@@ -91,12 +91,27 @@ You can set up Zero in two ways:
 3. **Start the App**
 
    ```bash
-   pnpm dev
+   # Frontend only
+   npm run dev:frontend
+
+   # Frontend + backend
+   npm run devfull
+
+   # Backend only
+   npm run dev:backend
    ```
 
 4. **Open in Browser**
 
-   Visit [http://localhost:3000](http://localhost:3000)
+   Visit [http://localhost:3000/mail](http://localhost:3000/mail) (root `/` now redirects to `/mail`)
+   - Test routes:
+     - [http://localhost:3000/mail](http://localhost:3000/mail) → redirects into your inbox
+     - [http://localhost:3000/mail/inbox](http://localhost:3000/mail/inbox)
+     - [http://localhost:8787/api/public/providers](http://localhost:8787/api/public/providers)
+   - Local env defaults:
+     - Commands use root `.env` via `dotenv` and default to:
+     - `VITE_PUBLIC_APP_URL=http://localhost:3000`
+     - `VITE_PUBLIC_BACKEND_URL=http://localhost:8787`
    </details>
 
 <details open>

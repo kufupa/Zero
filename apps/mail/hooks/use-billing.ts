@@ -1,5 +1,5 @@
 import { useAutumn, useCustomer } from 'autumn-js/react';
-import { signOut } from '@/lib/auth-client';
+import { signOut, useSession } from '@/lib/auth-client';
 import { isProCustomer } from '@/lib/utils';
 import { useEffect, useMemo } from 'react';
 
@@ -60,12 +60,13 @@ const FEATURE_IDS = {
 } as const;
 
 export const useBilling = () => {
+  const { data: session } = useSession();
   const { customer, refetch, isLoading, error } = useCustomer();
   const { attach, track, openBillingPortal } = useAutumn();
 
   useEffect(() => {
-    if (error) signOut();
-  }, [error]);
+    if (error && session?.user) signOut();
+  }, [error, session?.user]);
 
   const { isPro, ...customerFeatures } = useMemo(() => {
     const isPro = customer ? isProCustomer(customer) : false;
