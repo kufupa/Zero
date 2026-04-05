@@ -951,9 +951,9 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
 
           {recentSearches.length > 0 && !searchQuery && (
             <CommandGroup heading="Recent Searches">
-              {recentSearches.map((search, index) => (
+              {recentSearches.map((search) => (
                 <CommandItem
-                  key={`recent-${index}`}
+                  key={`recent-${search}`}
                   onSelect={() => handleSearch(search, true)}
                   disabled={isProcessing}
                 >

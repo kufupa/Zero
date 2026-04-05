@@ -298,17 +298,16 @@ export function AIChat({
               <ExampleQueries onQueryClick={handleQueryClick} />
             </div>
           ) : (
-            messages.map((message, index) => {
+            messages.map((message) => {
               const textParts = message.parts.filter((part) => part.type === 'text');
               const toolParts = message.parts.filter((part) => part.type === 'tool-invocation');
 
               return (
-                <div key={`${message.id}-${index}`} className="mb-2 flex flex-col" data-message-role={message.role}>
-                  {toolParts.map(
-                    (part, index) =>
+                <div key={message.id} className="mb-2 flex flex-col" data-message-role={message.role}>
+                  {toolParts.map((part) =>
                       part.toolInvocation?.result && (
                         <ToolResponse
-                          key={`${part.toolInvocation.toolName}-${index}`}
+                          key={`${message.id}-${part.toolInvocation.toolName}-${JSON.stringify(part.toolInvocation.result).slice(0, 20)}`}
                           toolName={part.toolInvocation.toolName}
                           result={part.toolInvocation.result}
                           args={part.toolInvocation.args}

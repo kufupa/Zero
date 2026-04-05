@@ -120,20 +120,24 @@ const AnimationComponent: React.FC<{
       <motion.span aria-hidden="true" variants={variants} className="inline-block whitespace-pre">
         {segment}
       </motion.span>
-    ) : (
-      <motion.span className="inline-block whitespace-pre">
-        {segment.split('').map((char, charIndex) => (
-          <motion.span
-            key={`char-${charIndex}`}
-            aria-hidden="true"
-            variants={variants}
-            className="inline-block whitespace-pre"
-          >
-            {char}
+        ) : (
+          <motion.span className="inline-block whitespace-pre">
+            {segment.split('').reduce<JSX.Element[]>((acc, char) => {
+              const key = `${segment}-${acc.length}`;
+              acc.push(
+                <motion.span
+                  key={key}
+                  aria-hidden="true"
+                  variants={variants}
+                  className="inline-block whitespace-pre"
+                >
+                  {char}
+                </motion.span>,
+              );
+              return acc;
+            }, [])}
           </motion.span>
-        ))}
-      </motion.span>
-    );
+        );
 
   if (!segmentWrapperClassName) {
     return content;
@@ -252,15 +256,19 @@ export function TextEffect({
           style={style}
         >
           {per !== 'line' ? <span className="sr-only">{children}</span> : null}
-          {segments.map((segment, index) => (
-            <AnimationComponent
-              key={`${per}-${index}-${segment}`}
-              segment={segment}
-              variants={computedVariants.item}
-              per={per}
-              segmentWrapperClassName={segmentWrapperClassName}
-            />
-          ))}
+          {segments.reduce((acc, segment) => {
+            const key = `${per}-${segment}-${acc.length}`;
+            acc.push(
+              <AnimationComponent
+                key={key}
+                segment={segment}
+                variants={computedVariants.item}
+                per={per}
+                segmentWrapperClassName={segmentWrapperClassName}
+              />,
+            );
+            return acc;
+          }, [] as JSX.Element[])}
         </MotionTag>
       )}
     </AnimatePresence>

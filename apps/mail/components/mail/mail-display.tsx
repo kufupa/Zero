@@ -168,7 +168,7 @@ const MailDisplayLabels = ({ labels }: { labels: string[] }) => {
 
   return (
     <div className="flex">
-      {visibleLabels.map((label, index) => {
+      {visibleLabels.map((label) => {
         const normalizedLabel = label.toLowerCase().replace(/^category_/i, '');
 
         let icon = null;
@@ -221,10 +221,10 @@ const MailDisplayLabels = ({ labels }: { labels: string[] }) => {
         }
 
         return (
-          <Tooltip key={`${label}-${index}`}>
+          <Tooltip key={`${label}-${labelText}`}>
             <TooltipTrigger>
               <Badge
-                key={`${label}-${index}`}
+                key={`${label}-${bgColor}`}
                 className={`rounded-md p-1 ${bgColor} dark:border-panelDark -ml-1.5 border-2 border-white transition-transform first:ml-0`}
               >
                 {icon}

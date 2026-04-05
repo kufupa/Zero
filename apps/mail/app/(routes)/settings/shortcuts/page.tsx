@@ -52,7 +52,7 @@ export default function ShortcutsPage() {
                 {scope.split('-').join(' ')}
               </h3>
               <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-                {scopedShortcuts.map((shortcut, index) => {
+                {scopedShortcuts.map((shortcut) => {
                   const categoryActionIndex: Record<string, number> = {
                     showImportant: 0,
                     showAllMail: 1,
@@ -75,8 +75,8 @@ export default function ShortcutsPage() {
                   }
 
                   return (
-                    <ShortcutItem
-                      key={`${scope}-${index}`}
+                  <ShortcutItem
+                      key={`${scope}-${shortcut.action}`}
                       keys={shortcut.keys}
                       //   action={shortcut.action}
                     >

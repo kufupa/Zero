@@ -861,8 +861,8 @@ export function EmailComposer({
                             ? `${nameWithoutExt.slice(0, maxNameLength)}…`
                             : nameWithoutExt;
                         return (
-                          <div
-                            key={file.name + index}
+                            <div
+                              key={`${file.name}-${file.size}-${file.lastModified}`}
                             className="group flex items-center justify-between gap-3 rounded-md px-1.5 py-1.5 hover:bg-black/5 dark:hover:bg-white/10"
                           >
                             <div className="flex min-w-0 flex-1 items-center gap-3">
@@ -1123,20 +1123,25 @@ const ContentPreview = ({
         scrollbarGutter: 'stable',
       }}
     >
-      {content.split('\n').map((line, i) => {
-        return (
-          <TextEffect
-            per="char"
-            preset="blur"
-            as="div"
-            className="whitespace-pre-wrap"
-            speedReveal={3}
-            key={i}
-          >
-            {line}
-          </TextEffect>
-        );
-      })}
+      {(() => {
+        let previewLineIndex = 0;
+        return content.split('\n').map((line) => {
+          const key = `preview-line-${line}-${previewLineIndex}`;
+          previewLineIndex += 1;
+          return (
+            <TextEffect
+              per="char"
+              preset="blur"
+              as="div"
+              className="whitespace-pre-wrap"
+              speedReveal={3}
+              key={key}
+            >
+              {line}
+            </TextEffect>
+          );
+        });
+      })()}
     </div>
     <div className="flex justify-end gap-2 p-2">
       <button
