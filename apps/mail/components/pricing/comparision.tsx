@@ -1,42 +1,10 @@
 import { Plus, PurpleThickCheck, ThickCheck } from '../icons/icons';
 import { useSession, signIn } from '@/lib/auth-client';
-import { useBilling } from '@/hooks/use-billing';
 import { useNavigate } from 'react-router';
-import { toast } from 'sonner';
 
 export default function Comparision() {
-  const { attach } = useBilling();
   const { data: session } = useSession();
   const navigate = useNavigate();
-
-  const handleUpgrade = async () => {
-    if (!session) {
-      toast.promise(
-        signIn.social({
-          provider: 'google',
-          callbackURL: `${window.location.origin}/pricing`,
-        }),
-        {
-          success: 'Redirecting to login...',
-          error: 'Login redirect failed',
-        },
-      );
-      return;
-    }
-
-    if (attach) {
-      toast.promise(
-        attach({
-          productId: 'pro-example',
-          successUrl: `${window.location.origin}/mail/inbox?success=true`,
-        }),
-        {
-          success: 'Redirecting to payment...',
-          error: 'Failed to process upgrade. Please try again later.',
-        },
-      );
-    }
-  };
   return (
     <div className="relative mx-auto mt-20 hidden max-w-[1200px] flex-col items-center justify-center md:flex">
       <Plus className="absolute left-[-5px] top-[-6px] mb-4 h-3 w-3 fill-white" />
@@ -153,15 +121,10 @@ export default function Comparision() {
                     navigate('/mail/inbox');
                   } else {
                     // User is not logged in, show sign-in dialog
-                    toast.promise(
-                      signIn.social({
-                        provider: 'google',
-                        callbackURL: `${window.location.origin}/mail`,
-                      }),
-                      {
-                        error: 'Login redirect failed',
-                      },
-                    );
+                    signIn.social({
+                      provider: 'google',
+                      callbackURL: `${window.location.origin}/mail`,
+                    });
                   }
                 }}
                 className="inline-flex h-[40px] items-center justify-center gap-2.5 self-stretch overflow-hidden rounded-lg bg-linear-to-l from-white/0 to-white/10 p-[3.5px] outline outline-1 -outline-offset-1 outline-white/10"
@@ -275,12 +238,19 @@ export default function Comparision() {
                 </div>
               </div>
               <button
-                onClick={handleUpgrade}
+                onClick={() =>
+                  session
+                    ? navigate('/mail/inbox')
+                    : void signIn.social({
+                        provider: 'google',
+                        callbackURL: `${window.location.origin}/mail`,
+                      })
+                }
                 className="inline-flex h-[40px] items-center justify-center gap-2.5 self-stretch overflow-hidden rounded-lg bg-linear-to-l from-white/0 to-white/10 p-[3.5px] outline outline-1 -outline-offset-1 outline-white/10"
               >
                 <div className="flex items-center justify-center">
                   <div className="justify-start text-center text-base font-semibold leading-none text-white/80">
-                    Start 7 day free trial
+                    Open app
                   </div>
                 </div>
               </button>

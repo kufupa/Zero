@@ -69,7 +69,6 @@ const startServerProcess = async (baseEnv) => {
 };
 
 const env = { ...process.env };
-env.VITE_DISABLE_AUTUMN = '1';
 env.VITE_DISABLE_SENTRY = '1';
 
 const backendReachable = forceFrontendOnly

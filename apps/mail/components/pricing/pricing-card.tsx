@@ -1,11 +1,8 @@
 import { PurpleThickCheck, ThickCheck } from '../icons/icons';
 import { useSession, signIn } from '@/lib/auth-client';
-import { PricingSwitch } from '../ui/pricing-switch';
-import { useBilling } from '@/hooks/use-billing';
 import { useNavigate } from 'react-router';
 import { Badge } from '../ui/badge';
 import { cn } from '@/lib/utils';
-import { useState } from 'react';
 import { toast } from 'sonner';
 
 const PRICING_CONSTANTS = {
@@ -39,8 +36,6 @@ const PRICING_CONSTANTS = {
     pro: 'outline outline-2 outline-offset-[3.5px] outline-[#2D2D2D]',
     divider: 'h-0 self-stretch outline outline-1 outline-offset-[-0.50px] outline-white/10',
   },
-  MONTHLY_PRICE: 20,
-  ANNUAL_DISCOUNT: 0.5,
 } as const;
 
 const handleGoogleSignIn = (
@@ -80,38 +75,12 @@ const FeatureItem = ({ text, isPro }: FeatureItemProps) => (
 );
 
 export default function PricingCard() {
-  const [isAnnual, setIsAnnual] = useState(false);
-  const monthlyPrice = PRICING_CONSTANTS.MONTHLY_PRICE;
-  const annualPrice = monthlyPrice * PRICING_CONSTANTS.ANNUAL_DISCOUNT;
-  const { attach } = useBilling();
   const { data: session } = useSession();
   const navigate = useNavigate();
-
-  const handleUpgrade = async () => {
-    if (!session) {
-      handleGoogleSignIn(`${window.location.origin}/pricing`);
-      return;
-    }
-
-    if (attach) {
-      toast.promise(
-        attach({
-          productId: isAnnual ? 'pro_annual' : 'pro-example',
-          successUrl: `${window.location.origin}/mail/inbox?success=true`,
-        }),
-        {
-          success: 'Redirecting to payment...',
-          error: 'Failed to process upgrade. Please try again later.',
-        },
-      );
-    }
-  };
   return (
     <div className="mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-8">
       <div className="relative z-20 mb-8 flex items-center justify-center gap-2">
-        <PricingSwitch onCheckedChange={(checked) => setIsAnnual(checked)} />
-        <p className="text-sm text-white/70">Billed Annually</p>
-        <Badge className="border border-[#656565] bg-[#3F3F3F] text-white">Save 50%</Badge>
+        <Badge className="border border-[#656565] bg-[#3F3F3F] text-white">No checkout in this build</Badge>
       </div>
       <div className="flex flex-col items-center justify-center gap-5 lg:flex-row lg:items-stretch">
         <div className={PRICING_CONSTANTS.CARD_STYLES.base}>
@@ -214,11 +183,11 @@ export default function PricingCard() {
               <div className="flex flex-col items-start justify-start gap-2 self-stretch">
                 <div className="inline-flex items-end justify-start gap-1 self-stretch">
                   <div className="justify-center text-4xl font-semibold leading-10 text-white">
-                    ${isAnnual ? annualPrice : monthlyPrice}
+                    Plan info
                   </div>
                   <div className="flex items-center justify-center gap-2.5 pb-0.5">
                     <div className="justify-center text-sm font-medium leading-tight text-white/40">
-                      {isAnnual ? '/MONTH (billed annually)' : '/MONTH'}
+                    contact for details
                     </div>
                   </div>
                 </div>
@@ -239,11 +208,15 @@ export default function PricingCard() {
           </div>
           <button
             className="z-30 mt-auto inline-flex h-10 cursor-pointer items-center justify-center gap-2.5 self-stretch overflow-hidden rounded-lg bg-white p-3 outline outline-1 -outline-offset-1"
-            onClick={handleUpgrade}
+            onClick={() => {
+              if (session) {
+                navigate('/mail/inbox');
+              }
+            }}
           >
             <div className="flex items-center justify-center gap-2.5 px-1">
               <div className="justify-start text-center font-semibold leading-none text-black">
-                Start 7 day free trial
+                Open inbox
               </div>
             </div>
           </button>
