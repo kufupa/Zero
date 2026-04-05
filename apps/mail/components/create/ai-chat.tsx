@@ -17,6 +17,13 @@ import { Tools } from '../../types/tools';
 import { format } from 'date-fns-tz';
 import { useQueryState } from 'nuqs';
 
+type ToolResult = {
+  labels?: Array<{ id: string }>;
+  id?: string;
+  newBody?: string;
+  [key: string]: unknown;
+};
+
 const ThreadPreview = ({ threadId }: { threadId: string }) => {
   const [, setThreadId] = useQueryState('threadId');
   const { data: getThread } = useThread(threadId);
@@ -145,42 +152,59 @@ export interface AIChatProps {
 }
 
 // Subcomponents for ToolResponse
-const GetThreadToolResponse = ({ result, args }: { result: any; args: any }) => {
+const GetThreadToolResponse = ({ result, args }: { result: unknown; args: unknown }) => {
   // Extract threadId from result or args
   let threadId: string | null = null;
   if (typeof result === 'string') {
     const match = result.match(/<thread id="([^"]+)" ?\/>/);
     if (match?.[1]) threadId = match[1];
   }
-  if (!threadId && args?.id && typeof args.id === 'string') threadId = args.id;
+  if (!threadId && args && typeof args === 'object') {
+    const toolArgs = args as { id?: unknown };
+    if (typeof toolArgs.id === 'string') threadId = toolArgs.id;
+  }
   if (!threadId) return null;
   return <ThreadPreview threadId={threadId} />;
 };
 
-const GetUserLabelsToolResponse = ({ result }: { result: any }) => {
-  if (!result?.labels) return null;
+const GetUserLabelsToolResponse = ({ result }: { result: unknown }) => {
+  if (!result || typeof result !== 'object') return null;
+  const threadResult = result as ToolResult;
+  const labels = threadResult.labels;
+  if (!Array.isArray(labels) || labels.length === 0) return null;
+
   return (
     <div className="flex flex-wrap gap-2">
-      {result.labels.map((label: any) => (
+      {labels.map((label) => (
         <MailLabels key={label.id} labels={[label]} />
       ))}
     </div>
   );
 };
 
-const ComposeEmailToolResponse = ({ result }: { result: any }) => {
-  if (!result?.newBody) return null;
+const ComposeEmailToolResponse = ({ result }: { result: unknown }) => {
+  if (!result || typeof result !== 'object') return null;
+  const parsedResult = result as ToolResult;
+  if (typeof parsedResult.newBody !== 'string') return null;
   return (
     <div className="rounded-lg border border-gray-200 p-4 dark:border-gray-800">
       <div className="prose dark:prose-invert max-w-none">
-        <Markdown>{result.newBody}</Markdown>
+        <Markdown>{parsedResult.newBody}</Markdown>
       </div>
     </div>
   );
 };
 
 // Main ToolResponse switcher
-const ToolResponse = ({ toolName, result, args }: { toolName: string; result: any; args: any }) => {
+const ToolResponse = ({
+  toolName,
+  result,
+  args,
+}: {
+  toolName: string;
+  result: unknown;
+  args: unknown;
+}) => {
   switch (toolName) {
     case Tools.GetThread:
       return <GetThreadToolResponse result={result} args={args} />;

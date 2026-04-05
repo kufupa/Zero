@@ -235,7 +235,11 @@ export const getFileIcon = (mimeType: string): string => {
   return '📎'; // Default icon
 };
 
-export const convertJSONToHTML = (json: any): string => {
+type JsonValue = string | number | boolean | null | JsonObject | JsonArray;
+type JsonObject = { [key: string]: JsonValue };
+type JsonArray = JsonValue[];
+
+export const convertJSONToHTML = (json: JsonValue): string => {
   if (!json) return '';
 
   // Handle different types
@@ -596,15 +600,20 @@ export const withExponentialBackoff = async <T>(
   while (true) {
     try {
       return await operation();
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const apiError = error as { code?: unknown; errors?: unknown };
+      const errorEntries = Array.isArray(apiError.errors) ? apiError.errors : [];
+      const firstError = errorEntries[0] as Record<string, unknown> | undefined;
+      const reason = typeof firstError?.reason === 'string' ? firstError.reason : undefined;
+
       if (retries >= maxRetries) {
         throw error;
       }
 
       const isRateLimit =
-        error?.code === 429 ||
-        error?.errors?.[0]?.reason === 'rateLimitExceeded' ||
-        error?.errors?.[0]?.reason === 'userRateLimitExceeded';
+        apiError.code === 429 ||
+        reason === 'rateLimitExceeded' ||
+        reason === 'userRateLimitExceeded';
 
       if (!isRateLimit) {
         throw error;

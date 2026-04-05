@@ -307,17 +307,18 @@ function AISidebar({ className }: AISidebarProps) {
   const { labels } = useSearchLabels();
 
   const onMessage = useCallback(
-    (message: any) => {
+    (message: MessageEvent<string>) => {
       try {
-        const parsedData = JSON.parse(message.data);
-        const { type } = parsedData;
+        const parsedData = JSON.parse(message.data) as Record<string, unknown>;
+        const type = typeof parsedData.type === 'string' ? parsedData.type : '';
         if (type === IncomingMessageType.Mail_Get) {
-          const { threadId } = parsedData;
+          const threadId = typeof parsedData.threadId === 'string' ? parsedData.threadId : null;
+          if (!threadId) return;
           queryClient.invalidateQueries({
             queryKey: trpc.mail.get.queryKey({ id: threadId }),
           });
         } else if (type === IncomingMessageType.Mail_List) {
-          const { folder } = parsedData;
+          const folder = typeof parsedData.folder === 'string' ? parsedData.folder : '';
           queryClient.invalidateQueries({
             queryKey: trpc.mail.listThreads.infiniteQueryKey({
               folder,
@@ -330,8 +331,15 @@ function AISidebar({ className }: AISidebarProps) {
             queryKey: trpc.labels.list.queryKey(),
           });
         } else if (type === IncomingMessageType.Do_State) {
-          const { isSyncing, syncingFolders, storageSize, counts, shards } = parsedData;
-          setDoState({ isSyncing, syncingFolders, storageSize, counts: counts ?? [], shards });
+          const isSyncing = typeof parsedData.isSyncing === 'boolean' ? parsedData.isSyncing : false;
+          const syncingFolders = Array.isArray(parsedData.syncingFolders)
+            ? (parsedData.syncingFolders as string[])
+            : [];
+          const storageSize =
+            typeof parsedData.storageSize === 'number' ? parsedData.storageSize : 0;
+          const counts = Array.isArray(parsedData.counts) ? (parsedData.counts as unknown[]) : [];
+          const shards = parsedData.shards;
+          setDoState({ isSyncing, syncingFolders, storageSize, counts, shards });
         }
       } catch (error) {
         console.error('error parsing party message', error, { rawMessage: message.data });

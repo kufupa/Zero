@@ -330,7 +330,7 @@ export function MailLayout() {
     if (!session?.user && !isPending) {
       navigate('/login');
     }
-  }, [session?.user, isPending]);
+  }, [navigate, session?.user, isPending]);
 
   const [{ isFetching, refetch: refetchThreads }] = useThreads();
   const isDesktop = useMediaQuery('(min-width: 768px)');

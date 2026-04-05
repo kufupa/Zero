@@ -114,7 +114,7 @@ export function NavUser() {
     queryClient.clear();
     await idbClear();
     toast.success('Cache cleared successfully');
-  }, []);
+  }, [queryClient]);
 
   const handleCopyConnectionId = useCallback(async () => {
     await navigator.clipboard.writeText(activeConnection?.id || '');
