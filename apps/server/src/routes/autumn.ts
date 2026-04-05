@@ -23,6 +23,42 @@ type AutumnContext = {
   };
 } & HonoContext;
 
+const autumnSecretConfigured = () => String(env.AUTUMN_SECRET_KEY ?? '').trim().length > 0;
+
+/** Billing API without Autumn keys would 500; stub a generous customer for local dev. */
+const localDevCustomerResponse = (customerData: NonNullable<AutumnContext['Variables']['customerData']>) => ({
+  id: customerData.customerId,
+  email: customerData.customerData.email,
+  name: customerData.customerData.name,
+  features: {
+    'chat-messages': {
+      unlimited: true,
+      balance: 999_999,
+      usage: 0,
+      included_usage: 999_999,
+      next_reset_at: null,
+      interval: 'month',
+    },
+    connections: {
+      unlimited: true,
+      balance: 999_999,
+      usage: 0,
+      included_usage: 999_999,
+      next_reset_at: null,
+      interval: 'month',
+    },
+    'brain-activity': {
+      unlimited: true,
+      balance: 999_999,
+      usage: 0,
+      included_usage: 999_999,
+      next_reset_at: null,
+      interval: 'month',
+    },
+  },
+  products: [{ id: 'pro-example', name: 'Pro (local dev)' }],
+});
+
 export const autumnApi = new Hono<AutumnContext>()
   .use('*', async (c, next) => {
     const { sessionUser } = c.var;
@@ -38,16 +74,34 @@ export const autumnApi = new Hono<AutumnContext>()
             },
           },
     );
-    c.set('autumn', new Autumn({ secretKey: env.AUTUMN_SECRET_KEY }));
+    if (autumnSecretConfigured()) {
+      c.set('autumn', new Autumn({ secretKey: env.AUTUMN_SECRET_KEY }));
+    }
     await next();
   })
   .post('/customers', async (c) => {
     const { autumn, customerData } = c.var;
     const body = await c.req.json();
-    if (!customerData) return c.json({ error: 'No customer ID found' }, 401);
+    if (!customerData) {
+      if (env.NODE_ENV === 'local' || env.NODE_ENV === 'development') {
+        return c.body(null, 204);
+      }
+      return c.json({ error: 'No customer ID found' }, 401);
+    }
+
+    if (!autumn && (env.NODE_ENV === 'local' || env.NODE_ENV === 'development')) {
+      return c.json({
+        ...localDevCustomerResponse(customerData),
+        ...sanitizeCustomerBody(body),
+      });
+    }
+
+    if (!autumn) {
+      return c.json({ error: 'Billing (Autumn) is not configured' }, 503);
+    }
 
     return c.json(
-      await autumn!.customers
+      await autumn.customers
         .create({
           id: customerData.customerId,
           ...customerData.customerData,
@@ -62,8 +116,15 @@ export const autumnApi = new Hono<AutumnContext>()
     const sanitizedBody = sanitizeCustomerBody(body);
     if (!customerData) return c.json({ error: 'No customer ID found' }, 401);
 
+    if (!autumn) {
+      if (env.NODE_ENV === 'local' || env.NODE_ENV === 'development') {
+        return c.json({});
+      }
+      return c.json({ error: 'Billing (Autumn) is not configured' }, 503);
+    }
+
     return c.json(
-      await autumn!
+      await autumn
         .attach({
           ...sanitizedBody,
           customer_id: customerData.customerId,
@@ -78,8 +139,15 @@ export const autumnApi = new Hono<AutumnContext>()
     const sanitizedBody = sanitizeCustomerBody(body);
     if (!customerData) return c.json({ error: 'No customer ID found' }, 401);
 
+    if (!autumn) {
+      if (env.NODE_ENV === 'local' || env.NODE_ENV === 'development') {
+        return c.json({});
+      }
+      return c.json({ error: 'Billing (Autumn) is not configured' }, 503);
+    }
+
     return c.json(
-      await autumn!
+      await autumn
         .cancel({
           ...sanitizedBody,
           customer_id: customerData.customerId,
@@ -93,8 +161,15 @@ export const autumnApi = new Hono<AutumnContext>()
     const sanitizedBody = sanitizeCustomerBody(body);
     if (!customerData) return c.json({ error: 'No customer ID found' }, 401);
 
+    if (!autumn) {
+      if (env.NODE_ENV === 'local' || env.NODE_ENV === 'development') {
+        return c.json({ allowed: true });
+      }
+      return c.json({ error: 'Billing (Autumn) is not configured' }, 503);
+    }
+
     return c.json(
-      await autumn!
+      await autumn
         .check({
           ...sanitizedBody,
           customer_id: customerData.customerId,
@@ -109,8 +184,15 @@ export const autumnApi = new Hono<AutumnContext>()
     const sanitizedBody = sanitizeCustomerBody(body);
     if (!customerData) return c.json({ error: 'No customer ID found' }, 401);
 
+    if (!autumn) {
+      if (env.NODE_ENV === 'local' || env.NODE_ENV === 'development') {
+        return c.json({ success: true });
+      }
+      return c.json({ error: 'Billing (Autumn) is not configured' }, 503);
+    }
+
     return c.json(
-      await autumn!
+      await autumn
         .track({
           ...sanitizedBody,
           customer_id: customerData.customerId,
@@ -124,8 +206,15 @@ export const autumnApi = new Hono<AutumnContext>()
     const body = await c.req.json();
     if (!customerData) return c.json({ error: 'No customer ID found' }, 401);
 
+    if (!autumn) {
+      if (env.NODE_ENV === 'local' || env.NODE_ENV === 'development') {
+        return c.json({ url: env.VITE_PUBLIC_APP_URL });
+      }
+      return c.json({ error: 'Billing (Autumn) is not configured' }, 503);
+    }
+
     return c.json(
-      await autumn!.customers
+      await autumn.customers
         .billingPortal(customerData.customerId, body)
         .then((data) => data.data),
     );
@@ -135,8 +224,15 @@ export const autumnApi = new Hono<AutumnContext>()
     const body = await c.req.json();
     if (!customerData) return c.json({ error: 'No customer ID found' }, 401);
 
+    if (!autumn) {
+      if (env.NODE_ENV === 'local' || env.NODE_ENV === 'development') {
+        return c.json({ url: env.VITE_PUBLIC_APP_URL });
+      }
+      return c.json({ error: 'Billing (Autumn) is not configured' }, 503);
+    }
+
     return c.json(
-      await autumn!.customers
+      await autumn.customers
         .billingPortal(customerData.customerId, {
           ...body,
           return_url: `${env.VITE_PUBLIC_APP_URL}`,
@@ -149,8 +245,15 @@ export const autumnApi = new Hono<AutumnContext>()
     const body = await c.req.json();
     if (!customerData) return c.json({ error: 'No customer ID found' }, 401);
 
+    if (!autumn) {
+      if (env.NODE_ENV === 'local' || env.NODE_ENV === 'development') {
+        return c.json({ id: crypto.randomUUID() });
+      }
+      return c.json({ error: 'Billing (Autumn) is not configured' }, 503);
+    }
+
     return c.json(
-      await autumn!.entities.create(customerData.customerId, body).then((data) => data.data),
+      await autumn.entities.create(customerData.customerId, body).then((data) => data.data),
     );
   })
   .get('/entities/:entityId', async (c) => {
@@ -170,8 +273,15 @@ export const autumnApi = new Hono<AutumnContext>()
       );
     }
 
+    if (!autumn) {
+      if (env.NODE_ENV === 'local' || env.NODE_ENV === 'development') {
+        return c.json({ id: entityId });
+      }
+      return c.json({ error: 'Billing (Autumn) is not configured' }, 503);
+    }
+
     return c.json(
-      await autumn!.entities
+      await autumn.entities
         .get(customerData.customerId, entityId, { expand })
         .then((data) => data.data),
     );
@@ -192,16 +302,30 @@ export const autumnApi = new Hono<AutumnContext>()
       );
     }
 
+    if (!autumn) {
+      if (env.NODE_ENV === 'local' || env.NODE_ENV === 'development') {
+        return c.json({ ok: true });
+      }
+      return c.json({ error: 'Billing (Autumn) is not configured' }, 503);
+    }
+
     return c.json(
-      await autumn!.entities.delete(customerData.customerId, entityId).then((data) => data.data),
+      await autumn.entities.delete(customerData.customerId, entityId).then((data) => data.data),
     );
   })
   .get('/components/pricing_table', async (c) => {
     const { autumn, customerData } = c.var;
 
+    if (!autumn) {
+      if (env.NODE_ENV === 'local' || env.NODE_ENV === 'development') {
+        return c.json({ products: [] });
+      }
+      return c.json({ error: 'Billing (Autumn) is not configured' }, 503);
+    }
+
     return c.json(
       await fetchPricingTable({
-        instance: autumn!,
+        instance: autumn,
         params: {
           customer_id: customerData?.customerId || undefined,
         },

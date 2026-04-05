@@ -751,6 +751,13 @@ const app = new Hono<HonoContext>()
         if (hostname === cookieDomain || hostname.endsWith('.' + cookieDomain)) {
           return origin;
         }
+        // Local: COOKIE_DOMAIN is often "localhost" while the dev server may use 127.0.0.1
+        if (
+          (env.NODE_ENV === 'local' || env.NODE_ENV === 'development') &&
+          (hostname === '127.0.0.1' || hostname === 'localhost')
+        ) {
+          return origin;
+        }
         return null;
       },
       credentials: true,

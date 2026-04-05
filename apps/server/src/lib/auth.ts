@@ -348,7 +348,10 @@ const createAuthConfig = () => {
       ipAddress: {
         disableIpTracking: true,
       },
-      cookiePrefix: env.NODE_ENV === 'development' ? 'better-auth-dev' : 'better-auth',
+      cookiePrefix:
+        env.NODE_ENV === 'development' || env.NODE_ENV === 'local'
+          ? 'better-auth-dev'
+          : 'better-auth',
       crossSubDomainCookies: {
         enabled: true,
         domain: env.COOKIE_DOMAIN,
@@ -361,6 +364,7 @@ const createAuthConfig = () => {
       'https://staging.0.email',
       'https://0.email',
       'http://localhost:3000',
+      'http://127.0.0.1:3000',
     ],
     session: {
       cookieCache: {
