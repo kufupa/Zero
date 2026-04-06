@@ -5,10 +5,10 @@ export async function clientLoader() {
   const isProd = !import.meta.env.DEV;
 
   const response = await fetch(import.meta.env.VITE_PUBLIC_BACKEND_URL + '/api/public/providers');
-  const data = (await response.json()) as { allProviders: any[] };
+  const data = (await response.json()) as { allProviders?: any[] };
 
   return {
-    allProviders: data.allProviders,
+    allProviders: data.allProviders ?? [],
     isProd,
   };
 }

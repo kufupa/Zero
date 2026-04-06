@@ -103,5 +103,30 @@ export type ZeroEnv = {
   DD_SITE: string;
 };
 
+function postgresTargetIsLocalhost(url: string): boolean {
+  try {
+    const u = new URL(url.replace(/^postgres(ql)?:/i, 'http:'));
+    return u.hostname === 'localhost' || u.hostname === '127.0.0.1';
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Use Hyperdrive’s connection string when it points at a non-local DB (e.g. after `pnpm nizzy sync`
+ * wrote `wrangler.local.jsonc`). Raw `DATABASE_URL` from vars alone often hits “proxy request failed”
+ * under `wrangler dev`. Fall back to `DATABASE_URL` when Hyperdrive is still the default local docker URL.
+ */
+export function getPostgresConnectionString(workerEnv: {
+  DATABASE_URL?: string;
+  HYPERDRIVE: { connectionString: string };
+}): string {
+  const hd = workerEnv.HYPERDRIVE.connectionString;
+  const db = workerEnv.DATABASE_URL?.trim() ?? '';
+  if (hd && !postgresTargetIsLocalhost(hd)) return hd;
+  if (db.length > 0) return db;
+  return hd;
+}
+
 const env = _env as ZeroEnv;
 export { env };

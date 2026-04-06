@@ -22,7 +22,7 @@ import { type EProviders } from '../types';
 import { createDriver } from './driver';
 import { createDb } from '../db';
 import { Effect } from 'effect';
-import { env } from '../env';
+import { env, getPostgresConnectionString } from '../env';
 import { Dub } from 'dub';
 
 const scheduleCampaign = (userInfo: { address: string; name: string }) =>
@@ -320,8 +320,13 @@ export const createAuth = () => {
 
 const createAuthConfig = () => {
   const cache = redis();
-  const { db } = createDb(env.HYPERDRIVE.connectionString);
+  const { db } = createDb(getPostgresConnectionString(env));
   return {
+    secret:
+      env.BETTER_AUTH_SECRET?.trim() ||
+      (env.NODE_ENV === 'production'
+        ? undefined
+        : 'local-dev-better-auth-secret-min-32-characters-long'),
     database: drizzleAdapter(db, { provider: 'pg' }),
     secondaryStorage: {
       get: async (key: string) => {

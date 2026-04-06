@@ -3,7 +3,7 @@ import { defaultLabels, EProviders, } from '../../types';
 import { connection } from '../../db/schema';
 
 
-import { env } from '../../env';
+import { env, getPostgresConnectionString } from '../../env';
 import { createDb } from '../../db';
 import { eq } from 'drizzle-orm';
 
@@ -29,7 +29,7 @@ export abstract class BaseSubscriptionFactory {
 
   protected async getConnectionFromDb(connectionId: string) {
     // Revisit
-    const { db, conn } = createDb(env.HYPERDRIVE.connectionString);
+    const { db, conn } = createDb(getPostgresConnectionString(env));
     const connectionData = await db.query.connection.findFirst({
       where: eq(connection.id, connectionId),
     });

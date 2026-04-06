@@ -62,7 +62,7 @@ import { connection } from '../../db/schema';
 import type { WSMessage } from 'partyserver';
 import { tools as authTools } from './tools';
 import { processToolCalls } from './utils';
-import { type ZeroEnv } from '../../env';
+import { getPostgresConnectionString, type ZeroEnv } from '../../env';
 import { type Connection } from 'agents';
 import { openai } from '@ai-sdk/openai';
 import * as schema from './db/schema';
@@ -702,7 +702,7 @@ export class ZeroDriver extends DurableObject<ZeroEnv> {
   public async setupAuth() {
     if (this.name === 'general') return;
     if (!this.driver) {
-      const { db, conn } = createDb(this.env.HYPERDRIVE.connectionString);
+      const { db, conn } = createDb(getPostgresConnectionString(this.env));
       const _connection = await db.query.connection.findFirst({
         where: eq(connection.id, this.name),
       });

@@ -3,6 +3,7 @@ import { cp, readFile } from 'fs/promises';
 import { log } from '@clack/prompts';
 import type { Command } from '.';
 import { join } from 'path';
+import { writeWranglerLocalHyperdrive } from './sync-hyperdrive';
 
 export const command: Command = {
   id: 'sync',
@@ -20,6 +21,9 @@ export const command: Command = {
     cp(join(root, '.env'), join(root, 'apps/mail/.dev.vars'));
     cp(join(root, '.env'), join(root, 'apps/mail/.env'));
     cp(join(root, '.env'), join(root, 'apps/server/.dev.vars'));
+
+    log.step('Writing apps/server/wrangler.local.jsonc (Hyperdrive local = DATABASE_URL, gitignored)');
+    await writeWranglerLocalHyperdrive(root, envFile);
 
     log.step('Syncing frontend types');
     await runCommand('pnpm', ['run', 'types'], { cwd: join(root, 'apps/mail') });

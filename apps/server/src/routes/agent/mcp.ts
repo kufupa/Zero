@@ -21,6 +21,7 @@ import { getCurrentDateContext } from '../../lib/prompts';
 import { connection } from '../../db/schema';
 import { FOLDERS } from '../../lib/utils';
 import { env } from 'cloudflare:workers';
+import { getPostgresConnectionString } from '../../env';
 import { eq, and } from 'drizzle-orm';
 import { McpAgent } from 'agents/mcp';
 import { createDb } from '../../db';
@@ -37,7 +38,7 @@ export class ZeroMCP extends McpAgent<typeof env, Record<string, unknown>, { use
 
   async init(): Promise<void> {
     if (!this.props.userId) return;
-    const { db, conn } = createDb(env.HYPERDRIVE.connectionString);
+    const { db, conn } = createDb(getPostgresConnectionString(env));
     const _connection = await db.query.connection.findFirst({
       where: eq(connection.userId, this.props.userId),
     });

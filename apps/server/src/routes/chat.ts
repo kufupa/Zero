@@ -21,6 +21,7 @@ import { connectionToDriver } from '../lib/server-utils';
 import type { CreateDraftData } from '../lib/schemas';
 import { FOLDERS } from '../lib/utils';
 import { env, RpcTarget } from 'cloudflare:workers';
+import { getPostgresConnectionString } from '../env';
 import { AIChatAgent } from 'agents/ai-chat-agent';
 import { tools as authTools } from './agent/tools';
 import { processToolCalls } from './agent/utils';
@@ -374,7 +375,7 @@ export class ZeroAgent extends AIChatAgent<typeof env> {
 
   public async setupAuth(connectionId: string) {
     if (!this.driver) {
-      const { db, conn } = createDb(env.HYPERDRIVE.connectionString);
+      const { db, conn } = createDb(getPostgresConnectionString(env));
       const _connection = await db.query.connection.findFirst({
         where: eq(connection.id, connectionId),
       });
@@ -1165,7 +1166,7 @@ export class ZeroMCP extends McpAgent<typeof env, {}, { userId: string }> {
   }
 
   async init(): Promise<void> {
-    const { db, conn } = createDb(env.HYPERDRIVE.connectionString);
+    const { db, conn } = createDb(getPostgresConnectionString(env));
     const _connection = await db.query.connection.findFirst({
       where: eq(connection.userId, this.props.userId),
     });

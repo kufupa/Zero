@@ -17,7 +17,7 @@ import { getZeroAgent, connectionToDriver } from '../lib/server-utils';
 import { WorkflowEntrypoint, WorkflowStep } from 'cloudflare:workers';
 import type { WorkflowEvent } from 'cloudflare:workers';
 import { connection } from '../db/schema';
-import type { ZeroEnv } from '../env';
+import { getPostgresConnectionString, type ZeroEnv } from '../env';
 import { eq } from 'drizzle-orm';
 import { createDb } from '../db';
 
@@ -74,7 +74,7 @@ export class SyncThreadsWorkflow extends WorkflowEntrypoint<ZeroEnv, SyncThreads
     };
 
     const setupResult = await step.do(`setup-connection-${connectionId}-${folder}`, async () => {
-      const { db, conn } = createDb(this.env.HYPERDRIVE.connectionString);
+      const { db, conn } = createDb(getPostgresConnectionString(this.env));
 
       const foundConnection = await db.query.connection.findFirst({
         where: eq(connection.id, connectionId),

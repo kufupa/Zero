@@ -23,7 +23,7 @@ import { type gmail_v1 } from '@googleapis/gmail';
 import { Effect, Console, Logger } from 'effect';
 import { connection } from './db/schema';
 import { EProviders } from './types';
-import type { ZeroEnv } from './env';
+import { getPostgresConnectionString, type ZeroEnv } from './env';
 import { initTracing } from './lib/tracing';
 import { EPrompts } from './types';
 import { eq } from 'drizzle-orm';
@@ -261,7 +261,7 @@ export class WorkflowRunner extends DurableObject<ZeroEnv> {
         historyProcessingKey,
       );
 
-      const { db, conn } = createDb(this.env.HYPERDRIVE.connectionString);
+      const { db, conn } = createDb(getPostgresConnectionString(this.env));
 
       const foundConnection = yield* Effect.tryPromise({
         try: async () => {
@@ -571,7 +571,7 @@ export class WorkflowRunner extends DurableObject<ZeroEnv> {
 
       if (providerId === EProviders.google) {
         yield* Console.log('[THREAD_WORKFLOW] Processing Google provider workflow');
-        const { db, conn } = createDb(this.env.HYPERDRIVE.connectionString);
+        const { db, conn } = createDb(getPostgresConnectionString(this.env));
 
         const foundConnection = yield* Effect.tryPromise({
           try: async () => {
@@ -729,7 +729,7 @@ export class WorkflowRunner extends DurableObject<ZeroEnv> {
 
       if (providerId === EProviders.google) {
         console.log('[THREAD_WORKFLOW] Processing Google provider workflow');
-        const { db, conn } = createDb(this.env.HYPERDRIVE.connectionString);
+        const { db, conn } = createDb(getPostgresConnectionString(this.env));
 
         let foundConnection;
         try {

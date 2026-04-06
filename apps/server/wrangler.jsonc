@@ -182,6 +182,11 @@
         "DD_API_KEY": "",
         "DD_APP_KEY": "",
         "DD_SITE": "datadoghq.com",
+        "BETTER_AUTH_SECRET": "local-dev-better-auth-secret-min-32-characters-long",
+        "BETTER_AUTH_URL": "http://localhost:8787",
+        "REDIS_URL": "http://localhost:8079",
+        "REDIS_TOKEN": "upstash-local-token",
+        "DATABASE_URL": "postgresql://postgres:postgres@localhost:5432/zerodotemail",
       },
       "kv_namespaces": [
         {

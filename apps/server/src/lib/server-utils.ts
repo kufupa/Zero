@@ -9,7 +9,7 @@ import { createDriver } from './driver';
 import { eq } from 'drizzle-orm';
 import { createDb } from '../db';
 import { Effect } from 'effect';
-import { env } from '../env';
+import { env, getPostgresConnectionString } from '../env';
 
 const mbToBytes = (mb: number) => mb * 1024 * 1024;
 
@@ -607,7 +607,7 @@ export const verifyToken = async (token: string) => {
 
 
 export const resetConnection = async (connectionId: string) => {
-  const { db, conn } = createDb(env.HYPERDRIVE.connectionString);
+  const { db, conn } = createDb(getPostgresConnectionString(env));
   await db
     .update(connection)
     .set({

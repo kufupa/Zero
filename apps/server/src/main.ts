@@ -42,7 +42,7 @@ import { ZeroMCP } from './routes/agent/mcp';
 import { publicRouter } from './routes/auth';
 import { WorkflowRunner } from './pipelines';
 import { initTracing } from './lib/tracing';
-import { env, type ZeroEnv } from './env';
+import { env, getPostgresConnectionString, type ZeroEnv } from './env';
 import type { HonoContext } from './ctx';
 import { createDb, type DB } from './db';
 import { createAuth } from './lib/auth';
@@ -202,7 +202,7 @@ export class DbRpcDO extends RpcTarget {
 }
 
 class ZeroDB extends DurableObject<ZeroEnv> {
-  db: DB = createDb(this.env.HYPERDRIVE.connectionString).db;
+  db: DB = createDb(getPostgresConnectionString(this.env)).db;
 
   async setMetaData(userId: string) {
     return new DbRpcDO(this, userId);
@@ -704,8 +704,24 @@ const api = new Hono<HonoContext>()
   })
   .route('/ai', aiRouter)
   .route('/public', publicRouter)
-  .on(['GET', 'POST', 'OPTIONS'], '/auth/*', (c) => {
-    return c.var.auth.handler(c.req.raw);
+  .on(['GET', 'POST', 'OPTIONS'], '/auth/*', async (c) => {
+    try {
+      return await c.var.auth.handler(c.req.raw);
+    } catch (err) {
+      console.error('[auth]', c.req.method, new URL(c.req.url).pathname, err);
+      const localHint =
+        env.NODE_ENV === 'local' || env.NODE_ENV === 'development'
+          ? 'Local dev: run `pnpm nizzy sync` (writes wrangler.local.jsonc for Hyperdrive), `pnpm db:push`, and use a remote DB session-pooler URI + Upstash HTTPS Redis. Docker: pnpm docker:db:up.'
+          : undefined;
+      return c.json(
+        {
+          code: 'AUTH_FAILURE',
+          message: err instanceof Error ? err.message : 'Authentication request failed',
+          hint: localHint,
+        },
+        500,
+      );
+    }
   })
   .use(
     trpcServer({
@@ -1162,7 +1178,7 @@ export default class Entry extends WorkerEntrypoint<ZeroEnv> {
 
   private async processExpiredSubscriptions() {
     console.log('[SCHEDULED] Checking for expired subscriptions...');
-    const { db, conn } = createDb(this.env.HYPERDRIVE.connectionString);
+    const { db, conn } = createDb(getPostgresConnectionString(this.env));
     const allAccounts = await db.query.connection.findMany({
       where: (fields, { isNotNull, and }) =>
         and(isNotNull(fields.accessToken), isNotNull(fields.refreshToken)),
