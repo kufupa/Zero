@@ -25,6 +25,28 @@ import { Effect } from 'effect';
 import { env, getPostgresConnectionString } from '../env';
 import { Dub } from 'dub';
 
+export const isDemoMode = () => env.ZERO_DEMO_MODE === '1';
+
+export const getDemoUser = () => ({
+  id: 'demo-user',
+  email: 'demo@zero.local',
+  name: 'Demo User',
+});
+
+const createMockAuth = (): Auth =>
+  ({
+    api: {
+      getSession: async () => ({
+        user: getDemoUser(),
+      }),
+      getJwks: async () => ({ keys: [] }),
+      getMcpSession: async () => null,
+      signOut: async () => ({ data: null, error: null }),
+      revokeSession: async () => ({ data: null, error: null }),
+    },
+    handler: async () => Response.json({ user: getDemoUser() }, { status: 200 }),
+  } as unknown as Auth);
+
 const scheduleCampaign = (userInfo: { address: string; name: string }) =>
   Effect.gen(function* () {
     const name = userInfo.name || 'there';
@@ -157,6 +179,8 @@ const connectionHandlerHook = async (account: Account) => {
 };
 
 export const createAuth = () => {
+  if (isDemoMode()) return createMockAuth();
+
   const twilioClient = twilio();
   const dub = new Dub();
 
@@ -390,6 +414,7 @@ const createAuthConfig = () => {
 };
 
 export const createSimpleAuth = () => {
+  if (isDemoMode()) return createMockAuth();
   return betterAuth(createAuthConfig());
 };
 

@@ -10,6 +10,7 @@ import { eq } from 'drizzle-orm';
 import { createDb } from '../db';
 import { Effect } from 'effect';
 import { env, getPostgresConnectionString } from '../env';
+import { isDemoMode } from '../config/demo';
 
 const mbToBytes = (mb: number) => mb * 1024 * 1024;
 
@@ -543,7 +544,26 @@ export const getZeroSocketAgent = async (connectionId: string) => {
   return stub;
 };
 
+const demoActiveConnection: typeof connection.$inferSelect = {
+  id: 'demo-connection',
+  userId: 'demo-user',
+  email: 'demo@zero.local',
+  name: 'Demo',
+  picture: null,
+  accessToken: 'demo-access-token',
+  refreshToken: 'demo-refresh-token',
+  scope: 'email',
+  providerId: 'google',
+  expiresAt: new Date(Date.now() + 86_400_000),
+  createdAt: new Date(),
+  updatedAt: new Date(),
+};
+
 export const getActiveConnection = async () => {
+  if (isDemoMode()) {
+    return demoActiveConnection;
+  }
+
   const c = getContext<HonoContext>();
   const { sessionUser, auth } = c.var;
   if (!sessionUser) throw new Error('Session Not Found');

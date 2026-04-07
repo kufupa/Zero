@@ -1,10 +1,19 @@
 import { authProviders, customProviders, isProviderEnabled } from '../lib/auth-providers';
 import type { HonoContext } from '../ctx';
 import { Hono } from 'hono';
+import { getDemoUser, isDemoMode } from '../lib/auth';
 
 const publicRouter = new Hono<HonoContext>();
+const authSessionRouter = new Hono<HonoContext>();
 
 publicRouter.get('/providers', async (c) => {
+  if (isDemoMode()) {
+    return c.json({
+      allProviders: [],
+      isProd: c.env.NODE_ENV === 'production',
+    });
+  }
+
   const env = c.env as unknown as Record<string, string>;
   const isProd = env.NODE_ENV === 'production';
 
@@ -49,4 +58,8 @@ publicRouter.get('/providers', async (c) => {
   });
 });
 
-export { publicRouter };
+authSessionRouter.get('/session', (c) => {
+  return c.json({ user: getDemoUser() });
+});
+
+export { publicRouter, authSessionRouter };

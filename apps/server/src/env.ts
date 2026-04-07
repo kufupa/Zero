@@ -31,6 +31,11 @@ export type ZeroEnv = {
   connection_labels: KVNamespace;
   prompts_storage: KVNamespace;
   NODE_ENV: 'local' | 'development' | 'production';
+  /**
+   * Temporary demo-mode shim flag.
+   * Demo mode only activates when this is exactly "1".
+   */
+  ZERO_DEMO_MODE?: string;
   JWT_SECRET: 'secret';
   ELEVENLABS_API_KEY: '1234567890';
   DISABLE_CALLS: 'true' | '';

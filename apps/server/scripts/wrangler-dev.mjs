@@ -22,6 +22,11 @@ args.push(
   '--env',
   'local',
 );
+if (process.env.ZERO_DEMO_MODE) {
+  args.push('--var', `ZERO_DEMO_MODE=${process.env.ZERO_DEMO_MODE}`);
+}
+const forwarded = process.argv.slice(2).filter((a) => a !== '--');
+args.push(...forwarded);
 
 const child = spawn(process.execPath, [wranglerCli, ...args], {
   stdio: 'inherit',

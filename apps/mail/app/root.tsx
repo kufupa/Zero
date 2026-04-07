@@ -18,6 +18,7 @@ import { Button } from '@/components/ui/button';
 import { getLocale } from '@/paraglide/runtime';
 import { siteConfig } from '@/lib/site-config';
 import { signOut } from '@/lib/auth-client';
+import { isDemoMode } from '@/lib/demo-session';
 import type { Route } from './+types/root';
 import { AlertCircle } from 'lucide-react';
 import { m } from '@/paraglide/messages';
@@ -147,6 +148,8 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
     }
   }, [error, message, details, stack]);
 
+  const isDemo = isDemoMode();
+
   return (
     <div className="dark:bg-background flex w-full items-center justify-center bg-white text-center">
       <div className="flex-col items-center justify-center md:flex dark:text-gray-100">
@@ -165,16 +168,18 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
           >
             Refresh
           </Button>
-          <Button
-            variant="outline"
-            onClick={async () => {
-              await signOut();
-              window.location.href = '/login';
-            }}
-            className="text-muted-foreground gap-2"
-          >
-            Log Out and Refresh
-          </Button>
+          {!isDemo && (
+            <Button
+              variant="outline"
+              onClick={async () => {
+                await signOut();
+                window.location.href = '/login';
+              }}
+              className="text-muted-foreground gap-2"
+            >
+              Log Out and Refresh
+            </Button>
+          )}
         </div>
       </div>
     </div>

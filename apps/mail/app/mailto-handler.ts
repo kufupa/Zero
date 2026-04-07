@@ -1,7 +1,7 @@
 import { cleanEmailAddresses } from '../lib/email-utils';
 import { trpcClient } from '@/providers/query-provider';
 import type { Route } from './+types/mailto-handler';
-import { authProxy } from '@/lib/auth-proxy';
+import { getSessionOrRedirect } from '@/lib/route-auth-shim';
 
 // Function to parse mailto URLs
 async function parseMailtoUrl(mailtoUrl: string) {
@@ -247,8 +247,8 @@ async function createDraftFromMailto(mailtoData: {
 }
 
 export async function clientLoader({ request }: Route.ClientLoaderArgs) {
-  const session = await authProxy.api.getSession({ headers: request.headers });
-  if (!session) return Response.redirect(`${import.meta.env.VITE_PUBLIC_APP_URL}/login`);
+  const session = await getSessionOrRedirect({ request });
+  if (session instanceof Response) return session;
 
   const url = new URL(request.url);
 

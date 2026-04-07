@@ -5,7 +5,7 @@ import tsconfigPaths from 'vite-tsconfig-paths';
 import oxlintPlugin from 'vite-plugin-oxlint';
 import babel from 'vite-plugin-babel';
 import tailwindcss from "@tailwindcss/vite";
-import { defineConfig } from 'vite';
+import { defineConfig, loadEnv } from 'vite';
 import dedent from 'dedent';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -58,24 +58,32 @@ const plugins = [
   }),
 ];
 
-export default defineConfig({
-  envDir: monorepoRoot,
-  plugins: [...plugins],
-  server: {
-    port: 3000,
-    warmup: {
-      clientFiles: ['./app/**/*', './components/**/*'],
+export default defineConfig(({ mode }) => {
+  const loaded = loadEnv(mode, monorepoRoot, '');
+  const zeroDemoMode = process.env.ZERO_DEMO_MODE ?? loaded.ZERO_DEMO_MODE ?? '';
+
+  return {
+    envDir: monorepoRoot,
+    define: {
+      'import.meta.env.ZERO_DEMO_MODE': JSON.stringify(zeroDemoMode),
     },
-  },
-  esbuild: {
-    pure: ['console.log'],
-  },
-  build: {
-    sourcemap: false,
-  },
-  resolve: {
-    alias: {
-      tslib: 'tslib/tslib.es6.js',
+    plugins: [...plugins],
+    server: {
+      port: 3000,
+      warmup: {
+        clientFiles: ['./app/**/*', './components/**/*'],
+      },
     },
-  },
+    esbuild: {
+      pure: ['console.log'],
+    },
+    build: {
+      sourcemap: false,
+    },
+    resolve: {
+      alias: {
+        tslib: 'tslib/tslib.es6.js',
+      },
+    },
+  };
 });

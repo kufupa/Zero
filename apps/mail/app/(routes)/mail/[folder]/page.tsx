@@ -2,7 +2,7 @@ import { useLoaderData, useNavigate } from 'react-router';
 
 import { MailLayout } from '@/components/mail/mail';
 import { useLabels } from '@/hooks/use-labels';
-import { authProxy } from '@/lib/auth-proxy';
+import { getSessionOrRedirect } from '@/lib/route-auth-shim';
 import { useEffect, useState } from 'react';
 import type { Route } from './+types/page';
 
@@ -11,8 +11,8 @@ const ALLOWED_FOLDERS = new Set(['inbox', 'draft', 'sent', 'spam', 'bin', 'archi
 export async function clientLoader({ params, request }: Route.ClientLoaderArgs) {
   if (!params.folder) return Response.redirect(`${import.meta.env.VITE_PUBLIC_APP_URL}/mail/inbox`);
 
-  const session = await authProxy.api.getSession({ headers: request.headers });
-  if (!session) return Response.redirect(`${import.meta.env.VITE_PUBLIC_APP_URL}/login`);
+  const session = await getSessionOrRedirect({ request });
+  if (session instanceof Response) return session;
 
   return {
     folder: params.folder,

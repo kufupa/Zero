@@ -1,7 +1,10 @@
 import { LoginClient } from './login-client';
-import { useLoaderData } from 'react-router';
+import { isDemoMode } from '@/lib/demo-session';
+import { redirect, useLoaderData } from 'react-router';
 
 export async function clientLoader() {
+  if (isDemoMode()) return redirect('/mail/inbox');
+
   const isProd = !import.meta.env.DEV;
 
   const response = await fetch(import.meta.env.VITE_PUBLIC_BACKEND_URL + '/api/public/providers');

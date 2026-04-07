@@ -45,7 +45,7 @@ import { initTracing } from './lib/tracing';
 import { env, getPostgresConnectionString, type ZeroEnv } from './env';
 import type { HonoContext } from './ctx';
 import { createDb, type DB } from './db';
-import { createAuth } from './lib/auth';
+import { createAuth, createSimpleAuth, getDemoUser, isDemoMode } from './lib/auth';
 import { aiRouter } from './routes/ai';
 import { appRouter } from './trpc';
 import { cors } from 'hono/cors';
@@ -583,7 +583,7 @@ function hashIpAddress(ip: string | undefined): string | undefined {
   return `ip_${Math.abs(hash).toString(16).padStart(8, '0')}`;
 }
 
-const api = new Hono<HonoContext>()
+let api = new Hono<HonoContext>()
   .use(contextStorage())
   .use('*', async (c, next) => {
     // Initialize request tracing using headers (no context pollution)
@@ -617,12 +617,19 @@ const api = new Hono<HonoContext>()
       'auth.method': c.req.header('Authorization') ? 'bearer_token' : 'session_cookie'
     });
 
-    const auth = createAuth();
-    c.set('auth', auth);
-    const session = await auth.api.getSession({ headers: c.req.raw.headers });
-    c.set('sessionUser', session?.user);
+    const tokenHeader = c.req.header('Authorization');
+    let session: any = null;
+    if (isDemoMode()) {
+      c.set('auth', createSimpleAuth() as any);
+      c.set('sessionUser', getDemoUser());
+    } else {
+      const auth = createAuth();
+      c.set('auth', auth);
+      session = await auth.api.getSession({ headers: c.req.raw.headers });
+      c.set('sessionUser', session?.user);
+    }
 
-    if (c.req.header('Authorization') && !session?.user) {
+    if (!isDemoMode() && tokenHeader && !session?.user) {
       // Start token verification span
       const tokenSpan = TraceContext.startSpan(traceId, 'token_verification', {
         tokenPresent: true,
@@ -630,7 +637,7 @@ const api = new Hono<HonoContext>()
         'auth.token_type': 'jwt'
       });
 
-      const token = c.req.header('Authorization')?.split(' ')[1];
+      const token = tokenHeader?.split(' ')[1];
 
       if (token) {
         try {
@@ -673,7 +680,7 @@ const api = new Hono<HonoContext>()
     TraceContext.completeSpan(traceId, authSpan.id, {
       authenticated: !!c.var.sessionUser,
       userId: c.var.sessionUser?.id,
-      authMethod: session?.user ? 'session' : (c.req.header('Authorization') ? 'token' : 'none'),
+      authMethod: isDemoMode() ? 'demo' : (session?.user ? 'session' : (tokenHeader ? 'token' : 'none')),
     });
 
     // Update trace metadata with user info
@@ -703,26 +710,52 @@ const api = new Hono<HonoContext>()
     c.set('auth', undefined as any);
   })
   .route('/ai', aiRouter)
-  .route('/public', publicRouter)
-  .on(['GET', 'POST', 'OPTIONS'], '/auth/*', async (c) => {
-    try {
-      return await c.var.auth.handler(c.req.raw);
-    } catch (err) {
-      console.error('[auth]', c.req.method, new URL(c.req.url).pathname, err);
-      const localHint =
-        env.NODE_ENV === 'local' || env.NODE_ENV === 'development'
-          ? 'Local dev: run `pnpm nizzy sync` (writes wrangler.local.jsonc for Hyperdrive), `pnpm db:push`, and use a remote DB session-pooler URI + Upstash HTTPS Redis. Docker: pnpm docker:db:up.'
-          : undefined;
-      return c.json(
-        {
-          code: 'AUTH_FAILURE',
-          message: err instanceof Error ? err.message : 'Authentication request failed',
-          hint: localHint,
+  .route('/public', publicRouter);
+
+api = api.on(['GET', 'POST', 'OPTIONS'], '/auth/*', async (c) => {
+  if (isDemoMode()) {
+    const pathname = new URL(c.req.url).pathname;
+    if (c.req.method === 'GET' && pathname.endsWith('/session')) {
+      const user = getDemoUser();
+      return c.json({
+        data: {
+          user: {
+            ...user,
+            emailVerified: true,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          },
+          session: {
+            id: 'demo-session',
+            userId: user.id,
+            token: 'demo-session-token',
+            expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 24 * 30).toISOString(),
+          },
         },
-        500,
-      );
+      });
     }
-  })
+    return c.json({ error: 'Not found' }, 404);
+  }
+  try {
+    return await c.var.auth.handler(c.req.raw);
+  } catch (err) {
+    console.error('[auth]', c.req.method, new URL(c.req.url).pathname, err);
+    const localHint =
+      env.NODE_ENV === 'local' || env.NODE_ENV === 'development'
+        ? 'Local dev: run `pnpm nizzy sync` (writes wrangler.local.jsonc for Hyperdrive), `pnpm db:push`, and use a remote DB session-pooler URI + Upstash HTTPS Redis. Docker: pnpm docker:db:up.'
+        : undefined;
+    return c.json(
+      {
+        code: 'AUTH_FAILURE',
+        message: err instanceof Error ? err.message : 'Authentication request failed',
+        hint: localHint,
+      },
+      500,
+    );
+  }
+});
+
+api = api
   .use(
     trpcServer({
       endpoint: '/api/trpc',
@@ -780,12 +813,18 @@ const app = new Hono<HonoContext>()
     }),
   )
   .get('.well-known/oauth-authorization-server', async (c) => {
+    if (isDemoMode()) {
+      return c.json({ error: 'Demo mode does not expose OAuth discovery metadata' }, 404);
+    }
     const auth = createAuth();
     return oAuthDiscoveryMetadata(auth)(c.req.raw);
   })
   .mount(
     '/sse',
     async (request, env, ctx) => {
+      if (isDemoMode()) {
+        return new Response('Demo mode: MCP unavailable', { status: 401 });
+      }
       const authBearer = request.headers.get('Authorization');
       if (!authBearer) {
         console.log('No auth provided');
@@ -818,6 +857,9 @@ const app = new Hono<HonoContext>()
   .mount(
     '/mcp',
     async (request, env, ctx) => {
+      if (isDemoMode()) {
+        return new Response('Demo mode: MCP unavailable', { status: 401 });
+      }
       const authBearer = request.headers.get('Authorization');
       if (!authBearer) {
         return new Response('Unauthorized', { status: 401 });
