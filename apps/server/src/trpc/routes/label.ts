@@ -1,5 +1,6 @@
 import { activeDriverProcedure, createRateLimiterMiddleware, router } from '../trpc';
 import { getZeroAgent } from '../../lib/server-utils';
+import { isDemoMode } from '../../config/demo';
 import { Ratelimit } from '@upstash/ratelimit';
 import { z } from 'zod';
 
@@ -28,6 +29,9 @@ export const labelsRouter = router({
     )
     .query(async ({ ctx }) => {
       const { activeConnection } = ctx;
+      if (isDemoMode()) {
+        return [];
+      }
       const { stub: agent } = await getZeroAgent(activeConnection.id);
       return await agent.getUserLabels();
     }),

@@ -79,7 +79,11 @@ const startServerProcess = async (baseEnv) => {
     env: baseEnv,
   });
 
-  for (let i = 0; i < 30; i++) {
+  const attempts = Math.max(
+    1,
+    Number.parseInt(process.env.ZERO_BACKEND_PROBE_ATTEMPTS ?? '', 10) || 120,
+  );
+  for (let i = 0; i < attempts; i++) {
     await wait(1000);
     if (await isBackendReachable()) {
       console.log('[local-dev] Backend is up.');
