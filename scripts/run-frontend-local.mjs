@@ -23,6 +23,39 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const backendUrl = process.env.VITE_PUBLIC_BACKEND_URL || 'http://localhost:8787';
 const backendProbeUrl = `${backendUrl.replace(/\/$/, '')}/api/public/providers`;
 
+let backendProcess = null;
+let shutdownHandlersInstalled = false;
+
+const stopBackend = () => {
+  if (!backendProcess || backendProcess.killed) return;
+  if (process.platform === 'win32') {
+    spawnSync('taskkill', ['/PID', String(backendProcess.pid), '/T', '/F'], { stdio: 'ignore' });
+  } else {
+    try {
+      spawnSync('kill', ['-TERM', String(backendProcess.pid)], { stdio: 'ignore' });
+    } catch {
+      try {
+        backendProcess.kill('SIGTERM');
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  backendProcess = null;
+};
+
+const installShutdownHandlers = () => {
+  if (shutdownHandlersInstalled) return;
+  shutdownHandlersInstalled = true;
+  const shutdown = (code = 0) => {
+    stopBackend();
+    process.exit(code);
+  };
+  process.on('SIGINT', () => shutdown(0));
+  process.on('SIGTERM', () => shutdown(0));
+  process.on('exit', () => stopBackend());
+};
+
 const isBackendReachable = async () => {
   try {
     const controller = new AbortController();
@@ -37,6 +70,27 @@ const isBackendReachable = async () => {
 
 const backendCmd = 'pnpm --dir apps/server run dev';
 
+const startServerProcess = async (baseEnv) => {
+  installShutdownHandlers();
+  backendProcess = spawn(backendCmd, {
+    shell: true,
+    stdio: 'ignore',
+    detached: false,
+    env: baseEnv,
+  });
+
+  for (let i = 0; i < 30; i++) {
+    await wait(1000);
+    if (await isBackendReachable()) {
+      console.log('[local-dev] Backend is up.');
+      return true;
+    }
+  }
+
+  stopBackend();
+  return false;
+};
+
 const startBackendIfNeeded = async (baseEnv) => {
   if (process.env.ZERO_AUTO_START_BACKEND === '0') return isBackendReachable();
   if (process.env.ZERO_AUTO_START_BACKEND === '1' || forceFull) {
@@ -48,35 +102,15 @@ const startBackendIfNeeded = async (baseEnv) => {
   return isBackendReachable();
 };
 
-const startServerProcess = async (baseEnv) => {
-  const backend = spawn(backendCmd, {
-    shell: true,
-    stdio: 'ignore',
-    detached: true,
-    env: baseEnv,
-  });
-  backend.unref();
-
-  for (let i = 0; i < 30; i++) {
-    await wait(1000);
-    if (await isBackendReachable()) {
-      console.log('[local-dev] Backend is up.');
-      return true;
-    }
-  }
-
-  return false;
-};
-
 const env = { ...process.env };
 env.VITE_DISABLE_SENTRY = '1';
 
-const backendReachable = forceFrontendOnly
-  ? false
-  : await startBackendIfNeeded(env);
+const backendReachable = forceFrontendOnly ? false : await startBackendIfNeeded(env);
 env.VITE_FRONTEND_ONLY = forceFrontendOnly ? '1' : backendReachable ? '0' : '1';
 
 const child = spawnSync(cmd, { shell: true, stdio: 'inherit', env });
+
+stopBackend();
 
 if (child.error) {
   console.error(child.error.message);

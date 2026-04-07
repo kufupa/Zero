@@ -18,20 +18,26 @@ const ReactCompilerConfig = {
 };
 
 const shouldRunOxlint = process.env.ZERO_DISABLE_OXLINT !== '1';
+const shouldRunReactCompiler = process.env.ZERO_DISABLE_REACT_COMPILER !== '1';
+const shouldRunWarmup = process.env.ZERO_DISABLE_VITE_WARMUP !== '1';
 
 const plugins = [
   ...(shouldRunOxlint ? [oxlintPlugin()] : []),
   reactRouter(),
   cloudflare(),
-  babel({
-    exclude: [/node_modules/, /[\\/]paraglide[\\/]/],
-    filter: /\.[jt]sx?$/,
-    babelConfig: {
-      presets: ['@babel/preset-typescript'], // if you use TypeScript
-      plugins: [['babel-plugin-react-compiler', ReactCompilerConfig]],
-      compact: false,
-    },
-  }),
+  ...(shouldRunReactCompiler
+    ? [
+        babel({
+          exclude: [/node_modules/, /[\\/]paraglide[\\/]/],
+          filter: /\.[jt]sx?$/,
+          babelConfig: {
+            presets: ['@babel/preset-typescript'],
+            plugins: [['babel-plugin-react-compiler', ReactCompilerConfig]],
+            compact: false,
+          },
+        }),
+      ]
+    : []),
   tsconfigPaths(),
   tailwindcss(),
   {
@@ -70,9 +76,13 @@ export default defineConfig(({ mode }) => {
     plugins: [...plugins],
     server: {
       port: 3000,
-      warmup: {
-        clientFiles: ['./app/**/*', './components/**/*'],
-      },
+      ...(shouldRunWarmup
+        ? {
+            warmup: {
+              clientFiles: ['./app/**/*', './components/**/*'],
+            },
+          }
+        : {}),
     },
     esbuild: {
       pure: ['console.log'],

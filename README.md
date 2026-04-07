@@ -26,6 +26,17 @@ Most email services today are either **closed-source**, **data-hungry**, or **to
 - 🎨 **Customizable UI & Features** – Tailor your email experience the way you want it.
 - 🚀 **Developer-Friendly** – Built with extensibility and integrations in mind.
 
+## Lean Dev Mode
+
+For lower RAM/CPU while working on the UI locally:
+
+- `pnpm dev:frontend:lean` — disables oxlint, the React Compiler Babel pass, and Vite server warmup via `scripts/with-lean-vite-env.mjs` (sets `ZERO_DISABLE_*` on all platforms, including Windows).
+- `pnpm cleanup:dev` — stops stray `node`, `esbuild`, and `workerd` processes whose command line includes this repository path (useful after a crashed or interrupted dev session).
+- `pnpm verify:dev:lean` — asserts the lean env toggles are set (used by CI or local sanity checks).
+- `pnpm verify:dev:cleanup` — regression check that ports **3000** and **8787** have no listeners after a short `pnpm devfull` run and shutdown (can take ~1 minute; ensure `ZERO_DEMO_MODE=1` in `.env` if you run without a full database).
+
+When you bump the workspace `wrangler` version, align `@cloudflare/vite-plugin` in `apps/mail/package.json` with a current release so Vite can import Wrangler without CommonJS named-export errors.
+
 ## Tech Stack
 
 Zero is built with modern and reliable technologies:
@@ -52,7 +63,7 @@ Watch this helpful video tutorial on how to set up Zero locally:
 
 **Required Versions:**
 
-- [Node.js](https://nodejs.org/en/download) (v18 or higher)
+- [Node.js](https://nodejs.org/en/download) — use **v22.14.0** from [`.nvmrc`](.nvmrc) when possible (minimum v18)
 - [pnpm](https://pnpm.io) (v10 or higher)
 - [Docker](https://docs.docker.com/engine/install/) (v20 or higher)
 
