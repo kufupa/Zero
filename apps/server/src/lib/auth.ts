@@ -24,14 +24,11 @@ import { createDb } from '../db';
 import { Effect } from 'effect';
 import { env, getPostgresConnectionString } from '../env';
 import { Dub } from 'dub';
+import { getDemoUser as getDemoUserFromConfig, isDemoMode as isDemoModeFromConfig } from '../config/demo';
 
-export const isDemoMode = () => env.ZERO_DEMO_MODE === '1';
-
-export const getDemoUser = () => ({
-  id: 'demo-user',
-  email: 'demo@zero.local',
-  name: 'Demo User',
-});
+/** Re-export so `main.ts` / routes keep a single import path; logic matches `config/demo` (incl. process.env fallback). */
+export const isDemoMode = isDemoModeFromConfig;
+export const getDemoUser = getDemoUserFromConfig;
 
 const createMockAuth = (): Auth =>
   ({

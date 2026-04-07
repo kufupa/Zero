@@ -1,0 +1,377 @@
+{
+  "version": 1,
+  "threads": [
+    {
+      "id": "cent-001",
+      "folder": "inbox",
+      "labels": [{ "id": "INBOX", "name": "INBOX" }],
+      "messages": [
+        {
+          "id": "cent-001-m1",
+          "from": { "email": "hr@legacyhotels.com", "name": "Morgan Price" },
+          "to": [{ "email": "centurion@legacyhotels.com", "name": "Centurion Reservations" }],
+          "receivedOn": "2026-05-12T14:05:00.000Z",
+          "subject": "Reminder: Spring compliance attestation (May 16 deadline)",
+          "bodyText": "Team — Please complete the spring compliance attestation in Workday by Friday, May 16. No response needed if you have already submitted.\n\nPeople Operations",
+          "unread": true
+        }
+      ],
+      "draft": { "bodyText": "", "depth": "minimal" }
+    },
+    {
+      "id": "cent-002",
+      "folder": "inbox",
+      "labels": [{ "id": "INBOX", "name": "INBOX" }],
+      "messages": [
+        {
+          "id": "cent-002-m1",
+          "from": { "email": "facilities@legacyhotels.com", "name": "Facilities — Central" },
+          "to": [{ "email": "centurion@legacyhotels.com", "name": "Centurion Reservations" }],
+          "receivedOn": "2026-05-12T13:40:00.000Z",
+          "subject": "FYI: Fire drill — Wednesday May 14, 10:15 AM",
+          "bodyText": "The Centurion is included in the regional fire drill window on Wednesday, May 14 at 10:15 AM local. Front desk: use the laminated guest script at the pod.\n\nFacilities",
+          "unread": true
+        }
+      ],
+      "draft": { "bodyText": "", "depth": "minimal" }
+    },
+    {
+      "id": "cent-003",
+      "folder": "inbox",
+      "labels": [{ "id": "INBOX", "name": "INBOX" }],
+      "messages": [
+        {
+          "id": "cent-003-m1",
+          "from": { "email": "fnb.ops@legacyhotels.com", "name": "F&B Ops" },
+          "to": [{ "email": "centurion@legacyhotels.com", "name": "Centurion Reservations" }],
+          "receivedOn": "2026-05-12T12:55:00.000Z",
+          "subject": "Menu note: Mother's Day brunch — May 11",
+          "bodyText": "Brunch service ran 10:00–2:00. Guest feedback was strong on the pastry table. Please route any billing disputes to F&B shared inbox.\n\nF&B Ops",
+          "unread": true
+        }
+      ],
+      "draft": { "bodyText": "", "depth": "minimal" }
+    },
+    {
+      "id": "cent-004",
+      "folder": "inbox",
+      "labels": [{ "id": "INBOX", "name": "INBOX" }],
+      "messages": [
+        {
+          "id": "cent-004-m1",
+          "from": { "email": "it.support@legacyhotels.com", "name": "IT Support" },
+          "to": [{ "email": "centurion@legacyhotels.com", "name": "Centurion Reservations" }],
+          "receivedOn": "2026-05-12T11:20:00.000Z",
+          "subject": "Scheduled maintenance — guest Wi‑Fi — May 13, 2:00–3:30 AM",
+          "bodyText": "Brief guest Wi‑Fi maintenance is scheduled overnight on May 13. Wired lobby workstations stay up. Post the standard door card at the desk.\n\nIT Support",
+          "unread": true
+        }
+      ],
+      "draft": { "bodyText": "", "depth": "minimal" }
+    },
+    {
+      "id": "cent-005",
+      "folder": "inbox",
+      "labels": [{ "id": "INBOX", "name": "INBOX" }],
+      "messages": [
+        {
+          "id": "cent-005-m1",
+          "from": { "email": "l.d.people@legacyhotels.com", "name": "Learning & Development" },
+          "to": [{ "email": "centurion@legacyhotels.com", "name": "Centurion Reservations" }],
+          "receivedOn": "2026-05-12T10:05:00.000Z",
+          "subject": "New micro‑course: de‑escalation at the front desk",
+          "bodyText": "A 12‑minute refresher is live in the training portal. Completion by May 31 is requested for all guest‑facing roles.\n\nL&D",
+          "unread": true
+        }
+      ],
+      "draft": { "bodyText": "", "depth": "minimal" }
+    },
+    {
+      "id": "cent-006",
+      "folder": "inbox",
+      "labels": [{ "id": "INBOX", "name": "INBOX" }],
+      "messages": [
+        {
+          "id": "cent-006-m1",
+          "from": { "email": "payroll@legacyhotels.com", "name": "Payroll Services" },
+          "to": [{ "email": "centurion@legacyhotels.com", "name": "Centurion Reservations" }],
+          "receivedOn": "2026-05-11T16:45:00.000Z",
+          "subject": "Payroll calendar — May 2026",
+          "bodyText": "Biweekly pay date: May 23. Timesheet lock: May 21, 11:59 PM. Managers: approve by May 22, 10:00 AM.\n\nPayroll",
+          "unread": true
+        }
+      ],
+      "draft": { "bodyText": "", "depth": "minimal" }
+    },
+    {
+      "id": "cent-007",
+      "folder": "inbox",
+      "labels": [{ "id": "INBOX", "name": "INBOX" }],
+      "messages": [
+        {
+          "id": "cent-007-m1",
+          "from": { "email": "s.rojas@legacyhotels.com", "name": "Sofia Rojas" },
+          "to": [{ "email": "centurion@legacyhotels.com", "name": "Centurion Reservations" }],
+          "receivedOn": "2026-05-11T15:10:00.000Z",
+          "subject": "Shift swap request — May 18 evening",
+          "bodyText": "Hi team — I need coverage for the 3:00–11:00 PM desk shift on Sunday, May 18. I can trade May 19 opening or May 20 mid if that helps.\n\nSofia Rojas\nFront Desk",
+          "unread": true
+        }
+      ],
+      "draft": {
+        "bodyText": "Sofia — Thanks for the heads‑up. I can cover May 18 evening if you take my May 19 opening (7:00–3:00). Reply yes and I will update the roster and notify the supervisor.\n\nCenturion Reservations",
+        "depth": "full"
+      }
+    },
+    {
+      "id": "cent-008",
+      "folder": "inbox",
+      "labels": [{ "id": "INBOX", "name": "INBOX" }],
+      "messages": [
+        {
+          "id": "cent-008-m1",
+          "from": { "email": "people.ops@legacyhotels.com", "name": "People Ops" },
+          "to": [{ "email": "centurion@legacyhotels.com", "name": "Centurion Reservations" }],
+          "receivedOn": "2026-05-11T14:22:00.000Z",
+          "subject": "PTO blackout clarification — Memorial Day week",
+          "bodyText": "Please confirm whether the property is treating May 24–26 as a soft blackout for non‑exempt front‑office PTO. Two agents submitted overlapping requests.\n\nPeople Ops",
+          "unread": true
+        }
+      ],
+      "draft": {
+        "bodyText": "We are observing a soft blackout May 24–26: PTO still requires director approval and same‑day desk coverage must be named. I will reply to the two agents with that policy link and copy you.\n\nCenturion Reservations",
+        "depth": "full"
+      }
+    },
+    {
+      "id": "cent-009",
+      "folder": "inbox",
+      "labels": [{ "id": "INBOX", "name": "INBOX" }],
+      "messages": [
+        {
+          "id": "cent-009-m1",
+          "from": { "email": "uniforms@legacyhotels.com", "name": "Uniform Program" },
+          "to": [{ "email": "centurion@legacyhotels.com", "name": "Centurion Reservations" }],
+          "receivedOn": "2026-05-11T13:05:00.000Z",
+          "subject": "Q2 uniform order — sizes due May 20",
+          "bodyText": "Please send consolidated sizes for new hires and replacements. Use the attached spreadsheet template from the last cycle.\n\nUniform Program",
+          "unread": true
+        }
+      ],
+      "draft": {
+        "bodyText": "Received. I will collect sizes from the front‑office roster by May 19 and upload one consolidated file to the portal before the May 20 cutoff.\n\nCenturion Reservations",
+        "depth": "full"
+      }
+    },
+    {
+      "id": "cent-010",
+      "folder": "inbox",
+      "labels": [{ "id": "INBOX", "name": "INBOX" }],
+      "messages": [
+        {
+          "id": "cent-010-m1",
+          "from": { "email": "security@legacyhotels.com", "name": "Physical Security" },
+          "to": [{ "email": "centurion@legacyhotels.com", "name": "Centurion Reservations" }],
+          "receivedOn": "2026-05-11T09:30:00.000Z",
+          "subject": "Keycard access — contractor list for May 15",
+          "bodyText": "Please confirm the three vendor names that should receive temporary B1 access on May 15 for the chiller inspection.\n\nSecurity",
+          "unread": true
+        }
+      ],
+      "draft": {
+        "bodyText": "The three vendors are: Northwind HVAC (lead: A. Patel), Elevate Scaffolding (lead: J. Cho), and Citywide Fire Safety (lead: R. Ng). Please issue 12‑hour badges and expire at 8:00 PM.\n\nCenturion Reservations",
+        "depth": "full"
+      }
+    },
+    {
+      "id": "cent-011",
+      "folder": "inbox",
+      "labels": [{ "id": "INBOX", "name": "INBOX" }],
+      "messages": [
+        {
+          "id": "cent-011-m1",
+          "from": { "email": "events@harborline.com", "name": "Harborline Events" },
+          "to": [{ "email": "centurion@legacyhotels.com", "name": "Centurion Reservations" }],
+          "receivedOn": "2026-05-10T18:40:00.000Z",
+          "subject": "Block inquiry — Chen / Morrison wedding — May 22–24, 2026",
+          "bodyText": "We are planning 18 rooms (mix of doubles and kings) plus a hospitality suite for Friday–Sunday, May 22–24, 2026. Can you quote a group rate and breakfast inclusion? We need a 30‑room ceiling hold until June 1.\n\nHarborline Events",
+          "unread": true
+        }
+      ],
+      "draft": {
+        "bodyText": "Thank you for the RFP. For May 22–24 we can offer 18 rooms at $189 on the Classic King/Double and $229 on the Deluxe King, both with breakfast for two. Hospitality suite on the 14th floor at $349 on the same pattern. I can place a soft hold at 30 rooms until June 1 under code CHEN‑MAY26. Shall I send the Iveri group link for deposits?\n\nThe Centurion — Reservations",
+        "depth": "full"
+      }
+    },
+    {
+      "id": "cent-012",
+      "folder": "inbox",
+      "labels": [{ "id": "INBOX", "name": "INBOX" }],
+      "messages": [
+        {
+          "id": "cent-012-m1",
+          "from": { "email": "travel@northfieldlabs.com", "name": "Northfield Labs Travel" },
+          "to": [{ "email": "centurion@legacyhotels.com", "name": "Centurion Reservations" }],
+          "receivedOn": "2026-05-10T16:15:00.000Z",
+          "subject": "Corporate retreat — 32 rooms — May 27–29, 2026",
+          "bodyText": "Need 32 rooms with breakout space adjacent if possible. Arrival afternoon May 27, departure morning May 29. AV on May 28 full day. Please confirm availability and catering intro contact.\n\nNorthfield Labs Travel",
+          "unread": true
+        }
+      ],
+      "draft": {
+        "bodyText": "We can accommodate 32 rooms across floors 8–10 with a dedicated breakout on 9. AV is contracted through our in‑house partner; I will loop them on copy. Proposed room block at $209 with breakfast. Catering intro: centurion.catering@legacyhotels.com. If this works I will hold the block for five business days pending signed agreement.\n\nThe Centurion — Reservations",
+        "depth": "full"
+      }
+    },
+    {
+      "id": "cent-013",
+      "folder": "inbox",
+      "labels": [{ "id": "INBOX", "name": "INBOX" }],
+      "messages": [
+        {
+          "id": "cent-013-m1",
+          "from": { "email": "jordan.ellis.personal@gmail.com", "name": "Jordan Ellis" },
+          "to": [{ "email": "centurion@legacyhotels.com", "name": "Centurion Reservations" }],
+          "receivedOn": "2026-05-10T14:50:00.000Z",
+          "subject": "Availability — Deluxe King — May 14–17, 2026",
+          "bodyText": "Hi — Do you have a Deluxe King available for check‑in May 14 and check‑out May 17? Late arrival around 10:30 PM on the 14th. Non‑smoking, high floor if possible.\n\nThanks,\nJordan",
+          "unread": true
+        }
+      ],
+      "draft": {
+        "bodyText": "<p>Hi Jordan,</p><p>We have a Deluxe King available May 14–17, 2026, non‑smoking, high floor (12). Late arrival is noted for after 10:30 PM.</p><p>You can confirm the hold here: <a href=\"https://book.iveri.studio/reserve/CEN-MAY14-DLX\">Complete booking on Iveri</a>.</p><p>Best,</p><p>The Centurion — Reservations</p>",
+        "bodyIsHtml": true,
+        "depth": "full"
+      }
+    },
+    {
+      "id": "cent-014",
+      "folder": "inbox",
+      "labels": [{ "id": "INBOX", "name": "INBOX" }],
+      "messages": [
+        {
+          "id": "cent-014-m1",
+          "from": { "email": "priya.nandakumar@outlook.com", "name": "Priya Nandakumar" },
+          "to": [{ "email": "centurion@legacyhotels.com", "name": "Centurion Reservations" }],
+          "receivedOn": "2026-05-10T13:25:00.000Z",
+          "subject": "Two queens — weekend of May 16–18?",
+          "bodyText": "Looking for two queens for May 16–18. If you do not have that room type, what is the closest alternative and price difference?\n\nPriya",
+          "unread": true
+        }
+      ],
+      "draft": {
+        "bodyText": "Priya — We are sold out of Two Queens for May 16–18. Closest options: (1) Deluxe King + rollaway at $199/night before taxes, or (2) Classic King at $179/night. If you can shift to May 9–11 or May 23–25, Two Queens opens at $189/night. Tell me which path you prefer and I will hold 24 hours.\n\nThe Centurion — Reservations",
+        "depth": "full"
+      }
+    },
+    {
+      "id": "cent-015",
+      "folder": "inbox",
+      "labels": [{ "id": "INBOX", "name": "INBOX" }],
+      "messages": [
+        {
+          "id": "cent-015-m1",
+          "from": { "email": "m.choi@freemail.net", "name": "Minseo Choi" },
+          "to": [{ "email": "centurion@legacyhotels.com", "name": "Centurion Reservations" }],
+          "receivedOn": "2026-05-09T20:10:00.000Z",
+          "subject": "Airport shuttle from Midtown terminal?",
+          "bodyText": "Does the hotel still run a shuttle from the Midtown air terminal on weekdays? We land 4:10 PM on May 19.\n\nMinseo",
+          "unread": true
+        }
+      ],
+      "draft": {
+        "bodyText": "Minseo — We partner with MetroLink Car Service: sedans every 30 minutes, $48 one‑way to the Centurion. I can add your name for the 4:45 PM pickup on May 19 if you reply with a mobile number. There is no hotel‑operated shuttle.\n\nThe Centurion — Reservations",
+        "depth": "full"
+      }
+    },
+    {
+      "id": "cent-016",
+      "folder": "inbox",
+      "labels": [{ "id": "INBOX", "name": "INBOX" }],
+      "messages": [
+        {
+          "id": "cent-016-m1",
+          "from": { "email": "ben.hart@coastalmedia.io", "name": "Ben Hart" },
+          "to": [{ "email": "centurion@legacyhotels.com", "name": "Centurion Reservations" }],
+          "receivedOn": "2026-05-09T17:00:00.000Z",
+          "subject": "Early check‑in request — May 21",
+          "bodyText": "I have a 9:30 AM meeting near the property. Any chance of early check‑in on May 21? I am flexible on room category.\n\nBen",
+          "unread": true
+        }
+      ],
+      "draft": {
+        "bodyText": "Ben — Early check‑in on May 21 may be available from 12:00 PM based on prior‑night departures; guaranteed from 3:00 PM. If you need certainty before noon, I recommend booking the night prior at our advance‑purchase rate ($169 Classic King). I can add a profile note for front desk to prioritize you.\n\nThe Centurion — Reservations",
+        "depth": "full"
+      }
+    },
+    {
+      "id": "cent-017",
+      "folder": "inbox",
+      "labels": [{ "id": "INBOX", "name": "INBOX" }],
+      "messages": [
+        {
+          "id": "cent-017-m1",
+          "from": { "email": "a.kim@legacyhotels.com", "name": "Alex Kim" },
+          "to": [{ "email": "centurion@legacyhotels.com", "name": "Centurion Reservations" }],
+          "receivedOn": "2026-05-09T11:00:00.000Z",
+          "subject": "Coverage for GM walkthrough — May 13, 9:00 AM",
+          "bodyText": "Need the desk double‑staffed 8:45–10:00 AM on May 13 for the GM property walkthrough. Who can anchor?",
+          "unread": true
+        },
+        {
+          "id": "cent-017-m2",
+          "from": { "email": "centurion@legacyhotels.com", "name": "Centurion Reservations" },
+          "to": [{ "email": "a.kim@legacyhotels.com", "name": "Alex Kim" }],
+          "receivedOn": "2026-05-09T11:18:00.000Z",
+          "subject": "Re: Coverage for GM walkthrough — May 13, 9:00 AM",
+          "bodyText": "I will anchor with Jamie on backup from 8:45–10:00. Lobby podium stocked and VIP arrivals list printed.\n\nReservations",
+          "unread": false,
+          "isDraft": false
+        }
+      ],
+      "draft": {
+        "bodyText": "Copy. I will confirm with Jamie and add the slot to the shared calendar.\n\nCenturion Reservations",
+        "depth": "full"
+      }
+    },
+    {
+      "id": "cent-018",
+      "folder": "inbox",
+      "labels": [{ "id": "INBOX", "name": "INBOX" }],
+      "messages": [
+        {
+          "id": "cent-018-m1",
+          "from": { "email": "legal@legacyhotels.com", "name": "Legal — Policy" },
+          "to": [{ "email": "centurion@legacyhotels.com", "name": "Centurion Reservations" }],
+          "receivedOn": "2026-05-08T15:40:00.000Z",
+          "subject": "Updated guest data handling checklist",
+          "bodyText": "Attached summary replaces the January version. Train the team by May 31. Questions to the privacy mailbox only.\n\nLegal",
+          "unread": true
+        },
+        {
+          "id": "cent-018-m2",
+          "from": { "email": "centurion@legacyhotels.com", "name": "Centurion Reservations" },
+          "to": [{ "email": "legal@legacyhotels.com", "name": "Legal — Policy" }],
+          "receivedOn": "2026-05-08T16:05:00.000Z",
+          "subject": "Re: Updated guest data handling checklist",
+          "bodyText": "Acknowledged. Scheduling a 20‑minute huddle for front office on May 20.\n\nReservations",
+          "unread": false,
+          "isDraft": false
+        },
+        {
+          "id": "cent-018-m3",
+          "from": { "email": "legal@legacyhotels.com", "name": "Legal — Policy" },
+          "to": [{ "email": "centurion@legacyhotels.com", "name": "Centurion Reservations" }],
+          "receivedOn": "2026-05-08T16:22:00.000Z",
+          "subject": "Re: Updated guest data handling checklist",
+          "bodyText": "Please retain sign‑in sheets for one year. Thank you.\n\nLegal",
+          "unread": true
+        }
+      ],
+      "draft": {
+        "bodyText": "Noted on sign‑in sheet retention. I will file May 20 huddle sheets with People Ops after the session.\n\nCenturion Reservations",
+        "depth": "full"
+      }
+    }
+  ]
+}

@@ -2,7 +2,8 @@ import type { IGetThreadResponse, IGetThreadsResponse } from './driver/types';
 import { OutgoingMessageType } from '../routes/agent/types';
 import { getContext } from 'hono/context-storage';
 import { connection } from '../db/schema';
-import { defaultPageSize } from './utils';
+import { defaultPageSize, FOLDERS } from './utils';
+import { getCenturionDemoThread, listCenturionDemoThreads } from './demo-mail';
 import type { HonoContext } from '../ctx';
 import { createClient } from 'dormroom';
 import { createDriver } from './driver';
@@ -287,15 +288,23 @@ export const getThread: (
   connectionId: string,
   threadId: string,
 ) => {
-    const result = await Effect.runPromise(getThreadEffect(connectionId, threadId));
-    if (!result.result) {
+  if (isDemoMode()) {
+    const result = getCenturionDemoThread(threadId);
+    if (!result) {
       throw new Error(`Thread ${threadId} not found`);
     }
-    if (!result.shardId) {
-      throw new Error(`Thread ${threadId} not found in any shard`);
-    }
-    return { result: result.result, shardId: result.shardId };
-  };
+    return { result, shardId: 'demo-shard' };
+  }
+
+  const result = await Effect.runPromise(getThreadEffect(connectionId, threadId));
+  if (!result.result) {
+    throw new Error(`Thread ${threadId} not found`);
+  }
+  if (!result.shardId) {
+    throw new Error(`Thread ${threadId} not found in any shard`);
+  }
+  return { result: result.result, shardId: result.shardId };
+};
 
 export const modifyThreadLabelsInDB = async (
   connectionId: string,
@@ -303,6 +312,9 @@ export const modifyThreadLabelsInDB = async (
   addLabels: string[],
   removeLabels: string[],
 ) => {
+  if (isDemoMode()) {
+    return;
+  }
   const threadResult = await getThread(connectionId, threadId);
   const shard = await getShardClient(connectionId, threadResult.shardId);
   await shard.stub.modifyThreadLabelsInDB(threadId, addLabels, removeLabels);
@@ -383,6 +395,9 @@ export const forceReSync = async (connectionId: string) => {
 };
 
 export const reSyncThread = async (connectionId: string, threadId: string) => {
+  if (isDemoMode()) {
+    return;
+  }
   try {
     const { shardId } = await getThread(connectionId, threadId);
     const agent = await getZeroAgentFromShard(connectionId, shardId);
@@ -402,12 +417,26 @@ export const getThreadsFromDB = async (
     pageToken?: string;
   },
 ): Promise<IGetThreadsResponse> => {
+  const maxResults = params.maxResults ?? defaultPageSize;
+
+  if (isDemoMode()) {
+    if (
+      (params.folder === FOLDERS.INBOX || params.folder === 'inbox' || !params.folder) &&
+      (!params.labelIds || params.labelIds.length === 0)
+    ) {
+      return listCenturionDemoThreads({
+        maxResults,
+        pageToken: params.pageToken ?? '',
+        q: params.q ?? '',
+      });
+    }
+    return { threads: [], nextPageToken: null };
+  }
+
   // Fire and forget - don't block the thread query on state updates
   //   const agent = await getZeroSocketAgent(connectionId);
   //   await agent.invalidateDoStateCache();
   void sendDoState(connectionId);
-
-  const maxResults = params.maxResults ?? defaultPageSize;
 
   if (maxResults === defaultPageSize && !params.pageToken && !params.q) {
     return Effect.promise(async () => {
@@ -547,8 +576,8 @@ export const getZeroSocketAgent = async (connectionId: string) => {
 const demoActiveConnection: typeof connection.$inferSelect = {
   id: 'demo-connection',
   userId: 'demo-user',
-  email: 'demo@zero.local',
-  name: 'Demo',
+  email: 'centurion@legacyhotels.com',
+  name: 'The Centurion',
   picture: null,
   accessToken: 'demo-access-token',
   refreshToken: 'demo-refresh-token',

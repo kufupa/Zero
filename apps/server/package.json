@@ -13,7 +13,8 @@
     "db:studio": "drizzle-kit studio",
     "eval": "evalite",
     "eval:dev": "evalite watch",
-    "test:cron": "curl 'http://localhost:8787/cdn-cgi/handler/scheduled'"
+    "test:cron": "curl 'http://localhost:8787/cdn-cgi/handler/scheduled'",
+    "test:demo-corpus": "vitest run tests/centurion-corpus.test.ts"
   },
   "exports": {
     "./trpc": "./src/trpc/index.ts",

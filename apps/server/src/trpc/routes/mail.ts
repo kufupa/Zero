@@ -24,6 +24,8 @@ import { getContext } from 'hono/context-storage';
 import { type HonoContext } from '../../ctx';
 import { TRPCError } from '@trpc/server';
 import { env } from '../../env';
+import { isDemoMode } from '../../config/demo';
+import { shouldSkipDriverMailMutation } from '../../lib/demo-mail/demo-mail-guard';
 import { z } from 'zod';
 
 const senderSchema = z.object({
@@ -51,12 +53,18 @@ export const mailRouter = router({
     .query(async ({ ctx, input }) => {
       const { activeConnection } = ctx;
       const executionCtx = getContext<HonoContext>().executionCtx;
+      if (isDemoMode()) {
+        return [];
+      }
       const { stub: agent } = await getZeroAgent(activeConnection.id, executionCtx);
 
       return await agent.suggestRecipients(input.query, input.limit);
     }),
   forceSync: activeDriverProcedure.mutation(async ({ ctx }) => {
     const { activeConnection } = ctx;
+    if (shouldSkipDriverMailMutation()) {
+      return true;
+    }
     return await forceReSync(activeConnection.id);
   }),
   get: activeDriverProcedure
@@ -86,6 +94,20 @@ export const mailRouter = router({
       const { folder, maxResults, cursor, q, labelIds } = input;
       const { activeConnection } = ctx;
       const executionCtx = getContext<HonoContext>().executionCtx;
+
+      if (isDemoMode()) {
+        if (folder === FOLDERS.DRAFT) {
+          return { threads: [], nextPageToken: null };
+        }
+        return getThreadsFromDB(activeConnection.id, {
+          folder,
+          maxResults,
+          labelIds,
+          pageToken: cursor,
+          q,
+        });
+      }
+
       const { stub: agent } = await getZeroAgent(activeConnection.id, executionCtx);
 
       console.debug('[listThreads] input:', { folder, maxResults, cursor, q, labelIds });
@@ -247,6 +269,9 @@ export const mailRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { activeConnection } = ctx;
       const executionCtx = getContext<HonoContext>().executionCtx;
+      if (shouldSkipDriverMailMutation()) {
+        return { success: true };
+      }
       const { stub: agent } = await getZeroAgent(activeConnection.id, executionCtx);
       const { threadId, addLabels, removeLabels } = input;
 
@@ -278,9 +303,15 @@ export const mailRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       const { activeConnection } = ctx;
-      const executionCtx = getContext<HonoContext>().executionCtx;
-      const { stub: agent } = await getZeroAgent(activeConnection.id, executionCtx);
-      const { threadIds } = await agent.normalizeIds(input.ids);
+      let threadIds: string[];
+      if (shouldSkipDriverMailMutation()) {
+        threadIds = input.ids;
+      } else {
+        const executionCtx = getContext<HonoContext>().executionCtx;
+        const { stub: agent } = await getZeroAgent(activeConnection.id, executionCtx);
+        const normalized = await agent.normalizeIds(input.ids);
+        threadIds = normalized.threadIds;
+      }
 
       if (!threadIds.length) {
         return { success: false, error: 'No thread IDs provided' };
@@ -332,9 +363,15 @@ export const mailRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       const { activeConnection } = ctx;
-      const executionCtx = getContext<HonoContext>().executionCtx;
-      const { stub: agent } = await getZeroAgent(activeConnection.id, executionCtx);
-      const { threadIds } = await agent.normalizeIds(input.ids);
+      let threadIds: string[];
+      if (shouldSkipDriverMailMutation()) {
+        threadIds = input.ids;
+      } else {
+        const executionCtx = getContext<HonoContext>().executionCtx;
+        const { stub: agent } = await getZeroAgent(activeConnection.id, executionCtx);
+        const normalized = await agent.normalizeIds(input.ids);
+        threadIds = normalized.threadIds;
+      }
 
       if (!threadIds.length) {
         return { success: false, error: 'No thread IDs provided' };
@@ -422,6 +459,13 @@ export const mailRouter = router({
     }),
   deleteAllSpam: activeDriverProcedure.mutation(async ({ ctx }): Promise<DeleteAllSpamResponse> => {
     const { activeConnection } = ctx;
+    if (shouldSkipDriverMailMutation()) {
+      return {
+        success: true,
+        message: 'Demo mode: no spam deleted',
+        count: 0,
+      };
+    }
     try {
       const result = await deleteAllSpam(activeConnection.id);
       return {
@@ -475,6 +519,9 @@ export const mailRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { activeConnection, sessionUser } = ctx;
       const executionCtx = getContext<HonoContext>().executionCtx;
+      if (shouldSkipDriverMailMutation()) {
+        return { success: true };
+      }
       const agent = await getZeroAgent(activeConnection.id, executionCtx);
 
       const { draftId, scheduleAt, attachments, ...mail } = input as typeof input & {
@@ -625,6 +672,9 @@ export const mailRouter = router({
     .mutation(async ({ input, ctx }) => {
       const { messageId } = input;
       const { activeConnection } = ctx;
+      if (shouldSkipDriverMailMutation()) {
+        return { success: true };
+      }
       const {
         pending_emails_status: statusKV,
         pending_emails_payload: payloadKV,
@@ -681,6 +731,9 @@ export const mailRouter = router({
     .mutation(async ({ input, ctx }) => {
       const { activeConnection } = ctx;
       const executionCtx = getContext<HonoContext>().executionCtx;
+      if (shouldSkipDriverMailMutation()) {
+        return true;
+      }
       const { exec, stub } = await getZeroAgent(activeConnection.id, executionCtx);
       exec(`DELETE FROM threads WHERE thread_id = ?`, input.id);
       await stub.reloadFolder('bin');
@@ -731,6 +784,15 @@ export const mailRouter = router({
   getEmailAliases: activeDriverProcedure.query(async ({ ctx }) => {
     const { activeConnection } = ctx;
     const executionCtx = getContext<HonoContext>().executionCtx;
+    if (isDemoMode()) {
+      return [
+        {
+          email: 'centurion@legacyhotels.com',
+          name: 'The Centurion',
+          primary: true,
+        },
+      ];
+    }
     const { stub: agent } = await getZeroAgent(activeConnection.id, executionCtx);
     return agent.getEmailAliases();
   }),
@@ -750,6 +812,10 @@ export const mailRouter = router({
       const wakeAtDate = new Date(input.wakeAt);
       if (wakeAtDate <= new Date()) {
         return { success: false, error: 'Snooze time must be in the future' };
+      }
+
+      if (shouldSkipDriverMailMutation()) {
+        return { success: true };
       }
 
       await Promise.all(
@@ -778,6 +844,9 @@ export const mailRouter = router({
     .mutation(async ({ input, ctx }) => {
       const { activeConnection } = ctx;
       if (!input.ids.length) return { success: false, error: 'No thread IDs' };
+      if (shouldSkipDriverMailMutation()) {
+        return { success: true };
+      }
       await Promise.all(
         input.ids.map((threadId) =>
           modifyThreadLabelsInDB(activeConnection.id, threadId, ['INBOX'], ['SNOOZED']),
@@ -799,6 +868,9 @@ export const mailRouter = router({
     .query(async ({ ctx, input }) => {
       const { activeConnection } = ctx;
       const executionCtx = getContext<HonoContext>().executionCtx;
+      if (isDemoMode()) {
+        return [];
+      }
       const { stub: agent } = await getZeroAgent(activeConnection.id, executionCtx);
       return agent.getMessageAttachments(input.messageId) as Promise<
         {
@@ -850,6 +922,9 @@ export const mailRouter = router({
     )
     .query(async ({ input, ctx }) => {
       const { activeConnection } = ctx;
+      if (isDemoMode()) {
+        return '';
+      }
       const { stub: agent } = await getZeroAgent(activeConnection.id);
       return agent.getRawEmail(input.id);
     }),
@@ -862,6 +937,9 @@ export const mailRouter = router({
     .query(async ({ input, ctx }) => {
       try {
         const { activeConnection } = ctx;
+        if (isDemoMode()) {
+          return { isVerified: false };
+        }
         const { stub: agent } = await getZeroAgent(activeConnection.id);
 
         console.log(`[VERIFY_EMAIL] Getting raw email for message ID: ${input.id}`);

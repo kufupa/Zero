@@ -33,8 +33,8 @@ export const isDemoMode = (): boolean => getDemoModeValue() === '1';
 
 export const getDemoUser = () => ({
   id: 'demo-user',
-  email: 'demo@zero.local',
-  name: 'Demo User',
+  email: 'centurion@legacyhotels.com',
+  name: 'The Centurion',
 });
 
 export const getDemoSession = (): DemoSession => {

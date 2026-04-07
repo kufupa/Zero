@@ -15,6 +15,7 @@
     "devfull": "dotenv -- node ./scripts/run-frontend-local.mjs --full",
     "verify:dev:cleanup": "node ./scripts/verify-dev-process-cleanup.mjs",
     "verify:dev:lean": "node ./scripts/with-lean-vite-env.mjs -- node ./scripts/verify-lean-dev-profile.mjs",
+    "verify:demo:corpus": "pnpm run --filter=@zero/server test:demo-corpus",
     "cleanup:dev": "node ./scripts/cleanup-dev-processes.mjs",
     "dev:backend": "dotenv -- node ./scripts/run-backend-local.mjs",
     "build": "turbo run build",
