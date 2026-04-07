@@ -18,7 +18,8 @@ const configPath = existsSync(localConfig) ? localConfig : baseConfig;
 const args = ['dev', '-c', configPath];
 args.push(
   '--show-interactive-dev-session=false',
-  '--experimental-vectorize-bind-to-prod',
+  // Avoid requiring CLOUDFLARE_API_TOKEN when stdin is not a TTY (e.g. IDE terminals, CI).
+  '--local',
   '--env',
   'local',
 );
