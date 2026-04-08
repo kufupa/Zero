@@ -11,6 +11,7 @@
     "precommit": "pnpm dlx oxlint@latest --deny-warnings",
     "dev": "turbo run dev",
     "dev:frontend": "dotenv -- node ./scripts/run-frontend-local.mjs --frontend-only",
+    "dev:demo:frontend": "node -e \"process.env.ZERO_DEMO_MODE = '1'; process.env.ZERO_DEMO_FRONTEND_ONLY = '1'; const { spawnSync } = require('node:child_process'); const child = spawnSync('pnpm', ['dev:frontend'], { stdio: 'inherit', shell: true }); process.exit(child.status ?? 1);\"",
     "dev:frontend:lean": "node ./scripts/with-lean-vite-env.mjs -- dotenv -- node ./scripts/run-frontend-local.mjs --frontend-only",
     "devfull": "dotenv -- node ./scripts/run-frontend-local.mjs --full",
     "verify:dev:cleanup": "node ./scripts/verify-dev-process-cleanup.mjs",

@@ -11,6 +11,7 @@ const hasPnpm = has('pnpm');
 const cliArgs = new Set(process.argv.slice(2));
 const forceFrontendOnly = cliArgs.has('--frontend-only') || cliArgs.has('--no-backend');
 const forceFull = cliArgs.has('--full');
+const demoFrontendOnly = process.env.ZERO_DEMO_MODE === '1' && process.env.ZERO_DEMO_FRONTEND_ONLY !== '0';
 
 if (!hasPnpm) {
   console.error('pnpm was not found on PATH. Install pnpm and rerun this command.');
@@ -60,9 +61,9 @@ const isBackendReachable = async () => {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 1500);
-    await fetch(backendProbeUrl, { method: 'GET', signal: controller.signal });
+    const response = await fetch(backendProbeUrl, { method: 'GET', signal: controller.signal });
     clearTimeout(timeout);
-    return true;
+    return response.ok;
   } catch {
     return false;
   }
@@ -96,21 +97,26 @@ const startServerProcess = async (baseEnv) => {
 };
 
 const startBackendIfNeeded = async (baseEnv) => {
-  if (process.env.ZERO_AUTO_START_BACKEND === '0') return isBackendReachable();
   if (process.env.ZERO_AUTO_START_BACKEND === '1' || forceFull) {
     if (await isBackendReachable()) return true;
     console.log(`[local-dev] Backend not reachable at ${backendUrl}, attempting to start apps/server...`);
     return startServerProcess(baseEnv);
   }
+  if (process.env.ZERO_AUTO_START_BACKEND === '0') return isBackendReachable();
 
   return isBackendReachable();
 };
 
 const env = { ...process.env };
 env.VITE_DISABLE_SENTRY = '1';
+const runFrontendOnly = forceFrontendOnly || (demoFrontendOnly && !forceFull);
 
-const backendReachable = forceFrontendOnly ? false : await startBackendIfNeeded(env);
-env.VITE_FRONTEND_ONLY = forceFrontendOnly ? '1' : backendReachable ? '0' : '1';
+if (demoFrontendOnly && !forceFull) {
+  console.log('[local-dev] FE-only demo mode active; skipping backend startup.');
+}
+
+const backendReachable = runFrontendOnly ? false : await startBackendIfNeeded(env);
+env.VITE_FRONTEND_ONLY = runFrontendOnly ? '1' : backendReachable ? '0' : '1';
 
 const child = spawnSync(cmd, { shell: true, stdio: 'inherit', env });
 

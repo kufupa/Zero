@@ -6,6 +6,8 @@ import { useTRPC } from '@/providers/query-provider';
 import useSearchLabels from './use-labels-search';
 import { useSession } from '@/lib/auth-client';
 import { isDemoMode } from '@/lib/demo-session';
+import { isFrontendOnlyDemo } from '@/lib/demo-frontonly';
+import { getDemoThread, listDemoThreads } from '@/lib/demo-mail/adapter';
 import { useAtom, useAtomValue } from 'jotai';
 import { useSettings } from './use-settings';
 import { useParams } from 'react-router';
@@ -20,22 +22,42 @@ export const useThreads = () => {
   const isInQueue = useAtomValue(isThreadInBackgroundQueueAtom);
   const trpc = useTRPC();
   const { labels } = useSearchLabels();
+  const demoFrontendOnly = isFrontendOnlyDemo();
 
   const threadsQuery = useInfiniteQuery(
-    trpc.mail.listThreads.infiniteQueryOptions(
-      {
-        q: searchValue.value,
-        folder,
-        labelIds: labels,
-      },
-      {
-        initialCursor: '',
-        getNextPageParam: (lastPage) => lastPage?.nextPageToken ?? null,
-        staleTime: 60 * 1000 * 1, // 1 minute
-        refetchOnMount: true,
-        refetchIntervalInBackground: true,
-      },
-    ),
+    demoFrontendOnly
+      ? {
+          queryKey: ['demo-mail', 'listThreads', folder, searchValue.value, labels.join(',')],
+          initialPageParam: '',
+          queryFn: ({ pageParam }) =>
+            Promise.resolve(
+              listDemoThreads({
+                folder,
+                q: searchValue.value,
+                cursor: String(pageParam ?? ''),
+                maxResults: 50,
+                labelIds: labels,
+              }),
+            ),
+          getNextPageParam: (lastPage) => lastPage?.nextPageToken ?? null,
+          staleTime: 60 * 1000 * 1,
+          refetchOnMount: true,
+          refetchIntervalInBackground: true,
+        }
+      : trpc.mail.listThreads.infiniteQueryOptions(
+          {
+            q: searchValue.value,
+            folder,
+            labelIds: labels,
+          },
+          {
+            initialCursor: '',
+            getNextPageParam: (lastPage) => lastPage?.nextPageToken ?? null,
+            staleTime: 60 * 1000 * 1, // 1 minute
+            refetchOnMount: true,
+            refetchIntervalInBackground: true,
+          },
+        ),
   );
 
   // Flatten threads from all pages and sort by receivedOn date (newest first)
@@ -68,19 +90,27 @@ export const useThread = (threadId: string | null) => {
   const [_threadId] = useQueryState('threadId');
   const id = threadId ? threadId : _threadId;
   const trpc = useTRPC();
+  const demoFrontendOnly = isFrontendOnlyDemo();
   const { data: settings } = useSettings();
   const { theme: systemTheme } = useTheme();
 
   const threadQuery = useQuery(
-    trpc.mail.get.queryOptions(
-      {
-        id: id!,
-      },
-      {
-        enabled: !!id && (!!session?.user?.id || isDemoMode()),
-        staleTime: 1000 * 60 * 60, // 1 minute
-      },
-    ),
+    demoFrontendOnly
+      ? {
+          queryKey: ['demo-mail', 'getThread', id],
+          queryFn: () => Promise.resolve(getDemoThread(id!)),
+          enabled: !!id,
+          staleTime: 1000 * 60 * 60, // 1 minute
+        }
+      : trpc.mail.get.queryOptions(
+          {
+            id: id!,
+          },
+          {
+            enabled: !!id && (!!session?.user?.id || isDemoMode()),
+            staleTime: 1000 * 60 * 60, // 1 minute
+          },
+        ),
   );
 
   const { latestDraft, isGroupThread, finalData, latestMessage } = useMemo(() => {

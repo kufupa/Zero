@@ -10,6 +10,7 @@
     "types": "wrangler types",
     "deploy": "wrangler deploy",
     "lint": "eslint .",
+    "test:demo": "vitest run tests/demo-mail.adapter.test.ts",
     "machine-translate": "inlang machine translate --project project.inlang"
   },
   "dependencies": {
@@ -140,6 +141,7 @@
     "typescript": "catalog:",
     "vite": "^6.3.5",
     "vite-tsconfig-paths": "^5.1.4",
+    "vitest": "3.2.4",
     "wrangler": "catalog:"
   }
 }

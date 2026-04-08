@@ -77,6 +77,9 @@ Manually spot-check in the UI:
 3. One **availability no** thread (alternates with concrete May 2026 options).
 4. One **internal FYI** (minimal draft) vs one **internal actionable** (full draft).
 
+Manual expectation for FE-only demo startup:
+with ZERO_DEMO_MODE=1 and ZERO_DEMO_FRONTEND_ONLY not set to 0, `run-frontend-local` must not attempt backend probe/start and must set `VITE_FRONTEND_ONLY=1`.
+
 ## Open work (out of scope for this document)
 
 Implementation planning, file paths, Zod schema, and demo-mode wiring to `mail.listThreads` / `mail.get` / drafts—handled in a follow-up **implementation plan** after this spec is approved.
