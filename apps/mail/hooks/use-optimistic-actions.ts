@@ -5,6 +5,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { backgroundQueueAtom } from '@/store/backgroundQueue';
 import type { ThreadDestination } from '@/lib/thread-actions';
 import { useTRPC } from '@/providers/query-provider';
+import { isFrontendOnlyDemo } from '@/lib/demo-frontonly';
 import { useMail } from '@/components/mail/use-mail';
 import { moveThreadsTo } from '@/lib/thread-actions';
 import { m } from '@/paraglide/messages';
@@ -51,6 +52,7 @@ const actionEventNames: Record<ActionType, (params: ActionParams) => string> = {
 
 export function useOptimisticActions() {
   const trpc = useTRPC();
+  const isDemoOnly = isFrontendOnlyDemo();
   const queryClient = useQueryClient();
   const [, setBackgroundQueue] = useAtom(backgroundQueueAtom);
   const [, addOptimisticAction] = useAtom(addOptimisticActionAtom);
@@ -193,6 +195,10 @@ export function useOptimisticActions() {
         read: true,
       });
 
+      if (isDemoOnly) {
+        return;
+      }
+
       createPendingAction({
         type: 'READ',
         threadIds,
@@ -211,7 +217,7 @@ export function useOptimisticActions() {
         toastMessage: silent ? '' : 'Marked as read',
       });
     },
-    [queryClient, addOptimisticAction, removeOptimisticAction, markAsRead, setMail],
+    [queryClient, addOptimisticAction, removeOptimisticAction, markAsRead, setMail, isDemoOnly],
   );
 
   function optimisticMarkAsUnread(threadIds: string[]) {
@@ -222,6 +228,10 @@ export function useOptimisticActions() {
       threadIds,
       read: false,
     });
+
+    if (isDemoOnly) {
+      return;
+    }
 
     createPendingAction({
       type: 'READ',

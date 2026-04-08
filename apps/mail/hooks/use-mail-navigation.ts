@@ -24,7 +24,6 @@ export function useMailNavigation({ items, containerRef, onNavigate }: UseMailNa
   itemsRef.current = items;
   const onNavigateRef = useRef(onNavigate);
   onNavigateRef.current = onNavigate;
-  const [threadId] = useQueryState('threadId');
   const [isCommandPaletteOpen] = useQueryState('isCommandPaletteOpen');
 
   const hoveredMailRef = useRef<string | null>(null);
@@ -89,7 +88,7 @@ export function useMailNavigation({ items, containerRef, onNavigate }: UseMailNa
         bulkSelected: [],
       }));
     },
-    [setMail, threadId],
+    [setMail, optimisticMarkAsRead],
   );
 
   const navigateNext = useCallback(() => {
