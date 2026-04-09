@@ -33,6 +33,7 @@ import { isMac } from '@/lib/platform';
 import { useQueryState } from 'nuqs';
 import { cn } from '@/lib/utils';
 import { useAtom } from 'jotai';
+import { isFrontendOnlyDemo } from '@/lib/demo-frontonly';
 
 // const AutoLabelingSettings = () => {
 //   const trpc = useTRPC();
@@ -318,6 +319,7 @@ export function MailLayout() {
   const { data: activeConnection } = useActiveConnection();
   const { activeFilters, clearAllFilters } = useCommandPalette();
   const [, setIsCommandPaletteOpen] = useQueryState('isCommandPaletteOpen');
+  const isDemoOnly = isFrontendOnlyDemo();
 
   useEffect(() => {
     if (prevFolderRef.current !== folder && mail.bulkSelected.length > 0) {
@@ -426,54 +428,47 @@ export function MailLayout() {
           >
             <div className="w-full md:h-[calc(100dvh-10px)]">
               <div className="z-15 sticky top-0 p-4 pb-0">
-                <div className="flex items-center gap-2">
-                  <SidebarToggle className="h-10 w-10" />
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <SidebarToggle className="h-10 w-10 shrink-0" />
 
                   {mail.bulkSelected.length === 0 ? (
                     <>
                       <Button
                         variant="outline"
                         className={cn(
-                          'text-muted-foreground border-border/40 bg-background/50 hover:bg-accent/30 focus-visible:ring-ring dark:border-border/20 dark:bg-background/40 relative flex h-10 flex-1 select-none items-center justify-start overflow-hidden rounded-lg border pl-3 text-left text-sm font-normal shadow-none ring-0 backdrop-blur-sm transition-all focus-visible:ring-2 focus-visible:ring-offset-2',
+                          'text-muted-foreground border-border/40 bg-background/50 hover:bg-accent/30 focus-visible:ring-ring dark:border-border/20 dark:bg-background/40 flex h-10 min-w-0 flex-1 select-none items-center gap-2 overflow-hidden rounded-lg border px-3 text-left text-sm font-normal shadow-none ring-0 backdrop-blur-sm transition-all focus-visible:ring-2 focus-visible:ring-offset-2 sm:min-w-[8rem]',
                         )}
                         onClick={handleOpenCommandPalette}
                       >
-                        <Search className="fill-muted-foreground h-4 w-4" />
+                        <Search className="fill-muted-foreground h-4 w-4 shrink-0" />
 
-                        <span className="ml-3 hidden truncate pr-20 lg:inline-block">
+                        <span className="hidden min-w-0 flex-1 truncate lg:inline">
                           {activeFilters.length > 0
                             ? activeFilters.map((f) => f.display).join(', ')
                             : 'Search'}
                         </span>
-                        <span className="ml-3 inline-block truncate pr-20 lg:hidden">
+                        <span className="min-w-0 flex-1 truncate lg:hidden">
                           {activeFilters.length > 0
                             ? `${activeFilters.length} filter${activeFilters.length > 1 ? 's' : ''}`
                             : 'Search'}
                         </span>
 
-                        <div className="absolute right-2 flex items-center gap-2">
-                          {/* {activeFilters.length > 0 && (
-                            <Badge variant="secondary" className="ml-2 h-5 rounded px-1">
-                              {activeFilters.length}
-                            </Badge>
-                          )} */}
-                          {activeFilters.length > 0 && (
-                            <Button
-                              variant="secondary"
-                              size="sm"
-                              className="h-6 rounded-md px-2 text-xs"
-                              onClick={handleClearFilters}
-                            >
-                              Clear
-                            </Button>
-                          )}
-                          <kbd className="bg-muted border-border/40 dark:bg-muted/40 pointer-events-none hidden h-6 select-none items-center gap-1 rounded border px-2 text-xs font-medium opacity-80 sm:flex">
-                            <span className={cn('text-xs', isMac ? 'text-sm' : 'text-xs')}>
-                              {isMac ? '⌘' : 'Ctrl'}
-                            </span>
-                            <span className="text-xs">K</span>
-                          </kbd>
-                        </div>
+                        {activeFilters.length > 0 ? (
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            className="h-6 shrink-0 rounded-md px-2 text-xs"
+                            onClick={handleClearFilters}
+                          >
+                            Clear
+                          </Button>
+                        ) : null}
+                        <kbd className="bg-muted border-border/40 dark:bg-muted/40 pointer-events-none hidden h-6 shrink-0 select-none items-center gap-1 rounded border px-2 text-xs font-medium opacity-80 sm:inline-flex">
+                          <span className={cn('text-xs', isMac ? 'text-sm' : 'text-xs')}>
+                            {isMac ? '⌘' : 'Ctrl'}
+                          </span>
+                          <span className="text-xs">K</span>
+                        </kbd>
                       </Button>
 
                       {activeConnection?.providerId === 'google' && folder === 'inbox' && (
@@ -560,8 +555,8 @@ export function MailLayout() {
             </div>
           )}
 
-          {activeConnection?.id ? <AISidebar /> : null}
-          {activeConnection?.id ? <AIToggleButton /> : null}
+          {!isDemoOnly && activeConnection?.id ? <AISidebar /> : null}
+          {!isDemoOnly && activeConnection?.id ? <AIToggleButton /> : null}
         </ResizablePanelGroup>
       </div>
     </TooltipProvider>

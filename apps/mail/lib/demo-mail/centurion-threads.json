@@ -4,7 +4,10 @@
     {
       "id": "cent-001",
       "folder": "inbox",
-      "labels": [{ "id": "INBOX", "name": "INBOX" }],
+      "labels": [
+        { "id": "INBOX", "name": "INBOX" },
+        { "id": "IMPORTANT", "name": "IMPORTANT" }
+      ],
       "messages": [
         {
           "id": "cent-001-m1",
@@ -21,7 +24,10 @@
     {
       "id": "cent-002",
       "folder": "inbox",
-      "labels": [{ "id": "INBOX", "name": "INBOX" }],
+      "labels": [
+        { "id": "INBOX", "name": "INBOX" },
+        { "id": "PERSONAL", "name": "PERSONAL" }
+      ],
       "messages": [
         {
           "id": "cent-002-m1",
@@ -38,7 +44,10 @@
     {
       "id": "cent-003",
       "folder": "inbox",
-      "labels": [{ "id": "INBOX", "name": "INBOX" }],
+      "labels": [
+        { "id": "INBOX", "name": "INBOX" },
+        { "id": "IMPORTANT", "name": "IMPORTANT" }
+      ],
       "messages": [
         {
           "id": "cent-003-m1",
@@ -55,7 +64,10 @@
     {
       "id": "cent-004",
       "folder": "inbox",
-      "labels": [{ "id": "INBOX", "name": "INBOX" }],
+      "labels": [
+        { "id": "INBOX", "name": "INBOX" },
+        { "id": "PERSONAL", "name": "PERSONAL" }
+      ],
       "messages": [
         {
           "id": "cent-004-m1",
@@ -72,7 +84,10 @@
     {
       "id": "cent-005",
       "folder": "inbox",
-      "labels": [{ "id": "INBOX", "name": "INBOX" }],
+      "labels": [
+        { "id": "INBOX", "name": "INBOX" },
+        { "id": "IMPORTANT", "name": "IMPORTANT" }
+      ],
       "messages": [
         {
           "id": "cent-005-m1",
@@ -89,7 +104,10 @@
     {
       "id": "cent-006",
       "folder": "inbox",
-      "labels": [{ "id": "INBOX", "name": "INBOX" }],
+      "labels": [
+        { "id": "INBOX", "name": "INBOX" },
+        { "id": "PROMOTIONS", "name": "PROMOTIONS" }
+      ],
       "messages": [
         {
           "id": "cent-006-m1",
@@ -106,7 +124,10 @@
     {
       "id": "cent-007",
       "folder": "inbox",
-      "labels": [{ "id": "INBOX", "name": "INBOX" }],
+      "labels": [
+        { "id": "INBOX", "name": "INBOX" },
+        { "id": "IMPORTANT", "name": "IMPORTANT" }
+      ],
       "messages": [
         {
           "id": "cent-007-m1",
@@ -126,7 +147,10 @@
     {
       "id": "cent-008",
       "folder": "inbox",
-      "labels": [{ "id": "INBOX", "name": "INBOX" }],
+      "labels": [
+        { "id": "INBOX", "name": "INBOX" },
+        { "id": "PROMOTIONS", "name": "PROMOTIONS" }
+      ],
       "messages": [
         {
           "id": "cent-008-m1",
@@ -166,7 +190,10 @@
     {
       "id": "cent-010",
       "folder": "inbox",
-      "labels": [{ "id": "INBOX", "name": "INBOX" }],
+      "labels": [
+        { "id": "INBOX", "name": "INBOX" },
+        { "id": "UPDATES", "name": "UPDATES" }
+      ],
       "messages": [
         {
           "id": "cent-010-m1",
@@ -186,7 +213,10 @@
     {
       "id": "cent-011",
       "folder": "inbox",
-      "labels": [{ "id": "INBOX", "name": "INBOX" }],
+      "labels": [
+        { "id": "INBOX", "name": "INBOX" },
+        { "id": "UPDATES", "name": "UPDATES" }
+      ],
       "messages": [
         {
           "id": "cent-011-m1",
@@ -206,7 +236,10 @@
     {
       "id": "cent-012",
       "folder": "inbox",
-      "labels": [{ "id": "INBOX", "name": "INBOX" }],
+      "labels": [
+        { "id": "INBOX", "name": "INBOX" },
+        { "id": "UPDATES", "name": "UPDATES" }
+      ],
       "messages": [
         {
           "id": "cent-012-m1",
@@ -226,7 +259,10 @@
     {
       "id": "cent-013",
       "folder": "inbox",
-      "labels": [{ "id": "INBOX", "name": "INBOX" }],
+      "labels": [
+        { "id": "INBOX", "name": "INBOX" },
+        { "id": "PERSONAL", "name": "PERSONAL" }
+      ],
       "messages": [
         {
           "id": "cent-013-m1",
@@ -247,7 +283,10 @@
     {
       "id": "cent-014",
       "folder": "inbox",
-      "labels": [{ "id": "INBOX", "name": "INBOX" }],
+      "labels": [
+        { "id": "INBOX", "name": "INBOX" },
+        { "id": "PROMOTIONS", "name": "PROMOTIONS" }
+      ],
       "messages": [
         {
           "id": "cent-014-m1",
@@ -267,7 +306,10 @@
     {
       "id": "cent-015",
       "folder": "inbox",
-      "labels": [{ "id": "INBOX", "name": "INBOX" }],
+      "labels": [
+        { "id": "INBOX", "name": "INBOX" },
+        { "id": "IMPORTANT", "name": "IMPORTANT" }
+      ],
       "messages": [
         {
           "id": "cent-015-m1",
