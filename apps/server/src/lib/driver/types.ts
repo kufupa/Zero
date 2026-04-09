@@ -10,6 +10,12 @@ export interface IGetThreadResponse {
   totalReplies: number;
   labels: { id: string; name: string }[];
   isLatestDraft?: boolean;
+  /** Populated only by frontend-only demo mail adapter; omit in production drivers. */
+  demo?: {
+    urgent: boolean;
+    demoCategory: 'group' | 'individual' | 'travel-agent' | 'hr';
+    llmIssueMessage?: string;
+  };
 }
 
 export const IGetThreadResponseSchema = z.object({
@@ -18,6 +24,13 @@ export const IGetThreadResponseSchema = z.object({
   hasUnread: z.boolean(),
   totalReplies: z.number(),
   labels: z.array(z.object({ id: z.string(), name: z.string() })),
+  demo: z
+    .object({
+      urgent: z.boolean(),
+      demoCategory: z.enum(['group', 'individual', 'travel-agent', 'hr']),
+      llmIssueMessage: z.string().optional(),
+    })
+    .optional(),
 });
 
 export interface ParsedDraft {

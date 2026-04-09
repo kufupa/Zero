@@ -44,6 +44,13 @@ describe('demo-mail adapter', () => {
     const thread = getDemoThread(firstId!);
     expect(thread.latest?.subject).toBeTruthy();
     expect(thread.messages.length).toBeGreaterThan(0);
+    expect(thread.demo?.demoCategory).toBeTruthy();
+    expect(typeof thread.demo?.urgent).toBe('boolean');
+  });
+
+  it('includes llmIssueMessage on demo thread when present in corpus', () => {
+    const thread = getDemoThread('cent-001');
+    expect(thread.demo?.llmIssueMessage).toMatch(/Demo: model confidence/i);
   });
 
   it('throws for unknown thread ids', () => {

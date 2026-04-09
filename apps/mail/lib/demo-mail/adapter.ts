@@ -174,6 +174,11 @@ function centurionThreadToGetResponse(thread: CenturionCorpusThread): IGetThread
     hasUnread,
     totalReplies: parsedInbound.length,
     labels: thread.labels?.length ? thread.labels : [{ id: 'INBOX', name: 'INBOX' }],
+    demo: {
+      urgent: thread.urgent,
+      demoCategory: thread.demoCategory,
+      ...(thread.llmIssueMessage ? { llmIssueMessage: thread.llmIssueMessage } : {}),
+    },
   };
 }
 
