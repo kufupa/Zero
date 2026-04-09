@@ -38,13 +38,18 @@ export const autumnApi = new Hono<AutumnContext>()
             },
           },
     );
-    c.set('autumn', new Autumn({ secretKey: env.AUTUMN_SECRET_KEY }));
+    if (env.AUTUMN_SECRET_KEY) {
+      c.set('autumn', new Autumn({ secretKey: env.AUTUMN_SECRET_KEY }));
+    } else {
+      c.set('autumn', null);
+    }
     await next();
   })
   .post('/customers', async (c) => {
     const { autumn, customerData } = c.var;
     const body = await c.req.json();
     if (!customerData) return c.json({ error: 'No customer ID found' }, 401);
+    if (!autumn) return c.json({ error: 'Autumn is not configured' }, 501);
 
     return c.json(
       await autumn!.customers
@@ -61,6 +66,7 @@ export const autumnApi = new Hono<AutumnContext>()
     const body = await c.req.json();
     const sanitizedBody = sanitizeCustomerBody(body);
     if (!customerData) return c.json({ error: 'No customer ID found' }, 401);
+    if (!autumn) return c.json({ error: 'Autumn is not configured' }, 501);
 
     return c.json(
       await autumn!
@@ -77,6 +83,7 @@ export const autumnApi = new Hono<AutumnContext>()
     const body = await c.req.json();
     const sanitizedBody = sanitizeCustomerBody(body);
     if (!customerData) return c.json({ error: 'No customer ID found' }, 401);
+    if (!autumn) return c.json({ error: 'Autumn is not configured' }, 501);
 
     return c.json(
       await autumn!
@@ -92,6 +99,7 @@ export const autumnApi = new Hono<AutumnContext>()
     const body = await c.req.json();
     const sanitizedBody = sanitizeCustomerBody(body);
     if (!customerData) return c.json({ error: 'No customer ID found' }, 401);
+    if (!autumn) return c.json({ error: 'Autumn is not configured' }, 501);
 
     return c.json(
       await autumn!
@@ -108,6 +116,7 @@ export const autumnApi = new Hono<AutumnContext>()
     const body = await c.req.json();
     const sanitizedBody = sanitizeCustomerBody(body);
     if (!customerData) return c.json({ error: 'No customer ID found' }, 401);
+    if (!autumn) return c.json({ error: 'Autumn is not configured' }, 501);
 
     return c.json(
       await autumn!
