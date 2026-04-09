@@ -49,6 +49,9 @@ import { useQueryState } from 'nuqs';
 import { format } from 'date-fns';
 import { useAtom } from 'jotai';
 import { toast } from 'sonner';
+import { AiDraftPreviewPanel } from '@/components/mail/ai-draft-preview-panel';
+import { demoAiDraftReviewedAtomFamily } from '@/store/demo-ai-draft-reviewed';
+import { isFrontendOnlyDemo } from '@/lib/demo-frontonly';
 
 const formatFileSize = (size: number) => {
   const sizeInMB = (size / (1024 * 1024)).toFixed(2);
@@ -154,11 +157,13 @@ const isFullscreen = false;
 export function ThreadDisplay() {
   const isMobile = useIsMobile();
   const { toggleOpen: toggleAISidebar } = useAISidebar();
-  const params = useParams<{ folder: string }>();
+  const isDemoOnly = isFrontendOnlyDemo();
+  const params = useParams<{ folder?: string }>();
 
   const folder = params?.folder ?? 'inbox';
   const [id, setThreadId] = useQueryState('threadId');
-  const { data: emailData, isLoading, refetch: refetchThread } = useThread(id ?? null);
+  const { data: emailData, isLoading, refetch: refetchThread, latestDraft } = useThread(id ?? null);
+  const [aiDraftReviewed, setAiDraftReviewed] = useAtom(demoAiDraftReviewedAtomFamily(id ?? ''));
   const [, items] = useThreads();
   const [isStarred, setIsStarred] = useState(false);
   const [isImportant, setIsImportant] = useState(false);
@@ -181,6 +186,23 @@ export function ThreadDisplay() {
   const [mode, setMode] = useQueryState('mode');
   const [activeReplyId, setActiveReplyId] = useQueryState('activeReplyId');
   const [, setDraftId] = useQueryState('draftId');
+
+  const draftPreviewHtml =
+    latestDraft?.decodedBody?.trim() || latestDraft?.body?.trim() ? latestDraft.decodedBody || latestDraft.body || '' : '';
+
+  const showAiDraftPreview =
+    isDemoOnly &&
+    Boolean(id) &&
+    Boolean(draftPreviewHtml) &&
+    !aiDraftReviewed &&
+    !mode;
+
+  const handleBeginAiDraftReview = useCallback(() => {
+    if (!latestDraft?.id) return;
+    setAiDraftReviewed(true);
+    void setMode('reply');
+    void setActiveReplyId(latestDraft.id);
+  }, [latestDraft?.id, setActiveReplyId, setAiDraftReviewed, setMode]);
 
   const [focusedIndex, setFocusedIndex] = useAtom(focusedIndexAtom);
   const trpc = useTRPC();
@@ -730,17 +752,19 @@ export function ThreadDisplay() {
                   Choose an email to view details
                 </p>
                 <div className="mt-4 grid grid-cols-1 gap-2 xl:grid-cols-2">
-                  <button
-                    onClick={toggleAISidebar}
-                    className="inline-flex h-7 items-center justify-center gap-0.5 overflow-hidden rounded-lg border bg-white px-2 dark:border-none dark:bg-[#313131] hover:bg-gray-100 dark:hover:bg-[#404040] transition-colors cursor-pointer"
-                  >
-                    <Sparkles className="mr-1 h-3.5 w-3.5 fill-[#959595]" />
-                    <div className="flex items-center justify-center gap-2.5 px-0.5">
-                      <div className="text-base-gray-950 justify-start text-sm leading-none">
-                        Zero chat
+                  {!isDemoOnly ? (
+                    <button
+                      onClick={toggleAISidebar}
+                      className="inline-flex h-7 items-center justify-center gap-0.5 overflow-hidden rounded-lg border bg-white px-2 dark:border-none dark:bg-[#313131] hover:bg-gray-100 dark:hover:bg-[#404040] transition-colors cursor-pointer"
+                    >
+                      <Sparkles className="mr-1 h-3.5 w-3.5 fill-[#959595]" />
+                      <div className="flex items-center justify-center gap-2.5 px-0.5">
+                        <div className="text-base-gray-950 justify-start text-sm leading-none">
+                          Zero chat
+                        </div>
                       </div>
-                    </div>
-                  </button>
+                    </button>
+                  ) : null}
                   <button
                     onClick={() => setIsComposeOpen('true')}
                     className="inline-flex h-7 items-center justify-center gap-0.5 overflow-hidden rounded-lg border bg-white px-2 dark:border-none dark:bg-[#313131] hover:bg-gray-100 dark:hover:bg-[#404040] transition-colors cursor-pointer"
@@ -983,9 +1007,18 @@ export function ThreadDisplay() {
                 />
               )}
 
+              {showAiDraftPreview ? (
+                <AiDraftPreviewPanel
+                  llmIssueMessage={emailData.demo?.llmIssueMessage}
+                  draftHtml={draftPreviewHtml}
+                  onBeginReview={handleBeginAiDraftReview}
+                />
+              ) : null}
+
               {mode &&
                 activeReplyId &&
-                activeReplyId === emailData.messages[emailData.messages.length - 1]?.id && (
+                (activeReplyId === emailData.messages[emailData.messages.length - 1]?.id ||
+                  activeReplyId === latestDraft?.id) && (
                   <div
                     className="border-border bg-panelLight dark:bg-panelDark sticky bottom-0 z-10 border-t px-4 py-2"
                     id={`reply-composer-${activeReplyId}`}

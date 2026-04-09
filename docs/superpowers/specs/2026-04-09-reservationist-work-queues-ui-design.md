@@ -1,7 +1,7 @@
 # Reservationist demo: work queues, urgency, and AI draft preview (UI design)
 
 **Date:** 2026-04-09  
-**Status:** Draft — pending review of this document before implementation plan  
+**Status:** Implemented (frontend-only demo) — see `FEATURE_CHANGES.md` [DEMO-103].  
 **Scope:** Front-end demo behavior and layout only. No real LLM integration, no change to send/automation backends in this phase.
 
 ## Goals

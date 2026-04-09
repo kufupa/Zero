@@ -42,7 +42,8 @@ import { useDraft } from '@/hooks/use-drafts';
 import { Check, Star } from 'lucide-react';
 import { Skeleton } from '../ui/skeleton';
 import { m } from '@/paraglide/messages';
-import { useParams } from 'react-router';
+import { Link, useParams } from 'react-router';
+import { parseWorkQueueSlug } from '@/lib/demo-mail/work-queue';
 import { Button } from '../ui/button';
 import { Avatar } from '../ui/avatar';
 import { useQueryState } from 'nuqs';
@@ -56,10 +57,11 @@ const Thread = memo(
     index,
   }: ThreadProps & { index?: number }) {
     const [searchValue] = useSearchValue();
-    const { folder } = useParams<{ folder: string }>();
+    const { folder } = useParams<{ folder?: string }>();
     const [, threads] = useThreads();
     const [threadId] = useQueryState('threadId');
     const { data: getThreadData, isGroupThread, latestDraft } = useThread(message.id);
+    const isUrgentDemo = message.$raw?.demo?.urgent === true;
     const [id, setThreadId] = useQueryState('threadId');
     const [focusedIndex, setFocusedIndex] = useAtom(focusedIndexAtom);
 
@@ -237,7 +239,11 @@ const Thread = memo(
               isKeyboardFocused && 'ring-primary/50',
               'relative',
               'group',
+              isUrgentDemo && 'border-r-4 border-red-600',
             )}
+            aria-label={
+              isUrgentDemo ? `Urgent: ${latestMessage.subject}` : latestMessage.subject
+            }
           >
             <div
               className={cn(
@@ -705,7 +711,9 @@ Draft.displayName = 'Draft';
 
 export const MailList = memo(
   function MailList() {
-    const { folder } = useParams<{ folder: string }>();
+    const params = useParams<{ folder?: string; queue?: string }>();
+    const folder = params.folder;
+    const workQueue = parseWorkQueueSlug(params.queue);
     const { data: settingsData } = useSettings();
     const [, setThreadId] = useQueryState('threadId');
     const [, setDraftId] = useQueryState('draftId');
@@ -965,13 +973,31 @@ export const MailList = memo(
                 <div className="flex flex-col items-center justify-center gap-2 text-center">
                   <EmptyStateIcon width={200} height={200} />
                   <div className="mt-5">
-                    <p className="text-lg">It's empty here</p>
-                    <p className="text-md text-muted-foreground dark:text-white/50">
-                      Search for another email or{' '}
-                      <button type="button" className="underline cursor-pointer" onClick={clearFilters}>
-                        clear filters
-                      </button>
-                    </p>
+                    {workQueue ? (
+                      <>
+                        <p className="text-lg">{m['navigation.sidebar.workQueueEmptyTitle']()}</p>
+                        <Link
+                          to="/mail/inbox"
+                          className="text-md text-muted-foreground mt-2 inline-block underline dark:text-white/50"
+                        >
+                          {m['navigation.sidebar.workQueueEmptyCta']()}
+                        </Link>
+                      </>
+                    ) : (
+                      <>
+                        <p className="text-lg">It's empty here</p>
+                        <p className="text-md text-muted-foreground dark:text-white/50">
+                          Search for another email or{' '}
+                          <button
+                            type="button"
+                            className="cursor-pointer underline"
+                            onClick={clearFilters}
+                          >
+                            clear filters
+                          </button>
+                        </p>
+                      </>
+                    )}
                   </div>
                 </div>
               </div>

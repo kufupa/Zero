@@ -10,13 +10,16 @@ import { isFrontendOnlyDemo } from '@/lib/demo-frontonly';
 import { getDemoThread, listDemoThreads } from '@/lib/demo-mail/adapter';
 import { useAtom, useAtomValue } from 'jotai';
 import { useSettings } from './use-settings';
+import { parseWorkQueueSlug } from '@/lib/demo-mail/work-queue';
 import { useParams } from 'react-router';
 import { useTheme } from 'next-themes';
 import { useQueryState } from 'nuqs';
 import { useMemo } from 'react';
 
 export const useThreads = () => {
-  const { folder } = useParams<{ folder: string }>();
+  const params = useParams<{ folder?: string; queue?: string }>();
+  const folder = params.folder;
+  const workQueue = parseWorkQueueSlug(params.queue);
   const [searchValue] = useSearchValue();
   const [backgroundQueue] = useAtom(backgroundQueueAtom);
   const isInQueue = useAtomValue(isThreadInBackgroundQueueAtom);
@@ -27,12 +30,20 @@ export const useThreads = () => {
   const threadsQuery = useInfiniteQuery(
     demoFrontendOnly
       ? {
-          queryKey: ['demo-mail', 'listThreads', folder, searchValue.value, labels.join(',')],
+          queryKey: [
+            'demo-mail',
+            'listThreads',
+            folder ?? null,
+            workQueue ?? null,
+            searchValue.value,
+            labels.join(','),
+          ],
           initialPageParam: '',
           queryFn: ({ pageParam }) =>
             Promise.resolve(
               listDemoThreads({
-                folder,
+                folder: folder ?? 'inbox',
+                workQueue: workQueue ?? undefined,
                 q: searchValue.value,
                 cursor: String(pageParam ?? ''),
                 maxResults: 50,
@@ -47,7 +58,7 @@ export const useThreads = () => {
       : trpc.mail.listThreads.infiniteQueryOptions(
           {
             q: searchValue.value,
-            folder,
+            folder: folder!,
             labelIds: labels,
           },
           {
@@ -143,7 +154,7 @@ export const useThread = (threadId: string | null) => {
 
     const finalData: IGetThreadResponse = {
       ...threadQuery.data,
-      messages: nonDraftMessages,
+      messages: demoFrontendOnly ? threadQuery.data.messages : nonDraftMessages,
     };
 
     return { latestDraft, isGroupThread, finalData, latestMessage };
@@ -171,7 +182,7 @@ export const useThread = (threadId: string | null) => {
       systemTheme,
     ],
     queryFn: async () => {
-      if (!latestMessage?.decodedBody || !settings?.settings) return null;
+      if (!latestMessage?.decodedBody || !settings?.settings || demoFrontendOnly) return null;
 
       const userTheme =
         settings.settings.colorTheme === 'system' ? systemTheme : settings.settings.colorTheme;
@@ -188,7 +199,7 @@ export const useThread = (threadId: string | null) => {
         hasBlockedImages: result.hasBlockedImages,
       };
     },
-    enabled: !!latestMessage?.decodedBody && !!settings?.settings,
+    enabled: !!latestMessage?.decodedBody && !!settings?.settings && !demoFrontendOnly,
     staleTime: 30 * 60 * 1000, // 30 minutes
     gcTime: 60 * 60 * 1000, // 1 hour
     refetchOnWindowFocus: false,

@@ -19,7 +19,9 @@ import { useAIFullScreen } from './ai-sidebar';
 import { useStats } from '@/hooks/use-stats';
 import { useLocation } from 'react-router';
 import { cn, FOLDERS } from '@/lib/utils';
+import { isFrontendOnlyDemo } from '@/lib/demo-frontonly';
 import { m } from '@/paraglide/messages';
+import { AlertCircle, Building2, Plane, User, Users } from 'lucide-react';
 // import { Video } from 'lucide-react';
 import { NavUser } from './nav-user';
 import { NavMain } from './nav-main';
@@ -52,6 +54,44 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
           items[0].items[3].badge =
             stats.find((stat) => stat.label?.toLowerCase() === FOLDERS.SENT)?.count ?? 0;
         }
+      }
+
+      if (currentSection === 'mail' && isFrontendOnlyDemo()) {
+        items.push({
+          title: m['navigation.sidebar.workQueues'](),
+          items: [
+            {
+              id: 'wq-group',
+              title: m['navigation.sidebar.workQueueGroup'](),
+              url: '/mail/work/group',
+              icon: Users,
+            },
+            {
+              id: 'wq-individual',
+              title: m['navigation.sidebar.workQueueIndividual'](),
+              url: '/mail/work/individual',
+              icon: User,
+            },
+            {
+              id: 'wq-travel-agent',
+              title: m['navigation.sidebar.workQueueTravelAgent'](),
+              url: '/mail/work/travel-agent',
+              icon: Plane,
+            },
+            {
+              id: 'wq-hr',
+              title: m['navigation.sidebar.workQueueHr'](),
+              url: '/mail/work/hr',
+              icon: Building2,
+            },
+            {
+              id: 'wq-urgent',
+              title: m['navigation.sidebar.workQueueUrgent'](),
+              url: '/mail/work/urgent',
+              icon: AlertCircle,
+            },
+          ],
+        });
       }
 
       return { currentSection, navItems: items };
