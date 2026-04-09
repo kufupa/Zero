@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { threadMatchesWorkQueue, type DemoCorpusThreadShape } from '../lib/demo-mail/work-queue';
+import {
+  parseWorkQueueSlug,
+  threadMatchesWorkQueue,
+  type DemoCorpusThreadShape,
+} from '../lib/demo-mail/work-queue';
 
 const t = (overrides: Partial<DemoCorpusThreadShape>): DemoCorpusThreadShape => ({
   id: 'x',
@@ -7,6 +11,20 @@ const t = (overrides: Partial<DemoCorpusThreadShape>): DemoCorpusThreadShape => 
   urgent: false,
   messages: [{ isDraft: false }],
   ...overrides,
+});
+
+describe('parseWorkQueueSlug', () => {
+  it('returns null for undefined, empty, and invalid slugs', () => {
+    expect(parseWorkQueueSlug(undefined)).toBeNull();
+    expect(parseWorkQueueSlug('')).toBeNull();
+    expect(parseWorkQueueSlug('not-a-queue')).toBeNull();
+  });
+
+  it('returns the slug for valid work queue paths', () => {
+    expect(parseWorkQueueSlug('travel-agent')).toBe('travel-agent');
+    expect(parseWorkQueueSlug('urgent')).toBe('urgent');
+    expect(parseWorkQueueSlug('group')).toBe('group');
+  });
 });
 
 describe('threadMatchesWorkQueue', () => {
