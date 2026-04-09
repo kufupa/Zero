@@ -29,6 +29,9 @@ const centurionCorpusThreadSchema = z
     id: z.string().min(1),
     folder: z.literal('inbox').default('inbox'),
     labels: z.array(z.object({ id: z.string(), name: z.string() })).optional().default([]),
+    demoCategory: z.enum(['group', 'individual', 'travel-agent', 'hr']),
+    urgent: z.boolean().default(false),
+    llmIssueMessage: z.string().min(1).optional(),
     messages: z.array(corpusMessageSchema).min(1),
     draft: draftSchema,
   })
