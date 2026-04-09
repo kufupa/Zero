@@ -1,7 +1,11 @@
 import { HotkeyProviderWrapper } from '@/components/providers/hotkey-provider-wrapper';
-import { OnboardingWrapper } from '@/components/onboarding';
 import { AppSidebar } from '@/components/ui/app-sidebar';
+import { lazy, Suspense } from 'react';
 import { Outlet } from 'react-router';
+
+const OnboardingWrapper = lazy(() =>
+  import('@/components/onboarding').then((module) => ({ default: module.OnboardingWrapper })),
+);
 
 export default function MailLayout() {
   return (
@@ -10,7 +14,9 @@ export default function MailLayout() {
       <div className="bg-sidebar dark:bg-sidebar w-full">
         <Outlet />
       </div>
-      <OnboardingWrapper />
+      <Suspense fallback={null}>
+        <OnboardingWrapper />
+      </Suspense>
     </HotkeyProviderWrapper>
   );
 }

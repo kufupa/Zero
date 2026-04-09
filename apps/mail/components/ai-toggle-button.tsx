@@ -1,10 +1,10 @@
 import { Tooltip, TooltipTrigger, TooltipContent } from './ui/tooltip';
-import { useAISidebar } from './ui/ai-sidebar';
+import { useAISidebarState } from './ui/ai-sidebar-state';
 import { Button } from './ui/button';
 
 // AI Toggle Button Component
 const AIToggleButton = () => {
-  const { toggleOpen: toggleAISidebar, open: isSidebarOpen } = useAISidebar();
+  const { toggleOpen: toggleAISidebar, open: isSidebarOpen } = useAISidebarState();
 
   return (
     !isSidebarOpen && (

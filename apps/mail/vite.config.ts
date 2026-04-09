@@ -14,16 +14,18 @@ const ReactCompilerConfig = {
 
 export default defineConfig({
   plugins: [
-    oxlintPlugin(),
+    process.env.VITE_ENABLE_OXLINT === 'true' ? oxlintPlugin() : null,
     reactRouter(),
     cloudflare(),
-    babel({
-      filter: /\.[jt]sx?$/,
-      babelConfig: {
-        presets: ['@babel/preset-typescript'], // if you use TypeScript
-        plugins: [['babel-plugin-react-compiler', ReactCompilerConfig]],
-      },
-    }),
+    process.env.VITE_ENABLE_REACT_COMPILER === 'true'
+      ? babel({
+          filter: /\.[jt]sx?$/,
+          babelConfig: {
+            presets: ['@babel/preset-typescript'],
+            plugins: [['babel-plugin-react-compiler', ReactCompilerConfig]],
+          },
+        })
+      : null,
     tsconfigPaths(),
     tailwindcss(),
     {
@@ -48,12 +50,15 @@ export default defineConfig({
       outdir: './paraglide',
       strategy: ['cookie', 'baseLocale'],
     }),
-  ],
+  ].filter(Boolean),
   server: {
     port: 3000,
-    warmup: {
-      clientFiles: ['./app/**/*', './components/**/*'],
-    },
+    warmup:
+      process.env.VITE_DISABLE_WARMUP === 'true'
+        ? undefined
+        : {
+            clientFiles: ['./app/entry.client.tsx', './app/root.tsx', './app/(routes)/mail/page.tsx'],
+          },
   },
   //   ssr: {
   //     optimizeDeps: {
