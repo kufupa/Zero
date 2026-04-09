@@ -99,4 +99,48 @@ describe('demo-mail adapter', () => {
     expect(beyondLast.threads).toEqual([]);
     expect(beyondLast.nextPageToken).toBeNull();
   });
+
+  it('filters by workQueue group', () => {
+    const all = listDemoThreads({
+      folder: 'inbox',
+      workQueue: 'group',
+      q: '',
+      cursor: '',
+      maxResults: 200,
+      labelIds: [],
+    });
+    expect(all.threads.length).toBeGreaterThan(0);
+    for (const row of all.threads) {
+      const raw = row.$raw as { demo?: { demoCategory: string; urgent: boolean } } | undefined;
+      expect(raw?.demo?.demoCategory).toBe('group');
+    }
+  });
+
+  it('returns urgent rollup across categories', () => {
+    const urgent = listDemoThreads({
+      folder: 'inbox',
+      workQueue: 'urgent',
+      q: '',
+      cursor: '',
+      maxResults: 200,
+      labelIds: [],
+    });
+    expect(urgent.threads.length).toBeGreaterThan(0);
+    for (const row of urgent.threads) {
+      const raw = row.$raw as { demo?: { urgent: boolean } } | undefined;
+      expect(raw?.demo?.urgent).toBe(true);
+    }
+  });
+
+  it('lists work queue threads even when folder is not inbox', () => {
+    const result = listDemoThreads({
+      folder: 'sent',
+      workQueue: 'group',
+      q: '',
+      cursor: '',
+      maxResults: 200,
+      labelIds: [],
+    });
+    expect(result.threads.length).toBeGreaterThan(0);
+  });
 });

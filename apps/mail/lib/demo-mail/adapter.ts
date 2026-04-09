@@ -1,6 +1,7 @@
 import demoCorpus from './centurion-threads.json' with { type: 'json' };
 import type { IGetThreadResponse, IGetThreadsResponse } from '../../server/src/lib/driver/types';
 import { CenturionCorpusFileSchema, type CenturionCorpusThread } from './schema';
+import { threadMatchesWorkQueue, type WorkQueueSlug } from './work-queue';
 
 function corpusThreadHasUnread(thread: CenturionCorpusThread): boolean {
   return thread.messages.some((message) => message.unread && message.isDraft !== true);
@@ -178,18 +179,23 @@ function centurionThreadToGetResponse(thread: CenturionCorpusThread): IGetThread
 
 export function listDemoThreads({
   folder = 'inbox',
+  workQueue,
   q = '',
   cursor = '',
   maxResults = 50,
   labelIds = [],
 }: {
   folder?: string;
+  /** When set, list from demo corpus and ignore the inbox-only folder gate (see /mail/work/:queue). */
+  workQueue?: WorkQueueSlug;
   q?: string;
   cursor?: string;
   maxResults?: number;
   labelIds?: string[];
 }): IGetThreadsResponse {
-  if (folder !== 'inbox') return { threads: [], nextPageToken: null };
+  if (folder !== 'inbox' && workQueue === undefined) {
+    return { threads: [], nextPageToken: null };
+  }
 
   const normalizedQuery = q.trim().toLowerCase();
   const sortedThreads = [...loadCorpus().threads].sort(
@@ -200,6 +206,9 @@ export function listDemoThreads({
 
   const rows = sortedThreads
     .filter((corpusThread) => {
+      if (workQueue !== undefined && !threadMatchesWorkQueue(corpusThread, workQueue)) {
+        return false;
+      }
       if (activeLabelIds.length > 0) {
         const matchesAll = activeLabelIds.every((id) => threadSatisfiesLabelId(corpusThread, id));
         if (!matchesAll) return false;
@@ -212,7 +221,16 @@ export function listDemoThreads({
         `${latest.subject} ${latest.from.email} ${latest.bodyText}`.toLowerCase();
       return searchTarget.includes(normalizedQuery);
     })
-    .map((thread) => ({ id: thread.id, historyId: null as string | null }));
+    .map((thread) => ({
+      id: thread.id,
+      historyId: null as string | null,
+      $raw: {
+        demo: {
+          urgent: thread.urgent,
+          demoCategory: thread.demoCategory,
+        },
+      },
+    }));
 
   const start = Number.parseInt(cursor, 10);
   const offset = Number.isNaN(start) ? 0 : Math.max(0, start);
