@@ -8,16 +8,24 @@ import React from 'react';
 
 interface HotkeyProviderWrapperProps {
   children: React.ReactNode;
+  includeMailHotkeys?: boolean;
 }
 
-export function HotkeyProviderWrapper({ children }: HotkeyProviderWrapperProps) {
+export function HotkeyProviderWrapper({
+  children,
+  includeMailHotkeys = true,
+}: HotkeyProviderWrapperProps) {
   return (
     <HotkeysProvider initiallyActiveScopes={['global', 'navigation']}>
       <NavigationHotkeys />
       <GlobalHotkeys />
-      <MailListHotkeys />
-      <ThreadDisplayHotkeys />
-      <ComposeHotkeys />
+      {includeMailHotkeys ? (
+        <>
+          <MailListHotkeys />
+          <ThreadDisplayHotkeys />
+          <ComposeHotkeys />
+        </>
+      ) : null}
       {children}
     </HotkeysProvider>
   );

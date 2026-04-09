@@ -1,7 +1,6 @@
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { useState, useEffect } from 'react';
-import confetti from 'canvas-confetti';
 
 const steps = [
   {
@@ -53,11 +52,15 @@ export function OnboardingDialog({
 
   useEffect(() => {
     if (currentStep === steps.length - 1) {
-      confetti({
-        particleCount: 100,
-        spread: 70,
-        origin: { y: 0.6 },
-      });
+      import('canvas-confetti')
+        .then(({ default: confetti }) =>
+          confetti({
+            particleCount: 100,
+            spread: 70,
+            origin: { y: 0.6 },
+          }),
+        )
+        .catch(console.error);
     }
   }, [currentStep, steps.length]);
 

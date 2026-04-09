@@ -9,15 +9,14 @@ import { Sidebar, SidebarContent, SidebarFooter, SidebarHeader } from '@/compone
 import { navigationConfig, bottomNavItems } from '@/config/navigation';
 // import { useTRPC } from '@/providers/query-provider';
 import { useSidebar } from '@/components/ui/sidebar';
-import { CreateEmail } from '../create/create-email';
 // import { useMutation } from '@tanstack/react-query';
 import { PencilCompose, X } from '../icons/icons';
 import { useBilling } from '@/hooks/use-billing';
 import { useIsMobile } from '@/hooks/use-mobile';
-import React, { useMemo, useState } from 'react';
+import React, { lazy, Suspense, useMemo, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { useSession } from '@/lib/auth-client';
-import { useAIFullScreen } from './ai-sidebar';
+import { useAIFullScreen } from './ai-sidebar-state';
 import { useStats } from '@/hooks/use-stats';
 import { useLocation } from 'react-router';
 import { cn, FOLDERS } from '@/lib/utils';
@@ -173,6 +172,10 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   );
 }
 
+const CreateEmail = lazy(() =>
+  import('../create/create-email').then((module) => ({ default: module.CreateEmail })),
+);
+
 function ComposeButton() {
   const { state } = useSidebar();
   const isMobile = useIsMobile();
@@ -215,7 +218,9 @@ function ComposeButton() {
       </DialogTrigger>
 
       <DialogContent className="h-screen w-screen max-w-none border-none bg-[#FAFAFA] p-0 shadow-none dark:bg-[#141414]">
-        <CreateEmail />
+        <Suspense fallback={null}>
+          <CreateEmail />
+        </Suspense>
       </DialogContent>
     </Dialog>
   );

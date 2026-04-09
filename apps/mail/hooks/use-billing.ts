@@ -1,5 +1,4 @@
 import { useAutumn, useCustomer } from 'autumn-js/react';
-import { signOut } from '@/lib/auth-client';
 import { isProCustomer } from '@/lib/utils';
 import { useEffect, useMemo } from 'react';
 
@@ -60,11 +59,29 @@ const FEATURE_IDS = {
 } as const;
 
 export const useBilling = () => {
+  // Billing is optional for frontend demos and local development; keep it opt-in.
+  // This prevents auth/session/billing endpoints from blocking core UI flows.
+  if (import.meta.env.DEV && import.meta.env.VITE_ENABLE_BILLING !== 'true') {
+    return {
+      isLoading: false,
+      customer: null,
+      refetch: async () => undefined,
+      attach: async () => undefined,
+      track: async () => undefined,
+      openBillingPortal: async () => undefined,
+      isPro: false,
+      ...DEFAULT_FEATURES,
+    } as const;
+  }
+
   const { customer, refetch, isLoading, error } = useCustomer();
   const { attach, track, openBillingPortal } = useAutumn();
 
   useEffect(() => {
-    if (error) signOut();
+    if (error) {
+      // Billing is non-critical for app startup; treat billing API errors as soft-fail.
+      console.warn('Billing unavailable:', error);
+    }
   }, [error]);
 
   const { isPro, ...customerFeatures } = useMemo(() => {

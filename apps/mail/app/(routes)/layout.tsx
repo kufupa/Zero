@@ -1,17 +1,17 @@
 import { HotkeyProviderWrapper } from '@/components/providers/hotkey-provider-wrapper';
-import { CommandPaletteProvider } from '@/components/context/command-palette-context';
+import { LazyCommandPaletteProvider } from '@/components/context/lazy-command-palette-provider';
 
 import { Outlet } from 'react-router';
 
 
 export default function Layout() {
   return (
-    <CommandPaletteProvider>
+    <LazyCommandPaletteProvider>
       <HotkeyProviderWrapper>
         <div className="relative flex max-h-screen w-full overflow-hidden">
           <Outlet />
         </div>
       </HotkeyProviderWrapper>
-    </CommandPaletteProvider>
+    </LazyCommandPaletteProvider>
   );
 }
