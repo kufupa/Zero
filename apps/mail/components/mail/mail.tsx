@@ -7,7 +7,7 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { Bell, Lightning, Mail, ScanEye, Tag, User, X, Search } from '../icons/icons';
 import { useCategorySettings, useDefaultCategoryId } from '@/hooks/use-categories';
-import { ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import { useCommandPalette } from '../context/command-palette-context';
 import { useHotkeys, useHotkeysContext } from 'react-hotkeys-hook';
 import { ThreadDisplay } from '@/components/mail/thread-display';
@@ -408,13 +408,12 @@ export function MailLayout() {
       <div className="rounded-inherit z-5 relative flex p-0 md:mr-0.5 md:mt-1">
         <ResizablePanelGroup
           direction="horizontal"
-          autoSaveId="mail-panel-layout"
           className="rounded-inherit overflow-hidden"
         >
           <ResizablePanel
-            defaultSize={35}
-            minSize={35}
-            maxSize={35}
+            defaultSize={isDesktop ? 35 : 100}
+            minSize={isDesktop ? 35 : 100}
+            maxSize={isDesktop ? 35 : 100}
             className={cn(
               `bg-panelLight dark:bg-panelDark mb-1 w-fit shadow-sm md:mr-[3px] md:rounded-2xl lg:flex lg:h-[calc(100dvh-8px)] lg:shadow-sm`,
               isDesktop && threadId && 'hidden lg:block',
@@ -529,16 +528,12 @@ export function MailLayout() {
             </div>
           </ResizablePanel>
 
-          {/* <ResizableHandle className="mr-0.5 hidden opacity-0 md:block" /> */}
+          {isDesktop && <ResizableHandle className="mr-0.5 hidden opacity-0 md:block" />}
 
           {isDesktop && (
             <ResizablePanel
-              className={cn(
-                'bg-panelLight dark:bg-panelDark mb-1 mr-0.5 w-fit rounded-2xl shadow-sm lg:h-[calc(100dvh-8px)]',
-                // Only show on md screens and larger when there is a threadId
-                !threadId && 'hidden lg:block',
-              )}
-              defaultSize={30}
+              className="bg-panelLight dark:bg-panelDark mb-1 mr-0.5 w-fit rounded-2xl shadow-sm lg:h-[calc(100dvh-8px)]"
+              defaultSize={65}
               minSize={30}
             >
               <div className="relative flex-1">
