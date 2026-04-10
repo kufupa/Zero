@@ -1,5 +1,6 @@
 import centurionThreads from './centurion-threads.json';
 import { parseDemoCorpus, type DemoMessage, type DemoThread } from './schema';
+import { filterRemovedDemoLabels } from './label-filter';
 import { threadMatchesWorkQueue, type WorkQueueSlug } from './work-queue';
 import type { IGetThreadResponse, IGetThreadsResponse } from '../../../server/src/lib/driver/types';
 
@@ -42,8 +43,10 @@ export function listDemoThreads(input: DemoListInput = {}): IGetThreadsResponse 
   const labelIds = (input.labelIds ?? []).filter((label) => label.trim().length > 0);
 
   const matches = parsedThreads.filter((entry) => {
+    const visibleLabels = filterRemovedDemoLabels(entry.thread.labels);
+
     if (folder !== 'inbox' && entry.thread.folder && entry.thread.folder !== folder) {
-      if (!labelsContain(entry.thread.labels, [folder])) {
+      if (!labelsContain(visibleLabels, [folder])) {
         return false;
       }
     }
@@ -56,7 +59,7 @@ export function listDemoThreads(input: DemoListInput = {}): IGetThreadsResponse 
       return false;
     }
 
-    if (labelIds.length > 0 && !labelsContain(entry.thread.labels, labelIds)) {
+    if (labelIds.length > 0 && !labelsContain(visibleLabels, labelIds)) {
       return false;
     }
 
@@ -80,9 +83,10 @@ export function getDemoThread(id: string): IGetThreadResponse {
   if (!entry) {
     throw new Error(`Demo thread not found: ${id}`);
   }
+  const visibleLabels = filterRemovedDemoLabels(entry.thread.labels);
 
   const parsedMessages = entry.messages.map((message, index) =>
-    mapDemoMessageToParsed(entry.thread, entry.messages, message, index),
+    mapDemoMessageToParsed(entry.thread, visibleLabels, entry.messages, message, index),
   );
   const nonDraftMessages = parsedMessages.filter((message) => message.isDraft !== true);
   const latest = nonDraftMessages[nonDraftMessages.length - 1];
@@ -92,20 +96,21 @@ export function getDemoThread(id: string): IGetThreadResponse {
     latest,
     hasUnread: nonDraftMessages.some((message) => message.unread),
     totalReplies: nonDraftMessages.length,
-    labels: entry.thread.labels.map((label) => ({ id: label.id, name: label.name })),
+    labels: visibleLabels.map((label) => ({ id: label.id, name: label.name })),
     isLatestDraft: parsedMessages[parsedMessages.length - 1]?.isDraft === true,
   };
 }
 
 function mapDemoMessageToParsed(
   thread: DemoThread,
+  threadLabels: DemoThread['labels'],
   messages: DemoMessage[],
   message: DemoMessage,
   index: number,
 ): IGetThreadResponse['messages'][number] {
   const messageId = `<${message.id}@demo.centurion.local>`;
   const inReplyTo = findPreviousInboundMessageId(messages, index);
-  const threadTags = thread.labels.map((label) => ({ id: label.id, name: label.name, type: 'system' }));
+  const threadTags = threadLabels.map((label) => ({ id: label.id, name: label.name, type: 'system' }));
   const isDraft = message.isDraft === true;
 
   return {
@@ -135,7 +140,9 @@ function mapDemoMessageToParsed(
 }
 
 function buildThreadSearchText(thread: DemoThread, messages: DemoMessage[]): string {
-  const labelText = thread.labels.map((label) => `${label.id} ${label.name}`).join(' ');
+  const labelText = filterRemovedDemoLabels(thread.labels)
+    .map((label) => `${label.id} ${label.name}`)
+    .join(' ');
   const messageText = messages
     .map((message) => {
       const recipientText = [

@@ -15,6 +15,17 @@ import { useTheme } from 'next-themes';
 import { useQueryState } from 'nuqs';
 import { useMemo } from 'react';
 
+const resolveThreadId = (threadData: IGetThreadResponse | undefined) => {
+  if (!threadData) return undefined;
+
+  if (threadData.latest) {
+    return threadData.latest.threadId ?? threadData.latest.id;
+  }
+
+  const firstMessage = threadData.messages?.[0];
+  return firstMessage?.threadId ?? firstMessage?.id;
+};
+
 export const useThreads = () => {
   const { folder } = useParams<{ folder: string }>();
   const [searchValue] = useSearchValue();
@@ -99,6 +110,8 @@ export const useThread = (threadId: string | null) => {
   const { data: session } = useSession();
   const [_threadId] = useQueryState('threadId');
   const id = threadId ? threadId : _threadId;
+  const [mode] = useQueryState('mode');
+  const [isComposeOpen] = useQueryState('isComposeOpen');
   const trpc = useTRPC();
   const { data: settings } = useSettings();
   const { theme: systemTheme } = useTheme();
@@ -109,6 +122,7 @@ export const useThread = (threadId: string | null) => {
     queryFn: async () => getDemoThread(id!),
     enabled: demoMode && !!id,
     staleTime: 1000 * 60 * 60,
+    placeholderData: undefined,
   });
 
   const threadQuery = useQuery(
@@ -119,13 +133,21 @@ export const useThread = (threadId: string | null) => {
       {
         enabled: !demoMode && !!id && !!session?.user.id,
         staleTime: 1000 * 60 * 60, // 1 minute
+        placeholderData: undefined,
       },
     ),
   );
   const activeThreadQuery = demoMode ? demoThreadQuery : threadQuery;
+  const activeThreadData = activeThreadQuery.data as IGetThreadResponse | undefined;
+  const activeThreadId = useMemo(
+    () => resolveThreadId(activeThreadData),
+    [activeThreadData],
+  );
+  const isThreadDataMismatch = Boolean(id && activeThreadId && activeThreadId !== id);
 
   const { latestDraft, isGroupThread, finalData, latestMessage } = useMemo(() => {
-    const threadData = activeThreadQuery.data as IGetThreadResponse | undefined;
+    const threadData = isThreadDataMismatch ? undefined : activeThreadData;
+
     if (!threadData) {
       return {
         latestDraft: undefined,
@@ -161,7 +183,7 @@ export const useThread = (threadId: string | null) => {
     };
 
     return { latestDraft, isGroupThread, finalData, latestMessage };
-  }, [activeThreadQuery.data]);
+  }, [activeThreadData, isThreadDataMismatch]);
 
   const { mutateAsync: processEmailContent } = useMutation(
     trpc.mail.processEmailContent.mutationOptions(),
@@ -175,6 +197,9 @@ export const useThread = (threadId: string | null) => {
       settings.settings.trustedSenders?.includes(latestMessage.sender.email) ||
       false;
   }, [settings?.settings, latestMessage?.sender?.email]);
+
+  const isActiveThread = !!id && id === _threadId;
+  const isComposeMode = isComposeOpen === 'true' || !!mode;
 
   // Prefetch query - intentionally unused, just for caching
   useQuery({
@@ -202,12 +227,17 @@ export const useThread = (threadId: string | null) => {
         hasBlockedImages: result.hasBlockedImages,
       };
     },
-    enabled: !demoMode && !!latestMessage?.decodedBody && !!settings?.settings,
+    enabled:
+      !demoMode &&
+      !!latestMessage?.decodedBody &&
+      !!settings?.settings &&
+      isActiveThread &&
+      !isComposeMode,
     staleTime: 30 * 60 * 1000, // 30 minutes
     gcTime: 60 * 60 * 1000, // 1 hour
     refetchOnWindowFocus: false,
     refetchOnMount: false,
   });
 
-  return { ...activeThreadQuery, data: finalData, isGroupThread, latestDraft };
+  return { ...activeThreadQuery, data: finalData, isGroupThread, latestDraft, isThreadDataMismatch };
 };

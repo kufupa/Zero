@@ -155,7 +155,13 @@ export function ThreadDisplay() {
 
   const folder = params?.folder ?? 'inbox';
   const [id, setThreadId] = useQueryState('threadId');
-  const { data: emailData, isLoading, refetch: refetchThread } = useThread(id ?? null);
+  const {
+    data: emailData,
+    isLoading,
+    isFetching,
+    isThreadDataMismatch,
+    refetch: refetchThread,
+  } = useThread(id ?? null);
   const [, items] = useThreads();
   const [isStarred, setIsStarred] = useState(false);
 
@@ -704,6 +710,8 @@ export function ThreadDisplay() {
     setNavigationDirection(null);
   }, [setNavigationDirection]);
 
+  const shouldShowSkeleton = !emailData || isLoading || (isFetching && isThreadDataMismatch);
+
   return (
     <div
       className={cn(
@@ -744,7 +752,7 @@ export function ThreadDisplay() {
               </div>
             </div>
           </div>
-        ) : !emailData || isLoading ? (
+        ) : shouldShowSkeleton ? (
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
             <ScrollArea className="h-full flex-1" type="auto">
               <div className="pb-4">

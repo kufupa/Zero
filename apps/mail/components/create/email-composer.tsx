@@ -106,6 +106,7 @@ export function EmailComposer({
   initialSubject = '',
   initialMessage = '',
   initialAttachments = [],
+  replyingTo,
   onSendEmail,
   onClose,
   className,
@@ -611,6 +612,22 @@ export function EmailComposer({
     });
   };
 
+  const isReplyComposer = Boolean(replyingTo);
+
+  const sendButton = (
+    <Button size={'xs'} onClick={handleSend} disabled={isLoading || settingsLoading || !isScheduleValid}>
+      <div className="flex items-center justify-center">
+        <div className="text-center text-sm leading-none text-white dark:text-black">
+          <span>Send </span>
+        </div>
+      </div>
+      <div className="flex h-5 items-center justify-center gap-1 rounded-sm bg-white/10 px-1 dark:bg-black/10">
+        <Command className="h-3.5 w-3.5 text-white dark:text-black" />
+        <CurvedArrow className="mt-1.5 h-4 w-4 fill-white dark:fill-black" />
+      </div>
+    </Button>
+  );
+
   return (
     <div
       className={cn(
@@ -772,17 +789,7 @@ export function EmailComposer({
         <div className="flex flex-col items-start justify-start gap-2">
           {toggleToolbar && <Toolbar editor={editor} />}
           <div className="flex items-center justify-start gap-2">
-            <Button size={'xs'} onClick={handleSend} disabled={isLoading || settingsLoading || !isScheduleValid}>
-              <div className="flex items-center justify-center">
-                <div className="text-center text-sm leading-none text-white dark:text-black">
-                  <span>Send </span>
-                </div>
-              </div>
-              <div className="flex h-5 items-center justify-center gap-1 rounded-sm bg-white/10 px-1 dark:bg-black/10">
-                <Command className="h-3.5 w-3.5 text-white dark:text-black" />
-                <CurvedArrow className="mt-1.5 h-4 w-4 fill-white dark:fill-black" />
-              </div>
-            </Button>
+            {!isReplyComposer ? sendButton : null}
             <ScheduleSendPicker
               value={scheduleAt}
               onChange={handleScheduleChange}
@@ -951,56 +958,60 @@ export function EmailComposer({
           </div>
         </div>
         <div className="flex items-start justify-start gap-2">
-          <div className="relative">
-            <AnimatePresence>
-              {aiGeneratedMessage !== null ? (
-                <ContentPreview
-                  content={aiGeneratedMessage}
-                  onAccept={() => {
-                    editor.commands.setContent({
-                      type: 'doc',
-                      content: aiGeneratedMessage.split(/\r?\n/).map((line) => {
-                        return {
-                          type: 'paragraph',
-                          content: line.trim().length === 0 ? [] : [{ type: 'text', text: line }],
-                        };
-                      }),
-                    });
-                    setAiGeneratedMessage(null);
-                  }}
-                  onReject={() => {
-                    setAiGeneratedMessage(null);
-                  }}
-                />
-              ) : null}
-            </AnimatePresence>
-            <Button
-              size={'xs'}
-              variant={'ghost'}
-              className="border border-[#8B5CF6] cursor-pointer"
-              onClick={async () => {
-                if (!subjectInput.trim()) {
-                  await handleGenerateSubject();
-                }
-                setAiGeneratedMessage(null);
-                await handleAiGenerate();
-              }}
-              disabled={isLoading || aiIsLoading || messageLength < 1}
-            >
-              <div className="flex items-center justify-center gap-2.5 pl-0.5">
-                <div className="flex h-5 items-center justify-center gap-1 rounded-sm">
-                  {aiIsLoading ? (
-                    <Loader className="h-3.5 w-3.5 animate-spin fill-black dark:fill-white" />
-                  ) : (
-                    <Sparkles className="h-3.5 w-3.5 fill-black dark:fill-white" />
-                  )}
+          {isReplyComposer ? (
+            sendButton
+          ) : (
+            <div className="relative">
+              <AnimatePresence>
+                {aiGeneratedMessage !== null ? (
+                  <ContentPreview
+                    content={aiGeneratedMessage}
+                    onAccept={() => {
+                      editor.commands.setContent({
+                        type: 'doc',
+                        content: aiGeneratedMessage.split(/\r?\n/).map((line) => {
+                          return {
+                            type: 'paragraph',
+                            content: line.trim().length === 0 ? [] : [{ type: 'text', text: line }],
+                          };
+                        }),
+                      });
+                      setAiGeneratedMessage(null);
+                    }}
+                    onReject={() => {
+                      setAiGeneratedMessage(null);
+                    }}
+                  />
+                ) : null}
+              </AnimatePresence>
+              <Button
+                size={'xs'}
+                variant={'ghost'}
+                className="border border-[#8B5CF6] cursor-pointer"
+                onClick={async () => {
+                  if (!subjectInput.trim()) {
+                    await handleGenerateSubject();
+                  }
+                  setAiGeneratedMessage(null);
+                  await handleAiGenerate();
+                }}
+                disabled={isLoading || aiIsLoading || messageLength < 1}
+              >
+                <div className="flex items-center justify-center gap-2.5 pl-0.5">
+                  <div className="flex h-5 items-center justify-center gap-1 rounded-sm">
+                    {aiIsLoading ? (
+                      <Loader className="h-3.5 w-3.5 animate-spin fill-black dark:fill-white" />
+                    ) : (
+                      <Sparkles className="h-3.5 w-3.5 fill-black dark:fill-white" />
+                    )}
+                  </div>
+                  <div className="hidden text-center text-sm leading-none text-black md:block dark:text-white">
+                    Generate
+                  </div>
                 </div>
-                <div className="hidden text-center text-sm leading-none text-black md:block dark:text-white">
-                  Generate
-                </div>
-              </div>
-            </Button>
-          </div>
+              </Button>
+            </div>
+          )}
         </div>
       </div>
 

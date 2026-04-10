@@ -6,6 +6,8 @@ import {
   resolveDemoThreadQueryContext,
 } from '../lib/demo-data/client';
 
+const REMOVED_DEMO_LABELS = new Set(['comment', 'to respond', 'promotion']);
+
 describe('demo client data helpers', () => {
   it('maps queue slugs to inbox query context', () => {
     expect(resolveDemoThreadQueryContext('urgent')).toEqual({
@@ -33,5 +35,15 @@ describe('demo client data helpers', () => {
 
     expect(labels.length).toBeGreaterThan(0);
     expect(uniqueIds.size).toBe(labels.length);
+  });
+
+  it('omits removed demo labels from list payload', () => {
+    const labels = listDemoLabels();
+    const hasRemovedLabel = labels.some(
+      (label) =>
+        REMOVED_DEMO_LABELS.has(label.id.toLowerCase()) || REMOVED_DEMO_LABELS.has(label.name.toLowerCase()),
+    );
+
+    expect(hasRemovedLabel).toBe(false);
   });
 });

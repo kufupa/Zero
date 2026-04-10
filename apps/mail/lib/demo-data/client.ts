@@ -1,6 +1,7 @@
 import centurionThreads from './centurion-threads.json';
 import { parseDemoCorpus } from './schema';
 import { resolveDemoFolderQueryContext, type DemoFolderQueryContext } from '../demo/folder-map';
+import { filterRemovedDemoLabels } from './label-filter';
 
 type DemoConnection = {
   id: string;
@@ -35,7 +36,7 @@ function buildDemoLabels(): DemoLabel[] {
   const map = new Map<string, DemoLabel>();
 
   for (const thread of parsedCorpus.threads) {
-    for (const label of thread.labels) {
+    for (const label of filterRemovedDemoLabels(thread.labels)) {
       if (!map.has(label.id)) {
         map.set(label.id, {
           id: label.id,

@@ -573,15 +573,19 @@ const Draft = memo(({ message, index }: { message: { id: string }; index: number
   const draftQuery = useDraft(message.id) as UseQueryResult<ParsedDraft>;
   const draft = draftQuery.data;
   const [, setComposeOpen] = useQueryState('isComposeOpen');
+  const [, setMode] = useQueryState('mode');
+  const [, setActiveReplyId] = useQueryState('activeReplyId');
   const [, setDraftId] = useQueryState('draftId');
   const { optimisticDeleteDraft } = useOptimisticActions();
   const optimisticState = useOptimisticThreadState(message.id);
 
   const handleMailClick = useCallback(() => {
+    setMode(null);
+    setActiveReplyId(null);
     setComposeOpen('true');
     setDraftId(message.id);
     return;
-  }, [message.id]);
+  }, [message.id, setMode, setActiveReplyId, setComposeOpen, setDraftId]);
 
   const handleDeleteDraft = useCallback(
     (e: React.MouseEvent) => {
@@ -714,7 +718,9 @@ export const MailList = memo(
     const { folder } = useParams<{ folder: string }>();
     const { data: settingsData } = useSettings();
     const [, setThreadId] = useQueryState('threadId');
+    const [, setMode] = useQueryState('mode');
     const [, setDraftId] = useQueryState('draftId');
+    const [, setActiveReplyId] = useQueryState('activeReplyId');
     const [searchValue, setSearchValue] = useSearchValue();
     const [anchorIndex, setAnchorIndex] = useState<number | null>(null);
 
@@ -756,10 +762,12 @@ export const MailList = memo(
 
     const handleNavigateToThread = useCallback(
       (threadId: string | null) => {
+        setMode(null);
+        setActiveReplyId(null);
         setThreadId(threadId);
         return;
       },
-      [setThreadId],
+      [setMode, setActiveReplyId, setThreadId],
     );
 
     const { focusedIndex, handleMouseEnter, keyboardActive } = useMailNavigation({
@@ -790,7 +798,6 @@ export const MailList = memo(
       return 'single';
     }, [isKeyPressed]);
 
-    const [, setActiveReplyId] = useQueryState('activeReplyId');
     const [, setMail] = useMail();
 
     const handleSelectMail = useCallback(
@@ -877,8 +884,9 @@ export const MailList = memo(
         setFocusedIndex(clickedIndex);
         if (message.unread && autoRead) optimisticMarkAsRead([messageThreadId], true);
         setThreadId(messageThreadId);
+        setMode(null);
+        setActiveReplyId(null);
         setDraftId(null);
-        // Don't clear activeReplyId - let ThreadDisplay handle Reply All auto-opening
       },
       [
         getSelectMode,
@@ -888,8 +896,9 @@ export const MailList = memo(
         optimisticMarkAsRead,
         setThreadId,
         setDraftId,
-        settingsData,
+        setMode,
         setActiveReplyId,
+        settingsData,
       ],
     );
 

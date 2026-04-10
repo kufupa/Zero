@@ -10,8 +10,7 @@ import { useCategorySettings, useDefaultCategoryId } from '@/hooks/use-categorie
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import { useCommandPalette } from '../context/command-palette-context';
 import { useHotkeys, useHotkeysContext } from 'react-hotkeys-hook';
-import { ThreadDisplay } from '@/components/mail/thread-display';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, lazy, Suspense } from 'react';
 import { useActiveConnection } from '@/hooks/use-connections';
 import { Check, ChevronDown, RefreshCcw } from 'lucide-react';
 import { useMediaQuery } from '../../hooks/use-media-query';
@@ -31,6 +30,11 @@ import { isMac } from '@/lib/platform';
 import { useQueryState } from 'nuqs';
 import { cn } from '@/lib/utils';
 import { useAtom } from 'jotai';
+const ThreadDisplay = lazy(() =>
+  import('@/components/mail/thread-display').then((module) => ({
+    default: module.ThreadDisplay,
+  })),
+);
 
 // const AutoLabelingSettings = () => {
 //   const trpc = useTRPC();
@@ -537,7 +541,15 @@ export function MailLayout() {
               minSize={30}
             >
               <div className="relative flex-1">
-                <ThreadDisplay />
+              {threadId ? (
+                <Suspense fallback={<div className="flex h-full items-center justify-center" />}>
+                  <ThreadDisplay />
+                </Suspense>
+              ) : (
+                <div className="text-muted-foreground flex h-full items-center justify-center text-sm">
+                  Select an email to view details
+                </div>
+              )}
               </div>
             </ResizablePanel>
           )}
@@ -547,7 +559,9 @@ export function MailLayout() {
             <div className="bg-panelLight dark:bg-panelDark fixed inset-0 z-50">
               <div className="flex h-full flex-col">
                 <div className="h-full overflow-y-auto outline-none">
+                <Suspense fallback={<div className="flex h-full items-center justify-center" />}>
                   <ThreadDisplay />
+                </Suspense>
                 </div>
               </div>
             </div>

@@ -8,11 +8,10 @@ import {
   useNavigate,
   type MetaFunction,
 } from 'react-router';
-import { Analytics as DubAnalytics } from '@dub/analytics/react';
 import { ServerProviders } from '@/providers/server-providers';
 import { ClientProviders } from '@/providers/client-providers';
 import { createTRPCClient, httpBatchLink } from '@trpc/client';
-import { useEffect, type PropsWithChildren } from 'react';
+import { lazy, Suspense, useEffect, type PropsWithChildren, useState } from 'react';
 import type { AppRouter } from '@zero/server/trpc';
 import { Button } from '@/components/ui/button';
 import { getLocale } from '@/paraglide/runtime';
@@ -25,8 +24,37 @@ import { ArrowLeft } from 'lucide-react';
 import * as Sentry from '@sentry/react';
 import superjson from 'superjson';
 import './globals.css';
+const DeferredDubAnalytics = lazy(() => import('@/components/analytics/deferred-dub-analytics'));
 
 const getUrl = () => import.meta.env.VITE_PUBLIC_BACKEND_URL + '/api/trpc';
+
+function AnalyticsProvider() {
+  const [shouldRenderAnalytics, setShouldRenderAnalytics] = useState(false);
+
+  useEffect(() => {
+    const startTimer = () => {
+      setShouldRenderAnalytics(true);
+    };
+
+    if (typeof window === 'undefined') return;
+
+    if ('requestIdleCallback' in window) {
+      const idleHandle = window.requestIdleCallback(startTimer, { timeout: 3000 });
+      return () => window.cancelIdleCallback?.(idleHandle);
+    }
+
+    const timeout = window.setTimeout(startTimer, 200);
+    return () => window.clearTimeout(timeout);
+  }, []);
+
+  if (!shouldRenderAnalytics) return null;
+
+  return (
+    <Suspense fallback={null}>
+      <DeferredDubAnalytics />
+    </Suspense>
+  );
+}
 
 export const getServerTrpc = (req: Request) =>
   createTRPCClient<AppRouter>({
@@ -71,11 +99,7 @@ export function Layout({ children }: PropsWithChildren) {
       <body className="antialiased">
         <ServerProviders connectionId={null}>
           <ClientProviders>{children}</ClientProviders>
-          <DubAnalytics
-            domainsConfig={{
-              refer: 'mail0.com',
-            }}
-          />
+          <AnalyticsProvider />
         </ServerProviders>
         <ScrollRestoration />
         <Scripts />

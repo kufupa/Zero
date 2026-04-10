@@ -36,6 +36,7 @@ import { useQueryState } from 'nuqs';
 import { Button } from './button';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 
 const bytesToMB = (bytes: number) => (bytes / 1024 / 1024).toFixed(2);
 
@@ -102,6 +103,7 @@ export function NavUser() {
   const [category] = useQueryState('category', { defaultValue: 'All Mail' });
   const { setLoading } = useLoading();
   const [{ isSyncing, syncingFolders, storageSize, shards }] = useDoState();
+  const frontendOnlyDemo = isFrontendOnlyDemo();
 
   const getSettingsHref = useCallback(() => {
     const currentPath = category
@@ -126,6 +128,7 @@ export function NavUser() {
   useEffect(() => setIsRendered(true), []);
 
   const handleAccountSwitch = (connectionId: string) => async () => {
+    if (frontendOnlyDemo) return;
     if (connectionId === activeConnection?.id) return;
 
     try {
@@ -276,7 +279,7 @@ export function NavUser() {
                           </div>
                         </DropdownMenuItem>
                       ))}
-                    <AddConnectionDialog />
+                    {!frontendOnlyDemo && <AddConnectionDialog />}
 
                     <DropdownMenuSeparator className="my-1" />
 
@@ -497,11 +500,13 @@ export function NavUser() {
                 </DropdownMenu>
               )}
 
-              <AddConnectionDialog>
-                <Button className="hover:bg-offsetLight/80 dark:hover:bg-offsetDark/80 flex h-7 w-7 cursor-pointer items-center justify-center rounded-[5px] border border-dashed bg-transparent px-0 text-black dark:bg-[#262626] dark:text-[#929292]">
-                  <Plus className="size-4" />
-                </Button>
-              </AddConnectionDialog>
+              {!frontendOnlyDemo && (
+                <AddConnectionDialog>
+                  <Button className="hover:bg-offsetLight/80 dark:hover:bg-offsetDark/80 flex h-7 w-7 cursor-pointer items-center justify-center rounded-[5px] border border-dashed bg-transparent px-0 text-black dark:bg-[#262626] dark:text-[#929292]">
+                    <Plus className="size-4" />
+                  </Button>
+                </AddConnectionDialog>
+              )}
             </div>
 
             <div className="flex items-center justify-center gap-1">
