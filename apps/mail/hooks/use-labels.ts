@@ -1,6 +1,8 @@
 import { useTRPC } from '@/providers/query-provider';
 import { useQuery } from '@tanstack/react-query';
 import { useMemo } from 'react';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { listDemoLabels } from '@/lib/demo-data/client';
 
 const desiredSystemLabels = new Set([
   'IMPORTANT',
@@ -14,15 +16,25 @@ const desiredSystemLabels = new Set([
 
 export function useLabels() {
   const trpc = useTRPC();
+  const demoMode = isFrontendOnlyDemo();
+  const demoLabelQuery = useQuery({
+    queryKey: ['demo', 'labels'],
+    queryFn: async () => listDemoLabels(),
+    enabled: demoMode,
+    staleTime: Infinity,
+  });
   const labelQuery = useQuery(
     trpc.labels.list.queryOptions(void 0, {
+      enabled: !demoMode,
       staleTime: 1000 * 60 * 60, // 1 hour
     }),
   );
 
+  const activeQuery = demoMode ? demoLabelQuery : labelQuery;
+
   const { userLabels, systemLabels } = useMemo(() => {
-    if (!labelQuery.data) return { userLabels: [], systemLabels: [] };
-    const cleanedName = labelQuery.data
+    if (!activeQuery.data) return { userLabels: [], systemLabels: [] };
+    const cleanedName = activeQuery.data
       .filter((label) => label.type === 'system')
       .map((label) => {
         return {
@@ -32,12 +44,12 @@ export function useLabels() {
       });
     const cleanedSystemLabels = cleanedName.filter((label) => desiredSystemLabels.has(label.name));
     return {
-      userLabels: labelQuery.data.filter((label) => label.type === 'user'),
+      userLabels: activeQuery.data.filter((label) => label.type === 'user'),
       systemLabels: cleanedSystemLabels,
     };
-  }, [labelQuery.data]);
+  }, [activeQuery.data]);
 
-  return { userLabels, systemLabels, ...labelQuery };
+  return { userLabels, systemLabels, ...activeQuery };
 }
 
 export function useThreadLabels(ids: string[]) {

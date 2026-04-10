@@ -17,6 +17,8 @@ import {
 } from '@/components/icons/icons';
 import { MessageSquareIcon } from 'lucide-react';
 import { m } from '@/paraglide/messages';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { DEMO_FOLDER_DEFINITIONS, type DemoFolderIdentity } from '@/lib/demo/folder-map';
 
 export interface NavItem {
   id?: string;
@@ -40,6 +42,20 @@ interface NavConfig {
   path: string;
   sections: NavSection[];
 }
+
+const DEMO_FOLDER_MODEL_ENABLED = isFrontendOnlyDemo();
+
+function getDemoFolderIcon(folderId: DemoFolderIdentity): React.ComponentType<any> {
+  if (folderId === 'urgent' || folderId === 'spam') return ExclamationCircle;
+  return Folder;
+}
+
+const demoFolderNavItems: NavItem[] = DEMO_FOLDER_DEFINITIONS.map((folder) => ({
+  id: folder.id,
+  title: folder.title,
+  url: `/mail/${folder.id}`,
+  icon: getDemoFolderIcon(folder.id),
+}));
 
 // ! items title has to be a message key (check messages/en.json)
 export const navigationConfig: Record<string, NavConfig> = {
@@ -89,12 +105,16 @@ export const navigationConfig: Record<string, NavConfig> = {
             icon: Clock,
             shortcut: 'g + z',
           },
-          {
-            id: 'spam',
-            title: m['navigation.sidebar.spam'](),
-            url: '/mail/spam',
-            icon: ExclamationCircle,
-          },
+          ...(!DEMO_FOLDER_MODEL_ENABLED
+            ? [
+                {
+                  id: 'spam',
+                  title: m['navigation.sidebar.spam'](),
+                  url: '/mail/spam',
+                  icon: ExclamationCircle,
+                },
+              ]
+            : []),
           {
             id: 'trash',
             title: m['navigation.sidebar.bin'](),
@@ -103,6 +123,14 @@ export const navigationConfig: Record<string, NavConfig> = {
           },
         ],
       },
+      ...(DEMO_FOLDER_MODEL_ENABLED
+        ? [
+            {
+              title: 'Demo Queues',
+              items: demoFolderNavItems,
+            },
+          ]
+        : []),
       // {
       //   title: "Categories",
       //   items: [

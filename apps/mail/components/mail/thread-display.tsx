@@ -6,7 +6,6 @@ import {
   Mail,
   Printer,
   Reply,
-  Sparkles,
   Star,
   ThreeDots,
   Trash,
@@ -26,15 +25,12 @@ import { focusedIndexAtom } from '@/hooks/use-mail-navigation';
 import { type ThreadDestination } from '@/lib/thread-actions';
 import { handleUnsubscribe } from '@/lib/email-utils.client';
 import { useThread, useThreads } from '@/hooks/use-threads';
-import { useAISidebar } from '@/components/ui/ai-sidebar';
 import { EmptyStateIcon } from '../icons/empty-state-svg';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import type { ParsedMessage, Attachment } from '@/types';
 import { useAnimations } from '@/hooks/use-animations';
 import { AnimatePresence, motion } from 'motion/react';
 import { MailDisplaySkeleton } from './mail-skeleton';
-import { useTRPC } from '@/providers/query-provider';
-import { useMutation } from '@tanstack/react-query';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { Button } from '@/components/ui/button';
 import { cleanHtml } from '@/lib/email-utils';
@@ -49,6 +45,8 @@ import { useQueryState } from 'nuqs';
 import { format } from 'date-fns';
 import { useAtom } from 'jotai';
 import { toast } from 'sonner';
+import { resolveImportantState } from '@/lib/mail/important-ui';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 
 const formatFileSize = (size: number) => {
   const sizeInMB = (size / (1024 * 1024)).toFixed(2);
@@ -153,7 +151,6 @@ function ThreadActionButton({
 const isFullscreen = false;
 export function ThreadDisplay() {
   const isMobile = useIsMobile();
-  const { toggleOpen: toggleAISidebar } = useAISidebar();
   const params = useParams<{ folder: string }>();
 
   const folder = params?.folder ?? 'inbox';
@@ -161,7 +158,6 @@ export function ThreadDisplay() {
   const { data: emailData, isLoading, refetch: refetchThread } = useThread(id ?? null);
   const [, items] = useThreads();
   const [isStarred, setIsStarred] = useState(false);
-  const [isImportant, setIsImportant] = useState(false);
 
   const [navigationDirection, setNavigationDirection] = useState<'previous' | 'next' | null>(null);
 
@@ -183,12 +179,20 @@ export function ThreadDisplay() {
   const [, setDraftId] = useQueryState('draftId');
 
   const [focusedIndex, setFocusedIndex] = useAtom(focusedIndexAtom);
-  const trpc = useTRPC();
-  const { mutateAsync: toggleImportant } = useMutation(trpc.mail.toggleImportant.mutationOptions());
+  const frontendOnlyDemo = isFrontendOnlyDemo();
   const [, setIsComposeOpen] = useQueryState('isComposeOpen');
 
   // Get optimistic state for this thread
   const optimisticState = useOptimisticThreadState(id ?? '');
+  const isImportant = useMemo(
+    () =>
+      resolveImportantState({
+        optimisticImportant: optimisticState.optimisticImportant,
+        latestTags: emailData?.latest?.tags,
+        messages: emailData?.messages,
+      }),
+    [optimisticState.optimisticImportant, emailData?.latest?.tags, emailData?.messages],
+  );
 
   const handleNext = useCallback(() => {
     if (!id || !items.length || focusedIndex === null) return setThreadId(null);
@@ -238,7 +242,8 @@ export function ThreadDisplay() {
     setDraftId(null);
   }, [setThreadId, setMode, setActiveReplyId, setDraftId]);
 
-  const { optimisticMoveThreadsTo } = useOptimisticActions();
+  const { optimisticMoveThreadsTo, optimisticToggleStar, optimisticToggleImportant } =
+    useOptimisticActions();
 
   const moveThreadTo = useCallback(
     async (destination: ThreadDestination) => {
@@ -253,8 +258,6 @@ export function ThreadDisplay() {
     },
     [id, folder, optimisticMoveThreadsTo, handleNext, setMode, setActiveReplyId, setDraftId],
   );
-
-  const { optimisticToggleStar } = useOptimisticActions();
 
   const handleToggleStar = useCallback(async () => {
     if (!emailData || !id) return;
@@ -649,22 +652,18 @@ export function ThreadDisplay() {
   };
 
   const handleToggleImportant = useCallback(async () => {
-    if (!emailData || !id) return;
-    await toggleImportant({ ids: [id] });
-    await refetchThread();
-    if (isImportant) {
-      toast.success(m['common.mail.markedAsImportant']());
-    } else {
-      toast.error('Failed to mark as important');
+    if (!emailData || !id || isImportant) return;
+    optimisticToggleImportant([id], true);
+    if (!frontendOnlyDemo) {
+      await refetchThread();
     }
-  }, [emailData, id]);
+  }, [emailData, id, isImportant, optimisticToggleImportant, frontendOnlyDemo, refetchThread]);
 
   // Set initial star state based on email data
   useEffect(() => {
     if (emailData?.latest?.tags) {
       // Check if any tag has the name 'STARRED'
       setIsStarred(emailData.latest.tags.some((tag) => tag.name === 'STARRED'));
-      setIsImportant(emailData.latest.tags.some((tag) => tag.name === 'IMPORTANT'));
     }
   }, [emailData?.latest?.tags]);
 
@@ -729,18 +728,7 @@ export function ThreadDisplay() {
                 <p className="text-md text-muted-foreground dark:text-white/50">
                   Choose an email to view details
                 </p>
-                <div className="mt-4 grid grid-cols-1 gap-2 xl:grid-cols-2">
-                  <button
-                    onClick={toggleAISidebar}
-                    className="inline-flex h-7 items-center justify-center gap-0.5 overflow-hidden rounded-lg border bg-white px-2 dark:border-none dark:bg-[#313131] hover:bg-gray-100 dark:hover:bg-[#404040] transition-colors cursor-pointer"
-                  >
-                    <Sparkles className="mr-1 h-3.5 w-3.5 fill-[#959595]" />
-                    <div className="flex items-center justify-center gap-2.5 px-0.5">
-                      <div className="text-base-gray-950 justify-start text-sm leading-none">
-                        Zero chat
-                      </div>
-                    </div>
-                  </button>
+                <div className="mt-4">
                   <button
                     onClick={() => setIsComposeOpen('true')}
                     className="inline-flex h-7 items-center justify-center gap-0.5 overflow-hidden rounded-lg border bg-white px-2 dark:border-none dark:bg-[#313131] hover:bg-gray-100 dark:hover:bg-[#404040] transition-colors cursor-pointer"

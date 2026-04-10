@@ -8,6 +8,8 @@ import { createTRPCContext } from '@trpc/tanstack-react-query';
 import { createTRPCClient, httpBatchLink } from '@trpc/client';
 import { useMemo, type PropsWithChildren } from 'react';
 import type { AppRouter } from '@zero/server/trpc';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { resolveDemoQueryPolicy } from '@/lib/demo/query-policy';
 import { CACHE_BURST_KEY } from '@/lib/constants';
 import { signOut } from '@/lib/auth-client';
 import { get, set, del } from 'idb-keyval';
@@ -31,6 +33,7 @@ export const makeQueryClient = (connectionId: string | null) =>
   new QueryClient({
     queryCache: new QueryCache({
       onError: (err, { meta }) => {
+        if (isFrontendOnlyDemo()) return;
         if (meta && meta.noGlobalError === true) return;
         if (meta && typeof meta.customError === 'string') console.error(meta.customError);
         else if (
@@ -83,6 +86,24 @@ const getQueryClient = (connectionId: string | null) => {
 
 const getUrl = () => import.meta.env.VITE_PUBLIC_BACKEND_URL + '/api/trpc';
 
+const fetchWithTimeout = (url: RequestInfo | URL, options?: RequestInit) => {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  if (options?.signal) {
+    options.signal.addEventListener(
+      'abort',
+      () => {
+        controller.abort();
+      },
+      { once: true },
+    );
+  }
+
+  return fetch(url, { ...options, signal: controller.signal }).finally(() => {
+    clearTimeout(timeout);
+  });
+};
+
 export const { TRPCProvider, useTRPC, useTRPCClient } = createTRPCContext<AppRouter>();
 
 export const trpcClient = createTRPCClient<AppRouter>({
@@ -94,7 +115,7 @@ export const trpcClient = createTRPCClient<AppRouter>({
       methodOverride: 'POST',
       maxItems: 1,
       fetch: (url, options) =>
-        fetch(url, { ...options, credentials: 'include' }).then((res) => {
+        fetchWithTimeout(url, { ...options, credentials: 'include' }).then((res) => {
           const currentPath = new URL(window.location.href).pathname;
           const redirectPath = res.headers.get('X-Zero-Redirect');
           if (!!redirectPath && redirectPath !== currentPath) {
@@ -112,9 +133,21 @@ export function QueryProvider({
   children,
   connectionId,
 }: PropsWithChildren<{ connectionId: string | null }>) {
+  const demoQueryPolicy = resolveDemoQueryPolicy();
   const persister = useMemo(
     () => createIDBPersister(`zero-query-cache-${connectionId ?? 'default'}`),
     [connectionId],
+  );
+  const policyAwarePersister = useMemo(
+    () =>
+      demoQueryPolicy.shouldHydratePersistedQueries
+        ? persister
+        : {
+            persistClient: persister.persistClient,
+            removeClient: persister.removeClient,
+            restoreClient: async () => undefined,
+          },
+    [demoQueryPolicy.shouldHydratePersistedQueries, persister],
   );
   const queryClient = useMemo(() => getQueryClient(connectionId), [connectionId]);
 
@@ -122,11 +155,12 @@ export function QueryProvider({
     <PersistQueryClientProvider
       client={queryClient}
       persistOptions={{
-        persister,
+        persister: policyAwarePersister,
         buster: CACHE_BURST_KEY,
         maxAge: 1000 * 60 * 60 * 24, // 24 hours
       }}
       onSuccess={() => {
+        if (!demoQueryPolicy.shouldInvalidateHydratedThreadQueries) return;
         const threadQueryKey = [['mail', 'listThreads'], { type: 'infinite' }];
         queryClient.setQueriesData(
           { queryKey: threadQueryKey },

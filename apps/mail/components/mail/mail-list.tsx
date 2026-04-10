@@ -47,6 +47,7 @@ import { Button } from '../ui/button';
 import { Avatar } from '../ui/avatar';
 import { useQueryState } from 'nuqs';
 import { useAtom } from 'jotai';
+import { resolveImportantState } from '@/lib/mail/important-ui';
 
 const Thread = memo(
   function Thread({
@@ -83,10 +84,11 @@ const Thread = memo(
             ? optimisticState.optimisticStarred
             : (getThreadData?.latest?.tags?.some((tag) => tag.name === 'STARRED') ?? false);
 
-        const displayImportant =
-          optimisticState.optimisticImportant !== null
-            ? optimisticState.optimisticImportant
-            : (getThreadData?.latest?.tags?.some((tag) => tag.name === 'IMPORTANT') ?? false);
+        const displayImportant = resolveImportantState({
+          optimisticImportant: optimisticState.optimisticImportant,
+          latestTags: getThreadData?.latest?.tags,
+          messages: getThreadData?.messages,
+        });
 
         const displayUnread =
           optimisticState.optimisticRead !== null
@@ -131,6 +133,7 @@ const Thread = memo(
         optimisticState.optimisticImportant,
         optimisticState.optimisticRead,
         getThreadData?.latest?.tags,
+        getThreadData?.messages,
         getThreadData?.hasUnread,
         getThreadData?.labels,
         optimisticState.optimisticLabels,
@@ -239,6 +242,9 @@ const Thread = memo(
               'group',
             )}
           >
+            {displayImportant ? (
+              <div className="pointer-events-none absolute inset-y-2 right-0 w-1 rounded-l-sm bg-red-500/90" />
+            ) : null}
             <div
               className={cn(
                 'dark:bg-panelDark z-25 absolute right-2 flex -translate-y-1/2 items-center gap-1 rounded-xl border bg-white p-1 opacity-0 shadow-sm group-hover:opacity-100',

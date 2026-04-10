@@ -3,6 +3,7 @@ import { useTRPC } from '@/providers/query-provider';
 import { useQuery } from '@tanstack/react-query';
 import { CircleCheck } from '../icons/icons';
 import React from 'react';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 
 interface EmailVerificationBadgeProps {
   messageId: string | undefined;
@@ -10,6 +11,7 @@ interface EmailVerificationBadgeProps {
 
 export const EmailVerificationBadge: React.FC<EmailVerificationBadgeProps> = ({ messageId }) => {
   const trpc = useTRPC();
+  const frontendOnlyDemo = isFrontendOnlyDemo();
 
   const {
     data: verificationResult,
@@ -17,7 +19,7 @@ export const EmailVerificationBadge: React.FC<EmailVerificationBadgeProps> = ({ 
     isError,
   } = useQuery({
     ...trpc.mail.verifyEmail.queryOptions({ id: messageId || '' }),
-    enabled: !!messageId,
+    enabled: !!messageId && !frontendOnlyDemo,
     staleTime: 5 * 60 * 1000,
     retry: 1,
     refetchOnWindowFocus: false,

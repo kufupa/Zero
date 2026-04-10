@@ -3,6 +3,8 @@ import { useLoaderData, useNavigate } from 'react-router';
 import { MailLayout } from '@/components/mail/mail';
 import { useLabels } from '@/hooks/use-labels';
 import { authProxy } from '@/lib/auth-proxy';
+import { isDemoQueueFolder } from '@/lib/demo/folder-map';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { useEffect, useState } from 'react';
 import type { Route } from './+types/page';
 
@@ -23,13 +25,15 @@ export default function MailPage() {
   const { folder } = useLoaderData<typeof clientLoader>();
   const navigate = useNavigate();
   const [isLabelValid, setIsLabelValid] = useState<boolean | null>(true);
+  const normalizedFolder = folder.toLowerCase();
 
-  const isStandardFolder = ALLOWED_FOLDERS.has(folder);
+  const isStandardFolder = ALLOWED_FOLDERS.has(normalizedFolder);
+  const isDemoWorkQueueFolder = isFrontendOnlyDemo() && isDemoQueueFolder(normalizedFolder);
 
   const { userLabels, isLoading: isLoadingLabels } = useLabels();
 
   useEffect(() => {
-    if (isStandardFolder) {
+    if (isStandardFolder || isDemoWorkQueueFolder) {
       setIsLabelValid(true);
       return;
     }
@@ -39,7 +43,7 @@ export default function MailPage() {
     if (userLabels) {
       const checkLabelExists = (labels: any[]): boolean => {
         for (const label of labels) {
-          if (label.id === folder) return true;
+          if (label.id === normalizedFolder) return true;
           if (label.labels && label.labels.length > 0) {
             if (checkLabelExists(label.labels)) return true;
           }
@@ -59,7 +63,7 @@ export default function MailPage() {
     } else {
       setIsLabelValid(false);
     }
-  }, [folder, userLabels, isLoadingLabels, isStandardFolder, navigate]);
+  }, [folder, normalizedFolder, userLabels, isLoadingLabels, isStandardFolder, isDemoWorkQueueFolder, navigate]);
 
   if (!isLabelValid) {
     return (

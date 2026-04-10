@@ -13,6 +13,7 @@ import { useCallback } from 'react';
 import posthog from 'posthog-js';
 import { useAtom } from 'jotai';
 import { toast } from 'sonner';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 
 enum ActionType {
   MOVE = 'MOVE',
@@ -58,6 +59,7 @@ export function useOptimisticActions() {
   const [threadId, setThreadId] = useQueryState('threadId');
   const [, setActiveReplyId] = useQueryState('activeReplyId');
   const [mail, setMail] = useMail();
+  const frontendOnlyDemo = isFrontendOnlyDemo();
   const { mutateAsync: markAsRead } = useMutation(trpc.mail.markAsRead.mutationOptions());
   const { mutateAsync: markAsUnread } = useMutation(trpc.mail.markAsUnread.mutationOptions());
 
@@ -130,7 +132,9 @@ export function useOptimisticActions() {
 
     async function doAction() {
       try {
-        await execute();
+        if (!frontendOnlyDemo) {
+          await execute();
+        }
         const typeActions = optimisticActionsManager.pendingActionsByType.get(type);
         console.log('here', {
           pendingActionsByTypeRef: optimisticActionsManager.pendingActionsByType.get(type)?.size,

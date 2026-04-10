@@ -8,6 +8,8 @@ import { m } from '@/paraglide/messages';
 import { useTheme } from 'next-themes';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { resolveMailHtml } from '@/lib/mail/resolve-mail-html';
 
 interface MailContentProps {
   id: string;
@@ -18,6 +20,7 @@ interface MailContentProps {
 export function MailContent({ id, html, senderEmail }: MailContentProps) {
   const { data, refetch } = useSettings();
   const queryClient = useQueryClient();
+  const frontendOnlyDemo = isFrontendOnlyDemo();
   const isTrustedSender = useMemo(
     () => data?.settings?.externalImages || data?.settings?.trustedSenders?.includes(senderEmail),
     [data?.settings, senderEmail],
@@ -66,7 +69,11 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
     trpc.mail.processEmailContent.mutationOptions(),
   );
 
-  const { data: processedData } = useQuery({
+  const {
+    data: processedData,
+    isError: isProcessEmailError,
+    isFetched: hasProcessedEmailResponse,
+  } = useQuery({
     queryKey: ['email-content', id, isTrustedSender || temporaryImagesEnabled, resolvedTheme],
     queryFn: async () => {
       const result = await processEmailContent({
@@ -84,7 +91,29 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
     gcTime: 60 * 60 * 1000,
     refetchOnWindowFocus: false,
     refetchOnMount: false,
+    enabled: !frontendOnlyDemo && Boolean(html),
   });
+
+  const resolvedHtml = useMemo(() => {
+    if (processedData?.html) {
+      return processedData.html;
+    }
+
+    if (frontendOnlyDemo || isProcessEmailError || hasProcessedEmailResponse) {
+      return resolveMailHtml({
+        rawHtml: html,
+        processedHtml: processedData?.html,
+      });
+    }
+
+    return null;
+  }, [
+    frontendOnlyDemo,
+    hasProcessedEmailResponse,
+    html,
+    isProcessEmailError,
+    processedData?.html,
+  ]);
 
   useEffect(() => {
     if (processedData) {
@@ -101,10 +130,10 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
   }, []);
 
   useEffect(() => {
-    if (!shadowRootRef.current || !processedData) return;
+    if (!shadowRootRef.current || !resolvedHtml) return;
 
-    shadowRootRef.current.innerHTML = processedData.html;
-  }, [processedData]);
+    shadowRootRef.current.innerHTML = resolvedHtml;
+  }, [resolvedHtml]);
 
   const handleImageError = useCallback(
     (e: Event) => {
@@ -146,7 +175,7 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
       root.removeEventListener('error', handleImageError, true);
       root.removeEventListener('click', handleClick);
     };
-  }, [processedData, handleImageError]);
+  }, [resolvedHtml, handleImageError]);
 
   useEffect(() => {
     if (isTrustedSender || temporaryImagesEnabled) {

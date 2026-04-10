@@ -1,8 +1,25 @@
 import { LoginClient } from './login-client';
 import { useLoaderData } from 'react-router';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 
 export async function clientLoader() {
   const isProd = !import.meta.env.DEV;
+  if (isFrontendOnlyDemo()) {
+    return {
+      allProviders: [
+        {
+          id: 'zero',
+          name: 'Continue to Demo',
+          enabled: true,
+          required: false,
+          envVarStatus: [],
+          isCustom: true,
+          customRedirectPath: '/mail/inbox',
+        },
+      ],
+      isProd,
+    };
+  }
 
   const response = await fetch(import.meta.env.VITE_PUBLIC_BACKEND_URL + '/api/public/providers');
   const data = (await response.json()) as { allProviders?: any[] };

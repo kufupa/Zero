@@ -4,6 +4,7 @@ import { useTRPC } from '@/providers/query-provider';
 import { useQuery } from '@tanstack/react-query';
 import { getEmailLogo } from '@/lib/utils';
 import DOMPurify from 'dompurify';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 
 export const getFirstLetterCharacter = (name?: string) => {
   if (!name) return '';
@@ -28,10 +29,11 @@ export const BimiAvatar = ({
 }: BimiAvatarProps) => {
   const trpc = useTRPC();
   const [useDefaultFallback, setUseDefaultFallback] = useState(false);
+  const frontendOnlyDemo = isFrontendOnlyDemo();
 
   const { data: bimiData, isLoading } = useQuery({
     ...trpc.bimi.getByEmail.queryOptions({ email: email || '' }),
-    enabled: !!email && !useDefaultFallback,
+    enabled: !!email && !useDefaultFallback && !frontendOnlyDemo,
     staleTime: 1000 * 60 * 60 * 24, // Cache for 24 hours
     gcTime: 1000 * 60 * 60 * 24 * 7, // Keep in cache for 7 days
   });

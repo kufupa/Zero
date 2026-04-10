@@ -15,7 +15,6 @@ import { PencilCompose } from '../icons/icons';
 import { useIsMobile } from '@/hooks/use-mobile';
 import React, { useMemo } from 'react';
 import { useSession } from '@/lib/auth-client';
-import { useAIFullScreen } from './ai-sidebar';
 import { useStats } from '@/hooks/use-stats';
 import { useLocation } from 'react-router';
 import { cn, FOLDERS } from '@/lib/utils';
@@ -29,7 +28,6 @@ import { useQueryState } from 'nuqs';
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   //   const trpc = useTRPC();
   //   const { mutateAsync: createMeet } = useMutation(trpc.meet.create.mutationOptions());
-  const { isFullScreen } = useAIFullScreen();
   const { data: stats } = useStats();
   const location = useLocation();
   const { data: session } = useSession();
@@ -80,48 +78,44 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   //   };
 
   return (
-    <div>
-      {!isFullScreen && (
-        <Sidebar
-          collapsible="icon"
-          {...props}
-          className={`bg-sidebar dark:bg-sidebar flex h-screen select-none flex-col items-center ${state === 'collapsed' ? '' : ''} pb-2`}
-        >
-          <SidebarHeader
-            className={`relative top-2.5 flex flex-col gap-2 ${state === 'collapsed' ? 'px-2' : 'md:px-4'}`}
-          >
-            {session && <NavUser />}
+    <Sidebar
+      collapsible="icon"
+      {...props}
+      className={`bg-sidebar dark:bg-sidebar flex h-screen select-none flex-col items-center ${state === 'collapsed' ? '' : ''} pb-2`}
+    >
+      <SidebarHeader
+        className={`relative top-2.5 flex flex-col gap-2 ${state === 'collapsed' ? 'px-2' : 'md:px-4'}`}
+      >
+        {session && <NavUser />}
 
-            {showComposeButton && (
-              <div className="flex gap-1">
-                <div className={cn('w-full')}>
-                  <ComposeButton />
-                </div>
-                {/* {isPro ? (
-                  <button
-                    onClick={handleCreateMeet}
-                    className="hover:bg-muted-foreground/10 inline-flex h-8 w-[20%] items-center justify-center gap-1 overflow-hidden rounded-lg border bg-white px-1.5 dark:border-none dark:bg-[#313131]"
-                  >
-                    <Video className="text-muted-foreground h-4 w-4" />
-                  </button>
-                ) : null} */}
-              </div>
-            )}
-          </SidebarHeader>
-          <SidebarContent
-            className={`scrollbar scrollbar-w-1 scrollbar-thumb-accent/40 scrollbar-track-transparent hover:scrollbar-thumb-accent scrollbar-thumb-rounded-full overflow-x-hidden py-0 pt-0 ${state !== 'collapsed' ? 'mt-5 md:px-4' : 'px-2'}`}
-          >
-            <div className="flex-1 py-0">
-              <NavMain items={navItems} />
+        {showComposeButton && (
+          <div className="flex gap-1">
+            <div className={cn('w-full')}>
+              <ComposeButton />
             </div>
-          </SidebarContent>
+            {/* {isPro ? (
+              <button
+                onClick={handleCreateMeet}
+                className="hover:bg-muted-foreground/10 inline-flex h-8 w-[20%] items-center justify-center gap-1 overflow-hidden rounded-lg border bg-white px-1.5 dark:border-none dark:bg-[#313131]"
+              >
+                <Video className="text-muted-foreground h-4 w-4" />
+              </button>
+            ) : null} */}
+          </div>
+        )}
+      </SidebarHeader>
+      <SidebarContent
+        className={`scrollbar scrollbar-w-1 scrollbar-thumb-accent/40 scrollbar-track-transparent hover:scrollbar-thumb-accent scrollbar-thumb-rounded-full overflow-x-hidden py-0 pt-0 ${state !== 'collapsed' ? 'mt-5 md:px-4' : 'px-2'}`}
+      >
+        <div className="flex-1 py-0">
+          <NavMain items={navItems} />
+        </div>
+      </SidebarContent>
 
-          <SidebarFooter className={`px-0 pb-0 ${state === 'collapsed' ? 'md:px-2' : 'md:px-4'}`}>
-            <NavMain items={bottomNavItems} />
-          </SidebarFooter>
-        </Sidebar>
-      )}
-    </div>
+      <SidebarFooter className={`px-0 pb-0 ${state === 'collapsed' ? 'md:px-2' : 'md:px-4'}`}>
+        <NavMain items={bottomNavItems} />
+      </SidebarFooter>
+    </Sidebar>
   );
 }
 

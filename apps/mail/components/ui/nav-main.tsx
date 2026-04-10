@@ -19,6 +19,8 @@ import { useStats } from '@/hooks/use-stats';
 import SidebarLabels from './sidebar-labels';
 import { useCallback, useRef } from 'react';
 import { BASE_URL } from '@/lib/constants';
+import { shouldShowSupportLinks } from '@/lib/demo/support-links';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { Plus } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
@@ -54,9 +56,14 @@ export function NavMain({ items }: NavMainProps) {
   const location = useLocation();
   const pathname = location.pathname;
   const searchParams = new URLSearchParams();
+  const frontendOnlyDemo = isFrontendOnlyDemo();
 
   const trpc = useTRPC();
-  const { data: intercomToken } = useQuery(trpc.user.getIntercomToken.queryOptions());
+  const { data: intercomToken } = useQuery(
+    trpc.user.getIntercomToken.queryOptions(void 0, {
+      enabled: !frontendOnlyDemo,
+    }),
+  );
 
   React.useEffect(() => {
     if (intercomToken) {
@@ -75,6 +82,7 @@ export function NavMain({ items }: NavMainProps) {
 
   // Check if these are bottom navigation items by looking at the first section's title
   const isBottomNav = items[0]?.title === '';
+  const showSupportLinks = isBottomNav && shouldShowSupportLinks();
 
   /**
    * Validates URLs to prevent open redirect vulnerabilities.
@@ -184,7 +192,7 @@ export function NavMain({ items }: NavMainProps) {
   return (
     <SidebarGroup className={`${state !== 'collapsed' ? '' : 'mt-1'} space-y-2.5 py-0 md:px-0`}>
       <SidebarMenu>
-        {isBottomNav ? (
+        {showSupportLinks ? (
           <>
             <SidebarMenuButton
               onClick={() => show()}

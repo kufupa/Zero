@@ -2,6 +2,7 @@ import { cleanEmailAddresses } from '../lib/email-utils';
 import { trpcClient } from '@/providers/query-provider';
 import type { Route } from './+types/mailto-handler';
 import { authProxy } from '@/lib/auth-proxy';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 
 // Function to parse mailto URLs
 async function parseMailtoUrl(mailtoUrl: string) {
@@ -262,6 +263,16 @@ export async function clientLoader({ request }: Route.ClientLoaderArgs) {
 
   // If parsing failed, redirect to empty compose
   if (!mailtoData) return Response.redirect(`${import.meta.env.VITE_PUBLIC_APP_URL}/mail/compose`);
+
+  if (isFrontendOnlyDemo()) {
+    const fallbackUrl = new URL(`${import.meta.env.VITE_PUBLIC_APP_URL}/mail/compose`);
+    if (mailtoData.to) fallbackUrl.searchParams.append('to', mailtoData.to);
+    if (mailtoData.subject) fallbackUrl.searchParams.append('subject', mailtoData.subject);
+    if (mailtoData.body) fallbackUrl.searchParams.append('body', mailtoData.body);
+    if (mailtoData.cc) fallbackUrl.searchParams.append('cc', mailtoData.cc);
+    if (mailtoData.bcc) fallbackUrl.searchParams.append('bcc', mailtoData.bcc);
+    return Response.redirect(fallbackUrl.toString());
+  }
 
   // Create a draft from the mailto data
   const draftId = await createDraftFromMailto(mailtoData);
