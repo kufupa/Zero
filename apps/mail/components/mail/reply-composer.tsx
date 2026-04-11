@@ -15,7 +15,7 @@ import { m } from '@/paraglide/messages';
 import { deriveReplyRecipients } from '@/lib/mail/reply-recipients';
 import type { Sender } from '@/types';
 import { useQueryState } from 'nuqs';
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import posthog from 'posthog-js';
 import { toast } from 'sonner';
 
@@ -217,15 +217,37 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
     [excludedReplyEmails, mode, replyToMessage],
   );
 
+  const composeSeed = `${mode ?? 'view'}:${replyToMessage?.id ?? 'latest'}`;
+  const draftRecipientSeedRef = useRef<string | null>(draftId ? composeSeed : null);
+
+  useEffect(() => {
+    if (!draftId) {
+      draftRecipientSeedRef.current = null;
+      return;
+    }
+
+    if (!draftRecipientSeedRef.current) {
+      draftRecipientSeedRef.current = composeSeed;
+    }
+  }, [draftId, composeSeed]);
+
   const hasDraftRecipients = draftTo.length > 0 || draftCc.length > 0 || draftBcc.length > 0;
-  const initialToRecipients = draftTo.length > 0 ? draftTo : hasDraftRecipients ? [] : derivedReplyRecipients.to;
-  const initialCcRecipients = draftCc.length > 0 ? draftCc : hasDraftRecipients ? [] : derivedReplyRecipients.cc;
+  const shouldUseDraftRecipients =
+    hasDraftRecipients && Boolean(draftId) && draftRecipientSeedRef.current === composeSeed;
+  const initialToRecipients = shouldUseDraftRecipients
+    ? draftTo.length > 0
+      ? draftTo
+      : []
+    : derivedReplyRecipients.to;
+  const initialCcRecipients = shouldUseDraftRecipients ? draftCc : derivedReplyRecipients.cc;
+  const initialBccRecipients = shouldUseDraftRecipients ? draftBcc : [];
 
   if (!mode || !emailData) return null;
 
   return (
     <div className="w-full rounded-2xl overflow-visible border">
       <EmailComposer
+        key={`reply-composer-${composeSeed}`}
         editorClassName="min-h-[50px]"
         className="w-full max-w-none! pb-1 overflow-visible"
         onSendEmail={handleSendEmail}
@@ -237,7 +259,7 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
         initialMessage={draft?.content ?? latestDraft?.decodedBody}
         initialTo={initialToRecipients}
         initialCc={initialCcRecipients}
-        initialBcc={draftBcc}
+        initialBcc={initialBccRecipients}
         initialSubject={draft?.subject}
         autofocus={true}
         settingsLoading={settingsLoading}

@@ -7,6 +7,7 @@ import { useThread } from '@/hooks/use-threads';
 import { useParams } from 'react-router';
 import { useQueryState } from 'nuqs';
 import { useSetAtom } from 'jotai';
+import { openReplyComposeContext } from '@/lib/mail/reply-compose-context';
 
 const closeView = (event: KeyboardEvent) => {
   event.preventDefault();
@@ -16,6 +17,7 @@ export function ThreadDisplayHotkeys() {
   const scope = 'thread-display';
   const [, setMode] = useQueryState('mode');
   const [, setActiveReplyId] = useQueryState('activeReplyId');
+  const [, setDraftId] = useQueryState('draftId');
   const [openThreadId] = useQueryState('threadId');
   const { data: thread } = useThread(openThreadId);
   const params = useParams<{
@@ -28,16 +30,31 @@ export function ThreadDisplayHotkeys() {
   const handlers = {
     closeView: () => closeView(new KeyboardEvent('keydown', { key: 'Escape' })),
     reply: () => {
-      setMode('reply');
-      setActiveReplyId(thread?.latest?.id ?? '');
+      void openReplyComposeContext({
+        mode: 'reply',
+        messageId: thread?.latest?.id ?? null,
+        setMode,
+        setActiveReplyId,
+        setDraftId,
+      });
     },
     forward: () => {
-      setMode('forward');
-      setActiveReplyId(thread?.latest?.id ?? '');
+      void openReplyComposeContext({
+        mode: 'forward',
+        messageId: thread?.latest?.id ?? null,
+        setMode,
+        setActiveReplyId,
+        setDraftId,
+      });
     },
     replyAll: () => {
-      setMode('replyAll');
-      setActiveReplyId(thread?.latest?.id ?? '');
+      void openReplyComposeContext({
+        mode: 'replyAll',
+        messageId: thread?.latest?.id ?? null,
+        setMode,
+        setActiveReplyId,
+        setDraftId,
+      });
     },
     delete: () => {
       if (!openThreadId) return;

@@ -21,13 +21,41 @@ export async function clientLoader() {
     };
   }
 
-  const response = await fetch(import.meta.env.VITE_PUBLIC_BACKEND_URL + '/api/public/providers');
-  const data = (await response.json()) as { allProviders?: any[] };
+  const fallbackProvider = [
+    {
+      id: 'zero',
+      name: 'Continue to Demo',
+      enabled: true,
+      required: false,
+      envVarStatus: [],
+      isCustom: true,
+      customRedirectPath: '/mail/inbox',
+    },
+  ];
 
-  return {
-    allProviders: data.allProviders ?? [],
-    isProd,
-  };
+  try {
+    const response = await fetch(import.meta.env.VITE_PUBLIC_BACKEND_URL + '/api/public/providers');
+
+    if (!response.ok) {
+      return {
+        allProviders: fallbackProvider,
+        isProd,
+      };
+    }
+
+    const data = (await response.json()) as { allProviders?: any[] };
+    return {
+      allProviders: data.allProviders ?? fallbackProvider,
+      isProd,
+    };
+  } catch (error) {
+    console.warn('Falling back to demo provider due missing backend:', error);
+
+    return {
+      allProviders: fallbackProvider,
+      isProd,
+    };
+  }
 }
 
 export default function LoginPage() {

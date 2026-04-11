@@ -43,6 +43,7 @@ import { useParams } from 'react-router';
 import { useQueryState } from 'nuqs';
 import { toast } from 'sonner';
 import type { Label as LabelType } from '@/types';
+import { openReplyComposeContext } from '@/lib/mail/reply-compose-context';
 
 interface EmailAction {
   id: string;
@@ -162,6 +163,7 @@ export function ThreadContextMenu({
   const [, setThreadId] = useQueryState('threadId');
   const { data: threadData } = useThread(threadId);
   const [, setActiveReplyId] = useQueryState('activeReplyId');
+  const [, setDraftId] = useQueryState('draftId');
   const optimisticState = useOptimisticThreadState(threadId);
   const trpc = useTRPC();
   const { refetch: refetchLabels } = useLabels();
@@ -273,21 +275,36 @@ export function ThreadContextMenu({
   };
 
   const handleThreadReply = () => {
-    setMode('reply');
     setThreadId(threadId);
-    if (threadData?.latest) setActiveReplyId(threadData?.latest?.id);
+    void openReplyComposeContext({
+      mode: 'reply',
+      messageId: threadData?.latest?.id ?? null,
+      setMode,
+      setActiveReplyId,
+      setDraftId,
+    });
   };
 
   const handleThreadReplyAll = () => {
-    setMode('replyAll');
     setThreadId(threadId);
-    if (threadData?.latest) setActiveReplyId(threadData?.latest?.id);
+    void openReplyComposeContext({
+      mode: 'replyAll',
+      messageId: threadData?.latest?.id ?? null,
+      setMode,
+      setActiveReplyId,
+      setDraftId,
+    });
   };
 
   const handleThreadForward = () => {
-    setMode('forward');
     setThreadId(threadId);
-    if (threadData?.latest) setActiveReplyId(threadData?.latest?.id);
+    void openReplyComposeContext({
+      mode: 'forward',
+      messageId: threadData?.latest?.id ?? null,
+      setMode,
+      setActiveReplyId,
+      setDraftId,
+    });
   };
 
   const handleOpenInNewTab = () => {

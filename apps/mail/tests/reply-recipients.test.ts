@@ -76,4 +76,33 @@ describe('deriveReplyRecipients', () => {
       cc: [],
     });
   });
+
+  it('switches recipient sets between reply and replyAll for the same message', () => {
+    const message = {
+      sender: { email: 'sender@example.com' },
+      to: [{ email: 'sender@example.com' }, { email: 'teammate@example.com' }, { email: 'manager@example.com' }],
+      cc: [{ email: 'observer@example.com' }],
+    };
+
+    const replyRecipients = deriveReplyRecipients({
+      mode: 'reply',
+      excludedEmails: ['me@example.com'],
+      message,
+    });
+
+    const replyAllRecipients = deriveReplyRecipients({
+      mode: 'replyAll',
+      excludedEmails: ['me@example.com'],
+      message,
+    });
+
+    expect(replyRecipients).toEqual({
+      to: ['sender@example.com'],
+      cc: [],
+    });
+    expect(replyAllRecipients).toEqual({
+      to: ['sender@example.com', 'teammate@example.com', 'manager@example.com'],
+      cc: ['observer@example.com'],
+    });
+  });
 });

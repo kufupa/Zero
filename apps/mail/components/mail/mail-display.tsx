@@ -57,6 +57,7 @@ import { useQueryState } from 'nuqs';
 import { Badge } from '../ui/badge';
 import { format } from 'date-fns';
 import { toast } from 'sonner';
+import { openReplyComposeContext, type ReplyComposeMode } from '@/lib/mail/reply-compose-context';
 
 // Add formatFileSize utility function
 const formatFileSize = (size: number) => {
@@ -687,6 +688,21 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
   );
 
   const [, setMode] = useQueryState('mode');
+  const [, setDraftId] = useQueryState('draftId');
+
+  const openComposeForMessage = useCallback(
+    (mode: ReplyComposeMode) => {
+      setIsCollapsed(false);
+      void openReplyComposeContext({
+        mode,
+        messageId: emailData.id,
+        setMode,
+        setActiveReplyId,
+        setDraftId,
+      });
+    },
+    [emailData.id, setMode, setActiveReplyId, setDraftId],
+  );
 
   useEffect(() => {
     if (!demo) {
@@ -1693,9 +1709,7 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                   <ActionButton
                     onClick={(e) => {
                       e.stopPropagation();
-                      setIsCollapsed(false);
-                      setMode('reply');
-                      setActiveReplyId(emailData.id);
+                      openComposeForMessage('reply');
                     }}
                     icon={<Reply className="fill-muted-foreground dark:fill-[#9B9B9B]" />}
                     text={m['common.mail.reply']()}
@@ -1704,9 +1718,7 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                   <ActionButton
                     onClick={(e) => {
                       e.stopPropagation();
-                      setIsCollapsed(false);
-                      setMode('replyAll');
-                      setActiveReplyId(emailData.id);
+                      openComposeForMessage('replyAll');
                     }}
                     icon={<ReplyAll className="fill-muted-foreground dark:fill-[#9B9B9B]" />}
                     text={m['common.mail.replyAll']()}
@@ -1715,9 +1727,7 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                   <ActionButton
                     onClick={(e) => {
                       e.stopPropagation();
-                      setIsCollapsed(false);
-                      setMode('forward');
-                      setActiveReplyId(emailData.id);
+                      openComposeForMessage('forward');
                     }}
                     icon={<Forward className="fill-muted-foreground dark:fill-[#9B9B9B]" />}
                     text={m['common.mail.forward']()}

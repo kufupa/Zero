@@ -47,6 +47,11 @@ import { useAtom } from 'jotai';
 import { toast } from 'sonner';
 import { resolveImportantState } from '@/lib/mail/important-ui';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import {
+  clearReplyComposeContext,
+  openReplyComposeContext,
+  type ReplyComposeMode,
+} from '@/lib/mail/reply-compose-context';
 
 const formatFileSize = (size: number) => {
   const sizeInMB = (size / (1024 * 1024)).toFixed(2);
@@ -184,6 +189,27 @@ export function ThreadDisplay() {
   const [activeReplyId, setActiveReplyId] = useQueryState('activeReplyId');
   const [, setDraftId] = useQueryState('draftId');
 
+  const clearComposeContext = useCallback(() => {
+    void clearReplyComposeContext({
+      setMode,
+      setActiveReplyId,
+      setDraftId,
+    });
+  }, [setMode, setActiveReplyId, setDraftId]);
+
+  const openComposeForLatestMessage = useCallback(
+    (nextMode: ReplyComposeMode) => {
+      void openReplyComposeContext({
+        mode: nextMode,
+        messageId: emailData?.latest?.id ?? null,
+        setMode,
+        setActiveReplyId,
+        setDraftId,
+      });
+    },
+    [emailData?.latest?.id, setMode, setActiveReplyId, setDraftId],
+  );
+
   const [focusedIndex, setFocusedIndex] = useAtom(focusedIndexAtom);
   const frontendOnlyDemo = isFrontendOnlyDemo();
   const [, setIsComposeOpen] = useQueryState('isComposeOpen');
@@ -208,9 +234,7 @@ export function ThreadDisplay() {
 
       const nextThread = items[nextIndex];
       if (nextThread) {
-        setMode(null);
-        setActiveReplyId(null);
-        setDraftId(null);
+        clearComposeContext();
         setThreadId(nextThread.id);
         setFocusedIndex(focusedIndex + 1);
         if (animationsEnabled) {
@@ -224,9 +248,7 @@ export function ThreadDisplay() {
     focusedIndex,
     setThreadId,
     setFocusedIndex,
-    setMode,
-    setActiveReplyId,
-    setDraftId,
+    clearComposeContext,
     animationsEnabled,
   ]);
 
@@ -243,10 +265,8 @@ export function ThreadDisplay() {
   const isInBin = folder === FOLDERS.BIN;
   const handleClose = useCallback(() => {
     setThreadId(null);
-    setMode(null);
-    setActiveReplyId(null);
-    setDraftId(null);
-  }, [setThreadId, setMode, setActiveReplyId, setDraftId]);
+    clearComposeContext();
+  }, [setThreadId, clearComposeContext]);
 
   const { optimisticMoveThreadsTo, optimisticToggleStar, optimisticToggleImportant } =
     useOptimisticActions();
@@ -255,14 +275,12 @@ export function ThreadDisplay() {
     async (destination: ThreadDestination) => {
       if (!id) return;
 
-      setMode(null);
-      setActiveReplyId(null);
-      setDraftId(null);
+      clearComposeContext();
 
       optimisticMoveThreadsTo([id], folder, destination);
       handleNext();
     },
-    [id, folder, optimisticMoveThreadsTo, handleNext, setMode, setActiveReplyId, setDraftId],
+    [id, folder, optimisticMoveThreadsTo, handleNext, clearComposeContext],
   );
 
   const handleToggleStar = useCallback(async () => {
@@ -795,8 +813,7 @@ export function ThreadDisplay() {
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    setMode('replyAll');
-                    setActiveReplyId(emailData?.latest?.id ?? '');
+                    openComposeForLatestMessage('replyAll');
                   }}
                   className="inline-flex h-7 items-center justify-center gap-1 overflow-hidden rounded-lg border bg-white px-1.5 dark:border-none dark:bg-[#313131] hover:bg-gray-100 dark:hover:bg-[#404040] transition-colors cursor-pointer"
                 >

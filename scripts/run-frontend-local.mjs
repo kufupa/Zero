@@ -12,7 +12,7 @@ const cliArgs = new Set(process.argv.slice(2));
 const forceFrontendOnly = cliArgs.has('--frontend-only') || cliArgs.has('--no-backend');
 const forceFull = cliArgs.has('--full');
 const isDemoFrontendOnlyArg = cliArgs.has('--demo-frontend-only');
-if (isDemoFrontendOnlyArg) {
+if (isDemoFrontendOnlyArg || forceFrontendOnly) {
   process.env.ZERO_DEMO_MODE = '1';
   process.env.ZERO_DEMO_FRONTEND_ONLY = '1';
 }
