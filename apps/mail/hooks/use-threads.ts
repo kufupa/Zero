@@ -14,6 +14,7 @@ import { useParams } from 'react-router';
 import { useTheme } from 'next-themes';
 import { useQueryState } from 'nuqs';
 import { useMemo } from 'react';
+import { computeThreadListEnabled } from '@/lib/mail/thread-list-query-enabled';
 
 const resolveThreadId = (threadData: IGetThreadResponse | undefined) => {
   if (!threadData) return undefined;
@@ -26,15 +27,33 @@ const resolveThreadId = (threadData: IGetThreadResponse | undefined) => {
   return firstMessage?.threadId ?? firstMessage?.id;
 };
 
-export const useThreads = () => {
-  const { folder } = useParams<{ folder: string }>();
+export type UseThreadsOptions = {
+  commandPaletteOpen?: string | null;
+};
+
+export const useThreads = (options?: UseThreadsOptions) => {
+  const { folder: routeFolder } = useParams<{ folder: string }>();
+  const canonicalRouteFolder = routeFolder?.toLowerCase();
   const [searchValue] = useSearchValue();
   const [backgroundQueue] = useAtom(backgroundQueueAtom);
   const isInQueue = useAtomValue(isThreadInBackgroundQueueAtom);
+  const { data: session } = useSession();
   const trpc = useTRPC();
   const { labels } = useSearchLabels();
   const demoMode = isFrontendOnlyDemo();
-  const demoContext = resolveDemoThreadQueryContext(folder);
+  const isPaletteMode = options != null && 'commandPaletteOpen' in options;
+  const paletteOpen = isPaletteMode ? options?.commandPaletteOpen === 'true' : false;
+  const folderForQuery = isPaletteMode ? canonicalRouteFolder ?? 'inbox' : canonicalRouteFolder;
+  const baseEnabled = computeThreadListEnabled({
+    demoMode,
+    sessionUserId: session?.user?.id,
+    routeFolder: canonicalRouteFolder,
+  });
+  const demoContext = resolveDemoThreadQueryContext(folderForQuery);
+  // Palette needs thread hints on non-mail routes (e.g. /settings): still require demo or session, never open live API unauthenticated.
+  const listEnabled = isPaletteMode
+    ? paletteOpen && (demoMode || Boolean(session?.user?.id))
+    : baseEnabled;
 
   const demoThreadsQuery = useInfiniteQuery({
     queryKey: [
@@ -57,24 +76,24 @@ export const useThreads = () => {
       }),
     getNextPageParam: (lastPage) => lastPage?.nextPageToken ?? null,
     staleTime: 60 * 1000,
-    refetchOnMount: true,
+    refetchOnMount: false,
     refetchIntervalInBackground: true,
-    enabled: demoMode,
+    enabled: demoMode && listEnabled,
   });
 
   const threadsQuery = useInfiniteQuery(
     trpc.mail.listThreads.infiniteQueryOptions(
       {
         q: searchValue.value,
-        folder,
+        folder: folderForQuery,
         labelIds: labels,
       },
       {
         initialCursor: '',
         getNextPageParam: (lastPage) => lastPage?.nextPageToken ?? null,
-        enabled: !demoMode,
+        enabled: !demoMode && listEnabled,
         staleTime: 60 * 1000 * 1, // 1 minute
-        refetchOnMount: true,
+        refetchOnMount: false,
         refetchIntervalInBackground: true,
       },
     ),

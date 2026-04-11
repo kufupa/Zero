@@ -431,7 +431,7 @@ function loadDemoStore(): DemoStore {
     labels: sanitizeLabels(storedValue.labels),
     settings: {
       ...DEFAULT_SETTINGS,
-      ...(storedValue.settings ?? {}),
+      ...storedValue.settings,
       categories: storedValue.settings?.categories ?? DEFAULT_SETTINGS.categories,
       trustedSenders: storedValue.settings?.trustedSenders ?? DEFAULT_SETTINGS.trustedSenders,
     },
@@ -461,7 +461,7 @@ function sanitizeStore(raw: Partial<DemoStore>): DemoStore {
     labels: sanitizeLabels(raw.labels),
     settings: {
       ...DEFAULT_SETTINGS,
-      ...(raw.settings ?? {}),
+      ...raw.settings,
       categories: raw.settings?.categories ?? DEFAULT_SETTINGS.categories,
       trustedSenders: raw.settings?.trustedSenders ?? DEFAULT_SETTINGS.trustedSenders,
     },

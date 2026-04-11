@@ -64,7 +64,7 @@ export async function handleGeneralSettingsSave(params: {
         const currentSettings = updater?.settings ?? params.data?.settings;
         return {
           settings: {
-            ...(currentSettings ?? {}),
+            ...currentSettings,
             ...params.values,
           },
         };

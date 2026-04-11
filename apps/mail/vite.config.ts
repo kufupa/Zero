@@ -17,7 +17,10 @@ const ReactCompilerConfig = {
   /* ... */
 };
 
-const shouldRunOxlint = process.env.ZERO_DISABLE_OXLINT !== '1';
+/** On Windows, vite-plugin-oxlint spawns `pnpm` with shell:false; only pnpm.cmd exists → ENOENT. PATH is fine. */
+const shouldRunOxlint =
+  process.env.ZERO_DISABLE_OXLINT !== '1' &&
+  (process.platform !== 'win32' || process.env.ZERO_OXLINT_ON_WINDOWS === '1');
 
 const plugins = [
   ...(shouldRunOxlint ? [oxlintPlugin()] : []),

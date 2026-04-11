@@ -1375,7 +1375,7 @@ describe('demo backend guard coverage', () => {
     const onError = vi.fn();
     const refetchConnections = vi.fn();
     const refetchSession = vi.fn();
-    const refetchThreads = vi.fn();
+    const invalidateThreads = vi.fn();
     const blocked = vi.fn();
 
     const mode = await runDisconnectConnection({
@@ -1387,7 +1387,7 @@ describe('demo backend guard coverage', () => {
       onError,
       refetchConnections,
       refetchSession,
-      refetchThreads,
+      invalidateThreads,
     });
 
     expect(mode).toBe('blocked');
@@ -1395,7 +1395,7 @@ describe('demo backend guard coverage', () => {
     expect(deleteConnectionMock).not.toHaveBeenCalled();
     expect(refetchConnections).not.toHaveBeenCalled();
     expect(refetchSession).not.toHaveBeenCalled();
-    expect(refetchThreads).not.toHaveBeenCalled();
+    expect(invalidateThreads).not.toHaveBeenCalled();
   });
 
   it('performs backend connection disconnect when demo mode is not active', async () => {
@@ -1404,7 +1404,7 @@ describe('demo backend guard coverage', () => {
     const onError = vi.fn();
     const refetchConnections = vi.fn();
     const refetchSession = vi.fn();
-    const refetchThreads = vi.fn();
+    const invalidateThreads = vi.fn();
 
     const mode = await runDisconnectConnection({
       connectionId: 'connection-live',
@@ -1415,7 +1415,7 @@ describe('demo backend guard coverage', () => {
       onError,
       refetchConnections,
       refetchSession,
-      refetchThreads,
+      invalidateThreads,
     });
 
     expect(mode).toBe('backend');
@@ -1423,7 +1423,7 @@ describe('demo backend guard coverage', () => {
     expect(onSuccess).toHaveBeenCalledTimes(1);
     expect(refetchConnections).toHaveBeenCalledTimes(1);
     expect(refetchSession).toHaveBeenCalledTimes(1);
-    expect(refetchThreads).toHaveBeenCalledTimes(1);
+    expect(invalidateThreads).toHaveBeenCalledTimes(1);
   });
 
   it('blocks reconnect flow in demo mode for external connection actions', async () => {

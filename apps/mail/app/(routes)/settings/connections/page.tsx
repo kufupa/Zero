@@ -11,13 +11,12 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { SettingsCard } from '@/components/settings/settings-card';
 import { AddConnectionDialog } from '@/components/connection/add';
 
-import { useSession, authClient } from '@/lib/auth-client';
+import { useSession, linkSocialSafe } from '@/lib/auth-client';
 import { useConnections } from '@/hooks/use-connections';
 import { useTRPC } from '@/providers/query-provider';
 import { Skeleton } from '@/components/ui/skeleton';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Trash, Plus, Unplug } from 'lucide-react';
-import { useThreads } from '@/hooks/use-threads';
 import { emailProviders } from '@/lib/constants';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -40,7 +39,7 @@ export async function runDisconnectConnection(params: {
   onError: (error: unknown) => void;
   refetchConnections: () => void;
   refetchSession: () => Promise<unknown> | unknown;
-  refetchThreads: () => Promise<unknown> | unknown;
+  invalidateThreads: () => Promise<unknown> | unknown;
 }) {
   if (params.isFrontendOnlyDemo) {
     params.onBlocked();
@@ -57,7 +56,7 @@ export async function runDisconnectConnection(params: {
   params.onSuccess();
   void params.refetchConnections();
   void params.refetchSession();
-  void params.refetchThreads();
+  void params.invalidateThreads();
   return 'backend';
 }
 
@@ -85,9 +84,9 @@ export default function ConnectionsPage() {
   const { refetch } = useSession();
   const [openTooltip, setOpenTooltip] = useState<string | null>(null);
 
+  const queryClient = useQueryClient();
   const trpc = useTRPC();
   const { mutateAsync: deleteConnection } = useMutation(trpc.connections.delete.mutationOptions());
-  const [{ refetch: refetchThreads }] = useThreads();
   const disconnectAccount = async (connectionId: string) => {
     await runDisconnectConnection({
       connectionId,
@@ -101,7 +100,8 @@ export default function ConnectionsPage() {
       },
       refetchConnections,
       refetchSession: refetch,
-      refetchThreads,
+      invalidateThreads: () =>
+        queryClient.invalidateQueries({ queryKey: trpc.mail.listThreads.infiniteQueryKey() }),
     });
   };
 
@@ -114,9 +114,9 @@ export default function ConnectionsPage() {
         <div className="space-y-6">
           {isLoading ? (
             <div className="grid gap-4 md:grid-cols-3">
-              {[...Array(3)].map((n) => (
+              {Array.from({ length: 3 }).map((_, index) => (
                 <div
-                  key={n}
+                  key={`connection-skeleton-${index}`}
                   className="bg-popover flex items-center justify-between rounded-lg border p-4"
                 >
                   <div className="flex min-w-0 items-center gap-4">
@@ -204,7 +204,7 @@ export default function ConnectionsPage() {
                                 isFrontendOnlyDemo: isFrontendOnlyDemo(),
                                 provider: connection.providerId,
                                 callbackURL: `${window.location.origin}/settings/connections`,
-                                linkSocial: authClient.linkSocial,
+            linkSocial: linkSocialSafe,
                                 onBlocked: () => toast.info('This action is not available in demo mode'),
                               });
                             }}

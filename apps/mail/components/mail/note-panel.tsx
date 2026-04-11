@@ -70,7 +70,7 @@ import { CSS } from '@dnd-kit/utilities';
 import type { Note } from '@/types';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import {
-  demoCreateNote,
+  demoUpsertNote,
   demoDeleteNote,
   demoReorderNotes,
   demoUpdateNote,
@@ -307,7 +307,7 @@ export function NotesPanel({ threadId }: NotesPanelProps) {
       };
       setIsAddingNewNote(true);
       try {
-        await (isFrontendOnlyDemo() ? demoCreateNote(noteData) : createNote(noteData));
+        await (isFrontendOnlyDemo() ? demoUpsertNote(noteData) : createNote(noteData));
         await refetch();
         setNewNoteContent('');
         setSelectedColor('default');
@@ -378,18 +378,18 @@ export function NotesPanel({ threadId }: NotesPanelProps) {
   const handleDeleteNote = async (noteId: string) => {
     if (isNoteActionPending) return;
 
-    const promise = async () => {
-      await (isFrontendOnlyDemo() ? demoDeleteNote(noteId) : deleteNote({ noteId }));
-      await refetch();
-    };
-
     return runNoteAction(async () => {
-      toast.promise(promise(), {
+      const operationPromise = (async () => {
+        await (isFrontendOnlyDemo() ? demoDeleteNote(noteId) : deleteNote({ noteId }));
+        await refetch();
+      })();
+
+      toast.promise(operationPromise, {
         loading: m['common.actions.loading'](),
         success: m['common.notes.noteDeleted'](),
         error: m['common.notes.errors.failedToDeleteNote'](),
       });
-      await promise();
+      await operationPromise;
     });
   };
 

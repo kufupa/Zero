@@ -744,6 +744,7 @@ Draft.displayName = 'Draft';
 export const MailList = memo(function MailList() {
     const { folder } = useParams<{ folder: string }>();
     const { data: settingsData } = useSettings();
+    const autoReadEnabled = settingsData?.settings?.autoRead ?? true;
     const [, setThreadId] = useQueryState('threadId');
     const [, setMode] = useQueryState('mode');
     const [, setDraftId] = useQueryState('draftId');
@@ -819,7 +820,6 @@ export const MailList = memo(function MailList() {
         return 'mass';
       }
       if (isAltPressed && isShiftPressed) {
-        console.log('Select All Below mode activated'); // Debug log
         return 'selectAllBelow';
       }
       return 'single';
@@ -831,7 +831,6 @@ export const MailList = memo(function MailList() {
       (message: ParsedMessage) => {
         const itemId = message.threadId ?? message.id;
         const currentMode = getSelectMode();
-        console.log('Selection mode:', currentMode, 'for item:', itemId);
 
         setMail((prevMail) => {
           const mail = prevMail;
@@ -843,29 +842,19 @@ export const MailList = memo(function MailList() {
               const newSelected = mail.bulkSelected.includes(itemId)
                 ? mail.bulkSelected.filter((id) => id !== itemId)
                 : [...mail.bulkSelected, itemId];
-              console.log('Mass selection mode - selected items:', newSelected.length);
               return { ...mail, bulkSelected: newSelected };
             }
             case 'selectAllBelow': {
               const clickedIndex = itemsRef.current.findIndex((item) => item.id === itemId);
-              console.log(
-                'SelectAllBelow - clicked index:',
-                clickedIndex,
-                'total items:',
-                itemsRef.current.length,
-              );
 
               if (clickedIndex !== -1) {
                 const itemsBelow = itemsRef.current.slice(clickedIndex);
                 const idsBelow = itemsBelow.map((item) => item.id);
-                console.log('Selecting all items below - count:', idsBelow.length);
                 return { ...mail, bulkSelected: idsBelow };
               }
-              console.log('Item not found in list, selecting just this item');
               return { ...mail, bulkSelected: [itemId] };
             }
             case 'range': {
-              console.log('Range selection mode');
               if (anchorIndex === null) {
                 return { ...mail, bulkSelected: [itemId] };
               }
@@ -877,7 +866,6 @@ export const MailList = memo(function MailList() {
               return { ...mail, bulkSelected: newSelected };
             }
             default: {
-              console.log('Single selection mode');
               return { ...mail, bulkSelected: [itemId] };
             }
           }
@@ -892,8 +880,6 @@ export const MailList = memo(function MailList() {
     const handleMailClick = useCallback(
       (message: ParsedMessage) => async () => {
         const mode = getSelectMode();
-        const autoRead = settingsData?.settings?.autoRead ?? true;
-        console.log('Mail click with mode:', mode);
 
         if (mode !== 'single') {
           const messageThreadId = message.threadId ?? message.id;
@@ -909,7 +895,7 @@ export const MailList = memo(function MailList() {
         const messageThreadId = message.threadId ?? message.id;
         const clickedIndex = itemsRef.current.findIndex((item) => item.id === messageThreadId);
         setFocusedIndex(clickedIndex);
-        if (message.unread && autoRead) optimisticMarkAsRead([messageThreadId], true);
+        if (message.unread && autoReadEnabled) optimisticMarkAsRead([messageThreadId], true);
         setThreadId(messageThreadId);
         setMode(null);
         setActiveReplyId(null);
@@ -925,7 +911,7 @@ export const MailList = memo(function MailList() {
         setDraftId,
         setMode,
         setActiveReplyId,
-        settingsData,
+        autoReadEnabled,
       ],
     );
 

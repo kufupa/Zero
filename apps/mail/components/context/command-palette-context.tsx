@@ -207,7 +207,7 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
   const [dateRangeEnd, setDateRangeEnd] = useState<Date | undefined>(undefined);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchValue, setSearchValue] = useSearchValue();
-  const [, threads] = useThreads();
+  const [, threads] = useThreads({ commandPaletteOpen: open });
   const [activeFilters, setActiveFilters] = useState<ActiveFilter[]>([]);
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
   const [savedSearches, setSavedSearches] = useState<SavedSearch[]>([]);

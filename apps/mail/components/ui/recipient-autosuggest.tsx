@@ -58,6 +58,8 @@ interface RecipientAutosuggestProps {
   placeholder?: string;
   className?: string;
   disabled?: boolean;
+  inputId?: string;
+  inputName?: string;
 }
 
 export function RecipientAutosuggest({
@@ -66,6 +68,8 @@ export function RecipientAutosuggest({
   placeholder = 'Enter email',
   className,
   disabled = false,
+  inputId,
+  inputName,
 }: RecipientAutosuggestProps) {
 
   const {
@@ -211,7 +215,8 @@ export function RecipientAutosuggest({
       .filter((email) => !canonicalRecipients.has(canonicalizeEmail(email)))
       .reduce<string[]>((acc, email) => {
         if (acc.some((existing) => canonicalizeEmail(existing) === canonicalizeEmail(email))) return acc;
-        return [...acc, email];
+      acc.push(email);
+      return acc;
       }, []);
 
     const remainingInput = parsedItems
@@ -273,6 +278,8 @@ export function RecipientAutosuggest({
           </div>
         ))}
         <input
+          id={inputId ?? `${name}-input`}
+          name={inputName ?? name}
           ref={inputDomRef}
           type="email"
           value={inputValue}

@@ -213,7 +213,7 @@ export function ThreadContextMenu({
 }: EmailContextMenuProps) {
   const { folder } = useParams<{ folder: string }>();
   const [mail, setMail] = useMail();
-  const [{ isLoading, isFetching }] = useThreads();
+  const [{ isLoading, isFetching, refetch: refetchThreads }] = useThreads();
   const currentFolder = folder ?? '';
   const isArchiveFolder = currentFolder === FOLDERS.ARCHIVE;
   const isSnoozedFolder = currentFolder === FOLDERS.SNOOZED;
@@ -415,12 +415,39 @@ export function ThreadContextMenu({
       return;
     }
 
+    const hadBulkSelectionForAction = mail.bulkSelected.length > 0;
+    const targetSet = new Set(targets);
+    const deletePromise = Promise.all(
+      targets.map(async (id) => {
+        return deleteThread({ id });
+      }),
+    )
+      .then((result) => {
+        if (hadBulkSelectionForAction) {
+          setMail((prev) => {
+            const prevBulkSelected = prev.bulkSelected;
+            const matchesOriginalTargets =
+              prevBulkSelected.length === targetSet.size &&
+              prevBulkSelected.every((id) => targetSet.has(id));
+
+            if (!matchesOriginalTargets) {
+              return prev;
+            }
+
+            return { ...prev, bulkSelected: [] };
+          });
+        }
+
+        return result;
+      })
+      .finally(async () => {
+        await Promise.resolve(refetchThreads()).catch((error) => {
+          console.error('Failed to refetch threads after delete:', error);
+        });
+      });
+
     toast.promise(
-      Promise.all(
-        targets.map(async (id) => {
-          return deleteThread({ id });
-        }),
-      ),
+      deletePromise,
       {
         loading: 'Deleting...',
         success: 'Deleted',

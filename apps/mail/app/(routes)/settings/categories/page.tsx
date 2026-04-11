@@ -289,7 +289,7 @@ export default function CategoriesSettingsPage() {
           return {
             ...updater,
             settings: {
-              ...(updater?.settings ?? data?.settings ?? {}),
+              ...(updater?.settings ?? data?.settings),
               categories: nextCategories,
             },
           };
@@ -353,7 +353,7 @@ export default function CategoriesSettingsPage() {
           return {
             ...updater,
             settings: {
-              ...(updater?.settings ?? {}),
+              ...updater?.settings,
               categories: defaultMailCategories as unknown as DemoSettings['categories'],
             },
           };

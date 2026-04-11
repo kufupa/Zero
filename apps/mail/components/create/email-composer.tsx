@@ -141,6 +141,8 @@ export function EmailComposer({
   const [isScheduleValid, setIsScheduleValid] = useState<boolean>(true);
   const [showAttachmentWarning, setShowAttachmentWarning] = useState(false);
   const [originalAttachments, setOriginalAttachments] = useState<File[]>(initialAttachments);
+  const [attachmentPreviewUrls, setAttachmentPreviewUrls] = useState<Record<string, string>>({});
+  const attachmentPreviewUrlMapRef = useRef(new Map<string, string>());
   const [imageQuality, setImageQuality] = useState<ImageQuality>(
     settings?.settings?.imageCompression || 'medium',
   );
@@ -253,6 +255,49 @@ export function EmailComposer({
   const subjectInput = watch('subject');
   const attachments = watch('attachments');
   const fromEmail = watch('fromEmail');
+  const getAttachmentKey = useCallback(
+    (file: File) => `${file.name}-${file.size}-${file.lastModified}`,
+    [],
+  );
+
+  const clearAttachmentState = useCallback(() => {
+    setOriginalAttachments([]);
+    setValue('attachments', [], { shouldDirty: false });
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  }, [setValue]);
+
+  useEffect(() => {
+    const files = (attachments ?? []) as File[];
+    const previousMap = attachmentPreviewUrlMapRef.current;
+    const nextMap = new Map<string, string>();
+
+    files.forEach((file) => {
+      if (!file.type.startsWith('image/')) return;
+      const key = getAttachmentKey(file);
+      const existingUrl = previousMap.get(key);
+      nextMap.set(key, existingUrl ?? URL.createObjectURL(file));
+    });
+
+    previousMap.forEach((url, key) => {
+      if (!nextMap.has(key)) {
+        URL.revokeObjectURL(url);
+      }
+    });
+
+    attachmentPreviewUrlMapRef.current = nextMap;
+    setAttachmentPreviewUrls(Object.fromEntries(nextMap));
+  }, [attachments, getAttachmentKey]);
+
+  useEffect(() => {
+    return () => {
+      attachmentPreviewUrlMapRef.current.forEach((url) => {
+        URL.revokeObjectURL(url);
+      });
+      attachmentPreviewUrlMapRef.current.clear();
+    };
+  }, []);
 
   const handleAttachment = async (newFiles: File[]) => {
     if (newFiles && newFiles.length > 0) {
@@ -374,6 +419,7 @@ export function EmailComposer({
       setHasUnsavedChanges(false);
       editor.commands.clearContent(true);
       form.reset();
+      clearAttachmentState();
       setIsComposeOpen(null);
     } catch (error) {
       console.error('Error sending email:', error);
@@ -726,6 +772,8 @@ export function EmailComposer({
           <div className="flex items-center gap-2 border-b p-3">
             <p className="text-sm font-medium text-[#8C8C8C]">Subject:</p>
             <input
+                  id="compose-subject"
+                  name="subject"
               className="h-4 w-full bg-transparent text-sm font-normal leading-normal text-black placeholder:text-[#797979] focus:outline-none dark:text-white/90"
               placeholder="Re: Design review feedback"
               value={subjectInput}
@@ -875,6 +923,7 @@ export function EmailComposer({
 
                     <div className="max-h-[250px] flex-1 space-y-0.5 overflow-y-auto p-1.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                       {attachments.map((file: File, index: number) => {
+                        const attachmentKey = getAttachmentKey(file);
                         const nameParts = file.name.split('.');
                         const extension = nameParts.length > 1 ? nameParts.pop() : undefined;
                         const nameWithoutExt = nameParts.join('.');
@@ -885,14 +934,14 @@ export function EmailComposer({
                             : nameWithoutExt;
                         return (
                             <div
-                              key={`${file.name}-${file.size}-${file.lastModified}`}
+                              key={attachmentKey}
                             className="group flex items-center justify-between gap-3 rounded-md px-1.5 py-1.5 hover:bg-black/5 dark:hover:bg-white/10"
                           >
                             <div className="flex min-w-0 flex-1 items-center gap-3">
                               <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded bg-[#F0F0F0] dark:bg-[#2C2C2C]">
                                 {file.type.startsWith('image/') ? (
                                   <img
-                                    src={URL.createObjectURL(file)}
+                                    src={attachmentPreviewUrls[attachmentKey]}
                                     alt={file.name}
                                     className="h-full w-full rounded object-cover"
                                     aria-hidden="true"

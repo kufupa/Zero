@@ -29,6 +29,16 @@ export async function getSession() {
   });
 }
 
+export function linkSocialSafe(
+  payload: Parameters<typeof authClient.linkSocial>[0],
+): Promise<unknown> {
+  if (isFrontendOnlyDemo()) {
+    return Promise.resolve(undefined);
+  }
+
+  return authClient.linkSocial(payload) as Promise<unknown>;
+}
+
 export function useSession() {
   const demoMode = isFrontendOnlyDemo();
   return useQuery({
