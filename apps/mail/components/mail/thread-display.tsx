@@ -41,7 +41,7 @@ import { m } from '@/paraglide/messages';
 import MailDisplay from './mail-display';
 import { useParams } from 'react-router';
 import { Inbox } from 'lucide-react';
-import { useQueryState } from 'nuqs';
+import { parseAsString, useQueryState, useQueryStates } from 'nuqs';
 import { format } from 'date-fns';
 import { useAtom } from 'jotai';
 import { toast } from 'sonner';
@@ -188,14 +188,20 @@ export function ThreadDisplay() {
   const [mode, setMode] = useQueryState('mode');
   const [activeReplyId, setActiveReplyId] = useQueryState('activeReplyId');
   const [, setDraftId] = useQueryState('draftId');
+  const [, setComposeState] = useQueryStates({
+    mode: parseAsString,
+    activeReplyId: parseAsString,
+    draftId: parseAsString,
+  });
 
   const clearComposeContext = useCallback(() => {
     void clearReplyComposeContext({
       setMode,
       setActiveReplyId,
       setDraftId,
+      setComposeState,
     });
-  }, [setMode, setActiveReplyId, setDraftId]);
+  }, [setMode, setActiveReplyId, setDraftId, setComposeState]);
 
   const openComposeForLatestMessage = useCallback(
     (nextMode: ReplyComposeMode) => {
@@ -205,9 +211,10 @@ export function ThreadDisplay() {
         setMode,
         setActiveReplyId,
         setDraftId,
+        setComposeState,
       });
     },
-    [emailData?.latest?.id, setMode, setActiveReplyId, setDraftId],
+    [emailData?.latest?.id, setMode, setActiveReplyId, setDraftId, setComposeState],
   );
 
   const [focusedIndex, setFocusedIndex] = useAtom(focusedIndexAtom);

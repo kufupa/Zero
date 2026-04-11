@@ -5,7 +5,7 @@ import useDelete from '@/hooks/driver/use-delete';
 import { useShortcuts } from './use-hotkey-utils';
 import { useThread } from '@/hooks/use-threads';
 import { useParams } from 'react-router';
-import { useQueryState } from 'nuqs';
+import { parseAsString, useQueryState, useQueryStates } from 'nuqs';
 import { useSetAtom } from 'jotai';
 import { openReplyComposeContext } from '@/lib/mail/reply-compose-context';
 
@@ -18,6 +18,11 @@ export function ThreadDisplayHotkeys() {
   const [, setMode] = useQueryState('mode');
   const [, setActiveReplyId] = useQueryState('activeReplyId');
   const [, setDraftId] = useQueryState('draftId');
+  const [, setComposeState] = useQueryStates({
+    mode: parseAsString,
+    activeReplyId: parseAsString,
+    draftId: parseAsString,
+  });
   const [openThreadId] = useQueryState('threadId');
   const { data: thread } = useThread(openThreadId);
   const params = useParams<{
@@ -36,6 +41,7 @@ export function ThreadDisplayHotkeys() {
         setMode,
         setActiveReplyId,
         setDraftId,
+        setComposeState,
       });
     },
     forward: () => {
@@ -45,6 +51,7 @@ export function ThreadDisplayHotkeys() {
         setMode,
         setActiveReplyId,
         setDraftId,
+        setComposeState,
       });
     },
     replyAll: () => {
@@ -54,6 +61,7 @@ export function ThreadDisplayHotkeys() {
         setMode,
         setActiveReplyId,
         setDraftId,
+        setComposeState,
       });
     },
     delete: () => {

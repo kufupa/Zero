@@ -61,6 +61,23 @@ describe('deriveReplyRecipients', () => {
     });
   });
 
+  it('falls back to the first non-self cc recipient when replying if to is self-only', () => {
+    const recipients = deriveReplyRecipients({
+      mode: 'reply',
+      excludedEmails: ['me@example.com'],
+      message: {
+        sender: { email: 'me@example.com' },
+        to: [{ email: 'me@example.com' }],
+        cc: [{ email: 'observer@example.com' }, { email: 'me@example.com' }],
+      },
+    });
+
+    expect(recipients).toEqual({
+      to: ['observer@example.com'],
+      cc: [],
+    });
+  });
+
   it('returns empty recipients for forward mode', () => {
     const recipients = deriveReplyRecipients({
       mode: 'forward',

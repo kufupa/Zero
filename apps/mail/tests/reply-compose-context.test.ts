@@ -20,6 +20,31 @@ describe('reply compose context helpers', () => {
     expect(setActiveReplyId).toHaveBeenCalledWith('message-123');
   });
 
+  it('updates compose query state atomically when a batch setter is provided', async () => {
+    const setComposeState = vi.fn();
+    const setMode = vi.fn();
+    const setActiveReplyId = vi.fn();
+    const setDraftId = vi.fn();
+
+    await openReplyComposeContext({
+      mode: 'replyAll',
+      messageId: 'message-123',
+      setMode,
+      setActiveReplyId,
+      setDraftId,
+      setComposeState,
+    });
+
+    expect(setComposeState).toHaveBeenCalledWith({
+      mode: 'replyAll',
+      activeReplyId: 'message-123',
+      draftId: null,
+    });
+    expect(setMode).not.toHaveBeenCalled();
+    expect(setActiveReplyId).not.toHaveBeenCalled();
+    expect(setDraftId).not.toHaveBeenCalled();
+  });
+
   it('normalizes empty message ids to null when opening compose context', async () => {
     const setMode = vi.fn();
     const setActiveReplyId = vi.fn();
@@ -50,5 +75,28 @@ describe('reply compose context helpers', () => {
     expect(setMode).toHaveBeenCalledWith(null);
     expect(setActiveReplyId).toHaveBeenCalledWith(null);
     expect(setDraftId).toHaveBeenCalledWith(null);
+  });
+
+  it('clears compose query state atomically when a batch setter is provided', async () => {
+    const setComposeState = vi.fn();
+    const setMode = vi.fn();
+    const setActiveReplyId = vi.fn();
+    const setDraftId = vi.fn();
+
+    await clearReplyComposeContext({
+      setMode,
+      setActiveReplyId,
+      setDraftId,
+      setComposeState,
+    });
+
+    expect(setComposeState).toHaveBeenCalledWith({
+      mode: null,
+      activeReplyId: null,
+      draftId: null,
+    });
+    expect(setMode).not.toHaveBeenCalled();
+    expect(setActiveReplyId).not.toHaveBeenCalled();
+    expect(setDraftId).not.toHaveBeenCalled();
   });
 });

@@ -11,7 +11,6 @@ import {
   ThreeDots,
   Tag,
   User,
-  ChevronDown,
   Printer,
 } from '../icons/icons';
 import {
@@ -42,8 +41,6 @@ import { useAttachments } from '@/hooks/use-attachments';
 import { useTRPC } from '@/providers/query-provider';
 import { useThreadLabels } from '@/hooks/use-labels';
 import { useMutation } from '@tanstack/react-query';
-import { Markdown } from '@react-email/components';
-import { useSummary } from '@/hooks/use-summary';
 import { TextShimmer } from '../ui/text-shimmer';
 import { useThread } from '@/hooks/use-threads';
 import { BimiAvatar } from '../ui/bimi-avatar';
@@ -53,7 +50,7 @@ import { MailContent } from './mail-content';
 import { m } from '@/paraglide/messages';
 import { useParams } from 'react-router';
 import { FileText } from 'lucide-react';
-import { useQueryState } from 'nuqs';
+import { parseAsString, useQueryState, useQueryStates } from 'nuqs';
 import { Badge } from '../ui/badge';
 import { format } from 'date-fns';
 import { toast } from 'sonner';
@@ -306,40 +303,6 @@ const ThreadAttachments = ({ attachments }: { attachments: Attachment[] }) => {
           </button>
         ))}
       </div>
-    </div>
-  );
-};
-
-const AiSummary = () => {
-  const [threadId] = useQueryState('threadId');
-  const { data: summary, isLoading } = useSummary(threadId ?? null);
-  const [showSummary, setShowSummary] = useState(false);
-
-  const handleToggle = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setShowSummary(!showSummary);
-  };
-
-  if (isLoading) return null;
-  if (!summary?.data.short?.length) return null;
-
-  return (
-    <div
-      className="mt-2 max-w-3xl rounded-xl border border-[#8B5CF6] bg-white px-4 py-2 dark:bg-[#252525]"
-      onClick={(e) => e.stopPropagation()}
-    >
-      <div className="flex cursor-pointer items-center" onClick={handleToggle}>
-        <TextShimmer className="text-xs font-medium text-[#929292]">Summary</TextShimmer>
-
-        {!isLoading && (
-          <ChevronDown
-            className={`ml-1 h-2.5 w-2.5 fill-[#929292] transition-transform ${showSummary ? 'rotate-180' : ''}`}
-          />
-        )}
-      </div>
-      {showSummary && (
-        <Markdown markdownContainerStyles={{ fontSize: 15 }}>{summary?.data.short || ''}</Markdown>
-      )}
     </div>
   );
 };
@@ -735,6 +698,11 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
 
   const [, setMode] = useQueryState('mode');
   const [, setDraftId] = useQueryState('draftId');
+  const [, setComposeState] = useQueryStates({
+    mode: parseAsString,
+    activeReplyId: parseAsString,
+    draftId: parseAsString,
+  });
 
   const openComposeForMessage = useCallback(
     (mode: ReplyComposeMode) => {
@@ -745,9 +713,10 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
         setMode,
         setActiveReplyId,
         setDraftId,
+        setComposeState,
       });
     },
-    [emailData.id, setMode, setActiveReplyId, setDraftId],
+    [emailData.id, setMode, setActiveReplyId, setDraftId, setComposeState],
   );
 
   useEffect(() => {
@@ -1370,7 +1339,6 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                     })()}
                   </div>
                 </div>
-                <AiSummary />
                 {threadAttachments && threadAttachments.length > 0 && (
                   <ThreadAttachments attachments={threadAttachments} />
                 )}

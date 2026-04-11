@@ -271,7 +271,7 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
   const initialToRecipients = shouldUseDraftRecipients
     ? draftTo.length > 0
       ? draftTo
-      : []
+      : derivedReplyRecipients.to
     : derivedReplyRecipients.to;
   const initialCcRecipients = shouldUseDraftRecipients ? draftCc : derivedReplyRecipients.cc;
   const initialBccRecipients = shouldUseDraftRecipients ? draftBcc : [];

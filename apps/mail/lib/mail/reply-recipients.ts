@@ -67,6 +67,13 @@ export function deriveReplyRecipients(params: {
       }
     }
 
+    if (to.length === 0) {
+      for (const recipient of message.cc ?? []) {
+        pushUniqueRecipient(to, seen, recipient, excluded);
+        if (to.length > 0) break;
+      }
+    }
+
     return { to, cc: [] };
   }
 

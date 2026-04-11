@@ -40,7 +40,7 @@ import { useMail } from '../mail/use-mail';
 import { Checkbox } from '../ui/checkbox';
 import { m } from '@/paraglide/messages';
 import { useParams } from 'react-router';
-import { useQueryState } from 'nuqs';
+import { parseAsString, useQueryState, useQueryStates } from 'nuqs';
 import { toast } from 'sonner';
 import type { Label as LabelType } from '@/types';
 import { openReplyComposeContext } from '@/lib/mail/reply-compose-context';
@@ -222,6 +222,11 @@ export function ThreadContextMenu({
   const { data: threadData } = useThread(threadId);
   const [, setActiveReplyId] = useQueryState('activeReplyId');
   const [, setDraftId] = useQueryState('draftId');
+  const [, setComposeState] = useQueryStates({
+    mode: parseAsString,
+    activeReplyId: parseAsString,
+    draftId: parseAsString,
+  });
   const optimisticState = useOptimisticThreadState(threadId);
   const trpc = useTRPC();
   const { refetch: refetchLabels } = useLabels();
@@ -340,6 +345,7 @@ export function ThreadContextMenu({
       setMode,
       setActiveReplyId,
       setDraftId,
+      setComposeState,
     });
   };
 
@@ -351,6 +357,7 @@ export function ThreadContextMenu({
       setMode,
       setActiveReplyId,
       setDraftId,
+      setComposeState,
     });
   };
 
@@ -362,6 +369,7 @@ export function ThreadContextMenu({
       setMode,
       setActiveReplyId,
       setDraftId,
+      setComposeState,
     });
   };
 
