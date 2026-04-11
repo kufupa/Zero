@@ -7,13 +7,14 @@ import { useStats } from '@/hooks/use-stats';
 import { m } from '@/paraglide/messages';
 import { useState } from 'react';
 import { toast } from 'sonner';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 
 const useDelete = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [mail, setMail] = useMail();
   const [{ refetch: refetchThreads }] = useThreads();
   const { refetch: refetchStats } = useStats();
-  const { addToQueue, } = useBackgroundQueue();
+  const { addToQueue } = useBackgroundQueue();
   const trpc = useTRPC();
   const { mutateAsync: deleteThread } = useMutation(trpc.mail.delete.mutationOptions());
 
@@ -21,6 +22,25 @@ const useDelete = () => {
     mutate: (id: string, type: 'thread' | 'email' = 'thread') => {
       setIsLoading(true);
       addToQueue(id);
+
+      if (isFrontendOnlyDemo()) {
+        return toast.promise(
+          Promise.resolve().then(async () => {
+            setMail({
+              ...mail,
+              bulkSelected: [],
+            });
+            setIsLoading(false);
+            await Promise.all([refetchThreads(), refetchStats()]);
+          }),
+          {
+            loading: m['common.actions.deletingMail'](),
+            success: m['common.actions.deletedMail'](),
+            error: m['common.actions.failedToDeleteMail'](),
+          },
+        );
+      }
+
       return toast.promise(
         deleteThread({
           id,

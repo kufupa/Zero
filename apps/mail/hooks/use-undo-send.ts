@@ -4,6 +4,8 @@ import { toast } from 'sonner';
 import { useTRPC } from '@/providers/query-provider';
 import { isSendResult } from '@/lib/email-utils';
 import type { UserSettings } from '@zero/server/schemas';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { demoUnsendEmail } from '@/lib/demo/local-actions';
 
 export type EmailData = {
   to: string[];
@@ -78,7 +80,9 @@ export const useUndoSend = () => {
               label: 'Undo',
               onClick: async () => {
                 try {
-                  await unsendEmail({ messageId });
+                  await (isFrontendOnlyDemo()
+                    ? demoUnsendEmail({ messageId })
+                    : unsendEmail({ messageId }));
                   toast.info('Schedule cancelled');
                 } catch {
                   toast.error('Failed to cancel');
@@ -93,8 +97,10 @@ export const useUndoSend = () => {
             action: {
               label: 'Undo',
               onClick: async () => {
-              try {
-                await unsendEmail({ messageId });
+                try {
+                  await (isFrontendOnlyDemo()
+                    ? demoUnsendEmail({ messageId })
+                    : unsendEmail({ messageId }));
                 
                 if (emailData) {
                   const serializedAttachments = await serializeFiles(emailData.attachments);

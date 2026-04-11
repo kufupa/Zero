@@ -59,6 +59,8 @@ import { Pencil2 } from '../icons/icons';
 import { Button } from '../ui/button';
 import { useQueryState } from 'nuqs';
 import { toast } from 'sonner';
+import { demoGenerateSearchQuery } from '@/lib/demo/local-actions';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 
 type CommandPaletteContext = {
   activeFilters: ActiveFilter[];
@@ -92,6 +94,29 @@ interface SavedSearch {
   query: string;
   createdAt: Date;
 }
+
+export type CommandPaletteSearchResult = {
+  query: string;
+};
+
+export const resolveCommandPaletteSearchQuery = async ({
+  query,
+  isFrontendOnlyDemoMode,
+  generateSearchQuery,
+}: {
+  query: string;
+  isFrontendOnlyDemoMode: boolean;
+  generateSearchQuery: (input: { query: string }) => Promise<CommandPaletteSearchResult>;
+}): Promise<CommandPaletteSearchResult> => {
+  if (isFrontendOnlyDemoMode) {
+    return demoGenerateSearchQuery({
+      query,
+      isFrontendOnlyDemoMode,
+    });
+  }
+
+  return generateSearchQuery({ query });
+};
 
 interface ActiveFilter {
   id: string;
@@ -197,6 +222,7 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
 
   const { userLabels = [] } = useLabels();
   const trpc = useTRPC();
+  const frontendOnlyDemoMode = isFrontendOnlyDemo();
   const { mutateAsync: generateSearchQuery } = useMutation(
     trpc.ai.generateSearchQuery.mutationOptions(),
   );
@@ -536,7 +562,11 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
         let finalQuery = query;
 
         if (useNaturalLanguage) {
-          const result = await generateSearchQuery({ query });
+          const result = await resolveCommandPaletteSearchQuery({
+            query,
+            isFrontendOnlyDemoMode: frontendOnlyDemoMode,
+            generateSearchQuery,
+          });
           finalQuery = result.query;
 
           const searchFilter: ActiveFilter = {

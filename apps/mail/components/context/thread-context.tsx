@@ -44,6 +44,8 @@ import { useQueryState } from 'nuqs';
 import { toast } from 'sonner';
 import type { Label as LabelType } from '@/types';
 import { openReplyComposeContext } from '@/lib/mail/reply-compose-context';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { demoCreateLabel } from '@/lib/demo/local-actions';
 
 interface EmailAction {
   id: string;
@@ -53,6 +55,62 @@ interface EmailAction {
   action: () => void;
   disabled?: boolean;
   condition?: () => boolean;
+}
+
+export type ThreadLabelCreateContextInput = {
+  data: LabelType;
+  isFrontendOnlyDemoMode: boolean;
+  setCreateLabelOpen: (value: boolean) => void;
+  createLabel: (input: {
+    name: string;
+    color: {
+      backgroundColor: string;
+      textColor: string;
+    };
+    type: 'user';
+  }) => Promise<unknown>;
+  refetchLabels: () => Promise<unknown> | unknown;
+  labelsSuccessMessage: string;
+  labelsSavingMessage: string;
+  labelsSaveErrorMessage: string;
+  onError: (error: unknown) => void;
+};
+
+export async function createLabelInThreadContext(input: ThreadLabelCreateContextInput): Promise<void> {
+  const labelData = {
+    name: input.data.name,
+    color: {
+      backgroundColor: input.data.color?.backgroundColor || '#202020',
+      textColor: input.data.color?.textColor || '#FFFFFF',
+    },
+    type: 'user' as const,
+  };
+
+  try {
+    if (input.isFrontendOnlyDemoMode) {
+      await input.createLabel(labelData);
+      await Promise.resolve(input.refetchLabels());
+      toast.success(input.labelsSuccessMessage);
+      return;
+    }
+
+    const promise = input.createLabel(labelData).then(async (result) => {
+      await Promise.resolve(input.refetchLabels());
+      return result;
+    });
+
+    toast.promise(promise, {
+      loading: input.labelsSavingMessage,
+      success: input.labelsSuccessMessage,
+      error: input.labelsSaveErrorMessage,
+    });
+
+    await promise;
+  } catch (error) {
+    input.onError(error);
+  } finally {
+    input.setCreateLabelOpen(false);
+  }
 }
 
 interface EmailContextMenuProps {
@@ -173,7 +231,7 @@ export function ThreadContextMenu({
     optimisticToggleImportant,
     optimisticMarkAsRead,
     optimisticMarkAsUnread,
-    // optimisticDeleteThreads,
+    optimisticDeleteThreads,
     optimisticSnooze,
     optimisticUnsnooze,
   } = useOptimisticActions();
@@ -348,6 +406,15 @@ export function ThreadContextMenu({
   const handleDelete = () => () => {
     const targets = mail.bulkSelected.length ? mail.bulkSelected : [threadId];
 
+    if (isFrontendOnlyDemo()) {
+      optimisticDeleteThreads(targets, currentFolder);
+      if (mail.bulkSelected.length) {
+        setMail({ ...mail, bulkSelected: [] });
+      }
+      toast.success('Deleted');
+      return;
+    }
+
     toast.promise(
       Promise.all(
         targets.map(async (id) => {
@@ -425,25 +492,6 @@ export function ThreadContextMenu({
       ];
     }
 
-    if (isArchiveFolder || !isInbox) {
-      return [
-        {
-          id: 'move-to-inbox',
-          label: m['common.mail.unarchive'](),
-          icon: <Inbox className="mr-2.5 h-4 w-4 opacity-60" />,
-          action: handleMove('', LABELS.INBOX),
-          disabled: false,
-        },
-        {
-          id: 'move-to-bin',
-          label: m['common.mail.moveToBin'](),
-          icon: <Trash className="mr-2.5 h-4 w-4 opacity-60" />,
-          action: handleMove('', LABELS.TRASH),
-          disabled: false,
-        },
-      ];
-    }
-
     if (isSent) {
       return [
         {
@@ -458,6 +506,25 @@ export function ThreadContextMenu({
           label: m['common.mail.moveToBin'](),
           icon: <Trash className="mr-2.5 h-4 w-4 opacity-60" />,
           action: handleMove(LABELS.SENT, LABELS.TRASH),
+          disabled: false,
+        },
+      ];
+    }
+
+    if (isArchiveFolder || !isInbox) {
+      return [
+        {
+          id: 'move-to-inbox',
+          label: m['common.mail.unarchive'](),
+          icon: <Inbox className="mr-2.5 h-4 w-4 opacity-60" />,
+          action: handleMove('', LABELS.INBOX),
+          disabled: false,
+        },
+        {
+          id: 'move-to-bin',
+          label: m['common.mail.moveToBin'](),
+          icon: <Trash className="mr-2.5 h-4 w-4 opacity-60" />,
+          action: handleMove('', LABELS.TRASH),
           disabled: false,
         },
       ];
@@ -502,32 +569,17 @@ export function ThreadContextMenu({
   };
 
   const handleCreateLabel = async (data: LabelType) => {
-    const labelData = {
-      name: data.name,
-      color: {
-        backgroundColor: data.color?.backgroundColor || '#202020',
-        textColor: data.color?.textColor || '#FFFFFF'
-      }
-    };
-    
-    try {
-      const promise = createLabel(labelData).then(async (result) => {
-        await refetchLabels();
-        return result;
-      });
-      
-      toast.promise(promise, {
-        loading: m['common.labels.savingLabel'](),
-        success: m['common.labels.saveLabelSuccess'](),
-        error: m['common.labels.failedToSavingLabel'](),
-      });
-      
-      await promise;
-    } catch (error) {
-      console.error('Failed to create label:', error);
-    } finally {
-      setCreateLabelOpen(false);
-    }
+    await createLabelInThreadContext({
+      data,
+      isFrontendOnlyDemoMode: isFrontendOnlyDemo(),
+      setCreateLabelOpen,
+      createLabel: isFrontendOnlyDemo() ? demoCreateLabel : createLabel,
+      refetchLabels,
+      labelsSuccessMessage: m['common.labels.saveLabelSuccess'](),
+      labelsSavingMessage: m['common.labels.savingLabel'](),
+      labelsSaveErrorMessage: m['common.labels.failedToSavingLabel'](),
+      onError: (error) => console.error('Failed to create label:', error),
+    });
   };
 
   const otherActions: EmailAction[] = useMemo(

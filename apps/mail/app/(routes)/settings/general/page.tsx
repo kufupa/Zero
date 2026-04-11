@@ -39,6 +39,48 @@ import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import * as z from 'zod';
 import { useCallback } from 'react';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { demoSetSettings } from '@/lib/demo/local-actions';
+
+export async function handleGeneralSettingsSave(params: {
+  values: z.infer<typeof userSettingsSchema>;
+  data?: { settings?: z.infer<typeof userSettingsSchema> };
+  isFrontendOnlyDemo: boolean;
+  queryClient: {
+    setQueryData: (
+      queryKey: unknown[],
+      updater: (updater: { settings?: z.infer<typeof userSettingsSchema> } | undefined) => unknown,
+    ) => void;
+  };
+  saveUserSettings: (values: z.infer<typeof userSettingsSchema>) => Promise<unknown>;
+  demoSetSettings: (settings: Partial<z.infer<typeof userSettingsSchema>>) => Promise<unknown>;
+  refetchSettings: () => Promise<unknown>;
+  settingsQueryKey: unknown[];
+}) {
+  if (params.isFrontendOnlyDemo) {
+    params.queryClient.setQueryData(
+      ['demo', 'settings'],
+      (updater: { settings?: z.infer<typeof userSettingsSchema> } | undefined) => {
+        const currentSettings = updater?.settings ?? params.data?.settings;
+        return {
+          settings: {
+            ...(currentSettings ?? {}),
+            ...params.values,
+          },
+        };
+      },
+    );
+    await params.demoSetSettings(params.data?.settings ? { ...params.data.settings, ...params.values } : params.values);
+    return;
+  }
+
+  params.queryClient.setQueryData(params.settingsQueryKey, (updater: { settings?: z.infer<typeof userSettingsSchema> } | undefined) => {
+    if (!updater) return updater;
+    return { settings: { ...updater.settings, ...params.values } };
+  });
+  await params.saveUserSettings(params.values);
+  await params.refetchSettings();
+}
 
 const TimezoneSelect = memo(
   ({ field }: { field: ControllerRenderProps<z.infer<typeof userSettingsSchema>, 'timezone'> }) => {
@@ -160,13 +202,16 @@ export default function GeneralPage() {
     const saved = data?.settings ? { ...data.settings } : undefined;
 
     try {
-      queryClient.setQueryData(trpc.settings.get.queryKey(), (updater) => {
-        if (!updater) return;
-        return { settings: { ...updater.settings, ...values } };
+      await handleGeneralSettingsSave({
+        values,
+        data: data ? { settings: data.settings } : undefined,
+        isFrontendOnlyDemo: isFrontendOnlyDemo(),
+        queryClient,
+        saveUserSettings,
+        demoSetSettings,
+        refetchSettings,
+        settingsQueryKey: trpc.settings.get.queryKey(),
       });
-      await saveUserSettings(values);
-      await refetchSettings();
-
       toast.success(m['common.settings.saved']());
     } catch (error) {
       console.error(error);

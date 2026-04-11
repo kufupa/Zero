@@ -38,6 +38,9 @@ import { GripVertical } from 'lucide-react';
 import { m } from '@/paraglide/messages';
 import { CSS } from '@dnd-kit/utilities';
 import { toast } from 'sonner';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { demoSetSettings } from '@/lib/demo/local-actions';
+import type { DemoSettings } from '@/lib/demo/local-store';
 
 interface SortableCategoryItemProps {
   cat: CategorySetting;
@@ -278,6 +281,24 @@ export default function CategoriesSettingsPage() {
         toast.error('Exactly one category must be set as default');
         return;
       }
+      if (isFrontendOnlyDemo()) {
+        const normalizedCategories = categories as unknown as DemoSettings['categories'];
+        queryClient.setQueryData(['demo', 'settings'], (updater: { settings?: { categories?: DemoSettings['categories'] } } | undefined) => {
+          const previous = updater?.settings?.categories ?? data?.settings?.categories;
+          const nextCategories = normalizedCategories.length > 0 ? normalizedCategories : previous;
+          return {
+            ...updater,
+            settings: {
+              ...(updater?.settings ?? data?.settings ?? {}),
+              categories: nextCategories,
+            },
+          };
+        });
+        await demoSetSettings({ categories: normalizedCategories });
+        setHasUnsavedChanges(false);
+        toast.success('Categories saved');
+        return;
+      }
       await saveUserSettings({ categories });
       queryClient.invalidateQueries({ queryKey: trpc.settings.get.queryKey() });
       setHasUnsavedChanges(false);
@@ -327,6 +348,21 @@ export default function CategoriesSettingsPage() {
 
   const handleResetToDefaults = async () => {
     try {
+      if (isFrontendOnlyDemo()) {
+        queryClient.setQueryData(['demo', 'settings'], (updater: { settings?: { categories?: DemoSettings['categories'] } } | undefined) => {
+          return {
+            ...updater,
+            settings: {
+              ...(updater?.settings ?? {}),
+              categories: defaultMailCategories as unknown as DemoSettings['categories'],
+            },
+          };
+        });
+        await demoSetSettings({ categories: defaultMailCategories as unknown as DemoSettings['categories'] });
+        setHasUnsavedChanges(false);
+        toast.success('Reset to defaults');
+        return;
+      }
       await saveUserSettings({ categories: defaultMailCategories });
       queryClient.invalidateQueries({ queryKey: trpc.settings.get.queryKey() });
       setHasUnsavedChanges(false);

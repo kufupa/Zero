@@ -10,6 +10,37 @@ import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { resolveMailHtml } from '@/lib/mail/resolve-mail-html';
+import { demoSetSettings } from '@/lib/demo/local-actions';
+
+export async function persistTrustedSender(params: {
+  senderEmail: string;
+  data?: { settings?: typeof defaultUserSettings };
+  isFrontendOnlyDemo: boolean;
+  saveUserSettings: (settings: typeof defaultUserSettings) => Promise<{ success?: boolean }>;
+  demoSetSettings: (settings: typeof defaultUserSettings) => Promise<unknown>;
+}) {
+  const existingSettings = params.data?.settings ?? {
+    ...defaultUserSettings,
+    timezone: getBrowserTimezone(),
+  };
+
+  const nextSettings = {
+    ...existingSettings,
+    trustedSenders: Array.from(new Set([...(existingSettings.trustedSenders ?? []), params.senderEmail])),
+  };
+
+  if (params.isFrontendOnlyDemo) {
+    await params.demoSetSettings(nextSettings);
+    return 'demo';
+  }
+
+  const { success } = await params.saveUserSettings(nextSettings);
+  if (!success) {
+    throw new Error('Failed to trust sender');
+  }
+
+  return 'backend';
+}
 
 interface MailContentProps {
   id: string;
@@ -41,21 +72,16 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
 
   const { mutateAsync: trustSender } = useMutation({
     mutationFn: async () => {
-      const existingSettings = data?.settings ?? {
-        ...defaultUserSettings,
-        timezone: getBrowserTimezone(),
-      };
-
-      const { success } = await saveUserSettings({
-        ...existingSettings,
-        trustedSenders: data?.settings?.trustedSenders
-          ? data.settings.trustedSenders.concat(senderEmail)
-          : [senderEmail],
+      await persistTrustedSender({
+        senderEmail,
+        data: data ?? undefined,
+        isFrontendOnlyDemo: frontendOnlyDemo,
+        saveUserSettings: (nextSettings: typeof defaultUserSettings) =>
+          saveUserSettings({
+            ...nextSettings,
+          }),
+        demoSetSettings,
       });
-
-      if (!success) {
-        throw new Error('Failed to trust sender');
-      }
     },
     onSuccess: () => {
       refetch();

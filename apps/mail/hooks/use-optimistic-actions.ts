@@ -14,6 +14,18 @@ import posthog from 'posthog-js';
 import { useAtom } from 'jotai';
 import { toast } from 'sonner';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import {
+  demoBulkDeleteThreads,
+  demoMarkAsRead,
+  demoMarkAsUnread,
+  demoModifyLabels,
+  demoMoveThreadsTo,
+  demoSnoozeThreads,
+  demoToggleImportant,
+  demoToggleStar,
+  demoUnsnoozeThreads,
+  demoDeleteDraft as demoDeleteDraftAction,
+} from '@/lib/demo/local-actions';
 
 enum ActionType {
   MOVE = 'MOVE',
@@ -132,9 +144,7 @@ export function useOptimisticActions() {
 
     async function doAction() {
       try {
-        if (!frontendOnlyDemo) {
-          await execute();
-        }
+        await execute();
         const typeActions = optimisticActionsManager.pendingActionsByType.get(type);
         console.log('here', {
           pendingActionsByTypeRef: optimisticActionsManager.pendingActionsByType.get(type)?.size,
@@ -203,7 +213,11 @@ export function useOptimisticActions() {
         params: { read: true },
         optimisticId,
         execute: async () => {
-          await markAsRead({ ids: threadIds });
+          if (frontendOnlyDemo) {
+            await demoMarkAsRead(threadIds);
+          } else {
+            await markAsRead({ ids: threadIds });
+          }
 
           if (mail.bulkSelected.length > 0) {
             setMail((prev) => ({ ...prev, bulkSelected: [] }));
@@ -233,7 +247,11 @@ export function useOptimisticActions() {
       params: { read: false },
       optimisticId,
       execute: async () => {
-        await markAsUnread({ ids: threadIds });
+          if (frontendOnlyDemo) {
+            await demoMarkAsUnread(threadIds);
+          } else {
+            await markAsUnread({ ids: threadIds });
+          }
 
         if (mail.bulkSelected.length > 0) {
           setMail({ ...mail, bulkSelected: [] });
@@ -262,7 +280,11 @@ export function useOptimisticActions() {
         params: { starred },
         optimisticId,
         execute: async () => {
-          await toggleStar({ ids: threadIds });
+          if (frontendOnlyDemo) {
+            await demoToggleStar(threadIds);
+          } else {
+            await toggleStar({ ids: threadIds });
+          }
         },
         undo: () => {
           removeOptimisticAction(optimisticId);
@@ -313,11 +335,15 @@ export function useOptimisticActions() {
       params: { currentFolder, destination },
       optimisticId,
       execute: async () => {
-        await moveThreadsTo({
-          threadIds,
-          currentFolder,
-          destination,
-        });
+          if (frontendOnlyDemo) {
+            await demoMoveThreadsTo({ threadIds, currentFolder, destination });
+          } else {
+            await moveThreadsTo({
+              threadIds,
+              currentFolder,
+              destination,
+            });
+          }
 
         if (mail.bulkSelected.length > 0) {
           setMail({ ...mail, bulkSelected: [] });
@@ -363,7 +389,11 @@ export function useOptimisticActions() {
       params: { currentFolder, destination: 'bin' },
       optimisticId,
       execute: async () => {
-        await bulkDeleteThread({ ids: threadIds });
+          if (frontendOnlyDemo) {
+            await demoBulkDeleteThreads({ ids: threadIds });
+          } else {
+            await bulkDeleteThread({ ids: threadIds });
+          }
 
         if (mail.bulkSelected.length > 0) {
           setMail({ ...mail, bulkSelected: [] });
@@ -400,7 +430,11 @@ export function useOptimisticActions() {
         params: { important: isImportant },
         optimisticId,
         execute: async () => {
-          await toggleImportant({ ids: threadIds });
+          if (frontendOnlyDemo) {
+            await demoToggleImportant(threadIds);
+          } else {
+            await toggleImportant({ ids: threadIds });
+          }
 
           if (mail.bulkSelected.length > 0) {
             setMail((prev) => ({ ...prev, bulkSelected: [] }));
@@ -431,11 +465,19 @@ export function useOptimisticActions() {
       params: { labelId, add },
       optimisticId,
       execute: async () => {
-        await modifyLabels({
-          threadId: threadIds,
-          addLabels: add ? [labelId] : [],
-          removeLabels: add ? [] : [labelId],
-        });
+          if (frontendOnlyDemo) {
+            await demoModifyLabels({
+              threadId: threadIds,
+              addLabels: add ? [labelId] : [],
+              removeLabels: add ? [] : [labelId],
+            });
+          } else {
+            await modifyLabels({
+              threadId: threadIds,
+              addLabels: add ? [labelId] : [],
+              removeLabels: add ? [] : [labelId],
+            });
+          }
 
         if (mail.bulkSelected.length > 0) {
           setMail({ ...mail, bulkSelected: [] });
@@ -465,7 +507,11 @@ export function useOptimisticActions() {
       params: { currentFolder, wakeAt: wakeAt.toISOString() },
       optimisticId,
       execute: async () => {
-        await snoozeThreads({ ids: threadIds, wakeAt: wakeAt.toISOString() });
+          if (frontendOnlyDemo) {
+            await demoSnoozeThreads({ ids: threadIds, wakeAt: wakeAt.toISOString() });
+          } else {
+            await snoozeThreads({ ids: threadIds, wakeAt: wakeAt.toISOString() });
+          }
 
         if (mail.bulkSelected.length > 0) {
           setMail({ ...mail, bulkSelected: [] });
@@ -493,7 +539,11 @@ export function useOptimisticActions() {
       params: { currentFolder } as any,
       optimisticId,
       execute: async () => {
-        await unsnoozeThreads({ ids: threadIds });
+          if (frontendOnlyDemo) {
+            await demoUnsnoozeThreads({ ids: threadIds });
+          } else {
+            await unsnoozeThreads({ ids: threadIds });
+          }
       },
       undo: () => {
         removeOptimisticAction(optimisticId);
@@ -517,7 +567,11 @@ export function useOptimisticActions() {
       params: {} as any,
       optimisticId,
       execute: async () => {
-        await deleteDraft({ id: draftId });
+          if (frontendOnlyDemo) {
+            await demoDeleteDraftAction(draftId);
+          } else {
+            await deleteDraft({ id: draftId });
+          }
         await queryClient.invalidateQueries({ queryKey: trpc.drafts.list.queryKey() });
       },
       undo: () => {

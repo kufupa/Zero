@@ -12,7 +12,7 @@ import { userSettingsSchema } from '@zero/server/schemas';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useTRPC } from '@/providers/query-provider';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 // import { saveUserSettings } from '@/actions/settings';
 import { useSettings } from '@/hooks/use-settings';
 import { Switch } from '@/components/ui/switch';
@@ -23,11 +23,14 @@ import { m } from '@/paraglide/messages';
 import { XIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import * as z from 'zod';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { demoSetSettings } from '@/lib/demo/local-actions';
 
 export default function PrivacyPage() {
   const [isSaving, setIsSaving] = useState(false);
   const { data, refetch } = useSettings();
   const trpc = useTRPC();
+  const queryClient = useQueryClient();
   const { mutateAsync: saveUserSettings } = useMutation(trpc.settings.save.mutationOptions());
 
   const form = useForm<z.infer<typeof userSettingsSchema>>({
@@ -48,20 +51,36 @@ export default function PrivacyPage() {
   async function onSubmit(values: z.infer<typeof userSettingsSchema>) {
     if (data) {
       setIsSaving(true);
-      toast.promise(
-        saveUserSettings({
-          ...data.settings,
-          ...values,
-        }),
-        {
-          success: m['common.settings.saved'](),
-          error: m['common.settings.failedToSave'](),
-          finally: async () => {
-            await refetch();
-            setIsSaving(false);
+      const nextSettings = { ...data.settings, ...values };
+
+      try {
+        if (isFrontendOnlyDemo()) {
+          await demoSetSettings(nextSettings);
+          queryClient.setQueryData(['demo', 'settings'], (updater: { settings?: typeof nextSettings } | undefined) => {
+            const currentSettings = updater?.settings ?? data.settings;
+            return { ...updater, settings: { ...currentSettings, ...nextSettings } };
+          });
+          toast.success(m['common.settings.saved']());
+          await refetch();
+          return;
+        }
+
+        await toast.promise(
+          saveUserSettings(nextSettings),
+          {
+            success: m['common.settings.saved'](),
+            error: m['common.settings.failedToSave'](),
+            finally: async () => {
+              await refetch();
+            },
           },
-        },
-      );
+        );
+      } catch (error) {
+        console.error(error);
+        toast.error(m['common.settings.failedToSave']());
+      } finally {
+        setIsSaving(false);
+      }
     }
   }
 

@@ -40,6 +40,19 @@ import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 
 const bytesToMB = (bytes: number) => (bytes / 1024 / 1024).toFixed(2);
 
+export async function runForceSyncAction(params: {
+  isFrontendOnlyDemo: boolean;
+  runForceSync: () => Promise<unknown>;
+  onBlocked: () => void;
+}) {
+  if (params.isFrontendOnlyDemo) {
+    params.onBlocked();
+    return;
+  }
+
+  await params.runForceSync();
+}
+
 interface SyncingStatusIndicatorProps {
   isSyncing: boolean;
   storageSize: number;
@@ -128,7 +141,10 @@ export function NavUser() {
   useEffect(() => setIsRendered(true), []);
 
   const handleAccountSwitch = (connectionId: string) => async () => {
-    if (frontendOnlyDemo) return;
+    if (frontendOnlyDemo) {
+      toast.info('This action is not available in demo mode');
+      return;
+    }
     if (connectionId === activeConnection?.id) return;
 
     try {
@@ -147,16 +163,31 @@ export function NavUser() {
     }
   };
 
-  const handleLogout = async () => {
-    toast.promise(signOut(), {
-      loading: 'Signing out...',
-      success: () => 'Signed out successfully!',
-      error: 'Error signing out',
-      async finally() {
-        // await handleClearCache();
-        window.location.href = '/login';
+  const handleForceSyncAction = async () => {
+    await runForceSyncAction({
+      isFrontendOnlyDemo: frontendOnlyDemo,
+      runForceSync: handleForceSync,
+      onBlocked: () => {
+        toast.info('This action is not available in demo mode');
       },
     });
+  };
+
+  const handleLogout = async () => {
+    try {
+      await toast.promise(
+        signOut(),
+        {
+          loading: 'Signing out...',
+          success: () => 'Signed out successfully!',
+          error: 'Error signing out',
+        },
+      );
+      window.location.href = '/login';
+    } catch (error) {
+      console.error('Failed to sign out:', error);
+      toast.error('Error signing out');
+    }
   };
 
   const otherConnections = useMemo(() => {
@@ -308,7 +339,7 @@ export function NavUser() {
                       <p className="text-[13px] opacity-60">Clear Local Cache</p>
                     </div>
                   </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => handleForceSync()}>
+                  <DropdownMenuItem onClick={() => handleForceSyncAction()}>
                     <div className="flex items-center gap-2">
                       <RefreshCcw size={16} className="opacity-60" />
                       <p className="text-[13px] opacity-60">Force re-sync</p>
@@ -542,7 +573,7 @@ export function NavUser() {
                       <p className="text-[13px] opacity-60">Clear Local Cache</p>
                     </div>
                   </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => handleForceSync()}>
+                  <DropdownMenuItem onClick={() => handleForceSyncAction()}>
                     <div className="flex items-center gap-2">
                       <RefreshCcw size={16} className="opacity-60" />
                       <p className="text-[13px] opacity-60">Force re-sync</p>

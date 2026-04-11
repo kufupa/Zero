@@ -57,6 +57,8 @@ import { useQueryState } from 'nuqs';
 import { Badge } from '../ui/badge';
 import { format } from 'date-fns';
 import { toast } from 'sonner';
+import { demoWebSearch } from '@/lib/demo/local-actions';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { openReplyComposeContext, type ReplyComposeMode } from '@/lib/mail/reply-compose-context';
 
 // Add formatFileSize utility function
@@ -342,6 +344,30 @@ const AiSummary = () => {
   );
 };
 
+type MailDisplayWebSearchResult = {
+  text: string;
+  sources: { id: string; title: string; url: string }[];
+};
+
+export const resolveMailDisplayWebSearch = async ({
+  query,
+  isFrontendOnlyDemoMode,
+  webSearch,
+}: {
+  query: string;
+  isFrontendOnlyDemoMode: boolean;
+  webSearch: (input: { query: string }) => Promise<MailDisplayWebSearchResult>;
+}): Promise<MailDisplayWebSearchResult> => {
+  if (isFrontendOnlyDemoMode) {
+    return demoWebSearch({
+      query,
+      isFrontendOnlyDemoMode,
+    });
+  }
+
+  return webSearch({ query });
+};
+
 type ActionButtonProps = {
   onClick: (e: React.MouseEvent) => void;
   icon: React.ReactNode;
@@ -518,12 +544,22 @@ const MoreAboutPerson = ({
   onOpenChange: (open: boolean) => void;
 }) => {
   const trpc = useTRPC();
+  const isFrontendOnlyDemoMode = isFrontendOnlyDemo();
+  const webSearchMutationOptions = trpc.ai.webSearch.mutationOptions();
   const {
     mutate: doSearch,
     isPending,
     data,
     error,
-  } = useMutation(trpc.ai.webSearch.mutationOptions());
+  } = useMutation({
+    ...webSearchMutationOptions,
+    mutationFn: ({ query }: { query: string }) =>
+      resolveMailDisplayWebSearch({
+        query,
+        isFrontendOnlyDemoMode,
+        webSearch: webSearchMutationOptions.mutationFn,
+      }),
+  });
   const handleSearch = useCallback(() => {
     doSearch({
       query: `In 50 words or less: What is the background of ${person.name} & ${person.email}, of ${person.email.split('@')[1]}.
@@ -592,12 +628,22 @@ const MoreAboutQuery = ({
   onOpenChange: (open: boolean) => void;
 }) => {
   const trpc = useTRPC();
+  const isFrontendOnlyDemoMode = isFrontendOnlyDemo();
+  const webSearchMutationOptions = trpc.ai.webSearch.mutationOptions();
   const {
     mutate: doSearch,
     isPending,
     data,
     error,
-  } = useMutation(trpc.ai.webSearch.mutationOptions());
+  } = useMutation({
+    ...webSearchMutationOptions,
+    mutationFn: ({ query }: { query: string }) =>
+      resolveMailDisplayWebSearch({
+        query,
+        isFrontendOnlyDemoMode,
+        webSearch: webSearchMutationOptions.mutationFn,
+      }),
+  });
 
   const handleSearch = useCallback(() => {
     doSearch({

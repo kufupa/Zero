@@ -1,10 +1,24 @@
 import { useTRPC } from '@/providers/query-provider';
 import { useQuery } from '@tanstack/react-query';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { demoGenerateSummary } from '@/lib/demo/local-actions';
 
 export const useSummary = (threadId: string | null) => {
   const trpc = useTRPC();
   const frontendOnlyDemo = isFrontendOnlyDemo();
+
+  if (frontendOnlyDemo) {
+    return useQuery({
+      queryKey: ['demo', 'brain', 'generateSummary', threadId],
+      queryFn: () =>
+        demoGenerateSummary({
+          threadId: threadId || 'unknown',
+          isFrontendOnlyDemoMode: frontendOnlyDemo,
+        }),
+      enabled: !!threadId,
+    });
+  }
+
   const summaryQuery = useQuery(
     trpc.brain.generateSummary.queryOptions(
       { threadId: threadId! },

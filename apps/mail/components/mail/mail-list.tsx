@@ -49,6 +49,34 @@ import { useQueryState } from 'nuqs';
 import { useAtom } from 'jotai';
 import { resolveImportantState } from '@/lib/mail/important-ui';
 
+type LabelForMemo = Readonly<{
+  id: string;
+  name: string;
+}>;
+
+export const areMailLabelsEqual = (
+  prevLabels?: readonly LabelForMemo[] | null,
+  nextLabels?: readonly LabelForMemo[] | null,
+) => {
+  if (prevLabels === nextLabels) return true;
+  if (!prevLabels || !nextLabels) {
+    return (prevLabels?.length ?? 0) === (nextLabels?.length ?? 0);
+  }
+
+  if (prevLabels.length !== nextLabels.length) return false;
+
+  for (let i = 0; i < prevLabels.length; i++) {
+    const prevLabel = prevLabels[i];
+    const nextLabel = nextLabels[i];
+
+    if (prevLabel.id !== nextLabel.id || prevLabel.name !== nextLabel.name) {
+      return false;
+    }
+  }
+
+  return true;
+};
+
 const Thread = memo(
   function Thread({
     message,
@@ -713,8 +741,7 @@ const Draft = memo(({ message, index }: { message: { id: string }; index: number
 
 Draft.displayName = 'Draft';
 
-export const MailList = memo(
-  function MailList() {
+export const MailList = memo(function MailList() {
     const { folder } = useParams<{ folder: string }>();
     const { data: settingsData } = useSettings();
     const [, setThreadId] = useQueryState('threadId');
@@ -1030,9 +1057,7 @@ export const MailList = memo(
         </div>
       </>
     );
-  },
-  () => true,
-);
+});
 
 export const MailLabels = memo(
   function MailListLabels({ labels }: { labels: { id: string; name: string }[] }) {
@@ -1077,7 +1102,7 @@ export const MailLabels = memo(
     );
   },
   (prev, next) => {
-    return JSON.stringify(prev.labels) === JSON.stringify(next.labels);
+    return areMailLabelsEqual(prev.labels, next.labels);
   },
 );
 

@@ -24,6 +24,8 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { TRPCClientError } from '@trpc/client';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { demoDeleteTemplate, demoUpsertTemplate } from '@/lib/demo/local-actions';
 
 type EmailTemplate = {
   id: string;
@@ -99,14 +101,17 @@ const TemplateButtonComponent: React.FC<TemplateButtonProps> = ({
     setIsSaving(true);
     try {
       const normalizedSubject = subject.trim() ? subject : null;
-      await createTemplate({
+      const request = {
         name: templateName.trim(),
         body: editor.getHTML(),
         to: to.length ? to : undefined,
         cc: cc.length ? cc : undefined,
         bcc: bcc.length ? bcc : undefined,
         ...(normalizedSubject !== null ? { subject: normalizedSubject } : {}),
-      });
+      };
+      await (isFrontendOnlyDemo()
+        ? demoUpsertTemplate(request)
+        : createTemplate(request));
       await queryClient.invalidateQueries({
         queryKey: trpc.templates.list.queryKey(),
       });
@@ -141,7 +146,9 @@ const TemplateButtonComponent: React.FC<TemplateButtonProps> = ({
   const handleDeleteTemplate = useCallback(
     async (templateId: string) => {
       try {
-        await deleteTemplateMutation({ id: templateId });
+        await (isFrontendOnlyDemo()
+          ? demoDeleteTemplate(templateId)
+          : deleteTemplateMutation({ id: templateId }));
         await queryClient.invalidateQueries({
           queryKey: trpc.templates.list.queryKey(),
         });

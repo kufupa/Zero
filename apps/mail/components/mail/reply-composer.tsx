@@ -18,6 +18,8 @@ import { useQueryState } from 'nuqs';
 import { useEffect, useMemo, useRef } from 'react';
 import posthog from 'posthog-js';
 import { toast } from 'sonner';
+import { demoSendEmail } from '@/lib/demo/local-actions';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 
 interface ReplyComposeProps {
   messageId?: string;
@@ -53,7 +55,14 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
     attachments: File[];
     scheduleAt?: string;
   }) => {
-    if (!replyToMessage || !activeConnection?.email) return;
+    if (!replyToMessage) {
+      toast.error('No message available to reply to.');
+      return;
+    }
+    if (!activeConnection?.email) {
+      toast.error('No active account is available.');
+      return;
+    }
 
     try {
       const userEmail = activeConnection.email.toLowerCase();
@@ -126,30 +135,55 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
               //   replyToMessage.decodedBody,
             );
 
-      const result = await sendEmail({
-        to: toRecipients,
-        cc: ccRecipients,
-        bcc: bccRecipients,
-        subject: data.subject,
-        message: emailBody,
-        attachments: await serializeFiles(data.attachments),
-        fromEmail: fromEmail,
-        draftId: draftId ?? undefined,
-        headers: {
-          'In-Reply-To': replyToMessage?.messageId ?? '',
-          References: [
-            ...(replyToMessage?.references ? replyToMessage.references.split(' ') : []),
-            replyToMessage?.messageId,
-          ]
-            .filter(Boolean)
-            .join(' '),
-          'Thread-Id': replyToMessage?.threadId ?? '',
-        },
-        threadId: replyToMessage?.threadId,
-        isForward: mode === 'forward',
-        originalMessage: replyToMessage.decodedBody,
-        scheduleAt: data.scheduleAt,
-      });
+      const result = isFrontendOnlyDemo()
+        ? await demoSendEmail({
+            to: toRecipients,
+            cc: ccRecipients,
+            bcc: bccRecipients,
+            subject: data.subject,
+            message: emailBody,
+            attachments: await serializeFiles(data.attachments),
+            fromEmail: fromEmail,
+            draftId: draftId ?? undefined,
+            headers: {
+              'In-Reply-To': replyToMessage?.messageId ?? '',
+              References: [
+                ...(replyToMessage?.references ? replyToMessage.references.split(' ') : []),
+                replyToMessage?.messageId,
+              ]
+                .filter(Boolean)
+                .join(' '),
+              'Thread-Id': replyToMessage?.threadId ?? '',
+            },
+            threadId: replyToMessage?.threadId,
+            isForward: mode === 'forward',
+            originalMessage: replyToMessage.decodedBody,
+            scheduleAt: data.scheduleAt,
+          })
+        : await sendEmail({
+            to: toRecipients,
+            cc: ccRecipients,
+            bcc: bccRecipients,
+            subject: data.subject,
+            message: emailBody,
+            attachments: await serializeFiles(data.attachments),
+            fromEmail: fromEmail,
+            draftId: draftId ?? undefined,
+            headers: {
+              'In-Reply-To': replyToMessage?.messageId ?? '',
+              References: [
+                ...(replyToMessage?.references ? replyToMessage.references.split(' ') : []),
+                replyToMessage?.messageId,
+              ]
+                .filter(Boolean)
+                .join(' '),
+              'Thread-Id': replyToMessage?.threadId ?? '',
+            },
+            threadId: replyToMessage?.threadId,
+            isForward: mode === 'forward',
+            originalMessage: replyToMessage.decodedBody,
+            scheduleAt: data.scheduleAt,
+          });
 
       posthog.capture('Reply Email Sent');
 

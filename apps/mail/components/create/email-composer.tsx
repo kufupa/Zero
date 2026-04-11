@@ -30,6 +30,12 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { useTRPC } from '@/providers/query-provider';
 import { useMutation } from '@tanstack/react-query';
 import { useSettings } from '@/hooks/use-settings';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import {
+  demoAiCompose,
+  demoGenerateEmailSubject,
+  demoUpsertDraft,
+} from '@/lib/demo/local-actions';
 
 import { cn, formatFileSize } from '@/lib/utils';
 import { useThread } from '@/hooks/use-threads';
@@ -422,13 +428,21 @@ export function EmailComposer({
       setAiIsLoading(true);
       const values = getValues();
 
-      const result = await aiCompose({
-        prompt: editor.getText(),
-        emailSubject: values.subject,
-        to: values.to,
-        cc: values.cc,
-        threadMessages: threadContent,
-      });
+      const result = isFrontendOnlyDemo()
+        ? await demoAiCompose({
+            prompt: editor.getText(),
+            emailSubject: values.subject,
+            to: values.to,
+            cc: values.cc,
+            threadMessages: threadContent,
+          })
+        : await aiCompose({
+            prompt: editor.getText(),
+            emailSubject: values.subject,
+            to: values.to,
+            cc: values.cc,
+            threadMessages: threadContent,
+          });
 
       setAiGeneratedMessage(result.newBody);
       // toast.success('Email generated successfully');
@@ -462,23 +476,23 @@ export function EmailComposer({
         message: editor.getHTML(),
         attachments: await serializeFiles(values.attachments ?? []),
         id: draftId,
-        threadId: threadId ? threadId : null,
-        fromEmail: values.fromEmail ? values.fromEmail : null,
+        threadId: threadId ? threadId : undefined,
+        fromEmail: values.fromEmail ? values.fromEmail : undefined,
       };
 
-      const response = await createDraft(draftData);
+      const response = isFrontendOnlyDemo()
+        ? await demoUpsertDraft(draftData)
+        : await createDraft(draftData);
 
       if (response?.id && response.id !== draftId) {
         setDraftId(response.id);
       }
+      setHasUnsavedChanges(false);
     } catch (error) {
       console.error('Error saving draft:', error);
       toast.error('Failed to save draft');
-      setIsSavingDraft(false);
-      setHasUnsavedChanges(false);
     } finally {
       setIsSavingDraft(false);
-      setHasUnsavedChanges(false);
     }
   };
 
@@ -492,7 +506,9 @@ export function EmailComposer({
         return;
       }
 
-      const { subject } = await generateEmailSubject({ message: messageText });
+      const { subject } = isFrontendOnlyDemo()
+        ? await demoGenerateEmailSubject({ message: messageText })
+        : await generateEmailSubject({ message: messageText });
       setValue('subject', subject);
       setHasUnsavedChanges(true);
     } catch (error) {

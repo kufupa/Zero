@@ -24,6 +24,61 @@ import { Badge } from '@/components/ui/badge';
 import { m } from '@/paraglide/messages';
 import { useState } from 'react';
 import { toast } from 'sonner';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+
+export async function runDisconnectConnection(params: {
+  connectionId: string;
+  isFrontendOnlyDemo: boolean;
+  deleteConnection: (
+    input: { connectionId: string },
+    options?: {
+      onError?: (error: unknown) => void;
+    },
+  ) => Promise<unknown>;
+  onBlocked: () => void;
+  onSuccess: () => void;
+  onError: (error: unknown) => void;
+  refetchConnections: () => void;
+  refetchSession: () => Promise<unknown> | unknown;
+  refetchThreads: () => Promise<unknown> | unknown;
+}) {
+  if (params.isFrontendOnlyDemo) {
+    params.onBlocked();
+    return 'blocked';
+  }
+
+  await params.deleteConnection(
+    { connectionId: params.connectionId },
+    {
+      onError: params.onError,
+    },
+  );
+
+  params.onSuccess();
+  void params.refetchConnections();
+  void params.refetchSession();
+  void params.refetchThreads();
+  return 'backend';
+}
+
+export async function runReconnectConnection(params: {
+  isFrontendOnlyDemo: boolean;
+  provider: string;
+  callbackURL: string;
+  linkSocial: (payload: { provider: string; callbackURL: string }) => Promise<unknown>;
+  onBlocked: () => void;
+}) {
+  if (params.isFrontendOnlyDemo) {
+    params.onBlocked();
+    return 'blocked';
+  }
+
+  await params.linkSocial({
+    provider: params.provider,
+    callbackURL: params.callbackURL,
+  });
+  return 'backend';
+}
 
 export default function ConnectionsPage() {
   const { data, isLoading, refetch: refetchConnections } = useConnections();
@@ -34,19 +89,20 @@ export default function ConnectionsPage() {
   const { mutateAsync: deleteConnection } = useMutation(trpc.connections.delete.mutationOptions());
   const [{ refetch: refetchThreads }] = useThreads();
   const disconnectAccount = async (connectionId: string) => {
-    await deleteConnection(
-      { connectionId },
-      {
-        onError: (error) => {
-          console.error('Error disconnecting account:', error);
-          toast.error(m['pages.settings.connections.disconnectError']());
-        },
+    await runDisconnectConnection({
+      connectionId,
+      isFrontendOnlyDemo: isFrontendOnlyDemo(),
+      deleteConnection,
+      onBlocked: () => toast.info('This action is not available in demo mode'),
+      onSuccess: () => toast.success(m['pages.settings.connections.disconnectSuccess']()),
+      onError: (error) => {
+        console.error('Error disconnecting account:', error);
+        toast.error(m['pages.settings.connections.disconnectError']());
       },
-    );
-    toast.success(m['pages.settings.connections.disconnectSuccess']());
-    void refetchConnections();
-    refetch();
-    void refetchThreads();
+      refetchConnections,
+      refetchSession: refetch,
+      refetchThreads,
+    });
   };
 
   return (
@@ -144,9 +200,12 @@ export default function ConnectionsPage() {
                             variant="secondary"
                             size="sm"
                             onClick={async () => {
-                              await authClient.linkSocial({
+                              await runReconnectConnection({
+                                isFrontendOnlyDemo: isFrontendOnlyDemo(),
                                 provider: connection.providerId,
                                 callbackURL: `${window.location.origin}/settings/connections`,
+                                linkSocial: authClient.linkSocial,
+                                onBlocked: () => toast.info('This action is not available in demo mode'),
                               });
                             }}
                           >

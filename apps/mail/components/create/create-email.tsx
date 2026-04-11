@@ -3,6 +3,8 @@ import { useActiveConnection } from '@/hooks/use-connections';
 import { Dialog, DialogClose } from '@/components/ui/dialog';
 import { useEmailAliases } from '@/hooks/use-email-aliases';
 import { cleanEmailAddresses } from '@/lib/email-utils';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { demoSendEmail } from '@/lib/demo/local-actions';
 
 import { useTRPC } from '@/providers/query-provider';
 import { useMutation } from '@tanstack/react-query';
@@ -95,17 +97,29 @@ export function CreateEmail({
       ? '<p style="color: #666; font-size: 12px;">Sent via <a href="https://0.email/" style="color: #0066cc; text-decoration: none;">Zero</a></p>'
       : '';
 
-    const result = await sendEmail({
-      to: data.to.map((email) => ({ email, name: email.split('@')[0] || email })),
-      cc: data.cc?.map((email) => ({ email, name: email.split('@')[0] || email })),
-      bcc: data.bcc?.map((email) => ({ email, name: email.split('@')[0] || email })),
-      subject: data.subject,
-      message: data.message + zeroSignature,
-      attachments: await serializeFiles(data.attachments),
-      fromEmail: userName.trim() ? `${userName.replace(/[<>]/g, '')} <${fromEmail}>` : fromEmail,
-      draftId: draftId ?? undefined,
-      scheduleAt: data.scheduleAt,
-    });
+    const result = isFrontendOnlyDemo()
+      ? await demoSendEmail({
+          to: data.to.map((email) => ({ email, name: email.split('@')[0] || email })),
+          cc: data.cc?.map((email) => ({ email, name: email.split('@')[0] || email })),
+          bcc: data.bcc?.map((email) => ({ email, name: email.split('@')[0] || email })),
+          subject: data.subject,
+          message: data.message + zeroSignature,
+          attachments: await serializeFiles(data.attachments),
+          fromEmail: userName.trim() ? `${userName.replace(/[<>]/g, '')} <${fromEmail}>` : fromEmail,
+          draftId: draftId ?? undefined,
+          scheduleAt: data.scheduleAt,
+        })
+      : await sendEmail({
+          to: data.to.map((email) => ({ email, name: email.split('@')[0] || email })),
+          cc: data.cc?.map((email) => ({ email, name: email.split('@')[0] || email })),
+          bcc: data.bcc?.map((email) => ({ email, name: email.split('@')[0] || email })),
+          subject: data.subject,
+          message: data.message + zeroSignature,
+          attachments: await serializeFiles(data.attachments),
+          fromEmail: userName.trim() ? `${userName.replace(/[<>]/g, '')} <${fromEmail}>` : fromEmail,
+          draftId: draftId ?? undefined,
+          scheduleAt: data.scheduleAt,
+        });
 
     setDraftId(null);
     clearUndoData();

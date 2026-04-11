@@ -22,8 +22,45 @@ import { clear } from 'idb-keyval';
 import { useState } from 'react';
 import { toast } from 'sonner';
 import * as z from 'zod';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 
 const CONFIRMATION_TEXT = 'DELETE';
+
+export async function runDeleteAccount(params: {
+  confirmText: string;
+  isFrontendOnlyDemo: boolean;
+  onBlocked: () => void;
+  onConfirmError: () => void;
+  deleteAccount: (
+    input: void,
+    options?: {
+      onSuccess?: (response: { success?: boolean; message?: string }) => Promise<void> | void;
+      onError?: (error: unknown) => void;
+      onSettled?: () => void;
+    },
+  ) => Promise<unknown>;
+  onDeleteSuccess: (response: { success?: boolean; message?: string }) => void;
+  onDeleteError: (error: unknown) => void;
+  onSettled: () => void;
+}) {
+  if (params.confirmText !== CONFIRMATION_TEXT) {
+    params.onConfirmError();
+    return 'invalid';
+  }
+
+  if (params.isFrontendOnlyDemo) {
+    params.onBlocked();
+    return 'blocked';
+  }
+
+  await params.deleteAccount(void 0, {
+    onSuccess: params.onDeleteSuccess,
+    onError: params.onDeleteError,
+    onSettled: params.onSettled,
+  });
+
+  return 'backend';
+}
 
 const formSchema = z.object({
   confirmText: z.string().refine((val) => val === CONFIRMATION_TEXT, {
@@ -46,11 +83,13 @@ function DeleteAccountDialog() {
   });
 
   async function onSubmit(values: z.infer<typeof formSchema>) {
-    if (values.confirmText !== CONFIRMATION_TEXT)
-      return toast.error(m['pages.settings.dangerZone.confirmation']());
-
-    await deleteAccount(void 0, {
-      onSuccess: async ({ success, message }) => {
+    await runDeleteAccount({
+      confirmText: values.confirmText,
+      isFrontendOnlyDemo: isFrontendOnlyDemo(),
+      onBlocked: () => toast.info('This action is not available in demo mode'),
+      onConfirmError: () => toast.error(m['pages.settings.dangerZone.confirmation']()),
+      deleteAccount,
+      onDeleteSuccess: async ({ success, message }) => {
         if (!success) return toast.error(message);
         try {
           await signOut();
@@ -63,7 +102,7 @@ function DeleteAccountDialog() {
         toast.success(m['pages.settings.dangerZone.deleted']());
         window.location.href = '/';
       },
-      onError: (error) => {
+      onDeleteError: (error) => {
         console.error('Failed to delete account:', error);
         toast.error(m['pages.settings.dangerZone.error']());
       },

@@ -2,7 +2,7 @@ import { useTRPC } from '@/providers/query-provider';
 import { useQuery } from '@tanstack/react-query';
 import { useMemo } from 'react';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
-import { listDemoLabels } from '@/lib/demo-data/client';
+import { listDemoLabels } from '@/lib/demo/local-store';
 
 const desiredSystemLabels = new Set([
   'IMPORTANT',
