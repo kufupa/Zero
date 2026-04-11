@@ -541,15 +541,9 @@ export function MailLayout() {
               minSize={30}
             >
               <div className="relative flex-1">
-              {threadId ? (
                 <Suspense fallback={<div className="flex h-full items-center justify-center" />}>
                   <ThreadDisplay />
                 </Suspense>
-              ) : (
-                <div className="text-muted-foreground flex h-full items-center justify-center text-sm">
-                  Select an email to view details
-                </div>
-              )}
               </div>
             </ResizablePanel>
           )}
