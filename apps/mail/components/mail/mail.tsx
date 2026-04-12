@@ -36,6 +36,18 @@ const ThreadDisplay = lazy(() =>
   })),
 );
 
+/** List panel % when desktop split; thread uses complement so both sum to 100. */
+const MAIL_LIST_SPLIT = {
+  default: 42,
+  min: 28,
+  max: 58,
+} as const;
+const MAIL_THREAD_SPLIT = {
+  default: 100 - MAIL_LIST_SPLIT.default,
+  min: 100 - MAIL_LIST_SPLIT.max,
+  max: 100 - MAIL_LIST_SPLIT.min,
+} as const;
+
 // const AutoLabelingSettings = () => {
 //   const trpc = useTRPC();
 //   const [open, setOpen] = useState(false);
@@ -411,13 +423,17 @@ export function MailLayout() {
     <TooltipProvider delayDuration={0}>
       <div className="rounded-inherit z-5 relative flex p-0 md:mr-0.5 md:mt-1">
         <ResizablePanelGroup
+          key={isDesktop ? 'mail-split-desktop' : 'mail-split-mobile'}
           direction="horizontal"
           className="rounded-inherit overflow-hidden"
+          autoSaveId={isDesktop ? 'mail-split-v2' : undefined}
         >
           <ResizablePanel
-            defaultSize={isDesktop ? 35 : 100}
-            minSize={isDesktop ? 35 : 100}
-            maxSize={isDesktop ? 35 : 100}
+            id="mail-list-panel"
+            order={0}
+            defaultSize={isDesktop ? MAIL_LIST_SPLIT.default : 100}
+            minSize={isDesktop ? MAIL_LIST_SPLIT.min : 100}
+            maxSize={isDesktop ? MAIL_LIST_SPLIT.max : 100}
             className={cn(
               `bg-panelLight dark:bg-panelDark mb-1 w-fit shadow-sm md:mr-[3px] md:rounded-2xl lg:flex lg:h-[calc(100dvh-8px)] lg:shadow-sm`,
               isDesktop && threadId && 'hidden lg:block',
@@ -532,13 +548,21 @@ export function MailLayout() {
             </div>
           </ResizablePanel>
 
-          {isDesktop && <ResizableHandle className="mr-0.5 hidden opacity-0 md:block" />}
+          {isDesktop && (
+            <ResizableHandle
+              withHandle
+              className="mr-0.5 hidden w-2 shrink-0 md:flex md:opacity-60 md:hover:opacity-100"
+            />
+          )}
 
           {isDesktop && (
             <ResizablePanel
+              id="mail-thread-panel"
+              order={1}
               className="bg-panelLight dark:bg-panelDark mb-1 mr-0.5 w-fit rounded-2xl shadow-sm lg:h-[calc(100dvh-8px)]"
-              defaultSize={65}
-              minSize={30}
+              defaultSize={MAIL_THREAD_SPLIT.default}
+              minSize={MAIL_THREAD_SPLIT.min}
+              maxSize={MAIL_THREAD_SPLIT.max}
             >
               <div className="relative flex-1">
                 <Suspense fallback={<div className="flex h-full items-center justify-center" />}>
