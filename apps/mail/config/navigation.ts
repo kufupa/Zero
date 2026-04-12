@@ -7,7 +7,6 @@ import {
   SettingsGear,
   Stars,
   Tabs,
-  Users,
   ArrowLeft,
   Danger,
   Sheet,
@@ -70,21 +69,18 @@ export const navigationConfig: Record<string, NavConfig> = {
             title: m['navigation.sidebar.inbox'](),
             url: '/mail/inbox',
             icon: Inbox,
-            shortcut: 'g + i',
           },
           {
             id: 'drafts',
             title: m['navigation.sidebar.drafts'](),
             url: '/mail/draft',
             icon: Folder,
-            shortcut: 'g + d',
           },
           {
             id: 'sent',
             title: m['navigation.sidebar.sent'](),
             url: '/mail/sent',
             icon: Plane2,
-            shortcut: 'g + t',
           },
         ],
       },
@@ -96,14 +92,12 @@ export const navigationConfig: Record<string, NavConfig> = {
             title: m['navigation.sidebar.archive'](),
             url: '/mail/archive',
             icon: Archive,
-            shortcut: 'g + a',
           },
           {
             id: 'snoozed',
             title: m['navigation.sidebar.snoozed'](),
             url: '/mail/snoozed',
             icon: Clock,
-            shortcut: 'g + z',
           },
           ...(!DEMO_FOLDER_MODEL_ENABLED
             ? [
@@ -179,12 +173,6 @@ export const navigationConfig: Record<string, NavConfig> = {
             title: m['navigation.settings.general'](),
             url: '/settings/general',
             icon: SettingsGear,
-            shortcut: 'g + s',
-          },
-          {
-            title: m['navigation.settings.connections'](),
-            url: '/settings/connections',
-            icon: Users,
           },
           {
             title: m['navigation.settings.privacy'](),
@@ -216,7 +204,6 @@ export const navigationConfig: Record<string, NavConfig> = {
             title: m['navigation.settings.shortcuts'](),
             url: '/settings/shortcuts',
             icon: Tabs,
-            shortcut: '?',
           },
           // {
           //   title: 'navigation.settings.signatures',

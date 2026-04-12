@@ -10,23 +10,19 @@ import {
 } from 'react-router';
 import { ServerProviders } from '@/providers/server-providers';
 import { ClientProviders } from '@/providers/client-providers';
-import { createTRPCClient, httpBatchLink } from '@trpc/client';
 import { lazy, Suspense, useEffect, type PropsWithChildren, useState } from 'react';
-import type { AppRouter } from '@zero/server/trpc';
 import { Button } from '@/components/ui/button';
 import { getLocale } from '@/paraglide/runtime';
 import { siteConfig } from '@/lib/site-config';
 import { signOut } from '@/lib/auth-client';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import type { Route } from './+types/root';
 import { AlertCircle } from 'lucide-react';
 import { m } from '@/paraglide/messages';
 import { ArrowLeft } from 'lucide-react';
 import * as Sentry from '@sentry/react';
-import superjson from 'superjson';
 import './globals.css';
 const DeferredDubAnalytics = lazy(() => import('@/components/analytics/deferred-dub-analytics'));
-
-const getUrl = () => import.meta.env.VITE_PUBLIC_BACKEND_URL + '/api/trpc';
 
 function AnalyticsProvider() {
   const [shouldRenderAnalytics, setShouldRenderAnalytics] = useState(false);
@@ -55,18 +51,6 @@ function AnalyticsProvider() {
     </Suspense>
   );
 }
-
-export const getServerTrpc = (req: Request) =>
-  createTRPCClient<AppRouter>({
-    links: [
-      httpBatchLink({
-        maxItems: 1,
-        url: getUrl(),
-        transformer: superjson,
-        headers: req.headers,
-      }),
-    ],
-  });
 
 export const meta: MetaFunction = () => {
   return [
@@ -121,6 +105,8 @@ export default function App() {
 }
 
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
+  const is404 = isRouteErrorResponse(error) && error.status === 404;
+
   let message = 'Oops!';
   let details = 'An unexpected error occurred.';
   let stack: string | undefined;
@@ -129,15 +115,14 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
     message = error.status === 404 ? '404' : 'Error';
     details =
       error.status === 404 ? 'The requested page could not be found.' : error.statusText || details;
-    if (error.status === 404) {
-      return <NotFound />;
-    }
   } else if (import.meta.env.DEV && error && error instanceof Error) {
     details = error.message;
     stack = error.stack;
   }
 
   useEffect(() => {
+    if (is404) return;
+
     console.error(error);
     console.error({ message, details, stack });
 
@@ -169,7 +154,11 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
         },
       });
     }
-  }, [error, message, details, stack]);
+  }, [error, is404, message, details, stack]);
+
+  if (is404) {
+    return <NotFound />;
+  }
 
   return (
     <div className="dark:bg-background flex w-full items-center justify-center bg-white text-center">
@@ -189,16 +178,18 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
           >
             Refresh
           </Button>
-          <Button
-            variant="outline"
-            onClick={async () => {
-              await signOut();
-              window.location.href = '/login';
-            }}
-            className="text-muted-foreground gap-2"
-          >
-            Log Out and Refresh
-          </Button>
+          {!isFrontendOnlyDemo() && (
+            <Button
+              variant="outline"
+              onClick={async () => {
+                await signOut();
+                window.location.href = '/login';
+              }}
+              className="text-muted-foreground gap-2"
+            >
+              Log Out and Refresh
+            </Button>
+          )}
         </div>
       </div>
     </div>

@@ -1,5 +1,6 @@
 import { useTRPC } from '@/providers/query-provider';
 import { useQuery } from '@tanstack/react-query';
+import { useMemo } from 'react';
 import { useSession } from '@/lib/auth-client';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 
@@ -12,10 +13,10 @@ const DEMO_SETTINGS: any = {
     externalImages: true,
     trustedSenders: [] as string[],
     customPrompt: '',
-    zeroSignature: true,
+    zeroSignature: false,
     categories: [],
     defaultEmailAlias: 'demo@centurion.local',
-    undoSendEnabled: false,
+    undoSendEnabled: true,
     imageCompression: 'medium',
     autoRead: true,
     animations: false,
@@ -26,10 +27,20 @@ export function useSettings() {
   const { data: session } = useSession();
   const trpc = useTRPC();
   const demoMode = isFrontendOnlyDemo();
+  const currentUserEmail = session?.user?.email?.trim().toLowerCase() || '';
+  const demoUserEmail = currentUserEmail || 'demo@centurion.local';
 
   const demoSettingsQuery = useQuery({
-    queryKey: ['demo', 'settings'],
-    queryFn: async () => DEMO_SETTINGS,
+    queryKey: ['demo', 'settings', demoUserEmail],
+    queryFn: async () => ({
+      ...DEMO_SETTINGS,
+      settings: {
+        ...DEMO_SETTINGS.settings,
+        defaultEmailAlias: demoUserEmail,
+        zeroSignature: false,
+        undoSendEnabled: true,
+      },
+    }),
     enabled: demoMode,
     staleTime: Infinity,
   });
@@ -41,5 +52,21 @@ export function useSettings() {
     }),
   );
 
-  return demoMode ? (demoSettingsQuery as typeof settingsQuery) : settingsQuery;
+  const normalizedSettings = useMemo(() => {
+    if (!settingsQuery.data?.settings) return settingsQuery.data;
+
+    return {
+      ...settingsQuery.data,
+      settings: {
+        ...settingsQuery.data.settings,
+        defaultEmailAlias: currentUserEmail || settingsQuery.data.settings.defaultEmailAlias || '',
+        zeroSignature: false,
+        undoSendEnabled: true,
+      },
+    };
+  }, [settingsQuery.data, currentUserEmail]);
+
+  return demoMode
+    ? (demoSettingsQuery as typeof settingsQuery)
+    : { ...settingsQuery, data: normalizedSettings };
 }

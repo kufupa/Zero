@@ -1,7 +1,6 @@
 import { useUndoSend, type EmailData, deserializeFiles } from '@/hooks/use-undo-send';
 import { useActiveConnection } from '@/hooks/use-connections';
 import { Dialog, DialogClose } from '@/components/ui/dialog';
-import { useEmailAliases } from '@/hooks/use-email-aliases';
 import { cleanEmailAddresses } from '@/lib/email-utils';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { demoSendEmail } from '@/lib/demo/local-actions';
@@ -50,7 +49,6 @@ export function CreateEmail({
 }) {
   const { data: session } = useSession();
 
-  const { data: aliases } = useEmailAliases();
   const [draftId, setDraftId] = useQueryState('draftId');
   const {
     data: draft,
@@ -91,11 +89,8 @@ export function CreateEmail({
     fromEmail?: string;
     scheduleAt?: string;
   }) => {
-    const fromEmail = data.fromEmail || aliases?.[0]?.email || userEmail;
-
-    const zeroSignature = settings?.settings.zeroSignature
-      ? '<p style="color: #666; font-size: 12px;">Sent via <a href="https://0.email/" style="color: #0066cc; text-decoration: none;">Zero</a></p>'
-      : '';
+    const fromEmail =
+      data.fromEmail || settings?.settings?.defaultEmailAlias || userEmail;
 
     const result = isFrontendOnlyDemo()
       ? await demoSendEmail({
@@ -103,7 +98,7 @@ export function CreateEmail({
           cc: data.cc?.map((email) => ({ email, name: email.split('@')[0] || email })),
           bcc: data.bcc?.map((email) => ({ email, name: email.split('@')[0] || email })),
           subject: data.subject,
-          message: data.message + zeroSignature,
+          message: data.message,
           attachments: await serializeFiles(data.attachments),
           fromEmail: userName.trim() ? `${userName.replace(/[<>]/g, '')} <${fromEmail}>` : fromEmail,
           draftId: draftId ?? undefined,
@@ -114,7 +109,7 @@ export function CreateEmail({
           cc: data.cc?.map((email) => ({ email, name: email.split('@')[0] || email })),
           bcc: data.bcc?.map((email) => ({ email, name: email.split('@')[0] || email })),
           subject: data.subject,
-          message: data.message + zeroSignature,
+          message: data.message,
           attachments: await serializeFiles(data.attachments),
           fromEmail: userName.trim() ? `${userName.replace(/[<>]/g, '')} <${fromEmail}>` : fromEmail,
           draftId: draftId ?? undefined,

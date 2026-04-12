@@ -483,7 +483,7 @@ export const mailRouter = router({
 
       const db = await getZeroDB(sessionUser.id);
       const userSettings = await db.findUserSettings();
-      const undoSendEnabled = userSettings?.settings?.undoSendEnabled ?? false;
+      const undoSendEnabled = userSettings?.settings?.undoSendEnabled ?? true;
       const shouldSchedule = !!scheduleAt || undoSendEnabled;
 
       const afterTask = async () => {

@@ -13,6 +13,7 @@ export default function ShortcutsPage() {
     // updateShortcut,
   } = useShortcutCache();
   const categorySettings = useCategorySettings();
+  const nonNavigationShortcuts = shortcuts.filter((shortcut) => shortcut.scope !== 'navigation');
 
   return (
     <div className="grid gap-6">
@@ -40,7 +41,7 @@ export default function ShortcutsPage() {
       >
         <div className="grid max-w-3xl gap-6">
           {Object.entries(
-            shortcuts.reduce<Record<string, Shortcut[]>>((acc, shortcut) => {
+            nonNavigationShortcuts.reduce<Record<string, Shortcut[]>>((acc, shortcut) => {
               const scope = shortcut.scope;
               if (!acc[scope]) acc[scope] = [];
               acc[scope].push(shortcut);

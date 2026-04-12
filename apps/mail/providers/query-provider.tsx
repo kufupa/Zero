@@ -15,6 +15,75 @@ import { signOut } from '@/lib/auth-client';
 import { get, set, del } from 'idb-keyval';
 import superjson from 'superjson';
 
+const createBackendDisabledError = (path: string[]) => {
+  const route = path.join('.');
+  return new Error(`[demo mode] Backend TRPC route is disabled: ${route}`);
+};
+
+const makeQueryKey = (path: string[], input?: unknown) => {
+  if (input === undefined) return ['demo', ...path];
+  return ['demo', ...path, input];
+};
+
+const makeFailingPromise = (path: string[]) => () =>
+  Promise.reject(createBackendDisabledError(path));
+
+const createDemoProcedureNode = (path: string[]): unknown => {
+  return new Proxy(
+    {},
+    {
+      get: (_target, prop) => {
+        if (typeof prop !== 'string') return undefined;
+
+        if (prop === 'query') {
+          return makeFailingPromise([...path, 'query']);
+        }
+
+        if (prop === 'mutate') {
+          return makeFailingPromise([...path, 'mutate']);
+        }
+
+        if (prop === 'queryOptions') {
+          return (input?: unknown) => ({
+            queryKey: makeQueryKey(path, input),
+            queryFn: makeFailingPromise([...path, 'query']) as never,
+          });
+        }
+
+        if (prop === 'mutationOptions') {
+          return (input?: unknown) => ({
+            mutationKey: makeQueryKey(path, input),
+            mutationFn: makeFailingPromise([...path, 'mutate']) as never,
+          });
+        }
+
+        if (prop === 'infiniteQueryOptions') {
+          return (input?: unknown) => ({
+            queryKey: makeQueryKey(path, input),
+            queryFn: makeFailingPromise([...path, 'query']) as never,
+          });
+        }
+
+        if (prop === 'queryKey') {
+          return (input?: unknown) => makeQueryKey(path, input);
+        }
+
+        if (prop === 'infiniteQueryKey') {
+          return (input?: unknown) => makeQueryKey(path, input);
+        }
+
+        if (prop === 'mutationKey') {
+          return (input?: unknown) => makeQueryKey(path, input);
+        }
+
+        return createDemoProcedureNode([...path, prop]);
+      },
+    },
+  ) as unknown;
+};
+
+const createDemoTrpcClient = (): unknown => createDemoProcedureNode([]);
+
 function createIDBPersister(idbValidKey: IDBValidKey = 'zero-query-cache') {
   return {
     persistClient: async (client: PersistedClient) => {
@@ -106,27 +175,29 @@ const fetchWithTimeout = (url: RequestInfo | URL, options?: RequestInit) => {
 
 export const { TRPCProvider, useTRPC, useTRPCClient } = createTRPCContext<AppRouter>();
 
-export const trpcClient = createTRPCClient<AppRouter>({
-  links: [
-    // loggerLink({ enabled: () => true }),
-    httpBatchLink({
-      transformer: superjson,
-      url: getUrl(),
-      methodOverride: 'POST',
-      maxItems: 1,
-      fetch: (url, options) =>
-        fetchWithTimeout(url, { ...options, credentials: 'include' }).then((res) => {
-          const currentPath = new URL(window.location.href).pathname;
-          const redirectPath = res.headers.get('X-Zero-Redirect');
-          if (!!redirectPath && redirectPath !== currentPath) {
-            window.location.href = redirectPath;
-            res.headers.delete('X-Zero-Redirect');
-          }
-          return res;
+export const trpcClient: AppRouter = isFrontendOnlyDemo()
+  ? (createDemoTrpcClient() as AppRouter)
+  : createTRPCClient<AppRouter>({
+      links: [
+        // loggerLink({ enabled: () => true }),
+        httpBatchLink({
+          transformer: superjson,
+          url: getUrl(),
+          methodOverride: 'POST',
+          maxItems: 1,
+          fetch: (url, options) =>
+            fetchWithTimeout(url, { ...options, credentials: 'include' }).then((res) => {
+              const currentPath = new URL(window.location.href).pathname;
+              const redirectPath = res.headers.get('X-Zero-Redirect');
+              if (!!redirectPath && redirectPath !== currentPath) {
+                window.location.href = redirectPath;
+                res.headers.delete('X-Zero-Redirect');
+              }
+              return res;
+            }),
         }),
-    }),
-  ],
-});
+      ],
+    });
 
 type TrpcHook = ReturnType<typeof useTRPC>;
 export function QueryProvider({
