@@ -1,61 +1,51 @@
 import { describe, expect, it } from 'vitest';
 import {
-  DEMO_FOLDER_DEFINITIONS,
-  isDemoQueueFolder,
-  resolveDemoFolderQueryContext,
+  DEMO_MAIL_FOLDER_DEFINITIONS,
+  isDemoMailFolderSlug,
+  normalizeDemoMailFolderSlug,
+  shouldShowCenturionCategoryPill,
 } from '../lib/demo/folder-map';
 
-describe('demo folder map', () => {
-  it('defines the requested folder model', () => {
-    expect(DEMO_FOLDER_DEFINITIONS.map((folder) => folder.id)).toEqual([
+describe('demo mail folder map', () => {
+  it('defines demo folder ids in sidebar order', () => {
+    expect(DEMO_MAIL_FOLDER_DEFINITIONS.map((f) => f.id)).toEqual([
       'internal',
       'individual',
       'group',
-      'spam',
+      'travel-agents',
       'urgent',
+      'spam',
     ]);
   });
 
-  it('maps folder identities to queue context', () => {
-    expect(resolveDemoFolderQueryContext('internal')).toEqual({
-      folder: 'inbox',
-      workQueue: 'hr',
-    });
-    expect(resolveDemoFolderQueryContext('individual')).toEqual({
-      folder: 'inbox',
-      workQueue: 'individual',
-    });
-    expect(resolveDemoFolderQueryContext('group')).toEqual({
-      folder: 'inbox',
-      workQueue: 'group',
-    });
-    expect(resolveDemoFolderQueryContext('spam')).toEqual({
-      folder: 'spam',
-      workQueue: null,
-    });
-    expect(resolveDemoFolderQueryContext('urgent')).toEqual({
-      folder: 'inbox',
-      workQueue: 'urgent',
-    });
+  it('normalizes alias slugs to canonical ids', () => {
+    expect(normalizeDemoMailFolderSlug('hr')).toBe('internal');
+    expect(normalizeDemoMailFolderSlug('internal-mail')).toBe('internal');
+    expect(normalizeDemoMailFolderSlug('travel-agent')).toBe('travel-agents');
+    expect(normalizeDemoMailFolderSlug('inbox')).toBe('inbox');
   });
 
-  it('keeps urgent and aliases valid demo folders', () => {
-    expect(isDemoQueueFolder('urgent')).toBe(true);
-    expect(isDemoQueueFolder('hr')).toBe(true);
-    expect(isDemoQueueFolder('group')).toBe(true);
-    expect(isDemoQueueFolder('individual')).toBe(true);
-    expect(isDemoQueueFolder('group-bookings')).toBe(true);
-    expect(isDemoQueueFolder('individual-room-bookings')).toBe(true);
+  it('detects demo mail folder slugs and aliases', () => {
+    expect(isDemoMailFolderSlug('urgent')).toBe(true);
+    expect(isDemoMailFolderSlug('hr')).toBe(true);
+    expect(isDemoMailFolderSlug('travel-agents')).toBe(true);
+    expect(isDemoMailFolderSlug('travel-agent')).toBe(true);
+    expect(isDemoMailFolderSlug('inbox')).toBe(false);
+    expect(isDemoMailFolderSlug('archive')).toBe(false);
   });
 
-  it('preserves regular folder behavior for non-mapped folders', () => {
-    expect(resolveDemoFolderQueryContext('inbox')).toEqual({
-      folder: 'inbox',
-      workQueue: null,
-    });
-    expect(resolveDemoFolderQueryContext('archive')).toEqual({
-      folder: 'archive',
-      workQueue: null,
-    });
+  it('shouldShowCenturionCategoryPill hides on matching category route', () => {
+    expect(
+      shouldShowCenturionCategoryPill({ routeFolder: 'internal', category: 'internal' }),
+    ).toBe(false);
+    expect(
+      shouldShowCenturionCategoryPill({ routeFolder: 'inbox', category: 'internal' }),
+    ).toBe(true);
+    expect(
+      shouldShowCenturionCategoryPill({ routeFolder: 'urgent', category: 'group' }),
+    ).toBe(true);
+    expect(shouldShowCenturionCategoryPill({ routeFolder: 'inbox', category: undefined })).toBe(
+      false,
+    );
   });
 });

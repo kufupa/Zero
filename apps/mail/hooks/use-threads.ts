@@ -6,7 +6,7 @@ import { useTRPC } from '@/providers/query-provider';
 import useSearchLabels from './use-labels-search';
 import { useSession } from '@/lib/auth-client';
 import { listDemoThreads, getDemoThread } from '@/lib/demo-data/adapter';
-import { resolveDemoThreadQueryContext } from '@/lib/demo-data/client';
+import { normalizeDemoMailFolderSlug } from '@/lib/demo/folder-map';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { useAtom, useAtomValue } from 'jotai';
 import { useSettings } from './use-settings';
@@ -49,7 +49,7 @@ export const useThreads = (options?: UseThreadsOptions) => {
     sessionUserId: session?.user?.id,
     routeFolder: canonicalRouteFolder,
   });
-  const demoContext = resolveDemoThreadQueryContext(folderForQuery);
+  const demoListFolder = normalizeDemoMailFolderSlug(folderForQuery);
   // Palette needs thread hints on non-mail routes (e.g. /settings): still require demo or session, never open live API unauthenticated.
   const listEnabled = isPaletteMode
     ? paletteOpen && (demoMode || Boolean(session?.user?.id))
@@ -60,16 +60,14 @@ export const useThreads = (options?: UseThreadsOptions) => {
       'demo',
       'mail',
       'listThreads',
-      demoContext.folder,
-      demoContext.workQueue,
+      demoListFolder,
       searchValue.value,
       labels.join(','),
     ],
     initialPageParam: '',
     queryFn: async ({ pageParam }) =>
       listDemoThreads({
-        folder: demoContext.folder,
-        workQueue: demoContext.workQueue ?? undefined,
+        folder: demoListFolder,
         q: searchValue.value,
         labelIds: labels,
         cursor: typeof pageParam === 'string' ? pageParam : '',

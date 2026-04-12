@@ -1,6 +1,5 @@
 import centurionThreads from './centurion-threads.json';
 import { parseDemoCorpus } from './schema';
-import { resolveDemoFolderQueryContext, type DemoFolderQueryContext } from '../demo/folder-map';
 import { filterRemovedDemoLabels } from './label-filter';
 
 type DemoConnection = {
@@ -72,8 +71,4 @@ export function getDemoActiveConnection(): DemoConnection | null {
 
 export function listDemoLabels(): DemoLabel[] {
   return demoLabels;
-}
-
-export function resolveDemoThreadQueryContext(folder?: string): DemoFolderQueryContext {
-  return resolveDemoFolderQueryContext(folder);
 }

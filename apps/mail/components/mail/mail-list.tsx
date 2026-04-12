@@ -37,6 +37,7 @@ import { useKeyState } from '@/hooks/use-hot-key';
 import { VList, type VListHandle } from 'virtua';
 import { BimiAvatar } from '../ui/bimi-avatar';
 import { RenderLabels } from './render-labels';
+import { CenturionCategoryPill } from './centurion-category-pill';
 import { Badge } from '@/components/ui/badge';
 import { useDraft } from '@/hooks/use-drafts';
 import { Check, Star } from 'lucide-react';
@@ -528,12 +529,15 @@ const Thread = memo(
                     {/* <div className="hidden md:flex">
                       {getThreadData.labels ? <MailLabels labels={getThreadData.labels} /> : null}
                     </div> */}
-                    {threadLabels && (
-                      <div className="mr-0 flex w-fit items-center justify-end gap-1">
-                        {!isFolderSent ? <RenderLabels labels={threadLabels} /> : null}
-                        {/* {getThreadData.labels ? <MailLabels labels={getThreadData.labels} /> : null} */}
+                    {!isFolderSent ? (
+                      <div className="mr-0 flex w-fit max-w-[min(100%,18rem)] shrink-0 flex-wrap items-center justify-end gap-1">
+                        <CenturionCategoryPill
+                          routeFolder={folder}
+                          category={message.centurionCategory}
+                        />
+                        <RenderLabels labels={threadLabels} />
                       </div>
-                    )}
+                    ) : null}
                   </div>
                   {emailContent && (
                     <div className="text-muted-foreground mt-2 line-clamp-2 text-xs">
@@ -571,6 +575,7 @@ const Thread = memo(
       threadLabels,
       optimisticLabels,
       emailContent,
+      message.centurionCategory,
     ]);
 
     return latestMessage ? (

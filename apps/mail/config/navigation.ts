@@ -17,11 +17,12 @@ import {
 import { MessageSquareIcon } from 'lucide-react';
 import { m } from '@/paraglide/messages';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
-import { DEMO_FOLDER_DEFINITIONS, type DemoFolderIdentity } from '@/lib/demo/folder-map';
+import { DEMO_MAIL_FOLDER_DEFINITIONS, type DemoMailFolderId } from '@/lib/demo/folder-map';
 
 export interface NavItem {
   id?: string;
   title: string;
+  subtitle?: string;
   url: string;
   icon: React.ComponentType<any>;
   badge?: number;
@@ -44,16 +45,17 @@ interface NavConfig {
 
 const DEMO_FOLDER_MODEL_ENABLED = isFrontendOnlyDemo();
 
-function getDemoFolderIcon(folderId: DemoFolderIdentity): React.ComponentType<any> {
+function getDemoMailFolderIcon(folderId: DemoMailFolderId): React.ComponentType<any> {
   if (folderId === 'urgent' || folderId === 'spam') return ExclamationCircle;
   return Folder;
 }
 
-const demoFolderNavItems: NavItem[] = DEMO_FOLDER_DEFINITIONS.map((folder) => ({
+const demoMailFolderNavItems: NavItem[] = DEMO_MAIL_FOLDER_DEFINITIONS.map((folder) => ({
   id: folder.id,
   title: folder.title,
+  subtitle: folder.subtitle,
   url: `/mail/${folder.id}`,
-  icon: getDemoFolderIcon(folder.id),
+  icon: getDemoMailFolderIcon(folder.id),
 }));
 
 // ! items title has to be a message key (check messages/en.json)
@@ -120,40 +122,11 @@ export const navigationConfig: Record<string, NavConfig> = {
       ...(DEMO_FOLDER_MODEL_ENABLED
         ? [
             {
-              title: 'Demo Queues',
-              items: demoFolderNavItems,
+              title: 'Folders',
+              items: demoMailFolderNavItems,
             },
           ]
         : []),
-      // {
-      //   title: "Categories",
-      //   items: [
-      //     {
-      //       title: "Social",
-      //       url: "/mail/inbox?category=social",
-      //       icon: UsersIcon,
-      //       badge: 972,
-      //     },
-      //     {
-      //       title: "Updates",
-      //       url: "/mail/inbox?category=updates",
-      //       icon: BellIcon,
-      //       badge: 342,
-      //     },
-      //     {
-      //       title: "Forums",
-      //       url: "/mail/inbox?category=forums",
-      //       icon: MessageCircleIcon,
-      //       badge: 128,
-      //     },
-      //     {
-      //       title: "Shopping",
-      //       url: "/mail/inbox?category=shopping",
-      //       icon: CartIcon,
-      //       badge: 8,
-      //     },
-      //   ],
-      // },
     ],
   },
   settings: {
@@ -205,23 +178,6 @@ export const navigationConfig: Record<string, NavConfig> = {
             url: '/settings/shortcuts',
             icon: Tabs,
           },
-          // {
-          //   title: 'navigation.settings.signatures',
-          //   url: '/settings/signatures',
-          //   icon: MessageSquareIcon,
-          //   disabled: true,
-          // },
-          // {
-          //   title: 'navigation.settings.shortcuts',
-          //   url: '/settings/shortcuts',
-          //   icon: Tabs,
-          //   disabled: true,
-          // },
-          // {
-          //   title: "Notifications",
-          //   url: "/settings/notifications",
-          //   icon: BellIcon,
-          // },
           {
             title: m['navigation.settings.deleteAccount'](),
             url: '/settings/danger-zone',

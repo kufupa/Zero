@@ -3,7 +3,13 @@ type DemoLabelLike = {
   name: string;
 };
 
-const REMOVED_DEMO_LABELS = new Set(['comment', 'to respond', 'promotion']);
+const REMOVED_DEMO_LABELS = new Set([
+  'comment',
+  'to respond',
+  'promotion',
+  'billing',
+  'notification',
+]);
 
 function normalizeLabelValue(value: string): string {
   return value.trim().toLowerCase();

@@ -1,90 +1,99 @@
-import { parseWorkQueueSlug, type WorkQueueSlug } from '../demo-data/work-queue';
+import type { CenturionMailCategory } from '../../../server/src/lib/driver/types';
 
-export type DemoFolderIdentity =
+export type DemoMailFolderId =
   | 'internal'
   | 'individual'
   | 'group'
-  | 'spam'
-  | 'urgent';
+  | 'travel-agents'
+  | 'urgent'
+  | 'spam';
 
-export type DemoFolderQueryContext = {
-  folder: string;
-  workQueue: WorkQueueSlug | null;
-};
+const CENTURION_CATEGORY_SLUGS = new Set<string>(['internal', 'individual', 'group', 'travel-agents']);
 
-type DemoFolderDefinition = {
-  id: DemoFolderIdentity;
+export type DemoMailFolderDefinition = {
+  id: DemoMailFolderId;
   title: string;
-  workQueue: WorkQueueSlug | null;
+  subtitle: string;
   aliases: string[];
 };
 
-export const DEMO_FOLDER_DEFINITIONS: DemoFolderDefinition[] = [
+/** Demo-only mail slices (URLs under /mail/:folder). Order = sidebar order. */
+export const DEMO_MAIL_FOLDER_DEFINITIONS: DemoMailFolderDefinition[] = [
   {
     id: 'internal',
     title: 'Internal Mail',
-    workQueue: 'hr',
+    subtitle: 'HR & team',
     aliases: ['internal-mail', 'hr'],
   },
   {
     id: 'individual',
     title: 'Individual Room Bookings',
-    workQueue: 'individual',
+    subtitle: 'Guest & room requests',
     aliases: ['individual-room-bookings'],
   },
   {
     id: 'group',
     title: 'Group Bookings',
-    workQueue: 'group',
+    subtitle: 'Blocks & events',
     aliases: ['group-bookings'],
   },
   {
-    id: 'spam',
-    title: 'Spam',
-    workQueue: null,
-    aliases: [],
+    id: 'travel-agents',
+    title: 'Travel Agents',
+    subtitle: 'Agency & partner mail',
+    aliases: ['travel-agent'],
   },
   {
     id: 'urgent',
     title: 'Urgent',
-    workQueue: 'urgent',
+    subtitle: 'Flagged time-sensitive',
+    aliases: [],
+  },
+  {
+    id: 'spam',
+    title: 'Spam',
+    subtitle: 'Quarantined',
     aliases: [],
   },
 ];
 
-const demoFolderLookup = new Map<string, DemoFolderDefinition>(
-  DEMO_FOLDER_DEFINITIONS.flatMap((definition) => [
-    [definition.id, definition] as const,
-    ...definition.aliases.map((alias) => [alias, definition] as const),
+const demoMailFolderBySlug = new Map<string, DemoMailFolderDefinition>(
+  DEMO_MAIL_FOLDER_DEFINITIONS.flatMap((def) => [
+    [def.id, def] as const,
+    ...def.aliases.map((alias) => [alias.toLowerCase(), def] as const),
   ]),
 );
 
-export function isDemoQueueFolder(folder?: string): boolean {
-  if (!folder) return false;
-  const normalized = folder.trim().toLowerCase();
-  return demoFolderLookup.has(normalized);
+/** Canonical slug for list adapter + query keys (post-alias). */
+export function normalizeDemoMailFolderSlug(folder?: string): string {
+  const raw = (folder ?? 'inbox').trim().toLowerCase() || 'inbox';
+  const mapped = demoMailFolderBySlug.get(raw);
+  if (mapped) return mapped.id;
+  return raw;
 }
 
-export function resolveDemoFolderQueryContext(folder?: string): DemoFolderQueryContext {
-  const normalizedFolder = (folder ?? 'inbox').trim().toLowerCase() || 'inbox';
-  const mappedFolder = demoFolderLookup.get(normalizedFolder);
-  if (mappedFolder) {
-    return {
-      folder: mappedFolder.id === 'spam' ? 'spam' : 'inbox',
-      workQueue: mappedFolder.workQueue,
-    };
-  }
+export function isDemoMailFolderSlug(folder?: string): boolean {
+  if (!folder) return false;
+  return demoMailFolderBySlug.has(folder.trim().toLowerCase());
+}
 
-  const directQueue = parseWorkQueueSlug(normalizedFolder);
-  if (directQueue) {
-    return {
-      folder: 'inbox',
-      workQueue: directQueue,
-    };
-  }
+export function isCenturionMailCategorySlug(value: string): value is CenturionMailCategory {
+  return CENTURION_CATEGORY_SLUGS.has(value);
+}
 
-  return {
-    folder: normalizedFolder,
-    workQueue: null,
-  };
+export function getCenturionCategoryTitle(slug: CenturionMailCategory): string {
+  const def = DEMO_MAIL_FOLDER_DEFINITIONS.find((d) => d.id === slug);
+  return def?.title ?? slug;
+}
+
+/** Show category pill on aggregate routes; hide when already viewing that category folder. */
+export function shouldShowCenturionCategoryPill(input: {
+  routeFolder: string | undefined;
+  category: CenturionMailCategory | undefined;
+}): boolean {
+  const { routeFolder, category } = input;
+  if (!category || !CENTURION_CATEGORY_SLUGS.has(category)) return false;
+  const routeSlug = normalizeDemoMailFolderSlug(routeFolder);
+  if (CENTURION_CATEGORY_SLUGS.has(routeSlug) && routeSlug === category) return false;
+  return true;
 }

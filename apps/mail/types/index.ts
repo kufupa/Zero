@@ -1,3 +1,7 @@
+import type { CenturionMailCategory } from '../../server/src/lib/driver/types';
+
+export type { CenturionMailCategory };
+
 export type Label = {
   id: string;
   name: string;
@@ -110,7 +114,7 @@ export interface MailListProps {
 export type MailSelectMode = 'mass' | 'range' | 'single' | 'selectAllBelow';
 
 export type ThreadProps = {
-  message: { id: string; historyId?: string | null };
+  message: { id: string; historyId?: string | null; centurionCategory?: CenturionMailCategory };
   onClick?: (message: ParsedMessage) => () => void;
   isKeyboardFocused?: boolean;
 };

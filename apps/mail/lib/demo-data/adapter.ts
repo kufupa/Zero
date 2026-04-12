@@ -1,8 +1,11 @@
 import centurionThreads from './centurion-threads.json';
 import { parseDemoCorpus, type DemoMessage, type DemoThread } from './schema';
 import { filterRemovedDemoLabels } from './label-filter';
-import { threadMatchesWorkQueue, type WorkQueueSlug } from './work-queue';
-import type { IGetThreadResponse, IGetThreadsResponse } from '../../../server/src/lib/driver/types';
+import type {
+  CenturionMailCategory,
+  IGetThreadResponse,
+  IGetThreadsResponse,
+} from '../../../server/src/lib/driver/types';
 
 const DEMO_CONNECTION_ID = 'demo-connection';
 const DEFAULT_MAX_RESULTS = 50;
@@ -32,8 +35,38 @@ type DemoListInput = {
   cursor?: string;
   maxResults?: number;
   labelIds?: string[];
-  workQueue?: WorkQueueSlug;
 };
+
+function toCenturionCategory(folder: DemoThread['folder']): CenturionMailCategory | undefined {
+  if (
+    folder === 'internal' ||
+    folder === 'individual' ||
+    folder === 'group' ||
+    folder === 'travel-agents'
+  ) {
+    return folder;
+  }
+  return undefined;
+}
+
+/** Demo list views: inbox = all non-spam; category slugs = primary folder; urgent = flag; spam = quarantine only. */
+export function threadMatchesDemoListFolder(thread: DemoThread, folderSlug: string): boolean {
+  switch (folderSlug) {
+    case 'inbox':
+      return thread.folder !== 'spam';
+    case 'spam':
+      return thread.folder === 'spam';
+    case 'urgent':
+      return thread.urgent === true;
+    case 'internal':
+    case 'individual':
+    case 'group':
+    case 'travel-agents':
+      return thread.folder === folderSlug;
+    default:
+      return false;
+  }
+}
 
 export function listDemoThreads(input: DemoListInput = {}): IGetThreadsResponse {
   const folder = (input.folder ?? 'inbox').toLowerCase();
@@ -45,17 +78,11 @@ export function listDemoThreads(input: DemoListInput = {}): IGetThreadsResponse 
   const matches = parsedThreads.filter((entry) => {
     const visibleLabels = filterRemovedDemoLabels(entry.thread.labels);
 
-    if (folder !== 'inbox' && entry.thread.folder && entry.thread.folder !== folder) {
-      if (!labelsContain(visibleLabels, [folder])) {
-        return false;
-      }
-    }
-
-    if (query && !entry.searchText.includes(query)) {
+    if (!threadMatchesDemoListFolder(entry.thread, folder)) {
       return false;
     }
 
-    if (input.workQueue && !threadMatchesWorkQueue(entry.thread, input.workQueue)) {
+    if (query && !entry.searchText.includes(query)) {
       return false;
     }
 
@@ -70,10 +97,14 @@ export function listDemoThreads(input: DemoListInput = {}): IGetThreadsResponse 
   const nextPageToken = page.length + cursor < matches.length ? String(cursor + page.length) : null;
 
   return {
-    threads: page.map((entry) => ({
-      id: entry.thread.id,
-      historyId: null,
-    })),
+    threads: page.map((entry) => {
+      const centurionCategory = toCenturionCategory(entry.thread.folder);
+      return {
+        id: entry.thread.id,
+        historyId: null,
+        ...(centurionCategory ? { centurionCategory } : {}),
+      };
+    }),
     nextPageToken,
   };
 }
@@ -91,6 +122,8 @@ export function getDemoThread(id: string): IGetThreadResponse {
   const nonDraftMessages = parsedMessages.filter((message) => message.isDraft !== true);
   const latest = nonDraftMessages[nonDraftMessages.length - 1];
 
+  const centurionCategory = toCenturionCategory(entry.thread.folder);
+
   return {
     messages: parsedMessages,
     latest,
@@ -98,6 +131,7 @@ export function getDemoThread(id: string): IGetThreadResponse {
     totalReplies: nonDraftMessages.length,
     labels: visibleLabels.map((label) => ({ id: label.id, name: label.name })),
     isLatestDraft: parsedMessages[parsedMessages.length - 1]?.isDraft === true,
+    ...(centurionCategory ? { centurionCategory } : {}),
   };
 }
 
@@ -153,7 +187,7 @@ function buildThreadSearchText(thread: DemoThread, messages: DemoMessage[]): str
         .map((recipient) => `${recipient.name ?? ''} ${recipient.email}`)
         .join(' ');
 
-      return `${thread.demoCategory} ${message.id} ${recipientText} ${message.sender.name ?? ''} ${message.sender.email} ${
+      return `${thread.folder} ${message.id} ${recipientText} ${message.sender.name ?? ''} ${message.sender.email} ${
         message.subject
       } ${message.body}`;
     })

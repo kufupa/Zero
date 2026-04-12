@@ -37,6 +37,7 @@ interface NavItemProps extends NavItem {
   onClick?: (e: React.MouseEvent<HTMLAnchorElement>) => void;
   suffix?: React.ComponentType<IconProps>;
   isSettingsPage?: boolean;
+  subtitle?: string;
 }
 
 interface NavMainProps {
@@ -244,7 +245,10 @@ export function NavMain({ items }: NavMainProps) {
             </SidebarMenuItem>
           </Collapsible>
         ))}
-        {!pathname.includes('/settings') && !isBottomNav && state !== 'collapsed' && (
+        {!pathname.includes('/settings') &&
+          !isBottomNav &&
+          state !== 'collapsed' &&
+          !isFrontendOnlyDemo() && (
           <Collapsible defaultOpen={true} className="group/collapsible flex-col">
             <SidebarMenuItem className="mb-4" style={{ height: 'auto' }}>
               <div className="mx-2 mb-4 flex items-center justify-between">
@@ -308,7 +312,13 @@ function NavItem(item: NavItemProps & { href: string }) {
       <CollapsibleTrigger asChild>
         <SidebarMenuButton
           asChild
-          tooltip={state === 'collapsed' ? item.title : undefined}
+          tooltip={
+            state === 'collapsed'
+              ? item.subtitle
+                ? `${item.title} — ${item.subtitle}`
+                : item.title
+              : undefined
+          }
           className={cn(
             'hover:bg-subtleWhite flex items-center dark:hover:bg-[#202020]',
             item.isActive && 'bg-subtleWhite text-accent-foreground dark:bg-[#202020]',
@@ -317,9 +327,14 @@ function NavItem(item: NavItemProps & { href: string }) {
         >
           <Link target={item.target} to={item.href}>
             {item.icon && <item.icon ref={iconRef} className="mr-2 shrink-0" />}
-            <p className="relative bottom-px mt-0.5 min-w-0 flex-1 truncate text-[13px]">
-              {item.title}
-            </p>
+            <span className="relative bottom-px mt-0.5 min-w-0 flex-1 truncate text-left">
+              <span className="block truncate text-[13px] leading-tight">{item.title}</span>
+              {item.subtitle ? (
+                <span className="text-muted-foreground block truncate text-[11px] leading-tight dark:text-[#898989]">
+                  {item.subtitle}
+                </span>
+              ) : null}
+            </span>
             {stats &&
               stats.some((stat) => stat.label?.toLowerCase() === item.id?.toLowerCase()) && (
                 <Badge className="text-muted-foreground ml-auto shrink-0 rounded-full border-none bg-transparent">

@@ -2,7 +2,7 @@ import { useLoaderData, useNavigate } from 'react-router';
 
 import { MailLayout } from '@/components/mail/mail';
 import { useLabels } from '@/hooks/use-labels';
-import { isDemoQueueFolder } from '@/lib/demo/folder-map';
+import { isDemoMailFolderSlug } from '@/lib/demo/folder-map';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { useEffect, useState } from 'react';
 import type { Route } from './+types/page';
@@ -23,12 +23,12 @@ export default function MailPage() {
   const normalizedFolder = folder.toLowerCase();
 
   const isStandardFolder = ALLOWED_FOLDERS.has(normalizedFolder);
-  const isDemoWorkQueueFolder = isFrontendOnlyDemo() && isDemoQueueFolder(normalizedFolder);
+  const isDemoMailFolder = isFrontendOnlyDemo() && isDemoMailFolderSlug(normalizedFolder);
 
   const { userLabels, isLoading: isLoadingLabels } = useLabels();
 
   useEffect(() => {
-    if (isStandardFolder || isDemoWorkQueueFolder) {
+    if (isStandardFolder || isDemoMailFolder) {
       setIsLabelValid(true);
       return;
     }
@@ -58,7 +58,7 @@ export default function MailPage() {
     } else {
       setIsLabelValid(false);
     }
-  }, [folder, normalizedFolder, userLabels, isLoadingLabels, isStandardFolder, isDemoWorkQueueFolder, navigate]);
+  }, [folder, normalizedFolder, userLabels, isLoadingLabels, isStandardFolder, isDemoMailFolder, navigate]);
 
   if (!isLabelValid) {
     return (

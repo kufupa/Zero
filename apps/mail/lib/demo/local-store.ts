@@ -1,5 +1,6 @@
 import { isFrontendOnlyDemo } from './runtime';
 import { listDemoLabels as listDemoLabelsSeed } from '../demo-data/client';
+import { isRemovedDemoLabel } from '../demo-data/label-filter';
 
 export type DemoDraft = {
   id: string;
@@ -502,10 +503,13 @@ function sanitizeLabels(rawLabels: Partial<Record<string, DemoLabel>> | undefine
     const maybeId = typeof label.id === 'string' && label.id.length > 0 ? label.id : id;
     if (!maybeId) continue;
 
+    const name = typeof label.name === 'string' && label.name.length > 0 ? label.name : DEMO_LABEL_NAME_DEFAULT;
+    if (isRemovedDemoLabel({ id: maybeId, name })) continue;
+
     const rawColor = isRecord(label.color) ? label.color : undefined;
     labels[maybeId] = {
       id: maybeId,
-      name: typeof label.name === 'string' && label.name.length > 0 ? label.name : DEMO_LABEL_NAME_DEFAULT,
+      name,
       type: label.type === 'system' ? 'system' : 'user',
       color: normalizeDemoLabelColor({
         backgroundColor:

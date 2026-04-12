@@ -5,6 +5,16 @@ const participantSchema = z.object({
   name: z.string().optional(),
 });
 
+export const demoThreadFolderSchema = z.enum([
+  'internal',
+  'individual',
+  'group',
+  'travel-agents',
+  'spam',
+]);
+
+export type DemoThreadFolder = z.infer<typeof demoThreadFolderSchema>;
+
 export const demoMessageSchema = z.object({
   id: z.string().min(1),
   sender: participantSchema,
@@ -21,8 +31,7 @@ export const demoMessageSchema = z.object({
 export const demoThreadSchema = z
   .object({
     id: z.string().min(1),
-    folder: z.literal('inbox').default('inbox'),
-    demoCategory: z.enum(['group', 'individual', 'travel-agent', 'hr']),
+    folder: demoThreadFolderSchema,
     urgent: z.boolean().default(false),
     llmIssueMessage: z.string().min(1).optional(),
     labels: z.array(z.object({ id: z.string(), name: z.string() })).default([]),
