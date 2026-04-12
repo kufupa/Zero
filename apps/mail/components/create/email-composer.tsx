@@ -6,21 +6,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/tooltip';
 import { Check, Command, Loader, Paperclip, Plus, Type, X as XIcon } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { TextEffect } from '@/components/motion-primitives/text-effect';
 import { ScheduleSendPicker } from './schedule-send-picker';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useEmailAliases } from '@/hooks/use-email-aliases';
 import useComposeEditor from '@/hooks/use-compose-editor';
 import { CurvedArrow, Sparkles, X } from '../icons/icons';
 import { gitHubEmojis } from '@tiptap/extension-emoji';
@@ -57,6 +48,7 @@ import type { ImageQuality } from '@/lib/image-compression';
 
 const shortcodeRegex = /:([a-zA-Z0-9_+-]+):/g;
 import { TemplateButton } from './template-button';
+import { emailListSignature } from '@/lib/mail/compose-signatures';
 
 type ThreadContent = {
   from: string;
@@ -89,6 +81,8 @@ interface EmailComposerProps {
   autofocus?: boolean;
   settingsLoading?: boolean;
   editorClassName?: string;
+  /** When set, sync to/cc/bcc/subject from props when they change without remounting (e.g. reply → reply all). Never overwrites the message body from props. */
+  syncReplyHeadersFromProps?: boolean;
 }
 
 
@@ -119,8 +113,8 @@ export function EmailComposer({
   autofocus = false,
   settingsLoading = false,
   editorClassName,
+  syncReplyHeadersFromProps = false,
 }: EmailComposerProps) {
-  const { data: aliases } = useEmailAliases();
   const { data: settings } = useSettings();
   const [showCc, setShowCc] = useState(initialCc.length > 0);
   const [showBcc, setShowBcc] = useState(initialBcc.length > 0);
@@ -242,13 +236,35 @@ export function EmailComposer({
       attachments: initialAttachments,
       fromEmail:
         settings?.settings?.defaultEmailAlias ||
-        aliases?.find((alias) => alias.primary)?.email ||
-        aliases?.[0]?.email ||
         '',
     },
   });
 
   const { watch, setValue, getValues } = form;
+
+  const externalHeaderSyncKey = useMemo(
+    () =>
+      [
+        emailListSignature(initialTo),
+        emailListSignature(initialCc),
+        emailListSignature(initialBcc),
+        initialSubject ?? '',
+      ].join('\f'),
+    [initialTo, initialCc, initialBcc, initialSubject],
+  );
+
+  useEffect(() => {
+    if (!syncReplyHeadersFromProps) return;
+
+    setValue('to', [...initialTo], { shouldDirty: true, shouldTouch: true });
+    setValue('cc', [...initialCc], { shouldDirty: true, shouldTouch: true });
+    setValue('bcc', [...initialBcc], { shouldDirty: true, shouldTouch: true });
+    setValue('subject', initialSubject ?? '', { shouldDirty: true, shouldTouch: true });
+    setShowCc(initialCc.length > 0);
+    setShowBcc(initialBcc.length > 0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- initial* match this key; listing array props would re-run every render (new [] identity from parent).
+  }, [externalHeaderSyncKey, syncReplyHeadersFromProps, setValue]);
+
   const toEmails = watch('to');
   const ccEmails = watch('cc');
   const bccEmails = watch('bcc');
@@ -639,17 +655,15 @@ export function EmailComposer({
   // });
 
 
-  // keep fromEmail in sync when settings or aliases load afterwards
+  // keep fromEmail in sync when settings load
   useEffect(() => {
     const preferred =
-      settings?.settings?.defaultEmailAlias ??
-      aliases?.find((a) => a.primary)?.email ??
-      aliases?.[0]?.email;
+      settings?.settings?.defaultEmailAlias || '';
 
     if (preferred && getValues('fromEmail') !== preferred) {
       setValue('fromEmail', preferred, { shouldDirty: false });
     }
-  }, [settings?.settings?.defaultEmailAlias, aliases, getValues, setValue]);
+  }, [settings?.settings?.defaultEmailAlias, getValues, setValue]);
 
   const handleQualityChange = async (newQuality: ImageQuality) => {
     setImageQuality(newQuality);
@@ -801,35 +815,7 @@ export function EmailComposer({
           </div>
         ) : null}
 
-        {/* From */}
-        {aliases && aliases.length > 1 ? (
-          <div className="flex items-center gap-2 border-b p-3">
-            <p className="text-sm font-medium text-[#8C8C8C]">From:</p>
-            <Select
-              value={fromEmail || ''}
-              onValueChange={(value) => {
-                setValue('fromEmail', value);
-                setHasUnsavedChanges(true);
-              }}
-            >
-              <SelectTrigger className="h-6 flex-1 border-0 bg-transparent p-0 text-sm font-normal text-black placeholder:text-[#797979] focus:outline-none focus:ring-0 dark:text-white/90">
-                <SelectValue placeholder="Select an email address" />
-              </SelectTrigger>
-              <SelectContent className="z-99999">
-                {aliases.map((alias) => (
-                  <SelectItem key={alias.email} value={alias.email}>
-                    <div className="flex flex-row items-center gap-1">
-                      <span className="text-sm">
-                        {alias.name ? `${alias.name} <${alias.email}>` : alias.email}
-                      </span>
-                      {alias.primary && <span className="text-xs text-[#8C8C8C]">Primary</span>}
-                    </div>
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        ) : null}
+        <input type="hidden" name="fromEmail" value={fromEmail || ''} />
 
         {/* Message Content */}
         <div className="flex-1 overflow-y-auto border-t bg-[#FFFFFF] px-3 py-3 outline-white/5 dark:bg-[#202020]">

@@ -1,7 +1,6 @@
 import { useUndoSend } from '@/hooks/use-undo-send';
 import { constructReplyBody, constructForwardBody } from '@/lib/utils';
 import { useActiveConnection } from '@/hooks/use-connections';
-import { useEmailAliases } from '@/hooks/use-email-aliases';
 import { EmailComposer } from '../create/email-composer';
 import { useHotkeysContext } from 'react-hotkeys-hook';
 import { useTRPC } from '@/providers/query-provider';
@@ -28,7 +27,6 @@ interface ReplyComposeProps {
 export default function ReplyCompose({ messageId }: ReplyComposeProps) {
   const [mode, setMode] = useQueryState('mode');
   const { enableScope, disableScope } = useHotkeysContext();
-  const { data: aliases } = useEmailAliases();
 
   const [draftId, setDraftId] = useQueryState('draftId');
   const [threadId] = useQueryState('threadId');
@@ -68,32 +66,11 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
       const userEmail = activeConnection.email.toLowerCase();
       const userName = activeConnection.name || session?.user?.name || '';
 
-      let fromEmail = userEmail;
-
-      if (aliases && aliases.length > 0 && replyToMessage) {
-        const allRecipients = [
-          ...(replyToMessage.to || []),
-          ...(replyToMessage.cc || []),
-          ...(replyToMessage.bcc || []),
-        ];
-        const matchingAlias = aliases.find((alias) =>
-          allRecipients.some(
-            (recipient) => recipient.email.toLowerCase() === alias.email.toLowerCase(),
-          ),
-        );
-
-        if (matchingAlias) {
-          fromEmail = userName.trim()
-            ? `${userName.replace(/[<>]/g, '')} <${matchingAlias.email}>`
-            : matchingAlias.email;
-        } else {
-          const primaryEmail =
-            aliases.find((alias) => alias.primary)?.email || aliases[0]?.email || userEmail;
-          fromEmail = userName.trim()
-            ? `${userName.replace(/[<>]/g, '')} <${primaryEmail}>`
-            : primaryEmail;
-        }
-      }
+    const senderEmail =
+      (settings?.settings?.defaultEmailAlias || userEmail || '').trim();
+    const fromEmail = userName.trim()
+      ? `${userName.replace(/[<>]/g, '')} <${senderEmail}>`
+      : senderEmail;
 
       const toRecipients: Sender[] = data.to.map((email) => ({
         email,
@@ -114,21 +91,17 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
           }))
         : undefined;
 
-      const zeroSignature = settings?.settings.zeroSignature
-        ? '<p style="color: #666; font-size: 12px;">Sent via <a href="https://0.email/" style="color: #0066cc; text-decoration: none;">Zero</a></p>'
-        : '';
-
       const emailBody =
         mode === 'forward'
           ? constructForwardBody(
-              data.message + zeroSignature,
+              data.message,
               new Date(replyToMessage.receivedOn || '').toLocaleString(),
               { ...replyToMessage.sender, subject: replyToMessage.subject },
               toRecipients,
               //   replyToMessage.decodedBody,
             )
           : constructReplyBody(
-              data.message + zeroSignature,
+              data.message,
               new Date(replyToMessage.receivedOn || '').toLocaleString(),
               replyToMessage.sender,
               toRecipients,
@@ -237,8 +210,8 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
   const draftBcc = ensureEmailArray(draft?.bcc);
 
   const excludedReplyEmails = useMemo(
-    () => [activeConnection?.email, session?.user?.email, ...(aliases?.map((alias) => alias.email) ?? [])],
-    [activeConnection?.email, aliases, session?.user?.email],
+    () => [activeConnection?.email, session?.user?.email],
+    [activeConnection?.email, session?.user?.email],
   );
 
   const derivedReplyRecipients = useMemo(
@@ -251,7 +224,9 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
     [excludedReplyEmails, mode, replyToMessage],
   );
 
+  // Draft/recipient affinity only — do not use for React `key` (including `mode` there remounts the composer and wipes the body on reply/replyAll/forward switches).
   const composeSeed = `${mode ?? 'view'}:${replyToMessage?.id ?? 'latest'}`;
+  const replyComposeInstanceId = replyToMessage?.id ?? threadId ?? 'latest';
   const draftRecipientSeedRef = useRef<string | null>(draftId ? composeSeed : null);
 
   useEffect(() => {
@@ -276,12 +251,27 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
   const initialCcRecipients = shouldUseDraftRecipients ? draftCc : derivedReplyRecipients.cc;
   const initialBccRecipients = shouldUseDraftRecipients ? draftBcc : [];
 
+  const replyComposeInitialSubject = useMemo(() => {
+    if (draft?.subject) return draft.subject;
+    const raw = replyToMessage?.subject?.trim() ?? '';
+    if (!raw) return '';
+    if (mode === 'forward') {
+      if (/^fwd?:/i.test(raw)) return raw;
+      return `Fwd: ${raw}`;
+    }
+    if (mode === 'reply' || mode === 'replyAll') {
+      if (/^re:/i.test(raw)) return raw;
+      return `Re: ${raw}`;
+    }
+    return raw;
+  }, [draft?.subject, mode, replyToMessage?.subject]);
+
   if (!mode || !emailData) return null;
 
   return (
     <div className="w-full rounded-2xl overflow-visible border">
       <EmailComposer
-        key={`reply-composer-${composeSeed}`}
+        key={`reply-compose-${replyComposeInstanceId}`}
         editorClassName="min-h-[50px]"
         className="w-full max-w-none! pb-1 overflow-visible"
         onSendEmail={handleSendEmail}
@@ -294,7 +284,8 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
         initialTo={initialToRecipients}
         initialCc={initialCcRecipients}
         initialBcc={initialBccRecipients}
-        initialSubject={draft?.subject}
+        initialSubject={replyComposeInitialSubject}
+        syncReplyHeadersFromProps
         autofocus={true}
         settingsLoading={settingsLoading}
         replyingTo={replyToMessage?.sender.email}
