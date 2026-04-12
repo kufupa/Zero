@@ -27,13 +27,14 @@ import { handleUnsubscribe } from '@/lib/email-utils.client';
 import { useThread, useThreads } from '@/hooks/use-threads';
 import { EmptyStateIcon } from '../icons/empty-state-svg';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import type { ParsedMessage, Attachment } from '@/types';
+import type { ParsedMessage, Attachment, Sender } from '@/types';
 import { useAnimations } from '@/hooks/use-animations';
 import { AnimatePresence, motion } from 'motion/react';
 import { MailDisplaySkeleton } from './mail-skeleton';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { Button } from '@/components/ui/button';
 import { cleanHtml } from '@/lib/email-utils';
+import { formatMailboxPlain } from '@/lib/mail/mailbox-format';
 import ReplyCompose from './reply-composer';
 import { NotesPanel } from './note-panel';
 import { cn, FOLDERS } from '@/lib/utils';
@@ -58,10 +59,15 @@ const formatFileSize = (size: number) => {
   return sizeInMB === '0.00' ? '' : `${sizeInMB} MB`;
 };
 
-const cleanNameDisplay = (name?: string) => {
-  if (!name) return '';
-  return name.replace(/["<>]/g, '');
-};
+const escapePrintHtml = (value: string) =>
+  value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+const formatMailboxListForPrint = (mailboxes?: Sender[] | null) =>
+  (mailboxes || [])
+    .map(formatMailboxPlain)
+    .filter(Boolean)
+    .map(escapePrintHtml)
+    .join('; ');
 
 interface ThreadDisplayProps {
   threadParam?: any;
@@ -537,8 +543,7 @@ export function ThreadDisplay() {
                   <div class="meta-row">
                     <span class="meta-label">From:</span>
                     <span class="meta-value">
-                      ${cleanNameDisplay(message.sender?.name)}
-                      ${message.sender?.email ? `<${message.sender.email}>` : ''}
+                      ${escapePrintHtml(formatMailboxPlain(message.sender))}
                     </span>
                   </div>
 
@@ -549,12 +554,7 @@ export function ThreadDisplay() {
                     <div class="meta-row">
                       <span class="meta-label">To:</span>
                       <span class="meta-value">
-                        ${message.to
-                          .map(
-                            (recipient) =>
-                              `${cleanNameDisplay(recipient.name)} <${recipient.email}>`,
-                          )
-                          .join(', ')}
+                        ${formatMailboxListForPrint(message.to)}
                       </span>
                     </div>
                   `
@@ -568,12 +568,7 @@ export function ThreadDisplay() {
                     <div class="meta-row">
                       <span class="meta-label">CC:</span>
                       <span class="meta-value">
-                        ${message.cc
-                          .map(
-                            (recipient) =>
-                              `${cleanNameDisplay(recipient.name)} <${recipient.email}>`,
-                          )
-                          .join(', ')}
+                        ${formatMailboxListForPrint(message.cc)}
                       </span>
                     </div>
                   `
@@ -587,12 +582,7 @@ export function ThreadDisplay() {
                     <div class="meta-row">
                       <span class="meta-label">BCC:</span>
                       <span class="meta-value">
-                        ${message.bcc
-                          .map(
-                            (recipient) =>
-                              `${cleanNameDisplay(recipient.name)} <${recipient.email}>`,
-                          )
-                          .join(', ')}
+                        ${formatMailboxListForPrint(message.bcc)}
                       </span>
                     </div>
                   `
