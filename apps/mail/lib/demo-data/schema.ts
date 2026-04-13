@@ -23,6 +23,7 @@ export const demoMessageSchema = z.object({
   bcc: z.array(participantSchema).optional(),
   subject: z.string(),
   body: z.string(),
+  bodyFormat: z.enum(['text', 'html']).default('text'),
   receivedOn: z.string().min(1),
   unread: z.boolean(),
   isDraft: z.boolean().optional(),
@@ -53,8 +54,10 @@ export const demoCorpusSchema = z.object({
   threads: z.array(demoThreadSchema).min(10),
 });
 
-export type DemoMessage = z.infer<typeof demoMessageSchema>;
-export type DemoThread = z.infer<typeof demoThreadSchema>;
+export type DemoMessageInput = z.input<typeof demoMessageSchema>;
+export type DemoMessage = z.output<typeof demoMessageSchema>;
+export type DemoThreadInput = z.input<typeof demoThreadSchema>;
+export type DemoThread = z.output<typeof demoThreadSchema>;
 export type DemoCorpus = z.infer<typeof demoCorpusSchema>;
 
 export function parseDemoCorpus(data: unknown): DemoCorpus {

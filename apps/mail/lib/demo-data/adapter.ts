@@ -1,5 +1,6 @@
 import centurionThreads from './centurion-threads.json';
-import { parseDemoCorpus, type DemoMessage, type DemoThread } from './schema';
+import { parseDemoCorpus, type DemoMessage, type DemoThread, type DemoThreadInput } from './schema';
+import { normalizeDemoMessageBody } from './normalize-demo-message-body';
 import { filterRemovedDemoLabels } from './label-filter';
 import type {
   CenturionMailCategory,
@@ -50,7 +51,7 @@ function toCenturionCategory(folder: DemoThread['folder']): CenturionMailCategor
 }
 
 /** Demo list views: inbox = all non-spam; category slugs = primary folder; urgent = flag; spam = quarantine only. */
-export function threadMatchesDemoListFolder(thread: DemoThread, folderSlug: string): boolean {
+export function threadMatchesDemoListFolder(thread: DemoThreadInput, folderSlug: string): boolean {
   switch (folderSlug) {
     case 'inbox':
       return thread.folder !== 'spam';
@@ -146,6 +147,10 @@ function mapDemoMessageToParsed(
   const inReplyTo = findPreviousInboundMessageId(messages, index);
   const threadTags = threadLabels.map((label) => ({ id: label.id, name: label.name, type: 'system' }));
   const isDraft = message.isDraft === true;
+  const normalizedBody = normalizeDemoMessageBody({
+    body: message.body,
+    bodyFormat: message.bodyFormat,
+  });
 
   return {
     id: message.id,
@@ -163,9 +168,9 @@ function mapDemoMessageToParsed(
     receivedOn: message.receivedOn,
     unread: message.unread,
     body: message.body,
-    processedHtml: toHtml(message.body),
+    processedHtml: normalizedBody,
     blobUrl: '',
-    decodedBody: toHtml(message.body),
+    decodedBody: normalizedBody,
     threadId: thread.id,
     isDraft,
     ...(inReplyTo ? { inReplyTo } : {}),
@@ -226,16 +231,6 @@ function normalizeMaxResults(maxResults?: number): number {
   if (!Number.isFinite(parsed)) return DEFAULT_MAX_RESULTS;
   if (parsed < 1) return DEFAULT_MAX_RESULTS;
   return Math.min(Math.floor(parsed), MAX_RESULTS);
-}
-
-function toHtml(input: string): string {
-  const safe = input.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  return safe
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .map((line) => `<p>${line}</p>`)
-    .join('');
 }
 
 function findPreviousInboundMessageId(messages: DemoMessage[], index: number): string | undefined {

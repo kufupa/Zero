@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { getDemoThread, listDemoThreads, threadMatchesDemoListFolder } from '../lib/demo-data/adapter';
-import type { DemoThread } from '../lib/demo-data/schema';
+import type { DemoThreadInput } from '../lib/demo-data/schema';
 
 const REMOVED_DEMO_LABELS = new Set(['comment', 'to respond', 'promotion', 'billing', 'notification']);
 
-function minimalThread(id: string, folder: DemoThread['folder'], urgent = false): DemoThread {
+const minimalThread = (id: string, folder: DemoThreadInput['folder'], urgent = false): DemoThreadInput => {
   return {
     id,
     folder,
@@ -22,7 +22,7 @@ function minimalThread(id: string, folder: DemoThread['folder'], urgent = false)
       },
     ],
   };
-}
+};
 
 describe('demo adapter', () => {
   it('returns at least one inbox thread', () => {
@@ -142,5 +142,14 @@ describe('demo adapter', () => {
     });
 
     expect(removedLabelList.threads).toHaveLength(0);
+  });
+
+  it('preserves incoming HTML for [Demo rich] threads', () => {
+    const thread = getDemoThread('sa-thread-rich-001');
+    const richMessage = thread.messages.at(0);
+    expect(richMessage).toBeDefined();
+    expect(richMessage?.decodedBody).toContain('<h1>Guest Handover</h1>');
+    expect(richMessage?.decodedBody).toContain('<blockquote>Use only pre-approved upgrades for <u>VIP profiles</u>.</blockquote>');
+    expect(richMessage?.decodedBody).toContain('<a href="https://example.com/operations/overnight-handover"');
   });
 });
