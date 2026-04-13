@@ -6,7 +6,7 @@ describe('demo session', () => {
     const session = getDemoSession();
 
     expect(session.user.id).toBe('demo-user');
-    expect(session.user.email).toBe('demo@centurion.local');
+    expect(session.user.email).toBe('centurion@legacyhotels.co.za');
     expect(session.user.name).toBeTruthy();
   });
 
