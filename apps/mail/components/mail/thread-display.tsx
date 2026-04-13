@@ -19,7 +19,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { useOptimisticThreadState } from '@/components/mail/optimistic-thread-state';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useOptimisticActions } from '@/hooks/use-optimistic-actions';
 import { focusedIndexAtom } from '@/hooks/use-mail-navigation';
 import { type ThreadDestination } from '@/lib/thread-actions';
@@ -241,18 +241,19 @@ export function ThreadDisplay() {
   );
   const draftVm = useMemo(() => {
     if (draftRowOptimistic.shouldHide) return null;
+    // Hide draft preview while any thread composer is open (reply / reply all / forward / continue draft).
+    if (mode) return null;
     return buildThreadDraftViewModel(latestDraft as ParsedMessage | undefined);
-  }, [latestDraft, draftRowOptimistic.shouldHide]);
+  }, [latestDraft, draftRowOptimistic.shouldHide, mode]);
 
   const openDraftForEdit = useCallback(() => {
-    if (!latestDraft?.id) return;
+    if (!latestDraft?.id || !emailData?.latest?.id) return;
     void setComposeState({
-      mode: null,
-      activeReplyId: null,
+      mode: 'reply',
+      activeReplyId: emailData.latest.id,
       draftId: latestDraft.id,
     });
-    void setIsComposeOpen('true');
-  }, [latestDraft?.id, setComposeState, setIsComposeOpen]);
+  }, [latestDraft?.id, emailData?.latest?.id, setComposeState]);
 
   const handleDeleteThreadDraft = useCallback(() => {
     if (!latestDraft?.id) return;
@@ -757,11 +758,7 @@ export function ThreadDisplay() {
   const shouldShowSkeleton = !emailData || isLoading || (isFetching && isThreadDataMismatch);
 
   const threadDraftSection = draftVm ? (
-    <ThreadAiMailsSection
-      title={m['common.threadDisplay.aiMailsTitle']()}
-      summariseLabel={m['common.threadDisplay.summariseAction']()}
-      onSummarise={() => toast.message(m['common.threadDisplay.summariseDemoToast']())}
-    >
+    <ThreadAiMailsSection>
       <ThreadDraftCard
         subject={draftVm.subject}
         bodyPreview={draftVm.bodyPreview}
@@ -1024,7 +1021,6 @@ export function ThreadDisplay() {
                     onAnimationComplete={handleAnimationComplete}
                     className="h-full w-full"
                   >
-                    {threadDraftSection}
                     <MessageList
                       messages={emailData.messages}
                       isFullscreen={isFullscreen}
@@ -1033,22 +1029,21 @@ export function ThreadDisplay() {
                       mode={mode || undefined}
                       activeReplyId={activeReplyId || undefined}
                       isMobile={isMobile}
+                      trailing={threadDraftSection}
                     />
                   </motion.div>
                 </AnimatePresence>
               ) : (
-                <>
-                  {threadDraftSection}
-                  <MessageList
-                    messages={emailData.messages}
-                    isFullscreen={isFullscreen}
-                    totalReplies={emailData?.totalReplies}
-                    allThreadAttachments={allThreadAttachments}
-                    mode={mode || undefined}
-                    activeReplyId={activeReplyId || undefined}
-                    isMobile={isMobile}
-                  />
-                </>
+                <MessageList
+                  messages={emailData.messages}
+                  isFullscreen={isFullscreen}
+                  totalReplies={emailData?.totalReplies}
+                  allThreadAttachments={allThreadAttachments}
+                  mode={mode || undefined}
+                  activeReplyId={activeReplyId || undefined}
+                  isMobile={isMobile}
+                  trailing={threadDraftSection}
+                />
               )}
 
               {mode &&
@@ -1077,6 +1072,7 @@ interface MessageListProps {
   mode?: string;
   activeReplyId?: string;
   isMobile: boolean;
+  trailing?: ReactNode;
 }
 
 const MessageList = ({
@@ -1087,6 +1083,7 @@ const MessageList = ({
   mode,
   activeReplyId,
   isMobile,
+  trailing,
 }: MessageListProps) => (
   <ScrollArea className={cn('flex-1', isMobile ? 'h-[calc(100%-1px)]' : 'h-full')} type="auto">
     <div className="pb-4">
@@ -1116,6 +1113,11 @@ const MessageList = ({
           </div>
         );
       })}
+      {trailing ? (
+        <div className={cn('duration-200', (messages?.length ?? 0) > 0 && 'border-border border-t')}>
+          {trailing}
+        </div>
+      ) : null}
     </div>
   </ScrollArea>
 );
