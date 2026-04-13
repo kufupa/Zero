@@ -239,7 +239,17 @@
       "enableImages": "Pokaż obrazy",
       "star": "Oznacz gwiazdką",
       "unstar": "Usuń oznaczenie gwiazdką",
-      "printThread": "Drukuj wątek"
+      "printThread": "Drukuj wątek",
+      "aiMailsTitle": "E-maile AI",
+      "summariseDemoToast": "Podsumowanie (demo)",
+      "summariseAction": "Streszczać",
+      "draftBadge": "[Projekt]",
+      "draftUnsentNotice": "Ta wiadomość nie została wysłana.",
+      "draftSavedPrefix": "Zapisano: ",
+      "draftTooltip": "Projekt",
+      "continueDraft": "Kontynuuj wersję roboczą",
+      "draftEmptyPreview": "Brak wersji roboczej tekstu do podglądu.",
+      "draftMoreOptions": "Więcej opcji"
     },
     "notes": {
       "title": "Notatki",
@@ -391,7 +401,16 @@
       "failedToUnmute": "Nie udało się wyłączyć wyciszenia",
       "archived": "Zarchiwizowano",
       "failedToArchive": "Nie udało się zarchiwizować",
-      "openInNewTab": "Otwórz w nowej karcie"
+      "openInNewTab": "Otwórz w nowej karcie",
+      "listSection": {
+        "pinned": "Przypięte",
+        "today": "Dzisiaj",
+        "yesterday": "Wczoraj",
+        "lastWeek": "W zeszłym tygodniu",
+        "thisMonth": "W tym miesiącu",
+        "lastMonth": "W zeszłym miesiącu",
+        "older": "Starszy"
+      }
     },
     "units": {
       "mb": "{amount} MB"

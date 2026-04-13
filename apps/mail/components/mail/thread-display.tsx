@@ -37,7 +37,10 @@ import { cleanHtml } from '@/lib/email-utils';
 import { formatMailboxPlain } from '@/lib/mail/mailbox-format';
 import ReplyCompose from './reply-composer';
 import { NotesPanel } from './note-panel';
-import { cn, FOLDERS } from '@/lib/utils';
+import { ThreadAiMailsSection } from '@/components/mail/thread-ai-mails-section';
+import { ThreadDraftCard } from '@/components/mail/thread-draft-card';
+import { buildThreadDraftViewModel } from '@/lib/mail/thread-draft-view-model';
+import { cn, FOLDERS, formatDateWithWeekdayAndTime } from '@/lib/utils';
 import { m } from '@/paraglide/messages';
 import MailDisplay from './mail-display';
 import { useParams } from 'react-router';
@@ -172,6 +175,7 @@ export function ThreadDisplay() {
     isFetching,
     isThreadDataMismatch,
     refetch: refetchThread,
+    latestDraft,
   } = useThread(id ?? null);
   const [, items] = useThreads();
   const [isStarred, setIsStarred] = useState(false);
@@ -226,6 +230,28 @@ export function ThreadDisplay() {
   const [focusedIndex, setFocusedIndex] = useAtom(focusedIndexAtom);
   const frontendOnlyDemo = isFrontendOnlyDemo();
   const [, setIsComposeOpen] = useQueryState('isComposeOpen');
+  const draftRowOptimistic = useOptimisticThreadState(
+    latestDraft?.isDraft ? latestDraft.id : '__thread_draft_none__',
+  );
+  const draftVm = useMemo(() => {
+    if (draftRowOptimistic.shouldHide) return null;
+    return buildThreadDraftViewModel(latestDraft as ParsedMessage | undefined);
+  }, [latestDraft, draftRowOptimistic.shouldHide]);
+
+  const openDraftForEdit = useCallback(() => {
+    if (!latestDraft?.id) return;
+    void setComposeState({
+      mode: null,
+      activeReplyId: null,
+      draftId: latestDraft.id,
+    });
+    void setIsComposeOpen('true');
+  }, [latestDraft?.id, setComposeState, setIsComposeOpen]);
+
+  const handleDeleteThreadDraft = useCallback(() => {
+    if (!latestDraft?.id) return;
+    optimisticDeleteDraft(latestDraft.id);
+  }, [latestDraft?.id, optimisticDeleteDraft]);
 
   // Get optimistic state for this thread
   const optimisticState = useOptimisticThreadState(id ?? '');
@@ -281,8 +307,12 @@ export function ThreadDisplay() {
     clearComposeContext();
   }, [setThreadId, clearComposeContext]);
 
-  const { optimisticMoveThreadsTo, optimisticToggleStar, optimisticToggleImportant } =
-    useOptimisticActions();
+  const {
+    optimisticMoveThreadsTo,
+    optimisticToggleStar,
+    optimisticToggleImportant,
+    optimisticDeleteDraft,
+  } = useOptimisticActions();
 
   const moveThreadTo = useCallback(
     async (destination: ThreadDestination) => {
@@ -727,6 +757,31 @@ export function ThreadDisplay() {
 
   const shouldShowSkeleton = !emailData || isLoading || (isFetching && isThreadDataMismatch);
 
+  const threadDraftSection = draftVm ? (
+    <ThreadAiMailsSection
+      title={m['common.threadDisplay.aiMailsTitle']()}
+      summariseLabel={m['common.threadDisplay.summariseAction']()}
+      onSummarise={() => toast.message(m['common.threadDisplay.summariseDemoToast']())}
+    >
+      <ThreadDraftCard
+        subject={draftVm.subject}
+        bodyPreview={draftVm.bodyPreview}
+        savedAtLabel={
+          m['common.threadDisplay.draftSavedPrefix']() +
+          formatDateWithWeekdayAndTime(draftVm.savedAtIso)
+        }
+        draftBadge={m['common.threadDisplay.draftBadge']()}
+        unsentNotice={m['common.threadDisplay.draftUnsentNotice']()}
+        emptyPreviewLabel={m['common.threadDisplay.draftEmptyPreview']()}
+        editLabel={m['common.threadDisplay.continueDraft']()}
+        deleteLabel={m['common.actions.Bin']()}
+        moreLabel={m['common.threadDisplay.draftMoreOptions']()}
+        onEdit={openDraftForEdit}
+        onDelete={handleDeleteThreadDraft}
+      />
+    </ThreadAiMailsSection>
+  ) : null;
+
   return (
     <div
       className={cn(
@@ -970,6 +1025,7 @@ export function ThreadDisplay() {
                     onAnimationComplete={handleAnimationComplete}
                     className="h-full w-full"
                   >
+                    {threadDraftSection}
                     <MessageList
                       messages={emailData.messages}
                       isFullscreen={isFullscreen}
@@ -982,15 +1038,18 @@ export function ThreadDisplay() {
                   </motion.div>
                 </AnimatePresence>
               ) : (
-                <MessageList
-                  messages={emailData.messages}
-                  isFullscreen={isFullscreen}
-                  totalReplies={emailData?.totalReplies}
-                  allThreadAttachments={allThreadAttachments}
-                  mode={mode || undefined}
-                  activeReplyId={activeReplyId || undefined}
-                  isMobile={isMobile}
-                />
+                <>
+                  {threadDraftSection}
+                  <MessageList
+                    messages={emailData.messages}
+                    isFullscreen={isFullscreen}
+                    totalReplies={emailData?.totalReplies}
+                    allThreadAttachments={allThreadAttachments}
+                    mode={mode || undefined}
+                    activeReplyId={activeReplyId || undefined}
+                    isMobile={isMobile}
+                  />
+                </>
               )}
 
               {mode &&

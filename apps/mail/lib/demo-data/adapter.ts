@@ -2,6 +2,8 @@ import centurionThreads from './centurion-threads.json';
 import { parseDemoCorpus, type DemoMessage, type DemoThread, type DemoThreadInput } from './schema';
 import { normalizeDemoMessageBody } from './normalize-demo-message-body';
 import { filterRemovedDemoLabels } from './label-filter';
+import { getDemoDeletedDraftIds, listDemoDrafts } from '../demo/local-store';
+import { parseRecipientToken, splitRecipientField } from '../demo/recipient-parsing';
 import type {
   CenturionMailCategory,
   IGetThreadResponse,
@@ -110,6 +112,41 @@ export function listDemoThreads(input: DemoListInput = {}): IGetThreadsResponse 
   };
 }
 
+function mergeDemoStoreDraftsIntoParsedMessages(
+  parsed: IGetThreadResponse['messages'][number][],
+  threadId: string,
+): IGetThreadResponse['messages'][number][] {
+  const storeDrafts = listDemoDrafts().filter((d) => d.threadId === threadId);
+  if (storeDrafts.length === 0) return parsed;
+
+  const next = [...parsed];
+  for (const d of storeDrafts) {
+    const normalizedBody = normalizeDemoMessageBody({ body: d.body, bodyFormat: 'text' });
+    const to = splitRecipientField(d.to)
+      .map((t) => parseRecipientToken(t))
+      .filter(
+        (x): x is NonNullable<ReturnType<typeof parseRecipientToken>> => x !== null,
+      )
+      .map((x) => ({ name: x.name, email: x.email }));
+
+    const idx = next.findIndex((m) => m.id === d.id);
+    if (idx >= 0) {
+      const prev = next[idx]!;
+      const subj = d.subject?.trim();
+      next[idx] = {
+        ...prev,
+        subject: subj || prev.subject,
+        title: subj || prev.title,
+        body: d.body,
+        decodedBody: normalizedBody,
+        processedHtml: normalizedBody,
+        to: to.length > 0 ? to : prev.to,
+      };
+    }
+  }
+  return next;
+}
+
 export function getDemoThread(id: string): IGetThreadResponse {
   const entry = threadLookup.get(id);
   if (!entry) {
@@ -117,9 +154,12 @@ export function getDemoThread(id: string): IGetThreadResponse {
   }
   const visibleLabels = filterRemovedDemoLabels(entry.thread.labels);
 
-  const parsedMessages = entry.messages.map((message, index) =>
+  let parsedMessages = entry.messages.map((message, index) =>
     mapDemoMessageToParsed(entry.thread, visibleLabels, entry.messages, message, index),
   );
+  parsedMessages = mergeDemoStoreDraftsIntoParsedMessages(parsedMessages, entry.thread.id);
+  const deletedIds = new Set(getDemoDeletedDraftIds());
+  parsedMessages = parsedMessages.filter((message) => !deletedIds.has(message.id));
   const nonDraftMessages = parsedMessages.filter((message) => message.isDraft !== true);
   const latest = nonDraftMessages[nonDraftMessages.length - 1];
 

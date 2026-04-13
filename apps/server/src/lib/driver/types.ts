@@ -8,6 +8,12 @@ export type CenturionMailCategory = 'internal' | 'individual' | 'group' | 'trave
 
 export const centurionMailCategorySchema = z.enum(['internal', 'individual', 'group', 'travel-agents']);
 
+/**
+ * Drafts (future backend):
+ * - v1: `messages[].isDraft` plus `latest` pointing at the newest non-draft message (current shape).
+ * - v2 optional: `drafts: ParsedMessage[]` for multiple drafts / AI variants; the mail UI can pick
+ *   `findLast` over that list or honor an explicit `activeDraftId` when added.
+ */
 export interface IGetThreadResponse {
   messages: ParsedMessage[];
   latest?: ParsedMessage;

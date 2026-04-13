@@ -239,7 +239,17 @@
       "enableImages": "画像を表示",
       "star": "スターを付ける",
       "unstar": "スターを外す",
-      "printThread": "スレッドを印刷"
+      "printThread": "スレッドを印刷",
+      "aiMailsTitle": "AIメール",
+      "summariseDemoToast": "要約（デモ）",
+      "summariseAction": "要約する",
+      "draftBadge": "[下書き]",
+      "draftUnsentNotice": "このメッセージは送信されていません。",
+      "draftSavedPrefix": "保存済み: ",
+      "draftTooltip": "下書き",
+      "continueDraft": "下書きを続ける",
+      "draftEmptyPreview": "まだプレビューできる下書きテキストはありません。",
+      "draftMoreOptions": "その他のオプション"
     },
     "notes": {
       "title": "メモ",
@@ -391,7 +401,16 @@
       "failedToUnmute": "ミュート解除に失敗しました",
       "archived": "アーカイブしました",
       "failedToArchive": "アーカイブに失敗しました",
-      "openInNewTab": "新しいタブで開く"
+      "openInNewTab": "新しいタブで開く",
+      "listSection": {
+        "pinned": "ピン留め",
+        "today": "今日",
+        "yesterday": "昨日",
+        "lastWeek": "先週",
+        "thisMonth": "今月",
+        "lastMonth": "先月",
+        "older": "年配の方"
+      }
     },
     "units": {
       "mb": "{amount} MB"

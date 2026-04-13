@@ -14,8 +14,8 @@ describe('demo draft seed + query key', () => {
     const drafts = listDemoDrafts();
 
     expect(drafts.length).toBeGreaterThanOrEqual(2);
-    expect(drafts.some((d) => d.id === 'draft-demo-kleinkaap')).toBe(true);
-    expect(drafts.some((d) => d.id === 'draft-demo-morake')).toBe(true);
+    expect(drafts.some((d) => d.id === 'sa-002-msg-02')).toBe(true);
+    expect(drafts.some((d) => d.id === 'sa-006-msg-02')).toBe(true);
   });
 
   it('uses stable react-query key prefix for draft list invalidation', () => {

@@ -571,6 +571,7 @@ export function useOptimisticActions() {
           if (frontendOnlyDemo) {
             await demoDeleteDraftAction(draftId);
             void queryClient.invalidateQueries({ queryKey: [...DEMO_MAIL_LIST_DRAFTS_QUERY_PREFIX] });
+            void queryClient.invalidateQueries({ queryKey: ['demo', 'mail', 'thread'] });
           } else {
             await deleteDraft({ id: draftId });
           }

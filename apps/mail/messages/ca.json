@@ -239,7 +239,17 @@
       "enableImages": "Mostra les imatges",
       "star": "Destacar",
       "unstar": "Treure destacat",
-      "printThread": "Imprimir fil"
+      "printThread": "Imprimir fil",
+      "aiMailsTitle": "Correus electrònics d'IA",
+      "summariseDemoToast": "Resumir (demo)",
+      "summariseAction": "Resumir",
+      "draftBadge": "[Esborrany]",
+      "draftUnsentNotice": "Aquest missatge no s'ha enviat.",
+      "draftSavedPrefix": "Desat: ",
+      "draftTooltip": "Esborrany",
+      "continueDraft": "Continua l'esborrany",
+      "draftEmptyPreview": "Encara no hi ha cap esborrany de text per previsualitzar.",
+      "draftMoreOptions": "Més opcions"
     },
     "notes": {
       "title": "Notes",
@@ -391,7 +401,16 @@
       "failedToUnmute": "No s'ha pogut activar el so",
       "archived": "Arxivat",
       "failedToArchive": "No s'ha pogut arxivar",
-      "openInNewTab": "Obre en una pestanya nova"
+      "openInNewTab": "Obre en una pestanya nova",
+      "listSection": {
+        "pinned": "Fixat",
+        "today": "Avui",
+        "yesterday": "Ahir",
+        "lastWeek": "La setmana passada",
+        "thisMonth": "Aquest mes",
+        "lastMonth": "El mes passat",
+        "older": "Més antic"
+      }
     },
     "units": {
       "mb": "{amount} MB"

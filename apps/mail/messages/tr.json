@@ -239,7 +239,17 @@
       "enableImages": "Görselleri Göster",
       "star": "Yıldızla",
       "unstar": "Yıldızı kaldır",
-      "printThread": "Yazışmayı yazdır"
+      "printThread": "Yazışmayı yazdır",
+      "aiMailsTitle": "Yapay Zeka E-postaları",
+      "summariseDemoToast": "Özetle (örnek)",
+      "summariseAction": "Özetleyin",
+      "draftBadge": "[Taslak]",
+      "draftUnsentNotice": "Bu mesaj gönderilmedi.",
+      "draftSavedPrefix": "Kaydedildi: ",
+      "draftTooltip": "Taslak",
+      "continueDraft": "Taslağı devam ettirin",
+      "draftEmptyPreview": "Henüz önizleme için taslak metin bulunmamaktadır.",
+      "draftMoreOptions": "Daha fazla seçenek"
     },
     "notes": {
       "title": "Notlar",
@@ -391,7 +401,16 @@
       "failedToUnmute": "Ses açılamadı",
       "archived": "Arşivlendi",
       "failedToArchive": "Arşivlenemedi",
-      "openInNewTab": "Yeni sekmede aç"
+      "openInNewTab": "Yeni sekmede aç",
+      "listSection": {
+        "pinned": "Sabitlendi",
+        "today": "Bugün",
+        "yesterday": "Dün",
+        "lastWeek": "Geçen hafta",
+        "thisMonth": "Bu ay",
+        "lastMonth": "Geçen ay",
+        "older": "Daha yaşlı"
+      }
     },
     "units": {
       "mb": "{amount} MB"

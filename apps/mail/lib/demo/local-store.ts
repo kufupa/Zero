@@ -92,6 +92,8 @@ export type DemoStore = {
   templates: Record<string, DemoTemplate>;
   labels: Record<string, DemoLabel>;
   settings: DemoSettings;
+  /** Demo thread draft message ids removed by user (tombstone); hides matching `isDraft` rows in getDemoThread. */
+  deletedDraftIds: string[];
 };
 
 const DEMO_USER_ID = 'demo-user';
@@ -117,7 +119,7 @@ const DEFAULT_SETTINGS: DemoSettings = {
 
 const SEED_DRAFTS: DemoDraft[] = [
   {
-    id: 'draft-demo-kleinkaap',
+    id: 'sa-002-msg-02',
     userId: DEMO_USER_ID,
     threadId: 'sa-thread-002',
     subject: 'RE: Kleinkaap Overflow Rooms 23 April',
@@ -129,7 +131,7 @@ const SEED_DRAFTS: DemoDraft[] = [
     updatedAt: '2026-04-11T10:00:00.000Z',
   },
   {
-    id: 'draft-demo-morake',
+    id: 'sa-006-msg-02',
     userId: DEMO_USER_ID,
     threadId: 'sa-thread-006',
     subject: 'RE: Request for a quotation',
@@ -212,13 +214,19 @@ export function upsertDemoDraft(input: DemoDraftInput): DemoDraft {
 
 export function deleteDemoDraft(id: string): boolean {
   const store = getActiveDemoStore();
-  if (!store.drafts[id]) {
-    return false;
+  if (store.drafts[id]) {
+    delete store.drafts[id];
   }
-
-  delete store.drafts[id];
+  if (!store.deletedDraftIds.includes(id)) {
+    store.deletedDraftIds.push(id);
+  }
   persistDemoStore(store);
   return true;
+}
+
+export function getDemoDeletedDraftIds(): readonly string[] {
+  const store = getActiveDemoStore();
+  return [...store.deletedDraftIds];
 }
 
 function ensureSeededDemoDrafts(store: DemoStore): void {
@@ -437,6 +445,7 @@ function createEmptyDemoStore(): DemoStore {
     templates: {},
     labels: seedLabels(),
     settings: clone(DEFAULT_SETTINGS),
+    deletedDraftIds: [],
   };
 }
 
@@ -474,6 +483,9 @@ function loadDemoStore(): DemoStore {
       categories: storedValue.settings?.categories ?? DEFAULT_SETTINGS.categories,
       trustedSenders: storedValue.settings?.trustedSenders ?? DEFAULT_SETTINGS.trustedSenders,
     },
+    deletedDraftIds: Array.isArray(storedValue.deletedDraftIds)
+      ? storedValue.deletedDraftIds.filter((x): x is string => typeof x === 'string' && x.length > 0)
+      : [],
   };
   return inMemoryStore;
 }
@@ -504,6 +516,9 @@ function sanitizeStore(raw: Partial<DemoStore>): DemoStore {
       categories: raw.settings?.categories ?? DEFAULT_SETTINGS.categories,
       trustedSenders: raw.settings?.trustedSenders ?? DEFAULT_SETTINGS.trustedSenders,
     },
+    deletedDraftIds: Array.isArray(raw.deletedDraftIds)
+      ? raw.deletedDraftIds.filter((x): x is string => typeof x === 'string' && x.length > 0)
+      : [],
   };
 }
 

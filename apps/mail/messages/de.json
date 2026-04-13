@@ -239,7 +239,17 @@
       "enableImages": "Bilder anzeigen",
       "star": "Mit Stern markieren",
       "unstar": "Stern entfernen",
-      "printThread": "Thread drucken"
+      "printThread": "Thread drucken",
+      "aiMailsTitle": "KI-E-Mails",
+      "summariseDemoToast": "Zusammenfassung (Demo)",
+      "summariseAction": "Zusammenfassen",
+      "draftBadge": "[Entwurf]",
+      "draftUnsentNotice": "Diese Nachricht wurde nicht gesendet.",
+      "draftSavedPrefix": "Gespeichert: ",
+      "draftTooltip": "Entwurf",
+      "continueDraft": "Entwurf fortsetzen",
+      "draftEmptyPreview": "Noch kein Entwurfstext zur Vorschau verfügbar.",
+      "draftMoreOptions": "Mehr Optionen"
     },
     "notes": {
       "title": "Notizen",
@@ -391,7 +401,16 @@
       "failedToUnmute": "Aufhebung der Stummschaltung fehlgeschlagen",
       "archived": "Archiviert",
       "failedToArchive": "Archivierung fehlgeschlagen",
-      "openInNewTab": "In neuem Tab öffnen"
+      "openInNewTab": "In neuem Tab öffnen",
+      "listSection": {
+        "pinned": "Angepinnt",
+        "today": "Heute",
+        "yesterday": "Gestern",
+        "lastWeek": "Letzte Woche",
+        "thisMonth": "Diesen Monat",
+        "lastMonth": "Letzten Monat",
+        "older": "Älter"
+      }
     },
     "units": {
       "mb": "{amount} MB"

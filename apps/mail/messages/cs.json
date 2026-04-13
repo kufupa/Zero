@@ -239,7 +239,17 @@
       "enableImages": "Zobrazit obrázky",
       "star": "Označit hvězdičkou",
       "unstar": "Odebrat hvězdičku",
-      "printThread": "Tisknout vlákno"
+      "printThread": "Tisknout vlákno",
+      "aiMailsTitle": "E-maily s umělou inteligencí",
+      "summariseDemoToast": "Shrnout (demo)",
+      "summariseAction": "Shrnout",
+      "draftBadge": "[Návrh]",
+      "draftUnsentNotice": "Tato zpráva nebyla odeslána.",
+      "draftSavedPrefix": "Uloženo: ",
+      "draftTooltip": "Návrh",
+      "continueDraft": "Pokračovat v konceptu",
+      "draftEmptyPreview": "Zatím není k dispozici žádný koncept textu k zobrazení náhledu.",
+      "draftMoreOptions": "Více možností"
     },
     "notes": {
       "title": "Poznámky",
@@ -391,7 +401,16 @@
       "failedToUnmute": "Zrušení ztlumení se nezdařilo",
       "archived": "Archivováno",
       "failedToArchive": "Archivace se nezdařila",
-      "openInNewTab": "Otevřít v nové záložce"
+      "openInNewTab": "Otevřít v nové záložce",
+      "listSection": {
+        "pinned": "Připnuto",
+        "today": "Dnes",
+        "yesterday": "Včera",
+        "lastWeek": "Minulý týden",
+        "thisMonth": "Tento měsíc",
+        "lastMonth": "Minulý měsíc",
+        "older": "Starší"
+      }
     },
     "units": {
       "mb": "{amount} MB"

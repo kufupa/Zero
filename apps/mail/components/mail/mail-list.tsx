@@ -30,6 +30,9 @@ import { useSearchValue } from '@/hooks/use-search-value';
 import { EmptyStateIcon } from '../icons/empty-state-svg';
 import { highlightText } from '@/lib/email-utils.client';
 import { mailListPlainPreview } from '@/lib/mail/mail-list-preview';
+import { buildMailListVirtualRows } from '@/lib/mail/build-mail-list-virtual-rows';
+import type { MailDateBucket } from '@/lib/mail/thread-date-bucket';
+import { MailListSectionHeader } from '@/components/mail/mail-list-section-header';
 import { cn, FOLDERS, formatDateWithWeekdayAndTime } from '@/lib/utils';
 import { useTRPC } from '@/providers/query-provider';
 import { useThreadLabels } from '@/hooks/use-labels';
@@ -50,6 +53,29 @@ import { Avatar } from '../ui/avatar';
 import { useQueryState } from 'nuqs';
 import { useAtom } from 'jotai';
 import { resolveImportantState } from '@/lib/mail/important-ui';
+
+function mailListSectionLabel(bucket: MailDateBucket): string {
+  switch (bucket) {
+    case 'pinned':
+      return m['common.mail.listSection.pinned']();
+    case 'today':
+      return m['common.mail.listSection.today']();
+    case 'yesterday':
+      return m['common.mail.listSection.yesterday']();
+    case 'lastWeek':
+      return m['common.mail.listSection.lastWeek']();
+    case 'thisMonth':
+      return m['common.mail.listSection.thisMonth']();
+    case 'lastMonth':
+      return m['common.mail.listSection.lastMonth']();
+    case 'older':
+      return m['common.mail.listSection.older']();
+    default: {
+      const _exhaustive: never = bucket;
+      return _exhaustive;
+    }
+  }
+}
 
 type LabelForMemo = Readonly<{
   id: string;
@@ -491,7 +517,9 @@ const Thread = memo(
                               <PencilCompose className="h-3 w-3 fill-blue-500 dark:fill-blue-400" />
                             </span>
                           </TooltipTrigger>
-                          <TooltipContent className="p-1 text-xs">Draft</TooltipContent>
+                          <TooltipContent className="p-1 text-xs">
+                            {m['common.threadDisplay.draftTooltip']()}
+                          </TooltipContent>
                         </Tooltip>
                       ) : null}
                       {/* {hasNotes ? (
@@ -760,6 +788,11 @@ export const MailList = memo(function MailList() {
     const [, setActiveReplyId] = useQueryState('activeReplyId');
     const [searchValue, setSearchValue] = useSearchValue();
     const [anchorIndex, setAnchorIndex] = useState<number | null>(null);
+    const [collapsedSections, setCollapsedSections] = useState<Set<MailDateBucket>>(() => new Set());
+
+    useEffect(() => {
+      setCollapsedSections(new Set());
+    }, [folder]);
 
     useEffect(() => {
       const handleKeyDown = (event: KeyboardEvent) => {
@@ -947,39 +980,71 @@ export const MailList = memo(function MailList() {
 
     const Comp = useMemo(() => (folder === FOLDERS.DRAFT ? Draft : Thread), [folder]);
 
+    const groupList = !isFiltering;
+
+    const toggleSection = useCallback((bucket: MailDateBucket) => {
+      setCollapsedSections((prev) => {
+        const next = new Set(prev);
+        if (next.has(bucket)) next.delete(bucket);
+        else next.add(bucket);
+        return next;
+      });
+    }, []);
+
+    const virtualRows = useMemo(
+      () =>
+        buildMailListVirtualRows(filteredItems, new Date(), collapsedSections, {
+          groupByDate: groupList,
+        }),
+      [filteredItems, collapsedSections, groupList],
+    );
+
     const vListRenderer = useCallback(
       (index: number) => {
-        const item = filteredItems[index];
-        return item ? (
-          <>
+        const row = virtualRows[index];
+        if (!row) return <></>;
+
+        if (row.type === 'header') {
+          return (
+            <div key={row.key} data-mail-list-section={row.bucket}>
+              <MailListSectionHeader
+                label={mailListSectionLabel(row.bucket)}
+                expanded={!collapsedSections.has(row.bucket)}
+                onToggle={() => toggleSection(row.bucket)}
+              />
+            </div>
+          );
+        }
+
+        const isLastThread = row.threadIndex === filteredItems.length - 1;
+
+        return (
+          <div key={row.key}>
             <Comp
-              key={item.id}
-              message={item}
-              isKeyboardFocused={focusedIndex === index && keyboardActive}
-              index={index}
+              message={row.message}
+              isKeyboardFocused={focusedIndex === row.threadIndex && keyboardActive}
+              index={row.threadIndex}
               onClick={handleMailClick}
             />
-            {index === filteredItems.length - 1 && (isFetchingNextPage || isFetchingMail) ? (
+            {isLastThread && (isFetchingNextPage || isFetchingMail) ? (
               <div className="flex w-full justify-center py-4">
                 <div className="h-4 w-4 animate-spin rounded-full border-2 border-neutral-900 border-t-transparent dark:border-white dark:border-t-transparent" />
               </div>
             ) : null}
-          </>
-        ) : (
-          <></>
+          </div>
         );
       },
       [
-        folder,
-        filteredItems,
+        Comp,
+        collapsedSections,
+        filteredItems.length,
         focusedIndex,
         keyboardActive,
+        handleMailClick,
         isFetchingMail,
         isFetchingNextPage,
-        handleMailClick,
-        isLoading,
-        isFetching,
-        hasNextPage,
+        toggleSection,
+        virtualRows,
       ],
     );
 
@@ -1016,16 +1081,15 @@ export const MailList = memo(function MailList() {
               <div className="flex flex-1 flex-col" id="mail-list-scroll">
                 <VList
                   ref={vListRef}
-                  count={filteredItems.length}
+                  count={virtualRows.length}
                   overscan={5}
-                  itemSize={100}
                   className="scrollbar-none flex-1 overflow-x-hidden"
                   onScroll={() => {
                     if (!vListRef.current) return;
                     const endIndex = vListRef.current.findEndIndex();
                     if (
-                      // if the shown items are last 5 items, load more
-                      Math.abs(filteredItems.length - 1 - endIndex) < 7 &&
+                      virtualRows.length > 0 &&
+                      endIndex >= virtualRows.length - 8 &&
                       !isLoading &&
                       !isFetchingNextPage &&
                       !isFetchingMail &&
