@@ -29,6 +29,7 @@ import { useThread, useThreads } from '@/hooks/use-threads';
 import { useSearchValue } from '@/hooks/use-search-value';
 import { EmptyStateIcon } from '../icons/empty-state-svg';
 import { highlightText } from '@/lib/email-utils.client';
+import { mailListPlainPreview } from '@/lib/mail/mail-list-preview';
 import { cn, FOLDERS, formatDate } from '@/lib/utils';
 import { useTRPC } from '@/providers/query-provider';
 import { useThreadLabels } from '@/hooks/use-labels';
@@ -107,7 +108,8 @@ const Thread = memo(
 
     const { displayStarred, displayImportant, displayUnread, optimisticLabels, emailContent } =
       useMemo(() => {
-        const emailContent = getThreadData?.latest?.body;
+        const source = getThreadData?.latest?.decodedBody || getThreadData?.latest?.body || '';
+        const emailContent = mailListPlainPreview(source);
         const displayStarred =
           optimisticState.optimisticStarred !== null
             ? optimisticState.optimisticStarred
@@ -161,6 +163,8 @@ const Thread = memo(
         optimisticState.optimisticStarred,
         optimisticState.optimisticImportant,
         optimisticState.optimisticRead,
+        getThreadData?.latest?.body,
+        getThreadData?.latest?.decodedBody,
         getThreadData?.latest?.tags,
         getThreadData?.messages,
         getThreadData?.hasUnread,
