@@ -15,7 +15,7 @@ const DEMO_SETTINGS: any = {
     customPrompt: '',
     zeroSignature: false,
     categories: [],
-    defaultEmailAlias: 'demo@centurion.local',
+    defaultEmailAlias: 'centurion@legacyhotels.co.za',
     undoSendEnabled: true,
     imageCompression: 'medium',
     autoRead: true,
@@ -28,7 +28,7 @@ export function useSettings() {
   const trpc = useTRPC();
   const demoMode = isFrontendOnlyDemo();
   const currentUserEmail = session?.user?.email?.trim().toLowerCase() || '';
-  const demoUserEmail = currentUserEmail || 'demo@centurion.local';
+  const demoUserEmail = currentUserEmail || 'centurion@legacyhotels.co.za';
 
   const demoSettingsQuery = useQuery({
     queryKey: ['demo', 'settings', demoUserEmail],

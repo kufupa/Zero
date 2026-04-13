@@ -6,8 +6,10 @@ import { useTRPC } from '@/providers/query-provider';
 import useSearchLabels from './use-labels-search';
 import { useSession } from '@/lib/auth-client';
 import { listDemoThreads, getDemoThread } from '@/lib/demo-data/adapter';
+import { demoMailListDraftsQueryKey } from '@/lib/demo/demo-mail-query-keys';
 import { normalizeDemoMailFolderSlug } from '@/lib/demo/folder-map';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { listDemoDrafts } from '@/lib/demo/local-store';
 import { useAtom, useAtomValue } from 'jotai';
 import { useSettings } from './use-settings';
 import { useParams } from 'react-router';
@@ -55,6 +57,38 @@ export const useThreads = (options?: UseThreadsOptions) => {
     ? paletteOpen && (demoMode || Boolean(session?.user?.id))
     : baseEnabled;
 
+  const demoDraftFolder =
+    demoMode && listEnabled && canonicalRouteFolder === 'draft';
+
+  const demoDraftsQuery = useInfiniteQuery({
+    queryKey: demoMailListDraftsQueryKey(searchValue.value),
+    initialPageParam: '',
+    queryFn: async () => {
+      const q = searchValue.value.trim().toLowerCase();
+      let drafts = listDemoDrafts();
+      if (q) {
+        drafts = drafts.filter(
+          (d) =>
+            d.subject.toLowerCase().includes(q) ||
+            d.to.toLowerCase().includes(q) ||
+            d.body.toLowerCase().includes(q) ||
+            d.cc.toLowerCase().includes(q) ||
+            d.bcc.toLowerCase().includes(q),
+        );
+      }
+      drafts.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+      return {
+        threads: drafts.map((d) => ({ id: d.id, historyId: null as const })),
+        nextPageToken: null,
+      };
+    },
+    getNextPageParam: () => null,
+    staleTime: 60 * 1000,
+    refetchOnMount: false,
+    refetchIntervalInBackground: true,
+    enabled: demoDraftFolder,
+  });
+
   const demoThreadsQuery = useInfiniteQuery({
     queryKey: [
       'demo',
@@ -76,7 +110,7 @@ export const useThreads = (options?: UseThreadsOptions) => {
     staleTime: 60 * 1000,
     refetchOnMount: false,
     refetchIntervalInBackground: true,
-    enabled: demoMode && listEnabled,
+    enabled: demoMode && listEnabled && !demoDraftFolder,
   });
 
   const threadsQuery = useInfiniteQuery(
@@ -96,7 +130,11 @@ export const useThreads = (options?: UseThreadsOptions) => {
       },
     ),
   );
-  const activeThreadsQuery = demoMode ? demoThreadsQuery : threadsQuery;
+  const activeThreadsQuery = demoMode
+    ? demoDraftFolder
+      ? demoDraftsQuery
+      : demoThreadsQuery
+    : threadsQuery;
 
   // Flatten threads from all pages and sort by receivedOn date (newest first)
 

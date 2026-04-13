@@ -13,6 +13,7 @@ import { useCallback } from 'react';
 import posthog from 'posthog-js';
 import { useAtom } from 'jotai';
 import { toast } from 'sonner';
+import { DEMO_MAIL_LIST_DRAFTS_QUERY_PREFIX } from '@/lib/demo/demo-mail-query-keys';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import {
   demoBulkDeleteThreads,
@@ -569,6 +570,7 @@ export function useOptimisticActions() {
       execute: async () => {
           if (frontendOnlyDemo) {
             await demoDeleteDraftAction(draftId);
+            void queryClient.invalidateQueries({ queryKey: [...DEMO_MAIL_LIST_DRAFTS_QUERY_PREFIX] });
           } else {
             await deleteDraft({ id: draftId });
           }

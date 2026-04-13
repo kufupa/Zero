@@ -19,8 +19,9 @@ import { AnimatePresence, motion } from 'motion/react';
 import { zodResolver } from '@hookform/resolvers/zod';
 
 import { useTRPC } from '@/providers/query-provider';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useSettings } from '@/hooks/use-settings';
+import { DEMO_MAIL_LIST_DRAFTS_QUERY_PREFIX } from '@/lib/demo/demo-mail-query-keys';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import {
   demoAiCompose,
@@ -219,6 +220,7 @@ export function EmailComposer({
   ];
 
   const trpc = useTRPC();
+  const queryClient = useQueryClient();
   const { mutateAsync: aiCompose } = useMutation(trpc.ai.compose.mutationOptions());
   const { mutateAsync: createDraft } = useMutation(trpc.drafts.create.mutationOptions());
   const { mutateAsync: generateEmailSubject } = useMutation(
@@ -535,6 +537,7 @@ export function EmailComposer({
         cc: values.cc?.join(', '),
         bcc: values.bcc?.join(', '),
         subject: values.subject,
+        body: editor.getHTML(),
         message: editor.getHTML(),
         attachments: await serializeFiles(values.attachments ?? []),
         id: draftId,
@@ -548,6 +551,9 @@ export function EmailComposer({
 
       if (response?.id && response.id !== draftId) {
         setDraftId(response.id);
+      }
+      if (isFrontendOnlyDemo()) {
+        void queryClient.invalidateQueries({ queryKey: [...DEMO_MAIL_LIST_DRAFTS_QUERY_PREFIX] });
       }
       setHasUnsavedChanges(false);
     } catch (error) {
