@@ -76,14 +76,16 @@ function getDemoMailFolderNavItemTheme(folderId: DemoMailFolderId): Pick<NavItem
   };
 }
 
-const demoMailFolderNavItems: NavItem[] = DEMO_MAIL_FOLDER_DEFINITIONS.map((folder) => ({
-  id: folder.id,
-  title: folder.title,
-  subtitle: folder.subtitle,
-  url: `/mail/${folder.id}`,
-  icon: getDemoMailFolderIcon(folder.id),
-  ...getDemoMailFolderNavItemTheme(folder.id),
-}));
+const demoMailFolderNavItems: NavItem[] = DEMO_MAIL_FOLDER_DEFINITIONS.filter((folder) => folder.id !== 'spam')
+  .sort((a, b) => (a.id === 'urgent' ? -1 : b.id === 'urgent' ? 1 : 0))
+  .map((folder) => ({
+    id: folder.id,
+    title: folder.title,
+    subtitle: folder.subtitle,
+    url: `/mail/${folder.id}`,
+    icon: getDemoMailFolderIcon(folder.id),
+    ...getDemoMailFolderNavItemTheme(folder.id),
+  }));
 
 // ! items title has to be a message key (check messages/en.json)
 export const navigationConfig: Record<string, NavConfig> = {
@@ -113,6 +115,14 @@ export const navigationConfig: Record<string, NavConfig> = {
           },
         ],
       },
+      ...(DEMO_FOLDER_MODEL_ENABLED
+        ? [
+            {
+              title: 'Folders',
+              items: demoMailFolderNavItems,
+            },
+          ]
+        : []),
       {
         title: 'Management',
         items: [
@@ -128,32 +138,20 @@ export const navigationConfig: Record<string, NavConfig> = {
             url: '/mail/snoozed',
             icon: Clock,
           },
-          ...(!DEMO_FOLDER_MODEL_ENABLED
-            ? [
-                {
-                  id: 'spam',
-                  title: m['navigation.sidebar.spam'](),
-                  url: '/mail/spam',
-                  icon: ExclamationCircle,
-                },
-              ]
-            : []),
           {
             id: 'trash',
             title: m['navigation.sidebar.bin'](),
             url: '/mail/bin',
             icon: Bin,
           },
+          {
+            id: 'spam',
+            title: m['navigation.sidebar.spam'](),
+            url: '/mail/spam',
+            icon: ExclamationCircle,
+          },
         ],
       },
-      ...(DEMO_FOLDER_MODEL_ENABLED
-        ? [
-            {
-              title: 'Folders',
-              items: demoMailFolderNavItems,
-            },
-          ]
-        : []),
     ],
   },
   settings: {
