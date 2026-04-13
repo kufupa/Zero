@@ -229,6 +229,12 @@ export function ThreadDisplay() {
 
   const [focusedIndex, setFocusedIndex] = useAtom(focusedIndexAtom);
   const frontendOnlyDemo = isFrontendOnlyDemo();
+  const {
+    optimisticMoveThreadsTo,
+    optimisticToggleStar,
+    optimisticToggleImportant,
+    optimisticDeleteDraft,
+  } = useOptimisticActions();
   const [, setIsComposeOpen] = useQueryState('isComposeOpen');
   const draftRowOptimistic = useOptimisticThreadState(
     latestDraft?.isDraft ? latestDraft.id : '__thread_draft_none__',
@@ -306,13 +312,6 @@ export function ThreadDisplay() {
     setThreadId(null);
     clearComposeContext();
   }, [setThreadId, clearComposeContext]);
-
-  const {
-    optimisticMoveThreadsTo,
-    optimisticToggleStar,
-    optimisticToggleImportant,
-    optimisticDeleteDraft,
-  } = useOptimisticActions();
 
   const moveThreadTo = useCallback(
     async (destination: ThreadDestination) => {
