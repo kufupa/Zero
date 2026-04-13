@@ -17,6 +17,56 @@ export type DemoMailFolderDefinition = {
   aliases: string[];
 };
 
+export type CenturionCategoryColorStyle = {
+  bg: string;
+  text: string;
+  darkBg: string;
+  darkText: string;
+};
+
+export const CENTURION_CATEGORY_COLOR_STYLES: Record<CenturionMailCategory, CenturionCategoryColorStyle> = {
+  /**
+   * Internal mail: blue conveys clarity, professionalism, and reliability.
+   */
+  internal: {
+    bg: '#DBEAFE',
+    text: '#1E3A8A',
+    darkBg: '#1E3A8A',
+    darkText: '#DBEAFE',
+  },
+  /**
+   * Individual room bookings: green suggests trust, calm handling, and action-ready support.
+   */
+  individual: {
+    bg: '#DCFCE7',
+    text: '#166534',
+    darkBg: '#14532D',
+    darkText: '#DCFCE7',
+  },
+  /**
+   * Group bookings: orange suggests activity, coordination, and urgency for events.
+   */
+  group: {
+    bg: '#FFEDD5',
+    text: '#9A3412',
+    darkBg: '#7C2D12',
+    darkText: '#FED7AA',
+  },
+  /**
+   * Travel agents: purple implies partnership, exploration, and strategic coordination.
+   */
+  'travel-agents': {
+    bg: '#EDE9FE',
+    text: '#4C1D95',
+    darkBg: '#5B21B6',
+    darkText: '#EDE9FE',
+  },
+};
+
+export function getCenturionCategoryColorStyle(slug: CenturionMailCategory): CenturionCategoryColorStyle {
+  return CENTURION_CATEGORY_COLOR_STYLES[slug];
+}
+
 /** Demo-only mail slices (URLs under /mail/:folder). Order = sidebar order. */
 export const DEMO_MAIL_FOLDER_DEFINITIONS: DemoMailFolderDefinition[] = [
   {

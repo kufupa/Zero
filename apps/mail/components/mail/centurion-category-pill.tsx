@@ -2,60 +2,12 @@ import { Link } from 'react-router';
 import { cn } from '@/lib/utils';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import {
+  getCenturionCategoryColorStyle,
   getCenturionCategoryTitle,
   shouldShowCenturionCategoryPill,
 } from '@/lib/demo/folder-map';
 import type { CenturionMailCategory } from '@/types';
 import type { CSSProperties } from 'react';
-
-const CENTURION_CATEGORY_PILL_STYLES: Record<
-  CenturionMailCategory,
-  {
-    bg: string;
-    text: string;
-    darkBg: string;
-    darkText: string;
-  }
-> = {
-  /**
-   * Internal mail: blue conveys clarity, professionalism, and reliability.
-   */
-  internal: {
-    bg: '#DBEAFE',
-    text: '#1E3A8A',
-    darkBg: '#1E3A8A',
-    darkText: '#DBEAFE',
-  },
-  /**
-   * Individual room bookings: green suggests trust, calm handling, and action-ready support.
-   */
-  individual: {
-    bg: '#DCFCE7',
-    text: '#166534',
-    darkBg: '#14532D',
-    darkText: '#DCFCE7',
-  },
-  /**
-   * Group bookings: orange suggests activity, coordination, and urgency for events.
-   */
-  group: {
-    bg: '#FFEDD5',
-    text: '#9A3412',
-    darkBg: '#7C2D12',
-    darkText: '#FED7AA',
-  },
-  /**
-   * Travel agents: purple implies partnership, exploration, and strategic coordination.
-   */
-  'travel-agents': {
-    bg: '#EDE9FE',
-    text: '#4C1D95',
-    darkBg: '#5B21B6',
-    darkText: '#EDE9FE',
-  },
-};
-
-const getPillStyle = (category: CenturionMailCategory) => CENTURION_CATEGORY_PILL_STYLES[category];
 
 export function CenturionCategoryPill({
   routeFolder,
@@ -71,7 +23,7 @@ export function CenturionCategoryPill({
 
   const slug = category!;
   const title = getCenturionCategoryTitle(slug);
-  const palette = getPillStyle(slug);
+  const palette = getCenturionCategoryColorStyle(slug);
 
   return (
     <Link

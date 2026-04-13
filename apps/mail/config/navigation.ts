@@ -17,7 +17,13 @@ import {
 import { MessageSquareIcon } from 'lucide-react';
 import { m } from '@/paraglide/messages';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
-import { DEMO_MAIL_FOLDER_DEFINITIONS, type DemoMailFolderId } from '@/lib/demo/folder-map';
+import {
+  DEMO_MAIL_FOLDER_DEFINITIONS,
+  getCenturionCategoryColorStyle,
+  isCenturionMailCategorySlug,
+  type DemoMailFolderId,
+} from '@/lib/demo/folder-map';
+import type { CSSProperties } from 'react';
 
 export interface NavItem {
   id?: string;
@@ -31,6 +37,8 @@ export interface NavItem {
   disabled?: boolean;
   target?: string;
   shortcut?: string;
+  style?: CSSProperties;
+  className?: string;
 }
 
 interface NavSection {
@@ -50,12 +58,31 @@ function getDemoMailFolderIcon(folderId: DemoMailFolderId): React.ComponentType<
   return Folder;
 }
 
+function getDemoMailFolderNavItemTheme(folderId: DemoMailFolderId): Pick<NavItem, 'style' | 'className'> {
+  if (!isCenturionMailCategorySlug(folderId)) {
+    return {};
+  }
+
+  const palette = getCenturionCategoryColorStyle(folderId);
+  return {
+    style: {
+      '--centurion-sidebar-bg': palette.bg,
+      '--centurion-sidebar-text': palette.text,
+      '--centurion-sidebar-bg-dark': palette.darkBg,
+      '--centurion-sidebar-text-dark': palette.darkText,
+    } as CSSProperties,
+    className:
+      'bg-[var(--centurion-sidebar-bg)] text-[var(--centurion-sidebar-text)] dark:bg-[var(--centurion-sidebar-bg-dark)] dark:text-[var(--centurion-sidebar-text-dark)]',
+  };
+}
+
 const demoMailFolderNavItems: NavItem[] = DEMO_MAIL_FOLDER_DEFINITIONS.map((folder) => ({
   id: folder.id,
   title: folder.title,
   subtitle: folder.subtitle,
   url: `/mail/${folder.id}`,
   icon: getDemoMailFolderIcon(folder.id),
+  ...getDemoMailFolderNavItemTheme(folder.id),
 }));
 
 // ! items title has to be a message key (check messages/en.json)

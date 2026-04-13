@@ -307,6 +307,8 @@ function NavItem(item: NavItemProps & { href: string }) {
     setOpenMobile(false);
   };
 
+  const hasCustomTheme = Boolean(item.style);
+
   return (
     <Collapsible defaultOpen={item.isActive}>
       <CollapsibleTrigger asChild>
@@ -322,7 +324,9 @@ function NavItem(item: NavItemProps & { href: string }) {
           className={cn(
             'hover:bg-subtleWhite flex items-center dark:hover:bg-[#202020]',
             item.isActive && 'bg-subtleWhite text-accent-foreground dark:bg-[#202020]',
+            item.className,
           )}
+          style={item.style}
           onClick={handleClick}
         >
           <Link target={item.target} to={item.href}>
@@ -330,7 +334,13 @@ function NavItem(item: NavItemProps & { href: string }) {
             <span className="relative bottom-px mt-0.5 min-w-0 flex-1 truncate text-left">
               <span className="block truncate text-[13px] leading-tight">{item.title}</span>
               {item.subtitle ? (
-                <span className="text-muted-foreground block truncate text-[11px] leading-tight dark:text-[#898989]">
+                <span
+                  className={cn(
+                    hasCustomTheme
+                      ? 'block truncate text-[11px] leading-tight text-current opacity-80'
+                      : 'text-muted-foreground block truncate text-[11px] leading-tight dark:text-[#898989]',
+                  )}
+                >
                   {item.subtitle}
                 </span>
               ) : null}
