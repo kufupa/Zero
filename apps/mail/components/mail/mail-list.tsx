@@ -30,7 +30,7 @@ import { useSearchValue } from '@/hooks/use-search-value';
 import { EmptyStateIcon } from '../icons/empty-state-svg';
 import { highlightText } from '@/lib/email-utils.client';
 import { mailListPlainPreview } from '@/lib/mail/mail-list-preview';
-import { cn, FOLDERS, formatDate } from '@/lib/utils';
+import { cn, FOLDERS, formatDateWithWeekdayAndTime } from '@/lib/utils';
 import { useTRPC } from '@/providers/query-provider';
 import { useThreadLabels } from '@/hooks/use-labels';
 import { useSettings } from '@/hooks/use-settings';
@@ -508,7 +508,7 @@ const Thread = memo(
                           isMailSelected && 'opacity-100',
                         )}
                       >
-                        {formatDate(latestMessage.receivedOn.split('.')[0] || '')}
+                        {formatDateWithWeekdayAndTime(latestMessage.receivedOn.split('.')[0] || '')}
                       </p>
                     ) : null}
                   </div>
@@ -727,7 +727,7 @@ const Draft = memo(({ message, index }: { message: { id: string }; index: number
                       'text-muted-foreground text-nowrap text-xs font-normal opacity-70 transition-opacity group-hover:opacity-100 dark:text-[#8C8C8C]',
                     )}
                   >
-                    {formatDate(Number(draft.rawMessage?.internalDate))}
+                    {formatDateWithWeekdayAndTime(Number(draft.rawMessage?.internalDate))}
                   </p>
                 )}
               </div>

@@ -173,6 +173,26 @@ export function formatDate(dateInput: string | Date | number): string {
   }
 }
 
+export function formatDateWithWeekdayAndTime(dateInput: string | Date | number): string {
+  if (typeof dateInput === 'number') {
+    dateInput = new Date(dateInput);
+  }
+
+  const dateObj = dateInput instanceof Date ? dateInput : parseAndValidateDate(dateInput);
+  if (!dateObj) {
+    return '';
+  }
+
+  try {
+    const timezone = getBrowserTimezone();
+
+    return formatInTimeZone(dateObj, timezone, 'EEE MMMM d HH:mm');
+  } catch (error) {
+    console.error('Error formatting date with weekday and time', error);
+    return '';
+  }
+}
+
 export const formatTime = (date: string) => {
   const dateObj = parseAndValidateDate(date);
   if (!dateObj) {
