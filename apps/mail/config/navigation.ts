@@ -23,6 +23,7 @@ import {
   isCenturionMailCategorySlug,
   type DemoMailFolderId,
 } from '@/lib/demo/folder-map';
+import { cn } from '@/lib/utils';
 import type { CSSProperties } from 'react';
 
 export interface NavItem {
@@ -78,14 +79,22 @@ function getDemoMailFolderNavItemTheme(folderId: DemoMailFolderId): Pick<NavItem
 
 const demoMailFolderNavItems: NavItem[] = DEMO_MAIL_FOLDER_DEFINITIONS.filter((folder) => folder.id !== 'spam')
   .sort((a, b) => (a.id === 'urgent' ? -1 : b.id === 'urgent' ? 1 : 0))
-  .map((folder) => ({
-    id: folder.id,
-    title: folder.title,
-    subtitle: folder.subtitle,
-    url: `/mail/${folder.id}`,
-    icon: getDemoMailFolderIcon(folder.id),
-    ...getDemoMailFolderNavItemTheme(folder.id),
-  }));
+  .map((folder) => {
+    const theme = getDemoMailFolderNavItemTheme(folder.id);
+    return {
+      id: folder.id,
+      title: folder.title,
+      subtitle: folder.subtitle,
+      url: `/mail/${folder.id}`,
+      icon: getDemoMailFolderIcon(folder.id),
+      ...theme,
+      className: cn(
+        theme.className,
+        folder.id === 'urgent' &&
+          "relative after:absolute after:inset-y-1.5 after:right-0 after:w-1 after:rounded-l-sm after:bg-red-500/90 after:content-['']",
+      ),
+    };
+  });
 
 // ! items title has to be a message key (check messages/en.json)
 export const navigationConfig: Record<string, NavConfig> = {
