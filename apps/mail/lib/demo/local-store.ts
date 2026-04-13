@@ -108,12 +108,39 @@ const DEFAULT_SETTINGS: DemoSettings = {
   colorTheme: 'system',
   zeroSignature: false,
   categories: [],
-  defaultEmailAlias: 'demo@centurion.local',
+  defaultEmailAlias: 'centurion@legacyhotels.co.za',
   undoSendEnabled: true,
   imageCompression: 'medium',
   autoRead: true,
   animations: false,
 };
+
+const SEED_DRAFTS: DemoDraft[] = [
+  {
+    id: 'draft-demo-kleinkaap',
+    userId: DEMO_USER_ID,
+    threadId: 'sa-thread-002',
+    subject: 'RE: Kleinkaap Overflow Rooms 23 April',
+    body: 'Dear Riani,\n\nThank you for your enquiry. Please find our rates for 20 single rooms B&B for 23–24 April below.\n\nKind regards,\nReservations',
+    to: 'info@kleinkaap.co.za',
+    cc: '',
+    bcc: '',
+    createdAt: '2026-04-11T10:00:00.000Z',
+    updatedAt: '2026-04-11T10:00:00.000Z',
+  },
+  {
+    id: 'draft-demo-morake',
+    userId: DEMO_USER_ID,
+    threadId: 'sa-thread-006',
+    subject: 'RE: Request for a quotation',
+    body: 'Good day,\n\nPlease see the quote for DBB government rate, 17–22 May 2026, attached in the system.\n\nRegards,\nReservations',
+    to: 'nmorake@vuselelacollege.co.za',
+    cc: '',
+    bcc: '',
+    createdAt: '2026-04-07T14:00:00.000Z',
+    updatedAt: '2026-04-07T14:00:00.000Z',
+  },
+];
 
 const SEED_TEMPLATES: DemoTemplate[] = [
   {
@@ -194,13 +221,24 @@ export function deleteDemoDraft(id: string): boolean {
   return true;
 }
 
+function ensureSeededDemoDrafts(store: DemoStore): void {
+  if (!isDemo()) return;
+  if (Object.keys(store.drafts).length > 0) return;
+  for (const draft of SEED_DRAFTS) {
+    store.drafts[draft.id] = clone(draft);
+  }
+  persistDemoStore(store);
+}
+
 export function getDemoDraft(id: string): DemoDraft | undefined {
   const store = getActiveDemoStore();
+  ensureSeededDemoDrafts(store);
   return store.drafts[id] ? clone(store.drafts[id] as DemoDraft) : undefined;
 }
 
 export function listDemoDrafts(): DemoDraft[] {
   const store = getActiveDemoStore();
+  ensureSeededDemoDrafts(store);
   return Object.values(store.drafts).map((draft) => clone(draft));
 }
 

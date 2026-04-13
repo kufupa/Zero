@@ -21,8 +21,8 @@ const DEMO_CONNECTIONS: DemoConnection[] = [
   {
     id: 'demo-connection',
     providerId: 'demo',
-    email: 'demo@centurion.local',
-    name: 'Centurion Demo Inbox',
+    email: 'centurion@legacyhotels.co.za',
+    name: 'Centurion Hotel Reservations',
     picture: null,
   },
 ];

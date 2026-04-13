@@ -32,7 +32,7 @@ const DEMO_SESSION: DemoSession = {
   user: {
     id: 'demo-user',
     name: 'Centurion Ops',
-    email: 'demo@centurion.local',
+    email: 'centurion@legacyhotels.co.za',
     image: null,
     phoneNumber: null,
     phoneNumberVerified: true,

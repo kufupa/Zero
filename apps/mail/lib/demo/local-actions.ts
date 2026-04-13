@@ -506,7 +506,7 @@ function createNoopDemoSettings(overrides: Partial<DemoSettings> = {}): DemoSett
     colorTheme: 'system',
     zeroSignature: false,
     categories: [],
-    defaultEmailAlias: 'demo@centurion.local',
+    defaultEmailAlias: 'centurion@legacyhotels.co.za',
     undoSendEnabled: true,
     imageCompression: 'medium',
     autoRead: true,

@@ -2,498 +2,308 @@
   "version": 1,
   "threads": [
     {
-      "id": "cen-thread-001",
-      "folder": "individual",
-      "urgent": true,
-      "llmIssueMessage": "Guest is requesting a same-day extension and needs a fast response.",
-      "labels": [],
-      "messages": [
-        {
-          "id": "cen-001-msg-01",
-          "sender": {
-            "name": "Isabella Moreno",
-            "email": "isabella.moreno@traveleria.com"
-          },
-          "to": [
-            {
-              "name": "The Centurion — Reservations",
-              "email": "centurion@legacyhotels.com"
-            }
-          ],
-          "subject": "Need an extension for today",
-          "body": "Hi team,\nI have a late checkout request for room 902 on the same reservation #ZL-2046. The guest checks out tomorrow morning but asked to keep the room until noon.\nCan this be approved?",
-          "receivedOn": "2026-04-09T08:10:00.000Z",
-          "unread": true
-        },
-        {
-          "id": "cen-001-msg-02",
-          "sender": {
-            "name": "The Centurion — Reservations",
-            "email": "centurion@legacyhotels.com"
-          },
-          "to": [
-            {
-              "name": "Isabella Moreno",
-              "email": "isabella.moreno@traveleria.com"
-            }
-          ],
-          "subject": "Re: Need an extension for today",
-          "body": "Draft response drafted. Confirm if the guest is eligible for same-day fee and housekeeping availability.",
-          "receivedOn": "2026-04-09T08:18:00.000Z",
-          "unread": false,
-          "isDraft": true
-        }
-      ]
-    },
-    {
-      "id": "cen-thread-002",
-      "folder": "group",
-      "urgent": false,
-      "llmIssueMessage": "Multiple guest arrival dates changed; one room has conflicting IDs.",
-      "labels": [],
-      "messages": [
-        {
-          "id": "cen-002-msg-01",
-          "sender": {
-            "name": "Horizon Meetings",
-            "email": "events@horizonmeetings.com"
-          },
-          "to": [
-            {
-              "name": "The Centurion — Reservations",
-              "email": "centurion@legacyhotels.com"
-            }
-          ],
-          "subject": "Group booking for 24 guests (week of May 14)",
-          "body": "We manage a 24-person group arrival on May 14 with rates locked at your quoted package. We still need confirmation on room 18 for one room with king bed.\nAny possibility of a 2-night hold extension?",
-          "receivedOn": "2026-04-09T07:55:00.000Z",
-          "unread": true
-        },
-        {
-          "id": "cen-002-msg-02",
-          "sender": {
-            "name": "The Centurion — Reservations",
-            "email": "centurion@legacyhotels.com"
-          },
-          "to": [
-            {
-              "name": "Horizon Meetings",
-              "email": "events@horizonmeetings.com"
-            }
-          ],
-          "subject": "Re: Group booking for 24 guests (week of May 14)",
-          "body": "Draft response includes availability summary and hold confirmation requirements for block room 18.",
-          "receivedOn": "2026-04-09T08:06:00.000Z",
-          "unread": false,
-          "isDraft": true
-        }
-      ]
-    },
-    {
-      "id": "cen-thread-003",
-      "folder": "travel-agents",
-      "urgent": false,
-      "labels": [
-        {
-          "id": "FYI",
-          "name": "FYI"
-        }
-      ],
-      "messages": [
-        {
-          "id": "cen-003-msg-01",
-          "sender": {
-            "name": "Ava Collins",
-            "email": "ava@solstice-travel.co"
-          },
-          "to": [
-            {
-              "name": "The Centurion — Reservations",
-              "email": "centurion@legacyhotels.com"
-            }
-          ],
-          "subject": "Ticketing mismatch for reservation CXT-9812",
-          "body": "Hi,\nWe see a mismatch in the ticketing profile for two suites. The departure date in your confirmation is 2026-05-18 but ticket references 2026-05-17.\nCan you verify and amend?",
-          "receivedOn": "2026-04-09T06:55:00.000Z",
-          "unread": false
-        },
-        {
-          "id": "cen-003-msg-02",
-          "sender": {
-            "name": "The Centurion — Reservations",
-            "email": "centurion@legacyhotels.com"
-          },
-          "to": [
-            {
-              "name": "Ava Collins",
-              "email": "ava@solstice-travel.co"
-            }
-          ],
-          "subject": "Re: Ticketing mismatch for reservation CXT-9812",
-          "body": "Draft response drafted with corrected departure date and note for amended confirmation copy.",
-          "receivedOn": "2026-04-09T07:03:00.000Z",
-          "unread": false,
-          "isDraft": true
-        }
-      ]
-    },
-    {
-      "id": "cen-thread-004",
-      "folder": "internal",
-      "urgent": false,
-      "labels": [],
-      "messages": [
-        {
-          "id": "cen-004-msg-01",
-          "sender": {
-            "name": "Mason Patel",
-            "email": "mason.patel@legacyhotels.com"
-          },
-          "to": [
-            {
-              "name": "The Centurion — Team",
-              "email": "ops@legacyhotels.com"
-            }
-          ],
-          "subject": "Shift handoff note: concierge coverage",
-          "body": "Friendly note for team: we need one extra concierge shift between 6-8 PM for gala arrivals starting tomorrow.\nPlease confirm any staffing overlap.",
-          "receivedOn": "2026-04-09T05:40:00.000Z",
-          "unread": true
-        },
-        {
-          "id": "cen-004-msg-02",
-          "sender": {
-            "name": "Guest Services",
-            "email": "services@legacyhotels.com"
-          },
-          "to": [
-            {
-              "name": "Mason Patel",
-              "email": "mason.patel@legacyhotels.com"
-            }
-          ],
-          "subject": "Re: Shift handoff note: concierge coverage",
-          "body": "Draft reply prepared with staffing assignment and temporary coverage confirmation from operations.",
-          "receivedOn": "2026-04-09T06:00:00.000Z",
-          "unread": false,
-          "isDraft": true
-        }
-      ]
-    },
-    {
-      "id": "cen-thread-005",
-      "folder": "individual",
-      "urgent": false,
-      "labels": [],
-      "messages": [
-        {
-          "id": "cen-005-msg-01",
-          "sender": {
-            "name": "Nina Kim",
-            "email": "nina.kim@orchidtravel.com"
-          },
-          "to": [
-            {
-              "name": "The Centurion — Reservations",
-              "email": "centurion@legacyhotels.com"
-            }
-          ],
-          "cc": [
-            {
-              "name": "Travel Ops",
-              "email": "ops@orchidtravel.com"
-            }
-          ],
-          "subject": "Payment confirmation mismatch",
-          "body": "The card authorization was processed but no nightly deposit reflected in the confirmation notes.\nCould you review and confirm payout date?",
-          "receivedOn": "2026-04-08T20:15:00.000Z",
-          "unread": true
-        }
-      ]
-    },
-    {
-      "id": "cen-thread-006",
-      "folder": "travel-agents",
-      "urgent": true,
-      "llmIssueMessage": "This thread has a strict travel window and potential overbooking risk.",
-      "labels": [],
-      "messages": [
-        {
-          "id": "cen-006-msg-01",
-          "sender": {
-            "name": "Liam Brooks",
-            "email": "liam@aero-route.com"
-          },
-          "to": [
-            {
-              "name": "The Centurion — Reservations",
-              "email": "centurion@legacyhotels.com"
-            }
-          ],
-          "subject": "Agency escalation: connecting flight delay",
-          "body": "One of our guests is delayed and requested a late release of room 1203 after missing flight ETA.\nUrgent reallocation may be needed before 4 PM cutoff.",
-          "receivedOn": "2026-04-08T16:52:00.000Z",
-          "unread": true
-        }
-      ]
-    },
-    {
-      "id": "cen-thread-007",
-      "folder": "group",
-      "urgent": false,
-      "labels": [],
-      "messages": [
-        {
-          "id": "cen-007-msg-01",
-          "sender": {
-            "name": "Apex Hospitality Partners",
-            "email": "ops@apex-hospitality.com"
-          },
-          "to": [
-            {
-              "name": "The Centurion — Reservations",
-              "email": "centurion@legacyhotels.com"
-            }
-          ],
-          "subject": "Pre-arrival request: welcome kits",
-          "body": "Please include welcome kits with water, local SIM card note, and route map for 14 arrivals.",
-          "receivedOn": "2026-04-08T11:05:00.000Z",
-          "unread": false
-        },
-        {
-          "id": "cen-007-msg-02",
-          "sender": {
-            "name": "The Centurion — Reservations",
-            "email": "centurion@legacyhotels.com"
-          },
-          "to": [
-            {
-              "name": "Apex Hospitality Partners",
-              "email": "ops@apex-hospitality.com"
-            }
-          ],
-          "subject": "Re: Pre-arrival request: welcome kits",
-          "body": "Draft reply prepared with logistics and packing list confirmation.",
-          "receivedOn": "2026-04-08T11:11:00.000Z",
-          "unread": false,
-          "isDraft": true
-        }
-      ]
-    },
-    {
-      "id": "cen-thread-008",
-      "folder": "internal",
-      "urgent": false,
-      "labels": [],
-      "messages": [
-        {
-          "id": "cen-008-msg-01",
-          "sender": {
-            "name": "Jules Parker",
-            "email": "jules.parker@legacyhotels.com"
-          },
-          "to": [
-            {
-              "name": "Front Desk Team",
-              "email": "frontdesk@legacyhotels.com"
-            }
-          ],
-          "subject": "Policy note: guest name corrections",
-          "body": "Please apply spelling corrections for names in the afternoon checkout batch.\nThis reduces front desk re-keying and speeds arrivals.",
-          "receivedOn": "2026-04-08T09:17:00.000Z",
-          "unread": false
-        },
-        {
-          "id": "cen-008-msg-02",
-          "sender": {
-            "name": "Guest Services",
-            "email": "services@legacyhotels.com"
-          },
-          "to": [
-            {
-              "name": "Jules Parker",
-              "email": "jules.parker@legacyhotels.com"
-            }
-          ],
-          "subject": "Re: Policy note: guest name corrections",
-          "body": "Drafting concise update to the front desk SOP for name handling and typo checks.",
-          "receivedOn": "2026-04-08T09:40:00.000Z",
-          "unread": false,
-          "isDraft": true
-        }
-      ]
-    },
-    {
-      "id": "cen-thread-009",
-      "folder": "individual",
-      "urgent": false,
-      "labels": [],
-      "messages": [
-        {
-          "id": "cen-009-msg-01",
-          "sender": {
-            "name": "Daniel Wu",
-            "email": "daniel.wu@skyline-commute.com"
-          },
-          "to": [
-            {
-              "name": "The Centurion — Reservations",
-              "email": "centurion@legacyhotels.com"
-            }
-          ],
-          "subject": "Invoice discrepancy for booking #SW-4491",
-          "body": "Our finance team flagged an extra service charge in the latest invoice. Can you issue a corrected copy?",
-          "receivedOn": "2026-04-07T14:22:00.000Z",
-          "unread": true
-        },
-        {
-          "id": "cen-009-msg-02",
-          "sender": {
-            "name": "The Centurion — Accounting",
-            "email": "billing@legacyhotels.com"
-          },
-          "to": [
-            {
-              "name": "Daniel Wu",
-              "email": "daniel.wu@skyline-commute.com"
-            }
-          ],
-          "subject": "Re: Invoice discrepancy for booking #SW-4491",
-          "body": "Draft with corrected line items and expected adjustment date is ready.",
-          "receivedOn": "2026-04-07T14:34:00.000Z",
-          "unread": false,
-          "isDraft": true
-        }
-      ]
-    },
-    {
-      "id": "cen-thread-010",
-      "folder": "travel-agents",
-      "urgent": false,
-      "labels": [],
-      "messages": [
-        {
-          "id": "cen-010-msg-01",
-          "sender": {
-            "name": "Priya Sethi",
-            "email": "priya.sethi@wanderline.travel"
-          },
-          "to": [
-            {
-              "name": "The Centurion — Reservations",
-              "email": "centurion@legacyhotels.com"
-            }
-          ],
-          "subject": "Can we add a second transfer pickup?",
-          "body": "We have a VIP guest arriving on business suite with two guests. Can we add airport transfer pickup at arrival time?",
-          "receivedOn": "2026-04-07T09:44:00.000Z",
-          "unread": true
-        },
-        {
-          "id": "cen-010-msg-02",
-          "sender": {
-            "name": "The Centurion — Concierge",
-            "email": "concierge@legacyhotels.com"
-          },
-          "to": [
-            {
-              "name": "Priya Sethi",
-              "email": "priya.sethi@wanderline.travel"
-            }
-          ],
-          "subject": "Re: Can we add a second transfer pickup?",
-          "body": "Draft reply drafted to confirm transfer add-on and fee details.",
-          "receivedOn": "2026-04-07T10:01:00.000Z",
-          "unread": false,
-          "isDraft": true
-        }
-      ]
-    },
-    {
-      "id": "cen-thread-011",
-      "folder": "group",
-      "urgent": true,
-      "llmIssueMessage": "Group has a duplicate confirmation and one room has not confirmed city tax included.",
-      "labels": [],
-      "messages": [
-        {
-          "id": "cen-011-msg-01",
-          "sender": {
-            "name": "Summit Trails",
-            "email": "operations@summittrails.com"
-          },
-          "to": [
-            {
-              "name": "The Centurion — Reservations",
-              "email": "centurion@legacyhotels.com"
-            }
-          ],
-          "subject": "Duplicate confirmation IDs for conference group",
-          "body": "We received two confirmation IDs for the same conference block; city tax handling differs by ID and one must be corrected within the hour.",
-          "receivedOn": "2026-04-06T17:13:00.000Z",
-          "unread": true
-        },
-        {
-          "id": "cen-011-msg-02",
-          "sender": {
-            "name": "The Centurion — Reservations",
-            "email": "centurion@legacyhotels.com"
-          },
-          "to": [
-            {
-              "name": "Summit Trails",
-              "email": "operations@summittrails.com"
-            }
-          ],
-          "subject": "Re: Duplicate confirmation IDs for conference group",
-          "body": "Draft reply confirms we can merge duplicate entries and normalize city tax immediately.",
-          "receivedOn": "2026-04-06T17:20:00.000Z",
-          "unread": false,
-          "isDraft": true
-        }
-      ]
-    },
-    {
-      "id": "cen-thread-012",
-      "folder": "internal",
-      "urgent": false,
-      "labels": [],
-      "messages": [
-        {
-          "id": "cen-012-msg-01",
-          "sender": {
-            "name": "Lena Brooks",
-            "email": "lena.brooks@legacyhotels.com"
-          },
-          "to": [
-            {
-              "name": "Housekeeping Team",
-              "email": "housekeeping@legacyhotels.com"
-            }
-          ],
-          "subject": "Weekly room readiness checklist update",
-          "body": "Please update the checklist template with new minibar stock and maintenance flags.\nThis should reduce manual follow-up on concierge handoffs.",
-          "receivedOn": "2026-04-06T07:22:00.000Z",
-          "unread": false
-        }
-      ]
-    },
-    {
-      "id": "cen-thread-spam-001",
+      "id": "sa-thread-001",
       "folder": "spam",
       "urgent": false,
       "labels": [],
       "messages": [
         {
-          "id": "cen-spam-001-msg-01",
+          "id": "sa-001-msg-01",
+          "sender": {
+            "name": "Bram Haenraets",
+            "email": "bram@email.viqal.com"
+          },
+          "to": [
+            {
+              "name": "The Centurion Hotel",
+              "email": "centurion@legacyhotels.co.za"
+            }
+          ],
+          "subject": "Video inside: Virtual Hotel Concierge",
+          "body": "Hi The Centurion Hotel,\n\nHotels using Viqal's Hospitality AI Assistants automate guest communication on WhatsApp — saving hours every day and boosting upsell revenue. Here is a short 10-minute demo that shows exactly how it works:\n\nokay",
+          "receivedOn": "2026-04-12T09:15:00.000Z",
+          "unread": true
+        }
+      ]
+    },
+    {
+      "id": "sa-thread-002",
+      "folder": "group",
+      "urgent": false,
+      "labels": [],
+      "messages": [
+        {
+          "id": "sa-002-msg-01",
+          "sender": {
+            "name": "Info",
+            "email": "info@kleinkaap.co.za"
+          },
+          "to": [
+            {
+              "name": "Centurion Hotel Reservations",
+              "email": "centurion@legacyhotels.co.za"
+            }
+          ],
+          "subject": "Kleinkaap Overflow Rooms 23 April",
+          "body": "Hi There,\n\nCan you assist with a quotation for 20 single rooms check in 23 April and check out 24 April?\nB&B?\n\nWhere your story becomes ours,\n\nRiani Steyn\nEvents & Banqueting Manager",
+          "receivedOn": "2026-04-11T14:22:00.000Z",
+          "unread": true
+        }
+      ]
+    },
+    {
+      "id": "sa-thread-003",
+      "folder": "individual",
+      "urgent": true,
+      "labels": [
+        {
+          "id": "IMPORTANT",
+          "name": "IMPORTANT"
+        }
+      ],
+      "messages": [
+        {
+          "id": "sa-003-msg-01",
+          "sender": {
+            "name": "Leelyn Govington",
+            "email": "leelyn.govington@travel.co.za"
+          },
+          "to": [
+            {
+              "name": "Centurion Hotel Reservations",
+              "email": "centurion@legacyhotels.co.za"
+            }
+          ],
+          "subject": "Urgent Tax invoice",
+          "body": "Good day,\n\nPlease assist with an urgent tax invoice for our guest file. Importance: High.\n\nKind regards,\nLeelyn Govington",
+          "receivedOn": "2026-04-08T10:04:00.000Z",
+          "unread": false
+        },
+        {
+          "id": "sa-003-msg-02",
+          "sender": {
+            "name": "Martha Mthembu",
+            "email": "marthamthembu@legacyhotels.co.za"
+          },
+          "to": [
+            {
+              "name": "Peter Mahlangu",
+              "email": "peter.mahlangu@example.com"
+            }
+          ],
+          "cc": [
+            {
+              "name": "Centurion Hotel Reservations",
+              "email": "centurion@legacyhotels.co.za"
+            },
+            {
+              "name": "Leelyn Govington",
+              "email": "leelyn.govington@travel.co.za"
+            }
+          ],
+          "subject": "RE: Urgent Tax invoice",
+          "body": "Dear Mr. Mahlangu,\n\nKindly see the details below and assist with the invoice at your earliest convenience.\n\nKind Regards,\n\nMartha Mthembu\nSenior Front Office Manager",
+          "receivedOn": "2026-04-08T11:18:00.000Z",
+          "unread": true
+        }
+      ]
+    },
+    {
+      "id": "sa-thread-004",
+      "folder": "individual",
+      "urgent": false,
+      "labels": [],
+      "messages": [
+        {
+          "id": "sa-004-msg-01",
+          "sender": {
+            "name": "Besty Travel Admin",
+            "email": "admin@bestytravel.co.za"
+          },
+          "to": [
+            {
+              "name": "The Centurion Reception",
+              "email": "centurion@legacyhotels.co.za"
+            },
+            {
+              "name": "Martha Mthembu",
+              "email": "marthamthembu@legacyhotels.co.za"
+            },
+            {
+              "name": "Reservations",
+              "email": "reservations@legacyhotels.co.za"
+            }
+          ],
+          "subject": "booking",
+          "body": "Good day\n\nI hope this email finds you well,\nKindly assist with making a booking for the following (government rates)(DBB)\nCheck in: 08 April 2026\nCheck out: 10 April 2026\nDepartment: Musina Local municipality\n\nGuest name: Takalani Rambuda\n\nKindly address the invoice to:\nBesty Travel\n26A Makhado street\nMankweng, 0727\nVAT No: 4020243921",
+          "receivedOn": "2026-04-10T08:05:00.000Z",
+          "unread": true
+        }
+      ]
+    },
+    {
+      "id": "sa-thread-005",
+      "folder": "travel-agents",
+      "urgent": false,
+      "labels": [],
+      "messages": [
+        {
+          "id": "sa-005-msg-01",
+          "sender": {
+            "name": "Nafisa Wadiwala",
+            "email": "nafisa@flynowtravel.co.za"
+          },
+          "to": [
+            {
+              "name": "Centurion Hotel Reservations",
+              "email": "centurion@legacyhotels.co.za"
+            }
+          ],
+          "subject": "RE 4 ROOMS CHECK IN THE 09 APR AND OUT THE 10APR",
+          "body": "Dear Reservations\n\nPlease confirm 4 room check in the 09 April and out the 10 April for government SADTU DBB\n\nNames of guest\n\n1. MAIPATO MORAKE\n2. TOBJA MONYAI\n3. NONZALISEKO MZIZI\n4. ZAKHELE MAHLALELA\n\nPLEASE NOTE\nAll pricing is valid for day of quotation only. Prices are subject to change based on availability and exchange rate.\nPLEASE MAKE SURE WHEN CONFIRMING BOOKINGS NAME AND SURNAME IS AS PER ID OR PASSPORT\n\nKind Regards\n\nNAFISA WADIWALA | Travel Consultant",
+          "receivedOn": "2026-04-09T16:40:00.000Z",
+          "unread": false
+        }
+      ]
+    },
+    {
+      "id": "sa-thread-006",
+      "folder": "individual",
+      "urgent": false,
+      "labels": [],
+      "messages": [
+        {
+          "id": "sa-006-msg-01",
+          "sender": {
+            "name": "Ntswaki Morake",
+            "email": "nmorake@vuselelacollege.co.za"
+          },
+          "to": [
+            {
+              "name": "Centurion Hotel Reservations",
+              "email": "centurion@legacyhotels.co.za"
+            }
+          ],
+          "subject": "Request for a quotation",
+          "body": "Good day Sir/Mam\n\nKindly send me a quotation and invoice for accommodation for the below dates :\n\nAccommodation: Bed, Breakfast and Dinner for 1 person (Government rate)\nCheck in: 17/05/2026 and Check out: 22/05/2026\n\nNtswaki Morake\nHR Practitioner",
+          "receivedOn": "2026-04-07T12:30:00.000Z",
+          "unread": true
+        }
+      ]
+    },
+    {
+      "id": "sa-thread-007",
+      "folder": "travel-agents",
+      "urgent": false,
+      "labels": [],
+      "messages": [
+        {
+          "id": "sa-007-msg-01",
+          "sender": {
+            "name": "Eva Joy Ruganzu",
+            "email": "e.ruganzu@afdb.org"
+          },
+          "to": [
+            {
+              "name": "P M Bobo",
+              "email": "pmbobo@legacyhotels.co.za"
+            },
+            {
+              "name": "Centurion Hotel Reservations",
+              "email": "centurion@legacyhotels.co.za"
+            },
+            {
+              "name": "Centurion Reservations Alt",
+              "email": "centurion@legacyhotels.com"
+            }
+          ],
+          "cc": [
+            {
+              "name": "Samia Tougoui",
+              "email": "s.tougoui@afdb.org"
+            },
+            {
+              "name": "Prajesh Bhakta",
+              "email": "p.bhakta@afdb.org"
+            },
+            {
+              "name": "Samuel Kamara",
+              "email": "s.kamara@afdb.org"
+            }
+          ],
+          "subject": "TRAVEL INFORMATION",
+          "body": "Dear Legacy Hotel Team,\n\nPlease find below my travel information:\n\nReference: AFDB0413\nName: EVA\nSurname: RUGANZU\nEmail Address: e.ruganzu@afdb.org\nContact Number: +254 713 679 841\nCheck-In Date: 11 April 2026\nCheck-Out Date: 19 April 2026\nTransfer from OR Tambo\n  Date of arrival: 11 April 2026\n  Time of arrival: 15:50\n  Flight No: KQ 762\nTransfer to OR Tambo\n  Date of departure: 19 April 2026\n  Time of departure: 12:10\n  Flight No: KQ 761\nDaily Transfer to and from Hotel: Yes/No\n\nThank you,\n\nEva RUGANZU | REGIONAL MANAGER",
+          "receivedOn": "2026-04-11T06:00:00.000Z",
+          "unread": true
+        }
+      ]
+    },
+    {
+      "id": "sa-thread-008",
+      "folder": "travel-agents",
+      "urgent": false,
+      "labels": [],
+      "messages": [
+        {
+          "id": "sa-008-msg-01",
+          "sender": {
+            "name": "Ramabulana Khathutshelo",
+            "email": "phophitraveltour@gmail.com"
+          },
+          "to": [
+            {
+              "name": "Centurion Hotel Reservations",
+              "email": "centurion@legacyhotels.co.za"
+            }
+          ],
+          "subject": "REQUEST FOR QUOTATION",
+          "body": "Good day\n\nPlease assist me with a quote for the below\n\n02PAX\nCheck in: 09 April 2026\nCheck out: 10 April 2026\nDBB WITH 2 SOFT DRINKS\nSTANDARD ROOMS\nGovernment Rate\nDept of Transport\n\n--\nMelvin Makwela\nTravel Consultant",
+          "receivedOn": "2026-04-10T15:55:00.000Z",
+          "unread": true
+        }
+      ]
+    },
+    {
+      "id": "sa-thread-internal-001",
+      "folder": "internal",
+      "urgent": false,
+      "labels": [],
+      "messages": [
+        {
+          "id": "sa-int-001-msg-01",
+          "sender": {
+            "name": "Thabo Nkosi",
+            "email": "thabo.nkosi@legacyhotels.co.za"
+          },
+          "to": [
+            {
+              "name": "Front Office Leads",
+              "email": "frontoffice@legacyhotels.co.za"
+            }
+          ],
+          "subject": "Handover: VIP arrivals Thursday",
+          "body": "Team,\n\nPlease note three VIP arrivals Thursday afternoon with airport transfers booked via concierge. Confirm room readiness by 14:00.\n\nThanks,\nThabo",
+          "receivedOn": "2026-04-06T07:00:00.000Z",
+          "unread": false
+        }
+      ]
+    },
+    {
+      "id": "sa-thread-spam-001",
+      "folder": "spam",
+      "urgent": false,
+      "labels": [],
+      "messages": [
+        {
+          "id": "sa-spam-001-msg-01",
           "sender": {
             "name": "Prize Desk",
             "email": "winner@junk-mail.example"
           },
           "to": [
             {
-              "name": "The Centurion — Reservations",
-              "email": "centurion@legacyhotels.com"
+              "name": "Centurion Hotel Reservations",
+              "email": "centurion@legacyhotels.co.za"
             }
           ],
           "subject": "You have been selected — claim your reward",
@@ -504,21 +314,21 @@
       ]
     },
     {
-      "id": "cen-thread-spam-002",
+      "id": "sa-thread-spam-002",
       "folder": "spam",
       "urgent": false,
       "labels": [],
       "messages": [
         {
-          "id": "cen-spam-002-msg-01",
+          "id": "sa-spam-002-msg-01",
           "sender": {
             "name": "SEO Services Pro",
             "email": "hello@seo-spam.example"
           },
           "to": [
             {
-              "name": "The Centurion — Reservations",
-              "email": "centurion@legacyhotels.com"
+              "name": "Centurion Hotel Reservations",
+              "email": "centurion@legacyhotels.co.za"
             }
           ],
           "subject": "Re: your website ranking",
