@@ -519,7 +519,7 @@ describe('demo backend guard coverage', () => {
     });
 
     expect(backendGenerateSearchQuery).not.toHaveBeenCalled();
-    expect(result.query).toBe('follow up client (demo)');
+    expect(result.query).toBe('follow up client');
   });
 
   it('keeps demo command-palette expansion deterministic for empty/whitespace query input', async () => {
@@ -534,7 +534,7 @@ describe('demo backend guard coverage', () => {
     });
 
     expect(backendGenerateSearchQuery).not.toHaveBeenCalled();
-    expect(result.query).toBe('query (demo)');
+    expect(result.query).toBe('query');
   });
 
   it('keeps demo command-palette expansion deterministic for trimmed punctuation-heavy query', async () => {
@@ -555,7 +555,7 @@ describe('demo backend guard coverage', () => {
     });
 
     expect(resultA).toEqual(resultB);
-    expect(resultA.query).toBe(`!!!???%%${'x'.repeat(96)}&&& spaced query!!! (demo)`);
+    expect(resultA.query).toBe(`!!!???%%${'x'.repeat(96)}&&& spaced query!!!`);
   });
 
   it('uses backend command-palette expansion when frontend-only demo mode is disabled', async () => {

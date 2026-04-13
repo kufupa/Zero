@@ -134,10 +134,10 @@ export function demoGenerateSearchQuery(
   const query = normalizeDemoQuery(input.query);
   return runDemoAction(
     () => ({
-      query: `${query} (demo)`,
+      query,
     }),
     () => ({
-      query: `${query} (demo)`,
+      query,
     }),
     delayMs,
     input.isFrontendOnlyDemoMode,
