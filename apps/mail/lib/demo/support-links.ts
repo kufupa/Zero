@@ -1,7 +1,7 @@
 import { isFrontendOnlyDemo } from './runtime';
 
 type SupportLinksEnv = {
-  ZERO_DEMO_MODE?: string;
+  VITE_PUBLIC_MAIL_API_MODE?: string;
   VITE_ZERO_DEMO_MODE?: string;
   VITE_FRONTEND_ONLY?: string;
 };

@@ -1,29 +1,29 @@
 import { DEMO_FEATURES, type DemoFeatureKey } from './config';
+import {
+  isDemoMode as isDemoModeFromMode,
+  isFrontendOnlyDemo as isFrontendOnlyDemoFromMode,
+  resolveMailMode,
+  type MailApiMode,
+  type MailModeEnv,
+} from '../runtime/mail-mode';
 
 /**
- * When true, app always behaves as frontend-only demo (no env required).
- * Set false before shipping production builds that need real auth/backend.
+ * Legacy export. Demo vs full-stack is controlled by `VITE_PUBLIC_MAIL_API_MODE` and dev scripts.
+ * Keep false so production builds never hard-force demo.
  */
-export const FORCE_FRONTEND_ONLY_DEMO = true;
+export const FORCE_FRONTEND_ONLY_DEMO = false;
 
-type DemoEnv = {
-  ZERO_DEMO_MODE?: string;
-  VITE_ZERO_DEMO_MODE?: string;
-  VITE_FRONTEND_ONLY?: string;
-  VITE_ZERO_DEMO_FRONTEND_ONLY?: string;
-  ZERO_DEMO_FRONTEND_ONLY?: string;
-};
+export type { MailApiMode, MailModeEnv };
+export { resolveMailMode };
+
+type DemoEnv = MailModeEnv;
 
 export function isDemoMode(env: DemoEnv = import.meta.env as unknown as DemoEnv): boolean {
-  const demoMode = env.ZERO_DEMO_MODE ?? env.VITE_ZERO_DEMO_MODE;
-  return demoMode === '1';
+  return isDemoModeFromMode(env);
 }
 
 export function isFrontendOnlyDemo(env: DemoEnv = import.meta.env as unknown as DemoEnv): boolean {
-  if (FORCE_FRONTEND_ONLY_DEMO) return true;
-  const frontendOnlyEnv =
-    env.VITE_FRONTEND_ONLY ?? env.VITE_ZERO_DEMO_FRONTEND_ONLY ?? env.ZERO_DEMO_FRONTEND_ONLY;
-  return isDemoMode(env) && frontendOnlyEnv === '1';
+  return isFrontendOnlyDemoFromMode(env);
 }
 
 export function isDemoFeatureEnabled(key: DemoFeatureKey): boolean {

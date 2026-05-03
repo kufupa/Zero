@@ -4,49 +4,31 @@ import {
   isDemoMode,
   isFrontendOnlyDemo,
   isDemoFeatureEnabled,
+  resolveMailMode,
 } from '../lib/demo/runtime';
 
 describe('demo runtime', () => {
-  it('treats ZERO_DEMO_MODE=1 as demo mode', () => {
-    expect(isDemoMode({ ZERO_DEMO_MODE: '1' })).toBe(true);
-    expect(isDemoMode({ ZERO_DEMO_MODE: '0' })).toBe(false);
+  it('does not force frontend-only demo via constant', () => {
+    expect(FORCE_FRONTEND_ONLY_DEMO).toBe(false);
   });
 
-  it('falls back to VITE_ZERO_DEMO_MODE when ZERO_DEMO_MODE is unset', () => {
-    expect(isDemoMode({ VITE_ZERO_DEMO_MODE: '1' })).toBe(true);
-    expect(isDemoMode({ VITE_ZERO_DEMO_MODE: '0' })).toBe(false);
-    expect(isDemoMode({})).toBe(false);
+  it('treats canonical demo mode as demo', () => {
+    expect(isDemoMode({ VITE_PUBLIC_MAIL_API_MODE: 'demo' })).toBe(true);
+    expect(isDemoMode({ VITE_PUBLIC_MAIL_API_MODE: 'legacy' })).toBe(false);
   });
 
-  it('requires both demo + frontend-only to hard disconnect backend', () => {
-    if (FORCE_FRONTEND_ONLY_DEMO) {
-      expect(isFrontendOnlyDemo({})).toBe(true);
-      expect(
-        isFrontendOnlyDemo({
-          ZERO_DEMO_MODE: '1',
-          VITE_FRONTEND_ONLY: '0',
-        }),
-      ).toBe(true);
-      return;
-    }
+  it('treats VITE compatibility flags as demo via resolver', () => {
+    expect(resolveMailMode({ VITE_ZERO_DEMO_MODE: '1' })).toBe('demo');
+    expect(resolveMailMode({ VITE_FRONTEND_ONLY: '1' })).toBe('demo');
+  });
+
+  it('treats frontend-only demo when mode is demo', () => {
+    expect(isFrontendOnlyDemo({ VITE_PUBLIC_MAIL_API_MODE: 'demo' })).toBe(true);
     expect(
       isFrontendOnlyDemo({
-        ZERO_DEMO_MODE: '1',
-        VITE_FRONTEND_ONLY: '1',
-      }),
-    ).toBe(true);
-    expect(
-      isFrontendOnlyDemo({
-        ZERO_DEMO_MODE: '1',
-        VITE_FRONTEND_ONLY: '0',
+        VITE_PUBLIC_MAIL_API_MODE: 'legacy',
       }),
     ).toBe(false);
-    expect(
-      isFrontendOnlyDemo({
-        ZERO_DEMO_MODE: '1',
-        ZERO_DEMO_FRONTEND_ONLY: '1',
-      }),
-    ).toBe(true);
   });
 
   it('reads typed feature toggles safely', () => {

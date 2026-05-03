@@ -5,7 +5,7 @@ type WaitDecisionInput = {
   userAgent: string | null;
   isSpaMode: boolean;
   env?: {
-    ZERO_DEMO_MODE?: string;
+    VITE_PUBLIC_MAIL_API_MODE?: string;
     VITE_ZERO_DEMO_MODE?: string;
     VITE_FRONTEND_ONLY?: string;
   };

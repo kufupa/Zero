@@ -1,12 +1,13 @@
 import * as Sentry from '@sentry/react';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { resolveMailMode } from '@/lib/runtime/mail-mode';
 
 const sentryDisabled =
   import.meta.env.VITE_DISABLE_SENTRY === '1' ||
-  isFrontendOnlyDemo({
+  resolveMailMode({
+    VITE_PUBLIC_MAIL_API_MODE: import.meta.env.VITE_PUBLIC_MAIL_API_MODE,
     VITE_ZERO_DEMO_MODE: import.meta.env.VITE_ZERO_DEMO_MODE,
     VITE_FRONTEND_ONLY: import.meta.env.VITE_FRONTEND_ONLY,
-  });
+  }) === 'demo';
 
 if (!sentryDisabled) {
   Sentry.init({
