@@ -11,7 +11,8 @@
     "deploy": "wrangler deploy",
     "lint": "eslint .",
     "machine-translate": "inlang machine translate --project project.inlang",
-    "test:demo": "vitest run tests"
+    "paraglide:compile": "paraglide-js compile --project ./project.inlang --outdir ./paraglide",
+    "test:demo": "pnpm paraglide:compile && vitest run tests"
   },
   "dependencies": {
     "@ai-sdk/perplexity": "1.1.9",
