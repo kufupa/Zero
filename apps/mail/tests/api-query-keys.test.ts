@@ -1,0 +1,19 @@
+import { describe, expect, it } from 'vitest';
+import { apiQueryKeys } from '../lib/api/query-keys';
+
+describe('api query keys', () => {
+  it('includes mode, account, domain, and input', () => {
+    const key = apiQueryKeys.mail.listThreads('legacy', 'conn-1', { folder: 'inbox' });
+    expect(key[0]).toBe('frontendApi');
+    expect(key[1]).toBe('legacy');
+    expect(key[2]).toBe('conn-1');
+    expect(key[3]).toBe('mail');
+    expect(key[4]).toBe('listThreads');
+    expect(key[5]).toEqual({ folder: 'inbox' });
+  });
+
+  it('uses anon placeholder when account is null', () => {
+    const key = apiQueryKeys.labels.list('demo', null);
+    expect(key[2]).toBe('anon');
+  });
+});

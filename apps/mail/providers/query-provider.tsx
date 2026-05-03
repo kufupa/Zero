@@ -8,7 +8,7 @@ import { createTRPCContext } from '@trpc/tanstack-react-query';
 import { createTRPCClient, httpBatchLink } from '@trpc/client';
 import { useMemo, type PropsWithChildren } from 'react';
 import type { AppRouter } from '@zero/server/trpc';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { resolveMailMode } from '@/lib/runtime/mail-mode';
 import { resolveDemoQueryPolicy } from '@/lib/demo/query-policy';
 import { CACHE_BURST_KEY } from '@/lib/constants';
 import { signOut } from '@/lib/auth-client';
@@ -98,11 +98,11 @@ function createIDBPersister(idbValidKey: IDBValidKey = 'zero-query-cache') {
   } satisfies Persister;
 }
 
-export const makeQueryClient = (connectionId: string | null) =>
+export const makeQueryClient = (opts: { mode: ReturnType<typeof resolveMailMode>; connectionId: string | null }) =>
   new QueryClient({
     queryCache: new QueryCache({
       onError: (err, { meta }) => {
-        if (isFrontendOnlyDemo()) return;
+        if (resolveMailMode() === 'demo') return;
         if (meta && meta.noGlobalError === true) return;
         if (meta && typeof meta.customError === 'string') console.error(meta.customError);
         else if (
@@ -124,7 +124,8 @@ export const makeQueryClient = (connectionId: string | null) =>
       queries: {
         retry: false,
         refetchOnWindowFocus: false,
-        queryKeyHashFn: (queryKey) => hashKey([{ connectionId }, ...queryKey]),
+        queryKeyHashFn: (queryKey) =>
+          hashKey([{ mode: opts.mode, connectionId: opts.connectionId }, ...queryKey]),
         gcTime: 1000 * 60 * 60 * 24, // 24 hours,
       },
       mutations: {
@@ -136,18 +137,26 @@ export const makeQueryClient = (connectionId: string | null) =>
 let browserQueryClient = {
   queryClient: null,
   activeConnectionId: null,
+  activeMode: null,
 } as {
   queryClient: QueryClient | null;
   activeConnectionId: string | null;
+  activeMode: ReturnType<typeof resolveMailMode> | null;
 };
 
 const getQueryClient = (connectionId: string | null) => {
+  const mode = resolveMailMode();
   if (typeof window === 'undefined') {
-    return makeQueryClient(connectionId);
+    return makeQueryClient({ mode, connectionId });
   } else {
-    if (!browserQueryClient.queryClient || browserQueryClient.activeConnectionId !== connectionId) {
-      browserQueryClient.queryClient = makeQueryClient(connectionId);
+    if (
+      !browserQueryClient.queryClient ||
+      browserQueryClient.activeConnectionId !== connectionId ||
+      browserQueryClient.activeMode !== mode
+    ) {
+      browserQueryClient.queryClient = makeQueryClient({ mode, connectionId });
       browserQueryClient.activeConnectionId = connectionId;
+      browserQueryClient.activeMode = mode;
     }
     return browserQueryClient.queryClient;
   }
@@ -175,7 +184,7 @@ const fetchWithTimeout = (url: RequestInfo | URL, options?: RequestInit) => {
 
 export const { TRPCProvider, useTRPC, useTRPCClient } = createTRPCContext<AppRouter>();
 
-export const trpcClient: AppRouter = isFrontendOnlyDemo()
+export const trpcClient: AppRouter = resolveMailMode() === 'demo'
   ? (createDemoTrpcClient() as AppRouter)
   : createTRPCClient<AppRouter>({
       links: [
@@ -204,10 +213,11 @@ export function QueryProvider({
   children,
   connectionId,
 }: PropsWithChildren<{ connectionId: string | null }>) {
+  const mode = resolveMailMode();
   const demoQueryPolicy = resolveDemoQueryPolicy();
   const persister = useMemo(
-    () => createIDBPersister(`zero-query-cache-${connectionId ?? 'default'}`),
-    [connectionId],
+    () => createIDBPersister(`zero-query-cache-v2-${mode}-${connectionId ?? 'anon'}`),
+    [connectionId, mode],
   );
   const policyAwarePersister = useMemo(
     () =>
@@ -220,7 +230,7 @@ export function QueryProvider({
           },
     [demoQueryPolicy.shouldHydratePersistedQueries, persister],
   );
-  const queryClient = useMemo(() => getQueryClient(connectionId), [connectionId]);
+  const queryClient = useMemo(() => getQueryClient(connectionId), [connectionId, mode]);
 
   return (
     <PersistQueryClientProvider

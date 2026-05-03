@@ -1,7 +1,7 @@
 import { createTRPCClient, httpBatchLink } from '@trpc/client';
 import type { AppRouter } from '@zero/server/trpc';
 import superjson from 'superjson';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { resolveMailMode } from '@/lib/runtime/mail-mode';
 
 const createBackendDisabledError = () =>
   new Error('[demo mode] Backend TRPC client is disabled in frontend-only mode');
@@ -47,7 +47,7 @@ const createDemoTrpcClient = (): unknown => createDemoProcedureNode([]);
 const getUrl = () => import.meta.env.VITE_PUBLIC_BACKEND_URL + '/api/trpc';
 
 export const getServerTrpc = (req: Request) =>
-  isFrontendOnlyDemo()
+  resolveMailMode() === 'demo'
     ? (createDemoTrpcClient() as AppRouter)
     : createTRPCClient<AppRouter>({
         links: [
