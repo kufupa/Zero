@@ -28,4 +28,22 @@ Known dirty at plan time: `.gitignore`, `apps/mail/vercel.json`. Left unchanged 
 
 ## Task checkpoints
 
-Append pass/fail and SHAs here as tasks complete.
+| Task | Summary | Tests | SHA |
+|------|---------|-------|-----|
+| 0 | Baseline doc + `paraglide:compile` before `test:demo` | baseline suite (after paraglide) | `d3cc1cd9` |
+| 1 | `VITE_PUBLIC_MAIL_API_MODE`, `mail-mode.ts`, `FORCE_FRONTEND_ONLY_DEMO=false`, instrument | `mail-mode`, `demo-runtime`, `support-links`, `entry-server-wait` | `098f0276` |
+| 2 | `FrontendApi` contract, DTOs, `hosted-http` proxy, errors | `api-contract` | `efb61571` |
+| 3 | `apiQueryKeys`, query-provider mode+IDB v2, `CACHE_BURST_KEY` bump, trpc mode gate | `api-query-keys`, `demo-query-policy`, full mail `162` tests | `1961db54` |
+| 4 | `legacy-trpc`, `demo-local`, `getFrontendApi`, factory tests | `api-factory`, `legacy-adapter-routes`, `demo-data`, `demo-local-store` | _(this commit)_ |
+
+### Follow-up (not done here)
+
+Tasks **5–13** from the final plan: AuthApi + login, remove server imports from UI, migrate hooks through `getFrontendApi` / `apiQueryKeys`, folder domain, remove demo tRPC proxy, drift-guard tests, `run-frontend-local.mjs` + `dev:hotel`, final `pnpm build:frontend` gate.
+
+### Paraglide + Vitest
+
+Fresh clones/worktrees: run `pnpm --filter=@zero/mail paraglide:compile` (or `pnpm --filter=@zero/mail test:demo` which runs compile first) before Vitest, or imports of `@/paraglide/runtime` fail.
+
+### Demo draft seed tests
+
+`listDemoDrafts()` only auto-seeds when `resolveMailMode() === 'demo'`. `tests/demo-draft-seed.test.ts` stubs `VITE_PUBLIC_MAIL_API_MODE=demo` in `beforeEach`.

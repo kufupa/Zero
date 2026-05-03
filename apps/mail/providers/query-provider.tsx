@@ -8,7 +8,7 @@ import { createTRPCContext } from '@trpc/tanstack-react-query';
 import { createTRPCClient, httpBatchLink } from '@trpc/client';
 import { useMemo, type PropsWithChildren } from 'react';
 import type { AppRouter } from '@zero/server/trpc';
-import { resolveMailMode } from '@/lib/runtime/mail-mode';
+import { resolveMailMode, type MailApiMode } from '@/lib/runtime/mail-mode';
 import { resolveDemoQueryPolicy } from '@/lib/demo/query-policy';
 import { CACHE_BURST_KEY } from '@/lib/constants';
 import { signOut } from '@/lib/auth-client';
@@ -134,32 +134,26 @@ export const makeQueryClient = (opts: { mode: ReturnType<typeof resolveMailMode>
     },
   });
 
-let browserQueryClient = {
-  queryClient: null,
-  activeConnectionId: null,
-  activeMode: null,
-} as {
-  queryClient: QueryClient | null;
-  activeConnectionId: string | null;
-  activeMode: ReturnType<typeof resolveMailMode> | null;
+const browserQueryClient = {
+  queryClient: null as QueryClient | null,
+  activeConnectionId: null as string | null,
+  activeMode: null as MailApiMode | null,
 };
 
-const getQueryClient = (connectionId: string | null) => {
-  const mode = resolveMailMode();
+const getQueryClient = (connectionId: string | null, mode: MailApiMode) => {
   if (typeof window === 'undefined') {
     return makeQueryClient({ mode, connectionId });
-  } else {
-    if (
-      !browserQueryClient.queryClient ||
-      browserQueryClient.activeConnectionId !== connectionId ||
-      browserQueryClient.activeMode !== mode
-    ) {
-      browserQueryClient.queryClient = makeQueryClient({ mode, connectionId });
-      browserQueryClient.activeConnectionId = connectionId;
-      browserQueryClient.activeMode = mode;
-    }
-    return browserQueryClient.queryClient;
   }
+  if (
+    !browserQueryClient.queryClient ||
+    browserQueryClient.activeConnectionId !== connectionId ||
+    browserQueryClient.activeMode !== mode
+  ) {
+    browserQueryClient.queryClient = makeQueryClient({ mode, connectionId });
+    browserQueryClient.activeConnectionId = connectionId;
+    browserQueryClient.activeMode = mode;
+  }
+  return browserQueryClient.queryClient;
 };
 
 const getUrl = () => import.meta.env.VITE_PUBLIC_BACKEND_URL + '/api/trpc';
@@ -230,7 +224,7 @@ export function QueryProvider({
           },
     [demoQueryPolicy.shouldHydratePersistedQueries, persister],
   );
-  const queryClient = useMemo(() => getQueryClient(connectionId), [connectionId, mode]);
+  const queryClient = useMemo(() => getQueryClient(connectionId, mode), [connectionId, mode]);
 
   return (
     <PersistQueryClientProvider

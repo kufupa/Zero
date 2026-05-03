@@ -1,12 +1,17 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { demoMailListDraftsQueryKey } from '../lib/demo/demo-mail-query-keys';
 import { listDemoDrafts, resetDemoStoreForTests } from '../lib/demo/local-store';
 
 beforeEach(() => {
+  vi.stubEnv('VITE_PUBLIC_MAIL_API_MODE', 'demo');
   resetDemoStoreForTests();
   if (typeof localStorage !== 'undefined') {
     localStorage.clear();
   }
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 describe('demo draft seed + query key', () => {
