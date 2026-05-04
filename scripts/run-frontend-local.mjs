@@ -9,11 +9,11 @@ const has = (bin) => {
 
 const hasPnpm = has('pnpm');
 const cliArgs = new Set(process.argv.slice(2));
-const forceHotel = cliArgs.has('--hotel');
+const forceHosted = cliArgs.has('--hosted');
 const forceFrontendOnly = cliArgs.has('--frontend-only') || cliArgs.has('--no-backend');
 const forceFull = cliArgs.has('--full');
 const isDemoFrontendOnlyArg = cliArgs.has('--demo-frontend-only');
-if (!forceHotel && (isDemoFrontendOnlyArg || forceFrontendOnly)) {
+if (!forceHosted && (isDemoFrontendOnlyArg || forceFrontendOnly)) {
   process.env.ZERO_DEMO_MODE = '1';
   process.env.ZERO_DEMO_FRONTEND_ONLY = '1';
 }
@@ -129,8 +129,8 @@ const startServerProcess = async (baseEnv) => {
 const env = { ...process.env };
 env.VITE_DISABLE_SENTRY = '1';
 
-if (forceHotel) {
-  env.VITE_PUBLIC_MAIL_API_MODE = 'hotel';
+if (forceHosted) {
+  env.VITE_PUBLIC_MAIL_API_MODE = 'hosted';
 } else if (forceFull) {
   env.VITE_PUBLIC_MAIL_API_MODE = 'legacy';
 } else if (forceFrontendOnly || isDemoFrontendOnlyArg || demoFrontendOnly) {
@@ -148,12 +148,12 @@ if (demoFrontendOnly) {
   env.ZERO_DISABLE_OXLINT = process.env.ZERO_DISABLE_OXLINT || '1';
 }
 
-if (forceHotel) {
-  console.log('[local-dev] Hotel mode shell (VITE_PUBLIC_MAIL_API_MODE=hotel); skipping backend startup.');
+if (forceHosted) {
+  console.log('[local-dev] Hosted mode shell (VITE_PUBLIC_MAIL_API_MODE=hosted); skipping backend startup.');
   env.ZERO_DISABLE_OXLINT = process.env.ZERO_DISABLE_OXLINT || '1';
 }
 
-const backendReachable = forceFrontendOnly || demoFrontendOnly || forceHotel
+const backendReachable = forceFrontendOnly || demoFrontendOnly || forceHosted
   ? false
   : await startBackendIfNeeded(env);
 env.VITE_FRONTEND_ONLY = forceFrontendOnly || demoFrontendOnly ? '1' : backendReachable ? '0' : '1';

@@ -19,7 +19,7 @@ export type PendingAction = BasePendingAction &
     | { type: 'IMPORTANT'; params: { important: boolean } }
     | { type: 'SNOOZE'; params: { currentFolder: string; wakeAt: string } }
     | { type: 'UNSNOOZE'; params: { currentFolder?: string; wakeAt?: string } }
-    | { type: 'DELETE_DRAFT'; params: {} }
+    | { type: 'DELETE_DRAFT'; params: Record<string, never> }
   );
 
 class OptimisticActionsManager {

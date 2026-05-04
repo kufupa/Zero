@@ -38,11 +38,24 @@ Known dirty at plan time: `.gitignore`, `apps/mail/vercel.json`. Left unchanged 
 
 ### Follow-up (not done here)
 
-Tasks **5–13** from the final plan: AuthApi + login, remove server imports from UI, migrate hooks through `getFrontendApi` / `apiQueryKeys`, folder domain, remove demo tRPC proxy, drift-guard tests, `run-frontend-local.mjs` + `dev:hotel`, final `pnpm build:frontend` gate.
+Tasks **5–13** from the final plan: AuthApi + login, remove server imports from UI, migrate hooks through `getFrontendApi` / `apiQueryKeys`, folder domain, remove demo tRPC proxy, drift-guard tests, `run-frontend-local.mjs` + `dev:hosted`, final `pnpm build:frontend` gate.
 
 ### Paraglide + Vitest
 
 Fresh clones/worktrees: run `pnpm --filter=@zero/mail paraglide:compile` (or `pnpm --filter=@zero/mail test:demo` which runs compile first) before Vitest, or imports of `@/paraglide/runtime` fail.
+
+## 2026-05-04 — Hosted rename + automated gates
+
+| Gate | Command | Result |
+|------|---------|--------|
+| Vitest (mail) | `pnpm --filter=@zero/mail test:demo` | PASS — 177 tests, 35 files |
+| Mail production build | `pnpm --filter=@zero/mail build` | PASS (client + SSR) |
+| Mail ESLint | `pnpm --filter=@zero/mail lint` | FAIL — 137 errors, 41 warnings (pre-existing debt; small fixes: hotkey unused binding, DELETE_DRAFT params type) |
+| Monorepo frontend build | `pnpm build:frontend` | PASS |
+
+**Rename (Phase A):** Root script `dev:hosted` replaces `dev:hotel`; `scripts/run-frontend-local.mjs` uses `--hosted` and sets `VITE_PUBLIC_MAIL_API_MODE=hosted`. Removed token `hotel` is rejected by `resolveMailMode` (falls through to `legacy`); see `apps/mail/tests/mail-mode.test.ts`.
+
+**Manual smoke (demo / legacy / hosted):** not recorded here — fill when validated.
 
 ### Demo draft seed tests
 

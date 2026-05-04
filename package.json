@@ -13,7 +13,7 @@
     "dev:frontend": "dotenv -- node ./scripts/run-frontend-local.mjs --frontend-only",
     "dev:demo:frontend": "dotenv -- node ./scripts/run-frontend-local.mjs --frontend-only --demo-frontend-only",
     "devfull": "dotenv -- node ./scripts/run-frontend-local.mjs --full",
-    "dev:hotel": "dotenv -- node ./scripts/run-frontend-local.mjs --hotel",
+    "dev:hosted": "dotenv -- node ./scripts/run-frontend-local.mjs --hosted",
     "dev:backend": "dotenv -- node ./scripts/run-backend-local.mjs",
     "cleanup:dev": "node ./scripts/cleanup-dev-processes.mjs",
     "build": "turbo run build",

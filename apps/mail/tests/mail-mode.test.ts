@@ -14,6 +14,10 @@ describe('mail mode resolver', () => {
     expect(resolveMailMode({ VITE_PUBLIC_MAIL_API_MODE: 'ses' })).toBe('legacy');
   });
 
+  it('does not accept removed hotel token (use hosted)', () => {
+    expect(resolveMailMode({ VITE_PUBLIC_MAIL_API_MODE: 'hotel' })).toBe('legacy');
+  });
+
   it('keeps compatibility only for VITE-prefixed old client flags', () => {
     expect(resolveMailMode({ VITE_ZERO_DEMO_MODE: '1' })).toBe('demo');
     expect(resolveMailMode({ VITE_FRONTEND_ONLY: '1' })).toBe('demo');

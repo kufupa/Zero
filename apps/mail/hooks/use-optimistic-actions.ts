@@ -585,7 +585,7 @@ export function useOptimisticActions() {
     createPendingAction({
       type: 'DELETE_DRAFT',
       threadIds: [draftId],
-      params: {} as any,
+      params: {} as Record<string, never>,
       optimisticId,
       execute: async () => {
           if (frontendOnlyDemo) {
