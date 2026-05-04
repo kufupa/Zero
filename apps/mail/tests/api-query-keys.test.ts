@@ -29,4 +29,17 @@ describe('api query keys', () => {
     expect(key[4]).toBe('messageAttachments');
     expect(key[5]).toEqual({ messageId: 'm1' });
   });
+
+  it('keys connections getDefault', () => {
+    const key = apiQueryKeys.connections.getDefault('legacy', null);
+    expect(key[3]).toBe('connections');
+    expect(key[4]).toBe('getDefault');
+  });
+
+  it('keys templates list', () => {
+    const key = apiQueryKeys.templates.list('legacy', null, {});
+    expect(key[3]).toBe('templates');
+    expect(key[4]).toBe('list');
+    expect(key[5]).toEqual({});
+  });
 });

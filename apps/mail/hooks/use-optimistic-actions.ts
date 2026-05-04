@@ -4,8 +4,8 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 
 import { backgroundQueueAtom } from '@/store/backgroundQueue';
 import type { ThreadDestination } from '@/lib/thread-actions';
-import { useTRPC } from '@/providers/query-provider';
-import { labelsListQueryKey } from '@/lib/api/query-options';
+import { draftsListPrefixKey, labelsListQueryKey } from '@/lib/api/query-options';
+import { getFrontendApi } from '@/lib/api/client';
 import { resolveMailMode } from '@/lib/runtime/mail-mode';
 import { useMail } from '@/components/mail/use-mail';
 import { moveThreadsTo } from '@/lib/thread-actions';
@@ -66,7 +66,6 @@ const actionEventNames: Record<ActionType, (params: ActionParams) => string> = {
 };
 
 export function useOptimisticActions() {
-  const trpc = useTRPC();
   const queryClient = useQueryClient();
   const [, setBackgroundQueue] = useAtom(backgroundQueueAtom);
   const [, addOptimisticAction] = useAtom(addOptimisticActionAtom);
@@ -75,18 +74,36 @@ export function useOptimisticActions() {
   const [, setActiveReplyId] = useQueryState('activeReplyId');
   const [mail, setMail] = useMail();
   const frontendOnlyDemo = isFrontendOnlyDemo();
-  const { mutateAsync: markAsRead } = useMutation(trpc.mail.markAsRead.mutationOptions());
-  const { mutateAsync: markAsUnread } = useMutation(trpc.mail.markAsUnread.mutationOptions());
+  const { mutateAsync: markAsRead } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().mail.markAsRead(input),
+  });
+  const { mutateAsync: markAsUnread } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().mail.markAsUnread(input),
+  });
 
-  const { mutateAsync: toggleStar } = useMutation(trpc.mail.toggleStar.mutationOptions());
-  const { mutateAsync: toggleImportant } = useMutation(trpc.mail.toggleImportant.mutationOptions());
+  const { mutateAsync: toggleStar } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().mail.toggleStar(input),
+  });
+  const { mutateAsync: toggleImportant } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().mail.toggleImportant(input),
+  });
 
-  const { mutateAsync: bulkDeleteThread } = useMutation(trpc.mail.bulkDelete.mutationOptions());
-  const { mutateAsync: snoozeThreads } = useMutation(trpc.mail.snoozeThreads.mutationOptions());
-  const { mutateAsync: unsnoozeThreads } = useMutation(trpc.mail.unsnoozeThreads.mutationOptions());
-  const { mutateAsync: modifyLabels } = useMutation(trpc.mail.modifyLabels.mutationOptions());
+  const { mutateAsync: bulkDeleteThread } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().mail.bulkDelete(input),
+  });
+  const { mutateAsync: snoozeThreads } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().mail.snoozeThreads(input),
+  });
+  const { mutateAsync: unsnoozeThreads } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().mail.unsnoozeThreads(input),
+  });
+  const { mutateAsync: modifyLabels } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().mail.modifyLabels(input),
+  });
 
-  const { mutateAsync: deleteDraft } = useMutation(trpc.drafts.delete.mutationOptions());
+  const { mutateAsync: deleteDraft } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().drafts.delete(input),
+  });
 
   const generatePendingActionId = () =>
     `pending_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
@@ -579,7 +596,9 @@ export function useOptimisticActions() {
           } else {
             await deleteDraft({ id: draftId });
           }
-        await queryClient.invalidateQueries({ queryKey: trpc.drafts.list.queryKey() });
+        await queryClient.invalidateQueries({
+          queryKey: draftsListPrefixKey({ mode: resolveMailMode(), accountId: null }),
+        });
       },
       undo: () => {
         removeOptimisticAction(optimisticId);

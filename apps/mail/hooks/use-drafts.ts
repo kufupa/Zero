@@ -1,9 +1,12 @@
-import { useTRPC } from '@/providers/query-provider';
 import { useQuery } from '@tanstack/react-query';
+import { useMemo } from 'react';
 import { useSession } from '@/lib/auth-client';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { getDemoDraft, type DemoDraft } from '@/lib/demo/local-store';
 import { parseRecipientToken, splitRecipientField } from '../lib/demo/recipient-parsing';
+import { getFrontendApi } from '@/lib/api/client';
+import { resolveMailMode } from '@/lib/runtime/mail-mode';
+import { draftsGetQueryKey, type ApiQueryContext } from '@/lib/api/query-options';
 
 type DraftLike = {
   id: string;
@@ -47,23 +50,19 @@ const toDemoDraftPayload = (draft?: DemoDraft | null): DraftLike | undefined => 
 
 export const useDraft = (id: string | null) => {
   const { data: session } = useSession();
-  const trpc = useTRPC();
   const demoMode = isFrontendOnlyDemo();
-
-  if (demoMode) {
-    return useQuery({
-      queryKey: ['demo', 'drafts', 'get', id],
-      queryFn: async () => toDemoDraftPayload(getDemoDraft(id ?? '')),
-      enabled: !!id,
-      staleTime: 1000 * 60 * 60, // 1 hour
-    });
-  }
-
-  const draftQuery = useQuery(
-    trpc.drafts.get.queryOptions(
-      { id: id! },
-      { enabled: !!session?.user.id && !!id, staleTime: 1000 * 60 * 60 },
-    ),
+  const queryCtx = useMemo<ApiQueryContext>(
+    () => ({ mode: resolveMailMode(), accountId: null }),
+    [],
   );
-  return draftQuery;
+
+  return useQuery({
+    queryKey: demoMode ? (['demo', 'drafts', 'get', id] as const) : draftsGetQueryKey(queryCtx, { id: id ?? '' }),
+    queryFn: () =>
+      demoMode
+        ? Promise.resolve(toDemoDraftPayload(getDemoDraft(id ?? '')))
+        : getFrontendApi().drafts.get({ id: id! }),
+    enabled: demoMode ? Boolean(id) : Boolean(session?.user?.id) && Boolean(id) && queryCtx.mode === 'legacy',
+    staleTime: 1000 * 60 * 60,
+  });
 };

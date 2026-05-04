@@ -27,6 +27,12 @@ export const apiQueryKeys = {
   },
   connections: {
     list: (mode: MailApiMode, accountId: string | null) => [...root(mode, accountId), 'connections', 'list'] as const,
+    getDefault: (mode: MailApiMode, accountId: string | null) =>
+      [...root(mode, accountId), 'connections', 'getDefault'] as const,
+  },
+  templates: {
+    list: (mode: MailApiMode, accountId: string | null, input: unknown) =>
+      [...root(mode, accountId), 'templates', 'list', input] as const,
   },
   auth: {
     session: (mode: MailApiMode, accountId: string | null) => [...root(mode, accountId), 'auth', 'session'] as const,

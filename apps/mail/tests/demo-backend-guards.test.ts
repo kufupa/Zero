@@ -10,7 +10,12 @@ import { resolveMailDisplayWebSearch } from '../components/mail/mail-display';
 import { createLabelInThreadContext } from '../components/context/thread-context';
 import { deleteLabelInSidebarContext } from '../components/context/label-sidebar-context';
 import { handleGeneralSettingsSave } from '../app/(routes)/settings/general/page';
-import { aiGenerateSummaryQueryKey, mailSettingsQueryKey } from '../lib/api/query-options';
+import {
+  aiGenerateSummaryQueryKey,
+  draftsGetQueryKey,
+  mailSettingsQueryKey,
+  templatesListQueryKey,
+} from '../lib/api/query-options';
 import { persistTrustedSender } from '../components/mail/mail-content';
 import { runDisconnectConnection, runReconnectConnection } from '../app/(routes)/settings/connections/page';
 import { runDeleteAccount } from '../app/(routes)/settings/danger-zone/page';
@@ -241,6 +246,20 @@ vi.mock('@/lib/demo/local-store', async () => {
 
 function makeTrpc() {
   return {
+    connections: {
+      list: {
+        query: vi.fn(async () => ({ connections: [] })),
+        queryOptions: vi.fn(),
+      },
+      getDefault: {
+        query: vi.fn(async () => null),
+        queryOptions: vi.fn(),
+      },
+      setDefault: {
+        mutationOptions: vi.fn(() => ({ mutationFn: vi.fn(async () => ({})) })),
+      },
+      delete: { mutationOptions: vi.fn() },
+    },
     drafts: {
       get: {
         queryOptions: vi.fn((input: { id: string }, options: Record<string, unknown> = {}) => ({
@@ -248,6 +267,11 @@ function makeTrpc() {
           queryFn: vi.fn(),
           ...options,
         })),
+        query: vi.fn(async (input: { id: string }) => ({ id: input.id })),
+      },
+      delete: {
+        mutationOptions: vi.fn(),
+        mutate: vi.fn(async () => ({ success: true })),
       },
     },
     labels: {
@@ -282,6 +306,7 @@ function makeTrpc() {
           queryFn: vi.fn(),
           ...options,
         })),
+        query: vi.fn(async () => ({ templates: [] })),
       },
     },
     mail: {
@@ -305,7 +330,16 @@ function makeTrpc() {
       },
       delete: {
         mutationOptions: vi.fn(),
+        mutate: vi.fn(async () => undefined),
       },
+      markAsRead: { mutate: vi.fn(async () => ({})) },
+      markAsUnread: { mutate: vi.fn(async () => ({})) },
+      toggleStar: { mutate: vi.fn(async () => ({})) },
+      toggleImportant: { mutate: vi.fn(async () => ({})) },
+      bulkDelete: { mutate: vi.fn(async () => ({})) },
+      snoozeThreads: { mutate: vi.fn(async () => ({})) },
+      unsnoozeThreads: { mutate: vi.fn(async () => ({})) },
+      modifyLabels: { mutate: vi.fn(async () => ({})) },
       suggestRecipients: {
         queryOptions: vi.fn((input: { query: string; limit: number }, options: Record<string, unknown> = {}) => ({
           queryKey: ['mail', 'suggestRecipients', input.query, input.limit],
@@ -509,14 +543,8 @@ describe('demo backend guard coverage', () => {
       queryKey: unknown[];
       queryFn?: () => unknown;
     };
-    expect(trpc.drafts.get.queryOptions).toHaveBeenCalledWith(
-      { id: 'draft-123' },
-      expect.objectContaining({
-        enabled: true,
-        staleTime: 1000 * 60 * 60,
-      }),
-    );
-    expect(draftQuery.queryKey).toEqual(['drafts', 'get', 'draft-123']);
+    expect(trpc.drafts.get.queryOptions).not.toHaveBeenCalled();
+    expect(draftQuery.queryKey).toEqual(draftsGetQueryKey({ mode: 'legacy', accountId: null }, { id: 'draft-123' }));
     expect(typeof draftQuery.queryFn).toBe('function');
     expect(getDemoDraftMock).not.toHaveBeenCalled();
   });
@@ -540,13 +568,8 @@ describe('demo backend guard coverage', () => {
       queryKey: unknown[];
       queryFn?: () => unknown;
     };
-    expect(trpc.templates.list.queryOptions).toHaveBeenCalledWith(
-      undefined,
-      expect.objectContaining({
-        staleTime: 1000 * 60 * 5,
-      }),
-    );
-    expect(templateQuery.queryKey).toEqual(['templates', 'list']);
+    expect(trpc.templates.list.queryOptions).not.toHaveBeenCalled();
+    expect(templateQuery.queryKey).toEqual(templatesListQueryKey({ mode: 'legacy', accountId: null }));
     expect(typeof templateQuery.queryFn).toBe('function');
     expect(listDemoTemplatesMock).not.toHaveBeenCalled();
   });
@@ -846,7 +869,7 @@ describe('demo backend guard coverage', () => {
 
     expect(addToQueueMock).toHaveBeenCalledWith('thread-demo');
     expect(deleteThreadMock).not.toHaveBeenCalled();
-    expect(trpc.mail.delete.mutationOptions).toHaveBeenCalled();
+    expect(trpc.mail.delete.mutationOptions).not.toHaveBeenCalled();
     expect(refetchThreadsMock).toHaveBeenCalled();
     expect(refetchStatsMock).toHaveBeenCalled();
     expect(setMailMock).toHaveBeenCalled();

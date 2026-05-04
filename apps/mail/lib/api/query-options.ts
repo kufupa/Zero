@@ -111,3 +111,53 @@ export function mailListThreadsQueryOptions(
     queryFn: () => api.mail.listThreads(input),
   };
 }
+
+export function connectionsListQueryKey(ctx: ApiQueryContext) {
+  return apiQueryKeys.connections.list(ctx.mode, ctx.accountId);
+}
+
+export function connectionsListQueryOptions(api: FrontendApi, ctx: ApiQueryContext) {
+  return {
+    queryKey: connectionsListQueryKey(ctx),
+    queryFn: () => api.connections.list(),
+  };
+}
+
+export function connectionsGetDefaultQueryKey(ctx: ApiQueryContext) {
+  return apiQueryKeys.connections.getDefault(ctx.mode, ctx.accountId);
+}
+
+export function connectionsGetDefaultQueryOptions(api: FrontendApi, ctx: ApiQueryContext) {
+  return {
+    queryKey: connectionsGetDefaultQueryKey(ctx),
+    queryFn: () => api.connections.getDefault(),
+  };
+}
+
+export function draftsGetQueryKey(ctx: ApiQueryContext, input: { id: string }) {
+  return apiQueryKeys.drafts.get(ctx.mode, ctx.accountId, input);
+}
+
+export function draftsGetQueryOptions(api: FrontendApi, ctx: ApiQueryContext, id: string) {
+  return {
+    queryKey: draftsGetQueryKey(ctx, { id }),
+    queryFn: () => api.drafts.get({ id }),
+  };
+}
+
+export function draftsListPrefixKey(ctx: ApiQueryContext) {
+  return [...apiQueryKeys.root(ctx.mode, ctx.accountId), 'drafts', 'list'] as const;
+}
+
+const TEMPLATES_LIST_INPUT = {} as const;
+
+export function templatesListQueryKey(ctx: ApiQueryContext) {
+  return apiQueryKeys.templates.list(ctx.mode, ctx.accountId, TEMPLATES_LIST_INPUT);
+}
+
+export function templatesListQueryOptions(api: FrontendApi, ctx: ApiQueryContext) {
+  return {
+    queryKey: templatesListQueryKey(ctx),
+    queryFn: () => api.templates.list({}),
+  };
+}
