@@ -6,6 +6,7 @@ import { isDemoMailFolderSlug } from '@/lib/demo/folder-map';
 import { isStandardMailFolderSlug } from '@/lib/domain/folders';
 import { isFrontendOnlyDemo } from '@/lib/runtime/mail-mode';
 import { useEffect, useState } from 'react';
+import type { Label } from '@/types';
 import type { Route } from './+types/page';
 
 export async function clientLoader({ params }: Route.ClientLoaderArgs) {
@@ -35,7 +36,7 @@ export default function MailPage() {
     if (isLoadingLabels) return;
 
     if (userLabels) {
-      const checkLabelExists = (labels: any[]): boolean => {
+      const checkLabelExists = (labels: Label[]): boolean => {
         for (const label of labels) {
           if (label.id === normalizedFolder) return true;
           if (label.labels && label.labels.length > 0) {
@@ -64,7 +65,7 @@ export default function MailPage() {
       <div className="flex h-screen w-full flex-col items-center justify-center">
         <h2 className="text-xl font-semibold">Folder not found</h2>
         <p className="text-muted-foreground mt-2">
-          The folder you're looking for doesn't exist. Redirecting to inbox...
+          The folder you&apos;re looking for doesn&apos;t exist. Redirecting to inbox...
         </p>
       </div>
     );
