@@ -3,12 +3,17 @@ import { ArrowsPointingIn, PanelLeftOpen, Phone } from '../icons/icons';
 import { useActiveConnection } from '@/hooks/use-connections';
 import { ResizablePanel } from '@/components/ui/resizable';
 import { useSearchValue } from '@/hooks/use-search-value';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import useSearchLabels from '@/hooks/use-labels-search';
 import { useQueryClient } from '@tanstack/react-query';
 import { AIChat } from '@/components/create/ai-chat';
-import { useTRPC } from '@/providers/query-provider';
-import { Tools } from '../../../server/src/types';
+import {
+  labelsListQueryKey,
+  mailGetThreadQueryKey,
+  mailListThreadsInfiniteQueryKey,
+} from '@/lib/api/query-options';
+import { resolveMailMode } from '@/lib/runtime/mail-mode';
+import { Tools } from '@/types/tools';
 import { useDoState } from '../mail/use-do-state';
 import { PromptsDialog } from './prompts-dialog';
 import { Button } from '@/components/ui/button';
@@ -297,7 +302,7 @@ function AISidebar({ className }: AISidebarProps) {
   const { open, setOpen, isFullScreen, setIsFullScreen, toggleViewMode, isSidebar, isPopup } =
     useAISidebar();
   const queryClient = useQueryClient();
-  const trpc = useTRPC();
+  const mailApiCtx = useMemo(() => ({ mode: resolveMailMode(), accountId: null as string | null }), []);
   const [threadId] = useQueryState('threadId');
   const { folder } = useParams<{ folder: string }>();
   const { refetch: refetchLabels } = useLabels();
@@ -315,12 +320,12 @@ function AISidebar({ className }: AISidebarProps) {
           const threadId = typeof parsedData.threadId === 'string' ? parsedData.threadId : null;
           if (!threadId) return;
           queryClient.invalidateQueries({
-            queryKey: trpc.mail.get.queryKey({ id: threadId }),
+            queryKey: mailGetThreadQueryKey(mailApiCtx, { id: threadId }),
           });
         } else if (type === IncomingMessageType.Mail_List) {
           const folder = typeof parsedData.folder === 'string' ? parsedData.folder : '';
           queryClient.invalidateQueries({
-            queryKey: trpc.mail.listThreads.infiniteQueryKey({
+            queryKey: mailListThreadsInfiniteQueryKey(mailApiCtx, {
               folder,
               labelIds: labels,
               q: searchValue.value,
@@ -328,7 +333,7 @@ function AISidebar({ className }: AISidebarProps) {
           });
         } else if (type === IncomingMessageType.User_Topics) {
           queryClient.invalidateQueries({
-            queryKey: trpc.labels.list.queryKey(),
+            queryKey: labelsListQueryKey({ mode: resolveMailMode(), accountId: null }),
           });
         } else if (type === IncomingMessageType.Do_State) {
           const isSyncing = typeof parsedData.isSyncing === 'boolean' ? parsedData.isSyncing : false;
@@ -345,7 +350,7 @@ function AISidebar({ className }: AISidebarProps) {
         console.error('error parsing party message', error, { rawMessage: message.data });
       }
     },
-    [queryClient, trpc, labels, searchValue.value, setDoState],
+    [queryClient, mailApiCtx, labels, searchValue.value, setDoState],
   );
 
   const agent = useAgent({
@@ -406,7 +411,11 @@ function AISidebar({ className }: AISidebarProps) {
           break;
         case Tools.SendEmail:
           await queryClient.invalidateQueries({
-            queryKey: trpc.mail.listThreads.queryKey({ folder: 'sent' }),
+            queryKey: mailListThreadsInfiniteQueryKey(mailApiCtx, {
+              folder: 'sent',
+              labelIds: labels,
+              q: searchValue.value,
+            }),
           });
           break;
         case Tools.MarkThreadsRead:
@@ -418,7 +427,7 @@ function AISidebar({ className }: AISidebarProps) {
           await Promise.all(
             (toolCall.args as { threadIds: string[] }).threadIds.map((id) =>
               queryClient.invalidateQueries({
-                queryKey: trpc.mail.get.queryKey({ id }),
+                queryKey: mailGetThreadQueryKey(mailApiCtx, { id }),
               }),
             ),
           );

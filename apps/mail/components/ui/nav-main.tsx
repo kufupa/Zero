@@ -7,7 +7,9 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import Intercom, { show } from '@intercom/messenger-js-sdk';
 import { MessageSquare, OldPhone } from '../icons/icons';
 import { useSidebar } from '../context/sidebar-context';
-import { useTRPC } from '@/providers/query-provider';
+import { getFrontendApi } from '@/lib/api/client';
+import { isFrontendOnlyDemo, resolveMailMode } from '@/lib/runtime/mail-mode';
+import { userIntercomTokenQueryKey, type ApiQueryContext } from '@/lib/api/query-options';
 import { type NavItem } from '@/config/navigation';
 import type { Label as LabelType } from '@/types';
 import { Link, useLocation } from 'react-router';
@@ -17,8 +19,9 @@ import { useLabels } from '@/hooks/use-labels';
 import { Badge } from '@/components/ui/badge';
 import { useStats } from '@/hooks/use-stats';
 import SidebarLabels from './sidebar-labels';
-import { useCallback, useRef } from 'react';
+import { useCallback, useMemo, useRef } from 'react';
 import { BASE_URL } from '@/lib/constants';
+import { shouldShowSupportLinks } from '@/lib/demo/support-links';
 import { Plus } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
@@ -35,6 +38,7 @@ interface NavItemProps extends NavItem {
   onClick?: (e: React.MouseEvent<HTMLAnchorElement>) => void;
   suffix?: React.ComponentType<IconProps>;
   isSettingsPage?: boolean;
+  subtitle?: string;
 }
 
 interface NavMainProps {
@@ -54,9 +58,17 @@ export function NavMain({ items }: NavMainProps) {
   const location = useLocation();
   const pathname = location.pathname;
   const searchParams = new URLSearchParams();
+  const frontendOnlyDemo = isFrontendOnlyDemo();
 
-  const trpc = useTRPC();
-  const { data: intercomToken } = useQuery(trpc.user.getIntercomToken.queryOptions());
+  const queryCtx = useMemo<ApiQueryContext>(
+    () => ({ mode: resolveMailMode(), accountId: null }),
+    [],
+  );
+  const { data: intercomToken } = useQuery({
+    queryKey: userIntercomTokenQueryKey(queryCtx),
+    queryFn: () => getFrontendApi().user.getIntercomToken(),
+    enabled: !frontendOnlyDemo && queryCtx.mode === 'legacy',
+  });
 
   React.useEffect(() => {
     if (intercomToken) {
@@ -67,7 +79,9 @@ export function NavMain({ items }: NavMainProps) {
     }
   }, [intercomToken]);
 
-  const { mutateAsync: createLabel } = useMutation(trpc.labels.create.mutationOptions());
+  const { mutateAsync: createLabel } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().labels.create(input),
+  });
 
   const { userLabels, refetch } = useLabels();
 
@@ -75,6 +89,7 @@ export function NavMain({ items }: NavMainProps) {
 
   // Check if these are bottom navigation items by looking at the first section's title
   const isBottomNav = items[0]?.title === '';
+  const showSupportLinks = isBottomNav && shouldShowSupportLinks();
 
   /**
    * Validates URLs to prevent open redirect vulnerabilities.
@@ -184,7 +199,7 @@ export function NavMain({ items }: NavMainProps) {
   return (
     <SidebarGroup className={`${state !== 'collapsed' ? '' : 'mt-1'} space-y-2.5 py-0 md:px-0`}>
       <SidebarMenu>
-        {isBottomNav ? (
+        {showSupportLinks ? (
           <>
             <SidebarMenuButton
               onClick={() => show()}
@@ -236,7 +251,10 @@ export function NavMain({ items }: NavMainProps) {
             </SidebarMenuItem>
           </Collapsible>
         ))}
-        {!pathname.includes('/settings') && !isBottomNav && state !== 'collapsed' && (
+        {!pathname.includes('/settings') &&
+          !isBottomNav &&
+          state !== 'collapsed' &&
+          !isFrontendOnlyDemo() && (
           <Collapsible defaultOpen={true} className="group/collapsible flex-col">
             <SidebarMenuItem className="mb-4" style={{ height: 'auto' }}>
               <div className="mx-2 mb-4 flex items-center justify-between">
@@ -295,23 +313,44 @@ function NavItem(item: NavItemProps & { href: string }) {
     setOpenMobile(false);
   };
 
+  const hasCustomTheme = Boolean(item.style);
+
   return (
     <Collapsible defaultOpen={item.isActive}>
       <CollapsibleTrigger asChild>
         <SidebarMenuButton
           asChild
-          tooltip={state === 'collapsed' ? item.title : undefined}
+          tooltip={
+            state === 'collapsed'
+              ? item.subtitle
+                ? `${item.title} — ${item.subtitle}`
+                : item.title
+              : undefined
+          }
           className={cn(
             'hover:bg-subtleWhite flex items-center dark:hover:bg-[#202020]',
             item.isActive && 'bg-subtleWhite text-accent-foreground dark:bg-[#202020]',
+            item.className,
           )}
+          style={item.style}
           onClick={handleClick}
         >
           <Link target={item.target} to={item.href}>
             {item.icon && <item.icon ref={iconRef} className="mr-2 shrink-0" />}
-            <p className="relative bottom-px mt-0.5 min-w-0 flex-1 truncate text-[13px]">
-              {item.title}
-            </p>
+            <span className="relative bottom-px mt-0.5 min-w-0 flex-1 truncate text-left">
+              <span className="block truncate text-[13px] leading-tight">{item.title}</span>
+              {item.subtitle ? (
+                <span
+                  className={cn(
+                    hasCustomTheme
+                      ? 'block truncate text-[11px] leading-tight text-current opacity-80'
+                      : 'text-muted-foreground block truncate text-[11px] leading-tight dark:text-[#898989]',
+                  )}
+                >
+                  {item.subtitle}
+                </span>
+              ) : null}
+            </span>
             {stats &&
               stats.some((stat) => stat.label?.toLowerCase() === item.id?.toLowerCase()) && (
                 <Badge className="text-muted-foreground ml-auto shrink-0 rounded-full border-none bg-transparent">

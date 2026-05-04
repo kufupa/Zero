@@ -7,11 +7,10 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { Bell, Lightning, Mail, ScanEye, Tag, User, X, Search } from '../icons/icons';
 import { useCategorySettings, useDefaultCategoryId } from '@/hooks/use-categories';
-import { ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import { useCommandPalette } from '../context/command-palette-context';
 import { useHotkeys, useHotkeysContext } from 'react-hotkeys-hook';
-import { ThreadDisplay } from '@/components/mail/thread-display';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, lazy, Suspense } from 'react';
 import { useActiveConnection } from '@/hooks/use-connections';
 import { Check, ChevronDown, RefreshCcw } from 'lucide-react';
 import { useMediaQuery } from '../../hooks/use-media-query';
@@ -22,9 +21,7 @@ import { useNavigate, useParams } from 'react-router';
 import { useMail } from '@/components/mail/use-mail';
 import { SidebarToggle } from '../ui/sidebar-toggle';
 import { clearBulkSelectionAtom } from './use-mail';
-import AISidebar from '@/components/ui/ai-sidebar';
 import { useThreads } from '@/hooks/use-threads';
-import AIToggleButton from '../ai-toggle-button';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { Button } from '@/components/ui/button';
 import { useSession } from '@/lib/auth-client';
@@ -33,6 +30,23 @@ import { isMac } from '@/lib/platform';
 import { useQueryState } from 'nuqs';
 import { cn } from '@/lib/utils';
 import { useAtom } from 'jotai';
+const ThreadDisplay = lazy(() =>
+  import('@/components/mail/thread-display').then((module) => ({
+    default: module.ThreadDisplay,
+  })),
+);
+
+/** List panel % when desktop split; thread uses complement so both sum to 100. */
+const MAIL_LIST_SPLIT = {
+  default: 42,
+  min: 28,
+  max: 58,
+} as const;
+const MAIL_THREAD_SPLIT = {
+  default: 100 - MAIL_LIST_SPLIT.default,
+  min: 100 - MAIL_LIST_SPLIT.max,
+  max: 100 - MAIL_LIST_SPLIT.min,
+} as const;
 
 // const AutoLabelingSettings = () => {
 //   const trpc = useTRPC();
@@ -409,14 +423,17 @@ export function MailLayout() {
     <TooltipProvider delayDuration={0}>
       <div className="rounded-inherit z-5 relative flex p-0 md:mr-0.5 md:mt-1">
         <ResizablePanelGroup
+          key={isDesktop ? 'mail-split-desktop' : 'mail-split-mobile'}
           direction="horizontal"
-          autoSaveId="mail-panel-layout"
           className="rounded-inherit overflow-hidden"
+          autoSaveId={isDesktop ? 'mail-split-v2' : undefined}
         >
           <ResizablePanel
-            defaultSize={35}
-            minSize={35}
-            maxSize={35}
+            id="mail-list-panel"
+            order={0}
+            defaultSize={isDesktop ? MAIL_LIST_SPLIT.default : 100}
+            minSize={isDesktop ? MAIL_LIST_SPLIT.min : 100}
+            maxSize={isDesktop ? MAIL_LIST_SPLIT.max : 100}
             className={cn(
               `bg-panelLight dark:bg-panelDark mb-1 w-fit shadow-sm md:mr-[3px] md:rounded-2xl lg:flex lg:h-[calc(100dvh-8px)] lg:shadow-sm`,
               isDesktop && threadId && 'hidden lg:block',
@@ -531,20 +548,26 @@ export function MailLayout() {
             </div>
           </ResizablePanel>
 
-          {/* <ResizableHandle className="mr-0.5 hidden opacity-0 md:block" /> */}
+          {isDesktop && (
+            <ResizableHandle
+              withHandle
+              className="mr-0.5 hidden w-2 shrink-0 md:flex md:opacity-60 md:hover:opacity-100"
+            />
+          )}
 
           {isDesktop && (
             <ResizablePanel
-              className={cn(
-                'bg-panelLight dark:bg-panelDark mb-1 mr-0.5 w-fit rounded-2xl shadow-sm lg:h-[calc(100dvh-8px)]',
-                // Only show on md screens and larger when there is a threadId
-                !threadId && 'hidden lg:block',
-              )}
-              defaultSize={30}
-              minSize={30}
+              id="mail-thread-panel"
+              order={1}
+              className="bg-panelLight dark:bg-panelDark mb-1 mr-0.5 w-fit rounded-2xl shadow-sm lg:h-[calc(100dvh-8px)]"
+              defaultSize={MAIL_THREAD_SPLIT.default}
+              minSize={MAIL_THREAD_SPLIT.min}
+              maxSize={MAIL_THREAD_SPLIT.max}
             >
               <div className="relative flex-1">
-                <ThreadDisplay />
+                <Suspense fallback={<div className="flex h-full items-center justify-center" />}>
+                  <ThreadDisplay />
+                </Suspense>
               </div>
             </ResizablePanel>
           )}
@@ -554,14 +577,14 @@ export function MailLayout() {
             <div className="bg-panelLight dark:bg-panelDark fixed inset-0 z-50">
               <div className="flex h-full flex-col">
                 <div className="h-full overflow-y-auto outline-none">
+                <Suspense fallback={<div className="flex h-full items-center justify-center" />}>
                   <ThreadDisplay />
+                </Suspense>
                 </div>
               </div>
             </div>
           )}
 
-          {activeConnection?.id ? <AISidebar /> : null}
-          {activeConnection?.id ? <AIToggleButton /> : null}
         </ResizablePanelGroup>
       </div>
     </TooltipProvider>

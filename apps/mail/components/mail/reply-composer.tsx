@@ -1,10 +1,9 @@
 import { useUndoSend } from '@/hooks/use-undo-send';
 import { constructReplyBody, constructForwardBody } from '@/lib/utils';
 import { useActiveConnection } from '@/hooks/use-connections';
-import { useEmailAliases } from '@/hooks/use-email-aliases';
 import { EmailComposer } from '../create/email-composer';
 import { useHotkeysContext } from 'react-hotkeys-hook';
-import { useTRPC } from '@/providers/query-provider';
+import { getFrontendApi } from '@/lib/api/client';
 import { useMutation } from '@tanstack/react-query';
 import { useSettings } from '@/hooks/use-settings';
 import { useThread } from '@/hooks/use-threads';
@@ -12,11 +11,14 @@ import { useSession } from '@/lib/auth-client';
 import { serializeFiles } from '@/lib/schemas';
 import { useDraft } from '@/hooks/use-drafts';
 import { m } from '@/paraglide/messages';
+import { deriveReplyRecipients } from '@/lib/mail/reply-recipients';
 import type { Sender } from '@/types';
 import { useQueryState } from 'nuqs';
-import { useEffect } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import posthog from 'posthog-js';
 import { toast } from 'sonner';
+import { demoSendEmail } from '@/lib/demo/local-actions';
+import { isFrontendOnlyDemo } from '@/lib/runtime/mail-mode';
 
 interface ReplyComposeProps {
   messageId?: string;
@@ -25,15 +27,15 @@ interface ReplyComposeProps {
 export default function ReplyCompose({ messageId }: ReplyComposeProps) {
   const [mode, setMode] = useQueryState('mode');
   const { enableScope, disableScope } = useHotkeysContext();
-  const { data: aliases } = useEmailAliases();
 
   const [draftId, setDraftId] = useQueryState('draftId');
   const [threadId] = useQueryState('threadId');
   const [, setActiveReplyId] = useQueryState('activeReplyId');
   const { data: emailData, refetch, latestDraft } = useThread(threadId);
   const { data: draft } = useDraft(draftId ?? null);
-  const trpc = useTRPC();
-  const { mutateAsync: sendEmail } = useMutation(trpc.mail.send.mutationOptions());
+  const { mutateAsync: sendEmail } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().mail.send(input),
+  });
   const { data: activeConnection } = useActiveConnection();
   const { data: settings, isLoading: settingsLoading } = useSettings();
   const { data: session } = useSession();
@@ -42,61 +44,6 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
   // Find the specific message to reply to
   const replyToMessage =
     (messageId && emailData?.messages.find((msg) => msg.id === messageId)) || emailData?.latest;
-
-  // Initialize recipients and subject when mode changes
-  useEffect(() => {
-    if (!replyToMessage || !mode || !activeConnection?.email) return;
-
-    const userEmail = activeConnection.email.toLowerCase();
-    const senderEmail = replyToMessage.sender.email.toLowerCase();
-
-    // Set subject based on mode
-
-    if (mode === 'reply') {
-      // Reply to sender
-      const to: string[] = [];
-
-      // If the sender is not the current user, add them to the recipients
-      if (senderEmail !== userEmail) {
-        to.push(replyToMessage.sender.email);
-      } else if (replyToMessage.to && replyToMessage.to.length > 0 && replyToMessage.to[0]?.email) {
-        // If we're replying to our own email, reply to the first recipient
-        to.push(replyToMessage.to[0].email);
-      }
-
-      // Initialize email composer with these recipients
-      // Note: The actual initialization happens in the EmailComposer component
-    } else if (mode === 'replyAll') {
-      const to: string[] = [];
-      const cc: string[] = [];
-
-      // Add original sender if not current user
-      if (senderEmail !== userEmail) {
-        to.push(replyToMessage.sender.email);
-      }
-
-      // Add original recipients from To field
-      replyToMessage.to?.forEach((recipient) => {
-        const recipientEmail = recipient.email.toLowerCase();
-        if (recipientEmail !== userEmail && recipientEmail !== senderEmail) {
-          to.push(recipient.email);
-        }
-      });
-
-      // Add CC recipients
-      replyToMessage.cc?.forEach((recipient) => {
-        const recipientEmail = recipient.email.toLowerCase();
-        if (recipientEmail !== userEmail && !to.includes(recipient.email)) {
-          cc.push(recipient.email);
-        }
-      });
-
-      // Initialize email composer with these recipients
-    } else if (mode === 'forward') {
-      // For forward, we start with empty recipients
-      // Just set the subject and include the original message
-    }
-  }, [mode, replyToMessage, activeConnection?.email]);
 
   const handleSendEmail = async (data: {
     to: string[];
@@ -107,38 +54,24 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
     attachments: File[];
     scheduleAt?: string;
   }) => {
-    if (!replyToMessage || !activeConnection?.email) return;
+    if (!replyToMessage) {
+      toast.error('No message available to reply to.');
+      return;
+    }
+    if (!activeConnection?.email) {
+      toast.error('No active account is available.');
+      return;
+    }
 
     try {
       const userEmail = activeConnection.email.toLowerCase();
       const userName = activeConnection.name || session?.user?.name || '';
 
-      let fromEmail = userEmail;
-
-      if (aliases && aliases.length > 0 && replyToMessage) {
-        const allRecipients = [
-          ...(replyToMessage.to || []),
-          ...(replyToMessage.cc || []),
-          ...(replyToMessage.bcc || []),
-        ];
-        const matchingAlias = aliases.find((alias) =>
-          allRecipients.some(
-            (recipient) => recipient.email.toLowerCase() === alias.email.toLowerCase(),
-          ),
-        );
-
-        if (matchingAlias) {
-          fromEmail = userName.trim()
-            ? `${userName.replace(/[<>]/g, '')} <${matchingAlias.email}>`
-            : matchingAlias.email;
-        } else {
-          const primaryEmail =
-            aliases.find((alias) => alias.primary)?.email || aliases[0]?.email || userEmail;
-          fromEmail = userName.trim()
-            ? `${userName.replace(/[<>]/g, '')} <${primaryEmail}>`
-            : primaryEmail;
-        }
-      }
+    const senderEmail =
+      (settings?.settings?.defaultEmailAlias || userEmail || '').trim();
+    const fromEmail = userName.trim()
+      ? `${userName.replace(/[<>]/g, '')} <${senderEmail}>`
+      : senderEmail;
 
       const toRecipients: Sender[] = data.to.map((email) => ({
         email,
@@ -159,51 +92,72 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
           }))
         : undefined;
 
-      const zeroSignature = settings?.settings.zeroSignature
-        ? '<p style="color: #666; font-size: 12px;">Sent via <a href="https://0.email/" style="color: #0066cc; text-decoration: none;">Zero</a></p>'
-        : '';
-
       const emailBody =
         mode === 'forward'
           ? constructForwardBody(
-              data.message + zeroSignature,
+              data.message,
               new Date(replyToMessage.receivedOn || '').toLocaleString(),
               { ...replyToMessage.sender, subject: replyToMessage.subject },
               toRecipients,
               //   replyToMessage.decodedBody,
             )
           : constructReplyBody(
-              data.message + zeroSignature,
+              data.message,
               new Date(replyToMessage.receivedOn || '').toLocaleString(),
               replyToMessage.sender,
               toRecipients,
               //   replyToMessage.decodedBody,
             );
 
-      const result = await sendEmail({
-        to: toRecipients,
-        cc: ccRecipients,
-        bcc: bccRecipients,
-        subject: data.subject,
-        message: emailBody,
-        attachments: await serializeFiles(data.attachments),
-        fromEmail: fromEmail,
-        draftId: draftId ?? undefined,
-        headers: {
-          'In-Reply-To': replyToMessage?.messageId ?? '',
-          References: [
-            ...(replyToMessage?.references ? replyToMessage.references.split(' ') : []),
-            replyToMessage?.messageId,
-          ]
-            .filter(Boolean)
-            .join(' '),
-          'Thread-Id': replyToMessage?.threadId ?? '',
-        },
-        threadId: replyToMessage?.threadId,
-        isForward: mode === 'forward',
-        originalMessage: replyToMessage.decodedBody,
-        scheduleAt: data.scheduleAt,
-      });
+      const result = isFrontendOnlyDemo()
+        ? await demoSendEmail({
+            to: toRecipients,
+            cc: ccRecipients,
+            bcc: bccRecipients,
+            subject: data.subject,
+            message: emailBody,
+            attachments: await serializeFiles(data.attachments),
+            fromEmail: fromEmail,
+            draftId: draftId ?? undefined,
+            headers: {
+              'In-Reply-To': replyToMessage?.messageId ?? '',
+              References: [
+                ...(replyToMessage?.references ? replyToMessage.references.split(' ') : []),
+                replyToMessage?.messageId,
+              ]
+                .filter(Boolean)
+                .join(' '),
+              'Thread-Id': replyToMessage?.threadId ?? '',
+            },
+            threadId: replyToMessage?.threadId,
+            isForward: mode === 'forward',
+            originalMessage: replyToMessage.decodedBody,
+            scheduleAt: data.scheduleAt,
+          })
+        : await sendEmail({
+            to: toRecipients,
+            cc: ccRecipients,
+            bcc: bccRecipients,
+            subject: data.subject,
+            message: emailBody,
+            attachments: await serializeFiles(data.attachments),
+            fromEmail: fromEmail,
+            draftId: draftId ?? undefined,
+            headers: {
+              'In-Reply-To': replyToMessage?.messageId ?? '',
+              References: [
+                ...(replyToMessage?.references ? replyToMessage.references.split(' ') : []),
+                replyToMessage?.messageId,
+              ]
+                .filter(Boolean)
+                .join(' '),
+              'Thread-Id': replyToMessage?.threadId ?? '',
+            },
+            threadId: replyToMessage?.threadId,
+            isForward: mode === 'forward',
+            originalMessage: replyToMessage.decodedBody,
+            scheduleAt: data.scheduleAt,
+          });
 
       posthog.capture('Reply Email Sent');
 
@@ -252,11 +206,73 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
     return [];
   };
 
+  const draftTo = ensureEmailArray(draft?.to);
+  const draftCc = ensureEmailArray(draft?.cc);
+  const draftBcc = ensureEmailArray(draft?.bcc);
+
+  const excludedReplyEmails = useMemo(
+    () => [activeConnection?.email, session?.user?.email],
+    [activeConnection?.email, session?.user?.email],
+  );
+
+  const derivedReplyRecipients = useMemo(
+    () =>
+      deriveReplyRecipients({
+        mode: mode as 'reply' | 'replyAll' | 'forward' | null | undefined,
+        message: replyToMessage,
+        excludedEmails: excludedReplyEmails,
+      }),
+    [excludedReplyEmails, mode, replyToMessage],
+  );
+
+  // Draft/recipient affinity only — do not use for React `key` (including `mode` there remounts the composer and wipes the body on reply/replyAll/forward switches).
+  const composeSeed = `${mode ?? 'view'}:${replyToMessage?.id ?? 'latest'}`;
+  const replyComposeInstanceId = replyToMessage?.id ?? threadId ?? 'latest';
+  const draftRecipientSeedRef = useRef<string | null>(draftId ? composeSeed : null);
+
+  useEffect(() => {
+    if (!draftId) {
+      draftRecipientSeedRef.current = null;
+      return;
+    }
+
+    if (!draftRecipientSeedRef.current) {
+      draftRecipientSeedRef.current = composeSeed;
+    }
+  }, [draftId, composeSeed]);
+
+  const hasDraftRecipients = draftTo.length > 0 || draftCc.length > 0 || draftBcc.length > 0;
+  const shouldUseDraftRecipients =
+    hasDraftRecipients && Boolean(draftId) && draftRecipientSeedRef.current === composeSeed;
+  const initialToRecipients = shouldUseDraftRecipients
+    ? draftTo.length > 0
+      ? draftTo
+      : derivedReplyRecipients.to
+    : derivedReplyRecipients.to;
+  const initialCcRecipients = shouldUseDraftRecipients ? draftCc : derivedReplyRecipients.cc;
+  const initialBccRecipients = shouldUseDraftRecipients ? draftBcc : [];
+
+  const replyComposeInitialSubject = useMemo(() => {
+    if (draft?.subject) return draft.subject;
+    const raw = replyToMessage?.subject?.trim() ?? '';
+    if (!raw) return '';
+    if (mode === 'forward') {
+      if (/^fwd?:/i.test(raw)) return raw;
+      return `Fwd: ${raw}`;
+    }
+    if (mode === 'reply' || mode === 'replyAll') {
+      if (/^re:/i.test(raw)) return raw;
+      return `Re: ${raw}`;
+    }
+    return raw;
+  }, [draft?.subject, mode, replyToMessage?.subject]);
+
   if (!mode || !emailData) return null;
 
   return (
     <div className="w-full rounded-2xl overflow-visible border">
       <EmailComposer
+        key={`reply-compose-${replyComposeInstanceId}`}
         editorClassName="min-h-[50px]"
         className="w-full max-w-none! pb-1 overflow-visible"
         onSendEmail={handleSendEmail}
@@ -266,10 +282,11 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
           setActiveReplyId(null);
         }}
         initialMessage={draft?.content ?? latestDraft?.decodedBody}
-        initialTo={ensureEmailArray(draft?.to)}
-        initialCc={ensureEmailArray(draft?.cc)}
-        initialBcc={ensureEmailArray(draft?.bcc)}
-        initialSubject={draft?.subject}
+        initialTo={initialToRecipients}
+        initialCc={initialCcRecipients}
+        initialBcc={initialBccRecipients}
+        initialSubject={replyComposeInitialSubject}
+        syncReplyHeadersFromProps
         autofocus={true}
         settingsLoading={settingsLoading}
         replyingTo={replyToMessage?.sender.email}

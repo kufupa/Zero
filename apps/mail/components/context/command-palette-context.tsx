@@ -44,7 +44,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { useLocation, useNavigate } from 'react-router';
 import { navigationConfig } from '@/config/navigation';
 import { Separator } from '@/components/ui/separator';
-import { useTRPC } from '@/providers/query-provider';
+import { getFrontendApi } from '@/lib/api/client';
 import { Calendar } from '@/components/ui/calendar';
 import { useMutation } from '@tanstack/react-query';
 import { useThreads } from '@/hooks/use-threads';
@@ -59,6 +59,8 @@ import { Pencil2 } from '../icons/icons';
 import { Button } from '../ui/button';
 import { useQueryState } from 'nuqs';
 import { toast } from 'sonner';
+import { demoGenerateSearchQuery } from '@/lib/demo/local-actions';
+import { isFrontendOnlyDemo } from '@/lib/runtime/mail-mode';
 
 type CommandPaletteContext = {
   activeFilters: ActiveFilter[];
@@ -92,6 +94,29 @@ interface SavedSearch {
   query: string;
   createdAt: Date;
 }
+
+export type CommandPaletteSearchResult = {
+  query: string;
+};
+
+export const resolveCommandPaletteSearchQuery = async ({
+  query,
+  isFrontendOnlyDemoMode,
+  generateSearchQuery,
+}: {
+  query: string;
+  isFrontendOnlyDemoMode: boolean;
+  generateSearchQuery: (input: { query: string }) => Promise<CommandPaletteSearchResult>;
+}): Promise<CommandPaletteSearchResult> => {
+  if (isFrontendOnlyDemoMode) {
+    return demoGenerateSearchQuery({
+      query,
+      isFrontendOnlyDemoMode,
+    });
+  }
+
+  return generateSearchQuery({ query });
+};
 
 interface ActiveFilter {
   id: string;
@@ -182,7 +207,7 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
   const [dateRangeEnd, setDateRangeEnd] = useState<Date | undefined>(undefined);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchValue, setSearchValue] = useSearchValue();
-  const [, threads] = useThreads();
+  const [, threads] = useThreads({ commandPaletteOpen: open });
   const [activeFilters, setActiveFilters] = useState<ActiveFilter[]>([]);
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
   const [savedSearches, setSavedSearches] = useState<SavedSearch[]>([]);
@@ -196,10 +221,10 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
   const { pathname } = useLocation();
 
   const { userLabels = [] } = useLabels();
-  const trpc = useTRPC();
-  const { mutateAsync: generateSearchQuery } = useMutation(
-    trpc.ai.generateSearchQuery.mutationOptions(),
-  );
+  const frontendOnlyDemoMode = isFrontendOnlyDemo();
+  const { mutateAsync: generateSearchQuery } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().ai.generateSearchQuery(input),
+  });
 
   useEffect(() => {
     setRecentSearches(getRecentSearches());
@@ -536,7 +561,11 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
         let finalQuery = query;
 
         if (useNaturalLanguage) {
-          const result = await generateSearchQuery({ query });
+          const result = await resolveCommandPaletteSearchQuery({
+            query,
+            isFrontendOnlyDemoMode: frontendOnlyDemoMode,
+            generateSearchQuery,
+          });
           finalQuery = result.query;
 
           const searchFilter: ActiveFilter = {

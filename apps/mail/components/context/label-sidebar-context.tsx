@@ -13,7 +13,7 @@ import {
   ContextMenuItem,
   ContextMenuTrigger,
 } from '../ui/context-menu';
-import { useTRPC } from '@/providers/query-provider';
+import { getFrontendApi } from '@/lib/api/client';
 import { useMutation } from '@tanstack/react-query';
 import { useState, type ReactNode } from 'react';
 import { useLabels } from '@/hooks/use-labels';
@@ -21,6 +21,8 @@ import { m } from '@/paraglide/messages';
 import { Trash } from '../icons/icons';
 import { Button } from '../ui/button';
 import { toast } from 'sonner';
+import { isFrontendOnlyDemo } from '@/lib/runtime/mail-mode';
+import { demoDeleteLabel } from '@/lib/demo/local-actions';
 
 interface LabelSidebarContextMenuProps {
   children: ReactNode;
@@ -28,19 +30,61 @@ interface LabelSidebarContextMenuProps {
   hide?: boolean;
 }
 
+export type LabelSidebarDeleteContextInput = {
+  labelId: string;
+  isFrontendOnlyDemoMode: boolean;
+  setDeleteDialogOpen: (open: boolean) => void;
+  deleteLabel: (input: { id: string }) => Promise<{ success: boolean }>;
+  refetchLabels: () => Promise<unknown> | unknown;
+  labelsSuccessMessage: string;
+  errorMessage: string;
+  onError: (error: unknown) => void;
+};
+
+export async function deleteLabelInSidebarContext(input: LabelSidebarDeleteContextInput): Promise<void> {
+  try {
+    if (input.isFrontendOnlyDemoMode) {
+      await input.deleteLabel({ id: input.labelId });
+      await Promise.resolve(input.refetchLabels());
+      toast.success(input.labelsSuccessMessage);
+      return;
+    }
+
+    const promise = input.deleteLabel({ id: input.labelId });
+    toast.promise(promise, {
+      success: input.labelsSuccessMessage,
+      error: input.errorMessage,
+      finally: () => {
+        void Promise.resolve(input.refetchLabels());
+        input.setDeleteDialogOpen(false);
+      },
+    });
+    await promise;
+  } catch (error) {
+    input.onError(error);
+  } finally {
+    input.setDeleteDialogOpen(false);
+  }
+}
+
 export function LabelSidebarContextMenu({ children, labelId, hide }: LabelSidebarContextMenuProps) {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
 
-  const trpc = useTRPC();
-  const { mutateAsync: deleteLabel } = useMutation(trpc.labels.delete.mutationOptions());
+  const { mutateAsync: deleteLabel } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().labels.delete(input),
+  });
   const { refetch } = useLabels();
 
   const handleDelete = () => {
-    toast.promise(deleteLabel({ id: labelId }), {
-      success: m['common.labels.deleteLabelSuccess'](),
-      error: 'Error deleting label',
-      finally: () => {
-        refetch();
+    void deleteLabelInSidebarContext({
+      labelId,
+      isFrontendOnlyDemoMode: isFrontendOnlyDemo(),
+      setDeleteDialogOpen,
+      deleteLabel: isFrontendOnlyDemo() ? demoDeleteLabel : (input) => deleteLabel(input),
+      refetchLabels: refetch,
+      labelsSuccessMessage: m['common.labels.deleteLabelSuccess'](),
+      errorMessage: 'Error deleting label',
+      onError: () => {
         setDeleteDialogOpen(false);
       },
     });

@@ -239,7 +239,17 @@
       "enableImages": "Afficher les images",
       "star": "Marquer d'une étoile",
       "unstar": "Retirer l'étoile",
-      "printThread": "Imprimer la conversation"
+      "printThread": "Imprimer la conversation",
+      "aiMailsTitle": "Courriels IA",
+      "summariseDemoToast": "Résumé (démo)",
+      "summariseAction": "Résumer",
+      "draftBadge": "[Brouillon]",
+      "draftUnsentNotice": "Ce message n'a pas été envoyé.",
+      "draftSavedPrefix": "Enregistré : ",
+      "draftTooltip": "Brouillon",
+      "continueDraft": "Poursuivre le brouillon",
+      "draftEmptyPreview": "Aucun brouillon de texte à prévisualiser pour le moment.",
+      "draftMoreOptions": "Plus d'options"
     },
     "notes": {
       "title": "Notes",
@@ -391,7 +401,16 @@
       "failedToUnmute": "Échec de la réactivation du son",
       "archived": "Archivé",
       "failedToArchive": "Échec de l'archivage",
-      "openInNewTab": "Ouvrir dans un nouvel onglet"
+      "openInNewTab": "Ouvrir dans un nouvel onglet",
+      "listSection": {
+        "pinned": "Épinglé",
+        "today": "Aujourd'hui",
+        "yesterday": "Hier",
+        "lastWeek": "La semaine dernière",
+        "thisMonth": "Ce mois-ci",
+        "lastMonth": "Mois dernier",
+        "older": "Plus vieux"
+      }
     },
     "units": {
       "mb": "{amount} Mo"

@@ -7,10 +7,12 @@ import {
   RotateCcwIcon,
 } from 'lucide-react';
 import {
+  AiPromptTypeEnum,
+  type AiPromptType,
+  ReSummarizeThread,
   SummarizeMessage,
   SummarizeThread,
-  ReSummarizeThread,
-} from '../../../server/src/lib/brain.fallback.prompts';
+} from '@/lib/domain/ai-prompts';
 import {
   Dialog,
   DialogContent,
@@ -22,10 +24,10 @@ import {
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from '@/components/ui/tooltip';
 import { AiChatPrompt, StyledEmailAssistantSystemPrompt } from '@/lib/prompts';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './tabs';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useTRPC } from '@/providers/query-provider';
-import { EPrompts } from '../../../server/src/types';
-import { useMutation } from '@tanstack/react-query';
+import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
+import { getFrontendApi } from '@/lib/api/client';
+import { resolveMailMode } from '@/lib/runtime/mail-mode';
+import { aiGetPromptsQueryKey, aiGetPromptsQueryOptions, type ApiQueryContext } from '@/lib/api/query-options';
 import { Button } from '@/components/ui/button';
 import { useForm } from 'react-hook-form';
 import { Paper } from '../icons/icons';
@@ -39,68 +41,75 @@ const isPromptValid = (prompt: string): boolean => {
   return trimmed !== '' && trimmed.toLowerCase() !== 'undefined';
 };
 
-const initialValues: Record<EPrompts, string> = {
-  [EPrompts.Chat]: '',
-  [EPrompts.Compose]: '',
-  [EPrompts.SummarizeThread]: '',
-  [EPrompts.ReSummarizeThread]: '',
-  [EPrompts.SummarizeMessage]: '',
+const initialValues: Record<AiPromptType, string> = {
+  [AiPromptTypeEnum.Chat]: '',
+  [AiPromptTypeEnum.Compose]: '',
+  [AiPromptTypeEnum.SummarizeThread]: '',
+  [AiPromptTypeEnum.ReSummarizeThread]: '',
+  [AiPromptTypeEnum.SummarizeMessage]: '',
 };
 
 const fallbackPrompts = {
-  [EPrompts.Chat]: AiChatPrompt(),
-  [EPrompts.Compose]: StyledEmailAssistantSystemPrompt(),
-  [EPrompts.SummarizeThread]: SummarizeThread,
-  [EPrompts.ReSummarizeThread]: ReSummarizeThread,
-  [EPrompts.SummarizeMessage]: SummarizeMessage,
+  [AiPromptTypeEnum.Chat]: AiChatPrompt(),
+  [AiPromptTypeEnum.Compose]: StyledEmailAssistantSystemPrompt(),
+  [AiPromptTypeEnum.SummarizeThread]: SummarizeThread,
+  [AiPromptTypeEnum.ReSummarizeThread]: ReSummarizeThread,
+  [AiPromptTypeEnum.SummarizeMessage]: SummarizeMessage,
 };
 
 export function PromptsDialog() {
-  const trpc = useTRPC();
   const queryClient = useQueryClient();
-  const { data: prompts } = useQuery(trpc.brain.getPrompts.queryOptions());
-
-  const { mutateAsync: updatePrompt, isPending: isSavingPrompt } = useMutation(
-    trpc.brain.updatePrompt.mutationOptions({
-      onSuccess: () => {
-        toast.success('Prompt updated');
-        queryClient.invalidateQueries({ queryKey: trpc.brain.getPrompts.queryKey() });
-      },
-      onError: (error) => {
-        toast.error(error.message ?? 'Failed to update prompt');
-      },
-    }),
+  const queryCtx = useMemo<ApiQueryContext>(
+    () => ({ mode: resolveMailMode(), accountId: null }),
+    [],
   );
+  const promptsEnabled = queryCtx.mode === 'legacy' || queryCtx.mode === 'demo';
+  const { data: prompts } = useQuery({
+    ...aiGetPromptsQueryOptions(getFrontendApi(), queryCtx),
+    enabled: promptsEnabled,
+  });
+
+  const { mutateAsync: updatePrompt, isPending: isSavingPrompt } = useMutation({
+    mutationFn: (input: { promptType: AiPromptType; prompt: string }) =>
+      getFrontendApi().ai.updatePrompt(input),
+    onSuccess: () => {
+      toast.success('Prompt updated');
+      queryClient.invalidateQueries({ queryKey: aiGetPromptsQueryKey(queryCtx) });
+    },
+    onError: (error: Error) => {
+      toast.error(error.message ?? 'Failed to update prompt');
+    },
+  });
 
   const mappedValues = useMemo(() => {
     if (!prompts) return initialValues;
     return Object.fromEntries(
       Object.entries(initialValues).map(([key]) => [
         key,
-        isPromptValid(prompts[key as EPrompts] ?? '')
-          ? prompts[key as EPrompts]
-          : fallbackPrompts[key as EPrompts],
+        isPromptValid(prompts[key as AiPromptType] ?? '')
+          ? prompts[key as AiPromptType]
+          : fallbackPrompts[key as AiPromptType],
       ]),
-    ) as Record<EPrompts, string>;
+    ) as Record<AiPromptType, string>;
   }, [prompts]);
 
-  const { register, getValues, setValue } = useForm<Record<EPrompts, string>>({
+  const { register, getValues, setValue } = useForm<Record<AiPromptType, string>>({
     defaultValues: initialValues,
     values: mappedValues,
   });
 
-  const resetToDefault = (promptType: EPrompts) => {
+  const resetToDefault = (promptType: AiPromptType) => {
     setValue(promptType, fallbackPrompts[promptType]);
   };
 
-  const renderPromptButtons = (promptType: EPrompts, enumType: EPrompts) => (
+  const renderPromptButtons = (promptType: AiPromptType, enumType: AiPromptType) => (
     <div className="flex gap-2">
       <Button
         size="sm"
         onClick={() =>
           updatePrompt({
             promptType: enumType,
-            content: getValues(promptType),
+            prompt: getValues(promptType),
           })
         }
         disabled={isSavingPrompt}
@@ -173,8 +182,8 @@ export function PromptsDialog() {
                   This system prompt is used in the chat sidebar agent. The agent has multiple tools
                   available.
                 </span>
-                <Textarea className="min-h-60" {...register(EPrompts.Chat)} />
-                {renderPromptButtons(EPrompts.Chat, EPrompts.Chat)}
+                <Textarea className="min-h-60" {...register(AiPromptTypeEnum.Chat)} />
+                {renderPromptButtons(AiPromptTypeEnum.Chat, AiPromptTypeEnum.Chat)}
               </TabsContent>
             ) : null}
             {prompts ? (
@@ -182,8 +191,8 @@ export function PromptsDialog() {
                 <span className="text-muted-foreground mb-2 flex gap-2 text-sm">
                   This system prompt is used to compose emails that sound like you.
                 </span>
-                <Textarea className="min-h-60" {...register(EPrompts.Compose)} />
-                {renderPromptButtons(EPrompts.Compose, EPrompts.Compose)}
+                <Textarea className="min-h-60" {...register(AiPromptTypeEnum.Compose)} />
+                {renderPromptButtons(AiPromptTypeEnum.Compose, AiPromptTypeEnum.Compose)}
               </TabsContent>
             ) : null}
             {prompts ? (
@@ -192,8 +201,8 @@ export function PromptsDialog() {
                   This system prompt is used to summarize threads. It takes the entire thread and
                   key information and summarizes them.
                 </span>
-                <Textarea className="min-h-60" {...register(EPrompts.SummarizeThread)} />
-                {renderPromptButtons(EPrompts.SummarizeThread, EPrompts.SummarizeThread)}
+                <Textarea className="min-h-60" {...register(AiPromptTypeEnum.SummarizeThread)} />
+                {renderPromptButtons(AiPromptTypeEnum.SummarizeThread, AiPromptTypeEnum.SummarizeThread)}
               </TabsContent>
             ) : null}
             {prompts ? (
@@ -202,8 +211,8 @@ export function PromptsDialog() {
                   This system prompt is used to re-summarize threads. It's used when the thread
                   messages change and a new context is needed.
                 </span>
-                <Textarea className="min-h-60" {...register(EPrompts.ReSummarizeThread)} />
-                {renderPromptButtons(EPrompts.ReSummarizeThread, EPrompts.ReSummarizeThread)}
+                <Textarea className="min-h-60" {...register(AiPromptTypeEnum.ReSummarizeThread)} />
+                {renderPromptButtons(AiPromptTypeEnum.ReSummarizeThread, AiPromptTypeEnum.ReSummarizeThread)}
               </TabsContent>
             ) : null}
             {prompts ? (
@@ -212,8 +221,8 @@ export function PromptsDialog() {
                   This system prompt is used to summarize messages. It takes a single message and
                   summarizes it.
                 </span>
-                <Textarea className="min-h-60" {...register(EPrompts.SummarizeMessage)} />
-                {renderPromptButtons(EPrompts.SummarizeMessage, EPrompts.SummarizeMessage)}
+                <Textarea className="min-h-60" {...register(AiPromptTypeEnum.SummarizeMessage)} />
+                {renderPromptButtons(AiPromptTypeEnum.SummarizeMessage, AiPromptTypeEnum.SummarizeMessage)}
               </TabsContent>
             ) : null}
           </Tabs>

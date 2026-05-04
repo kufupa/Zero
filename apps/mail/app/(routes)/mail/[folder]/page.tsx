@@ -2,18 +2,15 @@ import { useLoaderData, useNavigate } from 'react-router';
 
 import { MailLayout } from '@/components/mail/mail';
 import { useLabels } from '@/hooks/use-labels';
-import { authProxy } from '@/lib/auth-proxy';
+import { isDemoMailFolderSlug } from '@/lib/demo/folder-map';
+import { isStandardMailFolderSlug } from '@/lib/domain/folders';
+import { isFrontendOnlyDemo } from '@/lib/runtime/mail-mode';
 import { useEffect, useState } from 'react';
+import type { Label } from '@/types';
 import type { Route } from './+types/page';
 
-const ALLOWED_FOLDERS = new Set(['inbox', 'draft', 'sent', 'spam', 'bin', 'archive', 'snoozed']);
-
-export async function clientLoader({ params, request }: Route.ClientLoaderArgs) {
+export async function clientLoader({ params }: Route.ClientLoaderArgs) {
   if (!params.folder) return Response.redirect(`${import.meta.env.VITE_PUBLIC_APP_URL}/mail/inbox`);
-
-  const session = await authProxy.api.getSession({ headers: request.headers });
-  if (!session) return Response.redirect(`${import.meta.env.VITE_PUBLIC_APP_URL}/login`);
-
   return {
     folder: params.folder,
   };
@@ -23,13 +20,15 @@ export default function MailPage() {
   const { folder } = useLoaderData<typeof clientLoader>();
   const navigate = useNavigate();
   const [isLabelValid, setIsLabelValid] = useState<boolean | null>(true);
+  const normalizedFolder = folder.toLowerCase();
 
-  const isStandardFolder = ALLOWED_FOLDERS.has(folder);
+  const isStandardFolder = isStandardMailFolderSlug(normalizedFolder);
+  const isDemoMailFolder = isFrontendOnlyDemo() && isDemoMailFolderSlug(normalizedFolder);
 
   const { userLabels, isLoading: isLoadingLabels } = useLabels();
 
   useEffect(() => {
-    if (isStandardFolder) {
+    if (isStandardFolder || isDemoMailFolder) {
       setIsLabelValid(true);
       return;
     }
@@ -37,9 +36,9 @@ export default function MailPage() {
     if (isLoadingLabels) return;
 
     if (userLabels) {
-      const checkLabelExists = (labels: any[]): boolean => {
+      const checkLabelExists = (labels: Label[]): boolean => {
         for (const label of labels) {
-          if (label.id === folder) return true;
+          if (label.id === normalizedFolder) return true;
           if (label.labels && label.labels.length > 0) {
             if (checkLabelExists(label.labels)) return true;
           }
@@ -53,20 +52,20 @@ export default function MailPage() {
       if (!labelExists) {
         const timer = setTimeout(() => {
           navigate('/mail/inbox');
-        }, 2000);
+        }, 300);
         return () => clearTimeout(timer);
       }
     } else {
       setIsLabelValid(false);
     }
-  }, [folder, userLabels, isLoadingLabels, isStandardFolder, navigate]);
+  }, [folder, normalizedFolder, userLabels, isLoadingLabels, isStandardFolder, isDemoMailFolder, navigate]);
 
   if (!isLabelValid) {
     return (
       <div className="flex h-screen w-full flex-col items-center justify-center">
         <h2 className="text-xl font-semibold">Folder not found</h2>
         <p className="text-muted-foreground mt-2">
-          The folder you're looking for doesn't exist. Redirecting to inbox...
+          The folder you&apos;re looking for doesn&apos;t exist. Redirecting to inbox...
         </p>
       </div>
     );

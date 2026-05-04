@@ -2,18 +2,16 @@
 
 import { useState, useRef, useCallback, useMemo } from 'react';
 import { useController, type Control } from 'react-hook-form';
-import { useTRPC } from '@/providers/query-provider';
 import { useQuery } from '@tanstack/react-query';
+import { getFrontendApi } from '@/lib/api/client';
+import { isFrontendOnlyDemo, resolveMailMode } from '@/lib/runtime/mail-mode';
+import { mailSuggestRecipientsQueryKey, type ApiQueryContext } from '@/lib/api/query-options';
 import { useDebounce } from '@/hooks/use-debounce';
 import { cn } from '@/lib/utils';
+import { listDemoRecipientSuggestions, type RecipientSuggestion } from '@/lib/demo/local-suggestions';
+import { canonicalizeEmail, parseRecipientToken, splitRecipientField } from '../../lib/demo/recipient-parsing';
 import { X } from 'lucide-react';
 import { Avatar, AvatarFallback } from './avatar';
-
-interface RecipientSuggestion {
-  email: string;
-  name?: string | null;
-  displayText: string;
-}
 
 const isValidRecipientSuggestion = (item: unknown): item is RecipientSuggestion => {
   if (typeof item !== 'object' || item === null) return false;
@@ -61,6 +59,8 @@ interface RecipientAutosuggestProps {
   placeholder?: string;
   className?: string;
   disabled?: boolean;
+  inputId?: string;
+  inputName?: string;
 }
 
 export function RecipientAutosuggest({
@@ -69,6 +69,8 @@ export function RecipientAutosuggest({
   placeholder = 'Enter email',
   className,
   disabled = false,
+  inputId,
+  inputName,
 }: RecipientAutosuggestProps) {
 
   const {
@@ -93,21 +95,42 @@ export function RecipientAutosuggest({
 
   const [debouncedQuery, setDebouncedQuery] = useState('');
 
-  const trpc = useTRPC();
+  const demoMode = isFrontendOnlyDemo();
+  const queryCtx = useMemo<ApiQueryContext>(
+    () => ({ mode: resolveMailMode(), accountId: null }),
+    [],
+  );
+  const suggestInput = useMemo(
+    () => ({ query: debouncedQuery, limit: 10 as const }),
+    [debouncedQuery],
+  );
+
   const { data: allSuggestions = [], isLoading } = useQuery({
-    ...trpc.mail.suggestRecipients.queryOptions({
-      query: debouncedQuery,
-      limit: 10,
-    }),
-    enabled: debouncedQuery.trim().length > 0 && !isComposing,
+    queryKey: demoMode
+      ? (['demo', 'mail', 'recipientSuggestions', debouncedQuery] as const)
+      : mailSuggestRecipientsQueryKey(queryCtx, suggestInput),
+    queryFn: () =>
+      demoMode
+        ? listDemoRecipientSuggestions(debouncedQuery, 10)
+        : getFrontendApi().mail.suggestRecipients(suggestInput),
+    enabled:
+      debouncedQuery.trim().length > 0 &&
+      !isComposing &&
+      (demoMode || queryCtx.mode === 'legacy'),
+    staleTime: 1000 * 60 * 5, // 5 minutes
   });
+
+  const canonicalRecipients = useMemo(
+    () => new Set(recipients.map((recipient) => canonicalizeEmail(recipient))),
+    [recipients],
+  );
 
   const filteredSuggestions = useMemo(() => {
     const validatedSuggestions = validateSuggestions(allSuggestions);
     return validatedSuggestions.filter((suggestion) => 
-      !recipients.includes(suggestion.email)
+      !canonicalRecipients.has(canonicalizeEmail(suggestion.email))
     );
-  }, [allSuggestions, recipients]);
+  }, [allSuggestions, canonicalRecipients]);
 
   const isValidEmail = useCallback((email: string): boolean => {
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -115,13 +138,14 @@ export function RecipientAutosuggest({
   }, []);
 
   const addRecipient = useCallback((email: string) => {
-    if (!recipients.includes(email) && isValidEmail(email)) {
+    const normalizedEmail = canonicalizeEmail(email);
+    if (!canonicalRecipients.has(normalizedEmail) && isValidEmail(email)) {
       onRecipientsChange([...recipients, email]);
       setInputValue('');
       setIsOpen(false);
       setSelectedIndex(-1);
     }
-  }, [recipients, onRecipientsChange, isValidEmail]);
+  }, [canonicalRecipients, recipients, onRecipientsChange, isValidEmail]);
 
   const removeRecipient = useCallback((index: number) => {
     const newRecipients = recipients.filter((_: string, i: number) => i !== index);
@@ -185,16 +209,34 @@ export function RecipientAutosuggest({
   const handlePaste = useCallback((e: React.ClipboardEvent<HTMLInputElement>) => {
     e.preventDefault();
     const pastedText = e.clipboardData.getData('text');
-    const emails = pastedText
-      .split(/[,;\s]+/)
-      .map(email => email.trim())
-      .filter(email => email.length > 0 && isValidEmail(email))
-      .filter(email => !recipients.includes(email));
-    
-    if (emails.length > 0) {
-      onRecipientsChange([...recipients, ...emails]);
+    const mergedText = `${inputValue}${pastedText}`;
+    const parsedItems = splitRecipientField(mergedText)
+      .map((entry) => {
+        const parsed = parseRecipientToken(entry);
+        if (!parsed) return { email: null as string | null, keepText: entry };
+        return { email: parsed.email, keepText: null };
+      });
+
+    const emailsToAdd = parsedItems
+      .map(({ email }) => email)
+      .filter((email): email is string => email !== null)
+      .filter((email) => isValidEmail(email))
+      .filter((email) => !canonicalRecipients.has(canonicalizeEmail(email)))
+      .reduce<string[]>((acc, email) => {
+        if (acc.some((existing) => canonicalizeEmail(existing) === canonicalizeEmail(email))) return acc;
+      acc.push(email);
+      return acc;
+      }, []);
+
+    const remainingInput = parsedItems
+      .map(({ keepText }) => keepText?.trim())
+      .filter((entry): entry is string => !!entry);
+
+    if (emailsToAdd.length > 0) {
+      onRecipientsChange([...recipients, ...emailsToAdd]);
     }
-  }, [recipients, onRecipientsChange, isValidEmail]);
+    setInputValue(remainingInput.join(', '));
+  }, [canonicalRecipients, inputValue, recipients, onRecipientsChange, isValidEmail]);
 
   const handleClickOutside = useCallback((event: MouseEvent) => {
     if (
@@ -245,6 +287,8 @@ export function RecipientAutosuggest({
           </div>
         ))}
         <input
+          id={inputId ?? `${name}-input`}
+          name={inputName ?? name}
           ref={inputDomRef}
           type="email"
           value={inputValue}

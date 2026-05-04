@@ -1,6 +1,6 @@
 import { Html, Head, Body, Container, Section, Column, Row } from '@react-email/components';
 import { getListUnsubscribeAction } from '@/lib/email-utils';
-import { trpcClient } from '@/providers/query-provider';
+import { getFrontendApi } from '@/lib/api/client';
 import { renderToString } from 'react-dom/server';
 import type { ParsedMessage } from '@/types';
 
@@ -36,7 +36,7 @@ export const handleUnsubscribe = async ({ emailData }: { emailData: ParsedMessag
             clearTimeout(timeoutId);
             return true;
           case 'email':
-            await trpcClient.mail.send.mutate({
+            await getFrontendApi().mail.send({
               to: [
                 {
                   email: listUnsubscribeAction.emailAddress,

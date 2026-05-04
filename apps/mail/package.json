@@ -10,7 +10,9 @@
     "types": "wrangler types",
     "deploy": "wrangler deploy",
     "lint": "eslint .",
-    "machine-translate": "inlang machine translate --project project.inlang"
+    "machine-translate": "inlang machine translate --project project.inlang",
+    "paraglide:compile": "paraglide-js compile --project ./project.inlang --outdir ./paraglide",
+    "test:demo": "pnpm paraglide:compile && vitest run tests"
   },
   "dependencies": {
     "@ai-sdk/perplexity": "1.1.9",
@@ -140,6 +142,7 @@
     "typescript": "catalog:",
     "vite": "^6.3.5",
     "vite-tsconfig-paths": "^5.1.4",
+    "vitest": "3.2.4",
     "wrangler": "catalog:"
   }
 }

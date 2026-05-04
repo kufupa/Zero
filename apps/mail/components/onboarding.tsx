@@ -3,70 +3,160 @@ import { Button } from '@/components/ui/button';
 import { useState, useEffect } from 'react';
 import confetti from 'canvas-confetti';
 
-const steps = [
+type OnboardingBaseStep = {
+  title: string;
+  description: string;
+  bullets: string[];
+};
+
+type CarouselStep = OnboardingBaseStep & {
+  type: 'carousel';
+  visual: {
+    icon: string;
+    metric: string;
+    tone: string;
+    gradient: string;
+    headline: string;
+  };
+};
+
+type OnboardingStep = CarouselStep;
+
+const CAROUSEL_STEPS: CarouselStep[] = [
   {
-    title: 'Welcome to Zero Email!',
-    description: 'Your new intelligent email experience starts here.',
-    video: 'https://assets.0.email/get-started.png',
+    type: 'carousel',
+    title: 'Welcome to Lucein AI',
+    description:
+      'You are now on a hotel focused inbox. This tour shows your daily reservation workflow from Outlook to AI assisted composing and final human approval.',
+    bullets: [
+      'You already know your guests. Lucein AI helps you answer faster, safer, and more consistently.',
+      'Every draft is review-first so you stay in control.',
+    ],
+    visual: {
+      icon: '🏨',
+      metric: 'Reservation-first',
+      tone: 'Hotel operations clarity, not marketing fluff.',
+      headline: 'From guest question to reply-ready draft in one loop.',
+      gradient: 'from-sky-500/70 to-blue-500/90',
+    },
   },
   {
-    title: 'Chat with your inbox',
-    description: 'Zero allows you to chat with your inbox, and take actions on your behalf.',
-    video: 'https://assets.0.email/step2.gif',
+    type: 'carousel',
+    title: 'The daily reply loop',
+    description:
+      'For reservation-related emails, Lucein automatically prepares a rough draft using synced booking context, so you can quickly review and send.',
+    bullets: [
+      'You have full control to make edits and ensure the email sounds like you.',
+    ],
+    visual: {
+      icon: '↪️',
+      metric: 'Reservation ready drafting',
+      tone: 'Human in the loop at every reply.',
+      headline: 'Draft generation is a helper, not an autopilot.',
+      gradient: 'from-emerald-500/70 to-green-600/90',
+    },
   },
   {
-    title: 'AI Compose & Reply',
-    description: 'Our AI assistant allows you to write emails that sound like you.',
-    video: 'https://assets.0.email/step1.gif',
+    type: 'carousel',
+    title: 'Built for hospitality language',
+    description:
+      'Lucein AI is tuned for reservation style communication, so your outgoing replies stay courteous and operationally correct.',
+    bullets: [
+      'Keep tone aligned with your hotel standards.',
+      'If you spot issues, use the feedback button in the bottom left, or escalate to your General Manager.',
+    ],
+    visual: {
+      icon: '☕',
+      metric: 'Guest-ready phrasing',
+      tone: 'Consistent tone without sounding robotic.',
+      headline: 'Guests get clear, polite replies; your team keeps luxury quality, not policy.',
+      gradient: 'from-amber-500/60 to-rose-500/75',
+    },
   },
   {
-    title: 'Label your emails',
-    description: 'Zero helps you label your emails to focus on what matters.',
-    video: 'https://assets.0.email/step3.gif',
-  },
-  {
-    title: 'Coming Soon',
-    description: (
-      <>
-        <span className="text-muted-foreground mb-4">
-          We're excited to bring these powerful features to all users very soon!
-        </span>
-      </>
-    ),
-    video: 'https://assets.0.email/coming-soon.png',
-  },
-  {
-    title: 'Ready to start?',
-    description: 'Click below to begin your intelligent email experience!',
-    video: 'https://assets.0.email/ready.png',
+    type: 'carousel',
+    title: 'You stay in the control seat',
+    description:
+      'This is a powered assistant layer for a live reservation desk: fast recommendations, intentional review, full accountability.',
+    bullets: [
+      'Never sends automatically unless you hit Send.',
+      'You can replay this tour from Help when needed.',
+    ],
+    visual: {
+      icon: '✅',
+      metric: 'Human approval enabled',
+      tone: 'Speed without losing trust.',
+      headline: 'AI drafts, you decide, guests receive your final message.',
+      gradient: 'from-indigo-500/70 to-blue-600/90',
+    },
   },
 ];
+
+function buildStepVisual(step: CarouselStep) {
+  return (
+    <div className={`h-52 w-full overflow-hidden rounded-xl border bg-linear-to-br ${step.visual.gradient} p-4`}>
+      <div className="flex h-full flex-col justify-between gap-4 text-white">
+        <div className="text-xs font-semibold uppercase tracking-[0.2em] opacity-85">Lucein AI</div>
+        <div className="space-y-4">
+          <div className="inline-flex items-center gap-3 rounded-full bg-white/20 px-3 py-1.5 text-sm">
+            <span className="text-2xl">{step.visual.icon}</span>
+            <span>{step.visual.metric}</span>
+          </div>
+          <h3 className="text-xl font-semibold leading-tight">{step.visual.headline}</h3>
+          <p className="text-sm text-white/90">{step.visual.tone}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ 
+
+type OnboardingDialogProps = {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+};
 
 export function OnboardingDialog({
   open,
   onOpenChange,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-}) {
+}: OnboardingDialogProps) {
   const [currentStep, setCurrentStep] = useState(0);
+  const activeSteps: OnboardingStep[] = CAROUSEL_STEPS;
+  const isFinalStep = currentStep === activeSteps.length - 1;
+  const activeStep = activeSteps[currentStep];
 
   useEffect(() => {
-    if (currentStep === steps.length - 1) {
+    if (open) {
+      setCurrentStep(0);
+    }
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    if (isFinalStep) {
       confetti({
-        particleCount: 100,
-        spread: 70,
-        origin: { y: 0.6 },
+        particleCount: 120,
+        spread: 80,
+        origin: { y: 0.75 },
       });
     }
-  }, [currentStep, steps.length]);
+  }, [isFinalStep, open]);
 
   const handleNext = () => {
-    if (currentStep < steps.length - 1) {
-      setCurrentStep(currentStep + 1);
-    } else {
-      onOpenChange(false);
+    if (!isFinalStep) {
+      setCurrentStep((step) => step + 1);
+      return;
     }
+
+    onOpenChange(false);
+  };
+
+  const handleBack = () => {
+    setCurrentStep((step) => step - 1);
   };
 
   return (
@@ -74,67 +164,39 @@ export function OnboardingDialog({
       <DialogTitle></DialogTitle>
       <DialogContent
         showOverlay
-        className="bg-panelLight mx-auto w-full max-w-[90%] rounded-xl border p-0 sm:max-w-[690px] dark:bg-[#111111]"
+        className="bg-panelLight mx-auto w-full max-w-[90%] rounded-xl border p-0 sm:max-w-[760px] dark:bg-[#111111]"
       >
-        <div className="flex flex-col gap-4 p-4">
-          {steps[currentStep] && steps[currentStep].video && (
-            <div className="relative flex items-center justify-center">
-              <div className="bg-muted aspect-video w-full max-w-4xl overflow-hidden rounded-lg">
-                {steps.map(
-                  (step, index) =>
-                    step.video && (
-                      <div
-                        key={step.title}
-                        className={`absolute inset-0 transition-opacity duration-300 ${
-                          index === currentStep ? 'opacity-100' : 'opacity-0'
-                        }`}
-                      >
-                        <img
-                          loading="eager"
-                          width={500}
-                          height={500}
-                          src={step.video}
-                          alt={step.title}
-                          className="h-full w-full rounded-lg border object-cover"
-                        />
-                      </div>
-                    ),
-                )}
-              </div>
-            </div>
-          )}
-          <div className="space-y-0">
-            <h2 className="text-4xl font-semibold">{steps[currentStep]?.title}</h2>
-            <p className="text-muted-foreground max-w-xl text-sm">
-              {steps[currentStep]?.description}
-            </p>
+        <div className="flex flex-col gap-6 p-4">
+          <div className="space-y-2">
+            <h2 className="text-3xl font-semibold">{activeStep.title}</h2>
           </div>
-
-          <div className="mx-auto flex w-full justify-between">
-            <div className="flex gap-2">
-              <Button
-                size={'xs'}
-                onClick={() => setCurrentStep(currentStep - 1)}
-                variant="outline"
-                disabled={currentStep === 0}
-              >
+          <div className="grid gap-4 md:grid-cols-[1.25fr_1fr]">
+            {buildStepVisual(activeStep)}
+            <div>
+              <p className="text-sm text-muted-foreground">{activeStep.description}</p>
+              <ul className="mt-3 space-y-2 text-sm">
+                {activeStep.bullets.map((bullet) => (
+                  <li key={bullet} className="flex items-start gap-2">
+                    <span className="mt-1 inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
+                    {bullet}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+          <div className="mx-auto flex w-full flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div className="flex flex-wrap items-center gap-2">
+              <Button size="xs" variant="outline" onClick={handleBack} disabled={currentStep === 0}>
                 Go back
               </Button>
-              <Button size={'xs'} onClick={handleNext}>
-                {currentStep === steps.length - 1 ? 'Get Started' : 'Next'}
+              <Button size="xs" onClick={handleNext}>
+                {isFinalStep ? 'Get Started' : 'Next'}
               </Button>
             </div>
-            <div className="flex items-center justify-center">
-              <div className="flex gap-1">
-                {steps.map((_, index) => (
-                  <div
-                    key={_.title}
-                    className={`h-1 w-4 rounded-full md:w-10 ${
-                      index === currentStep ? 'bg-primary' : 'bg-muted'
-                    }`}
-                  />
-                ))}
-              </div>
+            <div className="flex items-center justify-end gap-2">
+              <Button size="xs" variant="ghost" onClick={() => onOpenChange(false)}>
+                Skip for now
+              </Button>
             </div>
           </div>
         </div>
@@ -144,20 +206,16 @@ export function OnboardingDialog({
 }
 
 export function OnboardingWrapper() {
-  const [showOnboarding, setShowOnboarding] = useState(false);
-  const ONBOARDING_KEY = 'hasCompletedOnboarding';
-
-  useEffect(() => {
-    const hasCompletedOnboarding = localStorage.getItem(ONBOARDING_KEY) === 'true';
-    setShowOnboarding(!hasCompletedOnboarding);
-  }, []);
+  const [showOnboarding, setShowOnboarding] = useState(true);
 
   const handleOpenChange = (open: boolean) => {
-    if (!open) {
-      localStorage.setItem(ONBOARDING_KEY, 'true');
-    }
     setShowOnboarding(open);
   };
 
-  return <OnboardingDialog open={showOnboarding} onOpenChange={handleOpenChange} />;
+  return (
+    <OnboardingDialog
+      open={showOnboarding}
+      onOpenChange={handleOpenChange}
+    />
+  );
 }

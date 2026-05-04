@@ -8,11 +8,13 @@ import { LabelDialog } from '@/components/labels/label-dialog';
 import { ScrollArea } from '@/components/ui/scroll-area';
 
 import { Separator } from '@/components/ui/separator';
-import { useTRPC } from '@/providers/query-provider';
+import { getFrontendApi } from '@/lib/api/client';
 import { useMutation } from '@tanstack/react-query';
 import { Plus, Pencil } from 'lucide-react';
 import { type Label as LabelType } from '@/types';
 import { Button } from '@/components/ui/button';
+import { isFrontendOnlyDemo } from '@/lib/runtime/mail-mode';
+import { demoCreateLabel, demoDeleteLabel } from '@/lib/demo/local-actions';
 
 import { Bin } from '@/components/icons/icons';
 import { useLabels } from '@/hooks/use-labels';
@@ -32,12 +34,32 @@ export default function LabelsPage() {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [editingLabel, setEditingLabel] = useState<LabelType | null>(null);
 
-  const trpc = useTRPC();
-  const { mutateAsync: createLabel } = useMutation(trpc.labels.create.mutationOptions());
-  const { mutateAsync: updateLabel } = useMutation(trpc.labels.update.mutationOptions());
-  const { mutateAsync: deleteLabel } = useMutation(trpc.labels.delete.mutationOptions());
+  const { mutateAsync: createLabel } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().labels.create(input),
+  });
+  const { mutateAsync: updateLabel } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().labels.update(input),
+  });
+  const { mutateAsync: deleteLabel } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().labels.delete(input),
+  });
 
   const handleSubmit = async (data: LabelType) => {
+    if (isFrontendOnlyDemo()) {
+      await toast.promise(
+        demoCreateLabel({
+          ...(editingLabel ? { id: editingLabel.id } : {}),
+          name: data.name,
+          color: data.color,
+        }),
+        {
+          loading: m['common.labels.savingLabel'](),
+          success: m['common.labels.saveLabelSuccess'](),
+          error: m['common.labels.failedToSavingLabel'](),
+        },
+      );
+      return;
+    }
     await toast.promise(
       editingLabel
         ? updateLabel({ id: editingLabel.id!, name: data.name, color: data.color })
@@ -51,6 +73,21 @@ export default function LabelsPage() {
   };
 
   const handleDelete = async (id: string) => {
+    if (isFrontendOnlyDemo()) {
+      await toast.promise(
+        demoDeleteLabel(id),
+        {
+          loading: m['common.labels.deletingLabel'](),
+          success: m['common.labels.deleteLabelSuccess'](),
+          error: m['common.labels.failedToDeleteLabel'](),
+          finally: async () => {
+            await refetch();
+          },
+        },
+      );
+      return;
+    }
+
     toast.promise(deleteLabel({ id }), {
       loading: m['common.labels.deletingLabel'](),
       success: m['common.labels.deleteLabelSuccess'](),

@@ -1,7 +1,8 @@
 import { cleanEmailAddresses } from '../lib/email-utils';
-import { trpcClient } from '@/providers/query-provider';
+import { getFrontendApi } from '@/lib/api/client';
 import type { Route } from './+types/mailto-handler';
 import { authProxy } from '@/lib/auth-proxy';
+import { isFrontendOnlyDemo } from '@/lib/runtime/mail-mode';
 
 // Function to parse mailto URLs
 async function parseMailtoUrl(mailtoUrl: string) {
@@ -194,7 +195,7 @@ async function createDraftFromMailto(mailtoData: {
       try {
         console.log(`Attempt ${attempt} to create draft...`);
 
-        const result = await trpcClient.drafts.create.mutate(draftData);
+        const result = await getFrontendApi().drafts.create(draftData);
 
         if (result?.id) {
           console.log('Draft created successfully with ID:', result.id);
@@ -262,6 +263,16 @@ export async function clientLoader({ request }: Route.ClientLoaderArgs) {
 
   // If parsing failed, redirect to empty compose
   if (!mailtoData) return Response.redirect(`${import.meta.env.VITE_PUBLIC_APP_URL}/mail/compose`);
+
+  if (isFrontendOnlyDemo()) {
+    const fallbackUrl = new URL(`${import.meta.env.VITE_PUBLIC_APP_URL}/mail/compose`);
+    if (mailtoData.to) fallbackUrl.searchParams.append('to', mailtoData.to);
+    if (mailtoData.subject) fallbackUrl.searchParams.append('subject', mailtoData.subject);
+    if (mailtoData.body) fallbackUrl.searchParams.append('body', mailtoData.body);
+    if (mailtoData.cc) fallbackUrl.searchParams.append('cc', mailtoData.cc);
+    if (mailtoData.bcc) fallbackUrl.searchParams.append('bcc', mailtoData.bcc);
+    return Response.redirect(fallbackUrl.toString());
+  }
 
   // Create a draft from the mailto data
   const draftId = await createDraftFromMailto(mailtoData);

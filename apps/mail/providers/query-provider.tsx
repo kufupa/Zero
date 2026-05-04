@@ -5,13 +5,16 @@ import {
 } from '@tanstack/react-query-persist-client';
 import { QueryCache, QueryClient, hashKey, type InfiniteData } from '@tanstack/react-query';
 import { createTRPCContext } from '@trpc/tanstack-react-query';
-import { createTRPCClient, httpBatchLink } from '@trpc/client';
 import { useMemo, type PropsWithChildren } from 'react';
 import type { AppRouter } from '@zero/server/trpc';
+import { resolveMailMode, type MailApiMode } from '@/lib/runtime/mail-mode';
+import { mailListThreadsPrefixKey } from '@/lib/api/query-options';
+import type { ThreadListResult } from '@/lib/api/contract';
+import { resolveDemoQueryPolicy } from '@/lib/demo/query-policy';
 import { CACHE_BURST_KEY } from '@/lib/constants';
 import { signOut } from '@/lib/auth-client';
 import { get, set, del } from 'idb-keyval';
-import superjson from 'superjson';
+import { api } from '@/lib/trpc';
 
 function createIDBPersister(idbValidKey: IDBValidKey = 'zero-query-cache') {
   return {
@@ -27,10 +30,11 @@ function createIDBPersister(idbValidKey: IDBValidKey = 'zero-query-cache') {
   } satisfies Persister;
 }
 
-export const makeQueryClient = (connectionId: string | null) =>
+export const makeQueryClient = (opts: { mode: ReturnType<typeof resolveMailMode>; connectionId: string | null }) =>
   new QueryClient({
     queryCache: new QueryCache({
       onError: (err, { meta }) => {
+        if (resolveMailMode() === 'demo') return;
         if (meta && meta.noGlobalError === true) return;
         if (meta && typeof meta.customError === 'string') console.error(meta.customError);
         else if (
@@ -52,7 +56,8 @@ export const makeQueryClient = (connectionId: string | null) =>
       queries: {
         retry: false,
         refetchOnWindowFocus: false,
-        queryKeyHashFn: (queryKey) => hashKey([{ connectionId }, ...queryKey]),
+        queryKeyHashFn: (queryKey) =>
+          hashKey([{ mode: opts.mode, connectionId: opts.connectionId }, ...queryKey]),
         gcTime: 1000 * 60 * 60 * 24, // 24 hours,
       },
       mutations: {
@@ -61,88 +66,89 @@ export const makeQueryClient = (connectionId: string | null) =>
     },
   });
 
-let browserQueryClient = {
-  queryClient: null,
-  activeConnectionId: null,
-} as {
-  queryClient: QueryClient | null;
-  activeConnectionId: string | null;
+const browserQueryClient = {
+  queryClient: null as QueryClient | null,
+  activeConnectionId: null as string | null,
+  activeMode: null as MailApiMode | null,
 };
 
-const getQueryClient = (connectionId: string | null) => {
+const getQueryClient = (connectionId: string | null, mode: MailApiMode) => {
   if (typeof window === 'undefined') {
-    return makeQueryClient(connectionId);
-  } else {
-    if (!browserQueryClient.queryClient || browserQueryClient.activeConnectionId !== connectionId) {
-      browserQueryClient.queryClient = makeQueryClient(connectionId);
-      browserQueryClient.activeConnectionId = connectionId;
-    }
-    return browserQueryClient.queryClient;
+    return makeQueryClient({ mode, connectionId });
   }
+  if (
+    !browserQueryClient.queryClient ||
+    browserQueryClient.activeConnectionId !== connectionId ||
+    browserQueryClient.activeMode !== mode
+  ) {
+    browserQueryClient.queryClient = makeQueryClient({ mode, connectionId });
+    browserQueryClient.activeConnectionId = connectionId;
+    browserQueryClient.activeMode = mode;
+  }
+  return browserQueryClient.queryClient;
 };
-
-const getUrl = () => import.meta.env.VITE_PUBLIC_BACKEND_URL + '/api/trpc';
 
 export const { TRPCProvider, useTRPC, useTRPCClient } = createTRPCContext<AppRouter>();
 
-export const trpcClient = createTRPCClient<AppRouter>({
-  links: [
-    // loggerLink({ enabled: () => true }),
-    httpBatchLink({
-      transformer: superjson,
-      url: getUrl(),
-      methodOverride: 'POST',
-      maxItems: 1,
-      fetch: (url, options) =>
-        fetch(url, { ...options, credentials: 'include' }).then((res) => {
-          const currentPath = new URL(window.location.href).pathname;
-          const redirectPath = res.headers.get('X-Zero-Redirect');
-          if (!!redirectPath && redirectPath !== currentPath) {
-            window.location.href = redirectPath;
-            res.headers.delete('X-Zero-Redirect');
-          }
-          return res;
-        }),
-    }),
-  ],
-});
+/** Same singleton as `lib/trpc` `api` — for TRPC shell + direct `trpcClient` imports. Prefer `getFrontendApi()` in UI. */
+export const trpcClient: AppRouter = api;
 
 type TrpcHook = ReturnType<typeof useTRPC>;
 export function QueryProvider({
   children,
   connectionId,
 }: PropsWithChildren<{ connectionId: string | null }>) {
+  const mode = resolveMailMode();
+  const demoQueryPolicy = resolveDemoQueryPolicy();
   const persister = useMemo(
-    () => createIDBPersister(`zero-query-cache-${connectionId ?? 'default'}`),
-    [connectionId],
+    () => createIDBPersister(`zero-query-cache-v2-${mode}-${connectionId ?? 'anon'}`),
+    [connectionId, mode],
   );
-  const queryClient = useMemo(() => getQueryClient(connectionId), [connectionId]);
+  const policyAwarePersister = useMemo(
+    () =>
+      demoQueryPolicy.shouldHydratePersistedQueries
+        ? persister
+        : {
+            persistClient: persister.persistClient,
+            removeClient: persister.removeClient,
+            restoreClient: async () => undefined,
+          },
+    [demoQueryPolicy.shouldHydratePersistedQueries, persister],
+  );
+  const queryClient = useMemo(() => getQueryClient(connectionId, mode), [connectionId, mode]);
 
   return (
     <PersistQueryClientProvider
       client={queryClient}
       persistOptions={{
-        persister,
+        persister: policyAwarePersister,
         buster: CACHE_BURST_KEY,
         maxAge: 1000 * 60 * 60 * 24, // 24 hours
       }}
       onSuccess={() => {
+        if (!demoQueryPolicy.shouldInvalidateHydratedThreadQueries) return;
+        const trimInfinite = <T extends { pages: unknown[]; pageParams: unknown[] }>(data: T) => ({
+          ...data,
+          pages: data.pages.slice(0, 3),
+          pageParams: data.pageParams.slice(0, 3),
+        });
         const threadQueryKey = [['mail', 'listThreads'], { type: 'infinite' }];
         queryClient.setQueriesData(
           { queryKey: threadQueryKey },
           (data: InfiniteData<TrpcHook['mail']['listThreads']['~types']['output']>) => {
             if (!data) return data;
-            // We only keep few pages of threads in the cache before we invalidate them
-            // invalidating will attempt to refetch every page that was in cache, if someone have too many pages in cache, it will refetch every page every time
-            // We don't want that, just keep like 3 pages (20 * 3 = 60 threads) in cache
-            return {
-              pages: data.pages.slice(0, 3),
-              pageParams: data.pageParams.slice(0, 3),
-            };
+            return trimInfinite(data);
           },
         );
-        // invalidate the query, it will refetch when the data is it is being accessed
         queryClient.invalidateQueries({ queryKey: threadQueryKey });
+        if (mode === 'legacy') {
+          const feListKey = mailListThreadsPrefixKey({ mode, accountId: connectionId });
+          queryClient.setQueriesData({ queryKey: feListKey }, (data: InfiniteData<ThreadListResult> | undefined) => {
+            if (!data) return data;
+            return trimInfinite(data);
+          });
+          queryClient.invalidateQueries({ queryKey: feListKey });
+        }
       }}
     >
       <TRPCProvider trpcClient={trpcClient} queryClient={queryClient}>
@@ -151,3 +157,5 @@ export function QueryProvider({
     </PersistQueryClientProvider>
   );
 }
+
+type IDBValidKey = string;

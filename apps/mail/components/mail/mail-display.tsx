@@ -11,7 +11,6 @@ import {
   ThreeDots,
   Tag,
   User,
-  ChevronDown,
   Printer,
 } from '../icons/icons';
 import {
@@ -39,24 +38,27 @@ import { EmailVerificationBadge } from './email-verification-badge';
 import type { Sender, ParsedMessage, Attachment } from '@/types';
 import { useActiveConnection } from '@/hooks/use-connections';
 import { useAttachments } from '@/hooks/use-attachments';
-import { useTRPC } from '@/providers/query-provider';
+import { getFrontendApi } from '@/lib/api/client';
 import { useThreadLabels } from '@/hooks/use-labels';
 import { useMutation } from '@tanstack/react-query';
-import { Markdown } from '@react-email/components';
-import { useSummary } from '@/hooks/use-summary';
 import { TextShimmer } from '../ui/text-shimmer';
 import { useThread } from '@/hooks/use-threads';
 import { BimiAvatar } from '../ui/bimi-avatar';
 import { RenderLabels } from './render-labels';
+import { CenturionCategoryPill } from './centurion-category-pill';
 import { cleanHtml } from '@/lib/email-utils';
+import { cleanEmailDisplay, cleanNameDisplay, MailboxInline, formatMailboxPlain } from '@/lib/mail/mailbox-format';
 import { MailContent } from './mail-content';
 import { m } from '@/paraglide/messages';
 import { useParams } from 'react-router';
 import { FileText } from 'lucide-react';
-import { useQueryState } from 'nuqs';
+import { parseAsString, useQueryState, useQueryStates } from 'nuqs';
 import { Badge } from '../ui/badge';
 import { format } from 'date-fns';
 import { toast } from 'sonner';
+import { demoWebSearch } from '@/lib/demo/local-actions';
+import { isFrontendOnlyDemo } from '@/lib/runtime/mail-mode';
+import { openReplyComposeContext, type ReplyComposeMode } from '@/lib/mail/reply-compose-context';
 
 // Add formatFileSize utility function
 const formatFileSize = (size: number) => {
@@ -240,17 +242,50 @@ const MailDisplayLabels = ({ labels }: { labels: string[] }) => {
   );
 };
 
-// Helper function to clean email display
-const cleanEmailDisplay = (email?: string) => {
-  if (!email) return '';
-  const match = email.match(/([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/);
-  return match ? match[1] : email;
-};
+const escapePrintHtml = (value: string) =>
+  value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-// Helper function to clean name display
-const cleanNameDisplay = (name?: string) => {
-  if (!name) return '';
-  return name.trim();
+const getFormattedMailboxes = (mailboxes?: Sender[] | null) =>
+  (mailboxes || [])
+    .map(formatMailboxPlain)
+    .filter(Boolean);
+
+const formatMailboxList = (mailboxes?: Sender[] | null) =>
+  getFormattedMailboxes(mailboxes).join('; ');
+
+const formatMailboxListForPrint = (mailboxes?: Sender[] | null) =>
+  getFormattedMailboxes(mailboxes).map(escapePrintHtml).join('; ');
+
+const renderMailboxSummary = (mailboxes: Sender[]) => {
+  const recipients = getFormattedMailboxes(mailboxes);
+  const visibleRecipients = recipients.slice(0, 3);
+  const hiddenRecipients = recipients.slice(3);
+
+  return (
+    <>
+      {visibleRecipients.map((recipient, index) => (
+        <span key={`${recipient}-${index}`}>
+          {recipient}
+          {index < visibleRecipients.length - 1 ? '; ' : ''}
+        </span>
+      ))}
+      {hiddenRecipients.length > 0 && (
+        <>
+          {visibleRecipients.length > 0 ? '; ' : ''}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="cursor-pointer">+{hiddenRecipients.length} others</span>
+            </TooltipTrigger>
+            <TooltipContent className="flex flex-col gap-1">
+              {hiddenRecipients.map((recipient, index) => (
+                <span key={`${recipient}-${index}`}>{recipient}</span>
+              ))}
+            </TooltipContent>
+          </Tooltip>
+        </>
+      )}
+    </>
+  );
 };
 
 const ThreadAttachments = ({ attachments }: { attachments: Attachment[] }) => {
@@ -307,38 +342,28 @@ const ThreadAttachments = ({ attachments }: { attachments: Attachment[] }) => {
   );
 };
 
-const AiSummary = () => {
-  const [threadId] = useQueryState('threadId');
-  const { data: summary, isLoading } = useSummary(threadId ?? null);
-  const [showSummary, setShowSummary] = useState(false);
+type MailDisplayWebSearchResult = {
+  text: string;
+  sources: { id: string; title: string; url: string }[];
+};
 
-  const handleToggle = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setShowSummary(!showSummary);
-  };
+export const resolveMailDisplayWebSearch = async ({
+  query,
+  isFrontendOnlyDemoMode,
+  webSearch,
+}: {
+  query: string;
+  isFrontendOnlyDemoMode: boolean;
+  webSearch: (input: { query: string }) => Promise<MailDisplayWebSearchResult>;
+}): Promise<MailDisplayWebSearchResult> => {
+  if (isFrontendOnlyDemoMode) {
+    return demoWebSearch({
+      query,
+      isFrontendOnlyDemoMode,
+    });
+  }
 
-  if (isLoading) return null;
-  if (!summary?.data.short?.length) return null;
-
-  return (
-    <div
-      className="mt-2 max-w-3xl rounded-xl border border-[#8B5CF6] bg-white px-4 py-2 dark:bg-[#252525]"
-      onClick={(e) => e.stopPropagation()}
-    >
-      <div className="flex cursor-pointer items-center" onClick={handleToggle}>
-        <TextShimmer className="text-xs font-medium text-[#929292]">Summary</TextShimmer>
-
-        {!isLoading && (
-          <ChevronDown
-            className={`ml-1 h-2.5 w-2.5 fill-[#929292] transition-transform ${showSummary ? 'rotate-180' : ''}`}
-          />
-        )}
-      </div>
-      {showSummary && (
-        <Markdown markdownContainerStyles={{ fontSize: 15 }}>{summary?.data.short || ''}</Markdown>
-      )}
-    </div>
-  );
+  return webSearch({ query });
 };
 
 type ActionButtonProps = {
@@ -516,19 +541,31 @@ const MoreAboutPerson = ({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) => {
-  const trpc = useTRPC();
+  const isFrontendOnlyDemoMode = isFrontendOnlyDemo();
+  const webSearchFn = useCallback(
+    (input: { query: string }) =>
+      getFrontendApi().ai.webSearch(input) as Promise<MailDisplayWebSearchResult>,
+    [],
+  );
   const {
     mutate: doSearch,
     isPending,
     data,
     error,
-  } = useMutation(trpc.ai.webSearch.mutationOptions());
+  } = useMutation({
+    mutationFn: ({ query }: { query: string }) =>
+      resolveMailDisplayWebSearch({
+        query,
+        isFrontendOnlyDemoMode,
+        webSearch: webSearchFn,
+      }),
+  });
   const handleSearch = useCallback(() => {
     doSearch({
       query: `In 50 words or less: What is the background of ${person.name} & ${person.email}, of ${person.email.split('@')[1]}.
       This could be a phishing email address, indicate if the domain is suspicious, example: x.io is not a valid domain for x.com | example: x.com is a valid domain for x.com | example: paypalcom.com is not a valid domain for paypal.com`,
     });
-  }, [person.name]);
+  }, [person.name, person.email, doSearch]);
 
   useEffect(() => {
     if (open) {
@@ -590,13 +627,25 @@ const MoreAboutQuery = ({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) => {
-  const trpc = useTRPC();
+  const isFrontendOnlyDemoMode = isFrontendOnlyDemo();
+  const webSearchFn = useCallback(
+    (input: { query: string }) =>
+      getFrontendApi().ai.webSearch(input) as Promise<MailDisplayWebSearchResult>,
+    [],
+  );
   const {
     mutate: doSearch,
     isPending,
     data,
     error,
-  } = useMutation(trpc.ai.webSearch.mutationOptions());
+  } = useMutation({
+    mutationFn: ({ query }: { query: string }) =>
+      resolveMailDisplayWebSearch({
+        query,
+        isFrontendOnlyDemoMode,
+        webSearch: webSearchFn,
+      }),
+  });
 
   const handleSearch = useCallback(() => {
     doSearch({
@@ -687,6 +736,27 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
   );
 
   const [, setMode] = useQueryState('mode');
+  const [, setDraftId] = useQueryState('draftId');
+  const [, setComposeState] = useQueryStates({
+    mode: parseAsString,
+    activeReplyId: parseAsString,
+    draftId: parseAsString,
+  });
+
+  const openComposeForMessage = useCallback(
+    (mode: ReplyComposeMode) => {
+      setIsCollapsed(false);
+      void openReplyComposeContext({
+        mode,
+        messageId: emailData.id,
+        setMode,
+        setActiveReplyId,
+        setDraftId,
+        setComposeState,
+      });
+    },
+    [emailData.id, setMode, setActiveReplyId, setDraftId, setComposeState],
+  );
 
   useEffect(() => {
     if (!demo) {
@@ -1020,8 +1090,7 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                 <div class="meta-row">
                   <span class="meta-label">From:</span>
                   <span class="meta-value">
-                    ${cleanNameDisplay(emailData.sender?.name)}
-                    ${emailData.sender?.email ? `&lt;${emailData.sender.email}&gt;` : ''}
+                    ${escapePrintHtml(formatMailboxPlain(emailData.sender))}
                   </span>
                 </div>
 
@@ -1031,12 +1100,7 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                   <div class="meta-row">
                     <span class="meta-label">To:</span>
                     <span class="meta-value">
-                      ${emailData.to
-                        .map(
-                          (recipient) =>
-                            `${cleanNameDisplay(recipient.name)} &lt;${recipient.email}&gt;`,
-                        )
-                        .join(', ')}
+                      ${formatMailboxListForPrint(emailData.to)}
                     </span>
                   </div>
                 `
@@ -1049,12 +1113,7 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                   <div class="meta-row">
                     <span class="meta-label">CC:</span>
                     <span class="meta-value">
-                      ${emailData.cc
-                        .map(
-                          (recipient) =>
-                            `${cleanNameDisplay(recipient.name)} &lt;${recipient.email}&gt;`,
-                        )
-                        .join(', ')}
+                      ${formatMailboxListForPrint(emailData.cc)}
                     </span>
                   </div>
                 `
@@ -1067,12 +1126,7 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                   <div class="meta-row">
                     <span class="meta-label">BCC:</span>
                     <span class="meta-value">
-                      ${emailData.bcc
-                        .map(
-                          (recipient) =>
-                            `${cleanNameDisplay(recipient.name)} &lt;${recipient.email}&gt;`,
-                        )
-                        .join(', ')}
+                      ${formatMailboxListForPrint(emailData.bcc)}
                     </span>
                   </div>
                 `
@@ -1261,13 +1315,17 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                   </span>
                 </span>
 
-                <div className="mt-2 flex items-center gap-2">
+                <div className="mt-2 flex flex-wrap items-center gap-2">
                   {emailData?.tags?.length ? (
                     <MailDisplayLabels labels={emailData?.tags.map((t) => t.name) || []} />
                   ) : null}
                   {emailData?.tags?.length ? (
                     <div className="bg-iconLight dark:bg-iconDark/20 relative h-3 w-0.5 rounded-full" />
                   ) : null}
+                  <CenturionCategoryPill
+                    routeFolder={folder}
+                    category={threadData?.centurionCategory}
+                  />
                   <RenderLabels labels={threadLabels} />
                   {threadLabels.length ? (
                     <div className="bg-iconLight dark:bg-iconDark/20 relative h-3 w-0.5 rounded-full" />
@@ -1308,7 +1366,6 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                     })()}
                   </div>
                 </div>
-                <AiSummary />
                 {threadAttachments && threadAttachments.length > 0 && (
                   <ThreadAttachments attachments={threadAttachments} />
                 )}
@@ -1328,22 +1385,22 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                   <div className="flex w-full items-center justify-start">
                     <div className="flex w-full flex-col">
                       <div className="flex w-full items-center justify-between">
-                        <div className="flex items-center gap-1">
-                          <div className="flex items-center gap-2">
-                            <span
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                e.preventDefault();
-                                setResearchSender({
-                                  name: emailData?.sender?.name || '',
-                                  email: emailData?.sender?.email || '',
-                                  //   extra: emailData?.sender?.extra || '',
-                                });
-                              }}
-                              className="hover:bg-muted font-semibold"
-                            >
-                              {cleanNameDisplay(emailData?.sender?.name)}
-                            </span>
+                          <div className="flex min-w-0 items-center gap-2">
+                            <div className="flex min-w-0 items-center gap-2">
+                              <span
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  e.preventDefault();
+                                  setResearchSender({
+                                    name: emailData?.sender?.name || '',
+                                    email: emailData?.sender?.email || '',
+                                    //   extra: emailData?.sender?.extra || '',
+                                  });
+                                }}
+                                className="hover:bg-muted min-w-0"
+                              >
+                                <MailboxInline sender={emailData?.sender} />
+                              </span>
                             <EmailVerificationBadge messageId={emailData?.id} />
                           </div>
 
@@ -1378,24 +1435,15 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                                     {m['common.mailDisplay.from']()}:
                                   </span>
                                   <div className="ml-3">
-                                    <span className="text-muted-foreground text-nowrap pr-1 font-bold">
-                                      {cleanNameDisplay(emailData?.sender?.name)}
-                                    </span>
-                                    {emailData?.sender?.name !== emailData?.sender?.email && (
-                                      <span className="text-muted-foreground text-nowrap">
-                                        {cleanEmailDisplay(emailData?.sender?.email)}
-                                      </span>
-                                    )}
+                                    <MailboxInline sender={emailData?.sender} />
                                   </div>
                                 </div>
                                 <div className="flex">
                                   <span className="w-24 text-nowrap text-end text-gray-500">
                                     {m['common.mailDisplay.to']()}:
                                   </span>
-                                  <span className="text-muted-foreground ml-3 text-nowrap">
-                                    {emailData?.to
-                                      ?.map((t) => cleanEmailDisplay(t.email))
-                                      .join(', ')}
+                                  <span className="text-muted-foreground ml-3 break-all">
+                                    {formatMailboxList(emailData?.to)}
                                   </span>
                                 </div>
                                 {emailData?.replyTo && emailData.replyTo.length > 0 && (
@@ -1413,10 +1461,8 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                                     <span className="shrink-0text-nowrap w-24 text-end text-gray-500">
                                       {m['common.mailDisplay.cc']()}:
                                     </span>
-                                    <span className="text-muted-foreground ml-3 text-nowrap">
-                                      {emailData?.cc
-                                        ?.map((t) => cleanEmailDisplay(t.email))
-                                        .join(', ')}
+                                    <span className="text-muted-foreground ml-3 break-all">
+                                      {formatMailboxList(emailData?.cc)}
                                     </span>
                                   </div>
                                 )}
@@ -1425,10 +1471,8 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                                     <span className="w-24 text-end text-gray-500">
                                       {m['common.mailDisplay.bcc']()}:
                                     </span>
-                                    <span className="text-muted-foreground ml-3 text-nowrap">
-                                      {emailData?.bcc
-                                        ?.map((t) => cleanEmailDisplay(t.email))
-                                        .join(', ')}
+                                    <span className="text-muted-foreground ml-3 break-all">
+                                      {formatMailboxList(emailData?.bcc)}
                                     </span>
                                   </div>
                                 )}
@@ -1537,51 +1581,27 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                         </div>
                       </div>
                       <div className="flex justify-between">
-                        <div className="flex gap-1">
+                        <div className="flex flex-wrap gap-1">
                           <p className="text-muted-foreground text-sm font-medium dark:text-[#8C8C8C]">
                             {m['common.mailDisplay.to']()}:{' '}
-                            {(() => {
-                              // Combine to and cc recipients
-                              const allRecipients = [
-                                ...(emailData?.to || []),
-                                ...(emailData?.cc || []),
-                              ];
-
-                              // If you're the only recipient
-                              if (allRecipients.length === 1 && folder !== 'sent') {
-                                return <span key="you">You</span>;
-                              }
-
-                              // Show first 3 recipients + count of others
-                              const visibleRecipients = allRecipients.slice(0, 3);
-                              const remainingCount = allRecipients.length - 3;
-
-                              return (
-                                <>
-                                  {visibleRecipients.map((recipient, index) => (
-                                    <span key={recipient.email}>
-                                      {cleanNameDisplay(recipient.name) ||
-                                        cleanEmailDisplay(recipient.email)}
-                                      {index < visibleRecipients.length - 1 ? ', ' : ''}
-                                    </span>
-                                  ))}
-                                  {remainingCount > 0 && (
-                                    <span key="others">{`, +${remainingCount} others`}</span>
-                                  )}
-                                </>
-                              );
-                            })()}
+                            {folder !== 'sent' &&
+                            (emailData?.to || []).length === 1 &&
+                            (emailData?.cc || []).length === 0
+                              ? 'You'
+                              : renderMailboxSummary(emailData?.to || [])}
                           </p>
+                          {(emailData?.cc?.length || 0) > 0 && (
+                            <p className="text-muted-foreground text-sm font-medium dark:text-[#8C8C8C]">
+                              {m['common.mailDisplay.cc']()}:{' '}
+                              {renderMailboxSummary(emailData?.cc || [])}
+                            </p>
+                          )}
                           {(emailData?.bcc?.length || 0) > 0 && (
                             <p className="text-muted-foreground text-sm font-medium dark:text-[#8C8C8C]">
                               Bcc:{' '}
-                              {emailData?.bcc?.map((recipient, index) => (
-                                <span key={recipient.email}>
-                                  {cleanNameDisplay(recipient.name) ||
-                                    cleanEmailDisplay(recipient.email)}
-                                  {index < (emailData?.bcc?.length || 0) - 1 ? ', ' : ''}
-                                </span>
-                              ))}
+                              {(emailData?.bcc || [])
+                                .map((recipient) => formatMailboxPlain(recipient))
+                                .join('; ')}
                             </p>
                           )}
                         </div>
@@ -1693,9 +1713,7 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                   <ActionButton
                     onClick={(e) => {
                       e.stopPropagation();
-                      setIsCollapsed(false);
-                      setMode('reply');
-                      setActiveReplyId(emailData.id);
+                      openComposeForMessage('reply');
                     }}
                     icon={<Reply className="fill-muted-foreground dark:fill-[#9B9B9B]" />}
                     text={m['common.mail.reply']()}
@@ -1704,9 +1722,7 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                   <ActionButton
                     onClick={(e) => {
                       e.stopPropagation();
-                      setIsCollapsed(false);
-                      setMode('replyAll');
-                      setActiveReplyId(emailData.id);
+                      openComposeForMessage('replyAll');
                     }}
                     icon={<ReplyAll className="fill-muted-foreground dark:fill-[#9B9B9B]" />}
                     text={m['common.mail.replyAll']()}
@@ -1715,9 +1731,7 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                   <ActionButton
                     onClick={(e) => {
                       e.stopPropagation();
-                      setIsCollapsed(false);
-                      setMode('forward');
-                      setActiveReplyId(emailData.id);
+                      openComposeForMessage('forward');
                     }}
                     icon={<Forward className="fill-muted-foreground dark:fill-[#9B9B9B]" />}
                     text={m['common.mail.forward']()}

@@ -58,7 +58,7 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { useTRPC } from '@/providers/query-provider';
+import { getFrontendApi } from '@/lib/api/client';
 import { Textarea } from '@/components/ui/textarea';
 import { useMutation } from '@tanstack/react-query';
 import { useThreadNotes } from '@/hooks/use-notes';
@@ -68,6 +68,13 @@ import { Badge } from '@/components/ui/badge';
 import { m } from '@/paraglide/messages';
 import { CSS } from '@dnd-kit/utilities';
 import type { Note } from '@/types';
+import { isFrontendOnlyDemo } from '@/lib/runtime/mail-mode';
+import {
+  demoUpsertNote,
+  demoDeleteNote,
+  demoReorderNotes,
+  demoUpdateNote,
+} from '@/lib/demo/local-actions';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 
@@ -243,13 +250,21 @@ export function NotesPanel({ threadId }: NotesPanelProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedColor, setSelectedColor] = useState('default');
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [isNoteActionPending, setIsNoteActionPending] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
-  const trpc = useTRPC();
-  const { mutateAsync: createNote } = useMutation(trpc.notes.create.mutationOptions());
-  const { mutateAsync: updateNote } = useMutation(trpc.notes.update.mutationOptions());
-  const { mutateAsync: deleteNote } = useMutation(trpc.notes.delete.mutationOptions());
-  const { mutateAsync: reorderNotes } = useMutation(trpc.notes.reorder.mutationOptions());
+  const { mutateAsync: createNote } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().notes.create(input),
+  });
+  const { mutateAsync: updateNote } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().notes.update(input),
+  });
+  const { mutateAsync: deleteNote } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().notes.delete(input),
+  });
+  const { mutateAsync: reorderNotes } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().notes.reorder(input),
+  });
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -278,29 +293,45 @@ export function NotesPanel({ threadId }: NotesPanelProps) {
     }
   }, [editingNoteId]);
 
+  const runNoteAction = async (action: () => Promise<unknown>) => {
+    if (isNoteActionPending) return;
+    setIsNoteActionPending(true);
+    try {
+      await action();
+    } finally {
+      setIsNoteActionPending(false);
+    }
+  };
+
   const handleAddNote = async () => {
-    if (newNoteContent.trim()) {
+    if (isNoteActionPending || !newNoteContent.trim()) return;
+
+    const action = async () => {
       const noteData = {
         threadId,
         color: selectedColor !== 'default' ? selectedColor : undefined,
         content: newNoteContent.trim(),
       };
-
-      const promise = async () => {
-        setIsAddingNewNote(true);
-        await createNote(noteData);
+      setIsAddingNewNote(true);
+      try {
+        await (isFrontendOnlyDemo() ? demoUpsertNote(noteData) : createNote(noteData));
         await refetch();
         setNewNoteContent('');
         setSelectedColor('default');
+      } finally {
         setIsAddingNewNote(false);
-      };
+      }
+    };
 
-      toast.promise(promise(), {
+    void runNoteAction(async () => {
+      const promise = action();
+      toast.promise(promise, {
         loading: m['common.actions.loading'](),
         success: m['common.notes.noteAdded'](),
         error: m['common.notes.errors.failedToAddNote'](),
       });
-    }
+      await promise;
+    });
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>, action: 'add' | 'edit') => {
@@ -315,29 +346,35 @@ export function NotesPanel({ threadId }: NotesPanelProps) {
   };
 
   const handleEditNote = async () => {
-    if (editingNoteId && editContent.trim()) {
-      const noteId = editingNoteId;
-      const contentToSave = editContent.trim();
+    if (isNoteActionPending || !editingNoteId || !editContent.trim()) return;
 
-      setEditingNoteId(null);
-      setEditContent('');
+    const noteId = editingNoteId;
+    const contentToSave = editContent.trim();
 
-      const promise = async () => {
-        await updateNote({
-          noteId,
-          data: {
-            content: contentToSave,
-          },
-        });
-        await refetch();
-      };
+    setEditingNoteId(null);
+    setEditContent('');
 
-      toast.promise(promise(), {
+    const action = async () => {
+      await (isFrontendOnlyDemo()
+        ? demoUpdateNote(noteId, { content: contentToSave })
+        : updateNote({
+            noteId,
+            data: {
+              content: contentToSave,
+            },
+          }));
+      await refetch();
+    };
+
+    void runNoteAction(async () => {
+      const promise = action();
+      toast.promise(promise, {
         loading: m['common.actions.saving'](),
         success: m['common.notes.noteUpdated'](),
         error: m['common.notes.errors.failedToUpdateNote'](),
       });
-    }
+      await promise;
+    });
   };
 
   const startEditing = (note: Note) => {
@@ -346,23 +383,27 @@ export function NotesPanel({ threadId }: NotesPanelProps) {
   };
 
   const handleDeleteNote = async (noteId: string) => {
-    try {
-      await deleteNote({ noteId });
-      await refetch();
-    } catch (error) {
-      console.error('Failed to delete note:', error);
-      throw error;
-    }
+    if (isNoteActionPending) return;
+
+    return runNoteAction(async () => {
+      const operationPromise = (async () => {
+        await (isFrontendOnlyDemo() ? demoDeleteNote(noteId) : deleteNote({ noteId }));
+        await refetch();
+      })();
+
+      toast.promise(operationPromise, {
+        loading: m['common.actions.loading'](),
+        success: m['common.notes.noteDeleted'](),
+        error: m['common.notes.errors.failedToDeleteNote'](),
+      });
+      await operationPromise;
+    });
   };
 
   const confirmDeleteNote = (noteId: string) => {
+    if (isNoteActionPending) return;
     // TODO: Dialog is bugged? needs to be fixed then implement a confirmation dialog
-    const promise = handleDeleteNote(noteId);
-    toast.promise(promise, {
-      loading: m['common.actions.loading'](),
-      success: m['common.notes.noteDeleted'](),
-      error: m['common.notes.errors.failedToDeleteNote'](),
-    });
+    void handleDeleteNote(noteId);
   };
 
   const handleCopyNote = (content: string) => {
@@ -371,10 +412,14 @@ export function NotesPanel({ threadId }: NotesPanelProps) {
   };
 
   const togglePinNote = async (noteId: string, isPinned: boolean) => {
-    const action = updateNote({
-      noteId,
-      data: { isPinned: !isPinned },
-    });
+    if (isNoteActionPending) return;
+
+    const action = isFrontendOnlyDemo()
+      ? demoUpdateNote(noteId, { isPinned: !isPinned })
+      : updateNote({
+          noteId,
+          data: { isPinned: !isPinned },
+        });
 
     toast.promise(action, {
       loading: m['common.actions.loading'](),
@@ -382,17 +427,23 @@ export function NotesPanel({ threadId }: NotesPanelProps) {
       error: m['common.notes.errors.failedToUpdateNote'](),
     });
 
-    await action;
-    return await refetch();
+    return runNoteAction(async () => {
+      await action;
+      await refetch();
+    });
   };
 
   const handleChangeNoteColor = async (noteId: string, color: string) => {
-    const action = updateNote({
-      noteId,
-      data: {
-        color,
-      },
-    });
+    if (isNoteActionPending) return;
+
+    const action = isFrontendOnlyDemo()
+      ? demoUpdateNote(noteId, { color })
+      : updateNote({
+          noteId,
+          data: {
+            color,
+          },
+        });
 
     toast.promise(action, {
       loading: m['common.actions.loading'](),
@@ -400,15 +451,23 @@ export function NotesPanel({ threadId }: NotesPanelProps) {
       error: m['common.notes.errors.failedToUpdateNoteColor'](),
     });
 
-    await action;
-    return await refetch();
+    return runNoteAction(async () => {
+      await action;
+      await refetch();
+    });
   };
 
   const handleDragStart = (event: DragStartEvent) => {
+    if (isNoteActionPending) return;
     setActiveId(event.active.id as string);
   };
 
   const handleDragEnd = async (event: DragEndEvent) => {
+    if (isNoteActionPending) {
+      setActiveId(null);
+      return;
+    }
+
     const { active, over } = event;
 
     if (over && active.id !== over.id) {
@@ -431,8 +490,38 @@ export function NotesPanel({ threadId }: NotesPanelProps) {
         const reorderedPinnedNotes = assignOrdersAfterPinnedReorder(newPinnedNotes);
 
         const newNotes = [...reorderedPinnedNotes, ...unpinnedNotes];
-        const action = reorderNotes({ notes: newNotes });
+        const action = isFrontendOnlyDemo()
+          ? demoReorderNotes(newNotes)
+          : reorderNotes({ notes: newNotes });
 
+        return runNoteAction(async () => {
+          toast.promise(action, {
+            loading: m['common.actions.loading'](),
+            success: m['common.notes.notesReordered'](),
+            error: m['common.notes.errors.failedToReorderNotes'](),
+          });
+
+          await action;
+          await refetch();
+          setActiveId(null);
+        });
+      } 
+
+      const oldIndex = unpinnedNotes.findIndex((n) => n.id === active.id);
+      const newIndex = unpinnedNotes.findIndex((n) => n.id === over.id);
+      const newUnpinnedNotes = arrayMove(unpinnedNotes, oldIndex, newIndex);
+
+      const reorderedUnpinnedNotes = assignOrdersAfterUnpinnedReorder(
+        newUnpinnedNotes,
+        pinnedNotes.length,
+      );
+
+      const newNotes = [...pinnedNotes, ...reorderedUnpinnedNotes];
+      const action = isFrontendOnlyDemo()
+        ? demoReorderNotes(newNotes)
+        : reorderNotes({ notes: newNotes });
+
+      return runNoteAction(async () => {
         toast.promise(action, {
           loading: m['common.actions.loading'](),
           success: m['common.notes.notesReordered'](),
@@ -441,28 +530,8 @@ export function NotesPanel({ threadId }: NotesPanelProps) {
 
         await action;
         await refetch();
-      } else {
-        const oldIndex = unpinnedNotes.findIndex((n) => n.id === active.id);
-        const newIndex = unpinnedNotes.findIndex((n) => n.id === over.id);
-        const newUnpinnedNotes = arrayMove(unpinnedNotes, oldIndex, newIndex);
-
-        const reorderedUnpinnedNotes = assignOrdersAfterUnpinnedReorder(
-          newUnpinnedNotes,
-          pinnedNotes.length,
-        );
-
-        const newNotes = [...pinnedNotes, ...reorderedUnpinnedNotes];
-        const action = reorderNotes({ notes: newNotes });
-
-        toast.promise(action, {
-          loading: m['common.actions.loading'](),
-          success: m['common.notes.notesReordered'](),
-          error: m['common.notes.errors.failedToReorderNotes'](),
-        });
-
-        await action;
-        await refetch();
-      }
+        setActiveId(null);
+      });
     }
 
     setActiveId(null);
@@ -749,7 +818,7 @@ export function NotesPanel({ threadId }: NotesPanelProps) {
                                 variant="default"
                                 size="xs"
                                 onClick={() => void handleAddNote()}
-                                disabled={!newNoteContent.trim()}
+                                disabled={isNoteActionPending || !newNoteContent.trim()}
                               >
                                 {m['common.notes.save']()}
                               </Button>
@@ -814,7 +883,12 @@ export function NotesPanel({ threadId }: NotesPanelProps) {
                     >
                       {m['common.notes.cancel']()}
                     </Button>
-                    <Button variant="default" size="xs" onClick={() => void handleEditNote()}>
+                    <Button
+                      variant="default"
+                      size="xs"
+                      onClick={() => void handleEditNote()}
+                      disabled={isNoteActionPending}
+                    >
                       {m['common.actions.saveChanges']()}
                     </Button>
                   </div>

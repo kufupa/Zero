@@ -1,4 +1,4 @@
-import { trpcClient } from '@/providers/query-provider';
+import { getFrontendApi } from '@/lib/api/client';
 const getCurrentThreadId = () => {
   if (typeof window !== 'undefined') {
     const params = new URLSearchParams(window.location.search);
@@ -15,7 +15,7 @@ const cleanNameDisplay = (name?: string) => {
 export const toolExecutors = {
   listEmails: async (params: { folder: string; query: string; maxResults: number }) => {
     try {
-      const result = await trpcClient.mail.listThreads.query({
+      const result = await getFrontendApi().mail.listThreads({
         folder: params.folder || 'INBOX',
         q: params.query,
       });
@@ -66,7 +66,7 @@ export const toolExecutors = {
         };
       }
 
-      const result = await trpcClient.mail.get.query({ id: threadId });
+      const result = await getFrontendApi().mail.getThread({ id: threadId });
       return {
         success: true,
         thread: result,
@@ -84,7 +84,7 @@ export const toolExecutors = {
     threadId: string;
   }) => {
     try {
-      await trpcClient.mail.send.mutate({
+      await getFrontendApi().mail.send({
         to: params.to.map((email: string) => ({ email })),
         subject: params.subject,
         message: params.message,
@@ -97,7 +97,7 @@ export const toolExecutors = {
   },
   markAsRead: async (params: any) => {
     try {
-      await trpcClient.mail.markAsRead.mutate({ ids: params.threadIds });
+      await getFrontendApi().mail.markAsRead({ ids: params.threadIds });
       return { success: true, message: 'Emails marked as read' };
     } catch (error: any) {
       return { success: false, error: error.message };
@@ -105,7 +105,7 @@ export const toolExecutors = {
   },
   markAsUnread: async (params: any) => {
     try {
-      await trpcClient.mail.markAsUnread.mutate({ ids: params.threadIds });
+      await getFrontendApi().mail.markAsUnread({ ids: params.threadIds });
       return { success: true, message: 'Emails marked as unread' };
     } catch (error: any) {
       return { success: false, error: error.message };
@@ -113,7 +113,7 @@ export const toolExecutors = {
   },
   archiveEmails: async (params: any) => {
     try {
-      await trpcClient.mail.bulkArchive.mutate({ ids: params.threadIds });
+      await getFrontendApi().mail.archive({ ids: params.threadIds });
       return { success: true, message: 'Emails archived' };
     } catch (error: any) {
       return { success: false, error: error.message };
@@ -121,7 +121,7 @@ export const toolExecutors = {
   },
   deleteEmails: async (params: any) => {
     try {
-      await trpcClient.mail.bulkDelete.mutate({ ids: params.threadIds });
+      await getFrontendApi().mail.bulkDelete({ ids: params.threadIds });
       return { success: true, message: 'Emails moved to trash' };
     } catch (error: any) {
       return { success: false, error: error.message };
@@ -137,7 +137,7 @@ export const toolExecutors = {
       };
     }
     try {
-      await trpcClient.mail.bulkDelete.mutate({ ids: [threadId] });
+      await getFrontendApi().mail.bulkDelete({ ids: [threadId] });
       return { success: true, message: 'Email deleted' };
     } catch (error: any) {
       return { success: false, error: error.message };
@@ -147,7 +147,7 @@ export const toolExecutors = {
     console.log('params:', params);
 
     try {
-      await trpcClient.labels.create.mutate({
+      await getFrontendApi().labels.create({
         name: params.name,
         color: {
           backgroundColor: params.backgroundColor || '#1C2A41',
@@ -162,13 +162,13 @@ export const toolExecutors = {
   },
   applyLabel: async (params: any) => {
     try {
-      const labels = await trpcClient.labels.list.query();
+      const labels = await getFrontendApi().labels.list();
       const label = labels.find((label: any) => label.name === params.label);
       if (!label) {
         return { success: false, error: 'Label not found' };
       }
 
-      await trpcClient.mail.modifyLabels.mutate({
+      await getFrontendApi().mail.modifyLabels({
         threadId: params.threadIds,
         addLabels: [label.id],
         removeLabels: [],
@@ -189,14 +189,14 @@ export const toolExecutors = {
         };
       }
 
-      const thread = await trpcClient.mail.get.query({ id: threadId });
+      const thread = await getFrontendApi().mail.getThread({ id: threadId });
       const labels = thread.labels;
       const label = labels.find((label: any) => label.name === params.label);
       if (!label) {
         return { success: false, error: 'Label not found' };
       }
 
-      await trpcClient.mail.modifyLabels.mutate({
+      await getFrontendApi().mail.modifyLabels({
         threadId: params.threadIds,
         addLabels: [],
         removeLabels: [label.id],
@@ -209,7 +209,7 @@ export const toolExecutors = {
   searchEmails: async (params: any) => {
     try {
       // just a simple search for now
-      const result = await trpcClient.mail.listThreads.query({
+      const result = await getFrontendApi().mail.listThreads({
         q: params.question,
         folder: 'INBOX',
       });
@@ -241,7 +241,7 @@ export const toolExecutors = {
       };
     }
     try {
-      const thread = await trpcClient.mail.get.query({ id: threadId });
+      const thread = await getFrontendApi().mail.getThread({ id: threadId });
 
       const emailContent = thread.messages?.map((m: any) => m.body).join('\n\n') || '';
       const subject = thread.latest?.subject || 'No subject';
@@ -269,7 +269,7 @@ export const toolExecutors = {
 
       Please provide a focused answer to the user's question based on the email content above. If the question asks for a summary, provide a concise summary. If it asks for specific information, extract and provide just that information. Always base your response on the actual email content provided you can also do web search if needed.`;
 
-      const { text } = await trpcClient.ai.webSearch.mutate({
+      const { text } = await getFrontendApi().ai.webSearch({
         query: emailContextPrompt,
       });
 
@@ -294,7 +294,7 @@ export const toolExecutors = {
       }
 
       try {
-        const thread = await trpcClient.mail.get.query({ id: threadId });
+        const thread = await getFrontendApi().mail.getThread({ id: threadId });
 
         const emailContent = thread.messages?.map((m: any) => m.body).join('\n\n') || '';
         const subject = thread.latest?.subject || 'No subject';
@@ -322,7 +322,7 @@ export const toolExecutors = {
         2. Any key action items or decisions needed
         3. The urgency level`;
 
-        const { text } = await trpcClient.ai.webSearch.mutate({
+        const { text } = await getFrontendApi().ai.webSearch({
           query: emailSummaryPrompt,
         });
 

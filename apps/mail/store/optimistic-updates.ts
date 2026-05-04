@@ -29,7 +29,7 @@ export const getThreadOptimisticActions = (threadId: string) =>
   atom((get) => {
     const actions = get(optimisticActionsAtom);
     return Object.entries(actions)
-      .filter(([_, action]) => action.threadIds.includes(threadId))
+      .filter(([, action]) => action.threadIds.includes(threadId))
       .map(([id, action]) => ({ id, ...action }));
   });
 
@@ -45,6 +45,7 @@ export const addOptimisticActionAtom = atom(null, (get, set, action: OptimisticA
 
 export const removeOptimisticActionAtom = atom(null, (get, set, id: string) => {
   const currentActions = get(optimisticActionsAtom);
-  const { [id]: _, ...rest } = currentActions;
+  const { [id]: removed, ...rest } = currentActions;
+  void removed;
   set(optimisticActionsAtom, rest);
 });

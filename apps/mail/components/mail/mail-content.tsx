@@ -1,13 +1,47 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
-import { defaultUserSettings } from '@zero/server/schemas';
-import { useTRPC } from '@/providers/query-provider';
+import { defaultUserSettings } from '@/lib/domain/settings';
+import { getFrontendApi } from '@/lib/api/client';
+import { isFrontendOnlyDemo, resolveMailMode } from '@/lib/runtime/mail-mode';
+import { mailSettingsQueryKey, type ApiQueryContext } from '@/lib/api/query-options';
 import { getBrowserTimezone } from '@/lib/timezones';
 import { useSettings } from '@/hooks/use-settings';
 import { m } from '@/paraglide/messages';
 import { useTheme } from 'next-themes';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
+import { resolveMailHtml } from '@/lib/mail/resolve-mail-html';
+import { demoSetSettings } from '@/lib/demo/local-actions';
+
+export async function persistTrustedSender(params: {
+  senderEmail: string;
+  data?: { settings?: typeof defaultUserSettings };
+  isFrontendOnlyDemo: boolean;
+  saveUserSettings: (settings: typeof defaultUserSettings) => Promise<{ success?: boolean }>;
+  demoSetSettings: (settings: typeof defaultUserSettings) => Promise<unknown>;
+}) {
+  const existingSettings = params.data?.settings ?? {
+    ...defaultUserSettings,
+    timezone: getBrowserTimezone(),
+  };
+
+  const nextSettings = {
+    ...existingSettings,
+    trustedSenders: Array.from(new Set([...(existingSettings.trustedSenders ?? []), params.senderEmail])),
+  };
+
+  if (params.isFrontendOnlyDemo) {
+    await params.demoSetSettings(nextSettings);
+    return 'demo';
+  }
+
+  const { success } = await params.saveUserSettings(nextSettings);
+  if (!success) {
+    throw new Error('Failed to trust sender');
+  }
+
+  return 'backend';
+}
 
 interface MailContentProps {
   id: string;
@@ -18,6 +52,7 @@ interface MailContentProps {
 export function MailContent({ id, html, senderEmail }: MailContentProps) {
   const { data, refetch } = useSettings();
   const queryClient = useQueryClient();
+  const frontendOnlyDemo = isFrontendOnlyDemo();
   const isTrustedSender = useMemo(
     () => data?.settings?.externalImages || data?.settings?.trustedSenders?.includes(senderEmail),
     [data?.settings, senderEmail],
@@ -27,32 +62,30 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const shadowRootRef = useRef<ShadowRoot | null>(null);
   const { resolvedTheme } = useTheme();
-  const trpc = useTRPC();
+  const queryCtx = useMemo<ApiQueryContext>(
+    () => ({ mode: resolveMailMode(), accountId: null }),
+    [],
+  );
 
   const { mutateAsync: saveUserSettings } = useMutation({
-    ...trpc.settings.save.mutationOptions(),
+    mutationFn: (input: unknown) => getFrontendApi().settings.save(input),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['settings'] });
+      queryClient.invalidateQueries({ queryKey: mailSettingsQueryKey(queryCtx) });
     },
   });
 
   const { mutateAsync: trustSender } = useMutation({
     mutationFn: async () => {
-      const existingSettings = data?.settings ?? {
-        ...defaultUserSettings,
-        timezone: getBrowserTimezone(),
-      };
-
-      const { success } = await saveUserSettings({
-        ...existingSettings,
-        trustedSenders: data?.settings?.trustedSenders
-          ? data.settings.trustedSenders.concat(senderEmail)
-          : [senderEmail],
+      await persistTrustedSender({
+        senderEmail,
+        data: data ?? undefined,
+        isFrontendOnlyDemo: frontendOnlyDemo,
+        saveUserSettings: (nextSettings: typeof defaultUserSettings) =>
+          saveUserSettings({
+            ...nextSettings,
+          }),
+        demoSetSettings,
       });
-
-      if (!success) {
-        throw new Error('Failed to trust sender');
-      }
     },
     onSuccess: () => {
       refetch();
@@ -62,11 +95,15 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
     },
   });
 
-  const { mutateAsync: processEmailContent } = useMutation(
-    trpc.mail.processEmailContent.mutationOptions(),
-  );
+  const { mutateAsync: processEmailContent } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().mail.processEmailContent(input),
+  });
 
-  const { data: processedData } = useQuery({
+  const {
+    data: processedData,
+    isError: isProcessEmailError,
+    isFetched: hasProcessedEmailResponse,
+  } = useQuery({
     queryKey: ['email-content', id, isTrustedSender || temporaryImagesEnabled, resolvedTheme],
     queryFn: async () => {
       const result = await processEmailContent({
@@ -84,7 +121,29 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
     gcTime: 60 * 60 * 1000,
     refetchOnWindowFocus: false,
     refetchOnMount: false,
+    enabled: !frontendOnlyDemo && Boolean(html),
   });
+
+  const resolvedHtml = useMemo(() => {
+    if (processedData?.html) {
+      return processedData.html;
+    }
+
+    if (frontendOnlyDemo || isProcessEmailError || hasProcessedEmailResponse) {
+      return resolveMailHtml({
+        rawHtml: html,
+        processedHtml: processedData?.html,
+      });
+    }
+
+    return null;
+  }, [
+    frontendOnlyDemo,
+    hasProcessedEmailResponse,
+    html,
+    isProcessEmailError,
+    processedData?.html,
+  ]);
 
   useEffect(() => {
     if (processedData) {
@@ -101,10 +160,10 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
   }, []);
 
   useEffect(() => {
-    if (!shadowRootRef.current || !processedData) return;
+    if (!shadowRootRef.current || !resolvedHtml) return;
 
-    shadowRootRef.current.innerHTML = processedData.html;
-  }, [processedData]);
+    shadowRootRef.current.innerHTML = resolvedHtml;
+  }, [resolvedHtml]);
 
   const handleImageError = useCallback(
     (e: Event) => {
@@ -146,7 +205,7 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
       root.removeEventListener('error', handleImageError, true);
       root.removeEventListener('click', handleClick);
     };
-  }, [processedData, handleImageError]);
+  }, [resolvedHtml, handleImageError]);
 
   useEffect(() => {
     if (isTrustedSender || temporaryImagesEnabled) {

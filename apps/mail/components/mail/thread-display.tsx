@@ -6,7 +6,6 @@ import {
   Mail,
   Printer,
   Reply,
-  Sparkles,
   Star,
   ThreeDots,
   Trash,
@@ -20,48 +19,61 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { useOptimisticThreadState } from '@/components/mail/optimistic-thread-state';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useOptimisticActions } from '@/hooks/use-optimistic-actions';
 import { focusedIndexAtom } from '@/hooks/use-mail-navigation';
 import { type ThreadDestination } from '@/lib/thread-actions';
 import { handleUnsubscribe } from '@/lib/email-utils.client';
 import { useThread, useThreads } from '@/hooks/use-threads';
-import { useAISidebar } from '@/components/ui/ai-sidebar';
 import { EmptyStateIcon } from '../icons/empty-state-svg';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import type { ParsedMessage, Attachment } from '@/types';
+import type { ParsedMessage, Attachment, Sender } from '@/types';
 import { useAnimations } from '@/hooks/use-animations';
 import { AnimatePresence, motion } from 'motion/react';
 import { MailDisplaySkeleton } from './mail-skeleton';
-import { useTRPC } from '@/providers/query-provider';
-import { useMutation } from '@tanstack/react-query';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { Button } from '@/components/ui/button';
 import { cleanHtml } from '@/lib/email-utils';
+import { formatMailboxPlain } from '@/lib/mail/mailbox-format';
 import ReplyCompose from './reply-composer';
 import { NotesPanel } from './note-panel';
-import { cn, FOLDERS } from '@/lib/utils';
+import { ThreadAiMailsSection } from '@/components/mail/thread-ai-mails-section';
+import { ThreadDraftCard } from '@/components/mail/thread-draft-card';
+import { buildThreadDraftViewModel } from '@/lib/mail/thread-draft-view-model';
+import { cn, FOLDERS, formatDateWithWeekdayAndTime } from '@/lib/utils';
 import { m } from '@/paraglide/messages';
 import MailDisplay from './mail-display';
 import { useParams } from 'react-router';
 import { Inbox } from 'lucide-react';
-import { useQueryState } from 'nuqs';
+import { parseAsString, useQueryState, useQueryStates } from 'nuqs';
 import { format } from 'date-fns';
 import { useAtom } from 'jotai';
 import { toast } from 'sonner';
+import { resolveImportantState } from '@/lib/mail/important-ui';
+import { isFrontendOnlyDemo } from '@/lib/runtime/mail-mode';
+import {
+  clearReplyComposeContext,
+  openReplyComposeContext,
+  type ReplyComposeMode,
+} from '@/lib/mail/reply-compose-context';
 
 const formatFileSize = (size: number) => {
   const sizeInMB = (size / (1024 * 1024)).toFixed(2);
   return sizeInMB === '0.00' ? '' : `${sizeInMB} MB`;
 };
 
-const cleanNameDisplay = (name?: string) => {
-  if (!name) return '';
-  return name.replace(/["<>]/g, '');
-};
+const escapePrintHtml = (value: string) =>
+  value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+const formatMailboxListForPrint = (mailboxes?: Sender[] | null) =>
+  (mailboxes || [])
+    .map(formatMailboxPlain)
+    .filter(Boolean)
+    .map(escapePrintHtml)
+    .join('; ');
 
 interface ThreadDisplayProps {
-  threadParam?: any;
+  threadParam?: string;
   onClose?: () => void;
   isMobile?: boolean;
   messages?: ParsedMessage[];
@@ -118,7 +130,7 @@ function ThreadActionButton({
   disabled = false,
   className,
 }: {
-  icon: React.ComponentType<React.ComponentPropsWithRef<any>> & {
+  icon: React.ComponentType<{ className?: string }> & {
     startAnimation?: () => void;
     stopAnimation?: () => void;
   };
@@ -127,7 +139,7 @@ function ThreadActionButton({
   disabled?: boolean;
   className?: string;
 }) {
-  const iconRef = useRef<any>(null);
+  const iconRef = useRef<{ startAnimation?: () => void; stopAnimation?: () => void } | null>(null);
 
   return (
     <TooltipProvider delayDuration={0}>
@@ -153,15 +165,20 @@ function ThreadActionButton({
 const isFullscreen = false;
 export function ThreadDisplay() {
   const isMobile = useIsMobile();
-  const { toggleOpen: toggleAISidebar } = useAISidebar();
   const params = useParams<{ folder: string }>();
 
   const folder = params?.folder ?? 'inbox';
   const [id, setThreadId] = useQueryState('threadId');
-  const { data: emailData, isLoading, refetch: refetchThread } = useThread(id ?? null);
+  const {
+    data: emailData,
+    isLoading,
+    isFetching,
+    isThreadDataMismatch,
+    refetch: refetchThread,
+    latestDraft,
+  } = useThread(id ?? null);
   const [, items] = useThreads();
   const [isStarred, setIsStarred] = useState(false);
-  const [isImportant, setIsImportant] = useState(false);
 
   const [navigationDirection, setNavigationDirection] = useState<'previous' | 'next' | null>(null);
 
@@ -181,14 +198,79 @@ export function ThreadDisplay() {
   const [mode, setMode] = useQueryState('mode');
   const [activeReplyId, setActiveReplyId] = useQueryState('activeReplyId');
   const [, setDraftId] = useQueryState('draftId');
+  const [, setComposeState] = useQueryStates({
+    mode: parseAsString,
+    activeReplyId: parseAsString,
+    draftId: parseAsString,
+  });
+
+  const clearComposeContext = useCallback(() => {
+    void clearReplyComposeContext({
+      setMode,
+      setActiveReplyId,
+      setDraftId,
+      setComposeState,
+    });
+  }, [setMode, setActiveReplyId, setDraftId, setComposeState]);
+
+  const openComposeForLatestMessage = useCallback(
+    (nextMode: ReplyComposeMode) => {
+      void openReplyComposeContext({
+        mode: nextMode,
+        messageId: emailData?.latest?.id ?? null,
+        setMode,
+        setActiveReplyId,
+        setDraftId,
+        setComposeState,
+      });
+    },
+    [emailData?.latest?.id, setMode, setActiveReplyId, setDraftId, setComposeState],
+  );
 
   const [focusedIndex, setFocusedIndex] = useAtom(focusedIndexAtom);
-  const trpc = useTRPC();
-  const { mutateAsync: toggleImportant } = useMutation(trpc.mail.toggleImportant.mutationOptions());
+  const frontendOnlyDemo = isFrontendOnlyDemo();
+  const {
+    optimisticMoveThreadsTo,
+    optimisticToggleStar,
+    optimisticToggleImportant,
+    optimisticDeleteDraft,
+  } = useOptimisticActions();
   const [, setIsComposeOpen] = useQueryState('isComposeOpen');
+  const draftRowOptimistic = useOptimisticThreadState(
+    latestDraft?.isDraft ? latestDraft.id : '__thread_draft_none__',
+  );
+  const draftVm = useMemo(() => {
+    if (draftRowOptimistic.shouldHide) return null;
+    // Hide draft preview while any thread composer is open (reply / reply all / forward / continue draft).
+    if (mode) return null;
+    return buildThreadDraftViewModel(latestDraft as ParsedMessage | undefined);
+  }, [latestDraft, draftRowOptimistic.shouldHide, mode]);
+
+  const openDraftForEdit = useCallback(() => {
+    if (!latestDraft?.id || !emailData?.latest?.id) return;
+    void setComposeState({
+      mode: 'reply',
+      activeReplyId: emailData.latest.id,
+      draftId: latestDraft.id,
+    });
+  }, [latestDraft?.id, emailData?.latest?.id, setComposeState]);
+
+  const handleDeleteThreadDraft = useCallback(() => {
+    if (!latestDraft?.id) return;
+    optimisticDeleteDraft(latestDraft.id);
+  }, [latestDraft?.id, optimisticDeleteDraft]);
 
   // Get optimistic state for this thread
   const optimisticState = useOptimisticThreadState(id ?? '');
+  const isImportant = useMemo(
+    () =>
+      resolveImportantState({
+        optimisticImportant: optimisticState.optimisticImportant,
+        latestTags: emailData?.latest?.tags,
+        messages: emailData?.messages,
+      }),
+    [optimisticState.optimisticImportant, emailData?.latest?.tags, emailData?.messages],
+  );
 
   const handleNext = useCallback(() => {
     if (!id || !items.length || focusedIndex === null) return setThreadId(null);
@@ -198,9 +280,7 @@ export function ThreadDisplay() {
 
       const nextThread = items[nextIndex];
       if (nextThread) {
-        setMode(null);
-        setActiveReplyId(null);
-        setDraftId(null);
+        clearComposeContext();
         setThreadId(nextThread.id);
         setFocusedIndex(focusedIndex + 1);
         if (animationsEnabled) {
@@ -214,9 +294,7 @@ export function ThreadDisplay() {
     focusedIndex,
     setThreadId,
     setFocusedIndex,
-    setMode,
-    setActiveReplyId,
-    setDraftId,
+    clearComposeContext,
     animationsEnabled,
   ]);
 
@@ -233,28 +311,20 @@ export function ThreadDisplay() {
   const isInBin = folder === FOLDERS.BIN;
   const handleClose = useCallback(() => {
     setThreadId(null);
-    setMode(null);
-    setActiveReplyId(null);
-    setDraftId(null);
-  }, [setThreadId, setMode, setActiveReplyId, setDraftId]);
-
-  const { optimisticMoveThreadsTo } = useOptimisticActions();
+    clearComposeContext();
+  }, [setThreadId, clearComposeContext]);
 
   const moveThreadTo = useCallback(
     async (destination: ThreadDestination) => {
       if (!id) return;
 
-      setMode(null);
-      setActiveReplyId(null);
-      setDraftId(null);
+      clearComposeContext();
 
       optimisticMoveThreadsTo([id], folder, destination);
       handleNext();
     },
-    [id, folder, optimisticMoveThreadsTo, handleNext, setMode, setActiveReplyId, setDraftId],
+    [id, folder, optimisticMoveThreadsTo, handleNext, clearComposeContext],
   );
-
-  const { optimisticToggleStar } = useOptimisticActions();
 
   const handleToggleStar = useCallback(async () => {
     if (!emailData || !id) return;
@@ -503,8 +573,7 @@ export function ThreadDisplay() {
                   <div class="meta-row">
                     <span class="meta-label">From:</span>
                     <span class="meta-value">
-                      ${cleanNameDisplay(message.sender?.name)}
-                      ${message.sender?.email ? `<${message.sender.email}>` : ''}
+                      ${escapePrintHtml(formatMailboxPlain(message.sender))}
                     </span>
                   </div>
 
@@ -515,12 +584,7 @@ export function ThreadDisplay() {
                     <div class="meta-row">
                       <span class="meta-label">To:</span>
                       <span class="meta-value">
-                        ${message.to
-                          .map(
-                            (recipient) =>
-                              `${cleanNameDisplay(recipient.name)} <${recipient.email}>`,
-                          )
-                          .join(', ')}
+                        ${formatMailboxListForPrint(message.to)}
                       </span>
                     </div>
                   `
@@ -534,12 +598,7 @@ export function ThreadDisplay() {
                     <div class="meta-row">
                       <span class="meta-label">CC:</span>
                       <span class="meta-value">
-                        ${message.cc
-                          .map(
-                            (recipient) =>
-                              `${cleanNameDisplay(recipient.name)} <${recipient.email}>`,
-                          )
-                          .join(', ')}
+                        ${formatMailboxListForPrint(message.cc)}
                       </span>
                     </div>
                   `
@@ -553,12 +612,7 @@ export function ThreadDisplay() {
                     <div class="meta-row">
                       <span class="meta-label">BCC:</span>
                       <span class="meta-value">
-                        ${message.bcc
-                          .map(
-                            (recipient) =>
-                              `${cleanNameDisplay(recipient.name)} <${recipient.email}>`,
-                          )
-                          .join(', ')}
+                        ${formatMailboxListForPrint(message.bcc)}
                       </span>
                     </div>
                   `
@@ -649,22 +703,18 @@ export function ThreadDisplay() {
   };
 
   const handleToggleImportant = useCallback(async () => {
-    if (!emailData || !id) return;
-    await toggleImportant({ ids: [id] });
-    await refetchThread();
-    if (isImportant) {
-      toast.success(m['common.mail.markedAsImportant']());
-    } else {
-      toast.error('Failed to mark as important');
+    if (!emailData || !id || isImportant) return;
+    optimisticToggleImportant([id], true);
+    if (!frontendOnlyDemo) {
+      await refetchThread();
     }
-  }, [emailData, id]);
+  }, [emailData, id, isImportant, optimisticToggleImportant, frontendOnlyDemo, refetchThread]);
 
   // Set initial star state based on email data
   useEffect(() => {
     if (emailData?.latest?.tags) {
       // Check if any tag has the name 'STARRED'
       setIsStarred(emailData.latest.tags.some((tag) => tag.name === 'STARRED'));
-      setIsImportant(emailData.latest.tags.some((tag) => tag.name === 'IMPORTANT'));
     }
   }, [emailData?.latest?.tags]);
 
@@ -705,6 +755,29 @@ export function ThreadDisplay() {
     setNavigationDirection(null);
   }, [setNavigationDirection]);
 
+  const shouldShowSkeleton = !emailData || isLoading || (isFetching && isThreadDataMismatch);
+
+  const threadDraftSection = draftVm ? (
+    <ThreadAiMailsSection>
+      <ThreadDraftCard
+        subject={draftVm.subject}
+        bodyPreview={draftVm.bodyPreview}
+        savedAtLabel={
+          m['common.threadDisplay.draftSavedPrefix']() +
+          formatDateWithWeekdayAndTime(draftVm.savedAtIso)
+        }
+        draftBadge={m['common.threadDisplay.draftBadge']()}
+        unsentNotice={m['common.threadDisplay.draftUnsentNotice']()}
+        emptyPreviewLabel={m['common.threadDisplay.draftEmptyPreview']()}
+        editLabel={m['common.threadDisplay.continueDraft']()}
+        deleteLabel={m['common.actions.Bin']()}
+        moreLabel={m['common.threadDisplay.draftMoreOptions']()}
+        onEdit={openDraftForEdit}
+        onDelete={handleDeleteThreadDraft}
+      />
+    </ThreadAiMailsSection>
+  ) : null;
+
   return (
     <div
       className={cn(
@@ -725,22 +798,11 @@ export function ThreadDisplay() {
             <div className="flex flex-col items-center justify-center gap-2 text-center">
               <EmptyStateIcon width={200} height={200} />
               <div className="mt-4">
-                <p className="text-lg">It's empty here</p>
+                <p className="text-lg">It&apos;s empty here</p>
                 <p className="text-md text-muted-foreground dark:text-white/50">
                   Choose an email to view details
                 </p>
-                <div className="mt-4 grid grid-cols-1 gap-2 xl:grid-cols-2">
-                  <button
-                    onClick={toggleAISidebar}
-                    className="inline-flex h-7 items-center justify-center gap-0.5 overflow-hidden rounded-lg border bg-white px-2 dark:border-none dark:bg-[#313131] hover:bg-gray-100 dark:hover:bg-[#404040] transition-colors cursor-pointer"
-                  >
-                    <Sparkles className="mr-1 h-3.5 w-3.5 fill-[#959595]" />
-                    <div className="flex items-center justify-center gap-2.5 px-0.5">
-                      <div className="text-base-gray-950 justify-start text-sm leading-none">
-                        Zero chat
-                      </div>
-                    </div>
-                  </button>
+                <div className="mt-4">
                   <button
                     onClick={() => setIsComposeOpen('true')}
                     className="inline-flex h-7 items-center justify-center gap-0.5 overflow-hidden rounded-lg border bg-white px-2 dark:border-none dark:bg-[#313131] hover:bg-gray-100 dark:hover:bg-[#404040] transition-colors cursor-pointer"
@@ -756,7 +818,7 @@ export function ThreadDisplay() {
               </div>
             </div>
           </div>
-        ) : !emailData || isLoading ? (
+        ) : shouldShowSkeleton ? (
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
             <ScrollArea className="h-full flex-1" type="auto">
               <div className="pb-4">
@@ -799,8 +861,7 @@ export function ThreadDisplay() {
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    setMode('replyAll');
-                    setActiveReplyId(emailData?.latest?.id ?? '');
+                    openComposeForLatestMessage('replyAll');
                   }}
                   className="inline-flex h-7 items-center justify-center gap-1 overflow-hidden rounded-lg border bg-white px-1.5 dark:border-none dark:bg-[#313131] hover:bg-gray-100 dark:hover:bg-[#404040] transition-colors cursor-pointer"
                 >
@@ -968,6 +1029,7 @@ export function ThreadDisplay() {
                       mode={mode || undefined}
                       activeReplyId={activeReplyId || undefined}
                       isMobile={isMobile}
+                      trailing={threadDraftSection}
                     />
                   </motion.div>
                 </AnimatePresence>
@@ -980,6 +1042,7 @@ export function ThreadDisplay() {
                   mode={mode || undefined}
                   activeReplyId={activeReplyId || undefined}
                   isMobile={isMobile}
+                  trailing={threadDraftSection}
                 />
               )}
 
@@ -1009,6 +1072,7 @@ interface MessageListProps {
   mode?: string;
   activeReplyId?: string;
   isMobile: boolean;
+  trailing?: ReactNode;
 }
 
 const MessageList = ({
@@ -1019,6 +1083,7 @@ const MessageList = ({
   mode,
   activeReplyId,
   isMobile,
+  trailing,
 }: MessageListProps) => (
   <ScrollArea className={cn('flex-1', isMobile ? 'h-[calc(100%-1px)]' : 'h-full')} type="auto">
     <div className="pb-4">
@@ -1048,6 +1113,11 @@ const MessageList = ({
           </div>
         );
       })}
+      {trailing ? (
+        <div className={cn('duration-200', (messages?.length ?? 0) > 0 && 'border-border border-t')}>
+          {trailing}
+        </div>
+      ) : null}
     </div>
   </ScrollArea>
 );

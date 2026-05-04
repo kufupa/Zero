@@ -1,24 +1,35 @@
-import { createAuthClient } from 'better-auth/client';
-
-const authClient = createAuthClient({
-  baseURL: import.meta.env.VITE_PUBLIC_BACKEND_URL,
-  fetchOptions: {
-    credentials: 'include',
-  },
-  plugins: [],
-});
+import { authClient } from './auth/better-auth-instance';
+import { getDemoSession } from './demo/session';
+import { resolveMailMode } from './runtime/mail-mode';
 
 export const authProxy = {
   api: {
     getSession: async ({ headers }: { headers: Headers }) => {
-      const session = await authClient.getSession({
-        fetchOptions: { headers, credentials: 'include' },
-      });
-      if (session.error) {
-        console.error(`Failed to get session: ${session.error}`, session);
+      if (resolveMailMode() === 'demo') {
+        return getDemoSession();
+      }
+      if (resolveMailMode() === 'hosted') {
         return null;
       }
-      return session.data;
+
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5000);
+
+      try {
+        const session = await authClient.getSession({
+          fetchOptions: { headers, credentials: 'include', signal: controller.signal },
+        });
+        if (session.error) {
+          console.error(`Failed to get session: ${session.error}`, session);
+          return null;
+        }
+        return session.data;
+      } catch (error) {
+        console.error('Failed to fetch session', error);
+        return null;
+      } finally {
+        clearTimeout(timeout);
+      }
     },
   },
 };

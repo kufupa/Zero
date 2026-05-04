@@ -25,7 +25,9 @@ import { useLoading } from '../context/loading-context';
 import { signOut, useSession } from '@/lib/auth-client';
 import { AddConnectionDialog } from '../connection/add';
 import { CircleCheck, ThreeDots } from '../icons/icons';
-import { useTRPC } from '@/providers/query-provider';
+import { getFrontendApi } from '@/lib/api/client';
+import { mailListThreadsPrefixKey } from '@/lib/api/query-options';
+import { isFrontendOnlyDemo, resolveMailMode } from '@/lib/runtime/mail-mode';
 import { useSidebar } from '@/components/ui/sidebar';
 import { SunIcon } from '../icons/animated/sun';
 import { clear as idbClear } from 'idb-keyval';
@@ -38,6 +40,19 @@ import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 
 const bytesToMB = (bytes: number) => (bytes / 1024 / 1024).toFixed(2);
+
+export async function runForceSyncAction(params: {
+  isFrontendOnlyDemo: boolean;
+  runForceSync: () => Promise<unknown>;
+  onBlocked: () => void;
+}) {
+  if (params.isFrontendOnlyDemo) {
+    params.onBlocked();
+    return;
+  }
+
+  await params.runForceSync();
+}
 
 interface SyncingStatusIndicatorProps {
   isSyncing: boolean;
@@ -90,18 +105,26 @@ export function NavUser() {
   const [isRendered, setIsRendered] = useState(false);
   const { theme, resolvedTheme, setTheme } = useTheme();
   const { state } = useSidebar();
-  const trpc = useTRPC();
   const [, setThreadId] = useQueryState('threadId');
-  const { mutateAsync: setDefaultConnection } = useMutation(
-    trpc.connections.setDefault.mutationOptions(),
-  );
-  const { mutateAsync: handleForceSync } = useMutation(trpc.mail.forceSync.mutationOptions());
+  const { mutateAsync: setDefaultConnection } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().connections.setDefault(input),
+  });
+  const { mutateAsync: handleForceSync } = useMutation({
+    mutationFn: () => getFrontendApi().mail.forceSync(),
+  });
   const pathname = useLocation().pathname;
   const queryClient = useQueryClient();
   const { data: activeConnection, refetch: refetchActiveConnection } = useActiveConnection();
   const [category] = useQueryState('category', { defaultValue: 'All Mail' });
   const { setLoading } = useLoading();
   const [{ isSyncing, syncingFolders, storageSize, shards }] = useDoState();
+  const frontendOnlyDemo = isFrontendOnlyDemo();
+  const mailThreadsPrefix = useMemo(
+    () => mailListThreadsPrefixKey({ mode: resolveMailMode(), accountId: null }),
+    [],
+  );
+  const showLogout = !frontendOnlyDemo;
+  const allowConnectionManagement = false;
 
   const getSettingsHref = useCallback(() => {
     const currentPath = category
@@ -126,6 +149,10 @@ export function NavUser() {
   useEffect(() => setIsRendered(true), []);
 
   const handleAccountSwitch = (connectionId: string) => async () => {
+    if (frontendOnlyDemo) {
+      toast.info('This action is not available in demo mode');
+      return;
+    }
     if (connectionId === activeConnection?.id) return;
 
     try {
@@ -133,7 +160,7 @@ export function NavUser() {
       setThreadId(null);
       await setDefaultConnection({ connectionId });
       queryClient.clear();
-      await queryClient.refetchQueries({ queryKey: trpc.mail.listThreads.infiniteQueryKey() });
+      await queryClient.refetchQueries({ queryKey: mailThreadsPrefix });
     } catch (error) {
       console.error('Error switching accounts:', error);
       toast.error(m['common.navUser.failedToSwitchAccount']());
@@ -144,16 +171,35 @@ export function NavUser() {
     }
   };
 
-  const handleLogout = async () => {
-    toast.promise(signOut(), {
-      loading: 'Signing out...',
-      success: () => 'Signed out successfully!',
-      error: 'Error signing out',
-      async finally() {
-        // await handleClearCache();
-        window.location.href = '/login';
+  const handleForceSyncAction = async () => {
+    await runForceSyncAction({
+      isFrontendOnlyDemo: frontendOnlyDemo,
+      runForceSync: handleForceSync,
+      onBlocked: () => {
+        toast.info('This action is not available in demo mode');
       },
     });
+  };
+
+  const handleLogout = async () => {
+    if (!showLogout) {
+      toast.info('This action is not available in demo mode');
+      return;
+    }
+    try {
+      await toast.promise(
+        signOut(),
+        {
+          loading: 'Signing out...',
+          success: () => 'Signed out successfully!',
+          error: 'Error signing out',
+        },
+      );
+      window.location.href = '/login';
+    } catch (error) {
+      console.error('Failed to sign out:', error);
+      toast.error('Error signing out');
+    }
   };
 
   const otherConnections = useMemo(() => {
@@ -237,49 +283,6 @@ export function NavUser() {
                 )}
                 <div className="space-y-1">
                   <>
-                    <p className="text-muted-foreground px-2 py-1 text-[11px] font-medium">
-                      {m['common.navUser.accounts']()}
-                    </p>
-
-                    {data?.connections
-                      ?.filter((connection) => connection.id !== activeConnection?.id)
-                      .map((connection) => (
-                        <DropdownMenuItem
-                          key={connection.id}
-                          onClick={handleAccountSwitch(connection.id)}
-                          className="flex cursor-pointer items-center gap-3 py-1"
-                        >
-                          <Avatar className="size-7 rounded-lg">
-                            <AvatarImage
-                              className="rounded-lg"
-                              src={connection.picture || undefined}
-                              alt={connection.name || connection.email}
-                            />
-                            <AvatarFallback className="rounded-lg text-[10px]">
-                              {(connection.name || connection.email)
-                                .split(' ')
-                                .map((n) => n[0])
-                                .join('')
-                                .toUpperCase()
-                                .slice(0, 2)}
-                            </AvatarFallback>
-                          </Avatar>
-                          <div className="-space-y-0.5">
-                            <p className="text-[12px]">{connection.name || connection.email}</p>
-                            {connection.name && (
-                              <p className="text-muted-foreground text-[11px]">
-                                {connection.email.length > 25
-                                  ? `${connection.email.slice(0, 25)}...`
-                                  : connection.email}
-                              </p>
-                            )}
-                          </div>
-                        </DropdownMenuItem>
-                      ))}
-                    <AddConnectionDialog />
-
-                    <DropdownMenuSeparator className="my-1" />
-
                     <DropdownMenuItem asChild>
                       <a href={getSettingsHref()} className="cursor-pointer">
                         <div className="flex items-center gap-2">
@@ -305,12 +308,14 @@ export function NavUser() {
                       <p className="text-[13px] opacity-60">Clear Local Cache</p>
                     </div>
                   </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => handleForceSync()}>
-                    <div className="flex items-center gap-2">
-                      <RefreshCcw size={16} className="opacity-60" />
-                      <p className="text-[13px] opacity-60">Force re-sync</p>
-                    </div>
-                  </DropdownMenuItem>
+                  {allowConnectionManagement && (
+                    <DropdownMenuItem onClick={() => handleForceSyncAction()}>
+                      <div className="flex items-center gap-2">
+                        <RefreshCcw size={16} className="opacity-60" />
+                        <p className="text-[13px] opacity-60">Force re-sync</p>
+                      </div>
+                    </DropdownMenuItem>
+                  )}
                   <SyncingStatusIndicator
                     isSyncing={isSyncing}
                     storageSize={storageSize}
@@ -347,12 +352,14 @@ export function NavUser() {
                       </div>
                     </a>
                   </DropdownMenuItem>
-                  <DropdownMenuItem className="cursor-pointer" onSelect={() => handleLogout()}>
-                    <div className="flex items-center gap-2">
-                      <LogOut size={16} className="opacity-60" />
-                      <p className="text-[13px] opacity-60">{m['common.actions.logout']()}</p>
-                    </div>
-                  </DropdownMenuItem>
+                  {showLogout && (
+                    <DropdownMenuItem className="cursor-pointer" onSelect={() => handleLogout()}>
+                      <div className="flex items-center gap-2">
+                        <LogOut size={16} className="opacity-60" />
+                        <p className="text-[13px] opacity-60">{m['common.actions.logout']()}</p>
+                      </div>
+                    </DropdownMenuItem>
+                  )}
                   <DropdownMenuSeparator className="mt-1" />
                   <div className="text-muted-foreground/60 flex items-center justify-center gap-1 px-2 pb-2 pt-1 text-[10px]">
                     <a href="/privacy" className="hover:underline">
@@ -368,154 +375,20 @@ export function NavUser() {
             </DropdownMenu>
           )
         ) : (
-          <div className="flex w-full items-center justify-between">
-            <div className="flex items-center gap-2">
-              {data && activeAccount ? (
-                <div
-                  key={activeAccount.id}
-                  onClick={handleAccountSwitch(activeAccount.id)}
-                  className={`flex cursor-pointer items-center ${
-                    activeAccount.id === activeConnection?.id && data.connections.length > 1
-                      ? 'outline-mainBlue rounded-[5px] outline outline-2'
-                      : ''
-                  }`}
-                >
-                  <div className="relative">
-                    <Avatar className="size-7 rounded-[5px]">
-                      <AvatarImage
-                        className="rounded-[5px]"
-                        src={activeAccount.picture || undefined}
-                        alt={activeAccount.name || activeAccount.email}
-                      />
-                      <AvatarFallback className="rounded-[5px] text-[10px]">
-                        {(activeAccount.name || activeAccount.email)
-                          .split(' ')
-                          .map((n) => n[0])
-                          .join('')
-                          .toUpperCase()
-                          .slice(0, 2)}
-                      </AvatarFallback>
-                    </Avatar>
-                    {activeAccount.id === activeConnection?.id && data.connections.length > 1 && (
-                      <CircleCheck className="fill-mainBlue absolute -bottom-2 -right-2 size-4 rounded-full bg-white dark:bg-[#141414]" />
-                    )}
-                  </div>
-                </div>
-              ) : (
-                <div className="flex cursor-pointer items-center">
-                  <div className="relative">
-                    <div className="bg-muted size-6 animate-pulse rounded-[5px]" />
-                  </div>
-                </div>
-              )}
-              {otherConnections.slice(0, 2).map((connection) => (
-                <Tooltip key={connection.id}>
-                  <TooltipTrigger asChild>
-                    <div
-                      onClick={handleAccountSwitch(connection.id)}
-                      className={`flex cursor-pointer items-center ${
-                        connection.id === activeConnection?.id && otherConnections.length > 1
-                          ? 'outline-mainBlue rounded-[5px] outline outline-2'
-                          : ''
-                      }`}
-                    >
-                      <div className="relative">
-                        <Avatar className="size-7 rounded-[5px]">
-                          <AvatarImage
-                            className="rounded-[5px]"
-                            src={connection.picture || undefined}
-                            alt={connection.name || connection.email}
-                          />
-                          <AvatarFallback className="rounded-[5px] text-[10px]">
-                            {(connection.name || connection.email)
-                              .split(' ')
-                              .map((n) => n[0])
-                              .join('')
-                              .toUpperCase()
-                              .slice(0, 2)}
-                          </AvatarFallback>
-                        </Avatar>
-                        {connection.id === activeConnection?.id && otherConnections.length > 1 && (
-                          <CircleCheck className="fill-mainBlue absolute -bottom-2 -right-2 size-4 rounded-full bg-white dark:bg-black" />
-                        )}
-                      </div>
-                    </div>
-                  </TooltipTrigger>
-                  <TooltipContent className="text-muted-foreground text-xs">
-                    {connection.email}
-                  </TooltipContent>
-                </Tooltip>
-              ))}
-
-              {otherConnections.length > 3 && (
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <button className="hover:bg-muted flex h-7 w-7 cursor-pointer items-center justify-center rounded-[5px]">
-                      <span className="text-[10px]">+{otherConnections.length - 3}</span>
-                    </button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent
-                    className="ml-3 min-w-56 bg-white font-medium dark:bg-[#131313]"
-                    align="end"
-                    side={'bottom'}
-                    sideOffset={8}
-                  >
-                    {otherConnections.slice(3).map((connection) => (
-                      <DropdownMenuItem
-                        key={connection.id}
-                        onClick={handleAccountSwitch(connection.id)}
-                        className="flex cursor-pointer items-center gap-3 py-1"
-                      >
-                        <Avatar className="size-7 rounded-lg">
-                          <AvatarImage
-                            className="rounded-lg"
-                            src={connection.picture || undefined}
-                            alt={connection.name || connection.email}
-                          />
-                          <AvatarFallback className="rounded-lg text-[10px]">
-                            {(connection.name || connection.email)
-                              .split(' ')
-                              .map((n) => n[0])
-                              .join('')
-                              .toUpperCase()
-                              .slice(0, 2)}
-                          </AvatarFallback>
-                        </Avatar>
-                        <div className="-space-y-0.5">
-                          <p className="text-[12px]">{connection.name || connection.email}</p>
-                          {connection.name && (
-                            <p className="text-muted-foreground text-[11px]">
-                              {connection.email.length > 25
-                                ? `${connection.email.slice(0, 25)}...`
-                                : connection.email}
-                            </p>
-                          )}
-                        </div>
-                      </DropdownMenuItem>
-                    ))}
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              )}
-
-              <AddConnectionDialog>
-                <Button className="hover:bg-offsetLight/80 dark:hover:bg-offsetDark/80 flex h-7 w-7 cursor-pointer items-center justify-center rounded-[5px] border border-dashed bg-transparent px-0 text-black dark:bg-[#262626] dark:text-[#929292]">
-                  <Plus className="size-4" />
-                </Button>
-              </AddConnectionDialog>
-            </div>
-
-            <div className="flex items-center justify-center gap-1">
-              {/* {isSessionPending ? null : !session.user.phoneNumberVerified ? (
+          <div className="flex w-full flex-col gap-2">
+            <div className="flex w-full items-center justify-between gap-2">
+              <div className="flex shrink-0 items-center justify-center">
+                {/* {isSessionPending ? null : !session.user.phoneNumberVerified ? (
                 <SetupInboxDialog />
               ) : (
                 <CallInboxDialog />
               )} */}
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" className={cn('md:h-fit md:px-2')}>
-                    <ThreeDots className="fill-iconLight dark:fill-iconDark" />
-                  </Button>
-                </DropdownMenuTrigger>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="ghost" className={cn('h-7 w-7 shrink-0 md:px-0')}>
+                      <ThreeDots className="fill-iconLight dark:fill-iconDark" />
+                    </Button>
+                  </DropdownMenuTrigger>
                 <DropdownMenuContent
                   className="ml-3 min-w-56 bg-white font-medium dark:bg-[#131313]"
                   align="end"
@@ -537,12 +410,14 @@ export function NavUser() {
                       <p className="text-[13px] opacity-60">Clear Local Cache</p>
                     </div>
                   </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => handleForceSync()}>
-                    <div className="flex items-center gap-2">
-                      <RefreshCcw size={16} className="opacity-60" />
-                      <p className="text-[13px] opacity-60">Force re-sync</p>
-                    </div>
-                  </DropdownMenuItem>
+                  {allowConnectionManagement && (
+                    <DropdownMenuItem onClick={() => handleForceSyncAction()}>
+                      <div className="flex items-center gap-2">
+                        <RefreshCcw size={16} className="opacity-60" />
+                        <p className="text-[13px] opacity-60">Force re-sync</p>
+                      </div>
+                    </DropdownMenuItem>
+                  )}
                   <SyncingStatusIndicator
                     isSyncing={isSyncing}
                     storageSize={storageSize}
@@ -579,12 +454,14 @@ export function NavUser() {
                       </div>
                     </a>
                   </DropdownMenuItem>
-                  <DropdownMenuItem className="cursor-pointer" onClick={handleLogout}>
-                    <div className="flex items-center gap-2">
-                      <LogOut size={16} className="opacity-60" />
-                      <p className="text-[13px] opacity-60">{m['common.actions.logout']()}</p>
-                    </div>
-                  </DropdownMenuItem>
+                  {showLogout && (
+                    <DropdownMenuItem className="cursor-pointer" onClick={handleLogout}>
+                      <div className="flex items-center gap-2">
+                        <LogOut size={16} className="opacity-60" />
+                        <p className="text-[13px] opacity-60">{m['common.actions.logout']()}</p>
+                      </div>
+                    </DropdownMenuItem>
+                  )}
                   <DropdownMenuSeparator className="mt-1" />
                   <div className="text-muted-foreground/60 flex items-center justify-center gap-1 px-2 pb-2 pt-1 text-[10px]">
                     <a href="/privacy" className="hover:underline">
@@ -597,25 +474,167 @@ export function NavUser() {
                   </div>
                 </DropdownMenuContent>
               </DropdownMenu>
+              </div>
+
+              <div className="flex min-w-0 flex-1 items-center justify-end gap-2">
+                {allowConnectionManagement &&
+                  otherConnections.slice(0, 2).map((connection) => (
+                    <Tooltip key={connection.id}>
+                      <TooltipTrigger asChild>
+                        <div
+                          onClick={handleAccountSwitch(connection.id)}
+                          className={`flex cursor-pointer items-center ${
+                            connection.id === activeConnection?.id && otherConnections.length > 1
+                              ? 'outline-mainBlue rounded-[5px] outline outline-2'
+                              : ''
+                          }`}
+                        >
+                          <div className="relative">
+                            <Avatar className="size-7 rounded-[5px]">
+                              <AvatarImage
+                                className="rounded-[5px]"
+                                src={connection.picture || undefined}
+                                alt={connection.name || connection.email}
+                              />
+                              <AvatarFallback className="rounded-[5px] text-[10px]">
+                                {(connection.name || connection.email)
+                                  .split(' ')
+                                  .map((n) => n[0])
+                                  .join('')
+                                  .toUpperCase()
+                                  .slice(0, 2)}
+                              </AvatarFallback>
+                            </Avatar>
+                            {connection.id === activeConnection?.id && otherConnections.length > 1 && (
+                              <CircleCheck className="fill-mainBlue absolute -bottom-2 -right-2 size-4 rounded-full bg-white dark:bg-black" />
+                            )}
+                          </div>
+                        </div>
+                      </TooltipTrigger>
+                      <TooltipContent className="text-muted-foreground text-xs">
+                        {connection.email}
+                      </TooltipContent>
+                    </Tooltip>
+                  ))}
+
+                {allowConnectionManagement && otherConnections.length > 3 && (
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <button className="hover:bg-muted flex h-7 w-7 cursor-pointer items-center justify-center rounded-[5px]">
+                        <span className="text-[10px]">+{otherConnections.length - 3}</span>
+                      </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent
+                      className="ml-3 min-w-56 bg-white font-medium dark:bg-[#131313]"
+                      align="end"
+                      side={'bottom'}
+                      sideOffset={8}
+                    >
+                      {allowConnectionManagement &&
+                        otherConnections.slice(3).map((connection) => (
+                          <DropdownMenuItem
+                            key={connection.id}
+                            onClick={handleAccountSwitch(connection.id)}
+                            className="flex cursor-pointer items-center gap-3 py-1"
+                          >
+                            <Avatar className="size-7 rounded-lg">
+                              <AvatarImage
+                                className="rounded-lg"
+                                src={connection.picture || undefined}
+                                alt={connection.name || connection.email}
+                              />
+                              <AvatarFallback className="rounded-lg text-[10px]">
+                                {(connection.name || connection.email)
+                                  .split(' ')
+                                  .map((n) => n[0])
+                                  .join('')
+                                  .toUpperCase()
+                                  .slice(0, 2)}
+                              </AvatarFallback>
+                            </Avatar>
+                            <div className="-space-y-0.5">
+                              <p className="text-[12px]">{connection.name || connection.email}</p>
+                              {connection.name && (
+                                <p className="text-muted-foreground text-[11px]">
+                                  {connection.email.length > 25
+                                    ? `${connection.email.slice(0, 25)}...`
+                                    : connection.email}
+                                </p>
+                              )}
+                            </div>
+                          </DropdownMenuItem>
+                        ))}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                )}
+
+                {allowConnectionManagement && (
+                  <AddConnectionDialog>
+                    <Button className="hover:bg-offsetLight/80 dark:hover:bg-offsetDark/80 flex h-7 w-7 cursor-pointer items-center justify-center rounded-[5px] border border-dashed bg-transparent px-0 text-black dark:bg-[#262626] dark:text-[#929292]">
+                      <Plus className="size-4" />
+                    </Button>
+                  </AddConnectionDialog>
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-start gap-2">
+              {data && activeAccount ? (
+                <div
+                  key={activeAccount.id}
+                  onClick={allowConnectionManagement ? handleAccountSwitch(activeAccount.id) : undefined}
+                  className={`flex shrink-0 ${allowConnectionManagement ? 'cursor-pointer' : ''} items-center ${
+                    allowConnectionManagement &&
+                    activeAccount.id === activeConnection?.id &&
+                    data.connections.length > 1
+                      ? 'outline-mainBlue rounded-[5px] outline outline-2'
+                      : ''
+                  }`}
+                >
+                  <div className="relative">
+                    <Avatar className="size-7 rounded-[5px]">
+                      <AvatarImage
+                        className="rounded-[5px]"
+                        src={activeAccount.picture || undefined}
+                        alt={activeAccount.name || activeAccount.email}
+                      />
+                      <AvatarFallback className="rounded-[5px] text-[10px]">
+                        {(activeAccount.name || activeAccount.email)
+                          .split(' ')
+                          .map((n) => n[0])
+                          .join('')
+                          .toUpperCase()
+                          .slice(0, 2)}
+                      </AvatarFallback>
+                    </Avatar>
+                    {allowConnectionManagement &&
+                      activeAccount.id === activeConnection?.id &&
+                      data.connections.length > 1 && (
+                      <CircleCheck className="fill-mainBlue absolute -bottom-2 -right-2 size-4 rounded-full bg-white dark:bg-[#141414]" />
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="flex shrink-0 cursor-pointer items-center">
+                  <div className="relative">
+                    <div className="bg-muted size-7 animate-pulse rounded-[5px]" />
+                  </div>
+                </div>
+              )}
+              <div className="mt-[2px] min-w-0 flex-1 flex flex-col gap-1">
+                <div className="flex items-center gap-1 text-[13px] leading-none text-black dark:text-white">
+                  <p className={cn('max-w-[14.5ch] truncate text-[13px]')}>
+                    {activeAccount?.name || session.user.name || 'User'}
+                  </p>
+                </div>
+                <div className="h-5 max-w-[200px] overflow-hidden truncate text-xs font-normal leading-none text-[#898989]">
+                  {activeAccount?.email || session.user.email}
+                </div>
+              </div>
             </div>
           </div>
         )}
       </div>
-
-      {state !== 'collapsed' && (
-            <div className="mt-2 flex items-center justify-between gap-2">
-          <div className="mt-[2px] flex flex-col items-start gap-1 space-y-1">
-            <div className="flex items-center gap-1 text-[13px] leading-none text-black dark:text-white">
-              <p className={cn('max-w-[14.5ch] truncate text-[13px]')}>
-                {activeAccount?.name || session.user.name || 'User'}
-              </p>
-            </div>
-            <div className="h-5 max-w-[200px] overflow-hidden truncate text-xs font-normal leading-none text-[#898989]">
-              {activeAccount?.email || session.user.email}
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

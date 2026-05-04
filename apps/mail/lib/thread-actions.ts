@@ -1,4 +1,4 @@
-import { trpcClient } from '@/providers/query-provider';
+import { getFrontendApi } from '@/lib/api/client';
 import { LABELS, FOLDERS } from '@/lib/utils';
 
 export type ThreadDestination = 'inbox' | 'archive' | 'spam' | 'bin' | 'snoozed' | null;
@@ -98,7 +98,7 @@ export async function moveThreadsTo({ threadIds, currentFolder, destination }: M
       return;
     }
 
-    return trpcClient.mail.modifyLabels.mutate({
+    return getFrontendApi().mail.modifyLabels({
       threadId: threadIds,
       addLabels: addLabel ? [addLabel] : [],
       removeLabels: removeLabel ? [removeLabel] : [],

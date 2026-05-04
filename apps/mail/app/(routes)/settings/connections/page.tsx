@@ -11,42 +11,103 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { SettingsCard } from '@/components/settings/settings-card';
 import { AddConnectionDialog } from '@/components/connection/add';
 
-import { useSession, authClient } from '@/lib/auth-client';
+import { useSession, linkSocialSafe } from '@/lib/auth-client';
 import { useConnections } from '@/hooks/use-connections';
-import { useTRPC } from '@/providers/query-provider';
+import { getFrontendApi } from '@/lib/api/client';
 import { Skeleton } from '@/components/ui/skeleton';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Trash, Plus, Unplug } from 'lucide-react';
-import { useThreads } from '@/hooks/use-threads';
 import { emailProviders } from '@/lib/constants';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { m } from '@/paraglide/messages';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { toast } from 'sonner';
+import { isFrontendOnlyDemo, resolveMailMode } from '@/lib/runtime/mail-mode';
+import { mailListThreadsPrefixKey } from '@/lib/api/query-options';
+
+export async function runDisconnectConnection(params: {
+  connectionId: string;
+  isFrontendOnlyDemo: boolean;
+  deleteConnection: (
+    input: { connectionId: string },
+    options?: {
+      onError?: (error: unknown) => void;
+    },
+  ) => Promise<unknown>;
+  onBlocked: () => void;
+  onSuccess: () => void;
+  onError: (error: unknown) => void;
+  refetchConnections: () => void;
+  refetchSession: () => Promise<unknown> | unknown;
+  invalidateThreads: () => Promise<unknown> | unknown;
+}) {
+  if (params.isFrontendOnlyDemo) {
+    params.onBlocked();
+    return 'blocked';
+  }
+
+  await params.deleteConnection(
+    { connectionId: params.connectionId },
+    {
+      onError: params.onError,
+    },
+  );
+
+  params.onSuccess();
+  void params.refetchConnections();
+  void params.refetchSession();
+  void params.invalidateThreads();
+  return 'backend';
+}
+
+export async function runReconnectConnection(params: {
+  isFrontendOnlyDemo: boolean;
+  provider: string;
+  callbackURL: string;
+  linkSocial: (payload: { provider: string; callbackURL: string }) => Promise<unknown>;
+  onBlocked: () => void;
+}) {
+  if (params.isFrontendOnlyDemo) {
+    params.onBlocked();
+    return 'blocked';
+  }
+
+  await params.linkSocial({
+    provider: params.provider,
+    callbackURL: params.callbackURL,
+  });
+  return 'backend';
+}
 
 export default function ConnectionsPage() {
   const { data, isLoading, refetch: refetchConnections } = useConnections();
   const { refetch } = useSession();
   const [openTooltip, setOpenTooltip] = useState<string | null>(null);
 
-  const trpc = useTRPC();
-  const { mutateAsync: deleteConnection } = useMutation(trpc.connections.delete.mutationOptions());
-  const [{ refetch: refetchThreads }] = useThreads();
+  const queryClient = useQueryClient();
+  const mailThreadsPrefix = useMemo(
+    () => mailListThreadsPrefixKey({ mode: resolveMailMode(), accountId: null }),
+    [],
+  );
+  const { mutateAsync: deleteConnection } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().connections.delete(input),
+  });
   const disconnectAccount = async (connectionId: string) => {
-    await deleteConnection(
-      { connectionId },
-      {
-        onError: (error) => {
-          console.error('Error disconnecting account:', error);
-          toast.error(m['pages.settings.connections.disconnectError']());
-        },
+    await runDisconnectConnection({
+      connectionId,
+      isFrontendOnlyDemo: isFrontendOnlyDemo(),
+      deleteConnection,
+      onBlocked: () => toast.info('This action is not available in demo mode'),
+      onSuccess: () => toast.success(m['pages.settings.connections.disconnectSuccess']()),
+      onError: (error) => {
+        console.error('Error disconnecting account:', error);
+        toast.error(m['pages.settings.connections.disconnectError']());
       },
-    );
-    toast.success(m['pages.settings.connections.disconnectSuccess']());
-    void refetchConnections();
-    refetch();
-    void refetchThreads();
+      refetchConnections,
+      refetchSession: refetch,
+      invalidateThreads: () => queryClient.invalidateQueries({ queryKey: mailThreadsPrefix }),
+    });
   };
 
   return (
@@ -58,9 +119,9 @@ export default function ConnectionsPage() {
         <div className="space-y-6">
           {isLoading ? (
             <div className="grid gap-4 md:grid-cols-3">
-              {[...Array(3)].map((n) => (
+              {Array.from({ length: 3 }).map((_, index) => (
                 <div
-                  key={n}
+                  key={`connection-skeleton-${index}`}
                   className="bg-popover flex items-center justify-between rounded-lg border p-4"
                 >
                   <div className="flex min-w-0 items-center gap-4">
@@ -144,9 +205,12 @@ export default function ConnectionsPage() {
                             variant="secondary"
                             size="sm"
                             onClick={async () => {
-                              await authClient.linkSocial({
+                              await runReconnectConnection({
+                                isFrontendOnlyDemo: isFrontendOnlyDemo(),
                                 provider: connection.providerId,
                                 callbackURL: `${window.location.origin}/settings/connections`,
+            linkSocial: linkSocialSafe,
+                                onBlocked: () => toast.info('This action is not available in demo mode'),
                               });
                             }}
                           >

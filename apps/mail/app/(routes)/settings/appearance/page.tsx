@@ -15,8 +15,8 @@ import {
 } from '@/components/ui/select';
 import { SettingsCard } from '@/components/settings/settings-card';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { useTRPC } from '@/providers/query-provider';
-import { useMutation } from '@tanstack/react-query';
+import { getFrontendApi } from '@/lib/api/client';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useSettings } from '@/hooks/use-settings';
 import { Laptop, Moon, Sun } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -26,6 +26,8 @@ import { useTheme } from 'next-themes';
 import { useState } from 'react';
 import { toast } from 'sonner';
 import * as z from 'zod';
+import { isFrontendOnlyDemo } from '@/lib/runtime/mail-mode';
+import { demoSetSettings } from '@/lib/demo/local-actions';
 
 const formSchema = z.object({
   colorTheme: z.enum(['dark', 'light', 'system', '']),
@@ -38,8 +40,10 @@ export default function AppearancePage() {
 
   const { data, refetch } = useSettings();
   const { theme, systemTheme, resolvedTheme, setTheme } = useTheme();
-  const trpc = useTRPC();
-  const { mutateAsync: saveUserSettings } = useMutation(trpc.settings.save.mutationOptions());
+  const queryClient = useQueryClient();
+  const { mutateAsync: saveUserSettings } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().settings.save(input),
+  });
 
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
@@ -72,20 +76,42 @@ export default function AppearancePage() {
   async function onSubmit(values: z.infer<typeof formSchema>) {
     if (data) {
       setIsSaving(true);
-      toast.promise(
-        saveUserSettings({
-          ...data.settings,
-          colorTheme: values.colorTheme as Theme,
-        }),
-        {
-          success: m['common.settings.saved'](),
-          error: m['common.settings.failedToSave'](),
-          finally: async () => {
-            await refetch();
-            setIsSaving(false);
+      const nextSettings = {
+        ...data.settings,
+        colorTheme: values.colorTheme as Theme,
+      };
+
+      try {
+        if (isFrontendOnlyDemo()) {
+          await demoSetSettings(nextSettings);
+          queryClient.setQueryData(['demo', 'settings'], (updater: { settings?: typeof nextSettings } | undefined) => {
+            const currentSettings = updater?.settings ?? data.settings;
+            return { ...updater, settings: { ...currentSettings, ...nextSettings } };
+          });
+          toast.success(m['common.settings.saved']());
+          await refetch();
+          return;
+        }
+
+        await toast.promise(
+          saveUserSettings({
+            ...data.settings,
+            colorTheme: values.colorTheme as Theme,
+          }),
+          {
+            success: m['common.settings.saved'](),
+            error: m['common.settings.failedToSave'](),
+            finally: async () => {
+              await refetch();
+            },
           },
-        },
-      );
+        );
+      } catch (error) {
+        console.error(error);
+        toast.error(m['common.settings.failedToSave']());
+      } finally {
+        setIsSaving(false);
+      }
     }
   }
 

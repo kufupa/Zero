@@ -32,7 +32,7 @@ import { SnoozeDialog } from '@/components/mail/snooze-dialog';
 import { type ThreadDestination } from '@/lib/thread-actions';
 import { useThread, useThreads } from '@/hooks/use-threads';
 import { useMemo, type ReactNode, useState, useCallback } from 'react';
-import { useTRPC } from '@/providers/query-provider';
+import { getFrontendApi } from '@/lib/api/client';
 import { useMutation } from '@tanstack/react-query';
 import { useLabels } from '@/hooks/use-labels';
 import { FOLDERS, LABELS } from '@/lib/utils';
@@ -40,9 +40,12 @@ import { useMail } from '../mail/use-mail';
 import { Checkbox } from '../ui/checkbox';
 import { m } from '@/paraglide/messages';
 import { useParams } from 'react-router';
-import { useQueryState } from 'nuqs';
+import { parseAsString, useQueryState, useQueryStates } from 'nuqs';
 import { toast } from 'sonner';
 import type { Label as LabelType } from '@/types';
+import { openReplyComposeContext } from '@/lib/mail/reply-compose-context';
+import { isFrontendOnlyDemo } from '@/lib/runtime/mail-mode';
+import { demoCreateLabel } from '@/lib/demo/local-actions';
 
 interface EmailAction {
   id: string;
@@ -52,6 +55,62 @@ interface EmailAction {
   action: () => void;
   disabled?: boolean;
   condition?: () => boolean;
+}
+
+export type ThreadLabelCreateContextInput = {
+  data: LabelType;
+  isFrontendOnlyDemoMode: boolean;
+  setCreateLabelOpen: (value: boolean) => void;
+  createLabel: (input: {
+    name: string;
+    color: {
+      backgroundColor: string;
+      textColor: string;
+    };
+    type: 'user';
+  }) => Promise<unknown>;
+  refetchLabels: () => Promise<unknown> | unknown;
+  labelsSuccessMessage: string;
+  labelsSavingMessage: string;
+  labelsSaveErrorMessage: string;
+  onError: (error: unknown) => void;
+};
+
+export async function createLabelInThreadContext(input: ThreadLabelCreateContextInput): Promise<void> {
+  const labelData = {
+    name: input.data.name,
+    color: {
+      backgroundColor: input.data.color?.backgroundColor || '#202020',
+      textColor: input.data.color?.textColor || '#FFFFFF',
+    },
+    type: 'user' as const,
+  };
+
+  try {
+    if (input.isFrontendOnlyDemoMode) {
+      await input.createLabel(labelData);
+      await Promise.resolve(input.refetchLabels());
+      toast.success(input.labelsSuccessMessage);
+      return;
+    }
+
+    const promise = input.createLabel(labelData).then(async (result) => {
+      await Promise.resolve(input.refetchLabels());
+      return result;
+    });
+
+    toast.promise(promise, {
+      loading: input.labelsSavingMessage,
+      success: input.labelsSuccessMessage,
+      error: input.labelsSaveErrorMessage,
+    });
+
+    await promise;
+  } catch (error) {
+    input.onError(error);
+  } finally {
+    input.setCreateLabelOpen(false);
+  }
 }
 
 interface EmailContextMenuProps {
@@ -154,7 +213,7 @@ export function ThreadContextMenu({
 }: EmailContextMenuProps) {
   const { folder } = useParams<{ folder: string }>();
   const [mail, setMail] = useMail();
-  const [{ isLoading, isFetching }] = useThreads();
+  const [{ isLoading, isFetching, refetch: refetchThreads }] = useThreads();
   const currentFolder = folder ?? '';
   const isArchiveFolder = currentFolder === FOLDERS.ARCHIVE;
   const isSnoozedFolder = currentFolder === FOLDERS.SNOOZED;
@@ -162,8 +221,13 @@ export function ThreadContextMenu({
   const [, setThreadId] = useQueryState('threadId');
   const { data: threadData } = useThread(threadId);
   const [, setActiveReplyId] = useQueryState('activeReplyId');
+  const [, setDraftId] = useQueryState('draftId');
+  const [, setComposeState] = useQueryStates({
+    mode: parseAsString,
+    activeReplyId: parseAsString,
+    draftId: parseAsString,
+  });
   const optimisticState = useOptimisticThreadState(threadId);
-  const trpc = useTRPC();
   const { refetch: refetchLabels } = useLabels();
   const {
     optimisticMoveThreadsTo,
@@ -171,12 +235,16 @@ export function ThreadContextMenu({
     optimisticToggleImportant,
     optimisticMarkAsRead,
     optimisticMarkAsUnread,
-    // optimisticDeleteThreads,
+    optimisticDeleteThreads,
     optimisticSnooze,
     optimisticUnsnooze,
   } = useOptimisticActions();
-  const { mutateAsync: deleteThread } = useMutation(trpc.mail.delete.mutationOptions());
-  const { mutateAsync: createLabel } = useMutation(trpc.labels.create.mutationOptions());
+  const { mutateAsync: deleteThread } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().mail.deleteThread(input),
+  });
+  const { mutateAsync: createLabel } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().labels.create(input),
+  });
 
   const { isUnread, isStarred, isImportant } = useMemo(() => {
     const unread = threadData?.hasUnread ?? false;
@@ -273,21 +341,39 @@ export function ThreadContextMenu({
   };
 
   const handleThreadReply = () => {
-    setMode('reply');
     setThreadId(threadId);
-    if (threadData?.latest) setActiveReplyId(threadData?.latest?.id);
+    void openReplyComposeContext({
+      mode: 'reply',
+      messageId: threadData?.latest?.id ?? null,
+      setMode,
+      setActiveReplyId,
+      setDraftId,
+      setComposeState,
+    });
   };
 
   const handleThreadReplyAll = () => {
-    setMode('replyAll');
     setThreadId(threadId);
-    if (threadData?.latest) setActiveReplyId(threadData?.latest?.id);
+    void openReplyComposeContext({
+      mode: 'replyAll',
+      messageId: threadData?.latest?.id ?? null,
+      setMode,
+      setActiveReplyId,
+      setDraftId,
+      setComposeState,
+    });
   };
 
   const handleThreadForward = () => {
-    setMode('forward');
     setThreadId(threadId);
-    if (threadData?.latest) setActiveReplyId(threadData?.latest?.id);
+    void openReplyComposeContext({
+      mode: 'forward',
+      messageId: threadData?.latest?.id ?? null,
+      setMode,
+      setActiveReplyId,
+      setDraftId,
+      setComposeState,
+    });
   };
 
   const handleOpenInNewTab = () => {
@@ -331,12 +417,48 @@ export function ThreadContextMenu({
   const handleDelete = () => () => {
     const targets = mail.bulkSelected.length ? mail.bulkSelected : [threadId];
 
+    if (isFrontendOnlyDemo()) {
+      optimisticDeleteThreads(targets, currentFolder);
+      if (mail.bulkSelected.length) {
+        setMail({ ...mail, bulkSelected: [] });
+      }
+      toast.success('Deleted');
+      return;
+    }
+
+    const hadBulkSelectionForAction = mail.bulkSelected.length > 0;
+    const targetSet = new Set(targets);
+    const deletePromise = Promise.all(
+      targets.map(async (id) => {
+        return deleteThread({ id });
+      }),
+    )
+      .then((result) => {
+        if (hadBulkSelectionForAction) {
+          setMail((prev) => {
+            const prevBulkSelected = prev.bulkSelected;
+            const matchesOriginalTargets =
+              prevBulkSelected.length === targetSet.size &&
+              prevBulkSelected.every((id) => targetSet.has(id));
+
+            if (!matchesOriginalTargets) {
+              return prev;
+            }
+
+            return { ...prev, bulkSelected: [] };
+          });
+        }
+
+        return result;
+      })
+      .finally(async () => {
+        await Promise.resolve(refetchThreads()).catch((error) => {
+          console.error('Failed to refetch threads after delete:', error);
+        });
+      });
+
     toast.promise(
-      Promise.all(
-        targets.map(async (id) => {
-          return deleteThread({ id });
-        }),
-      ),
+      deletePromise,
       {
         loading: 'Deleting...',
         success: 'Deleted',
@@ -408,25 +530,6 @@ export function ThreadContextMenu({
       ];
     }
 
-    if (isArchiveFolder || !isInbox) {
-      return [
-        {
-          id: 'move-to-inbox',
-          label: m['common.mail.unarchive'](),
-          icon: <Inbox className="mr-2.5 h-4 w-4 opacity-60" />,
-          action: handleMove('', LABELS.INBOX),
-          disabled: false,
-        },
-        {
-          id: 'move-to-bin',
-          label: m['common.mail.moveToBin'](),
-          icon: <Trash className="mr-2.5 h-4 w-4 opacity-60" />,
-          action: handleMove('', LABELS.TRASH),
-          disabled: false,
-        },
-      ];
-    }
-
     if (isSent) {
       return [
         {
@@ -441,6 +544,25 @@ export function ThreadContextMenu({
           label: m['common.mail.moveToBin'](),
           icon: <Trash className="mr-2.5 h-4 w-4 opacity-60" />,
           action: handleMove(LABELS.SENT, LABELS.TRASH),
+          disabled: false,
+        },
+      ];
+    }
+
+    if (isArchiveFolder || !isInbox) {
+      return [
+        {
+          id: 'move-to-inbox',
+          label: m['common.mail.unarchive'](),
+          icon: <Inbox className="mr-2.5 h-4 w-4 opacity-60" />,
+          action: handleMove('', LABELS.INBOX),
+          disabled: false,
+        },
+        {
+          id: 'move-to-bin',
+          label: m['common.mail.moveToBin'](),
+          icon: <Trash className="mr-2.5 h-4 w-4 opacity-60" />,
+          action: handleMove('', LABELS.TRASH),
           disabled: false,
         },
       ];
@@ -485,32 +607,17 @@ export function ThreadContextMenu({
   };
 
   const handleCreateLabel = async (data: LabelType) => {
-    const labelData = {
-      name: data.name,
-      color: {
-        backgroundColor: data.color?.backgroundColor || '#202020',
-        textColor: data.color?.textColor || '#FFFFFF'
-      }
-    };
-    
-    try {
-      const promise = createLabel(labelData).then(async (result) => {
-        await refetchLabels();
-        return result;
-      });
-      
-      toast.promise(promise, {
-        loading: m['common.labels.savingLabel'](),
-        success: m['common.labels.saveLabelSuccess'](),
-        error: m['common.labels.failedToSavingLabel'](),
-      });
-      
-      await promise;
-    } catch (error) {
-      console.error('Failed to create label:', error);
-    } finally {
-      setCreateLabelOpen(false);
-    }
+    await createLabelInThreadContext({
+      data,
+      isFrontendOnlyDemoMode: isFrontendOnlyDemo(),
+      setCreateLabelOpen,
+      createLabel: isFrontendOnlyDemo() ? demoCreateLabel : createLabel,
+      refetchLabels,
+      labelsSuccessMessage: m['common.labels.saveLabelSuccess'](),
+      labelsSavingMessage: m['common.labels.savingLabel'](),
+      labelsSaveErrorMessage: m['common.labels.failedToSavingLabel'](),
+      onError: (error) => console.error('Failed to create label:', error),
+    });
   };
 
   const otherActions: EmailAction[] = useMemo(

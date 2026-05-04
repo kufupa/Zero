@@ -5,8 +5,9 @@ import useDelete from '@/hooks/driver/use-delete';
 import { useShortcuts } from './use-hotkey-utils';
 import { useThread } from '@/hooks/use-threads';
 import { useParams } from 'react-router';
-import { useQueryState } from 'nuqs';
+import { parseAsString, useQueryState, useQueryStates } from 'nuqs';
 import { useSetAtom } from 'jotai';
+import { openReplyComposeContext } from '@/lib/mail/reply-compose-context';
 
 const closeView = (event: KeyboardEvent) => {
   event.preventDefault();
@@ -16,6 +17,12 @@ export function ThreadDisplayHotkeys() {
   const scope = 'thread-display';
   const [, setMode] = useQueryState('mode');
   const [, setActiveReplyId] = useQueryState('activeReplyId');
+  const [, setDraftId] = useQueryState('draftId');
+  const [, setComposeState] = useQueryStates({
+    mode: parseAsString,
+    activeReplyId: parseAsString,
+    draftId: parseAsString,
+  });
   const [openThreadId] = useQueryState('threadId');
   const { data: thread } = useThread(openThreadId);
   const params = useParams<{
@@ -28,16 +35,34 @@ export function ThreadDisplayHotkeys() {
   const handlers = {
     closeView: () => closeView(new KeyboardEvent('keydown', { key: 'Escape' })),
     reply: () => {
-      setMode('reply');
-      setActiveReplyId(thread?.latest?.id ?? '');
+      void openReplyComposeContext({
+        mode: 'reply',
+        messageId: thread?.latest?.id ?? null,
+        setMode,
+        setActiveReplyId,
+        setDraftId,
+        setComposeState,
+      });
     },
     forward: () => {
-      setMode('forward');
-      setActiveReplyId(thread?.latest?.id ?? '');
+      void openReplyComposeContext({
+        mode: 'forward',
+        messageId: thread?.latest?.id ?? null,
+        setMode,
+        setActiveReplyId,
+        setDraftId,
+        setComposeState,
+      });
     },
     replyAll: () => {
-      setMode('replyAll');
-      setActiveReplyId(thread?.latest?.id ?? '');
+      void openReplyComposeContext({
+        mode: 'replyAll',
+        messageId: thread?.latest?.id ?? null,
+        setMode,
+        setActiveReplyId,
+        setDraftId,
+        setComposeState,
+      });
     },
     delete: () => {
       if (!openThreadId) return;

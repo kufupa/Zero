@@ -1,11 +1,12 @@
 import { useUndoSend, type EmailData, deserializeFiles } from '@/hooks/use-undo-send';
 import { useActiveConnection } from '@/hooks/use-connections';
 import { Dialog, DialogClose } from '@/components/ui/dialog';
-import { useEmailAliases } from '@/hooks/use-email-aliases';
 import { cleanEmailAddresses } from '@/lib/email-utils';
+import { isFrontendOnlyDemo } from '@/lib/runtime/mail-mode';
+import { demoSendEmail } from '@/lib/demo/local-actions';
 
-import { useTRPC } from '@/providers/query-provider';
 import { useMutation } from '@tanstack/react-query';
+import { getFrontendApi } from '@/lib/api/client';
 import { useSettings } from '@/hooks/use-settings';
 import { EmailComposer } from './email-composer';
 import { useSession } from '@/lib/auth-client';
@@ -48,7 +49,6 @@ export function CreateEmail({
 }) {
   const { data: session } = useSession();
 
-  const { data: aliases } = useEmailAliases();
   const [draftId, setDraftId] = useQueryState('draftId');
   const {
     data: draft,
@@ -57,8 +57,9 @@ export function CreateEmail({
   } = useDraft(draftId ?? propDraftId ?? null);
 
   const [, setIsDraftFailed] = useState(false);
-  const trpc = useTRPC();
-  const { mutateAsync: sendEmail } = useMutation(trpc.mail.send.mutationOptions());
+  const { mutateAsync: sendEmail } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().mail.send(input),
+  });
   const [isComposeOpen, setIsComposeOpen] = useQueryState('isComposeOpen');
   const [, setThreadId] = useQueryState('threadId');
   const [, setActiveReplyId] = useQueryState('activeReplyId');
@@ -89,23 +90,32 @@ export function CreateEmail({
     fromEmail?: string;
     scheduleAt?: string;
   }) => {
-    const fromEmail = data.fromEmail || aliases?.[0]?.email || userEmail;
+    const fromEmail =
+      data.fromEmail || settings?.settings?.defaultEmailAlias || userEmail;
 
-    const zeroSignature = settings?.settings.zeroSignature
-      ? '<p style="color: #666; font-size: 12px;">Sent via <a href="https://0.email/" style="color: #0066cc; text-decoration: none;">Zero</a></p>'
-      : '';
-
-    const result = await sendEmail({
-      to: data.to.map((email) => ({ email, name: email.split('@')[0] || email })),
-      cc: data.cc?.map((email) => ({ email, name: email.split('@')[0] || email })),
-      bcc: data.bcc?.map((email) => ({ email, name: email.split('@')[0] || email })),
-      subject: data.subject,
-      message: data.message + zeroSignature,
-      attachments: await serializeFiles(data.attachments),
-      fromEmail: userName.trim() ? `${userName.replace(/[<>]/g, '')} <${fromEmail}>` : fromEmail,
-      draftId: draftId ?? undefined,
-      scheduleAt: data.scheduleAt,
-    });
+    const result = isFrontendOnlyDemo()
+      ? await demoSendEmail({
+          to: data.to.map((email) => ({ email, name: email.split('@')[0] || email })),
+          cc: data.cc?.map((email) => ({ email, name: email.split('@')[0] || email })),
+          bcc: data.bcc?.map((email) => ({ email, name: email.split('@')[0] || email })),
+          subject: data.subject,
+          message: data.message,
+          attachments: await serializeFiles(data.attachments),
+          fromEmail: userName.trim() ? `${userName.replace(/[<>]/g, '')} <${fromEmail}>` : fromEmail,
+          draftId: draftId ?? undefined,
+          scheduleAt: data.scheduleAt,
+        })
+      : await sendEmail({
+          to: data.to.map((email) => ({ email, name: email.split('@')[0] || email })),
+          cc: data.cc?.map((email) => ({ email, name: email.split('@')[0] || email })),
+          bcc: data.bcc?.map((email) => ({ email, name: email.split('@')[0] || email })),
+          subject: data.subject,
+          message: data.message,
+          attachments: await serializeFiles(data.attachments),
+          fromEmail: userName.trim() ? `${userName.replace(/[<>]/g, '')} <${fromEmail}>` : fromEmail,
+          draftId: draftId ?? undefined,
+          scheduleAt: data.scheduleAt,
+        });
 
     setDraftId(null);
     clearUndoData();

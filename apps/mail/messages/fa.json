@@ -239,7 +239,17 @@
       "enableImages": "نمایش تصاویر",
       "star": "ستاره‌دار کردن",
       "unstar": "حذف ستاره",
-      "printThread": "چاپ رشته"
+      "printThread": "چاپ رشته",
+      "aiMailsTitle": "ایمیل‌های هوش مصنوعی",
+      "summariseDemoToast": "خلاصه (نسخه آزمایشی)",
+      "summariseAction": "خلاصه کنید",
+      "draftBadge": "[پیش‌نویس]",
+      "draftUnsentNotice": "این پیام ارسال نشده است.",
+      "draftSavedPrefix": "ذخیره شده: ",
+      "draftTooltip": "پیش نویس",
+      "continueDraft": "ادامه پیش نویس",
+      "draftEmptyPreview": "هنوز متن پیش‌نویسی برای پیش‌نمایش وجود ندارد.",
+      "draftMoreOptions": "گزینه‌های بیشتر"
     },
     "notes": {
       "title": "یادداشت‌ها",
@@ -391,7 +401,16 @@
       "failedToUnmute": "فعال کردن صدا ناموفق بود",
       "archived": "بایگانی شد",
       "failedToArchive": "بایگانی کردن ناموفق بود",
-      "openInNewTab": "باز کردن در زبانه جدید"
+      "openInNewTab": "باز کردن در زبانه جدید",
+      "listSection": {
+        "pinned": "پین شده",
+        "today": "امروز",
+        "yesterday": "دیروز",
+        "lastWeek": "هفته گذشته",
+        "thisMonth": "این ماه",
+        "lastMonth": "ماه گذشته",
+        "older": "قدیمی‌تر"
+      }
     },
     "units": {
       "mb": "{amount} مگابایت"

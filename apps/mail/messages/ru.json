@@ -239,7 +239,17 @@
       "enableImages": "Показать изображения",
       "star": "Отметить",
       "unstar": "Снять отметку",
-      "printThread": "Распечатать цепочку"
+      "printThread": "Распечатать цепочку",
+      "aiMailsTitle": "Электронные письма с использованием ИИ",
+      "summariseDemoToast": "Краткое изложение (демоверсия)",
+      "summariseAction": "Подведем итоги",
+      "draftBadge": "[Черновик]",
+      "draftUnsentNotice": "Это сообщение не было отправлено.",
+      "draftSavedPrefix": "Сохранено: ",
+      "draftTooltip": "Черновик",
+      "continueDraft": "Продолжить черновик",
+      "draftEmptyPreview": "Предварительного просмотра чернового текста пока нет.",
+      "draftMoreOptions": "Больше вариантов"
     },
     "notes": {
       "title": "Заметки",
@@ -391,7 +401,16 @@
       "failedToUnmute": "Не удалось включить звук",
       "archived": "В архиве",
       "failedToArchive": "Не удалось архивировать",
-      "openInNewTab": "Открыть в новой вкладке"
+      "openInNewTab": "Открыть в новой вкладке",
+      "listSection": {
+        "pinned": "Закреплено",
+        "today": "Сегодня",
+        "yesterday": "Вчера",
+        "lastWeek": "На прошлой неделе",
+        "thisMonth": "В этом месяце",
+        "lastMonth": "В прошлом месяце",
+        "older": "Старше"
+      }
     },
     "units": {
       "mb": "{amount} МБ"

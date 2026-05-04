@@ -7,13 +7,15 @@ import {
   DialogTrigger,
 } from '../ui/dialog';
 import { emailProviders } from '@/lib/constants';
-import { authClient } from '@/lib/auth-client';
+import { linkSocialSafe } from '@/lib/auth-client';
+import { isFrontendOnlyDemo } from '@/lib/runtime/mail-mode';
 import { Plus, UserPlus } from 'lucide-react';
 import { useLocation } from 'react-router';
 import { m } from '@/paraglide/messages';
 import { motion } from 'motion/react';
 import { Button } from '../ui/button';
 import { cn } from '@/lib/utils';
+import { toast } from 'sonner';
 
 export const AddConnectionDialog = ({
   children,
@@ -25,6 +27,24 @@ export const AddConnectionDialog = ({
   onOpenChange?: (open: boolean) => void;
 }) => {
   const pathname = useLocation().pathname;
+  const frontendOnlyDemo = isFrontendOnlyDemo();
+
+  const handleLinkSocial = async (providerId: string) => {
+    if (frontendOnlyDemo) {
+      toast.info('This action is not available in demo mode');
+      return;
+    }
+
+    try {
+      await linkSocialSafe({
+        provider: providerId,
+        callbackURL: `${window.location.origin}${pathname}`,
+      });
+    } catch (error) {
+      console.error('Error linking account:', error);
+      toast.error('Failed to connect account. Please try again.');
+    }
+  };
 
   return (
     <Dialog onOpenChange={onOpenChange}>
@@ -67,12 +87,7 @@ export const AddConnectionDialog = ({
                 <Button
                   variant="outline"
                   className="h-24 w-full flex-col items-center justify-center gap-2"
-                  onClick={async () =>
-                    await authClient.linkSocial({
-                      provider: provider.providerId,
-                      callbackURL: `${window.location.origin}${pathname}`,
-                    })
-                  }
+                  onClick={async () => await handleLinkSocial(provider.providerId)}
                 >
                   <Icon className="size-6!" />
                   <span className="text-xs">{provider.name}</span>

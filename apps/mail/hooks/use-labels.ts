@@ -1,6 +1,9 @@
-import { useTRPC } from '@/providers/query-provider';
 import { useQuery } from '@tanstack/react-query';
 import { useMemo } from 'react';
+import { isFrontendOnlyDemo, resolveMailMode } from '@/lib/runtime/mail-mode';
+import { listDemoLabels } from '@/lib/demo/local-store';
+import { getFrontendApi } from '@/lib/api/client';
+import { labelsListQueryOptions, type ApiQueryContext } from '@/lib/api/query-options';
 
 const desiredSystemLabels = new Set([
   'IMPORTANT',
@@ -13,16 +16,29 @@ const desiredSystemLabels = new Set([
 ]);
 
 export function useLabels() {
-  const trpc = useTRPC();
-  const labelQuery = useQuery(
-    trpc.labels.list.queryOptions(void 0, {
-      staleTime: 1000 * 60 * 60, // 1 hour
-    }),
+  const demoMode = isFrontendOnlyDemo();
+  const queryCtx = useMemo<ApiQueryContext>(
+    () => ({ mode: resolveMailMode(), accountId: null }),
+    [],
   );
+  const liveLabelsEnabled = !demoMode && queryCtx.mode === 'legacy';
+  const demoLabelQuery = useQuery({
+    queryKey: ['demo', 'labels'],
+    queryFn: async () => listDemoLabels(),
+    enabled: demoMode,
+    staleTime: Infinity,
+  });
+  const labelQuery = useQuery({
+    ...labelsListQueryOptions(getFrontendApi(), queryCtx),
+    enabled: liveLabelsEnabled,
+    staleTime: 1000 * 60 * 60, // 1 hour
+  });
+
+  const activeQuery = demoMode ? demoLabelQuery : labelQuery;
 
   const { userLabels, systemLabels } = useMemo(() => {
-    if (!labelQuery.data) return { userLabels: [], systemLabels: [] };
-    const cleanedName = labelQuery.data
+    if (!activeQuery.data) return { userLabels: [], systemLabels: [] };
+    const cleanedName = activeQuery.data
       .filter((label) => label.type === 'system')
       .map((label) => {
         return {
@@ -32,12 +48,12 @@ export function useLabels() {
       });
     const cleanedSystemLabels = cleanedName.filter((label) => desiredSystemLabels.has(label.name));
     return {
-      userLabels: labelQuery.data.filter((label) => label.type === 'user'),
+      userLabels: activeQuery.data.filter((label) => label.type === 'user'),
       systemLabels: cleanedSystemLabels,
     };
-  }, [labelQuery.data]);
+  }, [activeQuery.data]);
 
-  return { userLabels, systemLabels, ...labelQuery };
+  return { userLabels, systemLabels, ...activeQuery };
 }
 
 export function useThreadLabels(ids: string[]) {

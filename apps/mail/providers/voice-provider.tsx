@@ -5,6 +5,11 @@ import { useSession } from '@/lib/auth-client';
 import type { ReactNode } from 'react';
 import { toast } from 'sonner';
 
+export type VoiceSessionContext = Record<string, unknown> & {
+  hasOpenEmail?: boolean;
+  currentThreadId?: string;
+};
+
 interface VoiceContextType {
   status: string;
   isInitializing: boolean;
@@ -13,10 +18,10 @@ interface VoiceContextType {
   lastToolCall: string | null;
   isOpen: boolean;
 
-  startConversation: (context?: any) => Promise<void>;
+  startConversation: (context?: VoiceSessionContext) => Promise<void>;
   endConversation: () => Promise<void>;
   requestPermission: () => Promise<boolean>;
-  sendContext: (context: any) => void;
+  sendContext: (context: VoiceSessionContext) => void;
 }
 
 // const toolNames = [
@@ -44,7 +49,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
   const [isInitializing, setIsInitializing] = useState(false);
   const [lastToolCall, setLastToolCall] = useState<string | null>(null);
   const [isOpen, setOpen] = useState(false);
-  const [, setCurrentContext] = useState<any>(null);
+  const [, setCurrentContext] = useState<VoiceSessionContext | null>(null);
 
   const conversation = useConversation({
     onConnect: () => {
@@ -102,7 +107,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const startConversation = async (context?: any) => {
+  const startConversation = async (context?: VoiceSessionContext) => {
     if (!hasPermission) {
       const result = await requestPermission();
       if (!result) return;
@@ -133,7 +138,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
           email_context_info: context?.hasOpenEmail
             ? `The user currently has an email open (thread ID: ${context.currentThreadId}). When the user refers to "this email" or "the current email", you can use the getEmail or summarizeEmail tools WITHOUT providing a threadId parameter - the tools will automatically use the currently open email.`
             : 'No email is currently open. If the user asks about an email, you will need to ask them to open it first or provide a specific thread ID.',
-          ...context,
+          ...(context as Record<string, unknown>),
         },
       });
 
@@ -152,7 +157,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const sendContext = (context: any) => {
+  const sendContext = (context: VoiceSessionContext) => {
     setCurrentContext(context);
   };
 

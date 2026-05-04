@@ -239,7 +239,17 @@
       "enableImages": "Képek megjelenítése",
       "star": "Csillagozás",
       "unstar": "Csillagozás törlése",
-      "printThread": "Beszélgetés nyomtatása"
+      "printThread": "Beszélgetés nyomtatása",
+      "aiMailsTitle": "MI e-mailek",
+      "summariseDemoToast": "Összefoglalás (demó)",
+      "summariseAction": "Összefoglaló",
+      "draftBadge": "[Vázlat]",
+      "draftUnsentNotice": "Ez az üzenet még nem lett elküldve.",
+      "draftSavedPrefix": "Mentett: ",
+      "draftTooltip": "Vázlat",
+      "continueDraft": "Vázlat folytatása",
+      "draftEmptyPreview": "Még nincs megtekinthető vázlatszöveg.",
+      "draftMoreOptions": "További lehetőségek"
     },
     "notes": {
       "title": "Jegyzetek",
@@ -391,7 +401,16 @@
       "failedToUnmute": "Némítás feloldása sikertelen",
       "archived": "Archiválva",
       "failedToArchive": "Archiválás sikertelen",
-      "openInNewTab": "Megnyitás új lapon"
+      "openInNewTab": "Megnyitás új lapon",
+      "listSection": {
+        "pinned": "Rögzítve",
+        "today": "Ma",
+        "yesterday": "Tegnap",
+        "lastWeek": "Múlt héten",
+        "thisMonth": "Ebben a hónapban",
+        "lastMonth": "Múlt hónap",
+        "older": "Régebbi"
+      }
     },
     "units": {
       "mb": "{amount} MB"

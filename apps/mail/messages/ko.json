@@ -239,7 +239,17 @@
       "enableImages": "이미지 표시",
       "star": "별표 표시",
       "unstar": "별표 제거",
-      "printThread": "스레드 인쇄"
+      "printThread": "스레드 인쇄",
+      "aiMailsTitle": "AI 이메일",
+      "summariseDemoToast": "요약 (데모)",
+      "summariseAction": "요약하다",
+      "draftBadge": "[초안]",
+      "draftUnsentNotice": "이 메시지는 전송되지 않았습니다.",
+      "draftSavedPrefix": "저장됨: ",
+      "draftTooltip": "초안",
+      "continueDraft": "초안 계속하기",
+      "draftEmptyPreview": "아직 미리 볼 초안 텍스트가 없습니다.",
+      "draftMoreOptions": "더 많은 옵션"
     },
     "notes": {
       "title": "노트",
@@ -391,7 +401,16 @@
       "failedToUnmute": "음소거 해제 실패",
       "archived": "보관됨",
       "failedToArchive": "보관 실패",
-      "openInNewTab": "새 탭에서 열기"
+      "openInNewTab": "새 탭에서 열기",
+      "listSection": {
+        "pinned": "고정됨",
+        "today": "오늘",
+        "yesterday": "어제",
+        "lastWeek": "지난주",
+        "thisMonth": "이번 달",
+        "lastMonth": "전달",
+        "older": "나이든"
+      }
     },
     "units": {
       "mb": "{amount} MB"

@@ -7,7 +7,6 @@ import {
   SettingsGear,
   Stars,
   Tabs,
-  Users,
   ArrowLeft,
   Danger,
   Sheet,
@@ -17,10 +16,19 @@ import {
 } from '@/components/icons/icons';
 import { MessageSquareIcon } from 'lucide-react';
 import { m } from '@/paraglide/messages';
+import { isFrontendOnlyDemo } from '@/lib/runtime/mail-mode';
+import {
+  getDemoMailFolderSidebarChrome,
+  listDemoMailSidebarNavDescriptors,
+  type DemoMailFolderId,
+} from '@/lib/demo/folder-map';
+import { cn } from '@/lib/utils';
+import type { CSSProperties } from 'react';
 
 export interface NavItem {
   id?: string;
   title: string;
+  subtitle?: string;
   url: string;
   icon: React.ComponentType<any>;
   badge?: number;
@@ -29,6 +37,8 @@ export interface NavItem {
   disabled?: boolean;
   target?: string;
   shortcut?: string;
+  style?: CSSProperties;
+  className?: string;
 }
 
 interface NavSection {
@@ -40,6 +50,30 @@ interface NavConfig {
   path: string;
   sections: NavSection[];
 }
+
+const DEMO_FOLDER_MODEL_ENABLED = isFrontendOnlyDemo();
+
+function getDemoMailFolderIcon(folderId: DemoMailFolderId): React.ComponentType<any> {
+  if (folderId === 'urgent' || folderId === 'spam') return ExclamationCircle;
+  return Folder;
+}
+
+const demoMailFolderNavItems: NavItem[] = listDemoMailSidebarNavDescriptors().map((folder) => {
+  const chrome = getDemoMailFolderSidebarChrome(folder.id);
+  return {
+    id: folder.id,
+    title: folder.title,
+    subtitle: folder.subtitle,
+    url: `/mail/${folder.pathSegment}`,
+    icon: getDemoMailFolderIcon(folder.id),
+    style: chrome.style as CSSProperties | undefined,
+    className: cn(
+      chrome.className,
+      folder.id === 'urgent' &&
+        "relative after:absolute after:inset-y-1.5 after:right-0 after:w-1 after:rounded-l-sm after:bg-red-500/90 after:content-['']",
+    ),
+  };
+});
 
 // ! items title has to be a message key (check messages/en.json)
 export const navigationConfig: Record<string, NavConfig> = {
@@ -54,24 +88,29 @@ export const navigationConfig: Record<string, NavConfig> = {
             title: m['navigation.sidebar.inbox'](),
             url: '/mail/inbox',
             icon: Inbox,
-            shortcut: 'g + i',
           },
           {
             id: 'drafts',
             title: m['navigation.sidebar.drafts'](),
             url: '/mail/draft',
             icon: Folder,
-            shortcut: 'g + d',
           },
           {
             id: 'sent',
             title: m['navigation.sidebar.sent'](),
             url: '/mail/sent',
             icon: Plane2,
-            shortcut: 'g + t',
           },
         ],
       },
+      ...(DEMO_FOLDER_MODEL_ENABLED
+        ? [
+            {
+              title: 'Folders',
+              items: demoMailFolderNavItems,
+            },
+          ]
+        : []),
       {
         title: 'Management',
         items: [
@@ -80,20 +119,12 @@ export const navigationConfig: Record<string, NavConfig> = {
             title: m['navigation.sidebar.archive'](),
             url: '/mail/archive',
             icon: Archive,
-            shortcut: 'g + a',
           },
           {
             id: 'snoozed',
             title: m['navigation.sidebar.snoozed'](),
             url: '/mail/snoozed',
             icon: Clock,
-            shortcut: 'g + z',
-          },
-          {
-            id: 'spam',
-            title: m['navigation.sidebar.spam'](),
-            url: '/mail/spam',
-            icon: ExclamationCircle,
           },
           {
             id: 'trash',
@@ -101,37 +132,14 @@ export const navigationConfig: Record<string, NavConfig> = {
             url: '/mail/bin',
             icon: Bin,
           },
+          {
+            id: 'spam',
+            title: m['navigation.sidebar.spam'](),
+            url: '/mail/spam',
+            icon: ExclamationCircle,
+          },
         ],
       },
-      // {
-      //   title: "Categories",
-      //   items: [
-      //     {
-      //       title: "Social",
-      //       url: "/mail/inbox?category=social",
-      //       icon: UsersIcon,
-      //       badge: 972,
-      //     },
-      //     {
-      //       title: "Updates",
-      //       url: "/mail/inbox?category=updates",
-      //       icon: BellIcon,
-      //       badge: 342,
-      //     },
-      //     {
-      //       title: "Forums",
-      //       url: "/mail/inbox?category=forums",
-      //       icon: MessageCircleIcon,
-      //       badge: 128,
-      //     },
-      //     {
-      //       title: "Shopping",
-      //       url: "/mail/inbox?category=shopping",
-      //       icon: CartIcon,
-      //       badge: 8,
-      //     },
-      //   ],
-      // },
     ],
   },
   settings: {
@@ -151,12 +159,6 @@ export const navigationConfig: Record<string, NavConfig> = {
             title: m['navigation.settings.general'](),
             url: '/settings/general',
             icon: SettingsGear,
-            shortcut: 'g + s',
-          },
-          {
-            title: m['navigation.settings.connections'](),
-            url: '/settings/connections',
-            icon: Users,
           },
           {
             title: m['navigation.settings.privacy'](),
@@ -188,25 +190,7 @@ export const navigationConfig: Record<string, NavConfig> = {
             title: m['navigation.settings.shortcuts'](),
             url: '/settings/shortcuts',
             icon: Tabs,
-            shortcut: '?',
           },
-          // {
-          //   title: 'navigation.settings.signatures',
-          //   url: '/settings/signatures',
-          //   icon: MessageSquareIcon,
-          //   disabled: true,
-          // },
-          // {
-          //   title: 'navigation.settings.shortcuts',
-          //   url: '/settings/shortcuts',
-          //   icon: Tabs,
-          //   disabled: true,
-          // },
-          // {
-          //   title: "Notifications",
-          //   url: "/settings/notifications",
-          //   icon: BellIcon,
-          // },
           {
             title: m['navigation.settings.deleteAccount'](),
             url: '/settings/danger-zone',

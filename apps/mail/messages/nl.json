@@ -239,7 +239,17 @@
       "enableImages": "Afbeeldingen tonen",
       "star": "Ster toevoegen",
       "unstar": "Ster verwijderen",
-      "printThread": "Thread afdrukken"
+      "printThread": "Thread afdrukken",
+      "aiMailsTitle": "AI-e-mails",
+      "summariseDemoToast": "Samenvatten (demonstratie)",
+      "summariseAction": "Samenvatten",
+      "draftBadge": "[Voorlopige versie]",
+      "draftUnsentNotice": "Dit bericht is niet verzonden.",
+      "draftSavedPrefix": "Opgeslagen: ",
+      "draftTooltip": "Voorlopige versie",
+      "continueDraft": "Vervolg concept",
+      "draftEmptyPreview": "Er is nog geen concepttekst beschikbaar om te bekijken.",
+      "draftMoreOptions": "Meer opties"
     },
     "notes": {
       "title": "Notities",
@@ -391,7 +401,16 @@
       "failedToUnmute": "Dempen opheffen mislukt",
       "archived": "Gearchiveerd",
       "failedToArchive": "Archiveren mislukt",
-      "openInNewTab": "Openen in nieuw tabblad"
+      "openInNewTab": "Openen in nieuw tabblad",
+      "listSection": {
+        "pinned": "Vastgepind",
+        "today": "Vandaag",
+        "yesterday": "Gisteren",
+        "lastWeek": "Vorige week",
+        "thisMonth": "Deze maand",
+        "lastMonth": "Vorige maand",
+        "older": "Ouder"
+      }
     },
     "units": {
       "mb": "{amount} MB"

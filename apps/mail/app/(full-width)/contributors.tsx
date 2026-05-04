@@ -410,7 +410,7 @@ export default function OpenPage() {
                 size="sm"
                 className="gap-2 border-neutral-200 bg-white/50 text-neutral-700 hover:bg-neutral-100 hover:text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900/50 dark:text-neutral-200 dark:hover:bg-neutral-800 dark:hover:text-white"
               >
-                <a href={`https://github.com/${REPOSITORY}`} target="_blank">
+                <a href={`https://github.com/${REPOSITORY}`} target="_blank" rel="noreferrer">
                   <Github className="h-4 w-4" />
                   View on GitHub
                 </a>
@@ -702,7 +702,7 @@ export default function OpenPage() {
                     <a
                       href={`https://github.com/${member.login}`}
                       target="_blank"
-                      className="rounded-md p-1 text-neutral-600 transition-colors hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-white"
+                      className="rounded-md p-1 text-neutral-600 transition-colors hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-white" rel="noreferrer"
                     >
                       <Github className="h-4 w-4" />
                     </a>
@@ -710,7 +710,7 @@ export default function OpenPage() {
                       <a
                         href={`https://x.com/${specialRoles[member.login.toLowerCase()]?.x}`}
                         target="_blank"
-                        className="rounded-md p-1 text-neutral-600 transition-colors hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-white"
+                        className="rounded-md p-1 text-neutral-600 transition-colors hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-white" rel="noreferrer"
                       >
                         <Twitter className="dark:fill-muted-foreground h-4 w-4" />
                       </a>
@@ -719,7 +719,7 @@ export default function OpenPage() {
                       <a
                         href={specialRoles[member.login.toLowerCase()]?.website || '#'}
                         target="_blank"
-                        className="rounded-md p-1 text-neutral-600 transition-colors hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-white"
+                        className="rounded-md p-1 text-neutral-600 transition-colors hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-white" rel="noreferrer"
                       >
                         <svg
                           className="h-4 w-4"
@@ -789,7 +789,7 @@ export default function OpenPage() {
                         animation: 'fadeInUp 0.5s ease-out forwards',
                         opacity: 0,
                         transform: 'translateY(10px)',
-                      }}
+                      }} rel="noreferrer"
                     >
                       <Avatar className="h-16 w-16 ring-2 ring-neutral-200 transition-transform group-hover:scale-105 group-hover:ring-neutral-300 dark:ring-neutral-800 dark:group-hover:ring-neutral-700">
                         <AvatarImage
@@ -932,7 +932,7 @@ export default function OpenPage() {
                     >
                       <a
                         href={`https://github.com/${REPOSITORY}/blob/main/.github/CONTRIBUTING.md`}
-                        target="_blank"
+                        target="_blank" rel="noreferrer"
                       >
                         <span className="relative z-10 flex items-center">
                           <GitGraph className="mr-2 h-4 w-4" />
@@ -945,7 +945,7 @@ export default function OpenPage() {
                       variant="outline"
                       className="gap-2 border-neutral-200 bg-white/80 text-neutral-700 hover:bg-neutral-100 hover:text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900/50 dark:text-neutral-200 dark:hover:bg-neutral-800 dark:hover:text-white"
                     >
-                      <a href={`https://github.com/${REPOSITORY}/issues`} target="_blank">
+                      <a href={`https://github.com/${REPOSITORY}/issues`} target="_blank" rel="noreferrer">
                         <MessageCircle className="h-4 w-4" />
                         Open Issues
                       </a>

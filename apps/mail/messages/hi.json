@@ -239,7 +239,17 @@
       "enableImages": "छवियाँ दिखाएँ",
       "star": "स्टार करें",
       "unstar": "स्टार हटाएं",
-      "printThread": "थ्रेड प्रिंट करें"
+      "printThread": "थ्रेड प्रिंट करें",
+      "aiMailsTitle": "एआई ईमेल",
+      "summariseDemoToast": "सारांश (डेमो)",
+      "summariseAction": "सारांशित करें",
+      "draftBadge": "[मसौदा]",
+      "draftUnsentNotice": "यह संदेश भेजा नहीं गया है।",
+      "draftSavedPrefix": "सहेजा गया: ",
+      "draftTooltip": "मसौदा",
+      "continueDraft": "मसौदा जारी रखें",
+      "draftEmptyPreview": "अभी पूर्वावलोकन के लिए कोई ड्राफ्ट टेक्स्ट उपलब्ध नहीं है।",
+      "draftMoreOptions": "अधिक विकल्प"
     },
     "notes": {
       "title": "नोट्स",
@@ -391,7 +401,16 @@
       "failedToUnmute": "अनम्यूट करने में विफल",
       "archived": "आर्काइव किया गया",
       "failedToArchive": "आर्काइव करने में विफल",
-      "openInNewTab": "नए टैब में खोलें"
+      "openInNewTab": "नए टैब में खोलें",
+      "listSection": {
+        "pinned": "पिन की गई",
+        "today": "आज",
+        "yesterday": "कल",
+        "lastWeek": "पिछले सप्ताह",
+        "thisMonth": "इस महीने",
+        "lastMonth": "पिछला महीना",
+        "older": "पुराने"
+      }
     },
     "units": {
       "mb": "{amount} MB"

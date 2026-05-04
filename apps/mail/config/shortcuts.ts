@@ -124,57 +124,7 @@ const threadDisplayShortcuts: Shortcut[] = [
   },
 ];
 
-const navigation: Shortcut[] = [
-  {
-    keys: ['g', 'd'],
-    action: 'goToDrafts',
-    type: 'combination',
-    description: 'Go to drafts',
-    scope: 'navigation',
-  },
-  {
-    keys: ['g', 'i'],
-    action: 'inbox',
-    type: 'combination',
-    description: 'Go to inbox',
-    scope: 'navigation',
-  },
-  {
-    keys: ['g', 't'],
-    action: 'sentMail',
-    type: 'combination',
-    description: 'Go to sent mail',
-    scope: 'navigation',
-  },
-  {
-    keys: ['g', 's'],
-    action: 'goToSettings',
-    type: 'combination',
-    description: 'Go to general settings',
-    scope: 'navigation',
-  },
-  {
-    keys: ['g', 'a'],
-    action: 'goToArchive',
-    type: 'combination',
-    description: 'Go to archive',
-    scope: 'navigation',
-  },
-  {
-    keys: ['g', 'b'],
-    action: 'goToBin',
-    type: 'combination',
-    description: 'Go to bin',
-    scope: 'navigation',
-  },
-  {
-    keys: ['?', 'shift'],
-    action: 'helpWithShortcuts',
-    type: 'combination',
-    description: 'Show keyboard shortcuts',
-    scope: 'navigation',
-  },
-];
+const navigation: Shortcut[] = [];
 
 const globalShortcuts: Shortcut[] = [
   // {

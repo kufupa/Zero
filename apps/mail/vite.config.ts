@@ -17,7 +17,10 @@ const ReactCompilerConfig = {
   /* ... */
 };
 
-const shouldRunOxlint = process.env.ZERO_DISABLE_OXLINT !== '1';
+/** On Windows, vite-plugin-oxlint spawns `pnpm` with shell:false; only pnpm.cmd exists → ENOENT. PATH is fine. */
+const shouldRunOxlint =
+  process.env.ZERO_DISABLE_OXLINT !== '1' &&
+  (process.platform !== 'win32' || process.env.ZERO_OXLINT_ON_WINDOWS === '1');
 
 const plugins = [
   ...(shouldRunOxlint ? [oxlintPlugin()] : []),
@@ -77,5 +80,10 @@ export default defineConfig({
     alias: {
       tslib: 'tslib/tslib.es6.js',
     },
+    // React Compiler runtime and react-dom must share one `react` instance or `H` stays null.
+    dedupe: ['react', 'react-dom'],
+  },
+  optimizeDeps: {
+    include: ['react', 'react/jsx-runtime', 'react-dom/client', 'react/compiler-runtime'],
   },
 });

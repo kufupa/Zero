@@ -315,7 +315,7 @@ export function useShortcuts(
       const pressedKeys = getModifierString(hotkeysEvent) + (hotkeysEvent.keys?.join('+') || '');
 
       const matchingEntry = Object.entries(shortcutMap).find(
-        ([_, shortcut]) => formatKeys(shortcut.keys) === pressedKeys,
+        ([, shortcut]) => formatKeys(shortcut.keys) === pressedKeys,
       );
 
       if (matchingEntry) {

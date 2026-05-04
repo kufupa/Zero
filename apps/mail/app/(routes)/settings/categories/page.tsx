@@ -22,9 +22,11 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { SettingsCard } from '@/components/settings/settings-card';
 import { Check, ChevronDown, Trash2, Plus } from 'lucide-react';
 import type { CategorySetting } from '@/hooks/use-categories';
-import { defaultMailCategories } from '@zero/server/schemas';
+import { defaultMailCategories } from '@/lib/domain/settings';
 import React, { useState, useEffect, useMemo } from 'react';
-import { useTRPC } from '@/providers/query-provider';
+import { getFrontendApi } from '@/lib/api/client';
+import { mailSettingsQueryKey } from '@/lib/api/query-options';
+import { isFrontendOnlyDemo, resolveMailMode } from '@/lib/runtime/mail-mode';
 import { useSettings } from '@/hooks/use-settings';
 import type { DragEndEvent } from '@dnd-kit/core';
 import { Switch } from '@/components/ui/switch';
@@ -38,6 +40,8 @@ import { GripVertical } from 'lucide-react';
 import { m } from '@/paraglide/messages';
 import { CSS } from '@dnd-kit/utilities';
 import { toast } from 'sonner';
+import { demoSetSettings } from '@/lib/demo/local-actions';
+import type { DemoSettings } from '@/lib/demo/local-store';
 
 interface SortableCategoryItemProps {
   cat: CategorySetting;
@@ -203,13 +207,18 @@ const SortableCategoryItem = React.memo(function SortableCategoryItem({
 
 export default function CategoriesSettingsPage() {
   const { data } = useSettings();
-  const trpc = useTRPC();
+  const mailSettingsKey = useMemo(
+    () => mailSettingsQueryKey({ mode: resolveMailMode(), accountId: null }),
+    [],
+  );
   const queryClient = useQueryClient();
   const { userLabels, systemLabels } = useLabels();
   const allLabels = useMemo(() => [...systemLabels, ...userLabels], [systemLabels, userLabels]);
 
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
-  const { mutateAsync: saveUserSettings } = useMutation(trpc.settings.save.mutationOptions());
+  const { mutateAsync: saveUserSettings } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().settings.save(input),
+  });
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -278,8 +287,26 @@ export default function CategoriesSettingsPage() {
         toast.error('Exactly one category must be set as default');
         return;
       }
+      if (isFrontendOnlyDemo()) {
+        const normalizedCategories = categories as unknown as DemoSettings['categories'];
+        queryClient.setQueryData(['demo', 'settings'], (updater: { settings?: { categories?: DemoSettings['categories'] } } | undefined) => {
+          const previous = updater?.settings?.categories ?? data?.settings?.categories;
+          const nextCategories = normalizedCategories.length > 0 ? normalizedCategories : previous;
+          return {
+            ...updater,
+            settings: {
+              ...(updater?.settings ?? data?.settings),
+              categories: nextCategories,
+            },
+          };
+        });
+        await demoSetSettings({ categories: normalizedCategories });
+        setHasUnsavedChanges(false);
+        toast.success('Categories saved');
+        return;
+      }
       await saveUserSettings({ categories });
-      queryClient.invalidateQueries({ queryKey: trpc.settings.get.queryKey() });
+      queryClient.invalidateQueries({ queryKey: mailSettingsKey });
       setHasUnsavedChanges(false);
       toast.success('Categories saved');
     } catch (e) {
@@ -327,8 +354,23 @@ export default function CategoriesSettingsPage() {
 
   const handleResetToDefaults = async () => {
     try {
+      if (isFrontendOnlyDemo()) {
+        queryClient.setQueryData(['demo', 'settings'], (updater: { settings?: { categories?: DemoSettings['categories'] } } | undefined) => {
+          return {
+            ...updater,
+            settings: {
+              ...updater?.settings,
+              categories: defaultMailCategories as unknown as DemoSettings['categories'],
+            },
+          };
+        });
+        await demoSetSettings({ categories: defaultMailCategories as unknown as DemoSettings['categories'] });
+        setHasUnsavedChanges(false);
+        toast.success('Reset to defaults');
+        return;
+      }
       await saveUserSettings({ categories: defaultMailCategories });
-      queryClient.invalidateQueries({ queryKey: trpc.settings.get.queryKey() });
+      queryClient.invalidateQueries({ queryKey: mailSettingsKey });
       setHasUnsavedChanges(false);
       toast.success('Reset to defaults');
     } catch (e) {

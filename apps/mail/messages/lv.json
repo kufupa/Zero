@@ -239,7 +239,17 @@
       "enableImages": "Rādīt attēlus",
       "star": "Pievienot zvaigznīti",
       "unstar": "Noņemt zvaigznīti",
-      "printThread": "Drukāt saraksti"
+      "printThread": "Drukāt saraksti",
+      "aiMailsTitle": "Mākslīgā intelekta e-pasti",
+      "summariseDemoToast": "Apkopot (demonstrācija)",
+      "summariseAction": "Apkopot",
+      "draftBadge": "[Melnraksts]",
+      "draftUnsentNotice": "Šis ziņojums nav nosūtīts.",
+      "draftSavedPrefix": "Saglabāts: ",
+      "draftTooltip": "Melnraksts",
+      "continueDraft": "Turpināt melnrakstu",
+      "draftEmptyPreview": "Vēl nav melnraksta teksta priekšskatīšanai.",
+      "draftMoreOptions": "Vairāk iespēju"
     },
     "notes": {
       "title": "Piezīmes",
@@ -391,7 +401,16 @@
       "failedToUnmute": "Neizdevās atjaunot skaņu",
       "archived": "Arhivēts",
       "failedToArchive": "Neizdevās arhivēt",
-      "openInNewTab": "Atvērt jaunā cilnē"
+      "openInNewTab": "Atvērt jaunā cilnē",
+      "listSection": {
+        "pinned": "Piesprausts",
+        "today": "Šodien",
+        "yesterday": "Vakar",
+        "lastWeek": "Pagājušajā nedēļā",
+        "thisMonth": "Šomēnes",
+        "lastMonth": "Pagājušajā mēnesī",
+        "older": "Vecāks"
+      }
     },
     "units": {
       "mb": "{amount} MB"

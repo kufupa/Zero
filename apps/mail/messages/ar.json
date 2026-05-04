@@ -239,7 +239,17 @@
       "enableImages": "عرض الصور",
       "star": "تمييز بنجمة",
       "unstar": "إلغاء التمييز بنجمة",
-      "printThread": "طباعة المحادثة"
+      "printThread": "طباعة المحادثة",
+      "aiMailsTitle": "رسائل البريد الإلكتروني المدعومة بالذكاء الاصطناعي",
+      "summariseDemoToast": "ملخص (عرض توضيحي)",
+      "summariseAction": "لخص",
+      "draftBadge": "[مسودة]",
+      "draftUnsentNotice": "لم يتم إرسال هذه الرسالة.",
+      "draftSavedPrefix": "أنقذ: ",
+      "draftTooltip": "مسودة",
+      "continueDraft": "متابعة المسودة",
+      "draftEmptyPreview": "لا يوجد نص مسودة للمعاينة حتى الآن.",
+      "draftMoreOptions": "خيارات إضافية"
     },
     "notes": {
       "title": "الملاحظات",
@@ -391,7 +401,16 @@
       "failedToUnmute": "فشل إلغاء الكتم",
       "archived": "تمت الأرشفة",
       "failedToArchive": "فشلت الأرشفة",
-      "openInNewTab": "فتح في علامة تبويب جديدة"
+      "openInNewTab": "فتح في علامة تبويب جديدة",
+      "listSection": {
+        "pinned": "مثبت",
+        "today": "اليوم",
+        "yesterday": "أمس",
+        "lastWeek": "الأسبوع الماضي",
+        "thisMonth": "هذا الشهر",
+        "lastMonth": "الشهر الماضي",
+        "older": "كبار السن"
+      }
     },
     "units": {
       "mb": "{amount} ميجابايت"

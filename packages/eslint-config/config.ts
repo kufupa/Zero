@@ -10,6 +10,7 @@ export default defineConfig([
     '**/build/**',
     '**/.react-router/**',
     '**/.well-known/**',
+    '**/paraglide/**',
   ]),
   // @ts-expect-error
   tseslint.configs.recommended,

@@ -1,9 +1,11 @@
 import { useMutation } from '@tanstack/react-query';
 import { toast } from 'sonner';
 
-import { useTRPC } from '@/providers/query-provider';
+import { getFrontendApi } from '@/lib/api/client';
 import { isSendResult } from '@/lib/email-utils';
-import type { UserSettings } from '@zero/server/schemas';
+import type { MailSettings } from '@/lib/domain/settings';
+import { isFrontendOnlyDemo } from '@/lib/runtime/mail-mode';
+import { demoUnsendEmail } from '@/lib/demo/local-actions';
 
 export type EmailData = {
   to: string[];
@@ -57,12 +59,13 @@ export const deserializeFiles = (serializedFiles: SerializedFile[]): File[] => {
 };
 
 export const useUndoSend = () => {
-  const trpc = useTRPC();
-  const { mutateAsync: unsendEmail } = useMutation(trpc.mail.unsend.mutationOptions());
+  const { mutateAsync: unsendEmail } = useMutation({
+    mutationFn: (input: { messageId: string }) => getFrontendApi().mail.unsend(input),
+  });
 
   const handleUndoSend = (
     result: unknown, 
-    settings: { settings: UserSettings } | undefined,
+    settings: { settings: MailSettings } | undefined,
     emailData?: EmailData
   ) => {
     if (isSendResult(result) && settings?.settings?.undoSendEnabled) {
@@ -78,7 +81,9 @@ export const useUndoSend = () => {
               label: 'Undo',
               onClick: async () => {
                 try {
-                  await unsendEmail({ messageId });
+                  await (isFrontendOnlyDemo()
+                    ? demoUnsendEmail({ messageId })
+                    : unsendEmail({ messageId }));
                   toast.info('Schedule cancelled');
                 } catch {
                   toast.error('Failed to cancel');
@@ -93,8 +98,10 @@ export const useUndoSend = () => {
             action: {
               label: 'Undo',
               onClick: async () => {
-              try {
-                await unsendEmail({ messageId });
+                try {
+                  await (isFrontendOnlyDemo()
+                    ? demoUnsendEmail({ messageId })
+                    : unsendEmail({ messageId }));
                 
                 if (emailData) {
                   const serializedAttachments = await serializeFiles(emailData.attachments);

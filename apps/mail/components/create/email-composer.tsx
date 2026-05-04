@@ -6,30 +6,28 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/tooltip';
 import { Check, Command, Loader, Paperclip, Plus, Type, X as XIcon } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { TextEffect } from '@/components/motion-primitives/text-effect';
 import { ScheduleSendPicker } from './schedule-send-picker';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useEmailAliases } from '@/hooks/use-email-aliases';
 import useComposeEditor from '@/hooks/use-compose-editor';
 import { CurvedArrow, Sparkles, X } from '../icons/icons';
 import { gitHubEmojis } from '@tiptap/extension-emoji';
 import { AnimatePresence, motion } from 'motion/react';
 import { zodResolver } from '@hookform/resolvers/zod';
 
-import { useTRPC } from '@/providers/query-provider';
-import { useMutation } from '@tanstack/react-query';
+import { getFrontendApi } from '@/lib/api/client';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useSettings } from '@/hooks/use-settings';
+import { DEMO_MAIL_LIST_DRAFTS_QUERY_PREFIX } from '@/lib/demo/demo-mail-query-keys';
+import { isFrontendOnlyDemo } from '@/lib/runtime/mail-mode';
+import {
+  demoAiCompose,
+  demoGenerateEmailSubject,
+  demoUpsertDraft,
+} from '@/lib/demo/local-actions';
 
 import { cn, formatFileSize } from '@/lib/utils';
 import { useThread } from '@/hooks/use-threads';
@@ -51,6 +49,7 @@ import type { ImageQuality } from '@/lib/image-compression';
 
 const shortcodeRegex = /:([a-zA-Z0-9_+-]+):/g;
 import { TemplateButton } from './template-button';
+import { emailListSignature } from '@/lib/mail/compose-signatures';
 
 type ThreadContent = {
   from: string;
@@ -83,6 +82,8 @@ interface EmailComposerProps {
   autofocus?: boolean;
   settingsLoading?: boolean;
   editorClassName?: string;
+  /** When set, sync to/cc/bcc/subject from props when they change without remounting (e.g. reply → reply all). Never overwrites the message body from props. */
+  syncReplyHeadersFromProps?: boolean;
 }
 
 
@@ -106,14 +107,15 @@ export function EmailComposer({
   initialSubject = '',
   initialMessage = '',
   initialAttachments = [],
+  replyingTo,
   onSendEmail,
   onClose,
   className,
   autofocus = false,
   settingsLoading = false,
   editorClassName,
+  syncReplyHeadersFromProps = false,
 }: EmailComposerProps) {
-  const { data: aliases } = useEmailAliases();
   const { data: settings } = useSettings();
   const [showCc, setShowCc] = useState(initialCc.length > 0);
   const [showBcc, setShowBcc] = useState(initialBcc.length > 0);
@@ -134,6 +136,8 @@ export function EmailComposer({
   const [isScheduleValid, setIsScheduleValid] = useState<boolean>(true);
   const [showAttachmentWarning, setShowAttachmentWarning] = useState(false);
   const [originalAttachments, setOriginalAttachments] = useState<File[]>(initialAttachments);
+  const [attachmentPreviewUrls, setAttachmentPreviewUrls] = useState<Record<string, string>>({});
+  const attachmentPreviewUrlMapRef = useRef(new Map<string, string>());
   const [imageQuality, setImageQuality] = useState<ImageQuality>(
     settings?.settings?.imageCompression || 'medium',
   );
@@ -215,12 +219,16 @@ export function EmailComposer({
     'see the files',
   ];
 
-  const trpc = useTRPC();
-  const { mutateAsync: aiCompose } = useMutation(trpc.ai.compose.mutationOptions());
-  const { mutateAsync: createDraft } = useMutation(trpc.drafts.create.mutationOptions());
-  const { mutateAsync: generateEmailSubject } = useMutation(
-    trpc.ai.generateEmailSubject.mutationOptions(),
-  );
+  const queryClient = useQueryClient();
+  const { mutateAsync: aiCompose } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().ai.compose(input),
+  });
+  const { mutateAsync: createDraft } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().drafts.create(input),
+  });
+  const { mutateAsync: generateEmailSubject } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().ai.generateEmailSubject(input),
+  });
 
   const form = useForm<z.infer<typeof schema>>({
     resolver: zodResolver(schema),
@@ -233,19 +241,84 @@ export function EmailComposer({
       attachments: initialAttachments,
       fromEmail:
         settings?.settings?.defaultEmailAlias ||
-        aliases?.find((alias) => alias.primary)?.email ||
-        aliases?.[0]?.email ||
         '',
     },
   });
 
   const { watch, setValue, getValues } = form;
+
+  const externalHeaderSyncKey = useMemo(
+    () =>
+      [
+        emailListSignature(initialTo),
+        emailListSignature(initialCc),
+        emailListSignature(initialBcc),
+        initialSubject ?? '',
+      ].join('\f'),
+    [initialTo, initialCc, initialBcc, initialSubject],
+  );
+
+  useEffect(() => {
+    if (!syncReplyHeadersFromProps) return;
+
+    setValue('to', [...initialTo], { shouldDirty: true, shouldTouch: true });
+    setValue('cc', [...initialCc], { shouldDirty: true, shouldTouch: true });
+    setValue('bcc', [...initialBcc], { shouldDirty: true, shouldTouch: true });
+    setValue('subject', initialSubject ?? '', { shouldDirty: true, shouldTouch: true });
+    setShowCc(initialCc.length > 0);
+    setShowBcc(initialBcc.length > 0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- initial* match this key; listing array props would re-run every render (new [] identity from parent).
+  }, [externalHeaderSyncKey, syncReplyHeadersFromProps, setValue]);
+
   const toEmails = watch('to');
   const ccEmails = watch('cc');
   const bccEmails = watch('bcc');
   const subjectInput = watch('subject');
   const attachments = watch('attachments');
   const fromEmail = watch('fromEmail');
+  const getAttachmentKey = useCallback(
+    (file: File) => `${file.name}-${file.size}-${file.lastModified}`,
+    [],
+  );
+
+  const clearAttachmentState = useCallback(() => {
+    setOriginalAttachments([]);
+    setValue('attachments', [], { shouldDirty: false });
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  }, [setValue]);
+
+  useEffect(() => {
+    const files = (attachments ?? []) as File[];
+    const previousMap = attachmentPreviewUrlMapRef.current;
+    const nextMap = new Map<string, string>();
+
+    files.forEach((file) => {
+      if (!file.type.startsWith('image/')) return;
+      const key = getAttachmentKey(file);
+      const existingUrl = previousMap.get(key);
+      nextMap.set(key, existingUrl ?? URL.createObjectURL(file));
+    });
+
+    previousMap.forEach((url, key) => {
+      if (!nextMap.has(key)) {
+        URL.revokeObjectURL(url);
+      }
+    });
+
+    attachmentPreviewUrlMapRef.current = nextMap;
+    setAttachmentPreviewUrls(Object.fromEntries(nextMap));
+  }, [attachments, getAttachmentKey]);
+
+  useEffect(() => {
+    return () => {
+      attachmentPreviewUrlMapRef.current.forEach((url) => {
+        URL.revokeObjectURL(url);
+      });
+      attachmentPreviewUrlMapRef.current.clear();
+    };
+  }, []);
 
   const handleAttachment = async (newFiles: File[]) => {
     if (newFiles && newFiles.length > 0) {
@@ -367,6 +440,7 @@ export function EmailComposer({
       setHasUnsavedChanges(false);
       editor.commands.clearContent(true);
       form.reset();
+      clearAttachmentState();
       setIsComposeOpen(null);
     } catch (error) {
       console.error('Error sending email:', error);
@@ -421,13 +495,21 @@ export function EmailComposer({
       setAiIsLoading(true);
       const values = getValues();
 
-      const result = await aiCompose({
-        prompt: editor.getText(),
-        emailSubject: values.subject,
-        to: values.to,
-        cc: values.cc,
-        threadMessages: threadContent,
-      });
+      const result = isFrontendOnlyDemo()
+        ? await demoAiCompose({
+            prompt: editor.getText(),
+            emailSubject: values.subject,
+            to: values.to,
+            cc: values.cc,
+            threadMessages: threadContent,
+          })
+        : await aiCompose({
+            prompt: editor.getText(),
+            emailSubject: values.subject,
+            to: values.to,
+            cc: values.cc,
+            threadMessages: threadContent,
+          });
 
       setAiGeneratedMessage(result.newBody);
       // toast.success('Email generated successfully');
@@ -458,26 +540,30 @@ export function EmailComposer({
         cc: values.cc?.join(', '),
         bcc: values.bcc?.join(', '),
         subject: values.subject,
+        body: editor.getHTML(),
         message: editor.getHTML(),
         attachments: await serializeFiles(values.attachments ?? []),
         id: draftId,
-        threadId: threadId ? threadId : null,
-        fromEmail: values.fromEmail ? values.fromEmail : null,
+        threadId: threadId ? threadId : undefined,
+        fromEmail: values.fromEmail ? values.fromEmail : undefined,
       };
 
-      const response = await createDraft(draftData);
+      const response = isFrontendOnlyDemo()
+        ? await demoUpsertDraft(draftData)
+        : await createDraft(draftData);
 
       if (response?.id && response.id !== draftId) {
         setDraftId(response.id);
       }
+      if (isFrontendOnlyDemo()) {
+        void queryClient.invalidateQueries({ queryKey: [...DEMO_MAIL_LIST_DRAFTS_QUERY_PREFIX] });
+      }
+      setHasUnsavedChanges(false);
     } catch (error) {
       console.error('Error saving draft:', error);
       toast.error('Failed to save draft');
-      setIsSavingDraft(false);
-      setHasUnsavedChanges(false);
     } finally {
       setIsSavingDraft(false);
-      setHasUnsavedChanges(false);
     }
   };
 
@@ -491,7 +577,9 @@ export function EmailComposer({
         return;
       }
 
-      const { subject } = await generateEmailSubject({ message: messageText });
+      const { subject } = isFrontendOnlyDemo()
+        ? await demoGenerateEmailSubject({ message: messageText })
+        : await generateEmailSubject({ message: messageText });
       setValue('subject', subject);
       setHasUnsavedChanges(true);
     } catch (error) {
@@ -576,17 +664,15 @@ export function EmailComposer({
   // });
 
 
-  // keep fromEmail in sync when settings or aliases load afterwards
+  // keep fromEmail in sync when settings load
   useEffect(() => {
     const preferred =
-      settings?.settings?.defaultEmailAlias ??
-      aliases?.find((a) => a.primary)?.email ??
-      aliases?.[0]?.email;
+      settings?.settings?.defaultEmailAlias || '';
 
     if (preferred && getValues('fromEmail') !== preferred) {
       setValue('fromEmail', preferred, { shouldDirty: false });
     }
-  }, [settings?.settings?.defaultEmailAlias, aliases, getValues, setValue]);
+  }, [settings?.settings?.defaultEmailAlias, getValues, setValue]);
 
   const handleQualityChange = async (newQuality: ImageQuality) => {
     setImageQuality(newQuality);
@@ -610,6 +696,22 @@ export function EmailComposer({
       return emoji?.emoji ?? match;
     });
   };
+
+  const isReplyComposer = Boolean(replyingTo);
+
+  const sendButton = (
+    <Button size={'xs'} onClick={handleSend} disabled={isLoading || settingsLoading || !isScheduleValid}>
+      <div className="flex items-center justify-center">
+        <div className="text-center text-sm leading-none text-white dark:text-black">
+          <span>Send </span>
+        </div>
+      </div>
+      <div className="flex h-5 items-center justify-center gap-1 rounded-sm bg-white/10 px-1 dark:bg-black/10">
+        <Command className="h-3.5 w-3.5 text-white dark:text-black" />
+        <CurvedArrow className="mt-1.5 h-4 w-4 fill-white dark:fill-black" />
+      </div>
+    </Button>
+  );
 
   return (
     <div
@@ -693,6 +795,8 @@ export function EmailComposer({
           <div className="flex items-center gap-2 border-b p-3">
             <p className="text-sm font-medium text-[#8C8C8C]">Subject:</p>
             <input
+                  id="compose-subject"
+                  name="subject"
               className="h-4 w-full bg-transparent text-sm font-normal leading-normal text-black placeholder:text-[#797979] focus:outline-none dark:text-white/90"
               placeholder="Re: Design review feedback"
               value={subjectInput}
@@ -720,35 +824,7 @@ export function EmailComposer({
           </div>
         ) : null}
 
-        {/* From */}
-        {aliases && aliases.length > 1 ? (
-          <div className="flex items-center gap-2 border-b p-3">
-            <p className="text-sm font-medium text-[#8C8C8C]">From:</p>
-            <Select
-              value={fromEmail || ''}
-              onValueChange={(value) => {
-                setValue('fromEmail', value);
-                setHasUnsavedChanges(true);
-              }}
-            >
-              <SelectTrigger className="h-6 flex-1 border-0 bg-transparent p-0 text-sm font-normal text-black placeholder:text-[#797979] focus:outline-none focus:ring-0 dark:text-white/90">
-                <SelectValue placeholder="Select an email address" />
-              </SelectTrigger>
-              <SelectContent className="z-99999">
-                {aliases.map((alias) => (
-                  <SelectItem key={alias.email} value={alias.email}>
-                    <div className="flex flex-row items-center gap-1">
-                      <span className="text-sm">
-                        {alias.name ? `${alias.name} <${alias.email}>` : alias.email}
-                      </span>
-                      {alias.primary && <span className="text-xs text-[#8C8C8C]">Primary</span>}
-                    </div>
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        ) : null}
+        <input type="hidden" name="fromEmail" value={fromEmail || ''} />
 
         {/* Message Content */}
         <div className="flex-1 overflow-y-auto border-t bg-[#FFFFFF] px-3 py-3 outline-white/5 dark:bg-[#202020]">
@@ -772,17 +848,7 @@ export function EmailComposer({
         <div className="flex flex-col items-start justify-start gap-2">
           {toggleToolbar && <Toolbar editor={editor} />}
           <div className="flex items-center justify-start gap-2">
-            <Button size={'xs'} onClick={handleSend} disabled={isLoading || settingsLoading || !isScheduleValid}>
-              <div className="flex items-center justify-center">
-                <div className="text-center text-sm leading-none text-white dark:text-black">
-                  <span>Send </span>
-                </div>
-              </div>
-              <div className="flex h-5 items-center justify-center gap-1 rounded-sm bg-white/10 px-1 dark:bg-black/10">
-                <Command className="h-3.5 w-3.5 text-white dark:text-black" />
-                <CurvedArrow className="mt-1.5 h-4 w-4 fill-white dark:fill-black" />
-              </div>
-            </Button>
+            {!isReplyComposer ? sendButton : null}
             <ScheduleSendPicker
               value={scheduleAt}
               onChange={handleScheduleChange}
@@ -852,6 +918,7 @@ export function EmailComposer({
 
                     <div className="max-h-[250px] flex-1 space-y-0.5 overflow-y-auto p-1.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                       {attachments.map((file: File, index: number) => {
+                        const attachmentKey = getAttachmentKey(file);
                         const nameParts = file.name.split('.');
                         const extension = nameParts.length > 1 ? nameParts.pop() : undefined;
                         const nameWithoutExt = nameParts.join('.');
@@ -862,14 +929,14 @@ export function EmailComposer({
                             : nameWithoutExt;
                         return (
                             <div
-                              key={`${file.name}-${file.size}-${file.lastModified}`}
+                              key={attachmentKey}
                             className="group flex items-center justify-between gap-3 rounded-md px-1.5 py-1.5 hover:bg-black/5 dark:hover:bg-white/10"
                           >
                             <div className="flex min-w-0 flex-1 items-center gap-3">
                               <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded bg-[#F0F0F0] dark:bg-[#2C2C2C]">
                                 {file.type.startsWith('image/') ? (
                                   <img
-                                    src={URL.createObjectURL(file)}
+                                    src={attachmentPreviewUrls[attachmentKey]}
                                     alt={file.name}
                                     className="h-full w-full rounded object-cover"
                                     aria-hidden="true"
@@ -951,56 +1018,60 @@ export function EmailComposer({
           </div>
         </div>
         <div className="flex items-start justify-start gap-2">
-          <div className="relative">
-            <AnimatePresence>
-              {aiGeneratedMessage !== null ? (
-                <ContentPreview
-                  content={aiGeneratedMessage}
-                  onAccept={() => {
-                    editor.commands.setContent({
-                      type: 'doc',
-                      content: aiGeneratedMessage.split(/\r?\n/).map((line) => {
-                        return {
-                          type: 'paragraph',
-                          content: line.trim().length === 0 ? [] : [{ type: 'text', text: line }],
-                        };
-                      }),
-                    });
-                    setAiGeneratedMessage(null);
-                  }}
-                  onReject={() => {
-                    setAiGeneratedMessage(null);
-                  }}
-                />
-              ) : null}
-            </AnimatePresence>
-            <Button
-              size={'xs'}
-              variant={'ghost'}
-              className="border border-[#8B5CF6] cursor-pointer"
-              onClick={async () => {
-                if (!subjectInput.trim()) {
-                  await handleGenerateSubject();
-                }
-                setAiGeneratedMessage(null);
-                await handleAiGenerate();
-              }}
-              disabled={isLoading || aiIsLoading || messageLength < 1}
-            >
-              <div className="flex items-center justify-center gap-2.5 pl-0.5">
-                <div className="flex h-5 items-center justify-center gap-1 rounded-sm">
-                  {aiIsLoading ? (
-                    <Loader className="h-3.5 w-3.5 animate-spin fill-black dark:fill-white" />
-                  ) : (
-                    <Sparkles className="h-3.5 w-3.5 fill-black dark:fill-white" />
-                  )}
+          {isReplyComposer ? (
+            sendButton
+          ) : (
+            <div className="relative">
+              <AnimatePresence>
+                {aiGeneratedMessage !== null ? (
+                  <ContentPreview
+                    content={aiGeneratedMessage}
+                    onAccept={() => {
+                      editor.commands.setContent({
+                        type: 'doc',
+                        content: aiGeneratedMessage.split(/\r?\n/).map((line) => {
+                          return {
+                            type: 'paragraph',
+                            content: line.trim().length === 0 ? [] : [{ type: 'text', text: line }],
+                          };
+                        }),
+                      });
+                      setAiGeneratedMessage(null);
+                    }}
+                    onReject={() => {
+                      setAiGeneratedMessage(null);
+                    }}
+                  />
+                ) : null}
+              </AnimatePresence>
+              <Button
+                size={'xs'}
+                variant={'ghost'}
+                className="border border-[#8B5CF6] cursor-pointer"
+                onClick={async () => {
+                  if (!subjectInput.trim()) {
+                    await handleGenerateSubject();
+                  }
+                  setAiGeneratedMessage(null);
+                  await handleAiGenerate();
+                }}
+                disabled={isLoading || aiIsLoading || messageLength < 1}
+              >
+                <div className="flex items-center justify-center gap-2.5 pl-0.5">
+                  <div className="flex h-5 items-center justify-center gap-1 rounded-sm">
+                    {aiIsLoading ? (
+                      <Loader className="h-3.5 w-3.5 animate-spin fill-black dark:fill-white" />
+                    ) : (
+                      <Sparkles className="h-3.5 w-3.5 fill-black dark:fill-white" />
+                    )}
+                  </div>
+                  <div className="hidden text-center text-sm leading-none text-black md:block dark:text-white">
+                    Generate
+                  </div>
                 </div>
-                <div className="hidden text-center text-sm leading-none text-black md:block dark:text-white">
-                  Generate
-                </div>
-              </div>
-            </Button>
-          </div>
+              </Button>
+            </div>
+          )}
         </div>
       </div>
 

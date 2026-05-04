@@ -1,5 +1,5 @@
 import { useTemplates } from '@/hooks/use-templates';
-import { useTRPC } from '@/providers/query-provider';
+import { getFrontendApi } from '@/lib/api/client';
 import { Editor } from '@tiptap/react';
 import { Button } from '@/components/ui/button';
 import {
@@ -15,6 +15,8 @@ import { toast } from 'sonner';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { FileText, Save, Trash2 } from 'lucide-react';
 import React, { useState, useMemo, useDeferredValue, useCallback } from 'react';
+import { isFrontendOnlyDemo, resolveMailMode } from '@/lib/runtime/mail-mode';
+import { templatesListQueryKey, type ApiQueryContext } from '@/lib/api/query-options';
 import {
   Dialog,
   DialogContent,
@@ -24,6 +26,7 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { TRPCClientError } from '@trpc/client';
+import { demoDeleteTemplate, demoUpsertTemplate } from '@/lib/demo/local-actions';
 
 type EmailTemplate = {
   id: string;
@@ -59,8 +62,11 @@ const TemplateButtonComponent: React.FC<TemplateButtonProps> = ({
   bcc,
   setRecipients,
 }) => {
-  const trpc = useTRPC();
   const queryClient = useQueryClient();
+  const queryCtx = useMemo<ApiQueryContext>(
+    () => ({ mode: resolveMailMode(), accountId: null }),
+    [],
+  );
   const { data } = useTemplates();
   
   const templates = (data?.templates ?? []) as EmailTemplate[];
@@ -84,10 +90,19 @@ const TemplateButtonComponent: React.FC<TemplateButtonProps> = ({
     return new Map(templates.map((t) => [t.id, t] as const));
   }, [templates]);
 
-  const { mutateAsync: createTemplate } = useMutation(trpc.templates.create.mutationOptions());
-  const { mutateAsync: deleteTemplateMutation } = useMutation(
-    trpc.templates.delete.mutationOptions(),
-  );
+  const { mutateAsync: createTemplate } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().templates.create(input),
+  });
+  const { mutateAsync: deleteTemplateMutation } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().templates.delete(input),
+  });
+
+  const invalidateTemplateList = useCallback(() => {
+    if (isFrontendOnlyDemo()) {
+      return queryClient.invalidateQueries({ queryKey: ['demo', 'templates'] as const });
+    }
+    return queryClient.invalidateQueries({ queryKey: templatesListQueryKey(queryCtx) });
+  }, [queryClient, queryCtx]);
 
   const handleSaveTemplate = async () => {
     if (!editor) return;
@@ -99,17 +114,18 @@ const TemplateButtonComponent: React.FC<TemplateButtonProps> = ({
     setIsSaving(true);
     try {
       const normalizedSubject = subject.trim() ? subject : null;
-      await createTemplate({
+      const request = {
         name: templateName.trim(),
         body: editor.getHTML(),
         to: to.length ? to : undefined,
         cc: cc.length ? cc : undefined,
         bcc: bcc.length ? bcc : undefined,
         ...(normalizedSubject !== null ? { subject: normalizedSubject } : {}),
-      });
-      await queryClient.invalidateQueries({
-        queryKey: trpc.templates.list.queryKey(),
-      });
+      };
+      await (isFrontendOnlyDemo()
+        ? demoUpsertTemplate(request)
+        : createTemplate(request));
+      await invalidateTemplateList();
       toast.success('Template saved');
       setTemplateName('');
       setSaveDialogOpen(false);
@@ -141,10 +157,10 @@ const TemplateButtonComponent: React.FC<TemplateButtonProps> = ({
   const handleDeleteTemplate = useCallback(
     async (templateId: string) => {
       try {
-        await deleteTemplateMutation({ id: templateId });
-        await queryClient.invalidateQueries({
-          queryKey: trpc.templates.list.queryKey(),
-        });
+        await (isFrontendOnlyDemo()
+          ? demoDeleteTemplate(templateId)
+          : deleteTemplateMutation({ id: templateId }));
+        await invalidateTemplateList();
         toast.success('Template deleted');
       } catch (err) {
         if (err instanceof TRPCClientError) {
@@ -154,7 +170,7 @@ const TemplateButtonComponent: React.FC<TemplateButtonProps> = ({
         }
       }
     },
-    [deleteTemplateMutation, queryClient, trpc.templates.list],
+    [deleteTemplateMutation, invalidateTemplateList],
   );
 
   const handleTemplateItemClick = useCallback(

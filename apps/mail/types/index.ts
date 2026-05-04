@@ -1,3 +1,5 @@
+export type { CenturionMailCategory } from '@/lib/domain/mail-thread';
+
 export type Label = {
   id: string;
   name: string;
@@ -110,7 +112,7 @@ export interface MailListProps {
 export type MailSelectMode = 'mass' | 'range' | 'single' | 'selectAllBelow';
 
 export type ThreadProps = {
-  message: { id: string; historyId?: string | null };
+  message: { id: string; historyId?: string | null; centurionCategory?: CenturionMailCategory };
   onClick?: (message: ParsedMessage) => () => void;
   isKeyboardFocused?: boolean;
 };

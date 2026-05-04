@@ -4,7 +4,9 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 
 import { backgroundQueueAtom } from '@/store/backgroundQueue';
 import type { ThreadDestination } from '@/lib/thread-actions';
-import { useTRPC } from '@/providers/query-provider';
+import { draftsListPrefixKey, labelsListQueryKey } from '@/lib/api/query-options';
+import { getFrontendApi } from '@/lib/api/client';
+import { isFrontendOnlyDemo, resolveMailMode } from '@/lib/runtime/mail-mode';
 import { useMail } from '@/components/mail/use-mail';
 import { moveThreadsTo } from '@/lib/thread-actions';
 import { m } from '@/paraglide/messages';
@@ -13,6 +15,19 @@ import { useCallback } from 'react';
 import posthog from 'posthog-js';
 import { useAtom } from 'jotai';
 import { toast } from 'sonner';
+import { DEMO_MAIL_LIST_DRAFTS_QUERY_PREFIX } from '@/lib/demo/demo-mail-query-keys';
+import {
+  demoBulkDeleteThreads,
+  demoMarkAsRead,
+  demoMarkAsUnread,
+  demoModifyLabels,
+  demoMoveThreadsTo,
+  demoSnoozeThreads,
+  demoToggleImportant,
+  demoToggleStar,
+  demoUnsnoozeThreads,
+  demoDeleteDraft as demoDeleteDraftAction,
+} from '@/lib/demo/local-actions';
 
 enum ActionType {
   MOVE = 'MOVE',
@@ -50,7 +65,6 @@ const actionEventNames: Record<ActionType, (params: ActionParams) => string> = {
 };
 
 export function useOptimisticActions() {
-  const trpc = useTRPC();
   const queryClient = useQueryClient();
   const [, setBackgroundQueue] = useAtom(backgroundQueueAtom);
   const [, addOptimisticAction] = useAtom(addOptimisticActionAtom);
@@ -58,24 +72,45 @@ export function useOptimisticActions() {
   const [threadId, setThreadId] = useQueryState('threadId');
   const [, setActiveReplyId] = useQueryState('activeReplyId');
   const [mail, setMail] = useMail();
-  const { mutateAsync: markAsRead } = useMutation(trpc.mail.markAsRead.mutationOptions());
-  const { mutateAsync: markAsUnread } = useMutation(trpc.mail.markAsUnread.mutationOptions());
+  const frontendOnlyDemo = isFrontendOnlyDemo();
+  const { mutateAsync: markAsRead } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().mail.markAsRead(input),
+  });
+  const { mutateAsync: markAsUnread } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().mail.markAsUnread(input),
+  });
 
-  const { mutateAsync: toggleStar } = useMutation(trpc.mail.toggleStar.mutationOptions());
-  const { mutateAsync: toggleImportant } = useMutation(trpc.mail.toggleImportant.mutationOptions());
+  const { mutateAsync: toggleStar } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().mail.toggleStar(input),
+  });
+  const { mutateAsync: toggleImportant } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().mail.toggleImportant(input),
+  });
 
-  const { mutateAsync: bulkDeleteThread } = useMutation(trpc.mail.bulkDelete.mutationOptions());
-  const { mutateAsync: snoozeThreads } = useMutation(trpc.mail.snoozeThreads.mutationOptions());
-  const { mutateAsync: unsnoozeThreads } = useMutation(trpc.mail.unsnoozeThreads.mutationOptions());
-  const { mutateAsync: modifyLabels } = useMutation(trpc.mail.modifyLabels.mutationOptions());
+  const { mutateAsync: bulkDeleteThread } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().mail.bulkDelete(input),
+  });
+  const { mutateAsync: snoozeThreads } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().mail.snoozeThreads(input),
+  });
+  const { mutateAsync: unsnoozeThreads } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().mail.unsnoozeThreads(input),
+  });
+  const { mutateAsync: modifyLabels } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().mail.modifyLabels(input),
+  });
 
-  const { mutateAsync: deleteDraft } = useMutation(trpc.drafts.delete.mutationOptions());
+  const { mutateAsync: deleteDraft } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().drafts.delete(input),
+  });
 
   const generatePendingActionId = () =>
     `pending_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 
   const refreshData = useCallback(async () => {
-    return await queryClient.refetchQueries({ queryKey: trpc.labels.list.queryKey() });
+    return await queryClient.refetchQueries({
+      queryKey: labelsListQueryKey({ mode: resolveMailMode(), accountId: null }),
+    });
   }, [queryClient]);
 
   function createPendingAction({
@@ -199,7 +234,11 @@ export function useOptimisticActions() {
         params: { read: true },
         optimisticId,
         execute: async () => {
-          await markAsRead({ ids: threadIds });
+          if (frontendOnlyDemo) {
+            await demoMarkAsRead(threadIds);
+          } else {
+            await markAsRead({ ids: threadIds });
+          }
 
           if (mail.bulkSelected.length > 0) {
             setMail((prev) => ({ ...prev, bulkSelected: [] }));
@@ -229,7 +268,11 @@ export function useOptimisticActions() {
       params: { read: false },
       optimisticId,
       execute: async () => {
-        await markAsUnread({ ids: threadIds });
+          if (frontendOnlyDemo) {
+            await demoMarkAsUnread(threadIds);
+          } else {
+            await markAsUnread({ ids: threadIds });
+          }
 
         if (mail.bulkSelected.length > 0) {
           setMail({ ...mail, bulkSelected: [] });
@@ -258,7 +301,11 @@ export function useOptimisticActions() {
         params: { starred },
         optimisticId,
         execute: async () => {
-          await toggleStar({ ids: threadIds });
+          if (frontendOnlyDemo) {
+            await demoToggleStar(threadIds);
+          } else {
+            await toggleStar({ ids: threadIds });
+          }
         },
         undo: () => {
           removeOptimisticAction(optimisticId);
@@ -309,11 +356,15 @@ export function useOptimisticActions() {
       params: { currentFolder, destination },
       optimisticId,
       execute: async () => {
-        await moveThreadsTo({
-          threadIds,
-          currentFolder,
-          destination,
-        });
+          if (frontendOnlyDemo) {
+            await demoMoveThreadsTo({ threadIds, currentFolder, destination });
+          } else {
+            await moveThreadsTo({
+              threadIds,
+              currentFolder,
+              destination,
+            });
+          }
 
         if (mail.bulkSelected.length > 0) {
           setMail({ ...mail, bulkSelected: [] });
@@ -359,7 +410,11 @@ export function useOptimisticActions() {
       params: { currentFolder, destination: 'bin' },
       optimisticId,
       execute: async () => {
-        await bulkDeleteThread({ ids: threadIds });
+          if (frontendOnlyDemo) {
+            await demoBulkDeleteThreads({ ids: threadIds });
+          } else {
+            await bulkDeleteThread({ ids: threadIds });
+          }
 
         if (mail.bulkSelected.length > 0) {
           setMail({ ...mail, bulkSelected: [] });
@@ -396,7 +451,11 @@ export function useOptimisticActions() {
         params: { important: isImportant },
         optimisticId,
         execute: async () => {
-          await toggleImportant({ ids: threadIds });
+          if (frontendOnlyDemo) {
+            await demoToggleImportant(threadIds);
+          } else {
+            await toggleImportant({ ids: threadIds });
+          }
 
           if (mail.bulkSelected.length > 0) {
             setMail((prev) => ({ ...prev, bulkSelected: [] }));
@@ -427,11 +486,19 @@ export function useOptimisticActions() {
       params: { labelId, add },
       optimisticId,
       execute: async () => {
-        await modifyLabels({
-          threadId: threadIds,
-          addLabels: add ? [labelId] : [],
-          removeLabels: add ? [] : [labelId],
-        });
+          if (frontendOnlyDemo) {
+            await demoModifyLabels({
+              threadId: threadIds,
+              addLabels: add ? [labelId] : [],
+              removeLabels: add ? [] : [labelId],
+            });
+          } else {
+            await modifyLabels({
+              threadId: threadIds,
+              addLabels: add ? [labelId] : [],
+              removeLabels: add ? [] : [labelId],
+            });
+          }
 
         if (mail.bulkSelected.length > 0) {
           setMail({ ...mail, bulkSelected: [] });
@@ -461,7 +528,11 @@ export function useOptimisticActions() {
       params: { currentFolder, wakeAt: wakeAt.toISOString() },
       optimisticId,
       execute: async () => {
-        await snoozeThreads({ ids: threadIds, wakeAt: wakeAt.toISOString() });
+          if (frontendOnlyDemo) {
+            await demoSnoozeThreads({ ids: threadIds, wakeAt: wakeAt.toISOString() });
+          } else {
+            await snoozeThreads({ ids: threadIds, wakeAt: wakeAt.toISOString() });
+          }
 
         if (mail.bulkSelected.length > 0) {
           setMail({ ...mail, bulkSelected: [] });
@@ -489,7 +560,11 @@ export function useOptimisticActions() {
       params: { currentFolder } as any,
       optimisticId,
       execute: async () => {
-        await unsnoozeThreads({ ids: threadIds });
+          if (frontendOnlyDemo) {
+            await demoUnsnoozeThreads({ ids: threadIds });
+          } else {
+            await unsnoozeThreads({ ids: threadIds });
+          }
       },
       undo: () => {
         removeOptimisticAction(optimisticId);
@@ -510,11 +585,19 @@ export function useOptimisticActions() {
     createPendingAction({
       type: 'DELETE_DRAFT',
       threadIds: [draftId],
-      params: {} as any,
+      params: {} as Record<string, never>,
       optimisticId,
       execute: async () => {
-        await deleteDraft({ id: draftId });
-        await queryClient.invalidateQueries({ queryKey: trpc.drafts.list.queryKey() });
+          if (frontendOnlyDemo) {
+            await demoDeleteDraftAction(draftId);
+            void queryClient.invalidateQueries({ queryKey: [...DEMO_MAIL_LIST_DRAFTS_QUERY_PREFIX] });
+            void queryClient.invalidateQueries({ queryKey: ['demo', 'mail', 'thread'] });
+          } else {
+            await deleteDraft({ id: draftId });
+          }
+        await queryClient.invalidateQueries({
+          queryKey: draftsListPrefixKey({ mode: resolveMailMode(), accountId: null }),
+        });
       },
       undo: () => {
         removeOptimisticAction(optimisticId);

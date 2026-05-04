@@ -3,6 +3,17 @@ import { ParsedMessageSchema } from '../../types';
 import type { CreateDraftData } from '../schemas';
 import { z } from 'zod';
 
+/** Demo / Centurion: primary category folder on thread (not spam). Live mail omits. */
+export type CenturionMailCategory = 'internal' | 'individual' | 'group' | 'travel-agents';
+
+export const centurionMailCategorySchema = z.enum(['internal', 'individual', 'group', 'travel-agents']);
+
+/**
+ * Drafts (future backend):
+ * - v1: `messages[].isDraft` plus `latest` pointing at the newest non-draft message (current shape).
+ * - v2 optional: `drafts: ParsedMessage[]` for multiple drafts / AI variants; the mail UI can pick
+ *   `findLast` over that list or honor an explicit `activeDraftId` when added.
+ */
 export interface IGetThreadResponse {
   messages: ParsedMessage[];
   latest?: ParsedMessage;
@@ -10,6 +21,7 @@ export interface IGetThreadResponse {
   totalReplies: number;
   labels: { id: string; name: string }[];
   isLatestDraft?: boolean;
+  centurionCategory?: CenturionMailCategory;
 }
 
 export const IGetThreadResponseSchema = z.object({
@@ -18,6 +30,7 @@ export const IGetThreadResponseSchema = z.object({
   hasUnread: z.boolean(),
   totalReplies: z.number(),
   labels: z.array(z.object({ id: z.string(), name: z.string() })),
+  centurionCategory: centurionMailCategorySchema.optional(),
 });
 
 export interface ParsedDraft {
@@ -120,7 +133,12 @@ export interface MailManager {
 }
 
 export interface IGetThreadsResponse {
-  threads: { id: string; historyId: string | null; $raw?: unknown }[];
+  threads: {
+    id: string;
+    historyId: string | null;
+    $raw?: unknown;
+    centurionCategory?: CenturionMailCategory;
+  }[];
   nextPageToken: string | null;
 }
 
@@ -130,6 +148,7 @@ export const IGetThreadsResponseSchema = z.object({
       id: z.string(),
       historyId: z.string().nullable(),
       $raw: z.unknown().optional(),
+      centurionCategory: centurionMailCategorySchema.optional(),
     }),
   ),
   nextPageToken: z.string().nullable(),

@@ -6,7 +6,7 @@ interface Window {
 interface SpeechRecognitionEvent extends Event {
   results: SpeechRecognitionResultList;
   resultIndex: number;
-  interpretation: any;
+  interpretation: unknown;
 }
 
 interface SpeechRecognitionResultList {
@@ -47,6 +47,7 @@ interface SpeechRecognition extends EventTarget {
   onnomatch: (event: Event) => void;
 }
 
+// eslint-disable-next-line no-var -- DOM global constructor shape
 declare var SpeechRecognition: {
   prototype: SpeechRecognition;
   new(): SpeechRecognition;
