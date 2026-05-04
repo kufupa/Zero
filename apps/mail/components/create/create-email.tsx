@@ -5,8 +5,8 @@ import { cleanEmailAddresses } from '@/lib/email-utils';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { demoSendEmail } from '@/lib/demo/local-actions';
 
-import { useTRPC } from '@/providers/query-provider';
 import { useMutation } from '@tanstack/react-query';
+import { getFrontendApi } from '@/lib/api/client';
 import { useSettings } from '@/hooks/use-settings';
 import { EmailComposer } from './email-composer';
 import { useSession } from '@/lib/auth-client';
@@ -57,8 +57,9 @@ export function CreateEmail({
   } = useDraft(draftId ?? propDraftId ?? null);
 
   const [, setIsDraftFailed] = useState(false);
-  const trpc = useTRPC();
-  const { mutateAsync: sendEmail } = useMutation(trpc.mail.send.mutationOptions());
+  const { mutateAsync: sendEmail } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().mail.send(input),
+  });
   const [isComposeOpen, setIsComposeOpen] = useQueryState('isComposeOpen');
   const [, setThreadId] = useQueryState('threadId');
   const [, setActiveReplyId] = useQueryState('activeReplyId');
