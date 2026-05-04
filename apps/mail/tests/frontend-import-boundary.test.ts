@@ -15,6 +15,18 @@ const ALLOW_TRPC = new Set([
 
 const ALLOW_SERVER_AUTH_TYPE = new Set(['lib/auth-client.ts']);
 
+const QUERY_PROVIDER_HOOK_IMPORT = /import\s*\{[^}]*\buseTRPC\b[^}]*\}\s*from\s*['"]@\/providers\/query-provider['"]/;
+const QUERY_PROVIDER_CLIENT_IMPORT = /import\s*\{[^}]*\btrpcClient\b[^}]*\}\s*from\s*['"]@\/providers\/query-provider['"]/;
+
+/** Drop block + full-line // comments so dead commented imports do not trip hooks/client guards. */
+function stripCommentsForImportScan(code: string): string {
+  const noBlock = code.replace(/\/\*[\s\S]*?\*\//g, '');
+  return noBlock
+    .split('\n')
+    .filter((line) => !line.trimStart().startsWith('//'))
+    .join('\n');
+}
+
 function* walkTsFiles(dir: string): Generator<string> {
   for (const name of readdirSync(dir)) {
     if (name === 'node_modules' || name === 'dist' || name === 'paraglide' || name === '.react-router') {
@@ -58,6 +70,14 @@ describe('frontend import boundary', () => {
 
       if (/@zero\/server\/trpc\b/.test(src) && !ALLOW_TRPC.has(rel)) {
         expect.fail(`${rel}: @zero/server/trpc only allowed in ${[...ALLOW_TRPC].join(', ')}`);
+      }
+
+      const srcForHookScan = stripCommentsForImportScan(src);
+      if (QUERY_PROVIDER_HOOK_IMPORT.test(srcForHookScan) && rel !== 'providers/query-provider.tsx') {
+        expect.fail(`${rel}: useTRPC must not be imported from query-provider (use getFrontendApi / query options)`);
+      }
+      if (QUERY_PROVIDER_CLIENT_IMPORT.test(srcForHookScan) && rel !== 'providers/query-provider.tsx') {
+        expect.fail(`${rel}: trpcClient must not be imported from query-provider (use getFrontendApi / lib/trpc api)`);
       }
     }
   });
