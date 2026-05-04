@@ -10,6 +10,7 @@ import { resolveMailDisplayWebSearch } from '../components/mail/mail-display';
 import { createLabelInThreadContext } from '../components/context/thread-context';
 import { deleteLabelInSidebarContext } from '../components/context/label-sidebar-context';
 import { handleGeneralSettingsSave } from '../app/(routes)/settings/general/page';
+import { mailSettingsQueryKey } from '../lib/api/query-options';
 import { persistTrustedSender } from '../components/mail/mail-content';
 import { runDisconnectConnection, runReconnectConnection } from '../app/(routes)/settings/connections/page';
 import { runDeleteAccount } from '../app/(routes)/settings/danger-zone/page';
@@ -1194,6 +1195,8 @@ describe('demo backend guard coverage', () => {
     const saveUserSettingsMock = vi.fn(async () => ({ success: true }));
     const refetchSettingsMock = vi.fn(async () => ({ success: true }));
 
+    const legacySettingsKey = mailSettingsQueryKey({ mode: 'legacy', accountId: null });
+
     await handleGeneralSettingsSave({
       values: nextValues as never,
       data: { settings: currentSettings },
@@ -1202,12 +1205,12 @@ describe('demo backend guard coverage', () => {
       saveUserSettings: saveUserSettingsMock,
       demoSetSettings: demoSetSettingsMock,
       refetchSettings: refetchSettingsMock,
-      settingsQueryKey: ['settings', 'get'],
+      settingsQueryKey: legacySettingsKey,
     });
 
     expect(demoSetSettingsMock).not.toHaveBeenCalled();
     expect(saveUserSettingsMock).toHaveBeenCalledWith(nextValues as never);
-    expect(queryDataMock).toHaveBeenCalledWith(['settings', 'get'], expect.any(Function));
+    expect(queryDataMock).toHaveBeenCalledWith(legacySettingsKey, expect.any(Function));
     expect(refetchSettingsMock).toHaveBeenCalledTimes(1);
   });
 

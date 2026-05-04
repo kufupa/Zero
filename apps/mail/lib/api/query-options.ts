@@ -9,6 +9,17 @@ export type ApiQueryContext = {
   accountId: string | null;
 };
 
+export function mailSettingsQueryKey(ctx: ApiQueryContext) {
+  return apiQueryKeys.settings.get(ctx.mode, ctx.accountId);
+}
+
+export function settingsGetQueryOptions(api: FrontendApi, ctx: ApiQueryContext) {
+  return {
+    queryKey: mailSettingsQueryKey(ctx),
+    queryFn: () => api.settings.get(),
+  };
+}
+
 export function mailListThreadsQueryOptions(
   api: FrontendApi,
   ctx: ApiQueryContext,

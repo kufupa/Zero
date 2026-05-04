@@ -25,6 +25,8 @@ import type { CategorySetting } from '@/hooks/use-categories';
 import { defaultMailCategories } from '@/lib/domain/settings';
 import React, { useState, useEffect, useMemo } from 'react';
 import { useTRPC } from '@/providers/query-provider';
+import { mailSettingsQueryKey } from '@/lib/api/query-options';
+import { resolveMailMode } from '@/lib/runtime/mail-mode';
 import { useSettings } from '@/hooks/use-settings';
 import type { DragEndEvent } from '@dnd-kit/core';
 import { Switch } from '@/components/ui/switch';
@@ -207,6 +209,10 @@ const SortableCategoryItem = React.memo(function SortableCategoryItem({
 export default function CategoriesSettingsPage() {
   const { data } = useSettings();
   const trpc = useTRPC();
+  const mailSettingsKey = useMemo(
+    () => mailSettingsQueryKey({ mode: resolveMailMode(), accountId: null }),
+    [],
+  );
   const queryClient = useQueryClient();
   const { userLabels, systemLabels } = useLabels();
   const allLabels = useMemo(() => [...systemLabels, ...userLabels], [systemLabels, userLabels]);
@@ -300,7 +306,7 @@ export default function CategoriesSettingsPage() {
         return;
       }
       await saveUserSettings({ categories });
-      queryClient.invalidateQueries({ queryKey: trpc.settings.get.queryKey() });
+      queryClient.invalidateQueries({ queryKey: mailSettingsKey });
       setHasUnsavedChanges(false);
       toast.success('Categories saved');
     } catch (e) {
@@ -364,7 +370,7 @@ export default function CategoriesSettingsPage() {
         return;
       }
       await saveUserSettings({ categories: defaultMailCategories });
-      queryClient.invalidateQueries({ queryKey: trpc.settings.get.queryKey() });
+      queryClient.invalidateQueries({ queryKey: mailSettingsKey });
       setHasUnsavedChanges(false);
       toast.success('Reset to defaults');
     } catch (e) {

@@ -25,6 +25,8 @@ import { locales } from '@/project.inlang/settings.json';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useTRPC } from '@/providers/query-provider';
+import { mailSettingsQueryKey } from '@/lib/api/query-options';
+import { resolveMailMode } from '@/lib/runtime/mail-mode';
 import { getBrowserTimezone } from '@/lib/timezones';
 
 import { useSettings } from '@/hooks/use-settings';
@@ -74,10 +76,17 @@ export async function handleGeneralSettingsSave(params: {
     return;
   }
 
-  params.queryClient.setQueryData(params.settingsQueryKey, (updater: { settings?: z.infer<typeof userSettingsSchema> } | undefined) => {
-    if (!updater) return updater;
-    return { settings: { ...updater.settings, ...params.values } };
-  });
+  params.queryClient.setQueryData(
+    params.settingsQueryKey,
+    (cached: z.infer<typeof userSettingsSchema> | { settings?: z.infer<typeof userSettingsSchema> } | undefined) => {
+      if (!cached) return cached;
+      const prev =
+        typeof cached === 'object' && cached && 'settings' in cached && cached.settings
+          ? cached.settings
+          : (cached as z.infer<typeof userSettingsSchema>);
+      return { ...prev, ...params.values };
+    },
+  );
   await params.saveUserSettings(params.values);
   await params.refetchSettings();
 }
@@ -162,6 +171,10 @@ export default function GeneralPage() {
 
   const { data, refetch: refetchSettings } = useSettings();
   const trpc = useTRPC();
+  const mailSettingsKey = useMemo(
+    () => mailSettingsQueryKey({ mode: resolveMailMode(), accountId: null }),
+    [],
+  );
   const queryClient = useQueryClient();
   const { mutateAsync: saveUserSettings } = useMutation(trpc.settings.save.mutationOptions());
   //   const { mutateAsync: setLocaleCookie } = useMutation(
@@ -208,15 +221,19 @@ export default function GeneralPage() {
         saveUserSettings,
         demoSetSettings,
         refetchSettings,
-        settingsQueryKey: trpc.settings.get.queryKey(),
+        settingsQueryKey: mailSettingsKey,
       });
       toast.success(m['common.settings.saved']());
     } catch (error) {
       console.error(error);
       toast.error(m['common.settings.failedToSave']());
-      queryClient.setQueryData(trpc.settings.get.queryKey(), (updater) => {
-        if (!updater) return;
-        return saved ? { settings: { ...updater.settings, ...saved } } : updater;
+      queryClient.setQueryData(mailSettingsKey, (cached) => {
+        if (!cached || !saved) return cached;
+        const prev =
+          typeof cached === 'object' && cached && 'settings' in cached && cached.settings
+            ? cached.settings
+            : (cached as z.infer<typeof userSettingsSchema>);
+        return { ...prev, ...saved };
       });
     } finally {
       setIsSaving(false);
