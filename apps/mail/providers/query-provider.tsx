@@ -5,7 +5,6 @@ import {
 } from '@tanstack/react-query-persist-client';
 import { QueryCache, QueryClient, hashKey, type InfiniteData } from '@tanstack/react-query';
 import { createTRPCContext } from '@trpc/tanstack-react-query';
-import { createTRPCClient, httpBatchLink } from '@trpc/client';
 import { useMemo, type PropsWithChildren } from 'react';
 import type { AppRouter } from '@zero/server/trpc';
 import { resolveMailMode, type MailApiMode } from '@/lib/runtime/mail-mode';
@@ -15,76 +14,7 @@ import { resolveDemoQueryPolicy } from '@/lib/demo/query-policy';
 import { CACHE_BURST_KEY } from '@/lib/constants';
 import { signOut } from '@/lib/auth-client';
 import { get, set, del } from 'idb-keyval';
-import superjson from 'superjson';
-
-const createBackendDisabledError = (path: string[]) => {
-  const route = path.join('.');
-  return new Error(`[demo mode] Backend TRPC route is disabled: ${route}`);
-};
-
-const makeQueryKey = (path: string[], input?: unknown) => {
-  if (input === undefined) return ['demo', ...path];
-  return ['demo', ...path, input];
-};
-
-const makeFailingPromise = (path: string[]) => () =>
-  Promise.reject(createBackendDisabledError(path));
-
-const createDemoProcedureNode = (path: string[]): unknown => {
-  return new Proxy(
-    {},
-    {
-      get: (_target, prop) => {
-        if (typeof prop !== 'string') return undefined;
-
-        if (prop === 'query') {
-          return makeFailingPromise([...path, 'query']);
-        }
-
-        if (prop === 'mutate') {
-          return makeFailingPromise([...path, 'mutate']);
-        }
-
-        if (prop === 'queryOptions') {
-          return (input?: unknown) => ({
-            queryKey: makeQueryKey(path, input),
-            queryFn: makeFailingPromise([...path, 'query']) as never,
-          });
-        }
-
-        if (prop === 'mutationOptions') {
-          return (input?: unknown) => ({
-            mutationKey: makeQueryKey(path, input),
-            mutationFn: makeFailingPromise([...path, 'mutate']) as never,
-          });
-        }
-
-        if (prop === 'infiniteQueryOptions') {
-          return (input?: unknown) => ({
-            queryKey: makeQueryKey(path, input),
-            queryFn: makeFailingPromise([...path, 'query']) as never,
-          });
-        }
-
-        if (prop === 'queryKey') {
-          return (input?: unknown) => makeQueryKey(path, input);
-        }
-
-        if (prop === 'infiniteQueryKey') {
-          return (input?: unknown) => makeQueryKey(path, input);
-        }
-
-        if (prop === 'mutationKey') {
-          return (input?: unknown) => makeQueryKey(path, input);
-        }
-
-        return createDemoProcedureNode([...path, prop]);
-      },
-    },
-  ) as unknown;
-};
-
-const createDemoTrpcClient = (): unknown => createDemoProcedureNode([]);
+import { api } from '@/lib/trpc';
 
 function createIDBPersister(idbValidKey: IDBValidKey = 'zero-query-cache') {
   return {
@@ -158,51 +88,10 @@ const getQueryClient = (connectionId: string | null, mode: MailApiMode) => {
   return browserQueryClient.queryClient;
 };
 
-const getUrl = () => import.meta.env.VITE_PUBLIC_BACKEND_URL + '/api/trpc';
-
-const fetchWithTimeout = (url: RequestInfo | URL, options?: RequestInit) => {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 5000);
-  if (options?.signal) {
-    options.signal.addEventListener(
-      'abort',
-      () => {
-        controller.abort();
-      },
-      { once: true },
-    );
-  }
-
-  return fetch(url, { ...options, signal: controller.signal }).finally(() => {
-    clearTimeout(timeout);
-  });
-};
-
 export const { TRPCProvider, useTRPC, useTRPCClient } = createTRPCContext<AppRouter>();
 
-export const trpcClient: AppRouter = resolveMailMode() === 'demo'
-  ? (createDemoTrpcClient() as AppRouter)
-  : createTRPCClient<AppRouter>({
-      links: [
-        // loggerLink({ enabled: () => true }),
-        httpBatchLink({
-          transformer: superjson,
-          url: getUrl(),
-          methodOverride: 'POST',
-          maxItems: 1,
-          fetch: (url, options) =>
-            fetchWithTimeout(url, { ...options, credentials: 'include' }).then((res) => {
-              const currentPath = new URL(window.location.href).pathname;
-              const redirectPath = res.headers.get('X-Zero-Redirect');
-              if (!!redirectPath && redirectPath !== currentPath) {
-                window.location.href = redirectPath;
-                res.headers.delete('X-Zero-Redirect');
-              }
-              return res;
-            }),
-        }),
-      ],
-    });
+/** Same singleton as `lib/trpc` `api` — for TRPC shell + direct `trpcClient` imports. Prefer `getFrontendApi()` in UI. */
+export const trpcClient: AppRouter = api;
 
 type TrpcHook = ReturnType<typeof useTRPC>;
 export function QueryProvider({
@@ -268,3 +157,5 @@ export function QueryProvider({
     </PersistQueryClientProvider>
   );
 }
+
+type IDBValidKey = string;
