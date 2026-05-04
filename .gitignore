@@ -63,3 +63,4 @@ apps/server/wrangler.local.jsonc
 tsx-0/
 
 tools.json
+.vercel
