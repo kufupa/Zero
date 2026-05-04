@@ -67,6 +67,51 @@ export function getCenturionCategoryColorStyle(slug: CenturionMailCategory): Cen
   return CENTURION_CATEGORY_COLOR_STYLES[slug];
 }
 
+/** Plain sidebar row for demo Centurion folders (no React / icons). */
+export type DemoMailSidebarNavDescriptor = {
+  id: DemoMailFolderId;
+  title: string;
+  subtitle: string;
+  /** Segment after `/mail/`. */
+  pathSegment: string;
+};
+
+/** Ordered demo mail nav rows (excludes spam; urgent first). */
+export function listDemoMailSidebarNavDescriptors(): DemoMailSidebarNavDescriptor[] {
+  return DEMO_MAIL_FOLDER_DEFINITIONS.filter((folder) => folder.id !== 'spam')
+    .sort((a, b) => (a.id === 'urgent' ? -1 : b.id === 'urgent' ? 1 : 0))
+    .map((folder) => ({
+      id: folder.id,
+      title: folder.title,
+      subtitle: folder.subtitle,
+      pathSegment: folder.id,
+    }));
+}
+
+export type DemoMailFolderSidebarChrome = {
+  className?: string;
+  style?: Record<string, string>;
+};
+
+/** Theme tokens for sidebar row; Centurion categories only. */
+export function getDemoMailFolderSidebarChrome(folderId: DemoMailFolderId): DemoMailFolderSidebarChrome {
+  if (!isCenturionMailCategorySlug(folderId)) {
+    return {};
+  }
+
+  const palette = getCenturionCategoryColorStyle(folderId);
+  return {
+    style: {
+      '--centurion-sidebar-bg': palette.bg,
+      '--centurion-sidebar-text': palette.text,
+      '--centurion-sidebar-bg-dark': palette.darkBg,
+      '--centurion-sidebar-text-dark': palette.darkText,
+    },
+    className:
+      'bg-[var(--centurion-sidebar-bg)] text-[var(--centurion-sidebar-text)] dark:bg-[var(--centurion-sidebar-bg-dark)] dark:text-[var(--centurion-sidebar-text-dark)]',
+  };
+}
+
 /** Demo-only mail slices (URLs under /mail/:folder). Order = sidebar order. */
 export const DEMO_MAIL_FOLDER_DEFINITIONS: DemoMailFolderDefinition[] = [
   {

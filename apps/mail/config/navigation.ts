@@ -18,9 +18,8 @@ import { MessageSquareIcon } from 'lucide-react';
 import { m } from '@/paraglide/messages';
 import { isFrontendOnlyDemo } from '@/lib/runtime/mail-mode';
 import {
-  DEMO_MAIL_FOLDER_DEFINITIONS,
-  getCenturionCategoryColorStyle,
-  isCenturionMailCategorySlug,
+  getDemoMailFolderSidebarChrome,
+  listDemoMailSidebarNavDescriptors,
   type DemoMailFolderId,
 } from '@/lib/demo/folder-map';
 import { cn } from '@/lib/utils';
@@ -59,42 +58,22 @@ function getDemoMailFolderIcon(folderId: DemoMailFolderId): React.ComponentType<
   return Folder;
 }
 
-function getDemoMailFolderNavItemTheme(folderId: DemoMailFolderId): Pick<NavItem, 'style' | 'className'> {
-  if (!isCenturionMailCategorySlug(folderId)) {
-    return {};
-  }
-
-  const palette = getCenturionCategoryColorStyle(folderId);
+const demoMailFolderNavItems: NavItem[] = listDemoMailSidebarNavDescriptors().map((folder) => {
+  const chrome = getDemoMailFolderSidebarChrome(folder.id);
   return {
-    style: {
-      '--centurion-sidebar-bg': palette.bg,
-      '--centurion-sidebar-text': palette.text,
-      '--centurion-sidebar-bg-dark': palette.darkBg,
-      '--centurion-sidebar-text-dark': palette.darkText,
-    } as CSSProperties,
-    className:
-      'bg-[var(--centurion-sidebar-bg)] text-[var(--centurion-sidebar-text)] dark:bg-[var(--centurion-sidebar-bg-dark)] dark:text-[var(--centurion-sidebar-text-dark)]',
+    id: folder.id,
+    title: folder.title,
+    subtitle: folder.subtitle,
+    url: `/mail/${folder.pathSegment}`,
+    icon: getDemoMailFolderIcon(folder.id),
+    style: chrome.style as CSSProperties | undefined,
+    className: cn(
+      chrome.className,
+      folder.id === 'urgent' &&
+        "relative after:absolute after:inset-y-1.5 after:right-0 after:w-1 after:rounded-l-sm after:bg-red-500/90 after:content-['']",
+    ),
   };
-}
-
-const demoMailFolderNavItems: NavItem[] = DEMO_MAIL_FOLDER_DEFINITIONS.filter((folder) => folder.id !== 'spam')
-  .sort((a, b) => (a.id === 'urgent' ? -1 : b.id === 'urgent' ? 1 : 0))
-  .map((folder) => {
-    const theme = getDemoMailFolderNavItemTheme(folder.id);
-    return {
-      id: folder.id,
-      title: folder.title,
-      subtitle: folder.subtitle,
-      url: `/mail/${folder.id}`,
-      icon: getDemoMailFolderIcon(folder.id),
-      ...theme,
-      className: cn(
-        theme.className,
-        folder.id === 'urgent' &&
-          "relative after:absolute after:inset-y-1.5 after:right-0 after:w-1 after:rounded-l-sm after:bg-red-500/90 after:content-['']",
-      ),
-    };
-  });
+});
 
 // ! items title has to be a message key (check messages/en.json)
 export const navigationConfig: Record<string, NavConfig> = {

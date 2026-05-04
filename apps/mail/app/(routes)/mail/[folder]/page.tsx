@@ -3,11 +3,10 @@ import { useLoaderData, useNavigate } from 'react-router';
 import { MailLayout } from '@/components/mail/mail';
 import { useLabels } from '@/hooks/use-labels';
 import { isDemoMailFolderSlug } from '@/lib/demo/folder-map';
+import { isStandardMailFolderSlug } from '@/lib/domain/folders';
 import { isFrontendOnlyDemo } from '@/lib/runtime/mail-mode';
 import { useEffect, useState } from 'react';
 import type { Route } from './+types/page';
-
-const ALLOWED_FOLDERS = new Set(['inbox', 'draft', 'sent', 'spam', 'bin', 'archive', 'snoozed']);
 
 export async function clientLoader({ params }: Route.ClientLoaderArgs) {
   if (!params.folder) return Response.redirect(`${import.meta.env.VITE_PUBLIC_APP_URL}/mail/inbox`);
@@ -22,7 +21,7 @@ export default function MailPage() {
   const [isLabelValid, setIsLabelValid] = useState<boolean | null>(true);
   const normalizedFolder = folder.toLowerCase();
 
-  const isStandardFolder = ALLOWED_FOLDERS.has(normalizedFolder);
+  const isStandardFolder = isStandardMailFolderSlug(normalizedFolder);
   const isDemoMailFolder = isFrontendOnlyDemo() && isDemoMailFolderSlug(normalizedFolder);
 
   const { userLabels, isLoading: isLoadingLabels } = useLabels();
