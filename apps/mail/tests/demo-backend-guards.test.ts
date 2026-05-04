@@ -55,7 +55,7 @@ const useMutationMock = vi.fn();
 const useMailMock = vi.fn();
 const useThreadsMock = vi.fn();
 const useStatsMock = vi.fn();
-const useBackgroundQueueMock = vi.fn();
+const backgroundQueueHookMock = vi.fn();
 const deleteThreadMock = vi.fn();
 const unsendEmailMock = vi.fn();
 const toastPromiseMock = vi.fn((promise: Promise<unknown>, options?: { finally?: () => Promise<void> | void }) => {
@@ -178,7 +178,7 @@ vi.mock('../hooks/use-connections', () => ({
 }));
 
 vi.mock('@/hooks/ui/use-background-queue', () => ({
-  default: () => useBackgroundQueueMock(),
+  default: () => backgroundQueueHookMock(),
 }));
 
 vi.mock('@/components/mail/use-mail', () => ({
@@ -220,7 +220,7 @@ vi.mock('react', async () => {
     },
     useRef: (value: unknown) => ({ current: value }),
     useCallback: (callback: unknown) => callback,
-    useMemo: (callback: any) => callback(),
+    useMemo: <T>(callback: () => T) => callback(),
   };
 });
 
@@ -463,7 +463,7 @@ beforeEach(() => {
   useMailMock.mockReturnValue([{ bulkSelected: [] }, setMailMock]);
   useThreadsMock.mockReturnValue([{ refetch: refetchThreadsMock }]);
   useStatsMock.mockReturnValue({ refetch: refetchStatsMock });
-  useBackgroundQueueMock.mockReturnValue({ addToQueue: addToQueueMock });
+  backgroundQueueHookMock.mockReturnValue({ addToQueue: addToQueueMock });
   trpc.mail.delete.mutationOptions.mockReturnValue({ endpoint: 'mail.delete' });
   trpc.mail.unsend.mutationOptions.mockReturnValue({ endpoint: 'mail.unsend' });
   useSessionMock.mockReturnValue({ data: { user: { id: 'demo-user' } } });
@@ -516,7 +516,7 @@ beforeEach(() => {
   useMailMock.mockClear();
   useThreadsMock.mockClear();
   useStatsMock.mockClear();
-  useBackgroundQueueMock.mockClear();
+  backgroundQueueHookMock.mockClear();
   deleteThreadMock.mockClear();
   unsendEmailMock.mockClear();
   toastPromiseMock.mockClear();

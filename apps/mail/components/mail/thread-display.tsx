@@ -73,7 +73,7 @@ const formatMailboxListForPrint = (mailboxes?: Sender[] | null) =>
     .join('; ');
 
 interface ThreadDisplayProps {
-  threadParam?: any;
+  threadParam?: string;
   onClose?: () => void;
   isMobile?: boolean;
   messages?: ParsedMessage[];
@@ -130,7 +130,7 @@ function ThreadActionButton({
   disabled = false,
   className,
 }: {
-  icon: React.ComponentType<React.ComponentPropsWithRef<any>> & {
+  icon: React.ComponentType<{ className?: string }> & {
     startAnimation?: () => void;
     stopAnimation?: () => void;
   };
@@ -139,7 +139,7 @@ function ThreadActionButton({
   disabled?: boolean;
   className?: string;
 }) {
-  const iconRef = useRef<any>(null);
+  const iconRef = useRef<{ startAnimation?: () => void; stopAnimation?: () => void } | null>(null);
 
   return (
     <TooltipProvider delayDuration={0}>
@@ -798,7 +798,7 @@ export function ThreadDisplay() {
             <div className="flex flex-col items-center justify-center gap-2 text-center">
               <EmptyStateIcon width={200} height={200} />
               <div className="mt-4">
-                <p className="text-lg">It's empty here</p>
+                <p className="text-lg">It&apos;s empty here</p>
                 <p className="text-md text-muted-foreground dark:text-white/50">
                   Choose an email to view details
                 </p>

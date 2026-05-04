@@ -174,7 +174,7 @@ const useComposeEditor = ({
       onPaste: (currentEditor, files, htmlContent) => {
         files.forEach((file) => {
           if (htmlContent) {
-            console.log(htmlContent); // eslint-disable-line no-console
+            console.log(htmlContent);  
             return false;
           }
 

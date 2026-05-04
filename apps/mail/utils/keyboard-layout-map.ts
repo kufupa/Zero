@@ -427,7 +427,7 @@ class KeyboardLayoutMapper {
     if (fromMapping && toMapping) {
       // Find the physical key code for the source key
       const physicalKey = Object.entries(fromMapping).find(
-        ([_, mappedKey]) => mappedKey.toLowerCase() === key.toLowerCase(),
+        ([, mappedKey]) => mappedKey.toLowerCase() === key.toLowerCase(),
       )?.[0];
 
       if (physicalKey && toMapping[physicalKey]) {
