@@ -4,11 +4,7 @@ import { normalizeDemoMessageBody } from './normalize-demo-message-body';
 import { filterRemovedDemoLabels } from './label-filter';
 import { getDemoDeletedDraftIds, listDemoDrafts } from '../demo/local-store';
 import { parseRecipientToken, splitRecipientField } from '../demo/recipient-parsing';
-import type {
-  CenturionMailCategory,
-  IGetThreadResponse,
-  IGetThreadsResponse,
-} from '../../../server/src/lib/driver/types';
+import type { CenturionMailCategory, IGetThreadResponse, IGetThreadsResponse } from '@/lib/domain/mail-thread';
 
 const DEMO_CONNECTION_ID = 'demo-connection';
 const DEFAULT_MAX_RESULTS = 50;

@@ -20,7 +20,7 @@ import { SettingsCard } from '@/components/settings/settings-card';
 import { Globe, Clock } from 'lucide-react';
 import { getLocale, setLocale } from '@/paraglide/runtime';
 import { useState, useEffect, useMemo, memo } from 'react';
-import { userSettingsSchema } from '@zero/server/schemas';
+import { userSettingsSchema } from '@/lib/domain/settings';
 import { locales } from '@/project.inlang/settings.json';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { zodResolver } from '@hookform/resolvers/zod';

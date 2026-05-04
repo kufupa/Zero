@@ -8,7 +8,7 @@ import useSearchLabels from '@/hooks/use-labels-search';
 import { useQueryClient } from '@tanstack/react-query';
 import { AIChat } from '@/components/create/ai-chat';
 import { useTRPC } from '@/providers/query-provider';
-import { Tools } from '../../../server/src/types';
+import { Tools } from '@/types/tools';
 import { useDoState } from '../mail/use-do-state';
 import { PromptsDialog } from './prompts-dialog';
 import { Button } from '@/components/ui/button';

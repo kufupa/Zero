@@ -3,7 +3,7 @@ import { toast } from 'sonner';
 
 import { useTRPC } from '@/providers/query-provider';
 import { isSendResult } from '@/lib/email-utils';
-import type { UserSettings } from '@zero/server/schemas';
+import type { MailSettings } from '@/lib/domain/settings';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { demoUnsendEmail } from '@/lib/demo/local-actions';
 
@@ -64,7 +64,7 @@ export const useUndoSend = () => {
 
   const handleUndoSend = (
     result: unknown, 
-    settings: { settings: UserSettings } | undefined,
+    settings: { settings: MailSettings } | undefined,
     emailData?: EmailData
   ) => {
     if (isSendResult(result) && settings?.settings?.undoSendEnabled) {

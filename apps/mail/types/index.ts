@@ -1,6 +1,4 @@
-import type { CenturionMailCategory } from '../../server/src/lib/driver/types';
-
-export type { CenturionMailCategory };
+export type { CenturionMailCategory } from '@/lib/domain/mail-thread';
 
 export type Label = {
   id: string;
