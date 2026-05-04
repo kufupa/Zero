@@ -29,4 +29,8 @@ export const apiQueryKeys = {
   auth: {
     session: (mode: MailApiMode, accountId: string | null) => [...root(mode, accountId), 'auth', 'session'] as const,
   },
+  ai: {
+    getPrompts: (mode: MailApiMode, accountId: string | null) =>
+      [...root(mode, accountId), 'ai', 'getPrompts'] as const,
+  },
 };

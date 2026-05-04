@@ -16,4 +16,10 @@ describe('api query keys', () => {
     const key = apiQueryKeys.labels.list('demo', null);
     expect(key[2]).toBe('anon');
   });
+
+  it('keys ai prompts list', () => {
+    const key = apiQueryKeys.ai.getPrompts('legacy', null);
+    expect(key[3]).toBe('ai');
+    expect(key[4]).toBe('getPrompts');
+  });
 });

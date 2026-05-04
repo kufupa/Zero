@@ -20,6 +20,17 @@ export function settingsGetQueryOptions(api: FrontendApi, ctx: ApiQueryContext) 
   };
 }
 
+export function aiGetPromptsQueryKey(ctx: ApiQueryContext) {
+  return apiQueryKeys.ai.getPrompts(ctx.mode, ctx.accountId);
+}
+
+export function aiGetPromptsQueryOptions(api: FrontendApi, ctx: ApiQueryContext) {
+  return {
+    queryKey: aiGetPromptsQueryKey(ctx),
+    queryFn: () => api.ai.getPrompts(),
+  };
+}
+
 export function mailListThreadsQueryOptions(
   api: FrontendApi,
   ctx: ApiQueryContext,

@@ -24,9 +24,10 @@ import {
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from '@/components/ui/tooltip';
 import { AiChatPrompt, StyledEmailAssistantSystemPrompt } from '@/lib/prompts';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './tabs';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useTRPC } from '@/providers/query-provider';
-import { useMutation } from '@tanstack/react-query';
+import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
+import { getFrontendApi } from '@/lib/api/client';
+import { resolveMailMode } from '@/lib/runtime/mail-mode';
+import { aiGetPromptsQueryKey, aiGetPromptsQueryOptions, type ApiQueryContext } from '@/lib/api/query-options';
 import { Button } from '@/components/ui/button';
 import { useForm } from 'react-hook-form';
 import { Paper } from '../icons/icons';
@@ -57,21 +58,28 @@ const fallbackPrompts = {
 };
 
 export function PromptsDialog() {
-  const trpc = useTRPC();
   const queryClient = useQueryClient();
-  const { data: prompts } = useQuery(trpc.brain.getPrompts.queryOptions());
-
-  const { mutateAsync: updatePrompt, isPending: isSavingPrompt } = useMutation(
-    trpc.brain.updatePrompt.mutationOptions({
-      onSuccess: () => {
-        toast.success('Prompt updated');
-        queryClient.invalidateQueries({ queryKey: trpc.brain.getPrompts.queryKey() });
-      },
-      onError: (error) => {
-        toast.error(error.message ?? 'Failed to update prompt');
-      },
-    }),
+  const queryCtx = useMemo<ApiQueryContext>(
+    () => ({ mode: resolveMailMode(), accountId: null }),
+    [],
   );
+  const promptsEnabled = queryCtx.mode === 'legacy' || queryCtx.mode === 'demo';
+  const { data: prompts } = useQuery({
+    ...aiGetPromptsQueryOptions(getFrontendApi(), queryCtx),
+    enabled: promptsEnabled,
+  });
+
+  const { mutateAsync: updatePrompt, isPending: isSavingPrompt } = useMutation({
+    mutationFn: (input: { promptType: AiPromptType; prompt: string }) =>
+      getFrontendApi().ai.updatePrompt(input),
+    onSuccess: () => {
+      toast.success('Prompt updated');
+      queryClient.invalidateQueries({ queryKey: aiGetPromptsQueryKey(queryCtx) });
+    },
+    onError: (error: Error) => {
+      toast.error(error.message ?? 'Failed to update prompt');
+    },
+  });
 
   const mappedValues = useMemo(() => {
     if (!prompts) return initialValues;
@@ -101,7 +109,7 @@ export function PromptsDialog() {
         onClick={() =>
           updatePrompt({
             promptType: enumType,
-            content: getValues(promptType),
+            prompt: getValues(promptType),
           })
         }
         disabled={isSavingPrompt}
