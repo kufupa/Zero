@@ -1,5 +1,5 @@
 import { cleanEmailAddresses } from '../lib/email-utils';
-import { trpcClient } from '@/providers/query-provider';
+import { getFrontendApi } from '@/lib/api/client';
 import type { Route } from './+types/mailto-handler';
 import { authProxy } from '@/lib/auth-proxy';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
@@ -195,7 +195,7 @@ async function createDraftFromMailto(mailtoData: {
       try {
         console.log(`Attempt ${attempt} to create draft...`);
 
-        const result = await trpcClient.drafts.create.mutate(draftData);
+        const result = await getFrontendApi().drafts.create(draftData);
 
         if (result?.id) {
           console.log('Draft created successfully with ID:', result.id);

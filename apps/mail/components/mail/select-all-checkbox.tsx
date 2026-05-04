@@ -1,6 +1,6 @@
 import React, { useCallback, useMemo, useRef, useState, useEffect } from 'react';
 import { useSearchValue } from '@/hooks/use-search-value';
-import { trpcClient } from '@/providers/query-provider';
+import { getFrontendApi } from '@/lib/api/client';
 import { useMail } from '@/components/mail/use-mail';
 import { Checkbox } from '@/components/ui/checkbox';
 import { useThreads } from '@/hooks/use-threads';
@@ -38,7 +38,7 @@ export default function SelectAllCheckbox({ className }: { className?: string })
 
     try {
       while (true) {
-        const page = await trpcClient.mail.listThreads.query({
+        const page = await getFrontendApi().mail.listThreads({
           folder,
           q: query,
           maxResults: MAX_PER_PAGE,
