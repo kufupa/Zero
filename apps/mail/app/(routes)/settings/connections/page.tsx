@@ -21,9 +21,11 @@ import { emailProviders } from '@/lib/constants';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { m } from '@/paraglide/messages';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { mailListThreadsPrefixKey } from '@/lib/api/query-options';
+import { resolveMailMode } from '@/lib/runtime/mail-mode';
 
 export async function runDisconnectConnection(params: {
   connectionId: string;
@@ -86,6 +88,10 @@ export default function ConnectionsPage() {
 
   const queryClient = useQueryClient();
   const trpc = useTRPC();
+  const mailThreadsPrefix = useMemo(
+    () => mailListThreadsPrefixKey({ mode: resolveMailMode(), accountId: null }),
+    [],
+  );
   const { mutateAsync: deleteConnection } = useMutation(trpc.connections.delete.mutationOptions());
   const disconnectAccount = async (connectionId: string) => {
     await runDisconnectConnection({
@@ -100,8 +106,7 @@ export default function ConnectionsPage() {
       },
       refetchConnections,
       refetchSession: refetch,
-      invalidateThreads: () =>
-        queryClient.invalidateQueries({ queryKey: trpc.mail.listThreads.infiniteQueryKey() }),
+      invalidateThreads: () => queryClient.invalidateQueries({ queryKey: mailThreadsPrefix }),
     });
   };
 

@@ -34,7 +34,9 @@ import { buildMailListVirtualRows } from '@/lib/mail/build-mail-list-virtual-row
 import type { MailDateBucket } from '@/lib/mail/thread-date-bucket';
 import { MailListSectionHeader } from '@/components/mail/mail-list-section-header';
 import { cn, FOLDERS, formatDateWithWeekdayAndTime } from '@/lib/utils';
-import { useTRPC } from '@/providers/query-provider';
+import { mailGetThreadPrefixKey, type ApiQueryContext } from '@/lib/api/query-options';
+import { resolveMailMode } from '@/lib/runtime/mail-mode';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { useThreadLabels } from '@/hooks/use-labels';
 import { useSettings } from '@/hooks/use-settings';
 import { useKeyState } from '@/hooks/use-hot-key';
@@ -810,8 +812,13 @@ export const MailList = memo(function MailList() {
 
     const [{ refetch, isLoading, isFetching, isFetchingNextPage, hasNextPage }, items, , loadMore] =
       useThreads();
-    const trpc = useTRPC();
-    const isFetchingMail = useIsFetching({ queryKey: trpc.mail.get.queryKey() }) > 0;
+    const mailApiCtx = useMemo<ApiQueryContext>(
+      () => ({ mode: resolveMailMode(), accountId: null }),
+      [],
+    );
+    const isFetchingLegacyThread = useIsFetching({ queryKey: mailGetThreadPrefixKey(mailApiCtx) }) > 0;
+    const isFetchingDemoThread = useIsFetching({ queryKey: ['demo', 'mail', 'thread'] }) > 0;
+    const isFetchingMail = isFrontendOnlyDemo() ? isFetchingDemoThread : isFetchingLegacyThread;
     const itemsRef = useRef(items);
     const parentRef = useRef<HTMLDivElement>(null);
     const vListRef = useRef<VListHandle>(null);

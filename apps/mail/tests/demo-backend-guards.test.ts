@@ -10,7 +10,7 @@ import { resolveMailDisplayWebSearch } from '../components/mail/mail-display';
 import { createLabelInThreadContext } from '../components/context/thread-context';
 import { deleteLabelInSidebarContext } from '../components/context/label-sidebar-context';
 import { handleGeneralSettingsSave } from '../app/(routes)/settings/general/page';
-import { mailSettingsQueryKey } from '../lib/api/query-options';
+import { aiGenerateSummaryQueryKey, mailSettingsQueryKey } from '../lib/api/query-options';
 import { persistTrustedSender } from '../components/mail/mail-content';
 import { runDisconnectConnection, runReconnectConnection } from '../app/(routes)/settings/connections/page';
 import { runDeleteAccount } from '../app/(routes)/settings/danger-zone/page';
@@ -285,6 +285,24 @@ function makeTrpc() {
       },
     },
     mail: {
+      listThreads: {
+        query: vi.fn(async () => ({ threads: [], nextPageToken: null as string | null })),
+      },
+      get: {
+        query: vi.fn(async () => ({ messages: [], latest: undefined })),
+      },
+      getMessageAttachments: {
+        query: vi.fn(async () => []),
+      },
+      processEmailContent: {
+        mutate: vi.fn(async (input: { html: string }) => ({
+          processedHtml: input.html,
+          hasBlockedImages: false,
+        })),
+      },
+      forceSync: {
+        mutationOptions: vi.fn(() => ({ mutationFn: vi.fn(async () => ({})) })),
+      },
       delete: {
         mutationOptions: vi.fn(),
       },
@@ -322,6 +340,12 @@ function makeTrpc() {
         })),
         ...options,
       })),
+      query: vi.fn(async (input: { threadId: string }) => ({
+        data: {
+          short: `Backend summary for thread ${input.threadId}`,
+          long: `Backend long summary for thread ${input.threadId}`,
+        },
+      })),
     },
     getState: {
       queryOptions: vi.fn((options: Record<string, unknown> = {}) => ({
@@ -329,6 +353,7 @@ function makeTrpc() {
         queryFn: vi.fn(),
         ...options,
       })),
+      query: vi.fn(async () => ({ enabled: true })),
     },
   },
   };
@@ -722,18 +747,15 @@ describe('demo backend guard coverage', () => {
     isFrontendOnlyDemoMock.mockReturnValue(false);
     useSummary('thread-live');
 
-    expect(trpc.brain.generateSummary.queryOptions).toHaveBeenCalledWith(
-      { threadId: 'thread-live' },
-      expect.objectContaining({
-        enabled: true,
-      }),
-    );
+    expect(trpc.brain.generateSummary.queryOptions).not.toHaveBeenCalled();
     expect(useQueryMock).toHaveBeenCalledTimes(1);
     const summaryQuery = useQueryMock.mock.calls[0]?.[0] as {
       queryKey: unknown[];
       queryFn?: () => Promise<{ data: { short: string; long: string } }>;
     };
-    expect(summaryQuery.queryKey).toEqual(['brain', 'generateSummary', 'thread-live']);
+    expect(summaryQuery.queryKey).toEqual(
+      aiGenerateSummaryQueryKey({ mode: 'legacy', accountId: null }, 'thread-live'),
+    );
     expect(typeof summaryQuery.queryFn).toBe('function');
     expect(trpc.ai.webSearch.mutationOptions).not.toHaveBeenCalled();
   });

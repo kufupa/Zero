@@ -26,6 +26,8 @@ import { signOut, useSession } from '@/lib/auth-client';
 import { AddConnectionDialog } from '../connection/add';
 import { CircleCheck, ThreeDots } from '../icons/icons';
 import { useTRPC } from '@/providers/query-provider';
+import { mailListThreadsPrefixKey } from '@/lib/api/query-options';
+import { resolveMailMode } from '@/lib/runtime/mail-mode';
 import { useSidebar } from '@/components/ui/sidebar';
 import { SunIcon } from '../icons/animated/sun';
 import { clear as idbClear } from 'idb-keyval';
@@ -117,6 +119,10 @@ export function NavUser() {
   const { setLoading } = useLoading();
   const [{ isSyncing, syncingFolders, storageSize, shards }] = useDoState();
   const frontendOnlyDemo = isFrontendOnlyDemo();
+  const mailThreadsPrefix = useMemo(
+    () => mailListThreadsPrefixKey({ mode: resolveMailMode(), accountId: null }),
+    [],
+  );
   const showLogout = !frontendOnlyDemo;
   const allowConnectionManagement = false;
 
@@ -154,7 +160,7 @@ export function NavUser() {
       setThreadId(null);
       await setDefaultConnection({ connectionId });
       queryClient.clear();
-      await queryClient.refetchQueries({ queryKey: trpc.mail.listThreads.infiniteQueryKey() });
+      await queryClient.refetchQueries({ queryKey: mailThreadsPrefix });
     } catch (error) {
       console.error('Error switching accounts:', error);
       toast.error(m['common.navUser.failedToSwitchAccount']());

@@ -9,6 +9,8 @@ import { createTRPCClient, httpBatchLink } from '@trpc/client';
 import { useMemo, type PropsWithChildren } from 'react';
 import type { AppRouter } from '@zero/server/trpc';
 import { resolveMailMode, type MailApiMode } from '@/lib/runtime/mail-mode';
+import { mailListThreadsPrefixKey } from '@/lib/api/query-options';
+import type { ThreadListResult } from '@/lib/api/contract';
 import { resolveDemoQueryPolicy } from '@/lib/demo/query-policy';
 import { CACHE_BURST_KEY } from '@/lib/constants';
 import { signOut } from '@/lib/auth-client';
@@ -236,22 +238,28 @@ export function QueryProvider({
       }}
       onSuccess={() => {
         if (!demoQueryPolicy.shouldInvalidateHydratedThreadQueries) return;
+        const trimInfinite = <T extends { pages: unknown[]; pageParams: unknown[] }>(data: T) => ({
+          ...data,
+          pages: data.pages.slice(0, 3),
+          pageParams: data.pageParams.slice(0, 3),
+        });
         const threadQueryKey = [['mail', 'listThreads'], { type: 'infinite' }];
         queryClient.setQueriesData(
           { queryKey: threadQueryKey },
           (data: InfiniteData<TrpcHook['mail']['listThreads']['~types']['output']>) => {
             if (!data) return data;
-            // We only keep few pages of threads in the cache before we invalidate them
-            // invalidating will attempt to refetch every page that was in cache, if someone have too many pages in cache, it will refetch every page every time
-            // We don't want that, just keep like 3 pages (20 * 3 = 60 threads) in cache
-            return {
-              pages: data.pages.slice(0, 3),
-              pageParams: data.pageParams.slice(0, 3),
-            };
+            return trimInfinite(data);
           },
         );
-        // invalidate the query, it will refetch when the data is it is being accessed
         queryClient.invalidateQueries({ queryKey: threadQueryKey });
+        if (mode === 'legacy') {
+          const feListKey = mailListThreadsPrefixKey({ mode, accountId: connectionId });
+          queryClient.setQueriesData({ queryKey: feListKey }, (data: InfiniteData<ThreadListResult> | undefined) => {
+            if (!data) return data;
+            return trimInfinite(data);
+          });
+          queryClient.invalidateQueries({ queryKey: feListKey });
+        }
       }}
     >
       <TRPCProvider trpcClient={trpcClient} queryClient={queryClient}>

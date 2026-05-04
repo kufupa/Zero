@@ -22,4 +22,11 @@ describe('api query keys', () => {
     expect(key[3]).toBe('ai');
     expect(key[4]).toBe('getPrompts');
   });
+
+  it('keys mail message attachments', () => {
+    const key = apiQueryKeys.mail.messageAttachments('legacy', null, { messageId: 'm1' });
+    expect(key[3]).toBe('mail');
+    expect(key[4]).toBe('messageAttachments');
+    expect(key[5]).toEqual({ messageId: 'm1' });
+  });
 });

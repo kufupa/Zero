@@ -2,9 +2,15 @@ import { backgroundQueueAtom, isThreadInBackgroundQueueAtom } from '@/store/back
 import { useInfiniteQuery, useQuery, useMutation } from '@tanstack/react-query';
 import type { IGetThreadResponse } from '@/lib/domain/mail-thread';
 import { useSearchValue } from '@/hooks/use-search-value';
-import { useTRPC } from '@/providers/query-provider';
 import useSearchLabels from './use-labels-search';
 import { useSession } from '@/lib/auth-client';
+import { getFrontendApi } from '@/lib/api/client';
+import { resolveMailMode } from '@/lib/runtime/mail-mode';
+import {
+  mailGetThreadQueryOptions,
+  mailListThreadsInfiniteQueryKey,
+  type ApiQueryContext,
+} from '@/lib/api/query-options';
 import { listDemoThreads, getDemoThread } from '@/lib/demo-data/adapter';
 import { demoMailListDraftsQueryKey } from '@/lib/demo/demo-mail-query-keys';
 import { normalizeDemoMailFolderSlug } from '@/lib/demo/folder-map';
@@ -40,7 +46,10 @@ export const useThreads = (options?: UseThreadsOptions) => {
   const [backgroundQueue] = useAtom(backgroundQueueAtom);
   const isInQueue = useAtomValue(isThreadInBackgroundQueueAtom);
   const { data: session } = useSession();
-  const trpc = useTRPC();
+  const queryCtx = useMemo<ApiQueryContext>(
+    () => ({ mode: resolveMailMode(), accountId: null }),
+    [],
+  );
   const { labels } = useSearchLabels();
   const demoMode = isFrontendOnlyDemo();
   const isPaletteMode = options != null && 'commandPaletteOpen' in options;
@@ -113,23 +122,29 @@ export const useThreads = (options?: UseThreadsOptions) => {
     enabled: demoMode && listEnabled && !demoDraftFolder,
   });
 
-  const threadsQuery = useInfiniteQuery(
-    trpc.mail.listThreads.infiniteQueryOptions(
-      {
-        q: searchValue.value,
-        folder: folderForQuery,
-        labelIds: labels,
-      },
-      {
-        initialCursor: '',
-        getNextPageParam: (lastPage) => lastPage?.nextPageToken ?? null,
-        enabled: !demoMode && listEnabled,
-        staleTime: 60 * 1000 * 1, // 1 minute
-        refetchOnMount: false,
-        refetchIntervalInBackground: true,
-      },
-    ),
+  const listFilters = useMemo(
+    () => ({
+      q: searchValue.value,
+      folder: folderForQuery,
+      labelIds: labels,
+    }),
+    [searchValue.value, folderForQuery, labels],
   );
+
+  const threadsQuery = useInfiniteQuery({
+    queryKey: mailListThreadsInfiniteQueryKey(queryCtx, listFilters),
+    queryFn: ({ pageParam }) =>
+      getFrontendApi().mail.listThreads({
+        ...listFilters,
+        cursor: typeof pageParam === 'string' ? pageParam : '',
+      }),
+    initialPageParam: '',
+    getNextPageParam: (lastPage) => lastPage?.nextPageToken ?? null,
+    enabled: !demoMode && listEnabled && queryCtx.mode === 'legacy',
+    staleTime: 60 * 1000,
+    refetchOnMount: false,
+    refetchIntervalInBackground: true,
+  });
   const activeThreadsQuery = demoMode
     ? demoDraftFolder
       ? demoDraftsQuery
@@ -167,7 +182,10 @@ export const useThread = (threadId: string | null) => {
   const id = threadId ? threadId : _threadId;
   const [mode] = useQueryState('mode');
   const [isComposeOpen] = useQueryState('isComposeOpen');
-  const trpc = useTRPC();
+  const queryCtx = useMemo<ApiQueryContext>(
+    () => ({ mode: resolveMailMode(), accountId: null }),
+    [],
+  );
   const { data: settings } = useSettings();
   const { theme: systemTheme } = useTheme();
   const demoMode = isFrontendOnlyDemo();
@@ -180,18 +198,12 @@ export const useThread = (threadId: string | null) => {
     placeholderData: undefined,
   });
 
-  const threadQuery = useQuery(
-    trpc.mail.get.queryOptions(
-      {
-        id: id!,
-      },
-      {
-        enabled: !demoMode && !!id && !!session?.user.id,
-        staleTime: 1000 * 60 * 60, // 1 minute
-        placeholderData: undefined,
-      },
-    ),
-  );
+  const threadQuery = useQuery({
+    ...mailGetThreadQueryOptions(getFrontendApi(), queryCtx, { id: id! }),
+    enabled: !demoMode && !!id && !!session?.user?.id && queryCtx.mode === 'legacy',
+    staleTime: 1000 * 60 * 60,
+    placeholderData: undefined,
+  });
   const activeThreadQuery = demoMode ? demoThreadQuery : threadQuery;
   const activeThreadData = activeThreadQuery.data as IGetThreadResponse | undefined;
   const activeThreadId = useMemo(
@@ -240,9 +252,9 @@ export const useThread = (threadId: string | null) => {
     return { latestDraft, isGroupThread, finalData, latestMessage };
   }, [activeThreadData, isThreadDataMismatch]);
 
-  const { mutateAsync: processEmailContent } = useMutation(
-    trpc.mail.processEmailContent.mutationOptions(),
-  );
+  const { mutateAsync: processEmailContent } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().mail.processEmailContent(input),
+  });
 
   // Extract image loading condition to avoid duplication
   const shouldLoadImages = useMemo(() => {

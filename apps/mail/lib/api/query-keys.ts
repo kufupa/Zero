@@ -10,6 +10,8 @@ export const apiQueryKeys = {
       [...root(mode, accountId), 'mail', 'listThreads', input] as const,
     getThread: (mode: MailApiMode, accountId: string | null, input: unknown) =>
       [...root(mode, accountId), 'mail', 'getThread', input] as const,
+    messageAttachments: (mode: MailApiMode, accountId: string | null, input: unknown) =>
+      [...root(mode, accountId), 'mail', 'messageAttachments', input] as const,
   },
   drafts: {
     list: (mode: MailApiMode, accountId: string | null, input: unknown) =>
@@ -32,5 +34,9 @@ export const apiQueryKeys = {
   ai: {
     getPrompts: (mode: MailApiMode, accountId: string | null) =>
       [...root(mode, accountId), 'ai', 'getPrompts'] as const,
+    generateSummary: (mode: MailApiMode, accountId: string | null, threadId: string) =>
+      [...root(mode, accountId), 'ai', 'generateSummary', threadId] as const,
+    getBrainState: (mode: MailApiMode, accountId: string | null) =>
+      [...root(mode, accountId), 'ai', 'getBrainState'] as const,
   },
 };
