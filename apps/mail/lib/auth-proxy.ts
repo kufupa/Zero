@@ -1,20 +1,15 @@
-import { createAuthClient } from 'better-auth/client';
-import { isFrontendOnlyDemo } from './demo/runtime';
+import { authClient } from './auth/better-auth-instance';
 import { getDemoSession } from './demo/session';
-
-const authClient = createAuthClient({
-  baseURL: import.meta.env.VITE_PUBLIC_BACKEND_URL,
-  fetchOptions: {
-    credentials: 'include',
-  },
-  plugins: [],
-});
+import { resolveMailMode } from './runtime/mail-mode';
 
 export const authProxy = {
   api: {
     getSession: async ({ headers }: { headers: Headers }) => {
-      if (isFrontendOnlyDemo()) {
+      if (resolveMailMode() === 'demo') {
         return getDemoSession();
+      }
+      if (resolveMailMode() === 'hosted') {
+        return null;
       }
 
       const controller = new AbortController();

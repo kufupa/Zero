@@ -1,54 +1,31 @@
-import { phoneNumberClient } from 'better-auth/client/plugins';
-import { createAuthClient } from 'better-auth/react';
 import { useQuery } from '@tanstack/react-query';
 import type { Auth } from '@zero/server/auth';
-import { isFrontendOnlyDemo } from './demo/runtime';
-import { getDemoSession } from './demo/session';
+import { authClient, $fetch, signIn, signOut, signUp } from './auth/better-auth-instance';
+import { getAuthApi } from './auth/factory';
+import { resolveMailMode } from './runtime/mail-mode';
 
-export const authClient = createAuthClient({
-  baseURL: import.meta.env.VITE_PUBLIC_BACKEND_URL,
-  fetchOptions: {
-    credentials: 'include',
-  },
-  plugins: [phoneNumberClient()],
-});
-
-export const { signIn, signUp, signOut, $fetch } = authClient;
+export { authClient, signIn, signUp, signOut, $fetch };
 
 export async function getSession() {
-  if (isFrontendOnlyDemo()) {
-    return {
-      data: getDemoSession(),
-      error: null,
-    };
-  }
-  return authClient.getSession({
-    fetchOptions: {
-      credentials: 'include',
-    },
-  });
+  return getAuthApi().getSession();
 }
 
-export function linkSocialSafe(
-  payload: Parameters<typeof authClient.linkSocial>[0],
-): Promise<unknown> {
-  if (isFrontendOnlyDemo()) {
-    return Promise.resolve(undefined);
-  }
-
-  return authClient.linkSocial(payload) as Promise<unknown>;
+export function linkSocialSafe(payload: Parameters<typeof authClient.linkSocial>[0]): Promise<unknown> {
+  return getAuthApi().linkSocialSafe(payload);
 }
 
 export function useSession() {
-  const demoMode = isFrontendOnlyDemo();
+  const mode = resolveMailMode();
+  const isDemo = mode === 'demo';
+  const isHosted = mode === 'hosted';
   return useQuery({
-    queryKey: ['auth', 'session', demoMode ? 'demo' : 'live'],
+    queryKey: ['auth', 'session', mode],
     queryFn: async () => {
       const result = await getSession();
       return result.data ?? null;
     },
-    staleTime: demoMode ? Infinity : 1000 * 30,
-    refetchOnWindowFocus: !demoMode,
+    staleTime: isDemo || isHosted ? Infinity : 1000 * 30,
+    refetchOnWindowFocus: !(isDemo || isHosted),
     retry: false,
   });
 }

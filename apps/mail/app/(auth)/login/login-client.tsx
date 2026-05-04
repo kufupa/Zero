@@ -1,6 +1,5 @@
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Suspense, useEffect, useState, type ReactNode } from 'react';
-import type { EnvVarInfo } from '@zero/server/auth-providers';
 import { Google, Microsoft } from '@/components/icons/icons';
 import ErrorMessage from '@/app/(auth)/login/error-message';
 import { Button } from '@/components/ui/button';
@@ -17,6 +16,8 @@ interface EnvVarStatus {
   defaultValue?: string;
 }
 
+type EnvVarInfo = Record<string, unknown>;
+
 interface Provider {
   id: string;
   name: string;
@@ -31,6 +32,7 @@ interface Provider {
 interface LoginClientProps {
   providers: Provider[];
   isProd: boolean;
+  loadError?: 'unreachable' | 'http_error' | 'hosted_unavailable';
 }
 
 const getProviderIcon = (providerId: string, className?: string): ReactNode => {
@@ -67,7 +69,7 @@ const getProviderIcon = (providerId: string, className?: string): ReactNode => {
   }
 };
 
-function LoginClientContent({ providers, isProd }: LoginClientProps) {
+function LoginClientContent({ providers, isProd, loadError }: LoginClientProps) {
   const navigate = useNavigate();
   const [expandedProviders, setExpandedProviders] = useState<Record<string, boolean>>({});
   const [error, _] = useQueryState('error');
@@ -142,6 +144,19 @@ function LoginClientContent({ providers, isProd }: LoginClientProps) {
             <Alert variant="default" className="border-orange-500/40 bg-orange-500/10">
               <AlertTitle className="text-orange-400">Error</AlertTitle>
               <AlertDescription>Failed to log you in. Please try again.</AlertDescription>
+            </Alert>
+          )}
+
+          {loadError && providers.length === 0 && (
+            <Alert variant="destructive" className="border-red-500/40 bg-red-500/10">
+              <AlertTitle className="text-red-300">Sign-in unavailable</AlertTitle>
+              <AlertDescription className="text-red-200/90">
+                {loadError === 'hosted_unavailable'
+                  ? 'Hosted login is not configured yet.'
+                  : loadError === 'http_error'
+                    ? 'Backend returned an error loading login providers.'
+                    : 'Could not reach the backend to load login providers.'}
+              </AlertDescription>
             </Alert>
           )}
 
