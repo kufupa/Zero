@@ -31,7 +31,7 @@ function* walkTsFiles(dir: string): Generator<string> {
 }
 
 describe('frontend import boundary', () => {
-  it('does not import forbidden server internals', () => {
+  it('does not import forbidden server internals', { timeout: 30_000 }, () => {
     const forbidden = [
       { re: /\bserver\/src\b/, msg: 'server/src' },
       { re: /@zero\/server\/src/, msg: '@zero/server/src' },

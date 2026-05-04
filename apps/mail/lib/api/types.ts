@@ -53,6 +53,8 @@ export type RecipientSuggestion = {
 
 export type BimiLogo = {
   url?: string;
+  /** SVG markup when the backend returns inline BIMI art (optional in demo). */
+  svgContent?: string;
   found: boolean;
 };
 

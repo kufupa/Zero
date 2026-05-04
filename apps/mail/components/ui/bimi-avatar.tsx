@@ -1,7 +1,9 @@
 import { Avatar, AvatarFallback, AvatarImage } from './avatar';
 import { useState, useCallback, useMemo } from 'react';
-import { useTRPC } from '@/providers/query-provider';
 import { useQuery } from '@tanstack/react-query';
+import { getFrontendApi } from '@/lib/api/client';
+import { resolveMailMode } from '@/lib/runtime/mail-mode';
+import { assetsGetBimiByEmailQueryKey, type ApiQueryContext } from '@/lib/api/query-options';
 import { getEmailLogo } from '@/lib/utils';
 import DOMPurify from 'dompurify';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
@@ -27,13 +29,21 @@ export const BimiAvatar = ({
   fallbackClassName = 'rounded-full bg-[#FFFFFF] font-bold text-[#9F9F9F] dark:bg-[#373737]',
   onImageError,
 }: BimiAvatarProps) => {
-  const trpc = useTRPC();
   const [useDefaultFallback, setUseDefaultFallback] = useState(false);
   const frontendOnlyDemo = isFrontendOnlyDemo();
+  const queryCtx = useMemo<ApiQueryContext>(
+    () => ({ mode: resolveMailMode(), accountId: null }),
+    [],
+  );
 
   const { data: bimiData, isLoading } = useQuery({
-    ...trpc.bimi.getByEmail.queryOptions({ email: email || '' }),
-    enabled: !!email && !useDefaultFallback && !frontendOnlyDemo,
+    queryKey: assetsGetBimiByEmailQueryKey(queryCtx, { email: email || '' }),
+    queryFn: () => getFrontendApi().assets.getBimiByEmail({ email: email || '' }),
+    enabled:
+      !!email &&
+      !useDefaultFallback &&
+      !frontendOnlyDemo &&
+      queryCtx.mode === 'legacy',
     staleTime: 1000 * 60 * 60 * 24, // Cache for 24 hours
     gcTime: 1000 * 60 * 60 * 24 * 7, // Keep in cache for 7 days
   });

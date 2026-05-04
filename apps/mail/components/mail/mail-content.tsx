@@ -1,7 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { defaultUserSettings } from '@/lib/domain/settings';
-import { useTRPC } from '@/providers/query-provider';
+import { getFrontendApi } from '@/lib/api/client';
+import { resolveMailMode } from '@/lib/runtime/mail-mode';
+import { mailSettingsQueryKey, type ApiQueryContext } from '@/lib/api/query-options';
 import { getBrowserTimezone } from '@/lib/timezones';
 import { useSettings } from '@/hooks/use-settings';
 import { m } from '@/paraglide/messages';
@@ -61,12 +63,15 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const shadowRootRef = useRef<ShadowRoot | null>(null);
   const { resolvedTheme } = useTheme();
-  const trpc = useTRPC();
+  const queryCtx = useMemo<ApiQueryContext>(
+    () => ({ mode: resolveMailMode(), accountId: null }),
+    [],
+  );
 
   const { mutateAsync: saveUserSettings } = useMutation({
-    ...trpc.settings.save.mutationOptions(),
+    mutationFn: (input: unknown) => getFrontendApi().settings.save(input),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['settings'] });
+      queryClient.invalidateQueries({ queryKey: mailSettingsQueryKey(queryCtx) });
     },
   });
 
@@ -91,9 +96,9 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
     },
   });
 
-  const { mutateAsync: processEmailContent } = useMutation(
-    trpc.mail.processEmailContent.mutationOptions(),
-  );
+  const { mutateAsync: processEmailContent } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().mail.processEmailContent(input),
+  });
 
   const {
     data: processedData,

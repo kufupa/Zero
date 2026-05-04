@@ -2,8 +2,10 @@
 
 import { useState, useRef, useCallback, useMemo } from 'react';
 import { useController, type Control } from 'react-hook-form';
-import { useTRPC } from '@/providers/query-provider';
 import { useQuery } from '@tanstack/react-query';
+import { getFrontendApi } from '@/lib/api/client';
+import { resolveMailMode } from '@/lib/runtime/mail-mode';
+import { mailSuggestRecipientsQueryKey, type ApiQueryContext } from '@/lib/api/query-options';
 import { useDebounce } from '@/hooks/use-debounce';
 import { cn } from '@/lib/utils';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
@@ -94,22 +96,30 @@ export function RecipientAutosuggest({
 
   const [debouncedQuery, setDebouncedQuery] = useState('');
 
-  const trpc = useTRPC();
   const demoMode = isFrontendOnlyDemo();
-  const { data: allSuggestions = [], isLoading } = demoMode
-    ? useQuery({
-        queryKey: ['demo', 'mail', 'recipientSuggestions', debouncedQuery],
-        queryFn: async () => listDemoRecipientSuggestions(debouncedQuery, 10),
-        enabled: debouncedQuery.trim().length > 0 && !isComposing,
-        staleTime: 1000 * 60 * 5, // 5 minutes
-      })
-    : useQuery({
-        ...trpc.mail.suggestRecipients.queryOptions({
-          query: debouncedQuery,
-          limit: 10,
-        }),
-        enabled: debouncedQuery.trim().length > 0 && !isComposing,
-      });
+  const queryCtx = useMemo<ApiQueryContext>(
+    () => ({ mode: resolveMailMode(), accountId: null }),
+    [],
+  );
+  const suggestInput = useMemo(
+    () => ({ query: debouncedQuery, limit: 10 as const }),
+    [debouncedQuery],
+  );
+
+  const { data: allSuggestions = [], isLoading } = useQuery({
+    queryKey: demoMode
+      ? (['demo', 'mail', 'recipientSuggestions', debouncedQuery] as const)
+      : mailSuggestRecipientsQueryKey(queryCtx, suggestInput),
+    queryFn: () =>
+      demoMode
+        ? listDemoRecipientSuggestions(debouncedQuery, 10)
+        : getFrontendApi().mail.suggestRecipients(suggestInput),
+    enabled:
+      debouncedQuery.trim().length > 0 &&
+      !isComposing &&
+      (demoMode || queryCtx.mode === 'legacy'),
+    staleTime: 1000 * 60 * 5, // 5 minutes
+  });
 
   const canonicalRecipients = useMemo(
     () => new Set(recipients.map((recipient) => canonicalizeEmail(recipient))),

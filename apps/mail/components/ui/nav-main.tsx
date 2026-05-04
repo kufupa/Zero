@@ -7,7 +7,9 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import Intercom, { show } from '@intercom/messenger-js-sdk';
 import { MessageSquare, OldPhone } from '../icons/icons';
 import { useSidebar } from '../context/sidebar-context';
-import { useTRPC } from '@/providers/query-provider';
+import { getFrontendApi } from '@/lib/api/client';
+import { resolveMailMode } from '@/lib/runtime/mail-mode';
+import { userIntercomTokenQueryKey, type ApiQueryContext } from '@/lib/api/query-options';
 import { type NavItem } from '@/config/navigation';
 import type { Label as LabelType } from '@/types';
 import { Link, useLocation } from 'react-router';
@@ -17,7 +19,7 @@ import { useLabels } from '@/hooks/use-labels';
 import { Badge } from '@/components/ui/badge';
 import { useStats } from '@/hooks/use-stats';
 import SidebarLabels from './sidebar-labels';
-import { useCallback, useRef } from 'react';
+import { useCallback, useMemo, useRef } from 'react';
 import { BASE_URL } from '@/lib/constants';
 import { shouldShowSupportLinks } from '@/lib/demo/support-links';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
@@ -59,12 +61,15 @@ export function NavMain({ items }: NavMainProps) {
   const searchParams = new URLSearchParams();
   const frontendOnlyDemo = isFrontendOnlyDemo();
 
-  const trpc = useTRPC();
-  const { data: intercomToken } = useQuery(
-    trpc.user.getIntercomToken.queryOptions(void 0, {
-      enabled: !frontendOnlyDemo,
-    }),
+  const queryCtx = useMemo<ApiQueryContext>(
+    () => ({ mode: resolveMailMode(), accountId: null }),
+    [],
   );
+  const { data: intercomToken } = useQuery({
+    queryKey: userIntercomTokenQueryKey(queryCtx),
+    queryFn: () => getFrontendApi().user.getIntercomToken(),
+    enabled: !frontendOnlyDemo && queryCtx.mode === 'legacy',
+  });
 
   React.useEffect(() => {
     if (intercomToken) {
@@ -75,7 +80,9 @@ export function NavMain({ items }: NavMainProps) {
     }
   }, [intercomToken]);
 
-  const { mutateAsync: createLabel } = useMutation(trpc.labels.create.mutationOptions());
+  const { mutateAsync: createLabel } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().labels.create(input),
+  });
 
   const { userLabels, refetch } = useLabels();
 

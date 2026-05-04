@@ -161,3 +161,65 @@ export function templatesListQueryOptions(api: FrontendApi, ctx: ApiQueryContext
     queryFn: () => api.templates.list({}),
   };
 }
+
+export function mailSuggestRecipientsQueryKey(
+  ctx: ApiQueryContext,
+  input: { query: string; limit: number },
+) {
+  return apiQueryKeys.mail.suggestRecipients(ctx.mode, ctx.accountId, input);
+}
+
+export function mailSuggestRecipientsQueryOptions(
+  api: FrontendApi,
+  ctx: ApiQueryContext,
+  input: { query: string; limit: number },
+) {
+  return {
+    queryKey: mailSuggestRecipientsQueryKey(ctx, input),
+    queryFn: () => api.mail.suggestRecipients(input),
+  };
+}
+
+export function mailVerifyEmailQueryKey(ctx: ApiQueryContext, input: { id: string }) {
+  return apiQueryKeys.mail.verifyEmail(ctx.mode, ctx.accountId, input);
+}
+
+export function mailVerifyEmailQueryOptions(api: FrontendApi, ctx: ApiQueryContext, messageId: string) {
+  return {
+    queryKey: mailVerifyEmailQueryKey(ctx, { id: messageId }),
+    queryFn: () => api.mail.verifyEmail({ id: messageId }),
+  };
+}
+
+export function notesListQueryKey(ctx: ApiQueryContext, input: { threadId: string }) {
+  return apiQueryKeys.notes.list(ctx.mode, ctx.accountId, input);
+}
+
+export function notesListQueryOptions(api: FrontendApi, ctx: ApiQueryContext, threadId: string) {
+  return {
+    queryKey: notesListQueryKey(ctx, { threadId }),
+    queryFn: () => api.notes.list({ threadId }),
+  };
+}
+
+export function assetsGetBimiByEmailQueryKey(ctx: ApiQueryContext, input: { email: string }) {
+  return apiQueryKeys.assets.getBimiByEmail(ctx.mode, ctx.accountId, input);
+}
+
+export function assetsGetBimiByEmailQueryOptions(api: FrontendApi, ctx: ApiQueryContext, email: string) {
+  return {
+    queryKey: assetsGetBimiByEmailQueryKey(ctx, { email }),
+    queryFn: () => api.assets.getBimiByEmail({ email }),
+  };
+}
+
+export function userIntercomTokenQueryKey(ctx: ApiQueryContext) {
+  return apiQueryKeys.user.getIntercomToken(ctx.mode, ctx.accountId);
+}
+
+export function userIntercomTokenQueryOptions(api: FrontendApi, ctx: ApiQueryContext) {
+  return {
+    queryKey: userIntercomTokenQueryKey(ctx),
+    queryFn: () => api.user.getIntercomToken(),
+  };
+}

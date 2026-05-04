@@ -14,6 +14,8 @@ import {
   aiGenerateSummaryQueryKey,
   draftsGetQueryKey,
   mailSettingsQueryKey,
+  mailSuggestRecipientsQueryKey,
+  notesListQueryKey,
   templatesListQueryKey,
 } from '../lib/api/query-options';
 import { persistTrustedSender } from '../components/mail/mail-content';
@@ -292,6 +294,7 @@ function makeTrpc() {
     },
     notes: {
       list: {
+        query: vi.fn(async () => ({ notes: [] })),
         queryOptions: vi.fn((input: { threadId: string }, options: Record<string, unknown> = {}) => ({
           queryKey: ['notes', 'list', input.threadId],
           queryFn: vi.fn(),
@@ -341,8 +344,17 @@ function makeTrpc() {
       unsnoozeThreads: { mutate: vi.fn(async () => ({})) },
       modifyLabels: { mutate: vi.fn(async () => ({})) },
       suggestRecipients: {
+        query: vi.fn(async () => []),
         queryOptions: vi.fn((input: { query: string; limit: number }, options: Record<string, unknown> = {}) => ({
           queryKey: ['mail', 'suggestRecipients', input.query, input.limit],
+          queryFn: vi.fn(),
+          ...options,
+        })),
+      },
+      verifyEmail: {
+        query: vi.fn(async () => ({ isVerified: false })),
+        queryOptions: vi.fn((input: { id: string }, options: Record<string, unknown> = {}) => ({
+          queryKey: ['mail', 'verifyEmail', input.id],
           queryFn: vi.fn(),
           ...options,
         })),
@@ -389,6 +401,16 @@ function makeTrpc() {
         ...options,
       })),
       query: vi.fn(async () => ({ enabled: true })),
+    },
+  },
+  bimi: {
+    getByEmail: {
+      query: vi.fn(async () => null),
+      queryOptions: vi.fn((input: { email: string }, options: Record<string, unknown> = {}) => ({
+        queryKey: ['bimi', 'getByEmail', input.email],
+        queryFn: vi.fn(),
+        ...options,
+      })),
     },
   },
   };
@@ -793,14 +815,9 @@ describe('demo backend guard coverage', () => {
       queryKey: unknown[];
       queryFn?: () => unknown;
     };
-    expect(trpc.notes.list.queryOptions).toHaveBeenCalledWith(
-      { threadId: 'thread-456' },
-      expect.objectContaining({
-        enabled: true,
-        staleTime: 1000 * 60 * 5,
-      }),
+    expect(notesQuery.queryKey).toEqual(
+      notesListQueryKey({ mode: 'legacy', accountId: null }, { threadId: 'thread-456' }),
     );
-    expect(notesQuery.queryKey).toEqual(['notes', 'list', 'thread-456']);
     expect(typeof notesQuery.queryFn).toBe('function');
     expect(listDemoNotesMock).not.toHaveBeenCalled();
   });
@@ -817,7 +834,6 @@ describe('demo backend guard coverage', () => {
 
     expect(suggestionQuery.queryKey[0]).toBe('demo');
     expect(suggestionQuery.enabled).toBe(false);
-    expect(trpc.mail.suggestRecipients.queryOptions).not.toHaveBeenCalled();
     expect(listDemoRecipientSuggestionsMock).not.toHaveBeenCalled();
   });
 
@@ -831,7 +847,6 @@ describe('demo backend guard coverage', () => {
     });
 
     expect(useQueryMock).toHaveBeenCalledTimes(1);
-    expect(trpc.mail.suggestRecipients.queryOptions).not.toHaveBeenCalled();
     expect(listDemoRecipientSuggestionsMock).toHaveBeenCalledWith('alice', 10);
   });
 
@@ -850,11 +865,9 @@ describe('demo backend guard coverage', () => {
       queryKey: unknown[];
       queryFn?: () => unknown;
     };
-    expect(trpc.mail.suggestRecipients.queryOptions).toHaveBeenCalledWith({
-      query: 'alice',
-      limit: 10,
-    });
-    expect(autosuggestQuery.queryKey).toEqual(['mail', 'suggestRecipients', 'alice', 10]);
+    expect(autosuggestQuery.queryKey).toEqual(
+      mailSuggestRecipientsQueryKey({ mode: 'legacy', accountId: null }, { query: 'alice', limit: 10 }),
+    );
     expect(typeof autosuggestQuery.queryFn).toBe('function');
     expect(listDemoRecipientSuggestionsMock).not.toHaveBeenCalled();
   });

@@ -11,8 +11,8 @@ import { SettingsCard } from '@/components/settings/settings-card';
 import { userSettingsSchema } from '@/lib/domain/settings';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { useTRPC } from '@/providers/query-provider';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { getFrontendApi } from '@/lib/api/client';
 // import { saveUserSettings } from '@/actions/settings';
 import { useSettings } from '@/hooks/use-settings';
 import { Switch } from '@/components/ui/switch';
@@ -29,9 +29,10 @@ import { demoSetSettings } from '@/lib/demo/local-actions';
 export default function PrivacyPage() {
   const [isSaving, setIsSaving] = useState(false);
   const { data, refetch } = useSettings();
-  const trpc = useTRPC();
   const queryClient = useQueryClient();
-  const { mutateAsync: saveUserSettings } = useMutation(trpc.settings.save.mutationOptions());
+  const { mutateAsync: saveUserSettings } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().settings.save(input),
+  });
 
   const form = useForm<z.infer<typeof userSettingsSchema>>({
     resolver: zodResolver(userSettingsSchema),
