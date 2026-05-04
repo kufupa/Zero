@@ -5,7 +5,6 @@ import { useSearchValue } from '@/hooks/use-search-value';
 import useSearchLabels from './use-labels-search';
 import { useSession } from '@/lib/auth-client';
 import { getFrontendApi } from '@/lib/api/client';
-import { resolveMailMode } from '@/lib/runtime/mail-mode';
 import {
   mailGetThreadQueryOptions,
   mailListThreadsInfiniteQueryKey,
@@ -14,7 +13,7 @@ import {
 import { listDemoThreads, getDemoThread } from '@/lib/demo-data/adapter';
 import { demoMailListDraftsQueryKey } from '@/lib/demo/demo-mail-query-keys';
 import { normalizeDemoMailFolderSlug } from '@/lib/demo/folder-map';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { isFrontendOnlyDemo, resolveMailMode } from '@/lib/runtime/mail-mode';
 import { listDemoDrafts } from '@/lib/demo/local-store';
 import { useAtom, useAtomValue } from 'jotai';
 import { useSettings } from './use-settings';

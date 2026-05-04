@@ -15,7 +15,7 @@ import { Button } from '@/components/ui/button';
 import { getLocale } from '@/paraglide/runtime';
 import { siteConfig } from '@/lib/site-config';
 import { signOut } from '@/lib/auth-client';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { isFrontendOnlyDemo } from '@/lib/runtime/mail-mode';
 import type { Route } from './+types/root';
 import { AlertCircle } from 'lucide-react';
 import { m } from '@/paraglide/messages';

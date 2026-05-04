@@ -8,7 +8,7 @@ import {
 } from '../ui/dialog';
 import { emailProviders } from '@/lib/constants';
 import { linkSocialSafe } from '@/lib/auth-client';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { isFrontendOnlyDemo } from '@/lib/runtime/mail-mode';
 import { Plus, UserPlus } from 'lucide-react';
 import { useLocation } from 'react-router';
 import { m } from '@/paraglide/messages';

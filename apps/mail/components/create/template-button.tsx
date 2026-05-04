@@ -15,7 +15,7 @@ import { toast } from 'sonner';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { FileText, Save, Trash2 } from 'lucide-react';
 import React, { useState, useMemo, useDeferredValue, useCallback } from 'react';
-import { resolveMailMode } from '@/lib/runtime/mail-mode';
+import { isFrontendOnlyDemo, resolveMailMode } from '@/lib/runtime/mail-mode';
 import { templatesListQueryKey, type ApiQueryContext } from '@/lib/api/query-options';
 import {
   Dialog,
@@ -26,7 +26,6 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { TRPCClientError } from '@trpc/client';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { demoDeleteTemplate, demoUpsertTemplate } from '@/lib/demo/local-actions';
 
 type EmailTemplate = {

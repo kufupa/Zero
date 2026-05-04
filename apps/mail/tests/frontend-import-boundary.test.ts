@@ -49,6 +49,9 @@ describe('frontend import boundary', () => {
       { re: /@zero\/server\/src/, msg: '@zero/server/src' },
       { re: /@zero\/server\/schemas/, msg: '@zero/server/schemas' },
       { re: /@zero\/server\/auth-providers/, msg: '@zero/server/auth-providers' },
+      { re: /@zero\/server\/src\/lib\/driver\/types/, msg: '@zero/server/src/lib/driver/types' },
+      { re: /\.\.\/\.\.\/server\/src\/lib\/driver\/types/, msg: 'relative server driver types' },
+      { re: /\.\.\/\.\.\/\.\.\/server\/src\/lib\/driver\/types/, msg: 'relative server driver types (deep)' },
     ];
 
     for (const file of walkTsFiles(mailRoot)) {

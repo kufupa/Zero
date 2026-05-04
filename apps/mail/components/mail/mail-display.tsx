@@ -57,7 +57,7 @@ import { Badge } from '../ui/badge';
 import { format } from 'date-fns';
 import { toast } from 'sonner';
 import { demoWebSearch } from '@/lib/demo/local-actions';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { isFrontendOnlyDemo } from '@/lib/runtime/mail-mode';
 import { openReplyComposeContext, type ReplyComposeMode } from '@/lib/mail/reply-compose-context';
 
 // Add formatFileSize utility function

@@ -1,9 +1,8 @@
 import { useQuery } from '@tanstack/react-query';
 import { useMemo } from 'react';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { isFrontendOnlyDemo, resolveMailMode } from '@/lib/runtime/mail-mode';
 import { demoGenerateSummary } from '@/lib/demo/local-actions';
 import { getFrontendApi } from '@/lib/api/client';
-import { resolveMailMode } from '@/lib/runtime/mail-mode';
 import {
   aiBrainStateQueryOptions,
   aiGenerateSummaryQueryKey,

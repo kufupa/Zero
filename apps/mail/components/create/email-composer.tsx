@@ -22,7 +22,7 @@ import { getFrontendApi } from '@/lib/api/client';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useSettings } from '@/hooks/use-settings';
 import { DEMO_MAIL_LIST_DRAFTS_QUERY_PREFIX } from '@/lib/demo/demo-mail-query-keys';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { isFrontendOnlyDemo } from '@/lib/runtime/mail-mode';
 import {
   demoAiCompose,
   demoGenerateEmailSubject,

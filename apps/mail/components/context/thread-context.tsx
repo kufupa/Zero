@@ -44,7 +44,7 @@ import { parseAsString, useQueryState, useQueryStates } from 'nuqs';
 import { toast } from 'sonner';
 import type { Label as LabelType } from '@/types';
 import { openReplyComposeContext } from '@/lib/mail/reply-compose-context';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { isFrontendOnlyDemo } from '@/lib/runtime/mail-mode';
 import { demoCreateLabel } from '@/lib/demo/local-actions';
 
 interface EmailAction {

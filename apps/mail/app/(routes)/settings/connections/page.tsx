@@ -23,9 +23,8 @@ import { Badge } from '@/components/ui/badge';
 import { m } from '@/paraglide/messages';
 import { useMemo, useState } from 'react';
 import { toast } from 'sonner';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { isFrontendOnlyDemo, resolveMailMode } from '@/lib/runtime/mail-mode';
 import { mailListThreadsPrefixKey } from '@/lib/api/query-options';
-import { resolveMailMode } from '@/lib/runtime/mail-mode';
 
 export async function runDisconnectConnection(params: {
   connectionId: string;

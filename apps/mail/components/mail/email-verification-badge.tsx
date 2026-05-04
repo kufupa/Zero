@@ -2,9 +2,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
 import { useQuery } from '@tanstack/react-query';
 import { CircleCheck } from '../icons/icons';
 import React, { useMemo } from 'react';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { isFrontendOnlyDemo, resolveMailMode } from '@/lib/runtime/mail-mode';
 import { getFrontendApi } from '@/lib/api/client';
-import { resolveMailMode } from '@/lib/runtime/mail-mode';
 import { mailVerifyEmailQueryKey, type ApiQueryContext } from '@/lib/api/query-options';
 
 interface EmailVerificationBadgeProps {

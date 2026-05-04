@@ -1,9 +1,8 @@
 import { useQuery } from '@tanstack/react-query';
 import { useMemo } from 'react';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { isFrontendOnlyDemo, resolveMailMode } from '@/lib/runtime/mail-mode';
 import { listDemoLabels } from '@/lib/demo/local-store';
 import { getFrontendApi } from '@/lib/api/client';
-import { resolveMailMode } from '@/lib/runtime/mail-mode';
 import { labelsListQueryOptions, type ApiQueryContext } from '@/lib/api/query-options';
 
 const desiredSystemLabels = new Set([

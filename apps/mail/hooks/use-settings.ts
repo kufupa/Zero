@@ -1,9 +1,8 @@
 import { useQuery } from '@tanstack/react-query';
 import { useMemo } from 'react';
 import { useSession } from '@/lib/auth-client';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { isFrontendOnlyDemo, resolveMailMode } from '@/lib/runtime/mail-mode';
 import { getFrontendApi } from '@/lib/api/client';
-import { resolveMailMode } from '@/lib/runtime/mail-mode';
 import { settingsGetQueryOptions, type ApiQueryContext } from '@/lib/api/query-options';
 import type { MailSettings } from '@/lib/domain/settings';
 

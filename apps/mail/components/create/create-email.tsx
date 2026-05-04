@@ -2,7 +2,7 @@ import { useUndoSend, type EmailData, deserializeFiles } from '@/hooks/use-undo-
 import { useActiveConnection } from '@/hooks/use-connections';
 import { Dialog, DialogClose } from '@/components/ui/dialog';
 import { cleanEmailAddresses } from '@/lib/email-utils';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { isFrontendOnlyDemo } from '@/lib/runtime/mail-mode';
 import { demoSendEmail } from '@/lib/demo/local-actions';
 
 import { useMutation } from '@tanstack/react-query';

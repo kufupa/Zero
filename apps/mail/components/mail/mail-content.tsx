@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { defaultUserSettings } from '@/lib/domain/settings';
 import { getFrontendApi } from '@/lib/api/client';
-import { resolveMailMode } from '@/lib/runtime/mail-mode';
+import { isFrontendOnlyDemo, resolveMailMode } from '@/lib/runtime/mail-mode';
 import { mailSettingsQueryKey, type ApiQueryContext } from '@/lib/api/query-options';
 import { getBrowserTimezone } from '@/lib/timezones';
 import { useSettings } from '@/hooks/use-settings';
@@ -10,7 +10,6 @@ import { m } from '@/paraglide/messages';
 import { useTheme } from 'next-themes';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { resolveMailHtml } from '@/lib/mail/resolve-mail-html';
 import { demoSetSettings } from '@/lib/demo/local-actions';
 

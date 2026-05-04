@@ -23,7 +23,7 @@ import { m } from '@/paraglide/messages';
 import { XIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import * as z from 'zod';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { isFrontendOnlyDemo } from '@/lib/runtime/mail-mode';
 import { demoSetSettings } from '@/lib/demo/local-actions';
 
 export default function PrivacyPage() {

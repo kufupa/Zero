@@ -16,7 +16,7 @@ import {
 } from '@/components/icons/icons';
 import { MessageSquareIcon } from 'lucide-react';
 import { m } from '@/paraglide/messages';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { isFrontendOnlyDemo } from '@/lib/runtime/mail-mode';
 import {
   DEMO_MAIL_FOLDER_DEFINITIONS,
   getCenturionCategoryColorStyle,

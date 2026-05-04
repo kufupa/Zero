@@ -7,7 +7,7 @@ import { useStats } from '@/hooks/use-stats';
 import { m } from '@/paraglide/messages';
 import { useState } from 'react';
 import { toast } from 'sonner';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { isFrontendOnlyDemo } from '@/lib/runtime/mail-mode';
 
 const useDelete = () => {
   const [isLoading, setIsLoading] = useState(false);

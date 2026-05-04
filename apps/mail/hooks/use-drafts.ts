@@ -1,11 +1,10 @@
 import { useQuery } from '@tanstack/react-query';
 import { useMemo } from 'react';
 import { useSession } from '@/lib/auth-client';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { isFrontendOnlyDemo, resolveMailMode } from '@/lib/runtime/mail-mode';
 import { getDemoDraft, type DemoDraft } from '@/lib/demo/local-store';
 import { parseRecipientToken, splitRecipientField } from '../lib/demo/recipient-parsing';
 import { getFrontendApi } from '@/lib/api/client';
-import { resolveMailMode } from '@/lib/runtime/mail-mode';
 import { draftsGetQueryKey, type ApiQueryContext } from '@/lib/api/query-options';
 
 type DraftLike = {

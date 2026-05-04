@@ -27,7 +27,7 @@ import { AddConnectionDialog } from '../connection/add';
 import { CircleCheck, ThreeDots } from '../icons/icons';
 import { getFrontendApi } from '@/lib/api/client';
 import { mailListThreadsPrefixKey } from '@/lib/api/query-options';
-import { resolveMailMode } from '@/lib/runtime/mail-mode';
+import { isFrontendOnlyDemo, resolveMailMode } from '@/lib/runtime/mail-mode';
 import { useSidebar } from '@/components/ui/sidebar';
 import { SunIcon } from '../icons/animated/sun';
 import { clear as idbClear } from 'idb-keyval';
@@ -38,7 +38,6 @@ import { useQueryState } from 'nuqs';
 import { Button } from './button';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 
 const bytesToMB = (bytes: number) => (bytes / 1024 / 1024).toFixed(2);
 

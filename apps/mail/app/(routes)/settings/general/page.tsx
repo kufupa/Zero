@@ -26,7 +26,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { getFrontendApi } from '@/lib/api/client';
 import { mailSettingsQueryKey } from '@/lib/api/query-options';
-import { resolveMailMode } from '@/lib/runtime/mail-mode';
+import { isFrontendOnlyDemo, resolveMailMode } from '@/lib/runtime/mail-mode';
 import { getBrowserTimezone } from '@/lib/timezones';
 
 import { useSettings } from '@/hooks/use-settings';
@@ -39,7 +39,6 @@ import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import * as z from 'zod';
 import { useCallback } from 'react';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { demoSetSettings } from '@/lib/demo/local-actions';
 import { useSession } from '@/lib/auth-client';
 import { Input } from '@/components/ui/input';

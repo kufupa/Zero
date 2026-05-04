@@ -2,11 +2,10 @@ import { Avatar, AvatarFallback, AvatarImage } from './avatar';
 import { useState, useCallback, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { getFrontendApi } from '@/lib/api/client';
-import { resolveMailMode } from '@/lib/runtime/mail-mode';
+import { isFrontendOnlyDemo, resolveMailMode } from '@/lib/runtime/mail-mode';
 import { assetsGetBimiByEmailQueryKey, type ApiQueryContext } from '@/lib/api/query-options';
 import { getEmailLogo } from '@/lib/utils';
 import DOMPurify from 'dompurify';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 
 export const getFirstLetterCharacter = (name?: string) => {
   if (!name) return '';

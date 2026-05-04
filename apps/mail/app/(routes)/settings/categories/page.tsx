@@ -26,7 +26,7 @@ import { defaultMailCategories } from '@/lib/domain/settings';
 import React, { useState, useEffect, useMemo } from 'react';
 import { getFrontendApi } from '@/lib/api/client';
 import { mailSettingsQueryKey } from '@/lib/api/query-options';
-import { resolveMailMode } from '@/lib/runtime/mail-mode';
+import { isFrontendOnlyDemo, resolveMailMode } from '@/lib/runtime/mail-mode';
 import { useSettings } from '@/hooks/use-settings';
 import type { DragEndEvent } from '@dnd-kit/core';
 import { Switch } from '@/components/ui/switch';
@@ -40,7 +40,6 @@ import { GripVertical } from 'lucide-react';
 import { m } from '@/paraglide/messages';
 import { CSS } from '@dnd-kit/utilities';
 import { toast } from 'sonner';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { demoSetSettings } from '@/lib/demo/local-actions';
 import type { DemoSettings } from '@/lib/demo/local-store';
 

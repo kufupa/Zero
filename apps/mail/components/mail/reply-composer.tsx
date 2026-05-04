@@ -18,7 +18,7 @@ import { useEffect, useMemo, useRef } from 'react';
 import posthog from 'posthog-js';
 import { toast } from 'sonner';
 import { demoSendEmail } from '@/lib/demo/local-actions';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { isFrontendOnlyDemo } from '@/lib/runtime/mail-mode';
 
 interface ReplyComposeProps {
   messageId?: string;

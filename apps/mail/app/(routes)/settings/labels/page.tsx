@@ -13,7 +13,7 @@ import { useMutation } from '@tanstack/react-query';
 import { Plus, Pencil } from 'lucide-react';
 import { type Label as LabelType } from '@/types';
 import { Button } from '@/components/ui/button';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { isFrontendOnlyDemo } from '@/lib/runtime/mail-mode';
 import { demoCreateLabel, demoDeleteLabel } from '@/lib/demo/local-actions';
 
 import { Bin } from '@/components/icons/icons';

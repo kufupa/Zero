@@ -1,6 +1,6 @@
 import { Link } from 'react-router';
 import { cn } from '@/lib/utils';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { isFrontendOnlyDemo } from '@/lib/runtime/mail-mode';
 import {
   getCenturionCategoryColorStyle,
   getCenturionCategoryTitle,

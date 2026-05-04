@@ -68,7 +68,7 @@ import { Badge } from '@/components/ui/badge';
 import { m } from '@/paraglide/messages';
 import { CSS } from '@dnd-kit/utilities';
 import type { Note } from '@/types';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { isFrontendOnlyDemo } from '@/lib/runtime/mail-mode';
 import {
   demoUpsertNote,
   demoDeleteNote,

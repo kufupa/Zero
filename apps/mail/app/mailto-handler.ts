@@ -2,7 +2,7 @@ import { cleanEmailAddresses } from '../lib/email-utils';
 import { getFrontendApi } from '@/lib/api/client';
 import type { Route } from './+types/mailto-handler';
 import { authProxy } from '@/lib/auth-proxy';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { isFrontendOnlyDemo } from '@/lib/runtime/mail-mode';
 
 // Function to parse mailto URLs
 async function parseMailtoUrl(mailtoUrl: string) {

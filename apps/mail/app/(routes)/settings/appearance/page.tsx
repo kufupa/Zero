@@ -26,7 +26,7 @@ import { useTheme } from 'next-themes';
 import { useState } from 'react';
 import { toast } from 'sonner';
 import * as z from 'zod';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { isFrontendOnlyDemo } from '@/lib/runtime/mail-mode';
 import { demoSetSettings } from '@/lib/demo/local-actions';
 
 const formSchema = z.object({

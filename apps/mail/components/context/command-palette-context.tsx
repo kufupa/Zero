@@ -60,7 +60,7 @@ import { Button } from '../ui/button';
 import { useQueryState } from 'nuqs';
 import { toast } from 'sonner';
 import { demoGenerateSearchQuery } from '@/lib/demo/local-actions';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { isFrontendOnlyDemo } from '@/lib/runtime/mail-mode';
 
 type CommandPaletteContext = {
   activeFilters: ActiveFilter[];

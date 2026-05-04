@@ -3,7 +3,7 @@ import { useLoaderData, useNavigate } from 'react-router';
 import { MailLayout } from '@/components/mail/mail';
 import { useLabels } from '@/hooks/use-labels';
 import { isDemoMailFolderSlug } from '@/lib/demo/folder-map';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { isFrontendOnlyDemo } from '@/lib/runtime/mail-mode';
 import { useEffect, useState } from 'react';
 import type { Route } from './+types/page';
 

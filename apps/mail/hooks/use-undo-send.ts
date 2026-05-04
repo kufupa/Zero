@@ -4,7 +4,7 @@ import { toast } from 'sonner';
 import { getFrontendApi } from '@/lib/api/client';
 import { isSendResult } from '@/lib/email-utils';
 import type { MailSettings } from '@/lib/domain/settings';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { isFrontendOnlyDemo } from '@/lib/runtime/mail-mode';
 import { demoUnsendEmail } from '@/lib/demo/local-actions';
 
 export type EmailData = {

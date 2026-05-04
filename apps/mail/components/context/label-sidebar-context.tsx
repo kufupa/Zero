@@ -21,7 +21,7 @@ import { m } from '@/paraglide/messages';
 import { Trash } from '../icons/icons';
 import { Button } from '../ui/button';
 import { toast } from 'sonner';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { isFrontendOnlyDemo } from '@/lib/runtime/mail-mode';
 import { demoDeleteLabel } from '@/lib/demo/local-actions';
 
 interface LabelSidebarContextMenuProps {

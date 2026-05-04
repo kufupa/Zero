@@ -165,6 +165,14 @@ vi.mock('../lib/demo/runtime', () => ({
   isFrontendOnlyDemo: () => isFrontendOnlyDemoMock(),
 }));
 
+vi.mock('@/lib/runtime/mail-mode', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/runtime/mail-mode')>();
+  return {
+    ...actual,
+    isFrontendOnlyDemo: () => isFrontendOnlyDemoMock(),
+  };
+});
+
 vi.mock('../hooks/use-connections', () => ({
   useActiveConnection: () => useActiveConnectionMock(),
 }));

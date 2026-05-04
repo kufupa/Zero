@@ -6,7 +6,7 @@ import { backgroundQueueAtom } from '@/store/backgroundQueue';
 import type { ThreadDestination } from '@/lib/thread-actions';
 import { draftsListPrefixKey, labelsListQueryKey } from '@/lib/api/query-options';
 import { getFrontendApi } from '@/lib/api/client';
-import { resolveMailMode } from '@/lib/runtime/mail-mode';
+import { isFrontendOnlyDemo, resolveMailMode } from '@/lib/runtime/mail-mode';
 import { useMail } from '@/components/mail/use-mail';
 import { moveThreadsTo } from '@/lib/thread-actions';
 import { m } from '@/paraglide/messages';
@@ -16,7 +16,6 @@ import posthog from 'posthog-js';
 import { useAtom } from 'jotai';
 import { toast } from 'sonner';
 import { DEMO_MAIL_LIST_DRAFTS_QUERY_PREFIX } from '@/lib/demo/demo-mail-query-keys';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import {
   demoBulkDeleteThreads,
   demoMarkAsRead,

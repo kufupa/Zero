@@ -50,7 +50,7 @@ import { format } from 'date-fns';
 import { useAtom } from 'jotai';
 import { toast } from 'sonner';
 import { resolveImportantState } from '@/lib/mail/important-ui';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { isFrontendOnlyDemo } from '@/lib/runtime/mail-mode';
 import {
   clearReplyComposeContext,
   openReplyComposeContext,
