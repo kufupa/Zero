@@ -315,6 +315,7 @@ function makeTrpc() {
       },
       unsend: {
         mutationOptions: vi.fn(),
+        mutate: vi.fn(async () => ({ success: true })),
       },
     },
   ai: {

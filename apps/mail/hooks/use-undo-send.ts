@@ -1,7 +1,7 @@
 import { useMutation } from '@tanstack/react-query';
 import { toast } from 'sonner';
 
-import { useTRPC } from '@/providers/query-provider';
+import { getFrontendApi } from '@/lib/api/client';
 import { isSendResult } from '@/lib/email-utils';
 import type { MailSettings } from '@/lib/domain/settings';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
@@ -59,8 +59,9 @@ export const deserializeFiles = (serializedFiles: SerializedFile[]): File[] => {
 };
 
 export const useUndoSend = () => {
-  const trpc = useTRPC();
-  const { mutateAsync: unsendEmail } = useMutation(trpc.mail.unsend.mutationOptions());
+  const { mutateAsync: unsendEmail } = useMutation({
+    mutationFn: (input: { messageId: string }) => getFrontendApi().mail.unsend(input),
+  });
 
   const handleUndoSend = (
     result: unknown, 
