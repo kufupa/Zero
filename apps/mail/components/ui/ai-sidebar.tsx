@@ -8,6 +8,8 @@ import useSearchLabels from '@/hooks/use-labels-search';
 import { useQueryClient } from '@tanstack/react-query';
 import { AIChat } from '@/components/create/ai-chat';
 import { useTRPC } from '@/providers/query-provider';
+import { labelsListQueryKey } from '@/lib/api/query-options';
+import { resolveMailMode } from '@/lib/runtime/mail-mode';
 import { Tools } from '@/types/tools';
 import { useDoState } from '../mail/use-do-state';
 import { PromptsDialog } from './prompts-dialog';
@@ -328,7 +330,7 @@ function AISidebar({ className }: AISidebarProps) {
           });
         } else if (type === IncomingMessageType.User_Topics) {
           queryClient.invalidateQueries({
-            queryKey: trpc.labels.list.queryKey(),
+            queryKey: labelsListQueryKey({ mode: resolveMailMode(), accountId: null }),
           });
         } else if (type === IncomingMessageType.Do_State) {
           const isSyncing = typeof parsedData.isSyncing === 'boolean' ? parsedData.isSyncing : false;

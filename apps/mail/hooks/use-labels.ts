@@ -1,8 +1,10 @@
-import { useTRPC } from '@/providers/query-provider';
 import { useQuery } from '@tanstack/react-query';
 import { useMemo } from 'react';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { listDemoLabels } from '@/lib/demo/local-store';
+import { getFrontendApi } from '@/lib/api/client';
+import { resolveMailMode } from '@/lib/runtime/mail-mode';
+import { labelsListQueryOptions, type ApiQueryContext } from '@/lib/api/query-options';
 
 const desiredSystemLabels = new Set([
   'IMPORTANT',
@@ -15,20 +17,23 @@ const desiredSystemLabels = new Set([
 ]);
 
 export function useLabels() {
-  const trpc = useTRPC();
   const demoMode = isFrontendOnlyDemo();
+  const queryCtx = useMemo<ApiQueryContext>(
+    () => ({ mode: resolveMailMode(), accountId: null }),
+    [],
+  );
+  const liveLabelsEnabled = !demoMode && queryCtx.mode === 'legacy';
   const demoLabelQuery = useQuery({
     queryKey: ['demo', 'labels'],
     queryFn: async () => listDemoLabels(),
     enabled: demoMode,
     staleTime: Infinity,
   });
-  const labelQuery = useQuery(
-    trpc.labels.list.queryOptions(void 0, {
-      enabled: !demoMode,
-      staleTime: 1000 * 60 * 60, // 1 hour
-    }),
-  );
+  const labelQuery = useQuery({
+    ...labelsListQueryOptions(getFrontendApi(), queryCtx),
+    enabled: liveLabelsEnabled,
+    staleTime: 1000 * 60 * 60, // 1 hour
+  });
 
   const activeQuery = demoMode ? demoLabelQuery : labelQuery;
 

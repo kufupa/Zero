@@ -119,6 +119,21 @@ vi.mock('@/hooks/use-optimistic-actions', () => ({
   useOptimisticActions: () => ({ optimisticToggleLabel: vi.fn() }),
 }));
 
+const trpcAdapterHolder: { ref: unknown } = { ref: null };
+
+vi.mock('@/lib/api/client', async () => {
+  const { createLegacyTrpcAdapter } = await import('../lib/api/adapters/legacy-trpc');
+  return {
+    getFrontendApi: () => {
+      const client = trpcAdapterHolder.ref;
+      if (!client) {
+        throw new Error('demo-backend-guards: trpcAdapterHolder.ref not set before getFrontendApi()');
+      }
+      return createLegacyTrpcAdapter(client as never);
+    },
+  };
+});
+
 vi.mock('@/providers/query-provider', () => ({
   useTRPC: () => useTRPCMock(),
 }));
@@ -242,6 +257,7 @@ function makeTrpc() {
           queryFn: vi.fn(),
           ...options,
         })),
+        query: vi.fn(async () => []),
       },
       create: {
         mutationOptions: vi.fn(),
@@ -320,6 +336,7 @@ function makeTrpc() {
 
 beforeEach(() => {
   trpc = makeTrpc();
+  trpcAdapterHolder.ref = trpc;
   isFrontendOnlyDemoMock.mockReturnValue(true);
   useTRPCMock.mockReturnValue(trpc);
   useMutationMock.mockReturnValue({ mutateAsync: deleteThreadMock });
@@ -876,33 +893,29 @@ describe('demo backend guard coverage', () => {
   it('uses local label reads for useLabels in demo mode', () => {
     useLabels();
 
-    expect(trpc.labels.list.queryOptions).toHaveBeenCalledWith(
-      undefined,
-      expect.objectContaining({
-        enabled: false,
-      }),
-    );
+    expect(trpc.labels.list.queryOptions).not.toHaveBeenCalled();
     const demoLabelCall = useQueryMock.mock.calls.find(
       (call) => (call[0] as { queryKey?: unknown[] } | undefined)?.queryKey?.[0] === 'demo',
-    )?.[0] as { queryKey: unknown[] } | undefined;
-    const backendLabelCall = useQueryMock.mock.calls.find(
-      (call) => (call[0] as { queryKey?: unknown[] } | undefined)?.queryKey?.[0] === 'labels',
-    )?.[0] as { queryKey: unknown[] } | undefined;
+    )?.[0] as { queryKey: unknown[]; enabled?: boolean } | undefined;
+    const backendLabelCall = useQueryMock.mock.calls.find((call) => {
+      const k = (call[0] as { queryKey?: unknown[] } | undefined)?.queryKey;
+      return Array.isArray(k) && k[0] === 'frontendApi' && k[3] === 'labels' && k[4] === 'list';
+    })?.[0] as { queryKey: unknown[]; enabled?: boolean } | undefined;
     expect(demoLabelCall?.queryKey).toEqual(['demo', 'labels']);
-    expect(backendLabelCall?.queryKey).toEqual(['labels', 'list']);
+    expect(backendLabelCall?.enabled).toBe(false);
   });
 
   it('uses backend label reads for useLabels when frontend-only demo mode is disabled', () => {
     isFrontendOnlyDemoMock.mockReturnValue(false);
     useLabels();
 
-    expect(trpc.labels.list.queryOptions).toHaveBeenCalledWith(
-      undefined,
-      expect.objectContaining({
-        enabled: true,
-        staleTime: 1000 * 60 * 60,
-      }),
-    );
+    expect(trpc.labels.list.queryOptions).not.toHaveBeenCalled();
+    const live = useQueryMock.mock.calls.find((call) => {
+      const k = (call[0] as { queryKey?: unknown[]; enabled?: boolean } | undefined)?.queryKey;
+      return Array.isArray(k) && k[0] === 'frontendApi' && k[3] === 'labels' && k[4] === 'list';
+    })?.[0] as { enabled?: boolean; staleTime?: number } | undefined;
+    expect(live?.enabled).toBe(true);
+    expect(live?.staleTime).toBe(1000 * 60 * 60);
   });
 
   it('uses local label actions in demo mode (thread/context create path)', async () => {

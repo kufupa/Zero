@@ -5,6 +5,8 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { backgroundQueueAtom } from '@/store/backgroundQueue';
 import type { ThreadDestination } from '@/lib/thread-actions';
 import { useTRPC } from '@/providers/query-provider';
+import { labelsListQueryKey } from '@/lib/api/query-options';
+import { resolveMailMode } from '@/lib/runtime/mail-mode';
 import { useMail } from '@/components/mail/use-mail';
 import { moveThreadsTo } from '@/lib/thread-actions';
 import { m } from '@/paraglide/messages';
@@ -90,7 +92,9 @@ export function useOptimisticActions() {
     `pending_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 
   const refreshData = useCallback(async () => {
-    return await queryClient.refetchQueries({ queryKey: trpc.labels.list.queryKey() });
+    return await queryClient.refetchQueries({
+      queryKey: labelsListQueryKey({ mode: resolveMailMode(), accountId: null }),
+    });
   }, [queryClient]);
 
   function createPendingAction({

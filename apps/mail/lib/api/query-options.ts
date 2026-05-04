@@ -31,6 +31,17 @@ export function aiGetPromptsQueryOptions(api: FrontendApi, ctx: ApiQueryContext)
   };
 }
 
+export function labelsListQueryKey(ctx: ApiQueryContext) {
+  return apiQueryKeys.labels.list(ctx.mode, ctx.accountId);
+}
+
+export function labelsListQueryOptions(api: FrontendApi, ctx: ApiQueryContext) {
+  return {
+    queryKey: labelsListQueryKey(ctx),
+    queryFn: () => api.labels.list(),
+  };
+}
+
 export function mailListThreadsQueryOptions(
   api: FrontendApi,
   ctx: ApiQueryContext,
