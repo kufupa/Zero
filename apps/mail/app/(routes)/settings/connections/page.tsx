@@ -13,7 +13,7 @@ import { AddConnectionDialog } from '@/components/connection/add';
 
 import { useSession, linkSocialSafe } from '@/lib/auth-client';
 import { useConnections } from '@/hooks/use-connections';
-import { useTRPC } from '@/providers/query-provider';
+import { getFrontendApi } from '@/lib/api/client';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Trash, Plus, Unplug } from 'lucide-react';
@@ -87,12 +87,13 @@ export default function ConnectionsPage() {
   const [openTooltip, setOpenTooltip] = useState<string | null>(null);
 
   const queryClient = useQueryClient();
-  const trpc = useTRPC();
   const mailThreadsPrefix = useMemo(
     () => mailListThreadsPrefixKey({ mode: resolveMailMode(), accountId: null }),
     [],
   );
-  const { mutateAsync: deleteConnection } = useMutation(trpc.connections.delete.mutationOptions());
+  const { mutateAsync: deleteConnection } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().connections.delete(input),
+  });
   const disconnectAccount = async (connectionId: string) => {
     await runDisconnectConnection({
       connectionId,

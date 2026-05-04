@@ -44,7 +44,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { useLocation, useNavigate } from 'react-router';
 import { navigationConfig } from '@/config/navigation';
 import { Separator } from '@/components/ui/separator';
-import { useTRPC } from '@/providers/query-provider';
+import { getFrontendApi } from '@/lib/api/client';
 import { Calendar } from '@/components/ui/calendar';
 import { useMutation } from '@tanstack/react-query';
 import { useThreads } from '@/hooks/use-threads';
@@ -221,11 +221,10 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
   const { pathname } = useLocation();
 
   const { userLabels = [] } = useLabels();
-  const trpc = useTRPC();
   const frontendOnlyDemoMode = isFrontendOnlyDemo();
-  const { mutateAsync: generateSearchQuery } = useMutation(
-    trpc.ai.generateSearchQuery.mutationOptions(),
-  );
+  const { mutateAsync: generateSearchQuery } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().ai.generateSearchQuery(input),
+  });
 
   useEffect(() => {
     setRecentSearches(getRecentSearches());

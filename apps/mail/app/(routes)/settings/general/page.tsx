@@ -24,7 +24,7 @@ import { userSettingsSchema } from '@/lib/domain/settings';
 import { locales } from '@/project.inlang/settings.json';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { useTRPC } from '@/providers/query-provider';
+import { getFrontendApi } from '@/lib/api/client';
 import { mailSettingsQueryKey } from '@/lib/api/query-options';
 import { resolveMailMode } from '@/lib/runtime/mail-mode';
 import { getBrowserTimezone } from '@/lib/timezones';
@@ -170,13 +170,14 @@ export default function GeneralPage() {
   const defaultUserEmail = session?.user?.email?.trim().toLowerCase() ?? '';
 
   const { data, refetch: refetchSettings } = useSettings();
-  const trpc = useTRPC();
   const mailSettingsKey = useMemo(
     () => mailSettingsQueryKey({ mode: resolveMailMode(), accountId: null }),
     [],
   );
   const queryClient = useQueryClient();
-  const { mutateAsync: saveUserSettings } = useMutation(trpc.settings.save.mutationOptions());
+  const { mutateAsync: saveUserSettings } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().settings.save(input),
+  });
   //   const { mutateAsync: setLocaleCookie } = useMutation(
   //     trpc.cookiePreferences.setLocaleCookie.mutationOptions(),
   //   );

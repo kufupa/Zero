@@ -15,7 +15,7 @@ import {
 } from '@/components/ui/select';
 import { SettingsCard } from '@/components/settings/settings-card';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { useTRPC } from '@/providers/query-provider';
+import { getFrontendApi } from '@/lib/api/client';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useSettings } from '@/hooks/use-settings';
 import { Laptop, Moon, Sun } from 'lucide-react';
@@ -40,9 +40,10 @@ export default function AppearancePage() {
 
   const { data, refetch } = useSettings();
   const { theme, systemTheme, resolvedTheme, setTheme } = useTheme();
-  const trpc = useTRPC();
   const queryClient = useQueryClient();
-  const { mutateAsync: saveUserSettings } = useMutation(trpc.settings.save.mutationOptions());
+  const { mutateAsync: saveUserSettings } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().settings.save(input),
+  });
 
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),

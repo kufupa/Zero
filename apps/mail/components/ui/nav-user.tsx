@@ -25,7 +25,7 @@ import { useLoading } from '../context/loading-context';
 import { signOut, useSession } from '@/lib/auth-client';
 import { AddConnectionDialog } from '../connection/add';
 import { CircleCheck, ThreeDots } from '../icons/icons';
-import { useTRPC } from '@/providers/query-provider';
+import { getFrontendApi } from '@/lib/api/client';
 import { mailListThreadsPrefixKey } from '@/lib/api/query-options';
 import { resolveMailMode } from '@/lib/runtime/mail-mode';
 import { useSidebar } from '@/components/ui/sidebar';
@@ -106,12 +106,13 @@ export function NavUser() {
   const [isRendered, setIsRendered] = useState(false);
   const { theme, resolvedTheme, setTheme } = useTheme();
   const { state } = useSidebar();
-  const trpc = useTRPC();
   const [, setThreadId] = useQueryState('threadId');
-  const { mutateAsync: setDefaultConnection } = useMutation(
-    trpc.connections.setDefault.mutationOptions(),
-  );
-  const { mutateAsync: handleForceSync } = useMutation(trpc.mail.forceSync.mutationOptions());
+  const { mutateAsync: setDefaultConnection } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().connections.setDefault(input),
+  });
+  const { mutateAsync: handleForceSync } = useMutation({
+    mutationFn: () => getFrontendApi().mail.forceSync(),
+  });
   const pathname = useLocation().pathname;
   const queryClient = useQueryClient();
   const { data: activeConnection, refetch: refetchActiveConnection } = useActiveConnection();

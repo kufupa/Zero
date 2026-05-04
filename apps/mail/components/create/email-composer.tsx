@@ -18,7 +18,7 @@ import { gitHubEmojis } from '@tiptap/extension-emoji';
 import { AnimatePresence, motion } from 'motion/react';
 import { zodResolver } from '@hookform/resolvers/zod';
 
-import { useTRPC } from '@/providers/query-provider';
+import { getFrontendApi } from '@/lib/api/client';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useSettings } from '@/hooks/use-settings';
 import { DEMO_MAIL_LIST_DRAFTS_QUERY_PREFIX } from '@/lib/demo/demo-mail-query-keys';
@@ -219,13 +219,16 @@ export function EmailComposer({
     'see the files',
   ];
 
-  const trpc = useTRPC();
   const queryClient = useQueryClient();
-  const { mutateAsync: aiCompose } = useMutation(trpc.ai.compose.mutationOptions());
-  const { mutateAsync: createDraft } = useMutation(trpc.drafts.create.mutationOptions());
-  const { mutateAsync: generateEmailSubject } = useMutation(
-    trpc.ai.generateEmailSubject.mutationOptions(),
-  );
+  const { mutateAsync: aiCompose } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().ai.compose(input),
+  });
+  const { mutateAsync: createDraft } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().drafts.create(input),
+  });
+  const { mutateAsync: generateEmailSubject } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().ai.generateEmailSubject(input),
+  });
 
   const form = useForm<z.infer<typeof schema>>({
     resolver: zodResolver(schema),

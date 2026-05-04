@@ -10,7 +10,7 @@ import { Form, FormControl, FormDescription, FormField, FormItem } from '@/compo
 import { SettingsCard } from '@/components/settings/settings-card';
 import { useSession, signOut } from '@/lib/auth-client';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { useTRPC } from '@/providers/query-provider';
+import { getFrontendApi } from '@/lib/api/client';
 import { useMutation } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -71,9 +71,10 @@ const formSchema = z.object({
 function DeleteAccountDialog() {
   const [isOpen, setIsOpen] = useState(false);
   
-  const trpc = useTRPC();
   const { refetch } = useSession();
-  const { mutateAsync: deleteAccount, isPending } = useMutation(trpc.user.delete.mutationOptions());
+  const { mutateAsync: deleteAccount, isPending } = useMutation({
+    mutationFn: () => getFrontendApi().user.delete(),
+  });
 
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),

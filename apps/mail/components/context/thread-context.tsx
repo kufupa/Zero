@@ -32,7 +32,7 @@ import { SnoozeDialog } from '@/components/mail/snooze-dialog';
 import { type ThreadDestination } from '@/lib/thread-actions';
 import { useThread, useThreads } from '@/hooks/use-threads';
 import { useMemo, type ReactNode, useState, useCallback } from 'react';
-import { useTRPC } from '@/providers/query-provider';
+import { getFrontendApi } from '@/lib/api/client';
 import { useMutation } from '@tanstack/react-query';
 import { useLabels } from '@/hooks/use-labels';
 import { FOLDERS, LABELS } from '@/lib/utils';
@@ -228,7 +228,6 @@ export function ThreadContextMenu({
     draftId: parseAsString,
   });
   const optimisticState = useOptimisticThreadState(threadId);
-  const trpc = useTRPC();
   const { refetch: refetchLabels } = useLabels();
   const {
     optimisticMoveThreadsTo,
@@ -240,8 +239,12 @@ export function ThreadContextMenu({
     optimisticSnooze,
     optimisticUnsnooze,
   } = useOptimisticActions();
-  const { mutateAsync: deleteThread } = useMutation(trpc.mail.delete.mutationOptions());
-  const { mutateAsync: createLabel } = useMutation(trpc.labels.create.mutationOptions());
+  const { mutateAsync: deleteThread } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().mail.deleteThread(input),
+  });
+  const { mutateAsync: createLabel } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().labels.create(input),
+  });
 
   const { isUnread, isStarred, isImportant } = useMemo(() => {
     const unread = threadData?.hasUnread ?? false;

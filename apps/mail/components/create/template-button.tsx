@@ -1,5 +1,5 @@
 import { useTemplates } from '@/hooks/use-templates';
-import { useTRPC } from '@/providers/query-provider';
+import { getFrontendApi } from '@/lib/api/client';
 import { Editor } from '@tiptap/react';
 import { Button } from '@/components/ui/button';
 import {
@@ -61,7 +61,6 @@ const TemplateButtonComponent: React.FC<TemplateButtonProps> = ({
   bcc,
   setRecipients,
 }) => {
-  const trpc = useTRPC();
   const queryClient = useQueryClient();
   const { data } = useTemplates();
   
@@ -86,10 +85,12 @@ const TemplateButtonComponent: React.FC<TemplateButtonProps> = ({
     return new Map(templates.map((t) => [t.id, t] as const));
   }, [templates]);
 
-  const { mutateAsync: createTemplate } = useMutation(trpc.templates.create.mutationOptions());
-  const { mutateAsync: deleteTemplateMutation } = useMutation(
-    trpc.templates.delete.mutationOptions(),
-  );
+  const { mutateAsync: createTemplate } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().templates.create(input),
+  });
+  const { mutateAsync: deleteTemplateMutation } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().templates.delete(input),
+  });
 
   const handleSaveTemplate = async () => {
     if (!editor) return;

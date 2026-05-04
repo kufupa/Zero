@@ -58,7 +58,7 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { useTRPC } from '@/providers/query-provider';
+import { getFrontendApi } from '@/lib/api/client';
 import { Textarea } from '@/components/ui/textarea';
 import { useMutation } from '@tanstack/react-query';
 import { useThreadNotes } from '@/hooks/use-notes';
@@ -253,11 +253,18 @@ export function NotesPanel({ threadId }: NotesPanelProps) {
   const [isNoteActionPending, setIsNoteActionPending] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
-  const trpc = useTRPC();
-  const { mutateAsync: createNote } = useMutation(trpc.notes.create.mutationOptions());
-  const { mutateAsync: updateNote } = useMutation(trpc.notes.update.mutationOptions());
-  const { mutateAsync: deleteNote } = useMutation(trpc.notes.delete.mutationOptions());
-  const { mutateAsync: reorderNotes } = useMutation(trpc.notes.reorder.mutationOptions());
+  const { mutateAsync: createNote } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().notes.create(input),
+  });
+  const { mutateAsync: updateNote } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().notes.update(input),
+  });
+  const { mutateAsync: deleteNote } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().notes.delete(input),
+  });
+  const { mutateAsync: reorderNotes } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().notes.reorder(input),
+  });
 
   const sensors = useSensors(
     useSensor(PointerSensor, {

@@ -24,7 +24,7 @@ import { Check, ChevronDown, Trash2, Plus } from 'lucide-react';
 import type { CategorySetting } from '@/hooks/use-categories';
 import { defaultMailCategories } from '@/lib/domain/settings';
 import React, { useState, useEffect, useMemo } from 'react';
-import { useTRPC } from '@/providers/query-provider';
+import { getFrontendApi } from '@/lib/api/client';
 import { mailSettingsQueryKey } from '@/lib/api/query-options';
 import { resolveMailMode } from '@/lib/runtime/mail-mode';
 import { useSettings } from '@/hooks/use-settings';
@@ -208,7 +208,6 @@ const SortableCategoryItem = React.memo(function SortableCategoryItem({
 
 export default function CategoriesSettingsPage() {
   const { data } = useSettings();
-  const trpc = useTRPC();
   const mailSettingsKey = useMemo(
     () => mailSettingsQueryKey({ mode: resolveMailMode(), accountId: null }),
     [],
@@ -218,7 +217,9 @@ export default function CategoriesSettingsPage() {
   const allLabels = useMemo(() => [...systemLabels, ...userLabels], [systemLabels, userLabels]);
 
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
-  const { mutateAsync: saveUserSettings } = useMutation(trpc.settings.save.mutationOptions());
+  const { mutateAsync: saveUserSettings } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().settings.save(input),
+  });
 
   const sensors = useSensors(
     useSensor(PointerSensor, {

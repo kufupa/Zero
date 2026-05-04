@@ -38,7 +38,7 @@ import { EmailVerificationBadge } from './email-verification-badge';
 import type { Sender, ParsedMessage, Attachment } from '@/types';
 import { useActiveConnection } from '@/hooks/use-connections';
 import { useAttachments } from '@/hooks/use-attachments';
-import { useTRPC } from '@/providers/query-provider';
+import { getFrontendApi } from '@/lib/api/client';
 import { useThreadLabels } from '@/hooks/use-labels';
 import { useMutation } from '@tanstack/react-query';
 import { TextShimmer } from '../ui/text-shimmer';
@@ -541,21 +541,23 @@ const MoreAboutPerson = ({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) => {
-  const trpc = useTRPC();
   const isFrontendOnlyDemoMode = isFrontendOnlyDemo();
-  const webSearchMutationOptions = trpc.ai.webSearch.mutationOptions();
+  const webSearchFn = useCallback(
+    (input: { query: string }) =>
+      getFrontendApi().ai.webSearch(input) as Promise<MailDisplayWebSearchResult>,
+    [],
+  );
   const {
     mutate: doSearch,
     isPending,
     data,
     error,
   } = useMutation({
-    ...webSearchMutationOptions,
     mutationFn: ({ query }: { query: string }) =>
       resolveMailDisplayWebSearch({
         query,
         isFrontendOnlyDemoMode,
-        webSearch: webSearchMutationOptions.mutationFn,
+        webSearch: webSearchFn,
       }),
   });
   const handleSearch = useCallback(() => {
@@ -563,7 +565,7 @@ const MoreAboutPerson = ({
       query: `In 50 words or less: What is the background of ${person.name} & ${person.email}, of ${person.email.split('@')[1]}.
       This could be a phishing email address, indicate if the domain is suspicious, example: x.io is not a valid domain for x.com | example: x.com is a valid domain for x.com | example: paypalcom.com is not a valid domain for paypal.com`,
     });
-  }, [person.name]);
+  }, [person.name, person.email, doSearch]);
 
   useEffect(() => {
     if (open) {
@@ -625,21 +627,23 @@ const MoreAboutQuery = ({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) => {
-  const trpc = useTRPC();
   const isFrontendOnlyDemoMode = isFrontendOnlyDemo();
-  const webSearchMutationOptions = trpc.ai.webSearch.mutationOptions();
+  const webSearchFn = useCallback(
+    (input: { query: string }) =>
+      getFrontendApi().ai.webSearch(input) as Promise<MailDisplayWebSearchResult>,
+    [],
+  );
   const {
     mutate: doSearch,
     isPending,
     data,
     error,
   } = useMutation({
-    ...webSearchMutationOptions,
     mutationFn: ({ query }: { query: string }) =>
       resolveMailDisplayWebSearch({
         query,
         isFrontendOnlyDemoMode,
-        webSearch: webSearchMutationOptions.mutationFn,
+        webSearch: webSearchFn,
       }),
   });
 

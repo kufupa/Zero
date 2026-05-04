@@ -7,7 +7,6 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import useSearchLabels from '@/hooks/use-labels-search';
 import { useQueryClient } from '@tanstack/react-query';
 import { AIChat } from '@/components/create/ai-chat';
-import { useTRPC } from '@/providers/query-provider';
 import {
   labelsListQueryKey,
   mailGetThreadQueryKey,
@@ -303,7 +302,6 @@ function AISidebar({ className }: AISidebarProps) {
   const { open, setOpen, isFullScreen, setIsFullScreen, toggleViewMode, isSidebar, isPopup } =
     useAISidebar();
   const queryClient = useQueryClient();
-  const trpc = useTRPC();
   const mailApiCtx = useMemo(() => ({ mode: resolveMailMode(), accountId: null as string | null }), []);
   const [threadId] = useQueryState('threadId');
   const { folder } = useParams<{ folder: string }>();
@@ -352,7 +350,7 @@ function AISidebar({ className }: AISidebarProps) {
         console.error('error parsing party message', error, { rawMessage: message.data });
       }
     },
-    [queryClient, trpc, mailApiCtx, labels, searchValue.value, setDoState],
+    [queryClient, mailApiCtx, labels, searchValue.value, setDoState],
   );
 
   const agent = useAgent({

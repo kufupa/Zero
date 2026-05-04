@@ -275,6 +275,7 @@ function makeTrpc() {
         mutationOptions: vi.fn(),
         mutate: vi.fn(async () => ({ success: true })),
       },
+      create: { mutationOptions: vi.fn() },
     },
     labels: {
       list: {
@@ -286,6 +287,9 @@ function makeTrpc() {
         query: vi.fn(async () => []),
       },
       create: {
+        mutationOptions: vi.fn(),
+      },
+      update: {
         mutationOptions: vi.fn(),
       },
       delete: {
@@ -301,6 +305,10 @@ function makeTrpc() {
           ...options,
         })),
       },
+      create: { mutate: vi.fn(async () => ({})) },
+      update: { mutate: vi.fn(async () => ({})) },
+      delete: { mutate: vi.fn(async () => ({})) },
+      reorder: { mutate: vi.fn(async () => ({})) },
     },
     templates: {
       list: {
@@ -311,8 +319,14 @@ function makeTrpc() {
         })),
         query: vi.fn(async () => ({ templates: [] })),
       },
+      create: { mutationOptions: vi.fn() },
+      delete: { mutationOptions: vi.fn() },
     },
     mail: {
+      send: {
+        mutationOptions: vi.fn(),
+        mutate: vi.fn(async () => ({})),
+      },
       listThreads: {
         query: vi.fn(async () => ({ threads: [], nextPageToken: null as string | null })),
       },
@@ -374,6 +388,14 @@ function makeTrpc() {
         ...options,
       })),
     },
+    generateSearchQuery: {
+      mutationOptions: vi.fn((options: Record<string, unknown> = {}) => ({
+        mutationFn: vi.fn(async (input: { query: string }) => ({ query: `${input.query} (backend)` })),
+        ...options,
+      })),
+    },
+    compose: { mutationOptions: vi.fn() },
+    generateEmailSubject: { mutationOptions: vi.fn() },
   },
   brain: {
     generateSummary: {
@@ -411,6 +433,14 @@ function makeTrpc() {
         queryFn: vi.fn(),
         ...options,
       })),
+    },
+  },
+  user: {
+    delete: {
+      mutationOptions: vi.fn(() => ({
+        mutationFn: vi.fn(async () => ({ success: true })),
+      })),
+      mutate: vi.fn(async () => ({ success: true })),
     },
   },
   };
@@ -493,6 +523,7 @@ beforeEach(() => {
   trpc.mail.delete.mutationOptions.mockClear();
   trpc.mail.unsend.mutationOptions.mockClear();
   trpc.labels.create.mutationOptions.mockClear();
+  trpc.labels.update.mutationOptions.mockClear();
   trpc.labels.delete.mutationOptions.mockClear();
   trpc.labels.list.queryOptions.mockClear();
   trpc.ai.webSearch.mutationOptions.mockClear();

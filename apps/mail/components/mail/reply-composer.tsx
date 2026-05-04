@@ -3,7 +3,7 @@ import { constructReplyBody, constructForwardBody } from '@/lib/utils';
 import { useActiveConnection } from '@/hooks/use-connections';
 import { EmailComposer } from '../create/email-composer';
 import { useHotkeysContext } from 'react-hotkeys-hook';
-import { useTRPC } from '@/providers/query-provider';
+import { getFrontendApi } from '@/lib/api/client';
 import { useMutation } from '@tanstack/react-query';
 import { useSettings } from '@/hooks/use-settings';
 import { useThread } from '@/hooks/use-threads';
@@ -33,8 +33,9 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
   const [, setActiveReplyId] = useQueryState('activeReplyId');
   const { data: emailData, refetch, latestDraft } = useThread(threadId);
   const { data: draft } = useDraft(draftId ?? null);
-  const trpc = useTRPC();
-  const { mutateAsync: sendEmail } = useMutation(trpc.mail.send.mutationOptions());
+  const { mutateAsync: sendEmail } = useMutation({
+    mutationFn: (input: unknown) => getFrontendApi().mail.send(input),
+  });
   const { data: activeConnection } = useActiveConnection();
   const { data: settings, isLoading: settingsLoading } = useSettings();
   const { data: session } = useSession();
