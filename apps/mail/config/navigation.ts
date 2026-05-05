@@ -196,6 +196,7 @@ export const navigationConfig: Record<string, NavConfig> = {
             title: m['navigation.settings.labels'](),
             url: '/settings/labels',
             icon: Sheet,
+            disabled: true,
           },
           {
             title: m['navigation.settings.categories'](),
