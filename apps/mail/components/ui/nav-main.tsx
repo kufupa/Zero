@@ -231,7 +231,9 @@ export function NavMain({ items }: NavMainProps) {
                 <div className="bg-muted-foreground/50 mx-2 mb-4 mt-2 h-[0.5px] dark:bg-[#262626]" />
               )}
               <div className="z-20 space-y-1 pb-2">
-                {section.items.map((item) => (
+                {section.items
+                  .filter((item) => !item.hidden)
+                  .map((item) => (
                   <NavItem
                     key={item.url}
                     {...item}
@@ -240,7 +242,7 @@ export function NavMain({ items }: NavMainProps) {
                     target={item.target}
                     title={item.title}
                   />
-                ))}
+                  ))}
               </div>
             </SidebarMenuItem>
           </Collapsible>

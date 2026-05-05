@@ -158,13 +158,15 @@ function DeleteAccountDialog() {
 }
 
 export default function DangerPage() {
+  const showDeleteAccount = false;
+
   return (
     <div className="grid gap-6">
       <SettingsCard
         title={m['pages.settings.dangerZone.title']()}
         description={m['pages.settings.dangerZone.description']()}
       >
-        <DeleteAccountDialog />
+        {showDeleteAccount && <DeleteAccountDialog />}
       </SettingsCard>
     </div>
   );

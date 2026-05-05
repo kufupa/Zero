@@ -23,6 +23,7 @@ const formSchema = z.object({
 
 export default function SecurityPage() {
   const [isSaving, setIsSaving] = useState(false);
+  const showDeleteAccount = false;
 
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
@@ -49,9 +50,11 @@ export default function SecurityPage() {
         description={m['pages.settings.security.description']()}
         footer={
           <div className="flex gap-4">
-            <Button variant="destructive" disabled>
-              {m['pages.settings.security.deleteAccount']()}
-            </Button>
+            {showDeleteAccount && (
+              <Button variant="destructive" disabled>
+                {m['pages.settings.security.deleteAccount']()}
+              </Button>
+            )}
             <Button type="submit" form="security-form" disabled={isSaving}>
               {isSaving ? m['common.actions.saving']() : m['common.actions.saveChanges']()}
             </Button>

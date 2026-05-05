@@ -38,6 +38,7 @@ export interface NavItem {
   disabled?: boolean;
   target?: string;
   shortcut?: string;
+  hidden?: boolean;
   style?: CSSProperties;
   className?: string;
 }
@@ -200,6 +201,8 @@ export const navigationConfig: Record<string, NavConfig> = {
             title: m['navigation.settings.categories'](),
             url: '/settings/categories',
             icon: Tabs,
+            disabled: true,
+            hidden: true,
           },
           {
             title: m['navigation.settings.signatures'](),
@@ -216,6 +219,8 @@ export const navigationConfig: Record<string, NavConfig> = {
             title: m['navigation.settings.deleteAccount'](),
             url: '/settings/danger-zone',
             icon: Danger,
+            disabled: true,
+            hidden: true,
           },
         ].map((item) => ({
           ...item,
