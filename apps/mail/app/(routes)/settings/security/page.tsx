@@ -49,7 +49,9 @@ export default function SecurityPage() {
         description={m['pages.settings.security.description']()}
         footer={
           <div className="flex gap-4">
-            <Button variant="destructive">{m['pages.settings.security.deleteAccount']()}</Button>
+            <Button variant="destructive" disabled>
+              {m['pages.settings.security.deleteAccount']()}
+            </Button>
             <Button type="submit" form="security-form" disabled={isSaving}>
               {isSaving ? m['common.actions.saving']() : m['common.actions.saveChanges']()}
             </Button>
