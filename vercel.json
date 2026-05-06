@@ -1,7 +1,13 @@
 {
   "version": 2,
   "framework": "vite",
-  "installCommand": "corepack pnpm install",
-  "buildCommand": "corepack pnpm --dir apps/mail exec vite build",
-  "outputDirectory": "apps/mail/build/client"
+  "installCommand": "corepack pnpm install --ignore-scripts",
+  "buildCommand": "ZERO_DISABLE_OXLINT=1 corepack pnpm run build:frontend",
+  "outputDirectory": "apps/mail/build/client",
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
 }
