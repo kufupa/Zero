@@ -19,6 +19,7 @@ import { useStats } from '@/hooks/use-stats';
 import { useLocation } from 'react-router';
 import { cn, FOLDERS } from '@/lib/utils';
 import { m } from '@/paraglide/messages';
+import { isAdminDashboardEnabled } from '@/lib/admin-dashboard/access';
 // import { Video } from 'lucide-react';
 import { NavUser } from './nav-user';
 import { NavMain } from './nav-main';
@@ -31,6 +32,8 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const { data: stats } = useStats();
   const location = useLocation();
   const { data: session } = useSession();
+  const showAdminDashboard = isAdminDashboardEnabled(session);
+
   const { currentSection, navItems } = useMemo(() => {
     // Find which section we're in based on the pathname
     const section = Object.entries(navigationConfig).find(([, config]) =>
@@ -40,6 +43,15 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
     const currentSection = section?.[0] || 'mail';
     if (navigationConfig[currentSection]) {
       const items = [...navigationConfig[currentSection].sections];
+
+      if (currentSection === 'settings' && items[0]) {
+        items[0] = {
+          ...items[0],
+          items: items[0].items.map((item) =>
+            item.id === 'admin-dashboard' ? { ...item, hidden: !showAdminDashboard } : item,
+          ),
+        };
+      }
 
       if (currentSection === 'mail' && stats && stats.length) {
         if (items[0]?.items[0]) {
@@ -59,7 +71,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         navItems: [],
       };
     }
-  }, [location.pathname, stats]);
+  }, [location.pathname, stats, showAdminDashboard]);
 
   const showComposeButton = currentSection === 'mail';
   const { state } = useSidebar();

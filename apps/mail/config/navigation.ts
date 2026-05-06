@@ -1,3 +1,4 @@
+import type { ComponentType, SVGProps } from 'react';
 import {
   Archive,
   Bin,
@@ -15,6 +16,7 @@ import {
   Clock,
 } from '@/components/icons/icons';
 import { MessageSquareIcon } from 'lucide-react';
+import { ShieldCheck } from 'lucide-react';
 import { m } from '@/paraglide/messages';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import {
@@ -31,7 +33,7 @@ export interface NavItem {
   title: string;
   subtitle?: string;
   url: string;
-  icon: React.ComponentType<any>;
+  icon: ComponentType<SVGProps<SVGSVGElement>>;
   badge?: number;
   isBackButton?: boolean;
   isSettingsButton?: boolean;
@@ -55,7 +57,7 @@ interface NavConfig {
 
 const DEMO_FOLDER_MODEL_ENABLED = isFrontendOnlyDemo();
 
-function getDemoMailFolderIcon(folderId: DemoMailFolderId): React.ComponentType<any> {
+function getDemoMailFolderIcon(folderId: DemoMailFolderId): ComponentType<SVGProps<SVGSVGElement>> {
   if (folderId === 'urgent' || folderId === 'spam') return ExclamationCircle;
   return Folder;
 }
@@ -221,6 +223,13 @@ export const navigationConfig: Record<string, NavConfig> = {
             url: '/settings/danger-zone',
             icon: Danger,
             disabled: true,
+            hidden: true,
+          },
+          {
+            id: 'admin-dashboard',
+            title: 'Admin dashboard',
+            url: '/settings/admin-dashboard',
+            icon: ShieldCheck,
             hidden: true,
           },
         ].map((item) => ({

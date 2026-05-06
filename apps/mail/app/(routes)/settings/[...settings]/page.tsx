@@ -4,6 +4,7 @@ import ShortcutsPage from '../shortcuts/page';
 import SecurityPage from '../security/page';
 import { m } from '@/paraglide/messages';
 import GeneralPage from '../general/page';
+import AdminDashboardPage from '../admin-dashboard/page';
 import { useLocation } from 'react-router';
 import LabelsPage from '../labels/page';
 
@@ -14,6 +15,7 @@ const settingsPages: Record<string, React.ComponentType> = {
   shortcuts: ShortcutsPage,
   notifications: NotificationsPage,
   labels: LabelsPage,
+  'admin-dashboard': AdminDashboardPage,
 };
 
 export default function SettingsPage() {
