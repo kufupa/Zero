@@ -56,7 +56,7 @@ type IconRefType = SVGSVGElement & {
 export function NavMain({ items }: NavMainProps) {
   const location = useLocation();
   const pathname = location.pathname;
-  const searchParams = new URLSearchParams();
+  const searchParams = new URLSearchParams(location.search);
   const frontendOnlyDemo = isFrontendOnlyDemo();
 
   const trpc = useTRPC();
@@ -107,10 +107,44 @@ export function NavMain({ items }: NavMainProps) {
     }
   }, []);
 
+  const sanitizeFrom = useCallback(
+    (rawFrom: string | null) => {
+      if (!rawFrom) return null;
+
+      let decodedFrom = rawFrom;
+      try {
+        decodedFrom = decodeURIComponent(rawFrom);
+      } catch {
+        return null;
+      }
+
+      if (!decodedFrom || decodedFrom === 'undefined' || decodedFrom === 'null') return null;
+
+      let normalizedFrom = decodedFrom.startsWith('/') ? decodedFrom : `/${decodedFrom}`;
+
+      if (normalizedFrom.startsWith('/settings/undefined/')) {
+        normalizedFrom = `/${normalizedFrom.slice('/settings/undefined/'.length)}`;
+      }
+
+      if (normalizedFrom.startsWith('/undefined/')) {
+        normalizedFrom = `/${normalizedFrom.slice('/undefined/'.length)}`;
+      }
+
+      if (normalizedFrom === '/undefined' || normalizedFrom === '/null') return null;
+
+      if (isValidInternalUrl(normalizedFrom)) {
+        return normalizedFrom;
+      }
+
+      return null;
+    },
+    [isValidInternalUrl],
+  );
+
   const getHref = useCallback(
     (item: NavItemProps) => {
       // Get the current 'from' parameter
-      const currentFrom = searchParams.get('from');
+      const currentFrom = sanitizeFrom(searchParams.get('from'));
 
       // Handle settings navigation
       if (item.isSettingsButton) {
@@ -122,9 +156,8 @@ export function NavMain({ items }: NavMainProps) {
       // Handle back button with redirect protection
       if (item.isBackButton) {
         if (currentFrom) {
-          const decodedFrom = decodeURIComponent(currentFrom);
-          if (isValidInternalUrl(decodedFrom)) {
-            return decodedFrom;
+          if (isValidInternalUrl(currentFrom)) {
+            return currentFrom;
           }
         }
         // Fall back to safe default if URL is missing or invalid
@@ -134,8 +167,7 @@ export function NavMain({ items }: NavMainProps) {
       // Handle settings pages navigation
       if (item.isSettingsPage && currentFrom) {
         // Validate and sanitize the 'from' parameter to prevent open redirects
-        const decodedFrom = decodeURIComponent(currentFrom);
-        if (isValidInternalUrl(decodedFrom)) {
+        if (isValidInternalUrl(currentFrom)) {
           return `${item.url}?from=${encodeURIComponent(currentFrom)}`;
         }
         // Fall back to safe default if URL validation fails
@@ -144,7 +176,7 @@ export function NavMain({ items }: NavMainProps) {
 
       return item.url;
     },
-    [pathname, searchParams, isValidInternalUrl],
+    [pathname, searchParams, sanitizeFrom, isValidInternalUrl],
   );
 
   const { data: activeAccount } = useActiveConnection();
