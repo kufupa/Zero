@@ -25,11 +25,11 @@ type OnboardingStep = CarouselStep;
 const CAROUSEL_STEPS: CarouselStep[] = [
   {
     type: 'carousel',
-    title: 'Welcome to Lucein AI',
+    title: 'Welcome to Nava AI',
     description:
       'You are now on a hotel focused inbox. This tour shows your daily reservation workflow from Outlook to AI assisted composing and final human approval.',
     bullets: [
-      'You already know your guests. Lucein AI helps you answer faster, safer, and more consistently.',
+      'You already know your guests. Nava AI helps you answer faster, safer, and more consistently.',
       'Every draft is review-first so you stay in control.',
     ],
     visual: {
@@ -44,7 +44,7 @@ const CAROUSEL_STEPS: CarouselStep[] = [
     type: 'carousel',
     title: 'The daily reply loop',
     description:
-      'For reservation-related emails, Lucein automatically prepares a rough draft using synced booking context, so you can quickly review and send.',
+      'For reservation-related emails, Nava automatically prepares a rough draft using synced booking context, so you can quickly review and send.',
     bullets: [
       'You have full control to make edits and ensure the email sounds like you.',
     ],
@@ -60,7 +60,7 @@ const CAROUSEL_STEPS: CarouselStep[] = [
     type: 'carousel',
     title: 'Built for hospitality language',
     description:
-      'Lucein AI is tuned for reservation style communication, so your outgoing replies stay courteous and operationally correct.',
+      'Nava AI is tuned for reservation style communication, so your outgoing replies stay courteous and operationally correct.',
     bullets: [
       'Keep tone aligned with your hotel standards.',
       'If you spot issues, use the feedback button in the bottom left, or escalate to your General Manager.',
@@ -96,7 +96,7 @@ function buildStepVisual(step: CarouselStep) {
   return (
     <div className={`h-52 w-full overflow-hidden rounded-xl border bg-linear-to-br ${step.visual.gradient} p-4`}>
       <div className="flex h-full flex-col justify-between gap-4 text-white">
-        <div className="text-xs font-semibold uppercase tracking-[0.2em] opacity-85">Lucein AI</div>
+        <div className="text-xs font-semibold uppercase tracking-[0.2em] opacity-85">Nava AI</div>
         <div className="space-y-4">
           <div className="inline-flex items-center gap-3 rounded-full bg-white/20 px-3 py-1.5 text-sm">
             <span className="text-2xl">{step.visual.icon}</span>
