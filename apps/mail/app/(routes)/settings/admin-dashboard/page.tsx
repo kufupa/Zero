@@ -763,14 +763,14 @@ export default function AdminDashboardPage() {
         return [inboxId];
       }
 
-      if (prev.includes(inboxId)) {
+        if (prev.includes(inboxId)) {
         if (prev.length <= 1) {
           return prev;
         }
         return prev.filter((id) => id !== inboxId);
       }
 
-      return [...prev, inboxId];
+        return [...prev, inboxId];
     });
   };
 
@@ -848,11 +848,9 @@ export default function AdminDashboardPage() {
                         >
                           <span className="min-w-0 flex-1 truncate">
                             {hotelLabel}
-                            {hotel.inboxes.length > 1 ? (
-                              <span className="ml-2 text-xs text-muted-foreground">
-                                ({selectedHotelCount}/{hotel.inboxes.length})
-                              </span>
-                            ) : null}
+                            <span className="ml-2 text-xs text-muted-foreground">
+                              ({selectedHotelCount}/{hotel.inboxes.length})
+                            </span>
                           </span>
                           <span className={`text-muted-foreground ${isHotelChecked ? 'opacity-100' : 'opacity-0'}`}>
                             <Check className="h-4 w-4" />
@@ -890,8 +888,8 @@ export default function AdminDashboardPage() {
               </DropdownMenu>
           {selectedInboxes.length < allInboxes.length ? (
             <Button variant="ghost" size="sm" onClick={handleClearSelection}>
-              Clear
-            </Button>
+                Clear
+              </Button>
           ) : null}
             </div>
           </div>
@@ -903,7 +901,7 @@ export default function AdminDashboardPage() {
               subtitle="Split by source below"
               subtitlePosition="right"
             />
-            <KpiBlock
+              <KpiBlock
               label="Total revenue from emails"
               value={formatCurrency(totalReservationRevenue)}
               subtitle="Sum of all inbound splits"
