@@ -34,7 +34,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const { data: session } = useSession();
   const showAdminDashboard = isAdminDashboardEnabled(session);
 
-  const { currentSection, navItems } = useMemo(() => {
+  const { currentSection, navItems, footerItems } = useMemo(() => {
     // Find which section we're in based on the pathname
     const section = Object.entries(navigationConfig).find(([, config]) =>
       location.pathname.startsWith(config.path),
@@ -64,11 +64,21 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         }
       }
 
-      return { currentSection, navItems: items };
+      const footerItems = bottomNavItems.map((section) => ({
+        ...section,
+        items: section.items.map((item) =>
+          item.id === 'admin-dashboard'
+            ? { ...item, hidden: !(currentSection === 'mail' && showAdminDashboard) }
+            : item,
+        ),
+      }));
+
+      return { currentSection, navItems: items, footerItems };
     } else {
       return {
         currentSection: '',
         navItems: [],
+        footerItems: bottomNavItems,
       };
     }
   }, [location.pathname, stats, showAdminDashboard]);
@@ -125,7 +135,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
       </SidebarContent>
 
       <SidebarFooter className={`px-0 pb-0 ${state === 'collapsed' ? 'md:px-2' : 'md:px-4'}`}>
-        <NavMain items={bottomNavItems} />
+        <NavMain items={footerItems} />
       </SidebarFooter>
     </Sidebar>
   );

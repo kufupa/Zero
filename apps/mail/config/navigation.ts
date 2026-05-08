@@ -246,6 +246,13 @@ export const bottomNavItems = [
     title: '',
     items: [
       {
+        id: 'admin-dashboard',
+        title: 'Admin dashboard',
+        url: '/settings/admin-dashboard',
+        icon: ShieldCheck,
+        hidden: true,
+      },
+      {
         id: 'settings',
         title: m['navigation.sidebar.settings'](),
         url: '/settings/general',
