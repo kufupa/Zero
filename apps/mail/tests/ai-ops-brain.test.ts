@@ -98,4 +98,29 @@ describe('ai ops brain demo data', () => {
       affectedNodeIds: expect.arrayContaining(['group-room-plan', 'group-draft']),
     });
   });
+
+  it('drives the Act -> Review -> Learn -> Brain demo spine', () => {
+    const graph = getAiOpsBrainGraph();
+
+    expect(graph.reviewSteps.map((step) => step.status)).toEqual(['done', 'done', 'current', 'queued']);
+    expect(graph.reviewSteps.find((step) => step.status === 'current')).toMatchObject({
+      id: 'review-gelato',
+      nodeId: 'group-gelato',
+      action: 'Ask manager before promising guest',
+    });
+    expect(graph.brainDelta).toMatchObject({
+      actor: 'Sarah Mokoena',
+      hotel: 'The Centurion',
+      affectedNodeIds: expect.arrayContaining(['group-youth-sports', 'group-gelato']),
+    });
+  });
+
+  it('offers guided whole-brain tour states', () => {
+    const graph = getAiOpsBrainGraph();
+
+    expect(graph.tours.map((tour) => tour.id)).toEqual(['categories', 'risk-alerts', 'learning-signals']);
+    expect(graph.tours.find((tour) => tour.id === 'risk-alerts')?.nodeIds).toEqual(
+      expect.arrayContaining(['internal-risk-alert', 'group-room-plan']),
+    );
+  });
 });

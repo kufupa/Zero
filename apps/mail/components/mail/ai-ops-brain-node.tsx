@@ -25,11 +25,11 @@ type LaneNodeData = {
 };
 
 const STATUS_THEME: Record<AiOpsBrainGraphNode['status'], string> = {
-  live: 'border-emerald-300/35 bg-emerald-300/10 text-emerald-50 shadow-emerald-950/30',
-  suggested: 'border-fuchsia-300/45 bg-fuchsia-300/10 text-fuchsia-50 shadow-fuchsia-950/35',
-  'weak-signal': 'border-fuchsia-300/25 bg-fuchsia-300/[0.07] text-fuchsia-100 shadow-fuchsia-950/20',
-  risk: 'border-amber-300/45 bg-amber-300/12 text-amber-50 shadow-amber-950/30',
-  muted: 'border-white/12 bg-white/[0.045] text-slate-300 shadow-black/25',
+  live: 'border-[#9DBDFF]/25 bg-[#0A1118]/82 text-slate-200 shadow-black/30',
+  suggested: 'border-[#9DBDFF]/35 bg-[#0A1118]/88 text-slate-100 shadow-black/35',
+  'weak-signal': 'border-[#9DBDFF]/30 bg-[#0A1118]/82 text-slate-100 shadow-black/30',
+  risk: 'border-amber-300/35 bg-amber-300/10 text-amber-50 shadow-black/30',
+  muted: 'border-white/10 bg-[#070B10]/68 text-slate-400 shadow-black/20',
 };
 
 const KIND_ICON: Record<AiOpsBrainGraphNode['kind'], typeof Mail> = {
@@ -56,10 +56,10 @@ export function AiOpsBrainFlowNode({ data }: NodeProps) {
       type="button"
       onClick={() => onSelectNode?.(node.id)}
       className={cn(
-        'group relative w-[230px] rounded-[22px] border p-3 text-left shadow-2xl backdrop-blur-xl transition-all',
+        'group relative w-[230px] rounded-full border px-5 py-4 text-left shadow-2xl backdrop-blur-xl transition-all duration-300',
         STATUS_THEME[node.status],
-        selected && 'scale-[1.03] ring-2 ring-white/70',
-        node.focus === 'hero' && 'shadow-fuchsia-950/40',
+        selected && 'scale-[1.03] border-[#C8D8FF]/60 ring-1 ring-[#C8D8FF]/55',
+        node.focus === 'hero' && 'shadow-[0_0_28px_rgba(157,189,255,0.12)]',
         dimmed && 'opacity-60 hover:opacity-95',
       )}
     >
@@ -67,17 +67,17 @@ export function AiOpsBrainFlowNode({ data }: NodeProps) {
       <Handle type="source" position={Position.Right} className="!h-2.5 !w-2.5 !border-white/60 !bg-slate-950" />
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2">
-          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-2xl border border-white/15 bg-black/30">
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-white/10 bg-black/20 text-[#9DBDFF]">
             <Icon className="h-4 w-4" />
           </span>
           <div className="min-w-0">
-            <p className="truncate text-sm font-semibold">{node.label}</p>
+            <p className="truncate text-sm font-semibold tracking-tight">{node.label}</p>
             <p className="mt-0.5 truncate text-[11px] text-current/65">{node.shortReason}</p>
           </div>
         </div>
         {node.status === 'risk' ? <AlertTriangle className="h-4 w-4 shrink-0 text-amber-200" /> : null}
       </div>
-      <div className="mt-3 flex flex-wrap gap-1.5">
+      <div className="mt-3 hidden flex-wrap gap-1.5 group-hover:flex">
         {node.badges.slice(0, 3).map((badge) => (
           <span key={badge} className="rounded-full border border-white/10 bg-black/25 px-2 py-0.5 text-[10px] font-medium">
             {badge}
@@ -88,7 +88,7 @@ export function AiOpsBrainFlowNode({ data }: NodeProps) {
         </span>
       </div>
       {node.focus === 'hero' ? (
-        <span className="absolute -right-1 -top-1 h-3 w-3 rounded-full bg-fuchsia-300 shadow-[0_0_22px_rgba(240,171,252,0.9)]" />
+        <span className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full bg-[#9DBDFF] shadow-[0_0_18px_rgba(157,189,255,0.75)]" />
       ) : null}
     </button>
   );

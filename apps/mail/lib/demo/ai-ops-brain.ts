@@ -116,6 +116,35 @@ export type AiOpsBrainRiskAlert = {
   recommendedAction: string;
 };
 
+export type AiOpsBrainReviewStep = {
+  id: string;
+  title: string;
+  actor: string;
+  status: 'done' | 'current' | 'queued';
+  nodeId: string;
+  summary: string;
+  reason: string;
+  sources: string[];
+  action: string;
+};
+
+export type AiOpsBrainDelta = {
+  title: string;
+  before: string;
+  after: string;
+  actor: string;
+  hotel: string;
+  affectedNodeIds: string[];
+};
+
+export type AiOpsBrainTour = {
+  id: 'categories' | 'risk-alerts' | 'learning-signals';
+  label: string;
+  title: string;
+  description: string;
+  nodeIds: string[];
+};
+
 export type AiOpsBrainGraph = {
   id: string;
   hotel: string;
@@ -127,6 +156,9 @@ export type AiOpsBrainGraph = {
   edges: AiOpsBrainGraphEdge[];
   evidence: AiOpsBrainEvidenceEvent[];
   riskAlerts: AiOpsBrainRiskAlert[];
+  reviewSteps: AiOpsBrainReviewStep[];
+  brainDelta: AiOpsBrainDelta;
+  tours: AiOpsBrainTour[];
 };
 
 export const AI_OPS_BRAIN_WORKFLOWS: Record<AiOpsBrainWorkflowKey, AiOpsBrainWorkflow> = {
@@ -826,6 +858,83 @@ const AI_OPS_BRAIN_GRAPH: AiOpsBrainGraph = {
       affectedNodeIds: ['group-room-plan', 'group-draft'],
       detail: 'Internal maintenance email says third-floor rooms may be unavailable for group allocation.',
       recommendedAction: 'Block floor 3 in room-plan suggestions and attach warning to affected group drafts.',
+    },
+  ],
+  reviewSteps: [
+    {
+      id: 'review-email',
+      title: 'Email received',
+      actor: 'Pretoria Girls Volleyball',
+      status: 'done',
+      nodeId: 'email-received',
+      summary: 'Two U16 teams ask for 22 rooms near each other.',
+      reason: 'group request -> room block flow',
+      sources: ['Inbound email', 'Historical group quotes'],
+      action: 'Facts extracted',
+    },
+    {
+      id: 'review-room-plan',
+      title: 'Room proximity',
+      actor: 'Nava',
+      status: 'done',
+      nodeId: 'group-room-plan',
+      summary: 'Room Plan API keeps teams same wing and avoids floor 3.',
+      reason: 'if youth team -> keep rooms nearby',
+      sources: ['Room plan API', 'Third-floor leak alert'],
+      action: 'Attach allocation warning',
+    },
+    {
+      id: 'review-gelato',
+      title: 'Gelato opportunity',
+      actor: 'Nava',
+      status: 'current',
+      nodeId: 'group-gelato',
+      summary: 'Players + warm weekend can support temporary gelato stand.',
+      reason: 'if youth_sports && April -> ask F&B capacity',
+      sources: ['Sarah edit', 'F&B calendar', 'Gelato stand anecdote'],
+      action: 'Ask manager before promising guest',
+    },
+    {
+      id: 'review-draft',
+      title: 'Draft reply',
+      actor: 'Sarah Mokoena',
+      status: 'queued',
+      nodeId: 'group-draft',
+      summary: 'Reply quotes rooms, asks about proximity, and avoids promising unapproved stand.',
+      reason: 'quote guest; route ops work internally',
+      sources: ['Group quote format', 'Manager approval SOP'],
+      action: 'Review and send',
+    },
+  ],
+  brainDelta: {
+    title: 'Brain changed',
+    before: 'Youth sports branch was a weak signal at 61%.',
+    after: 'Gelato + room proximity path promoted for future youth groups at 86%.',
+    actor: 'Sarah Mokoena',
+    hotel: 'The Centurion',
+    affectedNodeIds: ['group-youth-sports', 'group-gelato', 'group-calendar', 'group-gm-approval'],
+  },
+  tours: [
+    {
+      id: 'categories',
+      label: 'Categories',
+      title: 'Five inbox lanes',
+      description: 'Every inbound email lands in internal, individual, group, travel agent, or safety workflows.',
+      nodeIds: ['classify-category', 'internal-handover', 'individual-rate', 'group-availability', 'travel-agent-contract', 'spam-quarantine'],
+    },
+    {
+      id: 'risk-alerts',
+      label: 'Risk alerts',
+      title: 'Internal ops changes affect guest drafts',
+      description: 'A third-floor leak blocks room-plan suggestions before Nava promises allocation.',
+      nodeIds: ['internal-risk-alert', 'group-room-plan', 'group-draft'],
+    },
+    {
+      id: 'learning-signals',
+      label: 'Learning signals',
+      title: 'Human edits strengthen the SOP',
+      description: 'Skipped edits stay weak. Repeated edits ask the user to promote a new rule.',
+      nodeIds: ['group-youth-sports', 'group-gelato', 'group-calendar', 'group-learn'],
     },
   ],
 };
