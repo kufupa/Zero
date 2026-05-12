@@ -16,7 +16,7 @@ import {
   Clock,
 } from '@/components/icons/icons';
 import { MessageSquareIcon } from 'lucide-react';
-import { ShieldCheck } from 'lucide-react';
+import { BrainCircuit, ShieldCheck } from 'lucide-react';
 import { m } from '@/paraglide/messages';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import {
@@ -138,6 +138,19 @@ export const navigationConfig: Record<string, NavConfig> = {
       {
         title: 'Management',
         items: [
+          ...(DEMO_FOLDER_MODEL_ENABLED
+            ? [
+                {
+                  id: 'ai-ops-brain',
+                  title: 'AI Ops Brain',
+                  subtitle: 'Workflow memory',
+                  url: '/mail/inbox?brain=ops',
+                  icon: BrainCircuit,
+                  className:
+                    'bg-blue-50 text-blue-700 dark:bg-blue-400/10 dark:text-blue-200',
+                },
+              ]
+            : []),
           {
             id: 'archive',
             title: m['navigation.sidebar.archive'](),

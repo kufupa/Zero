@@ -6,17 +6,13 @@ import confetti from 'canvas-confetti';
 type OnboardingBaseStep = {
   title: string;
   description: string;
-  bullets: string[];
+  eyebrow: string;
 };
 
 type CarouselStep = OnboardingBaseStep & {
   type: 'carousel';
   visual: {
-    icon: string;
-    metric: string;
-    tone: string;
-    gradient: string;
-    headline: string;
+    mode: 'hotel' | 'provider' | 'import' | 'workflow' | 'brain';
   };
 };
 
@@ -25,86 +21,201 @@ type OnboardingStep = CarouselStep;
 const CAROUSEL_STEPS: CarouselStep[] = [
   {
     type: 'carousel',
-    title: 'Welcome to Nava AI',
+    eyebrow: 'Step 1 / hotel profile',
+    title: 'Connect The Centurion reservation desk',
     description:
-      'You are now on a hotel focused inbox. This tour shows your daily reservation workflow from Outlook to AI assisted composing and final human approval.',
-    bullets: [
-      'You already know your guests. Nava AI helps you answer faster, safer, and more consistently.',
-      'Every draft is review-first so you stay in control.',
-    ],
+      'Nava starts like a real hotel operations platform: property profile, inbox owner, service standard, and the workflows your team already runs manually.',
     visual: {
-      icon: '🏨',
-      metric: 'Reservation-first',
-      tone: 'Hotel operations clarity, not marketing fluff.',
-      headline: 'From guest question to reply-ready draft in one loop.',
-      gradient: 'from-sky-500/70 to-blue-500/90',
+      mode: 'hotel',
     },
   },
   {
     type: 'carousel',
-    title: 'The daily reply loop',
+    eyebrow: 'Step 2 / email provider',
+    title: 'Connect Google or Microsoft mail',
     description:
-      'For reservation-related emails, Nava automatically prepares a rough draft using synced booking context, so you can quickly review and send.',
-    bullets: [
-      'You have full control to make edits and ensure the email sounds like you.',
-    ],
+      'The demo is front-end only, but the product story is real: OAuth into Outlook or Gmail, pull historical threads, and keep live inbound mail in sync.',
     visual: {
-      icon: '↪️',
-      metric: 'Reservation ready drafting',
-      tone: 'Human in the loop at every reply.',
-      headline: 'Draft generation is a helper, not an autopilot.',
-      gradient: 'from-emerald-500/70 to-green-600/90',
+      mode: 'provider',
     },
   },
   {
     type: 'carousel',
-    title: 'Built for hospitality language',
+    eyebrow: 'Step 3 / historical import',
+    title: 'Import the hotel memory',
     description:
-      'Nava AI is tuned for reservation style communication, so your outgoing replies stay courteous and operationally correct.',
-    bullets: [
-      'Keep tone aligned with your hotel standards.',
-      'If you spot issues, use the feedback button in the bottom left, or escalate to your General Manager.',
-    ],
+      'Nava reads old replies to learn tone, rate language, release clauses, escalation paths, and which emails always needed a manager.',
     visual: {
-      icon: '☕',
-      metric: 'Guest-ready phrasing',
-      tone: 'Consistent tone without sounding robotic.',
-      headline: 'Guests get clear, polite replies; your team keeps luxury quality, not policy.',
-      gradient: 'from-amber-500/60 to-rose-500/75',
+      mode: 'import',
     },
   },
   {
     type: 'carousel',
-    title: 'You stay in the control seat',
+    eyebrow: 'Step 4 / workflow graph',
+    title: 'Generate hotel workflows',
     description:
-      'This is a powered assistant layer for a live reservation desk: fast recommendations, intentional review, full accountability.',
-    bullets: [
-      'Never sends automatically unless you hit Send.',
-      'You can replay this tour from Help when needed.',
-    ],
+      'Categories become living workflows: individual bookings, group quotes, travel agents, internal ops, and urgent guest recovery.',
     visual: {
-      icon: '✅',
-      metric: 'Human approval enabled',
-      tone: 'Speed without losing trust.',
-      headline: 'AI drafts, you decide, guests receive your final message.',
-      gradient: 'from-indigo-500/70 to-blue-600/90',
+      mode: 'workflow',
+    },
+  },
+  {
+    type: 'carousel',
+    eyebrow: 'Step 5 / AI employee goes live',
+    title: 'Every edit trains the company brain',
+    description:
+      'When a human changes a draft, Nava decides whether it was brand tone, missing source data, or a new workflow edge case, then updates the brain.',
+    visual: {
+      mode: 'brain',
     },
   },
 ];
 
 function buildStepVisual(step: CarouselStep) {
+  const mode = step.visual.mode;
+
   return (
-    <div className={`h-52 w-full overflow-hidden rounded-xl border bg-linear-to-br ${step.visual.gradient} p-4`}>
-      <div className="flex h-full flex-col justify-between gap-4 text-white">
-        <div className="text-xs font-semibold uppercase tracking-[0.2em] opacity-85">Nava AI</div>
-        <div className="space-y-4">
-          <div className="inline-flex items-center gap-3 rounded-full bg-white/20 px-3 py-1.5 text-sm">
-            <span className="text-2xl">{step.visual.icon}</span>
-            <span>{step.visual.metric}</span>
+    <div className="relative h-72 w-full overflow-hidden rounded-2xl border border-white/40 bg-[radial-gradient(circle_at_18%_18%,rgba(59,130,246,0.22),transparent_28%),linear-gradient(135deg,#f8fafc,#eef6ff_48%,#fff7ed)] p-4 shadow-sm dark:border-white/10 dark:bg-[radial-gradient(circle_at_18%_18%,rgba(59,130,246,0.25),transparent_28%),linear-gradient(135deg,#111827,#0f172a_48%,#1c1917)]">
+      <div className="absolute right-4 top-4 rounded-full border border-emerald-300/60 bg-emerald-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-700 dark:border-emerald-400/30 dark:bg-emerald-400/10 dark:text-emerald-200">
+        Live setup
+      </div>
+      <div className="flex h-full flex-col justify-between">
+        <div>
+          <div className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">
+            Nava AI employee setup
           </div>
-          <h3 className="text-xl font-semibold leading-tight">{step.visual.headline}</h3>
-          <p className="text-sm text-white/90">{step.visual.tone}</p>
+          <div className="mt-5 grid gap-3">
+            {mode === 'hotel' ? <HotelProfileVisual /> : null}
+            {mode === 'provider' ? <ProviderVisual /> : null}
+            {mode === 'import' ? <ImportVisual /> : null}
+            {mode === 'workflow' ? <WorkflowVisual /> : null}
+            {mode === 'brain' ? <BrainVisual /> : null}
+          </div>
         </div>
+        <div className="grid grid-cols-5 gap-1.5">
+          {CAROUSEL_STEPS.map((item) => (
+            <div
+              key={item.title}
+              className={`h-1.5 rounded-full ${
+                item.visual.mode === mode
+                  ? 'bg-blue-600 dark:bg-blue-400'
+                  : 'bg-slate-200 dark:bg-white/10'
+              }`}
+            />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function HotelProfileVisual() {
+  return (
+    <div className="rounded-2xl border border-white/70 bg-white/85 p-4 shadow-sm backdrop-blur dark:border-white/10 dark:bg-white/10">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-semibold">The Centurion Hotel</p>
+          <p className="mt-1 text-xs text-muted-foreground">Central reservations · 186 rooms · Pretoria</p>
+        </div>
+        <span className="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700 dark:bg-blue-400/10 dark:text-blue-200">
+          B2B pilot
+        </span>
+      </div>
+      <div className="mt-4 grid grid-cols-3 gap-2 text-xs">
+        {['4 min SLA', 'Warm formal tone', 'Manager exceptions'].map((item) => (
+          <div key={item} className="rounded-xl border bg-slate-50 px-3 py-2 dark:border-white/10 dark:bg-white/5">
+            {item}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ProviderVisual() {
+  return (
+    <div className="grid gap-3">
+      {[
+        ['Microsoft 365', 'centurion@legacyhotels.co.za', 'Connected'],
+        ['Google Workspace', 'sales@legacyhotels.co.za', 'Available'],
+      ].map(([provider, account, status]) => (
+        <div key={provider} className="flex items-center justify-between rounded-2xl border border-white/70 bg-white/85 p-3 shadow-sm backdrop-blur dark:border-white/10 dark:bg-white/10">
+          <div>
+            <p className="text-sm font-semibold">{provider}</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">{account}</p>
+          </div>
+          <span className="rounded-full bg-slate-900 px-2.5 py-1 text-xs font-medium text-white dark:bg-white dark:text-slate-950">
+            {status}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ImportVisual() {
+  return (
+    <div className="rounded-2xl border border-white/70 bg-white/85 p-4 shadow-sm backdrop-blur dark:border-white/10 dark:bg-white/10">
+      <div className="flex items-center justify-between text-sm">
+        <span className="font-semibold">Historical email import</span>
+        <span className="text-blue-600 dark:text-blue-300">18,420 threads</span>
+      </div>
+      <div className="mt-3 h-2 rounded-full bg-slate-200 dark:bg-white/10">
+        <div className="h-2 w-[86%] rounded-full bg-blue-600 dark:bg-blue-400" />
+      </div>
+      <div className="mt-4 grid gap-2 text-xs">
+        {['Tone examples found', 'Rate clauses extracted', 'Manager approvals detected'].map((item) => (
+          <div key={item} className="flex items-center gap-2 text-slate-700 dark:text-slate-200">
+            <span className="h-2 w-2 rounded-full bg-emerald-500" />
+            {item}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function WorkflowVisual() {
+  const items = ['Individual', 'Groups', 'Travel agents', 'Internal', 'Urgent'];
+
+  return (
+    <div className="rounded-2xl border border-white/70 bg-white/85 p-4 shadow-sm backdrop-blur dark:border-white/10 dark:bg-white/10">
+      <p className="text-sm font-semibold">Detected operational workflows</p>
+      <div className="mt-4 flex flex-wrap gap-2">
+        {items.map((item, index) => (
+          <span
+            key={item}
+            className="rounded-full border bg-slate-50 px-3 py-1.5 text-xs font-medium dark:border-white/10 dark:bg-white/5"
+          >
+            {index + 1}. {item}
+          </span>
+        ))}
+      </div>
+      <div className="mt-5 grid grid-cols-[1fr_auto_1fr_auto_1fr] items-center gap-2 text-center text-[11px]">
+        <span className="rounded-xl bg-blue-50 px-2 py-2 text-blue-700 dark:bg-blue-400/10 dark:text-blue-200">Trigger</span>
+        <span className="text-muted-foreground">→</span>
+        <span className="rounded-xl bg-amber-50 px-2 py-2 text-amber-700 dark:bg-amber-400/10 dark:text-amber-200">API lookup</span>
+        <span className="text-muted-foreground">→</span>
+        <span className="rounded-xl bg-emerald-50 px-2 py-2 text-emerald-700 dark:bg-emerald-400/10 dark:text-emerald-200">Draft</span>
+      </div>
+    </div>
+  );
+}
+
+function BrainVisual() {
+  return (
+    <div className="rounded-2xl border border-white/70 bg-white/85 p-4 shadow-sm backdrop-blur dark:border-white/10 dark:bg-white/10">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-semibold">Edit analyzed</p>
+          <p className="mt-1 text-xs text-muted-foreground">Human changed release clause order.</p>
+        </div>
+        <span className="rounded-full bg-violet-50 px-2.5 py-1 text-xs font-medium text-violet-700 dark:bg-violet-400/10 dark:text-violet-200">
+          Workflow updated
+        </span>
+      </div>
+      <div className="mt-4 rounded-xl border border-dashed border-blue-300 bg-blue-50/70 p-3 text-xs text-blue-900 dark:border-blue-300/30 dark:bg-blue-400/10 dark:text-blue-100">
+        Add node: “For group overflow requests, show 48-hour release clause before total price.”
       </div>
     </div>
   );
@@ -162,26 +273,42 @@ export function OnboardingDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogTitle></DialogTitle>
-      <DialogContent
-        showOverlay
-        className="bg-panelLight mx-auto w-full max-w-[90%] rounded-xl border p-0 sm:max-w-[760px] dark:bg-[#111111]"
-      >
-        <div className="flex flex-col gap-6 p-4">
+      <DialogContent showOverlay className="bg-panelLight mx-auto w-full max-w-[92%] rounded-2xl border p-0 sm:max-w-[860px] dark:bg-[#111111]">
+        <div className="flex flex-col gap-6 p-5">
           <div className="space-y-2">
-            <h2 className="text-3xl font-semibold">{activeStep.title}</h2>
+            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-blue-600 dark:text-blue-300">
+              {activeStep.eyebrow}
+            </p>
+            <h2 className="text-3xl font-semibold tracking-tight">{activeStep.title}</h2>
           </div>
-          <div className="grid gap-4 md:grid-cols-[1.25fr_1fr]">
+          <div className="grid gap-5 md:grid-cols-[1.25fr_0.9fr]">
             {buildStepVisual(activeStep)}
-            <div>
-              <p className="text-sm text-muted-foreground">{activeStep.description}</p>
-              <ul className="mt-3 space-y-2 text-sm">
-                {activeStep.bullets.map((bullet) => (
-                  <li key={bullet} className="flex items-start gap-2">
-                    <span className="mt-1 inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
-                    {bullet}
-                  </li>
-                ))}
-              </ul>
+            <div className="flex flex-col justify-between gap-4">
+              <div>
+                <p className="text-sm leading-6 text-muted-foreground">{activeStep.description}</p>
+                <div className="mt-5 rounded-2xl border bg-background/60 p-4 dark:bg-white/5">
+                  <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+                    Demo promise
+                  </p>
+                  <p className="mt-2 text-sm font-medium leading-6">
+                    This is not another inbox skin. It is the training ground for AI employees that learn hotel operations from every handled email.
+                  </p>
+                </div>
+              </div>
+              <div className="grid gap-2 text-xs text-muted-foreground">
+                <div className="flex items-center justify-between rounded-xl border px-3 py-2">
+                  <span>Historical threads analyzed</span>
+                  <span className="font-semibold text-foreground">18.4k</span>
+                </div>
+                <div className="flex items-center justify-between rounded-xl border px-3 py-2">
+                  <span>Workflows generated</span>
+                  <span className="font-semibold text-foreground">5</span>
+                </div>
+                <div className="flex items-center justify-between rounded-xl border px-3 py-2">
+                  <span>Human review stays on</span>
+                  <span className="font-semibold text-foreground">exceptions</span>
+                </div>
+              </div>
             </div>
           </div>
           <div className="mx-auto flex w-full flex-col gap-3 md:flex-row md:items-center md:justify-between">

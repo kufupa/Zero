@@ -39,6 +39,8 @@ import ReplyCompose from './reply-composer';
 import { NotesPanel } from './note-panel';
 import { ThreadAiMailsSection } from '@/components/mail/thread-ai-mails-section';
 import { ThreadDraftCard } from '@/components/mail/thread-draft-card';
+import { AiOpsBrainWorkspace } from '@/components/mail/ai-ops-brain-workspace';
+import { getAiOpsBrainWorkflowForThread } from '@/lib/demo/ai-ops-brain';
 import { buildThreadDraftViewModel } from '@/lib/mail/thread-draft-view-model';
 import { cn, FOLDERS, formatDateWithWeekdayAndTime } from '@/lib/utils';
 import { m } from '@/paraglide/messages';
@@ -73,7 +75,7 @@ const formatMailboxListForPrint = (mailboxes?: Sender[] | null) =>
     .join('; ');
 
 interface ThreadDisplayProps {
-  threadParam?: any;
+  threadParam?: unknown;
   onClose?: () => void;
   isMobile?: boolean;
   messages?: ParsedMessage[];
@@ -130,7 +132,7 @@ function ThreadActionButton({
   disabled = false,
   className,
 }: {
-  icon: React.ComponentType<React.ComponentPropsWithRef<any>> & {
+  icon: React.ComponentType<{ className?: string; ref?: React.Ref<unknown> }> & {
     startAnimation?: () => void;
     stopAnimation?: () => void;
   };
@@ -139,7 +141,7 @@ function ThreadActionButton({
   disabled?: boolean;
   className?: string;
 }) {
-  const iconRef = useRef<any>(null);
+  const iconRef = useRef<{ startAnimation?: () => void; stopAnimation?: () => void } | null>(null);
 
   return (
     <TooltipProvider delayDuration={0}>
@@ -197,6 +199,7 @@ export function ThreadDisplay() {
 
   const [mode, setMode] = useQueryState('mode');
   const [activeReplyId, setActiveReplyId] = useQueryState('activeReplyId');
+  const [brainMode, setBrainMode] = useQueryState('brain');
   const [, setDraftId] = useQueryState('draftId');
   const [, setComposeState] = useQueryStates({
     mode: parseAsString,
@@ -245,6 +248,24 @@ export function ThreadDisplay() {
     if (mode) return null;
     return buildThreadDraftViewModel(latestDraft as ParsedMessage | undefined);
   }, [latestDraft, draftRowOptimistic.shouldHide, mode]);
+  const aiOpsWorkflow = useMemo(
+    () =>
+      getAiOpsBrainWorkflowForThread({
+        routeFolder: folder,
+        threadCategory: emailData?.centurionCategory,
+        isUrgent: emailData?.messages.some((message) =>
+          message.tags?.some((tag) => tag.name === 'IMPORTANT' || tag.id === 'IMPORTANT'),
+        ),
+      }),
+    [folder, emailData?.centurionCategory, emailData?.messages],
+  );
+  const isAiOpsBrainOpen = frontendOnlyDemo && brainMode === 'ops';
+  const openAiOpsBrain = useCallback(() => {
+    void setBrainMode('ops');
+  }, [setBrainMode]);
+  const closeAiOpsBrain = useCallback(() => {
+    void setBrainMode(null);
+  }, [setBrainMode]);
 
   const openDraftForEdit = useCallback(() => {
     if (!latestDraft?.id || !emailData?.latest?.id) return;
@@ -772,6 +793,15 @@ export function ThreadDisplay() {
         editLabel={m['common.threadDisplay.continueDraft']()}
         deleteLabel={m['common.actions.Bin']()}
         moreLabel={m['common.threadDisplay.draftMoreOptions']()}
+        proofItems={[
+          `Generated from ${draftVm.bodyPreview ? 4 : 3} sources`,
+          aiOpsWorkflow.reviewLoad === 'Always review'
+            ? 'Human approval required'
+            : `Workflow: ${aiOpsWorkflow.title}`,
+          'Edit trains brain',
+        ]}
+        onViewWorkflow={openAiOpsBrain}
+        onTeachBrain={openAiOpsBrain}
         onEdit={openDraftForEdit}
         onDelete={handleDeleteThreadDraft}
       />
@@ -793,12 +823,21 @@ export function ThreadDisplay() {
           isFullscreen ? 'fixed inset-0 z-50' : '',
         )}
       >
-        {!id ? (
+        {isAiOpsBrainOpen ? (
+          <AiOpsBrainWorkspace
+            routeFolder={folder}
+            threadCategory={emailData?.centurionCategory}
+            isUrgent={emailData?.messages.some((message) =>
+              message.tags?.some((tag) => tag.name === 'IMPORTANT' || tag.id === 'IMPORTANT'),
+            )}
+            onClose={closeAiOpsBrain}
+          />
+        ) : !id ? (
           <div className="flex h-full items-center justify-center">
             <div className="flex flex-col items-center justify-center gap-2 text-center">
               <EmptyStateIcon width={200} height={200} />
               <div className="mt-4">
-                <p className="text-lg">It's empty here</p>
+                <p className="text-lg">It&apos;s empty here</p>
                 <p className="text-md text-muted-foreground dark:text-white/50">
                   Choose an email to view details
                 </p>
@@ -987,75 +1026,77 @@ export function ThreadDisplay() {
                 </DropdownMenu>
               </div>
             </div>
-            <div className={cn('flex min-h-0 flex-1 flex-col', isMobile && 'h-full')}>
-              {animationsEnabled ? (
-                <AnimatePresence mode="wait" initial={false}>
-                  <motion.div
-                    key={id}
-                    initial={{
-                      opacity: 0,
-                      x:
-                        navigationDirection === 'previous'
-                          ? -25
-                          : navigationDirection === 'next'
-                            ? 25
-                            : 0,
-                    }}
-                    animate={{
-                      opacity: 1,
-                      x: 0,
-                    }}
-                    exit={{
-                      opacity: 0,
-                      x:
-                        navigationDirection === 'previous'
-                          ? 25
-                          : navigationDirection === 'next'
+            <div className={cn('flex min-h-0 flex-1', isMobile ? 'h-full flex-col' : 'flex-row')}>
+              <div className="flex min-w-0 flex-1 flex-col">
+                {animationsEnabled ? (
+                  <AnimatePresence mode="wait" initial={false}>
+                    <motion.div
+                      key={id}
+                      initial={{
+                        opacity: 0,
+                        x:
+                          navigationDirection === 'previous'
                             ? -25
-                            : 0,
-                    }}
-                    transition={{
-                      duration: 0.08,
-                      ease: [0.4, 0, 0.2, 1],
-                    }}
-                    onAnimationComplete={handleAnimationComplete}
-                    className="h-full w-full"
-                  >
-                    <MessageList
-                      messages={emailData.messages}
-                      isFullscreen={isFullscreen}
-                      totalReplies={emailData?.totalReplies}
-                      allThreadAttachments={allThreadAttachments}
-                      mode={mode || undefined}
-                      activeReplyId={activeReplyId || undefined}
-                      isMobile={isMobile}
-                      trailing={threadDraftSection}
-                    />
-                  </motion.div>
-                </AnimatePresence>
-              ) : (
-                <MessageList
-                  messages={emailData.messages}
-                  isFullscreen={isFullscreen}
-                  totalReplies={emailData?.totalReplies}
-                  allThreadAttachments={allThreadAttachments}
-                  mode={mode || undefined}
-                  activeReplyId={activeReplyId || undefined}
-                  isMobile={isMobile}
-                  trailing={threadDraftSection}
-                />
-              )}
-
-              {mode &&
-                activeReplyId &&
-                activeReplyId === emailData.messages[emailData.messages.length - 1]?.id && (
-                  <div
-                    className="border-border bg-panelLight dark:bg-panelDark sticky bottom-0 z-10 border-t px-4 py-2"
-                    id={`reply-composer-${activeReplyId}`}
-                  >
-                    <ReplyCompose messageId={activeReplyId} />
-                  </div>
+                            : navigationDirection === 'next'
+                              ? 25
+                              : 0,
+                      }}
+                      animate={{
+                        opacity: 1,
+                        x: 0,
+                      }}
+                      exit={{
+                        opacity: 0,
+                        x:
+                          navigationDirection === 'previous'
+                            ? 25
+                            : navigationDirection === 'next'
+                              ? -25
+                              : 0,
+                      }}
+                      transition={{
+                        duration: 0.08,
+                        ease: [0.4, 0, 0.2, 1],
+                      }}
+                      onAnimationComplete={handleAnimationComplete}
+                      className="h-full w-full"
+                    >
+                      <MessageList
+                        messages={emailData.messages}
+                        isFullscreen={isFullscreen}
+                        totalReplies={emailData?.totalReplies}
+                        allThreadAttachments={allThreadAttachments}
+                        mode={mode || undefined}
+                        activeReplyId={activeReplyId || undefined}
+                        isMobile={isMobile}
+                        trailing={threadDraftSection}
+                      />
+                    </motion.div>
+                  </AnimatePresence>
+                ) : (
+                  <MessageList
+                    messages={emailData.messages}
+                    isFullscreen={isFullscreen}
+                    totalReplies={emailData?.totalReplies}
+                    allThreadAttachments={allThreadAttachments}
+                    mode={mode || undefined}
+                    activeReplyId={activeReplyId || undefined}
+                    isMobile={isMobile}
+                    trailing={threadDraftSection}
+                  />
                 )}
+
+                {mode &&
+                  activeReplyId &&
+                  activeReplyId === emailData.messages[emailData.messages.length - 1]?.id && (
+                    <div
+                      className="border-border bg-panelLight dark:bg-panelDark sticky bottom-0 z-10 border-t px-4 py-2"
+                      id={`reply-composer-${activeReplyId}`}
+                    >
+                      <ReplyCompose messageId={activeReplyId} />
+                    </div>
+                  )}
+              </div>
             </div>
           </>
         )}

@@ -19,6 +19,9 @@ export type ThreadDraftCardProps = {
   editLabel: string;
   deleteLabel: string;
   moreLabel: string;
+  proofItems?: string[];
+  onViewWorkflow?: () => void;
+  onTeachBrain?: () => void;
   onEdit: () => void;
   onDelete: () => void;
 };
@@ -33,6 +36,9 @@ export function ThreadDraftCard({
   editLabel,
   deleteLabel,
   moreLabel,
+  proofItems,
+  onViewWorkflow,
+  onTeachBrain,
   onEdit,
   onDelete,
 }: ThreadDraftCardProps) {
@@ -93,9 +99,46 @@ export function ThreadDraftCard({
           <span className="shrink-0 whitespace-nowrap">{savedAtLabel}</span>
         </div>
         <p className="text-foreground/90 dark:text-foreground/95 mt-2 line-clamp-3 text-sm">{previewText}</p>
+        {proofItems?.length ? (
+          <div className="mt-3 flex flex-wrap gap-1.5">
+            {proofItems.map((item, index) => (
+              <button
+                type="button"
+                key={item}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  if (item === 'Edit trains brain') {
+                    onTeachBrain?.();
+                    return;
+                  }
+                  if (index === 1 || item.startsWith('Workflow:')) {
+                    onViewWorkflow?.();
+                  }
+                }}
+                className="rounded-full border border-sky-200 bg-sky-50 px-2.5 py-1 text-[11px] font-medium text-sky-700 transition hover:border-sky-300 hover:bg-sky-100 dark:border-sky-400/30 dark:bg-sky-400/10 dark:text-sky-100 dark:hover:bg-sky-400/20"
+              >
+                {item}
+              </button>
+            ))}
+          </div>
+        ) : null}
       </div>
 
       <div className="mt-3 flex">
+        {onTeachBrain ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            className="mr-2 border border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700 hover:bg-fuchsia-100 dark:border-fuchsia-400/30 dark:bg-fuchsia-400/10 dark:text-fuchsia-100"
+            onClick={(event) => {
+              event.stopPropagation();
+              onTeachBrain();
+            }}
+          >
+            Teach Nava
+          </Button>
+        ) : null}
         <Button
           type="button"
           variant="ghost"
