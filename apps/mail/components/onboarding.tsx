@@ -1,7 +1,9 @@
-import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { useState, useEffect } from 'react';
 import confetti from 'canvas-confetti';
+
+const ONBOARDING_DISMISSED_KEY = 'nava-demo-onboarding-dismissed';
 
 type OnboardingBaseStep = {
   title: string;
@@ -272,8 +274,11 @@ export function OnboardingDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogTitle></DialogTitle>
       <DialogContent showOverlay className="bg-panelLight mx-auto w-full max-w-[92%] rounded-2xl border p-0 sm:max-w-[860px] dark:bg-[#111111]">
+        <DialogTitle className="sr-only">Nava demo onboarding</DialogTitle>
+        <DialogDescription className="sr-only">
+          Five-step walkthrough for connecting hotel email, importing history, generating workflows, and training the AI ops brain.
+        </DialogDescription>
         <div className="flex flex-col gap-6 p-5">
           <div className="space-y-2">
             <p className="text-xs font-semibold uppercase tracking-[0.22em] text-blue-600 dark:text-blue-300">
@@ -333,9 +338,19 @@ export function OnboardingDialog({
 }
 
 export function OnboardingWrapper() {
-  const [showOnboarding, setShowOnboarding] = useState(true);
+  const [showOnboarding, setShowOnboarding] = useState(() => {
+    if (typeof window === 'undefined') {
+      return true;
+    }
+
+    return window.sessionStorage.getItem(ONBOARDING_DISMISSED_KEY) !== 'true';
+  });
 
   const handleOpenChange = (open: boolean) => {
+    if (!open) {
+      window.sessionStorage.setItem(ONBOARDING_DISMISSED_KEY, 'true');
+    }
+
     setShowOnboarding(open);
   };
 
