@@ -1,0 +1,74 @@
+<h2>YC Demo Story: What Should Happen On Screen?</h2>
+<p class="subtitle">Goal: make Nava feel like hotel ops infrastructure, not just a pretty brain map. Click the direction that feels strongest.</p>
+
+<div class="section">
+  <div class="mockup">
+    <div class="mockup-header">Current problem</div>
+    <div class="mockup-body">
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px">
+        <div class="placeholder">
+          <strong>Find thread</strong><br>
+          Volleyball story is not obvious in inbox. User cannot demo from normal Outlook flow.
+        </div>
+        <div class="placeholder">
+          <strong>Edit moment</strong><br>
+          “Teach Nava” exists, but it is unclear what exact edit Sarah made and why it changes ops logic.
+        </div>
+        <div class="placeholder">
+          <strong>Scale/API story</strong><br>
+          Brain references APIs, but buyer cannot see how hotel connects PMS/calendar/room map themselves.
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="options">
+  <div class="option" data-choice="operator-first" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Operator-First Demo Path (recommended)</h3>
+      <p><strong>1.</strong> Open a clearly pinned “Volleyball group” email in Outlook. <strong>2.</strong> Show Nava draft missing an ops move. <strong>3.</strong> Edit draft/comment: “For youth sports groups, check room proximity and ask F&amp;B about gelato before promising.” <strong>4.</strong> Click Teach Nava. <strong>5.</strong> Brain shows new workflow node + API dependencies. <strong>6.</strong> Connect mock PMS/calendar API. <strong>7.</strong> Switch hotel: same primitive, different policy.</p>
+      <p>Best for YC: demonstrates wedge, learning loop, and scalability in one continuous user action.</p>
+    </div>
+  </div>
+
+  <div class="option" data-choice="setup-first" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Setup-First Demo Path</h3>
+      <p>Start with “Connect your hotel brain”: PMS, room map, F&amp;B calendar, approvals. Then open volleyball email and show Nava using those connected systems.</p>
+      <p>Clear API story, but slower. Risk: feels like enterprise setup software before they see magic.</p>
+    </div>
+  </div>
+
+  <div class="option" data-choice="portfolio-first" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Multi-Hotel Portfolio Path</h3>
+      <p>Start at “Legacy Hotels HQ” with 8 properties. Pick The Centurion, run volleyball demo, then show same learned primitive promoted to a hotel-specific policy and not blindly applied to another property.</p>
+      <p>Strong scale story, but needs more screen real estate and can distract from core edit-to-learning moment.</p>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>Recommended coded changes if we choose A</h3>
+  <div class="mockup">
+    <div class="mockup-header">Concrete UI beats</div>
+    <div class="mockup-body">
+      <div style="display:grid;grid-template-columns:1.1fr 1fr;gap:18px">
+        <div>
+          <p class="label">Outlook page</p>
+          <div class="placeholder">Add a YC Demo rail or pinned “Volleyball group booking” row so you can find the story instantly.</div>
+          <div class="placeholder">Draft card shows explicit delta: Nava draft → Sarah edit → “this is workflow logic, not tone.”</div>
+        </div>
+        <div>
+          <p class="label">Brain/API page</p>
+          <div class="placeholder">Add Connect API modal: PMS, room map CSV/API, F&amp;B calendar, approval owner. Demo states: missing → connected → used in run.</div>
+          <div class="placeholder">Add portfolio switch: The Centurion, Safari Lodge, Beach Hotel. Same categories, different rules/connectors.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
