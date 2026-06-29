@@ -1,7 +1,7 @@
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import type { AiOpsBrainGraphNode } from '@/lib/demo/ai-ops-brain';
+import { getAiOpsBrainGraph, type AiOpsBrainConnectorStory, type AiOpsBrainGraphNode } from '@/lib/demo/ai-ops-brain';
 import { Button } from '@/components/ui/button';
-import { PlugZap } from 'lucide-react';
+import { CheckCircle2, CircleDashed, PlugZap } from 'lucide-react';
 
 type AiOpsApiPopoverProps = {
   node: AiOpsBrainGraphNode;
@@ -9,6 +9,8 @@ type AiOpsApiPopoverProps = {
 
 export function AiOpsApiPopover({ node }: AiOpsApiPopoverProps) {
   if (!node.apiConfig) return null;
+  const connectors = getAiOpsBrainGraph().connectorStory;
+  const activeConnector = connectorForNode(connectors, node.id);
 
   return (
     <Popover>
@@ -25,15 +27,44 @@ export function AiOpsApiPopover({ node }: AiOpsApiPopoverProps) {
       <PopoverContent
         align="end"
         side="left"
-        className="w-96 border-white/10 bg-[#080b12] p-0 text-slate-100 shadow-2xl shadow-black/50"
+        className="w-[430px] border-white/10 bg-[#080b12] p-0 text-slate-100 shadow-2xl shadow-black/50"
       >
         <div className="border-b border-white/10 p-4">
           <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-cyan-200">API setup</p>
           <h3 className="mt-2 text-base font-semibold">{node.apiConfig.title}</h3>
+          <p className="mt-2 text-xs leading-5 text-slate-400">
+            Demo connector recipe: show YC exactly what data Nava needs, without spending the demo on integration plumbing.
+          </p>
         </div>
         <div className="space-y-4 p-4 text-sm">
+          {activeConnector ? (
+            <div className="rounded-2xl border border-cyan-300/25 bg-cyan-300/10 p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-cyan-200">Used in this run</p>
+                  <p className="mt-1 font-medium text-cyan-50">{activeConnector.system}: {activeConnector.label}</p>
+                </div>
+                <ConnectorStatus status={activeConnector.status} />
+              </div>
+              <p className="mt-2 text-xs leading-5 text-cyan-50/80">{activeConnector.demoLine}</p>
+            </div>
+          ) : null}
           <InfoBlock label="Recommended" value={node.apiConfig.recommended} />
           <InfoBlock label="Fallback" value={node.apiConfig.fallback} />
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">Hotel connector stack</p>
+            <div className="mt-2 space-y-2">
+              {connectors.map((connector) => (
+                <div key={connector.id} className="flex items-start justify-between gap-3 rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+                  <div>
+                    <p className="text-sm font-medium text-slate-100">{connector.system}</p>
+                    <p className="mt-1 text-xs leading-5 text-slate-400">{connector.usedFor}</p>
+                  </div>
+                  <ConnectorStatus status={connector.status} />
+                </div>
+              ))}
+            </div>
+          </div>
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">Needed fields</p>
             <div className="mt-2 flex flex-wrap gap-1.5">
@@ -54,18 +85,43 @@ export function AiOpsApiPopover({ node }: AiOpsApiPopoverProps) {
           </div>
           <div className="grid grid-cols-3 gap-2 pt-1">
             <Button type="button" size="xs" className="bg-cyan-300 text-slate-950 hover:bg-cyan-200">
-              Connect
+              Use demo key
             </Button>
             <Button type="button" size="xs" variant="ghost" className="border border-white/10 text-slate-200">
               Upload CSV
             </Button>
             <Button type="button" size="xs" variant="ghost" className="border border-white/10 text-slate-400">
-              Skip demo
+              Invite owner
             </Button>
           </div>
         </div>
       </PopoverContent>
     </Popover>
+  );
+}
+
+function connectorForNode(connectors: AiOpsBrainConnectorStory[], nodeId: string) {
+  if (nodeId === 'group-room-plan') return connectors.find((connector) => connector.system === 'Room map');
+  if (nodeId === 'group-calendar') return connectors.find((connector) => connector.system === 'F&B calendar');
+  if (nodeId === 'group-availability') return connectors.find((connector) => connector.system === 'PMS');
+  return undefined;
+}
+
+function ConnectorStatus({ status }: { status: AiOpsBrainConnectorStory['status'] }) {
+  if (status === 'connected') {
+    return (
+      <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-300/12 px-2 py-1 text-[11px] font-medium text-emerald-100">
+        <CheckCircle2 className="h-3 w-3" />
+        Connected
+      </span>
+    );
+  }
+
+  return (
+    <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-300/12 px-2 py-1 text-[11px] font-medium text-amber-100">
+      <CircleDashed className="h-3 w-3" />
+      Needs owner
+    </span>
   );
 }
 

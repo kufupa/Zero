@@ -145,6 +145,165 @@ export type AiOpsBrainTour = {
   nodeIds: string[];
 };
 
+export type AiOpsBrainFocusRunSegment = {
+  id: string;
+  sourceNodeId: string;
+  targetNodeId: string;
+  label: string;
+  detail: string;
+};
+
+export type AiOpsBrainFocusRun = {
+  title: string;
+  subtitle: string;
+  primaryNodeIds: string[];
+  segments: AiOpsBrainFocusRunSegment[];
+};
+
+export type AiOpsBrainTraceItem = {
+  id: string;
+  title: string;
+  type: 'evidence' | 'decision' | 'correction' | 'stored-rule';
+  nodeId: string;
+  eyebrow: string;
+  summary: string;
+  detail: string;
+  actor: string;
+  timestamp: string;
+  sources: string[];
+  actionLabel?: string;
+  commentPrompt?: string;
+};
+
+export type AiOpsBrainOperatorTraceEvent = {
+  id: string;
+  title: string;
+  status: 'checked' | 'decision' | 'missed';
+  kind: 'email' | 'api' | 'logic' | 'draft' | 'gap';
+  actor: 'Nava';
+  timestamp: string;
+  summary: string;
+  detail: string;
+  nodeId: string;
+  evidence: string[];
+  output: string;
+};
+
+export type AiOpsBrainWorkflowProposalNode = {
+  id: string;
+  label: string;
+  status: 'new' | 'changed' | 'existing';
+  detail: string;
+};
+
+export type AiOpsBrainWorkflowProposal = {
+  trigger: string;
+  checks: string[];
+  action: string;
+  guardrail: string;
+  defaultScope: string;
+  scopeOptions: string[];
+  ruleText: string;
+  beforePath: string[];
+  proposedNodes: AiOpsBrainWorkflowProposalNode[];
+  /** Hero line for workflow preview: what the hotel gains (policy-neutral). */
+  valueHeadline?: string;
+  /** Supporting copy: outcomes vs old path (may be longer than ruleText). */
+  valueDetail?: string;
+  /** Human anchor: which correction / thread taught Nava (demo narrative). */
+  teachingMoment?: string;
+};
+
+export type AiOpsBrainStoredRule = {
+  id: string;
+  title: string;
+  status: 'proposed' | 'stored' | 'needs-review';
+  hotel: string;
+  actor: string;
+  editType: string;
+  scope: string;
+  evidence: string[];
+  reviewState: string;
+  affectedSystems: string[];
+  lastTrained: string;
+  appliedCount: number;
+  contradictedCount: number;
+  ruleText: string;
+};
+
+export type AiOpsBrainDemoStepDetailKind =
+  | 'node'
+  | 'api-room-plan'
+  | 'api-calendar'
+  | 'diff'
+  | 'training'
+  | 'hotel';
+
+export type AiOpsBrainDemoStep = {
+  id: string;
+  title: string;
+  narration: string;
+  nodeId: string;
+  detailKind: AiOpsBrainDemoStepDetailKind;
+};
+
+export type AiOpsBrainNodeDetailCard = {
+  nodeId: string;
+  headline: string;
+  input: string[];
+  decision: string;
+  output: string[];
+  proof: string[];
+};
+
+export type AiOpsBrainApiMock = {
+  id: string;
+  nodeId: string;
+  title: string;
+  method: string;
+  path: string;
+  requestSummary: string;
+  responseLines: string[];
+  effect: string;
+};
+
+export type AiOpsBrainDraftDiff = {
+  navaLabel: string;
+  navaBody: string;
+  sarahLabel: string;
+  sarahBody: string;
+  operationalChange: string;
+};
+
+export type AiOpsBrainTrainingOverlay = {
+  ruleStatus: AiOpsBrainStoredRule['status'];
+  appliedCount: number;
+  contradictedCount: number;
+  reviewState: string;
+};
+
+export type AiOpsBrainTrainingOutcomes = {
+  weakSignal: AiOpsBrainTrainingOverlay;
+  promoted: AiOpsBrainTrainingOverlay;
+};
+
+export type AiOpsBrainYcDemoBeat = {
+  id: string;
+  title: string;
+  userAction: string;
+  say: string;
+  whyItMatters: string;
+};
+
+export type AiOpsBrainConnectorStory = {
+  id: string;
+  system: 'PMS' | 'Room map' | 'F&B calendar';
+  label: string;
+  status: 'connected' | 'needs-owner';
+  usedFor: string;
+  demoLine: string;
+};
+
 export type AiOpsBrainGraph = {
   id: string;
   hotel: string;
@@ -159,6 +318,18 @@ export type AiOpsBrainGraph = {
   reviewSteps: AiOpsBrainReviewStep[];
   brainDelta: AiOpsBrainDelta;
   tours: AiOpsBrainTour[];
+  focusRun: AiOpsBrainFocusRun;
+  reviewTrace: AiOpsBrainTraceItem[];
+  operatorTrace: AiOpsBrainOperatorTraceEvent[];
+  workflowProposal: AiOpsBrainWorkflowProposal;
+  storedRule: AiOpsBrainStoredRule;
+  demoSteps: AiOpsBrainDemoStep[];
+  nodeDetails: Record<string, AiOpsBrainNodeDetailCard>;
+  apiMocks: AiOpsBrainApiMock[];
+  draftDiff: AiOpsBrainDraftDiff;
+  trainingOutcomes: AiOpsBrainTrainingOutcomes;
+  ycDemoScript: AiOpsBrainYcDemoBeat[];
+  connectorStory: AiOpsBrainConnectorStory[];
 };
 
 export const AI_OPS_BRAIN_WORKFLOWS: Record<AiOpsBrainWorkflowKey, AiOpsBrainWorkflow> = {
@@ -807,7 +978,7 @@ const AI_OPS_BRAIN_GRAPH: AiOpsBrainGraph = {
     { id: 'e-youth-gelato', source: 'group-youth-sports', target: 'group-gelato', status: 'suggested' },
     { id: 'e-gelato-calendar', source: 'group-gelato', target: 'group-calendar', status: 'suggested' },
     { id: 'e-gelato-approval', source: 'group-gelato', target: 'group-gm-approval', status: 'suggested' },
-    { id: 'e-calendar-draft', source: 'group-calendar', target: 'group-draft', status: 'suggested' },
+    { id: 'e-calendar-approval', source: 'group-calendar', target: 'group-gm-approval', status: 'suggested' },
     { id: 'e-approval-draft', source: 'group-gm-approval', target: 'group-draft', status: 'suggested' },
     { id: 'e-draft-learn', source: 'group-draft', target: 'group-learn', status: 'weakSignal' },
     { id: 'e-classify-agent', source: 'classify-category', target: 'travel-agent-contract', status: 'live' },
@@ -909,7 +1080,7 @@ const AI_OPS_BRAIN_GRAPH: AiOpsBrainGraph = {
   brainDelta: {
     title: 'Brain changed',
     before: 'Youth sports branch was a weak signal at 61%.',
-    after: 'Gelato + room proximity path promoted for future youth groups at 86%.',
+    after: 'Group-booking workflow now checks ancillary fit, F&B capacity, and manager approval before guest wording.',
     actor: 'Sarah Mokoena',
     hotel: 'The Centurion',
     affectedNodeIds: ['group-youth-sports', 'group-gelato', 'group-calendar', 'group-gm-approval'],
@@ -935,6 +1106,536 @@ const AI_OPS_BRAIN_GRAPH: AiOpsBrainGraph = {
       title: 'Human edits strengthen the SOP',
       description: 'Skipped edits stay weak. Repeated edits ask the user to promote a new rule.',
       nodeIds: ['group-youth-sports', 'group-gelato', 'group-calendar', 'group-learn'],
+    },
+  ],
+  focusRun: {
+    title: 'Volleyball group booking run',
+    subtitle: 'Nava turns one edited draft into hotel memory.',
+    primaryNodeIds: [
+      'email-received',
+      'group-availability',
+      'group-room-plan',
+      'group-gelato',
+      'group-calendar',
+      'group-gm-approval',
+      'group-draft',
+      'group-learn',
+    ],
+    segments: [
+      {
+        id: 'segment-inbound-availability',
+        sourceNodeId: 'email-received',
+        targetNodeId: 'group-availability',
+        label: '3 evidence reads',
+        detail: 'Extract facts, classify group request, then check PMS inventory.',
+      },
+      {
+        id: 'segment-availability-room-plan',
+        sourceNodeId: 'group-availability',
+        targetNodeId: 'group-room-plan',
+        label: '2 ops checks',
+        detail: 'Hold provisional block and exclude third-floor rooms from allocation.',
+      },
+      {
+        id: 'segment-room-plan-gelato',
+        sourceNodeId: 'group-room-plan',
+        targetNodeId: 'group-gelato',
+        label: 'youth sports rule',
+        detail: 'Room proximity and team context trigger F&B upsell review.',
+      },
+      {
+        id: 'segment-gelato-calendar',
+        sourceNodeId: 'group-gelato',
+        targetNodeId: 'group-calendar',
+        label: 'F&B calendar',
+        detail: 'Tentative hold so F&B can accept or decline before guest copy mentions gelato.',
+      },
+      {
+        id: 'segment-calendar-approval',
+        sourceNodeId: 'group-calendar',
+        targetNodeId: 'group-gm-approval',
+        label: 'approval gate',
+        detail: 'Non-standard gelato setup needs manager approval before guest promise.',
+      },
+      {
+        id: 'segment-approval-draft',
+        sourceNodeId: 'group-gm-approval',
+        targetNodeId: 'group-draft',
+        label: 'draft guarded',
+        detail: 'Guest reply quotes rooms without promising unapproved stand.',
+      },
+      {
+        id: 'segment-draft-learn',
+        sourceNodeId: 'group-draft',
+        targetNodeId: 'group-learn',
+        label: 'stored SOP',
+        detail: 'Sarah approves training so this workflow applies to future youth groups.',
+      },
+    ],
+  },
+  reviewTrace: [
+    {
+      id: 'trace-evidence',
+      title: 'Evidence read',
+      type: 'evidence',
+      nodeId: 'email-received',
+      eyebrow: 'Inbound email + history',
+      summary: 'Two U16 volleyball teams need 22 nearby rooms for April 12-14.',
+      detail: 'Nava reads the inbound request, prior group quote format, PMS inventory, and internal third-floor leak alert before drafting.',
+      actor: 'Nava',
+      timestamp: '09:21',
+      sources: ['Inbound volleyball email', 'Historical group quote format', 'PMS inventory', 'Third-floor leak alert'],
+      actionLabel: 'Evidence attached',
+    },
+    {
+      id: 'trace-decision',
+      title: 'Decision made',
+      type: 'decision',
+      nodeId: 'group-room-plan',
+      eyebrow: 'Ops decision',
+      summary: 'Keep teams in the same wing and avoid floor 3.',
+      detail: 'The request is not just a quote. Room proximity affects guest experience, and the leak changes which rooms should be offered.',
+      actor: 'Nava',
+      timestamp: '09:23',
+      sources: ['Room plan API', 'Maintenance alert'],
+      actionLabel: 'Allocation constraint applied',
+    },
+    {
+      id: 'trace-correction',
+      title: 'Human correction',
+      type: 'correction',
+      nodeId: 'group-gelato',
+      eyebrow: 'Sarah edited draft',
+      summary: 'Add gelato stand review for youth sports group before sending.',
+      detail: 'Sarah says youth teams often buy snacks after matches. Nava should flag F&B and ask manager approval before mentioning it to the guest.',
+      actor: 'Sarah Mokoena',
+      timestamp: '09:48',
+      sources: ['Draft diff', 'Sarah comment', 'F&B calendar'],
+      actionLabel: 'Add comment',
+      commentPrompt: 'Explain when this should happen again...',
+    },
+    {
+      id: 'trace-stored-rule',
+      title: 'Stored SOP preview',
+      type: 'stored-rule',
+      nodeId: 'group-learn',
+      eyebrow: 'Company memory',
+      summary: 'Store ancillary + approval workflow for future group requests.',
+      detail: 'Similar family or youth group bookings should check whether an ancillary service fits, confirm F&B capacity, and require manager approval before draft send.',
+      actor: 'Nava',
+      timestamp: '09:50',
+      sources: ['Approved correction', 'Manager approval SOP'],
+      actionLabel: 'Approve + train',
+    },
+  ],
+  operatorTrace: [
+    {
+      id: 'trace-email',
+      title: 'Read request',
+      status: 'checked',
+      kind: 'email',
+      actor: 'Nava',
+      timestamp: '09:21',
+      summary: '22 rooms, volleyball group, Apr 12-14.',
+      detail: 'Nava parsed dates, room count, group context, and the guest-facing ask from the inbound email.',
+      nodeId: 'email-received',
+      evidence: ['Inbound email', 'Thread history'],
+      output: 'Group booking request routed to reservations.',
+    },
+    {
+      id: 'trace-pms',
+      title: 'Checked PMS availability',
+      status: 'checked',
+      kind: 'api',
+      actor: 'Nava',
+      timestamp: '09:22',
+      summary: '22-room provisional hold available.',
+      detail: 'PMS returned enough inventory to draft a hold without over-promising final allocation.',
+      nodeId: 'group-availability',
+      evidence: ['PMS availability API', 'Rate table'],
+      output: 'Hold rooms, confirm final allocation later.',
+    },
+    {
+      id: 'trace-room-logic',
+      title: 'Planned standard allocation review',
+      status: 'decision',
+      kind: 'logic',
+      actor: 'Nava',
+      timestamp: '09:23',
+      summary: 'Standard review before final room allocation.',
+      detail: 'Nava kept the reply safe but did not ask what extra operational checks this group profile should trigger.',
+      nodeId: 'group-room-plan',
+      evidence: ['Room plan rule', 'Maintenance alert'],
+      output: 'No guest-facing room proximity promise yet.',
+    },
+    {
+      id: 'trace-draft',
+      title: 'Drafted reply',
+      status: 'decision',
+      kind: 'draft',
+      actor: 'Nava',
+      timestamp: '09:24',
+      summary: 'Hold rooms, confirm final allocation after review.',
+      detail: 'The draft answered the booking request but missed the reason Sarah later added more operational context.',
+      nodeId: 'group-draft',
+      evidence: ['Draft body', 'Prior quote format'],
+      output: 'Safe baseline reply.',
+    },
+    {
+      id: 'trace-missed-ancillary',
+      title: 'Not checked: ancillary opportunity',
+      status: 'missed',
+      kind: 'gap',
+      actor: 'Nava',
+      timestamp: '09:25',
+      summary: 'No F&B or guest-experience opportunity checked.',
+      detail: 'Nava did not ask whether this group profile creates a hotel-specific ancillary service workflow.',
+      nodeId: 'group-gelato',
+      evidence: ['No F&B calendar read', 'No event-capacity check'],
+      output: 'Missing teaching point for Sarah.',
+    },
+    {
+      id: 'trace-missed-approval',
+      title: 'Not checked: approval gate',
+      status: 'missed',
+      kind: 'gap',
+      actor: 'Nava',
+      timestamp: '09:25',
+      summary: 'No manager approval before guest-facing upsell.',
+      detail: 'Nava did not know that non-standard F&B offers need approval before they appear in guest wording.',
+      nodeId: 'group-gm-approval',
+      evidence: ['No manager task', 'No approval state'],
+      output: 'Missing guardrail for workflow proposal.',
+    },
+  ],
+  workflowProposal: {
+    valueHeadline: 'Fewer risky guest promises, same polite replies',
+    valueDetail:
+      'Nava can still confirm rooms in friendly language. What changes is behind the scenes: before any ancillary idea (extra F&B, experiences) appears in guest copy, Nava runs internal capacity and manager checks — so ops agrees first, then wording updates.',
+    teachingMoment:
+      'Sarah adjusted the volleyball group reply: same-wing rooms plus a gelato idea that needed F&B and manager sign-off before it belonged in guest-facing text.',
+    trigger: 'similar group booking with children/families where season, weather, or guest profile could create an ancillary opportunity.',
+    checks: ['F&B capacity', 'Manager approval', 'Guest-facing wording guardrail'],
+    action: 'Create an internal F&B review before final guest wording.',
+    guardrail: 'Do not mention or promise the ancillary option before guest-facing wording is approved.',
+    defaultScope: 'This hotel',
+    scopeOptions: ['This hotel', 'All hotels', 'Ask next time'],
+    ruleText:
+      'For similar group bookings with children/families, check ancillary F&B opportunities and manager approval before guest-facing wording.',
+    beforePath: ['Group request', 'PMS hold', 'Standard review', 'Guest draft'],
+    proposedNodes: [
+      {
+        id: 'proposal-ancillary-check',
+        label: 'Ancillary opportunity check',
+        status: 'new',
+        detail: 'Ask whether group profile, season, or guest mix creates a hotel-specific service opportunity.',
+      },
+      {
+        id: 'proposal-fb-capacity',
+        label: 'F&B capacity check',
+        status: 'new',
+        detail: 'Check whether F&B can support the proposed service before it reaches guest copy.',
+      },
+      {
+        id: 'proposal-manager-approval',
+        label: 'Manager approval gate',
+        status: 'new',
+        detail: 'Require approval before Nava suggests or promises the option externally.',
+      },
+    ],
+  },
+  storedRule: {
+    id: 'rule-group-ancillary-approval',
+    title: 'Group ancillary opportunity check',
+    status: 'proposed',
+    hotel: 'The Centurion',
+    actor: 'Sarah Mokoena',
+    editType: 'Missing reasoning label',
+    scope: 'Group bookings -> children/families -> ancillary services',
+    evidence: ['Nava reasoning trace', 'Sarah teaching note', 'F&B calendar', 'Manager approval policy'],
+    reviewState: 'Needs manager approval before guest promise',
+    affectedSystems: ['PMS room plan', 'F&B calendar', 'Manager approval', 'Guest draft'],
+    lastTrained: '2026-04-12T09:50:00.000Z',
+    appliedCount: 0,
+    contradictedCount: 0,
+    ruleText:
+      'For similar group bookings with children/families, check ancillary F&B opportunities and manager approval before guest-facing wording.',
+  },
+  demoSteps: [
+    {
+      id: 'demo-1-inbound',
+      title: 'Inbound group request',
+      narration:
+        'Two U16 volleyball teams email for 22 rooms April 12–14. Nava parses sender, dates, headcount, and flags this as a group lane before anyone touches PMS.',
+      nodeId: 'email-received',
+      detailKind: 'node',
+    },
+    {
+      id: 'demo-2-hold',
+      title: 'Provisional block + inventory',
+      narration:
+        'Nava checks PMS for a 22-room provisional hold and surfaces rate context. Nothing is promised to the guest until allocation rules pass.',
+      nodeId: 'group-availability',
+      detailKind: 'node',
+    },
+    {
+      id: 'demo-3-room-api',
+      title: 'Room Plan API call',
+      narration:
+        'Room proximity is not vibes. Nava calls the room-plan integration, applies the third-floor leak constraint, and writes the allocation warning into the run.',
+      nodeId: 'group-room-plan',
+      detailKind: 'api-room-plan',
+    },
+    {
+      id: 'demo-4-upsell',
+      title: 'Youth sports upsell branch',
+      narration:
+        'Youth sports + April triggers an F&B gelato opportunity. Nava creates an internal signal, not a guest promise, until a human approves.',
+      nodeId: 'group-gelato',
+      detailKind: 'node',
+    },
+    {
+      id: 'demo-5-calendar',
+      title: 'F&B calendar hold',
+      narration:
+        'If the stand is real, it needs a calendar owner. Nava books a tentative hold and asks F&B for yes/no capacity before the draft mentions it.',
+      nodeId: 'group-calendar',
+      detailKind: 'api-calendar',
+    },
+    {
+      id: 'demo-6-approval',
+      title: 'Manager gate',
+      narration:
+        'Non-standard revenue moves hit GM approval. Nava blocks guest-facing language until this gate is satisfied or explicitly skipped.',
+      nodeId: 'group-gm-approval',
+      detailKind: 'node',
+    },
+    {
+      id: 'demo-7-draft',
+      title: 'Draft before / after Sarah',
+      narration:
+        'Sarah edits the draft: add proximity language and internal gelato review. That is an operational workflow change, not tone polish.',
+      nodeId: 'group-draft',
+      detailKind: 'diff',
+    },
+    {
+      id: 'demo-8-train',
+      title: 'Train the brain',
+      narration:
+        'Choose whether this stays a one-off weak signal or becomes hotel memory. Approve + train updates the graph and stored SOP for future youth groups.',
+      nodeId: 'group-learn',
+      detailKind: 'training',
+    },
+    {
+      id: 'demo-9-hotel',
+      title: 'Whole hotel brain',
+      narration:
+        'Zoom out to see categories, risk alerts, and learning signals on one map. The metadata rail proves what the hotel now stores.',
+      nodeId: 'classify-category',
+      detailKind: 'hotel',
+    },
+  ],
+  nodeDetails: {
+    'email-received': {
+      nodeId: 'email-received',
+      headline: 'Trigger: inbound mail',
+      input: ['Raw MIME from Outlook / Google', 'Thread id and folder = group'],
+      decision: 'Parse headers + body, normalize to thread object.',
+      output: ['Structured facts for classifier and PMS checks.'],
+      proof: ['Demo corpus thread: Pretoria Girls Volleyball', 'Timestamp 09:20'],
+    },
+    'group-availability': {
+      nodeId: 'group-availability',
+      headline: 'PMS inventory check',
+      input: ['22 rooms, Apr 12–14, two teams', 'Group lane from classifier'],
+      decision: 'if rooms > 10 then provisional hold + rate snapshot.',
+      output: ['Hold id GR-2026-0412-01', 'Available types: Twin, Queen'],
+      proof: ['PMS inventory snapshot', 'No guest-facing send yet'],
+    },
+    'group-room-plan': {
+      nodeId: 'group-room-plan',
+      headline: 'Room proximity + risk merge',
+      input: ['Team count + wing preference', 'Internal leak alert for floor 3'],
+      decision: 'Exclude blocked floors, prefer same wing for youth sports.',
+      output: ['Allocation suggestion JSON', 'Warning line for draft'],
+      proof: ['Room plan API response', 'Maintenance ticket #M-4401'],
+    },
+    'group-gelato': {
+      nodeId: 'group-gelato',
+      headline: 'F&B upsell signal',
+      input: ['Youth sports tag', 'April seasonality', 'Past gelato stand revenue note'],
+      decision: 'if youth_sports && April then suggest F&B review task.',
+      output: ['Internal F&B task draft', 'No guest promise until approval'],
+      proof: ['Sarah prior edit pattern', 'F&B calendar free slot scan'],
+    },
+    'group-calendar': {
+      nodeId: 'group-calendar',
+      headline: 'Calendar hold',
+      input: ['Proposed stand window', 'F&B owner role'],
+      decision: 'Create tentative event, require human accept.',
+      output: ['Calendar event id CAL-GEL-0412-T', 'Decision_needed flag'],
+      proof: ['Google Calendar API mock', 'Attendee list: F&B lead'],
+    },
+    'group-gm-approval': {
+      nodeId: 'group-gm-approval',
+      headline: 'GM approval gate',
+      input: ['Non-standard concession', 'Draft impact summary'],
+      decision: 'if new stand language in guest draft then require GM.',
+      output: ['Approve | Reject | Hold', 'Audit trail row'],
+      proof: ['Manager approval SOP v3', 'Sarah as acting approver in demo'],
+    },
+    'group-draft': {
+      nodeId: 'group-draft',
+      headline: 'Guest reply composition',
+      input: ['Hold id', 'Allocation warning', 'Approval state for gelato'],
+      decision: 'Quote rooms, attach internal tasks, never promise unapproved stand.',
+      output: ['Guest-visible draft', 'Internal handoff bundle'],
+      proof: ['Group quote template', 'Diff vs Nava baseline'],
+    },
+    'group-learn': {
+      nodeId: 'group-learn',
+      headline: 'Learning capture',
+      input: ['Draft diff', 'Actor + hotel scope', 'Human label on edit type'],
+      decision: 'if repeated weak signals then prompt promote rule.',
+      output: ['Weak signal row or promoted SOP revision'],
+      proof: ['Teach Nava event log', 'Affected node ids for graph delta'],
+    },
+    'classify-category': {
+      nodeId: 'classify-category',
+      headline: 'Five-lane router',
+      input: ['Structured facts', 'Sender domain', 'Urgency hints'],
+      decision: 'Route to internal, individual, group, travel agent, or spam.',
+      output: ['Lane id for downstream workflows'],
+      proof: ['Centurion category model v12'],
+    },
+  },
+  apiMocks: [
+    {
+      id: 'mock-room-plan',
+      nodeId: 'group-room-plan',
+      title: 'Room plan allocation',
+      method: 'POST',
+      path: '/v1/properties/centurion/allocations/suggest',
+      requestSummary: '{ guests: 48, teams: 2, avoid_floors: [3], prefer: "same_wing" }',
+      responseLines: [
+        '{',
+        '  "suggested_wing": "East",',
+        '  "excluded_units": ["301-318"],',
+        '  "warning": "floor_3_maintenance",',
+        '  "confidence": 0.91',
+        '}',
+      ],
+      effect: 'Floor 3 excluded from suggestions; East wing preferred for both teams.',
+    },
+    {
+      id: 'mock-fb-calendar',
+      nodeId: 'group-calendar',
+      title: 'F&B tentative hold',
+      method: 'POST',
+      path: '/calendar/v3/calendars/fb-ops@centurion/events',
+      requestSummary: '{ summary: "Gelato stand review", start: "2026-04-12T16:00Z", attendees: ["fb-lead@..."] }',
+      responseLines: [
+        '{',
+        '  "id": "evt_gelato_review_0412",',
+        '  "status": "tentative",',
+        '  "responseRequested": true',
+        '}',
+      ],
+      effect: 'F&B gets a real calendar artifact to accept or decline before guest copy mentions gelato.',
+    },
+  ],
+  draftDiff: {
+    navaLabel: 'Nava baseline',
+    navaBody:
+      'Dear Marlize,\n\nThank you for considering The Centurion for your volleyball group.\n\nWe can hold 22 rooms for your dates. We will confirm final allocation after standard review.\n\nWarm regards,\nReservations\nThe Centurion',
+    sarahLabel: 'Sarah edit (sent for demo)',
+    sarahBody:
+      'We will try to keep both teams on the same wing. Our team will also review a possible gelato stand for the players before we confirm wording with you.',
+    operationalChange:
+      "Sarah's sent edit teaches Nava to check room proximity, ancillary fit, F&B capacity, and manager approval before guest wording.",
+  },
+  trainingOutcomes: {
+    weakSignal: {
+      ruleStatus: 'proposed',
+      appliedCount: 0,
+      contradictedCount: 0,
+      reviewState: 'Logged as weak signal — promote if this repeats',
+    },
+    promoted: {
+      ruleStatus: 'stored',
+      appliedCount: 1,
+      contradictedCount: 0,
+      reviewState: 'Live for youth sports group requests at this property',
+    },
+  },
+  ycDemoScript: [
+    {
+      id: 'open-volleyball-thread',
+      title: 'Open the pinned volleyball group email',
+      userAction: 'Search or click the YC demo thread: “Volleyball group booking: 22 rooms, 12-14 April.”',
+      say: 'This is normal hotel inbox work: group quote, parent logistics, rooms close together.',
+      whyItMatters: 'YC sees the wedge starts inside Outlook, not inside a dashboard.',
+    },
+    {
+      id: 'show-bad-draft',
+      title: 'Show Nava’s baseline draft',
+      userAction: 'Point at the draft card: it has rooms and rate language, but misses operational follow-through.',
+      say: 'This answer is fine as email automation. It is not hotel operations yet.',
+      whyItMatters: 'Sets up why a simple reply assistant is not enough.',
+    },
+    {
+      id: 'make-sarah-edit',
+      title: 'Make Sarah’s workflow edit',
+      userAction: "Click Edit draft, then Apply Sarah's edit. The editor changes copy without manual typing.",
+      say: 'Sarah is not changing tone. She is teaching how this hotel actually works.',
+      whyItMatters: 'The edit becomes workflow logic: room-plan API, F&B calendar, manager approval, draft guardrail.',
+    },
+    {
+      id: 'teach-workflow',
+      title: 'Click Teach Nava',
+      userAction: 'Click Teach Nava, then Approve + train in the brain view.',
+      say: 'Nava converts that edit into a hotel-specific workflow, with evidence and approval state.',
+      whyItMatters: 'This is the core product loop: work happens once, then compounds.',
+    },
+    {
+      id: 'show-api-connectors',
+      title: 'Show lightweight API connectors',
+      userAction: 'Open Connect API on Room plan or Calendar node.',
+      say: 'For real hotels this connects to PMS, room map, and F&B calendar. In demo mode we show exactly which fields Nava needs.',
+      whyItMatters: 'Proves API thinking without turning YC demo into an integration walkthrough.',
+    },
+    {
+      id: 'show-multi-hotel-scope',
+      title: 'Show multi-hotel scope',
+      userAction: 'Zoom out to hotel brain and mention the same workflow primitives across properties.',
+      say: 'The primitive is reusable, but the policy is hotel-scoped. Centurion learns gelato; another property can learn spa, shuttle, or family-room rules.',
+      whyItMatters: 'Makes scalability credible: shared architecture, local hotel memory.',
+    },
+  ],
+  connectorStory: [
+    {
+      id: 'connector-pms',
+      system: 'PMS',
+      label: 'Availability + provisional hold',
+      status: 'connected',
+      usedFor: 'Read room types, block inventory, quote without overbooking.',
+      demoLine: 'Connected in demo: PMS returns 22-room hold and B&B availability.',
+    },
+    {
+      id: 'connector-room-map',
+      system: 'Room map',
+      label: 'Room proximity map',
+      status: 'connected',
+      usedFor: 'Keep youth teams near each other and exclude maintenance floors.',
+      demoLine: 'Connected in demo: room map excludes floor 3 and suggests East wing.',
+    },
+    {
+      id: 'connector-fb-calendar',
+      system: 'F&B calendar',
+      label: 'F&B capacity check',
+      status: 'needs-owner',
+      usedFor: 'Create tentative gelato stand review before guest-facing promise.',
+      demoLine: 'Needs owner approval: Nava prepares calendar hold, F&B accepts or declines.',
     },
   ],
 };

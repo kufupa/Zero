@@ -40,7 +40,16 @@ import { NotesPanel } from './note-panel';
 import { ThreadAiMailsSection } from '@/components/mail/thread-ai-mails-section';
 import { ThreadDraftCard } from '@/components/mail/thread-draft-card';
 import { AiOpsBrainWorkspace } from '@/components/mail/ai-ops-brain-workspace';
+import { getAiOpsBrainGraph } from '@/lib/demo/ai-ops-brain';
 import { getAiOpsBrainWorkflowForThread } from '@/lib/demo/ai-ops-brain';
+import {
+  applyYcVolleyballSarahInsert,
+  YC_VOLLEYBALL_DEMO_STAGE_EVENT,
+  getYcVolleyballDemoStage,
+  setYcVolleyballDemoStage,
+  type YcVolleyballDemoStage,
+  YC_VOLLEYBALL_THREAD_ID,
+} from '@/lib/demo/yc-volleyball-demo';
 import { buildThreadDraftViewModel } from '@/lib/mail/thread-draft-view-model';
 import { cn, FOLDERS, formatDateWithWeekdayAndTime } from '@/lib/utils';
 import { m } from '@/paraglide/messages';
@@ -259,22 +268,85 @@ export function ThreadDisplay() {
       }),
     [folder, emailData?.centurionCategory, emailData?.messages],
   );
+  const isYcVolleyballThread = id === YC_VOLLEYBALL_THREAD_ID;
+  const isYcVolleyballDemo = frontendOnlyDemo && isYcVolleyballThread;
+  const ycGraph = isYcVolleyballDemo ? getAiOpsBrainGraph() : null;
+  const [ycDemoStage, setYcDemoStageState] = useState<YcVolleyballDemoStage>('draft');
+  const [ycBrainOpensReasoning, setYcBrainOpensReasoning] = useState(false);
+
+  useEffect(() => {
+    if (!isYcVolleyballDemo) {
+      setYcDemoStageState('draft');
+      setYcBrainOpensReasoning(false);
+      return;
+    }
+    setYcDemoStageState(getYcVolleyballDemoStage());
+  }, [id, isYcVolleyballDemo]);
+
+  useEffect(() => {
+    if (!isYcVolleyballDemo) return;
+    const handleStageChange = () => {
+      setYcDemoStageState(getYcVolleyballDemoStage());
+    };
+    window.addEventListener(YC_VOLLEYBALL_DEMO_STAGE_EVENT, handleStageChange);
+    return () => window.removeEventListener(YC_VOLLEYBALL_DEMO_STAGE_EVENT, handleStageChange);
+  }, [isYcVolleyballDemo]);
+
+  const persistYcDemoStage = useCallback((stage: YcVolleyballDemoStage) => {
+    setYcVolleyballDemoStage(stage);
+    setYcDemoStageState(stage);
+  }, []);
+
+  const ycBodyAfterSarahInsert = useMemo(() => {
+    if (!draftVm || !ycGraph) return '';
+    return applyYcVolleyballSarahInsert(draftVm.bodyPreview, ycGraph.draftDiff.sarahBody);
+  }, [draftVm, ycGraph]);
+
+  const ycDraftPreviewForCard = useMemo(() => {
+    if (!draftVm) return '';
+    if (!isYcVolleyballDemo || !ycGraph) return draftVm.bodyPreview;
+    if (ycDemoStage === 'draft' || ycDemoStage === 'editing') return draftVm.bodyPreview;
+    if (
+      ycDemoStage === 'sarah-preview' ||
+      ycDemoStage === 'sent' ||
+      ycDemoStage === 'reasoning' ||
+      ycDemoStage === 'teaching' ||
+      ycDemoStage === 'workflow-preview' ||
+      ycDemoStage === 'stored'
+    ) {
+      return ycBodyAfterSarahInsert || draftVm.bodyPreview;
+    }
+    return draftVm.bodyPreview;
+  }, [draftVm, isYcVolleyballDemo, ycGraph, ycDemoStage, ycBodyAfterSarahInsert]);
+
+  const handleYcSaveAndSend = useCallback(() => {
+    persistYcDemoStage('sent');
+  }, [persistYcDemoStage]);
+
   const isAiOpsBrainOpen = frontendOnlyDemo && brainMode === 'ops';
   const openAiOpsBrain = useCallback(() => {
     void setBrainMode('ops');
   }, [setBrainMode]);
   const closeAiOpsBrain = useCallback(() => {
+    setYcBrainOpensReasoning(false);
     void setBrainMode(null);
   }, [setBrainMode]);
 
+  const openAiOpsBrainFromTeachPrompt = useCallback(() => {
+    setYcBrainOpensReasoning(true);
+    if (isYcVolleyballDemo) persistYcDemoStage('reasoning');
+    void setBrainMode('ops');
+  }, [isYcVolleyballDemo, persistYcDemoStage, setBrainMode]);
+
   const openDraftForEdit = useCallback(() => {
     if (!latestDraft?.id || !emailData?.latest?.id) return;
+    if (isYcVolleyballDemo) persistYcDemoStage('editing');
     void setComposeState({
       mode: 'reply',
       activeReplyId: emailData.latest.id,
       draftId: latestDraft.id,
     });
-  }, [latestDraft?.id, emailData?.latest?.id, setComposeState]);
+  }, [latestDraft?.id, emailData?.latest?.id, isYcVolleyballDemo, persistYcDemoStage, setComposeState]);
 
   const handleDeleteThreadDraft = useCallback(() => {
     if (!latestDraft?.id) return;
@@ -782,7 +854,7 @@ export function ThreadDisplay() {
     <ThreadAiMailsSection>
       <ThreadDraftCard
         subject={draftVm.subject}
-        bodyPreview={draftVm.bodyPreview}
+        bodyPreview={ycDraftPreviewForCard || draftVm.bodyPreview}
         savedAtLabel={
           m['common.threadDisplay.draftSavedPrefix']() +
           formatDateWithWeekdayAndTime(draftVm.savedAtIso)
@@ -793,15 +865,74 @@ export function ThreadDisplay() {
         editLabel={m['common.threadDisplay.continueDraft']()}
         deleteLabel={m['common.actions.Bin']()}
         moreLabel={m['common.threadDisplay.draftMoreOptions']()}
-        proofItems={[
-          `Generated from ${draftVm.bodyPreview ? 4 : 3} sources`,
-          aiOpsWorkflow.reviewLoad === 'Always review'
-            ? 'Human approval required'
-            : `Workflow: ${aiOpsWorkflow.title}`,
-          'Edit trains brain',
-        ]}
-        onViewWorkflow={openAiOpsBrain}
-        onTeachBrain={openAiOpsBrain}
+        teachLabel={isYcVolleyballDemo ? 'Review Nava reasoning' : undefined}
+        demoStatusLabel={
+          isYcVolleyballDemo && ycDemoStage === 'sent'
+            ? 'Sent. Nava can learn why you changed this reply.'
+            : isYcVolleyballDemo && ycDemoStage === 'stored'
+              ? 'Decision saved. Reopen Nava reasoning or zoom out to hotel brain.'
+            : undefined
+        }
+        primaryDemoActionLabel={
+          isYcVolleyballDemo
+            ? ycDemoStage === 'draft'
+              ? 'Edit draft'
+              : ycDemoStage === 'sarah-preview'
+                ? 'Send'
+                : ycDemoStage === 'sent'
+                  ? 'Review Nava reasoning'
+                  : ycDemoStage === 'stored'
+                    ? 'Review stored workflow'
+                    : ['reasoning', 'teaching', 'workflow-preview'].includes(ycDemoStage)
+                      ? 'Continue Nava reasoning'
+                  : undefined
+            : undefined
+        }
+        primaryDemoActionVariant={
+          isYcVolleyballDemo && ycDemoStage === 'draft'
+            ? 'secondary'
+            : isYcVolleyballDemo && ycDemoStage === 'sent'
+              ? 'outline'
+              : 'default'
+        }
+        onPrimaryDemoAction={
+          isYcVolleyballDemo
+            ? ycDemoStage === 'draft'
+              ? openDraftForEdit
+              : ycDemoStage === 'sarah-preview'
+                ? handleYcSaveAndSend
+                : ycDemoStage === 'sent'
+                  ? openAiOpsBrainFromTeachPrompt
+                  : ['reasoning', 'teaching', 'workflow-preview', 'stored'].includes(ycDemoStage)
+                    ? openAiOpsBrainFromTeachPrompt
+                  : undefined
+            : undefined
+        }
+        workflowInsertCallout={undefined}
+        demoEditInsight={
+          isYcVolleyballDemo && ycGraph && ycDemoStage === 'sent'
+            ? {
+                label: 'Sent reply',
+                before: ycGraph.draftDiff.navaBody,
+                after: ycGraph.draftDiff.sarahBody,
+                note: 'Sarah changed the reply after seeing Nava missed a hotel-specific decision boundary. Next: teach Nava what it missed.',
+              }
+            : undefined
+        }
+        proofItems={
+          isYcVolleyballDemo && ycGraph
+            ? undefined
+            : [
+                `Generated from ${draftVm.bodyPreview ? 4 : 3} sources`,
+                aiOpsWorkflow.reviewLoad === 'Always review'
+                  ? 'Human approval required'
+                  : `Workflow: ${aiOpsWorkflow.title}`,
+                'Edit trains brain',
+              ]
+        }
+        onViewWorkflow={!isYcVolleyballDemo ? openAiOpsBrain : undefined}
+        onTeachBrain={!isYcVolleyballDemo ? openAiOpsBrain : undefined}
+        showTeachWorkflowButton={!isYcVolleyballDemo}
         onEdit={openDraftForEdit}
         onDelete={handleDeleteThreadDraft}
       />
@@ -831,6 +962,9 @@ export function ThreadDisplay() {
               message.tags?.some((tag) => tag.name === 'IMPORTANT' || tag.id === 'IMPORTANT'),
             )}
             onClose={closeAiOpsBrain}
+            initialBrainMode={ycBrainOpensReasoning ? 'reasoning' : undefined}
+            ycDemoStage={isYcVolleyballDemo ? ycDemoStage : undefined}
+            onYcDemoStageChange={isYcVolleyballDemo ? persistYcDemoStage : undefined}
           />
         ) : !id ? (
           <div className="flex h-full items-center justify-center">

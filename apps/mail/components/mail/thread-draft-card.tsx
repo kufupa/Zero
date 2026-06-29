@@ -20,8 +20,23 @@ export type ThreadDraftCardProps = {
   deleteLabel: string;
   moreLabel: string;
   proofItems?: string[];
+  teachLabel?: string;
+  demoStatusLabel?: string;
+  primaryDemoActionLabel?: string;
+  primaryDemoActionVariant?: 'default' | 'secondary' | 'outline' | 'ghost';
+  onPrimaryDemoAction?: () => void;
+  demoEditInsight?: {
+    label: string;
+    before: string;
+    after: string;
+    note: string;
+  };
   onViewWorkflow?: () => void;
   onTeachBrain?: () => void;
+  /** When false, Teach button hidden even if onTeachBrain is set. Default: show when onTeachBrain is set. */
+  showTeachWorkflowButton?: boolean;
+  /** Shown after Sarah workflow insert is applied (before full insight card). */
+  workflowInsertCallout?: { text: string };
   onEdit: () => void;
   onDelete: () => void;
 };
@@ -37,8 +52,16 @@ export function ThreadDraftCard({
   deleteLabel,
   moreLabel,
   proofItems,
+  teachLabel = 'Teach Nava',
+  demoStatusLabel,
+  primaryDemoActionLabel,
+  primaryDemoActionVariant = 'default',
+  demoEditInsight,
+  showTeachWorkflowButton = true,
+  workflowInsertCallout,
   onViewWorkflow,
   onTeachBrain,
+  onPrimaryDemoAction,
   onEdit,
   onDelete,
 }: ThreadDraftCardProps) {
@@ -99,6 +122,35 @@ export function ThreadDraftCard({
           <span className="shrink-0 whitespace-nowrap">{savedAtLabel}</span>
         </div>
         <p className="text-foreground/90 dark:text-foreground/95 mt-2 line-clamp-3 text-sm">{previewText}</p>
+        {demoStatusLabel ? (
+          <p className="mt-3 rounded-lg border border-emerald-300/45 bg-emerald-50/80 px-3 py-2 text-xs font-semibold text-emerald-900 dark:border-emerald-400/30 dark:bg-emerald-400/10 dark:text-emerald-50">
+            {demoStatusLabel}
+          </p>
+        ) : null}
+        {workflowInsertCallout ? (
+          <div className="mt-3 rounded-lg border border-emerald-300/50 bg-emerald-50/90 p-2.5 text-xs leading-5 text-emerald-950 dark:border-emerald-400/35 dark:bg-emerald-400/12 dark:text-emerald-50">
+            <span className="font-semibold text-emerald-800 dark:text-emerald-200">Added: </span>
+            {workflowInsertCallout.text}
+          </div>
+        ) : null}
+        {demoEditInsight ? (
+          <div className="mt-3 rounded-xl border border-fuchsia-200 bg-fuchsia-50/80 p-3 text-sm dark:border-fuchsia-400/25 dark:bg-fuchsia-400/10">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-fuchsia-700 dark:text-fuchsia-200">
+              {demoEditInsight.label}
+            </p>
+            <div className="mt-2 grid gap-2 sm:grid-cols-2">
+              <div className="rounded-lg bg-white/70 p-2 text-xs leading-5 text-slate-700 dark:bg-black/20 dark:text-slate-300">
+                <span className="font-semibold">Nava draft: </span>
+                {demoEditInsight.before}
+              </div>
+              <div className="rounded-lg bg-white/90 p-2 text-xs leading-5 text-slate-900 dark:bg-fuchsia-300/10 dark:text-fuchsia-50">
+                <span className="font-semibold">Sarah edit: </span>
+                {demoEditInsight.after}
+              </div>
+            </div>
+            <p className="mt-2 text-xs leading-5 text-fuchsia-900 dark:text-fuchsia-100/85">{demoEditInsight.note}</p>
+          </div>
+        ) : null}
         {proofItems?.length ? (
           <div className="mt-3 flex flex-wrap gap-1.5">
             {proofItems.map((item, index) => (
@@ -125,7 +177,21 @@ export function ThreadDraftCard({
       </div>
 
       <div className="mt-3 flex">
-        {onTeachBrain ? (
+        {primaryDemoActionLabel && onPrimaryDemoAction ? (
+          <Button
+            type="button"
+            variant={primaryDemoActionVariant}
+            size="xs"
+            className="mr-2"
+            onClick={(event) => {
+              event.stopPropagation();
+              onPrimaryDemoAction();
+            }}
+          >
+            {primaryDemoActionLabel}
+          </Button>
+        ) : null}
+        {onTeachBrain && showTeachWorkflowButton ? (
           <Button
             type="button"
             variant="ghost"
@@ -136,7 +202,7 @@ export function ThreadDraftCard({
               onTeachBrain();
             }}
           >
-            Teach Nava
+            {teachLabel}
           </Button>
         ) : null}
         <Button

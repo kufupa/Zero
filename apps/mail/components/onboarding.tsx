@@ -1,9 +1,14 @@
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { useState, useEffect } from 'react';
+import { useLocation } from 'react-router';
 import confetti from 'canvas-confetti';
 
 const ONBOARDING_DISMISSED_KEY = 'nava-demo-onboarding-dismissed';
+
+function isBrainQuery(search: string) {
+  return new URLSearchParams(search).get('brain') === 'ops';
+}
 
 type OnboardingBaseStep = {
   title: string;
@@ -338,13 +343,25 @@ export function OnboardingDialog({
 }
 
 export function OnboardingWrapper() {
+  const location = useLocation();
+  const isBrainDemo = isBrainQuery(location.search);
   const [showOnboarding, setShowOnboarding] = useState(() => {
     if (typeof window === 'undefined') {
       return true;
     }
 
+    if (isBrainQuery(window.location.search)) {
+      return false;
+    }
+
     return window.sessionStorage.getItem(ONBOARDING_DISMISSED_KEY) !== 'true';
   });
+
+  useEffect(() => {
+    if (isBrainDemo) {
+      setShowOnboarding(false);
+    }
+  }, [isBrainDemo]);
 
   const handleOpenChange = (open: boolean) => {
     if (!open) {

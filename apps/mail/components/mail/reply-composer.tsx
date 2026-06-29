@@ -19,6 +19,15 @@ import posthog from 'posthog-js';
 import { toast } from 'sonner';
 import { demoSendEmail } from '@/lib/demo/local-actions';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import {
+  applyYcVolleyballSarahInsert,
+  formatYcVolleyballEditorHtml,
+  getYcVolleyballComposerInitialHtml,
+  getYcVolleyballDemoStage,
+  setYcVolleyballDemoStage,
+  YC_VOLLEYBALL_THREAD_ID,
+} from '@/lib/demo/yc-volleyball-demo';
+import { getAiOpsBrainGraph } from '@/lib/demo/ai-ops-brain';
 
 interface ReplyComposeProps {
   messageId?: string;
@@ -43,6 +52,9 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
   // Find the specific message to reply to
   const replyToMessage =
     (messageId && emailData?.messages.find((msg) => msg.id === messageId)) || emailData?.latest;
+  const isYcVolleyballDemo = isFrontendOnlyDemo() && threadId === YC_VOLLEYBALL_THREAD_ID;
+  const ycGraph = isYcVolleyballDemo ? getAiOpsBrainGraph() : null;
+  const ycDemoStage = isYcVolleyballDemo ? getYcVolleyballDemoStage() : null;
 
   const handleSendEmail = async (data: {
     to: string[];
@@ -162,6 +174,9 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
 
       // Reset states
       setMode(null);
+      if (isYcVolleyballDemo) {
+        setYcVolleyballDemoStage('sent');
+      }
       await refetch();
       
       handleUndoSend(result, settings, {
@@ -229,6 +244,11 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
   const replyComposeInstanceId = replyToMessage?.id ?? threadId ?? 'latest';
   const draftRecipientSeedRef = useRef<string | null>(draftId ? composeSeed : null);
 
+  const ycBaselineDraft =
+    isYcVolleyballDemo && ycGraph
+      ? (ycGraph.draftDiff.navaBody ?? latestDraft?.decodedBody ?? '')
+      : '';
+
   useEffect(() => {
     if (!draftId) {
       draftRecipientSeedRef.current = null;
@@ -280,12 +300,34 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
           setDraftId(null);
           setActiveReplyId(null);
         }}
-        initialMessage={draft?.content ?? latestDraft?.decodedBody}
+        initialMessage={
+          isYcVolleyballDemo && ycGraph
+            ? getYcVolleyballComposerInitialHtml({
+                stage: ycDemoStage ?? 'editing',
+                baselineDraft: ycBaselineDraft,
+                sarahParagraph: ycGraph.draftDiff.sarahBody,
+              })
+            : draft?.content ?? latestDraft?.decodedBody
+        }
         initialTo={initialToRecipients}
         initialCc={initialCcRecipients}
         initialBcc={initialBccRecipients}
         initialSubject={replyComposeInitialSubject}
         syncReplyHeadersFromProps
+        demoApplyEditAction={
+          isYcVolleyballDemo && ycGraph
+            ? {
+                label: "Apply Sarah's edit",
+                html: formatYcVolleyballEditorHtml(
+                  applyYcVolleyballSarahInsert(ycBaselineDraft, ycGraph.draftDiff.sarahBody),
+                ),
+                disabled: ycDemoStage === 'sarah-preview',
+                onApply: () => {
+                  setYcVolleyballDemoStage('sarah-preview');
+                },
+              }
+            : undefined
+        }
         autofocus={true}
         settingsLoading={settingsLoading}
         replyingTo={replyToMessage?.sender.email}

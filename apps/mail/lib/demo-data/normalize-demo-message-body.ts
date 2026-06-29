@@ -1,4 +1,5 @@
 const SCRIPT_TAG_REGEX = /<script\b[^>]*>[\s\S]*?<\/script\s*>/gi;
+const BLOCK_HTML_FRAGMENT_REGEX = /^<(?:p|div|h[1-6]|ul|ol|li|blockquote|table|section|article|br)\b[\s\S]*>/i;
 
 const escapeHtml = (value: string): string =>
   value
@@ -10,7 +11,7 @@ export function normalizeDemoMessageBody(input: { body: string; bodyFormat: 'tex
   const normalized = input.body.trim();
   if (!normalized) return '';
 
-  if (input.bodyFormat === 'html') {
+  if (input.bodyFormat === 'html' || isHtmlFragment(normalized)) {
     return normalized.replace(SCRIPT_TAG_REGEX, '').trim();
   }
 
@@ -21,4 +22,8 @@ export function normalizeDemoMessageBody(input: { body: string; bodyFormat: 'tex
     .filter((line) => line.length > 0)
     .map((line) => `<p>${line}</p>`)
     .join('');
+}
+
+function isHtmlFragment(value: string): boolean {
+  return BLOCK_HTML_FRAGMENT_REGEX.test(value);
 }

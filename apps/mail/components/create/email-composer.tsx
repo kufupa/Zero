@@ -82,6 +82,12 @@ interface EmailComposerProps {
   autofocus?: boolean;
   settingsLoading?: boolean;
   editorClassName?: string;
+  demoApplyEditAction?: {
+    label: string;
+    html: string;
+    disabled?: boolean;
+    onApply: () => void;
+  };
   /** When set, sync to/cc/bcc/subject from props when they change without remounting (e.g. reply → reply all). Never overwrites the message body from props. */
   syncReplyHeadersFromProps?: boolean;
 }
@@ -114,6 +120,7 @@ export function EmailComposer({
   autofocus = false,
   settingsLoading = false,
   editorClassName,
+  demoApplyEditAction,
   syncReplyHeadersFromProps = false,
 }: EmailComposerProps) {
   const { data: settings } = useSettings();
@@ -710,6 +717,24 @@ export function EmailComposer({
     </Button>
   );
 
+  const demoApplyEditButton = demoApplyEditAction ? (
+    <Button
+      type="button"
+      size="xs"
+      variant="secondary"
+      className="border border-emerald-300 bg-emerald-50 text-emerald-900 hover:bg-emerald-100 dark:border-emerald-400/30 dark:bg-emerald-400/10 dark:text-emerald-50"
+      disabled={isLoading || demoApplyEditAction.disabled}
+      onClick={() => {
+        editor.commands.setContent(demoApplyEditAction.html);
+        editor.commands.focus('end');
+        setHasUnsavedChanges(true);
+        demoApplyEditAction.onApply();
+      }}
+    >
+      {demoApplyEditAction.label}
+    </Button>
+  ) : null;
+
   return (
     <div
       className={cn(
@@ -1016,7 +1041,10 @@ export function EmailComposer({
         </div>
         <div className="flex items-start justify-start gap-2">
           {isReplyComposer ? (
-            sendButton
+            <>
+              {demoApplyEditButton}
+              {sendButton}
+            </>
           ) : (
             <div className="relative">
               <AnimatePresence>

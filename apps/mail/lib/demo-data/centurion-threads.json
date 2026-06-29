@@ -530,6 +530,54 @@
       ]
     },
     {
+      "id": "sa-thread-yc-volleyball",
+      "folder": "group",
+      "urgent": false,
+      "labels": [
+        {
+          "id": "yc-demo",
+          "name": "YC demo"
+        }
+      ],
+      "messages": [
+        {
+          "id": "sa-yc-volleyball-msg-01",
+          "sender": {
+            "name": "Marlize van der Merwe",
+            "email": "marlize@pretoriavolleyball.org"
+          },
+          "to": [
+            {
+              "name": "Centurion Hotel Reservations",
+              "email": "centurion@legacyhotels.co.za"
+            }
+          ],
+          "subject": "Volleyball group booking: 22 rooms, 12-14 April",
+          "body": "Good morning,\n\nWe are bringing two U16 girls volleyball teams to Pretoria for a tournament from 12 to 14 April. Can The Centurion assist with 22 rooms for players, coaches, and parents?\n\nIf possible, please keep the players close together. We will need breakfast included and a quote we can share with the school by tomorrow.\n\nKind regards,\nMarlize",
+          "receivedOn": "2026-04-12T09:20:00.000Z",
+          "unread": true
+        },
+        {
+          "id": "sa-yc-volleyball-msg-02",
+          "sender": {
+            "name": "The Centurion — Nava Draft",
+            "email": "centurion@legacyhotels.co.za"
+          },
+          "to": [
+            {
+              "name": "Marlize van der Merwe",
+              "email": "marlize@pretoriavolleyball.org"
+            }
+          ],
+          "subject": "Re: Volleyball group booking: 22 rooms, 12-14 April",
+          "body": "Dear Marlize,\n\nThank you for considering The Centurion for your volleyball group.\n\nWe can hold 22 rooms for your dates. We will confirm final allocation after standard review.\n\nWarm regards,\nReservations\nThe Centurion",
+          "receivedOn": "2026-04-12T09:24:00.000Z",
+          "unread": false,
+          "isDraft": true
+        }
+      ]
+    },
+    {
       "id": "sa-thread-spam-002",
       "folder": "spam",
       "urgent": false,

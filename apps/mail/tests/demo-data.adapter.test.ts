@@ -152,4 +152,18 @@ describe('demo adapter', () => {
     expect(richMessage?.decodedBody).toContain('<blockquote>Use only pre-approved upgrades for <u>VIP profiles</u>.</blockquote>');
     expect(richMessage?.decodedBody).toContain('<a href="https://example.com/operations/overnight-handover"');
   });
+
+  it('makes the YC volleyball workflow thread easy to find from inbox and group views', () => {
+    const inbox = listDemoThreads({ folder: 'inbox', q: 'volleyball', maxResults: 20 });
+    const group = listDemoThreads({ folder: 'group', q: 'volleyball', maxResults: 20 });
+
+    expect(inbox.threads[0]).toMatchObject({ id: 'sa-thread-yc-volleyball', centurionCategory: 'group' });
+    expect(group.threads[0]).toMatchObject({ id: 'sa-thread-yc-volleyball', centurionCategory: 'group' });
+
+    const thread = getDemoThread('sa-thread-yc-volleyball');
+    expect(thread.latest?.subject).toContain('Volleyball');
+    expect(thread.isLatestDraft).toBe(true);
+    expect(thread.messages.at(-1)?.decodedBody).toContain('hold 22 rooms');
+    expect(thread.messages.at(-1)?.decodedBody).not.toContain('gelato');
+  });
 });

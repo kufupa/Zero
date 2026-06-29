@@ -29,4 +29,13 @@ describe('normalizeDemoMessageBody', () => {
       }),
     ).toBe('<p>Use &lt;em&gt;tags&lt;/em&gt; and &amp; symbols</p>');
   });
+
+  it('preserves paragraph HTML even when mock data omits bodyFormat', () => {
+    expect(
+      normalizeDemoMessageBody({
+        bodyFormat: 'text',
+        body: '<p>Dear Ms Ruganzu,</p><p>Thank you for sharing your travel information.</p>',
+      }),
+    ).toBe('<p>Dear Ms Ruganzu,</p><p>Thank you for sharing your travel information.</p>');
+  });
 });

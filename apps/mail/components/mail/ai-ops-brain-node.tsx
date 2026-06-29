@@ -18,6 +18,8 @@ type BrainNodeData = {
   node: AiOpsBrainGraphNode;
   selectedNodeId?: string;
   onSelectNode?: (nodeId: string) => void;
+  /** YC demo: workflow preview / stored — pulse ring on taught node */
+  demoWorkflowHighlight?: boolean;
 };
 
 type LaneNodeData = {
@@ -46,7 +48,7 @@ const KIND_ICON: Record<AiOpsBrainGraphNode['kind'], typeof Mail> = {
 };
 
 export function AiOpsBrainFlowNode({ data }: NodeProps) {
-  const { node, selectedNodeId, onSelectNode } = data as BrainNodeData;
+  const { node, selectedNodeId, onSelectNode, demoWorkflowHighlight } = data as BrainNodeData;
   const Icon = KIND_ICON[node.kind];
   const selected = selectedNodeId === node.id;
   const dimmed = !node.focus && node.category !== 'core';
@@ -58,7 +60,9 @@ export function AiOpsBrainFlowNode({ data }: NodeProps) {
       className={cn(
         'group relative w-[230px] rounded-full border px-5 py-4 text-left shadow-2xl backdrop-blur-xl transition-all duration-300',
         STATUS_THEME[node.status],
-        selected && 'scale-[1.03] border-[#C8D8FF]/60 ring-1 ring-[#C8D8FF]/55',
+        demoWorkflowHighlight && 'ring-2 ring-emerald-400/85 shadow-[0_0_28px_rgba(52,211,153,0.35)] animate-pulse',
+        selected && !demoWorkflowHighlight && 'scale-[1.03] border-[#C8D8FF]/60 ring-1 ring-[#C8D8FF]/55',
+        selected && demoWorkflowHighlight && 'scale-[1.03]',
         node.focus === 'hero' && 'shadow-[0_0_28px_rgba(157,189,255,0.12)]',
         dimmed && 'opacity-60 hover:opacity-95',
       )}
