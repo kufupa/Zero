@@ -98,7 +98,7 @@ export const connectionsRouter = tRouter({
         )
         .limit(1);
       if (access.length === 0) {
-        throw new TRPCError({ code: 'NOT_FOUND', message: 'connection not found' });
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'NOT_FOUND: connection not found' });
       }
       // No server-side default is persisted for pilot; the frontend stores
       // the active transport id in client state and sends it via the
@@ -126,7 +126,7 @@ export const connectionsRouter = tRouter({
         )
         .limit(1);
       if (access.length === 0) {
-        throw new TRPCError({ code: 'NOT_FOUND', message: 'connection not found' });
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'NOT_FOUND: connection not found' });
       }
       if (access[0]!.role !== 'owner') {
         throw new TRPCError({

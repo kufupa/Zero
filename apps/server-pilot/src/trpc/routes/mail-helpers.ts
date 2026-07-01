@@ -25,7 +25,7 @@ export async function requireThreadForTransport(
     .where(and(eq(mailThread.id, threadId), eq(mailThread.transportId, transportId)))
     .limit(1);
   if (rows.length === 0) {
-    throw new TRPCError({ code: 'NOT_FOUND', message: 'thread not found' });
+    throw new TRPCError({ code: 'NOT_FOUND', message: 'NOT_FOUND: thread not found' });
   }
   return rows[0]!;
 }
@@ -45,7 +45,7 @@ export async function requireMessageForTransport(
     .where(and(eq(message.id, messageId), eq(message.transportId, transportId)))
     .limit(1);
   if (rows.length === 0) {
-    throw new TRPCError({ code: 'NOT_FOUND', message: 'message not found' });
+    throw new TRPCError({ code: 'NOT_FOUND', message: 'NOT_FOUND: message not found' });
   }
   return rows[0]!;
 }

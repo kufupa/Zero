@@ -285,7 +285,7 @@ export const mailRouter = tRouter({
         input.threadIds.length === 1 &&
         !visibleIds.includes(input.threadIds[0]!)
       ) {
-        throw new TRPCError({ code: 'NOT_FOUND', message: 'thread not found' });
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'NOT_FOUND: thread not found' });
       }
       if (visibleIds.length === 0) return { updated: 0 };
       for (const id of visibleIds) {
@@ -322,7 +322,7 @@ export const mailRouter = tRouter({
         input.threadIds.length === 1 &&
         !visibleIds.includes(input.threadIds[0]!)
       ) {
-        throw new TRPCError({ code: 'NOT_FOUND', message: 'thread not found' });
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'NOT_FOUND: thread not found' });
       }
       for (const id of visibleIds) {
         await db
@@ -517,7 +517,7 @@ export const mailRouter = tRouter({
     )
     .mutation(async ({ input, ctx }) => {
       if (input.fromEmail && input.fromEmail !== ctx.transportEmail) {
-        throw new TRPCError({ code: 'FORBIDDEN', message: 'spoofed from address' });
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'FORBIDDEN: spoofed from address' });
       }
       const db = getDb();
       const transportId = ctx.activeTransportId;
@@ -706,7 +706,7 @@ export const mailRouter = tRouter({
         )
         .limit(1);
       if (rows.length === 0) {
-        throw new TRPCError({ code: 'NOT_FOUND', message: 'attachment not found' });
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'NOT_FOUND: attachment not found' });
       }
       const att = rows[0]!;
       // Build a signed S3 GET URL (or, for the fake S3 used in tests, a

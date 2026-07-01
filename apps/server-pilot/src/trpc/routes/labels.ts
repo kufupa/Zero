@@ -92,7 +92,7 @@ export const labelsRouter = tRouter({
         )
         .limit(1);
       if (existing.length === 0) {
-        throw new TRPCError({ code: 'NOT_FOUND', message: 'label not found' });
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'NOT_FOUND: label not found' });
       }
       const patch: Record<string, unknown> = {};
       if (input.name !== undefined) patch.name = input.name;
@@ -120,7 +120,7 @@ export const labelsRouter = tRouter({
         )
         .limit(1);
       if (existing.length === 0) {
-        throw new TRPCError({ code: 'NOT_FOUND', message: 'label not found' });
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'NOT_FOUND: label not found' });
       }
       await db
         .delete(mailLabel)

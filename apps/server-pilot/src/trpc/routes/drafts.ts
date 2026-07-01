@@ -71,7 +71,7 @@ export const draftsRouter = tRouter({
         )
         .limit(1);
       if (rows.length === 0) {
-        throw new TRPCError({ code: 'NOT_FOUND', message: 'draft not found' });
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'NOT_FOUND: draft not found' });
       }
       const r = rows[0]!;
       return {
@@ -147,7 +147,7 @@ export const draftsRouter = tRouter({
         )
         .limit(1);
       if (existing.length === 0) {
-        throw new TRPCError({ code: 'NOT_FOUND', message: 'draft not found' });
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'NOT_FOUND: draft not found' });
       }
       if (input.threadId) {
         await requireThreadForTransport(db, input.threadId, transportId);
@@ -182,7 +182,7 @@ export const draftsRouter = tRouter({
         )
         .limit(1);
       if (existing.length === 0) {
-        throw new TRPCError({ code: 'NOT_FOUND', message: 'draft not found' });
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'NOT_FOUND: draft not found' });
       }
       await db
         .delete(mailDraft)
