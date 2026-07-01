@@ -90,6 +90,12 @@ function readRequestedTransportId(headers: Headers): string | undefined {
 }
 
 export const privateProcedure = publicProcedure.use(async ({ ctx, next }) => {
+  // Tests inject `sessionUser` directly (see tests/helpers/trpc-caller.ts) to
+  // bypass Better Auth; short-circuit when it's already present.
+  const injected = (ctx as Partial<TrpcPrivateContext>).sessionUser;
+  if (injected) {
+    return next({ ctx: { ...ctx, sessionUser: injected } });
+  }
   const sessionUser = await getSessionUser(ctx.auth, ctx.reqHeaders);
   if (!sessionUser) {
     throw new TRPCError({ code: 'UNAUTHORIZED', message: 'no session' });
@@ -98,6 +104,18 @@ export const privateProcedure = publicProcedure.use(async ({ ctx, next }) => {
 });
 
 export const mailboxProcedure = privateProcedure.use(async ({ ctx, next }) => {
+  // Tests inject a pre-resolved MailboxContext (activeTransportId, accessRole,
+  // transportEmail) directly; short-circuit when present.
+  const injected = ctx as Partial<MailboxContext>;
+  if (injected.activeTransportId && injected.accessRole) {
+    const mailbox: MailboxContext = {
+      userId: ctx.sessionUser.id,
+      activeTransportId: injected.activeTransportId,
+      transportEmail: injected.transportEmail ?? '',
+      accessRole: injected.accessRole,
+    };
+    return next({ ctx: { ...ctx, ...mailbox } });
+  }
   const requestedTransportId = readRequestedTransportId(ctx.reqHeaders);
   const db = getDb();
   try {

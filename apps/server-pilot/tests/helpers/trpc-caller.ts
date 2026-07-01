@@ -11,7 +11,6 @@
  */
 import type { DB } from '../../src/db/client.js';
 import { appRouter } from '../../src/trpc/router.js';
-import type { AppRouter } from '../../src/trpc/router.js';
 import {
   resolveMailboxContext,
   type MailboxContext,
@@ -23,6 +22,9 @@ export type CallerForOptions = {
   /** Override the active transport; default = user's highest-role transport. */
   requestedTransportId?: string;
 };
+
+/** The full root caller produced by `appRouter.createCaller(ctx)`. */
+type RootCaller = ReturnType<typeof appRouter.createCaller>;
 
 /**
  * Build a tRPC caller whose context mimics what `mailboxProcedure` would
@@ -36,12 +38,12 @@ export async function callerFor(
   userId: string,
   opts: CallerForOptions,
 ): Promise<{
-  mail: ReturnType<AppRouter['createCaller']>;
-  drafts: ReturnType<AppRouter['createCaller']>;
-  labels: ReturnType<AppRouter['createCaller']>;
-  settings: ReturnType<AppRouter['createCaller']>;
-  connections: ReturnType<AppRouter['createCaller']>;
-  user: ReturnType<AppRouter['createCaller']>;
+  mail: RootCaller['mail'];
+  drafts: RootCaller['drafts'];
+  labels: RootCaller['labels'];
+  settings: RootCaller['settings'];
+  connections: RootCaller['connections'];
+  user: RootCaller['user'];
   ctx: MailboxContext & { sessionUser: { id: string; email: string; name: string | null } };
 }> {
   const mailbox = await resolveMailboxContext(
@@ -66,12 +68,12 @@ export async function callerFor(
 
   const caller = appRouter.createCaller(ctx);
   return {
-    mail: caller,
-    drafts: caller,
-    labels: caller,
-    settings: caller,
-    connections: caller,
-    user: caller,
+    mail: caller.mail,
+    drafts: caller.drafts,
+    labels: caller.labels,
+    settings: caller.settings,
+    connections: caller.connections,
+    user: caller.user,
     ctx: { ...mailbox, sessionUser },
   };
 }
@@ -84,9 +86,9 @@ export async function callerForPrivate(
   userId: string,
   opts: { db: DB },
 ): Promise<{
-  settings: ReturnType<AppRouter['createCaller']>;
-  connections: ReturnType<AppRouter['createCaller']>;
-  user: ReturnType<AppRouter['createCaller']>;
+  settings: RootCaller['settings'];
+  connections: RootCaller['connections'];
+  user: RootCaller['user'];
 }> {
   const sessionUser = { id: userId, email: '', name: null };
   const ctx = {
@@ -99,8 +101,8 @@ export async function callerForPrivate(
   void dbClientModule;
   const caller = appRouter.createCaller(ctx);
   return {
-    settings: caller,
-    connections: caller,
-    user: caller,
+    settings: caller.settings,
+    connections: caller.connections,
+    user: caller.user,
   };
 }
