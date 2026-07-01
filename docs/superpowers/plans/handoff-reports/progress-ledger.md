@@ -8,3 +8,8 @@ Task 5: complete (commit b92ee32f, 25/25 tests green on EC2, seed:prod ran, psql
 Task 5: complete (commits 7156f88..b92ee32, review clean; note: resolveMailboxContext 3-arg db DI - Task 7 wraps 2-arg facade)
 Task 6: complete (commits b92ee32..bfc06a7, review clean after UUID-threading + rename fix; EC2 36/36 with env sourced)
 Task 7: complete (commits bfc06a7..6a8fbf9, review clean after facade + report fix)
+Task 8: complete (commit 8cc96b58, fake SMTP adapter + mail-send tests)
+Task 9: complete (commit fb9fe748, mailbox query cache + polling + logout IDB clear, mail build green)
+Task 10: complete (commit 1ae4d7c2, nginx/pm2/deploy-ec2.sh + deploy-config tests)
+Task 11: complete (commit 91045818, deferred real-mail readiness docs + vpn-route-check.sh)
+Task 12: complete (commit 91045818, load-50-users.ts + ingest-benchmark.ts + cloudwatch-alarms.md + overnight report)

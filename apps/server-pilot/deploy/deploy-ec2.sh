@@ -6,7 +6,10 @@ REPO_ROOT="${REPO_ROOT:-/home/ubuntu/repos/zero}"
 SERVER_PILOT="${REPO_ROOT}/apps/server-pilot"
 MAIL_APP="${REPO_ROOT}/apps/mail"
 WEB_ROOT="${WEB_ROOT:-/var/www/nava-mail}"
-ENV_FILE="${ENV_FILE:-/home/ubuntu/.env.production}"
+ENV_FILE="${ENV_FILE:-${REPO_ROOT}/apps/server-pilot/.env.production}"
+if [ ! -f "$ENV_FILE" ] && [ -f /home/ubuntu/.env.production ]; then
+  ENV_FILE=/home/ubuntu/.env.production
+fi
 
 echo "== deploy: repo ${REPO_ROOT} =="
 cd "$REPO_ROOT"
@@ -39,15 +42,19 @@ if command -v pm2 >/dev/null 2>&1; then
   pm2 save
   pm2 status
 else
-  echo "pm2 not installed; starting http in foreground for smoke only"
-  node "${SERVER_PILOT}/dist/main.js" &
-  HTTP_PID=$!
-  sleep 3
-  curl -fsS http://127.0.0.1:8788/health
-  kill "$HTTP_PID" || true
+  echo "pm2 not installed; installing globally"
+  npm install -g pm2
+  pm2 startOrReload "${SERVER_PILOT}/deploy/pm2.config.cjs" --update-env
+  pm2 save
+  pm2 status
 fi
 
 echo "== health =="
-curl -fsS http://127.0.0.1:8788/health
+sleep 2
+curl -fsS http://127.0.0.1:8788/health || {
+  echo "health check failed; pm2 logs http --lines 20"
+  pm2 logs http --lines 20 --nostream || true
+  exit 1
+}
 echo
 echo "deploy ok"
