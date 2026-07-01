@@ -12,6 +12,7 @@ import postgres from 'postgres';
 import * as schema from '../src/db/schema/index.js';
 import { parseEnv } from '../src/env.js';
 import { seedAll, PILOT_USERS } from '../src/db/seed.js';
+import { getPostgresSslOptions } from '../src/db/ssl-config.js';
 
 const PILOT_SECRET_NAME = 'nava-zero/server-pilot/pilot-users';
 const AWS_REGION = process.env.AWS_REGION ?? 'af-south-1';
@@ -48,7 +49,7 @@ async function main(): Promise<void> {
     max: 5,
     idle_timeout: 20,
     connect_timeout: 10,
-    ssl: { rejectUnauthorized: false },
+    ssl: getPostgresSslOptions(),
   });
   const db = drizzle(conn, { schema });
 

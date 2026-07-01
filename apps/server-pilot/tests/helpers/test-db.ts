@@ -15,6 +15,7 @@ import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import * as schema from '../../src/db/schema/index.js';
 import type { DB } from '../../src/db/client.js';
+import { getPostgresSslOptions } from '../../src/db/ssl-config.js';
 
 export const TEST_DB_AVAILABLE = !!process.env.DATABASE_URL;
 
@@ -26,7 +27,7 @@ async function probeDb(): Promise<boolean> {
     max: 1,
     idle_timeout: 5,
     connect_timeout: 4,
-    ssl: { rejectUnauthorized: false },
+    ssl: getPostgresSslOptions(),
   });
   try {
     await conn`select 1`;
@@ -54,7 +55,7 @@ export async function withTestDb<T>(cb: (db: DB) => Promise<T>): Promise<T> {
     max: 1,
     idle_timeout: 20,
     connect_timeout: 10,
-    ssl: { rejectUnauthorized: false },
+    ssl: getPostgresSslOptions(),
   });
   const db = drizzle(conn, { schema });
 

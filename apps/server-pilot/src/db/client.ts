@@ -2,6 +2,7 @@ import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import postgres, { type Sql } from 'postgres';
 import * as schema from './schema/index.js';
 import { parseEnv } from '../env.js';
+import { getPostgresSslOptions } from './ssl-config.js';
 
 export type DB = PostgresJsDatabase<typeof schema>;
 export type { Sql };
@@ -24,7 +25,7 @@ export function createDb(url: string): { db: DB; conn: Sql } {
     max: 10,
     idle_timeout: 20,
     connect_timeout: 10,
-    ssl: { rejectUnauthorized: false },
+    ssl: getPostgresSslOptions(),
   });
   const db = drizzle(conn, { schema });
   return { db, conn };

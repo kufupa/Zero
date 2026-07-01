@@ -24,6 +24,7 @@ dist
 # misc
 .DS_Store
 *.pem
+!apps/server-pilot/deploy/rds-ca-global.pem
 
 # debug
 npm-debug.log*
