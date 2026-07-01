@@ -12,6 +12,7 @@
  * transport as a no-op that records an outbound `message` row.
  */
 import { TRPCError } from '@trpc/server';
+import { assertSafeOutboundFields } from '../../mail/send/validate-outbound.js';
 import { z } from 'zod';
 import { and, eq, desc, isNotNull, inArray } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
@@ -516,6 +517,12 @@ export const mailRouter = tRouter({
       }),
     )
     .mutation(async ({ input, ctx }) => {
+      assertSafeOutboundFields({
+        to: input.to,
+        cc: input.cc,
+        bcc: input.bcc,
+        subject: input.subject,
+      });
       if (input.fromEmail && input.fromEmail !== ctx.transportEmail) {
         throw new TRPCError({ code: 'FORBIDDEN', message: 'FORBIDDEN: spoofed from address' });
       }

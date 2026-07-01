@@ -78,6 +78,31 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.send', () => {
     });
   }, 30000);
 
+  it('rejects CRLF injection in recipients before SMTP', async () => {
+    await withSeededTestDb(async (db) => {
+      const fake = new FakeSmtpTransport();
+      __setSmtpTransportForTests(fake);
+      try {
+        await seedCenturionThread(db);
+        const caller = await callerFor('user-centurion-worker', { db });
+        await expect(
+          caller.mail.send({
+            ...validCenturionReply,
+            to: ['a@b.com\r\nBCC: evil@x.com'],
+          }),
+        ).rejects.toThrow(/BAD_REQUEST/);
+        expect(fake.sent).toHaveLength(0);
+        const outbound = await db
+          .select()
+          .from(message)
+          .where(eq(message.direction, 'outbound'));
+        expect(outbound).toHaveLength(0);
+      } finally {
+        __setSmtpTransportForTests(null);
+      }
+    });
+  }, 30000);
+
   it('sends from selected mailbox and stores outbound row', async () => {
     await withSeededTestDb(async (db) => {
       const fake = new FakeSmtpTransport();
