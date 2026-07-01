@@ -1,0 +1,339 @@
+/**
+ * Mail router isolation tests (negative).
+ *
+ * Strategy:
+ *   - Use `withSeededTestDb` so the seed rows (transport-centurion, three
+ *     mailboxAccess rows) are visible inside the rollback transaction.
+ *   - Inside the test transaction, insert a second transport
+ *     `transport-frontdesk` + a `user-frontdesk` user + a mailboxAccess row
+ *     giving user-frontdesk access to transport-frontdesk ONLY (not centurion).
+ *   - Insert a `thread-centurion-1` thread on transport-centurion and a
+ *     `thread-frontdesk-1` thread on transport-frontdesk.
+ *   - Build callers for `user-frontdesk` (active transport = frontdesk) and
+ *     `user-manager` (active transport = centurion, owner).
+ *   - Assert user-frontdesk cannot list/get/mutate centurion threads.
+ *
+ * `callerFor` patches `getDb()` to return the transaction-scoped db so route
+ * code that calls `getDb()` sees the same transaction.
+ */
+import { describe, expect, it } from 'vitest';
+import {
+  mailboxTransport,
+  mailboxAccess,
+  mailThread,
+} from '../src/db/schema/mail.js';
+import { user as userAuthTable } from '../src/db/schema/auth.js';
+import {
+  TEST_DB_AVAILABLE,
+  probeTestDb,
+  withSeededTestDb,
+} from './helpers/test-db';
+import { callerFor } from './helpers/trpc-caller';
+
+const reachable = await probeTestDb();
+
+/**
+ * Seed the extra frontdesk transport + user + access + sample threads inside
+ * the test transaction. The global seed (transport-centurion + 3 accesses)
+ * is already present via `withSeededTestDb`.
+ */
+async function seedFrontdeskFixture(db: import('../src/db/client.js').DB) {
+  await db.insert(userAuthTable).values({
+    id: 'user-frontdesk',
+    name: 'Frontdesk',
+    email: 'frontdesk@legacyhotel.com',
+    emailVerified: true,
+  }).onConflictDoNothing({ target: userAuthTable.email });
+
+  await db.insert(mailboxTransport).values({
+    id: 'transport-frontdesk',
+    email: 'frontdesk@legacyhotel.com',
+    ownerHeaderValue: 'frontdesk@legacyhotel.com',
+    mailboxType: 'personal',
+    displayName: 'Frontdesk Transport',
+    isActive: true,
+  }).onConflictDoNothing({ target: mailboxTransport.id });
+
+  await db.insert(mailboxAccess).values({
+    id: 'access-frontdesk-frontdesk',
+    userId: 'user-frontdesk',
+    transportId: 'transport-frontdesk',
+    role: 'owner',
+  }).onConflictDoNothing({ target: mailboxAccess.id });
+
+  // Sample threads on each transport.
+  await db.insert(mailThread).values([
+    {
+      id: 'thread-centurion-1',
+      transportId: 'transport-centurion',
+      threadRootId: 'centurion-root-1',
+      subject: 'Centurion booking #4471',
+      snippet: 'Centurion secret thread',
+      isArchived: false,
+      isStarred: false,
+      isRead: false,
+      labelIds: [],
+      latestMessageAt: new Date(),
+    },
+    {
+      id: 'thread-frontdesk-1',
+      transportId: 'transport-frontdesk',
+      threadRootId: 'frontdesk-root-1',
+      subject: 'Frontdesk shift handover',
+      snippet: 'Frontdesk internal thread',
+      isArchived: false,
+      isStarred: false,
+      isRead: true,
+      labelIds: [],
+      latestMessageAt: new Date(),
+    },
+  ]).onConflictDoNothing({ target: mailThread.id });
+}
+
+describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
+  'mail router isolation (seeded, transaction-rollback)',
+  () => {
+    it(
+      'user without Centurion access cannot list Centurion threads',
+      async () => {
+        await withSeededTestDb(async (db) => {
+          await seedFrontdeskFixture(db);
+          const caller = await callerFor('user-frontdesk', { db });
+          const result = await caller.mail.listThreads({ folder: 'inbox' });
+          // user-frontdesk's active transport is transport-frontdesk; no
+          // centurion threads may appear.
+          expect(
+            result.threads.every(
+              (t) => t.transportId !== 'transport-centurion',
+            ),
+          ).toBe(true);
+          // And the frontdesk thread IS visible (sanity: caller works).
+          expect(
+            result.threads.some((t) => t.id === 'thread-frontdesk-1'),
+          ).toBe(true);
+        });
+      },
+      30000,
+    );
+
+    it(
+      'user without Centurion access cannot fetch Centurion thread by id',
+      async () => {
+        await withSeededTestDb(async (db) => {
+          await seedFrontdeskFixture(db);
+          const caller = await callerFor('user-frontdesk', { db });
+          await expect(
+            caller.mail.get({ id: 'thread-centurion-1' }),
+          ).rejects.toThrow(/NOT_FOUND/);
+        });
+      },
+      30000,
+    );
+
+    it(
+      'user without Centurion access cannot mutate Centurion thread by id',
+      async () => {
+        await withSeededTestDb(async (db) => {
+          await seedFrontdeskFixture(db);
+          const caller = await callerFor('user-frontdesk', { db });
+          await expect(
+            caller.mail.markAsRead({ threadIds: ['thread-centurion-1'] }),
+          ).rejects.toThrow(/NOT_FOUND/);
+        });
+      },
+      30000,
+    );
+
+    it(
+      'Centurion owner can list + fetch their own Centurion thread',
+      async () => {
+        // Sanity: the isolation guard does not lock out legitimate access.
+        await withSeededTestDb(async (db) => {
+          await seedFrontdeskFixture(db);
+          const caller = await callerFor('user-manager', {
+            db,
+            requestedTransportId: 'transport-centurion',
+          });
+          const result = await caller.mail.listThreads({ folder: 'inbox' });
+          expect(
+            result.threads.some((t) => t.id === 'thread-centurion-1'),
+          ).toBe(true);
+          const thread = await caller.mail.get({ id: 'thread-centurion-1' });
+          expect(thread.id).toBe('thread-centurion-1');
+          expect(thread.transportId).toBe('transport-centurion');
+        });
+      },
+      30000,
+    );
+
+    it(
+      'user without Centurion access cannot bulk-archive a Centurion thread',
+      async () => {
+        await withSeededTestDb(async (db) => {
+          await seedFrontdeskFixture(db);
+          const caller = await callerFor('user-frontdesk', { db });
+          // bulkArchive uses requireThreadForTransport which throws NOT_FOUND.
+          await expect(
+            caller.mail.bulkArchive({ threadIds: ['thread-centurion-1'] }),
+          ).rejects.toThrow(/NOT_FOUND/);
+        });
+      },
+      30000,
+    );
+
+    it(
+      'user without Centurion access cannot snooze a Centurion thread',
+      async () => {
+        await withSeededTestDb(async (db) => {
+          await seedFrontdeskFixture(db);
+          const caller = await callerFor('user-frontdesk', { db });
+          await expect(
+            caller.mail.snoozeThreads({
+              threadIds: ['thread-centurion-1'],
+              snoozedUntil: new Date(Date.now() + 86400000).toISOString(),
+            }),
+          ).rejects.toThrow(/NOT_FOUND/);
+        });
+      },
+      30000,
+    );
+
+    it(
+      'user without Centurion access cannot modify labels on a Centurion thread',
+      async () => {
+        await withSeededTestDb(async (db) => {
+          await seedFrontdeskFixture(db);
+          const caller = await callerFor('user-frontdesk', { db });
+          await expect(
+            caller.mail.modifyLabels({
+              threadIds: ['thread-centurion-1'],
+              addLabels: ['x'],
+              removeLabels: [],
+            }),
+          ).rejects.toThrow(/NOT_FOUND/);
+        });
+      },
+      30000,
+    );
+
+    it(
+      'mail.send rejects a spoofed from address',
+      async () => {
+        await withSeededTestDb(async (db) => {
+          await seedFrontdeskFixture(db);
+          const caller = await callerFor('user-frontdesk', { db });
+          // user-frontdesk's transportEmail is frontdesk@legacyhotel.com.
+          // Spoofing centurion@ must be rejected with FORBIDDEN.
+          await expect(
+            caller.mail.send({
+              to: ['guest@example.com'],
+              subject: 'hi',
+              html: '<p>hi</p>',
+              fromEmail: 'centurion@legacyhotel.com',
+            }),
+          ).rejects.toThrow(/FORBIDDEN/);
+        });
+      },
+      30000,
+    );
+
+    it(
+      'mail.send from own mailbox stores an outbound row',
+      async () => {
+        await withSeededTestDb(async (db) => {
+          await seedFrontdeskFixture(db);
+          const caller = await callerFor('user-frontdesk', { db });
+          const result = await caller.mail.send({
+            to: ['guest@example.com'],
+            subject: 'hello',
+            html: '<p>hello</p>',
+            text: 'hello',
+          });
+          expect(result.fromEmail).toBe('frontdesk@legacyhotel.com');
+          expect(result.messageId).toBeTruthy();
+          expect(result.threadId).toBeTruthy();
+        });
+      },
+      30000,
+    );
+
+    it(
+      'drafts are scoped to the caller mailbox',
+      async () => {
+        await withSeededTestDb(async (db) => {
+          await seedFrontdeskFixture(db);
+          // user-manager creates a draft on centurion.
+          const centurionCaller = await callerFor('user-manager', {
+            db,
+            requestedTransportId: 'transport-centurion',
+          });
+          const created = await centurionCaller.drafts.create({
+            to: ['guest@example.com'],
+            subject: 'centurion draft',
+            content: 'shh',
+          });
+          // user-frontdesk lists drafts — must not see the centurion draft.
+          const frontdeskCaller = await callerFor('user-frontdesk', { db });
+          const list = await frontdeskCaller.drafts.list({});
+          expect(
+            list.threads.every((t) => t.id !== created.id),
+          ).toBe(true);
+          // And frontdesk cannot fetch the centurion draft by id.
+          await expect(
+            frontdeskCaller.drafts.get({ id: created.id }),
+          ).rejects.toThrow(/NOT_FOUND/);
+        });
+      },
+      30000,
+    );
+
+    it(
+      'labels are scoped to the caller mailbox',
+      async () => {
+        await withSeededTestDb(async (db) => {
+          await seedFrontdeskFixture(db);
+          const centurionCaller = await callerFor('user-manager', {
+            db,
+            requestedTransportId: 'transport-centurion',
+          });
+          const created = await centurionCaller.labels.create({
+            name: 'centurion-only-label',
+          });
+          const frontdeskCaller = await callerFor('user-frontdesk', { db });
+          const list = await frontdeskCaller.labels.list();
+          // User labels returned to frontdesk must not include the centurion
+          // label. (System labels are shared and fine.)
+          expect(list.every((l) => l.id !== created.id)).toBe(true);
+          // And frontdesk cannot delete the centurion label.
+          await expect(
+            frontdeskCaller.labels.delete({ id: created.id }),
+          ).rejects.toThrow(/NOT_FOUND/);
+        });
+      },
+      30000,
+    );
+
+    it(
+      'connections.list returns only transports the user can access',
+      async () => {
+        await withSeededTestDb(async (db) => {
+          await seedFrontdeskFixture(db);
+          // user-frontdesk should see ONLY transport-frontdesk.
+          const { callerForPrivate } = await import('./helpers/trpc-caller');
+          const c = await callerForPrivate('user-frontdesk', { db });
+          const result = await c.connections.list();
+          expect(
+            result.connections.every((c) => c.id !== 'transport-centurion'),
+          ).toBe(true);
+          expect(
+            result.connections.some((c) => c.id === 'transport-frontdesk'),
+          ).toBe(true);
+        });
+      },
+      30000,
+    );
+  },
+);
+
+// Suppress unused-import lint (kept for ad-hoc assertions if extended).
+

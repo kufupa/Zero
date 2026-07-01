@@ -1,0 +1,23 @@
+/**
+ * tRPC root router — assembles all sub-routers into the `appRouter` exported
+ * from `./index.ts`. Frontend (`apps/mail`) imports `AppRouter` from
+ * `@zero/server/trpc` for type-safe `trpc.<sub>.<proc>` calls.
+ */
+import { router } from './trpc.js';
+import { mailRouter } from './routes/mail.js';
+import { draftsRouter } from './routes/drafts.js';
+import { labelsRouter } from './routes/labels.js';
+import { settingsRouter } from './routes/settings.js';
+import { connectionsRouter } from './routes/connections.js';
+import { userRouter } from './routes/user.js';
+
+export const appRouter = router({
+  mail: mailRouter,
+  drafts: draftsRouter,
+  labels: labelsRouter,
+  settings: settingsRouter,
+  connections: connectionsRouter,
+  user: userRouter,
+});
+
+export type AppRouter = typeof appRouter;
