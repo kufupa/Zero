@@ -2,18 +2,21 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Every dispatched subagent prompt must include: `Use /caveman ultra. Work autonomously. If blocked, do root cause analysis, research best fixes, implement best fix, verify, commit, continue.`
 
-**Goal:** Build, test, and deploy the production-shaped per-mailbox email backend on the real EC2 instance overnight, including RDS/S3/Secrets setup, Exchange POP3/SMTP integration gates, frontend compatibility, and autonomous failure recovery.
+**Goal:** Build, test, and deploy the production-shaped per-mailbox email backend on the real EC2 instance overnight, connect it to the frontend, and prove the app works with fixtures/fakes so real email ingest can be enabled later with confidence.
 
-**Architecture:** One aggregate Exchange POP3 copy mailbox (`nava@`) feeds one singleton Node worker on EC2. Exchange stamps `X-Zero-Mailbox`; worker streams raw MIME/attachments to S3 and writes mailbox-scoped rows to RDS Postgres. One React SPA is served by nginx on EC2; Hono/tRPC API enforces `mailboxAccess` on every mail route; React Query persistence stays for performance but must be scoped/cleared at auth boundaries.
+**Architecture:** One backend on EC2 exposes Hono/tRPC routes used by the existing React SPA. Mail ingest/send code is built behind interfaces and proven with `.eml` fixtures, fake POP3 sessions, and fake SMTP/test transports; real Exchange/mail-server connectivity is explicitly out of scope for this implementation pass. RDS Postgres stores mailbox-scoped rows, S3 stores raw MIME/attachments, and `mailboxAccess` gates every user-facing mail route.
 
-**Tech Stack:** Node.js, Hono, tRPC, Better Auth, Drizzle, PostgreSQL 15+ on RDS, S3, AWS Secrets Manager, AWS SSM, PM2, nginx, POP3, SMTP, streaming `MailParser`, React, TanStack Query, Vitest, Playwright, AWS CLI.
+**Tech Stack:** Node.js, Hono, tRPC, Better Auth, Drizzle, PostgreSQL 15+ on RDS, S3, AWS Secrets Manager, AWS SSM, PM2, nginx, fake POP3/SMTP test adapters, streaming `MailParser`, React, TanStack Query, Vitest, Playwright, AWS CLI.
 
 ## Global Constraints
 
 - Branch: `EC2-pilot`.
 - Primary plan file: `docs/superpowers/plans/2026-07-01-ec2-production-v4-local-first-implementation-plan.md`.
 - This V4 supersedes V3 while copying forward V3's per-mailbox isolation, aggregate POP3 ingest, `X-Zero-Mailbox` routing, and shared inbox access model.
-- Existing Cloudflare backend in `apps/server/` remains a reference until a task explicitly migrates or creates `apps/server-pilot/`.
+- Existing Cloudflare backend in `apps/server/` is reference-only on this branch. It will not be run again for this branch's target deployment.
+- Agents may modify frontend code, workspace config, package exports, and server code freely on this branch when that produces the cleanest solution.
+- Do not preserve compatibility with the old backend runtime. Preserve user-facing frontend behavior and product semantics, not old backend internals.
+- If `apps/server` and `apps/server-pilot` conflict over `@zero/server`, prioritize `apps/server-pilot` as the only runtime `@zero/server` package. It is acceptable to rename, de-scope, or remove old backend workspace participation while keeping old source files for reference.
 - Current repo schema is not either old plan's schema. First implementation task must audit current `apps/server/src/db/schema.ts` and migrations before generating production schema.
 - Current schema truth at plan time: 17 tables exist, including `user`, `session`, `account`, `connection`, `summary`, `note`, `userSettings`, `writingStyleMatrix`, OAuth tables, and `emailTemplate`; no `mailboxAccess`, `mailboxTransport`, `mailThread`, `message`, `attachment`, `mailIngestMailbox`, or `mailIngestQuarantine` exist yet.
 - Final production mail model must use `mailboxAccess` for owner/member/admin access. Do not revert to V4-draft direct-only `mailboxTransport.userId` ownership.
@@ -31,13 +34,45 @@
 - Access EC2 through AWS SSM only. No public SSH/RDP assumption.
 - RDS is not set up yet. Agents have permission to create RDS, S3, Secrets Manager values, security groups, CloudWatch alarms, and IAM attachments needed for this pilot.
 - RDS default: PostgreSQL 15+ or 16+, `db.t4g.medium` minimum, private in the EC2 VPC, SG permits `5432` only from EC2 app SG.
+- RDS sizing is easy to change later with `modify-db-instance --db-instance-class ... --apply-immediately` or during a maintenance window. Start `db.t4g.medium` unless cost pressure demands `db.t4g.small`; resize based on load, memory, CPU credits, and pool waits.
+- RDS price ballpark in `af-south-1`: `db.t4g.small` about $0.032/hr (~$23/mo), `db.t4g.medium` about $0.065/hr (~$47/mo), plus gp3 storage about $0.115/GB-month (~$11.50/mo for 100GB). Do not enable paid Multi-AZ unless later required.
 - S3 default: private bucket in `af-south-1`, SSE enabled, lifecycle configured for raw MIME/attachments.
-- VPN status: OpenVPN client package installed on EC2, no `.ovpn` profile active. Plan must verify routes after VPN starts.
-- VPN risk: if IT pushes full-tunnel/default route, EC2 may lose SSM/AWS/RDS reachability. Gate with `ip route`, SSM health, RDS `psql`, S3, POP3, SMTP checks before and after VPN.
+- VPN status: VPN is not connected for this implementation pass, so it should not affect EC2/RDS/S3/SSM work.
+- VPN route validation is deferred until IT provides and starts the real profile. Do not block backend/frontend build on VPN checks.
+- Connecting to the real mail server is out of scope for this pass. Build and test POP3/SMTP code with fixtures/fakes only.
+- Anything to do with the AI chatbot assistant is out of scope for this pass.
+- Anything to do with workflow-use Chromium/API integration is out of scope for this pass.
 - Secrets: never commit POP3/SMTP/RDS passwords. Store in AWS Secrets Manager or EC2 env files with locked permissions.
+- Database password must be stored in both places for this pilot:
+  - AWS Secrets Manager, so automation/runtime can fetch it.
+  - Untracked EC2 `.env.production`, owned/readable by `ubuntu`, so user can inspect it via SSM/RDP.
+  - Never commit `.env.production` or print it in final summaries.
 - Git versioning: commit after each independently verified task. Do not commit unrelated untracked docs/skills/temp research files.
 - Overnight autonomy: do not wait for user during implementation. If something breaks, run full root cause analysis, research with Exa/AWS docs if needed, implement best fix, verify, commit, continue.
-- Stop only for destructive action outside this plan, real credential absence, AWS account/auth denial, legal/compliance blocker, or a required human-only Exchange/VPN step that cannot be simulated.
+- Stop only for destructive action outside this plan, AWS account/auth denial, legal/compliance blocker, or a required credential for EC2/RDS/S3/frontend/backend work. Do not stop because real mail/VPN/workflow-use integration is unavailable; those are out of scope.
+
+## Current Scope
+
+In scope:
+
+- Build production-shaped backend.
+- Connect backend to the existing frontend app/UX, rewriting frontend integration code where cleaner than preserving old API shapes.
+- Rewrite frontend integration code where cleaner than adapter shims.
+- Make `apps/server-pilot` the runtime `@zero/server` package for this branch.
+- De-scope old `apps/server` from package resolution if it conflicts.
+- Run app on EC2.
+- Use RDS/S3/Secrets as needed for backend proof.
+- Prove schema, auth, mailbox isolation, fixture ingest, fake SMTP send, frontend query behavior, deployment, health, and load tests.
+- Leave real ingest/send interfaces ready for later mail-server connection.
+
+Out of scope:
+
+- Connecting to real Exchange/on-prem mail server.
+- Starting or configuring VPN.
+- Proving POP3/SMTP connectivity to the hotel network.
+- AI chatbot assistant features, prompts, or chat UX.
+- workflow-use Chromium/API integration.
+- Backward compatibility with old Cloudflare backend runtime.
 
 ---
 
@@ -46,7 +81,7 @@
 | Area | Keep From V3 | Keep From Old V4 | New V4 Decision |
 |---|---|---|---|
 | Mailbox isolation | `mailboxAccess` owner/member/admin; shared inboxes work | none | Use V3 access model. Old V4 direct `mailboxTransport.userId` is too narrow. |
-| Aggregate ingest | `nava@` POP3 + `X-Zero-Mailbox` | same | Keep. Missing marker quarantines, never guesses owner. |
+| Aggregate ingest | `nava@` POP3 + `X-Zero-Mailbox` | same | Keep backend shape, but prove with fixtures/fake POP3 now. Real mailbox connection is deferred. |
 | Schema | no `staffMember`, no `message_recipient`, no `mailPrompt`, snooze on thread | "17-table" caution | Re-audit actual schema first; target mail schema uses V3 semantics, not stale V4 code block. |
 | React Query | cache must not leak after auth boundary | persistence helps performance | Keep persistence, add/scaffold keys as `userId + activeTransportId`, keep logout/account-switch clear. |
 | Polling | real 30s query interval | config-gated measured polling | Config-gated `VITE_MAIL_POLL_MS=30000`, foreground only unless tested. |
@@ -62,21 +97,21 @@
 - `apps/mail/providers/query-provider.tsx` persists TanStack Query to IndexedDB under `zero-query-cache` and hashes keys with `connectionId`; current production root may pass `null`, so new backend must supply a mailbox-aware key or provider context.
 - `apps/mail/components/ui/nav-user.tsx` already clears `queryClient` and IDB through manual clear and account switch paths; logout currently redirects after `signOut()` and should clear cache before redirect.
 - `apps/mail/hooks/use-threads.ts` sets `refetchIntervalInBackground: true` but not `refetchInterval`; therefore no 30-second polling exists yet.
-- Old OAuth connection UI is already mostly hidden with `allowConnectionManagement = false`, but backend contract still exposes `connections.*` names that frontend expects.
+- Old OAuth connection UI is already mostly hidden with `allowConnectionManagement = false`.
+- Current frontend still imports `@zero/server/*` and calls old `connections.*` route names in places, but implementation may either provide compatibility adapters or rewrite those frontend callers to mailbox-native routes. Prefer the simpler, cleaner branch-local solution.
 
 ## Target Domain Model
 
 ```mermaid
 flowchart LR
-  exchange["Legacy Exchange / on-prem mail"] -->|"Transport Rule BCC + X-Zero-Mailbox"| nava["nava@ POP3 app copy mailbox"]
-  worker["PM2 worker singleton on EC2"] --> nava
+  fixture["Fixture .eml / fake POP3 session"] -->|"X-Zero-Mailbox"| worker["PM2 worker singleton on EC2"]
   worker --> s3["S3 raw MIME + attachments"]
   worker --> rds["RDS Postgres"]
-  users["50 VPN users"] --> nginx["nginx HTTPS/static SPA"]
+  users["50 users"] --> nginx["nginx HTTPS/static SPA"]
   nginx --> api["Hono/tRPC API on EC2"]
   api --> rds
   api --> s3
-  api -->|"SMTP Send As selected mailbox"| exchange
+  api -->|"fake SMTP/test transport now"| smtp["SMTP adapter interface"]
 ```
 
 ```mermaid
@@ -306,7 +341,7 @@ Create `docs/superpowers/plans/2026-07-01-ec2-production-v4-schema-audit.md` wit
 
 ## Decision
 
-Build `apps/server-pilot/` beside existing Cloudflare server first, export the same `@zero/server/*` package contract for `apps/mail`, and do not destructively remove old tables during pilot.
+Build `apps/server-pilot/` as the runtime backend for this branch. Keep `apps/server/` on disk only as reference unless package/workspace resolution conflicts, in which case de-scope or rename the old backend package so `apps/mail` resolves to `apps/server-pilot`. Frontend callers may be rewritten to mailbox-native routes instead of preserving old backend API shapes.
 ```
 
 - [ ] **Step 3: Commit audit**
@@ -423,11 +458,14 @@ git commit -m "chore: add ec2 bootstrap workflow"
 - Create: `apps/server-pilot/deploy/aws-resources.md`
 - Create: `apps/server-pilot/deploy/rds-smoke.sh`
 - Create: `apps/server-pilot/deploy/s3-smoke.sh`
+- Create: `apps/server-pilot/deploy/write-ec2-env.sh`
 - Create: `apps/server-pilot/src/env.ts`
 - Test: `apps/server-pilot/tests/env.test.ts`
 
 **Interfaces:**
 - Produces RDS endpoint, DB secret ARN, S3 bucket name, and app env contract.
+- Produces Secrets Manager copy of `DATABASE_URL`.
+- Produces untracked EC2 env file at `/home/ubuntu/repos/zero/apps/server-pilot/.env.production`.
 - RDS is private in same VPC; EC2 can connect.
 
 - [ ] **Step 1: Write env test**
@@ -459,7 +497,7 @@ describe('env', () => {
 
 - [ ] **Step 2: Implement env parser**
 
-`apps/server-pilot/src/env.ts` must parse:
+`apps/server-pilot/src/env.ts` must parse required backend/deploy env:
 
 ```typescript
 PORT
@@ -468,13 +506,18 @@ BETTER_AUTH_URL
 BETTER_AUTH_SECRET
 AWS_REGION
 S3_BUCKET
+POP3_POLL_INTERVAL_MS
+POP3_MAX_MESSAGES_PER_CYCLE
+```
+
+It may parse these deferred real-mail env values when present, but tests must not require them for current scope:
+
+```typescript
 POP3_HOST
 POP3_PORT
 POP3_TLS
 POP3_USER
 POP3_SECRET_ARN
-POP3_POLL_INTERVAL_MS
-POP3_MAX_MESSAGES_PER_CYCLE
 SMTP_HOST
 SMTP_PORT
 SMTP_SECURE
@@ -482,14 +525,30 @@ SMTP_USER
 SMTP_SECRET_ARN
 ```
 
-- [ ] **Step 3: Create AWS resources**
+- [ ] **Step 3: Create AWS resources and database password**
 
 Default CLI shape:
 
 ```bash
+export AWS_REGION=af-south-1
+export DB_ID=nava-zero-mail-pilot
+export DB_NAME=zero
+export DB_ADMIN_USER=zero_admin
+export DB_ADMIN_PASSWORD="$(openssl rand -base64 36 | tr -d '\n')"
+export DB_SECRET_NAME=nava-zero/server-pilot/database-url
+export RDS_SUBNET_IDS="$(
+  aws ec2 describe-subnets \
+    --region "$AWS_REGION" \
+    --filters "Name=vpc-id,Values=vpc-0f078e17a5f0f8599" \
+    --query 'Subnets | sort_by(@, &AvailabilityZone)[].SubnetId | [0:2] | join(` `, @)' \
+    --output text
+)"
+
+test "$(wc -w <<< "$RDS_SUBNET_IDS")" -ge 2
+
 export RDS_SG_ID="$(
   aws ec2 create-security-group \
-    --region af-south-1 \
+    --region "$AWS_REGION" \
     --group-name nava-zero-rds \
     --description "RDS Postgres for NAVA Zero" \
     --vpc-id vpc-0f078e17a5f0f8599 \
@@ -498,40 +557,74 @@ export RDS_SG_ID="$(
 )"
 
 aws ec2 authorize-security-group-ingress \
-  --region af-south-1 \
+  --region "$AWS_REGION" \
   --group-id "$RDS_SG_ID" \
   --protocol tcp \
   --port 5432 \
   --source-group sg-00190151691bd66fa
 
 aws rds create-db-subnet-group \
-  --region af-south-1 \
+  --region "$AWS_REGION" \
   --db-subnet-group-name nava-zero-mail \
   --db-subnet-group-description "NAVA Zero mail pilot" \
-  --subnet-ids subnet-0e6446aaaeaa8762e
+  --subnet-ids $RDS_SUBNET_IDS
 
 aws rds create-db-instance \
-  --region af-south-1 \
-  --db-instance-identifier nava-zero-mail-pilot \
+  --region "$AWS_REGION" \
+  --db-instance-identifier "$DB_ID" \
   --db-instance-class db.t4g.medium \
   --engine postgres \
   --engine-version 16 \
   --allocated-storage 100 \
   --storage-type gp3 \
   --storage-encrypted \
-  --db-name zero \
-  --master-username zero_admin \
-  --manage-master-user-password \
+  --db-name "$DB_NAME" \
+  --master-username "$DB_ADMIN_USER" \
+  --master-user-password "$DB_ADMIN_PASSWORD" \
   --vpc-security-group-ids "$RDS_SG_ID" \
   --db-subnet-group-name nava-zero-mail \
   --backup-retention-period 7 \
   --no-publicly-accessible
 ```
 
-If subnet group needs at least two AZs and only one subnet is currently known, discover VPC subnets first:
+If subnet discovery finds fewer than two subnets, create or identify a second subnet in another AZ before creating RDS:
 
 ```bash
 aws ec2 describe-subnets --region af-south-1 --filters "Name=vpc-id,Values=vpc-0f078e17a5f0f8599" --output table
+```
+
+After RDS is `available`, create the shared `DATABASE_URL` value and store it in AWS Secrets Manager:
+
+```bash
+aws rds wait db-instance-available --region "$AWS_REGION" --db-instance-identifier "$DB_ID"
+
+export DB_ENDPOINT="$(
+  aws rds describe-db-instances \
+    --region "$AWS_REGION" \
+    --db-instance-identifier "$DB_ID" \
+    --query 'DBInstances[0].Endpoint.Address' \
+    --output text
+)"
+
+export DATABASE_URL="postgres://${DB_ADMIN_USER}:${DB_ADMIN_PASSWORD}@${DB_ENDPOINT}:5432/${DB_NAME}"
+
+aws secretsmanager create-secret \
+  --region "$AWS_REGION" \
+  --name "$DB_SECRET_NAME" \
+  --description "NAVA Zero server-pilot DATABASE_URL" \
+  --secret-string "{\"DATABASE_URL\":\"${DATABASE_URL}\"}" \
+  || aws secretsmanager put-secret-value \
+    --region "$AWS_REGION" \
+    --secret-id "$DB_SECRET_NAME" \
+    --secret-string "{\"DATABASE_URL\":\"${DATABASE_URL}\"}"
+
+export DB_SECRET_ARN="$(
+  aws secretsmanager describe-secret \
+    --region "$AWS_REGION" \
+    --secret-id "$DB_SECRET_NAME" \
+    --query ARN \
+    --output text
+)"
 ```
 
 Create S3 bucket:
@@ -551,13 +644,75 @@ aws s3api put-bucket-encryption \
   --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
 ```
 
-- [ ] **Step 4: Verify from EC2**
+- [ ] **Step 4: Write readable locked EC2 env file**
+
+Create `apps/server-pilot/deploy/write-ec2-env.sh`:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "${AWS_REGION:=af-south-1}"
+: "${DB_SECRET_NAME:=nava-zero/server-pilot/database-url}"
+: "${S3_BUCKET:?S3_BUCKET required}"
+: "${BETTER_AUTH_URL:=http://127.0.0.1:8788}"
+: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET required}"
+
+DATABASE_URL="$(
+  aws secretsmanager get-secret-value \
+    --region "$AWS_REGION" \
+    --secret-id "$DB_SECRET_NAME" \
+    --query SecretString \
+    --output text \
+    | node -e 'let data=""; process.stdin.on("data", c => data += c); process.stdin.on("end", () => process.stdout.write(JSON.parse(data).DATABASE_URL));'
+)"
+
+ENV_PATH="/home/ubuntu/repos/zero/apps/server-pilot/.env.production"
+install -o ubuntu -g ubuntu -m 600 /dev/null "$ENV_PATH"
+
+cat > "$ENV_PATH" <<EOF
+NODE_ENV=production
+PORT=8788
+DATABASE_URL=${DATABASE_URL}
+BETTER_AUTH_URL=${BETTER_AUTH_URL}
+BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET}
+AWS_REGION=${AWS_REGION}
+S3_BUCKET=${S3_BUCKET}
+POP3_POLL_INTERVAL_MS=30000
+POP3_MAX_MESSAGES_PER_CYCLE=500
+EOF
+
+chown ubuntu:ubuntu "$ENV_PATH"
+chmod 600 "$ENV_PATH"
+echo "Wrote $ENV_PATH owned by ubuntu with mode 600"
+```
+
+Run it on EC2 after `S3_BUCKET` and `BETTER_AUTH_SECRET` are set:
+
+```bash
+sudo -E bash apps/server-pilot/deploy/write-ec2-env.sh
+sudo -u ubuntu bash -lc 'test -r /home/ubuntu/repos/zero/apps/server-pilot/.env.production'
+sudo -u ubuntu bash -lc 'grep -E "^(NODE_ENV|PORT|BETTER_AUTH_URL|AWS_REGION|S3_BUCKET)=" /home/ubuntu/repos/zero/apps/server-pilot/.env.production'
+```
+
+Expected:
+
+```text
+ubuntu can read .env.production
+DATABASE_URL exists in file but is not printed by smoke command
+file mode is 600
+```
+
+- [ ] **Step 5: Verify from EC2**
 
 Run through SSM:
 
 ```bash
 sudo -u ubuntu bash -lc '
 set -euo pipefail
+set -a
+source /home/ubuntu/repos/zero/apps/server-pilot/.env.production
+set +a
 psql "$DATABASE_URL" -c "select version();"
 aws s3 ls "s3://$S3_BUCKET" --region af-south-1
 '
@@ -570,14 +725,28 @@ Postgres version prints.
 S3 ls exits 0.
 ```
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Resize/downgrade note**
+
+RDS size is easy to change later:
 
 ```bash
-git add apps/server-pilot/src/env.ts apps/server-pilot/tests/env.test.ts apps/server-pilot/deploy/aws-resources.md apps/server-pilot/deploy/rds-smoke.sh apps/server-pilot/deploy/s3-smoke.sh
+aws rds modify-db-instance \
+  --region af-south-1 \
+  --db-instance-identifier nava-zero-mail-pilot \
+  --db-instance-class db.t4g.small \
+  --apply-immediately
+```
+
+Use `db.t4g.small` only if tests show memory/pool waits are fine. Use `db.t4g.large` if CPU credits, memory, or pool waits fail under load.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add apps/server-pilot/src/env.ts apps/server-pilot/tests/env.test.ts apps/server-pilot/deploy/aws-resources.md apps/server-pilot/deploy/rds-smoke.sh apps/server-pilot/deploy/s3-smoke.sh apps/server-pilot/deploy/write-ec2-env.sh
 git commit -m "feat: add aws resource env contract"
 ```
 
-## Task 3: Package Shell And Frontend Contract
+## Task 3: Package Shell And Runtime Server Switch
 
 **Files:**
 - Create: `apps/server-pilot/package.json`
@@ -592,7 +761,9 @@ git commit -m "feat: add aws resource env contract"
 - Modify: `pnpm-workspace.yaml`
 
 **Interfaces:**
-- Produces package with `@zero/server/*` export compatibility.
+- Produces `apps/server-pilot` as runtime `@zero/server` package for this branch.
+- Keeps or rewrites `@zero/server/*` exports only where frontend still needs them.
+- De-scopes old `apps/server` package resolution if workspace conflict appears.
 - Produces `GET /health -> { ok: true, service: "server-pilot" }`.
 
 - [ ] **Step 1: Write package contract test**
@@ -610,7 +781,7 @@ describe('server-pilot package contract', () => {
 });
 ```
 
-- [ ] **Step 2: Implement package shell**
+- [ ] **Step 2: Make server-pilot the runtime server package**
 
 Package scripts:
 
@@ -627,6 +798,13 @@ Package scripts:
 }
 ```
 
+Workspace rule:
+
+```text
+If two packages claim @zero/server, change workspace/package metadata so apps/mail resolves to apps/server-pilot.
+Old apps/server may remain on disk for reference, but must not be the runtime package for this branch.
+```
+
 - [ ] **Step 3: Run tests**
 
 ```bash
@@ -638,7 +816,7 @@ pnpm --filter @zero/server-pilot build
 
 ```bash
 git add pnpm-workspace.yaml apps/server-pilot/package.json apps/server-pilot/tsconfig.json apps/server-pilot/src apps/server-pilot/tests/package-contract.test.ts
-git commit -m "feat: add server-pilot package contract"
+git commit -m "feat: switch runtime server to server-pilot"
 ```
 
 ## Task 4: Production Mail Schema
@@ -901,7 +1079,7 @@ git commit -m "feat: add streaming pop3 ingest"
 
 **Interfaces:**
 - Produces `mail.listThreads`, `mail.get`, `mail.markAsRead`, `mail.toggleStar`, `mail.modifyLabels`, `mail.bulkArchive`, `mail.snoozeThreads`, `mail.send`.
-- Produces `connections.list` and `connections.getActive` compatibility backed by `mailboxAccess`.
+- Produces mailbox list/active-mailbox behavior for the frontend, either through thin `connections.*` compatibility wrappers or by rewriting frontend callers to mailbox-native route names.
 
 - [ ] **Step 1: Write negative isolation tests**
 
@@ -953,7 +1131,7 @@ git add apps/server-pilot/src/trpc apps/server-pilot/tests/mail-router-isolation
 git commit -m "feat: add mailbox-scoped mail router"
 ```
 
-## Task 8: SMTP Send As
+## Task 8: SMTP Adapter And Fake Send
 
 **Files:**
 - Create: `apps/server-pilot/src/mail/send/smtp.ts`
@@ -963,7 +1141,8 @@ git commit -m "feat: add mailbox-scoped mail router"
 **Interfaces:**
 - Produces `mail.send`.
 - Rejects arbitrary `fromEmail`.
-- Sends as selected mailbox via Exchange Send As/service account or SMTP relay.
+- Sends through a fake SMTP/test transport in this scope.
+- Keeps production SMTP adapter interface ready for later Exchange Send As/service account or SMTP relay.
 
 - [ ] **Step 1: Write send tests**
 
@@ -989,9 +1168,9 @@ describe('mail.send', () => {
 });
 ```
 
-- [ ] **Step 2: Implement sender**
+- [ ] **Step 2: Implement sender interface and fake transport**
 
-Use `nodemailer.createTransport` with SMTP secret fetched from Secrets Manager. Set:
+Default test path uses fake SMTP transport and never connects to the real mail server. Production adapter keeps this shape for later:
 
 ```typescript
 from: currentTransport.email
@@ -999,23 +1178,24 @@ inReplyTo: originalMessage.messageId
 references: [...originalMessage.references, originalMessage.messageId]
 ```
 
-- [ ] **Step 3: Verify from EC2 to Exchange/VPN**
+- [ ] **Step 3: Verify fake send on EC2**
 
-After VPN/mail network is available:
+Run:
 
 ```bash
-nc -vz "$SMTP_HOST" "$SMTP_PORT"
 pnpm --filter @zero/server-pilot test tests/mail-send.test.ts
 ```
+
+Expected: spoof rejection passes, fake send returns a message id, outbound row is stored.
 
 - [ ] **Step 4: Commit**
 
 ```bash
 git add apps/server-pilot/src/mail/send/smtp.ts apps/server-pilot/src/trpc/routes/mail.ts apps/server-pilot/tests/mail-send.test.ts
-git commit -m "feat: add exchange send-as mail route"
+git commit -m "feat: add scoped fake smtp send"
 ```
 
-## Task 9: Frontend Compatibility, Persistence, And Polling
+## Task 9: Frontend Integration, Persistence, And Polling
 
 **Files:**
 - Modify: `apps/mail/providers/query-provider.tsx`
@@ -1026,6 +1206,8 @@ git commit -m "feat: add exchange send-as mail route"
 - Test: `apps/mail/tests/logout-cache-clear.test.tsx`
 
 **Interfaces:**
+- Allows editing frontend route/hooks/components directly for mailbox-native backend integration.
+- Does not require preserving old OAuth `connections.*` APIs if rewriting callers is cleaner.
 - Keeps IndexedDB query persistence.
 - Query key includes mailbox identity, not `null`.
 - Logout/session expiry/account switch clears query client and IDB.
@@ -1084,14 +1266,30 @@ refetchIntervalInBackground: false,
 refetchOnWindowFocus: true,
 ```
 
-- [ ] **Step 4: Run tests and build**
+- [ ] **Step 4: Replace old connection assumptions**
+
+Search and update frontend code:
+
+```bash
+rg "connections\\.|connectionId|defaultConnectionId|useConnections|useActiveConnection" apps/mail
+```
+
+Implementation rule:
+
+```text
+Use mailbox-native names in new code: activeTransportId, mailboxAccess, mailboxTransport.
+Keep a thin compatibility wrapper only if it reduces frontend churn without hiding ownership rules.
+Do not preserve old OAuth multi-connection semantics.
+```
+
+- [ ] **Step 5: Run tests and build**
 
 ```bash
 pnpm --filter @zero/mail test:demo tests/query-cache-policy.test.tsx tests/thread-polling-policy.test.tsx tests/logout-cache-clear.test.tsx
 pnpm --filter @zero/mail build
 ```
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add apps/mail/providers/query-provider.tsx apps/mail/hooks/use-threads.ts apps/mail/components/ui/nav-user.tsx apps/mail/tests/query-cache-policy.test.tsx apps/mail/tests/thread-polling-policy.test.tsx apps/mail/tests/logout-cache-clear.test.tsx
@@ -1176,19 +1374,54 @@ git add apps/server-pilot/deploy/nginx.conf apps/server-pilot/deploy/pm2.config.
 git commit -m "feat: add ec2 deploy config"
 ```
 
-## Task 11: VPN, Exchange, And End-To-End Mail Gates
+## Task 11: Deferred Real-Mail Readiness Notes
 
 **Files:**
+- Create: `apps/server-pilot/deploy/deferred-real-mail-readiness.md`
 - Create: `apps/server-pilot/deploy/vpn-route-check.sh`
 - Create: `apps/server-pilot/deploy/exchange-smoke.md`
-- Test: `apps/server-pilot/tests/e2e-mail-flow.test.ts`
 
 **Interfaces:**
-- Produces before/after VPN route checks.
-- Proves EC2 can reach RDS/S3/SSM after VPN starts.
-- Proves POP3/SMTP connectivity when IT provides config/credentials.
+- Documents that VPN is not connected now and should not block current work.
+- Documents future route/mail-server checks for the later real-ingest phase.
+- Produces scripts/docs only; no real VPN/mail-server connection is required in this scope.
 
-- [ ] **Step 1: Add VPN route check**
+- [ ] **Step 1: Add deferred readiness doc**
+
+Create `apps/server-pilot/deploy/deferred-real-mail-readiness.md`:
+
+```markdown
+# Deferred Real-Mail Readiness
+
+Current scope:
+
+- Backend runs on EC2.
+- Frontend connects to backend.
+- RDS/S3-backed schema works.
+- Fixture ingest works.
+- Fake SMTP send works.
+- Isolation/load/build tests pass.
+
+Explicitly out of scope for this implementation pass:
+
+- Connecting VPN.
+- Connecting to Exchange/on-prem POP3/SMTP.
+- Sending real email.
+- Receiving/deleting real email from `nava@`.
+- AI chatbot assistant work.
+- workflow-use Chromium/API integration.
+
+Later real-ingest phase gates:
+
+- Start VPN profile provided by IT.
+- Verify SSM, RDS, S3 still work after VPN.
+- Verify POP3/SMTP reachability.
+- Send test email to Centurion.
+- Confirm copied raw mail includes `X-Zero-Mailbox: centurion@legacyhotel.com`.
+- Run worker against real `nava@` only after fixture/fake tests are green.
+```
+
+- [ ] **Step 2: Add future VPN route check script**
 
 `vpn-route-check.sh`:
 
@@ -1214,11 +1447,20 @@ echo "== s3 =="
 aws s3 ls "s3://$S3_BUCKET" --region "${AWS_REGION:-af-south-1}" >/dev/null
 
 echo "== pop3/smtp =="
-nc -vz "$POP3_HOST" "$POP3_PORT"
-nc -vz "$SMTP_HOST" "$SMTP_PORT"
+if [ -n "${POP3_HOST:-}" ] && [ -n "${POP3_PORT:-}" ]; then
+  nc -vz "$POP3_HOST" "$POP3_PORT"
+else
+  echo "POP3_HOST/POP3_PORT unset; skipped because real mail connection is deferred"
+fi
+
+if [ -n "${SMTP_HOST:-}" ] && [ -n "${SMTP_PORT:-}" ]; then
+  nc -vz "$SMTP_HOST" "$SMTP_PORT"
+else
+  echo "SMTP_HOST/SMTP_PORT unset; skipped because real mail connection is deferred"
+fi
 ```
 
-- [ ] **Step 2: Run before VPN**
+- [ ] **Step 3: Document current no-VPN expectation**
 
 Expected:
 
@@ -1226,10 +1468,10 @@ Expected:
 AWS STS OK
 RDS OK
 S3 OK
-POP3/SMTP may fail before VPN if on private corporate network
+POP3/SMTP skipped or may fail because real mail connection is deferred
 ```
 
-- [ ] **Step 3: Run after VPN**
+- [ ] **Step 4: Document future after-VPN expectation**
 
 Expected:
 
@@ -1241,16 +1483,16 @@ S3 still OK
 POP3/SMTP OK
 ```
 
-If VPN breaks AWS/SSM/RDS:
+Future fix if VPN breaks AWS/SSM/RDS:
 
 - Check `ip route` default route before/after.
 - Prefer split tunnel from IT.
 - If no split tunnel, add VPC endpoints for `ssm`, `ssmmessages`, `ec2messages`, S3 gateway endpoint, CloudWatch Logs, Secrets Manager where needed.
 - Keep RDS in local VPC path; never make RDS public to solve VPN routing.
 
-- [ ] **Step 4: Real mail smoke**
+- [ ] **Step 5: Document future real mail smoke**
 
-Send test email to Centurion. Verify:
+When real mail becomes in scope, send test email to Centurion and verify:
 
 ```text
 raw copy lands in nava@
@@ -1261,11 +1503,11 @@ frontdesk user cannot see thread
 reply sends as centurion@legacyhotel.com
 ```
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add apps/server-pilot/deploy/vpn-route-check.sh apps/server-pilot/deploy/exchange-smoke.md apps/server-pilot/tests/e2e-mail-flow.test.ts
-git commit -m "test: add vpn and exchange smoke gates"
+git add apps/server-pilot/deploy/deferred-real-mail-readiness.md apps/server-pilot/deploy/vpn-route-check.sh apps/server-pilot/deploy/exchange-smoke.md
+git commit -m "docs: add deferred real-mail readiness gates"
 ```
 
 ## Task 12: Load, Capacity, Alarms, And Overnight Final Gate
@@ -1357,10 +1599,10 @@ pm2 status
 - Server tests:
 - Frontend build:
 - RDS migration:
-- Ingest benchmark:
+- Fixture/fake ingest benchmark:
 - 50-user load:
-- VPN route:
-- Exchange POP3/SMTP:
+- Deferred VPN route check: not run in current scope
+- Deferred Exchange POP3/SMTP check: not run in current scope
 
 ## RCA Log
 
@@ -1418,14 +1660,23 @@ git commit -m "test: add ec2 capacity gates"
 - RDS backup retention enabled.
 - CloudWatch alarms documented or created.
 
-### VPN/Exchange Gates
+### Fixture/Fake Mail Gates
 
-- Before VPN: AWS STS, SSM, RDS, S3 work.
-- After VPN: AWS STS, SSM, RDS, S3 still work.
+- Fixture `.eml` with `X-Zero-Mailbox: centurion@legacyhotel.com` ingests into Centurion transport.
+- Fixture `.eml` with missing/unknown `X-Zero-Mailbox` quarantines.
+- Fake POP3 session deletes only after S3 and RDS persistence.
+- Fake SMTP send returns a message id and stores outbound row.
+- No test requires VPN, real POP3, real SMTP, or hotel mail-server credentials.
+
+### Deferred Real-Mail Gates
+
+These are not required for current plan completion:
+
+- VPN profile starts and preserves SSM/RDS/S3/AWS reachability.
 - POP3 and SMTP reachable from EC2 when VPN/IT config is present.
-- Test copy in `nava@` has `X-Zero-Mailbox: centurion@legacyhotel.com`.
-- Missing/unknown `X-Zero-Mailbox` quarantines.
-- `nava@` deletes only after S3 and RDS persistence.
+- Test copy in real `nava@` has `X-Zero-Mailbox: centurion@legacyhotel.com`.
+- Worker drains real `nava@`.
+- Reply sends through real Exchange/SMTP as `centurion@legacyhotel.com`.
 
 ### Load Gates
 
@@ -1449,3 +1700,4 @@ Use **Subagent-Driven Development** for overnight work:
 5. Commit every green task.
 6. If any task fails, run RCA/research/fix loop and continue.
 7. User is asleep; do not wait for prompts unless true human-only blocker.
+8. Do not treat VPN, real mail server, AI chatbot assistant, or workflow-use Chromium/API work as blockers. They are out of scope.
