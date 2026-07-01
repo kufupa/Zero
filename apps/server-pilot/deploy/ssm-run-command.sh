@@ -17,7 +17,7 @@ COMMAND_ID="$(
     --document-name AWS-RunShellScript \
     --timeout-seconds "${SSM_TIMEOUT_SECONDS:-900}" \
     --comment "nava zero command" \
-    --parameters "$(node -e 'console.log(JSON.stringify({commands:[`sudo -u ubuntu bash -lc ${JSON.stringify(process.argv[1])}`]}))' "$1")" \
+    --parameters "$(node -e 'const b64=Buffer.from(process.argv[1]).toString("base64"); console.log(JSON.stringify({commands:[`sudo -u ubuntu bash -lc "echo ${b64} | base64 -d | bash -s"`]}))' "$1")" \
     --query 'Command.CommandId' \
     --output text
 )"
