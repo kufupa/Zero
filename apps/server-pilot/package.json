@@ -17,8 +17,8 @@
     "start": "node dist/main.js",
     "worker": "node dist/mail/ingest/worker.js",
     "test": "vitest run",
-    "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate",
+    "db:generate": "node --import tsx ./node_modules/drizzle-kit/bin.cjs generate",
+    "db:migrate": "node --import tsx ./node_modules/drizzle-kit/bin.cjs migrate",
     "seed:prod": "tsx scripts/seed-prod.ts"
   },
   "dependencies": {
@@ -27,6 +27,7 @@
     "better-auth": "catalog:",
     "drizzle-orm": "catalog:",
     "hono": "catalog:",
+    "postgres": "3.4.5",
     "superjson": "catalog:",
     "zod": "catalog:"
   },

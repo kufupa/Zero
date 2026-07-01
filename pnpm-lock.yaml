@@ -763,6 +763,9 @@ importers:
       hono:
         specifier: 'catalog:'
         version: 4.8.3
+      postgres:
+        specifier: 3.4.5
+        version: 3.4.5
       superjson:
         specifier: 'catalog:'
         version: 2.2.2
