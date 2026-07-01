@@ -7,7 +7,14 @@
  * surface stable.
  */
 export { appRouter, type AppRouter } from './router.js';
-export { router, publicProcedure, privateProcedure, mailboxProcedure } from './trpc.js';
+export {
+  router,
+  publicProcedure,
+  privateProcedure,
+  mailboxProcedure,
+  requireMailboxAccess,
+  requireMailboxAccessFactory,
+} from './trpc.js';
 export type {
   TrpcSourceContext,
   TrpcPrivateContext,

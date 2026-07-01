@@ -152,3 +152,36 @@ export function requireMailboxAccessFactory(db: DB) {
     }
   };
 }
+
+/**
+ * Standalone 2-arg facade matching the spec's literal API surface:
+ *
+ *   await requireMailboxAccess(ctx.userId, ctx.activeTransportId);
+ *
+ * Wraps `resolveMailboxContext(userId, transportId, getDb())` and maps
+ * `MailboxForbiddenError` -> `TRPCError({ code: 'FORBIDDEN' })`. This is the
+ * call shape the brief documents; the `mailboxProcedure` middleware still
+ * does the same check upstream (so routes that go through it are already
+ * guarded), but this export exists so callers that hold a (userId,
+ * transportId) pair outside a tRPC procedure — or routes that re-verify
+ * access for a body-supplied id — can use the exact name the spec describes
+ * without having to thread a `db` handle themselves.
+ *
+ * The `requireMailboxAccessFactory(db)` variant remains for code paths that
+ * already hold a transaction-scoped db handle (e.g. attachment re-verification
+ * inside a route that opened its own tx). Both share `resolveMailboxContext`
+ * as the single source of truth for the access check.
+ */
+export async function requireMailboxAccess(
+  userId: string,
+  transportId: string,
+): Promise<MailboxContext> {
+  try {
+    return await resolveMailboxContext(userId, transportId, getDb());
+  } catch (err) {
+    if (err instanceof MailboxForbiddenError) {
+      throw new TRPCError({ code: 'FORBIDDEN', message: 'FORBIDDEN' });
+    }
+    throw err;
+  }
+}
