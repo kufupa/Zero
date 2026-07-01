@@ -23,8 +23,11 @@ Later real-ingest phase gates:
 - Start VPN profile provided by IT.
 - Verify SSM, RDS, S3 still work after VPN.
 - Verify POP3/SMTP reachability.
+- **IT transport rule (required):** BCC `nava@legacyhotel.com` and set `X-Zero-Mailbox: centurion@legacyhotel.com` on Centurion-bound copies.
+- **Strip rule (required before prod multi-user):** Exchange must remove any inbound external `X-Zero-Mailbox` before applying the internal relay stamp.
+- **`nava@` must not be internet-reachable** — only internal BCC copies land there; direct external mail to `nava@` must quarantine (negative test).
 - Send test email to Centurion.
-- Confirm copied raw mail includes `X-Zero-Mailbox: centurion@legacyhotel.com`.
+- Confirm copied raw mail includes `X-Zero-Mailbox: centurion@legacyhotel.com` as the **last** occurrence (forged earlier values stripped or overridden by relay).
 - Run worker against real `nava@` only after fixture/fake tests are green.
 
 ## Current no-VPN expectation

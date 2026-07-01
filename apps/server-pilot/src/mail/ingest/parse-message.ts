@@ -191,7 +191,7 @@ function buildParsedMessage(args: {
 }): ParsedInboundMessage {
   const { headers, rawHeaderLines, text, html, attachments } = args;
 
-  const ownerHeaderValue = firstHeader(headers, 'x-zero-mailbox');
+  const ownerHeaderValue = lastHeader(headers, 'x-zero-mailbox');
   const messageIdRaw = firstHeader(headers, 'message-id');
   const messageId = messageIdRaw ? stripAngles(messageIdRaw) : null;
   const inReplyToRaw = firstHeader(headers, 'in-reply-to');
@@ -232,6 +232,18 @@ function firstHeader(headers: Headers, name: string): string | null {
     return typeof first === 'string' ? first.trim() : null;
   }
   return typeof v === 'string' ? v.trim() : null;
+}
+
+/** Last non-empty occurrence — trusted relay stamp wins over forged earlier values. */
+function lastHeader(headers: Headers, name: string): string | null {
+  const v = headers.get(name);
+  if (!v) return null;
+  const values = Array.isArray(v) ? v : [v];
+  for (let i = values.length - 1; i >= 0; i--) {
+    const s = values[i];
+    if (typeof s === 'string' && s.trim()) return s.trim();
+  }
+  return null;
 }
 
 function normalizeReferences(v: unknown): string[] {

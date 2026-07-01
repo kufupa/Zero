@@ -139,6 +139,49 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     );
 
     it(
+      'routes double-stamped mail using relay (last) X-Zero-Mailbox',
+      async () => {
+        const storage = withFakeS3();
+        const raw = readFixture('centurion-double-stamp.eml');
+        const { result, stored } = await withSeededTestDb(async (db) => {
+          const messageId = generateMessageId();
+          const parsed = await parseRawMessage(raw, {
+            messageId,
+            storage,
+          });
+          expect(parsed.ownerHeaderValue).toBe('centurion@legacyhotel.com');
+          const r = await persistInboundMessage(
+            parsed,
+            raw,
+            {
+              ingestMailboxId: 'ingest-nava-legacy',
+              pop3Uidl: 'uidl-double-stamp',
+              messageId,
+            },
+            { db, storage },
+          );
+          let row: typeof message.$inferSelect | undefined;
+          if (r.kind === 'stored') {
+            const rows = await db
+              .select()
+              .from(message)
+              .where(eq(message.id, r.messageId));
+            row = rows[0];
+          }
+          return { result: r, stored: row };
+        });
+
+        expect(result.kind).toBe('stored');
+        if (result.kind !== 'stored') return;
+        expect(result.transportId).toBe('transport-centurion');
+        expect(stored).toBeDefined();
+        expect(stored!.transportId).toBe('transport-centurion');
+        expect(stored!.ownerHeaderValue).toBe('centurion@legacyhotel.com');
+      },
+      30000,
+    );
+
+    it(
       'quarantines unknown transport with reason unknown_transport',
       async () => {
         const storage = withFakeS3();
@@ -299,6 +342,16 @@ describe('parseRawMessage (no DB)', () => {
     expect(parsed.messageId).toBe('centurion-001@legacyhotel.com');
     expect(parsed.attachments.length).toBe(0);
     expect(parsed.textBody).toContain('Booking #4471');
+  });
+
+  it('uses last X-Zero-Mailbox when header appears twice', async () => {
+    const storage = withFakeS3();
+    const raw = readFixture('centurion-double-stamp.eml');
+    const parsed = await parseRawMessage(raw, {
+      messageId: generateMessageId(),
+      storage,
+    });
+    expect(parsed.ownerHeaderValue).toBe('centurion@legacyhotel.com');
   });
 
   it('returns null ownerHeaderValue when header missing', async () => {
