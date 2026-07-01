@@ -37,10 +37,9 @@ Latest commit at report time: Tasks 8–12 implemented locally; EC2 synced via S
 | Server unit tests (local) | mail-send + deploy-config pass; full suite needs RDS locally |
 | Frontend build | `pnpm --filter @zero/mail build` green after SSR fix |
 | Server build | `pnpm --filter @zero/server build` green |
-| EC2 bundle sync | Success @ `1ae4d7c2` |
-| EC2 mail-send tests | Pending re-run after deploy |
-| Ingest benchmark on EC2 | Script ready; not executed this pass |
-| 50-user load on EC2 | Script ready; not executed this pass |
+| EC2 bundle sync | Success @ `c3ebf9e2` |
+| EC2 server tests | **57/57 passed** |
+| EC2 deploy | **Success** — PM2 `http` + `worker` online, `/health` OK |
 | Deferred VPN route check | Not run (no VPN) |
 | Deferred Exchange smoke | Not run |
 
