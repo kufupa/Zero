@@ -63,3 +63,6 @@ apps/server/wrangler.local.jsonc
 tsx-0/
 
 tools.json
+# nava-zero server-pilot EC2 env (secrets; never commit)
+apps/server-pilot/.env.production
+apps/server-pilot/.env.*

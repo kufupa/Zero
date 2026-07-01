@@ -737,6 +737,15 @@ importers:
         specifier: 3.2.4
         version: 3.2.4(@types/debug@4.1.12)(@types/node@22.15.29)(happy-dom@12.10.3)(jiti@2.4.2)(jsdom@23.2.0)(lightningcss@1.30.1)(msw@2.10.4(@types/node@22.15.29)(typescript@5.8.3))(tsx@4.20.5)(yaml@2.8.0)
 
+  apps/server-pilot:
+    devDependencies:
+      typescript:
+        specifier: 'catalog:'
+        version: 5.8.3
+      vitest:
+        specifier: ^1.0.4
+        version: 1.6.1(@types/node@24.3.0)(@vitest/ui@1.6.1)(happy-dom@12.10.3)(jsdom@23.2.0)(lightningcss@1.30.1)
+
   packages/cli:
     devDependencies:
       '@clack/prompts':
