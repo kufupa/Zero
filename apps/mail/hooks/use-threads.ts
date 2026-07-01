@@ -17,6 +17,9 @@ import { useTheme } from 'next-themes';
 import { useQueryState } from 'nuqs';
 import { useMemo } from 'react';
 import { computeThreadListEnabled } from '@/lib/mail/thread-list-query-enabled';
+import { resolveThreadPollingMs } from '@/lib/mail/thread-polling-policy';
+
+const threadPollingMs = resolveThreadPollingMs(import.meta.env.VITE_MAIL_POLL_MS);
 
 const resolveThreadId = (threadData: IGetThreadResponse | undefined) => {
   if (!threadData) return undefined;
@@ -126,7 +129,9 @@ export const useThreads = (options?: UseThreadsOptions) => {
         enabled: !demoMode && listEnabled,
         staleTime: 60 * 1000 * 1, // 1 minute
         refetchOnMount: false,
-        refetchIntervalInBackground: true,
+        refetchInterval: threadPollingMs ?? false,
+        refetchIntervalInBackground: false,
+        refetchOnWindowFocus: true,
       },
     ),
   );

@@ -28,7 +28,13 @@ import { CircleCheck, ThreeDots } from '../icons/icons';
 import { useTRPC } from '@/providers/query-provider';
 import { useSidebar } from '@/components/ui/sidebar';
 import { SunIcon } from '../icons/animated/sun';
-import { clear as idbClear } from 'idb-keyval';
+import { clear as idbClear, del } from 'idb-keyval';
+import { runLogoutCleanup } from '@/lib/mail/query-cache-policy';
+import {
+  getMailCacheScope,
+  idbCacheKeyForScope,
+  setMailCacheScope,
+} from '@/lib/mail/mail-cache-scope';
 import { useLocation } from 'react-router';
 import { m } from '@/paraglide/messages';
 import { useTheme } from 'next-themes';
@@ -128,8 +134,12 @@ export function NavUser() {
   }, [pathname, category]);
 
   const handleClearCache = useCallback(async () => {
-    queryClient.clear();
-    await idbClear();
+    await runLogoutCleanup({
+      queryClient,
+      clearIdb: async () => {
+        await idbClear();
+      },
+    });
     toast.success('Cache cleared successfully');
   }, [queryClient]);
 
@@ -153,7 +163,16 @@ export function NavUser() {
       setLoading(true, m['common.navUser.switchingAccounts']());
       setThreadId(null);
       await setDefaultConnection({ connectionId });
-      queryClient.clear();
+      setMailCacheScope({
+        userId: session?.user?.id ?? null,
+        activeTransportId: connectionId,
+      });
+      await runLogoutCleanup({
+        queryClient,
+        clearIdb: async () => {
+          await del(idbCacheKeyForScope(getMailCacheScope()));
+        },
+      });
       await queryClient.refetchQueries({ queryKey: trpc.mail.listThreads.infiniteQueryKey() });
     } catch (error) {
       console.error('Error switching accounts:', error);
@@ -182,7 +201,15 @@ export function NavUser() {
     }
     try {
       await toast.promise(
-        signOut(),
+        signOut().then(async () => {
+          await runLogoutCleanup({
+            queryClient,
+            clearIdb: async () => {
+              await del(idbCacheKeyForScope(getMailCacheScope()));
+              await idbClear();
+            },
+          });
+        }),
         {
           loading: 'Signing out...',
           success: () => 'Signed out successfully!',

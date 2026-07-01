@@ -14,6 +14,16 @@ import { CACHE_BURST_KEY } from '@/lib/constants';
 import { signOut } from '@/lib/auth-client';
 import { get, set, del } from 'idb-keyval';
 import superjson from 'superjson';
+import { makeLiveQueryHashPrefix } from '@/lib/mail/query-cache-policy';
+import {
+  getMailCacheScope,
+  idbCacheKeyForScope,
+  setMailCacheScope,
+  type MailCacheScope,
+} from '@/lib/mail/mail-cache-scope';
+import { useSession } from '@/lib/auth-client';
+import { useActiveConnection } from '@/hooks/use-connections';
+import { useEffect } from 'react';
 
 const createBackendDisabledError = (path: string[]) => {
   const route = path.join('.');
@@ -98,7 +108,7 @@ function createIDBPersister(idbValidKey: IDBValidKey = 'zero-query-cache') {
   } satisfies Persister;
 }
 
-export const makeQueryClient = (connectionId: string | null) =>
+export const makeQueryClient = (_legacyConnectionId?: string | null) =>
   new QueryClient({
     queryCache: new QueryCache({
       onError: (err, { meta }) => {
@@ -107,7 +117,9 @@ export const makeQueryClient = (connectionId: string | null) =>
         if (meta && typeof meta.customError === 'string') console.error(meta.customError);
         else if (
           err.message === 'Required scopes missing' ||
-          err.message.includes('Invalid connection')
+          err.message.includes('Invalid connection') ||
+          err.message.includes('not permitted') ||
+          err.message.includes('FORBIDDEN')
         ) {
           signOut({
             fetchOptions: {
@@ -124,7 +136,17 @@ export const makeQueryClient = (connectionId: string | null) =>
       queries: {
         retry: false,
         refetchOnWindowFocus: false,
-        queryKeyHashFn: (queryKey) => hashKey([{ connectionId }, ...queryKey]),
+        queryKeyHashFn: (queryKey) => {
+          const scope = getMailCacheScope();
+          const prefix =
+            scope.userId && scope.activeTransportId
+              ? makeLiveQueryHashPrefix({
+                  userId: scope.userId,
+                  activeTransportId: scope.activeTransportId,
+                })
+              : { userId: scope.userId ?? 'anon', activeTransportId: scope.activeTransportId ?? 'pending' };
+          return hashKey([prefix, ...queryKey]);
+        },
         gcTime: 1000 * 60 * 60 * 24, // 24 hours,
       },
       mutations: {
@@ -141,13 +163,13 @@ let browserQueryClient = {
   activeConnectionId: string | null;
 };
 
-const getQueryClient = (connectionId: string | null) => {
+const getQueryClient = (scopeKey: string) => {
   if (typeof window === 'undefined') {
-    return makeQueryClient(connectionId);
+    return makeQueryClient();
   } else {
-    if (!browserQueryClient.queryClient || browserQueryClient.activeConnectionId !== connectionId) {
-      browserQueryClient.queryClient = makeQueryClient(connectionId);
-      browserQueryClient.activeConnectionId = connectionId;
+    if (!browserQueryClient.queryClient || browserQueryClient.activeConnectionId !== scopeKey) {
+      browserQueryClient.queryClient = makeQueryClient();
+      browserQueryClient.activeConnectionId = scopeKey;
     }
     return browserQueryClient.queryClient;
   }
@@ -185,29 +207,65 @@ export const trpcClient: AppRouter = isFrontendOnlyDemo()
           url: getUrl(),
           methodOverride: 'POST',
           maxItems: 1,
-          fetch: (url, options) =>
-            fetchWithTimeout(url, { ...options, credentials: 'include' }).then((res) => {
-              const currentPath = new URL(window.location.href).pathname;
-              const redirectPath = res.headers.get('X-Zero-Redirect');
-              if (!!redirectPath && redirectPath !== currentPath) {
-                window.location.href = redirectPath;
-                res.headers.delete('X-Zero-Redirect');
-              }
-              return res;
-            }),
+          fetch: (url, options) => {
+            const headers = new Headers(options?.headers);
+            const transportId = getMailCacheScope().activeTransportId;
+            if (transportId) {
+              headers.set('x-zero-active-transport', transportId);
+            }
+            return fetchWithTimeout(url, { ...options, headers, credentials: 'include' }).then(
+              (res) => {
+                const currentPath = new URL(window.location.href).pathname;
+                const redirectPath = res.headers.get('X-Zero-Redirect');
+                if (!!redirectPath && redirectPath !== currentPath) {
+                  window.location.href = redirectPath;
+                  res.headers.delete('X-Zero-Redirect');
+                }
+                return res;
+              },
+            );
+          },
         }),
       ],
     });
 
 type TrpcHook = ReturnType<typeof useTRPC>;
+
+/** Sync session + active mailbox into cache scope singleton (inside QueryProvider). */
+export function MailCacheScopeSync() {
+  const demoMode = isFrontendOnlyDemo();
+  const { data: session } = useSession();
+  const { data: activeConnection } = useActiveConnection();
+
+  useEffect(() => {
+    if (demoMode) {
+      setMailCacheScope({ userId: 'demo', activeTransportId: 'demo' });
+      return;
+    }
+    setMailCacheScope({
+      userId: session?.user?.id ?? null,
+      activeTransportId: activeConnection?.id ?? null,
+    });
+  }, [demoMode, session?.user?.id, activeConnection?.id]);
+
+  return null;
+}
+
 export function QueryProvider({
   children,
-  connectionId,
-}: PropsWithChildren<{ connectionId: string | null }>) {
+  mailCacheScope,
+}: PropsWithChildren<{ mailCacheScope?: MailCacheScope }>) {
   const demoQueryPolicy = resolveDemoQueryPolicy();
+  const scope = mailCacheScope ?? getMailCacheScope();
+  const scopeKey = idbCacheKeyForScope(scope);
+
+  useEffect(() => {
+    setMailCacheScope(scope);
+  }, [scope.userId, scope.activeTransportId]);
+
   const persister = useMemo(
-    () => createIDBPersister(`zero-query-cache-${connectionId ?? 'default'}`),
-    [connectionId],
+    () => createIDBPersister(scopeKey),
+    [scopeKey],
   );
   const policyAwarePersister = useMemo(
     () =>
@@ -220,7 +278,7 @@ export function QueryProvider({
           },
     [demoQueryPolicy.shouldHydratePersistedQueries, persister],
   );
-  const queryClient = useMemo(() => getQueryClient(connectionId), [connectionId]);
+  const queryClient = useMemo(() => getQueryClient(scopeKey), [scopeKey]);
 
   return (
     <PersistQueryClientProvider
@@ -237,16 +295,12 @@ export function QueryProvider({
           { queryKey: threadQueryKey },
           (data: InfiniteData<TrpcHook['mail']['listThreads']['~types']['output']>) => {
             if (!data) return data;
-            // We only keep few pages of threads in the cache before we invalidate them
-            // invalidating will attempt to refetch every page that was in cache, if someone have too many pages in cache, it will refetch every page every time
-            // We don't want that, just keep like 3 pages (20 * 3 = 60 threads) in cache
             return {
               pages: data.pages.slice(0, 3),
               pageParams: data.pageParams.slice(0, 3),
             };
           },
         );
-        // invalidate the query, it will refetch when the data is it is being accessed
         queryClient.invalidateQueries({ queryKey: threadQueryKey });
       }}
     >

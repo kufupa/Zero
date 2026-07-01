@@ -81,7 +81,7 @@ export function Layout({ children }: PropsWithChildren) {
         <Links />
       </head>
       <body className="antialiased">
-        <ServerProviders connectionId={null}>
+        <ServerProviders>
           <ClientProviders>{children}</ClientProviders>
           <AnalyticsProvider />
         </ServerProviders>
