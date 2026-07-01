@@ -56,16 +56,13 @@ export async function callerFor(
     sessionUser,
     ...mailbox,
   };
-  // Patch getDb so route code that calls `getDb()` sees the transaction-scoped
-  // handle. This is the same DI trick used by the ingest tests: they pass the
-  // tx-scoped db directly to functions; here we monkey-patch the module-level
-  // getter because the routes call `getDb()` themselves.
+  // Point the routes' `getDb()` calls at the transaction-scoped handle.
+  // ESM exports are live bindings (getter-only), so we can't reassign
+  // `getDb`; instead we set the module-internal cache via the test-only
+  // setter on the db client.
   const dbClientModule = await import('../../src/db/client.js');
-  const originalGetDb = dbClientModule.getDb;
-  (dbClientModule as { getDb: typeof originalGetDb }).getDb = (() =>
-    opts.db) as typeof originalGetDb;
-  // also patch back on next tick is unnecessary — each test rebuilds caller.
-  void originalGetDb;
+  dbClientModule.__setDbForTests({ db: opts.db, conn: null as never });
+  void dbClientModule;
 
   const caller = appRouter.createCaller(ctx);
   return {
@@ -98,7 +95,8 @@ export async function callerForPrivate(
     sessionUser,
   };
   const dbClientModule = await import('../../src/db/client.js');
-  (dbClientModule as { getDb: () => DB }).getDb = () => opts.db;
+  dbClientModule.__setDbForTests({ db: opts.db, conn: null as never });
+  void dbClientModule;
   const caller = appRouter.createCaller(ctx);
   return {
     settings: caller,

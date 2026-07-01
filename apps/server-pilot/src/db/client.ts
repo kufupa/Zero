@@ -8,6 +8,17 @@ export type { Sql };
 
 let cached: { db: DB; conn: Sql } | null = null;
 
+/**
+ * Test-only override: force `getDb()`/`getConn()` to return this handle
+ * instead of lazily creating one from `DATABASE_URL`. Pass `null` to clear.
+ *
+ * Production code never calls this; it exists so transaction-rollback tests
+ * can point the routes' `getDb()` calls at a tx-scoped drizzle handle.
+ */
+export function __setDbForTests(handle: { db: DB; conn: Sql } | null): void {
+  cached = handle;
+}
+
 export function createDb(url: string): { db: DB; conn: Sql } {
   const conn = postgres(url, {
     max: 10,
