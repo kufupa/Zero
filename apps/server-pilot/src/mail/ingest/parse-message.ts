@@ -311,12 +311,13 @@ function stripAngles(raw: string): string {
 }
 
 /**
- * Generate a deterministic message id placeholder for attachment keying.
- *
- * The actual `message.id` is set by the store layer from the DB row. For S3
- * keys we use a pre-generated UUID so the key exists before the row commits.
- * `store.ts` rewrites the message id after insert and is responsible for
- * ensuring the S3 keys still resolve (they do — keyed by pre-uuid).
+ * Generate a UUID for the inbound message. The SAME UUID must be used for:
+ *   - namespacing attachment S3 keys (`attachments/{messageId}/...`) via
+ *     `parseRawMessage`'s `opts.messageId`, AND
+ *   - the `message.id` DB row via `IngestMeta.messageId` → `store.ts`.
+ * Threading one UUID through both keeps the S3 attachment key prefix equal
+ * to the DB `message.id`. The caller (worker / parseAndPersist) is
+ * responsible for not regenerating it between parse and persist.
  */
 export function generateMessageId(): string {
   return randomUUID();

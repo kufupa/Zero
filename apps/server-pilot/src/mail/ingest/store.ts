@@ -55,6 +55,13 @@ export interface IngestMeta {
   /** POP3 UIDL on the ingest mailbox. */
   pop3Uidl: string;
   /**
+   * DB message id to use for the `message` row. MUST equal the id passed to
+   * `parseRawMessage` (which namespaces attachment S3 keys as
+   * `attachments/{messageId}/...`) so the S3 key prefix and the DB
+   * `message.id` stay aligned. One UUID threaded through both layers.
+   */
+  messageId: string;
+  /**
    * Optional pre-uploaded raw-mime S3 key. The worker pre-PUTs raw MIME to
    * S3 before persisting, so it passes the key here to avoid a second PUT.
    * When absent, `persistInboundMessage` uploads the raw bytes itself.
@@ -134,7 +141,7 @@ export async function persistInboundMessage(
 
   // Routing ------------------------------------------------------------
   if (!parsed.ownerHeaderValue) {
-    return quarantineMissingOwner({
+    return quarantineUnrouted({
       db,
       parsed,
       meta,
@@ -158,7 +165,7 @@ export async function persistInboundMessage(
     .limit(1);
 
   if (transportRows.length === 0) {
-    return quarantineMissingOwner({
+    return quarantineUnrouted({
       db,
       parsed,
       meta,
@@ -200,7 +207,10 @@ export async function persistInboundMessage(
   });
 
   // Insert message + attachments --------------------------------------
-  const messageId = generateMessageId();
+  // Reuse the SAME messageId that parseRawMessage used to namespace the
+  // attachment S3 keys (`attachments/{messageId}/...`) so the S3 key prefix
+  // and the DB `message.id` stay aligned. Do NOT regenerate here.
+  const messageId = meta.messageId;
   await db.insert(message).values({
     id: messageId,
     transportId: transport.id,
@@ -249,7 +259,7 @@ export async function persistInboundMessage(
   };
 }
 
-async function quarantineMissingOwner(args: {
+async function quarantineUnrouted(args: {
   db: DB;
   parsed: ParsedInboundMessage;
   meta: IngestMeta;
@@ -337,7 +347,7 @@ function headerSummary(parsed: ParsedInboundMessage): Record<string, unknown> {
  */
 export async function parseAndPersist(
   raw: Buffer,
-  meta: IngestMeta,
+  meta: Omit<IngestMeta, 'messageId'>,
   opts: PersistOptions,
 ): Promise<PersistResult> {
   const messageId = generateMessageId();
@@ -345,5 +355,5 @@ export async function parseAndPersist(
     messageId,
     storage: opts.storage,
   });
-  return persistInboundMessage(parsed, raw, meta, opts);
+  return persistInboundMessage(parsed, raw, { ...meta, messageId }, opts);
 }

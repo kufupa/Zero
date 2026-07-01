@@ -39,16 +39,21 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         const raw = readFixture('centurion-stamped.eml');
         // Persist + verify inside ONE seeded transaction so the verify sees
         // the rows the persist inserted (before rollback).
-        const { result, stored } = await withSeededTestDb(async (db) => {
+        const { result, stored, threadedId } = await withSeededTestDb(async (db) => {
+          const messageId = generateMessageId();
           const parsed = await parseRawMessage(raw, {
-            messageId: generateMessageId(),
+            messageId,
             storage,
           });
           expect(parsed.ownerHeaderValue).toBe('centurion@legacyhotel.com');
           const r = await persistInboundMessage(
             parsed,
             raw,
-            { ingestMailboxId: 'ingest-nava-legacy', pop3Uidl: 'uidl-1' },
+            {
+              ingestMailboxId: 'ingest-nava-legacy',
+              pop3Uidl: 'uidl-1',
+              messageId,
+            },
             { db, storage },
           );
           let row: typeof message.$inferSelect | undefined;
@@ -59,13 +64,13 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
               .where(eq(message.id, r.messageId));
             row = rows[0];
           }
-          return { result: r, stored: row };
+          return { result: r, stored: row, threadedId: messageId };
         });
 
         expect(result.kind).toBe('stored');
         if (result.kind !== 'stored') return;
         expect(result.transportId).toBe('transport-centurion');
-        expect(result.messageId).toBeTruthy();
+        expect(result.messageId).toBe(threadedId);
         expect(result.threadId).toBeTruthy();
         expect(result.attachmentCount).toBe(0);
 
@@ -98,7 +103,11 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           const r = await persistInboundMessage(
             parsed,
             raw,
-            { ingestMailboxId: 'ingest-nava-legacy', pop3Uidl: 'uidl-2' },
+            {
+              ingestMailboxId: 'ingest-nava-legacy',
+              pop3Uidl: 'uidl-2',
+              messageId: generateMessageId(),
+            },
             { db, storage },
           );
           let row: typeof mailIngestQuarantine.$inferSelect | undefined;
@@ -153,7 +162,11 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           return persistInboundMessage(
             parsed,
             mutated,
-            { ingestMailboxId: 'ingest-nava-legacy', pop3Uidl: 'uidl-3' },
+            {
+              ingestMailboxId: 'ingest-nava-legacy',
+              pop3Uidl: 'uidl-3',
+              messageId: generateMessageId(),
+            },
             { db, storage },
           );
         });
@@ -169,7 +182,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       async () => {
         const storage = withFakeS3();
         const raw = readFixture('centurion-attachment.eml');
-        const { result, attRows } = await withSeededTestDb(async (db) => {
+        const { result, attRows, threadedId } = await withSeededTestDb(async (db) => {
           const messageId = generateMessageId();
           const parsed = await parseRawMessage(raw, { messageId, storage });
           expect(parsed.attachments.length).toBe(1);
@@ -177,7 +190,11 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           const r = await persistInboundMessage(
             parsed,
             raw,
-            { ingestMailboxId: 'ingest-nava-legacy', pop3Uidl: 'uidl-4' },
+            {
+              ingestMailboxId: 'ingest-nava-legacy',
+              pop3Uidl: 'uidl-4',
+              messageId,
+            },
             { db, storage },
           );
           let rows: typeof attachment.$inferSelect[] = [];
@@ -187,16 +204,21 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
               .from(attachment)
               .where(eq(attachment.messageId, r.messageId));
           }
-          return { result: r, attRows: rows };
+          return { result: r, attRows: rows, threadedId: messageId };
         });
         expect(result.kind).toBe('stored');
         if (result.kind !== 'stored') return;
         expect(result.attachmentCount).toBe(1);
+        // The DB message.id MUST equal the threaded id (no regeneration).
+        expect(result.messageId).toBe(threadedId);
 
         // Attachment S3 key under attachments/.
         const storedAttachment = storage.listKeys('attachments/');
         expect(storedAttachment.length).toBe(1);
         expect(storedAttachment[0]!.startsWith('attachments/')).toBe(true);
+        // S3 attachment key prefix MUST equal the DB message.id
+        // (attachments/{message.id}/...). This is the contract being verified.
+        expect(storedAttachment[0]!.startsWith(`attachments/${threadedId}/`)).toBe(true);
 
         // Attachment row in DB (read in the same tx before rollback).
         expect(attRows.length).toBe(1);
@@ -223,7 +245,11 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           const f = await persistInboundMessage(
             parsed1,
             raw,
-            { ingestMailboxId: 'ingest-nava-legacy', pop3Uidl: 'uidl-dup' },
+            {
+              ingestMailboxId: 'ingest-nava-legacy',
+              pop3Uidl: 'uidl-dup',
+              messageId: generateMessageId(),
+            },
             { db, storage },
           );
           const parsed2 = await parseRawMessage(raw, {
@@ -233,7 +259,11 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           const s = await persistInboundMessage(
             parsed2,
             raw,
-            { ingestMailboxId: 'ingest-nava-legacy', pop3Uidl: 'uidl-dup' },
+            {
+              ingestMailboxId: 'ingest-nava-legacy',
+              pop3Uidl: 'uidl-dup',
+              messageId: generateMessageId(),
+            },
             { db, storage },
           );
           return { first: f, second: s };

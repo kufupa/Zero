@@ -145,16 +145,20 @@ export async function ingestOnce(
           contentType: 'message/rfc822',
         });
 
-        // Parse (attachments stream to S3 during parse).
+        // Parse (attachments stream to S3 during parse). The same `messageId`
+        // namespaces the attachment S3 keys (`attachments/{messageId}/...`).
         const parsed = await parseRawMessage(msg.raw, {
           messageId,
           storage,
         });
 
-        // PG transaction (the commit that authorizes DELE).
+        // PG transaction (the commit that authorizes DELE). Thread the SAME
+        // messageId into meta so store.ts reuses it as the DB `message.id`
+        // (S3 attachment key prefix == DB message.id).
         const result = await persistInboundMessage(parsed, msg.raw, {
           ingestMailboxId,
           pop3Uidl: uidl,
+          messageId,
           rawMimeS3Key: rawKey,
         }, { db, storage });
 
