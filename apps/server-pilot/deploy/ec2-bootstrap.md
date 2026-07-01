@@ -89,52 +89,64 @@ pnpm --version
 
 **Verified 2026-07-01:** `node v22.23.1`, `pnpm 10.15.0`.
 
-Login shells must source nvm before node/pnpm:
+### Wire nvm into non-interactive SSM shells (idempotent)
 
-```bash
-source ~/.nvm/nvm.sh
-```
-
-Add to `~/.bashrc` if missing (idempotent):
-
-```bash
-export NVM_DIR="$HOME/.nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-```
-
-## Step 3 — Clone or update repo on EC2
+SSM uses `sudo -u ubuntu bash -lc ...` (login, non-interactive). Ubuntu `.bashrc` returns early when non-interactive, so load nvm from `.profile` (and mirror in `.bashrc` for interactive sessions):
 
 ```bash
 bash apps/server-pilot/deploy/ssm-run-command.sh '
-set -euo pipefail
-source ~/.nvm/nvm.sh
-mkdir -p ~/repos
-if [ ! -d ~/repos/zero/.git ]; then
-  git clone https://github.com/kufupa/Zero ~/repos/zero
-fi
-cd ~/repos/zero
-git fetch --all --prune
-git checkout EC2-pilot
-git pull --ff-only || true
-corepack enable
-corepack prepare pnpm@10.15.0 --activate
-pnpm --version
-node --version
+grep -q nava-zero-nvm ~/.profile || {
+  echo "# nava-zero-nvm"
+  echo "export NVM_DIR=/home/ubuntu/.nvm"
+  echo "[ -s /home/ubuntu/.nvm/nvm.sh ] && . /home/ubuntu/.nvm/nvm.sh"
+} >> ~/.profile
+grep -q nava-zero-nvm ~/.bashrc || {
+  echo "# nava-zero-nvm"
+  echo "export NVM_DIR=/home/ubuntu/.nvm"
+  echo "[ -s /home/ubuntu/.nvm/nvm.sh ] && . /home/ubuntu/.nvm/nvm.sh"
+} >> ~/.bashrc
+echo wired
 '
+bash apps/server-pilot/deploy/ssm-run-command.sh 'node --version && pnpm --version'
 ```
 
-### Blockers (2026-07-01)
+Expected: `node v22.x`, `pnpm 10.15.0` without manual `source`. Run verify in a **second** SSM call (profile is read at login start).
 
-1. **Private GitHub repo:** HTTPS clone fails on EC2 without credentials:
-   `fatal: could not read Username for 'https://github.com': No such device or address`
-2. **`EC2-pilot` not on remote:** local-only branch at laptop; `git ls-remote origin EC2-pilot` empty. EC2 can only see commits after `git push -u origin EC2-pilot`.
+Explicit fallback in one-off commands:
 
-**Unblock before deploy tasks:**
+```bash
+source ~/.nvm/nvm.sh
+```
 
-- Push `EC2-pilot` to origin, **and**
-- Configure EC2 git auth (deploy key in `~/.ssh`, or read-only PAT in credential helper).
+## Step 3 — Sync repo to EC2 (git bundle, no push)
 
-Until then, bootstrap scripts and SSM wrapper are validated from laptop; repo tree on EC2 stays empty (`~/repos/` exists, no `zero/` clone).
+`EC2-pilot` is local-only; private GitHub HTTPS clone fails on EC2 without credentials. Use bundle sync instead of `git push` + clone.
+
+From laptop repo root:
+
+```bash
+bash apps/server-pilot/deploy/sync-ec2-git-bundle.sh
+```
+
+What it does:
+
+1. `git bundle create` for branch `EC2-pilot`
+2. Upload to private bucket `s3://nava-zero-bootstrap-845242190536/git-bundles/zero-EC2-pilot.bundle` (creates bucket if missing; SSE, block public access)
+3. Short-lived presigned GET URL (never logged or committed)
+4. SSM: download bundle, `git clone` to `/home/ubuntu/repos/zero`, checkout `EC2-pilot`
+5. Verify `git status --short --branch`, `git log -1`, `node --version`, `pnpm --version`
+
+Env overrides: `BOOTSTRAP_BUCKET`, `BUNDLE_KEY`, `GIT_BRANCH`, `PRESIGN_EXPIRES_SECONDS`.
+
+Re-run after local commits on `EC2-pilot` to refresh EC2 tree (still no push).
+
+### Legacy HTTPS clone (blocked)
+
+Do not use until GitHub auth on EC2 and branch on origin:
+
+```bash
+git clone https://github.com/kufupa/Zero ~/repos/zero  # fails: no credentials
+```
 
 ## Step 4 — SSM wrapper
 
@@ -144,7 +156,9 @@ From repo root on laptop:
 bash apps/server-pilot/deploy/ssm-run-command.sh 'hostname && whoami'
 ```
 
-Env overrides: `AWS_REGION`, `INSTANCE_ID`, `SSM_TIMEOUT_SECONDS`.
+Env overrides: `AWS_REGION`, `INSTANCE_ID`, `SSM_TIMEOUT_SECONDS`, `SSM_POLL_INTERVAL_SECONDS`.
+
+Polls SSM until `Success`, `Failed`, `Cancelled`, or `TimedOut` (does not return while `Pending`/`InProgress`).
 
 ## Step 5 — Interactive shell (optional)
 
