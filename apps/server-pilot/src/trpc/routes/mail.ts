@@ -27,6 +27,10 @@ import {
   requireThreadForTransport,
   requireMessageForTransport,
 } from './mail-helpers.js';
+import {
+  getSmtpTransport,
+  buildReplyHeaders,
+} from '../../mail/send/smtp.js';
 
 const FOLDER_VALUES = [
   'inbox',
@@ -493,13 +497,8 @@ export const mailRouter = tRouter({
   /**
    * Send a reply or new outbound message from the active mailbox.
    *
-   * Task 7 scope: wire the route + access guard + outbound row shape. The
-   * actual SMTP transport is a no-op (Task 8 implements SMTP/fake send).
-   * We record an outbound `message` row so the thread history reflects the
-   * sent mail; `isSent` is false until Task 8 flips it on real delivery.
-   *
-   * `fromEmail` MUST match the active transport's email — spoofed from
-   * addresses are rejected with FORBIDDEN. Task 8 will tighten this further.
+   * Uses fake SMTP transport in pilot pass; production adapter interface is
+   * ready for Exchange Send As / SMTP relay when real mail is enabled.
    */
   send: mailboxProcedure
     .input(
@@ -522,11 +521,29 @@ export const mailRouter = tRouter({
       const db = getDb();
       const transportId = ctx.activeTransportId;
       let threadId = input.threadId;
+      let inReplyTo: string | null = null;
+      let references: string[] = [];
+
       if (threadId) {
-        // verify thread belongs to caller's mailbox
         await requireThreadForTransport(db, threadId, transportId);
+        // Reply headers from latest inbound/outbound message on thread.
+        const prior = await db
+          .select({
+            messageIdHeader: message.messageIdHeader,
+            references: message.references,
+          })
+          .from(message)
+          .where(
+            and(eq(message.threadId, threadId), eq(message.transportId, transportId)),
+          )
+          .orderBy(desc(message.receivedAt))
+          .limit(1);
+        if (prior[0]) {
+          const headers = buildReplyHeaders(prior[0]!);
+          inReplyTo = headers.inReplyTo;
+          references = headers.references;
+        }
       } else {
-        // create a new thread for the outbound message
         threadId = randomUUID();
         await db.insert(mailThread).values({
           id: threadId,
@@ -541,7 +558,21 @@ export const mailRouter = tRouter({
           latestMessageAt: new Date(),
         });
       }
+
+      const smtpResult = await getSmtpTransport().send({
+        from: ctx.transportEmail,
+        to: input.to,
+        cc: input.cc,
+        bcc: input.bcc,
+        subject: input.subject,
+        html: input.html,
+        text: input.text,
+        inReplyTo,
+        references,
+      });
+
       const messageId = randomUUID();
+      const now = new Date();
       await db.insert(message).values({
         id: messageId,
         transportId,
@@ -554,21 +585,24 @@ export const mailRouter = tRouter({
         subject: input.subject || null,
         textBody: input.text || null,
         htmlBody: input.html || null,
+        messageIdHeader: smtpResult.messageId,
+        inReplyTo,
+        references,
         isRead: true,
         isStarred: false,
-        sentAt: new Date(),
-        receivedAt: new Date(),
+        sentAt: now,
+        receivedAt: now,
       });
-      // Bump thread latestMessageAt.
       await db
         .update(mailThread)
-        .set({ latestMessageAt: new Date(), updatedAt: new Date() })
+        .set({ latestMessageAt: now, updatedAt: now })
         .where(and(eq(mailThread.id, threadId), eq(mailThread.transportId, transportId)));
       return {
         messageId,
         threadId,
         fromEmail: ctx.transportEmail,
-        sent: false, // Task 8 flips this true on real delivery
+        sent: true,
+        smtpMessageId: smtpResult.messageId,
       };
     }),
 
