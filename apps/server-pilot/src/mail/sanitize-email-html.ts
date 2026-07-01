@@ -11,9 +11,9 @@ function imgScheme(src: string): string {
 
 function isAllowedImgSrc(src: string, shouldLoadImages: boolean): boolean {
   const scheme = imgScheme(src);
-  if (!scheme) return true;
   if (scheme === 'cid') return true;
   if (!shouldLoadImages) return false;
+  if (!scheme) return true;
   return scheme === 'http' || scheme === 'https' || scheme === 'data';
 }
 

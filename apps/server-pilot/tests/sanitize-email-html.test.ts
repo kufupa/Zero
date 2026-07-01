@@ -19,4 +19,22 @@ describe('sanitizeEmailHtml', () => {
     expect(hasBlockedImages).toBe(true);
     expect(html).not.toContain('https://evil.example');
   });
+
+  it('blocks protocol-relative images when shouldLoadImages is false', () => {
+    const { html, hasBlockedImages } = sanitizeEmailHtml(
+      '<img src="//evil.example/x.png">',
+      { shouldLoadImages: false },
+    );
+    expect(hasBlockedImages).toBe(true);
+    expect(html).not.toContain('evil.example');
+  });
+
+  it('blocks scheme-less images when shouldLoadImages is false', () => {
+    const { html, hasBlockedImages } = sanitizeEmailHtml(
+      '<img src="/images/tracking.png">',
+      { shouldLoadImages: false },
+    );
+    expect(hasBlockedImages).toBe(true);
+    expect(html).not.toContain('/images/tracking.png');
+  });
 });
