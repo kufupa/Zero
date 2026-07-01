@@ -1,0 +1,112 @@
+import { describe, expect, it } from 'vitest';
+import { eq } from 'drizzle-orm';
+import {
+  mailIngestMailbox,
+  mailboxAccess,
+  mailboxTransport,
+} from '../src/db/schema/mail';
+import { user as userTable, account } from '../src/db/schema/auth';
+import {
+  TEST_DB_AVAILABLE,
+  probeTestDb,
+  withSeededTestDb,
+} from './helpers/test-db';
+
+const reachable = await probeTestDb();
+
+describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
+  'seed contract (transaction-rollback)',
+  () => {
+    it(
+      'seeds nava@legacyhotel.com ingest mailbox',
+      async () => {
+        const ingest = await withSeededTestDb(async (db) => {
+          const rows = await db
+            .select()
+            .from(mailIngestMailbox)
+            .where(eq(mailIngestMailbox.email, 'nava@legacyhotel.com'));
+          return rows[0];
+        });
+        expect(ingest).toBeDefined();
+        expect(ingest!.email).toBe('nava@legacyhotel.com');
+        expect(ingest!.isActive).toBe(true);
+      },
+      30000,
+    );
+
+    it(
+      'seeds transport-centurion with personal mailboxType and centurion owner header',
+      async () => {
+        const transport = await withSeededTestDb(async (db) => {
+          const rows = await db
+            .select()
+            .from(mailboxTransport)
+            .where(eq(mailboxTransport.ownerHeaderValue, 'centurion@legacyhotel.com'));
+          return rows[0];
+        });
+        expect(transport).toBeDefined();
+        expect(transport!.id).toBe('transport-centurion');
+        expect(transport!.email).toBe('centurion@legacyhotel.com');
+        expect(transport!.mailboxType).toBe('personal');
+        expect(transport!.isActive).toBe(true);
+      },
+      30000,
+    );
+
+    it(
+      'seeds exactly 3 mailbox_access rows on transport-centurion with correct roles',
+      async () => {
+        const access = await withSeededTestDb(async (db) => {
+          return db
+            .select({
+              userId: mailboxAccess.userId,
+              role: mailboxAccess.role,
+            })
+            .from(mailboxAccess)
+            .where(eq(mailboxAccess.transportId, 'transport-centurion'));
+        });
+        expect(access).toHaveLength(3);
+        const byUser = Object.fromEntries(access.map((r) => [r.userId, r.role]));
+        expect(byUser['user-manager']).toBe('owner');
+        expect(byUser['user-centurion-worker']).toBe('member');
+        expect(byUser['user-admin']).toBe('admin');
+      },
+      30000,
+    );
+
+    it(
+      'seeds the three pilot users with emailVerified=true',
+      async () => {
+        const users = await withSeededTestDb(async (db) => {
+          return db
+            .select({ id: userTable.id, email: userTable.email, emailVerified: userTable.emailVerified })
+            .from(userTable);
+        });
+        const byId = Object.fromEntries(users.map((u) => [u.id, u]));
+        expect(byId['user-manager']?.email).toBe('manager@legacyhotel.com');
+        expect(byId['user-manager']?.emailVerified).toBe(true);
+        expect(byId['user-centurion-worker']?.email).toBe('worker@legacyhotel.com');
+        expect(byId['user-admin']?.email).toBe('admin@legacyhotel.com');
+      },
+      30000,
+    );
+
+    it(
+      'seeds credential accounts for the three pilot users with hashed passwords',
+      async () => {
+        const accounts = await withSeededTestDb(async (db) => {
+          return db
+            .select({ id: account.id, userId: account.userId, providerId: account.providerId, password: account.password })
+            .from(account)
+            .where(eq(account.providerId, 'credential'));
+        });
+        expect(accounts).toHaveLength(3);
+        for (const a of accounts) {
+          expect(a.password).toBeTruthy();
+          expect(a.password).toMatch(/^[0-9a-f]+:[0-9a-f]+$/);
+        }
+      },
+      30000,
+    );
+  },
+);
