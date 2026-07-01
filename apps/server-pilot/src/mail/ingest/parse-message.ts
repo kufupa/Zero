@@ -1,0 +1,323 @@
+/**
+ * Streaming raw-MIME parser.
+ *
+ * Uses the `MailParser` class (NOT `simpleParser`) so attachments stream to
+ * S3 via `parser.on('data', ...)` instead of being buffered in memory.
+ *
+ * `parseRawMessage(raw)` returns the headers, address fields, bodies, and a
+ * list of *attachment descriptors* (filename, mime type, size, contentId,
+ * inline flag, S3 key) — the attachment bytes have already been uploaded to
+ * S3 by the time the promise resolves.
+ *
+ * Routing marker `X-Zero-Mailbox` is extracted from the headers here so the
+ * store layer can route without re-parsing.
+ */
+import { MailParser, type Headers } from 'mailparser';
+import { Readable } from 'node:stream';
+import { randomUUID } from 'node:crypto';
+import {
+  attachmentKey,
+  getS3Storage,
+  type S3Storage,
+} from '../../storage/s3.js';
+
+export interface ParsedAttachment {
+  /** Generated S3 key under `attachments/`. */
+  s3Key: string;
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+  contentId: string | null;
+  isInline: boolean;
+}
+
+export interface ParsedInboundMessage {
+  /** `X-Zero-Mailbox` header value, lowercased; null when absent. */
+  ownerHeaderValue: string | null;
+  messageId: string | null;
+  inReplyTo: string | null;
+  references: string[];
+  fromAddress: string | null;
+  toAddresses: string[];
+  ccAddresses: string[];
+  bccAddresses: string[];
+  subject: string | null;
+  textBody: string | null;
+  htmlBody: string | null;
+  receivedAt: Date | null;
+  attachments: ParsedAttachment[];
+  /** Raw header lines kept for quarantine diagnostics. */
+  rawHeaderLines: { key: string; line: string }[];
+}
+
+export interface ParseOptions {
+  /** Generated message id used to build attachment S3 keys. */
+  messageId: string;
+  /** Optional S3 storage override (tests inject a fake). */
+  storage?: S3Storage;
+}
+
+/**
+ * Parse a raw RFC822 message and stream attachments to S3.
+ *
+ * @param raw raw MIME bytes
+ * @param opts.messageId database id of the future `message` row; used to
+ *   namespace attachment S3 keys (`attachments/{messageId}/...`)
+ * @returns a `ParsedInboundMessage` with all fields populated; attachments
+ *   are already in S3.
+ */
+export async function parseRawMessage(
+  raw: Buffer,
+  opts: ParseOptions,
+): Promise<ParsedInboundMessage> {
+  const storage = opts.storage ?? getS3Storage();
+
+  const parser = new MailParser();
+  let headers: Headers | null = null;
+  let rawHeaderLines: { key: string; line: string }[] = [];
+  let text: string | null = null;
+  let html: string | null = null;
+  const attachments: ParsedAttachment[] = [];
+  const errors: Error[] = [];
+
+  const attachmentPromises: Promise<void>[] = [];
+
+  parser.on('headers', (h) => {
+    headers = h;
+    // `parser.headerLines` is populated when the headers event fires.
+    const lines = (parser as unknown as { headerLines?: { key: string; line: string }[] }).headerLines;
+    if (lines) rawHeaderLines = lines.map((l) => ({ key: l.key, line: l.line }));
+  });
+
+  parser.on('data', (part) => {
+    if (part.type === 'text') {
+      if (typeof part.text === 'string' && part.text) text = part.text;
+      if (typeof part.html === 'string' && part.html) html = part.html;
+      return;
+    }
+    if (part.type === 'attachment') {
+      const idx = attachments.length;
+      const filename = part.filename ?? `attachment-${idx}`;
+      const s3Key = attachmentKey({
+        messageId: opts.messageId,
+        index: idx,
+        filename,
+      });
+      const isInline =
+        part.contentDisposition === 'inline' || !!part.related;
+      const attachment: ParsedAttachment = {
+        s3Key,
+        filename,
+        mimeType: part.contentType ?? 'application/octet-stream',
+        sizeBytes: 0,
+        contentId: part.cid ?? null,
+        isInline,
+      };
+      attachments.push(attachment);
+
+      // Stream `part.content` (a Readable) to S3. The mailparser contract:
+      // we must call `part.release()` after consuming the stream so the
+      // parser can continue.
+      //
+      // RCA: @aws-sdk/client-s3 PutObject with a streaming Readable Body
+      // requires a content-length and tries to compute a SHA256 checksum,
+      // which fails for mailparser's StreamHash Transform ("Unable to
+      // calculate hash for flowing readable stream") when the stream is
+      // already in flowing mode. The cleanest fix is to buffer the attachment
+      // stream to a Buffer before the PUT (attachments are bounded by the
+      // POP3 RETR payload, which is already fully loaded in memory). The
+      // streaming MailParser contract (`parser.on('data', ...)`) is
+      // preserved — only the final S3 PUT buffers.
+      const content = part.content as Readable;
+      const p = (async () => {
+        try {
+          const buf = await streamToBuffer(content);
+          const result = await storage.putObject({
+            key: s3Key,
+            body: buf,
+            contentType: attachment.mimeType,
+          });
+          attachment.sizeBytes = result.bytes;
+        } catch (err) {
+          errors.push(err instanceof Error ? err : new Error(String(err)));
+        } finally {
+          part.release?.();
+        }
+      })();
+      attachmentPromises.push(p);
+      return;
+    }
+  });
+
+  parser.on('error', (err) => {
+    errors.push(err instanceof Error ? err : new Error(String(err)));
+  });
+
+  // Feed the raw bytes through the parser.
+  const readable = Readable.from([raw]);
+  await new Promise<void>((resolve, reject) => {
+    readable.on('error', reject);
+    parser.on('end', () => resolve());
+    parser.on('error', reject);
+    readable.pipe(parser);
+  });
+
+  // Wait for every attachment upload to finish.
+  await Promise.all(attachmentPromises);
+
+  if (errors.length > 0) {
+    throw errors[0]!;
+  }
+
+  if (!headers) {
+    throw new Error('parseRawMessage: headers event never fired');
+  }
+
+  return buildParsedMessage({
+    headers,
+    rawHeaderLines,
+    text,
+    html,
+    attachments,
+  });
+}
+
+function buildParsedMessage(args: {
+  headers: Headers;
+  rawHeaderLines: { key: string; line: string }[];
+  text: string | null;
+  html: string | null;
+  attachments: ParsedAttachment[];
+}): ParsedInboundMessage {
+  const { headers, rawHeaderLines, text, html, attachments } = args;
+
+  const ownerHeaderValue = firstHeader(headers, 'x-zero-mailbox');
+  const messageIdRaw = firstHeader(headers, 'message-id');
+  const messageId = messageIdRaw ? stripAngles(messageIdRaw) : null;
+  const inReplyToRaw = firstHeader(headers, 'in-reply-to');
+  const inReplyTo = inReplyToRaw ? stripAngles(inReplyToRaw) : null;
+  const referencesRaw = headers.get('references');
+  const references = normalizeReferences(referencesRaw);
+  const fromAddress = extractAddress(headers.get('from'));
+  const toAddresses = extractAddresses(headers.get('to'));
+  const ccAddresses = extractAddresses(headers.get('cc'));
+  const bccAddresses = extractAddresses(headers.get('bcc'));
+  const subject = firstHeader(headers, 'subject');
+  const dateRaw = firstHeader(headers, 'date');
+  const receivedAt = dateRaw ? parseDate(dateRaw) : null;
+
+  return {
+    ownerHeaderValue: ownerHeaderValue ? ownerHeaderValue.toLowerCase() : null,
+    messageId,
+    inReplyTo,
+    references,
+    fromAddress,
+    toAddresses,
+    ccAddresses,
+    bccAddresses,
+    subject: subject ?? null,
+    textBody: text,
+    htmlBody: html,
+    receivedAt,
+    attachments,
+    rawHeaderLines,
+  };
+}
+
+function firstHeader(headers: Headers, name: string): string | null {
+  const v = headers.get(name);
+  if (!v) return null;
+  if (Array.isArray(v)) {
+    const first = v[0];
+    return typeof first === 'string' ? first.trim() : null;
+  }
+  return typeof v === 'string' ? v.trim() : null;
+}
+
+function normalizeReferences(v: unknown): string[] {
+  if (!v) return [];
+  if (Array.isArray(v)) {
+    return v.filter((x): x is string => typeof x === 'string');
+  }
+  if (typeof v === 'string') {
+    return v.split(/\s+/).map((s) => s.trim()).filter(Boolean);
+  }
+  return [];
+}
+
+function extractAddress(v: unknown): string | null {
+  if (!v) return null;
+  if (Array.isArray(v)) {
+    const first = v[0];
+    if (first && typeof first === 'object' && 'value' in first) {
+      const addr = first as { value?: Array<{ address?: string }> };
+      return addr.value?.[0]?.address ?? null;
+    }
+    if (first && typeof first === 'object' && 'address' in first) {
+      return (first as { address?: string }).address ?? null;
+    }
+    if (typeof first === 'string') return first.trim();
+  }
+  if (typeof v === 'string') return v.trim();
+  if (typeof v === 'object' && v && 'value' in v) {
+    const addr = v as { value?: Array<{ address?: string }> };
+    return addr.value?.[0]?.address ?? null;
+  }
+  return null;
+}
+
+function extractAddresses(v: unknown): string[] {
+  if (!v) return [];
+  const out: string[] = [];
+  const push = (item: unknown) => {
+    if (typeof item === 'string') {
+      out.push(item.trim());
+      return;
+    }
+    if (item && typeof item === 'object' && 'value' in item) {
+      const list = (item as { value?: Array<{ address?: string }> }).value;
+      if (list) {
+        for (const a of list) {
+          if (a.address) out.push(a.address);
+        }
+      }
+    }
+  };
+  if (Array.isArray(v)) {
+    for (const item of v) push(item);
+  } else {
+    push(v);
+  }
+  return out;
+}
+
+function parseDate(raw: string): Date | null {
+  const d = new Date(raw);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/** Drain a Readable into a Buffer (used for attachment S3 PUT). */
+async function streamToBuffer(stream: Readable): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream as AsyncIterable<Buffer>) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
+}
+
+/** Strip leading/trailing `<` `>` from a Message-ID / In-Reply-To value. */
+function stripAngles(raw: string): string {
+  return raw.replace(/^<+|>+$/g, '').trim();
+}
+
+/**
+ * Generate a deterministic message id placeholder for attachment keying.
+ *
+ * The actual `message.id` is set by the store layer from the DB row. For S3
+ * keys we use a pre-generated UUID so the key exists before the row commits.
+ * `store.ts` rewrites the message id after insert and is responsible for
+ * ensuring the S3 keys still resolve (they do — keyed by pre-uuid).
+ */
+export function generateMessageId(): string {
+  return randomUUID();
+}

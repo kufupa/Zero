@@ -22,16 +22,19 @@
     "seed:prod": "tsx scripts/seed-prod.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1077.0",
     "@hono/node-server": "^1.14.1",
     "@trpc/server": "catalog:",
     "better-auth": "catalog:",
     "drizzle-orm": "catalog:",
     "hono": "catalog:",
+    "mailparser": "^3.9.12",
     "postgres": "3.4.5",
     "superjson": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@types/mailparser": "^3.4.6",
     "@types/node": "catalog:",
     "@types/react": "catalog:",
     "drizzle-kit": "catalog:",
