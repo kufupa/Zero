@@ -9,7 +9,7 @@ import { useTheme } from 'next-themes';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
-import { resolveMailHtml } from '@/lib/mail/resolve-mail-html';
+import { resolveMailDisplayHtml } from '@/lib/mail/resolve-mail-display-html';
 import { demoSetSettings } from '@/lib/demo/local-actions';
 
 export async function persistTrustedSender(params: {
@@ -95,11 +95,7 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
     trpc.mail.processEmailContent.mutationOptions(),
   );
 
-  const {
-    data: processedData,
-    isError: isProcessEmailError,
-    isFetched: hasProcessedEmailResponse,
-  } = useQuery({
+  const { data: processedData } = useQuery({
     queryKey: ['email-content', id, isTrustedSender || temporaryImagesEnabled, resolvedTheme],
     queryFn: async () => {
       const result = await processEmailContent({
@@ -120,26 +116,15 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
     enabled: !frontendOnlyDemo && Boolean(html),
   });
 
-  const resolvedHtml = useMemo(() => {
-    if (processedData?.html) {
-      return processedData.html;
-    }
-
-    if (frontendOnlyDemo || isProcessEmailError || hasProcessedEmailResponse) {
-      return resolveMailHtml({
-        rawHtml: html,
+  const resolvedHtml = useMemo(
+    () =>
+      resolveMailDisplayHtml({
+        frontendOnlyDemo,
         processedHtml: processedData?.html,
-      });
-    }
-
-    return null;
-  }, [
-    frontendOnlyDemo,
-    hasProcessedEmailResponse,
-    html,
-    isProcessEmailError,
-    processedData?.html,
-  ]);
+        rawHtml: html,
+      }),
+    [frontendOnlyDemo, html, processedData?.html],
+  );
 
   useEffect(() => {
     if (processedData) {
