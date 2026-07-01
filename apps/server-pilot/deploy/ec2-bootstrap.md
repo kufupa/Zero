@@ -132,13 +132,32 @@ What it does:
 
 1. `git bundle create` for branch `EC2-pilot`
 2. Upload to private bucket `s3://nava-zero-bootstrap-845242190536/git-bundles/zero-EC2-pilot.bundle` (creates bucket if missing; SSE, block public access)
-3. Short-lived presigned GET URL (never logged or committed)
-4. SSM: download bundle, `git clone` to `/home/ubuntu/repos/zero`, checkout `EC2-pilot`
+3. SSM: EC2 fetches bundle directly from S3 using its instance profile role (`aws s3 cp s3://...`) — no presigned URLs, so nothing secret is persisted in SSM command history
+4. If `/home/ubuntu/repos/zero/.git` exists: in-place `git fetch` from bundle + `git reset --hard bundle/EC2-pilot` (preserves `node_modules` and other untracked work). Only fresh-clones when the repo is absent.
 5. Verify `git status --short --branch`, `git log -1`, `node --version`, `pnpm --version`
 
-Env overrides: `BOOTSTRAP_BUCKET`, `BUNDLE_KEY`, `GIT_BRANCH`, `PRESIGN_EXPIRES_SECONDS`.
+### Instance-profile S3 access (one-time setup)
 
-Re-run after local commits on `EC2-pilot` to refresh EC2 tree (still no push).
+The EC2 instance profile role must be allowed to read the bootstrap bundle. An inline policy `NavaZeroBootstrapBundleRead` is attached to role `nava-prod-public-ipv4-WorkerRole-bPmrMEkmdwLU` granting:
+
+- `s3:GetObject` on `arn:aws:s3:::nava-zero-bootstrap-845242190536/git-bundles/*`
+- `s3:ListBucket` on `arn:aws:s3:::nava-zero-bootstrap-845242190536` (prefix `git-bundles/*`)
+
+AWS CLI v2 is installed on the EC2 box (`/usr/local/bin/aws`) so the instance role credentials are picked up automatically — no static creds on the box.
+
+Re-attach (if role is recreated) from laptop:
+
+```bash
+aws iam put-role-policy \
+  --role-name nava-prod-public-ipv4-WorkerRole-bPmrMEkmdwLU \
+  --policy-name NavaZeroBootstrapBundleRead \
+  --policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:GetObject"],"Resource":["arn:aws:s3:::nava-zero-bootstrap-845242190536/git-bundles/*"]},{"Effect":"Allow","Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::nava-zero-bootstrap-845242190536"],"Condition":{"StringLike":{"s3:prefix":["git-bundles/*"]}}}]}' \
+  --region af-south-1
+```
+
+Env overrides: `BOOTSTRAP_BUCKET`, `BUNDLE_KEY`, `GIT_BRANCH`.
+
+Re-run after local commits on `EC2-pilot` to refresh EC2 tree (still no push). `node_modules` and other untracked files survive re-sync.
 
 ### Legacy HTTPS clone (blocked)
 

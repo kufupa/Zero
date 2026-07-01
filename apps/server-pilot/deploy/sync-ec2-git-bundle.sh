@@ -2,7 +2,8 @@
 set -euo pipefail
 
 # Sync local EC2-pilot branch to EC2 via private S3 git bundle (no git push).
-# Presigned URLs are short-lived and never logged or committed.
+# EC2 fetches the bundle directly from S3 using its instance profile role;
+# no presigned URLs are generated or persisted in SSM command history.
 
 : "${AWS_REGION:=af-south-1}"
 : "${INSTANCE_ID:=i-008f737974a9ba9b3}"
@@ -10,7 +11,6 @@ set -euo pipefail
 : "${EC2_REPO_PATH:=/home/ubuntu/repos/zero}"
 : "${BOOTSTRAP_BUCKET:=nava-zero-bootstrap-845242190536}"
 : "${BUNDLE_KEY:=git-bundles/zero-EC2-pilot.bundle}"
-: "${PRESIGN_EXPIRES_SECONDS:=300}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
@@ -50,17 +50,15 @@ fi
 echo "Uploading bundle to s3://$BOOTSTRAP_BUCKET/$BUNDLE_KEY ..."
 aws s3 cp "$BUNDLE_FILE" "s3://$BOOTSTRAP_BUCKET/$BUNDLE_KEY" --region "$AWS_REGION"
 
-PRESIGNED_URL="$(
-  aws s3 presign "s3://$BOOTSTRAP_BUCKET/$BUNDLE_KEY" \
-    --region "$AWS_REGION" \
-    --expires-in "$PRESIGN_EXPIRES_SECONDS"
-)"
+# EC2 pulls the bundle from S3 via its instance profile role (no presigned URL).
+# In-place update if repo exists (preserves node_modules + untracked work);
+# fresh clone only when repo absent.
+# Paths are inlined (no shell vars) because ssm-run-command.sh wraps the script
+# in `bash -lc "..."`, which would expand ${vars} before the inner assignment runs.
+REMOTE_BUNDLE="/tmp/zero-${GIT_BRANCH}.bundle"
+REMOTE_SCRIPT="set -euo pipefail; export AWS_DEFAULT_REGION=af-south-1; export NVM_DIR=/home/ubuntu/.nvm; [ -s /home/ubuntu/.nvm/nvm.sh ] && . /home/ubuntu/.nvm/nvm.sh; aws s3 cp s3://${BOOTSTRAP_BUCKET}/${BUNDLE_KEY} ${REMOTE_BUNDLE} --region ${AWS_REGION}; mkdir -p /home/ubuntu/repos; if [ -d ${EC2_REPO_PATH}/.git ]; then cd ${EC2_REPO_PATH}; git fetch ${REMOTE_BUNDLE} '+refs/heads/*:refs/remotes/bundle/*'; git checkout ${GIT_BRANCH}; git reset --hard bundle/${GIT_BRANCH}; else git clone ${REMOTE_BUNDLE} ${EC2_REPO_PATH}; cd ${EC2_REPO_PATH}; git checkout ${GIT_BRANCH}; fi; rm -f ${REMOTE_BUNDLE}; git status --short --branch; git log -1 --oneline; node --version; pnpm --version"
 
-BUNDLE_PATH="/tmp/zero-${GIT_BRANCH}.bundle"
-# Literal paths only: $ vars break through JSON/bash -lc layers.
-REMOTE_SCRIPT="set -euo pipefail; export NVM_DIR=/home/ubuntu/.nvm; [ -s /home/ubuntu/.nvm/nvm.sh ] && . /home/ubuntu/.nvm/nvm.sh; curl -fsSL '${PRESIGNED_URL}' -o ${BUNDLE_PATH}; mkdir -p /home/ubuntu/repos; rm -rf '${EC2_REPO_PATH}'; git clone ${BUNDLE_PATH} '${EC2_REPO_PATH}'; cd '${EC2_REPO_PATH}'; git checkout '${GIT_BRANCH}'; rm -f ${BUNDLE_PATH}; git status --short --branch; git log -1 --oneline; node --version; pnpm --version"
-
-echo "Deploying bundle to EC2 via SSM..."
+echo "Deploying bundle to EC2 via SSM (instance-profile S3 access)..."
 bash "$SCRIPT_DIR/ssm-run-command.sh" "$REMOTE_SCRIPT"
 
 echo "Bundle sync complete."
