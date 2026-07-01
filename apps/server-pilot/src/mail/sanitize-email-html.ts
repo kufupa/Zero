@@ -1,0 +1,88 @@
+import sanitizeHtml from 'sanitize-html';
+
+/** 1×1 transparent GIF — safe placeholder for blocked remote images. */
+const BLOCKED_IMAGE_PLACEHOLDER =
+  'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+
+function imgScheme(src: string): string {
+  const match = src.match(/^([a-z][a-z0-9+.-]*):/i);
+  return match ? match[1].toLowerCase() : '';
+}
+
+function isAllowedImgSrc(src: string, shouldLoadImages: boolean): boolean {
+  const scheme = imgScheme(src);
+  if (!scheme) return true;
+  if (scheme === 'cid') return true;
+  if (!shouldLoadImages) return false;
+  return scheme === 'http' || scheme === 'https' || scheme === 'data';
+}
+
+export function sanitizeEmailHtml(
+  html: string,
+  opts: { shouldLoadImages: boolean },
+): { html: string; hasBlockedImages: boolean } {
+  let hasBlockedImages = false;
+
+  const allowedImgSchemes = opts.shouldLoadImages
+    ? ['http', 'https', 'data', 'cid']
+    : ['cid'];
+
+  const sanitizeConfig: sanitizeHtml.IOptions = {
+    allowedTags: sanitizeHtml.defaults.allowedTags.concat([
+      'img',
+      'title',
+      'details',
+      'summary',
+      'style',
+    ]),
+    allowedAttributes: {
+      '*': [
+        'class',
+        'style',
+        'align',
+        'valign',
+        'width',
+        'height',
+        'cellpadding',
+        'cellspacing',
+        'border',
+        'bgcolor',
+        'colspan',
+        'rowspan',
+      ],
+      a: ['href', 'name', 'target', 'rel', 'class', 'style'],
+      img: ['src', 'alt', 'width', 'height', 'class', 'style'],
+    },
+    allowedSchemes: ['http', 'https', 'mailto', 'tel', 'cid'],
+    allowedSchemesByTag: {
+      img: allowedImgSchemes,
+    },
+    transformTags: {
+      a: (tagName, attribs) => ({
+        tagName,
+        attribs: {
+          ...attribs,
+          target: attribs.target || '_blank',
+          rel: 'noopener noreferrer',
+        },
+      }),
+      img: (tagName, attribs) => {
+        const src = attribs.src ?? '';
+        if (src && !isAllowedImgSrc(src, opts.shouldLoadImages)) {
+          hasBlockedImages = true;
+          return {
+            tagName,
+            attribs: {
+              ...attribs,
+              src: BLOCKED_IMAGE_PLACEHOLDER,
+            },
+          };
+        }
+        return { tagName, attribs };
+      },
+    },
+  };
+
+  const sanitized = sanitizeHtml(html, sanitizeConfig);
+  return { html: sanitized, hasBlockedImages };
+}

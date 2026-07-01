@@ -31,6 +31,7 @@ import {
   getSmtpTransport,
   buildReplyHeaders,
 } from '../../mail/send/smtp.js';
+import { sanitizeEmailHtml } from '../../mail/sanitize-email-html.js';
 
 const FOLDER_VALUES = [
   'inbox',
@@ -638,8 +639,7 @@ export const mailRouter = tRouter({
   }),
 
   /**
-   * Process email HTML for safe rendering (images, theme). Stub returns the
-   * input html unchanged; Task 9 / future task can wire a real sanitizer.
+   * Process email HTML for safe rendering (images, theme).
    */
   processEmailContent: mailboxProcedure
     .input(
@@ -650,7 +650,13 @@ export const mailRouter = tRouter({
       }),
     )
     .mutation(async ({ input }) => {
-      return { processedHtml: input.html, hasBlockedImages: false };
+      const result = sanitizeEmailHtml(input.html, {
+        shouldLoadImages: input.shouldLoadImages,
+      });
+      return {
+        processedHtml: result.html,
+        hasBlockedImages: result.hasBlockedImages,
+      };
     }),
 
   /**
