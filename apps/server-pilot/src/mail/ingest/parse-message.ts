@@ -20,6 +20,11 @@ import {
   getS3Storage,
   type S3Storage,
 } from '../../storage/s3.js';
+import {
+  getIngestLimits,
+  type IngestLimits,
+  assertWithinIngestLimits,
+} from './limits.js';
 
 export interface ParsedAttachment {
   /** Generated S3 key under `attachments/`. */
@@ -70,6 +75,9 @@ export async function parseRawMessage(
   raw: Buffer,
   opts: ParseOptions,
 ): Promise<ParsedInboundMessage> {
+  const limits = getIngestLimits();
+  assertWithinIngestLimits(raw.length, 'message', limits);
+
   const storage = opts.storage ?? getS3Storage();
 
   const parser = new MailParser();
@@ -131,7 +139,7 @@ export async function parseRawMessage(
       const content = part.content as Readable;
       const p = (async () => {
         try {
-          const buf = await streamToBuffer(content);
+          const buf = await streamToBuffer(content, limits);
           const result = await storage.putObject({
             key: s3Key,
             body: buf,
@@ -309,10 +317,17 @@ function parseDate(raw: string): Date | null {
 }
 
 /** Drain a Readable into a Buffer (used for attachment S3 PUT). */
-async function streamToBuffer(stream: Readable): Promise<Buffer> {
+async function streamToBuffer(
+  stream: Readable,
+  limits: IngestLimits,
+): Promise<Buffer> {
   const chunks: Buffer[] = [];
+  let total = 0;
   for await (const chunk of stream as AsyncIterable<Buffer>) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += buf.length;
+    assertWithinIngestLimits(total, 'attachment', limits);
+    chunks.push(buf);
   }
   return Buffer.concat(chunks);
 }

@@ -45,7 +45,8 @@ import {
 
 export type QuarantineReason =
   | 'missing_owner_header'
-  | 'unknown_transport';
+  | 'unknown_transport'
+  | 'message_too_large';
 
 export type PersistKind = 'stored' | 'quarantined' | 'duplicate';
 
@@ -211,43 +212,45 @@ export async function persistInboundMessage(
   // attachment S3 keys (`attachments/{messageId}/...`) so the S3 key prefix
   // and the DB `message.id` stay aligned. Do NOT regenerate here.
   const messageId = meta.messageId;
-  await db.insert(message).values({
-    id: messageId,
-    transportId: transport.id,
-    threadId,
-    ingestMailboxId: meta.ingestMailboxId,
-    direction: 'inbound',
-    pop3Uidl: meta.pop3Uidl,
-    ownerHeaderValue: parsed.ownerHeaderValue,
-    messageIdHeader: parsed.messageId,
-    inReplyTo: parsed.inReplyTo,
-    references: parsed.references,
-    fromAddress: parsed.fromAddress ?? '',
-    toAddresses: parsed.toAddresses,
-    ccAddresses: parsed.ccAddresses,
-    bccAddresses: parsed.bccAddresses,
-    subject: parsed.subject,
-    textBody: parsed.textBody,
-    htmlBody: parsed.htmlBody,
-    rawMimeS3Key,
-    receivedAt: parsed.receivedAt ?? new Date(),
-    sentAt: parsed.receivedAt ?? null,
-  });
+  await db.transaction(async (tx) => {
+    await tx.insert(message).values({
+      id: messageId,
+      transportId: transport.id,
+      threadId,
+      ingestMailboxId: meta.ingestMailboxId,
+      direction: 'inbound',
+      pop3Uidl: meta.pop3Uidl,
+      ownerHeaderValue: parsed.ownerHeaderValue,
+      messageIdHeader: parsed.messageId,
+      inReplyTo: parsed.inReplyTo,
+      references: parsed.references,
+      fromAddress: parsed.fromAddress ?? '',
+      toAddresses: parsed.toAddresses,
+      ccAddresses: parsed.ccAddresses,
+      bccAddresses: parsed.bccAddresses,
+      subject: parsed.subject,
+      textBody: parsed.textBody,
+      htmlBody: parsed.htmlBody,
+      rawMimeS3Key,
+      receivedAt: parsed.receivedAt ?? new Date(),
+      sentAt: parsed.receivedAt ?? null,
+    });
 
-  if (parsed.attachments.length > 0) {
-    await db.insert(attachment).values(
-      parsed.attachments.map((a) => ({
-        id: randomUUID(),
-        messageId,
-        filename: a.filename,
-        mimeType: a.mimeType,
-        sizeBytes: a.sizeBytes,
-        s3Key: a.s3Key,
-        contentId: a.contentId,
-        isInline: a.isInline,
-      })),
-    );
-  }
+    if (parsed.attachments.length > 0) {
+      await tx.insert(attachment).values(
+        parsed.attachments.map((a) => ({
+          id: randomUUID(),
+          messageId,
+          filename: a.filename,
+          mimeType: a.mimeType,
+          sizeBytes: a.sizeBytes,
+          s3Key: a.s3Key,
+          contentId: a.contentId,
+          isInline: a.isInline,
+        })),
+      );
+    }
+  });
 
   return {
     kind: 'stored',
@@ -256,6 +259,35 @@ export async function persistInboundMessage(
     threadId,
     rawMimeS3Key,
     attachmentCount: parsed.attachments.length,
+  };
+}
+
+/**
+ * Quarantine a message that exceeded ingest size limits. Called by the worker
+ * when `parseRawMessage` throws `IngestTooLargeError` after raw MIME is
+ * already in S3.
+ */
+export async function quarantineOversizedMessage(
+  meta: Pick<IngestMeta, 'ingestMailboxId' | 'pop3Uidl'>,
+  rawMimeS3Key: string,
+  opts: Pick<PersistOptions, 'db'>,
+  parsedHeaders?: Record<string, unknown>,
+): Promise<PersistQuarantinedResult> {
+  const quarantineId = randomUUID();
+  await opts.db.insert(mailIngestQuarantine).values({
+    id: quarantineId,
+    ingestMailboxId: meta.ingestMailboxId,
+    pop3Uidl: meta.pop3Uidl,
+    rawMimeS3Key,
+    reason: 'message_too_large',
+    ownerHeaderValue: null,
+    parsedHeaders: parsedHeaders ?? null,
+  });
+  return {
+    kind: 'quarantined',
+    quarantineId,
+    reason: 'message_too_large',
+    rawMimeS3Key,
   };
 }
 

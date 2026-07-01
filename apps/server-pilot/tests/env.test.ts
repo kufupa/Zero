@@ -57,6 +57,25 @@ describe('env', () => {
     expect(env.SMTP_SECURE).toBe(true);
   });
 
+  it('parses optional ingest size limit env', () => {
+    const env = parseEnv({
+      NODE_ENV: 'production',
+      PORT: '8788',
+      DATABASE_URL: 'postgres://zero:secret@host:5432/zero',
+      BETTER_AUTH_URL: 'https://nava.legacy.local',
+      BETTER_AUTH_SECRET: 'x'.repeat(32),
+      AWS_REGION: 'af-south-1',
+      S3_BUCKET: 'nava-mail-artifacts-test',
+      POP3_POLL_INTERVAL_MS: '30000',
+      POP3_MAX_MESSAGES_PER_CYCLE: '500',
+      INGEST_MAX_MESSAGE_BYTES: '26214400',
+      INGEST_MAX_ATTACHMENT_BYTES: '15728640',
+    });
+
+    expect(env.INGEST_MAX_MESSAGE_BYTES).toBe(26214400);
+    expect(env.INGEST_MAX_ATTACHMENT_BYTES).toBe(15728640);
+  });
+
   it('rejects non-integer numeric env', () => {
     expect(() =>
       parseEnv({

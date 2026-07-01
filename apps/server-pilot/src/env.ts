@@ -28,6 +28,8 @@ export interface MailEnv {
   SMTP_SECURE?: boolean;
   SMTP_USER?: string;
   SMTP_SECRET_ARN?: string;
+  INGEST_MAX_MESSAGE_BYTES?: number;
+  INGEST_MAX_ATTACHMENT_BYTES?: number;
 }
 
 export type EnvInput = Record<string, string | undefined>;
@@ -100,6 +102,18 @@ export function parseEnv(input: EnvInput): MailEnv {
   if (input.SMTP_SECURE) env.SMTP_SECURE = toBool('SMTP_SECURE', input.SMTP_SECURE);
   if (input.SMTP_USER) env.SMTP_USER = input.SMTP_USER;
   if (input.SMTP_SECRET_ARN) env.SMTP_SECRET_ARN = input.SMTP_SECRET_ARN;
+  if (input.INGEST_MAX_MESSAGE_BYTES) {
+    env.INGEST_MAX_MESSAGE_BYTES = toInt(
+      'INGEST_MAX_MESSAGE_BYTES',
+      input.INGEST_MAX_MESSAGE_BYTES,
+    );
+  }
+  if (input.INGEST_MAX_ATTACHMENT_BYTES) {
+    env.INGEST_MAX_ATTACHMENT_BYTES = toInt(
+      'INGEST_MAX_ATTACHMENT_BYTES',
+      input.INGEST_MAX_ATTACHMENT_BYTES,
+    );
+  }
 
   return env;
 }

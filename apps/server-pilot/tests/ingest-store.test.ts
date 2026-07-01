@@ -6,7 +6,11 @@ import {
   attachment,
 } from '../src/db/schema/mail';
 import { parseRawMessage, generateMessageId } from '../src/mail/ingest/parse-message';
-import { persistInboundMessage } from '../src/mail/ingest/store';
+import { IngestTooLargeError } from '../src/mail/ingest/limits';
+import {
+  persistInboundMessage,
+  quarantineOversizedMessage,
+} from '../src/mail/ingest/store';
 import { FakeS3Storage, resetS3Storage, setS3Storage } from '../src/storage/s3';
 import {
   TEST_DB_AVAILABLE,
@@ -322,6 +326,59 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       },
       30000,
     );
+
+    it(
+      'quarantines oversized attachment without leaving a partial message row',
+      async () => {
+        const prevAttach = process.env.INGEST_MAX_ATTACHMENT_BYTES;
+        process.env.INGEST_MAX_ATTACHMENT_BYTES = '50';
+        try {
+          const storage = withFakeS3();
+          const raw = readFixture('centurion-attachment.eml');
+          const { result, msgRows, qRow } = await withSeededTestDb(async (db) => {
+            const messageId = generateMessageId();
+            await expect(
+              parseRawMessage(raw, { messageId, storage }),
+            ).rejects.toBeInstanceOf(IngestTooLargeError);
+
+            const rawMimeS3Key =
+              'raw-mime/ingest-nava-legacy/test/oversized.eml';
+            const r = await quarantineOversizedMessage(
+              {
+                ingestMailboxId: 'ingest-nava-legacy',
+                pop3Uidl: 'uidl-oversized',
+              },
+              rawMimeS3Key,
+              { db },
+            );
+            const msgs = await db
+              .select()
+              .from(message)
+              .where(eq(message.pop3Uidl, 'uidl-oversized'));
+            const qs = await db
+              .select()
+              .from(mailIngestQuarantine)
+              .where(eq(mailIngestQuarantine.id, r.quarantineId));
+            return { result: r, msgRows: msgs, qRow: qs[0] };
+          });
+
+          expect(result.kind).toBe('quarantined');
+          if (result.kind !== 'quarantined') return;
+          expect(result.reason).toBe('message_too_large');
+          expect(msgRows.length).toBe(0);
+          expect(qRow).toBeDefined();
+          expect(qRow!.reason).toBe('message_too_large');
+          expect(qRow!.pop3Uidl).toBe('uidl-oversized');
+        } finally {
+          if (prevAttach === undefined) {
+            delete process.env.INGEST_MAX_ATTACHMENT_BYTES;
+          } else {
+            process.env.INGEST_MAX_ATTACHMENT_BYTES = prevAttach;
+          }
+        }
+      },
+      30000,
+    );
   },
 );
 
@@ -382,5 +439,27 @@ describe('parseRawMessage (no DB)', () => {
     // Decoded PDF starts with `%PDF`.
     expect(stored.slice(0, 4).toString('latin1')).toBe('%PDF');
     expect(att.sizeBytes).toBe(stored.byteLength);
+  });
+
+  it('rejects oversized attachments via streamToBuffer limit', async () => {
+    const prevAttach = process.env.INGEST_MAX_ATTACHMENT_BYTES;
+    process.env.INGEST_MAX_ATTACHMENT_BYTES = '50';
+    try {
+      const storage = withFakeS3();
+      const raw = readFixture('centurion-attachment.eml');
+      await expect(
+        parseRawMessage(raw, {
+          messageId: generateMessageId(),
+          storage,
+        }),
+      ).rejects.toBeInstanceOf(IngestTooLargeError);
+      expect(storage.listKeys('attachments/').length).toBe(0);
+    } finally {
+      if (prevAttach === undefined) {
+        delete process.env.INGEST_MAX_ATTACHMENT_BYTES;
+      } else {
+        process.env.INGEST_MAX_ATTACHMENT_BYTES = prevAttach;
+      }
+    }
   });
 });

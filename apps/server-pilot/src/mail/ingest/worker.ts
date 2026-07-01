@@ -40,7 +40,12 @@ import {
   type FakePop3Message,
 } from './pop3-client.js';
 import { parseRawMessage, generateMessageId } from './parse-message.js';
-import { persistInboundMessage, type PersistResult } from './store.js';
+import { IngestTooLargeError } from './limits.js';
+import {
+  persistInboundMessage,
+  quarantineOversizedMessage,
+  type PersistResult,
+} from './store.js';
 import { rawMimeKey, getS3Storage } from '../../storage/s3.js';
 
 export interface IngestOnceOptions {
@@ -126,6 +131,7 @@ export async function ingestOnce(
     const db = opts.db ?? getDb();
 
     for (const uidl of uidls.slice(0, maxMessages)) {
+      let rawKey: string | undefined;
       try {
         // RETR
         const msg = await pop3.retr(uidl);
@@ -134,7 +140,7 @@ export async function ingestOnce(
         const messageId = generateMessageId();
 
         // Pre-upload raw MIME to S3 BEFORE parsing/attachments.
-        const rawKey = rawMimeKey({
+        rawKey = rawMimeKey({
           ingestMailboxId,
           pop3Uidl: uidl,
           receivedAt: new Date(),
@@ -168,6 +174,18 @@ export async function ingestOnce(
         items.push({ uidl, result, status: 'ok' });
         processed += 1;
       } catch (err) {
+        if (err instanceof IngestTooLargeError && rawKey) {
+          const result = await quarantineOversizedMessage(
+            { ingestMailboxId, pop3Uidl: uidl },
+            rawKey,
+            { db },
+          );
+          await pop3.dele(uidl);
+          deled += 1;
+          items.push({ uidl, result, status: 'ok' });
+          processed += 1;
+          continue;
+        }
         const error = err instanceof Error ? err.message : String(err);
         items.push({ uidl, status: 'error', error });
         processed += 1;
