@@ -25,7 +25,7 @@ The goal: keep two different coding agents productive on the same branch without
 | Commits this session | 18 (see §4) |
 | Merge base | `d6a0fd05` (pre-session tip) |
 | Repo | `C:/Users/gamin/Desktop/projs/emails hotels uis/zero` |
-| Remote | `https://github.com/kufupa/Zero` — **DO NOT PUSH** (plan constraint; see §7) |
+| Remote | `https://github.com/kufupa/Zero` — **push OK and encouraged** after each verified task (see §6–7) |
 | EC2 repo path | `/home/ubuntu/repos/zero` on `EC2-pilot` (synced via git bundle, see §6) |
 
 ---
@@ -109,9 +109,9 @@ Model selection (from SDD skill): mechanical 1-2 file tasks → fast/cheap; inte
 
 ---
 
-## 6. EC2 sync workflow (NON-PUSH — critical)
+## 6. EC2 sync workflow (push + optional bundle)
 
-The repo is **private on GitHub** and the branch is **local-only** (not pushed, per plan). Cursor built a git-bundle-over-S3 sync so EC2 sees the latest commits without pushing:
+The repo is on **private GitHub**. **Push `EC2-pilot` after each verified commit** so Cloud Agents and other machines can clone latest state. Cursor also built a git-bundle-over-S3 sync as a **backup** when push is slow or EC2 needs in-place reset without a full fetch:
 
 ```bash
 cd /path/to/zero
@@ -121,7 +121,7 @@ bash apps/server-pilot/deploy/sync-ec2-git-bundle.sh
 
 What it does: `git bundle create` → upload to private S3 `nava-zero-bootstrap-845242190536/git-bundles/zero-EC2-pilot.bundle` → SSM tells EC2 to `aws s3 cp` (instance-profile S3 access, no presigned URL), then in-place `git fetch <bundle> +refs/heads/*:refs/remotes/bundle/*` + `git reset --hard bundle/EC2-pilot` (preserves untracked `node_modules`).
 
-**Claude Code must run this after every commit** so EC2 has the code for remote test/deploy verification. It takes ~30–40s (83MB bundle).
+**After push,** EC2 can `git pull --ff-only` on `EC2-pilot`. Run the bundle script when you need the S3/SSM path instead (or in addition). Bundle takes ~30–40s (83MB).
 
 To run a command on EC2:
 ```bash
@@ -134,7 +134,7 @@ The wrapper polls SSM to terminal status. Caveats see §11.
 ## 7. Hard constraints (from plan Global Constraints — binding)
 
 - **Branch:** `EC2-pilot`. Do not create a new branch.
-- **No `git push`** to remote unless the user explicitly asks during execution (they won't — they're asleep).
+- **`git push origin EC2-pilot`** after each verified task commit (user approved push; required for Cloud Agents).
 - **No real mail server connection.** POP3/SMTP code proven with `.eml` fixtures + fake transports only. `POP3_HOST` may be unset; worker skips gracefully.
 - **No VPN.** VPN not connected; do not block on VPN/Exchange checks.
 - **No AI chatbot assistant features.**
@@ -169,7 +169,7 @@ Remaining: Task 8 (SMTP fake send), Task 9 (frontend integration + polling), Tas
 Rules (non-negotiable):
 - Use /caveman ultra for you and every subagent you dispatch.
 - subagent-driven-development: implementer + task reviewer per task, fix loop on Critical/Important findings, append to .superpowers/sdd/progress.md on clean review (create the .superpowers/sdd/ dir if missing — it's gitignored scratch).
-- NO git push. Sync EC2 via `bash apps/server-pilot/deploy/sync-ec2-git-bundle.sh` after each commit.
+- PUSH after each verified commit: `git push origin EC2-pilot`. Optionally sync EC2 via bundle script or `git pull` on EC2.
 - NO real mail/VPN/AI/workflow-use — fixtures and fakes only.
 - NO re-doing Tasks 0-7. Trust the ledger + git log over your own recollection.
 - If blocked: root cause analysis, research best fix (Exa/AWS docs OK), implement, verify, commit, continue. User asleep — no stopping for ordinary bugs.
