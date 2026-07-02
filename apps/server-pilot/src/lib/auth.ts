@@ -39,6 +39,12 @@ export function assertPilotSignupAllowed(
   throw new APIError('FORBIDDEN', { message: 'signup disabled for pilot' });
 }
 
+/** Chrome caps Set-Cookie Max-Age at 400 days. */
+export const SESSION_TTL_SEC = 60 * 60 * 24 * 400;
+
+/** Active user extends another 400d session each week. */
+export const SESSION_UPDATE_AGE_SEC = 60 * 60 * 24 * 7;
+
 /**
  * Pilot Better Auth instance.
  *
@@ -89,9 +95,9 @@ export const createAuth = (
         env.NODE_ENV === 'development' ? 'better-auth-dev' : 'better-auth',
     },
     session: {
-      cookieCache: { enabled: true, maxAge: 60 * 60 * 24 * 30 },
-      expiresIn: 60 * 60 * 24 * 30,
-      updateAge: 60 * 60 * 24 * 3,
+      cookieCache: { enabled: true, maxAge: SESSION_TTL_SEC },
+      expiresIn: SESSION_TTL_SEC,
+      updateAge: SESSION_UPDATE_AGE_SEC,
     },
     account: {
       accountLinking: {

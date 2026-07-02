@@ -205,22 +205,24 @@ export function NavUser() {
       return;
     }
     try {
-      await toast.promise(
-        signOut().then(async () => {
-          await runLogoutCleanup({
-            queryClient,
-            clearIdb: async () => {
-              await del(idbCacheKeyForScope(getMailCacheScope()));
-              await idbClear();
-            },
-          });
-        }),
-        {
-          loading: 'Signing out...',
-          success: () => 'Signed out successfully!',
-          error: 'Error signing out',
-        },
-      );
+      await toast
+        .promise(
+          signOut().then(async () => {
+            await runLogoutCleanup({
+              queryClient,
+              clearIdb: async () => {
+                await del(idbCacheKeyForScope(getMailCacheScope()));
+                await idbClear();
+              },
+            });
+          }),
+          {
+            loading: 'Signing out...',
+            success: () => 'Signed out successfully!',
+            error: 'Error signing out',
+          },
+        )
+        .unwrap();
       window.location.href = '/login';
     } catch (error) {
       console.error('Failed to sign out:', error);

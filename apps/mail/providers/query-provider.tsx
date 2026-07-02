@@ -15,6 +15,8 @@ import { signOut } from '@/lib/auth-client';
 import { get, set, del } from 'idb-keyval';
 import superjson from 'superjson';
 import { makeLiveQueryHashPrefix } from '@/lib/mail/query-cache-policy';
+import { PERSIST_MAX_AGE, QUERY_GC_TIME } from '@/lib/mail/cache-ttl';
+import { runLogoutCleanup } from '@/lib/mail/query-cache-policy';
 import {
   getMailCacheScope,
   idbCacheKeyForScope,
@@ -24,6 +26,7 @@ import {
 import { useSession } from '@/lib/auth-client';
 import { useActiveConnection } from '@/hooks/use-connections';
 import { useEffect } from 'react';
+import { toast } from 'sonner';
 
 const createBackendDisabledError = (path: string[]) => {
   const route = path.join('.');
@@ -94,16 +97,76 @@ const createDemoProcedureNode = (path: string[]): unknown => {
 
 const createDemoTrpcClient = (): unknown => createDemoProcedureNode([]);
 
+const LEGACY_IDB_CACHE_KEY = 'zero-query-cache-default';
+
+let idbPersistDegraded = false;
+
+function isIdbAvailable(): boolean {
+  return typeof indexedDB !== 'undefined';
+}
+
+async function handleForbiddenSignOut(queryClient: QueryClient): Promise<void> {
+  await runLogoutCleanup({
+    queryClient,
+    clearIdb: async () => {
+      await del(idbCacheKeyForScope(getMailCacheScope()));
+    },
+  });
+  signOut({
+    fetchOptions: {
+      onSuccess: () => {
+        if (window.location.href.includes('/login')) return;
+        window.location.href = '/login?error=required_scopes_missing';
+      },
+    },
+  });
+}
+
 function createIDBPersister(idbValidKey: IDBValidKey = 'zero-query-cache') {
+  const noopPersister = {
+    persistClient: async () => undefined,
+    restoreClient: async () => undefined,
+    removeClient: async () => undefined,
+  } satisfies Persister;
+
+  if (!isIdbAvailable()) {
+    return noopPersister;
+  }
+
   return {
     persistClient: async (client: PersistedClient) => {
-      await set(idbValidKey, client);
+      if (idbPersistDegraded) return;
+      try {
+        await set(idbValidKey, client);
+      } catch (error) {
+        if (!idbPersistDegraded) {
+          idbPersistDegraded = true;
+          console.warn('[query-cache] IndexedDB persist disabled:', error);
+        }
+      }
     },
     restoreClient: async () => {
-      return await get<PersistedClient>(idbValidKey);
+      if (idbPersistDegraded) return undefined;
+      try {
+        return await get<PersistedClient>(idbValidKey);
+      } catch (error) {
+        if (!idbPersistDegraded) {
+          idbPersistDegraded = true;
+          console.warn('[query-cache] IndexedDB restore disabled:', error);
+        }
+        return undefined;
+      }
     },
     removeClient: async () => {
-      await del(idbValidKey);
+      if (idbPersistDegraded) return;
+      try {
+        await del(idbValidKey);
+      } catch (error) {
+        if (!idbPersistDegraded) {
+          idbPersistDegraded = true;
+          console.warn('[query-cache] IndexedDB remove disabled:', error);
+        }
+      }
     },
   } satisfies Persister;
 }
@@ -111,24 +174,20 @@ function createIDBPersister(idbValidKey: IDBValidKey = 'zero-query-cache') {
 export const makeQueryClient = (_legacyConnectionId?: string | null) =>
   new QueryClient({
     queryCache: new QueryCache({
-      onError: (err, { meta }) => {
+      onError: (err, query) => {
+        const { meta } = query;
         if (isFrontendOnlyDemo()) return;
         if (meta && meta.noGlobalError === true) return;
         if (meta && typeof meta.customError === 'string') console.error(meta.customError);
-        else if (
+        else if (err.message === 'NO_MAILBOX') {
+          toast.error('No mailbox assigned');
+        } else if (
           err.message === 'Required scopes missing' ||
           err.message.includes('Invalid connection') ||
           err.message.includes('not permitted') ||
-          err.message.includes('FORBIDDEN')
+          err.message === 'FORBIDDEN'
         ) {
-          signOut({
-            fetchOptions: {
-              onSuccess: () => {
-                if (window.location.href.includes('/login')) return;
-                window.location.href = '/login?error=required_scopes_missing';
-              },
-            },
-          });
+          void handleForbiddenSignOut(query.client);
         } else console.error(err.message || 'Something went wrong');
       },
     }),
@@ -147,7 +206,7 @@ export const makeQueryClient = (_legacyConnectionId?: string | null) =>
               : { userId: scope.userId ?? 'anon', activeTransportId: scope.activeTransportId ?? 'pending' };
           return hashKey([prefix, ...queryKey]);
         },
-        gcTime: 1000 * 60 * 60 * 24, // 24 hours,
+        gcTime: QUERY_GC_TIME,
       },
       mutations: {
         onError: (err) => console.error(err.message),
@@ -258,25 +317,35 @@ export function QueryProvider({
   const demoQueryPolicy = resolveDemoQueryPolicy();
   const scope = mailCacheScope ?? getMailCacheScope();
   const scopeKey = idbCacheKeyForScope(scope);
+  const scopeReady = Boolean(scope.userId && scope.activeTransportId);
 
   useEffect(() => {
     setMailCacheScope(scope);
   }, [scope.userId, scope.activeTransportId]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !isIdbAvailable()) return;
+    void del(LEGACY_IDB_CACHE_KEY).catch(() => undefined);
+  }, []);
 
   const persister = useMemo(
     () => createIDBPersister(scopeKey),
     [scopeKey],
   );
   const policyAwarePersister = useMemo(
-    () =>
-      demoQueryPolicy.shouldHydratePersistedQueries
-        ? persister
-        : {
-            persistClient: persister.persistClient,
-            removeClient: persister.removeClient,
-            restoreClient: async () => undefined,
-          },
-    [demoQueryPolicy.shouldHydratePersistedQueries, persister],
+    () => {
+      const gatedPersister = {
+        persistClient: async () => undefined,
+        restoreClient: async () => undefined,
+        removeClient: persister.removeClient,
+      } satisfies Persister;
+
+      if (!demoQueryPolicy.shouldHydratePersistedQueries || !scopeReady) {
+        return gatedPersister;
+      }
+      return persister;
+    },
+    [demoQueryPolicy.shouldHydratePersistedQueries, persister, scopeReady],
   );
   const queryClient = useMemo(() => getQueryClient(scopeKey), [scopeKey]);
 
@@ -286,7 +355,7 @@ export function QueryProvider({
       persistOptions={{
         persister: policyAwarePersister,
         buster: CACHE_BURST_KEY,
-        maxAge: 1000 * 60 * 60 * 24, // 24 hours
+        maxAge: PERSIST_MAX_AGE,
       }}
       onSuccess={() => {
         if (!demoQueryPolicy.shouldInvalidateHydratedThreadQueries) return;

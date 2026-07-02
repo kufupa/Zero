@@ -28,6 +28,7 @@ import {
   resolveMailboxContext,
   type MailboxContext,
   MailboxForbiddenError,
+  MailboxNoAccessError,
 } from './context.js';
 
 /**
@@ -52,6 +53,13 @@ export type TrpcMailboxContext = TrpcPrivateContext & MailboxContext;
 const t = initTRPC.context<TrpcSourceContext>().create({
   transformer: superjson,
 });
+
+function noMailboxTrpcError(): TRPCError {
+  return new TRPCError({
+    code: 'NO_MAILBOX' as 'FORBIDDEN',
+    message: 'NO_MAILBOX',
+  });
+}
 
 export const router = t.router;
 export const publicProcedure = t.procedure;
@@ -130,6 +138,9 @@ export const mailboxProcedure = privateProcedure.use(async ({ ctx, next }) => {
     );
     return next({ ctx: { ...ctx, ...mailbox } });
   } catch (err) {
+    if (err instanceof MailboxNoAccessError) {
+      throw noMailboxTrpcError();
+    }
     if (err instanceof MailboxForbiddenError) {
       throw new TRPCError({ code: 'FORBIDDEN', message: 'FORBIDDEN' });
     }
@@ -149,6 +160,9 @@ export function requireMailboxAccessFactory(db: DB) {
     try {
       return await resolveMailboxContext(userId, transportId, db);
     } catch (err) {
+      if (err instanceof MailboxNoAccessError) {
+        throw noMailboxTrpcError();
+      }
       if (err instanceof MailboxForbiddenError) {
         throw new TRPCError({ code: 'FORBIDDEN', message: 'FORBIDDEN' });
       }
@@ -183,6 +197,9 @@ export async function requireMailboxAccess(
   try {
     return await resolveMailboxContext(userId, transportId, getDb());
   } catch (err) {
+    if (err instanceof MailboxNoAccessError) {
+      throw noMailboxTrpcError();
+    }
     if (err instanceof MailboxForbiddenError) {
       throw new TRPCError({ code: 'FORBIDDEN', message: 'FORBIDDEN' });
     }

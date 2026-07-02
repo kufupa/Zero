@@ -26,6 +26,14 @@ export class MailboxForbiddenError extends Error {
   }
 }
 
+/** User is authenticated but has zero mailbox_access rows. */
+export class MailboxNoAccessError extends Error {
+  constructor(message = 'NO_MAILBOX') {
+    super(message);
+    this.name = 'MailboxNoAccessError';
+  }
+}
+
 export async function resolveMailboxContext(
   userId: string,
   requestedTransportId: string | undefined,
@@ -68,6 +76,7 @@ export async function resolveMailboxContext(
       transportId: mailboxAccess.transportId,
       role: mailboxAccess.role,
       email: mailboxTransport.email,
+      isDefault: mailboxAccess.isDefault,
     })
     .from(mailboxAccess)
     .innerJoin(
@@ -77,7 +86,7 @@ export async function resolveMailboxContext(
     .where(eq(mailboxAccess.userId, userId));
 
   if (candidates.length === 0) {
-    throw new MailboxForbiddenError();
+    throw new MailboxNoAccessError();
   }
 
   const roleRank: Record<MailboxAccessRole, number> = {
@@ -85,7 +94,10 @@ export async function resolveMailboxContext(
     admin: 1,
     member: 2,
   };
-  candidates.sort((a, b) => roleRank[a.role] - roleRank[b.role]);
+  candidates.sort((a, b) => {
+    if (a.isDefault !== b.isDefault) return a.isDefault ? -1 : 1;
+    return roleRank[a.role] - roleRank[b.role];
+  });
   const row = candidates[0]!;
   return {
     userId,
