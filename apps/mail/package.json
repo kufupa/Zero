@@ -11,6 +11,7 @@
     "deploy": "wrangler deploy",
     "lint": "eslint .",
     "machine-translate": "inlang machine translate --project project.inlang",
+    "test": "vitest run tests",
     "test:demo": "vitest run tests"
   },
   "dependencies": {

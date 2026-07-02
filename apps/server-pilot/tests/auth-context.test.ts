@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from 'vitest';
-import { resolveMailboxContext, MailboxForbiddenError } from '../src/trpc/context';
+import { resolveMailboxContext, MailboxForbiddenError, MailboxNoAccessError } from '../src/trpc/context';
 import {
   TEST_DB_AVAILABLE,
   probeTestDb,
@@ -52,13 +52,13 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     );
 
     it(
-      'rejects unknown user with no accesses',
+      'rejects unknown user with no accesses as NO_MAILBOX',
       async () => {
         await expect(
           withSeededTestDb((db) =>
             resolveMailboxContext('user-ghost', undefined, db),
           ),
-        ).rejects.toBeInstanceOf(MailboxForbiddenError);
+        ).rejects.toBeInstanceOf(MailboxNoAccessError);
       },
       30000,
     );
@@ -70,6 +70,12 @@ describe('resolveMailboxContext unit shape', () => {
     const err = new MailboxForbiddenError();
     expect(err.message).toBe('FORBIDDEN');
     expect(err.name).toBe('MailboxForbiddenError');
+  });
+
+  it('exposes MailboxNoAccessError carrying NO_MAILBOX', () => {
+    const err = new MailboxNoAccessError();
+    expect(err.message).toBe('NO_MAILBOX');
+    expect(err.name).toBe('MailboxNoAccessError');
   });
 });
 

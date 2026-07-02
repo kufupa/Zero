@@ -25,18 +25,46 @@ DATABASE_URL="$(
 ENV_PATH="/home/ubuntu/repos/zero/apps/server-pilot/.env.production"
 install -o ubuntu -g ubuntu -m 600 /dev/null "$ENV_PATH"
 
+# Quote values so special chars in secrets/URLs cannot break shell parsing.
+quote_val() {
+  printf "'%s'" "${1//\'/\'\\\'\'}"
+}
+
 cat > "$ENV_PATH" <<EOF
-NODE_ENV=production
-PORT=8788
-DATABASE_URL=${DATABASE_URL}
-BETTER_AUTH_URL=${BETTER_AUTH_URL}
-BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET}
-AWS_REGION=${AWS_REGION}
-S3_BUCKET=${S3_BUCKET}
-POP3_POLL_INTERVAL_MS=${POP3_POLL_INTERVAL_MS}
-POP3_MAX_MESSAGES_PER_CYCLE=${POP3_MAX_MESSAGES_PER_CYCLE}
-PILOT_OPEN_SIGNUP=0
+NODE_ENV='production'
+PORT='8788'
+DATABASE_URL=$(quote_val "$DATABASE_URL")
+BETTER_AUTH_URL=$(quote_val "$BETTER_AUTH_URL")
+BETTER_AUTH_SECRET=$(quote_val "$BETTER_AUTH_SECRET")
+AWS_REGION=$(quote_val "$AWS_REGION")
+S3_BUCKET=$(quote_val "$S3_BUCKET")
+POP3_POLL_INTERVAL_MS=$(quote_val "$POP3_POLL_INTERVAL_MS")
+POP3_MAX_MESSAGES_PER_CYCLE=$(quote_val "$POP3_MAX_MESSAGES_PER_CYCLE")
+MAIL_TRANSPORT_MODE=$(quote_val "${MAIL_TRANSPORT_MODE:-fixture}")
+PILOT_OPEN_SIGNUP='0'
 EOF
+
+# Optional real-mail POP3/SMTP keys (quoted when present).
+append_env() {
+  local key="$1"
+  local val="${2:-}"
+  if [[ -n "$val" ]]; then
+    printf '%s=%s\n' "$key" "$(quote_val "$val")" >> "$ENV_PATH"
+  fi
+}
+
+append_env INGEST_FIXTURE_DIR "${INGEST_FIXTURE_DIR:-}"
+append_env POP3_HOST "${POP3_HOST:-}"
+append_env POP3_PORT "${POP3_PORT:-}"
+append_env POP3_TLS "${POP3_TLS:-}"
+append_env POP3_USER "${POP3_USER:-}"
+append_env POP3_PASSWORD "${POP3_PASSWORD:-}"
+append_env POP3_SECRET_ARN "${POP3_SECRET_ARN:-}"
+append_env SMTP_HOST "${SMTP_HOST:-}"
+append_env SMTP_PORT "${SMTP_PORT:-}"
+append_env SMTP_SECURE "${SMTP_SECURE:-}"
+append_env SMTP_USER "${SMTP_USER:-}"
+append_env SMTP_SECRET_ARN "${SMTP_SECRET_ARN:-}"
 
 chown ubuntu:ubuntu "$ENV_PATH"
 chmod 600 "$ENV_PATH"
