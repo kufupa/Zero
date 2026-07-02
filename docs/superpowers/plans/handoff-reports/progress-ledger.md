@@ -46,3 +46,27 @@ Pre-real-ingest gate. Branch `EC2-pilot`. Real POP3 ingest still blocked until I
 - **Env:** `PILOT_OPEN_SIGNUP=0` appended to `.env.production`
 - **RDS tests (NODE_ENV=test):** 29/29 on targeted suite — seed-contract (5), auth-context (5), ingest-store (12 incl. double-stamp), sanitize-email-html (4), pop3-worker (3)
 - **Ops blocker (unchanged):** real Exchange/POP3 ingest off until IT relay rules per `deferred-real-mail-readiness.md`
+
+---
+
+## Bug fix wave (2026-07-02 plan)
+
+Branch `EC2-pilot`. Seven commits `4b173f5e..1a3e0d98`. Full report: [`2026-07-02-bug-fix-gate-report.md`](2026-07-02-bug-fix-gate-report.md).
+
+| Wave | Commit | Scope |
+|------|--------|-------|
+| 1 | 4b173f5e | tRPC POST + FE wire contract |
+| 2 | 1df697b5 | soft delete + seed/benchmark guards |
+| 3 | 79d1793b | threading, dates, pagination |
+| 4 | d35acfb0 | IDB leak + session TTL + NO_MAILBOX |
+| 5 | 6a99ba3c | thread actions + ops bundle |
+| 6 | 98aad701 | RealPop3Client + ingest durability |
+| 7 | 1a3e0d98 | MAIL_TRANSPORT_MODE + IT handoff |
+
+### Task 18 EC2 gate (2026-07-03)
+
+- **Local:** server 101 pass; mail 163 pass; builds green
+- **EC2:** sync + migrate (0001–0003) + deploy OK @ `1a3e0d98`
+- **EC2 tests:** 101 pass / 53 skip
+- **Signup:** 403 unchanged
+- **Transport:** `MAIL_TRANSPORT_MODE=fixture`; `INGEST_FIXTURE_DIR` set on EC2 for fixture cycles
