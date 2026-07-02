@@ -15,6 +15,20 @@
       "when": 1783031565045,
       "tag": "0001_tired_blizzard",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1783118400000,
+      "tag": "0002_mailbox_access_is_default",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1783204800000,
+      "tag": "0003_quarantine_ingest_uidl_uidx",
+      "breakpoints": true
     }
   ]
 }

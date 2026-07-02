@@ -46,7 +46,8 @@ import {
 export type QuarantineReason =
   | 'missing_owner_header'
   | 'unknown_transport'
-  | 'message_too_large';
+  | 'message_too_large'
+  | 'parse_failure';
 
 export type PersistKind = 'stored' | 'quarantined' | 'duplicate';
 
@@ -125,12 +126,9 @@ export async function persistInboundMessage(
   const { db } = opts;
   const storage = opts.storage ?? getS3Storage();
 
-  // Raw MIME S3 key. The worker pre-uploads and passes the key via
-  // `meta.rawMimeS3Key`; when absent, we upload the raw bytes here.
   const rawMimeS3Key = meta.rawMimeS3Key ?? rawMimeKey({
     ingestMailboxId: meta.ingestMailboxId,
     pop3Uidl: meta.pop3Uidl,
-    receivedAt: parsed.receivedAt ?? undefined,
   });
   if (!meta.rawMimeS3Key) {
     await storage.putObject({
@@ -138,6 +136,26 @@ export async function persistInboundMessage(
       body: raw,
       contentType: 'message/rfc822',
     });
+  }
+
+  const existingMessage = await findExistingInboundMessage(db, meta);
+  if (existingMessage) {
+    return {
+      kind: 'duplicate',
+      transportId: existingMessage.transportId,
+      messageId: existingMessage.id,
+      rawMimeS3Key,
+    };
+  }
+
+  const existingQuarantine = await findExistingQuarantine(db, meta);
+  if (existingQuarantine) {
+    return {
+      kind: 'quarantined',
+      quarantineId: existingQuarantine.id,
+      reason: existingQuarantine.reason as QuarantineReason,
+      rawMimeS3Key: existingQuarantine.rawMimeS3Key,
+    };
   }
 
   // Routing ------------------------------------------------------------
@@ -177,30 +195,6 @@ export async function persistInboundMessage(
 
   const transport = transportRows[0]!;
 
-  // Duplicate check ----------------------------------------------------
-  // If we've already stored this UIDL on this ingest mailbox, return
-  // `duplicate` without re-inserting. Worker treats duplicate as success
-  // (safe to DELE — message already persisted).
-  const existing = await db
-    .select({ id: message.id })
-    .from(message)
-    .where(
-      and(
-        eq(message.ingestMailboxId, meta.ingestMailboxId),
-        eq(message.pop3Uidl, meta.pop3Uidl),
-      ),
-    )
-    .limit(1);
-  if (existing.length > 0) {
-    return {
-      kind: 'duplicate',
-      transportId: transport.id,
-      messageId: existing[0]!.id,
-      rawMimeS3Key,
-    };
-  }
-
-  // Insert message + attachments (thread resolve inside same transaction).
   const messageId = meta.messageId;
   let threadId = '';
   await db.transaction(async (tx) => {
@@ -271,6 +265,16 @@ export async function quarantineOversizedMessage(
   opts: Pick<PersistOptions, 'db'>,
   parsedHeaders?: Record<string, unknown>,
 ): Promise<PersistQuarantinedResult> {
+  const existing = await findExistingQuarantine(opts.db, meta);
+  if (existing) {
+    return {
+      kind: 'quarantined',
+      quarantineId: existing.id,
+      reason: existing.reason as QuarantineReason,
+      rawMimeS3Key: existing.rawMimeS3Key,
+    };
+  }
+
   const quarantineId = randomUUID();
   await opts.db.insert(mailIngestQuarantine).values({
     id: quarantineId,
@@ -289,6 +293,89 @@ export async function quarantineOversizedMessage(
   };
 }
 
+/**
+ * Quarantine a poison message after repeated parse failures.
+ */
+export async function quarantineParseFailure(
+  meta: Pick<IngestMeta, 'ingestMailboxId' | 'pop3Uidl'>,
+  rawMimeS3Key: string,
+  opts: Pick<PersistOptions, 'db'>,
+  errorMessage?: string,
+): Promise<PersistQuarantinedResult> {
+  const existing = await findExistingQuarantine(opts.db, meta);
+  if (existing) {
+    return {
+      kind: 'quarantined',
+      quarantineId: existing.id,
+      reason: existing.reason as QuarantineReason,
+      rawMimeS3Key: existing.rawMimeS3Key,
+    };
+  }
+
+  const quarantineId = randomUUID();
+  await opts.db.insert(mailIngestQuarantine).values({
+    id: quarantineId,
+    ingestMailboxId: meta.ingestMailboxId,
+    pop3Uidl: meta.pop3Uidl,
+    rawMimeS3Key,
+    reason: 'parse_failure',
+    ownerHeaderValue: null,
+    parsedHeaders: errorMessage ? { error: errorMessage } : null,
+  });
+  return {
+    kind: 'quarantined',
+    quarantineId,
+    reason: 'parse_failure',
+    rawMimeS3Key,
+  };
+}
+
+async function findExistingInboundMessage(
+  db: DB,
+  meta: Pick<IngestMeta, 'ingestMailboxId' | 'pop3Uidl'>,
+): Promise<{ id: string; transportId: string } | undefined> {
+  const rows = await db
+    .select({ id: message.id, transportId: message.transportId })
+    .from(message)
+    .where(
+      and(
+        eq(message.ingestMailboxId, meta.ingestMailboxId),
+        eq(message.pop3Uidl, meta.pop3Uidl),
+        eq(message.direction, 'inbound'),
+      ),
+    )
+    .limit(1);
+  return rows[0];
+}
+
+async function findExistingQuarantine(
+  db: DB,
+  meta: Pick<IngestMeta, 'ingestMailboxId' | 'pop3Uidl'>,
+): Promise<
+  | {
+      id: string;
+      reason: string;
+      rawMimeS3Key: string;
+    }
+  | undefined
+> {
+  const rows = await db
+    .select({
+      id: mailIngestQuarantine.id,
+      reason: mailIngestQuarantine.reason,
+      rawMimeS3Key: mailIngestQuarantine.rawMimeS3Key,
+    })
+    .from(mailIngestQuarantine)
+    .where(
+      and(
+        eq(mailIngestQuarantine.ingestMailboxId, meta.ingestMailboxId),
+        eq(mailIngestQuarantine.pop3Uidl, meta.pop3Uidl),
+      ),
+    )
+    .limit(1);
+  return rows[0];
+}
+
 async function quarantineUnrouted(args: {
   db: DB;
   parsed: ParsedInboundMessage;
@@ -297,6 +384,16 @@ async function quarantineUnrouted(args: {
   reason: QuarantineReason;
 }): Promise<PersistQuarantinedResult> {
   const { db, parsed, meta, rawMimeS3Key, reason } = args;
+  const existing = await findExistingQuarantine(db, meta);
+  if (existing) {
+    return {
+      kind: 'quarantined',
+      quarantineId: existing.id,
+      reason: existing.reason as QuarantineReason,
+      rawMimeS3Key: existing.rawMimeS3Key,
+    };
+  }
+
   const quarantineId = randomUUID();
   await db.insert(mailIngestQuarantine).values({
     id: quarantineId,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ingestOnce } from '../src/mail/ingest/worker';
+import { ingestOnce, POISON_MAX_RETRIES } from '../src/mail/ingest/worker';
 import {
   FakePop3Client,
   type FakePop3Message,
@@ -120,8 +120,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
               where: () => ({
                 limit: async () => {
                   selectCount += 1;
-                  if (selectCount === 1) {
-                    // transport lookup
+                  if (selectCount === 3) {
                     return [
                       {
                         id: 'transport-centurion',
@@ -129,7 +128,6 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
                       },
                     ];
                   }
-                  // duplicate check + thread lookup: empty
                   return [];
                 },
               }),
@@ -160,22 +158,71 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       },
       30000,
     );
+
+    it(
+      'poison UIDL quarantined after max retries then DELEd',
+      async () => {
+        const storage = new FakeS3Storage('worker-poison-bucket');
+        resetS3Storage();
+        setS3Storage(storage);
+        const fakePop3 = new FakePop3Client({
+          messages: [{ uidl: 'uidl-poison', raw: Buffer.from('not-valid-mime') }],
+        });
+
+        const failureCounts = new Map<string, number>();
+        failureCounts.set('uidl-poison', POISON_MAX_RETRIES - 1);
+
+        const result = await withSeededTestDb(async (db) =>
+          ingestOnce({
+            pop3: fakePop3,
+            db,
+            ingestMailboxId: 'ingest-nava-legacy',
+            maxMessages: 10,
+            failureCounts,
+          }),
+        );
+
+        expect(result.deled).toBe(1);
+        expect(result.items[0]!.status).toBe('ok');
+        if (result.items[0]!.status === 'ok') {
+          expect(result.items[0]!.result.kind).toBe('quarantined');
+          if (result.items[0]!.result.kind === 'quarantined') {
+            expect(result.items[0]!.result.reason).toBe('parse_failure');
+          }
+        }
+        expect(storage.listKeys('quarantine-archive/')).toHaveLength(1);
+      },
+      30000,
+    );
   },
 );
 
 // Unit tests (no DB) for the fake pop3 path with no real env.
 describe('ingestOnce without DB-backed persist (fake pop3 only)', () => {
-  it('returns a cycleError when no pop3 configured and no fixtures', async () => {
-    // Clear env so createPop3Client returns null.
+  it('returns a cycleError when real mode has no pop3 configured', async () => {
     const saved = { ...process.env };
+    Object.assign(process.env, {
+      MAIL_TRANSPORT_MODE: 'real',
+      NODE_ENV: 'test',
+      PORT: '8788',
+      DATABASE_URL: 'postgres://test:test@localhost:5432/test',
+      BETTER_AUTH_URL: 'http://localhost',
+      BETTER_AUTH_SECRET: 'x'.repeat(32),
+      AWS_REGION: 'af-south-1',
+      S3_BUCKET: 'test-bucket',
+      POP3_POLL_INTERVAL_MS: '30000',
+      POP3_MAX_MESSAGES_PER_CYCLE: '50',
+    });
     delete process.env.POP3_HOST;
     delete process.env.POP3_PORT;
     delete process.env.POP3_USER;
+    delete process.env.POP3_PASSWORD;
+    delete process.env.POP3_SECRET_ARN;
     try {
       const result = await ingestOnce({});
       expect(result.listed).toBe(0);
       expect(result.processed).toBe(0);
-      expect(result.cycleError).toContain('no pop3 client');
+      expect(result.cycleError).toContain('no real pop3 client');
     } finally {
       process.env = saved;
     }

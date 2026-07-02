@@ -30,6 +30,7 @@
  *
  * Entry: `node dist/mail/ingest/worker.js` (package script `worker`).
  */
+import { pathToFileURL } from 'node:url';
 import { parseEnv } from '../../env.js';
 import { getDb, closeDb } from '../../db/client.js';
 import {
@@ -44,9 +45,17 @@ import { IngestTooLargeError } from './limits.js';
 import {
   persistInboundMessage,
   quarantineOversizedMessage,
+  quarantineParseFailure,
   type PersistResult,
 } from './store.js';
-import { rawMimeKey, getS3Storage } from '../../storage/s3.js';
+import {
+  rawMimeKey,
+  getS3Storage,
+  archiveQuarantineRawMime,
+} from '../../storage/s3.js';
+
+/** After this many consecutive failures for one UIDL, quarantine + DELE. */
+export const POISON_MAX_RETRIES = 3;
 
 export interface IngestOnceOptions {
   /** Injected POP3 client (real or fake). If absent, built from env. */
@@ -57,6 +66,8 @@ export interface IngestOnceOptions {
   ingestMailboxId?: string;
   /** Max messages per cycle. Defaults to env `POP3_MAX_MESSAGES_PER_CYCLE`. */
   maxMessages?: number;
+  /** Per-UIDL failure counts (tests may inject). */
+  failureCounts?: Map<string, number>;
 }
 
 export type ItemOutcome =
@@ -90,8 +101,6 @@ export interface IngestCycleResult {
 export async function ingestOnce(
   opts: IngestOnceOptions = {},
 ): Promise<IngestCycleResult> {
-  // Parse env defensively — when POP3 is injected (tests/fake path) we do not
-  // require the full production env surface.
   let env: ReturnType<typeof parseEnv> | null = null;
   try {
     env = parseEnv(process.env);
@@ -101,11 +110,11 @@ export async function ingestOnce(
   const ingestMailboxId = opts.ingestMailboxId ?? 'ingest-nava-legacy';
   const maxMessages =
     opts.maxMessages ?? env?.POP3_MAX_MESSAGES_PER_CYCLE ?? 500;
+  const failureCounts = opts.failureCounts ?? new Map<string, number>();
 
   const pop3 = opts.pop3 ?? (env ? createPop3Client(env) : null);
   const usedFakePop3 = pop3?.kind === 'fake';
 
-  // No real POP3 configured and no fake injected -> nothing to do.
   if (!pop3) {
     return {
       listed: 0,
@@ -113,7 +122,10 @@ export async function ingestOnce(
       deled: 0,
       items: [],
       usedFakePop3: false,
-      cycleError: 'no pop3 client configured',
+      cycleError:
+        env?.MAIL_TRANSPORT_MODE === 'real'
+          ? 'no real pop3 client configured (host/port/user/secret required)'
+          : 'no pop3 client configured',
     };
   }
 
@@ -133,17 +145,12 @@ export async function ingestOnce(
     for (const uidl of uidls.slice(0, maxMessages)) {
       let rawKey: string | undefined;
       try {
-        // RETR
         const msg = await pop3.retr(uidl);
-
-        // Pre-generate a message id for attachment keying.
         const messageId = generateMessageId();
 
-        // Pre-upload raw MIME to S3 BEFORE parsing/attachments.
         rawKey = rawMimeKey({
           ingestMailboxId,
           pop3Uidl: uidl,
-          receivedAt: new Date(),
         });
         await storage.putObject({
           key: rawKey,
@@ -151,16 +158,11 @@ export async function ingestOnce(
           contentType: 'message/rfc822',
         });
 
-        // Parse (attachments stream to S3 during parse). The same `messageId`
-        // namespaces the attachment S3 keys (`attachments/{messageId}/...`).
         const parsed = await parseRawMessage(msg.raw, {
           messageId,
           storage,
         });
 
-        // PG transaction (the commit that authorizes DELE). Thread the SAME
-        // messageId into meta so store.ts reuses it as the DB `message.id`
-        // (S3 attachment key prefix == DB message.id).
         const result = await persistInboundMessage(parsed, msg.raw, {
           ingestMailboxId,
           pop3Uidl: uidl,
@@ -168,7 +170,14 @@ export async function ingestOnce(
           rawMimeS3Key: rawKey,
         }, { db, storage });
 
-        // DELE only after S3 + PG commit (or duplicate).
+        if (result.kind === 'quarantined') {
+          await archiveQuarantineRawMime(storage, rawKey, {
+            ingestMailboxId,
+            pop3Uidl: uidl,
+          });
+        }
+
+        failureCounts.delete(uidl);
         await pop3.dele(uidl);
         deled += 1;
         items.push({ uidl, result, status: 'ok' });
@@ -180,16 +189,45 @@ export async function ingestOnce(
             rawKey,
             { db },
           );
+          await archiveQuarantineRawMime(storage, rawKey, {
+            ingestMailboxId,
+            pop3Uidl: uidl,
+          });
+          failureCounts.delete(uidl);
           await pop3.dele(uidl);
           deled += 1;
           items.push({ uidl, result, status: 'ok' });
           processed += 1;
           continue;
         }
+
+        const prev = failureCounts.get(uidl) ?? 0;
+        const next = prev + 1;
+        failureCounts.set(uidl, next);
+
+        if (next >= POISON_MAX_RETRIES && rawKey) {
+          const error = err instanceof Error ? err.message : String(err);
+          const result = await quarantineParseFailure(
+            { ingestMailboxId, pop3Uidl: uidl },
+            rawKey,
+            { db },
+            error,
+          );
+          await archiveQuarantineRawMime(storage, rawKey, {
+            ingestMailboxId,
+            pop3Uidl: uidl,
+          });
+          failureCounts.delete(uidl);
+          await pop3.dele(uidl);
+          deled += 1;
+          items.push({ uidl, result, status: 'ok' });
+          processed += 1;
+          continue;
+        }
+
         const error = err instanceof Error ? err.message : String(err);
         items.push({ uidl, status: 'error', error });
         processed += 1;
-        // Do NOT DELE — message stays on server for next cycle.
       }
     }
 
@@ -216,18 +254,9 @@ export function fakePop3FromMessages(
 /* Singleton loop                                                        */
 /* --------------------------------------------------------------------- */
 
-let stopping = false;
-
 /**
  * Run the worker loop until SIGTERM/SIGINT. Calls `ingestOnce()` on
  * `POP3_POLL_INTERVAL_MS`. Exits 0 on signal.
- *
- * If no real POP3 is configured (`POP3_HOST` unset) AND no fixtures are
- * provided, the worker logs once and exits 0 (graceful skip per the brief).
- *
- * If fixtures are passed (via `opts.fixtures`), the worker uses the fake
- * POP3 client for the first cycle and then exits 0 after one cycle. This is
- * the "run briefly against fixtures on EC2" verification path.
  */
 export async function runWorker(opts: {
   /** Fixture path: run one cycle against a fake POP3 with these messages, then exit. */
@@ -235,6 +264,8 @@ export async function runWorker(opts: {
   /** Override poll interval. Defaults to env. */
   pollIntervalMs?: number;
 } = {}): Promise<void> {
+  const stop = { stopping: false };
+
   let env: ReturnType<typeof parseEnv> | null = null;
   try {
     env = parseEnv(process.env);
@@ -242,17 +273,20 @@ export async function runWorker(opts: {
     env = null;
   }
   const interval = opts.pollIntervalMs ?? env?.POP3_POLL_INTERVAL_MS ?? 30000;
+  const mode = env?.MAIL_TRANSPORT_MODE ?? 'fixture';
+  const oneShot =
+    process.env.WORKER_ONE_SHOT === '1' || process.env.WORKER_ONE_SHOT === 'true';
 
   const onSignal = (sig: string) => {
-    if (stopping) return;
-    stopping = true;
+    if (stop.stopping) return;
+    stop.stopping = true;
     console.log(`worker: received ${sig}, stopping after current cycle`);
   };
   process.on('SIGTERM', () => onSignal('SIGTERM'));
   process.on('SIGINT', () => onSignal('SIGINT'));
 
-  // Fixture mode: one cycle, then exit.
   if (opts.fixtures && opts.fixtures.length > 0) {
+    console.log(`worker: transport.mode=fixture (explicit fixtures)`);
     const pop3 = fakePop3FromMessages(opts.fixtures);
     console.log(
       `worker: fixture mode, ${opts.fixtures.length} message(s), running one cycle`,
@@ -264,20 +298,44 @@ export async function runWorker(opts: {
     return;
   }
 
-  // No real POP3 configured -> graceful skip.
-  if (!env || !env.POP3_HOST || !env.POP3_PORT || !env.POP3_USER) {
+  if (!env) {
+    console.log('worker: env parse failed, skipping ingest');
+    return;
+  }
+
+  console.log(`worker: transport.mode=${mode}`);
+
+  const pop3 = createPop3Client(env);
+  if (!pop3) {
     console.log(
-      'worker: POP3_HOST/PORT/USER unset, no fixtures, skipping ingest',
+      mode === 'real'
+        ? 'worker: real mode but POP3_HOST/PORT/USER/secret unset, skipping ingest'
+        : 'worker: fixture mode but no POP3 client available, skipping ingest',
     );
     return;
   }
 
-  // Real loop.
-  console.log(`worker: starting poll loop, interval=${interval}ms`);
-  while (!stopping) {
+  if (oneShot) {
+    const maxMessages = process.env.WORKER_MAX_MESSAGES
+      ? Number(process.env.WORKER_MAX_MESSAGES)
+      : undefined;
+    console.log(
+      `worker: one-shot cycle, mode=${mode}, fake=${pop3.kind === 'fake'}${
+        maxMessages ? `, maxMessages=${maxMessages}` : ''
+      }`,
+    );
+    const result = await ingestOnce({ pop3, maxMessages });
+    console.log(JSON.stringify(result, null, 2));
+    await closeDb().catch(() => undefined);
+    console.log('worker: one-shot cycle complete, exiting 0');
+    return;
+  }
+
+  console.log(`worker: starting poll loop, interval=${interval}ms, fake=${pop3.kind === 'fake'}`);
+  while (!stop.stopping) {
     const start = Date.now();
     try {
-      const result = await ingestOnce();
+      const result = await ingestOnce({ pop3 });
       console.log(
         `worker: cycle listed=${result.listed} processed=${result.processed} deled=${result.deled} fake=${result.usedFakePop3}${
           result.cycleError ? ` error=${result.cycleError}` : ''
@@ -292,23 +350,35 @@ export async function runWorker(opts: {
     const elapsed = Date.now() - start;
     const wait = Math.max(0, interval - elapsed);
     if (wait > 0) {
-      await sleep(wait);
+      await abortableSleep(wait, () => stop.stopping);
     }
   }
   await closeDb().catch(() => undefined);
   console.log('worker: stopped, exiting 0');
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function abortableSleep(ms: number, shouldStop: () => boolean): Promise<void> {
+  return new Promise((resolve) => {
+    if (shouldStop()) {
+      resolve();
+      return;
+    }
+    const timer = setTimeout(resolve, ms);
+    const tick = setInterval(() => {
+      if (shouldStop()) {
+        clearTimeout(timer);
+        clearInterval(tick);
+        resolve();
+      }
+    }, 100);
+    timer.unref?.();
+    tick.unref?.();
+  });
 }
 
 /**
  * CLI entry. Reads fixture path from `WORKER_FIXTURE_DIR` env (optional) to
  * run one fixture cycle for EC2 verification; otherwise runs the real loop.
- *
- * `WORKER_FIXTURE_GLOB` may be a comma-separated list of `<uidl>:<path>`
- * pairs. If set, the worker runs one fake cycle and exits.
  */
 async function main(): Promise<void> {
   const fixtureSpec = process.env.WORKER_FIXTURE_SPEC;
@@ -328,19 +398,8 @@ async function main(): Promise<void> {
   await runWorker();
 }
 
-// Run only when invoked directly (`node dist/mail/ingest/worker.js`).
-const isMain = (() => {
-  const entry = process.env.npm_lifecycle_event;
-  if (entry === 'worker') return true;
-  // ESM: check import.meta.url ends with worker.js
-  try {
-    const url = (import.meta as { url?: string }).url;
-    if (url && url.endsWith('worker.js')) return true;
-  } catch {
-    // ignore
-  }
-  return false;
-})();
+const isMain =
+  import.meta.url === pathToFileURL(process.argv[1] ?? '').href;
 
 if (isMain) {
   main().catch((err) => {

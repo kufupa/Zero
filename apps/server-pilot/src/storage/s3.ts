@@ -15,8 +15,8 @@ import {
   S3Client,
   PutObjectCommand,
   HeadBucketCommand,
+  CopyObjectCommand,
 } from '@aws-sdk/client-s3';
-import { randomUUID } from 'node:crypto';
 
 export interface S3PutOptions {
   key: string;
@@ -30,10 +30,17 @@ export interface S3PutResult {
   bytes: number;
 }
 
+export interface S3CopyOptions {
+  sourceKey: string;
+  destKey: string;
+  contentType?: string;
+}
+
 export interface S3Storage {
   readonly kind: 'real' | 'fake';
   readonly bucket: string;
   putObject(opts: S3PutOptions): Promise<S3PutResult>;
+  copyObject(opts: S3CopyOptions): Promise<{ key: string; bucket: string }>;
 }
 
 /**
@@ -73,6 +80,19 @@ export class RealS3Storage implements S3Storage {
     return { key: opts.key, bucket: this.bucket, bytes };
   }
 
+  async copyObject(opts: S3CopyOptions): Promise<{ key: string; bucket: string }> {
+    await this.client.send(
+      new CopyObjectCommand({
+        Bucket: this.bucket,
+        CopySource: `${this.bucket}/${opts.sourceKey}`,
+        Key: opts.destKey,
+        ContentType: opts.contentType ?? 'message/rfc822',
+        ServerSideEncryption: 'AES256',
+      }),
+    );
+    return { key: opts.destKey, bucket: this.bucket };
+  }
+
   /** Best-effort reachability probe; throws if the bucket is not accessible. */
   async probe(): Promise<void> {
     await this.client.send(new HeadBucketCommand({ Bucket: this.bucket }));
@@ -102,6 +122,19 @@ export class FakeS3Storage implements S3Storage {
     return { key: opts.key, bucket: this.bucket, bytes: body.byteLength };
   }
 
+  async copyObject(opts: S3CopyOptions): Promise<{ key: string; bucket: string }> {
+    const src = this.stored.get(opts.sourceKey);
+    if (!src) {
+      throw new Error(`fake s3: missing source key ${opts.sourceKey}`);
+    }
+    this.calls.push({ op: 'COPY', key: opts.destKey });
+    this.stored.set(opts.destKey, {
+      body: Buffer.from(src.body),
+      contentType: opts.contentType ?? src.contentType,
+    });
+    return { key: opts.destKey, bucket: this.bucket };
+  }
+
   /** Test helper: get stored bytes for a key. */
   get(key: string): Buffer | undefined {
     const entry = this.stored.get(key);
@@ -114,24 +147,49 @@ export class FakeS3Storage implements S3Storage {
   }
 }
 
+function sanitizeUidl(uidl: string): string {
+  return uidl.replace(/[^A-Za-z0-9._-]+/g, '_');
+}
+
 /**
- * Build a raw-mime S3 key.
+ * Build a deterministic raw-mime S3 key.
  *
- * Layout: `raw-mime/{ingestMailboxId}/{yyyy}/{mm}/{dd}/{uuid}.eml`
+ * Layout: `raw-mime/{ingestMailboxId}/{sanitizedUidl}.eml`
  *
- * Matches the bucket lifecycle rule `raw-mime/*` (30-day expiry).
+ * Retries overwrite the same object. Matches lifecycle rule `raw-mime/*`.
  */
 export function rawMimeKey(opts: {
   ingestMailboxId: string;
   pop3Uidl: string;
-  receivedAt?: Date;
 }): string {
-  const d = opts.receivedAt ?? new Date();
-  const yyyy = d.getUTCFullYear().toString();
-  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
-  const dd = String(d.getUTCDate()).padStart(2, '0');
-  const uuid = randomUUID();
-  return `raw-mime/${opts.ingestMailboxId}/${yyyy}/${mm}/${dd}/${uuid}-${opts.pop3Uidl}.eml`;
+  return `raw-mime/${opts.ingestMailboxId}/${sanitizeUidl(opts.pop3Uidl)}.eml`;
+}
+
+/**
+ * Non-expiring quarantine archive prefix (no lifecycle rule on this path).
+ */
+export function quarantineArchiveKey(opts: {
+  ingestMailboxId: string;
+  pop3Uidl: string;
+}): string {
+  return `quarantine-archive/${opts.ingestMailboxId}/${sanitizeUidl(opts.pop3Uidl)}.eml`;
+}
+
+/**
+ * Copy raw MIME from the ingest prefix to the quarantine archive prefix.
+ */
+export async function archiveQuarantineRawMime(
+  storage: S3Storage,
+  sourceKey: string,
+  opts: { ingestMailboxId: string; pop3Uidl: string },
+): Promise<string> {
+  const destKey = quarantineArchiveKey(opts);
+  await storage.copyObject({
+    sourceKey,
+    destKey,
+    contentType: 'message/rfc822',
+  });
+  return destKey;
 }
 
 /**

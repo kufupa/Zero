@@ -27,7 +27,9 @@
  */
 import { connect as tlsConnect, type TLSSocket } from 'node:tls';
 import { connect as netConnect, type Socket } from 'node:net';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import type { MailTransportMode } from '../../env.js';
 
 export interface Pop3Message {
   uidl: string;
@@ -60,7 +62,18 @@ export interface Pop3ClientOptions {
   tls?: boolean;
   /** Source ARN for password in Secrets Manager (resolved before connect). */
   secretArn?: string;
+  /** @internal Inject a connected socket (tests only). */
+  testSocket?: Socket | TLSSocket;
+  /** @internal Override secret resolution (tests only). */
+  resolveSecret?: (arn: string) => Promise<string>;
 }
+
+const SOCKET_TIMEOUT_MS = 60_000;
+
+type LineWaiter = {
+  resolve: (line: Buffer) => void;
+  reject: (err: Error) => void;
+};
 
 /* ----------------------------------------------------------------------- */
 /* Real POP3 client (minimal)                                              */
@@ -73,59 +86,78 @@ export interface Pop3ClientOptions {
  * Single connection, sequential commands (no pipelining). POP3 is a line
  * protocol with `+OK`/`-ERR` responses and dot-stuffed multi-line payloads
  * for RETR and UIDL.
- *
- * This code is NEVER exercised against the real mail server in this pass;
- * the worker only constructs it when `POP3_HOST`/`POP3_PORT`/`POP3_USER` are
- * set. Tests use `FakePop3Client`.
  */
 export class RealPop3Client implements Pop3Client {
   readonly kind = 'real' as const;
   private readonly opts: Pop3ClientOptions;
   private sock: Socket | TLSSocket | null = null;
-  private readonly decoder = new TextDecoder('utf-8');
+  private byteBuf = Buffer.alloc(0);
+  private pendingLines: Buffer[] = [];
+  private lineWaiters: LineWaiter[] = [];
+  private uidlCache: Map<string, number> | null = null;
+  private closed = false;
+  private closeError: Error | null = null;
 
   constructor(opts: Pop3ClientOptions) {
     this.opts = opts;
   }
 
   async connect(): Promise<void> {
-    const { host, port, tls } = this.opts;
-    if (tls) {
-      this.sock = await openTls({ host, port });
-    } else {
-      this.sock = await openCleartext({ host, port });
+    const password = await this.resolvePassword();
+    if (!password) {
+      throw new Error('pop3 password required for real client (POP3_PASSWORD or POP3_SECRET_ARN)');
     }
-    // greeting
+    this.opts.password = password;
+
+    if (this.opts.testSocket) {
+      this.sock = this.opts.testSocket;
+    } else {
+      const { host, port, tls } = this.opts;
+      if (tls) {
+        this.sock = await openTls({ host, port });
+      } else {
+        this.sock = await openCleartext({ host, port });
+      }
+    }
+    this.attachSocketHandlers(this.sock);
+
     const greeting = await this.readLine();
     if (!greeting.startsWith('+OK')) {
       throw new Error(`pop3 greeting not OK: ${greeting}`);
     }
-    // USER + PASS
     await this.command(`USER ${this.opts.user}`);
-    if (this.opts.password) {
-      await this.command(`PASS ${this.opts.password}`);
-    }
+    await this.command(`PASS ${password}`);
   }
 
   async listUidl(): Promise<string[]> {
-    const body = await this.multiline('UIDL');
-    // body lines: "<n> <uidl>"
+    const body = await this.multilineText('UIDL');
     const uidls: string[] = [];
+    const cache = new Map<string, number>();
     for (const line of body) {
       const trimmed = line.trim();
       if (!trimmed) continue;
       const parts = trimmed.split(/\s+/);
-      // drop the leading message number
-      uidls.push(parts.length > 1 ? parts.slice(1).join(' ') : parts[0]!);
+      if (parts.length > 1) {
+        const num = Number(parts[0]);
+        const uidl = parts.slice(1).join(' ');
+        uidls.push(uidl);
+        cache.set(uidl, num);
+      } else {
+        uidls.push(parts[0]!);
+      }
     }
+    this.uidlCache = cache;
     return uidls;
   }
 
   async retr(uidl: string): Promise<Pop3Message> {
     const num = await this.lookupMessageNumber(uidl);
-    const body = await this.multiline(`RETR ${num}`);
-    // body lines are dot-unstuffed already; join with CRLF
-    const raw = Buffer.from(body.join('\r\n') + '\r\n', 'utf-8');
+    await this.writeLine(`RETR ${num}`);
+    const first = await this.readLine();
+    if (!first.startsWith('+OK')) {
+      throw new Error(`pop3 RETR ${num} failed: ${first}`);
+    }
+    const raw = await this.readRetrBody();
     return { uidl, raw };
   }
 
@@ -147,19 +179,118 @@ export class RealPop3Client implements Pop3Client {
       this.sock.destroy();
       this.sock = null;
     }
+    this.rejectWaiters(new Error('pop3 connection closed'));
+    this.closed = true;
+  }
+
+  /** @internal Test hook: push bytes as if they arrived on the socket. */
+  pushTestChunk(chunk: Buffer): void {
+    this.onData(chunk);
   }
 
   private async lookupMessageNumber(uidl: string): Promise<number> {
-    const body = await this.multiline('UIDL');
-    for (const line of body) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      const parts = trimmed.split(/\s+/);
-      if (parts.length < 2) continue;
-      const [num, u] = parts as [string, string];
-      if (u === uidl) return Number(num);
+    if (!this.uidlCache) {
+      await this.listUidl();
     }
-    throw new Error(`pop3 uidl not found: ${uidl}`);
+    const num = this.uidlCache?.get(uidl);
+    if (num === undefined) {
+      throw new Error(`pop3 uidl not found: ${uidl}`);
+    }
+    return num;
+  }
+
+  private async resolvePassword(): Promise<string | undefined> {
+    if (this.opts.password) return this.opts.password;
+    const envPass = process.env.POP3_PASSWORD;
+    if (envPass) return envPass;
+    if (this.opts.secretArn) {
+      if (this.opts.resolveSecret) {
+        return this.opts.resolveSecret(this.opts.secretArn);
+      }
+      return fetchPop3Secret(this.opts.secretArn);
+    }
+    return undefined;
+  }
+
+  private attachSocketHandlers(sock: Socket | TLSSocket): void {
+    sock.setTimeout(SOCKET_TIMEOUT_MS);
+    sock.on('data', (chunk: Buffer) => this.onData(chunk));
+    sock.on('error', (err: Error) => {
+      this.closeError = err;
+      this.rejectWaiters(err);
+    });
+    sock.on('close', () => {
+      if (!this.closeError) {
+        this.closeError = new Error('pop3 socket closed');
+      }
+      this.rejectWaiters(this.closeError);
+      this.closed = true;
+    });
+    sock.on('timeout', () => {
+      const err = new Error('pop3 socket timeout');
+      this.closeError = err;
+      sock.destroy(err);
+    });
+  }
+
+  private onData(chunk: Buffer): void {
+    this.byteBuf = Buffer.concat([this.byteBuf, chunk]);
+    this.flushLines();
+  }
+
+  private flushLines(): void {
+    while (true) {
+      const idx = this.byteBuf.indexOf('\r\n');
+      if (idx < 0) break;
+      const line = this.byteBuf.subarray(0, idx);
+      this.byteBuf = this.byteBuf.subarray(idx + 2);
+      if (this.lineWaiters.length > 0) {
+        const waiter = this.lineWaiters.shift()!;
+        waiter.resolve(line);
+      } else {
+        this.pendingLines.push(line);
+      }
+    }
+  }
+
+  private rejectWaiters(err: Error): void {
+    for (const waiter of this.lineWaiters) {
+      waiter.reject(err);
+    }
+    this.lineWaiters = [];
+  }
+
+  private async readLineBytes(): Promise<Buffer> {
+    if (this.closeError) {
+      throw this.closeError;
+    }
+    if (this.pendingLines.length > 0) {
+      return this.pendingLines.shift()!;
+    }
+    return new Promise((resolve, reject) => {
+      this.lineWaiters.push({ resolve, reject });
+    });
+  }
+
+  private async readLine(): Promise<string> {
+    const bytes = await this.readLineBytes();
+    return bytes.toString('utf-8');
+  }
+
+  private async readRetrBody(): Promise<Buffer> {
+    const parts: Buffer[] = [];
+    while (true) {
+      const line = await this.readLineBytes();
+      if (line.length === 1 && line[0] === 0x2e) {
+        break;
+      }
+      let bodyLine = line;
+      if (line.length >= 2 && line[0] === 0x2e && line[1] === 0x2e) {
+        bodyLine = line.subarray(1);
+      }
+      parts.push(bodyLine, Buffer.from('\r\n'));
+    }
+    return Buffer.concat(parts);
   }
 
   private async command(cmd: string): Promise<string> {
@@ -171,18 +302,16 @@ export class RealPop3Client implements Pop3Client {
     return line;
   }
 
-  private async multiline(cmd: string): Promise<string[]> {
+  private async multilineText(cmd: string): Promise<string[]> {
     await this.writeLine(cmd);
     const first = await this.readLine();
     if (!first.startsWith('+OK')) {
       throw new Error(`pop3 ${cmd} failed: ${first}`);
     }
     const lines: string[] = [];
-    // read until a line with only `.`
     while (true) {
       const line = await this.readLine();
       if (line === '.') break;
-      // de-stuff: lines starting with `..` are escaped `.`
       lines.push(line.startsWith('..') ? line.slice(1) : line);
     }
     return lines;
@@ -190,39 +319,33 @@ export class RealPop3Client implements Pop3Client {
 
   private async writeLine(line: string): Promise<void> {
     if (!this.sock) throw new Error('pop3 not connected');
+    if (this.closed) throw new Error('pop3 connection closed');
     return new Promise((resolve, reject) => {
       this.sock!.write(line + '\r\n', 'utf-8', (err) =>
         err ? reject(err) : resolve(),
       );
     });
   }
+}
 
-  private async readLine(): Promise<string> {
-    if (!this.sock) throw new Error('pop3 not connected');
-    // accumulate until CRLF
-    const sock = this.sock;
-    return new Promise((resolve, reject) => {
-      let buf = '';
-      const onData = (chunk: Buffer) => {
-        buf += this.decoder.decode(chunk, { stream: true });
-        let idx: number;
-        while ((idx = buf.indexOf('\r\n')) >= 0) {
-          const line = buf.slice(0, idx);
-          buf = buf.slice(idx + 2);
-          sock.off('data', onData);
-          sock.off('error', onErr);
-          resolve(line);
-          return;
-        }
-      };
-      const onErr = (err: Error) => {
-        sock.off('data', onData);
-        sock.off('error', onErr);
-        reject(err);
-      };
-      sock.on('data', onData);
-      sock.on('error', onErr);
-    });
+async function fetchPop3Secret(secretArn: string): Promise<string> {
+  const { SecretsManagerClient, GetSecretValueCommand } = await import(
+    '@aws-sdk/client-secrets-manager'
+  );
+  const region = process.env.AWS_REGION ?? 'af-south-1';
+  const client = new SecretsManagerClient({ region });
+  const out = await client.send(
+    new GetSecretValueCommand({ SecretId: secretArn }),
+  );
+  const raw = out.SecretString;
+  if (!raw) {
+    throw new Error(`pop3 secret empty: ${secretArn}`);
+  }
+  try {
+    const parsed = JSON.parse(raw) as { POP3_PASSWORD?: string; password?: string };
+    return parsed.POP3_PASSWORD ?? parsed.password ?? raw;
+  } catch {
+    return raw;
   }
 }
 
@@ -277,6 +400,8 @@ export class FakePop3Client implements Pop3Client {
 
   async connect(): Promise<void> {
     this.callLog.push({ op: 'connect' });
+    this.remaining = new Map(this.initial.map((m) => [m.uidl, m]));
+    this.pendingDele.clear();
     this.connected = true;
   }
 
@@ -343,24 +468,57 @@ export function loadFixtureMessages(
 /* Factory                                                                 */
 /* ----------------------------------------------------------------------- */
 
+/** Load `.eml` fixtures from a directory; uidl = filename without extension. */
+export function loadFixtureMessagesFromDir(dir?: string): FakePop3Message[] {
+  if (!dir) return [];
+  try {
+    return readdirSync(dir)
+      .filter((name) => name.endsWith('.eml'))
+      .map((name) => ({
+        uidl: name.replace(/\.eml$/, ''),
+        raw: readFileSync(join(dir, name)),
+      }));
+  } catch {
+    return [];
+  }
+}
+
 /**
- * Build a Pop3Client from env. Returns null when no real POP3 is configured
- * — the worker then falls back to the fake/fixture path.
+ * Build a Pop3Client from env.
+ *
+ * - `fixture` (default): always `FakePop3Client` — never opens TCP even when
+ *   `POP3_HOST` is set (prevents accidental real connect during deploy gates).
+ * - `real`: `RealPop3Client` when host/port/user and password/secret are set;
+ *   otherwise `null`.
  */
 export function createPop3Client(env: {
+  MAIL_TRANSPORT_MODE?: MailTransportMode;
   POP3_HOST?: string;
   POP3_PORT?: number;
   POP3_USER?: string;
+  POP3_PASSWORD?: string;
   POP3_SECRET_ARN?: string;
   POP3_TLS?: boolean;
-}): RealPop3Client | null {
+  INGEST_FIXTURE_DIR?: string;
+}): Pop3Client | null {
+  const mode = env.MAIL_TRANSPORT_MODE ?? 'fixture';
+
+  if (mode !== 'real') {
+    const messages = loadFixtureMessagesFromDir(env.INGEST_FIXTURE_DIR);
+    return new FakePop3Client({ messages });
+  }
+
   if (!env.POP3_HOST || !env.POP3_PORT || !env.POP3_USER) {
+    return null;
+  }
+  if (!env.POP3_PASSWORD && !env.POP3_SECRET_ARN) {
     return null;
   }
   return new RealPop3Client({
     host: env.POP3_HOST,
     port: env.POP3_PORT,
     user: env.POP3_USER,
+    password: env.POP3_PASSWORD,
     tls: env.POP3_TLS ?? true,
     secretArn: env.POP3_SECRET_ARN,
   });

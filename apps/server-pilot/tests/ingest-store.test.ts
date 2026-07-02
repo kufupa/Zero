@@ -278,7 +278,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     );
 
     it(
-      'treats a duplicate UIDL as safe-to-drain without re-inserting',
+      'treats a duplicate UIDL as safe-to-drain without re-inserting (inbound index)',
       async () => {
         const storage = withFakeS3();
         const raw = readFixture('centurion-stamped.eml');
@@ -378,6 +378,66 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         }
       },
       30000,
+    );
+
+    it(
+      'quarantine redelivery is idempotent for same ingest UIDL',
+      async () => {
+        const storage = withFakeS3();
+        const raw = readFixture('missing-owner.eml');
+        const { first, second } = await withSeededTestDb(async (db) => {
+          const parsed = await parseRawMessage(raw, {
+            messageId: generateMessageId(),
+            storage,
+          });
+          const f = await persistInboundMessage(
+            parsed,
+            raw,
+            {
+              ingestMailboxId: 'ingest-nava-legacy',
+              pop3Uidl: 'uidl-q-dup',
+              messageId: generateMessageId(),
+            },
+            { db, storage },
+          );
+          const s = await persistInboundMessage(
+            parsed,
+            raw,
+            {
+              ingestMailboxId: 'ingest-nava-legacy',
+              pop3Uidl: 'uidl-q-dup',
+              messageId: generateMessageId(),
+            },
+            { db, storage },
+          );
+          return { first: f, second: s };
+        });
+
+        expect(first.kind).toBe('quarantined');
+        expect(second.kind).toBe('quarantined');
+        if (first.kind === 'quarantined' && second.kind === 'quarantined') {
+          expect(second.quarantineId).toBe(first.quarantineId);
+          expect(second.reason).toBe('missing_owner_header');
+        }
+      },
+      30000,
+    );
+
+    it(
+      'rawMimeKey is deterministic for ingest mailbox + UIDL',
+      async () => {
+        const { rawMimeKey } = await import('../src/storage/s3.js');
+        const a = rawMimeKey({
+          ingestMailboxId: 'ingest-nava-legacy',
+          pop3Uidl: 'uidl-stable',
+        });
+        const b = rawMimeKey({
+          ingestMailboxId: 'ingest-nava-legacy',
+          pop3Uidl: 'uidl-stable',
+        });
+        expect(a).toBe(b);
+        expect(a).toBe('raw-mime/ingest-nava-legacy/uidl-stable.eml');
+      },
     );
   },
 );
