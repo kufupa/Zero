@@ -13,3 +13,36 @@ Task 9: complete (commit fb9fe748, mailbox query cache + polling + logout IDB cl
 Task 10: complete (commit 1ae4d7c2, nginx/pm2/deploy-ec2.sh + deploy-config tests)
 Task 11: complete (commit 91045818, deferred real-mail readiness docs + vpn-route-check.sh)
 Task 12: complete (commit 91045818, load-50-users.ts + ingest-benchmark.ts + cloudwatch-alarms.md + overnight report)
+
+---
+
+## Security hardening (2026-07-01 plan)
+
+Pre-real-ingest gate. Branch `EC2-pilot`. Real POP3 ingest still blocked until IT completes Exchange relay rules (Task 3 ops gate).
+
+| Task | Finding | Commit | Status |
+|------|---------|--------|--------|
+| 1 | F1 HTML XSS — server sanitize | e917df5a | complete |
+| 2 | F1 HTML XSS — UI no raw fallback | 94c674de | complete |
+| 3 | F2 X-Zero-Mailbox trust (last header) | ac100dd5 | complete |
+| 4 | F3 RDS TLS verify | e8ccba50 | complete |
+| 5 | N1 SMTP CRLF / outbound validate | 075cedfd | complete |
+| 6 | N2/N3 ingest transaction + size limits | e5bda6b0 | complete |
+| 7 | F4 Content-Disposition filenames | f3e60acd | complete |
+| 8 | F5/F6 signup guard + account linking | 4b031e7e | complete |
+| 9 | F7 tRPC test injection guard | 727833f9 | complete |
+| 10 | N5 nginx security headers | ff1c315f | complete |
+| 11 | N4 IDB cache on account switch | 88180fd7 | complete |
+| 12 | EC2 verification gate | 2955a324 + docs | complete |
+
+### Task 12 EC2 gate results (2026-07-02)
+
+- **Local:** `@zero/server` 54 pass / 38 skip; `@zero/mail` test green; both builds green. `package-contract` timeout bumped to 15s (2955a324).
+- **Push:** `EC2-pilot` pushed to origin (13 commits incl. hardening wave).
+- **Deploy:** bundle sync to `i-008f737974a9ba9b3`; `deploy-ec2.sh` build + pm2 reload; nginx installed with self-signed `nava.legacy.local` cert for header verification.
+- **Health:** `curl http://127.0.0.1:8788/health` → `{"ok":true,"service":"server-pilot"}`
+- **Nginx headers:** HSTS, X-Frame-Options DENY, CSP present on `https://nava.legacy.local/`
+- **Signup:** `POST /api/auth/sign-up/email` → **403** `signup disabled for pilot`
+- **Env:** `PILOT_OPEN_SIGNUP=0` appended to `.env.production`
+- **RDS tests (NODE_ENV=test):** 29/29 on targeted suite — seed-contract (5), auth-context (5), ingest-store (12 incl. double-stamp), sanitize-email-html (4), pop3-worker (3)
+- **Ops blocker (unchanged):** real Exchange/POP3 ingest off until IT relay rules per `deferred-real-mail-readiness.md`
