@@ -7,6 +7,8 @@
  *
  * Run:
  *   pnpm --filter @zero/server tsx scripts/ingest-benchmark.ts
+ *   pnpm --filter @zero/server tsx scripts/ingest-benchmark.ts --allow-prod
+ *   pnpm --filter @zero/server tsx scripts/ingest-benchmark.ts --cleanup
  *
  * Env:
  *   INGEST_BENCHMARK_COUNT     default 1000
@@ -17,16 +19,22 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
-import { closeDb } from '../src/db/client.js';
+import { like } from 'drizzle-orm';
+import { closeDb, getDb } from '../src/db/client.js';
 import {
   fakePop3FromMessages,
   ingestOnce,
 } from '../src/mail/ingest/worker.js';
 import type { FakePop3Message } from '../src/mail/ingest/pop3-client.js';
 import { INGEST_MAILBOX_ID } from '../src/db/seed.js';
+import { mailThread } from '../src/db/schema/mail.js';
+import { parseEnv } from '../src/env.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixturesDir = join(here, '..', 'tests', 'fixtures');
+
+const PILOT_PROD_DB_HOST = 'nava-zero-mail-pilot';
+const BENCHMARK_SUBJECT_PREFIX = 'Benchmark';
 
 const MESSAGE_COUNT = Number(process.env.INGEST_BENCHMARK_COUNT ?? 1000);
 const PDF_COUNT = Number(process.env.INGEST_BENCHMARK_PDF_COUNT ?? 100);
@@ -35,6 +43,52 @@ const MAX_PER_CYCLE = Number(
 );
 const DAILY_TARGET = Number(process.env.INGEST_DAILY_TARGET ?? 15_000);
 const RSS_SAMPLE_MS = Number(process.env.INGEST_RSS_SAMPLE_MS ?? 250);
+
+type CliFlags = {
+  allowProd: boolean;
+  cleanup: boolean;
+};
+
+function parseFlags(argv: string[]): CliFlags {
+  return {
+    allowProd: argv.includes('--allow-prod'),
+    cleanup: argv.includes('--cleanup'),
+  };
+}
+
+function isPilotProdDatabase(databaseUrl: string): boolean {
+  try {
+    const host = new URL(databaseUrl).hostname;
+    return host.includes(PILOT_PROD_DB_HOST);
+  } catch {
+    return databaseUrl.includes(PILOT_PROD_DB_HOST);
+  }
+}
+
+function assertSafeToRun(flags: CliFlags): void {
+  const env = parseEnv(process.env);
+  const onPilotProdDb = isPilotProdDatabase(env.DATABASE_URL);
+  const onPilotIngestMailbox = INGEST_MAILBOX_ID === 'ingest-nava-legacy';
+
+  if (!flags.allowProd && (onPilotProdDb || onPilotIngestMailbox)) {
+    console.error(
+      'ingest-benchmark refused: targets pilot production ingest mailbox / database.',
+    );
+    console.error(
+      'Re-run with --allow-prod only if you intend to write benchmark rows to production.',
+    );
+    process.exit(1);
+  }
+}
+
+async function cleanupBenchmarkRows(): Promise<number> {
+  const db = getDb();
+  const deleted = await db
+    .delete(mailThread)
+    .where(like(mailThread.subject, `${BENCHMARK_SUBJECT_PREFIX}%`))
+    .returning({ id: mailThread.id });
+  return deleted.length;
+}
 
 function readFixture(name: string): Buffer {
   return readFileSync(join(fixturesDir, name));
@@ -67,8 +121,8 @@ function buildFixtureMessages(): FakePop3Message[] {
     const template = usePdf ? pdfTemplate : plainTemplate;
     const messageId = `bench-msg-${i + 1}@legacyhotel.com`;
     const subject = usePdf
-      ? `Benchmark PDF message ${i + 1}`
-      : `Benchmark plain message ${i + 1}`;
+      ? `${BENCHMARK_SUBJECT_PREFIX} PDF message ${i + 1}`
+      : `${BENCHMARK_SUBJECT_PREFIX} plain message ${i + 1}`;
     messages.push({
       uidl,
       raw: cloneTemplate(template, uidl, messageId, subject),
@@ -92,6 +146,26 @@ function sampleMaxRss(intervalMs: number): { stop: () => number } {
 }
 
 async function main(): Promise<void> {
+  const flags = parseFlags(process.argv.slice(2));
+  assertSafeToRun(flags);
+
+  if (flags.cleanup) {
+    const removed = await cleanupBenchmarkRows();
+    console.log(
+      JSON.stringify(
+        {
+          cleanup: true,
+          removedThreads: removed,
+          subjectPrefix: BENCHMARK_SUBJECT_PREFIX,
+        },
+        null,
+        2,
+      ),
+    );
+    await closeDb().catch(() => undefined);
+    return;
+  }
+
   const messages = buildFixtureMessages();
   const pop3 = fakePop3FromMessages(messages);
   const rssSampler = sampleMaxRss(RSS_SAMPLE_MS);

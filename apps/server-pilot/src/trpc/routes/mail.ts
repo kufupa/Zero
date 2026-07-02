@@ -14,7 +14,7 @@
 import { TRPCError } from '@trpc/server';
 import { assertSafeOutboundFields } from '../../mail/send/validate-outbound.js';
 import { z } from 'zod';
-import { and, eq, asc, desc, isNotNull, inArray } from 'drizzle-orm';
+import { and, eq, asc, desc, isNotNull, isNull, inArray } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { mailboxProcedure, router as tRouter } from '../trpc.js';
 import { getDb } from '../../db/client.js';
@@ -117,8 +117,9 @@ export const mailRouter = tRouter({
    * List threads in the caller's active mailbox, filtered by folder/search.
    *
    * Folder semantics:
-   *   inbox    -> isArchived=false (default view)
-   *   archived -> isArchived=true
+   *   inbox    -> isArchived=false, not trashed (default view)
+   *   archived -> isArchived=true, not trashed
+   *   bin      -> trashedAt IS NOT NULL
    *   starred  -> isStarred=true
    *   snoozed  -> snoozedUntil IS NOT NULL
    *   sent     -> exists a message with direction='outbound' on the thread
@@ -137,12 +138,13 @@ export const mailRouter = tRouter({
         return { threads: [] as { id: string; transportId: string }[], nextPageToken: null };
       }
 
-      // bin: Task 5 adds trashedAt filter; accept slug without wrong results.
-      if (input.folder === 'bin') {
-        return { threads: [] as { id: string; transportId: string }[], nextPageToken: null };
-      }
-
       const conditions = [eq(mailThread.transportId, transportId)];
+
+      if (input.folder === 'bin') {
+        conditions.push(isNotNull(mailThread.trashedAt));
+      } else {
+        conditions.push(isNull(mailThread.trashedAt));
+      }
 
       if (input.folder === 'inbox') {
         conditions.push(eq(mailThread.isArchived, false));
@@ -200,6 +202,7 @@ export const mailRouter = tRouter({
           isRead: mailThread.isRead,
           labelIds: mailThread.labelIds,
           snoozedUntil: mailThread.snoozedUntil,
+          trashedAt: mailThread.trashedAt,
           latestMessageAt: mailThread.latestMessageAt,
           updatedAt: mailThread.updatedAt,
         })
@@ -266,6 +269,7 @@ export const mailRouter = tRouter({
           isRead: r.isRead,
           labelIds: r.labelIds,
           snoozedUntil: r.snoozedUntil,
+          trashedAt: r.trashedAt,
           latestMessageAt: r.latestMessageAt,
           historyId: null as string | null,
         })),
@@ -466,14 +470,32 @@ export const mailRouter = tRouter({
       const transportId = ctx.activeTransportId;
       const addSet = new Set(input.addLabels);
       const removeSet = new Set(input.removeLabels);
+      const trashAdded = addSet.delete('TRASH');
+      const trashRemoved = removeSet.delete('TRASH');
+      // INBOX is a system folder label; restoring from bin removes TRASH only.
+      addSet.delete('INBOX');
+      removeSet.delete('INBOX');
+      removeSet.delete('SENT');
+      removeSet.delete('SPAM');
+      removeSet.delete('SNOOZED');
+      addSet.delete('SENT');
+      addSet.delete('SPAM');
+      addSet.delete('SNOOZED');
       for (const id of input.threadIds) {
         const row = await requireThreadForTransport(db, id, transportId);
         const current = new Set(row.labelIds ?? []);
         for (const a of addSet) current.add(a);
         for (const r of removeSet) current.delete(r);
+        const patch: {
+          labelIds: string[];
+          updatedAt: Date;
+          trashedAt?: Date | null;
+        } = { labelIds: [...current], updatedAt: new Date() };
+        if (trashAdded) patch.trashedAt = new Date();
+        if (trashRemoved) patch.trashedAt = null;
         await db
           .update(mailThread)
-          .set({ labelIds: [...current], updatedAt: new Date() })
+          .set(patch)
           .where(and(eq(mailThread.id, id), eq(mailThread.transportId, transportId)));
       }
       return { updated: input.threadIds.length };
@@ -497,16 +519,21 @@ export const mailRouter = tRouter({
   bulkDelete: mailboxProcedure
     .input(bulkIdsInput)
     .mutation(async ({ input, ctx }) => {
-      // Hard-delete threads the caller can see. Cascades to messages +
-      // attachments via FK ON DELETE CASCADE. Drafts on these threads also
-      // cascade (Task 4 note: be aware; do not delete threads casually).
+      // Soft-delete (trash) unless already trashed; then hard-delete (delete forever).
       const db = getDb();
       const transportId = ctx.activeTransportId;
       for (const id of input.threadIds) {
-        await requireThreadForTransport(db, id, transportId);
-        await db
-          .delete(mailThread)
-          .where(and(eq(mailThread.id, id), eq(mailThread.transportId, transportId)));
+        const row = await requireThreadForTransport(db, id, transportId);
+        if (row.trashedAt) {
+          await db
+            .delete(mailThread)
+            .where(and(eq(mailThread.id, id), eq(mailThread.transportId, transportId)));
+        } else {
+          await db
+            .update(mailThread)
+            .set({ trashedAt: new Date(), updatedAt: new Date() })
+            .where(and(eq(mailThread.id, id), eq(mailThread.transportId, transportId)));
+        }
       }
       return { updated: input.threadIds.length };
     }),
@@ -516,12 +543,21 @@ export const mailRouter = tRouter({
     .mutation(async ({ input, ctx }) => {
       const db = getDb();
       const transportId = ctx.activeTransportId;
-      await requireThreadForTransport(db, input.id, transportId);
-      await db
-        .delete(mailThread)
-        .where(
-          and(eq(mailThread.id, input.id), eq(mailThread.transportId, transportId)),
-        );
+      const row = await requireThreadForTransport(db, input.id, transportId);
+      if (row.trashedAt) {
+        await db
+          .delete(mailThread)
+          .where(
+            and(eq(mailThread.id, input.id), eq(mailThread.transportId, transportId)),
+          );
+      } else {
+        await db
+          .update(mailThread)
+          .set({ trashedAt: new Date(), updatedAt: new Date() })
+          .where(
+            and(eq(mailThread.id, input.id), eq(mailThread.transportId, transportId)),
+          );
+      }
       return { deleted: true };
     }),
 

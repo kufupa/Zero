@@ -6,21 +6,70 @@
  * `nava-zero/server-pilot/pilot-users` (JSON; never committed to the repo).
  *
  * Run via: pnpm --filter @zero/server seed:prod
+ * Rotate passwords: pnpm --filter @zero/server seed:prod -- --rotate
  */
 import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import * as schema from '../src/db/schema/index.js';
 import { parseEnv } from '../src/env.js';
-import { seedAll, PILOT_USERS } from '../src/db/seed.js';
+import { seedAll, planPilotCredentials, PILOT_USERS } from '../src/db/seed.js';
 import { getPostgresSslOptions } from '../src/db/ssl-config.js';
 
 const PILOT_SECRET_NAME = 'nava-zero/server-pilot/pilot-users';
 const AWS_REGION = process.env.AWS_REGION ?? 'af-south-1';
 
-async function putPilotSecret(payload: Record<string, { password: string }>): Promise<void> {
+function parseFlags(argv: string[]): { rotate: boolean } {
+  return { rotate: argv.includes('--rotate') };
+}
+
+async function runAws(args: string[]): Promise<{ stdout: string; stderr: string }> {
   const { spawn } = await import('node:child_process');
+  return new Promise((resolve, reject) => {
+    const p = spawn('aws', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    p.stdout.on('data', (d) => (stdout += d.toString()));
+    p.stderr.on('data', (d) => (stderr += d.toString()));
+    p.on('error', reject);
+    p.on('close', (code) =>
+      code === 0 ? resolve({ stdout, stderr }) : reject(new Error(`aws ${args[0]} exit ${code}: ${stderr}`)),
+    );
+  });
+}
+
+async function ensurePilotSecret(): Promise<void> {
+  try {
+    await runAws([
+      'secretsmanager',
+      'describe-secret',
+      '--region',
+      AWS_REGION,
+      '--secret-id',
+      PILOT_SECRET_NAME,
+    ]);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (!/ResourceNotFoundException|can't find the specified secret/i.test(message)) {
+      throw err;
+    }
+    await runAws([
+      'secretsmanager',
+      'create-secret',
+      '--region',
+      AWS_REGION,
+      '--name',
+      PILOT_SECRET_NAME,
+      '--description',
+      'NAVA Zero server-pilot pilot user passwords (JSON by email)',
+      '--secret-string',
+      '{}',
+    ]);
+  }
+}
+
+async function putPilotSecret(payload: Record<string, { password: string }>): Promise<void> {
   const json = JSON.stringify(payload);
-  const args = [
+  await runAws([
     'secretsmanager',
     'put-secret-value',
     '--region',
@@ -29,21 +78,11 @@ async function putPilotSecret(payload: Record<string, { password: string }>): Pr
     PILOT_SECRET_NAME,
     '--secret-string',
     json,
-  ];
-  await new Promise<void>((resolve, reject) => {
-    const p = spawn('aws', args, { stdio: ['ignore', 'pipe', 'pipe'] });
-    let stderr = '';
-    p.stderr.on('data', (d) => (stderr += d.toString()));
-    p.on('error', reject);
-    p.on('close', (code) =>
-      code === 0
-        ? resolve()
-        : reject(new Error(`aws secretsmanager put-secret-value exit ${code}: ${stderr}`)),
-    );
-  });
+  ]);
 }
 
 async function main(): Promise<void> {
+  const flags = parseFlags(process.argv.slice(2));
   const env = parseEnv(process.env);
   const conn = postgres(env.DATABASE_URL, {
     max: 5,
@@ -54,15 +93,30 @@ async function main(): Promise<void> {
   const db = drizzle(conn, { schema });
 
   try {
-    const result = await seedAll(db);
-    await putPilotSecret(result.pilotCredentials);
+    const credentialsToWrite = await planPilotCredentials(db, {
+      rotatePasswords: flags.rotate,
+    });
+
+    if (Object.keys(credentialsToWrite).length > 0) {
+      await ensurePilotSecret();
+      await putPilotSecret(credentialsToWrite);
+    }
+
+    const result = await seedAll(db, {
+      rotatePasswords: flags.rotate,
+      precomputedCredentials: credentialsToWrite,
+    });
 
     console.log('seed complete');
     console.log('ingest mailbox: nava@legacyhotel.com');
     console.log('transports (count):', result.transportCount);
     console.log('mailbox_access rows (total):', result.accessCount);
     console.log('pilot users:', PILOT_USERS.map((u) => u.email).join(', '));
-    console.log('pilot credentials stored in Secrets Manager:', PILOT_SECRET_NAME);
+    if (Object.keys(credentialsToWrite).length > 0) {
+      console.log('pilot credentials stored in Secrets Manager:', PILOT_SECRET_NAME);
+    } else {
+      console.log('pilot credentials unchanged (use --rotate to rotate)');
+    }
   } finally {
     await conn.end();
   }

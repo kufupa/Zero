@@ -5,7 +5,7 @@
  * `tests/seed-contract.test.ts` (transaction-rollback verification) can both
  * call it against the same DB handle.
  */
-import { count } from 'drizzle-orm';
+import { count, eq } from 'drizzle-orm';
 import { randomBytes } from 'node:crypto';
 import { hashPassword } from 'better-auth/crypto';
 import { account, user as userTable } from './schema/auth.js';
@@ -46,6 +46,45 @@ export type SeedResult = {
   accessCount: number;
 };
 
+export type SeedOptions = {
+  /** When true, rotate passwords for all pilot users. Default false. */
+  rotatePasswords?: boolean;
+  /** Pre-generated plaintext passwords (from planPilotCredentials). */
+  precomputedCredentials?: Record<string, { password: string }>;
+};
+
+function credentialAccountId(specId: string): string {
+  return `cred-${specId}`;
+}
+
+/**
+ * Determine which pilot users need new passwords before any DB writes.
+ * Used by seed-prod to persist Secrets Manager values before seedAll.
+ */
+export async function planPilotCredentials(
+  db: DB,
+  opts: SeedOptions = {},
+): Promise<Record<string, { password: string }>> {
+  const rotatePasswords = opts.rotatePasswords ?? false;
+  const pilotCredentials: Record<string, { password: string }> = {};
+
+  for (const spec of PILOT_USERS) {
+    const existing = await db
+      .select({ id: account.id })
+      .from(account)
+      .where(eq(account.id, credentialAccountId(spec.id)))
+      .limit(1);
+
+    if (rotatePasswords || existing.length === 0) {
+      pilotCredentials[spec.email] = {
+        password: randomBytes(18).toString('base64url'),
+      };
+    }
+  }
+
+  return pilotCredentials;
+}
+
 /**
  * Seed all pilot rows against the given DB handle.
  *
@@ -53,7 +92,10 @@ export type SeedResult = {
  * connection (production) or a transaction-scoped handle (tests with
  * rollback).
  */
-export async function seedAll(db: DB): Promise<SeedResult> {
+export async function seedAll(db: DB, opts: SeedOptions = {}): Promise<SeedResult> {
+  const rotatePasswords = opts.rotatePasswords ?? false;
+  const precomputed = opts.precomputedCredentials ?? {};
+
   // 1. Ingest mailbox
   await db
     .insert(mailIngestMailbox)
@@ -87,46 +129,78 @@ export async function seedAll(db: DB): Promise<SeedResult> {
       },
     });
 
-  // 3. Pilot users + credential accounts (rotate passwords)
+  // 3. Pilot users + credential accounts (rotate only when requested or missing)
   const pilotCredentials: Record<string, { password: string }> = {};
-  for (const spec of PILOT_USERS) {
-    const password = randomBytes(18).toString('base64url');
-    const hashed = await hashPassword(password);
 
-    await db
-      .insert(userTable)
-      .values({
-        id: spec.id,
-        name: spec.name,
-        email: spec.email,
-        emailVerified: true,
-      })
-      .onConflictDoUpdate({
-        target: userTable.email,
-        set: {
+  await db.transaction(async (tx) => {
+    for (const spec of PILOT_USERS) {
+      const accountId = credentialAccountId(spec.id);
+      const existingAccount = await tx
+        .select({ id: account.id })
+        .from(account)
+        .where(eq(account.id, accountId))
+        .limit(1);
+
+      const shouldRotate = rotatePasswords || existingAccount.length === 0;
+      let password: string | undefined;
+      let hashed: string | undefined;
+
+      if (shouldRotate) {
+        password =
+          precomputed[spec.email]?.password ?? randomBytes(18).toString('base64url');
+        hashed = await hashPassword(password);
+        pilotCredentials[spec.email] = { password };
+      }
+
+      await tx
+        .insert(userTable)
+        .values({
+          id: spec.id,
           name: spec.name,
+          email: spec.email,
           emailVerified: true,
-          updatedAt: new Date(),
-        },
-      });
+        })
+        .onConflictDoUpdate({
+          target: userTable.email,
+          set: {
+            name: spec.name,
+            emailVerified: true,
+            updatedAt: new Date(),
+          },
+        });
 
-    const accountId = `cred-${spec.id}`;
-    await db
-      .insert(account)
-      .values({
-        id: accountId,
-        userId: spec.id,
-        accountId: spec.id,
-        providerId: 'credential',
-        password: hashed,
-      })
-      .onConflictDoUpdate({
-        target: account.id,
-        set: { password: hashed, updatedAt: new Date() },
-      });
+      const userRow = await tx
+        .select({ id: userTable.id })
+        .from(userTable)
+        .where(eq(userTable.email, spec.email))
+        .limit(1);
+      const actualUserId = userRow[0]?.id;
+      if (!actualUserId) {
+        throw new Error(`seed failed: user row missing for ${spec.email}`);
+      }
 
-    pilotCredentials[spec.email] = { password };
-  }
+      if (shouldRotate && hashed) {
+        await tx
+          .insert(account)
+          .values({
+            id: accountId,
+            userId: actualUserId,
+            accountId: actualUserId,
+            providerId: 'credential',
+            password: hashed,
+          })
+          .onConflictDoUpdate({
+            target: account.id,
+            set: {
+              password: hashed,
+              userId: actualUserId,
+              accountId: actualUserId,
+              updatedAt: new Date(),
+            },
+          });
+      }
+    }
+  });
 
   // 4. Mailbox access rows
   for (const row of ACCESS_ROWS) {

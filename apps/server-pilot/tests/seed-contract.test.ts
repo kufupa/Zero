@@ -6,10 +6,12 @@ import {
   mailboxTransport,
 } from '../src/db/schema/mail';
 import { user as userTable, account } from '../src/db/schema/auth';
+import { planPilotCredentials, seedAll } from '../src/db/seed';
 import {
   TEST_DB_AVAILABLE,
   probeTestDb,
   withSeededTestDb,
+  withTestDb,
 } from './helpers/test-db';
 
 const reachable = await probeTestDb();
@@ -104,6 +106,43 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         for (const a of accounts) {
           expect(a.password).toBeTruthy();
           expect(a.password).toMatch(/^[0-9a-f]+:[0-9a-f]+$/);
+        }
+      },
+      30000,
+    );
+
+    it(
+      'planPilotCredentials returns empty when accounts exist and rotatePasswords is false',
+      async () => {
+        const planned = await withSeededTestDb(async (db) => {
+          return planPilotCredentials(db, { rotatePasswords: false });
+        });
+        expect(Object.keys(planned)).toHaveLength(0);
+      },
+      30000,
+    );
+
+    it(
+      're-seeding without rotatePasswords does not change credential password hashes',
+      async () => {
+        const beforeAfter = await withTestDb(async (db) => {
+          await seedAll(db);
+          const before = await db
+            .select({ id: account.id, password: account.password })
+            .from(account)
+            .where(eq(account.providerId, 'credential'));
+          await seedAll(db, { rotatePasswords: false });
+          const after = await db
+            .select({ id: account.id, password: account.password })
+            .from(account)
+            .where(eq(account.providerId, 'credential'));
+          return { before, after };
+        });
+        const beforeById = Object.fromEntries(
+          beforeAfter.before.map((row) => [row.id, row.password]),
+        );
+        for (const row of beforeAfter.after) {
+          expect(row.password).toBe(beforeById[row.id]);
         }
       },
       30000,

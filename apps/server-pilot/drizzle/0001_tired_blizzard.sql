@@ -1,0 +1,1 @@
+ALTER TABLE "mail_thread" ADD COLUMN "trashed_at" timestamp;

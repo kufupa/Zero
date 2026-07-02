@@ -1,0 +1,114 @@
+/**
+ * Soft-delete / bin folder tests (Task 5).
+ *
+ * Verifies bulkDelete trashes threads, bin folder lists them, inbox excludes
+ * them, restore via modifyLabels clears trashedAt, and second delete hard-deletes.
+ */
+import { describe, expect, it } from 'vitest';
+import { eq } from 'drizzle-orm';
+import { mailThread } from '../src/db/schema/mail.js';
+import {
+  TEST_DB_AVAILABLE,
+  probeTestDb,
+  withSeededTestDb,
+} from './helpers/test-db';
+import { callerFor } from './helpers/trpc-caller';
+
+const reachable = await probeTestDb();
+
+async function insertInboxThread(db: import('../src/db/client.js').DB, id: string) {
+  await db.insert(mailThread).values({
+    id,
+    transportId: 'transport-centurion',
+    threadRootId: `root-${id}`,
+    subject: `Trash test ${id}`,
+    snippet: 'soft delete fixture',
+    isArchived: false,
+    isStarred: false,
+    isRead: false,
+    labelIds: [],
+    latestMessageAt: new Date(),
+  });
+}
+
+describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
+  'trash soft delete (seeded, transaction-rollback)',
+  () => {
+    it(
+      'bulkDelete moves thread to bin; restore clears trashedAt; second delete removes row',
+      async () => {
+        await withSeededTestDb(async (db) => {
+          const threadId = 'thread-trash-soft-1';
+          await insertInboxThread(db, threadId);
+          const caller = await callerFor('user-manager', { db });
+
+          const inboxBefore = await caller.mail.listThreads({ folder: 'inbox' });
+          expect(inboxBefore.threads.some((t) => t.id === threadId)).toBe(true);
+
+          await caller.mail.bulkDelete({ ids: [threadId] });
+
+          const rowTrashed = await db
+            .select({ trashedAt: mailThread.trashedAt })
+            .from(mailThread)
+            .where(eq(mailThread.id, threadId))
+            .limit(1);
+          expect(rowTrashed[0]?.trashedAt).toBeTruthy();
+
+          const inboxAfter = await caller.mail.listThreads({ folder: 'inbox' });
+          expect(inboxAfter.threads.some((t) => t.id === threadId)).toBe(false);
+
+          const binAfter = await caller.mail.listThreads({ folder: 'bin' });
+          expect(binAfter.threads.some((t) => t.id === threadId)).toBe(true);
+
+          await caller.mail.modifyLabels({
+            threadId: [threadId],
+            addLabels: ['INBOX'],
+            removeLabels: ['TRASH'],
+          });
+
+          const rowRestored = await db
+            .select({ trashedAt: mailThread.trashedAt })
+            .from(mailThread)
+            .where(eq(mailThread.id, threadId))
+            .limit(1);
+          expect(rowRestored[0]?.trashedAt).toBeNull();
+
+          const inboxRestored = await caller.mail.listThreads({ folder: 'inbox' });
+          expect(inboxRestored.threads.some((t) => t.id === threadId)).toBe(true);
+
+          await caller.mail.bulkDelete({ ids: [threadId] });
+          await caller.mail.bulkDelete({ ids: [threadId] });
+
+          const rowGone = await db
+            .select({ id: mailThread.id })
+            .from(mailThread)
+            .where(eq(mailThread.id, threadId))
+            .limit(1);
+          expect(rowGone).toHaveLength(0);
+        });
+      },
+      30000,
+    );
+
+    it(
+      'delete endpoint soft-deletes when not already trashed',
+      async () => {
+        await withSeededTestDb(async (db) => {
+          const threadId = 'thread-trash-soft-2';
+          await insertInboxThread(db, threadId);
+          const caller = await callerFor('user-manager', { db });
+
+          await caller.mail.delete({ id: threadId });
+
+          const row = await db
+            .select({ trashedAt: mailThread.trashedAt })
+            .from(mailThread)
+            .where(eq(mailThread.id, threadId))
+            .limit(1);
+          expect(row[0]?.trashedAt).toBeTruthy();
+        });
+      },
+      30000,
+    );
+  },
+);
