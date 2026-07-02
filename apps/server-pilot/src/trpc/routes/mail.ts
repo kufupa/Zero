@@ -14,7 +14,7 @@
 import { TRPCError } from '@trpc/server';
 import { assertSafeOutboundFields } from '../../mail/send/validate-outbound.js';
 import { z } from 'zod';
-import { and, eq, asc, desc, isNotNull, isNull, inArray } from 'drizzle-orm';
+import { and, eq, asc, desc, isNotNull, isNull, inArray, sql, exists } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { mailboxProcedure, router as tRouter } from '../trpc.js';
 import { getDb } from '../../db/client.js';
@@ -28,6 +28,9 @@ import {
 import {
   requireThreadForTransport,
   requireMessageForTransport,
+  encodePageCursor,
+  decodePageCursor,
+  keysetBefore,
 } from './mail-helpers.js';
 import {
   getSmtpTransport,
@@ -133,7 +136,6 @@ export const mailRouter = tRouter({
       const transportId = ctx.activeTransportId;
       const limit = input.limit;
 
-      // drafts / draft folder owned by drafts.list; return empty for compatibility.
       if (input.folder === 'drafts' || input.folder === 'draft') {
         return { threads: [] as { id: string; transportId: string }[], nextPageToken: null };
       }
@@ -156,7 +158,6 @@ export const mailRouter = tRouter({
         conditions.push(isNotNull(mailThread.snoozedUntil));
       }
 
-      // spam: threads whose labelIds include the transport's SPAM label.
       let spamLabelId: string | null = null;
       if (input.folder === 'spam') {
         const spamRow = await db
@@ -170,28 +171,81 @@ export const mailRouter = tRouter({
         if (!spamLabelId) {
           return { threads: [], nextPageToken: null };
         }
+        conditions.push(
+          sql`${mailThread.labelIds} ?| array[${sql`${spamLabelId}`}]`,
+        );
       }
 
-      // sent: thread has at least one outbound message on this transport.
-      let sentThreadIds: string[] | null = null;
       if (input.folder === 'sent') {
-        const sentRows = await db
-          .select({ threadId: message.threadId })
-          .from(message)
-          .where(
-            and(
-              eq(message.transportId, transportId),
-              eq(message.direction, 'outbound'),
+        conditions.push(
+          exists(
+            db
+              .select({ one: sql`1` })
+              .from(message)
+              .where(
+                and(
+                  eq(message.threadId, mailThread.id),
+                  eq(message.transportId, transportId),
+                  eq(message.direction, 'outbound'),
+                ),
+              ),
+          ),
+        );
+      }
+
+      if (input.labelIds && input.labelIds.length > 0) {
+        conditions.push(
+          sql`${mailThread.labelIds} ?| array[${sql.join(
+            input.labelIds.map((id) => sql`${id}`),
+            sql`, `,
+          )}]`,
+        );
+      }
+
+      if (input.q && input.q.trim()) {
+        const pattern = `%${input.q.trim().toLowerCase()}%`;
+        conditions.push(
+          sql`(lower(${mailThread.subject}) LIKE ${pattern} OR lower(${mailThread.snippet}) LIKE ${pattern})`,
+        );
+      }
+
+      if (input.cursor) {
+        const decoded = decodePageCursor(input.cursor);
+        if (decoded) {
+          conditions.push(
+            keysetBefore(
+              mailThread.latestMessageAt,
+              mailThread.id,
+              decoded.ts,
+              decoded.id,
             ),
-          )
-          .groupBy(message.threadId);
-        sentThreadIds = sentRows.map((r) => r.threadId);
-        if (sentThreadIds.length === 0) {
-          return { threads: [], nextPageToken: null };
+          );
+        } else {
+          const cursorThread = await db
+            .select({
+              latestMessageAt: mailThread.latestMessageAt,
+              id: mailThread.id,
+            })
+            .from(mailThread)
+            .where(
+              and(eq(mailThread.id, input.cursor), eq(mailThread.transportId, transportId)),
+            )
+            .limit(1);
+          if (cursorThread.length > 0) {
+            const row = cursorThread[0]!;
+            conditions.push(
+              keysetBefore(
+                mailThread.latestMessageAt,
+                mailThread.id,
+                row.latestMessageAt ?? new Date(0),
+                row.id,
+              ),
+            );
+          }
         }
       }
 
-      let query = db
+      let rows = await db
         .select({
           id: mailThread.id,
           transportId: mailThread.transportId,
@@ -207,55 +261,15 @@ export const mailRouter = tRouter({
           updatedAt: mailThread.updatedAt,
         })
         .from(mailThread)
-        .where(
-          sentThreadIds
-            ? and(eq(mailThread.transportId, transportId), inArray(mailThread.id, sentThreadIds))
-            : and(...conditions),
-        )
-        .orderBy(desc(mailThread.latestMessageAt))
+        .where(and(...conditions))
+        .orderBy(desc(mailThread.latestMessageAt), desc(mailThread.id))
         .limit(limit + 1);
 
-      let rows = await query;
       let nextPageToken: string | null = null;
       if (rows.length > limit) {
+        const last = rows[limit - 1]!;
         rows = rows.slice(0, limit);
-        nextPageToken = rows[rows.length - 1]?.id ?? null;
-      }
-      const cursor = input.cursor;
-      if (cursor) {
-        // Simple cursor: drop threads with latestMessageAt <= the cursor
-        // thread's latestMessageAt. Caller passes the last id.
-        const cursorThread = await db
-          .select({ latestMessageAt: mailThread.latestMessageAt })
-          .from(mailThread)
-          .where(and(eq(mailThread.id, cursor), eq(mailThread.transportId, transportId)))
-          .limit(1);
-        if (cursorThread.length > 0 && cursorThread[0]!.latestMessageAt) {
-          const cutoff = cursorThread[0]!.latestMessageAt!;
-          rows = rows.filter(
-            (r) => (r.latestMessageAt ? r.latestMessageAt < cutoff : false),
-          );
-        }
-      }
-
-      // Optional label filter: thread.labelIds jsonb overlaps input.labelIds.
-      if (input.labelIds && input.labelIds.length > 0) {
-        const wanted = new Set(input.labelIds);
-        rows = rows.filter((r) => (r.labelIds ?? []).some((id) => wanted.has(id)));
-      }
-
-      if (spamLabelId) {
-        rows = rows.filter((r) => (r.labelIds ?? []).includes(spamLabelId!));
-      }
-
-      // Optional text search across subject + snippet.
-      if (input.q && input.q.trim()) {
-        const q = input.q.trim().toLowerCase();
-        rows = rows.filter(
-          (r) =>
-            (r.subject?.toLowerCase().includes(q) ?? false) ||
-            (r.snippet?.toLowerCase().includes(q) ?? false),
-        );
+        nextPageToken = encodePageCursor(last.latestMessageAt, last.id);
       }
 
       return {

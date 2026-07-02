@@ -22,7 +22,7 @@
  * Tests run this inside `withTestDb` so the transaction is rolled back; in
  * production the transaction commits for real.
  */
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import type { DB } from '../../db/client.js';
 import {
@@ -200,19 +200,17 @@ export async function persistInboundMessage(
     };
   }
 
-  // Thread resolution --------------------------------------------------
-  const threadId = await resolveOrCreateThread({
-    db,
-    transportId: transport.id,
-    parsed,
-  });
-
-  // Insert message + attachments --------------------------------------
-  // Reuse the SAME messageId that parseRawMessage used to namespace the
-  // attachment S3 keys (`attachments/{messageId}/...`) so the S3 key prefix
-  // and the DB `message.id` stay aligned. Do NOT regenerate here.
+  // Insert message + attachments (thread resolve inside same transaction).
   const messageId = meta.messageId;
+  let threadId = '';
   await db.transaction(async (tx) => {
+    threadId = await resolveThreadId({
+      tx: tx as unknown as DB,
+      transportId: transport.id,
+      parsed,
+      pop3Uidl: meta.pop3Uidl,
+    });
+
     await tx.insert(message).values({
       id: messageId,
       transportId: transport.id,
@@ -317,18 +315,52 @@ async function quarantineUnrouted(args: {
   };
 }
 
-async function resolveOrCreateThread(args: {
-  db: DB;
+async function resolveThreadId(args: {
+  tx: DB;
   transportId: string;
   parsed: ParsedInboundMessage;
+  pop3Uidl: string;
 }): Promise<string> {
-  const { db, transportId, parsed } = args;
+  const { tx, transportId, parsed, pop3Uidl } = args;
+  const now = parsed.receivedAt ?? new Date();
+  const snippet = parsed.textBody
+    ? parsed.textBody.slice(0, 200)
+    : parsed.subject ?? '';
 
-  // Thread root = Message-ID if present, else the pop3 uidl-derived stable id.
-  const threadRootId =
-    parsed.messageId ?? `no-message-id-${parsed.inReplyTo ?? 'root'}`;
-  // Try to find an existing thread on this transport with the same root.
-  const existing = await db
+  const candidates = [
+    ...(parsed.inReplyTo ? [parsed.inReplyTo] : []),
+    ...parsed.references,
+  ].filter(Boolean);
+  const uniqueCandidates = [...new Set(candidates)];
+
+  if (uniqueCandidates.length > 0) {
+    const parentRows = await tx
+      .select({ threadId: message.threadId })
+      .from(message)
+      .where(
+        and(
+          eq(message.transportId, transportId),
+          inArray(message.messageIdHeader, uniqueCandidates),
+        ),
+      )
+      .limit(1);
+    if (parentRows.length > 0) {
+      const threadId = parentRows[0]!.threadId;
+      await tx
+        .update(mailThread)
+        .set({
+          latestMessageAt: now,
+          snippet,
+          isRead: false,
+          updatedAt: new Date(),
+        })
+        .where(eq(mailThread.id, threadId));
+      return threadId;
+    }
+  }
+
+  const threadRootId = parsed.messageId ?? `no-message-id-${pop3Uidl}`;
+  const existing = await tx
     .select({ id: mailThread.id })
     .from(mailThread)
     .where(
@@ -339,23 +371,31 @@ async function resolveOrCreateThread(args: {
     )
     .limit(1);
   if (existing.length > 0) {
-    return existing[0]!.id;
+    const threadId = existing[0]!.id;
+    await tx
+      .update(mailThread)
+      .set({
+        latestMessageAt: now,
+        snippet,
+        isRead: false,
+        updatedAt: new Date(),
+      })
+      .where(eq(mailThread.id, threadId));
+    return threadId;
   }
 
   const threadId = randomUUID();
-  await db.insert(mailThread).values({
+  await tx.insert(mailThread).values({
     id: threadId,
     transportId,
     threadRootId,
     subject: parsed.subject,
-    snippet: parsed.textBody
-      ? parsed.textBody.slice(0, 200)
-      : parsed.subject ?? '',
+    snippet,
     isArchived: false,
     isStarred: false,
     isRead: false,
     labelIds: [],
-    latestMessageAt: parsed.receivedAt ?? new Date(),
+    latestMessageAt: now,
   });
   return threadId;
 }

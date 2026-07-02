@@ -2,7 +2,7 @@
  * Shared mail-route helpers: thread/message scoping, NOT_FOUND guard.
  */
 import { TRPCError } from '@trpc/server';
-import { and, eq, desc, asc, isNotNull, isNull } from 'drizzle-orm';
+import { and, eq, desc, asc, isNotNull, isNull, sql, exists } from 'drizzle-orm';
 import type { DB } from '../../db/client.js';
 import {
   mailThread,
@@ -50,4 +50,25 @@ export async function requireMessageForTransport(
   return rows[0]!;
 }
 
-export { and, eq, desc, asc, isNotNull, isNull };
+export { and, eq, desc, asc, isNotNull, isNull, sql, exists };
+
+/** Encode keyset cursor as ISO timestamp + id. */
+export function encodePageCursor(ts: Date | null, id: string): string {
+  return `${(ts ?? new Date(0)).toISOString()}|${id}`;
+}
+
+/** Decode keyset cursor; returns null when format is invalid. */
+export function decodePageCursor(cursor: string): { ts: Date; id: string } | null {
+  const pipe = cursor.indexOf('|');
+  if (pipe === -1) return null;
+  const tsStr = cursor.slice(0, pipe);
+  const id = cursor.slice(pipe + 1);
+  const ts = new Date(tsStr);
+  if (Number.isNaN(ts.getTime()) || !id) return null;
+  return { ts, id };
+}
+
+/** Keyset predicate for DESC (ts, id) pagination — rows strictly older than cursor. */
+export function keysetBefore(tsColumn: unknown, idColumn: unknown, cursorTs: Date, cursorId: string) {
+  return sql`(COALESCE(${tsColumn}, to_timestamp(0)), ${idColumn}) < (${cursorTs}, ${cursorId})`;
+}

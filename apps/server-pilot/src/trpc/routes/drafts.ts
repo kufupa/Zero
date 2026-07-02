@@ -7,12 +7,17 @@
  */
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { and, eq, desc, inArray } from 'drizzle-orm';
+import { and, eq, desc, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { mailboxProcedure, router as tRouter } from '../trpc.js';
 import { getDb } from '../../db/client.js';
 import { mailDraft } from '../../db/schema/mail.js';
-import { requireThreadForTransport } from './mail-helpers.js';
+import {
+  requireThreadForTransport,
+  encodePageCursor,
+  decodePageCursor,
+  keysetBefore,
+} from './mail-helpers.js';
 import { createDraftInput } from '../wire-compat.js';
 
 export const draftsRouter = tRouter({
@@ -27,23 +32,62 @@ export const draftsRouter = tRouter({
     .query(async ({ input, ctx }) => {
       const db = getDb();
       const transportId = ctx.activeTransportId;
+      const limit = input.limit;
+
+      const conditions = [
+        eq(mailDraft.transportId, transportId),
+        eq(mailDraft.isSent, false),
+      ];
+
+      if (input.q && input.q.trim()) {
+        const pattern = `%${input.q.trim().toLowerCase()}%`;
+        conditions.push(
+          sql`(lower(${mailDraft.subject}) LIKE ${pattern} OR lower(${mailDraft.textBody}) LIKE ${pattern})`,
+        );
+      }
+
+      if (input.cursor) {
+        const decoded = decodePageCursor(input.cursor);
+        if (decoded) {
+          conditions.push(
+            keysetBefore(mailDraft.updatedAt, mailDraft.id, decoded.ts, decoded.id),
+          );
+        } else {
+          const cursorDraft = await db
+            .select({ updatedAt: mailDraft.updatedAt, id: mailDraft.id })
+            .from(mailDraft)
+            .where(
+              and(eq(mailDraft.id, input.cursor), eq(mailDraft.transportId, transportId)),
+            )
+            .limit(1);
+          if (cursorDraft.length > 0) {
+            const row = cursorDraft[0]!;
+            conditions.push(
+              keysetBefore(
+                mailDraft.updatedAt,
+                mailDraft.id,
+                row.updatedAt ?? new Date(0),
+                row.id,
+              ),
+            );
+          }
+        }
+      }
+
       let rows = await db
         .select()
         .from(mailDraft)
-        .where(eq(mailDraft.transportId, transportId))
-        .orderBy(desc(mailDraft.updatedAt))
-        .limit(input.limit + 1);
-      if (rows.length > input.limit) {
-        rows = rows.slice(0, input.limit);
+        .where(and(...conditions))
+        .orderBy(desc(mailDraft.updatedAt), desc(mailDraft.id))
+        .limit(limit + 1);
+
+      let nextPageToken: string | null = null;
+      if (rows.length > limit) {
+        const last = rows[limit - 1]!;
+        rows = rows.slice(0, limit);
+        nextPageToken = encodePageCursor(last.updatedAt, last.id);
       }
-      if (input.q && input.q.trim()) {
-        const q = input.q.trim().toLowerCase();
-        rows = rows.filter(
-          (r) =>
-            (r.subject?.toLowerCase().includes(q) ?? false) ||
-            (r.textBody?.toLowerCase().includes(q) ?? false),
-        );
-      }
+
       return {
         threads: rows.map((r) => ({
           id: r.id,
@@ -55,7 +99,7 @@ export const draftsRouter = tRouter({
           body: r.textBody,
           updatedAt: r.updatedAt,
         })),
-        nextPageToken: null as string | null,
+        nextPageToken,
       };
     }),
 
@@ -203,5 +247,3 @@ export const draftsRouter = tRouter({
     }),
 });
 
-// Silence unused-import warnings for helpers reserved for future bulk ops.
-void inArray;

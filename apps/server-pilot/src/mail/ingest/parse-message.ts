@@ -211,8 +211,13 @@ function buildParsedMessage(args: {
   const ccAddresses = extractAddresses(headers.get('cc'));
   const bccAddresses = extractAddresses(headers.get('bcc'));
   const subject = firstHeader(headers, 'subject');
-  const dateRaw = firstHeader(headers, 'date');
-  const receivedAt = dateRaw ? parseDate(dateRaw) : null;
+  const dateVal = headers.get('date');
+  const receivedAt =
+    dateVal instanceof Date
+      ? dateVal
+      : typeof dateVal === 'string'
+        ? parseDate(dateVal)
+        : null;
 
   return {
     ownerHeaderValue: ownerHeaderValue ? ownerHeaderValue.toLowerCase() : null,
@@ -256,13 +261,15 @@ function lastHeader(headers: Headers, name: string): string | null {
 
 function normalizeReferences(v: unknown): string[] {
   if (!v) return [];
+  let refs: string[] = [];
   if (Array.isArray(v)) {
-    return v.filter((x): x is string => typeof x === 'string');
+    refs = v.filter((x): x is string => typeof x === 'string');
+  } else if (typeof v === 'string') {
+    refs = v.split(/\s+/).map((s) => s.trim()).filter(Boolean);
+  } else {
+    return [];
   }
-  if (typeof v === 'string') {
-    return v.split(/\s+/).map((s) => s.trim()).filter(Boolean);
-  }
-  return [];
+  return refs.map(stripAngles);
 }
 
 function extractAddress(v: unknown): string | null {
