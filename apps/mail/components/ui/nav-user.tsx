@@ -30,6 +30,7 @@ import { useSidebar } from '@/components/ui/sidebar';
 import { SunIcon } from '../icons/animated/sun';
 import { clear as idbClear, del } from 'idb-keyval';
 import { runLogoutCleanup } from '@/lib/mail/query-cache-policy';
+import { previousScopeBeforeSwitch } from '@/lib/mail/account-switch-cache';
 import {
   getMailCacheScope,
   idbCacheKeyForScope,
@@ -162,6 +163,10 @@ export function NavUser() {
     try {
       setLoading(true, m['common.navUser.switchingAccounts']());
       setThreadId(null);
+      const previousScope = previousScopeBeforeSwitch({
+        current: getMailCacheScope(),
+        nextTransportId: connectionId,
+      });
       await setDefaultConnection({ connectionId });
       setMailCacheScope({
         userId: session?.user?.id ?? null,
@@ -170,7 +175,7 @@ export function NavUser() {
       await runLogoutCleanup({
         queryClient,
         clearIdb: async () => {
-          await del(idbCacheKeyForScope(getMailCacheScope()));
+          await del(idbCacheKeyForScope(previousScope));
         },
       });
       await queryClient.refetchQueries({ queryKey: trpc.mail.listThreads.infiniteQueryKey() });
