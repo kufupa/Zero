@@ -1,8 +1,43 @@
 import { betterAuth, type BetterAuthOptions } from 'better-auth';
+import { APIError, createAuthMiddleware } from 'better-auth/api';
 import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { getSocialProviders } from './auth-providers.js';
 import { getDb } from '../db/client.js';
 import * as schema from '../db/schema/index.js';
+
+export type PilotSignupEnv = {
+  PILOT_OPEN_SIGNUP?: string;
+  PILOT_SIGNUP_ALLOWLIST?: string;
+};
+
+/** Comma-separated allowlist entries, normalized to lowercase. */
+export function parsePilotSignupAllowlist(
+  allowlist: string | undefined,
+): string[] {
+  if (!allowlist?.trim()) return [];
+  return allowlist
+    .split(',')
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+export function isPilotSignupEmailAllowed(
+  email: string | undefined,
+  env: PilotSignupEnv,
+): boolean {
+  if (env.PILOT_OPEN_SIGNUP === '1') return true;
+  if (!email) return false;
+  const allow = parsePilotSignupAllowlist(env.PILOT_SIGNUP_ALLOWLIST);
+  return allow.includes(email.trim().toLowerCase());
+}
+
+export function assertPilotSignupAllowed(
+  email: string | undefined,
+  env: PilotSignupEnv,
+): void {
+  if (isPilotSignupEmailAllowed(email, env)) return;
+  throw new APIError('FORBIDDEN', { message: 'signup disabled for pilot' });
+}
 
 /**
  * Pilot Better Auth instance.
@@ -61,9 +96,17 @@ export const createAuth = (
     account: {
       accountLinking: {
         enabled: true,
-        allowDifferentEmails: true,
+        allowDifferentEmails: false,
         trustedProviders: ['google'],
       },
+    },
+    hooks: {
+      before: createAuthMiddleware(async (ctx) => {
+        if (!ctx.path.startsWith('/sign-up')) return;
+        const email =
+          typeof ctx.body?.email === 'string' ? ctx.body.email : undefined;
+        assertPilotSignupAllowed(email, env);
+      }),
     },
     ...opts,
   });
