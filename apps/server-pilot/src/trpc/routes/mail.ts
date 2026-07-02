@@ -32,6 +32,7 @@ import {
   getSmtpTransport,
   buildReplyHeaders,
 } from '../../mail/send/smtp.js';
+import { formatContentDispositionFilename } from '../../mail/attachment-filename.js';
 import { sanitizeEmailHtml } from '../../mail/sanitize-email-html.js';
 
 const FOLDER_VALUES = [
@@ -815,7 +816,7 @@ export async function getSignedAttachmentUrl(
   const cmd = new GetObjectCommand({
     Bucket: bucket,
     Key: s3Key,
-    ResponseContentDisposition: `attachment; filename="${filename}"`,
+    ResponseContentDisposition: formatContentDispositionFilename(filename),
     ResponseContentType: mimeType,
   });
   // 5-minute signed URL — short-lived so a leaked URL is bounded.
