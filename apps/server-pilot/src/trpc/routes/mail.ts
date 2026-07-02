@@ -14,7 +14,7 @@
 import { TRPCError } from '@trpc/server';
 import { assertSafeOutboundFields } from '../../mail/send/validate-outbound.js';
 import { z } from 'zod';
-import { and, eq, desc, isNotNull, inArray } from 'drizzle-orm';
+import { and, eq, asc, desc, isNotNull, inArray } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { mailboxProcedure, router as tRouter } from '../trpc.js';
 import { getDb } from '../../db/client.js';
@@ -23,6 +23,7 @@ import {
   message,
   attachment,
   mailLabel,
+  mailDraft,
 } from '../../db/schema/mail.js';
 import {
   requireThreadForTransport,
@@ -34,19 +35,77 @@ import {
 } from '../../mail/send/smtp.js';
 import { formatContentDispositionFilename } from '../../mail/attachment-filename.js';
 import { sanitizeEmailHtml } from '../../mail/sanitize-email-html.js';
+import {
+  parseFromEmail,
+  sendInput,
+  toParsedMessage,
+} from '../wire-compat.js';
 
-const FOLDER_VALUES = [
+/** FE + pilot folder slugs accepted by listThreads. */
+export const MAIL_FOLDER_VALUES = [
   'inbox',
   'sent',
   'drafts',
+  'draft',
   'archived',
+  'archive',
+  'bin',
+  'spam',
   'starred',
   'snoozed',
   'all',
 ] as const;
 
-const listThreadsInput = z.object({
-  folder: z.enum(FOLDER_VALUES).default('inbox'),
+/** FE bulk mutations send `{ ids }`; normalize to internal `threadIds`. */
+export const bulkIdsInput = z.union([
+  z.object({ ids: z.array(z.string()) }).transform(({ ids }) => ({ threadIds: ids })),
+  z.object({ threadIds: z.array(z.string()) }),
+]);
+
+function toIsoDateTime(value: string | Date): string {
+  const d = value instanceof Date ? value : new Date(value);
+  return d.toISOString();
+}
+
+/** FE snooze sends `{ ids, wakeAt }`; normalize to internal names. */
+export const snoozeThreadsInput = z.union([
+  z
+    .object({
+      ids: z.array(z.string()),
+      wakeAt: z.union([z.string(), z.date()]),
+    })
+    .transform(({ ids, wakeAt }) => ({
+      threadIds: ids,
+      snoozedUntil: toIsoDateTime(wakeAt),
+    })),
+  z.object({
+    threadIds: z.array(z.string()),
+    snoozedUntil: z.string().datetime(),
+  }),
+]);
+
+/** FE modifyLabels sends `{ threadId }` (array); normalize to `threadIds`. */
+export const modifyLabelsInput = z.union([
+  z
+    .object({
+      threadId: z.array(z.string()),
+      addLabels: z.array(z.string()).default([]),
+      removeLabels: z.array(z.string()).default([]),
+    })
+    .transform(({ threadId, addLabels, removeLabels }) => ({
+      threadIds: threadId,
+      addLabels,
+      removeLabels,
+    })),
+  z.object({
+    threadIds: z.array(z.string()),
+    addLabels: z.array(z.string()).default([]),
+    removeLabels: z.array(z.string()).default([]),
+  }),
+]);
+
+export const listThreadsInput = z.object({
+  folder: z.enum(MAIL_FOLDER_VALUES).default('inbox'),
   q: z.string().optional(),
   labelIds: z.array(z.string()).optional(),
   cursor: z.string().optional(),
@@ -73,8 +132,13 @@ export const mailRouter = tRouter({
       const transportId = ctx.activeTransportId;
       const limit = input.limit;
 
-      // drafts folder is owned by drafts.list; return empty for compatibility.
-      if (input.folder === 'drafts') {
+      // drafts / draft folder owned by drafts.list; return empty for compatibility.
+      if (input.folder === 'drafts' || input.folder === 'draft') {
+        return { threads: [] as { id: string; transportId: string }[], nextPageToken: null };
+      }
+
+      // bin: Task 5 adds trashedAt filter; accept slug without wrong results.
+      if (input.folder === 'bin') {
         return { threads: [] as { id: string; transportId: string }[], nextPageToken: null };
       }
 
@@ -82,12 +146,28 @@ export const mailRouter = tRouter({
 
       if (input.folder === 'inbox') {
         conditions.push(eq(mailThread.isArchived, false));
-      } else if (input.folder === 'archived') {
+      } else if (input.folder === 'archived' || input.folder === 'archive') {
         conditions.push(eq(mailThread.isArchived, true));
       } else if (input.folder === 'starred') {
         conditions.push(eq(mailThread.isStarred, true));
       } else if (input.folder === 'snoozed') {
         conditions.push(isNotNull(mailThread.snoozedUntil));
+      }
+
+      // spam: threads whose labelIds include the transport's SPAM label.
+      let spamLabelId: string | null = null;
+      if (input.folder === 'spam') {
+        const spamRow = await db
+          .select({ id: mailLabel.id })
+          .from(mailLabel)
+          .where(
+            and(eq(mailLabel.transportId, transportId), eq(mailLabel.name, 'SPAM')),
+          )
+          .limit(1);
+        spamLabelId = spamRow[0]?.id ?? null;
+        if (!spamLabelId) {
+          return { threads: [], nextPageToken: null };
+        }
       }
 
       // sent: thread has at least one outbound message on this transport.
@@ -161,6 +241,10 @@ export const mailRouter = tRouter({
         rows = rows.filter((r) => (r.labelIds ?? []).some((id) => wanted.has(id)));
       }
 
+      if (spamLabelId) {
+        rows = rows.filter((r) => (r.labelIds ?? []).includes(spamLabelId!));
+      }
+
       // Optional text search across subject + snippet.
       if (input.q && input.q.trim()) {
         const q = input.q.trim().toLowerCase();
@@ -204,15 +288,38 @@ export const mailRouter = tRouter({
         .where(
           and(eq(message.threadId, thread.id), eq(message.transportId, transportId)),
         )
-        .orderBy(desc(message.receivedAt));
-      const hasUnread = messages.some((m) => !m.isRead);
+        .orderBy(asc(message.receivedAt));
+      const messageIds = messages.map((m) => m.id);
+      const attachmentRows =
+        messageIds.length > 0
+          ? await db
+              .select({
+                messageId: attachment.messageId,
+                attachmentId: attachment.id,
+                filename: attachment.filename,
+                mimeType: attachment.mimeType,
+                size: attachment.sizeBytes,
+              })
+              .from(attachment)
+              .where(inArray(attachment.messageId, messageIds))
+          : [];
+      const attachmentsByMessage = new Map<string, typeof attachmentRows>();
+      for (const row of attachmentRows) {
+        const list = attachmentsByMessage.get(row.messageId) ?? [];
+        list.push(row);
+        attachmentsByMessage.set(row.messageId, list);
+      }
+      const parsedMessages = messages.map((m) =>
+        toParsedMessage(m, attachmentsByMessage.get(m.id) ?? []),
+      );
+      const hasUnread = parsedMessages.some((m) => m.unread);
       const labels = await db
         .select({ id: mailLabel.id, name: mailLabel.name })
         .from(mailLabel)
         .where(eq(mailLabel.transportId, transportId));
       const threadLabelIds = new Set(thread.labelIds ?? []);
       const threadLabels = labels.filter((l) => threadLabelIds.has(l.id));
-      const latest = messages[0] ?? undefined;
+      const latest = parsedMessages[parsedMessages.length - 1];
       return {
         id: thread.id,
         transportId: thread.transportId,
@@ -224,53 +331,16 @@ export const mailRouter = tRouter({
         labelIds: thread.labelIds,
         snoozedUntil: thread.snoozedUntil,
         latestMessageAt: thread.latestMessageAt,
-        messages: messages.map((m) => ({
-          id: m.id,
-          threadId: m.threadId,
-          transportId: m.transportId,
-          direction: m.direction,
-          fromAddress: m.fromAddress,
-          toAddresses: m.toAddresses,
-          ccAddresses: m.ccAddresses,
-          bccAddresses: m.bccAddresses,
-          subject: m.subject,
-          textBody: m.textBody,
-          htmlBody: m.htmlBody,
-          isRead: m.isRead,
-          isStarred: m.isStarred,
-          isDraft: false,
-          receivedAt: m.receivedAt,
-          sentAt: m.sentAt,
-          messageId: m.messageIdHeader,
-          inReplyTo: m.inReplyTo,
-          references: m.references,
-          attachments: [] as {
-            attachmentId: string;
-            filename: string;
-            mimeType: string;
-            size: number;
-          }[],
-        })),
-        latest: latest
-          ? {
-              id: latest.id,
-              threadId: latest.threadId,
-              subject: latest.subject,
-              fromAddress: latest.fromAddress,
-              toAddresses: latest.toAddresses,
-              receivedAt: latest.receivedAt,
-              isRead: latest.isRead,
-              isStarred: latest.isStarred,
-            }
-          : undefined,
+        messages: parsedMessages,
+        latest,
         hasUnread,
-        totalReplies: Math.max(0, messages.length - 1),
+        totalReplies: Math.max(0, parsedMessages.length - 1),
         labels: threadLabels,
       };
     }),
 
   markAsRead: mailboxProcedure
-    .input(z.object({ threadIds: z.array(z.string()) }))
+    .input(bulkIdsInput)
     .mutation(async ({ input, ctx }) => {
       const db = getDb();
       const transportId = ctx.activeTransportId;
@@ -311,7 +381,7 @@ export const mailRouter = tRouter({
     }),
 
   markAsUnread: mailboxProcedure
-    .input(z.object({ threadIds: z.array(z.string()) }))
+    .input(bulkIdsInput)
     .mutation(async ({ input, ctx }) => {
       const db = getDb();
       const transportId = ctx.activeTransportId;
@@ -341,7 +411,7 @@ export const mailRouter = tRouter({
     }),
 
   toggleStar: mailboxProcedure
-    .input(z.object({ threadIds: z.array(z.string()) }))
+    .input(bulkIdsInput)
     .mutation(async ({ input, ctx }) => {
       const db = getDb();
       const transportId = ctx.activeTransportId;
@@ -356,7 +426,7 @@ export const mailRouter = tRouter({
     }),
 
   toggleImportant: mailboxProcedure
-    .input(z.object({ threadIds: z.array(z.string()) }))
+    .input(bulkIdsInput)
     .mutation(async ({ input, ctx }) => {
       // No dedicated important column; treat as a label toggle for IMPORTANT.
       const db = getDb();
@@ -390,13 +460,7 @@ export const mailRouter = tRouter({
     }),
 
   modifyLabels: mailboxProcedure
-    .input(
-      z.object({
-        threadIds: z.array(z.string()),
-        addLabels: z.array(z.string()).default([]),
-        removeLabels: z.array(z.string()).default([]),
-      }),
-    )
+    .input(modifyLabelsInput)
     .mutation(async ({ input, ctx }) => {
       const db = getDb();
       const transportId = ctx.activeTransportId;
@@ -416,7 +480,7 @@ export const mailRouter = tRouter({
     }),
 
   bulkArchive: mailboxProcedure
-    .input(z.object({ threadIds: z.array(z.string()) }))
+    .input(bulkIdsInput)
     .mutation(async ({ input, ctx }) => {
       const db = getDb();
       const transportId = ctx.activeTransportId;
@@ -431,7 +495,7 @@ export const mailRouter = tRouter({
     }),
 
   bulkDelete: mailboxProcedure
-    .input(z.object({ threadIds: z.array(z.string()) }))
+    .input(bulkIdsInput)
     .mutation(async ({ input, ctx }) => {
       // Hard-delete threads the caller can see. Cascades to messages +
       // attachments via FK ON DELETE CASCADE. Drafts on these threads also
@@ -462,12 +526,7 @@ export const mailRouter = tRouter({
     }),
 
   snoozeThreads: mailboxProcedure
-    .input(
-      z.object({
-        threadIds: z.array(z.string()),
-        snoozedUntil: z.string().datetime(),
-      }),
-    )
+    .input(snoozeThreadsInput)
     .mutation(async ({ input, ctx }) => {
       const db = getDb();
       const transportId = ctx.activeTransportId;
@@ -483,7 +542,7 @@ export const mailRouter = tRouter({
     }),
 
   unsnoozeThreads: mailboxProcedure
-    .input(z.object({ threadIds: z.array(z.string()) }))
+    .input(bulkIdsInput)
     .mutation(async ({ input, ctx }) => {
       const db = getDb();
       const transportId = ctx.activeTransportId;
@@ -504,19 +563,7 @@ export const mailRouter = tRouter({
    * ready for Exchange Send As / SMTP relay when real mail is enabled.
    */
   send: mailboxProcedure
-    .input(
-      z.object({
-        threadId: z.string().optional(),
-        to: z.array(z.string()),
-        cc: z.array(z.string()).default([]),
-        bcc: z.array(z.string()).default([]),
-        subject: z.string().default(''),
-        html: z.string().default(''),
-        text: z.string().default(''),
-        fromEmail: z.string().optional(),
-        draftId: z.string().optional(),
-      }),
-    )
+    .input(sendInput)
     .mutation(async ({ input, ctx }) => {
       assertSafeOutboundFields({
         to: input.to,
@@ -524,8 +571,11 @@ export const mailRouter = tRouter({
         bcc: input.bcc,
         subject: input.subject,
       });
-      if (input.fromEmail && input.fromEmail !== ctx.transportEmail) {
-        throw new TRPCError({ code: 'FORBIDDEN', message: 'FORBIDDEN: spoofed from address' });
+      if (input.fromEmail) {
+        const bareFrom = parseFromEmail(input.fromEmail);
+        if (bareFrom !== ctx.transportEmail) {
+          throw new TRPCError({ code: 'FORBIDDEN', message: 'FORBIDDEN: spoofed from address' });
+        }
       }
       const db = getDb();
       const transportId = ctx.activeTransportId;
@@ -606,6 +656,18 @@ export const mailRouter = tRouter({
         .update(mailThread)
         .set({ latestMessageAt: now, updatedAt: now })
         .where(and(eq(mailThread.id, threadId), eq(mailThread.transportId, transportId)));
+      if (input.draftId) {
+        await db
+          .update(mailDraft)
+          .set({
+            isSent: true,
+            sentMessageId: messageId,
+            updatedAt: now,
+          })
+          .where(
+            and(eq(mailDraft.id, input.draftId), eq(mailDraft.transportId, transportId)),
+          );
+      }
       return {
         messageId,
         threadId,

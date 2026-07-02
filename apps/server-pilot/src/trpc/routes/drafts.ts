@@ -13,6 +13,7 @@ import { mailboxProcedure, router as tRouter } from '../trpc.js';
 import { getDb } from '../../db/client.js';
 import { mailDraft } from '../../db/schema/mail.js';
 import { requireThreadForTransport } from './mail-helpers.js';
+import { createDraftInput } from '../wire-compat.js';
 
 export const draftsRouter = tRouter({
   list: mailboxProcedure
@@ -86,40 +87,49 @@ export const draftsRouter = tRouter({
     }),
 
   create: mailboxProcedure
-    .input(
-      z.object({
-        to: z.array(z.string()).default([]),
-        cc: z.array(z.string()).default([]),
-        bcc: z.array(z.string()).default([]),
-        subject: z.string().default(''),
-        content: z.string().default(''),
-        html: z.string().default(''),
-        threadId: z.string().optional(),
-      }),
-    )
+    .input(createDraftInput)
     .mutation(async ({ input, ctx }) => {
       const db = getDb();
       const transportId = ctx.activeTransportId;
-      let threadId = input.threadId;
-      if (threadId) {
-        await requireThreadForTransport(db, threadId, transportId);
+      if (input.threadId) {
+        await requireThreadForTransport(db, input.threadId, transportId);
       }
-      const id = randomUUID();
-      await db.insert(mailDraft).values({
-        id,
-        transportId,
-        threadId: threadId ?? null,
-        createdByUserId: ctx.sessionUser.id,
+      const draftId = input.id ?? randomUUID();
+      const existing = await db
+        .select({ id: mailDraft.id })
+        .from(mailDraft)
+        .where(
+          and(eq(mailDraft.id, draftId), eq(mailDraft.transportId, transportId)),
+        )
+        .limit(1);
+      const row = {
+        threadId: input.threadId,
         toAddresses: input.to,
         ccAddresses: input.cc,
         bccAddresses: input.bcc,
         subject: input.subject || null,
-        textBody: input.content || null,
+        textBody: null as string | null,
         htmlBody: input.html || null,
-        attachments: [],
-        isSent: false,
-      });
-      return { id };
+        attachments: [] as { filename: string; mimeType: string; sizeBytes: number; s3Key: string }[],
+        updatedAt: new Date(),
+      };
+      if (existing.length > 0) {
+        await db
+          .update(mailDraft)
+          .set(row)
+          .where(
+            and(eq(mailDraft.id, draftId), eq(mailDraft.transportId, transportId)),
+          );
+      } else {
+        await db.insert(mailDraft).values({
+          id: draftId,
+          transportId,
+          createdByUserId: ctx.sessionUser.id,
+          isSent: false,
+          ...row,
+        });
+      }
+      return { id: draftId };
     }),
 
   update: mailboxProcedure

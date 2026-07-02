@@ -10,7 +10,7 @@ import { privateProcedure, router as tRouter } from '../trpc.js';
 
 export const userRouter = tRouter({
   getIntercomToken: privateProcedure.query(async () => {
-    return { token: null as string | null };
+    return null;
   }),
 
   delete: privateProcedure.mutation(async () => {

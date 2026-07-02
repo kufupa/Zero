@@ -5,12 +5,17 @@
  * hook calls `settings.get` (no input) and `settings.save(settings)`. We
  * upsert a `userSettings` row for the caller.
  */
-import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
 import { privateProcedure, router as tRouter } from '../trpc.js';
 import { getDb } from '../../db/client.js';
 import { userSettings } from '../../db/schema/app.js';
-import { userSettingsSchema, defaultUserSettings } from '../../lib/schemas.js';
+import {
+  userSettingsSchema,
+  defaultUserSettings,
+  type UserSettings,
+} from '../../lib/schemas.js';
+
+export const settingsSaveInput = userSettingsSchema.partial();
 
 export const settingsRouter = tRouter({
   get: privateProcedure.query(async ({ ctx }) => {
@@ -29,30 +34,33 @@ export const settingsRouter = tRouter({
   }),
 
   save: privateProcedure
-    .input(z.object({ settings: userSettingsSchema }))
+    .input(settingsSaveInput)
     .mutation(async ({ input, ctx }) => {
       const db = getDb();
       const userId = ctx.sessionUser.id;
       const existing = await db
-        .select({ id: userSettings.id })
+        .select({ id: userSettings.id, settings: userSettings.settings })
         .from(userSettings)
         .where(eq(userSettings.userId, userId))
         .limit(1);
       if (existing.length > 0) {
+        const merged: UserSettings = {
+          ...(existing[0]!.settings as UserSettings),
+          ...input,
+        };
         await db
           .update(userSettings)
-          .set({ settings: input.settings, updatedAt: new Date() })
+          .set({ settings: merged, updatedAt: new Date() })
           .where(eq(userSettings.id, existing[0]!.id));
-        return { id: existing[0]!.id };
+        return { success: true as const };
       }
-      // Insert new row. Use a deterministic id so re-saves are idempotent.
       const id = `settings-${userId}`;
       await db.insert(userSettings).values({
         id,
         userId,
-        settings: input.settings,
+        settings: { ...defaultUserSettings, ...input },
       });
-      return { id };
+      return { success: true as const };
     }),
 });
 

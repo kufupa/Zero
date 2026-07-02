@@ -69,6 +69,7 @@ app.on(['GET', 'POST'], '/api/trpc/*', (c) =>
     endpoint: '/api/trpc',
     router: appRouter,
     req: c.req.raw,
+    allowMethodOverride: true,
     createContext: () => ({ auth, reqHeaders: c.req.raw.headers }),
     onError: (opts) => {
       console.error('tRPC error:', opts.error);

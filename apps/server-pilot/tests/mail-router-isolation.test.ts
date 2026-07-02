@@ -268,9 +268,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             requestedTransportId: 'transport-centurion',
           });
           const created = await centurionCaller.drafts.create({
-            to: ['guest@example.com'],
+            to: 'guest@example.com',
             subject: 'centurion draft',
-            content: 'shh',
+            message: 'shh',
+            id: null,
           });
           // user-frontdesk lists drafts — must not see the centurion draft.
           const frontdeskCaller = await callerFor('user-frontdesk', { db });

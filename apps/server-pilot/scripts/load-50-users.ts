@@ -54,6 +54,8 @@ type RequestStats = {
   latencies: Record<LatencyBucket, number[]>;
   statusCounts: Record<string, number>;
   fiveXx: number;
+  listNon200: number;
+  getNon200: number;
 };
 
 function percentile(sorted: number[], p: number): number {
@@ -303,6 +305,7 @@ async function runCycle(
 
   const openTargets: { session: Session; threadId: string }[] = [];
   for (const row of listResults) {
+    if (row.status !== 200) stats.listNon200 += 1;
     for (const threadId of row.threadIds.slice(0, 2)) {
       openTargets.push({ session: row.session, threadId });
       if (openTargets.length >= CONCURRENT_OPENS) break;
@@ -315,13 +318,14 @@ async function runCycle(
   }
 
   await runPool(openTargets.slice(0, CONCURRENT_OPENS), CONCURRENT_OPENS, async (target) => {
-    await trpcCall(
+    const { status } = await trpcCall(
       'mail.get',
       { id: target.threadId },
       target.session.cookie,
       stats,
       'getThread',
     );
+    if (status !== 200) stats.getNon200 += 1;
   });
 
   const sendSessions = sessions.slice(0, CONCURRENT_SENDS);
@@ -357,6 +361,8 @@ async function main(): Promise<void> {
     latencies: { listThreads: [], getThread: [], send: [] },
     statusCounts: {},
     fiveXx: 0,
+    listNon200: 0,
+    getNon200: 0,
   };
 
   for (let cycle = 0; cycle < CYCLES; cycle += 1) {
@@ -377,6 +383,8 @@ async function main(): Promise<void> {
     concurrentOpens: CONCURRENT_OPENS,
     concurrentSends: CONCURRENT_SENDS,
     fiveXx: stats.fiveXx,
+    listNon200: stats.listNon200,
+    getNon200: stats.getNon200,
     statusCounts: stats.statusCounts,
     latenciesMs: {
       listThreads: summarizeLatencies(stats.latencies.listThreads),
@@ -388,8 +396,12 @@ async function main(): Promise<void> {
       p95GetMs: summarizeLatencies(stats.latencies.getThread).p95,
       p95TargetMs: 1000,
       fiveXxTarget: 0,
+      listNon200Target: 0,
+      getNon200Target: 0,
       pass:
         stats.fiveXx === 0 &&
+        stats.listNon200 === 0 &&
+        stats.getNon200 === 0 &&
         summarizeLatencies(stats.latencies.listThreads).p95 < 1000 &&
         summarizeLatencies(stats.latencies.getThread).p95 < 1000,
     },
