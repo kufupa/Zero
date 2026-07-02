@@ -59,6 +59,10 @@ export const mailIngestQuarantine = pgTable(
     index('mail_ingest_quarantine_ingest_idx').on(t.ingestMailboxId),
     index('mail_ingest_quarantine_reason_idx').on(t.reason),
     index('mail_ingest_quarantine_created_at_idx').on(t.createdAt),
+    uniqueIndex('mail_ingest_quarantine_ingest_uidl_uidx').on(
+      t.ingestMailboxId,
+      t.pop3Uidl,
+    ),
   ],
 );
 
@@ -92,6 +96,7 @@ export const mailboxAccess = pgTable(
       .notNull()
       .references(() => mailboxTransport.id, { onDelete: 'cascade' }),
     role: mailboxAccessRoleEnum('role').notNull(),
+    isDefault: boolean('is_default').notNull().default(false),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow(),
   },

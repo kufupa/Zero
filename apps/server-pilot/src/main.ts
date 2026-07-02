@@ -3,6 +3,7 @@ import { serve } from '@hono/node-server';
 import { fetchRequestHandler } from '@trpc/server/adapters/fetch';
 import { authProviders, customProviders, isProviderEnabled } from './lib/auth-providers.js';
 import { createAuth } from './lib/auth.js';
+import { closeDb } from './db/client.js';
 import { appRouter } from './trpc/router.js';
 
 const app = new Hono();
@@ -79,6 +80,24 @@ app.on(['GET', 'POST'], '/api/trpc/*', (c) =>
 
 const port = Number(process.env.PORT ?? 8788);
 
-serve({ fetch: app.fetch, port }, (info) => {
+const server = serve({ fetch: app.fetch, port }, (info) => {
   console.log(`server-pilot listening on http://0.0.0.0:${info.port}`);
 });
+
+function shutdown(signal: string) {
+  console.log(`${signal} received, shutting down`);
+  server.close(() => {
+    void closeDb()
+      .then(() => {
+        console.log('shutdown complete');
+        process.exit(0);
+      })
+      .catch((err) => {
+        console.error('shutdown error:', err);
+        process.exit(1);
+      });
+  });
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));

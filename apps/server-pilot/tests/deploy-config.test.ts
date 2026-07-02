@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 describe('deploy config', () => {
-  it('runs exactly one worker', async () => {
+  it('runs exactly one worker with autorestart disabled', async () => {
     const { loadPm2Config } = await import('../src/deploy/load-pm2-config.js');
     const pm2 = loadPm2Config();
     expect(pm2.apps.filter((app) => app.name === 'worker')).toHaveLength(1);
-    expect(pm2.apps.find((app) => app.name === 'worker')?.instances).toBe(1);
+    const worker = pm2.apps.find((app) => app.name === 'worker');
+    expect(worker?.instances).toBe(1);
+    expect(worker?.autorestart).toBe(false);
     expect(pm2.apps.filter((app) => app.name === 'http')).toHaveLength(1);
   });
 
@@ -15,6 +17,7 @@ describe('deploy config', () => {
     expect(nginx).toContain('listen 443 ssl');
     expect(nginx).toContain('proxy_pass http://127.0.0.1:8788/api/');
     expect(nginx).toContain('try_files $uri /index.html');
+    expect(nginx).toContain('client_max_body_size 35m');
   });
 
   it('nginx config redirects HTTP to HTTPS and sets security headers', async () => {
@@ -44,5 +47,54 @@ describe('deploy config', () => {
     expect(deploy).toContain('deploy/nginx.conf');
     expect(deploy).toContain('sudo nginx -t && sudo systemctl reload nginx');
     expect(deploy).toContain('nginx not installed');
+  });
+
+  it('write-ec2-env.sh quotes all env values', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const script = readFileSync(join(here, '..', 'deploy', 'write-ec2-env.sh'), 'utf8');
+    expect(script).toContain('quote_val()');
+    expect(script).toContain("NODE_ENV='production'");
+    expect(script).toContain('DATABASE_URL=$(quote_val "$DATABASE_URL")');
+    expect(script).toContain('BETTER_AUTH_SECRET=$(quote_val "$BETTER_AUTH_SECRET")');
+  });
+
+  it('FakeSmtpTransport ring buffer caps at 100', async () => {
+    const { FakeSmtpTransport, FAKE_SMTP_RING_MAX } = await import(
+      '../src/mail/send/smtp.js'
+    );
+    expect(FAKE_SMTP_RING_MAX).toBe(100);
+    const fake = new FakeSmtpTransport();
+    const payload = {
+      from: 'a@b.c',
+      to: ['d@e.f'],
+      cc: [] as string[],
+      bcc: [] as string[],
+      subject: 'x',
+      html: '',
+      text: 'x',
+    };
+    for (let i = 0; i < 110; i++) {
+      await fake.send(payload);
+    }
+    expect(fake.sent).toHaveLength(100);
+  });
+
+  it('main.ts registers SIGTERM graceful shutdown with closeDb', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const main = readFileSync(join(here, '..', 'src', 'main.ts'), 'utf8');
+    expect(main).toContain("process.on('SIGTERM'");
+    expect(main).toContain('server.close');
+    expect(main).toContain('closeDb');
+  });
+
+  it('mailbox_access schema has is_default column', async () => {
+    const { mailboxAccess } = await import('../src/db/schema/mail.js');
+    expect(mailboxAccess.isDefault).toBeDefined();
   });
 });

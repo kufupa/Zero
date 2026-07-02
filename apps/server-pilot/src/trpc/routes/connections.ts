@@ -14,7 +14,7 @@
  *   connection.name      -> transport.displayName
  *   connection.picture   -> null (no avatar column)
  *   connection.providerId -> 'mailbox' (single provider for pilot)
- *   default connection   -> highest-role transport for the user
+ *   default connection   -> is_default row, else highest-role transport
  */
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
@@ -33,7 +33,23 @@ const roleRank: Record<MailboxAccessRole, number> = {
   member: 2,
 };
 
-async function listTransportsForUser(userId: string) {
+type TransportRow = {
+  id: string;
+  email: string;
+  displayName: string | null;
+  mailboxType: 'personal' | 'shared';
+  role: MailboxAccessRole;
+  isDefault: boolean;
+};
+
+function sortTransports(rows: TransportRow[]) {
+  return rows.sort((a, b) => {
+    if (a.isDefault !== b.isDefault) return a.isDefault ? -1 : 1;
+    return roleRank[a.role] - roleRank[b.role];
+  });
+}
+
+async function listTransportsForUser(userId: string): Promise<TransportRow[]> {
   const db = getDb();
   const rows = await db
     .select({
@@ -42,6 +58,7 @@ async function listTransportsForUser(userId: string) {
       displayName: mailboxTransport.displayName,
       mailboxType: mailboxTransport.mailboxType,
       role: mailboxAccess.role,
+      isDefault: mailboxAccess.isDefault,
     })
     .from(mailboxAccess)
     .innerJoin(
@@ -49,7 +66,7 @@ async function listTransportsForUser(userId: string) {
       eq(mailboxAccess.transportId, mailboxTransport.id),
     )
     .where(eq(mailboxAccess.userId, userId));
-  return rows.sort((a, b) => roleRank[a.role] - roleRank[b.role]);
+  return sortTransports(rows);
 }
 
 export const connectionsRouter = tRouter({
@@ -86,13 +103,14 @@ export const connectionsRouter = tRouter({
     .input(z.object({ connectionId: z.string() }))
     .mutation(async ({ input, ctx }) => {
       const db = getDb();
+      const userId = ctx.sessionUser.id;
       // Verify the user has access to this transport.
       const access = await db
         .select({ transportId: mailboxAccess.transportId })
         .from(mailboxAccess)
         .where(
           and(
-            eq(mailboxAccess.userId, ctx.sessionUser.id),
+            eq(mailboxAccess.userId, userId),
             eq(mailboxAccess.transportId, input.connectionId),
           ),
         )
@@ -100,9 +118,19 @@ export const connectionsRouter = tRouter({
       if (access.length === 0) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'NOT_FOUND: connection not found' });
       }
-      // No server-side default is persisted for pilot; the frontend stores
-      // the active transport id in client state and sends it via the
-      // `x-zero-active-transport` header on subsequent requests.
+      await db
+        .update(mailboxAccess)
+        .set({ isDefault: false, updatedAt: new Date() })
+        .where(eq(mailboxAccess.userId, userId));
+      await db
+        .update(mailboxAccess)
+        .set({ isDefault: true, updatedAt: new Date() })
+        .where(
+          and(
+            eq(mailboxAccess.userId, userId),
+            eq(mailboxAccess.transportId, input.connectionId),
+          ),
+        );
       return { id: input.connectionId };
     }),
 

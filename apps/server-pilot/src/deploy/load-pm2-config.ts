@@ -11,6 +11,7 @@ export type Pm2App = {
   script: string;
   cwd: string;
   instances: number;
+  autorestart?: boolean;
 };
 
 export type Pm2Config = {

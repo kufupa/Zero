@@ -14,7 +14,7 @@
 import { TRPCError } from '@trpc/server';
 import { assertSafeOutboundFields } from '../../mail/send/validate-outbound.js';
 import { z } from 'zod';
-import { and, eq, asc, desc, isNotNull, isNull, inArray, sql, exists } from 'drizzle-orm';
+import { and, eq, asc, desc, isNotNull, isNull, inArray, sql, exists, or, lte } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { mailboxProcedure, router as tRouter } from '../trpc.js';
 import { getDb } from '../../db/client.js';
@@ -136,6 +136,18 @@ export const mailRouter = tRouter({
       const transportId = ctx.activeTransportId;
       const limit = input.limit;
 
+      // Lazy-clear expired snoozes so they reappear in inbox without a cron.
+      await db
+        .update(mailThread)
+        .set({ snoozedUntil: null, updatedAt: new Date() })
+        .where(
+          and(
+            eq(mailThread.transportId, transportId),
+            isNotNull(mailThread.snoozedUntil),
+            lte(mailThread.snoozedUntil, sql`now()`),
+          ),
+        );
+
       if (input.folder === 'drafts' || input.folder === 'draft') {
         return { threads: [] as { id: string; transportId: string }[], nextPageToken: null };
       }
@@ -150,6 +162,12 @@ export const mailRouter = tRouter({
 
       if (input.folder === 'inbox') {
         conditions.push(eq(mailThread.isArchived, false));
+        conditions.push(
+          or(
+            isNull(mailThread.snoozedUntil),
+            lte(mailThread.snoozedUntil, sql`now()`),
+          )!,
+        );
       } else if (input.folder === 'archived' || input.folder === 'archive') {
         conditions.push(eq(mailThread.isArchived, true));
       } else if (input.folder === 'starred') {
@@ -419,11 +437,18 @@ export const mailRouter = tRouter({
       ) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'NOT_FOUND: thread not found' });
       }
+      if (visibleIds.length === 0) return { updated: 0 };
       for (const id of visibleIds) {
         await db
           .update(mailThread)
           .set({ isRead: false, updatedAt: new Date() })
           .where(and(eq(mailThread.id, id), eq(mailThread.transportId, transportId)));
+        await db
+          .update(message)
+          .set({ isRead: false, updatedAt: new Date() })
+          .where(
+            and(eq(message.threadId, id), eq(message.transportId, transportId)),
+          );
       }
       return { updated: visibleIds.length };
     }),
@@ -446,27 +471,19 @@ export const mailRouter = tRouter({
   toggleImportant: mailboxProcedure
     .input(bulkIdsInput)
     .mutation(async ({ input, ctx }) => {
-      // No dedicated important column; treat as a label toggle for IMPORTANT.
+      // System label id matches labels.list synthetic IMPORTANT id.
       const db = getDb();
       const transportId = ctx.activeTransportId;
-      const importantLabel = await db
-        .select({ id: mailLabel.id })
-        .from(mailLabel)
-        .where(
-          and(eq(mailLabel.transportId, transportId), eq(mailLabel.name, 'IMPORTANT')),
-        )
-        .limit(1);
-      const importantId = importantLabel[0]?.id;
-      if (!importantId) return { updated: 0 };
+      const IMPORTANT = 'IMPORTANT';
       for (const id of input.threadIds) {
         const row = await requireThreadForTransport(db, id, transportId);
         const current = new Set(row.labelIds ?? []);
         let next: string[];
-        if (current.has(importantId)) {
-          current.delete(importantId);
+        if (current.has(IMPORTANT)) {
+          current.delete(IMPORTANT);
           next = [...current];
         } else {
-          current.add(importantId);
+          current.add(IMPORTANT);
           next = [...current];
         }
         await db

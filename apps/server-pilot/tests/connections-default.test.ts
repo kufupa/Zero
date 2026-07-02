@@ -1,0 +1,70 @@
+/**
+ * connections.setDefault persists mailbox_access.is_default (Task 14).
+ */
+import { describe, expect, it } from 'vitest';
+import { and, eq } from 'drizzle-orm';
+import { mailboxAccess, mailboxTransport } from '../src/db/schema/mail.js';
+import {
+  TEST_DB_AVAILABLE,
+  probeTestDb,
+  withSeededTestDb,
+} from './helpers/test-db';
+import { callerFor } from './helpers/trpc-caller';
+
+const reachable = await probeTestDb();
+
+const SECOND_TRANSPORT = 'transport-actions-second';
+
+describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
+  'connections.setDefault (seeded, transaction-rollback)',
+  () => {
+    it('persists is_default and getDefault returns chosen transport', async () => {
+      await withSeededTestDb(async (db) => {
+        await db
+          .insert(mailboxTransport)
+          .values({
+            id: SECOND_TRANSPORT,
+            email: 'second@legacyhotel.com',
+            ownerHeaderValue: 'second-owner-header',
+            mailboxType: 'shared',
+            displayName: 'Second mailbox',
+            isActive: true,
+          })
+          .onConflictDoNothing({ target: mailboxTransport.id });
+
+        await db
+          .insert(mailboxAccess)
+          .values({
+            id: `access-user-manager-${SECOND_TRANSPORT}`,
+            userId: 'user-manager',
+            transportId: SECOND_TRANSPORT,
+            role: 'member',
+            isDefault: false,
+          })
+          .onConflictDoNothing({ target: [mailboxAccess.userId, mailboxAccess.transportId] });
+
+        const caller = await callerFor('user-manager', { db });
+
+        await caller.connections.setDefault({ connectionId: SECOND_TRANSPORT });
+
+        const defaults = await db
+          .select({
+            transportId: mailboxAccess.transportId,
+            isDefault: mailboxAccess.isDefault,
+          })
+          .from(mailboxAccess)
+          .where(
+            and(
+              eq(mailboxAccess.userId, 'user-manager'),
+              eq(mailboxAccess.isDefault, true),
+            ),
+          );
+        expect(defaults).toHaveLength(1);
+        expect(defaults[0]?.transportId).toBe(SECOND_TRANSPORT);
+
+        const def = await caller.connections.getDefault();
+        expect(def?.id).toBe(SECOND_TRANSPORT);
+      });
+    });
+  },
+);
