@@ -89,10 +89,14 @@ function readRequestedTransportId(headers: Headers): string | undefined {
   return v && v.trim() ? v.trim() : undefined;
 }
 
+const isTest = process.env.NODE_ENV === 'test';
+
 export const privateProcedure = publicProcedure.use(async ({ ctx, next }) => {
   // Tests inject `sessionUser` directly (see tests/helpers/trpc-caller.ts) to
-  // bypass Better Auth; short-circuit when it's already present.
-  const injected = (ctx as Partial<TrpcPrivateContext>).sessionUser;
+  // bypass Better Auth; short-circuit only in test env.
+  const injected = isTest
+    ? (ctx as Partial<TrpcPrivateContext>).sessionUser
+    : undefined;
   if (injected) {
     return next({ ctx: { ...ctx, sessionUser: injected } });
   }
@@ -105,8 +109,8 @@ export const privateProcedure = publicProcedure.use(async ({ ctx, next }) => {
 
 export const mailboxProcedure = privateProcedure.use(async ({ ctx, next }) => {
   // Tests inject a pre-resolved MailboxContext (activeTransportId, accessRole,
-  // transportEmail) directly; short-circuit when present.
-  const injected = ctx as Partial<MailboxContext>;
+  // transportEmail) directly; short-circuit only in test env.
+  const injected = isTest ? (ctx as Partial<MailboxContext>) : {};
   if (injected.activeTransportId && injected.accessRole) {
     const mailbox: MailboxContext = {
       userId: ctx.sessionUser.id,
