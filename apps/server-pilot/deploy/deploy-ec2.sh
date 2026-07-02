@@ -36,6 +36,23 @@ echo "== sync SPA to ${WEB_ROOT} =="
 sudo mkdir -p "$WEB_ROOT"
 sudo rsync -a --delete "${MAIL_APP}/build/client/" "${WEB_ROOT}/"
 
+echo "== nginx =="
+NGINX_SITE="${NGINX_SITE:-/etc/nginx/sites-available/nava-zero}"
+NGINX_SRC="${SERVER_PILOT}/deploy/nginx.conf"
+if command -v nginx >/dev/null 2>&1; then
+  sudo cp "$NGINX_SRC" "$NGINX_SITE"
+  sudo ln -sf "$NGINX_SITE" /etc/nginx/sites-enabled/nava-zero
+  sudo nginx -t && sudo systemctl reload nginx
+else
+  echo "nginx not installed; first-time setup required:"
+  echo "  sudo apt install nginx"
+  echo "  sudo mkdir -p /etc/nginx/ssl"
+  echo "  # place nava.crt and nava.key in /etc/nginx/ssl/"
+  echo "  sudo cp ${NGINX_SRC} ${NGINX_SITE}"
+  echo "  sudo ln -sf ${NGINX_SITE} /etc/nginx/sites-enabled/nava-zero"
+  echo "  sudo nginx -t && sudo systemctl enable --now nginx"
+fi
+
 echo "== pm2 =="
 if command -v pm2 >/dev/null 2>&1; then
   pm2 startOrReload "${SERVER_PILOT}/deploy/pm2.config.cjs" --update-env
