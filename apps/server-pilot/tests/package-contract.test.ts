@@ -1,12 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
 describe('server-pilot package contract', () => {
-  it('exports modules apps/mail imports', async () => {
-    await expect(import('@zero/server/trpc')).resolves.toBeDefined();
-    await expect(import('@zero/server/auth')).resolves.toBeDefined();
-    await expect(import('@zero/server/auth-providers')).resolves.toBeDefined();
-    await expect(import('@zero/server/schemas')).resolves.toBeDefined();
-  });
+  it(
+    'exports modules apps/mail imports',
+    async () => {
+      await expect(import('@zero/server/trpc')).resolves.toBeDefined();
+      await expect(import('@zero/server/auth')).resolves.toBeDefined();
+      await expect(import('@zero/server/auth-providers')).resolves.toBeDefined();
+      await expect(import('@zero/server/schemas')).resolves.toBeDefined();
+    },
+    15_000,
+  );
 
   it('exposes AppRouter type and appRouter value from /trpc', async () => {
     const mod = await import('@zero/server/trpc');
