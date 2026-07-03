@@ -1,13 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 describe('deploy config', () => {
-  it('runs exactly one worker with autorestart disabled', async () => {
+  it('runs worker with bounded autorestart policy', async () => {
     const { loadPm2Config } = await import('../src/deploy/load-pm2-config.js');
     const pm2 = loadPm2Config();
     expect(pm2.apps.filter((app) => app.name === 'worker')).toHaveLength(1);
     const worker = pm2.apps.find((app) => app.name === 'worker');
     expect(worker?.instances).toBe(1);
-    expect(worker?.autorestart).toBe(false);
+    expect(worker?.autorestart).toBe(true);
+    expect(worker?.max_restarts).toBe(10);
     expect(pm2.apps.filter((app) => app.name === 'http')).toHaveLength(1);
   });
 

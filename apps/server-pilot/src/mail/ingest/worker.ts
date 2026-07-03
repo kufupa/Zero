@@ -41,7 +41,7 @@ import {
   type FakePop3Message,
 } from './pop3-client.js';
 import { parseRawMessage, generateMessageId } from './parse-message.js';
-import { IngestTooLargeError } from './limits.js';
+import { IngestTooLargeError, assertWithinIngestLimits, getIngestLimits } from './limits.js';
 import {
   persistInboundMessage,
   quarantineOversizedMessage,
@@ -141,11 +141,13 @@ export async function ingestOnce(
 
     const storage = getS3Storage();
     const db = opts.db ?? getDb();
+    const limits = getIngestLimits(process.env);
 
     for (const uidl of uidls.slice(0, maxMessages)) {
       let rawKey: string | undefined;
       try {
         const msg = await pop3.retr(uidl);
+        assertWithinIngestLimits(msg.raw.byteLength, 'message', limits);
         const messageId = generateMessageId();
 
         rawKey = rawMimeKey({
@@ -183,6 +185,21 @@ export async function ingestOnce(
         items.push({ uidl, result, status: 'ok' });
         processed += 1;
       } catch (err) {
+        if (err instanceof IngestTooLargeError && !rawKey) {
+          const skippedKey = `quarantine-skipped/${ingestMailboxId}/${uidl.replace(/[^A-Za-z0-9._-]+/g, '_')}.eml`;
+          const result = await quarantineOversizedMessage(
+            { ingestMailboxId, pop3Uidl: uidl },
+            skippedKey,
+            { db },
+          );
+          failureCounts.delete(uidl);
+          await pop3.dele(uidl);
+          deled += 1;
+          items.push({ uidl, result, status: 'ok' });
+          processed += 1;
+          continue;
+        }
+
         if (err instanceof IngestTooLargeError && rawKey) {
           const result = await quarantineOversizedMessage(
             { ingestMailboxId, pop3Uidl: uidl },
@@ -332,10 +349,11 @@ export async function runWorker(opts: {
   }
 
   console.log(`worker: starting poll loop, interval=${interval}ms, fake=${pop3.kind === 'fake'}`);
+  const failureCounts = new Map<string, number>();
   while (!stop.stopping) {
     const start = Date.now();
     try {
-      const result = await ingestOnce({ pop3 });
+      const result = await ingestOnce({ pop3, failureCounts });
       console.log(
         `worker: cycle listed=${result.listed} processed=${result.processed} deled=${result.deled} fake=${result.usedFakePop3}${
           result.cycleError ? ` error=${result.cycleError}` : ''

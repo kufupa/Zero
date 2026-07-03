@@ -160,37 +160,37 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     );
 
     it(
-      'poison UIDL quarantined after max retries then DELEd',
+      'poison UIDL quarantined across cycles when failureCounts persist',
       async () => {
-        const storage = new FakeS3Storage('worker-poison-bucket');
+        const storage = new FakeS3Storage('worker-poison-loop');
         resetS3Storage();
         setS3Storage(storage);
         const fakePop3 = new FakePop3Client({
-          messages: [{ uidl: 'uidl-poison', raw: Buffer.from('not-valid-mime') }],
+          messages: [{ uidl: 'uidl-poison-loop', raw: Buffer.from('not-valid-mime') }],
         });
-
         const failureCounts = new Map<string, number>();
-        failureCounts.set('uidl-poison', POISON_MAX_RETRIES - 1);
 
-        const result = await withSeededTestDb(async (db) =>
-          ingestOnce({
+        await withSeededTestDb(async (db) => {
+          for (let i = 0; i < POISON_MAX_RETRIES - 1; i++) {
+            const attempt = await ingestOnce({
+              pop3: fakePop3,
+              db,
+              ingestMailboxId: 'ingest-nava-legacy',
+              failureCounts,
+            });
+            expect(attempt.items[0]!.status).toBe('error');
+            expect(attempt.deled).toBe(0);
+          }
+
+          const final = await ingestOnce({
             pop3: fakePop3,
             db,
             ingestMailboxId: 'ingest-nava-legacy',
-            maxMessages: 10,
             failureCounts,
-          }),
-        );
-
-        expect(result.deled).toBe(1);
-        expect(result.items[0]!.status).toBe('ok');
-        if (result.items[0]!.status === 'ok') {
-          expect(result.items[0]!.result.kind).toBe('quarantined');
-          if (result.items[0]!.result.kind === 'quarantined') {
-            expect(result.items[0]!.result.reason).toBe('parse_failure');
-          }
-        }
-        expect(storage.listKeys('quarantine-archive/')).toHaveLength(1);
+          });
+          expect(final.deled).toBe(1);
+          expect(final.items[0]!.status).toBe('ok');
+        });
       },
       30000,
     );

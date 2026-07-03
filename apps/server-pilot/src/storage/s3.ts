@@ -67,17 +67,17 @@ export class RealS3Storage implements S3Storage {
   }
 
   async putObject(opts: S3PutOptions): Promise<S3PutResult> {
-    const bytes = await byteLength(opts.body);
+    const body = await toBuffer(opts.body);
     await this.client.send(
       new PutObjectCommand({
         Bucket: this.bucket,
         Key: opts.key,
-        Body: opts.body,
+        Body: body,
         ContentType: opts.contentType,
         ServerSideEncryption: 'AES256',
       }),
     );
-    return { key: opts.key, bucket: this.bucket, bytes };
+    return { key: opts.key, bucket: this.bucket, bytes: body.byteLength };
   }
 
   async copyObject(opts: S3CopyOptions): Promise<{ key: string; bucket: string }> {
@@ -206,15 +206,6 @@ export function attachmentKey(opts: {
 }): string {
   const safe = opts.filename.replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 80);
   return `attachments/${opts.messageId}/${String(opts.index).padStart(3, '0')}-${safe}`;
-}
-
-async function byteLength(
-  body: Buffer | Uint8Array | Readable,
-): Promise<number> {
-  if (Buffer.isBuffer(body)) return body.byteLength;
-  if (body instanceof Uint8Array) return body.byteLength;
-  // Stream: drain to compute length. Real S3 PUT will re-read from buffer.
-  return (await toBuffer(body)).byteLength;
 }
 
 async function toBuffer(body: Buffer | Uint8Array | Readable): Promise<Buffer> {

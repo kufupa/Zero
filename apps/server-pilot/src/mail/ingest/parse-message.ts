@@ -206,7 +206,8 @@ function buildParsedMessage(args: {
   const inReplyTo = inReplyToRaw ? stripAngles(inReplyToRaw) : null;
   const referencesRaw = headers.get('references');
   const references = normalizeReferences(referencesRaw);
-  const fromAddress = extractAddress(headers.get('from'));
+  const fromHeaderRaw = firstHeader(headers, 'from');
+  const fromAddress = extractAddress(headers.get('from')) ?? fromHeaderRaw;
   const toAddresses = extractAddresses(headers.get('to'));
   const ccAddresses = extractAddresses(headers.get('cc'));
   const bccAddresses = extractAddresses(headers.get('bcc'));
