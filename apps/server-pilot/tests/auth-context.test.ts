@@ -1,6 +1,9 @@
 import { beforeAll, describe, expect, it } from 'vitest';
-import { TRPCError } from '@trpc/server';
-import { resolveMailboxContext, MailboxForbiddenError, MailboxNoAccessError } from '../src/trpc/context';
+import {
+  resolveMailboxContext,
+  MailboxForbiddenError,
+  MailboxNoAccessError,
+} from '../src/trpc/context';
 import {
   TEST_DB_AVAILABLE,
   probeTestDb,
@@ -54,13 +57,12 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     );
 
     it(
-      'mailboxProcedure maps no-access user to FORBIDDEN with NO_MAILBOX message',
+      'callerFor rejects users with no mailbox access before tRPC',
       async () => {
         await withSeededTestDb(async (db) => {
-          await expect(callerFor('user-ghost', { db })).rejects.toMatchObject({
-            code: 'FORBIDDEN',
-            message: 'NO_MAILBOX',
-          } satisfies Partial<TRPCError>);
+          await expect(callerFor('user-ghost', { db })).rejects.toBeInstanceOf(
+            MailboxNoAccessError,
+          );
         });
       },
       30000,

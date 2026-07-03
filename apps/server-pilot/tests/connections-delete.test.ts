@@ -27,6 +27,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             isActive: true,
           });
           await db.insert(mailboxAccess).values({
+            id: 'access-user-manager-transport-delete-promote-1',
             userId: 'user-manager',
             transportId: extraTransportId,
             role: 'owner',

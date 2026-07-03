@@ -70,7 +70,8 @@ export function decodePageCursor(cursor: string): { ts: Date; id: string } | nul
 
 /** Keyset predicate for DESC (ts, id) pagination — rows strictly older than cursor. */
 export function keysetBefore(tsColumn: unknown, idColumn: unknown, cursorTs: Date, cursorId: string) {
-  return sql`(COALESCE(${tsColumn}, to_timestamp(0)), ${idColumn}) < (${cursorTs}, ${cursorId})`;
+  const cursorTsIso = cursorTs.toISOString();
+  return sql`(COALESCE(${tsColumn}, to_timestamp(0)), ${idColumn}) < (${cursorTsIso}::timestamptz, ${cursorId})`;
 }
 
 /** DESC sort with null timestamps last (Postgres). */

@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { ingestOnce, POISON_MAX_RETRIES } from '../src/mail/ingest/worker';
+import * as ingestStore from '../src/mail/ingest/store';
 import {
   FakePop3Client,
   type FakePop3Message,
@@ -114,7 +115,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         });
 
         let selectCount = 0;
-        const throwingDb = {
+        const throwingTx = {
           select: () => ({
             from: () => ({
               where: () => ({
@@ -136,6 +137,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           insert: () => {
             throw new Error('simulated PG failure');
           },
+        };
+        const throwingDb = {
+          ...throwingTx,
+          transaction: async (fn: (tx: typeof throwingTx) => Promise<unknown>) => fn(throwingTx),
         };
 
         const result = await ingestOnce({
@@ -166,31 +171,38 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         resetS3Storage();
         setS3Storage(storage);
         const fakePop3 = new FakePop3Client({
-          messages: [{ uidl: 'uidl-poison-loop', raw: Buffer.from('not-valid-mime') }],
+          messages: [{ uidl: 'uidl-poison-loop', raw: readFixture('centurion-stamped.eml') }],
         });
         const failureCounts = new Map<string, number>();
+        const persistSpy = vi
+          .spyOn(ingestStore, 'persistInboundMessage')
+          .mockRejectedValue(new Error('simulated persist failure'));
 
-        await withSeededTestDb(async (db) => {
-          for (let i = 0; i < POISON_MAX_RETRIES - 1; i++) {
-            const attempt = await ingestOnce({
+        try {
+          await withSeededTestDb(async (db) => {
+            for (let i = 0; i < POISON_MAX_RETRIES - 1; i++) {
+              const attempt = await ingestOnce({
+                pop3: fakePop3,
+                db,
+                ingestMailboxId: 'ingest-nava-legacy',
+                failureCounts,
+              });
+              expect(attempt.items[0]!.status).toBe('error');
+              expect(attempt.deled).toBe(0);
+            }
+
+            const final = await ingestOnce({
               pop3: fakePop3,
               db,
               ingestMailboxId: 'ingest-nava-legacy',
               failureCounts,
             });
-            expect(attempt.items[0]!.status).toBe('error');
-            expect(attempt.deled).toBe(0);
-          }
-
-          const final = await ingestOnce({
-            pop3: fakePop3,
-            db,
-            ingestMailboxId: 'ingest-nava-legacy',
-            failureCounts,
+            expect(final.deled).toBe(1);
+            expect(final.items[0]!.status).toBe('ok');
           });
-          expect(final.deled).toBe(1);
-          expect(final.items[0]!.status).toBe('ok');
-        });
+        } finally {
+          persistSpy.mockRestore();
+        }
       },
       30000,
     );

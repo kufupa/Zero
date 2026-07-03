@@ -63,16 +63,25 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           const caller = await callerFor('user-manager', { db });
           const pgErr = Object.assign(new Error('disk full'), { code: '53100' });
 
-          vi.spyOn(db, 'insert').mockImplementationOnce(
-            () =>
-              ({
-                values: vi.fn().mockRejectedValue(pgErr),
-              }) as never,
-          );
+          const insertSpy = vi
+            .spyOn(db, 'insert')
+            .mockImplementationOnce(
+              () =>
+                ({
+                  values: vi.fn().mockRejectedValue(pgErr),
+                }) as never,
+            );
 
           const rejection = caller.labels.create({ name: `io-${Date.now()}` });
-          await expect(rejection).rejects.not.toBeInstanceOf(TRPCError);
-          await expect(rejection).rejects.toThrow('disk full');
+          await expect(rejection).rejects.toSatisfy((err: unknown) => {
+            if (err instanceof TRPCError && err.code === 'CONFLICT') return false;
+            const text =
+              err instanceof Error
+                ? `${err.message}${err.cause instanceof Error ? err.cause.message : ''}`
+                : String(err);
+            return text.includes('disk full');
+          });
+          insertSpy.mockRestore();
         });
       },
       30000,

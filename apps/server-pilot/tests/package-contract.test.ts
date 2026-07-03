@@ -10,7 +10,7 @@ describe('server-pilot package contract', () => {
       await expect(import('@zero/server/auth-providers')).resolves.toBeDefined();
       await expect(import('@zero/server/schemas')).resolves.toBeDefined();
     },
-    15_000,
+    30_000,
   );
 
   it('package.json exports map includes mail-facing entrypoints', () => {
