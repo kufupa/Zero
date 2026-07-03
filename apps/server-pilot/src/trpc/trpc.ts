@@ -75,14 +75,10 @@ async function getSessionUser(
   email: string;
   name: string | null;
 } | null> {
-  try {
-    const session = await auth.api.getSession({ headers });
-    if (!session?.user) return null;
-    const u = session.user as { id: string; email: string; name?: string | null };
-    return { id: u.id, email: u.email, name: u.name ?? null };
-  } catch {
-    return null;
-  }
+  const session = await auth.api.getSession({ headers });
+  if (!session?.user) return null;
+  const u = session.user as { id: string; email: string; name?: string | null };
+  return { id: u.id, email: u.email, name: u.name ?? null };
 }
 
 /**

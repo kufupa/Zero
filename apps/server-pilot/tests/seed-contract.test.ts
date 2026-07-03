@@ -6,7 +6,7 @@ import {
   mailboxTransport,
 } from '../src/db/schema/mail';
 import { user as userTable, account } from '../src/db/schema/auth';
-import { planPilotCredentials, seedAll } from '../src/db/seed';
+import { planPilotCredentials, seedAll, PILOT_USERS } from '../src/db/seed';
 import {
   TEST_DB_AVAILABLE,
   probeTestDb,
@@ -94,16 +94,23 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     );
 
     it(
-      'seeds credential accounts for the three pilot users with hashed passwords',
+      'seeds credential accounts for each PILOT_USERS email with hashed passwords',
       async () => {
         const accounts = await withSeededTestDb(async (db) => {
           return db
-            .select({ id: account.id, userId: account.userId, providerId: account.providerId, password: account.password })
+            .select({
+              id: account.id,
+              userId: account.userId,
+              providerId: account.providerId,
+              password: account.password,
+            })
             .from(account)
             .where(eq(account.providerId, 'credential'));
         });
-        expect(accounts).toHaveLength(3);
-        for (const a of accounts) {
+        const pilotUserIds = new Set(PILOT_USERS.map((u) => u.id));
+        const pilotAccounts = accounts.filter((a) => pilotUserIds.has(a.userId));
+        expect(pilotAccounts).toHaveLength(PILOT_USERS.length);
+        for (const a of pilotAccounts) {
           expect(a.password).toBeTruthy();
           expect(a.password).toMatch(/^[0-9a-f]+:[0-9a-f]+$/);
         }

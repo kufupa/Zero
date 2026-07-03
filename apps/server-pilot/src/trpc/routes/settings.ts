@@ -5,14 +5,13 @@
  * hook calls `settings.get` (no input) and `settings.save(settings)`. We
  * upsert a `userSettings` row for the caller.
  */
-import { and, eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { privateProcedure, router as tRouter } from '../trpc.js';
 import { getDb } from '../../db/client.js';
 import { userSettings } from '../../db/schema/app.js';
 import {
   userSettingsSchema,
   defaultUserSettings,
-  type UserSettings,
 } from '../../lib/schemas.js';
 
 export const settingsSaveInput = userSettingsSchema.partial();
@@ -38,31 +37,24 @@ export const settingsRouter = tRouter({
     .mutation(async ({ input, ctx }) => {
       const db = getDb();
       const userId = ctx.sessionUser.id;
-      const existing = await db
-        .select({ id: userSettings.id, settings: userSettings.settings })
-        .from(userSettings)
-        .where(eq(userSettings.userId, userId))
-        .limit(1);
-      if (existing.length > 0) {
-        const merged: UserSettings = {
-          ...(existing[0]!.settings as UserSettings),
-          ...input,
-        };
-        await db
-          .update(userSettings)
-          .set({ settings: merged, updatedAt: new Date() })
-          .where(eq(userSettings.id, existing[0]!.id));
-        return { success: true as const };
-      }
       const id = `settings-${userId}`;
-      await db.insert(userSettings).values({
-        id,
-        userId,
-        settings: { ...defaultUserSettings, ...input },
-      });
+      const base = { ...defaultUserSettings, ...input };
+      await db
+        .insert(userSettings)
+        .values({
+          id,
+          userId,
+          settings: base,
+        })
+        .onConflictDoUpdate({
+          target: userSettings.userId,
+          set: {
+            settings: sql`coalesce(${userSettings.settings}, ${JSON.stringify(defaultUserSettings)}::jsonb) || ${JSON.stringify(input)}::jsonb`,
+            updatedAt: new Date(),
+          },
+        });
       return { success: true as const };
     }),
 });
 
-// Suppress unused-import lint (and is reserved for future multi-condition filters).
-void and;
+void sql;

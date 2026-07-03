@@ -118,19 +118,21 @@ export const connectionsRouter = tRouter({
       if (access.length === 0) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'NOT_FOUND: connection not found' });
       }
-      await db
-        .update(mailboxAccess)
-        .set({ isDefault: false, updatedAt: new Date() })
-        .where(eq(mailboxAccess.userId, userId));
-      await db
-        .update(mailboxAccess)
-        .set({ isDefault: true, updatedAt: new Date() })
-        .where(
-          and(
-            eq(mailboxAccess.userId, userId),
-            eq(mailboxAccess.transportId, input.connectionId),
-          ),
-        );
+      await db.transaction(async (tx) => {
+        await tx
+          .update(mailboxAccess)
+          .set({ isDefault: false, updatedAt: new Date() })
+          .where(eq(mailboxAccess.userId, userId));
+        await tx
+          .update(mailboxAccess)
+          .set({ isDefault: true, updatedAt: new Date() })
+          .where(
+            and(
+              eq(mailboxAccess.userId, userId),
+              eq(mailboxAccess.transportId, input.connectionId),
+            ),
+          );
+      });
       return { id: input.connectionId };
     }),
 
@@ -138,17 +140,17 @@ export const connectionsRouter = tRouter({
     .input(z.object({ connectionId: z.string() }))
     .mutation(async ({ input, ctx }) => {
       const db = getDb();
-      // Only an owner can remove a mailbox (and only if it's not the last
-      // one — pilot guardrail).
+      const userId = ctx.sessionUser.id;
       const access = await db
         .select({
           role: mailboxAccess.role,
           transportId: mailboxAccess.transportId,
+          isDefault: mailboxAccess.isDefault,
         })
         .from(mailboxAccess)
         .where(
           and(
-            eq(mailboxAccess.userId, ctx.sessionUser.id),
+            eq(mailboxAccess.userId, userId),
             eq(mailboxAccess.transportId, input.connectionId),
           ),
         )
@@ -162,22 +164,38 @@ export const connectionsRouter = tRouter({
           message: 'only owners can remove a mailbox',
         });
       }
-      // For pilot: refuse to delete the user's only mailbox.
-      const transports = await listTransportsForUser(ctx.sessionUser.id);
+      const transports = await listTransportsForUser(userId);
       if (transports.length <= 1) {
         throw new TRPCError({
           code: 'BAD_REQUEST',
           message: 'cannot delete the last mailbox',
         });
       }
+      const wasDefault = access[0]!.isDefault;
       await db
         .delete(mailboxAccess)
         .where(
           and(
-            eq(mailboxAccess.userId, ctx.sessionUser.id),
+            eq(mailboxAccess.userId, userId),
             eq(mailboxAccess.transportId, input.connectionId),
           ),
         );
-      return { deleted: true };
+      const remaining = (await listTransportsForUser(userId)).filter(
+        (t) => t.id !== input.connectionId,
+      );
+      let nextDefaultId: string | null = remaining[0]?.id ?? null;
+      if (wasDefault && remaining.length > 0) {
+        nextDefaultId = remaining[0]!.id;
+        await db
+          .update(mailboxAccess)
+          .set({ isDefault: true, updatedAt: new Date() })
+          .where(
+            and(
+              eq(mailboxAccess.userId, userId),
+              eq(mailboxAccess.transportId, nextDefaultId),
+            ),
+          );
+      }
+      return { deleted: true, nextDefaultId };
     }),
 });

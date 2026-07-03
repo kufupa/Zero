@@ -49,7 +49,6 @@ export const userSettings = pgTable(
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow(),
   },
-  (t) => [index('user_settings_settings_idx').on(t.settings)],
 );
 
 export const emailTemplate = pgTable(

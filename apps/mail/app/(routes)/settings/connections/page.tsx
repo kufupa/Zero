@@ -24,6 +24,7 @@ import { m } from '@/paraglide/messages';
 import { useState } from 'react';
 import { toast } from 'sonner';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { setMailCacheScope } from '@/lib/mail/mail-cache-scope';
 
 export async function runDisconnectConnection(params: {
   connectionId: string;
@@ -33,25 +34,34 @@ export async function runDisconnectConnection(params: {
     options?: {
       onError?: (error: unknown) => void;
     },
-  ) => Promise<unknown>;
+  ) => Promise<{ deleted?: boolean; nextDefaultId?: string | null } | unknown>;
   onBlocked: () => void;
   onSuccess: () => void;
   onError: (error: unknown) => void;
   refetchConnections: () => void;
   refetchSession: () => Promise<unknown> | unknown;
   invalidateThreads: () => Promise<unknown> | unknown;
+  onMailboxSwitched?: (nextDefaultId: string) => void;
 }) {
   if (params.isFrontendOnlyDemo) {
     params.onBlocked();
     return 'blocked';
   }
 
-  await params.deleteConnection(
+  const result = await params.deleteConnection(
     { connectionId: params.connectionId },
     {
       onError: params.onError,
     },
   );
+
+  const nextDefaultId =
+    result && typeof result === 'object' && 'nextDefaultId' in result
+      ? (result as { nextDefaultId?: string | null }).nextDefaultId
+      : undefined;
+  if (nextDefaultId) {
+    params.onMailboxSwitched?.(nextDefaultId);
+  }
 
   params.onSuccess();
   void params.refetchConnections();
@@ -81,7 +91,7 @@ export async function runReconnectConnection(params: {
 
 export default function ConnectionsPage() {
   const { data, isLoading, refetch: refetchConnections } = useConnections();
-  const { refetch } = useSession();
+  const { data: sessionData, refetch } = useSession();
   const [openTooltip, setOpenTooltip] = useState<string | null>(null);
 
   const queryClient = useQueryClient();
@@ -102,6 +112,12 @@ export default function ConnectionsPage() {
       refetchSession: refetch,
       invalidateThreads: () =>
         queryClient.invalidateQueries({ queryKey: trpc.mail.listThreads.infiniteQueryKey() }),
+      onMailboxSwitched: (nextDefaultId) => {
+        setMailCacheScope({
+          userId: sessionData?.user?.id ?? null,
+          activeTransportId: nextDefaultId,
+        });
+      },
     });
   };
 

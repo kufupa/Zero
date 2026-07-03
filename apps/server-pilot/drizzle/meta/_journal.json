@@ -29,6 +29,13 @@
       "when": 1783204800000,
       "tag": "0003_quarantine_ingest_uidl_uidx",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1783291200000,
+      "tag": "0004_drop_user_settings_settings_idx",
+      "breakpoints": true
     }
   ]
 }
