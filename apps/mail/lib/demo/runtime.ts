@@ -4,7 +4,7 @@ import { DEMO_FEATURES, type DemoFeatureKey } from './config';
  * When true, app always behaves as frontend-only demo (no env required).
  * Set false before shipping production builds that need real auth/backend.
  */
-export const FORCE_FRONTEND_ONLY_DEMO = true;
+export const FORCE_FRONTEND_ONLY_DEMO = false;
 
 type DemoEnv = {
   ZERO_DEMO_MODE?: string;

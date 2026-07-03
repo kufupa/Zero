@@ -3,6 +3,7 @@
  */
 import { z } from 'zod';
 import type { message } from '../db/schema/mail.js';
+import { sanitizeEmailHtml } from '../mail/sanitize-email-html.js';
 
 export type MessageRow = typeof message.$inferSelect;
 
@@ -165,8 +166,12 @@ export function toParsedMessage(
   attachments: AttachmentMeta[] = [],
 ): ParsedMessageWire {
   const bodyText = row.textBody ?? '';
-  const html = row.htmlBody ?? bodyText;
-  const decodedBody = html || bodyText;
+  const rawHtml = row.htmlBody ?? bodyText;
+  const sanitized =
+    rawHtml && rawHtml.includes('<')
+      ? sanitizeEmailHtml(rawHtml, { shouldLoadImages: false }).html
+      : rawHtml;
+  const decodedBody = sanitized || bodyText;
   const receivedOn = row.receivedAt
     ? row.receivedAt.toISOString()
     : row.sentAt
@@ -185,8 +190,8 @@ export function toParsedMessage(
     tls: true,
     receivedOn,
     unread: !row.isRead,
-    body: bodyText || html,
-    processedHtml: html,
+    body: bodyText || sanitized,
+    processedHtml: sanitized,
     blobUrl: '',
     decodedBody,
     threadId: row.threadId,

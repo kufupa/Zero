@@ -33,12 +33,10 @@ export function sanitizeEmailHtml(
       'title',
       'details',
       'summary',
-      'style',
     ]),
     allowedAttributes: {
       '*': [
         'class',
-        'style',
         'align',
         'valign',
         'width',
@@ -50,8 +48,8 @@ export function sanitizeEmailHtml(
         'colspan',
         'rowspan',
       ],
-      a: ['href', 'name', 'target', 'rel', 'class', 'style'],
-      img: ['src', 'alt', 'width', 'height', 'class', 'style'],
+      a: ['href', 'name', 'target', 'rel', 'class'],
+      img: ['src', 'alt', 'width', 'height', 'class'],
     },
     allowedSchemes: ['http', 'https', 'mailto', 'tel', 'cid'],
     allowedSchemesByTag: {

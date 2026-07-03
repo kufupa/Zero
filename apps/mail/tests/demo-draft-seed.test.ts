@@ -1,6 +1,14 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { demoMailListDraftsQueryKey } from '../lib/demo/demo-mail-query-keys';
 import { listDemoDrafts, resetDemoStoreForTests } from '../lib/demo/local-store';
+
+vi.mock('../lib/demo/runtime', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/demo/runtime')>();
+  return {
+    ...actual,
+    isFrontendOnlyDemo: () => true,
+  };
+});
 
 beforeEach(() => {
   resetDemoStoreForTests();
