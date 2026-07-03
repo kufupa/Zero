@@ -94,6 +94,46 @@ describe('deploy config', () => {
     expect(main).toContain('closeDb');
   });
 
+  it('deploy-ec2.sh picks latest nvm node via version sort', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const deploy = readFileSync(join(here, '..', 'deploy', 'deploy-ec2.sh'), 'utf8');
+    expect(deploy).toMatch(/sort -V \| tail -1/);
+  });
+
+  it('deploy-ec2.sh retries health check with backoff', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const deploy = readFileSync(join(here, '..', 'deploy', 'deploy-ec2.sh'), 'utf8');
+    expect(deploy).toContain('health attempt');
+    expect(deploy).toMatch(/seq 1 10/);
+  });
+
+  it('ssm-run-command.sh caps poll duration and empty-status spins', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const script = readFileSync(join(here, '..', 'deploy', 'ssm-run-command.sh'), 'utf8');
+    expect(script).toContain('SSM_MAX_POLL_SECONDS');
+    expect(script).toContain('SSM_MAX_EMPTY_POLLS');
+  });
+
+  it('rds-smoke.sh falls back to postgres npm package when psql missing', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const script = readFileSync(join(here, '..', 'deploy', 'rds-smoke.sh'), 'utf8');
+    expect(script).toContain('postgres npm package');
+    expect(script).not.toContain('require("pg")');
+    expect(script).toContain('import postgres from "postgres"');
+  });
+
   it('mailbox_access schema has is_default column', async () => {
     const { mailboxAccess } = await import('../src/db/schema/mail.js');
     expect(mailboxAccess.isDefault).toBeDefined();

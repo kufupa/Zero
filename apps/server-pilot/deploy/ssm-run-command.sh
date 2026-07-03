@@ -4,6 +4,8 @@ set -euo pipefail
 : "${AWS_REGION:=af-south-1}"
 : "${INSTANCE_ID:=i-008f737974a9ba9b3}"
 : "${SSM_POLL_INTERVAL_SECONDS:=2}"
+: "${SSM_MAX_POLL_SECONDS:=1800}"
+: "${SSM_MAX_EMPTY_POLLS:=30}"
 
 if [ "$#" -eq 0 ]; then
   echo "usage: $0 'hostname && whoami'" >&2
@@ -22,7 +24,17 @@ COMMAND_ID="$(
     --output text
 )"
 
+START_EPOCH="$(date +%s)"
+EMPTY_POLLS=0
+
 while true; do
+  NOW_EPOCH="$(date +%s)"
+  ELAPSED="$((NOW_EPOCH - START_EPOCH))"
+  if [ "$ELAPSED" -ge "$SSM_MAX_POLL_SECONDS" ]; then
+    echo "ssm poll exceeded ${SSM_MAX_POLL_SECONDS}s (command ${COMMAND_ID})" >&2
+    exit 1
+  fi
+
   INVOCATION="$(
     aws ssm get-command-invocation \
       --region "$AWS_REGION" \
@@ -36,6 +48,7 @@ while true; do
 
   case "$STATUS" in
     Pending|InProgress|Delayed)
+      EMPTY_POLLS=0
       sleep "$SSM_POLL_INTERVAL_SECONDS"
       ;;
     Success|Failed|Cancelled|TimedOut|Cancelling)
@@ -46,6 +59,11 @@ while true; do
       esac
       ;;
     "")
+      EMPTY_POLLS="$((EMPTY_POLLS + 1))"
+      if [ "$EMPTY_POLLS" -ge "$SSM_MAX_EMPTY_POLLS" ]; then
+        echo "ssm poll got ${SSM_MAX_EMPTY_POLLS} empty statuses (command ${COMMAND_ID})" >&2
+        exit 1
+      fi
       sleep "$SSM_POLL_INTERVAL_SECONDS"
       ;;
     *)

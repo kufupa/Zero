@@ -21,7 +21,7 @@ if [ -f "$ENV_FILE" ]; then
   set +a
 fi
 
-export PATH="${HOME}/.local/share/pnpm:${HOME}/.nvm/versions/node/$(ls "${HOME}/.nvm/versions/node" 2>/dev/null | tail -1)/bin:${PATH}"
+export PATH="${HOME}/.local/share/pnpm:${HOME}/.nvm/versions/node/$(ls "${HOME}/.nvm/versions/node" 2>/dev/null | sort -V | tail -1)/bin:${PATH}"
 
 echo "== pnpm install =="
 pnpm install --frozen-lockfile
@@ -67,11 +67,16 @@ else
 fi
 
 echo "== health =="
-sleep 2
-curl -fsS http://127.0.0.1:8788/health || {
-  echo "health check failed; pm2 logs http --lines 20"
-  pm2 logs http --lines 20 --nostream || true
-  exit 1
-}
-echo
-echo "deploy ok"
+HEALTH_URL="http://127.0.0.1:8788/health"
+for attempt in $(seq 1 10); do
+  if curl -fsS "$HEALTH_URL"; then
+    echo
+    echo "deploy ok"
+    exit 0
+  fi
+  echo "health attempt ${attempt}/10 failed; retry in ${attempt}s"
+  sleep "$attempt"
+done
+echo "health check failed after retries; pm2 logs http --lines 20"
+pm2 logs http --lines 20 --nostream || true
+exit 1

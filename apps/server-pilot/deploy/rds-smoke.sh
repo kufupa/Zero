@@ -5,7 +5,9 @@
 #   (or source .env.production first and pass DATABASE_URL via env)
 set -euo pipefail
 
-ENV_PATH="${ENV_PATH:-/home/ubuntu/repos/zero/apps/server-pilot/.env.production}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SERVER_PILOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+ENV_PATH="${ENV_PATH:-${SERVER_PILOT}/.env.production}"
 
 if [ -z "${DATABASE_URL:-}" ] && [ -r "$ENV_PATH" ]; then
   set -a
@@ -19,14 +21,16 @@ fi
 if command -v psql >/dev/null 2>&1; then
   psql "$DATABASE_URL" -c "select version();"
 else
-  echo "psql not found; falling back to node pg script" >&2
+  echo "psql not found; falling back to postgres npm package" >&2
   NODE_BIN="${NODE_BIN:-node}"
-  "$NODE_BIN" -e '
-    const { Client } = require("pg");
-    const c = new Client({ connectionString: process.env.DATABASE_URL });
-    c.connect().then(() => c.query("select version();")).then(r => {
-      console.log(r.rows[0].version);
-      return c.end();
-    }).catch(e => { console.error(e); process.exit(1); });
-  '
+  (
+    cd "$SERVER_PILOT"
+    "$NODE_BIN" --input-type=module -e '
+      import postgres from "postgres";
+      const sql = postgres(process.env.DATABASE_URL);
+      const [row] = await sql`select version()`;
+      console.log(row.version);
+      await sql.end({ timeout: 5 });
+    '
+  )
 fi
