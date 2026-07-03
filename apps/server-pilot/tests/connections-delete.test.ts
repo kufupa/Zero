@@ -69,10 +69,13 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       'rejects deleting last mailbox',
       async () => {
         await withSeededTestDb(async (db) => {
-          const caller = await callerForPrivate('user-centurion-worker', { db });
+          const caller = await callerForPrivate('user-manager', { db });
           await expect(
             caller.connections.delete({ connectionId: 'transport-centurion' }),
-          ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+          ).rejects.toMatchObject({
+            code: 'BAD_REQUEST',
+            message: 'cannot delete the last mailbox',
+          });
         });
       },
       30000,
