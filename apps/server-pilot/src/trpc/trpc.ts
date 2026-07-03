@@ -56,7 +56,7 @@ const t = initTRPC.context<TrpcSourceContext>().create({
 
 function noMailboxTrpcError(): TRPCError {
   return new TRPCError({
-    code: 'NO_MAILBOX' as 'FORBIDDEN',
+    code: 'FORBIDDEN',
     message: 'NO_MAILBOX',
   });
 }

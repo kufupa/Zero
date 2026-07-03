@@ -42,6 +42,9 @@ export function assertPilotSignupAllowed(
 /** Chrome caps Set-Cookie Max-Age at 400 days. */
 export const SESSION_TTL_SEC = 60 * 60 * 24 * 400;
 
+/** Signed cookie cache: server revalidates session against DB at this interval. */
+export const SESSION_COOKIE_CACHE_MAX_AGE_SEC = 60 * 60;
+
 /** Active user extends another 400d session each week. */
 export const SESSION_UPDATE_AGE_SEC = 60 * 60 * 24 * 7;
 
@@ -95,7 +98,7 @@ export const createAuth = (
         env.NODE_ENV === 'development' ? 'better-auth-dev' : 'better-auth',
     },
     session: {
-      cookieCache: { enabled: true, maxAge: SESSION_TTL_SEC },
+      cookieCache: { enabled: true, maxAge: SESSION_COOKIE_CACHE_MAX_AGE_SEC },
       expiresIn: SESSION_TTL_SEC,
       updateAge: SESSION_UPDATE_AGE_SEC,
     },

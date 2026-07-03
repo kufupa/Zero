@@ -35,7 +35,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
   'trash soft delete (seeded, transaction-rollback)',
   () => {
     it(
-      'bulkDelete moves thread to bin; restore clears trashedAt; second delete removes row',
+      'bulkDelete moves thread to bin; restore clears trashedAt; repeat delete stays trashed; permanent removes row',
       async () => {
         await withSeededTestDb(async (db) => {
           const threadId = 'thread-trash-soft-1';
@@ -78,6 +78,16 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
 
           await caller.mail.bulkDelete({ ids: [threadId] });
           await caller.mail.bulkDelete({ ids: [threadId] });
+
+          const rowStillTrashed = await db
+            .select({ trashedAt: mailThread.trashedAt })
+            .from(mailThread)
+            .where(eq(mailThread.id, threadId))
+            .limit(1);
+          expect(rowStillTrashed).toHaveLength(1);
+          expect(rowStillTrashed[0]?.trashedAt).toBeTruthy();
+
+          await caller.mail.bulkDelete({ ids: [threadId], permanent: true });
 
           const rowGone = await db
             .select({ id: mailThread.id })

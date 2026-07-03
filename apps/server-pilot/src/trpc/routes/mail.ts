@@ -548,18 +548,34 @@ export const mailRouter = tRouter({
     }),
 
   bulkDelete: mailboxProcedure
-    .input(bulkIdsInput)
+    .input(
+      z.union([
+        z
+          .object({
+            ids: z.array(z.string()),
+            permanent: z.boolean().optional(),
+          })
+          .transform(({ ids, permanent }) => ({
+            threadIds: ids,
+            permanent: permanent ?? false,
+          })),
+        z.object({
+          threadIds: z.array(z.string()),
+          permanent: z.boolean().optional(),
+        }),
+      ]),
+    )
     .mutation(async ({ input, ctx }) => {
-      // Soft-delete (trash) unless already trashed; then hard-delete (delete forever).
       const db = getDb();
       const transportId = ctx.activeTransportId;
+      const permanent = input.permanent ?? false;
       for (const id of input.threadIds) {
         const row = await requireThreadForTransport(db, id, transportId);
-        if (row.trashedAt) {
+        if (permanent && row.trashedAt) {
           await db
             .delete(mailThread)
             .where(and(eq(mailThread.id, id), eq(mailThread.transportId, transportId)));
-        } else {
+        } else if (!row.trashedAt) {
           await db
             .update(mailThread)
             .set({ trashedAt: new Date(), updatedAt: new Date() })

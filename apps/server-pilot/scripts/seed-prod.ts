@@ -14,6 +14,7 @@ import * as schema from '../src/db/schema/index.js';
 import { parseEnv } from '../src/env.js';
 import { seedAll, planPilotCredentials, PILOT_USERS } from '../src/db/seed.js';
 import { getPostgresSslOptions } from '../src/db/ssl-config.js';
+import { mergePilotSecretPayload } from '../src/lib/pilot-secrets.js';
 
 const PILOT_SECRET_NAME = 'nava-zero/server-pilot/pilot-users';
 const AWS_REGION = process.env.AWS_REGION ?? 'af-south-1';
@@ -67,6 +68,32 @@ async function ensurePilotSecret(): Promise<void> {
   }
 }
 
+async function getPilotSecret(): Promise<Record<string, { password: string }>> {
+  try {
+    const { stdout } = await runAws([
+      'secretsmanager',
+      'get-secret-value',
+      '--region',
+      AWS_REGION,
+      '--secret-id',
+      PILOT_SECRET_NAME,
+      '--query',
+      'SecretString',
+      '--output',
+      'text',
+    ]);
+    const trimmed = stdout.trim();
+    if (!trimmed) return {};
+    return JSON.parse(trimmed) as Record<string, { password: string }>;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (/ResourceNotFoundException|can't find the specified secret/i.test(message)) {
+      return {};
+    }
+    throw err;
+  }
+}
+
 async function putPilotSecret(payload: Record<string, { password: string }>): Promise<void> {
   const json = JSON.stringify(payload);
   await runAws([
@@ -99,7 +126,8 @@ async function main(): Promise<void> {
 
     if (Object.keys(credentialsToWrite).length > 0) {
       await ensurePilotSecret();
-      await putPilotSecret(credentialsToWrite);
+      const existing = await getPilotSecret();
+      await putPilotSecret(mergePilotSecretPayload(existing, credentialsToWrite));
     }
 
     const result = await seedAll(db, {
