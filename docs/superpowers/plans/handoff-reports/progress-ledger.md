@@ -65,8 +65,11 @@ Branch `EC2-pilot`. Seven commits `4b173f5e..1a3e0d98`. Full report: [`2026-07-0
 
 ### Task 18 EC2 gate (2026-07-03)
 
-- **Local:** server 101 pass; mail 163 pass; builds green
-- **EC2:** sync + migrate (0001–0003) + deploy OK @ `1a3e0d98`
-- **EC2 tests:** 101 pass / 53 skip
-- **Signup:** 403 unchanged
-- **Transport:** `MAIL_TRANSPORT_MODE=fixture`; `INGEST_FIXTURE_DIR` set on EC2 for fixture cycles
+- **Local:** server 106+ pass; mail 165 pass; builds green
+- **Post-audit Tier 5 (U1–U7):** commits `7ab251a3..e58ac16f` — see [`2026-07-03-post-audit-tier5-gate-report.md`](2026-07-03-post-audit-tier5-gate-report.md)
+- **EC2:** bundle sync + migrate (0004) + deploy OK @ `e58ac16f`
+- **EC2 mail tests:** 165/165 pass
+- **EC2 server tests:** 169/177 pass (`NODE_ENV=test`, full suite)
+- **Health:** `{"ok":true,"service":"server-pilot"}`
+- **Transport:** `MAIL_TRANSPORT_MODE=fixture`
+- **Ops blocker (unchanged):** real Exchange/POP3 ingest off until IT relay rules

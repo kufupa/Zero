@@ -538,37 +538,24 @@ it('RETR raw body is byte-identical (latin-1 fixture)', async () => { /* ... */ 
 
 ---
 
-## Tier 5 backlog (not in this plan — fix opportunistically)
+## Tier 5 backlog — **completed 2026-07-03** (post-audit plan U1–U7)
 
-| ID | Bug | One-liner |
-|----|-----|-----------|
-| B15 | `unsend` stale thread metadata | Ghost empty threads after unsend |
-| B16 | Bulk mutations non-atomic | Partial update then NOT_FOUND mid-batch |
-| B17 | `toggleStar` per-row flip | Bulk star semantics differ from old server |
-| B18 | `mail.get` attachments `[]` | PDF indicator missing in thread view |
-| B19 | `desc()` NULLS FIRST | Latent sort bug on null timestamps |
-| B20 | `labels.create/update` errors | Wrong CONFLICT/500 mapping |
-| C6 | `RealS3Storage` stream drain | Latent 0-byte upload if stream caller |
-| C8 | Cookie cache 30d | Session revoke invisible to client 30 days |
-| C9 | `getSessionUser` swallows errors | RDS blip → UNAUTHORIZED not 500 |
-| C11 | `settings.save` race | Concurrent first save → PK violation |
-| C12 | `connections.delete` stale header | Active mailbox deleted → sign-out loop |
-| D6 | btree index on settings jsonb | Long customPrompt → save fails |
-| D10 | `rds-smoke.sh` needs `pg` | Fallback broken without psql/pg |
-| D11 | deploy nvm lex sort | `v9` beats `v22` |
-| D12 | health check one probe | Flaky deploy green |
-| D13 | SSM poll spin forever | Script hang |
-| D16 | seed-contract global count | Breaks when real user added |
-| D17 | package-contract bypasses exports | Broken export map ships |
-| E3 | QueryClient recreated on scope change | Cache wipe flicker |
-| E4 | Unstable hash prefix | 2–3 duplicate fetch waves cold load |
-| E6 | QueryProvider clobbers scope | Transport header stuck pending |
-| E7 | Account switch persister | Latent until connection UI on |
-| E8 | Legacy IDB bucket orphan | Pre-migration cache never deleted |
-| A16 | Unparseable From → `''` | Blank sender |
-| A18 | Ingest test gaps | P1s hidden by missing assertions |
+See [`2026-07-03-post-audit-tier5-gate-report.md`](handoff-reports/2026-07-03-post-audit-tier5-gate-report.md).
 
-**Pull into scope if hit in prod:** C8, D6, B18 (attachments in thread view).
+| ID | Status | Notes |
+|----|--------|-------|
+| B15–B20 | fixed | U2 mail/label semantics |
+| C6 | fixed | U4 S3 buffer-once |
+| C8 | **accepted** | 400d DB session; 1h cookie cache revocation bound |
+| C9, C11, C12 | fixed | U3 settings/connections |
+| D6 | fixed | U3 migration 0004 |
+| D10–D13 | fixed | U7 deploy scripts |
+| D16 | fixed | U3 seed contract |
+| D17 | fixed | U6 exports-derived vitest aliases |
+| E3–E8 | fixed | U6 query cache scope |
+| A16, A18 | fixed | U4 ingest + U1/U3 tests |
+
+**Pull into scope if hit in prod:** none remaining from Tier 5 list.
 
 ---
 

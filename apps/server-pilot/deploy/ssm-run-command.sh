@@ -5,7 +5,7 @@ set -euo pipefail
 : "${INSTANCE_ID:=i-008f737974a9ba9b3}"
 : "${SSM_POLL_INTERVAL_SECONDS:=2}"
 : "${SSM_MAX_POLL_SECONDS:=1800}"
-: "${SSM_MAX_EMPTY_POLLS:=30}"
+: "${SSM_MAX_EMPTY_POLLS:=120}"
 
 if [ "$#" -eq 0 ]; then
   echo "usage: $0 'hostname && whoami'" >&2
