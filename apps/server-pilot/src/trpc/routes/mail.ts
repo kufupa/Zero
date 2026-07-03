@@ -31,6 +31,9 @@ import {
   encodePageCursor,
   decodePageCursor,
   keysetBefore,
+  descNullsLast,
+  resolveVisibleThreadIds,
+  refreshThreadAfterMessageRemoved,
 } from './mail-helpers.js';
 import {
   getSmtpTransport,
@@ -280,7 +283,7 @@ export const mailRouter = tRouter({
         })
         .from(mailThread)
         .where(and(...conditions))
-        .orderBy(desc(mailThread.latestMessageAt), desc(mailThread.id))
+        .orderBy(descNullsLast(mailThread.latestMessageAt), desc(mailThread.id))
         .limit(limit + 1);
 
       let nextPageToken: string | null = null;
@@ -380,26 +383,7 @@ export const mailRouter = tRouter({
     .mutation(async ({ input, ctx }) => {
       const db = getDb();
       const transportId = ctx.activeTransportId;
-      // Only operate on threads the caller can see.
-      const visible = await db
-        .select({ id: mailThread.id })
-        .from(mailThread)
-        .where(
-          and(
-            eq(mailThread.transportId, transportId),
-            inArray(mailThread.id, input.threadIds),
-          ),
-        );
-      const visibleIds = visible.map((v) => v.id);
-      // Strict NOT_FOUND when a single id is requested and not visible —
-      // matches the brief's isolation test. Bulk updates silently skip
-      // unknown ids (user-friendly idempotent behavior).
-      if (
-        input.threadIds.length === 1 &&
-        !visibleIds.includes(input.threadIds[0]!)
-      ) {
-        throw new TRPCError({ code: 'NOT_FOUND', message: 'NOT_FOUND: thread not found' });
-      }
+      const visibleIds = await resolveVisibleThreadIds(db, transportId, input.threadIds);
       if (visibleIds.length === 0) return { updated: 0 };
       for (const id of visibleIds) {
         await db
@@ -421,22 +405,7 @@ export const mailRouter = tRouter({
     .mutation(async ({ input, ctx }) => {
       const db = getDb();
       const transportId = ctx.activeTransportId;
-      const visible = await db
-        .select({ id: mailThread.id })
-        .from(mailThread)
-        .where(
-          and(
-            eq(mailThread.transportId, transportId),
-            inArray(mailThread.id, input.threadIds),
-          ),
-        );
-      const visibleIds = visible.map((v) => v.id);
-      if (
-        input.threadIds.length === 1 &&
-        !visibleIds.includes(input.threadIds[0]!)
-      ) {
-        throw new TRPCError({ code: 'NOT_FOUND', message: 'NOT_FOUND: thread not found' });
-      }
+      const visibleIds = await resolveVisibleThreadIds(db, transportId, input.threadIds);
       if (visibleIds.length === 0) return { updated: 0 };
       for (const id of visibleIds) {
         await db
@@ -458,24 +427,33 @@ export const mailRouter = tRouter({
     .mutation(async ({ input, ctx }) => {
       const db = getDb();
       const transportId = ctx.activeTransportId;
-      for (const id of input.threadIds) {
-        const row = await requireThreadForTransport(db, id, transportId);
+      const visibleIds = await resolveVisibleThreadIds(db, transportId, input.threadIds);
+      if (visibleIds.length === 0) return { updated: 0 };
+      const rows = await db
+        .select({ id: mailThread.id, isStarred: mailThread.isStarred })
+        .from(mailThread)
+        .where(
+          and(eq(mailThread.transportId, transportId), inArray(mailThread.id, visibleIds)),
+        );
+      const targetStarred = rows.some((r) => !r.isStarred);
+      for (const row of rows) {
         await db
           .update(mailThread)
-          .set({ isStarred: !row.isStarred, updatedAt: new Date() })
-          .where(and(eq(mailThread.id, id), eq(mailThread.transportId, transportId)));
+          .set({ isStarred: targetStarred, updatedAt: new Date() })
+          .where(and(eq(mailThread.id, row.id), eq(mailThread.transportId, transportId)));
       }
-      return { updated: input.threadIds.length };
+      return { updated: rows.length };
     }),
 
   toggleImportant: mailboxProcedure
     .input(bulkIdsInput)
     .mutation(async ({ input, ctx }) => {
-      // System label id matches labels.list synthetic IMPORTANT id.
       const db = getDb();
       const transportId = ctx.activeTransportId;
+      const visibleIds = await resolveVisibleThreadIds(db, transportId, input.threadIds);
+      if (visibleIds.length === 0) return { updated: 0 };
       const IMPORTANT = 'IMPORTANT';
-      for (const id of input.threadIds) {
+      for (const id of visibleIds) {
         const row = await requireThreadForTransport(db, id, transportId);
         const current = new Set(row.labelIds ?? []);
         let next: string[];
@@ -491,7 +469,7 @@ export const mailRouter = tRouter({
           .set({ labelIds: next, updatedAt: new Date() })
           .where(and(eq(mailThread.id, id), eq(mailThread.transportId, transportId)));
       }
-      return { updated: input.threadIds.length };
+      return { updated: visibleIds.length };
     }),
 
   modifyLabels: mailboxProcedure
@@ -499,11 +477,12 @@ export const mailRouter = tRouter({
     .mutation(async ({ input, ctx }) => {
       const db = getDb();
       const transportId = ctx.activeTransportId;
+      const visibleIds = await resolveVisibleThreadIds(db, transportId, input.threadIds);
+      if (visibleIds.length === 0) return { updated: 0 };
       const addSet = new Set(input.addLabels);
       const removeSet = new Set(input.removeLabels);
       const trashAdded = addSet.delete('TRASH');
       const trashRemoved = removeSet.delete('TRASH');
-      // INBOX is a system folder label; restoring from bin removes TRASH only.
       addSet.delete('INBOX');
       removeSet.delete('INBOX');
       removeSet.delete('SENT');
@@ -512,7 +491,7 @@ export const mailRouter = tRouter({
       addSet.delete('SENT');
       addSet.delete('SPAM');
       addSet.delete('SNOOZED');
-      for (const id of input.threadIds) {
+      for (const id of visibleIds) {
         const row = await requireThreadForTransport(db, id, transportId);
         const current = new Set(row.labelIds ?? []);
         for (const a of addSet) current.add(a);
@@ -529,7 +508,7 @@ export const mailRouter = tRouter({
           .set(patch)
           .where(and(eq(mailThread.id, id), eq(mailThread.transportId, transportId)));
       }
-      return { updated: input.threadIds.length };
+      return { updated: visibleIds.length };
     }),
 
   bulkArchive: mailboxProcedure
@@ -537,14 +516,15 @@ export const mailRouter = tRouter({
     .mutation(async ({ input, ctx }) => {
       const db = getDb();
       const transportId = ctx.activeTransportId;
-      for (const id of input.threadIds) {
-        await requireThreadForTransport(db, id, transportId);
+      const visibleIds = await resolveVisibleThreadIds(db, transportId, input.threadIds);
+      if (visibleIds.length === 0) return { updated: 0 };
+      for (const id of visibleIds) {
         await db
           .update(mailThread)
           .set({ isArchived: true, updatedAt: new Date() })
           .where(and(eq(mailThread.id, id), eq(mailThread.transportId, transportId)));
       }
-      return { updated: input.threadIds.length };
+      return { updated: visibleIds.length };
     }),
 
   bulkDelete: mailboxProcedure
@@ -569,7 +549,9 @@ export const mailRouter = tRouter({
       const db = getDb();
       const transportId = ctx.activeTransportId;
       const permanent = input.permanent ?? false;
-      for (const id of input.threadIds) {
+      const visibleIds = await resolveVisibleThreadIds(db, transportId, input.threadIds);
+      if (visibleIds.length === 0) return { updated: 0 };
+      for (const id of visibleIds) {
         const row = await requireThreadForTransport(db, id, transportId);
         if (permanent && row.trashedAt) {
           await db
@@ -582,7 +564,7 @@ export const mailRouter = tRouter({
             .where(and(eq(mailThread.id, id), eq(mailThread.transportId, transportId)));
         }
       }
-      return { updated: input.threadIds.length };
+      return { updated: visibleIds.length };
     }),
 
   delete: mailboxProcedure
@@ -614,14 +596,15 @@ export const mailRouter = tRouter({
       const db = getDb();
       const transportId = ctx.activeTransportId;
       const until = new Date(input.snoozedUntil);
-      for (const id of input.threadIds) {
-        await requireThreadForTransport(db, id, transportId);
+      const visibleIds = await resolveVisibleThreadIds(db, transportId, input.threadIds);
+      if (visibleIds.length === 0) return { updated: 0 };
+      for (const id of visibleIds) {
         await db
           .update(mailThread)
           .set({ snoozedUntil: until, updatedAt: new Date() })
           .where(and(eq(mailThread.id, id), eq(mailThread.transportId, transportId)));
       }
-      return { updated: input.threadIds.length };
+      return { updated: visibleIds.length };
     }),
 
   unsnoozeThreads: mailboxProcedure
@@ -629,14 +612,15 @@ export const mailRouter = tRouter({
     .mutation(async ({ input, ctx }) => {
       const db = getDb();
       const transportId = ctx.activeTransportId;
-      for (const id of input.threadIds) {
-        await requireThreadForTransport(db, id, transportId);
+      const visibleIds = await resolveVisibleThreadIds(db, transportId, input.threadIds);
+      if (visibleIds.length === 0) return { updated: 0 };
+      for (const id of visibleIds) {
         await db
           .update(mailThread)
           .set({ snoozedUntil: null, updatedAt: new Date() })
           .where(and(eq(mailThread.id, id), eq(mailThread.transportId, transportId)));
       }
-      return { updated: input.threadIds.length };
+      return { updated: visibleIds.length };
     }),
 
   /**
@@ -780,6 +764,7 @@ export const mailRouter = tRouter({
         .where(
           and(eq(message.id, input.messageId), eq(message.transportId, transportId)),
         );
+      await refreshThreadAfterMessageRemoved(db, msg.threadId, transportId);
       return { unsent: true };
     }),
 

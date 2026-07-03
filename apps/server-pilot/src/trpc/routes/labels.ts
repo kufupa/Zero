@@ -14,6 +14,26 @@ import { mailboxProcedure, router as tRouter } from '../trpc.js';
 import { getDb } from '../../db/client.js';
 import { mailLabel } from '../../db/schema/mail.js';
 
+function isPostgresUniqueViolation(err: unknown): boolean {
+  if (err && typeof err === 'object' && 'code' in err) {
+    if ((err as { code: string }).code === '23505') return true;
+  }
+  if (err instanceof Error && err.cause !== undefined) {
+    return isPostgresUniqueViolation(err.cause);
+  }
+  return false;
+}
+
+function throwIfUniqueViolation(err: unknown): never {
+  if (isPostgresUniqueViolation(err)) {
+    throw new TRPCError({
+      code: 'CONFLICT',
+      message: 'label name already exists on this mailbox',
+    });
+  }
+  throw err;
+}
+
 const SYSTEM_LABELS = [
   { id: 'IMPORTANT', name: 'IMPORTANT', type: 'system' as const },
   { id: 'UNREAD', name: 'UNREAD', type: 'system' as const },
@@ -63,12 +83,8 @@ export const labelsRouter = tRouter({
           name: input.name,
           color: input.color ?? null,
         });
-      } catch {
-        // unique(mail_label_transport_name_uidx) violation
-        throw new TRPCError({
-          code: 'CONFLICT',
-          message: 'label name already exists on this mailbox',
-        });
+      } catch (err) {
+        throwIfUniqueViolation(err);
       }
       return { id, name: input.name, type: 'user' as const, color: input.color };
     }),
@@ -98,12 +114,16 @@ export const labelsRouter = tRouter({
       if (input.name !== undefined) patch.name = input.name;
       if (input.color !== undefined) patch.color = input.color;
       if (Object.keys(patch).length === 0) return { id: input.id };
-      await db
-        .update(mailLabel)
-        .set(patch)
-        .where(
-          and(eq(mailLabel.id, input.id), eq(mailLabel.transportId, transportId)),
-        );
+      try {
+        await db
+          .update(mailLabel)
+          .set(patch)
+          .where(
+            and(eq(mailLabel.id, input.id), eq(mailLabel.transportId, transportId)),
+          );
+      } catch (err) {
+        throwIfUniqueViolation(err);
+      }
       return { id: input.id };
     }),
 

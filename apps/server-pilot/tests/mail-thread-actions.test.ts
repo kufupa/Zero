@@ -141,5 +141,97 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         expect(cleared[0]?.snoozedUntil).toBeNull();
       });
     });
+    it('toggleStar bulk sets uniform starred state', async () => {
+      await withSeededTestDb(async (db) => {
+        const starredId = 'thread-actions-star-1';
+        const unstarredId = 'thread-actions-star-2';
+        for (const id of [starredId, unstarredId]) {
+          await db.insert(mailThread).values({
+            id,
+            transportId: 'transport-centurion',
+            threadRootId: `root-${id}`,
+            subject: 'Star bulk',
+            snippet: 'star test',
+            isArchived: false,
+            isStarred: id === starredId,
+            isRead: true,
+            labelIds: [],
+            latestMessageAt: new Date(),
+          });
+        }
+        const caller = await callerFor('user-manager', { db });
+
+        const result = await caller.mail.toggleStar({
+          ids: [starredId, unstarredId, 'foreign-thread-id'],
+        });
+        expect(result.updated).toBe(2);
+
+        for (const id of [starredId, unstarredId]) {
+          const row = await db
+            .select({ isStarred: mailThread.isStarred })
+            .from(mailThread)
+            .where(eq(mailThread.id, id))
+            .limit(1);
+          expect(row[0]?.isStarred).toBe(true);
+        }
+      });
+    });
+
+    it('markAsRead bulk skips foreign ids without partial failure', async () => {
+      await withSeededTestDb(async (db) => {
+        await seedActionThread(db);
+        const caller = await callerFor('user-manager', { db });
+        const result = await caller.mail.markAsRead({
+          ids: [THREAD_ID, 'foreign-thread-id'],
+        });
+        expect(result.updated).toBe(1);
+      });
+    });
+
+    it('unsend last message deletes empty thread', async () => {
+      await withSeededTestDb(async (db) => {
+        const threadId = 'thread-unsend-only-1';
+        const outboundId = 'msg-unsend-only-1';
+        await db.insert(mailThread).values({
+          id: threadId,
+          transportId: 'transport-centurion',
+          threadRootId: 'unsend-root',
+          subject: 'Unsend only',
+          snippet: 'outbound only',
+          isArchived: false,
+          isStarred: false,
+          isRead: true,
+          labelIds: [],
+          latestMessageAt: new Date(),
+        });
+        await db.insert(message).values({
+          id: outboundId,
+          transportId: 'transport-centurion',
+          threadId,
+          direction: 'outbound',
+          fromAddress: 'centurion@legacyhotel.com',
+          toAddresses: ['guest@example.com'],
+          ccAddresses: [],
+          bccAddresses: [],
+          subject: 'Unsend only',
+          textBody: 'bye',
+          messageIdHeader: 'unsend-only-1',
+          references: [],
+          isRead: true,
+          isStarred: false,
+          sentAt: new Date(),
+          receivedAt: new Date(),
+        });
+        const caller = await callerFor('user-manager', { db });
+
+        await caller.mail.unsend({ messageId: outboundId });
+
+        const rows = await db
+          .select({ id: mailThread.id })
+          .from(mailThread)
+          .where(eq(mailThread.id, threadId));
+        expect(rows).toHaveLength(0);
+      });
+    });
   },
 );
