@@ -1,7 +1,19 @@
-import { defineConfig } from 'vitest/config';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { defineConfig } from 'vitest/config';
 
-const src = (p: string) => fileURLToPath(new URL(`./src/${p}`, import.meta.url));
+const root = fileURLToPath(new URL('.', import.meta.url));
+const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8')) as {
+  exports: Record<string, string>;
+};
+
+/** Vitest aliases derived from package.json exports — breaks if export map drifts. */
+const alias: Record<string, string> = {};
+for (const [subpath, target] of Object.entries(pkg.exports)) {
+  if (subpath === '.') continue;
+  alias[`@zero/server${subpath.slice(1)}`] = fileURLToPath(new URL(target, import.meta.url));
+}
 
 export default defineConfig({
   test: {
@@ -9,11 +21,6 @@ export default defineConfig({
     include: ['tests/**/*.test.ts'],
   },
   resolve: {
-    alias: {
-      '@zero/server/trpc': src('trpc/index.ts'),
-      '@zero/server/auth': src('lib/auth.ts'),
-      '@zero/server/auth-providers': src('lib/auth-providers.ts'),
-      '@zero/server/schemas': src('lib/schemas.ts'),
-    },
+    alias,
   },
 });

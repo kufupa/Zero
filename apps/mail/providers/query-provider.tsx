@@ -6,7 +6,7 @@ import {
 import { QueryCache, QueryClient, hashKey, type InfiniteData } from '@tanstack/react-query';
 import { createTRPCContext } from '@trpc/tanstack-react-query';
 import { createTRPCClient, httpBatchLink } from '@trpc/client';
-import { useMemo, type PropsWithChildren } from 'react';
+import { useMemo, useRef, useSyncExternalStore, type PropsWithChildren } from 'react';
 import type { AppRouter } from '@zero/server/trpc';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { resolveDemoQueryPolicy } from '@/lib/demo/query-policy';
@@ -14,14 +14,13 @@ import { CACHE_BURST_KEY } from '@/lib/constants';
 import { signOut } from '@/lib/auth-client';
 import { get, set, del } from 'idb-keyval';
 import superjson from 'superjson';
-import { makeLiveQueryHashPrefix } from '@/lib/mail/query-cache-policy';
+import { resolveQueryHashPrefix, runLogoutCleanup } from '@/lib/mail/query-cache-policy';
 import { PERSIST_MAX_AGE, QUERY_GC_TIME } from '@/lib/mail/cache-ttl';
-import { runLogoutCleanup } from '@/lib/mail/query-cache-policy';
 import {
   getMailCacheScope,
   idbCacheKeyForScope,
   setMailCacheScope,
-  type MailCacheScope,
+  subscribeMailCacheScope,
 } from '@/lib/mail/mail-cache-scope';
 import { useSession } from '@/lib/auth-client';
 import { useActiveConnection } from '@/hooks/use-connections';
@@ -196,14 +195,7 @@ export const makeQueryClient = (_legacyConnectionId?: string | null) =>
         retry: false,
         refetchOnWindowFocus: false,
         queryKeyHashFn: (queryKey) => {
-          const scope = getMailCacheScope();
-          const prefix =
-            scope.userId && scope.activeTransportId
-              ? makeLiveQueryHashPrefix({
-                  userId: scope.userId,
-                  activeTransportId: scope.activeTransportId,
-                })
-              : { userId: scope.userId ?? 'anon', activeTransportId: scope.activeTransportId ?? 'pending' };
+          const prefix = resolveQueryHashPrefix(getMailCacheScope());
           return hashKey([prefix, ...queryKey]);
         },
         gcTime: QUERY_GC_TIME,
@@ -214,24 +206,16 @@ export const makeQueryClient = (_legacyConnectionId?: string | null) =>
     },
   });
 
-let browserQueryClient = {
-  queryClient: null,
-  activeConnectionId: null,
-} as {
-  queryClient: QueryClient | null;
-  activeConnectionId: string | null;
-};
+let browserQueryClient: QueryClient | null = null;
 
-const getQueryClient = (scopeKey: string) => {
+const getQueryClient = () => {
   if (typeof window === 'undefined') {
     return makeQueryClient();
-  } else {
-    if (!browserQueryClient.queryClient || browserQueryClient.activeConnectionId !== scopeKey) {
-      browserQueryClient.queryClient = makeQueryClient();
-      browserQueryClient.activeConnectionId = scopeKey;
-    }
-    return browserQueryClient.queryClient;
   }
+  if (!browserQueryClient) {
+    browserQueryClient = makeQueryClient();
+  }
+  return browserQueryClient;
 };
 
 const getUrl = () => import.meta.env.VITE_PUBLIC_BACKEND_URL + '/api/trpc';
@@ -310,18 +294,12 @@ export function MailCacheScopeSync() {
   return null;
 }
 
-export function QueryProvider({
-  children,
-  mailCacheScope,
-}: PropsWithChildren<{ mailCacheScope?: MailCacheScope }>) {
+export function QueryProvider({ children }: PropsWithChildren) {
   const demoQueryPolicy = resolveDemoQueryPolicy();
-  const scope = mailCacheScope ?? getMailCacheScope();
+  const scope = useSyncExternalStore(subscribeMailCacheScope, getMailCacheScope, getMailCacheScope);
   const scopeKey = idbCacheKeyForScope(scope);
   const scopeReady = Boolean(scope.userId && scope.activeTransportId);
-
-  useEffect(() => {
-    setMailCacheScope(scope);
-  }, [scope.userId, scope.activeTransportId]);
+  const prevScopeKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (typeof window === 'undefined' || !isIdbAvailable()) return;
@@ -347,7 +325,17 @@ export function QueryProvider({
     },
     [demoQueryPolicy.shouldHydratePersistedQueries, persister, scopeReady],
   );
-  const queryClient = useMemo(() => getQueryClient(scopeKey), [scopeKey]);
+  const queryClient = useMemo(() => getQueryClient(), []);
+
+  useEffect(() => {
+    if (!scopeReady) return;
+    if (prevScopeKeyRef.current === scopeKey) return;
+    const hadPreviousScope = prevScopeKeyRef.current !== null;
+    prevScopeKeyRef.current = scopeKey;
+    if (hadPreviousScope) {
+      void queryClient.invalidateQueries();
+    }
+  }, [scopeKey, scopeReady, queryClient]);
 
   return (
     <PersistQueryClientProvider

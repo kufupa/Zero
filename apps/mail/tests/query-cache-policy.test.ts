@@ -1,12 +1,42 @@
-import { describe, expect, it, vi } from 'vitest';
-import { makeLiveQueryHashPrefix, runLogoutCleanup } from '../lib/mail/query-cache-policy';
+import { describe, expect, it, vi, afterEach } from 'vitest';
+import {
+  BOOTSTRAP_QUERY_HASH_PREFIX,
+  makeLiveQueryHashPrefix,
+  resolveQueryHashPrefix,
+  runLogoutCleanup,
+} from '../lib/mail/query-cache-policy';
+import { setMailCacheScope, subscribeMailCacheScope } from '../lib/mail/mail-cache-scope';
 
 describe('query cache policy', () => {
+  afterEach(() => {
+    setMailCacheScope({ userId: null, activeTransportId: null });
+  });
   it('hashes live query keys with active mailbox context', () => {
     expect(makeLiveQueryHashPrefix({ userId: 'u1', activeTransportId: 't1' })).toEqual({
       userId: 'u1',
       activeTransportId: 't1',
     });
+  });
+
+  it('uses one bootstrap prefix until mailbox scope is fully resolved', () => {
+    expect(resolveQueryHashPrefix({ userId: null, activeTransportId: null })).toEqual(
+      BOOTSTRAP_QUERY_HASH_PREFIX,
+    );
+    expect(resolveQueryHashPrefix({ userId: 'u1', activeTransportId: null })).toEqual(
+      BOOTSTRAP_QUERY_HASH_PREFIX,
+    );
+    expect(resolveQueryHashPrefix({ userId: 'u1', activeTransportId: 't1' })).toEqual({
+      userId: 'u1',
+      activeTransportId: 't1',
+    });
+  });
+
+  it('notifies scope subscribers when mailbox scope changes', () => {
+    const listener = vi.fn();
+    const unsubscribe = subscribeMailCacheScope(listener);
+    setMailCacheScope({ userId: 'u1', activeTransportId: 't1' });
+    expect(listener).toHaveBeenCalled();
+    unsubscribe();
   });
 
   it('clears query cache and idb on logout', async () => {
