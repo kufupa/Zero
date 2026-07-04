@@ -58,6 +58,21 @@ Gate behavior:
 
 Manual browser playbook (login as `nava-ops@`, DevTools header toggle, etc.) is **superseded** for fixture verification — keep only for post-VPN real-mail activation below.
 
+## Wire gate (pre–IT only, Option B)
+
+Runs `RealPop3Client` / `RealSmtpTransport` against localhost Mailpit — not every deploy.
+
+**One-time on EC2:** `bash apps/server-pilot/deploy/install-mailpit.sh`
+
+**Pre-IT SSM:**
+
+```bash
+bash apps/server-pilot/deploy/ssm-run-command.sh \
+  'cd /home/ubuntu/repos/zero && bash apps/server-pilot/deploy/wire-gate.sh'
+```
+
+Production `.env.production` stays `MAIL_TRANSPORT_MODE=fixture`. Wire env is forced only inside `wire-gate.sh`.
+
 ## Later real-ingest phase gates
 
 - Start VPN profile provided by IT.
