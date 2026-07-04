@@ -45,7 +45,8 @@ pnpm test tests/fixture-loopback-e2e.test.ts \
   tests/seed-contract.test.ts \
   tests/mail-send.test.ts \
   tests/ingest-store.test.ts \
-  tests/pop3-worker.test.ts
+  tests/pop3-worker.test.ts \
+  --reporter=dot
 
 echo "== build mail SPA =="
 cd "$REPO_ROOT"

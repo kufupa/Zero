@@ -61,8 +61,41 @@ while true; do
     "")
       EMPTY_POLLS="$((EMPTY_POLLS + 1))"
       if [ "$EMPTY_POLLS" -ge "$SSM_MAX_EMPTY_POLLS" ]; then
-        echo "ssm poll got ${SSM_MAX_EMPTY_POLLS} empty statuses (command ${COMMAND_ID})" >&2
-        exit 1
+        # Invocation may exist before Status is populated; one more read before abort.
+        RETRY_STATUS="$(
+          aws ssm get-command-invocation \
+            --region "$AWS_REGION" \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --query 'Status' \
+            --output text 2>/dev/null || true
+        )"
+        case "$RETRY_STATUS" in
+          Pending|InProgress|Delayed)
+            EMPTY_POLLS=0
+            sleep "$SSM_POLL_INTERVAL_SECONDS"
+            continue
+            ;;
+          Success|Failed|Cancelled|TimedOut|Cancelling)
+            INVOCATION="$(
+              aws ssm get-command-invocation \
+                --region "$AWS_REGION" \
+                --command-id "$COMMAND_ID" \
+                --instance-id "$INSTANCE_ID" \
+                --query '{Status:Status,Stdout:StandardOutputContent,Stderr:StandardErrorContent}' \
+                --output json 2>/dev/null || true
+            )"
+            printf '%s\n' "$INVOCATION"
+            case "$RETRY_STATUS" in
+              Success) exit 0 ;;
+              *) exit 1 ;;
+            esac
+            ;;
+          *)
+            echo "ssm poll got ${SSM_MAX_EMPTY_POLLS} empty statuses (command ${COMMAND_ID})" >&2
+            exit 1
+            ;;
+        esac
       fi
       sleep "$SSM_POLL_INTERVAL_SECONDS"
       ;;
