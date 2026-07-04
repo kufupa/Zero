@@ -5,6 +5,12 @@
  */
 const { execSync } = require('node:child_process');
 
+const awsEnv = {
+  ...process.env,
+  PYTHONUTF8: '1',
+  PYTHONIOENCODING: 'utf-8',
+};
+
 const commandId = process.argv[2];
 if (!commandId) {
   console.error('usage: ssm-format-invocation.cjs <command-id>');
@@ -22,11 +28,13 @@ function fetchField(field) {
       `--command-id ${commandId}`,
       `--instance-id ${instanceId}`,
       `--query ${field}`,
-      '--output text',
+      '--output json',
     ].join(' '),
-    { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 },
+    { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, env: awsEnv },
   );
-  return out.replace(/\r/g, '');
+  const parsed = JSON.parse(out.trim());
+  if (parsed === null || parsed === undefined) return '';
+  return String(parsed).replace(/\r/g, '');
 }
 
 function asciiSafe(text) {

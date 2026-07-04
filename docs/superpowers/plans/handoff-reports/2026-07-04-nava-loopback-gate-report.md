@@ -2,7 +2,7 @@
 
 Branch: `EC2-pilot`  
 EC2 instance: `i-008f737974a9ba9b3` (`af-south-1`)  
-Deployed SHA: `c59fba8e` (`fix(mail): tighten inbox listing and quarantine test fixtures`)
+Deployed SHA: `4f38697d` (`fix(deploy): ASCII-safe SSM stdout on Windows AWS CLI`)
 
 ## Wave commits (U1–U8 + overnight fixes)
 
@@ -17,7 +17,7 @@ Deployed SHA: `c59fba8e` (`fix(mail): tighten inbox listing and quarantine test 
 | U7 | `c6bcd114` | test(nava-e2e): add fixture loopback integration suite |
 | U8 | `31cb23d9` | feat(deploy): add fixture loopback ec2 gate script |
 | — | `38e6c734` | fix(deploy): harden ssm poll and gate vitest reporter |
-| — | `c59fba8e` | fix(mail): tighten inbox listing and quarantine test fixtures |
+| — | `4f38697d` | fix(deploy): ASCII-safe SSM stdout on Windows AWS CLI |
 
 ## Local gates (pre-push)
 
@@ -46,7 +46,7 @@ Deployed SHA: `c59fba8e` (`fix(mail): tighten inbox listing and quarantine test 
 3. **Gate 3 test failures on EC2** (`c59fba8e` fix):
    - **E2E-3**: outbound-only threads appeared in inbox — `listThreads(inbox)` now requires inbound message.
    - **ingest quarantine tests**: `missing-owner.eml` replace left `Delivered-To: nava@` — mailparser still routed to Nava spam; tests now use `unknownToEml()` helper.
-4. **Windows AWS CLI unicode** — vitest box-drawing breaks stdout capture; gate uses `--reporter=dot`.
+4. **Windows AWS CLI unicode** — vitest box-drawing + pm2 table checkmarks (`✓`) broke `get-command-invocation` on Windows laptop stdout. **Severity: observability only** — SSM `Status: Success` was always trustworthy; empty/broken JSON hid test counts. Fixed in `4f38697d`: fetch fields via `--output json` + `PYTHONUTF8=1`, ASCII-sanitize before emit. Gate uses `--reporter=dot` on EC2.
 
 ## Divergence log
 
