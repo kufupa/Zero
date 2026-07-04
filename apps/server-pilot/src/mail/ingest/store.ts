@@ -6,9 +6,10 @@
  *   2. Look up `mailboxTransport` by `ownerHeaderValue`. If found, store the
  *      message scoped to that transport (create/find a thread, insert
  *      `message` + `attachment` rows).
- *   3. If the header is missing -> quarantine with reason `missing_owner_header`.
- *      If the header is present but no matching transport -> quarantine with
- *      reason `unknown_transport`.
+ *   3. If the header is missing, try direct `To` match against active transport
+ *      emails; on match store with SPAM label. Otherwise quarantine with reason
+ *      `missing_owner_header`. If the header is present but no matching
+ *      transport -> quarantine with reason `unknown_transport`.
  *
  * Persistence order (inside one PG transaction):
  *   - raw MIME already uploaded to S3 BEFORE this function is called (worker
@@ -28,6 +29,7 @@ import type { DB } from '../../db/client.js';
 import {
   attachment,
   mailIngestQuarantine,
+  mailLabel,
   mailboxTransport,
   message,
   mailThread,
@@ -159,41 +161,48 @@ export async function persistInboundMessage(
   }
 
   // Routing ------------------------------------------------------------
+  let spamLabelId: string | null = null;
+  let transport: { id: string; email: string } | null = null;
+
   if (!parsed.ownerHeaderValue) {
-    return quarantineUnrouted({
-      db,
-      parsed,
-      meta,
-      rawMimeS3Key,
-      reason: 'missing_owner_header',
-    });
+    transport = await findDirectToTransport(db, parsed.toAddresses);
+    if (!transport) {
+      return quarantineUnrouted({
+        db,
+        parsed,
+        meta,
+        rawMimeS3Key,
+        reason: 'missing_owner_header',
+      });
+    }
+    spamLabelId = await ensureSpamLabel(db, transport.id);
+  } else {
+    const transportRows = await db
+      .select({
+        id: mailboxTransport.id,
+        email: mailboxTransport.email,
+      })
+      .from(mailboxTransport)
+      .where(
+        and(
+          eq(mailboxTransport.ownerHeaderValue, parsed.ownerHeaderValue),
+          eq(mailboxTransport.isActive, true),
+        ),
+      )
+      .limit(1);
+
+    if (transportRows.length === 0) {
+      return quarantineUnrouted({
+        db,
+        parsed,
+        meta,
+        rawMimeS3Key,
+        reason: 'unknown_transport',
+      });
+    }
+
+    transport = transportRows[0]!;
   }
-
-  const transportRows = await db
-    .select({
-      id: mailboxTransport.id,
-      email: mailboxTransport.email,
-    })
-    .from(mailboxTransport)
-    .where(
-      and(
-        eq(mailboxTransport.ownerHeaderValue, parsed.ownerHeaderValue),
-        eq(mailboxTransport.isActive, true),
-      ),
-    )
-    .limit(1);
-
-  if (transportRows.length === 0) {
-    return quarantineUnrouted({
-      db,
-      parsed,
-      meta,
-      rawMimeS3Key,
-      reason: 'unknown_transport',
-    });
-  }
-
-  const transport = transportRows[0]!;
 
   const messageId = meta.messageId;
   let threadId = '';
@@ -204,6 +213,12 @@ export async function persistInboundMessage(
       parsed,
       pop3Uidl: meta.pop3Uidl,
     });
+
+    await applyThreadLabels(
+      tx as unknown as DB,
+      threadId,
+      spamLabelId ? [spamLabelId] : [],
+    );
 
     await tx.insert(message).values({
       id: messageId,
@@ -374,6 +389,52 @@ async function findExistingQuarantine(
     )
     .limit(1);
   return rows[0];
+}
+
+async function findDirectToTransport(
+  db: DB,
+  toAddresses: string[],
+): Promise<{ id: string; email: string } | null> {
+  if (toAddresses.length === 0) return null;
+  const directTo = new Set(toAddresses.map((email) => email.toLowerCase()));
+  const transports = await db
+    .select({ id: mailboxTransport.id, email: mailboxTransport.email })
+    .from(mailboxTransport)
+    .where(eq(mailboxTransport.isActive, true));
+
+  return (
+    transports.find((transport) =>
+      directTo.has(transport.email.toLowerCase()),
+    ) ?? null
+  );
+}
+
+async function ensureSpamLabel(db: DB, transportId: string): Promise<string> {
+  const id = `label-spam-${transportId}`;
+  await db
+    .insert(mailLabel)
+    .values({ id, transportId, name: 'SPAM', color: null })
+    .onConflictDoNothing({ target: [mailLabel.transportId, mailLabel.name] });
+  return id;
+}
+
+async function applyThreadLabels(
+  tx: DB,
+  threadId: string,
+  labelIds: string[],
+): Promise<void> {
+  if (labelIds.length === 0) return;
+  const rows = await tx
+    .select({ labelIds: mailThread.labelIds })
+    .from(mailThread)
+    .where(eq(mailThread.id, threadId))
+    .limit(1);
+  const current = rows[0]?.labelIds ?? [];
+  const next = [...new Set([...current, ...labelIds])];
+  await tx
+    .update(mailThread)
+    .set({ labelIds: next, updatedAt: new Date() })
+    .where(eq(mailThread.id, threadId));
 }
 
 async function quarantineUnrouted(args: {

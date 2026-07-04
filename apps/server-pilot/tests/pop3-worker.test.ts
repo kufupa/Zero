@@ -88,9 +88,9 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           }
         }
         if (itemB!.status === 'ok') {
-          expect(itemB!.result.kind).toBe('quarantined');
-          if (itemB!.result.kind === 'quarantined') {
-            expect(itemB!.result.reason).toBe('missing_owner_header');
+          expect(itemB!.result.kind).toBe('stored');
+          if (itemB!.result.kind === 'stored') {
+            expect(itemB!.result.transportId).toBe('transport-nava');
           }
         }
       },

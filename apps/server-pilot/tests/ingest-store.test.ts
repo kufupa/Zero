@@ -4,6 +4,7 @@ import {
   mailIngestQuarantine,
   message,
   attachment,
+  mailThread,
 } from '../src/db/schema/mail';
 import { parseRawMessage, generateMessageId } from '../src/mail/ingest/parse-message';
 import { IngestTooLargeError } from '../src/mail/ingest/limits';
@@ -94,50 +95,71 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     );
 
     it(
-      'quarantines missing owner marker',
+      'routes missing-header direct-To Nava mail to Nava spam',
       async () => {
         const storage = withFakeS3();
         const raw = readFixture('missing-owner.eml');
-        const { result, q } = await withSeededTestDb(async (db) => {
-          const parsed = await parseRawMessage(raw, {
-            messageId: generateMessageId(),
-            storage,
-          });
+        const { result, stored, thread } = await withSeededTestDb(async (db) => {
+          const messageId = generateMessageId();
+          const parsed = await parseRawMessage(raw, { messageId, storage });
           expect(parsed.ownerHeaderValue).toBeNull();
+          expect(parsed.toAddresses).toContain('nava@legacyhotel.com');
+
           const r = await persistInboundMessage(
             parsed,
             raw,
             {
               ingestMailboxId: 'ingest-nava-legacy',
-              pop3Uidl: 'uidl-2',
-              messageId: generateMessageId(),
+              pop3Uidl: 'uidl-direct-nava',
+              messageId,
             },
             { db, storage },
           );
-          let row: typeof mailIngestQuarantine.$inferSelect | undefined;
-          if (r.kind === 'quarantined') {
-            const rows = await db
-              .select()
-              .from(mailIngestQuarantine)
-              .where(eq(mailIngestQuarantine.id, r.quarantineId));
-            row = rows[0];
-          }
-          return { result: r, q: row };
+
+          if (r.kind !== 'stored') return { result: r, stored: undefined, thread: undefined };
+          const messages = await db.select().from(message).where(eq(message.id, r.messageId));
+          const threads = await db.select().from(mailThread).where(eq(mailThread.id, r.threadId));
+          return { result: r, stored: messages[0], thread: threads[0] };
+        });
+
+        expect(result.kind).toBe('stored');
+        if (result.kind !== 'stored') return;
+        expect(result.transportId).toBe('transport-nava');
+        expect(stored!.ownerHeaderValue).toBeNull();
+        expect(thread!.labelIds).toContain('label-spam-transport-nava');
+      },
+      30000,
+    );
+
+    it(
+      'still quarantines missing-header mail with no known To address',
+      async () => {
+        const storage = withFakeS3();
+        const raw = Buffer.from(
+          readFixture('missing-owner.eml')
+            .toString('utf-8')
+            .replace('To: nava@legacyhotel.com', 'To: unknown@example.com'),
+          'utf-8',
+        );
+
+        const result = await withSeededTestDb(async (db) => {
+          const messageId = generateMessageId();
+          const parsed = await parseRawMessage(raw, { messageId, storage });
+          return persistInboundMessage(
+            parsed,
+            raw,
+            {
+              ingestMailboxId: 'ingest-nava-legacy',
+              pop3Uidl: 'uidl-no-direct-match',
+              messageId,
+            },
+            { db, storage },
+          );
         });
 
         expect(result.kind).toBe('quarantined');
         if (result.kind !== 'quarantined') return;
         expect(result.reason).toBe('missing_owner_header');
-        expect(result.quarantineId).toBeTruthy();
-        expect(result.rawMimeS3Key.startsWith('raw-mime/')).toBe(true);
-
-        // Verify the quarantine row.
-        expect(q).toBeDefined();
-        expect(q!.ingestMailboxId).toBe('ingest-nava-legacy');
-        expect(q!.pop3Uidl).toBe('uidl-2');
-        expect(q!.reason).toBe('missing_owner_header');
-        expect(q!.ownerHeaderValue).toBeNull();
-        expect(q!.rawMimeS3Key).toBe(result.rawMimeS3Key);
       },
       30000,
     );
