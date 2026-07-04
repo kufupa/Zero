@@ -28,6 +28,7 @@
 import { connect as tlsConnect, type TLSSocket } from 'node:tls';
 import { connect as netConnect, type Socket } from 'node:net';
 import { readdirSync, readFileSync } from 'node:fs';
+import { fixtureLoopbackStore } from '../fixture-loopback.js';
 import { join } from 'node:path';
 import type { MailTransportMode } from '../../env.js';
 
@@ -401,6 +402,9 @@ export class FakePop3Client implements Pop3Client {
   async connect(): Promise<void> {
     this.callLog.push({ op: 'connect' });
     this.remaining = new Map(this.initial.map((m) => [m.uidl, m]));
+    for (const m of fixtureLoopbackStore.drain()) {
+      this.remaining.set(m.uidl, m);
+    }
     this.pendingDele.clear();
     this.connected = true;
   }

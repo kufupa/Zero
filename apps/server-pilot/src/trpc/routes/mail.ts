@@ -35,6 +35,7 @@ import {
   resolveVisibleThreadIds,
   refreshThreadAfterMessageRemoved,
 } from './mail-helpers.js';
+import { maybeEnqueueLoopback } from '../../mail/fixture-loopback.js';
 import {
   getSmtpTransport,
   buildReplyHeaders,
@@ -703,6 +704,23 @@ export const mailRouter = tRouter({
         references,
         extraHeaders: { 'X-Zero-Mailbox': ctx.transportEmail },
       });
+
+      maybeEnqueueLoopback(
+        {
+          from: ctx.transportEmail,
+          to: input.to,
+          cc: input.cc,
+          bcc: input.bcc,
+          subject: input.subject,
+          html: input.html,
+          text: input.text,
+          inReplyTo,
+          references,
+        },
+        smtpResult,
+        process.env.MAIL_TRANSPORT_MODE === 'real' ? 'real' : 'fixture',
+        { 'X-Zero-Mailbox': ctx.transportEmail },
+      );
 
       const messageId = randomUUID();
       const now = new Date();
