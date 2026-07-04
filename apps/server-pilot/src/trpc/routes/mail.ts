@@ -45,6 +45,7 @@ import {
   parseFromEmail,
   sendInput,
   toParsedMessage,
+  buildMetadataDebugHeaders,
 } from '../wire-compat.js';
 
 /** FE + pilot folder slugs accepted by listThreads. */
@@ -348,9 +349,14 @@ export const mailRouter = tRouter({
         list.push(row);
         attachmentsByMessage.set(row.messageId, list);
       }
-      const parsedMessages = messages.map((m) =>
-        toParsedMessage(m, attachmentsByMessage.get(m.id) ?? []),
-      );
+      const parsedMessages = messages.map((m) => {
+        const parsed = toParsedMessage(m, attachmentsByMessage.get(m.id) ?? []);
+        if (transportId !== 'transport-nava') return parsed;
+        return {
+          ...parsed,
+          debugHeaders: buildMetadataDebugHeaders(m, ctx.transportEmail),
+        };
+      });
       const hasUnread = parsedMessages.some((m) => m.unread);
       const labels = await db
         .select({ id: mailLabel.id, name: mailLabel.name })

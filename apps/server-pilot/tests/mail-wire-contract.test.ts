@@ -11,6 +11,7 @@ import {
   MAIL_FOLDER_VALUES,
 } from '../src/trpc/routes/mail.js';
 import {
+  buildMetadataDebugHeaders,
   parseFromEmail,
   sendInput,
   toParsedMessage,
@@ -224,5 +225,46 @@ describe('mail wire contract — get returns ParsedMessage shape FE reads in use
     const latestMessage = ordered[ordered.length - 1]!;
     expect(latestMessage.id).toBe('msg-2');
     expect(latestMessage.sender.email).toBe('guest@example.com');
+  });
+});
+
+describe('mail wire contract — metadata debug headers', () => {
+  it('builds metadata debug headers without raw MIME reads', () => {
+    const debug = buildMetadataDebugHeaders(
+      {
+        ...GOLDEN_MESSAGE_ROW,
+        transportId: 'transport-nava',
+        direction: 'inbound',
+        ownerHeaderValue: 'nava@legacyhotel.com',
+        messageIdHeader: 'raw-1@example.com',
+        inReplyTo: 'parent@example.com',
+        references: ['root@example.com', 'parent@example.com'],
+      },
+      'nava@legacyhotel.com',
+    );
+
+    expect(debug).toEqual([
+      { key: 'x-zero-mailbox', line: 'X-Zero-Mailbox: nava@legacyhotel.com' },
+      { key: 'message-id', line: 'Message-ID: raw-1@example.com' },
+      { key: 'in-reply-to', line: 'In-Reply-To: parent@example.com' },
+      { key: 'references', line: 'References: root@example.com parent@example.com' },
+    ]);
+  });
+
+  it('marks missing inbound X-Zero-Mailbox explicitly', () => {
+    const debug = buildMetadataDebugHeaders(
+      {
+        ...GOLDEN_MESSAGE_ROW,
+        transportId: 'transport-nava',
+        direction: 'inbound',
+        ownerHeaderValue: null,
+      },
+      'nava@legacyhotel.com',
+    );
+
+    expect(debug[0]).toEqual({
+      key: 'x-zero-mailbox',
+      line: 'X-Zero-Mailbox: (missing)',
+    });
   });
 });

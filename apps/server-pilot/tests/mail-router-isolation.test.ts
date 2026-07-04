@@ -21,6 +21,7 @@ import {
   mailboxTransport,
   mailboxAccess,
   mailThread,
+  message,
 } from '../src/db/schema/mail.js';
 import { user as userAuthTable } from '../src/db/schema/auth.js';
 import {
@@ -309,6 +310,75 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           await expect(
             frontdeskCaller.labels.delete({ id: created.id }),
           ).rejects.toThrow(/NOT_FOUND/);
+        });
+      },
+      30000,
+    );
+
+    it(
+      'returns debug headers only on the Nava transport',
+      async () => {
+        await withSeededTestDb(async (db) => {
+          await db.insert(mailThread).values({
+            id: 'thread-nava-debug-1',
+            transportId: 'transport-nava',
+            threadRootId: 'nava-debug-root-1',
+            subject: 'debug',
+            snippet: 'debug',
+            isArchived: false,
+            isStarred: false,
+            isRead: false,
+            labelIds: [],
+            latestMessageAt: new Date(),
+          });
+          await db.insert(message).values({
+            id: 'msg-nava-debug-1',
+            transportId: 'transport-nava',
+            threadId: 'thread-nava-debug-1',
+            direction: 'inbound',
+            fromAddress: 'guest@example.com',
+            toAddresses: ['nava@legacyhotel.com'],
+            ccAddresses: [],
+            bccAddresses: [],
+            subject: 'debug',
+            textBody: 'debug',
+            ownerHeaderValue: 'nava@legacyhotel.com',
+            messageIdHeader: 'debug-1@example.com',
+            receivedAt: new Date(),
+          });
+
+          const nava = await callerFor('user-nava', {
+            db,
+            requestedTransportId: 'transport-nava',
+          });
+          const navaThread = await nava.mail.get({ id: 'thread-nava-debug-1' });
+          expect(navaThread.messages[0]!.debugHeaders).toContainEqual({
+            key: 'x-zero-mailbox',
+            line: 'X-Zero-Mailbox: nava@legacyhotel.com',
+          });
+
+          await seedFrontdeskFixture(db);
+          await db.insert(message).values({
+            id: 'msg-centurion-debug-1',
+            transportId: 'transport-centurion',
+            threadId: 'thread-centurion-1',
+            direction: 'inbound',
+            fromAddress: 'guest@example.com',
+            toAddresses: ['centurion@legacyhotel.com'],
+            ccAddresses: [],
+            bccAddresses: [],
+            subject: 'centurion debug',
+            textBody: 'centurion debug',
+            ownerHeaderValue: 'centurion@legacyhotel.com',
+            messageIdHeader: 'centurion-debug-1@example.com',
+            receivedAt: new Date(),
+          });
+          const centurion = await callerFor('user-manager', {
+            db,
+            requestedTransportId: 'transport-centurion',
+          });
+          const centurionThread = await centurion.mail.get({ id: 'thread-centurion-1' });
+          expect(centurionThread.messages[0]!.debugHeaders).toBeUndefined();
         });
       },
       30000,

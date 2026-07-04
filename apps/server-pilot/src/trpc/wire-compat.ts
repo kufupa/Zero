@@ -7,6 +7,8 @@ import { sanitizeEmailHtml } from '../mail/sanitize-email-html.js';
 
 export type MessageRow = typeof message.$inferSelect;
 
+export type MailDebugHeaderLine = { key: string; line: string };
+
 export interface AttachmentMeta {
   attachmentId: string;
   filename: string;
@@ -91,6 +93,7 @@ export interface ParsedMessageWire {
     headers: { name: string | null; value: string | null }[];
   }[];
   isDraft?: boolean;
+  debugHeaders?: MailDebugHeaderLine[];
 }
 
 /** Extract bare email from `Name <addr>` or return trimmed input. */
@@ -209,4 +212,33 @@ export function toParsedMessage(
       headers: [],
     })),
   };
+}
+
+export function buildMetadataDebugHeaders(
+  row: Pick<
+    MessageRow,
+    'direction' | 'ownerHeaderValue' | 'messageIdHeader' | 'inReplyTo' | 'references'
+  >,
+  transportEmail: string,
+): MailDebugHeaderLine[] {
+  const xZeroMailbox =
+    row.direction === 'outbound'
+      ? transportEmail
+      : row.ownerHeaderValue ?? '(missing)';
+
+  const lines: MailDebugHeaderLine[] = [
+    { key: 'x-zero-mailbox', line: `X-Zero-Mailbox: ${xZeroMailbox}` },
+  ];
+
+  if (row.messageIdHeader) {
+    lines.push({ key: 'message-id', line: `Message-ID: ${row.messageIdHeader}` });
+  }
+  if (row.inReplyTo) {
+    lines.push({ key: 'in-reply-to', line: `In-Reply-To: ${row.inReplyTo}` });
+  }
+  if (row.references?.length) {
+    lines.push({ key: 'references', line: `References: ${row.references.join(' ')}` });
+  }
+
+  return lines;
 }
