@@ -4,6 +4,7 @@ import {
   mailIngestMailbox,
   mailboxAccess,
   mailboxTransport,
+  mailLabel,
 } from '../src/db/schema/mail';
 import { user as userTable, account } from '../src/db/schema/auth';
 import { planPilotCredentials, seedAll, PILOT_USERS } from '../src/db/seed';
@@ -56,6 +57,68 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     );
 
     it(
+      'seeds transport-nava and nava-ops with access only to Nava',
+      async () => {
+        const result = await withSeededTestDb(async (db) => {
+          const transports = await db
+            .select()
+            .from(mailboxTransport)
+            .where(eq(mailboxTransport.id, 'transport-nava'));
+          const access = await db
+            .select({
+              userId: mailboxAccess.userId,
+              transportId: mailboxAccess.transportId,
+              role: mailboxAccess.role,
+              isDefault: mailboxAccess.isDefault,
+            })
+            .from(mailboxAccess)
+            .where(eq(mailboxAccess.userId, 'user-nava'));
+          return { transport: transports[0], access };
+        });
+
+        expect(result.transport).toBeDefined();
+        expect(result.transport!.email).toBe('nava@legacyhotel.com');
+        expect(result.transport!.ownerHeaderValue).toBe('nava@legacyhotel.com');
+        expect(result.access).toEqual([
+          {
+            userId: 'user-nava',
+            transportId: 'transport-nava',
+            role: 'owner',
+            isDefault: true,
+          },
+        ]);
+      },
+      30000,
+    );
+
+    it(
+      'seeds SPAM labels for Centurion and Nava transports',
+      async () => {
+        const labels = await withSeededTestDb(async (db) =>
+          db
+            .select({
+              id: mailLabel.id,
+              transportId: mailLabel.transportId,
+              name: mailLabel.name,
+            })
+            .from(mailLabel),
+        );
+
+        expect(labels).toContainEqual({
+          id: 'label-spam-transport-centurion',
+          transportId: 'transport-centurion',
+          name: 'SPAM',
+        });
+        expect(labels).toContainEqual({
+          id: 'label-spam-transport-nava',
+          transportId: 'transport-nava',
+          name: 'SPAM',
+        });
+      },
+      30000,
+    );
+
+    it(
       'seeds exactly 3 mailbox_access rows on transport-centurion with correct roles',
       async () => {
         const access = await withSeededTestDb(async (db) => {
@@ -77,7 +140,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     );
 
     it(
-      'seeds the three pilot users with emailVerified=true',
+      'seeds four pilot users with emailVerified=true',
       async () => {
         const users = await withSeededTestDb(async (db) => {
           return db
@@ -89,6 +152,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         expect(byId['user-manager']?.emailVerified).toBe(true);
         expect(byId['user-centurion-worker']?.email).toBe('worker@legacyhotel.com');
         expect(byId['user-admin']?.email).toBe('admin@legacyhotel.com');
+        expect(byId['user-nava']?.email).toBe('nava-ops@legacyhotel.com');
+        expect(byId['user-nava']?.emailVerified).toBe(true);
       },
       30000,
     );

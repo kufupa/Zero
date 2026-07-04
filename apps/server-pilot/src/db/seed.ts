@@ -13,6 +13,7 @@ import {
   mailIngestMailbox,
   mailboxAccess,
   mailboxTransport,
+  mailLabel,
 } from './schema/mail.js';
 import type { DB } from './client.js';
 
@@ -22,10 +23,16 @@ export type PilotUserSpec = {
   email: string;
 };
 
+export const NAVA_TRANSPORT_ID = 'transport-nava';
+export const NAVA_TRANSPORT_EMAIL = 'nava@legacyhotel.com';
+export const NAVA_OPS_USER_ID = 'user-nava';
+export const NAVA_OPS_USER_EMAIL = 'nava-ops@legacyhotel.com';
+
 export const PILOT_USERS: PilotUserSpec[] = [
   { id: 'user-manager', name: 'Centurion Manager', email: 'manager@legacyhotel.com' },
   { id: 'user-centurion-worker', name: 'Centurion Worker', email: 'worker@legacyhotel.com' },
   { id: 'user-admin', name: 'Pilot Admin', email: 'admin@legacyhotel.com' },
+  { id: NAVA_OPS_USER_ID, name: 'Nava Ops', email: NAVA_OPS_USER_EMAIL },
 ];
 
 export const INGEST_EMAIL = 'nava@legacyhotel.com';
@@ -129,6 +136,27 @@ export async function seedAll(db: DB, opts: SeedOptions = {}): Promise<SeedResul
       },
     });
 
+  await db
+    .insert(mailboxTransport)
+    .values({
+      id: NAVA_TRANSPORT_ID,
+      email: NAVA_TRANSPORT_EMAIL,
+      ownerHeaderValue: NAVA_TRANSPORT_EMAIL,
+      mailboxType: 'personal',
+      displayName: 'Nava Ops Transport',
+      isActive: true,
+    })
+    .onConflictDoUpdate({
+      target: mailboxTransport.ownerHeaderValue,
+      set: {
+        email: NAVA_TRANSPORT_EMAIL,
+        mailboxType: 'personal',
+        displayName: 'Nava Ops Transport',
+        isActive: true,
+        updatedAt: new Date(),
+      },
+    });
+
   // 3. Pilot users + credential accounts (rotate only when requested or missing)
   const pilotCredentials: Record<string, { password: string }> = {};
 
@@ -218,6 +246,23 @@ export async function seedAll(db: DB, opts: SeedOptions = {}): Promise<SeedResul
       });
   }
 
+  await db
+    .insert(mailboxAccess)
+    .values({
+      id: `access-${NAVA_OPS_USER_ID}-${NAVA_TRANSPORT_ID}`,
+      userId: NAVA_OPS_USER_ID,
+      transportId: NAVA_TRANSPORT_ID,
+      role: 'owner',
+      isDefault: true,
+    })
+    .onConflictDoUpdate({
+      target: [mailboxAccess.userId, mailboxAccess.transportId],
+      set: { role: 'owner', isDefault: true, updatedAt: new Date() },
+    });
+
+  await seedSpamLabel(db, TRANSPORT_ID);
+  await seedSpamLabel(db, NAVA_TRANSPORT_ID);
+
   // 5. Counts for summary
   const transportRows = await db
     .select({ id: mailboxTransport.id, email: mailboxTransport.email })
@@ -231,4 +276,16 @@ export async function seedAll(db: DB, opts: SeedOptions = {}): Promise<SeedResul
     transportCount: transportRows.length,
     accessCount: Number(accessCountRow[0]?.n ?? 0),
   };
+}
+
+async function seedSpamLabel(db: DB, transportId: string): Promise<void> {
+  await db
+    .insert(mailLabel)
+    .values({
+      id: `label-spam-${transportId}`,
+      transportId,
+      name: 'SPAM',
+      color: null,
+    })
+    .onConflictDoNothing({ target: [mailLabel.transportId, mailLabel.name] });
 }
