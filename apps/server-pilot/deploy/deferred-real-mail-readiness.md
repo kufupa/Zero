@@ -18,7 +18,47 @@ Explicitly out of scope for this implementation pass:
 - AI chatbot assistant work.
 - workflow-use Chromium/API integration.
 
-Later real-ingest phase gates:
+## Automated fixture loopback gate (pre–real-mail)
+
+Before VPN/real POP3/SMTP, fixture Nava send→ingest→inbox/spam/sent is verified automatically — no manual login, no Mailpit.
+
+**Script:** `apps/server-pilot/deploy/fixture-loopback-gate.sh`
+
+**On EC2 (ubuntu):**
+
+```bash
+cd /home/ubuntu/repos/zero
+bash apps/server-pilot/deploy/fixture-loopback-gate.sh
+```
+
+**From laptop via SSM** (`i-008f737974a9ba9b3`, `af-south-1`):
+
+```bash
+bash apps/server-pilot/deploy/ssm-run-command.sh \
+  'cd /home/ubuntu/repos/zero && bash apps/server-pilot/deploy/fixture-loopback-gate.sh'
+```
+
+**Typical deploy wave (overnight autonomous):**
+
+```text
+sync-ec2-git-bundle.sh
+→ source .env.production
+→ pnpm --filter @zero/server db:migrate
+→ deploy-ec2.sh
+→ fixture-loopback-gate.sh
+```
+
+Gate behavior:
+
+- Sources `apps/server-pilot/.env.production` (RDS `DATABASE_URL`, S3, etc.).
+- Forces `NODE_ENV=test` and `MAIL_TRANSPORT_MODE=fixture` for vitest only.
+- `pm2 stop worker` before tests (avoids POP3 race); `pm2 start worker` after.
+- Runs: `fixture-loopback-e2e`, `fixture-loopback`, `seed-contract`, `mail-send`, `ingest-store`, `pop3-worker`.
+- Builds `@zero/mail` SPA; prints `fixture-loopback-gate: PASS` on success.
+
+Manual browser playbook (login as `nava-ops@`, DevTools header toggle, etc.) is **superseded** for fixture verification — keep only for post-VPN real-mail activation below.
+
+## Later real-ingest phase gates
 
 - Start VPN profile provided by IT.
 - Verify SSM, RDS, S3 still work after VPN.
