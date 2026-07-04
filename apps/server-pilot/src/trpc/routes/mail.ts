@@ -695,6 +695,7 @@ export const mailRouter = tRouter({
         text: input.text,
         inReplyTo,
         references,
+        extraHeaders: { 'X-Zero-Mailbox': ctx.transportEmail },
       });
 
       const messageId = randomUUID();

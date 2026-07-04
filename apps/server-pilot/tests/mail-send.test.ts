@@ -134,6 +134,36 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.send', () => {
         expect(fake.sent).toHaveLength(1);
         expect(fake.sent[0]!.from).toBe('centurion@legacyhotel.com');
         expect(fake.sent[0]!.inReplyTo).toBe('inbound-msg-id-1');
+        expect(fake.sent[0]!.extraHeaders).toEqual({
+          'X-Zero-Mailbox': 'centurion@legacyhotel.com',
+        });
+      } finally {
+        __setSmtpTransportForTests(null);
+      }
+    });
+  }, 30000);
+
+  it('stamps X-Zero-Mailbox from the active Nava transport', async () => {
+    await withSeededTestDb(async (db) => {
+      const fake = new FakeSmtpTransport();
+      __setSmtpTransportForTests(fake);
+      try {
+        const caller = await callerFor('user-nava', {
+          db,
+          requestedTransportId: 'transport-nava',
+        });
+        const result = await caller.mail.send({
+          to: ['nava@legacyhotel.com'],
+          subject: 'loopback',
+          html: '<p>loopback</p>',
+          text: 'loopback',
+        });
+
+        expect(result.fromEmail).toBe('nava@legacyhotel.com');
+        expect(fake.sent).toHaveLength(1);
+        expect(fake.sent[0]!.extraHeaders).toEqual({
+          'X-Zero-Mailbox': 'nava@legacyhotel.com',
+        });
       } finally {
         __setSmtpTransportForTests(null);
       }

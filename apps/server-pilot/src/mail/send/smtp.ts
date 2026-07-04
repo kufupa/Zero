@@ -19,6 +19,7 @@ export interface OutboundMailPayload {
   text: string;
   inReplyTo?: string | null;
   references?: string[];
+  extraHeaders?: Record<string, string>;
 }
 
 export interface SmtpSendResult {
@@ -116,7 +117,7 @@ export class RealSmtpTransport implements SmtpTransport {
           : undefined,
     });
 
-    const headers: Record<string, string> = {};
+    const headers: Record<string, string> = { ...payload.extraHeaders };
     if (payload.inReplyTo) {
       headers['In-Reply-To'] = payload.inReplyTo;
     }
