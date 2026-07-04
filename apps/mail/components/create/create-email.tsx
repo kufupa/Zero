@@ -13,6 +13,11 @@ import { useSession } from '@/lib/auth-client';
 import { serializeFiles } from '@/lib/schemas';
 import { useDraft } from '@/hooks/use-drafts';
 import { useEffect, useMemo, useState } from 'react';
+import {
+  buildOutboundHeaderPreview,
+  canShowHeaderDebug,
+  isHeaderDebugEnabled,
+} from '@/lib/mail/header-debug';
 
 import type { Attachment } from '@/types';
 import { useQueryState } from 'nuqs';
@@ -78,6 +83,13 @@ export function CreateEmail({
 
   const userEmail = activeAccount?.email || activeConnection?.email || session?.user?.email || '';
   const userName = activeAccount?.name || activeConnection?.name || session?.user?.name || '';
+
+  const headerPreview = useMemo(() => {
+    if (!canShowHeaderDebug(activeConnection?.id) || !isHeaderDebugEnabled()) return [];
+    return buildOutboundHeaderPreview({
+      transportEmail: activeConnection?.email,
+    });
+  }, [activeConnection?.email, activeConnection?.id]);
 
   const handleSendEmail = async (data: {
     to: string[];
@@ -273,6 +285,7 @@ export function CreateEmail({
               }
               autofocus={false}
               settingsLoading={settingsLoading}
+              headerPreview={headerPreview}
             />
           )}
         </div>

@@ -50,6 +50,7 @@ import type { ImageQuality } from '@/lib/image-compression';
 const shortcodeRegex = /:([a-zA-Z0-9_+-]+):/g;
 import { TemplateButton } from './template-button';
 import { emailListSignature } from '@/lib/mail/compose-signatures';
+import type { HeaderDebugLine } from '@/types';
 
 type ThreadContent = {
   from: string;
@@ -84,6 +85,7 @@ interface EmailComposerProps {
   editorClassName?: string;
   /** When set, sync to/cc/bcc/subject from props when they change without remounting (e.g. reply → reply all). Never overwrites the message body from props. */
   syncReplyHeadersFromProps?: boolean;
+  headerPreview?: HeaderDebugLine[];
 }
 
 
@@ -115,6 +117,7 @@ export function EmailComposer({
   settingsLoading = false,
   editorClassName,
   syncReplyHeadersFromProps = false,
+  headerPreview = [],
 }: EmailComposerProps) {
   const { data: settings } = useSettings();
   const [showCc, setShowCc] = useState(initialCc.length > 0);
@@ -822,6 +825,15 @@ export function EmailComposer({
         ) : null}
 
         <input type="hidden" name="fromEmail" value={fromEmail || ''} />
+
+        {headerPreview.length > 0 ? (
+          <div className="border-t bg-[#FFFFFF] px-3 py-2 text-xs dark:bg-[#202020]">
+            <p className="mb-1 font-medium text-[#8C8C8C]">Headers on send</p>
+            <pre className="max-h-32 overflow-auto whitespace-pre-wrap rounded-md bg-black/[0.03] p-2 font-mono text-[11px] leading-5 dark:bg-white/[0.06]">
+              {headerPreview.map((line) => line.line).join('\n')}
+            </pre>
+          </div>
+        ) : null}
 
         {/* Message Content */}
         <div className="flex-1 overflow-y-auto border-t bg-[#FFFFFF] px-3 py-3 outline-white/5 dark:bg-[#202020]">

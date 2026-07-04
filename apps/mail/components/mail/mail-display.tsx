@@ -31,7 +31,7 @@ import {
 } from '../ui/dropdown-menu';
 import { cn, formatDate, formatTime, shouldShowSeparateTime } from '@/lib/utils';
 import { Dialog, DialogTitle, DialogHeader, DialogContent } from '../ui/dialog';
-import { memo, useEffect, useMemo, useState, useRef, useCallback } from 'react';
+import { memo, useEffect, useMemo, useState, useRef, useCallback, type MouseEvent } from 'react';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover';
 import { EmailVerificationBadge } from './email-verification-badge';
@@ -48,6 +48,11 @@ import { RenderLabels } from './render-labels';
 import { CenturionCategoryPill } from './centurion-category-pill';
 import { cleanHtml } from '@/lib/email-utils';
 import { cleanEmailDisplay, cleanNameDisplay, MailboxInline, formatMailboxPlain } from '@/lib/mail/mailbox-format';
+import {
+  canShowHeaderDebug,
+  isHeaderDebugEnabled,
+  setHeaderDebugEnabled,
+} from '@/lib/mail/header-debug';
 import { MailContent } from './mail-content';
 import { m } from '@/paraglide/messages';
 import { useParams } from 'react-router';
@@ -722,6 +727,21 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
     emailData.tags ? emailData.tags.map((l) => l.id) : [],
   );
   const { data: activeConnection } = useActiveConnection();
+  const canDebugHeaders = canShowHeaderDebug(activeConnection?.id);
+  const [headerDebugEnabled, setHeaderDebugEnabledState] = useState(false);
+
+  useEffect(() => {
+    setHeaderDebugEnabledState(isHeaderDebugEnabled());
+  }, []);
+
+  const toggleHeaderDebug = useCallback((e: MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const next = !headerDebugEnabled;
+    setHeaderDebugEnabled(next);
+    setHeaderDebugEnabledState(next);
+  }, [headerDebugEnabled]);
+
   const [researchSender, setResearchSender] = useState<Sender | null>(null);
   const [searchQuery, setSearchQuery] = useState<string | null>(null);
   //   const trpc = useTRPC();
@@ -1499,6 +1519,14 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                                     {cleanEmailDisplay(emailData?.sender?.email)}
                                   </span>
                                 </div>
+                                {canDebugHeaders && headerDebugEnabled && emailData.debugHeaders?.length ? (
+                                  <div className="mt-3 border-t pt-3">
+                                    <p className="mb-2 text-xs font-medium text-gray-500">Debug headers</p>
+                                    <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-md bg-black/[0.03] p-2 font-mono text-[11px] leading-5 dark:bg-white/[0.06]">
+                                      {emailData.debugHeaders.map((line) => line.line).join('\n')}
+                                    </pre>
+                                  </div>
+                                ) : null}
                                 {emailData.tls && (
                                   <div className="flex items-center">
                                     <span className="w-24 text-end text-gray-500">
@@ -1551,6 +1579,11 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                                 <Printer className="fill-iconLight dark:fill-iconDark mr-2 h-4 w-4" />
                                 {m['common.mailDisplay.print']()}
                               </DropdownMenuItem>
+                              {canDebugHeaders ? (
+                                <DropdownMenuItem onClick={toggleHeaderDebug}>
+                                  {headerDebugEnabled ? 'Disable header debug' : 'Enable header debug'}
+                                </DropdownMenuItem>
+                              ) : null}
                               {(messageAttachments?.length ?? 0) > 0 && (
                                 <DropdownMenuItem
                                   disabled={!messageAttachments?.length}

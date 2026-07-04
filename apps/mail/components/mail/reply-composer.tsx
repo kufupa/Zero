@@ -15,6 +15,11 @@ import { deriveReplyRecipients } from '@/lib/mail/reply-recipients';
 import type { Sender } from '@/types';
 import { useQueryState } from 'nuqs';
 import { useEffect, useMemo, useRef } from 'react';
+import {
+  buildOutboundHeaderPreview,
+  canShowHeaderDebug,
+  isHeaderDebugEnabled,
+} from '@/lib/mail/header-debug';
 import posthog from 'posthog-js';
 import { toast } from 'sonner';
 import { demoSendEmail } from '@/lib/demo/local-actions';
@@ -266,6 +271,20 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
     return raw;
   }, [draft?.subject, mode, replyToMessage?.subject]);
 
+  const headerPreview = useMemo(() => {
+    if (!canShowHeaderDebug(activeConnection?.id) || !isHeaderDebugEnabled()) return [];
+    return buildOutboundHeaderPreview({
+      transportEmail: activeConnection?.email,
+      inReplyTo: replyToMessage?.messageId,
+      references: replyToMessage?.references,
+    });
+  }, [
+    activeConnection?.email,
+    activeConnection?.id,
+    replyToMessage?.messageId,
+    replyToMessage?.references,
+  ]);
+
   if (!mode || !emailData) return null;
 
   return (
@@ -289,6 +308,7 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
         autofocus={true}
         settingsLoading={settingsLoading}
         replyingTo={replyToMessage?.sender.email}
+        headerPreview={headerPreview}
       />
     </div>
   );

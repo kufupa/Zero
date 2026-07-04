@@ -62,6 +62,11 @@ export interface Sender {
   subject?: string;
 }
 
+export interface HeaderDebugLine {
+  key: string;
+  line: string;
+}
+
 export interface ParsedMessage {
   id: string;
   connectionId?: string;
@@ -88,6 +93,7 @@ export interface ParsedMessage {
   threadId?: string;
   isDraft?: boolean;
   attachments?: Attachment[];
+  debugHeaders?: HeaderDebugLine[];
 }
 
 export interface IConnection {
