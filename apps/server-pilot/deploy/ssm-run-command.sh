@@ -7,6 +7,12 @@ set -euo pipefail
 : "${SSM_MAX_POLL_SECONDS:=1800}"
 : "${SSM_MAX_EMPTY_POLLS:=120}"
 
+print_invocation() {
+  node "${SCRIPT_DIR}/ssm-format-invocation.cjs" "$COMMAND_ID"
+}
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 if [ "$#" -eq 0 ]; then
   echo "usage: $0 'hostname && whoami'" >&2
   exit 2
@@ -52,7 +58,7 @@ while true; do
       sleep "$SSM_POLL_INTERVAL_SECONDS"
       ;;
     Success|Failed|Cancelled|TimedOut|Cancelling)
-      printf '%s\n' "$INVOCATION"
+      print_invocation
       case "$STATUS" in
         Success) exit 0 ;;
         *) exit 1 ;;
@@ -85,7 +91,7 @@ while true; do
                 --query '{Status:Status,Stdout:StandardOutputContent,Stderr:StandardErrorContent}' \
                 --output json 2>/dev/null || true
             )"
-            printf '%s\n' "$INVOCATION"
+            print_invocation
             case "$RETRY_STATUS" in
               Success) exit 0 ;;
               *) exit 1 ;;
@@ -100,7 +106,7 @@ while true; do
       sleep "$SSM_POLL_INTERVAL_SECONDS"
       ;;
     *)
-      printf '%s\n' "$INVOCATION"
+      print_invocation
       exit 1
       ;;
   esac
