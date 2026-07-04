@@ -50,6 +50,24 @@ describe('fixture loopback', () => {
     expect(await pop3.listUidl()).toContain(uidl);
   });
 
+  it('maybeEnqueueLoopback does not enqueue in wire mode', () => {
+    maybeEnqueueLoopback(
+      {
+        from: 'nava@legacyhotel.com',
+        to: ['nava@legacyhotel.com'],
+        cc: [],
+        bcc: [],
+        subject: 'wire-skip',
+        html: '<p>x</p>',
+        text: 'x',
+      },
+      { messageId: 'wire-1', accepted: ['nava@legacyhotel.com'] },
+      'wire',
+      { 'X-Zero-Mailbox': 'nava@legacyhotel.com' },
+    );
+    expect(fixtureLoopbackStore.drain()).toHaveLength(0);
+  });
+
   it('maybeEnqueueLoopback does not enqueue in real mode', () => {
     maybeEnqueueLoopback(
       {

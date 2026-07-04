@@ -487,11 +487,16 @@ export function loadFixtureMessagesFromDir(dir?: string): FakePop3Message[] {
   }
 }
 
+function usesRealPop3(mode: MailTransportMode | undefined): boolean {
+  return mode === 'real' || mode === 'wire';
+}
+
 /**
  * Build a Pop3Client from env.
  *
  * - `fixture` (default): always `FakePop3Client` — never opens TCP even when
  *   `POP3_HOST` is set (prevents accidental real connect during deploy gates).
+ * - `wire`: `RealPop3Client` against Mailpit (plain POP3, password optional).
  * - `real`: `RealPop3Client` when host/port/user and password/secret are set;
  *   otherwise `null`.
  */
@@ -507,7 +512,7 @@ export function createPop3Client(env: {
 }): Pop3Client | null {
   const mode = env.MAIL_TRANSPORT_MODE ?? 'fixture';
 
-  if (mode !== 'real') {
+  if (!usesRealPop3(mode)) {
     const messages = loadFixtureMessagesFromDir(env.INGEST_FIXTURE_DIR);
     return new FakePop3Client({ messages });
   }
@@ -515,7 +520,7 @@ export function createPop3Client(env: {
   if (!env.POP3_HOST || !env.POP3_PORT || !env.POP3_USER) {
     return null;
   }
-  if (!env.POP3_PASSWORD && !env.POP3_SECRET_ARN) {
+  if (mode === 'real' && !env.POP3_PASSWORD && !env.POP3_SECRET_ARN) {
     return null;
   }
   return new RealPop3Client({
@@ -523,7 +528,7 @@ export function createPop3Client(env: {
     port: env.POP3_PORT,
     user: env.POP3_USER,
     password: env.POP3_PASSWORD,
-    tls: env.POP3_TLS ?? true,
+    tls: env.POP3_TLS ?? mode === 'real',
     secretArn: env.POP3_SECRET_ARN,
   });
 }

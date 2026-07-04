@@ -746,7 +746,10 @@ export const mailRouter = tRouter({
           references,
         },
         smtpResult,
-        process.env.MAIL_TRANSPORT_MODE === 'real' ? 'real' : 'fixture',
+        process.env.MAIL_TRANSPORT_MODE === 'real' ||
+          process.env.MAIL_TRANSPORT_MODE === 'wire'
+          ? (process.env.MAIL_TRANSPORT_MODE as 'real' | 'wire')
+          : 'fixture',
         { 'X-Zero-Mailbox': ctx.transportEmail },
       );
 

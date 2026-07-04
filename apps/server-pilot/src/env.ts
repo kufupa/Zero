@@ -8,10 +8,10 @@
 
 export type NodeEnv = 'production' | 'development' | 'test';
 
-/** `fixture` (default) uses in-memory fake POP3/SMTP; `real` connects to Exchange. */
-export type MailTransportMode = 'fixture' | 'real';
+/** `fixture` (default) in-memory fake; `wire` TCP to Mailpit; `real` Exchange. */
+export type MailTransportMode = 'fixture' | 'wire' | 'real';
 
-const TRANSPORT_MODES: readonly MailTransportMode[] = ['fixture', 'real'];
+const TRANSPORT_MODES: readonly MailTransportMode[] = ['fixture', 'wire', 'real'];
 
 export interface MailEnv {
   NODE_ENV: NodeEnv;

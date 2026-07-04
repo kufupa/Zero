@@ -77,7 +77,7 @@ export function maybeEnqueueLoopback(
   mode: MailTransportMode,
   extraHeaders?: Record<string, string>,
 ): void {
-  if (mode === 'real') return;
+  if (mode === 'real' || mode === 'wire') return;
   const recipients = [...payload.to, ...payload.cc, ...payload.bcc];
   if (!recipientMatchesIngestEmail(recipients)) return;
   const raw = buildLoopbackEml({

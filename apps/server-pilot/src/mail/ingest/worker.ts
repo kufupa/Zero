@@ -123,7 +123,8 @@ export async function ingestOnce(
       items: [],
       usedFakePop3: false,
       cycleError:
-        env?.MAIL_TRANSPORT_MODE === 'real'
+        env?.MAIL_TRANSPORT_MODE === 'real' ||
+          env?.MAIL_TRANSPORT_MODE === 'wire'
           ? 'no real pop3 client configured (host/port/user/secret required)'
           : 'no pop3 client configured',
     };
@@ -325,8 +326,8 @@ export async function runWorker(opts: {
   const pop3 = createPop3Client(env);
   if (!pop3) {
     console.log(
-      mode === 'real'
-        ? 'worker: real mode but POP3_HOST/PORT/USER/secret unset, skipping ingest'
+      mode === 'real' || mode === 'wire'
+        ? 'worker: real/wire mode but POP3_HOST/PORT/USER unset, skipping ingest'
         : 'worker: fixture mode but no POP3 client available, skipping ingest',
     );
     return;

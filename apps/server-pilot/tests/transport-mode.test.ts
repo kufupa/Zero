@@ -139,6 +139,43 @@ describe('MAIL_TRANSPORT_MODE factories', () => {
     expect(transport.kind).toBe('real');
   });
 
+  it('parseEnv accepts MAIL_TRANSPORT_MODE=wire', () => {
+    const env = parseEnv({
+      PORT: '8788',
+      DATABASE_URL: 'postgres://x',
+      BETTER_AUTH_URL: 'http://localhost',
+      BETTER_AUTH_SECRET: 'secret',
+      AWS_REGION: 'af-south-1',
+      S3_BUCKET: 'bucket',
+      POP3_POLL_INTERVAL_MS: '30000',
+      POP3_MAX_MESSAGES_PER_CYCLE: '50',
+      MAIL_TRANSPORT_MODE: 'wire',
+    });
+    expect(env.MAIL_TRANSPORT_MODE).toBe('wire');
+  });
+
+  it('createPop3Client returns RealPop3Client in wire mode', () => {
+    const client = createPop3Client({
+      MAIL_TRANSPORT_MODE: 'wire',
+      POP3_HOST: '127.0.0.1',
+      POP3_PORT: 11110,
+      POP3_USER: 'ingest@wire.test',
+      POP3_PASSWORD: 'wire-test-pass',
+      POP3_TLS: false,
+    });
+    expect(client).toBeInstanceOf(RealPop3Client);
+  });
+
+  it('createSmtpTransport returns RealSmtpTransport in wire mode without secret ARN', () => {
+    const transport = createSmtpTransport({
+      mode: 'wire',
+      host: '127.0.0.1',
+      port: 11025,
+      secure: false,
+    });
+    expect(transport).toBeInstanceOf(RealSmtpTransport);
+  });
+
   it('createSmtpTransport throws in real mode without credentials', () => {
     expect(() =>
       createSmtpTransport({

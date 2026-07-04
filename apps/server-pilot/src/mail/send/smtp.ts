@@ -162,29 +162,34 @@ export class RealSmtpTransport implements SmtpTransport {
 function resolveTransportMode(opts: SmtpTransportOptions): MailTransportMode {
   if (opts.mode) return opts.mode;
   const raw = process.env.MAIL_TRANSPORT_MODE ?? 'fixture';
-  if (raw === 'real') return 'real';
+  if (raw === 'real' || raw === 'wire') return raw;
   return 'fixture';
 }
 
-/** Resolve transport from env — fake by default; real only when mode=real + host. */
+function usesRealSmtp(mode: MailTransportMode): boolean {
+  return mode === 'real' || mode === 'wire';
+}
+
+/** Resolve transport from env — fake by default; wire/real use TCP when host set. */
 export function createSmtpTransport(
   opts: SmtpTransportOptions = {},
 ): SmtpTransport {
   if (opts.forceFake) return new FakeSmtpTransport();
 
   const mode = resolveTransportMode(opts);
-  if (mode !== 'real') return new FakeSmtpTransport();
+  if (!usesRealSmtp(mode)) return new FakeSmtpTransport();
 
   const host = opts.host ?? process.env.SMTP_HOST;
-  const port = opts.port ?? Number(process.env.SMTP_PORT ?? '587');
+  const defaultPort = mode === 'wire' ? '11025' : '587';
+  const port = opts.port ?? Number(process.env.SMTP_PORT ?? defaultPort);
   if (!host) {
-    throw new Error('SMTP_HOST required when MAIL_TRANSPORT_MODE=real');
+    throw new Error(`SMTP_HOST required when MAIL_TRANSPORT_MODE=${mode}`);
   }
 
   const user = opts.user ?? process.env.SMTP_USER;
   const secretArn = opts.secretArn ?? process.env.SMTP_SECRET_ARN;
   const password = opts.password ?? process.env.SMTP_PASSWORD;
-  if (!password && !secretArn) {
+  if (mode === 'real' && !password && !secretArn) {
     throw new Error(
       'SMTP_PASSWORD or SMTP_SECRET_ARN required when MAIL_TRANSPORT_MODE=real',
     );
@@ -197,7 +202,9 @@ export function createSmtpTransport(
       ? true
       : secureRaw === 'false' || secureRaw === '0'
         ? false
-        : port === 465);
+        : mode === 'wire'
+          ? false
+          : port === 465);
 
   return new RealSmtpTransport({
     host,
