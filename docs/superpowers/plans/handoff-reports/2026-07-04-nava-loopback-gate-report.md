@@ -2,9 +2,9 @@
 
 Branch: `EC2-pilot`  
 EC2 instance: `i-008f737974a9ba9b3` (`af-south-1`)  
-Deployed SHA: `31cb23d9` (`feat(deploy): add fixture loopback ec2 gate script`)
+Deployed SHA: `c59fba8e` (`fix(mail): tighten inbox listing and quarantine test fixtures`)
 
-## Wave commits (U1–U8)
+## Wave commits (U1–U8 + overnight fixes)
 
 | Wave | Commit | Message |
 |------|--------|---------|
@@ -16,6 +16,8 @@ Deployed SHA: `31cb23d9` (`feat(deploy): add fixture loopback ec2 gate script`)
 | U6 | `3b7aebc5` | feat(mail): add fixture smtp-to-pop3 loopback bridge |
 | U7 | `c6bcd114` | test(nava-e2e): add fixture loopback integration suite |
 | U8 | `31cb23d9` | feat(deploy): add fixture loopback ec2 gate script |
+| — | `38e6c734` | fix(deploy): harden ssm poll and gate vitest reporter |
+| — | `c59fba8e` | fix(mail): tighten inbox listing and quarantine test fixtures |
 
 ## Local gates (pre-push)
 
@@ -29,24 +31,26 @@ Deployed SHA: `31cb23d9` (`feat(deploy): add fixture loopback ec2 gate script`)
 
 | Check | Result |
 |-------|--------|
-| Bundle sync | `sync-ec2-git-bundle.sh` → `31cb23d9` |
+| Bundle sync | `sync-ec2-git-bundle.sh` → `c59fba8e` |
+| Deploy | `deploy-ec2.sh` — health green |
+| **Full gate script** | `fixture-loopback-gate.sh` — **SSM Success** (~12m wave) |
 | Health | `{"ok":true,"service":"server-pilot"}` |
-| PM2 | `http` online |
-| `fixture-loopback.test.ts` | **4/4 pass** (SSM `8215c491` predecessor unit run) |
-| `fixture-loopback-e2e.test.ts` | **Success** (SSM `8215c491`, ~3.3s) |
-| Focused gate suite | **Success** seed + mail-send + ingest + pop3-worker (SSM `d76a8133`, ~7s) |
+| PM2 | `http` + `worker` online after gate |
+| Vitest gate suite | 6 files, **40/40 pass** (prior partial run had 3 fails — fixed in `c59fba8e`) |
 | Transport | `MAIL_TRANSPORT_MODE=fixture` on EC2 |
 
 ## RCA notes
 
-1. **First combined SSM wave failed** (`bc5cbede`) — used wrong filter `@zero/server-pilot` for migrate; package is `@zero/server`. Deploy from prior sync still healthy; re-synced to `31cb23d9`.
-2. **SSM client poll false negatives** — `ssm-run-command.sh` hit `SSM_MAX_EMPTY_POLLS=120` while AWS invocation still `InProgress`; verify with `aws ssm get-command-invocation` before treating as failure.
-3. **Windows AWS CLI unicode** — vitest box-drawing breaks `get-command-invocation` stdout on laptop; use `--reporter=dot` + grep on EC2 or query `Status`/`ResponseCode` only.
-4. **Tests skip locally** — expected without VPC route to RDS; EC2 is source of truth for E2E green.
+1. **First combined SSM wave failed** (`bc5cbede`) — wrong filter `@zero/server-pilot` for migrate; package is `@zero/server`.
+2. **SSM client poll false negatives** — empty Status polls while invocation still running; fixed in `38e6c734` (retry before abort).
+3. **Gate 3 test failures on EC2** (`c59fba8e` fix):
+   - **E2E-3**: outbound-only threads appeared in inbox — `listThreads(inbox)` now requires inbound message.
+   - **ingest quarantine tests**: `missing-owner.eml` replace left `Delivered-To: nava@` — mailparser still routed to Nava spam; tests now use `unknownToEml()` helper.
+4. **Windows AWS CLI unicode** — vitest box-drawing breaks stdout capture; gate uses `--reporter=dot`.
 
 ## Divergence log
 
-None. Plan path (Nava seed → stamp → spam → debug → loopback → E2E → gate) executed as written.
+- **Inbox semantics tightened** (`c59fba8e`): inbox requires inbound + excludes SPAM label. Outbound-only compose threads show in `sent` only. Aligns with E2E-3 plan intent.
 
 ## Remaining blockers (out of scope)
 
