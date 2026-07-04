@@ -173,6 +173,34 @@ export const mailRouter = tRouter({
             lte(mailThread.snoozedUntil, sql`now()`),
           )!,
         );
+        // Inbox = has inbound mail; outbound-only compose threads live in sent.
+        conditions.push(
+          exists(
+            db
+              .select({ one: sql`1` })
+              .from(message)
+              .where(
+                and(
+                  eq(message.threadId, mailThread.id),
+                  eq(message.transportId, transportId),
+                  eq(message.direction, 'inbound'),
+                ),
+              ),
+          ),
+        );
+        const spamRowInbox = await db
+          .select({ id: mailLabel.id })
+          .from(mailLabel)
+          .where(
+            and(eq(mailLabel.transportId, transportId), eq(mailLabel.name, 'SPAM')),
+          )
+          .limit(1);
+        const spamIdInbox = spamRowInbox[0]?.id;
+        if (spamIdInbox) {
+          conditions.push(
+            sql`NOT (${mailThread.labelIds} ?| array[${sql`${spamIdInbox}`}])`,
+          );
+        }
       } else if (input.folder === 'archived' || input.folder === 'archive') {
         conditions.push(eq(mailThread.isArchived, true));
       } else if (input.folder === 'starred') {

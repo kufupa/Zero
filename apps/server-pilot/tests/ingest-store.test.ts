@@ -22,16 +22,27 @@ import { readFixture } from './helpers/fixtures';
 
 const reachable = await probeTestDb();
 
-// Use a fresh fake S3 for each test so stored keys don't leak between tests.
-// IMPORTANT: setS3Storage(fake) makes getS3Storage() return the fake for both
-// the parse and persist layers. On EC2 (where S3_BUCKET/AWS_REGION are set)
-// the default would otherwise be RealS3Storage, leaving the fake empty and
-// the test's storage.assertions failing.
 function withFakeS3(): FakeS3Storage {
   const fake = new FakeS3Storage('test-mail-bucket');
   resetS3Storage();
   setS3Storage(fake);
   return fake;
+}
+
+/** Missing X-Zero-Mailbox, To not a known transport — quarantine path. */
+function unknownToEml(): Buffer {
+  return Buffer.from(
+    [
+      'From: guest@example.com',
+      'To: unknown@example.com',
+      'Subject: unrouted external',
+      'MIME-Version: 1.0',
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      'No transport routing header.',
+    ].join('\r\n'),
+    'utf-8',
+  );
 }
 
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
@@ -135,12 +146,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       'still quarantines missing-header mail with no known To address',
       async () => {
         const storage = withFakeS3();
-        const raw = Buffer.from(
-          readFixture('missing-owner.eml')
-            .toString('utf-8')
-            .replace('To: nava@legacyhotel.com', 'To: unknown@example.com'),
-          'utf-8',
-        );
+        const raw = unknownToEml();
 
         const result = await withSeededTestDb(async (db) => {
           const messageId = generateMessageId();
@@ -406,7 +412,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       'quarantine redelivery is idempotent for same ingest UIDL',
       async () => {
         const storage = withFakeS3();
-        const raw = readFixture('missing-owner.eml');
+        const raw = unknownToEml();
         const { first, second } = await withSeededTestDb(async (db) => {
           const parsed = await parseRawMessage(raw, {
             messageId: generateMessageId(),
