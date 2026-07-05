@@ -25,7 +25,18 @@ fi
 
 echo "== pm2: ensure mailpit sidecar =="
 pm2 delete mailpit mailpit.ecosystem 2>/dev/null || true
-pm2 startOrReload "${SCRIPT_DIR}/mailpit.ecosystem.cjs" --update-env
+if pm2 describe mailpit >/dev/null 2>&1; then
+  pm2 restart mailpit --update-env
+else
+  MP_POP3_AUTH='ingest@wire.test:wire-test-pass' \
+    pm2 start /usr/local/bin/mailpit \
+      --name mailpit \
+      --interpreter none \
+      -- \
+      --smtp=127.0.0.1:11025 \
+      --pop3=127.0.0.1:11110 \
+      --listen=127.0.0.1:18025
+fi
 pm2 save || true
 
 echo "== wait for mailpit HTTP =="
