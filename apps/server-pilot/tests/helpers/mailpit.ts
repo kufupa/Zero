@@ -42,7 +42,12 @@ async function waitForHttp(url: string, attempts = 40): Promise<void> {
 export async function startMailpitForTests(): Promise<MailpitContext | null> {
   const external = process.env.MAILPIT_HTTP_URL;
   if (external) {
-    return buildContext(external, null);
+    try {
+      await waitForHttp(external);
+      return buildContext(external, null);
+    } catch {
+      return null;
+    }
   }
 
   const binary = process.env.MAILPIT_BINARY ?? 'mailpit';

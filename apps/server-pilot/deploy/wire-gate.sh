@@ -18,14 +18,28 @@ fi
 
 export PATH="${HOME}/.local/share/pnpm:${HOME}/.nvm/versions/node/$(ls "${HOME}/.nvm/versions/node" 2>/dev/null | sort -V | tail -1)/bin:${PATH}"
 
-if ! command -v mailpit >/dev/null 2>&1; then
+if [ ! -x /usr/local/bin/mailpit ]; then
   echo "== install mailpit =="
   bash "${SCRIPT_DIR}/install-mailpit.sh"
 fi
 
 echo "== pm2: ensure mailpit sidecar =="
-pm2 start "${SCRIPT_DIR}/mailpit.ecosystem.cjs" || pm2 restart mailpit || true
+pm2 delete mailpit mailpit.ecosystem 2>/dev/null || true
+pm2 startOrReload "${SCRIPT_DIR}/mailpit.ecosystem.cjs" --update-env
 pm2 save || true
+
+echo "== wait for mailpit HTTP =="
+for i in $(seq 1 40); do
+  if curl -fsS "http://127.0.0.1:18025/api/v1/info" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.5
+done
+if ! curl -fsS "http://127.0.0.1:18025/api/v1/info" >/dev/null 2>&1; then
+  echo "wire-gate: mailpit not ready on 127.0.0.1:18025" >&2
+  pm2 logs mailpit --lines 30 --nostream || true
+  exit 1
+fi
 
 export MAILPIT_HTTP_URL="http://127.0.0.1:18025"
 export NODE_ENV=test
