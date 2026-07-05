@@ -109,6 +109,9 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable || !mailpitConfigured)(
           html: '<p>out</p>',
           text: 'out',
         });
+        // Mirror fixture E2E-3 empty FakePop3: external-only sends are not in ingest mailbox.
+        // Mailpit captures SMTP locally; drain POP3 queue so ingest does not re-import app sends.
+        await ctx.clearAll();
         const pop3 = wirePop3();
         await ingestOnce({
           pop3,

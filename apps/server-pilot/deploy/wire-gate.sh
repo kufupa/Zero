@@ -24,7 +24,8 @@ if [ ! -x /usr/local/bin/mailpit ]; then
 fi
 
 echo "== pm2: ensure mailpit sidecar =="
-pm2 delete mailpit mailpit.ecosystem 2>/dev/null || true
+pm2 delete mailpit 2>/dev/null || true
+pm2 delete mailpit.ecosystem 2>/dev/null || true
 if pm2 describe mailpit >/dev/null 2>&1; then
   pm2 restart mailpit --update-env
 else
