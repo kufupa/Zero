@@ -1,6 +1,6 @@
 import { backgroundQueueAtom, isThreadInBackgroundQueueAtom } from '@/store/backgroundQueue';
 import { useInfiniteQuery, useQuery, useMutation } from '@tanstack/react-query';
-import type { IGetThreadResponse } from '../../server/src/lib/driver/types';
+import type { IGetThreadResponse } from '@zero/server/driver/types';
 import { useSearchValue } from '@/hooks/use-search-value';
 import { useTRPC } from '@/providers/query-provider';
 import useSearchLabels from './use-labels-search';
@@ -17,6 +17,7 @@ import { useTheme } from 'next-themes';
 import { useQueryState } from 'nuqs';
 import { useMemo } from 'react';
 import { computeThreadListEnabled } from '@/lib/mail/thread-list-query-enabled';
+import { selectLiveThreadListQuery } from '@/lib/mail/thread-list-query-policy';
 import { resolveThreadPollingMs } from '@/lib/mail/thread-polling-policy';
 
 const threadPollingMs = resolveThreadPollingMs(import.meta.env.VITE_MAIL_POLL_MS);
@@ -116,6 +117,29 @@ export const useThreads = (options?: UseThreadsOptions) => {
     enabled: demoMode && listEnabled && !demoDraftFolder,
   });
 
+  const liveThreadListQuery = selectLiveThreadListQuery({
+    folder: canonicalRouteFolder,
+    demoMode,
+    listEnabled,
+  });
+  const liveDraftFolder = liveThreadListQuery.useDraftsList;
+
+  const liveDraftsQuery = useInfiniteQuery(
+    trpc.drafts.list.infiniteQueryOptions(
+      {
+        q: searchValue.value,
+        limit: 50,
+      },
+      {
+        initialCursor: '',
+        getNextPageParam: (lastPage) => lastPage?.nextPageToken ?? null,
+        enabled: liveDraftFolder,
+        staleTime: 60 * 1000,
+        refetchOnMount: false,
+      },
+    ),
+  );
+
   const threadsQuery = useInfiniteQuery(
     trpc.mail.listThreads.infiniteQueryOptions(
       {
@@ -126,7 +150,7 @@ export const useThreads = (options?: UseThreadsOptions) => {
       {
         initialCursor: '',
         getNextPageParam: (lastPage) => lastPage?.nextPageToken ?? null,
-        enabled: !demoMode && listEnabled,
+        enabled: liveThreadListQuery.useMailListThreads,
         staleTime: 60 * 1000 * 1, // 1 minute
         refetchOnMount: false,
         refetchInterval: threadPollingMs ?? false,
@@ -139,7 +163,9 @@ export const useThreads = (options?: UseThreadsOptions) => {
     ? demoDraftFolder
       ? demoDraftsQuery
       : demoThreadsQuery
-    : threadsQuery;
+    : liveDraftFolder
+      ? liveDraftsQuery
+      : threadsQuery;
 
   // Flatten threads from all pages and sort by receivedOn date (newest first)
 
@@ -205,21 +231,27 @@ export const useThread = (threadId: string | null) => {
   );
   const isThreadDataMismatch = Boolean(id && activeThreadId && activeThreadId !== id);
 
-  const { latestDraft, isGroupThread, finalData, latestMessage } = useMemo(() => {
+  const { latestDraft, drafts, aiDraftCandidates, isGroupThread, finalData, latestMessage } =
+    useMemo(() => {
     const threadData = isThreadDataMismatch ? undefined : activeThreadData;
 
     if (!threadData) {
       return {
         latestDraft: undefined,
+        drafts: [],
+        aiDraftCandidates: [],
         isGroupThread: false,
         finalData: undefined,
         latestMessage: undefined,
       };
     }
 
-    const latestDraft = threadData.latest?.id
-      ? threadData.messages.findLast((message: IGetThreadResponse['messages'][number]) => message.isDraft)
-      : undefined;
+    const drafts = threadData.drafts ?? [];
+    const activeDraft = drafts.find((draft) => draft.status === 'active');
+    const aiDraftCandidates = drafts.filter(
+      (draft) => draft.origin === 'ai' && draft.status === 'candidate',
+    );
+    const latestDraft = activeDraft;
 
     const isGroupThread = threadData.latest?.id
       ? (() => {
@@ -242,7 +274,7 @@ export const useThread = (threadId: string | null) => {
       messages: nonDraftMessages,
     };
 
-    return { latestDraft, isGroupThread, finalData, latestMessage };
+    return { latestDraft, drafts, aiDraftCandidates, isGroupThread, finalData, latestMessage };
   }, [activeThreadData, isThreadDataMismatch]);
 
   const { mutateAsync: processEmailContent } = useMutation(
@@ -299,5 +331,13 @@ export const useThread = (threadId: string | null) => {
     refetchOnMount: false,
   });
 
-  return { ...activeThreadQuery, data: finalData, isGroupThread, latestDraft, isThreadDataMismatch };
+  return {
+    ...activeThreadQuery,
+    data: finalData,
+    isGroupThread,
+    latestDraft,
+    drafts,
+    aiDraftCandidates,
+    isThreadDataMismatch,
+  };
 };

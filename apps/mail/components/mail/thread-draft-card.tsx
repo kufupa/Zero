@@ -19,8 +19,9 @@ export type ThreadDraftCardProps = {
   editLabel: string;
   deleteLabel: string;
   moreLabel: string;
-  onEdit: () => void;
-  onDelete: () => void;
+  onEdit?: () => void;
+  onDelete?: () => void;
+  isReadOnly?: boolean;
 };
 
 export function ThreadDraftCard({
@@ -35,6 +36,7 @@ export function ThreadDraftCard({
   moreLabel,
   onEdit,
   onDelete,
+  isReadOnly = false,
 }: ThreadDraftCardProps) {
   const previewText = bodyPreview.trim() ? bodyPreview : emptyPreviewLabel;
 
@@ -46,46 +48,50 @@ export function ThreadDraftCard({
       )}
     >
       <div className="absolute right-2 top-2 flex items-center gap-0.5">
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="text-sky-500 hover:text-sky-600 dark:text-sky-400 dark:hover:text-sky-300 h-8 w-8"
-              onClick={onEdit}
-              aria-label={editLabel}
-            >
-              <PencilCompose className="h-4 w-4 fill-current" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom" className="text-xs">
-            {editLabel}
-          </TooltipContent>
-        </Tooltip>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8 text-rose-500 hover:text-rose-600 dark:text-rose-400"
-              onClick={(e) => {
-                e.stopPropagation();
-                onDelete();
-              }}
-              aria-label={deleteLabel}
-            >
-              <Trash className="h-4 w-4 fill-current" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom" className="text-xs">
-            {deleteLabel}
-          </TooltipContent>
-        </Tooltip>
+        {!isReadOnly ? (
+          <>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="text-sky-500 hover:text-sky-600 dark:text-sky-400 dark:hover:text-sky-300 h-8 w-8"
+                  onClick={onEdit}
+                  aria-label={editLabel}
+                >
+                  <PencilCompose className="h-4 w-4 fill-current" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="text-xs">
+                {editLabel}
+              </TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 text-rose-500 hover:text-rose-600 dark:text-rose-400"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDelete?.();
+                  }}
+                  aria-label={deleteLabel}
+                >
+                  <Trash className="h-4 w-4 fill-current" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="text-xs">
+                {deleteLabel}
+              </TooltipContent>
+            </Tooltip>
+          </>
+        ) : null}
       </div>
 
-      <div className="pr-20">
+      <div className={cn(isReadOnly ? 'pr-4' : 'pr-20')}>
         <p className="text-rose-500 dark:text-rose-400 text-sm font-semibold">{draftBadge}</p>
         <p className="text-rose-500/95 dark:text-rose-400/95 mt-0.5 text-sm">{unsentNotice}</p>
         <div className="text-muted-foreground mt-2 flex flex-wrap items-baseline justify-between gap-2 text-xs">
@@ -96,15 +102,17 @@ export function ThreadDraftCard({
       </div>
 
       <div className="mt-3 flex">
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="text-muted-foreground h-8 w-8"
-          aria-label={moreLabel}
-        >
-          <MoreHorizontal className="h-4 w-4" />
-        </Button>
+        {!isReadOnly ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="text-muted-foreground h-8 w-8"
+            aria-label={moreLabel}
+          >
+            <MoreHorizontal className="h-4 w-4" />
+          </Button>
+        ) : null}
       </div>
     </div>
     </TooltipProvider>

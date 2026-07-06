@@ -176,6 +176,7 @@ export function ThreadDisplay() {
     isThreadDataMismatch,
     refetch: refetchThread,
     latestDraft,
+    aiDraftCandidates,
   } = useThread(id ?? null);
   const [, items] = useThreads();
   const [isStarred, setIsStarred] = useState(false);
@@ -237,14 +238,21 @@ export function ThreadDisplay() {
   } = useOptimisticActions();
   const [, setIsComposeOpen] = useQueryState('isComposeOpen');
   const draftRowOptimistic = useOptimisticThreadState(
-    latestDraft?.isDraft ? latestDraft.id : '__thread_draft_none__',
+    latestDraft?.id ? latestDraft.id : '__thread_draft_none__',
   );
   const draftVm = useMemo(() => {
     if (draftRowOptimistic.shouldHide) return null;
     // Hide draft preview while any thread composer is open (reply / reply all / forward / continue draft).
     if (mode) return null;
-    return buildThreadDraftViewModel(latestDraft as ParsedMessage | undefined);
+    return buildThreadDraftViewModel(latestDraft);
   }, [latestDraft, draftRowOptimistic.shouldHide, mode]);
+
+  const aiDraftCandidateVms = useMemo(() => {
+    if (mode) return [];
+    return aiDraftCandidates
+      .map((candidate) => buildThreadDraftViewModel(candidate))
+      .filter((vm): vm is NonNullable<typeof vm> => vm != null);
+  }, [aiDraftCandidates, mode]);
 
   const openDraftForEdit = useCallback(() => {
     if (!latestDraft?.id || !emailData?.latest?.id) return;
@@ -757,26 +765,47 @@ export function ThreadDisplay() {
 
   const shouldShowSkeleton = !emailData || isLoading || (isFetching && isThreadDataMismatch);
 
-  const threadDraftSection = draftVm ? (
-    <ThreadAiMailsSection>
-      <ThreadDraftCard
-        subject={draftVm.subject}
-        bodyPreview={draftVm.bodyPreview}
-        savedAtLabel={
-          m['common.threadDisplay.draftSavedPrefix']() +
-          formatDateWithWeekdayAndTime(draftVm.savedAtIso)
-        }
-        draftBadge={m['common.threadDisplay.draftBadge']()}
-        unsentNotice={m['common.threadDisplay.draftUnsentNotice']()}
-        emptyPreviewLabel={m['common.threadDisplay.draftEmptyPreview']()}
-        editLabel={m['common.threadDisplay.continueDraft']()}
-        deleteLabel={m['common.actions.Bin']()}
-        moreLabel={m['common.threadDisplay.draftMoreOptions']()}
-        onEdit={openDraftForEdit}
-        onDelete={handleDeleteThreadDraft}
-      />
-    </ThreadAiMailsSection>
-  ) : null;
+  const threadDraftSection =
+    draftVm || aiDraftCandidateVms.length > 0 ? (
+      <ThreadAiMailsSection>
+        {draftVm ? (
+          <ThreadDraftCard
+            subject={draftVm.subject}
+            bodyPreview={draftVm.bodyPreview}
+            savedAtLabel={
+              m['common.threadDisplay.draftSavedPrefix']() +
+              formatDateWithWeekdayAndTime(draftVm.savedAtIso)
+            }
+            draftBadge={m['common.threadDisplay.draftBadge']()}
+            unsentNotice={m['common.threadDisplay.draftUnsentNotice']()}
+            emptyPreviewLabel={m['common.threadDisplay.draftEmptyPreview']()}
+            editLabel={m['common.threadDisplay.continueDraft']()}
+            deleteLabel={m['common.actions.Bin']()}
+            moreLabel={m['common.threadDisplay.draftMoreOptions']()}
+            onEdit={openDraftForEdit}
+            onDelete={handleDeleteThreadDraft}
+          />
+        ) : null}
+        {aiDraftCandidateVms.map((candidateVm) => (
+          <ThreadDraftCard
+            key={candidateVm.id}
+            subject={candidateVm.subject}
+            bodyPreview={candidateVm.bodyPreview}
+            savedAtLabel={
+              m['common.threadDisplay.draftSavedPrefix']() +
+              formatDateWithWeekdayAndTime(candidateVm.savedAtIso)
+            }
+            draftBadge="AI draft"
+            unsentNotice="Candidate reply. Open the reply editor to use the newest AI draft when no active draft exists."
+            emptyPreviewLabel={m['common.threadDisplay.draftEmptyPreview']()}
+            editLabel={m['common.threadDisplay.continueDraft']()}
+            deleteLabel={m['common.actions.Bin']()}
+            moreLabel={m['common.threadDisplay.draftMoreOptions']()}
+            isReadOnly
+          />
+        ))}
+      </ThreadAiMailsSection>
+    ) : null;
 
   return (
     <div
