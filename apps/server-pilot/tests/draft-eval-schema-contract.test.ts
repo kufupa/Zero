@@ -10,8 +10,11 @@ import {
   message,
 } from '../src/db/schema/mail.js';
 import { user as userAuthTable } from '../src/db/schema/auth.js';
+import { TEST_DB_AVAILABLE, probeTestDb } from './helpers/test-db.js';
 
-describe('draft eval schema contract', () => {
+const reachable = await probeTestDb();
+
+describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('draft eval schema contract', () => {
   beforeEach(async () => {
     const db = getDb();
     await db.delete(mailDraftRevision);
