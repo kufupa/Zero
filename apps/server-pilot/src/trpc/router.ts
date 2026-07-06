@@ -10,6 +10,11 @@ import { labelsRouter } from './routes/labels.js';
 import { settingsRouter } from './routes/settings.js';
 import { connectionsRouter } from './routes/connections.js';
 import { userRouter } from './routes/user.js';
+import { aiRouter } from './routes/ai.js';
+import { brainRouter } from './routes/brain.js';
+import { notesRouter } from './routes/notes.js';
+import { templatesRouter } from './routes/templates.js';
+import { bimiRouter } from './routes/bimi.js';
 
 export const appRouter = router({
   mail: mailRouter,
@@ -18,6 +23,11 @@ export const appRouter = router({
   settings: settingsRouter,
   connections: connectionsRouter,
   user: userRouter,
+  ai: aiRouter,
+  brain: brainRouter,
+  notes: notesRouter,
+  templates: templatesRouter,
+  bimi: bimiRouter,
 });
 
 export type AppRouter = typeof appRouter;

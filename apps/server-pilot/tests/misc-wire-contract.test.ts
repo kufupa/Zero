@@ -127,3 +127,35 @@ describe('misc wire contract — user.getIntercomToken return shape', () => {
     expect(Boolean({ token: null as string | null })).toBe(true);
   });
 });
+
+import { appRouter } from '../src/trpc/router.js';
+
+describe('pilot inert legacy routers', () => {
+  it('exposes disabled pilot capabilities and safe empty legacy responses', async () => {
+    const caller = appRouter.createCaller({
+      source: 'test',
+      sessionUser: { id: 'user-1', email: 'user@example.com', name: 'User' },
+      activeTransportId: 'transport-1',
+    } as never);
+
+    await expect(caller.brain.getCapabilities()).resolves.toMatchObject({
+      ai: false,
+      brain: false,
+      notes: false,
+      templates: false,
+      bimi: false,
+      gmailSearchGrammar: false,
+      hotelCategories: true,
+      staleDraftWarning: true,
+    });
+
+    await expect(caller.ai.generateSearchQuery({ prompt: 'find urgent mail' })).resolves.toEqual({
+      query: '',
+      disabled: true,
+    });
+
+    await expect(caller.notes.list({ threadId: 'thread-1' })).resolves.toEqual([]);
+    await expect(caller.templates.list()).resolves.toEqual([]);
+    await expect(caller.bimi.getByEmail({ email: 'guest@example.com' })).resolves.toBeNull();
+  });
+});
