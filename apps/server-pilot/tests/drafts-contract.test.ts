@@ -32,7 +32,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
 
           const listed = await caller.drafts.list({});
           const row = listed.threads.find((t) => t.id === id);
-          expect(row?.body).toBe(body);
+          expect(row?.content).toBe(body);
         });
       },
       30000,

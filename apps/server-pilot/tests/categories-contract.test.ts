@@ -17,10 +17,11 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('categories router', () => {
     await withSeededTestDb(async (db) => {
       const transportId = randomUUID();
       const threadId = randomUUID();
+      const transportEmail = `nava-${randomUUID()}@example.com`;
       await db.insert(mailboxTransport).values({
         id: transportId,
-        email: 'nava@example.com',
-        ownerHeaderValue: 'nava@example.com',
+        email: transportEmail,
+        ownerHeaderValue: transportEmail,
       });
       await db.insert(mailThread).values({
         id: threadId,
@@ -37,7 +38,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('categories router', () => {
         sessionUser: { id: 'user-1', email: 'user@example.com', name: 'User' },
         activeTransportId: transportId,
         accessRole: 'owner',
-        transportEmail: 'nava@example.com',
+        transportEmail: transportEmail,
       } as never);
 
       const travel = await caller.categories.create({
@@ -69,10 +70,11 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('categories router', () => {
   it('rejects duplicate slugs in the same mailbox', async () => {
     await withSeededTestDb(async (db) => {
       const transportId = randomUUID();
+      const transportEmail = `nava-${randomUUID()}@example.com`;
       await db.insert(mailboxTransport).values({
         id: transportId,
-        email: 'nava@example.com',
-        ownerHeaderValue: 'nava@example.com',
+        email: transportEmail,
+        ownerHeaderValue: transportEmail,
       });
 
       __setDbForTests({ db, conn: null as never });
@@ -81,7 +83,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('categories router', () => {
         sessionUser: { id: 'user-1', email: 'user@example.com', name: 'User' },
         activeTransportId: transportId,
         accessRole: 'owner',
-        transportEmail: 'nava@example.com',
+        transportEmail: transportEmail,
       } as never);
 
       await caller.categories.create({ slug: 'urgent', name: 'Urgent', sortOrder: 1 });

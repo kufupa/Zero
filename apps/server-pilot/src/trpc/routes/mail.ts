@@ -14,7 +14,7 @@
 import { TRPCError } from '@trpc/server';
 import { assertSafeOutboundFields } from '../../mail/send/validate-outbound.js';
 import { z } from 'zod';
-import { and, eq, asc, desc, isNotNull, isNull, inArray, sql, exists, or, lte } from 'drizzle-orm';
+import { and, eq, asc, desc, isNotNull, isNull, inArray, sql, exists, or, lte, gt } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { mailboxProcedure, router as tRouter } from '../trpc.js';
 import { getDb } from '../../db/client.js';
@@ -920,7 +920,10 @@ export const mailRouter = tRouter({
                     eq(message.threadId, threadId),
                     eq(message.transportId, transportId),
                     eq(message.direction, 'inbound'),
-                    sql`COALESCE(${message.receivedAt}, ${message.createdAt}) > ${parentTime}`,
+                    gt(
+                      sql`COALESCE(${message.receivedAt}, ${message.createdAt})`,
+                      parentTime,
+                    ),
                   ),
                 )
                 .limit(1)
