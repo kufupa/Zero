@@ -27,7 +27,8 @@ if (!hasPnpm) {
 const cmd = 'pnpm --dir apps/mail run dev';
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const backendUrl = process.env.VITE_PUBLIC_BACKEND_URL || 'http://localhost:8787';
+const backendUrl =
+  process.env.VITE_PUBLIC_BACKEND_URL ?? 'http://localhost:8788';
 const backendProbeUrl = `${backendUrl.replace(/\/$/, '')}/api/public/providers`;
 const backendBin = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
 
@@ -43,7 +44,7 @@ const isBackendReachable = async () => {
   }
 };
 
-const backendCmd = ['--dir', 'apps/server', 'run', 'dev'];
+const backendCmd = ['--dir', 'apps/server-pilot', 'run', 'dev'];
 let backendProcess = null;
 
 const shutdownBackendProcess = () => {
@@ -81,7 +82,7 @@ const startBackendIfNeeded = async (baseEnv) => {
   if (process.env.ZERO_AUTO_START_BACKEND === '0') return isBackendReachable();
   if (process.env.ZERO_AUTO_START_BACKEND === '1' || forceFull) {
     if (await isBackendReachable()) return true;
-    console.log(`[local-dev] Backend not reachable at ${backendUrl}, attempting to start apps/server...`);
+    console.log(`[local-dev] Backend not reachable at ${backendUrl}, attempting to start apps/server-pilot...`);
     return startServerProcess(baseEnv);
   }
 
@@ -125,7 +126,11 @@ const startServerProcess = async (baseEnv) => {
   return false;
 };
 
-const env = { ...process.env };
+const env = {
+  ...process.env,
+  VITE_PUBLIC_BACKEND_URL:
+    process.env.VITE_PUBLIC_BACKEND_URL ?? 'http://localhost:8788',
+};
 env.VITE_DISABLE_SENTRY = '1';
 if (demoFrontendOnly) {
   env.ZERO_DEMO_MODE = '1';
