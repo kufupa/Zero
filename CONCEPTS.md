@@ -40,6 +40,10 @@ The HTTP/tRPC payload shapes the `apps/mail` frontend actually sends and expects
 
 Opaque pagination token encoding `(latestMessageAt|id)` used by `mail.listThreads` and `drafts.list`. Page 2+ depends on SQL row comparison — cursor timestamp must bind as `timestamptz`, not raw JS `Date` in tuple literals.
 
+### Inbox folder (listThreads)
+
+Pilot inbox listing includes only non-trashed, non-archived threads with at least one **inbound** message and without the SPAM label. Outbound-only compose threads belong in **sent**, not inbox. Test fixtures must seed inbound messages when asserting inbox visibility.
+
 ## Deploy and ops
 
 ### Bundle sync
