@@ -48,6 +48,7 @@ export const sendInput = z
     attachments: z.array(serializedAttachmentInput).optional().default([]),
     fromEmail: z.string().optional(),
     draftId: z.string().optional(),
+    confirmStaleDraft: z.boolean().optional().default(false),
   })
   .transform((input) => ({
     threadId: input.threadId,
@@ -60,6 +61,7 @@ export const sendInput = z
     attachments: input.attachments,
     fromEmail: input.fromEmail,
     draftId: input.draftId,
+    confirmStaleDraft: input.confirmStaleDraft,
   }));
 
 export type SendInput = z.infer<typeof sendInput>;
@@ -133,6 +135,7 @@ export const createDraftInput = z
     id: z.string().nullable().optional(),
     threadId: z.string().nullable().optional(),
     fromEmail: z.string().nullable().optional(),
+    replyToMessageId: z.string().nullable().optional(),
   })
   .transform((input) => ({
     to: splitAddresses(input.to ?? ''),
@@ -144,6 +147,7 @@ export const createDraftInput = z
     id: input.id ?? null,
     threadId: input.threadId ?? null,
     fromEmail: input.fromEmail ?? null,
+    replyToMessageId: input.replyToMessageId ?? null,
   }));
 
 export type CreateDraftInput = z.infer<typeof createDraftInput>;

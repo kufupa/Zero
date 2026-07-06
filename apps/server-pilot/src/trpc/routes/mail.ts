@@ -24,6 +24,7 @@ import {
   attachment,
   mailLabel,
   mailDraft,
+  mailDraftRevision,
   mailThreadCategory,
 } from '../../db/schema/mail.js';
 import {
@@ -49,6 +50,7 @@ import {
   toParsedMessage,
   buildMetadataDebugHeaders,
 } from '../wire-compat.js';
+import { toDraftWire } from './draft-wire.js';
 
 /** FE + pilot folder slugs accepted by listThreads. */
 export const MAIL_FOLDER_VALUES = [
@@ -410,6 +412,7 @@ export const mailRouter = tRouter({
                   eq(mailDraft.transportId, transportId),
                   inArray(mailDraft.threadId, threadIds),
                   eq(mailDraft.isSent, false),
+                  inArray(mailDraft.status, ['active', 'candidate']),
                 ),
               )
               .groupBy(mailDraft.threadId)
@@ -494,6 +497,44 @@ export const mailRouter = tRouter({
       const threadLabelIds = new Set(thread.labelIds ?? []);
       const threadLabels = labels.filter((l) => threadLabelIds.has(l.id));
       const latest = parsedMessages[parsedMessages.length - 1];
+
+      const draftRows = await db
+        .select()
+        .from(mailDraft)
+        .where(
+          and(
+            eq(mailDraft.threadId, input.id),
+            eq(mailDraft.transportId, transportId),
+            eq(mailDraft.isSent, false),
+            inArray(mailDraft.status, ['active', 'candidate']),
+          ),
+        )
+        .orderBy(
+          sql`CASE ${mailDraft.status} WHEN 'active' THEN 0 WHEN 'candidate' THEN 1 ELSE 2 END`,
+          desc(mailDraft.updatedAt),
+          desc(mailDraft.id),
+        );
+
+      const messageById = new Map(messages.map((row) => [row.id, row]));
+      const latestInbound = messages
+        .filter((row) => row.direction === 'inbound')
+        .toSorted((a, b) => {
+          const aTime = (a.receivedAt ?? a.createdAt).getTime();
+          const bTime = (b.receivedAt ?? b.createdAt).getTime();
+          return bTime - aTime;
+        })[0];
+      const latestInboundTime = latestInbound?.receivedAt ?? latestInbound?.createdAt ?? null;
+
+      const drafts = draftRows.map((draft) => {
+        const parent = draft.replyToMessageId ? messageById.get(draft.replyToMessageId) : undefined;
+        const parentTime = parent?.receivedAt ?? parent?.sentAt ?? parent?.createdAt ?? null;
+        const isStale =
+          parentTime !== null &&
+          latestInboundTime !== null &&
+          latestInboundTime.getTime() > parentTime.getTime();
+        return toDraftWire(draft, isStale);
+      });
+
       return {
         id: thread.id,
         transportId: thread.transportId,
@@ -510,6 +551,7 @@ export const mailRouter = tRouter({
         hasUnread,
         totalReplies: Math.max(0, parsedMessages.length - 1),
         labels: threadLabels,
+        drafts,
       };
     }),
 
@@ -820,6 +862,58 @@ export const mailRouter = tRouter({
         });
       }
 
+      let sendingDraft: typeof mailDraft.$inferSelect | null = null;
+      if (input.draftId) {
+        const draftRows = await db
+          .select()
+          .from(mailDraft)
+          .where(
+            and(
+              eq(mailDraft.id, input.draftId),
+              eq(mailDraft.transportId, transportId),
+              eq(mailDraft.isSent, false),
+              eq(mailDraft.status, 'active'),
+            ),
+          )
+          .limit(1);
+        sendingDraft = draftRows[0] ?? null;
+        if (!sendingDraft) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'DRAFT_NOT_FOUND' });
+        }
+        if (threadId && sendingDraft.replyToMessageId) {
+          const parentRows = await db
+            .select({ receivedAt: message.receivedAt, sentAt: message.sentAt, createdAt: message.createdAt })
+            .from(message)
+            .where(
+              and(
+                eq(message.id, sendingDraft.replyToMessageId),
+                eq(message.transportId, transportId),
+                eq(message.threadId, threadId),
+              ),
+            )
+            .limit(1);
+          const parent = parentRows[0];
+          const parentTime = parent?.receivedAt ?? parent?.sentAt ?? parent?.createdAt ?? null;
+          const newerInboundRows = parentTime
+            ? await db
+                .select({ id: message.id })
+                .from(message)
+                .where(
+                  and(
+                    eq(message.threadId, threadId),
+                    eq(message.transportId, transportId),
+                    eq(message.direction, 'inbound'),
+                    sql`COALESCE(${message.receivedAt}, ${message.createdAt}) > ${parentTime}`,
+                  ),
+                )
+                .limit(1)
+            : [];
+          if (newerInboundRows.length > 0 && !input.confirmStaleDraft) {
+            throw new TRPCError({ code: 'CONFLICT', message: 'STALE_DRAFT' });
+          }
+        }
+      }
+
       const smtpResult = await getSmtpTransport().send({
         from: ctx.transportEmail,
         to: input.to,
@@ -884,12 +978,27 @@ export const mailRouter = tRouter({
           .update(mailDraft)
           .set({
             isSent: true,
+            status: 'sent',
             sentMessageId: messageId,
             updatedAt: now,
           })
           .where(
             and(eq(mailDraft.id, input.draftId), eq(mailDraft.transportId, transportId)),
           );
+        await db.insert(mailDraftRevision).values({
+          id: randomUUID(),
+          draftId: input.draftId,
+          sentMessageId: messageId,
+          actorUserId: ctx.sessionUser.id,
+          kind: 'sent',
+          toAddresses: input.to,
+          ccAddresses: input.cc,
+          bccAddresses: input.bcc,
+          subject: input.subject || null,
+          textBody: input.text || null,
+          htmlBody: input.html || null,
+          attachments: [],
+        });
       }
       return {
         messageId,
