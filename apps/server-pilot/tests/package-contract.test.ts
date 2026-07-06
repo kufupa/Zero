@@ -51,3 +51,114 @@ describe('server-pilot package contract', () => {
     expect(typeof mod.deserializeFiles).toBe('function');
   });
 });
+
+import type {
+  MailCategory,
+  MailFilterInput,
+  ParsedDraft,
+  ParsedMessage,
+  PilotCapabilities,
+  ThreadDetailResponse,
+  ThreadListItem,
+  ThreadListResponse,
+} from '../src/lib/driver/types.js';
+
+describe('driver type package contract', () => {
+  it('exports live pilot mail contract types', () => {
+    const message = {
+      id: 'msg-1',
+      title: 'Hello',
+      subject: 'Hello',
+      tags: [],
+      sender: { email: 'guest@example.com' },
+      to: [{ email: 'nava@example.com' }],
+      cc: null,
+      bcc: null,
+      tls: true,
+      receivedOn: '2026-07-06T10:00:00.000Z',
+      unread: true,
+      body: 'Body',
+      processedHtml: 'Body',
+      blobUrl: '',
+      threadId: 'thread-1',
+      isDraft: false,
+    } satisfies ParsedMessage;
+
+    const draft = {
+      id: 'draft-1',
+      threadId: 'thread-1',
+      replyToMessageId: 'msg-1',
+      to: ['guest@example.com'],
+      cc: [],
+      bcc: [],
+      subject: 'Hello',
+      content: '<p>Reply</p>',
+      updatedAt: '2026-07-06T10:01:00.000Z',
+      status: 'active',
+      origin: 'manual',
+      generationId: null,
+      isStale: false,
+    } satisfies ParsedDraft;
+
+    const category = {
+      id: 'cat-travel',
+      slug: 'travel-agents',
+      name: 'Travel Agents',
+      color: '#14b8a6',
+      sortOrder: 10,
+    } satisfies MailCategory;
+
+    const filters = {
+      unread: true,
+      important: false,
+      starred: false,
+      categoryIds: [category.id],
+      labelIds: [],
+    } satisfies MailFilterInput;
+
+    const listItem = {
+      id: 'thread-1',
+      subject: 'Hello',
+      snippet: 'Body',
+      latestMessageAt: '2026-07-06T10:00:00.000Z',
+      isRead: false,
+      isStarred: false,
+      labelIds: [],
+      categoryIds: [category.id],
+      hasDraft: true,
+      draftCount: 1,
+    } satisfies ThreadListItem;
+
+    const list = {
+      threads: [listItem],
+      nextPageToken: null,
+    } satisfies ThreadListResponse;
+
+    const detail = {
+      latest: message,
+      messages: [message],
+      drafts: [draft],
+      hasUnread: true,
+      totalReplies: 1,
+      labels: [],
+      categories: [category],
+    } satisfies ThreadDetailResponse;
+
+    const caps = {
+      ai: false,
+      brain: false,
+      notes: false,
+      templates: false,
+      bimi: false,
+      gmailSearchGrammar: false,
+      hotelCategories: true,
+      staleDraftWarning: true,
+    } satisfies PilotCapabilities;
+
+    expect(detail.drafts[0]?.id).toBe('draft-1');
+    expect(detail.categories[0]?.slug).toBe('travel-agents');
+    expect(filters.categoryIds).toEqual(['cat-travel']);
+    expect(list.threads).toHaveLength(1);
+    expect(caps.hotelCategories).toBe(true);
+  });
+});

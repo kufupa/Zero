@@ -1,20 +1,131 @@
-/**
- * Placeholder driver types. Task 4 (schema) and Task 6 (driver manager) will
- * fill in the real interfaces mirroring the old `apps/server/src/lib/driver/types.ts`
- * (MailManager, IGetThreadResponse, ParsedDraft, ManagerConfig, etc.).
- *
- * Kept as a typed empty shell so `@zero/server/driver/types` resolves for any
- * future deep import and so the package export surface is stable.
- */
-
 export type CenturionMailCategory = 'internal' | 'individual' | 'group' | 'travel-agents';
 
-export interface IGetThreadResponse {
-  // TODO(task-4/6): mirror full shape from legacy driver types.
-  messages: unknown[];
+export interface ParsedAddress {
+  name?: string;
+  email: string;
+}
+
+export interface ParsedMessageTag {
+  id: string;
+  name: string;
+  type: string;
+}
+
+export interface ParsedMessageAttachment {
+  attachmentId: string;
+  filename: string;
+  mimeType: string;
+  size: number;
+  body: string;
+  headers: { name: string | null; value: string | null }[];
+}
+
+export interface MailDebugHeaderLine {
+  key: string;
+  line: string;
+}
+
+export interface ParsedMessage {
+  id: string;
+  title: string;
+  subject: string;
+  tags: ParsedMessageTag[];
+  sender: ParsedAddress;
+  to: ParsedAddress[];
+  cc: ParsedAddress[] | null;
+  bcc: ParsedAddress[] | null;
+  tls: boolean;
+  receivedOn: string;
+  unread: boolean;
+  body: string;
+  processedHtml: string;
+  blobUrl: string;
+  decodedBody?: string;
+  references?: string;
+  inReplyTo?: string;
+  messageId?: string;
+  threadId?: string;
+  attachments?: ParsedMessageAttachment[];
+  isDraft?: boolean;
+  debugHeaders?: MailDebugHeaderLine[];
+}
+
+export interface ParsedDraft {
+  id: string;
+  threadId: string | null;
+  replyToMessageId: string | null;
+  to: string[];
+  cc: string[];
+  bcc: string[];
+  subject: string | null;
+  content: string | null;
+  updatedAt: string;
+  status: 'active' | 'candidate' | 'discarded' | 'sent';
+  origin: 'manual' | 'ai';
+  generationId: string | null;
+  isStale: boolean;
+}
+
+export interface MailCategory {
+  id: string;
+  slug: string;
+  name: string;
+  color: string | null;
+  sortOrder: number;
+}
+
+export interface MailLabelWire {
+  id: string;
+  name: string;
+  type: 'system' | 'user';
+  color?: string | null;
+}
+
+export interface MailFilterInput {
+  unread?: boolean;
+  important?: boolean;
+  starred?: boolean;
+  categoryIds?: string[];
+  labelIds?: string[];
+}
+
+export interface ThreadListItem {
+  id: string;
+  subject: string | null;
+  snippet: string | null;
+  latestMessageAt: string | null;
+  isRead: boolean;
+  isStarred: boolean;
+  labelIds: string[];
+  categoryIds: string[];
+  hasDraft: boolean;
+  draftCount: number;
+}
+
+export interface ThreadListResponse {
+  threads: ThreadListItem[];
+  nextPageToken: string | null;
+}
+
+export interface ThreadDetailResponse {
+  latest?: ParsedMessage;
+  messages: ParsedMessage[];
+  drafts: ParsedDraft[];
   hasUnread: boolean;
   totalReplies: number;
-  labels: { id: string; name: string }[];
+  labels: MailLabelWire[];
+  categories: MailCategory[];
+}
+
+export interface PilotCapabilities {
+  ai: false;
+  brain: false;
+  notes: false;
+  templates: false;
+  bimi: false;
+  gmailSearchGrammar: false;
+  hotelCategories: true;
+  staleDraftWarning: true;
 }
 
 export interface ManagerConfig {
@@ -28,5 +139,6 @@ export interface ManagerConfig {
 
 export interface MailManager {
   config: ManagerConfig;
-  // TODO(task-6): mirror full method surface.
 }
+
+export type IGetThreadResponse = ThreadDetailResponse;

@@ -2,6 +2,7 @@
  * FE ↔ pilot wire format helpers — ParsedMessage shape and send input coercion.
  */
 import { z } from 'zod';
+import type { ParsedMessage } from '../lib/driver/types.js';
 import type { message } from '../db/schema/mail.js';
 import { sanitizeEmailHtml } from '../mail/sanitize-email-html.js';
 
@@ -64,7 +65,7 @@ export const sendInput = z
 export type SendInput = z.infer<typeof sendInput>;
 
 /** ParsedMessage wire shape returned by mail.get (matches FE IGetThreadResponse.messages). */
-export interface ParsedMessageWire {
+export interface ParsedMessageWire extends ParsedMessage {
   id: string;
   title: string;
   subject: string;
