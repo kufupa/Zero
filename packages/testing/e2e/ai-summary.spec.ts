@@ -6,8 +6,8 @@ if (!email) {
   throw new Error('EMAIL environment variable must be set.');
 }
 
-test.describe('AI Chat Email Summarization', () => {
-  test('should summarize emails and display the result', async ({ page }) => {
+test.describe('Pilot mail inbox (AI inert)', () => {
+  test('inbox loads and AI sidebar affordances stay hidden', async ({ page }) => {
     await page.goto('/mail/inbox');
     await page.waitForLoadState('domcontentloaded');
     console.log('Successfully accessed mail inbox');
@@ -24,32 +24,16 @@ test.describe('AI Chat Email Summarization', () => {
     } catch {
       console.log('No onboarding modal found, proceeding...');
     }
-    
+
     await expect(page.getByText('Inbox')).toBeVisible();
     console.log('Mail inbox is now visible');
 
-    console.log('Opening AI chat sidebar with keyboard shortcut...');
     await page.keyboard.press('Meta+0');
-    await expect(page.locator('form#ai-chat-form')).toBeVisible({ timeout: 10000 });
-    console.log('AI chat sidebar opened successfully');
+    await expect(page.locator('form#ai-chat-form')).not.toBeVisible({ timeout: 3000 });
+    console.log('AI chat sidebar correctly absent in pilot mode');
 
-    const chatInput = page.locator('form#ai-chat-form [contenteditable="true"]').first();
-    await chatInput.click();
-    await chatInput.fill('Please summarise the past five emails');
-    await page.keyboard.press('Enter');
-    console.log('Sent summarization query by pressing Enter');
-
-    console.log('Waiting for AI response...');
-    
-    const assistantMessage = page.locator('[data-message-role="assistant"]').last();
-    await expect(assistantMessage).toBeVisible({ timeout: 15000 });
-    
-    const responseText = await assistantMessage.textContent();
-
-    console.log('AI Response Text:', responseText);
-    expect(responseText).toBeTruthy();
-    expect(responseText!.length).toBeGreaterThan(15);
-    
-    console.log('Test completed: AI summarization successful!');
+    const threadRows = page.locator('[data-thread-id], [data-testid="thread-row"], tr, [role="row"]');
+    await expect(threadRows.first()).toBeVisible({ timeout: 15000 });
+    console.log('Inbox thread list remains usable without AI');
   });
 });

@@ -565,7 +565,7 @@ describe('demo backend guard coverage', () => {
     expect(resultA.query).toBe(`!!!???%%${'x'.repeat(96)}&&& spaced query!!!`);
   });
 
-  it('uses backend command-palette expansion when frontend-only demo mode is disabled', async () => {
+  it('passthrough command-palette query when demo off but pilot NL search disabled', async () => {
     const backendGenerateSearchQuery = vi.fn(async (input: { query: string }) => ({
       query: `${input.query} (backend)`,
     }));
@@ -576,8 +576,8 @@ describe('demo backend guard coverage', () => {
       generateSearchQuery: backendGenerateSearchQuery,
     });
 
-    expect(backendGenerateSearchQuery).toHaveBeenCalledWith({ query: 'follow up client' });
-    expect(result.query).toBe('follow up client (backend)');
+    expect(backendGenerateSearchQuery).not.toHaveBeenCalled();
+    expect(result.query).toBe('follow up client');
   });
 
   it('uses local web-search fallback in mail-display web search mode', async () => {
