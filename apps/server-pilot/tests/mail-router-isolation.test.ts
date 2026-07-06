@@ -89,6 +89,40 @@ async function seedFrontdeskFixture(db: import('../src/db/client.js').DB) {
       latestMessageAt: new Date(),
     },
   ]).onConflictDoNothing({ target: mailThread.id });
+
+  // Inbox listing requires at least one inbound message per thread (c59fba8e).
+  await db.insert(message).values([
+    {
+      id: 'msg-centurion-iso-1',
+      transportId: 'transport-centurion',
+      threadId: 'thread-centurion-1',
+      direction: 'inbound',
+      fromAddress: 'guest@example.com',
+      toAddresses: ['centurion@legacyhotel.com'],
+      ccAddresses: [],
+      bccAddresses: [],
+      subject: 'Centurion booking #4471',
+      textBody: 'Centurion secret thread',
+      ownerHeaderValue: 'centurion@legacyhotel.com',
+      messageIdHeader: 'centurion-iso-1@example.com',
+      receivedAt: new Date(),
+    },
+    {
+      id: 'msg-frontdesk-iso-1',
+      transportId: 'transport-frontdesk',
+      threadId: 'thread-frontdesk-1',
+      direction: 'inbound',
+      fromAddress: 'staff@example.com',
+      toAddresses: ['frontdesk@legacyhotel.com'],
+      ccAddresses: [],
+      bccAddresses: [],
+      subject: 'Frontdesk shift handover',
+      textBody: 'Frontdesk internal thread',
+      ownerHeaderValue: 'frontdesk@legacyhotel.com',
+      messageIdHeader: 'frontdesk-iso-1@example.com',
+      receivedAt: new Date(),
+    },
+  ]).onConflictDoNothing({ target: message.id });
 }
 
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(

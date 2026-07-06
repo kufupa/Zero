@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { mailThread } from '../src/db/schema/mail.js';
+import { mailThread, message } from '../src/db/schema/mail.js';
 import {
   TEST_DB_AVAILABLE,
   probeTestDb,
@@ -28,6 +28,21 @@ async function insertInboxThread(db: import('../src/db/client.js').DB, id: strin
     isRead: false,
     labelIds: [],
     latestMessageAt: new Date(),
+  });
+  await db.insert(message).values({
+    id: `msg-${id}`,
+    transportId: 'transport-centurion',
+    threadId: id,
+    direction: 'inbound',
+    fromAddress: 'guest@example.com',
+    toAddresses: ['centurion@legacyhotel.com'],
+    ccAddresses: [],
+    bccAddresses: [],
+    subject: `Trash test ${id}`,
+    textBody: 'soft delete fixture',
+    ownerHeaderValue: 'centurion@legacyhotel.com',
+    messageIdHeader: `${id}@example.com`,
+    receivedAt: new Date(),
   });
 }
 
