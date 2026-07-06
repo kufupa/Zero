@@ -8,6 +8,7 @@ import {
   jsonb,
   index,
   uniqueIndex,
+  primaryKey,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { user } from './auth.js';
@@ -121,6 +122,48 @@ export const mailLabel = pgTable(
   (t) => [
     uniqueIndex('mail_label_transport_name_uidx').on(t.transportId, t.name),
     index('mail_label_transport_idx').on(t.transportId),
+  ],
+);
+
+export const mailCategory = pgTable(
+  'mail_category',
+  {
+    id: text('id').primaryKey(),
+    transportId: text('transport_id')
+      .notNull()
+      .references(() => mailboxTransport.id, { onDelete: 'cascade' }),
+    slug: text('slug').notNull(),
+    name: text('name').notNull(),
+    color: text('color'),
+    sortOrder: integer('sort_order').notNull().default(0),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('mail_category_transport_slug_uidx').on(t.transportId, t.slug),
+    index('mail_category_transport_order_idx').on(t.transportId, t.sortOrder),
+  ],
+);
+
+export const mailThreadCategory = pgTable(
+  'mail_thread_category',
+  {
+    threadId: text('thread_id')
+      .notNull()
+      .references(() => mailThread.id, { onDelete: 'cascade' }),
+    categoryId: text('category_id')
+      .notNull()
+      .references(() => mailCategory.id, { onDelete: 'cascade' }),
+    transportId: text('transport_id')
+      .notNull()
+      .references(() => mailboxTransport.id, { onDelete: 'cascade' }),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.threadId, t.categoryId] }),
+    index('mail_thread_category_category_idx').on(t.categoryId),
+    index('mail_thread_category_transport_idx').on(t.transportId),
   ],
 );
 

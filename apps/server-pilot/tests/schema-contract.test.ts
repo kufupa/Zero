@@ -57,3 +57,16 @@ describe('v4 production mail schema', () => {
     expect((schema as Record<string, unknown>).userHotkeys).toBeUndefined();
   });
 });
+
+import { mailCategory, mailThreadCategory } from '../src/db/schema/mail.js';
+
+describe('mail category schema', () => {
+  it('exports mailbox-scoped categories and thread membership tables', () => {
+    expect(mailCategory).toBeDefined();
+    expect(mailThreadCategory).toBeDefined();
+    expect(mailCategory.id.name).toBe('id');
+    expect(mailCategory.slug.name).toBe('slug');
+    expect(mailThreadCategory.categoryId.name).toBe('category_id');
+    expect(mailThreadCategory.threadId.name).toBe('thread_id');
+  });
+});
