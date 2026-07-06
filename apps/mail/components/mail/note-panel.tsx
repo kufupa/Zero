@@ -76,6 +76,7 @@ import {
   demoUpdateNote,
 } from '@/lib/demo/local-actions';
 import { cn } from '@/lib/utils';
+import { shouldRenderLegacySurface } from '@/lib/pilot/capabilities';
 import { toast } from 'sonner';
 
 interface NotesPanelProps {
@@ -238,6 +239,10 @@ function SortableNote({
 }
 
 export function NotesPanel({ threadId }: NotesPanelProps) {
+  if (!shouldRenderLegacySurface('notes')) {
+    return null;
+  }
+
   const {
     data: { notes },
     refetch,

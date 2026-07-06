@@ -25,6 +25,7 @@ import {
 import { Input } from '@/components/ui/input';
 import { TRPCClientError } from '@trpc/client';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { shouldRenderLegacySurface } from '@/lib/pilot/capabilities';
 import { demoDeleteTemplate, demoUpsertTemplate } from '@/lib/demo/local-actions';
 
 type EmailTemplate = {
@@ -61,6 +62,10 @@ const TemplateButtonComponent: React.FC<TemplateButtonProps> = ({
   bcc,
   setRecipients,
 }) => {
+  if (!shouldRenderLegacySurface('templates')) {
+    return null;
+  }
+
   const trpc = useTRPC();
   const queryClient = useQueryClient();
   const { data } = useTemplates();

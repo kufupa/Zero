@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 import { getEmailLogo } from '@/lib/utils';
 import DOMPurify from 'dompurify';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { shouldRenderLegacySurface } from '@/lib/pilot/capabilities';
 
 export const getFirstLetterCharacter = (name?: string) => {
   if (!name) return '';
@@ -27,6 +28,10 @@ export const BimiAvatar = ({
   fallbackClassName = 'rounded-full bg-[#FFFFFF] font-bold text-[#9F9F9F] dark:bg-[#373737]',
   onImageError,
 }: BimiAvatarProps) => {
+  if (!shouldRenderLegacySurface('bimi')) {
+    return null;
+  }
+
   const trpc = useTRPC();
   const [useDefaultFallback, setUseDefaultFallback] = useState(false);
   const frontendOnlyDemo = isFrontendOnlyDemo();

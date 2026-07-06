@@ -21,6 +21,7 @@ import { useParams } from 'react-router';
 import { useAgent } from 'agents/react';
 import { useQueryState } from 'nuqs';
 import { cn } from '@/lib/utils';
+import { shouldRenderLegacySurface } from '@/lib/pilot/capabilities';
 import posthog from 'posthog-js';
 import { toast } from 'sonner';
 
@@ -294,6 +295,10 @@ export function useAISidebar() {
 }
 
 function AISidebar({ className }: AISidebarProps) {
+  if (!shouldRenderLegacySurface('ai')) {
+    return null;
+  }
+
   const { open, setOpen, isFullScreen, setIsFullScreen, toggleViewMode, isSidebar, isPopup } =
     useAISidebar();
   const queryClient = useQueryClient();

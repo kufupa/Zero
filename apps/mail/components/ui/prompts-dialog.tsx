@@ -32,6 +32,7 @@ import { Paper } from '../icons/icons';
 import { Textarea } from './textarea';
 import { Link } from 'react-router';
 import { useMemo } from 'react';
+import { shouldRenderLegacySurface } from '@/lib/pilot/capabilities';
 import { toast } from 'sonner';
 
 const isPromptValid = (prompt: string): boolean => {
@@ -56,6 +57,10 @@ const fallbackPrompts = {
 };
 
 export function PromptsDialog() {
+  if (!shouldRenderLegacySurface('brain')) {
+    return null;
+  }
+
   const trpc = useTRPC();
   const queryClient = useQueryClient();
   const { data: prompts } = useQuery(trpc.brain.getPrompts.queryOptions());
