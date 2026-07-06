@@ -1,6 +1,6 @@
 import { useUndoSend, type EmailData, deserializeFiles } from '@/hooks/use-undo-send';
 import { useActiveConnection } from '@/hooks/use-connections';
-import { Dialog, DialogClose } from '@/components/ui/dialog';
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { cleanEmailAddresses } from '@/lib/email-utils';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { demoSendEmail } from '@/lib/demo/local-actions';
@@ -12,12 +12,18 @@ import { EmailComposer } from './email-composer';
 import { useSession } from '@/lib/auth-client';
 import { serializeFiles } from '@/lib/schemas';
 import { useDraft } from '@/hooks/use-drafts';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  getStaleDraftRetryInput,
+  isStaleDraftConflict,
+  StaleDraftSendCancelled,
+} from '@/lib/mail/draft-persistence';
 import {
   buildOutboundHeaderPreview,
   canShowHeaderDebug,
   isHeaderDebugEnabled,
 } from '@/lib/mail/header-debug';
+import { Button } from '@/components/ui/button';
 
 import type { Attachment } from '@/types';
 import { useQueryState } from 'nuqs';
@@ -70,6 +76,8 @@ export function CreateEmail({
   const { data: activeConnection } = useActiveConnection();
   const { data: settings, isLoading: settingsLoading } = useSettings();
   const { handleUndoSend } = useUndoSend();
+  const [showStaleDraftConfirmation, setShowStaleDraftConfirmation] = useState(false);
+  const staleDraftResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
   // If there was an error loading the draft, set the failed state
   useEffect(() => {
     if (draftError) {
@@ -91,6 +99,18 @@ export function CreateEmail({
     });
   }, [activeConnection?.email, activeConnection?.id]);
 
+  const confirmStaleDraftSend = () =>
+    new Promise<boolean>((resolve) => {
+      staleDraftResolverRef.current = resolve;
+      setShowStaleDraftConfirmation(true);
+    });
+
+  const handleStaleDraftDecision = (confirmed: boolean) => {
+    setShowStaleDraftConfirmation(false);
+    staleDraftResolverRef.current?.(confirmed);
+    staleDraftResolverRef.current = null;
+  };
+
   const handleSendEmail = async (data: {
     to: string[];
     cc?: string[];
@@ -104,29 +124,30 @@ export function CreateEmail({
     const fromEmail =
       data.fromEmail || settings?.settings?.defaultEmailAlias || userEmail;
 
-    const result = isFrontendOnlyDemo()
-      ? await demoSendEmail({
-          to: data.to.map((email) => ({ email, name: email.split('@')[0] || email })),
-          cc: data.cc?.map((email) => ({ email, name: email.split('@')[0] || email })),
-          bcc: data.bcc?.map((email) => ({ email, name: email.split('@')[0] || email })),
-          subject: data.subject,
-          message: data.message,
-          attachments: await serializeFiles(data.attachments),
-          fromEmail: userName.trim() ? `${userName.replace(/[<>]/g, '')} <${fromEmail}>` : fromEmail,
-          draftId: draftId ?? undefined,
-          scheduleAt: data.scheduleAt,
-        })
-      : await sendEmail({
-          to: data.to.map((email) => ({ email, name: email.split('@')[0] || email })),
-          cc: data.cc?.map((email) => ({ email, name: email.split('@')[0] || email })),
-          bcc: data.bcc?.map((email) => ({ email, name: email.split('@')[0] || email })),
-          subject: data.subject,
-          message: data.message,
-          attachments: await serializeFiles(data.attachments),
-          fromEmail: userName.trim() ? `${userName.replace(/[<>]/g, '')} <${fromEmail}>` : fromEmail,
-          draftId: draftId ?? undefined,
-          scheduleAt: data.scheduleAt,
-        });
+    const sendInput = {
+      to: data.to.map((email) => ({ email, name: email.split('@')[0] || email })),
+      cc: data.cc?.map((email) => ({ email, name: email.split('@')[0] || email })),
+      bcc: data.bcc?.map((email) => ({ email, name: email.split('@')[0] || email })),
+      subject: data.subject,
+      message: data.message,
+      attachments: await serializeFiles(data.attachments),
+      fromEmail: userName.trim() ? `${userName.replace(/[<>]/g, '')} <${fromEmail}>` : fromEmail,
+      draftId: draftId ?? undefined,
+      scheduleAt: data.scheduleAt,
+    };
+
+    const sendWithInput = async (input: typeof sendInput) =>
+      isFrontendOnlyDemo() ? demoSendEmail(input) : sendEmail(input);
+
+    let result;
+    try {
+      result = await sendWithInput(sendInput);
+    } catch (error) {
+      if (!isStaleDraftConflict(error)) throw error;
+      const confirmed = await confirmStaleDraftSend();
+      if (!confirmed) throw new StaleDraftSendCancelled();
+      result = await sendWithInput(getStaleDraftRetryInput(sendInput));
+    }
 
     setDraftId(null);
     clearUndoData();
@@ -289,6 +310,23 @@ export function CreateEmail({
             />
           )}
         </div>
+      </Dialog>
+      <Dialog open={showStaleDraftConfirmation} onOpenChange={setShowStaleDraftConfirmation}>
+        <DialogContent showOverlay className="z-99999 sm:max-w-[425px]">
+          <DialogHeader>
+            <DialogTitle>Send stale draft?</DialogTitle>
+            <DialogDescription>
+              Newer messages arrived after this draft was started. Review latest reply before
+              sending, or send anyway.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="mt-2">
+            <Button variant="outline" onClick={() => handleStaleDraftDecision(false)}>
+              Cancel
+            </Button>
+            <Button onClick={() => handleStaleDraftDecision(true)}>Send anyway</Button>
+          </DialogFooter>
+        </DialogContent>
       </Dialog>
     </>
   );

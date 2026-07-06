@@ -645,12 +645,16 @@ const Draft = memo(({ message, index }: { message: { id: string }; index: number
   const optimisticState = useOptimisticThreadState(message.id);
 
   const handleMailClick = useCallback(() => {
-    setMode(null);
-    setActiveReplyId(null);
+    if (draft?.threadId) {
+      setMode('reply');
+      setActiveReplyId(draft.replyToMessageId ?? null);
+    } else {
+      setMode(null);
+      setActiveReplyId(null);
+    }
     setComposeOpen('true');
     setDraftId(message.id);
-    return;
-  }, [message.id, setMode, setActiveReplyId, setComposeOpen, setDraftId]);
+  }, [draft?.replyToMessageId, draft?.threadId, message.id, setMode, setActiveReplyId, setComposeOpen, setDraftId]);
 
   const handleDeleteDraft = useCallback(
     (e: React.MouseEvent) => {

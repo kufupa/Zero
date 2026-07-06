@@ -9,12 +9,27 @@ import { useSettings } from '@/hooks/use-settings';
 import { useThread } from '@/hooks/use-threads';
 import { useSession } from '@/lib/auth-client';
 import { serializeFiles } from '@/lib/schemas';
-import { useDraft } from '@/hooks/use-drafts';
+import { useDraft, useEnsureEditableDraftForReply } from '@/hooks/use-drafts';
+import {
+  getStaleDraftRetryInput,
+  isStaleDraftConflict,
+  shouldEnsureEditableDraftForReply,
+  StaleDraftSendCancelled,
+} from '@/lib/mail/draft-persistence';
 import { m } from '@/paraglide/messages';
 import { deriveReplyRecipients } from '@/lib/mail/reply-recipients';
 import type { Sender } from '@/types';
 import { useQueryState } from 'nuqs';
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { Button } from '@/components/ui/button';
 import {
   buildOutboundHeaderPreview,
   canShowHeaderDebug,
@@ -36,10 +51,14 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
   const [draftId, setDraftId] = useQueryState('draftId');
   const [threadId] = useQueryState('threadId');
   const [, setActiveReplyId] = useQueryState('activeReplyId');
-  const { data: emailData, refetch, latestDraft } = useThread(threadId);
+  const { data: emailData, refetch, latestDraft, aiDraftCandidates } = useThread(threadId);
   const { data: draft } = useDraft(draftId ?? null);
   const trpc = useTRPC();
   const { mutateAsync: sendEmail } = useMutation(trpc.mail.send.mutationOptions());
+  const { mutateAsync: ensureEditableDraftForReply } = useEnsureEditableDraftForReply();
+  const ensuredDraftKeyRef = useRef<string | null>(null);
+  const [showStaleDraftConfirmation, setShowStaleDraftConfirmation] = useState(false);
+  const staleDraftResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
   const { data: activeConnection } = useActiveConnection();
   const { data: settings, isLoading: settingsLoading } = useSettings();
   const { data: session } = useSession();
@@ -48,6 +67,50 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
   // Find the specific message to reply to
   const replyToMessage =
     (messageId && emailData?.messages.find((msg) => msg.id === messageId)) || emailData?.latest;
+
+  const confirmStaleDraftSend = () =>
+    new Promise<boolean>((resolve) => {
+      staleDraftResolverRef.current = resolve;
+      setShowStaleDraftConfirmation(true);
+    });
+
+  const handleStaleDraftDecision = (confirmed: boolean) => {
+    setShowStaleDraftConfirmation(false);
+    staleDraftResolverRef.current?.(confirmed);
+    staleDraftResolverRef.current = null;
+  };
+
+  useEffect(() => {
+    const decision = shouldEnsureEditableDraftForReply({
+      demoMode: isFrontendOnlyDemo(),
+      threadId,
+      replyToMessageId: replyToMessage?.id ?? null,
+      activeDraftId: latestDraft?.id ?? null,
+      aiCandidateCount: aiDraftCandidates?.length ?? 0,
+    });
+
+    if (!decision.shouldEnsure) return;
+
+    const ensureKey = `${decision.threadId}:${decision.replyToMessageId ?? 'none'}`;
+    if (ensuredDraftKeyRef.current === ensureKey) return;
+    ensuredDraftKeyRef.current = ensureKey;
+
+    void ensureEditableDraftForReply({
+      threadId: decision.threadId,
+      replyToMessageId: decision.replyToMessageId,
+    }).then((editableDraft) => {
+      setDraftId(editableDraft.id);
+      void refetch();
+    });
+  }, [
+    aiDraftCandidates?.length,
+    ensureEditableDraftForReply,
+    latestDraft?.id,
+    refetch,
+    replyToMessage?.id,
+    setDraftId,
+    threadId,
+  ]);
 
   const handleSendEmail = async (data: {
     to: string[];
@@ -113,8 +176,7 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
               //   replyToMessage.decodedBody,
             );
 
-      const result = isFrontendOnlyDemo()
-        ? await demoSendEmail({
+      const sendInput = {
             to: toRecipients,
             cc: ccRecipients,
             bcc: bccRecipients,
@@ -137,31 +199,20 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
             isForward: mode === 'forward',
             originalMessage: replyToMessage.decodedBody,
             scheduleAt: data.scheduleAt,
-          })
-        : await sendEmail({
-            to: toRecipients,
-            cc: ccRecipients,
-            bcc: bccRecipients,
-            subject: data.subject,
-            message: emailBody,
-            attachments: await serializeFiles(data.attachments),
-            fromEmail: fromEmail,
-            draftId: draftId ?? undefined,
-            headers: {
-              'In-Reply-To': replyToMessage?.messageId ?? '',
-              References: [
-                ...(replyToMessage?.references ? replyToMessage.references.split(' ') : []),
-                replyToMessage?.messageId,
-              ]
-                .filter(Boolean)
-                .join(' '),
-              'Thread-Id': replyToMessage?.threadId ?? '',
-            },
-            threadId: replyToMessage?.threadId,
-            isForward: mode === 'forward',
-            originalMessage: replyToMessage.decodedBody,
-            scheduleAt: data.scheduleAt,
-          });
+          };
+
+      const sendWithInput = async (input: typeof sendInput) =>
+        isFrontendOnlyDemo() ? demoSendEmail(input) : sendEmail(input);
+
+      let result;
+      try {
+        result = await sendWithInput(sendInput);
+      } catch (error) {
+        if (!isStaleDraftConflict(error)) throw error;
+        const confirmed = await confirmStaleDraftSend();
+        if (!confirmed) throw new StaleDraftSendCancelled();
+        result = await sendWithInput(getStaleDraftRetryInput(sendInput));
+      }
 
       posthog.capture('Reply Email Sent');
 
@@ -179,6 +230,7 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
         scheduleAt: data.scheduleAt,
       });
     } catch (error) {
+      if (error instanceof StaleDraftSendCancelled) throw error;
       console.error('Error sending email:', error);
       toast.error(m['pages.createEmail.failedToSendEmail']());
     }
@@ -308,8 +360,26 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
         autofocus={true}
         settingsLoading={settingsLoading}
         replyingTo={replyToMessage?.sender.email}
+        replyToMessageId={replyToMessage?.id ?? null}
         headerPreview={headerPreview}
       />
+      <Dialog open={showStaleDraftConfirmation} onOpenChange={setShowStaleDraftConfirmation}>
+        <DialogContent showOverlay className="z-99999 sm:max-w-[425px]">
+          <DialogHeader>
+            <DialogTitle>Send stale draft?</DialogTitle>
+            <DialogDescription>
+              Newer messages arrived after this draft was started. Review latest reply before
+              sending, or send anyway.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="mt-2">
+            <Button variant="outline" onClick={() => handleStaleDraftDecision(false)}>
+              Cancel
+            </Button>
+            <Button onClick={() => handleStaleDraftDecision(true)}>Send anyway</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

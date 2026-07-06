@@ -1,5 +1,5 @@
 import { useTRPC } from '@/providers/query-provider';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import { useSession } from '@/lib/auth-client';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { getDemoDraft, type DemoDraft } from '@/lib/demo/local-store';
@@ -7,8 +7,15 @@ import { parseRecipientToken, splitRecipientField } from '../lib/demo/recipient-
 
 type DraftLike = {
   id: string;
+  threadId?: string | null;
+  replyToMessageId?: string | null;
   content?: string;
   subject?: string;
+  updatedAt?: string;
+  status?: 'active' | 'candidate' | 'discarded' | 'sent';
+  origin?: 'manual' | 'ai';
+  generationId?: string | null;
+  isStale?: boolean;
   rawMessage?: {
     internalDate?: string | null;
   };
@@ -31,8 +38,15 @@ const toDemoDraftPayload = (draft?: DemoDraft | null): DraftLike | undefined => 
 
   const normalized: DraftLike = {
     id: draft.id,
+    threadId: draft.threadId ?? null,
+    replyToMessageId: null,
     content: draft.body,
     subject: draft.subject?.trim() || undefined,
+    updatedAt: draft.updatedAt,
+    status: 'active',
+    origin: 'manual',
+    generationId: null,
+    isStale: false,
     to: normalizeEmailList(draft.to),
     cc: normalizeEmailList(draft.cc),
     bcc: normalizeEmailList(draft.bcc),
@@ -66,4 +80,9 @@ export const useDraft = (id: string | null) => {
     ),
   );
   return draftQuery;
+};
+
+export const useEnsureEditableDraftForReply = () => {
+  const trpc = useTRPC();
+  return useMutation(trpc.drafts.ensureEditableForReply.mutationOptions());
 };

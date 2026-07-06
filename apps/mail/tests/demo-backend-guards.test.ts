@@ -447,8 +447,15 @@ describe('demo backend guard coverage', () => {
 
     expect(await queryFn!()).toEqual({
       id: 'draft-123',
+      threadId: 'thread-abc',
+      replyToMessageId: null,
       subject: 'Hotel Follow Up',
       content: 'Draft content',
+      updatedAt,
+      status: 'active',
+      origin: 'manual',
+      generationId: null,
+      isStale: false,
       to: ['alice@example.com', 'bob@example.com', 'carol@example.com'],
       cc: ['dana@example.com'],
       bcc: ['dana@example.com'],

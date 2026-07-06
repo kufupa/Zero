@@ -50,6 +50,13 @@ import type { ImageQuality } from '@/lib/image-compression';
 const shortcodeRegex = /:([a-zA-Z0-9_+-]+):/g;
 import { TemplateButton } from './template-button';
 import { emailListSignature } from '@/lib/mail/compose-signatures';
+import {
+  buildDraftMutationInput,
+  chooseDraftEditorState,
+  isStaleDraftSendCancelled,
+  shouldPersistDraft,
+} from '@/lib/mail/draft-persistence';
+import { useDraft } from '@/hooks/use-drafts';
 import type { HeaderDebugLine } from '@/types';
 
 type ThreadContent = {
@@ -85,6 +92,7 @@ interface EmailComposerProps {
   editorClassName?: string;
   /** When set, sync to/cc/bcc/subject from props when they change without remounting (e.g. reply → reply all). Never overwrites the message body from props. */
   syncReplyHeadersFromProps?: boolean;
+  replyToMessageId?: string | null;
   headerPreview?: HeaderDebugLine[];
 }
 
@@ -117,6 +125,7 @@ export function EmailComposer({
   settingsLoading = false,
   editorClassName,
   syncReplyHeadersFromProps = false,
+  replyToMessageId = null,
   headerPreview = [],
 }: EmailComposerProps) {
   const { data: settings } = useSettings();
@@ -131,6 +140,7 @@ export function EmailComposer({
   const [isComposeOpen, setIsComposeOpen] = useQueryState('isComposeOpen');
   const { data: emailData } = useThread(threadId ?? null);
   const [draftId, setDraftId] = useQueryState('draftId');
+  const { data: serverDraft } = useDraft(draftId ?? null);
   const [aiGeneratedMessage, setAiGeneratedMessage] = useState<string | null>(null);
   const [aiIsLoading, setAiIsLoading] = useState(false);
   const [isGeneratingSubject, setIsGeneratingSubject] = useState(false);
@@ -363,6 +373,26 @@ export function EmailComposer({
     }
   }, [editor, autofocus]);
 
+  useEffect(() => {
+    if (!editor || !serverDraft) return;
+
+    const editorState = chooseDraftEditorState({
+      isDirty: hasUnsavedChanges,
+      localHtml: editor.getHTML(),
+      localSubject: subjectInput,
+      serverDraft,
+    });
+
+    if (editorState.source !== 'server') return;
+
+    if (editorState.html !== editor.getHTML()) {
+      editor.commands.setContent(editorState.html, false);
+    }
+    if (editorState.subject !== subjectInput) {
+      setValue('subject', editorState.subject, { shouldDirty: false });
+    }
+  }, [editor, hasUnsavedChanges, serverDraft, setValue, subjectInput]);
+
   // Remove the TRPC query - we'll use the component's internal logic instead
   useEffect(() => {
     if (isComposeOpen === 'true' && editor) {
@@ -443,6 +473,7 @@ export function EmailComposer({
       clearAttachmentState();
       setIsComposeOpen(null);
     } catch (error) {
+      if (isStaleDraftSendCancelled(error)) return;
       console.error('Error sending email:', error);
       toast.error('Failed to send email');
     } finally {
@@ -527,26 +558,37 @@ export function EmailComposer({
 
     if (!hasUnsavedChanges) return;
     const messageText = editor.getText();
+    const html = editor.getHTML();
+    const aiBlocked = Boolean(aiGeneratedMessage || aiIsLoading || isGeneratingSubject);
 
-    if (messageText.trim() === initialMessage.trim()) return;
-    if (editor.getHTML() === initialMessage.trim()) return;
-    if (!values.to.length || !values.subject.length || !messageText.length) return;
-    if (aiGeneratedMessage || aiIsLoading || isGeneratingSubject) return;
+    if (
+      !shouldPersistDraft({
+        hasUnsavedChanges,
+        initialHtml: initialMessage,
+        html,
+        text: messageText,
+        to: values.to,
+        subject: values.subject,
+        aiBlocked,
+      })
+    ) {
+      return;
+    }
 
     try {
       setIsSavingDraft(true);
-      const draftData = {
-        to: values.to.join(', '),
-        cc: values.cc?.join(', '),
-        bcc: values.bcc?.join(', '),
+      const draftData = buildDraftMutationInput({
+        draftId: draftId ?? null,
+        threadId: threadId ?? null,
+        replyToMessageId,
+        to: values.to,
+        cc: values.cc ?? [],
+        bcc: values.bcc ?? [],
         subject: values.subject,
-        body: editor.getHTML(),
-        message: editor.getHTML(),
-        attachments: await serializeFiles(values.attachments ?? []),
-        id: draftId,
-        threadId: threadId ? threadId : undefined,
+        html,
         fromEmail: values.fromEmail ? values.fromEmail : undefined,
-      };
+        attachments: await serializeFiles(values.attachments ?? []),
+      });
 
       const response = isFrontendOnlyDemo()
         ? await demoUpsertDraft(draftData)
@@ -557,6 +599,20 @@ export function EmailComposer({
       }
       if (isFrontendOnlyDemo()) {
         void queryClient.invalidateQueries({ queryKey: [...DEMO_MAIL_LIST_DRAFTS_QUERY_PREFIX] });
+      } else {
+        const savedDraftId = response?.id ?? draftId;
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: trpc.drafts.list.queryKey() }),
+          savedDraftId
+            ? queryClient.invalidateQueries({
+                queryKey: trpc.drafts.get.queryKey({ id: savedDraftId }),
+              })
+            : Promise.resolve(),
+          threadId
+            ? queryClient.invalidateQueries({ queryKey: trpc.mail.get.queryKey({ id: threadId }) })
+            : Promise.resolve(),
+          queryClient.invalidateQueries({ queryKey: trpc.mail.listThreads.infiniteQueryKey() }),
+        ]);
       }
       setHasUnsavedChanges(false);
     } catch (error) {
