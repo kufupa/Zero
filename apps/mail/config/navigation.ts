@@ -27,6 +27,7 @@ import {
 } from '@/lib/demo/folder-map';
 import { cn } from '@/lib/utils';
 import type { CSSProperties } from 'react';
+import { PILOT_CAPABILITIES } from '@/lib/pilot/capabilities';
 
 export interface NavItem {
   id?: string;
@@ -45,9 +46,45 @@ export interface NavItem {
   className?: string;
 }
 
-interface NavSection {
+export interface NavSection {
   title: string;
   items: NavItem[];
+}
+
+export type LiveCategoryNavInput = {
+  slug: string;
+  name: string;
+  color?: string | null;
+  sortOrder?: number;
+};
+
+export function buildLiveCategoryNavItems(categories: LiveCategoryNavInput[]): NavItem[] {
+  return [...categories]
+    .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
+    .map((category) => ({
+      id: category.slug,
+      title: category.name,
+      url: `/mail/${category.slug}`,
+      icon: Folder,
+    }));
+}
+
+export function injectLiveCategoryNavSection(
+  sections: NavSection[],
+  categories: LiveCategoryNavInput[],
+): NavSection[] {
+  if (!PILOT_CAPABILITIES.hotelCategories || categories.length === 0) {
+    return sections;
+  }
+
+  const managementIndex = sections.findIndex((section) => section.title === 'Management');
+  const insertAt = managementIndex >= 0 ? managementIndex : sections.length;
+  const folderSection: NavSection = {
+    title: 'Folders',
+    items: buildLiveCategoryNavItems(categories),
+  };
+
+  return [...sections.slice(0, insertAt), folderSection, ...sections.slice(insertAt)];
 }
 
 interface NavConfig {

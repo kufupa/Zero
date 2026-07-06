@@ -19,6 +19,8 @@ import { useMemo } from 'react';
 import { computeThreadListEnabled } from '@/lib/mail/thread-list-query-enabled';
 import { selectLiveThreadListQuery } from '@/lib/mail/thread-list-query-policy';
 import { resolveThreadPollingMs } from '@/lib/mail/thread-polling-policy';
+import { resolveMailRouteFilter } from '@/lib/mail/route-filter';
+import { useCategorySettings } from './use-categories';
 
 const threadPollingMs = resolveThreadPollingMs(import.meta.env.VITE_MAIL_POLL_MS);
 
@@ -46,6 +48,7 @@ export const useThreads = (options?: UseThreadsOptions) => {
   const { data: session } = useSession();
   const trpc = useTRPC();
   const { labels } = useSearchLabels();
+  const categories = useCategorySettings();
   const demoMode = isFrontendOnlyDemo();
   const isPaletteMode = options != null && 'commandPaletteOpen' in options;
   const paletteOpen = isPaletteMode ? options?.commandPaletteOpen === 'true' : false;
@@ -117,6 +120,17 @@ export const useThreads = (options?: UseThreadsOptions) => {
     enabled: demoMode && listEnabled && !demoDraftFolder,
   });
 
+  const categoryBySlug = useMemo(
+    () =>
+      new Map(
+        categories
+          .filter((category): category is typeof category & { slug: string } => Boolean(category.slug))
+          .map((category) => [category.slug, category.id]),
+      ),
+    [categories],
+  );
+  const routeFilter = resolveMailRouteFilter(folderForQuery, categoryBySlug);
+
   const liveThreadListQuery = selectLiveThreadListQuery({
     folder: canonicalRouteFolder,
     demoMode,
@@ -144,8 +158,11 @@ export const useThreads = (options?: UseThreadsOptions) => {
     trpc.mail.listThreads.infiniteQueryOptions(
       {
         q: searchValue.value,
-        folder: folderForQuery,
-        labelIds: labels,
+        folder: routeFilter.folder,
+        filters: {
+          categoryIds: routeFilter.filters.categoryIds ?? [],
+          labelIds: labels,
+        },
       },
       {
         initialCursor: '',
