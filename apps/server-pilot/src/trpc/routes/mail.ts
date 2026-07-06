@@ -1083,9 +1083,14 @@ export const mailRouter = tRouter({
    * Email verification badge — stub. Returns unverified for pilot.
    */
   verifyEmail: mailboxProcedure
-    .input(z.object({ id: z.string() }))
+    .input(
+      z.object({
+        id: z.string().optional(),
+        email: z.string().optional(),
+      }),
+    )
     .query(async () => {
-      return { verified: false, messageId: null as string | null };
+      return { isVerified: false, messageId: null as string | null };
     }),
 
   /**
@@ -1093,9 +1098,17 @@ export const mailRouter = tRouter({
    * a real contacts source.
    */
   suggestRecipients: mailboxProcedure
-    .input(z.object({ q: z.string() }))
-    .query(async () => {
-      return { recipients: [] as { email: string; name?: string }[] };
+    .input(
+      z.object({
+        q: z.string().optional(),
+        query: z.string().optional(),
+        limit: z.number().optional(),
+      }),
+    )
+    .query(async ({ input }) => {
+      const search = (input.query ?? input.q ?? '').trim();
+      void search;
+      return [] as { email: string; name?: string }[];
     }),
 
   /**
@@ -1119,16 +1132,14 @@ export const mailRouter = tRouter({
         })
         .from(attachment)
         .where(eq(attachment.messageId, input.messageId));
-      return {
-        attachments: rows.map((r) => ({
-          attachmentId: r.attachmentId,
-          filename: r.filename,
-          mimeType: r.mimeType,
-          size: r.size,
-          body: '', // body is fetched via mail.getAttachment with a signed URL
-          headers: [] as { name: string; value: string }[],
-        })),
-      };
+      return rows.map((r) => ({
+        attachmentId: r.attachmentId,
+        filename: r.filename,
+        mimeType: r.mimeType,
+        size: r.size,
+        body: '', // body is fetched via mail.getAttachment with a signed URL
+        headers: [] as { name: string; value: string }[],
+      }));
     }),
 
   /**

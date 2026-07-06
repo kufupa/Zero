@@ -268,3 +268,24 @@ describe('mail wire contract — metadata debug headers', () => {
     });
   });
 });
+
+import { appRouter } from '../src/trpc/router.js';
+
+describe('existing route shape compatibility', () => {
+  it('returns frontend-compatible verifyEmail and attachment shapes', async () => {
+    const caller = appRouter.createCaller({
+      source: 'test',
+      sessionUser: { id: 'user-1', email: 'user@example.com', name: 'User' },
+      activeTransportId: 'transport-1',
+      accessRole: 'owner',
+      transportEmail: 'user@example.com',
+      reqHeaders: new Headers(),
+    } as never);
+
+    const verify = await caller.mail.verifyEmail({ email: 'guest@example.com' });
+    expect(verify).toEqual({ isVerified: false, messageId: null });
+
+    const suggestions = await caller.mail.suggestRecipients({ query: 'guest' });
+    expect(Array.isArray(suggestions)).toBe(true);
+  });
+});

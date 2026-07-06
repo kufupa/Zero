@@ -209,8 +209,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           const result = await caller.mail.getMessageAttachments({
             messageId: ids.frontdeskMessageId,
           });
-          expect(result.attachments.length).toBe(1);
-          expect(result.attachments[0]!.filename).toBe('frontdesk-memo.pdf');
+          expect(result.length).toBe(1);
+          expect(result[0]!.filename).toBe('frontdesk-memo.pdf');
         });
       },
       30000,

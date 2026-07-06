@@ -35,13 +35,13 @@ function throwIfUniqueViolation(err: unknown): never {
 }
 
 const SYSTEM_LABELS = [
-  { id: 'IMPORTANT', name: 'IMPORTANT', type: 'system' as const },
-  { id: 'UNREAD', name: 'UNREAD', type: 'system' as const },
-  { id: 'STARRED', name: 'STARRED', type: 'system' as const },
-  { id: 'FORUMS', name: 'FORUMS', type: 'system' as const },
-  { id: 'PROMOTIONS', name: 'PROMOTIONS', type: 'system' as const },
-  { id: 'SOCIAL', name: 'SOCIAL', type: 'system' as const },
-  { id: 'UPDATES', name: 'UPDATES', type: 'system' as const },
+  { id: 'IMPORTANT', name: 'IMPORTANT', type: 'system' as const, color: null },
+  { id: 'UNREAD', name: 'UNREAD', type: 'system' as const, color: null },
+  { id: 'STARRED', name: 'STARRED', type: 'system' as const, color: null },
+  { id: 'FORUMS', name: 'FORUMS', type: 'system' as const, color: null },
+  { id: 'PROMOTIONS', name: 'PROMOTIONS', type: 'system' as const, color: null },
+  { id: 'SOCIAL', name: 'SOCIAL', type: 'system' as const, color: null },
+  { id: 'UPDATES', name: 'UPDATES', type: 'system' as const, color: null },
 ];
 
 export const labelsRouter = tRouter({
@@ -86,7 +86,7 @@ export const labelsRouter = tRouter({
       } catch (err) {
         throwIfUniqueViolation(err);
       }
-      return { id, name: input.name, type: 'user' as const, color: input.color };
+      return { id, name: input.name, type: 'user' as const, color: input.color ?? null };
     }),
 
   update: mailboxProcedure

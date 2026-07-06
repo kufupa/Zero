@@ -7,7 +7,7 @@ export const useAttachments = (messageId: string) => {
   const { data: session } = useSession();
   const trpc = useTRPC();
   const frontendOnlyDemo = isFrontendOnlyDemo();
-  const AttachmentsQuery = useQuery(
+  const attachmentsQuery = useQuery(
     trpc.mail.getMessageAttachments.queryOptions(
       { messageId },
       {
@@ -17,5 +17,7 @@ export const useAttachments = (messageId: string) => {
     ),
   );
 
-  return AttachmentsQuery;
+  const attachments = attachmentsQuery.data ?? [];
+
+  return { ...attachmentsQuery, data: attachments };
 };
