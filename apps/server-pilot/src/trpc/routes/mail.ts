@@ -14,7 +14,7 @@
 import { TRPCError } from '@trpc/server';
 import { assertSafeOutboundFields } from '../../mail/send/validate-outbound.js';
 import { z } from 'zod';
-import { and, eq, asc, desc, isNotNull, isNull, inArray, sql, exists, or, lte, gt } from 'drizzle-orm';
+import { and, eq, asc, desc, isNotNull, isNull, inArray, sql, exists, or, lte } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { mailboxProcedure, router as tRouter } from '../trpc.js';
 import { getDb } from '../../db/client.js';
@@ -911,24 +911,24 @@ export const mailRouter = tRouter({
             .limit(1);
           const parent = parentRows[0];
           const parentTime = parent?.receivedAt ?? parent?.sentAt ?? parent?.createdAt ?? null;
-          const newerInboundRows = parentTime
-            ? await db
-                .select({ id: message.id })
-                .from(message)
-                .where(
-                  and(
-                    eq(message.threadId, threadId),
-                    eq(message.transportId, transportId),
-                    eq(message.direction, 'inbound'),
-                    gt(
-                      sql`COALESCE(${message.receivedAt}, ${message.createdAt})`,
-                      parentTime,
-                    ),
-                  ),
-                )
-                .limit(1)
-            : [];
-          if (newerInboundRows.length > 0 && !input.confirmStaleDraft) {
+          let hasNewerInbound = false;
+          if (parentTime) {
+            const inboundRows = await db
+              .select({ receivedAt: message.receivedAt, createdAt: message.createdAt })
+              .from(message)
+              .where(
+                and(
+                  eq(message.threadId, threadId),
+                  eq(message.transportId, transportId),
+                  eq(message.direction, 'inbound'),
+                ),
+              );
+            hasNewerInbound = inboundRows.some((row) => {
+              const rowTime = row.receivedAt ?? row.createdAt;
+              return rowTime.getTime() > parentTime.getTime();
+            });
+          }
+          if (hasNewerInbound && !input.confirmStaleDraft) {
             throw new TRPCError({ code: 'CONFLICT', message: 'STALE_DRAFT' });
           }
         }
