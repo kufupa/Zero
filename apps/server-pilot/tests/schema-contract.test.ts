@@ -56,6 +56,16 @@ describe('v4 production mail schema', () => {
     expect((schema as Record<string, unknown>).earlyAccess).toBeUndefined();
     expect((schema as Record<string, unknown>).userHotkeys).toBeUndefined();
   });
+
+  it('exports draft lifecycle and eval schema tables', () => {
+    expect(schema.aiDraftGeneration.contextMessageIds).toBeDefined();
+    expect(schema.aiDraftGeneration.promptVersion).toBeDefined();
+    expect(schema.mailDraft.status).toBeDefined();
+    expect(schema.mailDraft.origin).toBeDefined();
+    expect(schema.mailDraft.replyToMessageId).toBeDefined();
+    expect(schema.mailDraft.generationId).toBeDefined();
+    expect(schema.mailDraftRevision.kind).toBeDefined();
+  });
 });
 
 import { mailCategory, mailThreadCategory } from '../src/db/schema/mail.js';

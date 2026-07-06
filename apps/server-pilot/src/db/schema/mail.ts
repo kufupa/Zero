@@ -29,6 +29,26 @@ export const messageDirectionEnum = pgEnum('message_direction', [
   'outbound',
 ]);
 
+export const mailDraftStatusEnum = pgEnum('mail_draft_status', [
+  'active',
+  'candidate',
+  'discarded',
+  'sent',
+]);
+
+export const mailDraftOriginEnum = pgEnum('mail_draft_origin', [
+  'manual',
+  'ai',
+]);
+
+export const mailDraftRevisionKindEnum = pgEnum('mail_draft_revision_kind', [
+  'created',
+  'ai_generated',
+  'promoted',
+  'edited',
+  'sent',
+]);
+
 export const mailIngestMailbox = pgTable(
   'mail_ingest_mailbox',
   {
@@ -265,6 +285,30 @@ export const attachment = pgTable(
   ],
 );
 
+export const aiDraftGeneration = pgTable(
+  'ai_draft_generation',
+  {
+    id: text('id').primaryKey(),
+    transportId: text('transport_id')
+      .notNull()
+      .references(() => mailboxTransport.id, { onDelete: 'cascade' }),
+    threadId: text('thread_id')
+      .notNull()
+      .references(() => mailThread.id, { onDelete: 'cascade' }),
+    requestedByUserId: text('requested_by_user_id').notNull(),
+    contextMessageIds: jsonb('context_message_ids').$type<string[]>().notNull().default([]),
+    model: text('model').notNull(),
+    promptVersion: text('prompt_version').notNull(),
+    promptHash: text('prompt_hash'),
+    status: text('status').notNull().default('succeeded'),
+    errorMessage: text('error_message'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (t) => [
+    index('ai_draft_generation_thread_idx').on(t.transportId, t.threadId, t.createdAt),
+  ],
+);
+
 export const mailDraft = pgTable(
   'mail_draft',
   {
@@ -288,7 +332,17 @@ export const mailDraft = pgTable(
       { filename: string; mimeType: string; sizeBytes: number; s3Key: string }[]
     >().notNull().default([]),
     isSent: boolean('is_sent').notNull().default(false),
-    sentMessageId: text('sent_message_id'),
+    status: mailDraftStatusEnum('status').notNull().default('active'),
+    origin: mailDraftOriginEnum('origin').notNull().default('manual'),
+    replyToMessageId: text('reply_to_message_id').references(() => message.id, {
+      onDelete: 'set null',
+    }),
+    generationId: text('generation_id').references(() => aiDraftGeneration.id, {
+      onDelete: 'set null',
+    }),
+    sentMessageId: text('sent_message_id').references(() => message.id, {
+      onDelete: 'set null',
+    }),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow(),
   },
@@ -296,6 +350,45 @@ export const mailDraft = pgTable(
     index('mail_draft_transport_idx').on(t.transportId),
     index('mail_draft_thread_idx').on(t.threadId),
     index('mail_draft_created_by_idx').on(t.createdByUserId),
+    index('mail_draft_thread_status_idx').on(t.transportId, t.threadId, t.status, t.updatedAt),
+    index('mail_draft_reply_to_message_idx').on(t.replyToMessageId),
+    index('mail_draft_generation_idx').on(t.generationId),
+    uniqueIndex('mail_draft_one_active_thread_uidx')
+      .on(t.transportId, t.threadId)
+      .where(sql`${t.status} = 'active' AND ${t.threadId} IS NOT NULL`),
+  ],
+);
+
+export const mailDraftRevision = pgTable(
+  'mail_draft_revision',
+  {
+    id: text('id').primaryKey(),
+    draftId: text('draft_id')
+      .notNull()
+      .references(() => mailDraft.id, { onDelete: 'cascade' }),
+    generationId: text('generation_id').references(() => aiDraftGeneration.id, {
+      onDelete: 'set null',
+    }),
+    sentMessageId: text('sent_message_id').references(() => message.id, {
+      onDelete: 'set null',
+    }),
+    actorUserId: text('actor_user_id'),
+    kind: mailDraftRevisionKindEnum('kind').notNull(),
+    toAddresses: jsonb('to_addresses').$type<string[]>().notNull().default([]),
+    ccAddresses: jsonb('cc_addresses').$type<string[]>().notNull().default([]),
+    bccAddresses: jsonb('bcc_addresses').$type<string[]>().notNull().default([]),
+    subject: text('subject'),
+    textBody: text('text_body'),
+    htmlBody: text('html_body'),
+    attachments: jsonb('attachments').$type<
+      { filename: string; mimeType: string; sizeBytes: number; s3Key: string }[]
+    >().notNull().default([]),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (t) => [
+    index('mail_draft_revision_draft_idx').on(t.draftId, t.createdAt),
+    index('mail_draft_revision_generation_idx').on(t.generationId),
+    index('mail_draft_revision_sent_message_idx').on(t.sentMessageId),
   ],
 );
 
