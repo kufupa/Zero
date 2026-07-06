@@ -24,6 +24,7 @@ import {
   attachment,
   mailLabel,
   mailDraft,
+  mailThreadCategory,
 } from '../../db/schema/mail.js';
 import {
   requireThreadForTransport,
@@ -116,6 +117,15 @@ export const listThreadsInput = z.object({
   folder: z.enum(MAIL_FOLDER_VALUES).default('inbox'),
   q: z.string().optional(),
   labelIds: z.array(z.string()).optional(),
+  filters: z
+    .object({
+      unread: z.boolean().optional(),
+      important: z.boolean().optional(),
+      starred: z.boolean().optional(),
+      categoryIds: z.array(z.string()).optional(),
+      labelIds: z.array(z.string()).optional(),
+    })
+    .optional(),
   cursor: z.string().optional(),
   limit: z.number().int().min(1).max(100).default(50),
 });
@@ -253,6 +263,46 @@ export const mailRouter = tRouter({
         );
       }
 
+      const filterLabelIds = input.filters?.labelIds ?? [];
+      if (filterLabelIds.length > 0) {
+        conditions.push(
+          sql`${mailThread.labelIds} ?| array[${sql.join(
+            filterLabelIds.map((id) => sql`${id}`),
+            sql`, `,
+          )}]`,
+        );
+      }
+
+      if (input.filters?.unread === true) {
+        conditions.push(eq(mailThread.isRead, false));
+      }
+
+      if (input.filters?.starred === true) {
+        conditions.push(eq(mailThread.isStarred, true));
+      }
+
+      if (input.filters?.important === true) {
+        conditions.push(sql`${mailThread.labelIds} ? 'IMPORTANT'`);
+      }
+
+      const filterCategoryIds = input.filters?.categoryIds ?? [];
+      if (filterCategoryIds.length > 0) {
+        conditions.push(
+          exists(
+            db
+              .select({ one: sql`1` })
+              .from(mailThreadCategory)
+              .where(
+                and(
+                  eq(mailThreadCategory.threadId, mailThread.id),
+                  eq(mailThreadCategory.transportId, transportId),
+                  inArray(mailThreadCategory.categoryId, filterCategoryIds),
+                ),
+              ),
+          ),
+        );
+      }
+
       if (input.q && input.q.trim()) {
         const pattern = `%${input.q.trim().toLowerCase()}%`;
         conditions.push(
@@ -323,6 +373,53 @@ export const mailRouter = tRouter({
         nextPageToken = encodePageCursor(last.latestMessageAt, last.id);
       }
 
+      const threadIds = rows.map((row) => row.id);
+      const categoryRows =
+        threadIds.length > 0
+          ? await db
+              .select({
+                threadId: mailThreadCategory.threadId,
+                categoryId: mailThreadCategory.categoryId,
+              })
+              .from(mailThreadCategory)
+              .where(
+                and(
+                  eq(mailThreadCategory.transportId, transportId),
+                  inArray(mailThreadCategory.threadId, threadIds),
+                ),
+              )
+          : [];
+
+      const categoryIdsByThread = new Map<string, string[]>();
+      for (const row of categoryRows) {
+        const existing = categoryIdsByThread.get(row.threadId) ?? [];
+        existing.push(row.categoryId);
+        categoryIdsByThread.set(row.threadId, existing);
+      }
+
+      const draftCountRows =
+        threadIds.length > 0
+          ? await db
+              .select({
+                threadId: mailDraft.threadId,
+                count: sql<number>`count(*)::int`,
+              })
+              .from(mailDraft)
+              .where(
+                and(
+                  eq(mailDraft.transportId, transportId),
+                  inArray(mailDraft.threadId, threadIds),
+                  eq(mailDraft.isSent, false),
+                ),
+              )
+              .groupBy(mailDraft.threadId)
+          : [];
+      const draftCountByThread = new Map(
+        draftCountRows
+          .filter((row): row is { threadId: string; count: number } => Boolean(row.threadId))
+          .map((row) => [row.threadId, row.count]),
+      );
+
       return {
         threads: rows.map((r) => ({
           id: r.id,
@@ -337,6 +434,9 @@ export const mailRouter = tRouter({
           trashedAt: r.trashedAt,
           latestMessageAt: r.latestMessageAt,
           historyId: null as string | null,
+          categoryIds: categoryIdsByThread.get(r.id) ?? [],
+          hasDraft: (draftCountByThread.get(r.id) ?? 0) > 0,
+          draftCount: draftCountByThread.get(r.id) ?? 0,
         })),
         nextPageToken,
       };
