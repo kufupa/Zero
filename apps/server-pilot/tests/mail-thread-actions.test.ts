@@ -11,6 +11,7 @@ import {
   withSeededTestDb,
 } from './helpers/test-db';
 import { callerFor } from './helpers/trpc-caller';
+import { seedInboxThread } from './helpers/seed-inbox-thread';
 
 const reachable = await probeTestDb();
 
@@ -21,43 +22,21 @@ async function seedActionThread(
   db: import('../src/db/client.js').DB,
   opts: { snoozedUntil?: Date | null } = {},
 ) {
-  await db
-    .insert(mailThread)
-    .values({
-      id: THREAD_ID,
-      transportId: 'transport-centurion',
-      threadRootId: 'actions-root-1',
-      subject: 'Actions fixture',
-      snippet: 'thread actions test',
-      isArchived: false,
-      isStarred: false,
-      isRead: true,
-      labelIds: [],
-      snoozedUntil: opts.snoozedUntil ?? null,
-      latestMessageAt: new Date(),
-    })
-    .onConflictDoNothing({ target: mailThread.id });
-
-  await db
-    .insert(message)
-    .values({
-      id: MSG_ID,
-      transportId: 'transport-centurion',
-      threadId: THREAD_ID,
-      direction: 'inbound',
-      fromAddress: 'guest@example.com',
-      toAddresses: ['centurion@legacyhotel.com'],
-      ccAddresses: [],
-      bccAddresses: [],
-      subject: 'Actions fixture',
-      textBody: 'body',
-      messageIdHeader: 'actions-msg-1',
-      references: [],
-      isRead: true,
-      isStarred: false,
-      receivedAt: new Date(),
-    })
-    .onConflictDoNothing({ target: message.id });
+  await seedInboxThread(db, {
+    threadId: THREAD_ID,
+    transportId: 'transport-centurion',
+    transportEmail: 'centurion@legacyhotel.com',
+    threadRootId: 'actions-root-1',
+    subject: 'Actions fixture',
+    snippet: 'thread actions test',
+    isRead: true,
+    isMessageRead: true,
+    messageId: MSG_ID,
+    textBody: 'body',
+    messageIdHeader: 'actions-msg-1',
+    references: [],
+    snoozedUntil: opts.snoozedUntil ?? null,
+  });
 }
 
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(

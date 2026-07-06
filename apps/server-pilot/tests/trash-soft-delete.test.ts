@@ -6,43 +6,24 @@
  */
 import { describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { mailThread, message } from '../src/db/schema/mail.js';
+import { mailThread } from '../src/db/schema/mail.js';
 import {
   TEST_DB_AVAILABLE,
   probeTestDb,
   withSeededTestDb,
 } from './helpers/test-db';
 import { callerFor } from './helpers/trpc-caller';
+import { seedInboxThread } from './helpers/seed-inbox-thread';
 
 const reachable = await probeTestDb();
 
 async function insertInboxThread(db: import('../src/db/client.js').DB, id: string) {
-  await db.insert(mailThread).values({
-    id,
+  await seedInboxThread(db, {
+    threadId: id,
     transportId: 'transport-centurion',
-    threadRootId: `root-${id}`,
+    transportEmail: 'centurion@legacyhotel.com',
     subject: `Trash test ${id}`,
     snippet: 'soft delete fixture',
-    isArchived: false,
-    isStarred: false,
-    isRead: false,
-    labelIds: [],
-    latestMessageAt: new Date(),
-  });
-  await db.insert(message).values({
-    id: `msg-${id}`,
-    transportId: 'transport-centurion',
-    threadId: id,
-    direction: 'inbound',
-    fromAddress: 'guest@example.com',
-    toAddresses: ['centurion@legacyhotel.com'],
-    ccAddresses: [],
-    bccAddresses: [],
-    subject: `Trash test ${id}`,
-    textBody: 'soft delete fixture',
-    ownerHeaderValue: 'centurion@legacyhotel.com',
-    messageIdHeader: `${id}@example.com`,
-    receivedAt: new Date(),
   });
 }
 

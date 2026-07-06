@@ -30,6 +30,7 @@ import {
   withSeededTestDb,
 } from './helpers/test-db';
 import { callerFor } from './helpers/trpc-caller';
+import { seedInboxThread } from './helpers/seed-inbox-thread';
 
 const reachable = await probeTestDb();
 
@@ -62,67 +63,29 @@ async function seedFrontdeskFixture(db: import('../src/db/client.js').DB) {
     role: 'owner',
   }).onConflictDoNothing({ target: mailboxAccess.id });
 
-  // Sample threads on each transport.
-  await db.insert(mailThread).values([
-    {
-      id: 'thread-centurion-1',
-      transportId: 'transport-centurion',
-      threadRootId: 'centurion-root-1',
-      subject: 'Centurion booking #4471',
-      snippet: 'Centurion secret thread',
-      isArchived: false,
-      isStarred: false,
-      isRead: false,
-      labelIds: [],
-      latestMessageAt: new Date(),
-    },
-    {
-      id: 'thread-frontdesk-1',
-      transportId: 'transport-frontdesk',
-      threadRootId: 'frontdesk-root-1',
-      subject: 'Frontdesk shift handover',
-      snippet: 'Frontdesk internal thread',
-      isArchived: false,
-      isStarred: false,
-      isRead: true,
-      labelIds: [],
-      latestMessageAt: new Date(),
-    },
-  ]).onConflictDoNothing({ target: mailThread.id });
-
-  // Inbox listing requires at least one inbound message per thread (c59fba8e).
-  await db.insert(message).values([
-    {
-      id: 'msg-centurion-iso-1',
-      transportId: 'transport-centurion',
-      threadId: 'thread-centurion-1',
-      direction: 'inbound',
-      fromAddress: 'guest@example.com',
-      toAddresses: ['centurion@legacyhotel.com'],
-      ccAddresses: [],
-      bccAddresses: [],
-      subject: 'Centurion booking #4471',
-      textBody: 'Centurion secret thread',
-      ownerHeaderValue: 'centurion@legacyhotel.com',
-      messageIdHeader: 'centurion-iso-1@example.com',
-      receivedAt: new Date(),
-    },
-    {
-      id: 'msg-frontdesk-iso-1',
-      transportId: 'transport-frontdesk',
-      threadId: 'thread-frontdesk-1',
-      direction: 'inbound',
-      fromAddress: 'staff@example.com',
-      toAddresses: ['frontdesk@legacyhotel.com'],
-      ccAddresses: [],
-      bccAddresses: [],
-      subject: 'Frontdesk shift handover',
-      textBody: 'Frontdesk internal thread',
-      ownerHeaderValue: 'frontdesk@legacyhotel.com',
-      messageIdHeader: 'frontdesk-iso-1@example.com',
-      receivedAt: new Date(),
-    },
-  ]).onConflictDoNothing({ target: message.id });
+  await seedInboxThread(db, {
+    threadId: 'thread-centurion-1',
+    transportId: 'transport-centurion',
+    transportEmail: 'centurion@legacyhotel.com',
+    threadRootId: 'centurion-root-1',
+    subject: 'Centurion booking #4471',
+    snippet: 'Centurion secret thread',
+    messageId: 'msg-centurion-iso-1',
+    messageIdHeader: 'centurion-iso-1@example.com',
+  });
+  await seedInboxThread(db, {
+    threadId: 'thread-frontdesk-1',
+    transportId: 'transport-frontdesk',
+    transportEmail: 'frontdesk@legacyhotel.com',
+    threadRootId: 'frontdesk-root-1',
+    subject: 'Frontdesk shift handover',
+    snippet: 'Frontdesk internal thread',
+    isRead: true,
+    isMessageRead: true,
+    fromAddress: 'staff@example.com',
+    messageId: 'msg-frontdesk-iso-1',
+    messageIdHeader: 'frontdesk-iso-1@example.com',
+  });
 }
 
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
