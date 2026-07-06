@@ -6,7 +6,13 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog';
 import { Sidebar, SidebarContent, SidebarFooter, SidebarHeader } from '@/components/ui/sidebar';
-import { navigationConfig, bottomNavItems } from '@/config/navigation';
+import {
+  bottomNavItems,
+  injectLiveCategoryNavSection,
+  navigationConfig,
+} from '@/config/navigation';
+import { useCategorySettings } from '@/hooks/use-categories';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 // import { useTRPC } from '@/providers/query-provider';
 import { useSidebar } from '@/components/ui/sidebar';
 import { CreateEmail } from '../create/create-email';
@@ -33,6 +39,8 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const location = useLocation();
   const { data: session } = useSession();
   const showAdminDashboard = isAdminDashboardEnabled(session);
+  const categorySettings = useCategorySettings();
+  const demoMode = isFrontendOnlyDemo();
 
   const { currentSection, navItems, footerItems } = useMemo(() => {
     // Find which section we're in based on the pathname
@@ -42,7 +50,21 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
 
     const currentSection = section?.[0] || 'mail';
     if (navigationConfig[currentSection]) {
-      const items = [...navigationConfig[currentSection].sections];
+      let items = [...navigationConfig[currentSection].sections];
+
+      if (currentSection === 'mail' && !demoMode) {
+        items = injectLiveCategoryNavSection(
+          items,
+          categorySettings
+            .filter((category): category is typeof category & { slug: string } => Boolean(category.slug))
+            .map((category) => ({
+              slug: category.slug,
+              name: category.name,
+              color: category.color,
+              sortOrder: category.order,
+            })),
+        );
+      }
 
       if (currentSection === 'settings' && items[0]) {
         items[0] = {
@@ -81,7 +103,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         footerItems: bottomNavItems,
       };
     }
-  }, [location.pathname, stats, showAdminDashboard]);
+  }, [location.pathname, stats, showAdminDashboard, categorySettings, demoMode]);
 
   const showComposeButton = currentSection === 'mail';
   const { state } = useSidebar();
