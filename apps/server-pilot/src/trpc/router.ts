@@ -15,6 +15,7 @@ import { brainRouter } from './routes/brain.js';
 import { notesRouter } from './routes/notes.js';
 import { templatesRouter } from './routes/templates.js';
 import { bimiRouter } from './routes/bimi.js';
+import { categoriesRouter } from './routes/categories.js';
 
 export const appRouter = router({
   mail: mailRouter,
@@ -28,6 +29,7 @@ export const appRouter = router({
   notes: notesRouter,
   templates: templatesRouter,
   bimi: bimiRouter,
+  categories: categoriesRouter,
 });
 
 export type AppRouter = typeof appRouter;
