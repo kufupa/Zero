@@ -421,4 +421,37 @@ Remaining:
   4. `app/(routes)/settings/appearance/page.tsx(85,33)` — `DemoSettings.categories` shape mismatch.
   5. `app/(routes)/settings/danger-zone/page.tsx(79,27)` — Zod/react-hook-form version mismatch.
 
+## Full Test Layer (Wave 7, Task 17)
+
+Commands:
+- `pnpm --filter=@zero/server test`
+- `pnpm --filter=@zero/mail test`
+- `pnpm --filter=@zero/server build`
+- `pnpm --filter=@zero/mail exec tsc --noEmit --pretty false`
+- `pnpm --filter=@zero/mail build`
+- `bash apps/server-pilot/deploy/fixture-loopback-gate.sh` (EC2 SSM)
+- `bash apps/server-pilot/deploy/wire-gate.sh` (EC2 SSM)
+- `pnpm --filter=@zero/testing test:e2e`
+
+Result:
+- Server tests (local): **PASS** — 127 passed, 90 skipped (no local RDS).
+- Server tests (EC2, `NODE_ENV=test`): **PARTIAL** — 208 passed, 4 failed, 5 skipped (217 total). Failures isolated to 3 DB-backed files; require `NODE_ENV=test` when sourcing `.env.production` so tRPC test auth injection works.
+- Mail tests: **PASS** — 182 passed after pilot NL-search guard expectation fix.
+- Server build: **PASS**
+- Mail typecheck: **FAIL (historical)** — unrelated Zod/react-hook-form and settings type drift (first five unchanged from Task 16 list above).
+- Mail build: **PASS**
+- Fixture loopback E2E: **PASS** (EC2 SSM, 41/41 after migrations 0005–0007 applied).
+- Mailpit wire E2E: **PASS** (EC2 SSM, chained after fixture gate).
+- Playwright E2E: **SKIP (proof)** — local `sign-in/email` returns HTTP 500 (laptop cannot reach RDS for Better Auth); EC2 SSM playwright run exceeded 1800s poll waiting on browser install. Session mint via Secrets Manager + `PLAYWRIGHT_COOKIE_PREFIX` support added in `auth.setup.ts`; pilot-inert AI specs updated.
+
+RCA fixes made:
+- `apps/server-pilot/drizzle/meta/_journal.json` — registered migrations `0005_mail_categories`, `0006_draft_lifecycle_eval`, `0007_mail_thread_spam_state` so RDS received `spam_at` and draft lifecycle schema.
+- `apps/mail/tests/demo-backend-guards.test.ts` — command-palette test expects pilot NL-search passthrough (no backend `generateSearchQuery` when `canUseNaturalLanguageSearch()` is false).
+- `packages/testing/e2e/ai-summary.spec.ts`, `bulk-search.spec.ts` — assert AI sidebar absent; inbox still usable in pilot.
+- `packages/testing/e2e/auth.setup.ts` — `PLAYWRIGHT_COOKIE_PREFIX` for production cookie names on EC2.
+
+Skipped with proof:
+- Playwright E2E: local auth mint HTTP 500 without RDS; EC2 run hit SSM 1800s timeout (no `playwright install` on instance within poll window).
+- EC2 full server suite: 4 failing tests remain under `NODE_ENV=test` (208/217 pass); gate scripts (`fixture-loopback`, `wire`) green.
+
 

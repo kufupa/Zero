@@ -10,6 +10,7 @@ setup('inject real authentication session', async ({ page }) => {
   
   const SessionToken = process.env.PLAYWRIGHT_SESSION_TOKEN;
   const SessionData = process.env.PLAYWRIGHT_SESSION_DATA;
+  const cookiePrefix = process.env.PLAYWRIGHT_COOKIE_PREFIX ?? 'better-auth-dev';
 
   if (!SessionToken || !SessionData) {
     throw new Error('PLAYWRIGHT_SESSION_TOKEN and PLAYWRIGHT_SESSION_DATA environment variables must be set.');
@@ -22,7 +23,7 @@ setup('inject real authentication session', async ({ page }) => {
   // sets better auth session cookies
   await page.context().addCookies([
     {
-      name: 'better-auth-dev.session_token',
+      name: `${cookiePrefix}.session_token`,
       value: SessionToken,
       domain: 'localhost',
       path: '/',
@@ -31,7 +32,7 @@ setup('inject real authentication session', async ({ page }) => {
       sameSite: 'Lax'
     },
     {
-      name: 'better-auth-dev.session_data',
+      name: `${cookiePrefix}.session_data`,
       value: SessionData,
       domain: 'localhost', 
       path: '/',
