@@ -1,4 +1,7 @@
 import { atom, useAtom } from 'jotai';
+import { canUseNaturalLanguageSearch } from '@/lib/pilot/capabilities';
+
+export { canUseNaturalLanguageSearch };
 
 type Config = {
   value: string;

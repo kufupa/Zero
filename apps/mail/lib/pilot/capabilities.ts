@@ -11,6 +11,10 @@ export const PILOT_CAPABILITIES = {
   staleDraftWarning: true,
 } satisfies PilotCapabilities;
 
+export function canUseNaturalLanguageSearch(): boolean {
+  return PILOT_CAPABILITIES.ai && PILOT_CAPABILITIES.gmailSearchGrammar;
+}
+
 export type LegacySurface = 'ai' | 'brain' | 'notes' | 'templates' | 'bimi';
 
 export function shouldRenderLegacySurface(surface: LegacySurface): boolean {

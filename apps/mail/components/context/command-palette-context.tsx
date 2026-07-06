@@ -61,6 +61,10 @@ import { useQueryState } from 'nuqs';
 import { toast } from 'sonner';
 import { demoGenerateSearchQuery } from '@/lib/demo/local-actions';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import {
+  canUseNaturalLanguageSearch,
+  PILOT_CAPABILITIES,
+} from '@/lib/pilot/capabilities';
 
 type CommandPaletteContext = {
   activeFilters: ActiveFilter[];
@@ -113,6 +117,10 @@ export const resolveCommandPaletteSearchQuery = async ({
       query,
       isFrontendOnlyDemoMode,
     });
+  }
+
+  if (!canUseNaturalLanguageSearch()) {
+    return { query };
   }
 
   return generateSearchQuery({ query });
@@ -285,7 +293,9 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
       if (open) {
         if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'f') {
           e.preventDefault();
-          setCurrentView('filter');
+          if (PILOT_CAPABILITIES.gmailSearchGrammar) {
+            setCurrentView('filter');
+          }
         }
 
         if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
@@ -315,7 +325,12 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
   }, []);
 
   const filterOptions = useMemo<FilterOption[]>(
-    () => [
+    () => {
+      if (!PILOT_CAPABILITIES.gmailSearchGrammar) {
+        return [];
+      }
+
+      return [
       {
         id: 'from',
         name: 'From',
@@ -393,7 +408,8 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
         requiresInput: true,
         icon: Tag,
       },
-    ],
+    ];
+    },
     [],
   );
 
@@ -491,7 +507,12 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
   );
 
   const quickFilterOptions = useMemo(
-    () => [
+    () => {
+      if (!PILOT_CAPABILITIES.gmailSearchGrammar) {
+        return [];
+      }
+
+      return [
       {
         title: 'Unread Emails',
         icon: Mail,
@@ -549,7 +570,8 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
           executeSearch(`after:${date}`);
         },
       },
-    ],
+    ];
+    },
     [addFilter, executeSearch],
   );
 
@@ -561,7 +583,7 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
       try {
         let finalQuery = query;
 
-        if (useNaturalLanguage) {
+        if (useNaturalLanguage && canUseNaturalLanguageSearch()) {
           const result = await resolveCommandPaletteSearchQuery({
             query,
             isFrontendOnlyDemoMode: frontendOnlyDemoMode,
@@ -701,15 +723,17 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
       // description: 'Search across your emails',
     });
 
-    searchCommands.push({
-      title: 'Filter Emails',
-      icon: Filter,
-      shortcut: 'f',
-      onClick: () => {
-        setCurrentView('filter');
-      },
-      // description: 'Filter emails by criteria',
-    });
+    if (PILOT_CAPABILITIES.gmailSearchGrammar) {
+      searchCommands.push({
+        title: 'Filter Emails',
+        icon: Filter,
+        shortcut: 'f',
+        onClick: () => {
+          setCurrentView('filter');
+        },
+        // description: 'Filter emails by criteria',
+      });
+    }
 
     // searchCommands.push({
     //   title: 'Saved Searches',
@@ -935,11 +959,13 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
         ))}
 
         <CommandGroup heading="Help">
-          <CommandItem onSelect={() => setCurrentView('help')}>
-            <Info className="h-4 w-4 opacity-60" />
-            <span className="ml-2">Filter Syntax Help</span>
-            {/* <CommandShortcut>?</CommandShortcut> */}
-          </CommandItem>
+          {PILOT_CAPABILITIES.gmailSearchGrammar ? (
+            <CommandItem onSelect={() => setCurrentView('help')}>
+              <Info className="h-4 w-4 opacity-60" />
+              <span className="ml-2">Filter Syntax Help</span>
+              {/* <CommandShortcut>?</CommandShortcut> */}
+            </CommandItem>
+          ) : null}
         </CommandGroup>
       </CommandList>
     </>
@@ -966,7 +992,7 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
             onKeyDown={(e) => {
               if (e.key === 'Enter' && searchQuery.trim()) {
                 e.preventDefault();
-                handleSearch(searchQuery, true);
+                handleSearch(searchQuery, canUseNaturalLanguageSearch());
               }
             }}
           />
@@ -984,7 +1010,7 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
               {recentSearches.map((search) => (
                 <CommandItem
                   key={`recent-${search}`}
-                  onSelect={() => handleSearch(search, true)}
+                  onSelect={() => handleSearch(search, canUseNaturalLanguageSearch())}
                   disabled={isProcessing}
                 >
                   <Clock className="h-4 w-4 opacity-60" />
@@ -1028,13 +1054,15 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
 
           {searchQuery && (
             <CommandGroup heading="Search Suggestions">
-              <CommandItem onSelect={() => handleSearch(searchQuery, true)} disabled={isProcessing}>
-                <Search className="h-4 w-4 opacity-60" />
-                <span className="ml-2">Search for "{searchQuery}"</span>
-                <Badge variant="secondary" className="ml-auto text-xs">
-                  Smart Search
-                </Badge>
-              </CommandItem>
+              {canUseNaturalLanguageSearch() ? (
+                <CommandItem onSelect={() => handleSearch(searchQuery, true)} disabled={isProcessing}>
+                  <Search className="h-4 w-4 opacity-60" />
+                  <span className="ml-2">Search for "{searchQuery}"</span>
+                  <Badge variant="secondary" className="ml-auto text-xs">
+                    Smart Search
+                  </Badge>
+                </CommandItem>
+              ) : null}
 
               <CommandItem
                 onSelect={() => handleSearch(searchQuery, false)}
@@ -1044,7 +1072,7 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
                 <span className="ml-2">Exact match: "{searchQuery}"</span>
               </CommandItem>
 
-              {searchQuery.includes('@') && (
+              {PILOT_CAPABILITIES.gmailSearchGrammar && searchQuery.includes('@') && (
                 <CommandItem
                   onSelect={() => handleSearch(`from:${searchQuery}`, false)}
                   disabled={isProcessing}
@@ -1054,13 +1082,15 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
                 </CommandItem>
               )}
 
-              <CommandItem
-                onSelect={() => handleSearch(`subject:"${searchQuery}"`, false)}
-                disabled={isProcessing}
-              >
-                <FileText className="h-4 w-4 opacity-60" />
-                <span className="ml-2">Subject contains: "{searchQuery}"</span>
-              </CommandItem>
+              {PILOT_CAPABILITIES.gmailSearchGrammar ? (
+                <CommandItem
+                  onSelect={() => handleSearch(`subject:"${searchQuery}"`, false)}
+                  disabled={isProcessing}
+                >
+                  <FileText className="h-4 w-4 opacity-60" />
+                  <span className="ml-2">Subject contains: "{searchQuery}"</span>
+                </CommandItem>
+              ) : null}
 
               <CommandItem
                 onSelect={() => handleSearch(`"${searchQuery}"`, false)}
@@ -1312,14 +1342,18 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
             )}
 
             <CommandGroup heading="Examples">
-              <CommandItem disabled>
-                <CalendarIcon className="h-4 w-4 opacity-60" />
-                <span className="ml-2">after:2024/01/01</span>
-              </CommandItem>
-              <CommandItem disabled>
-                <Mail className="h-4 w-4 opacity-60" />
-                <span className="ml-2">from:john@example.com</span>
-              </CommandItem>
+              {PILOT_CAPABILITIES.gmailSearchGrammar ? (
+                <>
+                  <CommandItem disabled>
+                    <CalendarIcon className="h-4 w-4 opacity-60" />
+                    <span className="ml-2">after:2024/01/01</span>
+                  </CommandItem>
+                  <CommandItem disabled>
+                    <Mail className="h-4 w-4 opacity-60" />
+                    <span className="ml-2">from:john@example.com</span>
+                  </CommandItem>
+                </>
+              ) : null}
             </CommandGroup>
           </CommandList>
         ) : selectedDateFilter === 'between' ? (
@@ -1742,7 +1776,27 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
     </>
   );
 
-  const renderHelpView = () => (
+  const renderHelpView = () => {
+    if (!PILOT_CAPABILITIES.gmailSearchGrammar) {
+      return (
+        <>
+          <div className="flex items-center border-b px-3">
+            <button
+              className="text-muted-foreground hover:text-foreground mr-2"
+              onClick={() => setCurrentView('main')}
+            >
+              ←
+            </button>
+            <h3 className="font-medium">Filter Syntax Help</h3>
+          </div>
+          <div className="text-muted-foreground p-4 text-sm">
+            Advanced Gmail-style filters are not available in pilot mode.
+          </div>
+        </>
+      );
+    }
+
+    return (
     <>
       <div className="flex items-center border-b px-3">
         <button
@@ -1875,7 +1929,8 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
         </div>
       </ScrollArea>
     </>
-  );
+    );
+  };
 
   const renderView = () => {
     switch (currentView) {

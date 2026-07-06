@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { resolveMailRouteFilter } from '../lib/mail/route-filter';
-import { PILOT_CAPABILITIES } from '../lib/pilot/capabilities';
+import { canUseNaturalLanguageSearch, PILOT_CAPABILITIES } from '../lib/pilot/capabilities';
 
 describe('mail route filter contract', () => {
   it('maps hotel category slug to structured category filter', () => {
@@ -22,7 +22,7 @@ describe('mail route filter contract', () => {
 
 describe('pilot search capability gates', () => {
   it('disables natural language and Gmail grammar search', () => {
-    expect(PILOT_CAPABILITIES.ai && PILOT_CAPABILITIES.gmailSearchGrammar).toBe(false);
+    expect(canUseNaturalLanguageSearch()).toBe(false);
     expect(PILOT_CAPABILITIES.gmailSearchGrammar).toBe(false);
   });
 });
