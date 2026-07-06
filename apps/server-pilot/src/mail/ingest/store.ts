@@ -220,6 +220,13 @@ export async function persistInboundMessage(
       spamLabelId ? [spamLabelId] : [],
     );
 
+    if (spamLabelId) {
+      await tx
+        .update(mailThread)
+        .set({ spamAt: new Date(), updatedAt: new Date() })
+        .where(eq(mailThread.id, threadId));
+    }
+
     await tx.insert(message).values({
       id: messageId,
       transportId: transport.id,

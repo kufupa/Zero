@@ -167,6 +167,28 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       });
     });
 
+    it('moves threads between system states without label emulation', async () => {
+      await withSeededTestDb(async (db) => {
+        await seedActionThread(db);
+        const caller = await callerFor('user-manager', { db });
+
+        await caller.mail.moveThreads({ threadIds: [THREAD_ID], destination: 'spam' });
+        const spam = await caller.mail.listThreads({ folder: 'spam', limit: 20 });
+        expect(spam.threads.map((t) => t.id)).toContain(THREAD_ID);
+
+        await caller.mail.moveThreads({ threadIds: [THREAD_ID], destination: 'inbox' });
+        const inbox = await caller.mail.listThreads({ folder: 'inbox', limit: 20 });
+        expect(inbox.threads.map((t) => t.id)).toContain(THREAD_ID);
+
+        const rows = await db
+          .select({ spamAt: mailThread.spamAt, labelIds: mailThread.labelIds })
+          .from(mailThread)
+          .where(eq(mailThread.id, THREAD_ID));
+        expect(rows[0]?.spamAt).toBeNull();
+        expect(rows[0]?.labelIds ?? []).not.toContain('SPAM');
+      });
+    });
+
     it('unsend last message deletes empty thread', async () => {
       await withSeededTestDb(async (db) => {
         const threadId = 'thread-unsend-only-1';

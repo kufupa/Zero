@@ -115,6 +115,11 @@ export const modifyLabelsInput = z.union([
   }),
 ]);
 
+const moveThreadsInput = z.object({
+  threadIds: z.array(z.string()).min(1),
+  destination: z.enum(['inbox', 'archive', 'spam', 'bin']),
+});
+
 export const listThreadsInput = z.object({
   folder: z.enum(MAIL_FOLDER_VALUES).default('inbox'),
   q: z.string().optional(),
@@ -177,6 +182,12 @@ export const mailRouter = tRouter({
         conditions.push(isNull(mailThread.trashedAt));
       }
 
+      if (input.folder === 'spam') {
+        conditions.push(isNotNull(mailThread.spamAt));
+      } else {
+        conditions.push(isNull(mailThread.spamAt));
+      }
+
       if (input.folder === 'inbox') {
         conditions.push(eq(mailThread.isArchived, false));
         conditions.push(
@@ -200,43 +211,12 @@ export const mailRouter = tRouter({
               ),
           ),
         );
-        const spamRowInbox = await db
-          .select({ id: mailLabel.id })
-          .from(mailLabel)
-          .where(
-            and(eq(mailLabel.transportId, transportId), eq(mailLabel.name, 'SPAM')),
-          )
-          .limit(1);
-        const spamIdInbox = spamRowInbox[0]?.id;
-        if (spamIdInbox) {
-          conditions.push(
-            sql`NOT (${mailThread.labelIds} ?| array[${sql`${spamIdInbox}`}])`,
-          );
-        }
       } else if (input.folder === 'archived' || input.folder === 'archive') {
         conditions.push(eq(mailThread.isArchived, true));
       } else if (input.folder === 'starred') {
         conditions.push(eq(mailThread.isStarred, true));
       } else if (input.folder === 'snoozed') {
         conditions.push(isNotNull(mailThread.snoozedUntil));
-      }
-
-      let spamLabelId: string | null = null;
-      if (input.folder === 'spam') {
-        const spamRow = await db
-          .select({ id: mailLabel.id })
-          .from(mailLabel)
-          .where(
-            and(eq(mailLabel.transportId, transportId), eq(mailLabel.name, 'SPAM')),
-          )
-          .limit(1);
-        spamLabelId = spamRow[0]?.id ?? null;
-        if (!spamLabelId) {
-          return { threads: [], nextPageToken: null };
-        }
-        conditions.push(
-          sql`${mailThread.labelIds} ?| array[${sql`${spamLabelId}`}]`,
-        );
       }
 
       if (input.folder === 'sent') {
@@ -685,6 +665,43 @@ export const mailRouter = tRouter({
           .set(patch)
           .where(and(eq(mailThread.id, id), eq(mailThread.transportId, transportId)));
       }
+      return { updated: visibleIds.length };
+    }),
+
+  moveThreads: mailboxProcedure
+    .input(moveThreadsInput)
+    .mutation(async ({ input, ctx }) => {
+      const db = getDb();
+      const transportId = ctx.activeTransportId;
+      const visibleIds = await resolveVisibleThreadIds(db, transportId, input.threadIds);
+      if (visibleIds.length === 0) return { updated: 0 };
+
+      const patch: Partial<typeof mailThread.$inferInsert> = { updatedAt: new Date() };
+      if (input.destination === 'archive') {
+        patch.isArchived = true;
+        patch.trashedAt = null;
+        patch.spamAt = null;
+      }
+      if (input.destination === 'bin') {
+        patch.trashedAt = new Date();
+      }
+      if (input.destination === 'spam') {
+        patch.spamAt = new Date();
+        patch.trashedAt = null;
+        patch.isArchived = false;
+      }
+      if (input.destination === 'inbox') {
+        patch.isArchived = false;
+        patch.trashedAt = null;
+        patch.spamAt = null;
+        patch.snoozedUntil = null;
+      }
+
+      await db
+        .update(mailThread)
+        .set(patch)
+        .where(and(eq(mailThread.transportId, transportId), inArray(mailThread.id, visibleIds)));
+
       return { updated: visibleIds.length };
     }),
 
