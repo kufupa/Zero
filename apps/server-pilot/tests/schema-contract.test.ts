@@ -65,6 +65,10 @@ describe('v4 production mail schema', () => {
     expect(schema.mailDraft.replyToMessageId).toBeDefined();
     expect(schema.mailDraft.generationId).toBeDefined();
     expect(schema.mailDraftRevision.kind).toBeDefined();
+    expect(schema.aiWorkflowRun).toBeDefined();
+    expect(schema.aiWorkflowRun.idempotencyKey).toBeDefined();
+    expect(schema.aiWorkflowRun.state).toBeDefined();
+    expect(schema.aiWorkflowRun.runKind).toBeDefined();
   });
 });
 

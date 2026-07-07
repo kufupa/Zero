@@ -49,6 +49,22 @@ export const mailDraftRevisionKindEnum = pgEnum('mail_draft_revision_kind', [
   'sent',
 ]);
 
+export const aiWorkflowRunKindEnum = pgEnum('ai_workflow_run_kind', [
+  'inbound_triage',
+  'candidate_draft',
+  'feedback_extraction',
+]);
+
+export const aiWorkflowRunStateEnum = pgEnum('ai_workflow_run_state', [
+  'queued',
+  'claimed',
+  'running',
+  'succeeded',
+  'retry_wait',
+  'dead_letter',
+  'superseded',
+]);
+
 export const mailIngestMailbox = pgTable(
   'mail_ingest_mailbox',
   {
@@ -390,6 +406,50 @@ export const mailDraftRevision = pgTable(
     index('mail_draft_revision_draft_idx').on(t.draftId, t.createdAt),
     index('mail_draft_revision_generation_idx').on(t.generationId),
     index('mail_draft_revision_sent_message_idx').on(t.sentMessageId),
+  ],
+);
+
+export const aiWorkflowRun = pgTable(
+  'ai_workflow_run',
+  {
+    id: text('id').primaryKey(),
+    transportId: text('transport_id')
+      .notNull()
+      .references(() => mailboxTransport.id, { onDelete: 'cascade' }),
+    threadId: text('thread_id')
+      .notNull()
+      .references(() => mailThread.id, { onDelete: 'cascade' }),
+    triggerMessageId: text('trigger_message_id')
+      .notNull()
+      .references(() => message.id, { onDelete: 'cascade' }),
+    runKind: aiWorkflowRunKindEnum('run_kind').notNull(),
+    idempotencyKey: text('idempotency_key').notNull(),
+    modelId: text('model_id').notNull(),
+    promptVersion: text('prompt_version').notNull(),
+    promptHash: text('prompt_hash'),
+    state: aiWorkflowRunStateEnum('state').notNull().default('queued'),
+    claimOwner: text('claim_owner'),
+    attempts: integer('attempts').notNull().default(0),
+    nextRunAt: timestamp('next_run_at'),
+    mastraTraceId: text('mastra_trace_id'),
+    mastraScorerId: text('mastra_scorer_id'),
+    generationId: text('generation_id').references(() => aiDraftGeneration.id, {
+      onDelete: 'set null',
+    }),
+    metrics: jsonb('metrics').$type<Record<string, unknown>>(),
+    lastError: text('last_error'),
+    claimedAt: timestamp('claimed_at'),
+    startedAt: timestamp('started_at'),
+    finishedAt: timestamp('finished_at'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('ai_workflow_run_idempotency_uidx').on(t.idempotencyKey),
+    index('ai_workflow_run_claim_idx').on(t.state, t.nextRunAt, t.createdAt),
+    index('ai_workflow_run_transport_idx').on(t.transportId, t.state, t.createdAt),
+    index('ai_workflow_run_thread_idx').on(t.threadId, t.runKind),
+    index('ai_workflow_run_trigger_message_idx').on(t.triggerMessageId),
   ],
 );
 
