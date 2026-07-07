@@ -80,3 +80,4 @@ INGEST_FIXTURE_DIR=/home/ubuntu/repos/zero/apps/server-pilot/tests/fixtures
 
 - [2026-07-02-ec2-pilot-bug-fixes.md](../../superpowers/plans/2026-07-02-ec2-pilot-bug-fixes.md) (Task 19)
 - [deferred-real-mail-readiness.md](../../../apps/server-pilot/deploy/deferred-real-mail-readiness.md)
+- [wire-gate.sh](../../../apps/server-pilot/deploy/wire-gate.sh)
