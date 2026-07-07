@@ -433,7 +433,7 @@ Commands:
 - `bash apps/server-pilot/deploy/wire-gate.sh` (EC2 SSM)
 - `pnpm --filter=@zero/testing test:e2e`
 
-Result (final, EC2 @ `3253b308`, 2026-07-06):
+Result (final, EC2 @ `3307f6a8`, 2026-07-07):
 - Server tests (local): **PASS** — 127 passed, 90 skipped (no local RDS).
 - Server tests (EC2, `NODE_ENV=test`): **PASS** — 212 passed, 5 skipped (217 total).
 - Mail tests: **PASS** — 182 passed.
@@ -442,18 +442,21 @@ Result (final, EC2 @ `3253b308`, 2026-07-06):
 - Mail build: **PASS**
 - Fixture loopback E2E: **PASS** (EC2 SSM — `fixture-loopback-gate: PASS`)
 - Mailpit wire E2E: **PASS** (EC2 SSM — 19/19 wire tests, `wire-gate: PASS`)
-- Playwright E2E: **SKIP (proof)** — local `sign-in/email` returns HTTP 500 (laptop cannot reach RDS for Better Auth); EC2 SSM playwright run exceeded 1800s poll waiting on browser install. Session mint via Secrets Manager + `PLAYWRIGHT_COOKIE_PREFIX` support added in `auth.setup.ts`; pilot-inert AI specs updated.
+- Playwright E2E: **PASS** (EC2 SSM — `bash apps/server-pilot/deploy/playwright-ec2-gate.sh`, **6 passed** in 19.2s; session mint via Secrets Manager, FE dev on `localhost:3000`, `PLAYWRIGHT_BROWSERS_PATH=/opt/nava/playwright-browsers`, Playwright **1.52.0**)
 
 RCA fixes made:
 - `apps/server-pilot/drizzle/meta/_journal.json` — registered migrations `0005_mail_categories`, `0006_draft_lifecycle_eval`, `0007_mail_thread_spam_state` so RDS received `spam_at` and draft lifecycle schema.
 - `apps/mail/tests/demo-backend-guards.test.ts` — command-palette test expects pilot NL-search passthrough (no backend `generateSearchQuery` when `canUseNaturalLanguageSearch()` is false).
 - `packages/testing/e2e/ai-summary.spec.ts`, `bulk-search.spec.ts` — assert AI sidebar absent; inbox still usable in pilot.
-- `packages/testing/e2e/auth.setup.ts` — `PLAYWRIGHT_COOKIE_PREFIX` for production cookie names on EC2.
+- `packages/testing/e2e/auth.setup.ts` — cookie domain derived from `PLAYWRIGHT_BASE_URL`; `PLAYWRIGHT_COOKIE_PREFIX` for production cookie names on EC2.
+- `packages/testing/e2e/helpers/mail-inbox.ts` — dismiss Nava onboarding tour; pilot inbox/command-palette helpers.
+- `packages/testing/e2e/mail-actions.spec.ts`, `mail-inbox.spec.ts`, `search-bar.spec.ts` — pilot-safe assertions (context menu, thread reply, palette navigation).
+- `packages/testing/package.json` — pin `@playwright/test` to **1.52.0** to match EC2 `/opt/nava/playwright-browsers` (chromium-1169).
+- `apps/server-pilot/deploy/playwright-ec2-gate.sh` — EC2 gate: mint session, start FE dev if needed, run full Playwright suite.
 - `apps/server-pilot/tests/categories-contract.test.ts` — unique transport emails per test (avoid parallel unique constraint on `mailbox_transport.email`).
 - `apps/server-pilot/tests/drafts-contract.test.ts` — list assertion uses `content` not legacy `body`.
 - `apps/server-pilot/src/trpc/routes/mail.ts` — stale draft send uses in-memory inbound timestamp compare (matches `mail.get` isStale); fixes drizzle SQL date binding INTERNAL_SERVER_ERROR.
 
 Skipped with proof:
-- Playwright E2E: local auth mint HTTP 500 without RDS; EC2 run hit SSM 1800s timeout (no `playwright install` on instance within poll window). Core pilot gates (unit + fixture loopback + Mailpit wire) green without browser E2E.
-
+- None for Wave 7 browser E2E after EC2 gate green (`3307f6a8`).
 
