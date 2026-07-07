@@ -44,6 +44,11 @@ import {
   parseRawMessage,
   generateMessageId,
 } from './parse-message.js';
+import {
+  DEFAULT_AI_MODEL_ID,
+  DEFAULT_TRIAGE_PROMPT_VERSION,
+  enqueueAiRun,
+} from '../../ai/run-ledger.js';
 
 export type QuarantineReason =
   | 'missing_owner_header'
@@ -264,6 +269,19 @@ export async function persistInboundMessage(
         })),
       );
     }
+
+    await enqueueAiRun(
+      {
+        transportId: transport.id,
+        threadId,
+        triggerMessageId: messageId,
+        runKind: 'inbound_triage',
+        idempotencyKey: `inbound-triage:${messageId}`,
+        modelId: DEFAULT_AI_MODEL_ID,
+        promptVersion: DEFAULT_TRIAGE_PROMPT_VERSION,
+      },
+      tx as unknown as DB,
+    );
   });
 
   return {

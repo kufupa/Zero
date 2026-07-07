@@ -45,6 +45,11 @@ import {
 import { formatContentDispositionFilename } from '../../mail/attachment-filename.js';
 import { sanitizeEmailHtml } from '../../mail/sanitize-email-html.js';
 import {
+  DEFAULT_AI_MODEL_ID,
+  DEFAULT_FEEDBACK_PROMPT_VERSION,
+  enqueueAiRun,
+} from '../../ai/run-ledger.js';
+import {
   parseFromEmail,
   sendInput,
   toParsedMessage,
@@ -969,57 +974,73 @@ export const mailRouter = tRouter({
 
       const messageId = randomUUID();
       const now = new Date();
-      await db.insert(message).values({
-        id: messageId,
-        transportId,
-        threadId,
-        direction: 'outbound',
-        fromAddress: ctx.transportEmail,
-        toAddresses: input.to,
-        ccAddresses: input.cc,
-        bccAddresses: input.bcc,
-        subject: input.subject || null,
-        textBody: input.text || null,
-        htmlBody: input.html || null,
-        messageIdHeader: smtpResult.messageId,
-        inReplyTo,
-        references,
-        isRead: true,
-        isStarred: false,
-        sentAt: now,
-        receivedAt: now,
-      });
-      await db
-        .update(mailThread)
-        .set({ latestMessageAt: now, updatedAt: now })
-        .where(and(eq(mailThread.id, threadId), eq(mailThread.transportId, transportId)));
-      if (input.draftId) {
-        await db
-          .update(mailDraft)
-          .set({
-            isSent: true,
-            status: 'sent',
-            sentMessageId: messageId,
-            updatedAt: now,
-          })
-          .where(
-            and(eq(mailDraft.id, input.draftId), eq(mailDraft.transportId, transportId)),
-          );
-        await db.insert(mailDraftRevision).values({
-          id: randomUUID(),
-          draftId: input.draftId,
-          sentMessageId: messageId,
-          actorUserId: ctx.sessionUser.id,
-          kind: 'sent',
+      await db.transaction(async (tx) => {
+        await tx.insert(message).values({
+          id: messageId,
+          transportId,
+          threadId,
+          direction: 'outbound',
+          fromAddress: ctx.transportEmail,
           toAddresses: input.to,
           ccAddresses: input.cc,
           bccAddresses: input.bcc,
           subject: input.subject || null,
           textBody: input.text || null,
           htmlBody: input.html || null,
-          attachments: [],
+          messageIdHeader: smtpResult.messageId,
+          inReplyTo,
+          references,
+          isRead: true,
+          isStarred: false,
+          sentAt: now,
+          receivedAt: now,
         });
-      }
+        await tx
+          .update(mailThread)
+          .set({ latestMessageAt: now, updatedAt: now })
+          .where(and(eq(mailThread.id, threadId), eq(mailThread.transportId, transportId)));
+        if (input.draftId) {
+          await tx
+            .update(mailDraft)
+            .set({
+              isSent: true,
+              status: 'sent',
+              sentMessageId: messageId,
+              updatedAt: now,
+            })
+            .where(
+              and(eq(mailDraft.id, input.draftId), eq(mailDraft.transportId, transportId)),
+            );
+          await tx.insert(mailDraftRevision).values({
+            id: randomUUID(),
+            draftId: input.draftId,
+            sentMessageId: messageId,
+            actorUserId: ctx.sessionUser.id,
+            kind: 'sent',
+            toAddresses: input.to,
+            ccAddresses: input.cc,
+            bccAddresses: input.bcc,
+            subject: input.subject || null,
+            textBody: input.text || null,
+            htmlBody: input.html || null,
+            attachments: [],
+          });
+          if (sendingDraft?.generationId) {
+            await enqueueAiRun(
+              {
+                transportId,
+                threadId,
+                triggerMessageId: messageId,
+                runKind: 'feedback_extraction',
+                idempotencyKey: `feedback:${input.draftId}`,
+                modelId: DEFAULT_AI_MODEL_ID,
+                promptVersion: DEFAULT_FEEDBACK_PROMPT_VERSION,
+              },
+              tx as unknown as typeof db,
+            );
+          }
+        }
+      });
       return {
         messageId,
         threadId,

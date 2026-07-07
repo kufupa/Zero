@@ -1,11 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import { and, eq, inArray, lte, or, sql } from 'drizzle-orm';
-import { getDb } from '../db/client.js';
+import { getDb, type DB } from '../db/client.js';
 import { aiWorkflowRun } from '../db/schema/mail.js';
 import type {
   aiWorkflowRunKindEnum,
   aiWorkflowRunStateEnum,
 } from '../db/schema/mail.js';
+
+export const DEFAULT_AI_MODEL_ID = 'amazon.nova-lite-v1:0';
+export const DEFAULT_TRIAGE_PROMPT_VERSION = 'triage-v1';
+export const DEFAULT_FEEDBACK_PROMPT_VERSION = 'feedback-v1';
 
 export type AiWorkflowRunKind = (typeof aiWorkflowRunKindEnum.enumValues)[number];
 export type AiWorkflowRunState = (typeof aiWorkflowRunStateEnum.enumValues)[number];
@@ -53,9 +57,8 @@ function assertMailRunLinks(input: EnqueueAiRunInput): void {
   }
 }
 
-export async function enqueueAiRun(input: EnqueueAiRunInput) {
+export async function enqueueAiRun(input: EnqueueAiRunInput, db: DB = getDb()) {
   assertMailRunLinks(input);
-  const db = getDb();
   const now = new Date();
   const id = randomUUID();
 
