@@ -16,6 +16,10 @@ setup('inject real authentication session', async ({ page }) => {
     throw new Error('PLAYWRIGHT_SESSION_TOKEN and PLAYWRIGHT_SESSION_DATA environment variables must be set.');
   }
 
+  const baseUrl = process.env.PLAYWRIGHT_BASE_URL ?? 'http://localhost:3000';
+  const cookieDomain = new URL(baseUrl).hostname;
+  const cookieSecure = baseUrl.startsWith('https:');
+
   await page.goto('/', { waitUntil: 'domcontentloaded', timeout: 60000 });
   
   console.log('Page loaded, setting up authentication...');
@@ -25,19 +29,19 @@ setup('inject real authentication session', async ({ page }) => {
     {
       name: `${cookiePrefix}.session_token`,
       value: SessionToken,
-      domain: 'localhost',
+      domain: cookieDomain,
       path: '/',
       httpOnly: true,
-      secure: false,
+      secure: cookieSecure,
       sameSite: 'Lax'
     },
     {
       name: `${cookiePrefix}.session_data`,
       value: SessionData,
-      domain: 'localhost', 
+      domain: cookieDomain,
       path: '/',
       httpOnly: true,
-      secure: false,
+      secure: cookieSecure,
       sameSite: 'Lax'
     }
   ]);
