@@ -207,10 +207,12 @@ export function buildThreadSearchConditions(
   return conditions;
 }
 
-function draftAddressMatch(
-  column: typeof mailDraft.toAddresses,
-  needle: string,
-): SQL {
+type DraftAddressColumn =
+  | typeof mailDraft.toAddresses
+  | typeof mailDraft.ccAddresses
+  | typeof mailDraft.bccAddresses;
+
+function draftAddressMatch(column: DraftAddressColumn, needle: string): SQL {
   const pattern = addressLikePattern(needle);
   return sql`EXISTS (
     SELECT 1
