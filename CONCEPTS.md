@@ -85,3 +85,25 @@ A verification gate (typecheck, test, or build) reported as passing in a hand-of
 ### E2E session mint
 
 Autonomous Playwright gate step that logs in a pilot user non-interactively — POST `/api/auth/sign-in/email` with a password from Secrets Manager — then exports `PLAYWRIGHT_SESSION_TOKEN`/`PLAYWRIGHT_SESSION_DATA` (+ `PLAYWRIGHT_COOKIE_PREFIX`) so `auth.setup.ts` injects a real Better Auth session. Cookie domain/secure derive from `PLAYWRIGHT_BASE_URL`, not hardcoded `localhost`.
+
+## AI mail pipeline
+
+### AI workflow run
+
+Durable queue row in `ai_workflow_run` representing one async AI job (triage, candidate draft, or feedback extraction). Claimed by `ai-worker`, idempotent by `idempotency_key`, with retry/dead-letter state.
+
+### Shadow triage
+
+Classifier/eval path that records triage output and metrics without mutating mailbox category, spam, or urgent state until the spike gate enables durable writes.
+
+### AI candidate draft
+
+`mail_draft` with `status='candidate'` and `origin='ai'`, plus immutable `mail_draft_revision(kind='ai_generated')`. Never sends mail autonomously.
+
+### HITL feedback label
+
+Async label set comparing the first `ai_generated` revision to the final `sent` revision (tone, factual, recipient, subject, missing_info, no_edit). Stored as eval metrics, not active memory.
+
+### AI workflow runner
+
+The `ai-worker` PM2 process that claims `ai_workflow_run` rows and executes Mastra workflows against app-owned services. No SMTP/POP3 credentials and no send-capable imports.
