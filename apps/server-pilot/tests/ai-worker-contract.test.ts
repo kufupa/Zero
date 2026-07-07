@@ -108,6 +108,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
   it('retry does not duplicate candidate draft', async () => {
     const { transportId, threadId, messageId } = await seedInbound();
     const generationId = randomUUID();
+    const db = getDb();
     const run = await enqueueAiRun({
       transportId,
       threadId,
@@ -132,7 +133,6 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
       nextRunAt: new Date(),
       lastError: 'transient',
     });
-    const db = getDb();
     await db
       .update(aiWorkflowRun)
       .set({ state: 'claimed', generationId, updatedAt: new Date() })

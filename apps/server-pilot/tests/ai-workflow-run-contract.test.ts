@@ -241,6 +241,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai workflow run contract', ()
     await claimNextAiRun({ ownerId: 'worker-a' });
 
     const generationId = randomUUID();
+    const db = getDb();
     await db.insert(aiDraftGeneration).values({
       id: generationId,
       transportId,
@@ -258,7 +259,6 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai workflow run contract', ()
       metrics: { latencyMs: 1200, inputTokens: 400, outputTokens: 120 },
     });
 
-    const db = getDb();
     const [row] = await db
       .select()
       .from(aiWorkflowRun)

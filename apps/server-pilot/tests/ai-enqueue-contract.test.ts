@@ -7,10 +7,8 @@ import {
   mailDraft,
   mailDraftRevision,
   mailThread,
-  mailboxTransport,
   message,
 } from '../src/db/schema/mail.js';
-import { user as userAuthTable } from '../src/db/schema/auth.js';
 import { generateMessageId, parseRawMessage } from '../src/mail/ingest/parse-message.js';
 import { persistInboundMessage } from '../src/mail/ingest/store.js';
 import {
@@ -235,70 +233,39 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI enqueue contract', () => {
 
   it('does not create feedback run when SMTP send fails', async () => {
     await withSeededTestDb(async (db) => {
-      const transportId = randomUUID();
-      const threadId = randomUUID();
-      const inboundId = randomUUID();
+      const transportId = 'transport-centurion';
+      const threadId = 'thread-centurion-1';
+      const inboundId = 'msg-centurion-inbound-1';
       const draftId = randomUUID();
       const generationId = randomUUID();
 
-      await db.insert(mailboxTransport).values({
-        id: transportId,
-        email: `nava-${transportId.slice(0, 8)}@example.com`,
-        ownerHeaderValue: `nava-${transportId.slice(0, 8)}@example.com`,
-      });
-      await db
-        .insert(userAuthTable)
-        .values({
-          id: 'user-1',
-          name: 'User',
-          email: 'user@example.com',
-          emailVerified: false,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .onConflictDoNothing();
-      await db.insert(mailThread).values({
-        id: threadId,
-        transportId,
-        threadRootId: `<root-${threadId}@example.com>`,
-        subject: 'Booking',
-        snippet: 'Need help',
-        latestMessageAt: new Date(),
-      });
-      await db.insert(message).values({
-        id: inboundId,
-        transportId,
-        threadId,
-        direction: 'inbound',
-        fromAddress: 'guest@example.com',
-        toAddresses: ['nava@example.com'],
-        subject: 'Booking',
-        textBody: 'Need help',
-        receivedAt: new Date(),
-      });
+      await seedCenturionThread(db);
       await db.insert(aiDraftGeneration).values({
         id: generationId,
         transportId,
         threadId,
-        requestedByUserId: 'user-1',
+        requestedByUserId: 'user-centurion-worker',
         contextMessageIds: [inboundId],
         model: 'amazon.nova-lite-v1:0',
         promptVersion: 'draft-v1',
       });
-      await db.insert(mailDraft).values({
-        id: draftId,
-        transportId,
-        threadId,
-        createdByUserId: 'user-1',
-        toAddresses: ['guest@example.com'],
-        subject: 'Re: booking',
-        textBody: 'AI draft',
-        htmlBody: '<p>AI draft</p>',
-        status: 'active',
-        origin: 'ai',
-        generationId,
-        replyToMessageId: inboundId,
-      });
+      await db
+        .insert(mailDraft)
+        .values({
+          id: draftId,
+          transportId,
+          threadId,
+          createdByUserId: 'user-centurion-worker',
+          toAddresses: ['guest@example.com'],
+          subject: 'Re: booking',
+          textBody: 'AI draft',
+          htmlBody: '<p>AI draft</p>',
+          status: 'active',
+          origin: 'ai',
+          generationId,
+          replyToMessageId: inboundId,
+        })
+        .onConflictDoNothing();
 
       const failingSmtp = {
         send: async () => {
@@ -308,10 +275,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI enqueue contract', () => {
       __setSmtpTransportForTests(failingSmtp);
 
       try {
-        const caller = await callerFor('user-1', {
-          db,
-          requestedTransportId: transportId,
-        });
+        const caller = await callerFor('user-centurion-worker', { db });
         await expect(
           caller.mail.send({
             threadId,
