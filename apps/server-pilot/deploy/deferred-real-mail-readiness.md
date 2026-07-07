@@ -73,6 +73,21 @@ bash apps/server-pilot/deploy/ssm-run-command.sh \
 
 Production `.env.production` stays `MAIL_TRANSPORT_MODE=fixture`. Wire env is forced only inside `wire-gate.sh`.
 
+## Bedrock live gate (on-demand, not daily deploy)
+
+Proves EC2 instance role can invoke `amazon.nova-lite-v1:0` in `us-east-1`. Daily `ai-gate.sh` spike stays on fake adapter.
+
+**IAM:** inline `NavaZeroBedrockInvoke` on worker role — see `aws-resources.md`.
+
+**Pre-IT SSM:**
+
+```bash
+bash apps/server-pilot/deploy/ssm-run-command.sh \
+  'cd /home/ubuntu/repos/zero && bash apps/server-pilot/deploy/bedrock-live-gate.sh'
+```
+
+`ai-worker` PM2 uses `AI_ENABLED=true`, `BEDROCK_REGION=us-east-1`. EC2/RDS stay `af-south-1`.
+
 ## Later real-ingest phase gates
 
 - Start VPN profile provided by IT.

@@ -40,14 +40,14 @@ FAIL → reproduce → root cause → fix → test → commit → resume.
 
 ### Done criteria
 
-- [ ] `BedrockModelAdapter` + `createModelAdapter` factory + `BEDROCK_REGION` env
-- [ ] `bedrock-adapter-contract.test.ts` green (mocked SDK)
-- [ ] `ai-gate.sh` spike still deterministic (fake)
-- [ ] `NavaZeroBedrockInvoke` IAM on worker role
-- [ ] `wire-gate.sh` PASS on EC2 via SSM
-- [ ] `bedrock-live-gate.sh` PASS on EC2 via SSM
-- [ ] `docs/server-pilot-ai.md` + `aws-resources.md` updated
-- [ ] Handoff report under `docs/superpowers/plans/handoff-reports/`
+- [x] `BedrockModelAdapter` + `createModelAdapter` factory + `BEDROCK_REGION` env
+- [x] `bedrock-adapter-contract.test.ts` green (mocked SDK)
+- [x] `ai-gate.sh` spike still deterministic (fake)
+- [x] `NavaZeroBedrockInvoke` IAM on worker role
+- [x] `wire-gate.sh` PASS on EC2 via SSM
+- [x] `bedrock-live-gate.sh` PASS on EC2 via SSM
+- [x] `docs/server-pilot-ai.md` + `aws-resources.md` updated
+- [x] Handoff report under `docs/superpowers/plans/handoff-reports/`
 
 ## Execution Mode
 
