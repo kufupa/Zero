@@ -1,7 +1,7 @@
 import { sql, type SQL } from 'drizzle-orm';
 import type { DB } from '../../db/client.js';
 
-/** Matches backfill-search-vector.ts and migration 0009. */
+/** Matches backfill-search-vector.ts; migration 0009 adds column, 0010 backfills sender. */
 export const THREAD_SEARCH_VECTOR_CONFIG = 'simple' as const;
 
 /** Source text for mail_thread.search_vector (subject + snippet + latest inbound sender). */
