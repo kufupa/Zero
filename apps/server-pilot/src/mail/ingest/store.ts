@@ -50,6 +50,7 @@ import {
   DEFAULT_TRIAGE_PROMPT_VERSION,
   enqueueAiRun,
 } from '../../ai/run-ledger.js';
+import { refreshThreadSearchVector } from '../search/search-vector.js';
 
 export type QuarantineReason =
   | 'missing_owner_header'
@@ -270,6 +271,8 @@ export async function persistInboundMessage(
         })),
       );
     }
+
+    await refreshThreadSearchVector(tx as unknown as DB, threadId);
 
     await enqueueAiRun(
       {
