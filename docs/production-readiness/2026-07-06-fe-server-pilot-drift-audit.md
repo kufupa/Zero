@@ -433,15 +433,15 @@ Commands:
 - `bash apps/server-pilot/deploy/wire-gate.sh` (EC2 SSM)
 - `pnpm --filter=@zero/testing test:e2e`
 
-Result:
+Result (final, EC2 @ `3253b308`, 2026-07-06):
 - Server tests (local): **PASS** — 127 passed, 90 skipped (no local RDS).
-- Server tests (EC2, `NODE_ENV=test`): **PARTIAL** — 208 passed, 4 failed, 5 skipped (217 total). Failures isolated to 3 DB-backed files; require `NODE_ENV=test` when sourcing `.env.production` so tRPC test auth injection works.
-- Mail tests: **PASS** — 182 passed after pilot NL-search guard expectation fix.
+- Server tests (EC2, `NODE_ENV=test`): **PASS** — 212 passed, 5 skipped (217 total).
+- Mail tests: **PASS** — 182 passed.
 - Server build: **PASS**
 - Mail typecheck: **FAIL (historical)** — unrelated Zod/react-hook-form and settings type drift (first five unchanged from Task 16 list above).
 - Mail build: **PASS**
-- Fixture loopback E2E: **PASS** (EC2 SSM, 41/41 after migrations 0005–0007 applied).
-- Mailpit wire E2E: **PASS** (EC2 SSM, chained after fixture gate).
+- Fixture loopback E2E: **PASS** (EC2 SSM — `fixture-loopback-gate: PASS`)
+- Mailpit wire E2E: **PASS** (EC2 SSM — 19/19 wire tests, `wire-gate: PASS`)
 - Playwright E2E: **SKIP (proof)** — local `sign-in/email` returns HTTP 500 (laptop cannot reach RDS for Better Auth); EC2 SSM playwright run exceeded 1800s poll waiting on browser install. Session mint via Secrets Manager + `PLAYWRIGHT_COOKIE_PREFIX` support added in `auth.setup.ts`; pilot-inert AI specs updated.
 
 RCA fixes made:
@@ -449,9 +449,11 @@ RCA fixes made:
 - `apps/mail/tests/demo-backend-guards.test.ts` — command-palette test expects pilot NL-search passthrough (no backend `generateSearchQuery` when `canUseNaturalLanguageSearch()` is false).
 - `packages/testing/e2e/ai-summary.spec.ts`, `bulk-search.spec.ts` — assert AI sidebar absent; inbox still usable in pilot.
 - `packages/testing/e2e/auth.setup.ts` — `PLAYWRIGHT_COOKIE_PREFIX` for production cookie names on EC2.
+- `apps/server-pilot/tests/categories-contract.test.ts` — unique transport emails per test (avoid parallel unique constraint on `mailbox_transport.email`).
+- `apps/server-pilot/tests/drafts-contract.test.ts` — list assertion uses `content` not legacy `body`.
+- `apps/server-pilot/src/trpc/routes/mail.ts` — stale draft send uses in-memory inbound timestamp compare (matches `mail.get` isStale); fixes drizzle SQL date binding INTERNAL_SERVER_ERROR.
 
 Skipped with proof:
-- Playwright E2E: local auth mint HTTP 500 without RDS; EC2 run hit SSM 1800s timeout (no `playwright install` on instance within poll window).
-- EC2 full server suite: 4 failing tests remain under `NODE_ENV=test` (208/217 pass); gate scripts (`fixture-loopback`, `wire`) green.
+- Playwright E2E: local auth mint HTTP 500 without RDS; EC2 run hit SSM 1800s timeout (no `playwright install` on instance within poll window). Core pilot gates (unit + fixture loopback + Mailpit wire) green without browser E2E.
 
 
