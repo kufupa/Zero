@@ -16,6 +16,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/main.js",
     "worker": "node dist/mail/ingest/worker.js",
+    "ai-worker": "node dist/ai/worker.js",
     "test": "vitest run",
     "db:generate": "node --import tsx ./node_modules/drizzle-kit/bin.cjs generate",
     "db:migrate": "node --import tsx ./node_modules/drizzle-kit/bin.cjs migrate",

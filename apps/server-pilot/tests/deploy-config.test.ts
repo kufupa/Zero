@@ -10,6 +10,7 @@ describe('deploy config', () => {
     expect(worker?.autorestart).toBe(true);
     expect(worker?.max_restarts).toBe(10);
     expect(pm2.apps.filter((app) => app.name === 'http')).toHaveLength(1);
+    expect(pm2.apps.filter((app) => app.name === 'ai-worker')).toHaveLength(1);
   });
 
   it('nginx config proxies /api to localhost:8788', async () => {
