@@ -1,7 +1,34 @@
 import { describe, expect, it } from 'vitest';
 import pkg from '../package.json';
 
+const FORBIDDEN_AI_PACKAGES = [
+  'langfuse',
+  'langsmith',
+  '@mastra/langfuse',
+  '@mastra/langsmith',
+  '@mastra/platform',
+  '@mastra/observability-langfuse',
+  '@mastra/observability-langsmith',
+];
+
 describe('server-pilot package contract', () => {
+  it('does not depend on hosted observability or Mastra platform exporters', () => {
+    const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
+    const depNames = Object.keys(allDeps);
+
+    for (const forbidden of FORBIDDEN_AI_PACKAGES) {
+      expect(depNames).not.toContain(forbidden);
+    }
+
+    const hostedObservability = depNames.filter(
+      (name) =>
+        name.includes('langfuse') ||
+        name.includes('langsmith') ||
+        (name.startsWith('@mastra/') && name.includes('platform')),
+    );
+    expect(hostedObservability).toEqual([]);
+  });
+
   it(
     'exports modules apps/mail imports via package.json exports map',
     async () => {

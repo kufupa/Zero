@@ -22,10 +22,13 @@
     "seed:prod": "tsx scripts/seed-prod.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "3.1080.0",
     "@aws-sdk/client-s3": "^3.1077.0",
     "@aws-sdk/client-secrets-manager": "^3.1077.0",
     "@aws-sdk/s3-request-presigner": "^3.1077.0",
     "@hono/node-server": "^1.14.1",
+    "@mastra/core": "1.50.0",
+    "@mastra/libsql": "1.15.1",
     "@trpc/server": "catalog:",
     "better-auth": "catalog:",
     "drizzle-orm": "catalog:",
@@ -39,8 +42,8 @@
   },
   "devDependencies": {
     "@types/mailparser": "^3.4.6",
-    "@types/nodemailer": "^6.4.17",
     "@types/node": "catalog:",
+    "@types/nodemailer": "^6.4.17",
     "@types/react": "catalog:",
     "@types/sanitize-html": "2.13.0",
     "drizzle-kit": "catalog:",

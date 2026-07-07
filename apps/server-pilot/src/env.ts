@@ -39,6 +39,11 @@ export interface MailEnv {
   SMTP_SECRET_ARN?: string;
   INGEST_MAX_MESSAGE_BYTES?: number;
   INGEST_MAX_ATTACHMENT_BYTES?: number;
+  AI_ENABLED: boolean;
+  AI_MODEL_ID?: string;
+  BEDROCK_GUARDRAIL_ID?: string;
+  BEDROCK_GUARDRAIL_VERSION?: string;
+  MASTRA_STORAGE_PATH?: string;
 }
 
 export type EnvInput = Record<string, string | undefined>;
@@ -55,6 +60,29 @@ const REQUIRED = [
 ] as const;
 
 const NODE_ENVS: readonly NodeEnv[] = ['production', 'development', 'test'];
+
+const DEFAULT_AI_MODEL_ID = 'amazon.nova-lite-v1:0';
+const DEFAULT_MASTRA_STORAGE_PATH = './data/mastra';
+
+const HOSTED_OBSERVABILITY_PREFIXES = [
+  'LANGFUSE_',
+  'LANGSMITH_',
+  'MASTRA_CLOUD_',
+  'MASTRA_PLATFORM_',
+] as const;
+
+function assertNoHostedObservabilityEnv(input: EnvInput, aiEnabled: boolean): void {
+  if (!aiEnabled) return;
+
+  const forbidden = Object.keys(input).filter((key) =>
+    HOSTED_OBSERVABILITY_PREFIXES.some((prefix) => key.startsWith(prefix)),
+  );
+  if (forbidden.length > 0) {
+    throw new Error(
+      `hosted observability env keys are not allowed when AI is enabled: ${forbidden.join(', ')}`,
+    );
+  }
+}
 
 function toInt(name: string, raw: string): number {
   const n = Number(raw);
@@ -107,6 +135,7 @@ export function parseEnv(input: EnvInput): MailEnv {
       'POP3_MAX_MESSAGES_PER_CYCLE',
       input.POP3_MAX_MESSAGES_PER_CYCLE as string,
     ),
+    AI_ENABLED: false,
   };
 
   if (input.INGEST_FIXTURE_DIR) env.INGEST_FIXTURE_DIR = input.INGEST_FIXTURE_DIR;
@@ -133,6 +162,19 @@ export function parseEnv(input: EnvInput): MailEnv {
       'INGEST_MAX_ATTACHMENT_BYTES',
       input.INGEST_MAX_ATTACHMENT_BYTES,
     );
+  }
+
+  const aiEnabled = input.AI_ENABLED === 'true' || input.AI_ENABLED === '1';
+  assertNoHostedObservabilityEnv(input, aiEnabled);
+  env.AI_ENABLED = aiEnabled;
+
+  if (aiEnabled) {
+    env.AI_MODEL_ID = input.AI_MODEL_ID ?? DEFAULT_AI_MODEL_ID;
+    env.MASTRA_STORAGE_PATH = input.MASTRA_STORAGE_PATH ?? DEFAULT_MASTRA_STORAGE_PATH;
+    if (input.BEDROCK_GUARDRAIL_ID) env.BEDROCK_GUARDRAIL_ID = input.BEDROCK_GUARDRAIL_ID;
+    if (input.BEDROCK_GUARDRAIL_VERSION) {
+      env.BEDROCK_GUARDRAIL_VERSION = input.BEDROCK_GUARDRAIL_VERSION;
+    }
   }
 
   return env;
