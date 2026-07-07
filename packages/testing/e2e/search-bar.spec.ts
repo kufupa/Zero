@@ -11,7 +11,7 @@ test.describe('Command palette (pilot)', () => {
 
     await openCommandPalette(page);
     await page.getByRole('option', { name: 'Drafts' }).click();
-    await expect(page).toHaveURL(/\/mail\/drafts/, { timeout: 10000 });
+    await expect(page).toHaveURL(/\/mail\/draft/, { timeout: 10000 });
     console.log('Command palette navigated to drafts');
 
     await openCommandPalette(page);

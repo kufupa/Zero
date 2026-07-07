@@ -13,7 +13,7 @@ test.describe('Mail actions (pilot context menu)', () => {
     await expect(firstEmail).toBeVisible({ timeout: 15000 });
 
     await firstEmail.click({ button: 'right' });
-    await expect(page.getByRole('menuitem', { name: 'Reply' })).toBeVisible({ timeout: 5000 });
+    await expect(page.getByRole('menuitem', { name: 'Reply', exact: true }).first()).toBeVisible({ timeout: 5000 });
     await expect(page.getByRole('menuitem', { name: 'Forward' })).toBeVisible();
     console.log('Pilot thread context menu exposes reply actions');
   });
