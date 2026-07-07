@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { dismissMailOnboarding, expectPilotInboxVisible } from './helpers/mail-inbox';
 
 test.describe('Pilot mail inbox (AI sidebar inert)', () => {
   test('inbox usable when aiSidebar query param is set', async ({ page }) => {
@@ -6,20 +7,9 @@ test.describe('Pilot mail inbox (AI sidebar inert)', () => {
     await page.waitForLoadState('domcontentloaded');
     console.log('Successfully accessed mail inbox with aiSidebar query');
 
-    await page.waitForTimeout(2000);
-    try {
-      const welcomeModal = page.getByText('Welcome to Zero Email!');
-      if (await welcomeModal.isVisible({ timeout: 2000 })) {
-        console.log('Onboarding modal detected, clicking outside to dismiss...');
-        await page.locator('body').click({ position: { x: 100, y: 100 } });
-        await page.waitForTimeout(1500);
-        console.log('Modal successfully dismissed');
-      }
-    } catch {
-      console.log('No onboarding modal found, proceeding...');
-    }
+    await dismissMailOnboarding(page);
 
-    await expect(page.getByText('Inbox')).toBeVisible();
+    await expectPilotInboxVisible(page);
     console.log('Mail inbox is now visible');
 
     await expect(page.locator('form#ai-chat-form')).not.toBeVisible({ timeout: 3000 });

@@ -74,4 +74,8 @@ export PLAYWRIGHT_SESSION_TOKEN=$(node -e 'const r=process.argv[1];const m=r.mat
 export PLAYWRIGHT_SESSION_DATA=$(node -e 'const r=process.argv[1];const m=r.match(/better-auth\.session_data=([^;\r\n]+)/);if(!m)process.exit(1);console.log(m[1])' "$RESP")
 
 cd packages/testing
+set +e
 pnpm exec playwright test --reporter=line
+PW_EXIT=$?
+set -e
+exit "$PW_EXIT"

@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { dismissMailOnboarding, expectPilotInboxVisible } from './helpers/mail-inbox';
 
 const email = process.env.EMAIL;
 
@@ -12,20 +13,9 @@ test.describe('Pilot mail inbox (AI inert)', () => {
     await page.waitForLoadState('domcontentloaded');
     console.log('Successfully accessed mail inbox');
 
-    await page.waitForTimeout(2000);
-    try {
-      const welcomeModal = page.getByText('Welcome to Zero Email!');
-      if (await welcomeModal.isVisible({ timeout: 2000 })) {
-        console.log('Onboarding modal detected, dismissing...');
-        await page.locator('body').click({ position: { x: 100, y: 100 } });
-        await page.waitForTimeout(1500);
-        console.log('Modal successfully dismissed');
-      }
-    } catch {
-      console.log('No onboarding modal found, proceeding...');
-    }
+    await dismissMailOnboarding(page);
 
-    await expect(page.getByText('Inbox')).toBeVisible();
+    await expectPilotInboxVisible(page);
     console.log('Mail inbox is now visible');
 
     await page.keyboard.press('Meta+0');

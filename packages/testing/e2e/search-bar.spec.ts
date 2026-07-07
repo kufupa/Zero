@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { dismissMailOnboarding, expectPilotInboxVisible } from './helpers/mail-inbox';
 
 test.describe('Search Bar Functionality', () => {
   test('should apply and clear multiple filters from the command palette', async ({ page }) => {
@@ -6,21 +7,9 @@ test.describe('Search Bar Functionality', () => {
     await page.waitForLoadState('domcontentloaded');
     console.log('Successfully accessed mail inbox')
 
-    await page.waitForTimeout(2000)
+    await dismissMailOnboarding(page)
 
-    try {
-      const welcomeModal = page.getByText('Welcome to Zero Email!')
-      if (await welcomeModal.isVisible({ timeout: 2000 })) {
-        console.log('Onboarding modal detected, clicking outside to dismiss')
-        await page.locator('body').click({ position: { x: 100, y: 100 } })
-        await page.waitForTimeout(1500)
-        console.log('Modal successfully dismissed')
-      }
-    } catch {
-      console.log('No onboarding modal found, proceeding')
-    }
-
-    await expect(page.getByText('Inbox')).toBeVisible()
+    await expectPilotInboxVisible(page)
     console.log('Confirmed we are in the inbox')
 
     const filtersToTest = ["With Attachments", "Last 7 Days", "Starred Emails"]
