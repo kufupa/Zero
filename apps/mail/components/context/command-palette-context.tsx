@@ -513,9 +513,10 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
         finalQuery = semanticQuery || query;
       }
 
-      const isFilterSyntax = /^(from:|to:|subject:|has:|is:|after:|before:|label:)/.test(
-        query.trim(),
-      );
+      const isFilterSyntax =
+        /^(from:|to:|cc:|bcc:|subject:|has:|hasattachment:|is:|read:|after:|before:|label:|category:|importance:)/.test(
+          query.trim(),
+        );
       if (query.trim() && !isFilterSyntax) {
         const searchFilter: ActiveFilter = {
           id: `search-${Date.now()}`,

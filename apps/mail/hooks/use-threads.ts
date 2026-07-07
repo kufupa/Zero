@@ -16,6 +16,7 @@ import { useParams } from 'react-router';
 import { useTheme } from 'next-themes';
 import { useQueryState } from 'nuqs';
 import { useMemo } from 'react';
+import useDebouncedValue from '@/hooks/use-debounce';
 import { computeThreadListEnabled } from '@/lib/mail/thread-list-query-enabled';
 import { selectLiveThreadListQuery } from '@/lib/mail/thread-list-query-policy';
 import { resolveThreadPollingMs } from '@/lib/mail/thread-polling-policy';
@@ -50,6 +51,8 @@ export const useThreads = (options?: UseThreadsOptions) => {
   const { labels } = useSearchLabels();
   const categories = useCategorySettings();
   const demoMode = isFrontendOnlyDemo();
+  const debouncedSearchQ = useDebouncedValue(searchValue.value);
+  const liveSearchQ = demoMode ? searchValue.value : debouncedSearchQ;
   const isPaletteMode = options != null && 'commandPaletteOpen' in options;
   const paletteOpen = isPaletteMode ? options?.commandPaletteOpen === 'true' : false;
   const folderForQuery = isPaletteMode ? canonicalRouteFolder ?? 'inbox' : canonicalRouteFolder;
@@ -141,7 +144,7 @@ export const useThreads = (options?: UseThreadsOptions) => {
   const liveDraftsQuery = useInfiniteQuery(
     trpc.drafts.list.infiniteQueryOptions(
       {
-        q: searchValue.value,
+        q: liveSearchQ,
         limit: 50,
       },
       {
@@ -157,7 +160,7 @@ export const useThreads = (options?: UseThreadsOptions) => {
   const threadsQuery = useInfiniteQuery(
     trpc.mail.listThreads.infiniteQueryOptions(
       {
-        q: searchValue.value,
+        q: liveSearchQ,
         folder: routeFilter.folder,
         filters: {
           categoryIds: routeFilter.filters.categoryIds ?? [],
