@@ -67,3 +67,13 @@ tools.json
 # nava-zero server-pilot EC2 env (secrets; never commit)
 apps/server-pilot/.env.production
 apps/server-pilot/.env.*
+
+# Compound Engineering machine-local preferences (never commit)
+.compound-engineering/config.local.yaml
+
+# scratch research / agent working files (never commit)
+.tmp-research/
+
+# playwright artifacts (regenerated per run)
+packages/testing/playwright-report/
+packages/testing/test-results/
