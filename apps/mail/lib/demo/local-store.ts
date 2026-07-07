@@ -68,6 +68,15 @@ export type DemoLabelInput = Partial<Pick<DemoLabel, 'name' | 'type' | 'color'>>
   id?: string;
 };
 
+export type DemoCategorySetting = {
+  id: string;
+  name: string;
+  searchValue: string;
+  order: number;
+  isDefault: boolean;
+  icon?: string;
+};
+
 export type DemoSettings = {
   language: string;
   timezone: string;
@@ -78,7 +87,7 @@ export type DemoSettings = {
   trustedSenders: string[];
   colorTheme: 'light' | 'dark' | 'system';
   zeroSignature: boolean;
-  categories: string[];
+  categories: DemoCategorySetting[];
   defaultEmailAlias: string;
   undoSendEnabled: boolean;
   imageCompression: 'low' | 'medium' | 'original';

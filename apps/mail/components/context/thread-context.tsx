@@ -46,6 +46,7 @@ import type { Label as LabelType } from '@/types';
 import { openReplyComposeContext } from '@/lib/mail/reply-compose-context';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { demoCreateLabel } from '@/lib/demo/local-actions';
+import { labelColorStyles, serializeLabelColor } from '@/lib/label-colors';
 
 interface EmailAction {
   id: string;
@@ -77,11 +78,12 @@ export type ThreadLabelCreateContextInput = {
 };
 
 export async function createLabelInThreadContext(input: ThreadLabelCreateContextInput): Promise<void> {
+  const colorStyles = labelColorStyles(input.data.color);
   const labelData = {
     name: input.data.name,
     color: {
-      backgroundColor: input.data.color?.backgroundColor || '#202020',
-      textColor: input.data.color?.textColor || '#FFFFFF',
+      backgroundColor: colorStyles.backgroundColor || '#202020',
+      textColor: colorStyles.color || '#FFFFFF',
     },
     type: 'user' as const,
   };
@@ -608,7 +610,9 @@ export function ThreadContextMenu({
       data,
       isFrontendOnlyDemoMode: isFrontendOnlyDemo(),
       setCreateLabelOpen,
-      createLabel: isFrontendOnlyDemo() ? demoCreateLabel : createLabel,
+      createLabel: isFrontendOnlyDemo()
+        ? demoCreateLabel
+        : (input) => createLabel({ name: input.name, color: serializeLabelColor(input.color) }),
       refetchLabels,
       labelsSuccessMessage: m['common.labels.saveLabelSuccess'](),
       labelsSavingMessage: m['common.labels.savingLabel'](),

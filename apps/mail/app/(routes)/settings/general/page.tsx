@@ -216,7 +216,7 @@ export default function GeneralPage() {
       toast.error(m['common.settings.failedToSave']());
       queryClient.setQueryData(trpc.settings.get.queryKey(), (updater) => {
         if (!updater) return;
-        return saved ? { settings: { ...updater.settings, ...saved } } : updater;
+        return saved ? { ...updater, settings: { ...updater.settings, ...saved } } : updater;
       });
     } finally {
       setIsSaving(false);

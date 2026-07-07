@@ -11,6 +11,7 @@ import { Separator } from '@/components/ui/separator';
 import { useTRPC } from '@/providers/query-provider';
 import { useMutation } from '@tanstack/react-query';
 import { Plus, Pencil } from 'lucide-react';
+import { labelColorStyles, serializeLabelColor } from '@/lib/label-colors';
 import { type Label as LabelType } from '@/types';
 import { Button } from '@/components/ui/button';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
@@ -41,11 +42,15 @@ export default function LabelsPage() {
 
   const handleSubmit = async (data: LabelType) => {
     if (isFrontendOnlyDemo()) {
+      const colorStyles = labelColorStyles(data.color);
       await toast.promise(
         demoCreateLabel({
           ...(editingLabel ? { id: editingLabel.id } : {}),
           name: data.name,
-          color: data.color,
+          color: {
+            backgroundColor: colorStyles.backgroundColor ?? '#202020',
+            textColor: colorStyles.color ?? '#FFFFFF',
+          },
         }),
         {
           loading: m['common.labels.savingLabel'](),
@@ -55,10 +60,11 @@ export default function LabelsPage() {
       );
       return;
     }
+    const wireColor = serializeLabelColor(data.color);
     await toast.promise(
       editingLabel
-        ? updateLabel({ id: editingLabel.id!, name: data.name, color: data.color })
-        : createLabel({ color: data.color, name: data.name }),
+        ? updateLabel({ id: editingLabel.id!, name: data.name, color: wireColor })
+        : createLabel({ color: wireColor, name: data.name }),
       {
         loading: m['common.labels.savingLabel'](),
         success: m['common.labels.saveLabelSuccess'](),
@@ -147,10 +153,7 @@ export default function LabelsPage() {
                         <div className="flex items-center space-x-3">
                           <Badge
                             className="px-2 py-1"
-                            style={{
-                              backgroundColor: label.color?.backgroundColor,
-                              color: label.color?.textColor,
-                            }}
+                            style={labelColorStyles(label.color)}
                           >
                             <span>{label.name}</span>
                           </Badge>

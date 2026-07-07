@@ -1,4 +1,4 @@
-import { createTRPCClient, httpBatchLink } from '@trpc/client';
+import { createTRPCClient, httpBatchLink, type TRPCClient } from '@trpc/client';
 import type { AppRouter } from '@zero/server/trpc';
 import superjson from 'superjson';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
@@ -46,8 +46,8 @@ const createDemoTrpcClient = (): unknown => createDemoProcedureNode([]);
 
 const getUrl = () => import.meta.env.VITE_PUBLIC_BACKEND_URL + '/api/trpc';
 
-export const api: AppRouter = isFrontendOnlyDemo()
-  ? (createDemoTrpcClient() as AppRouter)
+export const api: TRPCClient<AppRouter> = isFrontendOnlyDemo()
+  ? (createDemoTrpcClient() as TRPCClient<AppRouter>)
   : createTRPCClient<AppRouter>({
       links: [
         httpBatchLink({

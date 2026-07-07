@@ -7,7 +7,7 @@ function thread(id: string, receivedOn: string, starred = false): ParsedMessage 
     id,
     title: '',
     subject: '',
-    tags: starred ? [{ id: 's', name: 'STARRED' }] : [],
+    tags: starred ? [{ id: 's', name: 'STARRED', type: 'system' }] : [],
     sender: { email: 'a@b.c' },
     to: [],
     cc: null,

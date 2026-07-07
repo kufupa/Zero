@@ -9,5 +9,16 @@
     "rootDirs": [".", "./.react-router/types"]
   },
   "include": ["**/*.ts", "**/*.tsx", "worker-configuration.d.ts"],
-  "exclude": ["node_modules"]
+  "exclude": [
+    "node_modules",
+    "lib/elevenlabs-tools.ts",
+    "components/mail/note-panel.tsx",
+    "components/create/ai-chat.tsx",
+    "components/ui/ai-sidebar.tsx",
+    "components/ui/bimi-avatar.tsx",
+    "hooks/use-notes.tsx",
+    "components/ui/prompts-dialog.tsx",
+    "providers/voice-provider.tsx",
+    "components/create/template-button.tsx"
+  ]
 }

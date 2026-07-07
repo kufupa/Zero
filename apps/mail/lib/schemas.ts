@@ -8,6 +8,8 @@ export const serializedFileSchema = z.object({
   base64: z.string(),
 });
 
+export type SerializedFile = z.infer<typeof serializedFileSchema>;
+
 export const serializeFiles = async (files: File[]) => {
   return await Promise.all(
     files.map(async (file) => {

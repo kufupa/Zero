@@ -8,9 +8,9 @@ import type {
   CenturionMailCategory,
   IGetThreadResponse,
   IGetThreadsResponse,
-} from '../../../server/src/lib/driver/types';
+  ThreadListItem,
+} from '@zero/server/driver/types';
 
-const DEMO_CONNECTION_ID = 'demo-connection';
 const DEFAULT_MAX_RESULTS = 50;
 const MAX_RESULTS = 100;
 
@@ -100,15 +100,31 @@ export function listDemoThreads(input: DemoListInput = {}): IGetThreadsResponse 
   const nextPageToken = page.length + cursor < matches.length ? String(cursor + page.length) : null;
 
   return {
-    threads: page.map((entry) => {
-      const centurionCategory = toCenturionCategory(entry.thread.folder);
-      return {
-        id: entry.thread.id,
-        historyId: null,
-        ...(centurionCategory ? { centurionCategory } : {}),
-      };
-    }),
+    threads: page.map((entry) => mapEntryToThreadListItem(entry)),
     nextPageToken,
+  };
+}
+
+function mapEntryToThreadListItem(entry: DemoThreadRecord): ThreadListItem {
+  const visibleLabels = filterRemovedDemoLabels(entry.thread.labels);
+  const nonDraftMessages = entry.messages.filter((message) => message.isDraft !== true);
+  const latestMsg = getLatestThreadMessage(entry.messages);
+  const draftMessages = entry.messages.filter((message) => message.isDraft === true);
+  const centurionCategory = toCenturionCategory(entry.thread.folder);
+
+  return {
+    id: entry.thread.id,
+    historyId: null,
+    subject: latestMsg.subject ?? null,
+    snippet: (latestMsg.body ?? '').slice(0, 200) || null,
+    latestMessageAt: latestMsg.receivedOn ?? null,
+    isRead: nonDraftMessages.every((message) => !message.unread),
+    isStarred: visibleLabels.some((label) => label.name.toUpperCase() === 'STARRED'),
+    labelIds: visibleLabels.map((label) => label.id),
+    categoryIds: [],
+    hasDraft: draftMessages.length > 0,
+    draftCount: draftMessages.length,
+    ...(centurionCategory ? { centurionCategory } : {}),
   };
 }
 
@@ -170,8 +186,9 @@ export function getDemoThread(id: string): IGetThreadResponse {
     latest,
     hasUnread: nonDraftMessages.some((message) => message.unread),
     totalReplies: nonDraftMessages.length,
-    labels: visibleLabels.map((label) => ({ id: label.id, name: label.name })),
-    isLatestDraft: parsedMessages[parsedMessages.length - 1]?.isDraft === true,
+    labels: visibleLabels.map((label) => ({ id: label.id, name: label.name, type: 'system' as const })),
+    drafts: [],
+    categories: [],
     ...(centurionCategory ? { centurionCategory } : {}),
   };
 }
@@ -194,7 +211,6 @@ function mapDemoMessageToParsed(
 
   return {
     id: message.id,
-    connectionId: DEMO_CONNECTION_ID,
     title: message.subject,
     subject: message.subject,
     tags: threadTags,

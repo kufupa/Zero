@@ -1,6 +1,7 @@
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
 import { useSearchValue } from '@/hooks/use-search-value';
 import type { Label } from '@/types';
+import { labelColorStyles } from '@/lib/label-colors';
 import { cn } from '@/lib/utils';
 import * as React from 'react';
 
@@ -40,10 +41,7 @@ export const RenderLabels = ({ count = 1, labels }: { count?: number; labels: La
             'inline-block overflow-hidden truncate rounded bg-[#E8DEFD] px-1.5 py-0.5 text-xs font-medium text-[#2C2241] dark:bg-[#2C2241] dark:text-[#E8DEFD]',
             searchValue.value.includes(`label:${label.name}`) && 'border-white',
           )}
-          style={{
-            background: label.color?.backgroundColor,
-            color: label.color?.textColor,
-          }}
+          style={labelColorStyles(label.color)}
         >
           {label.name}
         </button>
@@ -64,10 +62,7 @@ export const RenderLabels = ({ count = 1, labels }: { count?: number; labels: La
                   'inline-block overflow-hidden truncate rounded bg-[#E8DEFD] px-1.5 py-0.5 text-xs font-medium text-[#2C2241] dark:bg-[#2C2241] dark:text-[#E8DEFD]',
                   searchValue.value.includes(`label:${label.name}`) && 'border-white',
                 )}
-                style={{
-                  backgroundColor: label.color?.backgroundColor,
-                  color: label.color?.textColor,
-                }}
+                style={labelColorStyles(label.color)}
               >
                 {label.name}
               </button>

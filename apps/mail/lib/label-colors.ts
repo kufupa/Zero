@@ -1,3 +1,5 @@
+import type { LabelColorValue } from '@/types';
+
 export const LABEL_COLORS = [
   { textColor: '#FFFFFF', backgroundColor: '#202020' },
   { textColor: '#D1F0D9', backgroundColor: '#12341D' },
@@ -8,6 +10,23 @@ export const LABEL_COLORS = [
 ] as const;
 
 export type LabelColor = (typeof LABEL_COLORS)[number];
+
+export function labelColorStyles(color: LabelColorValue | undefined): {
+  backgroundColor?: string;
+  color?: string;
+} {
+  if (!color) return {};
+  if (typeof color === 'string') {
+    return { backgroundColor: color, color: '#FFFFFF' };
+  }
+  return { backgroundColor: color.backgroundColor, color: color.textColor };
+}
+
+export function serializeLabelColor(color: LabelColorValue | undefined): string | undefined {
+  if (!color) return undefined;
+  if (typeof color === 'string') return color;
+  return color.backgroundColor;
+}
 
 export function isValidLabelColor(color: { backgroundColor: string; textColor: string }): boolean {
   return LABEL_COLORS.some(

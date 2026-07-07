@@ -351,7 +351,7 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
           setDraftId(null);
           setActiveReplyId(null);
         }}
-        initialMessage={draft?.content ?? latestDraft?.decodedBody}
+        initialMessage={draft?.content ?? latestDraft?.content ?? undefined}
         initialTo={initialToRecipients}
         initialCc={initialCcRecipients}
         initialBcc={initialBccRecipients}

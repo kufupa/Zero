@@ -79,7 +79,12 @@ export function LabelSidebarContextMenu({ children, labelId, hide }: LabelSideba
       labelId,
       isFrontendOnlyDemoMode: isFrontendOnlyDemo(),
       setDeleteDialogOpen,
-      deleteLabel: isFrontendOnlyDemo() ? demoDeleteLabel : (input) => deleteLabel(input),
+      deleteLabel: isFrontendOnlyDemo()
+        ? (input) => demoDeleteLabel(input.id)
+        : async (input) => {
+            const result = await deleteLabel(input);
+            return { success: result.deleted };
+          },
       refetchLabels: refetch,
       labelsSuccessMessage: m['common.labels.deleteLabelSuccess'](),
       errorMessage: 'Error deleting label',

@@ -1,14 +1,19 @@
-import type { CenturionMailCategory } from '../../server/src/lib/driver/types';
+import type { CenturionMailCategory } from '@zero/server/driver/types';
 
 export type { CenturionMailCategory };
+
+export type LabelColorValue =
+  | string
+  | {
+      backgroundColor: string;
+      textColor: string;
+    }
+  | null;
 
 export type Label = {
   id: string;
   name: string;
-  color?: {
-    backgroundColor: string;
-    textColor: string;
-  };
+  color?: LabelColorValue;
   type: string;
   labels?: Label[];
 };
@@ -119,8 +124,19 @@ export interface MailListProps {
 
 export type MailSelectMode = 'mass' | 'range' | 'single' | 'selectAllBelow';
 
+export type MailListThreadRow = {
+  id: string;
+  historyId?: string | null;
+  centurionCategory?: CenturionMailCategory;
+  latestMessageAt?: string | null;
+  isStarred?: boolean;
+  receivedOn?: string;
+  tags?: Label[];
+  threadId?: string;
+};
+
 export type ThreadProps = {
-  message: { id: string; historyId?: string | null; centurionCategory?: CenturionMailCategory };
+  message: MailListThreadRow;
   onClick?: (message: ParsedMessage) => () => void;
   isKeyboardFocused?: boolean;
 };

@@ -228,7 +228,7 @@ export function demoUpdateNote(
   data: Partial<DemoNote>,
   delayMs = DEMO_ACTION_DELAY_MS,
 ): Promise<{ note?: DemoNote }> {
-  return runDemoAction(
+  return runDemoAction<{ note?: DemoNote }>(
     () => {
       const updated = upsertDemoNote({
         id: noteId,
@@ -240,7 +240,7 @@ export function demoUpdateNote(
       });
       return { note: updated };
     },
-    () => ({ note: undefined }),
+    () => ({}),
     delayMs,
   );
 }
@@ -259,7 +259,7 @@ export function demoReorderNotes(
   input: Array<Pick<DemoNote, 'id' | 'order' | 'isPinned'>>,
   delayMs = DEMO_ACTION_DELAY_MS,
 ): Promise<{ success: boolean; notes: DemoNote[] }> {
-  return runDemoAction(
+  return runDemoAction<{ success: boolean; notes: DemoNote[] }>(
     () => ({
       success: true,
       notes: reorderDemoNotes(input),
@@ -295,7 +295,7 @@ export function demoUnsendEmail(
   _input: { messageId: string },
   delayMs = DEMO_ACTION_DELAY_MS,
 ): Promise<{ success: boolean }> {
-  return runDemoAction(
+  return runDemoAction<{ success: boolean }>(
     () => ({ success: true }),
     () => ({ success: false }),
     delayMs,
@@ -437,6 +437,7 @@ function createNoopDemoStore(): DemoStore {
     templates: {},
     labels: {},
     settings: createNoopDemoSettings(),
+    deletedDraftIds: [],
   };
 }
 

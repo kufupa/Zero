@@ -34,7 +34,7 @@ function AnalyticsProvider() {
 
     if (typeof window === 'undefined') return;
 
-    if ('requestIdleCallback' in window) {
+    if (typeof window.requestIdleCallback === 'function') {
       const idleHandle = window.requestIdleCallback(startTimer, { timeout: 3000 });
       return () => window.cancelIdleCallback?.(idleHandle);
     }

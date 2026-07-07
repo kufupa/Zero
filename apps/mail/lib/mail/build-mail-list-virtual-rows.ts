@@ -1,21 +1,29 @@
-import type { ParsedMessage } from '@/types';
+import type { MailListThreadRow } from '@/types';
 import {
   getDateBucket,
-  isThreadStarredForPin,
   MAIL_DATE_BUCKET_ORDER,
   type MailDateBucket,
 } from './thread-date-bucket';
 
 export type MailListVirtualRow =
   | { type: 'header'; bucket: MailDateBucket; key: string }
-  | { type: 'thread'; key: string; message: ParsedMessage; threadIndex: number };
+  | { type: 'thread'; key: string; message: MailListThreadRow; threadIndex: number };
 
 export type BuildMailListVirtualRowsOptions = {
   groupByDate: boolean;
 };
 
+function listRowReceivedOn(message: MailListThreadRow): string | undefined {
+  return message.receivedOn ?? message.latestMessageAt ?? undefined;
+}
+
+function isThreadStarredForPin(message: MailListThreadRow): boolean {
+  if (message.isStarred) return true;
+  return message.tags?.some((tag) => tag.name === 'STARRED') ?? false;
+}
+
 export function buildMailListVirtualRows(
-  threads: ParsedMessage[],
+  threads: MailListThreadRow[],
   now: Date,
   collapsedBuckets: ReadonlySet<MailDateBucket>,
   options: BuildMailListVirtualRowsOptions,
@@ -29,7 +37,7 @@ export function buildMailListVirtualRows(
     }));
   }
 
-  const byBucket = new Map<MailDateBucket, ParsedMessage[]>();
+  const byBucket = new Map<MailDateBucket, MailListThreadRow[]>();
   for (const b of MAIL_DATE_BUCKET_ORDER) {
     byBucket.set(b, []);
   }
@@ -38,7 +46,7 @@ export function buildMailListVirtualRows(
     if (isThreadStarredForPin(message)) {
       byBucket.get('pinned')!.push(message);
     } else {
-      const bucket = typeof message.receivedOn === 'string' ? getDateBucket(message.receivedOn, now) : 'older';
+      const bucket = getDateBucket(listRowReceivedOn(message), now);
       byBucket.get(bucket)!.push(message);
     }
   }

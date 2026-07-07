@@ -15,7 +15,7 @@ import {
   FormMessage,
 } from '@/components/ui/form';
 import { CurvedArrow } from '@/components/icons/icons';
-import { LABEL_COLORS } from '@/lib/label-colors';
+import { LABEL_COLORS, labelColorStyles } from '@/lib/label-colors';
 import type { Label as LabelType } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
@@ -58,14 +58,19 @@ export function LabelDialog({
   });
 
   const formColor = form.watch('color');
+  const resolvedFormColor = labelColorStyles(formColor);
 
   // Reset form when editingLabel changes or dialog opens
   useEffect(() => {
     if (dialogOpen) {
       if (editingLabel) {
+        const colorStyles = labelColorStyles(editingLabel.color);
         form.reset({
           name: editingLabel.name,
-          color: editingLabel.color || { backgroundColor: '#202020', textColor: '#FFFFFF' },
+          color: {
+            backgroundColor: colorStyles.backgroundColor || '#202020',
+            textColor: colorStyles.color || '#FFFFFF',
+          },
         });
       } else {
         form.reset({
@@ -138,8 +143,8 @@ export function LabelDialog({
                         type="button"
                         key={color.backgroundColor}
                         className={`h-10 w-10 rounded-[4px] border-[0.5px] border-white/10 ${
-                          formColor?.backgroundColor.toString() === color.backgroundColor &&
-                          formColor.textColor.toString() === color.textColor
+                          resolvedFormColor.backgroundColor === color.backgroundColor &&
+                          resolvedFormColor.color === color.textColor
                             ? 'scale-110 ring-2 ring-blue-500 ring-offset-1'
                             : 'hover:scale-105'
                         }`}

@@ -112,7 +112,7 @@ export function RecipientAutosuggest({
       });
 
   const canonicalRecipients = useMemo(
-    () => new Set(recipients.map((recipient) => canonicalizeEmail(recipient))),
+    () => new Set(recipients.map((recipient: string) => canonicalizeEmail(recipient))),
     [recipients],
   );
 

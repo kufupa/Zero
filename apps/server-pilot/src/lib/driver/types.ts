@@ -48,6 +48,8 @@ export interface ParsedMessage {
   attachments?: ParsedMessageAttachment[];
   isDraft?: boolean;
   debugHeaders?: MailDebugHeaderLine[];
+  listUnsubscribe?: string;
+  listUnsubscribePost?: string;
 }
 
 export interface ParsedDraft {
@@ -91,6 +93,7 @@ export interface MailFilterInput {
 
 export interface ThreadListItem {
   id: string;
+  historyId: string | null;
   subject: string | null;
   snippet: string | null;
   latestMessageAt: string | null;
@@ -100,6 +103,8 @@ export interface ThreadListItem {
   categoryIds: string[];
   hasDraft: boolean;
   draftCount: number;
+  // Demo/hotel-pilot only: real Gmail pilot omits this.
+  centurionCategory?: CenturionMailCategory;
 }
 
 export interface ThreadListResponse {
@@ -115,6 +120,8 @@ export interface ThreadDetailResponse {
   totalReplies: number;
   labels: MailLabelWire[];
   categories: MailCategory[];
+  // Demo/hotel-pilot only: real Gmail pilot omits this.
+  centurionCategory?: CenturionMailCategory;
 }
 
 export interface PilotCapabilities {
@@ -142,3 +149,4 @@ export interface MailManager {
 }
 
 export type IGetThreadResponse = ThreadDetailResponse;
+export type IGetThreadsResponse = ThreadListResponse;

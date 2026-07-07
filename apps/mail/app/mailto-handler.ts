@@ -201,18 +201,17 @@ async function createDraftFromMailto(mailtoData: {
           console.log('Draft created successfully with ID:', result.id);
           return result.id;
         } else {
+          const failure = result as { id?: string; error?: string };
           console.error(
             `Draft creation failed (attempt ${attempt}):`,
-            result?.error || 'Unknown error',
+            failure.error || 'Unknown error',
           );
 
           // If the error is related to "Invalid To header", try to fix the format for the next attempt
           if (attempt < MAX_RETRIES) {
             if (
-              typeof result === 'object' &&
-              result &&
-              'error' in result &&
-              String(result.error).includes('Invalid To header')
+              typeof failure.error === 'string' &&
+              failure.error.includes('Invalid To header')
             ) {
               handleInvalidToHeader(draftData);
             }

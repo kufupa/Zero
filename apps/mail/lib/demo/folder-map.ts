@@ -1,4 +1,4 @@
-import type { CenturionMailCategory } from '../../../server/src/lib/driver/types';
+import type { CenturionMailCategory } from '@zero/server/driver/types';
 
 export type DemoMailFolderId =
   | 'internal'

@@ -13,7 +13,19 @@ export default function SelectAllCheckbox({ className }: { className?: string })
   const [mail, setMail] = useMail();
   const [, loadedThreads] = useThreads();
   const [{ value: query }] = useSearchValue();
-  const { folder = 'inbox' } = useParams<{ folder: string }>() ?? {};
+  const { folder: routeFolder = 'inbox' } = useParams<{ folder: string }>() ?? {};
+  const folder = routeFolder.toLowerCase() as
+    | 'all'
+    | 'sent'
+    | 'inbox'
+    | 'drafts'
+    | 'draft'
+    | 'archived'
+    | 'archive'
+    | 'bin'
+    | 'spam'
+    | 'starred'
+    | 'snoozed';
 
   const [isFetchingIds, setIsFetchingIds] = useState(false);
   const allIdsCache = useRef<string[] | null>(null);
@@ -41,7 +53,7 @@ export default function SelectAllCheckbox({ className }: { className?: string })
         const page = await trpcClient.mail.listThreads.query({
           folder,
           q: query,
-          maxResults: MAX_PER_PAGE,
+          limit: MAX_PER_PAGE,
           cursor,
         });
         if (page?.threads?.length) {

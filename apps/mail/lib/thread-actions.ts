@@ -49,11 +49,13 @@ export function getAvailableActions(folder: FolderLocation): ThreadDestination[]
 export async function moveThreadsTo({ threadIds, destination }: MoveThreadOptions) {
   try {
     if (!threadIds.length || !destination) return;
-    if (!['inbox', 'archive', 'spam', 'bin'].includes(destination)) return;
+    const moveDestinations = ['inbox', 'archive', 'spam', 'bin'] as const;
+    type MoveDestination = (typeof moveDestinations)[number];
+    if (!(moveDestinations as readonly string[]).includes(destination)) return;
 
     return trpcClient.mail.moveThreads.mutate({
       threadIds,
-      destination,
+      destination: destination as MoveDestination,
     });
   } catch (error) {
     console.error(`Error moving thread(s):`, error);

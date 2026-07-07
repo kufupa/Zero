@@ -20,7 +20,7 @@ import { focusedIndexAtom, useMailNavigation } from '@/hooks/use-mail-navigation
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useIsFetching, type UseQueryResult } from '@tanstack/react-query';
 import type { MailSelectMode, ParsedMessage, ThreadProps } from '@/types';
-import type { ParsedDraft } from '../../../server/src/lib/driver/types';
+import type { ParsedDraft } from '@zero/server/driver/types';
 import { ThreadContextMenu } from '@/components/context/thread-context';
 import { useOptimisticActions } from '@/hooks/use-optimistic-actions';
 import { useMail, type Config } from '@/components/mail/use-mail';
@@ -753,13 +753,13 @@ const Draft = memo(({ message, index }: { message: { id: string }; index: number
                     </span>
                   </span>
                 </div>
-                {draft.rawMessage?.internalDate && (
+                {draft?.updatedAt && (
                   <p
                     className={cn(
                       'text-muted-foreground text-nowrap text-xs font-normal opacity-70 transition-opacity group-hover:opacity-100 dark:text-[#8C8C8C]',
                     )}
                   >
-                    {formatDateWithWeekdayAndTime(Number(draft.rawMessage?.internalDate))}
+                    {formatDateWithWeekdayAndTime(Date.parse(draft.updatedAt))}
                   </p>
                 )}
               </div>

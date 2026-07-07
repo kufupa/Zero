@@ -10,6 +10,7 @@ import { useSidebar } from '../context/sidebar-context';
 import { useTRPC } from '@/providers/query-provider';
 import { type NavItem } from '@/config/navigation';
 import type { Label as LabelType } from '@/types';
+import { serializeLabelColor } from '@/lib/label-colors';
 import { Link, useLocation } from 'react-router';
 import { m } from '../../paraglide/messages.js';
 import { Button } from '@/components/ui/button';
@@ -205,7 +206,10 @@ export function NavMain({ items }: NavMainProps) {
 
   const onSubmit = async (data: LabelType) => {
     try {
-      const promise = createLabel(data).then(async (result) => {
+      const promise = createLabel({
+        name: data.name,
+        color: serializeLabelColor(data.color),
+      }).then(async (result) => {
         await refetch();
         return result;
       });

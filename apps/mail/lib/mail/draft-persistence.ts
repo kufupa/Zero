@@ -1,3 +1,5 @@
+import type { SerializedFile } from '@/lib/schemas';
+
 type DraftMutationInput = {
   draftId: string | null;
   threadId: string | null;
@@ -8,7 +10,7 @@ type DraftMutationInput = {
   subject: string;
   html: string;
   fromEmail?: string;
-  attachments: unknown[];
+  attachments: SerializedFile[];
 };
 
 type PersistDecisionInput = {

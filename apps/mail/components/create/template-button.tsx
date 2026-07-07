@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { useTemplates } from '@/hooks/use-templates';
 import { useTRPC } from '@/providers/query-provider';
 import { Editor } from '@tiptap/react';

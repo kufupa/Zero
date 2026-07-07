@@ -70,9 +70,13 @@ export default function ShortcutsPage() {
                     const cat = categorySettings[idx];
                     label = cat
                       ? `Show ${cat.name}`
-                      : m[`pages.settings.shortcuts.actions.${shortcut.action}`]();
+                      : (m as unknown as Record<string, () => string>)[
+                          `pages.settings.shortcuts.actions.${shortcut.action}`
+                        ]();
                   } else {
-                    label = m[`pages.settings.shortcuts.actions.${shortcut.action}`]();
+                    label = (m as unknown as Record<string, () => string>)[
+                      `pages.settings.shortcuts.actions.${shortcut.action}`
+                    ]();
                   }
 
                   return (

@@ -39,8 +39,10 @@ const plugins = [
   tailwindcss(),
   {
     name: 'add-headers',
-    applyToEnvironment: (env) => env.name === 'client',
-    generateBundle() {
+    applyToEnvironment(env: { name?: string }) {
+      return env.name === 'client';
+    },
+    generateBundle(this: { emitFile: (file: { fileName: string; type: 'asset'; source: string }) => void }) {
       this.emitFile({
         fileName: '_headers',
         type: 'asset',

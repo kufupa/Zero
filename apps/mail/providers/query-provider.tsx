@@ -5,7 +5,7 @@ import {
 } from '@tanstack/react-query-persist-client';
 import { QueryCache, QueryClient, hashKey, type InfiniteData } from '@tanstack/react-query';
 import { createTRPCContext } from '@trpc/tanstack-react-query';
-import { createTRPCClient, httpBatchLink } from '@trpc/client';
+import { createTRPCClient, httpBatchLink, type TRPCClient } from '@trpc/client';
 import { useMemo, useRef, useSyncExternalStore, type PropsWithChildren } from 'react';
 import type { AppRouter } from '@zero/server/trpc';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
@@ -170,8 +170,8 @@ function createIDBPersister(idbValidKey: IDBValidKey = 'zero-query-cache') {
   } satisfies Persister;
 }
 
-export const makeQueryClient = (_legacyConnectionId?: string | null) =>
-  new QueryClient({
+export const makeQueryClient = (_legacyConnectionId?: string | null) => {
+  const queryClient = new QueryClient({
     queryCache: new QueryCache({
       onError: (err, query) => {
         const { meta } = query;
@@ -186,7 +186,7 @@ export const makeQueryClient = (_legacyConnectionId?: string | null) =>
           err.message.includes('not permitted') ||
           err.message === 'FORBIDDEN'
         ) {
-          void handleForbiddenSignOut(query.client);
+          void handleForbiddenSignOut(queryClient);
         } else console.error(err.message || 'Something went wrong');
       },
     }),
@@ -205,6 +205,8 @@ export const makeQueryClient = (_legacyConnectionId?: string | null) =>
       },
     },
   });
+  return queryClient;
+};
 
 let browserQueryClient: QueryClient | null = null;
 
@@ -240,8 +242,8 @@ const fetchWithTimeout = (url: RequestInfo | URL, options?: RequestInit) => {
 
 export const { TRPCProvider, useTRPC, useTRPCClient } = createTRPCContext<AppRouter>();
 
-export const trpcClient: AppRouter = isFrontendOnlyDemo()
-  ? (createDemoTrpcClient() as AppRouter)
+export const trpcClient: TRPCClient<AppRouter> = isFrontendOnlyDemo()
+  ? (createDemoTrpcClient() as TRPCClient<AppRouter>)
   : createTRPCClient<AppRouter>({
       links: [
         // loggerLink({ enabled: () => true }),

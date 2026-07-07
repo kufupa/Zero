@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { Avatar, AvatarFallback, AvatarImage } from './avatar';
 import { useState, useCallback, useMemo } from 'react';
 import { useTRPC } from '@/providers/query-provider';

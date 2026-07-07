@@ -122,7 +122,7 @@ const AnimationComponent: React.FC<{
       </motion.span>
         ) : (
           <motion.span className="inline-block whitespace-pre">
-            {segment.split('').reduce<JSX.Element[]>((acc, char) => {
+            {segment.split('').reduce<React.JSX.Element[]>((acc, char) => {
               const key = `${segment}-${acc.length}`;
               acc.push(
                 <motion.span
@@ -268,7 +268,7 @@ export function TextEffect({
               />,
             );
             return acc;
-          }, [] as JSX.Element[])}
+          }, [] as React.JSX.Element[])}
         </MotionTag>
       )}
     </AnimatePresence>

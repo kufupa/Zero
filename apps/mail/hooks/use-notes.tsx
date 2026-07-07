@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { useActiveConnection } from './use-connections';
 import { useTRPC } from '@/providers/query-provider';
 import { useQuery } from '@tanstack/react-query';

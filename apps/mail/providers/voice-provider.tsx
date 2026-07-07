@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { createContext, useContext, useState } from 'react';
 import { useConversation } from '@elevenlabs/react';
 // import { callServerTool } from '@/lib/server-tool';

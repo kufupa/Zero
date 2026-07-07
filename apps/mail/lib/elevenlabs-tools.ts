@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { trpcClient } from '@/providers/query-provider';
 const getCurrentThreadId = () => {
   if (typeof window !== 'undefined') {

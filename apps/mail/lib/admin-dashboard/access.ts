@@ -2,11 +2,14 @@ import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 
 const ALLOWED_ADMIN_EMAILS = ['centurion@legacyhotels.co.za'] as const;
 
-type SessionLike = {
-  user?: {
-    email?: string | null;
-  } | null;
-} | null;
+type SessionLike =
+  | {
+      user?: {
+        email?: string | null;
+      } | null;
+    }
+  | null
+  | undefined;
 
 export type AdminSource = 'demo' | 'hosted';
 

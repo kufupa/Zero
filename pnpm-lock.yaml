@@ -68,11 +68,11 @@ importers:
         specifier: ^7.6.3
         version: 7.6.3(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
       zod:
-        specifier: 4.1.1
-        version: 4.1.1
+        specifier: 'catalog:'
+        version: 3.25.67
       zod-to-json-schema:
         specifier: 3.24.6
-        version: 3.24.6(zod@4.1.1)
+        version: 3.24.6(zod@3.25.67)
     devDependencies:
       '@types/node':
         specifier: 24.3.0
@@ -11315,9 +11315,6 @@ packages:
 
   zod@3.25.67:
     resolution: {integrity: sha512-idA2YXwpCdqUSKRCACDE6ItZD9TZzy3OZMtpfLoh6oPR47lipysRrJfjzMqFxQ3uJuUPyUeWe1r9vLH33xO/Qw==}
-
-  zod@4.1.1:
-    resolution: {integrity: sha512-SgMZK/h8Tigt9nnKkfJMvB/mKjiJXaX26xegP4sa+0wHIFVFWVlsQGdhklDmuargBD3Hsi3rsQRIzwJIhTPJHA==}
 
   zustand@4.5.7:
     resolution: {integrity: sha512-CHOUy7mu3lbD6o6LJLfllpjkzhHXSBlX8B9+qPddUsIfeF5S/UZ5q0kmCsnRqT1UHFQZchNFDDzMbQsuesHWlw==}
@@ -23466,10 +23463,6 @@ snapshots:
     dependencies:
       zod: 3.25.67
 
-  zod-to-json-schema@3.24.6(zod@4.1.1):
-    dependencies:
-      zod: 4.1.1
-
   zod-validation-error@3.5.2(zod@3.25.67):
     dependencies:
       zod: 3.25.67
@@ -23477,8 +23470,6 @@ snapshots:
   zod@3.22.3: {}
 
   zod@3.25.67: {}
-
-  zod@4.1.1: {}
 
   zustand@4.5.7(@types/react@19.0.10)(react@19.1.0):
     dependencies:

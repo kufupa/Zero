@@ -44,9 +44,8 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { useLocation, useNavigate } from 'react-router';
 import { navigationConfig } from '@/config/navigation';
 import { Separator } from '@/components/ui/separator';
-import { useTRPC } from '@/providers/query-provider';
+import { useTRPCClient } from '@/providers/query-provider';
 import { Calendar } from '@/components/ui/calendar';
-import { useMutation } from '@tanstack/react-query';
 import { useThreads } from '@/hooks/use-threads';
 import { useLabels } from '@/hooks/use-labels';
 import { Label } from '@/components/ui/label';
@@ -61,6 +60,7 @@ import { useQueryState } from 'nuqs';
 import { toast } from 'sonner';
 import { demoGenerateSearchQuery } from '@/lib/demo/local-actions';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { labelColorStyles } from '@/lib/label-colors';
 import {
   canUseNaturalLanguageSearch,
   PILOT_CAPABILITIES,
@@ -73,7 +73,7 @@ type CommandPaletteContext = {
 
 interface CommandItem {
   title: string;
-  icon?: ComponentType<{ size?: number; strokeWidth?: number; className?: string }>;
+  icon?: ComponentType<{ size?: number; strokeWidth?: number | string; className?: string }>;
   url?: string;
   onClick?: () => unknown;
   shortcut?: string;
@@ -89,7 +89,7 @@ interface FilterOption {
   keywords: string[];
   action: (...args: string[]) => string;
   requiresInput?: boolean;
-  icon?: ComponentType<{ size?: number; strokeWidth?: number; className?: string }>;
+  icon?: ComponentType<{ size?: number; strokeWidth?: number | string; className?: string }>;
 }
 
 interface SavedSearch {
@@ -229,10 +229,14 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
   const { pathname } = useLocation();
 
   const { userLabels = [] } = useLabels();
-  const trpc = useTRPC();
+  const trpcClient = useTRPCClient();
   const frontendOnlyDemoMode = isFrontendOnlyDemo();
-  const { mutateAsync: generateSearchQuery } = useMutation(
-    trpc.ai.generateSearchQuery.mutationOptions(),
+  const generateSearchQuery = useCallback(
+    async (input: { query: string }) => {
+      const result = await trpcClient.ai.generateSearchQuery.query({ prompt: input.query });
+      return { query: result.query || input.query };
+    },
+    [trpcClient],
   );
 
   useEffect(() => {
@@ -1497,7 +1501,9 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
                     !searchQuery ||
                     (label.name && label.name.toLowerCase().includes(searchQuery.toLowerCase())),
                 )
-                .map((label) => (
+                .map((label) => {
+                  const labelStyles = labelColorStyles(label.color);
+                  return (
                   <div
                     key={label.id}
                     className="hover:bg-accent flex cursor-pointer items-center space-x-2 rounded-md border p-2"
@@ -1515,10 +1521,10 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
                       }
                     }}
                   >
-                    {label.color?.backgroundColor && (
+                    {labelStyles.backgroundColor && (
                       <div
                         className="h-3 w-3 rounded-full"
-                        style={{ backgroundColor: label.color.backgroundColor }}
+                        style={{ backgroundColor: labelStyles.backgroundColor }}
                       />
                     )}
                     <span className="text-sm">{label.name || 'Unnamed Label'}</span>
@@ -1526,7 +1532,8 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
                       <Check className="ml-auto h-4 w-4" />
                     )} */}
                   </div>
-                ))}
+                  );
+                })}
             </div>
           )}
         </div>

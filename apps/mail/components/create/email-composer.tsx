@@ -542,7 +542,9 @@ export function EmailComposer({
             threadMessages: threadContent,
           });
 
-      setAiGeneratedMessage(result.newBody);
+      if ('newBody' in result) {
+        setAiGeneratedMessage(result.newBody);
+      }
       // toast.success('Email generated successfully');
     } catch (error) {
       console.error('Error generating AI email:', error);

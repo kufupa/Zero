@@ -1,8 +1,15 @@
 import { BoldIcon, ItalicIcon, UnderlineIcon, StrikethroughIcon, CodeIcon } from 'lucide-react';
-import type { SelectorItem } from './editor.node-selector';
+import type { Editor } from '@tiptap/core';
 import { EditorBubbleItem, useEditor } from 'novel';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
+
+type SelectorItem = {
+  name: string;
+  isActive: (editor: Editor) => boolean;
+  command: (editor: Editor) => void;
+  icon: React.ComponentType<{ className?: string }>;
+};
 
 export const TextButtons = () => {
   const { editor } = useEditor();

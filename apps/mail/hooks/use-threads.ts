@@ -1,6 +1,6 @@
 import { backgroundQueueAtom, isThreadInBackgroundQueueAtom } from '@/store/backgroundQueue';
 import { useInfiniteQuery, useQuery, useMutation } from '@tanstack/react-query';
-import type { IGetThreadResponse } from '@zero/server/driver/types';
+import type { IGetThreadResponse, ThreadListItem } from '@zero/server/driver/types';
 import { useSearchValue } from '@/hooks/use-search-value';
 import { useTRPC } from '@/providers/query-provider';
 import useSearchLabels from './use-labels-search';
@@ -85,7 +85,7 @@ export const useThreads = (options?: UseThreadsOptions) => {
       }
       drafts.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
       return {
-        threads: drafts.map((d) => ({ id: d.id, historyId: null as const })),
+        threads: drafts.map((d) => ({ id: d.id, historyId: null as string | null })),
         nextPageToken: null,
       };
     },
@@ -186,13 +186,13 @@ export const useThreads = (options?: UseThreadsOptions) => {
 
   // Flatten threads from all pages and sort by receivedOn date (newest first)
 
-  const threads = useMemo(() => {
-    return activeThreadsQuery.data
-      ? activeThreadsQuery.data.pages
-          .flatMap((e) => e.threads)
-          .filter(Boolean)
-          .filter((e) => !isInQueue(`thread:${e.id}`))
-      : [];
+  const threads = useMemo<ThreadListItem[]>(() => {
+    if (!activeThreadsQuery.data) return [];
+    const pages = activeThreadsQuery.data.pages as Array<{ threads: ThreadListItem[] }>;
+    return pages
+      .flatMap((page) => page.threads)
+      .filter((thread): thread is ThreadListItem => Boolean(thread))
+      .filter((thread) => !isInQueue(`thread:${thread.id}`));
   }, [activeThreadsQuery.data, activeThreadsQuery.dataUpdatedAt, isInQueue, backgroundQueue]);
 
   const isEmpty = useMemo(() => threads.length === 0, [threads]);

@@ -259,6 +259,11 @@ type JsonValue = string | number | boolean | null | JsonObject | JsonArray;
 type JsonObject = { [key: string]: JsonValue };
 type JsonArray = JsonValue[];
 
+function jsonStringField(obj: JsonObject, key: string): string {
+  const value = obj[key];
+  return typeof value === 'string' ? value : '';
+}
+
 export const convertJSONToHTML = (json: JsonValue): string => {
   if (!json) return '';
 
@@ -276,7 +281,7 @@ export const convertJSONToHTML = (json: JsonValue): string => {
   if (typeof json === 'object') {
     // Check if it's a text node
     if (json.type === 'text') {
-      let text = json.text || '';
+      let text = jsonStringField(json, 'text');
 
       // Apply formatting if present
       if (json.bold) text = `<strong>${text}</strong>`;
@@ -293,8 +298,9 @@ export const convertJSONToHTML = (json: JsonValue): string => {
     }
 
     // Handle headings
-    if (json.type?.startsWith('heading-')) {
-      const level = json.type.split('-')[1];
+    const nodeType = jsonStringField(json, 'type');
+    if (nodeType.startsWith('heading-')) {
+      const level = nodeType.split('-')[1];
       return `<h${level}>${convertJSONToHTML(json.children)}</h${level}>`;
     }
 

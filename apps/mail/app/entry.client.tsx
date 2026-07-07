@@ -26,7 +26,7 @@ const initializeInstrumentation = () => {
 };
 
 if (typeof window !== 'undefined') {
-  if ('requestIdleCallback' in window) {
+  if (typeof window.requestIdleCallback === 'function') {
     window.requestIdleCallback(initializeInstrumentation, { timeout: 5000 });
   } else {
     window.setTimeout(initializeInstrumentation, 200);

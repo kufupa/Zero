@@ -1,3 +1,4 @@
+import type { Control } from 'react-hook-form';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as React from 'react';
 import { useDraft } from '../hooks/use-drafts';
@@ -124,7 +125,8 @@ vi.mock('@/providers/query-provider', () => ({
 
 vi.mock('sonner', () => ({
   toast: {
-    promise: (...args: unknown[]) => toastPromiseMock(...args),
+    promise: (promise: Promise<unknown>, options?: { finally?: () => void | Promise<void> }) =>
+      toastPromiseMock(promise, options),
     success: (...args: unknown[]) => toastSuccessMock(...args),
     info: (...args: unknown[]) => toastInfoMock(...args),
     error: (...args: unknown[]) => toastErrorMock(...args),
@@ -750,7 +752,7 @@ describe('demo backend guard coverage', () => {
 
   it('keeps recipient autosuggest backend query disabled in frontend-only demo mode', () => {
     RecipientAutosuggest({
-      control: {},
+      control: {} as Control<any>,
       name: 'recipients',
       placeholder: 'Enter email',
     });
@@ -768,7 +770,7 @@ describe('demo backend guard coverage', () => {
     setStateQueue(['', false, -1, false, 'alice']);
 
     RecipientAutosuggest({
-      control: {},
+      control: {} as Control<any>,
       name: 'recipients',
       placeholder: 'Enter email',
     });
@@ -783,7 +785,7 @@ describe('demo backend guard coverage', () => {
     setStateQueue(['', false, -1, false, 'alice']);
 
     RecipientAutosuggest({
-      control: {},
+      control: {} as Control<any>,
       name: 'recipients',
       placeholder: 'Enter email',
     });
@@ -982,8 +984,8 @@ describe('demo backend guard coverage', () => {
 
     expect(draft.id).toBeTruthy();
     expect(sendNow).toEqual({ success: true });
-    expect(sendQueued.queued).toBe(true);
-    expect(typeof sendQueued.messageId).toBe('string');
+    expect('queued' in sendQueued && sendQueued.queued).toBe(true);
+    expect('messageId' in sendQueued && typeof sendQueued.messageId).toBe('string');
     expect(ai.newBody).toContain('Draft a concise follow-up message.');
     expect(generated.subject).toBe('Quarterly planning update for Q3');
   });
@@ -1101,7 +1103,7 @@ describe('demo backend guard coverage', () => {
   });
 
   it('routes non-demo sidebar delete through mutation toast flow', async () => {
-    const deleteLabelMock = vi.fn(async () => ({ success: true }));
+    const deleteLabelMock = vi.fn(async (_id: string) => ({ success: true }));
     const setDeleteDialogOpen = vi.fn();
     const deleteRefetch = vi.fn(async () => ({ success: true }));
 
@@ -1109,7 +1111,7 @@ describe('demo backend guard coverage', () => {
       labelId: 'server-label-id',
       isFrontendOnlyDemoMode: false,
       setDeleteDialogOpen,
-      deleteLabel: async ({ id }) => deleteLabelMock(id),
+      deleteLabel: async (input: { id: string }) => deleteLabelMock(input.id),
       refetchLabels: deleteRefetch,
       labelsSuccessMessage: 'Label deleted on server',
       errorMessage: 'Delete failed',
@@ -1135,15 +1137,15 @@ describe('demo backend guard coverage', () => {
       externalImages: true,
       autoRead: true,
       undoSendEnabled: false,
-      imageCompression: 'medium',
-      colorTheme: 'system',
+      imageCompression: 'medium' as const,
+      colorTheme: 'system' as const,
       categories: [],
-    } as const;
+    };
     const nextValues = {
       ...currentSettings,
       timezone: 'America/New_York',
       customPrompt: 'demo-mode-save',
-    } as const;
+    };
 
     const queryDataMock = vi.fn();
     const demoSetSettingsMock = vi.fn(async () => ({ ...currentSettings, ...nextValues }));
@@ -1187,14 +1189,14 @@ describe('demo backend guard coverage', () => {
       externalImages: true,
       autoRead: true,
       undoSendEnabled: false,
-      imageCompression: 'medium',
-      colorTheme: 'system',
+      imageCompression: 'medium' as const,
+      colorTheme: 'system' as const,
       categories: [],
-    } as const;
+    };
     const nextValues = {
       ...currentSettings,
       customPrompt: 'backend-save',
-    } as const;
+    };
 
     const queryDataMock = vi.fn();
     const demoSetSettingsMock = vi.fn(async () => ({ ...currentSettings, ...nextValues }));
@@ -1232,11 +1234,11 @@ describe('demo backend guard coverage', () => {
         externalImages: true,
         autoRead: true,
         undoSendEnabled: false,
-        imageCompression: 'medium',
-        colorTheme: 'system',
+        imageCompression: 'medium' as const,
+        colorTheme: 'system' as const,
         categories: [],
       },
-    } as const;
+    };
 
     const demoSetSettingsMock = vi.fn(async () => ({ ...data.settings, trustedSenders: ['alice@example.com'] }));
     const saveUserSettingsMock = vi.fn(async () => ({ success: true }));
@@ -1271,11 +1273,11 @@ describe('demo backend guard coverage', () => {
         externalImages: true,
         autoRead: true,
         undoSendEnabled: false,
-        imageCompression: 'medium',
-        colorTheme: 'system',
+        imageCompression: 'medium' as const,
+        colorTheme: 'system' as const,
         categories: [],
       },
-    } as const;
+    };
 
     const demoSetSettingsMock = vi.fn(async () => ({ ...data.settings, trustedSenders: ['existing@example.com', 'alice@example.com'] }));
     const saveUserSettingsMock = vi.fn(async () => ({ success: true }));

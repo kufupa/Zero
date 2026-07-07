@@ -38,7 +38,7 @@ import { EmailVerificationBadge } from './email-verification-badge';
 import type { Sender, ParsedMessage, Attachment } from '@/types';
 import { useActiveConnection } from '@/hooks/use-connections';
 import { useAttachments } from '@/hooks/use-attachments';
-import { useTRPC } from '@/providers/query-provider';
+import { useTRPCClient } from '@/providers/query-provider';
 import { useThreadLabels } from '@/hooks/use-labels';
 import { useMutation } from '@tanstack/react-query';
 import { TextShimmer } from '../ui/text-shimmer';
@@ -359,7 +359,7 @@ export const resolveMailDisplayWebSearch = async ({
 }: {
   query: string;
   isFrontendOnlyDemoMode: boolean;
-  webSearch: (input: { query: string }) => Promise<MailDisplayWebSearchResult>;
+  webSearch: (input: { query: string }) => Promise<MailDisplayWebSearchResult | { results?: unknown[]; disabled?: boolean }>;
 }): Promise<MailDisplayWebSearchResult> => {
   if (isFrontendOnlyDemoMode) {
     return demoWebSearch({
@@ -368,8 +368,33 @@ export const resolveMailDisplayWebSearch = async ({
     });
   }
 
-  return webSearch({ query });
+  const result = await webSearch({ query });
+  if ('text' in result && typeof result.text === 'string') {
+    return {
+      text: result.text,
+      sources: 'sources' in result && Array.isArray(result.sources) ? result.sources : [],
+    };
+  }
+
+  return {
+    text: 'Web search is unavailable in pilot mode.',
+    sources: [],
+  };
 };
+
+function useMailDisplayWebSearchMutation() {
+  const trpcClient = useTRPCClient();
+  const isFrontendOnlyDemoMode = isFrontendOnlyDemo();
+
+  return useMutation({
+    mutationFn: ({ query }: { query: string }) =>
+      resolveMailDisplayWebSearch({
+        query,
+        isFrontendOnlyDemoMode,
+        webSearch: (input) => trpcClient.ai.webSearch.query(input),
+      }),
+  });
+}
 
 type ActionButtonProps = {
   onClick: (e: React.MouseEvent) => void;
@@ -546,23 +571,12 @@ const MoreAboutPerson = ({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) => {
-  const trpc = useTRPC();
-  const isFrontendOnlyDemoMode = isFrontendOnlyDemo();
-  const webSearchMutationOptions = trpc.ai.webSearch.mutationOptions();
   const {
     mutate: doSearch,
     isPending,
     data,
     error,
-  } = useMutation({
-    ...webSearchMutationOptions,
-    mutationFn: ({ query }: { query: string }) =>
-      resolveMailDisplayWebSearch({
-        query,
-        isFrontendOnlyDemoMode,
-        webSearch: webSearchMutationOptions.mutationFn,
-      }),
-  });
+  } = useMailDisplayWebSearchMutation();
   const handleSearch = useCallback(() => {
     doSearch({
       query: `In 50 words or less: What is the background of ${person.name} & ${person.email}, of ${person.email.split('@')[1]}.
@@ -630,23 +644,12 @@ const MoreAboutQuery = ({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) => {
-  const trpc = useTRPC();
-  const isFrontendOnlyDemoMode = isFrontendOnlyDemo();
-  const webSearchMutationOptions = trpc.ai.webSearch.mutationOptions();
   const {
     mutate: doSearch,
     isPending,
     data,
     error,
-  } = useMutation({
-    ...webSearchMutationOptions,
-    mutationFn: ({ query }: { query: string }) =>
-      resolveMailDisplayWebSearch({
-        query,
-        isFrontendOnlyDemoMode,
-        webSearch: webSearchMutationOptions.mutationFn,
-      }),
-  });
+  } = useMailDisplayWebSearchMutation();
 
   const handleSearch = useCallback(() => {
     doSearch({
