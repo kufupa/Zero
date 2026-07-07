@@ -26,6 +26,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ComponentType,
 } from 'react';
@@ -57,6 +58,7 @@ import { m } from '@/paraglide/messages';
 import { Pencil2 } from '../icons/icons';
 import { Button } from '../ui/button';
 import { useQueryState } from 'nuqs';
+import { TRPCClientError } from '@trpc/client';
 import { toast } from 'sonner';
 import { demoGenerateSearchQuery } from '@/lib/demo/local-actions';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
@@ -102,6 +104,15 @@ interface SavedSearch {
 export type CommandPaletteSearchResult = {
   query: string;
 };
+
+export function isUnsupportedSearchOperatorError(error: unknown): boolean {
+  if (!(error instanceof TRPCClientError)) return false;
+  return (
+    error.data?.code === 'BAD_REQUEST' &&
+    typeof error.message === 'string' &&
+    error.message.includes('unsupported search operator')
+  );
+}
 
 export const resolveCommandPaletteSearchQuery = async ({
   query,
@@ -215,7 +226,7 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
   const [dateRangeEnd, setDateRangeEnd] = useState<Date | undefined>(undefined);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchValue, setSearchValue] = useSearchValue();
-  const [, threads] = useThreads({ commandPaletteOpen: open });
+  const [threadsQuery, threads] = useThreads({ commandPaletteOpen: open });
   const [activeFilters, setActiveFilters] = useState<ActiveFilter[]>([]);
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
   const [savedSearches, setSavedSearches] = useState<SavedSearch[]>([]);
@@ -238,6 +249,7 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
     },
     [trpcClient],
   );
+  const lastSearchErrorRef = useRef<string | null>(null);
 
   useEffect(() => {
     setRecentSearches(getRecentSearches());
@@ -276,6 +288,29 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
       setEmailSuggestions(Array.from(emails).slice(0, 20));
     }
   }, [threads]);
+
+  useEffect(() => {
+    if (!PILOT_CAPABILITIES.gmailSearchGrammar) return;
+
+    const query = searchValue.value.trim();
+    if (!query) {
+      lastSearchErrorRef.current = null;
+      return;
+    }
+
+    if (!threadsQuery.isError || !threadsQuery.error) {
+      if (!threadsQuery.isError) lastSearchErrorRef.current = null;
+      return;
+    }
+
+    if (!isUnsupportedSearchOperatorError(threadsQuery.error)) return;
+
+    const errorKey = `${query}:${threadsQuery.error.message}`;
+    if (lastSearchErrorRef.current === errorKey) return;
+
+    lastSearchErrorRef.current = errorKey;
+    toast.error(threadsQuery.error.message);
+  }, [searchValue.value, threadsQuery.error, threadsQuery.isError]);
 
   useEffect(() => {
     if (!open) {
@@ -473,7 +508,7 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
 
       let finalQuery = query;
 
-      if (isNaturalLanguage) {
+      if (isNaturalLanguage && !PILOT_CAPABILITIES.gmailSearchGrammar) {
         const semanticQuery = parseNaturalLanguageSearch(query);
         finalQuery = semanticQuery || query;
       }

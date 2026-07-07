@@ -21,8 +21,8 @@ describe('mail route filter contract', () => {
 });
 
 describe('pilot search capability gates', () => {
-  it('disables natural language and Gmail grammar search', () => {
+  it('enables Gmail grammar search while AI natural language stays off', () => {
     expect(canUseNaturalLanguageSearch()).toBe(false);
-    expect(PILOT_CAPABILITIES.gmailSearchGrammar).toBe(false);
+    expect(PILOT_CAPABILITIES.gmailSearchGrammar).toBe(true);
   });
 });
