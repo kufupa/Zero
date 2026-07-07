@@ -44,6 +44,22 @@ Opaque pagination token encoding `(latestMessageAt|id)` used by `mail.listThread
 
 Pilot inbox listing includes only non-trashed, non-archived threads with at least one **inbound** message and without the SPAM label. Outbound-only compose threads belong in **sent**, not inbox. Test fixtures must seed inbound messages when asserting inbox visibility.
 
+### Draft lifecycle status
+
+`mail_draft.status` state machine: `active` (the one editable draft), `candidate` (AI-generated, not yet promoted), `discarded` (superseded/abandoned), `sent`. Paired with `origin` (`manual | ai`), `replyToMessageId` (parent for stale checks), and `generationId` (AI provenance). Visible draft queries return `active` + `candidate` only.
+
+### Refresh-safe draft persistence
+
+Draft compose behavior where a body-first draft is persisted server-side early (via `shouldPersistDraft`, keyed on meaningful change not on complete recipients/subject) and a late server refetch never overwrites unsaved local edits (via `chooseDraftEditorState` dirty-state tiebreaker). Prevents losing a user-typed reply on refresh/navigation.
+
+### Stale draft (STALE_DRAFT)
+
+A reply draft whose `replyToMessageId` predates a newer inbound message on the same thread. Server `mail.send` raises `TRPCError({ code: 'CONFLICT', message: 'STALE_DRAFT' })`; the SPA asks the user and retries only with `confirmStaleDraft: true`. Detection is server-owned; the client just surfaces the conflict.
+
+### Draft promotion (ensureEditableForReply)
+
+Atomic server mutation that returns an editable `active` draft for a reply: existing active wins, else the newest `candidate` for the same parent promotes in place and older sibling candidates become `discarded`. One transaction so double-click / two-tab editor opens are idempotent and cannot create duplicate active drafts.
+
 ## Deploy and ops
 
 ### Bundle sync
@@ -53,3 +69,19 @@ Git-bundle-over-S3 workflow (`sync-ec2-git-bundle.sh`) that updates EC2 code via
 ### Pre-real-ingest gate
 
 The security hardening wave (sanitize HTML, mailbox header trust, RDS TLS, signup guard, etc.) that must pass on EC2 before enabling real POP3/SMTP ingest.
+
+### Manual RDS migrate
+
+Explicit operator step to apply Drizzle SQL migrations against pilot RDS. Not part of `deploy-ec2.sh` so breaking schema changes do not run automatically on every deploy. Requires exporting production env (`set -a` before sourcing `.env.production`) so child migrate processes inherit `DATABASE_URL`.
+
+### Patch-fragment truncation
+
+Autonomous-agent editing failure where a plan snippet is written as the entire file, leaving only the new hunk and dropping the file's head and tail. Structural (missing imports/exports), distinct from CRLF mangling or a bad logic change. Recovery is revert-to-clean-HEAD, not hand-repair.
+
+### False green gate
+
+A verification gate (typecheck, test, or build) reported as passing in a hand-off summary but never executed against the actual working tree — the described fixes were never persisted or committed, so re-running the check on disk reveals the true failures. Distinct from Patch-fragment truncation, where edits are corrupted rather than absent; here the state simply never matched the claim. Detection and prevention is to re-run the exact gate on disk (ideally in CI) rather than trusting the reported status.
+
+### E2E session mint
+
+Autonomous Playwright gate step that logs in a pilot user non-interactively — POST `/api/auth/sign-in/email` with a password from Secrets Manager — then exports `PLAYWRIGHT_SESSION_TOKEN`/`PLAYWRIGHT_SESSION_DATA` (+ `PLAYWRIGHT_COOKIE_PREFIX`) so `auth.setup.ts` injects a real Better Auth session. Cookie domain/secure derive from `PLAYWRIGHT_BASE_URL`, not hardcoded `localhost`.
