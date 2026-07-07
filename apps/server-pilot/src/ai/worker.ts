@@ -1,7 +1,7 @@
 import { pathToFileURL } from 'node:url';
 import { eq } from 'drizzle-orm';
 import { closeDb, getDb } from '../db/client.js';
-import { aiWorkflowRun, message } from '../db/schema/mail.js';
+import { aiWorkflowRun, aiDraftGeneration, message } from '../db/schema/mail.js';
 import { parseEnv } from '../env.js';
 import { createMastraRuntime } from './mastra.js';
 import { persistAiCandidateDraft } from './drafts.js';
@@ -63,12 +63,18 @@ export async function executeAiRun(runId: string): Promise<ExecuteAiRunResult> {
 
     if (run.runKind === 'candidate_draft') {
       const generationId = run.generationId ?? `${run.id}-generation`;
+      const [existingGeneration] = await db
+        .select({ requestedByUserId: aiDraftGeneration.requestedByUserId })
+        .from(aiDraftGeneration)
+        .where(eq(aiDraftGeneration.id, generationId))
+        .limit(1);
+      const createdByUserId = existingGeneration?.requestedByUserId ?? 'user-centurion-worker';
       const draft = await persistAiCandidateDraft({
         db,
         transportId: run.transportId,
         threadId: run.threadId,
         replyToMessageId: run.triggerMessageId,
-        createdByUserId: 'ai-worker',
+        createdByUserId,
         generationId,
         model: run.modelId,
         promptVersion: run.promptVersion,
