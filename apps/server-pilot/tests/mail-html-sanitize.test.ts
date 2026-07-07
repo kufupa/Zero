@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { sanitizeHtmlBodyForStorage } from '../src/mail/sanitize-email-html.js';
 import { toParsedMessage } from '../src/trpc/wire-compat.js';
 
 describe('mail html sanitize serving path', () => {
@@ -66,5 +67,39 @@ describe('mail html sanitize serving path', () => {
 
     expect(parsed.processedHtml).not.toContain('<style');
     expect(parsed.processedHtml).toContain('hi');
+  });
+
+  it('toParsedMessage stays safe when htmlBody was pre-sanitized at ingest', () => {
+    const malicious = '<img src=x onerror=alert(1)><script>alert(1)</script>';
+    const stored = sanitizeHtmlBodyForStorage(malicious)!;
+    const parsed = toParsedMessage({
+      id: 'm3',
+      transportId: 't1',
+      threadId: 'th1',
+      direction: 'inbound',
+      fromAddress: 'a@b.com',
+      toAddresses: ['c@d.com'],
+      ccAddresses: [],
+      bccAddresses: [],
+      subject: 'x',
+      textBody: null,
+      htmlBody: stored,
+      messageIdHeader: null,
+      inReplyTo: null,
+      references: [],
+      isRead: true,
+      isStarred: false,
+      receivedAt: new Date(),
+      sentAt: null,
+      ingestMailboxId: null,
+      pop3Uidl: null,
+      ownerHeaderValue: null,
+      rawMimeS3Key: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    expect(parsed.processedHtml).not.toContain('<script');
+    expect(parsed.processedHtml).not.toMatch(/onerror/i);
   });
 });
