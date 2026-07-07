@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import { eq } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
+import { persistAiCandidateDraft } from '../src/ai/drafts.js';
 import { getDb } from '../src/db/client.js';
 import {
   aiDraftGeneration,
@@ -120,5 +122,74 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('draft eval schema contract', 
       generationId,
       textBody: 'AI draft reply',
     });
+  });
+
+  it('replays generation without creating duplicate candidate drafts', async () => {
+    const db = getDb();
+    const transportId = randomUUID();
+    const threadId = randomUUID();
+    const messageId = randomUUID();
+    const generationId = randomUUID();
+
+    await db.insert(mailboxTransport).values({
+      id: transportId,
+      email: 'replay@example.com',
+      ownerHeaderValue: 'replay@example.com',
+    });
+    await db.insert(userAuthTable).values({
+      id: 'user-1',
+      name: 'User',
+      email: 'user@example.com',
+      emailVerified: false,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    }).onConflictDoNothing();
+    await db.insert(mailThread).values({
+      id: threadId,
+      transportId,
+      threadRootId: '<root@example.com>',
+      subject: 'Booking',
+      snippet: 'Need help',
+      latestMessageAt: new Date('2026-07-06T10:00:00Z'),
+    });
+    await db.insert(message).values({
+      id: messageId,
+      transportId,
+      threadId,
+      direction: 'inbound',
+      fromAddress: 'guest@example.com',
+      toAddresses: ['replay@example.com'],
+      subject: 'Booking',
+      textBody: 'Need help',
+      receivedAt: new Date('2026-07-06T10:00:00Z'),
+    });
+
+    const input = {
+      db,
+      transportId,
+      threadId,
+      replyToMessageId: messageId,
+      createdByUserId: 'user-1',
+      generationId,
+      model: 'amazon.nova-lite-v1:0',
+      promptVersion: 'draft-v1',
+      contextMessageIds: [messageId],
+      toAddresses: ['guest@example.com'],
+      subject: 'Re: Booking',
+      textBody: 'AI draft reply',
+      htmlBody: '<p>AI draft reply</p>',
+    };
+
+    const first = await persistAiCandidateDraft(input);
+    const second = await persistAiCandidateDraft(input);
+    expect(second.id).toBe(first.id);
+
+    const draftRows = await db.select().from(mailDraft).where(eq(mailDraft.generationId, generationId));
+    const revisionRows = await db
+      .select()
+      .from(mailDraftRevision)
+      .where(eq(mailDraftRevision.generationId, generationId));
+    expect(draftRows).toHaveLength(1);
+    expect(revisionRows).toHaveLength(1);
   });
 });
