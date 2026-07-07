@@ -12,6 +12,7 @@ import type { DB } from '../../db/client.js';
 import {
   attachment,
   mailCategory,
+  mailDraft,
   mailThread,
   mailThreadCategory,
   message,
@@ -201,6 +202,49 @@ export function buildThreadSearchConditions(
           ),
       ),
     );
+  }
+
+  return conditions;
+}
+
+function draftAddressMatch(
+  column: typeof mailDraft.toAddresses,
+  needle: string,
+): SQL {
+  const pattern = addressLikePattern(needle);
+  return sql`EXISTS (
+    SELECT 1
+    FROM jsonb_array_elements_text(${column}) AS addr
+    WHERE lower(addr) LIKE ${pattern}
+  )`;
+}
+
+/** Parsed mail search query → Drizzle SQL fragments to AND into drafts.list. */
+export function buildDraftSearchConditions(parsed: ParsedSearchQuery): SQL[] {
+  const conditions: SQL[] = [];
+
+  const freeText = parsed.freeText.trim();
+  if (freeText) {
+    const pattern = addressLikePattern(freeText);
+    conditions.push(
+      sql`(lower(${mailDraft.subject}) LIKE ${pattern} OR lower(${mailDraft.textBody}) LIKE ${pattern})`,
+    );
+  }
+
+  if (parsed.subject) {
+    conditions.push(
+      sql`lower(${mailDraft.subject}) LIKE ${addressLikePattern(parsed.subject)}`,
+    );
+  }
+
+  for (const needle of parsed.to) {
+    conditions.push(draftAddressMatch(mailDraft.toAddresses, needle));
+  }
+  for (const needle of parsed.cc) {
+    conditions.push(draftAddressMatch(mailDraft.ccAddresses, needle));
+  }
+  for (const needle of parsed.bcc) {
+    conditions.push(draftAddressMatch(mailDraft.bccAddresses, needle));
   }
 
   return conditions;
