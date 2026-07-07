@@ -40,6 +40,7 @@ pnpm test \
   --reporter=dot
 
 echo "== ai-gate: spike eval =="
+# Spike eval stays on fake adapter — see bedrock-live-gate.sh for live Bedrock.
 pnpm ai:test -- --mode=spike
 
 echo "== ai-gate: build =="

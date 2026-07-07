@@ -1,0 +1,162 @@
+import {
+  BedrockRuntimeClient,
+  ConverseCommand,
+  type ConverseCommandInput,
+} from '@aws-sdk/client-bedrock-runtime';
+import type { ModelAdapter, ModelInvokeInput, ModelInvokeResult } from './adapter.js';
+import { validateStructuredJsonOutput } from '../security/policy.js';
+
+const DEFAULT_BEDROCK_REGION = 'us-east-1';
+
+export interface BedrockModelAdapterConfig {
+  region?: string;
+  modelId?: string;
+  guardrailId?: string;
+  guardrailVersion?: string;
+  client?: BedrockRuntimeClient;
+}
+
+function stripMarkdownFences(text: string): string {
+  const trimmed = text.trim();
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  return fenced ? fenced[1].trim() : trimmed;
+}
+
+function parseModelJson(text: string): Record<string, unknown> {
+  const cleaned = stripMarkdownFences(text);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch {
+    throw new Error('model output was not valid JSON');
+  }
+  return validateStructuredJsonOutput(parsed);
+}
+
+function extractTextContent(content: unknown): string {
+  if (!Array.isArray(content)) {
+    throw new Error('model returned no text content');
+  }
+  const textBlock = content.find(
+    (block): block is { text: string } =>
+      typeof block === 'object' &&
+      block !== null &&
+      'text' in block &&
+      typeof (block as { text?: unknown }).text === 'string',
+  );
+  if (!textBlock?.text.trim()) {
+    throw new Error('model returned empty text content');
+  }
+  return textBlock.text;
+}
+
+function formatBedrockError(error: unknown, region: string, modelId: string): Error {
+  const name =
+    typeof error === 'object' && error !== null && 'name' in error
+      ? String((error as { name: unknown }).name)
+      : 'BedrockError';
+  const message =
+    typeof error === 'object' && error !== null && 'message' in error
+      ? String((error as { message: unknown }).message)
+      : String(error);
+  if (name === 'AccessDeniedException') {
+    return new Error(
+      `Bedrock AccessDenied for model ${modelId} in ${region}: ${message}`,
+    );
+  }
+  return new Error(`Bedrock ${name} for model ${modelId} in ${region}: ${message}`);
+}
+
+export class BedrockModelAdapter implements ModelAdapter {
+  private readonly client: BedrockRuntimeClient;
+  private readonly region: string;
+  private readonly defaultModelId?: string;
+  private readonly guardrailId?: string;
+  private readonly guardrailVersion?: string;
+
+  constructor(config: BedrockModelAdapterConfig = {}) {
+    this.region = config.region ?? DEFAULT_BEDROCK_REGION;
+    this.defaultModelId = config.modelId;
+    this.guardrailId = config.guardrailId;
+    this.guardrailVersion = config.guardrailVersion;
+    this.client =
+      config.client ??
+      new BedrockRuntimeClient({
+        region: this.region,
+      });
+  }
+
+  async invoke(input: ModelInvokeInput): Promise<ModelInvokeResult> {
+    const modelId = input.modelId || this.defaultModelId;
+    if (!modelId) {
+      throw new Error('modelId is required for Bedrock invoke');
+    }
+
+    const started = Date.now();
+    const commandInput: ConverseCommandInput = {
+      modelId,
+      system: [{ text: input.systemPrompt }],
+      messages: [{ role: 'user', content: [{ text: input.userPrompt }] }],
+    };
+
+    if (input.responseSchema) {
+      commandInput.inferenceConfig = { maxTokens: 2048, temperature: 0 };
+      commandInput.additionalModelRequestFields = {
+        responseFormat: {
+          json: { schema: input.responseSchema },
+        },
+      } as ConverseCommandInput['additionalModelRequestFields'];
+    } else {
+      commandInput.inferenceConfig = { maxTokens: 2048, temperature: 0 };
+    }
+
+    if (this.guardrailId && this.guardrailVersion) {
+      commandInput.guardrailConfig = {
+        guardrailIdentifier: this.guardrailId,
+        guardrailVersion: this.guardrailVersion,
+      };
+    }
+
+    const run = async () => this.client.send(new ConverseCommand(commandInput));
+
+    let response;
+    try {
+      response = await run();
+    } catch (error) {
+      const name =
+        typeof error === 'object' && error !== null && 'name' in error
+          ? String((error as { name: unknown }).name)
+          : '';
+      if (name === 'ThrottlingException') {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        try {
+          response = await run();
+        } catch (retryError) {
+          throw formatBedrockError(retryError, this.region, modelId);
+        }
+      } else {
+        throw formatBedrockError(error, this.region, modelId);
+      }
+    }
+
+    const text = extractTextContent(response.output?.message?.content);
+    const output = parseModelJson(text);
+    const latencyMs = Date.now() - started;
+
+    return {
+      modelId,
+      output,
+      usage: {
+        inputTokens: response.usage?.inputTokens ?? 0,
+        outputTokens: response.usage?.outputTokens ?? 0,
+        latencyMs,
+      },
+    };
+  }
+}
+
+export function createBedrockModelAdapter(
+  config: BedrockModelAdapterConfig = {},
+): ModelAdapter {
+  return new BedrockModelAdapter(config);
+}

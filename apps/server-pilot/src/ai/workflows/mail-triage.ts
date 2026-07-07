@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { createStep, createWorkflow } from '@mastra/core/workflows';
-import { createFakeModelAdapter } from '../bedrock/fake.js';
+import { createModelAdapter } from '../bedrock/factory.js';
 import { enforceInboundMailPolicy, validateStructuredJsonOutput } from '../security/policy.js';
 import { applyShadowTriageResult, validateTriageOutput } from '../triage.js';
 
@@ -29,7 +29,7 @@ const classifyStep = createStep({
   outputSchema: triageOutputSchema,
   execute: async ({ inputData, runId }) => {
     enforceInboundMailPolicy({ body: inputData.body });
-    const adapter = createFakeModelAdapter();
+    const adapter = createModelAdapter();
     const model = await adapter.invoke({
       modelId: 'amazon.nova-lite-v1:0',
       systemPrompt: 'classify inbound hotel mail',

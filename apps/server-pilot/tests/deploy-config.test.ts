@@ -11,6 +11,11 @@ describe('deploy config', () => {
     expect(worker?.max_restarts).toBe(10);
     expect(pm2.apps.filter((app) => app.name === 'http')).toHaveLength(1);
     expect(pm2.apps.filter((app) => app.name === 'ai-worker')).toHaveLength(1);
+    const aiWorker = pm2.apps.find((app) => app.name === 'ai-worker');
+    expect(aiWorker?.env?.AI_ENABLED).toBe('true');
+    expect(aiWorker?.env?.BEDROCK_REGION).toBe('us-east-1');
+    expect(aiWorker?.env?.SMTP_HOST).toBeUndefined();
+    expect(aiWorker?.env?.POP3_HOST).toBeUndefined();
   });
 
   it('nginx config proxies /api to localhost:8788', async () => {

@@ -41,6 +41,7 @@ export interface MailEnv {
   INGEST_MAX_ATTACHMENT_BYTES?: number;
   AI_ENABLED: boolean;
   AI_MODEL_ID?: string;
+  BEDROCK_REGION?: string;
   BEDROCK_GUARDRAIL_ID?: string;
   BEDROCK_GUARDRAIL_VERSION?: string;
   MASTRA_STORAGE_PATH?: string;
@@ -62,6 +63,7 @@ const REQUIRED = [
 const NODE_ENVS: readonly NodeEnv[] = ['production', 'development', 'test'];
 
 const DEFAULT_AI_MODEL_ID = 'amazon.nova-lite-v1:0';
+const DEFAULT_BEDROCK_REGION = 'us-east-1';
 const DEFAULT_MASTRA_STORAGE_PATH = './data/mastra';
 
 const HOSTED_OBSERVABILITY_PREFIXES = [
@@ -170,6 +172,7 @@ export function parseEnv(input: EnvInput): MailEnv {
 
   if (aiEnabled) {
     env.AI_MODEL_ID = input.AI_MODEL_ID ?? DEFAULT_AI_MODEL_ID;
+    env.BEDROCK_REGION = input.BEDROCK_REGION ?? DEFAULT_BEDROCK_REGION;
     env.MASTRA_STORAGE_PATH = input.MASTRA_STORAGE_PATH ?? DEFAULT_MASTRA_STORAGE_PATH;
     if (input.BEDROCK_GUARDRAIL_ID) env.BEDROCK_GUARDRAIL_ID = input.BEDROCK_GUARDRAIL_ID;
     if (input.BEDROCK_GUARDRAIL_VERSION) {

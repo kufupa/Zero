@@ -15,6 +15,7 @@ Self-hosted AI mail pipeline for async triage, candidate drafts, HITL feedback, 
 |----------|---------|---------|
 | `AI_ENABLED` | `false` | Enables AI env validation and worker runtime |
 | `AI_MODEL_ID` | `amazon.nova-lite-v1:0` | Bedrock/default model id |
+| `BEDROCK_REGION` | `us-east-1` | Bedrock runtime region (Nova Lite; cross-region from `af-south-1` EC2) |
 | `BEDROCK_GUARDRAIL_ID` | optional | Bedrock guardrail id |
 | `BEDROCK_GUARDRAIL_VERSION` | optional | Bedrock guardrail version |
 | `MASTRA_STORAGE_PATH` | `./data/mastra/runtime.db` | Local Mastra LibSQL storage |
@@ -73,8 +74,21 @@ bash apps/server-pilot/deploy/ssm-run-command.sh 'cd /home/ubuntu/repos/zero/app
 bash apps/server-pilot/deploy/ssm-run-command.sh 'export NVM_DIR=/home/ubuntu/.nvm; . /home/ubuntu/.nvm/nvm.sh; cd /home/ubuntu/repos/zero && bash apps/server-pilot/deploy/deploy-ec2.sh'
 bash apps/server-pilot/deploy/ssm-run-command.sh 'curl -fsS http://127.0.0.1:8788/health'
 bash apps/server-pilot/deploy/ssm-run-command.sh 'set -a; source /home/ubuntu/repos/zero/apps/server-pilot/.env.production; set +a; export NODE_ENV=test; cd /home/ubuntu/repos/zero && bash apps/server-pilot/deploy/ai-gate.sh'
+bash apps/server-pilot/deploy/ssm-run-command.sh 'cd /home/ubuntu/repos/zero && bash apps/server-pilot/deploy/wire-gate.sh'
+bash apps/server-pilot/deploy/ssm-run-command.sh 'cd /home/ubuntu/repos/zero && bash apps/server-pilot/deploy/bedrock-live-gate.sh'
 bash apps/server-pilot/deploy/ssm-run-command.sh 'cd /home/ubuntu/repos/zero && bash apps/server-pilot/deploy/fixture-loopback-gate.sh'
 ```
+
+## Adapter selection
+
+| Runtime | Adapter |
+|---------|---------|
+| `NODE_ENV=test` (gates, vitest) | `FakeModelAdapter` |
+| `ai-worker` PM2 (`AI_ENABLED=true`) | `BedrockModelAdapter` → `us-east-1` Nova Lite |
+| `ai-gate.sh` spike eval | fake only (deterministic) |
+| `bedrock-live-gate.sh` | one live Converse via instance role |
+
+IAM: inline policy `NavaZeroBedrockInvoke` on worker role — see `apps/server-pilot/deploy/aws-resources.md`.
 
 ## Future Auto-Send Prerequisites
 

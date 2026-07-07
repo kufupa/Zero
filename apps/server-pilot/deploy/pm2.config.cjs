@@ -36,6 +36,7 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         AI_ENABLED: 'true',
+        BEDROCK_REGION: 'us-east-1',
       },
     },
   ],
