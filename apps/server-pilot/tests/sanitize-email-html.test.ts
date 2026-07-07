@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { sanitizeEmailHtml } from '../src/mail/sanitize-email-html.js';
+import { sanitizeEmailHtml, sanitizeHtmlBodyForStorage } from '../src/mail/sanitize-email-html.js';
 
 describe('sanitizeEmailHtml', () => {
   it('strips script tags and event handlers', () => {
@@ -36,5 +36,23 @@ describe('sanitizeEmailHtml', () => {
     );
     expect(hasBlockedImages).toBe(true);
     expect(html).not.toContain('/images/tracking.png');
+  });
+});
+
+describe('sanitizeHtmlBodyForStorage', () => {
+  it('returns null for null', () => {
+    expect(sanitizeHtmlBodyForStorage(null)).toBeNull();
+  });
+
+  it('returns plain text unchanged when no angle brackets', () => {
+    expect(sanitizeHtmlBodyForStorage('plain booking text')).toBe('plain booking text');
+  });
+
+  it('strips script and handlers from HTML', () => {
+    const raw = '<img src=x onerror=alert(1)><script>alert(1)</script><p>ok</p>';
+    const stored = sanitizeHtmlBodyForStorage(raw);
+    expect(stored).not.toContain('<script');
+    expect(stored).not.toMatch(/onerror/i);
+    expect(stored).toContain('ok');
   });
 });

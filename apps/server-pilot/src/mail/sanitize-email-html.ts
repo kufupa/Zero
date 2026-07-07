@@ -84,3 +84,10 @@ export function sanitizeEmailHtml(
   const sanitized = sanitizeHtml(html, sanitizeConfig);
   return { html: sanitized, hasBlockedImages };
 }
+
+/** Sanitize HTML before persisting to Postgres. Raw MIME remains in S3. */
+export function sanitizeHtmlBodyForStorage(html: string | null): string | null {
+  if (html == null || html === '') return html;
+  if (!html.includes('<')) return html;
+  return sanitizeEmailHtml(html, { shouldLoadImages: false }).html;
+}
