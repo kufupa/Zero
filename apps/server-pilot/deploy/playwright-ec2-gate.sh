@@ -5,8 +5,15 @@ set -euo pipefail
 REPO_ROOT="${REPO_ROOT:-/home/ubuntu/repos/zero}"
 cd "$REPO_ROOT"
 
+echo "pnpm install (playwright pin)"
+pnpm install --frozen-lockfile
+
 export PATH="${HOME}/.local/share/pnpm:${HOME}/.nvm/versions/node/$(ls "${HOME}/.nvm/versions/node" 2>/dev/null | sort -V | tail -1)/bin:${PATH}"
 export PLAYWRIGHT_BROWSERS_PATH=/opt/nava/playwright-browsers
+if [ -f /opt/nava/ec2-playwright-chromium/env.sh ]; then
+  # shellcheck disable=SC1091
+  source /opt/nava/ec2-playwright-chromium/env.sh
+fi
 export PLAYWRIGHT_BASE_URL="${PLAYWRIGHT_BASE_URL:-http://localhost:3000}"
 export PLAYWRIGHT_COOKIE_PREFIX="${PLAYWRIGHT_COOKIE_PREFIX:-better-auth}"
 export VITE_PUBLIC_BACKEND_URL="${VITE_PUBLIC_BACKEND_URL:-http://127.0.0.1:8788}"
