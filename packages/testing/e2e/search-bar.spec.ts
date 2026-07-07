@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { dismissMailOnboarding, expectPilotInboxVisible } from './helpers/mail-inbox';
+import { dismissMailOnboarding, expectPilotInboxVisible, openCommandPalette } from './helpers/mail-inbox';
 
 test.describe('Search Bar Functionality', () => {
   test('should apply and clear multiple filters from the command palette', async ({ page }) => {
@@ -17,11 +17,10 @@ test.describe('Search Bar Functionality', () => {
     for (const filterText of filtersToTest) {
       console.log(`Testing filter: ${filterText}`)
       
-      console.log(`Opening command palette with Meta+k`)
-      await page.keyboard.press(`Meta+k`)
+      console.log(`Opening command palette with Control+k`)
+      await openCommandPalette(page)
       
       const dialogLocator = page.locator('[cmdk-dialog], [role="dialog"]')
-      await expect(dialogLocator.first()).toBeVisible({ timeout: 5000 })
       console.log('Command palette dialog is visible')
 
       const itemLocator = page.getByText(filterText, { exact: true })

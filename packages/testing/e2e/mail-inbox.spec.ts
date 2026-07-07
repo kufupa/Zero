@@ -25,7 +25,7 @@ test.describe('Signing In, Sending mail, Replying to a mail', () => {
     await page.locator('input').first().fill(email);
     console.log('Filled To: field');
     
-    await page.getByRole('button', { name: 'Send' }).click();
+    await page.getByRole('button', { name: 'Send' }).first().click();
     console.log('Clicked Send button');
     await page.waitForTimeout(3000);
     console.log('Email sent successfully!');
@@ -67,7 +67,7 @@ test.describe('Signing In, Sending mail, Replying to a mail', () => {
     await page.waitForTimeout(2000);
 
     console.log('Sending reply...');
-    await page.getByRole('button', { name: 'Send' }).click();
+    await page.getByRole('button', { name: 'Send' }).first().click();
     await page.waitForTimeout(3000);
     console.log('Reply sent successfully!');
 

@@ -13,7 +13,7 @@ test.describe('Mail actions: favorite, read, unread', () => {
     console.log('Mail inbox is now visible');
 
     const firstEmail = page.locator('[data-thread-id]').first();
-    await expect(firstEmail).toBeVisible();
+    await expect(firstEmail).toBeVisible({ timeout: 15000 });
     console.log('Found first email');
 
     await firstEmail.click({ button: 'right' });

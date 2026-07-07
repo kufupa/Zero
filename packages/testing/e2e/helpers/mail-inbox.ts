@@ -22,3 +22,9 @@ export async function expectPilotInboxVisible(page: Page) {
     page.getByRole('link', { name: 'Inbox', exact: true }).first(),
   ).toBeVisible({ timeout: 15000 });
 }
+
+export async function openCommandPalette(page: Page) {
+  await page.keyboard.press('Control+k');
+  const dialogLocator = page.locator('[cmdk-dialog], [role="dialog"]');
+  await expect(dialogLocator.first()).toBeVisible({ timeout: 5000 });
+}
