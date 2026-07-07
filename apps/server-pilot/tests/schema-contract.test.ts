@@ -28,6 +28,7 @@ describe('v4 production mail schema', () => {
     expect(schema.mailboxTransport.mailboxType).toBeDefined();
     expect(schema.mailThread.transportId).toBeDefined();
     expect(schema.mailThread.snoozedUntil).toBeDefined();
+    expect(schema.mailThread.searchVector).toBeDefined();
     expect(schema.message.transportId).toBeDefined();
     expect(schema.message.ingestMailboxId).toBeDefined();
     expect(schema.message.pop3Uidl).toBeDefined();
