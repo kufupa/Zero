@@ -44,6 +44,7 @@ import {
   parseRawMessage,
   generateMessageId,
 } from './parse-message.js';
+import { sanitizeHtmlBodyForStorage } from '../sanitize-email-html.js';
 import {
   DEFAULT_AI_MODEL_ID,
   DEFAULT_TRIAGE_PROMPT_VERSION,
@@ -249,7 +250,7 @@ export async function persistInboundMessage(
       bccAddresses: parsed.bccAddresses,
       subject: parsed.subject,
       textBody: parsed.textBody,
-      htmlBody: parsed.htmlBody,
+      htmlBody: sanitizeHtmlBodyForStorage(parsed.htmlBody),
       rawMimeS3Key,
       receivedAt: parsed.receivedAt ?? new Date(),
       sentAt: parsed.receivedAt ?? null,
