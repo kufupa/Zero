@@ -5,6 +5,7 @@ import { parseRawMessage, generateMessageId } from '../src/mail/ingest/parse-mes
 import { persistInboundMessage } from '../src/mail/ingest/store.js';
 import {
   THREAD_SEARCH_VECTOR_CONFIG,
+  threadSearchVectorSourceSql,
   threadSearchVectorText,
 } from '../src/mail/search/search-vector.js';
 import { FakeS3Storage, resetS3Storage, setS3Storage } from '../src/storage/s3.js';
@@ -60,11 +61,20 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             matches_backfill: boolean;
             finds_subject_term: boolean;
             finds_snippet_term: boolean;
+            from_address: string | null;
           }>(sql`
             SELECT
-              "search_vector" = to_tsvector(${THREAD_SEARCH_VECTOR_CONFIG}, coalesce("subject", '') || ' ' || coalesce("snippet", '')) AS matches_backfill,
+              "search_vector" = to_tsvector(${THREAD_SEARCH_VECTOR_CONFIG}, ${threadSearchVectorSourceSql}) AS matches_backfill,
               "search_vector" @@ plainto_tsquery(${THREAD_SEARCH_VECTOR_CONFIG}, 'centurion') AS finds_subject_term,
-              "search_vector" @@ plainto_tsquery(${THREAD_SEARCH_VECTOR_CONFIG}, 'amenities') AS finds_snippet_term
+              "search_vector" @@ plainto_tsquery(${THREAD_SEARCH_VECTOR_CONFIG}, 'amenities') AS finds_snippet_term,
+              (
+                SELECT "from_address"
+                FROM "message"
+                WHERE "message"."thread_id" = "mail_thread"."id"
+                  AND "message"."direction" = 'inbound'
+                ORDER BY "received_at" DESC NULLS LAST
+                LIMIT 1
+              ) AS from_address
             FROM "mail_thread"
             WHERE "id" = ${stored.threadId}
           `);
@@ -77,7 +87,11 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
 
         expect(result.thread.subject).toBe('Centurion booking confirmation #4471');
         expect(result.thread.snippet).toContain('welcome amenities');
-        expect(threadSearchVectorText(result.thread.subject, result.thread.snippet)).toContain(
+        expect(threadSearchVectorText(
+          result.thread.subject,
+          result.thread.snippet,
+          result.vectorRow?.from_address,
+        )).toContain(
           'Centurion booking confirmation #4471',
         );
         expect(result.vectorRow?.matches_backfill).toBe(true);
@@ -143,7 +157,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             finds_reply_snippet: boolean;
           }>(sql`
             SELECT
-              "search_vector" = to_tsvector(${THREAD_SEARCH_VECTOR_CONFIG}, coalesce("subject", '') || ' ' || coalesce("snippet", '')) AS matches_backfill,
+              "search_vector" = to_tsvector(${THREAD_SEARCH_VECTOR_CONFIG}, ${threadSearchVectorSourceSql}) AS matches_backfill,
               "search_vector" @@ plainto_tsquery(${THREAD_SEARCH_VECTOR_CONFIG}, 'amenities') AS finds_reply_snippet
             FROM "mail_thread"
             WHERE "id" = ${parentStored.threadId}

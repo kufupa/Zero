@@ -10,6 +10,10 @@ import postgres from 'postgres';
 import * as schema from '../src/db/schema/index.js';
 import { parseEnv } from '../src/env.js';
 import { getPostgresSslOptions } from '../src/db/ssl-config.js';
+import {
+  THREAD_SEARCH_VECTOR_CONFIG,
+  threadSearchVectorSourceSql,
+} from '../src/mail/search/search-vector.js';
 
 async function main(): Promise<void> {
   const env = parseEnv(process.env);
@@ -24,7 +28,7 @@ async function main(): Promise<void> {
   try {
     const result = await db.execute(sql`
       UPDATE "mail_thread"
-      SET "search_vector" = to_tsvector('simple', coalesce("subject", '') || ' ' || coalesce("snippet", ''))
+      SET "search_vector" = to_tsvector(${THREAD_SEARCH_VECTOR_CONFIG}, ${threadSearchVectorSourceSql})
     `);
     const updated = Number(result.count ?? 0);
     console.log(`backfill complete: ${updated} row(s) updated`);

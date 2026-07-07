@@ -19,6 +19,7 @@ const KNOWN_PREFIXES = new Set([
   'is',
   'has',
   'hasattachment',
+  'importance',
 ]);
 
 const TOKEN_RE = /"([^"\\]|\\.)*"|'([^'\\]|\\.)*'|[^\s]+/g;
@@ -97,11 +98,18 @@ function applyOperator(
         parsed.isRead = true;
         return;
       }
-      if (normalized === 'starred') {
+      if (normalized === 'starred' || normalized === 'flagged') {
         parsed.isStarred = true;
         return;
       }
       if (normalized === 'important') {
+        parsed.isImportant = true;
+        return;
+      }
+      throw new SearchParseError(token);
+    }
+    case 'importance': {
+      if (value.toLowerCase() === 'high') {
         parsed.isImportant = true;
         return;
       }
@@ -131,11 +139,32 @@ function applyOperator(
   }
 }
 
+function isOpenQuote(value: string): boolean {
+  return (
+    (value.startsWith('"') && !value.endsWith('"')) ||
+    (value.startsWith("'") && !value.endsWith("'"))
+  );
+}
+
+function readOperatorValue(tokens: string[], startIdx: number): { value: string; consumed: number } {
+  let raw = tokens[startIdx]!.slice(tokens[startIdx]!.indexOf(':') + 1);
+  let consumed = 1;
+
+  while (isOpenQuote(raw) && startIdx + consumed < tokens.length) {
+    raw += ` ${tokens[startIdx + consumed]}`;
+    consumed += 1;
+  }
+
+  return { value: unquote(raw), consumed };
+}
+
 export function parseSearchQuery(q: string): ParsedSearchQuery {
   const parsed = emptyParsedSearchQuery();
   const freeTextParts: string[] = [];
+  const tokens = tokenize(q.trim());
 
-  for (const token of tokenize(q.trim())) {
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i]!;
     const colonIdx = token.indexOf(':');
     if (colonIdx === -1) {
       freeTextParts.push(unquote(token));
@@ -143,7 +172,8 @@ export function parseSearchQuery(q: string): ParsedSearchQuery {
     }
 
     const prefix = token.slice(0, colonIdx).toLowerCase();
-    const value = unquote(token.slice(colonIdx + 1));
+    const { value, consumed } = readOperatorValue(tokens, i);
+    i += consumed - 1;
 
     if (!KNOWN_PREFIXES.has(prefix)) {
       throw new SearchParseError(token);
