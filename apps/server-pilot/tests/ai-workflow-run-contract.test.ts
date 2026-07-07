@@ -4,6 +4,7 @@ import { eq } from 'drizzle-orm';
 import { getDb } from '../src/db/client.js';
 import {
   aiWorkflowRun,
+  aiDraftGeneration,
   mailThread,
   mailboxTransport,
   message,
@@ -239,11 +240,21 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai workflow run contract', ()
     });
     await claimNextAiRun({ ownerId: 'worker-a' });
 
+    const generationId = randomUUID();
+    await db.insert(aiDraftGeneration).values({
+      id: generationId,
+      transportId,
+      threadId,
+      requestedByUserId: 'user-1',
+      contextMessageIds: [messageId],
+      model: 'amazon.nova-lite-v1:0',
+      promptVersion: 'draft-v1',
+    });
     await markAiRunSucceeded({
       runId: run.id,
       mastraTraceId: 'trace-123',
       mastraScorerId: 'scorer-456',
-      generationId: 'gen-789',
+      generationId,
       metrics: { latencyMs: 1200, inputTokens: 400, outputTokens: 120 },
     });
 
@@ -255,7 +266,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai workflow run contract', ()
     expect(row?.state).toBe('succeeded');
     expect(row?.mastraTraceId).toBe('trace-123');
     expect(row?.mastraScorerId).toBe('scorer-456');
-    expect(row?.generationId).toBe('gen-789');
+    expect(row?.generationId).toBe(generationId);
     expect(row?.metrics).toMatchObject({ latencyMs: 1200 });
   });
 });

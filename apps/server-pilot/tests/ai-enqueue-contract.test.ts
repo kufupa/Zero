@@ -3,6 +3,7 @@ import { eq } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import {
   aiWorkflowRun,
+  aiDraftGeneration,
   mailDraft,
   mailDraftRevision,
   mailThread,
@@ -26,6 +27,45 @@ import {
 } from './helpers/test-db.js';
 
 const reachable = await probeTestDb();
+
+async function seedCenturionThread(db: import('../src/db/client.js').DB) {
+  await db
+    .insert(mailThread)
+    .values({
+      id: 'thread-centurion-1',
+      transportId: 'transport-centurion',
+      threadRootId: 'centurion-root-1',
+      subject: 'Centurion booking #4471',
+      snippet: 'Original booking inquiry',
+      isArchived: false,
+      isStarred: false,
+      isRead: false,
+      labelIds: [],
+      latestMessageAt: new Date(),
+    })
+    .onConflictDoNothing({ target: mailThread.id });
+
+  await db
+    .insert(message)
+    .values({
+      id: 'msg-centurion-inbound-1',
+      transportId: 'transport-centurion',
+      threadId: 'thread-centurion-1',
+      direction: 'inbound',
+      fromAddress: 'guest@example.com',
+      toAddresses: ['centurion@legacyhotel.com'],
+      ccAddresses: [],
+      bccAddresses: [],
+      subject: 'Centurion booking #4471',
+      textBody: 'I need a room',
+      messageIdHeader: 'inbound-msg-id-1',
+      references: [],
+      isRead: false,
+      isStarred: false,
+      receivedAt: new Date(),
+    })
+    .onConflictDoNothing({ target: message.id });
+}
 
 function withFakeS3(): FakeS3Storage {
   const fake = new FakeS3Storage('test-mail-bucket');
@@ -135,6 +175,16 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI enqueue contract', () => {
         const draftId = randomUUID();
         const generationId = randomUUID();
 
+        await seedCenturionThread(db);
+        await db.insert(aiDraftGeneration).values({
+          id: generationId,
+          transportId,
+          threadId,
+          requestedByUserId: 'user-centurion-worker',
+          contextMessageIds: [inboundId],
+          model: 'amazon.nova-lite-v1:0',
+          promptVersion: 'draft-v1',
+        });
         await db
           .insert(mailDraft)
           .values({
@@ -225,6 +275,15 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI enqueue contract', () => {
         subject: 'Booking',
         textBody: 'Need help',
         receivedAt: new Date(),
+      });
+      await db.insert(aiDraftGeneration).values({
+        id: generationId,
+        transportId,
+        threadId,
+        requestedByUserId: 'user-1',
+        contextMessageIds: [inboundId],
+        model: 'amazon.nova-lite-v1:0',
+        promptVersion: 'draft-v1',
       });
       await db.insert(mailDraft).values({
         id: draftId,

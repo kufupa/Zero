@@ -7,6 +7,7 @@ import { eq } from 'drizzle-orm';
 import { getDb } from '../src/db/client.js';
 import {
   aiWorkflowRun,
+  aiDraftGeneration,
   mailDraft,
   mailDraftRevision,
   mailThread,
@@ -114,6 +115,15 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
       runKind: 'candidate_draft',
       idempotencyKey: `worker-draft:${messageId}`,
       modelId: 'amazon.nova-lite-v1:0',
+      promptVersion: 'draft-v1',
+    });
+    await db.insert(aiDraftGeneration).values({
+      id: generationId,
+      transportId,
+      threadId,
+      requestedByUserId: 'user-1',
+      contextMessageIds: [messageId],
+      model: 'amazon.nova-lite-v1:0',
       promptVersion: 'draft-v1',
     });
     await markAiRunRetry({
