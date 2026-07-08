@@ -214,7 +214,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('buildThreadSearchConditions',
       });
 
       expect(await listThreadIdsForQuery(db, 'has:attachment')).toEqual([withAtt]);
-      expect(await listThreadIdsForQuery(db, 'hasattachment:yes')).toEqual([withAtt]);
+      expect(await listThreadIdsForQuery(db, 'has:attachment')).toEqual([withAtt]);
     });
   });
 

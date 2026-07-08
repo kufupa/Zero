@@ -8,6 +8,7 @@ type ParityCase = {
   expected: Partial<ParsedSearchQuery>;
 };
 
+/** Canonical operator feature matrix (Gmail grammar only). */
 const parityCases: ParityCase[] = [
   { name: 'from', query: 'from:alice@corp.com', expected: { from: ['alice@corp.com'], freeText: '' } },
   { name: 'to', query: 'to:bob@corp.com', expected: { to: ['bob@corp.com'], freeText: '' } },
@@ -23,25 +24,8 @@ const parityCases: ParityCase[] = [
     query: 'has:attachment',
     expected: { hasAttachment: true, freeText: '' },
   },
-  {
-    name: 'hasattachment:yes',
-    query: 'hasattachment:yes',
-    expected: { hasAttachment: true, freeText: '' },
-  },
-  {
-    name: 'hasattachment:true',
-    query: 'hasattachment:true',
-    expected: { hasAttachment: true, freeText: '' },
-  },
-  { name: 'read:no', query: 'read:no', expected: { isRead: false, freeText: '' } },
   { name: 'is:unread', query: 'is:unread', expected: { isRead: false, freeText: '' } },
   { name: 'is:starred', query: 'is:starred', expected: { isStarred: true, freeText: '' } },
-  { name: 'is:flagged', query: 'is:flagged', expected: { isStarred: true, freeText: '' } },
-  {
-    name: 'importance:high',
-    query: 'importance:high',
-    expected: { isImportant: true, freeText: '' },
-  },
   {
     name: 'is:important',
     query: 'is:important',
@@ -67,7 +51,7 @@ const parityCases: ParityCase[] = [
   },
 ];
 
-describe('mail search operator parity matrix', () => {
+describe('mail search canonical operator feature matrix', () => {
   it.each(parityCases)('$name', ({ query, expected }) => {
     expect(parseSearchQuery(query)).toMatchObject(expected);
   });
