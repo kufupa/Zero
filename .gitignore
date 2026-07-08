@@ -74,6 +74,13 @@ apps/server-pilot/.env.*
 # scratch research / agent working files (never commit)
 .tmp-research/
 
+# T3MP3ST vendor clone + local API keys (tools/t3mp3st wrapper)
+tools/t3mp3st/.vendor/
+tools/t3mp3st/.env
+tools/t3mp3st/overnight-swarm.log
+tools/t3mp3st/overnight-swarm-pass2.log
+tools/t3mp3st/overnight-decompose.log
+
 # playwright artifacts (regenerated per run)
 packages/testing/playwright-report/
 packages/testing/test-results/

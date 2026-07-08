@@ -74,6 +74,7 @@ function append(title, body) {
 
 function runDecompose({ label, objective, files }) {
   const rel = files.join(',');
+  const timeoutMs = Number(process.env.XAI_DECOMPOSE_TIMEOUT_MS) || 15 * 60 * 1000;
   const args = [
     'scripts/decompose.mjs',
     '--objective',
@@ -91,11 +92,11 @@ function runDecompose({ label, objective, files }) {
     '--worker-model',
     'grok-4.3',
     '--rounds',
-    '3',
+    String(process.env.XAI_DECOMPOSE_ROUNDS || '2'),
     '--queries-per-round',
-    '6',
+    String(process.env.XAI_DECOMPOSE_QUERIES || '4'),
     '--parallel',
-    'true',
+    process.env.XAI_DECOMPOSE_PARALLEL || 'false',
     '--verbose',
     'true',
   ];
@@ -114,13 +115,24 @@ function runDecompose({ label, objective, files }) {
       shell: false,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    let killed = false;
+    const timer = setTimeout(() => {
+      killed = true;
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        // ignore
+      }
+    }, timeoutMs);
     child.stdout.on('data', (d) => {
       buf += d.toString();
       process.stdout.write(d);
     });
     child.stderr.on('data', (d) => process.stderr.write(d));
     child.on('close', (code) => {
-      if (code === 0) resolve(buf);
+      clearTimeout(timer);
+      if (killed) reject(new Error(`decompose ${label} timeout after ${timeoutMs}ms\n${buf.slice(-4000)}`));
+      else if (code === 0) resolve(buf);
       else reject(new Error(`decompose ${label} exit ${code}\n${buf.slice(-4000)}`));
     });
   });
