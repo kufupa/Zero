@@ -15,11 +15,8 @@ const KNOWN_PREFIXES = new Set([
   'before',
   'label',
   'category',
-  'read',
   'is',
   'has',
-  'hasattachment',
-  'importance',
 ]);
 
 const TOKEN_RE = /"([^"\\]|\\.)*"|'([^'\\]|\\.)*'|[^\s]+/g;
@@ -76,18 +73,6 @@ function applyOperator(
     case 'category':
       parsed.categorySlugs.push(value);
       return;
-    case 'read': {
-      const normalized = value.toLowerCase();
-      if (normalized === 'no' || normalized === 'false') {
-        parsed.isRead = false;
-        return;
-      }
-      if (normalized === 'yes' || normalized === 'true') {
-        parsed.isRead = true;
-        return;
-      }
-      throw new SearchParseError(token);
-    }
     case 'is': {
       const normalized = value.toLowerCase();
       if (normalized === 'unread') {
@@ -98,7 +83,7 @@ function applyOperator(
         parsed.isRead = true;
         return;
       }
-      if (normalized === 'starred' || normalized === 'flagged') {
+      if (normalized === 'starred') {
         parsed.isStarred = true;
         return;
       }
@@ -108,28 +93,9 @@ function applyOperator(
       }
       throw new SearchParseError(token);
     }
-    case 'importance': {
-      if (value.toLowerCase() === 'high') {
-        parsed.isImportant = true;
-        return;
-      }
-      throw new SearchParseError(token);
-    }
     case 'has': {
       if (value.toLowerCase() === 'attachment') {
         parsed.hasAttachment = true;
-        return;
-      }
-      throw new SearchParseError(token);
-    }
-    case 'hasattachment': {
-      const normalized = value.toLowerCase();
-      if (normalized === 'yes' || normalized === 'true') {
-        parsed.hasAttachment = true;
-        return;
-      }
-      if (normalized === 'no' || normalized === 'false') {
-        parsed.hasAttachment = false;
         return;
       }
       throw new SearchParseError(token);

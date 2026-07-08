@@ -31,30 +31,16 @@ describe('parseSearchQuery', () => {
     });
   });
 
-  it('maps read:no to unread', () => {
-    expect(parseSearchQuery('read:no')).toMatchObject({ isRead: false });
+  it('rejects Outlook spellings', () => {
+    for (const q of ['read:no', 'hasattachment:yes', 'importance:high', 'is:flagged']) {
+      expect(() => parseSearchQuery(q)).toThrow(SearchParseError);
+    }
+  });
+
+  it('accepts canonical is: and has: values only', () => {
     expect(parseSearchQuery('is:unread')).toMatchObject({ isRead: false });
-  });
-
-  it('maps hasattachment:yes and hasattachment:true', () => {
-    expect(parseSearchQuery('hasattachment:yes')).toMatchObject({ hasAttachment: true });
-    expect(parseSearchQuery('hasattachment:true')).toMatchObject({ hasAttachment: true });
     expect(parseSearchQuery('has:attachment')).toMatchObject({ hasAttachment: true });
-  });
-
-  it('maps hasattachment:false', () => {
-    expect(parseSearchQuery('hasattachment:false')).toMatchObject({ hasAttachment: false });
-    expect(parseSearchQuery('hasattachment:no')).toMatchObject({ hasAttachment: false });
-  });
-
-  it('maps importance:high to isImportant', () => {
-    expect(parseSearchQuery('importance:high')).toMatchObject({ isImportant: true });
-    expect(parseSearchQuery('is:important')).toMatchObject({ isImportant: true });
-  });
-
-  it('maps is:flagged to isStarred', () => {
-    expect(parseSearchQuery('is:flagged')).toMatchObject({ isStarred: true });
-    expect(parseSearchQuery('is:starred')).toMatchObject({ isStarred: true });
+    expect(() => parseSearchQuery('is:flagged')).toThrow(SearchParseError);
   });
 
   it('keeps bare text as freeText', () => {
