@@ -23,6 +23,17 @@ export async function expectPilotInboxVisible(page: Page) {
   ).toBeVisible({ timeout: 15000 });
 }
 
+export async function expectThreadVisibleInFolder(page: Page, folder: string, subject: string) {
+  await page.goto(`/mail/${folder}`);
+  await dismissMailOnboarding(page);
+  await expect(page.getByText(subject)).toBeVisible({ timeout: 30_000 });
+}
+
+export async function expectAiDraftCardVisible(page: Page) {
+  await expect(page.locator('[data-ai-draft-card]').first()).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText('AI draft').first()).toBeVisible();
+}
+
 export async function openCommandPalette(page: Page) {
   await page.keyboard.press('Control+k');
   const dialogLocator = page.locator('[cmdk-dialog], [role="dialog"]');

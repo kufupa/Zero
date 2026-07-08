@@ -33,6 +33,11 @@ const DEFAULT_DEMO_CATEGORIES: CategorySetting[] = [
 ];
 
 export function useCategorySettings(): CategorySetting[] {
+  const { categories } = useCategorySettingsQueryState();
+  return categories;
+}
+
+export function useCategorySettingsQueryState() {
   const { data } = useSettings();
   const trpc = useTRPC();
   const demoMode = isFrontendOnlyDemo();
@@ -43,7 +48,7 @@ export function useCategorySettings(): CategorySetting[] {
     }),
   );
 
-  const merged = useMemo(() => {
+  const categories = useMemo(() => {
     if (demoMode) {
       const overrides = (data?.settings.categories as CategorySetting[] | undefined) ?? [];
       const sorted = [...overrides].sort((a, b) => a.order - b.order);
@@ -70,7 +75,12 @@ export function useCategorySettings(): CategorySetting[] {
     return sorted.length === 0 ? DEFAULT_DEMO_CATEGORIES : sorted;
   }, [data?.settings.categories, demoMode, liveCategoriesQuery.data]);
 
-  return merged;
+  return {
+    categories,
+    isLoadingLiveCategories: !demoMode && liveCategoriesQuery.isLoading,
+    hasSettledLiveCategories:
+      demoMode || liveCategoriesQuery.isFetched || liveCategoriesQuery.isError,
+  };
 }
 
 export function useDefaultCategoryId(): string {

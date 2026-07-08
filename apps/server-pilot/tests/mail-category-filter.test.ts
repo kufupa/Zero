@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { and, eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import {
   mailCategory,
@@ -89,6 +90,56 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.listThreads category and
       expect(result.threads[0]?.categoryIds).toEqual(expect.arrayContaining([travelId, urgentId]));
       expect(result.threads[0]?.hasDraft).toBe(true);
       expect(result.threads[0]?.draftCount).toBe(1);
+    });
+  });
+
+  it('lists categorized thread via seeded group category slug filter', async () => {
+    await withSeededTestDb(async (db) => {
+      const [groupCategory] = await db
+        .select()
+        .from(mailCategory)
+        .where(and(eq(mailCategory.transportId, TRANSPORT_ID), eq(mailCategory.slug, 'group')))
+        .limit(1);
+      expect(groupCategory).toBeDefined();
+
+      const threadId = randomUUID();
+      const parentMessageId = randomUUID();
+      await db.insert(mailThread).values({
+        id: threadId,
+        transportId: TRANSPORT_ID,
+        threadRootId: `<${threadId}@example.com>`,
+        subject: 'Group quote for 20 rooms',
+        snippet: 'Need 20 rooms',
+        isRead: false,
+        latestMessageAt: new Date('2026-07-06T11:00:00Z'),
+      });
+      await db.insert(message).values({
+        id: parentMessageId,
+        transportId: TRANSPORT_ID,
+        threadId,
+        direction: 'inbound',
+        fromAddress: 'guest@example.com',
+        toAddresses: ['centurion@legacyhotel.com'],
+        subject: 'Group quote for 20 rooms',
+        textBody: 'Need 20 rooms',
+        receivedAt: new Date('2026-07-06T11:00:00Z'),
+      });
+      await db.insert(mailThreadCategory).values({
+        threadId,
+        categoryId: groupCategory!.id,
+        transportId: TRANSPORT_ID,
+      });
+
+      const { mail } = await callerFor('user-manager', { db });
+      const inbox = await mail.listThreads({ folder: 'inbox', limit: 20 });
+      expect(inbox.threads.map((t) => t.id)).toContain(threadId);
+
+      const groupOnly = await mail.listThreads({
+        folder: 'inbox',
+        filters: { categoryIds: [groupCategory!.id] },
+        limit: 20,
+      });
+      expect(groupOnly.threads.map((t) => t.id)).toEqual([threadId]);
     });
   });
 });

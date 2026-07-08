@@ -1,6 +1,7 @@
 import { useLoaderData, useNavigate } from 'react-router';
 
 import { MailLayout } from '@/components/mail/mail';
+import { useCategorySettingsQueryState } from '@/hooks/use-categories';
 import { useLabels } from '@/hooks/use-labels';
 import { isDemoMailFolderSlug } from '@/lib/demo/folder-map';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
@@ -26,6 +27,7 @@ export default function MailPage() {
   const isDemoMailFolder = isFrontendOnlyDemo() && isDemoMailFolderSlug(normalizedFolder);
 
   const { userLabels, isLoading: isLoadingLabels } = useLabels();
+  const { categories, hasSettledLiveCategories } = useCategorySettingsQueryState();
 
   useEffect(() => {
     if (isStandardFolder || isDemoMailFolder) {
@@ -33,7 +35,7 @@ export default function MailPage() {
       return;
     }
 
-    if (isLoadingLabels) return;
+    if (isLoadingLabels || !hasSettledLiveCategories) return;
 
     if (userLabels) {
       const checkLabelExists = (labels: any[]): boolean => {
@@ -46,19 +48,37 @@ export default function MailPage() {
         return false;
       };
 
+      const categoryExists = categories.some((category) => category.slug === normalizedFolder);
       const labelExists = checkLabelExists(userLabels);
-      setIsLabelValid(labelExists);
+      setIsLabelValid(categoryExists || labelExists);
 
-      if (!labelExists) {
+      if (!categoryExists && !labelExists) {
         const timer = setTimeout(() => {
           navigate('/mail/inbox');
         }, 300);
         return () => clearTimeout(timer);
       }
     } else {
-      setIsLabelValid(false);
+      const categoryExists = categories.some((category) => category.slug === normalizedFolder);
+      setIsLabelValid(categoryExists);
+      if (!categoryExists) {
+        const timer = setTimeout(() => {
+          navigate('/mail/inbox');
+        }, 300);
+        return () => clearTimeout(timer);
+      }
     }
-  }, [folder, normalizedFolder, userLabels, isLoadingLabels, isStandardFolder, isDemoMailFolder, navigate]);
+  }, [
+    folder,
+    normalizedFolder,
+    userLabels,
+    isLoadingLabels,
+    hasSettledLiveCategories,
+    categories,
+    isStandardFolder,
+    isDemoMailFolder,
+    navigate,
+  ]);
 
   if (!isLabelValid) {
     return (

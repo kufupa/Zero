@@ -787,22 +787,27 @@ export function ThreadDisplay() {
           />
         ) : null}
         {aiDraftCandidateVms.map((candidateVm) => (
-          <ThreadDraftCard
+          <div
             key={candidateVm.id}
-            subject={candidateVm.subject}
-            bodyPreview={candidateVm.bodyPreview}
-            savedAtLabel={
-              m['common.threadDisplay.draftSavedPrefix']() +
-              formatDateWithWeekdayAndTime(candidateVm.savedAtIso)
-            }
-            draftBadge="AI draft"
-            unsentNotice="Candidate reply. Open the reply editor to use the newest AI draft when no active draft exists."
-            emptyPreviewLabel={m['common.threadDisplay.draftEmptyPreview']()}
-            editLabel={m['common.threadDisplay.continueDraft']()}
-            deleteLabel={m['common.actions.Bin']()}
-            moreLabel={m['common.threadDisplay.draftMoreOptions']()}
-            isReadOnly
-          />
+            data-ai-draft-card
+            data-ai-draft-id={candidateVm.id}
+          >
+            <ThreadDraftCard
+              subject={candidateVm.subject}
+              bodyPreview={candidateVm.bodyPreview}
+              savedAtLabel={
+                m['common.threadDisplay.draftSavedPrefix']() +
+                formatDateWithWeekdayAndTime(candidateVm.savedAtIso)
+              }
+              draftBadge="AI draft"
+              unsentNotice="Candidate reply. Open the reply editor to use the newest AI draft when no active draft exists."
+              emptyPreviewLabel={m['common.threadDisplay.draftEmptyPreview']()}
+              editLabel={m['common.threadDisplay.continueDraft']()}
+              deleteLabel={m['common.actions.Bin']()}
+              moreLabel={m['common.threadDisplay.draftMoreOptions']()}
+              isReadOnly
+            />
+          </div>
         ))}
       </ThreadAiMailsSection>
     ) : null;
