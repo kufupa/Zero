@@ -8,17 +8,72 @@
 
 **Tech Stack:** TypeScript, Drizzle ORM, Postgres tsvector/GIN, Vitest, tRPC, React Query, Playwright.
 
-**Worktree:** `feat/mail-search` at `~/.config/superpowers/worktrees/zero/feat-mail-search`
+**Branch:** `EC2-pilot` (merge `feat/mail-search` first; post-merge test/fix on this branch only)
 
 ## Global Constraints
 
 - No AI search, vector search, or `parseNaturalLanguageSearch` on live path when grammar enabled.
+- **Canonical grammar only (Gmail operators).** Outlook spellings → `SearchParseError` → TRPC 400 + FE toast. No alias layer.
 - Unsupported operator → TRPC 400 with `{ code, token, message }`; FE toast, no silent ILIKE.
 - `q` max 512 chars on `listThreads` and `drafts.list`.
 - Shared parser for threads + drafts.
-- Canonical grammar only (Gmail operators). Outlook spellings → 400.
-- Supported: from/to/cc/bcc/subject, is:read|unread|starred|important, has:attachment, after/before, label/category.
 - Body search v1: subject + snippet + message from/to addresses (not full HTML body).
+- **No pre-merge gate.** Merge to `EC2-pilot` first; all validation + fixes happen on `EC2-pilot` after merge.
+
+## Overnight Autonomous Execution Mandate
+
+**User granted full autonomy.** No blocking questions overnight. No manual login. No "which approach?" pause.
+
+### Communication
+
+- Orchestrator + every subagent: **Respond `/caveman ultra`. Technical terms exact.**
+
+### AWS / infra (use freely)
+
+| Resource | ID / path |
+|----------|-----------|
+| EC2 | `i-008f737974a9ba9b3` (`af-south-1`) |
+| RDS | `nava-zero-mail-pilot` (Postgres 16) |
+| S3 | `nava-zero-mail-845242190536-af-south-1` |
+| Repo on EC2 | `/home/ubuntu/repos/zero` |
+| Sync | `apps/server-pilot/deploy/sync-ec2-git-bundle.sh` |
+| Deploy | `apps/server-pilot/deploy/deploy-ec2.sh` |
+| SSM | `apps/server-pilot/deploy/ssm-run-command.sh` |
+
+**Allowed:** bundle sync, deploy, migrate, seed (no `--rotate` unless fix requires), SSM remote tests, PM2 logs, health curl, RDS vitest on EC2, backfill script.
+
+**Forbidden:** force-push main, `--no-verify`, destructive git, IT Exchange/VPN/real mail creds.
+
+### RCA loop (mandatory on any red)
+
+FAIL → reproduce → root cause (file:line) → fix → test → commit → resume. Do not stop at first failure.
+
+### Done criteria
+
+- [x] `feat/mail-search` merged into `EC2-pilot`
+- [x] Local vitest green (parse/parity/input/date + FE contract)
+- [x] `pnpm --filter @zero/server build` + `pnpm --filter @zero/mail build` green
+- [ ] RDS migrations `0009` + `0010` applied on EC2
+- [ ] `backfill-search-vector.ts` run on EC2 RDS
+- [ ] DB-backed vitest green on EC2 via SSM
+- [ ] `deploy-ec2.sh` green; `/health` 200
+- [ ] Handoff report: `docs/superpowers/plans/handoff-reports/2026-07-08-mail-search-ec2-pilot.md`
+
+## Execution Mode
+
+Autonomous overnight — no user checkpoint. REQUIRED SUB-SKILL: superpowers:subagent-driven-development.
+
+## Post-merge integration wave (Tasks 8–12)
+
+### Task 8: Merge + local reconcile — DONE (2026-07-08)
+
+### Task 9: Push + EC2 sync
+
+### Task 10: RDS migrate + backfill (`set -a` before `db:migrate`)
+
+### Task 11: EC2 DB-backed vitest (`mail-search-query`, `mail-search-contract`, `mail-search-fts`)
+
+### Task 12: Deploy + smoke + handoff
 
 ---
 
