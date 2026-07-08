@@ -13,9 +13,13 @@ Self-hosted AI mail pipeline for async triage, candidate drafts, HITL feedback, 
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `AI_ENABLED` | `false` | Enables AI env validation and worker runtime |
+| `AI_ENABLED` | `false` | Enables model adapter selection |
+| `AI_WRITE_GATE_ENABLED` | `false` | Shadow-only triage when false; durable category/spam writes when true |
+| `AI_DRAFTS_ENABLED` | `false` | Enqueues `candidate_draft` runs after successful triage when true |
+| `AI_STALE_RUN_TIMEOUT_MS` | `900000` | Reclaim stale `claimed`/`running` AI runs after this many ms |
 | `AI_MODEL_ID` | `amazon.nova-lite-v1:0` | Bedrock/default model id |
 | `BEDROCK_REGION` | `us-east-1` | Bedrock runtime region (Nova Lite; cross-region from `af-south-1` EC2) |
+| `BEDROCK_PIPELINE_LIVE_TEST` | unset | Opt-in Playwright live pipeline proof only |
 | `BEDROCK_GUARDRAIL_ID` | optional | Bedrock guardrail id |
 | `BEDROCK_GUARDRAIL_VERSION` | optional | Bedrock guardrail version |
 | `MASTRA_STORAGE_PATH` | `./data/mastra/runtime.db` | Local Mastra LibSQL storage |
@@ -49,14 +53,71 @@ Run kinds:
 ## Shadow-To-Write Gate
 
 1. Spike eval runs against `tests/fixtures/ai-spike/*`.
-2. Scorers check category, urgent overlay, JSON validity, and security fixtures.
-3. `writeGateEnabled` stays false until spike passes.
-4. `applyDurableTriageResult` only mutates category/spam/urgent state when write gate is enabled.
+2. Scorers check category, urgent overlay, draft skeleton schema, failure no-mutation, JSON validity, and security fixtures.
+3. `AI_WRITE_GATE_ENABLED` defaults false; set true only after spike passes and ops approves durable writes.
+4. `applyDurableTriageResult` only mutates AI-managed category rows and spam state when write gate is enabled.
+5. `AI_DRAFTS_ENABLED` defaults false; candidate drafts enqueue only when explicitly enabled and thread is not spam.
 
 Run locally:
 
 ```bash
 pnpm --filter @zero/server ai:test -- --mode=spike
+```
+
+## Gate Order (opt-in live proof last)
+
+1. `pnpm --dir apps/server-pilot test tests/ai-*.test.ts --reporter=dot`
+2. `pnpm eval:ci`
+3. `apps/server-pilot/deploy/bedrock-live-gate.sh`
+4. `apps/server-pilot/deploy/wire-gate.sh`
+5. `apps/server-pilot/deploy/ai-mail-pipeline-live-gate.sh`
+
+## Rollback
+
+```bash
+AI_WRITE_GATE_ENABLED=false
+AI_DRAFTS_ENABLED=false
+pm2 restart ai-worker --update-env
+```
+
+Existing Inbox mail remains visible. Existing AI category memberships and candidate drafts are not deleted automatically.
+
+## Failure Lookup
+
+Latest failed AI runs:
+
+```sql
+SELECT id, run_kind, state, last_error, updated_at
+FROM ai_workflow_run
+WHERE state IN ('retry_wait', 'dead_letter')
+ORDER BY updated_at DESC
+LIMIT 20;
+```
+
+Trace by trigger message id:
+
+```sql
+SELECT id, run_kind, state, mastra_trace_id, metrics
+FROM ai_workflow_run
+WHERE trigger_message_id = $1
+ORDER BY created_at;
+```
+
+Candidate drafts by generation id:
+
+```sql
+SELECT d.id, d.status, d.origin, d.subject, d.to_addresses
+FROM mail_draft d
+WHERE d.generation_id = $1;
+```
+
+Category memberships by thread id:
+
+```sql
+SELECT c.slug, c.name
+FROM mail_thread_category tc
+JOIN mail_category c ON c.id = tc.category_id
+WHERE tc.thread_id = $1;
 ```
 
 ## Trace Lookup
@@ -77,6 +138,7 @@ bash apps/server-pilot/deploy/ssm-run-command.sh 'set -a; source /home/ubuntu/re
 bash apps/server-pilot/deploy/ssm-run-command.sh 'cd /home/ubuntu/repos/zero && bash apps/server-pilot/deploy/wire-gate.sh'
 bash apps/server-pilot/deploy/ssm-run-command.sh 'cd /home/ubuntu/repos/zero && bash apps/server-pilot/deploy/bedrock-live-gate.sh'
 bash apps/server-pilot/deploy/ssm-run-command.sh 'cd /home/ubuntu/repos/zero && bash apps/server-pilot/deploy/fixture-loopback-gate.sh'
+bash apps/server-pilot/deploy/ssm-run-command.sh 'cd /home/ubuntu/repos/zero && bash apps/server-pilot/deploy/ai-mail-pipeline-live-gate.sh'
 ```
 
 ## Adapter selection
@@ -87,6 +149,7 @@ bash apps/server-pilot/deploy/ssm-run-command.sh 'cd /home/ubuntu/repos/zero && 
 | `ai-worker` PM2 (`AI_ENABLED=true`) | `BedrockModelAdapter` → `us-east-1` Nova Lite |
 | `ai-gate.sh` spike eval | fake only (deterministic) |
 | `bedrock-live-gate.sh` | one live Converse via instance role |
+| `ai-mail-pipeline-live-gate.sh` | opt-in Mailpit → triage → category → draft → Playwright proof |
 
 IAM: inline policy `NavaZeroBedrockInvoke` on worker role — see `apps/server-pilot/deploy/aws-resources.md`.
 

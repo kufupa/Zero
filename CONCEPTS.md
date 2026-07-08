@@ -119,3 +119,7 @@ Abstraction boundary for LLM invocation in server-pilot (`ModelAdapter.invoke`).
 ### Bedrock live gate
 
 On-demand EC2 verification (`bedrock-live-gate.sh`) that runs one real Converse call via instance role credentials. Distinct from `ai-gate.sh`, which stays on the fake adapter for deterministic spike eval every deploy. Opt-in via `BEDROCK_LIVE_TEST=1`; proves IAM and cross-region Bedrock access without blocking daily deploys.
+
+### AI mail pipeline live gate
+
+Opt-in EC2 proof (`ai-mail-pipeline-live-gate.sh`) composing Mailpit ingest, `ai-worker` Bedrock triage, durable categories, candidate draft persistence, and Playwright browser proof. Requires `BEDROCK_PIPELINE_LIVE_TEST=1`. `AI_WRITE_GATE_ENABLED` and `AI_DRAFTS_ENABLED` default false in production; the live gate sets them explicitly for full proof.
