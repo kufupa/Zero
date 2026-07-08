@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import {
+  mailCategory,
   mailIngestMailbox,
   mailboxAccess,
   mailboxTransport,
   mailLabel,
 } from '../src/db/schema/mail';
+import { AI_MANAGED_CATEGORY_SLUGS } from '../src/ai/categories.js';
 import { user as userTable, account } from '../src/db/schema/auth';
 import { planPilotCredentials, seedAll, PILOT_USERS } from '../src/db/seed';
 import {
@@ -190,6 +192,27 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           return planPilotCredentials(db, { rotatePasswords: false });
         });
         expect(Object.keys(planned)).toHaveLength(0);
+      },
+      30000,
+    );
+
+    it(
+      'seeds AI-managed categories for each active transport',
+      async () => {
+        const categories = await withSeededTestDb(async (db) =>
+          db
+            .select({
+              transportId: mailCategory.transportId,
+              slug: mailCategory.slug,
+            })
+            .from(mailCategory),
+        );
+
+        for (const transportId of ['transport-centurion', 'transport-nava']) {
+          for (const slug of AI_MANAGED_CATEGORY_SLUGS) {
+            expect(categories).toContainEqual({ transportId, slug });
+          }
+        }
       },
       30000,
     );

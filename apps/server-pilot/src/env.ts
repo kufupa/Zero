@@ -40,6 +40,9 @@ export interface MailEnv {
   INGEST_MAX_MESSAGE_BYTES?: number;
   INGEST_MAX_ATTACHMENT_BYTES?: number;
   AI_ENABLED: boolean;
+  AI_WRITE_GATE_ENABLED: boolean;
+  AI_DRAFTS_ENABLED: boolean;
+  AI_STALE_RUN_TIMEOUT_MS: number;
   AI_MODEL_ID?: string;
   BEDROCK_REGION?: string;
   BEDROCK_GUARDRAIL_ID?: string;
@@ -138,6 +141,9 @@ export function parseEnv(input: EnvInput): MailEnv {
       input.POP3_MAX_MESSAGES_PER_CYCLE as string,
     ),
     AI_ENABLED: false,
+    AI_WRITE_GATE_ENABLED: false,
+    AI_DRAFTS_ENABLED: false,
+    AI_STALE_RUN_TIMEOUT_MS: 15 * 60_000,
   };
 
   if (input.INGEST_FIXTURE_DIR) env.INGEST_FIXTURE_DIR = input.INGEST_FIXTURE_DIR;
@@ -169,6 +175,16 @@ export function parseEnv(input: EnvInput): MailEnv {
   const aiEnabled = input.AI_ENABLED === 'true' || input.AI_ENABLED === '1';
   assertNoHostedObservabilityEnv(input, aiEnabled);
   env.AI_ENABLED = aiEnabled;
+
+  env.AI_WRITE_GATE_ENABLED = input.AI_WRITE_GATE_ENABLED
+    ? toBool('AI_WRITE_GATE_ENABLED', input.AI_WRITE_GATE_ENABLED)
+    : false;
+  env.AI_DRAFTS_ENABLED = input.AI_DRAFTS_ENABLED
+    ? toBool('AI_DRAFTS_ENABLED', input.AI_DRAFTS_ENABLED)
+    : false;
+  env.AI_STALE_RUN_TIMEOUT_MS = input.AI_STALE_RUN_TIMEOUT_MS
+    ? toInt('AI_STALE_RUN_TIMEOUT_MS', input.AI_STALE_RUN_TIMEOUT_MS)
+    : 15 * 60_000;
 
   if (aiEnabled) {
     env.AI_MODEL_ID = input.AI_MODEL_ID ?? DEFAULT_AI_MODEL_ID;

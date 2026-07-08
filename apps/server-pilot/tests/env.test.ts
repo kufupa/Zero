@@ -1,6 +1,21 @@
 import { describe, expect, it } from 'vitest';
 import { parseEnv } from '../src/env';
 
+function baseEnv(overrides: Record<string, string | undefined> = {}) {
+  return {
+    NODE_ENV: 'production',
+    PORT: '8788',
+    DATABASE_URL: 'postgres://zero:secret@host:5432/zero',
+    BETTER_AUTH_URL: 'https://nava.legacy.local',
+    BETTER_AUTH_SECRET: 'x'.repeat(32),
+    AWS_REGION: 'af-south-1',
+    S3_BUCKET: 'nava-mail-artifacts-test',
+    POP3_POLL_INTERVAL_MS: '30000',
+    POP3_MAX_MESSAGES_PER_CYCLE: '500',
+    ...overrides,
+  };
+}
+
 describe('env', () => {
   it('parses production AWS mail env', () => {
     const env = parseEnv({
@@ -90,6 +105,27 @@ describe('env', () => {
         POP3_MAX_MESSAGES_PER_CYCLE: '500',
       }),
     ).toThrow(/PORT/);
+  });
+
+  it('defaults AI write and draft gates to false', () => {
+    expect(parseEnv(baseEnv()).AI_WRITE_GATE_ENABLED).toBe(false);
+    expect(parseEnv(baseEnv()).AI_DRAFTS_ENABLED).toBe(false);
+    expect(parseEnv(baseEnv()).AI_STALE_RUN_TIMEOUT_MS).toBe(15 * 60_000);
+  });
+
+  it('parses AI write and draft gates when enabled', () => {
+    expect(
+      parseEnv({ ...baseEnv(), AI_WRITE_GATE_ENABLED: '1', AI_DRAFTS_ENABLED: 'true' }),
+    ).toMatchObject({
+      AI_WRITE_GATE_ENABLED: true,
+      AI_DRAFTS_ENABLED: true,
+    });
+  });
+
+  it('rejects invalid AI_WRITE_GATE_ENABLED values', () => {
+    expect(() => parseEnv({ ...baseEnv(), AI_WRITE_GATE_ENABLED: 'yes' })).toThrow(
+      /AI_WRITE_GATE_ENABLED/,
+    );
   });
 
   it('disables AI by default when AI_ENABLED is absent', () => {

@@ -35,8 +35,11 @@ module.exports = {
       max_restarts: 10,
       env: {
         NODE_ENV: 'production',
-        AI_ENABLED: 'true',
-        BEDROCK_REGION: 'us-east-1',
+        AI_ENABLED: process.env.AI_ENABLED ?? 'true',
+        AI_WRITE_GATE_ENABLED: process.env.AI_WRITE_GATE_ENABLED ?? 'false',
+        AI_DRAFTS_ENABLED: process.env.AI_DRAFTS_ENABLED ?? 'false',
+        AI_MODEL_ID: process.env.AI_MODEL_ID ?? 'amazon.nova-lite-v1:0',
+        BEDROCK_REGION: process.env.BEDROCK_REGION ?? 'us-east-1',
       },
     },
   ],

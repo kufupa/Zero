@@ -6,10 +6,12 @@
  * call it against the same DB handle.
  */
 import { count, eq } from 'drizzle-orm';
+import { AI_MANAGED_CATEGORY_SEED_ROWS } from '../ai/categories.js';
 import { randomBytes } from 'node:crypto';
 import { hashPassword } from 'better-auth/crypto';
 import { account, user as userTable } from './schema/auth.js';
 import {
+  mailCategory,
   mailIngestMailbox,
   mailboxAccess,
   mailboxTransport,
@@ -263,6 +265,15 @@ export async function seedAll(db: DB, opts: SeedOptions = {}): Promise<SeedResul
   await seedSpamLabel(db, TRANSPORT_ID);
   await seedSpamLabel(db, NAVA_TRANSPORT_ID);
 
+  const activeTransportRows = await db
+    .select({ id: mailboxTransport.id })
+    .from(mailboxTransport)
+    .where(eq(mailboxTransport.isActive, true));
+
+  for (const transport of activeTransportRows) {
+    await seedAiManagedCategories(db, transport.id);
+  }
+
   // 5. Counts for summary
   const transportRows = await db
     .select({ id: mailboxTransport.id, email: mailboxTransport.email })
@@ -276,6 +287,32 @@ export async function seedAll(db: DB, opts: SeedOptions = {}): Promise<SeedResul
     transportCount: transportRows.length,
     accessCount: Number(accessCountRow[0]?.n ?? 0),
   };
+}
+
+async function seedAiManagedCategories(db: DB, transportId: string): Promise<void> {
+  for (const row of AI_MANAGED_CATEGORY_SEED_ROWS) {
+    await db
+      .insert(mailCategory)
+      .values({
+        id: `category-${transportId}-${row.slug}`,
+        transportId,
+        slug: row.slug,
+        name: row.name,
+        color: row.color,
+        sortOrder: row.sortOrder,
+        isActive: true,
+      })
+      .onConflictDoUpdate({
+        target: [mailCategory.transportId, mailCategory.slug],
+        set: {
+          name: row.name,
+          color: row.color,
+          sortOrder: row.sortOrder,
+          isActive: true,
+          updatedAt: new Date(),
+        },
+      });
+  }
 }
 
 async function seedSpamLabel(db: DB, transportId: string): Promise<void> {
