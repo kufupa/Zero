@@ -9,10 +9,10 @@ describe('resolveMailListSearch', () => {
     });
   });
 
-  it('maps read:no alias', () => {
+  it('passes read:no through q for server to reject', () => {
     expect(resolveMailListSearch('read:no', {})).toEqual({
-      q: undefined,
-      filters: { unread: true },
+      q: 'read:no',
+      filters: {},
     });
   });
 

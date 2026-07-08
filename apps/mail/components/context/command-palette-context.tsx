@@ -514,7 +514,7 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
       }
 
       const isFilterSyntax =
-        /^(from:|to:|cc:|bcc:|subject:|has:|hasattachment:|is:|read:|after:|before:|label:|category:|importance:)/.test(
+        /^(from:|to:|cc:|bcc:|subject:|has:|is:|after:|before:|label:|category:)/.test(
           query.trim(),
         );
       if (query.trim() && !isFilterSyntax) {

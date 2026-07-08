@@ -14,11 +14,8 @@ export type ResolvedMailListSearch = {
 
 const STATUS_ONLY = new Map<string, Partial<MailListStructuredFilters>>([
   ['is:unread', { unread: true }],
-  ['read:no', { unread: true }],
   ['is:starred', { starred: true }],
-  ['is:flagged', { starred: true }],
   ['is:important', { important: true }],
-  ['importance:high', { important: true }],
 ]);
 
 /**
