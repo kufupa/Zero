@@ -76,4 +76,13 @@ describe('AI eval runner', () => {
     expect(report.traceIds.length).toBeGreaterThan(0);
     expect(report.scorerIds.length).toBeGreaterThan(0);
   });
+
+  it('includes draft skeleton and failure safety eval cases', async () => {
+    const report = await runSpikeEval({ passThreshold: 0.8 });
+    expect(report.metrics.totalCases).toBeGreaterThanOrEqual(8);
+    expect(report.metrics.draftSchemaCases).toBeGreaterThanOrEqual(1);
+    expect(report.metrics.failureSafetyCases).toBeGreaterThanOrEqual(1);
+    expect(report.failures.find((failure) => failure.id.includes('draft-skeleton'))).toBeUndefined();
+    expect(report.failures.find((failure) => failure.id.includes('failure-no-mutation'))).toBeUndefined();
+  });
 });

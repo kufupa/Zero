@@ -18,6 +18,14 @@
       "body": "Can you assist with a quotation for 20 single rooms check in 23 April and check out 24 April?"
     },
     {
+      "id": "group-urgent",
+      "sourceThreadId": "sa-thread-002b",
+      "expectedCategory": "group",
+      "expectedUrgent": true,
+      "subject": "Urgent group quote",
+      "body": "Urgent: need 20 rooms for a group booking tomorrow."
+    },
+    {
       "id": "individual-booking",
       "sourceThreadId": "sa-thread-003",
       "expectedCategory": "individual",
@@ -40,6 +48,37 @@
       "expectedUrgent": false,
       "subject": "Booking request",
       "body": "Please confirm availability for our travel agency guest."
+    },
+    {
+      "id": "travel-agent-normal",
+      "sourceThreadId": "sa-thread-005b",
+      "expectedCategory": "travel-agents",
+      "expectedUrgent": false,
+      "subject": "Standard agency booking",
+      "body": "Travel agency booking request for one guest room next week."
+    },
+    {
+      "id": "spam-suppresses-draft",
+      "sourceThreadId": "sa-thread-001b",
+      "expectedCategory": "spam",
+      "expectedUrgent": false,
+      "expectedDraft": false,
+      "subject": "Limited time hotel offer",
+      "body": "spam promotional offer click now"
+    },
+    {
+      "id": "draft-skeleton",
+      "kind": "draft-skeleton",
+      "subject": "Group booking",
+      "body": "Need a room for next week",
+      "expectedContainsBracketedBody": true
+    },
+    {
+      "id": "failure-no-mutation",
+      "kind": "failure-no-mutation",
+      "subject": "Broken model output",
+      "body": "guest inquiry",
+      "malformedOutput": { "category": "not-a-real-category", "urgent": "yes" }
     }
   ]
 }
