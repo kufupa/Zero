@@ -81,7 +81,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
   'mail search contract — drafts.list shared parser',
   () => {
-    it('free text matches draft subject via parser, not whole-string operator ILIKE', async () => {
+    it('subject: operator matches draft subject field only, not body ILIKE on whole query', async () => {
       await withSeededTestDb(async (db) => {
         const matchingDraftId = randomUUID();
         const decoyDraftId = randomUUID();
@@ -100,8 +100,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           id: decoyDraftId,
           transportId: TRANSPORT_ID,
           createdByUserId: 'user-manager',
-          subject: 'subject:invoice',
-          textBody: 'Operator in subject only',
+          subject: 'Billing reminder',
+          textBody: 'subject:invoice appears only in body',
           isSent: false,
           status: 'active',
           origin: 'manual',
