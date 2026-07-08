@@ -96,6 +96,10 @@ EC2/RDS verification step for the AI mail pipeline: runs server-pilot AI contrac
 
 Durable queue row in `ai_workflow_run` representing one async AI job (triage, candidate draft, or feedback extraction). Claimed by `ai-worker`, idempotent by `idempotency_key`, with retry/dead-letter state.
 
+### Claim fencing
+
+Terminal update invariant on AI workflow runs: `markAiRunSucceeded`, retry, and dead-letter helpers only mutate a row when `claimOwner` and `expectedStates` still match the worker that holds the claim. A stale or reclaimed worker's terminal write returns no row instead of overwriting a newer owner's result.
+
 ### Shadow triage
 
 Classifier/eval path that records triage output and metrics without mutating mailbox category, spam, or urgent state until the spike gate enables durable writes.

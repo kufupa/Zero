@@ -200,6 +200,7 @@ const adapter = createModelAdapter();
 
 ## Related
 
+- [Live AI mail pipeline with Mastra workflows, ai-worker writes, and opt-in gates](../architecture-patterns/live-ai-mail-pipeline-mastra-worker-gates.md) — full Mailpit → triage → gated writes → candidate draft → browser proof (builds on this adapter layer)
 - [EC2 AI contract tests fail RDS gate on FK and mailbox setup](../test-failures/ec2-ai-contract-tests-rds-gate-fk-setup.md) — parallel ai-gate RDS failures fixed before Bedrock wiring
 - Runbook: `docs/server-pilot-ai.md` (env table, adapter selection, SSM commands)
 - IAM provisioning: `apps/server-pilot/deploy/aws-resources.md`

@@ -12,6 +12,8 @@ This is a pnpm workspace monorepo with the following structure:
 - `packages/db/` - Database schemas and utilities
 - `packages/eslint-config/` - Shared ESLint configuration
 - `packages/tsconfig/` - Shared TypeScript configuration
+- `docs/solutions/` - Documented fixes and workflow gotchas (YAML frontmatter: `module`, `tags`, `problem_type`); search before debugging in documented areas
+- `CONCEPTS.md` - Shared domain vocabulary for mail-pilot terms
 
 ## Frequently Used Commands
 
