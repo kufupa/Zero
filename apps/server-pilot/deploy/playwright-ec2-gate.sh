@@ -17,6 +17,8 @@ fi
 export PLAYWRIGHT_BASE_URL="${PLAYWRIGHT_BASE_URL:-http://localhost:3000}"
 export PLAYWRIGHT_COOKIE_PREFIX="${PLAYWRIGHT_COOKIE_PREFIX:-better-auth}"
 export VITE_PUBLIC_BACKEND_URL="${VITE_PUBLIC_BACKEND_URL:-http://127.0.0.1:8788}"
+export ZERO_DEMO_FRONTEND_ONLY="${ZERO_DEMO_FRONTEND_ONLY:-1}"
+export VITE_FRONTEND_ONLY="${VITE_FRONTEND_ONLY:-1}"
 export ZERO_AUTO_START_BACKEND=0
 export EMAIL="${EMAIL:-guest@example.com}"
 
@@ -41,9 +43,9 @@ if ! curl -sf "${PLAYWRIGHT_BASE_URL}/" >/dev/null 2>&1; then
     VITE_PUBLIC_BACKEND_URL="$VITE_PUBLIC_BACKEND_URL" \
     VITE_DISABLE_SENTRY=1 \
     ZERO_DEMO_MODE=1 \
-    ZERO_DEMO_FRONTEND_ONLY=1 \
+    ZERO_DEMO_FRONTEND_ONLY="$ZERO_DEMO_FRONTEND_ONLY" \
     VITE_ZERO_DEMO_MODE=1 \
-    VITE_FRONTEND_ONLY=1 \
+    VITE_FRONTEND_ONLY="$VITE_FRONTEND_ONLY" \
     pnpm --dir apps/mail run dev > /tmp/fe-dev.log 2>&1 &
   FE_PID=$!
   for _ in $(seq 1 90); do
@@ -75,7 +77,11 @@ export PLAYWRIGHT_SESSION_DATA=$(node -e 'const r=process.argv[1];const m=r.matc
 
 cd packages/testing
 set +e
-pnpm exec playwright test --reporter=line
+if [ -n "${PLAYWRIGHT_INCLUDE_SPECS:-}" ]; then
+  pnpm exec playwright test "${PLAYWRIGHT_INCLUDE_SPECS}" --reporter=line
+else
+  pnpm exec playwright test --reporter=line
+fi
 PW_EXIT=$?
 set -e
 exit "$PW_EXIT"

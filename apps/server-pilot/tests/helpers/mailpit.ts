@@ -18,6 +18,12 @@ export type MailpitContext = {
   pop3Password: string;
   clearAll(): Promise<void>;
   injectRawEml(raw: Buffer, envelopeTo?: string): Promise<void>;
+  injectPlainEmail(input: {
+    from: string;
+    to: string;
+    subject: string;
+    text: string;
+  }): Promise<void>;
   stop(): Promise<void>;
 };
 
@@ -103,6 +109,24 @@ function buildContext(httpUrl: string, child: ChildProcess | null): MailpitConte
       await transport.sendMail({
         envelope: { from: 'inject@wire.test', to: [envelopeTo] },
         raw,
+      });
+    },
+    async injectPlainEmail(input: {
+      from: string;
+      to: string;
+      subject: string;
+      text: string;
+    }) {
+      const transport = nodemailer.createTransport({
+        host: u.hostname,
+        port: WIRE_SMTP_PORT,
+        secure: false,
+      });
+      await transport.sendMail({
+        from: input.from,
+        to: input.to,
+        subject: input.subject,
+        text: input.text,
       });
     },
     async stop() {
