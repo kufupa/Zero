@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Ship Gmail/Outlook-parity mail search on server-pilot with Postgres FTS, inline operator aliases, honest FE capability gating. No AI/semantic v1.
+**Goal:** Ship Gmail-parity mail search on server-pilot with Postgres FTS, canonical operator grammar, honest FE capability gating. No AI/semantic v1.
 
 **Architecture:** `parseSearchQuery(q)` → flat `ParsedSearchQuery` → `buildThreadSearchConditions` + FTS on `mail_thread.search_vector`. FE sends `q` + structured `filters.*`; no client-side mailbox filtering.
 
@@ -16,7 +16,8 @@
 - Unsupported operator → TRPC 400 with `{ code, token, message }`; FE toast, no silent ILIKE.
 - `q` max 512 chars on `listThreads` and `drafts.list`.
 - Shared parser for threads + drafts.
-- Inline aliases only: `read:no`=`is:unread`, `hasattachment:yes`=`has:attachment`, `category:` joins `mail_thread_category`.
+- Canonical grammar only (Gmail operators). Outlook spellings → 400.
+- Supported: from/to/cc/bcc/subject, is:read|unread|starred|important, has:attachment, after/before, label/category.
 - Body search v1: subject + snippet + message from/to addresses (not full HTML body).
 
 ---
@@ -46,13 +47,13 @@ describe('parseSearchQuery', () => {
     });
   });
 
-  it('maps read:no to unread', () => {
-    expect(parseSearchQuery('read:no')).toMatchObject({ isRead: false });
-    expect(parseSearchQuery('is:unread')).toMatchObject({ isRead: false });
+  it('rejects Outlook spellings', () => {
+    expect(() => parseSearchQuery('read:no')).toThrow(SearchParseError);
+    expect(() => parseSearchQuery('hasattachment:yes')).toThrow(SearchParseError);
   });
 
-  it('maps hasattachment:yes', () => {
-    expect(parseSearchQuery('hasattachment:yes')).toMatchObject({ hasAttachment: true });
+  it('accepts canonical operators', () => {
+    expect(parseSearchQuery('is:unread')).toMatchObject({ isRead: false });
     expect(parseSearchQuery('has:attachment')).toMatchObject({ hasAttachment: true });
   });
 

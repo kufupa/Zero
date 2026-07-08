@@ -3,7 +3,7 @@
 # Plan: Enterprise mail search (Outlook/Gmail parity)
 
 **Branch:** `feat/mail-search` worktree (to be created) off `EC2-pilot`
-**Status:** APPROVED — 2026-07-07 (user: inline aliases, no dialect layer, no AI v1)
+**Status:** IMPLEMENTED — canonical Gmail grammar only; Outlook spellings rejected
 **Design doc:** `~/.gstack/projects/kufupa-Zero/gamin-EC2-pilot-design-20260707-225724.md`
 
 ## Summary
@@ -127,9 +127,10 @@ Command palette / mail list
 - Unsupported operator token → 400 + FE toast (no silent ILIKE miss).
 - Wire palette quick filters → structured `filters.*` where BE already supports (unread/starred/important).
 
-### Operator aliases (inline in parser, not a separate layer)
-- Same SQL for equivalent spellings: `is:unread` / `read:no`, `has:attachment` / `hasattachment:yes`, `label:` / `category:` (category joins `mail_thread_category`).
-- No Outlook-vs-Gmail product fork — one parser, both spellings accepted.
+### Canonical grammar (no Outlook spellings)
+- One Gmail-style operator set: `is:unread`, `has:attachment`, etc.
+- Outlook spellings (`read:no`, `hasattachment:yes`) → `SearchParseError` → TRPC 400.
+- `label:` and `category:` are distinct operators (category joins `mail_thread_category`).
 
 ### Revised ship order
 1. Contract test fixtures + `ParsedSearchQuery` schema
@@ -144,7 +145,8 @@ Command palette / mail list
 |---|-------|----------|----------------|-----------|-----------|----------|
 | 1 | CEO | Block impl until client top-10 | **REJECTED** | — | User: ship parity now | — |
 | 2 | CEO | Add Outlook synonym layer | **REJECTED** | — | User: inline aliases, no layer | Separate dialect module |
-| 8 | User | Inline alias spellings in parser | Mechanical | P5 | `read:no` same as `is:unread` | Outlook dialect layer |
+| 8 | User | Inline alias spellings in parser | **SUPERSEDED** | P5 | Replaced by canonical-only | Outlook dialect layer |
+| 12 | User | Reject Outlook spellings | Mechanical | P5 | One grammar, tested paths | Inline alias tolerance |
 | 9 | User | No AI/semantic in v1 | Mechanical | P3 | Explicit non-goals | — |
 | 10 | Ponytail | Flat parser not AST | Mechanical | P5 | One struct, regex tokens | MailSearchAst |
 | 11 | Ponytail | 2 search files not 3 | Mechanical | P5 | parse.ts + query.ts | parser/build/fts split |
@@ -189,7 +191,7 @@ Command palette / mail list
 
 ### User challenge — RESOLVED
 - **You said:** Feature parity with Gmail/Outlook; don't care about naming layers; skip AI/semantic v1.
-- **Decision:** One server parser accepts both spellings inline (`read:no` = `is:unread`). No separate synonym module. No block on client top-10 before impl — contract tests use standard operator matrix from Gmail/Outlook docs.
+- **Decision:** Canonical Gmail grammar only. Outlook spellings rejected with 400. Feature parity via capabilities, not dual naming.
 
 ### Taste decisions (remaining)
 1. **Body search: excerpt vs full decodedBody** — recommend excerpt + sender fields v1; full body tier 1.5 if UAT needs it.
@@ -204,7 +206,7 @@ Command palette / mail list
 - **Dependencies:** none
 - **Files:** `apps/server-pilot/src/mail/search/parse.ts`, `apps/server-pilot/src/mail/search/types.ts`, `apps/server-pilot/tests/mail-search-parse.test.ts`
 - **Approach:** Zod `ParsedSearchQuery` — `freeText`, `from[]`, `to[]`, `subject`, `isRead`, `isStarred`, `isImportant`, `hasAttachment`, `after`, `before`, `labelIds`, `categorySlugs`, `unsupportedTokens[]`. `parseSearchQuery(q)` returns parsed or throws `SearchParseError` with token.
-- **Test scenarios:** `from:a@b.com`; `read:no` → unread; `hasattachment:yes`; unknown `foo:bar` → error; bare text → freeText only.
+- **Test scenarios:** `from:a@b.com`; `is:unread`; `has:attachment`; `read:no` → 400; unknown `foo:bar` → error; bare text → freeText only.
 - **Verification:** `vitest mail-search-parse.test.ts` green for parse-only; listThreads still ILIKE until U5.
 
 ### U2. FTS column + migration
