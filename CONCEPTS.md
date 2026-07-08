@@ -86,6 +86,10 @@ A verification gate (typecheck, test, or build) reported as passing in a hand-of
 
 Autonomous Playwright gate step that logs in a pilot user non-interactively — POST `/api/auth/sign-in/email` with a password from Secrets Manager — then exports `PLAYWRIGHT_SESSION_TOKEN`/`PLAYWRIGHT_SESSION_DATA` (+ `PLAYWRIGHT_COOKIE_PREFIX`) so `auth.setup.ts` injects a real Better Auth session. Cookie domain/secure derive from `PLAYWRIGHT_BASE_URL`, not hardcoded `localhost`.
 
+### AI gate
+
+EC2/RDS verification step for the AI mail pipeline: runs server-pilot AI contract tests against production Postgres plus spike eval and server build. Includes mocked `bedrock-adapter-contract.test.ts` (fake adapter — `NODE_ENV=test`). Live Bedrock Converse proof is the separate on-demand Bedrock live gate. Distinct from local vitest, which skips RDS-only cases when `DATABASE_URL` is unset.
+
 ## AI mail pipeline
 
 ### AI workflow run
@@ -107,3 +111,11 @@ Async label set comparing the first `ai_generated` revision to the final `sent` 
 ### AI workflow runner
 
 The `ai-worker` PM2 process that claims `ai_workflow_run` rows and executes Mastra workflows against app-owned services. No SMTP/POP3 credentials and no send-capable imports.
+
+### Model adapter
+
+Abstraction boundary for LLM invocation in server-pilot (`ModelAdapter.invoke`). `FakeModelAdapter` returns deterministic JSON for tests and deploy gates; `BedrockModelAdapter` calls Bedrock Converse on `ai-worker`. Selection is env-driven via `createModelAdapter()` — mirrors the mail transport factory pattern (`NODE_ENV=test` always fake; `AI_ENABLED=true` in production uses Bedrock).
+
+### Bedrock live gate
+
+On-demand EC2 verification (`bedrock-live-gate.sh`) that runs one real Converse call via instance role credentials. Distinct from `ai-gate.sh`, which stays on the fake adapter for deterministic spike eval every deploy. Opt-in via `BEDROCK_LIVE_TEST=1`; proves IAM and cross-region Bedrock access without blocking daily deploys.
