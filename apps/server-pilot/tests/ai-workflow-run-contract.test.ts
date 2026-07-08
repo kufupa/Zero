@@ -17,7 +17,11 @@ import {
   markAiRunRetry,
   markAiRunSucceeded,
 } from '../src/ai/run-ledger.js';
-import { TEST_DB_AVAILABLE, probeTestDb } from './helpers/test-db.js';
+import {
+  TEST_DB_AVAILABLE,
+  probeTestDb,
+  withSeededTestDb,
+} from './helpers/test-db.js';
 
 const reachable = await probeTestDb();
 
@@ -147,6 +151,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai workflow run contract', ()
     const nextRunAt = new Date('2026-07-07T12:00:00Z');
     await markAiRunRetry({
       runId: run.id,
+      claimOwner: claimed!.claimOwner!,
+      expectedStates: ['claimed'],
       attempts: 1,
       nextRunAt,
       lastError: 'bedrock timeout',
@@ -213,7 +219,12 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai workflow run contract', ()
       promptVersion: 'feedback-v1',
     });
     await claimNextAiRun({ ownerId: 'worker-a' });
-    await markAiRunDeadLetter({ runId: run.id, lastError: 'policy violation' });
+    await markAiRunDeadLetter({
+      runId: run.id,
+      claimOwner: 'worker-a',
+      expectedStates: ['claimed'],
+      lastError: 'policy violation',
+    });
 
     const claimed = await claimNextAiRun({ ownerId: 'worker-b' });
     expect(claimed).toBeNull();
@@ -238,7 +249,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai workflow run contract', ()
       modelId: 'amazon.nova-lite-v1:0',
       promptVersion: 'draft-v1',
     });
-    await claimNextAiRun({ ownerId: 'worker-a' });
+    const claimed = await claimNextAiRun({ ownerId: 'worker-a' });
 
     const generationId = randomUUID();
     const db = getDb();
@@ -253,6 +264,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai workflow run contract', ()
     });
     await markAiRunSucceeded({
       runId: run.id,
+      claimOwner: claimed!.claimOwner!,
+      expectedStates: ['claimed'],
       mastraTraceId: 'trace-123',
       mastraScorerId: 'scorer-456',
       generationId,
@@ -268,5 +281,82 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai workflow run contract', ()
     expect(row?.mastraScorerId).toBe('scorer-456');
     expect(row?.generationId).toBe(generationId);
     expect(row?.metrics).toMatchObject({ latencyMs: 1200 });
+  });
+
+  it('prevents original owner from marking success after stale reclaim', async () => {
+    await withSeededTestDb(async (db) => {
+      const transportId = randomUUID();
+      const threadId = randomUUID();
+      const messageId = randomUUID();
+      await db.insert(mailboxTransport).values({
+        id: transportId,
+        email: `nava-${transportId.slice(0, 8)}@example.com`,
+        ownerHeaderValue: `nava-${transportId.slice(0, 8)}@example.com`,
+      });
+      await db.insert(mailThread).values({
+        id: threadId,
+        transportId,
+        threadRootId: `<root-${threadId}@example.com>`,
+        subject: 'Booking',
+        snippet: 'Need help',
+        latestMessageAt: new Date(),
+      });
+      await db.insert(message).values({
+        id: messageId,
+        transportId,
+        threadId,
+        direction: 'inbound',
+        fromAddress: 'guest@example.com',
+        toAddresses: ['nava@example.com'],
+        subject: 'Booking',
+        textBody: 'Need help',
+        receivedAt: new Date(),
+      });
+
+      const run = await enqueueAiRun(
+        {
+          transportId,
+          threadId,
+          triggerMessageId: messageId,
+          runKind: 'inbound_triage',
+          idempotencyKey: `inbound-triage:${messageId}`,
+          modelId: 'amazon.nova-lite-v1:0',
+          promptVersion: 'triage-v1',
+        },
+        db,
+      );
+
+      await db
+        .update(aiWorkflowRun)
+        .set({
+          state: 'running',
+          claimOwner: 'owner-a',
+          updatedAt: new Date(Date.now() - 60 * 60_000),
+        })
+        .where(eq(aiWorkflowRun.id, run.id));
+
+      const reclaimed = await claimNextAiRun({
+        ownerId: 'owner-b',
+        staleRunTimeoutMs: 15 * 60_000,
+        db,
+      });
+      expect(reclaimed?.id).toBe(run.id);
+      expect(reclaimed?.claimOwner).toBe('owner-b');
+
+      const staleWrite = await markAiRunSucceeded(
+        {
+          runId: run.id,
+          claimOwner: 'owner-a',
+          expectedStates: ['running'],
+          metrics: { stale: true },
+        },
+        db,
+      );
+      expect(staleWrite).toBeNull();
+
+      const [row] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, run.id));
+      expect(row?.claimOwner).toBe('owner-b');
+      expect(row?.state).toBe('claimed');
+    });
   });
 });

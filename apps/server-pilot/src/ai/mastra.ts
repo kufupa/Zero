@@ -3,6 +3,7 @@ import { dirname } from 'node:path';
 import { Mastra } from '@mastra/core';
 import { LibSQLStore } from '@mastra/libsql';
 import { mailTriageWorkflow } from './workflows/mail-triage.js';
+import { candidateDraftWorkflow } from './workflows/candidate-draft.js';
 
 export function createMastraRuntime(storagePath = './data/mastra/runtime.db') {
   mkdirSync(dirname(storagePath), { recursive: true });
@@ -14,6 +15,7 @@ export function createMastraRuntime(storagePath = './data/mastra/runtime.db') {
   return new Mastra({
     workflows: {
       mailTriage: mailTriageWorkflow,
+      candidateDraft: candidateDraftWorkflow,
     },
     storage,
   });

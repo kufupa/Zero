@@ -6,6 +6,7 @@ import type {
   aiWorkflowRunKindEnum,
   aiWorkflowRunStateEnum,
 } from '../db/schema/mail.js';
+import { parseEnv } from '../env.js';
 
 export const DEFAULT_AI_MODEL_ID = 'amazon.nova-lite-v1:0';
 export const DEFAULT_TRIAGE_PROMPT_VERSION = 'triage-v1';
@@ -27,10 +28,14 @@ export interface EnqueueAiRunInput {
 
 export interface ClaimNextAiRunInput {
   ownerId: string;
+  staleRunTimeoutMs?: number;
+  db?: DB;
 }
 
 export interface MarkAiRunSucceededInput {
   runId: string;
+  claimOwner: string;
+  expectedStates: AiWorkflowRunState[];
   mastraTraceId?: string;
   mastraScorerId?: string;
   generationId?: string;
@@ -39,6 +44,8 @@ export interface MarkAiRunSucceededInput {
 
 export interface MarkAiRunRetryInput {
   runId: string;
+  claimOwner: string;
+  expectedStates: AiWorkflowRunState[];
   attempts: number;
   nextRunAt: Date;
   lastError: string;
@@ -46,6 +53,8 @@ export interface MarkAiRunRetryInput {
 
 export interface MarkAiRunDeadLetterInput {
   runId: string;
+  claimOwner: string;
+  expectedStates: AiWorkflowRunState[];
   lastError: string;
 }
 
@@ -95,17 +104,27 @@ export async function enqueueAiRun(input: EnqueueAiRunInput, db: DB = getDb()) {
 }
 
 export async function claimNextAiRun(input: ClaimNextAiRunInput) {
-  const db = getDb();
+  const db = input.db ?? getDb();
   const now = new Date();
+  const staleRunTimeoutMs =
+    input.staleRunTimeoutMs ??
+    parseEnv(process.env as Record<string, string | undefined>).AI_STALE_RUN_TIMEOUT_MS;
+  const staleBefore = new Date(now.getTime() - staleRunTimeoutMs);
 
   return db.transaction(async (tx) => {
     const [candidate] = await tx
       .select()
       .from(aiWorkflowRun)
       .where(
-        and(
-          inArray(aiWorkflowRun.state, ['queued', 'retry_wait']),
-          or(sql`${aiWorkflowRun.nextRunAt} IS NULL`, lte(aiWorkflowRun.nextRunAt, now)),
+        or(
+          and(
+            inArray(aiWorkflowRun.state, ['queued', 'retry_wait']),
+            or(sql`${aiWorkflowRun.nextRunAt} IS NULL`, lte(aiWorkflowRun.nextRunAt, now)),
+          ),
+          and(
+            inArray(aiWorkflowRun.state, ['claimed', 'running']),
+            lte(aiWorkflowRun.updatedAt, staleBefore),
+          ),
         ),
       )
       .orderBy(aiWorkflowRun.createdAt)
@@ -114,6 +133,14 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
 
     if (!candidate) return null;
 
+    const isReclaim = candidate.state === 'claimed' || candidate.state === 'running';
+    const reclaimCount =
+      isReclaim && typeof candidate.metrics === 'object' && candidate.metrics !== null
+        ? Number((candidate.metrics as Record<string, unknown>).reclaimCount ?? 0) + 1
+        : isReclaim
+          ? 1
+          : undefined;
+
     const [claimed] = await tx
       .update(aiWorkflowRun)
       .set({
@@ -121,11 +148,30 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
         claimOwner: input.ownerId,
         claimedAt: now,
         updatedAt: now,
+        ...(reclaimCount !== undefined
+          ? {
+              metrics: {
+                ...(typeof candidate.metrics === 'object' && candidate.metrics !== null
+                  ? (candidate.metrics as Record<string, unknown>)
+                  : {}),
+                reclaimCount,
+              },
+            }
+          : {}),
       })
       .where(
         and(
           eq(aiWorkflowRun.id, candidate.id),
-          inArray(aiWorkflowRun.state, ['queued', 'retry_wait']),
+          or(
+            and(
+              inArray(aiWorkflowRun.state, ['queued', 'retry_wait']),
+              or(sql`${aiWorkflowRun.nextRunAt} IS NULL`, lte(aiWorkflowRun.nextRunAt, now)),
+            ),
+            and(
+              inArray(aiWorkflowRun.state, ['claimed', 'running']),
+              lte(aiWorkflowRun.updatedAt, staleBefore),
+            ),
+          ),
         ),
       )
       .returning();
@@ -134,8 +180,7 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
   });
 }
 
-export async function markAiRunSucceeded(input: MarkAiRunSucceededInput) {
-  const db = getDb();
+export async function markAiRunSucceeded(input: MarkAiRunSucceededInput, db: DB = getDb()) {
   const now = new Date();
   const [row] = await db
     .update(aiWorkflowRun)
@@ -148,13 +193,18 @@ export async function markAiRunSucceeded(input: MarkAiRunSucceededInput) {
       finishedAt: now,
       updatedAt: now,
     })
-    .where(eq(aiWorkflowRun.id, input.runId))
+    .where(
+      and(
+        eq(aiWorkflowRun.id, input.runId),
+        eq(aiWorkflowRun.claimOwner, input.claimOwner),
+        inArray(aiWorkflowRun.state, input.expectedStates),
+      ),
+    )
     .returning();
   return row ?? null;
 }
 
-export async function markAiRunRetry(input: MarkAiRunRetryInput) {
-  const db = getDb();
+export async function markAiRunRetry(input: MarkAiRunRetryInput, db: DB = getDb()) {
   const now = new Date();
   const [row] = await db
     .update(aiWorkflowRun)
@@ -166,13 +216,18 @@ export async function markAiRunRetry(input: MarkAiRunRetryInput) {
       claimOwner: null,
       updatedAt: now,
     })
-    .where(eq(aiWorkflowRun.id, input.runId))
+    .where(
+      and(
+        eq(aiWorkflowRun.id, input.runId),
+        eq(aiWorkflowRun.claimOwner, input.claimOwner),
+        inArray(aiWorkflowRun.state, input.expectedStates),
+      ),
+    )
     .returning();
   return row ?? null;
 }
 
-export async function markAiRunDeadLetter(input: MarkAiRunDeadLetterInput) {
-  const db = getDb();
+export async function markAiRunDeadLetter(input: MarkAiRunDeadLetterInput, db: DB = getDb()) {
   const now = new Date();
   const [row] = await db
     .update(aiWorkflowRun)
@@ -183,7 +238,13 @@ export async function markAiRunDeadLetter(input: MarkAiRunDeadLetterInput) {
       finishedAt: now,
       updatedAt: now,
     })
-    .where(eq(aiWorkflowRun.id, input.runId))
+    .where(
+      and(
+        eq(aiWorkflowRun.id, input.runId),
+        eq(aiWorkflowRun.claimOwner, input.claimOwner),
+        inArray(aiWorkflowRun.state, input.expectedStates),
+      ),
+    )
     .returning();
   return row ?? null;
 }

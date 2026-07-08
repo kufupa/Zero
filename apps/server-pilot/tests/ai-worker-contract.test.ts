@@ -8,16 +8,19 @@ import { getDb } from '../src/db/client.js';
 import {
   aiWorkflowRun,
   aiDraftGeneration,
+  mailCategory,
   mailDraft,
   mailDraftRevision,
   mailThread,
+  mailThreadCategory,
   mailboxTransport,
   message,
 } from '../src/db/schema/mail.js';
 import { user as userAuthTable } from '../src/db/schema/auth.js';
 import { enqueueAiRun, markAiRunRetry } from '../src/ai/run-ledger.js';
 import { executeAiRun } from '../src/ai/worker.js';
-import { TEST_DB_AVAILABLE, probeTestDb } from './helpers/test-db.js';
+import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
+import { TRANSPORT_ID } from '../src/db/seed.js';
 
 const reachable = await probeTestDb();
 const here = dirname(fileURLToPath(import.meta.url));
@@ -129,6 +132,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
     });
     await markAiRunRetry({
       runId: run.id,
+      claimOwner: 'worker-a',
+      expectedStates: ['running'],
       attempts: 1,
       nextRunAt: new Date(),
       lastError: 'transient',
@@ -148,5 +153,275 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
       .where(eq(mailDraftRevision.generationId, generationId));
     expect(drafts).toHaveLength(1);
     expect(revisions).toHaveLength(1);
+  });
+
+  it('shadow mode does not write categories or enqueue candidate draft', async () => {
+    await withSeededTestDb(async (db) => {
+      const threadId = randomUUID();
+      const messageId = randomUUID();
+      await db.insert(mailThread).values({
+        id: threadId,
+        transportId: TRANSPORT_ID,
+        threadRootId: `<${threadId}@example.com>`,
+        subject: 'Booking',
+        snippet: 'Need help',
+        latestMessageAt: new Date(),
+      });
+      await db.insert(message).values({
+        id: messageId,
+        transportId: TRANSPORT_ID,
+        threadId,
+        direction: 'inbound',
+        fromAddress: 'guest@example.com',
+        toAddresses: ['centurion@legacyhotel.com'],
+        subject: 'Booking',
+        textBody: 'Need a room tonight',
+        receivedAt: new Date(),
+      });
+
+      const run = await enqueueAiRun(
+        {
+          transportId: TRANSPORT_ID,
+          threadId,
+          triggerMessageId: messageId,
+          runKind: 'inbound_triage',
+          idempotencyKey: `triage-shadow:${messageId}`,
+          modelId: 'amazon.nova-lite-v1:0',
+          promptVersion: 'triage-v1',
+        },
+        db,
+      );
+
+      process.env.AI_WRITE_GATE_ENABLED = 'false';
+      process.env.AI_DRAFTS_ENABLED = 'false';
+      const result = await executeAiRun(run.id);
+      expect(result.state).toBe('succeeded');
+
+      const memberships = await db
+        .select()
+        .from(mailThreadCategory)
+        .where(eq(mailThreadCategory.threadId, threadId));
+      expect(memberships).toHaveLength(0);
+
+      const draftRuns = await db
+        .select()
+        .from(aiWorkflowRun)
+        .where(eq(aiWorkflowRun.idempotencyKey, `candidate-draft:${messageId}`));
+      expect(draftRuns).toHaveLength(0);
+    });
+  });
+
+  it('write and draft mode writes category and enqueues one candidate draft', async () => {
+    await withSeededTestDb(async (db) => {
+      const threadId = randomUUID();
+      const messageId = randomUUID();
+      await db.insert(mailThread).values({
+        id: threadId,
+        transportId: TRANSPORT_ID,
+        threadRootId: `<${threadId}@example.com>`,
+        subject: 'Booking',
+        snippet: 'Need help',
+        latestMessageAt: new Date(),
+      });
+      await db.insert(message).values({
+        id: messageId,
+        transportId: TRANSPORT_ID,
+        threadId,
+        direction: 'inbound',
+        fromAddress: 'guest@example.com',
+        toAddresses: ['centurion@legacyhotel.com'],
+        subject: 'Booking',
+        textBody: 'Need a room tonight',
+        receivedAt: new Date(),
+      });
+
+      const run = await enqueueAiRun(
+        {
+          transportId: TRANSPORT_ID,
+          threadId,
+          triggerMessageId: messageId,
+          runKind: 'inbound_triage',
+          idempotencyKey: `triage-write:${messageId}`,
+          modelId: 'amazon.nova-lite-v1:0',
+          promptVersion: 'triage-v1',
+        },
+        db,
+      );
+
+      process.env.AI_WRITE_GATE_ENABLED = 'true';
+      process.env.AI_DRAFTS_ENABLED = 'true';
+      const result = await executeAiRun(run.id);
+      expect(result.state).toBe('succeeded');
+
+      const memberships = await db
+        .select({ slug: mailCategory.slug })
+        .from(mailThreadCategory)
+        .innerJoin(mailCategory, eq(mailCategory.id, mailThreadCategory.categoryId))
+        .where(eq(mailThreadCategory.threadId, threadId));
+      expect(memberships.map((row) => row.slug)).toContain('individual');
+
+      const draftRuns = await db
+        .select()
+        .from(aiWorkflowRun)
+        .where(eq(aiWorkflowRun.idempotencyKey, `candidate-draft:${messageId}`));
+      expect(draftRuns).toHaveLength(1);
+    });
+  });
+
+  it('retry same triage still enqueues only one candidate draft', async () => {
+    await withSeededTestDb(async (db) => {
+      const threadId = randomUUID();
+      const messageId = randomUUID();
+      await db.insert(mailThread).values({
+        id: threadId,
+        transportId: TRANSPORT_ID,
+        threadRootId: `<${threadId}@example.com>`,
+        subject: 'Booking',
+        snippet: 'Need help',
+        latestMessageAt: new Date(),
+      });
+      await db.insert(message).values({
+        id: messageId,
+        transportId: TRANSPORT_ID,
+        threadId,
+        direction: 'inbound',
+        fromAddress: 'guest@example.com',
+        toAddresses: ['centurion@legacyhotel.com'],
+        subject: 'Booking',
+        textBody: 'Need a room tonight',
+        receivedAt: new Date(),
+      });
+
+      const run = await enqueueAiRun(
+        {
+          transportId: TRANSPORT_ID,
+          threadId,
+          triggerMessageId: messageId,
+          runKind: 'inbound_triage',
+          idempotencyKey: `triage-retry:${messageId}`,
+          modelId: 'amazon.nova-lite-v1:0',
+          promptVersion: 'triage-v1',
+        },
+        db,
+      );
+
+      process.env.AI_WRITE_GATE_ENABLED = 'true';
+      process.env.AI_DRAFTS_ENABLED = 'true';
+      await executeAiRun(run.id);
+      await executeAiRun(run.id);
+
+      const draftRuns = await db
+        .select()
+        .from(aiWorkflowRun)
+        .where(eq(aiWorkflowRun.idempotencyKey, `candidate-draft:${messageId}`));
+      expect(draftRuns).toHaveLength(1);
+    });
+  });
+
+  it('spam triage sets spamAt and does not enqueue candidate draft', async () => {
+    await withSeededTestDb(async (db) => {
+      const threadId = randomUUID();
+      const messageId = randomUUID();
+      await db.insert(mailThread).values({
+        id: threadId,
+        transportId: TRANSPORT_ID,
+        threadRootId: `<${threadId}@example.com>`,
+        subject: 'Win a prize',
+        snippet: 'spam',
+        latestMessageAt: new Date(),
+      });
+      await db.insert(message).values({
+        id: messageId,
+        transportId: TRANSPORT_ID,
+        threadId,
+        direction: 'inbound',
+        fromAddress: 'spam@example.com',
+        toAddresses: ['centurion@legacyhotel.com'],
+        subject: 'Win a prize',
+        textBody: 'click here spam offer',
+        receivedAt: new Date(),
+      });
+
+      const run = await enqueueAiRun(
+        {
+          transportId: TRANSPORT_ID,
+          threadId,
+          triggerMessageId: messageId,
+          runKind: 'inbound_triage',
+          idempotencyKey: `triage-spam:${messageId}`,
+          modelId: 'amazon.nova-lite-v1:0',
+          promptVersion: 'triage-v1',
+        },
+        db,
+      );
+
+      process.env.AI_WRITE_GATE_ENABLED = 'true';
+      process.env.AI_DRAFTS_ENABLED = 'true';
+      const result = await executeAiRun(run.id);
+      expect(result.state).toBe('succeeded');
+
+      const [thread] = await db.select().from(mailThread).where(eq(mailThread.id, threadId));
+      expect(thread?.spamAt).not.toBeNull();
+
+      const draftRuns = await db
+        .select()
+        .from(aiWorkflowRun)
+        .where(eq(aiWorkflowRun.idempotencyKey, `candidate-draft:${messageId}`));
+      expect(draftRuns).toHaveLength(0);
+    });
+  });
+
+  it('does not enqueue candidate draft when thread already has spamAt', async () => {
+    await withSeededTestDb(async (db) => {
+      const threadId = randomUUID();
+      const messageId = randomUUID();
+      await db.insert(mailThread).values({
+        id: threadId,
+        transportId: TRANSPORT_ID,
+        threadRootId: `<${threadId}@example.com>`,
+        subject: 'Suspicious mail',
+        snippet: 'Already spam',
+        spamAt: new Date(),
+        latestMessageAt: new Date(),
+      });
+      await db.insert(message).values({
+        id: messageId,
+        transportId: TRANSPORT_ID,
+        threadId,
+        direction: 'inbound',
+        fromAddress: 'guest@example.com',
+        toAddresses: ['centurion@legacyhotel.com'],
+        subject: 'Suspicious mail',
+        textBody: 'Actually maybe a booking',
+        receivedAt: new Date(),
+      });
+
+      const run = await enqueueAiRun(
+        {
+          transportId: TRANSPORT_ID,
+          threadId,
+          triggerMessageId: messageId,
+          runKind: 'inbound_triage',
+          idempotencyKey: `triage-existing-spam:${messageId}`,
+          modelId: 'amazon.nova-lite-v1:0',
+          promptVersion: 'triage-v1',
+        },
+        db,
+      );
+
+      process.env.AI_WRITE_GATE_ENABLED = 'true';
+      process.env.AI_DRAFTS_ENABLED = 'true';
+      const result = await executeAiRun(run.id);
+      expect(result.state).toBe('succeeded');
+
+      const [thread] = await db.select().from(mailThread).where(eq(mailThread.id, threadId));
+      expect(thread?.spamAt).not.toBeNull();
+
+      const draftRuns = await db
+        .select()
+        .from(aiWorkflowRun)
+        .where(eq(aiWorkflowRun.idempotencyKey, `candidate-draft:${messageId}`));
+      expect(draftRuns).toHaveLength(0);
+    });
   });
 });

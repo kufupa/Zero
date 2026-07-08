@@ -1,18 +1,26 @@
 import { pathToFileURL } from 'node:url';
-import { eq } from 'drizzle-orm';
+import { and, eq, inArray, or } from 'drizzle-orm';
 import { closeDb, getDb } from '../db/client.js';
-import { aiWorkflowRun, aiDraftGeneration, message } from '../db/schema/mail.js';
+import {
+  aiWorkflowRun,
+  aiDraftGeneration,
+  mailDraft,
+  mailDraftRevision,
+  mailThread,
+  message,
+} from '../db/schema/mail.js';
 import { parseEnv } from '../env.js';
 import { createMastraRuntime } from './mastra.js';
 import { persistAiCandidateDraft } from './drafts.js';
 import { extractDraftFeedbackLabels } from './feedback.js';
 import {
   claimNextAiRun,
+  enqueueAiRun,
   markAiRunDeadLetter,
   markAiRunRetry,
   markAiRunSucceeded,
 } from './run-ledger.js';
-import { mailDraft, mailDraftRevision } from '../db/schema/mail.js';
+import { validateTriageOutput } from './triage.js';
 
 export const AI_WORKER_OWNER = `ai-worker-${process.pid}`;
 
@@ -21,15 +29,64 @@ export interface ExecuteAiRunResult {
   state: 'succeeded' | 'retry_wait' | 'dead_letter';
 }
 
+function claimOwnerFor(run: typeof aiWorkflowRun.$inferSelect): string {
+  return run.claimOwner ?? AI_WORKER_OWNER;
+}
+
+async function failAiRun(
+  run: typeof aiWorkflowRun.$inferSelect,
+  error: unknown,
+): Promise<ExecuteAiRunResult> {
+  const message = error instanceof Error ? error.message : String(error);
+  const attempts = run.attempts + 1;
+  const owner = claimOwnerFor(run);
+  if (attempts >= 3) {
+    await markAiRunDeadLetter({
+      runId: run.id,
+      claimOwner: owner,
+      expectedStates: ['running'],
+      lastError: message,
+    });
+    return { runId: run.id, state: 'dead_letter' };
+  }
+  await markAiRunRetry({
+    runId: run.id,
+    claimOwner: owner,
+    expectedStates: ['running'],
+    attempts,
+    nextRunAt: new Date(Date.now() + attempts * 60_000),
+    lastError: message,
+  });
+  return { runId: run.id, state: 'retry_wait' };
+}
+
 export async function executeAiRun(runId: string): Promise<ExecuteAiRunResult> {
   const db = getDb();
   const [run] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, runId)).limit(1);
   if (!run) throw new Error(`AI run not found: ${runId}`);
 
+  const owner = claimOwnerFor(run);
+
   await db
     .update(aiWorkflowRun)
-    .set({ state: 'running', startedAt: new Date(), updatedAt: new Date() })
-    .where(eq(aiWorkflowRun.id, runId));
+    .set({
+      state: 'running',
+      claimOwner: owner,
+      startedAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(aiWorkflowRun.id, runId),
+        or(
+          inArray(aiWorkflowRun.state, ['queued', 'retry_wait']),
+          and(
+            eq(aiWorkflowRun.claimOwner, owner),
+            inArray(aiWorkflowRun.state, ['claimed', 'running']),
+          ),
+        ),
+      ),
+    );
 
   try {
     if (run.runKind === 'inbound_triage') {
@@ -53,15 +110,107 @@ export async function executeAiRun(runId: string): Promise<ExecuteAiRunResult> {
       if (result.status !== 'success') {
         throw new Error(`mail triage workflow failed: ${result.status}`);
       }
-      await markAiRunSucceeded({
-        runId,
-        mastraTraceId: result.result?.traceId,
-        metrics: result.result?.metrics as Record<string, unknown>,
+
+      const env = parseEnv(process.env as Record<string, string | undefined>);
+      const output = validateTriageOutput(result.result?.output);
+
+      await db.transaction(async (tx) => {
+        await applyDurableTriageFromWorker({
+          db: tx as unknown as typeof db,
+          transportId: run.transportId,
+          threadId: run.threadId,
+          output,
+          writeGateEnabled: env.AI_WRITE_GATE_ENABLED,
+        });
+
+        const [threadBeforeDraft] = await tx
+          .select({ spamAt: mailThread.spamAt })
+          .from(mailThread)
+          .where(and(eq(mailThread.id, run.threadId), eq(mailThread.transportId, run.transportId)))
+          .limit(1);
+
+        let draftRunId: string | undefined;
+        if (env.AI_DRAFTS_ENABLED && output.category !== 'spam' && !threadBeforeDraft?.spamAt) {
+          const draftRun = await enqueueAiRun(
+            {
+              transportId: run.transportId,
+              threadId: run.threadId,
+              triggerMessageId: run.triggerMessageId,
+              runKind: 'candidate_draft',
+              idempotencyKey: `candidate-draft:${run.triggerMessageId}`,
+              modelId: run.modelId,
+              promptVersion: 'draft-v1',
+              promptHash: run.promptHash ?? undefined,
+            },
+            tx as unknown as typeof db,
+          );
+          draftRunId = draftRun.id;
+        }
+
+        const marked = await markAiRunSucceeded(
+          {
+            runId,
+            claimOwner: owner,
+            expectedStates: ['running'],
+            mastraTraceId: result.result?.traceId,
+            metrics: {
+              ...(result.result?.metrics as Record<string, unknown>),
+              durableWrite: env.AI_WRITE_GATE_ENABLED,
+              draftRunId,
+            },
+          },
+          tx as unknown as typeof db,
+        );
+        if (!marked) {
+          throw new Error(`failed to mark AI run succeeded with claim fencing: ${runId}`);
+        }
       });
+
       return { runId, state: 'succeeded' };
     }
 
     if (run.runKind === 'candidate_draft') {
+      const [trigger] = await db
+        .select()
+        .from(message)
+        .where(eq(message.id, run.triggerMessageId))
+        .limit(1);
+      if (!trigger) throw new Error(`trigger message not found: ${run.triggerMessageId}`);
+
+      const { deriveReplySubject, deriveReplyToAddress } = await import(
+        './workflows/candidate-draft.js'
+      );
+      const replyTo = deriveReplyToAddress(trigger.fromAddress);
+      if (!replyTo) {
+        const marked = await markAiRunSucceeded({
+          runId,
+          claimOwner: owner,
+          expectedStates: ['running'],
+          metrics: { skipped: true, reason: 'missing_reply_to_address' },
+        });
+        if (!marked) {
+          return { runId, state: 'retry_wait' };
+        }
+        return { runId, state: 'succeeded' };
+      }
+
+      const mastra = createMastraRuntime(process.env.MASTRA_STORAGE_PATH);
+      const workflow = mastra.getWorkflow('candidateDraft');
+      const workflowRun = await workflow.createRun();
+      const result = await workflowRun.start({
+        inputData: {
+          transportId: run.transportId,
+          threadId: run.threadId,
+          triggerMessageId: run.triggerMessageId,
+          fromAddress: trigger.fromAddress,
+          subject: trigger.subject ?? undefined,
+          body: trigger.textBody ?? trigger.htmlBody ?? '',
+        },
+      });
+      if (result.status !== 'success') {
+        throw new Error(`candidate draft workflow failed: ${result.status}`);
+      }
+
       const generationId = run.generationId ?? `${run.id}-generation`;
       const [existingGeneration] = await db
         .select({ requestedByUserId: aiDraftGeneration.requestedByUserId })
@@ -69,6 +218,7 @@ export async function executeAiRun(runId: string): Promise<ExecuteAiRunResult> {
         .where(eq(aiDraftGeneration.id, generationId))
         .limit(1);
       const createdByUserId = existingGeneration?.requestedByUserId ?? 'user-centurion-worker';
+      const subject = deriveReplySubject(trigger.subject);
       const draft = await persistAiCandidateDraft({
         db,
         transportId: run.transportId,
@@ -79,16 +229,26 @@ export async function executeAiRun(runId: string): Promise<ExecuteAiRunResult> {
         model: run.modelId,
         promptVersion: run.promptVersion,
         contextMessageIds: [run.triggerMessageId],
-        toAddresses: ['guest@example.com'],
-        subject: 'Re: Your inquiry',
-        textBody: 'Thank you for contacting us.',
-        htmlBody: '<p>Thank you for contacting us.</p>',
+        toAddresses: [replyTo],
+        subject,
+        textBody: result.result!.draftBody.textBody,
+        htmlBody: result.result!.draftBody.htmlBody,
       });
-      await markAiRunSucceeded({
+      const marked = await markAiRunSucceeded({
         runId,
+        claimOwner: owner,
+        expectedStates: ['running'],
         generationId: draft.generationId ?? generationId,
-        metrics: { draftId: draft.id },
+        metrics: {
+          draftId: draft.id,
+          generationId: draft.generationId ?? generationId,
+          modelId: run.modelId,
+          ...(result.result?.metrics as Record<string, unknown>),
+        },
       });
+      if (!marked) {
+        return { runId, state: 'retry_wait' };
+      }
       return { runId, state: 'succeeded' };
     }
 
@@ -112,32 +272,36 @@ export async function executeAiRun(runId: string): Promise<ExecuteAiRunResult> {
         aiGenerated,
         sent,
       });
-      await markAiRunSucceeded({
+      const marked = await markAiRunSucceeded({
         runId,
+        claimOwner: owner,
+        expectedStates: ['running'],
         metrics: {
           labels: feedback.labels,
           ...feedback.metrics,
         },
       });
+      if (!marked) {
+        return { runId, state: 'retry_wait' };
+      }
       return { runId, state: 'succeeded' };
     }
 
     throw new Error(`unsupported AI run kind: ${run.runKind}`);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    const attempts = run.attempts + 1;
-    if (attempts >= 3) {
-      await markAiRunDeadLetter({ runId, lastError: message });
-      return { runId, state: 'dead_letter' };
-    }
-    await markAiRunRetry({
-      runId,
-      attempts,
-      nextRunAt: new Date(Date.now() + attempts * 60_000),
-      lastError: message,
-    });
-    return { runId, state: 'retry_wait' };
+    return failAiRun(run, error);
   }
+}
+
+async function applyDurableTriageFromWorker(input: {
+  db: ReturnType<typeof getDb>;
+  transportId: string;
+  threadId: string;
+  output: ReturnType<typeof validateTriageOutput>;
+  writeGateEnabled: boolean;
+}) {
+  const { applyDurableTriageResult } = await import('./triage.js');
+  await applyDurableTriageResult(input);
 }
 
 export async function runAiWorkerOnce(): Promise<boolean> {

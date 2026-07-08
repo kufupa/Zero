@@ -44,6 +44,20 @@ export async function persistAiCandidateDraft(input: PersistAiCandidateDraftInpu
       )
       .limit(1);
     if (existingDraft[0]) return existingDraft[0];
+
+    const existingRevision = await input.db
+      .select({ draftId: mailDraftRevision.draftId })
+      .from(mailDraftRevision)
+      .where(eq(mailDraftRevision.generationId, input.generationId))
+      .limit(1);
+    if (existingRevision[0]) {
+      const [draftByRevision] = await input.db
+        .select()
+        .from(mailDraft)
+        .where(eq(mailDraft.id, existingRevision[0].draftId))
+        .limit(1);
+      if (draftByRevision) return draftByRevision;
+    }
   }
 
   const draftId = randomUUID();
