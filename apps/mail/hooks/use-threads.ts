@@ -16,10 +16,12 @@ import { useParams } from 'react-router';
 import { useTheme } from 'next-themes';
 import { useQueryState } from 'nuqs';
 import { useMemo } from 'react';
+import useDebouncedValue from '@/hooks/use-debounce';
 import { computeThreadListEnabled } from '@/lib/mail/thread-list-query-enabled';
 import { selectLiveThreadListQuery } from '@/lib/mail/thread-list-query-policy';
 import { resolveThreadPollingMs } from '@/lib/mail/thread-polling-policy';
 import { resolveMailRouteFilter } from '@/lib/mail/route-filter';
+import { resolveMailListSearch } from '@/lib/mail/search-filters';
 import { useCategorySettings } from './use-categories';
 
 const threadPollingMs = resolveThreadPollingMs(import.meta.env.VITE_MAIL_POLL_MS);
@@ -50,6 +52,8 @@ export const useThreads = (options?: UseThreadsOptions) => {
   const { labels } = useSearchLabels();
   const categories = useCategorySettings();
   const demoMode = isFrontendOnlyDemo();
+  const debouncedSearchQ = useDebouncedValue(searchValue.value);
+  const liveSearchQ = demoMode ? searchValue.value : debouncedSearchQ;
   const isPaletteMode = options != null && 'commandPaletteOpen' in options;
   const paletteOpen = isPaletteMode ? options?.commandPaletteOpen === 'true' : false;
   const folderForQuery = isPaletteMode ? canonicalRouteFolder ?? 'inbox' : canonicalRouteFolder;
@@ -131,6 +135,19 @@ export const useThreads = (options?: UseThreadsOptions) => {
   );
   const routeFilter = resolveMailRouteFilter(folderForQuery, categoryBySlug);
 
+  const baseListFilters = useMemo(
+    () => ({
+      categoryIds: routeFilter.filters.categoryIds ?? [],
+      labelIds: labels,
+    }),
+    [routeFilter.filters.categoryIds, labels],
+  );
+
+  const resolvedLiveSearch = useMemo(
+    () => resolveMailListSearch(liveSearchQ, baseListFilters),
+    [liveSearchQ, baseListFilters],
+  );
+
   const liveThreadListQuery = selectLiveThreadListQuery({
     folder: canonicalRouteFolder,
     demoMode,
@@ -141,7 +158,7 @@ export const useThreads = (options?: UseThreadsOptions) => {
   const liveDraftsQuery = useInfiniteQuery(
     trpc.drafts.list.infiniteQueryOptions(
       {
-        q: searchValue.value,
+        q: liveSearchQ,
         limit: 50,
       },
       {
@@ -157,12 +174,9 @@ export const useThreads = (options?: UseThreadsOptions) => {
   const threadsQuery = useInfiniteQuery(
     trpc.mail.listThreads.infiniteQueryOptions(
       {
-        q: searchValue.value,
+        q: resolvedLiveSearch.q,
         folder: routeFilter.folder,
-        filters: {
-          categoryIds: routeFilter.filters.categoryIds ?? [],
-          labelIds: labels,
-        },
+        filters: resolvedLiveSearch.filters,
       },
       {
         initialCursor: '',

@@ -6,7 +6,7 @@ export const PILOT_CAPABILITIES = {
   notes: false,
   templates: false,
   bimi: false,
-  gmailSearchGrammar: false,
+  gmailSearchGrammar: true,
   hotelCategories: true,
   staleDraftWarning: true,
 } satisfies PilotCapabilities;

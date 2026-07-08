@@ -56,6 +56,8 @@ import {
   buildMetadataDebugHeaders,
 } from '../wire-compat.js';
 import { toDraftWire } from './draft-wire.js';
+import { buildThreadSearchConditions } from '../../mail/search/query.js';
+import { parseSearchQueryOrThrow } from '../../mail/search/trpc.js';
 
 /** FE + pilot folder slugs accepted by listThreads. */
 export const MAIL_FOLDER_VALUES = [
@@ -127,7 +129,7 @@ const moveThreadsInput = z.object({
 
 export const listThreadsInput = z.object({
   folder: z.enum(MAIL_FOLDER_VALUES).default('inbox'),
-  q: z.string().optional(),
+  q: z.string().max(512).optional(),
   labelIds: z.array(z.string()).optional(),
   filters: z
     .object({
@@ -260,6 +262,7 @@ export const mailRouter = tRouter({
         );
       }
 
+      // Structured filters AND parsed q operators both apply (e.g. filters.unread + is:read).
       if (input.filters?.unread === true) {
         conditions.push(eq(mailThread.isRead, false));
       }
@@ -291,9 +294,9 @@ export const mailRouter = tRouter({
       }
 
       if (input.q && input.q.trim()) {
-        const pattern = `%${input.q.trim().toLowerCase()}%`;
+        const parsed = parseSearchQueryOrThrow(input.q);
         conditions.push(
-          sql`(lower(${mailThread.subject}) LIKE ${pattern} OR lower(${mailThread.snippet}) LIKE ${pattern})`,
+          ...buildThreadSearchConditions(db, parsed, { transportId }),
         );
       }
 

@@ -9,9 +9,16 @@ import {
   index,
   uniqueIndex,
   primaryKey,
+  customType,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { user } from './auth.js';
+
+const tsvector = customType<{ data: string; driverData: string }>({
+  dataType() {
+    return 'tsvector';
+  },
+});
 
 export const mailboxAccessRoleEnum = pgEnum('mailbox_access_role', [
   'owner',
@@ -213,6 +220,7 @@ export const mailThread = pgTable(
     threadRootId: text('thread_root_id').notNull(),
     subject: text('subject'),
     snippet: text('snippet'),
+    searchVector: tsvector('search_vector'),
     isArchived: boolean('is_archived').notNull().default(false),
     isStarred: boolean('is_starred').notNull().default(false),
     isRead: boolean('is_read').notNull().default(false),
@@ -234,6 +242,7 @@ export const mailThread = pgTable(
     index('mail_thread_snooze_wake_idx')
       .on(t.snoozedUntil)
       .where(sql`${t.snoozedUntil} IS NOT NULL`),
+    index('mail_thread_search_vector_idx').using('gin', t.searchVector),
   ],
 );
 

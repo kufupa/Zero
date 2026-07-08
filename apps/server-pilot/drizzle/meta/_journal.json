@@ -64,6 +64,20 @@
       "when": 1783636800000,
       "tag": "0008_ai_workflow_run",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1783723200000,
+      "tag": "0009_mail_thread_search_vector",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1783809600000,
+      "tag": "0010_search_vector_include_sender",
+      "breakpoints": true
     }
   ]
 }

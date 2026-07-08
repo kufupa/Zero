@@ -9,7 +9,7 @@ describe('pilot capabilities', () => {
       notes: false,
       templates: false,
       bimi: false,
-      gmailSearchGrammar: false,
+      gmailSearchGrammar: true,
       hotelCategories: true,
       staleDraftWarning: true,
     });

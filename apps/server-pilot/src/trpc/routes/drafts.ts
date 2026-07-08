@@ -21,6 +21,8 @@ import {
 } from './mail-helpers.js';
 import { createDraftInput } from '../wire-compat.js';
 import { toDraftWire } from './draft-wire.js';
+import { buildDraftSearchConditions } from '../../mail/search/query.js';
+import { parseSearchQueryOrThrow } from '../../mail/search/trpc.js';
 
 function isPostgresUniqueViolation(err: unknown): boolean {
   if (err && typeof err === 'object' && 'code' in err) {
@@ -36,7 +38,7 @@ export const draftsRouter = tRouter({
   list: mailboxProcedure
     .input(
       z.object({
-        q: z.string().optional(),
+        q: z.string().max(512).optional(),
         cursor: z.string().optional(),
         limit: z.number().int().min(1).max(100).default(50),
         threadId: z.string().optional(),
@@ -59,10 +61,8 @@ export const draftsRouter = tRouter({
       }
 
       if (input.q && input.q.trim()) {
-        const pattern = `%${input.q.trim().toLowerCase()}%`;
-        conditions.push(
-          sql`(lower(${mailDraft.subject}) LIKE ${pattern} OR lower(${mailDraft.textBody}) LIKE ${pattern})`,
-        );
+        const parsed = parseSearchQueryOrThrow(input.q);
+        conditions.push(...buildDraftSearchConditions(parsed));
       }
 
       if (input.cursor) {
