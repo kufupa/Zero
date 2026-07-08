@@ -2,7 +2,11 @@ import { z } from 'zod';
 import { createStep, createWorkflow } from '@mastra/core/workflows';
 import { createModelAdapter } from '../bedrock/factory.js';
 import { enforceInboundMailPolicy, validateStructuredJsonOutput } from '../security/policy.js';
-import { applyShadowTriageResult, validateTriageOutput } from '../triage.js';
+import {
+  applyShadowTriageResult,
+  TRIAGE_CATEGORIES,
+  validateTriageOutput,
+} from '../triage.js';
 
 const triageInputSchema = z.object({
   transportId: z.string(),
@@ -12,7 +16,14 @@ const triageInputSchema = z.object({
   body: z.string(),
 });
 
-const triageOutputSchema = z.object({
+export const mailTriageWorkflowOutputSchema = z.object({
+  output: z.object({
+    category: z.enum(TRIAGE_CATEGORIES),
+    urgent: z.boolean(),
+    confidence: z.number().min(0).max(1),
+    rationale: z.string(),
+    policyFlags: z.array(z.string()),
+  }),
   shadow: z.object({
     category: z.string(),
     urgent: z.boolean(),
@@ -26,7 +37,7 @@ const triageOutputSchema = z.object({
 const classifyStep = createStep({
   id: 'classify-mail',
   inputSchema: triageInputSchema,
-  outputSchema: triageOutputSchema,
+  outputSchema: mailTriageWorkflowOutputSchema,
   execute: async ({ inputData, runId }) => {
     enforceInboundMailPolicy({ body: inputData.body });
     const adapter = createModelAdapter();
@@ -46,6 +57,7 @@ const classifyStep = createStep({
       },
     });
     return {
+      output: shadow.output,
       shadow: {
         category: shadow.output.category,
         urgent: shadow.output.urgent,
@@ -61,7 +73,7 @@ const classifyStep = createStep({
 export const mailTriageWorkflow = createWorkflow({
   id: 'mail-triage',
   inputSchema: triageInputSchema,
-  outputSchema: triageOutputSchema,
+  outputSchema: mailTriageWorkflowOutputSchema,
 })
   .then(classifyStep)
   .commit();

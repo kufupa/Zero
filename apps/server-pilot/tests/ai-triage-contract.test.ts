@@ -1,15 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import {
   applyDurableTriageResult,
   applyShadowTriageResult,
   validateTriageOutput,
 } from '../src/ai/triage.js';
+import { createMastraRuntime } from '../src/ai/mastra.js';
 import { mailCategory, mailThread, mailThreadCategory } from '../src/db/schema/mail.js';
 import { mailboxTransport } from '../src/db/schema/mail.js';
 import { getDb } from '../src/db/client.js';
-import { TEST_DB_AVAILABLE, probeTestDb } from './helpers/test-db.js';
+import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
+import { TRANSPORT_ID } from '../src/db/seed.js';
 
 const reachable = await probeTestDb();
 
@@ -61,6 +63,28 @@ describe('AI triage contract', () => {
       category: 'group',
       urgent: true,
     });
+  });
+
+  it('mailTriageWorkflow returns validated output field', async () => {
+    const mastra = createMastraRuntime(':memory:');
+    const workflow = mastra.getWorkflow('mailTriage');
+    const workflowRun = await workflow.createRun();
+    const result = await workflowRun.start({
+      inputData: {
+        transportId: 'transport-centurion',
+        threadId: 'thread-1',
+        triggerMessageId: 'msg-1',
+        subject: 'Group quote',
+        body: 'Need 20 rooms for a group booking',
+      },
+    });
+    expect(result.status).toBe('success');
+    expect(result.result?.output).toMatchObject({
+      category: 'group',
+      urgent: expect.any(Boolean),
+      confidence: expect.any(Number),
+    });
+    expect(result.result?.metrics).toMatchObject({ shadow: true });
   });
 });
 
@@ -160,5 +184,70 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI durable triage contract', 
 
     const [thread] = await db.select().from(mailThread).where(eq(mailThread.id, threadId));
     expect(thread?.spamAt).not.toBeNull();
+  });
+
+  it('replaces only AI-managed categories and preserves custom category membership', async () => {
+    await withSeededTestDb(async (db) => {
+      const customCategoryId = randomUUID();
+      const groupCategory = await db
+        .select()
+        .from(mailCategory)
+        .where(and(eq(mailCategory.transportId, TRANSPORT_ID), eq(mailCategory.slug, 'group')))
+        .limit(1);
+      const individualCategory = await db
+        .select()
+        .from(mailCategory)
+        .where(and(eq(mailCategory.transportId, TRANSPORT_ID), eq(mailCategory.slug, 'individual')))
+        .limit(1);
+
+      expect(groupCategory[0]).toBeDefined();
+      expect(individualCategory[0]).toBeDefined();
+
+      const threadId = randomUUID();
+      await db.insert(mailCategory).values({
+        id: customCategoryId,
+        transportId: TRANSPORT_ID,
+        slug: `custom-vip-${customCategoryId.slice(0, 8)}`,
+        name: 'Custom VIP',
+        sortOrder: 900,
+      });
+      await db.insert(mailThread).values({
+        id: threadId,
+        transportId: TRANSPORT_ID,
+        threadRootId: `<${threadId}@example.com>`,
+        subject: 'Group quote',
+        snippet: 'Need 20 rooms',
+        latestMessageAt: new Date(),
+      });
+      await db.insert(mailThreadCategory).values([
+        { threadId, transportId: TRANSPORT_ID, categoryId: customCategoryId },
+        { threadId, transportId: TRANSPORT_ID, categoryId: groupCategory[0]!.id },
+      ]);
+
+      await applyDurableTriageResult({
+        db,
+        transportId: TRANSPORT_ID,
+        threadId,
+        writeGateEnabled: true,
+        output: {
+          category: 'individual',
+          urgent: false,
+          confidence: 0.92,
+          rationale: 'single guest inquiry',
+          policyFlags: [],
+        },
+      });
+
+      const rows = await db
+        .select({ slug: mailCategory.slug })
+        .from(mailThreadCategory)
+        .innerJoin(mailCategory, eq(mailCategory.id, mailThreadCategory.categoryId))
+        .where(eq(mailThreadCategory.threadId, threadId));
+
+      const slugs = rows.map((row) => row.slug);
+      expect(slugs).toContain(`custom-vip-${customCategoryId.slice(0, 8)}`);
+      expect(slugs).toContain('individual');
+      expect(slugs).not.toContain('group');
+    });
   });
 });

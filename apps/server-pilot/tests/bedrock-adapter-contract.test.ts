@@ -61,6 +61,35 @@ describe('bedrock adapter contract', () => {
     expect(send).toHaveBeenCalledOnce();
   });
 
+  it('uses outputConfig when responseSchema is provided', async () => {
+    const send = vi.fn().mockResolvedValue({
+      output: {
+        message: {
+          content: [{ text: '{"category":"group","urgent":false,"confidence":0.9,"rationale":"ok","policyFlags":[]}' }],
+        },
+      },
+      usage: { inputTokens: 10, outputTokens: 5 },
+    });
+    const adapter = new BedrockModelAdapter({
+      region: 'us-east-1',
+      client: { send } as never,
+    });
+    const schema = {
+      type: 'object',
+      properties: { category: { type: 'string' } },
+    };
+    await adapter.invoke({
+      modelId: 'amazon.nova-lite-v1:0',
+      systemPrompt: 'classify',
+      userPrompt: 'classify inbound email',
+      responseSchema: schema,
+    });
+    const commandInput = send.mock.calls[0]?.[0]?.input as {
+      outputConfig?: { textFormat?: { type?: string } };
+    };
+    expect(commandInput.outputConfig?.textFormat?.type).toBe('json_schema');
+  });
+
   it('strips markdown fences before JSON parse', async () => {
     const send = vi.fn().mockResolvedValue({
       output: {

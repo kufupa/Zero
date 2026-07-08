@@ -101,11 +101,18 @@ export class BedrockModelAdapter implements ModelAdapter {
 
     if (input.responseSchema) {
       commandInput.inferenceConfig = { maxTokens: 2048, temperature: 0 };
-      commandInput.additionalModelRequestFields = {
-        responseFormat: {
-          json: { schema: input.responseSchema },
+      commandInput.outputConfig = {
+        textFormat: {
+          type: 'json_schema',
+          structure: {
+            jsonSchema: {
+              schema: JSON.stringify(input.responseSchema),
+              name: 'mail_ai_output',
+              description: 'Structured output for server-pilot mail AI',
+            },
+          },
         },
-      } as ConverseCommandInput['additionalModelRequestFields'];
+      };
     } else {
       commandInput.inferenceConfig = { maxTokens: 2048, temperature: 0 };
     }
