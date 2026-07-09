@@ -2,6 +2,16 @@
 
 Flip `MAIL_TRANSPORT_MODE` from `fixture` (default) to `real` after IT provides Exchange POP3/SMTP access.
 
+## Day-to-day ops (before / after handoff)
+
+| Need | Command |
+|------|---------|
+| Ship new code | `bash apps/server-pilot/deploy/ops-deploy.sh` |
+| Bounce apps | `bash apps/server-pilot/deploy/ops-restart.sh` |
+| Soft reboot + smoke | `bash apps/server-pilot/deploy/ops-reboot.sh` |
+
+After real mail is active, `ops-deploy` keeps `worker` in the PM2 dump (non-fixture mode).
+
 ## Prerequisites
 
 - Security Wave 1 gate passed ([ec2-pilot-security-hardening plan](../../docs/superpowers/plans/2026-07-01-ec2-pilot-security-hardening.md))

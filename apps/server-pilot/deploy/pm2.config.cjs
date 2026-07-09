@@ -7,6 +7,9 @@ module.exports = {
       cwd: '/home/ubuntu/repos/zero/apps/server-pilot',
       instances: 1,
       exec_mode: 'fork',
+      autorestart: true,
+      min_uptime: 10_000,
+      max_restarts: 10,
       env: {
         NODE_ENV: 'production',
       },

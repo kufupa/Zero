@@ -73,6 +73,8 @@ bash apps/server-pilot/deploy/ssm-run-command.sh \
 
 Production `.env.production` stays `MAIL_TRANSPORT_MODE=fixture`. Wire env is forced only inside `wire-gate.sh`.
 
+**Fixture prod PM2:** `deploy-ec2.sh` / `ops-deploy.sh` keep `http` + `ai-worker` only — `worker` is deleted so reboot does not show an errored POP3 process. Start `worker` only via `activate-real-mail.sh` / `wire-gate.sh` after real/wire flip.
+
 ## Bedrock live gate (on-demand, not daily deploy)
 
 Proves EC2 instance role can invoke `amazon.nova-lite-v1:0` in `us-east-1`. Daily `ai-gate.sh` spike stays on fake adapter.

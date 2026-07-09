@@ -127,20 +127,22 @@ Without the bundle-sync fix, every deploy paid a full clone + cold `pnpm install
 
 ## Examples
 
-**Full local → EC2 loop:**
+**Day-to-day (prefer these):**
+
+```bash
+bash apps/server-pilot/deploy/ops-deploy.sh
+bash apps/server-pilot/deploy/ops-deploy.sh --migrate   # when schema changed
+bash apps/server-pilot/deploy/ops-restart.sh            # bounce apps, no OS reboot
+bash apps/server-pilot/deploy/ops-reboot.sh             # soft box reboot + smoke
+```
+
+**Advanced guts (debug only) — old multi-step loop:**
 
 ```bash
 bash apps/server-pilot/deploy/sync-ec2-git-bundle.sh
 bash apps/server-pilot/deploy/ssm-run-command.sh \
   'export NVM_DIR=/home/ubuntu/.nvm; . /home/ubuntu/.nvm/nvm.sh; cd /home/ubuntu/repos/zero && bash apps/server-pilot/deploy/deploy-ec2.sh'
 bash apps/server-pilot/deploy/ssm-run-command.sh 'curl -fsS http://127.0.0.1:8788/health'
-```
-
-**RDS migrate before deploy (when schema changed):**
-
-```bash
-bash apps/server-pilot/deploy/ssm-run-command.sh \
-  'cd /home/ubuntu/repos/zero/apps/server-pilot && set -a && source .env.production && set +a && pnpm db:migrate'
 ```
 
 **RDS tests on EC2 after deploy:**

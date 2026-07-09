@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# Post-boot / post-deploy health: nginx, :8788, :443, pm2 http online.
+set -euo pipefail
+
+LOG="${NAVA_POST_BOOT_SMOKE_LOG:-/var/log/nava-post-boot-smoke.log}"
+MAX_ATTEMPTS="${SMOKE_MAX_ATTEMPTS:-3}"
+SLEEP_SECS="${SMOKE_SLEEP_SECS:-5}"
+
+log() {
+  local line="[$(date -Is)] $*"
+  echo "$line"
+  if touch "$LOG" 2>/dev/null || sudo touch "$LOG" 2>/dev/null; then
+    if [ -w "$LOG" ]; then
+      echo "$line" >>"$LOG"
+    else
+      echo "$line" | sudo tee -a "$LOG" >/dev/null || true
+    fi
+  fi
+}
+
+fail() {
+  log "FAIL: $*"
+  exit 1
+}
+
+export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+# shellcheck disable=SC1091
+[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+export PATH="${HOME}/.local/share/pnpm:${HOME}/.nvm/versions/node/$(ls "${HOME}/.nvm/versions/node" 2>/dev/null | sort -V | tail -1)/bin:${PATH}"
+
+attempt=1
+while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
+  ok=1
+
+  if ! systemctl is-active --quiet nginx; then
+    log "attempt ${attempt}: nginx not active"
+    ok=0
+  fi
+
+  if ! curl -fsS "http://127.0.0.1:8788/health" >/dev/null; then
+    log "attempt ${attempt}: :8788/health failed"
+    ok=0
+  fi
+
+  # Prefer /health on :443; fall back to root (SPA may not expose /health)
+  if ! curl -fsSk "https://127.0.0.1/health" >/dev/null 2>&1 \
+    && ! curl -fsSk "https://127.0.0.1/" >/dev/null 2>&1; then
+    log "attempt ${attempt}: :443 probe failed"
+    ok=0
+  fi
+
+  if command -v pm2 >/dev/null 2>&1; then
+    if ! pm2 jlist 2>/dev/null | grep -q '"name":"http"'; then
+      log "attempt ${attempt}: pm2 http missing"
+      ok=0
+    elif ! pm2 jlist 2>/dev/null | node -e '
+      let s=""; process.stdin.on("data",d=>s+=d); process.stdin.on("end",()=>{
+        try {
+          const apps=JSON.parse(s);
+          const http=apps.find(a=>a.name==="http");
+          if (!http || http.pm2_env?.status!=="online") process.exit(1);
+        } catch { process.exit(1); }
+      });
+    '; then
+      log "attempt ${attempt}: pm2 http not online"
+      ok=0
+    fi
+  else
+    log "attempt ${attempt}: pm2 missing"
+    ok=0
+  fi
+
+  if [ "$ok" -eq 1 ]; then
+    log "PASS: nginx + :8788 + :443 + pm2 http online"
+    exit 0
+  fi
+
+  if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
+    sleep "$SLEEP_SECS"
+  fi
+  attempt=$((attempt + 1))
+done
+
+fail "smoke failed after ${MAX_ATTEMPTS} attempts"

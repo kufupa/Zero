@@ -2,6 +2,17 @@
 
 Copy this file alone into any repo or chat. It contains everything needed to reach the worker, run Chromium/Playwright, and operate the workflow pilot **without** other NAVA docs.
 
+## Day-to-day ops (use these)
+
+| Need | Command |
+|------|---------|
+| Ship new code | `bash apps/server-pilot/deploy/ops-deploy.sh` |
+| Ship + schema | `bash apps/server-pilot/deploy/ops-deploy.sh --migrate` |
+| Bounce apps (no OS reboot) | `bash apps/server-pilot/deploy/ops-restart.sh` |
+| Soft reboot box + smoke | `bash apps/server-pilot/deploy/ops-reboot.sh` |
+
+Guts (`sync-ec2-git-bundle.sh`, `deploy-ec2.sh`, `ssm-run-command.sh`) remain for debugging; do not teach them as the default loop.
+
 ---
 
 ## 1. What this machine is
@@ -296,7 +307,16 @@ bash scripts/ec2-deploy-preflight-via-ssm.sh
 ## 11. Useful ops commands
 
 ```bash
-# Reboot
+# Soft reboot + post-boot smoke (preferred)
+bash apps/server-pilot/deploy/ops-reboot.sh
+
+# App bounce only
+bash apps/server-pilot/deploy/ops-restart.sh
+
+# Ship code
+bash apps/server-pilot/deploy/ops-deploy.sh
+
+# Raw reboot (advanced — prefer ops-reboot.sh)
 aws ec2 reboot-instances --region af-south-1 --instance-ids i-008f737974a9ba9b3
 
 # Re-run host bootstrap

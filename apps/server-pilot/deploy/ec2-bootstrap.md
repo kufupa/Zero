@@ -2,6 +2,17 @@
 
 Repeatable baseline for overnight EC2 work on branch `EC2-pilot`. SSM-only access; no public SSH/RDP.
 
+## Day-to-day ops (use these)
+
+| Need | Command |
+|------|---------|
+| Ship new code | `bash apps/server-pilot/deploy/ops-deploy.sh` |
+| Ship + schema | `bash apps/server-pilot/deploy/ops-deploy.sh --migrate` |
+| Bounce apps (no OS reboot) | `bash apps/server-pilot/deploy/ops-restart.sh` |
+| Soft reboot box + smoke | `bash apps/server-pilot/deploy/ops-reboot.sh` |
+
+Guts (`sync-ec2-git-bundle.sh`, `deploy-ec2.sh`, `ssm-run-command.sh`) remain for debugging; do not teach them as the default loop.
+
 ## AWS identifiers
 
 | Item | Value |
@@ -198,6 +209,12 @@ aws ssm start-session \
 | `/home/ubuntu/repos/zero` | Target Zero monorepo (this pilot) |
 
 Full EC2 access doc: `docs/superpowers/EC2-ACCESS.MD` (reference; not required on box).
+
+## Soft reboot checklist
+
+1. Announce to staff (same URL, ~2–5 min gap).
+2. `bash apps/server-pilot/deploy/ops-reboot.sh`
+3. Staff hard refresh. Prefer `ops-restart.sh` if only apps need bounce.
 
 ## Next tasks (not this bootstrap)
 

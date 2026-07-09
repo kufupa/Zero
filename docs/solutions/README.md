@@ -6,7 +6,8 @@ Searchable learnings from solved problems on this repo. Written by `/ce-compound
 
 | Doc | Topic |
 |-----|-------|
-| [workflow-issues/ec2-pilot-autonomous-deploy-and-ssm-gotchas.md](workflow-issues/ec2-pilot-autonomous-deploy-and-ssm-gotchas.md) | EC2 deploy, bundle sync, SSM charmap, health gates |
+| [workflow-issues/ec2-pilot-autonomous-deploy-and-ssm-gotchas.md](workflow-issues/ec2-pilot-autonomous-deploy-and-ssm-gotchas.md) | EC2 deploy, bundle sync, SSM — prefer `ops-deploy.sh` |
+| [workflow-issues/ec2-pilot-safe-reboot-and-prod-restart.md](workflow-issues/ec2-pilot-safe-reboot-and-prod-restart.md) | Soft reboot + EIP; primary ops: `ops-reboot.sh` / `ops-restart.sh` |
 | [integration-issues/fe-pilot-trpc-wire-contract-drift.md](integration-issues/fe-pilot-trpc-wire-contract-drift.md) | tRPC 405, FE/pilot payload drift, load gate false positives |
 | [security-issues/ec2-pilot-pre-real-ingest-security-gate.md](security-issues/ec2-pilot-pre-real-ingest-security-gate.md) | Security hardening wave before real mail |
 | [architecture-patterns/mail-transport-mode-fixture-vs-real.md](architecture-patterns/mail-transport-mode-fixture-vs-real.md) | MAIL_TRANSPORT_MODE fixture vs real handoff |

@@ -10,6 +10,10 @@ describe('deploy config', () => {
     expect(worker?.autorestart).toBe(true);
     expect(worker?.max_restarts).toBe(10);
     expect(pm2.apps.filter((app) => app.name === 'http')).toHaveLength(1);
+    const http = pm2.apps.find((app) => app.name === 'http');
+    expect(http?.autorestart).toBe(true);
+    expect(http?.max_restarts).toBe(10);
+    expect(http?.min_uptime).toBe(10_000);
     expect(pm2.apps.filter((app) => app.name === 'ai-worker')).toHaveLength(1);
     const aiWorker = pm2.apps.find((app) => app.name === 'ai-worker');
     expect(aiWorker?.env?.AI_ENABLED).toBe('true');
@@ -143,5 +147,76 @@ describe('deploy config', () => {
   it('mailbox_access schema has is_default column', async () => {
     const { mailboxAccess } = await import('../src/db/schema/mail.js');
     expect(mailboxAccess.isDefault).toBeDefined();
+  });
+
+  it('deploy-ec2.sh installs pm2-startup and deletes fixture worker', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const deploy = readFileSync(join(here, '..', 'deploy', 'deploy-ec2.sh'), 'utf8');
+    expect(deploy).toContain('pm2-startup.sh');
+    expect(deploy).toContain('pm2 delete worker');
+    expect(deploy).toContain('MAIL_TRANSPORT_MODE');
+    expect(deploy).toContain('fixture');
+  });
+
+  it('pm2-boot.sh sources nvm and env then resurrect or startOrReload', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const boot = readFileSync(join(here, '..', 'deploy', 'pm2-boot.sh'), 'utf8');
+    expect(boot).toContain('nvm.sh');
+    expect(boot).toContain('.env.production');
+    expect(boot).toContain('pm2 resurrect');
+    expect(boot).toContain('startOrReload');
+  });
+
+  it('post-boot-smoke.sh checks :8788 and :443 not :3000', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const smoke = readFileSync(join(here, '..', 'deploy', 'post-boot-smoke.sh'), 'utf8');
+    expect(smoke).toContain('127.0.0.1:8788/health');
+    expect(smoke).toContain('https://127.0.0.1');
+    expect(smoke).not.toContain(':3000');
+    expect(smoke).toContain('systemctl is-active');
+  });
+
+  it('ops-deploy.sh syncs then SSM deploy-ec2 with optional migrate', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const ops = readFileSync(join(here, '..', 'deploy', 'ops-deploy.sh'), 'utf8');
+    expect(ops).toContain('sync-ec2-git-bundle.sh');
+    expect(ops).toContain('ssm-run-command.sh');
+    expect(ops).toContain('deploy-ec2.sh');
+    expect(ops).toContain('--migrate');
+    expect(ops).toContain('db:migrate');
+  });
+
+  it('ops-restart.sh reloads pm2 via SSM without sync', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const ops = readFileSync(join(here, '..', 'deploy', 'ops-restart.sh'), 'utf8');
+    expect(ops).toContain('ssm-run-command.sh');
+    expect(ops).toContain('startOrReload');
+    expect(ops).not.toContain('sync-ec2-git-bundle');
+  });
+
+  it('ops-reboot.sh reboots instance then runs post-boot-smoke', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const ops = readFileSync(join(here, '..', 'deploy', 'ops-reboot.sh'), 'utf8');
+    expect(ops).toContain('reboot-instances');
+    expect(ops).toContain('post-boot-smoke.sh');
+    expect(ops).toContain('ssm-run-command.sh');
   });
 });

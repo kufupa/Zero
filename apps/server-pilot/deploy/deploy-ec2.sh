@@ -54,15 +54,36 @@ else
 fi
 
 echo "== pm2 =="
+# Fixture prod: do not keep a broken POP3 worker in the dump after reboot.
+TRANSPORT_MODE="${MAIL_TRANSPORT_MODE:-fixture}"
+if [ "$TRANSPORT_MODE" = "fixture" ]; then
+  echo "== pm2: fixture mode — delete worker if present =="
+  pm2 delete worker 2>/dev/null || true
+fi
+
 if command -v pm2 >/dev/null 2>&1; then
-  pm2 startOrReload "${SERVER_PILOT}/deploy/pm2.config.cjs" --update-env
+  if [ "$TRANSPORT_MODE" = "fixture" ]; then
+    pm2 startOrReload "${SERVER_PILOT}/deploy/pm2.config.cjs" --only http --update-env
+    pm2 startOrReload "${SERVER_PILOT}/deploy/pm2.config.cjs" --only ai-worker --update-env
+    pm2 delete worker 2>/dev/null || true
+  else
+    pm2 startOrReload "${SERVER_PILOT}/deploy/pm2.config.cjs" --update-env
+  fi
   pm2 save
+  bash "${SERVER_PILOT}/deploy/pm2-startup.sh"
   pm2 status
 else
   echo "pm2 not installed; installing globally"
   npm install -g pm2
-  pm2 startOrReload "${SERVER_PILOT}/deploy/pm2.config.cjs" --update-env
+  if [ "$TRANSPORT_MODE" = "fixture" ]; then
+    pm2 startOrReload "${SERVER_PILOT}/deploy/pm2.config.cjs" --only http --update-env
+    pm2 startOrReload "${SERVER_PILOT}/deploy/pm2.config.cjs" --only ai-worker --update-env
+    pm2 delete worker 2>/dev/null || true
+  else
+    pm2 startOrReload "${SERVER_PILOT}/deploy/pm2.config.cjs" --update-env
+  fi
   pm2 save
+  bash "${SERVER_PILOT}/deploy/pm2-startup.sh"
   pm2 status
 fi
 

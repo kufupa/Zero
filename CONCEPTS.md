@@ -62,9 +62,21 @@ Atomic server mutation that returns an editable `active` draft for a reply: exis
 
 ## Deploy and ops
 
+### Elastic IP (pilot EC2)
+
+Static public IPv4 bound to the single pilot EC2 instance so a soft reboot preserves the staff-facing URL without DNS changes. Stop/start without an EIP would release the ephemeral address and break bookmarks unless DNS is repointed.
+
+### Pilot ops entrypoints
+
+Three laptop scripts for day-to-day EC2 pilot work: `ops-deploy.sh` (sync + optional migrate + on-box deploy), `ops-restart.sh` (PM2 bounce, no OS reboot), `ops-reboot.sh` (soft `reboot-instances` + post-boot smoke). Guts (`sync-ec2-git-bundle.sh`, `deploy-ec2.sh`, `ssm-run-command.sh`) stay for debugging.
+
+### EC2 soft reboot
+
+OS-level restart via `ops-reboot.sh` (wraps `reboot-instances` + smoke). Does not mutate RDS, detach EBS, or change instance ID. PM2 processes restore via systemd `pm2-ubuntu` (`pm2 startup`) — nginx on `:443` may outlive Node until PM2 brings `http` back. Prefer `ops-restart.sh` when only apps need bounce.
+
 ### Bundle sync
 
-Git-bundle-over-S3 workflow (`sync-ec2-git-bundle.sh`) that updates EC2 code via in-place `git fetch` + `reset --hard` without destroying `node_modules`. Complements normal `git push` to remote.
+Git-bundle-over-S3 workflow (`sync-ec2-git-bundle.sh`) that updates EC2 code via in-place `git fetch` + `reset --hard` without destroying `node_modules`. Called by `ops-deploy.sh`; complements normal `git push` to remote.
 
 ### Pre-real-ingest gate
 
@@ -72,7 +84,7 @@ The security hardening wave (sanitize HTML, mailbox header trust, RDS TLS, signu
 
 ### Manual RDS migrate
 
-Explicit operator step to apply Drizzle SQL migrations against pilot RDS. Not part of `deploy-ec2.sh` so breaking schema changes do not run automatically on every deploy. Requires exporting production env (`set -a` before sourcing `.env.production`) so child migrate processes inherit `DATABASE_URL`.
+Explicit operator step to apply Drizzle SQL migrations against pilot RDS. Opt-in via `ops-deploy.sh --migrate` (not default). Not part of bare `deploy-ec2.sh` so breaking schema changes do not run automatically on every deploy. Requires exporting production env (`set -a` before sourcing `.env.production`) so child migrate processes inherit `DATABASE_URL`.
 
 ### Patch-fragment truncation
 

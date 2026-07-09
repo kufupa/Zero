@@ -1,0 +1,17 @@
+[Unit]
+Description=NAVA Zero post-boot smoke (nginx + :8788 + :443)
+After=network-online.target pm2-ubuntu.service
+Wants=network-online.target
+Requires=pm2-ubuntu.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+Environment=HOME=/home/ubuntu
+Environment=NVM_DIR=/home/ubuntu/.nvm
+ExecStart=/bin/bash /home/ubuntu/repos/zero/apps/server-pilot/deploy/post-boot-smoke.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

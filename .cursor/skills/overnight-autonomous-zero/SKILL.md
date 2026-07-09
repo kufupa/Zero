@@ -67,11 +67,12 @@ Adapt goal line + done criteria to the feature; keep infra block verbatim.
 | RDS | `nava-zero-mail-pilot` (Postgres 16) |
 | S3 | `nava-zero-mail-845242190536-af-south-1` |
 | Repo on EC2 | `/home/ubuntu/repos/zero` |
-| Sync | `apps/server-pilot/deploy/sync-ec2-git-bundle.sh` |
-| Deploy | `apps/server-pilot/deploy/deploy-ec2.sh` |
-| SSM | `apps/server-pilot/deploy/ssm-run-command.sh` |
+| **Primary deploy** | `apps/server-pilot/deploy/ops-deploy.sh` (`--migrate` when schema) |
+| **Primary app bounce** | `apps/server-pilot/deploy/ops-restart.sh` |
+| **Primary box reboot** | `apps/server-pilot/deploy/ops-reboot.sh` |
+| Guts (fallback) | `sync-ec2-git-bundle.sh`, `deploy-ec2.sh`, `ssm-run-command.sh` |
 
-**Allowed:** bundle sync, deploy, migrate, seed (no `--rotate` unless fix requires), SSM remote tests, PM2 logs, health curl, RDS vitest on EC2.
+**Allowed:** ops wrappers, bundle sync, deploy, migrate (via `ops-deploy --migrate`), seed (no `--rotate` unless fix requires), SSM remote tests, PM2 logs, health curl, RDS vitest on EC2.
 
 **Forbidden:** force-push main, `--no-verify`, destructive git, IT Exchange/VPN/real mail creds.
 
@@ -98,8 +99,7 @@ Autonomous overnight — no user checkpoint. REQUIRED SUB-SKILL: superpowers:sub
 
 ```text
 local: tests + builds green → commit → push EC2-pilot
-→ sync-ec2-git-bundle.sh
-→ SSM: source .env.production → db:migrate → deploy-ec2.sh
+→ ops-deploy.sh            # or ops-deploy.sh --migrate when schema changed
 → SSM: gate script(s) from plan
 → handoff report under docs/superpowers/plans/handoff-reports/ if plan requires
 ```
