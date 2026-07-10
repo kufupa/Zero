@@ -127,7 +127,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI durable triage contract', 
       },
     ]);
 
-    await applyDurableTriageResult({
+    const skipped = await applyDurableTriageResult({
       db,
       transportId,
       threadId,
@@ -140,6 +140,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI durable triage contract', 
         policyFlags: [],
       },
     });
+    expect(skipped.applyMode).toBe('skipped');
 
     let memberships = await db
       .select()
@@ -147,7 +148,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI durable triage contract', 
       .where(eq(mailThreadCategory.threadId, threadId));
     expect(memberships).toHaveLength(0);
 
-    await applyDurableTriageResult({
+    const full = await applyDurableTriageResult({
       db,
       transportId,
       threadId,
@@ -160,6 +161,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI durable triage contract', 
         policyFlags: [],
       },
     });
+    expect(full.applyMode).toBe('full');
 
     memberships = await db
       .select()
@@ -169,25 +171,34 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI durable triage contract', 
       [groupCategoryId, urgentCategoryId].sort(),
     );
 
-    await applyDurableTriageResult({
+    const settledSpam = await applyDurableTriageResult({
       db,
       transportId,
       threadId,
       writeGateEnabled: true,
       output: {
         category: 'spam',
-        urgent: false,
+        urgent: true,
         confidence: 0.99,
         rationale: 'sales spam',
         policyFlags: [],
       },
     });
+    expect(settledSpam.applyMode).toBe('urgency_only');
 
     const [thread] = await db.select().from(mailThread).where(eq(mailThread.id, threadId));
-    expect(thread?.spamAt).not.toBeNull();
+    expect(thread?.spamAt).toBeNull();
+
+    memberships = await db
+      .select()
+      .from(mailThreadCategory)
+      .where(eq(mailThreadCategory.threadId, threadId));
+    expect(memberships.map((row) => row.categoryId).sort()).toEqual(
+      [groupCategoryId, urgentCategoryId].sort(),
+    );
   });
 
-  it('replaces only AI-managed categories and preserves custom category membership', async () => {
+  it('urgency_only when settled preserves primary and custom categories', async () => {
     await withSeededTestDb(async (db) => {
       const customCategoryId = randomUUID();
       const groupCategory = await db
@@ -225,19 +236,20 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI durable triage contract', 
         { threadId, transportId: TRANSPORT_ID, categoryId: groupCategory[0]!.id },
       ]);
 
-      await applyDurableTriageResult({
+      const result = await applyDurableTriageResult({
         db,
         transportId: TRANSPORT_ID,
         threadId,
         writeGateEnabled: true,
         output: {
           category: 'individual',
-          urgent: false,
+          urgent: true,
           confidence: 0.92,
           rationale: 'single guest inquiry',
           policyFlags: [],
         },
       });
+      expect(result.applyMode).toBe('urgency_only');
 
       const rows = await db
         .select({ slug: mailCategory.slug })
@@ -247,8 +259,49 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI durable triage contract', 
 
       const slugs = rows.map((row) => row.slug);
       expect(slugs).toContain(`custom-vip-${customCategoryId.slice(0, 8)}`);
-      expect(slugs).toContain('individual');
-      expect(slugs).not.toContain('group');
+      expect(slugs).toContain('group');
+      expect(slugs).toContain('urgent');
+      expect(slugs).not.toContain('individual');
+    });
+  });
+
+  it('returns applyMode full and sets spamAt on unsettled spam', async () => {
+    await withSeededTestDb(async (db) => {
+      const threadId = randomUUID();
+      await db.insert(mailThread).values({
+        id: threadId,
+        transportId: TRANSPORT_ID,
+        threadRootId: `<${threadId}@example.com>`,
+        subject: 'Promo blast',
+        snippet: 'Buy now',
+        latestMessageAt: new Date(),
+        spamAt: null,
+      });
+
+      const result = await applyDurableTriageResult({
+        db,
+        transportId: TRANSPORT_ID,
+        threadId,
+        output: {
+          category: 'spam',
+          urgent: false,
+          confidence: 0.99,
+          rationale: 'sales spam',
+          policyFlags: [],
+        },
+        writeGateEnabled: true,
+      });
+
+      expect(result.applyMode).toBe('full');
+      const [thread] = await db.select().from(mailThread).where(eq(mailThread.id, threadId));
+      expect(thread?.spamAt).not.toBeNull();
+
+      const memberships = await db
+        .select({ slug: mailCategory.slug })
+        .from(mailThreadCategory)
+        .innerJoin(mailCategory, eq(mailCategory.id, mailThreadCategory.categoryId))
+        .where(eq(mailThreadCategory.threadId, threadId));
+      expect(memberships).toHaveLength(0);
     });
   });
 
