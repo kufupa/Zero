@@ -76,11 +76,12 @@ pnpm test tests/mailpit-lifecycle.test.ts \
   --reporter=dot
 
 echo "== pm2: start worker (wire/real pilot only) =="
-set -a
-# shellcheck disable=SC1090
-source "$ENV_FILE"
-set +a
-if [ "${MAIL_TRANSPORT_MODE:-fixture}" = "wire" ] || [ "${MAIL_TRANSPORT_MODE:-fixture}" = "real" ]; then
+PROD_MAIL_MODE="fixture"
+if [ -f "$ENV_FILE" ]; then
+  PROD_MAIL_MODE="$(grep -E '^MAIL_TRANSPORT_MODE=' "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d "'\"" || true)"
+  PROD_MAIL_MODE="${PROD_MAIL_MODE:-fixture}"
+fi
+if [ "$PROD_MAIL_MODE" = "wire" ] || [ "$PROD_MAIL_MODE" = "real" ]; then
   pm2 start worker 2>/dev/null || pm2 start "${SCRIPT_DIR}/pm2.config.cjs" --only worker --update-env 2>/dev/null || true
 else
   pm2 delete worker 2>/dev/null || true
