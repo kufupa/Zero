@@ -35,10 +35,11 @@ if ! curl -sf "${VITE_PUBLIC_BACKEND_URL%/}/health" >/dev/null; then
   exit 1
 fi
 
-if ! curl -sf "${PLAYWRIGHT_BASE_URL}/" >/dev/null 2>&1; then
-  echo "starting frontend dev on ${PLAYWRIGHT_BASE_URL}"
-  pkill -f "react-router dev" 2>/dev/null || true
-  sleep 1
+# Always restart FE for gate: stale vite SSR can return 200 then blow up on /about.
+echo "restarting frontend dev on ${PLAYWRIGHT_BASE_URL}"
+pkill -f "react-router dev" 2>/dev/null || true
+sleep 1
+if true; then
   nohup env \
     VITE_PUBLIC_BACKEND_URL="$VITE_PUBLIC_BACKEND_URL" \
     VITE_DISABLE_SENTRY=1 \
