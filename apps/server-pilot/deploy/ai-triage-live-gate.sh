@@ -55,7 +55,7 @@ pnpm exec tsx <<'TS'
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import nodemailer from 'nodemailer';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, gt } from 'drizzle-orm';
 import { ingestOnce } from './src/mail/ingest/worker.js';
 import { createPop3Client } from './src/mail/ingest/pop3-client.js';
 import { parseEnv } from './src/env.js';
@@ -144,7 +144,7 @@ function assertMetrics(metrics: MetricsShape, caseId: string): void {
   if (!usage.rateTableVersion) throw new Error(`${caseId}: missing usage.rateTableVersion`);
 }
 
-async function waitForGuestTriage(subject: string, caseId: string, expectedCategory: string, expectedUrgent: boolean) {
+async function waitForGuestTriage(subject: string, caseId: string, expectedCategory: string, expectedUrgent: boolean, injectedAfter: Date) {
   const db = getDb();
   const deadline = Date.now() + DEADLINE_MS;
 
@@ -153,7 +153,7 @@ async function waitForGuestTriage(subject: string, caseId: string, expectedCateg
       .select({ threadId: mailThread.id, messageId: message.id })
       .from(message)
       .innerJoin(mailThread, eq(mailThread.id, message.threadId))
-      .where(eq(message.subject, subject))
+      .where(and(eq(message.subject, subject), gt(message.createdAt, injectedAfter)))
       .orderBy(desc(message.createdAt))
       .limit(1);
 
@@ -276,6 +276,7 @@ for (const testCase of manifest.cases) {
   const subject = parseSubject(raw);
   log(`== case ${testCase.id}: inject ${testCase.file} subject="${subject}" ==`);
 
+  const injectedAfter = new Date();
   await injectRawEml(raw);
   await ingestAndPump();
 
@@ -294,6 +295,7 @@ for (const testCase of manifest.cases) {
       testCase.id,
       testCase.expectedCategory,
       testCase.expectedUrgent,
+      injectedAfter,
     ),
   );
 }

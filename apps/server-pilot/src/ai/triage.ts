@@ -31,13 +31,13 @@ export function validateTriageOutput(raw: unknown): TriageOutput {
 
 /** Nova often labels single-guest agency bookings as individual when invoice is to the agency. */
 export function refineTriageOutput(
-  input: { from: string; body: string },
+  input: { from: string; body: string; subject?: string },
   output: TriageOutput,
 ): TriageOutput {
   if (output.category === 'travel-agents') {
     const guestFileInvoice =
-      /tax invoice/i.test(input.body) &&
-      /guest/i.test(input.body) &&
+      (/tax invoice/i.test(input.body) || /tax invoice/i.test(input.subject ?? '')) &&
+      /guest/i.test(input.body) &&
       !/address the invoice to/i.test(input.body);
     if (guestFileInvoice) {
       return {
