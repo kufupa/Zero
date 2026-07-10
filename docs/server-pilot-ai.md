@@ -72,6 +72,11 @@ pnpm --filter @zero/server ai:test -- --mode=spike
 4. `apps/server-pilot/deploy/wire-gate.sh`
 5. `apps/server-pilot/deploy/ai-mail-pipeline-live-gate.sh`
 
+## Triage proof profile (pilot)
+
+For durable triage proof on EC2: `AI_ENABLED=true`, `AI_WRITE_GATE_ENABLED=true`, `AI_DRAFTS_ENABLED=false`, `MAIL_TRANSPORT_MODE=wire`.
+Run `apps/server-pilot/deploy/ai-triage-live-gate.sh` after deploy. Inspect `ai_workflow_run.metrics` for `usage` (tokens, `estimatedCostUsd`, `rateTableVersion`) and `applyMode`.
+
 ## Rollback
 
 ```bash
