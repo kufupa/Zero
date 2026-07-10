@@ -73,6 +73,60 @@ function withFakeS3(): FakeS3Storage {
 }
 
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI enqueue contract', () => {
+  it('stores hotel-From copy as outbound with zero triage runs', async () => {
+    await withSeededTestDb(async (db) => {
+      const storage = withFakeS3();
+      const raw = readFixture('centurion-hotel-sent.eml');
+      const messageId = generateMessageId();
+      const parsed = await parseRawMessage(raw, { messageId, storage });
+      await persistInboundMessage(
+        parsed,
+        raw,
+        {
+          ingestMailboxId: 'ingest-nava-legacy',
+          pop3Uidl: `uidl-${randomUUID()}`,
+          messageId,
+        },
+        { db, storage },
+      );
+
+      const [msg] = await db.select().from(message).where(eq(message.id, messageId));
+      expect(msg.direction).toBe('outbound');
+
+      const runs = await db
+        .select()
+        .from(aiWorkflowRun)
+        .where(eq(aiWorkflowRun.triggerMessageId, messageId));
+      expect(runs).toHaveLength(0);
+    });
+  });
+
+  it('enqueues inbound_triage with promptVersion triage-v2 for guest From', async () => {
+    await withSeededTestDb(async (db) => {
+      const storage = withFakeS3();
+      const raw = readFixture('centurion-stamped.eml');
+      const messageId = generateMessageId();
+      const parsed = await parseRawMessage(raw, { messageId, storage });
+      await persistInboundMessage(
+        parsed,
+        raw,
+        {
+          ingestMailboxId: 'ingest-nava-legacy',
+          pop3Uidl: `uidl-${randomUUID()}`,
+          messageId,
+        },
+        { db, storage },
+      );
+
+      const [run] = await db
+        .select()
+        .from(aiWorkflowRun)
+        .where(eq(aiWorkflowRun.triggerMessageId, messageId));
+      expect(run.runKind).toBe('inbound_triage');
+      expect(run.promptVersion).toBe('triage-v2');
+    });
+  });
+
   it('creates one queued inbound triage run when a message is stored', async () => {
     await withSeededTestDb(async (db) => {
       const storage = withFakeS3();

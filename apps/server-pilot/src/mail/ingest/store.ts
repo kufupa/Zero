@@ -234,12 +234,17 @@ export async function persistInboundMessage(
         .where(eq(mailThread.id, threadId));
     }
 
+    const transportEmail = (transport.email ?? '').trim().toLowerCase();
+    const fromAddress = (parsed.fromAddress ?? '').trim().toLowerCase();
+    const fromEmail = fromAddress.match(/<([^>]+)>/)?.[1]?.toLowerCase() ?? fromAddress;
+    const isHotelSent = Boolean(transportEmail) && fromEmail === transportEmail;
+
     await tx.insert(message).values({
       id: messageId,
       transportId: transport.id,
       threadId,
       ingestMailboxId: meta.ingestMailboxId,
-      direction: 'inbound',
+      direction: isHotelSent ? 'outbound' : 'inbound',
       pop3Uidl: meta.pop3Uidl,
       ownerHeaderValue: parsed.ownerHeaderValue,
       messageIdHeader: parsed.messageId,
@@ -274,18 +279,20 @@ export async function persistInboundMessage(
 
     await refreshThreadSearchVector(tx as unknown as DB, threadId);
 
-    await enqueueAiRun(
-      {
-        transportId: transport.id,
-        threadId,
-        triggerMessageId: messageId,
-        runKind: 'inbound_triage',
-        idempotencyKey: `inbound-triage:${messageId}`,
-        modelId: DEFAULT_AI_MODEL_ID,
-        promptVersion: DEFAULT_TRIAGE_PROMPT_VERSION,
-      },
-      tx as unknown as DB,
-    );
+    if (!isHotelSent) {
+      await enqueueAiRun(
+        {
+          transportId: transport.id,
+          threadId,
+          triggerMessageId: messageId,
+          runKind: 'inbound_triage',
+          idempotencyKey: `inbound-triage:${messageId}`,
+          modelId: DEFAULT_AI_MODEL_ID,
+          promptVersion: DEFAULT_TRIAGE_PROMPT_VERSION,
+        },
+        tx as unknown as DB,
+      );
+    }
   });
 
   return {
