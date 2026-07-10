@@ -5,6 +5,7 @@ import { validateStructuredJsonOutput } from '../security/policy.js';
 import {
   applyShadowTriageResult,
   TRIAGE_CATEGORIES,
+  refineTriageOutput,
   validateTriageOutput,
 } from '../triage.js';
 
@@ -116,7 +117,10 @@ const classifyStep = createStep({
       userPrompt: buildUserPrompt(inputData),
       responseSchema: triageResponseSchema,
     });
-    const output = validateTriageOutput(validateStructuredJsonOutput(model.output));
+    const output = refineTriageOutput(
+      inputData,
+      validateTriageOutput(validateStructuredJsonOutput(model.output)),
+    );
     const shadow = applyShadowTriageResult({
       threadId: inputData.threadId,
       transportId: inputData.transportId,

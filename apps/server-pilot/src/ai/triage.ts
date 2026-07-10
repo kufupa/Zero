@@ -29,6 +29,25 @@ export function validateTriageOutput(raw: unknown): TriageOutput {
   return triageOutputSchema.parse(raw);
 }
 
+/** Nova often labels single-guest agency bookings as individual when invoice is to the agency. */
+export function refineTriageOutput(
+  input: { from: string; body: string },
+  output: TriageOutput,
+): TriageOutput {
+  if (output.category !== 'individual') return output;
+  const invoiceToAgency =
+    /address the invoice to/i.test(input.body) &&
+    (/travel/i.test(input.from) || /travel/i.test(input.body));
+  if (!invoiceToAgency) return output;
+  return {
+    ...output,
+    category: 'travel-agents',
+    policyFlags: [...output.policyFlags, 'refine:agency-invoice-party'],
+    rationale: `${output.rationale} Agency is the invoice party.`,
+  };
+}
+
+
 export function applyShadowTriageResult(input: ShadowTriageResult): ShadowTriageResult {
   validateTriageOutput(input.output);
   return {
