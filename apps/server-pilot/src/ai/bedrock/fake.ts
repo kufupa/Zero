@@ -48,12 +48,13 @@ const FIXTURE_OUTPUTS: Record<string, Record<string, unknown>> = {
 };
 
 function fixtureKey(input: ModelInvokeInput): string {
-  const prompt = input.userPrompt.toLowerCase();
-  if (prompt.includes('triage') || prompt.includes('classify')) {
-    if (prompt.includes('spam')) {
+  const combined = `${input.userPrompt}\n${input.systemPrompt ?? ''}`.toLowerCase();
+  const user = input.userPrompt.toLowerCase();
+  if (combined.includes('triage') || combined.includes('classify') || combined.includes('<email>')) {
+    if (user.includes('spam')) {
       return 'triageSpam';
     }
-    if (prompt.includes('group') || prompt.includes('20 rooms')) {
+    if (user.includes('group') || user.includes('20 rooms')) {
       return 'triageGroup';
     }
     return 'triage';
