@@ -24,6 +24,15 @@ export AI_ENABLED=true
 export AI_WRITE_GATE_ENABLED=true
 export AI_DRAFTS_ENABLED=false
 export MAIL_TRANSPORT_MODE=wire
+export SMTP_HOST=127.0.0.1
+export SMTP_PORT=11025
+export SMTP_SECURE=false
+export POP3_HOST=127.0.0.1
+export POP3_PORT=11110
+export POP3_TLS=false
+export POP3_USER=ingest@wire.test
+export POP3_PASSWORD=wire-test-pass
+export MAILPIT_HTTP_URL=http://127.0.0.1:18025
 export ZERO_DEMO_FRONTEND_ONLY=0
 export VITE_FRONTEND_ONLY=0
 
@@ -36,6 +45,7 @@ echo "== pm2: restart ai-worker with triage-only gates ==" >&2
 pm2 restart ai-worker --update-env || pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only ai-worker --update-env
 
 echo "== centurion-live corpus: inject, ingest, triage assert ==" >&2
+pm2 stop worker 2>/dev/null || true
 cd "$SERVER_PILOT"
 export PLAYWRIGHT_ENV_FILE
 pnpm exec tsx <<'TS'
