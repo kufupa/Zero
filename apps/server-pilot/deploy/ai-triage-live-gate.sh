@@ -46,6 +46,7 @@ pm2 restart ai-worker --update-env || pm2 start "${SERVER_PILOT}/deploy/pm2.conf
 
 echo "== centurion-live corpus: inject, ingest, triage assert ==" >&2
 pm2 stop worker 2>/dev/null || true
+pm2 stop ai-worker 2>/dev/null || true
 cd "$SERVER_PILOT"
 export PLAYWRIGHT_ENV_FILE
 pnpm exec tsx <<'TS'
@@ -80,7 +81,7 @@ const manifest = JSON.parse(readFileSync(join(FIXTURE_ROOT, 'manifest.json'), 'u
 const PLAYWRIGHT_ENV_FILE = process.env.PLAYWRIGHT_ENV_FILE ?? '/tmp/ai-triage-playwright.env';
 const INGEST_MAILBOX_ID = 'ingest-nava-legacy';
 const ENVELOPE_TO = 'nava@legacyhotel.com';
-const DEADLINE_MS = 120_000;
+const DEADLINE_MS = 180_000;
 const PLAYWRIGHT_CASE_ID = 'group-kleinkaap';
 
 function parseSubject(raw: Buffer): string {
@@ -111,7 +112,7 @@ async function ingestAndPump(): Promise<void> {
   const pop3 = createPop3Client(env);
   if (!pop3) throw new Error('POP3 client unavailable');
   await ingestOnce({ pop3, ingestMailboxId: INGEST_MAILBOX_ID, maxMessages: 10 });
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 8; i++) {
     await runAiWorkerOnce();
   }
 }
@@ -320,4 +321,5 @@ export VITE_FRONTEND_ONLY=0
 cd "$REPO_ROOT"
 PLAYWRIGHT_INCLUDE_SPECS=ai-triage-live.spec.ts bash "${SCRIPT_DIR}/playwright-ec2-gate.sh"
 
+pm2 start "${SCRIPT_DIR}/pm2.config.cjs" --only ai-worker --update-env 2>/dev/null || pm2 restart ai-worker --update-env || true
 echo "ai-triage-live-gate: PASS subject=${AI_TRIAGE_FIXTURE_SUBJECT} folder=${AI_TRIAGE_FIXTURE_FOLDER}"

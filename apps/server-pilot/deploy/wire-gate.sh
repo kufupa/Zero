@@ -75,7 +75,15 @@ pnpm test tests/mailpit-lifecycle.test.ts \
   tests/transport-mode.test.ts \
   --reporter=dot
 
-echo "== pm2: start worker =="
-pm2 start worker 2>/dev/null || pm2 start "${SCRIPT_DIR}/pm2.config.cjs" --only worker --update-env 2>/dev/null || true
+echo "== pm2: start worker (wire/real pilot only) =="
+set -a
+# shellcheck disable=SC1090
+source "$ENV_FILE"
+set +a
+if [ "${MAIL_TRANSPORT_MODE:-fixture}" = "wire" ] || [ "${MAIL_TRANSPORT_MODE:-fixture}" = "real" ]; then
+  pm2 start worker 2>/dev/null || pm2 start "${SCRIPT_DIR}/pm2.config.cjs" --only worker --update-env 2>/dev/null || true
+else
+  pm2 delete worker 2>/dev/null || true
+fi
 
 echo "wire-gate: PASS"
