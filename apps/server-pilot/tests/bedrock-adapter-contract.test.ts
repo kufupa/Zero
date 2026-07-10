@@ -1,10 +1,40 @@
 import { describe, expect, it, vi } from 'vitest';
-import { BedrockModelAdapter } from '../src/ai/bedrock/bedrock.js';
+import {
+  BedrockModelAdapter,
+  estimateNovaLiteCostUsd,
+  NOVA_LITE_RATE_TABLE_VERSION,
+} from '../src/ai/bedrock/bedrock.js';
 import { createFakeModelAdapter } from '../src/ai/bedrock/fake.js';
 import { resolveModelAdapter } from '../src/ai/bedrock/factory.js';
 import { validateStructuredJsonOutput } from '../src/ai/security/policy.js';
 
 describe('bedrock adapter contract', () => {
+  it('fake adapter returns full usage shape', async () => {
+    const adapter = createFakeModelAdapter();
+    const result = await adapter.invoke({
+      modelId: 'amazon.nova-lite-v1:0',
+      systemPrompt: 'classify',
+      userPrompt: 'classify this inbound email: hello',
+    });
+    expect(result.usage).toMatchObject({
+      inputTokens: expect.any(Number),
+      outputTokens: expect.any(Number),
+      totalTokens: expect.any(Number),
+      latencyMs: expect.any(Number),
+      estimatedCostUsd: expect.any(Number),
+      rateTableVersion: NOVA_LITE_RATE_TABLE_VERSION,
+    });
+    expect(result.usage.totalTokens).toBe(
+      result.usage.inputTokens + result.usage.outputTokens,
+    );
+  });
+
+  it('estimateNovaLiteCostUsd applies Nova Lite rates', () => {
+    expect(estimateNovaLiteCostUsd(1_000_000, 0)).toBeCloseTo(0.06, 10);
+    expect(estimateNovaLiteCostUsd(0, 1_000_000)).toBeCloseTo(0.24, 10);
+    expect(estimateNovaLiteCostUsd(10, 5)).toBeCloseTo(0.0000018, 10);
+  });
+
   it('fake adapter output validates as structured JSON', async () => {
     const adapter = createFakeModelAdapter();
     const result = await adapter.invoke({
@@ -58,6 +88,9 @@ describe('bedrock adapter contract', () => {
     expect(result.output).toMatchObject({ category: 'individual' });
     expect(result.usage.inputTokens).toBe(10);
     expect(result.usage.outputTokens).toBe(5);
+    expect(result.usage.totalTokens).toBe(15);
+    expect(result.usage.estimatedCostUsd).toBeCloseTo(0.0000018, 10);
+    expect(result.usage.rateTableVersion).toBe(NOVA_LITE_RATE_TABLE_VERSION);
     expect(send).toHaveBeenCalledOnce();
   });
 

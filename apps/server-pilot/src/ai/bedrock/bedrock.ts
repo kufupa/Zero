@@ -8,6 +8,17 @@ import { validateStructuredJsonOutput } from '../security/policy.js';
 
 const DEFAULT_BEDROCK_REGION = 'us-east-1';
 
+const NOVA_LITE_INPUT_USD_PER_MTOK = 0.06;
+const NOVA_LITE_OUTPUT_USD_PER_MTOK = 0.24;
+export const NOVA_LITE_RATE_TABLE_VERSION = 'nova-lite-v1-2026-07';
+
+export function estimateNovaLiteCostUsd(inputTokens: number, outputTokens: number): number {
+  return (
+    (inputTokens / 1e6) * NOVA_LITE_INPUT_USD_PER_MTOK +
+    (outputTokens / 1e6) * NOVA_LITE_OUTPUT_USD_PER_MTOK
+  );
+}
+
 export interface BedrockModelAdapterConfig {
   region?: string;
   modelId?: string;
@@ -149,14 +160,19 @@ export class BedrockModelAdapter implements ModelAdapter {
     const text = extractTextContent(response.output?.message?.content);
     const output = parseModelJson(text);
     const latencyMs = Date.now() - started;
+    const inputTokens = response.usage?.inputTokens ?? 0;
+    const outputTokens = response.usage?.outputTokens ?? 0;
 
     return {
       modelId,
       output,
       usage: {
-        inputTokens: response.usage?.inputTokens ?? 0,
-        outputTokens: response.usage?.outputTokens ?? 0,
+        inputTokens,
+        outputTokens,
+        totalTokens: inputTokens + outputTokens,
         latencyMs,
+        estimatedCostUsd: estimateNovaLiteCostUsd(inputTokens, outputTokens),
+        rateTableVersion: NOVA_LITE_RATE_TABLE_VERSION,
       },
     };
   }

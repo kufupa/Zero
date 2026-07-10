@@ -1,4 +1,22 @@
 import type { ModelAdapter, ModelInvokeInput, ModelInvokeResult } from './adapter.js';
+import {
+  estimateNovaLiteCostUsd,
+  NOVA_LITE_RATE_TABLE_VERSION,
+} from './bedrock.js';
+
+const FAKE_INPUT_TOKENS = 120;
+const FAKE_OUTPUT_TOKENS = 48;
+
+function fakeUsage(): ModelInvokeResult['usage'] {
+  return {
+    inputTokens: FAKE_INPUT_TOKENS,
+    outputTokens: FAKE_OUTPUT_TOKENS,
+    totalTokens: FAKE_INPUT_TOKENS + FAKE_OUTPUT_TOKENS,
+    latencyMs: 15,
+    estimatedCostUsd: estimateNovaLiteCostUsd(FAKE_INPUT_TOKENS, FAKE_OUTPUT_TOKENS),
+    rateTableVersion: NOVA_LITE_RATE_TABLE_VERSION,
+  };
+}
 
 const FIXTURE_OUTPUTS: Record<string, Record<string, unknown>> = {
   triage: {
@@ -55,21 +73,13 @@ export class FakeModelAdapter implements ModelAdapter {
           textBody: 'Hi Guest,\n\n[Write response here]\n\nBest,\nStaff',
           htmlBody: '<p>Hi Guest,</p><p>[Write response here]</p><p>Best,<br>Staff</p>',
         },
-        usage: {
-          inputTokens: 120,
-          outputTokens: 48,
-          latencyMs: 15,
-        },
+        usage: fakeUsage(),
       };
     }
     return {
       modelId: input.modelId,
       output: base,
-      usage: {
-        inputTokens: 120,
-        outputTokens: 48,
-        latencyMs: 15,
-      },
+      usage: fakeUsage(),
     };
   }
 }

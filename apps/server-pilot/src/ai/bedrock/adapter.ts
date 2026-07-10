@@ -11,7 +11,10 @@ export interface ModelInvokeResult {
   usage: {
     inputTokens: number;
     outputTokens: number;
+    totalTokens: number;
     latencyMs: number;
+    estimatedCostUsd: number;
+    rateTableVersion: string;
   };
 }
 
