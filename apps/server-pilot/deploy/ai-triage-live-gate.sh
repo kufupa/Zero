@@ -55,7 +55,7 @@ pnpm exec tsx <<'TS'
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import nodemailer from 'nodemailer';
-import { and, eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import { ingestOnce } from './src/mail/ingest/worker.js';
 import { createPop3Client } from './src/mail/ingest/pop3-client.js';
 import { parseEnv } from './src/env.js';
@@ -154,18 +154,30 @@ async function waitForGuestTriage(subject: string, caseId: string, expectedCateg
       .from(message)
       .innerJoin(mailThread, eq(mailThread.id, message.threadId))
       .where(eq(message.subject, subject))
+      .orderBy(desc(message.createdAt))
       .limit(1);
 
     if (rows[0]) {
       const { threadId, messageId } = rows[0];
       const runs = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.threadId, threadId));
-      const triage = runs.find((run) => run.runKind === 'inbound_triage');
+      const triage = runs.find(
+        (run) =>
+          run.runKind === 'inbound_triage' &&
+          run.triggerMessageId === messageId &&
+          run.state === 'succeeded',
+      );
       const draftRuns = runs.filter((run) => run.runKind === 'candidate_draft');
       if (draftRuns.length > 0) {
         throw new Error(`${caseId}: candidate_draft runs present with AI_DRAFTS_ENABLED=false`);
       }
 
-      if (triage?.state === 'succeeded') {
+      if (!triage) {
+        await ingestAndPump();
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        continue;
+      }
+
+      if (triage.state === 'succeeded') {
         const metrics = (triage.metrics ?? {}) as MetricsShape;
         assertMetrics(metrics, caseId);
 
