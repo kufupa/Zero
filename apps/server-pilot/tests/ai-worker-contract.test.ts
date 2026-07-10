@@ -106,6 +106,15 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
     const [row] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, run.id));
     expect(row?.state).toBe('succeeded');
     expect(row?.mastraTraceId).toBeTruthy();
+    expect(row?.metrics).toMatchObject({
+      applyMode: 'skipped',
+      usage: {
+        totalTokens: expect.any(Number),
+        estimatedCostUsd: expect.any(Number),
+      },
+    });
+    const usage = (row?.metrics as { usage?: { totalTokens?: number } } | null)?.usage;
+    expect(usage?.totalTokens).toBeGreaterThan(0);
   });
 
   it('retry does not duplicate candidate draft', async () => {
@@ -208,6 +217,16 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
         .from(aiWorkflowRun)
         .where(eq(aiWorkflowRun.idempotencyKey, `candidate-draft:${messageId}`));
       expect(draftRuns).toHaveLength(0);
+
+      const [row] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, run.id));
+      expect(row?.metrics).toMatchObject({
+        applyMode: 'skipped',
+        durableWrite: false,
+        usage: {
+          totalTokens: expect.any(Number),
+          estimatedCostUsd: expect.any(Number),
+        },
+      });
     });
   });
 
@@ -265,6 +284,16 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
         .from(aiWorkflowRun)
         .where(eq(aiWorkflowRun.idempotencyKey, `candidate-draft:${messageId}`));
       expect(draftRuns).toHaveLength(1);
+
+      const [row] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, run.id));
+      expect(row?.metrics).toMatchObject({
+        applyMode: 'full',
+        durableWrite: true,
+        usage: {
+          totalTokens: expect.any(Number),
+          estimatedCostUsd: expect.any(Number),
+        },
+      });
     });
   });
 

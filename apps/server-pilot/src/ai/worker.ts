@@ -104,6 +104,8 @@ export async function executeAiRun(runId: string): Promise<ExecuteAiRunResult> {
           threadId: run.threadId,
           triggerMessageId: run.triggerMessageId,
           subject: trigger?.subject ?? undefined,
+          from: trigger?.fromAddress ?? '',
+          to: trigger?.toAddresses ?? [],
           body: trigger?.textBody ?? trigger?.htmlBody ?? '',
         },
       });
@@ -115,7 +117,7 @@ export async function executeAiRun(runId: string): Promise<ExecuteAiRunResult> {
       const output = validateTriageOutput(result.result?.output);
 
       await db.transaction(async (tx) => {
-        await applyDurableTriageFromWorker({
+        const applyResult = await applyDurableTriageFromWorker({
           db: tx as unknown as typeof db,
           transportId: run.transportId,
           threadId: run.threadId,
@@ -157,6 +159,7 @@ export async function executeAiRun(runId: string): Promise<ExecuteAiRunResult> {
               ...(result.result?.metrics as Record<string, unknown>),
               durableWrite: env.AI_WRITE_GATE_ENABLED,
               draftRunId,
+              applyMode: applyResult.applyMode,
             },
           },
           tx as unknown as typeof db,
@@ -301,7 +304,7 @@ async function applyDurableTriageFromWorker(input: {
   writeGateEnabled: boolean;
 }) {
   const { applyDurableTriageResult } = await import('./triage.js');
-  await applyDurableTriageResult(input);
+  return applyDurableTriageResult(input);
 }
 
 export async function runAiWorkerOnce(): Promise<boolean> {
