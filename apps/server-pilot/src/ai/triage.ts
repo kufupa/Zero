@@ -51,11 +51,60 @@ export interface ApplyDurableTriageInput {
   writeGateEnabled: boolean;
 }
 
-export async function applyDurableTriageResult(input: ApplyDurableTriageInput): Promise<void> {
+export type ApplyMode = 'full' | 'urgency_only' | 'skipped';
+
+export async function applyDurableTriageResult(
+  input: ApplyDurableTriageInput,
+): Promise<{ applyMode: ApplyMode }> {
   const output = validateTriageOutput(input.output);
-  if (!input.writeGateEnabled) return;
+  if (!input.writeGateEnabled) return { applyMode: 'skipped' };
 
   const { db, transportId, threadId } = input;
+
+  const [thread] = await db
+    .select({ spamAt: mailThread.spamAt })
+    .from(mailThread)
+    .where(and(eq(mailThread.id, threadId), eq(mailThread.transportId, transportId)))
+    .limit(1);
+
+  const primaryRows = await db
+    .select({ categoryId: mailCategory.id, slug: mailCategory.slug })
+    .from(mailThreadCategory)
+    .innerJoin(mailCategory, eq(mailCategory.id, mailThreadCategory.categoryId))
+    .where(
+      and(
+        eq(mailThreadCategory.threadId, threadId),
+        eq(mailThreadCategory.transportId, transportId),
+        inArray(mailCategory.slug, [...AI_PRIMARY_CATEGORY_SLUGS]),
+      ),
+    );
+
+  const settled = primaryRows.length > 0 || thread?.spamAt != null;
+
+  if (settled) {
+    const allCats = await db
+      .select({ id: mailCategory.id, slug: mailCategory.slug })
+      .from(mailCategory)
+      .where(and(eq(mailCategory.transportId, transportId), eq(mailCategory.isActive, true)));
+    const urgentId = allCats.find((c) => c.slug === 'urgent')?.id;
+    if (!urgentId) throw new Error(`AI category missing for transport ${transportId}: urgent`);
+
+    await db.delete(mailThreadCategory).where(
+      and(
+        eq(mailThreadCategory.threadId, threadId),
+        eq(mailThreadCategory.transportId, transportId),
+        eq(mailThreadCategory.categoryId, urgentId),
+      ),
+    );
+    if (output.urgent) {
+      await db.insert(mailThreadCategory).values({
+        threadId,
+        categoryId: urgentId,
+        transportId,
+      });
+    }
+    return { applyMode: 'urgency_only' };
+  }
 
   const aiManagedRows = await db
     .select({ categoryId: mailCategory.id })
@@ -80,8 +129,13 @@ export async function applyDurableTriageResult(input: ApplyDurableTriageInput): 
       .update(mailThread)
       .set({ spamAt: new Date(), updatedAt: new Date() })
       .where(and(eq(mailThread.id, threadId), eq(mailThread.transportId, transportId)));
-    return;
+    return { applyMode: 'full' };
   }
+
+  await db
+    .update(mailThread)
+    .set({ spamAt: null, updatedAt: new Date() })
+    .where(and(eq(mailThread.id, threadId), eq(mailThread.transportId, transportId)));
 
   const categoryRows = await db
     .select({ id: mailCategory.id, slug: mailCategory.slug })
@@ -114,4 +168,6 @@ export async function applyDurableTriageResult(input: ApplyDurableTriageInput): 
       })),
     );
   }
+
+  return { applyMode: 'full' };
 }
