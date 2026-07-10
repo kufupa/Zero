@@ -34,6 +34,20 @@ export function refineTriageOutput(
   input: { from: string; body: string; subject?: string },
   output: TriageOutput,
 ): TriageOutput {
+  const haystack = `${input.subject ?? ''}
+${input.body}`;
+  if (output.category === 'internal' && output.urgent) {
+    const opsHandover = /handover|room readiness|vip arrivals/i.test(haystack);
+    if (opsHandover) {
+      return {
+        ...output,
+        urgent: false,
+        policyFlags: [...output.policyFlags, 'refine:internal-handover-not-urgent'],
+        rationale: `${output.rationale} Internal handover is not same-day urgent.`,
+      };
+    }
+  }
+
   if (output.category === 'travel-agents') {
     const guestFileInvoice =
       (/tax invoice/i.test(input.body) || /tax invoice/i.test(input.subject ?? '')) &&

@@ -70,6 +70,7 @@ Ticket: travel agency booking request → Category: travel-agents / urgent: fals
 Ticket: consultant confirms 4 rooms with guest name list → Category: travel-agents / urgent: false
 Ticket: Sample Travel books one municipality guest, invoice to agency VAT block → Category: travel-agents / urgent: false
 Ticket: banqueting handover tomorrow → Category: internal / urgent: false
+Ticket: VIP arrivals handover with room readiness deadline → Category: internal / urgent: false
 
 ## Output
 Match schema. rationale = one short sentence. confidence 0–1 for eval only.`;
