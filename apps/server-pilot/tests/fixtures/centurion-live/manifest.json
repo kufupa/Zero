@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "spam-viqal",
+      "file": "spam-virtual-concierge.eml",
+      "kind": "guest",
+      "expectedCategory": "spam",
+      "expectedUrgent": false
+    },
+    {
+      "id": "group-kleinkaap",
+      "file": "group-overflow-rooms.eml",
+      "kind": "guest",
+      "expectedCategory": "group",
+      "expectedUrgent": false
+    },
+    {
+      "id": "individual-urgent-invoice",
+      "file": "individual-urgent-tax-invoice.eml",
+      "kind": "guest",
+      "expectedCategory": "individual",
+      "expectedUrgent": true
+    },
+    {
+      "id": "individual-quotation",
+      "file": "individual-quotation-request.eml",
+      "kind": "guest",
+      "expectedCategory": "individual",
+      "expectedUrgent": false
+    },
+    {
+      "id": "individual-municipality",
+      "file": "individual-municipality-booking.eml",
+      "kind": "guest",
+      "expectedCategory": "individual",
+      "expectedUrgent": false
+    },
+    {
+      "id": "travel-agents-four-rooms",
+      "file": "travel-agents-multi-room.eml",
+      "kind": "guest",
+      "expectedCategory": "travel-agents",
+      "expectedUrgent": false
+    },
+    {
+      "id": "travel-agents-quote",
+      "file": "travel-agents-government-quote.eml",
+      "kind": "guest",
+      "expectedCategory": "travel-agents",
+      "expectedUrgent": false
+    },
+    {
+      "id": "internal-handover",
+      "file": "internal-vip-handover.eml",
+      "kind": "guest",
+      "expectedCategory": "internal",
+      "expectedUrgent": false
+    },
+    {
+      "id": "hotel-sent-copy",
+      "file": "hotel-sent-booking-reply.eml",
+      "kind": "hotel_sent",
+      "expectedCategory": null,
+      "expectedUrgent": false
+    }
+  ]
+}
