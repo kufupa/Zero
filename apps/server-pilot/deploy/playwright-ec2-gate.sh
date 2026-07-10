@@ -35,37 +35,33 @@ if ! curl -sf "${VITE_PUBLIC_BACKEND_URL%/}/health" >/dev/null; then
   exit 1
 fi
 
-# Always restart FE for gate: stale vite SSR can return 200 then blow up on /about.
-echo "restarting frontend dev on ${PLAYWRIGHT_BASE_URL}"
+# Prefer production SPA on :3000 (vite SSR trips on about.tsx jsxDEV).
+echo "serving mail production SPA on ${PLAYWRIGHT_BASE_URL}"
 pkill -f "react-router dev" 2>/dev/null || true
+pkill -f "serve -s" 2>/dev/null || true
 sleep 1
-if true; then
-  nohup env \
-    VITE_PUBLIC_BACKEND_URL="$VITE_PUBLIC_BACKEND_URL" \
-    VITE_DISABLE_SENTRY=1 \
-    ZERO_DEMO_MODE=1 \
-    ZERO_DEMO_FRONTEND_ONLY="$ZERO_DEMO_FRONTEND_ONLY" \
-    VITE_ZERO_DEMO_MODE=1 \
-    VITE_FRONTEND_ONLY="$VITE_FRONTEND_ONLY" \
-    pnpm --dir apps/mail run dev > /tmp/fe-dev.log 2>&1 &
-  FE_PID=$!
-  for _ in $(seq 1 90); do
-    if curl -sf "${PLAYWRIGHT_BASE_URL}/" >/dev/null 2>&1; then
-      echo "frontend up"
-      break
-    fi
-    if ! kill -0 "$FE_PID" 2>/dev/null; then
-      tail -80 /tmp/fe-dev.log >&2 || true
-      exit 1
-    fi
-    sleep 2
-  done
-  curl -sf "${PLAYWRIGHT_BASE_URL}/" >/dev/null || {
-    echo "frontend never became ready" >&2
+if [ ! -f apps/mail/build/client/index.html ]; then
+  echo "building mail SPA" >&2
+  pnpm --dir apps/mail run build
+fi
+nohup pnpm exec serve -s apps/mail/build/client -l 3000 > /tmp/fe-dev.log 2>&1 &
+FE_PID=$!
+for _ in $(seq 1 60); do
+  if curl -sf "${PLAYWRIGHT_BASE_URL}/" >/dev/null 2>&1; then
+    echo "frontend up (static)"
+    break
+  fi
+  if ! kill -0 "$FE_PID" 2>/dev/null; then
     tail -80 /tmp/fe-dev.log >&2 || true
     exit 1
-  }
-fi
+  fi
+  sleep 1
+done
+curl -sf "${PLAYWRIGHT_BASE_URL}/" >/dev/null || {
+  echo "frontend never became ready" >&2
+  tail -80 /tmp/fe-dev.log >&2 || true
+  exit 1
+}
 
 echo "minting session"
 SECRET=$(aws secretsmanager get-secret-value --region af-south-1 --secret-id nava-zero/server-pilot/pilot-users --query SecretString --output text)
