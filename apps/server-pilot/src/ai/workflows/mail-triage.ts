@@ -49,9 +49,9 @@ Classify one inbound hotel mailbox email. Output JSON only (schema enforced).
 
 ## Categories (pick exactly one primary)
 - internal: staff-to-staff / hotel ops handover
-- individual: single-guest booking or guest service (even when a travel agency sends the email for one named guest)
+- individual: single-guest booking or guest service when the guest (not an agency) is the commercial party
 - group: multi-room / overflow from venue, event, or direct organiser (not a travel agency)
-- travel-agents: travel agency or consultant booking one or more rooms on behalf of named guests
+- travel-agents: travel agency or consultant booking on behalf of guests (including one guest); invoice or billing to the agency
 - spam: sales, promo, irrelevant automation
 
 ## Urgency
@@ -66,7 +66,7 @@ Ticket: one guest tax invoice needed today → Category: individual / urgent: tr
 Ticket: 20 rooms overflow quote → Category: group / urgent: false
 Ticket: travel agency booking request → Category: travel-agents / urgent: false
 Ticket: consultant confirms 4 rooms with guest name list → Category: travel-agents / urgent: false
-Ticket: agency books one municipality guest with invoice block → Category: individual / urgent: false
+Ticket: Sample Travel books one municipality guest, invoice to agency VAT block → Category: travel-agents / urgent: false
 Ticket: banqueting handover tomorrow → Category: internal / urgent: false
 
 ## Output
