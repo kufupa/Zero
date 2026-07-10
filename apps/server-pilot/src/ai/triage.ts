@@ -34,6 +34,21 @@ export function refineTriageOutput(
   input: { from: string; body: string },
   output: TriageOutput,
 ): TriageOutput {
+  if (output.category === 'travel-agents') {
+    const guestFileInvoice =
+      /tax invoice/i.test(input.body) &&
+      /guest/i.test(input.body) &&
+      !/address the invoice to/i.test(input.body);
+    if (guestFileInvoice) {
+      return {
+        ...output,
+        category: 'individual',
+        policyFlags: [...output.policyFlags, 'refine:guest-file-invoice'],
+        rationale: `${output.rationale} Invoice is for a guest file, not agency billing.`,
+      };
+    }
+  }
+
   if (output.category !== 'individual') return output;
   const invoiceToAgency =
     /address the invoice to/i.test(input.body) &&
