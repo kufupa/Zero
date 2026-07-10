@@ -37,7 +37,8 @@ export function refineTriageOutput(
   if (output.category !== 'individual') return output;
   const invoiceToAgency =
     /address the invoice to/i.test(input.body) &&
-    (/travel/i.test(input.from) || /travel/i.test(input.body));
+    (/\btravel\b/i.test(input.from) ||
+      /address the invoice to[:\s]*\n?\s*[^\n]*\btravel\b/i.test(input.body));
   if (!invoiceToAgency) return output;
   return {
     ...output,
