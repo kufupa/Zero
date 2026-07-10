@@ -1,6 +1,6 @@
 // apps/server-pilot/tests/centurion-live-corpus-contract.test.ts
 import { describe, expect, it } from 'vitest';
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 const ROOT = join(import.meta.dirname, 'fixtures/centurion-live');
@@ -15,9 +15,22 @@ const DENYLIST = [
   'Nelda Coetzee',
 ];
 
+/** ISO month, RFC2822 month, or DD/MM/YYYY with July 2026 */
+const JULY_2026_DATE = /(?:2026-07|Jul(?:y)? 2026|\d{2}\/07\/2026)/i;
+
+function loadManifest() {
+  return JSON.parse(readFileSync(join(ROOT, 'manifest.json'), 'utf8'));
+}
+
+function listEmlFiles() {
+  return readdirSync(ROOT)
+    .filter((f) => f.endsWith('.eml'))
+    .sort();
+}
+
 describe('centurion-live corpus', () => {
   it('has manifest covering all primary categories + urgent + hotel_sent', () => {
-    const manifest = JSON.parse(readFileSync(join(ROOT, 'manifest.json'), 'utf8'));
+    const manifest = loadManifest();
     expect(manifest.version).toBe(1);
     const cats = new Set(manifest.cases.filter((c: { kind: string }) => c.kind === 'guest').map((c: { expectedCategory: string }) => c.expectedCategory));
     for (const need of ['spam', 'individual', 'group', 'travel-agents', 'internal']) {
@@ -27,8 +40,23 @@ describe('centurion-live corpus', () => {
     expect(manifest.cases.some((c: { kind: string }) => c.kind === 'hotel_sent')).toBe(true);
   });
 
-  it('every eml is stamped and denylist-clean; dates are 2026-07-ish', () => {
-    const files = readdirSync(ROOT).filter((f) => f.endsWith('.eml'));
+  it('manifest lists every eml on disk and vice versa', () => {
+    const manifest = loadManifest();
+    const manifestFiles = manifest.cases.map((c: { file: string }) => c.file).sort();
+    const diskFiles = listEmlFiles();
+
+    for (const file of manifestFiles) {
+      expect(existsSync(join(ROOT, file)), `missing fixture: ${file}`).toBe(true);
+    }
+
+    const manifestSet = new Set(manifestFiles);
+    const orphans = diskFiles.filter((f) => !manifestSet.has(f));
+    expect(orphans, `orphan .eml files not in manifest: ${orphans.join(', ')}`).toEqual([]);
+    expect(manifestFiles).toEqual(diskFiles);
+  });
+
+  it('every eml is stamped and denylist-clean; dates are July 2026', () => {
+    const files = listEmlFiles();
     expect(files.length).toBeGreaterThanOrEqual(9);
     for (const file of files) {
       const raw = readFileSync(join(ROOT, file), 'utf8');
@@ -36,7 +64,7 @@ describe('centurion-live corpus', () => {
       for (const bad of DENYLIST) {
         expect(raw.toLowerCase().includes(bad.toLowerCase())).toBe(false);
       }
-      expect(raw).toMatch(/2026/);
+      expect(raw, `${file} missing July 2026 date`).toMatch(JULY_2026_DATE);
     }
   });
 });
