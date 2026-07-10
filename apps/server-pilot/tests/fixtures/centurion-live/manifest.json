@@ -33,7 +33,7 @@
       "id": "individual-municipality",
       "file": "individual-municipality-booking.eml",
       "kind": "guest",
-      "expectedCategory": "individual",
+      "expectedCategory": "travel-agents",
       "expectedUrgent": false
     },
     {
