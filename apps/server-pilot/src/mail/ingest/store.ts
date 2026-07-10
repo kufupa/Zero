@@ -237,7 +237,20 @@ export async function persistInboundMessage(
     const transportEmail = (transport.email ?? '').trim().toLowerCase();
     const fromAddress = (parsed.fromAddress ?? '').trim().toLowerCase();
     const fromEmail = fromAddress.match(/<([^>]+)>/)?.[1]?.toLowerCase() ?? fromAddress;
-    const isHotelSent = Boolean(transportEmail) && fromEmail === transportEmail;
+    const recipientEmails = [
+      ...parsed.toAddresses,
+      ...parsed.ccAddresses,
+      ...parsed.bccAddresses,
+    ]
+      .map((a) => a.trim().toLowerCase())
+      .map((a) => a.match(/<([^>]+)>/)?.[1]?.toLowerCase() ?? a);
+    const isSelfIngestLoopback =
+      Boolean(transportEmail) &&
+      recipientEmails.some((a) => a === transportEmail);
+    const isHotelSent =
+      Boolean(transportEmail) &&
+      fromEmail === transportEmail &&
+      !isSelfIngestLoopback;
 
     await tx.insert(message).values({
       id: messageId,
