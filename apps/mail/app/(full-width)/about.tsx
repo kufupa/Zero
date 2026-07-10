@@ -1,3 +1,5 @@
+'use client';
+
 import { Card, CardHeader, CardTitle } from '@/components/ui/card';
 import { Github, Mail, ArrowLeft } from 'lucide-react';
 import { Navigation } from '@/components/navigation';
