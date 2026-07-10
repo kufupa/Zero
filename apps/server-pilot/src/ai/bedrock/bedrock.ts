@@ -110,8 +110,10 @@ export class BedrockModelAdapter implements ModelAdapter {
       messages: [{ role: 'user', content: [{ text: input.userPrompt }] }],
     };
 
-    if (input.responseSchema) {
-      commandInput.inferenceConfig = { maxTokens: 2048, temperature: 0 };
+    commandInput.inferenceConfig = { maxTokens: 2048, temperature: 0 };
+    // Nova Converse models reject outputConfig; rely on prompt + parseModelJson.
+    const supportsOutputConfig = !/amazon\.nova/i.test(modelId);
+    if (input.responseSchema && supportsOutputConfig) {
       commandInput.outputConfig = {
         textFormat: {
           type: 'json_schema',
@@ -124,8 +126,6 @@ export class BedrockModelAdapter implements ModelAdapter {
           },
         },
       };
-    } else {
-      commandInput.inferenceConfig = { maxTokens: 2048, temperature: 0 };
     }
 
     if (this.guardrailId && this.guardrailVersion) {
