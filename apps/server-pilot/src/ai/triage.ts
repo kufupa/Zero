@@ -115,8 +115,15 @@ export async function applyDurableTriageResult(
     );
 
   const settled = primaryRows.length > 0 || thread?.spamAt != null;
+  const currentPrimarySlugs = primaryRows.map((row) => row.slug);
 
   if (settled) {
+    const primaryChanged =
+      output.category !== 'spam' &&
+      currentPrimarySlugs.length > 0 &&
+      !currentPrimarySlugs.includes(output.category);
+
+    if (!primaryChanged) {
     const allCats = await db
       .select({ id: mailCategory.id, slug: mailCategory.slug })
       .from(mailCategory)
@@ -139,6 +146,7 @@ export async function applyDurableTriageResult(
       });
     }
     return { applyMode: 'urgency_only' };
+    }
   }
 
   const aiManagedRows = await db
