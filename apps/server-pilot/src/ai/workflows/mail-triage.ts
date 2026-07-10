@@ -50,8 +50,8 @@ Classify one inbound hotel mailbox email. Output JSON only (schema enforced).
 ## Categories (pick exactly one primary)
 - internal: staff-to-staff / hotel ops handover
 - individual: single-guest booking or guest service
-- group: multi-room / group / overflow / rooming list
-- travel-agents: agency booking or quote on behalf of traveler
+- group: multi-room / overflow from venue, event, or direct organiser (not a travel agency)
+- travel-agents: travel agency or consultant booking one or more rooms on behalf of named guests
 - spam: sales, promo, irrelevant automation
 
 ## Urgency
@@ -65,6 +65,7 @@ Ticket: Viqal WhatsApp sales blast → Category: spam / urgent: false
 Ticket: one guest tax invoice needed today → Category: individual / urgent: true
 Ticket: 20 rooms overflow quote → Category: group / urgent: false
 Ticket: travel agency booking request → Category: travel-agents / urgent: false
+Ticket: consultant confirms 4 rooms with guest name list → Category: travel-agents / urgent: false
 Ticket: banqueting handover tomorrow → Category: internal / urgent: false
 
 ## Output
