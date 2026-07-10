@@ -45,6 +45,8 @@ echo "== pm2: restart ai-worker with triage-only gates ==" >&2
 pm2 restart ai-worker --update-env || pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only ai-worker --update-env
 
 echo "== centurion-live corpus: inject, ingest, triage assert ==" >&2
+echo "== seed:prod (pilot mailbox transports) ==" >&2
+(cd "$SERVER_PILOT" && pnpm seed:prod)
 pm2 stop worker 2>/dev/null || true
 pm2 stop ai-worker 2>/dev/null || true
 cd "$SERVER_PILOT"
