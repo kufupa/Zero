@@ -136,12 +136,36 @@ function assertMetrics(metrics: MetricsShape, caseId: string): void {
   if (!metrics.applyMode) {
     throw new Error(`${caseId}: missing metrics.applyMode`);
   }
+  if (metrics.applyMode !== 'full') {
+    throw new Error(`${caseId}: expected applyMode=full got ${metrics.applyMode}`);
+  }
   const usage = metrics.usage;
   if (!usage) throw new Error(`${caseId}: missing metrics.usage`);
   if ((usage.inputTokens ?? 0) <= 0) throw new Error(`${caseId}: usage.inputTokens must be > 0`);
   if ((usage.outputTokens ?? 0) <= 0) throw new Error(`${caseId}: usage.outputTokens must be > 0`);
   if (usage.estimatedCostUsd == null) throw new Error(`${caseId}: missing usage.estimatedCostUsd`);
   if (!usage.rateTableVersion) throw new Error(`${caseId}: missing usage.rateTableVersion`);
+}
+
+/** Prior gate runs leave AI primary/spamAt → urgency_only. Unsettle so this run proves full apply. */
+async function unsettleThreadsForSubject(subject: string): Promise<void> {
+  const db = getDb();
+  const rows = await db
+    .select({ threadId: mailThread.id })
+    .from(message)
+    .innerJoin(mailThread, eq(mailThread.id, message.threadId))
+    .where(eq(message.subject, subject));
+  const threadIds = [...new Set(rows.map((row) => row.threadId))];
+  for (const threadId of threadIds) {
+    await db.delete(mailThreadCategory).where(eq(mailThreadCategory.threadId, threadId));
+    await db
+      .update(mailThread)
+      .set({ spamAt: null, updatedAt: new Date() })
+      .where(eq(mailThread.id, threadId));
+  }
+  if (threadIds.length > 0) {
+    log(`== unsettle ${threadIds.length} thread(s) for subject="${subject}" ==`);
+  }
 }
 
 async function waitForGuestTriage(subject: string, caseId: string, expectedCategory: string, expectedUrgent: boolean, injectedAfter: Date) {
@@ -275,6 +299,10 @@ for (const testCase of manifest.cases) {
   const raw = readFileSync(join(FIXTURE_ROOT, testCase.file));
   const subject = parseSubject(raw);
   log(`== case ${testCase.id}: inject ${testCase.file} subject="${subject}" ==`);
+
+  if (testCase.kind === 'guest') {
+    await unsettleThreadsForSubject(subject);
+  }
 
   const injectedAfter = new Date();
   await injectRawEml(raw);
