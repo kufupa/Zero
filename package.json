@@ -42,7 +42,18 @@
     "test:ai": "dotenv -- pnpm --filter=@zero/server run test:ai",
     "eval": "dotenv -- pnpm --filter=@zero/server run eval",
     "eval:dev": "dotenv -- pnpm --filter=@zero/server run eval:dev",
-    "eval:ci": "dotenv -- pnpm --filter=@zero/server run eval:ci"
+    "eval:ci": "dotenv -- pnpm --filter=@zero/server run eval:ci",
+    "t3mp3st:install": "bash tools/t3mp3st/run.sh install",
+    "t3mp3st:configure": "bash tools/t3mp3st/run.sh configure",
+    "t3mp3st:test-llm": "bash tools/t3mp3st/run.sh test-llm",
+    "t3mp3st:swarm:test": "bash tools/t3mp3st/run.sh swarm-test",
+    "t3mp3st:swarm:overnight": "node tools/t3mp3st/scripts/overnight-swarm.mjs",
+    "t3mp3st:decompose:regression": "node tools/t3mp3st/scripts/overnight-decompose-regression.mjs",
+    "t3mp3st:server": "bash tools/t3mp3st/run.sh server",
+    "t3mp3st:status": "bash tools/t3mp3st/run.sh status",
+    "t3mp3st:audit:overnight": "node tools/t3mp3st/scripts/overnight-swarm.mjs",
+    "t3mp3st:warroom:overnight": "node tools/t3mp3st/scripts/overnight-warroom.mjs",
+    "t3mp3st:warroom:full-stress": "node tools/t3mp3st/scripts/overnight-warroom-full-stress.mjs"
   },
   "devDependencies": {
     "@types/node": "24.3.0",

@@ -73,6 +73,10 @@ apps/server-pilot/.env.*
 
 # scratch research / agent working files (never commit)
 .tmp-research/
+.tmp/
+
+# Local clone of compound-engineering plugin (has its own .git)
+.cursor/compound-engineering/
 
 # playwright artifacts (regenerated per run)
 packages/testing/playwright-report/

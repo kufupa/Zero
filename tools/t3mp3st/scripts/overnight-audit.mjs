@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Overnight EC2-pilot code audit — T3MP3ST decompose + grok-4.3.
+ * Overnight EC2-pilot code audit — T3MP3ST decompose + grok-4.5.
  * Read-only: no production code edits. No AWS/network targets.
  */
 import { spawn } from 'node:child_process';
@@ -151,9 +151,9 @@ async function decomposePass({ label, objective, files }) {
   const relFiles = files.map((f) => relative(REPO_ROOT, f).replace(/\\/g, '/')).join(',');
   const env = {
     TEMPEST_ORCHESTRATOR_PROVIDER: 'xai',
-    TEMPEST_ORCHESTRATOR_MODEL: 'grok-4.3',
+    TEMPEST_ORCHESTRATOR_MODEL: 'grok-4.5',
     TEMPEST_WORKER_PROVIDER: 'xai',
-    TEMPEST_WORKER_MODEL: 'grok-4.3',
+    TEMPEST_WORKER_MODEL: 'grok-4.5',
     XAI_REASONING_EFFORT: 'high',
   };
   const args = [
@@ -167,11 +167,11 @@ async function decomposePass({ label, objective, files }) {
     '--orchestrator-provider',
     'xai',
     '--orchestrator-model',
-    'grok-4.3',
+    'grok-4.5',
     '--worker-provider',
     'xai',
     '--worker-model',
-    'grok-4.3',
+    'grok-4.5',
     '--rounds',
     '3',
     '--queries-per-round',
@@ -201,13 +201,13 @@ async function main() {
   mkdirSync(REPORT_DIR, { recursive: true });
   writeFileSync(
     REPORT,
-    `# EC2-pilot overnight code audit (T3MP3ST + grok-4.3)
+    `# EC2-pilot overnight code audit (T3MP3ST + grok-4.5)
 
 **Branch:** EC2-pilot  
 **Mode:** code-only — no AWS prod, no live network probes  
 **Scope:** \`apps/server-pilot/**\` (excl \`src/ai/**\` Mastra parallel work), \`apps/mail/**\` FE  
 **Out of scope:** legacy \`apps/server\` Cloudflare worker, Mastra AI pipeline implementation  
-**Backbone:** xAI \`grok-4.3\` + \`reasoning_effort=high\`
+**Backbone:** xAI \`grok-4.5\` + \`reasoning_effort=high\`
 
 Progressive findings append below.
 

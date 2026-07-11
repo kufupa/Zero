@@ -16,7 +16,8 @@ const REPO_ROOT = resolve(TOOLS_ROOT, '../..');
 const VENDOR = join(TOOLS_ROOT, '.vendor', 'T3MP3ST');
 const REPORT = join(
   REPO_ROOT,
-  'docs/superpowers/plans/handoff-reports/2026-07-07-ec2-pilot-t3mp3st-cli-swarm-audit.md',
+  process.env.XAI_SWARM_REPORT ||
+    'docs/superpowers/plans/handoff-reports/2026-07-08-ec2-pilot-t3mp3st-cli-swarm-audit.md',
 );
 
 const PRIOR_AUDIT = 'docs/superpowers/plans/2026-07-01-ec2-pilot-security-audit.md';
@@ -85,11 +86,11 @@ function runDecompose({ label, objective, files }) {
     '--orchestrator-provider',
     'xai',
     '--orchestrator-model',
-    'grok-4.3',
+    'grok-4.5',
     '--worker-provider',
     'xai',
     '--worker-model',
-    'grok-4.3',
+    'grok-4.5',
     '--rounds',
     '3',
     '--queries-per-round',
@@ -107,9 +108,9 @@ function runDecompose({ label, objective, files }) {
         ...process.env,
         XAI_REASONING_EFFORT: 'high',
         TEMPEST_ORCHESTRATOR_PROVIDER: 'xai',
-        TEMPEST_ORCHESTRATOR_MODEL: 'grok-4.3',
+        TEMPEST_ORCHESTRATOR_MODEL: 'grok-4.5',
         TEMPEST_WORKER_PROVIDER: 'xai',
-        TEMPEST_WORKER_MODEL: 'grok-4.3',
+        TEMPEST_WORKER_MODEL: 'grok-4.5',
       },
       shell: false,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -142,7 +143,7 @@ async function main() {
 
   append(
     'Pass 3 start — decompose regression',
-    `Cross-check vs [\`${PRIOR_AUDIT}\`](../../2026-07-01-ec2-pilot-security-audit.md). T3MP3ST decompose + grok-4.3.`,
+    `Cross-check vs [\`${PRIOR_AUDIT}\`](../../2026-07-01-ec2-pilot-security-audit.md). T3MP3ST decompose + grok-4.5.`,
   );
 
   for (const pass of PASSES) {

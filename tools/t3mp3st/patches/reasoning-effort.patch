@@ -1,0 +1,18 @@
+--- a/src/llm/index.ts
++++ b/src/llm/index.ts
+@@ -555,6 +555,14 @@
+       top_p: options?.topP,
+       stop: options?.stopSequences,
+     };
+ 
++    const reasoningEffort =
++      process.env.XAI_REASONING_EFFORT?.trim() ||
++      (this.config.provider === 'xai' && /^grok-4(\.|$)/.test(this.config.model) ? 'high' : '');
++    if (reasoningEffort) {
++      requestBody.reasoning_effort = reasoningEffort;
++      delete requestBody.stop;
++    }
++
+     if (options?.tools?.length) {
+       requestBody.tools = options.tools.map(t => ({
+         type: 'function',

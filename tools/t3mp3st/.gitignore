@@ -1,0 +1,7 @@
+# Secrets + local install (pnpm t3mp3st:install)
+.env
+.vendor/
+
+# Overnight / SSM scratch (regenerated per run)
+*.log
+_ssm-fe-check.json
