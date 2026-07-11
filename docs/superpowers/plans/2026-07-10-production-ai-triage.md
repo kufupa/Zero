@@ -79,8 +79,13 @@ Better path to done criteria → take it. Prefer elegant durable fix over quick 
 - [x] Playwright shows threads in inbox + category folder
 - [x] Live corpus: every guest fixture passes **agent LLM-in-the-loop review** (category + urgent correct for the email content)
 - [x] Hotel-sent fixture: Sent, zero triage runs
+- [x] Live gate proves `applyMode=full` on guest cases (unsettle before inject)
 - [x] Handoff report: per-email review notes + expected/actual + fixes applied
 - [x] No candidate-draft enablement
+
+### Overnight status
+
+**COMPLETE** @ `8e32b2ad` — gate PASS with full applyMode. Next product work (candidate drafts, Guardrails, multi-msg context) needs new plan via `/writing-plans` + overnight mandate.
 
 ## Execution Mode
 
