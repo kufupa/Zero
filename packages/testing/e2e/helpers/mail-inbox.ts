@@ -18,9 +18,13 @@ export async function dismissMailOnboarding(page: Page) {
 }
 
 export async function expectPilotInboxVisible(page: Page) {
-  await expect(
-    page.getByRole('link', { name: 'Inbox', exact: true }).first(),
-  ).toBeVisible({ timeout: 15000 });
+  // Pilot sidebar uses nav buttons/links; prefer href, fall back to visible Inbox label.
+  const byHref = page.locator('a[href="/mail/inbox"], a[href*="/mail/inbox"]').first();
+  if (await byHref.isVisible({ timeout: 3000 }).catch(() => false)) {
+    await expect(byHref).toBeVisible({ timeout: 15_000 });
+    return;
+  }
+  await expect(page.getByText('Inbox', { exact: true }).first()).toBeVisible({ timeout: 15_000 });
 }
 
 export async function expectThreadVisibleInFolder(page: Page, folder: string, subject: string) {
