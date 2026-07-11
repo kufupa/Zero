@@ -11,7 +11,7 @@ export const useAttachments = (messageId: string) => {
     trpc.mail.getMessageAttachments.queryOptions(
       { messageId },
       {
-        enabled: !!session?.user.id && !!messageId && !frontendOnlyDemo,
+        enabled: !!session?.user?.id && !!messageId && !frontendOnlyDemo,
         staleTime: 1000 * 60 * 60,
       },
     ),

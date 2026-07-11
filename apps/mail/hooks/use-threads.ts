@@ -248,7 +248,7 @@ export const useThread = (threadId: string | null) => {
         id: id!,
       },
       {
-        enabled: !demoMode && !!id && !!session?.user.id,
+        enabled: !demoMode && !!id && !!session?.user?.id,
         staleTime: 1000 * 60 * 60, // 1 minute
         placeholderData: undefined,
       },
