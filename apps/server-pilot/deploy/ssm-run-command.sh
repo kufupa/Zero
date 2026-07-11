@@ -32,6 +32,8 @@ COMMAND_ID="$(
 
 START_EPOCH="$(date +%s)"
 EMPTY_POLLS=0
+export PYTHONUTF8=1
+export PYTHONIOENCODING=utf-8
 
 while true; do
   NOW_EPOCH="$(date +%s)"
@@ -41,16 +43,15 @@ while true; do
     exit 1
   fi
 
-  INVOCATION="$(
+  # Status-only poll: Windows AWS CLI charmap dies when Stdout has vitest unicode.
+  STATUS="$(
     aws ssm get-command-invocation \
       --region "$AWS_REGION" \
       --command-id "$COMMAND_ID" \
       --instance-id "$INSTANCE_ID" \
-      --query '{Status:Status,Stdout:StandardOutputContent,Stderr:StandardErrorContent}' \
-      --output json 2>/dev/null || true
+      --query 'Status' \
+      --output text 2>/dev/null || true
   )"
-
-  STATUS="$(printf '%s' "$INVOCATION" | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{try{console.log(JSON.parse(s).Status||"")}catch{console.log("")}})')"
 
   case "$STATUS" in
     Pending|InProgress|Delayed)
@@ -64,44 +65,11 @@ while true; do
         *) exit 1 ;;
       esac
       ;;
-    "")
+    ""|None)
       EMPTY_POLLS="$((EMPTY_POLLS + 1))"
       if [ "$EMPTY_POLLS" -ge "$SSM_MAX_EMPTY_POLLS" ]; then
-        # Invocation may exist before Status is populated; one more read before abort.
-        RETRY_STATUS="$(
-          aws ssm get-command-invocation \
-            --region "$AWS_REGION" \
-            --command-id "$COMMAND_ID" \
-            --instance-id "$INSTANCE_ID" \
-            --query 'Status' \
-            --output text 2>/dev/null || true
-        )"
-        case "$RETRY_STATUS" in
-          Pending|InProgress|Delayed)
-            EMPTY_POLLS=0
-            sleep "$SSM_POLL_INTERVAL_SECONDS"
-            continue
-            ;;
-          Success|Failed|Cancelled|TimedOut|Cancelling)
-            INVOCATION="$(
-              aws ssm get-command-invocation \
-                --region "$AWS_REGION" \
-                --command-id "$COMMAND_ID" \
-                --instance-id "$INSTANCE_ID" \
-                --query '{Status:Status,Stdout:StandardOutputContent,Stderr:StandardErrorContent}' \
-                --output json 2>/dev/null || true
-            )"
-            print_invocation
-            case "$RETRY_STATUS" in
-              Success) exit 0 ;;
-              *) exit 1 ;;
-            esac
-            ;;
-          *)
-            echo "ssm poll got ${SSM_MAX_EMPTY_POLLS} empty statuses (command ${COMMAND_ID})" >&2
-            exit 1
-            ;;
-        esac
+        echo "ssm poll got ${SSM_MAX_EMPTY_POLLS} empty statuses (command ${COMMAND_ID})" >&2
+        exit 1
       fi
       sleep "$SSM_POLL_INTERVAL_SECONDS"
       ;;
