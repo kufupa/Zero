@@ -13,7 +13,7 @@ export type BuildMailListVirtualRowsOptions = {
   groupByDate: boolean;
 };
 
-function listRowReceivedOn(message: MailListThreadRow): string | undefined {
+function listRowReceivedOn(message: MailListThreadRow): string | Date | undefined {
   return message.receivedOn ?? message.latestMessageAt ?? undefined;
 }
 

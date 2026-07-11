@@ -536,7 +536,11 @@ const Thread = memo(
                           isMailSelected && 'opacity-100',
                         )}
                       >
-                        {formatDateWithWeekdayAndTime(latestMessage.receivedOn.split('.')[0] || '')}
+                        {formatDateWithWeekdayAndTime(
+                          typeof latestMessage.receivedOn === 'string'
+                            ? latestMessage.receivedOn.split('.')[0] || ''
+                            : latestMessage.receivedOn,
+                        )}
                       </p>
                     ) : null}
                   </div>

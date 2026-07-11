@@ -33,6 +33,10 @@ describe('getDateBucket', () => {
   it('returns older for invalid date string', () => {
     expect(getDateBucket('not-a-date', now)).toBe('older');
   });
+
+  it('accepts Date objects from superjson (listThreads.latestMessageAt)', () => {
+    expect(getDateBucket(new Date('2026-04-13T08:00:00.000Z'), now)).toBe('today');
+  });
 });
 
 describe('MAIL_DATE_BUCKET_ORDER', () => {

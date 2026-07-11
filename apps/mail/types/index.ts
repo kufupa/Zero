@@ -128,9 +128,9 @@ export type MailListThreadRow = {
   id: string;
   historyId?: string | null;
   centurionCategory?: CenturionMailCategory;
-  latestMessageAt?: string | null;
+  latestMessageAt?: string | Date | null;
   isStarred?: boolean;
-  receivedOn?: string;
+  receivedOn?: string | Date;
   tags?: Label[];
   threadId?: string;
 };

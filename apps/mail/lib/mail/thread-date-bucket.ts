@@ -32,9 +32,18 @@ export const MAIL_DATE_BUCKET_ORDER: MailDateBucket[] = [
  * Rolling windows (not strict ISO calendar week): today → yesterday → prior 5 days
  * as "last week", then current month, previous month, older.
  */
-export function getDateBucket(receivedOnIso: string | undefined | null, now: Date): MailDateBucket {
-  if (!receivedOnIso) return 'older';
-  const received = parseISO(receivedOnIso);
+export function getDateBucket(
+  receivedOnIso: string | Date | undefined | null,
+  now: Date,
+): MailDateBucket {
+  if (receivedOnIso == null || receivedOnIso === '') return 'older';
+  const iso =
+    receivedOnIso instanceof Date
+      ? receivedOnIso.toISOString()
+      : typeof receivedOnIso === 'string'
+        ? receivedOnIso
+        : String(receivedOnIso);
+  const received = parseISO(iso);
   if (!isValid(received)) return 'older';
 
   const d0 = startOfDay(received);
