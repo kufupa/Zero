@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Mint pilot session, ensure mail dev FE on :3000, run Playwright E2E on EC2.
+# Mint pilot session, hit production nginx SPA, run Playwright E2E on EC2.
+# Prefer https://127.0.0.1 (nginx → /api proxy) over :3000 static/vite — cookies + same-origin.
 set -euo pipefail
 
 REPO_ROOT="${REPO_ROOT:-/home/ubuntu/repos/zero}"
@@ -14,62 +15,83 @@ if [ -f /opt/nava/ec2-playwright-chromium/env.sh ]; then
   # shellcheck disable=SC1091
   source /opt/nava/ec2-playwright-chromium/env.sh
 fi
-export PLAYWRIGHT_BASE_URL="${PLAYWRIGHT_BASE_URL:-http://localhost:3000}"
+
+# Production path: nginx TLS + /api proxy (avoids cross-origin cookie loss on :3000).
+export PLAYWRIGHT_BASE_URL="${PLAYWRIGHT_BASE_URL:-https://127.0.0.1}"
 export PLAYWRIGHT_COOKIE_PREFIX="${PLAYWRIGHT_COOKIE_PREFIX:-better-auth}"
-export VITE_PUBLIC_BACKEND_URL="${VITE_PUBLIC_BACKEND_URL:-http://127.0.0.1:8788}"
+export PLAYWRIGHT_IGNORE_HTTPS_ERRORS="${PLAYWRIGHT_IGNORE_HTTPS_ERRORS:-1}"
 export ZERO_DEMO_FRONTEND_ONLY="${ZERO_DEMO_FRONTEND_ONLY:-1}"
 export VITE_FRONTEND_ONLY="${VITE_FRONTEND_ONLY:-1}"
 export ZERO_AUTO_START_BACKEND=0
 export EMAIL="${EMAIL:-guest@example.com}"
+
+# Backend for session mint + health. Same-origin via nginx when BASE is https://127.0.0.1.
+BACKEND_URL="${VITE_PUBLIC_BACKEND_URL:-}"
+if [ -z "$BACKEND_URL" ]; then
+  if [[ "$PLAYWRIGHT_BASE_URL" == https://* ]] || [[ "$PLAYWRIGHT_BASE_URL" == http://* ]]; then
+    BACKEND_URL="$PLAYWRIGHT_BASE_URL"
+  else
+    BACKEND_URL="http://127.0.0.1:8788"
+  fi
+fi
+export VITE_PUBLIC_BACKEND_URL="$BACKEND_URL"
 
 cleanup() {
   if [ -n "${FE_PID:-}" ]; then
     kill "$FE_PID" 2>/dev/null || true
   fi
   pkill -f "react-router dev" 2>/dev/null || true
+  pkill -f "dlx serve" 2>/dev/null || true
 }
 trap cleanup EXIT
 
-if ! curl -sf "${VITE_PUBLIC_BACKEND_URL%/}/health" >/dev/null; then
-  echo "backend not reachable at ${VITE_PUBLIC_BACKEND_URL}" >&2
+if ! curl -skf "${BACKEND_URL%/}/health" >/dev/null; then
+  echo "backend not reachable at ${BACKEND_URL}/health" >&2
   exit 1
 fi
 
-# Prefer production SPA on :3000 (vite SSR trips on about.tsx jsxDEV).
-# `serve` is not a workspace dep — use dlx so SPA fallback (-s) works without lock churn.
-echo "serving mail production SPA on ${PLAYWRIGHT_BASE_URL}"
-pkill -f "react-router dev" 2>/dev/null || true
-pkill -f "serve -s" 2>/dev/null || true
-pkill -f "dlx serve" 2>/dev/null || true
-sleep 1
-if [ ! -f apps/mail/build/client/index.html ]; then
-  echo "building mail SPA" >&2
-  pnpm --dir apps/mail run build
-fi
-nohup pnpm dlx serve@14.2.4 -s apps/mail/build/client -l 3000 > /tmp/fe-dev.log 2>&1 &
-FE_PID=$!
-for _ in $(seq 1 90); do
-  if curl -sf "${PLAYWRIGHT_BASE_URL}/" >/dev/null 2>&1; then
-    echo "frontend up (static)"
-    break
+# Only spin a local FE when explicitly on :3000 (legacy/dev). Default nginx path skips this.
+if [[ "$PLAYWRIGHT_BASE_URL" == *:3000* ]]; then
+  echo "serving mail production SPA on ${PLAYWRIGHT_BASE_URL}"
+  pkill -f "react-router dev" 2>/dev/null || true
+  pkill -f "serve -s" 2>/dev/null || true
+  pkill -f "dlx serve" 2>/dev/null || true
+  sleep 1
+  if [ ! -f apps/mail/build/client/index.html ]; then
+    echo "building mail SPA" >&2
+    pnpm --dir apps/mail run build
   fi
-  if ! kill -0 "$FE_PID" 2>/dev/null; then
-    echo "static FE process died" >&2
+  nohup pnpm dlx serve@14.2.4 -s apps/mail/build/client -l 3000 > /tmp/fe-dev.log 2>&1 &
+  FE_PID=$!
+  for _ in $(seq 1 90); do
+    if curl -sf "${PLAYWRIGHT_BASE_URL}/" >/dev/null 2>&1; then
+      echo "frontend up (static)"
+      break
+    fi
+    if ! kill -0 "$FE_PID" 2>/dev/null; then
+      echo "static FE process died" >&2
+      tr -cd '\11\12\15\40-\176' < /tmp/fe-dev.log | tail -80 >&2 || true
+      exit 1
+    fi
+    sleep 1
+  done
+  curl -sf "${PLAYWRIGHT_BASE_URL}/" >/dev/null || {
+    echo "frontend never became ready" >&2
     tr -cd '\11\12\15\40-\176' < /tmp/fe-dev.log | tail -80 >&2 || true
     exit 1
-  fi
-  sleep 1
-done
-curl -sf "${PLAYWRIGHT_BASE_URL}/" >/dev/null || {
-  echo "frontend never became ready" >&2
-  tr -cd '\11\12\15\40-\176' < /tmp/fe-dev.log | tail -80 >&2 || true
-  exit 1
-}
+  }
+else
+  echo "using nginx SPA at ${PLAYWRIGHT_BASE_URL}"
+  curl -skf "${PLAYWRIGHT_BASE_URL}/" >/dev/null || {
+    echo "nginx SPA not reachable at ${PLAYWRIGHT_BASE_URL}" >&2
+    exit 1
+  }
+fi
 
-echo "minting session"
+echo "minting session via ${BACKEND_URL}"
 SECRET=$(aws secretsmanager get-secret-value --region af-south-1 --secret-id nava-zero/server-pilot/pilot-users --query SecretString --output text)
 PW=$(node -e 'const j=JSON.parse(process.argv[1]);const v=j["manager@legacyhotel.com"];console.log(typeof v==="string"?v:v.password)' "$SECRET")
-RESP=$(curl -si -X POST "${VITE_PUBLIC_BACKEND_URL%/}/api/auth/sign-in/email" \
+RESP=$(curl -ski -X POST "${BACKEND_URL%/}/api/auth/sign-in/email" \
   -H "Content-Type: application/json" \
   -d "{\"email\":\"manager@legacyhotel.com\",\"password\":\"$PW\"}")
 export PLAYWRIGHT_SESSION_TOKEN=$(node -e 'const r=process.argv[1];const m=r.match(/better-auth\.session_token=([^;\r\n]+)/);if(!m)process.exit(1);console.log(decodeURIComponent(m[1]))' "$RESP")

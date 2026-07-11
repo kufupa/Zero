@@ -30,6 +30,8 @@ echo "== build server-pilot =="
 pnpm --filter @zero/server build
 
 echo "== build mail SPA =="
+# Empty string = same-origin /api via nginx. Unset becomes literal "undefined" in the bundle.
+export VITE_PUBLIC_BACKEND_URL="${VITE_PUBLIC_BACKEND_URL-}"
 pnpm --filter @zero/mail build
 
 echo "== sync SPA to ${WEB_ROOT} =="
