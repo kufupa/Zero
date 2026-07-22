@@ -82,7 +82,7 @@ const manifest = JSON.parse(readFileSync(join(FIXTURE_ROOT, 'manifest.json'), 'u
 
 const PLAYWRIGHT_ENV_FILE = process.env.PLAYWRIGHT_ENV_FILE ?? '/tmp/ai-triage-playwright.env';
 const INGEST_MAILBOX_ID = 'ingest-nava-legacy';
-const ENVELOPE_TO = 'nava@legacyhotel.com';
+const ENVELOPE_TO = 'navaai@legacyhotels.co.za';
 const DEADLINE_MS = 180_000;
 const PLAYWRIGHT_CASE_ID = 'group-kleinkaap';
 

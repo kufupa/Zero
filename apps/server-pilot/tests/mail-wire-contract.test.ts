@@ -235,16 +235,16 @@ describe('mail wire contract — metadata debug headers', () => {
         ...GOLDEN_MESSAGE_ROW,
         transportId: 'transport-nava',
         direction: 'inbound',
-        ownerHeaderValue: 'nava@legacyhotel.com',
+        ownerHeaderValue: 'navaai@legacyhotels.co.za',
         messageIdHeader: 'raw-1@example.com',
         inReplyTo: 'parent@example.com',
         references: ['root@example.com', 'parent@example.com'],
       },
-      'nava@legacyhotel.com',
+      'navaai@legacyhotels.co.za',
     );
 
     expect(debug).toEqual([
-      { key: 'x-zero-mailbox', line: 'X-Zero-Mailbox: nava@legacyhotel.com' },
+      { key: 'x-zero-mailbox', line: 'X-Zero-Mailbox: navaai@legacyhotels.co.za' },
       { key: 'message-id', line: 'Message-ID: raw-1@example.com' },
       { key: 'in-reply-to', line: 'In-Reply-To: parent@example.com' },
       { key: 'references', line: 'References: root@example.com parent@example.com' },
@@ -259,7 +259,7 @@ describe('mail wire contract — metadata debug headers', () => {
         direction: 'inbound',
         ownerHeaderValue: null,
       },
-      'nava@legacyhotel.com',
+      'navaai@legacyhotels.co.za',
     );
 
     expect(debug[0]).toEqual({

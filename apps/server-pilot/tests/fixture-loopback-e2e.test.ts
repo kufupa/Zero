@@ -37,7 +37,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('fixture loopback e2e', () => 
           requestedTransportId: 'transport-nava',
         });
         await nava.mail.send({
-          to: ['nava@legacyhotel.com'],
+          to: ['navaai@legacyhotels.co.za'],
           subject: 'self-loop',
           html: '<p>self</p>',
           text: 'self',
@@ -123,7 +123,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('fixture loopback e2e', () => 
           requestedTransportId: 'transport-nava',
         });
         await nava.mail.send({
-          to: ['nava@legacyhotel.com'],
+          to: ['navaai@legacyhotels.co.za'],
           subject: 'nava-isolated-loop',
           html: '<p>isolated</p>',
           text: 'isolated',

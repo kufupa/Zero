@@ -48,7 +48,7 @@ const transport = nodemailer.createTransport({
 });
 await transport.sendMail({
   from: 'Group Planner <group.planner@example.com>',
-  to: 'nava@legacyhotel.com',
+  to: 'navaai@legacyhotels.co.za',
   subject,
   text: 'Need 20 rooms for a group booking next month. Please quote availability.',
 });

@@ -33,7 +33,7 @@ describe('MAIL_TRANSPORT_MODE factories', () => {
       MAIL_TRANSPORT_MODE: 'fixture',
       POP3_HOST: 'mail.example.com',
       POP3_PORT: 995,
-      POP3_USER: 'nava@legacyhotel.com',
+      POP3_USER: 'navaai@legacyhotels.co.za',
       POP3_PASSWORD: 'secret',
     });
     expect(client).toBeInstanceOf(FakePop3Client);
@@ -45,7 +45,7 @@ describe('MAIL_TRANSPORT_MODE factories', () => {
       MAIL_TRANSPORT_MODE: 'fixture',
       POP3_HOST: 'mail.example.com',
       POP3_PORT: 995,
-      POP3_USER: 'nava@legacyhotel.com',
+      POP3_USER: 'navaai@legacyhotels.co.za',
     });
     expect(client).toBeInstanceOf(FakePop3Client);
     await client!.connect();
@@ -60,14 +60,14 @@ describe('MAIL_TRANSPORT_MODE factories', () => {
         MAIL_TRANSPORT_MODE: 'real',
         POP3_HOST: 'mail.example.com',
         POP3_PORT: 995,
-        POP3_USER: 'nava@legacyhotel.com',
+        POP3_USER: 'navaai@legacyhotels.co.za',
       }),
     ).toBeNull();
     expect(
       createPop3Client({
         MAIL_TRANSPORT_MODE: 'real',
         POP3_PORT: 995,
-        POP3_USER: 'nava@legacyhotel.com',
+        POP3_USER: 'navaai@legacyhotels.co.za',
         POP3_PASSWORD: 'secret',
       }),
     ).toBeNull();
@@ -78,7 +78,7 @@ describe('MAIL_TRANSPORT_MODE factories', () => {
       MAIL_TRANSPORT_MODE: 'real',
       POP3_HOST: 'mail.example.com',
       POP3_PORT: 995,
-      POP3_USER: 'nava@legacyhotel.com',
+      POP3_USER: 'navaai@legacyhotels.co.za',
       POP3_PASSWORD: 'secret',
     });
     expect(client).toBeInstanceOf(RealPop3Client);

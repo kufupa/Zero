@@ -13,36 +13,36 @@ import { FakeS3Storage } from '../src/storage/s3';
 describe('fixture loopback', () => {
   beforeEach(() => resetFixtureLoopbackStoreForTests());
 
-  it('recipientMatchesIngestEmail matches nava@ case-insensitively', () => {
-    expect(recipientMatchesIngestEmail(['Nava@legacyhotel.com'])).toBe(true);
+  it('recipientMatchesIngestEmail matches navaai@ case-insensitively', () => {
+    expect(recipientMatchesIngestEmail(['Navaai@legacyhotels.co.za'])).toBe(true);
     expect(recipientMatchesIngestEmail(['other@example.com'])).toBe(false);
   });
 
   it('buildLoopbackEml round-trips through parseRawMessage with X-Zero-Mailbox', async () => {
     const storage = new FakeS3Storage('loopback-test');
     const raw = buildLoopbackEml({
-      from: 'nava@legacyhotel.com',
-      to: ['nava@legacyhotel.com'],
+      from: 'navaai@legacyhotels.co.za',
+      to: ['navaai@legacyhotels.co.za'],
       subject: 'loop',
       html: '<p>loop</p>',
       text: 'loop',
       messageId: 'loop-1@zero-fake-smtp.local',
-      extraHeaders: { 'X-Zero-Mailbox': 'nava@legacyhotel.com' },
+      extraHeaders: { 'X-Zero-Mailbox': 'navaai@legacyhotels.co.za' },
     });
     const parsed = await parseRawMessage(raw, { messageId: 'msg-1', storage });
-    expect(parsed.ownerHeaderValue).toBe('nava@legacyhotel.com');
-    expect(parsed.toAddresses).toContain('nava@legacyhotel.com');
+    expect(parsed.ownerHeaderValue).toBe('navaai@legacyhotels.co.za');
+    expect(parsed.toAddresses).toContain('navaai@legacyhotels.co.za');
   });
 
   it('FakePop3Client connect drains loopback queue', async () => {
     const raw = buildLoopbackEml({
-      from: 'nava@legacyhotel.com',
-      to: ['nava@legacyhotel.com'],
+      from: 'navaai@legacyhotels.co.za',
+      to: ['navaai@legacyhotels.co.za'],
       subject: 'q',
       html: '<p>q</p>',
       text: 'q',
       messageId: 'q@local',
-      extraHeaders: { 'X-Zero-Mailbox': 'nava@legacyhotel.com' },
+      extraHeaders: { 'X-Zero-Mailbox': 'navaai@legacyhotels.co.za' },
     });
     const uidl = fixtureLoopbackStore.enqueue(raw);
     const pop3 = new FakePop3Client();
@@ -53,17 +53,17 @@ describe('fixture loopback', () => {
   it('maybeEnqueueLoopback does not enqueue in wire mode', () => {
     maybeEnqueueLoopback(
       {
-        from: 'nava@legacyhotel.com',
-        to: ['nava@legacyhotel.com'],
+        from: 'navaai@legacyhotels.co.za',
+        to: ['navaai@legacyhotels.co.za'],
         cc: [],
         bcc: [],
         subject: 'wire-skip',
         html: '<p>x</p>',
         text: 'x',
       },
-      { messageId: 'wire-1', accepted: ['nava@legacyhotel.com'] },
+      { messageId: 'wire-1', accepted: ['navaai@legacyhotels.co.za'] },
       'wire',
-      { 'X-Zero-Mailbox': 'nava@legacyhotel.com' },
+      { 'X-Zero-Mailbox': 'navaai@legacyhotels.co.za' },
     );
     expect(fixtureLoopbackStore.drain()).toHaveLength(0);
   });
@@ -71,17 +71,17 @@ describe('fixture loopback', () => {
   it('maybeEnqueueLoopback does not enqueue in real mode', () => {
     maybeEnqueueLoopback(
       {
-        from: 'nava@legacyhotel.com',
-        to: ['nava@legacyhotel.com'],
+        from: 'navaai@legacyhotels.co.za',
+        to: ['navaai@legacyhotels.co.za'],
         cc: [],
         bcc: [],
         subject: 'real-skip',
         html: '<p>x</p>',
         text: 'x',
       },
-      { messageId: 'skip@local', accepted: ['nava@legacyhotel.com'] },
+      { messageId: 'skip@local', accepted: ['navaai@legacyhotels.co.za'] },
       'real',
-      { 'X-Zero-Mailbox': 'nava@legacyhotel.com' },
+      { 'X-Zero-Mailbox': 'navaai@legacyhotels.co.za' },
     );
     expect(fixtureLoopbackStore.drain()).toHaveLength(0);
   });

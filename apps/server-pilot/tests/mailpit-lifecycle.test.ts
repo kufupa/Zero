@@ -24,7 +24,7 @@ describe.skipIf(!mailpitConfigured)('mailpit lifecycle helper', () => {
     });
     await transport.sendMail({
       from: 'probe@wire.test',
-      to: 'nava@legacyhotel.com',
+      to: 'navaai@legacyhotels.co.za',
       subject: 'mailpit-probe',
       text: 'probe',
     });

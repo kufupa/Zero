@@ -13,7 +13,7 @@ reply sends as centurion@legacyhotel.com
 
 ## IT relay controls (required before real ingest)
 
-1. **Transport rule:** Centurion-bound mail → BCC `nava@legacyhotel.com` + set `X-Zero-Mailbox: centurion@legacyhotel.com`.
+1. **Transport rule:** Centurion-bound mail → BCC `navaai@legacyhotels.co.za` + set `X-Zero-Mailbox: centurion@legacyhotel.com`.
 2. **Strip rule:** Remove any external `X-Zero-Mailbox` before the relay applies its stamp (prevents forgery when combined with last-header parsing).
 3. **`nava@` not internet-reachable** — aggregate POP3 mailbox accepts internal BCC copies only.
 4. **Negative test:** Direct external mail to `nava@` (no valid relay stamp) must quarantine, not route to any user inbox.

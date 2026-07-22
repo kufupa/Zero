@@ -25,7 +25,7 @@ After real mail is active, `ops-deploy` keeps `worker` in the PM2 dump (non-fixt
 | Item | Example |
 |------|---------|
 | POP3 host / port | `mail.legacyhotel.local` / `995` |
-| POP3 user | aggregate mailbox `nava@legacyhotel.com` |
+| POP3 user | aggregate mailbox `navaai@legacyhotels.co.za` |
 | POP3 password | stored in Secrets Manager (never in chat logs) |
 | SMTP relay host / port | `mail.legacyhotel.local` / `587` |
 | SMTP auth user | relay account |
@@ -66,7 +66,7 @@ cd /home/ubuntu/repos/zero/apps/server-pilot
 POP3_HOST=mail.legacyhotel.local \
 POP3_PORT=995 \
 POP3_TLS=true \
-POP3_USER=nava@legacyhotel.com \
+POP3_USER=navaai@legacyhotels.co.za \
 POP3_SECRET_ARN=arn:aws:secretsmanager:af-south-1:...:secret:nava-zero-mail-pilot/pop3 \
 SMTP_HOST=mail.legacyhotel.local \
 SMTP_PORT=587 \

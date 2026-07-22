@@ -153,16 +153,16 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.send', () => {
           requestedTransportId: 'transport-nava',
         });
         const result = await caller.mail.send({
-          to: ['nava@legacyhotel.com'],
+          to: ['navaai@legacyhotels.co.za'],
           subject: 'loopback',
           html: '<p>loopback</p>',
           text: 'loopback',
         });
 
-        expect(result.fromEmail).toBe('nava@legacyhotel.com');
+        expect(result.fromEmail).toBe('navaai@legacyhotels.co.za');
         expect(fake.sent).toHaveLength(1);
         expect(fake.sent[0]!.extraHeaders).toEqual({
-          'X-Zero-Mailbox': 'nava@legacyhotel.com',
+          'X-Zero-Mailbox': 'navaai@legacyhotels.co.za',
         });
       } finally {
         __setSmtpTransportForTests(null);

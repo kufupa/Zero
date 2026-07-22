@@ -334,12 +334,12 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             threadId: 'thread-nava-debug-1',
             direction: 'inbound',
             fromAddress: 'guest@example.com',
-            toAddresses: ['nava@legacyhotel.com'],
+            toAddresses: ['navaai@legacyhotels.co.za'],
             ccAddresses: [],
             bccAddresses: [],
             subject: 'debug',
             textBody: 'debug',
-            ownerHeaderValue: 'nava@legacyhotel.com',
+            ownerHeaderValue: 'navaai@legacyhotels.co.za',
             messageIdHeader: 'debug-1@example.com',
             receivedAt: new Date(),
           });
@@ -351,7 +351,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           const navaThread = await nava.mail.get({ id: 'thread-nava-debug-1' });
           expect(navaThread.messages[0]!.debugHeaders).toContainEqual({
             key: 'x-zero-mailbox',
-            line: 'X-Zero-Mailbox: nava@legacyhotel.com',
+            line: 'X-Zero-Mailbox: navaai@legacyhotels.co.za',
           });
 
           await seedFrontdeskFixture(db);

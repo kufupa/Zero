@@ -135,7 +135,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable || !mailpitConfigured)(
           requestedTransportId: 'transport-nava',
         });
         await nava.mail.send({
-          to: ['nava@legacyhotel.com'],
+          to: ['navaai@legacyhotels.co.za'],
           subject: 'wire-nava-private',
           html: '<p>nava</p>',
           text: 'nava',

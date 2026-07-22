@@ -114,7 +114,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           const messageId = generateMessageId();
           const parsed = await parseRawMessage(raw, { messageId, storage });
           expect(parsed.ownerHeaderValue).toBeNull();
-          expect(parsed.toAddresses).toContain('nava@legacyhotel.com');
+          expect(parsed.toAddresses).toContain('navaai@legacyhotels.co.za');
 
           const r = await persistInboundMessage(
             parsed,

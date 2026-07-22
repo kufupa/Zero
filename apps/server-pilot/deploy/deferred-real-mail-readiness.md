@@ -95,7 +95,7 @@ bash apps/server-pilot/deploy/ssm-run-command.sh \
 - Run ephemeral VPN safe smoke: [`vpn-smoke.md`](./vpn-smoke.md). Then confidence → enable: [`vpn-always-on.md`](./vpn-always-on.md) (`vpn-confidence.sh` → `vpn-install-always-on.sh`). Require `CONFIDENCE_PASS` + `ALWAYS_ON_OK`.
 - Verify SSM, RDS, S3 still work after VPN (`HOST_ROUTE_OK` / `STS_OK`).
 - Verify POP3/SMTP reachability.
-- **IT transport rule (required):** BCC `nava@legacyhotel.com` and set `X-Zero-Mailbox: centurion@legacyhotel.com` on Centurion-bound copies.
+- **IT transport rule (required):** BCC `navaai@legacyhotels.co.za` and set `X-Zero-Mailbox: centurion@legacyhotel.com` on Centurion-bound copies.
 - **Strip rule (required before prod multi-user):** Exchange must remove any inbound external `X-Zero-Mailbox` before applying the internal relay stamp.
 - **`nava@` must not be internet-reachable** — only internal BCC copies land there; direct external mail to `nava@` must quarantine (negative test).
 - Send test email to Centurion.

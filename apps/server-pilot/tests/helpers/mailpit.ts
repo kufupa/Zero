@@ -100,7 +100,7 @@ function buildContext(httpUrl: string, child: ChildProcess | null): MailpitConte
     async clearAll() {
       await fetch(`${httpUrl}/api/v1/messages`, { method: 'DELETE' });
     },
-    async injectRawEml(raw: Buffer, envelopeTo = 'nava@legacyhotel.com') {
+    async injectRawEml(raw: Buffer, envelopeTo = 'navaai@legacyhotels.co.za') {
       const transport = nodemailer.createTransport({
         host: u.hostname,
         port: WIRE_SMTP_PORT,
