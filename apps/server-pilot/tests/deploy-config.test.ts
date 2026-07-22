@@ -231,4 +231,31 @@ describe('deploy config', () => {
     expect(ops).toContain('post-boot-smoke.sh');
     expect(ops).toContain('ssm-run-command.sh');
   });
+
+  it('pilot-db-wipe.sh requires CONFIRM=WIPE_PILOT_DB and passes bash -n', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { spawnSync } = await import('node:child_process');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const scriptPath = join(here, '..', 'deploy', 'pilot-db-wipe.sh');
+    const script = readFileSync(scriptPath, 'utf8');
+    expect(script).toContain('CONFIRM=WIPE_PILOT_DB');
+    expect(script).toContain('exit 2');
+    expect(script).toContain('/var/lib/nava-pilot/wipe-navaai.ok');
+    expect(script).toContain('TRUNCATE TABLE');
+    expect(script).toContain('mail_ingest_mailbox');
+    expect(script).not.toMatch(/\bTRUNCATE TABLE[\s\S]*\buser\b/i);
+
+    const syntax = spawnSync('bash', ['-n', scriptPath], { encoding: 'utf8' });
+    expect(syntax.status).toBe(0);
+
+    // Refuse without confirm: exit 2 before any DB touch (no DATABASE_URL needed).
+    const refuse = spawnSync('bash', [scriptPath], {
+      encoding: 'utf8',
+      env: { ...process.env, CONFIRM: '', DATABASE_URL: '' },
+    });
+    expect(refuse.status).toBe(2);
+    expect(refuse.stderr).toMatch(/CONFIRM=WIPE_PILOT_DB/);
+  });
 });
