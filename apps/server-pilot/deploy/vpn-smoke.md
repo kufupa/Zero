@@ -5,10 +5,12 @@ Ephemeral OpenVPN client test on EC2. **≤300s** hard stop. Split tunnel enforc
 ## Prerequisites
 
 - Local folder `live real data connection/` with:
-  - `Nava.ovpn`, `Nava.p12`, `Nava-tls.key`, `nava-auth.txt` (filled)
-  - `nava-p12-pass.txt` placeholder → smoke strips `askpass` (empty P12 pass attempt)
+  - `Nava.ovpn`, `Nava.p12`, `Nava-tls.key`, `nava-auth.txt` (filled; LF preferred)
+  - Empty P12 pass (stage extracts PEM with `openssl pkcs12 -legacy`)
+- Laptop needs OpenSSL with `-legacy` (Git Bash / LibreSSL may differ — use a build that supports it)
 - AWS creds that can S3-write bootstrap bucket + SSM to `i-008f737974a9ba9b3`
-- Branch scripts on EC2 (`sync-ec2-git-bundle.sh` or deploy)
+- EC2 role can `s3:GetObject` on `vpn-nava/*` (see `NavaZeroBootstrapBundleRead`)
+- Branch scripts on EC2 (`sync-ec2-git-bundle.sh`)
 
 ## Ordered run
 

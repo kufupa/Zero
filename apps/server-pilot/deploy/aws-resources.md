@@ -37,7 +37,7 @@ Provisioned AWS resources for the mail pilot. All created via AWS CLI from lapto
 
 | Policy name | Grants |
 |-------------|-------|
-| `NavaZeroBootstrapBundleRead` (Task 1) | `s3:GetObject` on `nava-zero-bootstrap-845242190536/git-bundles/*`; `s3:ListBucket` on bootstrap bucket (prefix `git-bundles/*`) |
+| `NavaZeroBootstrapBundleRead` (Task 1) | `s3:GetObject` on `nava-zero-bootstrap-845242190536/git-bundles/*` and `vpn-nava/*`; `s3:ListBucket` on bootstrap bucket (prefixes `git-bundles/*`, `vpn-nava/*`) |
 | `NavaZeroMailBucketAccess` | `s3:ListBucket` / `s3:GetBucketLocation` / `s3:ListBucketMultipartUploads` on mail bucket; `s3:GetObject` / `s3:PutObject` / `s3:DeleteObject` / `s3:AbortMultipartUpload` / `s3:ListMultipartUploadParts` on mail bucket `/*` |
 | `NavaZeroSecretsRead` | `secretsmanager:GetSecretValue` / `secretsmanager:DescribeSecret` on `nava-zero/server-pilot/database-url-*` |
 | `NavaZeroRDSConnect` | `rds-db:connect` on `dbuser:nava-zero-mail-pilot/zero_admin` (for future IAM DB auth; password auth used today via SG routing) |

@@ -66,6 +66,14 @@ if [ -z "$DEFAULT_BEFORE" ]; then
 fi
 
 cd "$VPN_DIR"
+# Defense in depth: strip CRLF on box (Windows-staged auth files)
+if [ -f nava-auth.txt ]; then
+  tr -d '\r' <nava-auth.txt >nava-auth.txt.lf
+  mv nava-auth.txt.lf nava-auth.txt
+  chmod 600 nava-auth.txt
+fi
+tr -d '\r' <"$OVPN" >"${OVPN}.lf"
+mv "${OVPN}.lf" "$OVPN"
 
 # Host + pull-filter only for this smoke. Native --netns would put routes in
 # another namespace and host nc probes would miss hotel LAN (false FAIL).
