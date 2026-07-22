@@ -258,4 +258,67 @@ describe('deploy config', () => {
     expect(refuse.status).toBe(2);
     expect(refuse.stderr).toMatch(/CONFIRM=WIPE_PILOT_DB/);
   });
+
+  it('stage-navaai-mail-env.sh refuses REPLACE_ and keeps password out of SSM argv', async () => {
+    const { mkdtempSync, readFileSync, writeFileSync, rmSync } = await import('node:fs');
+    const { spawnSync } = await import('node:child_process');
+    const { tmpdir } = await import('node:os');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const scriptPath = join(here, '..', 'deploy', 'stage-navaai-mail-env.sh');
+    const script = readFileSync(scriptPath, 'utf8');
+
+    expect(script).toContain('navaai-mail-pass.txt');
+    expect(script).toContain('REPLACE_');
+    expect(script).toContain('mail-navaai');
+    expect(script).toContain('/run/nava-mail/password');
+    expect(script).toContain('chmod 600');
+    expect(script).toContain('chown root:root');
+    expect(script).toContain('STAGED_OK');
+    expect(script).toContain('ssm-run-command.sh');
+    expect(script).toContain('AWS_REGION:=af-south-1');
+    expect(script).toContain('INSTANCE_ID:=i-008f737974a9ba9b3');
+
+    // SSM installs via S3 cp — password bytes never interpolated into SYNC_CMD.
+    // Source uses \$ so remote bash expands S3_PREFIX (heredoc), not local password.
+    expect(script).toContain('\\$S3_PREFIX/password" /run/nava-mail/password');
+    expect(script).not.toMatch(/ssm-run-command\.sh[^]*\$\(cat/);
+    expect(script).not.toMatch(/echo\s+"?\$\{?(PASS|PASSWORD)/i);
+    expect(script).not.toMatch(/\bcat\b[^\n]*\/run\/nava-mail\/password/);
+    expect(script).not.toMatch(/SYNC_CMD=[\s\S]*PASS_FILE/);
+
+    const syntax = spawnSync('bash', ['-n', scriptPath], { encoding: 'utf8' });
+    expect(syntax.status).toBe(0);
+
+    const mailDir = mkdtempSync(join(tmpdir(), 'nava-mail-stage-test-'));
+    try {
+      writeFileSync(
+        join(mailDir, 'navaai-mail-pass.txt'),
+        'REPLACE_WITH_NAVAAI_MAILBOX_PASSWORD\n',
+        'utf8',
+      );
+      const refuse = spawnSync('bash', [scriptPath], {
+        encoding: 'utf8',
+        env: { ...process.env, MAIL_DIR: mailDir },
+      });
+      expect(refuse.status).toBe(2);
+      expect(refuse.stderr).toMatch(/placeholder/i);
+      expect(refuse.stdout).not.toMatch(/REPLACE_WITH_NAVAAI/);
+    } finally {
+      rmSync(mailDir, { recursive: true, force: true });
+    }
+
+    const missingDir = mkdtempSync(join(tmpdir(), 'nava-mail-stage-missing-'));
+    try {
+      const missing = spawnSync('bash', [scriptPath], {
+        encoding: 'utf8',
+        env: { ...process.env, MAIL_DIR: missingDir },
+      });
+      expect(missing.status).toBe(2);
+      expect(missing.stderr).toMatch(/missing/i);
+    } finally {
+      rmSync(missingDir, { recursive: true, force: true });
+    }
+  });
 });
