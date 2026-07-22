@@ -33,6 +33,7 @@
 | POP3 `CERT_HAS_EXPIRED` on 995 / SMTP `ESOCKET` on 587 | `MAIL_TLS_REJECT_UNAUTHORIZED=false` in POP3 TLS + nodemailer + activate; hotel Zimbra cert expired |
 | `sudo deploy/write-ec2-env.sh` → command not found | Absolute path `sudo -E bash …/write-ec2-env.sh` |
 | `pm2 startOrReload --update-env` left http on FakeSmtp after fixture→real | `deploy-ec2.sh` / `ops-restart.sh` now **delete+start** so env refreshes |
+| Post-handoff PM2 `worker` → `errored` (empty logs, restart storm) | `abortableSleep` used `timer.unref()`/`tick.unref()`; empty POP3 cycle left no event-loop handles → clean exit 0 → PM2 max_restarts. Fixed: keep timers ref'd. |
 
 ## Operator notes
 

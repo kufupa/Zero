@@ -382,7 +382,12 @@ function abortableSleep(ms: number, shouldStop: () => boolean): Promise<void> {
       resolve();
       return;
     }
-    const timer = setTimeout(resolve, ms);
+    // Keep timers ref'd: unref'd wait lets Node exit when POP3 cycle leaves no
+    // other handles (empty inbox) → PM2 restart storm / worker "errored".
+    const timer = setTimeout(() => {
+      clearInterval(tick);
+      resolve();
+    }, ms);
     const tick = setInterval(() => {
       if (shouldStop()) {
         clearTimeout(timer);
@@ -390,8 +395,6 @@ function abortableSleep(ms: number, shouldStop: () => boolean): Promise<void> {
         resolve();
       }
     }, 100);
-    timer.unref?.();
-    tick.unref?.();
   });
 }
 
