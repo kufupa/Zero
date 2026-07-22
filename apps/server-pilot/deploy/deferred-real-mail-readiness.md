@@ -11,7 +11,7 @@ Current scope:
 
 Explicitly out of scope for this implementation pass:
 
-- Permanent always-on VPN (ephemeral safe-smoke is separate — see below).
+- Permanent always-on VPN enable is gated by confidence — see [`vpn-always-on.md`](./vpn-always-on.md) (ephemeral smoke still first).
 - Connecting to Exchange/on-prem POP3/SMTP.
 - Sending real email.
 - Receiving/deleting real email from `nava@`.
@@ -92,9 +92,8 @@ bash apps/server-pilot/deploy/ssm-run-command.sh \
 
 ## Later real-ingest phase gates
 
-- Run ephemeral VPN safe smoke first: [`vpn-smoke.md`](./vpn-smoke.md) (`vpn-ec2-preflight.sh` → `vpn-stage-to-ec2.sh` → `vpn-safe-smoke.sh`). Do **not** enable permanent OpenVPN until `SMOKE_PASS` + `HOST_ROUTE_OK`.
-- Start VPN profile provided by IT (always-on only after smoke green).
-- Verify SSM, RDS, S3 still work after VPN.
+- Run ephemeral VPN safe smoke: [`vpn-smoke.md`](./vpn-smoke.md). Then confidence → enable: [`vpn-always-on.md`](./vpn-always-on.md) (`vpn-confidence.sh` → `vpn-install-always-on.sh`). Require `CONFIDENCE_PASS` + `ALWAYS_ON_OK`.
+- Verify SSM, RDS, S3 still work after VPN (`HOST_ROUTE_OK` / `STS_OK`).
 - Verify POP3/SMTP reachability.
 - **IT transport rule (required):** BCC `nava@legacyhotel.com` and set `X-Zero-Mailbox: centurion@legacyhotel.com` on Centurion-bound copies.
 - **Strip rule (required before prod multi-user):** Exchange must remove any inbound external `X-Zero-Mailbox` before applying the internal relay stamp.

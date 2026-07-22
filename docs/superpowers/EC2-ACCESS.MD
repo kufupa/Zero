@@ -283,12 +283,13 @@ bash scripts/ec2-deploy-preflight-via-ssm.sh
 
 ---
 
-## 9. VPN (safe smoke — permanent off)
+## 9. VPN (always-on after confidence)
 
 - **Why:** Reach Zimbra / Rocketseed / Infor on `172.24.0.0/16` without public APIs.
-- **Status:** Ephemeral **SSM-safe smoke** exists; **permanent** `openvpn-client@` **not** enabled.
-- **Runbook:** [`apps/server-pilot/deploy/vpn-smoke.md`](../../apps/server-pilot/deploy/vpn-smoke.md)
-- **Scripts:** `vpn-ec2-preflight.sh` → `vpn-stage-to-ec2.sh` → `vpn-safe-smoke.sh` (≤300s, pull-filter ignore redirect-gateway, host default-route assert, wipe `/run/nava-vpn`).
+- **Status:** Ephemeral smoke + **confidence gate**; always-on via `openvpn-client@nava` when install PASS.
+- **Runbooks:** [`vpn-smoke.md`](../../apps/server-pilot/deploy/vpn-smoke.md) (ephemeral) → [`vpn-always-on.md`](../../apps/server-pilot/deploy/vpn-always-on.md) (confidence → enable).
+- **Scripts:** `vpn-stage-to-ec2.sh` → `vpn-confidence.sh` → `vpn-install-always-on.sh`; abort `vpn-disable.sh`.
+- **Guards:** `pull-filter ignore redirect-gateway` + DNS/DOMAIN; host default-route + resolv assert; auto-disable on HOST_ROUTE fail.
 - **Egress:** Security group allows all outbound (`0.0.0.0/0`) for SSM, apt, VPN, and web.
 - **Allowlist:** hotel firewall may need `13.247.138.62`.
 

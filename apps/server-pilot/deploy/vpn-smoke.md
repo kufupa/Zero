@@ -1,6 +1,6 @@
 # Hotel VPN safe smoke (SSM-proof)
 
-Ephemeral OpenVPN client test on EC2. **≤300s** hard stop. Split tunnel enforced client-side. **Do not** enable `openvpn-client@` until this passes.
+Ephemeral OpenVPN client test on EC2. **≤300s** hard stop. Split tunnel enforced client-side. **Do not** enable `openvpn-client@` until smoke + [confidence](vpn-always-on.md) pass.
 
 ## Prerequisites
 
