@@ -70,8 +70,28 @@ while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
     ok=0
   fi
 
+  # VPN HARD checks (hotel SOFT). Wait briefly for tun after boot race.
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  VPN_WAIT_SECS="${VPN_WAIT_SECS:-30}"
+  vpn_ready=0
+  for _i in $(seq 1 "$VPN_WAIT_SECS"); do
+    if systemctl is-active --quiet openvpn-client@nava \
+      && ip -4 route | grep -qE '172\.24\.0\.0/16'; then
+      vpn_ready=1
+      break
+    fi
+    sleep 1
+  done
+  if [ "$vpn_ready" -ne 1 ]; then
+    log "attempt ${attempt}: VPN not ready after ${VPN_WAIT_SECS}s"
+    ok=0
+  elif ! bash "${SCRIPT_DIR}/vpn-health-assert.sh"; then
+    log "attempt ${attempt}: vpn-health-assert HARD fail"
+    ok=0
+  fi
+
   if [ "$ok" -eq 1 ]; then
-    log "PASS: nginx + :8788 + :443 + pm2 http online"
+    log "PASS: nginx + :8788 + :443 + pm2 http online + VPN_HARD_OK"
     exit 0
   fi
 

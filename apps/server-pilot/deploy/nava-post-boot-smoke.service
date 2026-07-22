@@ -1,7 +1,7 @@
 [Unit]
-Description=NAVA Zero post-boot smoke (nginx + :8788 + :443)
-After=network-online.target pm2-ubuntu.service
-Wants=network-online.target
+Description=NAVA Zero post-boot smoke (nginx + :8788 + :443 + VPN)
+After=network-online.target pm2-ubuntu.service openvpn-client@nava.service
+Wants=network-online.target openvpn-client@nava.service
 Requires=pm2-ubuntu.service
 
 [Service]
