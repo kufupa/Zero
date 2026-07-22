@@ -14,7 +14,7 @@
 | 2 `vpn-health-assert.sh` HARD/SOFT | `712c2d9e` | `VPN_HARD_OK` / fail tokens |
 | 3 post-boot VPN assert | `99fda11a` | smoke PASS includes `VPN_HARD_OK` |
 | 4 ops-deploy HARD + pkill guard | `70b79dc4` | refuse `exit 20`; assert wired |
-| 5 docs + soft reboot + handoff | (this commit) | `ops-reboot ok` |
+| 5 docs + soft reboot + handoff | `1e643c64` | `ops-reboot ok` |
 
 ## Live evidence
 
