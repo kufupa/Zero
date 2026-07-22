@@ -283,12 +283,14 @@ bash scripts/ec2-deploy-preflight-via-ssm.sh
 
 ---
 
-## 9. VPN (planned — not configured)
+## 9. VPN (safe smoke — permanent off)
 
-- **Why:** Reach Infor HMS / corporate UAT on private networks without public APIs.
-- **Status:** `openvpn` **client package installed** on instance; **no `.ovpn` profile or tunnel active** in repo.
-- **Next step:** IT provides OpenVPN config → place on instance → `systemctl start openvpn-client@...` (exact unit TBD with IT).
+- **Why:** Reach Zimbra / Rocketseed / Infor on `172.24.0.0/16` without public APIs.
+- **Status:** Ephemeral **SSM-safe smoke** exists; **permanent** `openvpn-client@` **not** enabled.
+- **Runbook:** [`apps/server-pilot/deploy/vpn-smoke.md`](../../apps/server-pilot/deploy/vpn-smoke.md)
+- **Scripts:** `vpn-ec2-preflight.sh` → `vpn-stage-to-ec2.sh` → `vpn-safe-smoke.sh` (≤300s, pull-filter ignore redirect-gateway, host default-route assert, wipe `/run/nava-vpn`).
 - **Egress:** Security group allows all outbound (`0.0.0.0/0`) for SSM, apt, VPN, and web.
+- **Allowlist:** hotel firewall may need `13.247.138.62`.
 
 ---
 
