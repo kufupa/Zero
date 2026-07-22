@@ -291,11 +291,14 @@ describe('deploy config', () => {
     expect(script).toContain('POP3_TLS=false');
     expect(script).toContain('SMTP_SECURE=false');
 
-    // SMTP auth smoke (not EHLO-only bare verify).
+    // SMTP auth smoke (not EHLO-only bare verify); TLS insecure gate for hotel certs.
     expect(script).toContain('auth: { user, pass }');
     expect(script).toContain('SMTP auth OK');
     expect(script).not.toContain('SMTP EHLO OK');
     expect(script).toContain('transporter.verify()');
+    expect(script).toContain('MAIL_TLS_REJECT_UNAUTHORIZED');
+    expect(script).toContain('tls: { rejectUnauthorized }');
+    expect(script).toContain('trying next candidate');
 
     expect(script).toContain('export AI_DRAFTS_ENABLED=false');
     expect(script).toContain('export AI_WRITE_GATE_ENABLED=true');
@@ -325,9 +328,11 @@ describe('deploy config', () => {
     expect(script).toContain('AWS_REGION:=af-south-1');
     expect(script).toContain('INSTANCE_ID:=i-008f737974a9ba9b3');
 
-    // SSM installs via S3 cp — password bytes never interpolated into SYNC_CMD.
-    // Source uses \$ so remote bash expands S3_PREFIX (heredoc), not local password.
-    expect(script).toContain('\\$S3_PREFIX/password" /run/nava-mail/password');
+    // SSM installs via S3 cp as ubuntu (IMDS), then sudo cp into /run —
+    // password bytes never interpolated into SYNC_CMD. sudo aws drops role → 403.
+    expect(script).toContain('aws s3 cp "\\$S3_PREFIX/password"');
+    expect(script).toContain('sudo cp "\\$TMP_PASS" /run/nava-mail/password');
+    expect(script).not.toContain('sudo aws s3 cp');
     expect(script).not.toMatch(/ssm-run-command\.sh[^]*\$\(cat/);
     expect(script).not.toMatch(/echo\s+"?\$\{?(PASS|PASSWORD)/i);
     expect(script).not.toMatch(/\bcat\b[^\n]*\/run\/nava-mail\/password/);

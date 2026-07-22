@@ -107,6 +107,8 @@ export class RealSmtpTransport implements SmtpTransport {
 
   async send(payload: OutboundMailPayload): Promise<SmtpSendResult> {
     const password = await this.resolvePassword();
+    const rejectUnauthorized =
+      process.env.MAIL_TLS_REJECT_UNAUTHORIZED !== 'false';
     const transporter = nodemailer.createTransport({
       host: this.opts.host,
       port: this.opts.port,
@@ -115,6 +117,7 @@ export class RealSmtpTransport implements SmtpTransport {
         this.opts.user && password
           ? { user: this.opts.user, pass: password }
           : undefined,
+      tls: { rejectUnauthorized },
     });
 
     const headers: Record<string, string> = { ...payload.extraHeaders };

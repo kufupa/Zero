@@ -359,8 +359,16 @@ function openCleartext(opts: { host: string; port: number }): Promise<Socket> {
 }
 
 function openTls(opts: { host: string; port: number }): Promise<TLSSocket> {
+  // Hotel Zimbra may present expired/self-signed certs over VPN.
+  // Set MAIL_TLS_REJECT_UNAUTHORIZED=false on pilot to proceed; default verify.
+  const rejectUnauthorized =
+    process.env.MAIL_TLS_REJECT_UNAUTHORIZED !== 'false';
   return new Promise((resolve, reject) => {
-    const sock = tlsConnect({ host: opts.host, port: opts.port });
+    const sock = tlsConnect({
+      host: opts.host,
+      port: opts.port,
+      rejectUnauthorized,
+    });
     sock.once('secureConnect', () => resolve(sock));
     sock.once('error', reject);
   });

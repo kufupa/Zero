@@ -47,14 +47,19 @@ aws s3 cp "$STAGE_TMP/password" "$S3_PREFIX/password" \
 echo "$S3_PREFIX" >"${TMPDIR:-/tmp}/nava-mail-last-s3-prefix.txt"
 
 echo "== SSM cp into /run/nava-mail/password =="
+# Download as ubuntu (instance-role IMDS). sudo aws drops role → 403 HeadObject.
 # shellcheck disable=SC2016
 SYNC_CMD=$(cat <<EOF
 set -euo pipefail
 S3_PREFIX='$S3_PREFIX'
 AWS_REGION='$AWS_REGION'
+TMP_PASS="\$(mktemp /tmp/nava-mail-pass.XXXXXX)"
+cleanup() { rm -f "\$TMP_PASS"; }
+trap cleanup EXIT
+aws s3 cp "\$S3_PREFIX/password" "\$TMP_PASS" --region "\$AWS_REGION" --only-show-errors
 sudo mkdir -p /run/nava-mail
 sudo chmod 700 /run/nava-mail
-sudo aws s3 cp "\$S3_PREFIX/password" /run/nava-mail/password --region "\$AWS_REGION" --only-show-errors
+sudo cp "\$TMP_PASS" /run/nava-mail/password
 sudo chmod 600 /run/nava-mail/password
 sudo chown root:root /run/nava-mail/password
 echo "STAGED_OK"

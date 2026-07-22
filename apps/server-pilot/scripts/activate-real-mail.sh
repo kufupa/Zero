@@ -103,13 +103,26 @@ fi
 export POP3_PORT POP3_TLS
 export SMTP_PORT SMTP_SECURE
 
+# Hotel Zimbra over VPN often has expired TLS certs (CERT_HAS_EXPIRED / ESOCKET).
+# Pilot default: accept for private hotel path; override with MAIL_TLS_REJECT_UNAUTHORIZED=true.
+export MAIL_TLS_REJECT_UNAUTHORIZED="${MAIL_TLS_REJECT_UNAUTHORIZED:-false}"
+
 echo "== build server-pilot (required for smoke + worker) =="
 cd "$REPO_ROOT"
 pnpm --filter @zero/server build
 
 echo "== POP3 auth smoke (no password logged) =="
 cd "$SERVER_PILOT"
-node --input-type=module -e "
+POP3_AUTH_OK=0
+# Prefer probed port; on TLS cert failure fall through 995→110.
+for try_port in "${POP3_PORT}" 995 110; do
+  case "$try_port" in
+    995) try_tls=true ;;
+    110) try_tls=false ;;
+    *) try_tls="${POP3_TLS}" ;;
+  esac
+  export POP3_PORT="$try_port" POP3_TLS="$try_tls"
+  if node --input-type=module -e "
 import { createPop3Client } from './dist/mail/ingest/pop3-client.js';
 const client = createPop3Client({
   MAIL_TRANSPORT_MODE: 'real',
@@ -123,8 +136,17 @@ const client = createPop3Client({
 if (!client) throw new Error('createPop3Client returned null');
 await client.connect();
 await client.quit();
-console.log('POP3 auth OK');
-"
+console.log('POP3 auth OK on ' + process.env.POP3_HOST + ':' + process.env.POP3_PORT + ' (POP3_TLS=' + process.env.POP3_TLS + ')');
+"; then
+    POP3_AUTH_OK=1
+    break
+  fi
+  echo "POP3 auth failed on :${try_port}; trying next candidate..." >&2
+done
+if [[ "$POP3_AUTH_OK" -ne 1 ]]; then
+  echo "POP3 auth smoke failed on all candidates" >&2
+  exit 1
+fi
 
 echo "== SMTP auth smoke =="
 node --input-type=module -e "
@@ -145,11 +167,13 @@ if (!pass && process.env.SMTP_SECRET_ARN) {
   }
 }
 if (!user || !pass) throw new Error('SMTP_USER and SMTP_PASSWORD (or SMTP_SECRET_ARN) required for auth smoke');
+const rejectUnauthorized = process.env.MAIL_TLS_REJECT_UNAUTHORIZED !== 'false';
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST,
   port,
   secure: process.env.SMTP_SECURE === 'true',
   auth: { user, pass },
+  tls: { rejectUnauthorized },
 });
 await transporter.verify();
 console.log('SMTP auth OK');
