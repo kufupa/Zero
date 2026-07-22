@@ -183,10 +183,11 @@ export AI_DRAFTS_ENABLED=false
 export AI_WRITE_GATE_ENABLED=true
 
 echo "== writing .env.production with MAIL_TRANSPORT_MODE=real =="
+WRITE_ENV="${SERVER_PILOT}/deploy/write-ec2-env.sh"
 if [[ "$(id -u)" -eq 0 ]]; then
-  deploy/write-ec2-env.sh
+  bash "$WRITE_ENV"
 else
-  sudo -E deploy/write-ec2-env.sh
+  sudo -E bash "$WRITE_ENV"
 fi
 
 echo "== redeploy =="
