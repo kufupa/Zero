@@ -26,7 +26,7 @@ export type PilotUserSpec = {
 };
 
 export const NAVA_TRANSPORT_ID = 'transport-nava';
-export const NAVA_TRANSPORT_EMAIL = 'nava@legacyhotel.com';
+export const NAVA_TRANSPORT_EMAIL = 'navaai@legacyhotels.co.za';
 export const NAVA_OPS_USER_ID = 'user-nava';
 export const NAVA_OPS_USER_EMAIL = 'nava-ops@legacyhotel.com';
 
@@ -37,7 +37,7 @@ export const PILOT_USERS: PilotUserSpec[] = [
   { id: NAVA_OPS_USER_ID, name: 'Nava Ops', email: NAVA_OPS_USER_EMAIL },
 ];
 
-export const INGEST_EMAIL = 'nava@legacyhotel.com';
+export const INGEST_EMAIL = 'navaai@legacyhotels.co.za';
 export const INGEST_MAILBOX_ID = 'ingest-nava-legacy';
 export const TRANSPORT_ID = 'transport-centurion';
 export const TRANSPORT_EMAIL = 'centurion@legacyhotel.com';
@@ -111,7 +111,7 @@ export async function seedAll(db: DB, opts: SeedOptions = {}): Promise<SeedResul
     .values({
       id: INGEST_MAILBOX_ID,
       email: INGEST_EMAIL,
-      description: 'NAVA aggregate ingest (legacyhotel.com)',
+      description: 'NAVA aggregate ingest (legacyhotels.co.za)',
       isActive: true,
     })
     .onConflictDoNothing({ target: mailIngestMailbox.email });

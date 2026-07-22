@@ -136,7 +136,7 @@ async function main(): Promise<void> {
     });
 
     console.log('seed complete');
-    console.log('ingest mailbox: nava@legacyhotel.com');
+    console.log('ingest mailbox: navaai@legacyhotels.co.za');
     console.log('transports (count):', result.transportCount);
     console.log('mailbox_access rows (total):', result.accessCount);
     console.log('pilot users:', PILOT_USERS.map((u) => u.email).join(', '));

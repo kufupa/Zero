@@ -9,7 +9,15 @@ import {
 } from '../src/db/schema/mail';
 import { AI_MANAGED_CATEGORY_SLUGS } from '../src/ai/categories.js';
 import { user as userTable, account } from '../src/db/schema/auth';
-import { planPilotCredentials, seedAll, PILOT_USERS } from '../src/db/seed';
+import {
+  planPilotCredentials,
+  seedAll,
+  PILOT_USERS,
+  NAVA_TRANSPORT_EMAIL,
+  INGEST_EMAIL,
+  TRANSPORT_EMAIL,
+  NAVA_OPS_USER_EMAIL,
+} from '../src/db/seed';
 import {
   TEST_DB_AVAILABLE,
   probeTestDb,
@@ -19,21 +27,34 @@ import {
 
 const reachable = await probeTestDb();
 
+describe('seed identity constants', () => {
+  it('uses navaai@legacyhotels.co.za for ingest + Nava transport', () => {
+    expect(INGEST_EMAIL).toBe('navaai@legacyhotels.co.za');
+    expect(NAVA_TRANSPORT_EMAIL).toBe('navaai@legacyhotels.co.za');
+  });
+
+  it('keeps Centurion + ops on legacyhotel.com', () => {
+    expect(TRANSPORT_EMAIL).toBe('centurion@legacyhotel.com');
+    expect(NAVA_OPS_USER_EMAIL).toBe('nava-ops@legacyhotel.com');
+  });
+});
+
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
   'seed contract (transaction-rollback)',
   () => {
     it(
-      'seeds nava@legacyhotel.com ingest mailbox',
+      'seeds navaai@legacyhotels.co.za ingest mailbox',
       async () => {
         const ingest = await withSeededTestDb(async (db) => {
           const rows = await db
             .select()
             .from(mailIngestMailbox)
-            .where(eq(mailIngestMailbox.email, 'nava@legacyhotel.com'));
+            .where(eq(mailIngestMailbox.email, 'navaai@legacyhotels.co.za'));
           return rows[0];
         });
         expect(ingest).toBeDefined();
-        expect(ingest!.email).toBe('nava@legacyhotel.com');
+        expect(ingest!.email).toBe('navaai@legacyhotels.co.za');
+        expect(ingest!.description).toBe('NAVA aggregate ingest (legacyhotels.co.za)');
         expect(ingest!.isActive).toBe(true);
       },
       30000,
@@ -79,8 +100,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         });
 
         expect(result.transport).toBeDefined();
-        expect(result.transport!.email).toBe('nava@legacyhotel.com');
-        expect(result.transport!.ownerHeaderValue).toBe('nava@legacyhotel.com');
+        expect(result.transport!.email).toBe('navaai@legacyhotels.co.za');
+        expect(result.transport!.ownerHeaderValue).toBe('navaai@legacyhotels.co.za');
         expect(result.access).toEqual([
           {
             userId: 'user-nava',
