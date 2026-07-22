@@ -14,7 +14,10 @@ A logical mail account boundary (e.g. Centurion front-desk inboxes). Staff users
 
 ### Ingest mailbox
 
-The single POP3 sink account (`nava@`) that receives BCC copies from on-prem Exchange. Messages are routed to the correct mailbox transport using the relay-stamped `X-Zero-Mailbox` header.
+The single POP3 sink account (`navaai@legacyhotels.co.za` on the hotel Zimbra pilot) that the EC2 worker drains. Hotel BCC / header-routing waves may still stamp `X-Zero-Mailbox` so messages land in the correct logical mailbox transport. Older docs may say `nava@legacyhotel.com` — that identity was replaced for the real-mail cutover.
+
+*Avoid: treating Centurion as a second POP3 account; Centurion remains a mailbox transport only.*
+
 
 ### MAIL_TRANSPORT_MODE
 
@@ -89,6 +92,30 @@ Autonomous Playwright gate step that logs in a pilot user non-interactively — 
 ### AI gate
 
 EC2/RDS verification step for the AI mail pipeline: runs server-pilot AI contract tests against production Postgres plus spike eval and server build. Includes mocked `bedrock-adapter-contract.test.ts` (fake adapter — `NODE_ENV=test`). Live Bedrock Converse proof is the separate on-demand Bedrock live gate. Distinct from local vitest, which skips RDS-only cases when `DATABASE_URL` is unset.
+
+### Always-on OpenVPN
+
+The systemd-managed hotel OpenVPN client on the pilot EC2 that stays connected across reboots and process crashes without restaging credentials on every deploy. Unit name in ops is `openvpn-client@nava`. Install is one-shot (stage → confidence → enable); day-to-day deploy only asserts health.
+
+### Split tunnel
+
+Routing posture where only the hotel LAN prefix goes over the VPN tunnel, while the instance default route stays on the AWS ENI. Required so SSM, STS, RDS, and S3 remain reachable while hotel mail/Infor are reachable.
+
+### HOST_ROUTE
+
+The instance default IPv4 route via the VPC gateway on the ENI (not via `tun`). Used as the live proof that split tunnel has not hijacked AWS egress.
+
+### VPN HARD assert
+
+Fail-closed health checks for always-on OpenVPN: unit active, HOST_ROUTE intact, hotel prefix route present, and AWS STS reachable. A HARD failure aborts post-boot smoke and ops-deploy.
+
+### VPN SOFT assert
+
+Best-effort hotel TCP probe that warns without failing deploy when the hotel side is briefly unreachable. Can be flipped to fail-closed with an explicit probe-required flag for real-mail activation paths.
+
+### Post-boot smoke
+
+Systemd oneshot (`nava-post-boot-smoke.service`) that runs after PM2 (and wants always-on OpenVPN) to verify nginx, `:8788`, `:443`, PM2 `http`, and VPN HARD health before declaring reboot recovery green.
 
 ## AI mail pipeline
 

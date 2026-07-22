@@ -1,6 +1,7 @@
 ---
 title: EC2 Pilot Safe Reboot and Production Restart Implications
 date: 2026-07-09
+last_updated: 2026-07-22
 category: workflow-issues
 module: server-pilot deploy
 problem_type: workflow_issue
@@ -11,6 +12,7 @@ applies_when:
   - Deciding between reboot-instances vs stop/start vs terminate
   - Staff ask whether the same URL works after a box restart
   - Verifying RDS data safety before any instance action
+  - Confirming always-on hotel OpenVPN returns after soft reboot
 tags:
   - ec2
   - reboot
@@ -35,11 +37,11 @@ This doc captures restart semantics, what changed (and did not), client impact, 
 
 ### Three AWS actions — do not confuse them
 
-| Action | RDS data | EBS disk | Public IP (with EIP) | Public IP (no EIP) | PM2 / nginx |
-|--------|----------|----------|----------------------|--------------------|-------------|
-| **`reboot-instances`** (what we did) | Untouched | Same volume attached | **Same** (`13.247.138.62`) | Usually same | Processes die; must come back via resurrect/startup |
+| Action | RDS data | EBS disk | Public IP (with EIP) | Public IP (no EIP) | PM2 / nginx / OpenVPN |
+|--------|----------|----------|----------------------|--------------------|------------------------|
+| **`reboot-instances`** (what we did) | Untouched | Same volume attached | **Same** (`13.247.138.62`) | Usually same | Processes die; PM2 via `pm2-ubuntu`; OpenVPN via `openvpn-client@nava` |
 | **`stop-instances` then `start-instances`** | Untouched | Same volume reattached | **Same** if EIP bound | **New ephemeral IP** - bookmarks/tunnels break | Same as reboot |
-| **`terminate-instances`** | Untouched (RDS is separate) | Root EBS deleted if `DeleteOnTermination=true` | EIP detached | Instance gone | Everything gone |
+| **`terminate-instances`** | Untouched (RDS is separate) | Root EBS deleted if `DeleteOnTermination=true` | EIP detached | Instance gone | Everything gone (VPN secrets on disk lost — re-bootstrap) |
 
 **Rule:** For pilot maintenance, use **`reboot-instances` only** unless you explicitly need stop/start (e.g. instance type change). Never terminate the pilot box. Never run RDS stop/reboot/delete when the goal is only EC2 maintenance.
 
@@ -68,14 +70,17 @@ aws ec2 reboot-instances --region "$AWS_REGION" --instance-ids "$INSTANCE_ID"
 
 Post-reboot (2026-07-09 operational log): SSM `PingStatus=Online`, RDS still `available`, Elastic IP public address unchanged (documented in `docs/superpowers/EC2-ACCESS.MD`), private IP unchanged.
 
-**Service recovery (2026-07-09 operational log):** PM2 processes were **not** listening immediately after boot (`curl` to `:8788` returned `000`). `pm2 resurrect` (from saved dump) brought core apps back:
+**Service recovery (2026-07-09 operational log — historical):** PM2 processes were **not** listening immediately after boot (`curl` to `:8788` returned `000`). Manual `pm2 resurrect` brought core apps back. That gap is why `pm2-startup` + `ops-reboot` + post-boot smoke shipped afterward.
 
-| PM2 name | Post-resurrect |
-|----------|----------------|
+**Current happy path (2026-07-22):** `ops-reboot.sh` waits SSM Online then runs `post-boot-smoke.sh`, which asserts nginx + `:8788` + `:443` + PM2 `http` **and** VPN HARD health (`VPN_HARD_OK`). Always-on OpenVPN uses a `Restart=on-failure` drop-in + keepalive; no VPN reinstall on reboot. Details: [ec2-pilot-nava-openvpn-always-on-health.md](./ec2-pilot-nava-openvpn-always-on-health.md).
+
+| PM2 / unit | Post-reboot expectation (today) |
+|------------|----------------------------------|
 | `http` | online - BE `:8788/health` returns 200 |
 | `ai-worker` | online |
-| `mailpit` | online (optional sidecar from saved PM2 dump; not in main `pm2.config.cjs`) |
-| `worker` | errored when `MAIL_TRANSPORT_MODE` is `real`/`wire` and POP3 env unset (pre-existing config gap, not reboot data loss) |
+| `mailpit` | online if present in dump (optional sidecar; not in main `pm2.config.cjs`) |
+| `worker` | absent in fixture; may error if real/wire without POP3 env |
+| `openvpn-client@nava` | active/enabled; HOST_ROUTE still via VPC gateway; `172.24.0.0/16` via tun |
 
 **Frontend path:** Staff reach the SPA through **nginx on `:443`**, not bare Node on `:3000`. nginx proxies `/api/` and `/health` to `127.0.0.1:8788` per `apps/server-pilot/deploy/nginx.conf`. A post-reboot check against `:3000` can falsely look broken even when prod URL is fine.
 
@@ -95,9 +100,10 @@ Post-reboot (2026-07-09 operational log): SSM `PingStatus=Online`, RDS still `av
 ### Minimal changes (shipped — use these)
 
 1. **`pm2-startup.sh`** — called from `deploy-ec2.sh` after `pm2 save`; installs `pm2-ubuntu.service`.
-2. **`post-boot-smoke.sh`** + systemd oneshot — nginx + `:8788` + `:443`.
+2. **`post-boot-smoke.sh`** + systemd oneshot — nginx + `:8788` + `:443` + VPN HARD assert (`After=`/`Wants=` OpenVPN).
 3. **Fixture worker guard** — `deploy-ec2.sh` deletes `worker` when `MAIL_TRANSPORT_MODE=fixture`.
 4. **Prefer `ops-restart.sh`** over box reboot for code/env refresh; use **`ops-reboot.sh`** for soft OS reboot + smoke.
+5. **Always-on OpenVPN durability** — `Restart=on-failure` drop-in + `keepalive`; `ops-deploy` HARD-asserts VPN without restaging (see [OpenVPN health compound](./ec2-pilot-nava-openvpn-always-on-health.md)).
 
 ### Do not need for plain reboot (already in place)
 
@@ -116,7 +122,8 @@ The `:3000` vs `:443` distinction matters for operators: health checks and war-r
 - Before any planned EC2 maintenance window
 - When onboarding staff or IT on "will my link break?"
 - When writing runbooks for autonomous agents rebooting the pilot box
-- When post-reboot health looks failed — check PM2 resurrect path before assuming deploy corruption
+- When post-reboot health looks failed — check `pm2-ubuntu` / smoke log / `openvpn-client@nava` before assuming deploy corruption
+- When hotel mail path dies after reboot — run `vpn-health-assert.sh` (HARD tokens) before digging POP3/SMTP
 
 ## Examples
 
@@ -146,8 +153,10 @@ bash apps/server-pilot/deploy/ops-reboot.sh
 
 ## Related
 
+- [ec2-pilot-ops-deploy-restart-reboot.md](./ec2-pilot-ops-deploy-restart-reboot.md) — ops-* front door + unattended PM2/VPN recovery
+- [ec2-pilot-nava-openvpn-always-on-health.md](./ec2-pilot-nava-openvpn-always-on-health.md) — always-on OpenVPN Restart + HARD/SOFT assert
 - [ec2-pilot-autonomous-deploy-and-ssm-gotchas.md](./ec2-pilot-autonomous-deploy-and-ssm-gotchas.md) — deploy loop, bundle sync, SSM UTF-8, `pm2 save` in deploy
 - [2026-07-09-001-feat-ec2-pilot-reboot-resilience-plan.md](../../../docs/plans/2026-07-09-001-feat-ec2-pilot-reboot-resilience-plan.md) — implementation plan for PM2 boot + smoke + worker guard
 - [apps/server-pilot/deploy/aws-resources.md](../../../apps/server-pilot/deploy/aws-resources.md) — instance/RDS identifiers
 - [apps/server-pilot/deploy/ec2-bootstrap.md](../../../apps/server-pilot/deploy/ec2-bootstrap.md) — SSM access, NVM bootstrap
-- [CONCEPTS.md](../../../CONCEPTS.md) — deploy/ops vocabulary
+- [CONCEPTS.md](../../../CONCEPTS.md) — Post-boot smoke, Always-on OpenVPN, HOST_ROUTE, VPN HARD/SOFT assert

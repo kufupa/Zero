@@ -1,6 +1,7 @@
 ---
 title: EC2 Pilot ops-deploy, ops-restart, and ops-reboot Entry Points
 date: 2026-07-10
+last_updated: 2026-07-22
 category: workflow-issues
 module: server-pilot deploy
 problem_type: workflow_issue
@@ -12,6 +13,7 @@ applies_when:
   - Soft-rebooting the pilot instance and verifying post-boot health
   - "MAIL_TRANSPORT_MODE=fixture and a saved PM2 dump still lists worker"
   - Teaching operators which script is primary vs legacy deploy-ec2 paths
+  - Asserting always-on hotel OpenVPN health on deploy/reboot without restaging secrets
 symptoms:
   - No single laptop entrypoint for sync+migrate+deploy+health
   - PM2 processes missing after reboot until manual resurrect
@@ -88,18 +90,22 @@ bash apps/server-pilot/deploy/ops-reboot.sh
 
 Wrappers orchestrate those guts (thin wrappers, thick guts). Migrate is opt-in (`--migrate`); never implied by a plain deploy.
 
+**VPN on every ship:** `ops-deploy.sh` runs a **HARD** VPN health assert after `:8788/health` (`vpn-health-assert.sh` over SSM). Unit down / HOST_ROUTE wrong / missing `172.24` route / STS fail aborts deploy. Hotel TCP is **SOFT** warn only unless `REQUIRE_HOTEL_PROBE=1`. Deploy never restages OpenVPN secrets or re-runs `vpn-install-always-on.sh` — see [ec2-pilot-nava-openvpn-always-on-health.md](./ec2-pilot-nava-openvpn-always-on-health.md).
+
 ### Auto recovery after crash / reboot
 
-Distinguish two failure modes:
+Distinguish three failure modes:
 
 1. **Process crash while the box is up** - PM2 autorestart brings the process back (bounded).
-2. **OS reboot** - systemd `pm2-ubuntu` resurrects the saved dump; no manual `pm2 resurrect`.
+2. **OpenVPN process crash** - systemd drop-in `Restart=on-failure` on `openvpn-client@nava` (SIGKILL/crash recovers; plain SIGTERM does not — see VPN durability doc).
+3. **OS reboot** - systemd `pm2-ubuntu` resurrects the saved dump; `openvpn-client@nava` comes back via WantedBy; no manual `pm2 resurrect` / VPN reinstall.
 
 Install and keep that path healthy:
 
 - **`pm2-startup.sh`** - idempotent: installs systemd `pm2-ubuntu` (via `pm2 startup` sudo line if missing), `pm2 save`, enables `nava-post-boot-smoke.service`.
 - **`pm2-boot.sh`** - NVM-safe PATH; `pm2 resurrect`, with `startOrReload` + `pm2 save` fallback if resurrect fails.
-- **`post-boot-smoke.sh`** - retries checks for nginx active, `http://127.0.0.1:8788/health`, `:443` (`/health` or `/`), and PM2 `http` online. Logs under `/var/log/nava-post-boot-smoke.log`.
+- **`nava-post-boot-smoke.service`** - `After=`/`Wants=` `openvpn-client@nava.service` (not `Requires=`).
+- **`post-boot-smoke.sh`** - retries checks for nginx active, `http://127.0.0.1:8788/health`, `:443` (`/health` or `/`), PM2 `http` online, then waits briefly for VPN and runs **HARD** `vpn-health-assert.sh`. PASS line includes `VPN_HARD_OK`. Logs under `/var/log/nava-post-boot-smoke.log`.
 - **`deploy-ec2.sh`** - after PM2 save, calls `pm2-startup`; in fixture mode deletes `worker` before save so the dump stays clean.
 - **`pm2.config.cjs`** - `http` matches workers: `autorestart: true`, `min_uptime: 10_000`, `max_restarts: 10`.
 
@@ -112,7 +118,7 @@ Living docs (ec2-bootstrap Day-to-day ops table, EC2-ACCESS, CONCEPTS Pilot ops 
 ### Verification contract
 
 - Local: `deploy-config.test.ts` asserts script contracts (entrypoints exist, wiring expectations).
-- On EC2 after deploy: `pm2-ubuntu` enabled; units present; smoke PASS; `http` + `ai-worker` online; `worker` absent when fixture.
+- On EC2 after deploy: `pm2-ubuntu` enabled; units present; smoke PASS including `VPN_HARD_OK`; `http` + `ai-worker` online; `worker` absent when fixture; `openvpn-client@nava` active with HOST_ROUTE still via VPC gateway.
 
 ## Why This Matters
 
@@ -156,7 +162,7 @@ bash apps/server-pilot/deploy/ops-deploy.sh
 bash apps/server-pilot/deploy/ops-deploy.sh --migrate
 ```
 
-Outcome on verified EC2 run: deploy installs/enables `pm2-ubuntu` + smoke unit; health curl succeeds; fixture dump has `http` + `ai-worker` only.
+Outcome on verified EC2 run: deploy installs/enables `pm2-ubuntu` + smoke unit; health curl succeeds; VPN HARD assert prints `VPN_HARD_OK`; fixture dump has `http` + `ai-worker` only.
 
 ### Example 2 - Soft reboot (before / after)
 
@@ -177,7 +183,7 @@ bash apps/server-pilot/deploy/ops-reboot.sh
 # reboot-instances then wait SSM Online then post-boot-smoke.sh
 ```
 
-Expected: systemd resurrects dump; smoke asserts nginx + `:8788` + `:443` + `http` online. No manual resurrect in the happy path.
+Expected: systemd resurrects dump; smoke asserts nginx + `:8788` + `:443` + `http` online + `VPN_HARD_OK`. No manual resurrect / VPN reinstall in the happy path.
 
 ### Example 3 - Bounce apps without reboot (before / after)
 
@@ -200,7 +206,8 @@ Fixture path reloads `http` + `ai-worker` only, deletes `worker`, saves, curls h
 | Failure | Recovery |
 |---------|----------|
 | `http` / worker process crash, box still up | PM2 autorestart (`min_uptime` 10s, `max_restarts` 10) - no OS reboot |
-| Soft OS reboot | `pm2-ubuntu` + `pm2-boot` resurrect; `nava-post-boot-smoke` oneshot reports PASS/FAIL |
+| OpenVPN crash (SIGKILL / unclean exit) | `openvpn-client@nava` `Restart=on-failure` drop-in; prove with `kill -9`, not SIGTERM |
+| Soft OS reboot | `pm2-ubuntu` + `pm2-boot` resurrect; OpenVPN unit restarts; `nava-post-boot-smoke` oneshot reports PASS/FAIL including `VPN_HARD_OK` |
 
 ### Example 5 - Fixture worker in dump (before / after)
 
@@ -210,9 +217,10 @@ Fixture path reloads `http` + `ai-worker` only, deletes `worker`, saves, curls h
 
 ## Related
 
-- [ec2-pilot-safe-reboot-and-prod-restart.md](./ec2-pilot-safe-reboot-and-prod-restart.md) - soft-reboot safety (EIP, RDS, same URL); complementary angle; consider consolidation later
+- [ec2-pilot-nava-openvpn-always-on-health.md](./ec2-pilot-nava-openvpn-always-on-health.md) - always-on OpenVPN Restart drop-in, HARD/SOFT assert, assert-don't-restage
+- [ec2-pilot-safe-reboot-and-prod-restart.md](./ec2-pilot-safe-reboot-and-prod-restart.md) - soft-reboot safety (EIP, RDS, same URL); complementary angle
 - [ec2-pilot-autonomous-deploy-and-ssm-gotchas.md](./ec2-pilot-autonomous-deploy-and-ssm-gotchas.md) - deploy/SSM/bundle guts; Examples already prefer `ops-*`
-- [CONCEPTS.md](../../../CONCEPTS.md) - Pilot ops entrypoints, EC2 soft reboot, Bundle sync, Post-boot smoke
+- [CONCEPTS.md](../../../CONCEPTS.md) - Bundle sync, Post-boot smoke, Always-on OpenVPN, VPN HARD/SOFT assert, HOST_ROUTE
 - [EC2-ACCESS.MD](../../superpowers/EC2-ACCESS.MD) - living day-to-day ops table
 - Plans: `docs/plans/2026-07-09-001-feat-ec2-pilot-reboot-resilience-plan.md`, `docs/superpowers/plans/2026-07-09-ec2-pilot-ops-scripts.md`
 - Handoff: `docs/superpowers/plans/handoff-reports/2026-07-09-ec2-pilot-ops-scripts.md`

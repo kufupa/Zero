@@ -1,6 +1,7 @@
 ---
 title: MAIL_TRANSPORT_MODE Fixture vs Real Transport Pattern
 date: 2026-07-02
+last_updated: 2026-07-22
 category: architecture-patterns
 module: server-pilot mail ingest
 problem_type: architecture_pattern
@@ -55,6 +56,8 @@ Post-deploy with `MAIL_TRANSPORT_MODE=fixture`:
 
 ### IT handoff
 
+Prerequisite: always-on hotel OpenVPN healthy (HARD assert / split tunnel). See [ec2-pilot-nava-openvpn-always-on-health.md](../workflow-issues/ec2-pilot-nava-openvpn-always-on-health.md) — do not restage VPN on every deploy.
+
 `activate-real-mail.sh`: store secrets → VPN route check → POP3/SMTP smoke → set `MAIL_TRANSPORT_MODE=real` → redeploy → one real ingest cycle with `--max-messages 1`.
 
 ## Why This Matters
@@ -78,6 +81,7 @@ INGEST_FIXTURE_DIR=/home/ubuntu/repos/zero/apps/server-pilot/tests/fixtures
 
 ## Related
 
+- [ec2-pilot-nava-openvpn-always-on-health.md](../workflow-issues/ec2-pilot-nava-openvpn-always-on-health.md) — always-on OpenVPN durability / HARD assert (prerequisite for `real`)
 - [2026-07-02-ec2-pilot-bug-fixes.md](../../superpowers/plans/2026-07-02-ec2-pilot-bug-fixes.md) (Task 19)
 - [deferred-real-mail-readiness.md](../../../apps/server-pilot/deploy/deferred-real-mail-readiness.md)
 - [wire-gate.sh](../../../apps/server-pilot/deploy/wire-gate.sh)
