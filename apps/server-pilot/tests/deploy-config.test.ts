@@ -169,8 +169,11 @@ describe('deploy config', () => {
     const deploy = readFileSync(join(here, '..', 'deploy', 'deploy-ec2.sh'), 'utf8');
     expect(deploy).toContain('pm2-startup.sh');
     expect(deploy).toContain('pm2 delete worker');
+    expect(deploy).toContain('pm2 start');
     expect(deploy).toContain('MAIL_TRANSPORT_MODE');
     expect(deploy).toContain('fixture');
+    // startOrReload keeps stale process env after fixture→real cutover.
+    expect(deploy).not.toContain('startOrReload');
   });
 
   it('pm2-boot.sh sources nvm and env then resurrect or startOrReload', async () => {
@@ -217,7 +220,9 @@ describe('deploy config', () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const ops = readFileSync(join(here, '..', 'deploy', 'ops-restart.sh'), 'utf8');
     expect(ops).toContain('ssm-run-command.sh');
-    expect(ops).toContain('startOrReload');
+    // delete+start refreshes process env; startOrReload kept stale MAIL_* after fixture→real.
+    expect(ops).toContain('pm2 delete');
+    expect(ops).toContain('pm2 start');
     expect(ops).not.toContain('sync-ec2-git-bundle');
   });
 

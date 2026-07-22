@@ -65,11 +65,14 @@ fi
 
 if command -v pm2 >/dev/null 2>&1; then
   if [ "$TRANSPORT_MODE" = "fixture" ]; then
-    pm2 startOrReload "${SERVER_PILOT}/deploy/pm2.config.cjs" --only http --update-env
-    pm2 startOrReload "${SERVER_PILOT}/deploy/pm2.config.cjs" --only ai-worker --update-env
     pm2 delete worker 2>/dev/null || true
+    # delete+start so --update-env actually replaces process env (reload keeps stale).
+    pm2 delete http ai-worker 2>/dev/null || true
+    pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only http --update-env
+    pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only ai-worker --update-env
   else
-    pm2 startOrReload "${SERVER_PILOT}/deploy/pm2.config.cjs" --update-env
+    pm2 delete http worker ai-worker 2>/dev/null || true
+    pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --update-env
   fi
   pm2 save
   bash "${SERVER_PILOT}/deploy/pm2-startup.sh"
@@ -78,11 +81,13 @@ else
   echo "pm2 not installed; installing globally"
   npm install -g pm2
   if [ "$TRANSPORT_MODE" = "fixture" ]; then
-    pm2 startOrReload "${SERVER_PILOT}/deploy/pm2.config.cjs" --only http --update-env
-    pm2 startOrReload "${SERVER_PILOT}/deploy/pm2.config.cjs" --only ai-worker --update-env
     pm2 delete worker 2>/dev/null || true
+    pm2 delete http ai-worker 2>/dev/null || true
+    pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only http --update-env
+    pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only ai-worker --update-env
   else
-    pm2 startOrReload "${SERVER_PILOT}/deploy/pm2.config.cjs" --update-env
+    pm2 delete http worker ai-worker 2>/dev/null || true
+    pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --update-env
   fi
   pm2 save
   bash "${SERVER_PILOT}/deploy/pm2-startup.sh"
