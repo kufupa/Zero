@@ -17,9 +17,9 @@ export default [
 
   route('/login', '(auth)/login/page.tsx'),
 
-  // Enable this when we have a zero signup page
+  // Pilot email/password (Better Auth). Signup stays gated server-side.
   // route('/zero/signup', '(auth)/zero/signup/page.tsx'),
-  // route('/zero/login', '(auth)/zero/login/page.tsx'),
+  route('/zero/login', '(auth)/zero/login/page.tsx'),
 
   layout('(routes)/layout.tsx', [
     route('/developer', '(routes)/developer/page.tsx'),

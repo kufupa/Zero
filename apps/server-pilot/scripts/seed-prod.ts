@@ -14,7 +14,7 @@ import * as schema from '../src/db/schema/index.js';
 import { parseEnv } from '../src/env.js';
 import { seedAll, planPilotCredentials, PILOT_USERS } from '../src/db/seed.js';
 import { getPostgresSslOptions } from '../src/db/ssl-config.js';
-import { mergePilotSecretPayload } from '../src/lib/pilot-secrets.js';
+import { replacePilotSecretPayload } from '../src/lib/pilot-secrets.js';
 
 const PILOT_SECRET_NAME = 'nava-zero/server-pilot/pilot-users';
 const AWS_REGION = process.env.AWS_REGION ?? 'af-south-1';
@@ -124,11 +124,16 @@ async function main(): Promise<void> {
       rotatePasswords: flags.rotate,
     });
 
-    if (Object.keys(credentialsToWrite).length > 0) {
-      await ensurePilotSecret();
-      const existing = await getPilotSecret();
-      await putPilotSecret(mergePilotSecretPayload(existing, credentialsToWrite));
-    }
+    await ensurePilotSecret();
+    const existing = await getPilotSecret();
+    const allowedEmails = PILOT_USERS.map((u) => u.email);
+    const nextSecret = replacePilotSecretPayload(
+      existing,
+      allowedEmails,
+      credentialsToWrite,
+    );
+    // Always rewrite so orphan persona keys are dropped even when passwords unchanged.
+    await putPilotSecret(nextSecret);
 
     const result = await seedAll(db, {
       rotatePasswords: flags.rotate,
@@ -139,11 +144,11 @@ async function main(): Promise<void> {
     console.log('ingest mailbox: navaai@legacyhotels.co.za');
     console.log('transports (count):', result.transportCount);
     console.log('mailbox_access rows (total):', result.accessCount);
-    console.log('pilot users:', PILOT_USERS.map((u) => u.email).join(', '));
+    console.log('pilot users:', allowedEmails.join(', '));
     if (Object.keys(credentialsToWrite).length > 0) {
       console.log('pilot credentials stored in Secrets Manager:', PILOT_SECRET_NAME);
     } else {
-      console.log('pilot credentials unchanged (use --rotate to rotate)');
+      console.log('pilot credentials unchanged (use --rotate to rotate); secret pruned to pilot emails');
     }
   } finally {
     await conn.end();

@@ -35,15 +35,15 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         await db
           .insert(mailboxAccess)
           .values({
-            id: `access-user-manager-${SECOND_TRANSPORT}`,
-            userId: 'user-manager',
+            id: `access-user-navaai-${SECOND_TRANSPORT}`,
+            userId: 'user-navaai',
             transportId: SECOND_TRANSPORT,
             role: 'member',
             isDefault: false,
           })
           .onConflictDoNothing({ target: [mailboxAccess.userId, mailboxAccess.transportId] });
 
-        const caller = await callerFor('user-manager', { db });
+        const caller = await callerFor('user-navaai', { db });
 
         await caller.connections.setDefault({ connectionId: SECOND_TRANSPORT });
 
@@ -55,7 +55,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           .from(mailboxAccess)
           .where(
             and(
-              eq(mailboxAccess.userId, 'user-manager'),
+              eq(mailboxAccess.userId, 'user-navaai'),
               eq(mailboxAccess.isDefault, true),
             ),
           );

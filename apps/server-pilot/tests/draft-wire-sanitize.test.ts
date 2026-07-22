@@ -11,7 +11,7 @@ function draftRow(
     id: 'draft-1',
     transportId: 'transport-centurion',
     threadId: 'thread-1',
-    createdByUserId: 'user-manager',
+    createdByUserId: 'user-navaai',
     toAddresses: [],
     ccAddresses: [],
     bccAddresses: [],

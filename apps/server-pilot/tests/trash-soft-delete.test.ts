@@ -36,7 +36,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         await withSeededTestDb(async (db) => {
           const threadId = 'thread-trash-soft-1';
           await insertInboxThread(db, threadId);
-          const caller = await callerFor('user-manager', { db });
+          const caller = await callerFor('user-navaai', { db });
 
           const inboxBefore = await caller.mail.listThreads({ folder: 'inbox' });
           expect(inboxBefore.threads.some((t) => t.id === threadId)).toBe(true);
@@ -102,7 +102,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         await withSeededTestDb(async (db) => {
           const threadId = 'thread-trash-soft-2';
           await insertInboxThread(db, threadId);
-          const caller = await callerFor('user-manager', { db });
+          const caller = await callerFor('user-navaai', { db });
 
           await caller.mail.delete({ id: threadId });
 

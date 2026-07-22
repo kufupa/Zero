@@ -32,11 +32,19 @@ pnpm --filter @zero/server build
 echo "== build mail SPA =="
 # Empty string = same-origin /api via nginx. Unset becomes literal "undefined" in the bundle.
 export VITE_PUBLIC_BACKEND_URL="${VITE_PUBLIC_BACKEND_URL-}"
+# Absolute app origin for RR redirects / metadata. Unset → literal "undefined/login" 404s.
+export VITE_PUBLIC_APP_URL="${VITE_PUBLIC_APP_URL:-https://nava.legacy.local}"
 pnpm --filter @zero/mail build
 
 echo "== sync SPA to ${WEB_ROOT} =="
 sudo mkdir -p "$WEB_ROOT"
 sudo rsync -a --delete "${MAIL_APP}/build/client/" "${WEB_ROOT}/"
+
+echo "== hosts: nava.legacy.local =="
+# SPA + cert use this name; without it Chromium on-box gets ERR_NAME_NOT_RESOLVED.
+if ! grep -qE '(^|[[:space:]])nava\.legacy\.local([[:space:]]|$)' /etc/hosts; then
+  echo '127.0.0.1 nava.legacy.local' | sudo tee -a /etc/hosts >/dev/null
+fi
 
 echo "== nginx =="
 NGINX_SITE="${NGINX_SITE:-/etc/nginx/sites-available/nava-zero}"

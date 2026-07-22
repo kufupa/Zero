@@ -67,7 +67,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable || !mailpitConfigured)(
           ingestMailboxId: 'ingest-nava-legacy',
           maxMessages: 10,
         });
-        const centurion = await callerFor('user-manager', {
+        const centurion = await callerFor('user-navaai', {
           db,
           requestedTransportId: 'transport-centurion',
         });
@@ -88,7 +88,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable || !mailpitConfigured)(
           ingestMailboxId: 'ingest-nava-legacy',
           maxMessages: 10,
         });
-        const nava = await callerFor('user-nava', {
+        const nava = await callerFor('user-navaai', {
           db,
           requestedTransportId: 'transport-nava',
         });
@@ -99,7 +99,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable || !mailpitConfigured)(
 
     it('WIRE-3 app send external → sent only (real SMTP, no loopback)', async () => {
       await withSeededTestDb(async (db) => {
-        const nava = await callerFor('user-nava', {
+        const nava = await callerFor('user-navaai', {
           db,
           requestedTransportId: 'transport-nava',
         });
@@ -130,7 +130,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable || !mailpitConfigured)(
 
     it('WIRE-4 isolation: Centurion cannot see Nava wire thread', async () => {
       await withSeededTestDb(async (db) => {
-        const nava = await callerFor('user-nava', {
+        const nava = await callerFor('user-navaai', {
           db,
           requestedTransportId: 'transport-nava',
         });
@@ -147,7 +147,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable || !mailpitConfigured)(
           ingestMailboxId: 'ingest-nava-legacy',
           maxMessages: 10,
         });
-        const centurion = await callerFor('user-manager', {
+        const centurion = await callerFor('user-navaai', {
           db,
           requestedTransportId: 'transport-centurion',
         });

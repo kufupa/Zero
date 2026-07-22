@@ -71,7 +71,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.listThreads category and
         id: draftId,
         transportId: TRANSPORT_ID,
         threadId: matchingThreadId,
-        createdByUserId: 'user-manager',
+        createdByUserId: 'user-navaai',
         replyToMessageId: parentMessageId,
         toAddresses: ['guest@example.com'],
         status: 'active',
@@ -79,7 +79,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.listThreads category and
         subject: 'Re: VIP airport transfer',
       });
 
-      const { mail } = await callerFor('user-manager', { db });
+      const { mail } = await callerFor('user-navaai', { db });
       const result = await mail.listThreads({
         folder: 'all',
         filters: { unread: true, categoryIds: [travelId] },
@@ -130,7 +130,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.listThreads category and
         transportId: TRANSPORT_ID,
       });
 
-      const { mail } = await callerFor('user-manager', { db });
+      const { mail } = await callerFor('user-navaai', { db });
       const inbox = await mail.listThreads({ folder: 'inbox', limit: 20 });
       expect(inbox.threads.map((t) => t.id)).toContain(threadId);
 

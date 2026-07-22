@@ -10,7 +10,7 @@
  *   - Insert a `thread-centurion-1` thread on transport-centurion and a
  *     `thread-frontdesk-1` thread on transport-frontdesk.
  *   - Build callers for `user-frontdesk` (active transport = frontdesk) and
- *     `user-manager` (active transport = centurion, owner).
+ *     `user-navaai` (active transport = centurion, owner).
  *   - Assert user-frontdesk cannot list/get/mutate centurion threads.
  *
  * `callerFor` patches `getDb()` to return the transaction-scoped db so route
@@ -148,7 +148,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         // Sanity: the isolation guard does not lock out legitimate access.
         await withSeededTestDb(async (db) => {
           await seedFrontdeskFixture(db);
-          const caller = await callerFor('user-manager', {
+          const caller = await callerFor('user-navaai', {
             db,
             requestedTransportId: 'transport-centurion',
           });
@@ -260,8 +260,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       async () => {
         await withSeededTestDb(async (db) => {
           await seedFrontdeskFixture(db);
-          // user-manager creates a draft on centurion.
-          const centurionCaller = await callerFor('user-manager', {
+          // user-navaai creates a draft on centurion.
+          const centurionCaller = await callerFor('user-navaai', {
             db,
             requestedTransportId: 'transport-centurion',
           });
@@ -291,7 +291,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       async () => {
         await withSeededTestDb(async (db) => {
           await seedFrontdeskFixture(db);
-          const centurionCaller = await callerFor('user-manager', {
+          const centurionCaller = await callerFor('user-navaai', {
             db,
             requestedTransportId: 'transport-centurion',
           });
@@ -344,7 +344,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             receivedAt: new Date(),
           });
 
-          const nava = await callerFor('user-nava', {
+          const nava = await callerFor('user-navaai', {
             db,
             requestedTransportId: 'transport-nava',
           });
@@ -370,7 +370,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             messageIdHeader: 'centurion-debug-1@example.com',
             receivedAt: new Date(),
           });
-          const centurion = await callerFor('user-manager', {
+          const centurion = await callerFor('user-navaai', {
             db,
             requestedTransportId: 'transport-centurion',
           });

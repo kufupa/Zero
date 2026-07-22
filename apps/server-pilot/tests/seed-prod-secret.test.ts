@@ -1,7 +1,40 @@
 import { describe, expect, it } from 'vitest';
-import { mergePilotSecretPayload } from '../src/lib/pilot-secrets.js';
+import {
+  mergePilotSecretPayload,
+  replacePilotSecretPayload,
+} from '../src/lib/pilot-secrets.js';
 
-describe('seed-prod secret merge', () => {
+describe('seed-prod secret replace', () => {
+  it('keeps only allowed emails and drops orphan personas', () => {
+    const existing = {
+      'manager@legacyhotel.com': { password: 'drop-me' },
+      'nava-ops@legacyhotel.com': { password: 'drop-me-too' },
+      'navaai@legacyhotels.co.za': { password: 'keep-me' },
+    };
+    const updates = {};
+    expect(
+      replacePilotSecretPayload(existing, ['navaai@legacyhotels.co.za'], updates),
+    ).toEqual({
+      'navaai@legacyhotels.co.za': { password: 'keep-me' },
+    });
+  });
+
+  it('applies updates for new or rotated pilot emails', () => {
+    const existing = {
+      'manager@legacyhotel.com': { password: 'old-manager' },
+    };
+    const updates = {
+      'navaai@legacyhotels.co.za': { password: 'new-pass' },
+    };
+    expect(
+      replacePilotSecretPayload(existing, ['navaai@legacyhotels.co.za'], updates),
+    ).toEqual({
+      'navaai@legacyhotels.co.za': { password: 'new-pass' },
+    });
+  });
+});
+
+describe('seed-prod secret merge (legacy)', () => {
   it('preserves unrelated users when seeding one new pilot', () => {
     const existing = {
       'legacy@hotel.com': { password: 'keep-me' },

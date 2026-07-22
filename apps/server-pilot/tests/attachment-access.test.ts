@@ -10,7 +10,7 @@
  *     the message's transportId == ctx.activeTransportId and throws NOT_FOUND.
  *   - user-frontdesk must NOT be able to list attachments for a centurion
  *     message via `mail.getMessageAttachments` / `mail.listAttachments`.
- *   - Sanity: user-manager (centurion owner) CAN fetch the centurion
+ *   - Sanity: user-navaai (centurion owner) CAN fetch the centurion
  *     attachment (and gets a URL — synthetic in the test/fake path).
  */
 import { describe, expect, it } from 'vitest';
@@ -184,7 +184,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       async () => {
         await withSeededTestDb(async (db) => {
           const ids = await seedAttachmentFixture(db);
-          const caller = await callerFor('user-manager', {
+          const caller = await callerFor('user-navaai', {
             db,
             requestedTransportId: 'transport-centurion',
           });

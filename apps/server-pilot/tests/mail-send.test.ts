@@ -68,7 +68,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.send', () => {
   it('rejects spoofed from address', async () => {
     await withSeededTestDb(async (db) => {
       await seedCenturionThread(db);
-      const caller = await callerFor('user-centurion-worker', { db });
+      const caller = await callerFor('user-navaai', { db });
       await expect(
         caller.mail.send({
           ...validCenturionReply,
@@ -84,7 +84,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.send', () => {
       __setSmtpTransportForTests(fake);
       try {
         await seedCenturionThread(db);
-        const caller = await callerFor('user-centurion-worker', { db });
+        const caller = await callerFor('user-navaai', { db });
         await expect(
           caller.mail.send({
             ...validCenturionReply,
@@ -109,7 +109,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.send', () => {
       __setSmtpTransportForTests(fake);
       try {
         await seedCenturionThread(db);
-        const caller = await callerFor('user-centurion-worker', { db });
+        const caller = await callerFor('user-navaai', { db });
         const result = await caller.mail.send(validCenturionReply);
         expect(result.fromEmail).toBe('centurion@legacyhotel.com');
         expect(result.messageId).toBeTruthy();
@@ -148,7 +148,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.send', () => {
       const fake = new FakeSmtpTransport();
       __setSmtpTransportForTests(fake);
       try {
-        const caller = await callerFor('user-nava', {
+        const caller = await callerFor('user-navaai', {
           db,
           requestedTransportId: 'transport-nava',
         });

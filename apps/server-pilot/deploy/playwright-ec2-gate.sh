@@ -90,10 +90,10 @@ fi
 
 echo "minting session via ${BACKEND_URL}"
 SECRET=$(aws secretsmanager get-secret-value --region af-south-1 --secret-id nava-zero/server-pilot/pilot-users --query SecretString --output text)
-PW=$(node -e 'const j=JSON.parse(process.argv[1]);const v=j["manager@legacyhotel.com"];console.log(typeof v==="string"?v:v.password)' "$SECRET")
+PW=$(node -e 'const j=JSON.parse(process.argv[1]);const v=j["navaai@legacyhotels.co.za"];console.log(typeof v==="string"?v:v.password)' "$SECRET")
 RESP=$(curl -ski -X POST "${BACKEND_URL%/}/api/auth/sign-in/email" \
   -H "Content-Type: application/json" \
-  -d "{\"email\":\"manager@legacyhotel.com\",\"password\":\"$PW\"}")
+  -d "{\"email\":\"navaai@legacyhotels.co.za\",\"password\":\"$PW\"}")
 export PLAYWRIGHT_SESSION_TOKEN=$(node -e 'const r=process.argv[1];const m=r.match(/better-auth\.session_token=([^;\r\n]+)/);if(!m)process.exit(1);console.log(decodeURIComponent(m[1]))' "$RESP")
 export PLAYWRIGHT_SESSION_DATA=$(node -e 'const r=process.argv[1];const m=r.match(/better-auth\.session_data=([^;\r\n]+)/);if(!m)process.exit(1);console.log(m[1])' "$RESP")
 

@@ -69,7 +69,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('sequential reply drafts', () 
           id: sentDraftId,
           transportId: TRANSPORT_ID,
           threadId,
-          createdByUserId: 'user-manager',
+          createdByUserId: 'user-navaai',
           status: 'sent',
           origin: 'manual',
           replyToMessageId: firstInboundId,
@@ -83,7 +83,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('sequential reply drafts', () 
           id: activeDraftId,
           transportId: TRANSPORT_ID,
           threadId,
-          createdByUserId: 'user-manager',
+          createdByUserId: 'user-navaai',
           status: 'active',
           origin: 'manual',
           replyToMessageId: secondInboundId,
@@ -94,7 +94,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('sequential reply drafts', () 
         },
       ]);
 
-      const { mail } = await callerFor('user-manager', { db });
+      const { mail } = await callerFor('user-navaai', { db });
       const thread = await mail.get({ id: threadId });
       expect(thread.drafts.map((draft) => draft.id)).toEqual([activeDraftId]);
       expect(thread.drafts[0]).toMatchObject({

@@ -48,7 +48,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('thread draft contract', () =>
         id: generationId,
         transportId: TRANSPORT_ID,
         threadId,
-        requestedByUserId: 'user-manager',
+        requestedByUserId: 'user-navaai',
         contextMessageIds: [parentMessageId],
         model: 'gpt-5.5',
         promptVersion: 'hotel-reply-v1',
@@ -58,7 +58,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('thread draft contract', () =>
           id: activeDraftId,
           transportId: TRANSPORT_ID,
           threadId,
-          createdByUserId: 'user-manager',
+          createdByUserId: 'user-navaai',
           status: 'active',
           origin: 'manual',
           replyToMessageId: parentMessageId,
@@ -70,7 +70,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('thread draft contract', () =>
           id: candidateDraftId,
           transportId: TRANSPORT_ID,
           threadId,
-          createdByUserId: 'user-manager',
+          createdByUserId: 'user-navaai',
           status: 'candidate',
           origin: 'ai',
           replyToMessageId: parentMessageId,
@@ -81,7 +81,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('thread draft contract', () =>
         },
       ]);
 
-      const { mail, drafts } = await callerFor('user-manager', { db });
+      const { mail, drafts } = await callerFor('user-navaai', { db });
       const thread = await mail.get({ id: threadId });
       expect(thread.messages).toHaveLength(1);
       expect(thread.messages.some((m) => m.isDraft)).toBe(false);

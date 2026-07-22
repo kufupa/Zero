@@ -60,7 +60,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('stale draft conflict', () => 
         id: draftId,
         transportId: TRANSPORT_ID,
         threadId,
-        createdByUserId: 'user-manager',
+        createdByUserId: 'user-navaai',
         status: 'active',
         origin: 'manual',
         replyToMessageId: parentMessageId,
@@ -70,7 +70,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('stale draft conflict', () => 
         htmlBody: '<p>Old draft</p>',
       });
 
-      const { mail } = await callerFor('user-manager', { db });
+      const { mail } = await callerFor('user-navaai', { db });
       await expect(
         mail.send({
           threadId,

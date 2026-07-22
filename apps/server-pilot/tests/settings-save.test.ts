@@ -17,7 +17,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       'concurrent first saves upsert without PK violation',
       async () => {
         await withSeededTestDb(async (db) => {
-          const caller = await callerForPrivate('user-manager', { db });
+          const caller = await callerForPrivate('user-navaai', { db });
           await Promise.all([
             caller.settings.save({ locale: 'en' }),
             caller.settings.save({ colorTheme: 'dark' }),
@@ -25,7 +25,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           const rows = await db
             .select()
             .from(userSettings)
-            .where(eq(userSettings.userId, 'user-manager'));
+            .where(eq(userSettings.userId, 'user-navaai'));
           expect(rows).toHaveLength(1);
         });
       },
@@ -36,7 +36,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       'long customPrompt save succeeds',
       async () => {
         await withSeededTestDb(async (db) => {
-          const caller = await callerForPrivate('user-manager', { db });
+          const caller = await callerForPrivate('user-navaai', { db });
           const longPrompt = 'x'.repeat(20_000);
           await caller.settings.save({ customPrompt: longPrompt });
           const got = await caller.settings.get();

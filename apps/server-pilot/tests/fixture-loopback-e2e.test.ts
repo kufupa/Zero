@@ -32,7 +32,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('fixture loopback e2e', () => 
       const fake = new FakeSmtpTransport();
       __setSmtpTransportForTests(fake);
       try {
-        const nava = await callerFor('user-nava', {
+        const nava = await callerFor('user-navaai', {
           db,
           requestedTransportId: 'transport-nava',
         });
@@ -70,7 +70,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('fixture loopback e2e', () => 
         ingestMailboxId: 'ingest-nava-legacy',
         maxMessages: 10,
       });
-      const nava = await callerFor('user-nava', {
+      const nava = await callerFor('user-navaai', {
         db,
         requestedTransportId: 'transport-nava',
       });
@@ -84,7 +84,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('fixture loopback e2e', () => 
       const fake = new FakeSmtpTransport();
       __setSmtpTransportForTests(fake);
       try {
-        const nava = await callerFor('user-nava', {
+        const nava = await callerFor('user-navaai', {
           db,
           requestedTransportId: 'transport-nava',
         });
@@ -118,7 +118,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('fixture loopback e2e', () => 
       const fake = new FakeSmtpTransport();
       __setSmtpTransportForTests(fake);
       try {
-        const nava = await callerFor('user-nava', {
+        const nava = await callerFor('user-navaai', {
           db,
           requestedTransportId: 'transport-nava',
         });
@@ -141,7 +141,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('fixture loopback e2e', () => 
           navaInbox.threads.some((t) => t.subject === 'nava-isolated-loop'),
         ).toBe(true);
 
-        const centurion = await callerFor('user-manager', {
+        const centurion = await callerFor('user-navaai', {
           db,
           requestedTransportId: 'transport-centurion',
         });

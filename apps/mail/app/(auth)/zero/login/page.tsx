@@ -2,8 +2,9 @@ import { Form, FormControl, FormField, FormItem, FormLabel } from '@/components/
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { signIn } from '@/lib/auth-client';
 import { useForm } from 'react-hook-form';
-import { Link } from 'react-router';
+import { Link, useNavigate } from 'react-router';
 import { toast } from 'sonner';
 import { z } from 'zod';
 
@@ -13,6 +14,7 @@ const formSchema = z.object({
 });
 
 export default function LoginZero() {
+  const navigate = useNavigate();
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
     defaultValues: {
@@ -21,13 +23,18 @@ export default function LoginZero() {
     },
   });
 
-  function onSubmit(values: z.infer<typeof formSchema>) {
-    // Use the correct sonner toast API
-    toast.success(`Trying to log in with ${values.email}`, {
-      description: 'Login attempt',
+  async function onSubmit(values: z.infer<typeof formSchema>) {
+    const result = await signIn.email({
+      email: values.email,
+      password: values.password,
+      callbackURL: '/mail/inbox',
     });
-
-    // Here you would typically handle authentication
+    if (result.error) {
+      toast.error(result.error.message || 'Login failed');
+      return;
+    }
+    toast.success('Signed in');
+    navigate('/mail/inbox');
   }
 
   return (
@@ -50,7 +57,7 @@ export default function LoginZero() {
                   <FormLabel className="text-muted-foreground">Email</FormLabel>
                   <FormControl>
                     <Input
-                      placeholder="nizzy@0.email"
+                      placeholder="navaai@legacyhotels.co.za"
                       {...field}
                       className="bg-black text-sm text-white placeholder:text-sm"
                     />

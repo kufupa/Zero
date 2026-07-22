@@ -15,7 +15,17 @@ export interface ProviderConfig {
   customRedirectPath?: string;
 }
 
-export const customProviders: ProviderConfig[] = [];
+/** Pilot email/password entry — Google OAuth optional on EC2. */
+export const customProviders: ProviderConfig[] = [
+  {
+    id: 'zero',
+    name: 'Email / Password',
+    requiredEnvVars: [],
+    config: {},
+    isCustom: true,
+    customRedirectPath: '/zero/login',
+  },
+];
 
 export const authProviders = (env: Record<string, string>): ProviderConfig[] => [
   {
@@ -38,7 +48,8 @@ export const authProviders = (env: Record<string, string>): ProviderConfig[] => 
       clientId: env.GOOGLE_CLIENT_ID,
       clientSecret: env.GOOGLE_CLIENT_SECRET,
     },
-    required: true,
+    // Pilot: do not block /login when Google creds absent (email/password is the path).
+    required: false,
   },
 ];
 

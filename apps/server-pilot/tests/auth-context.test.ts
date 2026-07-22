@@ -17,15 +17,15 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
   'mailbox context (seeded, transaction-rollback)',
   () => {
     it(
-      'returns owner access for Centurion manager',
+      'returns owner access for navaai on Centurion transport',
       async () => {
         const ctx = await withSeededTestDb((db) =>
-          resolveMailboxContext('user-manager', 'transport-centurion', db),
+          resolveMailboxContext('user-navaai', 'transport-centurion', db),
         );
         expect(ctx).toBeDefined();
         expect(ctx.transportEmail).toBe('centurion@legacyhotel.com');
         expect(ctx.accessRole).toBe('owner');
-        expect(ctx.userId).toBe('user-manager');
+        expect(ctx.userId).toBe('user-navaai');
         expect(ctx.activeTransportId).toBe('transport-centurion');
       },
       30000,
@@ -44,14 +44,15 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     );
 
     it(
-      'defaults to first accessible transport when none requested',
+      'defaults to isDefault transport when none requested',
       async () => {
         const ctx = await withSeededTestDb((db) =>
-          resolveMailboxContext('user-admin', undefined, db),
+          resolveMailboxContext('user-navaai', undefined, db),
         );
-        expect(ctx.userId).toBe('user-admin');
-        expect(ctx.transportEmail).toBe('centurion@legacyhotel.com');
-        expect(ctx.accessRole).toBe('admin');
+        expect(ctx.userId).toBe('user-navaai');
+        expect(ctx.transportEmail).toBe('navaai@legacyhotels.co.za');
+        expect(ctx.activeTransportId).toBe('transport-nava');
+        expect(ctx.accessRole).toBe('owner');
       },
       30000,
     );

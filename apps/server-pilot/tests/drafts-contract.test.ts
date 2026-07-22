@@ -18,7 +18,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       'drafts.create message reopens non-empty from get and list',
       async () => {
         await withSeededTestDb(async (db) => {
-          const caller = await callerFor('user-manager', { db });
+          const caller = await callerFor('user-navaai', { db });
           const body = '<p>Hello draft</p>';
 
           const { id } = await caller.drafts.create({

@@ -14,9 +14,10 @@ import {
   seedAll,
   PILOT_USERS,
   NAVA_TRANSPORT_EMAIL,
+  NAVA_USER_EMAIL,
+  NAVA_USER_ID,
   INGEST_EMAIL,
   TRANSPORT_EMAIL,
-  NAVA_OPS_USER_EMAIL,
 } from '../src/db/seed';
 import {
   TEST_DB_AVAILABLE,
@@ -28,14 +29,17 @@ import {
 const reachable = await probeTestDb();
 
 describe('seed identity constants', () => {
-  it('uses navaai@legacyhotels.co.za for ingest + Nava transport', () => {
+  it('uses navaai@legacyhotels.co.za for ingest + Nava transport + app login', () => {
     expect(INGEST_EMAIL).toBe('navaai@legacyhotels.co.za');
     expect(NAVA_TRANSPORT_EMAIL).toBe('navaai@legacyhotels.co.za');
+    expect(NAVA_USER_EMAIL).toBe('navaai@legacyhotels.co.za');
+    expect(PILOT_USERS).toEqual([
+      { id: NAVA_USER_ID, name: 'Nava AI', email: NAVA_USER_EMAIL },
+    ]);
   });
 
-  it('keeps Centurion + ops on legacyhotel.com', () => {
+  it('keeps Centurion transport on legacyhotel.com', () => {
     expect(TRANSPORT_EMAIL).toBe('centurion@legacyhotel.com');
-    expect(NAVA_OPS_USER_EMAIL).toBe('nava-ops@legacyhotel.com');
   });
 });
 
@@ -80,7 +84,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     );
 
     it(
-      'seeds transport-nava and nava-ops with access only to Nava',
+      'seeds transport-nava and grants navaai owner access on both transports',
       async () => {
         const result = await withSeededTestDb(async (db) => {
           const transports = await db
@@ -95,21 +99,30 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
               isDefault: mailboxAccess.isDefault,
             })
             .from(mailboxAccess)
-            .where(eq(mailboxAccess.userId, 'user-nava'));
+            .where(eq(mailboxAccess.userId, NAVA_USER_ID));
           return { transport: transports[0], access };
         });
 
         expect(result.transport).toBeDefined();
         expect(result.transport!.email).toBe('navaai@legacyhotels.co.za');
         expect(result.transport!.ownerHeaderValue).toBe('navaai@legacyhotels.co.za');
-        expect(result.access).toEqual([
-          {
-            userId: 'user-nava',
-            transportId: 'transport-nava',
-            role: 'owner',
-            isDefault: true,
-          },
-        ]);
+        expect(result.access).toHaveLength(2);
+        expect(result.access).toEqual(
+          expect.arrayContaining([
+            {
+              userId: NAVA_USER_ID,
+              transportId: 'transport-nava',
+              role: 'owner',
+              isDefault: true,
+            },
+            {
+              userId: NAVA_USER_ID,
+              transportId: 'transport-centurion',
+              role: 'owner',
+              isDefault: false,
+            },
+          ]),
+        );
       },
       30000,
     );
@@ -142,7 +155,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     );
 
     it(
-      'seeds exactly 3 mailbox_access rows on transport-centurion with correct roles',
+      'seeds exactly one mailbox_access row on transport-centurion for navaai owner',
       async () => {
         const access = await withSeededTestDb(async (db) => {
           return db
@@ -153,30 +166,51 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             .from(mailboxAccess)
             .where(eq(mailboxAccess.transportId, 'transport-centurion'));
         });
-        expect(access).toHaveLength(3);
-        const byUser = Object.fromEntries(access.map((r) => [r.userId, r.role]));
-        expect(byUser['user-manager']).toBe('owner');
-        expect(byUser['user-centurion-worker']).toBe('member');
-        expect(byUser['user-admin']).toBe('admin');
+        expect(access).toHaveLength(1);
+        expect(access[0]).toEqual({ userId: NAVA_USER_ID, role: 'owner' });
       },
       30000,
     );
 
     it(
-      'seeds four pilot users with emailVerified=true',
+      'seeds a single pilot user navaai@ with emailVerified=true',
       async () => {
         const users = await withSeededTestDb(async (db) => {
           return db
-            .select({ id: userTable.id, email: userTable.email, emailVerified: userTable.emailVerified })
+            .select({
+              id: userTable.id,
+              email: userTable.email,
+              emailVerified: userTable.emailVerified,
+            })
             .from(userTable);
         });
-        const byId = Object.fromEntries(users.map((u) => [u.id, u]));
-        expect(byId['user-manager']?.email).toBe('manager@legacyhotel.com');
-        expect(byId['user-manager']?.emailVerified).toBe(true);
-        expect(byId['user-centurion-worker']?.email).toBe('worker@legacyhotel.com');
-        expect(byId['user-admin']?.email).toBe('admin@legacyhotel.com');
-        expect(byId['user-nava']?.email).toBe('nava-ops@legacyhotel.com');
-        expect(byId['user-nava']?.emailVerified).toBe(true);
+        expect(users).toHaveLength(1);
+        expect(users[0]).toEqual({
+          id: NAVA_USER_ID,
+          email: NAVA_USER_EMAIL,
+          emailVerified: true,
+        });
+      },
+      30000,
+    );
+
+    it(
+      'prunes stale pilot personas on re-seed',
+      async () => {
+        const remaining = await withTestDb(async (db) => {
+          await seedAll(db);
+          await db.insert(userTable).values({
+            id: 'user-stale-ops',
+            name: 'Stale Ops',
+            email: 'nava-ops@legacyhotel.com',
+            emailVerified: true,
+          });
+          await seedAll(db, { rotatePasswords: false });
+          return db
+            .select({ id: userTable.id, email: userTable.email })
+            .from(userTable);
+        });
+        expect(remaining).toEqual([{ id: NAVA_USER_ID, email: NAVA_USER_EMAIL }]);
       },
       30000,
     );

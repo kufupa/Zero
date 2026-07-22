@@ -19,7 +19,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       'labels.create duplicate name → CONFLICT',
       async () => {
         await withSeededTestDb(async (db) => {
-          const caller = await callerFor('user-manager', { db });
+          const caller = await callerFor('user-navaai', { db });
           const name = `dup-create-${Date.now()}`;
 
           await caller.labels.create({ name });
@@ -37,7 +37,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       'labels.update rename to existing name → CONFLICT',
       async () => {
         await withSeededTestDb(async (db) => {
-          const caller = await callerFor('user-manager', { db });
+          const caller = await callerFor('user-navaai', { db });
           const stamp = Date.now();
           const first = `first-${stamp}`;
           const second = `second-${stamp}`;
@@ -60,7 +60,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       'labels.create non-unique PG error not mapped to CONFLICT',
       async () => {
         await withSeededTestDb(async (db) => {
-          const caller = await callerFor('user-manager', { db });
+          const caller = await callerFor('user-navaai', { db });
           const pgErr = Object.assign(new Error('disk full'), { code: '53100' });
 
           const insertSpy = vi

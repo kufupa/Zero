@@ -220,7 +220,7 @@ export async function executeAiRun(runId: string): Promise<ExecuteAiRunResult> {
         .from(aiDraftGeneration)
         .where(eq(aiDraftGeneration.id, generationId))
         .limit(1);
-      const createdByUserId = existingGeneration?.requestedByUserId ?? 'user-centurion-worker';
+      const createdByUserId = existingGeneration?.requestedByUserId ?? 'user-navaai';
       const subject = deriveReplySubject(trigger.subject);
       const draft = await persistAiCandidateDraft({
         db,

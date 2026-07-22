@@ -27,8 +27,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             isActive: true,
           });
           await db.insert(mailboxAccess).values({
-            id: 'access-user-manager-transport-delete-promote-1',
-            userId: 'user-manager',
+            id: 'access-user-navaai-transport-delete-promote-1',
+            userId: 'user-navaai',
             transportId: extraTransportId,
             role: 'owner',
             isDefault: false,
@@ -38,12 +38,12 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             .set({ isDefault: true })
             .where(
               and(
-                eq(mailboxAccess.userId, 'user-manager'),
+                eq(mailboxAccess.userId, 'user-navaai'),
                 eq(mailboxAccess.transportId, 'transport-centurion'),
               ),
             );
 
-          const caller = await callerForPrivate('user-manager', { db });
+          const caller = await callerForPrivate('user-navaai', { db });
           const result = await caller.connections.delete({
             connectionId: 'transport-centurion',
           });
@@ -54,7 +54,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             .from(mailboxAccess)
             .where(
               and(
-                eq(mailboxAccess.userId, 'user-manager'),
+                eq(mailboxAccess.userId, 'user-navaai'),
                 eq(mailboxAccess.isDefault, true),
               ),
             )
@@ -69,7 +69,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       'rejects deleting last mailbox',
       async () => {
         await withSeededTestDb(async (db) => {
-          const caller = await callerForPrivate('user-manager', { db });
+          const caller = await callerForPrivate('user-navaai', { db });
           await expect(
             caller.connections.delete({ connectionId: 'transport-centurion' }),
           ).rejects.toMatchObject({

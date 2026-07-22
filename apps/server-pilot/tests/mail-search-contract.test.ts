@@ -46,7 +46,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         });
         await refreshThreadSearchVector(db, decoyId);
 
-        const caller = await callerFor('user-manager', { db });
+        const caller = await callerFor('user-navaai', { db });
         const result = await caller.mail.listThreads({
           folder: 'inbox',
           q: 'from:alice@corp.com',
@@ -60,7 +60,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
 
     it('kind:email returns BAD_REQUEST with unsupported operator token', async () => {
       await withSeededTestDb(async (db) => {
-        const caller = await callerFor('user-manager', { db });
+        const caller = await callerFor('user-navaai', { db });
 
         await expect(
           caller.mail.listThreads({ folder: 'inbox', q: 'kind:email' }),
@@ -89,7 +89,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         await db.insert(mailDraft).values({
           id: matchingDraftId,
           transportId: TRANSPORT_ID,
-          createdByUserId: 'user-manager',
+          createdByUserId: 'user-navaai',
           subject: 'Hotel invoice draft',
           textBody: 'Please review',
           isSent: false,
@@ -99,7 +99,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         await db.insert(mailDraft).values({
           id: decoyDraftId,
           transportId: TRANSPORT_ID,
-          createdByUserId: 'user-manager',
+          createdByUserId: 'user-navaai',
           subject: 'Billing reminder',
           textBody: 'subject:invoice appears only in body',
           isSent: false,
@@ -107,7 +107,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           origin: 'manual',
         });
 
-        const caller = await callerFor('user-manager', { db });
+        const caller = await callerFor('user-navaai', { db });
         const result = await caller.drafts.list({ q: 'subject:invoice' });
 
         const ids = result.threads.map((d) => d.id);
@@ -118,7 +118,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
 
     it('kind:email returns BAD_REQUEST on drafts.list', async () => {
       await withSeededTestDb(async (db) => {
-        const caller = await callerFor('user-manager', { db });
+        const caller = await callerFor('user-navaai', { db });
 
         await expect(caller.drafts.list({ q: 'kind:email' })).rejects.toSatisfy(
           (err: unknown) => {

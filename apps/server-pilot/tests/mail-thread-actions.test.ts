@@ -45,7 +45,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     it('markAsUnread sets thread and message is_read=false', async () => {
       await withSeededTestDb(async (db) => {
         await seedActionThread(db);
-        const caller = await callerFor('user-manager', { db });
+        const caller = await callerFor('user-navaai', { db });
 
         await caller.mail.markAsUnread({ ids: [THREAD_ID] });
 
@@ -68,7 +68,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     it('toggleImportant toggles literal IMPORTANT in labelIds', async () => {
       await withSeededTestDb(async (db) => {
         await seedActionThread(db);
-        const caller = await callerFor('user-manager', { db });
+        const caller = await callerFor('user-navaai', { db });
 
         await caller.mail.toggleImportant({ ids: [THREAD_ID] });
 
@@ -94,7 +94,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       await withSeededTestDb(async (db) => {
         const future = new Date(Date.now() + 86400000);
         await seedActionThread(db, { snoozedUntil: future });
-        const caller = await callerFor('user-manager', { db });
+        const caller = await callerFor('user-navaai', { db });
 
         const inboxSnoozed = await caller.mail.listThreads({ folder: 'inbox' });
         expect(inboxSnoozed.threads.some((t) => t.id === THREAD_ID)).toBe(false);
@@ -138,7 +138,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             latestMessageAt: new Date(),
           });
         }
-        const caller = await callerFor('user-manager', { db });
+        const caller = await callerFor('user-navaai', { db });
 
         const result = await caller.mail.toggleStar({
           ids: [starredId, unstarredId, 'foreign-thread-id'],
@@ -159,7 +159,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     it('markAsRead bulk skips foreign ids without partial failure', async () => {
       await withSeededTestDb(async (db) => {
         await seedActionThread(db);
-        const caller = await callerFor('user-manager', { db });
+        const caller = await callerFor('user-navaai', { db });
         const result = await caller.mail.markAsRead({
           ids: [THREAD_ID, 'foreign-thread-id'],
         });
@@ -170,7 +170,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     it('moves threads between system states without label emulation', async () => {
       await withSeededTestDb(async (db) => {
         await seedActionThread(db);
-        const caller = await callerFor('user-manager', { db });
+        const caller = await callerFor('user-navaai', { db });
 
         await caller.mail.moveThreads({ threadIds: [THREAD_ID], destination: 'spam' });
         const spam = await caller.mail.listThreads({ folder: 'spam', limit: 20 });
@@ -223,7 +223,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           sentAt: new Date(),
           receivedAt: new Date(),
         });
-        const caller = await callerFor('user-manager', { db });
+        const caller = await callerFor('user-navaai', { db });
 
         await caller.mail.unsend({ messageId: outboundId });
 
