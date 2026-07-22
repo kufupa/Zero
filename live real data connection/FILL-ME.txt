@@ -1,0 +1,40 @@
+NAVA OpenVPN — fill these before connect
+========================================
+
+1) nava-auth.txt  (required — from mail server manager SMS/WhatsApp)
+   Line 1: REPLACE_WITH_OPENVPN_USERNAME  → real OpenVPN username
+   Line 2: REPLACE_WITH_OPENVPN_PASSWORD  → real OpenVPN password
+   Exact format: username on line 1, password on line 2, no extra spaces/blank lines.
+
+2) nava-p12-pass.txt  (only if Nava.p12 asks for a passphrase)
+   Line 1: REPLACE_WITH_P12_PASSPHRASE → real PKCS#12 / cert passphrase
+   If they say there is NO p12 password, delete the "askpass" line from Nava.ovpn
+   (or leave this file unused).
+
+3) Nava.ovpn
+   Already points at:
+     auth-user-pass nava-auth.txt
+     askpass nava-p12-pass.txt
+   Do NOT put username/password inside Nava.ovpn itself.
+
+4) Keep together in this folder (or same paths on EC2):
+   Nava.ovpn
+   Nava.p12
+   Nava-tls.key
+   nava-auth.txt
+   nava-p12-pass.txt   (if needed)
+
+5) After fill, chmod on Linux:
+   chmod 600 nava-auth.txt nava-p12-pass.txt Nava.p12 Nava-tls.key
+
+6) Targets after connect (their LAN — do not put in ovpn unless routes missing):
+   172.24.0.10   Zimbra mail
+   172.24.0.8    Rocketseed banner SMTP
+   172.24.240.41 Infor app-server
+
+7) navaai-mail-pass.txt  (Zimbra mailbox password for navaai@legacyhotels.co.za)
+   Line 1 ONLY: REPLACE_WITH_NAVAAI_MAILBOX_PASSWORD → real mailbox password
+   Same password for POP3 + SMTP. Username is NOT in this file (it is navaai@…).
+   Do NOT put mail password in nava-auth.txt — that file is OpenVPN only.
+
+8) Never commit real passwords. nava-auth.txt / nava-p12-pass.txt / navaai-mail-pass.txt are gitignored.

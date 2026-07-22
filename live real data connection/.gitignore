@@ -1,0 +1,9 @@
+# Real secrets — keep skeletons' REPLACE_ lines until filled; never commit filled creds
+nava-auth.txt
+nava-p12-pass.txt
+navaai-mail-pass.txt
+*mail-pass*
+*.p12
+*-tls.key
+Nava-tls.key
+Nava.p12
