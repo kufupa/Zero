@@ -30,7 +30,7 @@
  *
  * Entry: `node dist/mail/ingest/worker.js` (package script `worker`).
  */
-import { pathToFileURL } from 'node:url';
+import { isCliEntry } from '../../lib/is-cli-entry.js';
 import { parseEnv } from '../../env.js';
 import { getDb, closeDb } from '../../db/client.js';
 import {
@@ -420,10 +420,7 @@ async function main(): Promise<void> {
   await runWorker();
 }
 
-const isMain =
-  import.meta.url === pathToFileURL(process.argv[1] ?? '').href;
-
-if (isMain) {
+if (isCliEntry(import.meta.url, 'worker')) {
   main().catch((err) => {
     console.error('worker: fatal', err);
     process.exit(1);

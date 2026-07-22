@@ -1,4 +1,4 @@
-import { pathToFileURL } from 'node:url';
+import { isCliEntry } from '../lib/is-cli-entry.js';
 import { and, eq, inArray, or } from 'drizzle-orm';
 import { closeDb, getDb } from '../db/client.js';
 import {
@@ -337,7 +337,7 @@ async function main() {
   await runAiWorkerLoop();
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
+if (isCliEntry(import.meta.url, 'ai-worker')) {
   main().catch((error) => {
     console.error(error);
     process.exit(1);
