@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Activate real Exchange POP3/SMTP on EC2 pilot.
+# Activate real Exchange/Zimbra POP3/SMTP on EC2 pilot.
 # Parameterized — pass host/user/secret ARNs via env; never pass passwords on CLI.
 set -euo pipefail
 
@@ -7,11 +7,10 @@ REPO_ROOT="${REPO_ROOT:-/home/ubuntu/repos/zero}"
 SERVER_PILOT="${REPO_ROOT}/apps/server-pilot"
 AWS_REGION="${AWS_REGION:-af-south-1}"
 
-: "${POP3_HOST:?POP3_HOST required}"
-: "${POP3_PORT:?POP3_PORT required}"
-: "${POP3_USER:?POP3_USER required}"
-: "${SMTP_HOST:?SMTP_HOST required}"
-: "${SMTP_PORT:?SMTP_PORT required}"
+: "${POP3_HOST:=172.24.0.10}"
+: "${SMTP_HOST:=172.24.0.10}"
+: "${POP3_USER:=navaai@legacyhotels.co.za}"
+: "${SMTP_USER:=navaai@legacyhotels.co.za}"
 
 if [[ -z "${POP3_SECRET_ARN:-}" && -z "${POP3_PASSWORD:-}" ]]; then
   echo "POP3_SECRET_ARN or POP3_PASSWORD required" >&2
@@ -24,11 +23,13 @@ fi
 
 export AWS_REGION
 export MAIL_TRANSPORT_MODE=real
-export POP3_TLS="${POP3_TLS:-true}"
-export SMTP_SECURE="${SMTP_SECURE:-false}"
 
 echo "== activate-real-mail: validating connectivity =="
 cd "$SERVER_PILOT"
+
+# Staged secrets must survive sourcing an empty/stale .env.production (staged wins).
+STAGED_POP3_PASSWORD="${POP3_PASSWORD:-}"
+STAGED_SMTP_PASSWORD="${SMTP_PASSWORD:-}"
 
 if [[ -f "${SERVER_PILOT}/.env.production" ]]; then
   set -a
@@ -37,18 +38,70 @@ if [[ -f "${SERVER_PILOT}/.env.production" ]]; then
   set +a
 fi
 
-export POP3_HOST POP3_PORT POP3_USER POP3_TLS
-export SMTP_HOST SMTP_PORT SMTP_USER SMTP_SECURE
+if [[ -n "${STAGED_POP3_PASSWORD}" ]]; then
+  export POP3_PASSWORD="${STAGED_POP3_PASSWORD}"
+fi
+if [[ -n "${STAGED_SMTP_PASSWORD}" ]]; then
+  export SMTP_PASSWORD="${STAGED_SMTP_PASSWORD}"
+fi
+
+# Re-apply defaults after source (host/user may have been unset in .env).
+: "${POP3_HOST:=172.24.0.10}"
+: "${SMTP_HOST:=172.24.0.10}"
+: "${POP3_USER:=navaai@legacyhotels.co.za}"
+: "${SMTP_USER:=navaai@legacyhotels.co.za}"
+
+export POP3_HOST POP3_USER
+export SMTP_HOST SMTP_USER
 export POP3_SECRET_ARN="${POP3_SECRET_ARN:-}"
 export SMTP_SECRET_ARN="${SMTP_SECRET_ARN:-}"
 
 bash deploy/vpn-route-check.sh
 
-echo "== POP3 port reachability =="
-nc -vz "$POP3_HOST" "$POP3_PORT"
+probe_tcp() {
+  local host="$1" port="$2"
+  nc -z -w 3 "$host" "$port" >/dev/null 2>&1
+}
 
-echo "== SMTP port reachability =="
-nc -vz "$SMTP_HOST" "$SMTP_PORT"
+echo "== POP3 port probe (995 then 110) =="
+POP3_PORT=""
+POP3_TLS=""
+for candidate in 995 110; do
+  if probe_tcp "$POP3_HOST" "$candidate"; then
+    POP3_PORT="$candidate"
+    if [[ "$candidate" == "995" ]]; then
+      POP3_TLS=true
+    else
+      POP3_TLS=false
+    fi
+    echo "POP3 reachable on ${POP3_HOST}:${POP3_PORT} (POP3_TLS=${POP3_TLS})"
+    break
+  fi
+done
+if [[ -z "${POP3_PORT}" ]]; then
+  echo "POP3 port probe failed (tried 995, 110 on ${POP3_HOST})" >&2
+  exit 1
+fi
+
+echo "== SMTP port probe (587 then 25) =="
+SMTP_PORT=""
+SMTP_SECURE=""
+for candidate in 587 25; do
+  if probe_tcp "$SMTP_HOST" "$candidate"; then
+    SMTP_PORT="$candidate"
+    # 587 = STARTTLS submission; 25 = clear/relay — neither is implicit TLS (465).
+    SMTP_SECURE=false
+    echo "SMTP reachable on ${SMTP_HOST}:${SMTP_PORT} (SMTP_SECURE=${SMTP_SECURE})"
+    break
+  fi
+done
+if [[ -z "${SMTP_PORT}" ]]; then
+  echo "SMTP port probe failed (tried 587, 25 on ${SMTP_HOST})" >&2
+  exit 1
+fi
+
+export POP3_PORT POP3_TLS
+export SMTP_PORT SMTP_SECURE
 
 echo "== build server-pilot (required for smoke + worker) =="
 cd "$REPO_ROOT"
@@ -73,18 +126,37 @@ await client.quit();
 console.log('POP3 auth OK');
 "
 
-echo "== SMTP EHLO smoke =="
+echo "== SMTP auth smoke =="
 node --input-type=module -e "
 import nodemailer from 'nodemailer';
 const port = Number(process.env.SMTP_PORT);
+const user = process.env.SMTP_USER;
+let pass = process.env.SMTP_PASSWORD;
+if (!pass && process.env.SMTP_SECRET_ARN) {
+  const { SecretsManagerClient, GetSecretValueCommand } = await import('@aws-sdk/client-secrets-manager');
+  const client = new SecretsManagerClient({ region: process.env.AWS_REGION ?? 'af-south-1' });
+  const out = await client.send(new GetSecretValueCommand({ SecretId: process.env.SMTP_SECRET_ARN }));
+  const raw = out.SecretString ?? '';
+  try {
+    const parsed = JSON.parse(raw);
+    pass = parsed.SMTP_PASSWORD ?? parsed.password ?? raw;
+  } catch {
+    pass = raw;
+  }
+}
+if (!user || !pass) throw new Error('SMTP_USER and SMTP_PASSWORD (or SMTP_SECRET_ARN) required for auth smoke');
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST,
   port,
   secure: process.env.SMTP_SECURE === 'true',
+  auth: { user, pass },
 });
 await transporter.verify();
-console.log('SMTP EHLO OK');
+console.log('SMTP auth OK');
 "
+
+export AI_DRAFTS_ENABLED=false
+export AI_WRITE_GATE_ENABLED=true
 
 echo "== writing .env.production with MAIL_TRANSPORT_MODE=real =="
 if [[ "$(id -u)" -eq 0 ]]; then

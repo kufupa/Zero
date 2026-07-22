@@ -259,6 +259,51 @@ describe('deploy config', () => {
     expect(refuse.stderr).toMatch(/CONFIRM=WIPE_PILOT_DB/);
   });
 
+  it('activate-real-mail.sh probes ports, SMTP auth smoke, staged password wins', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { spawnSync } = await import('node:child_process');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const scriptPath = join(here, '..', 'scripts', 'activate-real-mail.sh');
+    const script = readFileSync(scriptPath, 'utf8');
+
+    expect(script).toContain('POP3_HOST:=172.24.0.10');
+    expect(script).toContain('SMTP_HOST:=172.24.0.10');
+    expect(script).toContain('POP3_USER:=navaai@legacyhotels.co.za');
+    expect(script).toContain('SMTP_USER:=navaai@legacyhotels.co.za');
+
+    // Staged passwords saved before source; restored after (staged wins).
+    expect(script).toContain('STAGED_POP3_PASSWORD="${POP3_PASSWORD:-}"');
+    expect(script).toContain('STAGED_SMTP_PASSWORD="${SMTP_PASSWORD:-}"');
+    expect(script).toMatch(
+      /STAGED_POP3_PASSWORD[\s\S]*source[\s\S]*\.env\.production[\s\S]*STAGED_POP3_PASSWORD/,
+    );
+    expect(script).toContain('export POP3_PASSWORD="${STAGED_POP3_PASSWORD}"');
+    expect(script).toContain('export SMTP_PASSWORD="${STAGED_SMTP_PASSWORD}"');
+
+    // Port probe loop: POP3 995→110, SMTP 587→25; fail closed.
+    expect(script).toContain('for candidate in 995 110');
+    expect(script).toContain('for candidate in 587 25');
+    expect(script).toContain('POP3 port probe failed');
+    expect(script).toContain('SMTP port probe failed');
+    expect(script).toContain('POP3_TLS=true');
+    expect(script).toContain('POP3_TLS=false');
+    expect(script).toContain('SMTP_SECURE=false');
+
+    // SMTP auth smoke (not EHLO-only bare verify).
+    expect(script).toContain('auth: { user, pass }');
+    expect(script).toContain('SMTP auth OK');
+    expect(script).not.toContain('SMTP EHLO OK');
+    expect(script).toContain('transporter.verify()');
+
+    expect(script).toContain('export AI_DRAFTS_ENABLED=false');
+    expect(script).toContain('export AI_WRITE_GATE_ENABLED=true');
+
+    const syntax = spawnSync('bash', ['-n', scriptPath], { encoding: 'utf8' });
+    expect(syntax.status).toBe(0);
+  });
+
   it('stage-navaai-mail-env.sh refuses REPLACE_ and keeps password out of SSM argv', async () => {
     const { mkdtempSync, readFileSync, writeFileSync, rmSync } = await import('node:fs');
     const { spawnSync } = await import('node:child_process');
