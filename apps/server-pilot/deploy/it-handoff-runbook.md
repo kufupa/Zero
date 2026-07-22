@@ -12,11 +12,13 @@ Flip `MAIL_TRANSPORT_MODE` from `fixture` (default) to `real` after IT provides 
 
 After real mail is active, `ops-deploy` keeps `worker` in the PM2 dump (non-fixture mode).
 
+**VPN:** always-on live on pilot; `ops-deploy` / `ops-reboot` HARD-assert via `vpn-health-assert.sh`. Durability + abort: [`vpn-always-on.md`](./vpn-always-on.md).
+
 ## Prerequisites
 
 - Security Wave 1 gate passed ([ec2-pilot-security-hardening plan](../../docs/superpowers/plans/2026-07-01-ec2-pilot-security-hardening.md))
 - All fixture/fake tests green on EC2
-- VPN profile installed with split tunnel for AWS (RDS, S3, SSM must stay reachable)
+- VPN always-on installed with split tunnel for AWS (RDS, S3, SSM must stay reachable) — see [`vpn-always-on.md`](./vpn-always-on.md)
 
 ## IT must provide
 

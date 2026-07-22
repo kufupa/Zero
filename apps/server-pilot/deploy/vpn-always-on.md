@@ -63,3 +63,48 @@ bash apps/server-pilot/deploy/ssm-run-command.sh \
 3. Confidence before enable
 4. Post-enable HOST_ROUTE/RESOLV assert → auto-disable on fail
 5. No secrets in git
+
+## Durability (boot / deploy / crash)
+
+Always-on stays up across crashes and soft reboots. Deploy **never** restages VPN secrets or re-runs install.
+
+### Crash recover
+
+- Drop-in: `/etc/systemd/system/openvpn-client@nava.service.d/restart.conf` (repo: `apps/server-pilot/deploy/systemd/openvpn-client@nava.service.d/restart.conf`)
+  - `Restart=on-failure` / `RestartSec=5`
+  - `StartLimitIntervalSec=120` / `StartLimitBurst=5`
+- Conf: `keepalive 10 60` in `/etc/openvpn/client/nava.conf`
+- **Recover proof uses SIGKILL (`kill -9`)** — `Restart=on-failure` skips SIGTERM/SIGINT/SIGHUP/SIGPIPE. Plain `kill` leaves unit inactive.
+
+### HARD vs SOFT (`vpn-health-assert.sh`)
+
+| Class | Checks | Fail |
+|-------|--------|------|
+| **HARD** | unit active; default via `172.31.0.1` (not `tun`); STS | `VPN_HARD_FAIL_*`; exit **1** → abort caller |
+| **SOFT** | hotel TCP on `172.24.0.0/16` | `VPN_SOFT_WARN_HOTEL`; exit **0** (warn only) |
+
+Pass tokens: `VPN_HARD_OK`, `VPN_HOTEL_OK` (or soft warn).
+
+### Who calls assert
+
+- `post-boot-smoke.sh` — HARD fail → smoke FAIL
+- `ops-deploy.sh` — HARD fail → deploy abort; hotel SOFT warn does not abort
+- `vpn-route-check.sh` — HARD first, then identity/routes/STS/RDS/S3/(POP3/SMTP)
+
+### Deploy / smoke guards
+
+- `ops-deploy` / `deploy-ec2` / PM2: **never** restage VPN or call `vpn-install-always-on.sh`
+- Ephemeral `vpn-safe-smoke.sh` / `vpn-confidence.sh`: refuse (`exit 20`, `*_REFUSE_ALWAYS_ON`) when always-on unit present unless `ALLOW_KILL_ALWAYS_ON=1`
+
+### New AMI / new instance
+
+Still run once: stage → confidence → install (`vpn-stage-to-ec2.sh` → `vpn-confidence.sh` → `vpn-install-always-on.sh`). Durability drop-in + keepalive land via install script.
+
+### Abort
+
+```bash
+bash apps/server-pilot/deploy/ssm-run-command.sh \
+  'bash /home/ubuntu/repos/zero/apps/server-pilot/deploy/vpn-disable.sh'
+```
+
+Plan: [`docs/superpowers/plans/2026-07-22-ec2-vpn-boot-deploy-durability.md`](../../../docs/superpowers/plans/2026-07-22-ec2-vpn-boot-deploy-durability.md)

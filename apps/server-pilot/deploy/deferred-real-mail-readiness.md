@@ -11,7 +11,7 @@ Current scope:
 
 Explicitly out of scope for this implementation pass:
 
-- Permanent always-on VPN enable is gated by confidence — see [`vpn-always-on.md`](./vpn-always-on.md) (ephemeral smoke still first).
+- Always-on hotel VPN is **live + durable** on pilot (`Restart=on-failure`, boot/deploy HARD assert) — see [`vpn-always-on.md`](./vpn-always-on.md) + [`2026-07-22-ec2-vpn-boot-deploy-durability.md`](../../../docs/superpowers/plans/2026-07-22-ec2-vpn-boot-deploy-durability.md). New instance still needs stage → confidence → install once. Ephemeral smoke still first for greenfield.
 - Connecting to Exchange/on-prem POP3/SMTP.
 - Sending real email.
 - Receiving/deleting real email from `nava@`.

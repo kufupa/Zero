@@ -286,10 +286,10 @@ bash scripts/ec2-deploy-preflight-via-ssm.sh
 ## 9. VPN (always-on after confidence)
 
 - **Why:** Reach Zimbra / Rocketseed / Infor on `172.24.0.0/16` without public APIs.
-- **Status:** Ephemeral smoke + **confidence gate**; always-on via `openvpn-client@nava` when install PASS.
-- **Runbooks:** [`vpn-smoke.md`](../../apps/server-pilot/deploy/vpn-smoke.md) (ephemeral) → [`vpn-always-on.md`](../../apps/server-pilot/deploy/vpn-always-on.md) (confidence → enable).
-- **Scripts:** `vpn-stage-to-ec2.sh` → `vpn-confidence.sh` → `vpn-install-always-on.sh`; abort `vpn-disable.sh`.
-- **Guards:** `pull-filter ignore redirect-gateway` + DNS/DOMAIN; host default-route + resolv assert; auto-disable on HOST_ROUTE fail.
+- **Status:** Always-on **live** on pilot (`openvpn-client@nava` active+enabled). Durable: systemd `Restart=on-failure` drop-in + `keepalive 10 60`. Boot/deploy notice via `vpn-health-assert.sh` (HARD unit/route/STS; SOFT hotel).
+- **Runbooks:** [`vpn-smoke.md`](../../apps/server-pilot/deploy/vpn-smoke.md) (ephemeral) → [`vpn-always-on.md`](../../apps/server-pilot/deploy/vpn-always-on.md) (confidence → enable + durability). Plan: [`2026-07-22-ec2-vpn-boot-deploy-durability.md`](./plans/2026-07-22-ec2-vpn-boot-deploy-durability.md).
+- **Scripts:** `vpn-stage-to-ec2.sh` → `vpn-confidence.sh` → `vpn-install-always-on.sh`; abort `vpn-disable.sh`. Deploy never restages VPN.
+- **Guards:** `pull-filter ignore redirect-gateway` + DNS/DOMAIN; host default-route + resolv assert; auto-disable on HOST_ROUTE fail; ephemeral smoke refuses always-on unless `ALLOW_KILL_ALWAYS_ON=1`.
 - **Egress:** Security group allows all outbound (`0.0.0.0/0`) for SSM, apt, VPN, and web.
 - **Allowlist:** hotel firewall may need `13.247.138.62`.
 

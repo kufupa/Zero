@@ -13,6 +13,8 @@ Repeatable baseline for overnight EC2 work on branch `EC2-pilot`. SSM-only acces
 
 Guts (`sync-ec2-git-bundle.sh`, `deploy-ec2.sh`, `ssm-run-command.sh`) remain for debugging; do not teach them as the default loop.
 
+**Hotel VPN (new AMI / new instance):** still run once — stage → confidence → install (`vpn-stage-to-ec2.sh` → `vpn-confidence.sh` → `vpn-install-always-on.sh`). Durability (`Restart=on-failure` + keepalive) lands via install. After that, deploy never restages. Runbook: [`vpn-always-on.md`](./vpn-always-on.md).
+
 ## AWS identifiers
 
 | Item | Value |
