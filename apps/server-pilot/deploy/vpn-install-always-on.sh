@@ -91,6 +91,7 @@ mv "$CLIENT_DIR/nava-auth.txt.lf" "$CLIENT_DIR/nava-auth.txt"
   echo "route 172.24.0.0 255.255.0.0"
   echo "script-security 1"
   echo "auth-nocache"
+  echo "keepalive 10 60"
 } >"$CONF"
 
 grep -q 'pull-filter ignore "redirect-gateway"' "$CONF" \
@@ -98,6 +99,13 @@ grep -q 'pull-filter ignore "redirect-gateway"' "$CONF" \
 
 chmod 600 "$CLIENT_DIR"/* "$CONF"
 chown root:root "$CLIENT_DIR"/* "$CONF"
+
+DROPIN_DIR="/etc/systemd/system/openvpn-client@nava.service.d"
+DROPIN_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/systemd/openvpn-client@nava.service.d/restart.conf"
+mkdir -p "$DROPIN_DIR"
+cp -f "$DROPIN_SRC" "$DROPIN_DIR/restart.conf"
+chmod 644 "$DROPIN_DIR/restart.conf"
+systemctl daemon-reload
 
 disable_now() {
   echo "== emergency disable =="
