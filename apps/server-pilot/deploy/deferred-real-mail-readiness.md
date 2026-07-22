@@ -1,6 +1,25 @@
 # Deferred Real-Mail Readiness
 
-Current scope:
+## Pilot cutover status (2026-07-22)
+
+**Primary path:** internet-reachable **`navaai@legacyhotels.co.za`** on Zimbra `172.24.0.10` via always-on VPN.
+
+**Operator checklist:** [`navaai-real-mail-smoke.md`](./navaai-real-mail-smoke.md)  
+(VPN assert → wipe+marker → migrate → `seed:prod` → MX dig → stage → activate → AE2 → AE3 → handoff)
+
+**Expected:** POP3 **DELE-after-ingest**; app is source of truth.  
+**AI:** `AI_DRAFTS_ENABLED=false`, `AI_WRITE_GATE_ENABLED=true`.  
+**Post-wipe:** throttle first POP3 cycles (`WORKER_ONE_SHOT` / `POP3_MAX_MESSAGES_PER_CYCLE`) — leftover Zimbra mail will DELE-ingest.
+
+### Superseded / deferred (hotel-prod later)
+
+Old BCC-only internal-aggregate model + “mailbox must not be internet-reachable” + external-quarantine negative test are **out of this pilot**. Revisit when IT ships Centurion BCC + `X-Zero-Mailbox` stamp/strip for multi-user routing. Until then, direct mail to `navaai@` and in-app routing (spam OK without stamp) are the smoke path.
+
+---
+
+## Still true (fixture / preflight)
+
+Current fixture scope:
 
 - Backend runs on EC2.
 - Frontend connects to backend.
@@ -9,14 +28,15 @@ Current scope:
 - Fake SMTP send works.
 - Isolation/load/build tests pass.
 
-Explicitly out of scope for this implementation pass:
+Still out of this wave (not blocking navaai@ smoke):
 
-- Always-on hotel VPN is **live + durable** on pilot (`Restart=on-failure`, boot/deploy HARD assert) — see [`vpn-always-on.md`](./vpn-always-on.md) + [`2026-07-22-ec2-vpn-boot-deploy-durability.md`](../../../docs/superpowers/plans/2026-07-22-ec2-vpn-boot-deploy-durability.md). New instance still needs stage → confidence → install once. Ephemeral smoke still first for greenfield.
-- Connecting to Exchange/on-prem POP3/SMTP.
-- Sending real email.
-- Receiving/deleting real email from `nava@`.
-- AI chatbot assistant work.
-- workflow-use Chromium/API integration.
+- Rocketseed / banner SMTP
+- Secrets Manager for mail POP3/SMTP (pilot = env-on-disk via [`stage-navaai-mail-env.sh`](./stage-navaai-mail-env.sh) + `write-ec2-env.sh`)
+- IT Centurion BCC + header stamp/strip multi-user routing
+- AI chatbot assistant work
+- workflow-use Chromium/API integration
+
+Always-on hotel VPN is **live + durable** on pilot (`Restart=on-failure`, boot/deploy HARD assert) — see [`vpn-always-on.md`](./vpn-always-on.md) + [`2026-07-22-ec2-vpn-boot-deploy-durability.md`](../../../docs/superpowers/plans/2026-07-22-ec2-vpn-boot-deploy-durability.md). New instance still needs stage → confidence → install once.
 
 ## Automated fixture loopback gate (pre–real-mail)
 
@@ -71,7 +91,7 @@ bash apps/server-pilot/deploy/ssm-run-command.sh \
   'cd /home/ubuntu/repos/zero && bash apps/server-pilot/deploy/wire-gate.sh'
 ```
 
-Production `.env.production` stays `MAIL_TRANSPORT_MODE=fixture`. Wire env is forced only inside `wire-gate.sh`.
+Production `.env.production` stays `MAIL_TRANSPORT_MODE=fixture` until cutover. Wire env is forced only inside `wire-gate.sh`.
 
 **Fixture prod PM2:** `deploy-ec2.sh` / `ops-deploy.sh` keep `http` + `ai-worker` only — `worker` is deleted so reboot does not show an errored POP3 process. Start `worker` only via `activate-real-mail.sh` / `wire-gate.sh` after real/wire flip.
 
@@ -90,35 +110,43 @@ bash apps/server-pilot/deploy/ssm-run-command.sh \
 
 `ai-worker` PM2 uses `AI_ENABLED=true`, `BEDROCK_REGION=us-east-1`. EC2/RDS stay `af-south-1`.
 
-## Later real-ingest phase gates
+## Real-mail cutover gates (pilot)
 
-- Run ephemeral VPN safe smoke: [`vpn-smoke.md`](./vpn-smoke.md). Then confidence → enable: [`vpn-always-on.md`](./vpn-always-on.md) (`vpn-confidence.sh` → `vpn-install-always-on.sh`). Require `CONFIDENCE_PASS` + `ALWAYS_ON_OK`.
-- Verify SSM, RDS, S3 still work after VPN (`HOST_ROUTE_OK` / `STS_OK`).
-- Verify POP3/SMTP reachability.
-- **IT transport rule (required):** BCC `navaai@legacyhotels.co.za` and set `X-Zero-Mailbox: centurion@legacyhotel.com` on Centurion-bound copies.
-- **Strip rule (required before prod multi-user):** Exchange must remove any inbound external `X-Zero-Mailbox` before applying the internal relay stamp.
-- **`nava@` must not be internet-reachable** — only internal BCC copies land there; direct external mail to `nava@` must quarantine (negative test).
-- Send test email to Centurion.
-- Confirm copied raw mail includes `X-Zero-Mailbox: centurion@legacyhotel.com` as the **last** occurrence (forged earlier values stripped or overridden by relay).
-- Run worker against real `nava@` only after fixture/fake tests are green.
+Follow [`navaai-real-mail-smoke.md`](./navaai-real-mail-smoke.md) in order:
 
-## Current no-VPN expectation
+1. `vpn-health-assert.sh` → `VPN_HARD_OK`
+2. `pilot-db-wipe.sh` + marker `/var/lib/nava-pilot/wipe-navaai.ok`
+3. migrate + `pnpm --filter @zero/server seed:prod`
+4. MX dig for `legacyhotels.co.za` (AE5); on FAIL use self-send for AE2
+5. `stage-navaai-mail-env.sh` → export password → `scripts/activate-real-mail.sh`
+6. AE2 inbound (external or self-send) + durable triage; spam OK
+7. AE3 app outbound as `navaai@`
+8. Handoff evidence + [`it-handoff-runbook.md`](./it-handoff-runbook.md)
+
+**Hotel-prod later (deferred):** Centurion-bound BCC into `navaai@` + `X-Zero-Mailbox: centurion@legacyhotel.com` last; strip forged external stamps; multi-user visibility proofs — see [`exchange-smoke.md`](./exchange-smoke.md) deferred section.
+
+## Current fixture expectation (pre-activate)
 
 ```text
 AWS STS OK
 RDS OK
 S3 OK
-POP3/SMTP skipped or may fail because real mail connection is deferred
+POP3/SMTP skipped or may fail until activate-real-mail
 ```
 
-## Future after-VPN expectation
+## After activate expectation
 
 ```text
 AWS STS still OK
 SSM still Online from laptop
 RDS still OK
 S3 OK
-POP3/SMTP OK
+VPN_HARD_OK
+POP3/SMTP auth OK to 172.24.0.10
+MAIL_TRANSPORT_MODE=real
+AI_DRAFTS_ENABLED=false
+AI_WRITE_GATE_ENABLED=true
+worker online
 ```
 
 ## If VPN breaks AWS/SSM/RDS
