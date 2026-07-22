@@ -17,6 +17,17 @@ if [ "$(id -u)" -ne 0 ]; then
   exec sudo -E bash "$0" "$@"
 fi
 
+ALWAYS_ON_CONF="/etc/openvpn/client/nava.conf"
+if [ -f "$ALWAYS_ON_CONF" ] && systemctl is-enabled --quiet openvpn-client@nava 2>/dev/null; then
+  if [ "${ALLOW_KILL_ALWAYS_ON:-0}" != "1" ]; then
+    echo "REFUSE: always-on openvpn-client@nava present. Re-run with ALLOW_KILL_ALWAYS_ON=1 only for controlled tests."
+    echo "SMOKE_REFUSE_ALWAYS_ON"
+    exit 20
+  fi
+  echo "ALLOW_KILL_ALWAYS_ON=1 — stopping unit before ephemeral test"
+  systemctl stop openvpn-client@nava
+fi
+
 : >"$LOG"
 : >"$STATUS_FILE"
 exec > >(tee -a "$LOG") 2>&1
@@ -33,6 +44,10 @@ cleanup() {
   rm -rf /run/nava-vpn
   mkdir -p /run/nava-vpn
   chmod 700 /run/nava-vpn
+  if [ "${ALLOW_KILL_ALWAYS_ON:-0}" = "1" ]; then
+    systemctl start openvpn-client@nava 2>/dev/null || true
+    echo "ALWAYS_ON_RESTART_BEST_EFFORT"
+  fi
   echo "CLEANUP_OK"
 }
 trap cleanup EXIT

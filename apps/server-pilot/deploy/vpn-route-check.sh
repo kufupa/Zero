@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+echo "== vpn HARD (unit/route/STS) =="
+bash "${SCRIPT_DIR}/vpn-health-assert.sh"
+
 echo "== identity =="
 hostname
 whoami

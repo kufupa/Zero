@@ -41,4 +41,8 @@ echo "== ops-deploy: health =="
 bash "${SCRIPT_DIR}/ssm-run-command.sh" \
   'curl -fsS http://127.0.0.1:8788/health'
 
+echo "== ops-deploy: VPN HARD assert =="
+bash "${SCRIPT_DIR}/ssm-run-command.sh" \
+  'bash /home/ubuntu/repos/zero/apps/server-pilot/deploy/vpn-health-assert.sh'
+
 echo "ops-deploy ok"
