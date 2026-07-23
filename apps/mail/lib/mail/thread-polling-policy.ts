@@ -5,3 +5,17 @@ export function resolveThreadPollingMs(value?: string): number | null {
   if (!Number.isFinite(ms) || ms < 15_000) return null;
   return ms;
 }
+
+/** Open-thread detail must poll too — list bumps to top but replies stay invisible otherwise. */
+export function openThreadQueryPollingOptions(value?: string): {
+  refetchInterval: number | false;
+  refetchIntervalInBackground: boolean;
+  refetchOnWindowFocus: boolean;
+} {
+  const ms = resolveThreadPollingMs(value);
+  return {
+    refetchInterval: ms ?? false,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
+  };
+}

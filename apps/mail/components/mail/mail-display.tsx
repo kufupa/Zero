@@ -48,6 +48,7 @@ import { RenderLabels } from './render-labels';
 import { CenturionCategoryPill } from './centurion-category-pill';
 import { cleanHtml } from '@/lib/email-utils';
 import { cleanEmailDisplay, cleanNameDisplay, MailboxInline, formatMailboxPlain } from '@/lib/mail/mailbox-format';
+import { shouldCollapseRecipientToYou } from '@/lib/mail/recipient-you-label';
 import {
   canShowHeaderDebug,
   isHeaderDebugEnabled,
@@ -1642,9 +1643,12 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                         <div className="flex flex-wrap gap-1">
                           <p className="text-muted-foreground text-sm font-medium dark:text-[#8C8C8C]">
                             {m['common.mailDisplay.to']()}:{' '}
-                            {folder !== 'sent' &&
-                            (emailData?.to || []).length === 1 &&
-                            (emailData?.cc || []).length === 0
+                            {shouldCollapseRecipientToYou({
+                              folder,
+                              to: emailData?.to || [],
+                              ccLength: (emailData?.cc || []).length,
+                              mailboxEmail: activeConnection?.email,
+                            })
                               ? 'You'
                               : renderMailboxSummary(emailData?.to || [])}
                           </p>

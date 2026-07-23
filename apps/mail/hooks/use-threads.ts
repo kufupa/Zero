@@ -20,12 +20,16 @@ import { useMemo } from 'react';
 import useDebouncedValue from '@/hooks/use-debounce';
 import { computeThreadListEnabled } from '@/lib/mail/thread-list-query-enabled';
 import { selectLiveThreadListQuery } from '@/lib/mail/thread-list-query-policy';
-import { resolveThreadPollingMs } from '@/lib/mail/thread-polling-policy';
+import {
+  openThreadQueryPollingOptions,
+  resolveThreadPollingMs,
+} from '@/lib/mail/thread-polling-policy';
 import { mergeCategoryIds, resolveMailRouteFilter } from '@/lib/mail/route-filter';
 import { resolveMailListSearch } from '@/lib/mail/search-filters';
 import { useCategorySettings } from './use-categories';
 
 const threadPollingMs = resolveThreadPollingMs(import.meta.env.VITE_MAIL_POLL_MS);
+const openThreadPolling = openThreadQueryPollingOptions(import.meta.env.VITE_MAIL_POLL_MS);
 
 const resolveThreadId = (threadData: IGetThreadResponse | undefined) => {
   if (!threadData) return undefined;
@@ -251,8 +255,11 @@ export const useThread = (threadId: string | null) => {
       },
       {
         enabled: !demoMode && !!id && !!session?.user?.id,
-        staleTime: 1000 * 60 * 60, // 1 minute
+        staleTime: 1000 * 60 * 60,
         placeholderData: undefined,
+        refetchInterval: openThreadPolling.refetchInterval,
+        refetchIntervalInBackground: openThreadPolling.refetchIntervalInBackground,
+        refetchOnWindowFocus: openThreadPolling.refetchOnWindowFocus,
       },
     ),
   );
