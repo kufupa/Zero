@@ -381,12 +381,13 @@ export const constructReplyBody = (
   const senderName = originalSender?.name || originalSender?.email || 'Unknown Sender';
   const senderEmail = originalSender?.email ? `&lt;${originalSender.email}&gt;` : '';
 
+  // class=gmail_quote: Gmail/Outlook trim signal + one outermost collapse root in Zero.
   return `
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
       <div style="">
         ${formattedMessage}
       </div>
-      <div style="padding-left: 16px; border-left: 3px solid #e2e8f0; color: #64748b;">
+      <div class="gmail_quote" style="padding-left: 16px; border-left: 3px solid #e2e8f0; color: #64748b;">
         <div style="font-size: 12px;">
           On ${originalDate}, ${senderName} ${senderEmail} wrote:
         </div>
@@ -413,7 +414,7 @@ export const constructForwardBody = (
       <div style="">
         ${formattedMessage}
       </div>
-      <div style="margin-top: 20px; border-top: 1px solid #e2e8f0; padding-top: 20px;">
+      <div class="gmail_quote" style="margin-top: 20px; border-top: 1px solid #e2e8f0; padding-top: 20px;">
         <div style="font-size: 12px; color: #64748b; margin-bottom: 10px;">
           ---------- Forwarded message ----------<br/>
           From: ${senderName} ${originalSender?.email ? `&lt;${originalSender.email}&gt;` : ''}<br/>

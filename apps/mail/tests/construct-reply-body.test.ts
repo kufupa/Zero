@@ -14,6 +14,7 @@ describe('constructReplyBody', () => {
     expect(html).toContain('wrote:');
     expect(html).toContain('<p>hi!!</p>');
     expect(html).toContain('<p>hiii</p>');
+    expect(html).toContain('class="gmail_quote"');
   });
 
   it('puts the original sender email in the wrote header', () => {
