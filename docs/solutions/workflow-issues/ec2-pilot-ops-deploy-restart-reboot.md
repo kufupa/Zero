@@ -1,7 +1,7 @@
 ---
 title: EC2 Pilot ops-deploy, ops-restart, and ops-reboot Entry Points
 date: 2026-07-10
-last_updated: 2026-07-22
+last_updated: 2026-07-23
 category: workflow-issues
 module: server-pilot deploy
 problem_type: workflow_issue
@@ -137,7 +137,9 @@ Teaching guts as the default also fights documentation: runbooks grow long, skil
 - Before planned maintenance soft reboot - prefer `ops-reboot.sh` (announce ~2-5 min staff gap; same EIP URL).
 - When writing or updating living docs, skills, or overnight agents that touch pilot ops - cite the three scripts, not the guts chain.
 - When diagnosing "box up but apps dead" after reboot - check `systemctl status pm2-ubuntu`, smoke log, then `pm2 status`; do not start with ad-hoc resurrect unless startup units are missing.
+- When `worker` / `ai-worker` show `errored` or `online` with **empty** out logs after a real-mail or deploy flip - treat as possible ESM entry / unref-sleep exit, not only env/dump issues ([pm2-esm-is-cli-entry-and-unref-sleep.md](../runtime-errors/pm2-esm-is-cli-entry-and-unref-sleep.md)); confirm poll lines in out logs, not just `pm2 status`.
 - When fixture mode is active - expect no `worker` in PM2; do not "fix" by starting POP3 worker without activate/wire paths.
+- Before/after Playwright U9 real-mail gate - use `ops-restart.sh` to bounce `UNDO_SEND_SECONDS` between `0` (gate) and `30` (product); see env bounce section above.
 - Not for: RDS stop/start, EIP changes, terminate-instance, ALB/multi-instance (out of scope; see [safe-reboot compound](./ec2-pilot-safe-reboot-and-prod-restart.md) for AWS action semantics).
 
 ## Examples
@@ -197,6 +199,21 @@ bash apps/server-pilot/deploy/ops-restart.sh
 
 Fixture path reloads `http` + `ai-worker` only, deletes `worker`, saves, curls health. Real/wire path reloads full config.
 
+### Env bounce for real-mail parity and U9 gate
+
+On live pilot (`MAIL_TRANSPORT_MODE=real`), `ops-restart.sh` is the safe way to pick up `.env.production` changes without a full rebuild. Two keys operators flip around the Playwright U9 gate:
+
+| Key | Product steady-state | U9 gate only |
+|-----|---------------------|--------------|
+| `UNDO_SEND_SECONDS` | `30` | `0` (gate script refuses non-zero) |
+| `BETTER_AUTH_URL` | `https://nava.legacy.local` | same (must match SPA / `PLAYWRIGHT_BASE_URL`) |
+
+Cycle: set `UNDO_SEND_SECONDS=0` → `ops-restart.sh` → run `playwright-real-mail-ui-gate.sh` → restore `UNDO_SEND_SECONDS=30` → `ops-restart.sh` again. Confirm PM2 process env matches the file (`pm2 env` / gate health), not just the on-disk file.
+
+`write-ec2-env.sh` and `activate-real-mail.sh` can rewrite `.env.production` — re-assert `BETTER_AUTH_URL` and `UNDO_SEND_SECONDS` after any full env regen. Prefer surgical SSM sed when only gate keys need fixing and POP3/SMTP secrets must stay.
+
+Full parity context: [live-pilot-production-parity-real-mail.md](../architecture-patterns/live-pilot-production-parity-real-mail.md).
+
 ### Example 4 - Process crash vs OS reboot
 
 **Before mental model:** "Something died - reboot the box" or "run resurrect for everything."
@@ -217,6 +234,8 @@ Fixture path reloads `http` + `ai-worker` only, deletes `worker`, saves, curls h
 
 ## Related
 
+- [live-pilot-production-parity-real-mail.md](../architecture-patterns/live-pilot-production-parity-real-mail.md) — U9 gate env cycle (`UNDO_SEND_SECONDS` 0↔30) via `ops-restart.sh`
+- [pm2-esm-is-cli-entry-and-unref-sleep.md](../runtime-errors/pm2-esm-is-cli-entry-and-unref-sleep.md) - PM2 `online`/`errored` + empty logs: ProcessContainerFork `isCliEntry` + ref'd poll sleep (not dump/ops alone)
 - [ec2-pilot-nava-openvpn-always-on-health.md](./ec2-pilot-nava-openvpn-always-on-health.md) - always-on OpenVPN Restart drop-in, HARD/SOFT assert, assert-don't-restage
 - [ec2-pilot-safe-reboot-and-prod-restart.md](./ec2-pilot-safe-reboot-and-prod-restart.md) - soft-reboot safety (EIP, RDS, same URL); complementary angle
 - [ec2-pilot-autonomous-deploy-and-ssm-gotchas.md](./ec2-pilot-autonomous-deploy-and-ssm-gotchas.md) - deploy/SSM/bundle guts; Examples already prefer `ops-*`

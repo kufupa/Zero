@@ -1,6 +1,7 @@
 ---
 title: Playwright E2E gate fails on EC2 against the pilot UI (cookies, browser revision, onboarding, legacy specs)
 date: 2026-07-07
+last_updated: 2026-07-23
 module: packages/testing e2e + apps/mail pilot UI
 problem_type: test_failure
 component: testing_framework
@@ -113,7 +114,33 @@ real, populated page.
 - **Rewrite specs when the UI paradigm changes** (command palette / hotkeys / context menus) rather than patching legacy selectors.
 - **Mint sessions from Secrets Manager** for autonomous runs instead of requiring an interactive login.
 
+## Real-mail UI gate (U9) — extends this learning
+
+After production-parity overnight (2026-07-23), a **second** Playwright gate proves live hotel mail through the nginx SPA — not just cookie injection against a dev server.
+
+| Gate | Script | Transport | Login proof |
+|------|--------|-----------|-------------|
+| Contract / pilot UI (this doc) | `playwright-ec2-gate.sh` patterns | fixture or demo paths | Minted cookies OK when `PLAYWRIGHT_BASE_URL` host matches |
+| Real-mail U9 | `apps/server-pilot/deploy/playwright-real-mail-ui-gate.sh` | `MAIL_TRANSPORT_MODE=real` only | **UI form login required** (AE1); mint is assist-only |
+
+U9-specific requirements (see [live-pilot-production-parity-real-mail.md](../architecture-patterns/live-pilot-production-parity-real-mail.md)):
+
+- `PLAYWRIGHT_BASE_URL=https://nava.legacy.local` must match `BETTER_AUTH_URL` host — cookies minted on `127.0.0.1` still fail when auth URL is `nava.legacy.local`.
+- `UNDO_SEND_SECONDS=0` in `.env.production` **and** PM2 after `ops-restart.sh` — gate refuses non-zero (product uses `30`; restore after green).
+- Refuses `ZERO_DEMO_FRONTEND_ONLY=1` / `VITE_FRONTEND_ONLY=1`.
+- Specs: AE1 login, AE7 compose self-loopback, AE9 Force Sync (await mutation `{processed}`, poll budget ≥60s), AE8 reply (`/^Reply(\s+r)?$/i` accessible name).
+- Compose via sidebar click — hard goto `?isComposeOpen=` remounts onboarding.
+
+```bash
+# Gate cycle (on EC2 via ssm-run-command.sh)
+# 1) UNDO_SEND_SECONDS=0 → ops-restart.sh
+bash apps/server-pilot/deploy/playwright-real-mail-ui-gate.sh
+# 2) Restore UNDO_SEND_SECONDS=30 → ops-restart.sh (mandatory for product undo)
+```
+
 ## Related
+- [live-pilot-production-parity-real-mail.md](../architecture-patterns/live-pilot-production-parity-real-mail.md) — U9 gate, auth host, UNDO 0↔30 restore, forceSync
+- [ec2-pilot-ops-deploy-restart-reboot.md](../workflow-issues/ec2-pilot-ops-deploy-restart-reboot.md) — `ops-restart.sh` to bounce PM2 env for gate vs product
 - [ec2-pilot-autonomous-deploy-and-ssm-gotchas.md](../workflow-issues/ec2-pilot-autonomous-deploy-and-ssm-gotchas.md) — running long gates on EC2 via SSM
-- [nava-fixture-loopback-e2e-harness.md](../architecture-patterns/nava-fixture-loopback-e2e-harness.md) — fixture/wire E2E harness that complements the browser gate
+- [nava-fixture-loopback-e2e-harness.md](../architecture-patterns/nava-fixture-loopback-e2e-harness.md) — fixture/wire E2E harness; not a substitute for U9
 - `docs/superpowers/plans/2026-07-06-server-pilot-contract-convergence-sdd.md` — Task 17 (full repo, Mailpit, Playwright E2E gate)

@@ -176,5 +176,6 @@ apps/server-pilot/deploy/ai-mail-pipeline-live-gate.sh
 
 - [Bedrock adapter factory and EC2 live gate](../integration-issues/bedrock-adapter-factory-and-ec2-live-gate.md) — adapter selection and IAM proof (complements this doc; does not cover full pipeline)
 - [EC2 AI contract tests RDS gate FK setup](../test-failures/ec2-ai-contract-tests-rds-gate-fk-setup.md) — DB-backed contract test setup
+- [PM2 ESM is-CLI-entry + unref sleep](../runtime-errors/pm2-esm-is-cli-entry-and-unref-sleep.md) — `worker` / `ai-worker` stay online under PM2 (argv + timer refs)
 - `docs/server-pilot-ai.md` — operator runbook (flags, gate order, rollback, SQL diagnostics)
 - `docs/superpowers/plans/2026-07-08-live-ai-mail-pipeline.md` — implementation plan source

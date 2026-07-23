@@ -1,7 +1,7 @@
 ---
 title: MAIL_TRANSPORT_MODE Fixture vs Real Transport Pattern
 date: 2026-07-02
-last_updated: 2026-07-22
+last_updated: 2026-07-23
 category: architecture-patterns
 module: server-pilot mail ingest
 problem_type: architecture_pattern
@@ -21,7 +21,7 @@ tags:
 
 ## Context
 
-The EC2 pilot is production-scoped — three mailboxes, roughly 1k messages/day — but IT has not yet handed over Exchange POP3/SMTP credentials. The backend must run on real RDS and S3 while mail server TCP connections stay off. `MAIL_TRANSPORT_MODE` (`fixture` | `wire` | `real`) lets fake, Mailpit, and Exchange adapters share identical interfaces and the same downstream persistence path (S3 → Postgres transaction → message row).
+The EC2 pilot is production-scoped — single ingest mailbox (`navaai@legacyhotels.co.za` on hotel Zimbra) plus logical hotel identities. Before real-mail cutover, the backend had to run on real RDS and S3 while mail-server TCP stayed off. `MAIL_TRANSPORT_MODE` (`fixture` | `wire` | `real`) lets fake, Mailpit, and real POP3/SMTP adapters share identical interfaces and the same downstream persistence path (S3 → Postgres transaction → message row). As of 2026-07-22 the pilot runs `real` against Zimbra; fixture/wire remain the deploy-gate and Mailpit paths.
 
 ## Guidance
 
@@ -31,7 +31,7 @@ The EC2 pilot is production-scoped — three mailboxes, roughly 1k messages/day 
 |---------|---------------------|--------|--------|
 | POP3 | `FakePop3Client` + fixture `.eml` dir | `RealPop3Client` → Mailpit | `RealPop3Client` |
 | SMTP | `FakeSmtpTransport` ring buffer | `RealSmtpTransport` → Mailpit | `RealSmtpTransport` (nodemailer) |
-| TCP to mail server | None | `127.0.0.1` Mailpit sidecar | VPN route to Exchange |
+| TCP to mail server | None | `127.0.0.1` Mailpit sidecar | VPN route to hotel Zimbra |
 | Downstream path | Same store/ingest transaction | Identical | Identical |
 
 ### Factory pattern
@@ -58,18 +58,19 @@ Post-deploy with `MAIL_TRANSPORT_MODE=fixture`:
 
 Prerequisite: always-on hotel OpenVPN healthy (HARD assert / split tunnel). See [ec2-pilot-nava-openvpn-always-on-health.md](../workflow-issues/ec2-pilot-nava-openvpn-always-on-health.md) — do not restage VPN on every deploy.
 
-`activate-real-mail.sh`: store secrets → VPN route check → POP3/SMTP smoke → set `MAIL_TRANSPORT_MODE=real` → redeploy → one real ingest cycle with `--max-messages 1`.
+`activate-real-mail.sh`: store secrets → VPN route check → POP3/SMTP smoke → set `MAIL_TRANSPORT_MODE=real` → redeploy → one real ingest cycle with `--max-messages 1`. After activate, confirm PM2 `worker` out logs show poll cycles (`online` alone can mask a silent `main()` skip under ProcessContainerFork).
 
 ## Why This Matters
 
-Without fixture mode, deploy gates either skip ingest (untested store path) or require live Exchange (blocked by IT). Fake adapters mirroring real interfaces mean code exercised on every deploy is the same code IT will activate.
+Without fixture mode, deploy gates either skip ingest (untested store path) or require live hotel mail (VPN + credentials). Fake adapters mirroring real interfaces mean code exercised on every deploy is the same code activated for `real`.
 
 ## When to Apply
 
-- **Now:** `MAIL_TRANSPORT_MODE=fixture` on EC2 (default if unset).
-- **Pre-IT:** run `wire-gate.sh` via SSM for Mailpit TCP confidence.
-- **After IT handoff:** flip to `real`, run handoff script, verify one ingest cycle.
-- **Never:** set `real` before security Wave 1 gate passes and IT relay rules documented.
+- **Daily gates / safe default:** `MAIL_TRANSPORT_MODE=fixture` when not proving hotel mail (unset still defaults fixture in code paths that care).
+- **Pre-real TCP confidence:** run `wire-gate.sh` via SSM for Mailpit.
+- **Live hotel mail:** `real` after VPN HARD assert + activate/smoke; verify one ingest cycle **and** PM2 `worker` out logs (status `online` alone is not enough — see PM2 ESM entry learning).
+- **Production-parity UI proof (U9):** keep `real` — do **not** flip to fixture for Playwright real-mail gate. U9 exercises compose/reply/forceSync on live Zimbra; see [live-pilot-production-parity-real-mail.md](./live-pilot-production-parity-real-mail.md).
+- **Never:** set `real` without VPN reachability to the mail host and staged credentials.
 
 ## Examples
 
@@ -81,7 +82,9 @@ INGEST_FIXTURE_DIR=/home/ubuntu/repos/zero/apps/server-pilot/tests/fixtures
 
 ## Related
 
+- [live-pilot-production-parity-real-mail.md](./live-pilot-production-parity-real-mail.md) — production-parity UX on `real` transport (auth host, poll, U9 gate, undo queue)
 - [ec2-pilot-nava-openvpn-always-on-health.md](../workflow-issues/ec2-pilot-nava-openvpn-always-on-health.md) — always-on OpenVPN durability / HARD assert (prerequisite for `real`)
+- [pm2-esm-is-cli-entry-and-unref-sleep.md](../runtime-errors/pm2-esm-is-cli-entry-and-unref-sleep.md) — after `real` flip, `worker` must enter `main()` under PM2 (not just show `online`)
 - [2026-07-02-ec2-pilot-bug-fixes.md](../../superpowers/plans/2026-07-02-ec2-pilot-bug-fixes.md) (Task 19)
 - [deferred-real-mail-readiness.md](../../../apps/server-pilot/deploy/deferred-real-mail-readiness.md)
 - [wire-gate.sh](../../../apps/server-pilot/deploy/wire-gate.sh)

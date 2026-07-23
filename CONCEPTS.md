@@ -21,7 +21,7 @@ The single POP3 sink account (`navaai@legacyhotels.co.za` on the hotel Zimbra pi
 
 ### MAIL_TRANSPORT_MODE
 
-Environment switch controlling whether POP3/SMTP use fixture adapters (in-memory / fixture files, no TCP to Exchange), wire adapters (real TCP to localhost Mailpit), or real adapters (Exchange). Pilot default is `fixture`; pre-IT wire gate uses `wire`; IT handoff flips to `real` without code changes.
+Environment switch controlling whether POP3/SMTP use fixture adapters (in-memory / fixture files, no TCP to hotel mail), wire adapters (real TCP to localhost Mailpit), or real adapters (hotel Zimbra/Exchange). Live EC2 pilot runs `real`; fixture remains the autonomous/local default and wire is the pre-IT Mailpit gate. Flip modes without code changes.
 
 ### Wire transport
 
@@ -87,7 +87,19 @@ A verification gate (typecheck, test, or build) reported as passing in a hand-of
 
 ### E2E session mint
 
-Autonomous Playwright gate step that logs in a pilot user non-interactively — POST `/api/auth/sign-in/email` with a password from Secrets Manager — then exports `PLAYWRIGHT_SESSION_TOKEN`/`PLAYWRIGHT_SESSION_DATA` (+ `PLAYWRIGHT_COOKIE_PREFIX`) so `auth.setup.ts` injects a real Better Auth session. Cookie domain/secure derive from `PLAYWRIGHT_BASE_URL`, not hardcoded `localhost`.
+Autonomous Playwright gate step that logs in a pilot user non-interactively — POST `/api/auth/sign-in/email` with a password from Secrets Manager — then exports `PLAYWRIGHT_SESSION_TOKEN`/`PLAYWRIGHT_SESSION_DATA` (+ `PLAYWRIGHT_COOKIE_PREFIX`) so `auth.setup.ts` injects a real Better Auth session. Cookie domain/secure derive from `PLAYWRIGHT_BASE_URL`, not hardcoded `localhost`. For the real-mail U9 gate, browser form login is the proof path; mint remains assist-only and does not replace AE1.
+
+### U9 gate
+
+Ephemeral Playwright real-mail UI proof on EC2 (`playwright-real-mail-ui-gate.sh`) against the live SPA host and hotel mailbox. Covers browser login, compose self-loopback, Force Sync loopback, and reply loopback. Requires real transport, host-matched auth URL, and a zero undo window for deterministic flush — then product undo must be restored.
+
+### Force Sync
+
+Operator-triggered one-shot ingest from the SPA debug menu: calls `forceSync` → `ingestOnce` under a mailbox lock and invalidates thread queries so new mail appears without a full page reload. Complements the default thread poll interval; does not replace always-on POP3 draining.
+
+### Undo send window
+
+Seconds outbound mail sits in the undo/schedule queue before SMTP flush (`UNDO_SEND_SECONDS`). Product UX uses a human-scale window; automated U9 sets the window to zero so compose/reply assertions are not racing the queue, then restores the product value after the gate.
 
 ### AI gate
 

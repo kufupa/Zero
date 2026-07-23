@@ -12,7 +12,8 @@ Searchable learnings from solved problems on this repo. Written by `/ce-compound
 | [integration-issues/fe-pilot-trpc-wire-contract-drift.md](integration-issues/fe-pilot-trpc-wire-contract-drift.md) | tRPC 405, FE/pilot payload drift, load gate false positives |
 | [security-issues/ec2-pilot-pre-real-ingest-security-gate.md](security-issues/ec2-pilot-pre-real-ingest-security-gate.md) | Security hardening wave before real mail |
 | [architecture-patterns/mail-transport-mode-fixture-vs-real.md](architecture-patterns/mail-transport-mode-fixture-vs-real.md) | MAIL_TRANSPORT_MODE fixture vs real handoff |
-| [architecture-patterns/nava-fixture-loopback-e2e-harness.md](architecture-patterns/nava-fixture-loopback-e2e-harness.md) | Fixture loopback bridge, Nava E2E scenarios, EC2 gate |
+| [architecture-patterns/live-pilot-production-parity-real-mail.md](architecture-patterns/live-pilot-production-parity-real-mail.md) | Live-pilot parity: auth host, 15s poll, forceSync, U9 gate, UNDO 0↔30 |
+| [runtime-errors/pm2-esm-is-cli-entry-and-unref-sleep.md](runtime-errors/pm2-esm-is-cli-entry-and-unref-sleep.md) | PM2 ESM `isMain` + unref sleep → worker errored / empty logs |
 
 Domain vocabulary: [CONCEPTS.md](../../CONCEPTS.md) at repo root.
 
