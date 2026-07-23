@@ -103,6 +103,13 @@ export function isOutboundClaimable(
   return false;
 }
 
+/** True if outbound msg already has SMTP Message-ID → skip re-send on reclaim. */
+export function hasPersistedSmtpDelivery(
+  messageIdHeader: string | null | undefined,
+): boolean {
+  return Boolean(messageIdHeader);
+}
+
 export async function enqueueOutbound(args: {
   transportId: string;
   messageId: string;
@@ -215,10 +222,32 @@ async function claimDue(
   });
 }
 
+async function markQueueSent(rowId: string, db: DB, now: Date = new Date()): Promise<void> {
+  await db
+    .update(outboundSendQueue)
+    .set({ status: 'sent', lastError: null, updatedAt: now })
+    .where(eq(outboundSendQueue.id, rowId));
+}
+
 async function deliverClaimed(
   row: typeof outboundSendQueue.$inferSelect,
   db: DB,
 ): Promise<SmtpSendResult> {
+  // Reclaim path: SMTP may already have succeeded; message row has Message-ID.
+  const [existing] = await db
+    .select({ messageIdHeader: message.messageIdHeader })
+    .from(message)
+    .where(and(eq(message.id, row.messageId), eq(message.transportId, row.transportId)))
+    .limit(1);
+
+  if (hasPersistedSmtpDelivery(existing?.messageIdHeader)) {
+    await markQueueSent(row.id, db);
+    return {
+      messageId: existing!.messageIdHeader!,
+      accepted: [],
+    };
+  }
+
   const payload = deserializeSmtpPayload(row.smtpPayload as unknown as QueuedSmtpPayload);
   const smtpResult = await getSmtpTransport().send(payload);
 
@@ -229,21 +258,17 @@ async function deliverClaimed(
   maybeEnqueueLoopback(payload, smtpResult, mode, payload.extraHeaders);
 
   const now = new Date();
-  await db.transaction(async (tx) => {
-    await tx
-      .update(message)
-      .set({
-        messageIdHeader: smtpResult.messageId,
-        sentAt: now,
-        receivedAt: now,
-        updatedAt: now,
-      })
-      .where(and(eq(message.id, row.messageId), eq(message.transportId, row.transportId)));
-    await tx
-      .update(outboundSendQueue)
-      .set({ status: 'sent', lastError: null, updatedAt: now })
-      .where(eq(outboundSendQueue.id, row.id));
-  });
+  // Persist smtp id on message FIRST so reclaim can skip SMTP if queue mark fails.
+  await db
+    .update(message)
+    .set({
+      messageIdHeader: smtpResult.messageId,
+      sentAt: now,
+      receivedAt: now,
+      updatedAt: now,
+    })
+    .where(and(eq(message.id, row.messageId), eq(message.transportId, row.transportId)));
+  await markQueueSent(row.id, db, now);
 
   return smtpResult;
 }

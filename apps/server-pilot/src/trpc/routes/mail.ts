@@ -1147,19 +1147,30 @@ export const mailRouter = tRouter({
       if (msg.direction !== 'outbound') {
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'not outbound' });
       }
-      const cancelled = await cancelOutbound(input.messageId, transportId, db);
-      if (!cancelled) {
-        throw new TRPCError({
-          code: 'BAD_REQUEST',
-          message: 'UNDO_WINDOW_CLOSED',
-        });
-      }
-      await db
-        .delete(message)
-        .where(
-          and(eq(message.id, input.messageId), eq(message.transportId, transportId)),
+      // Atomic: cancel + delete + thread refresh, or roll back. Cancel fail → no delete.
+      await db.transaction(async (tx) => {
+        const cancelled = await cancelOutbound(
+          input.messageId,
+          transportId,
+          tx as unknown as typeof db,
         );
-      await refreshThreadAfterMessageRemoved(db, msg.threadId, transportId);
+        if (!cancelled) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: 'UNDO_WINDOW_CLOSED',
+          });
+        }
+        await tx
+          .delete(message)
+          .where(
+            and(eq(message.id, input.messageId), eq(message.transportId, transportId)),
+          );
+        await refreshThreadAfterMessageRemoved(
+          tx as unknown as typeof db,
+          msg.threadId,
+          transportId,
+        );
+      });
       return { unsent: true };
     }),
 

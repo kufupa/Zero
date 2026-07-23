@@ -11,10 +11,13 @@ import {
   __forceSendAtPastForTests,
   flushDue,
   getUndoSendSeconds,
+  hasPersistedSmtpDelivery,
   isOutboundClaimable,
   serializeSmtpPayload,
   deserializeSmtpPayload,
 } from '../src/mail/send/outbound-queue.js';
+import { and, eq } from 'drizzle-orm';
+import { message, outboundSendQueue } from '../src/db/schema/mail.js';
 import {
   TEST_DB_AVAILABLE,
   probeTestDb,
@@ -130,6 +133,19 @@ describe('smtp payload serialize round-trip', () => {
   });
 });
 
+describe('hasPersistedSmtpDelivery', () => {
+  it('true when messageIdHeader set → skip SMTP on reclaim', () => {
+    expect(hasPersistedSmtpDelivery('<smtp@id>')).toBe(true);
+    expect(hasPersistedSmtpDelivery('id')).toBe(true);
+  });
+
+  it('false when null/empty → must SMTP', () => {
+    expect(hasPersistedSmtpDelivery(null)).toBe(false);
+    expect(hasPersistedSmtpDelivery(undefined)).toBe(false);
+    expect(hasPersistedSmtpDelivery('')).toBe(false);
+  });
+});
+
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('outbound queue (integration)', () => {
   const prevUndo = process.env.UNDO_SEND_SECONDS;
 
@@ -183,6 +199,56 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('outbound queue (integration)'
       expect(fake.sent).toHaveLength(1);
       await flushDue({ db });
       expect(fake.sent).toHaveLength(1);
+    });
+  }, 30000);
+
+  it('reclaim sending with existing messageIdHeader → skip SMTP', async () => {
+    await withSeededTestDb(async (db) => {
+      process.env.UNDO_SEND_SECONDS = '30';
+      const fake = new FakeSmtpTransport();
+      __setSmtpTransportForTests(fake);
+      const caller = await callerFor('user-navaai', {
+        db,
+        requestedTransportId: 'transport-nava',
+      });
+      const r = await caller.mail.send({
+        to: ['a@example.com'],
+        subject: 'reclaim-skip',
+        html: '<p>x</p>',
+        text: 'x',
+      });
+      const messageId = (r as { messageId: string }).messageId;
+      await __forceSendAtPastForTests(messageId, 'transport-nava', db);
+      await flushDue({ db });
+      expect(fake.sent).toHaveLength(1);
+
+      // Simulate crash after SMTP persist, before queue marked sent: stale sending + header.
+      const stale = new Date(Date.now() - RECLAIM_SENDING_AFTER_MS - 1000);
+      await db
+        .update(outboundSendQueue)
+        .set({ status: 'sending', claimedAt: stale, updatedAt: new Date() })
+        .where(
+          and(
+            eq(outboundSendQueue.messageId, messageId),
+            eq(outboundSendQueue.transportId, 'transport-nava'),
+          ),
+        );
+      const [msg] = await db
+        .select({ messageIdHeader: message.messageIdHeader })
+        .from(message)
+        .where(eq(message.id, messageId))
+        .limit(1);
+      expect(msg?.messageIdHeader).toBeTruthy();
+
+      await flushDue({ db });
+      expect(fake.sent).toHaveLength(1);
+
+      const [q] = await db
+        .select({ status: outboundSendQueue.status })
+        .from(outboundSendQueue)
+        .where(eq(outboundSendQueue.messageId, messageId))
+        .limit(1);
+      expect(q?.status).toBe('sent');
     });
   }, 30000);
 
