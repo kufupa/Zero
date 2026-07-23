@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  getHotelFolderPresentation,
+  getHotelPillColorStyle,
+} from '@/lib/mail/hotel-folder-presentation';
+import {
   buildListThreadsInput,
   categoryColorNavTheme,
   mergeCategoryIds,
@@ -37,6 +41,11 @@ describe('mail route filter contract', () => {
     });
     expect(input.labelIds).toEqual([]);
     expect(input.filters.categoryIds).not.toEqual(input.labelIds);
+  });
+
+  it('hotel chip display uses presentation title for managed slug', () => {
+    expect(getHotelFolderPresentation('travel-agents')?.title).toBe('Travel Agents');
+    expect(getHotelPillColorStyle('travel-agents').bg).toBe('#EDE9FE');
   });
 
   it('merges route + query categoryIds and applies color theme', () => {

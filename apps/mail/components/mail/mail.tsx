@@ -29,6 +29,11 @@ import { m } from '@/paraglide/messages';
 import { isMac } from '@/lib/platform';
 import { useQueryState } from 'nuqs';
 import { cn } from '@/lib/utils';
+import {
+  getHotelFolderPresentation,
+  getHotelPillColorStyle,
+  isHotelManagedCategorySlug,
+} from '@/lib/mail/hotel-folder-presentation';
 import { useAtom } from 'jotai';
 const ThreadDisplay = lazy(() =>
   import('@/components/mail/thread-display').then((module) => ({
@@ -782,6 +787,13 @@ function CategoryDropdown({ isMultiSelectMode }: CategoryDropdownProps) {
           const isChecked = isAllMail
             ? categoryIds.length === 0
             : categoryIds.includes(category.id);
+          const slug = category.slug;
+          const presentation = slug ? getHotelFolderPresentation(slug) : null;
+          const displayName = presentation?.title ?? category.name;
+          const dotColor =
+            slug && isHotelManagedCategorySlug(slug)
+              ? getHotelPillColorStyle(slug).text
+              : category.color;
           return (
             <DropdownMenuItem
               key={category.id}
@@ -794,16 +806,14 @@ function CategoryDropdown({ isMultiSelectMode }: CategoryDropdownProps) {
               role="menuitemcheckbox"
               aria-checked={isChecked}
             >
-              {category.color ? (
+              {dotColor ? (
                 <span
                   className="h-2.5 w-2.5 shrink-0 rounded-full"
-                  style={{ backgroundColor: category.color }}
+                  style={{ backgroundColor: dotColor }}
                   aria-hidden
                 />
               ) : null}
-              <span className="text-foreground font-medium capitalize">
-                {category.name.toLowerCase()}
-              </span>
+              <span className="text-foreground font-medium">{displayName}</span>
               {isChecked && <Check className="text-primary ml-auto h-4 w-4" />}
             </DropdownMenuItem>
           );
