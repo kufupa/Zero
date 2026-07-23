@@ -4,6 +4,7 @@ import {
   composeSelfLoopback,
   expectSubjectInInbox,
   forceSyncAndAwaitProcessed,
+  dismissMailOnboarding,
 } from './helpers/real-mail';
 
 /**
@@ -35,13 +36,19 @@ test.describe('real-mail reply loopback (AE8)', () => {
     }
 
     await page.getByText(subject, { exact: false }).first().click();
-    const replyBtn = page.getByRole('button', { name: 'Reply', exact: true }).first();
+    // ActionButton appends shortcut → accessible name "Reply r", not exact "Reply".
+    const replyBtn = page
+      .getByRole('button', { name: /^Reply(\s+r)?$/i })
+      .or(page.getByRole('button', { name: /^Reply(?!\s*all)/i }))
+      .first();
     await expect(replyBtn).toBeVisible({ timeout: 30_000 });
     await replyBtn.click();
 
+    await dismissMailOnboarding(page);
+
     const editor = page.locator('.ProseMirror').first();
     await expect(editor).toBeVisible({ timeout: 30_000 });
-    await editor.click();
+    await editor.click({ force: true });
     await editor.fill(marker);
 
     await page.getByRole('button', { name: /^Send\s*$/i }).first().click();
