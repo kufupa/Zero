@@ -898,7 +898,7 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
       <html>
         <head>
           <meta charset="utf-8">
-          <title>Print Email - ${emailData.subject || 'No Subject'}</title>
+          <title>Print Email - ${escapePrintHtml(emailData.subject || 'No Subject')}</title>
           <style>
             * {
               margin: 0;
@@ -1099,7 +1099,7 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
           <div class="email-container">
             <!-- Email Header -->
             <div class="email-header">
-              <h1 class="email-title">${emailData.subject || 'No Subject'}</h1>
+              <h1 class="email-title">${escapePrintHtml(emailData.subject || 'No Subject')}</h1>
 
               ${
                 emailData?.tags && emailData.tags.length > 0

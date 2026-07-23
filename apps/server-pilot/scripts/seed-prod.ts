@@ -109,6 +109,9 @@ async function putPilotSecret(payload: Record<string, { password: string }>): Pr
 }
 
 async function main(): Promise<void> {
+  if (process.env.CONFIRM_PILOT_SEED !== '1') {
+    throw new Error('refusing seed: set CONFIRM_PILOT_SEED=1');
+  }
   const flags = parseFlags(process.argv.slice(2));
   const env = parseEnv(process.env);
   const conn = postgres(env.DATABASE_URL, {

@@ -361,7 +361,7 @@ export function ThreadDisplay() {
       <html>
         <head>
           <meta charset="utf-8">
-          <title>Print Thread - ${emailData?.latest?.subject || 'No Subject'}</title>
+          <title>Print Thread - ${escapePrintHtml(emailData?.latest?.subject || 'No Subject')}</title>
           <style>
             * {
               margin: 0;
@@ -561,7 +561,7 @@ export function ThreadDisplay() {
               (message, index) => `
             <div class="email-container">
               <div class="email-header">
-                ${index === 0 ? `<h1 class="email-title">${message.subject || 'No Subject'}</h1>` : ''}
+                ${index === 0 ? `<h1 class="email-title">${escapePrintHtml(message.subject || 'No Subject')}</h1>` : ''}
 
 
                 ${

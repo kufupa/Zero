@@ -249,7 +249,7 @@ describe('deploy config', () => {
     expect(ops).toContain('ssm-run-command.sh');
   });
 
-  it('pilot-db-wipe.sh requires CONFIRM=WIPE_PILOT_DB and passes bash -n', async () => {
+  it('pilot-db-wipe.sh requires CONFIRM_PILOT_WIPE=1 and passes bash -n', async () => {
     const { readFileSync } = await import('node:fs');
     const { spawnSync } = await import('node:child_process');
     const { fileURLToPath } = await import('node:url');
@@ -257,7 +257,7 @@ describe('deploy config', () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const scriptPath = join(here, '..', 'deploy', 'pilot-db-wipe.sh');
     const script = readFileSync(scriptPath, 'utf8');
-    expect(script).toContain('CONFIRM=WIPE_PILOT_DB');
+    expect(script).toContain('CONFIRM_PILOT_WIPE=1');
     expect(script).toContain('exit 2');
     expect(script).toContain('/var/lib/nava-pilot/wipe-navaai.ok');
     expect(script).toContain('TRUNCATE TABLE');
@@ -270,10 +270,10 @@ describe('deploy config', () => {
     // Refuse without confirm: exit 2 before any DB touch (no DATABASE_URL needed).
     const refuse = spawnSync('bash', [scriptPath], {
       encoding: 'utf8',
-      env: { ...process.env, CONFIRM: '', DATABASE_URL: '' },
+      env: { ...process.env, CONFIRM_PILOT_WIPE: '', DATABASE_URL: '' },
     });
     expect(refuse.status).toBe(2);
-    expect(refuse.stderr).toMatch(/CONFIRM=WIPE_PILOT_DB/);
+    expect(refuse.stderr).toMatch(/CONFIRM_PILOT_WIPE=1/);
   });
 
   it('activate-real-mail.sh probes ports, SMTP auth smoke, staged password wins', async () => {

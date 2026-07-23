@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Truncate pilot mail tables (leave auth users). Destructive — requires CONFIRM.
-# Usage (on EC2): CONFIRM=WIPE_PILOT_DB bash apps/server-pilot/deploy/pilot-db-wipe.sh
+# Usage (on EC2): CONFIRM_PILOT_WIPE=1 bash apps/server-pilot/deploy/pilot-db-wipe.sh
 # Never run against non-pilot DBs. Live wipe is a separate cutover task.
 set -euo pipefail
 
-if [ "${CONFIRM:-}" != "WIPE_PILOT_DB" ]; then
-  echo "Refuse: set CONFIRM=WIPE_PILOT_DB to wipe pilot mail tables. Auth users left intact." >&2
+if [ "${CONFIRM_PILOT_WIPE:-}" != "1" ]; then
+  echo "refusing wipe: set CONFIRM_PILOT_WIPE=1" >&2
   exit 2
 fi
 
