@@ -16,19 +16,32 @@ export function requireRealMailPassword(): string {
 }
 
 export async function dismissMailOnboarding(page: Page) {
-  await page.waitForTimeout(500);
+  // OnboardingWrapper remounts open=true on each mail layout load (incl. compose query nav).
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const skipTour = page
+      .getByRole('button', { name: /Skip for now/i })
+      .or(page.getByText('Skip for now', { exact: true }));
+    if (await skipTour.first().isVisible({ timeout: 2_500 }).catch(() => false)) {
+      await skipTour.first().click({ force: true });
+      await page.waitForTimeout(400);
+      continue;
+    }
 
-  const skipTour = page.getByRole('button', { name: 'Skip for now' });
-  if (await skipTour.isVisible({ timeout: 3000 }).catch(() => false)) {
-    await skipTour.click();
-    await page.waitForTimeout(300);
-    return;
-  }
+    const navaTour = page.getByText('Welcome to Nava AI').or(page.getByText('Nava AI', { exact: true }));
+    if (await navaTour.first().isVisible({ timeout: 800 }).catch(() => false)) {
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(300);
+      continue;
+    }
 
-  const legacyWelcome = page.getByText('Welcome to Zero Email!');
-  if (await legacyWelcome.isVisible({ timeout: 1000 }).catch(() => false)) {
-    await page.locator('body').click({ position: { x: 100, y: 100 } });
-    await page.waitForTimeout(300);
+    const legacyWelcome = page.getByText('Welcome to Zero Email!');
+    if (await legacyWelcome.isVisible({ timeout: 500 }).catch(() => false)) {
+      await page.locator('body').click({ position: { x: 100, y: 100 }, force: true });
+      await page.waitForTimeout(300);
+      continue;
+    }
+
+    break;
   }
 }
 
@@ -125,8 +138,10 @@ export async function composeSelfLoopback(page: Page, subject: string) {
 
   await page.locator('#compose-subject').fill(subject);
 
+  await dismissMailOnboarding(page);
+
   const editor = page.locator('.ProseMirror').first();
-  await editor.click();
+  await editor.click({ force: true, timeout: 15_000 });
   await editor.fill(`Real-mail gate body for ${subject}`);
 
   await page.getByRole('button', { name: /^Send\s*$/i }).first().click();
