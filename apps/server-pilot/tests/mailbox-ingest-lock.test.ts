@@ -39,6 +39,55 @@ describe('withMailboxIngestLock', () => {
     expect(order).toEqual(['first-enter', 'first-exit', 'second']);
   });
 
+  it('concurrent waiters serialize after holder releases', async () => {
+    const order: string[] = [];
+    let inside = 0;
+    let maxInside = 0;
+    let releaseHolder!: () => void;
+    const holderGate = new Promise<void>((resolve) => {
+      releaseHolder = resolve;
+    });
+
+    const holder = withMailboxIngestLock('transport-race', async () => {
+      await holderGate;
+      return 'held';
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const makeWaiter = (name: string) =>
+      withMailboxIngestLock('transport-race', async () => {
+        inside++;
+        maxInside = Math.max(maxInside, inside);
+        order.push(`${name}-enter`);
+        await Promise.resolve();
+        await Promise.resolve();
+        order.push(`${name}-exit`);
+        inside--;
+        return name;
+      });
+
+    const w1 = makeWaiter('a');
+    const w2 = makeWaiter('b');
+
+    // Both waiters enqueue while holder still holds.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    releaseHolder();
+    const [h, a, b] = await Promise.all([holder, w1, w2]);
+    expect(h).toEqual({ ok: true, value: 'held' });
+    expect(a.ok).toBe(true);
+    expect(b.ok).toBe(true);
+    expect(maxInside).toBe(1);
+    expect(order).toEqual(
+      order[0] === 'a-enter'
+        ? ['a-enter', 'a-exit', 'b-enter', 'b-exit']
+        : ['b-enter', 'b-exit', 'a-enter', 'a-exit'],
+    );
+  });
+
   it('returns cycleError when lock wait times out', async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {

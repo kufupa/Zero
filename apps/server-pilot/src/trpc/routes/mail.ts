@@ -153,6 +153,22 @@ export function __setForceSyncPop3ForTests(client: Pop3Client | undefined): void
   forceSyncPop3ForTests = client;
 }
 
+/** Test-only: stub one ingest cycle (no DB / POP3). */
+type ForceSyncCycleStub = () => Promise<{
+  processed: number;
+  listed: number;
+  deled?: number;
+  cycleError?: string;
+}>;
+
+let forceSyncIngestOnceForTests: ForceSyncCycleStub | undefined;
+
+export function __setForceSyncIngestOnceForTests(
+  stub: ForceSyncCycleStub | undefined,
+): void {
+  forceSyncIngestOnceForTests = stub;
+}
+
 export { __resetMailboxIngestLocksForTests } from '../../mail/ingest/mailbox-ingest-lock.js';
 
 export const mailRouter = tRouter({
@@ -1095,6 +1111,9 @@ export const mailRouter = tRouter({
   forceSync: mailboxProcedure.mutation(async ({ ctx }) => {
     const mailboxKey = ctx.activeTransportId;
     const locked = await withMailboxIngestLock(mailboxKey, async () => {
+      if (forceSyncIngestOnceForTests) {
+        return forceSyncIngestOnceForTests();
+      }
       const { ingestOnce } = await import('../../mail/ingest/worker.js');
       let maxMessages: number | undefined;
       try {
