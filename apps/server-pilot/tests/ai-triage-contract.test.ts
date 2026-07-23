@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import {
   applyDurableTriageResult,
   applyShadowTriageResult,
+  refineTriageOutput,
   validateTriageOutput,
 } from '../src/ai/triage.js';
 import { createMastraRuntime } from '../src/ai/mastra.js';
@@ -17,6 +18,44 @@ import { TRANSPORT_ID } from '../src/db/seed.js';
 const reachable = await probeTestDb();
 
 describe('AI triage contract', () => {
+  it('refines short personal greeting away from spam into individual', () => {
+    const refined = refineTriageOutput(
+      {
+        from: 'aroransh17@gmail.com',
+        subject: 'test',
+        body: 'hi',
+      },
+      {
+        category: 'spam',
+        urgent: false,
+        confidence: 0.8,
+        rationale: 'Short irrelevant message',
+        policyFlags: [],
+      },
+    );
+    expect(refined.category).toBe('individual');
+    expect(refined.policyFlags).toContain('refine:short-personal-not-spam');
+  });
+
+  it('keeps real sales spam as spam', () => {
+    const refined = refineTriageOutput(
+      {
+        from: 'sales@viqal.example',
+        subject: 'Boost WhatsApp bookings today',
+        body: 'Limited-time promo — book a demo of our sales automation platform.',
+      },
+      {
+        category: 'spam',
+        urgent: false,
+        confidence: 0.95,
+        rationale: 'Sales outreach',
+        policyFlags: [],
+      },
+    );
+    expect(refined.category).toBe('spam');
+    expect(refined.policyFlags).not.toContain('refine:short-personal-not-spam');
+  });
+
   it('accepts hotel vocabulary categories', () => {
     for (const category of [
       'internal',

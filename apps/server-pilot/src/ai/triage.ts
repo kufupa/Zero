@@ -34,8 +34,36 @@ export function refineTriageOutput(
   input: { from: string; body: string; subject?: string },
   output: TriageOutput,
 ): TriageOutput {
-  const haystack = `${input.subject ?? ''}
-${input.body}`;
+  const subject = (input.subject ?? '').trim();
+  const body = input.body.trim();
+  const haystack = `${subject}
+${body}`;
+
+  // Nova over-fires spam on short personal notes ("hi"/"test") that are not
+  // sales/promo/automation — keep those in inbox as individual.
+  if (output.category === 'spam') {
+    const salesSignal =
+      /promo|sale|discount|unsubscribe|limited[- ]time|book a demo|whatsapp|newsletter|marketing|click here|viqal|outreach|boost|% off|\$\d/i.test(
+        haystack,
+      );
+    const shortPersonal =
+      !salesSignal &&
+      body.length > 0 &&
+      body.length <= 120 &&
+      subject.length <= 40 &&
+      !/\b(https?:\/\/|www\.)/i.test(haystack) &&
+      (/^(hi|hello|hey|test|tester\d*|bonjour|thanks|thank you)\b/i.test(body) ||
+        /^(hi|hello|hey|test|tester\d*)\b/i.test(subject));
+    if (shortPersonal) {
+      return {
+        ...output,
+        category: 'individual',
+        policyFlags: [...output.policyFlags, 'refine:short-personal-not-spam'],
+        rationale: `${output.rationale} Short personal note is not sales spam.`,
+      };
+    }
+  }
+
   if (output.category === 'internal' && output.urgent) {
     const opsHandover = /handover|room readiness|vip arrivals/i.test(haystack);
     if (opsHandover) {
