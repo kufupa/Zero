@@ -57,13 +57,28 @@ Better path to done criteria → take it. Log in handoff report.
 
 ### Done criteria
 
-- [ ] Reply/forward outbound HTML includes prior message body after quote header
-- [ ] Quote header attribution uses original recipients (not reply To)
-- [ ] Quoted blocks collapsed by default behind ellipsis/`details` (`blockquote`, `.gmail_quote`)
-- [ ] Expand shows full quote; collapse hides again
-- [ ] Targeted vitest green locally
-- [ ] EC2 SSM gate green for touched server-pilot suites
-- [ ] Handoff report under `docs/superpowers/plans/handoff-reports/`
+- [x] Reply/forward outbound HTML includes prior message body after quote header
+- [x] Quote header attribution uses original sender email (Gmail-correct; not reply To)
+- [x] Quoted blocks collapsed by default behind ellipsis/`details` (`blockquote`, `.gmail_quote`) — **outermost-only** (one toggle = full stream)
+- [x] Expand shows full quote; collapse hides again (`details`/`summary`)
+- [x] Targeted vitest green locally
+- [x] EC2 SSM gate green for touched server-pilot suites
+- [x] Handoff report under `docs/superpowers/plans/handoff-reports/`
+- [x] Design polish: thread-chrome `#313131` ThreeDots SVG; no nested ellipsis
+
+## Auto-decisions (design-review continue — 2026-07-23)
+
+Overnight continue: write questions + pick max-completeness recommendation; no wait.
+
+| ID | Question | Pick | Completeness | Why |
+|----|----------|------|--------------|-----|
+| D1 | Ellipsis button style | **A** thread chrome `#313131` + ThreeDots SVG | 9/10 | Matches Reply/thread actions; shadow-safe hex |
+| D2 | Dirty unrelated tree | **Leave** — commit only quote files | 10/10 | Avoid bundling VPN/1pager/docs noise |
+| D3 | Nested quote toggles | **Outermost-only** roots | 10/10 | Gmail/Outlook: one control → full stream |
+| D4 | Outbound quote markup | **`class="gmail_quote"`** on reply/forward wrappers | 9/10 | Client trim signal + one collapse root |
+| D5 | Port outermost fix to `apps/server` | **Defer** (pilot-only constraint) | kind-note | Out of overnight pilot scope |
+
+Shipped: `eebd6b58` (outermost + chrome button + gmail_quote outbound).
 
 ## Execution Mode
 
