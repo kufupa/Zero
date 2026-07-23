@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { buildLiveCategoryNavItems } from '@/config/navigation';
 import {
   buildCategoryIdToSlugMap,
   getHotelFolderNavTheme,
@@ -66,5 +67,31 @@ describe('hotel-folder-presentation', () => {
       true,
     );
     expect(shouldShowHotelCategoryPill({ routeFolder: 'urgent', pillSlug: 'urgent' })).toBe(false);
+  });
+});
+
+describe('buildLiveCategoryNavItems theme precedence', () => {
+  it('managed slug ignores seed hex and uses presentation title', () => {
+    const items = buildLiveCategoryNavItems([
+      {
+        slug: 'individual',
+        name: 'Individual',
+        color: '#2563eb',
+        sortOrder: 110,
+      },
+    ]);
+    expect(items[0]?.title).toBe('Individual Room Bookings');
+    expect(items[0]?.subtitle).toBe('Guest & room requests');
+    expect(items[0]?.className).toContain('--centurion-sidebar-bg');
+    expect(JSON.stringify(items[0]?.style)).toContain('#DCFCE7');
+    expect(JSON.stringify(items[0]?.style)).not.toContain('#2563eb');
+  });
+
+  it('unknown slug keeps API name and optional hex theme', () => {
+    const items = buildLiveCategoryNavItems([
+      { slug: 'vip-custom', name: 'VIP Desk', color: '#112233', sortOrder: 1 },
+    ]);
+    expect(items[0]?.title).toBe('VIP Desk');
+    expect(items[0]?.subtitle).toBeUndefined();
   });
 });

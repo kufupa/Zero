@@ -28,6 +28,11 @@ import {
 import { cn } from '@/lib/utils';
 import type { CSSProperties } from 'react';
 import { PILOT_CAPABILITIES } from '@/lib/pilot/capabilities';
+import {
+  getHotelFolderNavTheme,
+  getHotelFolderPresentation,
+  isHotelManagedCategorySlug,
+} from '@/lib/mail/hotel-folder-presentation';
 import { categoryColorNavTheme } from '@/lib/mail/route-filter';
 
 export interface NavItem {
@@ -63,18 +68,20 @@ export function buildLiveCategoryNavItems(categories: LiveCategoryNavInput[]): N
   return [...categories]
     .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
     .map((category) => {
-      const fromSettings = category.color?.trim()
-        ? categoryColorNavTheme(category.color)
-        : isCenturionMailCategorySlug(category.slug)
-          ? getDemoMailFolderNavItemTheme(category.slug as DemoMailFolderId)
+      const presentation = getHotelFolderPresentation(category.slug);
+      const managedTheme = isHotelManagedCategorySlug(category.slug)
+        ? getHotelFolderNavTheme(category.slug)
+        : category.color?.trim()
+          ? categoryColorNavTheme(category.color)
           : {};
 
       return {
         id: category.slug,
-        title: category.name,
+        title: presentation?.title ?? category.name,
+        subtitle: presentation?.subtitle,
         url: `/mail/${category.slug}`,
         icon: Folder,
-        ...fromSettings,
+        ...managedTheme,
       };
     });
 }
