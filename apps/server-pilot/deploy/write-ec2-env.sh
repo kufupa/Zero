@@ -12,7 +12,7 @@ set -euo pipefail
 : "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET required}"
 : "${POP3_POLL_INTERVAL_MS:=30000}"
 : "${POP3_MAX_MESSAGES_PER_CYCLE:=500}"
-: "${UNDO_SEND_SECONDS:=30}"
+: "${UNDO_SEND_SECONDS:=20}"
 
 DATABASE_URL="$(
   aws secretsmanager get-secret-value \

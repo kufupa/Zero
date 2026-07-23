@@ -40,8 +40,8 @@ export type QueuedSmtpPayload = {
 };
 
 export function getUndoSendSeconds(): number {
-  const n = Number(process.env.UNDO_SEND_SECONDS ?? '30');
-  return Number.isFinite(n) && n >= 0 ? n : 30;
+  const n = Number(process.env.UNDO_SEND_SECONDS ?? '20');
+  return Number.isFinite(n) && n >= 0 ? n : 20;
 }
 
 export function serializeSmtpPayload(payload: OutboundMailPayload): QueuedSmtpPayload {

@@ -35,9 +35,9 @@ describe('getUndoSendSeconds', () => {
     else process.env.UNDO_SEND_SECONDS = prev;
   });
 
-  it('defaults to 30', () => {
+  it('defaults to 20', () => {
     delete process.env.UNDO_SEND_SECONDS;
-    expect(getUndoSendSeconds()).toBe(30);
+    expect(getUndoSendSeconds()).toBe(20);
   });
 
   it('parses 0', () => {

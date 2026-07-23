@@ -93,7 +93,7 @@ describe('deploy config', () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const script = readFileSync(join(here, '..', 'deploy', 'write-ec2-env.sh'), 'utf8');
     expect(script).toContain('UNDO_SEND_SECONDS');
-    expect(script).toMatch(/UNDO_SEND_SECONDS:=30/);
+    expect(script).toMatch(/UNDO_SEND_SECONDS:=20/);
   });
 
   it('FakeSmtpTransport ring buffer caps at 100', async () => {
