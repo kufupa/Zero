@@ -16,7 +16,7 @@ export function requireRealMailPassword(): string {
 }
 
 export async function dismissMailOnboarding(page: Page) {
-  // OnboardingWrapper remounts open=true on each mail layout load (incl. compose query nav).
+  // Onboarding opens once until dismissed (localStorage); still dismiss if present.
   for (let attempt = 0; attempt < 5; attempt++) {
     const skipTour = page
       .getByRole('button', { name: /Skip for now/i })

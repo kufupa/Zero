@@ -1,5 +1,9 @@
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
+import {
+  markOnboardingDismissed,
+  shouldShowOnboarding,
+} from '@/lib/onboarding-persistence';
 import { useState, useEffect } from 'react';
 import confetti from 'canvas-confetti';
 
@@ -206,9 +210,12 @@ export function OnboardingDialog({
 }
 
 export function OnboardingWrapper() {
-  const [showOnboarding, setShowOnboarding] = useState(true);
+  const [showOnboarding, setShowOnboarding] = useState(() => shouldShowOnboarding());
 
   const handleOpenChange = (open: boolean) => {
+    if (!open) {
+      markOnboardingDismissed();
+    }
     setShowOnboarding(open);
   };
 
