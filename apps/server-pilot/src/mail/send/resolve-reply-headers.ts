@@ -1,4 +1,4 @@
-import { buildReplyHeaders } from './smtp';
+import { buildReplyHeaders } from './smtp.js';
 
 export type ReplyHeaderSource = {
   messageIdHeader: string | null;
