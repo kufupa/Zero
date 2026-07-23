@@ -20,7 +20,7 @@ import { useActiveConnection, useConnections } from '@/hooks/use-connections';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useDoState } from '@/components/mail/use-do-state';
+import { useDoState, setLastSyncAtAtom } from '@/components/mail/use-do-state';
 import { useLoading } from '../context/loading-context';
 import { signOut, useSession } from '@/lib/auth-client';
 import { AddConnectionDialog } from '../connection/add';
@@ -44,6 +44,7 @@ import { Button } from './button';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { useSetAtom } from 'jotai';
 
 const bytesToMB = (bytes: number) => (bytes / 1024 / 1024).toFixed(2);
 
@@ -71,18 +72,20 @@ function SyncingStatusIndicator({
   storageSize,
   syncingFolders,
 }: SyncingStatusIndicatorProps) {
+  // Drive from forceSync isPending / Do_State isSyncing — never treat empty
+  // Do_State storageSize as perpetual "Syncing…".
   const statusContent = (
     <div className="flex items-center gap-2">
       <div className="flex h-4 w-4 items-center justify-center">
         <div
           className={cn(
             'h-2 w-2 rounded-full',
-            isSyncing || storageSize === 0 ? 'animate-pulse bg-orange-500' : 'bg-green-500',
+            isSyncing ? 'animate-pulse bg-orange-500' : 'bg-green-500',
           )}
         />
       </div>
       <p className="text-[13px] opacity-60">
-        {isSyncing || storageSize === 0
+        {isSyncing
           ? 'Syncing emails...'
           : `Synced${storageSize ? ` • ${bytesToMB(storageSize)} MB` : ''}`}
       </p>
@@ -116,16 +119,20 @@ export function NavUser() {
   const { mutateAsync: setDefaultConnection } = useMutation(
     trpc.connections.setDefault.mutationOptions(),
   );
-  const { mutateAsync: handleForceSync } = useMutation(trpc.mail.forceSync.mutationOptions());
+  const { mutateAsync: handleForceSync, isPending: isForceSyncPending } = useMutation(
+    trpc.mail.forceSync.mutationOptions(),
+  );
   const pathname = useLocation().pathname;
   const queryClient = useQueryClient();
   const { data: activeConnection, refetch: refetchActiveConnection } = useActiveConnection();
   const [category] = useQueryState('category', { defaultValue: 'All Mail' });
   const { setLoading } = useLoading();
   const [{ isSyncing, syncingFolders, storageSize, shards }] = useDoState();
+  const setLastSyncAt = useSetAtom(setLastSyncAtAtom);
   const frontendOnlyDemo = isFrontendOnlyDemo();
   const showLogout = !frontendOnlyDemo;
   const allowConnectionManagement = false;
+  const displaySyncing = isForceSyncPending || isSyncing;
 
   const getSettingsHref = useCallback(() => {
     const currentPath = category
@@ -192,7 +199,13 @@ export function NavUser() {
   const handleForceSyncAction = async () => {
     await runForceSyncAction({
       isFrontendOnlyDemo: frontendOnlyDemo,
-      runForceSync: handleForceSync,
+      runForceSync: async () => {
+        await handleForceSync();
+        setLastSyncAt(Date.now());
+        await queryClient.invalidateQueries({
+          queryKey: trpc.mail.listThreads.infiniteQueryKey(),
+        });
+      },
       onBlocked: () => {
         toast.info('This action is not available in demo mode');
       },
@@ -336,16 +349,14 @@ export function NavUser() {
                       <p className="text-[13px] opacity-60">Clear Local Cache</p>
                     </div>
                   </DropdownMenuItem>
-                  {allowConnectionManagement && (
-                    <DropdownMenuItem onClick={() => handleForceSyncAction()}>
-                      <div className="flex items-center gap-2">
-                        <RefreshCcw size={16} className="opacity-60" />
-                        <p className="text-[13px] opacity-60">Force re-sync</p>
-                      </div>
-                    </DropdownMenuItem>
-                  )}
+                  <DropdownMenuItem onClick={() => handleForceSyncAction()}>
+                    <div className="flex items-center gap-2">
+                      <RefreshCcw size={16} className="opacity-60" />
+                      <p className="text-[13px] opacity-60">Force re-sync</p>
+                    </div>
+                  </DropdownMenuItem>
                   <SyncingStatusIndicator
-                    isSyncing={isSyncing}
+                    isSyncing={displaySyncing}
                     storageSize={storageSize}
                     syncingFolders={syncingFolders}
                   />
@@ -438,16 +449,14 @@ export function NavUser() {
                       <p className="text-[13px] opacity-60">Clear Local Cache</p>
                     </div>
                   </DropdownMenuItem>
-                  {allowConnectionManagement && (
-                    <DropdownMenuItem onClick={() => handleForceSyncAction()}>
-                      <div className="flex items-center gap-2">
-                        <RefreshCcw size={16} className="opacity-60" />
-                        <p className="text-[13px] opacity-60">Force re-sync</p>
-                      </div>
-                    </DropdownMenuItem>
-                  )}
+                  <DropdownMenuItem onClick={() => handleForceSyncAction()}>
+                    <div className="flex items-center gap-2">
+                      <RefreshCcw size={16} className="opacity-60" />
+                      <p className="text-[13px] opacity-60">Force re-sync</p>
+                    </div>
+                  </DropdownMenuItem>
                   <SyncingStatusIndicator
-                    isSyncing={isSyncing}
+                    isSyncing={displaySyncing}
                     storageSize={storageSize}
                     syncingFolders={syncingFolders}
                   />

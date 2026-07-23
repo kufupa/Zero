@@ -345,7 +345,14 @@ function AISidebar({ className }: AISidebarProps) {
             typeof parsedData.storageSize === 'number' ? parsedData.storageSize : 0;
           const counts = Array.isArray(parsedData.counts) ? (parsedData.counts as unknown[]) : [];
           const shards = parsedData.shards;
-          setDoState({ isSyncing, syncingFolders, storageSize, counts, shards });
+          setDoState((prev) => ({
+            ...prev,
+            isSyncing,
+            syncingFolders,
+            storageSize,
+            counts: counts as { label: string; count: number }[],
+            shards: typeof shards === 'number' ? shards : prev.shards,
+          }));
         }
       } catch (error) {
         console.error('error parsing party message', error, { rawMessage: message.data });

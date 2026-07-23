@@ -6,6 +6,8 @@ export type State = {
   storageSize: number;
   counts: { label: string; count: number }[];
   shards: number;
+  /** Epoch ms of last successful forceSync (or poll-driven sync marker). */
+  lastSyncAt: number | null;
 };
 
 const stateAtom = atom<State>({
@@ -14,6 +16,7 @@ const stateAtom = atom<State>({
   storageSize: 0,
   counts: [],
   shards: 0,
+  lastSyncAt: null,
 });
 
 function useDoState() {
@@ -35,4 +38,15 @@ const setStorageSizeAtom = atom(null, (get, set, storageSize: number) => {
   set(stateAtom, { ...current, storageSize });
 });
 
-export { setIsSyncingAtom, setSyncingFoldersAtom, setStorageSizeAtom, useDoState };
+const setLastSyncAtAtom = atom(null, (get, set, lastSyncAt: number | null) => {
+  const current = get(stateAtom);
+  set(stateAtom, { ...current, lastSyncAt });
+});
+
+export {
+  setIsSyncingAtom,
+  setSyncingFoldersAtom,
+  setStorageSizeAtom,
+  setLastSyncAtAtom,
+  useDoState,
+};

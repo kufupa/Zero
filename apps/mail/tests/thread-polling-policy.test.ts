@@ -6,8 +6,11 @@ describe('thread polling policy', () => {
     expect(resolveThreadPollingMs('30000')).toBe(30000);
   });
 
-  it('disables invalid or too-low intervals', () => {
+  it('defaults to 15000 when unset', () => {
+    expect(resolveThreadPollingMs(undefined)).toBe(15000);
+  });
+
+  it('rejects below 15s', () => {
     expect(resolveThreadPollingMs('1000')).toBe(null);
-    expect(resolveThreadPollingMs(undefined)).toBe(null);
   });
 });

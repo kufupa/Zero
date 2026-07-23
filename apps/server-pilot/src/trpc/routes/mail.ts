@@ -44,6 +44,8 @@ import {
 } from '../../mail/send/smtp.js';
 import { formatContentDispositionFilename } from '../../mail/attachment-filename.js';
 import { sanitizeEmailHtml } from '../../mail/sanitize-email-html.js';
+import { withMailboxIngestLock } from '../../mail/ingest/mailbox-ingest-lock.js';
+import type { Pop3Client } from '../../mail/ingest/pop3-client.js';
 import {
   DEFAULT_AI_MODEL_ID,
   DEFAULT_FEEDBACK_PROMPT_VERSION,
@@ -143,6 +145,15 @@ export const listThreadsInput = z.object({
   cursor: z.string().optional(),
   limit: z.number().int().min(1).max(100).default(50),
 });
+
+/** Test-only POP3 override for `forceSync` → `ingestOnce`. */
+let forceSyncPop3ForTests: Pop3Client | undefined;
+
+export function __setForceSyncPop3ForTests(client: Pop3Client | undefined): void {
+  forceSyncPop3ForTests = client;
+}
+
+export { __resetMailboxIngestLocksForTests } from '../../mail/ingest/mailbox-ingest-lock.js';
 
 export const mailRouter = tRouter({
   /**
@@ -1078,11 +1089,44 @@ export const mailRouter = tRouter({
     }),
 
   /**
-   * Force-sync trigger — stub. The pilot worker polls on its own schedule;
-   * this is a no-op until a real sync trigger is wired.
+   * Force-sync: one POP3 ingest cycle under a mailbox-scoped in-memory lock.
+   * If the lock is held, wait up to 30s; on timeout return cycleError.
    */
-  forceSync: mailboxProcedure.mutation(async () => {
-    return { triggered: true };
+  forceSync: mailboxProcedure.mutation(async ({ ctx }) => {
+    const mailboxKey = ctx.activeTransportId;
+    const locked = await withMailboxIngestLock(mailboxKey, async () => {
+      const { ingestOnce } = await import('../../mail/ingest/worker.js');
+      let maxMessages: number | undefined;
+      try {
+        const { parseEnv } = await import('../../env.js');
+        maxMessages = parseEnv(process.env).POP3_MAX_MESSAGES_PER_CYCLE;
+      } catch {
+        maxMessages = undefined;
+      }
+      return ingestOnce({
+        pop3: forceSyncPop3ForTests,
+        db: getDb(),
+        maxMessages,
+      });
+    });
+
+    if (!locked.ok) {
+      return {
+        triggered: true as const,
+        processed: 0,
+        listed: 0,
+        cycleError: locked.cycleError,
+      };
+    }
+
+    const cycle = locked.value;
+    return {
+      triggered: true as const,
+      processed: cycle.processed,
+      listed: cycle.listed,
+      deled: cycle.deled,
+      cycleError: cycle.cycleError,
+    };
   }),
 
   /**

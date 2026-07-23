@@ -34,6 +34,8 @@ echo "== build mail SPA =="
 export VITE_PUBLIC_BACKEND_URL="${VITE_PUBLIC_BACKEND_URL-}"
 # Absolute app origin for RR redirects / metadata. Unset → literal "undefined/login" 404s.
 export VITE_PUBLIC_APP_URL="${VITE_PUBLIC_APP_URL:-https://nava.legacy.local}"
+# Near-realtime thread list poll (policy min 15s; default baked for pilot).
+export VITE_MAIL_POLL_MS="${VITE_MAIL_POLL_MS:-15000}"
 pnpm --filter @zero/mail build
 
 echo "== sync SPA to ${WEB_ROOT} =="
