@@ -9,5 +9,7 @@ type SupportLinksEnv = {
 export function shouldShowSupportLinks(
   env: SupportLinksEnv = import.meta.env as unknown as SupportLinksEnv,
 ): boolean {
-  return !isFrontendOnlyDemo(env);
+  if (isFrontendOnlyDemo(env)) return false;
+  // Pilot honesty: no wired support provider → hide
+  return false;
 }

@@ -19,7 +19,6 @@ import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
 import { useForm } from 'react-hook-form';
 import { Bell } from 'lucide-react';
-import { useState } from 'react';
 import * as z from 'zod';
 
 const formSchema = z.object({
@@ -28,7 +27,8 @@ const formSchema = z.object({
 });
 
 export default function NotificationsPage() {
-  const [isSaving, setIsSaving] = useState(false);
+  // No persistence backend for notification prefs in pilot — keep Save disabled.
+  const canPersistNotifications = false;
 
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
@@ -39,10 +39,7 @@ export default function NotificationsPage() {
   });
 
   function onSubmit() {
-    setIsSaving(true);
-    setTimeout(() => {
-      setIsSaving(false);
-    }, 1000);
+    // Intentionally no-op until a real notifications settings API exists.
   }
 
   return (
@@ -55,8 +52,13 @@ export default function NotificationsPage() {
             <Button type="button" variant="outline" onClick={() => form.reset()}>
               Reset to Defaults
             </Button>
-            <Button type="submit" form="notifications-form" disabled={isSaving}>
-              {isSaving ? 'Saving...' : 'Save Changes'}
+            <Button
+              type="submit"
+              form="notifications-form"
+              disabled={!canPersistNotifications}
+              title="Not available in pilot"
+            >
+              Save Changes
             </Button>
           </div>
         }

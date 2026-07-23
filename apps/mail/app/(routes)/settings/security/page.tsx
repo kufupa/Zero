@@ -12,8 +12,6 @@ import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
 import { m } from '@/paraglide/messages';
 import { useForm } from 'react-hook-form';
-
-import { useState } from 'react';
 import * as z from 'zod';
 
 const formSchema = z.object({
@@ -22,7 +20,8 @@ const formSchema = z.object({
 });
 
 export default function SecurityPage() {
-  const [isSaving, setIsSaving] = useState(false);
+  // No persistence backend for security prefs in pilot — keep Save disabled.
+  const canPersistSecurity = false;
   const showDeleteAccount = false;
 
   const form = useForm<z.infer<typeof formSchema>>({
@@ -33,14 +32,8 @@ export default function SecurityPage() {
     },
   });
 
-  function onSubmit(values: z.infer<typeof formSchema>) {
-    setIsSaving(true);
-
-    // TODO: Save settings in user's account
-    setTimeout(() => {
-      console.log(values);
-      setIsSaving(false);
-    }, 1000);
+  function onSubmit(_values: z.infer<typeof formSchema>) {
+    // Intentionally no-op until a real security settings API exists.
   }
 
   return (
@@ -55,8 +48,13 @@ export default function SecurityPage() {
                 {m['pages.settings.security.deleteAccount']()}
               </Button>
             )}
-            <Button type="submit" form="security-form" disabled={isSaving}>
-              {isSaving ? m['common.actions.saving']() : m['common.actions.saveChanges']()}
+            <Button
+              type="submit"
+              form="security-form"
+              disabled={!canPersistSecurity}
+              title="Not available in pilot"
+            >
+              {m['common.actions.saveChanges']()}
             </Button>
           </div>
         }
