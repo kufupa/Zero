@@ -25,15 +25,26 @@ Status: Success
 
 Deploy path: `ops-deploy.sh --migrate` (HEAD `c5d8caec` then RCA commits synced) → health OK → `VPN_HARD_OK` / `VPN_HOTEL_OK` → gate green after e2e RCA loop.
 
-## PM2 / `.env.production` snapshot (gate)
+## PM2 / `.env.production` snapshot (gate wave)
 
 | Key | Value |
 |-----|-------|
 | `BETTER_AUTH_URL` | `https://nava.legacy.local` |
-| `UNDO_SEND_SECONDS` | `0` |
+| `UNDO_SEND_SECONDS` | `0` (gate only) |
 | `AI_WRITE_GATE_ENABLED` | `true` |
 | `MAIL_TRANSPORT_MODE` | `real` |
 | FE bake | `VITE_MAIL_POLL_MS=15000` (deploy-ec2 default) |
+
+## PM2 / `.env.production` snapshot (post closeout — current)
+
+| Key | Value |
+|-----|-------|
+| `BETTER_AUTH_URL` | `https://nava.legacy.local` |
+| `UNDO_SEND_SECONDS` | `30` |
+| `AI_WRITE_GATE_ENABLED` | `true` |
+| `MAIL_TRANSPORT_MODE` | `real` |
+| FE bake | `VITE_MAIL_POLL_MS=15000` |
+| tip | `4a0ca36b` Download-All deployed; docs `ab9145ce` |
 
 Patched on box before deploy (file was stale: auth URL still `http://127.0.0.1:8788`, `UNDO_SEND_SECONDS` missing). PM2 http process env matches file after deploy delete+start.
 
@@ -66,20 +77,23 @@ Patched on box before deploy (file was stale: auth URL still `http://127.0.0.1:8
 | Reply selector `/^Reply(\s+r)?$/i` | `ActionButton` accessible name is `Reply r` |
 | Sync-only redeploy for e2e helper fixes (no full rebuild each RCA) | Helpers run from repo; SPA already baked with poll=15s |
 
-## Residuals
+## Residuals (closed / non-blocking)
 
-- `UNDO_SEND_SECONDS=0` is **gate/ops** setting — restore product default (`30`) after overnight gate if undo UX needed for hotel demo.
-- `write-ec2-env.sh` default `UNDO_SEND_SECONDS:=30` — activate/real-mail rewrite can wipe gate `0`; re-assert before next U9 run.
-- Cookie mint path in gate script still runs (assist) but specs ignore it — can delete mint block later (YAGNI cleanup).
-- SPA age warning threshold only; build from earlier deploy still served during final gate (tests green).
-- EC2 git “ahead of origin by N” noise from local-only commits on box history — HEAD matches pushed tip via bundle.
+- ~~`UNDO_SEND_SECONDS=0`~~ → restored **`30`** in continue-working closeout (PM2 + `.env.production`).
+- `write-ec2-env.sh` / activate may still overwrite env — re-assert `BETTER_AUTH_URL` + `UNDO_SEND_SECONDS` before next U9 (set gate `0` only for that run).
+- Cookie mint path in gate script still runs (assist) but specs use UI login — YAGNI cleanup later.
+- EC2 git “ahead of origin by N” noise — HEAD matches pushed tip via bundle.
 
 ## Operator wake-up
 
 1. Browse `https://nava.legacy.local` as `navaai@legacyhotels.co.za`.
 2. Confirm poll ~15s + Force re-sync in user debug menu.
-3. Decide: keep `UNDO_SEND_SECONDS=0` or restore `30` + `ops-restart.sh`.
-4. Optional: bake handoff into product demo checklist; PartyKit / multi-user / Rocketseed still out of scope.
+3. Undo window is **30s** (product). For next Playwright U9: set `UNDO_SEND_SECONDS=0`, restart, run gate, restore `30`.
+4. PartyKit / multi-user / Rocketseed still out of scope.
+
+## PLAN STATUS
+
+**COMPLETE** — Tasks 1–12 + continue closeout. Health green. No open plan blockers.
 
 ## Continue-working closeout (2026-07-23 ~03:30 UTC+1)
 
