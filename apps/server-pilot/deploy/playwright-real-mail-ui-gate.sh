@@ -49,7 +49,7 @@ export VITE_FRONTEND_ONLY=0
 # UNDO_SEND_SECONDS=0 required so Send flushes immediately (KTD10).
 UNDO_VAL="${UNDO_SEND_SECONDS:-}"
 if [ -z "$UNDO_VAL" ] && [ -f "$ENV_FILE" ]; then
-  UNDO_VAL="$(grep -E '^UNDO_SEND_SECONDS=' "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"' || true)"
+  UNDO_VAL="$(grep -E '^UNDO_SEND_SECONDS=' "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d "\"'" || true)"
 fi
 if [ "${UNDO_VAL:-}" != "0" ]; then
   echo "refusing: UNDO_SEND_SECONDS must be 0 for real-mail UI gate (got '${UNDO_VAL:-unset}')" >&2

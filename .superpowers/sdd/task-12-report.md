@@ -1,56 +1,43 @@
-# Task 12 Report — Replace Label-Based Folder Moves with State Actions
+# Task 12 Report — EC2 deploy + full U9 gate + handoff
 
-**Date:** 2026-07-06  
+**Status:** DONE_WITH_CONCERNS  
 **Branch:** `EC2-pilot`  
-**Base:** Task 11 @ `f64b962e`
+**HEAD:** `71d6311d` (handoff)  
+**Instance:** `i-008f737974a9ba9b3` (`af-south-1`)
 
-## Status: PASS (local gate)
+## Gate
 
-## Commits
+- **Result:** PASS — `4 passed (2.8m)` (AE1, AE7, AE9, AE8)
+- **Command:** `ssm-run-command.sh "bash …/playwright-real-mail-ui-gate.sh"`
+- **SPA:** `https://nava.legacy.local`
+- **Env:** `BETTER_AUTH_URL=https://nava.legacy.local`, `UNDO_SEND_SECONDS=0`, `AI_WRITE_GATE_ENABLED=true`, `MAIL_TRANSPORT_MODE=real`, FE `VITE_MAIL_POLL_MS=15000`
 
-| Commit | Message |
-|--------|---------|
-| `4b9585b6` | `feat: inject live category sidebar nav` (Task 11 leftover, separate from Task 12) |
-| `498ab5a0` | `feat: align folder move actions with pilot state` |
+## Commits (Task 12 slice)
 
-## What changed
+| SHA | Message |
+|-----|---------|
+| `c5d8caec` | fix(mail): add .js extension to resolve-reply-headers import |
+| `d696d301` | fix(e2e): align Playwright base URL with BETTER_AUTH_URL host |
+| `1bcdb8ef` | fix(e2e): dismiss Nava onboarding overlay before compose editor |
+| `4f0fbe73` | fix(e2e): use UI login for AE7/8/9; tighten onboarding dismiss |
+| `80f051ab` | fix(e2e): open compose via sidebar click instead of hard goto |
+| `91270fac` | fix(e2e): match Reply button name including shortcut suffix |
+| `71d6311d` | docs(pilot): overnight parity handoff report |
 
-### Schema + migration
-- Added `mail_thread.spam_at` column in `apps/server-pilot/src/db/schema/mail.ts`
-- Created `apps/server-pilot/drizzle/0007_mail_thread_spam_state.sql` with backfill from legacy `SPAM` label + index `mail_thread_transport_spam_idx`
+## Handoff
 
-### Backend (`mail.ts`)
-- Added `moveThreadsInput` + `moveThreads` mutation — patches `isArchived`, `trashedAt`, `spamAt`, `snoozedUntil` per destination
-- `listThreads` spam folder now filters `spam_at IS NOT NULL`; all other folders exclude `spam_at IS NOT NULL`
-- Removed SPAM-label-based inbox/spam folder filtering
+`docs/superpowers/plans/handoff-reports/2026-07-23-live-pilot-parity-overnight.md`
 
-### Ingest (`store.ts`)
-- Direct-to fallback spam path sets `spamAt` on thread (keeps SPAM label for backfill compat)
+## Concerns / residuals
 
-### Frontend (`thread-actions.ts`)
-- `moveThreadsTo` calls `trpcClient.mail.moveThreads.mutate` instead of `modifyLabels` for inbox/archive/spam/bin
+1. `UNDO_SEND_SECONDS=0` left on PM2 for gate — restore `30` if product undo window needed.
+2. Env patched by SSM sed; future `write-ec2-env` / activate may overwrite — re-assert before next U9.
+3. Cookie mint in gate script unused (UI login preferred) — cleanup optional.
+4. First deploy failed on missing `.js` import (fixed); several e2e RCA rounds before green.
 
-## Tests
+## Post-gate fix (2026-07-23)
 
-| Gate | Result |
-|------|--------|
-| `pnpm --filter=@zero/mail test -- thread-actions-contract` | **PASS** (1 test) |
-| `pnpm vitest run tests/mail-thread-actions.test.ts` | **SKIP** (7 tests — no local RDS; `TEST_DB_AVAILABLE` false) |
-| `pnpm vitest run tests/schema-contract.test.ts` | **PASS** (8 tests) |
-
-New tests:
-- `apps/mail/tests/thread-actions-contract.test.ts` — asserts `moveThreadsTo` uses `moveThreads`, not `modifyLabels`
-- `apps/server-pilot/tests/mail-thread-actions.test.ts` — `moves threads between system states without label emulation`
-
-## Interfaces
-
-| Producer | Consumer |
-|----------|----------|
-| `mail.moveThreads({ threadIds, destination })` | `moveThreadsTo({ threadIds, destination })` |
-
-Spam folder state: `mail_thread.spam_at` (not label mutation).
-
-## Follow-up
-
-- Apply `0007_mail_thread_spam_state.sql` on RDS before deploy
-- Re-run `mail-thread-actions` on EC2/VPC with `TEST_DB_AVAILABLE` to verify integration test green
+- `handleDownloadAllAttachments` used `atob(attachment.body)` while API returns `body:''` → empty zip / fail.
+- Fix: reuse `getAttachment` signed-URL → blob path (same as single `downloadAttachment`); zip blobs.
+- Gate script: UNDO grep now strips both `"` and `'` quotes.
+- Commit: `fix(mail-ui): download-all via getAttachment signed URLs`

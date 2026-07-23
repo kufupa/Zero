@@ -472,57 +472,74 @@ const downloadAttachment = async (
 };
 
 const handleDownloadAllAttachments =
-  (subject: string, attachments: { body: string; mimeType: string; filename: string }[]) =>
+  (
+    subject: string,
+    messageId: string,
+    attachments: {
+      body?: string;
+      mimeType: string;
+      filename: string;
+      attachmentId: string;
+    }[],
+  ) =>
   async () => {
     if (!attachments.length) return;
 
-    const JSZip = (await import('jszip')).default;
-    const zip = new JSZip();
+    try {
+      const JSZip = (await import('jszip')).default;
+      const zip = new JSZip();
 
-    console.log('attachments', attachments);
-    attachments.forEach((attachment) => {
-      try {
-        const byteCharacters = atob(attachment.body);
-        const byteNumbers: number[] = Array(byteCharacters.length);
-        for (let i = 0; i < byteCharacters.length; i++) {
-          byteNumbers[i] = byteCharacters.charCodeAt(i);
-        }
-        const byteArray = new Uint8Array(byteNumbers);
+      await Promise.all(
+        attachments.map(async (attachment) => {
+          try {
+            let blob: Blob;
 
-        zip.file(attachment.filename, byteArray, {
-          binary: true,
-          date: new Date(),
-          unixPermissions: 0o644,
-        });
-      } catch (error) {
-        console.error(`Error adding ${attachment.filename} to zip:`, error);
-      }
-    });
+            if (!attachment.body) {
+              const { url } = await trpcClient.mail.getAttachment.query({
+                messageId,
+                attachmentId: attachment.attachmentId,
+              });
+              const res = await fetch(url);
+              blob = await res.blob();
+            } else {
+              const byteCharacters = atob(attachment.body);
+              const byteNumbers: number[] = Array(byteCharacters.length);
+              for (let i = 0; i < byteCharacters.length; i++) {
+                byteNumbers[i] = byteCharacters.charCodeAt(i);
+              }
+              blob = new Blob([new Uint8Array(byteNumbers)], { type: attachment.mimeType });
+            }
 
-    // Generate and download the zip file
-    zip
-      .generateAsync({
+            zip.file(attachment.filename, blob, {
+              binary: true,
+              date: new Date(),
+              unixPermissions: 0o644,
+            });
+          } catch (error) {
+            console.error(`Error adding ${attachment.filename} to zip:`, error);
+          }
+        }),
+      );
+
+      const content = await zip.generateAsync({
         type: 'blob',
         compression: 'DEFLATE',
         compressionOptions: {
           level: 9,
         },
-      })
-      .then((content) => {
-        const url = window.URL.createObjectURL(content);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = `attachments-${subject || 'email'}.zip`;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        window.URL.revokeObjectURL(url);
-      })
-      .catch((error) => {
-        console.error('Error generating zip file:', error);
       });
-
-    console.log('downloaded', subject, attachments);
+      const url = window.URL.createObjectURL(content);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `attachments-${subject || 'email'}.zip`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Error generating zip file:', error);
+      toast.error('Failed to download attachments');
+    }
   };
 
 const openAttachment = async (attachment: {
@@ -1608,6 +1625,7 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                                     e.preventDefault();
                                     handleDownloadAllAttachments(
                                       emailData.subject || 'email',
+                                      emailData.id,
                                       messageAttachments || [],
                                     )();
                                   }}
