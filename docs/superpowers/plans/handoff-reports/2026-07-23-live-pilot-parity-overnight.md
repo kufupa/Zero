@@ -80,3 +80,15 @@ Patched on box before deploy (file was stale: auth URL still `http://127.0.0.1:8
 2. Confirm poll ~15s + Force re-sync in user debug menu.
 3. Decide: keep `UNDO_SEND_SECONDS=0` or restore `30` + `ops-restart.sh`.
 4. Optional: bake handoff into product demo checklist; PartyKit / multi-user / Rocketseed still out of scope.
+
+## Continue-working closeout (2026-07-23 ~03:30 UTC+1)
+
+| Action | Result |
+|--------|--------|
+| Deploy `4a0ca36b` (Download-All via getAttachment) | `ops-deploy` ok; health `{"ok":true}`; VPN_HARD_OK / VPN_HOTEL_OK |
+| Restore product undo | `.env.production` + PM2 `UNDO_SEND_SECONDS=30` (was gate `0`) |
+| PM2 | http/worker/ai-worker online; `BETTER_AUTH_URL=https://nava.legacy.local`; `MAIL_TRANSPORT_MODE=real`; `AI_WRITE_GATE_ENABLED=true` |
+
+**Plan done criteria:** met. U9 gate previously green (4/4). Post-gate FE fix deployed. Product undo window restored.
+
+**Not re-run:** full Playwright U9 (gate requires `UNDO=0`); product now on `30`.
