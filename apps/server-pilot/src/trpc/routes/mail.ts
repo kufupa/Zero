@@ -38,10 +38,8 @@ import {
   refreshThreadAfterMessageRemoved,
 } from './mail-helpers.js';
 import { maybeEnqueueLoopback } from '../../mail/fixture-loopback.js';
-import {
-  getSmtpTransport,
-  buildReplyHeaders,
-} from '../../mail/send/smtp.js';
+import { getSmtpTransport } from '../../mail/send/smtp.js';
+import { resolveReplyHeaders } from '../../mail/send/resolve-reply-headers.js';
 import { formatContentDispositionFilename } from '../../mail/attachment-filename.js';
 import { sanitizeEmailHtml } from '../../mail/sanitize-email-html.js';
 import { withMailboxIngestLock } from '../../mail/ingest/mailbox-ingest-lock.js';
@@ -876,8 +874,14 @@ export const mailRouter = tRouter({
       const db = getDb();
       const transportId = ctx.activeTransportId;
       let threadId = input.threadId;
-      let inReplyTo: string | null = null;
-      let references: string[] = [];
+      let selectedMessage: {
+        messageIdHeader: string | null;
+        references: string[] | null;
+      } | null = null;
+      let latestThreadPrior: {
+        messageIdHeader: string | null;
+        references: string[] | null;
+      } | null = null;
 
       if (threadId) {
         await requireThreadForTransport(db, threadId, transportId);
@@ -899,13 +903,8 @@ export const mailRouter = tRouter({
           if (!selected[0]) {
             throw new TRPCError({ code: 'NOT_FOUND', message: 'REPLY_TO_MESSAGE_NOT_FOUND' });
           }
-          const headers = buildReplyHeaders(selected[0]!);
-          inReplyTo = headers.inReplyTo;
-          references = headers.references;
-        } else if (input.inReplyTo) {
-          inReplyTo = input.inReplyTo;
-          references = input.references ?? [];
-        } else {
+          selectedMessage = selected[0]!;
+        } else if (!input.inReplyTo) {
           const prior = await db
             .select({
               messageIdHeader: message.messageIdHeader,
@@ -917,11 +916,7 @@ export const mailRouter = tRouter({
             )
             .orderBy(desc(message.receivedAt))
             .limit(1);
-          if (prior[0]) {
-            const headers = buildReplyHeaders(prior[0]!);
-            inReplyTo = headers.inReplyTo;
-            references = headers.references;
-          }
+          latestThreadPrior = prior[0] ?? null;
         }
       } else {
         threadId = randomUUID();
@@ -993,6 +988,13 @@ export const mailRouter = tRouter({
           }
         }
       }
+
+      const { inReplyTo, references } = resolveReplyHeaders({
+        selectedMessage,
+        explicitInReplyTo: input.inReplyTo,
+        explicitReferences: input.references,
+        latestThreadPrior,
+      });
 
       const smtpResult = await getSmtpTransport().send({
         from: ctx.transportEmail,
