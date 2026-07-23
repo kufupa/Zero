@@ -1,5 +1,5 @@
 import { SidebarGroup, SidebarMenu, SidebarMenuButton, SidebarMenuItem } from './sidebar';
-import { Collapsible, CollapsibleTrigger } from '@/components/ui/collapsible';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { useCommandPalette } from '../context/command-palette-context.jsx';
 import { LabelDialog } from '@/components/labels/label-dialog';
 import { useActiveConnection } from '@/hooks/use-connections';
@@ -22,7 +22,7 @@ import { useCallback, useRef } from 'react';
 import { BASE_URL } from '@/lib/constants';
 import { shouldShowSupportLinks } from '@/lib/demo/support-links';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
-import { Plus } from 'lucide-react';
+import { ChevronRight, Plus } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import * as React from 'react';
@@ -287,12 +287,18 @@ export function NavMain({ items }: NavMainProps) {
           !isBottomNav &&
           state !== 'collapsed' &&
           !isFrontendOnlyDemo() && (
-          <Collapsible defaultOpen={true} className="group/collapsible flex-col">
+          <Collapsible defaultOpen={false} className="group/collapsible flex-col">
             <SidebarMenuItem className="mb-4" style={{ height: 'auto' }}>
-              <div className="mx-2 mb-4 flex items-center justify-between">
-                <span className="text-muted-foreground text-[13px] dark:text-[#898989]">
-                  {activeAccount?.providerId === 'google' ? 'Labels' : 'Folders'}
-                </span>
+              <div className="mx-2 mb-2 flex items-center justify-between">
+                <CollapsibleTrigger asChild>
+                  <button
+                    type="button"
+                    className="text-muted-foreground hover:text-foreground flex items-center gap-1 text-[13px] dark:text-[#898989]"
+                  >
+                    <ChevronRight className="h-3 w-3 transition-transform group-data-[state=open]/collapsible:rotate-90" />
+                    Labels
+                  </button>
+                </CollapsibleTrigger>
                 {activeAccount?.providerId === 'google' ? (
                   <LabelDialog
                     trigger={
@@ -306,10 +312,12 @@ export function NavMain({ items }: NavMainProps) {
                     }
                     onSubmit={onSubmit}
                   />
-                ) : activeAccount?.providerId === 'microsoft' ? null : null}
+                ) : null}
               </div>
 
-              {activeAccount ? <SidebarLabels data={userLabels ?? []} /> : null}
+              <CollapsibleContent>
+                {activeAccount ? <SidebarLabels data={userLabels ?? []} /> : null}
+              </CollapsibleContent>
             </SidebarMenuItem>
           </Collapsible>
         )}
