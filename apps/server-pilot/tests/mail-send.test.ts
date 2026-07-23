@@ -238,4 +238,69 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.send', () => {
       }
     });
   }, 30000);
+
+  it('forwards one PDF attachment to SMTP', async () => {
+    await withSeededTestDb(async (db) => {
+      const fake = new FakeSmtpTransport();
+      __setSmtpTransportForTests(fake);
+      const pdfB64 = Buffer.from('%PDF-1.4').toString('base64');
+      try {
+        await seedCenturionThread(db);
+        const caller = await callerFor('user-navaai', { db });
+        await caller.mail.send({
+          to: ['a@example.com'],
+          subject: 'with pdf',
+          html: '<p>x</p>',
+          text: 'x',
+          attachments: [
+            { name: 'a.pdf', type: 'application/pdf', size: 8, lastModified: 0, base64: pdfB64 },
+          ],
+        });
+        expect(fake.sent[0]!.attachments?.[0]?.filename).toBe('a.pdf');
+        expect(fake.sent[0]!.attachments?.[0]?.content).toBeTruthy();
+      } finally {
+        __setSmtpTransportForTests(null);
+      }
+    });
+  }, 30000);
+});
+
+/** Unit-level: FakeSmtp records attachments without RDS (mail.send path needs DB). */
+describe('FakeSmtpTransport attachments', () => {
+  it('records PDF attachment when calling transport directly', async () => {
+    const fake = new FakeSmtpTransport();
+    const content = Buffer.from('%PDF-1.4');
+    await fake.send({
+      from: 'centurion@legacyhotel.com',
+      to: ['a@example.com'],
+      cc: [],
+      bcc: [],
+      subject: 'with pdf',
+      html: '<p>x</p>',
+      text: 'x',
+      attachments: [
+        { filename: 'a.pdf', content, contentType: 'application/pdf' },
+      ],
+    });
+    expect(fake.sent).toHaveLength(1);
+    expect(fake.sent[0]!.attachments?.[0]?.filename).toBe('a.pdf');
+    expect(fake.sent[0]!.attachments?.[0]?.content).toEqual(content);
+    expect(fake.sent[0]!.attachments?.[0]?.contentType).toBe('application/pdf');
+  });
+
+  it('maps sendInput base64 → Buffer shape for SMTP payload', () => {
+    const pdfB64 = Buffer.from('%PDF-1.4').toString('base64');
+    const inputAttachments = [
+      { name: 'a.pdf', type: 'application/pdf', size: 8, lastModified: 0, base64: pdfB64 },
+    ];
+    const smtpAttachments = inputAttachments.map((a) => ({
+      filename: a.name,
+      content: Buffer.from(a.base64, 'base64'),
+      contentType: a.type,
+    }));
+    expect(smtpAttachments[0]!.filename).toBe('a.pdf');
+    expect(Buffer.isBuffer(smtpAttachments[0]!.content)).toBe(true);
+    expect(smtpAttachments[0]!.content.toString('utf8')).toBe('%PDF-1.4');
+    expect(smtpAttachments[0]!.contentType).toBe('application/pdf');
+  });
 });

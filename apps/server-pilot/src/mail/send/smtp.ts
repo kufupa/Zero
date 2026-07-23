@@ -9,6 +9,12 @@ import { randomUUID } from 'node:crypto';
 import nodemailer from 'nodemailer';
 import type { MailTransportMode } from '../../env.js';
 
+export interface OutboundMailAttachment {
+  filename: string;
+  content: Buffer | string;
+  contentType?: string;
+}
+
 export interface OutboundMailPayload {
   from: string;
   to: string[];
@@ -20,6 +26,7 @@ export interface OutboundMailPayload {
   inReplyTo?: string | null;
   references?: string[];
   extraHeaders?: Record<string, string>;
+  attachments?: OutboundMailAttachment[];
 }
 
 export interface SmtpSendResult {
@@ -137,6 +144,11 @@ export class RealSmtpTransport implements SmtpTransport {
       html: payload.html,
       text: payload.text,
       headers: Object.keys(headers).length ? headers : undefined,
+      attachments: payload.attachments?.map((a) => ({
+        filename: a.filename,
+        content: a.content,
+        contentType: a.contentType,
+      })),
     });
 
     const rawId = info.messageId ?? '';

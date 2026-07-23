@@ -996,6 +996,12 @@ export const mailRouter = tRouter({
         latestThreadPrior,
       });
 
+      const smtpAttachments = (input.attachments ?? []).map((a) => ({
+        filename: a.name,
+        content: Buffer.from(a.base64, 'base64'),
+        contentType: a.type,
+      }));
+
       const smtpResult = await getSmtpTransport().send({
         from: ctx.transportEmail,
         to: input.to,
@@ -1007,6 +1013,7 @@ export const mailRouter = tRouter({
         inReplyTo,
         references,
         extraHeaders: { 'X-Zero-Mailbox': ctx.transportEmail },
+        attachments: smtpAttachments,
       });
 
       maybeEnqueueLoopback(
@@ -1080,7 +1087,12 @@ export const mailRouter = tRouter({
             subject: input.subject || null,
             textBody: input.text || null,
             htmlBody: input.html || null,
-            attachments: [],
+            attachments: (input.attachments ?? []).map((a) => ({
+              filename: a.name,
+              mimeType: a.type,
+              sizeBytes: a.size,
+              s3Key: '',
+            })),
           });
           if (sendingDraft?.generationId) {
             await enqueueAiRun(

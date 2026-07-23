@@ -38,7 +38,7 @@ import { EmailVerificationBadge } from './email-verification-badge';
 import type { Sender, ParsedMessage, Attachment } from '@/types';
 import { useActiveConnection } from '@/hooks/use-connections';
 import { useAttachments } from '@/hooks/use-attachments';
-import { useTRPCClient } from '@/providers/query-provider';
+import { trpcClient, useTRPCClient } from '@/providers/query-provider';
 import { useThreadLabels } from '@/hooks/use-labels';
 import { useMutation } from '@tanstack/react-query';
 import { TextShimmer } from '../ui/text-shimmer';
@@ -428,35 +428,43 @@ const ActionButton = ({ onClick, icon, text, shortcut }: ActionButtonProps) => {
   );
 };
 
-const downloadAttachment = async (attachment: {
-  body: string;
-  mimeType: string;
-  filename: string;
-  attachmentId: string;
-}) => {
+const downloadAttachment = async (
+  attachment: {
+    body?: string;
+    mimeType: string;
+    filename: string;
+    attachmentId: string;
+  },
+  messageId: string,
+) => {
   try {
-    const attachmentData = attachment.body;
+    let blob: Blob;
 
-    if (!attachmentData) {
-      throw new Error('Attachment data not found');
+    if (!attachment.body) {
+      const { url } = await trpcClient.mail.getAttachment.query({
+        messageId,
+        attachmentId: attachment.attachmentId,
+      });
+      const res = await fetch(url);
+      blob = await res.blob();
+    } else {
+      const byteCharacters = atob(attachment.body);
+      const byteNumbers: number[] = Array(byteCharacters.length);
+      for (let i = 0; i < byteCharacters.length; i++) {
+        byteNumbers[i] = byteCharacters.charCodeAt(i);
+      }
+      const byteArray = new Uint8Array(byteNumbers);
+      blob = new Blob([byteArray], { type: attachment.mimeType });
     }
 
-    const byteCharacters = atob(attachmentData);
-    const byteNumbers: number[] = Array(byteCharacters.length);
-    for (let i = 0; i < byteCharacters.length; i++) {
-      byteNumbers[i] = byteCharacters.charCodeAt(i);
-    }
-    const byteArray = new Uint8Array(byteNumbers);
-    const blob = new Blob([byteArray], { type: attachment.mimeType });
-
-    const url = window.URL.createObjectURL(blob);
+    const objectUrl = window.URL.createObjectURL(blob);
     const link = document.createElement('a');
-    link.href = url;
+    link.href = objectUrl;
     link.download = attachment.filename;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-    window.URL.revokeObjectURL(url);
+    window.URL.revokeObjectURL(objectUrl);
   } catch (error) {
     console.error('Error downloading attachment:', error);
     toast.error('Failed to download attachment');
@@ -1729,7 +1737,7 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                           </span>
                         </button>
                         <button
-                          onClick={() => downloadAttachment(attachment)}
+                          onClick={() => downloadAttachment(attachment, emailData.id)}
                           className="flex cursor-pointer items-center gap-1 rounded-[5px] px-1.5 py-1 text-sm"
                         >
                           <HardDriveDownload className="text-muted-foreground dark:text-muted-foreground h-4 w-4 fill-[#FAFAFA] dark:fill-[#262626]" />
