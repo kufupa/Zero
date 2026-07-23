@@ -94,6 +94,39 @@ describe('deriveReplyRecipients', () => {
     });
   });
 
+  it('keeps self in To when replying to a self-only / loopback message', () => {
+    const recipients = deriveReplyRecipients({
+      mode: 'reply',
+      excludedEmails: ['me@example.com'],
+      message: {
+        sender: { email: 'me@example.com' },
+        to: [{ email: 'me@example.com' }],
+      },
+    });
+
+    expect(recipients).toEqual({
+      to: ['me@example.com'],
+      cc: [],
+    });
+  });
+
+  it('keeps self in To for reply-all on a self-only message', () => {
+    const recipients = deriveReplyRecipients({
+      mode: 'replyAll',
+      excludedEmails: ['me@example.com', 'session@example.com'],
+      message: {
+        sender: { email: 'me@example.com' },
+        to: [{ email: 'me@example.com' }],
+        cc: [{ email: 'me@example.com' }],
+      },
+    });
+
+    expect(recipients).toEqual({
+      to: ['me@example.com'],
+      cc: [],
+    });
+  });
+
   it('switches recipient sets between reply and replyAll for the same message', () => {
     const message = {
       sender: { email: 'sender@example.com' },

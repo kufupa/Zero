@@ -41,6 +41,31 @@ const pushUniqueRecipient = (
   list.push(rawEmail!);
 };
 
+/**
+ * When every participant is "self", exclusion leaves To empty and Reply cannot send.
+ * Prefer original To, then sender, then Cc — without excluding — so loopback/self-sent still autofills.
+ */
+const fillSelfOnlyFallback = (
+  to: string[],
+  seen: Set<string>,
+  message: ReplyMessageLike,
+) => {
+  if (to.length > 0) return;
+
+  for (const recipient of message.to ?? []) {
+    pushUniqueRecipient(to, seen, recipient);
+    if (to.length > 0) return;
+  }
+
+  pushUniqueRecipient(to, seen, message.sender);
+  if (to.length > 0) return;
+
+  for (const recipient of message.cc ?? []) {
+    pushUniqueRecipient(to, seen, recipient);
+    if (to.length > 0) return;
+  }
+};
+
 export function deriveReplyRecipients(params: {
   mode: ReplyMode;
   message?: ReplyMessageLike | null;
@@ -74,6 +99,8 @@ export function deriveReplyRecipients(params: {
       }
     }
 
+    fillSelfOnlyFallback(to, seen, message);
+
     return { to, cc: [] };
   }
 
@@ -97,6 +124,8 @@ export function deriveReplyRecipients(params: {
       ccSeen.add(normalized);
       cc.push(recipient.email!.trim());
     }
+
+    fillSelfOnlyFallback(to, toSeen, message);
 
     return { to, cc };
   }
