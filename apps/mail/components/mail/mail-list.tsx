@@ -640,8 +640,15 @@ const Thread = memo(
     ) : null;
   },
   (prev, next) => {
+    const prevCategoryIds = prev.message.categoryIds ?? [];
+    const nextCategoryIds = next.message.categoryIds ?? [];
+    const isSameCategoryIds =
+      prevCategoryIds.length === nextCategoryIds.length &&
+      prevCategoryIds.every((id, index) => id === nextCategoryIds[index]);
     const isSameMessage =
       prev.message.id === next.message.id &&
+      prev.message.centurionCategory === next.message.centurionCategory &&
+      isSameCategoryIds &&
       prev.isKeyboardFocused === next.isKeyboardFocused &&
       prev.index === next.index &&
       Object.is(prev.onClick, next.onClick);
