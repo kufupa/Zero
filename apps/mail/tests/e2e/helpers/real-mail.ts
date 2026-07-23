@@ -81,12 +81,39 @@ export async function injectMintedSession(_context: BrowserContext, page: Page) 
 }
 
 export async function openComposeDialog(page: Page) {
-  await page.goto('/mail/inbox?isComposeOpen=true', { waitUntil: 'domcontentloaded' });
+  // Stay on current inbox session — hard goto?isComposeOpen remounts onboarding and can blank SPA.
   await dismissMailOnboarding(page);
-  if (!(await page.locator('#compose-subject').isVisible({ timeout: 8_000 }).catch(() => false))) {
-    await page.getByRole('button', { name: /new email/i }).first().click();
+  await expectPilotInboxVisible(page);
+
+  if (await page.locator('#compose-subject').isVisible({ timeout: 2_000 }).catch(() => false)) {
+    return;
   }
-  await expect(page.locator('#compose-subject')).toBeVisible({ timeout: 30_000 });
+
+  const candidates = [
+    page.getByRole('button', { name: /new email/i }),
+    page.locator('button').filter({ hasText: /New Email/i }),
+    page.locator('[data-sidebar="header"] button').first(),
+    page.locator('button').filter({ has: page.locator('svg') }).filter({ hasText: /email/i }).first(),
+  ];
+
+  let opened = false;
+  for (const loc of candidates) {
+    if (await loc.first().isVisible({ timeout: 2_000 }).catch(() => false)) {
+      await loc.first().click({ force: true });
+      opened = true;
+      break;
+    }
+  }
+
+  if (!opened) {
+    // Fallback: query-param open (may remount onboarding — dismiss again).
+    await page.goto('/mail/inbox?isComposeOpen=true', { waitUntil: 'domcontentloaded', timeout: 60_000 });
+    await dismissMailOnboarding(page);
+  }
+
+  await page.getByText('Loading draft...').waitFor({ state: 'hidden', timeout: 30_000 }).catch(() => {});
+  await dismissMailOnboarding(page);
+  await expect(page.locator('#compose-subject')).toBeVisible({ timeout: 60_000 });
 }
 
 export async function composeSelfLoopback(page: Page, subject: string) {
