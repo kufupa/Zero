@@ -39,6 +39,23 @@ export function assertPilotSignupAllowed(
   throw new APIError('FORBIDDEN', { message: 'signup disabled for pilot' });
 }
 
+/** Pure helper for Better Auth trustedOrigins (unit-testable without DB). */
+export function resolvePilotTrustedOrigins(
+  env: Record<string, string | undefined>,
+): string[] {
+  const base = [
+    'https://nava.legacy.local',
+    'https://127.0.0.1',
+    'http://127.0.0.1:3000',
+    'http://localhost:3000',
+  ];
+  const extra = (env.BETTER_AUTH_TRUSTED_ORIGINS ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return [...new Set([...base, ...extra])];
+}
+
 /** Chrome caps Set-Cookie Max-Age at 400 days. */
 export const SESSION_TTL_SEC = 60 * 60 * 24 * 400;
 
@@ -75,6 +92,7 @@ export const createAuth = (
   return betterAuth({
     secret,
     baseURL,
+    trustedOrigins: resolvePilotTrustedOrigins(env),
     database: drizzleAdapter(db, {
       provider: 'pg',
       schema: schema as Record<string, unknown>,

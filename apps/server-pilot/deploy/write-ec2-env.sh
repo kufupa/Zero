@@ -8,10 +8,11 @@ set -euo pipefail
 : "${AWS_REGION:=af-south-1}"
 : "${DB_SECRET_NAME:=nava-zero/server-pilot/database-url}"
 : "${S3_BUCKET:?S3_BUCKET required}"
-: "${BETTER_AUTH_URL:=http://127.0.0.1:8788}"
+: "${BETTER_AUTH_URL:=https://nava.legacy.local}"
 : "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET required}"
 : "${POP3_POLL_INTERVAL_MS:=30000}"
 : "${POP3_MAX_MESSAGES_PER_CYCLE:=500}"
+: "${UNDO_SEND_SECONDS:=30}"
 
 DATABASE_URL="$(
   aws secretsmanager get-secret-value \
@@ -41,6 +42,7 @@ S3_BUCKET=$(quote_val "$S3_BUCKET")
 POP3_POLL_INTERVAL_MS=$(quote_val "$POP3_POLL_INTERVAL_MS")
 POP3_MAX_MESSAGES_PER_CYCLE=$(quote_val "$POP3_MAX_MESSAGES_PER_CYCLE")
 MAIL_TRANSPORT_MODE=$(quote_val "${MAIL_TRANSPORT_MODE:-fixture}")
+UNDO_SEND_SECONDS=$(quote_val "$UNDO_SEND_SECONDS")
 PILOT_OPEN_SIGNUP='0'
 EOF
 
