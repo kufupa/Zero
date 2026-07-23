@@ -57,10 +57,3 @@ describe('pilot search capability gates', () => {
     expect(PILOT_CAPABILITIES.gmailSearchGrammar).toBe(true);
   });
 });
-
-describe('pilot search capability gates', () => {
-  it('enables Gmail grammar search while AI natural language stays off', () => {
-    expect(canUseNaturalLanguageSearch()).toBe(false);
-    expect(PILOT_CAPABILITIES.gmailSearchGrammar).toBe(true);
-  });
-});
