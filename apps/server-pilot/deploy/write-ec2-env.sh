@@ -68,7 +68,12 @@ append_env SMTP_SECURE "${SMTP_SECURE:-}"
 append_env SMTP_USER "${SMTP_USER:-}"
 append_env SMTP_PASSWORD "${SMTP_PASSWORD:-}"
 append_env AI_DRAFTS_ENABLED "${AI_DRAFTS_ENABLED:-}"
-append_env AI_WRITE_GATE_ENABLED "${AI_WRITE_GATE_ENABLED:-}"
+# Real-mail: durable triage writes on by default (ops can still override).
+if [[ "${MAIL_TRANSPORT_MODE:-fixture}" == "real" ]]; then
+  append_env AI_WRITE_GATE_ENABLED "${AI_WRITE_GATE_ENABLED:-true}"
+else
+  append_env AI_WRITE_GATE_ENABLED "${AI_WRITE_GATE_ENABLED:-}"
+fi
 append_env SMTP_SECRET_ARN "${SMTP_SECRET_ARN:-}"
 append_env MAIL_TLS_REJECT_UNAUTHORIZED "${MAIL_TLS_REJECT_UNAUTHORIZED:-}"
 

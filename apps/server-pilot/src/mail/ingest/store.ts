@@ -7,9 +7,13 @@
  *      message scoped to that transport (create/find a thread, insert
  *      `message` + `attachment` rows).
  *   3. If the header is missing, try direct `To` match against active transport
- *      emails; on match store with SPAM label. Otherwise quarantine with reason
- *      `missing_owner_header`. If the header is present but no matching
- *      transport -> quarantine with reason `unknown_transport`.
+ *      emails; on match store inbox-first (no SPAM/`spamAt`) and enqueue triage.
+ *      Otherwise quarantine with reason `missing_owner_header`. If the header is
+ *      present but no matching transport -> quarantine with reason
+ *      `unknown_transport`.
+ *   4. Degraded containment: when `AI_WRITE_GATE_ENABLED` is not `'true'`,
+ *      apply soft label `soft-quarantine` for From domains outside the
+ *      transport domain (healthy gated path stays inbox-first).
  *
  * Persistence order (inside one PG transaction):
  *   - raw MIME already uploaded to S3 BEFORE this function is called (worker
@@ -168,7 +172,6 @@ export async function persistInboundMessage(
   }
 
   // Routing ------------------------------------------------------------
-  let spamLabelId: string | null = null;
   let transport: { id: string; email: string } | null = null;
 
   if (!parsed.ownerHeaderValue) {
@@ -182,7 +185,8 @@ export async function persistInboundMessage(
         reason: 'missing_owner_header',
       });
     }
-    spamLabelId = await ensureSpamLabel(db, transport.id);
+    // Inbox-first: direct-To without X-Zero-Mailbox still stores + enqueues
+    // triage; AI (when write gate on) may set spam later.
   } else {
     const transportRows = await db
       .select({
@@ -220,19 +224,6 @@ export async function persistInboundMessage(
       parsed,
       pop3Uidl: meta.pop3Uidl,
     });
-
-    await applyThreadLabels(
-      tx as unknown as DB,
-      threadId,
-      spamLabelId ? [spamLabelId] : [],
-    );
-
-    if (spamLabelId) {
-      await tx
-        .update(mailThread)
-        .set({ spamAt: new Date(), updatedAt: new Date() })
-        .where(eq(mailThread.id, threadId));
-    }
 
     const transportEmail = (transport.email ?? '').trim().toLowerCase();
     const fromAddress = (parsed.fromAddress ?? '').trim().toLowerCase();
@@ -288,6 +279,20 @@ export async function persistInboundMessage(
           isInline: a.isInline,
         })),
       );
+    }
+
+    // Degraded soft-quarantine when AI write gate off: external From domains
+    // only. Does not set spamAt — inbox-first until AI can triage.
+    if (
+      !isHotelSent &&
+      process.env.AI_WRITE_GATE_ENABLED !== 'true' &&
+      isExternalFromDomain(fromEmail, transportEmail)
+    ) {
+      const softLabelId = await ensureSoftQuarantineLabel(
+        tx as unknown as DB,
+        transport.id,
+      );
+      await applyThreadLabels(tx as unknown as DB, threadId, [softLabelId]);
     }
 
     await refreshThreadSearchVector(tx as unknown as DB, threadId);
@@ -458,13 +463,31 @@ async function findDirectToTransport(
   );
 }
 
-async function ensureSpamLabel(db: DB, transportId: string): Promise<string> {
-  const id = `label-spam-${transportId}`;
+async function ensureSoftQuarantineLabel(
+  db: DB,
+  transportId: string,
+): Promise<string> {
+  const id = `label-soft-quarantine-${transportId}`;
   await db
     .insert(mailLabel)
-    .values({ id, transportId, name: 'SPAM', color: null })
+    .values({ id, transportId, name: 'soft-quarantine', color: null })
     .onConflictDoNothing({ target: [mailLabel.transportId, mailLabel.name] });
   return id;
+}
+
+/** From domain outside transport domain (minimal allowlist = transport domain). */
+function isExternalFromDomain(
+  fromEmail: string,
+  transportEmail: string,
+): boolean {
+  const fromDomain = fromEmail.includes('@')
+    ? fromEmail.slice(fromEmail.lastIndexOf('@') + 1)
+    : '';
+  const transportDomain = transportEmail.includes('@')
+    ? transportEmail.slice(transportEmail.lastIndexOf('@') + 1)
+    : '';
+  if (!fromDomain || !transportDomain) return true;
+  return fromDomain !== transportDomain;
 }
 
 async function applyThreadLabels(

@@ -78,7 +78,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable || !mailpitConfigured)(
       });
     }, 60_000);
 
-    it('WIRE-2 missing X-Zero-Mailbox → Nava spam', async () => {
+    it('WIRE-2 missing X-Zero-Mailbox → Nava inbox (spamAt null)', async () => {
       await withSeededTestDb(async (db) => {
         await ctx.injectRawEml(readFixtureEml('missing-owner.eml'));
         const pop3 = wirePop3();
@@ -92,8 +92,14 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable || !mailpitConfigured)(
           db,
           requestedTransportId: 'transport-nava',
         });
+        const inbox = await nava.mail.listThreads({ folder: 'inbox' });
+        expect(
+          inbox.threads.some((t) => t.subject.includes('General reservation')),
+        ).toBe(true);
         const spam = await nava.mail.listThreads({ folder: 'spam' });
-        expect(spam.threads.length).toBeGreaterThan(0);
+        expect(
+          spam.threads.filter((t) => t.subject.includes('General reservation')),
+        ).toHaveLength(0);
       });
     }, 60_000);
 

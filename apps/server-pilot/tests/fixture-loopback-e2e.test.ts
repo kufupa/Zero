@@ -59,7 +59,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('fixture loopback e2e', () => 
     });
   }, 60000);
 
-  it('E2E-2 external-style: missing-owner → Nava spam', async () => {
+  it('E2E-2 external-style: missing-owner → Nava inbox (spamAt null)', async () => {
     await withSeededTestDb(async (db) => {
       const pop3 = new FakePop3Client({
         messages: [{ uidl: 'ext-1', raw: readFixture('missing-owner.eml') }],
@@ -74,8 +74,14 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('fixture loopback e2e', () => 
         db,
         requestedTransportId: 'transport-nava',
       });
+      const inbox = await nava.mail.listThreads({ folder: 'inbox' });
+      expect(
+        inbox.threads.some((t) => t.subject.includes('General reservation')),
+      ).toBe(true);
       const spam = await nava.mail.listThreads({ folder: 'spam' });
-      expect(spam.threads.length).toBeGreaterThan(0);
+      expect(
+        spam.threads.filter((t) => t.subject.includes('General reservation')),
+      ).toHaveLength(0);
     });
   }, 60000);
 

@@ -82,6 +82,8 @@ describe('deploy config', () => {
     expect(script).toContain('append_env SMTP_PASSWORD');
     expect(script).toContain('append_env AI_DRAFTS_ENABLED');
     expect(script).toContain('append_env AI_WRITE_GATE_ENABLED');
+    expect(script).toContain('AI_WRITE_GATE_ENABLED:-true');
+    expect(script).toMatch(/MAIL_TRANSPORT_MODE:-fixture\}" == "real"/);
   });
 
   it('write-ec2-env.sh writes UNDO_SEND_SECONDS', async () => {

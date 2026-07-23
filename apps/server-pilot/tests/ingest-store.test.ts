@@ -5,6 +5,7 @@ import {
   message,
   attachment,
   mailThread,
+  aiWorkflowRun,
 } from '../src/db/schema/mail';
 import { parseRawMessage, generateMessageId } from '../src/mail/ingest/parse-message';
 import { IngestTooLargeError } from '../src/mail/ingest/limits';
@@ -106,38 +107,115 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     );
 
     it(
-      'routes missing-header direct-To Nava mail to Nava spam',
+      'direct-To transport email without owner header lands with spamAt null',
       async () => {
         const storage = withFakeS3();
         const raw = readFixture('missing-owner.eml');
-        const { result, stored, thread } = await withSeededTestDb(async (db) => {
-          const messageId = generateMessageId();
-          const parsed = await parseRawMessage(raw, { messageId, storage });
-          expect(parsed.ownerHeaderValue).toBeNull();
-          expect(parsed.toAddresses).toContain('navaai@legacyhotels.co.za');
+        const prevGate = process.env.AI_WRITE_GATE_ENABLED;
+        process.env.AI_WRITE_GATE_ENABLED = 'true';
+        try {
+          const { result, stored, thread, triageRuns } = await withSeededTestDb(
+            async (db) => {
+              const messageId = generateMessageId();
+              const parsed = await parseRawMessage(raw, { messageId, storage });
+              expect(parsed.ownerHeaderValue).toBeNull();
+              expect(parsed.toAddresses).toContain('navaai@legacyhotels.co.za');
 
-          const r = await persistInboundMessage(
-            parsed,
-            raw,
-            {
-              ingestMailboxId: 'ingest-nava-legacy',
-              pop3Uidl: 'uidl-direct-nava',
-              messageId,
+              const r = await persistInboundMessage(
+                parsed,
+                raw,
+                {
+                  ingestMailboxId: 'ingest-nava-legacy',
+                  pop3Uidl: 'uidl-direct-nava-inbox',
+                  messageId,
+                },
+                { db, storage },
+              );
+
+              if (r.kind !== 'stored') {
+                return {
+                  result: r,
+                  stored: undefined,
+                  thread: undefined,
+                  triageRuns: [],
+                };
+              }
+              const messages = await db
+                .select()
+                .from(message)
+                .where(eq(message.id, r.messageId));
+              const threads = await db
+                .select()
+                .from(mailThread)
+                .where(eq(mailThread.id, r.threadId));
+              const runs = await db
+                .select()
+                .from(aiWorkflowRun)
+                .where(eq(aiWorkflowRun.triggerMessageId, r.messageId));
+              return {
+                result: r,
+                stored: messages[0],
+                thread: threads[0],
+                triageRuns: runs,
+              };
             },
-            { db, storage },
           );
 
-          if (r.kind !== 'stored') return { result: r, stored: undefined, thread: undefined };
-          const messages = await db.select().from(message).where(eq(message.id, r.messageId));
-          const threads = await db.select().from(mailThread).where(eq(mailThread.id, r.threadId));
-          return { result: r, stored: messages[0], thread: threads[0] };
-        });
+          expect(result.kind).toBe('stored');
+          if (result.kind !== 'stored') return;
+          expect(result.transportId).toBe('transport-nava');
+          expect(stored!.ownerHeaderValue).toBeNull();
+          expect(thread!.spamAt).toBeNull();
+          expect(thread!.labelIds).not.toContain('label-spam-transport-nava');
+          expect(triageRuns.length).toBeGreaterThan(0);
+          expect(triageRuns[0]!.runKind).toBe('inbound_triage');
+        } finally {
+          if (prevGate === undefined) delete process.env.AI_WRITE_GATE_ENABLED;
+          else process.env.AI_WRITE_GATE_ENABLED = prevGate;
+        }
+      },
+      30000,
+    );
 
-        expect(result.kind).toBe('stored');
-        if (result.kind !== 'stored') return;
-        expect(result.transportId).toBe('transport-nava');
-        expect(stored!.ownerHeaderValue).toBeNull();
-        expect(thread!.labelIds).toContain('label-spam-transport-nava');
+    it(
+      'applies soft-quarantine when AI write gate off and From is external',
+      async () => {
+        const storage = withFakeS3();
+        const raw = readFixture('missing-owner.eml');
+        const prevGate = process.env.AI_WRITE_GATE_ENABLED;
+        process.env.AI_WRITE_GATE_ENABLED = 'false';
+        try {
+          const { result, thread } = await withSeededTestDb(async (db) => {
+            const messageId = generateMessageId();
+            const parsed = await parseRawMessage(raw, { messageId, storage });
+            const r = await persistInboundMessage(
+              parsed,
+              raw,
+              {
+                ingestMailboxId: 'ingest-nava-legacy',
+                pop3Uidl: 'uidl-direct-soft-q',
+                messageId,
+              },
+              { db, storage },
+            );
+            if (r.kind !== 'stored') return { result: r, thread: undefined };
+            const threads = await db
+              .select()
+              .from(mailThread)
+              .where(eq(mailThread.id, r.threadId));
+            return { result: r, thread: threads[0] };
+          });
+
+          expect(result.kind).toBe('stored');
+          if (result.kind !== 'stored') return;
+          expect(thread!.spamAt).toBeNull();
+          expect(thread!.labelIds).toContain(
+            'label-soft-quarantine-transport-nava',
+          );
+        } finally {
+          if (prevGate === undefined) delete process.env.AI_WRITE_GATE_ENABLED;
+          else process.env.AI_WRITE_GATE_ENABLED = prevGate;
+        }
       },
       30000,
     );
