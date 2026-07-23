@@ -13,6 +13,8 @@ Searchable learnings from solved problems on this repo. Written by `/ce-compound
 | [security-issues/ec2-pilot-pre-real-ingest-security-gate.md](security-issues/ec2-pilot-pre-real-ingest-security-gate.md) | Security hardening wave before real mail |
 | [architecture-patterns/mail-transport-mode-fixture-vs-real.md](architecture-patterns/mail-transport-mode-fixture-vs-real.md) | MAIL_TRANSPORT_MODE fixture vs real handoff |
 | [architecture-patterns/live-pilot-production-parity-real-mail.md](architecture-patterns/live-pilot-production-parity-real-mail.md) | Live-pilot parity: auth host, 15s poll, forceSync, U9 gate, UNDO 0↔30 |
+| [logic-errors/mail-open-thread-stale-and-recipient-you-label.md](logic-errors/mail-open-thread-stale-and-recipient-you-label.md) | Open-thread poll + To:You only when recipient is mailbox |
+| [logic-errors/mail-quoted-history-crop-and-collapse.md](logic-errors/mail-quoted-history-crop-and-collapse.md) | Reply quote crop + ellipsis collapse for quoted history |
 | [runtime-errors/pm2-esm-is-cli-entry-and-unref-sleep.md](runtime-errors/pm2-esm-is-cli-entry-and-unref-sleep.md) | PM2 ESM `isMain` + unref sleep → worker errored / empty logs |
 
 Domain vocabulary: [CONCEPTS.md](../../CONCEPTS.md) at repo root.

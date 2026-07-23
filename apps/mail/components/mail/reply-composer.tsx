@@ -159,21 +159,28 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
           }))
         : undefined;
 
+      const quoteAttributionRecipients =
+        replyToMessage.to?.length > 0
+          ? replyToMessage.to
+          : replyToMessage.sender
+            ? [replyToMessage.sender]
+            : [];
+
       const emailBody =
         mode === 'forward'
           ? constructForwardBody(
               data.message,
               new Date(replyToMessage.receivedOn || '').toLocaleString(),
               { ...replyToMessage.sender, subject: replyToMessage.subject },
-              toRecipients,
-              //   replyToMessage.decodedBody,
+              quoteAttributionRecipients,
+              replyToMessage.decodedBody,
             )
           : constructReplyBody(
               data.message,
               new Date(replyToMessage.receivedOn || '').toLocaleString(),
               replyToMessage.sender,
-              toRecipients,
-              //   replyToMessage.decodedBody,
+              quoteAttributionRecipients,
+              replyToMessage.decodedBody,
             );
 
       const sendInput = {

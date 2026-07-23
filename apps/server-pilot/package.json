@@ -36,6 +36,7 @@
     "@mastra/libsql": "1.15.1",
     "@trpc/server": "catalog:",
     "better-auth": "catalog:",
+    "cheerio": "1.1.0",
     "drizzle-orm": "catalog:",
     "hono": "catalog:",
     "mailparser": "^3.9.12",

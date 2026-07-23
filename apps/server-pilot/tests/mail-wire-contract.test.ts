@@ -157,6 +157,28 @@ describe('mail wire contract — send accepts FE payload from create-email.tsx',
     expect(parsed.references).toEqual(['<root@x>', '<old@x>']);
   });
 
+  it('appends originalMessage when message html lacks the prior body', () => {
+    const parsed = sendInput.parse({
+      to: ['a@example.com'],
+      subject: 'Re: x',
+      message: '<p>hiii</p><div>On Thu wrote:</div>',
+      originalMessage: '<p>unique-prior-body-xyz</p>',
+    });
+    expect(parsed.html).toContain('hiii');
+    expect(parsed.html).toContain('unique-prior-body-xyz');
+  });
+
+  it('does not double-append originalMessage when already embedded', () => {
+    const prior = '<p>already-in-body</p>';
+    const parsed = sendInput.parse({
+      to: ['a@example.com'],
+      subject: 'Re: x',
+      message: `<p>new</p>${prior}`,
+      originalMessage: prior,
+    });
+    expect(parsed.html.match(/already-in-body/g)?.length).toBe(1);
+  });
+
   it('passes through scheduleAt ISO', () => {
     const parsed = sendInput.parse({
       to: ['a@example.com'],

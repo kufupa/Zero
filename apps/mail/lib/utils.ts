@@ -375,10 +375,11 @@ export const constructReplyBody = (
   formattedMessage: string,
   originalDate: string,
   originalSender: Sender | undefined,
-  otherRecipients: Sender[],
+  _otherRecipients: Sender[],
+  quotedMessage?: string,
 ) => {
   const senderName = originalSender?.name || originalSender?.email || 'Unknown Sender';
-  const recipientEmails = otherRecipients.map((r) => r.email).join(', ');
+  const senderEmail = originalSender?.email ? `&lt;${originalSender.email}&gt;` : '';
 
   return `
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
@@ -387,7 +388,10 @@ export const constructReplyBody = (
       </div>
       <div style="padding-left: 16px; border-left: 3px solid #e2e8f0; color: #64748b;">
         <div style="font-size: 12px;">
-          On ${originalDate}, ${senderName} ${recipientEmails ? `&lt;${recipientEmails}&gt;` : ''} wrote:
+          On ${originalDate}, ${senderName} ${senderEmail} wrote:
+        </div>
+        <div style="">
+          ${quotedMessage || ''}
         </div>
       </div>
     </div>
@@ -399,6 +403,7 @@ export const constructForwardBody = (
   originalDate: string,
   originalSender: Sender | undefined,
   otherRecipients: Sender[],
+  quotedMessage?: string,
 ) => {
   const senderName = originalSender?.name || originalSender?.email || 'Unknown Sender';
   const recipientEmails = otherRecipients.map((r) => r.email).join(', ');
@@ -415,6 +420,9 @@ export const constructForwardBody = (
           Date: ${originalDate}<br/>
           Subject: ${originalSender?.subject || 'No Subject'}<br/>
           To: ${recipientEmails || 'No Recipients'}
+        </div>
+        <div style="">
+          ${quotedMessage || ''}
         </div>
       </div>
     </div>

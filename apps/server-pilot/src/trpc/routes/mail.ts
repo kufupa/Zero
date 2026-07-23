@@ -46,6 +46,7 @@ import {
 } from '../../mail/send/outbound-queue.js';
 import { formatContentDispositionFilename } from '../../mail/attachment-filename.js';
 import { sanitizeEmailHtml } from '../../mail/sanitize-email-html.js';
+import { processQuotedContent } from '../../mail/collapse-quoted-html.js';
 import { withMailboxIngestLock } from '../../mail/ingest/mailbox-ingest-lock.js';
 import type { Pop3Client } from '../../mail/ingest/pop3-client.js';
 import {
@@ -1230,12 +1231,13 @@ export const mailRouter = tRouter({
       }),
     )
     .mutation(async ({ input }) => {
-      const result = sanitizeEmailHtml(input.html, {
+      const sanitized = sanitizeEmailHtml(input.html, {
         shouldLoadImages: input.shouldLoadImages,
       });
+      const processedHtml = processQuotedContent(sanitized.html, input.theme);
       return {
-        processedHtml: result.html,
-        hasBlockedImages: result.hasBlockedImages,
+        processedHtml,
+        hasBlockedImages: sanitized.hasBlockedImages,
       };
     }),
 

@@ -54,24 +54,35 @@ export const sendInput = z
     references: z.array(z.string()).optional(),
     /** FE schedule send — ISO string from create-email / reply-composer. */
     scheduleAt: z.string().optional(),
+    /** Prior message HTML — appended when client html lacks quoted body. */
+    originalMessage: z.string().optional(),
   })
-  .transform((input) => ({
-    threadId: input.threadId,
-    to: coerceRecipientEmails(input.to),
-    cc: coerceRecipientEmails(input.cc),
-    bcc: coerceRecipientEmails(input.bcc),
-    subject: input.subject,
-    html: input.message ?? input.html ?? '',
-    text: input.text ?? '',
-    attachments: input.attachments,
-    fromEmail: input.fromEmail,
-    draftId: input.draftId,
-    confirmStaleDraft: input.confirmStaleDraft,
-    replyToMessageId: input.replyToMessageId,
-    inReplyTo: input.inReplyTo,
-    references: input.references,
-    scheduleAt: input.scheduleAt,
-  }));
+  .transform((input) => {
+    const baseHtml = input.message ?? input.html ?? '';
+    const original = input.originalMessage?.trim() ?? '';
+    const html =
+      original && !baseHtml.includes(original.slice(0, Math.min(80, original.length)))
+        ? `${baseHtml}${original}`
+        : baseHtml;
+
+    return {
+      threadId: input.threadId,
+      to: coerceRecipientEmails(input.to),
+      cc: coerceRecipientEmails(input.cc),
+      bcc: coerceRecipientEmails(input.bcc),
+      subject: input.subject,
+      html,
+      text: input.text ?? '',
+      attachments: input.attachments,
+      fromEmail: input.fromEmail,
+      draftId: input.draftId,
+      confirmStaleDraft: input.confirmStaleDraft,
+      replyToMessageId: input.replyToMessageId,
+      inReplyTo: input.inReplyTo,
+      references: input.references,
+      scheduleAt: input.scheduleAt,
+    };
+  });
 
 export type SendInput = z.infer<typeof sendInput>;
 
