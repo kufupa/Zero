@@ -127,6 +127,7 @@ export type MailSelectMode = 'mass' | 'range' | 'single' | 'selectAllBelow';
 export type MailListThreadRow = {
   id: string;
   historyId?: string | null;
+  categoryIds?: string[];
   centurionCategory?: CenturionMailCategory;
   latestMessageAt?: string | Date | null;
   isStarred?: boolean;

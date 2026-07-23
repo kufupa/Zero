@@ -42,6 +42,8 @@ import { VList, type VListHandle } from 'virtua';
 import { BimiAvatar } from '../ui/bimi-avatar';
 import { RenderLabels } from './render-labels';
 import { CenturionCategoryPill } from './centurion-category-pill';
+import { buildCategoryIdToSlugMap } from '@/lib/mail/hotel-folder-presentation';
+import { useCategorySettings } from '@/hooks/use-categories';
 import { Badge } from '@/components/ui/badge';
 import { useDraft } from '@/hooks/use-drafts';
 import { Check, Star } from 'lucide-react';
@@ -117,6 +119,11 @@ const Thread = memo(
     const [, threads] = useThreads();
     const [threadId] = useQueryState('threadId');
     const { data: getThreadData, isGroupThread, latestDraft } = useThread(message.id);
+    const categorySettings = useCategorySettings();
+    const idToSlug = useMemo(
+      () => buildCategoryIdToSlugMap(categorySettings),
+      [categorySettings],
+    );
     const [id, setThreadId] = useQueryState('threadId');
     const [focusedIndex, setFocusedIndex] = useAtom(focusedIndexAtom);
 
@@ -570,6 +577,8 @@ const Thread = memo(
                         <CenturionCategoryPill
                           routeFolder={folder}
                           category={message.centurionCategory}
+                          categoryIds={message.categoryIds}
+                          idToSlug={idToSlug}
                         />
                         <RenderLabels labels={threadLabels} />
                       </div>
@@ -612,6 +621,8 @@ const Thread = memo(
       optimisticLabels,
       emailContent,
       message.centurionCategory,
+      message.categoryIds,
+      idToSlug,
     ]);
 
     return latestMessage ? (

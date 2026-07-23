@@ -46,6 +46,8 @@ import { useThread } from '@/hooks/use-threads';
 import { BimiAvatar } from '../ui/bimi-avatar';
 import { RenderLabels } from './render-labels';
 import { CenturionCategoryPill } from './centurion-category-pill';
+import { buildCategoryIdToSlugMap } from '@/lib/mail/hotel-folder-presentation';
+import { useCategorySettings } from '@/hooks/use-categories';
 import { cleanHtml } from '@/lib/email-utils';
 import { cleanEmailDisplay, cleanNameDisplay, MailboxInline, formatMailboxPlain } from '@/lib/mail/mailbox-format';
 import { shouldCollapseRecipientToYou } from '@/lib/mail/recipient-you-label';
@@ -741,6 +743,11 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
   //   const [isUnsubscribing, setIsUnsubscribing] = useState(false);
   const [preventCollapse, setPreventCollapse] = useState(false);
   const { folder } = useParams<{ folder: string }>();
+  const categorySettings = useCategorySettings();
+  const idToSlug = useMemo(
+    () => buildCategoryIdToSlugMap(categorySettings),
+    [categorySettings],
+  );
   //   const [selectedAttachment, setSelectedAttachment] = useState<null | {
   //     id: string;
   //     name: string;
@@ -1370,6 +1377,8 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                   <CenturionCategoryPill
                     routeFolder={folder}
                     category={threadData?.centurionCategory}
+                    categoryIds={threadData?.categoryIds}
+                    idToSlug={idToSlug}
                   />
                   <RenderLabels labels={threadLabels} />
                   {threadLabels.length ? (
