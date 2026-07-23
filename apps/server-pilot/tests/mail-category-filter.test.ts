@@ -142,4 +142,47 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.listThreads category and
       expect(groupOnly.threads.map((t) => t.id)).toEqual([threadId]);
     });
   });
+
+  it('mail.get returns categoryIds and categories matching listThreads', async () => {
+    await withSeededTestDb(async (db) => {
+      const [groupCategory] = await db
+        .select()
+        .from(mailCategory)
+        .where(and(eq(mailCategory.transportId, TRANSPORT_ID), eq(mailCategory.slug, 'group')))
+        .limit(1);
+      expect(groupCategory).toBeDefined();
+
+      const threadId = randomUUID();
+      await db.insert(mailThread).values({
+        id: threadId,
+        transportId: TRANSPORT_ID,
+        threadRootId: `<${threadId}@example.com>`,
+        subject: 'Get category wire',
+        snippet: 'wire',
+        isRead: true,
+        latestMessageAt: new Date('2026-07-06T12:00:00Z'),
+      });
+      await db.insert(message).values({
+        id: randomUUID(),
+        transportId: TRANSPORT_ID,
+        threadId,
+        direction: 'inbound',
+        fromAddress: 'a@example.com',
+        toAddresses: ['nava@example.com'],
+        subject: 'Get category wire',
+        textBody: 'hello',
+        receivedAt: new Date('2026-07-06T12:00:00Z'),
+      });
+      await db.insert(mailThreadCategory).values({
+        threadId,
+        categoryId: groupCategory!.id,
+        transportId: TRANSPORT_ID,
+      });
+
+      const { mail } = await callerFor('user-navaai', { db });
+      const detail = await mail.get({ id: threadId });
+      expect(detail.categoryIds).toEqual([groupCategory!.id]);
+      expect(detail.categories.map((c) => c.slug)).toEqual(['group']);
+    });
+  });
 });

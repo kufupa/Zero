@@ -169,6 +169,7 @@ describe('driver type package contract', () => {
       totalReplies: 1,
       labels: [],
       categories: [category],
+      categoryIds: [category.id],
     } satisfies ThreadDetailResponse;
 
     const caps = {

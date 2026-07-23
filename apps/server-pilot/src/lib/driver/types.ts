@@ -120,6 +120,7 @@ export interface ThreadDetailResponse {
   totalReplies: number;
   labels: MailLabelWire[];
   categories: MailCategory[];
+  categoryIds: string[];
   // Demo/hotel-pilot only: real Gmail pilot omits this.
   centurionCategory?: CenturionMailCategory;
 }

@@ -25,6 +25,7 @@ import {
   mailLabel,
   mailDraft,
   mailDraftRevision,
+  mailCategory,
   mailThreadCategory,
 } from '../../db/schema/mail.js';
 import {
@@ -173,6 +174,69 @@ export function __setForceSyncIngestOnceForTests(
 }
 
 export { __resetMailboxIngestLocksForTests } from '../../mail/ingest/mailbox-ingest-lock.js';
+
+async function loadCategoryIdsByThreadIds(
+  db: ReturnType<typeof getDb>,
+  transportId: string,
+  threadIds: string[],
+): Promise<Map<string, string[]>> {
+  const categoryIdsByThread = new Map<string, string[]>();
+  if (threadIds.length === 0) return categoryIdsByThread;
+
+  const categoryRows = await db
+    .select({
+      threadId: mailThreadCategory.threadId,
+      categoryId: mailThreadCategory.categoryId,
+    })
+    .from(mailThreadCategory)
+    .where(
+      and(
+        eq(mailThreadCategory.transportId, transportId),
+        inArray(mailThreadCategory.threadId, threadIds),
+      ),
+    );
+
+  for (const row of categoryRows) {
+    const existing = categoryIdsByThread.get(row.threadId) ?? [];
+    existing.push(row.categoryId);
+    categoryIdsByThread.set(row.threadId, existing);
+  }
+  return categoryIdsByThread;
+}
+
+async function loadThreadCategoriesForGet(
+  db: ReturnType<typeof getDb>,
+  transportId: string,
+  threadId: string,
+): Promise<{
+  categoryIds: string[];
+  categories: Array<{
+    id: string;
+    slug: string;
+    name: string;
+    color: string | null;
+    sortOrder: number;
+  }>;
+}> {
+  const categoryIdsByThread = await loadCategoryIdsByThreadIds(db, transportId, [threadId]);
+  const categoryIds = categoryIdsByThread.get(threadId) ?? [];
+  if (categoryIds.length === 0) return { categoryIds: [], categories: [] };
+
+  const categories = await db
+    .select({
+      id: mailCategory.id,
+      slug: mailCategory.slug,
+      name: mailCategory.name,
+      color: mailCategory.color,
+      sortOrder: mailCategory.sortOrder,
+    })
+    .from(mailCategory)
+    .where(
+      and(eq(mailCategory.transportId, transportId), inArray(mailCategory.id, categoryIds)),
+    );
+
+  return { categoryIds, categories };
+}
 
 export const mailRouter = tRouter({
   /**
@@ -394,28 +458,7 @@ export const mailRouter = tRouter({
       }
 
       const threadIds = rows.map((row) => row.id);
-      const categoryRows =
-        threadIds.length > 0
-          ? await db
-              .select({
-                threadId: mailThreadCategory.threadId,
-                categoryId: mailThreadCategory.categoryId,
-              })
-              .from(mailThreadCategory)
-              .where(
-                and(
-                  eq(mailThreadCategory.transportId, transportId),
-                  inArray(mailThreadCategory.threadId, threadIds),
-                ),
-              )
-          : [];
-
-      const categoryIdsByThread = new Map<string, string[]>();
-      for (const row of categoryRows) {
-        const existing = categoryIdsByThread.get(row.threadId) ?? [];
-        existing.push(row.categoryId);
-        categoryIdsByThread.set(row.threadId, existing);
-      }
+      const categoryIdsByThread = await loadCategoryIdsByThreadIds(db, transportId, threadIds);
 
       const draftCountRows =
         threadIds.length > 0
@@ -553,6 +596,12 @@ export const mailRouter = tRouter({
         return toDraftWire(draft, isStale);
       });
 
+      const { categoryIds, categories } = await loadThreadCategoriesForGet(
+        db,
+        transportId,
+        thread.id,
+      );
+
       return {
         id: thread.id,
         transportId: thread.transportId,
@@ -570,6 +619,8 @@ export const mailRouter = tRouter({
         totalReplies: Math.max(0, parsedMessages.length - 1),
         labels: threadLabels,
         drafts,
+        categoryIds,
+        categories,
       };
     }),
 

@@ -189,6 +189,7 @@ export function getDemoThread(id: string): IGetThreadResponse {
     labels: visibleLabels.map((label) => ({ id: label.id, name: label.name, type: 'system' as const })),
     drafts: [],
     categories: [],
+    categoryIds: [],
     ...(centurionCategory ? { centurionCategory } : {}),
   };
 }
