@@ -114,4 +114,59 @@ describe('withMailboxIngestLock', () => {
     release();
     await holder;
   });
+
+  it('timed-out waiter must not clear chain — sneak cannot enter during hold', async () => {
+    let inside = 0;
+    let maxInside = 0;
+    let sneaked_during_hold = false;
+    let releaseHolder!: () => void;
+    const holderGate = new Promise<void>((resolve) => {
+      releaseHolder = resolve;
+    });
+
+    const holder = withMailboxIngestLock('transport-sneak', async () => {
+      inside++;
+      maxInside = Math.max(maxInside, inside);
+      await holderGate;
+      inside--;
+      return 'held';
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const timedOut = await withMailboxIngestLock(
+      'transport-sneak',
+      async () => 'never',
+      20,
+    );
+    expect(timedOut).toEqual({
+      ok: false,
+      cycleError: 'mailbox ingest lock timeout',
+    });
+
+    // While holder still holds, a third caller must not sneak into the critical section.
+    const sneak = withMailboxIngestLock('transport-sneak', async () => {
+      inside++;
+      maxInside = Math.max(maxInside, inside);
+      if (inside > 1) sneaked_during_hold = true;
+      await Promise.resolve();
+      inside--;
+      return 'sneak';
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+    await new Promise((r) => setTimeout(r, 5));
+
+    expect(sneaked_during_hold).toBe(false);
+    expect(maxInside).toBe(1);
+
+    releaseHolder();
+    const [h, s] = await Promise.all([holder, sneak]);
+    expect(h).toEqual({ ok: true, value: 'held' });
+    expect(s).toEqual({ ok: true, value: 'sneak' });
+    expect(sneaked_during_hold).toBe(false);
+    expect(maxInside).toBe(1);
+  });
 });

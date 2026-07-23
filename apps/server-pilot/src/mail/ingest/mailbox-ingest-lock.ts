@@ -29,8 +29,9 @@ export async function withMailboxIngestLock<T>(
   const tail = previous.catch(() => undefined).then(() => gate);
   tails.set(mailboxKey, tail);
 
+  let acquired = false;
   try {
-    const acquired = await Promise.race([
+    acquired = await Promise.race([
       previous.then(() => true as const).catch(() => true as const),
       new Promise<false>((resolve) => {
         setTimeout(() => resolve(false), waitMs);
@@ -38,13 +39,17 @@ export async function withMailboxIngestLock<T>(
     ]);
 
     if (!acquired) {
+      // Release gate so chain can advance, but do NOT delete the tip:
+      // clearing tails while a predecessor still holds lets a new caller sneak in.
       return { ok: false, cycleError: 'mailbox ingest lock timeout' };
     }
 
     return { ok: true, value: await fn() };
   } finally {
     release();
-    if (tails.get(mailboxKey) === tail) {
+    // Only clear the map tip after a successful acquire (holder/waiter that ran fn).
+    // Timed-out waiters leave the chain entry so later callers still enqueue behind it.
+    if (acquired && tails.get(mailboxKey) === tail) {
       tails.delete(mailboxKey);
     }
   }
