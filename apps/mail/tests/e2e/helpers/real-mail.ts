@@ -17,25 +17,29 @@ export function requireRealMailPassword(): string {
 
 export async function dismissMailOnboarding(page: Page) {
   // OnboardingWrapper remounts open=true on each mail layout load (incl. compose query nav).
-  for (let attempt = 0; attempt < 4; attempt++) {
+  for (let attempt = 0; attempt < 5; attempt++) {
     const skipTour = page
       .getByRole('button', { name: /Skip for now/i })
       .or(page.getByText('Skip for now', { exact: true }));
-    if (await skipTour.first().isVisible({ timeout: 2_500 }).catch(() => false)) {
+    if (await skipTour.first().isVisible({ timeout: 1_500 }).catch(() => false)) {
       await skipTour.first().click({ force: true });
       await page.waitForTimeout(400);
+      // Confirm closed
+      if (!(await skipTour.first().isVisible({ timeout: 800 }).catch(() => false))) {
+        return;
+      }
       continue;
     }
 
-    const navaTour = page.getByText('Welcome to Nava AI').or(page.getByText('Nava AI', { exact: true }));
-    if (await navaTour.first().isVisible({ timeout: 800 }).catch(() => false)) {
+    const welcome = page.getByText('Welcome to Nava AI');
+    if (await welcome.isVisible({ timeout: 600 }).catch(() => false)) {
       await page.keyboard.press('Escape');
       await page.waitForTimeout(300);
       continue;
     }
 
     const legacyWelcome = page.getByText('Welcome to Zero Email!');
-    if (await legacyWelcome.isVisible({ timeout: 500 }).catch(() => false)) {
+    if (await legacyWelcome.isVisible({ timeout: 400 }).catch(() => false)) {
       await page.locator('body').click({ position: { x: 100, y: 100 }, force: true });
       await page.waitForTimeout(300);
       continue;
@@ -71,52 +75,9 @@ export async function uiLoginAsNavaai(page: Page) {
   await expectPilotInboxVisible(page);
 }
 
-/** Optional session cookies for non-login specs (gate may mint). */
-export async function injectMintedSession(context: BrowserContext, page: Page) {
-  const token = process.env.PLAYWRIGHT_SESSION_TOKEN;
-  const data = process.env.PLAYWRIGHT_SESSION_DATA;
-  if (!token || !data) {
-    await uiLoginAsNavaai(page);
-    return;
-  }
-
-  const baseUrl = process.env.PLAYWRIGHT_BASE_URL ?? 'https://127.0.0.1';
-  const cookiePrefix = process.env.PLAYWRIGHT_COOKIE_PREFIX ?? 'better-auth';
-  const cookieDomain = new URL(baseUrl).hostname;
-  const cookieSecure = baseUrl.startsWith('https:');
-
-  await context.addCookies([
-    {
-      name: `${cookiePrefix}.session_token`,
-      value: token,
-      domain: cookieDomain,
-      path: '/',
-      httpOnly: true,
-      secure: cookieSecure,
-      sameSite: 'Lax',
-    },
-    {
-      name: `${cookiePrefix}.session_data`,
-      value: data,
-      domain: cookieDomain,
-      path: '/',
-      httpOnly: true,
-      secure: cookieSecure,
-      sameSite: 'Lax',
-    },
-  ]);
-
-  await page.goto('/mail/inbox', { waitUntil: 'domcontentloaded', timeout: 60_000 });
-  await dismissMailOnboarding(page);
-
-  // Minted cookies often fail when PLAYWRIGHT_BASE_URL host ≠ BETTER_AUTH_URL (e.g. 127.0.0.1 vs nava.legacy.local).
-  const loginMarker = page.getByText('Login to Nava').or(page.getByRole('button', { name: /Continue with Email/i }));
-  if (await loginMarker.first().isVisible({ timeout: 3_000 }).catch(() => false)) {
-    await uiLoginAsNavaai(page);
-    return;
-  }
-
-  await expectPilotInboxVisible(page);
+/** Session for non-login specs — UI form login (cookie mint flaky vs BETTER_AUTH_URL host). */
+export async function injectMintedSession(_context: BrowserContext, page: Page) {
+  await uiLoginAsNavaai(page);
 }
 
 export async function openComposeDialog(page: Page) {
