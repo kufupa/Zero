@@ -24,7 +24,8 @@ if [ -f /opt/nava/ec2-playwright-chromium/env.sh ]; then
   source /opt/nava/ec2-playwright-chromium/env.sh
 fi
 
-export PLAYWRIGHT_BASE_URL="${PLAYWRIGHT_BASE_URL:-https://127.0.0.1}"
+# Must match BETTER_AUTH_URL host — cookies minted on 127.0.0.1 fail when auth URL is nava.legacy.local.
+export PLAYWRIGHT_BASE_URL="${PLAYWRIGHT_BASE_URL:-https://nava.legacy.local}"
 export PLAYWRIGHT_COOKIE_PREFIX="${PLAYWRIGHT_COOKIE_PREFIX:-better-auth}"
 export PLAYWRIGHT_IGNORE_HTTPS_ERRORS="${PLAYWRIGHT_IGNORE_HTTPS_ERRORS:-1}"
 export PLAYWRIGHT_REAL_MAIL_USER="${PLAYWRIGHT_REAL_MAIL_USER:-navaai@legacyhotels.co.za}"

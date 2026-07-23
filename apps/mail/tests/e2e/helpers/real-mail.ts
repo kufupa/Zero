@@ -95,6 +95,14 @@ export async function injectMintedSession(context: BrowserContext, page: Page) {
 
   await page.goto('/mail/inbox', { waitUntil: 'domcontentloaded', timeout: 60_000 });
   await dismissMailOnboarding(page);
+
+  // Minted cookies often fail when PLAYWRIGHT_BASE_URL host ≠ BETTER_AUTH_URL (e.g. 127.0.0.1 vs nava.legacy.local).
+  const loginMarker = page.getByText('Login to Nava').or(page.getByRole('button', { name: /Continue with Email/i }));
+  if (await loginMarker.first().isVisible({ timeout: 3_000 }).catch(() => false)) {
+    await uiLoginAsNavaai(page);
+    return;
+  }
+
   await expectPilotInboxVisible(page);
 }
 
