@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Real-mail Playwright UI gate (AE1 login, AE7 compose, AE9 forceSync).
+# Real-mail Playwright UI gate (AE1 login, AE7 compose, AE8 reply, AE9 forceSync).
 # Reuses mint/nginx patterns from playwright-ec2-gate.sh but REFUSES frontend-only demo.
 # EC2 run is Task 12 — this script is SSM-runnable when SPA + real transport are up.
 set -euo pipefail
@@ -124,7 +124,8 @@ pnpm exec playwright test \
   --reporter=line \
   real-mail-browser-login \
   real-mail-compose-self-loopback \
-  real-mail-force-sync-loopback
+  real-mail-force-sync-loopback \
+  real-mail-reply-loopback
 PW_EXIT=$?
 set -e
 exit "$PW_EXIT"
