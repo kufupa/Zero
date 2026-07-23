@@ -199,8 +199,14 @@ export class RealPop3Client implements Pop3Client {
 
   async close(): Promise<void> {
     if (this.sock) {
-      this.sock.destroy();
+      const sock = this.sock;
+      // Null first so a late 'close' event is ignored by sock-identity guards.
       this.sock = null;
+      try {
+        sock.destroy();
+      } catch {
+        /* ignore */
+      }
     }
     this.rejectWaiters(new Error('pop3 connection closed'));
     this.closed = true;
@@ -237,12 +243,18 @@ export class RealPop3Client implements Pop3Client {
 
   private attachSocketHandlers(sock: Socket | TLSSocket): void {
     sock.setTimeout(SOCKET_TIMEOUT_MS);
-    sock.on('data', (chunk: Buffer) => this.onData(chunk));
+    sock.on('data', (chunk: Buffer) => {
+      if (this.sock !== sock) return;
+      this.onData(chunk);
+    });
     sock.on('error', (err: Error) => {
+      if (this.sock !== sock) return;
       this.closeError = err;
       this.rejectWaiters(err);
     });
     sock.on('close', () => {
+      // Ignore late close from a previous poll-cycle socket.
+      if (this.sock !== sock) return;
       if (!this.closeError) {
         this.closeError = new Error('pop3 socket closed');
       }
@@ -250,6 +262,7 @@ export class RealPop3Client implements Pop3Client {
       this.closed = true;
     });
     sock.on('timeout', () => {
+      if (this.sock !== sock) return;
       const err = new Error('pop3 socket timeout');
       this.closeError = err;
       sock.destroy(err);

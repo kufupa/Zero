@@ -253,6 +253,8 @@ describe('RealPop3Client socket framing', () => {
     scriptSession(sock2);
     setImmediate(() => sock2.emit('data', Buffer.from('+OK ready\r\n')));
     await client.connect();
+    // Stale close from the previous socket must not poison the new session.
+    sock1.emit('close');
     await expect(client.listUidl()).resolves.toEqual(['a']);
     await client.quit();
   });
