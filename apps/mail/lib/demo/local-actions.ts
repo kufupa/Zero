@@ -144,25 +144,6 @@ export function demoGenerateSearchQuery(
   );
 }
 
-export function demoWebSearch(
-  input: { query: string; isFrontendOnlyDemoMode: boolean },
-  delayMs = DEMO_ACTION_DELAY_MS,
-): Promise<{ text: string; sources: Array<{ id: string; title: string; url: string }> }> {
-  const queryText = normalizeDemoQuery(input.query);
-  return runDemoAction(
-    () => ({
-      text: `Demo web search results for: ${queryText}`,
-      sources: [],
-    }),
-    () => ({
-      text: `Demo web search results for: ${queryText}`,
-      sources: [],
-    }),
-    delayMs,
-    input.isFrontendOnlyDemoMode,
-  );
-}
-
 export function demoGenerateSummary(
   input: { threadId: string; isFrontendOnlyDemoMode: boolean },
   delayMs = DEMO_ACTION_DELAY_MS,

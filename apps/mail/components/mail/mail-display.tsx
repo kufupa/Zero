@@ -20,7 +20,6 @@ import {
   Users,
   Lock,
   HardDriveDownload,
-  Loader2,
   CopyIcon,
 } from 'lucide-react';
 import {
@@ -30,7 +29,6 @@ import {
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
 import { cn, formatDate, formatTime, shouldShowSeparateTime } from '@/lib/utils';
-import { Dialog, DialogTitle, DialogHeader, DialogContent } from '../ui/dialog';
 import { memo, useEffect, useMemo, useState, useRef, useCallback, type MouseEvent } from 'react';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover';
@@ -38,10 +36,8 @@ import { EmailVerificationBadge } from './email-verification-badge';
 import type { Sender, ParsedMessage, Attachment } from '@/types';
 import { useActiveConnection } from '@/hooks/use-connections';
 import { useAttachments } from '@/hooks/use-attachments';
-import { trpcClient, useTRPCClient } from '@/providers/query-provider';
+import { trpcClient } from '@/providers/query-provider';
 import { useThreadLabels } from '@/hooks/use-labels';
-import { useMutation } from '@tanstack/react-query';
-import { TextShimmer } from '../ui/text-shimmer';
 import { useThread } from '@/hooks/use-threads';
 import { BimiAvatar } from '../ui/bimi-avatar';
 import { RenderLabels } from './render-labels';
@@ -49,7 +45,7 @@ import { CenturionCategoryPill } from './centurion-category-pill';
 import { buildCategoryIdToSlugMap } from '@/lib/mail/hotel-folder-presentation';
 import { useCategorySettings } from '@/hooks/use-categories';
 import { cleanHtml } from '@/lib/email-utils';
-import { cleanEmailDisplay, cleanNameDisplay, MailboxInline, formatMailboxPlain } from '@/lib/mail/mailbox-format';
+import { cleanEmailDisplay, MailboxInline, formatMailboxPlain } from '@/lib/mail/mailbox-format';
 import { shouldCollapseRecipientToYou } from '@/lib/mail/recipient-you-label';
 import {
   canShowHeaderDebug,
@@ -64,8 +60,7 @@ import { parseAsString, useQueryState, useQueryStates } from 'nuqs';
 import { Badge } from '../ui/badge';
 import { format } from 'date-fns';
 import { toast } from 'sonner';
-import { demoWebSearch } from '@/lib/demo/local-actions';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { copySenderEmail } from '@/lib/mail/copy-sender-email';
 import { openReplyComposeContext, type ReplyComposeMode } from '@/lib/mail/reply-compose-context';
 
 // Add formatFileSize utility function
@@ -98,60 +93,6 @@ const getFileIcon = (filename: string) => {
     default:
       return <FileText className="h-4 w-4 text-[#8B5CF6]" />;
   }
-};
-
-const StreamingText = ({ text }: { text: string }) => {
-  const [displayText, setDisplayText] = useState('');
-  const [isComplete, setIsComplete] = useState(false);
-  const [isThinking, setIsThinking] = useState(false);
-
-  useEffect(() => {
-    let currentIndex = 0;
-    setIsComplete(false);
-    setIsThinking(true);
-
-    const thinkingTimeout = setTimeout(() => {
-      setIsThinking(false);
-      setDisplayText('');
-
-      const interval = setInterval(() => {
-        if (currentIndex < text.length) {
-          const nextChar = text[currentIndex];
-          setDisplayText((prev) => prev + nextChar);
-          currentIndex++;
-        } else {
-          setIsComplete(true);
-          clearInterval(interval);
-        }
-      }, 20);
-
-      return () => clearInterval(interval);
-    }, 1000);
-
-    return () => {
-      clearTimeout(thinkingTimeout);
-    };
-  }, [text]);
-
-  return (
-    <div className="flex items-center gap-2">
-      <div
-        className={cn(
-          'bg-linear-to-r bg-size-[200%_100%] from-neutral-500 via-neutral-300 to-neutral-500 bg-clip-text text-sm leading-relaxed text-transparent',
-          isComplete ? 'animate-shine-slow' : '',
-        )}
-      >
-        {isThinking ? (
-          <TextShimmer duration={1}>Thinking...</TextShimmer>
-        ) : (
-          <span>{displayText}</span>
-        )}
-        {!isComplete && !isThinking && (
-          <span className="animate-blink bg-primary ml-0.5 inline-block h-4 w-0.5"></span>
-        )}
-      </div>
-    </div>
-  );
 };
 
 type Props = {
@@ -350,55 +291,6 @@ const ThreadAttachments = ({ attachments }: { attachments: Attachment[] }) => {
   );
 };
 
-type MailDisplayWebSearchResult = {
-  text: string;
-  sources: { id: string; title: string; url: string }[];
-};
-
-export const resolveMailDisplayWebSearch = async ({
-  query,
-  isFrontendOnlyDemoMode,
-  webSearch,
-}: {
-  query: string;
-  isFrontendOnlyDemoMode: boolean;
-  webSearch: (input: { query: string }) => Promise<MailDisplayWebSearchResult | { results?: unknown[]; disabled?: boolean }>;
-}): Promise<MailDisplayWebSearchResult> => {
-  if (isFrontendOnlyDemoMode) {
-    return demoWebSearch({
-      query,
-      isFrontendOnlyDemoMode,
-    });
-  }
-
-  const result = await webSearch({ query });
-  if ('text' in result && typeof result.text === 'string') {
-    return {
-      text: result.text,
-      sources: 'sources' in result && Array.isArray(result.sources) ? result.sources : [],
-    };
-  }
-
-  return {
-    text: 'Web search is unavailable in pilot mode.',
-    sources: [],
-  };
-};
-
-function useMailDisplayWebSearchMutation() {
-  const trpcClient = useTRPCClient();
-  const isFrontendOnlyDemoMode = isFrontendOnlyDemo();
-
-  return useMutation({
-    mutationFn: ({ query }: { query: string }) =>
-      resolveMailDisplayWebSearch({
-        query,
-        isFrontendOnlyDemoMode,
-        webSearch: (input) => trpcClient.ai.webSearch.query(input),
-      }),
-  });
-}
-
 type ActionButtonProps = {
   onClick: (e: React.MouseEvent) => void;
   icon: React.ReactNode;
@@ -589,152 +481,6 @@ const openAttachment = async (attachment: {
   }
 };
 
-const MoreAboutPerson = ({
-  person,
-  open,
-  onOpenChange,
-}: {
-  person: Sender;
-  extra?: string;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-}) => {
-  const {
-    mutate: doSearch,
-    isPending,
-    data,
-    error,
-  } = useMailDisplayWebSearchMutation();
-  const handleSearch = useCallback(() => {
-    doSearch({
-      query: `In 50 words or less: What is the background of ${person.name} & ${person.email}, of ${person.email.split('@')[1]}.
-      This could be a phishing email address, indicate if the domain is suspicious, example: x.io is not a valid domain for x.com | example: x.com is a valid domain for x.com | example: paypalcom.com is not a valid domain for paypal.com`,
-    });
-  }, [person.name]);
-
-  useEffect(() => {
-    if (open) {
-      handleSearch();
-    }
-  }, [open]);
-
-  const findSource = useCallback(
-    (id: string) => {
-      const sources = data?.sources;
-      if (!sources) return;
-      return sources.find((source) => source.id === id);
-    },
-    [data],
-  );
-
-  const replaceSourcesInText = useCallback(
-    (text: string) => {
-      const sources = data?.sources;
-      if (!sources) return text;
-      const sourcesRegex = /\[(\d+)\]/g;
-      return text.replaceAll(sourcesRegex, (match, p1) => {
-        console.log('p1', p1);
-        const source = findSource(p1);
-        return source ? `SOURCE HERE` : match;
-      });
-    },
-    [data],
-  );
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent showOverlay>
-        <DialogHeader>
-          <DialogTitle>More about {cleanNameDisplay(person.name)}</DialogTitle>
-        </DialogHeader>
-        <div className="mt-4 flex justify-center">
-          {isPending ? (
-            <Loader2 className="animate-spin" />
-          ) : data ? (
-            <StreamingText text={replaceSourcesInText(data.text)} />
-          ) : error ? (
-            <p>Error: {error.message}</p>
-          ) : (
-            <Loader2 className="animate-spin" />
-          )}
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
-};
-
-const MoreAboutQuery = ({
-  query,
-  open,
-  onOpenChange,
-}: {
-  query: string;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-}) => {
-  const {
-    mutate: doSearch,
-    isPending,
-    data,
-    error,
-  } = useMailDisplayWebSearchMutation();
-
-  const handleSearch = useCallback(() => {
-    doSearch({
-      query: query,
-    });
-  }, [query, doSearch]);
-
-  useEffect(() => {
-    if (open && query) {
-      handleSearch();
-    }
-  }, [open, query, handleSearch]);
-
-  const findSource = useCallback(
-    (id: string) => {
-      const sources = data?.sources;
-      if (!sources) return;
-      return sources.find((source) => source.id === id);
-    },
-    [data],
-  );
-
-  const replaceSourcesInText = useCallback(
-    (text: string) => {
-      const sources = data?.sources;
-      if (!sources) return text;
-      const sourcesRegex = /\[(\d+)\]/g;
-      return text.replaceAll(sourcesRegex, (match, p1) => {
-        const source = findSource(p1);
-        return source ? `SOURCE HERE` : match;
-      });
-    },
-    [data, findSource],
-  );
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent showOverlay>
-        <DialogHeader>
-          <DialogTitle>Search Results</DialogTitle>
-        </DialogHeader>
-        <div className="mt-4 flex justify-center">
-          {isPending ? (
-            <Loader2 className="animate-spin" />
-          ) : data ? (
-            <StreamingText text={replaceSourcesInText(data.text)} />
-          ) : error ? (
-            <p>Error: {error.message}</p>
-          ) : (
-            <Loader2 className="animate-spin" />
-          )}
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
-};
-
 const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }: Props) => {
   const [isCollapsed, setIsCollapsed] = useState<boolean>(false);
   const { data: threadData } = useThread(emailData.threadId ?? null);
@@ -778,8 +524,6 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
     setHeaderDebugEnabledState(next);
   }, [headerDebugEnabled]);
 
-  const [researchSender, setResearchSender] = useState<Sender | null>(null);
-  const [searchQuery, setSearchQuery] = useState<string | null>(null);
   //   const trpc = useTRPC();
 
   const isLastEmail = useMemo(
@@ -897,10 +641,12 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
 
   // Handle email copy of senders
   const handleCopySenderEmail = useCallback(async (personEmail: string) => {
-    if (!personEmail) return;
-
-    await navigator.clipboard.writeText(personEmail || '');
-    toast.success('Email copied to clipboard');
+    const result = await copySenderEmail(personEmail || '');
+    if (result === 'copied') {
+      toast.success('Email copied to clipboard');
+    } else if (result === 'failed') {
+      toast.error('Failed to copy email');
+    }
   }, []);
 
   // email printing
@@ -1309,7 +1055,7 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
         </PopoverContent>
       </Popover>
     ),
-    [],
+    [handleCopySenderEmail],
   );
 
   const people = useMemo(() => {
@@ -1340,20 +1086,6 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
       }}
     >
       <>
-        {searchQuery && (
-          <MoreAboutQuery
-            query={searchQuery}
-            open={!!searchQuery}
-            onOpenChange={(open) => (open ? void 0 : setSearchQuery(null))}
-          />
-        )}
-        {researchSender && (
-          <MoreAboutPerson
-            open={!!researchSender}
-            onOpenChange={(open) => (open ? void 0 : setResearchSender(null))}
-            person={researchSender}
-          />
-        )}
         <div className="relative h-full overflow-y-auto">
           <div className={cn('px-4', index === 0 && 'border-b py-4')}>
             {index === 0 && (
@@ -1445,13 +1177,20 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   e.preventDefault();
-                                  setResearchSender({
-                                    name: emailData?.sender?.name || '',
-                                    email: emailData?.sender?.email || '',
-                                    //   extra: emailData?.sender?.extra || '',
-                                  });
+                                  void handleCopySenderEmail(emailData?.sender?.email || '');
                                 }}
-                                className="hover:bg-muted min-w-0"
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter' || e.key === ' ') {
+                                    e.stopPropagation();
+                                    e.preventDefault();
+                                    void handleCopySenderEmail(emailData?.sender?.email || '');
+                                  }
+                                }}
+                                role="button"
+                                tabIndex={0}
+                                title="Copy email address"
+                                aria-label="Copy email address"
+                                className="hover:bg-muted min-w-0 cursor-pointer"
                               >
                                 <MailboxInline sender={emailData?.sender} />
                               </span>
@@ -1489,7 +1228,27 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                                     {m['common.mailDisplay.from']()}:
                                   </span>
                                   <div className="ml-3">
-                                    <MailboxInline sender={emailData?.sender} />
+                                    <span
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        e.preventDefault();
+                                        void handleCopySenderEmail(emailData?.sender?.email || '');
+                                      }}
+                                      onKeyDown={(e) => {
+                                        if (e.key === 'Enter' || e.key === ' ') {
+                                          e.stopPropagation();
+                                          e.preventDefault();
+                                          void handleCopySenderEmail(emailData?.sender?.email || '');
+                                        }
+                                      }}
+                                      role="button"
+                                      tabIndex={0}
+                                      title="Copy email address"
+                                      aria-label="Copy email address"
+                                      className="hover:bg-muted min-w-0 cursor-pointer"
+                                    >
+                                      <MailboxInline sender={emailData?.sender} />
+                                    </span>
                                   </div>
                                 </div>
                                 <div className="flex">

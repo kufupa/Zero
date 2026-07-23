@@ -7,7 +7,6 @@ import { useThreadNotes } from '../hooks/use-notes';
 import { useSummary } from '../hooks/use-summary';
 import { RecipientAutosuggest } from '../components/ui/recipient-autosuggest';
 import { resolveCommandPaletteSearchQuery } from '../components/context/command-palette-context';
-import { resolveMailDisplayWebSearch } from '../components/mail/mail-display';
 import { createLabelInThreadContext } from '../components/context/thread-context';
 import { deleteLabelInSidebarContext } from '../components/context/label-sidebar-context';
 import { handleGeneralSettingsSave } from '../app/(routes)/settings/general/page';
@@ -580,102 +579,6 @@ describe('demo backend guard coverage', () => {
 
     expect(backendGenerateSearchQuery).not.toHaveBeenCalled();
     expect(result.query).toBe('follow up client');
-  });
-
-  it('uses local web-search fallback in mail-display web search mode', async () => {
-    const backendWebSearch = vi.fn(async (input: { query: string }) => ({
-      text: `Backend web search for ${input.query}`,
-      sources: [
-        {
-          id: 'source-1',
-          title: 'Backend source',
-          url: 'https://example.com',
-        },
-      ],
-    }));
-
-    const result = await resolveMailDisplayWebSearch({
-      query: 'paypal',
-      isFrontendOnlyDemoMode: true,
-      webSearch: backendWebSearch,
-    });
-
-    expect(backendWebSearch).not.toHaveBeenCalled();
-    expect(result).toEqual({
-      text: 'Demo web search results for: paypal',
-      sources: [],
-    });
-  });
-
-  it('keeps mail-display web-search demo fallback deterministic for empty/whitespace query input', async () => {
-    const backendWebSearch = vi.fn(async (input: { query: string }) => ({
-      text: `Backend web search for ${input.query}`,
-      sources: [{ id: 'source-1', title: 'Backend source', url: 'https://example.com' }],
-    }));
-
-    const result = await resolveMailDisplayWebSearch({
-      query: '   ',
-      isFrontendOnlyDemoMode: true,
-      webSearch: backendWebSearch,
-    });
-
-    expect(backendWebSearch).not.toHaveBeenCalled();
-    expect(result.text).toBe('Demo web search results for: query');
-    expect(result.sources).toEqual([]);
-  });
-
-  it('keeps mail-display web-search demo fallback stable for long punctuation-heavy input', async () => {
-    const backendWebSearch = vi.fn(async (input: { query: string }) => ({
-      text: `Backend web search for ${input.query}`,
-      sources: [{ id: 'source-1', title: 'Backend source', url: 'https://example.com' }],
-    }));
-    const longQuery = `   !!!***${'?'.repeat(120)}%%% demo query!!!   `;
-
-    const first = await resolveMailDisplayWebSearch({
-      query: longQuery,
-      isFrontendOnlyDemoMode: true,
-      webSearch: backendWebSearch,
-    });
-    const second = await resolveMailDisplayWebSearch({
-      query: longQuery,
-      isFrontendOnlyDemoMode: true,
-      webSearch: backendWebSearch,
-    });
-
-    expect(first).toEqual(second);
-    expect(first.text).toBe(`Demo web search results for: !!!***${'?'.repeat(120)}%%% demo query!!!`);
-    expect(first.sources).toEqual([]);
-  });
-
-  it('uses backend web search query for mail-display web-search when demo mode is disabled', async () => {
-    const backendWebSearch = vi.fn(async (input: { query: string }) => ({
-      text: `Backend web search for ${input.query}`,
-      sources: [
-        {
-          id: 'source-1',
-          title: 'Backend source',
-          url: 'https://example.com',
-        },
-      ],
-    }));
-
-    const result = await resolveMailDisplayWebSearch({
-      query: 'paypal',
-      isFrontendOnlyDemoMode: false,
-      webSearch: backendWebSearch,
-    });
-
-    expect(backendWebSearch).toHaveBeenCalledWith({ query: 'paypal' });
-    expect(result).toEqual({
-      text: 'Backend web search for paypal',
-      sources: [
-        {
-          id: 'source-1',
-          title: 'Backend source',
-          url: 'https://example.com',
-        },
-      ],
-    });
   });
 
   it('uses local notes reads for useThreadNotes when frontend-only demo mode is active', () => {
