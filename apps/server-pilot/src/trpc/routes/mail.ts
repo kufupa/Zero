@@ -37,9 +37,13 @@ import {
   resolveVisibleThreadIds,
   refreshThreadAfterMessageRemoved,
 } from './mail-helpers.js';
-import { maybeEnqueueLoopback } from '../../mail/fixture-loopback.js';
-import { getSmtpTransport } from '../../mail/send/smtp.js';
 import { resolveReplyHeaders } from '../../mail/send/resolve-reply-headers.js';
+import {
+  cancelOutbound,
+  enqueueOutbound,
+  flushOne,
+  getUndoSendSeconds,
+} from '../../mail/send/outbound-queue.js';
 import { formatContentDispositionFilename } from '../../mail/attachment-filename.js';
 import { sanitizeEmailHtml } from '../../mail/sanitize-email-html.js';
 import { withMailboxIngestLock } from '../../mail/ingest/mailbox-ingest-lock.js';
@@ -1002,7 +1006,7 @@ export const mailRouter = tRouter({
         contentType: a.type,
       }));
 
-      const smtpResult = await getSmtpTransport().send({
+      const smtpPayload = {
         from: ctx.transportEmail,
         to: input.to,
         cc: input.cc,
@@ -1014,30 +1018,17 @@ export const mailRouter = tRouter({
         references,
         extraHeaders: { 'X-Zero-Mailbox': ctx.transportEmail },
         attachments: smtpAttachments,
-      });
+      };
 
-      maybeEnqueueLoopback(
-        {
-          from: ctx.transportEmail,
-          to: input.to,
-          cc: input.cc,
-          bcc: input.bcc,
-          subject: input.subject,
-          html: input.html,
-          text: input.text,
-          inReplyTo,
-          references,
-        },
-        smtpResult,
-        process.env.MAIL_TRANSPORT_MODE === 'real' ||
-          process.env.MAIL_TRANSPORT_MODE === 'wire'
-          ? (process.env.MAIL_TRANSPORT_MODE as 'real' | 'wire')
-          : 'fixture',
-        { 'X-Zero-Mailbox': ctx.transportEmail },
-      );
+      const undoSecs = getUndoSendSeconds();
+      const now = new Date();
+      const scheduleAtMs = input.scheduleAt ? Date.parse(input.scheduleAt) : NaN;
+      const isUserScheduled = Boolean(input.scheduleAt) && Number.isFinite(scheduleAtMs);
+      const sendAt = isUserScheduled
+        ? new Date(scheduleAtMs)
+        : new Date(now.getTime() + undoSecs * 1000);
 
       const messageId = randomUUID();
-      const now = new Date();
       await db.transaction(async (tx) => {
         await tx.insert(message).values({
           id: messageId,
@@ -1051,18 +1042,25 @@ export const mailRouter = tRouter({
           subject: input.subject || null,
           textBody: input.text || null,
           htmlBody: input.html || null,
-          messageIdHeader: smtpResult.messageId,
+          messageIdHeader: null,
           inReplyTo,
           references,
           isRead: true,
           isStarred: false,
-          sentAt: now,
+          sentAt: null,
           receivedAt: now,
         });
         await tx
           .update(mailThread)
           .set({ latestMessageAt: now, updatedAt: now })
           .where(and(eq(mailThread.id, threadId), eq(mailThread.transportId, transportId)));
+        await enqueueOutbound({
+          transportId,
+          messageId,
+          sendAt,
+          smtpPayload,
+          db: tx as unknown as typeof db,
+        });
         if (input.draftId) {
           await tx
             .update(mailDraft)
@@ -1110,18 +1108,35 @@ export const mailRouter = tRouter({
           }
         }
       });
+
+      if (isUserScheduled) {
+        return {
+          scheduled: true as const,
+          messageId,
+          sendAt: sendAt.getTime(),
+        };
+      }
+
+      if (undoSecs === 0) {
+        const smtpResult = await flushOne(messageId, transportId, db);
+        return {
+          sent: true as const,
+          messageId,
+          threadId,
+          fromEmail: ctx.transportEmail,
+          smtpMessageId: smtpResult.messageId,
+        };
+      }
+
       return {
+        queued: true as const,
         messageId,
-        threadId,
-        fromEmail: ctx.transportEmail,
-        sent: true,
-        smtpMessageId: smtpResult.messageId,
+        sendAt: sendAt.getTime(),
       };
     }),
 
   /**
-   * Undo send — stub. Task 8 will implement by deleting the outbound row
-   * before the SMTP send commits (undo window).
+   * Undo send — cancel pending queue row if still before sendAt; delete message.
    */
   unsend: mailboxProcedure
     .input(z.object({ messageId: z.string() }))
@@ -1132,8 +1147,13 @@ export const mailRouter = tRouter({
       if (msg.direction !== 'outbound') {
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'not outbound' });
       }
-      // Stub: delete the outbound message row. Task 8 will gate this on the
-      // undo window (e.g. message.sentAt within 30s).
+      const cancelled = await cancelOutbound(input.messageId, transportId, db);
+      if (!cancelled) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'UNDO_WINDOW_CLOSED',
+        });
+      }
       await db
         .delete(message)
         .where(

@@ -156,6 +156,16 @@ describe('mail wire contract — send accepts FE payload from create-email.tsx',
     expect(parsed.inReplyTo).toBe('<old@x>');
     expect(parsed.references).toEqual(['<root@x>', '<old@x>']);
   });
+
+  it('passes through scheduleAt ISO', () => {
+    const parsed = sendInput.parse({
+      to: ['a@example.com'],
+      subject: 'later',
+      html: '<p>x</p>',
+      scheduleAt: '2026-07-23T15:00:00.000Z',
+    });
+    expect(parsed.scheduleAt).toBe('2026-07-23T15:00:00.000Z');
+  });
 });
 
 describe('mail wire contract — parseFromEmail for spoof check', () => {

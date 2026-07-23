@@ -12,6 +12,10 @@ import {
 } from './helpers/test-db';
 import { callerFor } from './helpers/trpc-caller';
 import { seedInboxThread } from './helpers/seed-inbox-thread';
+import {
+  FakeSmtpTransport,
+  __setSmtpTransportForTests,
+} from '../src/mail/send/smtp.js';
 
 const reachable = await probeTestDb();
 
@@ -191,47 +195,39 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
 
     it('unsend last message deletes empty thread', async () => {
       await withSeededTestDb(async (db) => {
-        const threadId = 'thread-unsend-only-1';
-        const outboundId = 'msg-unsend-only-1';
-        await db.insert(mailThread).values({
-          id: threadId,
-          transportId: 'transport-centurion',
-          threadRootId: 'unsend-root',
-          subject: 'Unsend only',
-          snippet: 'outbound only',
-          isArchived: false,
-          isStarred: false,
-          isRead: true,
-          labelIds: [],
-          latestMessageAt: new Date(),
-        });
-        await db.insert(message).values({
-          id: outboundId,
-          transportId: 'transport-centurion',
-          threadId,
-          direction: 'outbound',
-          fromAddress: 'centurion@legacyhotel.com',
-          toAddresses: ['guest@example.com'],
-          ccAddresses: [],
-          bccAddresses: [],
-          subject: 'Unsend only',
-          textBody: 'bye',
-          messageIdHeader: 'unsend-only-1',
-          references: [],
-          isRead: true,
-          isStarred: false,
-          sentAt: new Date(),
-          receivedAt: new Date(),
-        });
-        const caller = await callerFor('user-navaai', { db });
+        const prevUndo = process.env.UNDO_SEND_SECONDS;
+        process.env.UNDO_SEND_SECONDS = '30';
+        try {
+          const fake = new FakeSmtpTransport();
+          __setSmtpTransportForTests(fake);
+          const caller = await callerFor('user-navaai', { db });
+          const result = await caller.mail.send({
+            to: ['guest@example.com'],
+            subject: 'Unsend only',
+            html: '<p>bye</p>',
+            text: 'bye',
+          });
+          expect(result).toMatchObject({ queued: true });
+          const messageId = (result as { messageId: string }).messageId;
+          const [msgRow] = await db
+            .select({ threadId: message.threadId })
+            .from(message)
+            .where(eq(message.id, messageId));
+          const threadId = msgRow!.threadId;
 
-        await caller.mail.unsend({ messageId: outboundId });
+          await caller.mail.unsend({ messageId });
 
-        const rows = await db
-          .select({ id: mailThread.id })
-          .from(mailThread)
-          .where(eq(mailThread.id, threadId));
-        expect(rows).toHaveLength(0);
+          const rows = await db
+            .select({ id: mailThread.id })
+            .from(mailThread)
+            .where(eq(mailThread.id, threadId));
+          expect(rows).toHaveLength(0);
+          expect(fake.sent).toHaveLength(0);
+        } finally {
+          __setSmtpTransportForTests(null);
+          if (prevUndo === undefined) delete process.env.UNDO_SEND_SECONDS;
+          else process.env.UNDO_SEND_SECONDS = prevUndo;
+        }
       });
     });
   },

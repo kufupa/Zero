@@ -1,7 +1,7 @@
 /**
  * mail.send — fake SMTP transport + spoof rejection + outbound row storage.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { eq, and } from 'drizzle-orm';
 import { mailThread, message } from '../src/db/schema/mail.js';
 import {
@@ -65,6 +65,19 @@ async function seedCenturionThread(db: import('../src/db/client.js').DB) {
 }
 
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.send', () => {
+  const prevUndo = process.env.UNDO_SEND_SECONDS;
+
+  beforeEach(() => {
+    // Sync flush so existing assertions on {sent:true} + immediate SMTP hold.
+    process.env.UNDO_SEND_SECONDS = '0';
+  });
+
+  afterEach(() => {
+    __setSmtpTransportForTests(null);
+    if (prevUndo === undefined) delete process.env.UNDO_SEND_SECONDS;
+    else process.env.UNDO_SEND_SECONDS = prevUndo;
+  });
+
   it('rejects spoofed from address', async () => {
     await withSeededTestDb(async (db) => {
       await seedCenturionThread(db);

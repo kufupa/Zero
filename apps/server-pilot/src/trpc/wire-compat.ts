@@ -52,6 +52,8 @@ export const sendInput = z
     replyToMessageId: z.string().optional(),
     inReplyTo: z.string().optional(),
     references: z.array(z.string()).optional(),
+    /** FE schedule send — ISO string from create-email / reply-composer. */
+    scheduleAt: z.string().optional(),
   })
   .transform((input) => ({
     threadId: input.threadId,
@@ -68,6 +70,7 @@ export const sendInput = z
     replyToMessageId: input.replyToMessageId,
     inReplyTo: input.inReplyTo,
     references: input.references,
+    scheduleAt: input.scheduleAt,
   }));
 
 export type SendInput = z.infer<typeof sendInput>;

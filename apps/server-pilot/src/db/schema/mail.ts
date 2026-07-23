@@ -462,6 +462,35 @@ export const aiWorkflowRun = pgTable(
   ],
 );
 
+/** Outbound SMTP undo/schedule queue — claimed by worker `flushDue`. */
+export const outboundSendQueue = pgTable(
+  'outbound_send_queue',
+  {
+    id: text('id').primaryKey(),
+    transportId: text('transport_id')
+      .notNull()
+      .references(() => mailboxTransport.id, { onDelete: 'cascade' }),
+    messageId: text('message_id')
+      .notNull()
+      .references(() => message.id, { onDelete: 'cascade' }),
+    sendAt: timestamp('send_at', { withTimezone: true }).notNull(),
+    status: text('status').notNull().default('pending'),
+    smtpPayload: jsonb('smtp_payload').$type<Record<string, unknown>>().notNull(),
+    attempts: integer('attempts').notNull().default(0),
+    lastError: text('last_error'),
+    claimedAt: timestamp('claimed_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('outbound_send_queue_message_uidx').on(t.messageId),
+    index('outbound_send_queue_due_idx').on(t.status, t.sendAt),
+    index('outbound_send_queue_transport_idx').on(t.transportId, t.status),
+  ],
+);
+
+export type OutboundSendQueueStatus = 'pending' | 'sending' | 'sent' | 'cancelled';
+
 export type MailboxAccessRole = (typeof mailboxAccessRoleEnum.enumValues)[number];
 export type MailboxType = (typeof mailboxTypeEnum.enumValues)[number];
 export type MessageDirection = (typeof messageDirectionEnum.enumValues)[number];

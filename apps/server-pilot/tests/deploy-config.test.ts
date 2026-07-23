@@ -84,6 +84,16 @@ describe('deploy config', () => {
     expect(script).toContain('append_env AI_WRITE_GATE_ENABLED');
   });
 
+  it('write-ec2-env.sh writes UNDO_SEND_SECONDS', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const script = readFileSync(join(here, '..', 'deploy', 'write-ec2-env.sh'), 'utf8');
+    expect(script).toContain('UNDO_SEND_SECONDS');
+    expect(script).toMatch(/UNDO_SEND_SECONDS:=30/);
+  });
+
   it('FakeSmtpTransport ring buffer caps at 100', async () => {
     const { FakeSmtpTransport, FAKE_SMTP_RING_MAX } = await import(
       '../src/mail/send/smtp.js'
