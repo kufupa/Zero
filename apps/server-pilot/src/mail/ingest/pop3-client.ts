@@ -110,6 +110,28 @@ export class RealPop3Client implements Pop3Client {
     }
     this.opts.password = password;
 
+    // Worker poll loop reuses one client; quit()/close() must not poison next cycle.
+    const reconnecting =
+      Boolean(this.sock) || this.closed || Boolean(this.closeError);
+    if (this.sock) {
+      this.sock.removeAllListeners();
+      try {
+        this.sock.destroy();
+      } catch {
+        /* ignore */
+      }
+      this.sock = null;
+    }
+    this.closed = false;
+    this.closeError = null;
+    this.lineWaiters = [];
+    this.uidlCache = null;
+    // Keep pre-connect pushTestChunk buffers on first connect only.
+    if (reconnecting) {
+      this.byteBuf = Buffer.alloc(0);
+      this.pendingLines = [];
+    }
+
     if (this.opts.testSocket) {
       this.sock = this.opts.testSocket;
     } else {

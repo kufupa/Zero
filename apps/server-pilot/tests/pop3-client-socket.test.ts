@@ -16,7 +16,8 @@ function createFakeSocket(): WritableSocket {
   const sock = new EventEmitter() as WritableSocket;
   sock.setTimeout = () => sock;
   sock.destroy = () => {
-    sock.emit('close');
+    // Match real net.Socket: 'close' is not sync with destroy().
+    setImmediate(() => sock.emit('close'));
   };
   sock.write = (
     _data: string | Buffer,
@@ -207,5 +208,52 @@ describe('RealPop3Client socket framing', () => {
       if (prev === undefined) delete process.env.POP3_PASSWORD;
       else process.env.POP3_PASSWORD = prev;
     }
+  });
+
+  it('reconnects after quit without sticky pop3 socket closed', async () => {
+    const sock1 = createFakeSocket();
+    const sock2 = createFakeSocket();
+    const client = new RealPop3Client({
+      host: 'mail.test',
+      port: 110,
+      user: 'ingest',
+      password: 'secret',
+      testSocket: sock1,
+    });
+
+    const scriptSession = (sock: WritableSocket) => {
+      wirePop3Script(sock, {
+        USER: () => {
+          setImmediate(() => sock.emit('data', Buffer.from('+OK\r\n')));
+        },
+        PASS: () => {
+          setImmediate(() => sock.emit('data', Buffer.from('+OK\r\n')));
+        },
+        UIDL: () => {
+          setImmediate(() =>
+            sock.emit('data', Buffer.from('+OK\r\n1 a\r\n.\r\n')),
+          );
+        },
+        QUIT: () => {
+          setImmediate(() => sock.emit('data', Buffer.from('+OK bye\r\n')));
+        },
+      });
+    };
+
+    scriptSession(sock1);
+    setImmediate(() => sock1.emit('data', Buffer.from('+OK ready\r\n')));
+    await client.connect();
+    await expect(client.listUidl()).resolves.toEqual(['a']);
+    await client.quit();
+    // Allow fake socket 'close' to set sticky closeError (real POP3 poll loop hits this).
+    await new Promise<void>((r) => setImmediate(r));
+
+    (client as unknown as { opts: { testSocket: WritableSocket } }).opts.testSocket =
+      sock2;
+    scriptSession(sock2);
+    setImmediate(() => sock2.emit('data', Buffer.from('+OK ready\r\n')));
+    await client.connect();
+    await expect(client.listUidl()).resolves.toEqual(['a']);
+    await client.quit();
   });
 });
