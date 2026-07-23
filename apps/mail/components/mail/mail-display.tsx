@@ -1648,6 +1648,7 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                               to: emailData?.to || [],
                               ccLength: (emailData?.cc || []).length,
                               mailboxEmail: activeConnection?.email,
+                              fromEmail: emailData?.sender?.email,
                             })
                               ? 'You'
                               : renderMailboxSummary(emailData?.to || [])}
