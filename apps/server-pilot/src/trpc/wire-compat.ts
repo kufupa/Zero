@@ -49,6 +49,9 @@ export const sendInput = z
     fromEmail: z.string().optional(),
     draftId: z.string().optional(),
     confirmStaleDraft: z.boolean().optional().default(false),
+    replyToMessageId: z.string().optional(),
+    inReplyTo: z.string().optional(),
+    references: z.array(z.string()).optional(),
   })
   .transform((input) => ({
     threadId: input.threadId,
@@ -62,6 +65,9 @@ export const sendInput = z
     fromEmail: input.fromEmail,
     draftId: input.draftId,
     confirmStaleDraft: input.confirmStaleDraft,
+    replyToMessageId: input.replyToMessageId,
+    inReplyTo: input.inReplyTo,
+    references: input.references,
   }));
 
 export type SendInput = z.infer<typeof sendInput>;

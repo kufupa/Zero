@@ -881,22 +881,47 @@ export const mailRouter = tRouter({
 
       if (threadId) {
         await requireThreadForTransport(db, threadId, transportId);
-        // Reply headers from latest inbound/outbound message on thread.
-        const prior = await db
-          .select({
-            messageIdHeader: message.messageIdHeader,
-            references: message.references,
-          })
-          .from(message)
-          .where(
-            and(eq(message.threadId, threadId), eq(message.transportId, transportId)),
-          )
-          .orderBy(desc(message.receivedAt))
-          .limit(1);
-        if (prior[0]) {
-          const headers = buildReplyHeaders(prior[0]!);
+        if (input.replyToMessageId) {
+          const selected = await db
+            .select({
+              messageIdHeader: message.messageIdHeader,
+              references: message.references,
+            })
+            .from(message)
+            .where(
+              and(
+                eq(message.id, input.replyToMessageId),
+                eq(message.threadId, threadId),
+                eq(message.transportId, transportId),
+              ),
+            )
+            .limit(1);
+          if (!selected[0]) {
+            throw new TRPCError({ code: 'NOT_FOUND', message: 'REPLY_TO_MESSAGE_NOT_FOUND' });
+          }
+          const headers = buildReplyHeaders(selected[0]!);
           inReplyTo = headers.inReplyTo;
           references = headers.references;
+        } else if (input.inReplyTo) {
+          inReplyTo = input.inReplyTo;
+          references = input.references ?? [];
+        } else {
+          const prior = await db
+            .select({
+              messageIdHeader: message.messageIdHeader,
+              references: message.references,
+            })
+            .from(message)
+            .where(
+              and(eq(message.threadId, threadId), eq(message.transportId, transportId)),
+            )
+            .orderBy(desc(message.receivedAt))
+            .limit(1);
+          if (prior[0]) {
+            const headers = buildReplyHeaders(prior[0]!);
+            inReplyTo = headers.inReplyTo;
+            references = headers.references;
+          }
         }
       } else {
         threadId = randomUUID();

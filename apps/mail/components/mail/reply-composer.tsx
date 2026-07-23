@@ -185,6 +185,7 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
             attachments: await serializeFiles(data.attachments),
             fromEmail: fromEmail,
             draftId: draftId ?? undefined,
+            replyToMessageId: replyToMessage?.id,
             headers: {
               'In-Reply-To': replyToMessage?.messageId ?? '',
               References: [

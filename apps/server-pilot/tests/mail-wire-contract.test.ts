@@ -141,6 +141,21 @@ describe('mail wire contract — send accepts FE payload from create-email.tsx',
     expect(parsed.html).toBe('<p>hello</p>');
     expect(parsed.text).toBe('hello');
   });
+
+  it('passes through replyToMessageId, inReplyTo, and references', () => {
+    const parsed = sendInput.parse({
+      to: ['a@example.com'],
+      subject: 'Re: x',
+      html: '<p>hi</p>',
+      text: 'hi',
+      replyToMessageId: 'msg-old-1',
+      inReplyTo: '<old@x>',
+      references: ['<root@x>', '<old@x>'],
+    });
+    expect(parsed.replyToMessageId).toBe('msg-old-1');
+    expect(parsed.inReplyTo).toBe('<old@x>');
+    expect(parsed.references).toEqual(['<root@x>', '<old@x>']);
+  });
 });
 
 describe('mail wire contract — parseFromEmail for spoof check', () => {

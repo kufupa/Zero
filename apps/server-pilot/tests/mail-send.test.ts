@@ -169,4 +169,73 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.send', () => {
       }
     });
   }, 30000);
+
+  it('uses selected message Message-ID for In-Reply-To when replyToMessageId set', async () => {
+    await withSeededTestDb(async (db) => {
+      const fake = new FakeSmtpTransport();
+      __setSmtpTransportForTests(fake);
+      try {
+        await seedCenturionThread(db);
+        // Newer message would win latest-thread fallback; selected older must win instead.
+        await db.insert(message).values({
+          id: 'msg-centurion-inbound-newer',
+          transportId: 'transport-centurion',
+          threadId: 'thread-centurion-1',
+          direction: 'inbound',
+          fromAddress: 'guest@example.com',
+          toAddresses: ['centurion@legacyhotel.com'],
+          ccAddresses: [],
+          bccAddresses: [],
+          subject: 'Centurion booking #4471',
+          textBody: 'Follow-up',
+          messageIdHeader: '<new@x>',
+          references: ['inbound-msg-id-1'],
+          isRead: false,
+          isStarred: false,
+          receivedAt: new Date(Date.now() + 60_000),
+        });
+        await db
+          .update(message)
+          .set({ messageIdHeader: '<old@x>' })
+          .where(eq(message.id, 'msg-centurion-inbound-1'));
+
+        const caller = await callerFor('user-navaai', { db });
+        await caller.mail.send({
+          threadId: 'thread-centurion-1',
+          to: ['a@example.com'],
+          subject: 'Re: x',
+          html: '<p>hi</p>',
+          text: 'hi',
+          replyToMessageId: 'msg-centurion-inbound-1',
+        });
+        expect(fake.sent[0]!.inReplyTo).toBe('<old@x>');
+      } finally {
+        __setSmtpTransportForTests(null);
+      }
+    });
+  }, 30000);
+
+  it('reply-all cc envelope matches input.cc', async () => {
+    await withSeededTestDb(async (db) => {
+      const fake = new FakeSmtpTransport();
+      __setSmtpTransportForTests(fake);
+      try {
+        await seedCenturionThread(db);
+        const caller = await callerFor('user-navaai', { db });
+        await caller.mail.send({
+          threadId: 'thread-centurion-1',
+          to: ['a@example.com'],
+          cc: ['b@example.com'],
+          subject: 'Re: x',
+          html: '<p>hi</p>',
+          text: 'hi',
+          replyToMessageId: 'msg-centurion-inbound-1',
+        });
+        expect(fake.sent[0]!.to).toEqual(expect.arrayContaining(['a@example.com']));
+        expect(fake.sent[0]!.cc).toEqual(expect.arrayContaining(['b@example.com']));
+      } finally {
+        __setSmtpTransportForTests(null);
+      }
+    });
+  }, 30000);
 });
