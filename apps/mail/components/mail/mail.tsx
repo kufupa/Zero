@@ -14,7 +14,7 @@ import { useCallback, useEffect, useRef, useState, lazy, Suspense } from 'react'
 import { useActiveConnection } from '@/hooks/use-connections';
 import { Check, ChevronDown, RefreshCcw } from 'lucide-react';
 import { useMediaQuery } from '../../hooks/use-media-query';
-import useSearchLabels from '@/hooks/use-labels-search';
+import useCategoryIds from '@/hooks/use-category-ids';
 import * as CustomIcons from '@/components/icons/icons';
 import { MailList } from '@/components/mail/mail-list';
 import { useNavigate, useParams } from 'react-router';
@@ -618,6 +618,7 @@ export const Categories = () => {
         return m[key] && typeof m[key] === 'function' ? (m[key] as () => string)() : cat.name;
       })(),
       searchValue: cat.searchValue,
+      colors: cat.color ?? undefined,
     } as const;
 
     // Helper to decide fill colour depending on selection
@@ -710,7 +711,7 @@ interface CategoryDropdownProps {
 
 function CategoryDropdown({ isMultiSelectMode }: CategoryDropdownProps) {
   const categorySettings = useCategorySettings();
-  const { setLabels, labels } = useSearchLabels();
+  const { categoryIds, setCategoryIds, toggleCategoryId } = useCategoryIds();
   const params = useParams<{ folder: string }>();
   const folder = params?.folder ?? 'inbox';
   const [isOpen, setIsOpen] = useState(false);
@@ -720,13 +721,12 @@ function CategoryDropdown({ isMultiSelectMode }: CategoryDropdownProps) {
     (key) => {
       const category = categorySettings[Number(key.key) - 1];
       if (!category) return;
-      const isCurrentlyActive = labels.includes(category.searchValue);
-
-      if (isCurrentlyActive) {
-        setLabels(labels.filter((label) => label !== category.searchValue));
-      } else {
-        setLabels([...labels, category.searchValue]);
+      // Empty id / All Mail → clear category filter
+      if (!category.id || category.searchValue === '') {
+        setCategoryIds([]);
+        return;
       }
+      toggleCategoryId(category.id);
     },
     {
       scopes: ['mail-list'],
@@ -735,35 +735,13 @@ function CategoryDropdown({ isMultiSelectMode }: CategoryDropdownProps) {
     },
   );
 
-  const handleLabelChange = (searchValue: string) => {
-    const trimmed = searchValue.trim();
-    if (!trimmed) {
-      setLabels([]);
+  const handleCategoryChange = (category: { id: string; searchValue: string }) => {
+    // Empty searchValue = "All Mail" — clear categoryIds (never write labelIds)
+    if (!category.searchValue.trim()) {
+      setCategoryIds([]);
       return;
     }
-
-    const parsedLabels = trimmed
-      .split(',')
-      .map((label) => label.trim())
-      .filter((label) => label.length > 0);
-
-    if (parsedLabels.length === 0) {
-      setLabels([]);
-      return;
-    }
-
-    const currentLabelsSet = new Set(labels);
-    const parsedLabelsSet = new Set(parsedLabels);
-
-    const allLabelsSelected = parsedLabels.every((label) => currentLabelsSet.has(label));
-
-    if (allLabelsSelected) {
-      const updatedLabels = labels.filter((label) => !parsedLabelsSet.has(label));
-      setLabels(updatedLabels);
-    } else {
-      const newLabelsSet = new Set([...labels, ...parsedLabels]);
-      setLabels(Array.from(newLabelsSet));
-    }
+    toggleCategoryId(category.id);
   };
 
   if (folder !== 'inbox' || isMultiSelectMode) return null;
@@ -776,13 +754,13 @@ function CategoryDropdown({ isMultiSelectMode }: CategoryDropdownProps) {
           className={cn(
             'text-muted-foreground border-border/40 bg-background/50 hover:bg-accent/30 dark:border-border/20 dark:bg-background/40 flex h-10 min-w-fit items-center gap-2 rounded-lg border px-3 backdrop-blur-sm transition-all',
           )}
-          aria-label="Filter by labels"
+          aria-label="Filter by categories"
           aria-expanded={isOpen}
           aria-haspopup="menu"
         >
           <span className="text-sm font-medium">
-            {labels.length > 0
-              ? `${labels.length} View${labels.length > 1 ? 's' : ''}`
+            {categoryIds.length > 0
+              ? `${categoryIds.length} View${categoryIds.length > 1 ? 's' : ''}`
               : m['navigation.settings.categories']()}
           </span>
           <ChevronDown
@@ -797,31 +775,39 @@ function CategoryDropdown({ isMultiSelectMode }: CategoryDropdownProps) {
         className="border-border/50 bg-muted w-48 rounded-xl border p-2 dark:bg-[#232323]"
         align="start"
         role="menu"
-        aria-label="Label filter options"
+        aria-label="Category filter options"
       >
-        {categorySettings.map((category) => (
-          <DropdownMenuItem
-            key={category.id}
-            className="hover:bg-accent/50 flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-colors"
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              handleLabelChange(category.searchValue);
-            }}
-            role="menuitemcheckbox"
-            aria-checked={labels.includes(category.id)}
-          >
-            <span className="text-foreground font-medium capitalize">
-              {category.name.toLowerCase()}
-            </span>
-            {/* Special case: empty searchValue means "All Mail" - shows everything */}
-            {(category.searchValue === ''
-              ? labels.length === 0
-              : category.searchValue.split(',').some((val) => labels.includes(val))) && (
-              <Check className="text-primary ml-auto h-4 w-4" />
-            )}
-          </DropdownMenuItem>
-        ))}
+        {categorySettings.map((category) => {
+          const isAllMail = category.searchValue === '';
+          const isChecked = isAllMail
+            ? categoryIds.length === 0
+            : categoryIds.includes(category.id);
+          return (
+            <DropdownMenuItem
+              key={category.id}
+              className="hover:bg-accent/50 flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-colors"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                handleCategoryChange(category);
+              }}
+              role="menuitemcheckbox"
+              aria-checked={isChecked}
+            >
+              {category.color ? (
+                <span
+                  className="h-2.5 w-2.5 shrink-0 rounded-full"
+                  style={{ backgroundColor: category.color }}
+                  aria-hidden
+                />
+              ) : null}
+              <span className="text-foreground font-medium capitalize">
+                {category.name.toLowerCase()}
+              </span>
+              {isChecked && <Check className="text-primary ml-auto h-4 w-4" />}
+            </DropdownMenuItem>
+          );
+        })}
       </DropdownMenuContent>
     </DropdownMenu>
   );

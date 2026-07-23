@@ -28,6 +28,7 @@ import {
 import { cn } from '@/lib/utils';
 import type { CSSProperties } from 'react';
 import { PILOT_CAPABILITIES } from '@/lib/pilot/capabilities';
+import { categoryColorNavTheme } from '@/lib/mail/route-filter';
 
 export interface NavItem {
   id?: string;
@@ -61,12 +62,21 @@ export type LiveCategoryNavInput = {
 export function buildLiveCategoryNavItems(categories: LiveCategoryNavInput[]): NavItem[] {
   return [...categories]
     .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
-    .map((category) => ({
-      id: category.slug,
-      title: category.name,
-      url: `/mail/${category.slug}`,
-      icon: Folder,
-    }));
+    .map((category) => {
+      const fromSettings = category.color?.trim()
+        ? categoryColorNavTheme(category.color)
+        : isCenturionMailCategorySlug(category.slug)
+          ? getDemoMailFolderNavItemTheme(category.slug as DemoMailFolderId)
+          : {};
+
+      return {
+        id: category.slug,
+        title: category.name,
+        url: `/mail/${category.slug}`,
+        icon: Folder,
+        ...fromSettings,
+      };
+    });
 }
 
 export function injectLiveCategoryNavSection(

@@ -4,6 +4,7 @@ import type { IGetThreadResponse, ThreadListItem } from '@zero/server/driver/typ
 import { useSearchValue } from '@/hooks/use-search-value';
 import { useTRPC } from '@/providers/query-provider';
 import useSearchLabels from './use-labels-search';
+import useCategoryIds from './use-category-ids';
 import { useSession } from '@/lib/auth-client';
 import { listDemoThreads, getDemoThread } from '@/lib/demo-data/adapter';
 import { demoMailListDraftsQueryKey } from '@/lib/demo/demo-mail-query-keys';
@@ -20,7 +21,7 @@ import useDebouncedValue from '@/hooks/use-debounce';
 import { computeThreadListEnabled } from '@/lib/mail/thread-list-query-enabled';
 import { selectLiveThreadListQuery } from '@/lib/mail/thread-list-query-policy';
 import { resolveThreadPollingMs } from '@/lib/mail/thread-polling-policy';
-import { resolveMailRouteFilter } from '@/lib/mail/route-filter';
+import { mergeCategoryIds, resolveMailRouteFilter } from '@/lib/mail/route-filter';
 import { resolveMailListSearch } from '@/lib/mail/search-filters';
 import { useCategorySettings } from './use-categories';
 
@@ -50,6 +51,7 @@ export const useThreads = (options?: UseThreadsOptions) => {
   const { data: session } = useSession();
   const trpc = useTRPC();
   const { labels } = useSearchLabels();
+  const { categoryIds: queryCategoryIds } = useCategoryIds();
   const categories = useCategorySettings();
   const demoMode = isFrontendOnlyDemo();
   const debouncedSearchQ = useDebouncedValue(searchValue.value);
@@ -137,10 +139,10 @@ export const useThreads = (options?: UseThreadsOptions) => {
 
   const baseListFilters = useMemo(
     () => ({
-      categoryIds: routeFilter.filters.categoryIds ?? [],
+      categoryIds: mergeCategoryIds(routeFilter.filters.categoryIds, queryCategoryIds),
       labelIds: labels,
     }),
-    [routeFilter.filters.categoryIds, labels],
+    [routeFilter.filters.categoryIds, queryCategoryIds, labels],
   );
 
   const resolvedLiveSearch = useMemo(
