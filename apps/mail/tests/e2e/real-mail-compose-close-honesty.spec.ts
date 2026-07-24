@@ -9,12 +9,25 @@ import {
  * Plan: docs/superpowers/plans/2026-07-24-compose-close-draft-honesty.md
  */
 
+async function clearBlockingOverlays(page: Page) {
+  await dismissMailOnboarding(page);
+  // Radix modal backdrop (onboarding / dialogs) blocks thread-row clicks.
+  for (let i = 0; i < 6; i++) {
+    const overlay = page.locator('div.fixed.inset-0[data-state="open"]').first();
+    if (!(await overlay.isVisible({ timeout: 400 }).catch(() => false))) break;
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(250);
+    await dismissMailOnboarding(page);
+  }
+}
+
 async function openFirstThread(page: Page) {
+  await clearBlockingOverlays(page);
   const row = page.locator('[data-thread-id]').first();
   await expect(row).toBeVisible({ timeout: 60_000 });
   const threadId = await row.getAttribute('data-thread-id');
   expect(threadId).toBeTruthy();
-  await row.click();
+  await row.click({ force: true });
   return threadId as string;
 }
 
@@ -114,6 +127,7 @@ test.describe('real-mail compose-close honesty', () => {
 
   test('AE3 dirty reply → fast other-thread click keeps body', async ({ page, context }) => {
     await injectMintedSession(context, page);
+    await clearBlockingOverlays(page);
 
     const rows = page.locator('[data-thread-id]');
     await expect(rows.first()).toBeVisible({ timeout: 60_000 });
@@ -126,18 +140,18 @@ test.describe('real-mail compose-close honesty', () => {
     expect(threadB).toBeTruthy();
     expect(threadA).not.toBe(threadB);
 
-    await rows.nth(0).click();
+    await rows.nth(0).click({ force: true });
     const editor = await openReply(page);
     const marker = `CLOSE-SWITCH-${Date.now()}`;
     await editor.click({ force: true });
     await editor.fill(marker);
 
     // Switch within autosave window (<3s)
-    await page.locator(`[data-thread-id="${threadB}"]`).first().click();
+    await page.locator(`[data-thread-id="${threadB}"]`).first().click({ force: true });
     await expect(page.getByRole('heading', { name: 'Close draft?' })).toHaveCount(0);
 
     // Return to A + Reply — flushed draft should restore marker
-    await page.locator(`[data-thread-id="${threadA}"]`).first().click();
+    await page.locator(`[data-thread-id="${threadA}"]`).first().click({ force: true });
     const editor2 = await openReply(page);
     await expect(editor2).toContainText(marker, { timeout: 30_000 });
 
