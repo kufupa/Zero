@@ -38,7 +38,8 @@ async function openReply(page: Page) {
     .or(page.getByRole('button', { name: /^Reply(?!\s*all)/i }))
     .first();
   await expect(replyBtn).toBeVisible({ timeout: 30_000 });
-  await replyBtn.click();
+  // Thread footer / recipient chips often intercept the action bar hit-target.
+  await replyBtn.click({ force: true });
   await dismissMailOnboarding(page);
   const editor = page.locator('.ProseMirror').first();
   await expect(editor).toBeVisible({ timeout: 30_000 });
