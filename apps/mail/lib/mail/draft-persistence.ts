@@ -121,3 +121,37 @@ export class StaleDraftSendCancelled extends Error {
 export function isStaleDraftSendCancelled(error: unknown): boolean {
   return error instanceof StaleDraftSendCancelled;
 }
+
+export type ComposeCloseIntent = 'userClose' | 'threadSwitch';
+export type ComposeCloseAction = 'closeSilent' | 'prompt' | 'flushAndLeave';
+export type ComposeDialogChoice = 'keepEditing' | 'saveDraft' | 'discard';
+
+export function resolveComposeCloseAction(
+  input: PersistDecisionInput & { intent: ComposeCloseIntent },
+): ComposeCloseAction {
+  const { intent, ...persistInput } = input;
+  if (!shouldPersistDraft(persistInput)) return 'closeSilent';
+  if (intent === 'threadSwitch') return 'flushAndLeave';
+  return 'prompt';
+}
+
+export function nextAfterDialogChoice(
+  choice: ComposeDialogChoice,
+): 'dismiss' | 'saveThenClose' | 'discardThenClose' {
+  if (choice === 'keepEditing') return 'dismiss';
+  if (choice === 'saveDraft') return 'saveThenClose';
+  return 'discardThenClose';
+}
+
+export async function runComposeLeaveFlush(
+  flush: (() => Promise<void>) | null | undefined,
+  clear: () => void | Promise<void>,
+): Promise<void> {
+  try {
+    await flush?.();
+  } catch {
+    // Caller/saveDraft owns user-visible error toast; never block leave.
+  } finally {
+    await clear();
+  }
+}

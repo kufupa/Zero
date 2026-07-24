@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   buildDraftMutationInput,
   chooseDraftEditorState,
+  nextAfterDialogChoice,
+  resolveComposeCloseAction,
+  runComposeLeaveFlush,
   shouldEnsureEditableDraftForReply,
   shouldPersistDraft,
 } from '../lib/mail/draft-persistence';
@@ -133,5 +136,112 @@ describe('draft persistence', () => {
         aiCandidateCount: 1,
       }),
     ).toEqual({ shouldEnsure: false });
+  });
+});
+
+describe('resolveComposeCloseAction', () => {
+  const dirtyBody = {
+    hasUnsavedChanges: true,
+    initialHtml: '',
+    html: '<p>Thanks</p>',
+    text: 'Thanks',
+    to: [] as string[],
+    subject: '',
+    aiBlocked: false,
+  };
+
+  it('prompts on userClose when content is persistable', () => {
+    expect(resolveComposeCloseAction({ ...dirtyBody, intent: 'userClose' })).toBe('prompt');
+  });
+
+  it('flushAndLeave on threadSwitch when content is persistable', () => {
+    expect(resolveComposeCloseAction({ ...dirtyBody, intent: 'threadSwitch' })).toBe(
+      'flushAndLeave',
+    );
+  });
+
+  it('closeSilent when whitespace-only and no subject/to', () => {
+    expect(
+      resolveComposeCloseAction({
+        hasUnsavedChanges: true,
+        initialHtml: '',
+        html: '<p>   </p>',
+        text: '   ',
+        to: [],
+        subject: '',
+        aiBlocked: false,
+        intent: 'userClose',
+      }),
+    ).toBe('closeSilent');
+  });
+
+  it('closeSilent when html unchanged from initial (quoted reply only)', () => {
+    expect(
+      resolveComposeCloseAction({
+        hasUnsavedChanges: true,
+        initialHtml: '<p>Quoted</p>',
+        html: '<p>Quoted</p>',
+        text: 'Quoted',
+        to: [],
+        subject: '',
+        aiBlocked: false,
+        intent: 'userClose',
+      }),
+    ).toBe('closeSilent');
+  });
+
+  it('closeSilent when not dirty', () => {
+    expect(
+      resolveComposeCloseAction({
+        ...dirtyBody,
+        hasUnsavedChanges: false,
+        intent: 'userClose',
+      }),
+    ).toBe('closeSilent');
+  });
+});
+
+describe('nextAfterDialogChoice', () => {
+  it('maps keepEditing / saveDraft / discard', () => {
+    expect(nextAfterDialogChoice('keepEditing')).toBe('dismiss');
+    expect(nextAfterDialogChoice('saveDraft')).toBe('saveThenClose');
+    expect(nextAfterDialogChoice('discard')).toBe('discardThenClose');
+  });
+});
+
+describe('runComposeLeaveFlush', () => {
+  it('awaits flush then clear', async () => {
+    const order: string[] = [];
+    await runComposeLeaveFlush(
+      async () => {
+        order.push('flush');
+      },
+      () => {
+        order.push('clear');
+      },
+    );
+    expect(order).toEqual(['flush', 'clear']);
+  });
+
+  it('still clears when flush rejects', async () => {
+    const order: string[] = [];
+    await runComposeLeaveFlush(
+      async () => {
+        order.push('flush');
+        throw new Error('save failed');
+      },
+      () => {
+        order.push('clear');
+      },
+    );
+    expect(order).toEqual(['flush', 'clear']);
+  });
+
+  it('clears when flush is null', async () => {
+    let cleared = false;
+    await runComposeLeaveFlush(null, () => {
+      cleared = true;
+    });
+    expect(cleared).toBe(true);
   });
 });
