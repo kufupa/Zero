@@ -158,8 +158,10 @@ test.describe('real-mail compose-close honesty', () => {
     await closeComposeViaEscape(page);
     await expectHonestCloseDialog(page);
     await clickRole(page, 'Discard', true);
+    // optimisticDeleteDraft executes on toast auto-close (5s) — wait past undo window
+    await expect(page.getByText(/Draft deleted/i).first()).toBeVisible({ timeout: 10_000 });
+    await page.waitForTimeout(5_500);
     await deleteWait.catch(() => undefined);
-    await page.waitForTimeout(1_000);
 
     await expect(page.getByRole('heading', { name: 'Close draft?' })).toHaveCount(0);
     await expect(editor).toBeHidden({ timeout: 15_000 });
