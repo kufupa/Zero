@@ -207,8 +207,8 @@ export function ThreadDisplay() {
     draftId: parseAsString,
   });
 
-  const clearComposeContext = useCallback(() => {
-    void runComposeLeaveFlush(flushComposeBeforeLeave, async () => {
+  const clearComposeContext = useCallback(async () => {
+    await runComposeLeaveFlush(flushComposeBeforeLeave, async () => {
       await clearReplyComposeContext({
         setMode,
         setActiveReplyId,
@@ -284,7 +284,7 @@ export function ThreadDisplay() {
     [optimisticState.optimisticImportant, emailData?.latest?.tags, emailData?.messages],
   );
 
-  const handleNext = useCallback(() => {
+  const handleNext = useCallback(async () => {
     if (!id || !items.length || focusedIndex === null) return setThreadId(null);
     if (focusedIndex < items.length - 1) {
       const nextIndex = Math.max(1, focusedIndex + 1);
@@ -292,7 +292,7 @@ export function ThreadDisplay() {
 
       const nextThread = items[nextIndex];
       if (nextThread) {
-        clearComposeContext();
+        await clearComposeContext();
         setThreadId(nextThread.id);
         setFocusedIndex(focusedIndex + 1);
         if (animationsEnabled) {
@@ -321,19 +321,19 @@ export function ThreadDisplay() {
   const isInArchive = folder === FOLDERS.ARCHIVE;
   const isInSpam = folder === FOLDERS.SPAM;
   const isInBin = folder === FOLDERS.BIN;
-  const handleClose = useCallback(() => {
+  const handleClose = useCallback(async () => {
+    await clearComposeContext();
     setThreadId(null);
-    clearComposeContext();
   }, [setThreadId, clearComposeContext]);
 
   const moveThreadTo = useCallback(
     async (destination: ThreadDestination) => {
       if (!id) return;
 
-      clearComposeContext();
+      await clearComposeContext();
 
       optimisticMoveThreadsTo([id], folder, destination);
-      handleNext();
+      await handleNext();
     },
     [id, folder, optimisticMoveThreadsTo, handleNext, clearComposeContext],
   );
