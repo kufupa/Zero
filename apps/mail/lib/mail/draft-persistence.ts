@@ -13,7 +13,7 @@ type DraftMutationInput = {
   attachments: SerializedFile[];
 };
 
-type PersistDecisionInput = {
+export type PersistDecisionInput = {
   hasUnsavedChanges: boolean;
   initialHtml: string;
   html: string;

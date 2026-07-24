@@ -54,8 +54,15 @@ import {
   buildDraftMutationInput,
   chooseDraftEditorState,
   isStaleDraftSendCancelled,
+  nextAfterDialogChoice,
+  resolveComposeCloseAction,
   shouldPersistDraft,
+  type ComposeDialogChoice,
+  type PersistDecisionInput,
 } from '@/lib/mail/draft-persistence';
+import { registerComposeFlush } from '@/lib/mail/compose-flush-registry';
+import { useOptimisticActions } from '@/hooks/use-optimistic-actions';
+import { m } from '@/paraglide/messages';
 import { useDraft } from '@/hooks/use-drafts';
 import type { HeaderDebugLine } from '@/types';
 
@@ -234,6 +241,7 @@ export function EmailComposer({
 
   const trpc = useTRPC();
   const queryClient = useQueryClient();
+  const { optimisticDeleteDraft } = useOptimisticActions();
   const { mutateAsync: aiCompose } = useMutation(trpc.ai.compose.mutationOptions());
   const { mutateAsync: createDraft } = useMutation(trpc.drafts.create.mutationOptions());
   const { mutateAsync: generateEmailSubject } = useMutation(
@@ -405,8 +413,18 @@ export function EmailComposer({
     if (!editor) return;
 
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
-      const hasContent = editor?.getText()?.trim().length > 0;
-      if (hasContent) {
+      const values = getValues();
+      if (
+        shouldPersistDraft({
+          hasUnsavedChanges,
+          initialHtml: initialMessage ?? '',
+          html: editor.getHTML(),
+          text: editor.getText(),
+          to: values.to ?? [],
+          subject: values.subject ?? '',
+          aiBlocked: Boolean(aiGeneratedMessage || aiIsLoading || isGeneratingSubject),
+        })
+      ) {
         e.preventDefault();
         e.returnValue = ''; // Required for Chrome
       }
@@ -414,26 +432,15 @@ export function EmailComposer({
 
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [editor]);
-
-  // Perhaps add `hasUnsavedChanges` to the condition
-  useEffect(() => {
-    if (!editor) return;
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        const hasContent = editor?.getText()?.trim().length > 0;
-        if (hasContent && !draftId) {
-          e.preventDefault();
-          e.stopPropagation();
-          setShowLeaveConfirmation(true);
-        }
-      }
-    };
-
-    document.addEventListener('keydown', handleKeyDown, true); // Use capture phase
-    return () => document.removeEventListener('keydown', handleKeyDown, true);
-  }, [editor, draftId]);
+  }, [
+    editor,
+    getValues,
+    hasUnsavedChanges,
+    initialMessage,
+    aiGeneratedMessage,
+    aiIsLoading,
+    isGeneratingSubject,
+  ]);
 
   const proceedWithSend = async () => {
     try {
@@ -555,10 +562,10 @@ export function EmailComposer({
     }
   };
 
-  const saveDraft = async () => {
+  const saveDraft = useCallback(async (): Promise<boolean> => {
     const values = getValues();
 
-    if (!hasUnsavedChanges) return;
+    if (!hasUnsavedChanges) return true;
     const messageText = editor.getText();
     const html = editor.getHTML();
     const aiBlocked = Boolean(aiGeneratedMessage || aiIsLoading || isGeneratingSubject);
@@ -574,7 +581,7 @@ export function EmailComposer({
         aiBlocked,
       })
     ) {
-      return;
+      return true;
     }
 
     try {
@@ -617,13 +624,128 @@ export function EmailComposer({
         ]);
       }
       setHasUnsavedChanges(false);
+      return true;
     } catch (error) {
       console.error('Error saving draft:', error);
       toast.error('Failed to save draft');
+      return false;
     } finally {
       setIsSavingDraft(false);
     }
-  };
+  }, [
+    hasUnsavedChanges,
+    editor,
+    aiGeneratedMessage,
+    aiIsLoading,
+    isGeneratingSubject,
+    initialMessage,
+    draftId,
+    threadId,
+    replyToMessageId,
+    createDraft,
+    queryClient,
+    trpc,
+    getValues,
+    setDraftId,
+  ]);
+
+  const buildPersistInput = useCallback((): PersistDecisionInput => {
+    const values = getValues();
+    return {
+      hasUnsavedChanges,
+      initialHtml: initialMessage ?? '',
+      html: editor?.getHTML() ?? '',
+      text: editor?.getText() ?? '',
+      to: values.to ?? [],
+      subject: values.subject ?? '',
+      aiBlocked: Boolean(aiGeneratedMessage || aiIsLoading || isGeneratingSubject),
+    };
+  }, [
+    hasUnsavedChanges,
+    initialMessage,
+    editor,
+    aiGeneratedMessage,
+    aiIsLoading,
+    isGeneratingSubject,
+    getValues,
+  ]);
+
+  const handleClose = useCallback(() => {
+    const action = resolveComposeCloseAction({ ...buildPersistInput(), intent: 'userClose' });
+    if (action === 'closeSilent') {
+      onClose?.();
+      return;
+    }
+    setShowLeaveConfirmation(true);
+  }, [buildPersistInput, onClose]);
+
+  const handleDialogChoice = useCallback(
+    async (choice: ComposeDialogChoice) => {
+      const next = nextAfterDialogChoice(choice);
+      if (next === 'dismiss') {
+        setShowLeaveConfirmation(false);
+        return;
+      }
+      if (next === 'saveThenClose') {
+        const ok = await saveDraft();
+        if (!ok && shouldPersistDraft(buildPersistInput())) return;
+        setShowLeaveConfirmation(false);
+        onClose?.();
+        return;
+      }
+      if (draftId) {
+        optimisticDeleteDraft(draftId);
+      }
+      setShowLeaveConfirmation(false);
+      onClose?.();
+    },
+    [buildPersistInput, draftId, onClose, optimisticDeleteDraft, saveDraft],
+  );
+
+  useEffect(() => {
+    const flush = async () => {
+      const values = getValues();
+      const action = resolveComposeCloseAction({
+        hasUnsavedChanges,
+        initialHtml: initialMessage ?? '',
+        html: editor?.getHTML() ?? '',
+        text: editor?.getText() ?? '',
+        to: values.to ?? [],
+        subject: values.subject ?? '',
+        aiBlocked: Boolean(aiGeneratedMessage || aiIsLoading || isGeneratingSubject),
+        intent: 'threadSwitch',
+      });
+      if (action === 'flushAndLeave') {
+        await saveDraft();
+      }
+    };
+    registerComposeFlush(flush);
+    return () => registerComposeFlush(null);
+  }, [
+    hasUnsavedChanges,
+    initialMessage,
+    editor,
+    aiGeneratedMessage,
+    aiIsLoading,
+    isGeneratingSubject,
+    saveDraft,
+    getValues,
+  ]);
+
+  useEffect(() => {
+    if (!editor) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        handleClose();
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown, true);
+    return () => document.removeEventListener('keydown', handleKeyDown, true);
+  }, [editor, handleClose]);
 
   const handleGenerateSubject = async () => {
     try {
@@ -646,24 +768,6 @@ export function EmailComposer({
     } finally {
       setIsGeneratingSubject(false);
     }
-  };
-
-  const handleClose = () => {
-    const hasContent = editor?.getText()?.trim().length > 0;
-    if (hasContent) {
-      setShowLeaveConfirmation(true);
-    } else {
-      onClose?.();
-    }
-  };
-
-  const confirmLeave = () => {
-    setShowLeaveConfirmation(false);
-    onClose?.();
-  };
-
-  const cancelLeave = () => {
-    setShowLeaveConfirmation(false);
   };
 
   // Component unmount protection
@@ -1145,18 +1249,29 @@ export function EmailComposer({
       <Dialog open={showLeaveConfirmation} onOpenChange={setShowLeaveConfirmation}>
         <DialogContent showOverlay className="z-99999 sm:max-w-[425px]">
           <DialogHeader>
-            <DialogTitle>Discard message?</DialogTitle>
-            <DialogDescription>
-              You have unsaved changes in your email. Are you sure you want to leave? Your changes
-              will be lost.
-            </DialogDescription>
+            <DialogTitle>{m['common.replyCompose.closeDraftTitle']()}</DialogTitle>
+            <DialogDescription>{m['common.replyCompose.closeDraftBody']()}</DialogDescription>
           </DialogHeader>
           <DialogFooter className="mt-2">
-            <Button variant="outline" onClick={cancelLeave} className="cursor-pointer">
-              Stay
+            <Button
+              variant="outline"
+              onClick={() => void handleDialogChoice('keepEditing')}
+              className="cursor-pointer"
+            >
+              {m['common.replyCompose.keepEditing']()}
             </Button>
-            <Button variant="destructive" onClick={confirmLeave} className="cursor-pointer">
-              Leave
+            <Button
+              onClick={() => void handleDialogChoice('saveDraft')}
+              className="cursor-pointer"
+            >
+              {m['common.replyCompose.saveDraft']()}
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => void handleDialogChoice('discard')}
+              className="cursor-pointer"
+            >
+              {m['common.replyCompose.discardDraft']()}
             </Button>
           </DialogFooter>
         </DialogContent>
