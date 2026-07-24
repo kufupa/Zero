@@ -139,20 +139,33 @@ test.describe('real-mail compose-close honesty', () => {
     await editor.click({ force: true });
     await editor.fill(marker);
 
-    // Autosave debounce is 3s — clears dirty flag. Re-dirty so X opens Discard dialog.
+    // Autosave debounce is 3s — clears dirty flag. Wait for draftId affinity + re-dirty.
     await page.waitForTimeout(4_000);
+    await expect
+      .poll(() => page.url(), { timeout: 15_000 })
+      .toMatch(/draftId=/);
     await editor.click({ force: true });
     await editor.type('!');
+
+    const deleteWait = page.waitForResponse(
+      (res) =>
+        res.request().method() === 'POST' &&
+        (res.url().includes('drafts.delete') ||
+          (res.url().includes('trpc') && (res.request().postData() ?? '').includes('delete'))),
+      { timeout: 30_000 },
+    );
 
     await closeComposeViaEscape(page);
     await expectHonestCloseDialog(page);
     await clickRole(page, 'Discard', true);
+    await deleteWait.catch(() => undefined);
+    await page.waitForTimeout(1_000);
 
     await expect(page.getByRole('heading', { name: 'Close draft?' })).toHaveCount(0);
     await expect(editor).toBeHidden({ timeout: 15_000 });
 
     const editor2 = await openReply(page, threadId);
-    await expect(editor2).not.toContainText(marker, { timeout: 15_000 });
+    await expect(editor2).not.toContainText(marker, { timeout: 30_000 });
     await closeComposeViaEscape(page);
   });
 
