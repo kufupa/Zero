@@ -51,6 +51,8 @@ import { useAtom } from 'jotai';
 import { toast } from 'sonner';
 import { resolveImportantState } from '@/lib/mail/important-ui';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { flushComposeBeforeLeave } from '@/lib/mail/compose-flush-registry';
+import { runComposeLeaveFlush } from '@/lib/mail/draft-persistence';
 import {
   clearReplyComposeContext,
   openReplyComposeContext,
@@ -206,11 +208,13 @@ export function ThreadDisplay() {
   });
 
   const clearComposeContext = useCallback(() => {
-    void clearReplyComposeContext({
-      setMode,
-      setActiveReplyId,
-      setDraftId,
-      setComposeState,
+    void runComposeLeaveFlush(flushComposeBeforeLeave, async () => {
+      await clearReplyComposeContext({
+        setMode,
+        setActiveReplyId,
+        setDraftId,
+        setComposeState,
+      });
     });
   }, [setMode, setActiveReplyId, setDraftId, setComposeState]);
 
