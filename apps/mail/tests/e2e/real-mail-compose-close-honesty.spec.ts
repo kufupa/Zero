@@ -34,26 +34,27 @@ async function openFirstThread(page: Page) {
 async function openReply(page: Page, threadId?: string | null) {
   await dismissMailOnboarding(page);
 
-  const tid =
-    threadId ??
-    (await page.locator('[data-thread-id]').first().getAttribute('data-thread-id').catch(() => null));
-
-  // URL mode is more reliable than force-clicking covered action-bar buttons.
-  // Do NOT Escape after this — Escape is compose-close and clears mode.
-  if (tid) {
-    const u = new URL(page.url());
-    if (!u.pathname.includes('/mail/')) u.pathname = '/mail/inbox';
-    u.searchParams.set('threadId', tid);
-    u.searchParams.set('mode', 'reply');
-    u.searchParams.delete('draftId');
-    await page.goto(u.toString(), { waitUntil: 'domcontentloaded', timeout: 60_000 });
-    await dismissMailOnboarding(page);
-  } else {
-    await page.keyboard.press('r');
+  if (threadId) {
+    const onThread = page.url().includes(threadId);
+    if (!onThread) {
+      await page.locator(`[data-thread-id="${threadId}"]`).first().click({ force: true });
+    }
   }
 
+  // Wait for sticky action bar (Reply r). Use native DOM click — Playwright
+  // pointer clicks get intercepted by recipient chips / border-t footers.
+  const replyBar = page.getByRole('button', { name: /^Reply r$/i }).first();
+  await expect(replyBar).toBeVisible({ timeout: 60_000 });
+  await replyBar.evaluate((el) => (el as HTMLButtonElement).click());
+
   const editor = page.locator('.ProseMirror').first();
-  await expect(editor).toBeVisible({ timeout: 60_000 });
+  try {
+    await expect(editor).toBeVisible({ timeout: 15_000 });
+  } catch {
+    // Fallback: hotkey (thread-display scope)
+    await page.keyboard.press('r');
+    await expect(editor).toBeVisible({ timeout: 30_000 });
+  }
   return editor;
 }
 
