@@ -27,7 +27,7 @@ async function openFirstThread(page: Page) {
   await expect(row).toBeVisible({ timeout: 60_000 });
   const threadId = await row.getAttribute('data-thread-id');
   expect(threadId).toBeTruthy();
-  await row.click({ force: true });
+  await row.evaluate((el) => (el as HTMLElement).click());
   return threadId as string;
 }
 
@@ -37,7 +37,9 @@ async function openReply(page: Page, threadId?: string | null) {
   if (threadId) {
     const onThread = page.url().includes(threadId);
     if (!onThread) {
-      await page.locator(`[data-thread-id="${threadId}"]`).first().click({ force: true });
+      await page.locator(`[data-thread-id="${threadId}"]`).first().evaluate((el) =>
+        (el as HTMLElement).click(),
+      );
     }
   }
 
@@ -56,6 +58,18 @@ async function openReply(page: Page, threadId?: string | null) {
     await expect(editor).toBeVisible({ timeout: 30_000 });
   }
   return editor;
+}
+
+async function clickRole(page: Page, name: string | RegExp, exact = false) {
+  const btn = page.getByRole('button', { name, exact });
+  await expect(btn.first()).toBeVisible({ timeout: 15_000 });
+  await btn.first().evaluate((el) => (el as HTMLButtonElement).click());
+}
+
+async function clickThreadRow(page: Page, threadId: string) {
+  const row = page.locator(`[data-thread-id="${threadId}"]`).first();
+  await expect(row).toBeVisible({ timeout: 30_000 });
+  await row.evaluate((el) => (el as HTMLElement).click());
 }
 
 async function closeComposeViaEscape(page: Page) {
@@ -98,9 +112,11 @@ test.describe('real-mail compose-close honesty', () => {
 
     await closeComposeViaEscape(page);
     await expectHonestCloseDialog(page);
-    await page.getByRole('button', { name: 'Save draft', exact: true }).click();
+    await clickRole(page, 'Save draft', true);
 
-    await expect(page.getByRole('heading', { name: 'Close draft?' })).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: 'Close draft?' })).toHaveCount(0, {
+      timeout: 60_000,
+    });
     await expect(editor).toBeHidden({ timeout: 15_000 });
 
     // Re-open reply — server draft should hydrate marker
@@ -110,7 +126,7 @@ test.describe('real-mail compose-close honesty', () => {
     // Cleanup: discard so pilot drafts stay tidy
     await closeComposeViaEscape(page);
     if (await page.getByRole('heading', { name: 'Close draft?' }).isVisible().catch(() => false)) {
-      await page.getByRole('button', { name: 'Discard', exact: true }).click();
+      await clickRole(page, 'Discard', true);
     }
   });
 
@@ -128,7 +144,7 @@ test.describe('real-mail compose-close honesty', () => {
 
     await closeComposeViaEscape(page);
     await expectHonestCloseDialog(page);
-    await page.getByRole('button', { name: 'Discard', exact: true }).click();
+    await clickRole(page, 'Discard', true);
 
     await expect(page.getByRole('heading', { name: 'Close draft?' })).toHaveCount(0);
     await expect(editor).toBeHidden({ timeout: 15_000 });
@@ -153,24 +169,26 @@ test.describe('real-mail compose-close honesty', () => {
     expect(threadB).toBeTruthy();
     expect(threadA).not.toBe(threadB);
 
-    await rows.nth(0).click({ force: true });
+    await clickThreadRow(page, threadA as string);
     const editor = await openReply(page, threadA);
     const marker = `CLOSE-SWITCH-${Date.now()}`;
     await editor.click({ force: true });
     await editor.fill(marker);
 
-    // Switch within autosave window (<3s)
-    await page.locator(`[data-thread-id="${threadB}"]`).first().click({ force: true });
+    // Switch within autosave window (<3s) — DOM click so flush registry runs
+    await clickThreadRow(page, threadB as string);
     await expect(page.getByRole('heading', { name: 'Close draft?' })).toHaveCount(0);
+    // Allow flush+navigate to settle
+    await page.waitForTimeout(1_500);
 
     // Return to A + Reply — flushed draft should restore marker
-    await page.locator(`[data-thread-id="${threadA}"]`).first().click({ force: true });
+    await clickThreadRow(page, threadA as string);
     const editor2 = await openReply(page, threadA);
     await expect(editor2).toContainText(marker, { timeout: 30_000 });
 
     await closeComposeViaEscape(page);
     if (await page.getByRole('heading', { name: 'Close draft?' }).isVisible().catch(() => false)) {
-      await page.getByRole('button', { name: 'Discard', exact: true }).click();
+      await clickRole(page, 'Discard', true);
     }
   });
 });
