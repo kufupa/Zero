@@ -610,7 +610,9 @@ export function EmailComposer({
         void queryClient.invalidateQueries({ queryKey: [...DEMO_MAIL_LIST_DRAFTS_QUERY_PREFIX] });
       } else {
         const savedDraftId = response?.id ?? draftId;
-        await Promise.all([
+        // Do not await refetch — Save draft / flush-on-leave must resolve after create,
+        // not after listThreads/drafts.list refetch (can hang under pilot load).
+        void Promise.all([
           queryClient.invalidateQueries({ queryKey: trpc.drafts.list.queryKey() }),
           savedDraftId
             ? queryClient.invalidateQueries({
