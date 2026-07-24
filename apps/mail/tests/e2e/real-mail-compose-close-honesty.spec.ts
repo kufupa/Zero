@@ -139,8 +139,10 @@ test.describe('real-mail compose-close honesty', () => {
     await editor.click({ force: true });
     await editor.fill(marker);
 
-    // Autosave debounce is 3s
+    // Autosave debounce is 3s — clears dirty flag. Re-dirty so X opens Discard dialog.
     await page.waitForTimeout(4_000);
+    await editor.click({ force: true });
+    await editor.type('!');
 
     await closeComposeViaEscape(page);
     await expectHonestCloseDialog(page);
