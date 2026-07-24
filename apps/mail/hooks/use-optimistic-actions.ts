@@ -575,7 +575,12 @@ export function useOptimisticActions() {
           } else {
             await deleteDraft({ id: draftId });
           }
-        await queryClient.invalidateQueries({ queryKey: trpc.drafts.list.queryKey() });
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: trpc.drafts.list.queryKey() }),
+          // Thread view hydrates latestDraft from mail.get — must drop discarded body.
+          queryClient.invalidateQueries({ queryKey: trpc.mail.get.queryKey() }),
+          queryClient.invalidateQueries({ queryKey: trpc.drafts.get.queryKey({ id: draftId }) }),
+        ]);
       },
       undo: () => {
         removeOptimisticAction(optimisticId);
