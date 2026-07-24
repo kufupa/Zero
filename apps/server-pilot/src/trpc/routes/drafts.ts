@@ -285,7 +285,10 @@ export const draftsRouter = tRouter({
           .where(
             and(eq(mailDraft.id, draftId), eq(mailDraft.transportId, transportId)),
           );
-      } else {
+        return { id: draftId };
+      }
+
+      try {
         await db.insert(mailDraft).values({
           id: draftId,
           transportId,
@@ -306,8 +309,31 @@ export const draftsRouter = tRouter({
           htmlBody: input.html || null,
           attachments: [],
         });
+        return { id: draftId };
+      } catch (error) {
+        // One active draft per thread — FE may omit draftId while latestDraft already exists.
+        if (!isPostgresUniqueViolation(error) || !input.threadId) throw error;
+        const activeRows = await db
+          .select({ id: mailDraft.id })
+          .from(mailDraft)
+          .where(
+            and(
+              eq(mailDraft.transportId, transportId),
+              eq(mailDraft.threadId, input.threadId),
+              eq(mailDraft.isSent, false),
+              eq(mailDraft.status, 'active'),
+            ),
+          )
+          .orderBy(desc(mailDraft.updatedAt), desc(mailDraft.id))
+          .limit(1);
+        const activeId = activeRows[0]?.id;
+        if (!activeId) throw error;
+        await db
+          .update(mailDraft)
+          .set(row)
+          .where(and(eq(mailDraft.id, activeId), eq(mailDraft.transportId, transportId)));
+        return { id: activeId };
       }
-      return { id: draftId };
     }),
 
   update: mailboxProcedure

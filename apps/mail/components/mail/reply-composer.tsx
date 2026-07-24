@@ -81,6 +81,13 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
   };
 
   useEffect(() => {
+    // Bind URL draftId to existing active thread draft so Save updates instead of INSERT.
+    if (latestDraft?.id && !draftId && mode) {
+      void setDraftId(latestDraft.id);
+    }
+  }, [latestDraft?.id, draftId, mode, setDraftId]);
+
+  useEffect(() => {
     const decision = shouldEnsureEditableDraftForReply({
       demoMode: isFrontendOnlyDemo(),
       threadId,
