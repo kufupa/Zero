@@ -55,6 +55,8 @@ import { Avatar } from '../ui/avatar';
 import { useQueryState } from 'nuqs';
 import { useAtom } from 'jotai';
 import { resolveImportantState } from '@/lib/mail/important-ui';
+import { flushComposeBeforeLeave } from '@/lib/mail/compose-flush-registry';
+import { runComposeLeaveFlush } from '@/lib/mail/draft-persistence';
 
 function mailListSectionLabel(bucket: MailDateBucket): string {
   switch (bucket) {
@@ -858,12 +860,13 @@ export const MailList = memo(function MailList() {
 
     const handleNavigateToThread = useCallback(
       (threadId: string | null) => {
-        setMode(null);
-        setActiveReplyId(null);
-        setThreadId(threadId);
-        return;
+        void runComposeLeaveFlush(flushComposeBeforeLeave, async () => {
+          setMode(null);
+          setActiveReplyId(null);
+          setDraftId(null);
+        }).then(() => setThreadId(threadId));
       },
-      [setMode, setActiveReplyId, setThreadId],
+      [setMode, setActiveReplyId, setDraftId, setThreadId],
     );
 
     const { focusedIndex, handleMouseEnter, keyboardActive } = useMailNavigation({
@@ -964,10 +967,12 @@ export const MailList = memo(function MailList() {
         const clickedIndex = itemsRef.current.findIndex((item) => item.id === messageThreadId);
         setFocusedIndex(clickedIndex);
         if (message.unread && autoReadEnabled) optimisticMarkAsRead([messageThreadId], true);
+        await runComposeLeaveFlush(flushComposeBeforeLeave, async () => {
+          setMode(null);
+          setActiveReplyId(null);
+          setDraftId(null);
+        });
         setThreadId(messageThreadId);
-        setMode(null);
-        setActiveReplyId(null);
-        setDraftId(null);
       },
       [
         getSelectMode,
