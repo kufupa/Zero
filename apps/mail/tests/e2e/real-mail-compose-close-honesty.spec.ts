@@ -33,13 +33,24 @@ async function openFirstThread(page: Page) {
 
 async function openReply(page: Page) {
   await dismissMailOnboarding(page);
-  const replyBtn = page
-    .getByRole('button', { name: /^Reply(\s+r)?$/i })
-    .or(page.getByRole('button', { name: /^Reply(?!\s*all)/i }))
-    .first();
-  await expect(replyBtn).toBeVisible({ timeout: 30_000 });
-  // Thread footer / recipient chips often intercept the action bar hit-target.
-  await replyBtn.click({ force: true });
+  await clearBlockingOverlays(page);
+
+  // Prefer sticky action-bar / continue-draft — per-message Reply often sits under scroll/chips.
+  const continueDraft = page.getByRole('button', { name: /^Continue draft$/i }).first();
+  const replyBar = page.getByRole('button', { name: /^Reply(\s+r)?$/i }).last();
+  const replyMsg = page.getByRole('button', { name: /^Reply$/i }).last();
+
+  if (await continueDraft.isVisible({ timeout: 2_000 }).catch(() => false)) {
+    await continueDraft.click({ force: true });
+  } else if (await replyBar.isVisible({ timeout: 5_000 }).catch(() => false)) {
+    await replyBar.click({ force: true });
+  } else if (await replyMsg.isVisible({ timeout: 5_000 }).catch(() => false)) {
+    await replyMsg.click({ force: true });
+  } else {
+    // Hotkey path (thread-display scope)
+    await page.keyboard.press('r');
+  }
+
   await dismissMailOnboarding(page);
   const editor = page.locator('.ProseMirror').first();
   await expect(editor).toBeVisible({ timeout: 30_000 });
