@@ -33,22 +33,21 @@ async function openFirstThread(page: Page) {
 
 async function openReply(page: Page, threadId?: string | null) {
   await dismissMailOnboarding(page);
-  await clearBlockingOverlays(page);
 
   const tid =
     threadId ??
     (await page.locator('[data-thread-id]').first().getAttribute('data-thread-id').catch(() => null));
 
   // URL mode is more reliable than force-clicking covered action-bar buttons.
+  // Do NOT Escape after this — Escape is compose-close and clears mode.
   if (tid) {
     const u = new URL(page.url());
-    u.pathname = u.pathname.includes('/mail/') ? u.pathname : '/mail/inbox';
+    if (!u.pathname.includes('/mail/')) u.pathname = '/mail/inbox';
     u.searchParams.set('threadId', tid);
     u.searchParams.set('mode', 'reply');
     u.searchParams.delete('draftId');
     await page.goto(u.toString(), { waitUntil: 'domcontentloaded', timeout: 60_000 });
     await dismissMailOnboarding(page);
-    await clearBlockingOverlays(page);
   } else {
     await page.keyboard.press('r');
   }
