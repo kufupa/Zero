@@ -31,29 +31,30 @@ async function openFirstThread(page: Page) {
   return threadId as string;
 }
 
-async function openReply(page: Page) {
+async function openReply(page: Page, threadId?: string | null) {
   await dismissMailOnboarding(page);
   await clearBlockingOverlays(page);
 
-  // Prefer sticky action-bar / continue-draft — per-message Reply often sits under scroll/chips.
-  const continueDraft = page.getByRole('button', { name: /^Continue draft$/i }).first();
-  const replyBar = page.getByRole('button', { name: /^Reply(\s+r)?$/i }).last();
-  const replyMsg = page.getByRole('button', { name: /^Reply$/i }).last();
+  const tid =
+    threadId ??
+    (await page.locator('[data-thread-id]').first().getAttribute('data-thread-id').catch(() => null));
 
-  if (await continueDraft.isVisible({ timeout: 2_000 }).catch(() => false)) {
-    await continueDraft.click({ force: true });
-  } else if (await replyBar.isVisible({ timeout: 5_000 }).catch(() => false)) {
-    await replyBar.click({ force: true });
-  } else if (await replyMsg.isVisible({ timeout: 5_000 }).catch(() => false)) {
-    await replyMsg.click({ force: true });
+  // URL mode is more reliable than force-clicking covered action-bar buttons.
+  if (tid) {
+    const u = new URL(page.url());
+    u.pathname = u.pathname.includes('/mail/') ? u.pathname : '/mail/inbox';
+    u.searchParams.set('threadId', tid);
+    u.searchParams.set('mode', 'reply');
+    u.searchParams.delete('draftId');
+    await page.goto(u.toString(), { waitUntil: 'domcontentloaded', timeout: 60_000 });
+    await dismissMailOnboarding(page);
+    await clearBlockingOverlays(page);
   } else {
-    // Hotkey path (thread-display scope)
     await page.keyboard.press('r');
   }
 
-  await dismissMailOnboarding(page);
   const editor = page.locator('.ProseMirror').first();
-  await expect(editor).toBeVisible({ timeout: 30_000 });
+  await expect(editor).toBeVisible({ timeout: 60_000 });
   return editor;
 }
 
@@ -77,8 +78,8 @@ async function expectHonestCloseDialog(page: Page) {
 test.describe('real-mail compose-close honesty', () => {
   test('AE4 empty Reply+Escape closes silent (no dialog)', async ({ page, context }) => {
     await injectMintedSession(context, page);
-    await openFirstThread(page);
-    const editor = await openReply(page);
+    const threadId = await openFirstThread(page);
+    const editor = await openReply(page, threadId);
 
     await closeComposeViaEscape(page);
 
@@ -88,8 +89,8 @@ test.describe('real-mail compose-close honesty', () => {
 
   test('AE2 type → Escape → Save draft keeps body on reopen', async ({ page, context }) => {
     await injectMintedSession(context, page);
-    await openFirstThread(page);
-    const editor = await openReply(page);
+    const threadId = await openFirstThread(page);
+    const editor = await openReply(page, threadId);
 
     const marker = `CLOSE-SAVE-${Date.now()}`;
     await editor.click({ force: true });
@@ -103,7 +104,7 @@ test.describe('real-mail compose-close honesty', () => {
     await expect(editor).toBeHidden({ timeout: 15_000 });
 
     // Re-open reply — server draft should hydrate marker
-    const editor2 = await openReply(page);
+    const editor2 = await openReply(page, threadId);
     await expect(editor2).toContainText(marker, { timeout: 30_000 });
 
     // Cleanup: discard so pilot drafts stay tidy
@@ -115,8 +116,8 @@ test.describe('real-mail compose-close honesty', () => {
 
   test('AE1 autosave then Discard removes draft on reopen', async ({ page, context }) => {
     await injectMintedSession(context, page);
-    await openFirstThread(page);
-    const editor = await openReply(page);
+    const threadId = await openFirstThread(page);
+    const editor = await openReply(page, threadId);
 
     const marker = `CLOSE-DISCARD-${Date.now()}`;
     await editor.click({ force: true });
@@ -132,7 +133,7 @@ test.describe('real-mail compose-close honesty', () => {
     await expect(page.getByRole('heading', { name: 'Close draft?' })).toHaveCount(0);
     await expect(editor).toBeHidden({ timeout: 15_000 });
 
-    const editor2 = await openReply(page);
+    const editor2 = await openReply(page, threadId);
     await expect(editor2).not.toContainText(marker, { timeout: 15_000 });
     await closeComposeViaEscape(page);
   });
@@ -153,7 +154,7 @@ test.describe('real-mail compose-close honesty', () => {
     expect(threadA).not.toBe(threadB);
 
     await rows.nth(0).click({ force: true });
-    const editor = await openReply(page);
+    const editor = await openReply(page, threadA);
     const marker = `CLOSE-SWITCH-${Date.now()}`;
     await editor.click({ force: true });
     await editor.fill(marker);
@@ -164,7 +165,7 @@ test.describe('real-mail compose-close honesty', () => {
 
     // Return to A + Reply — flushed draft should restore marker
     await page.locator(`[data-thread-id="${threadA}"]`).first().click({ force: true });
-    const editor2 = await openReply(page);
+    const editor2 = await openReply(page, threadA);
     await expect(editor2).toContainText(marker, { timeout: 30_000 });
 
     await closeComposeViaEscape(page);
