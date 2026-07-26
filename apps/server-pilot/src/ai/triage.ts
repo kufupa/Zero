@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { and, eq, inArray } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { AI_MANAGED_CATEGORY_SLUGS, AI_PRIMARY_CATEGORY_SLUGS } from './categories.js';
+import { isAutoTriageNeverSpam, normalizeEmailAddress } from './never-spam.js';
 import { mailCategory, mailThread, mailThreadCategory } from '../db/schema/mail.js';
 
 export const TRIAGE_CATEGORIES = [...AI_PRIMARY_CATEGORY_SLUGS, 'spam'] as const;
@@ -38,6 +39,18 @@ export function refineTriageOutput(
   const body = input.body.trim();
   const haystack = `${subject}
 ${body}`;
+
+  if (output.category === 'spam' && isAutoTriageNeverSpam(input.from)) {
+    const category = normalizeEmailAddress(input.from).endsWith('@legacyhotels.co.za')
+      ? 'internal'
+      : 'individual';
+    return {
+      ...output,
+      category,
+      policyFlags: [...output.policyFlags, 'refine:never-spam-allowlist'],
+      rationale: `${output.rationale} Sender is on auto-triage never-spam allowlist.`,
+    };
+  }
 
   // Nova over-fires spam on short personal notes ("hi"/"test") that are not
   // sales/promo/automation — keep those in inbox as individual.

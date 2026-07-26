@@ -18,10 +18,29 @@ import { TRANSPORT_ID } from '../src/db/seed.js';
 const reachable = await probeTestDb();
 
 describe('AI triage contract', () => {
+  it('never-spam From remaps AI spam to internal with refine:never-spam-allowlist', () => {
+    const refined = refineTriageOutput(
+      {
+        from: 'frontdesk@legacyhotels.co.za',
+        subject: 'Promo?',
+        body: 'Book a demo unsubscribe',
+      },
+      {
+        category: 'spam',
+        urgent: false,
+        confidence: 0.99,
+        rationale: 'salesy',
+        policyFlags: [],
+      },
+    );
+    expect(refined.category).toBe('internal');
+    expect(refined.policyFlags).toContain('refine:never-spam-allowlist');
+  });
+
   it('refines short personal greeting away from spam into individual', () => {
     const refined = refineTriageOutput(
       {
-        from: 'aroransh17@gmail.com',
+        from: 'guest@example.com',
         subject: 'test',
         body: 'hi',
       },
