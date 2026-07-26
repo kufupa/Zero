@@ -16,6 +16,7 @@ import { Check, ChevronDown, RefreshCcw } from 'lucide-react';
 import { useMediaQuery } from '../../hooks/use-media-query';
 import useCategoryIds from '@/hooks/use-category-ids';
 import * as CustomIcons from '@/components/icons/icons';
+import { EmptySpamButton } from '@/components/mail/empty-spam-button';
 import { MailList } from '@/components/mail/mail-list';
 import { useNavigate, useParams } from 'react-router';
 import { useMail } from '@/components/mail/use-mail';
@@ -526,6 +527,10 @@ export function MailLayout() {
                       </Tooltip>
                     </div>
                   )}
+
+                  {folder === 'spam' && mail.bulkSelected.length === 0 ? (
+                    <EmptySpamButton onCompleted={handleRefetchThreads} />
+                  ) : null}
 
                   <Button
                     onClick={handleRefetchThreads}

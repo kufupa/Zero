@@ -914,6 +914,30 @@ export const mailRouter = tRouter({
       return { updated: visibleIds.length };
     }),
 
+  /** Soft-trash every spam folder thread for the active transport (clear spamAt). */
+  emptySpam: mailboxProcedure.mutation(async ({ ctx }) => {
+    const db = getDb();
+    const transportId = ctx.activeTransportId;
+    const updated = await db
+      .update(mailThread)
+      .set({
+        trashedAt: new Date(),
+        spamAt: null,
+        isArchived: false,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(mailThread.transportId, transportId),
+          isNotNull(mailThread.spamAt),
+          isNull(mailThread.trashedAt),
+        ),
+      )
+      .returning({ id: mailThread.id });
+
+    return { updated: updated.length };
+  }),
+
   /**
    * Send a reply or new outbound message from the active mailbox.
    *
