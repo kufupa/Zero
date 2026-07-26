@@ -171,6 +171,35 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       });
     });
 
+    it('moveThreads to bin clears spamAt so thread appears in bin', async () => {
+      await withSeededTestDb(async (db) => {
+        await seedActionThread(db);
+        await db
+          .update(mailThread)
+          .set({ spamAt: new Date(), trashedAt: null })
+          .where(
+            and(eq(mailThread.id, THREAD_ID), eq(mailThread.transportId, 'transport-centurion')),
+          );
+
+        const caller = await callerFor('user-navaai', { db });
+        await caller.mail.moveThreads({ threadIds: [THREAD_ID], destination: 'bin' });
+
+        const rows = await db
+          .select({ spamAt: mailThread.spamAt, trashedAt: mailThread.trashedAt })
+          .from(mailThread)
+          .where(eq(mailThread.id, THREAD_ID))
+          .limit(1);
+        expect(rows[0]?.spamAt).toBeNull();
+        expect(rows[0]?.trashedAt).not.toBeNull();
+
+        const bin = await caller.mail.listThreads({ folder: 'bin', limit: 20 });
+        expect(bin.threads.map((t) => t.id)).toContain(THREAD_ID);
+
+        const spam = await caller.mail.listThreads({ folder: 'spam', limit: 20 });
+        expect(spam.threads.map((t) => t.id)).not.toContain(THREAD_ID);
+      });
+    });
+
     it('moves threads between system states without label emulation', async () => {
       await withSeededTestDb(async (db) => {
         await seedActionThread(db);

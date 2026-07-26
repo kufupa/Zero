@@ -773,6 +773,8 @@ export const mailRouter = tRouter({
       }
       if (input.destination === 'bin') {
         patch.trashedAt = new Date();
+        patch.spamAt = null;
+        patch.isArchived = false;
       }
       if (input.destination === 'spam') {
         patch.spamAt = new Date();
