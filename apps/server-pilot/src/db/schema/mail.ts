@@ -227,6 +227,7 @@ export const mailThread = pgTable(
     labelIds: jsonb('label_ids').$type<string[]>().notNull().default([]),
     snoozedUntil: timestamp('snoozed_until'),
     spamAt: timestamp('spam_at'),
+    spamUserLockedAt: timestamp('spam_user_locked_at'),
     trashedAt: timestamp('trashed_at'),
     latestMessageAt: timestamp('latest_message_at'),
     createdAt: timestamp('created_at').notNull().defaultNow(),

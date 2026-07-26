@@ -85,6 +85,13 @@
       "when": 1783896000000,
       "tag": "0011_outbound_send_queue",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1783982400000,
+      "tag": "0012_mail_thread_spam_user_lock",
+      "breakpoints": true
     }
   ]
 }

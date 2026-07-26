@@ -152,7 +152,7 @@ export async function applyDurableTriageResult(
   const { db, transportId, threadId } = input;
 
   const [thread] = await db
-    .select({ spamAt: mailThread.spamAt })
+    .select({ spamAt: mailThread.spamAt, spamUserLockedAt: mailThread.spamUserLockedAt })
     .from(mailThread)
     .where(and(eq(mailThread.id, threadId), eq(mailThread.transportId, transportId)))
     .limit(1);
@@ -169,7 +169,8 @@ export async function applyDurableTriageResult(
       ),
     );
 
-  const settled = primaryRows.length > 0 || thread?.spamAt != null;
+  const settled =
+    primaryRows.length > 0 || thread?.spamAt != null || thread?.spamUserLockedAt != null;
 
   if (settled) {
     // KTD2: settled threads never flip primary/spamAt — urgency overlay only.

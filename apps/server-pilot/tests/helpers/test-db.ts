@@ -3,7 +3,8 @@
  * used in production and runs `cb` inside a transaction that is rolled back
  * at the end, so tests never pollute the pilot seed.
  *
- * Requires `DATABASE_URL` in env AND that the host is reachable. If the host
+ * Requires `DATABASE_URL` in env AND that the host is reachable. If unset,
+ * loads `apps/server-pilot/.env` silently (no secret logging). If the host
  * is not reachable (e.g. running tests on a laptop outside the VPC), tests
  * skip via `describe.skipIf(!TEST_DB_AVAILABLE || !reachable)`.
  *
@@ -11,11 +12,39 @@
  * when the callback rejects. We always reject with a sentinel after the
  * user callback resolves so the rollback is unconditional.
  */
+import { existsSync, readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import * as schema from '../../src/db/schema/index.js';
 import type { DB } from '../../src/db/client.js';
 import { getPostgresSslOptions } from '../../src/db/ssl-config.js';
+
+function loadTestEnvFromDotenv(): void {
+  if (process.env.DATABASE_URL) return;
+  const envPath = path.join(fileURLToPath(new URL('../..', import.meta.url)), '.env');
+  if (!existsSync(envPath)) return;
+  const content = readFileSync(envPath, 'utf8');
+  for (const line of content.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq === -1) continue;
+    const key = trimmed.slice(0, eq).trim();
+    if (process.env[key] !== undefined) continue;
+    let value = trimmed.slice(eq + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    process.env[key] = value;
+  }
+}
+
+loadTestEnvFromDotenv();
 
 export const TEST_DB_AVAILABLE = !!process.env.DATABASE_URL;
 

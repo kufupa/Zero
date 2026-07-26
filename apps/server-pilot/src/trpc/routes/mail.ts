@@ -782,6 +782,7 @@ export const mailRouter = tRouter({
       }
       if (input.destination === 'spam') {
         patch.spamAt = new Date();
+        patch.spamUserLockedAt = new Date();
         patch.trashedAt = null;
         patch.isArchived = false;
       }
@@ -789,6 +790,7 @@ export const mailRouter = tRouter({
         patch.isArchived = false;
         patch.trashedAt = null;
         patch.spamAt = null;
+        patch.spamUserLockedAt = new Date();
         patch.snoozedUntil = null;
       }
 

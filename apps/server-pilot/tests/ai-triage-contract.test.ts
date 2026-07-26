@@ -567,4 +567,40 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI durable triage contract', 
       );
     });
   });
+
+  it('after user not-spam with lock, AI spam apply is urgency_only and spamAt stays null', async () => {
+    await withSeededTestDb(async (db) => {
+      const threadId = randomUUID();
+      await db.insert(mailThread).values({
+        id: threadId,
+        transportId: TRANSPORT_ID,
+        threadRootId: `<${threadId}@example.com>`,
+        subject: 'Guest message',
+        snippet: 'Hello',
+        latestMessageAt: new Date(),
+        spamAt: null,
+        spamUserLockedAt: new Date(),
+      });
+
+      const result = await applyDurableTriageResult({
+        db,
+        transportId: TRANSPORT_ID,
+        threadId,
+        output: {
+          category: 'spam',
+          urgent: false,
+          confidence: 0.99,
+          rationale: 'sales spam',
+          policyFlags: [],
+        },
+        writeGateEnabled: true,
+      });
+
+      expect(result.applyMode).toBe('urgency_only');
+
+      const [thread] = await db.select().from(mailThread).where(eq(mailThread.id, threadId));
+      expect(thread?.spamAt).toBeNull();
+      expect(thread?.spamUserLockedAt).not.toBeNull();
+    });
+  });
 });
