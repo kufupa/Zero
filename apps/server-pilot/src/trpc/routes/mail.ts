@@ -746,8 +746,12 @@ export const mailRouter = tRouter({
           labelIds: string[];
           updatedAt: Date;
           trashedAt?: Date | null;
+          spamAt?: Date | null;
         } = { labelIds: [...current], updatedAt: new Date() };
-        if (trashAdded) patch.trashedAt = new Date();
+        if (trashAdded) {
+          patch.trashedAt = new Date();
+          patch.spamAt = null;
+        }
         if (trashRemoved) patch.trashedAt = null;
         await db
           .update(mailThread)
@@ -845,7 +849,7 @@ export const mailRouter = tRouter({
         } else if (!row.trashedAt) {
           await db
             .update(mailThread)
-            .set({ trashedAt: new Date(), updatedAt: new Date() })
+            .set({ trashedAt: new Date(), spamAt: null, updatedAt: new Date() })
             .where(and(eq(mailThread.id, id), eq(mailThread.transportId, transportId)));
         }
       }
@@ -867,7 +871,7 @@ export const mailRouter = tRouter({
       } else {
         await db
           .update(mailThread)
-          .set({ trashedAt: new Date(), updatedAt: new Date() })
+          .set({ trashedAt: new Date(), spamAt: null, updatedAt: new Date() })
           .where(
             and(eq(mailThread.id, input.id), eq(mailThread.transportId, transportId)),
           );
