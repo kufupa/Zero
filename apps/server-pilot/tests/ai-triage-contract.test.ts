@@ -56,6 +56,45 @@ describe('AI triage contract', () => {
     expect(refined.policyFlags).toContain('refine:short-personal-not-spam');
   });
 
+  it('refines agency invoice party to travel-agents', () => {
+    const refined = refineTriageOutput(
+      {
+        from: 'agent@sampletravel.example',
+        subject: 'Booking',
+        body: 'Please address the invoice to Sample Travel\nVAT 123',
+      },
+      { category: 'individual', urgent: false, confidence: 0.7, rationale: 'guest', policyFlags: [] },
+    );
+    expect(refined.category).toBe('travel-agents');
+    expect(refined.policyFlags).toContain('refine:agency-invoice-party');
+  });
+
+  it('refines guest-file tax invoice away from travel-agents', () => {
+    const refined = refineTriageOutput(
+      {
+        from: 'billing@hotel.example',
+        subject: 'Tax Invoice 99',
+        body: 'Tax invoice for guest John Doe stay',
+      },
+      { category: 'travel-agents', urgent: false, confidence: 0.7, rationale: 'agency', policyFlags: [] },
+    );
+    expect(refined.category).toBe('individual');
+    expect(refined.policyFlags).toContain('refine:guest-file-invoice');
+  });
+
+  it('clears urgent on internal handover', () => {
+    const refined = refineTriageOutput(
+      {
+        from: 'ops@legacyhotels.co.za',
+        subject: 'Handover',
+        body: 'Night handover — room readiness and VIP arrivals',
+      },
+      { category: 'internal', urgent: true, confidence: 0.9, rationale: 'urgent ops', policyFlags: [] },
+    );
+    expect(refined.urgent).toBe(false);
+    expect(refined.policyFlags).toContain('refine:internal-handover-not-urgent');
+  });
+
   it('keeps real sales spam as spam', () => {
     const refined = refineTriageOutput(
       {
