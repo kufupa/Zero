@@ -56,12 +56,14 @@ export const labelsRouter = tRouter({
       })
       .from(mailLabel)
       .where(eq(mailLabel.transportId, transportId));
-    const userLabels = userRows.map((r) => ({
-      id: r.id,
-      name: r.name,
-      type: 'user' as const,
-      color: r.color,
-    }));
+    const userLabels = userRows
+      .filter((r) => r.name.toUpperCase() !== 'SPAM')
+      .map((r) => ({
+        id: r.id,
+        name: r.name,
+        type: 'user' as const,
+        color: r.color,
+      }));
     return [...SYSTEM_LABELS, ...userLabels];
   }),
 

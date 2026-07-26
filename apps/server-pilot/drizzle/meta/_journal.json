@@ -92,6 +92,13 @@
       "when": 1783982400000,
       "tag": "0012_mail_thread_spam_user_lock",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1784068800000,
+      "tag": "0013_strip_spam_label_ids",
+      "breakpoints": true
     }
   ]
 }

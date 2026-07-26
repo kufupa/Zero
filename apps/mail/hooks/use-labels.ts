@@ -14,6 +14,20 @@ const desiredSystemLabels = new Set([
   'UNREAD',
 ]);
 
+export function isVisibleUserLabel(label: { name: string }): boolean {
+  return label.name.toUpperCase() !== 'SPAM';
+}
+
+export function resolveThreadLabels<T extends { id?: string; name: string }>(
+  labels: T[],
+  ids: string[],
+): T[] {
+  return labels.filter(
+    (label) =>
+      isVisibleUserLabel(label) && (label.id ? ids.includes(label.id) : false),
+  );
+}
+
 export function useLabels() {
   const trpc = useTRPC();
   const demoMode = isFrontendOnlyDemo();
@@ -44,7 +58,9 @@ export function useLabels() {
       });
     const cleanedSystemLabels = cleanedName.filter((label) => desiredSystemLabels.has(label.name));
     return {
-      userLabels: activeQuery.data.filter((label) => label.type === 'user'),
+      userLabels: activeQuery.data.filter(
+        (label) => label.type === 'user' && isVisibleUserLabel(label),
+      ),
       systemLabels: cleanedSystemLabels,
     };
   }, [activeQuery.data]);
@@ -57,7 +73,7 @@ export function useThreadLabels(ids: string[]) {
 
   const threadLabels = useMemo(() => {
     if (!labels) return [];
-    return labels.filter((label) => (label.id ? ids.includes(label.id) : false));
+    return resolveThreadLabels(labels, ids);
   }, [labels, ids]);
 
   return { labels: threadLabels };
