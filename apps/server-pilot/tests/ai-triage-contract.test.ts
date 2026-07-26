@@ -14,6 +14,7 @@ import { mailboxTransport } from '../src/db/schema/mail.js';
 import { getDb } from '../src/db/client.js';
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
 import { TRANSPORT_ID } from '../src/db/seed.js';
+import { seedInboxThread } from './helpers/seed-inbox-thread.js';
 
 const reachable = await probeTestDb();
 
@@ -601,6 +602,36 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI durable triage contract', 
       const [thread] = await db.select().from(mailThread).where(eq(mailThread.id, threadId));
       expect(thread?.spamAt).toBeNull();
       expect(thread?.spamUserLockedAt).not.toBeNull();
+    });
+  });
+
+  it('applyDurableTriageResult skips spam_at when never-spam sender bypasses refine', async () => {
+    await withSeededTestDb(async (db) => {
+      const threadId = randomUUID();
+      await seedInboxThread(db, {
+        threadId,
+        transportId: TRANSPORT_ID,
+        transportEmail: 'centurion@legacyhotel.com',
+        fromAddress: 'frontdesk@legacyhotels.co.za',
+      });
+
+      const result = await applyDurableTriageResult({
+        db,
+        transportId: TRANSPORT_ID,
+        threadId,
+        output: {
+          category: 'spam',
+          urgent: false,
+          confidence: 0.99,
+          rationale: 'raw spam category without refine',
+          policyFlags: [],
+        },
+        writeGateEnabled: true,
+      });
+
+      expect(result.applyMode).toBe('full');
+      const [thread] = await db.select().from(mailThread).where(eq(mailThread.id, threadId));
+      expect(thread?.spamAt).toBeNull();
     });
   });
 });

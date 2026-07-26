@@ -13,6 +13,7 @@ import {
   persistInboundMessage,
   quarantineOversizedMessage,
 } from '../src/mail/ingest/store';
+import { upsertSenderPreference } from '../src/mail/sender-preference';
 import { FakeS3Storage, resetS3Storage, setS3Storage } from '../src/storage/s3';
 import {
   TEST_DB_AVAILABLE,
@@ -173,6 +174,63 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           if (prevGate === undefined) delete process.env.AI_WRITE_GATE_ENABLED;
           else process.env.AI_WRITE_GATE_ENABLED = prevGate;
         }
+      },
+      30000,
+    );
+
+    it(
+      'ingest from block-listed sender sets spamAt on persist',
+      async () => {
+        const storage = withFakeS3();
+        const blockedFrom = 'blocked-ingest@example.com';
+        const raw = Buffer.from(
+          [
+            `From: ${blockedFrom}`,
+            'To: centurion@legacyhotel.com',
+            'X-Zero-Mailbox: centurion@legacyhotel.com',
+            'Subject: blocked sender ingest',
+            'Message-ID: <blocked-ingest@test>',
+            'MIME-Version: 1.0',
+            'Content-Type: text/plain; charset=utf-8',
+            '',
+            'should land in spam',
+          ].join('\r\n'),
+          'utf-8',
+        );
+
+        const { result, thread } = await withSeededTestDb(async (db) => {
+          await upsertSenderPreference({
+            db,
+            transportId: 'transport-centurion',
+            emailRaw: blockedFrom,
+            kind: 'block',
+          });
+
+          const messageId = generateMessageId();
+          const parsed = await parseRawMessage(raw, { messageId, storage });
+          const r = await persistInboundMessage(
+            parsed,
+            raw,
+            {
+              ingestMailboxId: 'ingest-nava-legacy',
+              pop3Uidl: `uidl-block-ingest-${messageId}`,
+              messageId,
+            },
+            { db, storage },
+          );
+
+          if (r.kind !== 'stored') {
+            return { result: r, thread: undefined };
+          }
+          const threads = await db
+            .select()
+            .from(mailThread)
+            .where(eq(mailThread.id, r.threadId));
+          return { result: r, thread: threads[0] };
+        });
+
+        expect(result.kind).toBe('stored');
+        expect(thread?.spamAt).not.toBeNull();
       },
       30000,
     );

@@ -55,6 +55,7 @@ import {
   enqueueAiRun,
 } from '../../ai/run-ledger.js';
 import { refreshThreadSearchVector } from '../search/search-vector.js';
+import { getSenderPreference } from '../sender-preference.js';
 
 export type QuarantineReason =
   | 'missing_owner_header'
@@ -296,6 +297,20 @@ export async function persistInboundMessage(
     }
 
     await refreshThreadSearchVector(tx as unknown as DB, threadId);
+
+    if (!isHotelSent && parsed.fromAddress) {
+      const preference = await getSenderPreference({
+        db: tx as unknown as DB,
+        transportId: transport.id,
+        emailRaw: parsed.fromAddress,
+      });
+      if (preference === 'block') {
+        await tx
+          .update(mailThread)
+          .set({ spamAt: new Date(), updatedAt: new Date() })
+          .where(eq(mailThread.id, threadId));
+      }
+    }
 
     if (!isHotelSent) {
       await enqueueAiRun(

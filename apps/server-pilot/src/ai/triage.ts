@@ -3,6 +3,10 @@ import { and, eq, inArray } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { AI_MANAGED_CATEGORY_SLUGS, AI_PRIMARY_CATEGORY_SLUGS } from './categories.js';
 import { isAutoTriageNeverSpam, normalizeEmailAddress } from './never-spam.js';
+import {
+  getLatestInboundFromAddress,
+  getSenderPreference,
+} from '../mail/sender-preference.js';
 import { mailCategory, mailThread, mailThreadCategory } from '../db/schema/mail.js';
 
 export const TRIAGE_CATEGORIES = [...AI_PRIMARY_CATEGORY_SLUGS, 'spam'] as const;
@@ -217,6 +221,18 @@ export async function applyDurableTriageResult(
   }
 
   if (output.category === 'spam') {
+    const latestFrom = await getLatestInboundFromAddress(db, transportId, threadId);
+    if (latestFrom) {
+      const preference = await getSenderPreference({
+        db,
+        transportId,
+        emailRaw: latestFrom,
+      });
+      if (preference === 'allow' || isAutoTriageNeverSpam(latestFrom)) {
+        return { applyMode: 'full' };
+      }
+    }
+
     await db
       .update(mailThread)
       .set({ spamAt: new Date(), updatedAt: new Date() })

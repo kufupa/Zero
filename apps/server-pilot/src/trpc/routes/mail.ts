@@ -48,6 +48,10 @@ import {
 import { formatContentDispositionFilename } from '../../mail/attachment-filename.js';
 import { sanitizeEmailHtml } from '../../mail/sanitize-email-html.js';
 import { processQuotedContent } from '../../mail/collapse-quoted-html.js';
+import {
+  getLatestInboundFromAddress,
+  upsertSenderPreference,
+} from '../../mail/sender-preference.js';
 import { withMailboxIngestLock } from '../../mail/ingest/mailbox-ingest-lock.js';
 import type { Pop3Client } from '../../mail/ingest/pop3-client.js';
 import {
@@ -767,7 +771,7 @@ export const mailRouter = tRouter({
       const db = getDb();
       const transportId = ctx.activeTransportId;
       const visibleIds = await resolveVisibleThreadIds(db, transportId, input.threadIds);
-      if (visibleIds.length === 0) return { updated: 0 };
+      if (visibleIds.length === 0) return { updated: 0, preferences: [] };
 
       const patch: Partial<typeof mailThread.$inferInsert> = { updatedAt: new Date() };
       if (input.destination === 'archive') {
@@ -799,7 +803,24 @@ export const mailRouter = tRouter({
         .set(patch)
         .where(and(eq(mailThread.transportId, transportId), inArray(mailThread.id, visibleIds)));
 
-      return { updated: visibleIds.length };
+      const preferences: { email: string; kind: 'block' | 'allow' }[] = [];
+      if (input.destination === 'spam' || input.destination === 'inbox') {
+        const kind = input.destination === 'spam' ? 'block' : 'allow';
+        for (const threadId of visibleIds) {
+          const fromAddress = await getLatestInboundFromAddress(db, transportId, threadId);
+          if (!fromAddress) continue;
+          preferences.push(
+            await upsertSenderPreference({
+              db,
+              transportId,
+              emailRaw: fromAddress,
+              kind,
+            }),
+          );
+        }
+      }
+
+      return { updated: visibleIds.length, preferences };
     }),
 
   bulkArchive: mailboxProcedure

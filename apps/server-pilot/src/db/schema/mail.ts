@@ -36,6 +36,11 @@ export const messageDirectionEnum = pgEnum('message_direction', [
   'outbound',
 ]);
 
+export const mailSenderPreferenceKindEnum = pgEnum('mail_sender_preference_kind', [
+  'block',
+  'allow',
+]);
+
 export const mailDraftStatusEnum = pgEnum('mail_draft_status', [
   'active',
   'candidate',
@@ -207,6 +212,24 @@ export const mailThreadCategory = pgTable(
     primaryKey({ columns: [t.threadId, t.categoryId] }),
     index('mail_thread_category_category_idx').on(t.categoryId),
     index('mail_thread_category_transport_idx').on(t.transportId),
+  ],
+);
+
+export const mailSenderPreference = pgTable(
+  'mail_sender_preference',
+  {
+    id: text('id').primaryKey(),
+    transportId: text('transport_id')
+      .notNull()
+      .references(() => mailboxTransport.id, { onDelete: 'cascade' }),
+    email: text('email').notNull(),
+    kind: mailSenderPreferenceKindEnum('kind').notNull(),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('mail_sender_preference_transport_email_uidx').on(t.transportId, t.email),
+    index('mail_sender_preference_transport_idx').on(t.transportId),
   ],
 );
 
