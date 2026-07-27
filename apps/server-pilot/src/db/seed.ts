@@ -5,7 +5,7 @@
  * `tests/seed-contract.test.ts` (transaction-rollback verification) can both
  * call it against the same DB handle.
  */
-import { count, eq, notInArray } from 'drizzle-orm';
+import { count, eq, inArray, notInArray } from 'drizzle-orm';
 import { AI_MANAGED_CATEGORY_SEED_ROWS } from '../ai/categories.js';
 import { randomBytes } from 'node:crypto';
 import { hashPassword } from 'better-auth/crypto';
@@ -30,8 +30,12 @@ export const NAVA_TRANSPORT_EMAIL = 'navaai@legacyhotels.co.za';
 export const NAVA_USER_ID = 'user-navaai';
 export const NAVA_USER_EMAIL = 'navaai@legacyhotels.co.za';
 
+export const CENTURION_USER_ID = 'user-centurion';
+export const CENTURION_USER_EMAIL = 'centurion@legacyhotels.co.za';
+
 export const PILOT_USERS: PilotUserSpec[] = [
   { id: NAVA_USER_ID, name: 'Nava AI', email: NAVA_USER_EMAIL },
+  { id: CENTURION_USER_ID, name: 'Centurion', email: CENTURION_USER_EMAIL },
 ];
 
 export const INGEST_EMAIL = 'navaai@legacyhotels.co.za';
@@ -43,29 +47,6 @@ export const TRANSPORT_ALIASES = [
   'centurion@legacyhotels.com',
   'centurion@legacyhotel.com',
 ] as const;
-
-export type AccessRowSpec = {
-  userId: string;
-  transportId: string;
-  role: 'owner' | 'member' | 'admin';
-  isDefault: boolean;
-};
-
-/** Single login owns every active mailbox transport. */
-export const ACCESS_ROWS: AccessRowSpec[] = [
-  {
-    userId: NAVA_USER_ID,
-    transportId: NAVA_TRANSPORT_ID,
-    role: 'owner',
-    isDefault: true,
-  },
-  {
-    userId: NAVA_USER_ID,
-    transportId: TRANSPORT_ID,
-    role: 'owner',
-    isDefault: false,
-  },
-];
 
 export type SeedResult = {
   pilotCredentials: Record<string, { password: string }>;
@@ -86,6 +67,35 @@ function credentialAccountId(specId: string): string {
 
 function pilotUserIds(): string[] {
   return PILOT_USERS.map((u) => u.id);
+}
+
+/** Nava owns every active transport; Centurion owns Centurion only. */
+export async function applyPilotMailboxAccess(db: DB): Promise<void> {
+  const keepIds = pilotUserIds();
+  await db.delete(mailboxAccess).where(inArray(mailboxAccess.userId, keepIds));
+
+  const active = await db
+    .select({ id: mailboxTransport.id })
+    .from(mailboxTransport)
+    .where(eq(mailboxTransport.isActive, true));
+
+  for (const transport of active) {
+    await db.insert(mailboxAccess).values({
+      id: `access-${NAVA_USER_ID}-${transport.id}`,
+      userId: NAVA_USER_ID,
+      transportId: transport.id,
+      role: 'owner',
+      isDefault: transport.id === NAVA_TRANSPORT_ID,
+    });
+  }
+
+  await db.insert(mailboxAccess).values({
+    id: `access-${CENTURION_USER_ID}-${TRANSPORT_ID}`,
+    userId: CENTURION_USER_ID,
+    transportId: TRANSPORT_ID,
+    role: 'owner',
+    isDefault: true,
+  });
 }
 
 /**
@@ -260,29 +270,7 @@ export async function seedAll(db: DB, opts: SeedOptions = {}): Promise<SeedResul
   // 3b. Drop non-pilot auth users (cascades session/account/mailbox_access)
   const keepIds = pilotUserIds();
   await db.delete(userTable).where(notInArray(userTable.id, keepIds));
-
-  // 4. Mailbox access rows (owner on every seeded transport)
-  for (const row of ACCESS_ROWS) {
-    await db
-      .insert(mailboxAccess)
-      .values({
-        id: `access-${row.userId}-${row.transportId}`,
-        userId: row.userId,
-        transportId: row.transportId,
-        role: row.role,
-        isDefault: row.isDefault,
-      })
-      .onConflictDoUpdate({
-        target: [mailboxAccess.userId, mailboxAccess.transportId],
-        set: {
-          role: row.role,
-          isDefault: row.isDefault,
-          updatedAt: new Date(),
-        },
-      });
-  }
-
-  await db.delete(mailboxAccess).where(notInArray(mailboxAccess.userId, keepIds));
+  await applyPilotMailboxAccess(db);
 
   await seedSpamLabel(db, TRANSPORT_ID);
   await seedSpamLabel(db, NAVA_TRANSPORT_ID);

@@ -17,16 +17,30 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
   'mailbox context (seeded, transaction-rollback)',
   () => {
     it(
+      'returns owner access for centurion user on Centurion transport',
+      async () => {
+        const ctx = await withSeededTestDb((db) =>
+          resolveMailboxContext('user-centurion', 'transport-centurion', db),
+        );
+        expect(ctx).toBeDefined();
+        expect(ctx.transportEmail).toBe('centurion@legacyhotels.co.za');
+        expect(ctx.accessRole).toBe('owner');
+        expect(ctx.userId).toBe('user-centurion');
+        expect(ctx.activeTransportId).toBe('transport-centurion');
+      },
+      30000,
+    );
+
+    it(
       'returns owner access for navaai on Centurion transport',
       async () => {
         const ctx = await withSeededTestDb((db) =>
           resolveMailboxContext('user-navaai', 'transport-centurion', db),
         );
-        expect(ctx).toBeDefined();
-        expect(ctx.transportEmail).toBe('centurion@legacyhotels.co.za');
-        expect(ctx.accessRole).toBe('owner');
         expect(ctx.userId).toBe('user-navaai');
         expect(ctx.activeTransportId).toBe('transport-centurion');
+        expect(ctx.transportEmail).toBe('centurion@legacyhotels.co.za');
+        expect(ctx.accessRole).toBe('owner');
       },
       30000,
     );

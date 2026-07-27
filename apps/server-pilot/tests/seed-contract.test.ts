@@ -16,6 +16,8 @@ import {
   NAVA_TRANSPORT_EMAIL,
   NAVA_USER_EMAIL,
   NAVA_USER_ID,
+  CENTURION_USER_EMAIL,
+  CENTURION_USER_ID,
   INGEST_EMAIL,
   TRANSPORT_EMAIL,
   TRANSPORT_OWNER_HEADER,
@@ -37,6 +39,7 @@ describe('seed identity constants', () => {
     expect(NAVA_USER_EMAIL).toBe('navaai@legacyhotels.co.za');
     expect(PILOT_USERS).toEqual([
       { id: NAVA_USER_ID, name: 'Nava AI', email: NAVA_USER_EMAIL },
+      { id: CENTURION_USER_ID, name: 'Centurion', email: CENTURION_USER_EMAIL },
     ]);
   });
 
@@ -125,13 +128,13 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     );
 
     it(
-      'seeds transport-nava and grants navaai owner access on both transports',
+      'seeds Nava owner on every active transport; Centurion owns Centurion only',
       async () => {
         const result = await withSeededTestDb(async (db) => {
-          const transports = await db
-            .select()
+          const active = await db
+            .select({ id: mailboxTransport.id })
             .from(mailboxTransport)
-            .where(eq(mailboxTransport.id, 'transport-nava'));
+            .where(eq(mailboxTransport.isActive, true));
           const access = await db
             .select({
               userId: mailboxAccess.userId,
@@ -139,31 +142,26 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
               role: mailboxAccess.role,
               isDefault: mailboxAccess.isDefault,
             })
-            .from(mailboxAccess)
-            .where(eq(mailboxAccess.userId, NAVA_USER_ID));
-          return { transport: transports[0], access };
+            .from(mailboxAccess);
+          return { activeIds: active.map((r) => r.id).sort(), access };
         });
 
-        expect(result.transport).toBeDefined();
-        expect(result.transport!.email).toBe('navaai@legacyhotels.co.za');
-        expect(result.transport!.ownerHeaderValue).toBe('navaai@legacyhotels.co.za');
-        expect(result.access).toHaveLength(2);
-        expect(result.access).toEqual(
-          expect.arrayContaining([
-            {
-              userId: NAVA_USER_ID,
-              transportId: 'transport-nava',
-              role: 'owner',
-              isDefault: true,
-            },
-            {
-              userId: NAVA_USER_ID,
-              transportId: 'transport-centurion',
-              role: 'owner',
-              isDefault: false,
-            },
-          ]),
-        );
+        const navaRows = result.access.filter((r) => r.userId === NAVA_USER_ID);
+        expect(navaRows).toHaveLength(result.activeIds.length);
+        expect(navaRows.map((r) => r.transportId).sort()).toEqual(result.activeIds);
+        expect(navaRows.every((r) => r.role === 'owner')).toBe(true);
+        expect(navaRows.find((r) => r.transportId === 'transport-nava')?.isDefault).toBe(true);
+        expect(navaRows.filter((r) => r.isDefault)).toHaveLength(1);
+
+        const cenRows = result.access.filter((r) => r.userId === CENTURION_USER_ID);
+        expect(cenRows).toEqual([
+          {
+            userId: CENTURION_USER_ID,
+            transportId: 'transport-centurion',
+            role: 'owner',
+            isDefault: true,
+          },
+        ]);
       },
       30000,
     );
@@ -196,7 +194,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     );
 
     it(
-      'seeds exactly one mailbox_access row on transport-centurion for navaai owner',
+      'transport-centurion has Nava + Centurion owner rows',
       async () => {
         const access = await withSeededTestDb(async (db) => {
           return db
@@ -207,14 +205,51 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             .from(mailboxAccess)
             .where(eq(mailboxAccess.transportId, 'transport-centurion'));
         });
-        expect(access).toHaveLength(1);
-        expect(access[0]).toEqual({ userId: NAVA_USER_ID, role: 'owner' });
+        expect(access).toHaveLength(2);
+        expect(access).toEqual(
+          expect.arrayContaining([
+            { userId: NAVA_USER_ID, role: 'owner' },
+            { userId: CENTURION_USER_ID, role: 'owner' },
+          ]),
+        );
       },
       30000,
     );
 
     it(
-      'seeds a single pilot user navaai@ with emailVerified=true',
+      'applyPilotMailboxAccess grants Nava a new active transport without static ACCESS_ROWS edit',
+      async () => {
+        const { applyPilotMailboxAccess } = await import('../src/db/seed.js');
+        const outcome = await withSeededTestDb(async (db) => {
+          await db.insert(mailboxTransport).values({
+            id: 'transport-davinci',
+            email: 'davinci@legacyhotels.co.za',
+            ownerHeaderValue: 'davinci@legacyhotels.co.za',
+            mailboxType: 'personal',
+            displayName: 'Da Vinci Transport',
+            isActive: true,
+          });
+          await applyPilotMailboxAccess(db);
+          const nava = await db
+            .select({ transportId: mailboxAccess.transportId })
+            .from(mailboxAccess)
+            .where(eq(mailboxAccess.userId, NAVA_USER_ID));
+          const cen = await db
+            .select({ transportId: mailboxAccess.transportId })
+            .from(mailboxAccess)
+            .where(eq(mailboxAccess.userId, CENTURION_USER_ID));
+          return { navaIds: nava.map((r) => r.transportId).sort(), cenIds: cen.map((r) => r.transportId) };
+        });
+        expect(outcome.navaIds).toContain('transport-davinci');
+        expect(outcome.navaIds).toContain('transport-nava');
+        expect(outcome.navaIds).toContain('transport-centurion');
+        expect(outcome.cenIds).toEqual(['transport-centurion']);
+      },
+      30000,
+    );
+
+    it(
+      'seeds navaai@ and centurion@ pilot users with emailVerified=true',
       async () => {
         const users = await withSeededTestDb(async (db) => {
           return db
@@ -225,12 +260,21 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             })
             .from(userTable);
         });
-        expect(users).toHaveLength(1);
-        expect(users[0]).toEqual({
-          id: NAVA_USER_ID,
-          email: NAVA_USER_EMAIL,
-          emailVerified: true,
-        });
+        expect(users).toHaveLength(2);
+        expect(users).toEqual(
+          expect.arrayContaining([
+            {
+              id: NAVA_USER_ID,
+              email: NAVA_USER_EMAIL,
+              emailVerified: true,
+            },
+            {
+              id: CENTURION_USER_ID,
+              email: CENTURION_USER_EMAIL,
+              emailVerified: true,
+            },
+          ]),
+        );
       },
       30000,
     );
@@ -251,7 +295,13 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             .select({ id: userTable.id, email: userTable.email })
             .from(userTable);
         });
-        expect(remaining).toEqual([{ id: NAVA_USER_ID, email: NAVA_USER_EMAIL }]);
+        expect(remaining).toEqual(
+          expect.arrayContaining([
+            { id: NAVA_USER_ID, email: NAVA_USER_EMAIL },
+            { id: CENTURION_USER_ID, email: CENTURION_USER_EMAIL },
+          ]),
+        );
+        expect(remaining).toHaveLength(2);
       },
       30000,
     );
