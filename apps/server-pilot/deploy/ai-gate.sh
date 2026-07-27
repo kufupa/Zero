@@ -21,10 +21,13 @@ fi
 export NODE_ENV=test
 export PATH="${HOME}/.local/share/pnpm:${HOME}/.nvm/versions/node/$(ls "${HOME}/.nvm/versions/node" 2>/dev/null | sort -V | tail -1)/bin:${PATH}"
 
+# Intentional RDS-backed gate — required after pilot-RDS vitest refuse.
+export VITEST_ALLOW_PILOT_RDS=1
+
 cd "$SERVER_PILOT"
 
 echo "== ai-gate: targeted tests =="
-pnpm test \
+pnpm exec vitest run \
   tests/env.test.ts \
   tests/package-contract.test.ts \
   tests/schema-contract.test.ts \

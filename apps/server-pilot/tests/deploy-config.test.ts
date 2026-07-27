@@ -325,19 +325,49 @@ describe('deploy config', () => {
   });
 
   it('RDS vitest gates export VITEST_ALLOW_PILOT_RDS=1', async () => {
-    const { readFileSync } = await import('node:fs');
+    const { readdirSync, readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
     const { dirname, join } = await import('node:path');
     const here = dirname(fileURLToPath(import.meta.url));
     const deployDir = join(here, '..', 'deploy');
+
+    const sourcesProductionEnv = (script: string) =>
+      script.includes('.env.production') &&
+      (script.includes('source "$ENV_FILE"') ||
+        script.includes('source /home/ubuntu/.env.production') ||
+        script.includes('source .env.production'));
+
+    const invokesVitest = (script: string) =>
+      /\bpnpm test\b/.test(script) || /\bpnpm exec vitest\b/.test(script);
+
+    const rdsVitestGates = readdirSync(deployDir)
+      .filter((name) => name.endsWith('.sh'))
+      .filter((name) => {
+        const script = readFileSync(join(deployDir, name), 'utf8');
+        return sourcesProductionEnv(script) && invokesVitest(script);
+      });
+
+    expect(rdsVitestGates.length).toBeGreaterThanOrEqual(5);
+    for (const name of rdsVitestGates) {
+      const script = readFileSync(join(deployDir, name), 'utf8');
+      expect(script, `${name} must export VITEST_ALLOW_PILOT_RDS=1`).toContain(
+        'VITEST_ALLOW_PILOT_RDS=1',
+      );
+      expect(script, `${name} must use pnpm exec vitest run`).toContain(
+        'pnpm exec vitest run',
+      );
+    }
+
     for (const name of [
       'mail-search-gate.sh',
       'fixture-loopback-gate.sh',
       'wire-gate.sh',
+      'ai-gate.sh',
+      'bedrock-live-gate.sh',
     ]) {
-      const script = readFileSync(join(deployDir, name), 'utf8');
-      expect(script).toContain('VITEST_ALLOW_PILOT_RDS=1');
-      expect(script).toContain('pnpm exec vitest run');
+      expect(rdsVitestGates, `expected ${name} in RDS vitest gates`).toContain(
+        name,
+      );
     }
   });
 

@@ -24,7 +24,10 @@ export AI_ENABLED=true
 export BEDROCK_REGION="${BEDROCK_REGION:-us-east-1}"
 export BEDROCK_LIVE_TEST=1
 
+# Intentional RDS-backed gate — required after pilot-RDS vitest refuse.
+export VITEST_ALLOW_PILOT_RDS=1
+
 cd "$SERVER_PILOT"
-pnpm test tests/bedrock-live-contract.test.ts --reporter=dot
+pnpm exec vitest run tests/bedrock-live-contract.test.ts --reporter=dot
 
 echo "bedrock-live-gate: PASS"
