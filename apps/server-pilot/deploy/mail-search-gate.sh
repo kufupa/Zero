@@ -19,6 +19,9 @@ export NODE_ENV=test
 export MAIL_TRANSPORT_MODE=fixture
 export PATH="${HOME}/.local/share/pnpm:${HOME}/.nvm/versions/node/$(ls "${HOME}/.nvm/versions/node" 2>/dev/null | sort -V | tail -1)/bin:${PATH}"
 
+# Intentional RDS-backed gate — required after pilot-RDS vitest refuse.
+export VITEST_ALLOW_PILOT_RDS=1
+
 echo "== mail-search-gate: vitest =="
 pnpm exec vitest run \
   tests/mail-search-parse.test.ts \

@@ -324,6 +324,23 @@ describe('deploy config', () => {
     expect(syntax.status).toBe(0);
   });
 
+  it('RDS vitest gates export VITEST_ALLOW_PILOT_RDS=1', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const deployDir = join(here, '..', 'deploy');
+    for (const name of [
+      'mail-search-gate.sh',
+      'fixture-loopback-gate.sh',
+      'wire-gate.sh',
+    ]) {
+      const script = readFileSync(join(deployDir, name), 'utf8');
+      expect(script).toContain('VITEST_ALLOW_PILOT_RDS=1');
+      expect(script).toContain('pnpm exec vitest run');
+    }
+  });
+
   it('stage-navaai-mail-env.sh refuses REPLACE_ and keeps password out of SSM argv', async () => {
     const { mkdtempSync, readFileSync, writeFileSync, rmSync } = await import('node:fs');
     const { spawnSync } = await import('node:child_process');

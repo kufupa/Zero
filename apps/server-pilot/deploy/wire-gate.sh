@@ -64,13 +64,15 @@ export POP3_PORT=11110
 export POP3_TLS=false
 export POP3_USER=ingest@wire.test
 export POP3_PASSWORD=wire-test-pass
+export VITEST_ALLOW_PILOT_RDS=1
 
 echo "== pm2: stop worker (avoid POP3 race) =="
 pm2 stop worker || true
 
 echo "== vitest: wire suite =="
 cd "$SERVER_PILOT"
-pnpm test tests/mailpit-lifecycle.test.ts \
+pnpm exec vitest run \
+  tests/mailpit-lifecycle.test.ts \
   tests/mail-wire-e2e.test.ts \
   tests/transport-mode.test.ts \
   --reporter=dot

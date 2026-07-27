@@ -32,6 +32,7 @@ fi
 
 export NODE_ENV=test
 export MAIL_TRANSPORT_MODE=fixture
+export VITEST_ALLOW_PILOT_RDS=1
 
 export PATH="${HOME}/.local/share/pnpm:${HOME}/.nvm/versions/node/$(ls "${HOME}/.nvm/versions/node" 2>/dev/null | sort -V | tail -1)/bin:${PATH}"
 
@@ -40,7 +41,8 @@ pm2 stop worker || true
 
 echo "== vitest: fixture loopback suite =="
 cd "$SERVER_PILOT"
-pnpm test tests/fixture-loopback-e2e.test.ts \
+pnpm exec vitest run \
+  tests/fixture-loopback-e2e.test.ts \
   tests/fixture-loopback.test.ts \
   tests/seed-contract.test.ts \
   tests/mail-send.test.ts \
