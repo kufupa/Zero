@@ -1,0 +1,378 @@
+import { describe, expect, it } from 'vitest';
+import { eq } from 'drizzle-orm';
+import { randomUUID } from 'node:crypto';
+import {
+  aiWorkflowRun,
+  mailIngestQuarantine,
+  mailThread,
+  mailboxTransport,
+  message,
+} from '../src/db/schema/mail';
+import {
+  assertPromoteEnv,
+  formatPromoteSummary,
+  parsePromoteCliArgs,
+  promoteMissingOwnerHeaderQuarantine,
+  PromoteEnvError,
+} from '../src/mail/ingest/promote-quarantine';
+import { rawMimeKey } from '../src/storage/s3';
+import { FakeS3Storage, resetS3Storage, setS3Storage } from '../src/storage/s3';
+import {
+  TEST_DB_AVAILABLE,
+  probeTestDb,
+  withSeededTestDb,
+} from './helpers/test-db';
+import type { DB } from '../src/db/client';
+
+const reachable = await probeTestDb();
+
+function withFakeS3(): FakeS3Storage {
+  const fake = new FakeS3Storage('test-mail-bucket');
+  resetS3Storage();
+  setS3Storage(fake);
+  return fake;
+}
+
+function withIngestOwnerHeaderEnv(
+  value: string,
+  run: () => Promise<void>,
+): Promise<void> {
+  const prev = process.env.INGEST_REQUIRE_OWNER_HEADER;
+  process.env.INGEST_REQUIRE_OWNER_HEADER = value;
+  return run().finally(() => {
+    if (prev === undefined) delete process.env.INGEST_REQUIRE_OWNER_HEADER;
+    else process.env.INGEST_REQUIRE_OWNER_HEADER = prev;
+  });
+}
+
+async function seedCenturionAliases(db: DB): Promise<void> {
+  await db
+    .update(mailboxTransport)
+    .set({
+      sendFromConfig: {
+        aliases: [
+          'centurion@legacyhotels.co.za',
+          'centurion@legacyhotels.com',
+          'centurion@legacyhotel.com',
+        ],
+      },
+    })
+    .where(eq(mailboxTransport.id, 'transport-centurion'));
+}
+
+function centurionInboundEml(): Buffer {
+  return Buffer.from(
+    [
+      'From: guest@example.com',
+      'To: centurion@legacyhotels.co.za',
+      'Subject: promote AE5 inbound',
+      'MIME-Version: 1.0',
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      'Unstamped Centurion copy for promote.',
+    ].join('\r\n'),
+    'utf-8',
+  );
+}
+
+async function seedMissingOwnerQuarantine(args: {
+  db: DB;
+  storage: FakeS3Storage;
+  pop3Uidl: string;
+  raw: Buffer;
+  quarantineId?: string;
+}): Promise<{ quarantineId: string; rawMimeS3Key: string }> {
+  const ingestMailboxId = 'ingest-nava-legacy';
+  const rawMimeS3Key = rawMimeKey({
+    ingestMailboxId,
+    pop3Uidl: args.pop3Uidl,
+  });
+  await args.storage.putObject({
+    key: rawMimeS3Key,
+    body: args.raw,
+    contentType: 'message/rfc822',
+  });
+  const quarantineId = args.quarantineId ?? randomUUID();
+  await args.db.insert(mailIngestQuarantine).values({
+    id: quarantineId,
+    ingestMailboxId,
+    pop3Uidl: args.pop3Uidl,
+    rawMimeS3Key,
+    reason: 'missing_owner_header',
+    ownerHeaderValue: null,
+    parsedHeaders: { subject: 'promote AE5 inbound' },
+  });
+  return { quarantineId, rawMimeS3Key };
+}
+
+describe('promote-quarantine cli helpers', () => {
+  it('parses dry-run and limit flags', () => {
+    expect(parsePromoteCliArgs(['--dry-run', '--limit', '5'])).toEqual({
+      dryRun: true,
+      limit: 5,
+    });
+    expect(parsePromoteCliArgs(['--limit=3'])).toEqual({
+      dryRun: false,
+      limit: 3,
+    });
+  });
+
+  it('rejects promote when owner-header toggle strict', () => {
+    const prev = process.env.INGEST_REQUIRE_OWNER_HEADER;
+    process.env.INGEST_REQUIRE_OWNER_HEADER = 'true';
+    try {
+      expect(() => assertPromoteEnv()).toThrow(PromoteEnvError);
+    } finally {
+      if (prev === undefined) delete process.env.INGEST_REQUIRE_OWNER_HEADER;
+      else process.env.INGEST_REQUIRE_OWNER_HEADER = prev;
+    }
+  });
+
+  it('formats promote summary', () => {
+    expect(
+      formatPromoteSummary({
+        scanned: 2,
+        stored: 1,
+        duplicate: 0,
+        quarantined: 0,
+        errors: 1,
+        errorIds: ['q-err'],
+        dryRunIds: [],
+      }),
+    ).toBe('scanned=2 stored=1 duplicate=0 quarantined=0 errors=1 error_ids=q-err');
+  });
+});
+
+describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
+  'promote missing_owner_header quarantine (seeded, rollback)',
+  () => {
+    it(
+      'AE5: promotes seeded quarantine to Centurion inbound + triage + deletes quarantine',
+      async () => {
+        const storage = withFakeS3();
+        const pop3Uidl = 'uidl-promote-ae5';
+        const raw = centurionInboundEml();
+        const prevGate = process.env.AI_WRITE_GATE_ENABLED;
+        process.env.AI_WRITE_GATE_ENABLED = 'true';
+
+        try {
+          await withIngestOwnerHeaderEnv('false', async () => {
+            const outcome = await withSeededTestDb(async (db) => {
+              await seedCenturionAliases(db);
+              const { quarantineId } = await seedMissingOwnerQuarantine({
+                db,
+                storage,
+                pop3Uidl,
+                raw,
+              });
+
+              const result = await promoteMissingOwnerHeaderQuarantine({
+                db,
+                storage,
+              });
+
+              const quarantineRows = await db
+                .select()
+                .from(mailIngestQuarantine)
+                .where(eq(mailIngestQuarantine.id, quarantineId));
+              const messages = await db
+                .select()
+                .from(message)
+                .where(eq(message.pop3Uidl, pop3Uidl));
+              const triageRuns =
+                messages.length > 0
+                  ? await db
+                      .select()
+                      .from(aiWorkflowRun)
+                      .where(
+                        eq(aiWorkflowRun.triggerMessageId, messages[0]!.id),
+                      )
+                  : [];
+
+              return { result, quarantineRows, messages, triageRuns };
+            });
+
+            expect(outcome.result.stored).toBe(1);
+            expect(outcome.result.errors).toBe(0);
+            expect(outcome.quarantineRows).toHaveLength(0);
+            expect(outcome.messages).toHaveLength(1);
+            expect(outcome.messages[0]!.transportId).toBe('transport-centurion');
+            expect(outcome.messages[0]!.direction).toBe('inbound');
+            expect(outcome.triageRuns.length).toBe(1);
+            expect(outcome.triageRuns[0]!.runKind).toBe('inbound_triage');
+          });
+        } finally {
+          if (prevGate === undefined) delete process.env.AI_WRITE_GATE_ENABLED;
+          else process.env.AI_WRITE_GATE_ENABLED = prevGate;
+        }
+      },
+      30000,
+    );
+
+    it(
+      'clears quarantine when same UIDL already stored outbound without duplicate row',
+      async () => {
+        const storage = withFakeS3();
+        const pop3Uidl = 'uidl-promote-dup-outbound';
+        const raw = centurionInboundEml();
+
+        await withIngestOwnerHeaderEnv('false', async () => {
+          const outcome = await withSeededTestDb(async (db) => {
+            await seedCenturionAliases(db);
+            const { quarantineId } = await seedMissingOwnerQuarantine({
+              db,
+              storage,
+              pop3Uidl,
+              raw,
+            });
+
+            const existingMessageId = randomUUID();
+            const threadId = randomUUID();
+            await db.insert(mailThread).values({
+              id: threadId,
+              transportId: 'transport-centurion',
+              threadRootId: '<existing-outbound@example.com>',
+              subject: 'already stored outbound',
+              snippet: 'sent copy',
+              isArchived: false,
+              isStarred: false,
+              isRead: false,
+              labelIds: [],
+              latestMessageAt: new Date(),
+            });
+            await db.insert(message).values({
+              id: existingMessageId,
+              transportId: 'transport-centurion',
+              threadId,
+              ingestMailboxId: 'ingest-nava-legacy',
+              direction: 'outbound',
+              pop3Uidl,
+              ownerHeaderValue: null,
+              messageIdHeader: '<existing-outbound@example.com>',
+              inReplyTo: null,
+              references: [],
+              fromAddress: 'centurion@legacyhotels.co.za',
+              toAddresses: ['guest@example.com'],
+              ccAddresses: [],
+              bccAddresses: [],
+              subject: 'already stored outbound',
+              textBody: 'sent copy',
+              htmlBody: null,
+              rawMimeS3Key: rawMimeKey({
+                ingestMailboxId: 'ingest-nava-legacy',
+                pop3Uidl,
+              }),
+              receivedAt: new Date(),
+              sentAt: new Date(),
+            });
+
+            const result = await promoteMissingOwnerHeaderQuarantine({
+              db,
+              storage,
+            });
+            const quarantineRows = await db
+              .select()
+              .from(mailIngestQuarantine)
+              .where(eq(mailIngestQuarantine.id, quarantineId));
+            const messages = await db
+              .select()
+              .from(message)
+              .where(eq(message.pop3Uidl, pop3Uidl));
+
+            return { result, quarantineRows, messages, existingMessageId };
+          });
+
+          expect(outcome.result.duplicate).toBe(1);
+          expect(outcome.result.stored).toBe(0);
+          expect(outcome.quarantineRows).toHaveLength(0);
+          expect(outcome.messages).toHaveLength(1);
+          expect(outcome.messages[0]!.id).toBe(outcome.existingMessageId);
+        });
+      },
+      30000,
+    );
+
+    it(
+      'keeps quarantine row when S3 object missing and counts error',
+      async () => {
+        const storage = withFakeS3();
+        const pop3Uidl = 'uidl-promote-missing-s3';
+
+        await withIngestOwnerHeaderEnv('false', async () => {
+          const outcome = await withSeededTestDb(async (db) => {
+            await seedCenturionAliases(db);
+            const quarantineId = randomUUID();
+            const rawMimeS3Key = 'raw-mime/missing/object.eml';
+            await db.insert(mailIngestQuarantine).values({
+              id: quarantineId,
+              ingestMailboxId: 'ingest-nava-legacy',
+              pop3Uidl,
+              rawMimeS3Key,
+              reason: 'missing_owner_header',
+              ownerHeaderValue: null,
+              parsedHeaders: null,
+            });
+
+            const result = await promoteMissingOwnerHeaderQuarantine({
+              db,
+              storage,
+            });
+            const quarantineRows = await db
+              .select()
+              .from(mailIngestQuarantine)
+              .where(eq(mailIngestQuarantine.id, quarantineId));
+
+            return { result, quarantineRows, quarantineId };
+          });
+
+          expect(outcome.result.errors).toBe(1);
+          expect(outcome.result.errorIds).toContain(outcome.quarantineId);
+          expect(outcome.quarantineRows).toHaveLength(1);
+        });
+      },
+      30000,
+    );
+
+    it(
+      'dry-run lists quarantine ids without writes',
+      async () => {
+        const storage = withFakeS3();
+        const pop3Uidl = 'uidl-promote-dry-run';
+        const raw = centurionInboundEml();
+
+        await withIngestOwnerHeaderEnv('false', async () => {
+          const outcome = await withSeededTestDb(async (db) => {
+            const { quarantineId } = await seedMissingOwnerQuarantine({
+              db,
+              storage,
+              pop3Uidl,
+              raw,
+            });
+
+            const result = await promoteMissingOwnerHeaderQuarantine({
+              db,
+              storage,
+              dryRun: true,
+            });
+            const quarantineRows = await db
+              .select()
+              .from(mailIngestQuarantine)
+              .where(eq(mailIngestQuarantine.id, quarantineId));
+            const messages = await db
+              .select()
+              .from(message)
+              .where(eq(message.pop3Uidl, pop3Uidl));
+
+            return { result, quarantineRows, messages, quarantineId };
+          });
+
+          expect(outcome.result.dryRunIds).toEqual([outcome.quarantineId]);
+          expect(outcome.result.stored).toBe(0);
+          expect(outcome.quarantineRows).toHaveLength(1);
+          expect(outcome.messages).toHaveLength(0);
+        });
+      },
+      30000,
+    );
+  },
+);

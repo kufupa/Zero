@@ -128,6 +128,11 @@ export interface PersistOptions {
   db: DB;
   /** S3 storage override (tests inject a fake). */
   storage?: S3Storage;
+  /**
+   * Promote path: skip existing-quarantine short-circuit and delete this row
+   * atomically when the message insert commits.
+   */
+  promoteQuarantineId?: string;
 }
 
 /**
@@ -172,7 +177,9 @@ export async function persistInboundMessage(
     };
   }
 
-  const existingQuarantine = await findExistingQuarantine(db, meta);
+  const existingQuarantine = opts.promoteQuarantineId
+    ? undefined
+    : await findExistingQuarantine(db, meta);
   if (existingQuarantine) {
     return {
       kind: 'quarantined',
@@ -325,6 +332,12 @@ export async function persistInboundMessage(
         },
         tx as unknown as DB,
       );
+    }
+
+    if (opts.promoteQuarantineId) {
+      await tx
+        .delete(mailIngestQuarantine)
+        .where(eq(mailIngestQuarantine.id, opts.promoteQuarantineId));
     }
   });
 

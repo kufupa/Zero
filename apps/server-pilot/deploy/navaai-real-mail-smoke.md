@@ -18,6 +18,7 @@ Ordered checklist for flipping EC2 pilot from `MAIL_TRANSPORT_MODE=fixture` → 
 | Wipe + marker | `apps/server-pilot/deploy/pilot-db-wipe.sh` → marker `/var/lib/nava-pilot/wipe-navaai.ok` |
 | Stage password | `apps/server-pilot/deploy/stage-navaai-mail-env.sh` → `/run/nava-mail/password` |
 | Activate | `apps/server-pilot/scripts/activate-real-mail.sh` |
+| Promote quarantine | `apps/server-pilot/scripts/promote-quarantine.ts` |
 | Env writer | `apps/server-pilot/deploy/write-ec2-env.sh` (called by activate) |
 | Deploy | `apps/server-pilot/deploy/deploy-ec2.sh` (called by activate) |
 | Handoff ops | [`it-handoff-runbook.md`](./it-handoff-runbook.md) |
@@ -175,6 +176,26 @@ Pass when send succeeds and transport is not fixture `FakeSmtp` (`MAIL_TRANSPORT
    `docs/superpowers/plans/handoff-reports/2026-07-22-navaai-real-mail-cutover.md`
 2. Day-to-day ops: [`it-handoff-runbook.md`](./it-handoff-runbook.md) (`ops-deploy.sh` / `ops-restart.sh` / `ops-reboot.sh`)
 3. Stay on `real` + worker on; drafts remain off (`AI_DRAFTS_ENABLED=false`)
+
+### 12) Promote `missing_owner_header` quarantine (after U1/U2 env flip)
+
+After `INGEST_REQUIRE_OWNER_HEADER=false` is on EC2 and `seed:prod` has run:
+
+```bash
+cd /home/ubuntu/repos/zero
+set -a && source apps/server-pilot/.env.production && set +a
+grep INGEST_REQUIRE_OWNER_HEADER apps/server-pilot/.env.production
+# must show false before promote
+
+# dry-run first
+pnpm --filter @zero/server tsx apps/server-pilot/scripts/promote-quarantine.ts --dry-run
+
+# promote all (or --limit N for partial)
+pnpm --filter @zero/server tsx apps/server-pilot/scripts/promote-quarantine.ts
+```
+
+Pass when summary shows `stored` + `duplicate` counts, `errors=0`, and SQL  
+`select count(*) from mail_ingest_quarantine where reason='missing_owner_header'` → 0 (or only new poison).
 
 ## Rollback
 

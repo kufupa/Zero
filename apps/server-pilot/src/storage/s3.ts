@@ -16,6 +16,7 @@ import {
   PutObjectCommand,
   HeadBucketCommand,
   CopyObjectCommand,
+  GetObjectCommand,
 } from '@aws-sdk/client-s3';
 
 export interface S3PutOptions {
@@ -36,10 +37,16 @@ export interface S3CopyOptions {
   contentType?: string;
 }
 
+export interface S3GetResult {
+  body: Buffer;
+  contentType: string;
+}
+
 export interface S3Storage {
   readonly kind: 'real' | 'fake';
   readonly bucket: string;
   putObject(opts: S3PutOptions): Promise<S3PutResult>;
+  getObject(key: string): Promise<S3GetResult | null>;
   copyObject(opts: S3CopyOptions): Promise<{ key: string; bucket: string }>;
 }
 
@@ -78,6 +85,27 @@ export class RealS3Storage implements S3Storage {
       }),
     );
     return { key: opts.key, bucket: this.bucket, bytes: body.byteLength };
+  }
+
+  async getObject(key: string): Promise<S3GetResult | null> {
+    try {
+      const response = await this.client.send(
+        new GetObjectCommand({ Bucket: this.bucket, Key: key }),
+      );
+      if (!response.Body) return null;
+      const body = await toBuffer(response.Body as Readable);
+      return {
+        body,
+        contentType: response.ContentType ?? 'application/octet-stream',
+      };
+    } catch (err: unknown) {
+      const code =
+        err && typeof err === 'object' && 'name' in err
+          ? String((err as { name?: string }).name)
+          : '';
+      if (code === 'NoSuchKey' || code === 'NotFound') return null;
+      throw err;
+    }
   }
 
   async copyObject(opts: S3CopyOptions): Promise<{ key: string; bucket: string }> {
@@ -120,6 +148,13 @@ export class FakeS3Storage implements S3Storage {
     this.calls.push({ op: 'PUT', key: opts.key });
     this.stored.set(opts.key, { body, contentType: opts.contentType });
     return { key: opts.key, bucket: this.bucket, bytes: body.byteLength };
+  }
+
+  async getObject(key: string): Promise<S3GetResult | null> {
+    this.calls.push({ op: 'GET', key });
+    const entry = this.stored.get(key);
+    if (!entry) return null;
+    return { body: entry.body, contentType: entry.contentType };
   }
 
   async copyObject(opts: S3CopyOptions): Promise<{ key: string; bucket: string }> {
