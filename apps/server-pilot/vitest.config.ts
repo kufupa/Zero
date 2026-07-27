@@ -19,6 +19,7 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['tests/**/*.test.ts'],
+    setupFiles: ['./tests/setup/refuse-pilot-rds.ts'],
   },
   resolve: {
     alias,

@@ -3,6 +3,10 @@
  * used in production and runs `cb` inside a transaction that is rolled back
  * at the end, so tests never pollute the pilot seed.
  *
+ * HARD REFUSE: if DATABASE_URL hostname contains `nava-zero-mail-pilot`
+ * and `VITEST_ALLOW_PILOT_RDS` is not `1`, this module throws at load /
+ * before connect. See tests/helpers/pilot-rds-guard.ts.
+ *
  * Requires `DATABASE_URL` in env AND that the host is reachable. If unset,
  * loads `apps/server-pilot/.env` silently (no secret logging). If the host
  * is not reachable (e.g. running tests on a laptop outside the VPC), tests
@@ -20,6 +24,7 @@ import postgres from 'postgres';
 import * as schema from '../../src/db/schema/index.js';
 import type { DB } from '../../src/db/client.js';
 import { getPostgresSslOptions } from '../../src/db/ssl-config.js';
+import { assertNotPilotProdDatabase } from './pilot-rds-guard.js';
 
 function loadTestEnvFromDotenv(): void {
   if (process.env.DATABASE_URL) return;
@@ -45,6 +50,7 @@ function loadTestEnvFromDotenv(): void {
 }
 
 loadTestEnvFromDotenv();
+assertNotPilotProdDatabase(process.env.DATABASE_URL);
 
 export const TEST_DB_AVAILABLE = !!process.env.DATABASE_URL;
 
@@ -52,6 +58,7 @@ let probePromise: Promise<boolean> | undefined;
 
 async function probeDb(): Promise<boolean> {
   if (!process.env.DATABASE_URL) return false;
+  assertNotPilotProdDatabase(process.env.DATABASE_URL);
   const conn = postgres(process.env.DATABASE_URL, {
     max: 1,
     idle_timeout: 5,
@@ -80,6 +87,7 @@ export async function withTestDb<T>(cb: (db: DB) => Promise<T>): Promise<T> {
   if (!process.env.DATABASE_URL) {
     throw new Error('DATABASE_URL required for withTestDb');
   }
+  assertNotPilotProdDatabase(process.env.DATABASE_URL);
   const conn = postgres(process.env.DATABASE_URL, {
     max: 1,
     idle_timeout: 20,
