@@ -42,6 +42,7 @@ export interface MailEnv {
   AI_ENABLED: boolean;
   AI_WRITE_GATE_ENABLED: boolean;
   AI_DRAFTS_ENABLED: boolean;
+  INGEST_REQUIRE_OWNER_HEADER: boolean;
   AI_STALE_RUN_TIMEOUT_MS: number;
   AI_MODEL_ID?: string;
   BEDROCK_REGION?: string;
@@ -143,6 +144,7 @@ export function parseEnv(input: EnvInput): MailEnv {
     AI_ENABLED: false,
     AI_WRITE_GATE_ENABLED: false,
     AI_DRAFTS_ENABLED: false,
+    INGEST_REQUIRE_OWNER_HEADER: true,
     AI_STALE_RUN_TIMEOUT_MS: 15 * 60_000,
   };
 
@@ -182,6 +184,9 @@ export function parseEnv(input: EnvInput): MailEnv {
   env.AI_DRAFTS_ENABLED = input.AI_DRAFTS_ENABLED
     ? toBool('AI_DRAFTS_ENABLED', input.AI_DRAFTS_ENABLED)
     : false;
+  env.INGEST_REQUIRE_OWNER_HEADER = input.INGEST_REQUIRE_OWNER_HEADER
+    ? toBool('INGEST_REQUIRE_OWNER_HEADER', input.INGEST_REQUIRE_OWNER_HEADER)
+    : true;
   env.AI_STALE_RUN_TIMEOUT_MS = input.AI_STALE_RUN_TIMEOUT_MS
     ? toInt('AI_STALE_RUN_TIMEOUT_MS', input.AI_STALE_RUN_TIMEOUT_MS)
     : 15 * 60_000;
@@ -197,4 +202,12 @@ export function parseEnv(input: EnvInput): MailEnv {
   }
 
   return env;
+}
+
+/** Runtime check for ingest routing strictness (default strict). */
+export function ingestRequireOwnerHeader(
+  input: EnvInput = process.env as EnvInput,
+): boolean {
+  if (!input.INGEST_REQUIRE_OWNER_HEADER) return true;
+  return toBool('INGEST_REQUIRE_OWNER_HEADER', input.INGEST_REQUIRE_OWNER_HEADER);
 }

@@ -128,6 +128,25 @@ describe('env', () => {
     );
   });
 
+  it('defaults INGEST_REQUIRE_OWNER_HEADER to true', () => {
+    expect(parseEnv(baseEnv()).INGEST_REQUIRE_OWNER_HEADER).toBe(true);
+  });
+
+  it('parses INGEST_REQUIRE_OWNER_HEADER when relaxed', () => {
+    expect(
+      parseEnv({ ...baseEnv(), INGEST_REQUIRE_OWNER_HEADER: 'false' }),
+    ).toMatchObject({ INGEST_REQUIRE_OWNER_HEADER: false });
+    expect(
+      parseEnv({ ...baseEnv(), INGEST_REQUIRE_OWNER_HEADER: '0' }),
+    ).toMatchObject({ INGEST_REQUIRE_OWNER_HEADER: false });
+  });
+
+  it('rejects invalid INGEST_REQUIRE_OWNER_HEADER values', () => {
+    expect(() =>
+      parseEnv({ ...baseEnv(), INGEST_REQUIRE_OWNER_HEADER: 'maybe' }),
+    ).toThrow(/INGEST_REQUIRE_OWNER_HEADER/);
+  });
+
   it('disables AI by default when AI_ENABLED is absent', () => {
     const env = parseEnv({
       NODE_ENV: 'production',

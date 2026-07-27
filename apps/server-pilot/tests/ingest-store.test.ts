@@ -6,6 +6,7 @@ import {
   attachment,
   mailThread,
   aiWorkflowRun,
+  mailboxTransport,
 } from '../src/db/schema/mail';
 import { parseRawMessage, generateMessageId } from '../src/mail/ingest/parse-message';
 import { IngestTooLargeError } from '../src/mail/ingest/limits';
@@ -20,6 +21,7 @@ import {
   probeTestDb,
   withSeededTestDb,
 } from './helpers/test-db';
+import type { DB } from '../src/db/client';
 import { readFixture } from './helpers/fixtures';
 
 const reachable = await probeTestDb();
@@ -29,6 +31,34 @@ function withFakeS3(): FakeS3Storage {
   resetS3Storage();
   setS3Storage(fake);
   return fake;
+}
+
+function withIngestOwnerHeaderEnv(
+  value: string | undefined,
+  run: () => Promise<void>,
+): Promise<void> {
+  const prev = process.env.INGEST_REQUIRE_OWNER_HEADER;
+  if (value === undefined) delete process.env.INGEST_REQUIRE_OWNER_HEADER;
+  else process.env.INGEST_REQUIRE_OWNER_HEADER = value;
+  return run().finally(() => {
+    if (prev === undefined) delete process.env.INGEST_REQUIRE_OWNER_HEADER;
+    else process.env.INGEST_REQUIRE_OWNER_HEADER = prev;
+  });
+}
+
+async function seedCenturionAliases(db: DB): Promise<void> {
+  await db
+    .update(mailboxTransport)
+    .set({
+      sendFromConfig: {
+        aliases: [
+          'centurion@legacyhotels.co.za',
+          'centurion@legacyhotels.com',
+          'centurion@legacyhotel.com',
+        ],
+      },
+    })
+    .where(eq(mailboxTransport.id, 'transport-centurion'));
 }
 
 /** Missing X-Zero-Mailbox, To not a known transport — quarantine path. */
@@ -302,6 +332,230 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         expect(result.kind).toBe('quarantined');
         if (result.kind !== 'quarantined') return;
         expect(result.reason).toBe('missing_owner_header');
+      },
+      30000,
+    );
+
+    it(
+      'AE1: relaxed toggle routes unstamped To Centurion alias to Centurion transport',
+      async () => {
+        const storage = withFakeS3();
+        const raw = Buffer.from(
+          [
+            'From: guest@example.com',
+            'To: centurion@legacyhotels.co.za',
+            'Subject: unstamped centurion alias',
+            'MIME-Version: 1.0',
+            'Content-Type: text/plain; charset=utf-8',
+            '',
+            'BCC copy without stamp.',
+          ].join('\r\n'),
+          'utf-8',
+        );
+
+        await withIngestOwnerHeaderEnv('false', async () => {
+          const { result, stored } = await withSeededTestDb(async (db) => {
+            await seedCenturionAliases(db);
+            const messageId = generateMessageId();
+            const parsed = await parseRawMessage(raw, { messageId, storage });
+            expect(parsed.ownerHeaderValue).toBeNull();
+            const r = await persistInboundMessage(
+              parsed,
+              raw,
+              {
+                ingestMailboxId: 'ingest-nava-legacy',
+                pop3Uidl: 'uidl-ae1-centurion-alias',
+                messageId,
+              },
+              { db, storage },
+            );
+            let row: typeof message.$inferSelect | undefined;
+            if (r.kind === 'stored') {
+              const rows = await db
+                .select()
+                .from(message)
+                .where(eq(message.id, r.messageId));
+              row = rows[0];
+            }
+            return { result: r, stored: row };
+          });
+
+          expect(result.kind).toBe('stored');
+          if (result.kind !== 'stored') return;
+          expect(result.transportId).toBe('transport-centurion');
+          expect(stored?.direction).toBe('inbound');
+        });
+      },
+      30000,
+    );
+
+    it(
+      'AE2: relaxed toggle keeps direct-To navaai on Nava transport',
+      async () => {
+        const storage = withFakeS3();
+        const raw = readFixture('missing-owner.eml');
+
+        await withIngestOwnerHeaderEnv('false', async () => {
+          const { result } = await withSeededTestDb(async (db) => {
+            await seedCenturionAliases(db);
+            const messageId = generateMessageId();
+            const parsed = await parseRawMessage(raw, { messageId, storage });
+            return persistInboundMessage(
+              parsed,
+              raw,
+              {
+                ingestMailboxId: 'ingest-nava-legacy',
+                pop3Uidl: 'uidl-ae2-nava-direct',
+                messageId,
+              },
+              { db, storage },
+            );
+          });
+
+          expect(result.kind).toBe('stored');
+          if (result.kind !== 'stored') return;
+          expect(result.transportId).toBe('transport-nava');
+        });
+      },
+      30000,
+    );
+
+    it(
+      'AE3: relaxed toggle treats Centurion From to guest as outbound without triage',
+      async () => {
+        const storage = withFakeS3();
+        const raw = Buffer.from(
+          [
+            'From: centurion@legacyhotels.co.za',
+            'To: guest@example.com',
+            'Subject: centurion outbound copy',
+            'MIME-Version: 1.0',
+            'Content-Type: text/plain; charset=utf-8',
+            '',
+            'Hotel sent copy on sink.',
+          ].join('\r\n'),
+          'utf-8',
+        );
+
+        await withIngestOwnerHeaderEnv('false', async () => {
+          const { result, stored, triageRuns } = await withSeededTestDb(async (db) => {
+            await seedCenturionAliases(db);
+            const messageId = generateMessageId();
+            const parsed = await parseRawMessage(raw, { messageId, storage });
+            const r = await persistInboundMessage(
+              parsed,
+              raw,
+              {
+                ingestMailboxId: 'ingest-nava-legacy',
+                pop3Uidl: 'uidl-ae3-centurion-from',
+                messageId,
+              },
+              { db, storage },
+            );
+            if (r.kind !== 'stored') {
+              return { result: r, stored: undefined, triageRuns: [] };
+            }
+            const messages = await db
+              .select()
+              .from(message)
+              .where(eq(message.id, r.messageId));
+            const runs = await db
+              .select()
+              .from(aiWorkflowRun)
+              .where(eq(aiWorkflowRun.triggerMessageId, r.messageId));
+            return { result: r, stored: messages[0], triageRuns: runs };
+          });
+
+          expect(result.kind).toBe('stored');
+          if (result.kind !== 'stored') return;
+          expect(result.transportId).toBe('transport-centurion');
+          expect(stored?.direction).toBe('outbound');
+          expect(triageRuns.length).toBe(0);
+        });
+      },
+      30000,
+    );
+
+    it(
+      'AE4: strict toggle quarantines unstamped Centurion-equated mail without direct-To',
+      async () => {
+        const storage = withFakeS3();
+        const raw = Buffer.from(
+          [
+            'From: centurion@legacyhotels.co.za',
+            'To: guest@example.com',
+            'Subject: strict quarantine',
+            'MIME-Version: 1.0',
+            'Content-Type: text/plain; charset=utf-8',
+            '',
+            'Should quarantine when toggle default strict.',
+          ].join('\r\n'),
+          'utf-8',
+        );
+
+        await withIngestOwnerHeaderEnv(undefined, async () => {
+          const result = await withSeededTestDb(async (db) => {
+            await seedCenturionAliases(db);
+            const messageId = generateMessageId();
+            const parsed = await parseRawMessage(raw, { messageId, storage });
+            return persistInboundMessage(
+              parsed,
+              raw,
+              {
+                ingestMailboxId: 'ingest-nava-legacy',
+                pop3Uidl: 'uidl-ae4-strict-quarantine',
+                messageId,
+              },
+              { db, storage },
+            );
+          });
+
+          expect(result.kind).toBe('quarantined');
+          if (result.kind !== 'quarantined') return;
+          expect(result.reason).toBe('missing_owner_header');
+        });
+      },
+      30000,
+    );
+
+    it(
+      'routes stamped mail to Centurion when header matches alias value',
+      async () => {
+        const storage = withFakeS3();
+        const raw = Buffer.from(
+          [
+            'From: guest@example.com',
+            'To: guest@example.com',
+            'X-Zero-Mailbox: centurion@legacyhotels.co.za',
+            'Subject: stamped alias header',
+            'MIME-Version: 1.0',
+            'Content-Type: text/plain; charset=utf-8',
+            '',
+            'Stamp uses alias not primary owner header.',
+          ].join('\r\n'),
+          'utf-8',
+        );
+
+        const { result } = await withSeededTestDb(async (db) => {
+          await seedCenturionAliases(db);
+          const messageId = generateMessageId();
+          const parsed = await parseRawMessage(raw, { messageId, storage });
+          expect(parsed.ownerHeaderValue).toBe('centurion@legacyhotels.co.za');
+          return persistInboundMessage(
+            parsed,
+            raw,
+            {
+              ingestMailboxId: 'ingest-nava-legacy',
+              pop3Uidl: 'uidl-stamped-alias',
+              messageId,
+            },
+            { db, storage },
+          );
+        });
+
+        expect(result.kind).toBe('stored');
+        if (result.kind !== 'stored') return;
+        expect(result.transportId).toBe('transport-centurion');
       },
       30000,
     );

@@ -39,6 +39,11 @@ export const INGEST_MAILBOX_ID = 'ingest-nava-legacy';
 export const TRANSPORT_ID = 'transport-centurion';
 export const TRANSPORT_EMAIL = 'centurion@legacyhotel.com';
 export const TRANSPORT_OWNER_HEADER = 'centurion@legacyhotel.com';
+export const TRANSPORT_ALIASES = [
+  'centurion@legacyhotels.co.za',
+  'centurion@legacyhotels.com',
+  'centurion@legacyhotel.com',
+] as const;
 
 export type AccessRowSpec = {
   userId: string;
@@ -144,6 +149,7 @@ export async function seedAll(db: DB, opts: SeedOptions = {}): Promise<SeedResul
       mailboxType: 'personal',
       displayName: 'Centurion Transport',
       isActive: true,
+      sendFromConfig: { aliases: [...TRANSPORT_ALIASES] },
     })
     .onConflictDoUpdate({
       target: mailboxTransport.ownerHeaderValue,
@@ -152,6 +158,7 @@ export async function seedAll(db: DB, opts: SeedOptions = {}): Promise<SeedResul
         mailboxType: 'personal',
         displayName: 'Centurion Transport',
         isActive: true,
+        sendFromConfig: { aliases: [...TRANSPORT_ALIASES] },
         updatedAt: new Date(),
       },
     });

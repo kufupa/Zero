@@ -7,9 +7,10 @@
  *      message scoped to that transport (create/find a thread, insert
  *      `message` + `attachment` rows).
  *   3. If the header is missing, try direct `To` match against active transport
- *      emails; on match store inbox-first (no SPAM/`spamAt`) and enqueue triage.
- *      Otherwise quarantine with reason `missing_owner_header`. If the header is
- *      present but no matching transport -> quarantine with reason
+ *      emails; when `INGEST_REQUIRE_OWNER_HEADER=false`, also match Centurion
+ *      transport email/aliases on To/Cc/Bcc/From. On miss quarantine with
+ *      reason `missing_owner_header`. If the header is present but no matching
+ *      transport (owner header or alias) -> quarantine with reason
  *      `unknown_transport`.
  *   4. Degraded containment: when `AI_WRITE_GATE_ENABLED` is not `'true'`,
  *      apply soft label `soft-quarantine` for From domains outside the
@@ -56,6 +57,15 @@ import {
 } from '../../ai/run-ledger.js';
 import { refreshThreadSearchVector } from '../search/search-vector.js';
 import { getSenderPreference } from '../sender-preference.js';
+import { ingestRequireOwnerHeader } from '../../env.js';
+
+const CENTURION_TRANSPORT_ID = 'transport-centurion';
+
+type RoutedTransport = {
+  id: string;
+  email: string;
+  sendFromConfig: unknown;
+};
 
 export type QuarantineReason =
   | 'missing_owner_header'
@@ -173,10 +183,13 @@ export async function persistInboundMessage(
   }
 
   // Routing ------------------------------------------------------------
-  let transport: { id: string; email: string } | null = null;
+  let transport: RoutedTransport | null = null;
 
   if (!parsed.ownerHeaderValue) {
     transport = await findDirectToTransport(db, parsed.toAddresses);
+    if (!transport && !ingestRequireOwnerHeader()) {
+      transport = await findCenturionEquatedTransport(db, parsed);
+    }
     if (!transport) {
       return quarantineUnrouted({
         db,
@@ -189,21 +202,8 @@ export async function persistInboundMessage(
     // Inbox-first: direct-To without X-Zero-Mailbox still stores + enqueues
     // triage; AI (when write gate on) may set spam later.
   } else {
-    const transportRows = await db
-      .select({
-        id: mailboxTransport.id,
-        email: mailboxTransport.email,
-      })
-      .from(mailboxTransport)
-      .where(
-        and(
-          eq(mailboxTransport.ownerHeaderValue, parsed.ownerHeaderValue),
-          eq(mailboxTransport.isActive, true),
-        ),
-      )
-      .limit(1);
-
-    if (transportRows.length === 0) {
+    transport = await findTransportByStamp(db, parsed.ownerHeaderValue);
+    if (!transport) {
       return quarantineUnrouted({
         db,
         parsed,
@@ -212,8 +212,6 @@ export async function persistInboundMessage(
         reason: 'unknown_transport',
       });
     }
-
-    transport = transportRows[0]!;
   }
 
   const messageId = meta.messageId;
@@ -228,20 +226,22 @@ export async function persistInboundMessage(
 
     const transportEmail = (transport.email ?? '').trim().toLowerCase();
     const fromAddress = (parsed.fromAddress ?? '').trim().toLowerCase();
-    const fromEmail = fromAddress.match(/<([^>]+)>/)?.[1]?.toLowerCase() ?? fromAddress;
+    const fromEmail = normalizeEmailAddress(fromAddress);
     const recipientEmails = [
       ...parsed.toAddresses,
       ...parsed.ccAddresses,
       ...parsed.bccAddresses,
-    ]
-      .map((a) => a.trim().toLowerCase())
-      .map((a) => a.match(/<([^>]+)>/)?.[1]?.toLowerCase() ?? a);
+    ].map(normalizeEmailAddress);
+    const transportIdentities = transportIdentitySet(
+      transport.email,
+      transport.sendFromConfig,
+    );
     const isSelfIngestLoopback =
-      Boolean(transportEmail) &&
-      recipientEmails.some((a) => a === transportEmail);
+      transportIdentities.size > 0 &&
+      recipientEmails.some((a) => transportIdentities.has(a));
     const isHotelSent =
-      Boolean(transportEmail) &&
-      fromEmail === transportEmail &&
+      Boolean(fromEmail) &&
+      transportIdentities.has(fromEmail) &&
       !isSelfIngestLoopback;
 
     await tx.insert(message).values({
@@ -463,19 +463,122 @@ async function findExistingQuarantine(
 async function findDirectToTransport(
   db: DB,
   toAddresses: string[],
-): Promise<{ id: string; email: string } | null> {
+): Promise<RoutedTransport | null> {
   if (toAddresses.length === 0) return null;
-  const directTo = new Set(toAddresses.map((email) => email.toLowerCase()));
+  const directTo = new Set(toAddresses.map(normalizeEmailAddress));
   const transports = await db
-    .select({ id: mailboxTransport.id, email: mailboxTransport.email })
+    .select({
+      id: mailboxTransport.id,
+      email: mailboxTransport.email,
+      sendFromConfig: mailboxTransport.sendFromConfig,
+    })
     .from(mailboxTransport)
     .where(eq(mailboxTransport.isActive, true));
 
   return (
     transports.find((transport) =>
-      directTo.has(transport.email.toLowerCase()),
+      directTo.has(normalizeEmailAddress(transport.email)),
     ) ?? null
   );
+}
+
+function normalizeEmailAddress(raw: string): string {
+  const trimmed = raw.trim().toLowerCase();
+  return trimmed.match(/<([^>]+)>/)?.[1]?.toLowerCase() ?? trimmed;
+}
+
+function extractTransportAliases(sendFromConfig: unknown): string[] {
+  if (!sendFromConfig || typeof sendFromConfig !== 'object') return [];
+  const aliases = (sendFromConfig as { aliases?: unknown }).aliases;
+  if (!Array.isArray(aliases)) return [];
+  return aliases
+    .filter((alias): alias is string => typeof alias === 'string')
+    .map(normalizeEmailAddress)
+    .filter(Boolean);
+}
+
+function transportIdentitySet(email: string, sendFromConfig: unknown): Set<string> {
+  const identities = new Set<string>();
+  const normalizedEmail = normalizeEmailAddress(email);
+  if (normalizedEmail) identities.add(normalizedEmail);
+  for (const alias of extractTransportAliases(sendFromConfig)) {
+    identities.add(alias);
+  }
+  return identities;
+}
+
+function equatedAddresses(parsed: ParsedInboundMessage): string[] {
+  return [
+    parsed.fromAddress,
+    ...parsed.toAddresses,
+    ...parsed.ccAddresses,
+    ...parsed.bccAddresses,
+  ]
+    .filter((address): address is string => Boolean(address))
+    .map(normalizeEmailAddress)
+    .filter(Boolean);
+}
+
+async function findTransportByStamp(
+  db: DB,
+  ownerHeaderValue: string,
+): Promise<RoutedTransport | null> {
+  const normalizedHeader = normalizeEmailAddress(ownerHeaderValue);
+  const transports = await db
+    .select({
+      id: mailboxTransport.id,
+      email: mailboxTransport.email,
+      ownerHeaderValue: mailboxTransport.ownerHeaderValue,
+      sendFromConfig: mailboxTransport.sendFromConfig,
+    })
+    .from(mailboxTransport)
+    .where(eq(mailboxTransport.isActive, true));
+
+  const byOwnerHeader = transports.find(
+    (transport) =>
+      normalizeEmailAddress(transport.ownerHeaderValue) === normalizedHeader,
+  );
+  if (byOwnerHeader) return byOwnerHeader;
+
+  return (
+    transports.find((transport) =>
+      transportIdentitySet(transport.email, transport.sendFromConfig).has(
+        normalizedHeader,
+      ),
+    ) ?? null
+  );
+}
+
+async function findCenturionEquatedTransport(
+  db: DB,
+  parsed: ParsedInboundMessage,
+): Promise<RoutedTransport | null> {
+  const centurionRows = await db
+    .select({
+      id: mailboxTransport.id,
+      email: mailboxTransport.email,
+      sendFromConfig: mailboxTransport.sendFromConfig,
+    })
+    .from(mailboxTransport)
+    .where(
+      and(
+        eq(mailboxTransport.id, CENTURION_TRANSPORT_ID),
+        eq(mailboxTransport.isActive, true),
+      ),
+    )
+    .limit(1);
+
+  const centurion = centurionRows[0];
+  if (!centurion) return null;
+
+  const identities = transportIdentitySet(
+    centurion.email,
+    centurion.sendFromConfig,
+  );
+  if (equatedAddresses(parsed).some((address) => identities.has(address))) {
+    return centurion;
+  }
+  return null;
 }
 
 async function ensureSoftQuarantineLabel(
