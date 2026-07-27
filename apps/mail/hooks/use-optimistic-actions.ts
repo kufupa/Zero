@@ -16,6 +16,10 @@ import { toast } from 'sonner';
 import { DEMO_MAIL_LIST_DRAFTS_QUERY_PREFIX } from '@/lib/demo/demo-mail-query-keys';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import {
+  showSpamUndoToast,
+  type SenderPreference,
+} from '@/lib/mail/spam-undo-toast';
+import {
   demoBulkDeleteThreads,
   demoMarkAsRead,
   demoMarkAsUnread,
@@ -298,14 +302,87 @@ export function useOptimisticActions() {
     [queryClient, addOptimisticAction, removeOptimisticAction, toggleStar, setMail],
   );
 
+  async function executeSpamMoveWithUndoToast(
+    threadIds: string[],
+    currentFolder: string,
+    optimisticId: string,
+  ) {
+    try {
+      let preferences: SenderPreference[] = [];
+
+      if (frontendOnlyDemo) {
+        await demoMoveThreadsTo({ threadIds, currentFolder, destination: 'spam' });
+      } else {
+        const result = await moveThreadsTo({
+          threadIds,
+          currentFolder,
+          destination: 'spam',
+        });
+        preferences = result?.preferences ?? [];
+      }
+
+      posthog.capture(actionEventNames[ActionType.MOVE]({ destination: 'spam' }));
+
+      if (mail.bulkSelected.length > 0) {
+        setMail({ ...mail, bulkSelected: [] });
+      }
+
+      threadIds.forEach((id) => {
+        setBackgroundQueue({ type: 'delete', threadId: `thread:${id}` });
+      });
+
+      await refreshData();
+      removeOptimisticAction(optimisticId);
+
+      showSpamUndoToast({
+        threadIds,
+        preferences,
+        onUndo: async () => {
+          const undoOptimisticId = addOptimisticAction({
+            type: 'MOVE',
+            threadIds,
+            destination: 'inbox',
+          });
+
+          try {
+            if (frontendOnlyDemo) {
+              await demoMoveThreadsTo({
+                threadIds,
+                currentFolder: 'spam',
+                destination: 'inbox',
+              });
+            } else {
+              await moveThreadsTo({
+                threadIds,
+                currentFolder: 'spam',
+                destination: 'inbox',
+              });
+            }
+
+            await refreshData();
+            removeOptimisticAction(undoOptimisticId);
+          } catch (error) {
+            removeOptimisticAction(undoOptimisticId);
+            throw error;
+          }
+        },
+      });
+    } catch (error) {
+      console.error('Action failed:', error);
+      removeOptimisticAction(optimisticId);
+      threadIds.forEach((id) => {
+        setBackgroundQueue({ type: 'delete', threadId: `thread:${id}` });
+      });
+      toast.error('Action failed');
+    }
+  }
+
   function optimisticMoveThreadsTo(
     threadIds: string[],
     currentFolder: string,
     destination: ThreadDestination,
   ) {
     if (!threadIds.length || !destination) return;
-
-    // setFocusedIndex(null);
 
     const optimisticId = addOptimisticAction({
       type: 'MOVE',
@@ -321,14 +398,18 @@ export function useOptimisticActions() {
       setThreadId(null);
       setActiveReplyId(null);
     }
+
+    if (destination === 'spam') {
+      void executeSpamMoveWithUndoToast(threadIds, currentFolder, optimisticId);
+      return;
+    }
+
     const successMessage =
       destination === 'inbox'
         ? m['common.actions.movedToInbox']()
-        : destination === 'spam'
-          ? m['common.actions.movedToSpam']()
-          : destination === 'bin'
-            ? m['common.actions.movedToBin']()
-            : m['common.actions.archived']();
+        : destination === 'bin'
+          ? m['common.actions.movedToBin']()
+          : m['common.actions.archived']();
 
     createPendingAction({
       type: 'MOVE',
