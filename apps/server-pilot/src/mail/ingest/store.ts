@@ -133,6 +133,11 @@ export interface PersistOptions {
    * atomically when the message insert commits.
    */
   promoteQuarantineId?: string;
+  /**
+   * Rehydrate path: restore rows without enqueueing inbound_triage (avoids
+   * flooding Bedrock when bulk-recovering historical S3 MIME).
+   */
+  skipAiEnqueue?: boolean;
 }
 
 /**
@@ -319,7 +324,7 @@ export async function persistInboundMessage(
       }
     }
 
-    if (!isHotelSent) {
+    if (!isHotelSent && !opts.skipAiEnqueue) {
       await enqueueAiRun(
         {
           transportId: transport.id,

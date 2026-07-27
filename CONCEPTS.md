@@ -12,6 +12,14 @@ The production-shaped per-mailbox email backend running on EC2 (`apps/server-pil
 
 A logical mail account boundary (e.g. Centurion front-desk inboxes). Staff users gain access through mailbox access rows; the active transport ID scopes queries and cache keys in the SPA.
 
+### Mailbox access
+
+RDS `mailbox_access` row granting a user a role (`owner` / `admin` / `member`) on one transport, plus `is_default` for which inbox loads after login. `connections.list` returns only granted transports; missing row → FORBIDDEN on that mailbox.
+
+### Mailbox switcher
+
+SPA chrome that calls `connections.setDefault` to flip `is_default` and rescope the mail cache to another granted transport. Shown only when the user has 2+ connections; hidden for single-inbox personas (e.g. Centurion-only login).
+
 ### Ingest mailbox
 
 The single POP3 sink account (`navaai@legacyhotels.co.za` on the hotel Zimbra pilot) that the EC2 worker drains. Hotel BCC / header-routing waves may still stamp `X-Zero-Mailbox` so messages land in the correct logical mailbox transport. Older docs may say `nava@legacyhotel.com` — that identity was replaced for the real-mail cutover.
@@ -26,6 +34,9 @@ When `INGEST_REQUIRE_OWNER_HEADER=false`, sink mail without `X-Zero-Mailbox` sti
 
 Ops one-shot (`promote-quarantine.ts`) that re-runs S3-stored quarantine MIME through `persistInboundMessage` (atomic quarantine delete) so backlog leaves quarantine into the correct transport and inbound triage enqueues normally.
 
+### Raw MIME rehydrate
+
+Ops one-shot that rebuilds wiped message rows from durable S3 `raw-mime/` objects (same ingest persist path). Skips keys already present as messages or quarantine; default skips AI triage enqueue so bulk restore does not flood the worker. Distinct from Quarantine promote (which drains quarantine rows) and from intentional pilot DB wipe + seed (which restores transports/auth, not historical mail bodies).
 
 ### MAIL_TRANSPORT_MODE
 
@@ -53,7 +64,9 @@ Opaque pagination token encoding `(latestMessageAt|id)` used by `mail.listThread
 
 ### Inbox folder (listThreads)
 
-Pilot inbox listing includes only non-trashed, non-archived threads with at least one **inbound** message and without the SPAM label. Outbound-only compose threads belong in **sent**, not inbox. Test fixtures must seed inbound messages when asserting inbox visibility.
+Pilot inbox listing includes only non-trashed, non-archived, non-spam threads (`spam_at` null) with at least one **inbound** message. Spam membership is the spam timestamp, not a user label named SPAM. Outbound-only compose threads belong in **sent**, not inbox. Test fixtures must seed inbound messages when asserting inbox visibility.
+
+*Avoid: treating a legacy SPAM user-label chip as folder truth; inbox eligibility is `spam_at IS NULL`.*
 
 ### Draft lifecycle status
 
@@ -199,6 +212,28 @@ On-demand EC2 verification (`bedrock-live-gate.sh`) that runs one real Converse 
 
 Opt-in EC2 proof (`ai-mail-pipeline-live-gate.sh`) composing Mailpit ingest, `ai-worker` Bedrock triage, durable categories, candidate draft persistence, and Playwright browser proof. Requires `BEDROCK_PIPELINE_LIVE_TEST=1`. `AI_WRITE_GATE_ENABLED` and `AI_DRAFTS_ENABLED` default false in production; the live gate sets them explicitly for full proof.
 
+### Spam placement (`spam_at`)
+
+Folder-first spam membership: a thread is in Spam when its spam timestamp is set and it is not trashed. Soft user labels named SPAM are not folder truth. Leaving spam (bin, archive, soft-delete, empty-spam) must clear the spam timestamp so list predicates never orphan the thread.
+
+*Avoid: keeping spam set while also trashing or archiving; dual state matches neither folder.*
+
+### Never-spam (auto-triage)
+
+Allowlist of domains/addresses that durable AI triage must not mark spam. Manual mark-spam and explicit sender block at ingest still win. Distinct from heuristic refine (short personal notes, agency mail, etc.), which demotes false-positive spam categories without a hard allowlist.
+
+### User spam lock
+
+Per-thread freeze after staff mark-spam or not-spam so later AI apply cannot flip spam membership on that thread. Paired with sender block/allow preference for future ingest.
+
+### Empty spam
+
+Bulk soft-trash of the current Spam folder that clears spam membership as it trashes, so threads appear in Bin and nowhere else as orphans.
+
+### Sender preference (block/allow)
+
+Per-transport preference on a normalized sender address: block stamps new mail into spam at ingest; allow (and never-spam) blocks auto-triage from writing spam. Mark-spam / not-spam upsert the preference for the latest inbound From on the thread.
+
 ## Hotel taxonomy UI
 
 ### Hotel category
@@ -232,3 +267,5 @@ Pilot practice of removing or replacing dead/fake affordances (unavailable AI su
 - **"Folders" on mailbox provider** used to mean the Labels tree; hotel AI categories now own the Folders section title — Labels must never re-use Folders.
 - **category color** can mean seed DB hex or Centurion pastel presentation — for managed slugs, presentation wins in UI chrome.
 - **"honesty"** had been used for both Honesty UI (hide fake chrome) and Compose-close honesty (draft leave dialog) — these are distinct.
+- **"spam"** can mean Zimbra/server folder routing, a legacy SPAM user label, or app `spam_at` folder membership — app folder truth is `spam_at` only.
+- **"never-spam"** is auto-triage only — not a ban on manual mark-spam or ingest block.
