@@ -71,8 +71,11 @@ append_env AI_DRAFTS_ENABLED "${AI_DRAFTS_ENABLED:-}"
 # Real-mail: durable triage writes on by default (ops can still override).
 if [[ "${MAIL_TRANSPORT_MODE:-fixture}" == "real" ]]; then
   append_env AI_WRITE_GATE_ENABLED "${AI_WRITE_GATE_ENABLED:-true}"
+  # Pilot: allow unstamped Centurion BCC copies until IT stamps X-Zero-Mailbox.
+  append_env INGEST_REQUIRE_OWNER_HEADER "${INGEST_REQUIRE_OWNER_HEADER:-false}"
 else
   append_env AI_WRITE_GATE_ENABLED "${AI_WRITE_GATE_ENABLED:-}"
+  append_env INGEST_REQUIRE_OWNER_HEADER "${INGEST_REQUIRE_OWNER_HEADER:-}"
 fi
 append_env SMTP_SECRET_ARN "${SMTP_SECRET_ARN:-}"
 append_env MAIL_TLS_REJECT_UNAUTHORIZED "${MAIL_TLS_REJECT_UNAUTHORIZED:-}"

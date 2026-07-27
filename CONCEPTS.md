@@ -18,6 +18,14 @@ The single POP3 sink account (`navaai@legacyhotels.co.za` on the hotel Zimbra pi
 
 *Avoid: treating Centurion as a second POP3 account; Centurion remains a mailbox transport only.*
 
+### Unstamped Centurion routing
+
+When `INGEST_REQUIRE_OWNER_HEADER=false`, sink mail without `X-Zero-Mailbox` still routes: direct-To an active transport email (e.g. `navaai@`) wins first; else To/Cc/Bcc/From matching the Centurion transport email or its `send_from_config.aliases` lands on Centurion. Unknown unstamped mail still quarantines. Stamp present → header/alias lookup unchanged. Pilot deferral until IT stamps; not a replacement for relay stamp/strip.
+
+### Quarantine promote
+
+Ops one-shot (`promote-quarantine.ts`) that re-runs S3-stored quarantine MIME through `persistInboundMessage` (atomic quarantine delete) so backlog leaves quarantine into the correct transport and inbound triage enqueues normally.
+
 
 ### MAIL_TRANSPORT_MODE
 
@@ -53,7 +61,7 @@ Pilot inbox listing includes only non-trashed, non-archived threads with at leas
 
 ### Refresh-safe draft persistence
 
-Draft compose behavior where a body-first draft is persisted server-side early (via `shouldPersistDraft`, keyed on meaningful change not on complete recipients/subject) and a late server refetch never overwrites unsaved local edits (via `chooseDraftEditorState` dirty-state tiebreaker). Prevents losing a user-typed reply on refresh/navigation.
+Draft compose behavior where a body-first draft is persisted server-side early (via `shouldPersistDraft`, keyed on meaningful change not on complete recipients/subject) and a late server refetch never overwrites unsaved local edits (via `chooseDraftEditorState` dirty-state tiebreaker). Covers what to save and how not to clobber on refresh/refetch; for when leave/navigation must flush first, see Compose leave flush.
 
 ### Stale draft (STALE_DRAFT)
 
@@ -62,6 +70,18 @@ A reply draft whose `replyToMessageId` predates a newer inbound message on the s
 ### Draft promotion (ensureEditableForReply)
 
 Atomic server mutation that returns an editable `active` draft for a reply: existing active wins, else the newest `candidate` for the same parent promotes in place and older sibling candidates become `discarded`. One transaction so double-click / two-tab editor opens are idempotent and cannot create duplicate active drafts.
+
+### One active draft per thread
+
+Invariant that a mailbox transport may have at most one `active` draft on a given thread. Creates that omit an existing draft id must update that row rather than insert a second active draft. Distinct from Draft promotion, which also collapses candidates into a single editable active.
+
+### Compose leave flush
+
+Named leave path that persists the mounted reply/compose editor before navigation clears compose URL state or switches the selected thread. Thread-switch leave flushes silently; explicit close may prompt instead. Complements Refresh-safe draft persistence (what to save / how not to clobber) with when to run that save relative to navigation.
+
+### Compose-close honesty
+
+Staff-facing close contract for reply compose: empty close is silent; dirty explicit close offers Keep editing / Save draft / Discard; dirty thread switch flushes without a lying "changes will be lost" Stay/Leave. Distinct from Honesty UI (removing fake chrome) — this is draft lifecycle truthfulness on leave.
 
 ## Deploy and ops
 
@@ -97,6 +117,14 @@ Ephemeral Playwright real-mail UI proof on EC2 (`playwright-real-mail-ui-gate.sh
 
 Operator-triggered one-shot ingest from the SPA debug menu: calls `forceSync` → `ingestOnce` under a mailbox lock and invalidates thread queries so new mail appears without a full page reload. Complements the default thread poll interval; does not replace always-on POP3 draining.
 
+### Open-thread poll
+
+Foreground React Query refresh of the mounted thread-detail fetch (`mail.get` via `useThread`), using the same interval policy as the thread list. List poll alone can bump a conversation to the top while an already-open pane stays on a stale message snapshot until navigation or hard refresh.
+
+### Recipient You-collapse
+
+Display rule that rewrites a single **To** address as the friendly label **You** only when that address is the active mailbox. Must not fire for outbound messages merely because the route folder is inbox rather than sent.
+
 ### Undo send window
 
 Seconds outbound mail sits in the undo/schedule queue before SMTP flush (`UNDO_SEND_SECONDS`). Product UX uses a human-scale window; automated U9 sets the window to zero so compose/reply assertions are not racing the queue, then restores the product value after the gate.
@@ -111,7 +139,11 @@ The systemd-managed hotel OpenVPN client on the pilot EC2 that stays connected a
 
 ### Split tunnel
 
-Routing posture where only the hotel LAN prefix goes over the VPN tunnel, while the instance default route stays on the AWS ENI. Required so SSM, STS, RDS, and S3 remain reachable while hotel mail/Infor are reachable.
+Routing posture where only the hotel LAN prefix goes over the VPN tunnel, while the instance default route stays on the AWS ENI. Required so SSM, STS, RDS, and S3 remain reachable while hotel mail/Infor are reachable. Name resolution stays on the AWS resolvers — VPN-pushed DNS is ignored — so hotel-internal hostnames that lack public A records need a local hosts override on the pilot.
+
+### Infor HMS
+
+Hotel property-management web application on the hotel LAN, opened in a browser over always-on OpenVPN. Staff and pilot automation use a hostname that must match the server TLS certificate; when that name is not in public DNS, the EC2 pilot maps it locally rather than adopting hotel DNS.
 
 ### HOST_ROUTE
 
@@ -166,3 +198,37 @@ On-demand EC2 verification (`bedrock-live-gate.sh`) that runs one real Converse 
 ### AI mail pipeline live gate
 
 Opt-in EC2 proof (`ai-mail-pipeline-live-gate.sh`) composing Mailpit ingest, `ai-worker` Bedrock triage, durable categories, candidate draft persistence, and Playwright browser proof. Requires `BEDROCK_PIPELINE_LIVE_TEST=1`. `AI_WRITE_GATE_ENABLED` and `AI_DRAFTS_ENABLED` default false in production; the live gate sets them explicitly for full proof.
+
+## Hotel taxonomy UI
+
+### Hotel category
+
+An AI-managed mailbox classification (primary: internal, individual, group, travel-agents; overlay: urgent) stored as durable memberships on threads. Distinct from system folders (inbox/sent/spam/trash via thread flags) and from user Labels (soft tags / quarantine). Staff see them in the sidebar as **Folders**.
+
+### categoryIds filter
+
+List/query wire that filters threads by hotel category UUIDs — never by Label ids. Presentation titles and pastels are render-time only; selection and URL state stay on UUIDs.
+
+### Hotel folder presentation
+
+Frontend overlay that maps managed category slugs to demo-grade titles, subtitles, Centurion pastel nav/pill themes, and urgent stripe. Managed-slug display ignores seed DB hex; unknown/custom categories may still use stored color.
+
+### Centurion pastel theme
+
+The pastel background/text pair used for primary hotel category chrome (nav rows and pills). Preferred over solid seed hex for managed slugs so live pilot matches the FE demo scanability.
+
+### Labels demotion
+
+Sidebar posture where the Labels tree stays available but secondary: always titled Labels (never Folders on mailbox), collapsed by default behind a real collapsible control, so hotel Folders remain the hero taxonomy.
+
+### Honesty UI
+
+Pilot practice of removing or replacing dead/fake affordances (unavailable AI surfaces, demo-only chrome, stub dialogs) with a real staff workflow — or hiding them — rather than leaving an interaction that only announces the feature is off.
+
+*Avoid: keeping a disabled modal as the primary click target; flipping the whole SPA into frontend-only demo mode to recover demo chrome; conflating this with Compose-close honesty (draft Save/Discard/Keep editing).*
+
+## Flagged ambiguities
+
+- **"Folders" on mailbox provider** used to mean the Labels tree; hotel AI categories now own the Folders section title — Labels must never re-use Folders.
+- **category color** can mean seed DB hex or Centurion pastel presentation — for managed slugs, presentation wins in UI chrome.
+- **"honesty"** had been used for both Honesty UI (hide fake chrome) and Compose-close honesty (draft leave dialog) — these are distinct.
