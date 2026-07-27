@@ -124,7 +124,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.send', () => {
         await seedCenturionThread(db);
         const caller = await callerFor('user-navaai', { db });
         const result = await caller.mail.send(validCenturionReply);
-        expect(result.fromEmail).toBe('centurion@legacyhotel.com');
+        expect(result.fromEmail).toBe('centurion@legacyhotels.co.za');
         expect(result.messageId).toBeTruthy();
         expect(result.sent).toBe(true);
 
@@ -139,16 +139,16 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.send', () => {
           );
         expect(rows).toHaveLength(1);
         expect(rows[0]!.direction).toBe('outbound');
-        expect(rows[0]!.fromAddress).toBe('centurion@legacyhotel.com');
+        expect(rows[0]!.fromAddress).toBe('centurion@legacyhotels.co.za');
         expect(rows[0]!.messageIdHeader).toBeTruthy();
         expect(rows[0]!.inReplyTo).toBe('inbound-msg-id-1');
         expect(rows[0]!.references).toContain('inbound-msg-id-1');
 
         expect(fake.sent).toHaveLength(1);
-        expect(fake.sent[0]!.from).toBe('centurion@legacyhotel.com');
+        expect(fake.sent[0]!.from).toBe('centurion@legacyhotels.co.za');
         expect(fake.sent[0]!.inReplyTo).toBe('inbound-msg-id-1');
         expect(fake.sent[0]!.extraHeaders).toEqual({
-          'X-Zero-Mailbox': 'centurion@legacyhotel.com',
+          'X-Zero-Mailbox': 'centurion@legacyhotels.co.za',
         });
       } finally {
         __setSmtpTransportForTests(null);

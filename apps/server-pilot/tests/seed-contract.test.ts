@@ -18,6 +18,8 @@ import {
   NAVA_USER_ID,
   INGEST_EMAIL,
   TRANSPORT_EMAIL,
+  TRANSPORT_OWNER_HEADER,
+  TRANSPORT_ALIASES,
 } from '../src/db/seed';
 import {
   TEST_DB_AVAILABLE,
@@ -38,8 +40,13 @@ describe('seed identity constants', () => {
     ]);
   });
 
-  it('keeps Centurion transport on legacyhotel.com', () => {
-    expect(TRANSPORT_EMAIL).toBe('centurion@legacyhotel.com');
+  it('uses centurion@legacyhotels.co.za as live Centurion primary', () => {
+    expect(TRANSPORT_EMAIL).toBe('centurion@legacyhotels.co.za');
+    expect(TRANSPORT_OWNER_HEADER).toBe('centurion@legacyhotels.co.za');
+    expect(TRANSPORT_ALIASES).toEqual([
+      'centurion@legacyhotels.com',
+      'centurion@legacyhotel.com',
+    ]);
   });
 });
 
@@ -65,20 +72,54 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     );
 
     it(
-      'seeds transport-centurion with personal mailboxType and centurion owner header',
+      'seeds transport-centurion with live primary email, owner header, and aliases',
       async () => {
         const transport = await withSeededTestDb(async (db) => {
           const rows = await db
             .select()
             .from(mailboxTransport)
-            .where(eq(mailboxTransport.ownerHeaderValue, 'centurion@legacyhotel.com'));
+            .where(eq(mailboxTransport.id, 'transport-centurion'));
           return rows[0];
         });
         expect(transport).toBeDefined();
         expect(transport!.id).toBe('transport-centurion');
-        expect(transport!.email).toBe('centurion@legacyhotel.com');
+        expect(transport!.email).toBe('centurion@legacyhotels.co.za');
+        expect(transport!.ownerHeaderValue).toBe('centurion@legacyhotels.co.za');
         expect(transport!.mailboxType).toBe('personal');
         expect(transport!.isActive).toBe(true);
+        expect(transport!.sendFromConfig).toEqual({
+          aliases: ['centurion@legacyhotels.com', 'centurion@legacyhotel.com'],
+        });
+      },
+      30000,
+    );
+
+    it(
+      'upserts Centurion transport by id when owner_header_value was legacy',
+      async () => {
+        const transport = await withTestDb(async (db) => {
+          await db.insert(mailboxTransport).values({
+            id: 'transport-centurion',
+            email: 'centurion@legacyhotel.com',
+            ownerHeaderValue: 'centurion@legacyhotel.com',
+            mailboxType: 'personal',
+            displayName: 'Centurion Transport',
+            isActive: true,
+            sendFromConfig: { aliases: [] },
+          });
+          await seedAll(db, { rotatePasswords: false });
+          const rows = await db
+            .select()
+            .from(mailboxTransport)
+            .where(eq(mailboxTransport.id, 'transport-centurion'));
+          return rows[0];
+        });
+        expect(transport).toBeDefined();
+        expect(transport!.email).toBe('centurion@legacyhotels.co.za');
+        expect(transport!.ownerHeaderValue).toBe('centurion@legacyhotels.co.za');
+        expect(transport!.sendFromConfig).toEqual({
+          aliases: ['centurion@legacyhotels.com', 'centurion@legacyhotel.com'],
+        });
       },
       30000,
     );

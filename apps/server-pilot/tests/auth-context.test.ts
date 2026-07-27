@@ -23,7 +23,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           resolveMailboxContext('user-navaai', 'transport-centurion', db),
         );
         expect(ctx).toBeDefined();
-        expect(ctx.transportEmail).toBe('centurion@legacyhotel.com');
+        expect(ctx.transportEmail).toBe('centurion@legacyhotels.co.za');
         expect(ctx.accessRole).toBe('owner');
         expect(ctx.userId).toBe('user-navaai');
         expect(ctx.activeTransportId).toBe('transport-centurion');
