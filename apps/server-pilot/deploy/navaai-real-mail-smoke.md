@@ -197,6 +197,35 @@ pnpm --filter @zero/server tsx apps/server-pilot/scripts/promote-quarantine.ts
 Pass when summary shows `stored` + `duplicate` counts, `errors=0`, and SQL  
 `select count(*) from mail_ingest_quarantine where reason='missing_owner_header'` → 0 (or only new poison).
 
+## Post-wipe / fixture cleanup
+
+Deactivate leftover vitest fixture transports (do **not** DELETE):
+
+```sql
+UPDATE mailbox_transport SET is_active = false WHERE email LIKE '%@example.com';
+
+SELECT id, email, is_active FROM mailbox_transport ORDER BY email;
+
+SELECT count(*) AS active_example
+FROM mailbox_transport
+WHERE email LIKE '%@example.com' AND is_active;
+
+SELECT count(*) AS orphan_fixture_messages
+FROM message m
+JOIN mailbox_transport t ON m.transport_id = t.id
+WHERE t.email LIKE '%@example.com';
+```
+
+Expect `active_example = 0`. Centurion + Nava rows `is_active = true`. Orphan fixture message count may be >0 — leave them; CASCADE delete is out of scope.
+
+On EC2:
+
+```bash
+cd /home/ubuntu/repos/zero
+set -a && source apps/server-pilot/.env.production && set +a
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "UPDATE mailbox_transport SET is_active = false WHERE email LIKE '%@example.com';"
+```
+
 ## Rollback
 
 ```bash
