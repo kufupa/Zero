@@ -207,7 +207,15 @@ function buildParsedMessage(args: {
   const referencesRaw = headers.get('references');
   const references = normalizeReferences(referencesRaw);
   const fromHeaderRaw = firstHeader(headers, 'from');
-  const fromAddress = extractAddress(headers.get('from')) ?? fromHeaderRaw;
+  const fromEmail = extractAddress(headers.get('from')) ?? fromHeaderRaw;
+  const senderEmail = extractAddress(headers.get('sender'));
+  // ponytail: Outlook calendar FW keeps organizer in From; Sender is transmitter.
+  const fromAddress =
+    senderEmail &&
+    fromEmail &&
+    senderEmail.trim().toLowerCase() !== fromEmail.trim().toLowerCase()
+      ? senderEmail
+      : fromEmail;
   const toAddresses = extractAddresses(headers.get('to'));
   const ccAddresses = extractAddresses(headers.get('cc'));
   const bccAddresses = extractAddresses(headers.get('bcc'));

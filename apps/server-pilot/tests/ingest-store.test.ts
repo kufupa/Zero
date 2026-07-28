@@ -940,4 +940,41 @@ describe('parseRawMessage (no DB)', () => {
       }
     }
   });
+
+  it('prefers Sender over From when they differ (Outlook calendar FW)', async () => {
+    const storage = withFakeS3();
+    const raw = readFixture('outlook-calendar-fw-sender.eml');
+    const parsed = await parseRawMessage(raw, {
+      messageId: generateMessageId(),
+      storage,
+    });
+    expect(parsed.fromAddress).toBe('kdouglas@legacyhotels.co.za');
+  });
+
+  it('keeps From when Sender absent', async () => {
+    const storage = withFakeS3();
+    const raw = readFixture('centurion-stamped.eml');
+    const parsed = await parseRawMessage(raw, {
+      messageId: generateMessageId(),
+      storage,
+    });
+    expect(parsed.fromAddress).toBe('guest1@example.com');
+  });
+
+  it('keeps From when Sender equals From', async () => {
+    const storage = withFakeS3();
+    const base = readFixture('centurion-stamped.eml').toString('utf-8');
+    const raw = Buffer.from(
+      base.replace(
+        'From: Guest One <guest1@example.com>',
+        'From: Guest One <guest1@example.com>\r\nSender: Guest One <guest1@example.com>',
+      ),
+      'utf-8',
+    );
+    const parsed = await parseRawMessage(raw, {
+      messageId: generateMessageId(),
+      storage,
+    });
+    expect(parsed.fromAddress).toBe('guest1@example.com');
+  });
 });
