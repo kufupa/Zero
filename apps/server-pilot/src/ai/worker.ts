@@ -1,5 +1,5 @@
 import { isCliEntry } from '../lib/is-cli-entry.js';
-import { and, eq, inArray, or } from 'drizzle-orm';
+import { and, asc, eq, inArray, or } from 'drizzle-orm';
 import { closeDb, getDb } from '../db/client.js';
 import {
   aiWorkflowRun,
@@ -23,6 +23,8 @@ import {
 import { validateTriageOutput } from './triage.js';
 
 export const AI_WORKER_OWNER = `ai-worker-${process.pid}`;
+
+const MONEY_DRAFT_CATEGORIES = new Set(['new-bookings', 'groups-events', 'at-risk']);
 
 export interface ExecuteAiRunResult {
   runId: string;
@@ -95,6 +97,28 @@ export async function executeAiRun(runId: string): Promise<ExecuteAiRunResult> {
         .from(message)
         .where(eq(message.id, run.triggerMessageId))
         .limit(1);
+
+      const threadMessages = await db
+        .select({
+          id: message.id,
+          fromAddress: message.fromAddress,
+          subject: message.subject,
+          textBody: message.textBody,
+          htmlBody: message.htmlBody,
+          direction: message.direction,
+        })
+        .from(message)
+        .where(and(eq(message.threadId, run.threadId), eq(message.transportId, run.transportId)))
+        .orderBy(asc(message.receivedAt));
+
+      const messages = threadMessages.map((m) => ({
+        id: m.id,
+        from: m.fromAddress ?? '',
+        subject: m.subject ?? undefined,
+        body: m.textBody ?? m.htmlBody ?? '',
+        direction: m.direction ?? undefined,
+      }));
+
       const mastra = createMastraRuntime(process.env.MASTRA_STORAGE_PATH);
       const workflow = mastra.getWorkflow('mailTriage');
       const workflowRun = await workflow.createRun();
@@ -107,6 +131,7 @@ export async function executeAiRun(runId: string): Promise<ExecuteAiRunResult> {
           from: trigger?.fromAddress ?? '',
           to: trigger?.toAddresses ?? [],
           body: trigger?.textBody ?? trigger?.htmlBody ?? '',
+          messages,
         },
       });
       if (result.status !== 'success') {
@@ -132,7 +157,11 @@ export async function executeAiRun(runId: string): Promise<ExecuteAiRunResult> {
           .limit(1);
 
         let draftRunId: string | undefined;
-        if (env.AI_DRAFTS_ENABLED && output.category !== 'spam' && !threadBeforeDraft?.spamAt) {
+        if (
+          env.AI_DRAFTS_ENABLED &&
+          MONEY_DRAFT_CATEGORIES.has(output.category) &&
+          !threadBeforeDraft?.spamAt
+        ) {
           const draftRun = await enqueueAiRun(
             {
               transportId: run.transportId,

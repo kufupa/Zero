@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { and, eq } from 'drizzle-orm';
+import { buildSystemPrompt, buildUserPrompt } from '../src/ai/workflows/mail-triage.js';
 import { AI_PRIMARY_CATEGORY_SLUGS } from '../src/ai/categories.js';
 import { isAutoTriageNeverSpam } from '../src/ai/never-spam.js';
 import { randomUUID } from 'node:crypto';
@@ -20,6 +21,39 @@ import { seedInboxThread } from './helpers/seed-inbox-thread.js';
 const reachable = await probeTestDb();
 
 describe('AI triage contract', () => {
+  it('system prompt teaches revenue categories and spam exclusions', () => {
+    const p = buildSystemPrompt();
+    expect(p).toContain('new-bookings');
+    expect(p).toContain('groups-events');
+    expect(p).toContain('at-risk');
+    expect(p).toContain('ops');
+    expect(p).toMatch(/Not spam/i);
+    expect(p).not.toMatch(/irrelevant automation/i);
+    expect(p).toMatch(/GuestRevu|review digest/i);
+    expect(p).toMatch(/OTP|verification code/i);
+    expect(p).toMatch(/FortiMail|quarantine/i);
+  });
+
+  it('user prompt marks TRIGGER and preserves order', () => {
+    const text = buildUserPrompt({
+      transportId: 't',
+      threadId: 'th',
+      triggerMessageId: 'm2',
+      from: 'a@b.com',
+      to: [],
+      body: 'ignored-when-messages-present',
+      messages: [
+        { id: 'm1', from: 'hotel@x.com', subject: 'Quote', body: 'first' },
+        { id: 'm2', from: 'guest@y.com', subject: 'Re: Quote', body: 'second' },
+      ],
+    });
+    const i1 = text.indexOf('first');
+    const i2 = text.indexOf('second');
+    expect(i1).toBeGreaterThan(-1);
+    expect(i2).toBeGreaterThan(i1);
+    expect(text).toMatch(/TRIGGER/);
+  });
+
   it('never-spam From remaps AI spam to ops for legacyhotels.co.za', () => {
     const refined = refineTriageOutput(
       {
@@ -134,13 +168,7 @@ describe('AI triage contract', () => {
   });
 
   it('accepts hotel vocabulary categories', () => {
-    for (const category of [
-      'internal',
-      'individual',
-      'group',
-      'travel-agents',
-      'spam',
-    ] as const) {
+    for (const category of [...AI_PRIMARY_CATEGORY_SLUGS, 'spam'] as const) {
       expect(validateTriageOutput({
         category,
         urgent: false,
@@ -167,7 +195,7 @@ describe('AI triage contract', () => {
       threadId: 'thread-1',
       transportId: 'transport-1',
       output: {
-        category: 'group',
+        category: 'groups-events',
         urgent: true,
         confidence: 0.8,
         rationale: 'group quote language',
@@ -177,7 +205,7 @@ describe('AI triage contract', () => {
     });
     expect(shadow.metrics).toMatchObject({
       shadow: true,
-      category: 'group',
+      category: 'groups-events',
       urgent: true,
     });
   });
@@ -197,7 +225,7 @@ describe('AI triage contract', () => {
     });
     expect(result.status).toBe('success');
     expect(result.result?.output).toMatchObject({
-      category: 'group',
+      category: 'groups-events',
       urgent: expect.any(Boolean),
       confidence: expect.any(Number),
     });
@@ -248,14 +276,14 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI durable triage contract', 
       snippet: 'Need 20 rooms',
       latestMessageAt: new Date(),
     });
-    const groupCategoryId = randomUUID();
+    const groupsEventsCategoryId = randomUUID();
     const urgentCategoryId = randomUUID();
     await db.insert(mailCategory).values([
       {
-        id: groupCategoryId,
+        id: groupsEventsCategoryId,
         transportId,
-        slug: 'group',
-        name: 'Group',
+        slug: 'groups-events',
+        name: 'Groups & Events',
         sortOrder: 1,
       },
       {
@@ -273,7 +301,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI durable triage contract', 
       threadId,
       writeGateEnabled: false,
       output: {
-        category: 'group',
+        category: 'groups-events',
         urgent: true,
         confidence: 0.9,
         rationale: 'shadow only',
@@ -294,7 +322,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI durable triage contract', 
       threadId,
       writeGateEnabled: true,
       output: {
-        category: 'group',
+        category: 'groups-events',
         urgent: true,
         confidence: 0.9,
         rationale: 'durable write',
@@ -308,7 +336,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI durable triage contract', 
       .from(mailThreadCategory)
       .where(eq(mailThreadCategory.threadId, threadId));
     expect(memberships.map((row) => row.categoryId).sort()).toEqual(
-      [groupCategoryId, urgentCategoryId].sort(),
+      [groupsEventsCategoryId, urgentCategoryId].sort(),
     );
 
     const settledSpam = await applyDurableTriageResult({
@@ -334,26 +362,30 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI durable triage contract', 
       .from(mailThreadCategory)
       .where(eq(mailThreadCategory.threadId, threadId));
     expect(memberships.map((row) => row.categoryId).sort()).toEqual(
-      [groupCategoryId, urgentCategoryId].sort(),
+      [groupsEventsCategoryId, urgentCategoryId].sort(),
     );
   });
 
   it('urgency_only when settled preserves primary and custom categories', async () => {
     await withSeededTestDb(async (db) => {
       const customCategoryId = randomUUID();
-      const groupCategory = await db
+      const groupsEventsCategory = await db
         .select()
         .from(mailCategory)
-        .where(and(eq(mailCategory.transportId, TRANSPORT_ID), eq(mailCategory.slug, 'group')))
+        .where(
+          and(eq(mailCategory.transportId, TRANSPORT_ID), eq(mailCategory.slug, 'groups-events')),
+        )
         .limit(1);
-      const individualCategory = await db
+      const newBookingsCategory = await db
         .select()
         .from(mailCategory)
-        .where(and(eq(mailCategory.transportId, TRANSPORT_ID), eq(mailCategory.slug, 'individual')))
+        .where(
+          and(eq(mailCategory.transportId, TRANSPORT_ID), eq(mailCategory.slug, 'new-bookings')),
+        )
         .limit(1);
 
-      expect(groupCategory[0]).toBeDefined();
-      expect(individualCategory[0]).toBeDefined();
+      expect(groupsEventsCategory[0]).toBeDefined();
+      expect(newBookingsCategory[0]).toBeDefined();
 
       const threadId = randomUUID();
       await db.insert(mailCategory).values({
@@ -373,7 +405,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI durable triage contract', 
       });
       await db.insert(mailThreadCategory).values([
         { threadId, transportId: TRANSPORT_ID, categoryId: customCategoryId },
-        { threadId, transportId: TRANSPORT_ID, categoryId: groupCategory[0]!.id },
+        { threadId, transportId: TRANSPORT_ID, categoryId: groupsEventsCategory[0]!.id },
       ]);
 
       const result = await applyDurableTriageResult({
@@ -382,7 +414,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI durable triage contract', 
         threadId,
         writeGateEnabled: true,
         output: {
-          category: 'individual',
+          category: 'new-bookings',
           urgent: true,
           confidence: 0.92,
           rationale: 'single guest inquiry',
@@ -399,9 +431,9 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI durable triage contract', 
 
       const slugs = rows.map((row) => row.slug);
       expect(slugs).toContain(`custom-vip-${customCategoryId.slice(0, 8)}`);
-      expect(slugs).toContain('group');
+      expect(slugs).toContain('groups-events');
       expect(slugs).toContain('urgent');
-      expect(slugs).not.toContain('individual');
+      expect(slugs).not.toContain('new-bookings');
     });
   });
 
@@ -463,7 +495,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI durable triage contract', 
         transportId: TRANSPORT_ID,
         threadId,
         output: {
-          category: 'individual',
+          category: 'new-bookings',
           urgent: false,
           confidence: 0.9,
           rationale: 'booking',
@@ -481,18 +513,20 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI durable triage contract', 
         .from(mailThreadCategory)
         .innerJoin(mailCategory, eq(mailCategory.id, mailThreadCategory.categoryId))
         .where(eq(mailThreadCategory.threadId, threadId));
-      expect(memberships.map((row) => row.slug)).toContain('individual');
+      expect(memberships.map((row) => row.slug)).toContain('new-bookings');
     });
   });
 
   it('urgency_only when primary exists — primary unchanged even if model says spam', async () => {
     await withSeededTestDb(async (db) => {
-      const individualCategory = await db
+      const newBookingsCategory = await db
         .select()
         .from(mailCategory)
-        .where(and(eq(mailCategory.transportId, TRANSPORT_ID), eq(mailCategory.slug, 'individual')))
+        .where(
+          and(eq(mailCategory.transportId, TRANSPORT_ID), eq(mailCategory.slug, 'new-bookings')),
+        )
         .limit(1);
-      expect(individualCategory[0]).toBeDefined();
+      expect(newBookingsCategory[0]).toBeDefined();
 
       const threadId = randomUUID();
       await db.insert(mailThread).values({
@@ -507,7 +541,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI durable triage contract', 
       await db.insert(mailThreadCategory).values({
         threadId,
         transportId: TRANSPORT_ID,
-        categoryId: individualCategory[0]!.id,
+        categoryId: newBookingsCategory[0]!.id,
       });
 
       const result = await applyDurableTriageResult({
@@ -535,7 +569,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI durable triage contract', 
         .innerJoin(mailCategory, eq(mailCategory.id, mailThreadCategory.categoryId))
         .where(eq(mailThreadCategory.threadId, threadId));
       const slugs = memberships.map((row) => row.slug);
-      expect(slugs).toContain('individual');
+      expect(slugs).toContain('new-bookings');
       expect(slugs).toContain('urgent');
       expect(slugs).not.toContain('spam');
     });
@@ -560,7 +594,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI durable triage contract', 
         transportId: TRANSPORT_ID,
         threadId,
         output: {
-          category: 'individual',
+          category: 'new-bookings',
           urgent: true,
           confidence: 0.9,
           rationale: 'guest reply',

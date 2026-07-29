@@ -98,7 +98,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
       runKind: 'inbound_triage',
       idempotencyKey: `worker-success:${messageId}`,
       modelId: 'amazon.nova-lite-v1:0',
-      promptVersion: 'triage-v1',
+      promptVersion: 'triage-v4',
     });
     const result = await executeAiRun(run.id);
     expect(result.state).toBe('succeeded');
@@ -196,7 +196,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
           runKind: 'inbound_triage',
           idempotencyKey: `triage-shadow:${messageId}`,
           modelId: 'amazon.nova-lite-v1:0',
-          promptVersion: 'triage-v1',
+          promptVersion: 'triage-v4',
         },
         db,
       );
@@ -262,7 +262,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
           runKind: 'inbound_triage',
           idempotencyKey: `triage-write:${messageId}`,
           modelId: 'amazon.nova-lite-v1:0',
-          promptVersion: 'triage-v1',
+          promptVersion: 'triage-v4',
         },
         db,
       );
@@ -277,7 +277,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
         .from(mailThreadCategory)
         .innerJoin(mailCategory, eq(mailCategory.id, mailThreadCategory.categoryId))
         .where(eq(mailThreadCategory.threadId, threadId));
-      expect(memberships.map((row) => row.slug)).toContain('individual');
+      expect(memberships.map((row) => row.slug)).toContain('new-bookings');
 
       const draftRuns = await db
         .select()
@@ -329,7 +329,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
           runKind: 'inbound_triage',
           idempotencyKey: `triage-retry:${messageId}`,
           modelId: 'amazon.nova-lite-v1:0',
-          promptVersion: 'triage-v1',
+          promptVersion: 'triage-v4',
         },
         db,
       );
@@ -379,7 +379,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
           runKind: 'inbound_triage',
           idempotencyKey: `triage-spam:${messageId}`,
           modelId: 'amazon.nova-lite-v1:0',
-          promptVersion: 'triage-v1',
+          promptVersion: 'triage-v4',
         },
         db,
       );
@@ -397,6 +397,106 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
         .from(aiWorkflowRun)
         .where(eq(aiWorkflowRun.idempotencyKey, `candidate-draft:${messageId}`));
       expect(draftRuns).toHaveLength(0);
+    });
+  });
+
+  it('ops triage does not enqueue candidate draft when drafts enabled', async () => {
+    await withSeededTestDb(async (db) => {
+      const threadId = randomUUID();
+      const messageId = randomUUID();
+      await db.insert(mailThread).values({
+        id: threadId,
+        transportId: TRANSPORT_ID,
+        threadRootId: `<${threadId}@example.com>`,
+        subject: 'Banqueting handover',
+        snippet: 'handover',
+        latestMessageAt: new Date(),
+      });
+      await db.insert(message).values({
+        id: messageId,
+        transportId: TRANSPORT_ID,
+        threadId,
+        direction: 'inbound',
+        fromAddress: 'gm@legacyhotels.co.za',
+        toAddresses: ['centurion@legacyhotel.com'],
+        subject: 'Banqueting handover',
+        textBody: 'banqueting handover tomorrow with room readiness list',
+        receivedAt: new Date(),
+      });
+
+      const run = await enqueueAiRun(
+        {
+          transportId: TRANSPORT_ID,
+          threadId,
+          triggerMessageId: messageId,
+          runKind: 'inbound_triage',
+          idempotencyKey: `triage-ops:${messageId}`,
+          modelId: 'amazon.nova-lite-v1:0',
+          promptVersion: 'triage-v4',
+        },
+        db,
+      );
+
+      process.env.AI_WRITE_GATE_ENABLED = 'true';
+      process.env.AI_DRAFTS_ENABLED = 'true';
+      const result = await executeAiRun(run.id);
+      expect(result.state).toBe('succeeded');
+
+      const draftRuns = await db
+        .select()
+        .from(aiWorkflowRun)
+        .where(eq(aiWorkflowRun.idempotencyKey, `candidate-draft:${messageId}`));
+      expect(draftRuns).toHaveLength(0);
+    });
+  });
+
+  it('new-bookings triage enqueues candidate draft when drafts enabled', async () => {
+    await withSeededTestDb(async (db) => {
+      const threadId = randomUUID();
+      const messageId = randomUUID();
+      await db.insert(mailThread).values({
+        id: threadId,
+        transportId: TRANSPORT_ID,
+        threadRootId: `<${threadId}@example.com>`,
+        subject: 'Booking',
+        snippet: 'Need help',
+        latestMessageAt: new Date(),
+      });
+      await db.insert(message).values({
+        id: messageId,
+        transportId: TRANSPORT_ID,
+        threadId,
+        direction: 'inbound',
+        fromAddress: 'guest@example.com',
+        toAddresses: ['centurion@legacyhotel.com'],
+        subject: 'Booking',
+        textBody: 'Need a room tonight',
+        receivedAt: new Date(),
+      });
+
+      const run = await enqueueAiRun(
+        {
+          transportId: TRANSPORT_ID,
+          threadId,
+          triggerMessageId: messageId,
+          runKind: 'inbound_triage',
+          idempotencyKey: `triage-new-bookings:${messageId}`,
+          modelId: 'amazon.nova-lite-v1:0',
+          promptVersion: 'triage-v4',
+        },
+        db,
+      );
+
+      process.env.AI_WRITE_GATE_ENABLED = 'true';
+      process.env.AI_DRAFTS_ENABLED = 'true';
+      const result = await executeAiRun(run.id);
+      expect(result.state).toBe('succeeded');
+
+      const draftRuns = await db
+        .select()
+        .from(aiWorkflowRun)
+        .where(eq(aiWorkflowRun.idempotencyKey, `candidate-draft:${messageId}`));
+      expect(draftRuns).toHaveLength(1);
     });
   });
 
@@ -433,7 +533,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
           runKind: 'inbound_triage',
           idempotencyKey: `triage-existing-spam:${messageId}`,
           modelId: 'amazon.nova-lite-v1:0',
-          promptVersion: 'triage-v1',
+          promptVersion: 'triage-v4',
         },
         db,
       );

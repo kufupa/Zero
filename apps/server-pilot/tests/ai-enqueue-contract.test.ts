@@ -101,7 +101,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI enqueue contract', () => {
     });
   });
 
-  it('enqueues inbound_triage with promptVersion triage-v2 for guest From', async () => {
+  it('enqueues inbound_triage with promptVersion triage-v4 for guest From', async () => {
     await withSeededTestDb(async (db) => {
       const storage = withFakeS3();
       const raw = readFixture('centurion-stamped.eml');
@@ -123,7 +123,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI enqueue contract', () => {
         .from(aiWorkflowRun)
         .where(eq(aiWorkflowRun.triggerMessageId, messageId));
       expect(run.runKind).toBe('inbound_triage');
-      expect(run.promptVersion).toBe('triage-v2');
+      expect(run.promptVersion).toBe('triage-v4');
     });
   });
 
