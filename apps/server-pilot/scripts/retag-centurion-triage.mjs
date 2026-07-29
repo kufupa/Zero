@@ -30,6 +30,16 @@ const AI_MANAGED_SLUGS = [
   'urgent',
 ];
 
+// Legacy invent-WHO slugs — unsettle-only during retag (clear stale joins before triage-v4).
+const LEGACY_INVENT_WHO_SLUGS = [
+  'internal',
+  'individual',
+  'group',
+  'travel-agents',
+];
+
+const RETAG_UNSETTLE_SLUGS = [...AI_MANAGED_SLUGS, ...LEGACY_INVENT_WHO_SLUGS];
+
 function parseArgs(argv) {
   return {
     dryRun: !argv.includes('--apply'),
@@ -70,7 +80,7 @@ try {
       SELECT id
       FROM mail_category
       WHERE transport_id = ${TRANSPORT_ID}
-        AND slug = ANY(${AI_MANAGED_SLUGS})
+        AND slug = ANY(${RETAG_UNSETTLE_SLUGS})
     `
   ).map((row) => row.id);
 
