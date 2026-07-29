@@ -1,4 +1,8 @@
-export type CenturionMailCategory = 'internal' | 'individual' | 'group' | 'travel-agents';
+export type CenturionMailCategory =
+  | 'new-bookings'
+  | 'groups-events'
+  | 'at-risk'
+  | 'ops';
 
 export interface ParsedAddress {
   name?: string;

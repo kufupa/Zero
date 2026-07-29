@@ -4,7 +4,11 @@ import type { CreateDraftData } from '../schemas';
 import { z } from 'zod';
 
 /** Demo / Centurion: primary category folder on thread (not spam). Live mail omits. */
-export type CenturionMailCategory = 'internal' | 'individual' | 'group' | 'travel-agents';
+export type CenturionMailCategory =
+  | 'new-bookings'
+  | 'groups-events'
+  | 'at-risk'
+  | 'ops';
 
 export const centurionMailCategorySchema = z.enum(['internal', 'individual', 'group', 'travel-agents']);
 

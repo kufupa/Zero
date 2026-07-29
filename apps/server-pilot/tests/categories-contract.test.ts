@@ -1,6 +1,7 @@
 import { TRPCError } from '@trpc/server';
 import { describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
+import { AI_PRIMARY_CATEGORY_SLUGS, AI_MANAGED_CATEGORY_SEED_ROWS } from '../src/ai/categories.js';
 import { appRouter } from '../src/trpc/router.js';
 import { __setDbForTests } from '../src/db/client.js';
 import { mailThread, mailThreadCategory, mailboxTransport } from '../src/db/schema/mail.js';
@@ -11,6 +12,22 @@ import {
 } from './helpers/test-db';
 
 const reachable = await probeTestDb();
+
+it('primary slugs are revenue queues', () => {
+  expect([...AI_PRIMARY_CATEGORY_SLUGS]).toEqual([
+    'new-bookings',
+    'groups-events',
+    'at-risk',
+    'ops',
+  ]);
+  expect(AI_MANAGED_CATEGORY_SEED_ROWS.map((r) => r.slug)).toEqual([
+    'at-risk',
+    'new-bookings',
+    'groups-events',
+    'ops',
+    'urgent',
+  ]);
+});
 
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('categories router', () => {
   it('creates mailbox-scoped categories and assigns multiple categories to one thread', async () => {
