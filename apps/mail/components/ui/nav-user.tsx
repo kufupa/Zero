@@ -17,6 +17,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useActiveConnection, useConnections } from '@/hooks/use-connections';
+import { canManageConnections } from '@/lib/mail/can-manage-connections';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -131,7 +132,7 @@ export function NavUser() {
   const setLastSyncAt = useSetAtom(setLastSyncAtAtom);
   const frontendOnlyDemo = isFrontendOnlyDemo();
   const showLogout = !frontendOnlyDemo;
-  const allowConnectionManagement = false;
+  const allowConnectionManagement = canManageConnections(data?.connections?.length ?? 0);
   const displaySyncing = isForceSyncPending || isSyncing;
 
   const getSettingsHref = useCallback(() => {
