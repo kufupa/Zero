@@ -131,7 +131,8 @@ export async function planPilotCredentials(
  *
  * Idempotent: re-running upserts rows. The DB handle may be a normal
  * connection (production) or a transaction-scoped handle (tests with
- * rollback). Prunes auth users / mailbox_access not in PILOT_USERS.
+ * rollback). Prunes auth users not in PILOT_USERS; mailbox_access for
+ * pilot users is rebuilt by applyPilotMailboxAccess.
  */
 export async function seedAll(db: DB, opts: SeedOptions = {}): Promise<SeedResult> {
   const rotatePasswords = opts.rotatePasswords ?? false;
