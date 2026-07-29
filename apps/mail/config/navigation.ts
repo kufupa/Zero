@@ -111,6 +111,18 @@ interface NavConfig {
 
 const DEMO_FOLDER_MODEL_ENABLED = isFrontendOnlyDemo();
 
+/** Primary hotel folder sidebar order (urgent overlay sorted separately). */
+const HOTEL_PRIMARY_NAV_ORDER = ['at-risk', 'new-bookings', 'groups-events', 'ops'] as const;
+
+function getDemoMailFolderNavSortIndex(folderId: DemoMailFolderId): number {
+  if (folderId === 'urgent') return -1;
+  const primaryIndex = HOTEL_PRIMARY_NAV_ORDER.indexOf(
+    folderId as (typeof HOTEL_PRIMARY_NAV_ORDER)[number],
+  );
+  if (primaryIndex >= 0) return primaryIndex;
+  return HOTEL_PRIMARY_NAV_ORDER.length;
+}
+
 function getDemoMailFolderIcon(folderId: DemoMailFolderId): ComponentType<SVGProps<SVGSVGElement>> {
   if (folderId === 'urgent' || folderId === 'spam') return ExclamationCircle;
   return Folder;
@@ -135,7 +147,7 @@ function getDemoMailFolderNavItemTheme(folderId: DemoMailFolderId): Pick<NavItem
 }
 
 const demoMailFolderNavItems: NavItem[] = DEMO_MAIL_FOLDER_DEFINITIONS.filter((folder) => folder.id !== 'spam')
-  .sort((a, b) => (a.id === 'urgent' ? -1 : b.id === 'urgent' ? 1 : 0))
+  .sort((a, b) => getDemoMailFolderNavSortIndex(a.id) - getDemoMailFolderNavSortIndex(b.id))
   .map((folder) => {
     const theme = getDemoMailFolderNavItemTheme(folder.id);
     return {

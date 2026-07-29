@@ -11,21 +11,21 @@ import {
 
 describe('hotel-folder-presentation', () => {
   it('locks managed slugs to AI taxonomy', () => {
-    expect(isHotelManagedCategorySlug('individual')).toBe(true);
+    expect(isHotelManagedCategorySlug('new-bookings')).toBe(true);
     expect(isHotelManagedCategorySlug('urgent')).toBe(true);
     expect(isHotelManagedCategorySlug('spam')).toBe(false);
   });
 
   it('returns demo-style title and subtitle for managed slugs', () => {
-    expect(getHotelFolderPresentation('individual')).toEqual({
-      title: 'Individual Room Bookings',
-      subtitle: 'Guest & room requests',
+    expect(getHotelFolderPresentation('new-bookings')).toEqual({
+      title: 'New Bookings',
+      subtitle: expect.any(String),
     });
     expect(getHotelFolderPresentation('unknown-custom')).toBeNull();
   });
 
   it('nav theme for managed slug uses Centurion pastel CSS vars not solid hex', () => {
-    const theme = getHotelFolderNavTheme('individual');
+    const theme = getHotelFolderNavTheme('new-bookings');
     expect(theme.className).toContain('--centurion-sidebar-bg');
     expect(JSON.stringify(theme.style)).toContain('#DCFCE7');
   });
@@ -37,14 +37,14 @@ describe('hotel-folder-presentation', () => {
 
   it('resolve: primary + urgent → primary pillSlug + isUrgent', () => {
     const idToSlug = buildCategoryIdToSlugMap([
-      { id: 'c-ind', slug: 'individual' },
+      { id: 'c-nb', slug: 'new-bookings' },
       { id: 'c-urg', slug: 'urgent' },
     ]);
-    const resolved = resolveThreadCategoryPresentation(['c-ind', 'c-urg'], idToSlug);
+    const resolved = resolveThreadCategoryPresentation(['c-nb', 'c-urg'], idToSlug);
     expect(resolved).toEqual({
-      primarySlug: 'individual',
+      primarySlug: 'new-bookings',
       isUrgent: true,
-      pillSlug: 'individual',
+      pillSlug: 'new-bookings',
     });
   });
 
@@ -54,16 +54,16 @@ describe('hotel-folder-presentation', () => {
   });
 
   it('resolve: empty or unmapped → null pill', () => {
-    const idToSlug = buildCategoryIdToSlugMap([{ id: 'c-ind', slug: 'individual' }]);
+    const idToSlug = buildCategoryIdToSlugMap([{ id: 'c-nb', slug: 'new-bookings' }]);
     expect(resolveThreadCategoryPresentation([], idToSlug).pillSlug).toBeNull();
     expect(resolveThreadCategoryPresentation(['missing'], idToSlug).pillSlug).toBeNull();
   });
 
   it('hides pill when route already is that category', () => {
     expect(
-      shouldShowHotelCategoryPill({ routeFolder: 'individual', pillSlug: 'individual' }),
+      shouldShowHotelCategoryPill({ routeFolder: 'new-bookings', pillSlug: 'new-bookings' }),
     ).toBe(false);
-    expect(shouldShowHotelCategoryPill({ routeFolder: 'inbox', pillSlug: 'individual' })).toBe(
+    expect(shouldShowHotelCategoryPill({ routeFolder: 'inbox', pillSlug: 'new-bookings' })).toBe(
       true,
     );
     expect(shouldShowHotelCategoryPill({ routeFolder: 'urgent', pillSlug: 'urgent' })).toBe(false);
@@ -74,14 +74,14 @@ describe('buildLiveCategoryNavItems theme precedence', () => {
   it('managed slug ignores seed hex and uses presentation title', () => {
     const items = buildLiveCategoryNavItems([
       {
-        slug: 'individual',
-        name: 'Individual',
+        slug: 'new-bookings',
+        name: 'New Bookings',
         color: '#2563eb',
         sortOrder: 110,
       },
     ]);
-    expect(items[0]?.title).toBe('Individual Room Bookings');
-    expect(items[0]?.subtitle).toBe('Guest & room requests');
+    expect(items[0]?.title).toBe('New Bookings');
+    expect(items[0]?.subtitle).toBe('Win or service a stay');
     expect(items[0]?.className).toContain('--centurion-sidebar-bg');
     expect(JSON.stringify(items[0]?.style)).toContain('#DCFCE7');
     expect(JSON.stringify(items[0]?.style)).not.toContain('#2563eb');

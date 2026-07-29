@@ -13,10 +13,10 @@ import { cn } from '@/lib/utils';
  * AI_PRIMARY_CATEGORY_SLUGS / AI_OVERLAY_CATEGORY_SLUGS — do not drift.
  */
 export const HOTEL_PRIMARY_CATEGORY_SLUGS = [
-  'internal',
-  'individual',
-  'group',
-  'travel-agents',
+  'at-risk',
+  'new-bookings',
+  'groups-events',
+  'ops',
 ] as const;
 
 export const HOTEL_OVERLAY_CATEGORY_SLUGS = ['urgent'] as const;

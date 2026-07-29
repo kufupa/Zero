@@ -42,10 +42,10 @@ type DemoListInput = {
 
 function toCenturionCategory(folder: DemoThread['folder']): CenturionMailCategory | undefined {
   if (
-    folder === 'internal' ||
-    folder === 'individual' ||
-    folder === 'group' ||
-    folder === 'travel-agents'
+    folder === 'at-risk' ||
+    folder === 'new-bookings' ||
+    folder === 'groups-events' ||
+    folder === 'ops'
   ) {
     return folder;
   }
@@ -61,10 +61,10 @@ export function threadMatchesDemoListFolder(thread: DemoThreadInput, folderSlug:
       return thread.folder === 'spam';
     case 'urgent':
       return thread.urgent === true;
-    case 'internal':
-    case 'individual':
-    case 'group':
-    case 'travel-agents':
+    case 'at-risk':
+    case 'new-bookings':
+    case 'groups-events':
+    case 'ops':
       return thread.folder === folderSlug;
     default:
       return false;

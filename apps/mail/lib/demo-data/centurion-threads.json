@@ -28,7 +28,7 @@
     },
     {
       "id": "sa-thread-002",
-      "folder": "group",
+      "folder": "groups-events",
       "urgent": false,
       "labels": [],
       "messages": [
@@ -71,7 +71,7 @@
     },
     {
       "id": "sa-thread-003",
-      "folder": "individual",
+      "folder": "at-risk",
       "urgent": true,
       "labels": [
         {
@@ -146,7 +146,7 @@
     },
     {
       "id": "sa-thread-004",
-      "folder": "individual",
+      "folder": "new-bookings",
       "urgent": false,
       "labels": [],
       "messages": [
@@ -197,7 +197,7 @@
     },
     {
       "id": "sa-thread-005",
-      "folder": "travel-agents",
+      "folder": "new-bookings",
       "urgent": false,
       "labels": [],
       "messages": [
@@ -240,7 +240,7 @@
     },
     {
       "id": "sa-thread-006",
-      "folder": "individual",
+      "folder": "new-bookings",
       "urgent": false,
       "labels": [],
       "messages": [
@@ -283,7 +283,7 @@
     },
     {
       "id": "sa-thread-007",
-      "folder": "travel-agents",
+      "folder": "new-bookings",
       "urgent": false,
       "labels": [],
       "messages": [
@@ -354,7 +354,7 @@
     },
     {
       "id": "sa-thread-008",
-      "folder": "travel-agents",
+      "folder": "new-bookings",
       "urgent": false,
       "labels": [],
       "messages": [
@@ -397,7 +397,7 @@
     },
     {
       "id": "sa-thread-internal-001",
-      "folder": "internal",
+      "folder": "ops",
       "urgent": false,
       "labels": [],
       "messages": [
@@ -447,7 +447,7 @@
     },
     {
       "id": "sa-thread-rich-001",
-      "folder": "internal",
+      "folder": "ops",
       "urgent": true,
       "labels": [],
       "messages": [
@@ -473,7 +473,7 @@
     },
     {
       "id": "sa-thread-rich-002",
-      "folder": "individual",
+      "folder": "new-bookings",
       "urgent": false,
       "labels": [],
       "messages": [
@@ -499,7 +499,7 @@
     },
     {
       "id": "sa-thread-rich-003",
-      "folder": "travel-agents",
+      "folder": "new-bookings",
       "urgent": false,
       "labels": [],
       "messages": [

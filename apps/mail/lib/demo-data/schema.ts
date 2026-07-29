@@ -6,10 +6,10 @@ const participantSchema = z.object({
 });
 
 export const demoThreadFolderSchema = z.enum([
-  'internal',
-  'individual',
-  'group',
-  'travel-agents',
+  'at-risk',
+  'new-bookings',
+  'groups-events',
+  'ops',
   'spam',
 ]);
 
