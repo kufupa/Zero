@@ -1,4 +1,7 @@
-export const AUTO_TRIAGE_NEVER_SPAM_DOMAINS: ReadonlySet<string> = new Set(['legacyhotels.co.za']);
+export const AUTO_TRIAGE_NEVER_SPAM_DOMAINS: ReadonlySet<string> = new Set([
+  'legacyhotels.co.za',
+  'mail.legacyhotels.com',
+]);
 
 export const AUTO_TRIAGE_NEVER_SPAM_EMAILS: ReadonlySet<string> = new Set([
   'aroransh17@gmail.com',

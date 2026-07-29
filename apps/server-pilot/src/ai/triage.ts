@@ -34,31 +34,29 @@ export function validateTriageOutput(raw: unknown): TriageOutput {
   return triageOutputSchema.parse(raw);
 }
 
-/** Nova often labels single-guest agency bookings as individual when invoice is to the agency. */
 export function refineTriageOutput(
   input: { from: string; body: string; subject?: string },
   output: TriageOutput,
 ): TriageOutput {
   const subject = (input.subject ?? '').trim();
   const body = input.body.trim();
-  const haystack = `${subject}
-${body}`;
+  const haystack = `${subject}\n${body}`;
+  let next = output;
 
-  if (output.category === 'spam' && isAutoTriageNeverSpam(input.from)) {
+  if (next.category === 'spam' && isAutoTriageNeverSpam(input.from)) {
     const category = normalizeEmailAddress(input.from).endsWith('@legacyhotels.co.za')
-      ? 'internal'
-      : 'individual';
-    return {
-      ...output,
+      || normalizeEmailAddress(input.from).endsWith('@mail.legacyhotels.com')
+      ? 'ops'
+      : 'new-bookings';
+    next = {
+      ...next,
       category,
-      policyFlags: [...output.policyFlags, 'refine:never-spam-allowlist'],
-      rationale: `${output.rationale} Sender is on auto-triage never-spam allowlist.`,
+      policyFlags: [...next.policyFlags, 'refine:never-spam-allowlist'],
+      rationale: `${next.rationale} Sender is on auto-triage never-spam allowlist.`,
     };
   }
 
-  // Nova over-fires spam on short personal notes ("hi"/"test") that are not
-  // sales/promo/automation — keep those in inbox as individual.
-  if (output.category === 'spam') {
+  if (next.category === 'spam') {
     const salesSignal =
       /promo|sale|discount|unsubscribe|limited[- ]time|book a demo|whatsapp|newsletter|marketing|click here|viqal|outreach|boost|% off|\$\d/i.test(
         haystack,
@@ -72,54 +70,44 @@ ${body}`;
       (/^(hi|hello|hey|test|tester\d*|bonjour|thanks|thank you)\b/i.test(body) ||
         /^(hi|hello|hey|test|tester\d*)\b/i.test(subject));
     if (shortPersonal) {
-      return {
-        ...output,
-        category: 'individual',
-        policyFlags: [...output.policyFlags, 'refine:short-personal-not-spam'],
-        rationale: `${output.rationale} Short personal note is not sales spam.`,
+      next = {
+        ...next,
+        category: 'new-bookings',
+        policyFlags: [...next.policyFlags, 'refine:short-personal-not-spam'],
+        rationale: `${next.rationale} Short personal note is not sales spam.`,
       };
     }
   }
 
-  if (output.category === 'internal' && output.urgent) {
+  if (next.category === 'ops' && next.urgent) {
     const opsHandover = /handover|room readiness|vip arrivals/i.test(haystack);
     if (opsHandover) {
-      return {
-        ...output,
+      next = {
+        ...next,
         urgent: false,
-        policyFlags: [...output.policyFlags, 'refine:internal-handover-not-urgent'],
-        rationale: `${output.rationale} Internal handover is not same-day urgent.`,
+        policyFlags: [...next.policyFlags, 'refine:ops-handover-not-urgent'],
+        rationale: `${next.rationale} Ops handover is not same-day urgent.`,
       };
     }
   }
 
-  if (output.category === 'travel-agents') {
-    const guestFileInvoice =
-      (/tax invoice/i.test(input.body) || /tax invoice/i.test(input.subject ?? '')) &&
-      /guest/i.test(input.body) &&
-      !/address the invoice to/i.test(input.body);
-    if (guestFileInvoice) {
-      return {
-        ...output,
-        category: 'individual',
-        policyFlags: [...output.policyFlags, 'refine:guest-file-invoice'],
-        rationale: `${output.rationale} Invoice is for a guest file, not agency billing.`,
-      };
-    }
+  if (
+    next.urgent &&
+    /\burgent\b/i.test(subject) &&
+    /invoice|commission/i.test(haystack) &&
+    !/(today|tonight|same[- ]day|arrives? tomorrow|check[- ]?in tomorrow|within \d+\s*h)/i.test(
+      haystack,
+    )
+  ) {
+    next = {
+      ...next,
+      urgent: false,
+      policyFlags: [...next.policyFlags, 'refine:subject-urgent-not-sla'],
+      rationale: `${next.rationale} Subject URGENT on invoice/commission is not SLA.`,
+    };
   }
 
-  if (output.category !== 'individual') return output;
-  const invoiceToAgency =
-    /address the invoice to/i.test(input.body) &&
-    (/\btravel\b/i.test(input.from) ||
-      /address the invoice to[:\s]*\n?\s*[^\n]*\btravel\b/i.test(input.body));
-  if (!invoiceToAgency) return output;
-  return {
-    ...output,
-    category: 'travel-agents',
-    policyFlags: [...output.policyFlags, 'refine:agency-invoice-party'],
-    rationale: `${output.rationale} Agency is the invoice party.`,
-  };
+  return next;
 }
 
 

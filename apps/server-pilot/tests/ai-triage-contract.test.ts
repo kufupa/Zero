@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import { AI_PRIMARY_CATEGORY_SLUGS } from '../src/ai/categories.js';
+import { isAutoTriageNeverSpam } from '../src/ai/never-spam.js';
 import { randomUUID } from 'node:crypto';
 import {
   applyDurableTriageResult,
@@ -19,7 +20,7 @@ import { seedInboxThread } from './helpers/seed-inbox-thread.js';
 const reachable = await probeTestDb();
 
 describe('AI triage contract', () => {
-  it('never-spam From remaps AI spam to internal with refine:never-spam-allowlist', () => {
+  it('never-spam From remaps AI spam to ops for legacyhotels.co.za', () => {
     const refined = refineTriageOutput(
       {
         from: 'frontdesk@legacyhotels.co.za',
@@ -34,66 +35,83 @@ describe('AI triage contract', () => {
         policyFlags: [],
       },
     );
-    expect(refined.category).toBe('internal');
+    expect(refined.category).toBe('ops');
     expect(refined.policyFlags).toContain('refine:never-spam-allowlist');
   });
 
-  it('refines short personal greeting away from spam into individual', () => {
+  it('never-spam From remaps AI spam to new-bookings for allowlisted personal', () => {
     const refined = refineTriageOutput(
       {
-        from: 'guest@example.com',
-        subject: 'test',
-        body: 'hi',
+        from: 'aroransh17@gmail.com',
+        subject: 'hi',
+        body: 'hello there',
       },
       {
         category: 'spam',
         urgent: false,
-        confidence: 0.8,
-        rationale: 'Short irrelevant message',
+        confidence: 0.9,
+        rationale: 'spam?',
         policyFlags: [],
       },
     );
-    expect(refined.category).toBe('individual');
+    expect(refined.category).toBe('new-bookings');
+  });
+
+  it('refines short personal greeting away from spam into new-bookings', () => {
+    const refined = refineTriageOutput(
+      { from: 'guest@example.com', subject: 'hi', body: 'hello' },
+      {
+        category: 'spam',
+        urgent: false,
+        confidence: 0.8,
+        rationale: 'short',
+        policyFlags: [],
+      },
+    );
+    expect(refined.category).toBe('new-bookings');
     expect(refined.policyFlags).toContain('refine:short-personal-not-spam');
   });
 
-  it('refines agency invoice party to travel-agents', () => {
+  it('clears urgent on ops handover', () => {
     const refined = refineTriageOutput(
       {
-        from: 'agent@sampletravel.example',
-        subject: 'Booking',
-        body: 'Please address the invoice to Sample Travel\nVAT 123',
+        from: 'gm@legacyhotels.co.za',
+        subject: 'VIP arrivals',
+        body: 'handover room readiness list attached',
       },
-      { category: 'individual', urgent: false, confidence: 0.7, rationale: 'guest', policyFlags: [] },
-    );
-    expect(refined.category).toBe('travel-agents');
-    expect(refined.policyFlags).toContain('refine:agency-invoice-party');
-  });
-
-  it('refines guest-file tax invoice away from travel-agents', () => {
-    const refined = refineTriageOutput(
       {
-        from: 'billing@hotel.example',
-        subject: 'Tax Invoice 99',
-        body: 'Tax invoice for guest John Doe stay',
+        category: 'ops',
+        urgent: true,
+        confidence: 0.9,
+        rationale: 'urgent ops',
+        policyFlags: [],
       },
-      { category: 'travel-agents', urgent: false, confidence: 0.7, rationale: 'agency', policyFlags: [] },
-    );
-    expect(refined.category).toBe('individual');
-    expect(refined.policyFlags).toContain('refine:guest-file-invoice');
-  });
-
-  it('clears urgent on internal handover', () => {
-    const refined = refineTriageOutput(
-      {
-        from: 'ops@legacyhotels.co.za',
-        subject: 'Handover',
-        body: 'Night handover — room readiness and VIP arrivals',
-      },
-      { category: 'internal', urgent: true, confidence: 0.9, rationale: 'urgent ops', policyFlags: [] },
     );
     expect(refined.urgent).toBe(false);
-    expect(refined.policyFlags).toContain('refine:internal-handover-not-urgent');
+    expect(refined.policyFlags).toContain('refine:ops-handover-not-urgent');
+  });
+
+  it('forces urgent false when subject URGENT is only invoice/commission noise', () => {
+    const refined = refineTriageOutput(
+      {
+        from: 'accounts@agency.com',
+        subject: 'URGENT commission invoice March',
+        body: 'Please find attached commission statement for March.',
+      },
+      {
+        category: 'ops',
+        urgent: true,
+        confidence: 0.7,
+        rationale: 'urgent word',
+        policyFlags: [],
+      },
+    );
+    expect(refined.urgent).toBe(false);
+    expect(refined.policyFlags).toContain('refine:subject-urgent-not-sla');
+  });
+
+  it('treats mail.legacyhotels.com as never-spam', () => {
+    expect(isAutoTriageNeverSpam('MAILER-DAEMON@mail.legacyhotels.com')).toBe(true);
   });
 
   it('keeps real sales spam as spam', () => {
