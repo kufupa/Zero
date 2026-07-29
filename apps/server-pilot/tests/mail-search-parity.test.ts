@@ -36,8 +36,8 @@ const parityCases: ParityCase[] = [
   { name: 'label', query: 'label:work', expected: { labelIds: ['work'], freeText: '' } },
   {
     name: 'category',
-    query: 'category:travel-agents',
-    expected: { categorySlugs: ['travel-agents'], freeText: '' },
+    query: 'category:new-bookings',
+    expected: { categorySlugs: ['new-bookings'], freeText: '' },
   },
   {
     name: 'combined query',

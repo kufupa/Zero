@@ -93,12 +93,12 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.listThreads category and
     });
   });
 
-  it('lists categorized thread via seeded group category slug filter', async () => {
+  it('lists categorized thread via seeded groups-events category slug filter', async () => {
     await withSeededTestDb(async (db) => {
       const [groupCategory] = await db
         .select()
         .from(mailCategory)
-        .where(and(eq(mailCategory.transportId, TRANSPORT_ID), eq(mailCategory.slug, 'group')))
+        .where(and(eq(mailCategory.transportId, TRANSPORT_ID), eq(mailCategory.slug, 'groups-events')))
         .limit(1);
       expect(groupCategory).toBeDefined();
 
@@ -148,7 +148,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.listThreads category and
       const [groupCategory] = await db
         .select()
         .from(mailCategory)
-        .where(and(eq(mailCategory.transportId, TRANSPORT_ID), eq(mailCategory.slug, 'group')))
+        .where(and(eq(mailCategory.transportId, TRANSPORT_ID), eq(mailCategory.slug, 'groups-events')))
         .limit(1);
       expect(groupCategory).toBeDefined();
 
@@ -182,7 +182,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.listThreads category and
       const { mail } = await callerFor('user-navaai', { db });
       const detail = await mail.get({ id: threadId });
       expect(detail.categoryIds).toEqual([groupCategory!.id]);
-      expect(detail.categories.map((c) => c.slug)).toEqual(['group']);
+      expect(detail.categories.map((c) => c.slug)).toEqual(['groups-events']);
     });
   });
 });

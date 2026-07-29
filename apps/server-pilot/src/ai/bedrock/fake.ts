@@ -20,17 +20,24 @@ function fakeUsage(): ModelInvokeResult['usage'] {
 
 const FIXTURE_OUTPUTS: Record<string, Record<string, unknown>> = {
   triage: {
-    category: 'individual',
+    category: 'new-bookings',
     urgent: false,
     confidence: 0.91,
     rationale: 'Guest booking inquiry',
     policyFlags: [],
   },
   triageGroup: {
-    category: 'group',
+    category: 'groups-events',
     urgent: false,
     confidence: 0.88,
     rationale: 'Group quote language',
+    policyFlags: [],
+  },
+  triageOps: {
+    category: 'ops',
+    urgent: false,
+    confidence: 0.85,
+    rationale: 'Internal ops handover',
     policyFlags: [],
   },
   triageSpam: {
@@ -53,6 +60,9 @@ function fixtureKey(input: ModelInvokeInput): string {
   if (combined.includes('triage') || combined.includes('classify') || combined.includes('<email>')) {
     if (user.includes('spam')) {
       return 'triageSpam';
+    }
+    if (user.includes('handover') || user.includes('vip arrivals')) {
+      return 'triageOps';
     }
     if (user.includes('group') || user.includes('20 rooms')) {
       return 'triageGroup';

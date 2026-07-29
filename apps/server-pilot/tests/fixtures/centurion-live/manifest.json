@@ -12,49 +12,49 @@
       "id": "group-kleinkaap",
       "file": "group-overflow-rooms.eml",
       "kind": "guest",
-      "expectedCategory": "group",
+      "expectedCategory": "groups-events",
       "expectedUrgent": false
     },
     {
       "id": "individual-urgent-invoice",
       "file": "individual-urgent-tax-invoice.eml",
       "kind": "guest",
-      "expectedCategory": "individual",
+      "expectedCategory": "new-bookings",
       "expectedUrgent": true
     },
     {
       "id": "individual-quotation",
       "file": "individual-quotation-request.eml",
       "kind": "guest",
-      "expectedCategory": "individual",
+      "expectedCategory": "new-bookings",
       "expectedUrgent": false
     },
     {
       "id": "individual-municipality",
       "file": "individual-municipality-booking.eml",
       "kind": "guest",
-      "expectedCategory": "travel-agents",
+      "expectedCategory": "new-bookings",
       "expectedUrgent": false
     },
     {
       "id": "travel-agents-four-rooms",
       "file": "travel-agents-multi-room.eml",
       "kind": "guest",
-      "expectedCategory": "travel-agents",
+      "expectedCategory": "groups-events",
       "expectedUrgent": false
     },
     {
       "id": "travel-agents-quote",
       "file": "travel-agents-government-quote.eml",
       "kind": "guest",
-      "expectedCategory": "travel-agents",
+      "expectedCategory": "groups-events",
       "expectedUrgent": false
     },
     {
       "id": "internal-handover",
       "file": "internal-vip-handover.eml",
       "kind": "guest",
-      "expectedCategory": "internal",
+      "expectedCategory": "ops",
       "expectedUrgent": false
     },
     {

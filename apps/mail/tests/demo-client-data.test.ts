@@ -7,7 +7,7 @@ const REMOVED_DEMO_LABELS = new Set(['comment', 'to respond', 'promotion', 'bill
 describe('demo client data helpers', () => {
   it('normalizes demo mail folder slugs for list queries', () => {
     expect(normalizeDemoMailFolderSlug('urgent')).toBe('urgent');
-    expect(normalizeDemoMailFolderSlug('hr')).toBe('internal');
+    expect(normalizeDemoMailFolderSlug('operations')).toBe('ops');
     expect(normalizeDemoMailFolderSlug('inbox')).toBe('inbox');
   });
 

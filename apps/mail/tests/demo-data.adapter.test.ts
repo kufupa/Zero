@@ -47,14 +47,14 @@ describe('demo adapter', () => {
     expect(spam.threads.length).toBeGreaterThan(0);
   });
 
-  it('internal folder is subset of inbox', () => {
+  it('ops folder is subset of inbox', () => {
     const inbox = listDemoThreads({ folder: 'inbox', maxResults: 100 });
-    const internal = listDemoThreads({ folder: 'internal', maxResults: 100 });
+    const ops = listDemoThreads({ folder: 'ops', maxResults: 100 });
     const inboxIds = new Set(inbox.threads.map((t) => t.id));
-    for (const t of internal.threads) {
+    for (const t of ops.threads) {
       expect(inboxIds.has(t.id)).toBe(true);
     }
-    expect(internal.threads.length).toBeGreaterThan(0);
+    expect(ops.threads.length).toBeGreaterThan(0);
   });
 
   it('urgent folder lists urgent threads across categories', () => {
@@ -86,7 +86,7 @@ describe('demo adapter', () => {
     const inbox = listDemoThreads({ folder: 'inbox', maxResults: 100 });
     for (const row of inbox.threads) {
       expect(row.centurionCategory).toBeDefined();
-      expect(['internal', 'individual', 'group', 'travel-agents']).toContain(row.centurionCategory);
+      expect(['at-risk', 'new-bookings', 'groups-events', 'ops']).toContain(row.centurionCategory);
     }
     const spam = listDemoThreads({ folder: 'spam', maxResults: 100 });
     for (const row of spam.threads) {
@@ -95,9 +95,9 @@ describe('demo adapter', () => {
   });
 
   it('threadMatchesDemoListFolder encodes view rules', () => {
-    const t = minimalThread('1', 'individual', true);
+    const t = minimalThread('1', 'new-bookings', true);
     expect(threadMatchesDemoListFolder(t, 'inbox')).toBe(true);
-    expect(threadMatchesDemoListFolder(t, 'individual')).toBe(true);
+    expect(threadMatchesDemoListFolder(t, 'new-bookings')).toBe(true);
     expect(threadMatchesDemoListFolder(t, 'urgent')).toBe(true);
     expect(threadMatchesDemoListFolder(t, 'spam')).toBe(false);
 

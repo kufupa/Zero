@@ -90,7 +90,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai workflow run contract', ()
       runKind: 'inbound_triage',
       idempotencyKey,
       modelId: 'amazon.nova-lite-v1:0',
-      promptVersion: 'triage-v1',
+      promptVersion: 'triage-v4',
     });
     const second = await enqueueAiRun({
       transportId,
@@ -99,7 +99,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai workflow run contract', ()
       runKind: 'inbound_triage',
       idempotencyKey,
       modelId: 'amazon.nova-lite-v1:0',
-      promptVersion: 'triage-v1',
+      promptVersion: 'triage-v4',
     });
 
     expect(second.id).toBe(first.id);
@@ -120,7 +120,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai workflow run contract', ()
       runKind: 'inbound_triage',
       idempotencyKey: `inbound-triage:${messageId}`,
       modelId: 'amazon.nova-lite-v1:0',
-      promptVersion: 'triage-v1',
+      promptVersion: 'triage-v4',
     });
 
     const [first, second] = await Promise.all([
@@ -143,7 +143,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai workflow run contract', ()
       runKind: 'inbound_triage',
       idempotencyKey: `inbound-triage:${messageId}`,
       modelId: 'amazon.nova-lite-v1:0',
-      promptVersion: 'triage-v1',
+      promptVersion: 'triage-v4',
     });
     const claimed = await claimNextAiRun({ ownerId: 'worker-a' });
     expect(claimed?.id).toBe(run.id);
@@ -178,7 +178,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai workflow run contract', ()
         runKind: 'inbound_triage',
         idempotencyKey: 'missing-transport',
         modelId: 'amazon.nova-lite-v1:0',
-        promptVersion: 'triage-v1',
+        promptVersion: 'triage-v4',
       }),
     ).rejects.toThrow(/transport/i);
 
@@ -190,7 +190,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai workflow run contract', ()
         runKind: 'inbound_triage',
         idempotencyKey: 'missing-thread',
         modelId: 'amazon.nova-lite-v1:0',
-        promptVersion: 'triage-v1',
+        promptVersion: 'triage-v4',
       }),
     ).rejects.toThrow(/thread/i);
 
@@ -202,7 +202,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai workflow run contract', ()
         runKind: 'inbound_triage',
         idempotencyKey: 'missing-message',
         modelId: 'amazon.nova-lite-v1:0',
-        promptVersion: 'triage-v1',
+        promptVersion: 'triage-v4',
       }),
     ).rejects.toThrow(/message/i);
   });
@@ -321,7 +321,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai workflow run contract', ()
           runKind: 'inbound_triage',
           idempotencyKey: `inbound-triage:${messageId}`,
           modelId: 'amazon.nova-lite-v1:0',
-          promptVersion: 'triage-v1',
+          promptVersion: 'triage-v4',
         },
         db,
       );

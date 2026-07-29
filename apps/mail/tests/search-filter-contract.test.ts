@@ -15,12 +15,12 @@ import { canUseNaturalLanguageSearch, PILOT_CAPABILITIES } from '../lib/pilot/ca
 describe('mail route filter contract', () => {
   it('maps hotel category slug to structured category filter', () => {
     const result = resolveMailRouteFilter(
-      'travel-agents',
-      new Map([['travel-agents', 'cat-travel']]),
+      'new-bookings',
+      new Map([['new-bookings', 'cat-new-bookings']]),
     );
     expect(result).toEqual({
       folder: 'inbox',
-      filters: { categoryIds: ['cat-travel'] },
+      filters: { categoryIds: ['cat-new-bookings'] },
     });
   });
 
@@ -30,13 +30,13 @@ describe('mail route filter contract', () => {
   });
 
   it('hotel chip selection yields categoryIds not labelIds', () => {
-    const nextIds = toggleCategoryChip([], 'cat-travel');
-    expect(nextIds).toEqual(['cat-travel']);
-    expect(toggleCategoryChip(nextIds, 'cat-travel')).toEqual([]);
+    const nextIds = toggleCategoryChip([], 'cat-new-bookings');
+    expect(nextIds).toEqual(['cat-new-bookings']);
+    expect(toggleCategoryChip(nextIds, 'cat-new-bookings')).toEqual([]);
 
-    const input = buildListThreadsInput({ categoryIds: ['cat-travel'], labels: [] });
+    const input = buildListThreadsInput({ categoryIds: ['cat-new-bookings'], labels: [] });
     expect(input).toEqual({
-      filters: { categoryIds: ['cat-travel'] },
+      filters: { categoryIds: ['cat-new-bookings'] },
       labelIds: [],
     });
     expect(input.labelIds).toEqual([]);
@@ -44,8 +44,8 @@ describe('mail route filter contract', () => {
   });
 
   it('hotel chip display uses presentation title for managed slug', () => {
-    expect(getHotelFolderPresentation('travel-agents')?.title).toBe('Travel Agents');
-    expect(getHotelPillColorStyle('travel-agents').bg).toBe('#EDE9FE');
+    expect(getHotelFolderPresentation('new-bookings')?.title).toBe('New Bookings');
+    expect(getHotelPillColorStyle('new-bookings').bg).toBe('#DCFCE7');
   });
 
   it('merges route + query categoryIds and applies color theme', () => {

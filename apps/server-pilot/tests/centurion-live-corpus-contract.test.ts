@@ -33,7 +33,7 @@ describe('centurion-live corpus', () => {
     const manifest = loadManifest();
     expect(manifest.version).toBe(1);
     const cats = new Set(manifest.cases.filter((c: { kind: string }) => c.kind === 'guest').map((c: { expectedCategory: string }) => c.expectedCategory));
-    for (const need of ['spam', 'individual', 'group', 'travel-agents', 'internal']) {
+    for (const need of ['spam', 'new-bookings', 'groups-events', 'ops']) {
       expect(cats.has(need)).toBe(true);
     }
     expect(manifest.cases.some((c: { expectedUrgent: boolean }) => c.expectedUrgent)).toBe(true);

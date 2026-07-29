@@ -128,9 +128,9 @@ describe('driver type package contract', () => {
     } satisfies ParsedDraft;
 
     const category = {
-      id: 'cat-travel',
-      slug: 'travel-agents',
-      name: 'Travel Agents',
+      id: 'cat-new-bookings',
+      slug: 'new-bookings',
+      name: 'New Bookings',
       color: '#14b8a6',
       sortOrder: 10,
     } satisfies MailCategory;
@@ -184,8 +184,8 @@ describe('driver type package contract', () => {
     } satisfies PilotCapabilities;
 
     expect(detail.drafts[0]?.id).toBe('draft-1');
-    expect(detail.categories[0]?.slug).toBe('travel-agents');
-    expect(filters.categoryIds).toEqual(['cat-travel']);
+    expect(detail.categories[0]?.slug).toBe('new-bookings');
+    expect(filters.categoryIds).toEqual(['cat-new-bookings']);
     expect(list.threads).toHaveLength(1);
     expect(caps.hotelCategories).toBe(true);
   });

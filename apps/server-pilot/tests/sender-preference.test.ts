@@ -231,7 +231,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('sender preference (seeded)', 
         policyFlags: [],
       },
     );
-    expect(refined.category).toBe('internal');
+    expect(refined.category).toBe('ops');
     expect(refined.policyFlags).toContain('refine:never-spam-allowlist');
   });
 });

@@ -71,7 +71,7 @@ describe('bedrock adapter contract', () => {
     const send = vi.fn().mockResolvedValue({
       output: {
         message: {
-          content: [{ text: '{"category":"individual","urgent":false,"confidence":0.9,"rationale":"ok","policyFlags":[]}' }],
+          content: [{ text: '{"category":"new-bookings","urgent":false,"confidence":0.9,"rationale":"ok","policyFlags":[]}' }],
         },
       },
       usage: { inputTokens: 10, outputTokens: 5 },
@@ -85,7 +85,7 @@ describe('bedrock adapter contract', () => {
       systemPrompt: 'classify',
       userPrompt: 'classify inbound email',
     });
-    expect(result.output).toMatchObject({ category: 'individual' });
+    expect(result.output).toMatchObject({ category: 'new-bookings' });
     expect(result.usage.inputTokens).toBe(10);
     expect(result.usage.outputTokens).toBe(5);
     expect(result.usage.totalTokens).toBe(15);
@@ -98,7 +98,7 @@ describe('bedrock adapter contract', () => {
     const send = vi.fn().mockResolvedValue({
       output: {
         message: {
-          content: [{ text: '{"category":"group","urgent":false,"confidence":0.9,"rationale":"ok","policyFlags":[]}' }],
+          content: [{ text: '{"category":"groups-events","urgent":false,"confidence":0.9,"rationale":"ok","policyFlags":[]}' }],
         },
       },
       usage: { inputTokens: 10, outputTokens: 5 },

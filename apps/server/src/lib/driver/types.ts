@@ -10,7 +10,12 @@ export type CenturionMailCategory =
   | 'at-risk'
   | 'ops';
 
-export const centurionMailCategorySchema = z.enum(['internal', 'individual', 'group', 'travel-agents']);
+export const centurionMailCategorySchema = z.enum([
+  'new-bookings',
+  'groups-events',
+  'at-risk',
+  'ops',
+]);
 
 /**
  * Drafts (future backend):

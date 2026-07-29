@@ -14,7 +14,7 @@ describe('AI eval runner', () => {
     ) as { cases: Array<{ expectedCategory: string }> };
     const categories = demo.cases.map((testCase) => testCase.expectedCategory);
     expect(categories).toEqual(
-      expect.arrayContaining(['spam', 'group', 'individual', 'internal', 'travel-agents']),
+      expect.arrayContaining(['spam', 'groups-events', 'new-bookings', 'ops']),
     );
   });
 

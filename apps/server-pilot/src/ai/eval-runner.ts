@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createFakeModelAdapter } from './bedrock/fake.js';
+import { DEFAULT_TRIAGE_PROMPT_VERSION } from './run-ledger.js';
 import { validateStructuredJsonOutput } from './security/policy.js';
 import { scoreCategoryMatch, scoreUrgentMatch } from './scorers/category.js';
 import { scoreSecurityFixture } from './scorers/security.js';
@@ -61,21 +62,39 @@ function loadJson<T>(fileName: string): T {
 
 const CATEGORY_OVERRIDES: Record<string, Partial<TriageOutput>> = {
   spam: { category: 'spam', urgent: false, confidence: 0.95, rationale: 'sales outreach', policyFlags: [] },
-  group: { category: 'group', urgent: false, confidence: 0.9, rationale: 'group quote', policyFlags: [] },
-  individual: { category: 'individual', urgent: true, confidence: 0.88, rationale: 'guest request', policyFlags: [] },
-  internal: { category: 'internal', urgent: false, confidence: 0.87, rationale: 'internal ops', policyFlags: [] },
-  'travel-agents': {
-    category: 'travel-agents',
+  'groups-events': {
+    category: 'groups-events',
+    urgent: false,
+    confidence: 0.9,
+    rationale: 'group quote',
+    policyFlags: [],
+  },
+  'new-bookings': {
+    category: 'new-bookings',
+    urgent: true,
+    confidence: 0.88,
+    rationale: 'guest request',
+    policyFlags: [],
+  },
+  ops: { category: 'ops', urgent: false, confidence: 0.87, rationale: 'internal ops', policyFlags: [] },
+  'at-risk': {
+    category: 'at-risk',
     urgent: false,
     confidence: 0.86,
-    rationale: 'travel agent',
+    rationale: 'revenue risk',
     policyFlags: [],
   },
 };
 
 function categoryOverrideForCase(testCase: DemoFixtureCase): Partial<TriageOutput> {
   if (testCase.id === 'group-urgent') {
-    return { category: 'group', urgent: true, confidence: 0.9, rationale: 'urgent group quote', policyFlags: [] };
+    return {
+      category: 'groups-events',
+      urgent: true,
+      confidence: 0.9,
+      rationale: 'urgent group quote',
+      policyFlags: [],
+    };
   }
   if (!testCase.expectedCategory) return {};
   return CATEGORY_OVERRIDES[testCase.expectedCategory] ?? {};
@@ -212,7 +231,7 @@ export async function runSpikeEval(options?: {
     passed,
     writeGateEnabled: passed,
     modelId: 'amazon.nova-lite-v1:0',
-    promptVersion: 'triage-v1',
+    promptVersion: DEFAULT_TRIAGE_PROMPT_VERSION,
     traceIds,
     scorerIds: [...new Set(scorerIds)],
     metrics: {

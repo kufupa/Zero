@@ -59,8 +59,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('categories router', () => {
       } as never);
 
       const travel = await caller.categories.create({
-        slug: 'travel-agents',
-        name: 'Travel Agents',
+        slug: 'new-bookings',
+        name: 'New Bookings',
         color: '#14b8a6',
         sortOrder: 10,
       });
@@ -77,7 +77,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('categories router', () => {
       });
 
       const categories = await caller.categories.list();
-      expect(categories.map((c) => c.slug)).toEqual(['travel-agents', 'urgent']);
+      expect(categories.map((c) => c.slug)).toEqual(['new-bookings', 'urgent']);
 
       const membership = await db.select().from(mailThreadCategory);
       expect(membership.filter((row) => row.threadId === threadId)).toHaveLength(2);

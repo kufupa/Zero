@@ -69,7 +69,7 @@ describe('bedrock adapter contract', () => {
       userPrompt: 'classify this inbound email',
     });
     expect(triage.output).toMatchObject({
-      category: 'individual',
+      category: 'new-bookings',
       confidence: expect.any(Number),
     });
     expect(triage.usage.latencyMs).toBeGreaterThan(0);

@@ -12,7 +12,7 @@
     {
       "id": "group-quote",
       "sourceThreadId": "sa-thread-002",
-      "expectedCategory": "group",
+      "expectedCategory": "groups-events",
       "expectedUrgent": false,
       "subject": "Kleinkaap Overflow Rooms 23 April",
       "body": "Can you assist with a quotation for 20 single rooms check in 23 April and check out 24 April?"
@@ -20,7 +20,7 @@
     {
       "id": "group-urgent",
       "sourceThreadId": "sa-thread-002b",
-      "expectedCategory": "group",
+      "expectedCategory": "groups-events",
       "expectedUrgent": true,
       "subject": "Urgent group quote",
       "body": "Urgent: need 20 rooms for a group booking tomorrow."
@@ -28,7 +28,7 @@
     {
       "id": "individual-booking",
       "sourceThreadId": "sa-thread-003",
-      "expectedCategory": "individual",
+      "expectedCategory": "new-bookings",
       "expectedUrgent": true,
       "subject": "Urgent Tax invoice",
       "body": "Please assist with an urgent tax invoice for our guest file. Importance: High."
@@ -36,7 +36,7 @@
     {
       "id": "internal-banqueting",
       "sourceThreadId": "sa-thread-009",
-      "expectedCategory": "internal",
+      "expectedCategory": "ops",
       "expectedUrgent": false,
       "subject": "Banqueting handover",
       "body": "Internal handover for tomorrow's banquet setup and staffing."
@@ -44,7 +44,7 @@
     {
       "id": "travel-agent",
       "sourceThreadId": "sa-thread-005",
-      "expectedCategory": "travel-agents",
+      "expectedCategory": "new-bookings",
       "expectedUrgent": false,
       "subject": "Booking request",
       "body": "Please confirm availability for our travel agency guest."
@@ -52,7 +52,7 @@
     {
       "id": "travel-agent-normal",
       "sourceThreadId": "sa-thread-005b",
-      "expectedCategory": "travel-agents",
+      "expectedCategory": "new-bookings",
       "expectedUrgent": false,
       "subject": "Standard agency booking",
       "body": "Travel agency booking request for one guest room next week."
