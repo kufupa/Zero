@@ -7,6 +7,7 @@
  * Usage:
  *   node scripts/retag-centurion-triage.mjs
  *   node scripts/retag-centurion-triage.mjs --apply
+ *   node scripts/retag-centurion-triage.mjs --apply --key-prefix inbound-triage-retag-v4b --from-domain renniesbcdtravel.com
  *
  * Env: DATABASE_URL (+ deploy/rds-ca-global.pem for SSL when present)
  */
@@ -41,8 +42,20 @@ const LEGACY_INVENT_WHO_SLUGS = [
 const RETAG_UNSETTLE_SLUGS = [...AI_MANAGED_SLUGS, ...LEGACY_INVENT_WHO_SLUGS];
 
 function parseArgs(argv) {
+  let keyPrefix = 'inbound-triage-retag-v4';
+  let fromDomain = null;
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === '--key-prefix' && argv[i + 1]) {
+      keyPrefix = argv[++i];
+    } else if (arg === '--from-domain' && argv[i + 1]) {
+      fromDomain = argv[++i].toLowerCase();
+    }
+  }
   return {
     dryRun: !argv.includes('--apply'),
+    keyPrefix,
+    fromDomain,
   };
 }
 
@@ -54,11 +67,11 @@ function sslOptions() {
   return 'require';
 }
 
-function retagIdempotencyKey(messageId) {
-  return `inbound-triage-retag-v4:${messageId}`;
+function retagIdempotencyKey(messageId, keyPrefix) {
+  return `${keyPrefix}:${messageId}`;
 }
 
-const { dryRun } = parseArgs(process.argv.slice(2));
+const { dryRun, keyPrefix, fromDomain } = parseArgs(process.argv.slice(2));
 const url = process.env.DATABASE_URL;
 if (!url) {
   console.error('DATABASE_URL required');
@@ -87,6 +100,7 @@ try {
   const threads = await sql`
     SELECT
       t.id AS thread_id,
+      t.spam_at,
       t.spam_user_locked_at,
       (
         SELECT m.id
@@ -95,7 +109,15 @@ try {
           AND m.direction = 'inbound'
         ORDER BY coalesce(m.received_at, m.sent_at, m.created_at) DESC NULLS LAST, m.id DESC
         LIMIT 1
-      ) AS latest_inbound_id
+      ) AS latest_inbound_id,
+      (
+        SELECT lower(m.from_address)
+        FROM message m
+        WHERE m.thread_id = t.id
+          AND m.direction = 'inbound'
+        ORDER BY coalesce(m.received_at, m.sent_at, m.created_at) DESC NULLS LAST, m.id DESC
+        LIMIT 1
+      ) AS latest_inbound_from
     FROM mail_thread t
     WHERE t.transport_id = ${TRANSPORT_ID}
       AND EXISTS (
@@ -110,6 +132,16 @@ try {
   counts.scanned = threads.length;
 
   for (const row of threads) {
+    if (fromDomain) {
+      const from = row.latest_inbound_from ?? '';
+      if (!from.endsWith(`@${fromDomain}`)) {
+        continue;
+      }
+      if (!row.spam_at) {
+        continue;
+      }
+    }
+
     if (row.spam_user_locked_at) {
       counts.skipped_locked += 1;
       console.error(`skip locked thread_id=${row.thread_id}`);
@@ -121,7 +153,7 @@ try {
       continue;
     }
 
-    const idempotencyKey = retagIdempotencyKey(row.latest_inbound_id);
+    const idempotencyKey = retagIdempotencyKey(row.latest_inbound_id, keyPrefix);
 
     if (dryRun) {
       counts.unsettled += 1;
@@ -187,6 +219,8 @@ try {
       mode: dryRun ? 'dry-run' : 'apply',
       transportId: TRANSPORT_ID,
       promptVersion: PROMPT_VERSION,
+      keyPrefix,
+      fromDomain,
       ...counts,
     }),
   );

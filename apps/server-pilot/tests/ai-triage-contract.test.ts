@@ -32,6 +32,7 @@ describe('AI triage contract', () => {
     expect(p).toMatch(/GuestRevu|review digest/i);
     expect(p).toMatch(/OTP|verification code/i);
     expect(p).toMatch(/FortiMail|quarantine/i);
+    expect(p).toMatch(/travel voucher|booking voucher/i);
   });
 
   it('user prompt marks TRIGGER and preserves order', () => {

@@ -83,6 +83,7 @@ Never classify spam when the TRIGGER is:
 - Bank payment / POP / payment notification → ops
 - Booking confirmation, amendment, or RFQ/quote work already in-thread
 - Short personal note from a human (hi/test) with no sales pitch → new-bookings
+- Travel voucher / booking voucher / agency travel docs from a known travel agent (e.g. BCD/Rennies) for a guest stay → new-bookings (multi-room → groups-events)
 Hotel-ops automation that helps run the property is ops/new-bookings/groups-events/at-risk — not spam.
 
 ## Decision rules
@@ -105,6 +106,7 @@ Ticket: cold charity donation beg → spam / urgent false
 Ticket: short personal "hi" / subject "test" → new-bookings / urgent false
 Ticket: one guest needs tax invoice today → new-bookings / urgent true
 Ticket: agency books one guest, no cancel → new-bookings / urgent false
+Ticket: agency travel voucher / booking voucher for guest stay → new-bookings / urgent false
 Ticket: 20 rooms overflow quote → groups-events / urgent false
 Ticket: group cancel request for next week → at-risk / urgent false
 Ticket: OTA amendment must reply within 12h → at-risk / urgent true
