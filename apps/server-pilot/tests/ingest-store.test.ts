@@ -396,7 +396,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         const raw = readFixture('missing-owner.eml');
 
         await withIngestOwnerHeaderEnv('false', async () => {
-          const { result } = await withSeededTestDb(async (db) => {
+          const result = await withSeededTestDb(async (db) => {
             await seedCenturionAliases(db);
             const messageId = generateMessageId();
             const parsed = await parseRawMessage(raw, { messageId, storage });
@@ -536,7 +536,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           'utf-8',
         );
 
-        const { result } = await withSeededTestDb(async (db) => {
+        const result = await withSeededTestDb(async (db) => {
           await seedCenturionAliases(db);
           const messageId = generateMessageId();
           const parsed = await parseRawMessage(raw, { messageId, storage });

@@ -82,7 +82,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.send', () => {
   it('rejects spoofed from address', async () => {
     await withSeededTestDb(async (db) => {
       await seedCenturionThread(db);
-      const caller = await callerFor('user-navaai', { db });
+      const caller = await callerFor('user-navaai', {
+        db,
+        requestedTransportId: 'transport-centurion',
+      });
       await expect(
         caller.mail.send({
           ...validCenturionReply,
@@ -98,7 +101,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.send', () => {
       __setSmtpTransportForTests(fake);
       try {
         await seedCenturionThread(db);
-        const caller = await callerFor('user-navaai', { db });
+        const caller = await callerFor('user-navaai', {
+          db,
+          requestedTransportId: 'transport-centurion',
+        });
         await expect(
           caller.mail.send({
             ...validCenturionReply,
@@ -123,7 +129,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.send', () => {
       __setSmtpTransportForTests(fake);
       try {
         await seedCenturionThread(db);
-        const caller = await callerFor('user-navaai', { db });
+        const caller = await callerFor('user-navaai', {
+          db,
+          requestedTransportId: 'transport-centurion',
+        });
         const result = await caller.mail.send(validCenturionReply);
         expect(result.fromEmail).toBe('centurion@legacyhotels.co.za');
         expect(result.messageId).toBeTruthy();
@@ -218,7 +227,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.send', () => {
           .set({ messageIdHeader: '<old@x>' })
           .where(eq(message.id, 'msg-centurion-inbound-1'));
 
-        const caller = await callerFor('user-navaai', { db });
+        const caller = await callerFor('user-navaai', {
+          db,
+          requestedTransportId: 'transport-centurion',
+        });
         await caller.mail.send({
           threadId: 'thread-centurion-1',
           to: ['a@example.com'],
@@ -240,7 +252,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.send', () => {
       __setSmtpTransportForTests(fake);
       try {
         await seedCenturionThread(db);
-        const caller = await callerFor('user-navaai', { db });
+        const caller = await callerFor('user-navaai', {
+          db,
+          requestedTransportId: 'transport-centurion',
+        });
         await caller.mail.send({
           threadId: 'thread-centurion-1',
           to: ['a@example.com'],
