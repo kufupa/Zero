@@ -73,6 +73,9 @@ describe('AI triage contract', () => {
     expect(source).toMatch(/export async function classifyMailTriage/);
     expect(source).toMatch(/classifyMailTriage\(/);
     expect(source).not.toMatch(/process\.env\.AI_MODEL_ID/);
+    expect(source).toMatch(/createdAt:\s*z\.coerce\.date\(\)/);
+    expect(source).not.toMatch(/createdAt:\s*z\.coerce\.date\(\)\.optional\(\)/);
+    expect(source).not.toMatch(/createdAt:\s*m\.createdAt\s*\?\?/);
   });
 
   it('classifyMailTriage returns raw/refined output and provenance hashes', async () => {
@@ -346,6 +349,33 @@ describe('AI triage contract', () => {
       confidence: expect.any(Number),
       rationale: expect.any(String),
     });
+  });
+
+  it('rejects triage messages missing createdAt (no asOf fallback)', async () => {
+    const mastra = createMastraRuntime(':memory:');
+    const workflow = mastra.getWorkflow('mailTriage');
+    const workflowRun = await workflow.createRun();
+    await expect(
+      workflowRun.start({
+        inputData: {
+          transportId: 'transport-centurion',
+          threadId: 'thread-1',
+          triggerMessageId: 'msg-1',
+          asOf: '2026-07-01T12:00:00.000Z',
+          modelId: 'amazon.nova-lite-v1:0',
+          promptVersion: 'triage-v4',
+          messages: [
+            {
+              id: 'msg-1',
+              from: 'guest@example.com',
+              subject: 'Booking',
+              body: 'Need a room',
+              direction: 'inbound',
+            },
+          ],
+        },
+      }),
+    ).rejects.toThrow(/createdAt/i);
   });
 });
 

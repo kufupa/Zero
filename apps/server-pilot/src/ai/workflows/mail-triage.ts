@@ -25,7 +25,7 @@ const triageMessageSchema = z.object({
   subject: z.string().optional(),
   body: z.string(),
   direction: z.enum(['inbound', 'outbound']).optional(),
-  createdAt: z.coerce.date().optional(),
+  createdAt: z.coerce.date(),
   receivedAt: z.coerce.date().nullable().optional(),
   sentAt: z.coerce.date().nullable().optional(),
 });
@@ -215,7 +215,7 @@ function toTriageMessageRows(
     subject: m.subject,
     body: m.body,
     direction: m.direction ?? 'inbound',
-    createdAt: m.createdAt ?? new Date(input.asOf),
+    createdAt: m.createdAt,
     receivedAt: m.receivedAt ?? null,
     sentAt: m.sentAt ?? null,
   }));
