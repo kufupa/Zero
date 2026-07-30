@@ -45,7 +45,7 @@ describe('deploy config', () => {
       'add_header Referrer-Policy "strict-origin-when-cross-origin" always',
     );
     expect(nginx).toContain(
-      "add_header Content-Security-Policy \"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; frame-ancestors 'none';\" always",
+      "add_header Content-Security-Policy \"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; frame-ancestors 'none';\" always",
     );
   });
 
@@ -434,5 +434,91 @@ describe('deploy config', () => {
     } finally {
       rmSync(missingDir, { recursive: true, force: true });
     }
+  });
+
+  it('launch-readiness.sh is strict, redacted, read-only, and syntactically valid', async () => {
+    const { existsSync, readFileSync } = await import('node:fs');
+    const { spawnSync } = await import('node:child_process');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const scriptPath = join(here, '..', 'deploy', 'launch-readiness.sh');
+    const script = existsSync(scriptPath) ? readFileSync(scriptPath, 'utf8') : '';
+
+    expect(script).toContain('REQUIRE_HOTEL_PROBE=1');
+    expect(script).toContain('RDS_INSTANCE_ID:=nava-zero-mail-pilot');
+    expect(script).toContain('S3_BUCKET:=nava-zero-mail-845242190536-af-south-1');
+    expect(script).toContain('MAIL_TRANSPORT_MODE');
+    expect(script).toContain('BETTER_AUTH_URL');
+    expect(script).toContain('UNDO_SEND_SECONDS');
+    expect(script).toContain('AI_WRITE_GATE_ENABLED');
+    expect(script).toContain('AI_DRAFTS_ENABLED');
+    expect(script).toContain('monitoringMode');
+    expect(script).toContain('deletionProtection');
+    expect(script).toContain('multiAZ');
+    expect(script).toContain('latestInboundAt');
+    expect(script).toContain('backupLatestRestorableAt');
+    expect(script).not.toMatch(/\bset\s+-x\b/);
+    expect(script).not.toMatch(
+      /(?:echo|printf)[^\n]*(?:DATABASE_URL|PASSWORD|SECRET_ARN|SECRET_STRING)/,
+    );
+    expect(script).not.toMatch(/\b(?:INSERT|UPDATE|DELETE|TRUNCATE|ALTER|DROP|CREATE)\b/i);
+
+    const syntax = spawnSync('bash', ['-n', scriptPath], { encoding: 'utf8' });
+    expect(syntax.status).toBe(0);
+  });
+
+  it('real-mail UI gate has a non-mutating read-only mode', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const script = readFileSync(
+      join(here, '..', 'deploy', 'playwright-real-mail-ui-gate.sh'),
+      'utf8',
+    );
+
+    expect(script).toContain('--read-only');
+    expect(script).toContain('READ_ONLY=1');
+    expect(script).toContain('EXPECTED_UNDO_SEND_SECONDS=30');
+    expect(script).toContain('READ_ONLY_SPECS=(');
+    const readOnlySpecs = script.match(/READ_ONLY_SPECS=\(([\s\S]*?)\)/)?.[1] ?? '';
+    expect(readOnlySpecs).toContain('real-mail-browser-login');
+    expect(readOnlySpecs).toContain('real-mail-launch-readonly');
+    expect(readOnlySpecs).not.toMatch(/compose|reply|force-sync|forceSync|send/i);
+    expect(script).not.toContain('api/auth/sign-in/email');
+    expect(script).not.toMatch(/echo[^\n]*PLAYWRIGHT_REAL_MAIL_PASSWORD/);
+  });
+
+  it('task-owned operations files never stage the whole worktree', async () => {
+    const { existsSync, readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const repoRoot = join(here, '..', '..', '..');
+    const paths = [
+      join(here, '..', 'deploy', 'launch-readiness.sh'),
+      join(here, '..', 'deploy', 'playwright-real-mail-ui-gate.sh'),
+      join(repoRoot, 'docs', 'runbooks', 'centurion-day-one-operations.md'),
+    ];
+
+    for (const path of paths) {
+      const source = existsSync(path) ? readFileSync(path, 'utf8') : '';
+      expect(source, path).not.toMatch(/\bgit\s+add\s+(?:\.|-A|--all)(?:\s|$)/m);
+    }
+  });
+
+  it('private production and SDD artifacts are ignored', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const gitignore = readFileSync(join(here, '..', '..', '..', '.gitignore'), 'utf8');
+
+    expect(gitignore).toContain('live real data connection/');
+    expect(gitignore).toContain('Nava.ovpn');
+    expect(gitignore).toContain('Nava.zip');
+    expect(gitignore).toContain('.cursor/debug-*.log');
+    expect(gitignore).toContain('.superpowers/sdd/');
   });
 });
