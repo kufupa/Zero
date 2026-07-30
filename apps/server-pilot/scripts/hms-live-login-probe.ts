@@ -216,10 +216,20 @@ async function main(): Promise<void> {
   }
 }
 
+function sanitizeProbeError(raw: string): string {
+  // Strip secret-bearing tokens; keep IAM/AWS failure codes visible.
+  let msg = raw
+    .replace(/arn:aws:secretsmanager:[^\s]+/gi, 'arn:aws:secretsmanager:***')
+    .replace(/\b[A-Za-z0-9+/_-]{24,}=*/g, '***');
+  if (/\bpassword\b|\bcookie\b|SecretString/i.test(msg)) {
+    return 'redacted_error';
+  }
+  return msg.slice(0, 240);
+}
+
 main().catch((err) => {
+  const name = err instanceof Error ? err.name : 'Error';
   const msg = err instanceof Error ? err.message : String(err);
-  console.error(
-    /password|secret|cookie/i.test(msg) ? 'redacted_error' : msg.slice(0, 200),
-  );
+  console.error(`${name}: ${sanitizeProbeError(msg)}`);
   process.exit(1);
 });
