@@ -386,7 +386,9 @@ export function createFetchBrowserFactory(
         _url: string,
         handler: (route: PolicyRoute) => Promise<void> | void,
       ) {
-        this.#handlers.push(handler);
+        this.#handlers.push(async (route) => {
+          await handler(route);
+        });
       }
 
       async dispatchRoute(input: {
@@ -978,7 +980,16 @@ export async function tryCreatePlaywrightBrowserFactory(): Promise<BrowserFactor
                   (handler as (page: HmsPage) => void)(wrapPlaywrightPage(p)),
                 );
               } else if (event === 'download') {
-                context.on('download', (d) =>
+                // Playwright BrowserContext download typing varies by version;
+                // bind via untyped emit so factory still compiles.
+                (
+                  context as unknown as {
+                    on(
+                      event: 'download',
+                      listener: (download: { cancel(): Promise<void> }) => void,
+                    ): void;
+                  }
+                ).on('download', (d) =>
                   (handler as (download: HmsDownloadEvent) => void)({
                     cancel: () => d.cancel(),
                   }),

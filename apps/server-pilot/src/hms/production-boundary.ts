@@ -372,7 +372,7 @@ export async function runHmsDraftPipelineJourneys(): Promise<HmsDraftJourneyResu
           },
           unresolvedFields: [],
           evidence: hmsEv('ev-1', 'hms_find_reservation', ['reservation.status'], 'a'),
-        }) as ToolResult<unknown>,
+        }) as never,
     });
     const out = await runClaimSafeCandidateDraft({
       session,
@@ -399,7 +399,7 @@ export async function runHmsDraftPipelineJourneys(): Promise<HmsDraftJourneyResu
           data: { matches: [{}, {}], matchCount: 2, capped: false },
           unresolvedFields: ['reservation.match'],
           evidence: hmsEv('ev-amb', 'hms_find_reservation', [], 'b'),
-        }) as ToolResult<unknown>,
+        }) as never,
     });
     const out = await runClaimSafeCandidateDraft({
       session,
@@ -439,7 +439,7 @@ export async function runHmsDraftPipelineJourneys(): Promise<HmsDraftJourneyResu
           data: { inventoryObservations: [], rateObservations: [] },
           unresolvedFields: ['rate.amount', 'inventory.rooms'],
           evidence: hmsEv('ev-q', 'hms_quote_stay', [], 'c'),
-        }) as ToolResult<unknown>,
+        }) as never,
     });
     const out = await runClaimSafeCandidateDraft({
       session,
@@ -482,7 +482,7 @@ export async function runHmsDraftPipelineJourneys(): Promise<HmsDraftJourneyResu
             sourceHash: sha('d'),
             claimKeys: ['attachment.confirmation'],
           },
-        }) as ToolResult<unknown>,
+        }) as never,
     });
     const out = await runClaimSafeCandidateDraft({
       session,
@@ -522,7 +522,7 @@ export async function runHmsDraftPipelineJourneys(): Promise<HmsDraftJourneyResu
             sourceHash: sha('e'),
             claimKeys: [],
           },
-        }) as ToolResult<unknown>,
+        }) as never,
     });
     const out = await runClaimSafeCandidateDraft({
       session,
