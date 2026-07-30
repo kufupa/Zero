@@ -5,8 +5,17 @@
   "notes": [
     "Abort-first EC2 probe under fail-closed request policy.",
     "Password input is type=text with name=password (Infor quirk).",
-    "No credential values stored. No PMS mutation."
+    "Live property code in COMMON title is HRCEN (secret expectedPropertyCode updated).",
+    "No PMS mutation. Credential values never stored.",
+    "Next blocked bootstrap: POST /web/base/BSSTRT (body keys MENU_MODULE_KEY, SYSTEM_FUNCTION_NAME, USER_FUNCTION_NAME, removescreenflows)."
   ],
+  "canaryEvidence": {
+    "loginPostStatus": 200,
+    "afterSubmitPath": "/web/base/COMMON",
+    "afterSubmitTitle": "Infor HMS - HRCEN",
+    "propertyCodeInTitle": true,
+    "probeCommit": "5169ace4"
+  },
   "reviewedGetAllows": [
     { "path": "/web/base/logindisp", "resourceType": "document", "queryKeys": ["tenant"] },
     { "path": "/web/resources/inforhms/HMS-min.css", "resourceType": "stylesheet" },
@@ -18,7 +27,46 @@
     { "path": "/web/resources/inforhms/images/shared/logo.svg", "resourceType": "image" },
     { "path": "/web/resources/shared/css/SourceSansPro-font/SourceSansPro-Semibold.ttf", "resourceType": "font" },
     { "path": "/web/resources/shared/css/SourceSansPro-font/SourceSansPro-Regular.ttf", "resourceType": "font" },
-    { "path": "/web/resources/shared/css/SourceSansPro-font/SourceSansPro-It.ttf", "resourceType": "font" }
+    { "path": "/web/resources/shared/css/SourceSansPro-font/SourceSansPro-It.ttf", "resourceType": "font" },
+    { "path": "/web/base/COMMON", "resourceType": "document", "queryKeys": ["REQ_KEY"] },
+    { "path": "/", "resourceType": "document" },
+    { "path": "/web/resources/shared/scripts/vault/vaultUtility.js", "resourceType": "script" },
+    { "path": "/web/resources/shared/scripts/vault/parentFacade.js", "resourceType": "script" },
+    { "path": "/web/resources/shared/scripts/vault/parentFacadeImpl.js", "resourceType": "script" },
+    { "path": "/web/resources/shared/scripts/cryptojs/aes.js", "resourceType": "script" },
+    { "path": "/web/resources/shared/scripts/cryptojs/pbkdf2.js", "resourceType": "script" },
+    { "path": "/web/resources/shared/scripts/cryptojs/AesUtil.js", "resourceType": "script" },
+    { "path": "/web/resources/shared/scripts/cryptojs/sha256-min.js", "resourceType": "script" },
+    { "path": "/web/base/all-classes.js", "resourceType": "script" }
+  ],
+  "reviewedPostAllows": [
+    {
+      "path": "/web/base/login",
+      "resourceTypes": ["xhr", "fetch", "document"],
+      "bodyKeys": [
+        "SYSTEM_FUNCTION_NAME",
+        "USER_FUNCTION_NAME",
+        "csrftckt",
+        "password",
+        "resetpassword",
+        "tenant",
+        "userid"
+      ]
+    }
+  ],
+  "deferredBlocked": [
+    {
+      "method": "POST",
+      "path": "/web/base/BSSTRT",
+      "resourceType": "xhr",
+      "bodyKeys": [
+        "MENU_MODULE_KEY",
+        "SYSTEM_FUNCTION_NAME",
+        "USER_FUNCTION_NAME",
+        "removescreenflows"
+      ],
+      "note": "Session bootstrap after COMMON; review fixed values before allow; required before reservation search canary"
+    }
   ],
   "loginDomFingerprint": {
     "inputNames": ["userid", "password", "csrftckt"],
@@ -26,6 +74,5 @@
     "passwordCount": 0,
     "hasSignInCopy": true
   },
-  "probeCommit": "131f7811",
-  "status": "login_shell_green_zero_blocks"
+  "status": "login_and_property_title_verified_BSSTRT_deferred"
 }

@@ -1,9 +1,9 @@
 # Handoff — Infor HMS Read Foundation (2026-07-30)
 
-**Branch:** `EC2-pilot` @ `8c50373c`  
+**Branch:** `EC2-pilot` @ `c0844b0a`  
 **Plan:** `docs/superpowers/plans/2026-07-30-infor-hms-read-foundation.md`  
-**Deploy:** `ops-deploy.sh --migrate` green; health `ok`; VPN HARD ok  
-**Fixture gate:** `hms-read-gate.sh --fixture-only` **PASS** on EC2 (119 unit + playwright 2 + shadow eval smoke)
+**Deploy:** `ops-deploy.sh` green earlier; health `ok`; VPN HARD ok; `hms-ai-worker` online `lane=hms` **`HMS_DRAFT_ENRICHMENT_MODE=shadow`**  
+**Fixture gate:** `hms-read-gate.sh --fixture-only` **PASS**; `pdf-text-gate.sh` **PASS**; shadow corpus **n=35** eval pass
 
 ## Tasks 0–9
 
@@ -14,30 +14,48 @@
 | 2 Thread context + evidence | complete |
 | 3 Artifact/PDF reads | complete |
 | 4 Request policy | complete (PolicyRoute stub Accepted) |
-| 5 Runtime + discovery | complete (fixture; live discovery deferred) |
+| 5 Runtime + discovery | complete fixture; live login discovery in progress |
 | 6 Reservation + quote adapter | complete |
 | 7 Claim-safe candidate agent | complete (`planModel` Accepted) |
 | 8 Freshness UI / promote-send | complete |
-| 9 Gates + fixture E2E | complete implementer + EC2 fixture gate |
+| 9 Gates + fixture E2E + rollout wave | fixture/security/shadow green; live login+property title canary green; reservation read canary deferred on BSSTRT |
 
 ## Mode
 
-Keep **`HMS_DRAFT_ENRICHMENT_MODE=off`** until remaining rollout gates below.
+- **`shadow`** on EC2 (metrics / claim-safe mock tools). **`enabled` still forbidden.**
+- PM2 fix: `pm2.config.cjs` now passes `HMS_READ_SECRET_ARN` + chromium path into `hms-ai-worker`.
 
-## Remaining (true rollout, not code)
+## Live canary evidence (redacted)
 
-1. **Shadow quality** — labelled corpus **n≥30** for statistical gates (current eval smoke labels=3).
-2. **Live read canary** — orchestrator-only: import HMS secret → Task 5 discovery phases under Task 4 policy → redacted blocked signatures between phases. No mutation.
-3. **Enable** only after hard+stat gates green; else stay `off`.
-4. Optional: disposable-DB `--full` gate (pilot RDS DB vitest suites not used in fixture-only).
-5. EC2 `pdf-text-gate.sh` live Poppler/bwrap smoke when convenient.
+- IAM: `NavaZeroSecretsRead` includes `infor-hms-read-*`.
+- Probe: `apps/server-pilot/scripts/hms-live-login-probe.ts` + inventory `evals/hms/live-login-inventory.v1.json`.
+- Login POST `/web/base/login` → HTTP 200.
+- Landed `/web/base/COMMON`, title **`Infor HMS - HRCEN`**.
+- Secret `expectedPropertyCode` corrected **`centurion` → `HRCEN`** (name still Centurion Hotel).
+- Fail-closed next block: **POST `/web/base/BSSTRT`** (bootstrap; body keys inventoried; not auto-allowed).
+
+## Remaining deferred
+
+1. Review + allow BSSTRT (and follow-on read surfaces) → not-found reservation canary.
+2. Replace interim shadow abstention labels with live shadow outcomes when reads exist.
+3. Optional disposable-DB `--full` gate.
+4. Whole-branch review closeout of Critical/Important (dispatch after this handoff).
+5. **`enabled` only after** hard+stat + reservation read canary.
 
 ## Safety
 
 - No PMS writes. CRS Check Availability blocked. `bookable` always false.
-- Promote/send hard-block stale HMS (`STALE_AI_CANDIDATE` / `STALE_AI_DRAFT`).
+- Promote/send hard-block stale HMS.
 - Default AI worker cannot claim HMS lane; `hms-ai-worker` separate.
+- Probe never logs credential values; cookie-bearing Playwright errors sanitized.
 
-## Key commits (foundation wave)
+## Divergence log
 
-`ee648de5` … `8c50373c` on `EC2-pilot` (see `git log b6dddca2..HEAD --oneline`).
+- Property code live title uses **HRCEN**, not fixture `centurion`.
+- Infor password field is `type=text` name=`password`.
+- Shadow worker initially crashed: PM2 env omitted secret ARN when mode≠off — fixed in `c0844b0a`.
+- `ops-restart.sh` health curl can race before http binds; retry curl succeeds.
+
+## Key commits (rollout wave)
+
+`30954a82` shadow n=35 · `0a9ba4ac`…`5169ace4` live probe/allowlist · `c0844b0a` PM2 HMS env
