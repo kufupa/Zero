@@ -1,11 +1,107 @@
 import { randomUUID } from 'node:crypto';
-import { and, eq } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import {
   aiDraftGeneration,
   mailDraft,
   mailDraftRevision,
+  message,
 } from '../db/schema/mail.js';
+import { computeThreadStateVersion } from './thread-context.js';
+
+export class ThreadStateStaleError extends Error {
+  constructor(message = 'thread state version stale') {
+    super(message);
+    this.name = 'ThreadStateStaleError';
+  }
+}
+
+/**
+ * Revision kinds that participate in threadStateVersion.
+ * Exclude `ai_generated` so candidate persist does not immediately self-stale.
+ * Sent / edited / promoted / created = human or outbound state change.
+ */
+export const THREAD_STATE_REVISION_KINDS = [
+  'created',
+  'promoted',
+  'edited',
+  'sent',
+] as const;
+
+/** Fail closed when expected version does not match live thread hash. */
+export function assertThreadStateVersionFresh(expected: string, live: string): void {
+  if (expected !== live) throw new ThreadStateStaleError();
+}
+
+/**
+ * Latest thread-affecting draft revision for transport+thread.
+ * Used by threadStateVersion so sent revision / completed actions mark stale.
+ */
+export async function loadLatestThreadAffectingDraftRevisionId(
+  db: DB,
+  input: { transportId: string; threadId: string },
+): Promise<string | null> {
+  const [row] = await db
+    .select({ id: mailDraftRevision.id })
+    .from(mailDraftRevision)
+    .innerJoin(mailDraft, eq(mailDraftRevision.draftId, mailDraft.id))
+    .where(
+      and(
+        eq(mailDraft.transportId, input.transportId),
+        eq(mailDraft.threadId, input.threadId),
+        inArray(mailDraftRevision.kind, [...THREAD_STATE_REVISION_KINDS]),
+      ),
+    )
+    .orderBy(desc(mailDraftRevision.createdAt), desc(mailDraftRevision.id))
+    .limit(1);
+  return row?.id ?? null;
+}
+
+/**
+ * Live thread state version (messages + latest thread-affecting draft revision).
+ * Omit `latestDraftRevisionId` to load live from DB; pass explicit value to
+ * pin (tests / fence with a known snapshot).
+ */
+export async function loadLiveThreadStateVersion(
+  db: DB,
+  input: {
+    transportId: string;
+    threadId: string;
+    latestDraftRevisionId?: string | null;
+  },
+): Promise<string> {
+  const rows = await db
+    .select({
+      id: message.id,
+      direction: message.direction,
+      receivedAt: message.receivedAt,
+      sentAt: message.sentAt,
+    })
+    .from(message)
+    .where(
+      and(eq(message.threadId, input.threadId), eq(message.transportId, input.transportId)),
+    );
+
+  const latestDraftRevisionId =
+    input.latestDraftRevisionId !== undefined
+      ? input.latestDraftRevisionId
+      : await loadLatestThreadAffectingDraftRevisionId(db, {
+          transportId: input.transportId,
+          threadId: input.threadId,
+        });
+
+  return computeThreadStateVersion({
+    messages: rows.map((m) => ({
+      id: m.id,
+      direction: (m.direction === 'outbound' ? 'outbound' : 'inbound') as
+        | 'inbound'
+        | 'outbound',
+      timestamp:
+        (m.sentAt ?? m.receivedAt)?.toISOString() ?? '1970-01-01T00:00:00.000Z',
+    })),
+    latestDraftRevisionId,
+  });
+}
 
 export interface PersistAiCandidateDraftInput {
   db: DB;
@@ -23,9 +119,27 @@ export interface PersistAiCandidateDraftInput {
   subject: string;
   textBody: string;
   htmlBody: string;
+  /** HMS enrichment outcome; omitted for legacy skeleton. */
+  outcome?: 'candidate' | 'needs_clarification' | 'insufficient_evidence';
+  evidence?: unknown[];
+  threadStateVersion?: string;
+  /**
+   * Revision id baked into threadStateVersion at context build.
+   * Fence reloads live revision; this is retained for callers/metrics.
+   */
+  latestDraftRevisionId?: string | null;
+  /**
+   * When false (shadow / non-candidate), persist generation metrics only —
+   * no mailDraft / revision rows.
+   */
+  persistDraft?: boolean;
 }
 
 export async function persistAiCandidateDraft(input: PersistAiCandidateDraftInput) {
+  const persistDraft = input.persistDraft ?? false;
+  const outcome = input.outcome ?? 'candidate';
+  const evidence = input.evidence ?? [];
+
   const existingGeneration = await input.db
     .select({ id: aiDraftGeneration.id })
     .from(aiDraftGeneration)
@@ -58,6 +172,20 @@ export async function persistAiCandidateDraft(input: PersistAiCandidateDraftInpu
         .limit(1);
       if (draftByRevision) return draftByRevision;
     }
+
+    if (!persistDraft) {
+      const [gen] = await input.db
+        .select()
+        .from(aiDraftGeneration)
+        .where(eq(aiDraftGeneration.id, input.generationId))
+        .limit(1);
+      return {
+        ...gen,
+        id: undefined as unknown as string,
+        generationId: input.generationId,
+        status: 'candidate' as const,
+      };
+    }
   }
 
   const draftId = randomUUID();
@@ -65,6 +193,15 @@ export async function persistAiCandidateDraft(input: PersistAiCandidateDraftInpu
   const now = new Date();
 
   await input.db.transaction(async (tx) => {
+    if (input.threadStateVersion) {
+      // Live messages + thread-affecting revision (not pinned to context snapshot).
+      const live = await loadLiveThreadStateVersion(tx as unknown as DB, {
+        transportId: input.transportId,
+        threadId: input.threadId,
+      });
+      assertThreadStateVersionFresh(input.threadStateVersion, live);
+    }
+
     await tx
       .insert(aiDraftGeneration)
       .values({
@@ -76,9 +213,40 @@ export async function persistAiCandidateDraft(input: PersistAiCandidateDraftInpu
         model: input.model,
         promptVersion: input.promptVersion,
         status: 'succeeded',
+        outcome,
+        threadStateVersion: input.threadStateVersion ?? null,
+        evidence,
         createdAt: now,
       })
       .onConflictDoNothing();
+
+    if (existingGeneration.length > 0) {
+      await tx
+        .update(aiDraftGeneration)
+        .set({
+          outcome,
+          threadStateVersion: input.threadStateVersion ?? null,
+          evidence,
+          status: 'succeeded',
+        })
+        .where(eq(aiDraftGeneration.id, input.generationId));
+    }
+
+    if (!persistDraft) return;
+
+    // Atomic replace: supersede older visible AI candidates for this thread.
+    await tx
+      .update(mailDraft)
+      .set({ status: 'discarded', updatedAt: now })
+      .where(
+        and(
+          eq(mailDraft.transportId, input.transportId),
+          eq(mailDraft.threadId, input.threadId),
+          eq(mailDraft.isSent, false),
+          eq(mailDraft.status, 'candidate'),
+          eq(mailDraft.origin, 'ai'),
+        ),
+      );
 
     await tx.insert(mailDraft).values({
       id: draftId,
@@ -114,6 +282,14 @@ export async function persistAiCandidateDraft(input: PersistAiCandidateDraftInpu
       createdAt: now,
     });
   });
+
+  if (!persistDraft) {
+    return {
+      id: undefined as unknown as string,
+      generationId: input.generationId,
+      status: 'candidate' as const,
+    };
+  }
 
   const [draft] = await input.db
     .select()

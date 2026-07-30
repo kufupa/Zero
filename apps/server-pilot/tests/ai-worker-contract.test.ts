@@ -17,8 +17,8 @@ import {
   message,
 } from '../src/db/schema/mail.js';
 import { user as userAuthTable } from '../src/db/schema/auth.js';
-import { enqueueAiRun, markAiRunRetry } from '../src/ai/run-ledger.js';
-import { executeAiRun } from '../src/ai/worker.js';
+import { enqueueAiRun, claimNextAiRun, markAiRunRetry } from '../src/ai/run-ledger.js';
+import { aiWorkerOwnerId, executeAiRun } from '../src/ai/worker.js';
 import * as mastraModule from '../src/ai/mastra.js';
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
 import { TRANSPORT_ID } from '../src/db/seed.js';
@@ -26,6 +26,17 @@ import { TRANSPORT_ID } from '../src/db/seed.js';
 const reachable = await probeTestDb();
 const here = dirname(fileURLToPath(import.meta.url));
 
+async function claimForExecute(
+  runId: string,
+  lane: 'default' | 'hms' = 'default',
+) {
+  const claimed = await claimNextAiRun({
+    ownerId: aiWorkerOwnerId(lane),
+    lane,
+  });
+  expect(claimed?.id).toBe(runId);
+  return claimed!;
+}
 describe('ai worker contract', () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -41,6 +52,19 @@ describe('ai worker contract', () => {
     const keys = Object.keys(env).map((key) => key.toUpperCase());
     expect(keys.some((key) => key.includes('SMTP'))).toBe(false);
     expect(keys.some((key) => key.includes('POP3'))).toBe(false);
+    expect(env.AI_WORKER_LANE).toBe('default');
+  });
+
+  it('pm2 config adds hms-ai-worker on same worker entrypoint', async () => {
+    const { loadPm2Config } = await import('../src/deploy/load-pm2-config.js');
+    const pm2 = loadPm2Config();
+    const hmsWorker = pm2.apps.find((app) => app.name === 'hms-ai-worker');
+    expect(hmsWorker).toBeDefined();
+    expect(hmsWorker?.script).toBe('dist/ai/worker.js');
+    expect(hmsWorker?.instances).toBe(1);
+    expect(hmsWorker?.exec_mode).toBe('fork');
+    expect(hmsWorker?.env?.AI_WORKER_LANE).toBe('hms');
+    expect(hmsWorker?.env?.HMS_DRAFT_ENRICHMENT_MODE).toBeDefined();
   });
 
   it('worker module does not import send-capable SMTP modules', () => {
@@ -71,7 +95,6 @@ describe('ai worker contract', () => {
     expect(source).toMatch(/--timeout-ms/);
     expect(source).toMatch(/runAiWorkerDrain/);
     expect(source).toMatch(/unsupported prompt version/i);
-    // CLI keeps drainPrefix at parse boundary; drain API uses idempotencyPrefix only.
     expect(source).toMatch(/idempotencyPrefix:\s*args\.drainPrefix/);
     expect(source).toMatch(/idempotencyPrefix:\s*input\.idempotencyPrefix/);
     expect(source).not.toMatch(/input\.drainPrefix/);
@@ -146,6 +169,55 @@ describe('ai worker contract', () => {
     const selected = selectSupersedeTargets(rows);
     expect(selected.map((r) => r.id).sort()).toEqual(['1', '2']);
   });
+
+  it('worker claims by AI_WORKER_LANE and builds AbortSignal budget fence', () => {
+    const source = readFileSync(join(here, '..', 'src', 'ai', 'worker.ts'), 'utf8');
+    expect(source).toMatch(/AI_WORKER_LANE/);
+    expect(source).toMatch(/claimNextAiRun\(\{ ownerId: owner, lane/);
+    expect(source).toMatch(/remainingRunBudgetMs/);
+    expect(source).toMatch(/AbortSignal\.timeout/);
+    expect(source).toMatch(/AbortSignal\.any/);
+    expect(source).toMatch(/RunDeadlineError/);
+    expect(source).toMatch(/lane === 'hms'/);
+  });
+
+  it('worker heartbeats lease and aborts on lost lease', () => {
+    const source = readFileSync(join(here, '..', 'src', 'ai', 'worker.ts'), 'utf8');
+    expect(source).toMatch(/heartbeatAiRun\(/);
+    expect(source).toMatch(/setInterval/);
+    expect(source).toMatch(/clearInterval/);
+    expect(source).toMatch(/leaseAbort\.abort\(/);
+    expect(source).toMatch(/finally/);
+  });
+
+  it('running transition requires matching claimToken fence', () => {
+    const source = readFileSync(join(here, '..', 'src', 'ai', 'worker.ts'), 'utf8');
+    expect(source).toMatch(/markAiRunRunning\(/);
+    expect(source).not.toMatch(/run\.claimToken\s*\?\?\s*randomUUID\(/);
+  });
+
+  it('worker branches candidate_draft on HMS_DRAFT_ENRICHMENT_MODE (off keeps skeleton)', () => {
+    const source = readFileSync(join(here, '..', 'src', 'ai', 'worker.ts'), 'utf8');
+    expect(source).toMatch(/HMS_DRAFT_ENRICHMENT_MODE/);
+    expect(source).toMatch(/hmsMode === 'off'/);
+    expect(source).toMatch(/runClaimSafeCandidateDraft/);
+    expect(source).toMatch(/candidateDraft/);
+    expect(source).toMatch(/persistDraft/);
+  });
+
+  it('claim-safe path renders clarification templates and fences persist+succeed TX', () => {
+    const worker = readFileSync(join(here, '..', 'src', 'ai', 'worker.ts'), 'utf8');
+    expect(worker).toMatch(/renderClarificationQuestions/);
+    expect(worker).toMatch(/textToSafeHtml/);
+    expect(worker).not.toMatch(/questionCodes\.join/);
+    expect(worker).toMatch(/persistAiCandidateDraft\(/);
+    expect(worker).toMatch(/markAiRunSucceeded\(/);
+
+    const drafts = readFileSync(join(here, '..', 'src', 'ai', 'drafts.ts'), 'utf8');
+    expect(drafts).toMatch(/assertThreadStateVersionFresh/);
+    expect(drafts).toMatch(/loadLiveThreadStateVersion/);
+    expect(drafts).toMatch(/ThreadStateStaleError/);
+  });
 });
 
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () => {
@@ -203,6 +275,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
       modelId: 'amazon.nova-lite-v1:0',
       promptVersion: 'triage-v5',
     });
+    await claimForExecute(run.id);
     const result = await executeAiRun(run.id);
     expect(result.state).toBe('succeeded');
     const db = getDb();
@@ -256,14 +329,25 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
     await markAiRunRetry({
       runId: run.id,
       claimOwner: 'worker-a',
+      claimToken: 'token-a',
       expectedStates: ['running'],
       attempts: 1,
       nextRunAt: new Date(),
       lastError: 'transient',
+      failureClass: 'TRANSIENT_NETWORK',
     });
+    const claimToken = randomUUID();
+    const claimOwner = aiWorkerOwnerId('default');
     await db
       .update(aiWorkflowRun)
-      .set({ state: 'claimed', generationId, updatedAt: new Date() })
+      .set({
+        state: 'claimed',
+        generationId,
+        claimOwner,
+        claimToken,
+        deadlineAt: new Date(Date.now() + 150_000),
+        updatedAt: new Date(),
+      })
       .where(eq(aiWorkflowRun.id, run.id));
 
     await executeAiRun(run.id);
@@ -317,6 +401,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
 
       process.env.AI_WRITE_GATE_ENABLED = 'false';
       process.env.AI_DRAFTS_ENABLED = 'false';
+      await claimForExecute(run.id);
       const result = await executeAiRun(run.id);
       expect(result.state).toBe('succeeded');
 
@@ -386,6 +471,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
 
       process.env.AI_WRITE_GATE_ENABLED = 'true';
       process.env.AI_DRAFTS_ENABLED = 'true';
+      await claimForExecute(run.id);
       const result = await executeAiRun(run.id);
       expect(result.state).toBe('succeeded');
 
@@ -453,6 +539,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
 
       process.env.AI_WRITE_GATE_ENABLED = 'true';
       process.env.AI_DRAFTS_ENABLED = 'true';
+      await claimForExecute(run.id);
       await executeAiRun(run.id);
       await executeAiRun(run.id);
 
@@ -503,6 +590,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
 
       process.env.AI_WRITE_GATE_ENABLED = 'true';
       process.env.AI_DRAFTS_ENABLED = 'true';
+      await claimForExecute(run.id);
       const result = await executeAiRun(run.id);
       expect(result.state).toBe('succeeded');
 
@@ -556,6 +644,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
 
       process.env.AI_WRITE_GATE_ENABLED = 'true';
       process.env.AI_DRAFTS_ENABLED = 'true';
+      await claimForExecute(run.id);
       const result = await executeAiRun(run.id);
       expect(result.state).toBe('succeeded');
 
@@ -606,6 +695,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
 
       process.env.AI_WRITE_GATE_ENABLED = 'true';
       process.env.AI_DRAFTS_ENABLED = 'true';
+      await claimForExecute(run.id);
       const result = await executeAiRun(run.id);
       expect(result.state).toBe('succeeded');
 
@@ -657,6 +747,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
 
       process.env.AI_WRITE_GATE_ENABLED = 'true';
       process.env.AI_DRAFTS_ENABLED = 'true';
+      await claimForExecute(run.id);
       const result = await executeAiRun(run.id);
       expect(result.state).toBe('succeeded');
 

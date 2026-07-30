@@ -54,6 +54,16 @@ assertNotPilotProdDatabase(process.env.DATABASE_URL);
 
 export const TEST_DB_AVAILABLE = !!process.env.DATABASE_URL;
 
+/**
+ * HMS release gate: when HMS_DB_TEST_REQUIRED=1, missing DATABASE_URL must throw
+ * (fail closed). General suites retain skipIf(!TEST_DB_AVAILABLE) behavior.
+ */
+if (process.env.HMS_DB_TEST_REQUIRED === '1' && !process.env.DATABASE_URL) {
+  throw new Error(
+    'HMS_DB_TEST_REQUIRED=1 but DATABASE_URL is unset — fail closed (no skip)',
+  );
+}
+
 let probePromise: Promise<boolean> | undefined;
 
 async function probeDb(): Promise<boolean> {

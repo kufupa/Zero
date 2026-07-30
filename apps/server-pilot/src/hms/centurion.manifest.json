@@ -1,0 +1,216 @@
+{
+  "version": "fixture-1",
+  "binding": {
+    "transportId": "transport-centurion",
+    "origin": "http://127.0.0.1:17888",
+    "tenantId": "HMS_LEGACY",
+    "propertyKey": "centurion",
+    "expectedPropertyText": "Centurion Hotel"
+  },
+  "rules": [
+    {
+      "id": "login-page",
+      "origin": "http://127.0.0.1:17888",
+      "method": "GET",
+      "path": "/login",
+      "resourceTypes": ["document"],
+      "fixedQuery": {},
+      "variableQuery": {},
+      "fixedBody": {},
+      "variableBody": {},
+      "maxBodyBytes": 16384,
+      "redirectPolicy": "same-reviewed-chain"
+    },
+    {
+      "id": "login-session",
+      "origin": "http://127.0.0.1:17888",
+      "method": "POST",
+      "path": "/session",
+      "resourceTypes": ["document"],
+      "contentType": "application/x-www-form-urlencoded",
+      "fixedQuery": {},
+      "variableQuery": {},
+      "fixedBody": {},
+      "variableBody": {
+        "username": { "pattern": ".{1,64}", "maxLength": 64 },
+        "password": { "pattern": ".{1,128}", "maxLength": 128 }
+      },
+      "maxBodyBytes": 16384,
+      "redirectPolicy": "same-reviewed-chain"
+    },
+    {
+      "id": "property-header",
+      "origin": "http://127.0.0.1:17888",
+      "method": "GET",
+      "path": "/property",
+      "resourceTypes": ["document"],
+      "fixedQuery": {},
+      "variableQuery": {},
+      "fixedBody": {},
+      "variableBody": {},
+      "maxBodyBytes": 16384,
+      "redirectPolicy": "same-reviewed-chain"
+    },
+    {
+      "id": "reservations-page",
+      "origin": "http://127.0.0.1:17888",
+      "method": "GET",
+      "path": "/reservations",
+      "resourceTypes": ["document"],
+      "fixedQuery": {},
+      "variableQuery": {},
+      "fixedBody": {},
+      "variableBody": {},
+      "maxBodyBytes": 16384,
+      "redirectPolicy": "same-reviewed-chain"
+    },
+    {
+      "id": "reservation-search-confirmation",
+      "origin": "http://127.0.0.1:17888",
+      "method": "POST",
+      "path": "/web/reservation/search",
+      "resourceTypes": ["document", "xhr", "fetch"],
+      "contentType": "application/x-www-form-urlencoded",
+      "fixedQuery": {},
+      "variableQuery": {},
+      "fixedBody": {
+        "action": "search",
+        "tenant": "HMS_LEGACY",
+        "property": "centurion"
+      },
+      "variableBody": {
+        "confirmationNumber": { "pattern": "[A-Z0-9-]{1,32}", "maxLength": 32 },
+        "surname": { "pattern": ".{0,40}", "maxLength": 40 }
+      },
+      "maxBodyBytes": 16384,
+      "redirectPolicy": "same-reviewed-chain"
+    },
+    {
+      "id": "reservation-search-external",
+      "origin": "http://127.0.0.1:17888",
+      "method": "POST",
+      "path": "/web/reservation/search",
+      "resourceTypes": ["document", "xhr", "fetch"],
+      "contentType": "application/x-www-form-urlencoded",
+      "fixedQuery": {},
+      "variableQuery": {},
+      "fixedBody": {
+        "action": "search",
+        "tenant": "HMS_LEGACY",
+        "property": "centurion"
+      },
+      "variableBody": {
+        "externalReference": { "pattern": "[A-Z0-9-]{1,32}", "maxLength": 32 },
+        "confirmationNumber": { "pattern": ".{0,32}", "maxLength": 32 },
+        "surname": { "pattern": ".{0,40}", "maxLength": 40 }
+      },
+      "maxBodyBytes": 16384,
+      "redirectPolicy": "same-reviewed-chain"
+    },
+    {
+      "id": "reservation-search-surname",
+      "origin": "http://127.0.0.1:17888",
+      "method": "POST",
+      "path": "/web/reservation/search",
+      "resourceTypes": ["document", "xhr", "fetch"],
+      "contentType": "application/x-www-form-urlencoded",
+      "fixedQuery": {},
+      "variableQuery": {},
+      "fixedBody": {
+        "action": "search",
+        "tenant": "HMS_LEGACY",
+        "property": "centurion"
+      },
+      "variableBody": {
+        "surname": { "pattern": "[A-Za-z'\\-]{1,40}", "maxLength": 40 },
+        "arrivalDate": { "pattern": "\\d{4}-\\d{2}-\\d{2}", "maxLength": 10 },
+        "departureDate": { "pattern": "\\d{4}-\\d{2}-\\d{2}", "maxLength": 10 },
+        "confirmationNumber": { "pattern": ".{0,32}", "maxLength": 32 }
+      },
+      "maxBodyBytes": 16384,
+      "redirectPolicy": "same-reviewed-chain"
+    },
+    {
+      "id": "reservation-detail",
+      "origin": "http://127.0.0.1:17888",
+      "method": "GET",
+      "path": "/web/reservation/detail",
+      "resourceTypes": ["document"],
+      "fixedQuery": {},
+      "variableQuery": {
+        "id": { "pattern": "[A-Z0-9-]{1,32}", "maxLength": 32 }
+      },
+      "fixedBody": {},
+      "variableBody": {},
+      "maxBodyBytes": 16384,
+      "redirectPolicy": "same-reviewed-chain"
+    },
+    {
+      "id": "room-availability",
+      "origin": "http://127.0.0.1:17888",
+      "method": "GET",
+      "path": "/availability/rooms",
+      "resourceTypes": ["document"],
+      "fixedQuery": { "view": "inventory" },
+      "variableQuery": {
+        "startDate": { "pattern": "\\d{4}-\\d{2}-\\d{2}", "maxLength": 10 }
+      },
+      "fixedBody": {},
+      "variableBody": {},
+      "maxBodyBytes": 16384,
+      "redirectPolicy": "same-reviewed-chain"
+    },
+    {
+      "id": "display-rates",
+      "origin": "http://127.0.0.1:17888",
+      "method": "GET",
+      "path": "/availability/rates",
+      "resourceTypes": ["document"],
+      "fixedQuery": {},
+      "variableQuery": {},
+      "fixedBody": {},
+      "variableBody": {},
+      "maxBodyBytes": 16384,
+      "redirectPolicy": "same-reviewed-chain"
+    }
+  ],
+  "selectors": {
+    "reservation": {
+      "pagePath": "/reservations",
+      "searchPath": "/web/reservation/search",
+      "detailPath": "/web/reservation/detail",
+      "resultsTable": "[data-testid=\"results\"]",
+      "resultRow": "tr[data-confirmation]",
+      "noResults": "[data-testid=\"no-results\"]",
+      "detailLink": "a[href*=\"/web/reservation/detail\"]",
+      "confirmationAttr": "data-confirmation",
+      "externalRefAttr": "data-external-ref",
+      "guestNameAttr": "data-guest-name",
+      "arrivalAttr": "data-arrival",
+      "departureAttr": "data-departure",
+      "statusAttr": "data-status",
+      "roomTypeAttr": "data-room-type",
+      "ratePlanAttr": "data-rate-plan"
+    },
+    "quote": {
+      "inventoryPagePath": "/availability/rooms",
+      "ratesPagePath": "/availability/rates",
+      "inventoryRow": "[data-testid=\"inventory\"] tr[data-room-type]",
+      "inventoryDateAttr": "data-date",
+      "inventoryRoomTypeAttr": "data-room-type",
+      "inventoryAvailableAttr": "data-available",
+      "rateRow": "[data-testid=\"rates\"] tr[data-rate-plan]",
+      "rateRoomTypeAttr": "data-room-type",
+      "ratePlanAttr": "data-rate-plan",
+      "amountAttr": "data-amount",
+      "currencyAttr": "data-currency",
+      "amountBasisAttr": "data-amount-basis",
+      "taxIncludedAttr": "data-tax-included",
+      "inclusionsAttr": "data-inclusions",
+      "restrictionsAttr": "data-restrictions",
+      "boardBasisAttr": "data-board-basis",
+      "orgEligibilityAttr": "data-org-eligibility",
+      "amountBasisDefault": "nightly"
+    }
+  }
+}

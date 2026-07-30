@@ -10,8 +10,16 @@ export type NodeEnv = 'production' | 'development' | 'test';
 
 /** `fixture` (default) in-memory fake; `wire` TCP to Mailpit; `real` Exchange. */
 export type MailTransportMode = 'fixture' | 'wire' | 'real';
+export type AiExecutorLane = 'default' | 'hms';
+export type HmsDraftEnrichmentMode = 'off' | 'shadow' | 'enabled';
 
 const TRANSPORT_MODES: readonly MailTransportMode[] = ['fixture', 'wire', 'real'];
+const AI_WORKER_LANES: readonly AiExecutorLane[] = ['default', 'hms'];
+const HMS_DRAFT_ENRICHMENT_MODES: readonly HmsDraftEnrichmentMode[] = [
+  'off',
+  'shadow',
+  'enabled',
+];
 
 export interface MailEnv {
   NODE_ENV: NodeEnv;
@@ -44,11 +52,18 @@ export interface MailEnv {
   AI_DRAFTS_ENABLED: boolean;
   INGEST_REQUIRE_OWNER_HEADER: boolean;
   AI_STALE_RUN_TIMEOUT_MS: number;
+  AI_WORKER_LANE: AiExecutorLane;
   AI_MODEL_ID?: string;
   BEDROCK_REGION?: string;
   BEDROCK_GUARDRAIL_ID?: string;
   BEDROCK_GUARDRAIL_VERSION?: string;
   MASTRA_STORAGE_PATH?: string;
+  HMS_DRAFT_ENRICHMENT_MODE: HmsDraftEnrichmentMode;
+  HMS_RUN_DEADLINE_MS: number;
+  HMS_HEALTH_STATUS_PATH: string;
+  HMS_CIRCUIT_COOLDOWN_MS: number;
+  HMS_READ_SECRET_ARN?: string;
+  HMS_CHROMIUM_EXECUTABLE_PATH?: string;
 }
 
 export type EnvInput = Record<string, string | undefined>;
@@ -146,6 +161,11 @@ export function parseEnv(input: EnvInput): MailEnv {
     AI_DRAFTS_ENABLED: false,
     INGEST_REQUIRE_OWNER_HEADER: true,
     AI_STALE_RUN_TIMEOUT_MS: 15 * 60_000,
+    AI_WORKER_LANE: 'default',
+    HMS_DRAFT_ENRICHMENT_MODE: 'off',
+    HMS_RUN_DEADLINE_MS: 150_000,
+    HMS_HEALTH_STATUS_PATH: '/tmp/nava-zero-hms-health.json',
+    HMS_CIRCUIT_COOLDOWN_MS: 30_000,
   };
 
   if (input.INGEST_FIXTURE_DIR) env.INGEST_FIXTURE_DIR = input.INGEST_FIXTURE_DIR;
@@ -190,6 +210,50 @@ export function parseEnv(input: EnvInput): MailEnv {
   env.AI_STALE_RUN_TIMEOUT_MS = input.AI_STALE_RUN_TIMEOUT_MS
     ? toInt('AI_STALE_RUN_TIMEOUT_MS', input.AI_STALE_RUN_TIMEOUT_MS)
     : 15 * 60_000;
+
+  const rawLane = input.AI_WORKER_LANE ?? 'default';
+  if (!AI_WORKER_LANES.includes(rawLane as AiExecutorLane)) {
+    throw new Error(
+      `env AI_WORKER_LANE must be one of ${AI_WORKER_LANES.join(', ')}, got: ${rawLane}`,
+    );
+  }
+  env.AI_WORKER_LANE = rawLane as AiExecutorLane;
+
+  const rawHmsMode = input.HMS_DRAFT_ENRICHMENT_MODE ?? 'off';
+  if (!HMS_DRAFT_ENRICHMENT_MODES.includes(rawHmsMode as HmsDraftEnrichmentMode)) {
+    throw new Error(
+      `env HMS_DRAFT_ENRICHMENT_MODE must be one of ${HMS_DRAFT_ENRICHMENT_MODES.join(', ')}, got: ${rawHmsMode}`,
+    );
+  }
+  env.HMS_DRAFT_ENRICHMENT_MODE = rawHmsMode as HmsDraftEnrichmentMode;
+  env.HMS_RUN_DEADLINE_MS = input.HMS_RUN_DEADLINE_MS
+    ? toInt('HMS_RUN_DEADLINE_MS', input.HMS_RUN_DEADLINE_MS)
+    : 150_000;
+  env.HMS_HEALTH_STATUS_PATH =
+    input.HMS_HEALTH_STATUS_PATH ?? '/tmp/nava-zero-hms-health.json';
+  env.HMS_CIRCUIT_COOLDOWN_MS = input.HMS_CIRCUIT_COOLDOWN_MS
+    ? toInt('HMS_CIRCUIT_COOLDOWN_MS', input.HMS_CIRCUIT_COOLDOWN_MS)
+    : 30_000;
+
+  if (env.HMS_DRAFT_ENRICHMENT_MODE !== 'off') {
+    if (!input.HMS_READ_SECRET_ARN) {
+      throw new Error(
+        'env HMS_READ_SECRET_ARN is required when HMS enrichment is enabled',
+      );
+    }
+    if (!input.HMS_CHROMIUM_EXECUTABLE_PATH) {
+      throw new Error(
+        'env HMS_CHROMIUM_EXECUTABLE_PATH is required when HMS enrichment is enabled',
+      );
+    }
+    env.HMS_READ_SECRET_ARN = input.HMS_READ_SECRET_ARN;
+    env.HMS_CHROMIUM_EXECUTABLE_PATH = input.HMS_CHROMIUM_EXECUTABLE_PATH;
+  } else {
+    if (input.HMS_READ_SECRET_ARN) env.HMS_READ_SECRET_ARN = input.HMS_READ_SECRET_ARN;
+    if (input.HMS_CHROMIUM_EXECUTABLE_PATH) {
+      env.HMS_CHROMIUM_EXECUTABLE_PATH = input.HMS_CHROMIUM_EXECUTABLE_PATH;
+    }
+  }
 
   if (aiEnabled) {
     env.AI_MODEL_ID = input.AI_MODEL_ID ?? DEFAULT_AI_MODEL_ID;

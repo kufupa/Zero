@@ -39,7 +39,11 @@ import ReplyCompose from './reply-composer';
 import { NotesPanel } from './note-panel';
 import { ThreadAiMailsSection } from '@/components/mail/thread-ai-mails-section';
 import { ThreadDraftCard } from '@/components/mail/thread-draft-card';
-import { buildThreadDraftViewModel } from '@/lib/mail/thread-draft-view-model';
+import {
+  buildThreadDraftViewModel,
+  canRefreshHmsCandidate,
+  hmsCandidateNotice,
+} from '@/lib/mail/thread-draft-view-model';
 import { cn, FOLDERS, formatDateWithWeekdayAndTime } from '@/lib/utils';
 import { m } from '@/paraglide/messages';
 import MailDisplay from './mail-display';
@@ -58,6 +62,9 @@ import {
   openReplyComposeContext,
   type ReplyComposeMode,
 } from '@/lib/mail/reply-compose-context';
+import { useTRPC } from '@/providers/query-provider';
+import { useMutation, useQuery } from '@tanstack/react-query';
+import { useSession } from '@/lib/auth-client';
 
 const formatFileSize = (size: number) => {
   const sizeInMB = (size / (1024 * 1024)).toFixed(2);
@@ -182,6 +189,27 @@ export function ThreadDisplay() {
   } = useThread(id ?? null);
   const [, items] = useThreads();
   const [isStarred, setIsStarred] = useState(false);
+  const { data: session } = useSession();
+  const trpc = useTRPC();
+  const frontendOnlyDemo = isFrontendOnlyDemo();
+  const hmsCandidateQuery = useQuery(
+    trpc.ai.hmsCandidateState.queryOptions(
+      { threadId: id! },
+      {
+        enabled: Boolean(id) && Boolean(session?.user?.id) && !frontendOnlyDemo,
+        refetchInterval: (query) => {
+          const state = query.state.data?.activeRun?.state;
+          return state === 'queued' ||
+            state === 'claimed' ||
+            state === 'running' ||
+            state === 'retry_wait'
+            ? 1500
+            : false;
+        },
+      },
+    ),
+  );
+  const refreshHmsCandidate = useMutation(trpc.ai.refreshHmsCandidate.mutationOptions());
 
   const [navigationDirection, setNavigationDirection] = useState<'previous' | 'next' | null>(null);
 
@@ -233,7 +261,6 @@ export function ThreadDisplay() {
   );
 
   const [focusedIndex, setFocusedIndex] = useAtom(focusedIndexAtom);
-  const frontendOnlyDemo = isFrontendOnlyDemo();
   const {
     optimisticMoveThreadsTo,
     optimisticToggleStar,
@@ -244,6 +271,7 @@ export function ThreadDisplay() {
   const draftRowOptimistic = useOptimisticThreadState(
     latestDraft?.id ? latestDraft.id : '__thread_draft_none__',
   );
+  const hmsState = hmsCandidateQuery.data;
   const draftVm = useMemo(() => {
     if (draftRowOptimistic.shouldHide) return null;
     // Hide draft preview while any thread composer is open (reply / reply all / forward / continue draft).
@@ -253,10 +281,36 @@ export function ThreadDisplay() {
 
   const aiDraftCandidateVms = useMemo(() => {
     if (mode) return [];
+    const hmsInput = hmsState
+      ? {
+          outcome: hmsState.outcome,
+          freshness: hmsState.freshness,
+          activeRun: hmsState.activeRun,
+          unresolvedFields: hmsState.unresolvedFields,
+        }
+      : null;
+    // Prefer server HMS visible candidate when present; keep list continuity otherwise.
+    if (hmsState?.visibleCandidate) {
+      const vm = buildThreadDraftViewModel(hmsState.visibleCandidate as never, hmsInput);
+      return vm ? [vm] : [];
+    }
     return aiDraftCandidates
-      .map((candidate) => buildThreadDraftViewModel(candidate))
+      .map((candidate) => buildThreadDraftViewModel(candidate, hmsInput))
       .filter((vm): vm is NonNullable<typeof vm> => vm != null);
-  }, [aiDraftCandidates, mode]);
+  }, [aiDraftCandidates, mode, hmsState]);
+
+  const handleRefreshHmsCandidate = useCallback(() => {
+    if (!id) return;
+    void refreshHmsCandidate
+      .mutateAsync({ threadId: id })
+      .then(() => {
+        void hmsCandidateQuery.refetch();
+        void refetchThread();
+      })
+      .catch(() => {
+        toast.error('Failed to refresh AI draft');
+      });
+  }, [id, refreshHmsCandidate, hmsCandidateQuery, refetchThread]);
 
   const openDraftForEdit = useCallback(() => {
     if (!latestDraft?.id || !emailData?.latest?.id) return;
@@ -790,29 +844,45 @@ export function ThreadDisplay() {
             onDelete={handleDeleteThreadDraft}
           />
         ) : null}
-        {aiDraftCandidateVms.map((candidateVm) => (
-          <div
-            key={candidateVm.id}
-            data-ai-draft-card
-            data-ai-draft-id={candidateVm.id}
-          >
-            <ThreadDraftCard
-              subject={candidateVm.subject}
-              bodyPreview={candidateVm.bodyPreview}
-              savedAtLabel={
-                m['common.threadDisplay.draftSavedPrefix']() +
-                formatDateWithWeekdayAndTime(candidateVm.savedAtIso)
-              }
-              draftBadge="AI draft"
-              unsentNotice="Candidate reply. Open the reply editor to use the newest AI draft when no active draft exists."
-              emptyPreviewLabel={m['common.threadDisplay.draftEmptyPreview']()}
-              editLabel={m['common.threadDisplay.continueDraft']()}
-              deleteLabel={m['common.actions.Bin']()}
-              moreLabel={m['common.threadDisplay.draftMoreOptions']()}
-              isReadOnly
-            />
-          </div>
-        ))}
+        {aiDraftCandidateVms.map((candidateVm) => {
+          const notice =
+            hmsCandidateNotice(candidateVm) ??
+            'Candidate reply. Open the reply editor to use the newest AI draft when no active draft exists.';
+          const refreshPending =
+            candidateVm.refreshState === 'queued' ||
+            candidateVm.refreshState === 'claimed' ||
+            candidateVm.refreshState === 'running' ||
+            candidateVm.refreshState === 'retry_wait';
+          return (
+            <div
+              key={candidateVm.id}
+              data-ai-draft-card
+              data-ai-draft-id={candidateVm.id}
+              data-ai-freshness={candidateVm.freshness ?? 'unknown'}
+              data-ai-refresh-state={candidateVm.refreshState ?? 'idle'}
+            >
+              <ThreadDraftCard
+                subject={candidateVm.subject}
+                bodyPreview={candidateVm.bodyPreview}
+                savedAtLabel={
+                  m['common.threadDisplay.draftSavedPrefix']() +
+                  formatDateWithWeekdayAndTime(candidateVm.savedAtIso)
+                }
+                draftBadge="AI draft"
+                unsentNotice={notice}
+                emptyPreviewLabel={m['common.threadDisplay.draftEmptyPreview']()}
+                editLabel={m['common.threadDisplay.continueDraft']()}
+                deleteLabel={m['common.actions.Bin']()}
+                moreLabel={m['common.threadDisplay.draftMoreOptions']()}
+                isReadOnly
+                refreshLabel="Refresh AI draft"
+                onRefresh={handleRefreshHmsCandidate}
+                canRefresh={canRefreshHmsCandidate(candidateVm)}
+                refreshPending={refreshPending || refreshHmsCandidate.isPending}
+              />
+            </div>
+          );
+        })}
       </ThreadAiMailsSection>
     ) : null;
 

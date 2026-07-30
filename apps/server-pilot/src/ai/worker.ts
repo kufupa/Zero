@@ -9,30 +9,48 @@ import {
   mailThread,
   message,
 } from '../db/schema/mail.js';
-import { parseEnv } from '../env.js';
+import { parseEnv, type AiExecutorLane } from '../env.js';
 import { createMastraRuntime } from './mastra.js';
-import { persistAiCandidateDraft } from './drafts.js';
+import { persistAiCandidateDraft, loadLatestThreadAffectingDraftRevisionId } from './drafts.js';
 import { extractDraftFeedbackLabels } from './feedback.js';
 import {
   claimNextAiRun,
+  CLEANUP_RESERVE_MS,
   countNonterminalAiRuns,
   enqueueAiRun,
+  heartbeatAiRun,
   isSupportedInboundTriagePromptVersion,
   markAiRunDeadLetter,
   markAiRunRetry,
   markAiRunRunning,
   markAiRunSucceeded,
+  remainingRunBudgetMs,
   resolveDeployedTriagePromptVersion,
+  RunDeadlineError,
+  shouldRetryAiFailure,
+  toAiRunFence,
+  type AiFailureClass,
+  type AiRunFence,
   type AiRunScopeFilter,
   type AiWorkflowRunKind,
 } from './run-ledger.js';
 import { buildCausalTriageMessages, type TriageMessageRow } from './triage-input.js';
 import { validateTriageOutput } from './triage.js';
 
-export const AI_WORKER_OWNER = `ai-worker-${process.pid}`;
+function resolveWorkerLane(): AiExecutorLane {
+  return parseEnv(process.env as Record<string, string | undefined>).AI_WORKER_LANE;
+}
+
+export function aiWorkerOwnerId(lane: AiExecutorLane = resolveWorkerLane()): string {
+  return `${lane}-ai-worker-${process.pid}`;
+}
+
+/** @deprecated Prefer aiWorkerOwnerId(lane); kept for older call sites. */
+export const AI_WORKER_OWNER = aiWorkerOwnerId('default');
 
 const MONEY_DRAFT_CATEGORIES = new Set(['new-bookings', 'groups-events', 'at-risk']);
-
+/** Periodic lease renewal while a run executes (15–30s band). */
+export const AI_LEASE_HEARTBEAT_INTERVAL_MS = 20_000;
 export interface ExecuteAiRunResult {
   runId: string;
   state: 'succeeded' | 'retry_wait' | 'dead_letter';
@@ -60,7 +78,35 @@ export interface RunAiWorkerDrainResult {
 }
 
 function claimOwnerFor(run: typeof aiWorkflowRun.$inferSelect): string {
-  return run.claimOwner ?? AI_WORKER_OWNER;
+  return run.claimOwner ?? aiWorkerOwnerId(run.executorLane ?? resolveWorkerLane());
+}
+
+function classifyAiFailure(error: unknown): AiFailureClass {
+  if (error instanceof RunDeadlineError) return 'RUN_DEADLINE';
+  if (error && typeof error === 'object' && 'failureClass' in error) {
+    return (error as { failureClass: AiFailureClass }).failureClass;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  if (/timeout|ECONNRESET|ENOTFOUND|network/i.test(message)) return 'TRANSIENT_NETWORK';
+  if (/bedrock|throttl|TooManyRequests|ServiceUnavailable/i.test(message)) {
+    return 'BEDROCK_TRANSIENT';
+  }
+  if (/artifact|s3|NoSuchKey/i.test(message)) return 'ARTIFACT_TRANSIENT';
+  if (/policy|guardrail/i.test(message)) return 'POLICY_BLOCK';
+  if (/auth|unauthorized|forbidden/i.test(message)) return 'AUTH';
+  return 'UNKNOWN';
+}
+
+function buildRunAbortSignal(input: {
+  fence: AiRunFence;
+  leaseAbort: AbortController;
+  shutdownSignal: AbortSignal;
+  now?: Date;
+}): AbortSignal {
+  const remaining = remainingRunBudgetMs(input.fence, input.now);
+  if (remaining <= CLEANUP_RESERVE_MS) throw new RunDeadlineError();
+  const budgetSignal = AbortSignal.timeout(remaining);
+  return AbortSignal.any([budgetSignal, input.leaseAbort.signal, input.shutdownSignal]);
 }
 
 export function parseAiWorkerCliArgs(argv: string[]): AiWorkerCliArgs {
@@ -115,44 +161,95 @@ export function parseAiWorkerCliArgs(argv: string[]): AiWorkerCliArgs {
 async function failAiRun(
   run: typeof aiWorkflowRun.$inferSelect,
   error: unknown,
+  fence: AiRunFence | null,
 ): Promise<ExecuteAiRunResult> {
   const message = error instanceof Error ? error.message : String(error);
+  const failureClass = classifyAiFailure(error);
   const attempts = run.attempts + 1;
   const owner = claimOwnerFor(run);
-  if (attempts >= 3) {
+  const claimToken = fence?.claimToken ?? run.claimToken;
+  if (!claimToken) {
+    return { runId: run.id, state: 'dead_letter' };
+  }
+
+  const canRetry =
+    fence !== null &&
+    shouldRetryAiFailure({
+      failureClass,
+      fence,
+      attempts: run.attempts,
+    });
+
+  if (!canRetry) {
     await markAiRunDeadLetter({
       runId: run.id,
       claimOwner: owner,
+      claimToken,
       expectedStates: ['running'],
       lastError: message,
+      failureClass,
     });
     return { runId: run.id, state: 'dead_letter' };
   }
+
   await markAiRunRetry({
     runId: run.id,
     claimOwner: owner,
+    claimToken,
     expectedStates: ['running'],
     attempts,
     nextRunAt: new Date(Date.now() + attempts * 60_000),
     lastError: message,
+    failureClass,
   });
   return { runId: run.id, state: 'retry_wait' };
 }
 
-export async function executeAiRun(runId: string): Promise<ExecuteAiRunResult> {
+export type CandidateSessionFactory = (input: {
+  transportId: string;
+  threadId: string;
+  lookupCandidates: import('./thread-context.js').LookupCandidate[];
+  authorizedAttachmentIds: string[];
+  signal: AbortSignal;
+}) => import('./candidate-draft-agent.js').CandidateToolSession;
+
+export async function executeAiRun(
+  runId: string,
+  options: {
+    shutdownSignal?: AbortSignal;
+    /** Injectable claim-safe tool session (tests / Task 7 mocks). */
+    candidateSessionFactory?: CandidateSessionFactory;
+    candidatePlanModel?: (prompt: {
+      systemPrompt: string;
+      userPrompt: string;
+    }) => Promise<unknown>;
+  } = {},
+): Promise<ExecuteAiRunResult> {
   const db = getDb();
+  const env = parseEnv(process.env as Record<string, string | undefined>);
   const [run] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, runId)).limit(1);
   if (!run) throw new Error(`AI run not found: ${runId}`);
 
   const owner = claimOwnerFor(run);
-
-  const running = await markAiRunRunning({
-    runId,
+  const now = new Date();
+  if (!run.claimToken) {
+    return { runId: run.id, state: 'dead_letter' };
+  }
+  const claimToken = run.claimToken;
+  const deadlineAt = run.deadlineAt ?? new Date(now.getTime() + env.HMS_RUN_DEADLINE_MS);
+  const fence: AiRunFence = {
+    runId: run.id,
     claimOwner: owner,
-  });
-  if (!running) {
-    // Fence lost — stop before model invocation.
-    return { runId, state: 'dead_letter' };
+    claimToken,
+    deadlineAt,
+  };
+  const leaseAbort = new AbortController();
+  const shutdownSignal = options.shutdownSignal ?? new AbortController().signal;
+  const signal = buildRunAbortSignal({ fence, leaseAbort, shutdownSignal, now });
+
+  const flipped = await markAiRunRunning(fence);
+  if (!flipped) {
+    return { runId: run.id, state: 'dead_letter' };
   }
 
   if (run.runKind === 'inbound_triage' && !isSupportedInboundTriagePromptVersion(run.promptVersion)) {
@@ -160,13 +257,25 @@ export async function executeAiRun(runId: string): Promise<ExecuteAiRunResult> {
     await markAiRunDeadLetter({
       runId: run.id,
       claimOwner: owner,
+      claimToken,
       expectedStates: ['running'],
       lastError: `unsupported prompt version: ${run.promptVersion} (deployed ${deployed})`,
     });
     return { runId: run.id, state: 'dead_letter' };
   }
 
+  const runWithFence = { ...run, claimOwner: owner, claimToken, deadlineAt };
+
+  let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
   try {
+    heartbeatTimer = setInterval(() => {
+      void heartbeatAiRun(fence).then((ok) => {
+        if (!ok) leaseAbort.abort();
+      });
+    }, AI_LEASE_HEARTBEAT_INTERVAL_MS);
+
+    if (signal.aborted) throw new RunDeadlineError();
+
     if (run.runKind === 'inbound_triage') {
       const [trigger] = await db
         .select()
@@ -219,12 +328,13 @@ export async function executeAiRun(runId: string): Promise<ExecuteAiRunResult> {
           modelId: run.modelId,
           promptVersion: run.promptVersion,
         },
-      });
+        // Budget/lease fence for Mastra + future Playwright/S3/subprocess callers.
+        abortSignal: signal,
+      } as Parameters<typeof workflowRun.start>[0] & { abortSignal: AbortSignal });
       if (result.status !== 'success') {
         throw new Error(`mail triage workflow failed: ${result.status}`);
       }
 
-      const env = parseEnv(process.env as Record<string, string | undefined>);
       const output = validateTriageOutput(result.result?.output);
 
       await db.transaction(async (tx) => {
@@ -258,6 +368,7 @@ export async function executeAiRun(runId: string): Promise<ExecuteAiRunResult> {
               modelId: run.modelId,
               promptVersion: 'draft-v1',
               promptHash: run.promptHash ?? undefined,
+              executorLane: run.executorLane ?? 'default',
             },
             tx as unknown as typeof db,
           );
@@ -268,6 +379,7 @@ export async function executeAiRun(runId: string): Promise<ExecuteAiRunResult> {
           {
             runId,
             claimOwner: owner,
+            claimToken,
             expectedStates: ['running'],
             mastraTraceId: result.result?.traceId,
             metrics: {
@@ -303,6 +415,7 @@ export async function executeAiRun(runId: string): Promise<ExecuteAiRunResult> {
         const marked = await markAiRunSucceeded({
           runId,
           claimOwner: owner,
+          claimToken,
           expectedStates: ['running'],
           metrics: { skipped: true, reason: 'missing_reply_to_address' },
         });
@@ -310,23 +423,6 @@ export async function executeAiRun(runId: string): Promise<ExecuteAiRunResult> {
           return { runId, state: 'retry_wait' };
         }
         return { runId, state: 'succeeded' };
-      }
-
-      const mastra = createMastraRuntime(process.env.MASTRA_STORAGE_PATH);
-      const workflow = mastra.getWorkflow('candidateDraft');
-      const workflowRun = await workflow.createRun();
-      const result = await workflowRun.start({
-        inputData: {
-          transportId: run.transportId,
-          threadId: run.threadId,
-          triggerMessageId: run.triggerMessageId,
-          fromAddress: trigger.fromAddress,
-          subject: trigger.subject ?? undefined,
-          body: trigger.textBody ?? trigger.htmlBody ?? '',
-        },
-      });
-      if (result.status !== 'success') {
-        throw new Error(`candidate draft workflow failed: ${result.status}`);
       }
 
       const generationId = run.generationId ?? `${run.id}-generation`;
@@ -337,35 +433,201 @@ export async function executeAiRun(runId: string): Promise<ExecuteAiRunResult> {
         .limit(1);
       const createdByUserId = existingGeneration?.requestedByUserId ?? 'user-navaai';
       const subject = deriveReplySubject(trigger.subject);
-      const draft = await persistAiCandidateDraft({
-        db,
+      const hmsMode = env.HMS_DRAFT_ENRICHMENT_MODE;
+
+      // Off mode: existing skeleton workflow / evidence rules do not apply.
+      if (hmsMode === 'off') {
+        const mastra = createMastraRuntime(process.env.MASTRA_STORAGE_PATH);
+        const workflow = mastra.getWorkflow('candidateDraft');
+        const workflowRun = await workflow.createRun();
+        const result = await workflowRun.start({
+          inputData: {
+            transportId: run.transportId,
+            threadId: run.threadId,
+            triggerMessageId: run.triggerMessageId,
+            fromAddress: trigger.fromAddress,
+            subject: trigger.subject ?? undefined,
+            body: trigger.textBody ?? trigger.htmlBody ?? '',
+          },
+          abortSignal: signal,
+        } as Parameters<typeof workflowRun.start>[0] & { abortSignal: AbortSignal });
+        if (result.status !== 'success') {
+          throw new Error(`candidate draft workflow failed: ${result.status}`);
+        }
+
+        const draft = await persistAiCandidateDraft({
+          db,
+          transportId: run.transportId,
+          threadId: run.threadId,
+          replyToMessageId: run.triggerMessageId,
+          createdByUserId,
+          generationId,
+          model: run.modelId,
+          promptVersion: run.promptVersion,
+          contextMessageIds: [run.triggerMessageId],
+          toAddresses: [replyTo],
+          subject,
+          textBody: result.result!.draftBody.textBody,
+          htmlBody: result.result!.draftBody.htmlBody,
+          outcome: 'candidate',
+          persistDraft: true,
+        });
+        const marked = await markAiRunSucceeded({
+          runId,
+          claimOwner: owner,
+          claimToken,
+          expectedStates: ['running'],
+          generationId: draft.generationId ?? generationId,
+          metrics: {
+            draftId: draft.id,
+            generationId: draft.generationId ?? generationId,
+            modelId: run.modelId,
+            hmsMode: 'off',
+            ...(result.result?.metrics as Record<string, unknown>),
+          },
+        });
+        if (!marked) {
+          return { runId, state: 'retry_wait' };
+        }
+        return { runId, state: 'succeeded' };
+      }
+
+      // shadow | enabled: claim-safe path (mocked tools injectable via options).
+      const { runClaimSafeCandidateDraft, createMockCandidateSession } = await import(
+        './candidate-draft-agent.js'
+      );
+      const { buildThreadContext } = await import('./thread-context.js');
+      const threadMessages = await db
+        .select({
+          id: message.id,
+          transportId: message.transportId,
+          threadId: message.threadId,
+          direction: message.direction,
+          textBody: message.textBody,
+          htmlBody: message.htmlBody,
+          subject: message.subject,
+          receivedAt: message.receivedAt,
+          sentAt: message.sentAt,
+        })
+        .from(message)
+        .where(and(eq(message.threadId, run.threadId), eq(message.transportId, run.transportId)));
+
+      const latestDraftRevisionId = await loadLatestThreadAffectingDraftRevisionId(db, {
         transportId: run.transportId,
         threadId: run.threadId,
-        replyToMessageId: run.triggerMessageId,
-        createdByUserId,
-        generationId,
-        model: run.modelId,
-        promptVersion: run.promptVersion,
-        contextMessageIds: [run.triggerMessageId],
-        toAddresses: [replyTo],
-        subject,
-        textBody: result.result!.draftBody.textBody,
-        htmlBody: result.result!.draftBody.htmlBody,
       });
-      const marked = await markAiRunSucceeded({
-        runId,
-        claimOwner: owner,
-        expectedStates: ['running'],
-        generationId: draft.generationId ?? generationId,
-        metrics: {
-          draftId: draft.id,
-          generationId: draft.generationId ?? generationId,
-          modelId: run.modelId,
-          ...(result.result?.metrics as Record<string, unknown>),
-        },
+      const context = await buildThreadContext({
+        transportId: run.transportId,
+        threadId: run.threadId,
+        triggerMessageId: run.triggerMessageId,
+        messages: threadMessages.map((m) => ({
+          id: m.id,
+          transportId: m.transportId,
+          threadId: m.threadId,
+          direction: (m.direction === 'outbound' ? 'outbound' : 'inbound') as
+            | 'inbound'
+            | 'outbound',
+          textBody: m.textBody,
+          htmlBody: m.htmlBody,
+          subject: m.subject,
+          receivedAt: m.receivedAt,
+          sentAt: m.sentAt,
+          attachmentIds: [],
+        })),
+        latestDraftRevisionId,
       });
-      if (!marked) {
-        return { runId, state: 'retry_wait' };
+
+      const session =
+        options.candidateSessionFactory?.({
+          transportId: run.transportId,
+          threadId: run.threadId,
+          lookupCandidates: context.lookupCandidates,
+          authorizedAttachmentIds: context.authorizedAttachmentIds,
+          signal,
+        }) ??
+        createMockCandidateSession({
+          lookupCandidates: new Map(
+            context.lookupCandidates.map((c) => [c.id, c]),
+          ),
+          authorizedAttachmentIds: new Set(context.authorizedAttachmentIds),
+        });
+
+      const claimSafe = await runClaimSafeCandidateDraft({
+        session,
+        normalizedThreadText: context.normalizedText,
+        signal,
+        planModel: options.candidatePlanModel,
+      });
+
+      const persistDraft =
+        hmsMode === 'enabled' && claimSafe.outcome === 'candidate';
+      const { renderClarificationQuestions, textToSafeHtml } = await import(
+        './draft-evidence.js'
+      );
+      const clarificationText =
+        claimSafe.outcome === 'candidate'
+          ? null
+          : renderClarificationQuestions(claimSafe.plan.questionCodes).join('\n\n') ||
+            'Insufficient evidence for an automated candidate.';
+      const textBody =
+        claimSafe.outcome === 'candidate' ? claimSafe.textBody : clarificationText!;
+      const htmlBody =
+        claimSafe.outcome === 'candidate'
+          ? claimSafe.htmlBody
+          : textToSafeHtml(textBody);
+
+      let claimFenceLost = false;
+      try {
+        await db.transaction(async (tx) => {
+          const draft = await persistAiCandidateDraft({
+            db: tx as unknown as typeof db,
+            transportId: run.transportId,
+            threadId: run.threadId,
+            replyToMessageId: run.triggerMessageId,
+            createdByUserId,
+            generationId,
+            model: run.modelId,
+            promptVersion: run.promptVersion,
+            contextMessageIds: context.includedMessageIds,
+            toAddresses: [replyTo],
+            subject,
+            textBody,
+            htmlBody,
+            outcome: claimSafe.outcome,
+            evidence: claimSafe.evidence.map((e) => e.evidence),
+            threadStateVersion: context.threadStateVersion,
+            latestDraftRevisionId,
+            persistDraft,
+          });
+
+          const marked = await markAiRunSucceeded(
+            {
+              runId,
+              claimOwner: owner,
+              claimToken,
+              expectedStates: ['running'],
+              generationId: draft.generationId ?? generationId,
+              metrics: {
+                draftId: draft.id,
+                generationId: draft.generationId ?? generationId,
+                modelId: run.modelId,
+                hmsMode,
+                outcome: claimSafe.outcome,
+                persistDraft,
+                threadStateVersion: context.threadStateVersion,
+                ...claimSafe.metrics,
+              },
+            },
+            tx as unknown as typeof db,
+          );
+          if (!marked) {
+            claimFenceLost = true;
+            throw new Error(`failed to mark AI run succeeded with claim fencing: ${runId}`);
+          }
+        });
+      } catch (error) {
+        if (claimFenceLost) return { runId, state: 'retry_wait' };
+        throw error;
       }
       return { runId, state: 'succeeded' };
     }
@@ -393,6 +655,7 @@ export async function executeAiRun(runId: string): Promise<ExecuteAiRunResult> {
       const marked = await markAiRunSucceeded({
         runId,
         claimOwner: owner,
+        claimToken,
         expectedStates: ['running'],
         metrics: {
           labels: feedback.labels,
@@ -407,7 +670,9 @@ export async function executeAiRun(runId: string): Promise<ExecuteAiRunResult> {
 
     throw new Error(`unsupported AI run kind: ${run.runKind}`);
   } catch (error) {
-    return failAiRun(running, error);
+    return failAiRun(runWithFence, error, toAiRunFence(runWithFence) ?? fence);
+  } finally {
+    if (heartbeatTimer !== undefined) clearInterval(heartbeatTimer);
   }
 }
 
@@ -431,13 +696,23 @@ function scopeFromCli(args: AiWorkerCliArgs): AiRunScopeFilter {
   };
 }
 
-export async function runAiWorkerOnce(scope: AiRunScopeFilter = {}): Promise<boolean> {
-  const claimed = await claimNextAiRun({
-    ownerId: AI_WORKER_OWNER,
-    ...scope,
-  });
+function maybeInitHmsRuntime(lane: AiExecutorLane): void {
+  if (lane === 'hms') {
+    // HMS runtime init reserved for later tasks; only HMS lane may enter this path.
+  }
+}
+
+export type RunAiWorkerOnceOptions = { shutdownSignal?: AbortSignal } & AiRunScopeFilter;
+
+export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Promise<boolean> {
+  const env = parseEnv(process.env as Record<string, string | undefined>);
+  const lane = env.AI_WORKER_LANE;
+  maybeInitHmsRuntime(lane);
+  const owner = aiWorkerOwnerId(lane);
+  const { shutdownSignal, ...scope } = options;
+  const claimed = await claimNextAiRun({ ownerId: owner, lane, ...scope });
   if (!claimed) return false;
-  await executeAiRun(claimed.id);
+  await executeAiRun(claimed.id, { shutdownSignal });
   return true;
 }
 
@@ -468,7 +743,7 @@ export async function runAiWorkerDrain(
       };
     }
 
-    const worked = await runAiWorkerOnce(scope);
+    const worked = await runAiWorkerOnce({ ...scope });
     if (worked) {
       processed += 1;
       continue;
@@ -493,14 +768,16 @@ export async function runAiWorkerLoop(
   scope: AiRunScopeFilter = {},
 ): Promise<void> {
   let stopping = false;
+  const shutdown = new AbortController();
   const stop = () => {
     stopping = true;
+    shutdown.abort();
   };
   process.on('SIGTERM', stop);
   process.on('SIGINT', stop);
 
   while (!stopping) {
-    const worked = await runAiWorkerOnce(scope);
+    const worked = await runAiWorkerOnce({ ...scope, shutdownSignal: shutdown.signal });
     if (!worked) {
       await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
     }

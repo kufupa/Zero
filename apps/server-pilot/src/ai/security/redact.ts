@@ -1,8 +1,11 @@
 const SECRET_PATTERNS: RegExp[] = [
   /smtp[_-]?password\s*[:=]\s*\S+/gi,
   /pop3[_-]?password\s*[:=]\s*\S+/gi,
+  /\bpassword\s*[:=]\s*\S+/gi,
+  /\b(jsessionid|csrftckt|cookie|set-cookie)\s*[:=]\s*\S+/gi,
   /bearer\s+[a-z0-9._-]+/gi,
   /api[_-]?key\s*[:=]\s*\S+/gi,
+  /arn:aws:secretsmanager:[^\s"']+/gi,
   /-----BEGIN [A-Z ]+-----[\s\S]*?-----END [A-Z ]+-----/g,
 ];
 

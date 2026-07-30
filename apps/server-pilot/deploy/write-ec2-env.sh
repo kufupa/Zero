@@ -80,6 +80,18 @@ fi
 append_env SMTP_SECRET_ARN "${SMTP_SECRET_ARN:-}"
 append_env MAIL_TLS_REJECT_UNAUTHORIZED "${MAIL_TLS_REJECT_UNAUTHORIZED:-}"
 
+# HMS read runtime (optional; required when HMS_DRAFT_ENRICHMENT_MODE != off).
+# Gate defaults: enrichment off; never emit mutation-enable keys.
+append_env HMS_DRAFT_ENRICHMENT_MODE "${HMS_DRAFT_ENRICHMENT_MODE:-off}"
+append_env HMS_READ_SECRET_ARN "${HMS_READ_SECRET_ARN:-}"
+append_env HMS_CHROMIUM_EXECUTABLE_PATH "${HMS_CHROMIUM_EXECUTABLE_PATH:-}"
+append_env HMS_HEALTH_STATUS_PATH "${HMS_HEALTH_STATUS_PATH:-}"
+append_env HMS_RUN_DEADLINE_MS "${HMS_RUN_DEADLINE_MS:-}"
+append_env HMS_CIRCUIT_COOLDOWN_MS "${HMS_CIRCUIT_COOLDOWN_MS:-}"
+append_env HMS_READ_GATE_VERSION "${HMS_READ_GATE_VERSION:-1}"
+# Intentionally omitted (must never appear): HMS_MUTATION_ENABLED, HMS_WRITE_ENABLED,
+# HMS_WRITE_ADAPTERS, HMS_ALLOW_LIVE_WRITE, HMS_LIVE_MUTATION, INFOR_HMS_WRITE.
+
 chown ubuntu:ubuntu "$ENV_PATH"
 chmod 600 "$ENV_PATH"
 echo "Wrote $ENV_PATH owned by ubuntu with mode 600"

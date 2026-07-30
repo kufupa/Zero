@@ -155,4 +155,32 @@ describe('AI eval runner', () => {
     expect(src).toMatch(/mode === 'quality'|mode=quality|mode: 'quality'/);
     expect(src).not.toMatch(/createFakeModelAdapter\(\).*quality|quality.*createFakeModelAdapter/);
   });
+
+  it('parses hms-shadow CLI mode', async () => {
+    expect(parseEvalCliArgs(['--mode=hms-shadow', '--denominators=evals/hms/denominators.v1.json'])).toEqual({
+      mode: 'hms-shadow',
+      denominators: 'evals/hms/denominators.v1.json',
+    });
+  });
+
+  it('hms-shadow eval fails closed on empty denominator and scores fixed metrics', async () => {
+    const { runHmsShadowEval } = await import('../src/ai/eval-runner.js');
+    const empty = await runHmsShadowEval({
+      denominatorsPath: 'evals/hms/does-not-exist.json',
+    });
+    expect(empty.passed).toBe(false);
+    expect(empty.hardGates.denominatorNonEmpty).toBe(false);
+
+    const ok = await runHmsShadowEval({
+      denominatorsPath: 'evals/hms/denominators.v1.json',
+    });
+    expect(ok.mode).toBe('hms-shadow');
+    expect(ok.denominatorVersion).toBe(1);
+    expect(ok.metrics.denominatorSize).toBeGreaterThan(0);
+    expect(ok.hardGates.partialNeverScoresFull).toBe(true);
+    expect(ok.hardGates.zeroInventedFacts).toBe(true);
+    expect(ok.hardGates.zeroFalseCandidates).toBe(true);
+    expect(ok.passed).toBe(true);
+    expect(ok.metrics.strictFullRate + ok.metrics.usefulPartialRate).toBeLessThanOrEqual(1);
+  });
 });

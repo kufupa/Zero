@@ -7,7 +7,7 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
-import { MoreHorizontal } from 'lucide-react';
+import { MoreHorizontal, RefreshCcw } from 'lucide-react';
 
 export type ThreadDraftCardProps = {
   subject: string;
@@ -22,6 +22,10 @@ export type ThreadDraftCardProps = {
   onEdit?: () => void;
   onDelete?: () => void;
   isReadOnly?: boolean;
+  refreshLabel?: string;
+  onRefresh?: () => void;
+  canRefresh?: boolean;
+  refreshPending?: boolean;
 };
 
 export function ThreadDraftCard({
@@ -37,8 +41,13 @@ export function ThreadDraftCard({
   onEdit,
   onDelete,
   isReadOnly = false,
+  refreshLabel,
+  onRefresh,
+  canRefresh = false,
+  refreshPending = false,
 }: ThreadDraftCardProps) {
   const previewText = bodyPreview.trim() ? bodyPreview : emptyPreviewLabel;
+  const showRefresh = Boolean(refreshLabel && onRefresh);
 
   return (
     <TooltipProvider delayDuration={0}>
@@ -48,6 +57,26 @@ export function ThreadDraftCard({
       )}
     >
       <div className="absolute right-2 top-2 flex items-center gap-0.5">
+        {showRefresh ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="text-muted-foreground h-8 w-8"
+                onClick={onRefresh}
+                disabled={!canRefresh || refreshPending}
+                aria-label={refreshLabel}
+              >
+                <RefreshCcw className={cn('h-4 w-4', refreshPending && 'animate-spin')} />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="text-xs">
+              {refreshLabel}
+            </TooltipContent>
+          </Tooltip>
+        ) : null}
         {!isReadOnly ? (
           <>
             <Tooltip>
@@ -91,7 +120,7 @@ export function ThreadDraftCard({
         ) : null}
       </div>
 
-      <div className={cn(isReadOnly ? 'pr-4' : 'pr-20')}>
+      <div className={cn(isReadOnly || showRefresh ? 'pr-20' : 'pr-20')}>
         <p className="text-rose-500 dark:text-rose-400 text-sm font-semibold">{draftBadge}</p>
         <p className="text-rose-500/95 dark:text-rose-400/95 mt-0.5 text-sm">{unsentNotice}</p>
         <div className="text-muted-foreground mt-2 flex flex-wrap items-baseline justify-between gap-2 text-xs">
