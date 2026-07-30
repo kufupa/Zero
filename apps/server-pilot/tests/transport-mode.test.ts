@@ -267,44 +267,62 @@ describe('MAIL_TRANSPORT_MODE factories', () => {
     expect(client).toBeInstanceOf(RealPop3Client);
   });
 
-  it('createSmtpTransport returns RealSmtpTransport in wire mode without secret ARN', () => {
+  it('createSmtpTransport uses a separate wire path without secret ARN', () => {
     const transport = createSmtpTransport({
       mode: 'wire',
       host: '127.0.0.1',
       port: 11025,
       secure: false,
     });
-    expect(transport).toBeInstanceOf(RealSmtpTransport);
+    expect(transport).not.toBeInstanceOf(RealSmtpTransport);
+    expect(transport.kind).toBe('wire');
   });
 
-  it('wire SMTP remains cleartext-capable and credential-free', async () => {
-    const transport = createSmtpTransport({
-      mode: 'wire',
-      host: '127.0.0.1',
-      port: 11025,
-      secure: false,
-    });
+  it('wire SMTP ignores ambient and option credentials', async () => {
+    const saved = {
+      user: process.env.SMTP_USER,
+      password: process.env.SMTP_PASSWORD,
+      secretArn: process.env.SMTP_SECRET_ARN,
+    };
+    process.env.SMTP_USER = 'ambient-user';
+    process.env.SMTP_PASSWORD = 'ambient-password';
+    process.env.SMTP_SECRET_ARN = 'ambient-secret-arn';
 
-    await transport.send({
-      from: 'from@example.com',
-      to: ['to@example.com'],
-      cc: [],
-      bcc: [],
-      subject: 'wire',
-      html: '',
-      text: 'wire',
-    });
-
-    const options = createTransportMock.mock.calls[0]?.[0];
-    expect(options).toEqual(
-      expect.objectContaining({
+    try {
+      const transport = createSmtpTransport({
+        mode: 'wire',
         host: '127.0.0.1',
         port: 11025,
         secure: false,
-      }),
-    );
-    expect(options?.auth).toBeUndefined();
-    expect(options?.requireTLS).toBeUndefined();
+        user: 'option-user',
+        password: 'option-password',
+        secretArn: 'option-secret-arn',
+      });
+
+      await transport.send({
+        from: 'from@example.com',
+        to: ['to@example.com'],
+        cc: [],
+        bcc: [],
+        subject: 'wire',
+        html: '',
+        text: 'wire',
+      });
+
+      expect(createTransportMock).toHaveBeenCalledWith({
+        host: '127.0.0.1',
+        port: 11025,
+        secure: false,
+        auth: undefined,
+      });
+    } finally {
+      if (saved.user === undefined) delete process.env.SMTP_USER;
+      else process.env.SMTP_USER = saved.user;
+      if (saved.password === undefined) delete process.env.SMTP_PASSWORD;
+      else process.env.SMTP_PASSWORD = saved.password;
+      if (saved.secretArn === undefined) delete process.env.SMTP_SECRET_ARN;
+      else process.env.SMTP_SECRET_ARN = saved.secretArn;
+    }
   });
 
   it('createSmtpTransport throws in real mode without credentials', () => {
@@ -369,6 +387,44 @@ describe('MAIL_TRANSPORT_MODE factories', () => {
     );
   });
 
+  it('direct RealSmtpTransport construction cannot omit TLS requirement to downgrade', async () => {
+    const transport = new RealSmtpTransport({
+      host: 'smtp.example.com',
+      port: 587,
+      user: 'relay@example.com',
+      password: 'test-password',
+      tlsServername: 'smtp.example.com',
+    });
+
+    await transport.send({
+      from: 'sender@example.com',
+      to: ['to@example.com'],
+      cc: [],
+      bcc: [],
+      subject: 'subject',
+      html: '',
+      text: 'body',
+    });
+
+    expect(createTransportMock).toHaveBeenCalledWith({
+      host: 'smtp.example.com',
+      port: 587,
+      secure: false,
+      requireTLS: true,
+      connectionTimeout: 10_000,
+      greetingTimeout: 10_000,
+      socketTimeout: 60_000,
+      auth: {
+        user: 'relay@example.com',
+        pass: 'test-password',
+      },
+      tls: {
+        rejectUnauthorized: true,
+        servername: 'smtp.example.com',
+      },
+    });
+  });
+
   it('SmtpTransport interface parity — fake and real expose send', () => {
     const fake = new FakeSmtpTransport();
     const real = new RealSmtpTransport({
@@ -376,7 +432,6 @@ describe('MAIL_TRANSPORT_MODE factories', () => {
       port: 587,
       user: 'u',
       password: 'p',
-      requireTls: true,
       tlsServername: 'x',
     });
     for (const transport of [fake, real]) {

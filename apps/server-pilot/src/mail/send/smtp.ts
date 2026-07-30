@@ -36,7 +36,7 @@ export interface SmtpSendResult {
 }
 
 export interface SmtpTransport {
-  readonly kind: 'real' | 'fake';
+  readonly kind: 'real' | 'wire' | 'fake';
   send(payload: OutboundMailPayload): Promise<SmtpSendResult>;
 }
 
@@ -99,99 +99,131 @@ async function fetchSmtpSecret(secretArn: string): Promise<string> {
   }
 }
 
+type NodemailerTransporter = ReturnType<typeof nodemailer.createTransport>;
+
+async function sendWithTransporter(
+  transporter: NodemailerTransporter,
+  payload: OutboundMailPayload,
+): Promise<SmtpSendResult> {
+  const headers: Record<string, string> = { ...payload.extraHeaders };
+  if (payload.inReplyTo) {
+    headers['In-Reply-To'] = payload.inReplyTo;
+  }
+  if (payload.references?.length) {
+    headers.References = payload.references.join(' ');
+  }
+
+  const info = await transporter.sendMail({
+    from: payload.from,
+    to: payload.to,
+    cc: payload.cc.length ? payload.cc : undefined,
+    bcc: payload.bcc.length ? payload.bcc : undefined,
+    subject: payload.subject,
+    html: payload.html,
+    text: payload.text,
+    envelope: {
+      from: payload.from,
+      to: [...payload.to, ...payload.cc, ...payload.bcc],
+    },
+    headers: Object.keys(headers).length ? headers : undefined,
+    attachments: payload.attachments?.map((a) => ({
+      filename: a.filename,
+      content: a.content,
+      contentType: a.contentType,
+    })),
+  });
+
+  const rawId = info.messageId ?? '';
+  const messageId = rawId.replace(/^<|>$/g, '');
+  const accepted = (info.accepted ?? []).map(String);
+  return {
+    messageId: messageId || `${randomUUID()}@zero-smtp.local`,
+    accepted:
+      accepted.length > 0
+        ? accepted
+        : [...payload.to, ...payload.cc, ...payload.bcc],
+  };
+}
+
 /** Real SMTP transport via nodemailer — Exchange/SMTP relay. */
 export class RealSmtpTransport implements SmtpTransport {
   readonly kind = 'real' as const;
+  private readonly opts: {
+    host: string;
+    port: number;
+    tlsServername: string;
+    user: string;
+    password?: string;
+    secretArn?: string;
+  };
+
+  constructor(opts: {
+    host: string;
+    port: number;
+    tlsServername: string;
+    user: string;
+    password?: string;
+    secretArn?: string;
+  }) {
+    if (!opts.tlsServername) {
+      throw new Error('SMTP_TLS_SERVERNAME required for real SMTP transport');
+    }
+    if (!opts.user) {
+      throw new Error('SMTP_USER required for real SMTP transport');
+    }
+    if (!opts.password && !opts.secretArn) {
+      throw new Error(
+        'SMTP_PASSWORD or SMTP_SECRET_ARN required for real SMTP transport',
+      );
+    }
+    this.opts = opts;
+  }
+
+  async send(payload: OutboundMailPayload): Promise<SmtpSendResult> {
+    const password = await this.resolvePassword();
+    const transporter = nodemailer.createTransport({
+      host: this.opts.host,
+      port: this.opts.port,
+      secure: false,
+      requireTLS: true,
+      connectionTimeout: 10_000,
+      greetingTimeout: 10_000,
+      socketTimeout: 60_000,
+      auth: { user: this.opts.user, pass: password },
+      tls: {
+        rejectUnauthorized: true,
+        servername: this.opts.tlsServername,
+      },
+    });
+    return sendWithTransporter(transporter, payload);
+  }
+
+  private async resolvePassword(): Promise<string> {
+    if (this.opts.password) return this.opts.password;
+    return fetchSmtpSecret(this.opts.secretArn as string);
+  }
+}
+
+/** Mailpit/wire transport — cleartext-capable and never authenticates. */
+class WireSmtpTransport implements SmtpTransport {
+  readonly kind = 'wire' as const;
 
   constructor(
     private readonly opts: {
       host: string;
       port: number;
-      secure?: boolean;
-      requireTls?: boolean;
-      tlsServername?: string;
-      user?: string;
-      password?: string;
-      secretArn?: string;
+      secure: boolean;
     },
   ) {}
 
   async send(payload: OutboundMailPayload): Promise<SmtpSendResult> {
-    const password = await this.resolvePassword();
-    const auth =
-      this.opts.user && password
-        ? { user: this.opts.user, pass: password }
-        : undefined;
-    const transporter = this.opts.requireTls
-      ? nodemailer.createTransport({
-          host: this.opts.host,
-          port: this.opts.port,
-          secure: false,
-          requireTLS: true,
-          connectionTimeout: 10_000,
-          greetingTimeout: 10_000,
-          socketTimeout: 60_000,
-          auth,
-          tls: {
-            rejectUnauthorized: true,
-            servername: this.opts.tlsServername,
-          },
-        })
-      : nodemailer.createTransport({
-          host: this.opts.host,
-          port: this.opts.port,
-          secure: this.opts.secure ?? false,
-          ...(auth ? { auth } : {}),
-        });
-
-    const headers: Record<string, string> = { ...payload.extraHeaders };
-    if (payload.inReplyTo) {
-      headers['In-Reply-To'] = payload.inReplyTo;
-    }
-    if (payload.references?.length) {
-      headers.References = payload.references.join(' ');
-    }
-
-    const info = await transporter.sendMail({
-      from: payload.from,
-      to: payload.to,
-      cc: payload.cc.length ? payload.cc : undefined,
-      bcc: payload.bcc.length ? payload.bcc : undefined,
-      subject: payload.subject,
-      html: payload.html,
-      text: payload.text,
-      envelope: {
-        from: payload.from,
-        to: [...payload.to, ...payload.cc, ...payload.bcc],
-      },
-      headers: Object.keys(headers).length ? headers : undefined,
-      attachments: payload.attachments?.map((a) => ({
-        filename: a.filename,
-        content: a.content,
-        contentType: a.contentType,
-      })),
+    const transporter = nodemailer.createTransport({
+      host: this.opts.host,
+      port: this.opts.port,
+      secure: this.opts.secure,
+      auth: undefined,
     });
-
-    const rawId = info.messageId ?? '';
-    const messageId = rawId.replace(/^<|>$/g, '');
-    const accepted = (info.accepted ?? []).map(String);
-    return {
-      messageId: messageId || `${randomUUID()}@zero-smtp.local`,
-      accepted:
-        accepted.length > 0
-          ? accepted
-          : [...payload.to, ...payload.cc, ...payload.bcc],
-    };
-  }
-
-  private async resolvePassword(): Promise<string | undefined> {
-    if (this.opts.password) return this.opts.password;
-    const envPass = process.env.SMTP_PASSWORD;
-    if (envPass) return envPass;
-    if (this.opts.secretArn) {
-      return fetchSmtpSecret(this.opts.secretArn);
-    }
-    return undefined;
+    return sendWithTransporter(transporter, payload);
   }
 }
 
@@ -224,6 +256,13 @@ export function createSmtpTransport(
     throw new Error(`SMTP_HOST required when MAIL_TRANSPORT_MODE=${mode}`);
   }
 
+  if (mode === 'wire') {
+    const secureRaw = process.env.SMTP_SECURE;
+    const secure =
+      opts.secure ?? (secureRaw === 'true' || secureRaw === '1');
+    return new WireSmtpTransport({ host, port, secure });
+  }
+
   const user = opts.user ?? process.env.SMTP_USER;
   const secretArn = opts.secretArn ?? process.env.SMTP_SECRET_ARN;
   const password = opts.password ?? process.env.SMTP_PASSWORD;
@@ -233,37 +272,28 @@ export function createSmtpTransport(
     (requireTlsRaw === 'true' || requireTlsRaw === '1');
   const tlsServername =
     opts.tlsServername ?? process.env.SMTP_TLS_SERVERNAME;
-  if (mode === 'real') {
-    if (!user) {
-      throw new Error('SMTP_USER required when MAIL_TRANSPORT_MODE=real');
-    }
-    if (!password && !secretArn) {
-      throw new Error(
-        'SMTP_PASSWORD or SMTP_SECRET_ARN required when MAIL_TRANSPORT_MODE=real',
-      );
-    }
-    if (!requireTls) {
-      throw new Error(
-        'SMTP_REQUIRE_TLS=true required when MAIL_TRANSPORT_MODE=real',
-      );
-    }
-    if (!tlsServername) {
-      throw new Error(
-        'SMTP_TLS_SERVERNAME required when MAIL_TRANSPORT_MODE=real',
-      );
-    }
+  if (!user) {
+    throw new Error('SMTP_USER required when MAIL_TRANSPORT_MODE=real');
   }
-
-  const secureRaw = process.env.SMTP_SECURE;
-  const secureFromEnv = secureRaw === 'true' || secureRaw === '1';
-  const secure =
-    mode === 'real' ? false : (opts.secure ?? secureFromEnv);
+  if (!password && !secretArn) {
+    throw new Error(
+      'SMTP_PASSWORD or SMTP_SECRET_ARN required when MAIL_TRANSPORT_MODE=real',
+    );
+  }
+  if (!requireTls) {
+    throw new Error(
+      'SMTP_REQUIRE_TLS=true required when MAIL_TRANSPORT_MODE=real',
+    );
+  }
+  if (!tlsServername) {
+    throw new Error(
+      'SMTP_TLS_SERVERNAME required when MAIL_TRANSPORT_MODE=real',
+    );
+  }
 
   return new RealSmtpTransport({
     host,
     port,
-    secure,
-    requireTls: mode === 'real',
     tlsServername,
     user,
     password,

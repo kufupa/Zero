@@ -46,6 +46,18 @@ for key in "${STAGED_MAIL_KEYS[@]}"; do
   fi
 done
 
+# Caller-selected credential source clears stale alternate from .env.production.
+if [[ -n "${STAGED_MAIL_ENV[POP3_SECRET_ARN]+set}" && -z "${STAGED_MAIL_ENV[POP3_PASSWORD]+set}" ]]; then
+  unset POP3_PASSWORD
+elif [[ -n "${STAGED_MAIL_ENV[POP3_PASSWORD]+set}" && -z "${STAGED_MAIL_ENV[POP3_SECRET_ARN]+set}" ]]; then
+  unset POP3_SECRET_ARN
+fi
+if [[ -n "${STAGED_MAIL_ENV[SMTP_SECRET_ARN]+set}" && -z "${STAGED_MAIL_ENV[SMTP_PASSWORD]+set}" ]]; then
+  unset SMTP_PASSWORD
+elif [[ -n "${STAGED_MAIL_ENV[SMTP_PASSWORD]+set}" && -z "${STAGED_MAIL_ENV[SMTP_SECRET_ARN]+set}" ]]; then
+  unset SMTP_SECRET_ARN
+fi
+
 # POP3 retains hotel defaults and a POP3-only certificate exception.
 : "${POP3_HOST:=172.24.0.10}"
 : "${POP3_USER:=navaai@legacyhotels.co.za}"

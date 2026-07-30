@@ -420,6 +420,99 @@ describe('deploy config', () => {
     expect(syntax.status).toBe(0);
   });
 
+  it('activate-real-mail.sh clears stale alternate credentials for caller-selected sources', async () => {
+    const {
+      mkdirSync,
+      mkdtempSync,
+      readFileSync,
+      rmSync,
+      writeFileSync,
+    } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { spawnSync } = await import('node:child_process');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const script = readFileSync(
+      join(here, '..', 'scripts', 'activate-real-mail.sh'),
+      'utf8',
+    );
+    const marker = '# POP3 retains hotel defaults';
+    const markerIndex = script.indexOf(marker);
+    expect(markerIndex).toBeGreaterThan(0);
+    const configOnly = script.slice(0, markerIndex);
+    const tempRoot = mkdtempSync(join(tmpdir(), 'activate-mail-precedence-'));
+    const serverDir = join(tempRoot, 'apps', 'server-pilot');
+    const configScript = join(tempRoot, 'config-only.sh');
+    mkdirSync(serverDir, { recursive: true });
+
+    try {
+      writeFileSync(
+        join(serverDir, '.env.production'),
+        "POP3_PASSWORD='stale-pop3-password'\nSMTP_PASSWORD='stale-smtp-password'\n",
+        'utf8',
+      );
+      writeFileSync(
+        configScript,
+        `${configOnly}
+[[ "\${POP3_SECRET_ARN:-}" == "\${EXPECTED_POP3_SECRET_ARN:-}" ]]
+[[ "\${SMTP_SECRET_ARN:-}" == "\${EXPECTED_SMTP_SECRET_ARN:-}" ]]
+[[ -z "\${POP3_PASSWORD+x}" ]]
+[[ -z "\${SMTP_PASSWORD+x}" ]]
+`,
+        'utf8',
+      );
+      const secretChoice = spawnSync('bash', [configScript], {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          REPO_ROOT: tempRoot,
+          POP3_SECRET_ARN: "opaque pop3 $[] 'secret'",
+          SMTP_SECRET_ARN: "opaque smtp $[] 'secret'",
+          POP3_PASSWORD: '',
+          SMTP_PASSWORD: '',
+          EXPECTED_POP3_SECRET_ARN: "opaque pop3 $[] 'secret'",
+          EXPECTED_SMTP_SECRET_ARN: "opaque smtp $[] 'secret'",
+        },
+      });
+      expect(secretChoice.status).toBe(0);
+      expect(secretChoice.stdout).toBe('');
+
+      writeFileSync(
+        join(serverDir, '.env.production'),
+        "POP3_SECRET_ARN='stale-pop3-secret'\nSMTP_SECRET_ARN='stale-smtp-secret'\n",
+        'utf8',
+      );
+      writeFileSync(
+        configScript,
+        `${configOnly}
+[[ "\${POP3_PASSWORD:-}" == "\${EXPECTED_POP3_PASSWORD:-}" ]]
+[[ "\${SMTP_PASSWORD:-}" == "\${EXPECTED_SMTP_PASSWORD:-}" ]]
+[[ -z "\${POP3_SECRET_ARN+x}" ]]
+[[ -z "\${SMTP_SECRET_ARN+x}" ]]
+`,
+        'utf8',
+      );
+      const passwordChoice = spawnSync('bash', [configScript], {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          REPO_ROOT: tempRoot,
+          POP3_SECRET_ARN: '',
+          SMTP_SECRET_ARN: '',
+          POP3_PASSWORD: "opaque pop3 $[] 'password'",
+          SMTP_PASSWORD: "opaque smtp $[] 'password'",
+          EXPECTED_POP3_PASSWORD: "opaque pop3 $[] 'password'",
+          EXPECTED_SMTP_PASSWORD: "opaque smtp $[] 'password'",
+        },
+      });
+      expect(passwordChoice.status).toBe(0);
+      expect(passwordChoice.stdout).toBe('');
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it('intentional RDS vitest gates export VITEST_ALLOW_PILOT_RDS=1', async () => {
     const { readdirSync, readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
