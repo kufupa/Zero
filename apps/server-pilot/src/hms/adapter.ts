@@ -349,11 +349,11 @@ export class InforReadAdapter implements HmsReadAdapter {
     let status: ToolResult<ReservationReadData>['status'] = 'ok';
     if (unresolvedFields.length > 0) status = 'partial';
     if (canceled) {
-      // Still a concrete observation; not draft-ready for active-stay claims.
-      status = status === 'ok' ? 'ok' : status;
+      // Canceled/no-show is concrete but not active-stay draft-ready.
       if (!unresolvedFields.includes('reservationStatus.active')) {
         unresolvedFields.push('reservationStatus.active');
       }
+      status = 'partial';
     } else if (single.reservationStatus && !active) {
       unresolvedFields.push('reservationStatus.active');
       status = 'partial';
@@ -751,9 +751,7 @@ export class InforReadAdapter implements HmsReadAdapter {
         basisRaw === 'monthly' ||
         basisRaw === 'stay_total'
           ? basisRaw
-          : basisRaw
-            ? 'unknown'
-            : selectors.amountBasisDefault;
+          : 'unknown';
 
       const taxRaw = attrOrNull(node, selectors.taxIncludedAttr);
       const taxIncluded =

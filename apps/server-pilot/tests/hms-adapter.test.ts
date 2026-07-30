@@ -528,7 +528,7 @@ describe('InforReadAdapter.findReservation', () => {
       new AbortController().signal,
     );
 
-    expect(result.status).toBe('ok');
+    expect(result.status).toBe('partial');
     expect(result.draftReady).toBe(false);
     expect(result.unresolvedFields).toContain('reservationStatus.active');
     expect(result.data.matches[0]?.reservationStatus).toBe('No-Show');
