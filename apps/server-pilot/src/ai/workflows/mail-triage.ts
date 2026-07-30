@@ -1,11 +1,21 @@
 import { z } from 'zod';
 import { createStep, createWorkflow } from '@mastra/core/workflows';
+import type { ModelAdapter, ModelInvokeResult } from '../bedrock/adapter.js';
 import { createModelAdapter } from '../bedrock/factory.js';
 import { validateStructuredJsonOutput } from '../security/policy.js';
+import {
+  assertTriageAsOf,
+  buildCausalTriageMessages,
+  hashTriageInput,
+  hashTriagePrompt,
+  type TriageInput,
+  type TriageMessageRow,
+} from '../triage-input.js';
 import {
   applyShadowTriageResult,
   TRIAGE_CATEGORIES,
   refineTriageOutput,
+  type TriageOutput,
   validateTriageOutput,
 } from '../triage.js';
 
@@ -14,7 +24,10 @@ const triageMessageSchema = z.object({
   from: z.string(),
   subject: z.string().optional(),
   body: z.string(),
-  direction: z.string().optional(),
+  direction: z.enum(['inbound', 'outbound']).optional(),
+  createdAt: z.coerce.date().optional(),
+  receivedAt: z.coerce.date().nullable().optional(),
+  sentAt: z.coerce.date().nullable().optional(),
 });
 
 const triageInputSchema = z.object({
@@ -24,8 +37,11 @@ const triageInputSchema = z.object({
   subject: z.string().optional(),
   from: z.string().default(''),
   to: z.array(z.string()).default([]),
-  body: z.string(),
+  body: z.string().default(''),
   messages: z.array(triageMessageSchema).default([]),
+  asOf: z.string().datetime({ offset: true }),
+  modelId: z.string().min(1),
+  promptVersion: z.string().min(1),
 });
 
 const BODY_LIMIT = 2000;
@@ -123,16 +139,29 @@ Ticket: old commission invoice subject URGENT → ops / urgent false
 Match schema. rationale = one short sentence. confidence 0–1 for eval only.`;
 }
 
-export function buildUserPrompt(input: z.infer<typeof triageInputSchema>): string {
+type PromptMessage = {
+  id: string;
+  from: string;
+  subject?: string;
+  body: string;
+};
+
+export function buildUserPrompt(input: {
+  triggerMessageId: string;
+  from?: string;
+  subject?: string;
+  body?: string;
+  messages: PromptMessage[];
+}): string {
   const msgs =
     input.messages.length > 0
       ? input.messages
       : [
           {
             id: input.triggerMessageId,
-            from: input.from,
+            from: input.from ?? '',
             subject: input.subject,
-            body: input.body,
+            body: input.body ?? '',
           },
         ];
 
@@ -150,6 +179,94 @@ export function buildUserPrompt(input: z.infer<typeof triageInputSchema>): strin
   });
 
   return blocks.join('\n\n');
+}
+
+export interface TriageClassification {
+  rawOutput: TriageOutput;
+  output: TriageOutput;
+  modelId: string;
+  promptHash: string;
+  inputHash: string;
+  usage: ModelInvokeResult['usage'];
+}
+
+function toTriageMessageRows(
+  input: z.infer<typeof triageInputSchema>,
+): TriageMessageRow[] {
+  if (input.messages.length === 0) {
+    const asOfDate = new Date(input.asOf);
+    return [
+      {
+        id: input.triggerMessageId,
+        from: input.from,
+        subject: input.subject,
+        body: input.body,
+        direction: 'inbound',
+        createdAt: asOfDate,
+        receivedAt: null,
+        sentAt: null,
+      },
+    ];
+  }
+
+  return input.messages.map((m) => ({
+    id: m.id,
+    from: m.from,
+    subject: m.subject,
+    body: m.body,
+    direction: m.direction ?? 'inbound',
+    createdAt: m.createdAt ?? new Date(input.asOf),
+    receivedAt: m.receivedAt ?? null,
+    sentAt: m.sentAt ?? null,
+  }));
+}
+
+export async function classifyMailTriage(
+  input: TriageInput,
+  adapter: ModelAdapter,
+): Promise<TriageClassification> {
+  assertTriageAsOf(input.asOf);
+  const causalMessages = buildCausalTriageMessages(input.messages, input.triggerMessageId);
+  const causalInput: TriageInput = {
+    ...input,
+    messages: causalMessages,
+  };
+
+  const systemPrompt = buildSystemPrompt();
+  const userPrompt = buildUserPrompt({
+    triggerMessageId: causalInput.triggerMessageId,
+    messages: causalMessages,
+  });
+  const promptHash = hashTriagePrompt(systemPrompt);
+  const inputHash = hashTriageInput(causalInput);
+
+  const model = await adapter.invoke({
+    modelId: causalInput.modelId,
+    systemPrompt,
+    userPrompt,
+    responseSchema: triageResponseSchema,
+  });
+
+  const triggerMessage =
+    causalMessages.find((m) => m.id === causalInput.triggerMessageId) ?? causalMessages[0]!;
+  const rawOutput = validateTriageOutput(validateStructuredJsonOutput(model.output));
+  const output = refineTriageOutput(
+    {
+      from: triggerMessage.from,
+      subject: triggerMessage.subject,
+      body: triggerMessage.body,
+    },
+    rawOutput,
+  );
+
+  return {
+    rawOutput,
+    output,
+    modelId: model.modelId,
+    promptHash,
+    inputHash,
+    usage: model.usage,
+  };
 }
 
 export const mailTriageWorkflowOutputSchema = z.object({
@@ -176,34 +293,31 @@ const classifyStep = createStep({
   outputSchema: mailTriageWorkflowOutputSchema,
   execute: async ({ inputData, runId }) => {
     const adapter = createModelAdapter();
-    const model = await adapter.invoke({
-      modelId: process.env.AI_MODEL_ID || 'amazon.nova-lite-v1:0',
-      systemPrompt: buildSystemPrompt(),
-      userPrompt: buildUserPrompt(inputData),
-      responseSchema: triageResponseSchema,
-    });
-    const triggerMessage =
-      inputData.messages.find((m) => m.id === inputData.triggerMessageId) ??
-      ({
-        from: inputData.from,
-        subject: inputData.subject,
-        body: inputData.body,
-      } as { from: string; subject?: string; body: string });
-    const output = refineTriageOutput(
+    const rows = toTriageMessageRows(inputData);
+    const classification = await classifyMailTriage(
       {
-        from: triggerMessage.from,
-        subject: triggerMessage.subject,
-        body: triggerMessage.body,
+        transportId: inputData.transportId,
+        threadId: inputData.threadId,
+        triggerMessageId: inputData.triggerMessageId,
+        messages: rows,
+        asOf: inputData.asOf,
+        modelId: inputData.modelId,
+        promptVersion: inputData.promptVersion,
       },
-      validateTriageOutput(validateStructuredJsonOutput(model.output)),
+      adapter,
     );
     const shadow = applyShadowTriageResult({
       threadId: inputData.threadId,
       transportId: inputData.transportId,
-      output,
+      output: classification.output,
       metrics: {
-        modelId: model.modelId,
-        usage: model.usage,
+        modelId: classification.modelId,
+        usage: classification.usage,
+        promptHash: classification.promptHash,
+        inputHash: classification.inputHash,
+        rawOutput: classification.rawOutput,
+        rationale: classification.output.rationale,
+        policyFlags: classification.output.policyFlags,
       },
     });
     return {

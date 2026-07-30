@@ -43,6 +43,18 @@ describe('ai worker contract', () => {
     expect(source).not.toMatch(/getSmtpTransport/);
     expect(source).not.toMatch(/pop3-client/);
   });
+
+  it('worker loads causal timestamps and pins run model/prompt/asOf into triage', () => {
+    const source = readFileSync(join(here, '..', 'src', 'ai', 'worker.ts'), 'utf8');
+    expect(source).toMatch(/buildCausalTriageMessages/);
+    expect(source).toMatch(/createdAt:\s*message\.createdAt/);
+    expect(source).toMatch(/receivedAt:\s*message\.receivedAt/);
+    expect(source).toMatch(/sentAt:\s*message\.sentAt/);
+    expect(source).toMatch(/asOf:\s*run\.createdAt\.toISOString\(\)/);
+    expect(source).toMatch(/modelId:\s*run\.modelId/);
+    expect(source).toMatch(/promptVersion:\s*run\.promptVersion/);
+    expect(source).not.toMatch(/AI_MODEL_ID/);
+  });
 });
 
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () => {
@@ -108,6 +120,16 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
     expect(row?.mastraTraceId).toBeTruthy();
     expect(row?.metrics).toMatchObject({
       applyMode: 'skipped',
+      modelId: 'amazon.nova-lite-v1:0',
+      promptHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      inputHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      rawOutput: expect.objectContaining({
+        category: expect.any(String),
+        rationale: expect.any(String),
+        policyFlags: expect.any(Array),
+      }),
+      rationale: expect.any(String),
+      policyFlags: expect.any(Array),
       usage: {
         totalTokens: expect.any(Number),
         estimatedCostUsd: expect.any(Number),
@@ -115,6 +137,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
     });
     const usage = (row?.metrics as { usage?: { totalTokens?: number } } | null)?.usage;
     expect(usage?.totalTokens).toBeGreaterThan(0);
+    expect(JSON.stringify(row?.metrics)).not.toMatch(/Need a room tonight/);
   });
 
   it('retry does not duplicate candidate draft', async () => {
@@ -222,6 +245,9 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
       expect(row?.metrics).toMatchObject({
         applyMode: 'skipped',
         durableWrite: false,
+        modelId: 'amazon.nova-lite-v1:0',
+        promptHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        inputHash: expect.stringMatching(/^[a-f0-9]{64}$/),
         usage: {
           totalTokens: expect.any(Number),
           estimatedCostUsd: expect.any(Number),

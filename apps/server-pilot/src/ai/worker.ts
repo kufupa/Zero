@@ -20,6 +20,7 @@ import {
   markAiRunRetry,
   markAiRunSucceeded,
 } from './run-ledger.js';
+import { buildCausalTriageMessages, type TriageMessageRow } from './triage-input.js';
 import { validateTriageOutput } from './triage.js';
 
 export const AI_WORKER_OWNER = `ai-worker-${process.pid}`;
@@ -106,18 +107,25 @@ export async function executeAiRun(runId: string): Promise<ExecuteAiRunResult> {
           textBody: message.textBody,
           htmlBody: message.htmlBody,
           direction: message.direction,
+          createdAt: message.createdAt,
+          receivedAt: message.receivedAt,
+          sentAt: message.sentAt,
         })
         .from(message)
         .where(and(eq(message.threadId, run.threadId), eq(message.transportId, run.transportId)))
-        .orderBy(asc(message.receivedAt));
+        .orderBy(asc(message.createdAt), asc(message.id));
 
-      const messages = threadMessages.map((m) => ({
+      const rows: TriageMessageRow[] = threadMessages.map((m) => ({
         id: m.id,
         from: m.fromAddress ?? '',
         subject: m.subject ?? undefined,
         body: m.textBody ?? m.htmlBody ?? '',
-        direction: m.direction ?? undefined,
+        direction: m.direction === 'outbound' ? 'outbound' : 'inbound',
+        createdAt: m.createdAt,
+        receivedAt: m.receivedAt ?? null,
+        sentAt: m.sentAt ?? null,
       }));
+      const messages = buildCausalTriageMessages(rows, run.triggerMessageId);
 
       const mastra = createMastraRuntime(process.env.MASTRA_STORAGE_PATH);
       const workflow = mastra.getWorkflow('mailTriage');
@@ -132,6 +140,9 @@ export async function executeAiRun(runId: string): Promise<ExecuteAiRunResult> {
           to: trigger?.toAddresses ?? [],
           body: trigger?.textBody ?? trigger?.htmlBody ?? '',
           messages,
+          asOf: run.createdAt.toISOString(),
+          modelId: run.modelId,
+          promptVersion: run.promptVersion,
         },
       });
       if (result.status !== 'success') {
