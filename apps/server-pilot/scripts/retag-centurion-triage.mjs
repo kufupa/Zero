@@ -31,7 +31,7 @@ export const DEFAULT_MODEL_ID = 'amazon.nova-lite-v1:0';
 export const DEFAULT_PROMPT_VERSION = 'triage-v5';
 export const DEFAULT_KEY_PREFIX = 'inbound-triage-retag-v5';
 
-const AI_MANAGED_SLUGS = [
+export const AI_MANAGED_SLUGS = [
   'new-bookings',
   'groups-events',
   'at-risk',

@@ -225,6 +225,42 @@ describe('deploy config', () => {
     expect(ops).toContain('db:migrate');
   });
 
+  it('quiesced deploy builds assets, asserts workers stopped, skips PM2/health, keeps VPN', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const deploy = readFileSync(join(here, '..', 'deploy', 'deploy-ec2.sh'), 'utf8');
+    const ops = readFileSync(join(here, '..', 'deploy', 'ops-deploy.sh'), 'utf8');
+
+    expect(deploy).toContain('--quiesced');
+    expect(ops).toContain('--quiesced');
+    expect(ops).toContain('vpn-health-assert.sh');
+
+    const deployQuiesced = deploy.match(
+      /if\s+\[\s*"\$\{?QUIESCED\}?"\s*=\s*"1"\s*\][\s\S]*?(?=^fi\b)/m,
+    )?.[0];
+    expect(deployQuiesced, 'deploy-ec2.sh QUIESCED branch').toBeTruthy();
+    expect(deployQuiesced).toMatch(/http/);
+    expect(deployQuiesced).toMatch(/worker/);
+    expect(deployQuiesced).toMatch(/ai-worker/);
+    expect(deployQuiesced).not.toMatch(/\bpm2\s+start\b/);
+    expect(deployQuiesced).not.toMatch(/\bpm2\s+delete\b/);
+    expect(deployQuiesced).not.toMatch(/\bpm2\s+save\b/);
+    expect(deployQuiesced).not.toMatch(/health attempt|8788\/health/);
+
+    // Non-quiesced path still has PM2 start + health (launch safety).
+    expect(deploy).toContain('pm2 start');
+    expect(deploy).toContain('health attempt');
+
+    const opsQuiesced = ops.match(
+      /if\s+\[\s*"\$\{?QUIESCED\}?"\s*=\s*"1"\s*\][\s\S]*?(?=^fi\b)/m,
+    )?.[0];
+    expect(opsQuiesced, 'ops-deploy.sh QUIESCED branch').toBeTruthy();
+    expect(opsQuiesced).not.toMatch(/curl[^\n]*\/health/);
+    expect(ops).toMatch(/deploy-ec2\.sh --quiesced|deploy-ec2\.sh"\s*--quiesced/);
+  });
+
   it('ops-restart.sh reloads pm2 via SSM without sync', async () => {
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
