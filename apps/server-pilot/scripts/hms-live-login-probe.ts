@@ -250,6 +250,21 @@ async function main(): Promise<void> {
           bodyBytes: Buffer.byteLength(postData),
         };
         events.push(ev);
+        if (
+          req.method().toUpperCase() === 'POST' &&
+          new URL(req.url()).pathname === '/web/base/login'
+        ) {
+          const response = await route.fetch();
+          const buf = await response.body();
+          xhrMeta.push({
+            path: '/web/base/login',
+            status: response.status(),
+            ok: response.ok(),
+            bodyBytes: buf.byteLength,
+          });
+          await route.fulfill({ response });
+          return;
+        }
         await route.continue();
         return;
       }
