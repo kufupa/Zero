@@ -5,7 +5,9 @@ import type { DB } from '../src/db/client.js';
 import {
   aiDraftGeneration,
   aiWorkflowRun,
+  attachment,
   mailDraft,
+  mailDraftRevision,
   mailThread,
   message,
 } from '../src/db/schema/mail.js';
@@ -13,6 +15,9 @@ import { TRANSPORT_ID } from '../src/db/seed.js';
 import { computeThreadStateVersion } from '../src/ai/thread-context.js';
 import {
   assertThreadStateVersionFresh,
+  loadLatestThreadAffectingDraftRevisionId,
+  loadLiveThreadStateVersion,
+  persistAiCandidateDraft,
   ThreadStateStaleError,
 } from '../src/ai/drafts.js';
 import {
@@ -26,6 +31,7 @@ import {
   isHmsEnrichedGeneration,
   loadHmsCandidateState,
   enqueueHmsCandidateRefresh,
+  resolveMailAttachmentFreshnessInputs,
   HMS_CANDIDATE_TOOLSET_VERSION,
 } from '../src/trpc/routes/drafts.js';
 import {
@@ -140,6 +146,25 @@ describe('HMS candidate freshness helpers', () => {
         attachmentSourceHashes: new Map([['att-1', sha('changed')]]),
       }),
     ).toBe('stale_evidence');
+  });
+
+  it('marks missing attachment ids stale_evidence', () => {
+    expect(
+      evaluateHmsEvidenceFreshness({
+        evidence: [mailEvidence()],
+        attachmentSourceHashes: new Map([['att-1', sha('attachment-body')]]),
+        missingAttachmentIds: new Set(['att-1']),
+      }),
+    ).toBe('stale_evidence');
+  });
+
+  it('fail-closed unknown when mail attachment hash map missing key', () => {
+    expect(
+      evaluateHmsEvidenceFreshness({
+        evidence: [mailEvidence()],
+        attachmentSourceHashes: new Map(),
+      }),
+    ).toBe('unknown');
   });
 
   it('marks thread version mismatch stale_thread', () => {
@@ -259,88 +284,76 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('HMS candidate state (DB)', ()
     });
   });
 
-  it('atomic new success replaces visible candidate with newest', async () => {
+  it('atomic new success supersedes older visible candidates', async () => {
     await withSeededTestDb(async (db) => {
       const { threadId, parentMessageId } = await seedThread(db);
       const olderGen = randomUUID();
-      const newerGen = randomUUID();
       const olderDraft = randomUUID();
-      const newerDraft = randomUUID();
-      const threadStateVersion = computeThreadStateVersion({
-        messages: [
-          {
-            id: parentMessageId,
-            direction: 'inbound',
-            timestamp: '2026-07-30T10:00:00.000Z',
-          },
-        ],
-        latestDraftRevisionId: null,
+      const threadStateVersion = await loadLiveThreadStateVersion(db, {
+        transportId: TRANSPORT_ID,
+        threadId,
       });
-      await db.insert(aiDraftGeneration).values([
-        {
-          id: olderGen,
-          transportId: TRANSPORT_ID,
-          threadId,
-          requestedByUserId: 'user-navaai',
-          contextMessageIds: [parentMessageId],
-          model: 'test',
-          promptVersion: 'draft-v1',
-          outcome: 'candidate',
-          threadStateVersion,
-          evidence: [hmsEvidence({ expiresAt: '2099-01-01T00:00:00.000Z' })],
-          createdAt: new Date('2026-07-30T10:01:00Z'),
-        },
-        {
-          id: newerGen,
-          transportId: TRANSPORT_ID,
-          threadId,
-          requestedByUserId: 'user-navaai',
-          contextMessageIds: [parentMessageId],
-          model: 'test',
-          promptVersion: 'draft-v1',
-          outcome: 'candidate',
-          threadStateVersion,
-          evidence: [hmsEvidence({ expiresAt: '2099-01-01T00:00:00.000Z' })],
-          createdAt: new Date('2026-07-30T10:02:00Z'),
-        },
-      ]);
-      await db.insert(mailDraft).values([
-        {
-          id: olderDraft,
-          transportId: TRANSPORT_ID,
-          threadId,
-          createdByUserId: 'user-navaai',
-          status: 'candidate',
-          origin: 'ai',
-          generationId: olderGen,
-          replyToMessageId: parentMessageId,
-          toAddresses: ['guest@example.com'],
-          subject: 'Re: Booking',
-          textBody: 'Older',
-          updatedAt: new Date('2026-07-30T10:01:00Z'),
-        },
-        {
-          id: newerDraft,
-          transportId: TRANSPORT_ID,
-          threadId,
-          createdByUserId: 'user-navaai',
-          status: 'candidate',
-          origin: 'ai',
-          generationId: newerGen,
-          replyToMessageId: parentMessageId,
-          toAddresses: ['guest@example.com'],
-          subject: 'Re: Booking',
-          textBody: 'Newest',
-          updatedAt: new Date('2026-07-30T10:02:00Z'),
-        },
-      ]);
+      await db.insert(aiDraftGeneration).values({
+        id: olderGen,
+        transportId: TRANSPORT_ID,
+        threadId,
+        requestedByUserId: 'user-navaai',
+        contextMessageIds: [parentMessageId],
+        model: 'test',
+        promptVersion: 'draft-v1',
+        outcome: 'candidate',
+        threadStateVersion,
+        evidence: [hmsEvidence({ expiresAt: '2099-01-01T00:00:00.000Z' })],
+        createdAt: new Date('2026-07-30T10:01:00Z'),
+      });
+      await db.insert(mailDraft).values({
+        id: olderDraft,
+        transportId: TRANSPORT_ID,
+        threadId,
+        createdByUserId: 'user-navaai',
+        status: 'candidate',
+        origin: 'ai',
+        generationId: olderGen,
+        replyToMessageId: parentMessageId,
+        toAddresses: ['guest@example.com'],
+        subject: 'Re: Booking',
+        textBody: 'Older',
+        updatedAt: new Date('2026-07-30T10:01:00Z'),
+      });
+
+      const newerGen = randomUUID();
+      const newer = await persistAiCandidateDraft({
+        db,
+        transportId: TRANSPORT_ID,
+        threadId,
+        replyToMessageId: parentMessageId,
+        createdByUserId: 'user-navaai',
+        generationId: newerGen,
+        model: 'test',
+        promptVersion: 'draft-v1',
+        contextMessageIds: [parentMessageId],
+        toAddresses: ['guest@example.com'],
+        subject: 'Re: Booking',
+        textBody: 'Newest',
+        htmlBody: '<p>Newest</p>',
+        outcome: 'candidate',
+        evidence: [hmsEvidence({ expiresAt: '2099-01-01T00:00:00.000Z' })],
+        threadStateVersion,
+      });
+
+      const olderRow = await db
+        .select()
+        .from(mailDraft)
+        .where(eq(mailDraft.id, olderDraft))
+        .limit(1);
+      expect(olderRow[0]?.status).toBe('discarded');
 
       const state = await loadHmsCandidateState({
         db,
         transportId: TRANSPORT_ID,
         threadId,
       });
-      expect(state.visibleCandidate?.id).toBe(newerDraft);
+      expect(state.visibleCandidate?.id).toBe(newer.id);
       expect(state.visibleCandidate?.content).toBe('Newest');
     });
   });
@@ -511,6 +524,163 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('HMS candidate state (DB)', ()
         requestedByUserId: 'user-navaai',
       });
       expect(b.runId).toBe(a.runId);
+    });
+  });
+
+  it('sent revision marks candidate stale_thread', async () => {
+    await withSeededTestDb(async (db) => {
+      const { caller, threadId, parentMessageId } = await seedThread(db);
+      const generationId = randomUUID();
+      const draftId = randomUUID();
+      const threadStateVersion = await loadLiveThreadStateVersion(db, {
+        transportId: TRANSPORT_ID,
+        threadId,
+      });
+      await db.insert(aiDraftGeneration).values({
+        id: generationId,
+        transportId: TRANSPORT_ID,
+        threadId,
+        requestedByUserId: 'user-navaai',
+        contextMessageIds: [parentMessageId],
+        model: 'test',
+        promptVersion: 'draft-v1',
+        outcome: 'candidate',
+        threadStateVersion,
+        evidence: [hmsEvidence({ expiresAt: '2099-01-01T00:00:00.000Z' })],
+      });
+      await db.insert(mailDraft).values({
+        id: draftId,
+        transportId: TRANSPORT_ID,
+        threadId,
+        createdByUserId: 'user-navaai',
+        status: 'candidate',
+        origin: 'ai',
+        generationId,
+        replyToMessageId: parentMessageId,
+        toAddresses: ['guest@example.com'],
+        subject: 'Re: Booking',
+        textBody: 'Candidate',
+      });
+
+      const sentDraftId = randomUUID();
+      await db.insert(mailDraft).values({
+        id: sentDraftId,
+        transportId: TRANSPORT_ID,
+        threadId,
+        createdByUserId: 'user-navaai',
+        status: 'sent',
+        origin: 'manual',
+        isSent: true,
+        toAddresses: ['guest@example.com'],
+        subject: 'Re: Booking',
+        textBody: 'Already sent',
+      });
+      await db.insert(mailDraftRevision).values({
+        id: randomUUID(),
+        draftId: sentDraftId,
+        actorUserId: 'user-navaai',
+        kind: 'sent',
+        toAddresses: ['guest@example.com'],
+        subject: 'Re: Booking',
+        textBody: 'Already sent',
+        htmlBody: null,
+        attachments: [],
+      });
+
+      const liveRev = await loadLatestThreadAffectingDraftRevisionId(db, {
+        transportId: TRANSPORT_ID,
+        threadId,
+      });
+      expect(liveRev).toBeTruthy();
+
+      const state = await caller.ai.hmsCandidateState({ threadId });
+      expect(state.freshness).toBe('stale_thread');
+      expect(state.visibleCandidate?.isStale).toBe(true);
+    });
+  });
+
+  it('missing mail attachment row marks stale_evidence; injected hashes detect change', async () => {
+    await withSeededTestDb(async (db) => {
+      const { threadId, parentMessageId } = await seedThread(db);
+      const generationId = randomUUID();
+      const draftId = randomUUID();
+      const attId = randomUUID();
+      const bodyHash = sha('attachment-body');
+      const threadStateVersion = await loadLiveThreadStateVersion(db, {
+        transportId: TRANSPORT_ID,
+        threadId,
+      });
+
+      await db.insert(attachment).values({
+        id: attId,
+        messageId: parentMessageId,
+        filename: 'note.txt',
+        mimeType: 'text/plain',
+        sizeBytes: 16,
+        s3Key: `attachments/${parentMessageId}/note.txt`,
+      });
+
+      const evidence = [mailEvidence({ attachmentId: attId, sourceHash: bodyHash })];
+      await db.insert(aiDraftGeneration).values({
+        id: generationId,
+        transportId: TRANSPORT_ID,
+        threadId,
+        requestedByUserId: 'user-navaai',
+        contextMessageIds: [parentMessageId],
+        model: 'test',
+        promptVersion: 'draft-v1',
+        outcome: 'candidate',
+        threadStateVersion,
+        evidence,
+      });
+      await db.insert(mailDraft).values({
+        id: draftId,
+        transportId: TRANSPORT_ID,
+        threadId,
+        createdByUserId: 'user-navaai',
+        status: 'candidate',
+        origin: 'ai',
+        generationId,
+        replyToMessageId: parentMessageId,
+        toAddresses: ['guest@example.com'],
+        subject: 'Re: Booking',
+        textBody: 'With attachment evidence',
+      });
+
+      const resolved = await resolveMailAttachmentFreshnessInputs({
+        db,
+        transportId: TRANSPORT_ID,
+        threadId,
+        evidence,
+      });
+      // No contentHash column → fail closed unknown unless hashes injected.
+      expect(resolved.missingAttachmentIds.size).toBe(0);
+      expect(resolved.attachmentSourceHashes.size).toBe(0);
+
+      const freshWithInject = await loadHmsCandidateState({
+        db,
+        transportId: TRANSPORT_ID,
+        threadId,
+        attachmentSourceHashes: new Map([[attId, bodyHash]]),
+      });
+      expect(freshWithInject.freshness).toBe('fresh');
+
+      const staleHash = await loadHmsCandidateState({
+        db,
+        transportId: TRANSPORT_ID,
+        threadId,
+        attachmentSourceHashes: new Map([[attId, sha('changed')]]),
+      });
+      expect(staleHash.freshness).toBe('stale_evidence');
+
+      await db.delete(attachment).where(eq(attachment.id, attId));
+      const missing = await loadHmsCandidateState({
+        db,
+        transportId: TRANSPORT_ID,
+        threadId,
+        attachmentSourceHashes: new Map([[attId, bodyHash]]),
+      });
+      expect(missing.freshness).toBe('stale_evidence');
     });
   });
 });

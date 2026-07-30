@@ -14,8 +14,10 @@ import { getDb, type DB } from '../../db/client.js';
 import {
   aiDraftGeneration,
   aiWorkflowRun,
+  attachment,
   mailDraft,
   mailDraftRevision,
+  message,
 } from '../../db/schema/mail.js';
 import {
   requireThreadForTransport,
@@ -104,8 +106,13 @@ export function isHmsEnrichedGeneration(generation: {
 export function evaluateHmsEvidenceFreshness(input: {
   evidence: unknown[];
   now?: Date;
-  /** Current attachmentId → sha256 hex; missing key → unknown for that ref. */
+  /**
+   * Current attachmentId → sha256 hex of attachment bytes.
+   * Missing key → unknown for that ref (fail closed for promote/send).
+   */
   attachmentSourceHashes?: ReadonlyMap<string, string>;
+  /** Evidence attachment IDs absent from DB → stale_evidence. */
+  missingAttachmentIds?: ReadonlySet<string>;
 }): Exclude<HmsCandidateFreshness, 'stale_thread'> {
   if (!Array.isArray(input.evidence) || input.evidence.length === 0) return 'unknown';
   const now = input.now ?? new Date();
@@ -116,6 +123,9 @@ export function evaluateHmsEvidenceFreshness(input: {
     if (evidence.kind === 'hms') {
       if (!isEvidenceFresh(evidence, now)) return 'stale_evidence';
       continue;
+    }
+    if (input.missingAttachmentIds?.has(evidence.attachmentId)) {
+      return 'stale_evidence';
     }
     const current = input.attachmentSourceHashes?.get(evidence.attachmentId);
     if (current === undefined) return 'unknown';
@@ -130,6 +140,7 @@ export function evaluateHmsCandidateFreshness(input: {
   evidence: unknown[];
   now?: Date;
   attachmentSourceHashes?: ReadonlyMap<string, string>;
+  missingAttachmentIds?: ReadonlySet<string>;
 }): HmsCandidateFreshness {
   if (!input.threadStateVersion) return 'unknown';
   if (input.threadStateVersion !== input.liveThreadStateVersion) return 'stale_thread';
@@ -137,7 +148,70 @@ export function evaluateHmsCandidateFreshness(input: {
     evidence: input.evidence,
     now: input.now,
     attachmentSourceHashes: input.attachmentSourceHashes,
+    missingAttachmentIds: input.missingAttachmentIds,
   });
+}
+
+/**
+ * Resolve live attachment hashes for mail_attachment evidence.
+ *
+ * Prefer caller-injected hashes (tests / future contentHash column). Otherwise
+ * load attachment rows for the thread: missing row → missingIds (stale).
+ * Attachment table has no contentHash today → no hash entries → fail closed
+ * `unknown` for present mail attachments until hashes are injectable/stored.
+ */
+export async function resolveMailAttachmentFreshnessInputs(input: {
+  db: DB;
+  transportId: string;
+  threadId: string;
+  evidence: unknown[];
+  attachmentSourceHashes?: ReadonlyMap<string, string>;
+}): Promise<{
+  attachmentSourceHashes: ReadonlyMap<string, string>;
+  missingAttachmentIds: ReadonlySet<string>;
+}> {
+  const attachmentIds = new Set<string>();
+  for (const raw of input.evidence) {
+    const parsed = EvidenceRefSchema.safeParse(raw);
+    if (!parsed.success) continue;
+    if (parsed.data.kind === 'mail_attachment') {
+      attachmentIds.add(parsed.data.attachmentId);
+    }
+  }
+
+  if (attachmentIds.size === 0) {
+    return {
+      attachmentSourceHashes: input.attachmentSourceHashes ?? new Map(),
+      missingAttachmentIds: new Set(),
+    };
+  }
+
+  const rows = await input.db
+    .select({
+      id: attachment.id,
+      // Reserved for future contentHash column / dialect extension.
+      s3Key: attachment.s3Key,
+      sizeBytes: attachment.sizeBytes,
+    })
+    .from(attachment)
+    .innerJoin(message, eq(attachment.messageId, message.id))
+    .where(
+      and(
+        eq(message.transportId, input.transportId),
+        eq(message.threadId, input.threadId),
+        inArray(attachment.id, [...attachmentIds]),
+      ),
+    );
+
+  const found = new Set(rows.map((r) => r.id));
+  const missingAttachmentIds = new Set(
+    [...attachmentIds].filter((id) => !found.has(id)),
+  );
+
+  // Injected hashes win. DB has no contentHash column yet — do not invent
+  // metadata fingerprints that cannot match evidence.sourceHash (body sha256).
+  const hashes = new Map<string, string>(input.attachmentSourceHashes ?? []);
+  return { attachmentSourceHashes: hashes, missingAttachmentIds };
 }
 
 export function collectUnresolvedFields(input: {
@@ -245,18 +319,26 @@ export async function loadHmsCandidateState(input: {
 
   let freshness: HmsCandidateFreshness = 'unknown';
   if (generation && isHmsEnrichedGeneration(generation)) {
-    // Generations persist threadStateVersion with latestDraftRevisionId=null (worker).
+    const evidence = generation.evidence ?? [];
+    // Omit latestDraftRevisionId → load live thread-affecting revision (Task-2 contract).
     const live = await loadLiveThreadStateVersion(input.db, {
       transportId: input.transportId,
       threadId: input.threadId,
-      latestDraftRevisionId: null,
+    });
+    const attachmentFreshness = await resolveMailAttachmentFreshnessInputs({
+      db: input.db,
+      transportId: input.transportId,
+      threadId: input.threadId,
+      evidence,
+      attachmentSourceHashes: input.attachmentSourceHashes,
     });
     freshness = evaluateHmsCandidateFreshness({
       threadStateVersion: generation.threadStateVersion,
       liveThreadStateVersion: live,
-      evidence: generation.evidence ?? [],
+      evidence,
       now,
-      attachmentSourceHashes: input.attachmentSourceHashes,
+      attachmentSourceHashes: attachmentFreshness.attachmentSourceHashes,
+      missingAttachmentIds: attachmentFreshness.missingAttachmentIds,
     });
   }
 
@@ -296,18 +378,26 @@ export async function assertHmsDraftFreshForAction(input: {
     .limit(1);
   if (!generation || !isHmsEnrichedGeneration(generation)) return;
 
-  // Match worker persist: threadStateVersion computed with latestDraftRevisionId=null.
+  const evidence = generation.evidence ?? [];
+  // Omit latestDraftRevisionId → load live thread-affecting revision.
   const live = await loadLiveThreadStateVersion(input.db, {
     transportId: input.transportId,
     threadId: input.draft.threadId,
-    latestDraftRevisionId: null,
+  });
+  const attachmentFreshness = await resolveMailAttachmentFreshnessInputs({
+    db: input.db,
+    transportId: input.transportId,
+    threadId: input.draft.threadId,
+    evidence,
+    attachmentSourceHashes: input.attachmentSourceHashes,
   });
   const freshness = evaluateHmsCandidateFreshness({
     threadStateVersion: generation.threadStateVersion,
     liveThreadStateVersion: live,
-    evidence: generation.evidence ?? [],
+    evidence,
     now: input.now,
-    attachmentSourceHashes: input.attachmentSourceHashes,
+    attachmentSourceHashes: attachmentFreshness.attachmentSourceHashes,
+    missingAttachmentIds: attachmentFreshness.missingAttachmentIds,
   });
   if (freshness !== 'fresh') {
     throw new TRPCError({ code: 'CONFLICT', message: input.conflict });
@@ -331,7 +421,6 @@ export async function enqueueHmsCandidateRefresh(input: {
   const threadStateVersion = await loadLiveThreadStateVersion(input.db, {
     transportId: input.transportId,
     threadId: input.threadId,
-    latestDraftRevisionId: null,
   });
   const idempotencyKey = buildHmsRefreshIdempotencyKey({
     transportId: input.transportId,

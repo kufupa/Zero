@@ -11,7 +11,7 @@ import {
 } from '../db/schema/mail.js';
 import { parseEnv, type AiExecutorLane } from '../env.js';
 import { createMastraRuntime } from './mastra.js';
-import { persistAiCandidateDraft } from './drafts.js';
+import { persistAiCandidateDraft, loadLatestThreadAffectingDraftRevisionId } from './drafts.js';
 import { extractDraftFeedbackLabels } from './feedback.js';
 import {
   claimNextAiRun,
@@ -414,6 +414,10 @@ export async function executeAiRun(
         .from(message)
         .where(and(eq(message.threadId, run.threadId), eq(message.transportId, run.transportId)));
 
+      const latestDraftRevisionId = await loadLatestThreadAffectingDraftRevisionId(db, {
+        transportId: run.transportId,
+        threadId: run.threadId,
+      });
       const context = await buildThreadContext({
         transportId: run.transportId,
         threadId: run.threadId,
@@ -432,7 +436,7 @@ export async function executeAiRun(
           sentAt: m.sentAt,
           attachmentIds: [],
         })),
-        latestDraftRevisionId: null,
+        latestDraftRevisionId,
       });
 
       const session =
@@ -494,7 +498,7 @@ export async function executeAiRun(
             outcome: claimSafe.outcome,
             evidence: claimSafe.evidence.map((e) => e.evidence),
             threadStateVersion: context.threadStateVersion,
-            latestDraftRevisionId: null,
+            latestDraftRevisionId,
             persistDraft,
           });
 

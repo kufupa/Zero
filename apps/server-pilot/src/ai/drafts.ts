@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, eq } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import {
   aiDraftGeneration,
@@ -16,11 +16,52 @@ export class ThreadStateStaleError extends Error {
   }
 }
 
+/**
+ * Revision kinds that participate in threadStateVersion.
+ * Exclude `ai_generated` so candidate persist does not immediately self-stale.
+ * Sent / edited / promoted / created = human or outbound state change.
+ */
+export const THREAD_STATE_REVISION_KINDS = [
+  'created',
+  'promoted',
+  'edited',
+  'sent',
+] as const;
+
 /** Fail closed when expected version does not match live thread hash. */
 export function assertThreadStateVersionFresh(expected: string, live: string): void {
   if (expected !== live) throw new ThreadStateStaleError();
 }
 
+/**
+ * Latest thread-affecting draft revision for transport+thread.
+ * Used by threadStateVersion so sent revision / completed actions mark stale.
+ */
+export async function loadLatestThreadAffectingDraftRevisionId(
+  db: DB,
+  input: { transportId: string; threadId: string },
+): Promise<string | null> {
+  const [row] = await db
+    .select({ id: mailDraftRevision.id })
+    .from(mailDraftRevision)
+    .innerJoin(mailDraft, eq(mailDraftRevision.draftId, mailDraft.id))
+    .where(
+      and(
+        eq(mailDraft.transportId, input.transportId),
+        eq(mailDraft.threadId, input.threadId),
+        inArray(mailDraftRevision.kind, [...THREAD_STATE_REVISION_KINDS]),
+      ),
+    )
+    .orderBy(desc(mailDraftRevision.createdAt), desc(mailDraftRevision.id))
+    .limit(1);
+  return row?.id ?? null;
+}
+
+/**
+ * Live thread state version (messages + latest thread-affecting draft revision).
+ * Omit `latestDraftRevisionId` to load live from DB; pass explicit value to
+ * pin (tests / fence with a known snapshot).
+ */
 export async function loadLiveThreadStateVersion(
   db: DB,
   input: {
@@ -41,6 +82,14 @@ export async function loadLiveThreadStateVersion(
       and(eq(message.threadId, input.threadId), eq(message.transportId, input.transportId)),
     );
 
+  const latestDraftRevisionId =
+    input.latestDraftRevisionId !== undefined
+      ? input.latestDraftRevisionId
+      : await loadLatestThreadAffectingDraftRevisionId(db, {
+          transportId: input.transportId,
+          threadId: input.threadId,
+        });
+
   return computeThreadStateVersion({
     messages: rows.map((m) => ({
       id: m.id,
@@ -50,7 +99,7 @@ export async function loadLiveThreadStateVersion(
       timestamp:
         (m.sentAt ?? m.receivedAt)?.toISOString() ?? '1970-01-01T00:00:00.000Z',
     })),
-    latestDraftRevisionId: input.latestDraftRevisionId ?? null,
+    latestDraftRevisionId,
   });
 }
 
@@ -74,7 +123,10 @@ export interface PersistAiCandidateDraftInput {
   outcome?: 'candidate' | 'needs_clarification' | 'insufficient_evidence';
   evidence?: unknown[];
   threadStateVersion?: string;
-  /** Same value used when context was built (worker currently passes null). */
+  /**
+   * Revision id baked into threadStateVersion at context build.
+   * Fence reloads live revision; this is retained for callers/metrics.
+   */
   latestDraftRevisionId?: string | null;
   /**
    * When false (shadow / non-candidate), persist generation metrics only —
@@ -142,10 +194,10 @@ export async function persistAiCandidateDraft(input: PersistAiCandidateDraftInpu
 
   await input.db.transaction(async (tx) => {
     if (input.threadStateVersion) {
+      // Live messages + thread-affecting revision (not pinned to context snapshot).
       const live = await loadLiveThreadStateVersion(tx as unknown as DB, {
         transportId: input.transportId,
         threadId: input.threadId,
-        latestDraftRevisionId: input.latestDraftRevisionId ?? null,
       });
       assertThreadStateVersionFresh(input.threadStateVersion, live);
     }
@@ -181,6 +233,20 @@ export async function persistAiCandidateDraft(input: PersistAiCandidateDraftInpu
     }
 
     if (!persistDraft) return;
+
+    // Atomic replace: supersede older visible AI candidates for this thread.
+    await tx
+      .update(mailDraft)
+      .set({ status: 'discarded', updatedAt: now })
+      .where(
+        and(
+          eq(mailDraft.transportId, input.transportId),
+          eq(mailDraft.threadId, input.threadId),
+          eq(mailDraft.isSent, false),
+          eq(mailDraft.status, 'candidate'),
+          eq(mailDraft.origin, 'ai'),
+        ),
+      );
 
     await tx.insert(mailDraft).values({
       id: draftId,
