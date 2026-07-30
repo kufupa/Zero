@@ -171,6 +171,23 @@ export function refineTriageOutput(
   }
 
   if (
+    next.category === 'ops' &&
+    next.urgent &&
+    /invoice|tax invoice/i.test(haystack) &&
+    !/(today|tonight|same[- ]day|arrives? tomorrow|check[- ]?in tomorrow|within \d+\s*h)/i.test(
+      haystack,
+    ) &&
+    !hasSameDayCheckInSignal(haystack, input.asOf)
+  ) {
+    next = {
+      ...next,
+      urgent: false,
+      policyFlags: [...next.policyFlags, 'refine:ops-invoice-not-urgent'],
+      rationale: `${next.rationale} Ops invoice without same-day/hard SLA is not urgent.`,
+    };
+  }
+
+  if (
     !next.urgent &&
     (next.category === 'new-bookings' ||
       next.category === 'groups-events' ||
@@ -182,6 +199,21 @@ export function refineTriageOutput(
       urgent: true,
       policyFlags: [...next.policyFlags, 'refine:same-day-ci-urgent'],
       rationale: `${next.rationale} Same-day check-in/arrival relative to asOf is urgent.`,
+    };
+  }
+
+  if (
+    next.urgent &&
+    next.category === 'new-bookings' &&
+    /\burgent\b/i.test(subject) &&
+    !hasSameDayCheckInSignal(haystack, input.asOf) &&
+    !/(today|tonight|same[- ]day|within \d+\s*h|arrives? tomorrow)/i.test(haystack)
+  ) {
+    next = {
+      ...next,
+      urgent: false,
+      policyFlags: [...next.policyFlags, 'refine:subject-urgent-no-sla-signal'],
+      rationale: `${next.rationale} Subject URGENT without same-day/hard SLA is not urgent.`,
     };
   }
 
