@@ -623,11 +623,17 @@ async function main(): Promise<void> {
     page.on('response', (res) => {
       try {
         const url = new URL(res.url());
-        if (url.pathname === '/web/base/login' || res.request().method() === 'POST') {
+        const path = url.pathname;
+        if (
+          path === '/web/base/login' ||
+          path.startsWith('/web/base/OSRESV') ||
+          path.startsWith('/web/base/BSSTRT') ||
+          res.request().method() === 'POST'
+        ) {
           const headers = res.headers();
           const len = Number(headers['content-length'] ?? '0');
           xhrMeta.push({
-            path: url.pathname,
+            path,
             status: res.status(),
             ok: res.ok(),
             bodyBytes: Number.isFinite(len) ? len : 0,
@@ -903,21 +909,36 @@ async function main(): Promise<void> {
         if (clicked.some((c) => /guest\s*stay/i.test(c))) {
           await page!.waitForTimeout(4000);
           const searchFilled = await page!.evaluate(() => {
+            const wantNames = [
+              'confirmationnumber',
+              'confirmationNumber',
+              'CONFIRMATIONNUMBER',
+            ];
+            for (const name of wantNames) {
+              const el = document.querySelector(
+                `input[name="${name}"]`,
+              ) as HTMLInputElement | null;
+              if (el) {
+                el.focus();
+                el.value = 'NOTFOUND-CANARY';
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+                return name;
+              }
+            }
             const inputs = [
               ...document.querySelectorAll('input, textarea'),
             ] as HTMLInputElement[];
-            const candidates = inputs.filter((el) => {
-              const name = `${el.name} ${el.id} ${el.placeholder} ${el.getAttribute('aria-label') || ''}`.toLowerCase();
-              return /confirm|confirmation|resv|reservation|account/.test(name);
-            });
-            // Prefer visible text-like inputs
-            for (const el of candidates) {
+            for (const el of inputs) {
               if (el.type === 'password' || el.type === 'hidden') continue;
+              const name =
+                `${el.name} ${el.id} ${el.placeholder} ${el.getAttribute('aria-label') || ''}`.toLowerCase();
+              if (!/confirm/.test(name)) continue;
               el.focus();
               el.value = 'NOTFOUND-CANARY';
               el.dispatchEvent(new Event('input', { bubbles: true }));
               el.dispatchEvent(new Event('change', { bubbles: true }));
-              return el.name || el.id || 'filled';
+              return el.name || el.id || 'confirm-ish';
             }
             return null;
           });
