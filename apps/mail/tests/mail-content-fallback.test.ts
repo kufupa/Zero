@@ -4,6 +4,7 @@ import {
   resolveMailDisplayHtml,
 } from '../lib/mail/resolve-mail-display-html';
 import * as mailContent from '../components/mail/mail-content';
+import { isImageTrustedSender } from '../lib/mail/trust-sender';
 
 const MALICIOUS_RAW_HTML = '<body><p>visible</p><script>alert("xss")</script></body>';
 
@@ -178,5 +179,34 @@ describe('mail content image failures', () => {
     ).toBe(true);
     expect(image.attributes.has('src')).toBe(true);
     expect(image.target.style.display).toBe('none');
+  });
+});
+
+describe('isImageTrustedSender (FE twin)', () => {
+  it('trusts hotel domains without trustedSenders entry', () => {
+    expect(
+      isImageTrustedSender({
+        senderEmail: 'centurion@legacyhotels.co.za',
+        externalImages: false,
+        trustedSenders: [],
+      }),
+    ).toBe(true);
+  });
+
+  it('matches domain entries in trustedSenders', () => {
+    expect(
+      isImageTrustedSender({
+        senderEmail: 'a@partner.test',
+        externalImages: false,
+        trustedSenders: ['partner.test'],
+      }),
+    ).toBe(true);
+    expect(
+      isImageTrustedSender({
+        senderEmail: 'x@evil.test',
+        externalImages: false,
+        trustedSenders: [],
+      }),
+    ).toBe(false);
   });
 });

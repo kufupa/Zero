@@ -145,4 +145,14 @@ describe('sanitizeHtmlBodyForStorage', () => {
     expect(stored).not.toMatch(/onerror/i);
     expect(stored).toContain('ok');
   });
+
+  it('storage sanitize keeps remote https img src but strips script', () => {
+    const html = sanitizeHtmlBodyForStorage(
+      '<p><img src="https://branding.legacyhotels.co.za/x.gif"><script>alert(1)</script></p>',
+    )!;
+    expect(html).toContain(
+      'src="https://branding.legacyhotels.co.za/x.gif"',
+    );
+    expect(html).not.toContain('<script');
+  });
 });

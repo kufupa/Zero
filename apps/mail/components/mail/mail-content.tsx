@@ -10,6 +10,7 @@ import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { resolveMailDisplayHtml } from '@/lib/mail/resolve-mail-display-html';
+import { isImageTrustedSender } from '@/lib/mail/trust-sender';
 import { demoSetSettings } from '@/lib/demo/local-actions';
 
 const INLINE_IMAGE_PATH =
@@ -97,7 +98,12 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
   const queryClient = useQueryClient();
   const frontendOnlyDemo = isFrontendOnlyDemo();
   const isTrustedSender = useMemo(
-    () => data?.settings?.externalImages || data?.settings?.trustedSenders?.includes(senderEmail),
+    () =>
+      isImageTrustedSender({
+        senderEmail,
+        externalImages: data?.settings?.externalImages,
+        trustedSenders: data?.settings?.trustedSenders,
+      }),
     [data?.settings, senderEmail],
   );
   const [cspViolation, setCspViolation] = useState(false);

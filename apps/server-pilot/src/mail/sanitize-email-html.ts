@@ -97,5 +97,6 @@ export function sanitizeEmailHtml(
 export function sanitizeHtmlBodyForStorage(html: string | null): string | null {
   if (html == null || html === '') return html;
   if (!html.includes('<')) return html;
-  return sanitizeEmailHtml(html, { shouldLoadImages: false }).html;
+  // Preserve remote URLs for the later sender-trust gate while stripping XSS.
+  return sanitizeEmailHtml(html, { shouldLoadImages: true }).html;
 }

@@ -34,20 +34,30 @@ describe('pilot-rds-guard', () => {
     ).toBe(false);
   });
 
-  it('refuses pilot URL without opt-in', () => {
-    expect(() =>
-      assertNotPilotProdDatabase(pilotUrl, { VITEST_ALLOW_PILOT_RDS: '' }),
-    ).toThrow(/VITEST_ALLOW_PILOT_RDS=1/);
+  it('refuses pilot URL', () => {
+    expect(() => assertNotPilotProdDatabase(pilotUrl)).toThrow(
+      /No override exists/,
+    );
   });
 
-  it('allows pilot URL with opt-in', () => {
-    expect(() =>
-      assertNotPilotProdDatabase(pilotUrl, { VITEST_ALLOW_PILOT_RDS: '1' }),
-    ).not.toThrow();
+  it('refuses pilot URL even when legacy opt-in is set', () => {
+    const previous = process.env.VITEST_ALLOW_PILOT_RDS;
+    process.env.VITEST_ALLOW_PILOT_RDS = '1';
+    try {
+      expect(() => assertNotPilotProdDatabase(pilotUrl)).toThrow(
+        /No override exists/,
+      );
+    } finally {
+      if (previous === undefined) {
+        delete process.env.VITEST_ALLOW_PILOT_RDS;
+      } else {
+        process.env.VITEST_ALLOW_PILOT_RDS = previous;
+      }
+    }
   });
 
   it('no-ops when DATABASE_URL unset / empty', () => {
-    expect(() => assertNotPilotProdDatabase(undefined, {})).not.toThrow();
-    expect(() => assertNotPilotProdDatabase('', {})).not.toThrow();
+    expect(() => assertNotPilotProdDatabase(undefined)).not.toThrow();
+    expect(() => assertNotPilotProdDatabase('')).not.toThrow();
   });
 });
