@@ -105,6 +105,36 @@ function minimalLoginManifest(origin: string): RequestPolicyManifest {
       getStaticRule(origin, 'live-login-all-js', '/web/base/login-all.js', [
         'script',
       ]),
+      getStaticRule(
+        origin,
+        'live-login-error-svg',
+        '/web/resources/inforhms/images/toolbar/error-solid.svg',
+        ['image'],
+      ),
+      getStaticRule(
+        origin,
+        'live-login-logo-svg',
+        '/web/resources/inforhms/images/shared/logo.svg',
+        ['image'],
+      ),
+      getStaticRule(
+        origin,
+        'live-login-font-semibold',
+        '/web/resources/shared/css/SourceSansPro-font/SourceSansPro-Semibold.ttf',
+        ['font'],
+      ),
+      getStaticRule(
+        origin,
+        'live-login-font-regular',
+        '/web/resources/shared/css/SourceSansPro-font/SourceSansPro-Regular.ttf',
+        ['font'],
+      ),
+      getStaticRule(
+        origin,
+        'live-login-font-it',
+        '/web/resources/shared/css/SourceSansPro-font/SourceSansPro-It.ttf',
+        ['font'],
+      ),
     ],
   });
 }
@@ -200,6 +230,7 @@ async function main(): Promise<void> {
         waitUntil: 'domcontentloaded',
         timeout: 45_000,
       });
+      await page.waitForTimeout(2500);
     } catch (err) {
       const raw = err instanceof Error ? err.message : 'navigation_failed';
       navError = /password|secret|cookie/i.test(raw)
@@ -208,10 +239,38 @@ async function main(): Promise<void> {
     }
 
     const title = page ? await page.title().catch(() => '') : '';
-    const passwordCount = page
-      ? await page.locator('input[type="password"]').count().catch(() => 0)
-      : 0;
-    const hasLoginFields = passwordCount > 0 || /login/i.test(title);
+    const dom = page
+      ? await page
+          .evaluate(() => {
+            const inputs = [...document.querySelectorAll('input')].map((el) => ({
+              type: (el as HTMLInputElement).type || '',
+              name: ((el as HTMLInputElement).name || '').slice(0, 40),
+              id: ((el as HTMLInputElement).id || '').slice(0, 40),
+            }));
+            const text = (document.body?.innerText || '').toLowerCase();
+            return {
+              inputCount: inputs.length,
+              inputTypes: inputs.map((i) => i.type),
+              inputNames: inputs.map((i) => i.name),
+              formCount: document.forms.length,
+              iframeCount: document.querySelectorAll('iframe').length,
+              passwordCount: inputs.filter((i) => i.type === 'password')
+                .length,
+              hasSignInCopy:
+                text.includes('sign in') ||
+                text.includes('username') ||
+                text.includes('password') ||
+                text.includes('login'),
+            };
+          })
+          .catch(() => null)
+      : null;
+    const hasLoginFields = Boolean(
+      dom &&
+        (dom.passwordCount > 0 ||
+          dom.hasSignInCopy ||
+          dom.inputNames.some((n) => /user|pass|login/i.test(n))),
+    );
 
     if (process.env.HMS_LIVE_CANARY_SUBMIT === '1') {
       throw new Error('credential submit not enabled in this probe build');
@@ -229,7 +288,9 @@ async function main(): Promise<void> {
       phase: 'login-probe',
       origin,
       titlePresent: Boolean(title),
+      titleLooksLikeInfor: /infor|hms/i.test(title),
       hasLoginFields,
+      dom,
       documentAllowed,
       navError,
       allowCount: events.filter((e) => e.decision === 'allow').length,
