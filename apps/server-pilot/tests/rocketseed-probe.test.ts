@@ -1,9 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
+import pkg from '../package.json';
 import {
   GMAIL_CANARY_ADDRESS,
   NAVA_ADDRESS,
   buildRocketseedProbe,
   buildRocketseedProbeSummary,
+  executeRocketseedProbe,
+  extractSmtpSecretValue,
   type RocketseedProbeInput,
 } from '../scripts/rocketseed-probe.js';
 
@@ -53,6 +56,27 @@ describe('buildRocketseedProbe', () => {
   it('rejects missing SMTP secret', () => {
     expect(() => buildRocketseedProbe(validInput(), '  ')).toThrow(
       'SMTP_PASSWORD or resolved SMTP_SECRET_ARN required',
+    );
+  });
+
+  it('preserves opaque SMTP credential whitespace', () => {
+    const opaqueSecret = '  unit-only-secret-value\t';
+    const plan = buildRocketseedProbe(validInput(), opaqueSecret);
+
+    expect(plan.transport.auth.pass).toBe(opaqueSecret);
+  });
+
+  it.each([
+    ['{"SMTP_PASSWORD":"  json-secret\\t"}', '  json-secret\t'],
+    ['{"password":"\\tjson-secret  "}', '\tjson-secret  '],
+    ['  raw-secret\t', '  raw-secret\t'],
+  ])('preserves exact secret bytes from %s', (secretString, expected) => {
+    expect(extractSmtpSecretValue(secretString)).toBe(expected);
+  });
+
+  it('rejects all-whitespace secret payload', () => {
+    expect(() => extractSmtpSecretValue(' \t ')).toThrow(
+      'SMTP secret is empty',
     );
   });
 
@@ -180,6 +204,29 @@ describe('buildRocketseedProbe', () => {
     expect(plan.message.attachments).toBeUndefined();
   });
 
+  it.each([
+    ['authUser', 'centurion@legacyhotels.co.za'],
+    ['headerFrom', 'centurion@legacyhotels.co.za'],
+    ['envelopeFrom', 'centurion@legacyhotels.co.za'],
+    ['recipient', GMAIL_CANARY_ADDRESS],
+  ] as const)(
+    'forbids manual synthetic PDF when %s is not Nava',
+    (field, value) => {
+      expect(() =>
+        buildRocketseedProbe(
+          validInput({
+            mode: 'manual',
+            includeSyntheticPdf: true,
+            [field]: value,
+          }),
+          FAKE_SECRET,
+        ),
+      ).toThrow(
+        'synthetic PDF requires Nava auth user, Header From, envelope From, and recipient',
+      );
+    },
+  );
+
   it('builds redacted output and never prints secret values', () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -205,5 +252,61 @@ describe('buildRocketseedProbe', () => {
       log.mockRestore();
       error.mockRestore();
     }
+  });
+
+  it('preserves safe Message-ID exactly while stripping controls and secret', () => {
+    const plan = buildRocketseedProbe(validInput(), FAKE_SECRET);
+    const safe = buildRocketseedProbeSummary(plan, {
+      messageId: '<probe.123@example.com>',
+    });
+    const unsafe = buildRocketseedProbeSummary(plan, {
+      messageId: `<probe.123@example.com>\r\n${FAKE_SECRET}`,
+    });
+
+    expect(safe.messageId).toBe('<probe.123@example.com>');
+    expect(unsafe.messageId).toBe(
+      '<probe.123@example.com>[redacted-secret]',
+    );
+  });
+
+  it('executes verify then one send then close with injected transport', async () => {
+    const events: string[] = [];
+    const plan = buildRocketseedProbe(validInput(), FAKE_SECRET);
+    const transport = {
+      verify: vi.fn(async () => {
+        events.push('verify');
+        return true;
+      }),
+      sendMail: vi.fn(async () => {
+        events.push('send');
+        return {
+          response: '250 queued',
+          messageId: '<probe.123@example.com>',
+          accepted: [NAVA_ADDRESS],
+          rejected: [],
+        };
+      }),
+      close: vi.fn(() => {
+        events.push('close');
+      }),
+    };
+
+    const summary = await executeRocketseedProbe(plan, () => transport);
+
+    expect(events).toEqual(['verify', 'send', 'close']);
+    expect(transport.verify).toHaveBeenCalledOnce();
+    expect(transport.sendMail).toHaveBeenCalledOnce();
+    expect(transport.sendMail).toHaveBeenCalledWith(plan.message);
+    expect(transport.close).toHaveBeenCalledOnce();
+    expect(summary.messageId).toBe('<probe.123@example.com>');
+  });
+
+  it('exposes a focused Rocketseed script typecheck path', () => {
+    const command = (pkg.scripts as Record<string, string>)[
+      'typecheck:rocketseed'
+    ];
+
+    expect(command).toContain('tsc --noEmit');
+    expect(command).toContain('scripts/rocketseed-probe.ts');
   });
 });

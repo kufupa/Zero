@@ -74,6 +74,16 @@ export type RocketseedProbeResult = {
   rejected?: unknown[];
 };
 
+type RocketseedProbeTransportClient = {
+  verify(): Promise<unknown>;
+  sendMail(message: RocketseedProbeMessage): Promise<RocketseedProbeResult>;
+  close(): void;
+};
+
+type RocketseedProbeTransportFactory = (
+  options: RocketseedProbeTransport,
+) => RocketseedProbeTransportClient;
+
 class ProbeConfigurationError extends Error {
   constructor(message: string) {
     super(message);
@@ -130,8 +140,8 @@ export function buildRocketseedProbe(
     outboundId: required('outbound ID', rawInput.outboundId),
     subjectToken: required('subject token', rawInput.subjectToken),
   };
-  const secret = authSecret.trim();
-  if (!secret) {
+  const secret = authSecret;
+  if (!secret.trim()) {
     throw new ProbeConfigurationError(
       'SMTP_PASSWORD or resolved SMTP_SECRET_ARN required',
     );
@@ -174,6 +184,18 @@ export function buildRocketseedProbe(
         'autonomous Gmail canary forbids attachments',
       );
     }
+  }
+
+  if (
+    input.includeSyntheticPdf &&
+    (input.authUser !== NAVA_ADDRESS ||
+      input.headerFrom !== NAVA_ADDRESS ||
+      input.envelopeFrom !== NAVA_ADDRESS ||
+      input.recipient !== NAVA_ADDRESS)
+  ) {
+    throw new ProbeConfigurationError(
+      'synthetic PDF requires Nava auth user, Header From, envelope From, and recipient',
+    );
   }
 
   return {
@@ -233,6 +255,18 @@ function redactText(value: string, secret: string): string {
   return redacted.replace(/[\r\n]+/g, ' ').slice(0, 500);
 }
 
+function sanitizeMessageId(value: string, secret: string): string {
+  const redacted = secret
+    ? value.split(secret).join('[redacted-secret]')
+    : value;
+  return [...redacted]
+    .filter((character) => {
+      const codePoint = character.codePointAt(0) ?? 0;
+      return codePoint > 0x1f && (codePoint < 0x7f || codePoint > 0x9f);
+    })
+    .join('');
+}
+
 export function buildRocketseedProbeSummary(
   plan: RocketseedProbePlan,
   result: RocketseedProbeResult,
@@ -262,13 +296,50 @@ export function buildRocketseedProbeSummary(
     response: redactText(result.response ?? '', secret),
     accepted: (result.accepted ?? []).map(stringifyAddress),
     rejected: (result.rejected ?? []).map(stringifyAddress),
-    messageId: redactText(result.messageId ?? '', secret),
+    messageId: sanitizeMessageId(result.messageId ?? '', secret),
   };
 }
 
+export async function executeRocketseedProbe(
+  plan: RocketseedProbePlan,
+  createTransport: RocketseedProbeTransportFactory = (options) =>
+    nodemailer.createTransport(options),
+) {
+  const transporter = createTransport(plan.transport);
+  try {
+    await transporter.verify();
+    const result = await transporter.sendMail(plan.message);
+    return buildRocketseedProbeSummary(plan, result);
+  } finally {
+    transporter.close();
+  }
+}
+
+export function extractSmtpSecretValue(secretString: string): string {
+  if (!secretString.trim()) {
+    throw new ProbeConfigurationError('SMTP secret is empty');
+  }
+  try {
+    const parsed = JSON.parse(secretString) as {
+      SMTP_PASSWORD?: unknown;
+      password?: unknown;
+    };
+    const candidate = parsed.SMTP_PASSWORD ?? parsed.password;
+    if (typeof candidate !== 'string' || !candidate.trim()) {
+      throw new ProbeConfigurationError(
+        'SMTP secret JSON must contain SMTP_PASSWORD or password',
+      );
+    }
+    return candidate;
+  } catch (error) {
+    if (error instanceof ProbeConfigurationError) throw error;
+    return secretString;
+  }
+}
+
 async function resolveSmtpSecret(env: NodeJS.ProcessEnv): Promise<string> {
-  const direct = env.SMTP_PASSWORD?.trim();
-  if (direct) return direct;
+  const direct = env.SMTP_PASSWORD;
+  if (direct?.trim()) return direct;
 
   const secretArn = env.SMTP_SECRET_ARN?.trim();
   if (!secretArn) {
@@ -289,22 +360,7 @@ async function resolveSmtpSecret(env: NodeJS.ProcessEnv): Promise<string> {
     if (!response.SecretString) {
       throw new ProbeConfigurationError('SMTP secret is empty');
     }
-    try {
-      const parsed = JSON.parse(response.SecretString) as {
-        SMTP_PASSWORD?: unknown;
-        password?: unknown;
-      };
-      const candidate = parsed.SMTP_PASSWORD ?? parsed.password;
-      if (typeof candidate !== 'string' || !candidate.trim()) {
-        throw new ProbeConfigurationError(
-          'SMTP secret JSON must contain SMTP_PASSWORD or password',
-        );
-      }
-      return candidate.trim();
-    } catch (error) {
-      if (error instanceof ProbeConfigurationError) throw error;
-      return response.SecretString.trim();
-    }
+    return extractSmtpSecretValue(response.SecretString);
   } finally {
     client.destroy();
   }
@@ -359,24 +415,8 @@ async function main(): Promise<void> {
   const input = readCliInput(process.argv.slice(2), process.env);
   const secret = await resolveSmtpSecret(process.env);
   const plan = buildRocketseedProbe(input, secret);
-  const transporter = nodemailer.createTransport(plan.transport);
-
-  try {
-    await transporter.verify();
-    const info = await transporter.sendMail(plan.message);
-    console.log(
-      JSON.stringify(
-        buildRocketseedProbeSummary(plan, {
-          response: info.response,
-          messageId: info.messageId,
-          accepted: info.accepted,
-          rejected: info.rejected,
-        }),
-      ),
-    );
-  } finally {
-    transporter.close();
-  }
+  const summary = await executeRocketseedProbe(plan);
+  console.log(JSON.stringify(summary));
 }
 
 function safeFailure(error: unknown): string {
