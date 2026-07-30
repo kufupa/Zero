@@ -1,36 +1,34 @@
 # Handoff — Hotel triage-v5 cutover (Task 9)
 
 Date: 2026-07-30  
-Status: **IN_PROGRESS** (freeze `90e02c63` rejected; new candidate prompt staged; cutover not applied)
+Status: **DONE_WITH_CONCERNS** (freeze rejected; labels relocked; new candidate not yet Task7-green; cutover withheld)
 
-## Freeze / SHAs
+## SHAs / hashes
 
-- **Rejected** freeze: `90e02c63` · promptHash `f894a211…`
-- **New** promptHash: `d1283a179941393f69a732b6ab9e12bee612705308d035ad05a3b9e0912f51c6` (Task7-only harden; SHA TBD after Task7 green commit)
-- Merge HMS⊕v5: `a2b0b858` on `origin/triage-v5-quality`
-- Live prod: still triage-v4 at `/home/ubuntu/repos/zero` (PM2 online)
+- Rejected freeze: `90e02c63` · `f894a211…`
+- HMS⊕v5 merge: `a2b0b858`
+- Latest candidate: `4df3d1dd` · `17311310b54f1505d45da32dde33ab8c30f393f522d7488af4982b4e9ef3472a`
+- Live prod: triage-v4 (`/home/ubuntu/repos/zero`)
 
 ## Second-review
 
 - Label fixes: **3** (`1403c5cc`, `e4d58baf`, `f8eb8e8c`)
-- Model wrong (labels stand): 6 IDs — see `.superpowers/sdd/task-9-report.md`
-- Policy unresolved: **none**
-- Audit: `.tmp/triage-quality/reports/task9-exhaustive/second-review-audit.json`
+- Model wrong remain (do not open into prompt tune from Task9 IDs): see task-9-report
+- Policy unresolved: none
 
-## Exhaustive after relock (rescored @ rejected hash)
+## Task7 reprove (latest)
 
-Still **ineligible** (prot≥3 + disagree3). Dominance would pass. → reopen candidate on Task7/193 only.
+- eligible=false · prot2 · disagree2 · metrics cat21/urg8/joint28
+- Artifacts: EC2 `.tmp/triage-quality/reports/task7-reprove/`
+
+## Exhaustive (rejected hash, post-relock rescore)
+
+- eligible=false · prot3 · disagree3 · dominance would pass
 
 ## Cutover
 
-**Not started.** Hotel stays on v4 until exhaustive `eligible=true`.
+**No.** Hotel on v4 until exhaustive eligible=true.
 
 ## Next
 
-1. Task7 193 pair (prot0 + agree) on new promptHash
-2. Exhaustive all-inbound read-only
-3. Cutover preflight only if eligible
-
-## Residual
-
-Manual monitoring; Multi-AZ off; S3 unsolved; wiped instance retained.
+Continue Task7-only candidate until prot0+agree+dominance, then exhaustive read-only, then cutover preflight.
