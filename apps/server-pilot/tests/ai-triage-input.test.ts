@@ -96,7 +96,7 @@ describe('triage provenance hashes', () => {
       messages,
       asOf: '2026-07-01T12:00:00.000Z',
       modelId: 'amazon.nova-lite-v1:0',
-      promptVersion: 'triage-v4',
+      promptVersion: 'triage-v5',
     };
 
     expect(() =>
@@ -143,7 +143,7 @@ describe('triage provenance hashes', () => {
           messages,
           asOf: '2026-07-01T12:00:00.000Z',
           modelId: 'pinned-model-from-run',
-          promptVersion: 'triage-v4',
+          promptVersion: 'triage-v5',
         },
         createFakeModelAdapter(),
       );

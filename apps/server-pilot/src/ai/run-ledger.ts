@@ -9,7 +9,7 @@ import type {
 import { parseEnv } from '../env.js';
 
 export const DEFAULT_AI_MODEL_ID = 'amazon.nova-lite-v1:0';
-export const DEFAULT_TRIAGE_PROMPT_VERSION = 'triage-v4';
+export const DEFAULT_TRIAGE_PROMPT_VERSION = 'triage-v5';
 export const DEFAULT_FEEDBACK_PROMPT_VERSION = 'feedback-v1';
 
 export type AiWorkflowRunKind = (typeof aiWorkflowRunKindEnum.enumValues)[number];

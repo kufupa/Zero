@@ -112,7 +112,7 @@ describe('ai worker contract', () => {
         transportId: TRANSPORT_ID,
         runKind: 'inbound_triage',
         state: 'queued',
-        promptVersion: 'triage-v4',
+        promptVersion: 'triage-v5',
       },
       {
         id: '2',
@@ -133,14 +133,14 @@ describe('ai worker contract', () => {
         transportId: 'transport-nava',
         runKind: 'inbound_triage',
         state: 'queued',
-        promptVersion: 'triage-v4',
+        promptVersion: 'triage-v5',
       },
       {
         id: '5',
         transportId: TRANSPORT_ID,
         runKind: 'inbound_triage',
         state: 'succeeded',
-        promptVersion: 'triage-v4',
+        promptVersion: 'triage-v5',
       },
     ];
     const selected = selectSupersedeTargets(rows);
@@ -201,7 +201,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
       runKind: 'inbound_triage',
       idempotencyKey: `worker-success:${messageId}`,
       modelId: 'amazon.nova-lite-v1:0',
-      promptVersion: 'triage-v4',
+      promptVersion: 'triage-v5',
     });
     const result = await executeAiRun(run.id);
     expect(result.state).toBe('succeeded');
@@ -310,7 +310,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
           runKind: 'inbound_triage',
           idempotencyKey: `triage-shadow:${messageId}`,
           modelId: 'amazon.nova-lite-v1:0',
-          promptVersion: 'triage-v4',
+          promptVersion: 'triage-v5',
         },
         db,
       );
@@ -379,7 +379,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
           runKind: 'inbound_triage',
           idempotencyKey: `triage-write:${messageId}`,
           modelId: 'amazon.nova-lite-v1:0',
-          promptVersion: 'triage-v4',
+          promptVersion: 'triage-v5',
         },
         db,
       );
@@ -446,7 +446,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
           runKind: 'inbound_triage',
           idempotencyKey: `triage-retry:${messageId}`,
           modelId: 'amazon.nova-lite-v1:0',
-          promptVersion: 'triage-v4',
+          promptVersion: 'triage-v5',
         },
         db,
       );
@@ -496,7 +496,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
           runKind: 'inbound_triage',
           idempotencyKey: `triage-spam:${messageId}`,
           modelId: 'amazon.nova-lite-v1:0',
-          promptVersion: 'triage-v4',
+          promptVersion: 'triage-v5',
         },
         db,
       );
@@ -549,7 +549,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
           runKind: 'inbound_triage',
           idempotencyKey: `triage-ops:${messageId}`,
           modelId: 'amazon.nova-lite-v1:0',
-          promptVersion: 'triage-v4',
+          promptVersion: 'triage-v5',
         },
         db,
       );
@@ -599,7 +599,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
           runKind: 'inbound_triage',
           idempotencyKey: `triage-new-bookings:${messageId}`,
           modelId: 'amazon.nova-lite-v1:0',
-          promptVersion: 'triage-v4',
+          promptVersion: 'triage-v5',
         },
         db,
       );
@@ -650,7 +650,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
           runKind: 'inbound_triage',
           idempotencyKey: `triage-existing-spam:${messageId}`,
           modelId: 'amazon.nova-lite-v1:0',
-          promptVersion: 'triage-v4',
+          promptVersion: 'triage-v5',
         },
         db,
       );
@@ -680,7 +680,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
       runKind: 'inbound_triage',
       idempotencyKey: `worker-fence-lost:${messageId}`,
       modelId: 'amazon.nova-lite-v1:0',
-      promptVersion: 'triage-v4',
+      promptVersion: 'triage-v5',
     });
     const db = getDb();
     await db
@@ -748,7 +748,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
       runKind: 'inbound_triage',
       idempotencyKey: `inbound-triage:${other.messageId}`,
       modelId: 'amazon.nova-lite-v1:0',
-      promptVersion: 'triage-v4',
+      promptVersion: 'triage-v5',
     });
 
     const db = getDb();
