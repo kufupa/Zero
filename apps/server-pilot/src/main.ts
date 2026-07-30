@@ -3,7 +3,12 @@ import { serve } from '@hono/node-server';
 import { fetchRequestHandler } from '@trpc/server/adapters/fetch';
 import { authProviders, customProviders, isProviderEnabled } from './lib/auth-providers.js';
 import { createAuth } from './lib/auth.js';
-import { closeDb } from './db/client.js';
+import { closeDb, getDb } from './db/client.js';
+import {
+  createInlineAttachmentHandler,
+  findAuthorizedInlineAttachment,
+} from './http/inline-attachment.js';
+import { getS3Storage } from './storage/s3.js';
 import { appRouter } from './trpc/router.js';
 
 const app = new Hono();
@@ -55,6 +60,23 @@ app.get('/api/public/providers', (c) => {
 // Better Auth handlers mount at /api/auth/* (better-auth default basePath).
 const auth = createAuth();
 app.on(['GET', 'POST', 'OPTIONS'], '/api/auth/*', (c) => auth.handler(c.req.raw));
+
+app.get(
+  '/api/mail/messages/:messageId/attachments/:attachmentId/inline',
+  createInlineAttachmentHandler({
+    auth: {
+      getSession: (headers) => auth.api.getSession({ headers }),
+    },
+    db: {
+      findAuthorizedAttachment: (input) =>
+        findAuthorizedInlineAttachment(getDb(), input),
+    },
+    storage: {
+      getObjectBounded: (key, maxBytes) =>
+        getS3Storage().getObjectBounded(key, maxBytes),
+    },
+  }),
+);
 
 // tRPC endpoint. We use `@trpc/server/adapters/fetch`'s `fetchRequestHandler`
 // directly (instead of `@hono/trpc-server`) to avoid a dual-package types

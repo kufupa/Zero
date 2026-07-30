@@ -29,6 +29,7 @@ import {
   withSeededTestDb,
 } from './helpers/test-db';
 import { callerFor } from './helpers/trpc-caller';
+import { findAuthorizedInlineAttachment } from '../src/http/inline-attachment.js';
 
 const reachable = await probeTestDb();
 
@@ -231,6 +232,43 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
               attachmentId: ids.frontdeskAttachmentId,
             }),
           ).rejects.toThrow(/NOT_FOUND/);
+        });
+      },
+      30000,
+    );
+
+    it(
+      'inline lookup authorizes attachment through message mailbox access',
+      async () => {
+        await withSeededTestDb(async (db) => {
+          const ids = await seedAttachmentFixture(db);
+
+          await expect(
+            findAuthorizedInlineAttachment(db, {
+              userId: 'user-frontdesk',
+              messageId: ids.centurionMessageId,
+              attachmentId: ids.centurionAttachmentId,
+            }),
+          ).resolves.toBeNull();
+
+          await expect(
+            findAuthorizedInlineAttachment(db, {
+              userId: 'user-frontdesk',
+              messageId: ids.centurionMessageId,
+              attachmentId: ids.frontdeskAttachmentId,
+            }),
+          ).resolves.toBeNull();
+
+          await expect(
+            findAuthorizedInlineAttachment(db, {
+              userId: 'user-frontdesk',
+              messageId: ids.frontdeskMessageId,
+              attachmentId: ids.frontdeskAttachmentId,
+            }),
+          ).resolves.toMatchObject({
+            id: ids.frontdeskAttachmentId,
+            messageId: ids.frontdeskMessageId,
+          });
         });
       },
       30000,
