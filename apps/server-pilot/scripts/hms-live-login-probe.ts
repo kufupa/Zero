@@ -226,6 +226,25 @@ function minimalLoginManifest(origin: string): RequestPolicyManifest {
       getStaticRule(origin, 'live-common-all-classes', '/web/base/all-classes.js', [
         'script',
       ]),
+      {
+        id: 'live-bsstrt',
+        origin,
+        method: 'POST',
+        path: '/web/base/BSSTRT',
+        resourceTypes: ['xhr', 'fetch'],
+        contentType: 'application/x-www-form-urlencoded',
+        fixedQuery: {},
+        variableQuery: {},
+        fixedBody: {},
+        variableBody: {
+          MENU_MODULE_KEY: { pattern: '.{0,64}', maxLength: 64 },
+          SYSTEM_FUNCTION_NAME: { pattern: '.{0,64}', maxLength: 64 },
+          USER_FUNCTION_NAME: { pattern: '.{0,64}', maxLength: 64 },
+          removescreenflows: { pattern: '.{0,16}', maxLength: 16 },
+        },
+        maxBodyBytes: 4096,
+        redirectPolicy: 'same-reviewed-chain',
+      },
     ],
   });
 }
