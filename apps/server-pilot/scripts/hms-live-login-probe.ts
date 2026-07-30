@@ -476,16 +476,85 @@ function minimalLoginManifest(origin: string): RequestPolicyManifest {
           room: { pattern: '.{0,32}', maxLength: 32 },
           tripadvisorid: { pattern: '.{0,64}', maxLength: 64 },
           twitterid: { pattern: '.{0,64}', maxLength: 64 },
-          // ExtJS filter-row names (DOM inventory); may post ff_ or stripped.
-          ff_confirmationnumber: { pattern: '.{0,64}', maxLength: 64 },
-          ff_firstname: { pattern: '.{0,64}', maxLength: 64 },
-          ff_lastname: { pattern: '.{0,64}', maxLength: 64 },
-          ff_room: { pattern: '.{0,32}', maxLength: 32 },
-          ff_status: { pattern: '.{0,64}', maxLength: 64 },
-          filterfields: { pattern: '.{0,256}', maxLength: 256 },
-          selfiltervaluectrl: { pattern: '.{0,256}', maxLength: 256 },
-          dataspylist: { pattern: '.{0,64}', maxLength: 64 },
-          search: { pattern: '.{0,64}', maxLength: 64 },
+        },
+        maxBodyBytes: 16_384,
+        redirectPolicy: 'same-reviewed-chain',
+      },
+      {
+        // Guest Stay quick-search (placeholder: Name, Confirmation, Room…).
+        // Observed 2026-07-30 soft-capture: NOTFOUND-CANARY → empty list.
+        id: 'live-osress-search',
+        origin,
+        method: 'POST',
+        path: '/web/base/OSRESS.search',
+        resourceTypes: ['xhr', 'fetch'],
+        contentType: 'application/x-www-form-urlencoded',
+        fixedQuery: {},
+        variableQuery: {},
+        fixedBody: {},
+        variableBody: {
+          COMPONENT_INFO_TYPE: { pattern: '.{0,64}', maxLength: 64 },
+          CURRENT_TAB_NAME: { pattern: '.{0,64}', maxLength: 64 },
+          DATASPY_ID: { pattern: '.{0,64}', maxLength: 64 },
+          GRID_ID: { pattern: '.{0,64}', maxLength: 64 },
+          GRID_NAME: { pattern: '.{0,64}', maxLength: 64 },
+          SYSTEM_FUNCTION_NAME: { pattern: '.{0,64}', maxLength: 64 },
+          USER_FUNCTION_NAME: { pattern: '.{0,64}', maxLength: 64 },
+          externalconfirmation: { pattern: '.{0,64}', maxLength: 64 },
+          MADDON_FILTER_ALIAS_NAME_1: { pattern: '.{0,64}', maxLength: 64 },
+          MADDON_FILTER_ALIAS_NAME_2: { pattern: '.{0,64}', maxLength: 64 },
+          MADDON_FILTER_ALIAS_NAME_3: { pattern: '.{0,64}', maxLength: 64 },
+          MADDON_FILTER_ALIAS_NAME_4: { pattern: '.{0,64}', maxLength: 64 },
+          MADDON_FILTER_ALIAS_NAME_5: { pattern: '.{0,64}', maxLength: 64 },
+          MADDON_FILTER_ALIAS_NAME_6: { pattern: '.{0,64}', maxLength: 64 },
+          MADDON_FILTER_ALIAS_NAME_7: { pattern: '.{0,64}', maxLength: 64 },
+          MADDON_FILTER_ALIAS_NAME_8: { pattern: '.{0,64}', maxLength: 64 },
+          MADDON_FILTER_ALIAS_NAME_9: { pattern: '.{0,64}', maxLength: 64 },
+          MADDON_FILTER_ALIAS_NAME_10: { pattern: '.{0,64}', maxLength: 64 },
+          MADDON_FILTER_JOINER_1: { pattern: '.{0,16}', maxLength: 16 },
+          MADDON_FILTER_JOINER_2: { pattern: '.{0,16}', maxLength: 16 },
+          MADDON_FILTER_JOINER_3: { pattern: '.{0,16}', maxLength: 16 },
+          MADDON_FILTER_JOINER_4: { pattern: '.{0,16}', maxLength: 16 },
+          MADDON_FILTER_JOINER_5: { pattern: '.{0,16}', maxLength: 16 },
+          MADDON_FILTER_JOINER_6: { pattern: '.{0,16}', maxLength: 16 },
+          MADDON_FILTER_JOINER_7: { pattern: '.{0,16}', maxLength: 16 },
+          MADDON_FILTER_JOINER_8: { pattern: '.{0,16}', maxLength: 16 },
+          MADDON_FILTER_JOINER_9: { pattern: '.{0,16}', maxLength: 16 },
+          MADDON_FILTER_JOINER_10: { pattern: '.{0,16}', maxLength: 16 },
+          MADDON_FILTER_OPERATOR_1: { pattern: '.{0,16}', maxLength: 16 },
+          MADDON_FILTER_OPERATOR_2: { pattern: '.{0,16}', maxLength: 16 },
+          MADDON_FILTER_OPERATOR_3: { pattern: '.{0,16}', maxLength: 16 },
+          MADDON_FILTER_OPERATOR_4: { pattern: '.{0,16}', maxLength: 16 },
+          MADDON_FILTER_OPERATOR_5: { pattern: '.{0,16}', maxLength: 16 },
+          MADDON_FILTER_OPERATOR_6: { pattern: '.{0,16}', maxLength: 16 },
+          MADDON_FILTER_OPERATOR_7: { pattern: '.{0,16}', maxLength: 16 },
+          MADDON_FILTER_OPERATOR_8: { pattern: '.{0,16}', maxLength: 16 },
+          MADDON_FILTER_OPERATOR_9: { pattern: '.{0,16}', maxLength: 16 },
+          MADDON_FILTER_OPERATOR_10: { pattern: '.{0,16}', maxLength: 16 },
+          MADDON_FILTER_SEQNUM_1: { pattern: '.{0,8}', maxLength: 8 },
+          MADDON_FILTER_SEQNUM_2: { pattern: '.{0,8}', maxLength: 8 },
+          MADDON_FILTER_SEQNUM_3: { pattern: '.{0,8}', maxLength: 8 },
+          MADDON_FILTER_SEQNUM_4: { pattern: '.{0,8}', maxLength: 8 },
+          MADDON_FILTER_SEQNUM_5: { pattern: '.{0,8}', maxLength: 8 },
+          MADDON_FILTER_SEQNUM_6: { pattern: '.{0,8}', maxLength: 8 },
+          MADDON_FILTER_SEQNUM_7: { pattern: '.{0,8}', maxLength: 8 },
+          MADDON_FILTER_SEQNUM_8: { pattern: '.{0,8}', maxLength: 8 },
+          MADDON_FILTER_SEQNUM_9: { pattern: '.{0,8}', maxLength: 8 },
+          MADDON_FILTER_SEQNUM_10: { pattern: '.{0,8}', maxLength: 8 },
+          MADDON_FILTER_VALUE_1: { pattern: '.{0,64}', maxLength: 64 },
+          MADDON_FILTER_VALUE_2: { pattern: '.{0,64}', maxLength: 64 },
+          MADDON_FILTER_VALUE_3: { pattern: '.{0,64}', maxLength: 64 },
+          MADDON_FILTER_VALUE_4: { pattern: '.{0,64}', maxLength: 64 },
+          MADDON_FILTER_VALUE_5: { pattern: '.{0,64}', maxLength: 64 },
+          MADDON_FILTER_VALUE_6: { pattern: '.{0,64}', maxLength: 64 },
+          MADDON_FILTER_VALUE_7: { pattern: '.{0,64}', maxLength: 64 },
+          MADDON_FILTER_VALUE_8: { pattern: '.{0,64}', maxLength: 64 },
+          MADDON_FILTER_VALUE_9: { pattern: '.{0,64}', maxLength: 64 },
+          MADDON_FILTER_VALUE_10: { pattern: '.{0,64}', maxLength: 64 },
+          MADDON_LPAREN_3: { pattern: '.{0,16}', maxLength: 16 },
+          MADDON_LPAREN_5: { pattern: '.{0,16}', maxLength: 16 },
+          MADDON_RPAREN_6: { pattern: '.{0,16}', maxLength: 16 },
+          MADDON_RPAREN_10: { pattern: '.{0,16}', maxLength: 16 },
         },
         maxBodyBytes: 16_384,
         redirectPolicy: 'same-reviewed-chain',
@@ -810,6 +879,7 @@ async function main(): Promise<void> {
       confirmFieldValueLen: number;
       confirmFieldLooksCanary: boolean;
       hdrWithConfirmationCount: number;
+      osressSearchAllowCount: number;
       lstAllowCount: number;
       firstBlockAfterNav: ProbeEvent | null;
     } | null = null;
@@ -919,42 +989,29 @@ async function main(): Promise<void> {
           await clickExactLabel('Guest Stay');
         }
 
-        // After OSRESV shell: attempt list search only (never New Record).
-        // Live DOM uses ExtJS filter names with ff_ prefix (inventory 2026-07-30).
+        // After OSRESV shell: quick-search only (never New Record).
+        // Live UX: input[name=search] placeholder "Search by Name, Confirmation…"
+        // → POST /web/base/OSRESS.search (soft-capture 2026-07-30).
         if (clicked.some((c) => /guest\s*stay/i.test(c))) {
           await page!.waitForTimeout(4000);
-          const confirmCandidates = [
-            'ff_confirmationnumber',
-            'confirmationnumber',
-            'confirmationNumber',
-          ];
+          const searchLoc = page!.locator('input[name="search"]').first();
           let searchFilled: string | null = null;
-          for (const name of confirmCandidates) {
-            const loc = page!.locator(`input[name="${name}"]`).first();
-            if (await loc.count().catch(() => 0)) {
-              await loc.fill('NOTFOUND-CANARY', { timeout: 5_000 });
-              searchFilled = name;
-              break;
-            }
-          }
-          if (!searchFilled) {
-            searchFilled = await page!.evaluate(() => {
-              const inputs = [
-                ...document.querySelectorAll('input, textarea'),
-              ] as HTMLInputElement[];
-              for (const el of inputs) {
-                if (el.type === 'password' || el.type === 'hidden') continue;
-                const hay =
-                  `${el.name} ${el.id} ${el.placeholder} ${el.getAttribute('aria-label') || ''}`.toLowerCase();
-                if (!/confirm/.test(hay)) continue;
-                el.focus();
-                el.value = 'NOTFOUND-CANARY';
-                el.dispatchEvent(new Event('input', { bubbles: true }));
-                el.dispatchEvent(new Event('change', { bubbles: true }));
-                return el.name || el.id || 'confirm-ish';
+          if (await searchLoc.count().catch(() => 0)) {
+            await searchLoc.fill('NOTFOUND-CANARY', { timeout: 5_000 });
+            searchFilled = 'search';
+          } else {
+            // Fallback: ExtJS filter-row confirmation field
+            for (const name of [
+              'ff_confirmationnumber',
+              'confirmationnumber',
+            ]) {
+              const loc = page!.locator(`input[name="${name}"]`).first();
+              if (await loc.count().catch(() => 0)) {
+                await loc.fill('NOTFOUND-CANARY', { timeout: 5_000 });
+                searchFilled = name;
+                break;
               }
-              return null;
-            });
+            }
           }
           if (searchFilled) {
             clicked.push(`searchField:${searchFilled}`);
@@ -967,28 +1024,7 @@ async function main(): Promise<void> {
                 await page!.keyboard.press('Enter');
               });
             clicked.push('search:Enter');
-            await page!.waitForTimeout(3000);
-            // Click Search/Go/Find/Filter — never New/Save/Duplicate
-            const searchBtn = page!
-              .locator('button, a, span, td, div, input[type="button"]')
-              .filter({ hasText: /^(Search|Go|Find|Apply|Filter)$/i })
-              .first();
-            if (
-              await searchBtn.isVisible({ timeout: 2_000 }).catch(() => false)
-            ) {
-              const btnText = (
-                (await searchBtn.textContent().catch(() => '')) || ''
-              ).trim();
-              if (
-                !/new|save|duplicate|submit|check\s*in|check\s*out|walk/i.test(
-                  btnText,
-                )
-              ) {
-                await searchBtn.click({ force: true, timeout: 5_000 });
-                clicked.push(`searchBtn:${btnText || 'Search'}`);
-                await page!.waitForTimeout(4000);
-              }
-            }
+            await page!.waitForTimeout(5000);
           } else {
             clicked.push('searchField:missing');
           }
@@ -1006,15 +1042,17 @@ async function main(): Promise<void> {
       const afterNav = await page
         .evaluate(() => {
           const t = (document.body?.innerText || '').toLowerCase();
-          const filled = (
-            document.querySelector(
-              'input[name="ff_confirmationnumber"], input[name="confirmationnumber"]',
-            ) as HTMLInputElement | null
-          )?.value;
+          const searchEl = document.querySelector(
+            'input[name="search"]',
+          ) as HTMLInputElement | null;
+          const confirmEl = document.querySelector(
+            'input[name="ff_confirmationnumber"], input[name="confirmationnumber"]',
+          ) as HTMLInputElement | null;
+          const filled = searchEl?.value || confirmEl?.value || '';
           return {
             path: location.pathname,
             title: document.title.slice(0, 80),
-            confirmFieldValueLen: filled ? filled.length : 0,
+            confirmFieldValueLen: filled.length,
             confirmFieldLooksCanary: filled === 'NOTFOUND-CANARY',
             listHint: {
               hasNoResults:
@@ -1043,8 +1081,12 @@ async function main(): Promise<void> {
       const hdrAfterSearch = events.filter(
         (e) =>
           e.decision === 'allow' &&
-          e.redactedSignature.path === '/web/base/OSRESV.HDR' &&
-          e.redactedSignature.bodyKeys.includes('confirmationnumber'),
+          e.redactedSignature.path === '/web/base/OSRESV.HDR',
+      );
+      const osressSearchAllows = events.filter(
+        (e) =>
+          e.decision === 'allow' &&
+          e.redactedSignature.path === '/web/base/OSRESS.search',
       );
       const lstAfterSearch = events.filter(
         (e) =>
@@ -1064,6 +1106,7 @@ async function main(): Promise<void> {
         confirmFieldValueLen: afterNav.confirmFieldValueLen,
         confirmFieldLooksCanary: afterNav.confirmFieldLooksCanary,
         hdrWithConfirmationCount: hdrAfterSearch.length,
+        osressSearchAllowCount: osressSearchAllows.length,
         lstAllowCount: lstAfterSearch.length,
         firstBlockAfterNav: postNavBlocks[0] ?? null,
       };
@@ -1131,6 +1174,12 @@ async function main(): Promise<void> {
         loginPostAllowed: payload.loginPostAllowed,
         propertyCodeInTitle: payload.propertyCodeInTitle,
         guestStayClicked: payload.guestStayNav?.clicked ?? null,
+        guestStayNoResults:
+          payload.guestStayNav?.listHint?.hasNoResults ?? null,
+        guestStayOsressSearch:
+          payload.guestStayNav?.osressSearchAllowCount ?? null,
+        guestStayCanaryField:
+          payload.guestStayNav?.confirmFieldLooksCanary ?? null,
         guestStayFirstBlockPath:
           payload.guestStayNav?.firstBlockAfterNav?.redactedSignature.path ??
           null,
