@@ -87,7 +87,8 @@ export async function getLatestInboundFromAddress(
         eq(message.direction, 'inbound'),
       ),
     )
-    .orderBy(desc(message.receivedAt))
+    // Trusted order matches worker/classifier: server ingestion (createdAt, id).
+    .orderBy(desc(message.createdAt), desc(message.id))
     .limit(1);
   return rows[0]?.fromAddress ?? null;
 }
