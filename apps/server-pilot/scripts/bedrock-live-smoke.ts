@@ -25,7 +25,10 @@ async function main(): Promise<void> {
     responseSchema: {
       type: 'object',
       properties: {
-        category: { type: 'string' },
+        category: {
+          type: 'string',
+          enum: ['new-bookings', 'groups-events', 'at-risk', 'ops', 'spam'],
+        },
         urgent: { type: 'boolean' },
         confidence: { type: 'number' },
         rationale: { type: 'string' },
