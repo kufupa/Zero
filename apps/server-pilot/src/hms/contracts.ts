@@ -214,3 +214,171 @@ export const requestPolicyManifestSchema = z
   .strict();
 
 export type RequestPolicyManifest = z.infer<typeof requestPolicyManifestSchema>;
+
+const isoDateSchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'expected ISO date YYYY-MM-DD');
+
+/** Single Guest Stay list/detail observation (capped lists use this row shape). */
+export const reservationObservationSchema = z
+  .object({
+    confirmationNumber: z.string().nullable(),
+    externalReference: z.string().nullable(),
+    guestName: z.string().nullable(),
+    arrivalDate: isoDateSchema.nullable(),
+    departureDate: isoDateSchema.nullable(),
+    reservationStatus: z.string().nullable(),
+    roomType: z.string().nullable(),
+    ratePlan: z.string().nullable(),
+  })
+  .strict();
+
+export type ReservationObservation = z.infer<typeof reservationObservationSchema>;
+
+/** Model-facing reservation read payload (wrapped by ToolResult). */
+export const reservationReadDataSchema = z
+  .object({
+    matches: z.array(reservationObservationSchema).max(20),
+    matchCount: z.number().int().nonnegative(),
+    capped: z.boolean(),
+  })
+  .strict();
+
+export type ReservationReadData = z.infer<typeof reservationReadDataSchema>;
+
+export const inventoryObservationSchema = z
+  .object({
+    date: isoDateSchema,
+    roomType: z.string().min(1),
+    inventoryStatus: z.enum(['available', 'unavailable', 'unknown']),
+    availableCount: z.number().int().min(0).nullable(),
+  })
+  .strict();
+
+export type InventoryObservation = z.infer<typeof inventoryObservationSchema>;
+
+export const rateObservationSchema = z
+  .object({
+    roomType: z.string().min(1),
+    ratePlan: z.string().nullable(),
+    amount: z.string().nullable(),
+    amountBasis: z.enum([
+      'nightly',
+      'weekly',
+      'monthly',
+      'stay_total',
+      'unknown',
+    ]),
+    currency: z.string().nullable(),
+    taxIncluded: z.boolean().nullable(),
+    inclusions: z.array(z.string()),
+    restrictions: z.array(z.string()),
+    boardBasis: z.string().nullable(),
+    organizationEligibility: z.enum([
+      'confirmed',
+      'unresolved',
+      'not_requested',
+    ]),
+  })
+  .strict();
+
+export type RateObservation = z.infer<typeof rateObservationSchema>;
+
+/**
+ * Stay-option / quote payload. Inventory + rates stay separate observations.
+ * bookable is always false — separate screens never prove an executable offer.
+ */
+export const stayOptionReadDataSchema = z
+  .object({
+    inventoryObservations: z.array(inventoryObservationSchema).max(100),
+    rateObservations: z.array(rateObservationSchema).max(100),
+    bookable: z.literal(false),
+    requestedRooms: z.number().int().positive(),
+  })
+  .strict();
+
+export type StayOptionReadData = z.infer<typeof stayOptionReadDataSchema>;
+
+/** Exact CSS / data-attr selectors — no loose record + parallel key list. */
+export const reservationSelectorsSchema = z
+  .object({
+    pagePath: z.string().startsWith('/'),
+    searchPath: z.string().startsWith('/'),
+    detailPath: z.string().startsWith('/'),
+    resultsTable: z.string().min(1),
+    resultRow: z.string().min(1),
+    noResults: z.string().min(1),
+    detailLink: z.string().min(1),
+    confirmationAttr: z.string().min(1),
+    externalRefAttr: z.string().min(1),
+    guestNameAttr: z.string().min(1),
+    arrivalAttr: z.string().min(1),
+    departureAttr: z.string().min(1),
+    statusAttr: z.string().min(1),
+    roomTypeAttr: z.string().min(1),
+    ratePlanAttr: z.string().min(1),
+  })
+  .strict();
+
+export const quoteSelectorsSchema = z
+  .object({
+    inventoryPagePath: z.string().startsWith('/'),
+    ratesPagePath: z.string().startsWith('/'),
+    inventoryRow: z.string().min(1),
+    inventoryDateAttr: z.string().min(1),
+    inventoryRoomTypeAttr: z.string().min(1),
+    inventoryAvailableAttr: z.string().min(1),
+    rateRow: z.string().min(1),
+    rateRoomTypeAttr: z.string().min(1),
+    ratePlanAttr: z.string().min(1),
+    amountAttr: z.string().min(1),
+    currencyAttr: z.string().min(1),
+    amountBasisAttr: z.string().min(1),
+    taxIncludedAttr: z.string().min(1),
+    inclusionsAttr: z.string().min(1),
+    restrictionsAttr: z.string().min(1),
+    boardBasisAttr: z.string().min(1),
+    orgEligibilityAttr: z.string().min(1),
+    amountBasisDefault: z.enum([
+      'nightly',
+      'weekly',
+      'monthly',
+      'stay_total',
+      'unknown',
+    ]),
+  })
+  .strict();
+
+export const centurionManifestSchema = z
+  .object({
+    version: z.string().min(1),
+    binding: z
+      .object({
+        transportId: z.string().min(1),
+        origin: z
+          .string()
+          .url()
+          .refine(
+            (value) =>
+              value.startsWith('https://') ||
+              /^http:\/\/127\.0\.0\.1:\d+$/.test(value),
+            'origin must be HTTPS or literal loopback test origin',
+          ),
+        tenantId: z.string().min(1),
+        propertyKey: z.string().min(1),
+        expectedPropertyText: z.string().min(1),
+      })
+      .strict(),
+    rules: z.array(requestRuleSchema).min(1),
+    selectors: z
+      .object({
+        reservation: reservationSelectorsSchema,
+        quote: quoteSelectorsSchema,
+      })
+      .strict(),
+  })
+  .strict();
+
+export type CenturionManifest = z.infer<typeof centurionManifestSchema>;
+export type ReservationSelectors = z.infer<typeof reservationSelectorsSchema>;
+export type QuoteSelectors = z.infer<typeof quoteSelectorsSchema>;
