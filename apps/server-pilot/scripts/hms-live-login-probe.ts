@@ -476,6 +476,16 @@ function minimalLoginManifest(origin: string): RequestPolicyManifest {
           room: { pattern: '.{0,32}', maxLength: 32 },
           tripadvisorid: { pattern: '.{0,64}', maxLength: 64 },
           twitterid: { pattern: '.{0,64}', maxLength: 64 },
+          // ExtJS filter-row names (DOM inventory); may post ff_ or stripped.
+          ff_confirmationnumber: { pattern: '.{0,64}', maxLength: 64 },
+          ff_firstname: { pattern: '.{0,64}', maxLength: 64 },
+          ff_lastname: { pattern: '.{0,64}', maxLength: 64 },
+          ff_room: { pattern: '.{0,32}', maxLength: 32 },
+          ff_status: { pattern: '.{0,64}', maxLength: 64 },
+          filterfields: { pattern: '.{0,256}', maxLength: 256 },
+          selfiltervaluectrl: { pattern: '.{0,256}', maxLength: 256 },
+          dataspylist: { pattern: '.{0,64}', maxLength: 64 },
+          search: { pattern: '.{0,64}', maxLength: 64 },
         },
         maxBodyBytes: 16_384,
         redirectPolicy: 'same-reviewed-chain',
@@ -797,6 +807,10 @@ async function main(): Promise<void> {
         hasGuestStayCopy: boolean;
         hasNewRecord: boolean;
       } | null;
+      confirmFieldValueLen: number;
+      confirmFieldLooksCanary: boolean;
+      hdrWithConfirmationCount: number;
+      lstAllowCount: number;
       firstBlockAfterNav: ProbeEvent | null;
     } | null = null;
 
@@ -906,53 +920,58 @@ async function main(): Promise<void> {
         }
 
         // After OSRESV shell: attempt list search only (never New Record).
+        // Live DOM uses ExtJS filter names with ff_ prefix (inventory 2026-07-30).
         if (clicked.some((c) => /guest\s*stay/i.test(c))) {
           await page!.waitForTimeout(4000);
-          const searchFilled = await page!.evaluate(() => {
-            const wantNames = [
-              'confirmationnumber',
-              'confirmationNumber',
-              'CONFIRMATIONNUMBER',
-            ];
-            for (const name of wantNames) {
-              const el = document.querySelector(
-                `input[name="${name}"]`,
-              ) as HTMLInputElement | null;
-              if (el) {
+          const confirmCandidates = [
+            'ff_confirmationnumber',
+            'confirmationnumber',
+            'confirmationNumber',
+          ];
+          let searchFilled: string | null = null;
+          for (const name of confirmCandidates) {
+            const loc = page!.locator(`input[name="${name}"]`).first();
+            if (await loc.count().catch(() => 0)) {
+              await loc.fill('NOTFOUND-CANARY', { timeout: 5_000 });
+              searchFilled = name;
+              break;
+            }
+          }
+          if (!searchFilled) {
+            searchFilled = await page!.evaluate(() => {
+              const inputs = [
+                ...document.querySelectorAll('input, textarea'),
+              ] as HTMLInputElement[];
+              for (const el of inputs) {
+                if (el.type === 'password' || el.type === 'hidden') continue;
+                const hay =
+                  `${el.name} ${el.id} ${el.placeholder} ${el.getAttribute('aria-label') || ''}`.toLowerCase();
+                if (!/confirm/.test(hay)) continue;
                 el.focus();
                 el.value = 'NOTFOUND-CANARY';
                 el.dispatchEvent(new Event('input', { bubbles: true }));
                 el.dispatchEvent(new Event('change', { bubbles: true }));
-                return name;
+                return el.name || el.id || 'confirm-ish';
               }
-            }
-            const inputs = [
-              ...document.querySelectorAll('input, textarea'),
-            ] as HTMLInputElement[];
-            for (const el of inputs) {
-              if (el.type === 'password' || el.type === 'hidden') continue;
-              const name =
-                `${el.name} ${el.id} ${el.placeholder} ${el.getAttribute('aria-label') || ''}`.toLowerCase();
-              if (!/confirm/.test(name)) continue;
-              el.focus();
-              el.value = 'NOTFOUND-CANARY';
-              el.dispatchEvent(new Event('input', { bubbles: true }));
-              el.dispatchEvent(new Event('change', { bubbles: true }));
-              return el.name || el.id || 'confirm-ish';
-            }
-            return null;
-          });
+              return null;
+            });
+          }
           if (searchFilled) {
             clicked.push(`searchField:${searchFilled}`);
-            await page!.locator('input[name="search"], input#search').first().press('Enter').catch(async () => {
-              await page!.keyboard.press('Enter');
-            });
+            const filledLoc = page!
+              .locator(`input[name="${searchFilled}"]`)
+              .first();
+            await filledLoc
+              .press('Enter', { timeout: 5_000 })
+              .catch(async () => {
+                await page!.keyboard.press('Enter');
+              });
             clicked.push('search:Enter');
-            await page!.waitForTimeout(2000);
-            // Click Search/Go/Find — never New/Save/Duplicate
+            await page!.waitForTimeout(3000);
+            // Click Search/Go/Find/Filter — never New/Save/Duplicate
             const searchBtn = page!
-              .locator('button, a, span, td, div')
-              .filter({ hasText: /^(Search|Go|Find|Apply)$/i })
+              .locator('button, a, span, td, div, input[type="button"]')
+              .filter({ hasText: /^(Search|Go|Find|Apply|Filter)$/i })
               .first();
             if (
               await searchBtn.isVisible({ timeout: 2_000 }).catch(() => false)
@@ -970,6 +989,8 @@ async function main(): Promise<void> {
                 await page!.waitForTimeout(4000);
               }
             }
+          } else {
+            clicked.push('searchField:missing');
           }
         }
       } catch (err) {
@@ -985,16 +1006,26 @@ async function main(): Promise<void> {
       const afterNav = await page
         .evaluate(() => {
           const t = (document.body?.innerText || '').toLowerCase();
+          const filled = (
+            document.querySelector(
+              'input[name="ff_confirmationnumber"], input[name="confirmationnumber"]',
+            ) as HTMLInputElement | null
+          )?.value;
           return {
             path: location.pathname,
             title: document.title.slice(0, 80),
+            confirmFieldValueLen: filled ? filled.length : 0,
+            confirmFieldLooksCanary: filled === 'NOTFOUND-CANARY',
             listHint: {
               hasNoResults:
                 t.includes('no reservations') ||
                 t.includes('no records') ||
                 t.includes('no results') ||
+                t.includes('no data to display') ||
                 t.includes('0 records') ||
-                t.includes('not found'),
+                t.includes('0 items') ||
+                t.includes('not found') ||
+                t.includes('no matching'),
               hasGuestStayCopy:
                 t.includes('guest stay') || t.includes('confirmation'),
               hasNewRecord: t.includes('new record'),
@@ -1004,8 +1035,22 @@ async function main(): Promise<void> {
         .catch(() => ({
           path: null as string | null,
           title: null as string | null,
+          confirmFieldValueLen: 0,
+          confirmFieldLooksCanary: false,
           listHint: null,
         }));
+
+      const hdrAfterSearch = events.filter(
+        (e) =>
+          e.decision === 'allow' &&
+          e.redactedSignature.path === '/web/base/OSRESV.HDR' &&
+          e.redactedSignature.bodyKeys.includes('confirmationnumber'),
+      );
+      const lstAfterSearch = events.filter(
+        (e) =>
+          e.decision === 'allow' &&
+          e.redactedSignature.path === '/web/base/OSRESV.LST',
+      );
 
       guestStayNav = {
         attempted: true,
@@ -1016,6 +1061,10 @@ async function main(): Promise<void> {
         afterPath: afterNav.path,
         afterTitle: afterNav.title,
         listHint: afterNav.listHint,
+        confirmFieldValueLen: afterNav.confirmFieldValueLen,
+        confirmFieldLooksCanary: afterNav.confirmFieldLooksCanary,
+        hdrWithConfirmationCount: hdrAfterSearch.length,
+        lstAllowCount: lstAfterSearch.length,
         firstBlockAfterNav: postNavBlocks[0] ?? null,
       };
     }
