@@ -26,7 +26,8 @@
     "test": "vitest run",
     "db:generate": "node --import tsx ./node_modules/drizzle-kit/bin.cjs generate",
     "db:migrate": "node --import tsx ./node_modules/drizzle-kit/bin.cjs migrate",
-    "seed:prod": "tsx scripts/seed-prod.ts"
+    "seed:prod": "tsx scripts/seed-prod.ts",
+    "probe:rocketseed": "tsx scripts/rocketseed-probe.ts"
   },
   "dependencies": {
     "@aws-sdk/client-bedrock-runtime": "3.1080.0",
