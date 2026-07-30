@@ -74,5 +74,6 @@
     "passwordCount": 0,
     "hasSignInCopy": true
   },
-  "status": "login_and_property_title_verified_BSSTRT_deferred"
+  "status": "login_property_shell_green_reservation_nav_deferred",
+  "deferredNext": "Open Guest Stay / reservation search under fail-closed policy (new probe phase); do not allow save/submit toolbar POSTs"
 }

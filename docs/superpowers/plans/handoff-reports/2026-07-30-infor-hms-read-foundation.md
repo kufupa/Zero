@@ -36,7 +36,7 @@
 
 ## Remaining deferred
 
-1. Review + allow BSSTRT (and follow-on read surfaces) → not-found reservation canary.
+1. **Guest Stay / reservation not-found canary** — shell (COMMON + BSSTRT) green; need dedicated nav phase under fail-closed policy (do not allow save/submit toolbar actions).
 2. Replace interim shadow abstention labels with live shadow outcomes when reads exist.
 3. Optional disposable-DB `--full` gate.
 4. **`enabled` only after** hard+stat + reservation read canary.
