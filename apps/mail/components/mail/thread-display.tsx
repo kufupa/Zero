@@ -28,6 +28,7 @@ import { useThread, useThreads } from '@/hooks/use-threads';
 import { EmptyStateIcon } from '../icons/empty-state-svg';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import type { ParsedMessage, Attachment, Sender } from '@/types';
+import { sortAttachmentsForDisplay } from '@/lib/attachment-priority';
 import { useAnimations } from '@/hooks/use-animations';
 import { AnimatePresence, motion } from 'motion/react';
 import { MailDisplaySkeleton } from './mail-skeleton';
@@ -218,12 +219,13 @@ export function ThreadDisplay() {
   // Collect all attachments from all messages in the thread
   const allThreadAttachments = useMemo(() => {
     if (!emailData?.messages) return [];
-    return emailData.messages.reduce<Attachment[]>((acc, message) => {
+    const flat = emailData.messages.reduce<Attachment[]>((acc, message) => {
       if (message.attachments && message.attachments.length > 0) {
         acc.push(...message.attachments);
       }
       return acc;
     }, []);
+    return sortAttachmentsForDisplay(flat);
   }, [emailData?.messages]);
 
   const [mode, setMode] = useQueryState('mode');

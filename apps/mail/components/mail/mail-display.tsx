@@ -62,6 +62,7 @@ import { format } from 'date-fns';
 import { toast } from 'sonner';
 import { copySenderEmail } from '@/lib/mail/copy-sender-email';
 import { openReplyComposeContext, type ReplyComposeMode } from '@/lib/mail/reply-compose-context';
+import { sortAttachmentsForDisplay } from '@/lib/attachment-priority';
 
 // Add formatFileSize utility function
 const formatFileSize = (size: number) => {
@@ -240,6 +241,8 @@ const renderMailboxSummary = (mailboxes: Sender[]) => {
 const ThreadAttachments = ({ attachments }: { attachments: Attachment[] }) => {
   if (!attachments || attachments.length === 0) return null;
 
+  const ordered = sortAttachmentsForDisplay(attachments);
+
   const handleDownload = async (attachment: Attachment) => {
     try {
       // Convert base64 to blob
@@ -266,18 +269,19 @@ const ThreadAttachments = ({ attachments }: { attachments: Attachment[] }) => {
   };
 
   return (
-    <div className="mt-2 w-full">
+    <div className="mt-2 w-full min-w-0">
       <div className="flex items-center gap-2">
         <span className="text-sm font-medium">
           Thread Attachments <span className="text-[#8D8D8D]">[{attachments.length}]</span>
         </span>
       </div>
-      <div className="mt-2 flex flex-wrap gap-2">
-        {attachments.map((attachment) => (
+      {/* ponytail: one-row LTR scroll like Outlook density; wrap burned vertical space */}
+      <div className="mt-2 flex flex-nowrap gap-2 overflow-x-auto pb-1">
+        {ordered.map((attachment) => (
           <button
             key={`${attachment.attachmentId}-${attachment.filename}`}
             onClick={() => handleDownload(attachment)}
-            className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-sm hover:bg-[#F0F0F0] dark:bg-[#262626] dark:hover:bg-[#303030]"
+            className="flex shrink-0 cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-sm hover:bg-[#F0F0F0] dark:bg-[#262626] dark:hover:bg-[#303030]"
           >
             <span className="text-muted-foreground">{getFileIcon(attachment.filename)}</span>
             <span className="max-w-[200px] truncate" title={attachment.filename}>
@@ -1488,6 +1492,43 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
             </div>
           </div>
 
+          {/* Outlook: attachments under header/subject, above body. Keep images; docs first. */}
+          {messageAttachments && messageAttachments.length > 0 ? (
+            <div
+              className="flex min-w-0 flex-nowrap items-center gap-2 overflow-x-auto px-4 pb-1 pt-2"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {sortAttachmentsForDisplay(messageAttachments).map((attachment, attachmentIndex) => (
+                <div
+                  key={`${attachment.filename}-${attachment.attachmentId}`}
+                  className="flex shrink-0"
+                >
+                  <button
+                    className="flex cursor-pointer items-center gap-1 rounded-[5px] bg-[#FAFAFA] px-1.5 py-1 text-sm font-medium hover:bg-[#F0F0F0] dark:bg-[#262626] dark:hover:bg-[#303030]"
+                    onClick={() => openAttachment(attachment)}
+                  >
+                    {getFileIcon(attachment.filename)}
+                    <span className="max-w-[15ch] truncate text-sm text-black dark:text-white">
+                      {attachment.filename}
+                    </span>{' '}
+                    <span className="text-muted-foreground whitespace-nowrap text-sm dark:text-[#929292]">
+                      {formatFileSize(attachment.size)}
+                    </span>
+                  </button>
+                  <button
+                    onClick={() => downloadAttachment(attachment, emailData.id)}
+                    className="flex cursor-pointer items-center gap-1 rounded-[5px] px-1.5 py-1 text-sm"
+                  >
+                    <HardDriveDownload className="text-muted-foreground dark:text-muted-foreground h-4 w-4 fill-[#FAFAFA] dark:fill-[#262626]" />
+                  </button>
+                  {attachmentIndex < messageAttachments.length - 1 && (
+                    <div className="m-auto h-2 w-px bg-[#E0E0E0] dark:bg-[#424242]" />
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : null}
+
           <div className={cn('h-0 overflow-hidden duration-200', !isCollapsed && 'h-px')}></div>
 
           <div
@@ -1506,39 +1547,6 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                     html={emailData?.decodedBody}
                     senderEmail={emailData.sender.email}
                   />
-                ) : null}
-                {/* mail attachments */}
-                {messageAttachments && messageAttachments.length > 0 ? (
-                  <div className="mb-4 flex flex-wrap items-center gap-2 px-4 pt-4">
-                    {messageAttachments.map((attachment) => (
-                      <div
-                        key={`${attachment.filename}-${attachment.attachmentId}`}
-                        className="flex"
-                      >
-                        <button
-                          className="flex cursor-pointer items-center gap-1 rounded-[5px] bg-[#FAFAFA] px-1.5 py-1 text-sm font-medium hover:bg-[#F0F0F0] dark:bg-[#262626] dark:hover:bg-[#303030]"
-                          onClick={() => openAttachment(attachment)}
-                        >
-                          {getFileIcon(attachment.filename)}
-                          <span className="max-w-[15ch] truncate text-sm text-black dark:text-white">
-                            {attachment.filename}
-                          </span>{' '}
-                          <span className="text-muted-foreground whitespace-nowrap text-sm dark:text-[#929292]">
-                            {formatFileSize(attachment.size)}
-                          </span>
-                        </button>
-                        <button
-                          onClick={() => downloadAttachment(attachment, emailData.id)}
-                          className="flex cursor-pointer items-center gap-1 rounded-[5px] px-1.5 py-1 text-sm"
-                        >
-                          <HardDriveDownload className="text-muted-foreground dark:text-muted-foreground h-4 w-4 fill-[#FAFAFA] dark:fill-[#262626]" />
-                        </button>
-                        {index < (messageAttachments?.length || 0) - 1 && (
-                          <div className="m-auto h-2 w-px bg-[#E0E0E0] dark:bg-[#424242]" />
-                        )}
-                      </div>
-                    ))}
-                  </div>
                 ) : null}
                 <div className="my-2.5 flex gap-2 px-4">
                   <ActionButton
