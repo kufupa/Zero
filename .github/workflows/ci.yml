@@ -26,3 +26,19 @@ jobs:
 
       - name: Lint JS
         run: pnpm dlx oxlint@latest --deny-warnings
+
+      - name: Test Rocketseed network-free server flow
+        run: |
+          unset DATABASE_URL VITEST_ALLOW_PILOT_RDS
+          pnpm --dir apps/server-pilot run test:rocketseed
+
+      - name: Test frontend CID handling
+        run: |
+          unset DATABASE_URL VITEST_ALLOW_PILOT_RDS
+          pnpm --dir apps/mail exec vitest run tests/mail-content-fallback.test.ts
+
+      - name: Build pilot server
+        run: pnpm --dir apps/server-pilot run build
+
+      - name: Build mail frontend
+        run: pnpm --dir apps/mail run build

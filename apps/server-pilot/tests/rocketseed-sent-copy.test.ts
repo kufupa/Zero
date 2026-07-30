@@ -1,6 +1,8 @@
+import { load } from 'cheerio';
 import { and, eq } from 'drizzle-orm';
+import { Hono } from 'hono';
 import { randomUUID } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { DB } from '../src/db/client';
 import {
   attachment,
@@ -10,15 +12,21 @@ import {
   message,
 } from '../src/db/schema/mail';
 import {
+  createInlineAttachmentHandler,
+  findAuthorizedInlineAttachment,
+} from '../src/http/inline-attachment';
+import {
   generateMessageId,
   parseRawMessage,
 } from '../src/mail/ingest/parse-message';
 import { persistInboundMessage } from '../src/mail/ingest/store';
+import { BLOCKED_IMAGE_PLACEHOLDER } from '../src/mail/sanitize-email-html';
 import {
   FakeS3Storage,
   resetS3Storage,
   setS3Storage,
 } from '../src/storage/s3';
+import { callerFor } from './helpers/trpc-caller';
 import { readFixture } from './helpers/fixtures';
 import {
   TEST_DB_AVAILABLE,
@@ -30,13 +38,29 @@ import {
 const OUTBOUND_ID = 'a0b1c2d3-e4f5-4a67-8b90-abcdef123456';
 const UNKNOWN_OUTBOUND_ID = '11111111-2222-4333-8444-555555555555';
 const TRANSPORT_ID = 'transport-centurion';
-const TRANSPORT_EMAIL = 'sender@hotel.example';
+const TRANSPORT_EMAIL = 'sender@hotel.example.invalid';
 const THREAD_ID = 'thread-rocketseed-original';
-const SMTP_MESSAGE_ID = 'smtp-original@example.test';
+const SMTP_MESSAGE_ID = 'smtp-original@example.invalid';
 const OLD_ATTACHMENT_KEY = 'attachments/local-original/original.pdf';
 const DELIVERED_AT = new Date('2026-07-28T12:34:56.000Z');
+const INLINE_ORIGIN = 'https://mail.example.invalid';
+const INLINE_ROUTE =
+  '/api/mail/messages/:messageId/attachments/:attachmentId/inline';
 
 const reachable = await probeTestDb();
+const originalBetterAuthUrl = process.env.BETTER_AUTH_URL;
+
+beforeEach(() => {
+  process.env.BETTER_AUTH_URL = INLINE_ORIGIN;
+});
+
+afterEach(() => {
+  if (originalBetterAuthUrl === undefined) {
+    delete process.env.BETTER_AUTH_URL;
+  } else {
+    process.env.BETTER_AUTH_URL = originalBetterAuthUrl;
+  }
+});
 
 function withFakeS3(): FakeS3Storage {
   const storage = new FakeS3Storage('test-mail-bucket');
@@ -64,7 +88,7 @@ async function configureSyntheticTransport(db: DB): Promise<void> {
     .set({
       email: TRANSPORT_EMAIL,
       ownerHeaderValue: TRANSPORT_EMAIL,
-      sendFromConfig: { aliases: ['alias@hotel.example'] },
+      sendFromConfig: { aliases: ['alias@hotel.example.invalid'] },
     })
     .where(eq(mailboxTransport.id, TRANSPORT_ID));
 }
@@ -101,7 +125,7 @@ async function seedOriginalMessage(
     threadId,
     direction: opts.direction ?? 'outbound',
     fromAddress: TRANSPORT_EMAIL,
-    toAddresses: ['guest@example.test'],
+    toAddresses: ['guest@example.invalid'],
     ccAddresses: [],
     bccAddresses: [TRANSPORT_EMAIL],
     subject: 'Local unbranded subject',
@@ -140,17 +164,23 @@ describe('Rocketseed branded sent-copy parser', () => {
 
     expect(parsed.outboundMessageId).toBe(OUTBOUND_ID);
     expect(parsed.htmlBody).toContain('Delivered branded body.');
-    expect(parsed.attachments).toHaveLength(2);
+    expect(parsed.attachments).toHaveLength(3);
     expect(parsed.attachments).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          filename: 'brand-logo.png',
+          filename: 'synthetic-banner.png',
           mimeType: 'image/png',
-          contentId: 'brand-logo@example.test',
+          contentId: 'image-banner@localhost',
           isInline: true,
         }),
         expect.objectContaining({
-          filename: 'itinerary.pdf',
+          filename: 'synthetic-footer.jpg',
+          mimeType: 'image/jpeg',
+          contentId: 'image-footer@localhost',
+          isInline: true,
+        }),
+        expect.objectContaining({
+          filename: 'synthetic-itinerary.pdf',
           mimeType: 'application/pdf',
           contentId: null,
           isInline: false,
@@ -289,6 +319,57 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           .select({ id: mailThread.id })
           .from(mailThread)
           .where(eq(mailThread.transportId, TRANSPORT_ID));
+        const caller = await callerFor('user-navaai', {
+          db,
+          requestedTransportId: TRANSPORT_ID,
+        });
+        const projectedThread = await caller.mail.get({ id: THREAD_ID });
+        const projection = await caller.mail.processEmailContent({
+          messageId: OUTBOUND_ID,
+          html: stored?.htmlBody ?? '',
+          shouldLoadImages: false,
+          theme: 'light',
+        });
+        const $ = load(projection.processedHtml, null, false);
+        const inlineRoutes = $('img[alt^="Synthetic Rocketseed"]')
+          .map((_index, node) => $(node).attr('src'))
+          .get();
+        const app = new Hono();
+        app.get(
+          INLINE_ROUTE,
+          createInlineAttachmentHandler({
+            auth: {
+              getSession: async (headers) => {
+                const userId = headers.get('x-synthetic-user');
+                return userId ? { user: { id: userId } } : null;
+              },
+            },
+            db: {
+              findAuthorizedAttachment: (input) =>
+                findAuthorizedInlineAttachment(db, input),
+            },
+            storage,
+          }),
+        );
+
+        for (const route of inlineRoutes) {
+          const response = await app.request(route, {
+            headers: { 'x-synthetic-user': 'user-navaai' },
+          });
+          const attachmentId = decodeURIComponent(
+            new URL(route).pathname.split('/').at(-2) ?? '',
+          );
+          const storedAttachment = attachmentRows.find(
+            (row) => row.id === attachmentId,
+          );
+          expect(response.status).toBe(200);
+          expect(Buffer.from(await response.arrayBuffer())).toEqual(
+            storage.stored.get(storedAttachment!.s3Key)?.body,
+          );
+        }
+        const unauthorized = await app.request(inlineRoutes[0]!, {
+          headers: { 'x-synthetic-user': 'user-foreign-mailbox' },
+        });
 
         return {
           result,
@@ -300,6 +381,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           afterMessageCount: afterMessages.length,
           beforeThreadCount: beforeThreads.length,
           afterThreadCount: afterThreads.length,
+          projectedThread,
+          projection,
+          inlineRoutes,
+          unauthorizedStatus: unauthorized.status,
         };
       });
 
@@ -308,7 +393,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         transportId: TRANSPORT_ID,
         messageId: OUTBOUND_ID,
         threadId: THREAD_ID,
-        attachmentCount: 2,
+        attachmentCount: 3,
       });
       expect(state.replay).toMatchObject({
         kind: 'duplicate',
@@ -325,9 +410,9 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         ingestMailboxId: 'ingest-nava-legacy',
         pop3Uidl: 'uidl-rocketseed-reconcile',
         ownerHeaderValue: TRANSPORT_EMAIL,
-        messageIdHeader: 'delivered-copy@example.test',
+        messageIdHeader: 'delivered-copy@example.invalid',
         fromAddress: TRANSPORT_EMAIL,
-        toAddresses: ['guest@example.test'],
+        toAddresses: ['guest@example.invalid'],
         subject: 'Synthetic branded confirmation',
         textBody: 'Delivered branded body.',
         rawMimeS3Key:
@@ -341,13 +426,19 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       expect(state.attachmentRows).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
-            filename: 'brand-logo.png',
+            filename: 'synthetic-banner.png',
             mimeType: 'image/png',
-            contentId: 'brand-logo@example.test',
+            contentId: 'image-banner@localhost',
             isInline: true,
           }),
           expect.objectContaining({
-            filename: 'itinerary.pdf',
+            filename: 'synthetic-footer.jpg',
+            mimeType: 'image/jpeg',
+            contentId: 'image-footer@localhost',
+            isInline: true,
+          }),
+          expect.objectContaining({
+            filename: 'synthetic-itinerary.pdf',
             mimeType: 'application/pdf',
             contentId: null,
             isInline: false,
@@ -360,6 +451,26 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         ),
       ).toBe(false);
       expect(storage.stored.has(OLD_ATTACHMENT_KEY)).toBe(true);
+      expect(state.projectedThread.id).toBe(THREAD_ID);
+      expect(state.projectedThread.messages).toHaveLength(1);
+      expect(state.projectedThread.messages[0]?.id).toBe(OUTBOUND_ID);
+      expect(
+        state.projectedThread.messages[0]?.attachments?.map(
+          (item) => item.filename,
+        ),
+      ).toContain('synthetic-itinerary.pdf');
+      expect(state.inlineRoutes).toHaveLength(2);
+      expect(
+        state.inlineRoutes.every((route) =>
+          route.startsWith(`${INLINE_ORIGIN}/api/mail/messages/`),
+        ),
+      ).toBe(true);
+      expect(state.projection.processedHtml).not.toMatch(/\bcid:/i);
+      expect(state.projection.processedHtml).not.toContain(
+        'tracker.example.invalid',
+      );
+      expect(state.projection.processedHtml).toContain(BLOCKED_IMAGE_PLACEHOLDER);
+      expect(state.unauthorizedStatus).toBe(404);
     }, 30000);
 
     it('serializes concurrent replay for one mailbox UIDL', async () => {
@@ -369,13 +480,13 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       const transportId = `transport-rocketseed-${runId}`;
       const ingestMailboxId = `ingest-rocketseed-${runId}`;
       const threadId = `thread-rocketseed-${runId}`;
-      const transportEmail = `sender-${runId}@hotel.example`;
+      const transportEmail = `sender-${runId}@hotel.example.invalid`;
       const pop3Uidl = `uidl-rocketseed-${runId}`;
       const raw = Buffer.from(
         brandedFixture()
           .toString('utf8')
           .replaceAll(TRANSPORT_EMAIL, transportEmail)
-          .replace(OUTBOUND_ID.toUpperCase(), outboundId.toUpperCase()),
+          .replace(OUTBOUND_ID, outboundId),
         'utf8',
       );
       const parseIds = [generateMessageId(), generateMessageId()];
@@ -390,7 +501,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       try {
         await first.db.insert(mailIngestMailbox).values({
           id: ingestMailboxId,
-          email: `sink-${runId}@example.test`,
+          email: `sink-${runId}@example.invalid`,
           description: 'Synthetic concurrent replay mailbox',
           isActive: true,
         });
@@ -420,14 +531,14 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           threadId,
           direction: 'outbound',
           fromAddress: transportEmail,
-          toAddresses: ['guest@example.test'],
+          toAddresses: ['guest@example.invalid'],
           ccAddresses: [],
           bccAddresses: [transportEmail],
           subject: 'Local unbranded subject',
           textBody: 'Local unbranded body',
           htmlBody: '<p>Local unbranded body</p>',
           rawMimeS3Key: 'raw-mime/local-concurrent-original.eml',
-          messageIdHeader: `smtp-${runId}@example.test`,
+          messageIdHeader: `smtp-${runId}@example.invalid`,
           references: [],
           isRead: true,
           isStarred: false,
@@ -505,7 +616,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
               kind: 'stored',
               messageId: outboundId,
               threadId,
-              attachmentCount: 2,
+              attachmentCount: 3,
             }),
             expect.objectContaining({
               kind: 'duplicate',
@@ -521,10 +632,14 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           pop3Uidl,
         });
         expect(finalThreads).toHaveLength(1);
-        expect(finalAttachments).toHaveLength(2);
+        expect(finalAttachments).toHaveLength(3);
         expect(
           finalAttachments.map((row) => row.filename).sort(),
-        ).toEqual(['brand-logo.png', 'itinerary.pdf']);
+        ).toEqual([
+          'synthetic-banner.png',
+          'synthetic-footer.jpg',
+          'synthetic-itinerary.pdf',
+        ]);
         expect(winnerIndex).toBeGreaterThanOrEqual(0);
         expect(
           finalAttachments.every((row) =>
@@ -733,8 +848,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         brandedFixture()
           .toString('utf8')
           .replace(
-            'From: Synthetic Front Desk <sender@hotel.example>',
-            'From: Synthetic Outsider <outsider@example.test>',
+            'From: Synthetic Front Desk <sender@hotel.example.invalid>',
+            'From: Synthetic Outsider <outsider@example.invalid>',
           ),
         'utf8',
       );

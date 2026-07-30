@@ -1,10 +1,11 @@
-From: Synthetic Front Desk <sender@hotel.example>
-To: guest@example.test
+From: Synthetic Front Desk <sender@hotel.example.invalid>
+To: guest@example.invalid
 Subject: Synthetic branded confirmation
 Date: Tue, 28 Jul 2026 12:34:56 +0000
-Message-ID: <delivered-copy@example.test>
-X-Zero-Mailbox: sender@hotel.example
-X-Zero-Outbound-Id: A0B1C2D3-E4F5-4A67-8B90-ABCDEF123456
+Message-ID: <delivered-copy@example.invalid>
+X-Zero-Mailbox: sender@hotel.example.invalid
+X-Zero-Outbound-Id: a0b1c2d3-e4f5-4a67-8b90-abcdef123456
+X-Rocketseed-Fixture: synthetic-marker
 MIME-Version: 1.0
 Content-Type: multipart/mixed; boundary="mixed-boundary"
 
@@ -21,22 +22,68 @@ Delivered branded body.
 --alternative-boundary
 Content-Type: text/html; charset=utf-8
 
-<html><body><p>Delivered branded body.</p><img src="cid:brand-logo@example.test"></body></html>
+<html><body><!-- Rocketseed synthetic marker --><p>Delivered branded body.</p><img alt="Synthetic Rocketseed banner" width="2" height="1" src="cid:image-banner@localhost"><img alt="Synthetic Rocketseed footer" width="1" height="2" src="cid:image-footer@localhost"><img alt="Synthetic remote tracker" width="1" height="1" src="https://tracker.example.invalid/open.gif"></body></html>
 --alternative-boundary--
 
 --related-boundary
-Content-Type: image/png; name="brand-logo.png"
+Content-Type: image/png; name="synthetic-banner.png"
 Content-Transfer-Encoding: base64
-Content-Disposition: inline; filename="brand-logo.png"
-Content-ID: <brand-logo@example.test>
+Content-Disposition: inline; filename="synthetic-banner.png"
+Content-ID: <image-banner@localhost>
 
-c3ludGhldGljLWltYWdl
+iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAIAAAB7QOjdAAAAD0lEQVR4nGPUz3/LwMAAAAcH
+AY1/PHpJAAAAAElFTkSuQmCC
+--related-boundary
+Content-Type: image/jpeg; name="synthetic-footer.jpg"
+Content-Transfer-Encoding: base64
+Content-Disposition: inline; filename="synthetic-footer.jpg"
+Content-ID: <image-footer@localhost>
+
+/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRof
+Hh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwh
+MjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAAR
+CAACAAEDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAA
+AgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkK
+FhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWG
+h4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl
+5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREA
+AgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYk
+NOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOE
+hYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk
+5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD0eiiiviT2z//Z
 --related-boundary--
 
 --mixed-boundary
-Content-Type: application/pdf; name="itinerary.pdf"
+Content-Type: application/pdf; name="synthetic-itinerary.pdf"
 Content-Transfer-Encoding: base64
-Content-Disposition: attachment; filename="itinerary.pdf"
+Content-Disposition: attachment; filename="synthetic-itinerary.pdf"
 
-JVBERi0xLjQKJXN5bnRoZXRpYy1maXh0dXJlCg==
+JVBERi0xLjQKJSBjcmVhdGVkIGJ5IFBpbGxvdyBQREYgZHJpdmVyCjQgMCBvYmo8PAovVHlw
+ZSAvQ2F0YWxvZwovUGFnZXMgNSAwIFIKPj5lbmRvYmoKNSAwIG9iajw8Ci9UeXBlIC9QYWdl
+cwovQ291bnQgMQovS2lkcyBbIDIgMCBSIF0KPj5lbmRvYmoKMSAwIG9iajw8Ci9UeXBlIC9Y
+T2JqZWN0Ci9TdWJ0eXBlIC9JbWFnZQovV2lkdGggOAovSGVpZ2h0IDgKL0ZpbHRlciAvRENUR
+GVjb2RlCi9CaXRzUGVyQ29tcG9uZW50IDgKL0NvbG9yU3BhY2UgL0RldmljZVJHQgovTGVuZ3
+RoIDYzMQo+PnN0cmVhbQr/2P/gABBKRklGAAEBAAABAAEAAP/bAEMACAYGBwYFCAcHBwkJCA
+oMFA0MCwsMGRITDxQdGh8eHRocHCAkLicgIiwjHBwoNyksMDE0NDQfJzk9ODI8LjM0Mv/bAEM
+BCQkJDAsMGA0NGDIhHCEyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMj
+IyMjIyMjIyMjIyMv/AABEIAAgACAMBIgACEQEDEQH/xAAfAAABBQEBAQEBAQAAAAAAAAAAAQI
+DBAUGBwgJCgv/xAC1EAACAQMDAgQDBQUEBAAAAX0BAgMABBEFEiExQQYTUWEHInEUMoGRoQgj
+QrHBFVLR8CQzYnKCCQoWFxgZGiUmJygpKjQ1Njc4OTpDREVGR0hJSlNUVVZXWFlaY2RlZmdoa
+WpzdHV2d3h5eoOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0t
+PU1dbX2Nna4eLj5OXm5+jp6vHy8/T19vf4+fr/xAAfAQADAQEBAQEBAQEBAAAAAAAAAQIDBAU
+GBwgJCgv/xAC1EQACAQIEBAMEBwUEBAABAncAAQIDEQQFITEGEkFRB2FxEyIygQgUQpGhscEJ
+IzNS8BVictEKFiQ04SXxFxgZGiYnKCkqNTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlq
+c3R1dnd4eXqCg4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS
+09TV1tfY2dri4+Tl5ufo6ery8/T19vf4+fr/2gAMAwEAAhEDEQA/APf6KKKAP//ZCmVuZHN0
+cmVhbQplbmRvYmoKMiAwIG9iajw8Ci9SZXNvdXJjZXMgPDwKL1Byb2NTZXQgWyAvUERGIC9J
+bWFnZUMgXQovWE9iamVjdCA8PAovaW1hZ2UgMSAwIFIKPj4KPj4KL01lZGlhQm94IFsgMCAw
+IDguMCA4LjAgXQovQ29udGVudHMgMyAwIFIKL1R5cGUgL1BhZ2UKL1BhcmVudCA1IDAgUgo+
+PmVuZG9iagozIDAgb2JqPDwKL0xlbmd0aCA0Mwo+PnN0cmVhbQpxIDguMDAwMDAwIDAgMCA4
+LjAwMDAwMCAwIDAgY20gL2ltYWdlIERvIFEKCmVuZHN0cmVhbQplbmRvYmoKNiAwIG9iajw8
+Ci9DcmVhdGlvbkRhdGUgKEQ6MjAyNjA3MzAyMTU2MDJaKQovTW9kRGF0ZSAoRDoyMDI2MDcz
+MDIxNTYwMlopCj4+ZW5kb2JqCnhyZWYKMCA3CjAwMDAwMDAwMDAgNjU1MzYgZiAKMDAwMDAw
+MDE0NCAwMDAwMCBuIAowMDAwMDAwOTM2IDAwMDAwIG4gCjAwMDAwMDEwOTQgMDAwMDAgbiAK
+MDAwMDAwMDA0MCAwMDAwMCBuIAowMDAwMDAwMDg3IDAwMDAwIG4gCjAwMDAwMDExODUgMDAw
+MDAgbiAKdHJhaWxlcgo8PAovUm9vdCA0IDAgUgovU2l6ZSA3Ci9JbmZvIDYgMCBSCj4+CnN0
+YXJ0eHJlZgoxMjY3CiUlRU9G
 --mixed-boundary--
