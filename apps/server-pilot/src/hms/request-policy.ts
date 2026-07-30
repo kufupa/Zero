@@ -467,8 +467,7 @@ function evaluateAgainstRule(
   if (rule.contentType) {
     const expected = mediaTypeOf(rule.contentType);
     const actual = input.contentType;
-    if (expected && actual && expected !== actual) {
-      // Prefer specific malform codes already handled; otherwise unmatched shape.
+    if (!expected || !actual || expected !== actual) {
       return block(BLOCK_CODES.UNMATCHED_REQUEST, signature());
     }
   }

@@ -238,7 +238,7 @@ describe('HMS fail-closed request matrix', () => {
       code: BLOCK_CODES.UNKNOWN_METHOD,
     },
     {
-      name: 'unknown resource type',
+      name: 'websocket resource type',
       input: {
         url: `${ORIGIN}/web/reservation/search?screen=guestStay&confirmationNumber=ABC123`,
         method: 'POST',
@@ -252,6 +252,38 @@ describe('HMS fail-closed request matrix', () => {
         }),
       },
       code: BLOCK_CODES.WEBSOCKET,
+    },
+    {
+      name: 'unknown resource type',
+      input: {
+        url: `${ORIGIN}/web/reservation/search?screen=guestStay&confirmationNumber=ABC123`,
+        method: 'POST',
+        resourceType: 'image',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        postData: formBody({
+          action: 'search',
+          tenant: 'FIXTURE',
+          property: 'centurion',
+          surname: 'Guest',
+        }),
+      },
+      code: BLOCK_CODES.UNKNOWN_RESOURCE_TYPE,
+    },
+    {
+      name: 'missing content-type when rule requires it',
+      input: {
+        url: `${ORIGIN}/web/reservation/search?screen=guestStay&confirmationNumber=ABC123`,
+        method: 'POST',
+        resourceType: 'xhr',
+        headers: {},
+        postData: formBody({
+          action: 'search',
+          tenant: 'FIXTURE',
+          property: 'centurion',
+          surname: 'Guest',
+        }),
+      },
+      code: BLOCK_CODES.UNMATCHED_REQUEST,
     },
   ])('blocks $name before continue', async ({ input, code }) => {
     const { route, decision, recorder } = await runPolicy(input);
