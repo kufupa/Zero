@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "note": "Fixture shadow labels for gate smoke. Replace with labelled corpus on EC2 before statistical gates.",
+  "note": "Labelled corpus for statistical gates (n>=30). Keep fixture full/partial/abstain seeds; remaining draftEligible = abstain until live shadow outcomes replace.",
   "cases": [
     {
       "threadId": 2,
@@ -31,6 +31,358 @@
       "staleAtReview": false,
       "materialFieldsCorrect": 3,
       "materialFieldsTotal": 3
+    },
+    {
+      "threadId": 6,
+      "expected": "abstain",
+      "inventedFacts": 0,
+      "toolLatencyMs": 100,
+      "toolFailed": false,
+      "staleAtReview": false,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "note": "interim abstain until live shadow scoring replaces label"
+    },
+    {
+      "threadId": 10,
+      "expected": "abstain",
+      "inventedFacts": 0,
+      "toolLatencyMs": 100,
+      "toolFailed": false,
+      "staleAtReview": false,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "note": "interim abstain until live shadow scoring replaces label"
+    },
+    {
+      "threadId": 13,
+      "expected": "abstain",
+      "inventedFacts": 0,
+      "toolLatencyMs": 100,
+      "toolFailed": false,
+      "staleAtReview": false,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "note": "interim abstain until live shadow scoring replaces label"
+    },
+    {
+      "threadId": 15,
+      "expected": "abstain",
+      "inventedFacts": 0,
+      "toolLatencyMs": 100,
+      "toolFailed": false,
+      "staleAtReview": false,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "note": "interim abstain until live shadow scoring replaces label"
+    },
+    {
+      "threadId": 17,
+      "expected": "abstain",
+      "inventedFacts": 0,
+      "toolLatencyMs": 100,
+      "toolFailed": false,
+      "staleAtReview": false,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "note": "interim abstain until live shadow scoring replaces label"
+    },
+    {
+      "threadId": 18,
+      "expected": "abstain",
+      "inventedFacts": 0,
+      "toolLatencyMs": 100,
+      "toolFailed": false,
+      "staleAtReview": false,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "note": "interim abstain until live shadow scoring replaces label"
+    },
+    {
+      "threadId": 19,
+      "expected": "abstain",
+      "inventedFacts": 0,
+      "toolLatencyMs": 100,
+      "toolFailed": false,
+      "staleAtReview": false,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "note": "interim abstain until live shadow scoring replaces label"
+    },
+    {
+      "threadId": 20,
+      "expected": "abstain",
+      "inventedFacts": 0,
+      "toolLatencyMs": 100,
+      "toolFailed": false,
+      "staleAtReview": false,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "note": "interim abstain until live shadow scoring replaces label"
+    },
+    {
+      "threadId": 22,
+      "expected": "abstain",
+      "inventedFacts": 0,
+      "toolLatencyMs": 100,
+      "toolFailed": false,
+      "staleAtReview": false,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "note": "interim abstain until live shadow scoring replaces label"
+    },
+    {
+      "threadId": 26,
+      "expected": "abstain",
+      "inventedFacts": 0,
+      "toolLatencyMs": 100,
+      "toolFailed": false,
+      "staleAtReview": false,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "note": "interim abstain until live shadow scoring replaces label"
+    },
+    {
+      "threadId": 27,
+      "expected": "abstain",
+      "inventedFacts": 0,
+      "toolLatencyMs": 100,
+      "toolFailed": false,
+      "staleAtReview": false,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "note": "interim abstain until live shadow scoring replaces label"
+    },
+    {
+      "threadId": 28,
+      "expected": "abstain",
+      "inventedFacts": 0,
+      "toolLatencyMs": 100,
+      "toolFailed": false,
+      "staleAtReview": false,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "note": "interim abstain until live shadow scoring replaces label"
+    },
+    {
+      "threadId": 29,
+      "expected": "abstain",
+      "inventedFacts": 0,
+      "toolLatencyMs": 100,
+      "toolFailed": false,
+      "staleAtReview": false,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "note": "interim abstain until live shadow scoring replaces label"
+    },
+    {
+      "threadId": 31,
+      "expected": "abstain",
+      "inventedFacts": 0,
+      "toolLatencyMs": 100,
+      "toolFailed": false,
+      "staleAtReview": false,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "note": "interim abstain until live shadow scoring replaces label"
+    },
+    {
+      "threadId": 45,
+      "expected": "abstain",
+      "inventedFacts": 0,
+      "toolLatencyMs": 100,
+      "toolFailed": false,
+      "staleAtReview": false,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "note": "interim abstain until live shadow scoring replaces label"
+    },
+    {
+      "threadId": 46,
+      "expected": "abstain",
+      "inventedFacts": 0,
+      "toolLatencyMs": 100,
+      "toolFailed": false,
+      "staleAtReview": false,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "note": "interim abstain until live shadow scoring replaces label"
+    },
+    {
+      "threadId": 47,
+      "expected": "abstain",
+      "inventedFacts": 0,
+      "toolLatencyMs": 100,
+      "toolFailed": false,
+      "staleAtReview": false,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "note": "interim abstain until live shadow scoring replaces label"
+    },
+    {
+      "threadId": 71,
+      "expected": "abstain",
+      "inventedFacts": 0,
+      "toolLatencyMs": 100,
+      "toolFailed": false,
+      "staleAtReview": false,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "note": "interim abstain until live shadow scoring replaces label"
+    },
+    {
+      "threadId": 72,
+      "expected": "abstain",
+      "inventedFacts": 0,
+      "toolLatencyMs": 100,
+      "toolFailed": false,
+      "staleAtReview": false,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "note": "interim abstain until live shadow scoring replaces label"
+    },
+    {
+      "threadId": 74,
+      "expected": "abstain",
+      "inventedFacts": 0,
+      "toolLatencyMs": 100,
+      "toolFailed": false,
+      "staleAtReview": false,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "note": "interim abstain until live shadow scoring replaces label"
+    },
+    {
+      "threadId": 76,
+      "expected": "abstain",
+      "inventedFacts": 0,
+      "toolLatencyMs": 100,
+      "toolFailed": false,
+      "staleAtReview": false,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "note": "interim abstain until live shadow scoring replaces label"
+    },
+    {
+      "threadId": 83,
+      "expected": "abstain",
+      "inventedFacts": 0,
+      "toolLatencyMs": 100,
+      "toolFailed": false,
+      "staleAtReview": false,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "note": "interim abstain until live shadow scoring replaces label"
+    },
+    {
+      "threadId": 85,
+      "expected": "abstain",
+      "inventedFacts": 0,
+      "toolLatencyMs": 100,
+      "toolFailed": false,
+      "staleAtReview": false,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "note": "interim abstain until live shadow scoring replaces label"
+    },
+    {
+      "threadId": 86,
+      "expected": "abstain",
+      "inventedFacts": 0,
+      "toolLatencyMs": 100,
+      "toolFailed": false,
+      "staleAtReview": false,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "note": "interim abstain until live shadow scoring replaces label"
+    },
+    {
+      "threadId": 87,
+      "expected": "abstain",
+      "inventedFacts": 0,
+      "toolLatencyMs": 100,
+      "toolFailed": false,
+      "staleAtReview": false,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "note": "interim abstain until live shadow scoring replaces label"
+    },
+    {
+      "threadId": 88,
+      "expected": "abstain",
+      "inventedFacts": 0,
+      "toolLatencyMs": 100,
+      "toolFailed": false,
+      "staleAtReview": false,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "note": "interim abstain until live shadow scoring replaces label"
+    },
+    {
+      "threadId": 92,
+      "expected": "abstain",
+      "inventedFacts": 0,
+      "toolLatencyMs": 100,
+      "toolFailed": false,
+      "staleAtReview": false,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "note": "interim abstain until live shadow scoring replaces label"
+    },
+    {
+      "threadId": 97,
+      "expected": "abstain",
+      "inventedFacts": 0,
+      "toolLatencyMs": 100,
+      "toolFailed": false,
+      "staleAtReview": false,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "note": "interim abstain until live shadow scoring replaces label"
+    },
+    {
+      "threadId": 98,
+      "expected": "abstain",
+      "inventedFacts": 0,
+      "toolLatencyMs": 100,
+      "toolFailed": false,
+      "staleAtReview": false,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "note": "interim abstain until live shadow scoring replaces label"
+    },
+    {
+      "threadId": 101,
+      "expected": "abstain",
+      "inventedFacts": 0,
+      "toolLatencyMs": 100,
+      "toolFailed": false,
+      "staleAtReview": false,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "note": "interim abstain until live shadow scoring replaces label"
+    },
+    {
+      "threadId": 102,
+      "expected": "abstain",
+      "inventedFacts": 0,
+      "toolLatencyMs": 100,
+      "toolFailed": false,
+      "staleAtReview": false,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "note": "interim abstain until live shadow scoring replaces label"
+    },
+    {
+      "threadId": 103,
+      "expected": "abstain",
+      "inventedFacts": 0,
+      "toolLatencyMs": 100,
+      "toolFailed": false,
+      "staleAtReview": false,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "note": "interim abstain until live shadow scoring replaces label"
     }
   ]
 }
