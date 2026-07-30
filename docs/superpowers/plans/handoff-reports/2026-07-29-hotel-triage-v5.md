@@ -1,37 +1,67 @@
 # Handoff — Hotel triage-v5 cutover (Task 9)
 
 Date: 2026-07-30  
-Status: **BLOCKED** (Task7 green on restored `8c386224`; exhaustive ineligible; cutover withheld)
+Status: **BLOCKED** (live retag applied then restored; audit failed 100% gate)
 
-## SHAs / hashes
+## User override (2026-07-30)
 
-- Rejected freeze: `90e02c63` · `f894a211…`
-- HMS⊕v5 merge: `a2b0b858`
-- Release candidate prompt blob: `8c386224` · `5b0be70c3860940be9f0d87a08995f54defa8a52c0ba7f1abd17300010ac3b8d`
-- Branch HEAD: `693638e7` (restore after aborted `88eebd2c`/`9bfb83cc`)
-- Live prod: triage-v4 (`/home/ubuntu/repos/zero`)
+- Skip overnight exhaustive eligibility gate.
+- Retag with production triage-v5 predictions (twice-stable Bedrock nova-lite).
+- Cutover still **did not land** — audit fail → snapshot restore.
 
-## Second-review
+## Live retag attempt
 
-- Label fixes this session: **4** (`d9ff71f4`, `c45892cd` asOf-drift; `42f91149`, `fdc8f690` TAC→ops)
-- Earlier fixes: 3 (`1403c5cc`, `e4d58baf`, `f8eb8e8c`)
-- Model wrong sticky: `18829ff1` (do not open into prompt)
-- Policy unresolved: none
+| Field | Value |
+| --- | --- |
+| Box SHA | `c0fcf78e` (tip; includes `ca97bfe5`) |
+| promptVersion | `triage-v5` |
+| promptHash | `5b0be70c3860940be9f0d87a08995f54defa8a52c0ba7f1abd17300010ac3b8d` |
+| RDS pre-retag snapshot | `nava-zero-mail-pilot-pre-v5-retag-20260730-171047` (available; DeletionProtection=true) |
+| KEY_PREFIX | `inbound-triage-retag-v5-20260730-ca97bfe5` |
+| Snapshot hash | `6487506d85d67bd53617adcc4ff9efd22ef6fc305a6c7d82b9fac6d81ceb26ae` |
+| Inputs artifact hash / sourceHash | `186643190aba043b1a4439ad5edbdd4547bba7c8ed3016007acc5f0f850154ba` |
 
-## Task7
+### Counts
 
-- eligible=true on `5b0be70c…` · prot0 · disagree0 · worst cat19/urg5/joint24 vs v4 best 23/13/30
-- Aborted later agency-invoice commits after Task7 prot regression
+- Eligible cohort: **268**
+- Twice-stable approved: **265** (3 unstable excluded; 19 throttle retries succeeded)
+- Unstable threadIds: `7bbc2587-8e7e-4373-878b-a13ab396ad26`, `7e0243d9-a645-4df2-bbd3-d64218b83ce2`, `9575f062-3383-4155-b69a-70ac31329d6d`
+- Dry-run wouldInsert: **265**, collisions: **0**
+- Apply inserted=mutated: **265**, collisions: **0**
+- Key probe post-apply wouldInsert: **0**
+- Drain: prefix nonterminal **0**, succeeded **265**, failed **0**
 
-## Exhaustive (`5b0be70c…`, locked 234)
+### Audit (failed)
 
-- eligible=false · best partial prot3 disagree1 · worst 26/14/39 vs v4 best 34/13/42
-- Fail: prot (incl. sticky `18829ff1`) + urg 14>13 + residual disagree
+- `ok=false`, checkedTargets=265, errors=370
+- Kinds: inputHash=265, durableCategory=51, durableSpam=47, approvedOutput=6, durableUrgent=1
+- Systemic: audit expects `spam_at` cleared even when approvedCategory=`spam` (durable spam join uses `spam_at`, not AI-managed slug) → spam-approved targets cannot pass as written.
+- Systemic: every target failed production inputHash recompute vs worker metrics (asOf/hash path mismatch).
+- Residual model drift (approvedOutput): 6 threadIds where drain classification ≠ twice-stable rehearsal.
 
-## Cutover
+### Rollback
 
-**No.** Hotel on v4 until exhaustive eligible=true.
+- `restore-centurion-triage-snapshot.mjs --apply` from `cutover-snapshot.json`
+- restored=305, `verifySnapshotAgainstLive` **ok**
+- Fresh-prefix succeeded runs remain in ledger (historical); durable AI state restored to pre-retag.
 
-## Next
+## Hotel now
 
-Keep `8c386224`/`5b0be70c…` as candidate. Clear exhaustive without Task9-ID prompt tickets; else stay on v4.
+- PM2: http/worker/ai-worker/hms-ai-worker **online**
+- Health: `{"ok":true,"service":"server-pilot"}`
+- Code DEFAULT_TRIAGE_PROMPT_VERSION: **triage-v5** (new inbound uses v5)
+- Durable Centurion labels: **pre-retag restored** (not cutover-applied)
+
+## Residual risk
+
+- Cutover incomplete; hotel durable triage still pre-v5 labels while runtime prompt is v5.
+- Re-attempt needs: (1) audit spam/`spam_at` expectation fix or spam-approved handling, (2) inputHash asOf alignment between worker metrics and audit recompute, (3) optional third-pass stability or approved=drain-output binding, (4) new KEY_PREFIX (current prefix keys already exist).
+
+## Artifacts (on box, no PII in this doc)
+
+`.tmp/triage-quality/rollout/` — snapshot, targets, inputs, rehearsal meta, approved, dry/apply summaries, audit, restore summaries.
+
+## Prior context
+
+- Task7 green on `5b0be70c…`; exhaustive previously ineligible (override skipped that gate).
+- Sticky model-wrong: `18829ff1` (do not open into prompt).

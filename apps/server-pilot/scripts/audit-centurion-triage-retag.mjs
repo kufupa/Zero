@@ -110,6 +110,10 @@ export function parseAuditArgs(argv) {
 }
 
 function expectedDurableSlugs(approvedCategory, approvedUrgent) {
+  // spam is persisted via mail_thread.spam_at, not an AI-managed category join.
+  if (String(approvedCategory) === 'spam') {
+    return approvedUrgent ? ['urgent'] : [];
+  }
   const slugs = [String(approvedCategory)];
   if (approvedUrgent) slugs.push('urgent');
   return [...new Set(slugs)].sort();
@@ -294,21 +298,22 @@ export async function auditCenturionTriageRetag(opts) {
       );
     }
 
-    const finishedAt =
-      run.finishedAt instanceof Date
-        ? run.finishedAt.toISOString()
-        : run.finishedAt
-          ? new Date(run.finishedAt).toISOString()
+    // Worker classifies with asOf=run.createdAt (not finishedAt).
+    const runCreatedAt =
+      run.createdAt instanceof Date
+        ? run.createdAt.toISOString()
+        : run.createdAt
+          ? new Date(run.createdAt).toISOString()
           : null;
-    if (!finishedAt) {
-      push(`missing finishedAt for ${target.threadId}`);
+    if (!runCreatedAt) {
+      push(`missing createdAt for ${target.threadId}`);
     } else {
       const recomputed = await opts.driver.recomputeProductionInputHash({
         threadId: target.threadId,
         triggerMessageId: target.triggerMessageId,
         modelId: manifest.modelId,
         promptVersion: manifest.promptVersion,
-        asOf: finishedAt,
+        asOf: runCreatedAt,
       });
       // Never compare to regression hashes — production asOf differs.
       void opts.regressionInputHashByThread;
@@ -325,7 +330,11 @@ export async function auditCenturionTriageRetag(opts) {
         `durable category mismatch for ${target.threadId}: expected ${expectedSlugs.join(',')} got ${actualSlugs.join(',')}`,
       );
     }
-    if (durable.spamAt != null) {
+    if (String(target.approvedCategory) === 'spam') {
+      if (durable.spamAt == null) {
+        push(`durable spam mismatch for ${target.threadId}: expected spam_at set`);
+      }
+    } else if (durable.spamAt != null) {
       push(`durable spam mismatch for ${target.threadId}: expected cleared spam_at`);
     }
     if (Boolean(durable.aiCategorySlugs?.includes('urgent')) !== Boolean(target.approvedUrgent)) {
@@ -387,6 +396,7 @@ export function createPostgresAuditDriver(sql) {
           prompt_hash AS "promptHash",
           state,
           metrics,
+          created_at AS "createdAt",
           finished_at AS "finishedAt"
         FROM ai_workflow_run
         WHERE transport_id = ${TRANSPORT_ID}

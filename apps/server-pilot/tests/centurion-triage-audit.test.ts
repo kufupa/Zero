@@ -52,6 +52,7 @@ type MemRun = {
   promptHash: string | null;
   state: string;
   metrics: Record<string, unknown>;
+  createdAt: string;
   finishedAt: string;
 };
 
@@ -266,6 +267,7 @@ async function buildApprovedFixture(opts?: {
     promptVersion: PROMPT_VERSION,
     promptHash: PROMPT_HASH,
     state: 'succeeded',
+    createdAt: '2026-07-30T12:59:00.000Z',
     finishedAt: '2026-07-30T13:00:00.000Z',
     metrics: {
       category: 'groups-events',
@@ -621,6 +623,7 @@ describe('strict centurion triage audit', () => {
         promptVersion: PROMPT_VERSION,
         promptHash: PROMPT_HASH,
         state: 'succeeded',
+        createdAt: '2026-07-30T12:59:00.000Z',
         finishedAt: '2026-07-30T13:00:00.000Z',
         metrics: {
           category: 'groups-events',
@@ -680,6 +683,7 @@ describe('strict centurion triage audit', () => {
       promptVersion: PROMPT_VERSION,
       promptHash: PROMPT_HASH,
       state: 'succeeded',
+      createdAt: '2026-07-30T12:59:00.000Z',
       finishedAt: '2026-07-30T13:00:00.000Z',
       metrics: { category: 'ops', urgent: false, applyMode: 'full', inputHash },
     });
@@ -714,7 +718,8 @@ describe('strict centurion triage audit', () => {
         asOf: string;
       }) {
         seenAsOf = input.asOf;
-        expect(input.asOf).toBe('2026-07-30T13:00:00.000Z');
+        // Worker asOf is run.createdAt, not finishedAt.
+        expect(input.asOf).toBe('2026-07-30T12:59:00.000Z');
         return fx.inputHash;
       },
     };
@@ -728,6 +733,41 @@ describe('strict centurion triage audit', () => {
       regressionInputHashByThread: { 't-eligible': sha('regression-different') },
     });
     expect(result.ok).toBe(true);
-    expect(seenAsOf).toBe('2026-07-30T13:00:00.000Z');
+    expect(seenAsOf).toBe('2026-07-30T12:59:00.000Z');
+  });
+
+  it('accepts spam-approved targets via spam_at without spam category slug', async () => {
+    const fx = await buildApprovedFixture({
+      mutateLiveAfterSnapshot: (threads) => {
+        const eligible = threads.get('t-eligible')!;
+        eligible.aiCategorySlugs = [];
+        eligible.spamAt = '2026-07-30T13:00:00.000Z';
+      },
+    });
+    fx.runs[0].metrics = {
+      ...fx.runs[0].metrics,
+      category: 'spam',
+      urgent: false,
+    };
+    const manifest = rehashManifest({
+      ...fx.manifest,
+      targets: fx.manifest.targets.map((t: Record<string, unknown>) => ({
+        ...t,
+        approvedCategory: 'spam',
+        approvedUrgent: false,
+      })),
+    });
+
+    const result = await auditCenturionTriageRetag({
+      driver: fx.auditDriver,
+      snapshot: fx.snapshot,
+      manifest,
+      applySummary: {
+        ...fx.applySummary,
+        manifestHash: (manifest as { manifestHash: string }).manifestHash,
+      },
+      keyPrefix: KEY_PREFIX,
+    });
+    expect(result.ok).toBe(true);
   });
 });
