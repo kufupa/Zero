@@ -38,6 +38,31 @@ async function loadSecret(arn: string): Promise<HmsSecret> {
   return hmsSecretSchema.parse(JSON.parse(res.SecretString));
 }
 
+function getStaticRule(
+  origin: string,
+  id: string,
+  path: string,
+  resourceTypes: string[],
+) {
+  return {
+    id,
+    origin,
+    method: 'GET' as const,
+    path,
+    resourceTypes,
+    fixedQuery: {},
+    variableQuery: {},
+    fixedBody: {},
+    variableBody: {},
+    maxBodyBytes: 4096,
+    redirectPolicy: 'same-reviewed-chain' as const,
+  };
+}
+
+/**
+ * Abort-first inventory (2026-07-30 EC2 probe): document GET + exact static
+ * GETs observed as unknown_path on first pass. No POST/credential submit here.
+ */
 function minimalLoginManifest(origin: string): RequestPolicyManifest {
   return requestPolicyManifestSchema.parse({
     rules: [
@@ -56,6 +81,30 @@ function minimalLoginManifest(origin: string): RequestPolicyManifest {
         maxBodyBytes: 4096,
         redirectPolicy: 'same-reviewed-chain',
       },
+      getStaticRule(origin, 'live-login-css', '/web/resources/inforhms/HMS-min.css', [
+        'stylesheet',
+      ]),
+      getStaticRule(
+        origin,
+        'live-login-jquery',
+        '/web/resources/shared/scripts/jquery-3.6.0.min.js',
+        ['script'],
+      ),
+      getStaticRule(
+        origin,
+        'live-login-jquery-json',
+        '/web/resources/shared/scripts/jquery.json-2.3.min.js',
+        ['script'],
+      ),
+      getStaticRule(
+        origin,
+        'live-login-companyon',
+        '/web/resources/shared/scripts/infor-companyon-client.js',
+        ['script'],
+      ),
+      getStaticRule(origin, 'live-login-all-js', '/web/base/login-all.js', [
+        'script',
+      ]),
     ],
   });
 }
