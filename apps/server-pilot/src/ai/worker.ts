@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { isCliEntry } from '../lib/is-cli-entry.js';
 import { and, asc, eq, inArray, or } from 'drizzle-orm';
 import { closeDb, getDb } from '../db/client.js';
@@ -9,20 +10,36 @@ import {
   mailThread,
   message,
 } from '../db/schema/mail.js';
-import { parseEnv } from '../env.js';
+import { parseEnv, type AiExecutorLane } from '../env.js';
 import { createMastraRuntime } from './mastra.js';
 import { persistAiCandidateDraft } from './drafts.js';
 import { extractDraftFeedbackLabels } from './feedback.js';
 import {
   claimNextAiRun,
+  CLEANUP_RESERVE_MS,
   enqueueAiRun,
   markAiRunDeadLetter,
   markAiRunRetry,
   markAiRunSucceeded,
+  remainingRunBudgetMs,
+  RunDeadlineError,
+  shouldRetryAiFailure,
+  toAiRunFence,
+  type AiFailureClass,
+  type AiRunFence,
 } from './run-ledger.js';
 import { validateTriageOutput } from './triage.js';
 
-export const AI_WORKER_OWNER = `ai-worker-${process.pid}`;
+function resolveWorkerLane(): AiExecutorLane {
+  return parseEnv(process.env as Record<string, string | undefined>).AI_WORKER_LANE;
+}
+
+export function aiWorkerOwnerId(lane: AiExecutorLane = resolveWorkerLane()): string {
+  return `${lane}-ai-worker-${process.pid}`;
+}
+
+/** @deprecated Prefer aiWorkerOwnerId(lane); kept for older call sites. */
+export const AI_WORKER_OWNER = aiWorkerOwnerId('default');
 
 const MONEY_DRAFT_CATEGORIES = new Set(['new-bookings', 'groups-events', 'at-risk']);
 
@@ -32,50 +49,117 @@ export interface ExecuteAiRunResult {
 }
 
 function claimOwnerFor(run: typeof aiWorkflowRun.$inferSelect): string {
-  return run.claimOwner ?? AI_WORKER_OWNER;
+  return run.claimOwner ?? aiWorkerOwnerId(run.executorLane ?? resolveWorkerLane());
+}
+
+function classifyAiFailure(error: unknown): AiFailureClass {
+  if (error instanceof RunDeadlineError) return 'RUN_DEADLINE';
+  if (error && typeof error === 'object' && 'failureClass' in error) {
+    return (error as { failureClass: AiFailureClass }).failureClass;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  if (/timeout|ECONNRESET|ENOTFOUND|network/i.test(message)) return 'TRANSIENT_NETWORK';
+  if (/bedrock|throttl|TooManyRequests|ServiceUnavailable/i.test(message)) {
+    return 'BEDROCK_TRANSIENT';
+  }
+  if (/artifact|s3|NoSuchKey/i.test(message)) return 'ARTIFACT_TRANSIENT';
+  if (/policy|guardrail/i.test(message)) return 'POLICY_BLOCK';
+  if (/auth|unauthorized|forbidden/i.test(message)) return 'AUTH';
+  return 'UNKNOWN';
+}
+
+function buildRunAbortSignal(input: {
+  fence: AiRunFence;
+  leaseAbort: AbortController;
+  shutdownSignal: AbortSignal;
+  now?: Date;
+}): AbortSignal {
+  const remaining = remainingRunBudgetMs(input.fence, input.now);
+  if (remaining <= CLEANUP_RESERVE_MS) throw new RunDeadlineError();
+  const budgetSignal = AbortSignal.timeout(remaining);
+  return AbortSignal.any([budgetSignal, input.leaseAbort.signal, input.shutdownSignal]);
 }
 
 async function failAiRun(
   run: typeof aiWorkflowRun.$inferSelect,
   error: unknown,
+  fence: AiRunFence | null,
 ): Promise<ExecuteAiRunResult> {
   const message = error instanceof Error ? error.message : String(error);
+  const failureClass = classifyAiFailure(error);
   const attempts = run.attempts + 1;
   const owner = claimOwnerFor(run);
-  if (attempts >= 3) {
+  const claimToken = fence?.claimToken ?? run.claimToken;
+  if (!claimToken) {
+    return { runId: run.id, state: 'dead_letter' };
+  }
+
+  const canRetry =
+    fence !== null &&
+    shouldRetryAiFailure({
+      failureClass,
+      fence,
+      attempts: run.attempts,
+    });
+
+  if (!canRetry) {
     await markAiRunDeadLetter({
       runId: run.id,
       claimOwner: owner,
+      claimToken,
       expectedStates: ['running'],
       lastError: message,
+      failureClass,
     });
     return { runId: run.id, state: 'dead_letter' };
   }
+
   await markAiRunRetry({
     runId: run.id,
     claimOwner: owner,
+    claimToken,
     expectedStates: ['running'],
     attempts,
     nextRunAt: new Date(Date.now() + attempts * 60_000),
     lastError: message,
+    failureClass,
   });
   return { runId: run.id, state: 'retry_wait' };
 }
 
-export async function executeAiRun(runId: string): Promise<ExecuteAiRunResult> {
+export async function executeAiRun(
+  runId: string,
+  options: { shutdownSignal?: AbortSignal } = {},
+): Promise<ExecuteAiRunResult> {
   const db = getDb();
+  const env = parseEnv(process.env as Record<string, string | undefined>);
   const [run] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, runId)).limit(1);
   if (!run) throw new Error(`AI run not found: ${runId}`);
 
   const owner = claimOwnerFor(run);
+  const now = new Date();
+  const claimToken = run.claimToken ?? randomUUID();
+  const deadlineAt = run.deadlineAt ?? new Date(now.getTime() + env.HMS_RUN_DEADLINE_MS);
+  const fence: AiRunFence = {
+    runId: run.id,
+    claimOwner: owner,
+    claimToken,
+    deadlineAt,
+  };
+  const leaseAbort = new AbortController();
+  const shutdownSignal = options.shutdownSignal ?? new AbortController().signal;
+  const signal = buildRunAbortSignal({ fence, leaseAbort, shutdownSignal, now });
 
   await db
     .update(aiWorkflowRun)
     .set({
       state: 'running',
       claimOwner: owner,
-      startedAt: new Date(),
-      updatedAt: new Date(),
+      claimToken,
+      deadlineAt,
+      heartbeatAt: now,
+      startedAt: now,
+      updatedAt: now,
     })
     .where(
       and(
@@ -90,7 +174,11 @@ export async function executeAiRun(runId: string): Promise<ExecuteAiRunResult> {
       ),
     );
 
+  const runWithFence = { ...run, claimOwner: owner, claimToken, deadlineAt };
+
   try {
+    if (signal.aborted) throw new RunDeadlineError();
+
     if (run.runKind === 'inbound_triage') {
       const [trigger] = await db
         .select()
@@ -133,12 +221,13 @@ export async function executeAiRun(runId: string): Promise<ExecuteAiRunResult> {
           body: trigger?.textBody ?? trigger?.htmlBody ?? '',
           messages,
         },
-      });
+        // Budget/lease fence for Mastra + future Playwright/S3/subprocess callers.
+        abortSignal: signal,
+      } as Parameters<typeof workflowRun.start>[0] & { abortSignal: AbortSignal });
       if (result.status !== 'success') {
         throw new Error(`mail triage workflow failed: ${result.status}`);
       }
 
-      const env = parseEnv(process.env as Record<string, string | undefined>);
       const output = validateTriageOutput(result.result?.output);
 
       await db.transaction(async (tx) => {
@@ -172,6 +261,7 @@ export async function executeAiRun(runId: string): Promise<ExecuteAiRunResult> {
               modelId: run.modelId,
               promptVersion: 'draft-v1',
               promptHash: run.promptHash ?? undefined,
+              executorLane: run.executorLane ?? 'default',
             },
             tx as unknown as typeof db,
           );
@@ -182,6 +272,7 @@ export async function executeAiRun(runId: string): Promise<ExecuteAiRunResult> {
           {
             runId,
             claimOwner: owner,
+            claimToken,
             expectedStates: ['running'],
             mastraTraceId: result.result?.traceId,
             metrics: {
@@ -217,6 +308,7 @@ export async function executeAiRun(runId: string): Promise<ExecuteAiRunResult> {
         const marked = await markAiRunSucceeded({
           runId,
           claimOwner: owner,
+          claimToken,
           expectedStates: ['running'],
           metrics: { skipped: true, reason: 'missing_reply_to_address' },
         });
@@ -238,7 +330,8 @@ export async function executeAiRun(runId: string): Promise<ExecuteAiRunResult> {
           subject: trigger.subject ?? undefined,
           body: trigger.textBody ?? trigger.htmlBody ?? '',
         },
-      });
+        abortSignal: signal,
+      } as Parameters<typeof workflowRun.start>[0] & { abortSignal: AbortSignal });
       if (result.status !== 'success') {
         throw new Error(`candidate draft workflow failed: ${result.status}`);
       }
@@ -269,6 +362,7 @@ export async function executeAiRun(runId: string): Promise<ExecuteAiRunResult> {
       const marked = await markAiRunSucceeded({
         runId,
         claimOwner: owner,
+        claimToken,
         expectedStates: ['running'],
         generationId: draft.generationId ?? generationId,
         metrics: {
@@ -307,6 +401,7 @@ export async function executeAiRun(runId: string): Promise<ExecuteAiRunResult> {
       const marked = await markAiRunSucceeded({
         runId,
         claimOwner: owner,
+        claimToken,
         expectedStates: ['running'],
         metrics: {
           labels: feedback.labels,
@@ -321,7 +416,7 @@ export async function executeAiRun(runId: string): Promise<ExecuteAiRunResult> {
 
     throw new Error(`unsupported AI run kind: ${run.runKind}`);
   } catch (error) {
-    return failAiRun(run, error);
+    return failAiRun(runWithFence, error, toAiRunFence(runWithFence) ?? fence);
   }
 }
 
@@ -336,23 +431,37 @@ async function applyDurableTriageFromWorker(input: {
   return applyDurableTriageResult(input);
 }
 
-export async function runAiWorkerOnce(): Promise<boolean> {
-  const claimed = await claimNextAiRun({ ownerId: AI_WORKER_OWNER });
+function maybeInitHmsRuntime(lane: AiExecutorLane): void {
+  if (lane === 'hms') {
+    // HMS runtime init reserved for later tasks; only HMS lane may enter this path.
+  }
+}
+
+export async function runAiWorkerOnce(
+  options: { shutdownSignal?: AbortSignal } = {},
+): Promise<boolean> {
+  const env = parseEnv(process.env as Record<string, string | undefined>);
+  const lane = env.AI_WORKER_LANE;
+  maybeInitHmsRuntime(lane);
+  const owner = `${lane}-ai-worker-${process.pid}`;
+  const claimed = await claimNextAiRun({ ownerId: owner, lane });
   if (!claimed) return false;
-  await executeAiRun(claimed.id);
+  await executeAiRun(claimed.id, options);
   return true;
 }
 
 export async function runAiWorkerLoop(pollIntervalMs = 5_000): Promise<void> {
   let stopping = false;
+  const shutdown = new AbortController();
   const stop = () => {
     stopping = true;
+    shutdown.abort();
   };
   process.on('SIGTERM', stop);
   process.on('SIGINT', stop);
 
   while (!stopping) {
-    const worked = await runAiWorkerOnce();
+    const worked = await runAiWorkerOnce({ shutdownSignal: shutdown.signal });
     if (!worked) {
       await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
     }

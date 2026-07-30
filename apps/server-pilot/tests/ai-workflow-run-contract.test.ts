@@ -13,9 +13,13 @@ import { user as userAuthTable } from '../src/db/schema/auth.js';
 import {
   claimNextAiRun,
   enqueueAiRun,
+  heartbeatAiRun,
   markAiRunDeadLetter,
   markAiRunRetry,
   markAiRunSucceeded,
+  remainingRunBudgetMs,
+  shouldRetryAiFailure,
+  type AiRunFence,
 } from '../src/ai/run-ledger.js';
 import {
   TEST_DB_AVAILABLE,
@@ -24,6 +28,55 @@ import {
 } from './helpers/test-db.js';
 
 const reachable = await probeTestDb();
+
+describe('ai workflow run fencing (unit)', () => {
+  it('does not retry when less than cleanup reserve remains', () => {
+    const deadlineAt = new Date('2026-07-30T12:02:30.000Z');
+    const fence: AiRunFence = {
+      runId: 'run-1',
+      claimOwner: 'owner',
+      claimToken: 'token',
+      deadlineAt,
+    };
+
+    expect(remainingRunBudgetMs(fence, new Date('2026-07-30T12:02:25.000Z'))).toBe(5_000);
+    expect(
+      shouldRetryAiFailure({
+        failureClass: 'TRANSIENT_NETWORK',
+        fence,
+        attempts: 0,
+        now: new Date('2026-07-30T12:02:25.000Z'),
+      }),
+    ).toBe(false);
+
+    expect(
+      shouldRetryAiFailure({
+        failureClass: 'BEDROCK_TRANSIENT',
+        fence,
+        attempts: 0,
+        now: new Date('2026-07-30T12:00:00.000Z'),
+      }),
+    ).toBe(true);
+
+    expect(
+      shouldRetryAiFailure({
+        failureClass: 'POLICY_BLOCK',
+        fence,
+        attempts: 0,
+        now: new Date('2026-07-30T12:00:00.000Z'),
+      }),
+    ).toBe(false);
+
+    expect(
+      shouldRetryAiFailure({
+        failureClass: 'ARTIFACT_TRANSIENT',
+        fence,
+        attempts: 1,
+        now: new Date('2026-07-30T12:00:00.000Z'),
+      }),
+    ).toBe(false);
+  });
+});
 
 async function seedMailContext() {
   const db = getDb();
@@ -124,8 +177,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai workflow run contract', ()
     });
 
     const [first, second] = await Promise.all([
-      claimNextAiRun({ ownerId: 'worker-a' }),
-      claimNextAiRun({ ownerId: 'worker-b' }),
+      claimNextAiRun({ ownerId: 'worker-a', lane: 'default' }),
+      claimNextAiRun({ ownerId: 'worker-b', lane: 'default' }),
     ]);
 
     const claimed = [first, second].filter(Boolean);
@@ -145,17 +198,19 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai workflow run contract', ()
       modelId: 'amazon.nova-lite-v1:0',
       promptVersion: 'triage-v4',
     });
-    const claimed = await claimNextAiRun({ ownerId: 'worker-a' });
+    const claimed = await claimNextAiRun({ ownerId: 'worker-a', lane: 'default' });
     expect(claimed?.id).toBe(run.id);
 
     const nextRunAt = new Date('2026-07-07T12:00:00Z');
     await markAiRunRetry({
       runId: run.id,
       claimOwner: claimed!.claimOwner!,
+      claimToken: claimed!.claimToken!,
       expectedStates: ['claimed'],
       attempts: 1,
       nextRunAt,
       lastError: 'bedrock timeout',
+      failureClass: 'BEDROCK_TRANSIENT',
     });
 
     const db = getDb();
@@ -218,15 +273,17 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai workflow run contract', ()
       modelId: 'amazon.nova-lite-v1:0',
       promptVersion: 'feedback-v1',
     });
-    await claimNextAiRun({ ownerId: 'worker-a' });
+    const owned = await claimNextAiRun({ ownerId: 'worker-a', lane: 'default' });
     await markAiRunDeadLetter({
       runId: run.id,
       claimOwner: 'worker-a',
+      claimToken: owned!.claimToken!,
       expectedStates: ['claimed'],
       lastError: 'policy violation',
+      failureClass: 'POLICY_BLOCK',
     });
 
-    const claimed = await claimNextAiRun({ ownerId: 'worker-b' });
+    const claimed = await claimNextAiRun({ ownerId: 'worker-b', lane: 'default' });
     expect(claimed).toBeNull();
 
     const db = getDb();
@@ -249,7 +306,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai workflow run contract', ()
       modelId: 'amazon.nova-lite-v1:0',
       promptVersion: 'draft-v1',
     });
-    const claimed = await claimNextAiRun({ ownerId: 'worker-a' });
+    const claimed = await claimNextAiRun({ ownerId: 'worker-a', lane: 'default' });
 
     const generationId = randomUUID();
     const db = getDb();
@@ -265,6 +322,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai workflow run contract', ()
     await markAiRunSucceeded({
       runId: run.id,
       claimOwner: claimed!.claimOwner!,
+      claimToken: claimed!.claimToken!,
       expectedStates: ['claimed'],
       mastraTraceId: 'trace-123',
       mastraScorerId: 'scorer-456',
@@ -337,6 +395,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai workflow run contract', ()
 
       const reclaimed = await claimNextAiRun({
         ownerId: 'owner-b',
+        lane: 'default',
         staleRunTimeoutMs: 15 * 60_000,
         db,
       });
@@ -347,6 +406,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai workflow run contract', ()
         {
           runId: run.id,
           claimOwner: 'owner-a',
+          claimToken: 'stale-token',
           expectedStates: ['running'],
           metrics: { stale: true },
         },
@@ -358,5 +418,211 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai workflow run contract', ()
       expect(row?.claimOwner).toBe('owner-b');
       expect(row?.state).toBe('claimed');
     });
+  });
+
+  it('claims only requested executor lane', async () => {
+    const defaultCtx = await seedMailContext();
+    const hmsCtx = await seedMailContext();
+
+    await enqueueAiRun({
+      transportId: defaultCtx.transportId,
+      threadId: defaultCtx.threadId,
+      triggerMessageId: defaultCtx.messageId,
+      runKind: 'inbound_triage',
+      idempotencyKey: `lane-default:${defaultCtx.messageId}`,
+      modelId: 'amazon.nova-lite-v1:0',
+      promptVersion: 'triage-v4',
+      executorLane: 'default',
+    });
+    await enqueueAiRun({
+      transportId: hmsCtx.transportId,
+      threadId: hmsCtx.threadId,
+      triggerMessageId: hmsCtx.messageId,
+      runKind: 'candidate_draft',
+      idempotencyKey: `lane-hms:${hmsCtx.messageId}`,
+      modelId: 'amazon.nova-lite-v1:0',
+      promptVersion: 'draft-v1',
+      executorLane: 'hms',
+    });
+
+    const defaultClaim = await claimNextAiRun({ ownerId: 'default-worker', lane: 'default' });
+    expect(defaultClaim?.executorLane).toBe('default');
+    expect(defaultClaim?.triggerMessageId).toBe(defaultCtx.messageId);
+
+    const hmsClaim = await claimNextAiRun({ ownerId: 'hms-worker', lane: 'hms' });
+    expect(hmsClaim?.executorLane).toBe('hms');
+    expect(hmsClaim?.triggerMessageId).toBe(hmsCtx.messageId);
+
+    expect(await claimNextAiRun({ ownerId: 'default-worker-2', lane: 'default' })).toBeNull();
+    expect(await claimNextAiRun({ ownerId: 'hms-worker-2', lane: 'hms' })).toBeNull();
+  });
+
+  it('sets deadline once and preserves it across retry and stale reclaim', async () => {
+    const { transportId, threadId, messageId } = await seedMailContext();
+    await enqueueAiRun({
+      transportId,
+      threadId,
+      triggerMessageId: messageId,
+      runKind: 'candidate_draft',
+      idempotencyKey: `deadline:${messageId}`,
+      modelId: 'amazon.nova-lite-v1:0',
+      promptVersion: 'draft-v1',
+      executorLane: 'hms',
+    });
+
+    const firstClaimAt = new Date('2026-07-30T12:00:00.000Z');
+    const first = await claimNextAiRun({
+      ownerId: 'hms-a',
+      lane: 'hms',
+      now: firstClaimAt,
+    });
+    expect(first?.deadlineAt?.toISOString()).toBe(
+      new Date(firstClaimAt.getTime() + 150_000).toISOString(),
+    );
+    const frozenDeadline = first!.deadlineAt!;
+
+    await markAiRunRetry({
+      runId: first!.id,
+      claimOwner: first!.claimOwner!,
+      claimToken: first!.claimToken!,
+      expectedStates: ['claimed'],
+      attempts: 1,
+      nextRunAt: new Date('2026-07-30T12:01:00.000Z'),
+      lastError: 'transient network',
+      failureClass: 'TRANSIENT_NETWORK',
+    });
+
+    const second = await claimNextAiRun({
+      ownerId: 'hms-b',
+      lane: 'hms',
+      now: new Date('2026-07-30T12:01:00.000Z'),
+    });
+    expect(second?.deadlineAt?.toISOString()).toBe(frozenDeadline.toISOString());
+
+    const db = getDb();
+    await db
+      .update(aiWorkflowRun)
+      .set({
+        state: 'running',
+        updatedAt: new Date('2026-07-30T11:00:00.000Z'),
+      })
+      .where(eq(aiWorkflowRun.id, second!.id));
+
+    const reclaimed = await claimNextAiRun({
+      ownerId: 'hms-c',
+      lane: 'hms',
+      now: new Date('2026-07-30T12:02:00.000Z'),
+      staleRunTimeoutMs: 15 * 60_000,
+    });
+    expect(reclaimed?.deadlineAt?.toISOString()).toBe(frozenDeadline.toISOString());
+    expect(reclaimed?.claimToken).not.toBe(second?.claimToken);
+  });
+
+  it('rejects heartbeat and final commit from stale claim token', async () => {
+    const { transportId, threadId, messageId } = await seedMailContext();
+    await enqueueAiRun({
+      transportId,
+      threadId,
+      triggerMessageId: messageId,
+      runKind: 'inbound_triage',
+      idempotencyKey: `fence:${messageId}`,
+      modelId: 'amazon.nova-lite-v1:0',
+      promptVersion: 'triage-v4',
+      executorLane: 'default',
+    });
+
+    const first = await claimNextAiRun({ ownerId: 'owner-a', lane: 'default' });
+    const staleFence: AiRunFence = {
+      runId: first!.id,
+      claimOwner: first!.claimOwner!,
+      claimToken: first!.claimToken!,
+      deadlineAt: first!.deadlineAt!,
+    };
+
+    const db = getDb();
+    await db
+      .update(aiWorkflowRun)
+      .set({
+        state: 'running',
+        updatedAt: new Date(Date.now() - 60 * 60_000),
+      })
+      .where(eq(aiWorkflowRun.id, first!.id));
+
+    const reclaimed = await claimNextAiRun({
+      ownerId: 'owner-b',
+      lane: 'default',
+      staleRunTimeoutMs: 15 * 60_000,
+    });
+    expect(reclaimed?.claimOwner).toBe('owner-b');
+    expect(reclaimed?.claimToken).not.toBe(staleFence.claimToken);
+
+    expect(await heartbeatAiRun(staleFence)).toBe(false);
+    expect(
+      await markAiRunSucceeded({
+        runId: staleFence.runId,
+        claimOwner: staleFence.claimOwner,
+        claimToken: staleFence.claimToken,
+        expectedStates: ['claimed', 'running'],
+      }),
+    ).toBeNull();
+
+    const liveFence: AiRunFence = {
+      runId: reclaimed!.id,
+      claimOwner: reclaimed!.claimOwner!,
+      claimToken: reclaimed!.claimToken!,
+      deadlineAt: reclaimed!.deadlineAt!,
+    };
+    expect(await heartbeatAiRun(liveFence)).toBe(true);
+  });
+
+  it('keeps default worker progressing while HMS run is stalled', async () => {
+    const defaultCtx = await seedMailContext();
+    const hmsCtx = await seedMailContext();
+
+    await enqueueAiRun({
+      transportId: defaultCtx.transportId,
+      threadId: defaultCtx.threadId,
+      triggerMessageId: defaultCtx.messageId,
+      runKind: 'inbound_triage',
+      idempotencyKey: `progress-default:${defaultCtx.messageId}`,
+      modelId: 'amazon.nova-lite-v1:0',
+      promptVersion: 'triage-v4',
+      executorLane: 'default',
+    });
+    const hmsRun = await enqueueAiRun({
+      transportId: hmsCtx.transportId,
+      threadId: hmsCtx.threadId,
+      triggerMessageId: hmsCtx.messageId,
+      runKind: 'candidate_draft',
+      idempotencyKey: `progress-hms:${hmsCtx.messageId}`,
+      modelId: 'amazon.nova-lite-v1:0',
+      promptVersion: 'draft-v1',
+      executorLane: 'hms',
+    });
+
+    const stalled = await claimNextAiRun({
+      ownerId: 'hms-stalled',
+      lane: 'hms',
+      now: new Date('2026-07-30T12:00:00.000Z'),
+    });
+    expect(stalled?.id).toBe(hmsRun.id);
+
+    const db = getDb();
+    await db
+      .update(aiWorkflowRun)
+      .set({ state: 'running', updatedAt: new Date('2026-07-30T12:00:00.000Z') })
+      .where(eq(aiWorkflowRun.id, hmsRun.id));
+
+    const defaultClaim = await claimNextAiRun({
+      ownerId: 'default-live',
+      lane: 'default',
+      now: new Date('2026-07-30T12:01:00.000Z'),
+    });
+    expect(defaultClaim?.triggerMessageId).toBe(defaultCtx.messageId);
+    expect(defaultClaim?.executorLane).toBe('default');
+
+    const [hmsRow] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, hmsRun.id));
+    expect(hmsRow?.state).toBe('running');
+    expect(hmsRow?.claimOwner).toBe('hms-stalled');
   });
 });

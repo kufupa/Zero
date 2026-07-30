@@ -35,6 +35,19 @@ describe('ai worker contract', () => {
     const keys = Object.keys(env).map((key) => key.toUpperCase());
     expect(keys.some((key) => key.includes('SMTP'))).toBe(false);
     expect(keys.some((key) => key.includes('POP3'))).toBe(false);
+    expect(env.AI_WORKER_LANE).toBe('default');
+  });
+
+  it('pm2 config adds hms-ai-worker on same worker entrypoint', async () => {
+    const { loadPm2Config } = await import('../src/deploy/load-pm2-config.js');
+    const pm2 = loadPm2Config();
+    const hmsWorker = pm2.apps.find((app) => app.name === 'hms-ai-worker');
+    expect(hmsWorker).toBeDefined();
+    expect(hmsWorker?.script).toBe('dist/ai/worker.js');
+    expect(hmsWorker?.instances).toBe(1);
+    expect(hmsWorker?.exec_mode).toBe('fork');
+    expect(hmsWorker?.env?.AI_WORKER_LANE).toBe('hms');
+    expect(hmsWorker?.env?.HMS_DRAFT_ENRICHMENT_MODE).toBeDefined();
   });
 
   it('worker module does not import send-capable SMTP modules', () => {
@@ -42,6 +55,17 @@ describe('ai worker contract', () => {
     expect(source).not.toMatch(/mail\/send\/smtp/);
     expect(source).not.toMatch(/getSmtpTransport/);
     expect(source).not.toMatch(/pop3-client/);
+  });
+
+  it('worker claims by AI_WORKER_LANE and builds AbortSignal budget fence', () => {
+    const source = readFileSync(join(here, '..', 'src', 'ai', 'worker.ts'), 'utf8');
+    expect(source).toMatch(/AI_WORKER_LANE/);
+    expect(source).toMatch(/claimNextAiRun\(\{ ownerId: owner, lane \}/);
+    expect(source).toMatch(/remainingRunBudgetMs/);
+    expect(source).toMatch(/AbortSignal\.timeout/);
+    expect(source).toMatch(/AbortSignal\.any/);
+    expect(source).toMatch(/RunDeadlineError/);
+    expect(source).toMatch(/lane === 'hms'/);
   });
 });
 
@@ -142,10 +166,12 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
     await markAiRunRetry({
       runId: run.id,
       claimOwner: 'worker-a',
+      claimToken: 'token-a',
       expectedStates: ['running'],
       attempts: 1,
       nextRunAt: new Date(),
       lastError: 'transient',
+      failureClass: 'TRANSIENT_NETWORK',
     });
     await db
       .update(aiWorkflowRun)

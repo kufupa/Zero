@@ -77,6 +77,8 @@ export const aiWorkflowRunStateEnum = pgEnum('ai_workflow_run_state', [
   'superseded',
 ]);
 
+export const aiExecutorLaneEnum = pgEnum('ai_executor_lane', ['default', 'hms']);
+
 export const mailIngestMailbox = pgTable(
   'mail_ingest_mailbox',
   {
@@ -352,6 +354,9 @@ export const aiDraftGeneration = pgTable(
     promptHash: text('prompt_hash'),
     status: text('status').notNull().default('succeeded'),
     errorMessage: text('error_message'),
+    outcome: text('outcome'),
+    threadStateVersion: text('thread_state_version'),
+    evidence: jsonb('evidence').$type<unknown[]>().notNull().default([]),
     createdAt: timestamp('created_at').notNull().defaultNow(),
   },
   (t) => [
@@ -461,7 +466,9 @@ export const aiWorkflowRun = pgTable(
     promptVersion: text('prompt_version').notNull(),
     promptHash: text('prompt_hash'),
     state: aiWorkflowRunStateEnum('state').notNull().default('queued'),
+    executorLane: aiExecutorLaneEnum('executor_lane').notNull().default('default'),
     claimOwner: text('claim_owner'),
+    claimToken: text('claim_token'),
     attempts: integer('attempts').notNull().default(0),
     nextRunAt: timestamp('next_run_at'),
     mastraTraceId: text('mastra_trace_id'),
@@ -471,7 +478,10 @@ export const aiWorkflowRun = pgTable(
     }),
     metrics: jsonb('metrics').$type<Record<string, unknown>>(),
     lastError: text('last_error'),
+    failureClass: text('failure_class'),
     claimedAt: timestamp('claimed_at'),
+    heartbeatAt: timestamp('heartbeat_at'),
+    deadlineAt: timestamp('deadline_at'),
     startedAt: timestamp('started_at'),
     finishedAt: timestamp('finished_at'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
@@ -480,6 +490,7 @@ export const aiWorkflowRun = pgTable(
   (t) => [
     uniqueIndex('ai_workflow_run_idempotency_uidx').on(t.idempotencyKey),
     index('ai_workflow_run_claim_idx').on(t.state, t.nextRunAt, t.createdAt),
+    index('ai_workflow_run_lane_claim_idx').on(t.executorLane, t.state, t.nextRunAt, t.createdAt),
     index('ai_workflow_run_transport_idx').on(t.transportId, t.state, t.createdAt),
     index('ai_workflow_run_thread_idx').on(t.threadId, t.runKind),
     index('ai_workflow_run_trigger_message_idx').on(t.triggerMessageId),
