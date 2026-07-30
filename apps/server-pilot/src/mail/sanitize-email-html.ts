@@ -14,6 +14,7 @@ function imgScheme(src: string): string {
 }
 
 function isAllowedImgSrc(src: string, shouldLoadImages: boolean): boolean {
+  if (src.includes('<') || src.includes('>')) return false;
   if (src === BLOCKED_IMAGE_PLACEHOLDER) return true;
   const scheme = imgScheme(src);
   if (scheme === 'cid') return true;

@@ -101,6 +101,32 @@ describe('sanitizeEmailHtml', () => {
     expect(html).toContain(`src="${BLOCKED_IMAGE_PLACEHOLDER}"`);
     expect(html).toContain('src="https://images.example/banner.png"');
   });
+
+  it('blocks comment-obfuscated data schemes before sanitizer normalization', () => {
+    const obfuscated = [
+      '<!--before-->data:image/png;base64,AAAA',
+      'da<!--inside-->ta:image/png;base64,BBBB',
+      'D&#x41;<!--mixed-->tA:image/svg+xml,CCCC',
+      'd&#97;<!--entity-->TA:text/html,DDDD',
+    ];
+    const { html, hasBlockedImages } = sanitizeEmailHtml(
+      obfuscated
+        .map((src, index) => `<img alt="obfuscated-${index}" src="${src}">`)
+        .join('') +
+        `<img alt="safe-placeholder" src="${BLOCKED_IMAGE_PLACEHOLDER}">` +
+        '<img alt="inline" src="CID:banner@hotel">',
+      { shouldLoadImages: true },
+    );
+
+    expect(hasBlockedImages).toBe(true);
+    expect(html.split(BLOCKED_IMAGE_PLACEHOLDER)).toHaveLength(
+      obfuscated.length + 2,
+    );
+    expect(html).not.toContain('data:image/png;base64,AAAA');
+    expect(html).not.toMatch(/BBBB|CCCC|DDDD|<!--/);
+    expect(html).toContain('alt="safe-placeholder"');
+    expect(html).toContain('src="CID:banner@hotel"');
+  });
 });
 
 describe('sanitizeHtmlBodyForStorage', () => {
