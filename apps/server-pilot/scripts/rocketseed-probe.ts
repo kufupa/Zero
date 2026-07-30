@@ -319,22 +319,27 @@ export function extractSmtpSecretValue(secretString: string): string {
   if (!secretString.trim()) {
     throw new ProbeConfigurationError('SMTP secret is empty');
   }
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(secretString) as {
-      SMTP_PASSWORD?: unknown;
-      password?: unknown;
-    };
-    const candidate = parsed.SMTP_PASSWORD ?? parsed.password;
-    if (typeof candidate !== 'string' || !candidate.trim()) {
-      throw new ProbeConfigurationError(
-        'SMTP secret JSON must contain SMTP_PASSWORD or password',
-      );
-    }
-    return candidate;
-  } catch (error) {
-    if (error instanceof ProbeConfigurationError) throw error;
+    parsed = JSON.parse(secretString);
+  } catch {
     return secretString;
   }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return secretString;
+  }
+  const record = parsed as Record<string, unknown>;
+  const candidate =
+    typeof record.SMTP_PASSWORD === 'string'
+      ? record.SMTP_PASSWORD
+      : typeof record.password === 'string'
+        ? record.password
+        : undefined;
+  if (candidate === undefined) return secretString;
+  if (!candidate.trim()) {
+    throw new ProbeConfigurationError('SMTP secret is empty');
+  }
+  return candidate;
 }
 
 async function resolveSmtpSecret(env: NodeJS.ProcessEnv): Promise<string> {

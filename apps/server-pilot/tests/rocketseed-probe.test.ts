@@ -74,6 +74,13 @@ describe('buildRocketseedProbe', () => {
     expect(extractSmtpSecretValue(secretString)).toBe(expected);
   });
 
+  it.each([
+    ['JSON string', '  "json-shaped-secret" \t'],
+    ['JSON object without password key', ' {"token":"opaque-secret"}\n'],
+  ])('preserves opaque %s SecretString bytes', (_label, secretString) => {
+    expect(extractSmtpSecretValue(secretString)).toBe(secretString);
+  });
+
   it('rejects all-whitespace secret payload', () => {
     expect(() => extractSmtpSecretValue(' \t ')).toThrow(
       'SMTP secret is empty',
