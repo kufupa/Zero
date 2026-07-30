@@ -64,20 +64,27 @@ fi
 
 echo "STAGE_START $(date -u +%Y-%m-%dT%H:%M:%SZ) stage=$STAGE sha=$(git rev-parse HEAD)"
 
+set +e
 NODE_ENV=production AI_ENABLED=true pnpm --dir apps/server-pilot exec tsx src/ai/eval-runner.ts \
   --mode=quality \
   --inputs ../../.tmp/triage-quality/inputs.jsonl \
   --labels ../../.tmp/triage-quality/labels.jsonl \
   --out "../../.tmp/triage-quality/reports/stage-${STAGE}.json" \
-  --repeat-id "stage-${STAGE}"
+  --repeat-id "stage-${STAGE}" \
+  >"$TQ/reports/stage-${STAGE}.eval.log" 2>&1
+EVAL_RC=$?
+set -e
 
 node -e '
 const fs=require("fs");
 const stage=process.argv[1];
+const evalRc=Number(process.argv[2]);
 const r=JSON.parse(fs.readFileSync(".tmp/triage-quality/reports/stage-"+stage+".json","utf8"));
+const incomplete=(r.cases||[]).filter((c)=>c.status!=="complete");
 const out={
   stage,
   sha: require("child_process").execSync("git rev-parse HEAD",{encoding:"utf8"}).trim(),
+  evalRc,
   complete:r.complete,
   promptHash:r.promptHash,
   modelId:r.modelId,
@@ -85,16 +92,20 @@ const out={
   metrics:{
     totalCases:r.metrics.totalCases,
     completeCases:r.metrics.completeCases,
+    incompleteCases:r.metrics.incompleteCases,
     categoryErrors:r.metrics.categoryErrors,
     urgentErrors:r.metrics.urgentErrors,
     jointErrors:r.metrics.jointErrors,
   },
   protectedRegressions:(r.protectedRegressions||[]).length,
   protectedReasons:[...new Set((r.protectedRegressions||[]).map(x=>x.reason))],
+  incompleteCount: incomplete.length,
+  incompleteReasons: [...new Set(incomplete.map((c)=>c.incompleteReason).filter(Boolean))],
+  failureCount: (r.failures||[]).length,
 };
 fs.writeFileSync(".tmp/triage-quality/reports/stage-"+stage+"-summary.json", JSON.stringify(out,null,2));
 console.log(JSON.stringify(out));
 if(!r.complete) process.exit(4);
-' "$STAGE"
+' "$STAGE" "$EVAL_RC"
 
 echo "STAGE_OK $(date -u +%Y-%m-%dT%H:%M:%SZ) stage=$STAGE"
