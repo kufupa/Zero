@@ -272,6 +272,28 @@ export function fakePop3FromMessages(
 /* Singleton loop                                                        */
 /* --------------------------------------------------------------------- */
 
+type FlushDue = () => Promise<{ flushed: number }>;
+
+export async function flushOutboundAfterIngest(
+  oneShot: boolean,
+  flushDue?: FlushDue,
+): Promise<void> {
+  if (oneShot) return;
+  try {
+    const result = flushDue
+      ? await flushDue()
+      : await (await import('../send/outbound-queue.js')).flushDue();
+    if (result.flushed > 0) {
+      console.log(`worker: flushDue flushed=${result.flushed}`);
+    }
+  } catch (err) {
+    console.error(
+      'worker: flushDue threw:',
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+}
+
 /**
  * Run the worker loop until SIGTERM/SIGINT. Calls `ingestOnce()` on
  * `POP3_POLL_INTERVAL_MS`. Exits 0 on signal.
@@ -311,18 +333,7 @@ export async function runWorker(opts: {
     );
     const result = await ingestOnce({ pop3 });
     console.log(JSON.stringify(result, null, 2));
-    try {
-      const { flushDue } = await import('../send/outbound-queue.js');
-      const flushed = await flushDue();
-      if (flushed.flushed > 0) {
-        console.log(`worker: flushDue flushed=${flushed.flushed}`);
-      }
-    } catch (err) {
-      console.error(
-        'worker: flushDue threw:',
-        err instanceof Error ? err.message : String(err),
-      );
-    }
+    await flushOutboundAfterIngest(true);
     await closeDb().catch(() => undefined);
     console.log('worker: fixture cycle complete, exiting 0');
     return;
@@ -356,18 +367,7 @@ export async function runWorker(opts: {
     );
     const result = await ingestOnce({ pop3, maxMessages });
     console.log(JSON.stringify(result, null, 2));
-    try {
-      const { flushDue } = await import('../send/outbound-queue.js');
-      const flushed = await flushDue();
-      if (flushed.flushed > 0) {
-        console.log(`worker: flushDue flushed=${flushed.flushed}`);
-      }
-    } catch (err) {
-      console.error(
-        'worker: flushDue threw:',
-        err instanceof Error ? err.message : String(err),
-      );
-    }
+    await flushOutboundAfterIngest(true);
     await closeDb().catch(() => undefined);
     console.log('worker: one-shot cycle complete, exiting 0');
     return;
@@ -390,18 +390,7 @@ export async function runWorker(opts: {
         err instanceof Error ? err.message : String(err),
       );
     }
-    try {
-      const { flushDue } = await import('../send/outbound-queue.js');
-      const flushed = await flushDue();
-      if (flushed.flushed > 0) {
-        console.log(`worker: flushDue flushed=${flushed.flushed}`);
-      }
-    } catch (err) {
-      console.error(
-        'worker: flushDue threw:',
-        err instanceof Error ? err.message : String(err),
-      );
-    }
+    await flushOutboundAfterIngest(false);
     const elapsed = Date.now() - start;
     const wait = Math.max(0, interval - elapsed);
     if (wait > 0) {

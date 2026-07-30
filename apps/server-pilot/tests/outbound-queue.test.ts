@@ -1,10 +1,12 @@
 /**
  * Outbound undo/schedule queue — unit + optional integration.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   FakeSmtpTransport,
   __setSmtpTransportForTests,
+  createSmtpTransport,
+  type SmtpTransport,
 } from '../src/mail/send/smtp.js';
 import {
   RECLAIM_SENDING_AFTER_MS,
@@ -25,7 +27,91 @@ import {
 } from './helpers/test-db.js';
 import { callerFor } from './helpers/trpc-caller.js';
 
+const { createTransportMock, sendMailMock } = vi.hoisted(() => ({
+  createTransportMock: vi.fn(),
+  sendMailMock: vi.fn(),
+}));
+
+vi.mock('nodemailer', () => ({
+  default: {
+    createTransport: createTransportMock,
+  },
+}));
+
 const reachable = await probeTestDb();
+
+const smtpPayload = {
+  from: 'sender@example.com',
+  to: ['accepted@example.com'],
+  cc: [],
+  bcc: ['rejected@example.com'],
+  subject: 'outcome',
+  html: '<p>outcome</p>',
+  text: 'outcome',
+};
+
+function smtpWith(
+  send: SmtpTransport['send'],
+): SmtpTransport {
+  return { kind: 'fake', send };
+}
+
+describe('SMTP send outcomes', () => {
+  beforeEach(() => {
+    createTransportMock.mockReset();
+    sendMailMock.mockReset();
+    createTransportMock.mockReturnValue({ sendMail: sendMailMock });
+  });
+
+  it('never synthesizes acceptance when Nodemailer accepts nobody', async () => {
+    sendMailMock.mockResolvedValue({
+      messageId: '<none@example.com>',
+      accepted: [],
+      rejected: ['rejected@example.com'],
+    });
+    const transport = createSmtpTransport({
+      mode: 'wire',
+      host: '127.0.0.1',
+      port: 11025,
+      secure: false,
+    });
+
+    await expect(transport.send(smtpPayload)).resolves.toEqual({
+      messageId: 'none@example.com',
+      accepted: [],
+      rejected: ['rejected@example.com'],
+    });
+  });
+
+  it('returns partial accepted and rejected recipients unchanged', async () => {
+    sendMailMock.mockResolvedValue({
+      messageId: '<partial@example.com>',
+      accepted: ['accepted@example.com'],
+      rejected: ['rejected@example.com'],
+    });
+    const transport = createSmtpTransport({
+      mode: 'wire',
+      host: '127.0.0.1',
+      port: 11025,
+      secure: false,
+    });
+
+    await expect(transport.send(smtpPayload)).resolves.toEqual({
+      messageId: 'partial@example.com',
+      accepted: ['accepted@example.com'],
+      rejected: ['rejected@example.com'],
+    });
+  });
+
+  it('fake transport reports full acceptance and no rejection', async () => {
+    const fake = new FakeSmtpTransport();
+
+    await expect(fake.send(smtpPayload)).resolves.toMatchObject({
+      accepted: ['accepted@example.com', 'rejected@example.com'],
+      rejected: [],
+    });
+  });
+});
 
 describe('getUndoSendSeconds', () => {
   const prev = process.env.UNDO_SEND_SECONDS;
@@ -266,6 +352,198 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('outbound queue (integration)'
       });
       expect(r).toMatchObject({ sent: true });
       expect(fake.sent).toHaveLength(1);
+    });
+  }, 30000);
+
+  it('zero accepted recipients fails before sent state', async () => {
+    await withSeededTestDb(async (db) => {
+      const send = vi.fn<SmtpTransport['send']>().mockResolvedValue({
+        messageId: 'none@example.com',
+        accepted: [],
+        rejected: ['a@example.com'],
+      });
+      __setSmtpTransportForTests(smtpWith(send));
+      const caller = await callerFor('user-navaai', { db });
+      const r = await caller.mail.send({
+        to: ['a@example.com'],
+        subject: 'none accepted',
+        html: '<p>x</p>',
+        text: 'x',
+      });
+      const messageId = (r as { messageId: string }).messageId;
+      await __forceSendAtPastForTests(messageId, 'transport-nava', db);
+
+      expect(await flushDue({ db })).toEqual({ flushed: 0 });
+
+      const [queued] = await db
+        .select({
+          status: outboundSendQueue.status,
+          lastError: outboundSendQueue.lastError,
+        })
+        .from(outboundSendQueue)
+        .where(eq(outboundSendQueue.messageId, messageId))
+        .limit(1);
+      const [stored] = await db
+        .select({ messageIdHeader: message.messageIdHeader })
+        .from(message)
+        .where(eq(message.id, messageId))
+        .limit(1);
+      expect(queued?.status).toBe('sending');
+      expect(queued?.lastError).toContain('SMTP_ZERO_ACCEPTED');
+      expect(stored?.messageIdHeader).toBeNull();
+    });
+  }, 30000);
+
+  it('full acceptance marks sent and clears prior error', async () => {
+    await withSeededTestDb(async (db) => {
+      const send = vi.fn<SmtpTransport['send']>().mockResolvedValue({
+        messageId: 'full@example.com',
+        accepted: ['a@example.com', 'navaai@legacyhotels.co.za'],
+        rejected: [],
+      });
+      __setSmtpTransportForTests(smtpWith(send));
+      const caller = await callerFor('user-navaai', { db });
+      const r = await caller.mail.send({
+        to: ['a@example.com'],
+        subject: 'full accepted',
+        html: '<p>x</p>',
+        text: 'x',
+      });
+      const messageId = (r as { messageId: string }).messageId;
+      await __forceSendAtPastForTests(messageId, 'transport-nava', db);
+      await db
+        .update(outboundSendQueue)
+        .set({ lastError: 'prior transient error' })
+        .where(eq(outboundSendQueue.messageId, messageId));
+
+      expect(await flushDue({ db })).toEqual({ flushed: 1 });
+
+      const [queued] = await db
+        .select({
+          status: outboundSendQueue.status,
+          lastError: outboundSendQueue.lastError,
+        })
+        .from(outboundSendQueue)
+        .where(eq(outboundSendQueue.messageId, messageId))
+        .limit(1);
+      expect(queued).toMatchObject({ status: 'sent', lastError: null });
+    });
+  }, 30000);
+
+  it('partial acceptance is terminal and preserves structured warning', async () => {
+    await withSeededTestDb(async (db) => {
+      const send = vi.fn<SmtpTransport['send']>().mockResolvedValue({
+        messageId: 'partial@example.com',
+        accepted: ['a@example.com'],
+        rejected: ['navaai@legacyhotels.co.za'],
+      });
+      __setSmtpTransportForTests(smtpWith(send));
+      const caller = await callerFor('user-navaai', { db });
+      const r = await caller.mail.send({
+        to: ['a@example.com'],
+        subject: 'partial accepted',
+        html: '<p>x</p>',
+        text: 'x',
+      });
+      const messageId = (r as { messageId: string }).messageId;
+      await __forceSendAtPastForTests(messageId, 'transport-nava', db);
+
+      expect(await flushDue({ db })).toEqual({ flushed: 1 });
+      expect(await flushDue({ db })).toEqual({ flushed: 0 });
+
+      const [queued] = await db
+        .select({
+          status: outboundSendQueue.status,
+          lastError: outboundSendQueue.lastError,
+        })
+        .from(outboundSendQueue)
+        .where(eq(outboundSendQueue.messageId, messageId))
+        .limit(1);
+      const [stored] = await db
+        .select({ messageIdHeader: message.messageIdHeader })
+        .from(message)
+        .where(eq(message.id, messageId))
+        .limit(1);
+      expect(queued?.status).toBe('sent');
+      expect(JSON.parse(queued?.lastError ?? '{}')).toEqual({
+        code: 'PARTIAL_REJECTION',
+        messageId: 'partial@example.com',
+        accepted: ['a@example.com'],
+        rejected: ['navaai@legacyhotels.co.za'],
+      });
+      expect(stored?.messageIdHeader).toBe('partial@example.com');
+      expect(send).toHaveBeenCalledTimes(1);
+    });
+  }, 30000);
+
+  it('immediate send returns honest accepted and rejected recipients', async () => {
+    await withSeededTestDb(async (db) => {
+      process.env.UNDO_SEND_SECONDS = '0';
+      const send = vi.fn<SmtpTransport['send']>().mockResolvedValue({
+        messageId: 'immediate@example.com',
+        accepted: ['a@example.com'],
+        rejected: ['navaai@legacyhotels.co.za'],
+      });
+      __setSmtpTransportForTests(smtpWith(send));
+      const caller = await callerFor('user-navaai', { db });
+
+      const r = await caller.mail.send({
+        to: ['a@example.com'],
+        subject: 'immediate partial',
+        html: '<p>x</p>',
+        text: 'x',
+      });
+
+      expect(r).toMatchObject({
+        sent: true,
+        smtpMessageId: 'immediate@example.com',
+        accepted: ['a@example.com'],
+        rejected: ['navaai@legacyhotels.co.za'],
+      });
+    });
+  }, 30000);
+
+  it('pre-accept SMTP error remains retryable', async () => {
+    await withSeededTestDb(async (db) => {
+      const send = vi
+        .fn<SmtpTransport['send']>()
+        .mockRejectedValueOnce(new Error('connection reset before DATA acceptance'))
+        .mockResolvedValueOnce({
+          messageId: 'retry@example.com',
+          accepted: ['a@example.com', 'navaai@legacyhotels.co.za'],
+          rejected: [],
+        });
+      __setSmtpTransportForTests(smtpWith(send));
+      const caller = await callerFor('user-navaai', { db });
+      const r = await caller.mail.send({
+        to: ['a@example.com'],
+        subject: 'retry pre-accept',
+        html: '<p>x</p>',
+        text: 'x',
+      });
+      const messageId = (r as { messageId: string }).messageId;
+      await __forceSendAtPastForTests(messageId, 'transport-nava', db);
+
+      expect(await flushDue({ db })).toEqual({ flushed: 0 });
+      await db
+        .update(outboundSendQueue)
+        .set({
+          status: 'sending',
+          claimedAt: new Date(Date.now() - RECLAIM_SENDING_AFTER_MS - 1000),
+        })
+        .where(eq(outboundSendQueue.messageId, messageId));
+      expect(await flushDue({ db })).toEqual({ flushed: 1 });
+
+      const [queued] = await db
+        .select({
+          status: outboundSendQueue.status,
+          lastError: outboundSendQueue.lastError,
+        })
+        .from(outboundSendQueue)
+        .where(eq(outboundSendQueue.messageId, messageId))
+        .limit(1);
+      expect(queued).toMatchObject({ status: 'sent', lastError: null });
+      expect(send).toHaveBeenCalledTimes(2);
     });
   }, 30000);
 

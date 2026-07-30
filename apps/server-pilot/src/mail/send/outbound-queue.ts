@@ -222,11 +222,44 @@ async function claimDue(
   });
 }
 
-async function markQueueSent(rowId: string, db: DB, now: Date = new Date()): Promise<void> {
+async function markQueueSent(
+  rowId: string,
+  db: DB,
+  opts: { now?: Date; lastError?: string | null } = {},
+): Promise<void> {
   await db
     .update(outboundSendQueue)
-    .set({ status: 'sent', lastError: null, updatedAt: now })
+    .set({
+      status: 'sent',
+      lastError: opts.lastError ?? null,
+      updatedAt: opts.now ?? new Date(),
+    })
     .where(eq(outboundSendQueue.id, rowId));
+}
+
+function normalizedRecipient(address: string): string {
+  return address.trim().toLowerCase();
+}
+
+function isFullAcceptance(
+  payload: OutboundMailPayload,
+  result: SmtpSendResult,
+): boolean {
+  if (result.rejected.length > 0) return false;
+  const requested = new Set(
+    [...payload.to, ...payload.cc, ...payload.bcc].map(normalizedRecipient),
+  );
+  const accepted = new Set(result.accepted.map(normalizedRecipient));
+  return requested.size > 0 && [...requested].every((address) => accepted.has(address));
+}
+
+function partialRejectionWarning(result: SmtpSendResult): string {
+  return JSON.stringify({
+    code: 'PARTIAL_REJECTION',
+    messageId: result.messageId,
+    accepted: result.accepted,
+    rejected: result.rejected,
+  });
 }
 
 async function deliverClaimed(
@@ -245,11 +278,15 @@ async function deliverClaimed(
     return {
       messageId: existing!.messageIdHeader!,
       accepted: [],
+      rejected: [],
     };
   }
 
   const payload = deserializeSmtpPayload(row.smtpPayload as unknown as QueuedSmtpPayload);
   const smtpResult = await getSmtpTransport().send(payload);
+  if (smtpResult.accepted.length === 0) {
+    throw new Error('SMTP_ZERO_ACCEPTED');
+  }
 
   const mode =
     process.env.MAIL_TRANSPORT_MODE === 'real' || process.env.MAIL_TRANSPORT_MODE === 'wire'
@@ -268,7 +305,12 @@ async function deliverClaimed(
       updatedAt: now,
     })
     .where(and(eq(message.id, row.messageId), eq(message.transportId, row.transportId)));
-  await markQueueSent(row.id, db, now);
+  await markQueueSent(row.id, db, {
+    now,
+    lastError: isFullAcceptance(payload, smtpResult)
+      ? null
+      : partialRejectionWarning(smtpResult),
+  });
 
   return smtpResult;
 }
@@ -351,6 +393,7 @@ export async function flushOne(
       return {
         messageId: msg?.messageIdHeader ?? messageId,
         accepted: [],
+        rejected: [],
       };
     }
     throw new Error(`outbound flushOne: nothing to claim for ${messageId}`);

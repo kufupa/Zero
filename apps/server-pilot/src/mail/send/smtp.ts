@@ -33,6 +33,7 @@ export interface SmtpSendResult {
   /** RFC Message-ID header value (without angle brackets). */
   messageId: string;
   accepted: string[];
+  rejected: string[];
 }
 
 export interface SmtpTransport {
@@ -71,6 +72,7 @@ export class FakeSmtpTransport implements SmtpTransport {
     return {
       messageId,
       accepted: [...payload.to, ...payload.cc, ...payload.bcc],
+      rejected: [],
     };
   }
 }
@@ -135,13 +137,10 @@ async function sendWithTransporter(
 
   const rawId = info.messageId ?? '';
   const messageId = rawId.replace(/^<|>$/g, '');
-  const accepted = (info.accepted ?? []).map(String);
   return {
     messageId: messageId || `${randomUUID()}@zero-smtp.local`,
-    accepted:
-      accepted.length > 0
-        ? accepted
-        : [...payload.to, ...payload.cc, ...payload.bcc],
+    accepted: (info.accepted ?? []).map(String),
+    rejected: (info.rejected ?? []).map(String),
   };
 }
 
