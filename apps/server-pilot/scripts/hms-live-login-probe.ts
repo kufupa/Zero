@@ -326,6 +326,84 @@ function minimalLoginManifest(origin: string): RequestPolicyManifest {
         '/web/resources/inforhms/images/tree/folder.svg',
         ['image'],
       ),
+      getStaticRule(
+        origin,
+        'live-overlay-line',
+        '/web/resources/inforhms/images/toolbar/overlay-line.svg',
+        ['image'],
+      ),
+      getStaticRule(
+        origin,
+        'live-toolbar-settings',
+        '/web/resources/inforhms/images/toolbar/settings.svg',
+        ['image'],
+      ),
+      getStaticRule(
+        origin,
+        'live-toolbar-save-icon',
+        '/web/resources/inforhms/images/toolbar/save.svg',
+        ['image'],
+      ),
+      getStaticRule(
+        origin,
+        'live-toolbar-refresh',
+        '/web/resources/inforhms/images/toolbar/refresh.svg',
+        ['image'],
+      ),
+      getStaticRule(
+        origin,
+        'live-toolbar-quick',
+        '/web/resources/inforhms/images/toolbar/quick-access.svg',
+        ['image'],
+      ),
+      getStaticRule(
+        origin,
+        'live-toolbar-caret',
+        '/web/resources/inforhms/images/toolbar/caret-down.svg',
+        ['image'],
+      ),
+      getStaticRule(
+        origin,
+        'live-toolbar-send-icon',
+        '/web/resources/inforhms/images/toolbar/send-submit.svg',
+        ['image'],
+      ),
+      getStaticRule(
+        origin,
+        'live-slider-bg',
+        '/web/resources/inforhms/images/slider/slider-bg.png',
+        ['image'],
+      ),
+      getStaticRule(
+        origin,
+        'live-slider-thumb',
+        '/web/resources/inforhms/images/slider/slider-thumb.png',
+        ['image'],
+      ),
+      getStaticRule(
+        origin,
+        'live-toolbar-bullet',
+        '/web/resources/inforhms/images/toolbar/bullet-list.svg',
+        ['image'],
+      ),
+      getStaticRule(
+        origin,
+        'live-toolbar-expand',
+        '/web/resources/inforhms/images/toolbar/expand-app-tray.svg',
+        ['image'],
+      ),
+      getStaticRule(
+        origin,
+        'live-toolbar-mingle',
+        '/web/resources/inforhms/images/toolbar/mingle-share.svg',
+        ['image'],
+      ),
+      getStaticRule(
+        origin,
+        'live-font-bold',
+        '/web/resources/shared/css/SourceSansPro-font/SourceSansPro-Bold.ttf',
+        ['font'],
+      ),
     ],
   });
 }
@@ -570,7 +648,9 @@ async function main(): Promise<void> {
           bodyBytes: Number.isFinite(len) ? len : 0,
         });
       }
-      await page.waitForTimeout(2000);
+      await page.waitForTimeout(
+        process.env.HMS_LIVE_CANARY_GUEST_STAY === '1' ? 5000 : 2000,
+      );
       const postBlocks = events
         .filter((e) => e.decision === 'block')
         .slice(preBlockCount);
@@ -591,13 +671,133 @@ async function main(): Promise<void> {
                   t.includes('incorrect') ||
                   t.includes('failed'),
                 hasProperty:
-                  t.includes('property') || t.includes('centurion'),
+                  t.includes('property') ||
+                  t.includes('centurion') ||
+                  t.includes('hrcen'),
                 hasSignIn: t.includes('sign in') || t.includes('userid'),
               };
             })(),
           }))
           .catch(() => null)
       : null;
+
+    let guestStayNav: {
+      attempted: boolean;
+      menuHits: Array<{ text: string; tag: string }>;
+      clicked: string[];
+      refusedMutationHit: boolean;
+      error: string | null;
+      afterPath: string | null;
+      afterTitle: string | null;
+      firstBlockAfterNav: ProbeEvent | null;
+    } | null = null;
+
+    // Guest Stay open: documented menu Front Desk > Guest Stay (Infor help).
+    // Abort-first: never New Record / Save / Duplicate / Submit / Check In|Out.
+    if (
+      process.env.HMS_LIVE_CANARY_GUEST_STAY === '1' &&
+      process.env.HMS_LIVE_CANARY_SUBMIT === '1' &&
+      page &&
+      afterSubmit &&
+      !afterSubmit.stillHasUserid
+    ) {
+      const preNavBlockCount = events.filter((e) => e.decision === 'block')
+        .length;
+      const clicked: string[] = [];
+      let refusedMutationHit = false;
+      let navErr: string | null = null;
+      const menuHits = await page
+        .evaluate(() => {
+          const out: Array<{ text: string; tag: string }> = [];
+          const nodes = document.querySelectorAll(
+            'a, span, div, li, td, label, button',
+          );
+          for (const el of nodes) {
+            const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+            if (!text || text.length > 48) continue;
+            if (
+              /front\s*desk|guest\s*stay|reservations?/i.test(text) &&
+              !/new\s*record|duplicate|save|submit|check\s*in|check\s*out|walk\s*-?\s*in/i.test(
+                text,
+              )
+            ) {
+              out.push({ text, tag: el.tagName });
+              if (out.length >= 40) break;
+            }
+          }
+          return out;
+        })
+        .catch(() => [] as Array<{ text: string; tag: string }>);
+
+      try {
+        // Refuse if mutation affordances are the only matches.
+        const mutationVisible = await page
+          .getByText(/new\s*record|duplicate\s*reservation|save\s*record/i)
+          .first()
+          .isVisible({ timeout: 500 })
+          .catch(() => false);
+        // Visible mutation toolbar is OK on shell; we simply must not click it.
+        void mutationVisible;
+
+        const frontDesk = page
+          .getByText(/^Front Desk$/i)
+          .or(page.getByText(/Front Desk/i))
+          .first();
+        if (await frontDesk.isVisible({ timeout: 3_000 }).catch(() => false)) {
+          await frontDesk.click({ timeout: 5_000 });
+          clicked.push('Front Desk');
+          await page.waitForTimeout(1500);
+        }
+
+        const guestStay = page
+          .getByText(/^Guest Stay$/i)
+          .or(page.getByText(/Guest Stay/i))
+          .first();
+        if (await guestStay.isVisible({ timeout: 5_000 }).catch(() => false)) {
+          // Guard: if the matched node text includes mutation words, refuse.
+          const label = (
+            (await guestStay.textContent().catch(() => '')) || ''
+          ).trim();
+          if (
+            /new\s*record|duplicate|save|submit|check\s*in|check\s*out|walk\s*-?\s*in/i.test(
+              label,
+            )
+          ) {
+            refusedMutationHit = true;
+          } else {
+            await guestStay.click({ timeout: 5_000 });
+            clicked.push('Guest Stay');
+            await page.waitForTimeout(3500);
+          }
+        }
+      } catch (err) {
+        const raw = err instanceof Error ? err.message : String(err);
+        navErr = /password|secret|cookie|jsessionid/i.test(raw)
+          ? 'redacted_error'
+          : raw.slice(0, 160);
+      }
+
+      const postNavBlocks = events
+        .filter((e) => e.decision === 'block')
+        .slice(preNavBlockCount);
+      const afterNav = await page
+        .evaluate(() => ({
+          path: location.pathname,
+          title: document.title.slice(0, 80),
+        }))
+        .catch(() => ({ path: null as string | null, title: null as string | null }));
+
+      guestStayNav = {
+        attempted: true,
+        menuHits: menuHits.slice(0, 20),
+        clicked,
+        refusedMutationHit,
+        error: navErr,
+        afterPath: afterNav.path,
+        afterTitle: afterNav.title,
+        firstBlockAfterNav: postNavBlocks[0] ?? null,
+      };
+    }
 
     // Connectivity canary: document GET allowed OR we captured a fail-closed
     // first block with redacted signature (abort-first inventory).
@@ -612,12 +812,19 @@ async function main(): Promise<void> {
         e.redactedSignature.method === 'POST' &&
         e.redactedSignature.path === '/web/base/login',
     );
+    const propertyCodeInTitle = Boolean(
+      (afterSubmit?.title || '').includes(secret.expectedPropertyCode),
+    );
+    const phase =
+      process.env.HMS_LIVE_CANARY_GUEST_STAY === '1' &&
+      process.env.HMS_LIVE_CANARY_SUBMIT === '1'
+        ? 'guest-stay-nav-probe'
+        : process.env.HMS_LIVE_CANARY_SUBMIT === '1'
+          ? 'login-submit-probe'
+          : 'login-probe';
     const payload = {
       ok: documentAllowed || (firstBlock !== null && events.length > 0),
-      phase:
-        process.env.HMS_LIVE_CANARY_SUBMIT === '1'
-          ? 'login-submit-probe'
-          : 'login-probe',
+      phase,
       origin,
       titlePresent: Boolean(title),
       titleLooksLikeInfor: /infor|hms/i.test(title),
@@ -625,6 +832,8 @@ async function main(): Promise<void> {
       dom,
       fixedBodyCandidateKeys,
       afterSubmit,
+      guestStayNav,
+      propertyCodeInTitle,
       xhrMeta: xhrMeta.slice(0, 20),
       documentAllowed,
       loginPostAllowed,
@@ -632,7 +841,7 @@ async function main(): Promise<void> {
       allowCount: events.filter((e) => e.decision === 'allow').length,
       blockCount: events.filter((e) => e.decision === 'block').length,
       firstBlock,
-      events: events.slice(0, 60),
+      events: events.slice(0, 80),
       propertyExpectation: {
         tenant: secret.expectedTenant,
         propertyCode: secret.expectedPropertyCode,
@@ -647,8 +856,16 @@ async function main(): Promise<void> {
       JSON.stringify({
         wrote: outPath,
         ok: payload.ok,
+        phase: payload.phase,
         documentAllowed: payload.documentAllowed,
         loginPostAllowed: payload.loginPostAllowed,
+        propertyCodeInTitle: payload.propertyCodeInTitle,
+        guestStayClicked: payload.guestStayNav?.clicked ?? null,
+        guestStayFirstBlockPath:
+          payload.guestStayNav?.firstBlockAfterNav?.redactedSignature.path ??
+          null,
+        guestStayFirstBlockCode:
+          payload.guestStayNav?.firstBlockAfterNav?.code ?? null,
         allowCount: payload.allowCount,
         blockCount: payload.blockCount,
         hasLoginFields: payload.hasLoginFields,
