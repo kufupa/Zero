@@ -59,6 +59,13 @@ module.exports = {
         NODE_ENV: 'production',
         AI_WORKER_LANE: 'hms',
         HMS_DRAFT_ENRICHMENT_MODE: process.env.HMS_DRAFT_ENRICHMENT_MODE ?? 'off',
+        HMS_READ_SECRET_ARN: process.env.HMS_READ_SECRET_ARN ?? '',
+        HMS_CHROMIUM_EXECUTABLE_PATH:
+          process.env.HMS_CHROMIUM_EXECUTABLE_PATH ?? '',
+        HMS_HEALTH_STATUS_PATH:
+          process.env.HMS_HEALTH_STATUS_PATH ?? '/tmp/nava-zero-hms-health.json',
+        HMS_RUN_DEADLINE_MS: process.env.HMS_RUN_DEADLINE_MS ?? '',
+        HMS_CIRCUIT_COOLDOWN_MS: process.env.HMS_CIRCUIT_COOLDOWN_MS ?? '',
         AI_ENABLED: process.env.AI_ENABLED ?? 'true',
         AI_WRITE_GATE_ENABLED: process.env.AI_WRITE_GATE_ENABLED ?? 'false',
         AI_DRAFTS_ENABLED: process.env.AI_DRAFTS_ENABLED ?? 'false',
