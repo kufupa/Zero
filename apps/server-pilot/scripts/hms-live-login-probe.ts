@@ -404,6 +404,48 @@ function minimalLoginManifest(origin: string): RequestPolicyManifest {
         '/web/resources/shared/css/SourceSansPro-font/SourceSansPro-Bold.ttf',
         ['font'],
       ),
+      getStaticRule(
+        origin,
+        'live-tree-open-folder',
+        '/web/resources/inforhms/images/tree/open-folder.svg',
+        ['image'],
+      ),
+      getStaticRule(
+        origin,
+        'live-tree-dot',
+        '/web/resources/inforhms/images/tree/dot.svg',
+        ['image'],
+      ),
+      getStaticRule(
+        origin,
+        'live-tree-plusminus',
+        '/web/resources/inforhms/images/tree/plusminus-folder-closed.svg',
+        ['image'],
+      ),
+      {
+        id: 'live-osresv',
+        origin,
+        method: 'POST',
+        path: '/web/base/OSRESV',
+        resourceTypes: ['xhr', 'fetch', 'document'],
+        contentType: 'application/x-www-form-urlencoded',
+        fixedQuery: {},
+        variableQuery: {
+          FUNCTION_CLASS: { pattern: '.{0,64}', maxLength: 64 },
+          USER_FUNCTION_NAME: { pattern: '.{0,64}', maxLength: 64 },
+        },
+        fixedBody: {},
+        variableBody: {
+          CURRENT_TAB_NAME: { pattern: '.{0,64}', maxLength: 64 },
+          FUNCTION_CLASS: { pattern: '.{0,64}', maxLength: 64 },
+          MENU_MODULE_KEY: { pattern: '.{0,64}', maxLength: 64 },
+          SYSTEM_FUNCTION_NAME: { pattern: '.{0,64}', maxLength: 64 },
+          USER_FUNCTION_NAME: { pattern: '.{0,64}', maxLength: 64 },
+          removescreenflows: { pattern: '.{0,16}', maxLength: 16 },
+        },
+        maxBodyBytes: 8192,
+        redirectPolicy: 'same-reviewed-chain',
+      },
     ],
   });
 }
@@ -795,6 +837,54 @@ async function main(): Promise<void> {
           !refusedMutationHit
         ) {
           await clickExactLabel('Guest Stay');
+        }
+
+        // After OSRESV shell: attempt list search only (never New Record).
+        if (clicked.some((c) => /guest\s*stay/i.test(c))) {
+          await page!.waitForTimeout(4000);
+          const searchFilled = await page!.evaluate(() => {
+            const inputs = [
+              ...document.querySelectorAll('input, textarea'),
+            ] as HTMLInputElement[];
+            const candidates = inputs.filter((el) => {
+              const name = `${el.name} ${el.id} ${el.placeholder} ${el.getAttribute('aria-label') || ''}`.toLowerCase();
+              return /confirm|confirmation|resv|reservation|account/.test(name);
+            });
+            // Prefer visible text-like inputs
+            for (const el of candidates) {
+              if (el.type === 'password' || el.type === 'hidden') continue;
+              el.focus();
+              el.value = 'NOTFOUND-CANARY';
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+              return el.name || el.id || 'filled';
+            }
+            return null;
+          });
+          if (searchFilled) {
+            clicked.push(`searchField:${searchFilled}`);
+            // Click Search/Go/Find — never New/Save/Duplicate
+            const searchBtn = page!
+              .locator('button, a, span, td, div')
+              .filter({ hasText: /^(Search|Go|Find|Apply)$/i })
+              .first();
+            if (
+              await searchBtn.isVisible({ timeout: 2_000 }).catch(() => false)
+            ) {
+              const btnText = (
+                (await searchBtn.textContent().catch(() => '')) || ''
+              ).trim();
+              if (
+                !/new|save|duplicate|submit|check\s*in|check\s*out|walk/i.test(
+                  btnText,
+                )
+              ) {
+                await searchBtn.click({ force: true, timeout: 5_000 });
+                clicked.push(`searchBtn:${btnText || 'Search'}`);
+                await page!.waitForTimeout(4000);
+              }
+            }
+          }
         }
       } catch (err) {
         const raw = err instanceof Error ? err.message : String(err);
