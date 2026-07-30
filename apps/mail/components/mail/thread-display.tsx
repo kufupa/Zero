@@ -221,7 +221,12 @@ export function ThreadDisplay() {
     if (!emailData?.messages) return [];
     const flat = emailData.messages.reduce<Attachment[]>((acc, message) => {
       if (message.attachments && message.attachments.length > 0) {
-        acc.push(...message.attachments);
+        acc.push(
+          ...message.attachments.map((attachment) => ({
+            ...attachment,
+            messageId: message.id,
+          })),
+        );
       }
       return acc;
     }, []);

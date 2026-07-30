@@ -36,7 +36,6 @@ import { EmailVerificationBadge } from './email-verification-badge';
 import type { Sender, ParsedMessage, Attachment } from '@/types';
 import { useActiveConnection } from '@/hooks/use-connections';
 import { useAttachments } from '@/hooks/use-attachments';
-import { trpcClient } from '@/providers/query-provider';
 import { useThreadLabels } from '@/hooks/use-labels';
 import { useThread } from '@/hooks/use-threads';
 import { BimiAvatar } from '../ui/bimi-avatar';
@@ -63,6 +62,11 @@ import { toast } from 'sonner';
 import { copySenderEmail } from '@/lib/mail/copy-sender-email';
 import { openReplyComposeContext, type ReplyComposeMode } from '@/lib/mail/reply-compose-context';
 import { sortAttachmentsForDisplay } from '@/lib/attachment-priority';
+import {
+  downloadAttachmentViaBlob,
+  fetchAttachmentBlob,
+  openAttachmentViaBlob,
+} from '@/lib/attachment-access';
 
 // Add formatFileSize utility function
 const formatFileSize = (size: number) => {
@@ -245,26 +249,17 @@ const ThreadAttachments = ({ attachments }: { attachments: Attachment[] }) => {
 
   const handleDownload = async (attachment: Attachment) => {
     try {
-      // Convert base64 to blob
-      const byteCharacters = atob(attachment.body);
-      const byteNumbers: number[] = Array(byteCharacters.length);
-      for (let i = 0; i < byteCharacters.length; i++) {
-        byteNumbers[i] = byteCharacters.charCodeAt(i);
-      }
-      const byteArray = new Uint8Array(byteNumbers);
-      const blob = new Blob([byteArray], { type: attachment.mimeType });
-
-      // Create download link
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = attachment.filename;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      window.URL.revokeObjectURL(url);
+      await downloadAttachmentViaBlob({
+        messageId: attachment.messageId ?? '',
+        attachmentId: attachment.attachmentId,
+        filename: attachment.filename,
+        mimeType: attachment.mimeType,
+        body: attachment.body,
+        size: attachment.size,
+      });
     } catch (error) {
       console.error('Error downloading attachment:', error);
+      toast.error('Failed to download attachment');
     }
   };
 
@@ -333,37 +328,19 @@ const downloadAttachment = async (
     mimeType: string;
     filename: string;
     attachmentId: string;
+    size?: number;
   },
   messageId: string,
 ) => {
   try {
-    let blob: Blob;
-
-    if (!attachment.body) {
-      const { url } = await trpcClient.mail.getAttachment.query({
-        messageId,
-        attachmentId: attachment.attachmentId,
-      });
-      const res = await fetch(url);
-      blob = await res.blob();
-    } else {
-      const byteCharacters = atob(attachment.body);
-      const byteNumbers: number[] = Array(byteCharacters.length);
-      for (let i = 0; i < byteCharacters.length; i++) {
-        byteNumbers[i] = byteCharacters.charCodeAt(i);
-      }
-      const byteArray = new Uint8Array(byteNumbers);
-      blob = new Blob([byteArray], { type: attachment.mimeType });
-    }
-
-    const objectUrl = window.URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = objectUrl;
-    link.download = attachment.filename;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    window.URL.revokeObjectURL(objectUrl);
+    await downloadAttachmentViaBlob({
+      messageId,
+      attachmentId: attachment.attachmentId,
+      filename: attachment.filename,
+      mimeType: attachment.mimeType,
+      body: attachment.body,
+      size: attachment.size,
+    });
   } catch (error) {
     console.error('Error downloading attachment:', error);
     toast.error('Failed to download attachment');
@@ -379,6 +356,7 @@ const handleDownloadAllAttachments =
       mimeType: string;
       filename: string;
       attachmentId: string;
+      size?: number;
     }[],
   ) =>
   async () => {
@@ -387,38 +365,37 @@ const handleDownloadAllAttachments =
     try {
       const JSZip = (await import('jszip')).default;
       const zip = new JSZip();
+      let failed = 0;
 
       await Promise.all(
         attachments.map(async (attachment) => {
           try {
-            let blob: Blob;
-
-            if (!attachment.body) {
-              const { url } = await trpcClient.mail.getAttachment.query({
-                messageId,
-                attachmentId: attachment.attachmentId,
-              });
-              const res = await fetch(url);
-              blob = await res.blob();
-            } else {
-              const byteCharacters = atob(attachment.body);
-              const byteNumbers: number[] = Array(byteCharacters.length);
-              for (let i = 0; i < byteCharacters.length; i++) {
-                byteNumbers[i] = byteCharacters.charCodeAt(i);
-              }
-              blob = new Blob([new Uint8Array(byteNumbers)], { type: attachment.mimeType });
-            }
-
+            const blob = await fetchAttachmentBlob({
+              messageId,
+              attachmentId: attachment.attachmentId,
+              mimeType: attachment.mimeType,
+              body: attachment.body,
+              size: attachment.size,
+            });
             zip.file(attachment.filename, blob, {
               binary: true,
               date: new Date(),
               unixPermissions: 0o644,
             });
           } catch (error) {
+            failed += 1;
             console.error(`Error adding ${attachment.filename} to zip:`, error);
           }
         }),
       );
+
+      if (failed === attachments.length) {
+        toast.error('Failed to download attachments');
+        return;
+      }
+      if (failed > 0) {
+        toast.error(`${failed} of ${attachments.length} attachments failed`);
+      }
 
       const content = await zip.generateAsync({
         type: 'blob',
@@ -441,47 +418,32 @@ const handleDownloadAllAttachments =
     }
   };
 
-const openAttachment = async (attachment: {
-  body: string;
-  mimeType: string;
-  filename: string;
-  attachmentId: string;
-}) => {
+const openAttachment = async (
+  attachment: {
+    body?: string;
+    mimeType: string;
+    filename: string;
+    attachmentId: string;
+    size?: number;
+  },
+  messageId: string,
+) => {
   try {
-    const attachmentData = attachment.body;
-
-    if (!attachmentData) {
-      throw new Error('Attachment data not found');
-    }
-
-    const byteCharacters = atob(attachmentData);
-    const byteNumbers: number[] = Array(byteCharacters.length);
-    for (let i = 0; i < byteCharacters.length; i++) {
-      byteNumbers[i] = byteCharacters.charCodeAt(i);
-    }
-    const byteArray = new Uint8Array(byteNumbers);
-    const blob = new Blob([byteArray], { type: attachment.mimeType });
-    const url = window.URL.createObjectURL(blob);
-
-    const width = 800;
-    const height = 600;
-    const left = (window.screen.width - width) / 2;
-    const top = (window.screen.height - height) / 2;
-
-    const popup = window.open(
-      url,
-      'attachment-viewer',
-      `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes,status=no,location=no,menubar=no`,
-    );
-
-    if (popup) {
-      popup.focus();
-      // Clean up the URL after a short delay to ensure the browser has time to load it
-      setTimeout(() => window.URL.revokeObjectURL(url), 1000);
-    }
+    await openAttachmentViaBlob({
+      messageId,
+      attachmentId: attachment.attachmentId,
+      filename: attachment.filename,
+      mimeType: attachment.mimeType,
+      body: attachment.body,
+      size: attachment.size,
+    });
   } catch (error) {
     console.error('Error opening attachment:', error);
-    toast.error('Failed to open attachment');
+    toast.error(
+      error instanceof Error && error.message === 'Popup blocked'
+        ? 'Popup blocked — allow popups to open attachments'
+        : 'Failed to open attachment',
+    );
   }
 };
 
@@ -1505,7 +1467,7 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                 >
                   <button
                     className="flex cursor-pointer items-center gap-1 rounded-[5px] bg-[#FAFAFA] px-1.5 py-1 text-sm font-medium hover:bg-[#F0F0F0] dark:bg-[#262626] dark:hover:bg-[#303030]"
-                    onClick={() => openAttachment(attachment)}
+                    onClick={() => openAttachment(attachment, emailData.id)}
                   >
                     {getFileIcon(attachment.filename)}
                     <span className="max-w-[15ch] truncate text-sm text-black dark:text-white">

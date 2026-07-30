@@ -117,6 +117,8 @@ export interface Attachment {
   size: number;
   body: string;
   headers: { name?: string | null; value?: string | null }[];
+  /** Set on thread aggregates so chips can call getAttachment without body. */
+  messageId?: string;
 }
 export interface MailListProps {
   isCompact?: boolean;
