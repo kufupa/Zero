@@ -174,6 +174,51 @@ function minimalLoginManifest(origin: string): RequestPolicyManifest {
         redirectPolicy: 'same-reviewed-chain',
       },
       getStaticRule(origin, 'live-post-login-root', '/', ['document']),
+      getStaticRule(
+        origin,
+        'live-common-vault-utility',
+        '/web/resources/shared/scripts/vault/vaultUtility.js',
+        ['script'],
+      ),
+      getStaticRule(
+        origin,
+        'live-common-parent-facade',
+        '/web/resources/shared/scripts/vault/parentFacade.js',
+        ['script'],
+      ),
+      getStaticRule(
+        origin,
+        'live-common-parent-facade-impl',
+        '/web/resources/shared/scripts/vault/parentFacadeImpl.js',
+        ['script'],
+      ),
+      getStaticRule(
+        origin,
+        'live-common-aes',
+        '/web/resources/shared/scripts/cryptojs/aes.js',
+        ['script'],
+      ),
+      getStaticRule(
+        origin,
+        'live-common-pbkdf2',
+        '/web/resources/shared/scripts/cryptojs/pbkdf2.js',
+        ['script'],
+      ),
+      getStaticRule(
+        origin,
+        'live-common-aes-util',
+        '/web/resources/shared/scripts/cryptojs/AesUtil.js',
+        ['script'],
+      ),
+      getStaticRule(
+        origin,
+        'live-common-sha256',
+        '/web/resources/shared/scripts/cryptojs/sha256-min.js',
+        ['script'],
+      ),
+      getStaticRule(origin, 'live-common-all-classes', '/web/base/all-classes.js', [
+        'script',
+      ]),
     ],
   });
 }
