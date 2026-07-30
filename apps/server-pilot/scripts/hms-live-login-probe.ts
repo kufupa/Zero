@@ -225,6 +225,24 @@ async function main(): Promise<void> {
         return;
       }
       events.push(ev);
+      // Enrich blocked POST fingerprints with body keys for reviewed allowlist
+      // authoring (never values).
+      if (
+        decision.action === 'block' &&
+        req.method().toUpperCase() === 'POST' &&
+        req.postData()
+      ) {
+        try {
+          ev.redactedSignature = {
+            ...ev.redactedSignature,
+            bodyKeys: [...new URLSearchParams(req.postData()!).keys()].sort(),
+            bodyBytes: Buffer.byteLength(req.postData()!),
+            contentType: req.headers()['content-type'],
+          };
+        } catch {
+          /* keep policy signature */
+        }
+      }
       if (!firstBlock) firstBlock = ev;
       await route.abort();
     });
