@@ -386,7 +386,7 @@ describe('deploy config', () => {
     expect(syntax.status).toBe(0);
   });
 
-  it('intentional RDS vitest gates export VITEST_ALLOW_PILOT_RDS=1', async () => {
+  it('production-env vitest gates require a disposable test database', async () => {
     const { readdirSync, readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
     const { dirname, join } = await import('node:path');
@@ -402,7 +402,7 @@ describe('deploy config', () => {
     const invokesVitest = (script: string) =>
       /\bpnpm test\b/.test(script) || /\bpnpm exec vitest\b/.test(script);
 
-    // AI/Bedrock gates must stay DB-free — excluded from intentional pilot-RDS escape hatch.
+    // AI/Bedrock gates stay DB-free and do not source production DB settings into Vitest.
     const dbFreeGateNames = new Set(['ai-gate.sh', 'bedrock-live-gate.sh']);
 
     const rdsVitestGates = readdirSync(deployDir)
@@ -416,8 +416,17 @@ describe('deploy config', () => {
     expect(rdsVitestGates.length).toBeGreaterThanOrEqual(3);
     for (const name of rdsVitestGates) {
       const script = readFileSync(join(deployDir, name), 'utf8');
-      expect(script, `${name} must export VITEST_ALLOW_PILOT_RDS=1`).toContain(
-        'VITEST_ALLOW_PILOT_RDS=1',
+      expect(script, `${name} must require TEST_DATABASE_URL`).toContain(
+        'TEST_DATABASE_URL',
+      );
+      expect(script, `${name} must replace inherited DATABASE_URL`).toContain(
+        'export DATABASE_URL="$TEST_DATABASE_URL"',
+      );
+      expect(script, `${name} must clear the legacy escape hatch`).toContain(
+        'unset VITEST_ALLOW_PILOT_RDS',
+      );
+      expect(script, `${name} must never export the legacy escape hatch`).not.toContain(
+        'export VITEST_ALLOW_PILOT_RDS=1',
       );
       expect(script, `${name} must use pnpm exec vitest run`).toContain(
         'pnpm exec vitest run',

@@ -1,11 +1,10 @@
 /**
- * Test DB helper: opens a drizzle postgres-js DB to the same RDS instance
- * used in production and runs `cb` inside a transaction that is rolled back
- * at the end, so tests never pollute the pilot seed.
+ * Test DB helper: opens a configured disposable postgres DB and runs `cb`
+ * inside a transaction that is rolled back at the end.
  *
- * HARD REFUSE: if DATABASE_URL hostname contains `nava-zero-mail-pilot`
- * and `VITEST_ALLOW_PILOT_RDS` is not `1`, this module throws at load /
- * before connect. See tests/helpers/pilot-rds-guard.ts.
+ * HARD REFUSE: if DATABASE_URL hostname contains `nava-zero-mail-pilot`,
+ * this module always throws before connect. No escape hatch exists.
+ * See tests/helpers/pilot-rds-guard.ts.
  *
  * Requires `DATABASE_URL` in env AND that the host is reachable. If unset,
  * loads `apps/server-pilot/.env` silently (no secret logging). If the host

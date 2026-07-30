@@ -27,6 +27,7 @@ import {
 import { mergeCategoryIds, resolveMailRouteFilter } from '@/lib/mail/route-filter';
 import { resolveMailListSearch } from '@/lib/mail/search-filters';
 import { useCategorySettings } from './use-categories';
+import { isImageTrustedSender } from '@/lib/mail/trust-sender';
 
 const threadPollingMs = resolveThreadPollingMs(import.meta.env.VITE_MAIL_POLL_MS);
 const openThreadPolling = openThreadQueryPollingOptions(import.meta.env.VITE_MAIL_POLL_MS);
@@ -325,9 +326,11 @@ export const useThread = (threadId: string | null) => {
   const shouldLoadImages = useMemo(() => {
     if (!settings?.settings || !latestMessage?.sender?.email) return false;
 
-    return settings.settings.externalImages ||
-      settings.settings.trustedSenders?.includes(latestMessage.sender.email) ||
-      false;
+    return isImageTrustedSender({
+      senderEmail: latestMessage.sender.email,
+      externalImages: settings.settings.externalImages,
+      trustedSenders: settings.settings.trustedSenders,
+    });
   }, [settings?.settings, latestMessage?.sender?.email]);
 
   const isActiveThread = !!id && id === _threadId;
@@ -336,13 +339,13 @@ export const useThread = (threadId: string | null) => {
   // Prefetch query - intentionally unused, just for caching
   useQuery({
     queryKey: [
-      'email-content',
+      'email-content-v2',
       latestMessage?.id,
       shouldLoadImages,
       systemTheme,
     ],
     queryFn: async () => {
-      if (!latestMessage?.decodedBody || !settings?.settings) return null;
+      if (!latestMessage?.decodedBody || !settings?.settings || !latestMessage?.id) return null;
 
       const userTheme =
         settings.settings.colorTheme === 'system' ? systemTheme : settings.settings.colorTheme;
@@ -350,6 +353,7 @@ export const useThread = (threadId: string | null) => {
 
       const result = await processEmailContent({
         html: latestMessage.decodedBody,
+        messageId: latestMessage.id,
         shouldLoadImages,
         theme,
       });

@@ -47,8 +47,7 @@ import {
   getUndoSendSeconds,
 } from '../../mail/send/outbound-queue.js';
 import { formatContentDispositionFilename } from '../../mail/attachment-filename.js';
-import { sanitizeEmailHtml } from '../../mail/sanitize-email-html.js';
-import { processQuotedContent } from '../../mail/collapse-quoted-html.js';
+import { processEmailHtmlForDisplay } from '../../mail/process-email-html.js';
 import {
   getLatestInboundFromAddress,
   upsertSenderPreference,
@@ -69,6 +68,7 @@ import {
 import { toDraftWire } from './draft-wire.js';
 import { buildThreadSearchConditions } from '../../mail/search/query.js';
 import { parseSearchQueryOrThrow } from '../../mail/search/trpc.js';
+import { parseEnv } from '../../env.js';
 
 /** FE + pilot folder slugs accepted by listThreads. */
 export const MAIL_FOLDER_VALUES = [
@@ -168,6 +168,14 @@ export const listThreadsInput = z.object({
     .optional(),
   cursor: z.string().optional(),
   limit: z.number().int().min(1).max(100).default(50),
+});
+
+/** Input for `mail.processEmailContent` — messageId required for authz + CID scope. */
+export const processEmailContentInput = z.object({
+  html: z.string(),
+  messageId: z.string().min(1),
+  shouldLoadImages: z.boolean().default(false),
+  theme: z.enum(['light', 'dark']).default('light'),
 });
 
 /** Test-only POP3 override for `forceSync` → `ingestOnce`. */
@@ -1351,25 +1359,36 @@ export const mailRouter = tRouter({
   }),
 
   /**
-   * Process email HTML for safe rendering (images, theme).
+   * Process email HTML for safe rendering (images, theme, CID projection).
+   * Requires messageId so CID rewrite stays scoped to authorized attachment rows.
    */
   processEmailContent: mailboxProcedure
-    .input(
-      z.object({
-        html: z.string(),
-        shouldLoadImages: z.boolean().default(false),
-        theme: z.enum(['light', 'dark']).default('light'),
-      }),
-    )
-    .mutation(async ({ input }) => {
-      const sanitized = sanitizeEmailHtml(input.html, {
+    .input(processEmailContentInput)
+    .mutation(async ({ input, ctx }) => {
+      const db = getDb();
+      const transportId = ctx.activeTransportId;
+      await requireMessageForTransport(db, input.messageId, transportId);
+
+      const rows = await db
+        .select({
+          attachmentId: attachment.id,
+          contentId: attachment.contentId,
+          mimeType: attachment.mimeType,
+          sizeBytes: attachment.sizeBytes,
+        })
+        .from(attachment)
+        .where(eq(attachment.messageId, input.messageId));
+
+      const origin = new URL(parseEnv(process.env).BETTER_AUTH_URL).origin;
+
+      return processEmailHtmlForDisplay({
+        html: input.html,
+        messageId: input.messageId,
         shouldLoadImages: input.shouldLoadImages,
+        theme: input.theme,
+        origin,
+        attachments: rows,
       });
-      const processedHtml = processQuotedContent(sanitized.html, input.theme);
-      return {
-        processedHtml,
-        hasBlockedImages: sanitized.hasBlockedImages,
-      };
     }),
 
   /**

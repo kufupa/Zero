@@ -13,17 +13,12 @@ export function isPilotProdDatabase(databaseUrl: string): boolean {
   }
 }
 
-/**
- * Throws if `databaseUrl` points at the pilot RDS and
- * `VITEST_ALLOW_PILOT_RDS=1` is not set. No-ops for unset/empty URL.
- */
+/** Throws if `databaseUrl` points at pilot RDS. No override exists. */
 export function assertNotPilotProdDatabase(
   databaseUrl: string | undefined,
-  env: NodeJS.ProcessEnv = process.env,
 ): void {
   if (!databaseUrl) return;
   if (!isPilotProdDatabase(databaseUrl)) return;
-  if (env.VITEST_ALLOW_PILOT_RDS === '1') return;
 
   let host = '(unparseable)';
   try {
@@ -35,7 +30,6 @@ export function assertNotPilotProdDatabase(
   throw new Error(
     `Refusing vitest against pilot RDS (${host}). ` +
       `Unset DATABASE_URL or use a disposable DB. ` +
-      `Intentional gates only: set VITEST_ALLOW_PILOT_RDS=1 ` +
-      `(marker: ${PILOT_PROD_DB_HOST}).`,
+      `No override exists (marker: ${PILOT_PROD_DB_HOST}).`,
   );
 }
