@@ -4,6 +4,7 @@ import { fetchRequestHandler } from '@trpc/server/adapters/fetch';
 import { authProviders, customProviders, isProviderEnabled } from './lib/auth-providers.js';
 import { createAuth } from './lib/auth.js';
 import { closeDb } from './db/client.js';
+import { createWiredInlineAttachmentHandler } from './http/inline-attachment.js';
 import { appRouter } from './trpc/router.js';
 
 const app = new Hono();
@@ -55,6 +56,18 @@ app.get('/api/public/providers', (c) => {
 // Better Auth handlers mount at /api/auth/* (better-auth default basePath).
 const auth = createAuth();
 app.on(['GET', 'POST', 'OPTIONS'], '/api/auth/*', (c) => auth.handler(c.req.raw));
+
+// CID inline images: cookie session + mailbox_access join (no active-transport
+// header — <img> tags cannot set custom headers). Must mount before /api/trpc/*.
+const inlineAttachmentHandler = createWiredInlineAttachmentHandler(auth);
+app.get(
+  '/api/mail/messages/:messageId/attachments/:attachmentId/inline',
+  async (c) =>
+    inlineAttachmentHandler(c.req.raw, {
+      messageId: c.req.param('messageId'),
+      attachmentId: c.req.param('attachmentId'),
+    }),
+);
 
 // tRPC endpoint. We use `@trpc/server/adapters/fetch`'s `fetchRequestHandler`
 // directly (instead of `@hono/trpc-server`) to avoid a dual-package types
