@@ -73,11 +73,15 @@ echo "== hms-read-gate: shadow eval =="
   pnpm run eval:hms-shadow
 ) | tee "${GATE_DIR}/hms-shadow-eval.json" || fail "eval:hms-shadow failed"
 
-if [ "$MODE" = "--full" ] || [ "$MODE" = "--fixture-only" ]; then
+if [ "$MODE" = "--full" ]; then
   if [ "${HMS_DB_TEST_REQUIRED}" = "1" ]; then
-    echo "== hms-read-gate: HMS vitest bundle (DB required) =="
-    # Intentional EC2 gate against pilot RDS: allow only when DATABASE_URL set.
-    export VITEST_ALLOW_PILOT_RDS=1
+    echo "== hms-read-gate: HMS vitest bundle (DB required, --full only) =="
+    # Intentional gate against configured DATABASE_URL (prefer disposable).
+    # Pilot RDS allowed only with VITEST_ALLOW_PILOT_RDS=1 already set by caller.
+    if echo "${DATABASE_URL:-}" | grep -q 'nava-zero-mail-pilot'; then
+      export VITEST_ALLOW_PILOT_RDS=1
+      echo "== hms-read-gate: WARNING using pilot RDS (VITEST_ALLOW_PILOT_RDS=1) =="
+    fi
     pnpm exec vitest run \
       tests/hms-contracts.test.ts \
       tests/hms-request-policy.test.ts \
@@ -94,6 +98,24 @@ if [ "$MODE" = "--full" ] || [ "$MODE" = "--fixture-only" ]; then
       tests/ai-eval-runner.test.ts \
       --reporter=dot || fail "HMS vitest bundle failed"
   fi
+elif [ "$MODE" = "--fixture-only" ]; then
+  echo "== hms-read-gate: non-DB HMS unit suite (fixture-only) =="
+  (
+    unset DATABASE_URL
+    export HMS_DB_TEST_REQUIRED=0
+    pnpm exec vitest run \
+      tests/hms-contracts.test.ts \
+      tests/hms-request-policy.test.ts \
+      tests/hms-runtime.test.ts \
+      tests/hms-discovery.test.ts \
+      tests/hms-adapter.test.ts \
+      tests/hms-thread-context.test.ts \
+      tests/hms-artifact.test.ts \
+      tests/hms-candidate-agent.test.ts \
+      tests/hms-production-boundary.test.ts \
+      tests/ai-eval-runner.test.ts \
+      --reporter=dot
+  ) || fail "HMS non-DB unit suite failed"
 fi
 
 echo "== hms-read-gate: playwright fixture config (API journeys) =="
