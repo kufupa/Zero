@@ -139,7 +139,7 @@ describe('SMTP send outcomes', () => {
     expect(result.messageId).toBe(transmitted.messageId);
   });
 
-  it('wire SMTP keeps its existing post-send fallback semantics', async () => {
+  it('wire SMTP transmits its fallback Message-ID before send', async () => {
     sendMailMock.mockResolvedValue({
       accepted: ['accepted@example.com', 'rejected@example.com'],
       rejected: [],
@@ -156,8 +156,8 @@ describe('SMTP send outcomes', () => {
       messageId?: string;
     };
 
-    expect(transmitted.messageId).toBeUndefined();
-    expect(result.messageId).toMatch(/^[0-9a-f-]+@zero-smtp\.local$/);
+    expect(transmitted.messageId).toMatch(/^[0-9a-f-]+@zero-smtp\.local$/);
+    expect(result.messageId).toBe(transmitted.messageId);
   });
 });
 

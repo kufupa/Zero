@@ -325,19 +325,39 @@ export async function runWorkerCycle(
  * Run the worker loop until SIGTERM/SIGINT. Calls `ingestOnce()` on
  * `POP3_POLL_INTERVAL_MS`. Exits 0 on signal.
  */
+export interface RunWorkerDependencies {
+  env?: ReturnType<typeof parseEnv> | null;
+  createPop3Client?: typeof createPop3Client;
+  ingestOnce?: typeof ingestOnce;
+  flushDue?: FlushDue;
+  closeDb?: typeof closeDb;
+  registerSignalHandlers?: boolean;
+  maxCycles?: number;
+}
+
 export async function runWorker(opts: {
   /** Fixture path: run one cycle against a fake POP3 with these messages, then exit. */
   fixtures?: FakePop3Message[];
   /** Override poll interval. Defaults to env. */
   pollIntervalMs?: number;
-} = {}): Promise<void> {
+} = {}, deps: RunWorkerDependencies = {}): Promise<void> {
   const stop = { stopping: false };
+  const createClient = deps.createPop3Client ?? createPop3Client;
+  const closeWorkerDb = deps.closeDb ?? closeDb;
+  const cycleDeps = {
+    ingestOnce: deps.ingestOnce,
+    flushDue: deps.flushDue,
+  };
 
   let env: ReturnType<typeof parseEnv> | null = null;
-  try {
-    env = parseEnv(process.env);
-  } catch {
-    env = null;
+  if (Object.prototype.hasOwnProperty.call(deps, 'env')) {
+    env = deps.env ?? null;
+  } else {
+    try {
+      env = parseEnv(process.env);
+    } catch {
+      env = null;
+    }
   }
   const interval = opts.pollIntervalMs ?? env?.POP3_POLL_INTERVAL_MS ?? 30000;
   const mode = env?.MAIL_TRANSPORT_MODE ?? 'fixture';
@@ -349,18 +369,23 @@ export async function runWorker(opts: {
     stop.stopping = true;
     console.log(`worker: received ${sig}, stopping after current cycle`);
   };
-  process.on('SIGTERM', () => onSignal('SIGTERM'));
-  process.on('SIGINT', () => onSignal('SIGINT'));
+  if (deps.registerSignalHandlers !== false) {
+    process.on('SIGTERM', () => onSignal('SIGTERM'));
+    process.on('SIGINT', () => onSignal('SIGINT'));
+  }
 
-  if (opts.fixtures && opts.fixtures.length > 0) {
+  if (opts.fixtures !== undefined) {
     console.log(`worker: transport.mode=fixture (explicit fixtures)`);
     const pop3 = fakePop3FromMessages(opts.fixtures);
     console.log(
       `worker: fixture mode, ${opts.fixtures.length} message(s), running one cycle`,
     );
-    const result = await runWorkerCycle({ oneShot: true, pop3 });
+    const result = await runWorkerCycle(
+      { oneShot: true, pop3 },
+      cycleDeps,
+    );
     console.log(JSON.stringify(result, null, 2));
-    await closeDb().catch(() => undefined);
+    await closeWorkerDb().catch(() => undefined);
     console.log('worker: fixture cycle complete, exiting 0');
     return;
   }
@@ -372,7 +397,7 @@ export async function runWorker(opts: {
 
   console.log(`worker: transport.mode=${mode}`);
 
-  const pop3 = createPop3Client(env);
+  const pop3 = createClient(env);
   if (!pop3) {
     console.log(
       mode === 'real' || mode === 'wire'
@@ -391,23 +416,30 @@ export async function runWorker(opts: {
         maxMessages ? `, maxMessages=${maxMessages}` : ''
       }`,
     );
-    const result = await runWorkerCycle({ oneShot: true, pop3, maxMessages });
+    const result = await runWorkerCycle(
+      { oneShot: true, pop3, maxMessages },
+      cycleDeps,
+    );
     console.log(JSON.stringify(result, null, 2));
-    await closeDb().catch(() => undefined);
+    await closeWorkerDb().catch(() => undefined);
     console.log('worker: one-shot cycle complete, exiting 0');
     return;
   }
 
   console.log(`worker: starting poll loop, interval=${interval}ms, fake=${pop3.kind === 'fake'}`);
   const failureCounts = new Map<string, number>();
-  while (!stop.stopping) {
+  let completedCycles = 0;
+  while (
+    !stop.stopping &&
+    (deps.maxCycles === undefined || completedCycles < deps.maxCycles)
+  ) {
     const start = Date.now();
     try {
       const result = await runWorkerCycle({
         oneShot: false,
         pop3,
         failureCounts,
-      });
+      }, cycleDeps);
       console.log(
         `worker: cycle listed=${result.listed} processed=${result.processed} deled=${result.deled} fake=${result.usedFakePop3}${
           result.cycleError ? ` error=${result.cycleError}` : ''
@@ -419,13 +451,14 @@ export async function runWorker(opts: {
         err instanceof Error ? err.message : String(err),
       );
     }
+    completedCycles += 1;
     const elapsed = Date.now() - start;
     const wait = Math.max(0, interval - elapsed);
     if (wait > 0) {
       await abortableSleep(wait, () => stop.stopping);
     }
   }
-  await closeDb().catch(() => undefined);
+  await closeWorkerDb().catch(() => undefined);
   console.log('worker: stopped, exiting 0');
 }
 

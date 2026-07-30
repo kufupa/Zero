@@ -384,6 +384,7 @@ async function deliverClaimed(
 
   // Uncertain-delivery window: SMTP can accept before outcome persistence.
   // A crash here leaves no durable recipient evidence, so stale reclaim may resend.
+  // This boundary is plan-acknowledged; no exactly-once delivery claim is made.
   const smtpResult = await getSmtpTransport().send(payload);
   if (smtpResult.accepted.length === 0) {
     throw new Error('SMTP_ZERO_ACCEPTED');

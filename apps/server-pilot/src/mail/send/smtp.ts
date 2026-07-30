@@ -225,7 +225,8 @@ class WireSmtpTransport implements SmtpTransport {
       secure: this.opts.secure,
       auth: undefined,
     });
-    return sendWithTransporter(transporter, payload);
+    const transmittedMessageId = `${randomUUID()}@zero-smtp.local`;
+    return sendWithTransporter(transporter, payload, transmittedMessageId);
   }
 }
 
