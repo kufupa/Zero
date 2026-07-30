@@ -359,4 +359,118 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai workflow run contract', ()
       expect(row?.state).toBe('claimed');
     });
   });
+
+  it('scoped claim cannot take another transport/kind/prefix/version', async () => {
+    const a = await seedMailContext();
+    const b = await seedMailContext();
+
+    const match = await enqueueAiRun({
+      transportId: a.transportId,
+      threadId: a.threadId,
+      triggerMessageId: a.messageId,
+      runKind: 'inbound_triage',
+      idempotencyKey: `inbound-triage-retag-v5:${a.messageId}`,
+      modelId: 'amazon.nova-lite-v1:0',
+      promptVersion: 'triage-v5',
+    });
+    await enqueueAiRun({
+      transportId: b.transportId,
+      threadId: b.threadId,
+      triggerMessageId: b.messageId,
+      runKind: 'inbound_triage',
+      idempotencyKey: `inbound-triage:${b.messageId}`,
+      modelId: 'amazon.nova-lite-v1:0',
+      promptVersion: 'triage-v4',
+    });
+    await enqueueAiRun({
+      transportId: a.transportId,
+      threadId: a.threadId,
+      triggerMessageId: a.messageId,
+      runKind: 'candidate_draft',
+      idempotencyKey: `candidate-draft:${a.messageId}`,
+      modelId: 'amazon.nova-lite-v1:0',
+      promptVersion: 'draft-v1',
+    });
+
+    const wrongTransport = await claimNextAiRun({
+      ownerId: 'scoped-worker',
+      transportId: b.transportId,
+      runKind: 'inbound_triage',
+      promptVersion: 'triage-v5',
+      idempotencyPrefix: 'inbound-triage-retag-v5',
+    });
+    expect(wrongTransport).toBeNull();
+
+    const wrongKind = await claimNextAiRun({
+      ownerId: 'scoped-worker',
+      transportId: a.transportId,
+      runKind: 'candidate_draft',
+      promptVersion: 'triage-v5',
+      idempotencyPrefix: 'inbound-triage-retag-v5',
+    });
+    expect(wrongKind).toBeNull();
+
+    const wrongVersion = await claimNextAiRun({
+      ownerId: 'scoped-worker',
+      transportId: a.transportId,
+      runKind: 'inbound_triage',
+      promptVersion: 'triage-v4',
+      idempotencyPrefix: 'inbound-triage-retag-v5',
+    });
+    expect(wrongVersion).toBeNull();
+
+    const wrongPrefix = await claimNextAiRun({
+      ownerId: 'scoped-worker',
+      transportId: a.transportId,
+      runKind: 'inbound_triage',
+      promptVersion: 'triage-v5',
+      idempotencyPrefix: 'inbound-triage:',
+    });
+    expect(wrongPrefix).toBeNull();
+
+    const claimed = await claimNextAiRun({
+      ownerId: 'scoped-worker',
+      transportId: a.transportId,
+      runKind: 'inbound_triage',
+      promptVersion: 'triage-v5',
+      idempotencyPrefix: 'inbound-triage-retag-v5',
+    });
+    expect(claimed?.id).toBe(match.id);
+
+    const db = getDb();
+    const [untouched] = await db
+      .select()
+      .from(aiWorkflowRun)
+      .where(eq(aiWorkflowRun.idempotencyKey, `inbound-triage:${b.messageId}`));
+    expect(untouched?.state).toBe('queued');
+    expect(untouched?.claimOwner).toBeNull();
+  });
+
+  it('markAiRunRunning returns null when fence loses', async () => {
+    const { markAiRunRunning } = await import('../src/ai/run-ledger.js');
+    const { transportId, threadId, messageId } = await seedMailContext();
+    const run = await enqueueAiRun({
+      transportId,
+      threadId,
+      triggerMessageId: messageId,
+      runKind: 'inbound_triage',
+      idempotencyKey: `inbound-triage-fence:${messageId}`,
+      modelId: 'amazon.nova-lite-v1:0',
+      promptVersion: 'triage-v4',
+    });
+    const claimed = await claimNextAiRun({ ownerId: 'owner-a' });
+    expect(claimed?.id).toBe(run.id);
+
+    const db = getDb();
+    await db
+      .update(aiWorkflowRun)
+      .set({ state: 'succeeded', claimOwner: null, finishedAt: new Date(), updatedAt: new Date() })
+      .where(eq(aiWorkflowRun.id, run.id));
+
+    const fenced = await markAiRunRunning({
+      runId: run.id,
+      claimOwner: 'owner-a',
+    });
+    expect(fenced).toBeNull();
+  });
 });

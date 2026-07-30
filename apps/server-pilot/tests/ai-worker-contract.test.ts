@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { getDb } from '../src/db/client.js';
@@ -19,6 +19,7 @@ import {
 import { user as userAuthTable } from '../src/db/schema/auth.js';
 import { enqueueAiRun, markAiRunRetry } from '../src/ai/run-ledger.js';
 import { executeAiRun } from '../src/ai/worker.js';
+import * as mastraModule from '../src/ai/mastra.js';
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
 import { TRANSPORT_ID } from '../src/db/seed.js';
 
@@ -26,6 +27,11 @@ const reachable = await probeTestDb();
 const here = dirname(fileURLToPath(import.meta.url));
 
 describe('ai worker contract', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete process.env.AI_TRIAGE_PROMPT_VERSION;
+  });
+
   it('pm2 config contains ai-worker without SMTP/POP3 secret env keys', async () => {
     const { loadPm2Config } = await import('../src/deploy/load-pm2-config.js');
     const pm2 = loadPm2Config();
@@ -54,6 +60,86 @@ describe('ai worker contract', () => {
     expect(source).toMatch(/modelId:\s*run\.modelId/);
     expect(source).toMatch(/promptVersion:\s*run\.promptVersion/);
     expect(source).not.toMatch(/AI_MODEL_ID/);
+  });
+
+  it('worker fences claimed-to-running with returning and scopes drain CLI', () => {
+    const source = readFileSync(join(here, '..', 'src', 'ai', 'worker.ts'), 'utf8');
+    expect(source).toMatch(/markAiRunRunning/);
+    expect(source).toMatch(/--drain-prefix/);
+    expect(source).toMatch(/--transport-id/);
+    expect(source).toMatch(/--prompt-version/);
+    expect(source).toMatch(/--timeout-ms/);
+    expect(source).toMatch(/runAiWorkerDrain/);
+    expect(source).toMatch(/unsupported prompt version/i);
+  });
+
+  it('parseAiWorkerCliArgs reads drain scope flags', async () => {
+    const { parseAiWorkerCliArgs } = await import('../src/ai/worker.js');
+    expect(
+      parseAiWorkerCliArgs([
+        '--drain-prefix',
+        'inbound-triage-retag-v5',
+        '--transport-id',
+        'transport-centurion',
+        '--prompt-version',
+        'triage-v5',
+        '--timeout-ms',
+        '120000',
+      ]),
+    ).toEqual({
+      drainPrefix: 'inbound-triage-retag-v5',
+      transportId: 'transport-centurion',
+      promptVersion: 'triage-v5',
+      timeoutMs: 120_000,
+      runKind: 'inbound_triage',
+    });
+  });
+
+  it('supersede script dry-run selects Centurion nonterminal triage and draft rows', async () => {
+    const { parseSupersedeArgs, selectSupersedeTargets } = await import(
+      '../scripts/supersede-centurion-ai-runs.mjs'
+    );
+    expect(parseSupersedeArgs([])).toMatchObject({ dryRun: true });
+    expect(parseSupersedeArgs(['--apply'])).toMatchObject({ dryRun: false });
+    const rows = [
+      {
+        id: '1',
+        transportId: TRANSPORT_ID,
+        runKind: 'inbound_triage',
+        state: 'queued',
+        promptVersion: 'triage-v4',
+      },
+      {
+        id: '2',
+        transportId: TRANSPORT_ID,
+        runKind: 'candidate_draft',
+        state: 'running',
+        promptVersion: 'draft-v1',
+      },
+      {
+        id: '3',
+        transportId: TRANSPORT_ID,
+        runKind: 'feedback_extraction',
+        state: 'queued',
+        promptVersion: 'feedback-v1',
+      },
+      {
+        id: '4',
+        transportId: 'transport-nava',
+        runKind: 'inbound_triage',
+        state: 'queued',
+        promptVersion: 'triage-v4',
+      },
+      {
+        id: '5',
+        transportId: TRANSPORT_ID,
+        runKind: 'inbound_triage',
+        state: 'succeeded',
+        promptVersion: 'triage-v4',
+      },
+    ];
+    const selected = selectSupersedeTargets(rows);
+    expect(selected.map((r) => r.id).sort()).toEqual(['1', '2']);
   });
 });
 
@@ -578,5 +664,123 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
         .where(eq(aiWorkflowRun.idempotencyKey, `candidate-draft:${messageId}`));
       expect(draftRuns).toHaveLength(0);
     });
+  });
+
+  it('zero-row running transition causes no model call', async () => {
+    const { transportId, threadId, messageId } = await seedInbound();
+    const run = await enqueueAiRun({
+      transportId,
+      threadId,
+      triggerMessageId: messageId,
+      runKind: 'inbound_triage',
+      idempotencyKey: `worker-fence-lost:${messageId}`,
+      modelId: 'amazon.nova-lite-v1:0',
+      promptVersion: 'triage-v4',
+    });
+    const db = getDb();
+    await db
+      .update(aiWorkflowRun)
+      .set({
+        state: 'succeeded',
+        claimOwner: null,
+        finishedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(aiWorkflowRun.id, run.id));
+
+    const spy = vi.spyOn(mastraModule, 'createMastraRuntime');
+    const result = await executeAiRun(run.id);
+    expect(spy).not.toHaveBeenCalled();
+    expect(result.state).toBe('dead_letter');
+    const [row] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, run.id));
+    expect(row?.state).toBe('succeeded');
+    expect(row?.mastraTraceId).toBeNull();
+  });
+
+  it('unsupported prompt version dead-letters immediately without model call', async () => {
+    process.env.AI_TRIAGE_PROMPT_VERSION = 'triage-v5';
+    const { transportId, threadId, messageId } = await seedInbound();
+    const run = await enqueueAiRun({
+      transportId,
+      threadId,
+      triggerMessageId: messageId,
+      runKind: 'inbound_triage',
+      idempotencyKey: `worker-unsupported-v4:${messageId}`,
+      modelId: 'amazon.nova-lite-v1:0',
+      promptVersion: 'triage-v4',
+    });
+
+    const spy = vi.spyOn(mastraModule, 'createMastraRuntime');
+    const result = await executeAiRun(run.id);
+    expect(result.state).toBe('dead_letter');
+    expect(spy).not.toHaveBeenCalled();
+
+    const db = getDb();
+    const [row] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, run.id));
+    expect(row?.state).toBe('dead_letter');
+    expect(row?.lastError).toMatch(/unsupported prompt version/i);
+    expect(row?.lastError).toMatch(/triage-v4/);
+  });
+
+  it('scoped drain leaves unrelated queued row untouched and times out on future retry-wait', async () => {
+    const scoped = await seedInbound();
+    const other = await seedInbound();
+    const prefix = `inbound-triage-retag-v5-${randomUUID().slice(0, 8)}`;
+
+    const retryRun = await enqueueAiRun({
+      transportId: scoped.transportId,
+      threadId: scoped.threadId,
+      triggerMessageId: scoped.messageId,
+      runKind: 'inbound_triage',
+      idempotencyKey: `${prefix}:${scoped.messageId}`,
+      modelId: 'amazon.nova-lite-v1:0',
+      promptVersion: 'triage-v5',
+    });
+    await enqueueAiRun({
+      transportId: other.transportId,
+      threadId: other.threadId,
+      triggerMessageId: other.messageId,
+      runKind: 'inbound_triage',
+      idempotencyKey: `inbound-triage:${other.messageId}`,
+      modelId: 'amazon.nova-lite-v1:0',
+      promptVersion: 'triage-v4',
+    });
+
+    const db = getDb();
+    await db
+      .update(aiWorkflowRun)
+      .set({
+        state: 'retry_wait',
+        nextRunAt: new Date(Date.now() + 60 * 60_000),
+        claimOwner: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(aiWorkflowRun.id, retryRun.id));
+
+    const { runAiWorkerDrain } = await import('../src/ai/worker.js');
+    const drain = await runAiWorkerDrain({
+      drainPrefix: prefix,
+      transportId: scoped.transportId,
+      promptVersion: 'triage-v5',
+      runKind: 'inbound_triage',
+      timeoutMs: 200,
+      pollIntervalMs: 50,
+    });
+    expect(drain.ok).toBe(false);
+    expect(drain.reason).toBe('timeout');
+    expect(drain.remainingNonterminal).toBeGreaterThan(0);
+
+    const [untouched] = await db
+      .select()
+      .from(aiWorkflowRun)
+      .where(eq(aiWorkflowRun.idempotencyKey, `inbound-triage:${other.messageId}`));
+    expect(untouched?.state).toBe('queued');
+    expect(untouched?.claimOwner).toBeNull();
+
+    const [stillWaiting] = await db
+      .select()
+      .from(aiWorkflowRun)
+      .where(eq(aiWorkflowRun.id, retryRun.id));
+    expect(stillWaiting?.state).toBe('retry_wait');
   });
 });

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, eq, inArray, lte, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, like, lte, or, sql, type SQL } from 'drizzle-orm';
 import { getDb, type DB } from '../db/client.js';
 import { aiWorkflowRun } from '../db/schema/mail.js';
 import type {
@@ -15,6 +15,13 @@ export const DEFAULT_FEEDBACK_PROMPT_VERSION = 'feedback-v1';
 export type AiWorkflowRunKind = (typeof aiWorkflowRunKindEnum.enumValues)[number];
 export type AiWorkflowRunState = (typeof aiWorkflowRunStateEnum.enumValues)[number];
 
+export const NONTERMINAL_AI_RUN_STATES = [
+  'queued',
+  'claimed',
+  'running',
+  'retry_wait',
+] as const satisfies readonly AiWorkflowRunState[];
+
 export interface EnqueueAiRunInput {
   transportId: string;
   threadId: string;
@@ -29,7 +36,50 @@ export interface EnqueueAiRunInput {
 export interface ClaimNextAiRunInput {
   ownerId: string;
   staleRunTimeoutMs?: number;
+  transportId?: string;
+  runKind?: AiWorkflowRunKind;
+  promptVersion?: string;
+  idempotencyPrefix?: string;
   db?: DB;
+}
+
+export interface AiRunScopeFilter {
+  transportId?: string;
+  runKind?: AiWorkflowRunKind;
+  promptVersion?: string;
+  idempotencyPrefix?: string;
+}
+
+export interface MarkAiRunRunningInput {
+  runId: string;
+  claimOwner: string;
+  db?: DB;
+}
+
+/** Deployed inbound triage prompt this binary will execute. Others dead-letter. */
+export function resolveDeployedTriagePromptVersion(
+  env: Record<string, string | undefined> = process.env as Record<string, string | undefined>,
+): string {
+  const fromEnv = env.AI_TRIAGE_PROMPT_VERSION?.trim();
+  return fromEnv || DEFAULT_TRIAGE_PROMPT_VERSION;
+}
+
+export function isSupportedInboundTriagePromptVersion(
+  promptVersion: string,
+  env: Record<string, string | undefined> = process.env as Record<string, string | undefined>,
+): boolean {
+  return promptVersion === resolveDeployedTriagePromptVersion(env);
+}
+
+function scopePredicates(scope: AiRunScopeFilter): SQL[] {
+  const parts: SQL[] = [];
+  if (scope.transportId) parts.push(eq(aiWorkflowRun.transportId, scope.transportId));
+  if (scope.runKind) parts.push(eq(aiWorkflowRun.runKind, scope.runKind));
+  if (scope.promptVersion) parts.push(eq(aiWorkflowRun.promptVersion, scope.promptVersion));
+  if (scope.idempotencyPrefix) {
+    parts.push(like(aiWorkflowRun.idempotencyKey, `${scope.idempotencyPrefix}%`));
+  }
+  return parts;
 }
 
 export interface MarkAiRunSucceededInput {
@@ -110,20 +160,29 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
     input.staleRunTimeoutMs ??
     parseEnv(process.env as Record<string, string | undefined>).AI_STALE_RUN_TIMEOUT_MS;
   const staleBefore = new Date(now.getTime() - staleRunTimeoutMs);
+  const scope = scopePredicates({
+    transportId: input.transportId,
+    runKind: input.runKind,
+    promptVersion: input.promptVersion,
+    idempotencyPrefix: input.idempotencyPrefix,
+  });
 
   return db.transaction(async (tx) => {
     const [candidate] = await tx
       .select()
       .from(aiWorkflowRun)
       .where(
-        or(
-          and(
-            inArray(aiWorkflowRun.state, ['queued', 'retry_wait']),
-            or(sql`${aiWorkflowRun.nextRunAt} IS NULL`, lte(aiWorkflowRun.nextRunAt, now)),
-          ),
-          and(
-            inArray(aiWorkflowRun.state, ['claimed', 'running']),
-            lte(aiWorkflowRun.updatedAt, staleBefore),
+        and(
+          ...scope,
+          or(
+            and(
+              inArray(aiWorkflowRun.state, ['queued', 'retry_wait']),
+              or(sql`${aiWorkflowRun.nextRunAt} IS NULL`, lte(aiWorkflowRun.nextRunAt, now)),
+            ),
+            and(
+              inArray(aiWorkflowRun.state, ['claimed', 'running']),
+              lte(aiWorkflowRun.updatedAt, staleBefore),
+            ),
           ),
         ),
       )
@@ -162,6 +221,7 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
       .where(
         and(
           eq(aiWorkflowRun.id, candidate.id),
+          ...scope,
           or(
             and(
               inArray(aiWorkflowRun.state, ['queued', 'retry_wait']),
@@ -178,6 +238,49 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
 
     return claimed ?? null;
   });
+}
+
+export async function markAiRunRunning(input: MarkAiRunRunningInput) {
+  const db = input.db ?? getDb();
+  const now = new Date();
+  const [row] = await db
+    .update(aiWorkflowRun)
+    .set({
+      state: 'running',
+      claimOwner: input.claimOwner,
+      startedAt: now,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(aiWorkflowRun.id, input.runId),
+        or(
+          inArray(aiWorkflowRun.state, ['queued', 'retry_wait']),
+          and(
+            eq(aiWorkflowRun.claimOwner, input.claimOwner),
+            inArray(aiWorkflowRun.state, ['claimed', 'running']),
+          ),
+        ),
+      ),
+    )
+    .returning();
+  return row ?? null;
+}
+
+export async function countNonterminalAiRuns(
+  scope: AiRunScopeFilter,
+  db: DB = getDb(),
+): Promise<number> {
+  const [row] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(aiWorkflowRun)
+    .where(
+      and(
+        inArray(aiWorkflowRun.state, [...NONTERMINAL_AI_RUN_STATES]),
+        ...scopePredicates(scope),
+      ),
+    );
+  return Number(row?.count ?? 0);
 }
 
 export async function markAiRunSucceeded(input: MarkAiRunSucceededInput, db: DB = getDb()) {
