@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "note": "Fixture shadow labels for gate smoke. Replace with labelled corpus on EC2 before statistical gates.",
+  "cases": [
+    {
+      "threadId": 2,
+      "expected": "abstain",
+      "inventedFacts": 0,
+      "toolLatencyMs": 120,
+      "toolFailed": false,
+      "staleAtReview": false,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0
+    },
+    {
+      "threadId": 4,
+      "expected": "useful_partial",
+      "inventedFacts": 0,
+      "toolLatencyMs": 240,
+      "toolFailed": false,
+      "staleAtReview": false,
+      "materialFieldsCorrect": 2,
+      "materialFieldsTotal": 2
+    },
+    {
+      "threadId": 5,
+      "expected": "full",
+      "inventedFacts": 0,
+      "toolLatencyMs": 180,
+      "toolFailed": false,
+      "staleAtReview": false,
+      "materialFieldsCorrect": 3,
+      "materialFieldsTotal": 3
+    }
+  ]
+}

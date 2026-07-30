@@ -85,4 +85,34 @@ describe('AI eval runner', () => {
     expect(report.failures.find((failure) => failure.id.includes('draft-skeleton'))).toBeUndefined();
     expect(report.failures.find((failure) => failure.id.includes('failure-no-mutation'))).toBeUndefined();
   });
+
+  it('parses hms-shadow CLI mode', async () => {
+    const { parseEvalCliArgs } = await import('../src/ai/eval-runner.js');
+    expect(parseEvalCliArgs(['--mode=hms-shadow', '--denominators=evals/hms/denominators.v1.json'])).toEqual({
+      mode: 'hms-shadow',
+      denominators: 'evals/hms/denominators.v1.json',
+    });
+  });
+
+  it('hms-shadow eval fails closed on empty denominator and scores fixed metrics', async () => {
+    const { runHmsShadowEval } = await import('../src/ai/eval-runner.js');
+    const empty = await runHmsShadowEval({
+      denominatorsPath: 'evals/hms/does-not-exist.json',
+    });
+    expect(empty.passed).toBe(false);
+    expect(empty.hardGates.denominatorNonEmpty).toBe(false);
+
+    const ok = await runHmsShadowEval({
+      denominatorsPath: 'evals/hms/denominators.v1.json',
+    });
+    expect(ok.mode).toBe('hms-shadow');
+    expect(ok.denominatorVersion).toBe(1);
+    expect(ok.metrics.denominatorSize).toBeGreaterThan(0);
+    expect(ok.hardGates.partialNeverScoresFull).toBe(true);
+    expect(ok.hardGates.zeroInventedFacts).toBe(true);
+    expect(ok.hardGates.zeroFalseCandidates).toBe(true);
+    expect(ok.passed).toBe(true);
+    // Partial never equals Full in rates accounting
+    expect(ok.metrics.strictFullRate + ok.metrics.usefulPartialRate).toBeLessThanOrEqual(1);
+  });
 });
