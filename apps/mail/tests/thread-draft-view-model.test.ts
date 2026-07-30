@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { buildThreadDraftViewModel } from '../lib/mail/thread-draft-view-model';
+import {
+  buildThreadDraftViewModel,
+  canRefreshHmsCandidate,
+  hmsCandidateNotice,
+} from '../lib/mail/thread-draft-view-model';
 import type { ParsedDraft } from '@zero/server/driver/types';
 import type { ParsedMessage } from '@/types';
 
@@ -72,5 +76,55 @@ describe('buildThreadDraftViewModel', () => {
     expect(vm?.origin).toBe('ai');
     expect(vm?.status).toBe('candidate');
     expect(vm?.isStale).toBe(false);
+  });
+
+  it('maps stale HMS candidate to Refresh-capable view model', () => {
+    const vm = buildThreadDraftViewModel(
+      pilotDraft({ id: 'pd2', origin: 'ai', status: 'candidate', content: '<p>Old</p>' }),
+      {
+        outcome: 'candidate',
+        freshness: 'stale_evidence',
+        activeRun: null,
+        unresolvedFields: [],
+      },
+    );
+    expect(vm).toMatchObject({
+      freshness: 'stale_evidence',
+      refreshState: 'idle',
+      isStale: true,
+      aiOutcome: 'candidate',
+    });
+    expect(hmsCandidateNotice(vm!)).toContain('Refresh');
+    expect(canRefreshHmsCandidate(vm)).toBe(true);
+  });
+
+  it('maps running Refresh to pending disabled refresh', () => {
+    const vm = buildThreadDraftViewModel(
+      pilotDraft({ id: 'pd3', origin: 'ai', status: 'candidate' }),
+      {
+        outcome: 'candidate',
+        freshness: 'fresh',
+        activeRun: { id: 'run-1', state: 'running' },
+        unresolvedFields: [],
+      },
+    );
+    expect(vm?.refreshState).toBe('running');
+    expect(hmsCandidateNotice(vm!)).toContain('Refreshing');
+    expect(canRefreshHmsCandidate(vm)).toBe(false);
+  });
+
+  it('maps needs_clarification outcome', () => {
+    const vm = buildThreadDraftViewModel(
+      pilotDraft({ id: 'pd4', origin: 'ai', status: 'candidate' }),
+      {
+        outcome: 'needs_clarification',
+        freshness: 'unknown',
+        activeRun: null,
+        unresolvedFields: ['evidence'],
+      },
+    );
+    expect(vm?.aiOutcome).toBe('needs_clarification');
+    expect(vm?.unresolvedFields).toEqual(['evidence']);
+    expect(hmsCandidateNotice(vm!)).toContain('clarification');
   });
 });

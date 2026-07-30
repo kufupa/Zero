@@ -10,8 +10,13 @@ import { z } from 'zod';
 import { and, eq, desc, inArray, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { mailboxProcedure, router as tRouter } from '../trpc.js';
-import { getDb } from '../../db/client.js';
-import { mailDraft, mailDraftRevision } from '../../db/schema/mail.js';
+import { getDb, type DB } from '../../db/client.js';
+import {
+  aiDraftGeneration,
+  aiWorkflowRun,
+  mailDraft,
+  mailDraftRevision,
+} from '../../db/schema/mail.js';
 import {
   requireThreadForTransport,
   requireMessageForTransport,
@@ -23,6 +28,19 @@ import { createDraftInput } from '../wire-compat.js';
 import { toDraftWire } from './draft-wire.js';
 import { buildDraftSearchConditions } from '../../mail/search/query.js';
 import { parseSearchQueryOrThrow } from '../../mail/search/trpc.js';
+import {
+  EvidenceRefSchema,
+  isEvidenceFresh,
+  type HmsEvidenceRef,
+  type MailEvidenceRef,
+} from '../../ai/draft-evidence.js';
+import {
+  loadLiveThreadStateVersion,
+} from '../../ai/drafts.js';
+import {
+  DEFAULT_AI_MODEL_ID,
+  enqueueAiRun,
+} from '../../ai/run-ledger.js';
 
 function isPostgresUniqueViolation(err: unknown): boolean {
   if (err && typeof err === 'object' && 'code' in err) {
@@ -32,6 +50,343 @@ function isPostgresUniqueViolation(err: unknown): boolean {
     return isPostgresUniqueViolation(err.cause);
   }
   return false;
+}
+
+/** Bump when candidate tool registry / claim schemas change. */
+export const HMS_CANDIDATE_TOOLSET_VERSION = 'hms-candidate-tools-v1';
+
+export const DEFAULT_HMS_CANDIDATE_PROMPT_VERSION = 'draft-v1';
+
+export type HmsCandidateFreshness = 'fresh' | 'stale_thread' | 'stale_evidence' | 'unknown';
+
+export type HmsCandidateActiveRunState = 'queued' | 'claimed' | 'running' | 'retry_wait';
+
+export type HmsCandidateState = {
+  visibleCandidate: ReturnType<typeof toDraftWire> | null;
+  activeRun: {
+    id: string;
+    state: HmsCandidateActiveRunState;
+  } | null;
+  outcome: 'candidate' | 'needs_clarification' | 'insufficient_evidence' | null;
+  freshness: HmsCandidateFreshness;
+  unresolvedFields: string[];
+  refreshedAt: string | null;
+};
+
+const ACTIVE_REFRESH_STATES = new Set<string>([
+  'queued',
+  'claimed',
+  'running',
+  'retry_wait',
+]);
+
+export function buildHmsRefreshIdempotencyKey(input: {
+  transportId: string;
+  threadId: string;
+  threadStateVersion: string;
+  toolsetVersion?: string;
+}): string {
+  const toolset = input.toolsetVersion ?? HMS_CANDIDATE_TOOLSET_VERSION;
+  return `hms-refresh:${input.transportId}:${input.threadId}:${input.threadStateVersion}:${toolset}`;
+}
+
+/** Skeleton / off-mode generations skip HMS freshness hard-blocks. */
+export function isHmsEnrichedGeneration(generation: {
+  outcome: string | null;
+  threadStateVersion: string | null;
+  evidence: unknown[] | null;
+}): boolean {
+  if (generation.outcome) return true;
+  if (generation.threadStateVersion) return true;
+  return Array.isArray(generation.evidence) && generation.evidence.length > 0;
+}
+
+export function evaluateHmsEvidenceFreshness(input: {
+  evidence: unknown[];
+  now?: Date;
+  /** Current attachmentId → sha256 hex; missing key → unknown for that ref. */
+  attachmentSourceHashes?: ReadonlyMap<string, string>;
+}): Exclude<HmsCandidateFreshness, 'stale_thread'> {
+  if (!Array.isArray(input.evidence) || input.evidence.length === 0) return 'unknown';
+  const now = input.now ?? new Date();
+  for (const raw of input.evidence) {
+    const parsed = EvidenceRefSchema.safeParse(raw);
+    if (!parsed.success) return 'unknown';
+    const evidence = parsed.data as HmsEvidenceRef | MailEvidenceRef;
+    if (evidence.kind === 'hms') {
+      if (!isEvidenceFresh(evidence, now)) return 'stale_evidence';
+      continue;
+    }
+    const current = input.attachmentSourceHashes?.get(evidence.attachmentId);
+    if (current === undefined) return 'unknown';
+    if (current !== evidence.sourceHash) return 'stale_evidence';
+  }
+  return 'fresh';
+}
+
+export function evaluateHmsCandidateFreshness(input: {
+  threadStateVersion: string | null;
+  liveThreadStateVersion: string;
+  evidence: unknown[];
+  now?: Date;
+  attachmentSourceHashes?: ReadonlyMap<string, string>;
+}): HmsCandidateFreshness {
+  if (!input.threadStateVersion) return 'unknown';
+  if (input.threadStateVersion !== input.liveThreadStateVersion) return 'stale_thread';
+  return evaluateHmsEvidenceFreshness({
+    evidence: input.evidence,
+    now: input.now,
+    attachmentSourceHashes: input.attachmentSourceHashes,
+  });
+}
+
+export function collectUnresolvedFields(input: {
+  outcome: string | null;
+  evidence: unknown[];
+}): string[] {
+  if (input.outcome === 'needs_clarification' || input.outcome === 'insufficient_evidence') {
+    return ['evidence'];
+  }
+  const fields: string[] = [];
+  for (const raw of input.evidence) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+    const unresolved = (raw as { unresolvedFields?: unknown }).unresolvedFields;
+    if (Array.isArray(unresolved)) {
+      for (const f of unresolved) {
+        if (typeof f === 'string' && f.length > 0) fields.push(f);
+      }
+    }
+  }
+  return [...new Set(fields)];
+}
+
+/**
+ * Query newest successful AI candidate independently from any active Refresh run.
+ */
+export async function loadHmsCandidateState(input: {
+  db: DB;
+  transportId: string;
+  threadId: string;
+  now?: Date;
+  attachmentSourceHashes?: ReadonlyMap<string, string>;
+}): Promise<HmsCandidateState> {
+  const now = input.now ?? new Date();
+
+  const [activeRunRow] = await input.db
+    .select({
+      id: aiWorkflowRun.id,
+      state: aiWorkflowRun.state,
+      createdAt: aiWorkflowRun.createdAt,
+    })
+    .from(aiWorkflowRun)
+    .where(
+      and(
+        eq(aiWorkflowRun.transportId, input.transportId),
+        eq(aiWorkflowRun.threadId, input.threadId),
+        eq(aiWorkflowRun.runKind, 'candidate_draft'),
+        inArray(aiWorkflowRun.state, ['queued', 'claimed', 'running', 'retry_wait']),
+      ),
+    )
+    .orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id))
+    .limit(1);
+
+  const activeRun =
+    activeRunRow && ACTIVE_REFRESH_STATES.has(activeRunRow.state)
+      ? {
+          id: activeRunRow.id,
+          state: activeRunRow.state as HmsCandidateActiveRunState,
+        }
+      : null;
+
+  const [candidate] = await input.db
+    .select()
+    .from(mailDraft)
+    .where(
+      and(
+        eq(mailDraft.transportId, input.transportId),
+        eq(mailDraft.threadId, input.threadId),
+        eq(mailDraft.isSent, false),
+        eq(mailDraft.status, 'candidate'),
+        eq(mailDraft.origin, 'ai'),
+      ),
+    )
+    .orderBy(desc(mailDraft.updatedAt), desc(mailDraft.id))
+    .limit(1);
+
+  if (!candidate?.generationId) {
+    return {
+      visibleCandidate: null,
+      activeRun,
+      outcome: null,
+      freshness: 'unknown',
+      unresolvedFields: [],
+      refreshedAt: null,
+    };
+  }
+
+  const [generation] = await input.db
+    .select()
+    .from(aiDraftGeneration)
+    .where(
+      and(
+        eq(aiDraftGeneration.id, candidate.generationId),
+        eq(aiDraftGeneration.transportId, input.transportId),
+      ),
+    )
+    .limit(1);
+
+  const outcomeRaw = generation?.outcome ?? null;
+  const outcome =
+    outcomeRaw === 'candidate' ||
+    outcomeRaw === 'needs_clarification' ||
+    outcomeRaw === 'insufficient_evidence'
+      ? outcomeRaw
+      : null;
+
+  let freshness: HmsCandidateFreshness = 'unknown';
+  if (generation && isHmsEnrichedGeneration(generation)) {
+    // Generations persist threadStateVersion with latestDraftRevisionId=null (worker).
+    const live = await loadLiveThreadStateVersion(input.db, {
+      transportId: input.transportId,
+      threadId: input.threadId,
+      latestDraftRevisionId: null,
+    });
+    freshness = evaluateHmsCandidateFreshness({
+      threadStateVersion: generation.threadStateVersion,
+      liveThreadStateVersion: live,
+      evidence: generation.evidence ?? [],
+      now,
+      attachmentSourceHashes: input.attachmentSourceHashes,
+    });
+  }
+
+  return {
+    visibleCandidate: toDraftWire(candidate, freshness !== 'fresh'),
+    activeRun,
+    outcome,
+    freshness,
+    unresolvedFields: collectUnresolvedFields({
+      outcome,
+      evidence: generation?.evidence ?? [],
+    }),
+    refreshedAt: generation?.createdAt?.toISOString() ?? null,
+  };
+}
+
+export async function assertHmsDraftFreshForAction(input: {
+  db: DB;
+  transportId: string;
+  draft: typeof mailDraft.$inferSelect;
+  conflict: 'STALE_AI_CANDIDATE' | 'STALE_AI_DRAFT';
+  now?: Date;
+  attachmentSourceHashes?: ReadonlyMap<string, string>;
+}): Promise<void> {
+  if (input.draft.origin !== 'ai') return;
+  if (!input.draft.generationId || !input.draft.threadId) return;
+
+  const [generation] = await input.db
+    .select()
+    .from(aiDraftGeneration)
+    .where(
+      and(
+        eq(aiDraftGeneration.id, input.draft.generationId),
+        eq(aiDraftGeneration.transportId, input.transportId),
+      ),
+    )
+    .limit(1);
+  if (!generation || !isHmsEnrichedGeneration(generation)) return;
+
+  // Match worker persist: threadStateVersion computed with latestDraftRevisionId=null.
+  const live = await loadLiveThreadStateVersion(input.db, {
+    transportId: input.transportId,
+    threadId: input.draft.threadId,
+    latestDraftRevisionId: null,
+  });
+  const freshness = evaluateHmsCandidateFreshness({
+    threadStateVersion: generation.threadStateVersion,
+    liveThreadStateVersion: live,
+    evidence: generation.evidence ?? [],
+    now: input.now,
+    attachmentSourceHashes: input.attachmentSourceHashes,
+  });
+  if (freshness !== 'fresh') {
+    throw new TRPCError({ code: 'CONFLICT', message: input.conflict });
+  }
+}
+
+export async function enqueueHmsCandidateRefresh(input: {
+  db: DB;
+  transportId: string;
+  threadId: string;
+  triggerMessageId: string;
+  requestedByUserId: string;
+  modelId?: string;
+  promptVersion?: string;
+}): Promise<{
+  runId: string;
+  runState: 'queued' | 'claimed' | 'running' | 'retry_wait' | 'succeeded' | 'dead_letter' | 'superseded';
+  idempotencyKey: string;
+  threadStateVersion: string;
+}> {
+  const threadStateVersion = await loadLiveThreadStateVersion(input.db, {
+    transportId: input.transportId,
+    threadId: input.threadId,
+    latestDraftRevisionId: null,
+  });
+  const idempotencyKey = buildHmsRefreshIdempotencyKey({
+    transportId: input.transportId,
+    threadId: input.threadId,
+    threadStateVersion,
+  });
+
+  const run = await enqueueAiRun(
+    {
+      transportId: input.transportId,
+      threadId: input.threadId,
+      triggerMessageId: input.triggerMessageId,
+      runKind: 'candidate_draft',
+      idempotencyKey,
+      modelId: input.modelId ?? DEFAULT_AI_MODEL_ID,
+      promptVersion: input.promptVersion ?? DEFAULT_HMS_CANDIDATE_PROMPT_VERSION,
+      executorLane: 'hms',
+    },
+    input.db,
+  );
+
+  const generationId = run.generationId ?? `${run.id}-generation`;
+  const [existingGen] = await input.db
+    .select({ id: aiDraftGeneration.id })
+    .from(aiDraftGeneration)
+    .where(eq(aiDraftGeneration.id, generationId))
+    .limit(1);
+  if (!existingGen) {
+    await input.db.insert(aiDraftGeneration).values({
+      id: generationId,
+      transportId: input.transportId,
+      threadId: input.threadId,
+      requestedByUserId: input.requestedByUserId,
+      contextMessageIds: [input.triggerMessageId],
+      model: input.modelId ?? DEFAULT_AI_MODEL_ID,
+      promptVersion: input.promptVersion ?? DEFAULT_HMS_CANDIDATE_PROMPT_VERSION,
+      status: 'queued',
+      threadStateVersion,
+      evidence: [],
+      createdAt: new Date(),
+    });
+  }
+  if (!run.generationId) {
+    await input.db
+      .update(aiWorkflowRun)
+      .set({ generationId, updatedAt: new Date() })
+      .where(and(eq(aiWorkflowRun.id, run.id), sql`${aiWorkflowRun.generationId} IS NULL`));
+  }
+
+  return {
+    runId: run.id,
+    runState: run.state,
+    idempotencyKey,
+    threadStateVersion,
+  };
 }
 
 export const draftsRouter = tRouter({
@@ -191,6 +546,13 @@ export const draftsRouter = tRouter({
           if (!candidate) {
             throw new TRPCError({ code: 'NOT_FOUND', message: 'DRAFT_NOT_FOUND' });
           }
+
+          await assertHmsDraftFreshForAction({
+            db: tx as unknown as DB,
+            transportId,
+            draft: candidate,
+            conflict: 'STALE_AI_CANDIDATE',
+          });
 
           await tx
             .update(mailDraft)

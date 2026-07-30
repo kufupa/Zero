@@ -28,6 +28,7 @@ import {
   mailCategory,
   mailThreadCategory,
 } from '../../db/schema/mail.js';
+import { assertHmsDraftFreshForAction } from './drafts.js';
 import {
   requireThreadForTransport,
   requireMessageForTransport,
@@ -1092,6 +1093,13 @@ export const mailRouter = tRouter({
               return rowTime.getTime() > parentTime.getTime();
             });
           }
+          // HMS-enriched AI drafts: evidence/thread freshness cannot use confirmStaleDraft.
+          await assertHmsDraftFreshForAction({
+            db,
+            transportId,
+            draft: sendingDraft,
+            conflict: 'STALE_AI_DRAFT',
+          });
           if (hasNewerInbound && !input.confirmStaleDraft) {
             throw new TRPCError({ code: 'CONFLICT', message: 'STALE_DRAFT' });
           }
