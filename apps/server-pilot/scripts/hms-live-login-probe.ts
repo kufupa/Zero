@@ -135,6 +135,29 @@ function minimalLoginManifest(origin: string): RequestPolicyManifest {
         '/web/resources/shared/css/SourceSansPro-font/SourceSansPro-It.ttf',
         ['font'],
       ),
+      {
+        id: 'live-login-post',
+        origin,
+        method: 'POST',
+        path: '/web/base/login',
+        resourceTypes: ['xhr', 'fetch', 'document'],
+        contentType: 'application/x-www-form-urlencoded',
+        fixedQuery: {},
+        variableQuery: {},
+        fixedBody: {
+          tenant: 'HMS_LEGACY',
+        },
+        variableBody: {
+          userid: { pattern: '.{1,64}', maxLength: 64 },
+          password: { pattern: '.{1,128}', maxLength: 128 },
+          csrftckt: { pattern: '.{0,256}', maxLength: 256 },
+          resetpassword: { pattern: '.{0,32}', maxLength: 32 },
+          SYSTEM_FUNCTION_NAME: { pattern: '.{0,64}', maxLength: 64 },
+          USER_FUNCTION_NAME: { pattern: '.{0,64}', maxLength: 64 },
+        },
+        maxBodyBytes: 4096,
+        redirectPolicy: 'same-reviewed-chain',
+      },
     ],
   });
 }
@@ -300,12 +323,23 @@ async function main(): Promise<void> {
           dom.inputNames.some((n) => /user|pass|login/i.test(n))),
     );
 
+    let fixedBodyCandidates: Record<string, string> | undefined;
     if (process.env.HMS_LIVE_CANARY_SUBMIT === '1') {
       if (!hasLoginFields || !page) {
         throw new Error('login fields missing; refuse submit');
       }
-      // Fill only — never log values. Abort-first: first unknown POST becomes
-      // redacted inventory; do not invent allow rules automatically.
+      fixedBodyCandidates = await page.evaluate(() => {
+        const out: Record<string, string> = {};
+        for (const el of document.querySelectorAll('input')) {
+          const name = (el as HTMLInputElement).name || '';
+          if (!name) continue;
+          if (/pass|user|csrf|ticket|token|secret/i.test(name)) continue;
+          const v = (el as HTMLInputElement).value || '';
+          if (v && v.length <= 64) out[name] = v;
+        }
+        return out;
+      });
+      // Fill only — never log credential values. Abort-first inventory for next unknown.
       await page.locator('input[name="userid"]').fill(secret.username);
       await page.locator('input[name="password"]').fill(secret.password);
       const preBlockCount = events.filter((e) => e.decision === 'block').length;
@@ -318,12 +352,11 @@ async function main(): Promise<void> {
           .catch(async () => {
             await page!.locator('input[name="password"]').press('Enter');
           }),
-        page.waitForTimeout(3500),
+        page.waitForTimeout(4500),
       ]);
       const postBlocks = events
         .filter((e) => e.decision === 'block')
         .slice(preBlockCount);
-      // Recompute firstBlock if submit introduced one
       if (!firstBlock && postBlocks[0]) firstBlock = postBlocks[0];
     }
 
@@ -333,6 +366,12 @@ async function main(): Promise<void> {
       (e) =>
         e.decision === 'allow' &&
         e.redactedSignature.path === '/web/base/logindisp',
+    );
+    const loginPostAllowed = events.some(
+      (e) =>
+        e.decision === 'allow' &&
+        e.redactedSignature.method === 'POST' &&
+        e.redactedSignature.path === '/web/base/login',
     );
     const payload = {
       ok: documentAllowed || (firstBlock !== null && events.length > 0),
@@ -345,7 +384,9 @@ async function main(): Promise<void> {
       titleLooksLikeInfor: /infor|hms/i.test(title),
       hasLoginFields,
       dom,
+      fixedBodyCandidates,
       documentAllowed,
+      loginPostAllowed,
       navError,
       allowCount: events.filter((e) => e.decision === 'allow').length,
       blockCount: events.filter((e) => e.decision === 'block').length,
@@ -366,11 +407,13 @@ async function main(): Promise<void> {
         wrote: outPath,
         ok: payload.ok,
         documentAllowed: payload.documentAllowed,
+        loginPostAllowed: payload.loginPostAllowed,
         allowCount: payload.allowCount,
         blockCount: payload.blockCount,
         hasLoginFields: payload.hasLoginFields,
         firstBlockCode: firstBlock?.code ?? null,
         firstBlockPath: firstBlock?.redactedSignature.path ?? null,
+        firstBlockMethod: firstBlock?.redactedSignature.method ?? null,
       }),
     );
     if (!payload.ok) process.exit(2);
