@@ -200,15 +200,25 @@ async function main(): Promise<void> {
       });
       const ev = eventFromDecision(decision);
       if (decision.action === 'allow') {
+        const url = new URL(req.url());
+        const postData = req.postData() ?? '';
+        let bodyKeys: string[] = [];
+        if (postData) {
+          try {
+            bodyKeys = [...new URLSearchParams(postData).keys()].sort();
+          } catch {
+            bodyKeys = [];
+          }
+        }
         ev.redactedSignature = {
           method: req.method(),
-          origin: new URL(req.url()).origin,
-          path: new URL(req.url()).pathname,
+          origin: url.origin,
+          path: url.pathname,
           resourceType: req.resourceType(),
           contentType: req.headers()['content-type'],
-          queryKeys: [...new URL(req.url()).searchParams.keys()].sort(),
-          bodyKeys: [],
-          bodyBytes: Buffer.byteLength(req.postData() ?? ''),
+          queryKeys: [...url.searchParams.keys()].sort(),
+          bodyKeys,
+          bodyBytes: Buffer.byteLength(postData),
         };
         events.push(ev);
         await route.continue();
@@ -273,7 +283,30 @@ async function main(): Promise<void> {
     );
 
     if (process.env.HMS_LIVE_CANARY_SUBMIT === '1') {
-      throw new Error('credential submit not enabled in this probe build');
+      if (!hasLoginFields || !page) {
+        throw new Error('login fields missing; refuse submit');
+      }
+      // Fill only — never log values. Abort-first: first unknown POST becomes
+      // redacted inventory; do not invent allow rules automatically.
+      await page.locator('input[name="userid"]').fill(secret.username);
+      await page.locator('input[name="password"]').fill(secret.password);
+      const preBlockCount = events.filter((e) => e.decision === 'block').length;
+      await Promise.all([
+        page
+          .locator('button, input[type="submit"]')
+          .filter({ hasText: /sign in|log in|login/i })
+          .first()
+          .click({ timeout: 10_000 })
+          .catch(async () => {
+            await page!.locator('input[name="password"]').press('Enter');
+          }),
+        page.waitForTimeout(3500),
+      ]);
+      const postBlocks = events
+        .filter((e) => e.decision === 'block')
+        .slice(preBlockCount);
+      // Recompute firstBlock if submit introduced one
+      if (!firstBlock && postBlocks[0]) firstBlock = postBlocks[0];
     }
 
     // Connectivity canary: document GET allowed OR we captured a fail-closed
@@ -285,7 +318,10 @@ async function main(): Promise<void> {
     );
     const payload = {
       ok: documentAllowed || (firstBlock !== null && events.length > 0),
-      phase: 'login-probe',
+      phase:
+        process.env.HMS_LIVE_CANARY_SUBMIT === '1'
+          ? 'login-submit-probe'
+          : 'login-probe',
       origin,
       titlePresent: Boolean(title),
       titleLooksLikeInfor: /infor|hms/i.test(title),

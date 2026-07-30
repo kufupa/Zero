@@ -1,0 +1,31 @@
+{
+  "version": "live-login-inventory-1",
+  "capturedAt": "2026-07-30",
+  "origin": "https://appsrv-1.legacyhotels.co.za",
+  "notes": [
+    "Abort-first EC2 probe under fail-closed request policy.",
+    "Password input is type=text with name=password (Infor quirk).",
+    "No credential values stored. No PMS mutation."
+  ],
+  "reviewedGetAllows": [
+    { "path": "/web/base/logindisp", "resourceType": "document", "queryKeys": ["tenant"] },
+    { "path": "/web/resources/inforhms/HMS-min.css", "resourceType": "stylesheet" },
+    { "path": "/web/resources/shared/scripts/jquery-3.6.0.min.js", "resourceType": "script" },
+    { "path": "/web/resources/shared/scripts/jquery.json-2.3.min.js", "resourceType": "script" },
+    { "path": "/web/resources/shared/scripts/infor-companyon-client.js", "resourceType": "script" },
+    { "path": "/web/base/login-all.js", "resourceType": "script" },
+    { "path": "/web/resources/inforhms/images/toolbar/error-solid.svg", "resourceType": "image" },
+    { "path": "/web/resources/inforhms/images/shared/logo.svg", "resourceType": "image" },
+    { "path": "/web/resources/shared/css/SourceSansPro-font/SourceSansPro-Semibold.ttf", "resourceType": "font" },
+    { "path": "/web/resources/shared/css/SourceSansPro-font/SourceSansPro-Regular.ttf", "resourceType": "font" },
+    { "path": "/web/resources/shared/css/SourceSansPro-font/SourceSansPro-It.ttf", "resourceType": "font" }
+  ],
+  "loginDomFingerprint": {
+    "inputNames": ["userid", "password", "csrftckt"],
+    "inputTypes": ["text", "text", "text"],
+    "passwordCount": 0,
+    "hasSignInCopy": true
+  },
+  "probeCommit": "131f7811",
+  "status": "login_shell_green_zero_blocks"
+}
