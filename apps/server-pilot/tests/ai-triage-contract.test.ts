@@ -230,6 +230,21 @@ describe('AI triage contract', () => {
     expect(refined.category).toBe('new-bookings');
   });
 
+  it('refines empty body spam away into new-bookings when no sales pitch', () => {
+    const refined = refineTriageOutput(
+      { from: 'guest@example.com', subject: 'Re: rooms', body: '' },
+      {
+        category: 'spam',
+        urgent: false,
+        confidence: 0.7,
+        rationale: 'empty',
+        policyFlags: [],
+      },
+    );
+    expect(refined.category).toBe('new-bookings');
+    expect(refined.policyFlags).toContain('refine:empty-body-not-spam');
+  });
+
   it('refines short personal greeting away from spam into new-bookings', () => {
     const refined = refineTriageOutput(
       { from: 'guest@example.com', subject: 'hi', body: 'hello' },

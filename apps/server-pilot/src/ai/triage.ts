@@ -61,6 +61,15 @@ export function refineTriageOutput(
       /promo|sale|discount|unsubscribe|limited[- ]time|book a demo|whatsapp|newsletter|marketing|click here|viqal|outreach|boost|% off|\$\d/i.test(
         haystack,
       );
+    const emptyBodyPreferWork = !salesSignal && body.length === 0 && subject.length <= 80;
+    if (emptyBodyPreferWork) {
+      next = {
+        ...next,
+        category: 'new-bookings',
+        policyFlags: [...next.policyFlags, 'refine:empty-body-not-spam'],
+        rationale: `${next.rationale} Empty body with no sales pitch prefers work.`,
+      };
+    }
     const shortPersonal =
       !salesSignal &&
       body.length > 0 &&
