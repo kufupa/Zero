@@ -93,6 +93,23 @@ export function parseSnapshotArgs(argv) {
 }
 
 /**
+ * SNAPSHOT_PROMPT_HASH required only when emitting targets (--targets-out / bind emit path).
+ * Snapshot-only runs may omit it.
+ * @param {string|null|undefined} promptHash
+ * @param {{ emitTargets: boolean }} opts
+ * @returns {string|null}
+ */
+export function requireSnapshotPromptHash(promptHash, opts) {
+  if (!opts?.emitTargets) {
+    return null;
+  }
+  if (!promptHash || !isSha256Hex(promptHash)) {
+    throw new Error('SNAPSHOT_PROMPT_HASH (sha256 hex) required to emit targets');
+  }
+  return promptHash;
+}
+
+/**
  * @param {{
  *   threadId: string,
  *   spamAt: string|null,
@@ -497,9 +514,13 @@ async function main() {
 
   const modelId = process.env.SNAPSHOT_MODEL_ID ?? 'amazon.nova-lite-v1:0';
   const promptVersion = process.env.SNAPSHOT_PROMPT_VERSION ?? 'triage-v5';
-  const promptHash = process.env.SNAPSHOT_PROMPT_HASH;
-  if (!promptHash || !isSha256Hex(promptHash)) {
-    console.error('SNAPSHOT_PROMPT_HASH (sha256 hex) required to emit targets');
+  let promptHash = null;
+  try {
+    promptHash = requireSnapshotPromptHash(process.env.SNAPSHOT_PROMPT_HASH, {
+      emitTargets: Boolean(args.targetsOutPath),
+    });
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : err);
     process.exit(1);
   }
 

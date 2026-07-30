@@ -9,6 +9,18 @@ import {
   buildCenturionTriageSnapshot,
   emitTargetManifestFromSnapshot,
 } from '../scripts/snapshot-centurion-triage.mjs';
+import { computeCanonicalManifestHash } from '../scripts/retag-centurion-triage.mjs';
+
+function rehashManifest(manifest: Record<string, unknown>) {
+  const { manifestHash: _ignored, ...withoutHash } = manifest as {
+    manifestHash?: string;
+    [k: string]: unknown;
+  };
+  return {
+    ...withoutHash,
+    manifestHash: computeCanonicalManifestHash(withoutHash),
+  };
+}
 
 const MODEL_ID = 'amazon.nova-lite-v1:0';
 const PROMPT_VERSION = 'triage-v5';
@@ -367,24 +379,9 @@ describe('strict centurion triage audit', () => {
   });
 
   it('rejects missing/extra/duplicate target coverage', async () => {
+    // Missing: drop eligible target + valid rehash → coverage path (not stale manifestHash).
     const missing = await buildApprovedFixture({
-      mutateManifest: (m) => {
-        const next = {
-          ...m,
-          targets: [
-            ...m.targets,
-            {
-              ...m.targets[0],
-              threadId: 't-missing',
-              triggerMessageId: 'm-missing',
-              triggerHash: 'a'.repeat(64),
-              preStateHash: 'a'.repeat(64),
-            },
-          ],
-        };
-        // leave hash stale → also hash fail; recompute via bind helper path in audit
-        return next;
-      },
+      mutateManifest: (m) => rehashManifest({ ...m, targets: [] }),
     });
     const missingResult = await auditCenturionTriageRetag({
       driver: missing.auditDriver,
@@ -394,31 +391,56 @@ describe('strict centurion triage audit', () => {
       keyPrefix: KEY_PREFIX,
     });
     expect(missingResult.ok).toBe(false);
-    expect(missingResult.errors.join('\n')).toMatch(/missing|coverage|manifestHash|duplicate|extra/i);
+    expect(missingResult.errors.join('\n')).toMatch(/missing target coverage/i);
+    expect(missingResult.errors.join('\n')).not.toMatch(/manifestHash mismatch/i);
 
-    const extraRun = await buildApprovedFixture({
-      extraRun: {
-        id: 'run-extra',
-        threadId: 't-locked',
-        triggerMessageId: 'm-locked',
-        idempotencyKey: `${KEY_PREFIX}:m-locked`,
-        modelId: MODEL_ID,
-        promptVersion: PROMPT_VERSION,
-        promptHash: PROMPT_HASH,
-        state: 'succeeded',
-        finishedAt: '2026-07-30T13:00:00.000Z',
-        metrics: { category: 'ops', urgent: false, applyMode: 'full', inputHash: 'e'.repeat(64) },
-      },
+    // Extra: non-eligible target + valid rehash → extra coverage path.
+    const extra = await buildApprovedFixture({
+      mutateManifest: (m) =>
+        rehashManifest({
+          ...m,
+          targets: [
+            ...m.targets,
+            {
+              threadId: 't-locked',
+              triggerMessageId: 'm-locked',
+              triggerHash: 'a'.repeat(64),
+              preStateHash: 'a'.repeat(64),
+              approvedCategory: 'ops',
+              approvedUrgent: false,
+              sourceHash: SOURCE_HASH,
+              rehearsalResultHash: 'd'.repeat(64),
+            },
+          ],
+        }),
     });
     const extraResult = await auditCenturionTriageRetag({
-      driver: extraRun.auditDriver,
-      snapshot: extraRun.snapshot,
-      manifest: extraRun.manifest,
-      applySummary: extraRun.applySummary,
+      driver: extra.auditDriver,
+      snapshot: extra.snapshot,
+      manifest: extra.manifest,
+      applySummary: extra.applySummary,
       keyPrefix: KEY_PREFIX,
     });
     expect(extraResult.ok).toBe(false);
-    expect(extraResult.errors.join('\n')).toMatch(/extra|excluded|unexpected/i);
+    expect(extraResult.errors.join('\n')).toMatch(/extra\/non-eligible target/i);
+    expect(extraResult.errors.join('\n')).not.toMatch(/manifestHash mismatch/i);
+
+    // True duplicate target threadId (validator + audit duplicate gate).
+    const dup = await buildApprovedFixture({
+      mutateManifest: (m) => ({
+        ...m,
+        targets: [...m.targets, { ...m.targets[0] }],
+      }),
+    });
+    const dupResult = await auditCenturionTriageRetag({
+      driver: dup.auditDriver,
+      snapshot: dup.snapshot,
+      manifest: dup.manifest,
+      applySummary: dup.applySummary,
+      keyPrefix: KEY_PREFIX,
+    });
+    expect(dupResult.ok).toBe(false);
+    expect(dupResult.errors.join('\n')).toMatch(/duplicate target/i);
   });
 
   it('rejects wrong trigger/pre-state hash', async () => {

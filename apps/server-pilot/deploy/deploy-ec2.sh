@@ -91,13 +91,14 @@ if [ "$QUIESCED" = "1" ]; then
         const hit=apps.find(a=>a.name===process.argv[1]);
         process.stdout.write(hit?.pm2_env?.status || '');
       " "$app")"
-      if [ "$status" = "online" ] || [ "$status" = "launching" ]; then
+      # Absent process OK; any known non-stopped status (online/launching/errored/stopping/…) refuses.
+      if [ -n "$status" ] && [ "$status" != "stopped" ]; then
         echo "quiesced deploy refused: ${app} status=${status} (must be stopped)" >&2
         exit 1
       fi
     fi
   done
-  echo "quiesced: http/worker/ai-worker not online"
+  echo "quiesced: http/worker/ai-worker stopped"
   echo "quiesced deploy ok (assets synced; no PM2 mutation; no HTTP health)"
   exit 0
 fi

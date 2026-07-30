@@ -233,17 +233,41 @@ describe('deploy config', () => {
     const deploy = readFileSync(join(here, '..', 'deploy', 'deploy-ec2.sh'), 'utf8');
     const ops = readFileSync(join(here, '..', 'deploy', 'ops-deploy.sh'), 'utf8');
 
+    /** Depth-aware if/fi — full QUIESCED branch, not first nested fi. */
+    const extractBashIfBlock = (script: string, conditionRe: RegExp): string | null => {
+      const match = script.match(conditionRe);
+      if (!match || match.index == null) return null;
+      const lines = script.slice(match.index).split(/\r?\n/);
+      let depth = 0;
+      const collected: string[] = [];
+      for (const line of lines) {
+        collected.push(line);
+        if (/^\s*if\b/.test(line)) depth += 1;
+        if (/^\s*fi\b/.test(line)) {
+          depth -= 1;
+          if (depth === 0) return collected.join('\n');
+        }
+      }
+      return null;
+    };
+
     expect(deploy).toContain('--quiesced');
     expect(ops).toContain('--quiesced');
     expect(ops).toContain('vpn-health-assert.sh');
 
-    const deployQuiesced = deploy.match(
-      /if\s+\[\s*"\$\{?QUIESCED\}?"\s*=\s*"1"\s*\][\s\S]*?(?=^fi\b)/m,
-    )?.[0];
+    const deployQuiesced = extractBashIfBlock(
+      deploy,
+      /if\s+\[\s*"\$\{?QUIESCED\}?"\s*=\s*"1"\s*\]/,
+    );
     expect(deployQuiesced, 'deploy-ec2.sh QUIESCED branch').toBeTruthy();
+    expect(deployQuiesced).toContain('quiesced deploy ok');
+    expect(deployQuiesced).toMatch(/exit 0/);
     expect(deployQuiesced).toMatch(/http/);
     expect(deployQuiesced).toMatch(/worker/);
     expect(deployQuiesced).toMatch(/ai-worker/);
+    // Refuse any non-stopped status (errored/stopping/online/launching/…).
+    expect(deployQuiesced).toMatch(/"\$status"\s*!=\s*"stopped"/);
+    expect(deployQuiesced).not.toMatch(/"\$status"\s*=\s*"online"/);
     expect(deployQuiesced).not.toMatch(/\bpm2\s+start\b/);
     expect(deployQuiesced).not.toMatch(/\bpm2\s+delete\b/);
     expect(deployQuiesced).not.toMatch(/\bpm2\s+save\b/);
@@ -253,10 +277,12 @@ describe('deploy config', () => {
     expect(deploy).toContain('pm2 start');
     expect(deploy).toContain('health attempt');
 
-    const opsQuiesced = ops.match(
-      /if\s+\[\s*"\$\{?QUIESCED\}?"\s*=\s*"1"\s*\][\s\S]*?(?=^fi\b)/m,
-    )?.[0];
+    const opsQuiesced = extractBashIfBlock(
+      ops,
+      /if\s+\[\s*"\$\{?QUIESCED\}?"\s*=\s*"1"\s*\]/,
+    );
     expect(opsQuiesced, 'ops-deploy.sh QUIESCED branch').toBeTruthy();
+    expect(opsQuiesced).toContain('deploy-ec2.sh --quiesced');
     expect(opsQuiesced).not.toMatch(/curl[^\n]*\/health/);
     expect(ops).toMatch(/deploy-ec2\.sh --quiesced|deploy-ec2\.sh"\s*--quiesced/);
   });

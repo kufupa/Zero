@@ -10,6 +10,7 @@ import {
   computeCustomCategoryPresenceHash,
   emitTargetManifestFromSnapshot,
   parseSnapshotArgs,
+  requireSnapshotPromptHash,
   verifySnapshotAgainstLive,
 } from '../scripts/snapshot-centurion-triage.mjs';
 import {
@@ -22,6 +23,24 @@ import {
   parseRestoreArgs,
   restoreCenturionTriageSnapshot,
 } from '../scripts/restore-centurion-triage-snapshot.mjs';
+
+/** Depth-aware bash if/fi extract — covers full QUIESCED branch (not first nested fi). */
+function extractBashIfBlock(script: string, conditionRe: RegExp): string | null {
+  const match = script.match(conditionRe);
+  if (!match || match.index == null) return null;
+  const lines = script.slice(match.index).split(/\r?\n/);
+  let depth = 0;
+  const collected: string[] = [];
+  for (const line of lines) {
+    collected.push(line);
+    if (/^\s*if\b/.test(line)) depth += 1;
+    if (/^\s*fi\b/.test(line)) {
+      depth -= 1;
+      if (depth === 0) return collected.join('\n');
+    }
+  }
+  return null;
+}
 
 const TRANSPORT_ID = 'transport-centurion';
 const MODEL_ID = 'amazon.nova-lite-v1:0';
@@ -182,6 +201,19 @@ describe('snapshot CLI args', () => {
     });
     expect(() => parseSnapshotArgs(['--out'])).toThrow(/--out requires/i);
     expect(() => parseSnapshotArgs(['--out', 's.json', '--nope'])).toThrow(/unknown option/i);
+  });
+
+  it('requires SNAPSHOT_PROMPT_HASH only when emitting targets', () => {
+    expect(requireSnapshotPromptHash(undefined, { emitTargets: false })).toBeNull();
+    expect(requireSnapshotPromptHash(null, { emitTargets: false })).toBeNull();
+    expect(requireSnapshotPromptHash('not-a-hash', { emitTargets: false })).toBeNull();
+    expect(() => requireSnapshotPromptHash(undefined, { emitTargets: true })).toThrow(
+      /SNAPSHOT_PROMPT_HASH/,
+    );
+    expect(() => requireSnapshotPromptHash('short', { emitTargets: true })).toThrow(
+      /SNAPSHOT_PROMPT_HASH/,
+    );
+    expect(requireSnapshotPromptHash(PROMPT_HASH, { emitTargets: true })).toBe(PROMPT_HASH);
   });
 
   it('restore requires --snapshot and rejects unknown options', () => {
@@ -417,11 +449,19 @@ describe('quiesced deploy wrappers', () => {
     expect(ops).toContain('--quiesced');
     expect(ops).toContain('vpn-health-assert.sh');
 
-    const deployQuiesced = deploy.match(
-      /if\s+\[\s*"\$\{?QUIESCED\}?"\s*=\s*"1"\s*\][\s\S]*?(?=^fi\b)/m,
-    )?.[0];
+    const deployQuiesced = extractBashIfBlock(
+      deploy,
+      /if\s+\[\s*"\$\{?QUIESCED\}?"\s*=\s*"1"\s*\]/,
+    );
     expect(deployQuiesced, 'deploy-ec2.sh must have QUIESCED=1 branch').toBeTruthy();
-    expect(deployQuiesced).toMatch(/http|worker|ai-worker/);
+    // Full branch (past nested fi): stop assert + exit 0, no PM2 mutate.
+    expect(deployQuiesced).toContain('quiesced deploy ok');
+    expect(deployQuiesced).toMatch(/exit 0/);
+    expect(deployQuiesced).toMatch(/http/);
+    expect(deployQuiesced).toMatch(/worker/);
+    expect(deployQuiesced).toMatch(/ai-worker/);
+    expect(deployQuiesced).toMatch(/"\$status"\s*!=\s*"stopped"/);
+    expect(deployQuiesced).not.toMatch(/"\$status"\s*=\s*"online"/);
     expect(deployQuiesced).not.toMatch(/\bpm2\s+start\b/);
     expect(deployQuiesced).not.toMatch(/\bpm2\s+delete\b/);
     expect(deployQuiesced).not.toMatch(/\bpm2\s+save\b/);
@@ -429,10 +469,12 @@ describe('quiesced deploy wrappers', () => {
 
     // ops quiesced: still VPN; must not require HTTP health when passing --quiesced
     expect(ops).toMatch(/QUIESCED/);
-    const opsHealthBlock = ops.match(
-      /if\s+\[\s*"\$\{?QUIESCED\}?"\s*=\s*"1"\s*\][\s\S]*?(?=^fi\b)/m,
-    )?.[0];
+    const opsHealthBlock = extractBashIfBlock(
+      ops,
+      /if\s+\[\s*"\$\{?QUIESCED\}?"\s*=\s*"1"\s*\]/,
+    );
     expect(opsHealthBlock, 'ops-deploy.sh must have QUIESCED=1 branch').toBeTruthy();
+    expect(opsHealthBlock).toContain('deploy-ec2.sh --quiesced');
     expect(opsHealthBlock).not.toMatch(/curl[^\n]*\/health/);
     expect(ops).toContain('vpn-health-assert.sh');
   });
