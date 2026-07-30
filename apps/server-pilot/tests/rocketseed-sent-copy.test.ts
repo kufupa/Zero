@@ -26,6 +26,7 @@ import {
   resetS3Storage,
   setS3Storage,
 } from '../src/storage/s3';
+import { assertRequiredRocketseedDbReachable } from './helpers/rocketseed-db-gate';
 import { callerFor } from './helpers/trpc-caller';
 import { readFixture } from './helpers/fixtures';
 import {
@@ -48,6 +49,11 @@ const INLINE_ROUTE =
   '/api/mail/messages/:messageId/attachments/:attachmentId/inline';
 
 const reachable = await probeTestDb();
+assertRequiredRocketseedDbReachable({
+  required: process.env.REQUIRE_ROCKETSEED_DB_TESTS === '1',
+  databaseUrlConfigured: TEST_DB_AVAILABLE,
+  reachable,
+});
 const originalBetterAuthUrl = process.env.BETTER_AUTH_URL;
 
 beforeEach(() => {
