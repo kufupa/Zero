@@ -56,6 +56,8 @@ export type HmsReadSession = {
   origin: string;
   /** Last blocked policy decision (redacted), if any. */
   violation(): RequestDecision | null;
+  /** True after policy block, abort, popup/download/ws, or close. */
+  terminal(): boolean;
   /** Page surface for adapters / discovery (injectable browser). */
   page: HmsPage;
   close(): Promise<void>;
@@ -78,9 +80,13 @@ export type HmsPage = {
   }>;
   fillLogin(username: string, password: string): Promise<void>;
   submitLogin(): Promise<void>;
+  /** POST url-encoded form through context route policy (canary / adapters). */
+  postForm(url: string, fields: Record<string, string>): Promise<void>;
   click(selector: string): Promise<void>;
   evaluate<T>(fn: () => T | Promise<T>): Promise<T>;
 };
+
+export type HmsDownloadEvent = { cancel(): Promise<void> };
 
 export type HmsBrowserContext = {
   route(
@@ -91,6 +97,8 @@ export type HmsBrowserContext = {
   close(): Promise<void>;
   pages(): HmsPage[];
   on(event: 'page', handler: (page: HmsPage) => void): void;
+  on(event: 'download', handler: (download: HmsDownloadEvent) => void): void;
+  on(event: 'websocket', handler: () => void): void;
 };
 
 export type HmsBrowser = {
@@ -301,10 +309,15 @@ export function createFetchBrowserFactory(
         const action = actionMatch?.[1] ?? '/session';
         const base = this.ctx.lastOrigin ?? 'http://127.0.0.1';
         const url = new URL(action, base).toString();
-        const postData = new URLSearchParams({
+        await this.postForm(url, {
           username: creds.username,
           password: creds.password,
-        }).toString();
+        });
+      }
+
+      async postForm(url: string, fields: Record<string, string>) {
+        this.#assertOpen();
+        const postData = new URLSearchParams(fields).toString();
         const decision = await this.ctx.dispatchRoute({
           url,
           method: 'POST',
@@ -317,7 +330,7 @@ export function createFetchBrowserFactory(
         if (decision?.action === 'block') {
           throw new HmsRuntimeError(
             decision.code,
-            `login blocked: ${decision.code}`,
+            `post blocked: ${decision.code}`,
           );
         }
         const res = await fetch(url, {
@@ -365,6 +378,8 @@ export function createFetchBrowserFactory(
         ...routeHandlers,
       ];
       #pageListeners: Array<(page: HmsPage) => void> = [];
+      #downloadListeners: Array<(download: HmsDownloadEvent) => void> = [];
+      #websocketListeners: Array<() => void> = [];
       lastViolation: RequestDecision | null = null;
 
       async route(
@@ -449,8 +464,31 @@ export function createFetchBrowserFactory(
         return [...this.#pages];
       }
 
-      on(event: 'page', handler: (page: HmsPage) => void) {
-        if (event === 'page') this.#pageListeners.push(handler);
+      on(
+        event: 'page' | 'download' | 'websocket',
+        handler:
+          | ((page: HmsPage) => void)
+          | ((download: HmsDownloadEvent) => void)
+          | (() => void),
+      ) {
+        if (event === 'page') {
+          this.#pageListeners.push(handler as (page: HmsPage) => void);
+        } else if (event === 'download') {
+          this.#downloadListeners.push(
+            handler as (download: HmsDownloadEvent) => void,
+          );
+        } else if (event === 'websocket') {
+          this.#websocketListeners.push(handler as () => void);
+        }
+      }
+
+      /** Test helper: emit download/ws for guard coverage. */
+      emitDownload(download: HmsDownloadEvent = { cancel: async () => {} }) {
+        for (const listener of this.#downloadListeners) listener(download);
+      }
+
+      emitWebSocket() {
+        for (const listener of this.#websocketListeners) listener();
       }
 
       async close() {
@@ -638,10 +676,24 @@ export function createHmsRuntime(options: HmsRuntimeOptions): HmsRuntime {
     try {
       const secret = await getSecret(signal);
       const origin = new URL(secret.loginUrl).origin;
-      // Step 3: reservation not-found read (fixture path)
+      // Step 3: reservation not-found read (real search path, not page shell only)
       await session.page.goto(`${origin}/reservations`, {
         timeout: remainingBudgetMs(signal, timeoutMs),
       });
+      await session.page.postForm(`${origin}/web/reservation/search`, {
+        action: 'search',
+        tenant: secret.expectedTenant,
+        property: secret.expectedPropertyCode,
+        confirmationNumber: 'NOTFOUND-CANARY',
+        surname: '',
+      });
+      const searchHtml = await session.page.content();
+      if (!/data-testid="no-results"|No reservations found/i.test(searchHtml)) {
+        throw new HmsRuntimeError(
+          'canary_reservation',
+          'canary expected reservation not-found result',
+        );
+      }
       // Step 4: harmless Room Availability if rule present
       const hasRooms = options.manifest.rules.some(
         (r) => r.path === '/availability/rooms',
@@ -681,10 +733,38 @@ export function createHmsRuntime(options: HmsRuntimeOptions): HmsRuntime {
 
     let context: HmsBrowserContext | null = null;
     let lastViolation: RequestDecision | null = null;
+    let terminal = false;
+    let released = false;
+    let closedCounted = false;
     const guards = createBrowserEventGuards(options.manifest);
 
+    const releaseOnce = () => {
+      if (released) return;
+      released = true;
+      activeSessions = Math.max(0, activeSessions - 1);
+      release();
+    };
+
+    const teardown = async () => {
+      input.signal.removeEventListener('abort', closeOnAbort);
+      try {
+        if (context) {
+          await context.close();
+          if (!closedCounted) {
+            closedCounted = true;
+            contextsClosed += 1;
+          }
+        }
+      } catch {
+        /* ignore close errors */
+      } finally {
+        releaseOnce();
+      }
+    };
+
     const closeOnAbort = () => {
-      void context?.close();
+      terminal = true;
+      void teardown();
     };
     input.signal.addEventListener('abort', closeOnAbort, { once: true });
 
@@ -703,14 +783,34 @@ export function createHmsRuntime(options: HmsRuntimeOptions): HmsRuntime {
           decision;
         if (decision.action === 'block') {
           lastViolation = decision;
+          terminal = true;
+          await teardown();
         }
       });
 
       context.on('page', (page) => {
         if (context!.pages().length > 1) {
-          void guards.handlePopup(page);
-          lastViolation = guards.lastBlock();
+          void (async () => {
+            await guards.handlePopup(page);
+            lastViolation = guards.lastBlock();
+            terminal = true;
+            await teardown();
+          })();
         }
+      });
+      context.on('download', (download) => {
+        void (async () => {
+          await guards.handleDownload(download);
+          lastViolation = guards.lastBlock();
+          terminal = true;
+          await teardown();
+        })();
+      });
+      context.on('websocket', () => {
+        guards.handleWebSocket();
+        lastViolation = guards.lastBlock();
+        terminal = true;
+        void teardown();
       });
 
       const page = await context.newPage();
@@ -725,36 +825,21 @@ export function createHmsRuntime(options: HmsRuntimeOptions): HmsRuntime {
       await verifyProperty(page, secret);
 
       const sessionId = randomUUID();
-      let closed = false;
 
       return {
         id: sessionId,
         origin: new URL(secret.loginUrl).origin,
         violation: () => lastViolation,
+        terminal: () => terminal,
         page,
         close: async () => {
-          if (closed) return;
-          closed = true;
-          input.signal.removeEventListener('abort', closeOnAbort);
-          try {
-            await context?.close();
-          } finally {
-            contextsClosed += 1;
-            activeSessions = Math.max(0, activeSessions - 1);
-            release();
-          }
+          terminal = true;
+          await teardown();
         },
       };
     } catch (err) {
-      input.signal.removeEventListener('abort', closeOnAbort);
-      try {
-        await context?.close();
-        if (context) contextsClosed += 1;
-      } catch {
-        /* ignore */
-      }
-      activeSessions = Math.max(0, activeSessions - 1);
-      release();
+      terminal = true;
+      await teardown();
 
       const code =
         err instanceof HmsRuntimeError ? err.code : redactError(err);
@@ -879,9 +964,29 @@ export async function tryCreatePlaywrightBrowserFactory(): Promise<BrowserFactor
             pages() {
               return context.pages().map(wrapPlaywrightPage);
             },
-            on(event, handler) {
+            on(
+              event: 'page' | 'download' | 'websocket',
+              handler:
+                | ((page: HmsPage) => void)
+                | ((download: HmsDownloadEvent) => void)
+                | (() => void),
+            ) {
               if (event === 'page') {
-                context.on('page', (p) => handler(wrapPlaywrightPage(p)));
+                context.on('page', (p) =>
+                  (handler as (page: HmsPage) => void)(wrapPlaywrightPage(p)),
+                );
+              } else if (event === 'download') {
+                context.on('download', (d) =>
+                  (handler as (download: HmsDownloadEvent) => void)({
+                    cancel: () => d.cancel(),
+                  }),
+                );
+              } else if (event === 'websocket') {
+                context.on('page', (p) => {
+                  p.on('websocket', () => {
+                    (handler as () => void)();
+                  });
+                });
               }
             },
           };
@@ -902,6 +1007,7 @@ function wrapPlaywrightPage(page: {
   close(): Promise<void>;
   setDefaultTimeout(ms: number): void;
   setDefaultNavigationTimeout(ms: number): void;
+  setContent?(html: string): Promise<void>;
   locator(selector: string): {
     fill(value: string): Promise<void>;
     click(): Promise<void>;
@@ -912,6 +1018,7 @@ function wrapPlaywrightPage(page: {
     opts: { name: string },
   ): { click(): Promise<void> };
   evaluate<T>(fn: () => T | Promise<T>): Promise<T>;
+  evaluate<T, A>(fn: (arg: A) => T | Promise<T>, arg: A): Promise<T>;
 }): HmsPage {
   return {
     async goto(url, options) {
@@ -939,6 +1046,24 @@ function wrapPlaywrightPage(page: {
     async submitLogin() {
       await page.getByRole('button', { name: 'Sign in' }).click();
       await page.goto; // navigation follows form
+    },
+    async postForm(url, fields) {
+      const postData = new URLSearchParams(fields).toString();
+      const html = await page.evaluate(
+        async ({ url, postData }) => {
+          const res = await fetch(url, {
+            method: 'POST',
+            headers: { 'content-type': 'application/x-www-form-urlencoded' },
+            body: postData,
+            credentials: 'same-origin',
+          });
+          return await res.text();
+        },
+        { url, postData },
+      );
+      if (page.setContent) {
+        await page.setContent(html);
+      }
     },
     async click(selector) {
       await page.locator(selector).click();

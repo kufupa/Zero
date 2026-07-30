@@ -313,6 +313,14 @@ describe('HMS runtime', () => {
     await expect(session.page.content()).rejects.toMatchObject({
       code: 'context_closed',
     });
+    expect(session.terminal()).toBe(true);
+    // abort teardown releases semaphore — second session must open without waiting on close()
+    const second = await runtime.openReadSession({
+      transportId: secret.mailboxTransportId,
+      signal: AbortSignal.timeout(15_000),
+    });
+    expect(second.terminal()).toBe(false);
+    await second.close();
     await session.close();
   });
 
@@ -342,9 +350,35 @@ describe('HMS runtime', () => {
 
     expect(server.state.mutationHits).toBe(beforeHits);
     expect(session.violation()?.action).toBe('block');
+    expect(session.terminal()).toBe(true);
     const serialized = JSON.stringify(session.violation());
     expect(serialized).not.toContain('fixture-password');
+    await expect(session.page.content()).rejects.toMatchObject({
+      code: 'context_closed',
+    });
+    // fail-closed teardown releases lock without explicit close first
+    const next = await runtime.openReadSession({
+      transportId: secret.mailboxTransportId,
+      signal: AbortSignal.timeout(15_000),
+    });
+    expect(runtime.health().activeSessions).toBe(1);
+    await next.close();
     await session.close();
+  });
+
+  it('canary posts reservation not-found search', async () => {
+    const server = await startHmsFixtureServer({ scenario: 'reservation-not-found' });
+    cleanup.push(server.close);
+    const { runtime } = await boot(server);
+    await runtime.start(AbortSignal.timeout(15_000));
+    expect(runtime.health().state).toBe('ready');
+    const searchPosts = server.requests.filter(
+      (r) => r.method === 'POST' && r.path === '/web/reservation/search',
+    );
+    expect(searchPosts.length).toBeGreaterThanOrEqual(1);
+    expect(searchPosts.some((r) => r.body.includes('NOTFOUND-CANARY'))).toBe(
+      true,
+    );
   });
 
   it('credential mode mismatch rejects non-view_only', async () => {

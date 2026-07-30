@@ -59,6 +59,24 @@ function fixtureManifest(origin: string) {
         redirectPolicy: 'same-reviewed-chain',
       }),
       requestRuleSchema.parse({
+        id: 'reservation-search',
+        origin,
+        method: 'POST',
+        path: '/web/reservation/search',
+        resourceTypes: ['document', 'xhr', 'fetch'],
+        contentType: 'application/x-www-form-urlencoded',
+        fixedBody: {
+          action: 'search',
+          tenant: FIXTURE_IDS.tenant,
+          property: FIXTURE_IDS.propertyCode,
+        },
+        variableBody: {
+          confirmationNumber: { pattern: '[A-Z0-9-]{1,32}', maxLength: 32 },
+          surname: { pattern: '.{0,40}', maxLength: 40 },
+        },
+        redirectPolicy: 'same-reviewed-chain',
+      }),
+      requestRuleSchema.parse({
         id: 'room-availability',
         origin,
         method: 'GET',
