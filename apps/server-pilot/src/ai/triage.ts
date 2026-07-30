@@ -92,6 +92,7 @@ export function refineTriageOutput(
   }
 
   if (
+    next.category === 'ops' &&
     next.urgent &&
     /\burgent\b/i.test(subject) &&
     /invoice|commission/i.test(haystack) &&
@@ -103,7 +104,7 @@ export function refineTriageOutput(
       ...next,
       urgent: false,
       policyFlags: [...next.policyFlags, 'refine:subject-urgent-not-sla'],
-      rationale: `${next.rationale} Subject URGENT on invoice/commission is not SLA.`,
+      rationale: `${next.rationale} Subject URGENT on ops invoice/commission is not SLA.`,
     };
   }
 

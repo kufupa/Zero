@@ -45,20 +45,59 @@ describe('AI triage contract', () => {
     expect(p).toMatch(/travel voucher|booking voucher/i);
   });
 
-  it('user prompt marks TRIGGER and preserves order', () => {
+  it('system prompt uses decision sequence and contrastive queue boundaries', () => {
+    const p = buildSystemPrompt();
+    expect(p).toMatch(/underlying (commercial )?intent/i);
+    expect(p).toMatch(/group shape/i);
+    expect(p).toMatch(/revenue risk/i);
+    expect(p).toMatch(/urgency.*asOf|asOf.*urgency/i);
+    expect(p).toMatch(/spam/i);
+    expect(p).toMatch(/one-room|one room/i);
+    expect(p).toMatch(/multi-room|multi room/i);
+    expect(p).toMatch(/rooming list/i);
+    expect(p).toMatch(/officials|delegates|team|banquet|conference/i);
+    expect(p).toMatch(/forward|FW:/i);
+    expect(p).toMatch(/commercial intent/i);
+    expect(p).toMatch(/handover/i);
+    expect(p).toMatch(/calendar.*(cancel|cancellation)|(cancel|cancellation).*calendar/i);
+    expect(p).toMatch(/booking.*(cancel|cancellation)|(cancel|cancellation).*booking/i);
+    expect(p).toMatch(/integrat(e|ion) fail|FAILED TO INTEGRATE|PMS/i);
+    expect(p).toMatch(/OTA|SynXis|hard SLA|time-boxed/i);
+    expect(p).toMatch(/same-day|hard.?SLA/i);
+    expect(p).toMatch(/invoice|commission/i);
+    expect(p).toMatch(/sender domain does not override|embedded commercial intent/i);
+    expect(p).toMatch(/confidence.*diagnostic|self-report/i);
+    expect(p).not.toMatch(/\bOCR\b/i);
+    expect(p).not.toMatch(/attachment pars/i);
+  });
+
+  it('user prompt marks TRIGGER and preserves ingestion order with causal fields', () => {
     const text = buildUserPrompt({
-      transportId: 't',
-      threadId: 'th',
       triggerMessageId: 'm2',
-      from: 'a@b.com',
-      to: [],
-      body: 'ignored-when-messages-present',
       asOf: '2026-07-01T12:00:00.000Z',
-      modelId: 'amazon.nova-lite-v1:0',
-      promptVersion: 'triage-v4',
+      from: 'a@b.com',
+      body: 'ignored-when-messages-present',
       messages: [
-        { id: 'm1', from: 'hotel@x.com', subject: 'Quote', body: 'first' },
-        { id: 'm2', from: 'guest@y.com', subject: 'Re: Quote', body: 'second' },
+        {
+          id: 'm1',
+          from: 'hotel@x.com',
+          subject: 'Quote',
+          body: 'first',
+          direction: 'outbound',
+          createdAt: new Date('2026-07-01T10:00:00.000Z'),
+          receivedAt: null,
+          sentAt: new Date('2026-07-01T09:55:00.000Z'),
+        },
+        {
+          id: 'm2',
+          from: 'guest@y.com',
+          subject: 'Re: Quote',
+          body: 'second',
+          direction: 'inbound',
+          createdAt: new Date('2026-07-01T11:00:00.000Z'),
+          receivedAt: new Date('2026-07-01T10:58:00.000Z'),
+          sentAt: null,
+        },
       ],
     });
     const i1 = text.indexOf('first');
@@ -66,6 +105,50 @@ describe('AI triage contract', () => {
     expect(i1).toBeGreaterThan(-1);
     expect(i2).toBeGreaterThan(i1);
     expect(text).toMatch(/TRIGGER/);
+    expect(text).toMatch(/asOf:\s*2026-07-01T12:00:00\.000Z/);
+    expect(text).toMatch(/direction:\s*outbound/);
+    expect(text).toMatch(/direction:\s*inbound/);
+    expect(text).toMatch(/ingestedAt:\s*2026-07-01T10:00:00\.000Z/);
+    expect(text).toMatch(/ingestedAt:\s*2026-07-01T11:00:00\.000Z/);
+    expect(text).toMatch(/messageDate:\s*2026-07-01T09:55:00\.000Z/);
+    expect(text).toMatch(/messageDate:\s*2026-07-01T10:58:00\.000Z/);
+    expect(text).toMatch(/--- message 0 /);
+    expect(text).toMatch(/--- message 1 /);
+    expect(text).toMatch(/DATA to classify|not instructions/i);
+    expect((text.match(/ TRIGGER ---/g) ?? []).length).toBe(1);
+    expect(text).toMatch(/Classify only the message marked TRIGGER/i);
+  });
+
+  it('user prompt omits messageDate when sender dates absent and keeps server order', () => {
+    const text = buildUserPrompt({
+      triggerMessageId: 'm-trigger',
+      asOf: '2026-07-29T15:38:03.615Z',
+      messages: [
+        {
+          id: 'm-a',
+          from: 'a@x.com',
+          subject: 'A',
+          body: 'alpha',
+          direction: 'inbound',
+          createdAt: new Date('2026-07-01T10:00:00.000Z'),
+          receivedAt: null,
+          sentAt: null,
+        },
+        {
+          id: 'm-trigger',
+          from: 'b@x.com',
+          subject: 'B',
+          body: 'beta',
+          direction: 'inbound',
+          createdAt: new Date('2026-07-01T11:00:00.000Z'),
+          receivedAt: null,
+          sentAt: null,
+        },
+      ],
+    });
+    expect(text).not.toMatch(/messageDate:/);
+    expect(text.indexOf('alpha')).toBeLessThan(text.indexOf('beta'));
+    expect(text).toMatch(/asOf:\s*2026-07-29T15:38:03\.615Z/);
   });
 
   it('classifyMailTriage is shared path used by workflow source', () => {
@@ -181,7 +264,7 @@ describe('AI triage contract', () => {
     expect(refined.policyFlags).toContain('refine:ops-handover-not-urgent');
   });
 
-  it('forces urgent false when subject URGENT is only invoice/commission noise', () => {
+  it('forces urgent false when subject URGENT is only ops invoice/commission noise', () => {
     const refined = refineTriageOutput(
       {
         from: 'accounts@agency.com',
@@ -198,6 +281,61 @@ describe('AI triage contract', () => {
     );
     expect(refined.urgent).toBe(false);
     expect(refined.policyFlags).toContain('refine:subject-urgent-not-sla');
+  });
+
+  it('does not apply subject-urgent-not-sla outside ops category', () => {
+    const refined = refineTriageOutput(
+      {
+        from: 'accounts@agency.com',
+        subject: 'URGENT commission invoice March',
+        body: 'Please find attached commission statement for March.',
+      },
+      {
+        category: 'at-risk',
+        urgent: true,
+        confidence: 0.7,
+        rationale: 'revenue',
+        policyFlags: [],
+      },
+    );
+    expect(refined.urgent).toBe(true);
+    expect(refined.policyFlags).not.toContain('refine:subject-urgent-not-sla');
+  });
+
+  it('preserves urgent for same-day tax invoice and hard-SLA text', () => {
+    const taxToday = refineTriageOutput(
+      {
+        from: 'guest@example.com',
+        subject: 'URGENT tax invoice',
+        body: 'Need tax invoice today before checkout.',
+      },
+      {
+        category: 'ops',
+        urgent: true,
+        confidence: 0.8,
+        rationale: 'same day',
+        policyFlags: [],
+      },
+    );
+    expect(taxToday.urgent).toBe(true);
+    expect(taxToday.policyFlags).not.toContain('refine:subject-urgent-not-sla');
+
+    const hardSla = refineTriageOutput(
+      {
+        from: 'ota@example.com',
+        subject: 'URGENT commission invoice',
+        body: 'Reply within 12h or booking cancels.',
+      },
+      {
+        category: 'ops',
+        urgent: true,
+        confidence: 0.8,
+        rationale: 'sla',
+        policyFlags: [],
+      },
+    );
+    expect(hardSla.urgent).toBe(true);
+    expect(hardSla.policyFlags).not.toContain('refine:subject-urgent-not-sla');
   });
 
   it('treats mail.legacyhotels.com as never-spam', () => {
