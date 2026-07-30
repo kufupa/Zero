@@ -16,6 +16,7 @@ import {
   heartbeatAiRun,
   markAiRunDeadLetter,
   markAiRunRetry,
+  markAiRunRunning,
   markAiRunSucceeded,
   remainingRunBudgetMs,
   shouldRetryAiFailure,
@@ -573,6 +574,41 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai workflow run contract', ()
       deadlineAt: reclaimed!.deadlineAt!,
     };
     expect(await heartbeatAiRun(liveFence)).toBe(true);
+  });
+
+  it('running transition requires matching claimToken', async () => {
+    const { transportId, threadId, messageId } = await seedMailContext();
+    await enqueueAiRun({
+      transportId,
+      threadId,
+      triggerMessageId: messageId,
+      runKind: 'inbound_triage',
+      idempotencyKey: `running-fence:${messageId}`,
+      modelId: 'amazon.nova-lite-v1:0',
+      promptVersion: 'triage-v4',
+      executorLane: 'default',
+    });
+
+    const claimed = await claimNextAiRun({ ownerId: 'owner-run', lane: 'default' });
+    const fence: AiRunFence = {
+      runId: claimed!.id,
+      claimOwner: claimed!.claimOwner!,
+      claimToken: claimed!.claimToken!,
+      deadlineAt: claimed!.deadlineAt!,
+    };
+
+    expect(await markAiRunRunning(fence)).toBe(true);
+    expect(
+      await markAiRunRunning({
+        ...fence,
+        claimToken: 'wrong-token',
+      }),
+    ).toBe(false);
+
+    const db = getDb();
+    const [row] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, claimed!.id));
+    expect(row?.state).toBe('running');
+    expect(row?.claimToken).toBe(fence.claimToken);
   });
 
   it('keeps default worker progressing while HMS run is stalled', async () => {

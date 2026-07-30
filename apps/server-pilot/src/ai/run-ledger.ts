@@ -303,6 +303,29 @@ export async function heartbeatAiRun(fence: AiRunFence, db: DB = getDb()): Promi
   return Boolean(row);
 }
 
+export async function markAiRunRunning(fence: AiRunFence, db: DB = getDb()): Promise<boolean> {
+  const now = new Date();
+  const [row] = await db
+    .update(aiWorkflowRun)
+    .set({
+      state: 'running',
+      heartbeatAt: now,
+      startedAt: now,
+      deadlineAt: fence.deadlineAt,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(aiWorkflowRun.id, fence.runId),
+        eq(aiWorkflowRun.claimOwner, fence.claimOwner),
+        eq(aiWorkflowRun.claimToken, fence.claimToken),
+        inArray(aiWorkflowRun.state, ['claimed', 'running']),
+      ),
+    )
+    .returning({ id: aiWorkflowRun.id });
+  return Boolean(row);
+}
+
 export async function markAiRunSucceeded(input: MarkAiRunSucceededInput, db: DB = getDb()) {
   const now = new Date();
   const [row] = await db

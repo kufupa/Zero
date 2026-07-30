@@ -1,6 +1,5 @@
-import { randomUUID } from 'node:crypto';
 import { isCliEntry } from '../lib/is-cli-entry.js';
-import { and, asc, eq, inArray, or } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 import { closeDb, getDb } from '../db/client.js';
 import {
   aiWorkflowRun,
@@ -18,8 +17,10 @@ import {
   claimNextAiRun,
   CLEANUP_RESERVE_MS,
   enqueueAiRun,
+  heartbeatAiRun,
   markAiRunDeadLetter,
   markAiRunRetry,
+  markAiRunRunning,
   markAiRunSucceeded,
   remainingRunBudgetMs,
   RunDeadlineError,
@@ -42,7 +43,8 @@ export function aiWorkerOwnerId(lane: AiExecutorLane = resolveWorkerLane()): str
 export const AI_WORKER_OWNER = aiWorkerOwnerId('default');
 
 const MONEY_DRAFT_CATEGORIES = new Set(['new-bookings', 'groups-events', 'at-risk']);
-
+/** Periodic lease renewal while a run executes (15–30s band). */
+export const AI_LEASE_HEARTBEAT_INTERVAL_MS = 20_000;
 export interface ExecuteAiRunResult {
   runId: string;
   state: 'succeeded' | 'retry_wait' | 'dead_letter';
@@ -138,7 +140,10 @@ export async function executeAiRun(
 
   const owner = claimOwnerFor(run);
   const now = new Date();
-  const claimToken = run.claimToken ?? randomUUID();
+  if (!run.claimToken) {
+    return { runId: run.id, state: 'dead_letter' };
+  }
+  const claimToken = run.claimToken;
   const deadlineAt = run.deadlineAt ?? new Date(now.getTime() + env.HMS_RUN_DEADLINE_MS);
   const fence: AiRunFence = {
     runId: run.id,
@@ -150,33 +155,21 @@ export async function executeAiRun(
   const shutdownSignal = options.shutdownSignal ?? new AbortController().signal;
   const signal = buildRunAbortSignal({ fence, leaseAbort, shutdownSignal, now });
 
-  await db
-    .update(aiWorkflowRun)
-    .set({
-      state: 'running',
-      claimOwner: owner,
-      claimToken,
-      deadlineAt,
-      heartbeatAt: now,
-      startedAt: now,
-      updatedAt: now,
-    })
-    .where(
-      and(
-        eq(aiWorkflowRun.id, runId),
-        or(
-          inArray(aiWorkflowRun.state, ['queued', 'retry_wait']),
-          and(
-            eq(aiWorkflowRun.claimOwner, owner),
-            inArray(aiWorkflowRun.state, ['claimed', 'running']),
-          ),
-        ),
-      ),
-    );
+  const flipped = await markAiRunRunning(fence);
+  if (!flipped) {
+    return { runId: run.id, state: 'dead_letter' };
+  }
 
   const runWithFence = { ...run, claimOwner: owner, claimToken, deadlineAt };
 
+  let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
   try {
+    heartbeatTimer = setInterval(() => {
+      void heartbeatAiRun(fence).then((ok) => {
+        if (!ok) leaseAbort.abort();
+      });
+    }, AI_LEASE_HEARTBEAT_INTERVAL_MS);
+
     if (signal.aborted) throw new RunDeadlineError();
 
     if (run.runKind === 'inbound_triage') {
@@ -417,6 +410,8 @@ export async function executeAiRun(
     throw new Error(`unsupported AI run kind: ${run.runKind}`);
   } catch (error) {
     return failAiRun(runWithFence, error, toAiRunFence(runWithFence) ?? fence);
+  } finally {
+    if (heartbeatTimer !== undefined) clearInterval(heartbeatTimer);
   }
 }
 
