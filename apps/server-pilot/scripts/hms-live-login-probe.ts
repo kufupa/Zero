@@ -250,21 +250,6 @@ async function main(): Promise<void> {
           bodyBytes: Buffer.byteLength(postData),
         };
         events.push(ev);
-        if (
-          req.method().toUpperCase() === 'POST' &&
-          new URL(req.url()).pathname === '/web/base/login'
-        ) {
-          const response = await route.fetch();
-          const buf = await response.body();
-          xhrMeta.push({
-            path: '/web/base/login',
-            status: response.status(),
-            ok: response.ok(),
-            bodyBytes: buf.byteLength,
-          });
-          await route.fulfill({ response });
-          return;
-        }
         await route.continue();
         return;
       }
@@ -381,17 +366,41 @@ async function main(): Promise<void> {
       await page.locator('input[name="userid"]').fill(secret.username);
       await page.locator('input[name="password"]').fill(secret.password);
       const preBlockCount = events.filter((e) => e.decision === 'block').length;
-      await Promise.all([
-        page
-          .locator('button, input[type="submit"]')
-          .filter({ hasText: /sign in|log in|login/i })
-          .first()
-          .click({ timeout: 10_000 })
-          .catch(async () => {
-            await page!.locator('input[name="password"]').press('Enter');
-          }),
-        page.waitForTimeout(4500),
-      ]);
+      const loginResponsePromise = page
+        .waitForResponse(
+          (res) => {
+            try {
+              return (
+                new URL(res.url()).pathname === '/web/base/login' &&
+                res.request().method() === 'POST'
+              );
+            } catch {
+              return false;
+            }
+          },
+          { timeout: 20_000 },
+        )
+        .catch(() => null);
+      await page
+        .locator('button, input[type="submit"]')
+        .filter({ hasText: /sign in|log in|login/i })
+        .first()
+        .click({ timeout: 10_000 })
+        .catch(async () => {
+          await page!.locator('input[name="password"]').press('Enter');
+        });
+      const loginRes = await loginResponsePromise;
+      if (loginRes) {
+        const headers = loginRes.headers();
+        const len = Number(headers['content-length'] ?? '0');
+        xhrMeta.push({
+          path: '/web/base/login',
+          status: loginRes.status(),
+          ok: loginRes.ok(),
+          bodyBytes: Number.isFinite(len) ? len : 0,
+        });
+      }
+      await page.waitForTimeout(2000);
       const postBlocks = events
         .filter((e) => e.decision === 'block')
         .slice(preBlockCount);
@@ -480,6 +489,11 @@ async function main(): Promise<void> {
     );
     if (!payload.ok) process.exit(2);
   } finally {
+    try {
+      await page?.unrouteAll({ behavior: 'ignoreErrors' });
+    } catch {
+      /* ignore */
+    }
     await page?.context().close().catch(() => {});
     await browser?.close().catch(() => {});
   }
@@ -489,8 +503,9 @@ function sanitizeProbeError(raw: string): string {
   // Strip secret-bearing tokens; keep IAM/AWS failure codes visible.
   let msg = raw
     .replace(/arn:aws:secretsmanager:[^\s]+/gi, 'arn:aws:secretsmanager:***')
+    .replace(/\b(cookie|set-cookie|jsessionid|csrftckt)\s*[:=][^\s;]+/gi, '$1=***')
     .replace(/\b[A-Za-z0-9+/_-]{24,}=*/g, '***');
-  if (/\bpassword\b|\bcookie\b|SecretString/i.test(msg)) {
+  if (/\bpassword\b|SecretString/i.test(msg)) {
     return 'redacted_error';
   }
   return msg.slice(0, 240);
