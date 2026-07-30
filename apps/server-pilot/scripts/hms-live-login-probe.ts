@@ -158,6 +158,22 @@ function minimalLoginManifest(origin: string): RequestPolicyManifest {
         maxBodyBytes: 4096,
         redirectPolicy: 'same-reviewed-chain',
       },
+      {
+        id: 'live-post-login-common',
+        origin,
+        method: 'GET',
+        path: '/web/base/COMMON',
+        resourceTypes: ['document', 'xhr', 'fetch'],
+        fixedQuery: {},
+        variableQuery: {
+          REQ_KEY: { pattern: '.{1,128}', maxLength: 128 },
+        },
+        fixedBody: {},
+        variableBody: {},
+        maxBodyBytes: 4096,
+        redirectPolicy: 'same-reviewed-chain',
+      },
+      getStaticRule(origin, 'live-post-login-root', '/', ['document']),
     ],
   });
 }
