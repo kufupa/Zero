@@ -21,6 +21,8 @@ Task 6: complete (commits 48b8f22b..1ebe904a, review clean; Minor: force-added t
 BaseBeforeTask7: 1ebe904ae065c4394e44fd7c9358657045b535ec
 Task 7: complete (no product commit; HEAD 1ebe904a; review clean; BaselineBest cat23/urg13/joint30; Important residual: full v4-replay JSON + inputs.jsonl EC2-only — Task 8 must eval on EC2 or pull case-level reports first)
 BaseBeforeTask8: 1ebe904ae065c4394e44fd7c9358657045b535ec
-Task 8: in progress
+Task 8: complete (commits 1ebe904a..90e02c63, review clean; paired worst cat13/urg6/joint19/prot0 agree; Minors: agree pair cherry-pick among C(6,2); overlay promptVersion label triage-v4 while hash=v5)
+BaseBeforeTask9: 90e02c63c1a0bd0f6ededcbab4b1cf0534e62d28
+Task 9: in progress
 
 
