@@ -505,7 +505,7 @@ function minimalLoginManifest(origin: string): RequestPolicyManifest {
           confirmationnumber: { pattern: '.{0,64}', maxLength: 64 },
           facebookid: { pattern: '.{0,64}', maxLength: 64 },
           firstname: { pattern: '.{0,64}', maxLength: 64 },
-          guestfullname: { pattern: '.{0,64}', maxLength: 64 },
+          guestNumber: { pattern: '.{0,64}', maxLength: 64 },
           guestid: { pattern: '.{0,64}', maxLength: 64 },
           hoteldate: { pattern: '.{0,32}', maxLength: 32 },
           lastname: { pattern: '.{0,64}', maxLength: 64 },

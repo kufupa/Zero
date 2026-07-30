@@ -88,6 +88,7 @@ if [ "$MODE" = "--full" ]; then
       tests/hms-runtime.test.ts \
       tests/hms-discovery.test.ts \
       tests/hms-adapter.test.ts \
+      tests/hms-live-read-manifest.test.ts \
       tests/hms-thread-context.test.ts \
       tests/hms-artifact.test.ts \
       tests/hms-candidate-agent.test.ts \
@@ -109,6 +110,7 @@ elif [ "$MODE" = "--fixture-only" ]; then
       tests/hms-runtime.test.ts \
       tests/hms-discovery.test.ts \
       tests/hms-adapter.test.ts \
+      tests/hms-live-read-manifest.test.ts \
       tests/hms-thread-context.test.ts \
       tests/hms-artifact.test.ts \
       tests/hms-candidate-agent.test.ts \

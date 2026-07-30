@@ -38,10 +38,16 @@
 
 ## Remaining deferred
 
-1. Wire reservation adapter to live Guest Stay selectors / `OSRESS.search` (still fixture until then).
+1. **Next plan:** live `InforReadAdapter` + Playwright session factory using `live-read-manifest.ts` + list-row fingerprint (adapter stays fixture until then).
 2. Replace interim shadow abstention labels with live shadow outcomes when reads exist.
 3. Optional disposable-DB `--full` gate.
 4. **`enabled` only after** hard+stat + production read path review.
+
+## Live read policy (promoted)
+
+- `apps/server-pilot/src/hms/live-read-manifest.ts` — reviewed functional rules (login/BSSTRT/OSRESV*/OSRESS.search).
+- Tests: `tests/hms-live-read-manifest.test.ts` (in `hms-read-gate.sh --fixture-only`).
+- Shadow worker still uses claim-safe mocks; no Chromium in enrichment path yet.
 
 ## Review closeout (post-canary)
 
