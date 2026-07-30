@@ -5,16 +5,21 @@ export const BLOCKED_IMAGE_PLACEHOLDER =
   'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
 
 function imgScheme(src: string): string {
-  const match = src.match(/^([a-z][a-z0-9+.-]*):/i);
+  let schemeCandidate = '';
+  for (let index = 0; index < src.length; index += 1) {
+    if (src.charCodeAt(index) > 0x20) schemeCandidate += src[index];
+  }
+  const match = schemeCandidate.match(/^([a-z][a-z0-9+.-]*):/i);
   return match ? match[1].toLowerCase() : '';
 }
 
 function isAllowedImgSrc(src: string, shouldLoadImages: boolean): boolean {
+  if (src === BLOCKED_IMAGE_PLACEHOLDER) return true;
   const scheme = imgScheme(src);
   if (scheme === 'cid') return true;
   if (!shouldLoadImages) return false;
   if (!scheme) return true;
-  return scheme === 'http' || scheme === 'https' || scheme === 'data';
+  return scheme === 'http' || scheme === 'https';
 }
 
 export function sanitizeEmailHtml(
@@ -23,8 +28,8 @@ export function sanitizeEmailHtml(
 ): { html: string; hasBlockedImages: boolean } {
   let hasBlockedImages = false;
 
-  // data: remains allowed at the sanitizer layer so the generated blocked
-  // placeholder survives. Caller-provided data: is replaced by transformTags.
+  // data: remains allowed at the sanitizer layer only so the exact generated
+  // placeholder survives. Every other data: URI is replaced by transformTags.
   const allowedImgSchemes = opts.shouldLoadImages
     ? ['http', 'https', 'data', 'cid']
     : ['cid', 'data'];

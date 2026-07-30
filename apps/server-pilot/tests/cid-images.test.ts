@@ -37,6 +37,18 @@ describe('normalizeContentId', () => {
     expect(normalizeContentId(' CID:Photo@Host ')).toBe('cid:photo@host');
   });
 
+  it('rejects decoded controls before trimming or angle normalization', () => {
+    for (const raw of [
+      'cid:%0Afoo',
+      'cid:foo%0D',
+      'cid:%09%3Cfoo%3E%09',
+      'cid:\nfoo',
+      'cid:foo\t',
+    ]) {
+      expect(normalizeContentId(raw), raw).toBeNull();
+    }
+  });
+
   it('rejects invalid percent escapes, controls, empty ids, and forbidden delimiters', () => {
     for (const raw of [
       'cid:%',

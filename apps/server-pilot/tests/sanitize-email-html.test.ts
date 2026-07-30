@@ -68,6 +68,39 @@ describe('sanitizeEmailHtml', () => {
     expect(html).toContain('alt="tracker"');
     expect(html).not.toContain('data:image/png');
   });
+
+  it('blocks arbitrary data payloads even when image loading is enabled', () => {
+    const payloads = [
+      'data:image/png;base64,AAAA',
+      ' \tdata:image/gif;base64,AAAA',
+      'data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%3C%2Fsvg%3E',
+      'data:text/html,%3Cscript%3Ealert(1)%3C%2Fscript%3E',
+    ];
+    const { html, hasBlockedImages } = sanitizeEmailHtml(
+      payloads
+        .map((src, index) => `<img alt="unsafe-${index}" src="${src}">`)
+        .join(''),
+      { shouldLoadImages: true },
+    );
+
+    expect(hasBlockedImages).toBe(true);
+    expect(html.split(BLOCKED_IMAGE_PLACEHOLDER)).toHaveLength(payloads.length + 1);
+    for (const payload of payloads) {
+      expect(html).not.toContain(payload);
+    }
+  });
+
+  it('keeps only the exact generated placeholder and remote images when enabled', () => {
+    const { html, hasBlockedImages } = sanitizeEmailHtml(
+      `<img alt="blocked" src="${BLOCKED_IMAGE_PLACEHOLDER}">` +
+        '<img alt="remote" src="https://images.example/banner.png">',
+      { shouldLoadImages: true },
+    );
+
+    expect(hasBlockedImages).toBe(false);
+    expect(html).toContain(`src="${BLOCKED_IMAGE_PLACEHOLDER}"`);
+    expect(html).toContain('src="https://images.example/banner.png"');
+  });
 });
 
 describe('sanitizeHtmlBodyForStorage', () => {

@@ -30,17 +30,15 @@ export function normalizeContentId(raw: string): string | null {
     return null;
   }
 
+  if (/\p{Cc}/u.test(normalized)) return null;
+
   normalized = normalized.trim();
   if (normalized.startsWith('<') && normalized.endsWith('>')) {
     normalized = normalized.slice(1, -1);
   }
   normalized = normalized.toLowerCase();
 
-  if (
-    !normalized ||
-    /\p{Cc}/u.test(normalized) ||
-    /[\\/?#]/.test(normalized)
-  ) {
+  if (!normalized || /[\\/?#]/.test(normalized)) {
     return null;
   }
   return normalized;

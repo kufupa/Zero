@@ -48,6 +48,12 @@ function jpeg(width: number, height: number): Buffer {
   ]);
 }
 
+function jpegSofOffset(bytes: Buffer): number {
+  const offset = bytes.indexOf(Buffer.from([0xff, 0xc0]));
+  if (offset < 0) throw new Error('test JPEG missing SOF0');
+  return offset;
+}
+
 function gif(
   width: number,
   height: number,
@@ -72,15 +78,21 @@ function webpChunk(kind: 'VP8X' | 'VP8 ' | 'VP8L', data: Buffer): Buffer {
   return buffer;
 }
 
-function webpVp8x(width: number, height: number): Buffer {
-  const data = Buffer.alloc(10);
+function webpVp8x(width: number, height: number, extraBytes = 0): Buffer {
+  const data = Buffer.alloc(10 + extraBytes);
   data.writeUIntLE(width - 1, 4, 3);
   data.writeUIntLE(height - 1, 7, 3);
   return webpChunk('VP8X', data);
 }
 
-function webpVp8(width: number, height: number): Buffer {
-  const data = Buffer.alloc(10);
+function webpVp8(
+  width: number,
+  height: number,
+  firstPartitionLength = 0,
+  payloadLength = 10 + firstPartitionLength,
+): Buffer {
+  const data = Buffer.alloc(payloadLength);
+  data.writeUIntLE((firstPartitionLength << 5) | 0x10, 0, 3);
   data[3] = 0x9d;
   data[4] = 0x01;
   data[5] = 0x2a;
@@ -89,10 +101,11 @@ function webpVp8(width: number, height: number): Buffer {
   return webpChunk('VP8 ', data);
 }
 
-function webpVp8l(width: number, height: number): Buffer {
+function webpVp8l(width: number, height: number, version = 0): Buffer {
   const data = Buffer.alloc(5);
   data[0] = 0x2f;
-  const dimensions = ((height - 1) << 14) | (width - 1);
+  const dimensions =
+    ((version & 0x7) << 29) | ((height - 1) << 14) | (width - 1);
   data.writeUInt32LE(dimensions >>> 0, 1);
   return webpChunk('VP8L', data);
 }
@@ -150,6 +163,63 @@ describe('assertSafeInlineRaster', () => {
         InlineImageUnsupportedError,
       );
     }
+  });
+
+  it('rejects malformed JPEG SOF component descriptors', () => {
+    const zeroComponents = jpeg(1, 1);
+    const zeroOffset = jpegSofOffset(zeroComponents);
+    zeroComponents[zeroOffset + 9] = 0;
+
+    const shortDescriptor = jpeg(1, 1);
+    const shortOffset = jpegSofOffset(shortDescriptor);
+    shortDescriptor.writeUInt16BE(16, shortOffset + 2);
+
+    const longDescriptor = jpeg(1, 1);
+    const longOffset = jpegSofOffset(longDescriptor);
+    longDescriptor[longOffset + 9] = 1;
+
+    const truncatedDescriptor = jpeg(1, 1);
+    const truncatedOffset = jpegSofOffset(truncatedDescriptor);
+    const truncated = truncatedDescriptor.subarray(0, truncatedOffset + 18);
+
+    for (const bytes of [
+      zeroComponents,
+      shortDescriptor,
+      longDescriptor,
+      truncated,
+    ]) {
+      expect(() => assertSafeInlineRaster(bytes, 'image/jpeg')).toThrow(
+        InlineImageUnsupportedError,
+      );
+    }
+  });
+
+  it('rejects malformed WebP inner headers and partitions', () => {
+    const interframe = webpVp8(1, 1);
+    interframe[20] = interframe[20]! | 0x01;
+
+    const badKeyframeSignature = webpVp8(1, 1);
+    badKeyframeSignature[23] = 0;
+
+    for (const bytes of [
+      webpVp8x(1, 1, 2),
+      webpVp8l(1, 1, 1),
+      webpChunk('VP8L', Buffer.from([0x2f, 0, 0, 0])),
+      webpVp8(1, 1, 1, 10),
+      webpChunk('VP8 ', Buffer.alloc(9)),
+      interframe,
+      badKeyframeSignature,
+    ]) {
+      expect(() => assertSafeInlineRaster(bytes, 'image/webp')).toThrow(
+        InlineImageUnsupportedError,
+      );
+    }
+  });
+
+  it('accepts a VP8 first partition fully contained by the chunk', () => {
+    expect(() =>
+      assertSafeInlineRaster(webpVp8(1, 1, 2, 12), 'image/webp'),
+    ).not.toThrow();
   });
 
   it('rejects zero dimensions and width or height above 10,000', () => {

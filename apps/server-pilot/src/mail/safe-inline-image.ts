@@ -132,6 +132,13 @@ function readJpegDimensions(bytes: Buffer): Dimensions {
 
     if (isStartOfFrame) {
       if (segmentLength < 8) unsupported('Truncated JPEG SOF');
+      const componentCount = bytes[offset + 7]!;
+      if (
+        componentCount < 1 ||
+        segmentLength !== 8 + 3 * componentCount
+      ) {
+        unsupported('Invalid JPEG SOF components');
+      }
       return {
         height: bytes.readUInt16BE(offset + 3),
         width: bytes.readUInt16BE(offset + 5),
@@ -155,20 +162,23 @@ function readGifDimensions(bytes: Buffer): Dimensions {
 function readWebpDimensions(bytes: Buffer): Dimensions {
   if (bytes.length < 20) unsupported('Truncated WebP header');
 
-  const declaredEnd = bytes.readUInt32LE(4) + 8;
+  const riffEnd = bytes.readUInt32LE(4) + 8;
   const chunkSize = bytes.readUInt32LE(16);
-  const chunkEnd = 20 + chunkSize + (chunkSize % 2);
+  const chunkDataEnd = 20 + chunkSize;
+  const chunkEnd = chunkDataEnd + (chunkSize % 2);
   if (
-    declaredEnd < 20 ||
-    declaredEnd > bytes.length ||
-    chunkEnd > declaredEnd
+    riffEnd < 20 ||
+    riffEnd !== bytes.length ||
+    riffEnd % 2 !== 0 ||
+    chunkDataEnd > riffEnd ||
+    chunkEnd > riffEnd
   ) {
     unsupported('Truncated WebP chunk');
   }
 
   const chunk = bytes.subarray(12, 16).toString('ascii');
   if (chunk === 'VP8X') {
-    if (chunkSize < 10) unsupported('Truncated VP8X header');
+    if (chunkSize !== 10) unsupported('Invalid VP8X header');
     return {
       width: bytes.readUIntLE(24, 3) + 1,
       height: bytes.readUIntLE(27, 3) + 1,
@@ -176,9 +186,12 @@ function readWebpDimensions(bytes: Buffer): Dimensions {
   }
 
   if (chunk === 'VP8 ') {
+    if (chunkSize < 10) unsupported('Truncated VP8 frame header');
+    const frameTag = bytes.readUIntLE(20, 3);
+    const firstPartitionLength = frameTag >>> 5;
     if (
-      chunkSize < 10 ||
-      (bytes[20]! & 1) !== 0 ||
+      (frameTag & 1) !== 0 ||
+      firstPartitionLength > chunkSize - 10 ||
       bytes[23] !== 0x9d ||
       bytes[24] !== 0x01 ||
       bytes[25] !== 0x2a
@@ -196,6 +209,9 @@ function readWebpDimensions(bytes: Buffer): Dimensions {
       unsupported('Invalid VP8L frame header');
     }
     const dimensions = bytes.readUInt32LE(21);
+    if ((dimensions >>> 29) !== 0) {
+      unsupported('Unsupported VP8L version');
+    }
     return {
       width: (dimensions & 0x3fff) + 1,
       height: ((dimensions >>> 14) & 0x3fff) + 1,
