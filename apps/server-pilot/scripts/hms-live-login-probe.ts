@@ -446,6 +446,61 @@ function minimalLoginManifest(origin: string): RequestPolicyManifest {
         maxBodyBytes: 8192,
         redirectPolicy: 'same-reviewed-chain',
       },
+      {
+        id: 'live-osresv-hdr',
+        origin,
+        method: 'POST',
+        path: '/web/base/OSRESV.HDR',
+        resourceTypes: ['xhr', 'fetch'],
+        contentType: 'application/x-www-form-urlencoded',
+        fixedQuery: {},
+        variableQuery: {},
+        fixedBody: {},
+        variableBody: {
+          CURRENT_TAB_NAME: { pattern: '.{0,64}', maxLength: 64 },
+          MENU_MODULE_KEY: { pattern: '.{0,64}', maxLength: 64 },
+          SYSTEM_FUNCTION_NAME: { pattern: '.{0,64}', maxLength: 64 },
+          USER_FUNCTION_NAME: { pattern: '.{0,64}', maxLength: 64 },
+          account: { pattern: '.{0,64}', maxLength: 64 },
+          bookingdotcomid: { pattern: '.{0,64}', maxLength: 64 },
+          confirmationnumber: { pattern: '.{0,64}', maxLength: 64 },
+          facebookid: { pattern: '.{0,64}', maxLength: 64 },
+          firstname: { pattern: '.{0,64}', maxLength: 64 },
+          guestfullname: { pattern: '.{0,64}', maxLength: 64 },
+          guestid: { pattern: '.{0,64}', maxLength: 64 },
+          hoteldate: { pattern: '.{0,32}', maxLength: 32 },
+          lastname: { pattern: '.{0,64}', maxLength: 64 },
+          propertycode: { pattern: 'HRCEN|', maxLength: 16 },
+          removescreenflows: { pattern: '.{0,16}', maxLength: 16 },
+          reservationstayid: { pattern: '.{0,64}', maxLength: 64 },
+          room: { pattern: '.{0,32}', maxLength: 32 },
+          tripadvisorid: { pattern: '.{0,64}', maxLength: 64 },
+          twitterid: { pattern: '.{0,64}', maxLength: 64 },
+        },
+        maxBodyBytes: 16_384,
+        redirectPolicy: 'same-reviewed-chain',
+      },
+      {
+        id: 'live-osresv-lst',
+        origin,
+        method: 'POST',
+        path: '/web/base/OSRESV.LST',
+        resourceTypes: ['xhr', 'fetch'],
+        contentType: 'application/x-www-form-urlencoded',
+        fixedQuery: {},
+        variableQuery: {},
+        fixedBody: {},
+        variableBody: {
+          COMPONENT_INFO_TYPE: { pattern: '.{0,64}', maxLength: 64 },
+          CURRENT_TAB_NAME: { pattern: '.{0,64}', maxLength: 64 },
+          MENU_MODULE_KEY: { pattern: '.{0,64}', maxLength: 64 },
+          SYSTEM_FUNCTION_NAME: { pattern: '.{0,64}', maxLength: 64 },
+          USER_FUNCTION_NAME: { pattern: '.{0,64}', maxLength: 64 },
+          removescreenflows: { pattern: '.{0,16}', maxLength: 16 },
+        },
+        maxBodyBytes: 16_384,
+        redirectPolicy: 'same-reviewed-chain',
+      },
     ],
   });
 }
@@ -731,6 +786,11 @@ async function main(): Promise<void> {
       error: string | null;
       afterPath: string | null;
       afterTitle: string | null;
+      listHint: {
+        hasNoResults: boolean;
+        hasGuestStayCopy: boolean;
+        hasNewRecord: boolean;
+      } | null;
       firstBlockAfterNav: ProbeEvent | null;
     } | null = null;
 
@@ -863,6 +923,11 @@ async function main(): Promise<void> {
           });
           if (searchFilled) {
             clicked.push(`searchField:${searchFilled}`);
+            await page!.locator('input[name="search"], input#search').first().press('Enter').catch(async () => {
+              await page!.keyboard.press('Enter');
+            });
+            clicked.push('search:Enter');
+            await page!.waitForTimeout(2000);
             // Click Search/Go/Find — never New/Save/Duplicate
             const searchBtn = page!
               .locator('button, a, span, td, div')
@@ -897,11 +962,29 @@ async function main(): Promise<void> {
         .filter((e) => e.decision === 'block')
         .slice(preNavBlockCount);
       const afterNav = await page
-        .evaluate(() => ({
-          path: location.pathname,
-          title: document.title.slice(0, 80),
-        }))
-        .catch(() => ({ path: null as string | null, title: null as string | null }));
+        .evaluate(() => {
+          const t = (document.body?.innerText || '').toLowerCase();
+          return {
+            path: location.pathname,
+            title: document.title.slice(0, 80),
+            listHint: {
+              hasNoResults:
+                t.includes('no reservations') ||
+                t.includes('no records') ||
+                t.includes('no results') ||
+                t.includes('0 records') ||
+                t.includes('not found'),
+              hasGuestStayCopy:
+                t.includes('guest stay') || t.includes('confirmation'),
+              hasNewRecord: t.includes('new record'),
+            },
+          };
+        })
+        .catch(() => ({
+          path: null as string | null,
+          title: null as string | null,
+          listHint: null,
+        }));
 
       guestStayNav = {
         attempted: true,
@@ -911,6 +994,7 @@ async function main(): Promise<void> {
         error: navErr,
         afterPath: afterNav.path,
         afterTitle: afterNav.title,
+        listHint: afterNav.listHint,
         firstBlockAfterNav: postNavBlocks[0] ?? null,
       };
     }
