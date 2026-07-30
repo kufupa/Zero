@@ -33,6 +33,11 @@ cd "$REPO"
 export NODE_ENV=production
 export AI_ENABLED=true
 
+# Always rebuild stages from committed tree (never from prior stage overlays).
+git checkout --force -- \
+  apps/server-pilot/src/ai/workflows/mail-triage.ts \
+  apps/server-pilot/src/ai/triage.ts
+
 node apps/server-pilot/scripts/triage-v5-build-stages.cjs "$BASE_SHA" "$TQ/stage-src"
 
 MAIL=apps/server-pilot/src/ai/workflows/mail-triage.ts
@@ -56,6 +61,27 @@ case "$STAGE" in
     exit 2
     ;;
 esac
+
+# Prove stage identity before Bedrock spend.
+node -e '
+const fs=require("fs");
+const stage=process.argv[1];
+const mail=fs.readFileSync("apps/server-pilot/src/ai/workflows/mail-triage.ts","utf8");
+const triage=fs.readFileSync("apps/server-pilot/src/ai/triage.ts","utf8");
+const info={
+  stage,
+  hasDecisionSequence: /Decision sequence/.test(mail),
+  hasIngestedAt: /ingestedAt/.test(mail),
+  hasOldDecisionRules: /## Decision rules/.test(mail),
+  refineOpsOnly: /category === '\''ops'\'' &&[\r\n\s]*next\.urgent &&[\r\n\s]*\/\\burgent\\b/.test(triage),
+};
+console.log(JSON.stringify(info));
+if(stage==="a" && info.hasDecisionSequence) throw new Error("stage a must keep v4 system prompt");
+if((stage==="b"||stage==="c"||stage.startsWith("selected")) && !info.hasDecisionSequence) {
+  throw new Error("stage "+stage+" missing Decision sequence prompt");
+}
+if(!info.hasIngestedAt) throw new Error("missing causal serializer");
+' "$STAGE"
 
 if [ ! -f "$TQ/inputs.jsonl" ] || [ ! -f "$TQ/labels.jsonl" ]; then
   echo "missing inputs/labels under $TQ" >&2
