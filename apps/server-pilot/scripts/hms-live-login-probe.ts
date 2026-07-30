@@ -200,6 +200,12 @@ async function main(): Promise<void> {
   const manifest = minimalLoginManifest(origin);
 
   const events: ProbeEvent[] = [];
+  const xhrMeta: Array<{
+    path: string;
+    status: number;
+    ok: boolean;
+    bodyBytes: number;
+  }> = [];
   let browser: Browser | null = null;
   let page: Page | null = null;
   let firstBlock: ProbeEvent | null = null;
@@ -271,6 +277,23 @@ async function main(): Promise<void> {
     });
 
     page = await context.newPage();
+    page.on('response', (res) => {
+      try {
+        const url = new URL(res.url());
+        if (url.pathname === '/web/base/login' || res.request().method() === 'POST') {
+          const headers = res.headers();
+          const len = Number(headers['content-length'] ?? '0');
+          xhrMeta.push({
+            path: url.pathname,
+            status: res.status(),
+            ok: res.ok(),
+            bodyBytes: Number.isFinite(len) ? len : 0,
+          });
+        }
+      } catch {
+        /* ignore */
+      }
+    });
     const loginUrl = secret.loginUrl.includes('tenant=')
       ? secret.loginUrl
       : `${secret.loginUrl}${secret.loginUrl.includes('?') ? '&' : '?'}tenant=${encodeURIComponent(secret.expectedTenant)}`;
@@ -408,6 +431,7 @@ async function main(): Promise<void> {
       dom,
       fixedBodyCandidates,
       afterSubmit,
+      xhrMeta: xhrMeta.slice(0, 20),
       documentAllowed,
       loginPostAllowed,
       navError,
