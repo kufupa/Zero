@@ -60,6 +60,8 @@ export interface MailEnv {
   MASTRA_STORAGE_PATH?: string;
   HMS_DRAFT_ENRICHMENT_MODE: HmsDraftEnrichmentMode;
   HMS_RUN_DEADLINE_MS: number;
+  HMS_HEALTH_STATUS_PATH: string;
+  HMS_CIRCUIT_COOLDOWN_MS: number;
   HMS_READ_SECRET_ARN?: string;
   HMS_CHROMIUM_EXECUTABLE_PATH?: string;
 }
@@ -162,6 +164,8 @@ export function parseEnv(input: EnvInput): MailEnv {
     AI_WORKER_LANE: 'default',
     HMS_DRAFT_ENRICHMENT_MODE: 'off',
     HMS_RUN_DEADLINE_MS: 150_000,
+    HMS_HEALTH_STATUS_PATH: '/tmp/nava-zero-hms-health.json',
+    HMS_CIRCUIT_COOLDOWN_MS: 30_000,
   };
 
   if (input.INGEST_FIXTURE_DIR) env.INGEST_FIXTURE_DIR = input.INGEST_FIXTURE_DIR;
@@ -225,9 +229,30 @@ export function parseEnv(input: EnvInput): MailEnv {
   env.HMS_RUN_DEADLINE_MS = input.HMS_RUN_DEADLINE_MS
     ? toInt('HMS_RUN_DEADLINE_MS', input.HMS_RUN_DEADLINE_MS)
     : 150_000;
-  if (input.HMS_READ_SECRET_ARN) env.HMS_READ_SECRET_ARN = input.HMS_READ_SECRET_ARN;
-  if (input.HMS_CHROMIUM_EXECUTABLE_PATH) {
+  env.HMS_HEALTH_STATUS_PATH =
+    input.HMS_HEALTH_STATUS_PATH ?? '/tmp/nava-zero-hms-health.json';
+  env.HMS_CIRCUIT_COOLDOWN_MS = input.HMS_CIRCUIT_COOLDOWN_MS
+    ? toInt('HMS_CIRCUIT_COOLDOWN_MS', input.HMS_CIRCUIT_COOLDOWN_MS)
+    : 30_000;
+
+  if (env.HMS_DRAFT_ENRICHMENT_MODE !== 'off') {
+    if (!input.HMS_READ_SECRET_ARN) {
+      throw new Error(
+        'env HMS_READ_SECRET_ARN is required when HMS enrichment is enabled',
+      );
+    }
+    if (!input.HMS_CHROMIUM_EXECUTABLE_PATH) {
+      throw new Error(
+        'env HMS_CHROMIUM_EXECUTABLE_PATH is required when HMS enrichment is enabled',
+      );
+    }
+    env.HMS_READ_SECRET_ARN = input.HMS_READ_SECRET_ARN;
     env.HMS_CHROMIUM_EXECUTABLE_PATH = input.HMS_CHROMIUM_EXECUTABLE_PATH;
+  } else {
+    if (input.HMS_READ_SECRET_ARN) env.HMS_READ_SECRET_ARN = input.HMS_READ_SECRET_ARN;
+    if (input.HMS_CHROMIUM_EXECUTABLE_PATH) {
+      env.HMS_CHROMIUM_EXECUTABLE_PATH = input.HMS_CHROMIUM_EXECUTABLE_PATH;
+    }
   }
 
   if (aiEnabled) {
