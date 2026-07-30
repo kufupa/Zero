@@ -12,8 +12,6 @@
  *     message via `mail.getMessageAttachments` / `mail.listAttachments`.
  *   - Sanity: user-navaai (centurion owner) CAN fetch the centurion
  *     attachment (and gets a URL — synthetic in the test/fake path).
- *   - Inline HTTP authz (`loadAuthorizedAttachment`) uses mailbox_access join
- *     only — no x-zero-active-transport header.
  */
 import { describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
@@ -25,13 +23,12 @@ import {
   attachment,
 } from '../src/db/schema/mail.js';
 import { user as userAuthTable } from '../src/db/schema/auth.js';
-import { loadAuthorizedAttachment } from '../src/http/inline-attachment.js';
 import {
   TEST_DB_AVAILABLE,
   probeTestDb,
   withSeededTestDb,
-} from './helpers/test-db.js';
-import { callerFor } from './helpers/trpc-caller.js';
+} from './helpers/test-db';
+import { callerFor } from './helpers/trpc-caller';
 
 const reachable = await probeTestDb();
 
@@ -234,40 +231,6 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
               attachmentId: ids.frontdeskAttachmentId,
             }),
           ).rejects.toThrow(/NOT_FOUND/);
-        });
-      },
-      30000,
-    );
-
-    it(
-      'loadAuthorizedAttachment denies cross-mailbox without active-transport header',
-      async () => {
-        await withSeededTestDb(async (db) => {
-          const ids = await seedAttachmentFixture(db);
-          const denied = await loadAuthorizedAttachment(db, {
-            userId: 'user-frontdesk',
-            messageId: ids.centurionMessageId,
-            attachmentId: ids.centurionAttachmentId,
-          });
-          expect(denied).toBeNull();
-
-          const mismatched = await loadAuthorizedAttachment(db, {
-            userId: 'user-frontdesk',
-            messageId: ids.centurionMessageId,
-            attachmentId: ids.frontdeskAttachmentId,
-          });
-          expect(mismatched).toBeNull();
-
-          const allowed = await loadAuthorizedAttachment(db, {
-            userId: 'user-frontdesk',
-            messageId: ids.frontdeskMessageId,
-            attachmentId: ids.frontdeskAttachmentId,
-          });
-          expect(allowed).toEqual({
-            s3Key: `attachments/${ids.frontdeskMessageId}/000-frontdesk-memo.pdf`,
-            mimeType: 'application/pdf',
-            sizeBytes: 512,
-          });
         });
       },
       30000,

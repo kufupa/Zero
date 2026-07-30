@@ -195,10 +195,9 @@ export function toParsedMessage(
 ): ParsedMessageWire {
   const bodyText = row.textBody ?? '';
   const rawHtml = row.htmlBody ?? bodyText;
-  // XSS strip only — remotes kept; render trust gate lives in processEmailContent.
   const sanitized =
     rawHtml && rawHtml.includes('<')
-      ? sanitizeEmailHtml(rawHtml, { shouldLoadImages: true }).html
+      ? sanitizeEmailHtml(rawHtml, { shouldLoadImages: false }).html
       : rawHtml;
   const decodedBody = sanitized || bodyText;
   const receivedOn = row.receivedAt

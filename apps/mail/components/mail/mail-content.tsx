@@ -10,7 +10,6 @@ import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { resolveMailDisplayHtml } from '@/lib/mail/resolve-mail-display-html';
-import { isImageTrustedSender } from '@/lib/mail/trust-sender';
 import { demoSetSettings } from '@/lib/demo/local-actions';
 
 export async function persistTrustedSender(params: {
@@ -54,12 +53,7 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
   const queryClient = useQueryClient();
   const frontendOnlyDemo = isFrontendOnlyDemo();
   const isTrustedSender = useMemo(
-    () =>
-      isImageTrustedSender({
-        senderEmail,
-        externalImages: data?.settings?.externalImages,
-        trustedSenders: data?.settings?.trustedSenders,
-      }),
+    () => data?.settings?.externalImages || data?.settings?.trustedSenders?.includes(senderEmail),
     [data?.settings, senderEmail],
   );
   const [cspViolation, setCspViolation] = useState(false);
@@ -102,11 +96,10 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
   );
 
   const { data: processedData } = useQuery({
-    queryKey: ['email-content-v2', id, isTrustedSender || temporaryImagesEnabled, resolvedTheme],
+    queryKey: ['email-content', id, isTrustedSender || temporaryImagesEnabled, resolvedTheme],
     queryFn: async () => {
       const result = await processEmailContent({
         html,
-        messageId: id,
         shouldLoadImages: isTrustedSender || temporaryImagesEnabled,
         theme: (resolvedTheme as 'light' | 'dark') || 'light',
       });
@@ -156,17 +149,12 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
   const handleImageError = useCallback(
     (e: Event) => {
       const target = e.target as HTMLImageElement;
-      if (target.tagName !== 'IMG') return;
-      const src = target.getAttribute('src') ?? target.src ?? '';
-      if (src.includes('/attachments/') && src.includes('/inline')) {
-        target.removeAttribute('src');
-        // Keep alt. Never treat CID inline fail as remote-block banner when trusted.
-        return;
+      if (target.tagName === 'IMG') {
+        if (!(isTrustedSender || temporaryImagesEnabled)) {
+          setCspViolation(true);
+        }
+        target.style.display = 'none';
       }
-      if (!(isTrustedSender || temporaryImagesEnabled)) {
-        setCspViolation(true);
-      }
-      target.style.display = 'none';
     },
     [isTrustedSender, temporaryImagesEnabled],
   );

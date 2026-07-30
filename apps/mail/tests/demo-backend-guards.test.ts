@@ -1201,48 +1201,6 @@ describe('demo backend guard coverage', () => {
     expect(demoSetSettingsMock).not.toHaveBeenCalled();
   });
 
-  it('persists domain-style trusted sender entry via same helper', async () => {
-    const data = {
-      settings: {
-        language: 'en',
-        timezone: 'UTC',
-        dynamicContent: false,
-        customPrompt: '',
-        zeroSignature: true,
-        defaultEmailAlias: 'centurion@legacyhotels.co.za',
-        animations: false,
-        trustedSenders: [] as string[],
-        externalImages: false,
-        autoRead: true,
-        undoSendEnabled: false,
-        imageCompression: 'medium' as const,
-        colorTheme: 'system' as const,
-        categories: [],
-      },
-    };
-
-    const demoSetSettingsMock = vi.fn(async () => ({
-      ...data.settings,
-      trustedSenders: ['partner.test'],
-    }));
-    const saveUserSettingsMock = vi.fn(async () => ({ success: true }));
-
-    const mode = await persistTrustedSender({
-      senderEmail: 'partner.test',
-      data,
-      isFrontendOnlyDemo: true,
-      saveUserSettings: saveUserSettingsMock as never,
-      demoSetSettings: demoSetSettingsMock as never,
-    });
-
-    expect(mode).toBe('demo');
-    expect(demoSetSettingsMock).toHaveBeenCalledWith({
-      ...data.settings,
-      trustedSenders: ['partner.test'],
-    });
-    expect(saveUserSettingsMock).not.toHaveBeenCalled();
-  });
-
   it('blocks destructive force sync in demo mode and keeps backend no-op', async () => {
     const runForceSyncMock = vi.fn(async () => undefined);
     const blockedToast = vi.fn();

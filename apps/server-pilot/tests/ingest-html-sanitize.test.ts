@@ -16,9 +16,6 @@ const reachable = await probeTestDb();
 const MALICIOUS_HTML =
   '<img src=x onerror=alert(1)><script>alert(1)</script><p>booking</p>';
 
-const REMOTE_IMG_HTML =
-  '<p><img src="https://branding.legacyhotels.co.za/x.gif"><script>alert(1)</script>booking</p>';
-
 function centurionHtmlEml(html: string): Buffer {
   return Buffer.from(
     [
@@ -74,37 +71,6 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       expect(row?.htmlBody).toBeDefined();
       expect(row!.htmlBody!).not.toContain('<script');
       expect(row!.htmlBody!).not.toMatch(/onerror/i);
-      expect(row!.htmlBody!).toContain('booking');
-    });
-
-    it('stores remote https img src while stripping script', async () => {
-      const storage = withFakeS3();
-      const raw = centurionHtmlEml(REMOTE_IMG_HTML);
-
-      const { result, row } = await withSeededTestDb(async (db) => {
-        const messageId = generateMessageId();
-        const parsed = await parseRawMessage(raw, { messageId, storage });
-        const r = await persistInboundMessage(
-          parsed,
-          raw,
-          {
-            ingestMailboxId: 'ingest-nava-legacy',
-            pop3Uidl: `uidl-html-remote-${randomUUID()}`,
-            messageId,
-          },
-          { db, storage },
-        );
-        if (r.kind !== 'stored') return { result: r, row: undefined };
-        const rows = await db
-          .select()
-          .from(message)
-          .where(eq(message.id, r.messageId));
-        return { result: r, row: rows[0] };
-      }, 30000);
-
-      expect(result.kind).toBe('stored');
-      expect(row!.htmlBody!).toContain('src="https://branding.legacyhotels.co.za/x.gif"');
-      expect(row!.htmlBody!).not.toContain('<script');
       expect(row!.htmlBody!).toContain('booking');
     });
   },
