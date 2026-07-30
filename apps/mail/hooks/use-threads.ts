@@ -237,7 +237,7 @@ export const useThread = (threadId: string | null) => {
   const [isComposeOpen] = useQueryState('isComposeOpen');
   const trpc = useTRPC();
   const { data: settings } = useSettings();
-  const { theme: systemTheme } = useTheme();
+  const { resolvedTheme } = useTheme();
   const demoMode = isFrontendOnlyDemo();
 
   const demoThreadQuery = useQuery({
@@ -329,6 +329,7 @@ export const useThread = (threadId: string | null) => {
       settings.settings.trustedSenders?.includes(latestMessage.sender.email) ||
       false;
   }, [settings?.settings, latestMessage?.sender?.email]);
+  const contentTheme = resolvedTheme === 'dark' ? 'dark' : 'light';
 
   const isActiveThread = !!id && id === _threadId;
   const isComposeMode = isComposeOpen === 'true' || !!mode;
@@ -336,22 +337,19 @@ export const useThread = (threadId: string | null) => {
   // Prefetch query - intentionally unused, just for caching
   useQuery({
     queryKey: [
-      'email-content',
+      'email-content-v2',
       latestMessage?.id,
       shouldLoadImages,
-      systemTheme,
+      contentTheme,
     ],
     queryFn: async () => {
       if (!latestMessage?.decodedBody || !settings?.settings) return null;
 
-      const userTheme =
-        settings.settings.colorTheme === 'system' ? systemTheme : settings.settings.colorTheme;
-      const theme = userTheme === 'dark' ? 'dark' : 'light';
-
       const result = await processEmailContent({
+        messageId: latestMessage.id,
         html: latestMessage.decodedBody,
         shouldLoadImages,
-        theme,
+        theme: contentTheme,
       });
 
       return {

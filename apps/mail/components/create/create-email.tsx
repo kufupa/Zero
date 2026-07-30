@@ -121,6 +121,7 @@ export function CreateEmail({
     fromEmail?: string;
     scheduleAt?: string;
   }) => {
+    const frontendOnlyDemo = isFrontendOnlyDemo();
     const fromEmail =
       data.fromEmail || settings?.settings?.defaultEmailAlias || userEmail;
 
@@ -131,13 +132,19 @@ export function CreateEmail({
       subject: data.subject,
       message: data.message,
       attachments: await serializeFiles(data.attachments),
-      fromEmail: userName.trim() ? `${userName.replace(/[<>]/g, '')} <${fromEmail}>` : fromEmail,
+      ...(frontendOnlyDemo
+        ? {
+            fromEmail: userName.trim()
+              ? `${userName.replace(/[<>]/g, '')} <${fromEmail}>`
+              : fromEmail,
+          }
+        : {}),
       draftId: draftId ?? undefined,
       scheduleAt: data.scheduleAt,
     };
 
     const sendWithInput = async (input: typeof sendInput) =>
-      isFrontendOnlyDemo() ? demoSendEmail(input) : sendEmail(input);
+      frontendOnlyDemo ? demoSendEmail(input) : sendEmail(input);
 
     let result;
     try {

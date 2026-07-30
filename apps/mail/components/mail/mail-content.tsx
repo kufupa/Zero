@@ -12,6 +12,42 @@ import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { resolveMailDisplayHtml } from '@/lib/mail/resolve-mail-display-html';
 import { demoSetSettings } from '@/lib/demo/local-actions';
 
+const INLINE_IMAGE_PATH =
+  /^\/api\/mail\/messages\/[^/]+\/attachments\/[^/]+\/inline\/?$/;
+
+function isAuthenticatedInlineImageUrl(
+  src: string,
+  backendUrl: string,
+): boolean {
+  try {
+    const backendOrigin = new URL(backendUrl).origin;
+    const imageUrl = new URL(src, backendOrigin);
+    return (
+      imageUrl.origin === backendOrigin &&
+      INLINE_IMAGE_PATH.test(imageUrl.pathname)
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function handleMailContentImageError(
+  target: Pick<
+    HTMLImageElement,
+    'src' | 'style' | 'getAttribute' | 'removeAttribute'
+  >,
+  options: { imagesEnabled: boolean; backendUrl: string },
+): boolean {
+  const src = target.getAttribute('src') ?? target.src;
+  if (isAuthenticatedInlineImageUrl(src, options.backendUrl)) {
+    target.removeAttribute('src');
+    return false;
+  }
+
+  target.style.display = 'none';
+  return !options.imagesEnabled;
+}
+
 export async function persistTrustedSender(params: {
   senderEmail: string;
   data?: { settings?: typeof defaultUserSettings };
@@ -62,6 +98,9 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
   const shadowRootRef = useRef<ShadowRoot | null>(null);
   const { resolvedTheme } = useTheme();
   const trpc = useTRPC();
+  const shouldLoadImages =
+    isTrustedSender || temporaryImagesEnabled;
+  const contentTheme = resolvedTheme === 'dark' ? 'dark' : 'light';
 
   const { mutateAsync: saveUserSettings } = useMutation({
     ...trpc.settings.save.mutationOptions(),
@@ -96,12 +135,18 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
   );
 
   const { data: processedData } = useQuery({
-    queryKey: ['email-content', id, isTrustedSender || temporaryImagesEnabled, resolvedTheme],
+    queryKey: [
+      'email-content-v2',
+      id,
+      shouldLoadImages,
+      contentTheme,
+    ],
     queryFn: async () => {
       const result = await processEmailContent({
+        messageId: id,
         html,
-        shouldLoadImages: isTrustedSender || temporaryImagesEnabled,
-        theme: (resolvedTheme as 'light' | 'dark') || 'light',
+        shouldLoadImages,
+        theme: contentTheme,
       });
 
       return {
@@ -150,13 +195,17 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
     (e: Event) => {
       const target = e.target as HTMLImageElement;
       if (target.tagName === 'IMG') {
-        if (!(isTrustedSender || temporaryImagesEnabled)) {
+        if (
+          handleMailContentImageError(target, {
+            imagesEnabled: shouldLoadImages,
+            backendUrl: import.meta.env.VITE_PUBLIC_BACKEND_URL,
+          })
+        ) {
           setCspViolation(true);
         }
-        target.style.display = 'none';
       }
     },
-    [isTrustedSender, temporaryImagesEnabled],
+    [shouldLoadImages],
   );
 
   useEffect(() => {

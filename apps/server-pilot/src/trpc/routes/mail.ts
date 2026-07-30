@@ -49,6 +49,7 @@ import {
 import { formatContentDispositionFilename } from '../../mail/attachment-filename.js';
 import { sanitizeEmailHtml } from '../../mail/sanitize-email-html.js';
 import { processQuotedContent } from '../../mail/collapse-quoted-html.js';
+import { projectCidImages } from '../../mail/cid-images.js';
 import {
   getLatestInboundFromAddress,
   upsertSenderPreference,
@@ -109,6 +110,20 @@ export function withTransportSelfBcc(
     out.push(self);
   }
   return out;
+}
+
+export function trustedInlineOrigin(raw: string | undefined): string {
+  try {
+    const parsed = new URL(raw ?? '');
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new Error('unsupported protocol');
+    }
+    return parsed.origin;
+  } catch {
+    throw new Error(
+      'BETTER_AUTH_URL must be an absolute http(s) URL for inline images',
+    );
+  }
 }
 
 /** FE snooze sends `{ ids, wakeAt }`; normalize to internal names. */
@@ -1361,19 +1376,44 @@ export const mailRouter = tRouter({
   processEmailContent: mailboxProcedure
     .input(
       z.object({
+        messageId: z.string().min(1),
         html: z.string(),
         shouldLoadImages: z.boolean().default(false),
         theme: z.enum(['light', 'dark']).default('light'),
       }),
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
+      const db = getDb();
+      await requireMessageForTransport(
+        db,
+        input.messageId,
+        ctx.activeTransportId,
+      );
       const sanitized = sanitizeEmailHtml(input.html, {
         shouldLoadImages: input.shouldLoadImages,
       });
-      const processedHtml = processQuotedContent(sanitized.html, input.theme);
+      const attachments = await db
+        .select({
+          attachmentId: attachment.id,
+          contentId: attachment.contentId,
+          mimeType: attachment.mimeType,
+          sizeBytes: attachment.sizeBytes,
+          isInline: attachment.isInline,
+        })
+        .from(attachment)
+        .where(eq(attachment.messageId, input.messageId));
+      const projected = projectCidImages(sanitized.html, attachments, {
+        messageId: input.messageId,
+        origin: trustedInlineOrigin(process.env.BETTER_AUTH_URL),
+      });
+      const processedHtml = processQuotedContent(
+        projected.html,
+        input.theme,
+      );
       return {
         processedHtml,
-        hasBlockedImages: sanitized.hasBlockedImages,
+        hasBlockedImages:
+          sanitized.hasBlockedImages || projected.hasBlockedImages,
       };
     }),
 

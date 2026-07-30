@@ -137,15 +137,16 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
       return;
     }
 
+    const frontendOnlyDemo = isFrontendOnlyDemo();
     try {
       const userEmail = activeConnection.email.toLowerCase();
       const userName = activeConnection.name || session?.user?.name || '';
 
-    const senderEmail =
-      (settings?.settings?.defaultEmailAlias || userEmail || '').trim();
-    const fromEmail = userName.trim()
-      ? `${userName.replace(/[<>]/g, '')} <${senderEmail}>`
-      : senderEmail;
+      const senderEmail =
+        (settings?.settings?.defaultEmailAlias || userEmail || '').trim();
+      const fromEmail = userName.trim()
+        ? `${userName.replace(/[<>]/g, '')} <${senderEmail}>`
+        : senderEmail;
 
       const toRecipients: Sender[] = data.to.map((email) => ({
         email,
@@ -197,7 +198,7 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
             subject: data.subject,
             message: emailBody,
             attachments: await serializeFiles(data.attachments),
-            fromEmail: fromEmail,
+            ...(frontendOnlyDemo ? { fromEmail } : {}),
             draftId: draftId ?? undefined,
             replyToMessageId: replyToMessage?.id,
             headers: {
@@ -217,7 +218,7 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
           };
 
       const sendWithInput = async (input: typeof sendInput) =>
-        isFrontendOnlyDemo() ? demoSendEmail(input) : sendEmail(input);
+        frontendOnlyDemo ? demoSendEmail(input) : sendEmail(input);
 
       let result;
       try {
