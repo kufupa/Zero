@@ -71,6 +71,11 @@ describe('ai worker contract', () => {
     expect(source).toMatch(/--timeout-ms/);
     expect(source).toMatch(/runAiWorkerDrain/);
     expect(source).toMatch(/unsupported prompt version/i);
+    // CLI keeps drainPrefix at parse boundary; drain API uses idempotencyPrefix only.
+    expect(source).toMatch(/idempotencyPrefix:\s*args\.drainPrefix/);
+    expect(source).toMatch(/idempotencyPrefix:\s*input\.idempotencyPrefix/);
+    expect(source).not.toMatch(/input\.drainPrefix/);
+    expect(source).not.toMatch(/runAiWorkerDrain\(\{[\s\S]*?\bdrainPrefix\s*:/);
   });
 
   it('parseAiWorkerCliArgs reads drain scope flags', async () => {
@@ -759,7 +764,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
 
     const { runAiWorkerDrain } = await import('../src/ai/worker.js');
     const drain = await runAiWorkerDrain({
-      drainPrefix: prefix,
+      idempotencyPrefix: prefix,
       transportId: scoped.transportId,
       promptVersion: 'triage-v5',
       runKind: 'inbound_triage',
