@@ -11,6 +11,23 @@ if [ ! -f "$ENV_FILE" ] && [ -f /home/ubuntu/.env.production ]; then
   ENV_FILE=/home/ubuntu/.env.production
 fi
 
+QUIESCED=0
+for arg in "$@"; do
+  case "$arg" in
+    --quiesced) QUIESCED=1 ;;
+    -h|--help)
+      echo "usage: $0 [--quiesced]"
+      echo "  default: install/build/sync + PM2 start + HTTP health"
+      echo "  --quiesced: install/build/sync only; assert http/worker/ai-worker stopped; no PM2 mutation; no HTTP health"
+      exit 0
+      ;;
+    *)
+      echo "unknown arg: $arg (try --quiesced)" >&2
+      exit 2
+      ;;
+  esac
+done
+
 echo "== deploy: repo ${REPO_ROOT} =="
 cd "$REPO_ROOT"
 
@@ -63,6 +80,27 @@ else
   echo "  sudo cp ${NGINX_SRC} ${NGINX_SITE}"
   echo "  sudo ln -sf ${NGINX_SITE} /etc/nginx/sites-enabled/nava-zero"
   echo "  sudo nginx -t && sudo systemctl enable --now nginx"
+fi
+
+if [ "$QUIESCED" = "1" ]; then
+  echo "== quiesced: assert http, worker, ai-worker stopped =="
+  for app in http worker ai-worker; do
+    if command -v pm2 >/dev/null 2>&1 && pm2 describe "$app" >/dev/null 2>&1; then
+      status="$(pm2 jlist 2>/dev/null | node -e "
+        const apps=JSON.parse(require('fs').readFileSync(0,'utf8')||'[]');
+        const hit=apps.find(a=>a.name===process.argv[1]);
+        process.stdout.write(hit?.pm2_env?.status || '');
+      " "$app")"
+      # Absent process OK; any known non-stopped status (online/launching/errored/stopping/…) refuses.
+      if [ -n "$status" ] && [ "$status" != "stopped" ]; then
+        echo "quiesced deploy refused: ${app} status=${status} (must be stopped)" >&2
+        exit 1
+      fi
+    fi
+  done
+  echo "quiesced: http/worker/ai-worker stopped"
+  echo "quiesced deploy ok (assets synced; no PM2 mutation; no HTTP health)"
+  exit 0
 fi
 
 echo "== pm2 =="

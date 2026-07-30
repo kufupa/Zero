@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, eq, inArray, lte, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, like, lte, or, sql, type SQL } from 'drizzle-orm';
 import { getDb, type DB } from '../db/client.js';
 import { aiWorkflowRun } from '../db/schema/mail.js';
 import type {
@@ -10,7 +10,7 @@ import type {
 import { parseEnv } from '../env.js';
 
 export const DEFAULT_AI_MODEL_ID = 'amazon.nova-lite-v1:0';
-export const DEFAULT_TRIAGE_PROMPT_VERSION = 'triage-v4';
+export const DEFAULT_TRIAGE_PROMPT_VERSION = 'triage-v5';
 export const DEFAULT_FEEDBACK_PROMPT_VERSION = 'feedback-v1';
 export const CLEANUP_RESERVE_MS = 10_000;
 
@@ -18,6 +18,13 @@ export type AiWorkflowRunKind = (typeof aiWorkflowRunKindEnum.enumValues)[number
 export type AiWorkflowRunState = (typeof aiWorkflowRunStateEnum.enumValues)[number];
 export type AiExecutorLane = (typeof aiExecutorLaneEnum.enumValues)[number];
 export type AiWorkflowRun = typeof aiWorkflowRun.$inferSelect;
+
+export const NONTERMINAL_AI_RUN_STATES = [
+  'queued',
+  'claimed',
+  'running',
+  'retry_wait',
+] as const satisfies readonly AiWorkflowRunState[];
 
 export type AiRunFence = {
   runId: string;
@@ -56,7 +63,14 @@ export interface EnqueueAiRunInput {
   executorLane?: AiExecutorLane;
 }
 
-export interface ClaimNextAiRunInput {
+export interface AiRunScopeFilter {
+  transportId?: string;
+  runKind?: AiWorkflowRunKind;
+  promptVersion?: string;
+  idempotencyPrefix?: string;
+}
+
+export interface ClaimNextAiRunInput extends AiRunScopeFilter {
   ownerId: string;
   lane: AiExecutorLane;
   now?: Date;
@@ -92,7 +106,7 @@ export interface MarkAiRunDeadLetterInput {
   claimToken: string;
   expectedStates: AiWorkflowRunState[];
   lastError: string;
-  failureClass: AiFailureClass;
+  failureClass?: AiFailureClass;
 }
 
 export class RunDeadlineError extends Error {
@@ -109,6 +123,32 @@ function assertMailRunLinks(input: EnqueueAiRunInput): void {
   if (!input.triggerMessageId) {
     throw new Error('trigger message id is required for mail-triggered AI runs');
   }
+}
+
+/** Deployed inbound triage prompt this binary will execute. Others dead-letter. */
+export function resolveDeployedTriagePromptVersion(
+  env: Record<string, string | undefined> = process.env as Record<string, string | undefined>,
+): string {
+  const fromEnv = env.AI_TRIAGE_PROMPT_VERSION?.trim();
+  return fromEnv || DEFAULT_TRIAGE_PROMPT_VERSION;
+}
+
+export function isSupportedInboundTriagePromptVersion(
+  promptVersion: string,
+  env: Record<string, string | undefined> = process.env as Record<string, string | undefined>,
+): boolean {
+  return promptVersion === resolveDeployedTriagePromptVersion(env);
+}
+
+function scopePredicates(scope: AiRunScopeFilter): SQL[] {
+  const parts: SQL[] = [];
+  if (scope.transportId) parts.push(eq(aiWorkflowRun.transportId, scope.transportId));
+  if (scope.runKind) parts.push(eq(aiWorkflowRun.runKind, scope.runKind));
+  if (scope.promptVersion) parts.push(eq(aiWorkflowRun.promptVersion, scope.promptVersion));
+  if (scope.idempotencyPrefix) {
+    parts.push(like(aiWorkflowRun.idempotencyKey, `${scope.idempotencyPrefix}%`));
+  }
+  return parts;
 }
 
 export function remainingRunBudgetMs(fence: AiRunFence, now: Date = new Date()): number {
@@ -182,6 +222,12 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
   const staleRunTimeoutMs = input.staleRunTimeoutMs ?? env.AI_STALE_RUN_TIMEOUT_MS;
   const staleBefore = new Date(now.getTime() - staleRunTimeoutMs);
   const runDeadlineMs = env.HMS_RUN_DEADLINE_MS;
+  const scope = scopePredicates({
+    transportId: input.transportId,
+    runKind: input.runKind,
+    promptVersion: input.promptVersion,
+    idempotencyPrefix: input.idempotencyPrefix,
+  });
 
   return db.transaction(async (tx) => {
     for (let attempt = 0; attempt < 32; attempt++) {
@@ -191,6 +237,7 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
         .where(
           and(
             eq(aiWorkflowRun.executorLane, input.lane),
+            ...scope,
             or(
               and(
                 inArray(aiWorkflowRun.state, ['queued', 'retry_wait']),
@@ -233,8 +280,7 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
             ? 1
             : undefined;
 
-      const deadlineAt =
-        candidate.deadlineAt ?? new Date(now.getTime() + runDeadlineMs);
+      const deadlineAt = candidate.deadlineAt ?? new Date(now.getTime() + runDeadlineMs);
       const claimToken = randomUUID();
 
       const [claimed] = await tx
@@ -262,6 +308,7 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
           and(
             eq(aiWorkflowRun.id, candidate.id),
             eq(aiWorkflowRun.executorLane, input.lane),
+            ...scope,
             or(
               and(
                 inArray(aiWorkflowRun.state, ['queued', 'retry_wait']),
@@ -324,6 +371,19 @@ export async function markAiRunRunning(fence: AiRunFence, db: DB = getDb()): Pro
     )
     .returning({ id: aiWorkflowRun.id });
   return Boolean(row);
+}
+
+export async function countNonterminalAiRuns(
+  scope: AiRunScopeFilter,
+  db: DB = getDb(),
+): Promise<number> {
+  const [row] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(aiWorkflowRun)
+    .where(
+      and(inArray(aiWorkflowRun.state, [...NONTERMINAL_AI_RUN_STATES]), ...scopePredicates(scope)),
+    );
+  return Number(row?.count ?? 0);
 }
 
 export async function markAiRunSucceeded(input: MarkAiRunSucceededInput, db: DB = getDb()) {

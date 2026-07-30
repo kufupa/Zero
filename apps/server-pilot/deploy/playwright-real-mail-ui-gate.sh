@@ -1,8 +1,19 @@
 #!/usr/bin/env bash
-# Real-mail Playwright UI gate (AE1 login, AE7 compose, AE8 reply, AE9 forceSync).
-# Reuses mint/nginx patterns from playwright-ec2-gate.sh but REFUSES frontend-only demo.
-# EC2 run is Task 12 — this script is SSM-runnable when SPA + real transport are up.
+# Real-mail Playwright UI gate. --read-only proves launch UI without mail mutation.
 set -euo pipefail
+
+READ_ONLY=0
+case "${1:-}" in
+  "")
+    ;;
+  --read-only)
+    READ_ONLY=1
+    ;;
+  *)
+    echo "usage: $0 [--read-only]" >&2
+    exit 2
+    ;;
+esac
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="${REPO_ROOT:-$(cd "${SCRIPT_DIR}/../../.." && pwd)}"
@@ -46,14 +57,20 @@ fi
 export ZERO_DEMO_FRONTEND_ONLY=0
 export VITE_FRONTEND_ONLY=0
 
-# UNDO_SEND_SECONDS=0 required so Send flushes immediately (KTD10).
+# Read-only launch proof must run against day-one product config. Mutating loopback
+# proof remains opt-in and keeps its immediate-send requirement.
+if [ "$READ_ONLY" -eq 1 ]; then
+  EXPECTED_UNDO_SEND_SECONDS=30
+else
+  EXPECTED_UNDO_SEND_SECONDS=0
+fi
+
 UNDO_VAL="${UNDO_SEND_SECONDS:-}"
 if [ -z "$UNDO_VAL" ] && [ -f "$ENV_FILE" ]; then
   UNDO_VAL="$(grep -E '^UNDO_SEND_SECONDS=' "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d "\"'" || true)"
 fi
-if [ "${UNDO_VAL:-}" != "0" ]; then
-  echo "refusing: UNDO_SEND_SECONDS must be 0 for real-mail UI gate (got '${UNDO_VAL:-unset}')" >&2
-  echo "hint: set UNDO_SEND_SECONDS=0 in ${ENV_FILE} then bash apps/server-pilot/deploy/ops-restart.sh" >&2
+if [ "${UNDO_VAL:-}" != "$EXPECTED_UNDO_SEND_SECONDS" ]; then
+  echo "refusing: UNDO_SEND_SECONDS must be ${EXPECTED_UNDO_SEND_SECONDS} for this UI gate mode" >&2
   exit 2
 fi
 
@@ -101,21 +118,36 @@ curl -skf "${PLAYWRIGHT_BASE_URL}/" >/dev/null || {
 
 echo "resolving navaai password from Secrets Manager (or env)"
 if [ -z "${PLAYWRIGHT_REAL_MAIL_PASSWORD:-${PLAYWRIGHT_NAVA_PASSWORD:-}}" ]; then
-  SECRET=$(aws secretsmanager get-secret-value --region "${AWS_REGION:-af-south-1}" --secret-id nava-zero/server-pilot/pilot-users --query SecretString --output text)
-  PLAYWRIGHT_REAL_MAIL_PASSWORD=$(node -e 'const j=JSON.parse(process.argv[1]);const v=j["navaai@legacyhotels.co.za"];console.log(typeof v==="string"?v:v.password)' "$SECRET")
+  PLAYWRIGHT_REAL_MAIL_PASSWORD="$(
+    aws secretsmanager get-secret-value \
+      --region "${AWS_REGION:-af-south-1}" \
+      --secret-id nava-zero/server-pilot/pilot-users \
+      --query SecretString \
+      --output text |
+      node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{const j=JSON.parse(s);const v=j["navaai@legacyhotels.co.za"];process.stdout.write(typeof v==="string"?v:v.password)})'
+  )"
 else
   PLAYWRIGHT_REAL_MAIL_PASSWORD="${PLAYWRIGHT_REAL_MAIL_PASSWORD:-$PLAYWRIGHT_NAVA_PASSWORD}"
 fi
 export PLAYWRIGHT_REAL_MAIL_PASSWORD
 
-# Mint optional cookies for non-login specs; login.spec MUST use UI form (AE1).
-echo "minting session via ${BACKEND_URL} (compose/forceSync assist only)"
-RESP=$(curl -ski -X POST "${BACKEND_URL%/}/api/auth/sign-in/email" \
-  -H "Content-Type: application/json" \
-  -d "{\"email\":\"${PLAYWRIGHT_REAL_MAIL_USER}\",\"password\":\"${PLAYWRIGHT_REAL_MAIL_PASSWORD}\"}")
-PLAYWRIGHT_SESSION_TOKEN=$(node -e 'const r=process.argv[1];const m=r.match(/better-auth\.session_token=([^;\r\n]+)/);if(!m)process.exit(1);console.log(decodeURIComponent(m[1]))' "$RESP")
-PLAYWRIGHT_SESSION_DATA=$(node -e 'const r=process.argv[1];const m=r.match(/better-auth\.session_data=([^;\r\n]+)/);if(!m)process.exit(1);console.log(m[1])' "$RESP")
-export PLAYWRIGHT_SESSION_TOKEN PLAYWRIGHT_SESSION_DATA
+READ_ONLY_SPECS=(
+  real-mail-browser-login
+  real-mail-launch-readonly
+)
+MUTATING_SPECS=(
+  real-mail-browser-login
+  real-mail-compose-self-loopback
+  real-mail-force-sync-loopback
+  real-mail-reply-loopback
+)
+if [ "$READ_ONLY" -eq 1 ]; then
+  SELECTED_SPECS=("${READ_ONLY_SPECS[@]}")
+  export REAL_MAIL_READ_ONLY=1
+else
+  SELECTED_SPECS=("${MUTATING_SPECS[@]}")
+  export REAL_MAIL_READ_ONLY=0
+fi
 
 cd packages/testing
 export REAL_MAIL_UI_GATE=1
@@ -123,10 +155,7 @@ set +e
 # testMatch=/real-mail-.*\.spec\.ts/ via REAL_MAIL_UI_GATE — pass name filters, not absolute paths
 pnpm exec playwright test \
   --reporter=line \
-  real-mail-browser-login \
-  real-mail-compose-self-loopback \
-  real-mail-force-sync-loopback \
-  real-mail-reply-loopback
+  "${SELECTED_SPECS[@]}"
 PW_EXIT=$?
 set -e
 exit "$PW_EXIT"

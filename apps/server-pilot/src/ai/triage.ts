@@ -23,6 +23,16 @@ export const triageOutputSchema = z.object({
 
 export type TriageOutput = z.infer<typeof triageOutputSchema>;
 
+/**
+ * Centurion-scoped property-name subjects that prefer work over spam when
+ * the subject is property-leading. Named allowlist — do not silently expand
+ * to arbitrary hotel brands without an explicit entry + contract test.
+ */
+export const PROPERTY_SUBJECT_PREFER_WORK_ALLOWLIST = [
+  'centurion lake hotel',
+  'centurion hotel',
+] as const;
+
 export interface ShadowTriageResult {
   threadId: string;
   transportId: string;
@@ -35,7 +45,7 @@ export function validateTriageOutput(raw: unknown): TriageOutput {
 }
 
 export function refineTriageOutput(
-  input: { from: string; body: string; subject?: string },
+  input: { from: string; body: string; subject?: string; asOf?: string },
   output: TriageOutput,
 ): TriageOutput {
   const subject = (input.subject ?? '').trim();
@@ -61,6 +71,38 @@ export function refineTriageOutput(
       /promo|sale|discount|unsubscribe|limited[- ]time|book a demo|whatsapp|newsletter|marketing|click here|viqal|outreach|boost|% off|\$\d/i.test(
         haystack,
       );
+    const emptyBodyPreferWork = !salesSignal && body.length === 0 && subject.length <= 80;
+    if (emptyBodyPreferWork) {
+      next = {
+        ...next,
+        category: 'new-bookings',
+        policyFlags: [...next.policyFlags, 'refine:empty-body-not-spam'],
+        rationale: `${next.rationale} Empty body with no sales pitch prefers work.`,
+      };
+    }
+    // Require hotel day-visitor / contact-form / walk-in / table-booking signal.
+    // Bare restaurant|lunch|dinner alone must NOT force new-bookings (sales spam).
+    const dayVisitorHotelSignal =
+      /day[- ]?visitor|contact form|walk[- ]?in|table[- ]?book(ing)?/i.test(haystack);
+    if (dayVisitorHotelSignal && !/unsubscribe|book a demo|whatsapp sales/i.test(haystack)) {
+      next = {
+        ...next,
+        category: 'new-bookings',
+        policyFlags: [...next.policyFlags, 'refine:day-visitor-not-spam'],
+        rationale: `${next.rationale} Day-visitor/contact-form/walk-in/table-booking is not sales spam.`,
+      };
+    }
+    const propertySubjectOnly =
+      subjectMatchesPropertyPreferWorkAllowlist(subject) &&
+      !/unsubscribe|newsletter|book a demo/i.test(haystack);
+    if (propertySubjectOnly) {
+      next = {
+        ...next,
+        category: 'new-bookings',
+        policyFlags: [...next.policyFlags, 'refine:property-subject-prefer-work'],
+        rationale: `${next.rationale} Property-name subject prefers work over spam.`,
+      };
+    }
     const shortPersonal =
       !salesSignal &&
       body.length > 0 &&
@@ -79,6 +121,38 @@ export function refineTriageOutput(
     }
   }
 
+  if (
+    next.category === 'ops' &&
+    (/(release|cancel).{0,40}(held|series|allocation|block)|(held|series)\s+allocation/i.test(
+      haystack,
+    ) ||
+      (/allocation/i.test(haystack) && /series/i.test(haystack)))
+  ) {
+    next = {
+      ...next,
+      category: 'at-risk',
+      policyFlags: [...next.policyFlags, 'refine:series-release-at-risk'],
+      rationale: `${next.rationale} Held series/allocation release is at-risk.`,
+    };
+  }
+
+  if (
+    next.category === 'at-risk' &&
+    /booking|voucher|reservation|rooms?\b/i.test(haystack) &&
+    !/\b(cancel|cancell?ation|amend|release held|unpaid|pay at (check|ci)|within \d+\s*h|synxis|ota)\b/i.test(
+      haystack,
+    ) &&
+    !/\b(2|3|4|5|6|7|8|9|10|\d{2})\s+rooms?\b/i.test(haystack) &&
+    !/\b(allocation|series\s+rates|held\s+series|room\s+block)\b/i.test(haystack)
+  ) {
+    next = {
+      ...next,
+      category: 'new-bookings',
+      policyFlags: [...next.policyFlags, 'refine:one-room-ack-not-at-risk'],
+      rationale: `${next.rationale} One-room booking ack without cancel/SLA is new-bookings.`,
+    };
+  }
+
   if (next.category === 'ops' && next.urgent) {
     const opsHandover = /handover|room readiness|vip arrivals/i.test(haystack);
     if (opsHandover) {
@@ -92,6 +166,7 @@ export function refineTriageOutput(
   }
 
   if (
+    next.category === 'ops' &&
     next.urgent &&
     /\burgent\b/i.test(subject) &&
     /invoice|commission/i.test(haystack) &&
@@ -103,11 +178,95 @@ export function refineTriageOutput(
       ...next,
       urgent: false,
       policyFlags: [...next.policyFlags, 'refine:subject-urgent-not-sla'],
-      rationale: `${next.rationale} Subject URGENT on invoice/commission is not SLA.`,
+      rationale: `${next.rationale} Subject URGENT on ops invoice/commission is not SLA.`,
+    };
+  }
+
+  if (
+    next.category === 'ops' &&
+    next.urgent &&
+    /invoice|tax invoice/i.test(haystack) &&
+    !/(today|tonight|same[- ]day|arrives? tomorrow|check[- ]?in tomorrow|within \d+\s*h)/i.test(
+      haystack,
+    ) &&
+    !hasSameDayCheckInSignal(haystack, input.asOf)
+  ) {
+    next = {
+      ...next,
+      urgent: false,
+      policyFlags: [...next.policyFlags, 'refine:ops-invoice-not-urgent'],
+      rationale: `${next.rationale} Ops invoice without same-day/hard SLA is not urgent.`,
+    };
+  }
+
+  if (
+    !next.urgent &&
+    (next.category === 'new-bookings' ||
+      next.category === 'groups-events' ||
+      next.category === 'at-risk') &&
+    hasSameDayCheckInSignal(haystack, input.asOf)
+  ) {
+    next = {
+      ...next,
+      urgent: true,
+      policyFlags: [...next.policyFlags, 'refine:same-day-ci-urgent'],
+      rationale: `${next.rationale} Same-day check-in/arrival relative to asOf is urgent.`,
+    };
+  }
+
+  if (
+    next.urgent &&
+    next.category === 'new-bookings' &&
+    /\burgent\b/i.test(subject) &&
+    !hasSameDayCheckInSignal(haystack, input.asOf) &&
+    !/(today|tonight|same[- ]day|within \d+\s*h|arrives? tomorrow)/i.test(haystack)
+  ) {
+    next = {
+      ...next,
+      urgent: false,
+      policyFlags: [...next.policyFlags, 'refine:subject-urgent-no-sla-signal'],
+      rationale: `${next.rationale} Subject URGENT without same-day/hard SLA is not urgent.`,
     };
   }
 
   return next;
+}
+
+function subjectMatchesPropertyPreferWorkAllowlist(subject: string): boolean {
+  const escaped = PROPERTY_SUBJECT_PREFER_WORK_ALLOWLIST.map((name) =>
+    name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
+  ).join('|');
+  return new RegExp(`^(?:${escaped})\\b`, 'i').test(subject);
+}
+
+function hasSameDayCheckInSignal(haystack: string, asOf?: string): boolean {
+  if (/check\s*[- ]?in\s*:?\s*today|arrives?\s+today|arrival\s+today|ci\s+today|same[- ]day\s*(ci|check)/i.test(
+    haystack,
+  )) {
+    return true;
+  }
+  if (!asOf) return false;
+  const d = new Date(asOf);
+  if (Number.isNaN(d.getTime())) return false;
+  const day = d.getUTCDate();
+  const monShort = d.toLocaleString('en-US', { month: 'short', timeZone: 'UTC' });
+  const monLong = d.toLocaleString('en-US', { month: 'long', timeZone: 'UTC' });
+  const year = d.getUTCFullYear();
+  const dateAlts = [
+    `${day}\\s*${monShort}`,
+    `${day}\\s*${monLong}`,
+    `${day}[-/]0?${d.getUTCMonth() + 1}[-/]${year}`,
+    `${day}[-/]0?${d.getUTCMonth() + 1}\\b`,
+    `${String(day).padStart(2, '0')}[-/]${String(d.getUTCMonth() + 1).padStart(2, '0')}`,
+  ];
+  for (const alt of dateAlts) {
+    const re = new RegExp(
+      `(check\\s*[- ]?in|arrival|ci)\\D{0,12}${alt}|${alt}\\D{0,12}(check\\s*[- ]?in|arrival)|\\b${day}\\s*[-–]\\s*\\d{1,2}\\s*${monShort}`,
+      'i',
+    );
+    if (re.test(haystack)) return true;
+  }
+  return false;
 }
 
 

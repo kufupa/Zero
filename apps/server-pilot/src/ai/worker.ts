@@ -16,19 +16,25 @@ import { extractDraftFeedbackLabels } from './feedback.js';
 import {
   claimNextAiRun,
   CLEANUP_RESERVE_MS,
+  countNonterminalAiRuns,
   enqueueAiRun,
   heartbeatAiRun,
+  isSupportedInboundTriagePromptVersion,
   markAiRunDeadLetter,
   markAiRunRetry,
   markAiRunRunning,
   markAiRunSucceeded,
   remainingRunBudgetMs,
+  resolveDeployedTriagePromptVersion,
   RunDeadlineError,
   shouldRetryAiFailure,
   toAiRunFence,
   type AiFailureClass,
   type AiRunFence,
+  type AiRunScopeFilter,
+  type AiWorkflowRunKind,
 } from './run-ledger.js';
+import { buildCausalTriageMessages, type TriageMessageRow } from './triage-input.js';
 import { validateTriageOutput } from './triage.js';
 
 function resolveWorkerLane(): AiExecutorLane {
@@ -48,6 +54,27 @@ export const AI_LEASE_HEARTBEAT_INTERVAL_MS = 20_000;
 export interface ExecuteAiRunResult {
   runId: string;
   state: 'succeeded' | 'retry_wait' | 'dead_letter';
+}
+
+export interface AiWorkerCliArgs {
+  drainPrefix?: string;
+  transportId?: string;
+  promptVersion?: string;
+  timeoutMs?: number;
+  runKind: AiWorkflowRunKind;
+}
+
+export interface RunAiWorkerDrainInput extends AiRunScopeFilter {
+  timeoutMs: number;
+  pollIntervalMs?: number;
+  ownerId?: string;
+}
+
+export interface RunAiWorkerDrainResult {
+  ok: boolean;
+  reason: 'drained' | 'timeout';
+  remainingNonterminal: number;
+  processed: number;
 }
 
 function claimOwnerFor(run: typeof aiWorkflowRun.$inferSelect): string {
@@ -80,6 +107,55 @@ function buildRunAbortSignal(input: {
   if (remaining <= CLEANUP_RESERVE_MS) throw new RunDeadlineError();
   const budgetSignal = AbortSignal.timeout(remaining);
   return AbortSignal.any([budgetSignal, input.leaseAbort.signal, input.shutdownSignal]);
+}
+
+export function parseAiWorkerCliArgs(argv: string[]): AiWorkerCliArgs {
+  let drainPrefix: string | undefined;
+  let transportId: string | undefined;
+  let promptVersion: string | undefined;
+  let timeoutMs: number | undefined;
+  let runKind: AiWorkflowRunKind = 'inbound_triage';
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === '--drain-prefix') {
+      const value = argv[++i];
+      if (!value || value.startsWith('--')) throw new Error('--drain-prefix requires a value');
+      drainPrefix = value;
+      continue;
+    }
+    if (arg === '--transport-id') {
+      const value = argv[++i];
+      if (!value || value.startsWith('--')) throw new Error('--transport-id requires a value');
+      transportId = value;
+      continue;
+    }
+    if (arg === '--prompt-version') {
+      const value = argv[++i];
+      if (!value || value.startsWith('--')) throw new Error('--prompt-version requires a value');
+      promptVersion = value;
+      continue;
+    }
+    if (arg === '--timeout-ms') {
+      const value = argv[++i];
+      if (!value || value.startsWith('--')) throw new Error('--timeout-ms requires a value');
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        throw new Error(`--timeout-ms must be a positive number, got: ${value}`);
+      }
+      timeoutMs = parsed;
+      continue;
+    }
+    if (arg === '--run-kind') {
+      const value = argv[++i];
+      if (!value || value.startsWith('--')) throw new Error('--run-kind requires a value');
+      runKind = value as AiWorkflowRunKind;
+      continue;
+    }
+    throw new Error(`unknown option: ${arg}`);
+  }
+
+  return { drainPrefix, transportId, promptVersion, timeoutMs, runKind };
 }
 
 async function failAiRun(
@@ -176,6 +252,18 @@ export async function executeAiRun(
     return { runId: run.id, state: 'dead_letter' };
   }
 
+  if (run.runKind === 'inbound_triage' && !isSupportedInboundTriagePromptVersion(run.promptVersion)) {
+    const deployed = resolveDeployedTriagePromptVersion();
+    await markAiRunDeadLetter({
+      runId: run.id,
+      claimOwner: owner,
+      claimToken,
+      expectedStates: ['running'],
+      lastError: `unsupported prompt version: ${run.promptVersion} (deployed ${deployed})`,
+    });
+    return { runId: run.id, state: 'dead_letter' };
+  }
+
   const runWithFence = { ...run, claimOwner: owner, claimToken, deadlineAt };
 
   let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
@@ -203,18 +291,25 @@ export async function executeAiRun(
           textBody: message.textBody,
           htmlBody: message.htmlBody,
           direction: message.direction,
+          createdAt: message.createdAt,
+          receivedAt: message.receivedAt,
+          sentAt: message.sentAt,
         })
         .from(message)
         .where(and(eq(message.threadId, run.threadId), eq(message.transportId, run.transportId)))
-        .orderBy(asc(message.receivedAt));
+        .orderBy(asc(message.createdAt), asc(message.id));
 
-      const messages = threadMessages.map((m) => ({
+      const rows: TriageMessageRow[] = threadMessages.map((m) => ({
         id: m.id,
         from: m.fromAddress ?? '',
         subject: m.subject ?? undefined,
         body: m.textBody ?? m.htmlBody ?? '',
-        direction: m.direction ?? undefined,
+        direction: m.direction === 'outbound' ? 'outbound' : 'inbound',
+        createdAt: m.createdAt,
+        receivedAt: m.receivedAt ?? null,
+        sentAt: m.sentAt ?? null,
       }));
+      const messages = buildCausalTriageMessages(rows, run.triggerMessageId);
 
       const mastra = createMastraRuntime(process.env.MASTRA_STORAGE_PATH);
       const workflow = mastra.getWorkflow('mailTriage');
@@ -229,6 +324,9 @@ export async function executeAiRun(
           to: trigger?.toAddresses ?? [],
           body: trigger?.textBody ?? trigger?.htmlBody ?? '',
           messages,
+          asOf: run.createdAt.toISOString(),
+          modelId: run.modelId,
+          promptVersion: run.promptVersion,
         },
         // Budget/lease fence for Mastra + future Playwright/S3/subprocess callers.
         abortSignal: signal,
@@ -589,26 +687,86 @@ async function applyDurableTriageFromWorker(input: {
   return applyDurableTriageResult(input);
 }
 
+function scopeFromCli(args: AiWorkerCliArgs): AiRunScopeFilter {
+  return {
+    transportId: args.transportId,
+    runKind: args.runKind,
+    promptVersion: args.promptVersion,
+    idempotencyPrefix: args.drainPrefix,
+  };
+}
+
 function maybeInitHmsRuntime(lane: AiExecutorLane): void {
   if (lane === 'hms') {
     // HMS runtime init reserved for later tasks; only HMS lane may enter this path.
   }
 }
 
-export async function runAiWorkerOnce(
-  options: { shutdownSignal?: AbortSignal } = {},
-): Promise<boolean> {
+export type RunAiWorkerOnceOptions = { shutdownSignal?: AbortSignal } & AiRunScopeFilter;
+
+export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Promise<boolean> {
   const env = parseEnv(process.env as Record<string, string | undefined>);
   const lane = env.AI_WORKER_LANE;
   maybeInitHmsRuntime(lane);
-  const owner = `${lane}-ai-worker-${process.pid}`;
-  const claimed = await claimNextAiRun({ ownerId: owner, lane });
+  const owner = aiWorkerOwnerId(lane);
+  const { shutdownSignal, ...scope } = options;
+  const claimed = await claimNextAiRun({ ownerId: owner, lane, ...scope });
   if (!claimed) return false;
-  await executeAiRun(claimed.id, options);
+  await executeAiRun(claimed.id, { shutdownSignal });
   return true;
 }
 
-export async function runAiWorkerLoop(pollIntervalMs = 5_000): Promise<void> {
+export async function runAiWorkerDrain(
+  input: RunAiWorkerDrainInput,
+): Promise<RunAiWorkerDrainResult> {
+  const pollIntervalMs = input.pollIntervalMs ?? 1_000;
+  const scope: AiRunScopeFilter = {
+    transportId: input.transportId,
+    runKind: input.runKind,
+    promptVersion: input.promptVersion,
+    idempotencyPrefix: input.idempotencyPrefix,
+  };
+  const deadline = Date.now() + input.timeoutMs;
+  let processed = 0;
+
+  while (true) {
+    const remaining = await countNonterminalAiRuns(scope);
+    if (remaining === 0) {
+      return { ok: true, reason: 'drained', remainingNonterminal: 0, processed };
+    }
+    if (Date.now() >= deadline) {
+      return {
+        ok: false,
+        reason: 'timeout',
+        remainingNonterminal: remaining,
+        processed,
+      };
+    }
+
+    const worked = await runAiWorkerOnce({ ...scope });
+    if (worked) {
+      processed += 1;
+      continue;
+    }
+    // No due claim — wait for retry-wait nextRunAt or timeout.
+    const sleepMs = Math.min(pollIntervalMs, Math.max(0, deadline - Date.now()));
+    if (sleepMs <= 0) {
+      const still = await countNonterminalAiRuns(scope);
+      return {
+        ok: still === 0,
+        reason: still === 0 ? 'drained' : 'timeout',
+        remainingNonterminal: still,
+        processed,
+      };
+    }
+    await new Promise((resolve) => setTimeout(resolve, sleepMs));
+  }
+}
+
+export async function runAiWorkerLoop(
+  pollIntervalMs = 5_000,
+  scope: AiRunScopeFilter = {},
+): Promise<void> {
   let stopping = false;
   const shutdown = new AbortController();
   const stop = () => {
@@ -619,7 +777,7 @@ export async function runAiWorkerLoop(pollIntervalMs = 5_000): Promise<void> {
   process.on('SIGINT', stop);
 
   while (!stopping) {
-    const worked = await runAiWorkerOnce({ shutdownSignal: shutdown.signal });
+    const worked = await runAiWorkerOnce({ ...scope, shutdownSignal: shutdown.signal });
     if (!worked) {
       await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
     }
@@ -630,6 +788,44 @@ export async function runAiWorkerLoop(pollIntervalMs = 5_000): Promise<void> {
 
 async function main() {
   parseEnv(process.env as Record<string, string | undefined>);
+  const args = parseAiWorkerCliArgs(process.argv.slice(2));
+  const scoped =
+    args.drainPrefix !== undefined ||
+    args.transportId !== undefined ||
+    args.promptVersion !== undefined ||
+    args.timeoutMs !== undefined;
+
+  if (scoped) {
+    if (args.timeoutMs === undefined) {
+      throw new Error('scoped drain requires --timeout-ms');
+    }
+    const result = await runAiWorkerDrain({
+      ...scopeFromCli(args),
+      timeoutMs: args.timeoutMs,
+    });
+    await closeDb();
+    if (!result.ok) {
+      console.error(
+        JSON.stringify({
+          ok: false,
+          reason: result.reason,
+          remainingNonterminal: result.remainingNonterminal,
+          processed: result.processed,
+        }),
+      );
+      process.exit(1);
+    }
+    console.log(
+      JSON.stringify({
+        ok: true,
+        reason: result.reason,
+        remainingNonterminal: 0,
+        processed: result.processed,
+      }),
+    );
+    return;
+  }
+
   await runAiWorkerLoop();
 }
 

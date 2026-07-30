@@ -1,7 +1,17 @@
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import {
+  BedrockModelAdapter,
+  createBedrockModelAdapter,
+} from './bedrock/bedrock.js';
 import { createFakeModelAdapter } from './bedrock/fake.js';
+import {
+  qualityInputCaseSchema,
+  qualityLabelSchema,
+  runQualityEval,
+  type QualityEvalReport,
+} from './quality-eval.js';
 import { DEFAULT_TRIAGE_PROMPT_VERSION } from './run-ledger.js';
 import { validateStructuredJsonOutput } from './security/policy.js';
 import { scoreCategoryMatch, scoreUrgentMatch } from './scorers/category.js';
@@ -106,26 +116,24 @@ function loadJson<T>(fileName: string): T {
   ) as T;
 }
 
-const CATEGORY_OVERRIDES: Record<string, Partial<TriageOutput>> = {
-  spam: { category: 'spam', urgent: false, confidence: 0.95, rationale: 'sales outreach', policyFlags: [] },
+/** Spike plumbing only — expected labels override fake adapter output. */
+const CATEGORY_OVERRIDES: Record<string, Omit<Partial<TriageOutput>, 'urgent'>> = {
+  spam: { category: 'spam', confidence: 0.95, rationale: 'sales outreach', policyFlags: [] },
   'groups-events': {
     category: 'groups-events',
-    urgent: false,
     confidence: 0.9,
     rationale: 'group quote',
     policyFlags: [],
   },
   'new-bookings': {
     category: 'new-bookings',
-    urgent: true,
     confidence: 0.88,
     rationale: 'guest request',
     policyFlags: [],
   },
-  ops: { category: 'ops', urgent: false, confidence: 0.87, rationale: 'internal ops', policyFlags: [] },
+  ops: { category: 'ops', confidence: 0.87, rationale: 'internal ops', policyFlags: [] },
   'at-risk': {
     category: 'at-risk',
-    urgent: false,
     confidence: 0.86,
     rationale: 'revenue risk',
     policyFlags: [],
@@ -133,17 +141,21 @@ const CATEGORY_OVERRIDES: Record<string, Partial<TriageOutput>> = {
 };
 
 function categoryOverrideForCase(testCase: DemoFixtureCase): Partial<TriageOutput> {
+  // Ordinary new-bookings default urgent=false; explicit fixture urgency wins.
+  const urgent = testCase.expectedUrgent ?? false;
   if (testCase.id === 'group-urgent') {
     return {
       category: 'groups-events',
-      urgent: true,
+      urgent,
       confidence: 0.9,
       rationale: 'urgent group quote',
       policyFlags: [],
     };
   }
   if (!testCase.expectedCategory) return {};
-  return CATEGORY_OVERRIDES[testCase.expectedCategory] ?? {};
+  const base = CATEGORY_OVERRIDES[testCase.expectedCategory];
+  if (!base) return {};
+  return { ...base, urgent };
 }
 
 async function classifyFixtureCase(testCase: DemoFixtureCase): Promise<{
@@ -168,10 +180,7 @@ async function classifyFixtureCase(testCase: DemoFixtureCase): Promise<{
   };
 }
 
-export async function runSpikeEval(options?: {
-  passThreshold?: number;
-}): Promise<SpikeEvalReport> {
-  const passThreshold = options?.passThreshold ?? 0.85;
+export async function runSpikeEval(): Promise<SpikeEvalReport> {
   const demo = loadJson<{ cases: DemoFixtureCase[] }>('centurion-demo.json');
   const redteam = loadJson<{ cases: RedteamFixtureCase[] }>('redteam.json');
 
@@ -269,8 +278,7 @@ export async function runSpikeEval(options?: {
   }
 
   const totalCases = demo.cases.length + redteam.cases.length;
-  const passRate = passedCases / totalCases;
-  const passed = passRate >= passThreshold;
+  const passed = failures.length === 0;
 
   return {
     mode: 'spike',
@@ -296,16 +304,121 @@ export async function runSpikeEval(options?: {
   };
 }
 
-export function parseEvalCliArgs(argv: string[]): {
-  mode: 'spike' | 'hms-shadow';
-  denominators?: string;
-} {
-  const mode = argv.find((arg) => arg.startsWith('--mode='))?.split('=')[1] ?? 'spike';
-  const denominators = argv.find((arg) => arg.startsWith('--denominators='))?.split('=')[1];
-  if (mode !== 'spike' && mode !== 'hms-shadow') {
-    throw new Error(`unsupported eval mode: ${mode}`);
+export type EvalCliArgs =
+  | { mode: 'spike' }
+  | { mode: 'hms-shadow'; denominators?: string }
+  | {
+      mode: 'quality';
+      inputsPath: string;
+      labelsPath: string;
+      outPath: string;
+      repeatId: string;
+    };
+
+function readFlag(argv: string[], name: string): string | undefined {
+  const eq = argv.find((arg) => arg.startsWith(`${name}=`));
+  if (eq) return eq.slice(name.length + 1);
+  const idx = argv.indexOf(name);
+  if (idx >= 0) return argv[idx + 1];
+  return undefined;
+}
+
+export function parseEvalCliArgs(argv: string[]): EvalCliArgs {
+  const mode = readFlag(argv, '--mode') ?? 'spike';
+  if (mode === 'spike') {
+    return { mode: 'spike' };
   }
-  return { mode, denominators };
+  if (mode === 'hms-shadow') {
+    const denominators = readFlag(argv, '--denominators');
+    return { mode: 'hms-shadow', denominators };
+  }
+  if (mode === 'quality') {
+    const inputsPath = readFlag(argv, '--inputs');
+    const labelsPath = readFlag(argv, '--labels');
+    const outPath = readFlag(argv, '--out');
+    const repeatId = readFlag(argv, '--repeat-id');
+    if (!inputsPath || !labelsPath || !outPath || !repeatId) {
+      throw new Error('quality mode requires --inputs --labels --out --repeat-id');
+    }
+    return { mode: 'quality', inputsPath, labelsPath, outPath, repeatId };
+  }
+  throw new Error(`unsupported eval mode: ${mode}`);
+}
+
+function isAiEnabledFlag(raw: string | boolean | undefined): boolean {
+  if (typeof raw === 'boolean') return raw;
+  return raw === 'true' || raw === '1';
+}
+
+export function assertQualityCliRuntime(env: {
+  NODE_ENV?: string;
+  AI_ENABLED?: string | boolean;
+}): void {
+  if (env.NODE_ENV !== 'production') {
+    throw new Error('quality eval requires NODE_ENV=production');
+  }
+  if (!isAiEnabledFlag(env.AI_ENABLED)) {
+    throw new Error('quality eval requires AI_ENABLED=true (AI disabled)');
+  }
+}
+
+export function createQualityModelAdapter(env: {
+  NODE_ENV?: string;
+  AI_ENABLED?: string | boolean;
+  AI_MODEL_ID?: string;
+  BEDROCK_REGION?: string;
+  BEDROCK_GUARDRAIL_ID?: string;
+  BEDROCK_GUARDRAIL_VERSION?: string;
+}): BedrockModelAdapter {
+  assertQualityCliRuntime(env);
+  const adapter = createBedrockModelAdapter({
+    region: env.BEDROCK_REGION,
+    modelId: env.AI_MODEL_ID,
+    guardrailId: env.BEDROCK_GUARDRAIL_ID,
+    guardrailVersion: env.BEDROCK_GUARDRAIL_VERSION,
+  });
+  if (!(adapter instanceof BedrockModelAdapter)) {
+    throw new Error('quality eval aborted: fake adapter resolved');
+  }
+  return adapter;
+}
+
+function readJsonl<T>(path: string, parse: (row: unknown) => T): T[] {
+  const text = readFileSync(path, 'utf8');
+  const rows: T[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    rows.push(parse(JSON.parse(trimmed)));
+  }
+  return rows;
+}
+
+export async function runQualityEvalCli(args: Extract<EvalCliArgs, { mode: 'quality' }>): Promise<QualityEvalReport> {
+  const adapter = createQualityModelAdapter({
+    NODE_ENV: process.env.NODE_ENV,
+    AI_ENABLED: process.env.AI_ENABLED,
+    AI_MODEL_ID: process.env.AI_MODEL_ID,
+    BEDROCK_REGION: process.env.BEDROCK_REGION,
+    BEDROCK_GUARDRAIL_ID: process.env.BEDROCK_GUARDRAIL_ID,
+    BEDROCK_GUARDRAIL_VERSION: process.env.BEDROCK_GUARDRAIL_VERSION,
+  });
+
+  const inputs = readJsonl(resolve(args.inputsPath), (row) => qualityInputCaseSchema.parse(row));
+  const labels = readJsonl(resolve(args.labelsPath), (row) => qualityLabelSchema.parse(row));
+  const report = await runQualityEval(
+    {
+      repeatId: args.repeatId,
+      inputs,
+      labels,
+    },
+    adapter,
+  );
+
+  const outPath = resolve(args.outPath);
+  mkdirSync(dirname(outPath), { recursive: true });
+  writeFileSync(outPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
+  return report;
 }
 
 function loadHmsDenominators(relativePath: string): HmsDenominatorFile {
@@ -488,6 +601,14 @@ export async function runHmsShadowEval(options?: {
 
 async function main() {
   const args = parseEvalCliArgs(process.argv.slice(2));
+  if (args.mode === 'quality') {
+    const report = await runQualityEvalCli(args);
+    console.log(JSON.stringify(report, null, 2));
+    if (!report.complete) {
+      process.exit(1);
+    }
+    return;
+  }
   if (args.mode === 'hms-shadow') {
     const report = await runHmsShadowEval({
       denominatorsPath: args.denominators,

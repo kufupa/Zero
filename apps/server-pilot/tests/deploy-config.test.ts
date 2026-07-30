@@ -45,7 +45,7 @@ describe('deploy config', () => {
       'add_header Referrer-Policy "strict-origin-when-cross-origin" always',
     );
     expect(nginx).toContain(
-      "add_header Content-Security-Policy \"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; frame-ancestors 'none';\" always",
+      "add_header Content-Security-Policy \"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; frame-ancestors 'none';\" always",
     );
   });
 
@@ -225,6 +225,68 @@ describe('deploy config', () => {
     expect(ops).toContain('db:migrate');
   });
 
+  it('quiesced deploy builds assets, asserts workers stopped, skips PM2/health, keeps VPN', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const deploy = readFileSync(join(here, '..', 'deploy', 'deploy-ec2.sh'), 'utf8');
+    const ops = readFileSync(join(here, '..', 'deploy', 'ops-deploy.sh'), 'utf8');
+
+    /** Depth-aware if/fi — full QUIESCED branch, not first nested fi. */
+    const extractBashIfBlock = (script: string, conditionRe: RegExp): string | null => {
+      const match = script.match(conditionRe);
+      if (!match || match.index == null) return null;
+      const lines = script.slice(match.index).split(/\r?\n/);
+      let depth = 0;
+      const collected: string[] = [];
+      for (const line of lines) {
+        collected.push(line);
+        if (/^\s*if\b/.test(line)) depth += 1;
+        if (/^\s*fi\b/.test(line)) {
+          depth -= 1;
+          if (depth === 0) return collected.join('\n');
+        }
+      }
+      return null;
+    };
+
+    expect(deploy).toContain('--quiesced');
+    expect(ops).toContain('--quiesced');
+    expect(ops).toContain('vpn-health-assert.sh');
+
+    const deployQuiesced = extractBashIfBlock(
+      deploy,
+      /if\s+\[\s*"\$\{?QUIESCED\}?"\s*=\s*"1"\s*\]/,
+    );
+    expect(deployQuiesced, 'deploy-ec2.sh QUIESCED branch').toBeTruthy();
+    expect(deployQuiesced).toContain('quiesced deploy ok');
+    expect(deployQuiesced).toMatch(/exit 0/);
+    expect(deployQuiesced).toMatch(/http/);
+    expect(deployQuiesced).toMatch(/worker/);
+    expect(deployQuiesced).toMatch(/ai-worker/);
+    // Refuse any non-stopped status (errored/stopping/online/launching/…).
+    expect(deployQuiesced).toMatch(/"\$status"\s*!=\s*"stopped"/);
+    expect(deployQuiesced).not.toMatch(/"\$status"\s*=\s*"online"/);
+    expect(deployQuiesced).not.toMatch(/\bpm2\s+start\b/);
+    expect(deployQuiesced).not.toMatch(/\bpm2\s+delete\b/);
+    expect(deployQuiesced).not.toMatch(/\bpm2\s+save\b/);
+    expect(deployQuiesced).not.toMatch(/health attempt|8788\/health/);
+
+    // Non-quiesced path still has PM2 start + health (launch safety).
+    expect(deploy).toContain('pm2 start');
+    expect(deploy).toContain('health attempt');
+
+    const opsQuiesced = extractBashIfBlock(
+      ops,
+      /if\s+\[\s*"\$\{?QUIESCED\}?"\s*=\s*"1"\s*\]/,
+    );
+    expect(opsQuiesced, 'ops-deploy.sh QUIESCED branch').toBeTruthy();
+    expect(opsQuiesced).toContain('deploy-ec2.sh --quiesced');
+    expect(opsQuiesced).not.toMatch(/curl[^\n]*\/health/);
+    expect(ops).toMatch(/deploy-ec2\.sh --quiesced|deploy-ec2\.sh"\s*--quiesced/);
+  });
+
   it('ops-restart.sh reloads pm2 via SSM without sync', async () => {
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
@@ -324,7 +386,7 @@ describe('deploy config', () => {
     expect(syntax.status).toBe(0);
   });
 
-  it('RDS vitest gates export VITEST_ALLOW_PILOT_RDS=1', async () => {
+  it('intentional RDS vitest gates export VITEST_ALLOW_PILOT_RDS=1', async () => {
     const { readdirSync, readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
     const { dirname, join } = await import('node:path');
@@ -340,14 +402,18 @@ describe('deploy config', () => {
     const invokesVitest = (script: string) =>
       /\bpnpm test\b/.test(script) || /\bpnpm exec vitest\b/.test(script);
 
+    // AI/Bedrock gates must stay DB-free — excluded from intentional pilot-RDS escape hatch.
+    const dbFreeGateNames = new Set(['ai-gate.sh', 'bedrock-live-gate.sh']);
+
     const rdsVitestGates = readdirSync(deployDir)
       .filter((name) => name.endsWith('.sh'))
+      .filter((name) => !dbFreeGateNames.has(name))
       .filter((name) => {
         const script = readFileSync(join(deployDir, name), 'utf8');
         return sourcesProductionEnv(script) && invokesVitest(script);
       });
 
-    expect(rdsVitestGates.length).toBeGreaterThanOrEqual(5);
+    expect(rdsVitestGates.length).toBeGreaterThanOrEqual(3);
     for (const name of rdsVitestGates) {
       const script = readFileSync(join(deployDir, name), 'utf8');
       expect(script, `${name} must export VITEST_ALLOW_PILOT_RDS=1`).toContain(
@@ -362,13 +428,45 @@ describe('deploy config', () => {
       'mail-search-gate.sh',
       'fixture-loopback-gate.sh',
       'wire-gate.sh',
-      'ai-gate.sh',
-      'bedrock-live-gate.sh',
     ]) {
       expect(rdsVitestGates, `expected ${name} in RDS vitest gates`).toContain(
         name,
       );
     }
+  });
+
+  it('AI and Bedrock gates never bypass pilot-RDS Vitest guard', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const deployDir = join(here, '..', 'deploy');
+
+    const aiGate = readFileSync(join(deployDir, 'ai-gate.sh'), 'utf8');
+    const bedrockGate = readFileSync(join(deployDir, 'bedrock-live-gate.sh'), 'utf8');
+
+    for (const [name, script] of [
+      ['ai-gate.sh', aiGate],
+      ['bedrock-live-gate.sh', bedrockGate],
+    ] as const) {
+      expect(script, `${name} must not set VITEST_ALLOW_PILOT_RDS=1`).not.toContain(
+        'VITEST_ALLOW_PILOT_RDS=1',
+      );
+      expect(script, `${name} must unset DATABASE_URL and VITEST_ALLOW_PILOT_RDS`).toMatch(
+        /unset\s+DATABASE_URL\s+VITEST_ALLOW_PILOT_RDS/,
+      );
+    }
+
+    // ai-gate is DB-free: never source production env into Vitest.
+    expect(aiGate).not.toMatch(/source\s+"?\$\{?ENV_FILE/);
+    expect(aiGate).not.toContain('source .env.production');
+    expect(aiGate).toContain('pnpm exec vitest run');
+
+    // bedrock-live may source Bedrock/AWS settings, but must never invoke Vitest.
+    expect(bedrockGate).not.toMatch(/\bpnpm exec vitest\b/);
+    expect(bedrockGate).not.toMatch(/\bpnpm test\b/);
+    expect(bedrockGate).toContain('bedrock-live-smoke');
+    expect(bedrockGate).toMatch(/\btsx\b/);
   });
 
   it('stage-navaai-mail-env.sh refuses REPLACE_ and keeps password out of SSM argv', async () => {
@@ -434,5 +532,91 @@ describe('deploy config', () => {
     } finally {
       rmSync(missingDir, { recursive: true, force: true });
     }
+  });
+
+  it('launch-readiness.sh is strict, redacted, read-only, and syntactically valid', async () => {
+    const { existsSync, readFileSync } = await import('node:fs');
+    const { spawnSync } = await import('node:child_process');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const scriptPath = join(here, '..', 'deploy', 'launch-readiness.sh');
+    const script = existsSync(scriptPath) ? readFileSync(scriptPath, 'utf8') : '';
+
+    expect(script).toContain('REQUIRE_HOTEL_PROBE=1');
+    expect(script).toContain('RDS_INSTANCE_ID:=nava-zero-mail-pilot');
+    expect(script).toContain('S3_BUCKET:=nava-zero-mail-845242190536-af-south-1');
+    expect(script).toContain('MAIL_TRANSPORT_MODE');
+    expect(script).toContain('BETTER_AUTH_URL');
+    expect(script).toContain('UNDO_SEND_SECONDS');
+    expect(script).toContain('AI_WRITE_GATE_ENABLED');
+    expect(script).toContain('AI_DRAFTS_ENABLED');
+    expect(script).toContain('monitoringMode');
+    expect(script).toContain('deletionProtection');
+    expect(script).toContain('multiAZ');
+    expect(script).toContain('latestInboundAt');
+    expect(script).toContain('backupLatestRestorableAt');
+    expect(script).not.toMatch(/\bset\s+-x\b/);
+    expect(script).not.toMatch(
+      /(?:echo|printf)[^\n]*(?:DATABASE_URL|PASSWORD|SECRET_ARN|SECRET_STRING)/,
+    );
+    expect(script).not.toMatch(/\b(?:INSERT|UPDATE|DELETE|TRUNCATE|ALTER|DROP|CREATE)\b/i);
+
+    const syntax = spawnSync('bash', ['-n', scriptPath], { encoding: 'utf8' });
+    expect(syntax.status).toBe(0);
+  });
+
+  it('real-mail UI gate has a non-mutating read-only mode', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const script = readFileSync(
+      join(here, '..', 'deploy', 'playwright-real-mail-ui-gate.sh'),
+      'utf8',
+    );
+
+    expect(script).toContain('--read-only');
+    expect(script).toContain('READ_ONLY=1');
+    expect(script).toContain('EXPECTED_UNDO_SEND_SECONDS=30');
+    expect(script).toContain('READ_ONLY_SPECS=(');
+    const readOnlySpecs = script.match(/READ_ONLY_SPECS=\(([\s\S]*?)\)/)?.[1] ?? '';
+    expect(readOnlySpecs).toContain('real-mail-browser-login');
+    expect(readOnlySpecs).toContain('real-mail-launch-readonly');
+    expect(readOnlySpecs).not.toMatch(/compose|reply|force-sync|forceSync|send/i);
+    expect(script).not.toContain('api/auth/sign-in/email');
+    expect(script).not.toMatch(/echo[^\n]*PLAYWRIGHT_REAL_MAIL_PASSWORD/);
+  });
+
+  it('task-owned operations files never stage the whole worktree', async () => {
+    const { existsSync, readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const repoRoot = join(here, '..', '..', '..');
+    const paths = [
+      join(here, '..', 'deploy', 'launch-readiness.sh'),
+      join(here, '..', 'deploy', 'playwright-real-mail-ui-gate.sh'),
+      join(repoRoot, 'docs', 'runbooks', 'centurion-day-one-operations.md'),
+    ];
+
+    for (const path of paths) {
+      const source = existsSync(path) ? readFileSync(path, 'utf8') : '';
+      expect(source, path).not.toMatch(/\bgit\s+add\s+(?:\.|-A|--all)(?:\s|$)/m);
+    }
+  });
+
+  it('private production and SDD artifacts are ignored', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const gitignore = readFileSync(join(here, '..', '..', '..', '.gitignore'), 'utf8');
+
+    expect(gitignore).toContain('live real data connection/');
+    expect(gitignore).toContain('Nava.ovpn');
+    expect(gitignore).toContain('Nava.zip');
+    expect(gitignore).toContain('.cursor/debug-*.log');
+    expect(gitignore).toContain('.superpowers/sdd/');
   });
 });

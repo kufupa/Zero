@@ -2,7 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { runSpikeEval } from '../src/ai/eval-runner.js';
+import {
+  assertQualityCliRuntime,
+  createQualityModelAdapter,
+  parseEvalCliArgs,
+  runSpikeEval,
+} from '../src/ai/eval-runner.js';
+import { BedrockModelAdapter } from '../src/ai/bedrock/bedrock.js';
 import { applyDurableTriageResult } from '../src/ai/triage.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -18,19 +24,38 @@ describe('AI eval runner', () => {
     );
   });
 
+  it('ordinary new-bookings defaults to urgent=false', async () => {
+    const report = await runSpikeEval();
+    const ordinary = report.failures.filter((failure) =>
+      failure.id === 'travel-agent' || failure.id === 'travel-agent-normal',
+    );
+    expect(ordinary).toEqual([]);
+    expect(report.failures.some((failure) => /urgent=true/.test(failure.reason))).toBe(false);
+  });
+
+  it('explicit fixture urgency wins for urgent new-bookings and group-urgent', async () => {
+    const report = await runSpikeEval();
+    expect(report.failures.find((failure) => failure.id === 'individual-booking')).toBeUndefined();
+    expect(report.failures.find((failure) => failure.id === 'group-urgent')).toBeUndefined();
+  });
+
+  it('spike passes only with zero failures', async () => {
+    const report = await runSpikeEval();
+    expect(report.metrics.failedCases).toBe(0);
+    expect(report.failures).toHaveLength(0);
+    expect(report.passed).toBe(true);
+    expect(report.writeGateEnabled).toBe(true);
+  });
+
   it('red-team fixtures fail safe', async () => {
-    const report = await runSpikeEval({ passThreshold: 0.01 });
+    const report = await runSpikeEval();
     const redteamFailures = report.failures.filter((failure) =>
       failure.id.startsWith('prompt-injection') || failure.id.startsWith('forbidden-send'),
     );
     expect(redteamFailures).toHaveLength(0);
   });
 
-  it('spike gate blocks durable writes when threshold fails', async () => {
-    const report = await runSpikeEval({ passThreshold: 1.01 });
-    expect(report.passed).toBe(false);
-    expect(report.writeGateEnabled).toBe(false);
-
+  it('spike gate blocks durable writes when gate fails', async () => {
     const writes: string[] = [];
     const db = {
       update: () => ({
@@ -57,7 +82,7 @@ describe('AI eval runner', () => {
       db: db as never,
       transportId: 't1',
       threadId: 'th1',
-      writeGateEnabled: report.writeGateEnabled,
+      writeGateEnabled: false,
       output: {
         category: 'spam',
         urgent: false,
@@ -69,8 +94,8 @@ describe('AI eval runner', () => {
     expect(writes).toHaveLength(0);
   });
 
-  it('spike gate enables write gate when threshold passes', async () => {
-    const report = await runSpikeEval({ passThreshold: 0.8 });
+  it('spike gate enables write gate when all fixtures pass', async () => {
+    const report = await runSpikeEval();
     expect(report.passed).toBe(true);
     expect(report.writeGateEnabled).toBe(true);
     expect(report.traceIds.length).toBeGreaterThan(0);
@@ -78,7 +103,7 @@ describe('AI eval runner', () => {
   });
 
   it('includes draft skeleton and failure safety eval cases', async () => {
-    const report = await runSpikeEval({ passThreshold: 0.8 });
+    const report = await runSpikeEval();
     expect(report.metrics.totalCases).toBeGreaterThanOrEqual(8);
     expect(report.metrics.draftSchemaCases).toBeGreaterThanOrEqual(1);
     expect(report.metrics.failureSafetyCases).toBeGreaterThanOrEqual(1);
@@ -86,8 +111,52 @@ describe('AI eval runner', () => {
     expect(report.failures.find((failure) => failure.id.includes('failure-no-mutation'))).toBeUndefined();
   });
 
+  it('parses quality CLI args for inputs/labels/out/repeat-id', () => {
+    const args = parseEvalCliArgs([
+      '--mode=quality',
+      '--inputs=../../.tmp/triage-quality/inputs.jsonl',
+      '--labels=../../.tmp/triage-quality/labels.jsonl',
+      '--out=../../.tmp/triage-quality/reports/report.json',
+      '--repeat-id=baseline-1',
+    ]);
+    expect(args).toEqual({
+      mode: 'quality',
+      inputsPath: '../../.tmp/triage-quality/inputs.jsonl',
+      labelsPath: '../../.tmp/triage-quality/labels.jsonl',
+      outPath: '../../.tmp/triage-quality/reports/report.json',
+      repeatId: 'baseline-1',
+    });
+  });
+
+  it('quality CLI aborts unless production + AI enabled + explicit Bedrock adapter', () => {
+    expect(() =>
+      assertQualityCliRuntime({
+        NODE_ENV: 'test',
+        AI_ENABLED: true,
+      }),
+    ).toThrow(/production/i);
+    expect(() =>
+      assertQualityCliRuntime({
+        NODE_ENV: 'production',
+        AI_ENABLED: false,
+      }),
+    ).toThrow(/AI_ENABLED|disabled/i);
+
+    const adapter = createQualityModelAdapter({
+      NODE_ENV: 'production',
+      AI_ENABLED: true,
+      AI_MODEL_ID: 'amazon.nova-lite-v1:0',
+      BEDROCK_REGION: 'us-east-1',
+    });
+    expect(adapter).toBeInstanceOf(BedrockModelAdapter);
+
+    const src = readFileSync(join(here, '../src/ai/eval-runner.ts'), 'utf8');
+    expect(src).toMatch(/createBedrockModelAdapter|new BedrockModelAdapter|BedrockModelAdapter/);
+    expect(src).toMatch(/mode === 'quality'|mode=quality|mode: 'quality'/);
+    expect(src).not.toMatch(/createFakeModelAdapter\(\).*quality|quality.*createFakeModelAdapter/);
+  });
+
   it('parses hms-shadow CLI mode', async () => {
-    const { parseEvalCliArgs } = await import('../src/ai/eval-runner.js');
     expect(parseEvalCliArgs(['--mode=hms-shadow', '--denominators=evals/hms/denominators.v1.json'])).toEqual({
       mode: 'hms-shadow',
       denominators: 'evals/hms/denominators.v1.json',
@@ -112,7 +181,6 @@ describe('AI eval runner', () => {
     expect(ok.hardGates.zeroInventedFacts).toBe(true);
     expect(ok.hardGates.zeroFalseCandidates).toBe(true);
     expect(ok.passed).toBe(true);
-    // Partial never equals Full in rates accounting
     expect(ok.metrics.strictFullRate + ok.metrics.usefulPartialRate).toBeLessThanOrEqual(1);
   });
 });

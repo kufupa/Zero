@@ -94,7 +94,7 @@ describe('bedrock adapter contract', () => {
     expect(send).toHaveBeenCalledOnce();
   });
 
-  it('uses outputConfig when responseSchema is provided', async () => {
+  it('Nova omits outputConfig even when responseSchema is provided', async () => {
     const send = vi.fn().mockResolvedValue({
       output: {
         message: {
@@ -113,6 +113,35 @@ describe('bedrock adapter contract', () => {
     };
     await adapter.invoke({
       modelId: 'amazon.nova-lite-v1:0',
+      systemPrompt: 'classify',
+      userPrompt: 'classify inbound email',
+      responseSchema: schema,
+    });
+    const commandInput = send.mock.calls[0]?.[0]?.input as {
+      outputConfig?: { textFormat?: { type?: string } };
+    };
+    expect(commandInput.outputConfig).toBeUndefined();
+  });
+
+  it('mocked non-Nova retains JSON schema outputConfig', async () => {
+    const send = vi.fn().mockResolvedValue({
+      output: {
+        message: {
+          content: [{ text: '{"category":"ops","urgent":false,"confidence":0.9,"rationale":"ok","policyFlags":[]}' }],
+        },
+      },
+      usage: { inputTokens: 10, outputTokens: 5 },
+    });
+    const adapter = new BedrockModelAdapter({
+      region: 'us-east-1',
+      client: { send } as never,
+    });
+    const schema = {
+      type: 'object',
+      properties: { category: { type: 'string' } },
+    };
+    await adapter.invoke({
+      modelId: 'anthropic.claude-3-haiku-20240307-v1:0',
       systemPrompt: 'classify',
       userPrompt: 'classify inbound email',
       responseSchema: schema,

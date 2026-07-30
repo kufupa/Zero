@@ -34,6 +34,7 @@ yarn-error.log*
 bun-debug.log*
 # env files (can opt-in for committing if needed)
 .env
+.env.production
 .dev.vars
 
 # vercel
@@ -81,3 +82,15 @@ apps/server-pilot/.env.*
 # playwright artifacts (regenerated per run)
 packages/testing/playwright-report/
 packages/testing/test-results/
+
+# Centurion production/private operator artifacts (never commit)
+/live real data connection/
+Nava.ovpn
+Nava.zip
+*.mbox
+*.mailbox-dump*
+.tmp*
+.cursor/debug-*.log
+
+# SDD controller scratch/reports (local only; tracked historical reports stay tracked)
+.superpowers/sdd/
