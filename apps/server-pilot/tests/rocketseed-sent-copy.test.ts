@@ -1,8 +1,10 @@
 import { and, eq } from 'drizzle-orm';
+import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { DB } from '../src/db/client';
 import {
   attachment,
+  mailIngestMailbox,
   mailboxTransport,
   mailThread,
   message,
@@ -20,6 +22,7 @@ import {
 import { readFixture } from './helpers/fixtures';
 import {
   TEST_DB_AVAILABLE,
+  openTestDbConnection,
   probeTestDb,
   withSeededTestDb,
 } from './helpers/test-db';
@@ -183,6 +186,33 @@ describe('Rocketseed branded sent-copy parser', () => {
   });
 });
 
+describe('ingest replay lock key', () => {
+  it('is deterministic and tuple-safe for mailbox plus UIDL', async () => {
+    const storeModule = await import('../src/mail/ingest/store');
+    const lockKey = (
+      storeModule as typeof storeModule & {
+        ingestReplayLockKey?: (meta: {
+          ingestMailboxId: string;
+          pop3Uidl: string;
+        }) => string;
+      }
+    ).ingestReplayLockKey;
+
+    expect(lockKey).toBeTypeOf('function');
+    if (!lockKey) return;
+    expect(
+      lockKey({ ingestMailboxId: 'mailbox:a', pop3Uidl: 'uidl:b' }),
+    ).toBe(
+      lockKey({ ingestMailboxId: 'mailbox:a', pop3Uidl: 'uidl:b' }),
+    );
+    expect(
+      lockKey({ ingestMailboxId: 'mailbox:a', pop3Uidl: 'uidl:b' }),
+    ).not.toBe(
+      lockKey({ ingestMailboxId: 'mailbox', pop3Uidl: 'a:uidl:b' }),
+    );
+  });
+});
+
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
   'Rocketseed branded sent-copy reconciliation',
   () => {
@@ -331,6 +361,186 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       ).toBe(false);
       expect(storage.stored.has(OLD_ATTACHMENT_KEY)).toBe(true);
     }, 30000);
+
+    it('serializes concurrent replay for one mailbox UIDL', async () => {
+      const storage = withFakeS3();
+      const runId = randomUUID();
+      const outboundId = randomUUID();
+      const transportId = `transport-rocketseed-${runId}`;
+      const ingestMailboxId = `ingest-rocketseed-${runId}`;
+      const threadId = `thread-rocketseed-${runId}`;
+      const transportEmail = `sender-${runId}@hotel.example`;
+      const pop3Uidl = `uidl-rocketseed-${runId}`;
+      const raw = Buffer.from(
+        brandedFixture()
+          .toString('utf8')
+          .replaceAll(TRANSPORT_EMAIL, transportEmail)
+          .replace(OUTBOUND_ID.toUpperCase(), outboundId.toUpperCase()),
+        'utf8',
+      );
+      const parseIds = [generateMessageId(), generateMessageId()];
+      const parsedMessages = await Promise.all(
+        parseIds.map((messageId) =>
+          parseRawMessage(raw, { messageId, storage }),
+        ),
+      );
+      const first = openTestDbConnection();
+      const second = openTestDbConnection();
+
+      try {
+        await first.db.insert(mailIngestMailbox).values({
+          id: ingestMailboxId,
+          email: `sink-${runId}@example.test`,
+          description: 'Synthetic concurrent replay mailbox',
+          isActive: true,
+        });
+        await first.db.insert(mailboxTransport).values({
+          id: transportId,
+          email: transportEmail,
+          ownerHeaderValue: transportEmail,
+          displayName: 'Synthetic concurrent transport',
+          isActive: true,
+          sendFromConfig: { aliases: [] },
+        });
+        await first.db.insert(mailThread).values({
+          id: threadId,
+          transportId,
+          threadRootId: `root-${runId}`,
+          subject: 'Local unbranded subject',
+          snippet: 'Local unbranded body',
+          isArchived: false,
+          isStarred: false,
+          isRead: true,
+          labelIds: [],
+          latestMessageAt: new Date('2026-07-28T12:00:00.000Z'),
+        });
+        await first.db.insert(message).values({
+          id: outboundId,
+          transportId,
+          threadId,
+          direction: 'outbound',
+          fromAddress: transportEmail,
+          toAddresses: ['guest@example.test'],
+          ccAddresses: [],
+          bccAddresses: [transportEmail],
+          subject: 'Local unbranded subject',
+          textBody: 'Local unbranded body',
+          htmlBody: '<p>Local unbranded body</p>',
+          rawMimeS3Key: 'raw-mime/local-concurrent-original.eml',
+          messageIdHeader: `smtp-${runId}@example.test`,
+          references: [],
+          isRead: true,
+          isStarred: false,
+          receivedAt: new Date('2026-07-28T12:00:00.000Z'),
+          sentAt: new Date('2026-07-28T12:00:00.000Z'),
+        });
+        await first.db.insert(attachment).values({
+          id: `attachment-rocketseed-${runId}`,
+          messageId: outboundId,
+          filename: 'local-original.pdf',
+          mimeType: 'application/pdf',
+          sizeBytes: 8,
+          s3Key: `attachments/local-${runId}/original.pdf`,
+          contentId: null,
+          isInline: false,
+        });
+
+        const calls = [
+          persistInboundMessage(
+            parsedMessages[0]!,
+            raw,
+            {
+              ingestMailboxId,
+              pop3Uidl,
+              messageId: parseIds[0]!,
+            },
+            { db: first.db, storage },
+          ),
+          persistInboundMessage(
+            parsedMessages[1]!,
+            raw,
+            {
+              ingestMailboxId,
+              pop3Uidl,
+              messageId: parseIds[1]!,
+            },
+            { db: second.db, storage },
+          ),
+        ];
+        const settled = await Promise.allSettled(calls);
+        const rejected = settled.find(
+          (result): result is PromiseRejectedResult =>
+            result.status === 'rejected',
+        );
+        if (rejected) throw rejected.reason;
+        const results = settled.map(
+          (result) => (result as PromiseFulfilledResult<
+            Awaited<(typeof calls)[number]>
+          >).value,
+        );
+
+        const finalMessages = await first.db
+          .select()
+          .from(message)
+          .where(eq(message.transportId, transportId));
+        const finalThreads = await first.db
+          .select()
+          .from(mailThread)
+          .where(eq(mailThread.transportId, transportId));
+        const finalAttachments = await first.db
+          .select()
+          .from(attachment)
+          .where(eq(attachment.messageId, outboundId));
+        const winnerIndex = results.findIndex(
+          (result) => result.kind === 'stored',
+        );
+
+        expect(results.map((result) => result.kind).sort()).toEqual([
+          'duplicate',
+          'stored',
+        ]);
+        expect(results).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              kind: 'stored',
+              messageId: outboundId,
+              threadId,
+              attachmentCount: 2,
+            }),
+            expect.objectContaining({
+              kind: 'duplicate',
+              messageId: outboundId,
+            }),
+          ]),
+        );
+        expect(finalMessages).toHaveLength(1);
+        expect(finalMessages[0]).toMatchObject({
+          id: outboundId,
+          threadId,
+          ingestMailboxId,
+          pop3Uidl,
+        });
+        expect(finalThreads).toHaveLength(1);
+        expect(finalAttachments).toHaveLength(2);
+        expect(
+          finalAttachments.map((row) => row.filename).sort(),
+        ).toEqual(['brand-logo.png', 'itinerary.pdf']);
+        expect(winnerIndex).toBeGreaterThanOrEqual(0);
+        expect(
+          finalAttachments.every((row) =>
+            row.s3Key.startsWith(`attachments/${parseIds[winnerIndex]}/`),
+          ),
+        ).toBe(true);
+      } finally {
+        await first.db
+          .delete(mailboxTransport)
+          .where(eq(mailboxTransport.id, transportId));
+        await first.db
+          .delete(mailIngestMailbox)
+          .where(eq(mailIngestMailbox.id, ingestMailboxId));
+        await Promise.all([first.close(), second.close()]);
+      }
+    }, 60000);
 
     it('falls back to exact Message-ID only when correlation header is absent', async () => {
       const storage = withFakeS3();

@@ -91,6 +91,27 @@ export function probeTestDb(): Promise<boolean> {
   return probePromise;
 }
 
+/** Open one independent disposable-DB connection for concurrency tests. */
+export function openTestDbConnection(): {
+  db: DB;
+  close: () => Promise<void>;
+} {
+  if (!process.env.DATABASE_URL) {
+    throw new Error('DATABASE_URL required for openTestDbConnection');
+  }
+  assertNotPilotProdDatabase(process.env.DATABASE_URL);
+  const conn = postgres(process.env.DATABASE_URL, {
+    max: 1,
+    idle_timeout: 20,
+    connect_timeout: 10,
+    ssl: getPostgresSslOptions(),
+  });
+  return {
+    db: drizzle(conn, { schema }),
+    close: () => conn.end(),
+  };
+}
+
 const ROLLBACK = '___test_rollback___';
 
 export async function withTestDb<T>(cb: (db: DB) => Promise<T>): Promise<T> {

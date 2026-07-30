@@ -68,8 +68,9 @@ export interface ParseOptions {
  * Parse a raw RFC822 message and stream attachments to S3.
  *
  * @param raw raw MIME bytes
- * @param opts.messageId database id of the future `message` row; used to
- *   namespace attachment S3 keys (`attachments/{messageId}/...`)
+ * @param opts.messageId incoming parse UUID used to namespace attachment S3
+ *   keys (`attachments/{messageId}/...`). New inbound rows reuse it as their
+ *   database id; outbound reconciliation preserves the original message id.
  * @returns a `ParsedInboundMessage` with all fields populated; attachments
  *   are already in S3.
  */

@@ -28,7 +28,7 @@
  * Tests run this inside `withTestDb` so the transaction is rolled back; in
  * production the transaction commits for real.
  */
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import type { DB } from '../../db/client.js';
 import {
@@ -172,6 +172,27 @@ export async function persistInboundMessage(
     });
   }
 
+  return db.transaction(async (tx) => {
+    const transactionDb = tx as unknown as DB;
+    await acquireIngestReplayLock(transactionDb, meta);
+    return persistInboundMessageLocked({
+      parsed,
+      meta,
+      opts,
+      rawMimeS3Key,
+      db: transactionDb,
+    });
+  });
+}
+
+async function persistInboundMessageLocked(args: {
+  parsed: ParsedInboundMessage;
+  meta: IngestMeta;
+  opts: PersistOptions;
+  rawMimeS3Key: string;
+  db: DB;
+}): Promise<PersistResult> {
+  const { parsed, meta, opts, rawMimeS3Key, db } = args;
   const existingMessage = await findExistingIngestedMessage(db, meta);
   if (existingMessage) {
     return {
@@ -229,8 +250,9 @@ export async function persistInboundMessage(
   const incomingMessageId = meta.messageId;
   let storedMessageId = incomingMessageId;
   let threadId = '';
-  await db.transaction(async (tx) => {
-    const transactionDb = tx as unknown as DB;
+  const transactionDb = db;
+  const tx = db;
+  {
     const transportIdentities = transportIdentitySet(
       transport.email,
       transport.sendFromConfig,
@@ -305,7 +327,14 @@ export async function persistInboundMessage(
           .delete(mailIngestQuarantine)
           .where(eq(mailIngestQuarantine.id, opts.promoteQuarantineId));
       }
-      return;
+      return {
+        kind: 'stored',
+        transportId: transport.id,
+        messageId: storedMessageId,
+        threadId,
+        rawMimeS3Key,
+        attachmentCount: parsed.attachments.length,
+      };
     }
 
     threadId = await resolveThreadId({
@@ -417,7 +446,7 @@ export async function persistInboundMessage(
         .delete(mailIngestQuarantine)
         .where(eq(mailIngestQuarantine.id, opts.promoteQuarantineId));
     }
-  });
+  }
 
   return {
     kind: 'stored',
@@ -503,6 +532,22 @@ export async function quarantineParseFailure(
     reason: 'parse_failure',
     rawMimeS3Key,
   };
+}
+
+export function ingestReplayLockKey(
+  meta: Pick<IngestMeta, 'ingestMailboxId' | 'pop3Uidl'>,
+): string {
+  return JSON.stringify([meta.ingestMailboxId, meta.pop3Uidl]);
+}
+
+async function acquireIngestReplayLock(
+  db: DB,
+  meta: Pick<IngestMeta, 'ingestMailboxId' | 'pop3Uidl'>,
+): Promise<void> {
+  const lockKey = ingestReplayLockKey(meta);
+  await db.execute(sql`
+    SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0::bigint))
+  `);
 }
 
 async function findExistingIngestedMessage(
