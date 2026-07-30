@@ -5,7 +5,54 @@ import {
   aiDraftGeneration,
   mailDraft,
   mailDraftRevision,
+  message,
 } from '../db/schema/mail.js';
+import { computeThreadStateVersion } from './thread-context.js';
+
+export class ThreadStateStaleError extends Error {
+  constructor(message = 'thread state version stale') {
+    super(message);
+    this.name = 'ThreadStateStaleError';
+  }
+}
+
+/** Fail closed when expected version does not match live thread hash. */
+export function assertThreadStateVersionFresh(expected: string, live: string): void {
+  if (expected !== live) throw new ThreadStateStaleError();
+}
+
+export async function loadLiveThreadStateVersion(
+  db: DB,
+  input: {
+    transportId: string;
+    threadId: string;
+    latestDraftRevisionId?: string | null;
+  },
+): Promise<string> {
+  const rows = await db
+    .select({
+      id: message.id,
+      direction: message.direction,
+      receivedAt: message.receivedAt,
+      sentAt: message.sentAt,
+    })
+    .from(message)
+    .where(
+      and(eq(message.threadId, input.threadId), eq(message.transportId, input.transportId)),
+    );
+
+  return computeThreadStateVersion({
+    messages: rows.map((m) => ({
+      id: m.id,
+      direction: (m.direction === 'outbound' ? 'outbound' : 'inbound') as
+        | 'inbound'
+        | 'outbound',
+      timestamp:
+        (m.sentAt ?? m.receivedAt)?.toISOString() ?? '1970-01-01T00:00:00.000Z',
+    })),
+    latestDraftRevisionId: input.latestDraftRevisionId ?? null,
+  });
+}
 
 export interface PersistAiCandidateDraftInput {
   db: DB;
@@ -27,6 +74,8 @@ export interface PersistAiCandidateDraftInput {
   outcome?: 'candidate' | 'needs_clarification' | 'insufficient_evidence';
   evidence?: unknown[];
   threadStateVersion?: string;
+  /** Same value used when context was built (worker currently passes null). */
+  latestDraftRevisionId?: string | null;
   /**
    * When false (shadow / non-candidate), persist generation metrics only —
    * no mailDraft / revision rows.
@@ -92,6 +141,15 @@ export async function persistAiCandidateDraft(input: PersistAiCandidateDraftInpu
   const now = new Date();
 
   await input.db.transaction(async (tx) => {
+    if (input.threadStateVersion) {
+      const live = await loadLiveThreadStateVersion(tx as unknown as DB, {
+        transportId: input.transportId,
+        threadId: input.threadId,
+        latestDraftRevisionId: input.latestDraftRevisionId ?? null,
+      });
+      assertThreadStateVersionFresh(input.threadStateVersion, live);
+    }
+
     await tx
       .insert(aiDraftGeneration)
       .values({

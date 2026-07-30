@@ -10,6 +10,7 @@ import {
   isEvidenceFresh,
   renderCandidate,
   renderClaim,
+  renderClarificationQuestions,
   renderFactualLines,
   textToSafeHtml,
   type EvidenceClaim,
@@ -28,6 +29,10 @@ import {
   minimizeToolResultForModel,
   runClaimSafeCandidateDraft,
 } from '../src/ai/candidate-draft-agent.js';
+import {
+  ThreadStateStaleError,
+  assertThreadStateVersionFresh,
+} from '../src/ai/drafts.js';
 import { generateSkeletonDraft } from '../src/ai/workflows/candidate-draft.js';
 
 const now = new Date('2026-07-30T12:00:00.000Z');
@@ -511,6 +516,25 @@ describe('claim-safe candidate agent', () => {
         claims: map,
       }),
     ).toThrow(/uncited critical literal/i);
+  });
+
+  it('renderClarificationQuestions maps codes to templates', () => {
+    expect(renderClarificationQuestions(['missing_confirmation'])).toEqual([
+      'Could you share your confirmation number?',
+    ]);
+    expect(renderClarificationQuestions(['unknown_code'])[0]).toMatch(/additional details/i);
+    const joined = renderClarificationQuestions(['missing_stay_dates', 'missing_guest_name']).join(
+      '\n\n',
+    );
+    expect(joined).toContain('arrival and departure');
+    expect(joined).toContain('guest surname');
+    expect(textToSafeHtml('A & B <C>')).toContain('&amp;');
+    expect(textToSafeHtml('A & B <C>')).toContain('&lt;');
+  });
+
+  it('fail closed when threadStateVersion mismatches', () => {
+    expect(() => assertThreadStateVersionFresh('abc', 'abc')).not.toThrow();
+    expect(() => assertThreadStateVersionFresh('fresh', 'stale')).toThrow(ThreadStateStaleError);
   });
 
   it('HTML derives from validated text; model never supplies HTML', () => {

@@ -459,55 +459,73 @@ export async function executeAiRun(
 
       const persistDraft =
         hmsMode === 'enabled' && claimSafe.outcome === 'candidate';
-      const textBody =
+      const { renderClarificationQuestions, textToSafeHtml } = await import(
+        './draft-evidence.js'
+      );
+      const clarificationText =
         claimSafe.outcome === 'candidate'
-          ? claimSafe.textBody
-          : claimSafe.plan.questionCodes.join('\n') ||
+          ? null
+          : renderClarificationQuestions(claimSafe.plan.questionCodes).join('\n\n') ||
             'Insufficient evidence for an automated candidate.';
+      const textBody =
+        claimSafe.outcome === 'candidate' ? claimSafe.textBody : clarificationText!;
       const htmlBody =
         claimSafe.outcome === 'candidate'
           ? claimSafe.htmlBody
-          : `<p>${textBody.replace(/</g, '&lt;')}</p>`;
+          : textToSafeHtml(textBody);
 
-      const draft = await persistAiCandidateDraft({
-        db,
-        transportId: run.transportId,
-        threadId: run.threadId,
-        replyToMessageId: run.triggerMessageId,
-        createdByUserId,
-        generationId,
-        model: run.modelId,
-        promptVersion: run.promptVersion,
-        contextMessageIds: context.includedMessageIds,
-        toAddresses: [replyTo],
-        subject,
-        textBody,
-        htmlBody,
-        outcome: claimSafe.outcome,
-        evidence: claimSafe.evidence.map((e) => e.evidence),
-        threadStateVersion: context.threadStateVersion,
-        persistDraft,
-      });
+      let claimFenceLost = false;
+      try {
+        await db.transaction(async (tx) => {
+          const draft = await persistAiCandidateDraft({
+            db: tx as unknown as typeof db,
+            transportId: run.transportId,
+            threadId: run.threadId,
+            replyToMessageId: run.triggerMessageId,
+            createdByUserId,
+            generationId,
+            model: run.modelId,
+            promptVersion: run.promptVersion,
+            contextMessageIds: context.includedMessageIds,
+            toAddresses: [replyTo],
+            subject,
+            textBody,
+            htmlBody,
+            outcome: claimSafe.outcome,
+            evidence: claimSafe.evidence.map((e) => e.evidence),
+            threadStateVersion: context.threadStateVersion,
+            latestDraftRevisionId: null,
+            persistDraft,
+          });
 
-      const marked = await markAiRunSucceeded({
-        runId,
-        claimOwner: owner,
-        claimToken,
-        expectedStates: ['running'],
-        generationId: draft.generationId ?? generationId,
-        metrics: {
-          draftId: draft.id,
-          generationId: draft.generationId ?? generationId,
-          modelId: run.modelId,
-          hmsMode,
-          outcome: claimSafe.outcome,
-          persistDraft,
-          threadStateVersion: context.threadStateVersion,
-          ...claimSafe.metrics,
-        },
-      });
-      if (!marked) {
-        return { runId, state: 'retry_wait' };
+          const marked = await markAiRunSucceeded(
+            {
+              runId,
+              claimOwner: owner,
+              claimToken,
+              expectedStates: ['running'],
+              generationId: draft.generationId ?? generationId,
+              metrics: {
+                draftId: draft.id,
+                generationId: draft.generationId ?? generationId,
+                modelId: run.modelId,
+                hmsMode,
+                outcome: claimSafe.outcome,
+                persistDraft,
+                threadStateVersion: context.threadStateVersion,
+                ...claimSafe.metrics,
+              },
+            },
+            tx as unknown as typeof db,
+          );
+          if (!marked) {
+            claimFenceLost = true;
+            throw new Error(`failed to mark AI run succeeded with claim fencing: ${runId}`);
+          }
+        });
+      } catch (error) {
+        if (claimFenceLost) return { runId, state: 'retry_wait' };
+        throw error;
       }
       return { runId, state: 'succeeded' };
     }

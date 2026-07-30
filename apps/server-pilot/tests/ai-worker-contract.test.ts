@@ -102,6 +102,20 @@ describe('ai worker contract', () => {
     expect(source).toMatch(/candidateDraft/);
     expect(source).toMatch(/persistDraft/);
   });
+
+  it('claim-safe path renders clarification templates and fences persist+succeed TX', () => {
+    const worker = readFileSync(join(here, '..', 'src', 'ai', 'worker.ts'), 'utf8');
+    expect(worker).toMatch(/renderClarificationQuestions/);
+    expect(worker).toMatch(/textToSafeHtml/);
+    expect(worker).not.toMatch(/questionCodes\.join/);
+    expect(worker).toMatch(/persistAiCandidateDraft\(/);
+    expect(worker).toMatch(/markAiRunSucceeded\(/);
+
+    const drafts = readFileSync(join(here, '..', 'src', 'ai', 'drafts.ts'), 'utf8');
+    expect(drafts).toMatch(/assertThreadStateVersionFresh/);
+    expect(drafts).toMatch(/loadLiveThreadStateVersion/);
+    expect(drafts).toMatch(/ThreadStateStaleError/);
+  });
 });
 
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () => {
