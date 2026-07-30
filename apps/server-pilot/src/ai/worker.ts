@@ -129,9 +129,25 @@ async function failAiRun(
   return { runId: run.id, state: 'retry_wait' };
 }
 
+export type CandidateSessionFactory = (input: {
+  transportId: string;
+  threadId: string;
+  lookupCandidates: import('./thread-context.js').LookupCandidate[];
+  authorizedAttachmentIds: string[];
+  signal: AbortSignal;
+}) => import('./candidate-draft-agent.js').CandidateToolSession;
+
 export async function executeAiRun(
   runId: string,
-  options: { shutdownSignal?: AbortSignal } = {},
+  options: {
+    shutdownSignal?: AbortSignal;
+    /** Injectable claim-safe tool session (tests / Task 7 mocks). */
+    candidateSessionFactory?: CandidateSessionFactory;
+    candidatePlanModel?: (prompt: {
+      systemPrompt: string;
+      userPrompt: string;
+    }) => Promise<unknown>;
+  } = {},
 ): Promise<ExecuteAiRunResult> {
   const db = getDb();
   const env = parseEnv(process.env as Record<string, string | undefined>);
@@ -311,24 +327,6 @@ export async function executeAiRun(
         return { runId, state: 'succeeded' };
       }
 
-      const mastra = createMastraRuntime(process.env.MASTRA_STORAGE_PATH);
-      const workflow = mastra.getWorkflow('candidateDraft');
-      const workflowRun = await workflow.createRun();
-      const result = await workflowRun.start({
-        inputData: {
-          transportId: run.transportId,
-          threadId: run.threadId,
-          triggerMessageId: run.triggerMessageId,
-          fromAddress: trigger.fromAddress,
-          subject: trigger.subject ?? undefined,
-          body: trigger.textBody ?? trigger.htmlBody ?? '',
-        },
-        abortSignal: signal,
-      } as Parameters<typeof workflowRun.start>[0] & { abortSignal: AbortSignal });
-      if (result.status !== 'success') {
-        throw new Error(`candidate draft workflow failed: ${result.status}`);
-      }
-
       const generationId = run.generationId ?? `${run.id}-generation`;
       const [existingGeneration] = await db
         .select({ requestedByUserId: aiDraftGeneration.requestedByUserId })
@@ -337,6 +335,140 @@ export async function executeAiRun(
         .limit(1);
       const createdByUserId = existingGeneration?.requestedByUserId ?? 'user-navaai';
       const subject = deriveReplySubject(trigger.subject);
+      const hmsMode = env.HMS_DRAFT_ENRICHMENT_MODE;
+
+      // Off mode: existing skeleton workflow / evidence rules do not apply.
+      if (hmsMode === 'off') {
+        const mastra = createMastraRuntime(process.env.MASTRA_STORAGE_PATH);
+        const workflow = mastra.getWorkflow('candidateDraft');
+        const workflowRun = await workflow.createRun();
+        const result = await workflowRun.start({
+          inputData: {
+            transportId: run.transportId,
+            threadId: run.threadId,
+            triggerMessageId: run.triggerMessageId,
+            fromAddress: trigger.fromAddress,
+            subject: trigger.subject ?? undefined,
+            body: trigger.textBody ?? trigger.htmlBody ?? '',
+          },
+          abortSignal: signal,
+        } as Parameters<typeof workflowRun.start>[0] & { abortSignal: AbortSignal });
+        if (result.status !== 'success') {
+          throw new Error(`candidate draft workflow failed: ${result.status}`);
+        }
+
+        const draft = await persistAiCandidateDraft({
+          db,
+          transportId: run.transportId,
+          threadId: run.threadId,
+          replyToMessageId: run.triggerMessageId,
+          createdByUserId,
+          generationId,
+          model: run.modelId,
+          promptVersion: run.promptVersion,
+          contextMessageIds: [run.triggerMessageId],
+          toAddresses: [replyTo],
+          subject,
+          textBody: result.result!.draftBody.textBody,
+          htmlBody: result.result!.draftBody.htmlBody,
+          outcome: 'candidate',
+          persistDraft: true,
+        });
+        const marked = await markAiRunSucceeded({
+          runId,
+          claimOwner: owner,
+          claimToken,
+          expectedStates: ['running'],
+          generationId: draft.generationId ?? generationId,
+          metrics: {
+            draftId: draft.id,
+            generationId: draft.generationId ?? generationId,
+            modelId: run.modelId,
+            hmsMode: 'off',
+            ...(result.result?.metrics as Record<string, unknown>),
+          },
+        });
+        if (!marked) {
+          return { runId, state: 'retry_wait' };
+        }
+        return { runId, state: 'succeeded' };
+      }
+
+      // shadow | enabled: claim-safe path (mocked tools injectable via options).
+      const { runClaimSafeCandidateDraft, createMockCandidateSession } = await import(
+        './candidate-draft-agent.js'
+      );
+      const { buildThreadContext } = await import('./thread-context.js');
+      const threadMessages = await db
+        .select({
+          id: message.id,
+          transportId: message.transportId,
+          threadId: message.threadId,
+          direction: message.direction,
+          textBody: message.textBody,
+          htmlBody: message.htmlBody,
+          subject: message.subject,
+          receivedAt: message.receivedAt,
+          sentAt: message.sentAt,
+        })
+        .from(message)
+        .where(and(eq(message.threadId, run.threadId), eq(message.transportId, run.transportId)));
+
+      const context = await buildThreadContext({
+        transportId: run.transportId,
+        threadId: run.threadId,
+        triggerMessageId: run.triggerMessageId,
+        messages: threadMessages.map((m) => ({
+          id: m.id,
+          transportId: m.transportId,
+          threadId: m.threadId,
+          direction: (m.direction === 'outbound' ? 'outbound' : 'inbound') as
+            | 'inbound'
+            | 'outbound',
+          textBody: m.textBody,
+          htmlBody: m.htmlBody,
+          subject: m.subject,
+          receivedAt: m.receivedAt,
+          sentAt: m.sentAt,
+          attachmentIds: [],
+        })),
+        latestDraftRevisionId: null,
+      });
+
+      const session =
+        options.candidateSessionFactory?.({
+          transportId: run.transportId,
+          threadId: run.threadId,
+          lookupCandidates: context.lookupCandidates,
+          authorizedAttachmentIds: context.authorizedAttachmentIds,
+          signal,
+        }) ??
+        createMockCandidateSession({
+          lookupCandidates: new Map(
+            context.lookupCandidates.map((c) => [c.id, c]),
+          ),
+          authorizedAttachmentIds: new Set(context.authorizedAttachmentIds),
+        });
+
+      const claimSafe = await runClaimSafeCandidateDraft({
+        session,
+        normalizedThreadText: context.normalizedText,
+        signal,
+        planModel: options.candidatePlanModel,
+      });
+
+      const persistDraft =
+        hmsMode === 'enabled' && claimSafe.outcome === 'candidate';
+      const textBody =
+        claimSafe.outcome === 'candidate'
+          ? claimSafe.textBody
+          : claimSafe.plan.questionCodes.join('\n') ||
+            'Insufficient evidence for an automated candidate.';
+      const htmlBody =
+        claimSafe.outcome === 'candidate'
+          ? claimSafe.htmlBody
+          : `<p>${textBody.replace(/</g, '&lt;')}</p>`;
+
       const draft = await persistAiCandidateDraft({
         db,
         transportId: run.transportId,
@@ -346,12 +478,17 @@ export async function executeAiRun(
         generationId,
         model: run.modelId,
         promptVersion: run.promptVersion,
-        contextMessageIds: [run.triggerMessageId],
+        contextMessageIds: context.includedMessageIds,
         toAddresses: [replyTo],
         subject,
-        textBody: result.result!.draftBody.textBody,
-        htmlBody: result.result!.draftBody.htmlBody,
+        textBody,
+        htmlBody,
+        outcome: claimSafe.outcome,
+        evidence: claimSafe.evidence.map((e) => e.evidence),
+        threadStateVersion: context.threadStateVersion,
+        persistDraft,
       });
+
       const marked = await markAiRunSucceeded({
         runId,
         claimOwner: owner,
@@ -362,7 +499,11 @@ export async function executeAiRun(
           draftId: draft.id,
           generationId: draft.generationId ?? generationId,
           modelId: run.modelId,
-          ...(result.result?.metrics as Record<string, unknown>),
+          hmsMode,
+          outcome: claimSafe.outcome,
+          persistDraft,
+          threadStateVersion: context.threadStateVersion,
+          ...claimSafe.metrics,
         },
       });
       if (!marked) {

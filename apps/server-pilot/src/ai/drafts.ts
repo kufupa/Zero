@@ -23,9 +23,22 @@ export interface PersistAiCandidateDraftInput {
   subject: string;
   textBody: string;
   htmlBody: string;
+  /** HMS enrichment outcome; omitted for legacy skeleton. */
+  outcome?: 'candidate' | 'needs_clarification' | 'insufficient_evidence';
+  evidence?: unknown[];
+  threadStateVersion?: string;
+  /**
+   * When false (shadow / non-candidate), persist generation metrics only —
+   * no mailDraft / revision rows.
+   */
+  persistDraft?: boolean;
 }
 
 export async function persistAiCandidateDraft(input: PersistAiCandidateDraftInput) {
+  const persistDraft = input.persistDraft ?? true;
+  const outcome = input.outcome ?? 'candidate';
+  const evidence = input.evidence ?? [];
+
   const existingGeneration = await input.db
     .select({ id: aiDraftGeneration.id })
     .from(aiDraftGeneration)
@@ -58,6 +71,20 @@ export async function persistAiCandidateDraft(input: PersistAiCandidateDraftInpu
         .limit(1);
       if (draftByRevision) return draftByRevision;
     }
+
+    if (!persistDraft) {
+      const [gen] = await input.db
+        .select()
+        .from(aiDraftGeneration)
+        .where(eq(aiDraftGeneration.id, input.generationId))
+        .limit(1);
+      return {
+        ...gen,
+        id: undefined as unknown as string,
+        generationId: input.generationId,
+        status: 'candidate' as const,
+      };
+    }
   }
 
   const draftId = randomUUID();
@@ -76,9 +103,26 @@ export async function persistAiCandidateDraft(input: PersistAiCandidateDraftInpu
         model: input.model,
         promptVersion: input.promptVersion,
         status: 'succeeded',
+        outcome,
+        threadStateVersion: input.threadStateVersion ?? null,
+        evidence,
         createdAt: now,
       })
       .onConflictDoNothing();
+
+    if (existingGeneration.length > 0) {
+      await tx
+        .update(aiDraftGeneration)
+        .set({
+          outcome,
+          threadStateVersion: input.threadStateVersion ?? null,
+          evidence,
+          status: 'succeeded',
+        })
+        .where(eq(aiDraftGeneration.id, input.generationId));
+    }
+
+    if (!persistDraft) return;
 
     await tx.insert(mailDraft).values({
       id: draftId,
@@ -114,6 +158,14 @@ export async function persistAiCandidateDraft(input: PersistAiCandidateDraftInpu
       createdAt: now,
     });
   });
+
+  if (!persistDraft) {
+    return {
+      id: undefined as unknown as string,
+      generationId: input.generationId,
+      status: 'candidate' as const,
+    };
+  }
 
   const [draft] = await input.db
     .select()

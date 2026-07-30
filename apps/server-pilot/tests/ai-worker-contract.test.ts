@@ -93,6 +93,15 @@ describe('ai worker contract', () => {
     expect(source).toMatch(/markAiRunRunning\(/);
     expect(source).not.toMatch(/run\.claimToken\s*\?\?\s*randomUUID\(/);
   });
+
+  it('worker branches candidate_draft on HMS_DRAFT_ENRICHMENT_MODE (off keeps skeleton)', () => {
+    const source = readFileSync(join(here, '..', 'src', 'ai', 'worker.ts'), 'utf8');
+    expect(source).toMatch(/HMS_DRAFT_ENRICHMENT_MODE/);
+    expect(source).toMatch(/hmsMode === 'off'/);
+    expect(source).toMatch(/runClaimSafeCandidateDraft/);
+    expect(source).toMatch(/candidateDraft/);
+    expect(source).toMatch(/persistDraft/);
+  });
 });
 
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () => {

@@ -47,35 +47,56 @@ const systemPrompt = [
   'Return JSON only.',
 ].join('\n');
 
+export type SkeletonDraftInput = z.infer<typeof candidateDraftInputSchema>;
+
+/** Legacy off-mode skeleton — evidence rules do not apply. */
+export async function generateSkeletonDraft(
+  input: SkeletonDraftInput,
+  signal?: AbortSignal,
+) {
+  if (signal?.aborted) {
+    const err = new Error('skeleton draft aborted');
+    err.name = 'AbortError';
+    throw err;
+  }
+  enforceInboundMailPolicy({ body: input.body });
+  const adapter = createModelAdapter();
+  const model = await adapter.invoke({
+    modelId: 'amazon.nova-lite-v1:0',
+    systemPrompt,
+    userPrompt: `draft reply skeleton for inbound email from ${input.fromAddress}: ${input.body}`,
+  });
+  const parsed = candidateDraftModelOutputSchema.parse(
+    validateStructuredJsonOutput(model.output),
+  );
+  return {
+    draftBody: {
+      textBody: parsed.textBody,
+      htmlBody: parsed.htmlBody,
+    },
+    metrics: {
+      modelId: model.modelId,
+      usage: model.usage,
+      hmsMode: 'off',
+    },
+  };
+}
+
 const generateDraftStep = createStep({
   id: 'generate-candidate-draft',
   inputSchema: candidateDraftInputSchema,
   outputSchema: candidateDraftOutputSchema,
   execute: async ({ inputData, runId }) => {
-    enforceInboundMailPolicy({ body: inputData.body });
-    const adapter = createModelAdapter();
-    const model = await adapter.invoke({
-      modelId: 'amazon.nova-lite-v1:0',
-      systemPrompt,
-      userPrompt: `draft reply skeleton for inbound email from ${inputData.fromAddress}: ${inputData.body}`,
-    });
-    const parsed = candidateDraftModelOutputSchema.parse(
-      validateStructuredJsonOutput(model.output),
-    );
+    const result = await generateSkeletonDraft(inputData);
     return {
-      draftBody: {
-        textBody: parsed.textBody,
-        htmlBody: parsed.htmlBody,
-      },
-      metrics: {
-        modelId: model.modelId,
-        usage: model.usage,
-      },
+      draftBody: result.draftBody,
+      metrics: result.metrics,
       traceId: runId,
     };
   },
 });
 
+/** Mastra workflow for HMS mode `off` skeleton path. */
 export const candidateDraftWorkflow = createWorkflow({
   id: 'candidate-draft',
   inputSchema: candidateDraftInputSchema,
