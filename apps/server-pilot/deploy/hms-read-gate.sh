@@ -55,18 +55,29 @@ fi
 
 cd "$SERVER_PILOT"
 
+# Vitest setup refuses pilot RDS host unless VITEST_ALLOW_PILOT_RDS=1.
+# Fixture boundary/eval suites are unit-only — run with DATABASE_URL unset.
 echo "== hms-read-gate: production-boundary + eval =="
-pnpm exec vitest run \
-  tests/hms-production-boundary.test.ts \
-  tests/ai-eval-runner.test.ts \
-  --reporter=dot || fail "vitest boundary/eval failed"
+(
+  unset DATABASE_URL
+  export HMS_DB_TEST_REQUIRED=0
+  pnpm exec vitest run \
+    tests/hms-production-boundary.test.ts \
+    tests/ai-eval-runner.test.ts \
+    --reporter=dot
+) || fail "vitest boundary/eval failed"
 
 echo "== hms-read-gate: shadow eval =="
-pnpm run eval:hms-shadow | tee "${GATE_DIR}/hms-shadow-eval.json" || fail "eval:hms-shadow failed"
+(
+  unset DATABASE_URL
+  pnpm run eval:hms-shadow
+) | tee "${GATE_DIR}/hms-shadow-eval.json" || fail "eval:hms-shadow failed"
 
 if [ "$MODE" = "--full" ] || [ "$MODE" = "--fixture-only" ]; then
   if [ "${HMS_DB_TEST_REQUIRED}" = "1" ]; then
     echo "== hms-read-gate: HMS vitest bundle (DB required) =="
+    # Intentional EC2 gate against pilot RDS: allow only when DATABASE_URL set.
+    export VITEST_ALLOW_PILOT_RDS=1
     pnpm exec vitest run \
       tests/hms-contracts.test.ts \
       tests/hms-request-policy.test.ts \
