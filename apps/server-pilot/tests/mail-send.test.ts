@@ -14,6 +14,7 @@ import {
   FakeSmtpTransport,
   __setSmtpTransportForTests,
 } from '../src/mail/send/smtp.js';
+import { withTransportSelfBcc } from '../src/trpc/routes/mail.js';
 
 const reachable = await probeTestDb();
 
@@ -146,6 +147,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.send', () => {
 
         expect(fake.sent).toHaveLength(1);
         expect(fake.sent[0]!.from).toBe('centurion@legacyhotels.co.za');
+        expect(fake.sent[0]!.bcc).toContain('centurion@legacyhotels.co.za');
+        expect(rows[0]!.bccAddresses).toContain('centurion@legacyhotels.co.za');
         expect(fake.sent[0]!.inReplyTo).toBe('inbound-msg-id-1');
         expect(fake.sent[0]!.extraHeaders).toEqual({
           'X-Zero-Mailbox': 'centurion@legacyhotels.co.za',
@@ -174,6 +177,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.send', () => {
 
         expect(result.fromEmail).toBe('navaai@legacyhotels.co.za');
         expect(fake.sent).toHaveLength(1);
+        expect(fake.sent[0]!.bcc).toContain('navaai@legacyhotels.co.za');
         expect(fake.sent[0]!.extraHeaders).toEqual({
           'X-Zero-Mailbox': 'navaai@legacyhotels.co.za',
         });
@@ -276,6 +280,21 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.send', () => {
       }
     });
   }, 30000);
+});
+
+describe('withTransportSelfBcc', () => {
+  it('appends active mailbox when missing', () => {
+    expect(withTransportSelfBcc(['a@b.com'], 'centurion@legacyhotels.co.za')).toEqual([
+      'a@b.com',
+      'centurion@legacyhotels.co.za',
+    ]);
+  });
+
+  it('dedupes case-insensitively', () => {
+    expect(
+      withTransportSelfBcc(['Centurion@LegacyHotels.co.za'], 'centurion@legacyhotels.co.za'),
+    ).toEqual(['Centurion@LegacyHotels.co.za']);
+  });
 });
 
 /** Unit-level: FakeSmtp records attachments without RDS (mail.send path needs DB). */

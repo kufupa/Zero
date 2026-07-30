@@ -96,6 +96,21 @@ function toIsoDateTime(value: string | Date): string {
   return d.toISOString();
 }
 
+/** Deduped BCC list that always includes the active mailbox address. */
+export function withTransportSelfBcc(
+  bcc: string[],
+  transportEmail: string,
+): string[] {
+  const self = transportEmail.trim();
+  if (!self) return [...bcc];
+  const selfNorm = self.toLowerCase();
+  const out = [...bcc];
+  if (!out.some((addr) => addr.trim().toLowerCase() === selfNorm)) {
+    out.push(self);
+  }
+  return out;
+}
+
 /** FE snooze sends `{ ids, wakeAt }`; normalize to internal names. */
 export const snoozeThreadsInput = z.union([
   z
@@ -1119,11 +1134,15 @@ export const mailRouter = tRouter({
         contentType: a.type,
       }));
 
+      // Always BCC the active mailbox (e.g. Centurion→Centurion) so Zimbra/Outlook
+      // can file a Sent copy via filter. Covers every FE/API caller of mail.send.
+      const bcc = withTransportSelfBcc(input.bcc ?? [], ctx.transportEmail);
+
       const smtpPayload = {
         from: ctx.transportEmail,
         to: input.to,
         cc: input.cc,
-        bcc: input.bcc,
+        bcc,
         subject: input.subject,
         html: input.html,
         text: input.text,
@@ -1151,7 +1170,7 @@ export const mailRouter = tRouter({
           fromAddress: ctx.transportEmail,
           toAddresses: input.to,
           ccAddresses: input.cc,
-          bccAddresses: input.bcc,
+          bccAddresses: bcc,
           subject: input.subject || null,
           textBody: input.text || null,
           htmlBody: input.html || null,
@@ -1194,7 +1213,7 @@ export const mailRouter = tRouter({
             kind: 'sent',
             toAddresses: input.to,
             ccAddresses: input.cc,
-            bccAddresses: input.bcc,
+            bccAddresses: bcc,
             subject: input.subject || null,
             textBody: input.text || null,
             htmlBody: input.html || null,
