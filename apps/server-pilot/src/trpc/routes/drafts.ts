@@ -92,6 +92,30 @@ export function buildHmsRefreshIdempotencyKey(input: {
   return `hms-refresh:${input.transportId}:${input.threadId}:${input.threadStateVersion}:${toolset}`;
 }
 
+/**
+ * Refresh run outcome never clears a prior candidate — candidate query is
+ * independent of activeRun (failed/dead_letter → activeRun null, prior stays).
+ */
+export function resolveHmsCandidateVisibility(input: {
+  priorCandidateId: string | null;
+  refreshRun: { id: string; state: string } | null;
+}): {
+  visibleCandidateId: string | null;
+  activeRun: { id: string; state: HmsCandidateActiveRunState } | null;
+} {
+  const activeRun =
+    input.refreshRun && ACTIVE_REFRESH_STATES.has(input.refreshRun.state)
+      ? {
+          id: input.refreshRun.id,
+          state: input.refreshRun.state as HmsCandidateActiveRunState,
+        }
+      : null;
+  return {
+    visibleCandidateId: input.priorCandidateId,
+    activeRun,
+  };
+}
+
 /** Skeleton / off-mode generations skip HMS freshness hard-blocks. */
 export function isHmsEnrichedGeneration(generation: {
   outcome: string | null;
@@ -101,6 +125,33 @@ export function isHmsEnrichedGeneration(generation: {
   if (generation.outcome) return true;
   if (generation.threadStateVersion) return true;
   return Array.isArray(generation.evidence) && generation.evidence.length > 0;
+}
+
+/**
+ * Pure mirror of assertHmsDraftFreshForAction promote/send gate (no DB).
+ * Off-mode skeleton → never blocked. Enriched + non-fresh → blocked.
+ */
+export function hmsPromoteBlockedByFreshness(input: {
+  generation: {
+    outcome: string | null;
+    threadStateVersion: string | null;
+    evidence: unknown[] | null;
+  };
+  liveThreadStateVersion: string;
+  now?: Date;
+  attachmentSourceHashes?: ReadonlyMap<string, string>;
+  missingAttachmentIds?: ReadonlySet<string>;
+}): boolean {
+  if (!isHmsEnrichedGeneration(input.generation)) return false;
+  const freshness = evaluateHmsCandidateFreshness({
+    threadStateVersion: input.generation.threadStateVersion,
+    liveThreadStateVersion: input.liveThreadStateVersion,
+    evidence: input.generation.evidence ?? [],
+    now: input.now,
+    attachmentSourceHashes: input.attachmentSourceHashes,
+    missingAttachmentIds: input.missingAttachmentIds,
+  });
+  return freshness !== 'fresh';
 }
 
 export function evaluateHmsEvidenceFreshness(input: {
@@ -264,14 +315,6 @@ export async function loadHmsCandidateState(input: {
     .orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id))
     .limit(1);
 
-  const activeRun =
-    activeRunRow && ACTIVE_REFRESH_STATES.has(activeRunRow.state)
-      ? {
-          id: activeRunRow.id,
-          state: activeRunRow.state as HmsCandidateActiveRunState,
-        }
-      : null;
-
   const [candidate] = await input.db
     .select()
     .from(mailDraft)
@@ -286,6 +329,14 @@ export async function loadHmsCandidateState(input: {
     )
     .orderBy(desc(mailDraft.updatedAt), desc(mailDraft.id))
     .limit(1);
+
+  const visibility = resolveHmsCandidateVisibility({
+    priorCandidateId: candidate?.id ?? null,
+    refreshRun: activeRunRow
+      ? { id: activeRunRow.id, state: activeRunRow.state }
+      : null,
+  });
+  const activeRun = visibility.activeRun;
 
   if (!candidate?.generationId) {
     return {

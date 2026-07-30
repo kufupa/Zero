@@ -41,6 +41,7 @@ export default defineConfig({
   expect: { timeout: 30_000 },
   reporter: [
     ['list'],
+    ['./e2e/hms-fail-on-skip.reporter.ts'],
     ['json', { outputFile: path.resolve(__dirname, '../../.superpowers/sdd/hms-read-foundation/gates/playwright-hms-fixture.json') }],
   ],
   use: {

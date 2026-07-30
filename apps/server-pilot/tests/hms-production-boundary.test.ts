@@ -5,6 +5,7 @@ import {
   assertHmsDbTestPrerequisite,
   assertSecurityMarkersAbsentOrRedacted,
   auditProductionBoundary,
+  buildSecurityMarkerSurfacesFromInjectedPayloads,
   collectForbiddenImports,
   runHmsDraftPipelineJourneys,
 } from '../src/hms/production-boundary.js';
@@ -65,23 +66,36 @@ describe('HMS production boundary', () => {
     }
   });
 
-  it('security marker matrix: raw markers absent or redacted across surfaces', () => {
-    const clean = assertSecurityMarkersAbsentOrRedacted({
-      dbRowsJson: JSON.stringify({ note: 'ok' }),
-      logs: 'request ok',
-      metricsJson: '{}',
-      healthJson: '{}',
-      mastraJson: '{}',
-      evidenceJson: JSON.stringify({ claimKeys: [] }),
+  it('security marker matrix: injected payloads redacted across serialization surfaces', () => {
+    const surfaces = buildSecurityMarkerSurfacesFromInjectedPayloads({
+      emailBody: `Guest wrote ${SECURITY_MARKERS.email} in thread`,
+      fixtureDomPostData: new URLSearchParams({
+        action: 'search',
+        tenant: 'FIXTURE',
+        property: 'centurion',
+        surname: SECURITY_MARKERS.fixtureDom,
+      }).toString(),
+      pdfText: `Confirmation PDF contains ${SECURITY_MARKERS.pdf}`,
+      secretLoaderError: `secret load failed password=${SECURITY_MARKERS.secretMeta}`,
     });
-    expect(clean.passed).toBe(true);
 
-    const redacted = assertSecurityMarkersAbsentOrRedacted({
-      logs: `saw [REDACTED:${SECURITY_MARKERS.email}] in mail`,
-      evidenceJson: `[REDACTED:${SECURITY_MARKERS.pdf}]`,
-    });
-    expect(redacted.passed).toBe(true);
+    const check = assertSecurityMarkersAbsentOrRedacted(surfaces);
+    expect(check.leaks, JSON.stringify(check.leaks)).toEqual([]);
+    expect(check.passed).toBe(true);
 
+    // Evidence / health must not carry raw PDF or secret markers.
+    expect(surfaces.evidenceJson).not.toContain(SECURITY_MARKERS.pdf);
+    expect(surfaces.healthJson).not.toContain(SECURITY_MARKERS.secretMeta);
+    expect(surfaces.healthJson).toContain('redacted_error');
+    // DOM body values must not appear in request-policy decision serialization.
+    expect(surfaces.dbRowsJson).not.toContain(SECURITY_MARKERS.fixtureDom);
+    // Email marker only allowed as explicit redaction token in logs.
+    expect(surfaces.logs).toContain(`[REDACTED:${SECURITY_MARKERS.email}]`);
+    expect(surfaces.logs.replaceAll(`[REDACTED:${SECURITY_MARKERS.email}]`, '')).not.toContain(
+      SECURITY_MARKERS.email,
+    );
+
+    // Control: raw injection without redaction path still fails the assert helper.
     const leak = assertSecurityMarkersAbsentOrRedacted({
       logs: `leaked ${SECURITY_MARKERS.secretMeta}`,
     });
@@ -94,5 +108,10 @@ describe('HMS production boundary', () => {
     expect(journeys).toHaveLength(10);
     const failed = journeys.filter((j) => !j.passed);
     expect(failed, JSON.stringify(failed)).toEqual([]);
+
+    const byId = Object.fromEntries(journeys.map((j) => [j.id, j]));
+    expect(byId.refresh_failure_keeps_prior?.detail).toMatch(/visible=draft-prior/);
+    expect(byId.outbound_before_send_stale?.detail).toMatch(/freshness=stale_thread/);
+    expect(byId.off_mode_skeleton_promotable?.detail).toMatch(/enriched=false/);
   });
 });

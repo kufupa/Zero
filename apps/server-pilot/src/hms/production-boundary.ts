@@ -3,6 +3,7 @@
  * No live HMS, no mutation enable flags, no write-lab/OCR/MCP/generic-browser in HMS graph.
  */
 import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { dirname, extname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -13,7 +14,20 @@ import {
   runClaimSafeCandidateDraft,
 } from '../ai/candidate-draft-agent.js';
 import type { ToolResult } from '../ai/draft-evidence.js';
+import { redactSecrets, redactTracePayload } from '../ai/security/redact.js';
+import { computeThreadStateVersion } from '../ai/thread-context.js';
 import { loadPm2Config } from '../deploy/load-pm2-config.js';
+import {
+  requestPolicyManifestSchema,
+  requestRuleSchema,
+} from './contracts.js';
+import { evaluateObservedRequest } from './request-policy.js';
+import {
+  evaluateHmsCandidateFreshness,
+  hmsPromoteBlockedByFreshness,
+  isHmsEnrichedGeneration,
+  resolveHmsCandidateVisibility,
+} from '../trpc/routes/drafts.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const serverPilotRoot = join(here, '..', '..');
@@ -584,31 +598,86 @@ export async function runHmsDraftPipelineJourneys(): Promise<HmsDraftJourneyResu
   }
 
   {
-    const prior = { id: 'draft-prior' };
-    const refreshFailed = { state: 'failed' as const };
-    const visible = refreshFailed.state === 'failed' ? prior : null;
+    // Refresh failure / dead_letter: prior candidate stays; activeRun cleared.
+    const priorId = 'draft-prior';
+    const visibility = resolveHmsCandidateVisibility({
+      priorCandidateId: priorId,
+      refreshRun: { id: 'run-refresh-fail', state: 'dead_letter' },
+    });
     results.push({
       id: 'refresh_failure_keeps_prior',
-      passed: visible?.id === 'draft-prior',
-      detail: `visible=${visible?.id ?? 'none'}`,
+      passed:
+        visibility.visibleCandidateId === priorId && visibility.activeRun === null,
+      detail: `visible=${visibility.visibleCandidateId ?? 'none'};activeRun=${visibility.activeRun?.state ?? 'none'}`,
     });
   }
 
   {
-    const freshness = 'stale_thread' as const;
+    // New outbound after generation → thread version drift → stale_thread → send blocked.
+    const atGeneration = computeThreadStateVersion({
+      messages: [
+        {
+          id: 'm-in',
+          direction: 'inbound',
+          timestamp: '2026-07-30T10:00:00.000Z',
+        },
+      ],
+      latestDraftRevisionId: null,
+    });
+    const afterOutbound = computeThreadStateVersion({
+      messages: [
+        {
+          id: 'm-in',
+          direction: 'inbound',
+          timestamp: '2026-07-30T10:00:00.000Z',
+        },
+        {
+          id: 'm-out',
+          direction: 'outbound',
+          timestamp: '2026-07-30T10:05:00.000Z',
+        },
+      ],
+      latestDraftRevisionId: null,
+    });
+    const evidence = [
+      hmsEv('ev-stale', 'hms_find_reservation', ['reservation.status'], 'f'),
+    ];
+    const freshness = evaluateHmsCandidateFreshness({
+      threadStateVersion: atGeneration,
+      liveThreadStateVersion: afterOutbound,
+      evidence,
+    });
+    const sendBlocked = hmsPromoteBlockedByFreshness({
+      generation: {
+        outcome: 'candidate',
+        threadStateVersion: atGeneration,
+        evidence,
+      },
+      liveThreadStateVersion: afterOutbound,
+    });
     results.push({
       id: 'outbound_before_send_stale',
-      passed: freshness === 'stale_thread',
-      detail: `freshness=${freshness}`,
+      passed: freshness === 'stale_thread' && sendBlocked,
+      detail: `freshness=${freshness};sendBlocked=${sendBlocked}`,
     });
   }
 
   {
-    const hmsMode = 'off';
+    // Off-mode skeleton: not HMS-enriched → promote freshness gate skipped.
+    const skeletonGeneration = {
+      outcome: null,
+      threadStateVersion: null,
+      evidence: [] as unknown[],
+    };
+    const enriched = isHmsEnrichedGeneration(skeletonGeneration);
+    const promoteBlocked = hmsPromoteBlockedByFreshness({
+      generation: skeletonGeneration,
+      liveThreadStateVersion: 'any-live-version',
+    });
     results.push({
       id: 'off_mode_skeleton_promotable',
-      passed: hmsMode === 'off',
-      detail: `mode=${hmsMode}`,
+      passed: !enriched && !promoteBlocked,
+      detail: `enriched=${enriched};promoteBlocked=${promoteBlocked}`,
     });
   }
 
@@ -622,6 +691,131 @@ export const SECURITY_MARKERS = {
   pdf: 'HMS_SEC_MARK_PDF_1d4e',
   secretMeta: 'HMS_SEC_MARK_SECRET_5a8f',
 } as const;
+
+export function redactHmsSecurityMarkers(text: string): string {
+  let out = text;
+  for (const marker of Object.values(SECURITY_MARKERS)) {
+    out = out.split(marker).join(`[REDACTED:${marker}]`);
+  }
+  return out;
+}
+
+/** Mirror runtime redactError: never echo password/secret/arn/cookie into health. */
+function redactHealthError(errMessage: string): string {
+  if (/password|secret|arn:aws|cookie|authorization/i.test(errMessage)) {
+    return 'redacted_error';
+  }
+  return errMessage.slice(0, 120);
+}
+
+const SECURITY_MATRIX_ORIGIN = 'http://127.0.0.1:17888';
+
+/**
+ * Inject markers through email / fixture DOM POST / PDF / secret-loader paths,
+ * then serialize the surfaces production code would persist or emit.
+ * Raw markers must be absent or wrapped as [REDACTED:marker].
+ */
+export function buildSecurityMarkerSurfacesFromInjectedPayloads(payloads: {
+  emailBody: string;
+  fixtureDomPostData: string;
+  pdfText: string;
+  secretLoaderError: string;
+}): {
+  dbRowsJson: string;
+  logs: string;
+  metricsJson: string;
+  healthJson: string;
+  mastraJson: string;
+  evidenceJson: string;
+} {
+  // Email → logs / Mastra: secret patterns + HMS marker redaction.
+  const logs = redactHmsSecurityMarkers(
+    redactSecrets(`mail.inbound body=${payloads.emailBody}`),
+  );
+  const mastraJson = redactHmsSecurityMarkers(
+    JSON.stringify(
+      redactTracePayload({
+        kind: 'inbound_mail',
+        body: payloads.emailBody,
+      }),
+    ),
+  );
+
+  // Fixture DOM / XHR body → request-policy redacted signature (keys only).
+  const rule = requestRuleSchema.parse({
+    id: 'reservation-search-sec',
+    origin: SECURITY_MATRIX_ORIGIN,
+    method: 'POST',
+    path: '/web/reservation/search',
+    resourceTypes: ['xhr', 'fetch'],
+    fixedQuery: { screen: 'guestStay' },
+    variableQuery: {
+      confirmationNumber: { pattern: '[A-Z0-9]{1,16}', maxLength: 16 },
+    },
+    contentType: 'application/x-www-form-urlencoded',
+    fixedBody: {
+      action: 'search',
+      tenant: 'FIXTURE',
+      property: 'centurion',
+    },
+    variableBody: {
+      surname: { pattern: "[A-Za-z0-9'_\\-]{1,64}", maxLength: 64 },
+    },
+    maxBodyBytes: 4096,
+    redirectPolicy: 'same-reviewed-chain',
+  });
+  const manifest = requestPolicyManifestSchema.parse({ rules: [rule] });
+  const decision = evaluateObservedRequest(manifest, {
+    url: `${SECURITY_MATRIX_ORIGIN}/web/reservation/search?screen=guestStay&confirmationNumber=CONF1`,
+    method: 'POST',
+    resourceType: 'xhr',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    postData: payloads.fixtureDomPostData,
+  });
+  const decisionJson = JSON.stringify(decision);
+
+  // PDF → persisted evidence is ref/hash/claimKeys only (no attachment text).
+  const sourceHash = createHash('sha256').update(payloads.pdfText).digest('hex');
+  const evidence = {
+    kind: 'mail_attachment',
+    id: 'ev-sec-pdf',
+    toolId: 'mail_read_artifact',
+    toolVersion: '1',
+    attachmentId: 'att-sec-pdf',
+    observedAt: '2026-07-30T11:00:00.000Z',
+    sourceHash,
+    claimKeys: ['attachment.text'],
+  };
+  const evidenceJson = JSON.stringify(evidence);
+
+  // Secret-loader failure → health lastErrorCode via redact path.
+  const healthJson = JSON.stringify({
+    schemaVersion: 1,
+    state: 'degraded',
+    lastErrorCode: redactHealthError(payloads.secretLoaderError),
+  });
+
+  const metricsJson = JSON.stringify({
+    toolFailures: 0,
+    securityMarkerPaths: ['email', 'dom', 'pdf', 'secret'],
+    decisionAction: 'action' in decision ? decision.action : 'unknown',
+  });
+
+  const dbRowsJson = JSON.stringify({
+    generations: [{ outcome: 'insufficient_evidence', evidence: [evidence] }],
+    drafts: [{ textBody: '[REDACTED_DRAFT]' }],
+    requestPolicy: JSON.parse(decisionJson),
+  });
+
+  return {
+    dbRowsJson,
+    logs,
+    metricsJson,
+    healthJson,
+    mastraJson,
+    evidenceJson,
+  };
+}
 
 export function assertSecurityMarkersAbsentOrRedacted(surfaces: {
   dbRowsJson?: string;
