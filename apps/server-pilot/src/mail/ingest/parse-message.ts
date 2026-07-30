@@ -369,13 +369,12 @@ function stripAngles(raw: string): string {
 }
 
 /**
- * Generate a UUID for the inbound message. The SAME UUID must be used for:
- *   - namespacing attachment S3 keys (`attachments/{messageId}/...`) via
- *     `parseRawMessage`'s `opts.messageId`, AND
- *   - the `message.id` DB row via `IngestMeta.messageId` → `store.ts`.
- * Threading one UUID through both keeps the S3 attachment key prefix equal
- * to the DB `message.id`. The caller (worker / parseAndPersist) is
- * responsible for not regenerating it between parse and persist.
+ * Generate the incoming parse UUID. It always namespaces incoming attachment
+ * S3 keys and normally seeds a new inbound `message.id`. Sent-copy
+ * reconciliation instead preserves the original outbound `message.id`, so
+ * incoming S3 key prefixes need not equal the stored row id. The caller
+ * (worker / parseAndPersist) must not regenerate this UUID between parse and
+ * persist.
  */
 export function generateMessageId(): string {
   return randomUUID();
