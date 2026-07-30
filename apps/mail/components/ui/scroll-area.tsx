@@ -2,6 +2,7 @@ import { ScrollArea as ScrollAreaPrimitive } from 'radix-ui';
 import * as React from 'react';
 
 import { cn } from '@/lib/utils';
+import { SCROLL_AREA_FLEX_MIN_W_CLASS } from '@/lib/attachment-chip-scroll';
 
 interface ScrollAreaProps extends React.ComponentPropsWithoutRef<typeof ScrollAreaPrimitive.Root> {
   hideScrollbar?: boolean;
@@ -11,8 +12,14 @@ const ScrollArea = React.forwardRef<
   React.ElementRef<typeof ScrollAreaPrimitive.Root>,
   ScrollAreaProps
 >(({ className, children, hideScrollbar = false, ...props }, ref) => (
-  <ScrollAreaPrimitive.Root className={cn('relative overflow-hidden', className)} {...props}>
-    <ScrollAreaPrimitive.Viewport ref={ref} className="h-full w-full rounded-[inherit]">
+  <ScrollAreaPrimitive.Root
+    className={cn('relative overflow-hidden', SCROLL_AREA_FLEX_MIN_W_CLASS, className)}
+    {...props}
+  >
+    <ScrollAreaPrimitive.Viewport
+      ref={ref}
+      className={cn('h-full w-full rounded-[inherit]', SCROLL_AREA_FLEX_MIN_W_CLASS)}
+    >
       {children}
     </ScrollAreaPrimitive.Viewport>
     <ScrollBar hideScrollbar={hideScrollbar} />

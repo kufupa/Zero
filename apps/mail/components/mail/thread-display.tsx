@@ -1200,8 +1200,8 @@ const MessageList = ({
   isMobile,
   trailing,
 }: MessageListProps) => (
-  <ScrollArea className={cn('flex-1', isMobile ? 'h-[calc(100%-1px)]' : 'h-full')} type="auto">
-    <div className="pb-4">
+  <ScrollArea className={cn('min-w-0 flex-1', isMobile ? 'h-[calc(100%-1px)]' : 'h-full')} type="auto">
+    <div className="min-w-0 pb-4">
       {(messages || []).map((message, index) => {
         const isLastMessage = index === messages.length - 1;
         const isReplyingToThisMessage = mode && activeReplyId === message.id;

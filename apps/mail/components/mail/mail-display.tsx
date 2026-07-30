@@ -63,6 +63,12 @@ import { copySenderEmail } from '@/lib/mail/copy-sender-email';
 import { openReplyComposeContext, type ReplyComposeMode } from '@/lib/mail/reply-compose-context';
 import { sortAttachmentsForDisplay } from '@/lib/attachment-priority';
 import {
+  ATTACHMENT_CHIP_SCROLLPORT_CLASS,
+  ATTACHMENT_CHIP_TRACK_CLASS,
+  MAIL_DISPLAY_BODY_SHELL_CLASS,
+  MAIL_DISPLAY_ROOT_CLASS,
+} from '@/lib/attachment-chip-scroll';
+import {
   downloadAttachmentViaBlob,
   fetchAttachmentBlob,
   openAttachmentViaBlob,
@@ -264,27 +270,29 @@ const ThreadAttachments = ({ attachments }: { attachments: Attachment[] }) => {
   };
 
   return (
-    <div className="mt-2 w-full min-w-0">
+    <div className="mt-2 w-full min-w-0 max-w-full">
       <div className="flex items-center gap-2">
         <span className="text-sm font-medium">
           Thread Attachments <span className="text-[#8D8D8D]">[{attachments.length}]</span>
         </span>
       </div>
-      {/* ponytail: one-row LTR scroll like Outlook density; wrap burned vertical space */}
-      <div className="mt-2 flex flex-nowrap gap-2 overflow-x-auto pb-1">
-        {ordered.map((attachment) => (
-          <button
-            key={`${attachment.attachmentId}-${attachment.filename}`}
-            onClick={() => handleDownload(attachment)}
-            className="flex shrink-0 cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-sm hover:bg-[#F0F0F0] dark:bg-[#262626] dark:hover:bg-[#303030]"
-          >
-            <span className="text-muted-foreground">{getFileIcon(attachment.filename)}</span>
-            <span className="max-w-[200px] truncate" title={attachment.filename}>
-              {attachment.filename}
-            </span>
-            <span className="text-muted-foreground">{formatFileSize(attachment.size)}</span>
-          </button>
-        ))}
+      {/* ponytail: outer scrollport + inner w-max — flex+overflow on same node won't shrink */}
+      <div className={cn('mt-2 pb-2', ATTACHMENT_CHIP_SCROLLPORT_CLASS)}>
+        <div className={ATTACHMENT_CHIP_TRACK_CLASS}>
+          {ordered.map((attachment) => (
+            <button
+              key={`${attachment.attachmentId}-${attachment.filename}`}
+              onClick={() => handleDownload(attachment)}
+              className="flex shrink-0 cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-sm hover:bg-[#F0F0F0] dark:bg-[#262626] dark:hover:bg-[#303030]"
+            >
+              <span className="text-muted-foreground">{getFileIcon(attachment.filename)}</span>
+              <span className="max-w-[200px] truncate" title={attachment.filename}>
+                {attachment.filename}
+              </span>
+              <span className="text-muted-foreground">{formatFileSize(attachment.size)}</span>
+            </button>
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -1043,7 +1051,7 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
 
   return (
     <div
-      className={cn('relative flex-1 overflow-hidden')}
+      className={cn(MAIL_DISPLAY_ROOT_CLASS)}
       id={`mail-${emailData.id}`}
       onClick={(e) => {
         if (openDetailsPopover) {
@@ -1052,8 +1060,8 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
       }}
     >
       <>
-        <div className="relative h-full overflow-y-auto">
-          <div className={cn('px-4', index === 0 && 'border-b py-4')}>
+        <div className={MAIL_DISPLAY_BODY_SHELL_CLASS}>
+          <div className={cn('min-w-0 px-4', index === 0 && 'border-b py-4')}>
             {index === 0 && (
               <>
                 <span className="inline-flex items-center gap-2 font-medium text-black dark:text-white">
@@ -1457,37 +1465,42 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
           {/* Outlook: attachments under header/subject, above body. Keep images; docs first. */}
           {messageAttachments && messageAttachments.length > 0 ? (
             <div
-              className="flex min-w-0 flex-nowrap items-center gap-2 overflow-x-auto px-4 pb-1 pt-2"
+              className="w-full min-w-0 max-w-full px-4 pb-2 pt-2"
               onClick={(e) => e.stopPropagation()}
             >
-              {sortAttachmentsForDisplay(messageAttachments).map((attachment, attachmentIndex) => (
-                <div
-                  key={`${attachment.filename}-${attachment.attachmentId}`}
-                  className="flex shrink-0"
-                >
-                  <button
-                    className="flex cursor-pointer items-center gap-1 rounded-[5px] bg-[#FAFAFA] px-1.5 py-1 text-sm font-medium hover:bg-[#F0F0F0] dark:bg-[#262626] dark:hover:bg-[#303030]"
-                    onClick={() => openAttachment(attachment, emailData.id)}
-                  >
-                    {getFileIcon(attachment.filename)}
-                    <span className="max-w-[15ch] truncate text-sm text-black dark:text-white">
-                      {attachment.filename}
-                    </span>{' '}
-                    <span className="text-muted-foreground whitespace-nowrap text-sm dark:text-[#929292]">
-                      {formatFileSize(attachment.size)}
-                    </span>
-                  </button>
-                  <button
-                    onClick={() => downloadAttachment(attachment, emailData.id)}
-                    className="flex cursor-pointer items-center gap-1 rounded-[5px] px-1.5 py-1 text-sm"
-                  >
-                    <HardDriveDownload className="text-muted-foreground dark:text-muted-foreground h-4 w-4 fill-[#FAFAFA] dark:fill-[#262626]" />
-                  </button>
-                  {attachmentIndex < messageAttachments.length - 1 && (
-                    <div className="m-auto h-2 w-px bg-[#E0E0E0] dark:bg-[#424242]" />
-                  )}
+              {/* ponytail: outer scrollport + inner w-max — same as ThreadAttachments */}
+              <div className={ATTACHMENT_CHIP_SCROLLPORT_CLASS}>
+                <div className={ATTACHMENT_CHIP_TRACK_CLASS}>
+                  {sortAttachmentsForDisplay(messageAttachments).map((attachment, attachmentIndex) => (
+                    <div
+                      key={`${attachment.filename}-${attachment.attachmentId}`}
+                      className="flex shrink-0"
+                    >
+                      <button
+                        className="flex cursor-pointer items-center gap-1 rounded-[5px] bg-[#FAFAFA] px-1.5 py-1 text-sm font-medium hover:bg-[#F0F0F0] dark:bg-[#262626] dark:hover:bg-[#303030]"
+                        onClick={() => openAttachment(attachment, emailData.id)}
+                      >
+                        {getFileIcon(attachment.filename)}
+                        <span className="max-w-[15ch] truncate text-sm text-black dark:text-white">
+                          {attachment.filename}
+                        </span>{' '}
+                        <span className="text-muted-foreground whitespace-nowrap text-sm dark:text-[#929292]">
+                          {formatFileSize(attachment.size)}
+                        </span>
+                      </button>
+                      <button
+                        onClick={() => downloadAttachment(attachment, emailData.id)}
+                        className="flex cursor-pointer items-center gap-1 rounded-[5px] px-1.5 py-1 text-sm"
+                      >
+                        <HardDriveDownload className="text-muted-foreground dark:text-muted-foreground h-4 w-4 fill-[#FAFAFA] dark:fill-[#262626]" />
+                      </button>
+                      {attachmentIndex < messageAttachments.length - 1 && (
+                        <div className="m-auto h-2 w-px bg-[#E0E0E0] dark:bg-[#424242]" />
+                      )}
+                    </div>
+                  ))}
                 </div>
-              ))}
+              </div>
             </div>
           ) : null}
 
