@@ -360,6 +360,28 @@ async function main(): Promise<void> {
       if (!firstBlock && postBlocks[0]) firstBlock = postBlocks[0];
     }
 
+    const afterSubmit = page
+      ? await page
+          .evaluate(() => ({
+            path: location.pathname,
+            title: document.title.slice(0, 80),
+            stillHasUserid: !!document.querySelector('input[name="userid"]'),
+            bodyHint: (() => {
+              const t = (document.body?.innerText || '').toLowerCase();
+              return {
+                hasError:
+                  t.includes('invalid') ||
+                  t.includes('incorrect') ||
+                  t.includes('failed'),
+                hasProperty:
+                  t.includes('property') || t.includes('centurion'),
+                hasSignIn: t.includes('sign in') || t.includes('userid'),
+              };
+            })(),
+          }))
+          .catch(() => null)
+      : null;
+
     // Connectivity canary: document GET allowed OR we captured a fail-closed
     // first block with redacted signature (abort-first inventory).
     const documentAllowed = events.some(
@@ -385,13 +407,14 @@ async function main(): Promise<void> {
       hasLoginFields,
       dom,
       fixedBodyCandidates,
+      afterSubmit,
       documentAllowed,
       loginPostAllowed,
       navError,
       allowCount: events.filter((e) => e.decision === 'allow').length,
       blockCount: events.filter((e) => e.decision === 'block').length,
       firstBlock,
-      events: events.slice(0, 40),
+      events: events.slice(0, 60),
       propertyExpectation: {
         tenant: secret.expectedTenant,
         propertyCode: secret.expectedPropertyCode,
