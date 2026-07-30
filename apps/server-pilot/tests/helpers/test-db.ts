@@ -24,6 +24,11 @@ import * as schema from '../../src/db/schema/index.js';
 import type { DB } from '../../src/db/client.js';
 import { getPostgresSslOptions } from '../../src/db/ssl-config.js';
 import { assertNotPilotProdDatabase } from './pilot-rds-guard.js';
+import { isLoopbackDatabaseUrl } from './test-db-ssl.js';
+
+function getTestDbSslOptions(databaseUrl: string) {
+  return isLoopbackDatabaseUrl(databaseUrl) ? false : getPostgresSslOptions();
+}
 
 function loadTestEnvFromDotenv(): void {
   if (process.env.DATABASE_URL) return;
@@ -72,7 +77,7 @@ async function probeDb(): Promise<boolean> {
     max: 1,
     idle_timeout: 5,
     connect_timeout: 4,
-    ssl: getPostgresSslOptions(),
+    ssl: getTestDbSslOptions(process.env.DATABASE_URL),
   });
   try {
     await conn`select 1`;
@@ -103,7 +108,7 @@ export function openTestDbConnection(): {
     max: 1,
     idle_timeout: 20,
     connect_timeout: 10,
-    ssl: getPostgresSslOptions(),
+    ssl: getTestDbSslOptions(process.env.DATABASE_URL),
   });
   return {
     db: drizzle(conn, { schema }),
@@ -122,7 +127,7 @@ export async function withTestDb<T>(cb: (db: DB) => Promise<T>): Promise<T> {
     max: 1,
     idle_timeout: 20,
     connect_timeout: 10,
-    ssl: getPostgresSslOptions(),
+    ssl: getTestDbSslOptions(process.env.DATABASE_URL),
   });
   const db = drizzle(conn, { schema });
 
