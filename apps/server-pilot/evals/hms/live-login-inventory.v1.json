@@ -7,14 +7,25 @@
     "Password input is type=text with name=password (Infor quirk).",
     "Live property code in COMMON title is HRCEN (secret expectedPropertyCode updated).",
     "No PMS mutation. Credential values never stored.",
-    "Next blocked bootstrap: POST /web/base/BSSTRT (body keys MENU_MODULE_KEY, SYSTEM_FUNCTION_NAME, USER_FUNCTION_NAME, removescreenflows)."
+    "Guest Stay open: Front Desk → Guest Stay → POST /web/base/OSRESV (+ HDR/LST).",
+    "Not-found search: input[name=search] (placeholder Search by Name, Confirmation…) → POST /web/base/OSRESS.search.",
+    "Filter-row confirmation field DOM name is ff_confirmationnumber (optional path)."
   ],
   "canaryEvidence": {
     "loginPostStatus": 200,
     "afterSubmitPath": "/web/base/COMMON",
     "afterSubmitTitle": "Infor HMS - HRCEN",
     "propertyCodeInTitle": true,
-    "probeCommit": "5169ace4"
+    "guestStayNav": {
+      "menu": ["Front Desk", "Guest Stay"],
+      "searchField": "search",
+      "searchEndpoint": "/web/base/OSRESS.search",
+      "canaryToken": "NOTFOUND-CANARY",
+      "hasNoResults": true,
+      "hasNewRecord": false,
+      "osressSearchAllowCount": 1
+    },
+    "probeCommit": "fdb1db5e"
   },
   "reviewedGetAllows": [
     { "path": "/web/base/logindisp", "resourceType": "document", "queryKeys": ["tenant"] },
@@ -37,7 +48,9 @@
     { "path": "/web/resources/shared/scripts/cryptojs/pbkdf2.js", "resourceType": "script" },
     { "path": "/web/resources/shared/scripts/cryptojs/AesUtil.js", "resourceType": "script" },
     { "path": "/web/resources/shared/scripts/cryptojs/sha256-min.js", "resourceType": "script" },
-    { "path": "/web/base/all-classes.js", "resourceType": "script" }
+    { "path": "/web/base/all-classes.js", "resourceType": "script" },
+    { "path": "/web/resources/inforhms/images/toolbar/dropdown.svg", "resourceType": "image", "note": "chrome only" },
+    { "path": "/web/resources/inforhms/images/toolbar/new-document.svg", "resourceType": "image", "note": "GET icon only — never allow New Record POST" }
   ],
   "reviewedPostAllows": [
     {
@@ -52,20 +65,45 @@
         "tenant",
         "userid"
       ]
+    },
+    {
+      "path": "/web/base/BSSTRT",
+      "note": "Session bootstrap after COMMON"
+    },
+    {
+      "path": "/web/base/BSSTRT.HDR",
+      "note": "Bootstrap header"
+    },
+    {
+      "path": "/web/base/OSRESV",
+      "note": "Open Guest Stay"
+    },
+    {
+      "path": "/web/base/OSRESV.HDR",
+      "note": "Guest Stay header form"
+    },
+    {
+      "path": "/web/base/OSRESV.LST",
+      "note": "Guest Stay list"
+    },
+    {
+      "path": "/web/base/OSRESS.search",
+      "note": "Guest Stay quick-search (confirmation/name/room); read-only list filter",
+      "bodyKeysSample": [
+        "externalconfirmation",
+        "MADDON_FILTER_*",
+        "GRID_ID",
+        "GRID_NAME",
+        "DATASPY_ID",
+        "COMPONENT_INFO_TYPE"
+      ]
     }
   ],
   "deferredBlocked": [
     {
       "method": "POST",
-      "path": "/web/base/BSSTRT",
-      "resourceType": "xhr",
-      "bodyKeys": [
-        "MENU_MODULE_KEY",
-        "SYSTEM_FUNCTION_NAME",
-        "USER_FUNCTION_NAME",
-        "removescreenflows"
-      ],
-      "note": "Session bootstrap after COMMON; review fixed values before allow; required before reservation search canary"
+      "path": "/web/base/* (save|delete|duplicate|checkin|checkout|CRS)",
+      "note": "Mutation / CRS still fail-closed forever in this phase"
     }
   ],
   "loginDomFingerprint": {
@@ -74,6 +112,11 @@
     "passwordCount": 0,
     "hasSignInCopy": true
   },
-  "status": "login_property_shell_green_reservation_nav_deferred",
-  "deferredNext": "Open Guest Stay / reservation search under fail-closed policy (new probe phase); do not allow save/submit toolbar POSTs"
+  "guestStayDomFingerprint": {
+    "quickSearchName": "search",
+    "quickSearchPlaceholderPrefix": "Search by Name, Confirmation",
+    "filterRowConfirmation": "ff_confirmationnumber"
+  },
+  "status": "login_property_shell_and_guest_stay_notfound_canary_green",
+  "deferredNext": "Wire reservation adapter live selectors; keep enabled off; optional disposable-DB --full gate"
 }

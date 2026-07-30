@@ -422,6 +422,45 @@ function minimalLoginManifest(origin: string): RequestPolicyManifest {
         '/web/resources/inforhms/images/tree/plusminus-folder-closed.svg',
         ['image'],
       ),
+      // Guest Stay toolbar chrome (GET images only — not action POSTs).
+      ...[
+        'dropdown',
+        'left-arrow',
+        'new-document',
+        'delete',
+        'previous-page',
+        'next-page',
+        'copy',
+        'reset',
+        'print',
+        'print-preview',
+        'expand-left',
+        'split-view',
+        'expand-right',
+        'money',
+        'inventory',
+      ].map((name) =>
+        getStaticRule(
+          origin,
+          `live-toolbar-${name}`,
+          `/web/resources/inforhms/images/toolbar/${name}.svg`,
+          ['image'],
+        ),
+      ),
+      ...[
+        'room-rate-availability',
+        'room-type-availability',
+        'room-availability',
+        'employee-directory',
+        'interface-status',
+      ].map((name) =>
+        getStaticRule(
+          origin,
+          `live-hms-toolbar-${name}`,
+          `/web/resources/inforhms/images/hms/toolbar/${name}.svg`,
+          ['image'],
+        ),
+      ),
       {
         id: 'live-osresv',
         origin,
