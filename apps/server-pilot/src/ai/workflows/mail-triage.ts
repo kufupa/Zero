@@ -87,7 +87,7 @@ Sender domain does not override embedded commercial intent in guest/agency forwa
 1. Underlying commercial intent — guest/agency stay request, group/event, real booking risk, ops noise, or spam.
 2. Group shape — two or more rooms, rooming list, team/squad/family block, delegates/officials, conference/banquet/catering/function, site inspection, multi-person event meal → groups-events (unless at-risk beats it). One-room voucher stays new-bookings.
 3. Revenue risk — explicit booking cancellation/amendment threat, unpaid near arrival, time-boxed OTA/SynXis action, money-mail delivery-fail → at-risk. Calendar "Canceled:" meeting cancellation and channel/PMS "FAILED TO INTEGRATE" → ops unless text has a real booking cancel, revenue threat, or hard reply SLA.
-4. Urgency at asOf — urgent=true only for same-day action or unexpired hard SLA relative to asOf (tax invoice today, reply within Nh, arrival/CI today, or arrival tomorrow when unpaid / payment or invoice still needed on a real booking or agency voucher). Subject "URGENT", the word cancel, a quotation with no reservation held, or a stay/CI date >1 calendar day after asOf with no hard Nh SLA → urgent=false.
+4. Urgency at asOf — urgent=true for same-day action or unexpired hard SLA relative to asOf (tax invoice today, reply within Nh, check-in/CI today including voided agency voucher still carrying booking docs, or arrival tomorrow when unpaid / payment or invoice still needed). Subject "URGENT", the word cancel alone, or stay/CI weeks–months after asOf with no hard Nh SLA → urgent=false.
 5. Spam exclusions — apply inclusion/exclusion below. Clear sales/marketing/newsletter/quarantine digests stay spam. Prefer a work category when the TRIGGER is ambiguous (empty body, OTA guest-message relay with "."/blank body, job application, day-visitor F&B).
 
 ## Spam criteria (inclusion)
@@ -104,7 +104,7 @@ Never classify spam when the TRIGGER is:
 - Channel / booking OTP or verification code → ops
 - Automatic reply / out-of-office / left-company redirect on a real RFQ/booking thread → new-bookings or ops
 - MTA bounce / undelivered mail returned (MAILER-DAEMON) → ops (at-risk only if bounce is delivery-fail on money mail)
-- Bank payment / POP / payment notification → ops
+- Bank payment / POP / proof of payment / "please find attached the proof of payment" → ops (not spam)
 - Booking confirmation, amendment, or RFQ/quote work already in-thread
 - Short personal note from a human (hi/test) with no sales pitch → new-bookings
 - Empty or near-empty body with no sales pitch → prefer work (usually new-bookings), not spam
@@ -163,6 +163,7 @@ Ticket: channel OTP / verification code → ops / urgent false
 Ticket: Automatic reply on RFQ thread → new-bookings / urgent false
 Ticket: MAILER-DAEMON undelivered → ops / urgent false
 Ticket: FNB payment notification → ops / urgent false
+Ticket: attached proof of payment / POP for hotel invoice → ops / urgent false
 Ticket: old commission invoice subject URGENT, no same-day/SLA → ops / urgent false
 Ticket: Expedia/Booking.com guest message with blank or "." body → new-bookings / urgent false
 Ticket: TAC/airline hotel availability vacant-room update (link expires Nh) → ops / urgent false
