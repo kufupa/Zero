@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { sanitizeEmailHtml, sanitizeHtmlBodyForStorage } from '../src/mail/sanitize-email-html.js';
+import {
+  BLOCKED_IMAGE_PLACEHOLDER,
+  sanitizeEmailHtml,
+  sanitizeHtmlBodyForStorage,
+} from '../src/mail/sanitize-email-html.js';
 
 describe('sanitizeEmailHtml', () => {
   it('strips script tags and event handlers', () => {
@@ -18,6 +22,7 @@ describe('sanitizeEmailHtml', () => {
     );
     expect(hasBlockedImages).toBe(true);
     expect(html).not.toContain('https://evil.example');
+    expect(html).toContain(BLOCKED_IMAGE_PLACEHOLDER);
   });
 
   it('blocks protocol-relative images when shouldLoadImages is false', () => {
