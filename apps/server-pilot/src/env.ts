@@ -36,12 +36,15 @@ export interface MailEnv {
   POP3_HOST?: string;
   POP3_PORT?: number;
   POP3_TLS?: boolean;
+  POP3_TLS_REJECT_UNAUTHORIZED?: boolean;
   POP3_USER?: string;
   POP3_PASSWORD?: string;
   POP3_SECRET_ARN?: string;
   SMTP_HOST?: string;
   SMTP_PORT?: number;
   SMTP_SECURE?: boolean;
+  SMTP_REQUIRE_TLS?: boolean;
+  SMTP_TLS_SERVERNAME?: string;
   SMTP_USER?: string;
   SMTP_PASSWORD?: string;
   SMTP_SECRET_ARN?: string;
@@ -132,7 +135,7 @@ export function parseEnv(input: EnvInput): MailEnv {
     );
   }
 
-  const rawTransportMode = input.MAIL_TRANSPORT_MODE ?? 'fixture';
+  const rawTransportMode = input.MAIL_TRANSPORT_MODE || 'fixture';
   if (!TRANSPORT_MODES.includes(rawTransportMode as MailTransportMode)) {
     throw new Error(
       `env MAIL_TRANSPORT_MODE must be one of ${TRANSPORT_MODES.join(', ')}, got: ${rawTransportMode}`,
@@ -172,15 +175,45 @@ export function parseEnv(input: EnvInput): MailEnv {
   if (input.POP3_HOST) env.POP3_HOST = input.POP3_HOST;
   if (input.POP3_PORT) env.POP3_PORT = toInt('POP3_PORT', input.POP3_PORT);
   if (input.POP3_TLS) env.POP3_TLS = toBool('POP3_TLS', input.POP3_TLS);
+  if (input.POP3_TLS_REJECT_UNAUTHORIZED) {
+    env.POP3_TLS_REJECT_UNAUTHORIZED = toBool(
+      'POP3_TLS_REJECT_UNAUTHORIZED',
+      input.POP3_TLS_REJECT_UNAUTHORIZED,
+    );
+  }
   if (input.POP3_USER) env.POP3_USER = input.POP3_USER;
   if (input.POP3_PASSWORD) env.POP3_PASSWORD = input.POP3_PASSWORD;
   if (input.POP3_SECRET_ARN) env.POP3_SECRET_ARN = input.POP3_SECRET_ARN;
   if (input.SMTP_HOST) env.SMTP_HOST = input.SMTP_HOST;
   if (input.SMTP_PORT) env.SMTP_PORT = toInt('SMTP_PORT', input.SMTP_PORT);
   if (input.SMTP_SECURE) env.SMTP_SECURE = toBool('SMTP_SECURE', input.SMTP_SECURE);
+  if (input.SMTP_REQUIRE_TLS) {
+    env.SMTP_REQUIRE_TLS = toBool('SMTP_REQUIRE_TLS', input.SMTP_REQUIRE_TLS);
+  }
+  if (input.SMTP_TLS_SERVERNAME) {
+    env.SMTP_TLS_SERVERNAME = input.SMTP_TLS_SERVERNAME;
+  }
   if (input.SMTP_USER) env.SMTP_USER = input.SMTP_USER;
   if (input.SMTP_PASSWORD) env.SMTP_PASSWORD = input.SMTP_PASSWORD;
   if (input.SMTP_SECRET_ARN) env.SMTP_SECRET_ARN = input.SMTP_SECRET_ARN;
+  if (env.MAIL_TRANSPORT_MODE === 'real') {
+    const missingRealSmtp = (
+      ['SMTP_HOST', 'SMTP_USER', 'SMTP_TLS_SERVERNAME'] as const
+    ).filter((key) => !env[key]);
+    if (missingRealSmtp.length > 0) {
+      throw new Error(
+        `env missing required for real SMTP: ${missingRealSmtp.join(', ')}`,
+      );
+    }
+    if (!env.SMTP_PASSWORD && !env.SMTP_SECRET_ARN) {
+      throw new Error(
+        'env SMTP_PASSWORD or SMTP_SECRET_ARN required for real SMTP',
+      );
+    }
+    if (env.SMTP_REQUIRE_TLS !== true) {
+      throw new Error('env SMTP_REQUIRE_TLS=true required for real SMTP');
+    }
+  }
   if (input.INGEST_MAX_MESSAGE_BYTES) {
     env.INGEST_MAX_MESSAGE_BYTES = toInt(
       'INGEST_MAX_MESSAGE_BYTES',

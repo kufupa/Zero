@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createPop3Client,
   FakePop3Client,
@@ -13,7 +13,52 @@ import {
 import { parseEnv } from '../src/env';
 import { fixturePath } from './helpers/fixtures';
 
+const { createTransportMock, sendMailMock } = vi.hoisted(() => ({
+  createTransportMock: vi.fn(),
+  sendMailMock: vi.fn(),
+}));
+
+vi.mock('nodemailer', () => ({
+  default: {
+    createTransport: createTransportMock,
+  },
+}));
+
+const requiredEnv = {
+  PORT: '8788',
+  DATABASE_URL: 'postgres://x',
+  BETTER_AUTH_URL: 'http://localhost',
+  BETTER_AUTH_SECRET: 'secret',
+  AWS_REGION: 'af-south-1',
+  S3_BUCKET: 'bucket',
+  POP3_POLL_INTERVAL_MS: '30000',
+  POP3_MAX_MESSAGES_PER_CYCLE: '50',
+};
+
+const realSmtpEnv = {
+  ...requiredEnv,
+  MAIL_TRANSPORT_MODE: 'real',
+  SMTP_HOST: 'smtp.example.com',
+  SMTP_PORT: '587',
+  SMTP_USER: 'relay@example.com',
+  SMTP_PASSWORD: 'test-password',
+  SMTP_REQUIRE_TLS: 'true',
+  SMTP_TLS_SERVERNAME: 'smtp.example.com',
+};
+
 describe('MAIL_TRANSPORT_MODE factories', () => {
+  beforeEach(() => {
+    createTransportMock.mockReset();
+    sendMailMock.mockReset();
+    sendMailMock.mockResolvedValue({
+      messageId: '<message@example.com>',
+      accepted: ['to@example.com'],
+    });
+    createTransportMock.mockReturnValue({
+      sendMail: sendMailMock,
+    });
+  });
+
   it('parseEnv defaults MAIL_TRANSPORT_MODE to fixture', () => {
     const env = parseEnv({
       PORT: '8788',
@@ -26,6 +71,37 @@ describe('MAIL_TRANSPORT_MODE factories', () => {
       POP3_MAX_MESSAGES_PER_CYCLE: '50',
     });
     expect(env.MAIL_TRANSPORT_MODE).toBe('fixture');
+  });
+
+  it('parseEnv parses split POP3 and SMTP TLS policy', () => {
+    const env = parseEnv({
+      ...realSmtpEnv,
+      POP3_TLS_REJECT_UNAUTHORIZED: 'false',
+    });
+
+    expect(env.POP3_TLS_REJECT_UNAUTHORIZED).toBe(false);
+    expect(env.SMTP_REQUIRE_TLS).toBe(true);
+    expect(env.SMTP_TLS_SERVERNAME).toBe('smtp.example.com');
+  });
+
+  it('parseEnv rejects incomplete or insecure real SMTP configuration', () => {
+    for (const key of ['SMTP_HOST', 'SMTP_USER', 'SMTP_TLS_SERVERNAME'] as const) {
+      expect(() => parseEnv({ ...realSmtpEnv, [key]: undefined })).toThrow(key);
+    }
+
+    expect(() =>
+      parseEnv({
+        ...realSmtpEnv,
+        SMTP_PASSWORD: undefined,
+        SMTP_SECRET_ARN: undefined,
+      }),
+    ).toThrow(/SMTP_PASSWORD or SMTP_SECRET_ARN/);
+    expect(() =>
+      parseEnv({
+        ...realSmtpEnv,
+        SMTP_REQUIRE_TLS: 'false',
+      }),
+    ).toThrow(/SMTP_REQUIRE_TLS=true/);
   });
 
   it('createPop3Client returns FakePop3Client in fixture mode even when POP3_HOST set', () => {
@@ -80,9 +156,17 @@ describe('MAIL_TRANSPORT_MODE factories', () => {
       POP3_PORT: 995,
       POP3_USER: 'navaai@legacyhotels.co.za',
       POP3_PASSWORD: 'secret',
+      POP3_TLS_REJECT_UNAUTHORIZED: false,
     });
     expect(client).toBeInstanceOf(RealPop3Client);
     expect(client?.kind).toBe('real');
+    expect(
+      (
+        client as RealPop3Client & {
+          opts: { tlsRejectUnauthorized?: boolean };
+        }
+      ).opts.tlsRejectUnauthorized,
+    ).toBe(false);
   });
 
   it('loadFixtureMessagesFromDir loads .eml files by stem uidl', () => {
@@ -134,9 +218,26 @@ describe('MAIL_TRANSPORT_MODE factories', () => {
       port: 587,
       user: 'relay@legacyhotel.com',
       password: 'secret',
+      requireTls: true,
+      tlsServername: 'smtp.example.com',
     });
     expect(transport).toBeInstanceOf(RealSmtpTransport);
     expect(transport.kind).toBe('real');
+  });
+
+  it('createSmtpTransport defaults only a missing mode to fixture', () => {
+    const saved = process.env.MAIL_TRANSPORT_MODE;
+    delete process.env.MAIL_TRANSPORT_MODE;
+    try {
+      expect(createSmtpTransport()).toBeInstanceOf(FakeSmtpTransport);
+      process.env.MAIL_TRANSPORT_MODE = 'unknown-mode';
+      expect(() => createSmtpTransport()).toThrow(
+        /MAIL_TRANSPORT_MODE.*unknown-mode/,
+      );
+    } finally {
+      if (saved === undefined) delete process.env.MAIL_TRANSPORT_MODE;
+      else process.env.MAIL_TRANSPORT_MODE = saved;
+    }
   });
 
   it('parseEnv accepts MAIL_TRANSPORT_MODE=wire', () => {
@@ -176,6 +277,36 @@ describe('MAIL_TRANSPORT_MODE factories', () => {
     expect(transport).toBeInstanceOf(RealSmtpTransport);
   });
 
+  it('wire SMTP remains cleartext-capable and credential-free', async () => {
+    const transport = createSmtpTransport({
+      mode: 'wire',
+      host: '127.0.0.1',
+      port: 11025,
+      secure: false,
+    });
+
+    await transport.send({
+      from: 'from@example.com',
+      to: ['to@example.com'],
+      cc: [],
+      bcc: [],
+      subject: 'wire',
+      html: '',
+      text: 'wire',
+    });
+
+    const options = createTransportMock.mock.calls[0]?.[0];
+    expect(options).toEqual(
+      expect.objectContaining({
+        host: '127.0.0.1',
+        port: 11025,
+        secure: false,
+      }),
+    );
+    expect(options?.auth).toBeUndefined();
+    expect(options?.requireTLS).toBeUndefined();
+  });
+
   it('createSmtpTransport throws in real mode without credentials', () => {
     expect(() =>
       createSmtpTransport({
@@ -183,8 +314,59 @@ describe('MAIL_TRANSPORT_MODE factories', () => {
         host: 'smtp.example.com',
         port: 587,
         user: 'relay@legacyhotel.com',
+        requireTls: true,
+        tlsServername: 'smtp.example.com',
       }),
     ).toThrow(/SMTP_PASSWORD or SMTP_SECRET_ARN/);
+  });
+
+  it('real SMTP enforces authenticated STARTTLS and explicit envelope sender', async () => {
+    const transport = createSmtpTransport({
+      mode: 'real',
+      host: 'smtp.example.com',
+      port: 587,
+      user: 'relay@example.com',
+      password: 'test-password',
+      requireTls: true,
+      tlsServername: 'smtp.example.com',
+    });
+    const payload = {
+      from: 'sender@example.com',
+      to: ['to@example.com'],
+      cc: ['cc@example.com'],
+      bcc: ['bcc@example.com'],
+      subject: 'subject',
+      html: '<p>body</p>',
+      text: 'body',
+    };
+
+    await transport.send(payload);
+
+    expect(createTransportMock).toHaveBeenCalledWith({
+      host: 'smtp.example.com',
+      port: 587,
+      secure: false,
+      requireTLS: true,
+      connectionTimeout: 10_000,
+      greetingTimeout: 10_000,
+      socketTimeout: 60_000,
+      auth: {
+        user: 'relay@example.com',
+        pass: 'test-password',
+      },
+      tls: {
+        rejectUnauthorized: true,
+        servername: 'smtp.example.com',
+      },
+    });
+    expect(sendMailMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        envelope: {
+          from: 'sender@example.com',
+          to: ['to@example.com', 'cc@example.com', 'bcc@example.com'],
+        },
+      }),
+    );
   });
 
   it('SmtpTransport interface parity — fake and real expose send', () => {
@@ -194,6 +376,8 @@ describe('MAIL_TRANSPORT_MODE factories', () => {
       port: 587,
       user: 'u',
       password: 'p',
+      requireTls: true,
+      tlsServername: 'x',
     });
     for (const transport of [fake, real]) {
       expect(typeof transport.send).toBe('function');

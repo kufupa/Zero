@@ -72,14 +72,18 @@ describe('deploy config', () => {
     expect(script).toContain('BETTER_AUTH_SECRET=$(quote_val "$BETTER_AUTH_SECRET")');
   });
 
-  it('write-ec2-env.sh persists SMTP password and AI gates', async () => {
+  it('write-ec2-env.sh persists split mail TLS policy and AI gates', async () => {
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
     const { dirname, join } = await import('node:path');
     const here = dirname(fileURLToPath(import.meta.url));
     const script = readFileSync(join(here, '..', 'deploy', 'write-ec2-env.sh'), 'utf8');
+    expect(script).toContain('append_env POP3_TLS_REJECT_UNAUTHORIZED');
     expect(script).toContain('append_env SMTP_USER');
     expect(script).toContain('append_env SMTP_PASSWORD');
+    expect(script).toContain('append_env SMTP_REQUIRE_TLS');
+    expect(script).toContain('append_env SMTP_TLS_SERVERNAME');
+    expect(script).not.toContain('append_env MAIL_TLS_REJECT_UNAUTHORIZED');
     expect(script).toContain('append_env AI_DRAFTS_ENABLED');
     expect(script).toContain('append_env AI_WRITE_GATE_ENABLED');
     expect(script).toContain('AI_WRITE_GATE_ENABLED:-true');
@@ -338,7 +342,7 @@ describe('deploy config', () => {
     expect(refuse.stderr).toMatch(/CONFIRM_PILOT_WIPE=1/);
   });
 
-  it('activate-real-mail.sh probes ports, SMTP auth smoke, staged password wins', async () => {
+  it('activate-real-mail.sh preserves caller mail config and requires explicit secure SMTP', async () => {
     const { readFileSync } = await import('node:fs');
     const { spawnSync } = await import('node:child_process');
     const { fileURLToPath } = await import('node:url');
@@ -348,36 +352,66 @@ describe('deploy config', () => {
     const script = readFileSync(scriptPath, 'utf8');
 
     expect(script).toContain('POP3_HOST:=172.24.0.10');
-    expect(script).toContain('SMTP_HOST:=172.24.0.10');
+    expect(script).not.toContain('SMTP_HOST:=172.24.0.10');
+    expect(script).not.toContain('172.24.0.8');
     expect(script).toContain('POP3_USER:=navaai@legacyhotels.co.za');
-    expect(script).toContain('SMTP_USER:=navaai@legacyhotels.co.za');
+    expect(script).toContain(': "${SMTP_HOST:?SMTP_HOST required}"');
+    expect(script).toContain(': "${SMTP_PORT:?SMTP_PORT required}"');
+    expect(script).toContain(': "${SMTP_TLS_SERVERNAME:?SMTP_TLS_SERVERNAME required}"');
+    expect(script).toContain(': "${SMTP_USER:?SMTP_USER required}"');
+    expect(script).toContain(': "${SMTP_REQUIRE_TLS:?SMTP_REQUIRE_TLS=true required}"');
+    expect(script).toMatch(/SMTP_REQUIRE_TLS}"\s*!=\s*"true"/);
 
-    // Staged passwords saved before source; restored after (staged wins).
-    expect(script).toContain('STAGED_POP3_PASSWORD="${POP3_PASSWORD:-}"');
-    expect(script).toContain('STAGED_SMTP_PASSWORD="${SMTP_PASSWORD:-}"');
-    expect(script).toMatch(
-      /STAGED_POP3_PASSWORD[\s\S]*source[\s\S]*\.env\.production[\s\S]*STAGED_POP3_PASSWORD/,
-    );
-    expect(script).toContain('export POP3_PASSWORD="${STAGED_POP3_PASSWORD}"');
-    expect(script).toContain('export SMTP_PASSWORD="${STAGED_SMTP_PASSWORD}"');
+    const sourceIndex = script.indexOf('source "${SERVER_PILOT}/.env.production"');
+    expect(sourceIndex).toBeGreaterThan(0);
+    const beforeSource = script.slice(0, sourceIndex);
+    const afterSource = script.slice(sourceIndex);
+    expect(beforeSource).toContain('STAGED_MAIL_KEYS=(');
+    expect(beforeSource).toContain('STAGED_MAIL_ENV');
+    for (const key of [
+      'POP3_HOST',
+      'POP3_PORT',
+      'POP3_TLS',
+      'POP3_TLS_REJECT_UNAUTHORIZED',
+      'POP3_USER',
+      'POP3_SECRET_ARN',
+      'POP3_PASSWORD',
+      'SMTP_HOST',
+      'SMTP_PORT',
+      'SMTP_SECURE',
+      'SMTP_REQUIRE_TLS',
+      'SMTP_TLS_SERVERNAME',
+      'SMTP_USER',
+      'SMTP_SECRET_ARN',
+      'SMTP_PASSWORD',
+    ]) {
+      expect(beforeSource, `${key} must be staged before source`).toContain(key);
+    }
+    expect(afterSource).toMatch(/STAGED_MAIL_ENV[\s\S]*export/);
 
-    // Port probe loop: POP3 995→110, SMTP 587→25; fail closed.
+    // POP3 may probe defaults; SMTP probes only explicit cutover endpoint.
     expect(script).toContain('for candidate in 995 110');
-    expect(script).toContain('for candidate in 587 25');
     expect(script).toContain('POP3 port probe failed');
+    expect(script).not.toContain('for candidate in 587 25');
+    expect(script).toContain('probe_tcp "$SMTP_HOST" "$SMTP_PORT"');
     expect(script).toContain('SMTP port probe failed');
     expect(script).toContain('POP3_TLS=true');
     expect(script).toContain('POP3_TLS=false');
-    expect(script).toContain('SMTP_SECURE=false');
 
-    // SMTP auth smoke (not EHLO-only bare verify); TLS insecure gate for hotel certs.
+    // POP3-only certificate exception; SMTP mirrors strict runtime STARTTLS.
+    expect(script).toContain('POP3_TLS_REJECT_UNAUTHORIZED');
+    expect(script).not.toContain('MAIL_TLS_REJECT_UNAUTHORIZED');
     expect(script).toContain('auth: { user, pass }');
     expect(script).toContain('SMTP auth OK');
     expect(script).not.toContain('SMTP EHLO OK');
     expect(script).toContain('transporter.verify()');
-    expect(script).toContain('MAIL_TLS_REJECT_UNAUTHORIZED');
-    expect(script).toContain('tls: { rejectUnauthorized }');
-    expect(script).toContain('trying next candidate');
+    expect(script).toContain('secure: false');
+    expect(script).toContain('requireTLS: true');
+    expect(script).toContain('connectionTimeout: 10_000');
+    expect(script).toContain('greetingTimeout: 10_000');
+    expect(script).toContain('socketTimeout: 60_000');
+    expect(script).toContain('rejectUnauthorized: true');
+    expect(script).toContain('servername: process.env.SMTP_TLS_SERVERNAME');
 
     expect(script).toContain('export AI_DRAFTS_ENABLED=false');
     expect(script).toContain('export AI_WRITE_GATE_ENABLED=true');

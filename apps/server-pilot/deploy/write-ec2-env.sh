@@ -59,12 +59,15 @@ append_env INGEST_FIXTURE_DIR "${INGEST_FIXTURE_DIR:-}"
 append_env POP3_HOST "${POP3_HOST:-}"
 append_env POP3_PORT "${POP3_PORT:-}"
 append_env POP3_TLS "${POP3_TLS:-}"
+append_env POP3_TLS_REJECT_UNAUTHORIZED "${POP3_TLS_REJECT_UNAUTHORIZED:-}"
 append_env POP3_USER "${POP3_USER:-}"
 append_env POP3_PASSWORD "${POP3_PASSWORD:-}"
 append_env POP3_SECRET_ARN "${POP3_SECRET_ARN:-}"
 append_env SMTP_HOST "${SMTP_HOST:-}"
 append_env SMTP_PORT "${SMTP_PORT:-}"
 append_env SMTP_SECURE "${SMTP_SECURE:-}"
+append_env SMTP_REQUIRE_TLS "${SMTP_REQUIRE_TLS:-}"
+append_env SMTP_TLS_SERVERNAME "${SMTP_TLS_SERVERNAME:-}"
 append_env SMTP_USER "${SMTP_USER:-}"
 append_env SMTP_PASSWORD "${SMTP_PASSWORD:-}"
 append_env AI_DRAFTS_ENABLED "${AI_DRAFTS_ENABLED:-}"
@@ -78,7 +81,6 @@ else
   append_env INGEST_REQUIRE_OWNER_HEADER "${INGEST_REQUIRE_OWNER_HEADER:-}"
 fi
 append_env SMTP_SECRET_ARN "${SMTP_SECRET_ARN:-}"
-append_env MAIL_TLS_REJECT_UNAUTHORIZED "${MAIL_TLS_REJECT_UNAUTHORIZED:-}"
 
 # HMS read runtime (optional; required when HMS_DRAFT_ENRICHMENT_MODE != off).
 # Gate defaults: enrichment off; never emit mutation-enable keys.

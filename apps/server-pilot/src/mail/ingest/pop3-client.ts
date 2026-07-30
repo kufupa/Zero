@@ -61,6 +61,8 @@ export interface Pop3ClientOptions {
   password?: string;
   /** Use TLS (STLS or implicit TLS). */
   tls?: boolean;
+  /** POP3-only certificate policy; SMTP always validates certificates. */
+  tlsRejectUnauthorized?: boolean;
   /** Source ARN for password in Secrets Manager (resolved before connect). */
   secretArn?: string;
   /** @internal Inject a connected socket (tests only). */
@@ -137,7 +139,10 @@ export class RealPop3Client implements Pop3Client {
     } else {
       const { host, port, tls } = this.opts;
       if (tls) {
-        this.sock = await openTls({ host, port });
+        const rejectUnauthorized =
+          this.opts.tlsRejectUnauthorized ??
+          process.env.POP3_TLS_REJECT_UNAUTHORIZED !== 'false';
+        this.sock = await openTls({ host, port, rejectUnauthorized });
       } else {
         this.sock = await openCleartext({ host, port });
       }
@@ -393,16 +398,18 @@ function openCleartext(opts: { host: string; port: number }): Promise<Socket> {
   });
 }
 
-function openTls(opts: { host: string; port: number }): Promise<TLSSocket> {
+function openTls(opts: {
+  host: string;
+  port: number;
+  rejectUnauthorized: boolean;
+}): Promise<TLSSocket> {
   // Hotel Zimbra may present expired/self-signed certs over VPN.
-  // Set MAIL_TLS_REJECT_UNAUTHORIZED=false on pilot to proceed; default verify.
-  const rejectUnauthorized =
-    process.env.MAIL_TLS_REJECT_UNAUTHORIZED !== 'false';
+  // POP3 may explicitly disable validation; SMTP never shares this exception.
   return new Promise((resolve, reject) => {
     const sock = tlsConnect({
       host: opts.host,
       port: opts.port,
-      rejectUnauthorized,
+      rejectUnauthorized: opts.rejectUnauthorized,
     });
     sock.once('secureConnect', () => resolve(sock));
     sock.once('error', reject);
@@ -551,6 +558,7 @@ export function createPop3Client(env: {
   POP3_PASSWORD?: string;
   POP3_SECRET_ARN?: string;
   POP3_TLS?: boolean;
+  POP3_TLS_REJECT_UNAUTHORIZED?: boolean;
   INGEST_FIXTURE_DIR?: string;
 }): Pop3Client | null {
   const mode = env.MAIL_TRANSPORT_MODE ?? 'fixture';
@@ -572,6 +580,7 @@ export function createPop3Client(env: {
     user: env.POP3_USER,
     password: env.POP3_PASSWORD,
     tls: env.POP3_TLS ?? mode === 'real',
+    tlsRejectUnauthorized: env.POP3_TLS_REJECT_UNAUTHORIZED,
     secretArn: env.POP3_SECRET_ARN,
   });
 }
