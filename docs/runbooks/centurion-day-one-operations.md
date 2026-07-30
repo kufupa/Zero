@@ -41,7 +41,7 @@ At each watch point:
 3. Sweep **Groups & Events**. Confirm group/event requests have human follow-up.
 4. Sweep **Ops**. Confirm operational notices and automation mail are not hiding revenue work.
 5. Recheck uncategorized/new arrivals. Assisted sorting can be wrong; queue placement is not proof of completion.
-6. Check readiness backlog counts and latest inbound timestamp. Any nonterminal or dead-letter backlog blocks green status.
+6. Check readiness backlog counts and latest inbound timestamp. Nonterminal backlog, or dead-letter rows finished in the last 24 hours, blocks green status. Older (historical) terminal dead-letter count is an observation for operator review and does not alone block READY.
 
 Do not send from monitoring session unless human operator intentionally enters normal mailbox workflow.
 
