@@ -58,6 +58,15 @@ describe('AI security contract', () => {
     expect(redactSystemPrompt(raw)).not.toContain('system prompt:');
     expect(redactTracePayload({ body: raw }).body).toContain('[REDACTED]');
   });
+
+  it('redacts generic password, cookie, and secretsmanager ARN patterns', () => {
+    const raw =
+      'password=hunter2 cookie=JSESSIONID=abc CSRFTCKT=def arn:aws:secretsmanager:af-south-1:123:secret:nava-x';
+    const out = redactSecrets(raw);
+    expect(out).not.toContain('hunter2');
+    expect(out).not.toContain('JSESSIONID=abc');
+    expect(out).not.toContain('arn:aws:secretsmanager:');
+  });
 });
 
 describe('bedrock adapter contract', () => {

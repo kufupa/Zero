@@ -339,6 +339,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('HMS candidate state (DB)', ()
         outcome: 'candidate',
         evidence: [hmsEvidence({ expiresAt: '2099-01-01T00:00:00.000Z' })],
         threadStateVersion,
+        persistDraft: true,
       });
 
       const olderRow = await db

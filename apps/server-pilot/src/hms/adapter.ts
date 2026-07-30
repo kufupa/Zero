@@ -408,8 +408,8 @@ export class InforReadAdapter implements HmsReadAdapter {
 
     const binding = await this.#page.readPropertyBinding();
     if (
-      binding.propertyCode &&
-      binding.propertyCode !== this.#manifest.binding.propertyKey
+      binding.propertyCode !== this.#manifest.binding.propertyKey ||
+      binding.tenant !== this.#manifest.binding.tenantId
     ) {
       return this.#quoteResult({
         status: 'manual_required',
@@ -417,7 +417,7 @@ export class InforReadAdapter implements HmsReadAdapter {
         unresolvedFields: ['property_binding'],
         observedAt,
         claimKeys: [],
-        sourceSeed: 'wrong-property-quote',
+        sourceSeed: `wrong-property-quote:${binding.propertyCode ?? 'null'}`,
         draftReady: false,
       });
     }

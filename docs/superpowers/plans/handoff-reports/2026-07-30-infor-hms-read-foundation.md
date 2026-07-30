@@ -39,8 +39,13 @@
 1. Review + allow BSSTRT (and follow-on read surfaces) → not-found reservation canary.
 2. Replace interim shadow abstention labels with live shadow outcomes when reads exist.
 3. Optional disposable-DB `--full` gate.
-4. Whole-branch review closeout of Critical/Important (dispatch after this handoff).
-5. **`enabled` only after** hard+stat + reservation read canary.
+4. **`enabled` only after** hard+stat + reservation read canary.
+
+## Review closeout (post-canary)
+
+Whole-branch [review](ac67f5e7-d179-423d-8c57-d300fd1e1406) Critical/Important addressed:
+- Critical: `quoteStay` property/tenant bind fail-closed (match `findReservation`).
+- Important: probe submit dual-gate + view_only; keys-only fixedBody; REQ_KEY charset pin; `redactSecrets` HMS patterns; `persistDraft` default false.
 
 ## Safety
 

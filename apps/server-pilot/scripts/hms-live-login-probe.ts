@@ -1,8 +1,12 @@
 /**
  * Orchestrator-only abort-first live HMS login probe.
  * Loads secret from Secrets Manager, opens Chromium to login URL under
- * fail-closed request policy, never submits credentials.
- * Writes redacted JSON only.
+ * fail-closed request policy.
+ *
+ * Credential submit requires BOTH:
+ *   HMS_DISCOVERY_ALLOW_LIVE=1 and HMS_LIVE_CANARY_SUBMIT=1
+ * and secret.credentialMode === 'view_only'.
+ * Writes redacted JSON only (no credential/cookie values).
  */
 import { chromium, type Browser, type Page } from 'playwright';
 import { mkdir, writeFile } from 'node:fs/promises';
@@ -166,7 +170,10 @@ function minimalLoginManifest(origin: string): RequestPolicyManifest {
         resourceTypes: ['document', 'xhr', 'fetch'],
         fixedQuery: {},
         variableQuery: {
-          REQ_KEY: { pattern: '.{1,128}', maxLength: 128 },
+          // Session REQ_KEY is opaque; constrain charset/length only.
+          // Do not treat COMMON as a write-form allow — stop on unknown POST
+          // (e.g. BSSTRT) before any mutation surface.
+          REQ_KEY: { pattern: '[A-Za-z0-9._-]{8,128}', maxLength: 128 },
         },
         fixedBody: {},
         variableBody: {},
@@ -407,21 +414,23 @@ async function main(): Promise<void> {
           dom.inputNames.some((n) => /user|pass|login/i.test(n))),
     );
 
-    let fixedBodyCandidates: Record<string, string> | undefined;
+    let fixedBodyCandidateKeys: string[] | undefined;
     if (process.env.HMS_LIVE_CANARY_SUBMIT === '1') {
       if (!hasLoginFields || !page) {
         throw new Error('login fields missing; refuse submit');
       }
-      fixedBodyCandidates = await page.evaluate(() => {
-        const out: Record<string, string> = {};
+      if (secret.credentialMode !== 'view_only') {
+        throw new Error('refuse submit: credentialMode must be view_only');
+      }
+      fixedBodyCandidateKeys = await page.evaluate(() => {
+        const keys: string[] = [];
         for (const el of document.querySelectorAll('input')) {
           const name = (el as HTMLInputElement).name || '';
           if (!name) continue;
           if (/pass|user|csrf|ticket|token|secret/i.test(name)) continue;
-          const v = (el as HTMLInputElement).value || '';
-          if (v && v.length <= 64) out[name] = v;
+          keys.push(name);
         }
-        return out;
+        return keys.sort();
       });
       // Fill only — never log credential values. Abort-first inventory for next unknown.
       await page.locator('input[name="userid"]').fill(secret.username);
@@ -514,7 +523,7 @@ async function main(): Promise<void> {
       titleLooksLikeInfor: /infor|hms/i.test(title),
       hasLoginFields,
       dom,
-      fixedBodyCandidates,
+      fixedBodyCandidateKeys,
       afterSubmit,
       xhrMeta: xhrMeta.slice(0, 20),
       documentAllowed,

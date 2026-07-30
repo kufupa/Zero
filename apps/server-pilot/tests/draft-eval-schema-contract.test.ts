@@ -178,6 +178,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('draft eval schema contract', 
       subject: 'Re: Booking',
       textBody: 'AI draft reply',
       htmlBody: '<p>AI draft reply</p>',
+      persistDraft: true,
     };
 
     const first = await persistAiCandidateDraft(input);

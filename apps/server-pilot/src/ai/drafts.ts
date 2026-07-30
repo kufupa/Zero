@@ -136,7 +136,7 @@ export interface PersistAiCandidateDraftInput {
 }
 
 export async function persistAiCandidateDraft(input: PersistAiCandidateDraftInput) {
-  const persistDraft = input.persistDraft ?? true;
+  const persistDraft = input.persistDraft ?? false;
   const outcome = input.outcome ?? 'candidate';
   const evidence = input.evidence ?? [];
 

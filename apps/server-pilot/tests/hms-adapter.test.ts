@@ -597,6 +597,40 @@ describe('InforReadAdapter.quoteStay', () => {
     return `<table data-testid="rates"><tr ${parts}><td>rate</td></tr></table>`;
   }
 
+  it('fails closed when property binding code or tenant is missing', async () => {
+    const navigations: string[] = [];
+    const { adapter } = adapterFor(
+      {
+        property: {
+          tenant: 'HMS_LEGACY',
+          propertyCode: '',
+          propertyName: 'Centurion Hotel',
+        },
+        searchHtml: '<p>n/a</p>',
+        inventoryHtml: `${headerHtml({ propertyCode: '' })}${inventoryRows([
+          { date: '2026-08-03', count: '3' },
+          { date: '2026-08-04', count: '3' },
+        ])}`,
+        ratesHtml: `${headerHtml({ propertyCode: '' })}${rateRow({
+          'data-room-type': 'STD',
+          'data-rate-plan': 'BAR',
+          'data-amount': '1200',
+          'data-currency': 'ZAR',
+        })}`,
+      },
+      navigations,
+    );
+
+    const result = await adapter.quoteStay(
+      baseQuote,
+      new AbortController().signal,
+    );
+    expect(result.status).toBe('manual_required');
+    expect(result.unresolvedFields).toContain('property_binding');
+    expect(result.draftReady).toBe(false);
+    expect(navigations).toHaveLength(0);
+  });
+
   it('keeps inventory and rates separate; bookable always false', async () => {
     const navigations: string[] = [];
     const { adapter } = adapterFor(
