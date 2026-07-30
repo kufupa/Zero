@@ -3,6 +3,8 @@
  * Live HMS mutation surfaces stay out of autonomousAllowed / active_read.
  */
 
+import { z } from 'zod';
+
 export type CapabilityRow = {
   id: string;
   officialDocs: string[];
@@ -146,3 +148,69 @@ export function activeDiscoveryCapabilities(): string[] {
     (row) => row.phase === 'active_read' && row.autonomousAllowed,
   ).map((row) => row.id);
 }
+
+const variableFieldSchema = z
+  .object({
+    pattern: z.string(),
+    maxLength: z.number().int().positive(),
+  })
+  .strict();
+
+const multimapValueSchema = z.union([z.string(), z.array(z.string())]);
+
+/**
+ * Canonical HMS read request template. Fail closed: only exact reviewed
+ * signatures may continue; values never widen from live observation.
+ */
+export const requestRuleSchema = z
+  .object({
+    id: z.string().min(1),
+    origin: z.string().url(),
+    method: z.enum(['GET', 'POST']),
+    path: z.string().startsWith('/'),
+    resourceTypes: z.array(z.string()).min(1),
+    fixedQuery: z.record(multimapValueSchema).default({}),
+    variableQuery: z.record(variableFieldSchema).default({}),
+    contentType: z.string().optional(),
+    fixedBody: z.record(multimapValueSchema).default({}),
+    variableBody: z.record(variableFieldSchema).default({}),
+    maxBodyBytes: z.number().int().positive().default(16_384),
+    redirectPolicy: z.literal('same-reviewed-chain'),
+  })
+  .strict();
+
+export type RequestRule = z.infer<typeof requestRuleSchema>;
+
+/** Structural request fingerprint only — never raw query/body values. */
+export const redactedRequestSignatureSchema = z
+  .object({
+    method: z.string(),
+    origin: z.string(),
+    path: z.string(),
+    resourceType: z.string(),
+    contentType: z.string().optional(),
+    queryKeys: z.array(z.string()),
+    bodyKeys: z.array(z.string()),
+    bodyBytes: z.number().int().nonnegative(),
+  })
+  .strict();
+
+export type RedactedRequestSignature = z.infer<
+  typeof redactedRequestSignatureSchema
+>;
+
+export type RequestDecision =
+  | { action: 'allow'; ruleId: string }
+  | {
+      action: 'block';
+      code: string;
+      redactedSignature: RedactedRequestSignature;
+    };
+
+export const requestPolicyManifestSchema = z
+  .object({
+    rules: z.array(requestRuleSchema).min(1),
+  })
+  .strict();
+
+export type RequestPolicyManifest = z.infer<typeof requestPolicyManifestSchema>;
