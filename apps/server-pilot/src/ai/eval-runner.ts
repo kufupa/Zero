@@ -60,26 +60,24 @@ function loadJson<T>(fileName: string): T {
   ) as T;
 }
 
-const CATEGORY_OVERRIDES: Record<string, Partial<TriageOutput>> = {
-  spam: { category: 'spam', urgent: false, confidence: 0.95, rationale: 'sales outreach', policyFlags: [] },
+/** Spike plumbing only — expected labels override fake adapter output. */
+const CATEGORY_OVERRIDES: Record<string, Omit<Partial<TriageOutput>, 'urgent'>> = {
+  spam: { category: 'spam', confidence: 0.95, rationale: 'sales outreach', policyFlags: [] },
   'groups-events': {
     category: 'groups-events',
-    urgent: false,
     confidence: 0.9,
     rationale: 'group quote',
     policyFlags: [],
   },
   'new-bookings': {
     category: 'new-bookings',
-    urgent: true,
     confidence: 0.88,
     rationale: 'guest request',
     policyFlags: [],
   },
-  ops: { category: 'ops', urgent: false, confidence: 0.87, rationale: 'internal ops', policyFlags: [] },
+  ops: { category: 'ops', confidence: 0.87, rationale: 'internal ops', policyFlags: [] },
   'at-risk': {
     category: 'at-risk',
-    urgent: false,
     confidence: 0.86,
     rationale: 'revenue risk',
     policyFlags: [],
@@ -87,17 +85,21 @@ const CATEGORY_OVERRIDES: Record<string, Partial<TriageOutput>> = {
 };
 
 function categoryOverrideForCase(testCase: DemoFixtureCase): Partial<TriageOutput> {
+  // Ordinary new-bookings default urgent=false; explicit fixture urgency wins.
+  const urgent = testCase.expectedUrgent ?? false;
   if (testCase.id === 'group-urgent') {
     return {
       category: 'groups-events',
-      urgent: true,
+      urgent,
       confidence: 0.9,
       rationale: 'urgent group quote',
       policyFlags: [],
     };
   }
   if (!testCase.expectedCategory) return {};
-  return CATEGORY_OVERRIDES[testCase.expectedCategory] ?? {};
+  const base = CATEGORY_OVERRIDES[testCase.expectedCategory];
+  if (!base) return {};
+  return { ...base, urgent };
 }
 
 async function classifyFixtureCase(testCase: DemoFixtureCase): Promise<{
@@ -122,10 +124,7 @@ async function classifyFixtureCase(testCase: DemoFixtureCase): Promise<{
   };
 }
 
-export async function runSpikeEval(options?: {
-  passThreshold?: number;
-}): Promise<SpikeEvalReport> {
-  const passThreshold = options?.passThreshold ?? 0.85;
+export async function runSpikeEval(): Promise<SpikeEvalReport> {
   const demo = loadJson<{ cases: DemoFixtureCase[] }>('centurion-demo.json');
   const redteam = loadJson<{ cases: RedteamFixtureCase[] }>('redteam.json');
 
@@ -223,8 +222,7 @@ export async function runSpikeEval(options?: {
   }
 
   const totalCases = demo.cases.length + redteam.cases.length;
-  const passRate = passedCases / totalCases;
-  const passed = passRate >= passThreshold;
+  const passed = failures.length === 0;
 
   return {
     mode: 'spike',

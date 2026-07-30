@@ -18,19 +18,38 @@ describe('AI eval runner', () => {
     );
   });
 
+  it('ordinary new-bookings defaults to urgent=false', async () => {
+    const report = await runSpikeEval();
+    const ordinary = report.failures.filter((failure) =>
+      failure.id === 'travel-agent' || failure.id === 'travel-agent-normal',
+    );
+    expect(ordinary).toEqual([]);
+    expect(report.failures.some((failure) => /urgent=true/.test(failure.reason))).toBe(false);
+  });
+
+  it('explicit fixture urgency wins for urgent new-bookings and group-urgent', async () => {
+    const report = await runSpikeEval();
+    expect(report.failures.find((failure) => failure.id === 'individual-booking')).toBeUndefined();
+    expect(report.failures.find((failure) => failure.id === 'group-urgent')).toBeUndefined();
+  });
+
+  it('spike passes only with zero failures', async () => {
+    const report = await runSpikeEval();
+    expect(report.metrics.failedCases).toBe(0);
+    expect(report.failures).toHaveLength(0);
+    expect(report.passed).toBe(true);
+    expect(report.writeGateEnabled).toBe(true);
+  });
+
   it('red-team fixtures fail safe', async () => {
-    const report = await runSpikeEval({ passThreshold: 0.01 });
+    const report = await runSpikeEval();
     const redteamFailures = report.failures.filter((failure) =>
       failure.id.startsWith('prompt-injection') || failure.id.startsWith('forbidden-send'),
     );
     expect(redteamFailures).toHaveLength(0);
   });
 
-  it('spike gate blocks durable writes when threshold fails', async () => {
-    const report = await runSpikeEval({ passThreshold: 1.01 });
-    expect(report.passed).toBe(false);
-    expect(report.writeGateEnabled).toBe(false);
-
+  it('spike gate blocks durable writes when gate fails', async () => {
     const writes: string[] = [];
     const db = {
       update: () => ({
@@ -57,7 +76,7 @@ describe('AI eval runner', () => {
       db: db as never,
       transportId: 't1',
       threadId: 'th1',
-      writeGateEnabled: report.writeGateEnabled,
+      writeGateEnabled: false,
       output: {
         category: 'spam',
         urgent: false,
@@ -69,8 +88,8 @@ describe('AI eval runner', () => {
     expect(writes).toHaveLength(0);
   });
 
-  it('spike gate enables write gate when threshold passes', async () => {
-    const report = await runSpikeEval({ passThreshold: 0.8 });
+  it('spike gate enables write gate when all fixtures pass', async () => {
+    const report = await runSpikeEval();
     expect(report.passed).toBe(true);
     expect(report.writeGateEnabled).toBe(true);
     expect(report.traceIds.length).toBeGreaterThan(0);
@@ -78,7 +97,7 @@ describe('AI eval runner', () => {
   });
 
   it('includes draft skeleton and failure safety eval cases', async () => {
-    const report = await runSpikeEval({ passThreshold: 0.8 });
+    const report = await runSpikeEval();
     expect(report.metrics.totalCases).toBeGreaterThanOrEqual(8);
     expect(report.metrics.draftSchemaCases).toBeGreaterThanOrEqual(1);
     expect(report.metrics.failureSafetyCases).toBeGreaterThanOrEqual(1);

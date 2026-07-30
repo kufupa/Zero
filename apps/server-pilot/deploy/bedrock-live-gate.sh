@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # EC2 Bedrock live gate: one Converse call via instance role. NOT in daily ai-gate.
+# May source production Bedrock/AWS settings; never runs Vitest; never keeps DATABASE_URL.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -17,17 +18,16 @@ if [ -f "$ENV_FILE" ]; then
   set +a
 fi
 
+# Immediately drop DB credentials / pilot-RDS Vitest escape hatch after sourcing AWS/Bedrock settings.
+unset DATABASE_URL VITEST_ALLOW_PILOT_RDS
+
 export PATH="${HOME}/.local/share/pnpm:${HOME}/.nvm/versions/node/$(ls "${HOME}/.nvm/versions/node" 2>/dev/null | sort -V | tail -1)/bin:${PATH}"
 
 export NODE_ENV=production
 export AI_ENABLED=true
 export BEDROCK_REGION="${BEDROCK_REGION:-us-east-1}"
-export BEDROCK_LIVE_TEST=1
-
-# Intentional RDS-backed gate — required after pilot-RDS vitest refuse.
-export VITEST_ALLOW_PILOT_RDS=1
 
 cd "$SERVER_PILOT"
-pnpm exec vitest run tests/bedrock-live-contract.test.ts --reporter=dot
+pnpm exec tsx scripts/bedrock-live-smoke.ts
 
 echo "bedrock-live-gate: PASS"

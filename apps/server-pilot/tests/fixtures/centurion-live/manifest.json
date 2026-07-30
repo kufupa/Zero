@@ -58,6 +58,13 @@
       "expectedUrgent": false
     },
     {
+      "id": "at-risk-ota-amendment",
+      "file": "at-risk-ota-amendment.eml",
+      "kind": "guest",
+      "expectedCategory": "at-risk",
+      "expectedUrgent": false
+    },
+    {
       "id": "hotel-sent-copy",
       "file": "hotel-sent-booking-reply.eml",
       "kind": "hotel_sent",

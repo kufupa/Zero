@@ -324,7 +324,7 @@ describe('deploy config', () => {
     expect(syntax.status).toBe(0);
   });
 
-  it('RDS vitest gates export VITEST_ALLOW_PILOT_RDS=1', async () => {
+  it('intentional RDS vitest gates export VITEST_ALLOW_PILOT_RDS=1', async () => {
     const { readdirSync, readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
     const { dirname, join } = await import('node:path');
@@ -340,14 +340,18 @@ describe('deploy config', () => {
     const invokesVitest = (script: string) =>
       /\bpnpm test\b/.test(script) || /\bpnpm exec vitest\b/.test(script);
 
+    // AI/Bedrock gates must stay DB-free — excluded from intentional pilot-RDS escape hatch.
+    const dbFreeGateNames = new Set(['ai-gate.sh', 'bedrock-live-gate.sh']);
+
     const rdsVitestGates = readdirSync(deployDir)
       .filter((name) => name.endsWith('.sh'))
+      .filter((name) => !dbFreeGateNames.has(name))
       .filter((name) => {
         const script = readFileSync(join(deployDir, name), 'utf8');
         return sourcesProductionEnv(script) && invokesVitest(script);
       });
 
-    expect(rdsVitestGates.length).toBeGreaterThanOrEqual(5);
+    expect(rdsVitestGates.length).toBeGreaterThanOrEqual(3);
     for (const name of rdsVitestGates) {
       const script = readFileSync(join(deployDir, name), 'utf8');
       expect(script, `${name} must export VITEST_ALLOW_PILOT_RDS=1`).toContain(
@@ -362,13 +366,45 @@ describe('deploy config', () => {
       'mail-search-gate.sh',
       'fixture-loopback-gate.sh',
       'wire-gate.sh',
-      'ai-gate.sh',
-      'bedrock-live-gate.sh',
     ]) {
       expect(rdsVitestGates, `expected ${name} in RDS vitest gates`).toContain(
         name,
       );
     }
+  });
+
+  it('AI and Bedrock gates never bypass pilot-RDS Vitest guard', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const deployDir = join(here, '..', 'deploy');
+
+    const aiGate = readFileSync(join(deployDir, 'ai-gate.sh'), 'utf8');
+    const bedrockGate = readFileSync(join(deployDir, 'bedrock-live-gate.sh'), 'utf8');
+
+    for (const [name, script] of [
+      ['ai-gate.sh', aiGate],
+      ['bedrock-live-gate.sh', bedrockGate],
+    ] as const) {
+      expect(script, `${name} must not set VITEST_ALLOW_PILOT_RDS=1`).not.toContain(
+        'VITEST_ALLOW_PILOT_RDS=1',
+      );
+      expect(script, `${name} must unset DATABASE_URL and VITEST_ALLOW_PILOT_RDS`).toMatch(
+        /unset\s+DATABASE_URL\s+VITEST_ALLOW_PILOT_RDS/,
+      );
+    }
+
+    // ai-gate is DB-free: never source production env into Vitest.
+    expect(aiGate).not.toMatch(/source\s+"?\$\{?ENV_FILE/);
+    expect(aiGate).not.toContain('source .env.production');
+    expect(aiGate).toContain('pnpm exec vitest run');
+
+    // bedrock-live may source Bedrock/AWS settings, but must never invoke Vitest.
+    expect(bedrockGate).not.toMatch(/\bpnpm exec vitest\b/);
+    expect(bedrockGate).not.toMatch(/\bpnpm test\b/);
+    expect(bedrockGate).toContain('bedrock-live-smoke');
+    expect(bedrockGate).toMatch(/\btsx\b/);
   });
 
   it('stage-navaai-mail-env.sh refuses REPLACE_ and keeps password out of SSM argv', async () => {
