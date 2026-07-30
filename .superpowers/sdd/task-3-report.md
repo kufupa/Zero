@@ -3,7 +3,7 @@
 Date: 2026-07-30  
 Branch: `triage-v5-quality`  
 Base HEAD: `1c648564d98178762307ffb582704bb22c3dc1e6`  
-Commit: (see git log after checkpoint)  
+Commit: e9a9d8d4e19cddca1b0fdb53bc1616cf02ef2dd1  
 Subject: `feat(ai): add read-only triage quality evaluator`  
 Pushed: no
 
