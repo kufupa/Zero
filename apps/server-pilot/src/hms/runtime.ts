@@ -784,7 +784,9 @@ export function createHmsRuntime(options: HmsRuntimeOptions): HmsRuntime {
         if (decision.action === 'block') {
           lastViolation = decision;
           terminal = true;
-          await teardown();
+          // Do not await: Playwright context.close waits for active route
+          // handlers (PW 1.52+). Fire-and-forget matches abort/ws path.
+          void teardown();
         }
       });
 
@@ -794,7 +796,7 @@ export function createHmsRuntime(options: HmsRuntimeOptions): HmsRuntime {
             await guards.handlePopup(page);
             lastViolation = guards.lastBlock();
             terminal = true;
-            await teardown();
+            void teardown();
           })();
         }
       });
@@ -803,7 +805,7 @@ export function createHmsRuntime(options: HmsRuntimeOptions): HmsRuntime {
           await guards.handleDownload(download);
           lastViolation = guards.lastBlock();
           terminal = true;
-          await teardown();
+          void teardown();
         })();
       });
       context.on('websocket', () => {
