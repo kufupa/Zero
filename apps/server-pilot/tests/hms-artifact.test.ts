@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { FakeS3Storage } from '../src/storage/s3.js';
+import { FakeS3Storage, S3ObjectTooLargeError } from '../src/storage/s3.js';
 import { MailEvidenceRefSchema, ToolResultSchema } from '../src/ai/draft-evidence.js';
 import {
   ARTIFACT_MAX_INPUT_BYTES,
@@ -41,6 +41,12 @@ function locator(overrides: Partial<AttachmentLocator> = {}): AttachmentLocator 
     messageId: 'msg-1',
     ...overrides,
   };
+}
+
+function resolveLocatorOf(
+  loc: AttachmentLocator | null,
+): (attachmentId: string) => Promise<AttachmentLocator | null> {
+  return async () => loc;
 }
 
 function fixtureRunner(input: {
@@ -94,9 +100,10 @@ function fixtureRunner(input: {
 }
 
 describe('readAuthorizedArtifact', () => {
-  it('blocks unauthorized attachment ID before S3', async () => {
+  it('blocks unauthorized attachment ID before resolveLocator and S3', async () => {
     const s3 = new FakeS3Storage('artifact-test');
-    const getSpy = vi.spyOn(s3, 'getObject');
+    const getSpy = vi.spyOn(s3, 'getObjectBounded');
+    const resolveLocator = vi.fn(resolveLocatorOf(locator()));
     const runner = fixtureRunner({});
 
     const result = await readAuthorizedArtifact({
@@ -104,15 +111,93 @@ describe('readAuthorizedArtifact', () => {
       authorizedAttachmentIds: new Set(['own']),
       s3,
       signal: AbortSignal.timeout(5_000),
-      locator: locator(),
+      resolveLocator,
       runner,
     });
 
     expect(result.status).toBe('manual_required');
     expect(result.data.reason).toBe('unsupported');
     expect(result.draftReady).toBe(false);
+    expect(resolveLocator).not.toHaveBeenCalled();
     expect(getSpy).not.toHaveBeenCalled();
     expect(runner.commands()).toEqual([]);
+  });
+
+  it('returns manual when resolveLocator is null without S3', async () => {
+    const s3 = new FakeS3Storage('artifact-test');
+    const getSpy = vi.spyOn(s3, 'getObjectBounded');
+    const resolveLocator = vi.fn(async () => null);
+
+    const result = await readAuthorizedArtifact({
+      attachmentId: 'att-missing',
+      authorizedAttachmentIds: new Set(['att-missing']),
+      s3,
+      signal: AbortSignal.timeout(5_000),
+      resolveLocator,
+      runner: fixtureRunner({}),
+    });
+
+    expect(result.status).toBe('manual_required');
+    expect(result.data.reason).toBe('malformed');
+    expect(resolveLocator).toHaveBeenCalledWith('att-missing');
+    expect(getSpy).not.toHaveBeenCalled();
+  });
+
+  it('rejects wrong-prefix locator key before S3', async () => {
+    const s3 = new FakeS3Storage('artifact-test');
+    const getSpy = vi.spyOn(s3, 'getObjectBounded');
+
+    const result = await readAuthorizedArtifact({
+      attachmentId: 'att-prefix',
+      authorizedAttachmentIds: new Set(['att-prefix']),
+      s3,
+      signal: AbortSignal.timeout(5_000),
+      resolveLocator: resolveLocatorOf(
+        locator({
+          s3Key: 'raw-mime/other/poison.eml',
+          messageId: 'msg-1',
+        }),
+      ),
+      runner: fixtureRunner({}),
+    });
+
+    expect(result.status).toBe('manual_required');
+    expect(result.data.reason).toBe('unsupported');
+    expect(getSpy).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when declared sizeBytes small but stored body huge', async () => {
+    const s3 = new FakeS3Storage('artifact-test');
+    const huge = Buffer.alloc(1024 * 1024, 0x41);
+    huge.write('%PDF-', 0);
+    await s3.putObject({
+      key: 'attachments/msg-1/000-note.pdf',
+      body: huge,
+      contentType: 'application/pdf',
+    });
+    const getSpy = vi.spyOn(s3, 'getObjectBounded');
+    const declared = 32;
+
+    const result = await readAuthorizedArtifact({
+      attachmentId: 'att-mismatch',
+      authorizedAttachmentIds: new Set(['att-mismatch']),
+      s3,
+      signal: AbortSignal.timeout(5_000),
+      resolveLocator: resolveLocatorOf(
+        locator({ sizeBytes: declared }),
+      ),
+      runner: fixtureRunner({}),
+    });
+
+    expect(result.status).toBe('manual_required');
+    expect(result.data.reason).toBe('malformed');
+    expect(getSpy).toHaveBeenCalledWith(
+      'attachments/msg-1/000-note.pdf',
+      declared,
+    );
+    await expect(getSpy.mock.results[0]?.value).rejects.toBeInstanceOf(
+      S3ObjectTooLargeError,
+    );
   });
 
   it('reads text/plain with UTF-8 normalization', async () => {
@@ -129,11 +214,13 @@ describe('readAuthorizedArtifact', () => {
       authorizedAttachmentIds: new Set(['att-txt']),
       s3,
       signal: AbortSignal.timeout(5_000),
-      locator: locator({
-        s3Key: 'attachments/msg-1/000-note.txt',
-        mimeType: 'text/plain',
-        sizeBytes: body.byteLength,
-      }),
+      resolveLocator: resolveLocatorOf(
+        locator({
+          s3Key: 'attachments/msg-1/000-note.txt',
+          mimeType: 'text/plain',
+          sizeBytes: body.byteLength,
+        }),
+      ),
     });
 
     expect(result.status).toBe('ok');
@@ -146,6 +233,33 @@ describe('readAuthorizedArtifact', () => {
     expect(result.data.text).toBe('line1\nline2tail');
     expect(result.evidence.kind).toBe('mail_attachment');
     expect(result.evidence.sourceHash).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('rejects text/plain when streamed contentType mismatches', async () => {
+    const body = Buffer.from('hello', 'utf8');
+    const s3 = new FakeS3Storage('artifact-test');
+    await s3.putObject({
+      key: 'attachments/msg-1/000-note.txt',
+      body,
+      contentType: 'application/octet-stream',
+    });
+
+    const result = await readAuthorizedArtifact({
+      attachmentId: 'att-txt-mime',
+      authorizedAttachmentIds: new Set(['att-txt-mime']),
+      s3,
+      signal: AbortSignal.timeout(5_000),
+      resolveLocator: resolveLocatorOf(
+        locator({
+          s3Key: 'attachments/msg-1/000-note.txt',
+          mimeType: 'text/plain',
+          sizeBytes: body.byteLength,
+        }),
+      ),
+    });
+
+    expect(result.status).toBe('manual_required');
+    expect(result.data.reason).toBe('unsupported');
   });
 
   it('returns ok for embedded PDF text via sandboxed runner', async () => {
@@ -166,7 +280,7 @@ describe('readAuthorizedArtifact', () => {
       authorizedAttachmentIds: new Set(['att-pdf']),
       s3,
       signal: AbortSignal.timeout(5_000),
-      locator: locator({ sizeBytes: body.byteLength }),
+      resolveLocator: resolveLocatorOf(locator({ sizeBytes: body.byteLength })),
       runner,
     });
 
@@ -194,7 +308,7 @@ describe('readAuthorizedArtifact', () => {
       authorizedAttachmentIds: new Set(['att-1']),
       s3,
       signal: AbortSignal.timeout(5_000),
-      locator: locator({ sizeBytes: body.byteLength }),
+      resolveLocator: resolveLocatorOf(locator({ sizeBytes: body.byteLength })),
       runner: fixtureRunner({
         pdfInfo: 'Pages: 1\nEncrypted: no\n',
         text: '   \f ',
@@ -237,17 +351,19 @@ describe('readAuthorizedArtifact', () => {
       data: { reason: 'malformed' },
     });
 
-    const getSpy = vi.spyOn(s3, 'getObject');
+    const getSpy = vi.spyOn(s3, 'getObjectBounded');
     const unsupported = await readAuthorizedArtifact({
       attachmentId: 'att-img',
       authorizedAttachmentIds: new Set(['att-img']),
       s3,
       signal: AbortSignal.timeout(5_000),
-      locator: locator({
-        s3Key: 'attachments/msg-1/000-pic.png',
-        mimeType: 'image/png',
-        sizeBytes: 4,
-      }),
+      resolveLocator: resolveLocatorOf(
+        locator({
+          s3Key: 'attachments/msg-1/000-pic.png',
+          mimeType: 'image/png',
+          sizeBytes: 4,
+        }),
+      ),
     });
     expect(unsupported).toMatchObject({
       status: 'manual_required',
@@ -304,18 +420,22 @@ describe('readAuthorizedArtifact', () => {
       body: oversized,
       contentType: 'application/pdf',
     });
+    const getSpy = vi.spyOn(s3, 'getObjectBounded');
     const tooLargeIn = await readAuthorizedArtifact({
       attachmentId: 'att-big',
       authorizedAttachmentIds: new Set(['att-big']),
       s3,
       signal: AbortSignal.timeout(5_000),
-      locator: locator({
-        s3Key: 'attachments/msg-1/000-big.pdf',
-        sizeBytes: oversized.byteLength,
-      }),
+      resolveLocator: resolveLocatorOf(
+        locator({
+          s3Key: 'attachments/msg-1/000-big.pdf',
+          sizeBytes: oversized.byteLength,
+        }),
+      ),
       runner: fixtureRunner({}),
     });
     expect(tooLargeIn.data.reason).toBe('too_large');
+    expect(getSpy).not.toHaveBeenCalled();
   });
 
   it('abort kills subprocess and deletes temp directory', async () => {
@@ -371,11 +491,13 @@ describe('readAuthorizedArtifact', () => {
       authorizedAttachmentIds: new Set(['att-ledger']),
       s3,
       signal: AbortSignal.timeout(5_000),
-      locator: locator({
-        s3Key: 'attachments/msg-1/000-note.txt',
-        mimeType: 'text/plain',
-        sizeBytes: body.byteLength,
-      }),
+      resolveLocator: resolveLocatorOf(
+        locator({
+          s3Key: 'attachments/msg-1/000-note.txt',
+          mimeType: 'text/plain',
+          sizeBytes: body.byteLength,
+        }),
+      ),
       ledger,
     });
 

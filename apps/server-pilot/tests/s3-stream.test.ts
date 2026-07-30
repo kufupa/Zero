@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Readable } from 'node:stream';
-import { FakeS3Storage } from '../src/storage/s3.js';
+import { FakeS3Storage, S3ObjectTooLargeError } from '../src/storage/s3.js';
 
 describe('s3 stream upload', () => {
   it('FakeS3Storage stores full bytes from Readable stream', async () => {
@@ -16,5 +16,24 @@ describe('s3 stream upload', () => {
 
     expect(result.bytes).toBe(payload.byteLength);
     expect(storage.get('raw-mime/test/stream.eml')?.toString()).toBe('stream-body-bytes');
+  });
+
+  it('FakeS3Storage getObjectBounded rejects oversized bodies', async () => {
+    const storage = new FakeS3Storage('stream-test');
+    await storage.putObject({
+      key: 'attachments/msg/000-big.bin',
+      body: Buffer.alloc(100, 0x42),
+      contentType: 'application/octet-stream',
+    });
+
+    await expect(
+      storage.getObjectBounded('attachments/msg/000-big.bin', 50),
+    ).rejects.toBeInstanceOf(S3ObjectTooLargeError);
+
+    const ok = await storage.getObjectBounded(
+      'attachments/msg/000-big.bin',
+      100,
+    );
+    expect(ok?.body.byteLength).toBe(100);
   });
 });

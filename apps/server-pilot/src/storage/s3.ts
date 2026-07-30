@@ -42,11 +42,28 @@ export interface S3GetResult {
   contentType: string;
 }
 
+/** Thrown when a bounded read would exceed maxBytes; callers must not keep the body. */
+export class S3ObjectTooLargeError extends Error {
+  readonly maxBytes: number;
+  readonly observedBytes: number;
+
+  constructor(maxBytes: number, observedBytes: number) {
+    super(
+      `S3 object exceeds maxBytes=${maxBytes} (observed>=${observedBytes})`,
+    );
+    this.name = 'S3ObjectTooLargeError';
+    this.maxBytes = maxBytes;
+    this.observedBytes = observedBytes;
+  }
+}
+
 export interface S3Storage {
   readonly kind: 'real' | 'fake';
   readonly bucket: string;
   putObject(opts: S3PutOptions): Promise<S3PutResult>;
   getObject(key: string): Promise<S3GetResult | null>;
+  /** Read object only if body length ≤ maxBytes; abort/fail closed otherwise. */
+  getObjectBounded(key: string, maxBytes: number): Promise<S3GetResult | null>;
   copyObject(opts: S3CopyOptions): Promise<{ key: string; bucket: string }>;
 }
 
@@ -108,6 +125,43 @@ export class RealS3Storage implements S3Storage {
     }
   }
 
+  async getObjectBounded(
+    key: string,
+    maxBytes: number,
+  ): Promise<S3GetResult | null> {
+    try {
+      const response = await this.client.send(
+        new GetObjectCommand({ Bucket: this.bucket, Key: key }),
+      );
+      if (!response.Body) return null;
+      const contentLength = response.ContentLength;
+      if (
+        typeof contentLength === 'number' &&
+        contentLength > maxBytes
+      ) {
+        const body = response.Body as Readable;
+        body.destroy();
+        throw new S3ObjectTooLargeError(maxBytes, contentLength);
+      }
+      const body = await streamToBufferBounded(
+        response.Body as Readable,
+        maxBytes,
+      );
+      return {
+        body,
+        contentType: response.ContentType ?? 'application/octet-stream',
+      };
+    } catch (err: unknown) {
+      if (err instanceof S3ObjectTooLargeError) throw err;
+      const code =
+        err && typeof err === 'object' && 'name' in err
+          ? String((err as { name?: string }).name)
+          : '';
+      if (code === 'NoSuchKey' || code === 'NotFound') return null;
+      throw err;
+    }
+  }
+
   async copyObject(opts: S3CopyOptions): Promise<{ key: string; bucket: string }> {
     await this.client.send(
       new CopyObjectCommand({
@@ -154,6 +208,19 @@ export class FakeS3Storage implements S3Storage {
     this.calls.push({ op: 'GET', key });
     const entry = this.stored.get(key);
     if (!entry) return null;
+    return { body: entry.body, contentType: entry.contentType };
+  }
+
+  async getObjectBounded(
+    key: string,
+    maxBytes: number,
+  ): Promise<S3GetResult | null> {
+    this.calls.push({ op: 'GET_BOUNDED', key });
+    const entry = this.stored.get(key);
+    if (!entry) return null;
+    if (entry.body.byteLength > maxBytes) {
+      throw new S3ObjectTooLargeError(maxBytes, entry.body.byteLength);
+    }
     return { body: entry.body, contentType: entry.contentType };
   }
 
@@ -253,6 +320,35 @@ async function streamToBuffer(stream: Readable): Promise<Buffer> {
   const chunks: Buffer[] = [];
   for await (const chunk of stream as AsyncIterable<Buffer>) {
     chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
+}
+
+async function streamToBufferBounded(
+  stream: Readable,
+  maxBytes: number,
+): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  try {
+    for await (const chunk of stream as AsyncIterable<Buffer>) {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      total += buf.byteLength;
+      if (total > maxBytes) {
+        stream.destroy();
+        throw new S3ObjectTooLargeError(maxBytes, total);
+      }
+      chunks.push(buf);
+    }
+  } catch (err) {
+    if (!(err instanceof S3ObjectTooLargeError)) {
+      try {
+        stream.destroy();
+      } catch {
+        // ignore destroy errors while propagating original
+      }
+    }
+    throw err;
   }
   return Buffer.concat(chunks);
 }

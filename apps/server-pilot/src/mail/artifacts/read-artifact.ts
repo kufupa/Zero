@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import type { ToolResult } from '../../ai/draft-evidence.js';
-import type { S3Storage } from '../../storage/s3.js';
+import { S3ObjectTooLargeError, type S3Storage } from '../../storage/s3.js';
 
 export const ARTIFACT_MAX_INPUT_BYTES = 20 * 1024 * 1024;
 export const ARTIFACT_MAX_OUTPUT_BYTES = 256 * 1024;
@@ -363,6 +363,9 @@ export async function extractEmbeddedPdfText(
     await writeFile(inputPath, source.body, { mode: 0o600 });
 
     const runner = options.runner ?? runPdfSandbox;
+    if (options.runner === undefined) {
+      assertPdfToolchain();
+    }
     const linkedSignal = AbortSignal.any([
       options.signal ?? new AbortController().signal,
       AbortSignal.timeout(ARTIFACT_SUBPROCESS_TIMEOUT_MS),
@@ -502,16 +505,18 @@ export async function extractEmbeddedPdfText(
 }
 
 /**
- * Authorized attachment ID → S3 stream → text/plain or sandboxed pdftotext.
- * Locator is server-resolved; S3 keys never appear in ToolResult.
+ * Authorized attachment ID → resolve DB locator → bounded S3 → text/plain or pdftotext.
+ * Locator resolved by attachmentId only; caller never supplies S3 keys. Keys never in ToolResult.
  */
 export async function readAuthorizedArtifact(input: {
   attachmentId: string;
   authorizedAttachmentIds: ReadonlySet<string>;
   s3: S3Storage;
   signal: AbortSignal;
-  /** Server-resolved attachment row fields. Never model-supplied keys alone. */
-  locator: AttachmentLocator;
+  /** Server-side resolve by attachmentId (DB in prod; fixture map in tests). */
+  resolveLocator: (
+    attachmentId: string,
+  ) => Promise<AttachmentLocator | null>;
   runner?: SandboxRunner;
   ledger?: ToolLedger;
   now?: Date;
@@ -536,7 +541,20 @@ export async function readAuthorizedArtifact(input: {
     );
   }
 
-  const { locator } = input;
+  const locator = await input.resolveLocator(input.attachmentId);
+  if (!locator) {
+    return finish(
+      manualResult({
+        attachmentId: input.attachmentId,
+        mimeType: 'application/pdf',
+        reason: 'malformed',
+        sourceHash: sha256Hex(''),
+        now,
+        unresolvedFields: ['attachment'],
+      }),
+    );
+  }
+
   if (!locator.s3Key.startsWith(`attachments/${locator.messageId}/`)) {
     return finish(
       manualResult({
@@ -578,33 +596,45 @@ export async function readAuthorizedArtifact(input: {
     );
   }
 
-  const object = await input.s3.getObject(locator.s3Key);
-  if (!object) {
+  const maxBytes = Math.min(locator.sizeBytes, ARTIFACT_MAX_INPUT_BYTES);
+  let object: { body: Buffer; contentType: string };
+  try {
+    const fetched = await input.s3.getObjectBounded(locator.s3Key, maxBytes);
+    if (!fetched) {
+      return finish(
+        manualResult({
+          attachmentId: input.attachmentId,
+          mimeType: locator.mimeType,
+          reason: 'malformed',
+          sourceHash: sha256Hex(''),
+          now,
+        }),
+      );
+    }
+    object = fetched;
+  } catch (err) {
+    if (err instanceof S3ObjectTooLargeError) {
+      const reason: ArtifactReason =
+        maxBytes >= ARTIFACT_MAX_INPUT_BYTES ? 'too_large' : 'malformed';
+      return finish(
+        manualResult({
+          attachmentId: input.attachmentId,
+          mimeType: locator.mimeType,
+          reason,
+          sourceHash: sha256Hex(''),
+          now,
+        }),
+      );
+    }
+    throw err;
+  }
+
+  if (locator.sizeBytes !== object.body.byteLength) {
     return finish(
       manualResult({
         attachmentId: input.attachmentId,
         mimeType: locator.mimeType,
         reason: 'malformed',
-        sourceHash: sha256Hex(''),
-        now,
-      }),
-    );
-  }
-
-  if (
-    object.body.byteLength > ARTIFACT_MAX_INPUT_BYTES ||
-    locator.sizeBytes !== object.body.byteLength
-  ) {
-    const reason: ArtifactReason =
-      object.body.byteLength > ARTIFACT_MAX_INPUT_BYTES ||
-      locator.sizeBytes > ARTIFACT_MAX_INPUT_BYTES
-        ? 'too_large'
-        : 'malformed';
-    return finish(
-      manualResult({
-        attachmentId: input.attachmentId,
-        mimeType: locator.mimeType,
-        reason,
         sourceHash: sha256Hex(
           object.body.subarray(0, Math.min(object.body.byteLength, 64)),
         ),
@@ -614,6 +644,20 @@ export async function readAuthorizedArtifact(input: {
   }
 
   if (locator.mimeType === 'text/plain') {
+    if (
+      object.contentType &&
+      object.contentType !== 'text/plain'
+    ) {
+      return finish(
+        manualResult({
+          attachmentId: input.attachmentId,
+          mimeType: 'text/plain',
+          reason: 'unsupported',
+          sourceHash: sha256Hex(object.body),
+          now,
+        }),
+      );
+    }
     if (object.body.byteLength > ARTIFACT_MAX_OUTPUT_BYTES) {
       return finish(
         manualResult({
