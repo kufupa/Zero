@@ -39,6 +39,8 @@ export interface ParsedAttachment {
 export interface ParsedInboundMessage {
   /** `X-Zero-Mailbox` header value, lowercased; null when absent. */
   ownerHeaderValue: string | null;
+  /** Canonical UUID from `X-Zero-Outbound-Id`; null when absent or malformed. */
+  outboundMessageId: string | null;
   messageId: string | null;
   inReplyTo: string | null;
   references: string[];
@@ -200,6 +202,9 @@ function buildParsedMessage(args: {
   const { headers, rawHeaderLines, text, html, attachments } = args;
 
   const ownerHeaderValue = lastHeader(headers, 'x-zero-mailbox');
+  const outboundMessageId = normalizeOutboundMessageId(
+    firstHeader(headers, 'x-zero-outbound-id'),
+  );
   const messageIdRaw = firstHeader(headers, 'message-id');
   const messageId = messageIdRaw ? stripAngles(messageIdRaw) : null;
   const inReplyToRaw = firstHeader(headers, 'in-reply-to');
@@ -230,6 +235,7 @@ function buildParsedMessage(args: {
 
   return {
     ownerHeaderValue: ownerHeaderValue ? ownerHeaderValue.toLowerCase() : null,
+    outboundMessageId,
     messageId,
     inReplyTo,
     references,
@@ -330,6 +336,14 @@ function extractAddresses(v: unknown): string[] {
 function parseDate(raw: string): Date | null {
   const d = new Date(raw);
   return Number.isNaN(d.getTime()) ? null : d;
+}
+
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function normalizeOutboundMessageId(raw: string | null): string | null {
+  if (!raw || !UUID_PATTERN.test(raw)) return null;
+  return raw.toLowerCase();
 }
 
 /** Drain a Readable into a Buffer (used for attachment S3 PUT). */

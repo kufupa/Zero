@@ -1,0 +1,42 @@
+From: Synthetic Front Desk <sender@hotel.example>
+To: guest@example.test
+Subject: Synthetic branded confirmation
+Date: Tue, 28 Jul 2026 12:34:56 +0000
+Message-ID: <delivered-copy@example.test>
+X-Zero-Mailbox: sender@hotel.example
+X-Zero-Outbound-Id: A0B1C2D3-E4F5-4A67-8B90-ABCDEF123456
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="mixed-boundary"
+
+--mixed-boundary
+Content-Type: multipart/related; boundary="related-boundary"
+
+--related-boundary
+Content-Type: multipart/alternative; boundary="alternative-boundary"
+
+--alternative-boundary
+Content-Type: text/plain; charset=utf-8
+
+Delivered branded body.
+--alternative-boundary
+Content-Type: text/html; charset=utf-8
+
+<html><body><p>Delivered branded body.</p><img src="cid:brand-logo@example.test"></body></html>
+--alternative-boundary--
+
+--related-boundary
+Content-Type: image/png; name="brand-logo.png"
+Content-Transfer-Encoding: base64
+Content-Disposition: inline; filename="brand-logo.png"
+Content-ID: <brand-logo@example.test>
+
+c3ludGhldGljLWltYWdl
+--related-boundary--
+
+--mixed-boundary
+Content-Type: application/pdf; name="itinerary.pdf"
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="itinerary.pdf"
+
+JVBERi0xLjQKJXN5bnRoZXRpYy1maXh0dXJlCg==
+--mixed-boundary--

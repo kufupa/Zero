@@ -81,10 +81,10 @@ export interface IngestMeta {
   /** POP3 UIDL on the ingest mailbox. */
   pop3Uidl: string;
   /**
-   * DB message id to use for the `message` row. MUST equal the id passed to
-   * `parseRawMessage` (which namespaces attachment S3 keys as
-   * `attachments/{messageId}/...`) so the S3 key prefix and the DB
-   * `message.id` stay aligned. One UUID threaded through both layers.
+   * Incoming parse id. MUST equal the id passed to `parseRawMessage`, which
+   * namespaces attachment S3 keys. New rows reuse it as `message.id`;
+   * reconciled outbound rows keep their original id while delivered S3 keys
+   * retain this incoming parse-id prefix.
    */
   messageId: string;
   /**
@@ -172,7 +172,7 @@ export async function persistInboundMessage(
     });
   }
 
-  const existingMessage = await findExistingInboundMessage(db, meta);
+  const existingMessage = await findExistingIngestedMessage(db, meta);
   if (existingMessage) {
     return {
       kind: 'duplicate',
@@ -226,28 +226,101 @@ export async function persistInboundMessage(
     }
   }
 
-  const messageId = meta.messageId;
+  const incomingMessageId = meta.messageId;
+  let storedMessageId = incomingMessageId;
   let threadId = '';
   await db.transaction(async (tx) => {
+    const transactionDb = tx as unknown as DB;
+    const transportIdentities = transportIdentitySet(
+      transport.email,
+      transport.sendFromConfig,
+    );
+    const fromAddress = (parsed.fromAddress ?? '').trim().toLowerCase();
+    const fromEmail = normalizeEmailAddress(fromAddress);
+    const reconciliationCandidate =
+      Boolean(fromEmail) && transportIdentities.has(fromEmail)
+        ? await findOutboundReconciliationCandidate(
+            transactionDb,
+            transport.id,
+            parsed,
+          )
+        : undefined;
+
+    if (reconciliationCandidate) {
+      const deliveredAt = parsed.receivedAt ?? new Date();
+      const now = new Date();
+      storedMessageId = reconciliationCandidate.id;
+      threadId = reconciliationCandidate.threadId;
+
+      await tx
+        .update(message)
+        .set({
+          ingestMailboxId: meta.ingestMailboxId,
+          pop3Uidl: meta.pop3Uidl,
+          ownerHeaderValue: parsed.ownerHeaderValue,
+          messageIdHeader: parsed.messageId,
+          inReplyTo: parsed.inReplyTo,
+          references: parsed.references,
+          fromAddress: parsed.fromAddress ?? '',
+          toAddresses: parsed.toAddresses,
+          ccAddresses: parsed.ccAddresses,
+          bccAddresses: parsed.bccAddresses,
+          subject: parsed.subject,
+          textBody: parsed.textBody,
+          htmlBody: sanitizeHtmlBodyForStorage(parsed.htmlBody),
+          rawMimeS3Key,
+          receivedAt: deliveredAt,
+          sentAt: deliveredAt,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(message.id, reconciliationCandidate.id),
+            eq(message.transportId, transport.id),
+            eq(message.direction, 'outbound'),
+          ),
+        );
+
+      await tx
+        .delete(attachment)
+        .where(eq(attachment.messageId, reconciliationCandidate.id));
+      if (parsed.attachments.length > 0) {
+        await tx.insert(attachment).values(
+          parsed.attachments.map((a) => ({
+            id: randomUUID(),
+            messageId: reconciliationCandidate.id,
+            filename: a.filename,
+            mimeType: a.mimeType,
+            sizeBytes: a.sizeBytes,
+            s3Key: a.s3Key,
+            contentId: a.contentId,
+            isInline: a.isInline,
+          })),
+        );
+      }
+
+      await refreshThreadSearchVector(transactionDb, threadId);
+      if (opts.promoteQuarantineId) {
+        await tx
+          .delete(mailIngestQuarantine)
+          .where(eq(mailIngestQuarantine.id, opts.promoteQuarantineId));
+      }
+      return;
+    }
+
     threadId = await resolveThreadId({
-      tx: tx as unknown as DB,
+      tx: transactionDb,
       transportId: transport.id,
       parsed,
       pop3Uidl: meta.pop3Uidl,
     });
 
     const transportEmail = (transport.email ?? '').trim().toLowerCase();
-    const fromAddress = (parsed.fromAddress ?? '').trim().toLowerCase();
-    const fromEmail = normalizeEmailAddress(fromAddress);
     const recipientEmails = [
       ...parsed.toAddresses,
       ...parsed.ccAddresses,
       ...parsed.bccAddresses,
     ].map(normalizeEmailAddress);
-    const transportIdentities = transportIdentitySet(
-      transport.email,
-      transport.sendFromConfig,
-    );
     const isSelfIngestLoopback =
       transportIdentities.size > 0 &&
       recipientEmails.some((a) => transportIdentities.has(a));
@@ -257,7 +330,7 @@ export async function persistInboundMessage(
       !isSelfIngestLoopback;
 
     await tx.insert(message).values({
-      id: messageId,
+      id: incomingMessageId,
       transportId: transport.id,
       threadId,
       ingestMailboxId: meta.ingestMailboxId,
@@ -283,7 +356,7 @@ export async function persistInboundMessage(
       await tx.insert(attachment).values(
         parsed.attachments.map((a) => ({
           id: randomUUID(),
-          messageId,
+          messageId: incomingMessageId,
           filename: a.filename,
           mimeType: a.mimeType,
           sizeBytes: a.sizeBytes,
@@ -308,7 +381,7 @@ export async function persistInboundMessage(
       await applyThreadLabels(tx as unknown as DB, threadId, [softLabelId]);
     }
 
-    await refreshThreadSearchVector(tx as unknown as DB, threadId);
+    await refreshThreadSearchVector(transactionDb, threadId);
 
     if (!isHotelSent && parsed.fromAddress) {
       const preference = await getSenderPreference({
@@ -329,9 +402,9 @@ export async function persistInboundMessage(
         {
           transportId: transport.id,
           threadId,
-          triggerMessageId: messageId,
+          triggerMessageId: incomingMessageId,
           runKind: 'inbound_triage',
-          idempotencyKey: `inbound-triage:${messageId}`,
+          idempotencyKey: `inbound-triage:${incomingMessageId}`,
           modelId: DEFAULT_AI_MODEL_ID,
           promptVersion: DEFAULT_TRIAGE_PROMPT_VERSION,
         },
@@ -349,7 +422,7 @@ export async function persistInboundMessage(
   return {
     kind: 'stored',
     transportId: transport.id,
-    messageId,
+    messageId: storedMessageId,
     threadId,
     rawMimeS3Key,
     attachmentCount: parsed.attachments.length,
@@ -432,7 +505,7 @@ export async function quarantineParseFailure(
   };
 }
 
-async function findExistingInboundMessage(
+async function findExistingIngestedMessage(
   db: DB,
   meta: Pick<IngestMeta, 'ingestMailboxId' | 'pop3Uidl'>,
 ): Promise<{ id: string; transportId: string } | undefined> {
@@ -443,11 +516,59 @@ async function findExistingInboundMessage(
       and(
         eq(message.ingestMailboxId, meta.ingestMailboxId),
         eq(message.pop3Uidl, meta.pop3Uidl),
-        eq(message.direction, 'inbound'),
       ),
     )
     .limit(1);
   return rows[0];
+}
+
+type OutboundReconciliationCandidate = {
+  id: string;
+  threadId: string;
+};
+
+async function findOutboundReconciliationCandidate(
+  db: DB,
+  transportId: string,
+  parsed: ParsedInboundMessage,
+): Promise<OutboundReconciliationCandidate | undefined> {
+  if (hasOutboundCorrelationHeader(parsed)) {
+    if (!parsed.outboundMessageId) return undefined;
+    const rows = await db
+      .select({ id: message.id, threadId: message.threadId })
+      .from(message)
+      .where(
+        and(
+          eq(message.id, parsed.outboundMessageId),
+          eq(message.transportId, transportId),
+          eq(message.direction, 'outbound'),
+        ),
+      )
+      .limit(1);
+    return rows[0];
+  }
+
+  if (!parsed.messageId) return undefined;
+  const rows = await db
+    .select({ id: message.id, threadId: message.threadId })
+    .from(message)
+    .where(
+      and(
+        eq(message.messageIdHeader, parsed.messageId),
+        eq(message.transportId, transportId),
+        eq(message.direction, 'outbound'),
+      ),
+    )
+    .limit(2);
+  return rows.length === 1 ? rows[0] : undefined;
+}
+
+function hasOutboundCorrelationHeader(
+  parsed: ParsedInboundMessage,
+): boolean {
+  return parsed.rawHeaderLines.some(
+    (header) => header.key.trim().toLowerCase() === 'x-zero-outbound-id',
+  );
 }
 
 async function findExistingQuarantine(

@@ -1137,6 +1137,7 @@ export const mailRouter = tRouter({
       // Always BCC the active mailbox (e.g. Centurion→Centurion) so Zimbra/Outlook
       // can file a Sent copy via filter. Covers every FE/API caller of mail.send.
       const bcc = withTransportSelfBcc(input.bcc ?? [], ctx.transportEmail);
+      const messageId = randomUUID();
 
       const smtpPayload = {
         from: ctx.transportEmail,
@@ -1148,7 +1149,10 @@ export const mailRouter = tRouter({
         text: input.text,
         inReplyTo,
         references,
-        extraHeaders: { 'X-Zero-Mailbox': ctx.transportEmail },
+        extraHeaders: {
+          'X-Zero-Mailbox': ctx.transportEmail,
+          'X-Zero-Outbound-Id': messageId,
+        },
         attachments: smtpAttachments,
       };
 
@@ -1160,7 +1164,6 @@ export const mailRouter = tRouter({
         ? new Date(scheduleAtMs)
         : new Date(now.getTime() + undoSecs * 1000);
 
-      const messageId = randomUUID();
       await db.transaction(async (tx) => {
         await tx.insert(message).values({
           id: messageId,

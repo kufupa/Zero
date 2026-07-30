@@ -1,0 +1,568 @@
+import { and, eq } from 'drizzle-orm';
+import { describe, expect, it } from 'vitest';
+import type { DB } from '../src/db/client';
+import {
+  attachment,
+  mailboxTransport,
+  mailThread,
+  message,
+} from '../src/db/schema/mail';
+import {
+  generateMessageId,
+  parseRawMessage,
+} from '../src/mail/ingest/parse-message';
+import { persistInboundMessage } from '../src/mail/ingest/store';
+import {
+  FakeS3Storage,
+  resetS3Storage,
+  setS3Storage,
+} from '../src/storage/s3';
+import { readFixture } from './helpers/fixtures';
+import {
+  TEST_DB_AVAILABLE,
+  probeTestDb,
+  withSeededTestDb,
+} from './helpers/test-db';
+
+const OUTBOUND_ID = 'a0b1c2d3-e4f5-4a67-8b90-abcdef123456';
+const UNKNOWN_OUTBOUND_ID = '11111111-2222-4333-8444-555555555555';
+const TRANSPORT_ID = 'transport-centurion';
+const TRANSPORT_EMAIL = 'sender@hotel.example';
+const THREAD_ID = 'thread-rocketseed-original';
+const SMTP_MESSAGE_ID = 'smtp-original@example.test';
+const OLD_ATTACHMENT_KEY = 'attachments/local-original/original.pdf';
+const DELIVERED_AT = new Date('2026-07-28T12:34:56.000Z');
+
+const reachable = await probeTestDb();
+
+function withFakeS3(): FakeS3Storage {
+  const storage = new FakeS3Storage('test-mail-bucket');
+  resetS3Storage();
+  setS3Storage(storage);
+  return storage;
+}
+
+function brandedFixture(): Buffer {
+  return readFixture('rocketseed-branded-sent-copy.eml');
+}
+
+function replaceHeader(raw: Buffer, name: string, value: string | null): Buffer {
+  const source = raw.toString('utf8');
+  const pattern = new RegExp(`^${name}:.*\\r?$`, 'im');
+  const replaced = value === null
+    ? source.replace(new RegExp(`^${name}:.*\\r?\\n`, 'im'), '')
+    : source.replace(pattern, `${name}: ${value}`);
+  return Buffer.from(replaced, 'utf8');
+}
+
+async function configureSyntheticTransport(db: DB): Promise<void> {
+  await db
+    .update(mailboxTransport)
+    .set({
+      email: TRANSPORT_EMAIL,
+      ownerHeaderValue: TRANSPORT_EMAIL,
+      sendFromConfig: { aliases: ['alias@hotel.example'] },
+    })
+    .where(eq(mailboxTransport.id, TRANSPORT_ID));
+}
+
+async function seedOriginalMessage(
+  db: DB,
+  opts: {
+    id?: string;
+    transportId?: string;
+    threadId?: string;
+    direction?: 'inbound' | 'outbound';
+    withAttachment?: boolean;
+  } = {},
+): Promise<void> {
+  const transportId = opts.transportId ?? TRANSPORT_ID;
+  const threadId = opts.threadId ?? THREAD_ID;
+  const id = opts.id ?? OUTBOUND_ID;
+
+  await db.insert(mailThread).values({
+    id: threadId,
+    transportId,
+    threadRootId: `root-${threadId}`,
+    subject: 'Local unbranded subject',
+    snippet: 'Local unbranded body',
+    isArchived: false,
+    isStarred: false,
+    isRead: true,
+    labelIds: [],
+    latestMessageAt: new Date('2026-07-28T12:00:00.000Z'),
+  });
+  await db.insert(message).values({
+    id,
+    transportId,
+    threadId,
+    direction: opts.direction ?? 'outbound',
+    fromAddress: TRANSPORT_EMAIL,
+    toAddresses: ['guest@example.test'],
+    ccAddresses: [],
+    bccAddresses: [TRANSPORT_EMAIL],
+    subject: 'Local unbranded subject',
+    textBody: 'Local unbranded body',
+    htmlBody: '<p>Local unbranded body</p>',
+    rawMimeS3Key: 'raw-mime/local-original.eml',
+    messageIdHeader: SMTP_MESSAGE_ID,
+    references: [],
+    isRead: true,
+    isStarred: true,
+    receivedAt: new Date('2026-07-28T12:00:00.000Z'),
+    sentAt: new Date('2026-07-28T12:00:00.000Z'),
+  });
+
+  if (opts.withAttachment) {
+    await db.insert(attachment).values({
+      id: 'attachment-local-original',
+      messageId: id,
+      filename: 'original.pdf',
+      mimeType: 'application/pdf',
+      sizeBytes: 8,
+      s3Key: OLD_ATTACHMENT_KEY,
+      contentId: null,
+      isInline: false,
+    });
+  }
+}
+
+describe('Rocketseed branded sent-copy parser', () => {
+  it('normalizes outbound UUID and preserves branded attachment metadata', async () => {
+    const storage = withFakeS3();
+    const parsed = await parseRawMessage(brandedFixture(), {
+      messageId: generateMessageId(),
+      storage,
+    });
+
+    expect(parsed.outboundMessageId).toBe(OUTBOUND_ID);
+    expect(parsed.htmlBody).toContain('Delivered branded body.');
+    expect(parsed.attachments).toHaveLength(2);
+    expect(parsed.attachments).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          filename: 'brand-logo.png',
+          mimeType: 'image/png',
+          contentId: 'brand-logo@example.test',
+          isInline: true,
+        }),
+        expect.objectContaining({
+          filename: 'itinerary.pdf',
+          mimeType: 'application/pdf',
+          contentId: null,
+          isInline: false,
+        }),
+      ]),
+    );
+  });
+
+  it.each([
+    'not-a-uuid',
+    `${OUTBOUND_ID}-suffix`,
+    `{${OUTBOUND_ID}}`,
+  ])('rejects malformed outbound correlation %s', async (value) => {
+    const storage = withFakeS3();
+    const raw = replaceHeader(
+      brandedFixture(),
+      'X-Zero-Outbound-Id',
+      value,
+    );
+    const parsed = await parseRawMessage(raw, {
+      messageId: generateMessageId(),
+      storage,
+    });
+
+    expect(parsed.outboundMessageId).toBeNull();
+    expect(
+      parsed.rawHeaderLines.some(
+        (header) =>
+          header.key.toLowerCase() === 'x-zero-outbound-id' &&
+          header.line.includes(value),
+      ),
+    ).toBe(true);
+  });
+});
+
+describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
+  'Rocketseed branded sent-copy reconciliation',
+  () => {
+    it('replaces delivered content on original outbound row without duplicates', async () => {
+      const storage = withFakeS3();
+      await storage.putObject({
+        key: OLD_ATTACHMENT_KEY,
+        body: Buffer.from('old-local-pdf'),
+        contentType: 'application/pdf',
+      });
+      const raw = brandedFixture();
+      const incomingParseId = generateMessageId();
+      const parsed = await parseRawMessage(raw, {
+        messageId: incomingParseId,
+        storage,
+      });
+
+      const state = await withSeededTestDb(async (db) => {
+        await configureSyntheticTransport(db);
+        await seedOriginalMessage(db, { withAttachment: true });
+        const beforeMessages = await db
+          .select({ id: message.id })
+          .from(message)
+          .where(eq(message.transportId, TRANSPORT_ID));
+        const beforeThreads = await db
+          .select({ id: mailThread.id })
+          .from(mailThread)
+          .where(eq(mailThread.transportId, TRANSPORT_ID));
+
+        const result = await persistInboundMessage(
+          parsed,
+          raw,
+          {
+            ingestMailboxId: 'ingest-nava-legacy',
+            pop3Uidl: 'uidl-rocketseed-reconcile',
+            messageId: incomingParseId,
+          },
+          { db, storage },
+        );
+        const replay = await persistInboundMessage(
+          parsed,
+          raw,
+          {
+            ingestMailboxId: 'ingest-nava-legacy',
+            pop3Uidl: 'uidl-rocketseed-reconcile',
+            messageId: generateMessageId(),
+          },
+          { db, storage },
+        );
+
+        const [stored] = await db
+          .select()
+          .from(message)
+          .where(
+            and(
+              eq(message.id, OUTBOUND_ID),
+              eq(message.transportId, TRANSPORT_ID),
+            ),
+          )
+          .limit(1);
+        const attachmentRows = await db
+          .select()
+          .from(attachment)
+          .where(eq(attachment.messageId, OUTBOUND_ID));
+        const incomingRows = await db
+          .select({ id: message.id })
+          .from(message)
+          .where(eq(message.id, incomingParseId));
+        const afterMessages = await db
+          .select({ id: message.id })
+          .from(message)
+          .where(eq(message.transportId, TRANSPORT_ID));
+        const afterThreads = await db
+          .select({ id: mailThread.id })
+          .from(mailThread)
+          .where(eq(mailThread.transportId, TRANSPORT_ID));
+
+        return {
+          result,
+          replay,
+          stored,
+          attachmentRows,
+          incomingRows,
+          beforeMessageCount: beforeMessages.length,
+          afterMessageCount: afterMessages.length,
+          beforeThreadCount: beforeThreads.length,
+          afterThreadCount: afterThreads.length,
+        };
+      });
+
+      expect(state.result).toMatchObject({
+        kind: 'stored',
+        transportId: TRANSPORT_ID,
+        messageId: OUTBOUND_ID,
+        threadId: THREAD_ID,
+        attachmentCount: 2,
+      });
+      expect(state.replay).toMatchObject({
+        kind: 'duplicate',
+        transportId: TRANSPORT_ID,
+        messageId: OUTBOUND_ID,
+      });
+      expect(state.incomingRows).toHaveLength(0);
+      expect(state.afterMessageCount).toBe(state.beforeMessageCount);
+      expect(state.afterThreadCount).toBe(state.beforeThreadCount);
+      expect(state.stored).toMatchObject({
+        id: OUTBOUND_ID,
+        threadId: THREAD_ID,
+        direction: 'outbound',
+        ingestMailboxId: 'ingest-nava-legacy',
+        pop3Uidl: 'uidl-rocketseed-reconcile',
+        ownerHeaderValue: TRANSPORT_EMAIL,
+        messageIdHeader: 'delivered-copy@example.test',
+        fromAddress: TRANSPORT_EMAIL,
+        toAddresses: ['guest@example.test'],
+        subject: 'Synthetic branded confirmation',
+        textBody: 'Delivered branded body.',
+        rawMimeS3Key:
+          'raw-mime/ingest-nava-legacy/uidl-rocketseed-reconcile.eml',
+        isRead: true,
+        isStarred: true,
+      });
+      expect(state.stored?.htmlBody).toContain('Delivered branded body.');
+      expect(state.stored?.receivedAt).toEqual(DELIVERED_AT);
+      expect(state.stored?.sentAt).toEqual(DELIVERED_AT);
+      expect(state.attachmentRows).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            filename: 'brand-logo.png',
+            mimeType: 'image/png',
+            contentId: 'brand-logo@example.test',
+            isInline: true,
+          }),
+          expect.objectContaining({
+            filename: 'itinerary.pdf',
+            mimeType: 'application/pdf',
+            contentId: null,
+            isInline: false,
+          }),
+        ]),
+      );
+      expect(
+        state.attachmentRows.some(
+          (row) => row.s3Key === OLD_ATTACHMENT_KEY,
+        ),
+      ).toBe(false);
+      expect(storage.stored.has(OLD_ATTACHMENT_KEY)).toBe(true);
+    }, 30000);
+
+    it('falls back to exact Message-ID only when correlation header is absent', async () => {
+      const storage = withFakeS3();
+      let raw = replaceHeader(
+        brandedFixture(),
+        'X-Zero-Outbound-Id',
+        null,
+      );
+      raw = replaceHeader(raw, 'Message-ID', `<${SMTP_MESSAGE_ID}>`);
+      const incomingParseId = generateMessageId();
+      const parsed = await parseRawMessage(raw, {
+        messageId: incomingParseId,
+        storage,
+      });
+
+      const state = await withSeededTestDb(async (db) => {
+        await configureSyntheticTransport(db);
+        await seedOriginalMessage(db);
+        const result = await persistInboundMessage(
+          parsed,
+          raw,
+          {
+            ingestMailboxId: 'ingest-nava-legacy',
+            pop3Uidl: 'uidl-rocketseed-message-id-fallback',
+            messageId: incomingParseId,
+          },
+          { db, storage },
+        );
+        const [stored] = await db
+          .select()
+          .from(message)
+          .where(eq(message.id, OUTBOUND_ID))
+          .limit(1);
+        return { result, stored };
+      });
+
+      expect(parsed.outboundMessageId).toBeNull();
+      expect(state.result).toMatchObject({
+        kind: 'stored',
+        messageId: OUTBOUND_ID,
+        threadId: THREAD_ID,
+      });
+      expect(state.stored?.htmlBody).toContain('Delivered branded body.');
+    }, 30000);
+
+    it.each([
+      ['malformed', 'not-a-uuid'],
+      ['unknown', UNKNOWN_OUTBOUND_ID],
+    ])(
+      'does not overwrite via %s correlation or fall back to Message-ID',
+      async (_label, outboundHeader) => {
+        const storage = withFakeS3();
+        let raw = replaceHeader(
+          brandedFixture(),
+          'X-Zero-Outbound-Id',
+          outboundHeader,
+        );
+        raw = replaceHeader(raw, 'Message-ID', `<${SMTP_MESSAGE_ID}>`);
+        const incomingParseId = generateMessageId();
+        const parsed = await parseRawMessage(raw, {
+          messageId: incomingParseId,
+          storage,
+        });
+
+        const state = await withSeededTestDb(async (db) => {
+          await configureSyntheticTransport(db);
+          await seedOriginalMessage(db);
+          const result = await persistInboundMessage(
+            parsed,
+            raw,
+            {
+              ingestMailboxId: 'ingest-nava-legacy',
+              pop3Uidl: `uidl-rocketseed-${_label}`,
+              messageId: incomingParseId,
+            },
+            { db, storage },
+          );
+          const [original] = await db
+            .select()
+            .from(message)
+            .where(eq(message.id, OUTBOUND_ID))
+            .limit(1);
+          return { result, original };
+        });
+
+        expect(state.result).toMatchObject({
+          kind: 'stored',
+          messageId: incomingParseId,
+        });
+        expect(state.original?.htmlBody).toBe(
+          '<p>Local unbranded body</p>',
+        );
+        expect(state.original?.pop3Uidl).toBeNull();
+      },
+      30000,
+    );
+
+    it('does not overwrite matching correlation on another transport', async () => {
+      const storage = withFakeS3();
+      const raw = brandedFixture();
+      const incomingParseId = generateMessageId();
+      const parsed = await parseRawMessage(raw, {
+        messageId: incomingParseId,
+        storage,
+      });
+
+      const state = await withSeededTestDb(async (db) => {
+        await configureSyntheticTransport(db);
+        await seedOriginalMessage(db, {
+          transportId: 'transport-nava',
+          threadId: 'thread-rocketseed-other-transport',
+        });
+        const result = await persistInboundMessage(
+          parsed,
+          raw,
+          {
+            ingestMailboxId: 'ingest-nava-legacy',
+            pop3Uidl: 'uidl-rocketseed-cross-transport',
+            messageId: incomingParseId,
+          },
+          { db, storage },
+        );
+        const [otherTransport] = await db
+          .select()
+          .from(message)
+          .where(
+            and(
+              eq(message.id, OUTBOUND_ID),
+              eq(message.transportId, 'transport-nava'),
+            ),
+          )
+          .limit(1);
+        return { result, otherTransport };
+      });
+
+      expect(state.result).toMatchObject({
+        kind: 'stored',
+        transportId: TRANSPORT_ID,
+        messageId: incomingParseId,
+      });
+      expect(state.otherTransport?.htmlBody).toBe(
+        '<p>Local unbranded body</p>',
+      );
+      expect(state.otherTransport?.pop3Uidl).toBeNull();
+    }, 30000);
+
+    it('does not overwrite matching correlation on an inbound row', async () => {
+      const storage = withFakeS3();
+      const raw = brandedFixture();
+      const incomingParseId = generateMessageId();
+      const parsed = await parseRawMessage(raw, {
+        messageId: incomingParseId,
+        storage,
+      });
+
+      const state = await withSeededTestDb(async (db) => {
+        await configureSyntheticTransport(db);
+        await seedOriginalMessage(db, { direction: 'inbound' });
+        const result = await persistInboundMessage(
+          parsed,
+          raw,
+          {
+            ingestMailboxId: 'ingest-nava-legacy',
+            pop3Uidl: 'uidl-rocketseed-wrong-direction',
+            messageId: incomingParseId,
+          },
+          { db, storage },
+        );
+        const [original] = await db
+          .select()
+          .from(message)
+          .where(eq(message.id, OUTBOUND_ID))
+          .limit(1);
+        return { result, original };
+      });
+
+      expect(state.result).toMatchObject({
+        kind: 'stored',
+        messageId: incomingParseId,
+      });
+      expect(state.original?.direction).toBe('inbound');
+      expect(state.original?.htmlBody).toBe(
+        '<p>Local unbranded body</p>',
+      );
+    }, 30000);
+
+    it('does not trust matching correlation from a non-transport sender', async () => {
+      const storage = withFakeS3();
+      const raw = Buffer.from(
+        brandedFixture()
+          .toString('utf8')
+          .replace(
+            'From: Synthetic Front Desk <sender@hotel.example>',
+            'From: Synthetic Outsider <outsider@example.test>',
+          ),
+        'utf8',
+      );
+      const incomingParseId = generateMessageId();
+      const parsed = await parseRawMessage(raw, {
+        messageId: incomingParseId,
+        storage,
+      });
+
+      const state = await withSeededTestDb(async (db) => {
+        await configureSyntheticTransport(db);
+        await seedOriginalMessage(db);
+        const result = await persistInboundMessage(
+          parsed,
+          raw,
+          {
+            ingestMailboxId: 'ingest-nava-legacy',
+            pop3Uidl: 'uidl-rocketseed-sender-mismatch',
+            messageId: incomingParseId,
+          },
+          { db, storage },
+        );
+        const [original] = await db
+          .select()
+          .from(message)
+          .where(eq(message.id, OUTBOUND_ID))
+          .limit(1);
+        return { result, original };
+      });
+
+      expect(state.result).toMatchObject({
+        kind: 'stored',
+        messageId: incomingParseId,
+      });
+      expect(state.original?.htmlBody).toBe(
+        '<p>Local unbranded body</p>',
+      );
+      expect(state.original?.pop3Uidl).toBeNull();
+    }, 30000);
+  },
+);

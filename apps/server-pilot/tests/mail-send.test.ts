@@ -152,6 +152,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.send', () => {
         expect(fake.sent[0]!.inReplyTo).toBe('inbound-msg-id-1');
         expect(fake.sent[0]!.extraHeaders).toEqual({
           'X-Zero-Mailbox': 'centurion@legacyhotels.co.za',
+          'X-Zero-Outbound-Id': result.messageId,
         });
       } finally {
         __setSmtpTransportForTests(null);
@@ -180,6 +181,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.send', () => {
         expect(fake.sent[0]!.bcc).toContain('navaai@legacyhotels.co.za');
         expect(fake.sent[0]!.extraHeaders).toEqual({
           'X-Zero-Mailbox': 'navaai@legacyhotels.co.za',
+          'X-Zero-Outbound-Id': result.messageId,
         });
       } finally {
         __setSmtpTransportForTests(null);
