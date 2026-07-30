@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { sanitizeEmailHtml, sanitizeHtmlBodyForStorage } from '../src/mail/sanitize-email-html.js';
+import {
+  BLOCKED_IMAGE_PLACEHOLDER,
+  sanitizeEmailHtml,
+  sanitizeHtmlBodyForStorage,
+} from '../src/mail/sanitize-email-html.js';
 
 describe('sanitizeEmailHtml', () => {
   it('strips script tags and event handlers', () => {
@@ -18,6 +22,7 @@ describe('sanitizeEmailHtml', () => {
     );
     expect(hasBlockedImages).toBe(true);
     expect(html).not.toContain('https://evil.example');
+    expect(html).toContain(`src="${BLOCKED_IMAGE_PLACEHOLDER}"`);
   });
 
   it('blocks protocol-relative images when shouldLoadImages is false', () => {
@@ -36,6 +41,32 @@ describe('sanitizeEmailHtml', () => {
     );
     expect(hasBlockedImages).toBe(true);
     expect(html).not.toContain('/images/tracking.png');
+  });
+
+  it('permits cid only for img src while stripping anchors and srcset', () => {
+    const { html, hasBlockedImages } = sanitizeEmailHtml(
+      '<a href="cid:banner@hotel">open</a>' +
+        '<img alt="banner" src="CID:banner@hotel" srcset="cid:second@hotel 2x">',
+      { shouldLoadImages: false },
+    );
+
+    expect(hasBlockedImages).toBe(false);
+    expect(html).toContain('src="CID:banner@hotel"');
+    expect(html).toContain('alt="banner"');
+    expect(html).not.toContain('href="cid:');
+    expect(html).not.toContain('srcset');
+  });
+
+  it('blocks caller-provided data images while retaining generated placeholders', () => {
+    const { html, hasBlockedImages } = sanitizeEmailHtml(
+      '<img alt="tracker" src="data:image/png;base64,AAAA">',
+      { shouldLoadImages: false },
+    );
+
+    expect(hasBlockedImages).toBe(true);
+    expect(html).toContain(`src="${BLOCKED_IMAGE_PLACEHOLDER}"`);
+    expect(html).toContain('alt="tracker"');
+    expect(html).not.toContain('data:image/png');
   });
 });
 

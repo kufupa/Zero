@@ -1,7 +1,7 @@
 import sanitizeHtml from 'sanitize-html';
 
 /** 1×1 transparent GIF — safe placeholder for blocked remote images. */
-const BLOCKED_IMAGE_PLACEHOLDER =
+export const BLOCKED_IMAGE_PLACEHOLDER =
   'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
 
 function imgScheme(src: string): string {
@@ -23,9 +23,11 @@ export function sanitizeEmailHtml(
 ): { html: string; hasBlockedImages: boolean } {
   let hasBlockedImages = false;
 
+  // data: remains allowed at the sanitizer layer so the generated blocked
+  // placeholder survives. Caller-provided data: is replaced by transformTags.
   const allowedImgSchemes = opts.shouldLoadImages
     ? ['http', 'https', 'data', 'cid']
-    : ['cid'];
+    : ['cid', 'data'];
 
   const sanitizeConfig: sanitizeHtml.IOptions = {
     allowedTags: sanitizeHtml.defaults.allowedTags.concat([
@@ -51,7 +53,7 @@ export function sanitizeEmailHtml(
       a: ['href', 'name', 'target', 'rel', 'class'],
       img: ['src', 'alt', 'width', 'height', 'class'],
     },
-    allowedSchemes: ['http', 'https', 'mailto', 'tel', 'cid'],
+    allowedSchemes: ['http', 'https', 'mailto', 'tel'],
     allowedSchemesByTag: {
       img: allowedImgSchemes,
     },
