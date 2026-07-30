@@ -3,7 +3,8 @@
  * Invoked by deploy/bedrock-live-gate.sh through tsx — never Vitest, never DB.
  */
 import { createModelAdapter } from '../src/ai/bedrock/factory.js';
-import { triageOutputSchema } from '../src/ai/triage.js';
+import { classifyMailTriage } from '../src/ai/workflows/mail-triage.js';
+import { DEFAULT_TRIAGE_PROMPT_VERSION } from '../src/ai/run-ledger.js';
 
 async function main(): Promise<void> {
   if (process.env.DATABASE_URL) {
@@ -15,41 +16,43 @@ async function main(): Promise<void> {
 
   const adapter = createModelAdapter();
   const modelId = process.env.AI_MODEL_ID ?? 'amazon.nova-lite-v1:0';
-  const result = await adapter.invoke({
-    modelId,
-    systemPrompt:
-      'You classify hotel inbound mail. Return JSON only matching the triage schema.',
-    userPrompt:
-      'Classify this inbound email as JSON with keys category, urgent, confidence, rationale, policyFlags. ' +
-      'Email: Guest asks for a quotation for one room next week. Not spam. Not urgent.',
-    responseSchema: {
-      type: 'object',
-      properties: {
-        category: {
-          type: 'string',
-          enum: ['new-bookings', 'groups-events', 'at-risk', 'ops', 'spam'],
+  const asOf = '2026-07-29T15:38:03.615Z';
+  const classification = await classifyMailTriage(
+    {
+      transportId: 'transport-centurion',
+      threadId: 'bedrock-live-smoke',
+      triggerMessageId: 'smoke-1',
+      asOf,
+      modelId,
+      promptVersion: DEFAULT_TRIAGE_PROMPT_VERSION,
+      messages: [
+        {
+          id: 'smoke-1',
+          from: 'guest@example.com',
+          subject: 'Room quote',
+          body: 'Guest asks for a quotation for one room next week. Not spam. Not urgent.',
+          direction: 'inbound',
+          createdAt: new Date('2026-07-29T12:00:00.000Z'),
+          receivedAt: new Date('2026-07-29T12:00:00.000Z'),
+          sentAt: null,
         },
-        urgent: { type: 'boolean' },
-        confidence: { type: 'number' },
-        rationale: { type: 'string' },
-        policyFlags: { type: 'array', items: { type: 'string' } },
-      },
-      required: ['category', 'urgent', 'confidence', 'rationale', 'policyFlags'],
+      ],
     },
-  });
+    adapter,
+  );
 
-  const parsed = triageOutputSchema.parse(result.output);
   console.log(
     JSON.stringify(
       {
         ok: true,
-        modelId: result.modelId,
-        category: parsed.category,
-        urgent: parsed.urgent,
+        modelId: classification.modelId,
+        promptHash: classification.promptHash,
+        category: classification.output.category,
+        urgent: classification.output.urgent,
         usage: {
-          inputTokens: result.usage.inputTokens,
-          outputTokens: result.usage.outputTokens,
-          latencyMs: result.usage.latencyMs,
+          inputTokens: classification.usage.inputTokens,
+          outputTokens: classification.usage.outputTokens,
+          latencyMs: classification.usage.latencyMs,
         },
       },
       null,

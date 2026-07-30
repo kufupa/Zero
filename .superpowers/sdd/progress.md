@@ -13,6 +13,14 @@ Task 2: complete (commits fcad5005..cb8216d6, review clean; Minor: empty-message
 BaseBeforeTask4: cb8216d60db4d8ce2ac7dbcea3bcc56025b5d1ca
 Task 4: complete (commits cb8216d6..1c648564, review clean; Minor: N+1 probeKeys per thread; probeKeys source-contract weak)
 BaseBeforeTask3: 1c648564d98178762307ffb582704bb22c3dc1e6
-Task 3: complete (see task-3-report.md; commit feat(ai): add read-only triage quality evaluator)
+Task 3: complete (commits 1c648564..d8857786, review clean; Minors: incompleteReason taxonomy soft; exporter DB untested; asOf datetime offset mismatch; fake-adapter abort structural; no force .tmp out path)
+BaseBeforeTask5: d8857786407b27e2596c86fd7bc3478b74d7530e
+Task 5: complete (commits d8857786..48b8f22b, review clean; Minor: DB drain suite skipped locally; fence-loss return semantics; LIKE wildcards)
+BaseBeforeTask6: 48b8f22bbca4ed141c6243211c61af0429843280
+Task 6: complete (commits 48b8f22b..1ebe904a, review clean; Minor: force-added task-6-report; extractBashIfBlock dup; report header stale metadata)
+BaseBeforeTask7: 1ebe904ae065c4394e44fd7c9358657045b535ec
+Task 7: complete (no product commit; HEAD 1ebe904a; review clean; BaselineBest cat23/urg13/joint30; Important residual: full v4-replay JSON + inputs.jsonl EC2-only — Task 8 must eval on EC2 or pull case-level reports first)
+BaseBeforeTask8: 1ebe904ae065c4394e44fd7c9358657045b535ec
+Task 8: in progress
 
 
