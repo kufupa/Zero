@@ -69,9 +69,11 @@ async function switchToCenturion(page: Page): Promise<void> {
 }
 
 test.describe('active mailbox sender identity', () => {
-  test('Centurion send omits client fromEmail and uses mocked server sender', async ({ page }) => {
+  test('intercepts Centurion send, omits fromEmail, and reads mocked response sender', async ({ page }) => {
     test.setTimeout(120_000);
 
+    // Client routing/payload evidence only. Backend sender stamping belongs to
+    // server-pilot/tests/mail-send.test.ts.
     let activeTransportHeader: string | undefined;
     let requestInput: Record<string, unknown> | null = null;
     const mockedResult = {

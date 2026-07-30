@@ -26,6 +26,21 @@ export function isFrontendOnlyDemo(env: DemoEnv = import.meta.env as unknown as 
   return isDemoMode(env) && frontendOnlyEnv === '1';
 }
 
+export function buildMailSendInput<T extends object>(
+  input: T,
+  options: { frontendOnlyDemo: boolean; fromEmail: string },
+): Omit<T, 'fromEmail'> & { fromEmail?: string } {
+  const sendInput = { ...input } as Omit<T, 'fromEmail'> & {
+    fromEmail?: string;
+  };
+  delete sendInput.fromEmail;
+
+  if (options.frontendOnlyDemo) {
+    sendInput.fromEmail = options.fromEmail;
+  }
+  return sendInput;
+}
+
 export function isDemoFeatureEnabled(key: DemoFeatureKey): boolean {
   return DEMO_FEATURES[key];
 }

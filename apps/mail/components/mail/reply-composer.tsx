@@ -38,7 +38,10 @@ import {
 import posthog from 'posthog-js';
 import { toast } from 'sonner';
 import { demoSendEmail } from '@/lib/demo/local-actions';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import {
+  buildMailSendInput,
+  isFrontendOnlyDemo,
+} from '@/lib/demo/runtime';
 
 interface ReplyComposeProps {
   messageId?: string;
@@ -191,31 +194,36 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
               replyToMessage.decodedBody,
             );
 
-      const sendInput = {
-            to: toRecipients,
-            cc: ccRecipients,
-            bcc: bccRecipients,
-            subject: data.subject,
-            message: emailBody,
-            attachments: await serializeFiles(data.attachments),
-            ...(frontendOnlyDemo ? { fromEmail } : {}),
-            draftId: draftId ?? undefined,
-            replyToMessageId: replyToMessage?.id,
-            headers: {
-              'In-Reply-To': replyToMessage?.messageId ?? '',
-              References: [
-                ...(replyToMessage?.references ? replyToMessage.references.split(' ') : []),
-                replyToMessage?.messageId,
-              ]
-                .filter(Boolean)
-                .join(' '),
-              'Thread-Id': replyToMessage?.threadId ?? '',
-            },
-            threadId: replyToMessage?.threadId,
-            isForward: mode === 'forward',
-            originalMessage: replyToMessage.decodedBody,
-            scheduleAt: data.scheduleAt,
-          };
+      const sendInput = buildMailSendInput(
+        {
+          to: toRecipients,
+          cc: ccRecipients,
+          bcc: bccRecipients,
+          subject: data.subject,
+          message: emailBody,
+          attachments: await serializeFiles(data.attachments),
+          draftId: draftId ?? undefined,
+          replyToMessageId: replyToMessage?.id,
+          headers: {
+            'In-Reply-To': replyToMessage?.messageId ?? '',
+            References: [
+              ...(replyToMessage?.references ? replyToMessage.references.split(' ') : []),
+              replyToMessage?.messageId,
+            ]
+              .filter(Boolean)
+              .join(' '),
+            'Thread-Id': replyToMessage?.threadId ?? '',
+          },
+          threadId: replyToMessage?.threadId,
+          isForward: mode === 'forward',
+          originalMessage: replyToMessage.decodedBody,
+          scheduleAt: data.scheduleAt,
+        },
+        {
+          frontendOnlyDemo,
+          fromEmail,
+        },
+      );
 
       const sendWithInput = async (input: typeof sendInput) =>
         frontendOnlyDemo ? demoSendEmail(input) : sendEmail(input);

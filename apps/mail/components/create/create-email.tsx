@@ -2,7 +2,10 @@ import { useUndoSend, type EmailData, deserializeFiles } from '@/hooks/use-undo-
 import { useActiveConnection } from '@/hooks/use-connections';
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { cleanEmailAddresses } from '@/lib/email-utils';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import {
+  buildMailSendInput,
+  isFrontendOnlyDemo,
+} from '@/lib/demo/runtime';
 import { demoSendEmail } from '@/lib/demo/local-actions';
 
 import { useTRPC } from '@/providers/query-provider';
@@ -125,23 +128,24 @@ export function CreateEmail({
     const fromEmail =
       data.fromEmail || settings?.settings?.defaultEmailAlias || userEmail;
 
-    const sendInput = {
-      to: data.to.map((email) => ({ email, name: email.split('@')[0] || email })),
-      cc: data.cc?.map((email) => ({ email, name: email.split('@')[0] || email })),
-      bcc: data.bcc?.map((email) => ({ email, name: email.split('@')[0] || email })),
-      subject: data.subject,
-      message: data.message,
-      attachments: await serializeFiles(data.attachments),
-      ...(frontendOnlyDemo
-        ? {
-            fromEmail: userName.trim()
-              ? `${userName.replace(/[<>]/g, '')} <${fromEmail}>`
-              : fromEmail,
-          }
-        : {}),
-      draftId: draftId ?? undefined,
-      scheduleAt: data.scheduleAt,
-    };
+    const sendInput = buildMailSendInput(
+      {
+        to: data.to.map((email) => ({ email, name: email.split('@')[0] || email })),
+        cc: data.cc?.map((email) => ({ email, name: email.split('@')[0] || email })),
+        bcc: data.bcc?.map((email) => ({ email, name: email.split('@')[0] || email })),
+        subject: data.subject,
+        message: data.message,
+        attachments: await serializeFiles(data.attachments),
+        draftId: draftId ?? undefined,
+        scheduleAt: data.scheduleAt,
+      },
+      {
+        frontendOnlyDemo,
+        fromEmail: userName.trim()
+          ? `${userName.replace(/[<>]/g, '')} <${fromEmail}>`
+          : fromEmail,
+      },
+    );
 
     const sendWithInput = async (input: typeof sendInput) =>
       frontendOnlyDemo ? demoSendEmail(input) : sendEmail(input);

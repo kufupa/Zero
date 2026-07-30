@@ -17,11 +17,15 @@ const INLINE_IMAGE_PATH =
 
 function isAuthenticatedInlineImageUrl(
   src: string,
-  backendUrl: string,
+  options: { backendUrl: string | undefined; pageOrigin: string },
 ): boolean {
   try {
-    const backendOrigin = new URL(backendUrl).origin;
-    const imageUrl = new URL(src, backendOrigin);
+    const pageOrigin = new URL(options.pageOrigin).origin;
+    const backendUrl = options.backendUrl?.trim() ?? '';
+    const backendOrigin = backendUrl
+      ? new URL(backendUrl).origin
+      : pageOrigin;
+    const imageUrl = new URL(src, pageOrigin);
     return (
       imageUrl.origin === backendOrigin &&
       INLINE_IMAGE_PATH.test(imageUrl.pathname)
@@ -36,10 +40,14 @@ export function handleMailContentImageError(
     HTMLImageElement,
     'src' | 'style' | 'getAttribute' | 'removeAttribute'
   >,
-  options: { imagesEnabled: boolean; backendUrl: string },
+  options: {
+    imagesEnabled: boolean;
+    backendUrl: string | undefined;
+    pageOrigin: string;
+  },
 ): boolean {
   const src = target.getAttribute('src') ?? target.src;
-  if (isAuthenticatedInlineImageUrl(src, options.backendUrl)) {
+  if (isAuthenticatedInlineImageUrl(src, options)) {
     target.removeAttribute('src');
     return false;
   }
@@ -199,6 +207,7 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
           handleMailContentImageError(target, {
             imagesEnabled: shouldLoadImages,
             backendUrl: import.meta.env.VITE_PUBLIC_BACKEND_URL,
+            pageOrigin: window.location.origin,
           })
         ) {
           setCspViolation(true);

@@ -77,12 +77,20 @@ describe('mail content image failures', () => {
   function handleImageError(
     target: ImageErrorTarget,
     imagesEnabled: boolean,
+    options: {
+      backendUrl?: string;
+      pageOrigin?: string;
+    } = {},
   ): boolean {
     const helper = (
       mailContent as typeof mailContent & {
         handleMailContentImageError?: (
           image: ImageErrorTarget,
-          options: { imagesEnabled: boolean; backendUrl: string },
+          options: {
+            imagesEnabled: boolean;
+            backendUrl: string;
+            pageOrigin: string;
+          },
         ) => boolean;
       }
     ).handleMailContentImageError;
@@ -91,10 +99,32 @@ describe('mail content image failures', () => {
       throw new Error('handleMailContentImageError is not implemented');
     }
 
-    return helper(target, { imagesEnabled, backendUrl: backendOrigin });
+    return helper(target, {
+      imagesEnabled,
+      backendUrl: options.backendUrl ?? backendOrigin,
+      pageOrigin: options.pageOrigin ?? backendOrigin,
+    });
   }
 
-  it('removes a failed authenticated inline src while preserving the image and alt text', () => {
+  it('uses page origin for a failed same-origin inline route when backend config is empty', () => {
+    const pageOrigin = 'https://app.example.test';
+    const image = fakeImage(
+      `${pageOrigin}/api/mail/messages/message-1/attachments/attachment-1/inline`,
+      'Brand banner',
+    );
+
+    expect(
+      handleImageError(image.target, false, {
+        backendUrl: '',
+        pageOrigin,
+      }),
+    ).toBe(false);
+    expect(image.attributes.has('src')).toBe(false);
+    expect(image.attributes.get('alt')).toBe('Brand banner');
+    expect(image.target.style.display).toBe('');
+  });
+
+  it('uses explicit backend origin for a failed authenticated inline route', () => {
     const image = fakeImage(
       `${backendOrigin}/api/mail/messages/message-1/attachments/attachment-1/inline`,
       'Brand banner',
@@ -129,6 +159,23 @@ describe('mail content image failures', () => {
     );
 
     expect(handleImageError(image.target, false)).toBe(true);
+    expect(image.attributes.has('src')).toBe(true);
+    expect(image.target.style.display).toBe('none');
+  });
+
+  it('does not fall back to page origin for malformed backend config', () => {
+    const pageOrigin = 'https://app.example.test';
+    const image = fakeImage(
+      `${pageOrigin}/api/mail/messages/message-1/attachments/attachment-1/inline`,
+      'Malformed config banner',
+    );
+
+    expect(
+      handleImageError(image.target, false, {
+        backendUrl: 'not a valid URL',
+        pageOrigin,
+      }),
+    ).toBe(true);
     expect(image.attributes.has('src')).toBe(true);
     expect(image.target.style.display).toBe('none');
   });
