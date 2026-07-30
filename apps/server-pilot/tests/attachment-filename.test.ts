@@ -14,6 +14,16 @@ describe('formatContentDispositionFilename', () => {
     expect(result).not.toMatch(/[\r\n]/);
   });
 
+  it('escapes an interior backslash in the quoted fallback', () => {
+    const result = formatContentDispositionFilename('folder\\invoice.pdf');
+    expect(result).toBe('attachment; filename="folder\\\\invoice.pdf"');
+  });
+
+  it('escapes a trailing backslash before the generated closing quote', () => {
+    const result = formatContentDispositionFilename('invoice.pdf\\');
+    expect(result).toBe('attachment; filename="invoice.pdf\\\\"');
+  });
+
   it('uses RFC 5987 for non-ASCII filenames', () => {
     const result = formatContentDispositionFilename('café.pdf');
     expect(result).toContain("filename*=UTF-8''");

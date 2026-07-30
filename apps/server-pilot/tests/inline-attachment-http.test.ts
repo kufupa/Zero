@@ -201,7 +201,7 @@ describe('inline attachment HTTP handler', () => {
     const test = fixture({
       attachment: {
         ...validAttachment,
-        filename: 'evil"\r\n.png',
+        filename: 'evil"\r\n\\photo.png\\',
         mimeType: ' IMAGE/PNG; charset=binary ',
         sizeBytes: body.byteLength,
       },
@@ -214,7 +214,7 @@ describe('inline attachment HTTP handler', () => {
     expect(Buffer.from(await response.arrayBuffer())).toEqual(body);
     expect(response.headers.get('content-type')).toBe('image/png');
     expect(response.headers.get('content-disposition')).toBe(
-      'inline; filename="evil.png"',
+      'inline; filename="evil\\\\photo.png\\\\"',
     );
     expect(response.headers.get('content-length')).toBe(
       String(body.byteLength),

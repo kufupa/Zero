@@ -16,7 +16,7 @@ function asciiFilenameFallback(raw: string): string {
   const stripped = [...stripUnsafeFilenameChars(raw)]
     .map((char) => (isAsciiPrintable(char) ? char : '_'))
     .join('');
-  return stripped || 'attachment';
+  return (stripped || 'attachment').replace(/\\/g, '\\\\');
 }
 
 function encodeRFC5987(value: string): string {
