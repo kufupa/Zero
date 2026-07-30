@@ -730,45 +730,71 @@ async function main(): Promise<void> {
         .catch(() => [] as Array<{ text: string; tag: string }>);
 
       try {
-        // Refuse if mutation affordances are the only matches.
-        const mutationVisible = await page
-          .getByText(/new\s*record|duplicate\s*reservation|save\s*record/i)
-          .first()
-          .isVisible({ timeout: 500 })
-          .catch(() => false);
-        // Visible mutation toolbar is OK on shell; we simply must not click it.
-        void mutationVisible;
+        const clickExactLabel = async (label: string): Promise<boolean> => {
+          const clickedOk = await page!.evaluate((want) => {
+            const nodes = [
+              ...document.querySelectorAll('td, span, div, a, label, li'),
+            ];
+            for (const el of nodes) {
+              const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+              if (text !== want) continue;
+              // Prefer leaf-ish nodes (short text equals want exactly).
+              (el as HTMLElement).click();
+              return true;
+            }
+            return false;
+          }, label);
+          if (clickedOk) {
+            clicked.push(label);
+            await page!.waitForTimeout(2000);
+            return true;
+          }
+          // Fallback Playwright force click
+          const loc = page!
+            .locator('td, span, div, a')
+            .filter({ hasText: new RegExp(`^${label}$`, 'i') })
+            .first();
+          if (await loc.isVisible({ timeout: 2_000 }).catch(() => false)) {
+            await loc.click({ force: true, timeout: 5_000 });
+            clicked.push(`${label}:force`);
+            await page!.waitForTimeout(2000);
+            return true;
+          }
+          return false;
+        };
 
-        const frontDesk = page
-          .getByText(/^Front Desk$/i)
-          .or(page.getByText(/Front Desk/i))
-          .first();
-        if (await frontDesk.isVisible({ timeout: 3_000 }).catch(() => false)) {
-          await frontDesk.click({ timeout: 5_000 });
-          clicked.push('Front Desk');
-          await page.waitForTimeout(1500);
-        }
-
-        const guestStay = page
-          .getByText(/^Guest Stay$/i)
-          .or(page.getByText(/Guest Stay/i))
-          .first();
-        if (await guestStay.isVisible({ timeout: 5_000 }).catch(() => false)) {
-          // Guard: if the matched node text includes mutation words, refuse.
-          const label = (
-            (await guestStay.textContent().catch(() => '')) || ''
-          ).trim();
+        await clickExactLabel('Front Desk');
+        // Re-scan after expand for Guest Stay
+        const afterExpandHits = await page
+          .evaluate(() => {
+            const out: string[] = [];
+            for (const el of document.querySelectorAll(
+              'td, span, div, a, label, li',
+            )) {
+              const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+              if (/^Guest Stay$/i.test(text)) out.push(text);
+              if (out.length >= 10) break;
+            }
+            return out;
+          })
+          .catch(() => [] as string[]);
+        for (const hit of afterExpandHits) {
           if (
             /new\s*record|duplicate|save|submit|check\s*in|check\s*out|walk\s*-?\s*in/i.test(
-              label,
+              hit,
             )
           ) {
             refusedMutationHit = true;
-          } else {
-            await guestStay.click({ timeout: 5_000 });
-            clicked.push('Guest Stay');
-            await page.waitForTimeout(3500);
+            continue;
           }
+          await clickExactLabel(hit);
+          break;
+        }
+        if (
+          !clicked.some((c) => /guest\s*stay/i.test(c)) &&
+          !refusedMutationHit
+        ) {
+          await clickExactLabel('Guest Stay');
         }
       } catch (err) {
         const raw = err instanceof Error ? err.message : String(err);
