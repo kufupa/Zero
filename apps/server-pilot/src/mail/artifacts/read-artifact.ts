@@ -568,6 +568,24 @@ export async function readAuthorizedArtifact(input: {
     );
   }
 
+  if (
+    !Number.isFinite(locator.sizeBytes) ||
+    locator.sizeBytes < 0 ||
+    !Number.isInteger(locator.sizeBytes)
+  ) {
+    return finish(
+      manualResult({
+        attachmentId: input.attachmentId,
+        mimeType:
+          locator.mimeType === 'text/plain' ? 'text/plain' : 'application/pdf',
+        reason: 'malformed',
+        sourceHash: sha256Hex(''),
+        now,
+        unresolvedFields: ['attachment'],
+      }),
+    );
+  }
+
   if (locator.sizeBytes > ARTIFACT_MAX_INPUT_BYTES) {
     return finish(
       manualResult({

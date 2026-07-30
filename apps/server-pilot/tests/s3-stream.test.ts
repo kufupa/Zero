@@ -36,4 +36,16 @@ describe('s3 stream upload', () => {
     );
     expect(ok?.body.byteLength).toBe(100);
   });
+
+  it('FakeS3Storage getObjectBounded rejects non-finite maxBytes', async () => {
+    const storage = new FakeS3Storage('stream-test');
+    await storage.putObject({
+      key: 'attachments/msg/000-x.bin',
+      body: Buffer.from('x'),
+      contentType: 'application/octet-stream',
+    });
+    await expect(
+      storage.getObjectBounded('attachments/msg/000-x.bin', Number.NaN),
+    ).rejects.toBeInstanceOf(TypeError);
+  });
 });

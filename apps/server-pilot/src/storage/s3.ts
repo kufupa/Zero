@@ -129,6 +129,7 @@ export class RealS3Storage implements S3Storage {
     key: string,
     maxBytes: number,
   ): Promise<S3GetResult | null> {
+    assertBoundedMaxBytes(maxBytes);
     try {
       const response = await this.client.send(
         new GetObjectCommand({ Bucket: this.bucket, Key: key }),
@@ -215,6 +216,7 @@ export class FakeS3Storage implements S3Storage {
     key: string,
     maxBytes: number,
   ): Promise<S3GetResult | null> {
+    assertBoundedMaxBytes(maxBytes);
     this.calls.push({ op: 'GET_BOUNDED', key });
     const entry = this.stored.get(key);
     if (!entry) return null;
@@ -328,6 +330,7 @@ async function streamToBufferBounded(
   stream: Readable,
   maxBytes: number,
 ): Promise<Buffer> {
+  assertBoundedMaxBytes(maxBytes);
   const chunks: Buffer[] = [];
   let total = 0;
   try {
@@ -351,6 +354,14 @@ async function streamToBufferBounded(
     throw err;
   }
   return Buffer.concat(chunks);
+}
+
+function assertBoundedMaxBytes(maxBytes: number): void {
+  if (!Number.isFinite(maxBytes) || maxBytes < 0 || !Number.isInteger(maxBytes)) {
+    throw new TypeError(
+      `getObjectBounded maxBytes must be a non-negative finite integer (got ${String(maxBytes)})`,
+    );
+  }
 }
 
 /**

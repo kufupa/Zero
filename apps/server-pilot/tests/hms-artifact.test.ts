@@ -523,4 +523,22 @@ describe('readAuthorizedArtifact', () => {
     expect(gateScript).toMatch(/bwrap/);
     expect(gateScript).toMatch(/prlimit/);
   });
+
+  it('rejects non-finite sizeBytes before S3', async () => {
+    const s3 = new FakeS3Storage('artifact-test');
+    const getSpy = vi.spyOn(s3, 'getObjectBounded');
+    const result = await readAuthorizedArtifact({
+      attachmentId: 'att-nan',
+      authorizedAttachmentIds: new Set(['att-nan']),
+      s3,
+      signal: AbortSignal.timeout(5_000),
+      resolveLocator: resolveLocatorOf(
+        locator({ sizeBytes: Number.NaN }),
+      ),
+      runner: fixtureRunner({}),
+    });
+    expect(result.status).toBe('manual_required');
+    expect(result.data.reason).toBe('malformed');
+    expect(getSpy).not.toHaveBeenCalled();
+  });
 });
