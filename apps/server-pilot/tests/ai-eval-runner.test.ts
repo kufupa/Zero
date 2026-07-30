@@ -2,7 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { runSpikeEval } from '../src/ai/eval-runner.js';
+import {
+  assertQualityCliRuntime,
+  createQualityModelAdapter,
+  parseEvalCliArgs,
+  runSpikeEval,
+} from '../src/ai/eval-runner.js';
+import { BedrockModelAdapter } from '../src/ai/bedrock/bedrock.js';
 import { applyDurableTriageResult } from '../src/ai/triage.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -103,5 +109,50 @@ describe('AI eval runner', () => {
     expect(report.metrics.failureSafetyCases).toBeGreaterThanOrEqual(1);
     expect(report.failures.find((failure) => failure.id.includes('draft-skeleton'))).toBeUndefined();
     expect(report.failures.find((failure) => failure.id.includes('failure-no-mutation'))).toBeUndefined();
+  });
+
+  it('parses quality CLI args for inputs/labels/out/repeat-id', () => {
+    const args = parseEvalCliArgs([
+      '--mode=quality',
+      '--inputs=../../.tmp/triage-quality/inputs.jsonl',
+      '--labels=../../.tmp/triage-quality/labels.jsonl',
+      '--out=../../.tmp/triage-quality/reports/report.json',
+      '--repeat-id=baseline-1',
+    ]);
+    expect(args).toEqual({
+      mode: 'quality',
+      inputsPath: '../../.tmp/triage-quality/inputs.jsonl',
+      labelsPath: '../../.tmp/triage-quality/labels.jsonl',
+      outPath: '../../.tmp/triage-quality/reports/report.json',
+      repeatId: 'baseline-1',
+    });
+  });
+
+  it('quality CLI aborts unless production + AI enabled + explicit Bedrock adapter', () => {
+    expect(() =>
+      assertQualityCliRuntime({
+        NODE_ENV: 'test',
+        AI_ENABLED: true,
+      }),
+    ).toThrow(/production/i);
+    expect(() =>
+      assertQualityCliRuntime({
+        NODE_ENV: 'production',
+        AI_ENABLED: false,
+      }),
+    ).toThrow(/AI_ENABLED|disabled/i);
+
+    const adapter = createQualityModelAdapter({
+      NODE_ENV: 'production',
+      AI_ENABLED: true,
+      AI_MODEL_ID: 'amazon.nova-lite-v1:0',
+      BEDROCK_REGION: 'us-east-1',
+    });
+    expect(adapter).toBeInstanceOf(BedrockModelAdapter);
+
+    const src = readFileSync(join(here, '../src/ai/eval-runner.ts'), 'utf8');
+    expect(src).toMatch(/createBedrockModelAdapter|new BedrockModelAdapter|BedrockModelAdapter/);
+    expect(src).toMatch(/mode === 'quality'|mode=quality|mode: 'quality'/);
+    expect(src).not.toMatch(/createFakeModelAdapter\(\).*quality|quality.*createFakeModelAdapter/);
   });
 });

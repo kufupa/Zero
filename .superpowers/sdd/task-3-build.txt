@@ -1,0 +1,4 @@
+
+> @zero/server@0.0.0 build C:\Users\gamin\Desktop\projs\emails hotels uis\zero-triage-v5\apps\server-pilot
+> tsc -p tsconfig.json
+

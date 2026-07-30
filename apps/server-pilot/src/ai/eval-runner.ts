@@ -1,7 +1,17 @@
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import {
+  BedrockModelAdapter,
+  createBedrockModelAdapter,
+} from './bedrock/bedrock.js';
 import { createFakeModelAdapter } from './bedrock/fake.js';
+import {
+  qualityInputCaseSchema,
+  qualityLabelSchema,
+  runQualityEval,
+  type QualityEvalReport,
+} from './quality-eval.js';
 import { DEFAULT_TRIAGE_PROMPT_VERSION } from './run-ledger.js';
 import { validateStructuredJsonOutput } from './security/policy.js';
 import { scoreCategoryMatch, scoreUrgentMatch } from './scorers/category.js';
@@ -248,19 +258,132 @@ export async function runSpikeEval(): Promise<SpikeEvalReport> {
   };
 }
 
-export function parseEvalCliArgs(argv: string[]): { mode: 'spike' } {
-  const mode = argv.find((arg) => arg.startsWith('--mode='))?.split('=')[1] ?? 'spike';
-  if (mode !== 'spike') {
+export type EvalCliArgs =
+  | { mode: 'spike' }
+  | {
+      mode: 'quality';
+      inputsPath: string;
+      labelsPath: string;
+      outPath: string;
+      repeatId: string;
+    };
+
+function readFlag(argv: string[], name: string): string | undefined {
+  const eq = argv.find((arg) => arg.startsWith(`${name}=`));
+  if (eq) return eq.slice(name.length + 1);
+  const idx = argv.indexOf(name);
+  if (idx >= 0) return argv[idx + 1];
+  return undefined;
+}
+
+export function parseEvalCliArgs(argv: string[]): EvalCliArgs {
+  const mode = readFlag(argv, '--mode') ?? 'spike';
+  if (mode === 'spike') {
+    return { mode: 'spike' };
+  }
+  if (mode !== 'quality') {
     throw new Error(`unsupported eval mode: ${mode}`);
   }
-  return { mode: 'spike' };
+  const inputsPath = readFlag(argv, '--inputs');
+  const labelsPath = readFlag(argv, '--labels');
+  const outPath = readFlag(argv, '--out');
+  const repeatId = readFlag(argv, '--repeat-id');
+  if (!inputsPath || !labelsPath || !outPath || !repeatId) {
+    throw new Error('quality mode requires --inputs --labels --out --repeat-id');
+  }
+  return { mode: 'quality', inputsPath, labelsPath, outPath, repeatId };
+}
+
+function isAiEnabledFlag(raw: string | boolean | undefined): boolean {
+  if (typeof raw === 'boolean') return raw;
+  return raw === 'true' || raw === '1';
+}
+
+export function assertQualityCliRuntime(env: {
+  NODE_ENV?: string;
+  AI_ENABLED?: string | boolean;
+}): void {
+  if (env.NODE_ENV !== 'production') {
+    throw new Error('quality eval requires NODE_ENV=production');
+  }
+  if (!isAiEnabledFlag(env.AI_ENABLED)) {
+    throw new Error('quality eval requires AI_ENABLED=true (AI disabled)');
+  }
+}
+
+export function createQualityModelAdapter(env: {
+  NODE_ENV?: string;
+  AI_ENABLED?: string | boolean;
+  AI_MODEL_ID?: string;
+  BEDROCK_REGION?: string;
+  BEDROCK_GUARDRAIL_ID?: string;
+  BEDROCK_GUARDRAIL_VERSION?: string;
+}): BedrockModelAdapter {
+  assertQualityCliRuntime(env);
+  const adapter = createBedrockModelAdapter({
+    region: env.BEDROCK_REGION,
+    modelId: env.AI_MODEL_ID,
+    guardrailId: env.BEDROCK_GUARDRAIL_ID,
+    guardrailVersion: env.BEDROCK_GUARDRAIL_VERSION,
+  });
+  if (!(adapter instanceof BedrockModelAdapter)) {
+    throw new Error('quality eval aborted: fake adapter resolved');
+  }
+  return adapter;
+}
+
+function readJsonl<T>(path: string, parse: (row: unknown) => T): T[] {
+  const text = readFileSync(path, 'utf8');
+  const rows: T[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    rows.push(parse(JSON.parse(trimmed)));
+  }
+  return rows;
+}
+
+export async function runQualityEvalCli(args: Extract<EvalCliArgs, { mode: 'quality' }>): Promise<QualityEvalReport> {
+  const adapter = createQualityModelAdapter({
+    NODE_ENV: process.env.NODE_ENV,
+    AI_ENABLED: process.env.AI_ENABLED,
+    AI_MODEL_ID: process.env.AI_MODEL_ID,
+    BEDROCK_REGION: process.env.BEDROCK_REGION,
+    BEDROCK_GUARDRAIL_ID: process.env.BEDROCK_GUARDRAIL_ID,
+    BEDROCK_GUARDRAIL_VERSION: process.env.BEDROCK_GUARDRAIL_VERSION,
+  });
+
+  const inputs = readJsonl(resolve(args.inputsPath), (row) => qualityInputCaseSchema.parse(row));
+  const labels = readJsonl(resolve(args.labelsPath), (row) => qualityLabelSchema.parse(row));
+  const report = await runQualityEval(
+    {
+      repeatId: args.repeatId,
+      inputs,
+      labels,
+    },
+    adapter,
+  );
+
+  const outPath = resolve(args.outPath);
+  mkdirSync(dirname(outPath), { recursive: true });
+  writeFileSync(outPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
+  return report;
 }
 
 async function main() {
   const args = parseEvalCliArgs(process.argv.slice(2));
+  if (args.mode === 'quality') {
+    const report = await runQualityEvalCli(args);
+    console.log(JSON.stringify(report, null, 2));
+    if (!report.complete) {
+      process.exit(1);
+    }
+    return;
+  }
+
   const report = await runSpikeEval();
   console.log(JSON.stringify(report, null, 2));
-  if (args.mode === 'spike' && !report.passed) {
+  if (!report.passed) {
     process.exit(1);
   }
 }
