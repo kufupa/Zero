@@ -130,7 +130,8 @@ export function refineTriageOutput(
     !/\b(cancel|cancell?ation|amend|release held|unpaid|pay at (check|ci)|within \d+\s*h|synxis|ota)\b/i.test(
       haystack,
     ) &&
-    !/\b(2|3|4|5|6|7|8|9|10|\d{2})\s+rooms?\b/i.test(haystack)
+    !/\b(2|3|4|5|6|7|8|9|10|\d{2})\s+rooms?\b/i.test(haystack) &&
+    !/\b(allocation|series\s+rates|held\s+series|room\s+block)\b/i.test(haystack)
   ) {
     next = {
       ...next,
