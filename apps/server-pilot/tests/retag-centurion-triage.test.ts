@@ -131,6 +131,9 @@ function createMemoryDriver(seed: {
         }
         return out;
       },
+      async probeKeys(keys: string[]) {
+        return new Set(keys.filter((k) => runs.has(k)));
+      },
       async transaction<T>(work: (tx: {
         insertRunReturning: (row: {
           id: string;
@@ -490,7 +493,74 @@ describe('runCenturionRetag idempotency + skips', () => {
     expect(dry.mutated).toBe(0);
   });
 
-  it('skips locked, blocked, allowed, and outbound-only without mutation', async () => {
+  it('dry-run existing key reports collisions=1 wouldInsert=0 (agrees with apply)', async () => {
+    const createdAt = '2026-07-01T10:00:00.000Z';
+    const keyPrefix = 'inbound-triage-retag-v5-dry-collide';
+    const seedThreads: MemThread[] = [
+      {
+        threadId: 't1',
+        spamAt: new Date('2026-07-01T09:00:00.000Z'),
+        spamUserLockedAt: null,
+        latestInboundId: 'm1',
+        latestInboundFrom: 'a@b.com',
+        latestInboundCreatedAt: new Date(createdAt),
+        aiCategorySlugs: ['ops'],
+        hasInbound: true,
+      },
+    ];
+    const existingKeys = [retagIdempotencyKey('m1', keyPrefix)];
+    const manifest = buildManifest([
+      {
+        threadId: 't1',
+        triggerMessageId: 'm1',
+        triggerCreatedAt: createdAt,
+        spamAt: '2026-07-01T09:00:00.000Z',
+        aiCategorySlugs: ['ops'],
+      },
+    ]);
+    const dryMem = createMemoryDriver({
+      threads: seedThreads.map((t) => ({ ...t, aiCategorySlugs: [...t.aiCategorySlugs] })),
+      existingKeys,
+    });
+    const dry = await runCenturionRetag({
+      driver: dryMem.driver,
+      dryRun: true,
+      keyPrefix,
+      fromDomain: null,
+      manifest,
+    });
+    expect(dry).toMatchObject({
+      eligible: 1,
+      collisions: 1,
+      wouldInsert: 0,
+      inserted: 0,
+      mutated: 0,
+    });
+
+    const applyMem = createMemoryDriver({
+      threads: seedThreads.map((t) => ({ ...t, aiCategorySlugs: [...t.aiCategorySlugs] })),
+      existingKeys,
+    });
+    const apply = await runCenturionRetag({
+      driver: applyMem.driver,
+      dryRun: false,
+      keyPrefix,
+      fromDomain: null,
+      manifest,
+    });
+    expect(apply).toMatchObject({
+      eligible: 1,
+      collisions: 1,
+      wouldInsert: 0,
+      inserted: 0,
+      mutated: 0,
+    });
+    expect(dry.collisions).toBe(apply.collisions);
+    expect(dry.wouldInsert).toBe(apply.inserted);
+    expect(applyMem.threads.get('t1')?.aiCategorySlugs).toEqual(['ops']);
+  });
+
+  it('skips locked, blocked, allowed, outbound-only, and not-spam domain without mutation', async () => {
     const createdAt = '2026-07-01T10:00:00.000Z';
     const mem = createMemoryDriver({
       threads: [
@@ -534,6 +604,16 @@ describe('runCenturionRetag idempotency + skips', () => {
           aiCategorySlugs: [],
           hasInbound: false,
         },
+        {
+          threadId: 't-nospam',
+          spamAt: null,
+          spamUserLockedAt: null,
+          latestInboundId: 'm-nospam',
+          latestInboundFrom: 'clean@example.com',
+          latestInboundCreatedAt: new Date(createdAt),
+          aiCategorySlugs: ['ops'],
+          hasInbound: true,
+        },
       ],
       preferences: {
         'blocked@example.com': 'block',
@@ -550,18 +630,20 @@ describe('runCenturionRetag idempotency + skips', () => {
     });
 
     expect(result).toMatchObject({
-      scanned: 4,
+      scanned: 5,
       eligible: 0,
       skippedLocked: 1,
       skippedBlocked: 1,
       skippedAllowed: 1,
       skippedOutboundOnly: 1,
+      skippedNotSpam: 1,
       inserted: 0,
       mutated: 0,
     });
     expect(mem.threads.get('t-locked')?.aiCategorySlugs).toEqual(['ops']);
     expect(mem.threads.get('t-block')?.aiCategorySlugs).toEqual(['ops']);
     expect(mem.threads.get('t-allow')?.aiCategorySlugs).toEqual(['ops']);
+    expect(mem.threads.get('t-nospam')?.aiCategorySlugs).toEqual(['ops']);
     expect(mem.runs.size).toBe(0);
   });
 
@@ -664,6 +746,7 @@ describe('retag script source contract', () => {
     const src = readFileSync(pathJoin(here, '../scripts/retag-centurion-triage.mjs'), 'utf8');
     expect(src).toMatch(/ORDER BY\s+m\.created_at DESC\s*,\s*m\.id DESC/i);
     expect(src).toMatch(/ON CONFLICT\s*\(\s*idempotency_key\s*\)\s*DO NOTHING\s*RETURNING\s+id/i);
+    expect(src).toMatch(/probeKeys/);
     expect(src).toMatch(/export\s+(async\s+)?function\s+runCenturionRetag/);
     expect(src).toMatch(/export\s+function\s+parseArgs/);
     expect(src).toMatch(/export\s+function\s+retagIdempotencyKey/);

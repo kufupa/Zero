@@ -209,6 +209,7 @@ function emptyCounts() {
     skippedBlocked: 0,
     skippedAllowed: 0,
     skippedOutboundOnly: 0,
+    skippedNotSpam: 0,
     collisions: 0,
     wouldInsert: 0,
     inserted: 0,
@@ -239,6 +240,7 @@ function isoOrNull(value) {
  * @property {() => Promise<string[]>} listAiManagedCategoryIds
  * @property {(opts: { threadIds?: string[]|null }) => Promise<RetagThreadRow[]>} listThreads
  * @property {(emails: string[]) => Promise<Map<string, 'block'|'allow'>>} listSenderPreferences
+ * @property {(keys: string[]) => Promise<Set<string>>} probeKeys
  * @property {(work: (tx: {
  *   insertRunReturning: (row: object) => Promise<string|null>,
  *   clearAiManagedCategories: (threadId: string, categoryIds: string[]) => Promise<void>,
@@ -379,6 +381,20 @@ export function createPostgresRetagDriver(sql) {
       `;
       for (const row of rows) {
         out.set(row.email, row.kind);
+      }
+      return out;
+    },
+
+    async probeKeys(keys) {
+      const out = new Set();
+      if (keys.length === 0) return out;
+      const rows = await sql`
+        SELECT idempotency_key
+        FROM ai_workflow_run
+        WHERE idempotency_key = ANY(${keys})
+      `;
+      for (const row of rows) {
+        out.add(row.idempotency_key);
       }
       return out;
     },
@@ -540,6 +556,7 @@ export async function runCenturionRetag(opts) {
 
     if (fromDomain && !row.spamAt) {
       // subset repair historically only retagged spam-tagged domain mail
+      counts.skippedNotSpam += 1;
       continue;
     }
 
@@ -575,7 +592,12 @@ export async function runCenturionRetag(opts) {
     const idempotencyKey = retagIdempotencyKey(row.latestInboundId, keyPrefix);
 
     if (dryRun) {
-      counts.wouldInsert += 1;
+      const existing = await driver.probeKeys([idempotencyKey]);
+      if (existing.has(idempotencyKey)) {
+        counts.collisions += 1;
+      } else {
+        counts.wouldInsert += 1;
+      }
       continue;
     }
 
