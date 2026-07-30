@@ -323,6 +323,45 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           db,
           requestedTransportId: TRANSPORT_ID,
         });
+        const pdfAttachment = attachmentRows.find(
+          (row) => row.mimeType === 'application/pdf',
+        );
+        expect(pdfAttachment).toBeDefined();
+        const fetchPdfThroughFakePath = async () => {
+          const originalBucket = process.env.S3_BUCKET;
+          const originalRegion = process.env.AWS_REGION;
+          delete process.env.S3_BUCKET;
+          delete process.env.AWS_REGION;
+          try {
+            const pdfDownload = await caller.mail.getAttachment({
+              messageId: OUTBOUND_ID,
+              attachmentId: pdfAttachment!.id,
+            });
+            const foreignMailbox = await callerFor('user-navaai', {
+              db,
+              requestedTransportId: 'transport-nava',
+            });
+            await expect(
+              foreignMailbox.mail.getAttachment({
+                messageId: OUTBOUND_ID,
+                attachmentId: pdfAttachment!.id,
+              }),
+            ).rejects.toThrow(/NOT_FOUND/);
+            return pdfDownload;
+          } finally {
+            if (originalBucket === undefined) {
+              delete process.env.S3_BUCKET;
+            } else {
+              process.env.S3_BUCKET = originalBucket;
+            }
+            if (originalRegion === undefined) {
+              delete process.env.AWS_REGION;
+            } else {
+              process.env.AWS_REGION = originalRegion;
+            }
+          }
+        };
+        const pdfDownload = await fetchPdfThroughFakePath();
         const projectedThread = await caller.mail.get({ id: THREAD_ID });
         const projection = await caller.mail.processEmailContent({
           messageId: OUTBOUND_ID,
@@ -381,6 +420,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           afterMessageCount: afterMessages.length,
           beforeThreadCount: beforeThreads.length,
           afterThreadCount: afterThreads.length,
+          pdfAttachment,
+          pdfDownload,
           projectedThread,
           projection,
           inlineRoutes,
@@ -454,6 +495,20 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       expect(state.projectedThread.id).toBe(THREAD_ID);
       expect(state.projectedThread.messages).toHaveLength(1);
       expect(state.projectedThread.messages[0]?.id).toBe(OUTBOUND_ID);
+      expect(state.pdfDownload).toMatchObject({
+        attachmentId: state.pdfAttachment!.id,
+        filename: 'synthetic-itinerary.pdf',
+        mimeType: 'application/pdf',
+        size: state.pdfAttachment!.sizeBytes,
+      });
+      expect(state.pdfDownload.size).toBeGreaterThan(0);
+      expect(state.pdfDownload.url).toMatch(
+        /^zero-fake-s3:\/\/fake-mail-bucket\//,
+      );
+      expect(state.pdfDownload.url).toContain(
+        'filename=synthetic-itinerary.pdf',
+      );
+      expect(state.pdfDownload.url).toContain('mime=application%2Fpdf');
       expect(
         state.projectedThread.messages[0]?.attachments?.map(
           (item) => item.filename,

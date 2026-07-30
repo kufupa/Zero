@@ -1052,6 +1052,7 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
   return (
     <div
       className={cn(MAIL_DISPLAY_ROOT_CLASS)}
+      data-mail-message-id={emailData.id}
       id={`mail-${emailData.id}`}
       onClick={(e) => {
         if (openDetailsPopover) {

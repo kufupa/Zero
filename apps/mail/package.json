@@ -12,7 +12,8 @@
     "lint": "eslint .",
     "machine-translate": "inlang machine translate --project project.inlang",
     "test": "vitest run tests",
-    "test:demo": "vitest run tests"
+    "test:demo": "vitest run tests",
+    "test:rocketseed:browser": "vitest run tests/rocketseed-browser-safety.test.ts && node -e \"for (const key of ['PLAYWRIGHT_ROCKETSEED_FIXTURE_USER','PLAYWRIGHT_ROCKETSEED_FIXTURE_PASSWORD','PLAYWRIGHT_ROCKETSEED_THREAD_ID']) if (!process.env[key]) throw new Error('Rocketseed browser gate requires ' + key)\" && playwright test tests/e2e/real-mail-cid-inline.spec.ts --reporter=line"
   },
   "dependencies": {
     "@ai-sdk/perplexity": "1.1.9",

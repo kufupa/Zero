@@ -1,19 +1,15 @@
 import { expect, test, type Page, type Request } from '@playwright/test';
 import { dismissMailOnboarding } from './helpers/real-mail';
+import {
+  MAIL_MESSAGE_ROOT_SELECTOR,
+  blockedHarnessRequestReason,
+  requireLoopbackBaseUrl,
+} from './helpers/rocketseed-safety';
 
 const SUBJECT = 'Synthetic branded confirmation';
 const MESSAGE_ID = 'a0b1c2d3-e4f5-4a67-8b90-abcdef123456';
 const PDF_FILENAME = 'synthetic-itinerary.pdf';
-const TRACKER_URL = 'https://tracker.example.invalid/open.gif';
 const baseURL = process.env.PLAYWRIGHT_ROCKETSEED_BASE_URL ?? 'http://127.0.0.1:3000';
-
-function assertLoopbackBaseUrl(raw: string): string {
-  const parsed = new URL(raw);
-  if (!['127.0.0.1', 'localhost'].includes(parsed.hostname)) {
-    throw new Error(`Rocketseed pixel gate refuses non-loopback baseURL (host=${parsed.hostname})`);
-  }
-  return raw;
-}
 
 function fixtureCredentials(): {
   email: string;
@@ -31,9 +27,12 @@ function fixtureCredentials(): {
   return { email, password, threadId };
 }
 
-function isMailSendRequest(request: Request): boolean {
-  const requestText = `${request.url()}\n${request.postData() ?? ''}`;
-  return request.method() === 'POST' && requestText.includes('mail.send');
+function blockedRequestReason(request: Request) {
+  return blockedHarnessRequestReason({
+    url: request.url(),
+    method: request.method(),
+    postData: request.postData(),
+  });
 }
 
 async function loginToFixtureHarness(page: Page): Promise<string> {
@@ -51,7 +50,8 @@ async function loginToFixtureHarness(page: Page): Promise<string> {
 }
 
 test.use({
-  baseURL: assertLoopbackBaseUrl(baseURL),
+  baseURL: requireLoopbackBaseUrl(baseURL),
+  serviceWorkers: 'block',
   storageState: { cookies: [], origins: [] },
 });
 
@@ -60,24 +60,18 @@ test.describe('Rocketseed representative CID rendering', () => {
     page,
   }) => {
     test.setTimeout(120_000);
-    let cidRequests = 0;
-    let trackerRequests = 0;
-    let mailSendRequests = 0;
+    const blockedAttempts = new Set<string>();
+
+    page.on('request', (request) => {
+      const reason = blockedRequestReason(request);
+      if (reason) {
+        blockedAttempts.add(`${reason}: ${request.method()} ${request.url()}`);
+      }
+    });
 
     await page.route('**/*', async (route) => {
       const request = route.request();
-      if (request.url().startsWith('cid:')) {
-        cidRequests += 1;
-        await route.abort();
-        return;
-      }
-      if (request.url() === TRACKER_URL) {
-        trackerRequests += 1;
-        await route.abort();
-        return;
-      }
-      if (isMailSendRequest(request)) {
-        mailSendRequests += 1;
+      if (blockedRequestReason(request)) {
         await route.abort();
         return;
       }
@@ -91,10 +85,13 @@ test.describe('Rocketseed representative CID rendering', () => {
     });
     await dismissMailOnboarding(page);
 
-    const message = page.locator(`#mail-${MESSAGE_ID}`);
+    const renderedMessages = page.locator(MAIL_MESSAGE_ROOT_SELECTOR);
+    const message = page.locator(
+      `${MAIL_MESSAGE_ROOT_SELECTOR}[data-mail-message-id="${MESSAGE_ID}"]`,
+    );
     await expect(message).toHaveCount(1);
     await expect(message).toContainText(SUBJECT);
-    await expect(page.locator('[id^="mail-"]:visible')).toHaveCount(1);
+    await expect(renderedMessages).toHaveCount(1);
 
     const bodyHost = message.locator('.mail-content');
     await expect(bodyHost).toBeVisible({ timeout: 30_000 });
@@ -141,8 +138,6 @@ test.describe('Rocketseed representative CID rendering', () => {
 
     await expect(message.getByText(PDF_FILENAME, { exact: true })).toBeVisible();
     await page.waitForTimeout(500);
-    expect(cidRequests).toBe(0);
-    expect(trackerRequests).toBe(0);
-    expect(mailSendRequests).toBe(0);
+    expect([...blockedAttempts]).toEqual([]);
   });
 });
