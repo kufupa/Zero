@@ -170,6 +170,14 @@ export const listThreadsInput = z.object({
   limit: z.number().int().min(1).max(100).default(50),
 });
 
+/** Input for `mail.processEmailContent` — messageId required for authz + CID scope. */
+export const processEmailContentInput = z.object({
+  html: z.string(),
+  messageId: z.string().min(1),
+  shouldLoadImages: z.boolean().default(false),
+  theme: z.enum(['light', 'dark']).default('light'),
+});
+
 /** Test-only POP3 override for `forceSync` → `ingestOnce`. */
 let forceSyncPop3ForTests: Pop3Client | undefined;
 
@@ -1355,14 +1363,7 @@ export const mailRouter = tRouter({
    * Requires messageId so CID rewrite stays scoped to authorized attachment rows.
    */
   processEmailContent: mailboxProcedure
-    .input(
-      z.object({
-        html: z.string(),
-        messageId: z.string().min(1),
-        shouldLoadImages: z.boolean().default(false),
-        theme: z.enum(['light', 'dark']).default('light'),
-      }),
-    )
+    .input(processEmailContentInput)
     .mutation(async ({ input, ctx }) => {
       const db = getDb();
       const transportId = ctx.activeTransportId;

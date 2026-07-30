@@ -1,5 +1,34 @@
 import { describe, expect, it } from 'vitest';
 import { processEmailHtmlForDisplay } from '../src/mail/process-email-html.js';
+import { processEmailContentInput } from '../src/trpc/routes/mail.js';
+import { mailThread, message } from '../src/db/schema/mail.js';
+import {
+  TEST_DB_AVAILABLE,
+  probeTestDb,
+  withSeededTestDb,
+} from './helpers/test-db.js';
+import { callerFor } from './helpers/trpc-caller.js';
+
+describe('processEmailContentInput', () => {
+  it('requires messageId', () => {
+    const missing = processEmailContentInput.safeParse({
+      html: '<p>hi</p>',
+    });
+    expect(missing.success).toBe(false);
+
+    const empty = processEmailContentInput.safeParse({
+      html: '<p>hi</p>',
+      messageId: '',
+    });
+    expect(empty.success).toBe(false);
+
+    const ok = processEmailContentInput.safeParse({
+      html: '<p>hi</p>',
+      messageId: 'msg-1',
+    });
+    expect(ok.success).toBe(true);
+  });
+});
 
 describe('processEmailHtmlForDisplay', () => {
   it('projects cid after sanitize when messageId in scope', async () => {
@@ -56,3 +85,57 @@ describe('processEmailHtmlForDisplay', () => {
     );
   });
 });
+
+const reachable = await probeTestDb();
+
+describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
+  'mail.processEmailContent authz (seeded, transaction-rollback)',
+  () => {
+    it(
+      'rejects missing / foreign message via requireMessageForTransport',
+      async () => {
+        await withSeededTestDb(async (db) => {
+          await db.insert(mailThread).values({
+            id: 'thread-proc-authz-cent',
+            transportId: 'transport-centurion',
+            threadRootId: 'proc-authz-cent-root',
+            subject: 'Centurion process authz',
+            snippet: 'body',
+            isArchived: false,
+            isStarred: false,
+            isRead: true,
+            labelIds: [],
+            latestMessageAt: new Date(),
+          });
+          await db.insert(message).values({
+            id: 'msg-proc-authz-cent',
+            transportId: 'transport-centurion',
+            threadId: 'thread-proc-authz-cent',
+            direction: 'inbound',
+            fromAddress: 'guest@example.com',
+            toAddresses: ['centurion@legacyhotel.com'],
+            subject: 'Centurion process authz',
+            textBody: 'body',
+            receivedAt: new Date(),
+          });
+
+          const frontdesk = await callerFor('user-frontdesk', { db });
+          await expect(
+            frontdesk.mail.processEmailContent({
+              html: '<p>hi</p>',
+              messageId: 'msg-proc-authz-cent',
+            }),
+          ).rejects.toThrow(/NOT_FOUND/);
+
+          await expect(
+            frontdesk.mail.processEmailContent({
+              html: '<p>hi</p>',
+              messageId: 'msg-does-not-exist',
+            }),
+          ).rejects.toThrow(/NOT_FOUND/);
+        });
+      },
+      30000,
+    );
+  },
+);
