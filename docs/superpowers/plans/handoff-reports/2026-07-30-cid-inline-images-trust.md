@@ -68,3 +68,10 @@ Summary: **39 passed | 3 skipped** (8 files: 7 passed | 1 skipped). Duration ~2.
 
 - No Vitest against pilot RDS; `unset DATABASE_URL VITEST_ALLOW_PILOT_RDS` on EC2 gate.
 - No PII / DB URLs in this report.
+
+## Final branch review (2026-07-30)
+
+- Verdict: MERGE OK — no Critical.
+- **Important (acked residual):** Print path in `mail-display.tsx` / `thread-display.tsx` still uses `cleanHtml(decodedBody)` without `processEmailContent` trust gate. Main Shadow DOM path is gated. Default `externalImages: true`. Follow-up: print from processed HTML.
+- Minors retained: FE twin domain drift risk; TEST_DB skips; inline URL substring match; historical burned remotes; CSS `url()`.
+
