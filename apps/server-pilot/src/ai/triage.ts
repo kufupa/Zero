@@ -23,6 +23,16 @@ export const triageOutputSchema = z.object({
 
 export type TriageOutput = z.infer<typeof triageOutputSchema>;
 
+/**
+ * Centurion-scoped property-name subjects that prefer work over spam when
+ * the subject is property-leading. Named allowlist — do not silently expand
+ * to arbitrary hotel brands without an explicit entry + contract test.
+ */
+export const PROPERTY_SUBJECT_PREFER_WORK_ALLOWLIST = [
+  'centurion lake hotel',
+  'centurion hotel',
+] as const;
+
 export interface ShadowTriageResult {
   threadId: string;
   transportId: string;
@@ -70,18 +80,20 @@ export function refineTriageOutput(
         rationale: `${next.rationale} Empty body with no sales pitch prefers work.`,
       };
     }
-    const dayVisitorOrContactForm =
-      /day[- ]?visitor|contact form|restaurant|lunch|dinner|f\s*&\s*b|food and bev/i.test(haystack);
-    if (dayVisitorOrContactForm && !/unsubscribe|book a demo|whatsapp sales/i.test(haystack)) {
+    // Require hotel day-visitor / contact-form / walk-in / table-booking signal.
+    // Bare restaurant|lunch|dinner alone must NOT force new-bookings (sales spam).
+    const dayVisitorHotelSignal =
+      /day[- ]?visitor|contact form|walk[- ]?in|table[- ]?book(ing)?/i.test(haystack);
+    if (dayVisitorHotelSignal && !/unsubscribe|book a demo|whatsapp sales/i.test(haystack)) {
       next = {
         ...next,
         category: 'new-bookings',
         policyFlags: [...next.policyFlags, 'refine:day-visitor-not-spam'],
-        rationale: `${next.rationale} Day-visitor/F&B/contact-form is not sales spam.`,
+        rationale: `${next.rationale} Day-visitor/contact-form/walk-in/table-booking is not sales spam.`,
       };
     }
     const propertySubjectOnly =
-      /^(centurion lake hotel|centurion hotel)\b/i.test(subject) &&
+      subjectMatchesPropertyPreferWorkAllowlist(subject) &&
       !/unsubscribe|newsletter|book a demo/i.test(haystack);
     if (propertySubjectOnly) {
       next = {
@@ -218,6 +230,13 @@ export function refineTriageOutput(
   }
 
   return next;
+}
+
+function subjectMatchesPropertyPreferWorkAllowlist(subject: string): boolean {
+  const escaped = PROPERTY_SUBJECT_PREFER_WORK_ALLOWLIST.map((name) =>
+    name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
+  ).join('|');
+  return new RegExp(`^(?:${escaped})\\b`, 'i').test(subject);
 }
 
 function hasSameDayCheckInSignal(haystack: string, asOf?: string): boolean {

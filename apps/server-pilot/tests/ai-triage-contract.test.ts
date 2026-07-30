@@ -264,6 +264,175 @@ describe('AI triage contract', () => {
     expect(refined.policyFlags).toContain('refine:day-visitor-not-spam');
   });
 
+  it('does not refine bare lunch/restaurant sales spam via day-visitor path', () => {
+    const refined = refineTriageOutput(
+      {
+        from: 'sales@partner.example',
+        subject: 'Restaurant lunch specials',
+        body: 'Grow dinner covers with our restaurant CRM. Limited-time lunch offer for hoteliers.',
+      },
+      {
+        category: 'spam',
+        urgent: false,
+        confidence: 0.95,
+        rationale: 'sales',
+        policyFlags: [],
+      },
+    );
+    expect(refined.category).toBe('spam');
+    expect(refined.policyFlags).not.toContain('refine:day-visitor-not-spam');
+  });
+
+  it('refines walk-in / table-booking hotel signal spam into new-bookings', () => {
+    const walkIn = refineTriageOutput(
+      {
+        from: 'guest@example.com',
+        subject: 'Walk-in availability',
+        body: 'Can we walk-in for two tonight?',
+      },
+      {
+        category: 'spam',
+        urgent: false,
+        confidence: 0.7,
+        rationale: 'walk-in',
+        policyFlags: [],
+      },
+    );
+    expect(walkIn.category).toBe('new-bookings');
+    expect(walkIn.policyFlags).toContain('refine:day-visitor-not-spam');
+
+    const tableBooking = refineTriageOutput(
+      {
+        from: 'guest@example.com',
+        subject: 'Table booking request',
+        body: 'Please hold a table for 4 at 19:00.',
+      },
+      {
+        category: 'spam',
+        urgent: false,
+        confidence: 0.7,
+        rationale: 'table',
+        policyFlags: [],
+      },
+    );
+    expect(tableBooking.category).toBe('new-bookings');
+    expect(tableBooking.policyFlags).toContain('refine:day-visitor-not-spam');
+  });
+
+  it('refines Centurion property-subject spam into new-bookings via allowlist', () => {
+    const refined = refineTriageOutput(
+      {
+        from: 'vendor@example.com',
+        subject: 'Centurion Lake Hotel rate sheet',
+        body: 'Attached vendor advertising materials for the property.',
+      },
+      {
+        category: 'spam',
+        urgent: false,
+        confidence: 0.8,
+        rationale: 'vendor',
+        policyFlags: [],
+      },
+    );
+    expect(refined.category).toBe('new-bookings');
+    expect(refined.policyFlags).toContain('refine:property-subject-prefer-work');
+  });
+
+  it('does not apply property-subject prefer-work outside Centurion allowlist', () => {
+    const refined = refineTriageOutput(
+      {
+        from: 'vendor@example.com',
+        subject: 'Generic Beach Resort rate sheet',
+        body: 'Attached vendor advertising materials for the property.',
+      },
+      {
+        category: 'spam',
+        urgent: false,
+        confidence: 0.8,
+        rationale: 'vendor',
+        policyFlags: [],
+      },
+    );
+    expect(refined.category).toBe('spam');
+    expect(refined.policyFlags).not.toContain('refine:property-subject-prefer-work');
+  });
+
+  it('refines held series/allocation release from ops into at-risk', () => {
+    const refined = refineTriageOutput(
+      {
+        from: 'groups@agency.com',
+        subject: 'Release held series allocation',
+        body: 'Please release the held series allocation for Oct block.',
+      },
+      {
+        category: 'ops',
+        urgent: false,
+        confidence: 0.85,
+        rationale: 'ops',
+        policyFlags: [],
+      },
+    );
+    expect(refined.category).toBe('at-risk');
+    expect(refined.policyFlags).toContain('refine:series-release-at-risk');
+  });
+
+  it('refines one-room booking ack away from at-risk into new-bookings', () => {
+    const refined = refineTriageOutput(
+      {
+        from: 'agent@travel.com',
+        subject: 'Booking voucher #9912',
+        body: 'Please acknowledge 1 room reservation for Smith, 12–14 Aug.',
+      },
+      {
+        category: 'at-risk',
+        urgent: false,
+        confidence: 0.8,
+        rationale: 'risk?',
+        policyFlags: [],
+      },
+    );
+    expect(refined.category).toBe('new-bookings');
+    expect(refined.policyFlags).toContain('refine:one-room-ack-not-at-risk');
+  });
+
+  it('clears urgent on ops invoice without same-day/hard SLA', () => {
+    const refined = refineTriageOutput(
+      {
+        from: 'accounts@agency.com',
+        subject: 'Tax invoice March',
+        body: 'Please find tax invoice attached for March commission.',
+      },
+      {
+        category: 'ops',
+        urgent: true,
+        confidence: 0.75,
+        rationale: 'invoice',
+        policyFlags: [],
+      },
+    );
+    expect(refined.urgent).toBe(false);
+    expect(refined.policyFlags).toContain('refine:ops-invoice-not-urgent');
+  });
+
+  it('clears urgent when subject URGENT has no same-day/hard SLA on new-bookings', () => {
+    const refined = refineTriageOutput(
+      {
+        from: 'guest@example.com',
+        subject: 'URGENT room request',
+        body: 'Looking for availability next month for one night.',
+      },
+      {
+        category: 'new-bookings',
+        urgent: true,
+        confidence: 0.7,
+        rationale: 'urgent word',
+        policyFlags: [],
+      },
+    );
+    expect(refined.urgent).toBe(false);
+    expect(refined.policyFlags).toContain('refine:subject-urgent-no-sla-signal');
+  });
+
   it('sets urgent for same-day check-in relative to asOf', () => {
     const refined = refineTriageOutput(
       {
