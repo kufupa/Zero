@@ -21,6 +21,9 @@ test.describe('HMS draft pipeline fixture journeys', () => {
   });
 
   test('API journey matrix via vitest (10 journeys, no skip)', () => {
+    const env = { ...process.env, HMS_DB_TEST_REQUIRED: '0' };
+    delete env.DATABASE_URL;
+    delete env.VITEST_ALLOW_PILOT_RDS;
     const result = spawnSync(
       'pnpm',
       ['exec', 'vitest', 'run', 'tests/hms-production-boundary.test.ts', '--reporter=dot'],
@@ -28,13 +31,7 @@ test.describe('HMS draft pipeline fixture journeys', () => {
         cwd: serverPilot,
         encoding: 'utf8',
         shell: true,
-        env: {
-          ...process.env,
-          // Do not force DB for this unit/API matrix
-          HMS_DB_TEST_REQUIRED: process.env.HMS_DB_TEST_REQUIRED === '1' && process.env.DATABASE_URL
-            ? '1'
-            : '0',
-        },
+        env,
       },
     );
     if (result.status !== 0) {
