@@ -10,11 +10,14 @@ import {
 } from '../src/mail/send/smtp.js';
 import {
   RECLAIM_SENDING_AFTER_MS,
+  __setAfterSmtpOutcomePersistForTests,
   __forceSendAtPastForTests,
+  attachSmtpDeliveryOutcome,
   flushDue,
+  flushOne,
   getUndoSendSeconds,
-  hasPersistedSmtpDelivery,
   isOutboundClaimable,
+  readSmtpDeliveryOutcome,
   serializeSmtpPayload,
   deserializeSmtpPayload,
 } from '../src/mail/send/outbound-queue.js';
@@ -110,6 +113,51 @@ describe('SMTP send outcomes', () => {
       accepted: ['accepted@example.com', 'rejected@example.com'],
       rejected: [],
     });
+  });
+
+  it('real SMTP transmits its fallback Message-ID before send', async () => {
+    sendMailMock.mockResolvedValue({
+      accepted: ['accepted@example.com', 'rejected@example.com'],
+      rejected: [],
+    });
+    const transport = createSmtpTransport({
+      mode: 'real',
+      host: 'smtp.example.com',
+      port: 587,
+      user: 'relay@example.com',
+      password: 'test-password',
+      requireTls: true,
+      tlsServername: 'smtp.example.com',
+    });
+
+    const result = await transport.send(smtpPayload);
+    const transmitted = sendMailMock.mock.calls[0]?.[0] as {
+      messageId?: string;
+    };
+
+    expect(transmitted.messageId).toMatch(/^[0-9a-f-]+@zero-smtp\.local$/);
+    expect(result.messageId).toBe(transmitted.messageId);
+  });
+
+  it('wire SMTP keeps its existing post-send fallback semantics', async () => {
+    sendMailMock.mockResolvedValue({
+      accepted: ['accepted@example.com', 'rejected@example.com'],
+      rejected: [],
+    });
+    const transport = createSmtpTransport({
+      mode: 'wire',
+      host: '127.0.0.1',
+      port: 11025,
+      secure: false,
+    });
+
+    const result = await transport.send(smtpPayload);
+    const transmitted = sendMailMock.mock.calls[0]?.[0] as {
+      messageId?: string;
+    };
+
+    expect(transmitted.messageId).toBeUndefined();
+    expect(result.messageId).toMatch(/^[0-9a-f-]+@zero-smtp\.local$/);
   });
 });
 
@@ -217,18 +265,35 @@ describe('smtp payload serialize round-trip', () => {
     const back = deserializeSmtpPayload(queued);
     expect(back.attachments?.[0]?.content).toEqual(content);
   });
-});
 
-describe('hasPersistedSmtpDelivery', () => {
-  it('true when messageIdHeader set → skip SMTP on reclaim', () => {
-    expect(hasPersistedSmtpDelivery('<smtp@id>')).toBe(true);
-    expect(hasPersistedSmtpDelivery('id')).toBe(true);
+  it('stores and reconstructs exact SMTP delivery outcome', () => {
+    const queued = serializeSmtpPayload(smtpPayload);
+    const outcome = {
+      messageId: 'persisted@example.com',
+      accepted: ['accepted@example.com'],
+      rejected: ['rejected@example.com'],
+    };
+
+    const persisted = attachSmtpDeliveryOutcome(queued, outcome);
+
+    expect(readSmtpDeliveryOutcome(persisted)).toEqual(outcome);
+    expect(readSmtpDeliveryOutcome(queued)).toBeNull();
+    expect(deserializeSmtpPayload(persisted)).toEqual(smtpPayload);
   });
 
-  it('false when null/empty → must SMTP', () => {
-    expect(hasPersistedSmtpDelivery(null)).toBe(false);
-    expect(hasPersistedSmtpDelivery(undefined)).toBe(false);
-    expect(hasPersistedSmtpDelivery('')).toBe(false);
+  it('rejects malformed persisted SMTP delivery outcome', () => {
+    const queued = serializeSmtpPayload(smtpPayload);
+
+    expect(() =>
+      readSmtpDeliveryOutcome({
+        ...queued,
+        deliveryOutcome: {
+          messageId: 'broken@example.com',
+          accepted: 'not-an-array',
+          rejected: [],
+        },
+      }),
+    ).toThrow('SMTP_DELIVERY_OUTCOME_INVALID');
   });
 });
 
@@ -241,6 +306,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('outbound queue (integration)'
 
   afterEach(() => {
     __setSmtpTransportForTests(null);
+    __setAfterSmtpOutcomePersistForTests(undefined);
     if (prevUndo === undefined) delete process.env.UNDO_SEND_SECONDS;
     else process.env.UNDO_SEND_SECONDS = prevUndo;
   });
@@ -288,7 +354,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('outbound queue (integration)'
     });
   }, 30000);
 
-  it('reclaim sending with existing messageIdHeader → skip SMTP', async () => {
+  it('legacy delivered row without persisted outcome fails explicitly', async () => {
     await withSeededTestDb(async (db) => {
       process.env.UNDO_SEND_SECONDS = '30';
       const fake = new FakeSmtpTransport();
@@ -308,11 +374,26 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('outbound queue (integration)'
       await flushDue({ db });
       expect(fake.sent).toHaveLength(1);
 
-      // Simulate crash after SMTP persist, before queue marked sent: stale sending + header.
+      const [delivered] = await db
+        .select({ smtpPayload: outboundSendQueue.smtpPayload })
+        .from(outboundSendQueue)
+        .where(eq(outboundSendQueue.messageId, messageId))
+        .limit(1);
+      const {
+        deliveryOutcome: _deliveryOutcome,
+        ...legacyPayload
+      } = delivered!.smtpPayload as Record<string, unknown>;
+
+      // Legacy crash state: Message-ID exists, but exact recipient outcome was never persisted.
       const stale = new Date(Date.now() - RECLAIM_SENDING_AFTER_MS - 1000);
       await db
         .update(outboundSendQueue)
-        .set({ status: 'sending', claimedAt: stale, updatedAt: new Date() })
+        .set({
+          status: 'sending',
+          claimedAt: stale,
+          smtpPayload: legacyPayload,
+          updatedAt: new Date(),
+        })
         .where(
           and(
             eq(outboundSendQueue.messageId, messageId),
@@ -326,15 +407,29 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('outbound queue (integration)'
         .limit(1);
       expect(msg?.messageIdHeader).toBeTruthy();
 
-      await flushDue({ db });
+      expect(await flushDue({ db })).toEqual({ flushed: 0 });
       expect(fake.sent).toHaveLength(1);
 
       const [q] = await db
-        .select({ status: outboundSendQueue.status })
+        .select({
+          status: outboundSendQueue.status,
+          lastError: outboundSendQueue.lastError,
+        })
         .from(outboundSendQueue)
         .where(eq(outboundSendQueue.messageId, messageId))
         .limit(1);
-      expect(q?.status).toBe('sent');
+      expect(q).toMatchObject({
+        status: 'sending',
+        lastError: 'SMTP_DELIVERY_OUTCOME_MISSING',
+      });
+
+      await db
+        .update(outboundSendQueue)
+        .set({ status: 'sent' })
+        .where(eq(outboundSendQueue.messageId, messageId));
+      await expect(flushOne(messageId, 'transport-nava', db)).rejects.toThrow(
+        'SMTP_DELIVERY_OUTCOME_MISSING',
+      );
     });
   }, 30000);
 
@@ -427,6 +522,22 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('outbound queue (integration)'
         .where(eq(outboundSendQueue.messageId, messageId))
         .limit(1);
       expect(queued).toMatchObject({ status: 'sent', lastError: null });
+
+      await db
+        .update(outboundSendQueue)
+        .set({ lastError: 'stale terminal warning' })
+        .where(eq(outboundSendQueue.messageId, messageId));
+      await expect(flushOne(messageId, 'transport-nava', db)).resolves.toEqual({
+        messageId: 'full@example.com',
+        accepted: ['a@example.com', 'navaai@legacyhotels.co.za'],
+        rejected: [],
+      });
+      const [idempotent] = await db
+        .select({ lastError: outboundSendQueue.lastError })
+        .from(outboundSendQueue)
+        .where(eq(outboundSendQueue.messageId, messageId))
+        .limit(1);
+      expect(idempotent?.lastError).toBeNull();
     });
   }, 30000);
 
@@ -473,6 +584,81 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('outbound queue (integration)'
       });
       expect(stored?.messageIdHeader).toBe('partial@example.com');
       expect(send).toHaveBeenCalledTimes(1);
+    });
+  }, 30000);
+
+  it('recovers exact partial outcome after crash without resending', async () => {
+    await withSeededTestDb(async (db) => {
+      const outcome = {
+        messageId: 'partial-crash@example.com',
+        accepted: ['a@example.com'],
+        rejected: ['navaai@legacyhotels.co.za'],
+      };
+      const send = vi.fn<SmtpTransport['send']>().mockResolvedValue(outcome);
+      __setSmtpTransportForTests(smtpWith(send));
+      __setAfterSmtpOutcomePersistForTests(
+        vi.fn().mockRejectedValueOnce(new Error('simulated crash after outcome persistence')),
+      );
+      const caller = await callerFor('user-navaai', { db });
+      const r = await caller.mail.send({
+        to: ['a@example.com'],
+        subject: 'partial crash',
+        html: '<p>x</p>',
+        text: 'x',
+      });
+      const messageId = (r as { messageId: string }).messageId;
+      await __forceSendAtPastForTests(messageId, 'transport-nava', db);
+
+      expect(await flushDue({ db })).toEqual({ flushed: 0 });
+      expect(send).toHaveBeenCalledOnce();
+
+      const [crashedQueue] = await db
+        .select({ smtpPayload: outboundSendQueue.smtpPayload })
+        .from(outboundSendQueue)
+        .where(eq(outboundSendQueue.messageId, messageId))
+        .limit(1);
+      const [crashedMessage] = await db
+        .select({ messageIdHeader: message.messageIdHeader })
+        .from(message)
+        .where(eq(message.id, messageId))
+        .limit(1);
+      expect(
+        readSmtpDeliveryOutcome(
+          crashedQueue!.smtpPayload as ReturnType<typeof serializeSmtpPayload>,
+        ),
+      ).toEqual(outcome);
+      expect(crashedMessage?.messageIdHeader).toBeNull();
+
+      __setAfterSmtpOutcomePersistForTests(undefined);
+      await db
+        .update(outboundSendQueue)
+        .set({
+          status: 'sending',
+          claimedAt: new Date(Date.now() - RECLAIM_SENDING_AFTER_MS - 1000),
+        })
+        .where(eq(outboundSendQueue.messageId, messageId));
+
+      expect(await flushDue({ db })).toEqual({ flushed: 1 });
+      expect(send).toHaveBeenCalledOnce();
+      await db
+        .update(outboundSendQueue)
+        .set({ lastError: null })
+        .where(eq(outboundSendQueue.messageId, messageId));
+      await expect(flushOne(messageId, 'transport-nava', db)).resolves.toEqual(outcome);
+
+      const [recoveredQueue] = await db
+        .select({
+          status: outboundSendQueue.status,
+          lastError: outboundSendQueue.lastError,
+        })
+        .from(outboundSendQueue)
+        .where(eq(outboundSendQueue.messageId, messageId))
+        .limit(1);
+      expect(recoveredQueue?.status).toBe('sent');
+      expect(JSON.parse(recoveredQueue?.lastError ?? '{}')).toEqual({
+        code: 'PARTIAL_REJECTION',
+        ...outcome,
+      });
     });
   }, 30000);
 

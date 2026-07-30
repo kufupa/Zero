@@ -106,6 +106,7 @@ type NodemailerTransporter = ReturnType<typeof nodemailer.createTransport>;
 async function sendWithTransporter(
   transporter: NodemailerTransporter,
   payload: OutboundMailPayload,
+  transmittedMessageId?: string,
 ): Promise<SmtpSendResult> {
   const headers: Record<string, string> = { ...payload.extraHeaders };
   if (payload.inReplyTo) {
@@ -127,6 +128,7 @@ async function sendWithTransporter(
       from: payload.from,
       to: [...payload.to, ...payload.cc, ...payload.bcc],
     },
+    ...(transmittedMessageId ? { messageId: transmittedMessageId } : {}),
     headers: Object.keys(headers).length ? headers : undefined,
     attachments: payload.attachments?.map((a) => ({
       filename: a.filename,
@@ -135,7 +137,7 @@ async function sendWithTransporter(
     })),
   });
 
-  const rawId = info.messageId ?? '';
+  const rawId = info.messageId || transmittedMessageId || '';
   const messageId = rawId.replace(/^<|>$/g, '');
   return {
     messageId: messageId || `${randomUUID()}@zero-smtp.local`,
@@ -194,7 +196,8 @@ export class RealSmtpTransport implements SmtpTransport {
         servername: this.opts.tlsServername,
       },
     });
-    return sendWithTransporter(transporter, payload);
+    const transmittedMessageId = `${randomUUID()}@zero-smtp.local`;
+    return sendWithTransporter(transporter, payload, transmittedMessageId);
   }
 
   private async resolvePassword(): Promise<string> {

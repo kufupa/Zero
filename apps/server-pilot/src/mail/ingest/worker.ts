@@ -294,6 +294,33 @@ export async function flushOutboundAfterIngest(
   }
 }
 
+export async function runWorkerCycle(
+  opts: {
+    oneShot: boolean;
+    pop3: Pop3Client;
+    maxMessages?: number;
+    failureCounts?: Map<string, number>;
+  },
+  deps: {
+    ingestOnce?: typeof ingestOnce;
+    flushDue?: FlushDue;
+  } = {},
+): Promise<IngestCycleResult> {
+  const runIngest = deps.ingestOnce ?? ingestOnce;
+  const ingestOpts: IngestOnceOptions = {
+    pop3: opts.pop3,
+    maxMessages: opts.maxMessages,
+  };
+  if (opts.failureCounts) {
+    ingestOpts.failureCounts = opts.failureCounts;
+  }
+  try {
+    return await runIngest(ingestOpts);
+  } finally {
+    await flushOutboundAfterIngest(opts.oneShot, deps.flushDue);
+  }
+}
+
 /**
  * Run the worker loop until SIGTERM/SIGINT. Calls `ingestOnce()` on
  * `POP3_POLL_INTERVAL_MS`. Exits 0 on signal.
@@ -331,9 +358,8 @@ export async function runWorker(opts: {
     console.log(
       `worker: fixture mode, ${opts.fixtures.length} message(s), running one cycle`,
     );
-    const result = await ingestOnce({ pop3 });
+    const result = await runWorkerCycle({ oneShot: true, pop3 });
     console.log(JSON.stringify(result, null, 2));
-    await flushOutboundAfterIngest(true);
     await closeDb().catch(() => undefined);
     console.log('worker: fixture cycle complete, exiting 0');
     return;
@@ -365,9 +391,8 @@ export async function runWorker(opts: {
         maxMessages ? `, maxMessages=${maxMessages}` : ''
       }`,
     );
-    const result = await ingestOnce({ pop3, maxMessages });
+    const result = await runWorkerCycle({ oneShot: true, pop3, maxMessages });
     console.log(JSON.stringify(result, null, 2));
-    await flushOutboundAfterIngest(true);
     await closeDb().catch(() => undefined);
     console.log('worker: one-shot cycle complete, exiting 0');
     return;
@@ -378,7 +403,11 @@ export async function runWorker(opts: {
   while (!stop.stopping) {
     const start = Date.now();
     try {
-      const result = await ingestOnce({ pop3, failureCounts });
+      const result = await runWorkerCycle({
+        oneShot: false,
+        pop3,
+        failureCounts,
+      });
       console.log(
         `worker: cycle listed=${result.listed} processed=${result.processed} deled=${result.deled} fake=${result.usedFakePop3}${
           result.cycleError ? ` error=${result.cycleError}` : ''
@@ -390,7 +419,6 @@ export async function runWorker(opts: {
         err instanceof Error ? err.message : String(err),
       );
     }
-    await flushOutboundAfterIngest(false);
     const elapsed = Date.now() - start;
     const wait = Math.max(0, interval - elapsed);
     if (wait > 0) {
