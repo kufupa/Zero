@@ -305,6 +305,7 @@ export async function classifyMailTriage(
       from: triggerMessage.from,
       subject: triggerMessage.subject,
       body: triggerMessage.body,
+      asOf: causalInput.asOf,
     },
     rawOutput,
   );

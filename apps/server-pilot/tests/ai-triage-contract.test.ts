@@ -245,6 +245,45 @@ describe('AI triage contract', () => {
     expect(refined.policyFlags).toContain('refine:empty-body-not-spam');
   });
 
+  it('refines day-visitor contact form spam into new-bookings', () => {
+    const refined = refineTriageOutput(
+      {
+        from: 'noreply@profitroom.com',
+        subject: 'Default contact form',
+        body: 'Message: Good afternoon, I am a day visitor looking for lunch.',
+      },
+      {
+        category: 'spam',
+        urgent: false,
+        confidence: 0.8,
+        rationale: 'form',
+        policyFlags: [],
+      },
+    );
+    expect(refined.category).toBe('new-bookings');
+    expect(refined.policyFlags).toContain('refine:day-visitor-not-spam');
+  });
+
+  it('sets urgent for same-day check-in relative to asOf', () => {
+    const refined = refineTriageOutput(
+      {
+        from: 'agent@travel.com',
+        subject: 'RE 29 Jul 2026 2 rooms',
+        body: 'Please confirm 2 rooms. Check in 29 Jul. Check out 31 Jul.',
+        asOf: '2026-07-29T15:38:03.615Z',
+      },
+      {
+        category: 'groups-events',
+        urgent: false,
+        confidence: 0.9,
+        rationale: 'two rooms',
+        policyFlags: [],
+      },
+    );
+    expect(refined.urgent).toBe(true);
+    expect(refined.policyFlags).toContain('refine:same-day-ci-urgent');
+  });
+
   it('refines short personal greeting away from spam into new-bookings', () => {
     const refined = refineTriageOutput(
       { from: 'guest@example.com', subject: 'hi', body: 'hello' },
