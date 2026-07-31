@@ -96,11 +96,20 @@ function toIsoDateTime(value: string | Date): string {
   return d.toISOString();
 }
 
+/** Audit self-BCC is on unless MAIL_SELF_BCC is explicitly disabled. */
+export function isSelfBccEnabled(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const raw = env.MAIL_SELF_BCC?.trim().toLowerCase();
+  return raw !== 'false' && raw !== '0' && raw !== 'off';
+}
+
 /** Deduped BCC list that always includes the active mailbox address. */
 export function withTransportSelfBcc(
   bcc: string[],
   transportEmail: string,
 ): string[] {
+  if (!isSelfBccEnabled()) return [...bcc];
   const self = transportEmail.trim();
   if (!self) return [...bcc];
   const selfNorm = self.toLowerCase();
@@ -1142,8 +1151,9 @@ export const mailRouter = tRouter({
         contentType: a.type,
       }));
 
-      // Always BCC the active mailbox (e.g. Centurion→Centurion) so Zimbra/Outlook
-      // can file a Sent copy via filter. Covers every FE/API caller of mail.send.
+      // BCC the active mailbox (e.g. Centurion→Centurion) so Zimbra/Outlook can
+      // file a Sent copy via filter. Covers every FE/API caller of mail.send.
+      // Disabled when MAIL_SELF_BCC is false/0/off.
       const bcc = withTransportSelfBcc(input.bcc ?? [], ctx.transportEmail);
 
       const smtpPayload = {

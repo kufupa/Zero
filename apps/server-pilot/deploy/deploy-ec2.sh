@@ -65,6 +65,13 @@ if ! grep -qE '(^|[[:space:]])nava\.legacy\.local([[:space:]]|$)' /etc/hosts; th
   echo '127.0.0.1 nava.legacy.local' | sudo tee -a /etc/hosts >/dev/null
 fi
 
+echo "== hosts: appsrv-1.legacyhotels.co.za (Infor HMS via VPN) =="
+# Hotel internal hostname has no public A record; EC2 split-tunnel ignores VPN DNS.
+# Map to Infor app-server so Chromium hostname matches *.legacyhotels.co.za cert.
+if ! grep -qE '(^|[[:space:]])appsrv-1\.legacyhotels\.co\.za([[:space:]]|$)' /etc/hosts; then
+  echo '172.24.240.41 appsrv-1.legacyhotels.co.za' | sudo tee -a /etc/hosts >/dev/null
+fi
+
 echo "== nginx =="
 NGINX_SITE="${NGINX_SITE:-/etc/nginx/sites-available/nava-zero}"
 NGINX_SRC="${SERVER_PILOT}/deploy/nginx.conf"

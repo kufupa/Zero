@@ -32,8 +32,16 @@ if [ -f "$ENV_FILE" ]; then
   set +a
 fi
 
+if [ -n "${TEST_DATABASE_URL:-}" ]; then
+  export DATABASE_URL="$TEST_DATABASE_URL"
+  export HMS_DB_TEST_REQUIRED=1
+else
+  unset DATABASE_URL
+  export HMS_DB_TEST_REQUIRED=0
+fi
+unset VITEST_ALLOW_PILOT_RDS
+
 export NODE_ENV=test
-export HMS_DB_TEST_REQUIRED=1
 export PATH="${HOME}/.local/share/pnpm:${HOME}/.nvm/versions/node/$(ls "${HOME}/.nvm/versions/node" 2>/dev/null | sort -V | tail -1)/bin:${PATH}"
 
 fail() {
@@ -42,20 +50,12 @@ fail() {
   exit 1
 }
 
-# Fail closed: DATABASE_URL required when gate runs
-if [ -z "${DATABASE_URL:-}" ]; then
-  # Local fixture agents may lack RDS — still run unit boundary + eval without DB suites
-  if [ "$MODE" = "--fixture-only" ] && [ "${HMS_GATE_ALLOW_NO_DB:-}" = "1" ]; then
-    echo "== hms-read-gate: HMS_GATE_ALLOW_NO_DB=1 — skipping DB-required vitest bundle =="
-    export HMS_DB_TEST_REQUIRED=0
-  else
-    fail "DATABASE_URL unset (HMS_DB_TEST_REQUIRED=1). Set HMS_GATE_ALLOW_NO_DB=1 only for local unit boundary."
-  fi
+if [ "$MODE" = "--full" ] && [ "${HMS_DB_TEST_REQUIRED}" != "1" ]; then
+  fail "TEST_DATABASE_URL must point to a disposable non-production DB for --full"
 fi
 
 cd "$SERVER_PILOT"
 
-# Vitest setup refuses pilot RDS host unless VITEST_ALLOW_PILOT_RDS=1.
 # Fixture boundary/eval suites are unit-only — run with DATABASE_URL unset.
 echo "== hms-read-gate: production-boundary + eval =="
 (
@@ -76,12 +76,6 @@ echo "== hms-read-gate: shadow eval =="
 if [ "$MODE" = "--full" ]; then
   if [ "${HMS_DB_TEST_REQUIRED}" = "1" ]; then
     echo "== hms-read-gate: HMS vitest bundle (DB required, --full only) =="
-    # Intentional gate against configured DATABASE_URL (prefer disposable).
-    # Pilot RDS allowed only with VITEST_ALLOW_PILOT_RDS=1 already set by caller.
-    if echo "${DATABASE_URL:-}" | grep -q 'nava-zero-mail-pilot'; then
-      export VITEST_ALLOW_PILOT_RDS=1
-      echo "== hms-read-gate: WARNING using pilot RDS (VITEST_ALLOW_PILOT_RDS=1) =="
-    fi
     pnpm exec vitest run \
       tests/hms-contracts.test.ts \
       tests/hms-request-policy.test.ts \

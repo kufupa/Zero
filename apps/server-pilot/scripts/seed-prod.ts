@@ -123,12 +123,17 @@ async function main(): Promise<void> {
   const db = drizzle(conn, { schema });
 
   try {
+    await ensurePilotSecret();
+    const existing = await getPilotSecret();
     const credentialsToWrite = await planPilotCredentials(db, {
       rotatePasswords: flags.rotate,
     });
-
-    await ensurePilotSecret();
-    const existing = await getPilotSecret();
+    // Prefer Secrets Manager plaintext when creating a new account (ops sets SM first).
+    for (const email of Object.keys(credentialsToWrite)) {
+      const raw = existing[email];
+      const fromSm = typeof raw === 'string' ? raw : raw?.password;
+      if (fromSm) credentialsToWrite[email] = { password: fromSm };
+    }
     const allowedEmails = PILOT_USERS.map((u) => u.email);
     const nextSecret = replacePilotSecretPayload(
       existing,

@@ -295,6 +295,26 @@ describe('withTransportSelfBcc', () => {
       withTransportSelfBcc(['Centurion@LegacyHotels.co.za'], 'centurion@legacyhotels.co.za'),
     ).toEqual(['Centurion@LegacyHotels.co.za']);
   });
+
+  it('omits the audit copy when MAIL_SELF_BCC is disabled', () => {
+    const previous = process.env.MAIL_SELF_BCC;
+    try {
+      for (const value of ['false', '0', 'off', 'OFF']) {
+        process.env.MAIL_SELF_BCC = value;
+        expect(withTransportSelfBcc(['a@b.com'], 'centurion@legacyhotels.co.za')).toEqual([
+          'a@b.com',
+        ]);
+      }
+      process.env.MAIL_SELF_BCC = 'true';
+      expect(withTransportSelfBcc(['a@b.com'], 'centurion@legacyhotels.co.za')).toEqual([
+        'a@b.com',
+        'centurion@legacyhotels.co.za',
+      ]);
+    } finally {
+      if (previous === undefined) delete process.env.MAIL_SELF_BCC;
+      else process.env.MAIL_SELF_BCC = previous;
+    }
+  });
 });
 
 /** Unit-level: FakeSmtp records attachments without RDS (mail.send path needs DB). */

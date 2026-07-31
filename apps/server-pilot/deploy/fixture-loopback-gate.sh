@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # EC2 autonomous fixture loopback gate: vitest E2E + mail build after deploy.
-# Run on EC2 as ubuntu with apps/server-pilot/.env.production present.
+# Run on EC2 as ubuntu with apps/server-pilot/.env.production present and
+# TEST_DATABASE_URL pointing at a disposable non-production database.
 #
 # Usage (on instance):
 #   bash apps/server-pilot/deploy/fixture-loopback-gate.sh
@@ -30,9 +31,15 @@ elif [ -f /home/ubuntu/.env.production ]; then
   set +a
 fi
 
+if [ -z "${TEST_DATABASE_URL:-}" ]; then
+  echo "fixture-loopback-gate: TEST_DATABASE_URL must point to a disposable non-production DB" >&2
+  exit 1
+fi
+export DATABASE_URL="$TEST_DATABASE_URL"
+unset VITEST_ALLOW_PILOT_RDS
+
 export NODE_ENV=test
 export MAIL_TRANSPORT_MODE=fixture
-export VITEST_ALLOW_PILOT_RDS=1
 
 export PATH="${HOME}/.local/share/pnpm:${HOME}/.nvm/versions/node/$(ls "${HOME}/.nvm/versions/node" 2>/dev/null | sort -V | tail -1)/bin:${PATH}"
 
