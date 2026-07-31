@@ -1,5 +1,48 @@
 import { describe, expect, it } from 'vitest';
 
+const CANONICAL_HOST = 'nava.legacyhotels.co.za';
+const CANONICAL_HOST_ENTRY = `127.0.0.1 ${CANONICAL_HOST}`;
+
+async function runNavaHostMapping(initialHosts: string): Promise<string> {
+  const { mkdtempSync, readFileSync, rmSync, writeFileSync } = await import('node:fs');
+  const { spawnSync } = await import('node:child_process');
+  const { tmpdir } = await import('node:os');
+  const { fileURLToPath } = await import('node:url');
+  const { dirname, join } = await import('node:path');
+  const here = dirname(fileURLToPath(import.meta.url));
+  const deploy = readFileSync(join(here, '..', 'deploy', 'deploy-ec2.sh'), 'utf8');
+  const start = deploy.indexOf(`echo "== hosts: ${CANONICAL_HOST} =="`);
+  const end = deploy.indexOf('echo "== hosts: appsrv-1.legacyhotels.co.za', start);
+  if (start < 0 || end < 0) throw new Error('Nava hosts block not found');
+
+  const tempDir = mkdtempSync(join(tmpdir(), 'nava-hosts-test-'));
+  const hostsPath = join(tempDir, 'hosts');
+  const bashHostsPath = hostsPath
+    .replace(/^([A-Za-z]):\\/, (_, drive: string) => `/${drive.toLowerCase()}/`)
+    .replaceAll('\\', '/');
+  try {
+    writeFileSync(hostsPath, initialHosts, 'utf8');
+    const block = deploy
+      .slice(start, end)
+      .replaceAll('sudo ', '')
+      .replaceAll('/etc/hosts', `'${bashHostsPath}'`);
+    const result = spawnSync('bash', ['-c', block], { encoding: 'utf8' });
+    if (result.status !== 0) {
+      throw new Error(result.stderr || `Nava hosts block exited ${result.status}`);
+    }
+    return readFileSync(hostsPath, 'utf8');
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+function activeCanonicalEntries(hosts: string): string[] {
+  return hosts
+    .split(/\r?\n/)
+    .filter((line) => !line.trimStart().startsWith('#'))
+    .filter((line) => line.split(/\s+/).includes(CANONICAL_HOST));
+}
+
 describe('deploy config', () => {
   it('runs worker with bounded autorestart policy', async () => {
     const { loadPm2Config } = await import('../src/deploy/load-pm2-config.js');
@@ -90,6 +133,31 @@ describe('deploy config', () => {
     );
     expect(deploy).toContain('127.0.0.1 nava.legacyhotels.co.za');
     expect(deploy).not.toContain('127.0.0.1 nava.legacy.local');
+  });
+
+  it('repairs a wrong-IP canonical hostname entry without deleting unrelated aliases', async () => {
+    const hosts = await runNavaHostMapping(
+      [
+        '127.0.0.1 localhost',
+        `192.0.2.40 ${CANONICAL_HOST} keep-this-alias.example`,
+        '192.0.2.50 untouched.example',
+      ].join('\n'),
+    );
+
+    expect(activeCanonicalEntries(hosts)).toEqual([CANONICAL_HOST_ENTRY]);
+    expect(hosts).toContain('192.0.2.40 keep-this-alias.example');
+    expect(hosts).toContain('192.0.2.50 untouched.example');
+  });
+
+  it('adds an active canonical mapping when the hostname appears only in comments', async () => {
+    const comment = `# 192.0.2.40 ${CANONICAL_HOST} documentation only`;
+    const hosts = await runNavaHostMapping(
+      [comment, '127.0.0.1 localhost', '192.0.2.50 untouched.example'].join('\n'),
+    );
+
+    expect(activeCanonicalEntries(hosts)).toEqual([CANONICAL_HOST_ENTRY]);
+    expect(hosts).toContain(comment);
+    expect(hosts).toContain('192.0.2.50 untouched.example');
   });
 
   it('write-ec2-env.sh quotes all env values', async () => {

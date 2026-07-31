@@ -65,9 +65,37 @@ echo "== hosts: nava.legacyhotels.co.za =="
 sudo sed -i \
   '/^[[:space:]]*127\.0\.0\.1[[:space:]]\+nava\.legacy\.local[[:space:]]*$/d' \
   /etc/hosts
-if ! grep -qE '(^|[[:space:]])nava\.legacyhotels\.co\.za([[:space:]]|$)' /etc/hosts; then
-  echo '127.0.0.1 nava.legacyhotels.co.za' | sudo tee -a /etc/hosts >/dev/null
-fi
+HOSTS_TMP="$(mktemp)"
+awk -v canonical='nava.legacyhotels.co.za' '
+  {
+    original = $0
+    comment_at = index(original, "#")
+    content = comment_at ? substr(original, 1, comment_at - 1) : original
+    comment = comment_at ? substr(original, comment_at) : ""
+    count = split(content, fields, /[[:space:]]+/)
+    found = 0
+    kept = 0
+    output = ""
+    for (i = 1; i <= count; i += 1) {
+      if (fields[i] == canonical) {
+        found = 1
+      } else if (fields[i] != "") {
+        kept += 1
+        output = output (output ? " " : "") fields[i]
+      }
+    }
+    if (!found) {
+      print original
+    } else if (kept >= 2) {
+      print output (comment ? " " comment : "")
+    } else if (comment) {
+      print comment
+    }
+  }
+  END { print "127.0.0.1 nava.legacyhotels.co.za" }
+' /etc/hosts > "$HOSTS_TMP"
+sudo tee /etc/hosts < "$HOSTS_TMP" >/dev/null
+rm -f "$HOSTS_TMP"
 
 echo "== hosts: appsrv-1.legacyhotels.co.za (Infor HMS via VPN) =="
 # Hotel internal hostname has no public A record; EC2 split-tunnel ignores VPN DNS.
