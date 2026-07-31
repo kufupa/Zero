@@ -7,7 +7,6 @@ const CANONICAL_HOST_ENTRY = `127.0.0.1 ${CANONICAL_HOST}`;
 const BASH_CHILD_TIMEOUT_MS = 10_000;
 const BASH_CLEANUP_GRACE_MS = 1_000;
 const TASKKILL_TIMEOUT_MS = 1_000;
-const WINDOWS_PROCESS_QUERY_TIMEOUT_MS = 1_500;
 
 type BashResult = {
   status: number | null;
@@ -20,91 +19,6 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function queryWindowsProcessTree(pid: number): Promise<number[]> {
-  return new Promise((resolve, reject) => {
-    const query = spawn(
-      'wmic.exe',
-      ['process', 'get', 'ParentProcessId,ProcessId', '/format:csv'],
-      {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        windowsHide: true,
-      },
-    );
-    let stdout = '';
-    let stderr = '';
-    let settled = false;
-
-    query.stdout.setEncoding('utf8');
-    query.stderr.setEncoding('utf8');
-    query.stdout.on('data', (chunk: string) => {
-      stdout += chunk;
-    });
-    query.stderr.on('data', (chunk: string) => {
-      stderr += chunk;
-    });
-
-    const finish = (pids?: number[], error?: Error) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      if (error) reject(error);
-      else resolve(pids!);
-    };
-    const timeout = setTimeout(() => {
-      const killAccepted = query.kill('SIGKILL');
-      finish(
-        undefined,
-        new Error(
-          `process-tree query did not close within ${WINDOWS_PROCESS_QUERY_TIMEOUT_MS}ms; ` +
-            `forced termination ${killAccepted ? 'requested' : 'failed'}`,
-        ),
-      );
-    }, WINDOWS_PROCESS_QUERY_TIMEOUT_MS);
-
-    query.once('error', (error) => {
-      finish(undefined, new Error(`process-tree query failed to start: ${error.message}`));
-    });
-    query.once('close', (status, signal) => {
-      if (status !== 0) {
-        finish(
-          undefined,
-          new Error(
-            `process-tree query exited ${status ?? 'null'}${signal ? ` (${signal})` : ''}` +
-              `${stderr.trim() ? `: ${stderr.trim()}` : ''}`,
-          ),
-        );
-        return;
-      }
-      const relationships = stdout
-        .split(/\r?\n/)
-        .map((line) => line.trim().split(','))
-        .filter((columns) => columns.length >= 3)
-        .map((columns) => ({
-          parentPid: Number(columns.at(-2)),
-          pid: Number(columns.at(-1)),
-        }))
-        .filter(
-          (entry) =>
-            Number.isInteger(entry.parentPid) &&
-            Number.isInteger(entry.pid) &&
-            entry.pid > 0,
-        );
-      const pids = [pid];
-      for (let index = 0; index < pids.length; index += 1) {
-        for (const relationship of relationships) {
-          if (
-            relationship.parentPid === pids[index] &&
-            !pids.includes(relationship.pid)
-          ) {
-            pids.push(relationship.pid);
-          }
-        }
-      }
-      finish(pids);
-    });
-  });
-}
-
 function runTaskkill(pid: number): Promise<void> {
   return new Promise((resolve, reject) => {
     const killer = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], {
@@ -114,6 +28,9 @@ function runTaskkill(pid: number): Promise<void> {
     let stdout = '';
     let stderr = '';
     let settled = false;
+    let timedOut = false;
+    let helperKill = 'not requested';
+    let helperError = '';
 
     killer.stdout.setEncoding('utf8');
     killer.stderr.setEncoding('utf8');
@@ -132,24 +49,38 @@ function runTaskkill(pid: number): Promise<void> {
       else resolve();
     };
     const timeout = setTimeout(() => {
-      const killAccepted = killer.kill('SIGKILL');
-      finish(
-        new Error(
-          `taskkill did not close within ${TASKKILL_TIMEOUT_MS}ms; ` +
-            `forced termination ${killAccepted ? 'requested' : 'failed'}`,
-        ),
-      );
+      timedOut = true;
+      try {
+        helperKill = killer.kill('SIGKILL') ? 'requested' : 'returned false';
+      } catch (error) {
+        helperKill = `threw: ${errorMessage(error)}`;
+      }
     }, TASKKILL_TIMEOUT_MS);
 
     killer.once('error', (error) => {
+      if (timedOut) {
+        helperError = `; helper error: ${error.message}`;
+        return;
+      }
       finish(new Error(`taskkill failed to start: ${error.message}`));
     });
     killer.once('close', (status, signal) => {
+      const output = stderr.trim() || stdout.trim();
+      if (timedOut) {
+        finish(
+          new Error(
+            `taskkill timed out after ${TASKKILL_TIMEOUT_MS}ms; helper kill ${helperKill}; ` +
+              `helper closed ${status ?? 'null'}${signal ? ` (${signal})` : ''}` +
+              helperError +
+              `${output ? `: ${output}` : ''}`,
+          ),
+        );
+        return;
+      }
       if (status === 0) {
         finish();
         return;
       }
-      const output = stderr.trim() || stdout.trim();
       finish(
         new Error(
           `taskkill exited ${status ?? 'null'}${signal ? ` (${signal})` : ''}` +
@@ -161,64 +92,18 @@ function runTaskkill(pid: number): Promise<void> {
 }
 
 function processIsAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
-  }
-}
-
-async function terminateWindowsProcessTree(pid: number): Promise<void> {
-  let treePids: number[] = [];
-  let queryError: Error | null = null;
-  try {
-    treePids = await queryWindowsProcessTree(pid);
   } catch (error) {
-    queryError = new Error(errorMessage(error));
-  }
-
-  let taskkillError: Error | null = null;
-  try {
-    await runTaskkill(pid);
-  } catch (error) {
-    taskkillError = new Error(errorMessage(error));
-  }
-  if (queryError) {
-    if (taskkillError) {
-      throw new Error(
-        `${taskkillError.message}; process-tree query failed: ${queryError.message}`,
-      );
-    }
-    return;
-  }
-
-  for (const processId of treePids.reverse()) {
-    if (!processIsAlive(processId)) continue;
-    try {
-      process.kill(processId, 'SIGKILL');
-    } catch {
-      // The bounded verification below reports any process that remains.
-    }
-  }
-
-  const deadline = Date.now() + 500;
-  let remaining = treePids.filter(processIsAlive);
-  while (remaining.length > 0 && Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 25));
-    remaining = treePids.filter(processIsAlive);
-  }
-  if (remaining.length > 0) {
-    throw new Error(
-      `${taskkillError?.message ?? 'taskkill reported success'}; ` +
-        `fallback left PIDs ${remaining.join(', ')} alive`,
-    );
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
   }
 }
 
 async function terminateProcessTree(pid: number): Promise<void> {
   if (process.platform === 'win32') {
-    await terminateWindowsProcessTree(pid);
+    await runTaskkill(pid);
     return;
   }
 
@@ -258,11 +143,13 @@ async function runBash({
   input = '',
   env = process.env,
   timeoutMs = BASH_CHILD_TIMEOUT_MS,
+  onSpawn,
 }: {
   args?: string[];
   input?: string;
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
+  onSpawn?: (pid: number) => void;
 } = {}): Promise<BashResult> {
   const child = spawn('bash', args, {
     detached: process.platform !== 'win32',
@@ -270,6 +157,7 @@ async function runBash({
     stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true,
   });
+  if (child.pid != null) onSpawn?.(child.pid);
   let stdout = '';
   let stderr = '';
   let reportExecutionError!: (error: Error) => void;
@@ -329,19 +217,6 @@ async function runBash({
       await terminateProcessTree(child.pid);
     } catch (error) {
       terminationError = new Error(errorMessage(error));
-      let fallbackAccepted = false;
-      try {
-        fallbackAccepted = child.kill('SIGKILL');
-      } catch (fallbackError) {
-        terminationError = new Error(
-          `${terminationError.message}; fallback kill threw: ${errorMessage(fallbackError)}`,
-        );
-      }
-      if (!fallbackAccepted) {
-        terminationError = new Error(
-          `${terminationError.message}; fallback child kill returned false`,
-        );
-      }
     }
   }
 
@@ -1252,35 +1127,40 @@ describe('deploy config', () => {
   });
 
   it('runBash removes descendants before timeout rejection completes', async () => {
-    const { existsSync, mkdtempSync, rmSync } = await import('node:fs');
+    const { existsSync, mkdtempSync, readFileSync, rmSync } = await import('node:fs');
     const { tmpdir } = await import('node:os');
     const { join } = await import('node:path');
     const tempDir = mkdtempSync(join(tmpdir(), 'nava-bash-timeout-test-'));
     const markerPath = join(tempDir, 'descendant-finished');
+    const pidPath = join(tempDir, 'descendant-pid');
 
     try {
-      let timeoutError: Error | undefined;
-      try {
-        await runBash({
+      let bashPid: number | undefined;
+      await expect(
+        runBash({
           args: [
             '-c',
-            'node -e \'setTimeout(() => require("node:fs").writeFileSync(process.env.MARKER_PATH, "leaked"), 2000)\'',
+            'node -e \'const fs = require("node:fs"); fs.writeFileSync(process.env.PID_PATH, String(process.pid)); setTimeout(() => fs.writeFileSync(process.env.MARKER_PATH, "leaked"), 3000)\' & wait',
           ],
           env: {
             ...process.env,
             MARKER_PATH: markerPath,
+            PID_PATH: pidPath,
           },
-          timeoutMs: 50,
-        });
-      } catch (error) {
-        timeoutError = error instanceof Error ? error : new Error(String(error));
-      }
-      expect(timeoutError?.message).toMatch(
-        /^bash (?:timed out after 50ms; process tree cleanup completed|timeout after 50ms cleanup failed:)/,
-      );
+          timeoutMs: 500,
+          onSpawn: (pid) => {
+            bashPid = pid;
+          },
+        }),
+      ).rejects.toThrow('bash timed out after 500ms; process tree cleanup completed');
 
-      await new Promise((resolve) => setTimeout(resolve, 2_200));
-      expect(existsSync(markerPath), timeoutError?.message).toBe(false);
+      const descendantPid = Number(readFileSync(pidPath, 'utf8'));
+      expect(bashPid).toBeTypeOf('number');
+      expect(processIsAlive(bashPid!)).toBe(false);
+      expect(processIsAlive(descendantPid)).toBe(false);
+
+      await new Promise((resolve) => setTimeout(resolve, 2_500));
+      expect(existsSync(markerPath)).toBe(false);
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
