@@ -484,7 +484,6 @@ collect_readiness_perimeter() {
       --query 'Reservations[0].Instances[0].{securityGroups:SecurityGroups,ipv6:NetworkInterfaces[].Ipv6Addresses[].Ipv6Address}' \
       --output json 2>/dev/null
   )"; then
-    INSTANCE_NETWORK="$instance_network_result"
     local sg_ids_text=""
     if sg_ids_text="$(
       node -e '
@@ -509,8 +508,9 @@ collect_readiness_perimeter() {
         const ids = state.securityGroups.map((group) => group.GroupId);
         if (new Set(ids).size !== ids.length) process.exit(1);
         process.stdout.write(ids.join("\n"));
-      ' "$INSTANCE_NETWORK" 2>/dev/null
+      ' "$instance_network_result" 2>/dev/null
     )"; then
+      INSTANCE_NETWORK="$instance_network_result"
       mapfile -t SG_IDS <<<"$sg_ids_text"
       INSTANCE_NETWORK_OK=true
       local sg_state_result=""

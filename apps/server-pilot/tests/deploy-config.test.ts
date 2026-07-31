@@ -365,6 +365,7 @@ async function runAwsPerimeterCollection({
     BlockPublicPolicy: true,
     RestrictPublicBuckets: true,
   }),
+  instanceNetworkRaw,
   failCors = false,
   failPublicAccess = false,
   failInstance = false,
@@ -375,6 +376,7 @@ async function runAwsPerimeterCollection({
   securityGroups?: unknown;
   corsRaw?: string;
   publicAccessRaw?: string;
+  instanceNetworkRaw?: string;
   failCors?: boolean;
   failPublicAccess?: boolean;
   failInstance?: boolean;
@@ -490,7 +492,7 @@ printf 'AWS_REPORT=%s\\n' "$(build_readiness_report)"
         ...validReportShellEnv(),
         AWS_TEST_CORS_RAW: corsRaw ?? JSON.stringify(cors),
         AWS_TEST_PUBLIC_ACCESS_RAW: publicAccessRaw,
-        AWS_TEST_INSTANCE: JSON.stringify(instanceNetwork),
+        AWS_TEST_INSTANCE: instanceNetworkRaw ?? JSON.stringify(instanceNetwork),
         AWS_TEST_SECURITY_GROUPS: JSON.stringify(securityGroups),
         AWS_TEST_FAIL_CORS: failCors ? '1' : '0',
         AWS_TEST_FAIL_PUBLIC_ACCESS: failPublicAccess ? '1' : '0',
@@ -1932,6 +1934,34 @@ describe('deploy config', () => {
     expect(sgFailure.facts?.securityGroupQueryOk).toBe(false);
     const sgReport = sgFailure.report!;
     expect(sgReport.checks.securityGroupIngressEmpty).toBe(false);
+  });
+
+  it('AWS perimeter collection safely rejects malformed EC2 stdout', async () => {
+    for (const instanceNetworkRaw of [
+      '{"securityGroups":',
+      `${JSON.stringify(validInstanceNetwork())}\ni-private sg-private`,
+      JSON.stringify({ securityGroups: [], ipv6: [] }),
+    ]) {
+      const collected = await runAwsPerimeterCollection({ instanceNetworkRaw });
+      expect(collected.status, collected.stderr).toBe(0);
+      expect(collected.stderr).toContain(
+        'launch-readiness: EC2 network response invalid',
+      );
+      expect(collected.stderr).not.toMatch(
+        /SyntaxError|JSON\.parse|Unexpected token|i-private|sg-private/,
+      );
+      expect(collected.securityGroupArgs).toEqual([]);
+      expect(collected.facts).toMatchObject({
+        instanceNetwork: {},
+        instanceNetworkOk: false,
+        securityGroupQueryOk: false,
+      });
+      expect(JSON.stringify(collected.facts)).not.toMatch(/i-private|sg-private/);
+      expect(collected.report?.checks).toMatchObject({
+        securityGroupIngressEmpty: false,
+        instanceHasNoPublicIpv6: false,
+      });
+    }
   });
 
   it('AWS perimeter collection rejects malformed attachments and SG results', async () => {
