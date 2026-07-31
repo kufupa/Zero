@@ -71,6 +71,27 @@ describe('deploy config', () => {
     expect(deploy).toContain('172.24.240.41');
   });
 
+  it('uses BETTER_AUTH_URL as the only production app-origin source', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const deploy = readFileSync(join(here, '..', 'deploy', 'deploy-ec2.sh'), 'utf8');
+    const writer = readFileSync(join(here, '..', 'deploy', 'write-ec2-env.sh'), 'utf8');
+
+    expect(writer).toContain(
+      ': "${BETTER_AUTH_URL:=https://nava.legacyhotels.co.za}"',
+    );
+    expect(deploy).toContain(
+      ': "${BETTER_AUTH_URL:?BETTER_AUTH_URL required before SPA build}"',
+    );
+    expect(deploy).toContain(
+      'export VITE_PUBLIC_APP_URL="${VITE_PUBLIC_APP_URL:-$BETTER_AUTH_URL}"',
+    );
+    expect(deploy).toContain('127.0.0.1 nava.legacyhotels.co.za');
+    expect(deploy).not.toContain('127.0.0.1 nava.legacy.local');
+  });
+
   it('write-ec2-env.sh quotes all env values', async () => {
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');

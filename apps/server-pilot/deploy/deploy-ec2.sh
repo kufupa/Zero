@@ -37,6 +37,7 @@ if [ -f "$ENV_FILE" ]; then
   source "$ENV_FILE"
   set +a
 fi
+: "${BETTER_AUTH_URL:?BETTER_AUTH_URL required before SPA build}"
 
 export PATH="${HOME}/.local/share/pnpm:${HOME}/.nvm/versions/node/$(ls "${HOME}/.nvm/versions/node" 2>/dev/null | sort -V | tail -1)/bin:${PATH}"
 
@@ -50,7 +51,7 @@ echo "== build mail SPA =="
 # Empty string = same-origin /api via nginx. Unset becomes literal "undefined" in the bundle.
 export VITE_PUBLIC_BACKEND_URL="${VITE_PUBLIC_BACKEND_URL-}"
 # Absolute app origin for RR redirects / metadata. Unset → literal "undefined/login" 404s.
-export VITE_PUBLIC_APP_URL="${VITE_PUBLIC_APP_URL:-https://nava.legacy.local}"
+export VITE_PUBLIC_APP_URL="${VITE_PUBLIC_APP_URL:-$BETTER_AUTH_URL}"
 # Near-realtime thread list poll (policy min 15s; default baked for pilot).
 export VITE_MAIL_POLL_MS="${VITE_MAIL_POLL_MS:-15000}"
 pnpm --filter @zero/mail build
@@ -59,10 +60,13 @@ echo "== sync SPA to ${WEB_ROOT} =="
 sudo mkdir -p "$WEB_ROOT"
 sudo rsync -a --delete "${MAIL_APP}/build/client/" "${WEB_ROOT}/"
 
-echo "== hosts: nava.legacy.local =="
-# SPA + cert use this name; without it Chromium on-box gets ERR_NAME_NOT_RESOLVED.
-if ! grep -qE '(^|[[:space:]])nava\.legacy\.local([[:space:]]|$)' /etc/hosts; then
-  echo '127.0.0.1 nava.legacy.local' | sudo tee -a /etc/hosts >/dev/null
+echo "== hosts: nava.legacyhotels.co.za =="
+# EC2 uses split-tunnel routing and does not consume hotel DNS; on-box browser gates need this.
+sudo sed -i \
+  '/^[[:space:]]*127\.0\.0\.1[[:space:]]\+nava\.legacy\.local[[:space:]]*$/d' \
+  /etc/hosts
+if ! grep -qE '(^|[[:space:]])nava\.legacyhotels\.co\.za([[:space:]]|$)' /etc/hosts; then
+  echo '127.0.0.1 nava.legacyhotels.co.za' | sudo tee -a /etc/hosts >/dev/null
 fi
 
 echo "== hosts: appsrv-1.legacyhotels.co.za (Infor HMS via VPN) =="

@@ -41,17 +41,18 @@ export function assertPilotSignupAllowed(
 
 /** Pure helper for Better Auth trustedOrigins (unit-testable without DB). */
 export function resolvePilotTrustedOrigins(
-  env: Record<string, string | undefined>,
+  env: Record<string, string | undefined> = process.env,
 ): string[] {
+  const authURL = env.BETTER_AUTH_URL?.trim();
   const base = [
-    'https://nava.legacy.local',
+    authURL ? new URL(authURL).origin : undefined,
     'https://127.0.0.1',
     'http://127.0.0.1:3000',
     'http://localhost:3000',
-  ];
+  ].filter((origin): origin is string => Boolean(origin));
   const extra = (env.BETTER_AUTH_TRUSTED_ORIGINS ?? '')
     .split(',')
-    .map((s) => s.trim())
+    .map((origin) => origin.trim())
     .filter(Boolean);
   return [...new Set([...base, ...extra])];
 }
