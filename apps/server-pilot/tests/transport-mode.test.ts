@@ -127,16 +127,54 @@ describe('MAIL_TRANSPORT_MODE factories', () => {
     }
   });
 
-  it('createSmtpTransport returns RealSmtpTransport in real mode with host and password', () => {
+  it('createSmtpTransport returns RealSmtpTransport in real mode on Rocketseed hop', () => {
     const transport = createSmtpTransport({
       mode: 'real',
-      host: 'smtp.example.com',
+      host: '172.24.0.8',
       port: 587,
-      user: 'relay@legacyhotel.com',
-      password: 'secret',
+      user: 'navaai@legacyhotels.co.za',
+      password: 'leftover-ignored',
     });
     expect(transport).toBeInstanceOf(RealSmtpTransport);
     expect(transport.kind).toBe('real');
+  });
+
+  it('createSmtpTransport allows real mode on Rocketseed without SMTP password', () => {
+    const transport = createSmtpTransport({
+      mode: 'real',
+      host: '172.24.0.8',
+      port: 587,
+    });
+    expect(transport).toBeInstanceOf(RealSmtpTransport);
+  });
+
+  it('createSmtpTransport rejects Zimbra SMTP host in real mode', () => {
+    expect(() =>
+      createSmtpTransport({
+        mode: 'real',
+        host: '172.24.0.10',
+        port: 587,
+      }),
+    ).toThrow(/172\.24\.0\.8/);
+  });
+
+  it('createSmtpTransport rejects non-Rocketseed host in real mode', () => {
+    expect(() =>
+      createSmtpTransport({
+        mode: 'real',
+        host: 'smtp.example.com',
+        port: 587,
+        password: 'secret',
+      }),
+    ).toThrow(/172\.24\.0\.8/);
+  });
+
+  it('fixture mode still returns Fake when SMTP_HOST is Zimbra', () => {
+    const transport = createSmtpTransport({
+      mode: 'fixture',
+      host: '172.24.0.10',
+    });
+    expect(transport).toBeInstanceOf(FakeSmtpTransport);
   });
 
   it('parseEnv accepts MAIL_TRANSPORT_MODE=wire', () => {
@@ -176,21 +214,10 @@ describe('MAIL_TRANSPORT_MODE factories', () => {
     expect(transport).toBeInstanceOf(RealSmtpTransport);
   });
 
-  it('createSmtpTransport throws in real mode without credentials', () => {
-    expect(() =>
-      createSmtpTransport({
-        mode: 'real',
-        host: 'smtp.example.com',
-        port: 587,
-        user: 'relay@legacyhotel.com',
-      }),
-    ).toThrow(/SMTP_PASSWORD or SMTP_SECRET_ARN/);
-  });
-
   it('SmtpTransport interface parity — fake and real expose send', () => {
     const fake = new FakeSmtpTransport();
     const real = new RealSmtpTransport({
-      host: 'x',
+      host: '172.24.0.8',
       port: 587,
       user: 'u',
       password: 'p',
@@ -199,5 +226,51 @@ describe('MAIL_TRANSPORT_MODE factories', () => {
       expect(typeof transport.send).toBe('function');
       expect(['fake', 'real']).toContain(transport.kind);
     }
+  });
+});
+
+describe('Rocketseed real SMTP hop options', () => {
+  // Imported after describe so failures surface if export missing (RED).
+  it('omits auth on Rocketseed even when password present', async () => {
+    const { buildRealSmtpNodemailerOptions } = await import('../src/mail/send/smtp');
+    const opts = buildRealSmtpNodemailerOptions({
+      host: '172.24.0.8',
+      port: 587,
+      user: 'navaai@legacyhotels.co.za',
+      password: 'leftover-zimbra-secret',
+    });
+    expect(opts.auth).toBeUndefined();
+  });
+
+  it('forces strict TLS + SNI on Rocketseed ignoring MAIL_TLS_REJECT_UNAUTHORIZED=false', async () => {
+    const { buildRealSmtpNodemailerOptions } = await import('../src/mail/send/smtp');
+    const previous = process.env.MAIL_TLS_REJECT_UNAUTHORIZED;
+    process.env.MAIL_TLS_REJECT_UNAUTHORIZED = 'false';
+    try {
+      const opts = buildRealSmtpNodemailerOptions({
+        host: '172.24.0.8',
+        port: 587,
+      });
+      expect(opts.requireTLS).toBe(true);
+      expect(opts.tls.rejectUnauthorized).toBe(true);
+      expect(opts.tls.servername).toBe('branding.legacyhotels.co.za');
+    } finally {
+      if (previous === undefined) delete process.env.MAIL_TLS_REJECT_UNAUTHORIZED;
+      else process.env.MAIL_TLS_REJECT_UNAUTHORIZED = previous;
+    }
+  });
+
+  it('wire/Mailpit host keeps optional auth and does not force Rocketseed SNI', async () => {
+    const { buildRealSmtpNodemailerOptions } = await import('../src/mail/send/smtp');
+    const opts = buildRealSmtpNodemailerOptions({
+      host: '127.0.0.1',
+      port: 11025,
+      user: 'u',
+      password: 'p',
+      secure: false,
+    });
+    expect(opts.auth).toEqual({ user: 'u', pass: 'p' });
+    expect(opts.tls.servername).toBeUndefined();
+    expect(opts.requireTLS).toBeUndefined();
   });
 });

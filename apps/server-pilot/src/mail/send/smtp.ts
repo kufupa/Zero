@@ -3,11 +3,80 @@
  *
  * `MAIL_TRANSPORT_MODE=fixture` (default) uses `FakeSmtpTransport` — in-memory
  * ring buffer, no TCP. `MAIL_TRANSPORT_MODE=real` uses `RealSmtpTransport`
- * (nodemailer) against Exchange/SMTP relay when host + credentials are set.
+ * against Rocketseed (`172.24.0.8`) only — IP-trusted STARTTLS, never AUTH.
+ * `wire` uses RealSmtpTransport against Mailpit (no hop pin).
  */
 import { randomUUID } from 'node:crypto';
 import nodemailer from 'nodemailer';
 import type { MailTransportMode } from '../../env.js';
+
+/** Sole allowed real-mail SMTP connect host (Rocketseed banner relay). */
+export const ROCKETSEED_SMTP_HOST = '172.24.0.8';
+
+/** TLS SNI for Rocketseed — not a connect host. */
+export const ROCKETSEED_TLS_SERVERNAME = 'branding.legacyhotels.co.za';
+
+export function isRocketseedSmtpHost(host: string): boolean {
+  return host.trim() === ROCKETSEED_SMTP_HOST;
+}
+
+/** Fail closed: real mode may only connect to Rocketseed. */
+export function assertRealSmtpHop(host: string): void {
+  if (!isRocketseedSmtpHost(host)) {
+    throw new Error(
+      `SMTP_HOST must be ${ROCKETSEED_SMTP_HOST} when MAIL_TRANSPORT_MODE=real (got ${host})`,
+    );
+  }
+}
+
+export type RealSmtpNodemailerOptions = {
+  host: string;
+  port: number;
+  secure: boolean;
+  requireTLS?: boolean;
+  auth?: { user: string; pass: string };
+  tls: { rejectUnauthorized: boolean; servername?: string };
+};
+
+/**
+ * Nodemailer options for real/wire TCP sends.
+ * Rocketseed: never AUTH (even if password present); strict STARTTLS + SNI.
+ * Wire/other: optional AUTH; shared MAIL_TLS_REJECT_UNAUTHORIZED for Mailpit.
+ */
+export function buildRealSmtpNodemailerOptions(opts: {
+  host: string;
+  port: number;
+  secure?: boolean;
+  user?: string;
+  password?: string;
+}): RealSmtpNodemailerOptions {
+  const secure = opts.secure ?? false;
+  if (isRocketseedSmtpHost(opts.host)) {
+    return {
+      host: opts.host.trim(),
+      port: opts.port,
+      secure,
+      requireTLS: true,
+      auth: undefined,
+      tls: {
+        rejectUnauthorized: true,
+        servername: ROCKETSEED_TLS_SERVERNAME,
+      },
+    };
+  }
+  const rejectUnauthorized =
+    process.env.MAIL_TLS_REJECT_UNAUTHORIZED !== 'false';
+  return {
+    host: opts.host,
+    port: opts.port,
+    secure,
+    auth:
+      opts.user && opts.password
+        ? { user: opts.user, pass: opts.password }
+        : undefined,
+    tls: { rejectUnauthorized },
+  };
+}
 
 export interface OutboundMailAttachment {
   filename: string;
@@ -113,19 +182,18 @@ export class RealSmtpTransport implements SmtpTransport {
   ) {}
 
   async send(payload: OutboundMailPayload): Promise<SmtpSendResult> {
-    const password = await this.resolvePassword();
-    const rejectUnauthorized =
-      process.env.MAIL_TLS_REJECT_UNAUTHORIZED !== 'false';
-    const transporter = nodemailer.createTransport({
-      host: this.opts.host,
-      port: this.opts.port,
-      secure: this.opts.secure ?? false,
-      auth:
-        this.opts.user && password
-          ? { user: this.opts.user, pass: password }
-          : undefined,
-      tls: { rejectUnauthorized },
-    });
+    const password = isRocketseedSmtpHost(this.opts.host)
+      ? undefined
+      : await this.resolvePassword();
+    const transporter = nodemailer.createTransport(
+      buildRealSmtpNodemailerOptions({
+        host: this.opts.host,
+        port: this.opts.port,
+        secure: this.opts.secure,
+        user: this.opts.user,
+        password,
+      }),
+    );
 
     const headers: Record<string, string> = { ...payload.extraHeaders };
     if (payload.inReplyTo) {
@@ -200,15 +268,13 @@ export function createSmtpTransport(
   if (!host) {
     throw new Error(`SMTP_HOST required when MAIL_TRANSPORT_MODE=${mode}`);
   }
+  if (mode === 'real') {
+    assertRealSmtpHop(host);
+  }
 
   const user = opts.user ?? process.env.SMTP_USER;
   const secretArn = opts.secretArn ?? process.env.SMTP_SECRET_ARN;
   const password = opts.password ?? process.env.SMTP_PASSWORD;
-  if (mode === 'real' && !password && !secretArn) {
-    throw new Error(
-      'SMTP_PASSWORD or SMTP_SECRET_ARN required when MAIL_TRANSPORT_MODE=real',
-    );
-  }
 
   const secureRaw = process.env.SMTP_SECURE;
   const secure =
