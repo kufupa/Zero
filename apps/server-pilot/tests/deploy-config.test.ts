@@ -105,6 +105,8 @@ type LaunchReadinessReport = {
 type AwsPerimeterFacts = {
   cors: unknown;
   publicAccess: unknown;
+  s3CorsOk: boolean;
+  s3PublicAccessOk: boolean;
   instanceNetwork: unknown;
   securityGroups: unknown;
   instanceNetworkOk: boolean;
@@ -134,6 +136,63 @@ async function readLaunchReadiness(): Promise<string> {
   return readFileSync(join(here, '..', 'deploy', 'launch-readiness.sh'), 'utf8');
 }
 
+function validReportShellEnv(): Record<string, string> {
+  return {
+    REMOTE_JSON: JSON.stringify({
+      health: { http: true, https: true, tls: true },
+      pm2: {
+        required: {
+          http: { present: true, online: true, restarts: 0 },
+          worker: { present: true, online: true, restarts: 0 },
+          'ai-worker': { present: true, online: true, restarts: 0 },
+        },
+        allOnline: true,
+      },
+      hotelProbe: true,
+      firewall: {
+        statusRead: true,
+        rulesRead: true,
+        active: true,
+        defaultDeny: true,
+        tunnel443: true,
+        broad443Absent: true,
+      },
+      config: {
+        envLoaded: true,
+        mailTransportModeReal: true,
+        betterAuthUrlCorrect: true,
+        undoSendSecondsCorrect: true,
+        aiWriteGateEnabled: true,
+        aiDraftsDisabled: true,
+      },
+      db: {
+        connected: true,
+        centurionActiveTransportCount: 1,
+        centurionActiveCategoryCount: 5,
+        workflowNonterminalCount: 0,
+        workflowDeadLetterCount: 0,
+        workflowDeadLetterRecentCount: 0,
+        outboundNonterminalCount: 0,
+        latestInboundAt: null,
+        counts: { threads: 0, messages: 0, inboundMessages: 0 },
+      },
+      disk: { safe: true, usedPercent: 10, freeMB: 10_000 },
+    }),
+    RDS_JSON: JSON.stringify({
+      status: 'available',
+      deletionProtection: true,
+      multiAZ: false,
+      backupRetentionDays: 7,
+      backupLatestRestorableAt: '2026-07-31T12:00:00.000Z',
+    }),
+    S3_AVAILABLE: 'true',
+    S3_VERSIONING: 'Enabled',
+    S3_LIFECYCLE: '[]',
+    CLOUDWATCH_ALARM_COUNT: '1',
+    SNS_TOPIC_COUNT: '1',
+  };
+}
+
 async function runLaunchReadinessReport({
   firewall = {},
   cors = validCors(),
@@ -145,6 +204,8 @@ async function runLaunchReadinessReport({
   },
   instanceNetwork = validInstanceNetwork(),
   securityGroups = validSecurityGroups(),
+  s3CorsOk = true,
+  s3PublicAccessOk = true,
   instanceNetworkOk = true,
   securityGroupQueryOk = true,
   omitSecurityGroups = false,
@@ -154,88 +215,38 @@ async function runLaunchReadinessReport({
   publicAccess?: unknown;
   instanceNetwork?: unknown;
   securityGroups?: unknown;
+  s3CorsOk?: boolean;
+  s3PublicAccessOk?: boolean;
   instanceNetworkOk?: boolean;
   securityGroupQueryOk?: boolean;
   omitSecurityGroups?: boolean;
 } = {}): Promise<LaunchReadinessReport> {
   const { spawnSync } = await import('node:child_process');
-  const source = (await readLaunchReadiness()).replaceAll('\r\n', '\n');
-  const reportStart = source.indexOf('REPORT_JSON="$(');
-  const heredocMarker = "<<'NODE'\n";
-  const heredocStart = source.indexOf(heredocMarker, reportStart);
-  const codeStart = heredocStart + heredocMarker.length;
-  const codeEnd = source.indexOf('\nNODE\n)"', codeStart);
-  if (reportStart < 0 || heredocStart < 0 || codeEnd < 0) {
-    throw new Error('launch-readiness report builder not found');
-  }
-
-  const remote = {
-    health: { http: true, https: true, tls: true },
-    pm2: {
-      required: {
-        http: { present: true, online: true, restarts: 0 },
-        worker: { present: true, online: true, restarts: 0 },
-        'ai-worker': { present: true, online: true, restarts: 0 },
-      },
-      allOnline: true,
-    },
-    hotelProbe: true,
-    firewall: {
-      statusRead: true,
-      rulesRead: true,
-      active: true,
-      defaultDeny: true,
-      tunnel443: true,
-      broad443Absent: true,
-      ...firewall,
-    },
-    config: {
-      envLoaded: true,
-      mailTransportModeReal: true,
-      betterAuthUrlCorrect: true,
-      undoSendSecondsCorrect: true,
-      aiWriteGateEnabled: true,
-      aiDraftsDisabled: true,
-    },
-    db: {
-      connected: true,
-      centurionActiveTransportCount: 1,
-      centurionActiveCategoryCount: 5,
-      workflowNonterminalCount: 0,
-      workflowDeadLetterCount: 0,
-      workflowDeadLetterRecentCount: 0,
-      outboundNonterminalCount: 0,
-      latestInboundAt: null,
-      counts: { threads: 0, messages: 0, inboundMessages: 0 },
-    },
-    disk: { safe: true, usedPercent: 10, freeMB: 10_000 },
-  };
-  const rds = {
-    status: 'available',
-    deletionProtection: true,
-    multiAZ: false,
-    backupRetentionDays: 7,
-    backupLatestRestorableAt: '2026-07-31T12:00:00.000Z',
-  };
-  const args = [
-    JSON.stringify(remote),
-    JSON.stringify(rds),
-    'true',
-    'Enabled',
-    '[]',
-    '1',
-    '1',
-    JSON.stringify(cors),
-    JSON.stringify(publicAccess),
-    JSON.stringify(instanceNetwork),
-  ];
-  if (!omitSecurityGroups) args.push(JSON.stringify(securityGroups));
-  else args.push('');
-  args.push(String(instanceNetworkOk), String(securityGroupQueryOk));
-
-  const result = spawnSync(process.execPath, ['-', ...args], {
-    input: source.slice(codeStart, codeEnd),
+  const source = await readLaunchReadiness();
+  const reportBuilder = extractSourceBlock(
+    source,
+    '# BEGIN_READINESS_REPORT_BUILDER',
+    '# END_READINESS_REPORT_BUILDER',
+  );
+  const shellEnv = validReportShellEnv();
+  const remote = JSON.parse(shellEnv.REMOTE_JSON);
+  remote.firewall = { ...remote.firewall, ...firewall };
+  const result = spawnSync('bash', [], {
     encoding: 'utf8',
+    input: `${reportBuilder}\nbuild_readiness_report\n`,
+    env: {
+      ...process.env,
+      ...shellEnv,
+      REMOTE_JSON: JSON.stringify(remote),
+      S3_CORS: JSON.stringify(cors),
+      S3_PUBLIC_ACCESS: JSON.stringify(publicAccess),
+      INSTANCE_NETWORK: JSON.stringify(instanceNetwork),
+      SG_STATE: omitSecurityGroups ? '' : JSON.stringify(securityGroups),
+      INSTANCE_NETWORK_OK: String(instanceNetworkOk),
+      SG_QUERY_OK: String(securityGroupQueryOk),
+      S3_CORS_OK: String(s3CorsOk),
+      S3_PUBLIC_ACCESS_OK: String(s3PublicAccessOk),
+    },
   });
   if (result.status !== 0) {
     throw new Error(result.stderr || `readiness report builder exited ${result.status}`);
@@ -309,8 +320,9 @@ printf 'UFW_FACTS=%s,%s,%s,%s,%s,%s\\n' \
   "\${UFW_RULES_READ:-false}" \
   "$UFW_ACTIVE" "$UFW_DEFAULT_DENY" "$UFW_TUN443" "$UFW_BROAD443_ABSENT"
 `;
-    const result = spawnSync('bash', ['-c', script], {
+    const result = spawnSync('bash', [], {
       encoding: 'utf8',
+      input: script,
       env: {
         ...process.env,
         PATH: `${toBashPath(stubDir)}${delimiter}${process.env.PATH ?? ''}`,
@@ -346,18 +358,32 @@ async function runAwsPerimeterCollection({
   cors = validCors(),
   instanceNetwork = validInstanceNetwork(),
   securityGroups = validSecurityGroups(),
+  corsRaw,
+  publicAccessRaw = JSON.stringify({
+    BlockPublicAcls: true,
+    IgnorePublicAcls: true,
+    BlockPublicPolicy: true,
+    RestrictPublicBuckets: true,
+  }),
+  failCors = false,
+  failPublicAccess = false,
   failInstance = false,
   failSecurityGroups = false,
 }: {
   cors?: unknown;
   instanceNetwork?: unknown;
   securityGroups?: unknown;
+  corsRaw?: string;
+  publicAccessRaw?: string;
+  failCors?: boolean;
+  failPublicAccess?: boolean;
   failInstance?: boolean;
   failSecurityGroups?: boolean;
 } = {}): Promise<{
   status: number | null;
   stderr: string;
   facts: AwsPerimeterFacts | null;
+  report: LaunchReadinessReport | null;
   securityGroupArgs: string[];
 }> {
   const {
@@ -384,10 +410,18 @@ async function runAwsPerimeterCollection({
       `#!/usr/bin/env bash
 case "$1 $2" in
   "s3api get-bucket-cors")
-    printf '%s' "\${AWS_TEST_CORS}"
+    if [ "\${AWS_TEST_FAIL_CORS:-0}" = "1" ]; then
+      printf '%s\\n' "\${AWS_TEST_SECRET}" >&2
+      exit 53
+    fi
+    printf '%s' "\${AWS_TEST_CORS_RAW}"
     ;;
   "s3api get-public-access-block")
-    printf '%s' '{"BlockPublicAcls":true,"IgnorePublicAcls":true,"BlockPublicPolicy":true,"RestrictPublicBuckets":true}'
+    if [ "\${AWS_TEST_FAIL_PUBLIC_ACCESS:-0}" = "1" ]; then
+      printf '%s\\n' "\${AWS_TEST_SECRET}" >&2
+      exit 54
+    fi
+    printf '%s' "\${AWS_TEST_PUBLIC_ACCESS_RAW}"
     ;;
   "ec2 describe-instances")
     if [ "\${AWS_TEST_FAIL_INSTANCE:-0}" = "1" ]; then
@@ -413,18 +447,28 @@ esac
     );
     chmodSync(awsPath, 0o755);
 
-    const block = extractSourceBlock(
-      await readLaunchReadiness(),
-      'S3_CORS="$(',
-      'CLOUDWATCH_ALARM_COUNT="$(',
+    const source = await readLaunchReadiness();
+    const collectionBlock = extractSourceBlock(
+      source,
+      '# BEGIN_READINESS_PERIMETER_COLLECTION',
+      '# END_READINESS_PERIMETER_COLLECTION',
+    );
+    const reportBuilder = extractSourceBlock(
+      source,
+      '# BEGIN_READINESS_REPORT_BUILDER',
+      '# END_READINESS_REPORT_BUILDER',
     );
     const script = `set -euo pipefail
-${block}
+${collectionBlock}
+${reportBuilder}
 node - "$S3_CORS" "$S3_PUBLIC_ACCESS" "$INSTANCE_NETWORK" "$SG_STATE" \
-  "\${INSTANCE_NETWORK_OK:-false}" "\${SG_QUERY_OK:-false}" <<'NODE'
+  "\${INSTANCE_NETWORK_OK:-false}" "\${SG_QUERY_OK:-false}" \
+  "\${S3_CORS_OK:-false}" "\${S3_PUBLIC_ACCESS_OK:-false}" <<'NODE'
 const facts = {
   cors: JSON.parse(process.argv[2]),
   publicAccess: JSON.parse(process.argv[3]),
+  s3CorsOk: process.argv[8] === "true",
+  s3PublicAccessOk: process.argv[9] === "true",
   instanceNetwork: JSON.parse(process.argv[4]),
   securityGroups: JSON.parse(process.argv[5]),
   instanceNetworkOk: process.argv[6] === "true",
@@ -432,29 +476,39 @@ const facts = {
 };
 process.stdout.write("AWS_FACTS=" + JSON.stringify(facts) + "\\n");
 NODE
+printf 'AWS_REPORT=%s\\n' "$(build_readiness_report)"
 `;
-    const result = spawnSync('bash', ['-c', script], {
+    const result = spawnSync('bash', [], {
       encoding: 'utf8',
+      input: script,
       env: {
         ...process.env,
         PATH: `${toBashPath(stubDir)}${delimiter}${process.env.PATH ?? ''}`,
         AWS_REGION: 'test-region-1',
         S3_BUCKET: 'test-bucket',
         INSTANCE_ID: 'i-test',
-        AWS_TEST_CORS: JSON.stringify(cors),
+        ...validReportShellEnv(),
+        AWS_TEST_CORS_RAW: corsRaw ?? JSON.stringify(cors),
+        AWS_TEST_PUBLIC_ACCESS_RAW: publicAccessRaw,
         AWS_TEST_INSTANCE: JSON.stringify(instanceNetwork),
         AWS_TEST_SECURITY_GROUPS: JSON.stringify(securityGroups),
+        AWS_TEST_FAIL_CORS: failCors ? '1' : '0',
+        AWS_TEST_FAIL_PUBLIC_ACCESS: failPublicAccess ? '1' : '0',
         AWS_TEST_FAIL_INSTANCE: failInstance ? '1' : '0',
         AWS_TEST_FAIL_SG: failSecurityGroups ? '1' : '0',
-        AWS_TEST_SECRET: 'sensitive-aws-stub-detail',
+        AWS_TEST_SECRET: 'sensitive-aws-stub-detail i-private sg-private',
         AWS_TEST_SG_ARGS: toBashPath(argsPath),
       },
     });
     const serialized = result.stdout.match(/AWS_FACTS=([^\r\n]+)/)?.[1];
+    const serializedReport = result.stdout.match(/AWS_REPORT=([^\r\n]+)/)?.[1];
     return {
       status: result.status,
       stderr: result.stderr,
       facts: serialized ? (JSON.parse(serialized) as AwsPerimeterFacts) : null,
+      report: serializedReport
+        ? (JSON.parse(serializedReport) as LaunchReadinessReport)
+        : null,
       securityGroupArgs: existsSync(argsPath)
         ? readFileSync(argsPath, 'utf8').split(/\r?\n/).filter(Boolean)
         : [],
@@ -462,19 +516,6 @@ NODE
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
-}
-
-async function reportFromAwsFacts(
-  facts: AwsPerimeterFacts,
-): Promise<LaunchReadinessReport> {
-  return runLaunchReadinessReport({
-    cors: facts.cors,
-    publicAccess: facts.publicAccess,
-    instanceNetwork: facts.instanceNetwork,
-    securityGroups: facts.securityGroups,
-    instanceNetworkOk: facts.instanceNetworkOk,
-    securityGroupQueryOk: facts.securityGroupQueryOk,
-  });
 }
 
 async function runVpnHealth(
@@ -1487,6 +1528,9 @@ describe('deploy config', () => {
     expect(readiness).toContain('--group-ids "${SG_IDS[@]}"');
     expect(readiness).not.toMatch(/--group-ids\s+\$SG_IDS/);
     expect(readiness).toContain('UFW_BROAD443_ABSENT=false');
+    expect(readiness).toContain('# BEGIN_READINESS_PERIMETER_COLLECTION');
+    expect(readiness).toContain('# END_READINESS_PERIMETER_COLLECTION');
+    expect(readiness).toContain('build_readiness_report()');
   });
 
   it('VPN health rejects a missing tun0 interface or wrong exact tunnel CIDR', async () => {
@@ -1541,6 +1585,9 @@ describe('deploy config', () => {
       `${INTENDED_UFW_ALLOW}\nufw allow in on tun0 to any port 443 proto udp`,
       `${INTENDED_UFW_ALLOW}\nufw allow 443/tcp`,
       `${INTENDED_UFW_ALLOW}\n${INTENDED_UFW_ALLOW}`,
+      `${INTENDED_UFW_ALLOW}\nufw limit 443/tcp`,
+      `${INTENDED_UFW_ALLOW}\nufw route allow 443/tcp`,
+      `${INTENDED_UFW_ALLOW}\nufw insert 1 allow 443/tcp`,
     ];
     for (const added of disallowedRules) {
       const collected = await runUfwCollection({ added });
@@ -1754,12 +1801,14 @@ describe('deploy config', () => {
   it('AWS perimeter collection quotes SG IDs and drives the real report inputs', async () => {
     const collected = await runAwsPerimeterCollection();
     expect(collected.status, collected.stderr).toBe(0);
+    expect(collected.facts?.s3CorsOk).toBe(true);
+    expect(collected.facts?.s3PublicAccessOk).toBe(true);
     expect(collected.facts?.instanceNetworkOk).toBe(true);
     expect(collected.facts?.securityGroupQueryOk).toBe(true);
     expect(collected.securityGroupArgs).toContain(SG_ONE);
     expect(collected.securityGroupArgs).toContain(SG_TWO);
 
-    const report = await reportFromAwsFacts(collected.facts!);
+    const report = collected.report!;
     expect(report.checks).toMatchObject({
       s3CorsCanonical: true,
       s3PublicAccessBlocked: true,
@@ -1767,6 +1816,96 @@ describe('deploy config', () => {
       instanceHasNoPublicIpv6: true,
     });
   });
+
+  it('S3 perimeter collection fails stably for bad commands and output', async () => {
+    const cases = [
+      {
+        options: { failCors: true },
+        message: 'launch-readiness: S3 CORS query failed',
+        failedCheck: 's3CorsCanonical',
+      },
+      {
+        options: { corsRaw: '' },
+        message: 'launch-readiness: S3 CORS response invalid',
+        failedCheck: 's3CorsCanonical',
+      },
+      {
+        options: { corsRaw: '{"CORSRules":' },
+        message: 'launch-readiness: S3 CORS response invalid',
+        failedCheck: 's3CorsCanonical',
+      },
+      {
+        options: { corsRaw: '{"CORSRules":[]}\ni-private-partial' },
+        message: 'launch-readiness: S3 CORS response invalid',
+        failedCheck: 's3CorsCanonical',
+      },
+      {
+        options: { corsRaw: '{"CORSRules":"invalid"}' },
+        message: 'launch-readiness: S3 CORS response invalid',
+        failedCheck: 's3CorsCanonical',
+      },
+      {
+        options: {
+          corsRaw: JSON.stringify({ ...validCors(), UnexpectedField: true }),
+        },
+        message: 'launch-readiness: S3 CORS response invalid',
+        failedCheck: 's3CorsCanonical',
+      },
+      {
+        options: { failPublicAccess: true },
+        message: 'launch-readiness: S3 public-access query failed',
+        failedCheck: 's3PublicAccessBlocked',
+      },
+      {
+        options: { publicAccessRaw: '' },
+        message: 'launch-readiness: S3 public-access response invalid',
+        failedCheck: 's3PublicAccessBlocked',
+      },
+      {
+        options: { publicAccessRaw: '{"BlockPublicAcls":' },
+        message: 'launch-readiness: S3 public-access response invalid',
+        failedCheck: 's3PublicAccessBlocked',
+      },
+      {
+        options: {
+          publicAccessRaw:
+            '{"BlockPublicAcls":true,"IgnorePublicAcls":true}\nsg-private-partial',
+        },
+        message: 'launch-readiness: S3 public-access response invalid',
+        failedCheck: 's3PublicAccessBlocked',
+      },
+      {
+        options: { publicAccessRaw: '{"BlockPublicAcls":true}' },
+        message: 'launch-readiness: S3 public-access response invalid',
+        failedCheck: 's3PublicAccessBlocked',
+      },
+      {
+        options: {
+          publicAccessRaw: JSON.stringify({
+            BlockPublicAcls: true,
+            IgnorePublicAcls: true,
+            BlockPublicPolicy: true,
+            RestrictPublicBuckets: true,
+            UnexpectedField: true,
+          }),
+        },
+        message: 'launch-readiness: S3 public-access response invalid',
+        failedCheck: 's3PublicAccessBlocked',
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      const collected = await runAwsPerimeterCollection(testCase.options);
+      expect(collected.status, JSON.stringify(testCase.options)).toBe(0);
+      expect(collected.stderr).toContain(testCase.message);
+      expect(collected.stderr).not.toMatch(
+        /sensitive-aws-stub-detail|i-private|sg-private/,
+      );
+      expect(JSON.stringify(collected.facts)).not.toMatch(/i-private|sg-private/);
+      const report = collected.report!;
+      expect(report.checks[testCase.failedCheck]).toBe(false);
+    }
+  }, 30_000);
 
   it('AWS perimeter collection redacts EC2 and SG query failures', async () => {
     const instanceFailure = await runAwsPerimeterCollection({ failInstance: true });
@@ -1777,7 +1916,7 @@ describe('deploy config', () => {
     expect(instanceFailure.stderr).not.toContain('sensitive-aws-stub-detail');
     expect(instanceFailure.facts?.instanceNetworkOk).toBe(false);
     expect(instanceFailure.facts?.securityGroupQueryOk).toBe(false);
-    const instanceReport = await reportFromAwsFacts(instanceFailure.facts!);
+    const instanceReport = instanceFailure.report!;
     expect(instanceReport.checks.securityGroupIngressEmpty).toBe(false);
     expect(instanceReport.checks.instanceHasNoPublicIpv6).toBe(false);
 
@@ -1791,7 +1930,7 @@ describe('deploy config', () => {
     expect(sgFailure.stderr).not.toContain('sensitive-aws-stub-detail');
     expect(sgFailure.facts?.instanceNetworkOk).toBe(true);
     expect(sgFailure.facts?.securityGroupQueryOk).toBe(false);
-    const sgReport = await reportFromAwsFacts(sgFailure.facts!);
+    const sgReport = sgFailure.report!;
     expect(sgReport.checks.securityGroupIngressEmpty).toBe(false);
   });
 
@@ -1806,7 +1945,7 @@ describe('deploy config', () => {
     expect(malformedAttachment.status).toBe(0);
     expect(malformedAttachment.securityGroupArgs).toEqual([]);
     expect(malformedAttachment.facts?.instanceNetworkOk).toBe(false);
-    const attachmentReport = await reportFromAwsFacts(malformedAttachment.facts!);
+    const attachmentReport = malformedAttachment.report!;
     expect(attachmentReport.checks.securityGroupIngressEmpty).toBe(false);
     expect(attachmentReport.checks.instanceHasNoPublicIpv6).toBe(false);
 
@@ -1821,14 +1960,14 @@ describe('deploy config', () => {
       ],
     });
     expect(malformedResult.status).toBe(0);
-    const malformedReport = await reportFromAwsFacts(malformedResult.facts!);
+    const malformedReport = malformedResult.report!;
     expect(malformedReport.checks.securityGroupIngressEmpty).toBe(false);
 
     const partialResult = await runAwsPerimeterCollection({
       securityGroups: [{ id: SG_ONE, ingress: [] }],
     });
     expect(partialResult.status).toBe(0);
-    const partialReport = await reportFromAwsFacts(partialResult.facts!);
+    const partialReport = partialResult.report!;
     expect(partialReport.checks.securityGroupIngressEmpty).toBe(false);
   });
 
@@ -1839,7 +1978,7 @@ describe('deploy config', () => {
     ]) {
       const collected = await runAwsPerimeterCollection({ cors });
       expect(collected.status, collected.stderr).toBe(0);
-      const report = await reportFromAwsFacts(collected.facts!);
+      const report = collected.report!;
       expect(report.checks.s3CorsCanonical).toBe(false);
     }
   });
@@ -1847,11 +1986,13 @@ describe('deploy config', () => {
   it('launch readiness rejects public instance IPv6 addresses', async () => {
     const report = await runLaunchReadinessReport({
       instanceNetwork: {
-        securityGroups: [{ GroupId: 'sg-test' }],
+        securityGroups: [{ GroupId: SG_ONE }],
         ipv6: ['2001:db8::1'],
       },
+      securityGroups: [{ id: SG_ONE, ingress: [] }],
     });
 
+    expect(report.checks.securityGroupIngressEmpty).toBe(true);
     expect(report.checks.instanceHasNoPublicIpv6).toBe(false);
   });
 

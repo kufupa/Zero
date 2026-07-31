@@ -113,14 +113,14 @@ if UFW_ADDED="$(sudo ufw show added 2>/dev/null)"; then
   UFW_RULES_READ=true
   if printf '%s\n' "$UFW_ADDED" |
     awk -v expected="$EXPECTED_UFW_ALLOW" '
-      /^[[:space:]]*ufw[[:space:]]+allow([[:space:]]|$)/ {
+      /^[[:space:]]*ufw([[:space:]]|$)/ {
         line = $0
         sub(/^[[:space:]]+/, "", line)
         sub(/[[:space:]]+$/, "", line)
-        allow_count += 1
+        rule_count += 1
         if (line == expected) exact_count += 1
       }
-      END { exit allow_count == 1 && exact_count == 1 ? 0 : 1 }
+      END { exit rule_count == 1 && exact_count == 1 ? 0 : 1 }
     '; then
     UFW_TUN443=true
     UFW_BROAD443_ABSENT=true
@@ -377,83 +377,168 @@ S3_LIFECYCLE="$(
     --query 'Rules[].{id:ID,status:Status,expirationDays:Expiration.Days,abortDays:AbortIncompleteMultipartUpload.DaysAfterInitiation}' \
     --output json 2>/dev/null || printf '%s' '[]'
 )"
-S3_CORS="$(
-  aws s3api get-bucket-cors \
-    --region "$AWS_REGION" \
-    --bucket "$S3_BUCKET" \
-    --output json 2>/dev/null || printf '%s' '{"CORSRules":[]}'
-)"
-S3_PUBLIC_ACCESS="$(
-  aws s3api get-public-access-block \
-    --region "$AWS_REGION" \
-    --bucket "$S3_BUCKET" \
-    --query 'PublicAccessBlockConfiguration' \
-    --output json 2>/dev/null || printf '%s' '{}'
-)"
-INSTANCE_NETWORK='{}'
-INSTANCE_NETWORK_OK=false
-SG_STATE='[]'
-SG_QUERY_OK=false
-SG_IDS=()
+# BEGIN_READINESS_PERIMETER_COLLECTION
+collect_readiness_perimeter() {
+  S3_CORS='{"CORSRules":[]}'
+  S3_CORS_OK=false
+  S3_PUBLIC_ACCESS='{}'
+  S3_PUBLIC_ACCESS_OK=false
+  INSTANCE_NETWORK='{}'
+  INSTANCE_NETWORK_OK=false
+  SG_STATE='[]'
+  SG_QUERY_OK=false
+  SG_IDS=()
 
-if INSTANCE_NETWORK_RESULT="$(
-  aws ec2 describe-instances \
-    --region "$AWS_REGION" \
-    --instance-ids "$INSTANCE_ID" \
-    --query 'Reservations[0].Instances[0].{securityGroups:SecurityGroups,ipv6:NetworkInterfaces[].Ipv6Addresses[].Ipv6Address}' \
-    --output json 2>/dev/null
-)"; then
-  INSTANCE_NETWORK="$INSTANCE_NETWORK_RESULT"
-  SG_IDS_TEXT=""
-  if SG_IDS_TEXT="$(
-    node -e '
-      const state = JSON.parse(process.argv[1]);
-      const validRecord =
-        state &&
-        typeof state === "object" &&
-        !Array.isArray(state) &&
-        Array.isArray(state.securityGroups) &&
-        state.securityGroups.length > 0 &&
-        Array.isArray(state.ipv6) &&
-        state.ipv6.every((address) => typeof address === "string") &&
-        state.securityGroups.every(
-          (group) =>
-            group &&
-            typeof group === "object" &&
-            !Array.isArray(group) &&
-            typeof group.GroupId === "string" &&
-            /^sg-[0-9a-f]{8,17}$/.test(group.GroupId),
-        );
-      if (!validRecord) process.exit(1);
-      const ids = state.securityGroups.map((group) => group.GroupId);
-      if (new Set(ids).size !== ids.length) process.exit(1);
-      process.stdout.write(ids.join("\n"));
-    ' "$INSTANCE_NETWORK" 2>/dev/null
+  local s3_cors_result=""
+  if s3_cors_result="$(
+    aws s3api get-bucket-cors \
+      --region "$AWS_REGION" \
+      --bucket "$S3_BUCKET" \
+      --output json 2>/dev/null
   )"; then
-    mapfile -t SG_IDS <<<"$SG_IDS_TEXT"
-    INSTANCE_NETWORK_OK=true
-    if SG_STATE_RESULT="$(
-      aws ec2 describe-security-groups \
-        --region "$AWS_REGION" \
-        --group-ids "${SG_IDS[@]}" \
-        --query 'SecurityGroups[].{id:GroupId,ingress:IpPermissions}' \
-        --output json 2>/dev/null
-    )"; then
-      if node -e 'JSON.parse(process.argv[1])' "$SG_STATE_RESULT" 2>/dev/null; then
-        SG_STATE="$SG_STATE_RESULT"
-        SG_QUERY_OK=true
-      else
-        echo "launch-readiness: security-group response invalid" >&2
-      fi
+    if node -e '
+      const value = JSON.parse(process.argv[1]);
+      const isRecord = (item) =>
+        item !== null && typeof item === "object" && !Array.isArray(item);
+      const isStringArray = (item, required = false) =>
+        Array.isArray(item) &&
+        (!required || item.length > 0) &&
+        item.every((entry) => typeof entry === "string" && entry.length > 0);
+      const fields = new Set([
+        "AllowedOrigins",
+        "AllowedMethods",
+        "AllowedHeaders",
+        "ExposeHeaders",
+        "MaxAgeSeconds",
+      ]);
+      const valid =
+        isRecord(value) &&
+        Object.keys(value).length === 1 &&
+        Object.hasOwn(value, "CORSRules") &&
+        Array.isArray(value.CORSRules) &&
+        value.CORSRules.length > 0 &&
+        value.CORSRules.every(
+          (rule) =>
+            isRecord(rule) &&
+            Object.keys(rule).every((field) => fields.has(field)) &&
+            isStringArray(rule.AllowedOrigins, true) &&
+            isStringArray(rule.AllowedMethods, true) &&
+            (rule.AllowedHeaders === undefined ||
+              isStringArray(rule.AllowedHeaders)) &&
+            (rule.ExposeHeaders === undefined ||
+              isStringArray(rule.ExposeHeaders)) &&
+            (rule.MaxAgeSeconds === undefined ||
+              (Number.isInteger(rule.MaxAgeSeconds) &&
+                rule.MaxAgeSeconds >= 0)),
+        );
+      process.exit(valid ? 0 : 1);
+    ' "$s3_cors_result" 2>/dev/null; then
+      S3_CORS="$s3_cors_result"
+      S3_CORS_OK=true
     else
-      echo "launch-readiness: security-group query failed" >&2
+      echo "launch-readiness: S3 CORS response invalid" >&2
     fi
   else
-    echo "launch-readiness: EC2 network response invalid" >&2
+    echo "launch-readiness: S3 CORS query failed" >&2
   fi
-else
-  echo "launch-readiness: EC2 network query failed" >&2
-fi
+
+  local s3_public_access_result=""
+  if s3_public_access_result="$(
+    aws s3api get-public-access-block \
+      --region "$AWS_REGION" \
+      --bucket "$S3_BUCKET" \
+      --query 'PublicAccessBlockConfiguration' \
+      --output json 2>/dev/null
+  )"; then
+    if node -e '
+      const value = JSON.parse(process.argv[1]);
+      const fields = [
+        "BlockPublicAcls",
+        "IgnorePublicAcls",
+        "BlockPublicPolicy",
+        "RestrictPublicBuckets",
+      ];
+      const valid =
+        value !== null &&
+        typeof value === "object" &&
+        !Array.isArray(value) &&
+        Object.keys(value).length === fields.length &&
+        Object.keys(value).every((field) => fields.includes(field)) &&
+        fields.every((field) => typeof value[field] === "boolean");
+      process.exit(valid ? 0 : 1);
+    ' "$s3_public_access_result" 2>/dev/null; then
+      S3_PUBLIC_ACCESS="$s3_public_access_result"
+      S3_PUBLIC_ACCESS_OK=true
+    else
+      echo "launch-readiness: S3 public-access response invalid" >&2
+    fi
+  else
+    echo "launch-readiness: S3 public-access query failed" >&2
+  fi
+
+  local instance_network_result=""
+  if instance_network_result="$(
+    aws ec2 describe-instances \
+      --region "$AWS_REGION" \
+      --instance-ids "$INSTANCE_ID" \
+      --query 'Reservations[0].Instances[0].{securityGroups:SecurityGroups,ipv6:NetworkInterfaces[].Ipv6Addresses[].Ipv6Address}' \
+      --output json 2>/dev/null
+  )"; then
+    INSTANCE_NETWORK="$instance_network_result"
+    local sg_ids_text=""
+    if sg_ids_text="$(
+      node -e '
+        const state = JSON.parse(process.argv[1]);
+        const validRecord =
+          state &&
+          typeof state === "object" &&
+          !Array.isArray(state) &&
+          Array.isArray(state.securityGroups) &&
+          state.securityGroups.length > 0 &&
+          Array.isArray(state.ipv6) &&
+          state.ipv6.every((address) => typeof address === "string") &&
+          state.securityGroups.every(
+            (group) =>
+              group &&
+              typeof group === "object" &&
+              !Array.isArray(group) &&
+              typeof group.GroupId === "string" &&
+              /^sg-[0-9a-f]{8,17}$/.test(group.GroupId),
+          );
+        if (!validRecord) process.exit(1);
+        const ids = state.securityGroups.map((group) => group.GroupId);
+        if (new Set(ids).size !== ids.length) process.exit(1);
+        process.stdout.write(ids.join("\n"));
+      ' "$INSTANCE_NETWORK" 2>/dev/null
+    )"; then
+      mapfile -t SG_IDS <<<"$sg_ids_text"
+      INSTANCE_NETWORK_OK=true
+      local sg_state_result=""
+      if sg_state_result="$(
+        aws ec2 describe-security-groups \
+          --region "$AWS_REGION" \
+          --group-ids "${SG_IDS[@]}" \
+          --query 'SecurityGroups[].{id:GroupId,ingress:IpPermissions}' \
+          --output json 2>/dev/null
+      )"; then
+        if node -e 'JSON.parse(process.argv[1])' "$sg_state_result" 2>/dev/null; then
+          SG_STATE="$sg_state_result"
+          SG_QUERY_OK=true
+        else
+          echo "launch-readiness: security-group response invalid" >&2
+        fi
+      else
+        echo "launch-readiness: security-group query failed" >&2
+      fi
+    else
+      echo "launch-readiness: EC2 network response invalid" >&2
+    fi
+  else
+    echo "launch-readiness: EC2 network query failed" >&2
+  fi
+}
+collect_readiness_perimeter
+# END_READINESS_PERIMETER_COLLECTION
 
 CLOUDWATCH_ALARM_COUNT="$(
   aws cloudwatch describe-alarms \
@@ -468,7 +553,8 @@ SNS_TOPIC_COUNT="$(
     --output text 2>/dev/null || printf '%s' '0'
 )"
 
-REPORT_JSON="$(
+# BEGIN_READINESS_REPORT_BUILDER
+build_readiness_report() {
   node - \
     "$REMOTE_JSON" \
     "$RDS_JSON" \
@@ -482,7 +568,9 @@ REPORT_JSON="$(
     "$INSTANCE_NETWORK" \
     "$SG_STATE" \
     "$INSTANCE_NETWORK_OK" \
-    "$SG_QUERY_OK" <<'NODE'
+    "$SG_QUERY_OK" \
+    "$S3_CORS_OK" \
+    "$S3_PUBLIC_ACCESS_OK" <<'NODE'
 const remote = JSON.parse(process.argv[2]);
 const rds = JSON.parse(process.argv[3] || "{}");
 const s3Available = process.argv[4] === "true";
@@ -497,6 +585,8 @@ const securityGroupValue = JSON.parse(process.argv[12] || "[]");
 const securityGroups = Array.isArray(securityGroupValue) ? securityGroupValue : [];
 const instanceNetworkOk = process.argv[13] === "true";
 const securityGroupQueryOk = process.argv[14] === "true";
+const s3CorsOk = process.argv[15] === "true";
+const s3PublicAccessOk = process.argv[16] === "true";
 const canonicalOrigin = "https://nava.legacyhotels.co.za";
 const isRecord = (value) =>
   value !== null && typeof value === "object" && !Array.isArray(value);
@@ -515,6 +605,8 @@ const corsRuleFields = new Set([
 ]);
 const corsStructureValid =
   isRecord(cors) &&
+  Object.keys(cors).length === 1 &&
+  Object.hasOwn(cors, "CORSRules") &&
   corsRules.length > 0 &&
   corsRules.every(
     (rule) =>
@@ -541,6 +633,21 @@ const hasCanonicalCorsRule =
       rule.AllowedOrigins.includes(canonicalOrigin) &&
       rule.AllowedMethods.includes("GET") &&
       rule.AllowedMethods.includes("HEAD"),
+  );
+const publicAccessFields = [
+  "BlockPublicAcls",
+  "IgnorePublicAcls",
+  "BlockPublicPolicy",
+  "RestrictPublicBuckets",
+];
+const publicAccessStructureValid =
+  isRecord(publicAccess) &&
+  Object.keys(publicAccess).length === publicAccessFields.length &&
+  Object.keys(publicAccess).every((field) =>
+    publicAccessFields.includes(field),
+  ) &&
+  publicAccessFields.every(
+    (field) => typeof publicAccess[field] === "boolean",
   );
 const sgIdPattern = /^sg-[0-9a-f]{8,17}$/;
 const attachedGroups = Array.isArray(instanceNetwork.securityGroups)
@@ -633,8 +740,13 @@ const checks = {
     remote.firewall?.tunnel443 === true &&
     remote.firewall?.broad443Absent === true,
   s3CorsCanonical:
-    corsStructureValid && !hasWildcardCorsOrigin && hasCanonicalCorsRule,
+    s3CorsOk &&
+    corsStructureValid &&
+    !hasWildcardCorsOrigin &&
+    hasCanonicalCorsRule,
   s3PublicAccessBlocked:
+    s3PublicAccessOk &&
+    publicAccessStructureValid &&
     publicAccess.BlockPublicAcls === true &&
     publicAccess.IgnorePublicAcls === true &&
     publicAccess.BlockPublicPolicy === true &&
@@ -683,7 +795,10 @@ const report = {
 };
 process.stdout.write(JSON.stringify(report));
 NODE
-)"
+}
+# END_READINESS_REPORT_BUILDER
+
+REPORT_JSON="$(build_readiness_report)"
 
 printf '%s\n' "$REPORT_JSON"
 node - "$REPORT_JSON" <<'NODE' >&2
