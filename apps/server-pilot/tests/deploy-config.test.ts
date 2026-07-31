@@ -1004,6 +1004,13 @@ printf 'AWS_REPORT=%s\\n' "$(build_readiness_report)"
   }
 }
 
+const VPN_HEALTH_OUTPUT_SENTINELS = {
+  route: 'default via',
+  address: 'inet ',
+  host: 'PRIVATE_HOST_SENTINEL',
+  port: 'PRIVATE_PORT_SENTINEL',
+} as const;
+
 async function runVpnHealth(
   address: string,
   interfacePresent: boolean,
@@ -1027,11 +1034,21 @@ async function runVpnHealth(
   try {
     mkdirSync(stubDir);
     const successStub = '#!/usr/bin/env bash\nexit 0\n';
-    for (const command of ['aws', 'nc', 'systemctl']) {
+    for (const command of ['aws', 'systemctl']) {
       const path = join(stubDir, command);
       writeFileSync(path, successStub, 'utf8');
       chmodSync(path, 0o755);
     }
+    const ncPath = join(stubDir, 'nc');
+    writeFileSync(
+      ncPath,
+      `#!/usr/bin/env bash
+printf '%s\\n' '${VPN_HEALTH_OUTPUT_SENTINELS.host}:${VPN_HEALTH_OUTPUT_SENTINELS.port}'
+exit 0
+`,
+      'utf8',
+    );
+    chmodSync(ncPath, 0o755);
     const ipPath = join(stubDir, 'ip');
     writeFileSync(
       ipPath,
@@ -2218,29 +2235,6 @@ describe('deploy config', () => {
     expect(readiness).toContain('build_readiness_report()');
   });
 
-  it('VPN health output redacts route and hotel endpoint details', async () => {
-    const { readFileSync } = await import('node:fs');
-    const { fileURLToPath } = await import('node:url');
-    const { dirname, join } = await import('node:path');
-    const here = dirname(fileURLToPath(import.meta.url));
-    const script = readFileSync(
-      join(here, '..', 'deploy', 'vpn-health-assert.sh'),
-      'utf8',
-    );
-    const echoLines = script.match(/^\s*echo\b.*$/gm)?.join('\n') ?? '';
-
-    expect(echoLines).not.toContain('DEFAULT_ROUTE=');
-    expect(echoLines).not.toMatch(
-      /\$(?:\{)?(?:DEFAULT|HOSTS?|PORTS?|h|p)(?:\})?/,
-    );
-    expect(echoLines).not.toMatch(
-      /\$(?:\{)?h(?:\})?[^\n]*:\$(?:\{)?p(?:\})?/,
-    );
-    expect(script).toContain('echo "VPN_HARD_OK"');
-    expect(script).toContain('echo "HOTEL_PROBE_OK"');
-    expect(script).toContain('echo "VPN_HOTEL_OK"');
-  });
-
   it('VPN health rejects a missing tun0 interface or wrong exact tunnel CIDR', async () => {
     const missing = await runVpnHealth('192.168.138.2/29', false);
     expect(missing.status).toBe(1);
@@ -2252,7 +2246,18 @@ describe('deploy config', () => {
 
     const exact = await runVpnHealth('192.168.138.2/29', true);
     expect(exact.status, exact.stderr).toBe(0);
-    expect(exact.stdout).toContain('VPN_HARD_OK');
+    expect(exact.stdout).toBe(
+      [
+        '== vpn-health-assert ==',
+        'VPN_HARD_OK',
+        'HOTEL_PROBE_OK',
+        'VPN_HOTEL_OK',
+        '',
+      ].join('\n'),
+    );
+    for (const sentinel of Object.values(VPN_HEALTH_OUTPUT_SENTINELS)) {
+      expect(exact.stdout).not.toContain(sentinel);
+    }
   });
 
   it('launch readiness accepts complete private perimeter facts', async () => {

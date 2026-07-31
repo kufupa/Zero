@@ -52,7 +52,7 @@ echo "VPN_HARD_OK"
 hotel_ok=0
 for h in "${HOSTS[@]}"; do
   for p in "${PORTS[@]}"; do
-    if nc -z -w 2 "$h" "$p" 2>/dev/null; then
+    if nc -z -w 2 "$h" "$p" >/dev/null 2>&1; then
       hotel_ok=1
       echo "HOTEL_PROBE_OK"
       break 2
