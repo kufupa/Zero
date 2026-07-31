@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 const CANONICAL_HOST = 'nava.legacyhotels.co.za';
+const CANONICAL_ORIGIN = `https://${CANONICAL_HOST}`;
 const CANONICAL_HOST_ENTRY = `127.0.0.1 ${CANONICAL_HOST}`;
 
 async function runNavaHostMapping(initialHosts: string): Promise<string> {
@@ -341,11 +342,43 @@ describe('deploy config', () => {
 
     for (const file of files) {
       const script = readFileSync(join(here, '..', 'deploy', file), 'utf8');
-      expect(script).not.toContain('--insecure');
-      expect(script).not.toContain('curl -sk');
-      expect(script).not.toContain('curl -fsSk');
+      expect(script).not.toMatch(
+        /\bcurl\b[^\r\n]*(?:--insecure|(?:^|\s)-[A-Za-z]*k[A-Za-z]*)/,
+      );
       expect(script).not.toContain(
         'PLAYWRIGHT_IGNORE_HTTPS_ERRORS="${PLAYWRIGHT_IGNORE_HTTPS_ERRORS:-1}"',
+      );
+      const curlInvocations = [...script.matchAll(/\bcurl\b[^\r\n]*/g)].map(
+        ([invocation]) => invocation,
+      );
+      expect(curlInvocations.length, `${file} curl invocation count`).toBeGreaterThan(0);
+      for (const invocation of curlInvocations) {
+        expect(invocation, `${file}: ${invocation}`).toMatch(
+          /^curl --disable --noproxy '\*'/,
+        );
+      }
+      expect(script).toContain(`CANONICAL_ORIGIN="${CANONICAL_ORIGIN}"`);
+    }
+
+    const launch = readFileSync(
+      join(here, '..', 'deploy', 'launch-readiness.sh'),
+      'utf8',
+    );
+    expect(launch).toContain('-servername "$PUBLIC_HOST"');
+    expect(launch).toContain('-verify_hostname "$PUBLIC_HOST"');
+    expect(launch).toContain('-verify_return_error');
+    expect(launch).toContain('-CAfile /etc/ssl/certs/ca-certificates.crt');
+    expect(launch).toContain('-checkend 2592000');
+    expect(launch).not.toContain('--cacert "$CERT_FILE"');
+
+    for (const file of ['playwright-real-mail-ui-gate.sh', 'playwright-ec2-gate.sh']) {
+      const script = readFileSync(join(here, '..', 'deploy', file), 'utf8');
+      expect(script).toContain('BACKEND_URL="$CANONICAL_ORIGIN"');
+      expect(script).toContain('export PLAYWRIGHT_BASE_URL="$CANONICAL_ORIGIN"');
+      expect(script).toContain('export VITE_PUBLIC_BACKEND_URL="$CANONICAL_ORIGIN"');
+      expect(script).toContain('refusing: PLAYWRIGHT_BASE_URL must be canonical HTTPS origin');
+      expect(script).toContain(
+        'refusing: VITE_PUBLIC_BACKEND_URL must be canonical HTTPS origin',
       );
     }
 
@@ -356,6 +389,195 @@ describe('deploy config', () => {
     expect(config).not.toContain('|| realMailGate');
     expect(config).toContain('Real-mail Playwright requires PLAYWRIGHT_BASE_URL');
     expect(config).toContain('Real-mail Playwright forbids ignored HTTPS errors');
+    expect(config).toContain('Real-mail Playwright requires canonical HTTPS base URL');
+    expect(config).toContain(`const CANONICAL_ORIGIN = '${CANONICAL_ORIGIN}'`);
+  });
+
+  it('production scripts reject noncanonical origins before external commands', async () => {
+    const {
+      chmodSync,
+      existsSync,
+      mkdirSync,
+      mkdtempSync,
+      readFileSync,
+      rmSync,
+      writeFileSync,
+    } = await import('node:fs');
+    const { spawnSync } = await import('node:child_process');
+    const { tmpdir } = await import('node:os');
+    const { delimiter, dirname, join } = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const repoRoot = join(here, '..', '..', '..');
+    const deployDir = join(here, '..', 'deploy');
+    const tempDir = mkdtempSync(join(tmpdir(), 'nava-tls-origin-test-'));
+    const stubDir = join(tempDir, 'bin');
+    const markerPath = join(tempDir, 'external-commands.log');
+    const toBashPath = (path: string) =>
+      path
+        .replace(/^([A-Za-z]):\\/, (_, drive: string) => `/${drive.toLowerCase()}/`)
+        .replaceAll('\\', '/');
+
+    mkdirSync(stubDir);
+    const stub = `#!/usr/bin/env bash\nprintf '%s\\n' "$(basename "$0")" >>"$NAVA_TEST_MARKER"\nexit 97\n`;
+    for (const command of [
+      'aws',
+      'curl',
+      'mktemp',
+      'openssl',
+      'pm2',
+      'pnpm',
+      'sleep',
+      'sudo',
+      'systemctl',
+      'timeout',
+    ]) {
+      const path = join(stubDir, command);
+      writeFileSync(path, stub, 'utf8');
+      chmodSync(path, 0o755);
+    }
+
+    const launchSource = readFileSync(
+      join(deployDir, 'launch-readiness.sh'),
+      'utf8',
+    );
+    const launchRemote = launchSource.match(
+      /REMOTE_COMMAND="\$\(cat <<'REMOTE'\r?\n([\s\S]*?)\r?\nREMOTE\r?\n\)"/,
+    )?.[1];
+    expect(launchRemote, 'launch-readiness remote block').toBeTruthy();
+
+    const baseEnv = {
+      ...process.env,
+      HOME: toBashPath(tempDir),
+      PATH: `${toBashPath(stubDir)}${delimiter}${process.env.PATH ?? ''}`,
+      REPO_ROOT: toBashPath(repoRoot),
+      ENV_FILE: toBashPath(join(tempDir, 'missing.env')),
+      NAVA_POST_BOOT_SMOKE_LOG: toBashPath(join(tempDir, 'smoke.log')),
+      NAVA_TEST_MARKER: toBashPath(markerPath),
+      SMOKE_MAX_ATTEMPTS: '1',
+      SMOKE_SLEEP_SECS: '0',
+      VPN_WAIT_SECS: '1',
+      UNDO_SEND_SECONDS: '0',
+      BETTER_AUTH_URL: CANONICAL_ORIGIN,
+      PLAYWRIGHT_BASE_URL: CANONICAL_ORIGIN,
+      VITE_PUBLIC_BACKEND_URL: CANONICAL_ORIGIN,
+    };
+
+    const run = (
+      scriptName: string,
+      overrides: Record<string, string>,
+      remote = false,
+    ) => {
+      rmSync(markerPath, { force: true });
+      const result = remote
+        ? spawnSync('bash', ['-c', launchRemote!], {
+            encoding: 'utf8',
+            env: { ...baseEnv, ...overrides },
+          })
+        : spawnSync('bash', [join(deployDir, scriptName)], {
+            encoding: 'utf8',
+            env: { ...baseEnv, ...overrides },
+          });
+      return {
+        ...result,
+        externalCommands: existsSync(markerPath)
+          ? readFileSync(markerPath, 'utf8')
+          : '',
+      };
+    };
+
+    const invalidOrigins = [
+      `http://${CANONICAL_HOST}`,
+      `https://other.example`,
+      `https://user:pass@${CANONICAL_HOST}`,
+      `${CANONICAL_ORIGIN}:444`,
+      `${CANONICAL_ORIGIN}/mail`,
+      `${CANONICAL_ORIGIN}?source=override`,
+      `${CANONICAL_ORIGIN}#override`,
+    ];
+
+    try {
+      for (const value of invalidOrigins) {
+        for (const [scriptName, remote] of [
+          ['post-boot-smoke.sh', false],
+          ['launch-readiness.sh', true],
+        ] as const) {
+          const result = run(scriptName, { BETTER_AUTH_URL: value }, remote);
+          expect(result.status, `${scriptName} accepted ${value}`).toBe(2);
+          expect(result.stderr).toContain(
+            'refusing: BETTER_AUTH_URL must be canonical HTTPS origin',
+          );
+          expect(result.externalCommands, `${scriptName} ran command for ${value}`).toBe(
+            '',
+          );
+        }
+      }
+
+      const gateCases = [
+        { PLAYWRIGHT_BASE_URL: `http://${CANONICAL_HOST}` },
+        { PLAYWRIGHT_BASE_URL: 'https://other.example' },
+        { PLAYWRIGHT_BASE_URL: `https://user:pass@${CANONICAL_HOST}` },
+        { PLAYWRIGHT_BASE_URL: `${CANONICAL_ORIGIN}:444` },
+        { PLAYWRIGHT_BASE_URL: `${CANONICAL_ORIGIN}/mail` },
+        { PLAYWRIGHT_BASE_URL: `${CANONICAL_ORIGIN}?source=override` },
+        { PLAYWRIGHT_BASE_URL: `${CANONICAL_ORIGIN}#override` },
+        { VITE_PUBLIC_BACKEND_URL: 'https://other.example' },
+        { VITE_PUBLIC_BACKEND_URL: `https://user:pass@${CANONICAL_HOST}` },
+      ];
+      for (const scriptName of [
+        'playwright-real-mail-ui-gate.sh',
+        'playwright-ec2-gate.sh',
+      ]) {
+        for (const overrides of gateCases) {
+          const result = run(scriptName, overrides);
+          expect(result.status, `${scriptName} accepted ${JSON.stringify(overrides)}`).toBe(
+            2,
+          );
+          expect(result.stderr).toMatch(
+            /refusing: (?:PLAYWRIGHT_BASE_URL|VITE_PUBLIC_BACKEND_URL) must be canonical HTTPS origin/,
+          );
+          expect(
+            result.externalCommands,
+            `${scriptName} ran command for ${JSON.stringify(overrides)}`,
+          ).toBe('');
+        }
+      }
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it('real-mail Playwright config rejects noncanonical base and normalizes one slash', async () => {
+    const envKeys = [
+      'REAL_MAIL_UI_GATE',
+      'PLAYWRIGHT_BASE_URL',
+      'PLAYWRIGHT_IGNORE_HTTPS_ERRORS',
+    ] as const;
+    const previous = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
+
+    try {
+      process.env.REAL_MAIL_UI_GATE = '1';
+      process.env.PLAYWRIGHT_IGNORE_HTTPS_ERRORS = '0';
+      process.env.PLAYWRIGHT_BASE_URL = 'https://other.example';
+      vi.resetModules();
+      await expect(
+        import('../../../packages/testing/playwright.config.ts'),
+      ).rejects.toThrow('Real-mail Playwright requires canonical HTTPS base URL');
+
+      process.env.PLAYWRIGHT_BASE_URL = `${CANONICAL_ORIGIN}/`;
+      vi.resetModules();
+      const { default: config } = await import(
+        '../../../packages/testing/playwright.config.ts'
+      );
+      expect((config.use as { baseURL?: string }).baseURL).toBe(CANONICAL_ORIGIN);
+    } finally {
+      for (const key of envKeys) {
+        const value = previous[key];
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      vi.resetModules();
+    }
   });
 
   it('ops-deploy.sh syncs then SSM deploy-ec2 with optional migrate', async () => {

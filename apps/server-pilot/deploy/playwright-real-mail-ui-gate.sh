@@ -43,9 +43,39 @@ if [ -f "$ENV_FILE" ]; then
   set +a
 fi
 
+CANONICAL_ORIGIN="https://nava.legacyhotels.co.za"
 : "${BETTER_AUTH_URL:?BETTER_AUTH_URL missing from production environment}"
-# Must match BETTER_AUTH_URL host so browser auth cookies stay same-origin.
-export PLAYWRIGHT_BASE_URL="${PLAYWRIGHT_BASE_URL:-$BETTER_AUTH_URL}"
+case "$BETTER_AUTH_URL" in
+  "$CANONICAL_ORIGIN"|"$CANONICAL_ORIGIN/")
+    ;;
+  *)
+    echo "refusing: BETTER_AUTH_URL must be canonical HTTPS origin" >&2
+    exit 2
+    ;;
+esac
+if [ -n "${PLAYWRIGHT_BASE_URL:-}" ]; then
+  case "$PLAYWRIGHT_BASE_URL" in
+    "$CANONICAL_ORIGIN"|"$CANONICAL_ORIGIN/")
+      ;;
+    *)
+      echo "refusing: PLAYWRIGHT_BASE_URL must be canonical HTTPS origin" >&2
+      exit 2
+      ;;
+  esac
+fi
+if [ -n "${VITE_PUBLIC_BACKEND_URL:-}" ]; then
+  case "$VITE_PUBLIC_BACKEND_URL" in
+    "$CANONICAL_ORIGIN"|"$CANONICAL_ORIGIN/")
+      ;;
+    *)
+      echo "refusing: VITE_PUBLIC_BACKEND_URL must be canonical HTTPS origin" >&2
+      exit 2
+      ;;
+  esac
+fi
+export BETTER_AUTH_URL="$CANONICAL_ORIGIN"
+export PLAYWRIGHT_BASE_URL="$CANONICAL_ORIGIN"
+export VITE_PUBLIC_BACKEND_URL="$CANONICAL_ORIGIN"
 export PLAYWRIGHT_COOKIE_PREFIX="${PLAYWRIGHT_COOKIE_PREFIX:-better-auth}"
 if [ "${PLAYWRIGHT_IGNORE_HTTPS_ERRORS:-0}" = "1" ]; then
   echo "refusing: production Playwright cannot ignore HTTPS errors" >&2
@@ -97,26 +127,19 @@ else
   echo "warning: ${INDEX_HTML} missing — relying on nginx-deployed SPA" >&2
 fi
 
-BACKEND_URL="${VITE_PUBLIC_BACKEND_URL:-}"
-if [ -z "$BACKEND_URL" ]; then
-  if [[ "$PLAYWRIGHT_BASE_URL" == https://* ]] || [[ "$PLAYWRIGHT_BASE_URL" == http://* ]]; then
-    BACKEND_URL="$PLAYWRIGHT_BASE_URL"
-  else
-    BACKEND_URL="http://127.0.0.1:8788"
-  fi
-fi
-export VITE_PUBLIC_BACKEND_URL="$BACKEND_URL"
+BACKEND_URL="$CANONICAL_ORIGIN"
 
 echo "pnpm install (playwright pin)"
 pnpm install --frozen-lockfile
 
-if ! curl -fsS "${BACKEND_URL%/}/health" >/dev/null; then
+if ! curl --disable --noproxy '*' -fsS \
+  "${BACKEND_URL%/}/health" >/dev/null; then
   echo "backend not reachable at ${BACKEND_URL}/health" >&2
   exit 1
 fi
 
 echo "using SPA at ${PLAYWRIGHT_BASE_URL}"
-curl -fsS "${PLAYWRIGHT_BASE_URL}/" >/dev/null || {
+curl --disable --noproxy '*' -fsS "${PLAYWRIGHT_BASE_URL}/" >/dev/null || {
   echo "SPA not reachable at ${PLAYWRIGHT_BASE_URL}" >&2
   exit 1
 }

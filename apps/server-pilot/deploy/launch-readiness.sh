@@ -39,15 +39,24 @@ if [ -r "$ENV_FILE" ]; then
   fi
 fi
 
+CANONICAL_ORIGIN="https://nava.legacyhotels.co.za"
 : "${BETTER_AUTH_URL:?BETTER_AUTH_URL missing from production environment}"
-PUBLIC_ORIGIN="$BETTER_AUTH_URL"
-PUBLIC_HOST="$(
-  node -e 'const url = new URL(process.argv[1]); if (url.protocol !== "https:" || url.pathname !== "/") process.exit(1); process.stdout.write(url.hostname)' \
-    "$PUBLIC_ORIGIN"
-)"
+case "$BETTER_AUTH_URL" in
+  "$CANONICAL_ORIGIN"|"$CANONICAL_ORIGIN/")
+    ;;
+  *)
+    echo "refusing: BETTER_AUTH_URL must be canonical HTTPS origin" >&2
+    exit 2
+    ;;
+esac
+PUBLIC_ORIGIN="$CANONICAL_ORIGIN"
+PUBLIC_HOST="${CANONICAL_ORIGIN#https://}"
+export BETTER_AUTH_URL="$PUBLIC_ORIGIN"
 
 HTTP_OK=false
-if curl -fsS --max-time 10 "http://127.0.0.1:8788/health" >/dev/null 2>&1; then
+if curl --disable --noproxy '*' -fsS \
+  --max-time 10 \
+  "http://127.0.0.1:8788/health" >/dev/null 2>&1; then
   HTTP_OK=true
 fi
 
@@ -69,7 +78,7 @@ if timeout 10 openssl s_client \
   TLS_VALID=true
 fi
 
-if curl -fsS \
+if curl --disable --noproxy '*' -fsS \
   --max-time 10 \
   --resolve "${PUBLIC_HOST}:443:127.0.0.1" \
   "${PUBLIC_ORIGIN%/}/health" >/dev/null 2>&1; then
