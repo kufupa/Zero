@@ -106,19 +106,137 @@ fi
 
 echo "== nginx =="
 NGINX_SITE="${NGINX_SITE:-/etc/nginx/sites-available/nava-zero}"
+NGINX_ENABLED="${NGINX_ENABLED:-/etc/nginx/sites-enabled/nava-zero}"
 NGINX_SRC="${SERVER_PILOT}/deploy/nginx.conf"
 if command -v nginx >/dev/null 2>&1; then
-  sudo cp "$NGINX_SRC" "$NGINX_SITE"
-  sudo ln -sf "$NGINX_SITE" /etc/nginx/sites-enabled/nava-zero
-  sudo nginx -t && sudo systemctl reload nginx
+  NGINX_BACKUP="$(mktemp "${TMPDIR:-/tmp}/nava-nginx.XXXXXX")"
+  NGINX_EXISTED=0
+  NGINX_ENABLED_EXISTED=0
+  NGINX_ENABLED_TARGET=""
+
+  cleanup_nginx_backup() {
+    if ! sudo rm -f "$NGINX_BACKUP"; then
+      echo "nginx backup cleanup failed: ${NGINX_BACKUP}" >&2
+      return 1
+    fi
+  }
+  trap 'cleanup_nginx_backup || true' EXIT
+
+  if sudo test -L "$NGINX_SITE"; then
+    echo "nginx site path is a symlink; candidate not installed" >&2
+    exit 1
+  elif sudo test -f "$NGINX_SITE"; then
+    if ! sudo cp --preserve=mode,ownership,timestamps "$NGINX_SITE" "$NGINX_BACKUP"; then
+      echo "nginx site backup failed; candidate not installed" >&2
+      exit 1
+    fi
+    NGINX_EXISTED=1
+  elif sudo test -e "$NGINX_SITE"; then
+    echo "nginx site path is not a regular file; candidate not installed" >&2
+    exit 1
+  fi
+
+  if sudo test -L "$NGINX_ENABLED"; then
+    if ! NGINX_ENABLED_TARGET="$(sudo readlink "$NGINX_ENABLED")"; then
+      echo "nginx enabled symlink target could not be read; candidate not installed" >&2
+      exit 1
+    fi
+    if ! sudo test -e "$NGINX_ENABLED"; then
+      echo "nginx enabled symlink is already broken; candidate not installed" >&2
+      exit 1
+    fi
+    NGINX_ENABLED_EXISTED=1
+  elif sudo test -e "$NGINX_ENABLED"; then
+    echo "nginx enabled path is not a symlink; candidate not installed" >&2
+    exit 1
+  fi
+
+  activate_nginx() {
+    if ! sudo install -o root -g root -m 644 "$NGINX_SRC" "$NGINX_SITE"; then
+      return 1
+    fi
+    if ! sudo ln -sfn "$NGINX_SITE" "$NGINX_ENABLED"; then
+      return 1
+    fi
+    if ! sudo nginx -t; then
+      return 1
+    fi
+    if ! sudo systemctl reload nginx; then
+      return 1
+    fi
+  }
+
+  restore_nginx() {
+    local rollback_failed=0
+    local enabled_removed=1
+
+    if ! sudo rm -f "$NGINX_ENABLED"; then
+      rollback_failed=1
+      enabled_removed=0
+    fi
+
+    if [ "$NGINX_EXISTED" -eq 1 ]; then
+      if ! sudo cp --preserve=mode,ownership,timestamps "$NGINX_BACKUP" "$NGINX_SITE"; then
+        rollback_failed=1
+      fi
+    elif [ "$enabled_removed" -eq 1 ]; then
+      if ! sudo rm -f "$NGINX_SITE"; then
+        rollback_failed=1
+      fi
+    else
+      # Keep the candidate site so an unremovable enabled link cannot become broken.
+      rollback_failed=1
+    fi
+
+    if [ "$NGINX_ENABLED_EXISTED" -eq 1 ] && [ "$enabled_removed" -eq 1 ]; then
+      if ! sudo ln -s "$NGINX_ENABLED_TARGET" "$NGINX_ENABLED"; then
+        rollback_failed=1
+      fi
+    fi
+
+    if [ "$rollback_failed" -eq 0 ]; then
+      if ! sudo nginx -t; then
+        rollback_failed=1
+      elif ! sudo systemctl reload nginx; then
+        rollback_failed=1
+      fi
+    fi
+
+    [ "$rollback_failed" -eq 0 ]
+  }
+
+  if activate_nginx; then
+    if cleanup_nginx_backup; then
+      trap - EXIT
+    else
+      echo "nginx activated but temporary backup cleanup failed" >&2
+      exit 1
+    fi
+  else
+    ROLLBACK_OK=0
+    if restore_nginx; then
+      ROLLBACK_OK=1
+    fi
+
+    CLEANUP_OK=0
+    if cleanup_nginx_backup; then
+      CLEANUP_OK=1
+      trap - EXIT
+    fi
+
+    if [ "$ROLLBACK_OK" -eq 1 ]; then
+      echo "nginx candidate failed; restored previous config" >&2
+    else
+      echo "nginx candidate failed; rollback failed" >&2
+    fi
+    if [ "$CLEANUP_OK" -ne 1 ]; then
+      echo "nginx candidate failed; temporary backup cleanup failed" >&2
+    fi
+    exit 1
+  fi
 else
-  echo "nginx not installed; first-time setup required:"
-  echo "  sudo apt install nginx"
-  echo "  sudo mkdir -p /etc/nginx/ssl"
-  echo "  # place nava.crt and nava.key in /etc/nginx/ssl/"
-  echo "  sudo cp ${NGINX_SRC} ${NGINX_SITE}"
-  echo "  sudo ln -sf ${NGINX_SITE} /etc/nginx/sites-enabled/nava-zero"
-  echo "  sudo nginx -t && sudo systemctl enable --now nginx"
+  echo "nginx not installed; install nginx and the validated TLS files before deploy" >&2
+  exit 1
 fi
 
 if [ "$QUIESCED" = "1" ]; then

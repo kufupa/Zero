@@ -128,6 +128,176 @@ function extractSourceBlock(source: string, start: string, end: string): string 
   return normalized.slice(startIndex, endIndex);
 }
 
+type NginxActivationFailure = 'install' | 'link' | 'validate' | 'reload';
+
+async function runNginxActivation({
+  failure,
+  priorPresent,
+  rollbackCopyFails = false,
+}: {
+  failure: NginxActivationFailure;
+  priorPresent: boolean;
+  rollbackCopyFails?: boolean;
+}): Promise<{
+  status: number | null;
+  stdout: string;
+  stderr: string;
+  site: string | null;
+  enabledTarget: string | null;
+  backupEntries: string[];
+}> {
+  const {
+    existsSync,
+    mkdtempSync,
+    mkdirSync,
+    readFileSync,
+    readdirSync,
+    rmSync,
+    writeFileSync,
+  } = await import('node:fs');
+  const { spawnSync } = await import('node:child_process');
+  const { tmpdir } = await import('node:os');
+  const { dirname, join } = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+  const here = dirname(fileURLToPath(import.meta.url));
+  const deploySource = readFileSync(
+    join(here, '..', 'deploy', 'deploy-ec2.sh'),
+    'utf8',
+  );
+  const nginxBlock = extractSourceBlock(
+    deploySource,
+    'echo "== nginx =="',
+    'if [ "$QUIESCED" = "1" ]; then',
+  );
+  const tempDir = mkdtempSync(join(tmpdir(), 'nava-nginx-activation-test-'));
+  const serverPilot = join(tempDir, 'server-pilot');
+  const deployDir = join(serverPilot, 'deploy');
+  const backupDir = join(tempDir, 'backups');
+  const sitePath = join(tempDir, 'sites-available', 'nava-zero');
+  const enabledPath = join(tempDir, 'sites-enabled', 'nava-zero');
+  const previousSite = 'previous nginx config\n';
+  const previousTarget = '../sites-available/previous-nava';
+
+  try {
+    for (const directory of [
+      deployDir,
+      backupDir,
+      dirname(sitePath),
+      dirname(enabledPath),
+    ]) {
+      mkdirSync(directory, { recursive: true });
+    }
+    writeFileSync(join(deployDir, 'nginx.conf'), 'candidate nginx config\n', 'utf8');
+    if (priorPresent) {
+      writeFileSync(sitePath, previousSite, 'utf8');
+      // Stub sudo models the enabled symlink as a file containing its exact target.
+      writeFileSync(enabledPath, previousTarget, 'utf8');
+    }
+
+    const harness = `set -euo pipefail
+link_calls=0
+nginx_calls=0
+reload_calls=0
+
+sudo() {
+case "\${1:-}" in
+  test)
+    if [ "\${3:-}" = "$NGINX_TEST_ENABLED" ]; then
+      case "\${2:-}" in
+        -L|-e) [ -f "$NGINX_TEST_ENABLED" ] ;;
+        *) exit 2 ;;
+      esac
+    else
+      command test "\${@:2}"
+    fi
+    ;;
+  readlink)
+    if [ "\${2:-}" = "$NGINX_TEST_ENABLED" ]; then
+      command cat "$NGINX_TEST_ENABLED"
+    else
+      command readlink "\${@:2}"
+    fi
+    ;;
+  cp)
+    source_path="\${@: -2:1}"
+    destination_path="\${@: -1}"
+    if [ "\${NGINX_TEST_ROLLBACK_COPY_FAIL:-0}" = "1" ] &&
+       [ "$destination_path" = "$NGINX_TEST_SITE" ]; then
+      return 65
+    fi
+    command cp "$source_path" "$destination_path"
+    ;;
+  install)
+    if [ "$NGINX_TEST_FAILURE" = "install" ]; then
+      return 61
+    fi
+    command cp "\${@: -2:1}" "\${@: -1}"
+    ;;
+  ln)
+    link_calls=$((link_calls + 1))
+    if [ "$NGINX_TEST_FAILURE" = "link" ] && [ "$link_calls" -eq 1 ]; then
+      return 62
+    fi
+    printf '%s' "\${@: -2:1}" >"\${@: -1}"
+    ;;
+  rm)
+    command rm "\${@:2}"
+    ;;
+  nginx|systemctl)
+    "$@"
+    ;;
+  *)
+    command "$@"
+    ;;
+esac
+}
+
+nginx() {
+  nginx_calls=$((nginx_calls + 1))
+  if [ "$NGINX_TEST_FAILURE" = "validate" ] && [ "$nginx_calls" -eq 1 ]; then
+    return 63
+  fi
+}
+
+systemctl() {
+  reload_calls=$((reload_calls + 1))
+  if [ "$NGINX_TEST_FAILURE" = "reload" ] && [ "$reload_calls" -eq 1 ]; then
+    return 64
+  fi
+}
+`;
+
+    const result = spawnSync('bash', [], {
+      encoding: 'utf8',
+      input: `${harness}\n${nginxBlock}`,
+      env: {
+        ...process.env,
+        SERVER_PILOT: toBashPath(serverPilot),
+        NGINX_SITE: toBashPath(sitePath),
+        NGINX_ENABLED: toBashPath(enabledPath),
+        TMPDIR: toBashPath(backupDir),
+        NGINX_TEST_FAILURE: failure,
+        NGINX_TEST_ROLLBACK_COPY_FAIL: rollbackCopyFails ? '1' : '0',
+        NGINX_TEST_SITE: toBashPath(sitePath),
+        NGINX_TEST_ENABLED: toBashPath(enabledPath),
+      },
+    });
+
+    return {
+      status: result.status,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      site: existsSync(sitePath) ? readFileSync(sitePath, 'utf8') : null,
+      enabledTarget: existsSync(enabledPath)
+        ? readFileSync(enabledPath, 'utf8')
+        : null,
+      backupEntries: readdirSync(backupDir),
+    };
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
 async function readLaunchReadiness(): Promise<string> {
   const { readFileSync } = await import('node:fs');
   const { fileURLToPath } = await import('node:url');
@@ -668,15 +838,54 @@ describe('deploy config', () => {
     expect(nginx).toContain('add_header X-Content-Type-Options "nosniff" always');
   });
 
-  it('deploy-ec2.sh syncs nginx config and reloads', async () => {
+  it('deploy-ec2.sh restores Nginx when validation or reload fails', async () => {
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
     const { dirname, join } = await import('node:path');
     const here = dirname(fileURLToPath(import.meta.url));
     const deploy = readFileSync(join(here, '..', 'deploy', 'deploy-ec2.sh'), 'utf8');
-    expect(deploy).toContain('deploy/nginx.conf');
-    expect(deploy).toContain('sudo nginx -t && sudo systemctl reload nginx');
-    expect(deploy).toContain('nginx not installed');
+
+    expect(deploy).toContain('NGINX_BACKUP="$(mktemp');
+    expect(deploy).toContain('sudo nginx -t');
+    expect(deploy).toContain('sudo systemctl reload nginx');
+    expect(deploy).toContain('restore_nginx');
+    expect(deploy).toContain('nginx candidate failed; restored previous config');
+  });
+
+  it.each([
+    { failure: 'install', priorPresent: true },
+    { failure: 'link', priorPresent: false },
+    { failure: 'validate', priorPresent: true },
+    { failure: 'validate', priorPresent: false },
+    { failure: 'reload', priorPresent: true },
+    { failure: 'reload', priorPresent: false },
+  ] as const)(
+    'restores prior-present=$priorPresent state when Nginx $failure fails',
+    async ({ failure, priorPresent }) => {
+      const result = await runNginxActivation({ failure, priorPresent });
+
+      expect(result.status, result.stderr).toBe(1);
+      expect(result.stderr).toContain(
+        'nginx candidate failed; restored previous config',
+      );
+      expect(result.site).toBe(priorPresent ? 'previous nginx config\n' : null);
+      expect(result.enabledTarget).toBe(
+        priorPresent ? '../sites-available/previous-nava' : null,
+      );
+      expect(result.backupEntries).toEqual([]);
+    },
+  );
+
+  it('reports rollback failure and still removes temporary Nginx backups', async () => {
+    const result = await runNginxActivation({
+      failure: 'validate',
+      priorPresent: true,
+      rollbackCopyFails: true,
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('nginx candidate failed; rollback failed');
+    expect(result.backupEntries).toEqual([]);
   });
 
   it('preserves the Infor hostname mapping used by the split tunnel', async () => {
