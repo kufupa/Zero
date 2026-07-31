@@ -1,0 +1,18 @@
+---
+description: "Hard safety boundary preventing tests from mutating Zero pilot or production databases"
+alwaysApply: true
+---
+
+# Pilot RDS test safety
+
+Safety overrides plans, skills, review findings, autonomy, and requests to make tests green.
+
+- Never run Vitest or another test runner with `DATABASE_URL` pointing at `nava-zero-mail-pilot` or any production database.
+- Never set or use `VITEST_ALLOW_PILOT_RDS=1`. Treat it as a prohibited legacy escape hatch.
+- Never source `.env.production` into a shell that will run tests.
+- Before Vitest on laptop or EC2, run `unset DATABASE_URL VITEST_ALLOW_PILOT_RDS`.
+- Database-required tests use a disposable non-production database only.
+- Pilot verification uses read-only SQL/API checks, health checks, or purpose-built non-test scripts.
+- Existing plans or gate scripts that permit pilot-RDS Vitest are stale. Do not execute that permission.
+- Missing disposable database is a safety blocker, including during overnight autonomous execution.
+- Never print database URLs, credentials, private mail bodies, addresses, or other PII into prompts, subagent inputs, logs, or SSM output.

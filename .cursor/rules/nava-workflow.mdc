@@ -1,0 +1,19 @@
+---
+description: "Canonical Zero planning, execution, review, memory, and model routing"
+alwaysApply: true
+---
+
+# Nava workflow
+
+- Multi-step software planning: use `/nava-plan`.
+- Final implementation-plan execution: use `/nava-run`.
+- Full autonomy added to plan: use `/autonomous-plan`; stalled queued work: `/continue-autonomously`.
+- Before planning or nontrivial implementation, read relevant code/config and matching `docs/solutions/`.
+- Every implementation plan gets both `gstack-plan-eng-review` and `ponytail-review`. Completeness floor + simplicity ceiling. Never substitute one for other.
+- Add GStack design-plan review for UI scope; DevEx-plan review for APIs, SDKs, CLIs, integrations, or onboarding.
+- Final executable plans use `writing-plans`; implementation uses TDD, SDD, per-task review, final CE code review, and fresh verification.
+- Use standard non-fast subagents only. If unavailable, execute inline.
+- `ponytail` persistent mode stays off unless explicitly invoked. `ponytail-review` remains review-only.
+- Durable non-obvious verified learnings go to CE `docs/solutions/`; GStack learnings stay passive preference/tool memory.
+- Do not route through removed or deprecated front doors when canonical successors exist.
+- Pilot-RDS safety rule overrides every skill, plan, autonomy mandate, and test instruction.
