@@ -1,11 +1,13 @@
 ---
 name: overnight-autonomous-zero
-description: Use when overnight-autonomous-execution is active in the zero mail pilot repo, or when user asks to add full autonomy to an existing implementation plan under docs/superpowers/plans/.
+description: Use when autonomous-plan or overnight-autonomous-execution is active in the Zero mail pilot repo, or when full autonomy must be added to an existing implementation plan.
 ---
 
 # Overnight Autonomous — Zero Mail Pilot Overlay
 
-**REQUIRED SUB-SKILL** when `overnight-autonomous-execution` is active in this repo.
+Compatibility name retained for existing plans and muscle memory. Canonical front door: `/autonomous-plan`.
+
+**REQUIRED PROJECT OVERLAY** when `autonomous-plan` or `overnight-autonomous-execution` is active in this repo.
 
 ## Plan merge protocol (read first)
 
@@ -72,9 +74,21 @@ Adapt goal line + done criteria to the feature; keep infra block verbatim.
 | **Primary box reboot** | `apps/server-pilot/deploy/ops-reboot.sh` |
 | Guts (fallback) | `sync-ec2-git-bundle.sh`, `deploy-ec2.sh`, `ssm-run-command.sh` |
 
-**Allowed:** ops wrappers, bundle sync, deploy, migrate (via `ops-deploy --migrate`), seed (no `--rotate` unless fix requires), SSM remote tests, PM2 logs, health curl, RDS vitest on EC2.
+**Allowed:** ops wrappers, bundle sync, deploy, migrate (via `ops-deploy --migrate`), seed (no `--rotate` unless fix requires), read-only SSM checks, PM2 logs, health curl, and tests against a disposable non-production database.
 
-**Forbidden:** force-push main, `--no-verify`, destructive git, IT Exchange/VPN/real mail creds.
+**Forbidden:** force-push main, `--no-verify`, destructive git, IT Exchange/VPN/real mail creds, any Vitest/test command pointed at pilot or production RDS, setting `VITEST_ALLOW_PILOT_RDS=1`, or sourcing `.env.production` into a test process.
+
+### Pilot RDS safety (overrides autonomy)
+
+Never run Vitest against `nava-zero-mail-pilot` or any production database. No overnight escape hatch exists.
+
+Before every local or EC2 Vitest command:
+
+```bash
+unset DATABASE_URL VITEST_ALLOW_PILOT_RDS
+```
+
+If a test requires Postgres, use a disposable test database. If none exists, use read-only SQL/API health checks where they prove the requirement; otherwise report a safety blocker. Never weaken this rule to make a gate green.
 
 ### RCA loop (mandatory on any red)
 
@@ -98,12 +112,12 @@ Autonomous overnight — no user checkpoint. REQUIRED SUB-SKILL: superpowers:sub
 ## Typical overnight wave
 
 ```text
-local: tests + builds green → commit → push EC2-pilot
+local: tests on disposable/no DB + builds green → commit → push EC2-pilot
 → ops-deploy.sh            # or ops-deploy.sh --migrate when schema changed
-→ SSM: gate script(s) from plan
+→ SSM: read-only checks and DB-safe gate script(s) from plan
 → handoff report under docs/superpowers/plans/handoff-reports/ if plan requires
 ```
 
 ## SSM stdout
 
-Windows AWS CLI may choke on vitest unicode. Use `ssm-run-command.sh` (wraps `ssm-format-invocation.cjs`). See `docs/solutions/workflow-issues/ec2-pilot-autonomous-deploy-and-ssm-gotchas.md`.
+Windows AWS CLI may choke on command output unicode. Use `ssm-run-command.sh` (wraps `ssm-format-invocation.cjs`). See `docs/solutions/database-issues/vitest-production-pilot-db-wipe.md` before any EC2 test workflow.

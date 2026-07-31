@@ -13,7 +13,7 @@ gstack_eng_review_scope: full-as-written
 
 # feat: Real Zimbra mail cutover for navaai@
 
-> **For agentic workers:** Prefer `superpowers:subagent-driven-development` or `/ce-work`. Product Contract IDs (R/A/F/AE) are authoritative for behavior.
+> **For agentic workers:** Prefer `superpowers:subagent-driven-development`. Product Contract IDs (R/A/F/AE) are authoritative for behavior.
 
 **Product Contract preservation:** Enriched in-place from brainstorm confirmation — Product Contract unchanged after write; Planning Contract added below.
 

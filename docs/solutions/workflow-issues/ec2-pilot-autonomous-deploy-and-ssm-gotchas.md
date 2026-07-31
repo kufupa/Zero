@@ -1,6 +1,6 @@
 ---
 title: EC2 Pilot Autonomous Deploy and SSM Gotchas
-last_updated: 2026-07-07
+last_updated: 2026-07-28
 category: workflow-issues
 module: server-pilot deploy
 problem_type: workflow_issue
@@ -11,11 +11,13 @@ applies_when:
   - Git bundle sync to EC2 when direct git pull is insufficient
   - Long pnpm install or build steps run through ssm-run-command.sh
   - Running RDS drizzle migrations on EC2 before or after deploy
+  - Running intentional EC2 vitest gates that source .env.production
 tags:
   - ec2
   - ssm
   - bundle-sync
   - deploy
+  - vitest-allow-pilot-rds
 ---
 
 # EC2 Pilot Autonomous Deploy and SSM Gotchas
@@ -107,13 +109,13 @@ bash apps/server-pilot/deploy/ssm-run-command.sh \
 
 **Verified:** Contract convergence Wave 7 (2026-07-07) — migrations applied with exported env; PM2 http/worker online; `curl -fsS http://127.0.0.1:8788/health` OK. RDS and Secrets Manager `DATABASE_URL` were never corrupt.
 
-**EC2 server tests need `NODE_ENV=test`.** Full vitest on EC2 with only `.env.production` sourced yields auth mock failures. Export `NODE_ENV=test` before `pnpm test` for the integration suite.
+**EC2 Vitest against pilot RDS is unconditionally blocked.** Sourcing `.env.production` into tests is actively dangerous. Vitest always refuses `DATABASE_URL` hosts containing `nava-zero-mail-pilot`; `VITEST_ALLOW_PILOT_RDS=1` no longer bypasses the guard (see [vitest-production-pilot-db-wipe.md](../database-issues/vitest-production-pilot-db-wipe.md)). DB-backed gates require `TEST_DATABASE_URL` pointing at a disposable database, replace inherited `DATABASE_URL`, and clear the legacy escape hatch. AI/Bedrock gates remain DB-free.
 
 **SSM poll cap.** `ssm-run-command.sh` sets `SSM_MAX_POLL_SECONDS=1800` and `SSM_MAX_EMPTY_POLLS=120` so empty-status spins do not hang forever (30 was too aggressive for slow command registration).
 
 ### Test timeout under parallel load
 
-`package-contract.test.ts` timed out at 5s under parallel vitest load; bumped to 15s (commit `2955a324`).
+`package-contract.test.ts` timed out at 5s under parallel vitest load; bumped to 15s (commit `2955a324`), later to 30s for the exports-map import check.
 
 ## Why This Matters
 
@@ -145,17 +147,24 @@ bash apps/server-pilot/deploy/ssm-run-command.sh \
 bash apps/server-pilot/deploy/ssm-run-command.sh 'curl -fsS http://127.0.0.1:8788/health'
 ```
 
-**RDS tests on EC2 after deploy:**
+**Disposable-DB Vitest on EC2:**
 
 ```bash
+# TEST_DATABASE_URL must already be set securely to a disposable DB.
 bash apps/server-pilot/deploy/ssm-run-command.sh \
-  'set -a; source /home/ubuntu/repos/zero/apps/server-pilot/.env.production; set +a; export NODE_ENV=test; cd /home/ubuntu/repos/zero && pnpm --filter @zero/server test tests/ingest-store.test.ts 2>&1 | LC_ALL=C tr -dc "\040-\176\012\015"'
+  'export NVM_DIR=/home/ubuntu/.nvm; . /home/ubuntu/.nvm/nvm.sh; cd /home/ubuntu/repos/zero && bash apps/server-pilot/deploy/mail-search-gate.sh'
+
+# DB-free focused run
+bash apps/server-pilot/deploy/ssm-run-command.sh \
+  'unset DATABASE_URL VITEST_ALLOW_PILOT_RDS; export NODE_ENV=test; cd /home/ubuntu/repos/zero/apps/server-pilot && pnpm exec vitest run tests/env.test.ts --reporter=dot 2>&1 | LC_ALL=C tr -dc "\040-\176\012\015"'
 ```
 
 ## Related
 
+- [vitest-production-pilot-db-wipe.md](../database-issues/vitest-production-pilot-db-wipe.md) — unconditional pilot-RDS Vitest refusal + disposable-DB gate contract
 - [nava-fixture-loopback-e2e-harness.md](../architecture-patterns/nava-fixture-loopback-e2e-harness.md) — fixture loopback gate uses `ssm-run-command.sh`
 - [ec2-pilot-post-audit-tier5-execution.md](./ec2-pilot-post-audit-tier5-execution.md) — Tier 5 wave SHAs, gates, test triage
+- [ec2-pilot-ops-deploy-restart-reboot.md](./ec2-pilot-ops-deploy-restart-reboot.md) — operator front door (`ops-*` scripts)
 - [mail-list-keyset-pagination-cursor.md](../logic-errors/mail-list-keyset-pagination-cursor.md) — page-2 cursor bind fix
 - [task-1-report.md](../../superpowers/plans/handoff-reports/task-1-report.md) (presign RCA, `64695dbf`)
 - [progress-ledger.md](../../superpowers/plans/handoff-reports/progress-ledger.md) (Task 12 EC2 gate)

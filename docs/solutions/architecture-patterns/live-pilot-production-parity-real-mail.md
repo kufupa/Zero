@@ -1,6 +1,7 @@
 ---
 title: Live Pilot Production Parity for Real Mail on EC2
 date: 2026-07-23
+last_updated: 2026-07-23
 category: architecture-patterns
 module: server-pilot real mail
 problem_type: architecture_pattern
@@ -78,6 +79,7 @@ Patch live env surgically (SSM sed / targeted edit). Prefer **not** full `write-
 ### Near-realtime without F5
 
 - Thread list polls at ~15s (`VITE_MAIL_POLL_MS=15000`).
+- Open thread detail must share the same foreground poll policy (`openThreadQueryPollingOptions` on `useThread` / `mail.get`) — list bump alone leaves an open pane stale until hard refresh. See [mail-open-thread-stale-and-recipient-you-label.md](../logic-errors/mail-open-thread-stale-and-recipient-you-label.md).
 - Force Sync (user debug menu) calls real `forceSync` → `ingestOnce` under mailbox lock — marker / new mail appears without hard reload.
 - Compose and reply loopbacks must land via poll + sync, not `location.reload`.
 

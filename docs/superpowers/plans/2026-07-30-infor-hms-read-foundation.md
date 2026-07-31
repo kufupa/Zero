@@ -60,9 +60,9 @@
 | **Primary box reboot** | `apps/server-pilot/deploy/ops-reboot.sh` |
 | Guts (fallback) | `sync-ec2-git-bundle.sh`, `deploy-ec2.sh`, `ssm-run-command.sh` |
 
-**Allowed:** ops wrappers, bundle sync, deploy, migrate (via `ops-deploy --migrate`), seed (no `--rotate` unless fix requires), SSM remote tests, PM2 logs, health curl, RDS vitest on EC2.
+**Allowed:** ops wrappers, bundle sync, deploy, migrate (via `ops-deploy --migrate`), seed (no `--rotate` unless fix requires), read-only SSM checks, PM2 logs, health curl, and tests against a disposable non-production database.
 
-**Forbidden:** force-push main, `--no-verify`, destructive git, IT Exchange/VPN/real mail creds.
+**Forbidden:** force-push main, `--no-verify`, destructive git, IT Exchange/VPN/real mail creds, pilot/production-RDS Vitest, `VITEST_ALLOW_PILOT_RDS=1`, or sourcing `.env.production` into tests.
 
 Deploy and live-read canary work begins only in Task 9 after Tasks 0–8 and their task reviews are green. No deployment step authorizes a live HMS mutation.
 
