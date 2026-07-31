@@ -62,10 +62,22 @@ append_env POP3_TLS "${POP3_TLS:-}"
 append_env POP3_USER "${POP3_USER:-}"
 append_env POP3_PASSWORD "${POP3_PASSWORD:-}"
 append_env POP3_SECRET_ARN "${POP3_SECRET_ARN:-}"
+# Real SMTP is Rocketseed-only (IP-trust). Default + fail closed if mis-set.
+if [[ "${MAIL_TRANSPORT_MODE:-fixture}" == "real" ]]; then
+  : "${SMTP_HOST:=172.24.0.8}"
+  : "${SMTP_PORT:=587}"
+  : "${SMTP_SECURE:=false}"
+  if [[ "${SMTP_HOST}" != "172.24.0.8" ]]; then
+    echo "SMTP_HOST must be 172.24.0.8 when MAIL_TRANSPORT_MODE=real (got ${SMTP_HOST})" >&2
+    exit 1
+  fi
+fi
+
 append_env SMTP_HOST "${SMTP_HOST:-}"
 append_env SMTP_PORT "${SMTP_PORT:-}"
 append_env SMTP_SECURE "${SMTP_SECURE:-}"
 append_env SMTP_USER "${SMTP_USER:-}"
+# Optional: leftover SMTP_PASSWORD is ignored by RealSmtpTransport on Rocketseed.
 append_env SMTP_PASSWORD "${SMTP_PASSWORD:-}"
 append_env AI_DRAFTS_ENABLED "${AI_DRAFTS_ENABLED:-}"
 # Real-mail: durable triage writes on by default (ops can still override).

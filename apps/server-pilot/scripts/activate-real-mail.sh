@@ -1,23 +1,22 @@
 #!/usr/bin/env bash
-# Activate real Exchange/Zimbra POP3/SMTP on EC2 pilot.
-# Parameterized — pass host/user/secret ARNs via env; never pass passwords on CLI.
+# Activate real hotel mail on EC2 pilot:
+#   POP3 → Zimbra 172.24.0.10 (AUTH required)
+#   SMTP → Rocketseed 172.24.0.8:587 STARTTLS (IP-trust, never AUTH)
+# Parameterized — pass POP3 secret via env; never pass passwords on CLI.
 set -euo pipefail
 
 REPO_ROOT="${REPO_ROOT:-/home/ubuntu/repos/zero}"
 SERVER_PILOT="${REPO_ROOT}/apps/server-pilot"
 AWS_REGION="${AWS_REGION:-af-south-1}"
+ROCKETSEED_SMTP_HOST="172.24.0.8"
 
 : "${POP3_HOST:=172.24.0.10}"
-: "${SMTP_HOST:=172.24.0.10}"
+: "${SMTP_HOST:=172.24.0.8}"
 : "${POP3_USER:=navaai@legacyhotels.co.za}"
 : "${SMTP_USER:=navaai@legacyhotels.co.za}"
 
 if [[ -z "${POP3_SECRET_ARN:-}" && -z "${POP3_PASSWORD:-}" ]]; then
   echo "POP3_SECRET_ARN or POP3_PASSWORD required" >&2
-  exit 1
-fi
-if [[ -z "${SMTP_SECRET_ARN:-}" && -z "${SMTP_PASSWORD:-}" ]]; then
-  echo "SMTP_SECRET_ARN or SMTP_PASSWORD required" >&2
   exit 1
 fi
 
@@ -27,9 +26,11 @@ export MAIL_TRANSPORT_MODE=real
 echo "== activate-real-mail: validating connectivity =="
 cd "$SERVER_PILOT"
 
-# Staged secrets must survive sourcing an empty/stale .env.production (staged wins).
+# Staged values must survive sourcing an empty/stale .env.production (staged wins).
 STAGED_POP3_PASSWORD="${POP3_PASSWORD:-}"
 STAGED_SMTP_PASSWORD="${SMTP_PASSWORD:-}"
+STAGED_SMTP_HOST="${SMTP_HOST:-}"
+STAGED_POP3_HOST="${POP3_HOST:-}"
 
 if [[ -f "${SERVER_PILOT}/.env.production" ]]; then
   set -a
@@ -44,12 +45,23 @@ fi
 if [[ -n "${STAGED_SMTP_PASSWORD}" ]]; then
   export SMTP_PASSWORD="${STAGED_SMTP_PASSWORD}"
 fi
+if [[ -n "${STAGED_SMTP_HOST}" ]]; then
+  export SMTP_HOST="${STAGED_SMTP_HOST}"
+fi
+if [[ -n "${STAGED_POP3_HOST}" ]]; then
+  export POP3_HOST="${STAGED_POP3_HOST}"
+fi
 
 # Re-apply defaults after source (host/user may have been unset in .env).
 : "${POP3_HOST:=172.24.0.10}"
-: "${SMTP_HOST:=172.24.0.10}"
+: "${SMTP_HOST:=172.24.0.8}"
 : "${POP3_USER:=navaai@legacyhotels.co.za}"
 : "${SMTP_USER:=navaai@legacyhotels.co.za}"
+
+if [[ "${SMTP_HOST}" != "${ROCKETSEED_SMTP_HOST}" ]]; then
+  echo "SMTP_HOST must be 172.24.0.8 (Rocketseed); got ${SMTP_HOST}" >&2
+  exit 1
+fi
 
 export POP3_HOST POP3_USER
 export SMTP_HOST SMTP_USER
@@ -83,28 +95,20 @@ if [[ -z "${POP3_PORT}" ]]; then
   exit 1
 fi
 
-echo "== SMTP port probe (587 then 25) =="
-SMTP_PORT=""
-SMTP_SECURE=""
-for candidate in 587 25; do
-  if probe_tcp "$SMTP_HOST" "$candidate"; then
-    SMTP_PORT="$candidate"
-    # 587 = STARTTLS submission; 25 = clear/relay — neither is implicit TLS (465).
-    SMTP_SECURE=false
-    echo "SMTP reachable on ${SMTP_HOST}:${SMTP_PORT} (SMTP_SECURE=${SMTP_SECURE})"
-    break
-  fi
-done
-if [[ -z "${SMTP_PORT}" ]]; then
-  echo "SMTP port probe failed (tried 587, 25 on ${SMTP_HOST})" >&2
+echo "== SMTP port probe (Rocketseed 587 only) =="
+SMTP_PORT=587
+SMTP_SECURE=false
+if ! probe_tcp "$SMTP_HOST" "$SMTP_PORT"; then
+  echo "SMTP port probe failed (tried ${SMTP_PORT} on ${SMTP_HOST})" >&2
   exit 1
 fi
+echo "SMTP reachable on ${SMTP_HOST}:${SMTP_PORT} (SMTP_SECURE=${SMTP_SECURE})"
 
 export POP3_PORT POP3_TLS
 export SMTP_PORT SMTP_SECURE
 
-# Hotel Zimbra over VPN often has expired TLS certs (CERT_HAS_EXPIRED / ESOCKET).
-# Pilot default: accept for private hotel path; override with MAIL_TLS_REJECT_UNAUTHORIZED=true.
+# POP3 (Zimbra) may need loose TLS for expired hotel certs.
+# Rocketseed SMTP smoke below forces rejectUnauthorized=true independently.
 export MAIL_TLS_REJECT_UNAUTHORIZED="${MAIL_TLS_REJECT_UNAUTHORIZED:-false}"
 
 echo "== build server-pilot (required for smoke + worker) =="
@@ -148,35 +152,26 @@ if [[ "$POP3_AUTH_OK" -ne 1 ]]; then
   exit 1
 fi
 
-echo "== SMTP auth smoke =="
+echo "== SMTP STARTTLS smoke (Rocketseed IP-trust, no AUTH) =="
 node --input-type=module -e "
 import nodemailer from 'nodemailer';
-const port = Number(process.env.SMTP_PORT);
-const user = process.env.SMTP_USER;
-let pass = process.env.SMTP_PASSWORD;
-if (!pass && process.env.SMTP_SECRET_ARN) {
-  const { SecretsManagerClient, GetSecretValueCommand } = await import('@aws-sdk/client-secrets-manager');
-  const client = new SecretsManagerClient({ region: process.env.AWS_REGION ?? 'af-south-1' });
-  const out = await client.send(new GetSecretValueCommand({ SecretId: process.env.SMTP_SECRET_ARN }));
-  const raw = out.SecretString ?? '';
-  try {
-    const parsed = JSON.parse(raw);
-    pass = parsed.SMTP_PASSWORD ?? parsed.password ?? raw;
-  } catch {
-    pass = raw;
-  }
+const host = process.env.SMTP_HOST;
+if (host !== '172.24.0.8') {
+  throw new Error('SMTP_HOST must be 172.24.0.8 for Rocketseed smoke');
 }
-if (!user || !pass) throw new Error('SMTP_USER and SMTP_PASSWORD (or SMTP_SECRET_ARN) required for auth smoke');
-const rejectUnauthorized = process.env.MAIL_TLS_REJECT_UNAUTHORIZED !== 'false';
 const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST,
-  port,
-  secure: process.env.SMTP_SECURE === 'true',
-  auth: { user, pass },
-  tls: { rejectUnauthorized },
+  host,
+  port: Number(process.env.SMTP_PORT),
+  secure: false,
+  requireTLS: true,
+  auth: undefined,
+  tls: {
+    rejectUnauthorized: true,
+    servername: 'branding.legacyhotels.co.za',
+  },
 });
 await transporter.verify();
-console.log('SMTP auth OK');
+console.log('SMTP STARTTLS OK');
 "
 
 export AI_DRAFTS_ENABLED=false
@@ -204,4 +199,4 @@ export WORKER_MAX_MESSAGES=1
 node dist/mail/ingest/worker.js
 
 echo "== activate-real-mail complete =="
-echo "MAIL_TRANSPORT_MODE=real — verify pm2 logs and exchange-smoke.md"
+echo "MAIL_TRANSPORT_MODE=real SMTP=${SMTP_HOST}:${SMTP_PORT} (Rocketseed) POP3=${POP3_HOST} — verify pm2 logs and navaai-real-mail-smoke.md"

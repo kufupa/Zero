@@ -338,7 +338,7 @@ describe('deploy config', () => {
     expect(refuse.stderr).toMatch(/CONFIRM_PILOT_WIPE=1/);
   });
 
-  it('activate-real-mail.sh probes ports, SMTP auth smoke, staged password wins', async () => {
+  it('activate-real-mail.sh pins Rocketseed SMTP, no AUTH smoke, staged password wins', async () => {
     const { readFileSync } = await import('node:fs');
     const { spawnSync } = await import('node:child_process');
     const { fileURLToPath } = await import('node:url');
@@ -348,9 +348,16 @@ describe('deploy config', () => {
     const script = readFileSync(scriptPath, 'utf8');
 
     expect(script).toContain('POP3_HOST:=172.24.0.10');
-    expect(script).toContain('SMTP_HOST:=172.24.0.10');
+    expect(script).toContain('SMTP_HOST:=172.24.0.8');
+    expect(script).not.toContain('SMTP_HOST:=172.24.0.10');
     expect(script).toContain('POP3_USER:=navaai@legacyhotels.co.za');
     expect(script).toContain('SMTP_USER:=navaai@legacyhotels.co.za');
+    expect(script).toMatch(/SMTP_HOST[^\n]*172\.24\.0\.8/);
+    expect(script).toContain('SMTP_HOST must be 172.24.0.8');
+
+    // POP3 still requires credentials; SMTP password optional (IP-trust).
+    expect(script).toContain('POP3_SECRET_ARN or POP3_PASSWORD required');
+    expect(script).not.toContain('SMTP_SECRET_ARN or SMTP_PASSWORD required');
 
     // Staged passwords saved before source; restored after (staged wins).
     expect(script).toContain('STAGED_POP3_PASSWORD="${POP3_PASSWORD:-}"');
@@ -361,22 +368,23 @@ describe('deploy config', () => {
     expect(script).toContain('export POP3_PASSWORD="${STAGED_POP3_PASSWORD}"');
     expect(script).toContain('export SMTP_PASSWORD="${STAGED_SMTP_PASSWORD}"');
 
-    // Port probe loop: POP3 995→110, SMTP 587→25; fail closed.
+    // Port probe: POP3 995→110; SMTP 587 only (no port 25).
     expect(script).toContain('for candidate in 995 110');
-    expect(script).toContain('for candidate in 587 25');
+    expect(script).toContain('SMTP_PORT=587');
+    expect(script).not.toContain('for candidate in 587 25');
     expect(script).toContain('POP3 port probe failed');
     expect(script).toContain('SMTP port probe failed');
     expect(script).toContain('POP3_TLS=true');
     expect(script).toContain('POP3_TLS=false');
     expect(script).toContain('SMTP_SECURE=false');
 
-    // SMTP auth smoke (not EHLO-only bare verify); TLS insecure gate for hotel certs.
-    expect(script).toContain('auth: { user, pass }');
-    expect(script).toContain('SMTP auth OK');
-    expect(script).not.toContain('SMTP EHLO OK');
-    expect(script).toContain('transporter.verify()');
-    expect(script).toContain('MAIL_TLS_REJECT_UNAUTHORIZED');
-    expect(script).toContain('tls: { rejectUnauthorized }');
+    // Rocketseed STARTTLS smoke — never AUTH verify with Zimbra creds.
+    expect(script).toContain('SMTP STARTTLS OK');
+    expect(script).not.toContain('auth: { user, pass }');
+    expect(script).not.toContain('SMTP auth OK');
+    expect(script).toContain('requireTLS: true');
+    expect(script).toContain("servername: 'branding.legacyhotels.co.za'");
+    expect(script).toContain('rejectUnauthorized: true');
     expect(script).toContain('trying next candidate');
 
     expect(script).toContain('export AI_DRAFTS_ENABLED=false');
