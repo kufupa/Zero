@@ -2218,6 +2218,29 @@ describe('deploy config', () => {
     expect(readiness).toContain('build_readiness_report()');
   });
 
+  it('VPN health output redacts route and hotel endpoint details', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const script = readFileSync(
+      join(here, '..', 'deploy', 'vpn-health-assert.sh'),
+      'utf8',
+    );
+    const echoLines = script.match(/^\s*echo\b.*$/gm)?.join('\n') ?? '';
+
+    expect(echoLines).not.toContain('DEFAULT_ROUTE=');
+    expect(echoLines).not.toMatch(
+      /\$(?:\{)?(?:DEFAULT|HOSTS?|PORTS?|h|p)(?:\})?/,
+    );
+    expect(echoLines).not.toMatch(
+      /\$(?:\{)?h(?:\})?[^\n]*:\$(?:\{)?p(?:\})?/,
+    );
+    expect(script).toContain('echo "VPN_HARD_OK"');
+    expect(script).toContain('echo "HOTEL_PROBE_OK"');
+    expect(script).toContain('echo "VPN_HOTEL_OK"');
+  });
+
   it('VPN health rejects a missing tun0 interface or wrong exact tunnel CIDR', async () => {
     const missing = await runVpnHealth('192.168.138.2/29', false);
     expect(missing.status).toBe(1);

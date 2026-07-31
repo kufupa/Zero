@@ -32,11 +32,10 @@ if ! ip -4 -o addr show dev "$EXPECTED_VPN_INTERFACE" |
 fi
 
 DEFAULT="$(ip -4 route show default | head -n1 || true)"
-echo "DEFAULT_ROUTE=$DEFAULT"
-if [ -z "$DEFAULT" ] || ! echo "$DEFAULT" | grep -q 'via 172\.31\.0\.1'; then
+if [ -z "$DEFAULT" ] || ! grep -q 'via 172\.31\.0\.1' <<<"$DEFAULT"; then
   hard_fail "VPN_HARD_FAIL_HOST_ROUTE"
 fi
-if echo "$DEFAULT" | grep -qE 'tun[0-9]+'; then
+if grep -qE 'tun[0-9]+' <<<"$DEFAULT"; then
   hard_fail "VPN_HARD_FAIL_HOST_ROUTE"
 fi
 
@@ -55,7 +54,7 @@ for h in "${HOSTS[@]}"; do
   for p in "${PORTS[@]}"; do
     if nc -z -w 2 "$h" "$p" 2>/dev/null; then
       hotel_ok=1
-      echo "HOTEL_PROBE_OK $h:$p"
+      echo "HOTEL_PROBE_OK"
       break 2
     fi
   done
