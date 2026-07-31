@@ -9,6 +9,8 @@ After ephemeral smoke PASS, run confidence gate, then enable `openvpn-client@nav
 - Local `live real data connection/` with filled auth + P12
 - Scripts on EC2 (`sync-ec2-git-bundle.sh`)
 
+Ronny's completion email is accepted as delivery of the server-side VPN assignment. Do not add another up-front hotel-IT confirmation blocker. Runtime reconnect and reboot proof below decides whether escalation is needed.
+
 ## Ordered run
 
 ```bash
@@ -60,9 +62,10 @@ bash apps/server-pilot/deploy/ssm-run-command.sh \
 
 1. `pull-filter ignore "redirect-gateway"` (+ DNS/DOMAIN)
 2. Explicit `route 172.24.0.0/16`
-3. Confidence before enable
-4. Post-enable HOST_ROUTE/RESOLV assert → auto-disable on fail
-5. No secrets in git
+3. Exact tunnel identity: interface `tun0`, IPv4 CIDR `192.168.138.2/29`
+4. Confidence before enable
+5. Post-enable HOST_ROUTE/RESOLV assert → auto-disable on fail
+6. No secrets in git
 
 ## Durability (boot / deploy / crash)
 
@@ -80,10 +83,34 @@ Always-on stays up across crashes and soft reboots. Deploy **never** restages VP
 
 | Class | Checks | Fail |
 |-------|--------|------|
-| **HARD** | unit active; default via `172.31.0.1` (not `tun`); STS | `VPN_HARD_FAIL_*`; exit **1** → abort caller |
+| **HARD** | unit active; `tun0` exists; exact `192.168.138.2/29`; default via `172.31.0.1` (not `tun`); STS | `VPN_HARD_FAIL_*`; exit **1** → abort caller |
 | **SOFT** | hotel TCP on `172.24.0.0/16` | `VPN_SOFT_WARN_HOTEL`; exit **0** (warn only) |
 
 Pass tokens: `VPN_HARD_OK`, `VPN_HOTEL_OK` (or soft warn).
+
+### Server-side tunnel identity
+
+Client-side `ifconfig-persist` records a prior address but does not guarantee that reconnects receive the same address. Hotel VPN must assign this client through server-side `ifconfig-push`, CCD, or an equivalent fixed-assignment mechanism.
+
+Required runtime identity:
+
+- Interface: `tun0`
+- IPv4 CIDR: `192.168.138.2/29`
+
+`vpn-health-assert.sh` verifies both values before default-route and hotel-route checks. Every deploy and every reboot must run that assertion:
+
+```bash
+# Reconnect proof
+sudo systemctl restart openvpn-client@nava
+bash /home/ubuntu/repos/zero/apps/server-pilot/deploy/vpn-health-assert.sh
+
+# Reboot proof from laptop; post-boot smoke invokes the same assertion
+bash apps/server-pilot/deploy/ops-reboot.sh
+```
+
+Expected result after each reconnect or reboot is `VPN_HARD_OK` with `tun0` carrying exactly `192.168.138.2/29`. `ops-deploy.sh`, `post-boot-smoke.sh`, and `launch-readiness.sh` make drift a persistent failure.
+
+Escalate to hotel IT only when runtime proof fails with `VPN_HARD_FAIL_INTERFACE_tun0` or `VPN_HARD_FAIL_ADDRESS`. Ask them specifically to verify the server-side `ifconfig-push`/CCD-equivalent mapping for this client, then rerun reconnect and reboot proof. Do not request general confirmation before a failing runtime signal exists.
 
 ### Who calls assert
 

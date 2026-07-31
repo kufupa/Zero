@@ -57,6 +57,226 @@ function activeCanonicalEntries(hosts: string): string[] {
     .filter((line) => line.split(/\s+/).includes(CANONICAL_HOST));
 }
 
+type FirewallFacts = {
+  active: boolean;
+  defaultDeny: boolean;
+  tunnel443: boolean;
+  broad443Absent: boolean;
+};
+
+type LaunchReadinessReport = {
+  checks: Record<string, boolean>;
+  observations: Record<string, unknown>;
+};
+
+async function runLaunchReadinessReport({
+  firewall = {},
+  cors = {
+    CORSRules: [
+      {
+        AllowedOrigins: [CANONICAL_ORIGIN],
+        AllowedMethods: ['GET', 'HEAD'],
+      },
+    ],
+  },
+  publicAccess = {
+    BlockPublicAcls: true,
+    IgnorePublicAcls: true,
+    BlockPublicPolicy: true,
+    RestrictPublicBuckets: true,
+  },
+  instanceNetwork = {
+    securityGroups: [{ GroupId: 'sg-test' }],
+    ipv6: [],
+  },
+  securityGroups = [{ id: 'sg-test', ingress: [] }],
+  omitSecurityGroups = false,
+}: {
+  firewall?: Partial<FirewallFacts>;
+  cors?: unknown;
+  publicAccess?: unknown;
+  instanceNetwork?: unknown;
+  securityGroups?: unknown;
+  omitSecurityGroups?: boolean;
+} = {}): Promise<LaunchReadinessReport> {
+  const { readFileSync } = await import('node:fs');
+  const { spawnSync } = await import('node:child_process');
+  const { fileURLToPath } = await import('node:url');
+  const { dirname, join } = await import('node:path');
+  const here = dirname(fileURLToPath(import.meta.url));
+  const source = readFileSync(
+    join(here, '..', 'deploy', 'launch-readiness.sh'),
+    'utf8',
+  ).replaceAll('\r\n', '\n');
+  const reportStart = source.indexOf('REPORT_JSON="$(');
+  const heredocMarker = "<<'NODE'\n";
+  const heredocStart = source.indexOf(heredocMarker, reportStart);
+  const codeStart = heredocStart + heredocMarker.length;
+  const codeEnd = source.indexOf('\nNODE\n)"', codeStart);
+  if (reportStart < 0 || heredocStart < 0 || codeEnd < 0) {
+    throw new Error('launch-readiness report builder not found');
+  }
+
+  const remote = {
+    health: { http: true, https: true, tls: true },
+    pm2: {
+      required: {
+        http: { present: true, online: true, restarts: 0 },
+        worker: { present: true, online: true, restarts: 0 },
+        'ai-worker': { present: true, online: true, restarts: 0 },
+      },
+      allOnline: true,
+    },
+    hotelProbe: true,
+    firewall: {
+      active: true,
+      defaultDeny: true,
+      tunnel443: true,
+      broad443Absent: true,
+      ...firewall,
+    },
+    config: {
+      envLoaded: true,
+      mailTransportModeReal: true,
+      betterAuthUrlCorrect: true,
+      undoSendSecondsCorrect: true,
+      aiWriteGateEnabled: true,
+      aiDraftsDisabled: true,
+    },
+    db: {
+      connected: true,
+      centurionActiveTransportCount: 1,
+      centurionActiveCategoryCount: 5,
+      workflowNonterminalCount: 0,
+      workflowDeadLetterCount: 0,
+      workflowDeadLetterRecentCount: 0,
+      outboundNonterminalCount: 0,
+      latestInboundAt: null,
+      counts: { threads: 0, messages: 0, inboundMessages: 0 },
+    },
+    disk: { safe: true, usedPercent: 10, freeMB: 10_000 },
+  };
+  const rds = {
+    status: 'available',
+    deletionProtection: true,
+    multiAZ: false,
+    backupRetentionDays: 7,
+    backupLatestRestorableAt: '2026-07-31T12:00:00.000Z',
+  };
+  const args = [
+    JSON.stringify(remote),
+    JSON.stringify(rds),
+    'true',
+    'Enabled',
+    '[]',
+    '1',
+    '1',
+    JSON.stringify(cors),
+    JSON.stringify(publicAccess),
+    JSON.stringify(instanceNetwork),
+  ];
+  if (!omitSecurityGroups) args.push(JSON.stringify(securityGroups));
+
+  const result = spawnSync(process.execPath, ['-', ...args], {
+    input: source.slice(codeStart, codeEnd),
+    encoding: 'utf8',
+  });
+  if (result.status !== 0) {
+    throw new Error(result.stderr || `readiness report builder exited ${result.status}`);
+  }
+  return JSON.parse(result.stdout) as LaunchReadinessReport;
+}
+
+async function runVpnHealth(
+  address: string,
+  interfacePresent: boolean,
+): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  const {
+    chmodSync,
+    mkdtempSync,
+    mkdirSync,
+    readFileSync,
+    rmSync,
+    writeFileSync,
+  } = await import('node:fs');
+  const { spawnSync } = await import('node:child_process');
+  const { tmpdir } = await import('node:os');
+  const { delimiter, dirname, join } = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+  const here = dirname(fileURLToPath(import.meta.url));
+  const sourcePath = join(here, '..', 'deploy', 'vpn-health-assert.sh');
+  const tempDir = mkdtempSync(join(tmpdir(), 'nava-vpn-identity-test-'));
+  const stubDir = join(tempDir, 'bin');
+  const toBashPath = (path: string) =>
+    path
+      .replace(/^([A-Za-z]):\\/, (_, drive: string) => `/${drive.toLowerCase()}/`)
+      .replaceAll('\\', '/');
+
+  try {
+    mkdirSync(stubDir);
+    const successStub = '#!/usr/bin/env bash\nexit 0\n';
+    for (const command of ['aws', 'nc', 'systemctl']) {
+      const path = join(stubDir, command);
+      writeFileSync(path, successStub, 'utf8');
+      chmodSync(path, 0o755);
+    }
+    const ipPath = join(stubDir, 'ip');
+    writeFileSync(
+      ipPath,
+      `#!/usr/bin/env bash
+case "$*" in
+  "link show tun0")
+    [ "\${VPN_TEST_INTERFACE_PRESENT:-0}" = "1" ]
+    ;;
+  "-4 -o addr show dev tun0")
+    printf '7: tun0    inet %s scope global tun0\\n' "\${VPN_TEST_ADDRESS:-}"
+    ;;
+  "-4 route show default")
+    printf '%s\\n' 'default via 172.31.0.1 dev ens5'
+    ;;
+  "-4 route")
+    printf '%s\\n' '172.24.0.0/16 dev tun0 scope link'
+    ;;
+  *)
+    exit 97
+    ;;
+esac
+`,
+      'utf8',
+    );
+    chmodSync(ipPath, 0o755);
+
+    const scriptPath = join(tempDir, 'vpn-health-assert.sh');
+    const stsPath = toBashPath(join(tempDir, 'sts.json'));
+    writeFileSync(
+      scriptPath,
+      readFileSync(sourcePath, 'utf8').replace(
+        '/tmp/nava-vpn-health-sts.json',
+        stsPath,
+      ),
+      'utf8',
+    );
+    chmodSync(scriptPath, 0o755);
+
+    const result = spawnSync('bash', [toBashPath(scriptPath)], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: `${toBashPath(stubDir)}${delimiter}${process.env.PATH ?? ''}`,
+        VPN_TEST_ADDRESS: address,
+        VPN_TEST_INTERFACE_PRESENT: interfacePresent ? '1' : '0',
+      },
+    });
+    return {
+      status: result.status,
+      stdout: result.stdout,
+      stderr: result.stderr,
+    };
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
 describe('deploy config', () => {
   it('runs worker with bounded autorestart policy', async () => {
     const { loadPm2Config } = await import('../src/deploy/load-pm2-config.js');
@@ -955,6 +1175,134 @@ describe('deploy config', () => {
     } finally {
       rmSync(missingDir, { recursive: true, force: true });
     }
+  });
+
+  it('VPN and launch readiness enforce the private HTTPS perimeter', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const vpn = readFileSync(
+      join(here, '..', 'deploy', 'vpn-health-assert.sh'),
+      'utf8',
+    );
+    const readiness = readFileSync(
+      join(here, '..', 'deploy', 'launch-readiness.sh'),
+      'utf8',
+    );
+
+    expect(vpn).toContain('EXPECTED_VPN_INTERFACE="${EXPECTED_VPN_INTERFACE:-tun0}"');
+    expect(vpn).toContain('EXPECTED_VPN_CIDR="${EXPECTED_VPN_CIDR:-192.168.138.2/29}"');
+    expect(readiness).toContain('ufwTunnel443Only');
+    expect(readiness).toContain('securityGroupIngressEmpty');
+    expect(readiness).toContain('s3CorsCanonical');
+    expect(readiness).toContain('s3PublicAccessBlocked');
+    expect(readiness).toContain('instanceHasNoPublicIpv6');
+    expect(readiness).toContain('aws s3api get-bucket-cors');
+    expect(readiness).toContain('aws s3api get-public-access-block');
+    expect(readiness).toContain('aws ec2 describe-instances');
+    expect(readiness).toContain('aws ec2 describe-security-groups');
+  });
+
+  it('VPN health rejects a missing tun0 interface or wrong exact tunnel CIDR', async () => {
+    const missing = await runVpnHealth('192.168.138.2/29', false);
+    expect(missing.status).toBe(1);
+    expect(missing.stdout).toContain('VPN_HARD_FAIL_INTERFACE_tun0');
+
+    const wrongAddress = await runVpnHealth('192.168.138.3/29', true);
+    expect(wrongAddress.status).toBe(1);
+    expect(wrongAddress.stdout).toContain('VPN_HARD_FAIL_ADDRESS');
+
+    const exact = await runVpnHealth('192.168.138.2/29', true);
+    expect(exact.status, exact.stderr).toBe(0);
+    expect(exact.stdout).toContain('VPN_HARD_OK');
+  });
+
+  it('launch readiness accepts complete private perimeter facts', async () => {
+    const report = await runLaunchReadinessReport();
+
+    expect(report.checks).toMatchObject({
+      ufwTunnel443Only: true,
+      s3CorsCanonical: true,
+      s3PublicAccessBlocked: true,
+      securityGroupIngressEmpty: true,
+      instanceHasNoPublicIpv6: true,
+    });
+    const observations = JSON.stringify(report.observations);
+    expect(observations).not.toContain(CANONICAL_ORIGIN);
+    expect(observations).not.toContain('AllowedOrigins');
+    expect(observations).not.toContain('sg-test');
+  });
+
+  it('launch readiness rejects broad HTTPS firewall ingress', async () => {
+    const report = await runLaunchReadinessReport({
+      firewall: { broad443Absent: false },
+    });
+
+    expect(report.checks.ufwTunnel443Only).toBe(false);
+  });
+
+  it('launch readiness requires canonical CORS origin and methods in one rule', async () => {
+    const splitRules = await runLaunchReadinessReport({
+      cors: {
+        CORSRules: [
+          { AllowedOrigins: [CANONICAL_ORIGIN], AllowedMethods: [] },
+          {
+            AllowedOrigins: ['http://localhost:3000'],
+            AllowedMethods: ['GET', 'HEAD'],
+          },
+        ],
+      },
+    });
+    expect(splitRules.checks.s3CorsCanonical).toBe(false);
+
+    const wildcard = await runLaunchReadinessReport({
+      cors: {
+        CORSRules: [
+          {
+            AllowedOrigins: [CANONICAL_ORIGIN, '*'],
+            AllowedMethods: ['GET', 'HEAD'],
+          },
+        ],
+      },
+    });
+    expect(wildcard.checks.s3CorsCanonical).toBe(false);
+  });
+
+  it('launch readiness requires all four S3 public-access blocks', async () => {
+    const report = await runLaunchReadinessReport({
+      publicAccess: {
+        BlockPublicAcls: true,
+        IgnorePublicAcls: true,
+        BlockPublicPolicy: true,
+      },
+    });
+
+    expect(report.checks.s3PublicAccessBlocked).toBe(false);
+  });
+
+  it('launch readiness fails closed for missing or nonempty SG results', async () => {
+    const missing = await runLaunchReadinessReport({ omitSecurityGroups: true });
+    expect(missing.checks.securityGroupIngressEmpty).toBe(false);
+
+    const empty = await runLaunchReadinessReport({ securityGroups: [] });
+    expect(empty.checks.securityGroupIngressEmpty).toBe(false);
+
+    const ingress = await runLaunchReadinessReport({
+      securityGroups: [{ id: 'sg-test', ingress: [{ IpProtocol: 'tcp' }] }],
+    });
+    expect(ingress.checks.securityGroupIngressEmpty).toBe(false);
+  });
+
+  it('launch readiness rejects public instance IPv6 addresses', async () => {
+    const report = await runLaunchReadinessReport({
+      instanceNetwork: {
+        securityGroups: [{ GroupId: 'sg-test' }],
+        ipv6: ['2001:db8::1'],
+      },
+    });
+
+    expect(report.checks.instanceHasNoPublicIpv6).toBe(false);
   });
 
   it('launch-readiness.sh is strict, redacted, read-only, and syntactically valid', async () => {

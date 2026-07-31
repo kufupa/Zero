@@ -90,6 +90,28 @@ if REQUIRE_HOTEL_PROBE=1 bash "${SERVER_PILOT}/deploy/vpn-health-assert.sh" >/de
   HOTEL_PROBE_OK=true
 fi
 
+UFW_ACTIVE=false
+UFW_DEFAULT_DENY=false
+UFW_TUN443=false
+UFW_BROAD443_ABSENT=true
+UFW_VERBOSE="$(sudo ufw status verbose 2>/dev/null || true)"
+UFW_ADDED="$(sudo ufw show added 2>/dev/null || true)"
+
+if printf '%s\n' "$UFW_VERBOSE" | grep -q '^Status: active$'; then
+  UFW_ACTIVE=true
+fi
+if printf '%s\n' "$UFW_VERBOSE" | grep -q 'Default: deny (incoming)'; then
+  UFW_DEFAULT_DENY=true
+fi
+if printf '%s\n' "$UFW_ADDED" |
+  grep -Fq 'ufw allow in on tun0 to any port 443 proto tcp'; then
+  UFW_TUN443=true
+fi
+if printf '%s\n' "$UFW_ADDED" |
+  awk '/443/ && $0 !~ /on tun0/ { bad = 1 } END { exit bad ? 0 : 1 }'; then
+  UFW_BROAD443_ABSENT=false
+fi
+
 PM2_SUMMARY="$(
   if command -v pm2 >/dev/null 2>&1; then
     pm2 jlist 2>/dev/null | node -e '
@@ -140,6 +162,7 @@ fi
 export HTTP_OK HTTPS_OK TLS_VALID HOTEL_PROBE_OK ENV_LOADED
 export DISK_USED_PERCENT DISK_FREE_MB DISK_SAFE
 export PM2_SUMMARY
+export UFW_ACTIVE UFW_DEFAULT_DENY UFW_TUN443 UFW_BROAD443_ABSENT
 
 cd "$SERVER_PILOT"
 DB_SUMMARY="$(
@@ -245,6 +268,12 @@ const report = {
   },
   pm2,
   hotelProbe: bool("HOTEL_PROBE_OK"),
+  firewall: {
+    active: bool("UFW_ACTIVE"),
+    defaultDeny: bool("UFW_DEFAULT_DENY"),
+    tunnel443: bool("UFW_TUN443"),
+    broad443Absent: bool("UFW_BROAD443_ABSENT"),
+  },
   config: {
     envLoaded: bool("ENV_LOADED"),
     mailTransportModeReal: process.env.MAIL_TRANSPORT_MODE === "real",
@@ -294,7 +323,7 @@ NODE
 )" || REMOTE_JSON=""
 
 if [ "$SSM_EXIT" -ne 0 ] || [ -z "$REMOTE_JSON" ]; then
-  REMOTE_JSON='{"health":{"http":false,"https":false,"tls":false},"pm2":{"required":{},"allOnline":false},"hotelProbe":false,"config":{"envLoaded":false,"mailTransportModeReal":false,"betterAuthUrlCorrect":false,"undoSendSecondsCorrect":false,"aiWriteGateEnabled":false,"aiDraftsDisabled":false},"db":{"connected":false,"centurionActiveTransportCount":0,"centurionActiveCategoryCount":0,"workflowNonterminalCount":0,"workflowDeadLetterCount":0,"workflowDeadLetterRecentCount":0,"outboundNonterminalCount":0,"latestInboundAt":null,"counts":{"threads":0,"messages":0,"inboundMessages":0}},"disk":{"safe":false,"usedPercent":100,"freeMB":0}}'
+  REMOTE_JSON='{"health":{"http":false,"https":false,"tls":false},"pm2":{"required":{},"allOnline":false},"hotelProbe":false,"firewall":{"active":false,"defaultDeny":false,"tunnel443":false,"broad443Absent":false},"config":{"envLoaded":false,"mailTransportModeReal":false,"betterAuthUrlCorrect":false,"undoSendSecondsCorrect":false,"aiWriteGateEnabled":false,"aiDraftsDisabled":false},"db":{"connected":false,"centurionActiveTransportCount":0,"centurionActiveCategoryCount":0,"workflowNonterminalCount":0,"workflowDeadLetterCount":0,"workflowDeadLetterRecentCount":0,"outboundNonterminalCount":0,"latestInboundAt":null,"counts":{"threads":0,"messages":0,"inboundMessages":0}},"disk":{"safe":false,"usedPercent":100,"freeMB":0}}'
 fi
 
 RDS_JSON="$(
@@ -330,6 +359,41 @@ S3_LIFECYCLE="$(
     --query 'Rules[].{id:ID,status:Status,expirationDays:Expiration.Days,abortDays:AbortIncompleteMultipartUpload.DaysAfterInitiation}' \
     --output json 2>/dev/null || printf '%s' '[]'
 )"
+S3_CORS="$(
+  aws s3api get-bucket-cors \
+    --region "$AWS_REGION" \
+    --bucket "$S3_BUCKET" \
+    --output json 2>/dev/null || printf '%s' '{"CORSRules":[]}'
+)"
+S3_PUBLIC_ACCESS="$(
+  aws s3api get-public-access-block \
+    --region "$AWS_REGION" \
+    --bucket "$S3_BUCKET" \
+    --query 'PublicAccessBlockConfiguration' \
+    --output json 2>/dev/null || printf '%s' '{}'
+)"
+INSTANCE_NETWORK="$(
+  aws ec2 describe-instances \
+    --region "$AWS_REGION" \
+    --instance-ids "$INSTANCE_ID" \
+    --query 'Reservations[0].Instances[0].{securityGroups:SecurityGroups,ipv6:NetworkInterfaces[].Ipv6Addresses[].Ipv6Address}' \
+    --output json
+)"
+SG_IDS="$(
+  node -e 'const state = JSON.parse(process.argv[1]); for (const group of state?.securityGroups ?? []) process.stdout.write(`${group.GroupId}\n`)' \
+    "$INSTANCE_NETWORK"
+)"
+if [ -n "$SG_IDS" ]; then
+  SG_STATE="$(
+    aws ec2 describe-security-groups \
+      --region "$AWS_REGION" \
+      --group-ids $SG_IDS \
+      --query 'SecurityGroups[].{id:GroupId,ingress:IpPermissions}' \
+      --output json
+  )"
+else
+  SG_STATE='[]'
+fi
 
 CLOUDWATCH_ALARM_COUNT="$(
   aws cloudwatch describe-alarms \
@@ -352,7 +416,11 @@ REPORT_JSON="$(
     "$S3_VERSIONING" \
     "$S3_LIFECYCLE" \
     "$CLOUDWATCH_ALARM_COUNT" \
-    "$SNS_TOPIC_COUNT" <<'NODE'
+    "$SNS_TOPIC_COUNT" \
+    "$S3_CORS" \
+    "$S3_PUBLIC_ACCESS" \
+    "$INSTANCE_NETWORK" \
+    "$SG_STATE" <<'NODE'
 const remote = JSON.parse(process.argv[2]);
 const rds = JSON.parse(process.argv[3] || "{}");
 const s3Available = process.argv[4] === "true";
@@ -360,6 +428,37 @@ const s3Versioning = process.argv[5] || "Disabled";
 const s3Lifecycle = JSON.parse(process.argv[6] || "[]");
 const cloudWatchAlarmCount = Number(process.argv[7] || 0);
 const snsTopicCount = Number(process.argv[8] || 0);
+const cors = JSON.parse(process.argv[9] || '{"CORSRules":[]}') ?? { CORSRules: [] };
+const publicAccess = JSON.parse(process.argv[10] || "{}") ?? {};
+const instanceNetwork = JSON.parse(process.argv[11] || "{}") ?? {};
+const securityGroupValue = JSON.parse(process.argv[12] || "[]");
+const securityGroups = Array.isArray(securityGroupValue) ? securityGroupValue : [];
+const canonicalOrigin = "https://nava.legacyhotels.co.za";
+const corsRules = Array.isArray(cors.CORSRules) ? cors.CORSRules : [];
+const hasWildcardCorsOrigin = corsRules.some(
+  (rule) =>
+    Array.isArray(rule?.AllowedOrigins) && rule.AllowedOrigins.includes("*"),
+);
+const hasCanonicalCorsRule = corsRules.some((rule) => {
+  const origins = Array.isArray(rule?.AllowedOrigins) ? rule.AllowedOrigins : [];
+  const methods = Array.isArray(rule?.AllowedMethods) ? rule.AllowedMethods : [];
+  return (
+    origins.includes(canonicalOrigin) &&
+    methods.includes("GET") &&
+    methods.includes("HEAD")
+  );
+});
+const attachedSecurityGroupIds = new Set(
+  (Array.isArray(instanceNetwork.securityGroups)
+    ? instanceNetwork.securityGroups
+    : []
+  )
+    .map((group) => group?.GroupId)
+    .filter(Boolean),
+);
+const inspectedSecurityGroupIds = new Set(
+  securityGroups.map((group) => group?.id).filter(Boolean),
+);
 const pm2Required = remote.pm2?.required ?? {};
 const db = remote.db ?? {};
 
@@ -393,6 +492,28 @@ const checks = {
     Number(rds.backupRetentionDays ?? 0) > 0 &&
     Boolean(rds.backupLatestRestorableAt),
   deletionProtection: rds.deletionProtection === true,
+  ufwTunnel443Only:
+    remote.firewall?.active === true &&
+    remote.firewall?.defaultDeny === true &&
+    remote.firewall?.tunnel443 === true &&
+    remote.firewall?.broad443Absent === true,
+  s3CorsCanonical: !hasWildcardCorsOrigin && hasCanonicalCorsRule,
+  s3PublicAccessBlocked:
+    publicAccess.BlockPublicAcls === true &&
+    publicAccess.IgnorePublicAcls === true &&
+    publicAccess.BlockPublicPolicy === true &&
+    publicAccess.RestrictPublicBuckets === true,
+  securityGroupIngressEmpty:
+    attachedSecurityGroupIds.size > 0 &&
+    attachedSecurityGroupIds.size === inspectedSecurityGroupIds.size &&
+    [...attachedSecurityGroupIds].every((id) =>
+      inspectedSecurityGroupIds.has(id),
+    ) &&
+    securityGroups.every(
+      (group) => Array.isArray(group?.ingress) && group.ingress.length === 0,
+    ),
+  instanceHasNoPublicIpv6:
+    Array.isArray(instanceNetwork.ipv6) && instanceNetwork.ipv6.length === 0,
 };
 const failures = Object.entries(checks)
   .filter(([, passed]) => !passed)
@@ -411,6 +532,12 @@ const report = {
       available: s3Available,
       versioning: s3Versioning,
       lifecycle: s3Lifecycle,
+      corsCanonical: checks.s3CorsCanonical,
+      publicAccessBlocked: checks.s3PublicAccessBlocked,
+    },
+    network: {
+      securityGroupIngressEmpty: checks.securityGroupIngressEmpty,
+      instanceHasNoPublicIpv6: checks.instanceHasNoPublicIpv6,
     },
     cloudWatchAlarmCount,
     snsTopicCount,
