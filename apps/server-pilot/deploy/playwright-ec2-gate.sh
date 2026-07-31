@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Mint pilot session, hit production nginx SPA, run Playwright E2E on EC2.
-# Prefer canonical nginx TLS over :3000 static/vite — cookies + same-origin.
+# Use canonical nginx TLS so cookies and API requests remain same-origin.
 set -euo pipefail
 
 REPO_ROOT="${REPO_ROOT:-/home/ubuntu/repos/zero}"
@@ -71,59 +71,17 @@ pnpm install --frozen-lockfile
 # Backend for session mint + health. Same-origin via canonical nginx TLS by default.
 BACKEND_URL="$CANONICAL_ORIGIN"
 
-cleanup() {
-  if [ -n "${FE_PID:-}" ]; then
-    kill "$FE_PID" 2>/dev/null || true
-  fi
-  pkill -f "react-router dev" 2>/dev/null || true
-  pkill -f "dlx serve" 2>/dev/null || true
-}
-trap cleanup EXIT
-
 if ! curl --disable --noproxy '*' -fsS \
   "${BACKEND_URL%/}/health" >/dev/null; then
   echo "backend not reachable at ${BACKEND_URL}/health" >&2
   exit 1
 fi
 
-# Only spin a local FE when explicitly on :3000 (legacy/dev). Default nginx path skips this.
-if [[ "$PLAYWRIGHT_BASE_URL" == *:3000* ]]; then
-  echo "serving mail production SPA on ${PLAYWRIGHT_BASE_URL}"
-  pkill -f "react-router dev" 2>/dev/null || true
-  pkill -f "serve -s" 2>/dev/null || true
-  pkill -f "dlx serve" 2>/dev/null || true
-  sleep 1
-  if [ ! -f apps/mail/build/client/index.html ]; then
-    echo "building mail SPA" >&2
-    pnpm --dir apps/mail run build
-  fi
-  nohup pnpm dlx serve@14.2.4 -s apps/mail/build/client -l 3000 > /tmp/fe-dev.log 2>&1 &
-  FE_PID=$!
-  for _ in $(seq 1 90); do
-    if curl --disable --noproxy '*' -sf \
-      "${PLAYWRIGHT_BASE_URL}/" >/dev/null 2>&1; then
-      echo "frontend up (static)"
-      break
-    fi
-    if ! kill -0 "$FE_PID" 2>/dev/null; then
-      echo "static FE process died" >&2
-      tr -cd '\11\12\15\40-\176' < /tmp/fe-dev.log | tail -80 >&2 || true
-      exit 1
-    fi
-    sleep 1
-  done
-  curl --disable --noproxy '*' -sf "${PLAYWRIGHT_BASE_URL}/" >/dev/null || {
-    echo "frontend never became ready" >&2
-    tr -cd '\11\12\15\40-\176' < /tmp/fe-dev.log | tail -80 >&2 || true
-    exit 1
-  }
-else
-  echo "using nginx SPA at ${PLAYWRIGHT_BASE_URL}"
-  curl --disable --noproxy '*' -fsS "${PLAYWRIGHT_BASE_URL}/" >/dev/null || {
-    echo "nginx SPA not reachable at ${PLAYWRIGHT_BASE_URL}" >&2
-    exit 1
-  }
-fi
+echo "using nginx SPA at ${PLAYWRIGHT_BASE_URL}"
+curl --disable --noproxy '*' -fsS "${PLAYWRIGHT_BASE_URL}/" >/dev/null || {
+  echo "nginx SPA not reachable at ${PLAYWRIGHT_BASE_URL}" >&2
+  exit 1
+}
 
 echo "minting session via ${BACKEND_URL}"
 SECRET=$(aws secretsmanager get-secret-value --region af-south-1 --secret-id nava-zero/server-pilot/pilot-users --query SecretString --output text)

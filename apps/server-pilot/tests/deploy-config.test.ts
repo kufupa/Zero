@@ -4,6 +4,19 @@ const CANONICAL_HOST = 'nava.legacyhotels.co.za';
 const CANONICAL_ORIGIN = `https://${CANONICAL_HOST}`;
 const CANONICAL_HOST_ENTRY = `127.0.0.1 ${CANONICAL_HOST}`;
 
+function curlCommands(source: string): string[] {
+  const logicalCommands = source.replace(/\\\r?\n[ \t]*/g, ' ');
+  return [...logicalCommands.matchAll(/\bcurl\b[^\r\n]*/g)].map(
+    ([command]) => command,
+  );
+}
+
+function insecureCurlCommands(source: string): string[] {
+  return curlCommands(source).filter((command) =>
+    /(?:--insecure|(?:^|\s)-[A-Za-z]*k[A-Za-z]*)/.test(command),
+  );
+}
+
 async function runNavaHostMapping(initialHosts: string): Promise<string> {
   const { mkdtempSync, readFileSync, rmSync, writeFileSync } = await import('node:fs');
   const { spawnSync } = await import('node:child_process');
@@ -342,15 +355,11 @@ describe('deploy config', () => {
 
     for (const file of files) {
       const script = readFileSync(join(here, '..', 'deploy', file), 'utf8');
-      expect(script).not.toMatch(
-        /\bcurl\b[^\r\n]*(?:--insecure|(?:^|\s)-[A-Za-z]*k[A-Za-z]*)/,
-      );
+      expect(insecureCurlCommands(script), `${file} insecure curl commands`).toEqual([]);
       expect(script).not.toContain(
         'PLAYWRIGHT_IGNORE_HTTPS_ERRORS="${PLAYWRIGHT_IGNORE_HTTPS_ERRORS:-1}"',
       );
-      const curlInvocations = [...script.matchAll(/\bcurl\b[^\r\n]*/g)].map(
-        ([invocation]) => invocation,
-      );
+      const curlInvocations = curlCommands(script);
       expect(curlInvocations.length, `${file} curl invocation count`).toBeGreaterThan(0);
       for (const invocation of curlInvocations) {
         expect(invocation, `${file}: ${invocation}`).toMatch(
@@ -382,6 +391,17 @@ describe('deploy config', () => {
       );
     }
 
+    const ec2Gate = readFileSync(
+      join(here, '..', 'deploy', 'playwright-ec2-gate.sh'),
+      'utf8',
+    );
+    expect(ec2Gate).not.toContain(':3000');
+    expect(ec2Gate).not.toContain('cleanup()');
+    expect(ec2Gate).not.toContain('FE_PID');
+    expect(ec2Gate).not.toContain('pkill');
+    expect(ec2Gate).not.toContain('nohup');
+    expect(ec2Gate).not.toContain('dlx serve');
+
     const config = readFileSync(
       join(here, '..', '..', '..', 'packages', 'testing', 'playwright.config.ts'),
       'utf8',
@@ -391,6 +411,20 @@ describe('deploy config', () => {
     expect(config).toContain('Real-mail Playwright forbids ignored HTTPS errors');
     expect(config).toContain('Real-mail Playwright requires canonical HTTPS base URL');
     expect(config).toContain(`const CANONICAL_ORIGIN = '${CANONICAL_ORIGIN}'`);
+  });
+
+  it('curl scanner rejects insecure options across shell continuations', () => {
+    const fixtures = [
+      `curl --disable --noproxy '*' -fsS \\\n  -k "${CANONICAL_ORIGIN}/health"`,
+      `curl --disable --noproxy '*' \\\r\n  -Sfks "${CANONICAL_ORIGIN}/health"`,
+      `curl --disable --noproxy '*' -fsS \\\n  --insecure "${CANONICAL_ORIGIN}/health"`,
+    ];
+
+    for (const fixture of fixtures) {
+      expect(curlCommands(fixture)).toHaveLength(1);
+      expect(curlCommands(fixture)[0]).toMatch(/^curl --disable --noproxy '\*'/);
+      expect(insecureCurlCommands(fixture)).toHaveLength(1);
+    }
   });
 
   it('production scripts reject noncanonical origins before external commands', async () => {
@@ -513,33 +547,30 @@ describe('deploy config', () => {
         }
       }
 
-      const gateCases = [
-        { PLAYWRIGHT_BASE_URL: `http://${CANONICAL_HOST}` },
-        { PLAYWRIGHT_BASE_URL: 'https://other.example' },
-        { PLAYWRIGHT_BASE_URL: `https://user:pass@${CANONICAL_HOST}` },
-        { PLAYWRIGHT_BASE_URL: `${CANONICAL_ORIGIN}:444` },
-        { PLAYWRIGHT_BASE_URL: `${CANONICAL_ORIGIN}/mail` },
-        { PLAYWRIGHT_BASE_URL: `${CANONICAL_ORIGIN}?source=override` },
-        { PLAYWRIGHT_BASE_URL: `${CANONICAL_ORIGIN}#override` },
-        { VITE_PUBLIC_BACKEND_URL: 'https://other.example' },
-        { VITE_PUBLIC_BACKEND_URL: `https://user:pass@${CANONICAL_HOST}` },
-      ];
       for (const scriptName of [
         'playwright-real-mail-ui-gate.sh',
         'playwright-ec2-gate.sh',
       ]) {
-        for (const overrides of gateCases) {
-          const result = run(scriptName, overrides);
-          expect(result.status, `${scriptName} accepted ${JSON.stringify(overrides)}`).toBe(
-            2,
-          );
-          expect(result.stderr).toMatch(
-            /refusing: (?:PLAYWRIGHT_BASE_URL|VITE_PUBLIC_BACKEND_URL) must be canonical HTTPS origin/,
-          );
-          expect(
-            result.externalCommands,
-            `${scriptName} ran command for ${JSON.stringify(overrides)}`,
-          ).toBe('');
+        for (const variable of [
+          'BETTER_AUTH_URL',
+          'PLAYWRIGHT_BASE_URL',
+          'VITE_PUBLIC_BACKEND_URL',
+        ] as const) {
+          for (const value of invalidOrigins) {
+            const overrides = { [variable]: value };
+            const result = run(scriptName, overrides);
+            expect(
+              result.status,
+              `${scriptName} accepted ${JSON.stringify(overrides)}`,
+            ).toBe(2);
+            expect(result.stderr).toContain(
+              `refusing: ${variable} must be canonical HTTPS origin`,
+            );
+            expect(
+              result.externalCommands,
+              `${scriptName} ran command for ${JSON.stringify(overrides)}`,
+            ).toBe('');
+          }
         }
       }
     } finally {
@@ -557,6 +588,21 @@ describe('deploy config', () => {
 
     try {
       process.env.REAL_MAIL_UI_GATE = '1';
+      process.env.PLAYWRIGHT_IGNORE_HTTPS_ERRORS = '0';
+
+      delete process.env.PLAYWRIGHT_BASE_URL;
+      vi.resetModules();
+      await expect(
+        import('../../../packages/testing/playwright.config.ts'),
+      ).rejects.toThrow('Real-mail Playwright requires PLAYWRIGHT_BASE_URL');
+
+      process.env.PLAYWRIGHT_BASE_URL = CANONICAL_ORIGIN;
+      process.env.PLAYWRIGHT_IGNORE_HTTPS_ERRORS = '1';
+      vi.resetModules();
+      await expect(
+        import('../../../packages/testing/playwright.config.ts'),
+      ).rejects.toThrow('Real-mail Playwright forbids ignored HTTPS errors');
+
       process.env.PLAYWRIGHT_IGNORE_HTTPS_ERRORS = '0';
       process.env.PLAYWRIGHT_BASE_URL = 'https://other.example';
       vi.resetModules();
