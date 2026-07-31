@@ -10,6 +10,7 @@ import {
   mailboxTransport,
   mailThread,
   message,
+  outboundSendQueue,
 } from '../src/db/schema/mail';
 import {
   createInlineAttachmentHandler,
@@ -44,6 +45,13 @@ const THREAD_ID = 'thread-rocketseed-original';
 const SMTP_MESSAGE_ID = 'smtp-original@example.invalid';
 const OLD_ATTACHMENT_KEY = 'attachments/local-original/original.pdf';
 const DELIVERED_AT = new Date('2026-07-28T12:34:56.000Z');
+const ORIGINAL_SENT_AT = new Date('2026-07-28T12:00:00.000Z');
+const ORIGINAL_IN_REPLY_TO = 'parent-original@example.invalid';
+const ORIGINAL_REFERENCES = [
+  'root-original@example.invalid',
+  ORIGINAL_IN_REPLY_TO,
+];
+const ORIGINAL_CC = ['cc-original@example.invalid'];
 const INLINE_ORIGIN = 'https://mail.example.invalid';
 const INLINE_ROUTE =
   '/api/mail/messages/:messageId/attachments/:attachmentId/inline';
@@ -88,6 +96,14 @@ function replaceHeader(raw: Buffer, name: string, value: string | null): Buffer 
   return Buffer.from(replaced, 'utf8');
 }
 
+function replaceTopReceivedChain(raw: Buffer, receivedLines: string[]): Buffer {
+  const source = raw.toString('utf8');
+  return Buffer.from(
+    source.replace(/^Received:.*\r?\n/im, `${receivedLines.join('\r\n')}\r\n`),
+    'utf8',
+  );
+}
+
 async function configureSyntheticTransport(db: DB): Promise<void> {
   await db
     .update(mailboxTransport)
@@ -107,6 +123,7 @@ async function seedOriginalMessage(
     threadId?: string;
     direction?: 'inbound' | 'outbound';
     withAttachment?: boolean;
+    queueStatus?: 'sent' | 'pending' | null;
   } = {},
 ): Promise<void> {
   const transportId = opts.transportId ?? TRANSPORT_ID;
@@ -132,19 +149,31 @@ async function seedOriginalMessage(
     direction: opts.direction ?? 'outbound',
     fromAddress: TRANSPORT_EMAIL,
     toAddresses: ['guest@example.invalid'],
-    ccAddresses: [],
+    ccAddresses: ORIGINAL_CC,
     bccAddresses: [TRANSPORT_EMAIL],
     subject: 'Local unbranded subject',
     textBody: 'Local unbranded body',
     htmlBody: '<p>Local unbranded body</p>',
     rawMimeS3Key: 'raw-mime/local-original.eml',
     messageIdHeader: SMTP_MESSAGE_ID,
-    references: [],
+    inReplyTo: ORIGINAL_IN_REPLY_TO,
+    references: ORIGINAL_REFERENCES,
     isRead: true,
     isStarred: true,
-    receivedAt: new Date('2026-07-28T12:00:00.000Z'),
-    sentAt: new Date('2026-07-28T12:00:00.000Z'),
+    receivedAt: ORIGINAL_SENT_AT,
+    sentAt: ORIGINAL_SENT_AT,
   });
+
+  if (opts.queueStatus !== null) {
+    await db.insert(outboundSendQueue).values({
+      id: `queue-${id}`,
+      transportId,
+      messageId: id,
+      sendAt: ORIGINAL_SENT_AT,
+      status: opts.queueStatus ?? 'sent',
+      smtpPayload: { synthetic: true },
+    });
+  }
 
   if (opts.withAttachment) {
     await db.insert(attachment).values({
@@ -457,10 +486,14 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         ingestMailboxId: 'ingest-nava-legacy',
         pop3Uidl: 'uidl-rocketseed-reconcile',
         ownerHeaderValue: TRANSPORT_EMAIL,
-        messageIdHeader: 'delivered-copy@example.invalid',
+        messageIdHeader: SMTP_MESSAGE_ID,
+        inReplyTo: ORIGINAL_IN_REPLY_TO,
+        references: ORIGINAL_REFERENCES,
         fromAddress: TRANSPORT_EMAIL,
         toAddresses: ['guest@example.invalid'],
-        subject: 'Synthetic branded confirmation',
+        ccAddresses: ORIGINAL_CC,
+        bccAddresses: [TRANSPORT_EMAIL],
+        subject: 'Local unbranded subject',
         textBody: 'Delivered branded body.',
         rawMimeS3Key:
           'raw-mime/ingest-nava-legacy/uidl-rocketseed-reconcile.eml',
@@ -469,7 +502,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       });
       expect(state.stored?.htmlBody).toContain('Delivered branded body.');
       expect(state.stored?.receivedAt).toEqual(DELIVERED_AT);
-      expect(state.stored?.sentAt).toEqual(DELIVERED_AT);
+      expect(state.stored?.sentAt).toEqual(ORIGINAL_SENT_AT);
       expect(state.attachmentRows).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -534,7 +567,111 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       expect(state.unauthorizedStatus).toBe(404);
     }, 30000);
 
-    it('serializes concurrent replay for one mailbox UIDL', async () => {
+    it.each([
+      ['absent', null],
+      ['pending', 'pending'],
+    ] as const)(
+      'stores trusted self-copy separately when queue evidence is %s',
+      async (label, queueStatus) => {
+        const storage = withFakeS3();
+        const raw = brandedFixture();
+        const incomingParseId = generateMessageId();
+        const parsed = await parseRawMessage(raw, {
+          messageId: incomingParseId,
+          storage,
+        });
+
+        const state = await withSeededTestDb(async (db) => {
+          await configureSyntheticTransport(db);
+          await seedOriginalMessage(db, { queueStatus });
+          const result = await persistInboundMessage(
+            parsed,
+            raw,
+            {
+              ingestMailboxId: 'ingest-nava-legacy',
+              pop3Uidl: `uidl-rocketseed-queue-${label}`,
+              messageId: incomingParseId,
+            },
+            { db, storage },
+          );
+          const [original] = await db
+            .select()
+            .from(message)
+            .where(eq(message.id, OUTBOUND_ID))
+            .limit(1);
+          const [incoming] = await db
+            .select()
+            .from(message)
+            .where(eq(message.id, incomingParseId))
+            .limit(1);
+          return { result, original, incoming };
+        });
+
+        expect(state.result).toMatchObject({
+          kind: 'stored',
+          messageId: incomingParseId,
+        });
+        expect(state.original).toMatchObject({
+          htmlBody: '<p>Local unbranded body</p>',
+          ingestMailboxId: null,
+          pop3Uidl: null,
+        });
+        expect(state.incoming?.id).toBe(incomingParseId);
+      },
+      30000,
+    );
+
+    it('stores forged-chain self-copy separately when trusted IP is only lower Received', async () => {
+      const storage = withFakeS3();
+      const raw = replaceTopReceivedChain(brandedFixture(), [
+        'Received: from attacker.example.invalid ([203.0.113.9]) by ingest.example.invalid',
+        'Received: from synthetic-rocketseed.example.invalid ([172.24.0.8]) by attacker.example.invalid',
+      ]);
+      const incomingParseId = generateMessageId();
+      const parsed = await parseRawMessage(raw, {
+        messageId: incomingParseId,
+        storage,
+      });
+
+      const state = await withSeededTestDb(async (db) => {
+        await configureSyntheticTransport(db);
+        await seedOriginalMessage(db);
+        const result = await persistInboundMessage(
+          parsed,
+          raw,
+          {
+            ingestMailboxId: 'ingest-nava-legacy',
+            pop3Uidl: 'uidl-rocketseed-forged-chain',
+            messageId: incomingParseId,
+          },
+          { db, storage },
+        );
+        const [original] = await db
+          .select()
+          .from(message)
+          .where(eq(message.id, OUTBOUND_ID))
+          .limit(1);
+        const [incoming] = await db
+          .select()
+          .from(message)
+          .where(eq(message.id, incomingParseId))
+          .limit(1);
+        return { result, original, incoming };
+      });
+
+      expect(state.result).toMatchObject({
+        kind: 'stored',
+        messageId: incomingParseId,
+      });
+      expect(state.original).toMatchObject({
+        htmlBody: '<p>Local unbranded body</p>',
+        ingestMailboxId: null,
+        pop3Uidl: null,
+      });
+      expect(state.incoming?.id).toBe(incomingParseId);
+    }, 30000);
+
+    it('allows only one distinct-UIDL contender to reconcile attachments', async () => {
       const storage = withFakeS3();
       const runId = randomUUID();
       const outboundId = randomUUID();
@@ -542,7 +679,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       const ingestMailboxId = `ingest-rocketseed-${runId}`;
       const threadId = `thread-rocketseed-${runId}`;
       const transportEmail = `sender-${runId}@hotel.example.invalid`;
-      const pop3Uidl = `uidl-rocketseed-${runId}`;
+      const pop3Uidls = [
+        `uidl-rocketseed-${runId}-a`,
+        `uidl-rocketseed-${runId}-b`,
+      ];
       const raw = Buffer.from(
         brandedFixture()
           .toString('utf8')
@@ -606,6 +746,14 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           receivedAt: new Date('2026-07-28T12:00:00.000Z'),
           sentAt: new Date('2026-07-28T12:00:00.000Z'),
         });
+        await first.db.insert(outboundSendQueue).values({
+          id: `queue-rocketseed-${runId}`,
+          transportId,
+          messageId: outboundId,
+          sendAt: new Date('2026-07-28T12:00:00.000Z'),
+          status: 'sent',
+          smtpPayload: { synthetic: true },
+        });
         await first.db.insert(attachment).values({
           id: `attachment-rocketseed-${runId}`,
           messageId: outboundId,
@@ -623,7 +771,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             raw,
             {
               ingestMailboxId,
-              pop3Uidl,
+              pop3Uidl: pop3Uidls[0]!,
               messageId: parseIds[0]!,
             },
             { db: first.db, storage },
@@ -633,7 +781,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             raw,
             {
               ingestMailboxId,
-              pop3Uidl,
+              pop3Uidl: pop3Uidls[1]!,
               messageId: parseIds[1]!,
             },
             { db: second.db, storage },
@@ -646,9 +794,9 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         );
         if (rejected) throw rejected.reason;
         const results = settled.map(
-          (result) => (result as PromiseFulfilledResult<
-            Awaited<(typeof calls)[number]>
-          >).value,
+          (result) =>
+            (result as PromiseFulfilledResult<Awaited<(typeof calls)[number]>>)
+              .value,
         );
 
         const finalMessages = await first.db
@@ -690,8 +838,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           id: outboundId,
           threadId,
           ingestMailboxId,
-          pop3Uidl,
         });
+        expect(pop3Uidls).toContain(finalMessages[0]?.pop3Uidl);
         expect(finalThreads).toHaveLength(1);
         expect(finalAttachments).toHaveLength(3);
         expect(

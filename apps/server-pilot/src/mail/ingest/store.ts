@@ -28,7 +28,7 @@
  * Tests run this inside `withTestDb` so the transaction is rolled back; in
  * production the transaction commits for real.
  */
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import type { DB } from '../../db/client.js';
 import {
@@ -38,6 +38,7 @@ import {
   mailboxTransport,
   message,
   mailThread,
+  outboundSendQueue,
 } from '../../db/schema/mail.js';
 import {
   rawMimeKey,
@@ -58,6 +59,7 @@ import {
 import { refreshThreadSearchVector } from '../search/search-vector.js';
 import { getSenderPreference } from '../sender-preference.js';
 import { ingestRequireOwnerHeader } from '../../env.js';
+import { hasTrustedTopReceivedHeader } from './rocketseed-relay.js';
 
 const CENTURION_TRANSPORT_ID = 'transport-centurion';
 
@@ -259,40 +261,32 @@ async function persistInboundMessageLocked(args: {
     );
     const fromAddress = (parsed.fromAddress ?? '').trim().toLowerCase();
     const fromEmail = normalizeEmailAddress(fromAddress);
-    const reconciliationCandidate =
-      Boolean(fromEmail) && transportIdentities.has(fromEmail)
-        ? await findOutboundReconciliationCandidate(
-            transactionDb,
-            transport.id,
-            parsed,
-          )
-        : undefined;
+    const mayReconcile =
+      Boolean(fromEmail) &&
+      transportIdentities.has(fromEmail) &&
+      hasTrustedTopReceivedHeader(parsed.rawHeaderLines);
+    const reconciliationCandidate = mayReconcile
+      ? await findOutboundReconciliationCandidate(
+          transactionDb,
+          transport.id,
+          parsed,
+        )
+      : undefined;
 
     if (reconciliationCandidate) {
       const deliveredAt = parsed.receivedAt ?? new Date();
       const now = new Date();
-      storedMessageId = reconciliationCandidate.id;
-      threadId = reconciliationCandidate.threadId;
 
-      await tx
+      const reconciled = await tx
         .update(message)
         .set({
           ingestMailboxId: meta.ingestMailboxId,
           pop3Uidl: meta.pop3Uidl,
           ownerHeaderValue: parsed.ownerHeaderValue,
-          messageIdHeader: parsed.messageId,
-          inReplyTo: parsed.inReplyTo,
-          references: parsed.references,
-          fromAddress: parsed.fromAddress ?? '',
-          toAddresses: parsed.toAddresses,
-          ccAddresses: parsed.ccAddresses,
-          bccAddresses: parsed.bccAddresses,
-          subject: parsed.subject,
           textBody: parsed.textBody,
           htmlBody: sanitizeHtmlBodyForStorage(parsed.htmlBody),
           rawMimeS3Key,
           receivedAt: deliveredAt,
-          sentAt: deliveredAt,
           updatedAt: now,
         })
         .where(
@@ -300,17 +294,31 @@ async function persistInboundMessageLocked(args: {
             eq(message.id, reconciliationCandidate.id),
             eq(message.transportId, transport.id),
             eq(message.direction, 'outbound'),
+            isNull(message.ingestMailboxId),
           ),
-        );
+        )
+        .returning({ id: message.id, threadId: message.threadId });
+
+      const reconciledRow = reconciled[0];
+      if (!reconciledRow) {
+        return {
+          kind: 'duplicate',
+          transportId: transport.id,
+          messageId: reconciliationCandidate.id,
+          rawMimeS3Key,
+        };
+      }
+      storedMessageId = reconciledRow.id;
+      threadId = reconciledRow.threadId;
 
       await tx
         .delete(attachment)
-        .where(eq(attachment.messageId, reconciliationCandidate.id));
+        .where(eq(attachment.messageId, reconciledRow.id));
       if (parsed.attachments.length > 0) {
         await tx.insert(attachment).values(
           parsed.attachments.map((a) => ({
             id: randomUUID(),
-            messageId: reconciliationCandidate.id,
+            messageId: reconciledRow.id,
             filename: a.filename,
             mimeType: a.mimeType,
             sizeBytes: a.sizeBytes,
@@ -334,6 +342,22 @@ async function persistInboundMessageLocked(args: {
         threadId,
         rawMimeS3Key,
         attachmentCount: parsed.attachments.length,
+      };
+    }
+
+    const reconciledDuplicate = mayReconcile
+      ? await findReconciledOutboundDuplicate(
+          transactionDb,
+          transport.id,
+          parsed,
+        )
+      : undefined;
+    if (reconciledDuplicate) {
+      return {
+        kind: 'duplicate',
+        transportId: transport.id,
+        messageId: reconciledDuplicate.id,
+        rawMimeS3Key,
       };
     }
 
@@ -567,7 +591,7 @@ async function findExistingIngestedMessage(
   return rows[0];
 }
 
-type OutboundReconciliationCandidate = {
+type OutboundReconciliationMatch = {
   id: string;
   threadId: string;
 };
@@ -576,17 +600,49 @@ async function findOutboundReconciliationCandidate(
   db: DB,
   transportId: string,
   parsed: ParsedInboundMessage,
-): Promise<OutboundReconciliationCandidate | undefined> {
+): Promise<OutboundReconciliationMatch | undefined> {
+  return findOutboundReconciliationMatch(db, transportId, parsed, false);
+}
+
+async function findReconciledOutboundDuplicate(
+  db: DB,
+  transportId: string,
+  parsed: ParsedInboundMessage,
+): Promise<OutboundReconciliationMatch | undefined> {
+  return findOutboundReconciliationMatch(db, transportId, parsed, true);
+}
+
+async function findOutboundReconciliationMatch(
+  db: DB,
+  transportId: string,
+  parsed: ParsedInboundMessage,
+  reconciled: boolean,
+): Promise<OutboundReconciliationMatch | undefined> {
+  const reconciliationState = reconciled
+    ? isNotNull(message.ingestMailboxId)
+    : isNull(message.ingestMailboxId);
   if (hasOutboundCorrelationHeader(parsed)) {
     if (!parsed.outboundMessageId) return undefined;
     const rows = await db
-      .select({ id: message.id, threadId: message.threadId })
+      .select({
+        id: message.id,
+        threadId: message.threadId,
+      })
       .from(message)
+      .innerJoin(
+        outboundSendQueue,
+        and(
+          eq(outboundSendQueue.messageId, message.id),
+          eq(outboundSendQueue.transportId, message.transportId),
+          eq(outboundSendQueue.status, 'sent'),
+        ),
+      )
       .where(
         and(
           eq(message.id, parsed.outboundMessageId),
           eq(message.transportId, transportId),
           eq(message.direction, 'outbound'),
+          reconciliationState,
         ),
       )
       .limit(1);
@@ -595,13 +651,25 @@ async function findOutboundReconciliationCandidate(
 
   if (!parsed.messageId) return undefined;
   const rows = await db
-    .select({ id: message.id, threadId: message.threadId })
+    .select({
+      id: message.id,
+      threadId: message.threadId,
+    })
     .from(message)
+    .innerJoin(
+      outboundSendQueue,
+      and(
+        eq(outboundSendQueue.messageId, message.id),
+        eq(outboundSendQueue.transportId, message.transportId),
+        eq(outboundSendQueue.status, 'sent'),
+      ),
+    )
     .where(
       and(
         eq(message.messageIdHeader, parsed.messageId),
         eq(message.transportId, transportId),
         eq(message.direction, 'outbound'),
+        reconciliationState,
       ),
     )
     .limit(2);
