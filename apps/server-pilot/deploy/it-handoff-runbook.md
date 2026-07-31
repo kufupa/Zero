@@ -38,13 +38,13 @@ After real mail is active, `ops-deploy` keeps `worker` in the PM2 dump (non-fixt
 | POP3 host / port | `172.24.0.10` / probe `995` then `110` |
 | POP3 user | `navaai@legacyhotels.co.za` |
 | POP3 password | staged via `stage-navaai-mail-env.sh` → `/run/nava-mail/password` → export to shell → `.env.production` (chmod 600) |
-| SMTP host / port | same host / probe `587` then `25` |
-| SMTP auth user | `navaai@legacyhotels.co.za` (same mailbox) |
-| SMTP password | same as POP3 this wave |
+| SMTP host / port | **Rocketseed** `172.24.0.8` / `587` only (STARTTLS; IP-trust — **no SMTP AUTH**) |
+| SMTP From identity | Active mailbox transport (`navaai@` or `centurion@`) — not free-form client From |
+| SMTP password | **Not required** for Rocketseed; leftover Zimbra SMTP password must not be used for AUTH |
 | VPN | always-on already; assert with `vpn-health-assert.sh` |
 | Transport rules | **Deferred** for pilot smoke — Centurion BCC + `X-Zero-Mailbox` later |
 
-Secrets Manager for mail is **not** required for this single-box pilot (env-on-disk). Optional SM path still works in `activate-real-mail.sh` if `POP3_SECRET_ARN` / `SMTP_SECRET_ARN` set instead of env password.
+Secrets Manager for mail is **not** required for this single-box pilot (env-on-disk). Optional SM path still works in `activate-real-mail.sh` for **POP3** if `POP3_SECRET_ARN` set instead of env password. Defaults inside activate when unset: `POP3_HOST=172.24.0.10`, `SMTP_HOST=172.24.0.8`, `POP3_USER`/`SMTP_USER=navaai@legacyhotels.co.za`.
 
 ## Agent steps
 
@@ -68,15 +68,15 @@ export SMTP_PASSWORD="$POP3_PASSWORD"
 ./scripts/activate-real-mail.sh
 ```
 
-Defaults inside activate when unset: `POP3_HOST`/`SMTP_HOST=172.24.0.10`, `POP3_USER`/`SMTP_USER=navaai@legacyhotels.co.za`.
+Defaults inside activate when unset: `POP3_HOST=172.24.0.10`, `SMTP_HOST=172.24.0.8`, `POP3_USER`/`SMTP_USER=navaai@legacyhotels.co.za`. SMTP password is optional (Rocketseed IP-trust).
 
 The script:
 
 1. Validates VPN + AWS + RDS + S3 (`deploy/vpn-route-check.sh`)
-2. Port probe POP3 `995`→`110`, SMTP `587`→`25`
+2. Port probe POP3 `995`→`110`; SMTP **587 only** on Rocketseed
 3. POP3 USER/PASS smoke
-4. SMTP **auth** smoke (`SMTP_USER` + password)
-5. Writes `.env.production` with `MAIL_TRANSPORT_MODE=real`, AI gates, SMTP password (`deploy/write-ec2-env.sh`)
+4. SMTP **STARTTLS** smoke (no AUTH; `requireTLS` + SNI `branding.legacyhotels.co.za`)
+5. Writes `.env.production` with `MAIL_TRANSPORT_MODE=real`, `SMTP_HOST=172.24.0.8`, AI gates (`deploy/write-ec2-env.sh`)
 6. Redeploys via `deploy/deploy-ec2.sh`
 7. One ingest cycle: `WORKER_ONE_SHOT=1 WORKER_MAX_MESSAGES=1`
 

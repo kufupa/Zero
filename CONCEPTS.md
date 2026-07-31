@@ -36,15 +36,51 @@ Ops one-shot (`promote-quarantine.ts`) that re-runs S3-stored quarantine MIME th
 
 ### Raw MIME rehydrate
 
-Ops one-shot that rebuilds wiped message rows from durable S3 `raw-mime/` objects (same ingest persist path). Skips keys already present as messages or quarantine; default skips AI triage enqueue so bulk restore does not flood the worker. Distinct from Quarantine promote (which drains quarantine rows) and from intentional pilot DB wipe + seed (which restores transports/auth, not historical mail bodies).
+Ops one-shot that rebuilds wiped message rows from durable S3 `raw-mime/` objects (same ingest persist path). Skips keys already present as messages or quarantine; default skips AI triage enqueue so bulk restore does not flood the worker. Distinct from Quarantine promote (which drains quarantine rows) and from intentional pilot DB wipe + seed (which restores transports/auth, not historical mail bodies). Prefer **Pilot RDS PITR rename recovery** when a clean pre-wipe restore window exists and thread/label continuity matters.
+
+### Pilot RDS PITR rename recovery
+
+Ops recovery that restores the live pilot Postgres instance from a **pre-wipe** point-in-time into a temporary identifier, verifies Centurion/inbound counts, then renames the wiped instance aside and renames the restore into the original identifier so the app endpoint hostname stays stable. Distinct from Raw MIME rehydrate (new message IDs from S3) and from DeletionProtection (which only blocks deleting the instance, not SQL/fixture wipes).
+
+*Avoid: restoring from automated snapshots taken after the wipe clock — they capture empty/fixture state.*
+
+### Wipe-safe pilot verify
+
+How to prove seed / mailbox-access / switcher changes on the live EC2 pilot without pointing Vitest at pilot RDS: local unit/guard tests with `DATABASE_URL` unset; live proof via deploy + `CONFIRM_PILOT_SEED` seed (no password rotate unless required) + SQL or `connections.list` semantics. Distinct from intentional RDS gate scripts that set an explicit vitest opt-in.
+
+*Avoid: treating “EC2 vitest green” as the acceptance path for grant or switcher proof after the Jul 2026 wipe.*
+
+### Pilot RDS vitest refuse
+
+Fail-closed Vitest bootstrap that aborts when `DATABASE_URL` points at the live pilot Postgres host unless an explicit opt-in env is set. Catches suites that never use the transactional test-DB helper. Distinct from the intentional pilot wipe confirm gate (operator truncate scripts) and from disposable/local DB test runs. Necessary but not sufficient alone — opt-in shells and non-Vitest mutators can still wipe; see Pilot RDS PITR rename recovery.
+
+### VITEST_ALLOW_PILOT_RDS
+
+Escape-hatch env historically used by intentional RDS-backed deploy gate scripts when they source production env and run Vitest. After the dual-key mutation guard lands, hazard-context connects to pilot also require a second confirm (`CONFIRM_PILOT_MUTATE` or script-specific seed/wipe confirm as defined in the mutation-guard plan). Must not be set in casual overnight agent shells. Prefer DB-free gates that unset `DATABASE_URL` so neither key is needed.
+
+### Pilot DB hazard context
+
+Runtime signal that Vitest/`NODE_ENV=test`/explicit guard mode is active — under which opening a connection to the live pilot Postgres host is refused unless dual confirms are present. Distinct from production PM2 runtime, which must keep connecting to pilot without those confirms.
+
+### Rocketseed banner server
+
+Hotel SMTP branding relay (`172.24.0.8` / `branding.legacyhotels.co.za`) that injects signature and top/footer banners before mail reaches Zimbra. **Mandatory sole real-mail SMTP hop** for Zero (`MAIL_TRANSPORT_MODE=real` connects only to `.8:587` STARTTLS, IP-trust, never AUTH); POP3 stays Zimbra `.10`. Banner selection remains **From/sender tenant provisioning**, not SMTP AUTH and not “did the message touch Rocketseed.” Traversal stamps (`X-ExSBR-Direction`, `X-BypassBranding`) appear on branded and unbranded copies alike. Fixture/wire do not use hotel SMTP.
+
+*Avoid: treating relay success or BypassBranding headers as proof banners were injected; treating Nava unbranded mail as a broken relay when Nava is an unprovisioned test/BCC sink; pointing real SMTP at Zimbra `.10`.*
+
+### Audit self-BCC
+
+Outbound practice of BCC'ing the active mailbox transport address on every `mail.send` so Zimbra/Outlook can file a Sent copy and the POP3 sink can ingest a return for reconciliation. Orthogonal to Rocketseed branding. Working-tree killswitch `MAIL_SELF_BCC=false|0|off` may disable it for testing once that gate is committed/deployed; until then, omit BCC on direct probe sends.
+
+*Avoid: assuming the Centurion BCC causes Centurion banners; banners require a provisioned From on the Rocketseed path.*
 
 ### MAIL_TRANSPORT_MODE
 
-Environment switch controlling whether POP3/SMTP use fixture adapters (in-memory / fixture files, no TCP to hotel mail), wire adapters (real TCP to localhost Mailpit), or real adapters (hotel Zimbra/Exchange). Live EC2 pilot runs `real`; fixture remains the autonomous/local default and wire is the pre-IT Mailpit gate. Flip modes without code changes.
+Environment switch controlling whether POP3/SMTP use fixture adapters (in-memory / fixture files, no TCP to hotel mail), wire adapters (real TCP to localhost Mailpit), or real adapters (hotel path: SMTP → Rocketseed `.8`, POP3 → Zimbra `.10`). Live EC2 pilot runs `real`; fixture remains the autonomous/local default and wire is the pre-IT Mailpit gate. Flip modes without code changes.
 
 ### Wire transport
 
-`MAIL_TRANSPORT_MODE=wire` — `RealPop3Client` + `RealSmtpTransport` against Mailpit on `127.0.0.1` (ports 11025/11110/18025). Pre-IT confidence for protocol path. Distinct from fixture loopback (in-process) and real (Exchange). Run via `wire-gate.sh`, not every deploy.
+`MAIL_TRANSPORT_MODE=wire` — `RealPop3Client` + `RealSmtpTransport` against Mailpit on `127.0.0.1` (ports 11025/11110/18025). Pre-IT confidence for protocol path. Distinct from fixture loopback (in-process) and real (Rocketseed SMTP + Zimbra POP3). Run via `wire-gate.sh`, not every deploy.
 
 ### Fixture loopback
 
@@ -144,7 +180,7 @@ Seconds outbound mail sits in the undo/schedule queue before SMTP flush (`UNDO_S
 
 ### AI gate
 
-EC2/RDS verification step for the AI mail pipeline: runs server-pilot AI contract tests against production Postgres plus spike eval and server build. Includes mocked `bedrock-adapter-contract.test.ts` (fake adapter — `NODE_ENV=test`). Live Bedrock Converse proof is the separate on-demand Bedrock live gate. Distinct from local vitest, which skips RDS-only cases when `DATABASE_URL` is unset.
+EC2/RDS verification step for the AI mail pipeline: runs server-pilot AI contract tests against production Postgres plus spike eval and server build. Includes mocked `bedrock-adapter-contract.test.ts` (fake adapter — `NODE_ENV=test`). Live Bedrock Converse proof is the separate on-demand Bedrock live gate. Requires VITEST_ALLOW_PILOT_RDS when sourcing production env. Distinct from local vitest, which skips RDS-only cases when `DATABASE_URL` is unset and refuses the pilot host without the opt-in.
 
 ### Always-on OpenVPN
 
@@ -188,6 +224,14 @@ Terminal update invariant on AI workflow runs: `markAiRunSucceeded`, retry, and 
 
 Classifier/eval path that records triage output and metrics without mutating mailbox category, spam, or urgent state until the spike gate enables durable writes.
 
+### Centurion triage retag
+
+Ops cutover that back-applies production triage classifications onto an approved Centurion thread cohort: quiesce workers, snapshot (RDS + app), bind twice-stable approvals under a fresh ledger key prefix, dry-run, apply, scoped drain, then audit-or-restore. Distinct from Shadow triage (no durable writes) and from ordinary inbound classify of new mail. A spent key prefix must not be reused; red audit restores pre-retag durable labels while code may stay on the new prompt version.
+
+### Triage asOf
+
+The ISO instant folded into the triage input hash for a workflow run — the causal window of messages the classifier saw. Workers hash at run create time; finish time is bookkeeping only. Audits that recompute production `inputHash` must use the same instant or every target falsely mismatches.
+
 ### AI candidate draft
 
 `mail_draft` with `status='candidate'` and `origin='ai'`, plus immutable `mail_draft_revision(kind='ai_generated')`. Never sends mail autonomously.
@@ -214,13 +258,14 @@ Opt-in EC2 proof (`ai-mail-pipeline-live-gate.sh`) composing Mailpit ingest, `ai
 
 ### Spam placement (`spam_at`)
 
-Folder-first spam membership: a thread is in Spam when its spam timestamp is set and it is not trashed. Soft user labels named SPAM are not folder truth. Leaving spam (bin, archive, soft-delete, empty-spam) must clear the spam timestamp so list predicates never orphan the thread.
+Folder-first spam membership: a thread is in Spam when its spam timestamp is set and it is not trashed. Soft user labels named SPAM are not folder truth. Leaving spam (bin, archive, soft-delete, empty-spam) must clear the spam timestamp so list predicates never orphan the thread. Durable AI triage and Centurion triage retag audits treat approved `spam` the same way: expect the spam timestamp set, not an AI-managed category slug named spam.
 
 *Avoid: keeping spam set while also trashing or archiving; dual state matches neither folder.*
+*Avoid: expecting a `spam` hotel-category join as durable spam proof — membership is the spam timestamp.*
 
 ### Never-spam (auto-triage)
 
-Allowlist of domains/addresses that durable AI triage must not mark spam. Manual mark-spam and explicit sender block at ingest still win. Distinct from heuristic refine (short personal notes, agency mail, etc.), which demotes false-positive spam categories without a hard allowlist.
+Allowlist of domains/addresses that durable AI triage must not mark spam. Manual mark-spam and explicit sender block at ingest still win. Distinct from heuristic refine (short personal notes, agency mail, etc.), which demotes false-positive spam categories without a hard allowlist. The same hotel domain allowlist also seeds default **Image trust** in the mail reader so staff see first-party banners/GIFs without trusting every address by hand.
 
 ### User spam lock
 
@@ -232,13 +277,29 @@ Bulk soft-trash of the current Spam folder that clears spam membership as it tra
 
 ### Sender preference (block/allow)
 
-Per-transport preference on a normalized sender address: block stamps new mail into spam at ingest; allow (and never-spam) blocks auto-triage from writing spam. Mark-spam / not-spam upsert the preference for the latest inbound From on the thread.
+Per-transport preference on a normalized sender address: block stamps new mail into spam at ingest; allow (and never-spam) blocks auto-triage from writing spam. Mark-spam / not-spam upsert the preference for the latest inbound Effective from address on the thread.
+
+### Effective from address
+
+The address stored as the message’s sender after MIME parse: when RFC `Sender` is present and differs from `From` (case-insensitive), the transmitter in `Sender` wins; otherwise `From`. Outlook calendar forwards keep the organizer in `From` and the forwarder in `Sender`, so this rule attributes the forwarder. Downstream triage, never-spam, reply-to, sender preferences, and Image trust all key off this value.
+
+*Avoid: assuming MIME `From` always names who transmitted the message into the sink.*
+
+### CID (Content-ID) inline image
+
+A MIME-embedded image part referenced from HTML as a `cid:` URI rather than an `http(s)` URL. The browser cannot fetch `cid:` directly; the mail reader must rewrite matched references to an authenticated same-origin inline attachment URL before display. Distinct from downloadable attachments (chip/download path) and from remote marketing images.
+
+### Image trust
+
+Whether the mail reader may load remote `http(s)` images for a message. Defaults from the Never-spam hotel domain allowlist plus user trusted-sender settings (exact address or domain). First-party CID parts are projected for mailbox owners regardless; remote URLs stay gated. Trust is a render-time policy — storage sanitize must not permanently erase remote image URLs.
+
+*Avoid: treating Trust Sender as exact-email-only; hotel operational mail is multi-address on shared domains.*
 
 ## Hotel taxonomy UI
 
 ### Hotel category
 
-An AI-managed mailbox classification (primary: internal, individual, group, travel-agents; overlay: urgent) stored as durable memberships on threads. Distinct from system folders (inbox/sent/spam/trash via thread flags) and from user Labels (soft tags / quarantine). Staff see them in the sidebar as **Folders**.
+An AI-managed mailbox classification (primary work queues: new-bookings, groups-events, at-risk, ops; overlay: urgent) stored as durable memberships on threads. Distinct from system folders (inbox/sent/spam/trash via thread flags) and from user Labels (soft tags / quarantine). Staff see them in the sidebar as **Folders**, and on `/mail` Inbox as segmented sections (same taxonomy). Legacy invent-WHO slugs (internal, individual, group, travel-agents) are remapped away.
 
 ### categoryIds filter
 
@@ -262,10 +323,41 @@ Pilot practice of removing or replacing dead/fake affordances (unavailable AI su
 
 *Avoid: keeping a disabled modal as the primary click target; flipping the whole SPA into frontend-only demo mode to recover demo chrome; conflating this with Compose-close honesty (draft Save/Discard/Keep editing).*
 
+## Agent workflow (Cursor skills)
+
+### Nava plan
+
+Canonical multi-step planning front door for Zero. Per the installed nava-plan skill, produces one final executable TDD plan and does not implement product code. Repo rule requires a Paired plan gate and `writing-plans` on the path to a final executable plan.
+
+### Nava run
+
+Canonical implementation front door for a final executable plan. Runs TDD/SDD with per-task review, final CE code review, and fresh verification. Per the installed nava-run skill, does not by itself authorize commits, pushes, PRs, or production mutations unless the user explicitly requested them.
+
+### Autonomous plan
+
+Mandate-stamping front door that embeds overnight autonomy into an existing implementation plan **in place**. Not a planner and not a substitute for Nava plan. Compatibility alias: overnight-autonomous-execution; Zero overlay: overnight-autonomous-zero.
+
+*Avoid: treating Autonomous plan as CE→review→writing-plans; creating a sibling “plan to modify the plan.”*
+
+### Continue autonomously
+
+Queued fail-safe that resumes stalled autonomous work after the agent paused, asked a routine question, or ended early. Inspect state first; auto-decide reversible choices; stop only on true blockers. Compatibility alias documented on the installed continue-autonomously skill: overnight-continue-working.
+
+### Paired plan gate
+
+Mandatory dual review on every implementation plan: `gstack-plan-eng-review` as the completeness floor and `ponytail-review` as the simplicity ceiling. Neither substitutes for the other. Persistent ponytail mode stays off unless explicitly invoked; ponytail-review remains the review-only half of this gate.
+
+### Pilot RDS test safety
+
+Hard override that forbids Vitest (and similar runners) against pilot/production Postgres, including under overnight autonomy and “make tests green” pressure. Prefer disposable non-production databases for DB-required tests; prove pilot with read-only SQL/API, health checks, or purpose-built non-test scripts. Related: Pilot RDS vitest refuse, VITEST_ALLOW_PILOT_RDS, Wipe-safe pilot verify.
+
 ## Flagged ambiguities
 
+- **"Rocketseed branding"** had been conflated with “mail traversed 172.24.0.8” — branding is From/sender tenant provisioning; traversal alone is insufficient.
+- **"autonomous-plan"** had been used as if it were the full planning pipeline — Autonomous plan only stamps a mandate; Nava plan owns CE→paired review→writing-plans.
+- **"ponytail"** had been conflated with ponytail-review — persistent ponytail mode is OFF by default; the Paired plan gate uses ponytail-review only.
 - **"Folders" on mailbox provider** used to mean the Labels tree; hotel AI categories now own the Folders section title — Labels must never re-use Folders.
 - **category color** can mean seed DB hex or Centurion pastel presentation — for managed slugs, presentation wins in UI chrome.
 - **"honesty"** had been used for both Honesty UI (hide fake chrome) and Compose-close honesty (draft leave dialog) — these are distinct.
 - **"spam"** can mean Zimbra/server folder routing, a legacy SPAM user label, or app `spam_at` folder membership — app folder truth is `spam_at` only.
-- **"never-spam"** is auto-triage only — not a ban on manual mark-spam or ingest block.
+- **"never-spam"** names the auto-triage allowlist (not a ban on manual mark-spam or ingest block); the same hotel domain list also seeds Image trust defaults — spam auto-path and image-loading are still distinct product surfaces.

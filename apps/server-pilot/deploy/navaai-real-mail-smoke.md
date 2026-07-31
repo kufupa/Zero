@@ -1,6 +1,15 @@
 # navaai@ Real-Mail Smoke (pilot cutover)
 
-Ordered checklist for flipping EC2 pilot from `MAIL_TRANSPORT_MODE=fixture` → `real` against Zimbra `172.24.0.10` using internet-reachable **`navaai@legacyhotels.co.za`** (sole POP3 ingest + Nava SMTP identity).
+Ordered checklist for flipping EC2 pilot from `MAIL_TRANSPORT_MODE=fixture` → `real`:
+**SMTP → Rocketseed `172.24.0.8:587`** (IP-trust STARTTLS, never AUTH);
+**POP3 → Zimbra `172.24.0.10`** using internet-reachable **`navaai@legacyhotels.co.za`** (sole POP3 ingest + Nava From identity).
+
+### Rocketseed hop checklist (cutover)
+
+- [ ] `.env.production` has `SMTP_HOST=172.24.0.8`, `SMTP_PORT=587` (not `.10`)
+- [ ] Activate smoke prints `SMTP STARTTLS OK` (no `SMTP auth OK`)
+- [ ] App send Accepted `250`; Received/peer shows Rocketseed `.8` / `branding.legacyhotels.co.za`
+- [ ] Nava From may be unbranded (expected); Centurion From should show banner markers when proving branding
 
 **Not this task / not here:** live EC2 cutover ops (Task 9). This file is the operator runbook only.
 

@@ -1,6 +1,6 @@
 # Exchange / Real Mail Smoke
 
-**Pilot (current):** internet-reachable **`navaai@legacyhotels.co.za`** — sole POP3 sink + Nava SMTP identity on Zimbra `172.24.0.10`.
+**Pilot (current):** internet-reachable **`navaai@legacyhotels.co.za`** — sole POP3 sink on Zimbra `172.24.0.10`; outbound SMTP via Rocketseed `172.24.0.8:587` (IP-trust).
 
 Full ordered cutover: [`navaai-real-mail-smoke.md`](./navaai-real-mail-smoke.md).
 
@@ -24,18 +24,18 @@ Centurion inbox may stay empty until hotel IT BCC + stamp (deferred below).
 1. VPN always-on green — `bash apps/server-pilot/deploy/vpn-health-assert.sh` → `VPN_HARD_OK` (see [`vpn-always-on.md`](./vpn-always-on.md)).
 2. Wipe marker present: `/var/lib/nava-pilot/wipe-navaai.ok` (from `pilot-db-wipe.sh`) then migrate + `seed:prod`.
 3. Password staged: `stage-navaai-mail-env.sh` → `/run/nava-mail/password`; export into shell **before** activate smoke.
-4. `POP3_HOST`/`SMTP_HOST=172.24.0.10`, `POP3_USER`/`SMTP_USER=navaai@legacyhotels.co.za` (activate defaults).
+4. `POP3_HOST=172.24.0.10`, `SMTP_HOST=172.24.0.8`, `POP3_USER`/`SMTP_USER=navaai@legacyhotels.co.za` (activate defaults).
 5. MX dig for `legacyhotels.co.za` (AE5) — on FAIL use self-send for inbound proof.
 6. Fixture/fake gates green before flip.
 
 ## Smoke steps (pilot)
 
-1. Activate via `apps/server-pilot/scripts/activate-real-mail.sh` (port probe + POP3/SMTP auth + env write + one-shot).
-2. Confirm `.env.production`: `MAIL_TRANSPORT_MODE=real`, `AI_DRAFTS_ENABLED=false`, `AI_WRITE_GATE_ENABLED=true`.
+1. Activate via `apps/server-pilot/scripts/activate-real-mail.sh` (POP3 AUTH + Rocketseed STARTTLS no-AUTH smoke + env write + one-shot).
+2. Confirm `.env.production`: `MAIL_TRANSPORT_MODE=real`, `SMTP_HOST=172.24.0.8`, `AI_DRAFTS_ENABLED=false`, `AI_WRITE_GATE_ENABLED=true`.
 3. Send test To:`navaai@legacyhotels.co.za` (external if MX PASS, else app self-send).
 4. Throttle backlog after wipe: `WORKER_ONE_SHOT=1` / low `POP3_MAX_MESSAGES_PER_CYCLE` on first cycles.
 5. `pm2 logs worker --lines 50` — ingest + DELE; subject in app.
-6. App outbound as `navaai@legacyhotels.co.za`; confirm real SMTP path.
+6. App outbound as `navaai@legacyhotels.co.za` via Rocketseed; confirm hop `.8` (Nava may be unbranded).
 
 ## Deferred — hotel-prod multi-user (not pilot)
 

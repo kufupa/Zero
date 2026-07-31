@@ -2,7 +2,7 @@
 
 ## Pilot cutover status (2026-07-22)
 
-**Primary path:** internet-reachable **`navaai@legacyhotels.co.za`** on Zimbra `172.24.0.10` via always-on VPN.
+**Primary path:** internet-reachable **`navaai@legacyhotels.co.za`** — POP3 on Zimbra `172.24.0.10`, SMTP on Rocketseed `172.24.0.8:587` via always-on VPN.
 
 **Operator checklist:** [`navaai-real-mail-smoke.md`](./navaai-real-mail-smoke.md)  
 (VPN assert → wipe+marker → migrate → `seed:prod` → MX dig → stage → activate → AE2 → AE3 → handoff)
@@ -30,11 +30,12 @@ Current fixture scope:
 
 Still out of this wave (not blocking navaai@ smoke):
 
-- Rocketseed / banner SMTP
 - Secrets Manager for mail POP3/SMTP (pilot = env-on-disk via [`stage-navaai-mail-env.sh`](./stage-navaai-mail-env.sh) + `write-ec2-env.sh`)
 - IT Centurion BCC + header stamp/strip multi-user routing
 - AI chatbot assistant work
 - workflow-use Chromium/API integration
+
+**In scope now:** Rocketseed sole real SMTP hop (`172.24.0.8:587` IP-trust) — see [`2026-07-31-rocketseed-sole-smtp-hop.md`](../../../docs/superpowers/plans/2026-07-31-rocketseed-sole-smtp-hop.md).
 
 Always-on hotel VPN is **live + durable** on pilot (`Restart=on-failure`, boot/deploy HARD assert) — see [`vpn-always-on.md`](./vpn-always-on.md) + [`2026-07-22-ec2-vpn-boot-deploy-durability.md`](../../../docs/superpowers/plans/2026-07-22-ec2-vpn-boot-deploy-durability.md). New instance still needs stage → confidence → install once.
 
@@ -142,7 +143,7 @@ SSM still Online from laptop
 RDS still OK
 S3 OK
 VPN_HARD_OK
-POP3/SMTP auth OK to 172.24.0.10
+POP3 auth OK to 172.24.0.10; SMTP STARTTLS OK to Rocketseed 172.24.0.8 (no AUTH)
 MAIL_TRANSPORT_MODE=real
 AI_DRAFTS_ENABLED=false
 AI_WRITE_GATE_ENABLED=true
