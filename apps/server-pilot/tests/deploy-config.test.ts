@@ -2347,6 +2347,7 @@ describe('deploy config', () => {
     }
   });
 
+  // Three Bash/Node collection runs can exceed Vitest's 5s default on Windows.
   it('AWS perimeter collection rejects malformed attachments and SG results', async () => {
     const malformedAttachment = await runAwsPerimeterCollection({
       instanceNetwork: {
@@ -2382,7 +2383,7 @@ describe('deploy config', () => {
     expect(partialResult.status).toBe(0);
     const partialReport = partialResult.report!;
     expect(partialReport.checks.securityGroupIngressEmpty).toBe(false);
-  });
+  }, 15_000);
 
   it('AWS-collected wildcard and malformed CORS fail the real report', async () => {
     for (const cors of [
