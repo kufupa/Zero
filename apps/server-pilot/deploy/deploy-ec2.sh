@@ -109,61 +109,22 @@ NGINX_SITE="${NGINX_SITE:-/etc/nginx/sites-available/nava-zero}"
 NGINX_ENABLED="${NGINX_ENABLED:-/etc/nginx/sites-enabled/nava-zero}"
 NGINX_SRC="${SERVER_PILOT}/deploy/nginx.conf"
 if command -v nginx >/dev/null 2>&1; then
-  NGINX_BACKUP="$(mktemp "${TMPDIR:-/tmp}/nava-nginx.XXXXXX")"
+  NGINX_BACKUP=""
   NGINX_EXISTED=0
   NGINX_ENABLED_EXISTED=0
   NGINX_ENABLED_TARGET=""
+  NGINX_TRANSACTION_ACTIVE=0
+  NGINX_FAILURE_CONTEXT="nginx transaction aborted"
 
   cleanup_nginx_backup() {
+    if [ -z "$NGINX_BACKUP" ]; then
+      return 0
+    fi
     if ! sudo rm -f "$NGINX_BACKUP"; then
       echo "nginx backup cleanup failed: ${NGINX_BACKUP}" >&2
       return 1
     fi
-  }
-  trap 'cleanup_nginx_backup || true' EXIT
-
-  if sudo test -L "$NGINX_SITE"; then
-    echo "nginx site path is a symlink; candidate not installed" >&2
-    exit 1
-  elif sudo test -f "$NGINX_SITE"; then
-    if ! sudo cp --preserve=mode,ownership,timestamps "$NGINX_SITE" "$NGINX_BACKUP"; then
-      echo "nginx site backup failed; candidate not installed" >&2
-      exit 1
-    fi
-    NGINX_EXISTED=1
-  elif sudo test -e "$NGINX_SITE"; then
-    echo "nginx site path is not a regular file; candidate not installed" >&2
-    exit 1
-  fi
-
-  if sudo test -L "$NGINX_ENABLED"; then
-    if ! NGINX_ENABLED_TARGET="$(sudo readlink "$NGINX_ENABLED")"; then
-      echo "nginx enabled symlink target could not be read; candidate not installed" >&2
-      exit 1
-    fi
-    if ! sudo test -e "$NGINX_ENABLED"; then
-      echo "nginx enabled symlink is already broken; candidate not installed" >&2
-      exit 1
-    fi
-    NGINX_ENABLED_EXISTED=1
-  elif sudo test -e "$NGINX_ENABLED"; then
-    echo "nginx enabled path is not a symlink; candidate not installed" >&2
-    exit 1
-  fi
-
-  activate_nginx() {
-    if ! sudo install -o root -g root -m 644 "$NGINX_SRC" "$NGINX_SITE"; then
-      return 1
-    fi
-    if ! sudo ln -sfn "$NGINX_SITE" "$NGINX_ENABLED"; then
-      return 1
-    fi
-    if ! sudo nginx -t; then
-      return 1
-    fi
-    if ! sudo systemctl reload nginx; then
-      return 1
-    fi
+    NGINX_BACKUP=""
   }
 
   restore_nginx() {
@@ -205,33 +166,114 @@ if command -v nginx >/dev/null 2>&1; then
     [ "$rollback_failed" -eq 0 ]
   }
 
-  if activate_nginx; then
-    if cleanup_nginx_backup; then
-      trap - EXIT
-    else
-      echo "nginx activated but temporary backup cleanup failed" >&2
+  nginx_on_exit() {
+    local original_status="$1"
+    local was_active="$NGINX_TRANSACTION_ACTIVE"
+    local rollback_ok=1
+    local cleanup_ok=1
+
+    # Prevent nested exits and repeated signals from interrupting rollback.
+    trap - EXIT
+    trap '' INT TERM
+    NGINX_TRANSACTION_ACTIVE=0
+
+    if [ "$was_active" -eq 1 ] && ! restore_nginx; then
+      rollback_ok=0
+    fi
+    if ! cleanup_nginx_backup; then
+      cleanup_ok=0
+    fi
+
+    if [ "$was_active" -eq 1 ]; then
+      if [ "$rollback_ok" -eq 1 ]; then
+        if [ "$NGINX_FAILURE_CONTEXT" = "nginx candidate failed" ]; then
+          echo "nginx candidate failed; restored previous config" >&2
+        else
+          echo "${NGINX_FAILURE_CONTEXT}; restored previous config" >&2
+        fi
+      elif [ "$NGINX_FAILURE_CONTEXT" = "nginx candidate failed" ]; then
+        echo "nginx candidate failed; rollback failed" >&2
+      else
+        echo "${NGINX_FAILURE_CONTEXT}; rollback failed" >&2
+      fi
+    fi
+
+    if [ "$rollback_ok" -ne 1 ] || [ "$cleanup_ok" -ne 1 ]; then
       exit 1
     fi
+    exit "$original_status"
+  }
+
+  nginx_on_signal() {
+    local signal_status="$1"
+    NGINX_FAILURE_CONTEXT="nginx transaction interrupted"
+    trap '' INT TERM
+    exit "$signal_status"
+  }
+
+  activate_nginx() {
+    if ! sudo install -o root -g root -m 644 "$NGINX_SRC" "$NGINX_SITE"; then
+      return 1
+    fi
+    if ! sudo ln -sfn "$NGINX_SITE" "$NGINX_ENABLED"; then
+      return 1
+    fi
+    if ! sudo nginx -t; then
+      return 1
+    fi
+    if ! sudo systemctl reload nginx; then
+      return 1
+    fi
+  }
+
+  # All handlers exist before backup creation or candidate mutation.
+  trap 'nginx_on_exit $?' EXIT
+  trap 'nginx_on_signal 130' INT
+  trap 'nginx_on_signal 143' TERM
+
+  NGINX_BACKUP="$(mktemp "${TMPDIR:-/tmp}/nava-nginx.XXXXXX")"
+
+  if sudo test -L "$NGINX_SITE"; then
+    echo "nginx site path is a symlink; candidate not installed" >&2
+    exit 1
+  elif sudo test -f "$NGINX_SITE"; then
+    if ! sudo cp --preserve=mode,ownership,timestamps "$NGINX_SITE" "$NGINX_BACKUP"; then
+      echo "nginx site backup failed; candidate not installed" >&2
+      exit 1
+    fi
+    NGINX_EXISTED=1
+  elif sudo test -e "$NGINX_SITE"; then
+    echo "nginx site path is not a regular file; candidate not installed" >&2
+    exit 1
+  fi
+
+  if sudo test -L "$NGINX_ENABLED"; then
+    if ! NGINX_ENABLED_TARGET="$(sudo readlink "$NGINX_ENABLED")"; then
+      echo "nginx enabled symlink target could not be read; candidate not installed" >&2
+      exit 1
+    fi
+    if ! sudo test -e "$NGINX_ENABLED"; then
+      echo "nginx enabled symlink is already broken; candidate not installed" >&2
+      exit 1
+    fi
+    NGINX_ENABLED_EXISTED=1
+  elif sudo test -e "$NGINX_ENABLED"; then
+    echo "nginx enabled path is not a symlink; candidate not installed" >&2
+    exit 1
+  fi
+
+  NGINX_TRANSACTION_ACTIVE=1
+  if ! activate_nginx; then
+    NGINX_FAILURE_CONTEXT="nginx candidate failed"
+    exit 1
+  fi
+
+  # Candidate is live. Disarm rollback before deleting its backup.
+  NGINX_TRANSACTION_ACTIVE=0
+  if cleanup_nginx_backup; then
+    trap - EXIT INT TERM
   else
-    ROLLBACK_OK=0
-    if restore_nginx; then
-      ROLLBACK_OK=1
-    fi
-
-    CLEANUP_OK=0
-    if cleanup_nginx_backup; then
-      CLEANUP_OK=1
-      trap - EXIT
-    fi
-
-    if [ "$ROLLBACK_OK" -eq 1 ]; then
-      echo "nginx candidate failed; restored previous config" >&2
-    else
-      echo "nginx candidate failed; rollback failed" >&2
-    fi
-    if [ "$CLEANUP_OK" -ne 1 ]; then
-      echo "nginx candidate failed; temporary backup cleanup failed" >&2
-    fi
+    echo "nginx activated but temporary backup cleanup failed" >&2
     exit 1
   fi
 else

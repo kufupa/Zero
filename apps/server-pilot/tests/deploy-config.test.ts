@@ -128,22 +128,34 @@ function extractSourceBlock(source: string, start: string, end: string): string 
   return normalized.slice(startIndex, endIndex);
 }
 
-type NginxActivationFailure = 'install' | 'link' | 'validate' | 'reload';
+type NginxActivationScenario =
+  | 'install'
+  | 'link'
+  | 'validate'
+  | 'reload'
+  | 'sigint'
+  | 'sigterm'
+  | 'unexpected-exit'
+  | 'cleanup-exit';
+type NginxPriorState = 'absent' | 'present' | 'dangling';
 
 async function runNginxActivation({
-  failure,
-  priorPresent,
+  scenario,
+  priorState,
   rollbackCopyFails = false,
 }: {
-  failure: NginxActivationFailure;
-  priorPresent: boolean;
+  scenario: NginxActivationScenario;
+  priorState: NginxPriorState;
   rollbackCopyFails?: boolean;
 }): Promise<{
   status: number | null;
   stdout: string;
   stderr: string;
   site: string | null;
+  enabledState: 'absent' | 'valid' | 'dangling';
   enabledTarget: string | null;
+  nginxCalls: number;
+  reloadCalls: number;
   backupEntries: string[];
 }> {
   const {
@@ -157,7 +169,7 @@ async function runNginxActivation({
   } = await import('node:fs');
   const { spawnSync } = await import('node:child_process');
   const { tmpdir } = await import('node:os');
-  const { dirname, join } = await import('node:path');
+  const { dirname, isAbsolute, join, resolve } = await import('node:path');
   const { fileURLToPath } = await import('node:url');
   const here = dirname(fileURLToPath(import.meta.url));
   const deploySource = readFileSync(
@@ -175,6 +187,10 @@ async function runNginxActivation({
   const backupDir = join(tempDir, 'backups');
   const sitePath = join(tempDir, 'sites-available', 'nava-zero');
   const enabledPath = join(tempDir, 'sites-enabled', 'nava-zero');
+  const enabledModelPath = join(tempDir, 'enabled-link.target');
+  const nginxCallsPath = join(tempDir, 'nginx-calls');
+  const reloadCallsPath = join(tempDir, 'reload-calls');
+  const previousTargetPath = join(dirname(sitePath), 'previous-nava');
   const previousSite = 'previous nginx config\n';
   const previousTarget = '../sites-available/previous-nava';
 
@@ -188,23 +204,39 @@ async function runNginxActivation({
       mkdirSync(directory, { recursive: true });
     }
     writeFileSync(join(deployDir, 'nginx.conf'), 'candidate nginx config\n', 'utf8');
-    if (priorPresent) {
+    writeFileSync(nginxCallsPath, '0', 'utf8');
+    writeFileSync(reloadCallsPath, '0', 'utf8');
+    if (priorState !== 'absent') {
       writeFileSync(sitePath, previousSite, 'utf8');
-      // Stub sudo models the enabled symlink as a file containing its exact target.
-      writeFileSync(enabledPath, previousTarget, 'utf8');
+      writeFileSync(enabledModelPath, previousTarget, 'utf8');
+    }
+    if (priorState === 'present') {
+      writeFileSync(previousTargetPath, 'previous enabled config\n', 'utf8');
     }
 
     const harness = `set -euo pipefail
 link_calls=0
 nginx_calls=0
 reload_calls=0
+cleanup_calls=0
+
+link_target_exists() {
+  [ -f "$NGINX_TEST_LINK_MODEL" ] || return 1
+  target="$(command cat "$NGINX_TEST_LINK_MODEL")"
+  case "$target" in
+    /*) resolved_target="$target" ;;
+    *) resolved_target="$(command dirname "$NGINX_TEST_ENABLED")/$target" ;;
+  esac
+  command test -e "$resolved_target"
+}
 
 sudo() {
 case "\${1:-}" in
   test)
     if [ "\${3:-}" = "$NGINX_TEST_ENABLED" ]; then
       case "\${2:-}" in
-        -L|-e) [ -f "$NGINX_TEST_ENABLED" ] ;;
+        -L) [ -f "$NGINX_TEST_LINK_MODEL" ] ;;
+        -e) link_target_exists ;;
         *) exit 2 ;;
       esac
     else
@@ -213,7 +245,7 @@ case "\${1:-}" in
     ;;
   readlink)
     if [ "\${2:-}" = "$NGINX_TEST_ENABLED" ]; then
-      command cat "$NGINX_TEST_ENABLED"
+      command cat "$NGINX_TEST_LINK_MODEL"
     else
       command readlink "\${@:2}"
     fi
@@ -228,20 +260,45 @@ case "\${1:-}" in
     command cp "$source_path" "$destination_path"
     ;;
   install)
-    if [ "$NGINX_TEST_FAILURE" = "install" ]; then
+    command cp "\${@: -2:1}" "\${@: -1}"
+    if [ "$NGINX_TEST_SCENARIO" = "install" ]; then
       return 61
     fi
-    command cp "\${@: -2:1}" "\${@: -1}"
     ;;
   ln)
     link_calls=$((link_calls + 1))
-    if [ "$NGINX_TEST_FAILURE" = "link" ] && [ "$link_calls" -eq 1 ]; then
+    destination_path="\${@: -1}"
+    target="\${@: -2:1}"
+    if [ "$destination_path" != "$NGINX_TEST_ENABLED" ]; then
+      return 97
+    fi
+    command rm -f "$NGINX_TEST_LINK_MODEL"
+    if [ "$NGINX_TEST_SCENARIO" = "link" ] && [ "$link_calls" -eq 1 ]; then
       return 62
     fi
-    printf '%s' "\${@: -2:1}" >"\${@: -1}"
+    printf '%s' "$target" >"$NGINX_TEST_LINK_MODEL"
+    if [ "$link_calls" -eq 1 ]; then
+      case "$NGINX_TEST_SCENARIO" in
+        sigint) kill -INT "$BASHPID" ;;
+        sigterm) kill -TERM "$BASHPID" ;;
+        unexpected-exit) exit 73 ;;
+      esac
+    fi
     ;;
   rm)
-    command rm "\${@:2}"
+    destination_path="\${@: -1}"
+    if [ "$destination_path" = "$NGINX_TEST_ENABLED" ]; then
+      command rm -f "$NGINX_TEST_LINK_MODEL"
+    elif [[ "$destination_path" == "$NGINX_TEST_BACKUP_DIR"/nava-nginx.* ]]; then
+      cleanup_calls=$((cleanup_calls + 1))
+      if [ "$NGINX_TEST_SCENARIO" = "cleanup-exit" ] &&
+         [ "$cleanup_calls" -eq 1 ]; then
+        exit 74
+      fi
+      command rm "\${@:2}"
+    else
+      command rm "\${@:2}"
+    fi
     ;;
   nginx|systemctl)
     "$@"
@@ -254,14 +311,16 @@ esac
 
 nginx() {
   nginx_calls=$((nginx_calls + 1))
-  if [ "$NGINX_TEST_FAILURE" = "validate" ] && [ "$nginx_calls" -eq 1 ]; then
+  printf '%s' "$nginx_calls" >"$NGINX_TEST_NGINX_CALLS"
+  if [ "$NGINX_TEST_SCENARIO" = "validate" ] && [ "$nginx_calls" -eq 1 ]; then
     return 63
   fi
 }
 
 systemctl() {
   reload_calls=$((reload_calls + 1))
-  if [ "$NGINX_TEST_FAILURE" = "reload" ] && [ "$reload_calls" -eq 1 ]; then
+  printf '%s' "$reload_calls" >"$NGINX_TEST_RELOAD_CALLS"
+  if [ "$NGINX_TEST_SCENARIO" = "reload" ] && [ "$reload_calls" -eq 1 ]; then
     return 64
   fi
 }
@@ -276,21 +335,45 @@ systemctl() {
         NGINX_SITE: toBashPath(sitePath),
         NGINX_ENABLED: toBashPath(enabledPath),
         TMPDIR: toBashPath(backupDir),
-        NGINX_TEST_FAILURE: failure,
+        NGINX_TEST_SCENARIO: scenario,
         NGINX_TEST_ROLLBACK_COPY_FAIL: rollbackCopyFails ? '1' : '0',
         NGINX_TEST_SITE: toBashPath(sitePath),
         NGINX_TEST_ENABLED: toBashPath(enabledPath),
+        NGINX_TEST_LINK_MODEL: toBashPath(enabledModelPath),
+        NGINX_TEST_NGINX_CALLS: toBashPath(nginxCallsPath),
+        NGINX_TEST_RELOAD_CALLS: toBashPath(reloadCallsPath),
+        NGINX_TEST_BACKUP_DIR: toBashPath(backupDir),
       },
     });
+
+    const enabledTarget = existsSync(enabledModelPath)
+      ? readFileSync(enabledModelPath, 'utf8')
+      : null;
+    const nativeTarget =
+      process.platform === 'win32' && enabledTarget?.match(/^\/[A-Za-z]\//)
+        ? `${enabledTarget[1]}:/${enabledTarget.slice(3)}`
+        : enabledTarget;
+    const resolvedTarget =
+      nativeTarget == null
+        ? null
+        : isAbsolute(nativeTarget)
+          ? nativeTarget
+          : resolve(dirname(enabledPath), nativeTarget);
 
     return {
       status: result.status,
       stdout: result.stdout,
       stderr: result.stderr,
       site: existsSync(sitePath) ? readFileSync(sitePath, 'utf8') : null,
-      enabledTarget: existsSync(enabledPath)
-        ? readFileSync(enabledPath, 'utf8')
-        : null,
+      enabledState:
+        enabledTarget == null
+          ? 'absent'
+          : resolvedTarget != null && existsSync(resolvedTarget)
+            ? 'valid'
+            : 'dangling',
+      enabledTarget,
+      nginxCalls: Number(readFileSync(nginxCallsPath, 'utf8')),
+      reloadCalls: Number(readFileSync(reloadCallsPath, 'utf8')),
       backupEntries: readdirSync(backupDir),
     };
   } finally {
@@ -850,41 +933,132 @@ describe('deploy config', () => {
     expect(deploy).toContain('sudo systemctl reload nginx');
     expect(deploy).toContain('restore_nginx');
     expect(deploy).toContain('nginx candidate failed; restored previous config');
+    expect(deploy).toContain('nginx_on_exit');
+    expect(deploy).toContain("trap 'nginx_on_signal 130' INT");
+    expect(deploy).toContain("trap 'nginx_on_signal 143' TERM");
   });
 
   it.each([
-    { failure: 'install', priorPresent: true },
-    { failure: 'link', priorPresent: false },
-    { failure: 'validate', priorPresent: true },
-    { failure: 'validate', priorPresent: false },
-    { failure: 'reload', priorPresent: true },
-    { failure: 'reload', priorPresent: false },
+    { scenario: 'install', priorState: 'absent', nginxCalls: 1, reloadCalls: 1 },
+    { scenario: 'install', priorState: 'present', nginxCalls: 1, reloadCalls: 1 },
+    { scenario: 'link', priorState: 'absent', nginxCalls: 1, reloadCalls: 1 },
+    { scenario: 'link', priorState: 'present', nginxCalls: 1, reloadCalls: 1 },
+    { scenario: 'validate', priorState: 'absent', nginxCalls: 2, reloadCalls: 1 },
+    { scenario: 'validate', priorState: 'present', nginxCalls: 2, reloadCalls: 1 },
+    { scenario: 'reload', priorState: 'absent', nginxCalls: 2, reloadCalls: 2 },
+    { scenario: 'reload', priorState: 'present', nginxCalls: 2, reloadCalls: 2 },
   ] as const)(
-    'restores prior-present=$priorPresent state when Nginx $failure fails',
-    async ({ failure, priorPresent }) => {
-      const result = await runNginxActivation({ failure, priorPresent });
+    'restores priorState=$priorState state when Nginx $scenario fails',
+    async ({ scenario, priorState, nginxCalls, reloadCalls }) => {
+      const result = await runNginxActivation({ scenario, priorState });
 
       expect(result.status, result.stderr).toBe(1);
       expect(result.stderr).toContain(
         'nginx candidate failed; restored previous config',
       );
-      expect(result.site).toBe(priorPresent ? 'previous nginx config\n' : null);
-      expect(result.enabledTarget).toBe(
-        priorPresent ? '../sites-available/previous-nava' : null,
+      expect(result.site).toBe(
+        priorState === 'present' ? 'previous nginx config\n' : null,
       );
+      expect(result.enabledState).toBe(
+        priorState === 'present' ? 'valid' : 'absent',
+      );
+      expect(result.enabledTarget).toBe(
+        priorState === 'present' ? '../sites-available/previous-nava' : null,
+      );
+      expect(result.site).not.toBe('candidate nginx config\n');
+      expect(result.nginxCalls).toBe(nginxCalls);
+      expect(result.reloadCalls).toBe(reloadCalls);
       expect(result.backupEntries).toEqual([]);
     },
   );
 
+  it.each([
+    { scenario: 'sigint', priorState: 'absent', status: 130 },
+    { scenario: 'sigint', priorState: 'present', status: 130 },
+    { scenario: 'sigterm', priorState: 'absent', status: 143 },
+    { scenario: 'sigterm', priorState: 'present', status: 143 },
+    { scenario: 'unexpected-exit', priorState: 'absent', status: 73 },
+    { scenario: 'unexpected-exit', priorState: 'present', status: 73 },
+  ] as const)(
+    'restores priorState=$priorState after $scenario and preserves status',
+    async ({ scenario, priorState, status }) => {
+      const result = await runNginxActivation({ scenario, priorState });
+
+      expect(result.status, result.stderr).toBe(status);
+      expect(result.stderr).toContain(
+        scenario === 'unexpected-exit'
+          ? 'nginx transaction aborted; restored previous config'
+          : 'nginx transaction interrupted; restored previous config',
+      );
+      expect(result.site).toBe(
+        priorState === 'present' ? 'previous nginx config\n' : null,
+      );
+      expect(result.enabledState).toBe(
+        priorState === 'present' ? 'valid' : 'absent',
+      );
+      expect(result.enabledTarget).toBe(
+        priorState === 'present' ? '../sites-available/previous-nava' : null,
+      );
+      expect(result.site).not.toBe('candidate nginx config\n');
+      expect(result.nginxCalls).toBe(1);
+      expect(result.reloadCalls).toBe(1);
+      expect(result.backupEntries).toEqual([]);
+    },
+  );
+
+  it('distinguishes and refuses a dangling prior enabled symlink model', async () => {
+    const result = await runNginxActivation({
+      scenario: 'validate',
+      priorState: 'dangling',
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('nginx enabled symlink is already broken');
+    expect(result.site).toBe('previous nginx config\n');
+    expect(result.enabledState).toBe('dangling');
+    expect(result.enabledTarget).toBe('../sites-available/previous-nava');
+    expect(result.nginxCalls).toBe(0);
+    expect(result.reloadCalls).toBe(0);
+    expect(result.backupEntries).toEqual([]);
+  });
+
+  it('disarms rollback before cleaning up a successful activation', async () => {
+    const result = await runNginxActivation({
+      scenario: 'cleanup-exit',
+      priorState: 'present',
+    });
+
+    expect(result.status).toBe(74);
+    expect(result.stderr).not.toContain('restored previous config');
+    expect(result.site).toBe('candidate nginx config\n');
+    expect(result.enabledState).toBe('valid');
+    expect(result.enabledTarget).toMatch(/\/sites-available\/nava-zero$/);
+    expect(result.nginxCalls).toBe(1);
+    expect(result.reloadCalls).toBe(1);
+    expect(result.backupEntries).toEqual([]);
+  });
+
   it('reports rollback failure and still removes temporary Nginx backups', async () => {
     const result = await runNginxActivation({
-      failure: 'validate',
-      priorPresent: true,
+      scenario: 'validate',
+      priorState: 'present',
       rollbackCopyFails: true,
     });
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('nginx candidate failed; rollback failed');
+    expect(result.backupEntries).toEqual([]);
+  });
+
+  it('reports trap rollback failure and exits nonzero', async () => {
+    const result = await runNginxActivation({
+      scenario: 'unexpected-exit',
+      priorState: 'present',
+      rollbackCopyFails: true,
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('nginx transaction aborted; rollback failed');
     expect(result.backupEntries).toEqual([]);
   });
 
