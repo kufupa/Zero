@@ -60,6 +60,17 @@ describe('deploy config', () => {
     expect(deploy).toContain('nginx not installed');
   });
 
+  it('preserves the Infor hostname mapping used by the split tunnel', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const deploy = readFileSync(join(here, '..', 'deploy', 'deploy-ec2.sh'), 'utf8');
+
+    expect(deploy).toContain('appsrv-1.legacyhotels.co.za');
+    expect(deploy).toContain('172.24.240.41');
+  });
+
   it('write-ec2-env.sh quotes all env values', async () => {
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
