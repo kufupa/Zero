@@ -74,22 +74,35 @@ describe('deploy config', () => {
     expect(nginx).toContain('client_max_body_size 35m');
   });
 
-  it('nginx config redirects HTTP to HTTPS and sets security headers', async () => {
+  it('nginx serves only the canonical host with the public fullchain', async () => {
     const { readNginxConfig } = await import('../src/deploy/load-pm2-config.js');
     const nginx = readNginxConfig();
-    expect(nginx).toContain('listen 80');
-    expect(nginx).toContain('return 301 https://$host$request_uri');
+
+    expect(nginx).toContain('listen 80 default_server');
+    expect(nginx).toContain('listen 443 ssl default_server');
+    expect(nginx).toContain('server_name nava.legacyhotels.co.za');
     expect(nginx).toContain(
-      'add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always',
+      'ssl_certificate     /etc/nginx/ssl/nava.legacyhotels.co.za.fullchain.pem',
     );
+    expect(nginx).toContain(
+      'ssl_certificate_key /etc/nginx/ssl/nava.legacyhotels.co.za.key',
+    );
+    expect(nginx).toContain('if ($host != nava.legacyhotels.co.za)');
+    expect(nginx).toContain('return 444');
+    expect(nginx).not.toContain('nava.legacy.local');
+  });
+
+  it('nginx preserves security headers and allows only the exact S3 endpoint', async () => {
+    const { readNginxConfig } = await import('../src/deploy/load-pm2-config.js');
+    const nginx = readNginxConfig();
+
+    expect(nginx).toContain(
+      "connect-src 'self' https://nava-zero-mail-845242190536-af-south-1.s3.af-south-1.amazonaws.com",
+    );
+    expect(nginx).toContain('expires -1');
+    expect(nginx).not.toContain('add_header Cache-Control "no-cache"');
     expect(nginx).toContain('add_header X-Frame-Options "DENY" always');
     expect(nginx).toContain('add_header X-Content-Type-Options "nosniff" always');
-    expect(nginx).toContain(
-      'add_header Referrer-Policy "strict-origin-when-cross-origin" always',
-    );
-    expect(nginx).toContain(
-      "add_header Content-Security-Policy \"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; frame-ancestors 'none';\" always",
-    );
   });
 
   it('deploy-ec2.sh syncs nginx config and reloads', async () => {
