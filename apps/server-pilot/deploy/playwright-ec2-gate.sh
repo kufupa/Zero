@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Mint pilot session, hit production nginx SPA, run Playwright E2E on EC2.
-# Prefer https://127.0.0.1 (nginx → /api proxy) over :3000 static/vite — cookies + same-origin.
+# Prefer canonical nginx TLS over :3000 static/vite — cookies + same-origin.
 set -euo pipefail
 
 REPO_ROOT="${REPO_ROOT:-/home/ubuntu/repos/zero}"
@@ -16,16 +16,29 @@ if [ -f /opt/nava/ec2-playwright-chromium/env.sh ]; then
   source /opt/nava/ec2-playwright-chromium/env.sh
 fi
 
+ENV_FILE="${ENV_FILE:-apps/server-pilot/.env.production}"
+if [ -f "$ENV_FILE" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+fi
+
+: "${BETTER_AUTH_URL:?BETTER_AUTH_URL missing from production environment}"
 # Production path: nginx TLS + /api proxy (avoids cross-origin cookie loss on :3000).
-export PLAYWRIGHT_BASE_URL="${PLAYWRIGHT_BASE_URL:-https://127.0.0.1}"
+export PLAYWRIGHT_BASE_URL="${PLAYWRIGHT_BASE_URL:-$BETTER_AUTH_URL}"
 export PLAYWRIGHT_COOKIE_PREFIX="${PLAYWRIGHT_COOKIE_PREFIX:-better-auth}"
-export PLAYWRIGHT_IGNORE_HTTPS_ERRORS="${PLAYWRIGHT_IGNORE_HTTPS_ERRORS:-1}"
+if [ "${PLAYWRIGHT_IGNORE_HTTPS_ERRORS:-0}" = "1" ]; then
+  echo "refusing: production Playwright cannot ignore HTTPS errors" >&2
+  exit 2
+fi
+export PLAYWRIGHT_IGNORE_HTTPS_ERRORS=0
 export ZERO_DEMO_FRONTEND_ONLY="${ZERO_DEMO_FRONTEND_ONLY:-1}"
 export VITE_FRONTEND_ONLY="${VITE_FRONTEND_ONLY:-1}"
 export ZERO_AUTO_START_BACKEND=0
 export EMAIL="${EMAIL:-guest@example.com}"
 
-# Backend for session mint + health. Same-origin via nginx when BASE is https://127.0.0.1.
+# Backend for session mint + health. Same-origin via canonical nginx TLS by default.
 BACKEND_URL="${VITE_PUBLIC_BACKEND_URL:-}"
 if [ -z "$BACKEND_URL" ]; then
   if [[ "$PLAYWRIGHT_BASE_URL" == https://* ]] || [[ "$PLAYWRIGHT_BASE_URL" == http://* ]]; then
@@ -45,7 +58,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if ! curl -skf "${BACKEND_URL%/}/health" >/dev/null; then
+if ! curl -fsS "${BACKEND_URL%/}/health" >/dev/null; then
   echo "backend not reachable at ${BACKEND_URL}/health" >&2
   exit 1
 fi
@@ -82,7 +95,7 @@ if [[ "$PLAYWRIGHT_BASE_URL" == *:3000* ]]; then
   }
 else
   echo "using nginx SPA at ${PLAYWRIGHT_BASE_URL}"
-  curl -skf "${PLAYWRIGHT_BASE_URL}/" >/dev/null || {
+  curl -fsS "${PLAYWRIGHT_BASE_URL}/" >/dev/null || {
     echo "nginx SPA not reachable at ${PLAYWRIGHT_BASE_URL}" >&2
     exit 1
   }
@@ -91,7 +104,7 @@ fi
 echo "minting session via ${BACKEND_URL}"
 SECRET=$(aws secretsmanager get-secret-value --region af-south-1 --secret-id nava-zero/server-pilot/pilot-users --query SecretString --output text)
 PW=$(node -e 'const j=JSON.parse(process.argv[1]);const v=j["navaai@legacyhotels.co.za"];console.log(typeof v==="string"?v:v.password)' "$SECRET")
-RESP=$(curl -ski -X POST "${BACKEND_URL%/}/api/auth/sign-in/email" \
+RESP=$(curl -sSi -X POST "${BACKEND_URL%/}/api/auth/sign-in/email" \
   -H "Content-Type: application/json" \
   -d "{\"email\":\"navaai@legacyhotels.co.za\",\"password\":\"$PW\"}")
 export PLAYWRIGHT_SESSION_TOKEN=$(node -e 'const r=process.argv[1];const m=r.match(/better-auth\.session_token=([^;\r\n]+)/);if(!m)process.exit(1);console.log(decodeURIComponent(m[1]))' "$RESP")

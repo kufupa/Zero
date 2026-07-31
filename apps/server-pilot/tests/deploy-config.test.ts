@@ -313,16 +313,49 @@ describe('deploy config', () => {
     expect(boot).toContain('startOrReload');
   });
 
-  it('post-boot-smoke.sh checks :8788 and :443 not :3000', async () => {
+  it('post-boot-smoke.sh checks :8788 and canonical :443 not :3000', async () => {
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
     const { dirname, join } = await import('node:path');
     const here = dirname(fileURLToPath(import.meta.url));
     const smoke = readFileSync(join(here, '..', 'deploy', 'post-boot-smoke.sh'), 'utf8');
     expect(smoke).toContain('127.0.0.1:8788/health');
-    expect(smoke).toContain('https://127.0.0.1');
+    expect(smoke).toContain('BETTER_AUTH_URL');
+    expect(smoke).toContain('--resolve "${PUBLIC_HOST}:443:127.0.0.1"');
+    expect(smoke).not.toContain('"https://127.0.0.1');
     expect(smoke).not.toContain(':3000');
     expect(smoke).toContain('systemctl is-active');
+  });
+
+  it('production browser and smoke gates never bypass TLS verification', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const files = [
+      'launch-readiness.sh',
+      'post-boot-smoke.sh',
+      'playwright-real-mail-ui-gate.sh',
+      'playwright-ec2-gate.sh',
+    ];
+
+    for (const file of files) {
+      const script = readFileSync(join(here, '..', 'deploy', file), 'utf8');
+      expect(script).not.toContain('--insecure');
+      expect(script).not.toContain('curl -sk');
+      expect(script).not.toContain('curl -fsSk');
+      expect(script).not.toContain(
+        'PLAYWRIGHT_IGNORE_HTTPS_ERRORS="${PLAYWRIGHT_IGNORE_HTTPS_ERRORS:-1}"',
+      );
+    }
+
+    const config = readFileSync(
+      join(here, '..', '..', '..', 'packages', 'testing', 'playwright.config.ts'),
+      'utf8',
+    );
+    expect(config).not.toContain('|| realMailGate');
+    expect(config).toContain('Real-mail Playwright requires PLAYWRIGHT_BASE_URL');
+    expect(config).toContain('Real-mail Playwright forbids ignored HTTPS errors');
   });
 
   it('ops-deploy.sh syncs then SSM deploy-ec2 with optional migrate', async () => {

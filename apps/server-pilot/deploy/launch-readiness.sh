@@ -39,6 +39,13 @@ if [ -r "$ENV_FILE" ]; then
   fi
 fi
 
+: "${BETTER_AUTH_URL:?BETTER_AUTH_URL missing from production environment}"
+PUBLIC_ORIGIN="$BETTER_AUTH_URL"
+PUBLIC_HOST="$(
+  node -e 'const url = new URL(process.argv[1]); if (url.protocol !== "https:" || url.pathname !== "/") process.exit(1); process.stdout.write(url.hostname)' \
+    "$PUBLIC_ORIGIN"
+)"
+
 HTTP_OK=false
 if curl -fsS --max-time 10 "http://127.0.0.1:8788/health" >/dev/null 2>&1; then
   HTTP_OK=true
@@ -47,24 +54,27 @@ fi
 HTTPS_OK=false
 TLS_VALID=false
 CERT_FILE="$(mktemp)"
+cleanup_cert() { rm -f "$CERT_FILE"; }
+trap cleanup_cert EXIT
+
 if timeout 10 openssl s_client \
   -connect "127.0.0.1:443" \
-  -servername "nava.legacy.local" \
+  -servername "$PUBLIC_HOST" \
+  -verify_hostname "$PUBLIC_HOST" \
+  -verify_return_error \
+  -CAfile /etc/ssl/certs/ca-certificates.crt \
   -showcerts </dev/null 2>/dev/null |
-  openssl x509 -outform PEM >"$CERT_FILE" 2>/dev/null; then
-  if openssl x509 -in "$CERT_FILE" -checkend 86400 -noout >/dev/null 2>&1 \
-    && openssl x509 -in "$CERT_FILE" -checkhost "nava.legacy.local" -noout >/dev/null 2>&1; then
-    TLS_VALID=true
-  fi
-  if curl -fsS \
-    --max-time 10 \
-    --cacert "$CERT_FILE" \
-    --resolve "nava.legacy.local:443:127.0.0.1" \
-    "https://nava.legacy.local/health" >/dev/null 2>&1; then
-    HTTPS_OK=true
-  fi
+  openssl x509 -outform PEM >"$CERT_FILE" 2>/dev/null \
+  && openssl x509 -in "$CERT_FILE" -checkend 2592000 -noout >/dev/null 2>&1; then
+  TLS_VALID=true
 fi
-rm -f "$CERT_FILE"
+
+if curl -fsS \
+  --max-time 10 \
+  --resolve "${PUBLIC_HOST}:443:127.0.0.1" \
+  "${PUBLIC_ORIGIN%/}/health" >/dev/null 2>&1; then
+  HTTPS_OK=true
+fi
 
 HOTEL_PROBE_OK=false
 if REQUIRE_HOTEL_PROBE=1 bash "${SERVER_PILOT}/deploy/vpn-health-assert.sh" >/dev/null 2>&1; then
@@ -229,7 +239,8 @@ const report = {
   config: {
     envLoaded: bool("ENV_LOADED"),
     mailTransportModeReal: process.env.MAIL_TRANSPORT_MODE === "real",
-    betterAuthUrlCorrect: process.env.BETTER_AUTH_URL === "https://nava.legacy.local",
+    betterAuthUrlCorrect:
+      process.env.BETTER_AUTH_URL === "https://nava.legacyhotels.co.za",
     undoSendSecondsCorrect: process.env.UNDO_SEND_SECONDS === "30",
     aiWriteGateEnabled: process.env.AI_WRITE_GATE_ENABLED === "true",
     aiDraftsDisabled: process.env.AI_DRAFTS_ENABLED === "false",

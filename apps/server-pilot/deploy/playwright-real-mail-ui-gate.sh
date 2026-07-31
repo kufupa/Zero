@@ -35,12 +35,6 @@ if [ -f /opt/nava/ec2-playwright-chromium/env.sh ]; then
   source /opt/nava/ec2-playwright-chromium/env.sh
 fi
 
-# Must match BETTER_AUTH_URL host — cookies minted on 127.0.0.1 fail when auth URL is nava.legacy.local.
-export PLAYWRIGHT_BASE_URL="${PLAYWRIGHT_BASE_URL:-https://nava.legacy.local}"
-export PLAYWRIGHT_COOKIE_PREFIX="${PLAYWRIGHT_COOKIE_PREFIX:-better-auth}"
-export PLAYWRIGHT_IGNORE_HTTPS_ERRORS="${PLAYWRIGHT_IGNORE_HTTPS_ERRORS:-1}"
-export PLAYWRIGHT_REAL_MAIL_USER="${PLAYWRIGHT_REAL_MAIL_USER:-navaai@legacyhotels.co.za}"
-
 ENV_FILE="${ENV_FILE:-apps/server-pilot/.env.production}"
 if [ -f "$ENV_FILE" ]; then
   set -a
@@ -48,6 +42,17 @@ if [ -f "$ENV_FILE" ]; then
   source "$ENV_FILE"
   set +a
 fi
+
+: "${BETTER_AUTH_URL:?BETTER_AUTH_URL missing from production environment}"
+# Must match BETTER_AUTH_URL host so browser auth cookies stay same-origin.
+export PLAYWRIGHT_BASE_URL="${PLAYWRIGHT_BASE_URL:-$BETTER_AUTH_URL}"
+export PLAYWRIGHT_COOKIE_PREFIX="${PLAYWRIGHT_COOKIE_PREFIX:-better-auth}"
+if [ "${PLAYWRIGHT_IGNORE_HTTPS_ERRORS:-0}" = "1" ]; then
+  echo "refusing: production Playwright cannot ignore HTTPS errors" >&2
+  exit 2
+fi
+export PLAYWRIGHT_IGNORE_HTTPS_ERRORS=0
+export PLAYWRIGHT_REAL_MAIL_USER="${PLAYWRIGHT_REAL_MAIL_USER:-navaai@legacyhotels.co.za}"
 
 # Re-assert after sourcing production env (file may have demo flags — still refuse).
 if [ "${ZERO_DEMO_FRONTEND_ONLY:-0}" = "1" ] || [ "${VITE_FRONTEND_ONLY:-0}" = "1" ]; then
@@ -105,13 +110,13 @@ export VITE_PUBLIC_BACKEND_URL="$BACKEND_URL"
 echo "pnpm install (playwright pin)"
 pnpm install --frozen-lockfile
 
-if ! curl -skf "${BACKEND_URL%/}/health" >/dev/null; then
+if ! curl -fsS "${BACKEND_URL%/}/health" >/dev/null; then
   echo "backend not reachable at ${BACKEND_URL}/health" >&2
   exit 1
 fi
 
 echo "using SPA at ${PLAYWRIGHT_BASE_URL}"
-curl -skf "${PLAYWRIGHT_BASE_URL}/" >/dev/null || {
+curl -fsS "${PLAYWRIGHT_BASE_URL}/" >/dev/null || {
   echo "SPA not reachable at ${PLAYWRIGHT_BASE_URL}" >&2
   exit 1
 }

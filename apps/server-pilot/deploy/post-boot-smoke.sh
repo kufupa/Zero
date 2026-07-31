@@ -28,6 +28,16 @@ export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
 export PATH="${HOME}/.local/share/pnpm:${HOME}/.nvm/versions/node/$(ls "${HOME}/.nvm/versions/node" 2>/dev/null | sort -V | tail -1)/bin:${PATH}"
 
+ENV_FILE="${ENV_FILE:-/home/ubuntu/repos/zero/apps/server-pilot/.env.production}"
+if [ -r "$ENV_FILE" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+fi
+: "${BETTER_AUTH_URL:?BETTER_AUTH_URL missing from production environment}"
+PUBLIC_HOST="$(node -e 'process.stdout.write(new URL(process.argv[1]).hostname)' "$BETTER_AUTH_URL")"
+
 attempt=1
 while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
   ok=1
@@ -43,9 +53,13 @@ while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
   fi
 
   # Prefer /health on :443; fall back to root (SPA may not expose /health)
-  if ! curl -fsSk "https://127.0.0.1/health" >/dev/null 2>&1 \
-    && ! curl -fsSk "https://127.0.0.1/" >/dev/null 2>&1; then
-    log "attempt ${attempt}: :443 probe failed"
+  if ! curl -fsS \
+    --resolve "${PUBLIC_HOST}:443:127.0.0.1" \
+    "${BETTER_AUTH_URL%/}/health" >/dev/null 2>&1 \
+    && ! curl -fsS \
+    --resolve "${PUBLIC_HOST}:443:127.0.0.1" \
+    "${BETTER_AUTH_URL%/}/" >/dev/null 2>&1; then
+    log "attempt ${attempt}: trusted :443 probe failed"
     ok=0
   fi
 

@@ -23,5 +23,14 @@ test.describe('real-mail browser login (AE1)', () => {
     await expect(
       page.getByText(REAL_MAIL_USER, { exact: false }).or(page.getByText('Inbox', { exact: true })).first(),
     ).toBeVisible({ timeout: 30_000 });
+
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await expect(page).toHaveURL(/\/mail(\/|$)/);
+    await expect(
+      page
+        .getByText(REAL_MAIL_USER, { exact: false })
+        .or(page.getByText('Inbox', { exact: true }))
+        .first(),
+    ).toBeVisible({ timeout: 30_000 });
   });
 });
