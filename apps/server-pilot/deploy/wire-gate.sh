@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pre-IT wire gate: Mailpit TCP + wire vitest on prod RDS. NOT run every deploy.
+# Pre-IT wire gate: Mailpit TCP + wire vitest on disposable DB. NOT run every deploy.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVER_PILOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -15,6 +15,13 @@ if [ -f "$ENV_FILE" ]; then
   source "$ENV_FILE"
   set +a
 fi
+
+if [ -z "${TEST_DATABASE_URL:-}" ]; then
+  echo "wire-gate: TEST_DATABASE_URL must point to a disposable non-production DB" >&2
+  exit 1
+fi
+export DATABASE_URL="$TEST_DATABASE_URL"
+unset VITEST_ALLOW_PILOT_RDS
 
 export PATH="${HOME}/.local/share/pnpm:${HOME}/.nvm/versions/node/$(ls "${HOME}/.nvm/versions/node" 2>/dev/null | sort -V | tail -1)/bin:${PATH}"
 
@@ -64,7 +71,6 @@ export POP3_PORT=11110
 export POP3_TLS=false
 export POP3_USER=ingest@wire.test
 export POP3_PASSWORD=wire-test-pass
-export VITEST_ALLOW_PILOT_RDS=1
 
 echo "== pm2: stop worker (avoid POP3 race) =="
 pm2 stop worker || true
