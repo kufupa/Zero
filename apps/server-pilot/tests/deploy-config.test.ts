@@ -3,6 +3,86 @@ import { describe, expect, it, vi } from 'vitest';
 const CANONICAL_HOST = 'nava.legacyhotels.co.za';
 const CANONICAL_ORIGIN = `https://${CANONICAL_HOST}`;
 const CANONICAL_HOST_ENTRY = `127.0.0.1 ${CANONICAL_HOST}`;
+const BASH_CHILD_TIMEOUT_MS = 10_000;
+
+type BashResult = {
+  status: number | null;
+  signal: NodeJS.Signals | null;
+  stdout: string;
+  stderr: string;
+};
+
+async function runBash({
+  args = [],
+  input = '',
+  env = process.env,
+  timeoutMs = BASH_CHILD_TIMEOUT_MS,
+}: {
+  args?: string[];
+  input?: string;
+  env?: NodeJS.ProcessEnv;
+  timeoutMs?: number;
+} = {}): Promise<BashResult> {
+  const { spawn } = await import('node:child_process');
+
+  return new Promise((resolve, reject) => {
+    const child = spawn('bash', args, {
+      env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.on('data', (chunk: string) => {
+      stderr += chunk;
+    });
+
+    let timeout: NodeJS.Timeout;
+    const rejectOnce = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        // Spawn failures can leave no process handle to kill.
+      }
+      reject(error);
+    };
+
+    timeout = setTimeout(() => {
+      rejectOnce(
+        new Error(
+          `bash timed out after ${timeoutMs}ms${stderr ? `\nstderr:\n${stderr}` : ''}`,
+        ),
+      );
+    }, timeoutMs);
+
+    child.once('error', (error) => {
+      rejectOnce(new Error(`failed to run bash: ${error.message}`));
+    });
+    child.stdin.on('error', (error: NodeJS.ErrnoException) => {
+      if (error.code !== 'EPIPE') {
+        rejectOnce(new Error(`failed to write bash stdin: ${error.message}`));
+      }
+    });
+    child.once('close', (status, signal) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve({ status, signal, stdout, stderr });
+    });
+
+    child.stdin.end(input);
+  });
+}
 
 function curlCommands(source: string): string[] {
   const logicalCommands = source.replace(/\\\r?\n[ \t]*/g, ' ');
@@ -19,7 +99,6 @@ function insecureCurlCommands(source: string): string[] {
 
 async function runNavaHostMapping(initialHosts: string): Promise<string> {
   const { mkdtempSync, readFileSync, rmSync, writeFileSync } = await import('node:fs');
-  const { spawnSync } = await import('node:child_process');
   const { tmpdir } = await import('node:os');
   const { fileURLToPath } = await import('node:url');
   const { dirname, join } = await import('node:path');
@@ -40,7 +119,7 @@ async function runNavaHostMapping(initialHosts: string): Promise<string> {
       .slice(start, end)
       .replaceAll('sudo ', '')
       .replaceAll('/etc/hosts', `'${bashHostsPath}'`);
-    const result = spawnSync('bash', ['-c', block], { encoding: 'utf8' });
+    const result = await runBash({ args: ['-c', block] });
     if (result.status !== 0) {
       throw new Error(result.stderr || `Nava hosts block exited ${result.status}`);
     }
@@ -167,7 +246,6 @@ async function runNginxActivation({
     rmSync,
     writeFileSync,
   } = await import('node:fs');
-  const { spawnSync } = await import('node:child_process');
   const { tmpdir } = await import('node:os');
   const { dirname, isAbsolute, join, resolve } = await import('node:path');
   const { fileURLToPath } = await import('node:url');
@@ -326,8 +404,7 @@ systemctl() {
 }
 `;
 
-    const result = spawnSync('bash', [], {
-      encoding: 'utf8',
+    const result = await runBash({
       input: `${harness}\n${nginxBlock}`,
       env: {
         ...process.env,
@@ -474,7 +551,6 @@ async function runLaunchReadinessReport({
   securityGroupQueryOk?: boolean;
   omitSecurityGroups?: boolean;
 } = {}): Promise<LaunchReadinessReport> {
-  const { spawnSync } = await import('node:child_process');
   const source = await readLaunchReadiness();
   const reportBuilder = extractSourceBlock(
     source,
@@ -484,8 +560,7 @@ async function runLaunchReadinessReport({
   const shellEnv = validReportShellEnv();
   const remote = JSON.parse(shellEnv.REMOTE_JSON);
   remote.firewall = { ...remote.firewall, ...firewall };
-  const result = spawnSync('bash', [], {
-    encoding: 'utf8',
+  const result = await runBash({
     input: `${reportBuilder}\nbuild_readiness_report\n`,
     env: {
       ...process.env,
@@ -525,7 +600,6 @@ async function runUfwCollection({
   const { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } = await import(
     'node:fs'
   );
-  const { spawnSync } = await import('node:child_process');
   const { tmpdir } = await import('node:os');
   const { delimiter, join } = await import('node:path');
   const tempDir = mkdtempSync(join(tmpdir(), 'nava-ufw-collection-test-'));
@@ -573,8 +647,7 @@ printf 'UFW_FACTS=%s,%s,%s,%s,%s,%s\\n' \
   "\${UFW_RULES_READ:-false}" \
   "$UFW_ACTIVE" "$UFW_DEFAULT_DENY" "$UFW_TUN443" "$UFW_BROAD443_ABSENT"
 `;
-    const result = spawnSync('bash', [], {
-      encoding: 'utf8',
+    const result = await runBash({
       input: script,
       env: {
         ...process.env,
@@ -650,7 +723,6 @@ async function runAwsPerimeterCollection({
     rmSync,
     writeFileSync,
   } = await import('node:fs');
-  const { spawnSync } = await import('node:child_process');
   const { tmpdir } = await import('node:os');
   const { delimiter, join } = await import('node:path');
   const tempDir = mkdtempSync(join(tmpdir(), 'nava-aws-perimeter-test-'));
@@ -733,8 +805,7 @@ process.stdout.write("AWS_FACTS=" + JSON.stringify(facts) + "\\n");
 NODE
 printf 'AWS_REPORT=%s\\n' "$(build_readiness_report)"
 `;
-    const result = spawnSync('bash', [], {
-      encoding: 'utf8',
+    const result = await runBash({
       input: script,
       env: {
         ...process.env,
@@ -785,7 +856,6 @@ async function runVpnHealth(
     rmSync,
     writeFileSync,
   } = await import('node:fs');
-  const { spawnSync } = await import('node:child_process');
   const { tmpdir } = await import('node:os');
   const { delimiter, dirname, join } = await import('node:path');
   const { fileURLToPath } = await import('node:url');
@@ -840,8 +910,8 @@ esac
     );
     chmodSync(scriptPath, 0o755);
 
-    const result = spawnSync('bash', [toBashPath(scriptPath)], {
-      encoding: 'utf8',
+    const result = await runBash({
+      args: [toBashPath(scriptPath)],
       env: {
         ...process.env,
         PATH: `${toBashPath(stubDir)}${delimiter}${process.env.PATH ?? ''}`,
@@ -1369,7 +1439,6 @@ describe('deploy config', () => {
       rmSync,
       writeFileSync,
     } = await import('node:fs');
-    const { spawnSync } = await import('node:child_process');
     const { tmpdir } = await import('node:os');
     const { delimiter, dirname, join } = await import('node:path');
     const { fileURLToPath } = await import('node:url');
@@ -1425,21 +1494,16 @@ describe('deploy config', () => {
       VITE_PUBLIC_BACKEND_URL: CANONICAL_ORIGIN,
     };
 
-    const run = (
+    const run = async (
       scriptName: string,
       overrides: Record<string, string>,
       remote = false,
     ) => {
       rmSync(markerPath, { force: true });
-      const result = remote
-        ? spawnSync('bash', ['-c', launchRemote!], {
-            encoding: 'utf8',
-            env: { ...baseEnv, ...overrides },
-          })
-        : spawnSync('bash', [join(deployDir, scriptName)], {
-            encoding: 'utf8',
-            env: { ...baseEnv, ...overrides },
-          });
+      const result = await runBash({
+        args: remote ? ['-c', launchRemote!] : [join(deployDir, scriptName)],
+        env: { ...baseEnv, ...overrides },
+      });
       return {
         ...result,
         externalCommands: existsSync(markerPath)
@@ -1464,7 +1528,7 @@ describe('deploy config', () => {
           ['post-boot-smoke.sh', false],
           ['launch-readiness.sh', true],
         ] as const) {
-          const result = run(scriptName, { BETTER_AUTH_URL: value }, remote);
+          const result = await run(scriptName, { BETTER_AUTH_URL: value }, remote);
           expect(result.status, `${scriptName} accepted ${value}`).toBe(2);
           expect(result.stderr).toContain(
             'refusing: BETTER_AUTH_URL must be canonical HTTPS origin',
@@ -1486,7 +1550,7 @@ describe('deploy config', () => {
         ] as const) {
           for (const value of invalidOrigins) {
             const overrides = { [variable]: value };
-            const result = run(scriptName, overrides);
+            const result = await run(scriptName, overrides);
             expect(
               result.status,
               `${scriptName} accepted ${JSON.stringify(overrides)}`,
@@ -2319,12 +2383,22 @@ describe('deploy config', () => {
     expect(sgReport.checks.securityGroupIngressEmpty).toBe(false);
   });
 
-  it('AWS perimeter collection safely rejects malformed EC2 stdout', async () => {
-    for (const instanceNetworkRaw of [
-      '{"securityGroups":',
-      `${JSON.stringify(validInstanceNetwork())}\ni-private sg-private`,
-      JSON.stringify({ securityGroups: [], ipv6: [] }),
-    ]) {
+  it.each([
+    {
+      name: 'truncated JSON',
+      instanceNetworkRaw: '{"securityGroups":',
+    },
+    {
+      name: 'trailing private output',
+      instanceNetworkRaw: `${JSON.stringify(validInstanceNetwork())}\ni-private sg-private`,
+    },
+    {
+      name: 'missing security-group attachments',
+      instanceNetworkRaw: JSON.stringify({ securityGroups: [], ipv6: [] }),
+    },
+  ])(
+    'AWS perimeter collection safely rejects malformed EC2 stdout: $name',
+    async ({ instanceNetworkRaw }) => {
       const collected = await runAwsPerimeterCollection({ instanceNetworkRaw });
       expect(collected.status, collected.stderr).toBe(0);
       expect(collected.stderr).toContain(
@@ -2344,11 +2418,10 @@ describe('deploy config', () => {
         securityGroupIngressEmpty: false,
         instanceHasNoPublicIpv6: false,
       });
-    }
-  });
+    },
+  );
 
-  // Three Bash/Node collection runs can exceed Vitest's 5s default on Windows.
-  it('AWS perimeter collection rejects malformed attachments and SG results', async () => {
+  it('AWS perimeter collection rejects malformed instance SG attachments', async () => {
     const malformedAttachment = await runAwsPerimeterCollection({
       instanceNetwork: {
         securityGroups: [{ GroupId: SG_ONE }, {}],
@@ -2362,7 +2435,9 @@ describe('deploy config', () => {
     const attachmentReport = malformedAttachment.report!;
     expect(attachmentReport.checks.securityGroupIngressEmpty).toBe(false);
     expect(attachmentReport.checks.instanceHasNoPublicIpv6).toBe(false);
+  });
 
+  it('AWS perimeter collection rejects malformed SG result records', async () => {
     const malformedResult = await runAwsPerimeterCollection({
       instanceNetwork: {
         securityGroups: [{ GroupId: SG_ONE }],
@@ -2376,14 +2451,16 @@ describe('deploy config', () => {
     expect(malformedResult.status).toBe(0);
     const malformedReport = malformedResult.report!;
     expect(malformedReport.checks.securityGroupIngressEmpty).toBe(false);
+  });
 
+  it('AWS perimeter collection fails closed for partial SG result coverage', async () => {
     const partialResult = await runAwsPerimeterCollection({
       securityGroups: [{ id: SG_ONE, ingress: [] }],
     });
     expect(partialResult.status).toBe(0);
     const partialReport = partialResult.report!;
     expect(partialReport.checks.securityGroupIngressEmpty).toBe(false);
-  }, 15_000);
+  });
 
   it('AWS-collected wildcard and malformed CORS fail the real report', async () => {
     for (const cors of [
