@@ -31,7 +31,7 @@ Provisioned AWS resources for the mail pilot. All created via AWS CLI from lapto
 | S3 SSE | AES256 |
 | S3 public access block | all 4 blocks enabled (private) |
 | S3 lifecycle | `raw-mime/*` expire 30d, `attachments/*` expire 90d, incomplete multipart abort 1d |
-| S3 CORS | Allowlisted GET/HEAD for `https://nava.legacy.local` + localhost:3000 (browser attachment blob fetch). No wildcard origins. |
+| S3 CORS | Cutover overlap: canonical + legacy + localhost GET/HEAD. Final after 24h: canonical + localhost GET/HEAD; legacy removed. No wildcard origins. |
 | Bootstrap bucket (Task 1) | `nava-zero-bootstrap-845242190536` |
 
 ## EC2 instance profile inline policies
@@ -103,8 +103,8 @@ aws s3api create-bucket --region "$AWS_REGION" --bucket "$NAVA_MAIL_BUCKET" --cr
 aws s3api put-public-access-block --region "$AWS_REGION" --bucket "$NAVA_MAIL_BUCKET" --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
 aws s3api put-bucket-encryption --region "$AWS_REGION" --bucket "$NAVA_MAIL_BUCKET" --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
 aws s3api put-bucket-lifecycle-configuration --region "$AWS_REGION" --bucket "$NAVA_MAIL_BUCKET" --lifecycle-configuration '{"Rules":[{"ID":"expire-raw-mime-30d","Status":"Enabled","Filter":{"Prefix":"raw-mime/"},"Expiration":{"Days":30}},{"ID":"expire-attachments-90d","Status":"Enabled","Filter":{"Prefix":"attachments/"},"Expiration":{"Days":90}},{"ID":"abort-incomplete-multipart-1d","Status":"Enabled","Filter":{"Prefix":""},"AbortIncompleteMultipartUpload":{"DaysAfterInitiation":1}}]}'
-# Browser attachment fetch (FE blob helper). Allowlist only — never *.
-aws s3api put-bucket-cors --region "$AWS_REGION" --bucket "$NAVA_MAIL_BUCKET" --cors-configuration '{"CORSRules":[{"AllowedOrigins":["https://nava.legacy.local","http://localhost:3000","https://localhost:3000"],"AllowedMethods":["GET","HEAD"],"AllowedHeaders":["*"],"ExposeHeaders":["Content-Disposition","Content-Type","Content-Length"],"MaxAgeSeconds":300}]}'
+# Browser attachment fetch during cutover overlap. Origin allowlist only — never *.
+aws s3api put-bucket-cors --region "$AWS_REGION" --bucket "$NAVA_MAIL_BUCKET" --cors-configuration '{"CORSRules":[{"AllowedOrigins":["https://nava.legacyhotels.co.za","https://nava.legacy.local","http://localhost:3000","https://localhost:3000"],"AllowedMethods":["GET","HEAD"],"AllowedHeaders":["*"],"ExposeHeaders":["Content-Disposition","Content-Type","Content-Length"],"MaxAgeSeconds":300}]}'
 
 # 6. EC2 instance role inline policies
 ROLE=nava-prod-public-ipv4-WorkerRole-bPmrMEkmdwLU
@@ -113,6 +113,25 @@ aws iam put-role-policy --region "$AWS_REGION" --role-name "$ROLE" --policy-name
 aws iam put-role-policy --region "$AWS_REGION" --role-name "$ROLE" --policy-name NavaZeroRDSConnect --policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["rds-db:connect"],"Resource":"arn:aws:rds:af-south-1:845242190536:dbuser:nava-zero-mail-pilot/zero_admin"}]}'
 aws iam put-role-policy --region "$AWS_REGION" --role-name "$ROLE" --policy-name NavaZeroBedrockInvoke --policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["bedrock:InvokeModel"],"Resource":"arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-lite-v1:0"}]}'
 ```
+
+## S3 CORS cutover states
+
+Browser attachment fetches use one CORS rule so each allowed origin receives both required methods.
+
+1. **Cutover overlap:** allow `https://nava.legacyhotels.co.za`, `https://nava.legacy.local`, `http://localhost:3000`, and `https://localhost:3000` with `GET` and `HEAD`.
+2. **Final state after 24 hours:** allow `https://nava.legacyhotels.co.za`, `http://localhost:3000`, and `https://localhost:3000` with `GET` and `HEAD`. Remove `https://nava.legacy.local`.
+
+Never use `*` in `AllowedOrigins`. Do not split the canonical origin and its `GET`/`HEAD` methods across different rules.
+
+For either transition:
+
+1. **Read before write:** save `aws s3api get-bucket-cors --region "$AWS_REGION" --bucket "$NAVA_MAIL_BUCKET" --output json` to a mode-600 temporary file.
+2. Apply the intended complete CORS document.
+3. **Immediate readback:** run the same `get-bucket-cors` command, then semantically compare the returned rule with the intended origins and methods. `launch-readiness.sh` must report `s3CorsCanonical=true`.
+4. Preserve that successful readback as the applied-state snapshot.
+5. **Compare before rollback:** read current CORS again and compare it with the applied-state snapshot. If they differ, stop because another operator changed the bucket. Only when they match may the saved pre-write document be restored, followed by another immediate readback.
+
+These snapshots contain bucket configuration only. Do not include S3 object keys, environment values, credentials, or mail data in readiness output.
 
 ## Resize / downgrade
 

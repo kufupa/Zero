@@ -1,6 +1,1188 @@
-import { describe, expect, it } from 'vitest';
+import { spawn } from 'node:child_process';
+import { describe, expect, it, vi } from 'vitest';
+
+const CANONICAL_HOST = 'nava.legacyhotels.co.za';
+const CANONICAL_ORIGIN = `https://${CANONICAL_HOST}`;
+const CANONICAL_HOST_ENTRY = `127.0.0.1 ${CANONICAL_HOST}`;
+const BASH_CHILD_TIMEOUT_MS = 10_000;
+const BASH_CLEANUP_GRACE_MS = 1_000;
+const TASKKILL_TIMEOUT_MS = 1_000;
+
+type BashResult = {
+  status: number | null;
+  signal: NodeJS.Signals | null;
+  stdout: string;
+  stderr: string;
+};
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function runTaskkill(pid: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const killer = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    let timedOut = false;
+    let helperKill = 'not requested';
+    let helperError = '';
+
+    killer.stdout.setEncoding('utf8');
+    killer.stderr.setEncoding('utf8');
+    killer.stdout.on('data', (chunk: string) => {
+      stdout += chunk;
+    });
+    killer.stderr.on('data', (chunk: string) => {
+      stderr += chunk;
+    });
+
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (error) reject(error);
+      else resolve();
+    };
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      try {
+        helperKill = killer.kill('SIGKILL') ? 'requested' : 'returned false';
+      } catch (error) {
+        helperKill = `threw: ${errorMessage(error)}`;
+      }
+    }, TASKKILL_TIMEOUT_MS);
+
+    killer.once('error', (error) => {
+      if (timedOut) {
+        helperError = `; helper error: ${error.message}`;
+        return;
+      }
+      finish(new Error(`taskkill failed to start: ${error.message}`));
+    });
+    killer.once('close', (status, signal) => {
+      const output = stderr.trim() || stdout.trim();
+      if (timedOut) {
+        finish(
+          new Error(
+            `taskkill timed out after ${TASKKILL_TIMEOUT_MS}ms; helper kill ${helperKill}; ` +
+              `helper closed ${status ?? 'null'}${signal ? ` (${signal})` : ''}` +
+              helperError +
+              `${output ? `: ${output}` : ''}`,
+          ),
+        );
+        return;
+      }
+      if (status === 0) {
+        finish();
+        return;
+      }
+      finish(
+        new Error(
+          `taskkill exited ${status ?? 'null'}${signal ? ` (${signal})` : ''}` +
+            `${output ? `: ${output}` : ''}`,
+        ),
+      );
+    });
+  });
+}
+
+function processIsAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+async function terminateProcessTree(pid: number): Promise<void> {
+  if (process.platform === 'win32') {
+    await runTaskkill(pid);
+    return;
+  }
+
+  try {
+    process.kill(-pid, 'SIGKILL');
+  } catch (error) {
+    throw new Error(`process-group kill failed: ${errorMessage(error)}`);
+  }
+}
+
+function waitForClose(
+  closePromise: Promise<BashResult>,
+  graceMs: number,
+): Promise<BashResult> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (result?: BashResult, error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (error) reject(error);
+      else resolve(result!);
+    };
+    const timeout = setTimeout(() => {
+      finish(undefined, new Error(`bash did not close within ${graceMs}ms cleanup grace`));
+    }, graceMs);
+
+    closePromise.then(
+      (result) => finish(result),
+      (error) => finish(undefined, error),
+    );
+  });
+}
+
+async function runBash({
+  args = [],
+  input = '',
+  env = process.env,
+  timeoutMs = BASH_CHILD_TIMEOUT_MS,
+  onSpawn,
+}: {
+  args?: string[];
+  input?: string;
+  env?: NodeJS.ProcessEnv;
+  timeoutMs?: number;
+  onSpawn?: (pid: number) => void;
+} = {}): Promise<BashResult> {
+  const child = spawn('bash', args, {
+    detached: process.platform !== 'win32',
+    env,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true,
+  });
+  if (child.pid != null) onSpawn?.(child.pid);
+  let stdout = '';
+  let stderr = '';
+  let reportExecutionError!: (error: Error) => void;
+
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  child.stdout.on('data', (chunk: string) => {
+    stdout += chunk;
+  });
+  child.stderr.on('data', (chunk: string) => {
+    stderr += chunk;
+  });
+
+  const closePromise = new Promise<BashResult>((resolve) => {
+    child.once('close', (status, signal) => {
+      resolve({ status, signal, stdout, stderr });
+    });
+  });
+  const executionErrorPromise = new Promise<{ error: Error }>((resolve) => {
+    reportExecutionError = (error) => resolve({ error });
+  });
+  child.once('error', (error) => {
+    reportExecutionError(new Error(`failed to run bash: ${error.message}`));
+  });
+  child.stdin.on('error', (error: NodeJS.ErrnoException) => {
+    if (error.code !== 'EPIPE') {
+      reportExecutionError(new Error(`failed to write bash stdin: ${error.message}`));
+    }
+  });
+  try {
+    child.stdin.end(input);
+  } catch (error) {
+    reportExecutionError(new Error(`failed to write bash stdin: ${errorMessage(error)}`));
+  }
+
+  let runTimeout: NodeJS.Timeout;
+  const timeoutPromise = new Promise<{ timedOut: true }>((resolve) => {
+    runTimeout = setTimeout(() => resolve({ timedOut: true }), timeoutMs);
+  });
+  const outcome = await Promise.race([
+    closePromise.then((result) => ({ result })),
+    executionErrorPromise,
+    timeoutPromise,
+  ]);
+  clearTimeout(runTimeout!);
+
+  if ('result' in outcome) return outcome.result;
+  if ('error' in outcome && child.pid == null) throw outcome.error;
+
+  const cleanupReason =
+    'timedOut' in outcome ? `timeout after ${timeoutMs}ms` : `error: ${outcome.error.message}`;
+  let terminationError: Error | null = null;
+  if (child.pid == null) {
+    terminationError = new Error('child PID unavailable');
+  } else {
+    try {
+      await terminateProcessTree(child.pid);
+    } catch (error) {
+      terminationError = new Error(errorMessage(error));
+    }
+  }
+
+  let closedResult: BashResult;
+  try {
+    closedResult = await waitForClose(closePromise, BASH_CLEANUP_GRACE_MS);
+  } catch (error) {
+    throw new Error(
+      `bash ${cleanupReason} cleanup failed: ${errorMessage(error)}` +
+        `${terminationError ? `; tree termination error: ${terminationError.message}` : ''}`,
+    );
+  }
+
+  if (terminationError) {
+    throw new Error(
+      `bash ${cleanupReason} cleanup failed: ${terminationError.message}; ` +
+        `bash closed with status ${closedResult.status ?? 'null'}`,
+    );
+  }
+  if ('error' in outcome) throw outcome.error;
+
+  throw new Error(
+    `bash timed out after ${timeoutMs}ms; process tree cleanup completed` +
+      `${closedResult.stderr ? `\nstderr:\n${closedResult.stderr}` : ''}`,
+  );
+}
+
+function curlCommands(source: string): string[] {
+  const logicalCommands = source.replace(/\\\r?\n[ \t]*/g, ' ');
+  return [...logicalCommands.matchAll(/\bcurl\b[^\r\n]*/g)].map(
+    ([command]) => command,
+  );
+}
+
+function insecureCurlCommands(source: string): string[] {
+  return curlCommands(source).filter((command) =>
+    /(?:--insecure|(?:^|\s)-[A-Za-z]*k[A-Za-z]*)/.test(command),
+  );
+}
+
+async function runNavaHostMapping(initialHosts: string): Promise<string> {
+  const { mkdtempSync, readFileSync, rmSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { fileURLToPath } = await import('node:url');
+  const { dirname, join } = await import('node:path');
+  const here = dirname(fileURLToPath(import.meta.url));
+  const deploy = readFileSync(join(here, '..', 'deploy', 'deploy-ec2.sh'), 'utf8');
+  const start = deploy.indexOf(`echo "== hosts: ${CANONICAL_HOST} =="`);
+  const end = deploy.indexOf('echo "== hosts: appsrv-1.legacyhotels.co.za', start);
+  if (start < 0 || end < 0) throw new Error('Nava hosts block not found');
+
+  const tempDir = mkdtempSync(join(tmpdir(), 'nava-hosts-test-'));
+  const hostsPath = join(tempDir, 'hosts');
+  const bashHostsPath = hostsPath
+    .replace(/^([A-Za-z]):\\/, (_, drive: string) => `/${drive.toLowerCase()}/`)
+    .replaceAll('\\', '/');
+  try {
+    writeFileSync(hostsPath, initialHosts, 'utf8');
+    const block = deploy
+      .slice(start, end)
+      .replaceAll('sudo ', '')
+      .replaceAll('/etc/hosts', `'${bashHostsPath}'`);
+    const result = await runBash({ args: ['-c', block] });
+    if (result.status !== 0) {
+      throw new Error(result.stderr || `Nava hosts block exited ${result.status}`);
+    }
+    return readFileSync(hostsPath, 'utf8');
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+function activeCanonicalEntries(hosts: string): string[] {
+  return hosts
+    .split(/\r?\n/)
+    .filter((line) => !line.trimStart().startsWith('#'))
+    .filter((line) => line.split(/\s+/).includes(CANONICAL_HOST));
+}
+
+const SG_ONE = 'sg-0123456789abcdef0';
+const SG_TWO = 'sg-0fedcba9876543210';
+const INTENDED_UFW_ALLOW = 'ufw allow in on tun0 to any port 443 proto tcp';
+const ACTIVE_DEFAULT_DENY_UFW = [
+  'Status: active',
+  'Logging: on (low)',
+  'Default: deny (incoming), allow (outgoing), disabled (routed)',
+].join('\n');
+
+const validCors = (origins: string[] = [CANONICAL_ORIGIN]) => ({
+  CORSRules: [
+    {
+      AllowedOrigins: origins,
+      AllowedMethods: ['GET', 'HEAD'],
+      AllowedHeaders: ['*'],
+      ExposeHeaders: ['Content-Type'],
+      MaxAgeSeconds: 300,
+    },
+  ],
+});
+
+const validInstanceNetwork = () => ({
+  securityGroups: [{ GroupId: SG_ONE }, { GroupId: SG_TWO }],
+  ipv6: [],
+});
+
+const validSecurityGroups = () => [
+  { id: SG_ONE, ingress: [] },
+  { id: SG_TWO, ingress: [] },
+];
+
+type FirewallFacts = {
+  statusRead: boolean;
+  rulesRead: boolean;
+  active: boolean;
+  defaultDeny: boolean;
+  tunnel443: boolean;
+  broad443Absent: boolean;
+};
+
+type LaunchReadinessReport = {
+  checks: Record<string, boolean>;
+  observations: Record<string, unknown>;
+};
+
+type AwsPerimeterFacts = {
+  cors: unknown;
+  publicAccess: unknown;
+  s3CorsOk: boolean;
+  s3PublicAccessOk: boolean;
+  instanceNetwork: unknown;
+  securityGroups: unknown;
+  instanceNetworkOk: boolean;
+  securityGroupQueryOk: boolean;
+};
+
+const toBashPath = (path: string) =>
+  path
+    .replace(/^([A-Za-z]):\\/, (_, drive: string) => `/${drive.toLowerCase()}/`)
+    .replaceAll('\\', '/');
+
+function extractSourceBlock(source: string, start: string, end: string): string {
+  const normalized = source.replaceAll('\r\n', '\n');
+  const startIndex = normalized.indexOf(start);
+  const endIndex = normalized.indexOf(end, startIndex);
+  if (startIndex < 0 || endIndex < 0) {
+    throw new Error(`source block not found: ${start} -> ${end}`);
+  }
+  return normalized.slice(startIndex, endIndex);
+}
+
+type NginxActivationScenario =
+  | 'install'
+  | 'link'
+  | 'validate'
+  | 'reload'
+  | 'sigint'
+  | 'sigterm'
+  | 'unexpected-exit'
+  | 'cleanup-exit';
+type NginxPriorState = 'absent' | 'present' | 'dangling';
+
+async function runNginxActivation({
+  scenario,
+  priorState,
+  rollbackCopyFails = false,
+}: {
+  scenario: NginxActivationScenario;
+  priorState: NginxPriorState;
+  rollbackCopyFails?: boolean;
+}): Promise<{
+  status: number | null;
+  stdout: string;
+  stderr: string;
+  site: string | null;
+  enabledState: 'absent' | 'valid' | 'dangling';
+  enabledTarget: string | null;
+  nginxCalls: number;
+  reloadCalls: number;
+  backupEntries: string[];
+}> {
+  const {
+    existsSync,
+    mkdtempSync,
+    mkdirSync,
+    readFileSync,
+    readdirSync,
+    rmSync,
+    writeFileSync,
+  } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { dirname, isAbsolute, join, resolve } = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+  const here = dirname(fileURLToPath(import.meta.url));
+  const deploySource = readFileSync(
+    join(here, '..', 'deploy', 'deploy-ec2.sh'),
+    'utf8',
+  );
+  const nginxBlock = extractSourceBlock(
+    deploySource,
+    'echo "== nginx =="',
+    'if [ "$QUIESCED" = "1" ]; then',
+  );
+  const tempDir = mkdtempSync(join(tmpdir(), 'nava-nginx-activation-test-'));
+  const serverPilot = join(tempDir, 'server-pilot');
+  const deployDir = join(serverPilot, 'deploy');
+  const backupDir = join(tempDir, 'backups');
+  const sitePath = join(tempDir, 'sites-available', 'nava-zero');
+  const enabledPath = join(tempDir, 'sites-enabled', 'nava-zero');
+  const enabledModelPath = join(tempDir, 'enabled-link.target');
+  const nginxCallsPath = join(tempDir, 'nginx-calls');
+  const reloadCallsPath = join(tempDir, 'reload-calls');
+  const previousTargetPath = join(dirname(sitePath), 'previous-nava');
+  const previousSite = 'previous nginx config\n';
+  const previousTarget = '../sites-available/previous-nava';
+
+  try {
+    for (const directory of [
+      deployDir,
+      backupDir,
+      dirname(sitePath),
+      dirname(enabledPath),
+    ]) {
+      mkdirSync(directory, { recursive: true });
+    }
+    writeFileSync(join(deployDir, 'nginx.conf'), 'candidate nginx config\n', 'utf8');
+    writeFileSync(nginxCallsPath, '0', 'utf8');
+    writeFileSync(reloadCallsPath, '0', 'utf8');
+    if (priorState !== 'absent') {
+      writeFileSync(sitePath, previousSite, 'utf8');
+      writeFileSync(enabledModelPath, previousTarget, 'utf8');
+    }
+    if (priorState === 'present') {
+      writeFileSync(previousTargetPath, 'previous enabled config\n', 'utf8');
+    }
+
+    const harness = `set -euo pipefail
+link_calls=0
+nginx_calls=0
+reload_calls=0
+cleanup_calls=0
+
+link_target_exists() {
+  [ -f "$NGINX_TEST_LINK_MODEL" ] || return 1
+  target="$(command cat "$NGINX_TEST_LINK_MODEL")"
+  case "$target" in
+    /*) resolved_target="$target" ;;
+    *) resolved_target="$(command dirname "$NGINX_TEST_ENABLED")/$target" ;;
+  esac
+  command test -e "$resolved_target"
+}
+
+sudo() {
+case "\${1:-}" in
+  test)
+    if [ "\${3:-}" = "$NGINX_TEST_ENABLED" ]; then
+      case "\${2:-}" in
+        -L) [ -f "$NGINX_TEST_LINK_MODEL" ] ;;
+        -e) link_target_exists ;;
+        *) exit 2 ;;
+      esac
+    else
+      command test "\${@:2}"
+    fi
+    ;;
+  readlink)
+    if [ "\${2:-}" = "$NGINX_TEST_ENABLED" ]; then
+      command cat "$NGINX_TEST_LINK_MODEL"
+    else
+      command readlink "\${@:2}"
+    fi
+    ;;
+  cp)
+    source_path="\${@: -2:1}"
+    destination_path="\${@: -1}"
+    if [ "\${NGINX_TEST_ROLLBACK_COPY_FAIL:-0}" = "1" ] &&
+       [ "$destination_path" = "$NGINX_TEST_SITE" ]; then
+      return 65
+    fi
+    command cp "$source_path" "$destination_path"
+    ;;
+  install)
+    command cp "\${@: -2:1}" "\${@: -1}"
+    if [ "$NGINX_TEST_SCENARIO" = "install" ]; then
+      return 61
+    fi
+    ;;
+  ln)
+    link_calls=$((link_calls + 1))
+    destination_path="\${@: -1}"
+    target="\${@: -2:1}"
+    if [ "$destination_path" != "$NGINX_TEST_ENABLED" ]; then
+      return 97
+    fi
+    command rm -f "$NGINX_TEST_LINK_MODEL"
+    if [ "$NGINX_TEST_SCENARIO" = "link" ] && [ "$link_calls" -eq 1 ]; then
+      return 62
+    fi
+    printf '%s' "$target" >"$NGINX_TEST_LINK_MODEL"
+    if [ "$link_calls" -eq 1 ]; then
+      case "$NGINX_TEST_SCENARIO" in
+        sigint) kill -INT "$BASHPID" ;;
+        sigterm) kill -TERM "$BASHPID" ;;
+        unexpected-exit) exit 73 ;;
+      esac
+    fi
+    ;;
+  rm)
+    destination_path="\${@: -1}"
+    if [ "$destination_path" = "$NGINX_TEST_ENABLED" ]; then
+      command rm -f "$NGINX_TEST_LINK_MODEL"
+    elif [[ "$destination_path" == "$NGINX_TEST_BACKUP_DIR"/nava-nginx.* ]]; then
+      cleanup_calls=$((cleanup_calls + 1))
+      if [ "$NGINX_TEST_SCENARIO" = "cleanup-exit" ] &&
+         [ "$cleanup_calls" -eq 1 ]; then
+        exit 74
+      fi
+      command rm "\${@:2}"
+    else
+      command rm "\${@:2}"
+    fi
+    ;;
+  nginx|systemctl)
+    "$@"
+    ;;
+  *)
+    command "$@"
+    ;;
+esac
+}
+
+nginx() {
+  nginx_calls=$((nginx_calls + 1))
+  printf '%s' "$nginx_calls" >"$NGINX_TEST_NGINX_CALLS"
+  if [ "$NGINX_TEST_SCENARIO" = "validate" ] && [ "$nginx_calls" -eq 1 ]; then
+    return 63
+  fi
+}
+
+systemctl() {
+  reload_calls=$((reload_calls + 1))
+  printf '%s' "$reload_calls" >"$NGINX_TEST_RELOAD_CALLS"
+  if [ "$NGINX_TEST_SCENARIO" = "reload" ] && [ "$reload_calls" -eq 1 ]; then
+    return 64
+  fi
+}
+`;
+
+    const result = await runBash({
+      input: `${harness}\n${nginxBlock}`,
+      env: {
+        ...process.env,
+        SERVER_PILOT: toBashPath(serverPilot),
+        NGINX_SITE: toBashPath(sitePath),
+        NGINX_ENABLED: toBashPath(enabledPath),
+        TMPDIR: toBashPath(backupDir),
+        NGINX_TEST_SCENARIO: scenario,
+        NGINX_TEST_ROLLBACK_COPY_FAIL: rollbackCopyFails ? '1' : '0',
+        NGINX_TEST_SITE: toBashPath(sitePath),
+        NGINX_TEST_ENABLED: toBashPath(enabledPath),
+        NGINX_TEST_LINK_MODEL: toBashPath(enabledModelPath),
+        NGINX_TEST_NGINX_CALLS: toBashPath(nginxCallsPath),
+        NGINX_TEST_RELOAD_CALLS: toBashPath(reloadCallsPath),
+        NGINX_TEST_BACKUP_DIR: toBashPath(backupDir),
+      },
+    });
+
+    const enabledTarget = existsSync(enabledModelPath)
+      ? readFileSync(enabledModelPath, 'utf8')
+      : null;
+    const nativeTarget =
+      process.platform === 'win32' && enabledTarget?.match(/^\/[A-Za-z]\//)
+        ? `${enabledTarget[1]}:/${enabledTarget.slice(3)}`
+        : enabledTarget;
+    const resolvedTarget =
+      nativeTarget == null
+        ? null
+        : isAbsolute(nativeTarget)
+          ? nativeTarget
+          : resolve(dirname(enabledPath), nativeTarget);
+
+    return {
+      status: result.status,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      site: existsSync(sitePath) ? readFileSync(sitePath, 'utf8') : null,
+      enabledState:
+        enabledTarget == null
+          ? 'absent'
+          : resolvedTarget != null && existsSync(resolvedTarget)
+            ? 'valid'
+            : 'dangling',
+      enabledTarget,
+      nginxCalls: Number(readFileSync(nginxCallsPath, 'utf8')),
+      reloadCalls: Number(readFileSync(reloadCallsPath, 'utf8')),
+      backupEntries: readdirSync(backupDir),
+    };
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+async function readLaunchReadiness(): Promise<string> {
+  const { readFileSync } = await import('node:fs');
+  const { fileURLToPath } = await import('node:url');
+  const { dirname, join } = await import('node:path');
+  const here = dirname(fileURLToPath(import.meta.url));
+  return readFileSync(join(here, '..', 'deploy', 'launch-readiness.sh'), 'utf8');
+}
+
+function validReportShellEnv(): Record<string, string> {
+  return {
+    REMOTE_JSON: JSON.stringify({
+      health: { http: true, https: true, tls: true },
+      pm2: {
+        required: {
+          http: { present: true, online: true, restarts: 0 },
+          worker: { present: true, online: true, restarts: 0 },
+          'ai-worker': { present: true, online: true, restarts: 0 },
+        },
+        allOnline: true,
+      },
+      hotelProbe: true,
+      firewall: {
+        statusRead: true,
+        rulesRead: true,
+        active: true,
+        defaultDeny: true,
+        tunnel443: true,
+        broad443Absent: true,
+      },
+      config: {
+        envLoaded: true,
+        mailTransportModeReal: true,
+        betterAuthUrlCorrect: true,
+        undoSendSecondsCorrect: true,
+        aiWriteGateEnabled: true,
+        aiDraftsDisabled: true,
+      },
+      db: {
+        connected: true,
+        centurionActiveTransportCount: 1,
+        centurionActiveCategoryCount: 5,
+        workflowNonterminalCount: 0,
+        workflowDeadLetterCount: 0,
+        workflowDeadLetterRecentCount: 0,
+        outboundNonterminalCount: 0,
+        latestInboundAt: null,
+        counts: { threads: 0, messages: 0, inboundMessages: 0 },
+      },
+      disk: { safe: true, usedPercent: 10, freeMB: 10_000 },
+    }),
+    RDS_JSON: JSON.stringify({
+      status: 'available',
+      deletionProtection: true,
+      multiAZ: false,
+      backupRetentionDays: 7,
+      backupLatestRestorableAt: '2026-07-31T12:00:00.000Z',
+    }),
+    S3_AVAILABLE: 'true',
+    S3_VERSIONING: 'Enabled',
+    S3_LIFECYCLE: '[]',
+    CLOUDWATCH_ALARM_COUNT: '1',
+    SNS_TOPIC_COUNT: '1',
+  };
+}
+
+async function runLaunchReadinessReport({
+  firewall = {},
+  cors = validCors(),
+  publicAccess = {
+    BlockPublicAcls: true,
+    IgnorePublicAcls: true,
+    BlockPublicPolicy: true,
+    RestrictPublicBuckets: true,
+  },
+  instanceNetwork = validInstanceNetwork(),
+  securityGroups = validSecurityGroups(),
+  s3CorsOk = true,
+  s3PublicAccessOk = true,
+  instanceNetworkOk = true,
+  securityGroupQueryOk = true,
+  omitSecurityGroups = false,
+}: {
+  firewall?: Partial<FirewallFacts>;
+  cors?: unknown;
+  publicAccess?: unknown;
+  instanceNetwork?: unknown;
+  securityGroups?: unknown;
+  s3CorsOk?: boolean;
+  s3PublicAccessOk?: boolean;
+  instanceNetworkOk?: boolean;
+  securityGroupQueryOk?: boolean;
+  omitSecurityGroups?: boolean;
+} = {}): Promise<LaunchReadinessReport> {
+  const source = await readLaunchReadiness();
+  const reportBuilder = extractSourceBlock(
+    source,
+    '# BEGIN_READINESS_REPORT_BUILDER',
+    '# END_READINESS_REPORT_BUILDER',
+  );
+  const shellEnv = validReportShellEnv();
+  const remote = JSON.parse(shellEnv.REMOTE_JSON);
+  remote.firewall = { ...remote.firewall, ...firewall };
+  const result = await runBash({
+    input: `${reportBuilder}\nbuild_readiness_report\n`,
+    env: {
+      ...process.env,
+      ...shellEnv,
+      REMOTE_JSON: JSON.stringify(remote),
+      S3_CORS: JSON.stringify(cors),
+      S3_PUBLIC_ACCESS: JSON.stringify(publicAccess),
+      INSTANCE_NETWORK: JSON.stringify(instanceNetwork),
+      SG_STATE: omitSecurityGroups ? '' : JSON.stringify(securityGroups),
+      INSTANCE_NETWORK_OK: String(instanceNetworkOk),
+      SG_QUERY_OK: String(securityGroupQueryOk),
+      S3_CORS_OK: String(s3CorsOk),
+      S3_PUBLIC_ACCESS_OK: String(s3PublicAccessOk),
+    },
+  });
+  if (result.status !== 0) {
+    throw new Error(result.stderr || `readiness report builder exited ${result.status}`);
+  }
+  return JSON.parse(result.stdout) as LaunchReadinessReport;
+}
+
+async function runUfwCollection({
+  verbose = ACTIVE_DEFAULT_DENY_UFW,
+  added = INTENDED_UFW_ALLOW,
+  failStatus = false,
+  failAdded = false,
+}: {
+  verbose?: string;
+  added?: string;
+  failStatus?: boolean;
+  failAdded?: boolean;
+} = {}): Promise<{
+  status: number | null;
+  stderr: string;
+  facts: FirewallFacts | null;
+}> {
+  const { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } = await import(
+    'node:fs'
+  );
+  const { tmpdir } = await import('node:os');
+  const { delimiter, join } = await import('node:path');
+  const tempDir = mkdtempSync(join(tmpdir(), 'nava-ufw-collection-test-'));
+  const stubDir = join(tempDir, 'bin');
+
+  try {
+    mkdirSync(stubDir);
+    const sudoPath = join(stubDir, 'sudo');
+    writeFileSync(
+      sudoPath,
+      `#!/usr/bin/env bash
+case "$*" in
+  "ufw status verbose")
+    if [ "\${UFW_TEST_FAIL_STATUS:-0}" = "1" ]; then
+      printf '%s\\n' "\${UFW_TEST_SECRET}" >&2
+      exit 41
+    fi
+    printf '%s\\n' "\${UFW_TEST_VERBOSE}"
+    ;;
+  "ufw show added")
+    if [ "\${UFW_TEST_FAIL_ADDED:-0}" = "1" ]; then
+      printf '%s\\n' "\${UFW_TEST_SECRET}" >&2
+      exit 42
+    fi
+    printf '%s\\n' "\${UFW_TEST_ADDED}"
+    ;;
+  *)
+    exit 97
+    ;;
+esac
+`,
+      'utf8',
+    );
+    chmodSync(sudoPath, 0o755);
+
+    const block = extractSourceBlock(
+      await readLaunchReadiness(),
+      'UFW_STATUS_READ=false',
+      'PM2_SUMMARY="$(',
+    );
+    const script = `set -euo pipefail
+${block}
+printf 'UFW_FACTS=%s,%s,%s,%s,%s,%s\\n' \
+  "\${UFW_STATUS_READ:-false}" \
+  "\${UFW_RULES_READ:-false}" \
+  "$UFW_ACTIVE" "$UFW_DEFAULT_DENY" "$UFW_TUN443" "$UFW_BROAD443_ABSENT"
+`;
+    const result = await runBash({
+      input: script,
+      env: {
+        ...process.env,
+        PATH: `${toBashPath(stubDir)}${delimiter}${process.env.PATH ?? ''}`,
+        UFW_TEST_VERBOSE: verbose,
+        UFW_TEST_ADDED: added,
+        UFW_TEST_FAIL_STATUS: failStatus ? '1' : '0',
+        UFW_TEST_FAIL_ADDED: failAdded ? '1' : '0',
+        UFW_TEST_SECRET: 'sensitive-ufw-stub-detail',
+      },
+    });
+    const values = result.stdout.match(/UFW_FACTS=([^\r\n]+)/)?.[1]?.split(',');
+    return {
+      status: result.status,
+      stderr: result.stderr,
+      facts:
+        values?.length === 6
+          ? {
+              statusRead: values[0] === 'true',
+              rulesRead: values[1] === 'true',
+              active: values[2] === 'true',
+              defaultDeny: values[3] === 'true',
+              tunnel443: values[4] === 'true',
+              broad443Absent: values[5] === 'true',
+            }
+          : null,
+    };
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+async function runAwsPerimeterCollection({
+  cors = validCors(),
+  instanceNetwork = validInstanceNetwork(),
+  securityGroups = validSecurityGroups(),
+  corsRaw,
+  publicAccessRaw = JSON.stringify({
+    BlockPublicAcls: true,
+    IgnorePublicAcls: true,
+    BlockPublicPolicy: true,
+    RestrictPublicBuckets: true,
+  }),
+  instanceNetworkRaw,
+  failCors = false,
+  failPublicAccess = false,
+  failInstance = false,
+  failSecurityGroups = false,
+}: {
+  cors?: unknown;
+  instanceNetwork?: unknown;
+  securityGroups?: unknown;
+  corsRaw?: string;
+  publicAccessRaw?: string;
+  instanceNetworkRaw?: string;
+  failCors?: boolean;
+  failPublicAccess?: boolean;
+  failInstance?: boolean;
+  failSecurityGroups?: boolean;
+} = {}): Promise<{
+  status: number | null;
+  stderr: string;
+  facts: AwsPerimeterFacts | null;
+  report: LaunchReadinessReport | null;
+  securityGroupArgs: string[];
+}> {
+  const {
+    chmodSync,
+    existsSync,
+    mkdtempSync,
+    mkdirSync,
+    readFileSync,
+    rmSync,
+    writeFileSync,
+  } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { delimiter, join } = await import('node:path');
+  const tempDir = mkdtempSync(join(tmpdir(), 'nava-aws-perimeter-test-'));
+  const stubDir = join(tempDir, 'bin');
+  const argsPath = join(tempDir, 'sg-args.txt');
+
+  try {
+    mkdirSync(stubDir);
+    const awsPath = join(stubDir, 'aws');
+    writeFileSync(
+      awsPath,
+      `#!/usr/bin/env bash
+case "$1 $2" in
+  "s3api get-bucket-cors")
+    if [ "\${AWS_TEST_FAIL_CORS:-0}" = "1" ]; then
+      printf '%s\\n' "\${AWS_TEST_SECRET}" >&2
+      exit 53
+    fi
+    printf '%s' "\${AWS_TEST_CORS_RAW}"
+    ;;
+  "s3api get-public-access-block")
+    if [ "\${AWS_TEST_FAIL_PUBLIC_ACCESS:-0}" = "1" ]; then
+      printf '%s\\n' "\${AWS_TEST_SECRET}" >&2
+      exit 54
+    fi
+    printf '%s' "\${AWS_TEST_PUBLIC_ACCESS_RAW}"
+    ;;
+  "ec2 describe-instances")
+    if [ "\${AWS_TEST_FAIL_INSTANCE:-0}" = "1" ]; then
+      printf '%s\\n' "\${AWS_TEST_SECRET}" >&2
+      exit 51
+    fi
+    printf '%s' "\${AWS_TEST_INSTANCE}"
+    ;;
+  "ec2 describe-security-groups")
+    printf '%s\\n' "$@" >"\${AWS_TEST_SG_ARGS}"
+    if [ "\${AWS_TEST_FAIL_SG:-0}" = "1" ]; then
+      printf '%s\\n' "\${AWS_TEST_SECRET}" >&2
+      exit 52
+    fi
+    printf '%s' "\${AWS_TEST_SECURITY_GROUPS}"
+    ;;
+  *)
+    exit 97
+    ;;
+esac
+`,
+      'utf8',
+    );
+    chmodSync(awsPath, 0o755);
+
+    const source = await readLaunchReadiness();
+    const collectionBlock = extractSourceBlock(
+      source,
+      '# BEGIN_READINESS_PERIMETER_COLLECTION',
+      '# END_READINESS_PERIMETER_COLLECTION',
+    );
+    const reportBuilder = extractSourceBlock(
+      source,
+      '# BEGIN_READINESS_REPORT_BUILDER',
+      '# END_READINESS_REPORT_BUILDER',
+    );
+    const script = `set -euo pipefail
+${collectionBlock}
+${reportBuilder}
+node - "$S3_CORS" "$S3_PUBLIC_ACCESS" "$INSTANCE_NETWORK" "$SG_STATE" \
+  "\${INSTANCE_NETWORK_OK:-false}" "\${SG_QUERY_OK:-false}" \
+  "\${S3_CORS_OK:-false}" "\${S3_PUBLIC_ACCESS_OK:-false}" <<'NODE'
+const facts = {
+  cors: JSON.parse(process.argv[2]),
+  publicAccess: JSON.parse(process.argv[3]),
+  s3CorsOk: process.argv[8] === "true",
+  s3PublicAccessOk: process.argv[9] === "true",
+  instanceNetwork: JSON.parse(process.argv[4]),
+  securityGroups: JSON.parse(process.argv[5]),
+  instanceNetworkOk: process.argv[6] === "true",
+  securityGroupQueryOk: process.argv[7] === "true",
+};
+process.stdout.write("AWS_FACTS=" + JSON.stringify(facts) + "\\n");
+NODE
+printf 'AWS_REPORT=%s\\n' "$(build_readiness_report)"
+`;
+    const result = await runBash({
+      input: script,
+      env: {
+        ...process.env,
+        PATH: `${toBashPath(stubDir)}${delimiter}${process.env.PATH ?? ''}`,
+        AWS_REGION: 'test-region-1',
+        S3_BUCKET: 'test-bucket',
+        INSTANCE_ID: 'i-test',
+        ...validReportShellEnv(),
+        AWS_TEST_CORS_RAW: corsRaw ?? JSON.stringify(cors),
+        AWS_TEST_PUBLIC_ACCESS_RAW: publicAccessRaw,
+        AWS_TEST_INSTANCE: instanceNetworkRaw ?? JSON.stringify(instanceNetwork),
+        AWS_TEST_SECURITY_GROUPS: JSON.stringify(securityGroups),
+        AWS_TEST_FAIL_CORS: failCors ? '1' : '0',
+        AWS_TEST_FAIL_PUBLIC_ACCESS: failPublicAccess ? '1' : '0',
+        AWS_TEST_FAIL_INSTANCE: failInstance ? '1' : '0',
+        AWS_TEST_FAIL_SG: failSecurityGroups ? '1' : '0',
+        AWS_TEST_SECRET: 'sensitive-aws-stub-detail i-private sg-private',
+        AWS_TEST_SG_ARGS: toBashPath(argsPath),
+      },
+    });
+    const serialized = result.stdout.match(/AWS_FACTS=([^\r\n]+)/)?.[1];
+    const serializedReport = result.stdout.match(/AWS_REPORT=([^\r\n]+)/)?.[1];
+    return {
+      status: result.status,
+      stderr: result.stderr,
+      facts: serialized ? (JSON.parse(serialized) as AwsPerimeterFacts) : null,
+      report: serializedReport
+        ? (JSON.parse(serializedReport) as LaunchReadinessReport)
+        : null,
+      securityGroupArgs: existsSync(argsPath)
+        ? readFileSync(argsPath, 'utf8').split(/\r?\n/).filter(Boolean)
+        : [],
+    };
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+const VPN_HEALTH_OUTPUT_SENTINELS = {
+  route: 'default via',
+  address: 'inet ',
+  host: 'PRIVATE_HOST_SENTINEL',
+  port: 'PRIVATE_PORT_SENTINEL',
+} as const;
+
+async function runVpnHealth(
+  address: string,
+  interfacePresent: boolean,
+): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  const {
+    chmodSync,
+    mkdtempSync,
+    mkdirSync,
+    readFileSync,
+    rmSync,
+    writeFileSync,
+  } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { delimiter, dirname, join } = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+  const here = dirname(fileURLToPath(import.meta.url));
+  const sourcePath = join(here, '..', 'deploy', 'vpn-health-assert.sh');
+  const tempDir = mkdtempSync(join(tmpdir(), 'nava-vpn-identity-test-'));
+  const stubDir = join(tempDir, 'bin');
+
+  try {
+    mkdirSync(stubDir);
+    const successStub = '#!/usr/bin/env bash\nexit 0\n';
+    for (const command of ['aws', 'systemctl']) {
+      const path = join(stubDir, command);
+      writeFileSync(path, successStub, 'utf8');
+      chmodSync(path, 0o755);
+    }
+    const ncPath = join(stubDir, 'nc');
+    writeFileSync(
+      ncPath,
+      `#!/usr/bin/env bash
+printf '%s\\n' '${VPN_HEALTH_OUTPUT_SENTINELS.host}:${VPN_HEALTH_OUTPUT_SENTINELS.port}'
+exit 0
+`,
+      'utf8',
+    );
+    chmodSync(ncPath, 0o755);
+    const ipPath = join(stubDir, 'ip');
+    writeFileSync(
+      ipPath,
+      `#!/usr/bin/env bash
+case "$*" in
+  "link show tun0")
+    [ "\${VPN_TEST_INTERFACE_PRESENT:-0}" = "1" ]
+    ;;
+  "-4 -o addr show dev tun0")
+    printf '7: tun0    inet %s scope global tun0\\n' "\${VPN_TEST_ADDRESS:-}"
+    ;;
+  "-4 route show default")
+    printf '%s\\n' 'default via 172.31.0.1 dev ens5'
+    ;;
+  "-4 route")
+    printf '%s\\n' '172.24.0.0/16 dev tun0 scope link'
+    ;;
+  *)
+    exit 97
+    ;;
+esac
+`,
+      'utf8',
+    );
+    chmodSync(ipPath, 0o755);
+
+    const scriptPath = join(tempDir, 'vpn-health-assert.sh');
+    const stsPath = toBashPath(join(tempDir, 'sts.json'));
+    writeFileSync(
+      scriptPath,
+      readFileSync(sourcePath, 'utf8').replace(
+        '/tmp/nava-vpn-health-sts.json',
+        stsPath,
+      ),
+      'utf8',
+    );
+    chmodSync(scriptPath, 0o755);
+
+    const result = await runBash({
+      args: [toBashPath(scriptPath)],
+      env: {
+        ...process.env,
+        PATH: `${toBashPath(stubDir)}${delimiter}${process.env.PATH ?? ''}`,
+        VPN_TEST_ADDRESS: address,
+        VPN_TEST_INTERFACE_PRESENT: interfacePresent ? '1' : '0',
+      },
+    });
+    return {
+      status: result.status,
+      stdout: result.stdout,
+      stderr: result.stderr,
+    };
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
 
 describe('deploy config', () => {
+  it('runBash returns status, signal, stdout, and stderr', async () => {
+    const result = await runBash({
+      args: ['-c', "printf 'normal-out'; printf 'normal-err' >&2; exit 7"],
+    });
+
+    expect(result).toEqual({
+      status: 7,
+      signal: null,
+      stdout: 'normal-out',
+      stderr: 'normal-err',
+    });
+  });
+
+  it('runBash rejects when bash cannot spawn', async () => {
+    const pathlessEnv = Object.fromEntries(
+      Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'path'),
+    );
+    pathlessEnv.PATH = '';
+
+    await expect(
+      runBash({
+        args: ['-c', 'exit 0'],
+        env: pathlessEnv,
+      }),
+    ).rejects.toThrow(/failed to run bash.*ENOENT/);
+  });
+
+  it('runBash rejects commands that exceed their timeout', async () => {
+    await expect(
+      runBash({
+        args: ['-c', 'sleep 5'],
+        timeoutMs: 50,
+      }),
+    ).rejects.toThrow('bash timed out after 50ms; process tree cleanup completed');
+  });
+
+  it('runBash removes descendants before timeout rejection completes', async () => {
+    const { existsSync, mkdtempSync, readFileSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const tempDir = mkdtempSync(join(tmpdir(), 'nava-bash-timeout-test-'));
+    const markerPath = join(tempDir, 'descendant-finished');
+    const pidPath = join(tempDir, 'descendant-pid');
+
+    try {
+      let bashPid: number | undefined;
+      await expect(
+        runBash({
+          args: [
+            '-c',
+            'node -e \'const fs = require("node:fs"); fs.writeFileSync(process.env.PID_PATH, String(process.pid)); setTimeout(() => fs.writeFileSync(process.env.MARKER_PATH, "leaked"), 3000)\' & wait',
+          ],
+          env: {
+            ...process.env,
+            MARKER_PATH: markerPath,
+            PID_PATH: pidPath,
+          },
+          timeoutMs: 500,
+          onSpawn: (pid) => {
+            bashPid = pid;
+          },
+        }),
+      ).rejects.toThrow('bash timed out after 500ms; process tree cleanup completed');
+
+      const descendantPid = Number(readFileSync(pidPath, 'utf8'));
+      expect(bashPid).toBeTypeOf('number');
+      expect(processIsAlive(bashPid!)).toBe(false);
+      expect(processIsAlive(descendantPid)).toBe(false);
+
+      await new Promise((resolve) => setTimeout(resolve, 2_500));
+      expect(existsSync(markerPath)).toBe(false);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('runs worker with bounded autorestart policy', async () => {
     const { loadPm2Config } = await import('../src/deploy/load-pm2-config.js');
     const pm2 = loadPm2Config();
@@ -31,33 +1213,233 @@ describe('deploy config', () => {
     expect(nginx).toContain('client_max_body_size 35m');
   });
 
-  it('nginx config redirects HTTP to HTTPS and sets security headers', async () => {
+  it('nginx serves only the canonical host with the public fullchain', async () => {
     const { readNginxConfig } = await import('../src/deploy/load-pm2-config.js');
     const nginx = readNginxConfig();
-    expect(nginx).toContain('listen 80');
-    expect(nginx).toContain('return 301 https://$host$request_uri');
+
+    expect(nginx).toContain('listen 80 default_server');
+    expect(nginx).toContain('listen 443 ssl default_server');
+    expect(nginx).toContain('server_name nava.legacyhotels.co.za');
     expect(nginx).toContain(
-      'add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always',
-    );
-    expect(nginx).toContain('add_header X-Frame-Options "DENY" always');
-    expect(nginx).toContain('add_header X-Content-Type-Options "nosniff" always');
-    expect(nginx).toContain(
-      'add_header Referrer-Policy "strict-origin-when-cross-origin" always',
+      'ssl_certificate     /etc/nginx/ssl/nava.legacyhotels.co.za.fullchain.pem',
     );
     expect(nginx).toContain(
-      "add_header Content-Security-Policy \"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; frame-ancestors 'none';\" always",
+      'ssl_certificate_key /etc/nginx/ssl/nava.legacyhotels.co.za.key',
     );
+    expect(nginx).toContain('if ($host != nava.legacyhotels.co.za)');
+    expect(nginx).toContain('return 444');
+    expect(nginx).not.toContain('nava.legacy.local');
   });
 
-  it('deploy-ec2.sh syncs nginx config and reloads', async () => {
+  it('nginx preserves security headers and allows only the exact S3 endpoint', async () => {
+    const { readNginxConfig } = await import('../src/deploy/load-pm2-config.js');
+    const nginx = readNginxConfig();
+
+    expect(nginx).toContain(
+      "connect-src 'self' https://nava-zero-mail-845242190536-af-south-1.s3.af-south-1.amazonaws.com",
+    );
+    expect(nginx).toContain('expires -1');
+    expect(nginx).not.toContain('add_header Cache-Control "no-cache"');
+    expect(nginx).toContain('add_header X-Frame-Options "DENY" always');
+    expect(nginx).toContain('add_header X-Content-Type-Options "nosniff" always');
+  });
+
+  it('deploy-ec2.sh restores Nginx when validation or reload fails', async () => {
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
     const { dirname, join } = await import('node:path');
     const here = dirname(fileURLToPath(import.meta.url));
     const deploy = readFileSync(join(here, '..', 'deploy', 'deploy-ec2.sh'), 'utf8');
-    expect(deploy).toContain('deploy/nginx.conf');
-    expect(deploy).toContain('sudo nginx -t && sudo systemctl reload nginx');
-    expect(deploy).toContain('nginx not installed');
+
+    expect(deploy).toContain('NGINX_BACKUP="$(mktemp');
+    expect(deploy).toContain('sudo nginx -t');
+    expect(deploy).toContain('sudo systemctl reload nginx');
+    expect(deploy).toContain('restore_nginx');
+    expect(deploy).toContain('nginx candidate failed; restored previous config');
+    expect(deploy).toContain('nginx_on_exit');
+    expect(deploy).toContain("trap 'nginx_on_signal 130' INT");
+    expect(deploy).toContain("trap 'nginx_on_signal 143' TERM");
+  });
+
+  it.each([
+    { scenario: 'install', priorState: 'absent', nginxCalls: 1, reloadCalls: 1 },
+    { scenario: 'install', priorState: 'present', nginxCalls: 1, reloadCalls: 1 },
+    { scenario: 'link', priorState: 'absent', nginxCalls: 1, reloadCalls: 1 },
+    { scenario: 'link', priorState: 'present', nginxCalls: 1, reloadCalls: 1 },
+    { scenario: 'validate', priorState: 'absent', nginxCalls: 2, reloadCalls: 1 },
+    { scenario: 'validate', priorState: 'present', nginxCalls: 2, reloadCalls: 1 },
+    { scenario: 'reload', priorState: 'absent', nginxCalls: 2, reloadCalls: 2 },
+    { scenario: 'reload', priorState: 'present', nginxCalls: 2, reloadCalls: 2 },
+  ] as const)(
+    'restores priorState=$priorState state when Nginx $scenario fails',
+    async ({ scenario, priorState, nginxCalls, reloadCalls }) => {
+      const result = await runNginxActivation({ scenario, priorState });
+
+      expect(result.status, result.stderr).toBe(1);
+      expect(result.stderr).toContain(
+        'nginx candidate failed; restored previous config',
+      );
+      expect(result.site).toBe(
+        priorState === 'present' ? 'previous nginx config\n' : null,
+      );
+      expect(result.enabledState).toBe(
+        priorState === 'present' ? 'valid' : 'absent',
+      );
+      expect(result.enabledTarget).toBe(
+        priorState === 'present' ? '../sites-available/previous-nava' : null,
+      );
+      expect(result.site).not.toBe('candidate nginx config\n');
+      expect(result.nginxCalls).toBe(nginxCalls);
+      expect(result.reloadCalls).toBe(reloadCalls);
+      expect(result.backupEntries).toEqual([]);
+    },
+  );
+
+  it.each([
+    { scenario: 'sigint', priorState: 'absent', status: 130 },
+    { scenario: 'sigint', priorState: 'present', status: 130 },
+    { scenario: 'sigterm', priorState: 'absent', status: 143 },
+    { scenario: 'sigterm', priorState: 'present', status: 143 },
+    { scenario: 'unexpected-exit', priorState: 'absent', status: 73 },
+    { scenario: 'unexpected-exit', priorState: 'present', status: 73 },
+  ] as const)(
+    'restores priorState=$priorState after $scenario and preserves status',
+    async ({ scenario, priorState, status }) => {
+      const result = await runNginxActivation({ scenario, priorState });
+
+      expect(result.status, result.stderr).toBe(status);
+      expect(result.stderr).toContain(
+        scenario === 'unexpected-exit'
+          ? 'nginx transaction aborted; restored previous config'
+          : 'nginx transaction interrupted; restored previous config',
+      );
+      expect(result.site).toBe(
+        priorState === 'present' ? 'previous nginx config\n' : null,
+      );
+      expect(result.enabledState).toBe(
+        priorState === 'present' ? 'valid' : 'absent',
+      );
+      expect(result.enabledTarget).toBe(
+        priorState === 'present' ? '../sites-available/previous-nava' : null,
+      );
+      expect(result.site).not.toBe('candidate nginx config\n');
+      expect(result.nginxCalls).toBe(1);
+      expect(result.reloadCalls).toBe(1);
+      expect(result.backupEntries).toEqual([]);
+    },
+  );
+
+  it('distinguishes and refuses a dangling prior enabled symlink model', async () => {
+    const result = await runNginxActivation({
+      scenario: 'validate',
+      priorState: 'dangling',
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('nginx enabled symlink is already broken');
+    expect(result.site).toBe('previous nginx config\n');
+    expect(result.enabledState).toBe('dangling');
+    expect(result.enabledTarget).toBe('../sites-available/previous-nava');
+    expect(result.nginxCalls).toBe(0);
+    expect(result.reloadCalls).toBe(0);
+    expect(result.backupEntries).toEqual([]);
+  });
+
+  it('disarms rollback before cleaning up a successful activation', async () => {
+    const result = await runNginxActivation({
+      scenario: 'cleanup-exit',
+      priorState: 'present',
+    });
+
+    expect(result.status).toBe(74);
+    expect(result.stderr).not.toContain('restored previous config');
+    expect(result.site).toBe('candidate nginx config\n');
+    expect(result.enabledState).toBe('valid');
+    expect(result.enabledTarget).toMatch(/\/sites-available\/nava-zero$/);
+    expect(result.nginxCalls).toBe(1);
+    expect(result.reloadCalls).toBe(1);
+    expect(result.backupEntries).toEqual([]);
+  });
+
+  it('reports rollback failure and still removes temporary Nginx backups', async () => {
+    const result = await runNginxActivation({
+      scenario: 'validate',
+      priorState: 'present',
+      rollbackCopyFails: true,
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('nginx candidate failed; rollback failed');
+    expect(result.backupEntries).toEqual([]);
+  });
+
+  it('reports trap rollback failure and exits nonzero', async () => {
+    const result = await runNginxActivation({
+      scenario: 'unexpected-exit',
+      priorState: 'present',
+      rollbackCopyFails: true,
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('nginx transaction aborted; rollback failed');
+    expect(result.backupEntries).toEqual([]);
+  });
+
+  it('preserves the Infor hostname mapping used by the split tunnel', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const deploy = readFileSync(join(here, '..', 'deploy', 'deploy-ec2.sh'), 'utf8');
+
+    expect(deploy).toContain('appsrv-1.legacyhotels.co.za');
+    expect(deploy).toContain('172.24.240.41');
+  });
+
+  it('uses BETTER_AUTH_URL as the only production app-origin source', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const deploy = readFileSync(join(here, '..', 'deploy', 'deploy-ec2.sh'), 'utf8');
+    const writer = readFileSync(join(here, '..', 'deploy', 'write-ec2-env.sh'), 'utf8');
+
+    expect(writer).toContain(
+      ': "${BETTER_AUTH_URL:=https://nava.legacyhotels.co.za}"',
+    );
+    expect(deploy).toContain(
+      ': "${BETTER_AUTH_URL:?BETTER_AUTH_URL required before SPA build}"',
+    );
+    expect(deploy).toContain(
+      'export VITE_PUBLIC_APP_URL="${VITE_PUBLIC_APP_URL:-$BETTER_AUTH_URL}"',
+    );
+    expect(deploy).toContain('127.0.0.1 nava.legacyhotels.co.za');
+    expect(deploy).not.toContain('127.0.0.1 nava.legacy.local');
+  });
+
+  it('repairs a wrong-IP canonical hostname entry without deleting unrelated aliases', async () => {
+    const hosts = await runNavaHostMapping(
+      [
+        '127.0.0.1 localhost',
+        `192.0.2.40 ${CANONICAL_HOST} keep-this-alias.example`,
+        '192.0.2.50 untouched.example',
+      ].join('\n'),
+    );
+
+    expect(activeCanonicalEntries(hosts)).toEqual([CANONICAL_HOST_ENTRY]);
+    expect(hosts).toContain('192.0.2.40 keep-this-alias.example');
+    expect(hosts).toContain('192.0.2.50 untouched.example');
+  });
+
+  it('adds an active canonical mapping when the hostname appears only in comments', async () => {
+    const comment = `# 192.0.2.40 ${CANONICAL_HOST} documentation only`;
+    const hosts = await runNavaHostMapping(
+      [comment, '127.0.0.1 localhost', '192.0.2.50 untouched.example'].join('\n'),
+    );
+
+    expect(activeCanonicalEntries(hosts)).toEqual([CANONICAL_HOST_ENTRY]);
+    expect(hosts).toContain(comment);
+    expect(hosts).toContain('192.0.2.50 untouched.example');
   });
 
   it('write-ec2-env.sh quotes all env values', async () => {
@@ -200,16 +1582,293 @@ describe('deploy config', () => {
     expect(boot).toContain('startOrReload');
   });
 
-  it('post-boot-smoke.sh checks :8788 and :443 not :3000', async () => {
+  it('post-boot-smoke.sh checks :8788 and canonical :443 not :3000', async () => {
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
     const { dirname, join } = await import('node:path');
     const here = dirname(fileURLToPath(import.meta.url));
     const smoke = readFileSync(join(here, '..', 'deploy', 'post-boot-smoke.sh'), 'utf8');
     expect(smoke).toContain('127.0.0.1:8788/health');
-    expect(smoke).toContain('https://127.0.0.1');
+    expect(smoke).toContain('BETTER_AUTH_URL');
+    expect(smoke).toContain('--resolve "${PUBLIC_HOST}:443:127.0.0.1"');
+    expect(smoke).not.toContain('"https://127.0.0.1');
     expect(smoke).not.toContain(':3000');
     expect(smoke).toContain('systemctl is-active');
+  });
+
+  it('production browser and smoke gates never bypass TLS verification', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const files = [
+      'launch-readiness.sh',
+      'post-boot-smoke.sh',
+      'playwright-real-mail-ui-gate.sh',
+      'playwright-ec2-gate.sh',
+    ];
+
+    for (const file of files) {
+      const script = readFileSync(join(here, '..', 'deploy', file), 'utf8');
+      expect(insecureCurlCommands(script), `${file} insecure curl commands`).toEqual([]);
+      expect(script).not.toContain(
+        'PLAYWRIGHT_IGNORE_HTTPS_ERRORS="${PLAYWRIGHT_IGNORE_HTTPS_ERRORS:-1}"',
+      );
+      const curlInvocations = curlCommands(script);
+      expect(curlInvocations.length, `${file} curl invocation count`).toBeGreaterThan(0);
+      for (const invocation of curlInvocations) {
+        expect(invocation, `${file}: ${invocation}`).toMatch(
+          /^curl --disable --noproxy '\*'/,
+        );
+      }
+      expect(script).toContain(`CANONICAL_ORIGIN="${CANONICAL_ORIGIN}"`);
+    }
+
+    const launch = readFileSync(
+      join(here, '..', 'deploy', 'launch-readiness.sh'),
+      'utf8',
+    );
+    expect(launch).toContain('-servername "$PUBLIC_HOST"');
+    expect(launch).toContain('-verify_hostname "$PUBLIC_HOST"');
+    expect(launch).toContain('-verify_return_error');
+    expect(launch).toContain('-CAfile /etc/ssl/certs/ca-certificates.crt');
+    expect(launch).toContain('-checkend 2592000');
+    expect(launch).not.toContain('--cacert "$CERT_FILE"');
+
+    for (const file of ['playwright-real-mail-ui-gate.sh', 'playwright-ec2-gate.sh']) {
+      const script = readFileSync(join(here, '..', 'deploy', file), 'utf8');
+      expect(script).toContain('BACKEND_URL="$CANONICAL_ORIGIN"');
+      expect(script).toContain('export PLAYWRIGHT_BASE_URL="$CANONICAL_ORIGIN"');
+      expect(script).toContain('export VITE_PUBLIC_BACKEND_URL="$CANONICAL_ORIGIN"');
+      expect(script).toContain('refusing: PLAYWRIGHT_BASE_URL must be canonical HTTPS origin');
+      expect(script).toContain(
+        'refusing: VITE_PUBLIC_BACKEND_URL must be canonical HTTPS origin',
+      );
+    }
+
+    const ec2Gate = readFileSync(
+      join(here, '..', 'deploy', 'playwright-ec2-gate.sh'),
+      'utf8',
+    );
+    expect(ec2Gate).not.toContain(':3000');
+    expect(ec2Gate).not.toContain('cleanup()');
+    expect(ec2Gate).not.toContain('FE_PID');
+    expect(ec2Gate).not.toContain('pkill');
+    expect(ec2Gate).not.toContain('nohup');
+    expect(ec2Gate).not.toContain('dlx serve');
+
+    const config = readFileSync(
+      join(here, '..', '..', '..', 'packages', 'testing', 'playwright.config.ts'),
+      'utf8',
+    );
+    expect(config).not.toContain('|| realMailGate');
+    expect(config).toContain('Real-mail Playwright requires PLAYWRIGHT_BASE_URL');
+    expect(config).toContain('Real-mail Playwright forbids ignored HTTPS errors');
+    expect(config).toContain('Real-mail Playwright requires canonical HTTPS base URL');
+    expect(config).toContain(`const CANONICAL_ORIGIN = '${CANONICAL_ORIGIN}'`);
+  });
+
+  it('curl scanner rejects insecure options across shell continuations', () => {
+    const fixtures = [
+      `curl --disable --noproxy '*' -fsS \\\n  -k "${CANONICAL_ORIGIN}/health"`,
+      `curl --disable --noproxy '*' \\\r\n  -Sfks "${CANONICAL_ORIGIN}/health"`,
+      `curl --disable --noproxy '*' -fsS \\\n  --insecure "${CANONICAL_ORIGIN}/health"`,
+    ];
+
+    for (const fixture of fixtures) {
+      expect(curlCommands(fixture)).toHaveLength(1);
+      expect(curlCommands(fixture)[0]).toMatch(/^curl --disable --noproxy '\*'/);
+      expect(insecureCurlCommands(fixture)).toHaveLength(1);
+    }
+  });
+
+  it('production scripts reject noncanonical origins before external commands', async () => {
+    const {
+      chmodSync,
+      existsSync,
+      mkdirSync,
+      mkdtempSync,
+      readFileSync,
+      rmSync,
+      writeFileSync,
+    } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { delimiter, dirname, join } = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const repoRoot = join(here, '..', '..', '..');
+    const deployDir = join(here, '..', 'deploy');
+    const tempDir = mkdtempSync(join(tmpdir(), 'nava-tls-origin-test-'));
+    const stubDir = join(tempDir, 'bin');
+    const markerPath = join(tempDir, 'external-commands.log');
+
+    mkdirSync(stubDir);
+    const stub = `#!/usr/bin/env bash\nprintf '%s\\n' "$(basename "$0")" >>"$NAVA_TEST_MARKER"\nexit 97\n`;
+    for (const command of [
+      'aws',
+      'curl',
+      'mktemp',
+      'openssl',
+      'pm2',
+      'pnpm',
+      'sleep',
+      'sudo',
+      'systemctl',
+      'timeout',
+    ]) {
+      const path = join(stubDir, command);
+      writeFileSync(path, stub, 'utf8');
+      chmodSync(path, 0o755);
+    }
+
+    const launchSource = readFileSync(
+      join(deployDir, 'launch-readiness.sh'),
+      'utf8',
+    );
+    const launchRemote = launchSource.match(
+      /REMOTE_COMMAND="\$\(cat <<'REMOTE'\r?\n([\s\S]*?)\r?\nREMOTE\r?\n\)"/,
+    )?.[1];
+    expect(launchRemote, 'launch-readiness remote block').toBeTruthy();
+
+    const baseEnv = {
+      ...process.env,
+      HOME: toBashPath(tempDir),
+      PATH: `${toBashPath(stubDir)}${delimiter}${process.env.PATH ?? ''}`,
+      REPO_ROOT: toBashPath(repoRoot),
+      ENV_FILE: toBashPath(join(tempDir, 'missing.env')),
+      NAVA_POST_BOOT_SMOKE_LOG: toBashPath(join(tempDir, 'smoke.log')),
+      NAVA_TEST_MARKER: toBashPath(markerPath),
+      SMOKE_MAX_ATTEMPTS: '1',
+      SMOKE_SLEEP_SECS: '0',
+      VPN_WAIT_SECS: '1',
+      UNDO_SEND_SECONDS: '0',
+      BETTER_AUTH_URL: CANONICAL_ORIGIN,
+      PLAYWRIGHT_BASE_URL: CANONICAL_ORIGIN,
+      VITE_PUBLIC_BACKEND_URL: CANONICAL_ORIGIN,
+    };
+
+    const run = async (
+      scriptName: string,
+      overrides: Record<string, string>,
+      remote = false,
+    ) => {
+      rmSync(markerPath, { force: true });
+      const result = await runBash({
+        args: remote ? ['-c', launchRemote!] : [join(deployDir, scriptName)],
+        env: { ...baseEnv, ...overrides },
+      });
+      return {
+        ...result,
+        externalCommands: existsSync(markerPath)
+          ? readFileSync(markerPath, 'utf8')
+          : '',
+      };
+    };
+
+    const invalidOrigins = [
+      `http://${CANONICAL_HOST}`,
+      `https://other.example`,
+      `https://user:pass@${CANONICAL_HOST}`,
+      `${CANONICAL_ORIGIN}:444`,
+      `${CANONICAL_ORIGIN}/mail`,
+      `${CANONICAL_ORIGIN}?source=override`,
+      `${CANONICAL_ORIGIN}#override`,
+    ];
+
+    try {
+      for (const value of invalidOrigins) {
+        for (const [scriptName, remote] of [
+          ['post-boot-smoke.sh', false],
+          ['launch-readiness.sh', true],
+        ] as const) {
+          const result = await run(scriptName, { BETTER_AUTH_URL: value }, remote);
+          expect(result.status, `${scriptName} accepted ${value}`).toBe(2);
+          expect(result.stderr).toContain(
+            'refusing: BETTER_AUTH_URL must be canonical HTTPS origin',
+          );
+          expect(result.externalCommands, `${scriptName} ran command for ${value}`).toBe(
+            '',
+          );
+        }
+      }
+
+      for (const scriptName of [
+        'playwright-real-mail-ui-gate.sh',
+        'playwright-ec2-gate.sh',
+      ]) {
+        for (const variable of [
+          'BETTER_AUTH_URL',
+          'PLAYWRIGHT_BASE_URL',
+          'VITE_PUBLIC_BACKEND_URL',
+        ] as const) {
+          for (const value of invalidOrigins) {
+            const overrides = { [variable]: value };
+            const result = await run(scriptName, overrides);
+            expect(
+              result.status,
+              `${scriptName} accepted ${JSON.stringify(overrides)}`,
+            ).toBe(2);
+            expect(result.stderr).toContain(
+              `refusing: ${variable} must be canonical HTTPS origin`,
+            );
+            expect(
+              result.externalCommands,
+              `${scriptName} ran command for ${JSON.stringify(overrides)}`,
+            ).toBe('');
+          }
+        }
+      }
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it('real-mail Playwright config rejects noncanonical base and normalizes one slash', async () => {
+    const envKeys = [
+      'REAL_MAIL_UI_GATE',
+      'PLAYWRIGHT_BASE_URL',
+      'PLAYWRIGHT_IGNORE_HTTPS_ERRORS',
+    ] as const;
+    const previous = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
+
+    try {
+      process.env.REAL_MAIL_UI_GATE = '1';
+      process.env.PLAYWRIGHT_IGNORE_HTTPS_ERRORS = '0';
+
+      delete process.env.PLAYWRIGHT_BASE_URL;
+      vi.resetModules();
+      await expect(
+        import('../../../packages/testing/playwright.config.ts'),
+      ).rejects.toThrow('Real-mail Playwright requires PLAYWRIGHT_BASE_URL');
+
+      process.env.PLAYWRIGHT_BASE_URL = CANONICAL_ORIGIN;
+      process.env.PLAYWRIGHT_IGNORE_HTTPS_ERRORS = '1';
+      vi.resetModules();
+      await expect(
+        import('../../../packages/testing/playwright.config.ts'),
+      ).rejects.toThrow('Real-mail Playwright forbids ignored HTTPS errors');
+
+      process.env.PLAYWRIGHT_IGNORE_HTTPS_ERRORS = '0';
+      process.env.PLAYWRIGHT_BASE_URL = 'https://other.example';
+      vi.resetModules();
+      await expect(
+        import('../../../packages/testing/playwright.config.ts'),
+      ).rejects.toThrow('Real-mail Playwright requires canonical HTTPS base URL');
+
+      process.env.PLAYWRIGHT_BASE_URL = `${CANONICAL_ORIGIN}/`;
+      vi.resetModules();
+      const { default: config } = await import(
+        '../../../packages/testing/playwright.config.ts'
+      );
+      expect((config.use as { baseURL?: string }).baseURL).toBe(CANONICAL_ORIGIN);
+    } finally {
+      for (const key of envKeys) {
+        const value = previous[key];
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      vi.resetModules();
+    }
   });
 
   it('ops-deploy.sh syncs then SSM deploy-ec2 with optional migrate', async () => {
@@ -549,6 +2208,555 @@ describe('deploy config', () => {
     } finally {
       rmSync(missingDir, { recursive: true, force: true });
     }
+  });
+
+  it('VPN and launch readiness enforce the private HTTPS perimeter', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const vpn = readFileSync(
+      join(here, '..', 'deploy', 'vpn-health-assert.sh'),
+      'utf8',
+    );
+    const readiness = readFileSync(
+      join(here, '..', 'deploy', 'launch-readiness.sh'),
+      'utf8',
+    );
+
+    expect(vpn).toContain('EXPECTED_VPN_INTERFACE="${EXPECTED_VPN_INTERFACE:-tun0}"');
+    expect(vpn).toContain('EXPECTED_VPN_CIDR="${EXPECTED_VPN_CIDR:-192.168.138.2/29}"');
+    expect(readiness).toContain('ufwTunnel443Only');
+    expect(readiness).toContain('securityGroupIngressEmpty');
+    expect(readiness).toContain('s3CorsCanonical');
+    expect(readiness).toContain('s3PublicAccessBlocked');
+    expect(readiness).toContain('instanceHasNoPublicIpv6');
+    expect(readiness).toContain('aws s3api get-bucket-cors');
+    expect(readiness).toContain('aws s3api get-public-access-block');
+    expect(readiness).toContain('aws ec2 describe-instances');
+    expect(readiness).toContain('aws ec2 describe-security-groups');
+    expect(readiness).toContain('--group-ids "${SG_IDS[@]}"');
+    expect(readiness).not.toMatch(/--group-ids\s+\$SG_IDS/);
+    expect(readiness).toContain('UFW_BROAD443_ABSENT=false');
+    expect(readiness).toContain('# BEGIN_READINESS_PERIMETER_COLLECTION');
+    expect(readiness).toContain('# END_READINESS_PERIMETER_COLLECTION');
+    expect(readiness).toContain('build_readiness_report()');
+  });
+
+  it('VPN health rejects a missing tun0 interface or wrong exact tunnel CIDR', async () => {
+    const missing = await runVpnHealth('192.168.138.2/29', false);
+    expect(missing.status).toBe(1);
+    expect(missing.stdout).toContain('VPN_HARD_FAIL_INTERFACE_tun0');
+
+    const wrongAddress = await runVpnHealth('192.168.138.3/29', true);
+    expect(wrongAddress.status).toBe(1);
+    expect(wrongAddress.stdout).toContain('VPN_HARD_FAIL_ADDRESS');
+
+    const exact = await runVpnHealth('192.168.138.2/29', true);
+    expect(exact.status, exact.stderr).toBe(0);
+    expect(exact.stdout).toBe(
+      [
+        '== vpn-health-assert ==',
+        'VPN_HARD_OK',
+        'HOTEL_PROBE_OK',
+        'VPN_HOTEL_OK',
+        '',
+      ].join('\n'),
+    );
+    for (const sentinel of Object.values(VPN_HEALTH_OUTPUT_SENTINELS)) {
+      expect(exact.stdout).not.toContain(sentinel);
+    }
+  });
+
+  it('launch readiness accepts complete private perimeter facts', async () => {
+    const report = await runLaunchReadinessReport();
+
+    expect(report.checks).toMatchObject({
+      ufwTunnel443Only: true,
+      s3CorsCanonical: true,
+      s3PublicAccessBlocked: true,
+      securityGroupIngressEmpty: true,
+      instanceHasNoPublicIpv6: true,
+    });
+    const observations = JSON.stringify(report.observations);
+    expect(observations).not.toContain(CANONICAL_ORIGIN);
+    expect(observations).not.toContain('AllowedOrigins');
+    expect(observations).not.toContain(SG_ONE);
+  });
+
+  it('UFW collection accepts exactly one intended tunnel HTTPS allow', async () => {
+    const exact = await runUfwCollection();
+    expect(exact.status, exact.stderr).toBe(0);
+    expect(exact.facts).toEqual({
+      statusRead: true,
+      rulesRead: true,
+      active: true,
+      defaultDeny: true,
+      tunnel443: true,
+      broad443Absent: true,
+    });
+    const exactReport = await runLaunchReadinessReport({ firewall: exact.facts! });
+    expect(exactReport.checks.ufwTunnel443Only).toBe(true);
+
+    const disallowedRules = [
+      `${INTENDED_UFW_ALLOW}\nufw allow 'Nginx Full'`,
+      `${INTENDED_UFW_ALLOW}\nufw allow 'Nginx HTTPS'`,
+      `${INTENDED_UFW_ALLOW}\nufw allow 22/tcp`,
+      `${INTENDED_UFW_ALLOW}\nufw allow in on tun0 to any port 443`,
+      `${INTENDED_UFW_ALLOW}\nufw allow in on tun0 to any port 443 proto udp`,
+      `${INTENDED_UFW_ALLOW}\nufw allow 443/tcp`,
+      `${INTENDED_UFW_ALLOW}\n${INTENDED_UFW_ALLOW}`,
+      `${INTENDED_UFW_ALLOW}\nufw limit 443/tcp`,
+      `${INTENDED_UFW_ALLOW}\nufw route allow 443/tcp`,
+      `${INTENDED_UFW_ALLOW}\nufw insert 1 allow 443/tcp`,
+    ];
+    for (const added of disallowedRules) {
+      const collected = await runUfwCollection({ added });
+      expect(collected.status, collected.stderr).toBe(0);
+      expect(collected.facts?.tunnel443).toBe(false);
+      expect(collected.facts?.broad443Absent).toBe(false);
+      const report = await runLaunchReadinessReport({
+        firewall: collected.facts!,
+      });
+      expect(report.checks.ufwTunnel443Only).toBe(false);
+    }
+  }, 15_000);
+
+  it('UFW collection fails closed when either command fails', async () => {
+    for (const failure of [{ failStatus: true }, { failAdded: true }]) {
+      const collected = await runUfwCollection(failure);
+      expect(collected.status).toBe(0);
+      expect(collected.stderr).not.toContain('sensitive-ufw-stub-detail');
+      expect(collected.facts?.statusRead && collected.facts?.rulesRead).toBe(false);
+      if ('failAdded' in failure) {
+        expect(collected.facts?.broad443Absent).toBe(false);
+      }
+      const report = await runLaunchReadinessReport({
+        firewall: collected.facts!,
+      });
+      expect(report.checks.ufwTunnel443Only).toBe(false);
+    }
+  });
+
+  it('UFW collection requires active status and default-deny incoming', async () => {
+    for (const verbose of [
+      'Status: inactive\nDefault: deny (incoming), allow (outgoing)',
+      'Status: active\nDefault: allow (incoming), allow (outgoing)',
+    ]) {
+      const collected = await runUfwCollection({ verbose });
+      expect(collected.status, collected.stderr).toBe(0);
+      const report = await runLaunchReadinessReport({
+        firewall: collected.facts!,
+      });
+      expect(report.checks.ufwTunnel443Only).toBe(false);
+    }
+  });
+
+  it('launch readiness accepts overlap and final canonical CORS states', async () => {
+    const overlap = await runLaunchReadinessReport({
+      cors: validCors([
+        CANONICAL_ORIGIN,
+        'https://nava.legacy.local',
+        'http://localhost:3000',
+        'https://localhost:3000',
+      ]),
+    });
+    expect(overlap.checks.s3CorsCanonical).toBe(true);
+
+    const final = await runLaunchReadinessReport({
+      cors: validCors([
+        CANONICAL_ORIGIN,
+        'http://localhost:3000',
+        'https://localhost:3000',
+      ]),
+    });
+    expect(final.checks.s3CorsCanonical).toBe(true);
+  });
+
+  it('launch readiness requires canonical CORS origin and methods in one valid rule', async () => {
+    const splitRules = await runLaunchReadinessReport({
+      cors: {
+        CORSRules: [
+          { AllowedOrigins: [CANONICAL_ORIGIN], AllowedMethods: [] },
+          {
+            AllowedOrigins: ['http://localhost:3000'],
+            AllowedMethods: ['GET', 'HEAD'],
+          },
+        ],
+      },
+    });
+    expect(splitRules.checks.s3CorsCanonical).toBe(false);
+
+    for (const wildcardOrigin of ['*', 'https://*.legacyhotels.co.za', 'https://nava.*']) {
+      const wildcard = await runLaunchReadinessReport({
+        cors: validCors([CANONICAL_ORIGIN, wildcardOrigin]),
+      });
+      expect(wildcard.checks.s3CorsCanonical, wildcardOrigin).toBe(false);
+    }
+  });
+
+  it('launch readiness rejects any malformed CORS rule or field', async () => {
+    const canonicalRule = validCors().CORSRules[0];
+    const malformedCors = [
+      { CORSRules: [canonicalRule, null] },
+      {
+        CORSRules: [
+          canonicalRule,
+          { AllowedOrigins: CANONICAL_ORIGIN, AllowedMethods: ['GET', 'HEAD'] },
+        ],
+      },
+      {
+        CORSRules: [
+          canonicalRule,
+          { AllowedOrigins: [CANONICAL_ORIGIN, 7], AllowedMethods: ['GET', 'HEAD'] },
+        ],
+      },
+      {
+        CORSRules: [
+          canonicalRule,
+          { AllowedOrigins: [CANONICAL_ORIGIN], AllowedMethods: ['GET', 7] },
+        ],
+      },
+      {
+        CORSRules: [{ ...canonicalRule, AllowedHeaders: '*' }],
+      },
+      {
+        CORSRules: [{ ...canonicalRule, MaxAgeSeconds: '300' }],
+      },
+      {
+        CORSRules: [{ ...canonicalRule, UnexpectedField: true }],
+      },
+    ];
+
+    for (const cors of malformedCors) {
+      const report = await runLaunchReadinessReport({ cors });
+      expect(report.checks.s3CorsCanonical).toBe(false);
+    }
+  });
+
+  it('launch readiness requires all four S3 public-access blocks', async () => {
+    const report = await runLaunchReadinessReport({
+      publicAccess: {
+        BlockPublicAcls: true,
+        IgnorePublicAcls: true,
+        BlockPublicPolicy: true,
+      },
+    });
+
+    expect(report.checks.s3PublicAccessBlocked).toBe(false);
+  });
+
+  it('launch readiness fails closed for missing, partial, or nonempty SG results', async () => {
+    const missing = await runLaunchReadinessReport({ omitSecurityGroups: true });
+    expect(missing.checks.securityGroupIngressEmpty).toBe(false);
+
+    const empty = await runLaunchReadinessReport({ securityGroups: [] });
+    expect(empty.checks.securityGroupIngressEmpty).toBe(false);
+
+    const ingress = await runLaunchReadinessReport({
+      instanceNetwork: {
+        securityGroups: [{ GroupId: SG_ONE }],
+        ipv6: [],
+      },
+      securityGroups: [{ id: SG_ONE, ingress: [{ IpProtocol: 'tcp' }] }],
+    });
+    expect(ingress.checks.securityGroupIngressEmpty).toBe(false);
+
+    const partial = await runLaunchReadinessReport({
+      securityGroups: [{ id: SG_ONE, ingress: [] }],
+    });
+    expect(partial.checks.securityGroupIngressEmpty).toBe(false);
+  });
+
+  it('launch readiness rejects malformed or duplicate SG attachment/result records', async () => {
+    const malformedCases = [
+      {
+        instanceNetwork: {
+          securityGroups: [{ GroupId: SG_ONE }, {}],
+          ipv6: [],
+        },
+        securityGroups: [{ id: SG_ONE, ingress: [] }],
+      },
+      {
+        instanceNetwork: {
+          securityGroups: [{ GroupId: SG_ONE }, { GroupId: SG_ONE }],
+          ipv6: [],
+        },
+        securityGroups: [{ id: SG_ONE, ingress: [] }],
+      },
+      {
+        instanceNetwork: {
+          securityGroups: [{ GroupId: 'not-an-sg-id' }],
+          ipv6: [],
+        },
+        securityGroups: [{ id: 'not-an-sg-id', ingress: [] }],
+      },
+      {
+        instanceNetwork: {
+          securityGroups: [{ GroupId: SG_ONE }],
+          ipv6: [],
+        },
+        securityGroups: [
+          { id: SG_ONE, ingress: [] },
+          { ingress: [] },
+        ],
+      },
+      {
+        instanceNetwork: {
+          securityGroups: [{ GroupId: SG_ONE }],
+          ipv6: [],
+        },
+        securityGroups: [
+          { id: SG_ONE, ingress: [] },
+          { id: SG_ONE, ingress: [] },
+        ],
+      },
+    ];
+
+    for (const input of malformedCases) {
+      const report = await runLaunchReadinessReport(input);
+      expect(report.checks.securityGroupIngressEmpty).toBe(false);
+    }
+  });
+
+  it('AWS perimeter collection quotes SG IDs and drives the real report inputs', async () => {
+    const collected = await runAwsPerimeterCollection();
+    expect(collected.status, collected.stderr).toBe(0);
+    expect(collected.facts?.s3CorsOk).toBe(true);
+    expect(collected.facts?.s3PublicAccessOk).toBe(true);
+    expect(collected.facts?.instanceNetworkOk).toBe(true);
+    expect(collected.facts?.securityGroupQueryOk).toBe(true);
+    expect(collected.securityGroupArgs).toContain(SG_ONE);
+    expect(collected.securityGroupArgs).toContain(SG_TWO);
+
+    const report = collected.report!;
+    expect(report.checks).toMatchObject({
+      s3CorsCanonical: true,
+      s3PublicAccessBlocked: true,
+      securityGroupIngressEmpty: true,
+      instanceHasNoPublicIpv6: true,
+    });
+  });
+
+  it('S3 perimeter collection fails stably for bad commands and output', async () => {
+    const cases = [
+      {
+        options: { failCors: true },
+        message: 'launch-readiness: S3 CORS query failed',
+        failedCheck: 's3CorsCanonical',
+      },
+      {
+        options: { corsRaw: '' },
+        message: 'launch-readiness: S3 CORS response invalid',
+        failedCheck: 's3CorsCanonical',
+      },
+      {
+        options: { corsRaw: '{"CORSRules":' },
+        message: 'launch-readiness: S3 CORS response invalid',
+        failedCheck: 's3CorsCanonical',
+      },
+      {
+        options: { corsRaw: '{"CORSRules":[]}\ni-private-partial' },
+        message: 'launch-readiness: S3 CORS response invalid',
+        failedCheck: 's3CorsCanonical',
+      },
+      {
+        options: { corsRaw: '{"CORSRules":"invalid"}' },
+        message: 'launch-readiness: S3 CORS response invalid',
+        failedCheck: 's3CorsCanonical',
+      },
+      {
+        options: {
+          corsRaw: JSON.stringify({ ...validCors(), UnexpectedField: true }),
+        },
+        message: 'launch-readiness: S3 CORS response invalid',
+        failedCheck: 's3CorsCanonical',
+      },
+      {
+        options: { failPublicAccess: true },
+        message: 'launch-readiness: S3 public-access query failed',
+        failedCheck: 's3PublicAccessBlocked',
+      },
+      {
+        options: { publicAccessRaw: '' },
+        message: 'launch-readiness: S3 public-access response invalid',
+        failedCheck: 's3PublicAccessBlocked',
+      },
+      {
+        options: { publicAccessRaw: '{"BlockPublicAcls":' },
+        message: 'launch-readiness: S3 public-access response invalid',
+        failedCheck: 's3PublicAccessBlocked',
+      },
+      {
+        options: {
+          publicAccessRaw:
+            '{"BlockPublicAcls":true,"IgnorePublicAcls":true}\nsg-private-partial',
+        },
+        message: 'launch-readiness: S3 public-access response invalid',
+        failedCheck: 's3PublicAccessBlocked',
+      },
+      {
+        options: { publicAccessRaw: '{"BlockPublicAcls":true}' },
+        message: 'launch-readiness: S3 public-access response invalid',
+        failedCheck: 's3PublicAccessBlocked',
+      },
+      {
+        options: {
+          publicAccessRaw: JSON.stringify({
+            BlockPublicAcls: true,
+            IgnorePublicAcls: true,
+            BlockPublicPolicy: true,
+            RestrictPublicBuckets: true,
+            UnexpectedField: true,
+          }),
+        },
+        message: 'launch-readiness: S3 public-access response invalid',
+        failedCheck: 's3PublicAccessBlocked',
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      const collected = await runAwsPerimeterCollection(testCase.options);
+      expect(collected.status, JSON.stringify(testCase.options)).toBe(0);
+      expect(collected.stderr).toContain(testCase.message);
+      expect(collected.stderr).not.toMatch(
+        /sensitive-aws-stub-detail|i-private|sg-private/,
+      );
+      expect(JSON.stringify(collected.facts)).not.toMatch(/i-private|sg-private/);
+      const report = collected.report!;
+      expect(report.checks[testCase.failedCheck]).toBe(false);
+    }
+  }, 30_000);
+
+  it('AWS perimeter collection redacts EC2 and SG query failures', async () => {
+    const instanceFailure = await runAwsPerimeterCollection({ failInstance: true });
+    expect(instanceFailure.status).toBe(0);
+    expect(instanceFailure.stderr).toContain(
+      'launch-readiness: EC2 network query failed',
+    );
+    expect(instanceFailure.stderr).not.toContain('sensitive-aws-stub-detail');
+    expect(instanceFailure.facts?.instanceNetworkOk).toBe(false);
+    expect(instanceFailure.facts?.securityGroupQueryOk).toBe(false);
+    const instanceReport = instanceFailure.report!;
+    expect(instanceReport.checks.securityGroupIngressEmpty).toBe(false);
+    expect(instanceReport.checks.instanceHasNoPublicIpv6).toBe(false);
+
+    const sgFailure = await runAwsPerimeterCollection({
+      failSecurityGroups: true,
+    });
+    expect(sgFailure.status).toBe(0);
+    expect(sgFailure.stderr).toContain(
+      'launch-readiness: security-group query failed',
+    );
+    expect(sgFailure.stderr).not.toContain('sensitive-aws-stub-detail');
+    expect(sgFailure.facts?.instanceNetworkOk).toBe(true);
+    expect(sgFailure.facts?.securityGroupQueryOk).toBe(false);
+    const sgReport = sgFailure.report!;
+    expect(sgReport.checks.securityGroupIngressEmpty).toBe(false);
+  });
+
+  it.each([
+    {
+      name: 'truncated JSON',
+      instanceNetworkRaw: '{"securityGroups":',
+    },
+    {
+      name: 'trailing private output',
+      instanceNetworkRaw: `${JSON.stringify(validInstanceNetwork())}\ni-private sg-private`,
+    },
+    {
+      name: 'missing security-group attachments',
+      instanceNetworkRaw: JSON.stringify({ securityGroups: [], ipv6: [] }),
+    },
+  ])(
+    'AWS perimeter collection safely rejects malformed EC2 stdout: $name',
+    async ({ instanceNetworkRaw }) => {
+      const collected = await runAwsPerimeterCollection({ instanceNetworkRaw });
+      expect(collected.status, collected.stderr).toBe(0);
+      expect(collected.stderr).toContain(
+        'launch-readiness: EC2 network response invalid',
+      );
+      expect(collected.stderr).not.toMatch(
+        /SyntaxError|JSON\.parse|Unexpected token|i-private|sg-private/,
+      );
+      expect(collected.securityGroupArgs).toEqual([]);
+      expect(collected.facts).toMatchObject({
+        instanceNetwork: {},
+        instanceNetworkOk: false,
+        securityGroupQueryOk: false,
+      });
+      expect(JSON.stringify(collected.facts)).not.toMatch(/i-private|sg-private/);
+      expect(collected.report?.checks).toMatchObject({
+        securityGroupIngressEmpty: false,
+        instanceHasNoPublicIpv6: false,
+      });
+    },
+  );
+
+  it('AWS perimeter collection rejects malformed instance SG attachments', async () => {
+    const malformedAttachment = await runAwsPerimeterCollection({
+      instanceNetwork: {
+        securityGroups: [{ GroupId: SG_ONE }, {}],
+        ipv6: [],
+      },
+      securityGroups: [{ id: SG_ONE, ingress: [] }],
+    });
+    expect(malformedAttachment.status).toBe(0);
+    expect(malformedAttachment.securityGroupArgs).toEqual([]);
+    expect(malformedAttachment.facts?.instanceNetworkOk).toBe(false);
+    const attachmentReport = malformedAttachment.report!;
+    expect(attachmentReport.checks.securityGroupIngressEmpty).toBe(false);
+    expect(attachmentReport.checks.instanceHasNoPublicIpv6).toBe(false);
+  });
+
+  it('AWS perimeter collection rejects malformed SG result records', async () => {
+    const malformedResult = await runAwsPerimeterCollection({
+      instanceNetwork: {
+        securityGroups: [{ GroupId: SG_ONE }],
+        ipv6: [],
+      },
+      securityGroups: [
+        { id: SG_ONE, ingress: [] },
+        { ingress: [] },
+      ],
+    });
+    expect(malformedResult.status).toBe(0);
+    const malformedReport = malformedResult.report!;
+    expect(malformedReport.checks.securityGroupIngressEmpty).toBe(false);
+  });
+
+  it('AWS perimeter collection fails closed for partial SG result coverage', async () => {
+    const partialResult = await runAwsPerimeterCollection({
+      securityGroups: [{ id: SG_ONE, ingress: [] }],
+    });
+    expect(partialResult.status).toBe(0);
+    const partialReport = partialResult.report!;
+    expect(partialReport.checks.securityGroupIngressEmpty).toBe(false);
+  });
+
+  it('AWS-collected wildcard and malformed CORS fail the real report', async () => {
+    for (const cors of [
+      validCors([CANONICAL_ORIGIN, 'https://*.legacyhotels.co.za']),
+      { CORSRules: [validCors().CORSRules[0], null] },
+    ]) {
+      const collected = await runAwsPerimeterCollection({ cors });
+      expect(collected.status, collected.stderr).toBe(0);
+      const report = collected.report!;
+      expect(report.checks.s3CorsCanonical).toBe(false);
+    }
+  });
+
+  it('launch readiness rejects public instance IPv6 addresses', async () => {
+    const report = await runLaunchReadinessReport({
+      instanceNetwork: {
+        securityGroups: [{ GroupId: SG_ONE }],
+        ipv6: ['2001:db8::1'],
+      },
+      securityGroups: [{ id: SG_ONE, ingress: [] }],
+    });
+
+    expect(report.checks.securityGroupIngressEmpty).toBe(true);
+    expect(report.checks.instanceHasNoPublicIpv6).toBe(false);
   });
 
   it('launch-readiness.sh is strict, redacted, read-only, and syntactically valid', async () => {

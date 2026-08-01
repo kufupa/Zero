@@ -5,6 +5,8 @@ set -euo pipefail
 UNIT="${UNIT:-openvpn-client@nava}"
 AWS_REGION="${AWS_REGION:-af-south-1}"
 REQUIRE_HOTEL_PROBE="${REQUIRE_HOTEL_PROBE:-0}"
+EXPECTED_VPN_INTERFACE="${EXPECTED_VPN_INTERFACE:-tun0}"
+EXPECTED_VPN_CIDR="${EXPECTED_VPN_CIDR:-192.168.138.2/29}"
 
 HOSTS=(172.24.0.10 172.24.0.8 172.24.240.41)
 PORTS=(25 587 993 443 8080 80)
@@ -20,12 +22,20 @@ if ! systemctl is-active --quiet "$UNIT"; then
   hard_fail "VPN_HARD_FAIL_UNIT"
 fi
 
+if ! ip link show "$EXPECTED_VPN_INTERFACE" >/dev/null 2>&1; then
+  hard_fail "VPN_HARD_FAIL_INTERFACE_${EXPECTED_VPN_INTERFACE}"
+fi
+
+if ! ip -4 -o addr show dev "$EXPECTED_VPN_INTERFACE" |
+  awk -v expected="$EXPECTED_VPN_CIDR" '$4 == expected { found = 1 } END { exit found ? 0 : 1 }'; then
+  hard_fail "VPN_HARD_FAIL_ADDRESS"
+fi
+
 DEFAULT="$(ip -4 route show default | head -n1 || true)"
-echo "DEFAULT_ROUTE=$DEFAULT"
-if [ -z "$DEFAULT" ] || ! echo "$DEFAULT" | grep -q 'via 172\.31\.0\.1'; then
+if [ -z "$DEFAULT" ] || ! grep -q 'via 172\.31\.0\.1' <<<"$DEFAULT"; then
   hard_fail "VPN_HARD_FAIL_HOST_ROUTE"
 fi
-if echo "$DEFAULT" | grep -qE 'tun[0-9]+'; then
+if grep -qE 'tun[0-9]+' <<<"$DEFAULT"; then
   hard_fail "VPN_HARD_FAIL_HOST_ROUTE"
 fi
 
@@ -42,9 +52,9 @@ echo "VPN_HARD_OK"
 hotel_ok=0
 for h in "${HOSTS[@]}"; do
   for p in "${PORTS[@]}"; do
-    if nc -z -w 2 "$h" "$p" 2>/dev/null; then
+    if nc -z -w 2 "$h" "$p" >/dev/null 2>&1; then
       hotel_ok=1
-      echo "HOTEL_PROBE_OK $h:$p"
+      echo "HOTEL_PROBE_OK"
       break 2
     fi
   done

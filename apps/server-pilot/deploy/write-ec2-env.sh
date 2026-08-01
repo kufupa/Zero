@@ -8,7 +8,7 @@ set -euo pipefail
 : "${AWS_REGION:=af-south-1}"
 : "${DB_SECRET_NAME:=nava-zero/server-pilot/database-url}"
 : "${S3_BUCKET:?S3_BUCKET required}"
-: "${BETTER_AUTH_URL:=https://nava.legacy.local}"
+: "${BETTER_AUTH_URL:=https://nava.legacyhotels.co.za}"
 : "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET required}"
 : "${POP3_POLL_INTERVAL_MS:=30000}"
 : "${POP3_MAX_MESSAGES_PER_CYCLE:=500}"

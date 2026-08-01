@@ -39,36 +39,92 @@ if [ -r "$ENV_FILE" ]; then
   fi
 fi
 
+CANONICAL_ORIGIN="https://nava.legacyhotels.co.za"
+: "${BETTER_AUTH_URL:?BETTER_AUTH_URL missing from production environment}"
+case "$BETTER_AUTH_URL" in
+  "$CANONICAL_ORIGIN"|"$CANONICAL_ORIGIN/")
+    ;;
+  *)
+    echo "refusing: BETTER_AUTH_URL must be canonical HTTPS origin" >&2
+    exit 2
+    ;;
+esac
+PUBLIC_ORIGIN="$CANONICAL_ORIGIN"
+PUBLIC_HOST="${CANONICAL_ORIGIN#https://}"
+export BETTER_AUTH_URL="$PUBLIC_ORIGIN"
+
 HTTP_OK=false
-if curl -fsS --max-time 10 "http://127.0.0.1:8788/health" >/dev/null 2>&1; then
+if curl --disable --noproxy '*' -fsS \
+  --max-time 10 \
+  "http://127.0.0.1:8788/health" >/dev/null 2>&1; then
   HTTP_OK=true
 fi
 
 HTTPS_OK=false
 TLS_VALID=false
 CERT_FILE="$(mktemp)"
+cleanup_cert() { rm -f "$CERT_FILE"; }
+trap cleanup_cert EXIT
+
 if timeout 10 openssl s_client \
   -connect "127.0.0.1:443" \
-  -servername "nava.legacy.local" \
+  -servername "$PUBLIC_HOST" \
+  -verify_hostname "$PUBLIC_HOST" \
+  -verify_return_error \
+  -CAfile /etc/ssl/certs/ca-certificates.crt \
   -showcerts </dev/null 2>/dev/null |
-  openssl x509 -outform PEM >"$CERT_FILE" 2>/dev/null; then
-  if openssl x509 -in "$CERT_FILE" -checkend 86400 -noout >/dev/null 2>&1 \
-    && openssl x509 -in "$CERT_FILE" -checkhost "nava.legacy.local" -noout >/dev/null 2>&1; then
-    TLS_VALID=true
-  fi
-  if curl -fsS \
-    --max-time 10 \
-    --cacert "$CERT_FILE" \
-    --resolve "nava.legacy.local:443:127.0.0.1" \
-    "https://nava.legacy.local/health" >/dev/null 2>&1; then
-    HTTPS_OK=true
-  fi
+  openssl x509 -outform PEM >"$CERT_FILE" 2>/dev/null \
+  && openssl x509 -in "$CERT_FILE" -checkend 2592000 -noout >/dev/null 2>&1; then
+  TLS_VALID=true
 fi
-rm -f "$CERT_FILE"
+
+if curl --disable --noproxy '*' -fsS \
+  --max-time 10 \
+  --resolve "${PUBLIC_HOST}:443:127.0.0.1" \
+  "${PUBLIC_ORIGIN%/}/health" >/dev/null 2>&1; then
+  HTTPS_OK=true
+fi
 
 HOTEL_PROBE_OK=false
 if REQUIRE_HOTEL_PROBE=1 bash "${SERVER_PILOT}/deploy/vpn-health-assert.sh" >/dev/null 2>&1; then
   HOTEL_PROBE_OK=true
+fi
+
+UFW_STATUS_READ=false
+UFW_RULES_READ=false
+UFW_ACTIVE=false
+UFW_DEFAULT_DENY=false
+UFW_TUN443=false
+UFW_BROAD443_ABSENT=false
+UFW_VERBOSE=""
+UFW_ADDED=""
+EXPECTED_UFW_ALLOW='ufw allow in on tun0 to any port 443 proto tcp'
+
+if UFW_VERBOSE="$(sudo ufw status verbose 2>/dev/null)"; then
+  UFW_STATUS_READ=true
+  if printf '%s\n' "$UFW_VERBOSE" | grep -q '^Status: active$'; then
+    UFW_ACTIVE=true
+  fi
+  if printf '%s\n' "$UFW_VERBOSE" | grep -q 'Default: deny (incoming)'; then
+    UFW_DEFAULT_DENY=true
+  fi
+fi
+if UFW_ADDED="$(sudo ufw show added 2>/dev/null)"; then
+  UFW_RULES_READ=true
+  if printf '%s\n' "$UFW_ADDED" |
+    awk -v expected="$EXPECTED_UFW_ALLOW" '
+      /^[[:space:]]*ufw([[:space:]]|$)/ {
+        line = $0
+        sub(/^[[:space:]]+/, "", line)
+        sub(/[[:space:]]+$/, "", line)
+        rule_count += 1
+        if (line == expected) exact_count += 1
+      }
+      END { exit rule_count == 1 && exact_count == 1 ? 0 : 1 }
+    '; then
+    UFW_TUN443=true
+    UFW_BROAD443_ABSENT=true
+  fi
 fi
 
 PM2_SUMMARY="$(
@@ -121,6 +177,8 @@ fi
 export HTTP_OK HTTPS_OK TLS_VALID HOTEL_PROBE_OK ENV_LOADED
 export DISK_USED_PERCENT DISK_FREE_MB DISK_SAFE
 export PM2_SUMMARY
+export UFW_STATUS_READ UFW_RULES_READ
+export UFW_ACTIVE UFW_DEFAULT_DENY UFW_TUN443 UFW_BROAD443_ABSENT
 
 cd "$SERVER_PILOT"
 DB_SUMMARY="$(
@@ -226,10 +284,19 @@ const report = {
   },
   pm2,
   hotelProbe: bool("HOTEL_PROBE_OK"),
+  firewall: {
+    statusRead: bool("UFW_STATUS_READ"),
+    rulesRead: bool("UFW_RULES_READ"),
+    active: bool("UFW_ACTIVE"),
+    defaultDeny: bool("UFW_DEFAULT_DENY"),
+    tunnel443: bool("UFW_TUN443"),
+    broad443Absent: bool("UFW_BROAD443_ABSENT"),
+  },
   config: {
     envLoaded: bool("ENV_LOADED"),
     mailTransportModeReal: process.env.MAIL_TRANSPORT_MODE === "real",
-    betterAuthUrlCorrect: process.env.BETTER_AUTH_URL === "https://nava.legacy.local",
+    betterAuthUrlCorrect:
+      process.env.BETTER_AUTH_URL === "https://nava.legacyhotels.co.za",
     undoSendSecondsCorrect: process.env.UNDO_SEND_SECONDS === "30",
     aiWriteGateEnabled: process.env.AI_WRITE_GATE_ENABLED === "true",
     aiDraftsDisabled: process.env.AI_DRAFTS_ENABLED === "false",
@@ -274,7 +341,7 @@ NODE
 )" || REMOTE_JSON=""
 
 if [ "$SSM_EXIT" -ne 0 ] || [ -z "$REMOTE_JSON" ]; then
-  REMOTE_JSON='{"health":{"http":false,"https":false,"tls":false},"pm2":{"required":{},"allOnline":false},"hotelProbe":false,"config":{"envLoaded":false,"mailTransportModeReal":false,"betterAuthUrlCorrect":false,"undoSendSecondsCorrect":false,"aiWriteGateEnabled":false,"aiDraftsDisabled":false},"db":{"connected":false,"centurionActiveTransportCount":0,"centurionActiveCategoryCount":0,"workflowNonterminalCount":0,"workflowDeadLetterCount":0,"workflowDeadLetterRecentCount":0,"outboundNonterminalCount":0,"latestInboundAt":null,"counts":{"threads":0,"messages":0,"inboundMessages":0}},"disk":{"safe":false,"usedPercent":100,"freeMB":0}}'
+  REMOTE_JSON='{"health":{"http":false,"https":false,"tls":false},"pm2":{"required":{},"allOnline":false},"hotelProbe":false,"firewall":{"statusRead":false,"rulesRead":false,"active":false,"defaultDeny":false,"tunnel443":false,"broad443Absent":false},"config":{"envLoaded":false,"mailTransportModeReal":false,"betterAuthUrlCorrect":false,"undoSendSecondsCorrect":false,"aiWriteGateEnabled":false,"aiDraftsDisabled":false},"db":{"connected":false,"centurionActiveTransportCount":0,"centurionActiveCategoryCount":0,"workflowNonterminalCount":0,"workflowDeadLetterCount":0,"workflowDeadLetterRecentCount":0,"outboundNonterminalCount":0,"latestInboundAt":null,"counts":{"threads":0,"messages":0,"inboundMessages":0}},"disk":{"safe":false,"usedPercent":100,"freeMB":0}}'
 fi
 
 RDS_JSON="$(
@@ -310,6 +377,168 @@ S3_LIFECYCLE="$(
     --query 'Rules[].{id:ID,status:Status,expirationDays:Expiration.Days,abortDays:AbortIncompleteMultipartUpload.DaysAfterInitiation}' \
     --output json 2>/dev/null || printf '%s' '[]'
 )"
+# BEGIN_READINESS_PERIMETER_COLLECTION
+collect_readiness_perimeter() {
+  S3_CORS='{"CORSRules":[]}'
+  S3_CORS_OK=false
+  S3_PUBLIC_ACCESS='{}'
+  S3_PUBLIC_ACCESS_OK=false
+  INSTANCE_NETWORK='{}'
+  INSTANCE_NETWORK_OK=false
+  SG_STATE='[]'
+  SG_QUERY_OK=false
+  SG_IDS=()
+
+  local s3_cors_result=""
+  if s3_cors_result="$(
+    aws s3api get-bucket-cors \
+      --region "$AWS_REGION" \
+      --bucket "$S3_BUCKET" \
+      --output json 2>/dev/null
+  )"; then
+    if node -e '
+      const value = JSON.parse(process.argv[1]);
+      const isRecord = (item) =>
+        item !== null && typeof item === "object" && !Array.isArray(item);
+      const isStringArray = (item, required = false) =>
+        Array.isArray(item) &&
+        (!required || item.length > 0) &&
+        item.every((entry) => typeof entry === "string" && entry.length > 0);
+      const fields = new Set([
+        "AllowedOrigins",
+        "AllowedMethods",
+        "AllowedHeaders",
+        "ExposeHeaders",
+        "MaxAgeSeconds",
+      ]);
+      const valid =
+        isRecord(value) &&
+        Object.keys(value).length === 1 &&
+        Object.hasOwn(value, "CORSRules") &&
+        Array.isArray(value.CORSRules) &&
+        value.CORSRules.length > 0 &&
+        value.CORSRules.every(
+          (rule) =>
+            isRecord(rule) &&
+            Object.keys(rule).every((field) => fields.has(field)) &&
+            isStringArray(rule.AllowedOrigins, true) &&
+            isStringArray(rule.AllowedMethods, true) &&
+            (rule.AllowedHeaders === undefined ||
+              isStringArray(rule.AllowedHeaders)) &&
+            (rule.ExposeHeaders === undefined ||
+              isStringArray(rule.ExposeHeaders)) &&
+            (rule.MaxAgeSeconds === undefined ||
+              (Number.isInteger(rule.MaxAgeSeconds) &&
+                rule.MaxAgeSeconds >= 0)),
+        );
+      process.exit(valid ? 0 : 1);
+    ' "$s3_cors_result" 2>/dev/null; then
+      S3_CORS="$s3_cors_result"
+      S3_CORS_OK=true
+    else
+      echo "launch-readiness: S3 CORS response invalid" >&2
+    fi
+  else
+    echo "launch-readiness: S3 CORS query failed" >&2
+  fi
+
+  local s3_public_access_result=""
+  if s3_public_access_result="$(
+    aws s3api get-public-access-block \
+      --region "$AWS_REGION" \
+      --bucket "$S3_BUCKET" \
+      --query 'PublicAccessBlockConfiguration' \
+      --output json 2>/dev/null
+  )"; then
+    if node -e '
+      const value = JSON.parse(process.argv[1]);
+      const fields = [
+        "BlockPublicAcls",
+        "IgnorePublicAcls",
+        "BlockPublicPolicy",
+        "RestrictPublicBuckets",
+      ];
+      const valid =
+        value !== null &&
+        typeof value === "object" &&
+        !Array.isArray(value) &&
+        Object.keys(value).length === fields.length &&
+        Object.keys(value).every((field) => fields.includes(field)) &&
+        fields.every((field) => typeof value[field] === "boolean");
+      process.exit(valid ? 0 : 1);
+    ' "$s3_public_access_result" 2>/dev/null; then
+      S3_PUBLIC_ACCESS="$s3_public_access_result"
+      S3_PUBLIC_ACCESS_OK=true
+    else
+      echo "launch-readiness: S3 public-access response invalid" >&2
+    fi
+  else
+    echo "launch-readiness: S3 public-access query failed" >&2
+  fi
+
+  local instance_network_result=""
+  if instance_network_result="$(
+    aws ec2 describe-instances \
+      --region "$AWS_REGION" \
+      --instance-ids "$INSTANCE_ID" \
+      --query 'Reservations[0].Instances[0].{securityGroups:SecurityGroups,ipv6:NetworkInterfaces[].Ipv6Addresses[].Ipv6Address}' \
+      --output json 2>/dev/null
+  )"; then
+    local sg_ids_text=""
+    if sg_ids_text="$(
+      node -e '
+        const state = JSON.parse(process.argv[1]);
+        const validRecord =
+          state &&
+          typeof state === "object" &&
+          !Array.isArray(state) &&
+          Array.isArray(state.securityGroups) &&
+          state.securityGroups.length > 0 &&
+          Array.isArray(state.ipv6) &&
+          state.ipv6.every((address) => typeof address === "string") &&
+          state.securityGroups.every(
+            (group) =>
+              group &&
+              typeof group === "object" &&
+              !Array.isArray(group) &&
+              typeof group.GroupId === "string" &&
+              /^sg-[0-9a-f]{8,17}$/.test(group.GroupId),
+          );
+        if (!validRecord) process.exit(1);
+        const ids = state.securityGroups.map((group) => group.GroupId);
+        if (new Set(ids).size !== ids.length) process.exit(1);
+        process.stdout.write(ids.join("\n"));
+      ' "$instance_network_result" 2>/dev/null
+    )"; then
+      INSTANCE_NETWORK="$instance_network_result"
+      mapfile -t SG_IDS <<<"$sg_ids_text"
+      INSTANCE_NETWORK_OK=true
+      local sg_state_result=""
+      if sg_state_result="$(
+        aws ec2 describe-security-groups \
+          --region "$AWS_REGION" \
+          --group-ids "${SG_IDS[@]}" \
+          --query 'SecurityGroups[].{id:GroupId,ingress:IpPermissions}' \
+          --output json 2>/dev/null
+      )"; then
+        if node -e 'JSON.parse(process.argv[1])' "$sg_state_result" 2>/dev/null; then
+          SG_STATE="$sg_state_result"
+          SG_QUERY_OK=true
+        else
+          echo "launch-readiness: security-group response invalid" >&2
+        fi
+      else
+        echo "launch-readiness: security-group query failed" >&2
+      fi
+    else
+      echo "launch-readiness: EC2 network response invalid" >&2
+    fi
+  else
+    echo "launch-readiness: EC2 network query failed" >&2
+  fi
+}
+collect_readiness_perimeter
+# END_READINESS_PERIMETER_COLLECTION
 
 CLOUDWATCH_ALARM_COUNT="$(
   aws cloudwatch describe-alarms \
@@ -324,7 +553,8 @@ SNS_TOPIC_COUNT="$(
     --output text 2>/dev/null || printf '%s' '0'
 )"
 
-REPORT_JSON="$(
+# BEGIN_READINESS_REPORT_BUILDER
+build_readiness_report() {
   node - \
     "$REMOTE_JSON" \
     "$RDS_JSON" \
@@ -332,7 +562,15 @@ REPORT_JSON="$(
     "$S3_VERSIONING" \
     "$S3_LIFECYCLE" \
     "$CLOUDWATCH_ALARM_COUNT" \
-    "$SNS_TOPIC_COUNT" <<'NODE'
+    "$SNS_TOPIC_COUNT" \
+    "$S3_CORS" \
+    "$S3_PUBLIC_ACCESS" \
+    "$INSTANCE_NETWORK" \
+    "$SG_STATE" \
+    "$INSTANCE_NETWORK_OK" \
+    "$SG_QUERY_OK" \
+    "$S3_CORS_OK" \
+    "$S3_PUBLIC_ACCESS_OK" <<'NODE'
 const remote = JSON.parse(process.argv[2]);
 const rds = JSON.parse(process.argv[3] || "{}");
 const s3Available = process.argv[4] === "true";
@@ -340,6 +578,127 @@ const s3Versioning = process.argv[5] || "Disabled";
 const s3Lifecycle = JSON.parse(process.argv[6] || "[]");
 const cloudWatchAlarmCount = Number(process.argv[7] || 0);
 const snsTopicCount = Number(process.argv[8] || 0);
+const cors = JSON.parse(process.argv[9] || '{"CORSRules":[]}') ?? { CORSRules: [] };
+const publicAccess = JSON.parse(process.argv[10] || "{}") ?? {};
+const instanceNetwork = JSON.parse(process.argv[11] || "{}") ?? {};
+const securityGroupValue = JSON.parse(process.argv[12] || "[]");
+const securityGroups = Array.isArray(securityGroupValue) ? securityGroupValue : [];
+const instanceNetworkOk = process.argv[13] === "true";
+const securityGroupQueryOk = process.argv[14] === "true";
+const s3CorsOk = process.argv[15] === "true";
+const s3PublicAccessOk = process.argv[16] === "true";
+const canonicalOrigin = "https://nava.legacyhotels.co.za";
+const isRecord = (value) =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+const isStringArray = (value, requireValue = false) =>
+  Array.isArray(value) &&
+  (!requireValue || value.length > 0) &&
+  value.every((item) => typeof item === "string" && item.length > 0);
+const corsRules =
+  isRecord(cors) && Array.isArray(cors.CORSRules) ? cors.CORSRules : [];
+const corsRuleFields = new Set([
+  "AllowedOrigins",
+  "AllowedMethods",
+  "AllowedHeaders",
+  "ExposeHeaders",
+  "MaxAgeSeconds",
+]);
+const corsStructureValid =
+  isRecord(cors) &&
+  Object.keys(cors).length === 1 &&
+  Object.hasOwn(cors, "CORSRules") &&
+  corsRules.length > 0 &&
+  corsRules.every(
+    (rule) =>
+      isRecord(rule) &&
+      Object.keys(rule).every((field) => corsRuleFields.has(field)) &&
+      isStringArray(rule.AllowedOrigins, true) &&
+      isStringArray(rule.AllowedMethods, true) &&
+      (rule.AllowedHeaders === undefined ||
+        isStringArray(rule.AllowedHeaders)) &&
+      (rule.ExposeHeaders === undefined ||
+        isStringArray(rule.ExposeHeaders)) &&
+      (rule.MaxAgeSeconds === undefined ||
+        (Number.isInteger(rule.MaxAgeSeconds) && rule.MaxAgeSeconds >= 0)),
+  );
+const hasWildcardCorsOrigin =
+  corsStructureValid &&
+  corsRules.some((rule) =>
+    rule.AllowedOrigins.some((origin) => origin.includes("*")),
+  );
+const hasCanonicalCorsRule =
+  corsStructureValid &&
+  corsRules.some(
+    (rule) =>
+      rule.AllowedOrigins.includes(canonicalOrigin) &&
+      rule.AllowedMethods.includes("GET") &&
+      rule.AllowedMethods.includes("HEAD"),
+  );
+const publicAccessFields = [
+  "BlockPublicAcls",
+  "IgnorePublicAcls",
+  "BlockPublicPolicy",
+  "RestrictPublicBuckets",
+];
+const publicAccessStructureValid =
+  isRecord(publicAccess) &&
+  Object.keys(publicAccess).length === publicAccessFields.length &&
+  Object.keys(publicAccess).every((field) =>
+    publicAccessFields.includes(field),
+  ) &&
+  publicAccessFields.every(
+    (field) => typeof publicAccess[field] === "boolean",
+  );
+const sgIdPattern = /^sg-[0-9a-f]{8,17}$/;
+const attachedGroups = Array.isArray(instanceNetwork.securityGroups)
+  ? instanceNetwork.securityGroups
+  : [];
+const attachedRecordsValid =
+  isRecord(instanceNetwork) &&
+  attachedGroups.length > 0 &&
+  attachedGroups.every(
+    (group) =>
+      isRecord(group) &&
+      typeof group.GroupId === "string" &&
+      sgIdPattern.test(group.GroupId),
+  ) &&
+  Array.isArray(instanceNetwork.ipv6) &&
+  instanceNetwork.ipv6.every((address) => typeof address === "string");
+const attachedIds = attachedRecordsValid
+  ? attachedGroups.map((group) => group.GroupId)
+  : [];
+const attachedIdsUnique =
+  attachedRecordsValid && new Set(attachedIds).size === attachedIds.length;
+const inspectedRecordsValid =
+  securityGroups.length > 0 &&
+  securityGroups.every(
+    (group) =>
+      isRecord(group) &&
+      typeof group.id === "string" &&
+      sgIdPattern.test(group.id) &&
+      Array.isArray(group.ingress),
+  );
+const inspectedIds = inspectedRecordsValid
+  ? securityGroups.map((group) => group.id)
+  : [];
+const inspectedIdsUnique =
+  inspectedRecordsValid && new Set(inspectedIds).size === inspectedIds.length;
+const exactSecurityGroupSet =
+  attachedIdsUnique &&
+  inspectedIdsUnique &&
+  attachedIds.length === inspectedIds.length &&
+  attachedIds.every((id) => inspectedIds.includes(id));
+const ingressEmpty =
+  inspectedRecordsValid &&
+  securityGroups.every((group) => group.ingress.length === 0);
+const instanceNetworkValid =
+  instanceNetworkOk && attachedRecordsValid && attachedIdsUnique;
+const securityGroupsValid =
+  securityGroupQueryOk &&
+  inspectedRecordsValid &&
+  inspectedIdsUnique &&
+  exactSecurityGroupSet &&
+  ingressEmpty;
 const pm2Required = remote.pm2?.required ?? {};
 const db = remote.db ?? {};
 
@@ -373,6 +732,28 @@ const checks = {
     Number(rds.backupRetentionDays ?? 0) > 0 &&
     Boolean(rds.backupLatestRestorableAt),
   deletionProtection: rds.deletionProtection === true,
+  ufwTunnel443Only:
+    remote.firewall?.statusRead === true &&
+    remote.firewall?.rulesRead === true &&
+    remote.firewall?.active === true &&
+    remote.firewall?.defaultDeny === true &&
+    remote.firewall?.tunnel443 === true &&
+    remote.firewall?.broad443Absent === true,
+  s3CorsCanonical:
+    s3CorsOk &&
+    corsStructureValid &&
+    !hasWildcardCorsOrigin &&
+    hasCanonicalCorsRule,
+  s3PublicAccessBlocked:
+    s3PublicAccessOk &&
+    publicAccessStructureValid &&
+    publicAccess.BlockPublicAcls === true &&
+    publicAccess.IgnorePublicAcls === true &&
+    publicAccess.BlockPublicPolicy === true &&
+    publicAccess.RestrictPublicBuckets === true,
+  securityGroupIngressEmpty: instanceNetworkValid && securityGroupsValid,
+  instanceHasNoPublicIpv6:
+    instanceNetworkValid && instanceNetwork.ipv6.length === 0,
 };
 const failures = Object.entries(checks)
   .filter(([, passed]) => !passed)
@@ -391,6 +772,12 @@ const report = {
       available: s3Available,
       versioning: s3Versioning,
       lifecycle: s3Lifecycle,
+      corsCanonical: checks.s3CorsCanonical,
+      publicAccessBlocked: checks.s3PublicAccessBlocked,
+    },
+    network: {
+      securityGroupIngressEmpty: checks.securityGroupIngressEmpty,
+      instanceHasNoPublicIpv6: checks.instanceHasNoPublicIpv6,
     },
     cloudWatchAlarmCount,
     snsTopicCount,
@@ -408,7 +795,10 @@ const report = {
 };
 process.stdout.write(JSON.stringify(report));
 NODE
-)"
+}
+# END_READINESS_REPORT_BUILDER
+
+REPORT_JSON="$(build_readiness_report)"
 
 printf '%s\n' "$REPORT_JSON"
 node - "$REPORT_JSON" <<'NODE' >&2

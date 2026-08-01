@@ -1,13 +1,10 @@
 #!/usr/bin/env bash
 # Mint pilot session, hit production nginx SPA, run Playwright E2E on EC2.
-# Prefer https://127.0.0.1 (nginx → /api proxy) over :3000 static/vite — cookies + same-origin.
+# Use canonical nginx TLS so cookies and API requests remain same-origin.
 set -euo pipefail
 
 REPO_ROOT="${REPO_ROOT:-/home/ubuntu/repos/zero}"
 cd "$REPO_ROOT"
-
-echo "pnpm install (playwright pin)"
-pnpm install --frozen-lockfile
 
 export PATH="${HOME}/.local/share/pnpm:${HOME}/.nvm/versions/node/$(ls "${HOME}/.nvm/versions/node" 2>/dev/null | sort -V | tail -1)/bin:${PATH}"
 export PLAYWRIGHT_BROWSERS_PATH=/opt/nava/playwright-browsers
@@ -16,82 +13,81 @@ if [ -f /opt/nava/ec2-playwright-chromium/env.sh ]; then
   source /opt/nava/ec2-playwright-chromium/env.sh
 fi
 
-# Production path: nginx TLS + /api proxy (avoids cross-origin cookie loss on :3000).
-export PLAYWRIGHT_BASE_URL="${PLAYWRIGHT_BASE_URL:-https://127.0.0.1}"
+ENV_FILE="${ENV_FILE:-apps/server-pilot/.env.production}"
+if [ -f "$ENV_FILE" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+fi
+
+CANONICAL_ORIGIN="https://nava.legacyhotels.co.za"
+: "${BETTER_AUTH_URL:?BETTER_AUTH_URL missing from production environment}"
+case "$BETTER_AUTH_URL" in
+  "$CANONICAL_ORIGIN"|"$CANONICAL_ORIGIN/")
+    ;;
+  *)
+    echo "refusing: BETTER_AUTH_URL must be canonical HTTPS origin" >&2
+    exit 2
+    ;;
+esac
+if [ -n "${PLAYWRIGHT_BASE_URL:-}" ]; then
+  case "$PLAYWRIGHT_BASE_URL" in
+    "$CANONICAL_ORIGIN"|"$CANONICAL_ORIGIN/")
+      ;;
+    *)
+      echo "refusing: PLAYWRIGHT_BASE_URL must be canonical HTTPS origin" >&2
+      exit 2
+      ;;
+  esac
+fi
+if [ -n "${VITE_PUBLIC_BACKEND_URL:-}" ]; then
+  case "$VITE_PUBLIC_BACKEND_URL" in
+    "$CANONICAL_ORIGIN"|"$CANONICAL_ORIGIN/")
+      ;;
+    *)
+      echo "refusing: VITE_PUBLIC_BACKEND_URL must be canonical HTTPS origin" >&2
+      exit 2
+      ;;
+  esac
+fi
+export BETTER_AUTH_URL="$CANONICAL_ORIGIN"
+export PLAYWRIGHT_BASE_URL="$CANONICAL_ORIGIN"
+export VITE_PUBLIC_BACKEND_URL="$CANONICAL_ORIGIN"
 export PLAYWRIGHT_COOKIE_PREFIX="${PLAYWRIGHT_COOKIE_PREFIX:-better-auth}"
-export PLAYWRIGHT_IGNORE_HTTPS_ERRORS="${PLAYWRIGHT_IGNORE_HTTPS_ERRORS:-1}"
+if [ "${PLAYWRIGHT_IGNORE_HTTPS_ERRORS:-0}" = "1" ]; then
+  echo "refusing: production Playwright cannot ignore HTTPS errors" >&2
+  exit 2
+fi
+export PLAYWRIGHT_IGNORE_HTTPS_ERRORS=0
 export ZERO_DEMO_FRONTEND_ONLY="${ZERO_DEMO_FRONTEND_ONLY:-1}"
 export VITE_FRONTEND_ONLY="${VITE_FRONTEND_ONLY:-1}"
 export ZERO_AUTO_START_BACKEND=0
 export EMAIL="${EMAIL:-guest@example.com}"
 
-# Backend for session mint + health. Same-origin via nginx when BASE is https://127.0.0.1.
-BACKEND_URL="${VITE_PUBLIC_BACKEND_URL:-}"
-if [ -z "$BACKEND_URL" ]; then
-  if [[ "$PLAYWRIGHT_BASE_URL" == https://* ]] || [[ "$PLAYWRIGHT_BASE_URL" == http://* ]]; then
-    BACKEND_URL="$PLAYWRIGHT_BASE_URL"
-  else
-    BACKEND_URL="http://127.0.0.1:8788"
-  fi
-fi
-export VITE_PUBLIC_BACKEND_URL="$BACKEND_URL"
+echo "pnpm install (playwright pin)"
+pnpm install --frozen-lockfile
 
-cleanup() {
-  if [ -n "${FE_PID:-}" ]; then
-    kill "$FE_PID" 2>/dev/null || true
-  fi
-  pkill -f "react-router dev" 2>/dev/null || true
-  pkill -f "dlx serve" 2>/dev/null || true
-}
-trap cleanup EXIT
+# Backend for session mint + health. Same-origin via canonical nginx TLS by default.
+BACKEND_URL="$CANONICAL_ORIGIN"
 
-if ! curl -skf "${BACKEND_URL%/}/health" >/dev/null; then
+if ! curl --disable --noproxy '*' -fsS \
+  "${BACKEND_URL%/}/health" >/dev/null; then
   echo "backend not reachable at ${BACKEND_URL}/health" >&2
   exit 1
 fi
 
-# Only spin a local FE when explicitly on :3000 (legacy/dev). Default nginx path skips this.
-if [[ "$PLAYWRIGHT_BASE_URL" == *:3000* ]]; then
-  echo "serving mail production SPA on ${PLAYWRIGHT_BASE_URL}"
-  pkill -f "react-router dev" 2>/dev/null || true
-  pkill -f "serve -s" 2>/dev/null || true
-  pkill -f "dlx serve" 2>/dev/null || true
-  sleep 1
-  if [ ! -f apps/mail/build/client/index.html ]; then
-    echo "building mail SPA" >&2
-    pnpm --dir apps/mail run build
-  fi
-  nohup pnpm dlx serve@14.2.4 -s apps/mail/build/client -l 3000 > /tmp/fe-dev.log 2>&1 &
-  FE_PID=$!
-  for _ in $(seq 1 90); do
-    if curl -sf "${PLAYWRIGHT_BASE_URL}/" >/dev/null 2>&1; then
-      echo "frontend up (static)"
-      break
-    fi
-    if ! kill -0 "$FE_PID" 2>/dev/null; then
-      echo "static FE process died" >&2
-      tr -cd '\11\12\15\40-\176' < /tmp/fe-dev.log | tail -80 >&2 || true
-      exit 1
-    fi
-    sleep 1
-  done
-  curl -sf "${PLAYWRIGHT_BASE_URL}/" >/dev/null || {
-    echo "frontend never became ready" >&2
-    tr -cd '\11\12\15\40-\176' < /tmp/fe-dev.log | tail -80 >&2 || true
-    exit 1
-  }
-else
-  echo "using nginx SPA at ${PLAYWRIGHT_BASE_URL}"
-  curl -skf "${PLAYWRIGHT_BASE_URL}/" >/dev/null || {
-    echo "nginx SPA not reachable at ${PLAYWRIGHT_BASE_URL}" >&2
-    exit 1
-  }
-fi
+echo "using nginx SPA at ${PLAYWRIGHT_BASE_URL}"
+curl --disable --noproxy '*' -fsS "${PLAYWRIGHT_BASE_URL}/" >/dev/null || {
+  echo "nginx SPA not reachable at ${PLAYWRIGHT_BASE_URL}" >&2
+  exit 1
+}
 
 echo "minting session via ${BACKEND_URL}"
 SECRET=$(aws secretsmanager get-secret-value --region af-south-1 --secret-id nava-zero/server-pilot/pilot-users --query SecretString --output text)
 PW=$(node -e 'const j=JSON.parse(process.argv[1]);const v=j["navaai@legacyhotels.co.za"];console.log(typeof v==="string"?v:v.password)' "$SECRET")
-RESP=$(curl -ski -X POST "${BACKEND_URL%/}/api/auth/sign-in/email" \
+RESP=$(curl --disable --noproxy '*' -sSi \
+  -X POST "${BACKEND_URL%/}/api/auth/sign-in/email" \
   -H "Content-Type: application/json" \
   -d "{\"email\":\"navaai@legacyhotels.co.za\",\"password\":\"$PW\"}")
 export PLAYWRIGHT_SESSION_TOKEN=$(node -e 'const r=process.argv[1];const m=r.match(/better-auth\.session_token=([^;\r\n]+)/);if(!m)process.exit(1);console.log(decodeURIComponent(m[1]))' "$RESP")

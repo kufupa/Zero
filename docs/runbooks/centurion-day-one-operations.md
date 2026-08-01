@@ -1,10 +1,44 @@
 # Centurion day-one operations
 
-## Launch contract
+## Internal HTTPS contract
 
-- Safe rollback SHA: `b6dddca299a28ed06282cc0fadfab7cd169c3f9c`.
+- Canonical URL: `https://nava.legacyhotels.co.za`.
+- Hotel internal DNS resolves the canonical hostname to the Nava EC2 OpenVPN address.
+- Authorized Centurion LAN and approved staff-VPN devices may reach TCP 443.
+- Public DNS remains absent. EC2 security groups retain zero ingress. UFW allows TCP 443 only on `tun0`.
+- Staff must close the old tab, finish pending draft/send work, open the canonical bookmark, and log in again. Browser-origin state does not migrate.
+- Direct attachments use five-minute presigned S3 URLs. S3 Block Public Access remains fully enabled.
+
+## Cutover gates
+
+1. Ronny's completion email is accepted as the network configuration handoff; runtime address and LAN/VPN checks still must pass.
+2. Focused DB-free Vitest, both builds, and shell syntax pass.
+3. Certificate hostname, key match, chain, and 30-day life checks pass.
+4. Pre-cutover SHA plus env/hosts/Nginx/cert/CORS/UFW snapshots exist.
+5. `/api/public/providers` reports Google disabled. If Google is enabled, register `https://nava.legacyhotels.co.za/api/auth/callback/google` before continuing.
+6. Deploy with `DO_MIGRATE=0` while UFW 443 remains closed.
+7. Trusted on-box TLS, headers, wrong-host rejection, login, and hard reload pass.
+8. Open only `tun0` TCP 443, then require launch-readiness `READY`.
+9. Prove one Centurion LAN workstation, one VPN-only workstation, and one non-hotel negative path.
+10. Keep legacy CORS for 24 hours, then remove only that origin after a clean readback comparison.
+
+## Rollback contracts
+
+- Initial hostname-cutover rollback: delete the UFW tunnel rule first, restore the pinned pre-cutover SHA and runtime backups, and intentionally leave staff access closed. No emergency DNS change is required.
+- Future application rollback: deploy the first stable post-cutover SHA while retaining the canonical hostname, trusted certificate, CORS, and UFW perimeter.
+- Never wipe, reseed, migrate, or run Vitest against production RDS during rollback.
+
+## Certificate ownership
+
+- Hotel IT owns host-specific replacement issuance through DNS-01.
+- Nava operator owns installation, Nginx validation, and trusted browser proof.
+- Install replacement by `2026-11-28`; current certificate expiry is `2026-12-28`.
+- Launch readiness fails when fewer than 30 days remain.
+
+## Operating guardrails
+
 - Centurion sorting is assisted sorting. AI may classify queues; human operator validates priority and owns every reply/send decision.
-- Production gates: `MAIL_TRANSPORT_MODE=real`, `BETTER_AUTH_URL=https://nava.legacy.local`, `UNDO_SEND_SECONDS=30`, `AI_WRITE_GATE_ENABLED=true`, `AI_DRAFTS_ENABLED=false`.
+- Production gates: `MAIL_TRANSPORT_MODE=real`, `BETTER_AUTH_URL=https://nava.legacyhotels.co.za`, `UNDO_SEND_SECONDS=30`, `AI_WRITE_GATE_ENABLED=true`, `AI_DRAFTS_ENABLED=false`.
 - Never run Vitest with production `DATABASE_URL`. Never set `VITEST_ALLOW_PILOT_RDS=1` during day-one operations.
 - Never use Force Sync, compose, reply, draft, or send as part of health proof. Use read-only gate.
 
@@ -30,7 +64,7 @@ bash apps/server-pilot/deploy/ssm-run-command.sh \
   'cd /home/ubuntu/repos/zero && bash apps/server-pilot/deploy/playwright-real-mail-ui-gate.sh --read-only'
 ```
 
-Zero-ingress security group plus loopback hostname supports on-box proof only. Hotel workstation access needs separately approved network topology; do not improvise ingress.
+Ronny's completion email satisfies the network configuration handoff. Runtime address, Centurion LAN, staff-VPN, and non-hotel negative checks remain mandatory. Do not add EC2 security-group ingress.
 
 ## Queue sweeps
 
@@ -45,18 +79,13 @@ At each watch point:
 
 Do not send from monitoring session unless human operator intentionally enters normal mailbox workflow.
 
-## Incident and rollback
+## Incident response
 
 1. Stop customer action. Preserve evidence; do not wipe, reseed, migrate, or run tests against production RDS.
 2. Capture redacted readiness JSON and PM2 status. Never copy environment values or private mail into tickets.
-3. Exact rollback entrypoint:
-
-```bash
-GIT_BRANCH=EC2-pilot bash apps/server-pilot/deploy/ops-deploy.sh
-```
-
-4. Confirm deployed SHA equals `b6dddca299a28ed06282cc0fadfab7cd169c3f9c`.
-5. Rerun launch readiness and read-only UI gate before resuming.
+3. Apply the matching rollback contract above. For initial hostname cutover, remove the UFW `tun0` TCP 443 allow before restoring the pinned SHA and snapshots.
+4. Confirm deployed SHA and restored runtime files match the pre-cutover evidence.
+5. Keep staff access closed until launch readiness and the read-only UI gate pass again.
 
 ## Accepted residuals requiring owner action
 
