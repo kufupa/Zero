@@ -164,15 +164,25 @@ The instance default IPv4 route via the VPC gateway on the ENI (not via `tun`). 
 
 ### VPN HARD assert
 
-Fail-closed health checks for always-on OpenVPN: unit active, HOST_ROUTE intact, hotel prefix route present, and AWS STS reachable. A HARD failure aborts post-boot smoke and ops-deploy.
+Fail-closed health checks for always-on OpenVPN: unit active, expected tunnel interface and exact address/CIDR, HOST_ROUTE intact, hotel prefix route present, and AWS STS reachable. A HARD failure aborts post-boot smoke and ops-deploy. Success output uses fixed status tokens only — no routes, hosts, or ports — so SSM command history stays redacted.
 
 ### VPN SOFT assert
 
-Best-effort hotel TCP probe that warns without failing deploy when the hotel side is briefly unreachable. Can be flipped to fail-closed with an explicit probe-required flag for real-mail activation paths.
+Best-effort hotel TCP probe that warns without failing deploy when the hotel side is briefly unreachable. Can be flipped to fail-closed with an explicit probe-required flag for real-mail activation paths. Probe success likewise emits fixed tokens only.
 
 ### Post-boot smoke
 
 Systemd oneshot (`nava-post-boot-smoke.service`) that runs after PM2 (and wants always-on OpenVPN) to verify nginx, `:8788`, `:443`, PM2 `http`, and VPN HARD health before declaring reboot recovery green.
+
+### Canonical origin
+
+The single staff-facing HTTPS origin for the Centurion pilot (`https://nava.legacyhotels.co.za`). Auth `baseURL` / trusted origins, SPA `VITE_PUBLIC_APP_URL`, Nginx `server_name` + TLS paths, S3 CORS, and production browser gates must all agree on this origin. Hotel internal DNS points it at the EC2 OpenVPN address; public DNS stays absent.
+
+*Avoid: treating `nava.legacy.local` as the live staff URL after the hotel-HTTPS cutover; that name is legacy overlap only.*
+
+### Closed deploy then open
+
+Cutover sequencing where the app and Nginx TLS site are deployed and proven on-box while UFW still denies hotel TCP 443, then exactly one `tun0` TCP/443 allow is added before launch-readiness must report READY. Initial rollback removes the tunnel allow first and restores the pinned pre-cutover runtime, leaving staff access closed.
 
 ## AI mail pipeline
 
@@ -269,3 +279,4 @@ Pilot practice of removing or replacing dead/fake affordances (unavailable AI su
 - **"honesty"** had been used for both Honesty UI (hide fake chrome) and Compose-close honesty (draft leave dialog) — these are distinct.
 - **"spam"** can mean Zimbra/server folder routing, a legacy SPAM user label, or app `spam_at` folder membership — app folder truth is `spam_at` only.
 - **"never-spam"** is auto-triage only — not a ban on manual mark-spam or ingest block.
+- **"nava URL"** after the hotel-HTTPS cutover means the Canonical origin on hotel DNS/VPN — not `nava.legacy.local` (legacy CORS overlap only).
