@@ -455,7 +455,7 @@ type ExactMailAnchor = {
 
 async function selectOldestExactCandidates(
   databaseUrl: string,
-  limit = 30,
+  limit = 12,
 ): Promise<ExactMailAnchor[]> {
   const { db, conn } = createDb(databaseUrl);
   try {
@@ -628,8 +628,14 @@ async function runCanary(): Promise<void> {
     ...process.env,
     HMS_DRAFT_ENRICHMENT_MODE: 'shadow',
   });
+  // Not-found + fingerprint + up to N exact searches each need a fresh login.
+  const signal = AbortSignal.timeout(
+    Math.max(
+      hmsConfig.runDeadlineMs,
+      90_000 + anchors!.length * 90_000,
+    ),
+  );
   const runtime = await createProductionHmsRuntime(hmsConfig);
-  const signal = AbortSignal.timeout(hmsConfig.runDeadlineMs);
   try {
     await runtime.start(signal);
     const driver = createLiveGuestStayDriver({
