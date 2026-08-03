@@ -343,6 +343,13 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function isNavigationRaceError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /navigat|Execution context was destroyed|changing the content|Target closed/i.test(
+    msg,
+  );
+}
+
 /**
  * Live login is async (COMMON shell + config JSON). Fixture returns attrs
  * immediately. Poll until tenant+propertyCode extractable or budget exhausted.
@@ -357,24 +364,31 @@ export async function waitForAuthenticatedShell(
 ): Promise<void> {
   const deadline = Date.now() + Math.max(500, timeoutMs);
   while (Date.now() < deadline) {
-    const html = await page.content();
-    const title = await page.title();
-    const binding = extractPropertyBindingFromDom({
-      html,
-      title,
-      pageUrl: page.url(),
-    });
-    if (
-      binding.tenant === secret.expectedTenant &&
-      binding.propertyCode === secret.expectedPropertyCode
-    ) {
-      return;
+    try {
+      const html = await page.content();
+      const title = await page.title();
+      const binding = extractPropertyBindingFromDom({
+        html,
+        title,
+        pageUrl: page.url(),
+      });
+      if (
+        binding.tenant === secret.expectedTenant &&
+        binding.propertyCode === secret.expectedPropertyCode
+      ) {
+        return;
+      }
+      // Fixture: data-tenant present even when secret binding uses same page.
+      if (
+        extractAttr(html, 'data-tenant') &&
+        extractAttr(html, 'data-property-code')
+      ) {
+        return;
+      }
+    } catch (err) {
+      if (!isNavigationRaceError(err)) throw err;
     }
-    // Fixture: data-tenant present even when secret binding uses same page.
-    if (extractAttr(html, 'data-tenant') && extractAttr(html, 'data-property-code')) {
-      return;
-    }
-    await sleep(200);
+    await sleep(250);
   }
   throw new HmsRuntimeError('AUTH_FAILED', 'post-login shell not ready');
 }
@@ -955,28 +969,45 @@ export function createHmsRuntime(options: HmsRuntimeOptions): HmsRuntime {
     page: HmsPage,
     secret: HmsSecret,
   ): Promise<void> {
-    const binding = await page.readPropertyBinding();
-    if (binding.tenant !== secret.expectedTenant) {
-      throw new HmsRuntimeError('wrong_tenant', 'tenant ID mismatch');
+    const deadline = Date.now() + 5_000;
+    let lastNavErr: unknown;
+    while (Date.now() < deadline) {
+      try {
+        const binding = await page.readPropertyBinding();
+        if (binding.tenant !== secret.expectedTenant) {
+          throw new HmsRuntimeError('wrong_tenant', 'tenant ID mismatch');
+        }
+        if (binding.propertyCode !== secret.expectedPropertyCode) {
+          throw new HmsRuntimeError('wrong_property', 'property code mismatch');
+        }
+        if (binding.propertyName === secret.expectedPropertyName) return;
+        const html = await page.content();
+        const title = await page.title();
+        if (
+          livePropertyNameSatisfied({
+            html,
+            title,
+            expectedPropertyCode: secret.expectedPropertyCode,
+            expectedPropertyName: secret.expectedPropertyName,
+            bindingPropertyName: binding.propertyName,
+          })
+        ) {
+          return;
+        }
+        throw new HmsRuntimeError('wrong_property', 'property name mismatch');
+      } catch (err) {
+        if (err instanceof HmsRuntimeError) throw err;
+        if (!isNavigationRaceError(err)) throw err;
+        lastNavErr = err;
+        await sleep(250);
+      }
     }
-    if (binding.propertyCode !== secret.expectedPropertyCode) {
-      throw new HmsRuntimeError('wrong_property', 'property code mismatch');
-    }
-    if (binding.propertyName === secret.expectedPropertyName) return;
-    const html = await page.content();
-    const title = await page.title();
-    if (
-      livePropertyNameSatisfied({
-        html,
-        title,
-        expectedPropertyCode: secret.expectedPropertyCode,
-        expectedPropertyName: secret.expectedPropertyName,
-        bindingPropertyName: binding.propertyName,
-      })
-    ) {
-      return;
-    }
-    throw new HmsRuntimeError('wrong_property', 'property name mismatch');
+    throw new HmsRuntimeError(
+      'session_failed',
+      lastNavErr instanceof Error
+        ? lastNavErr.message.slice(0, 120)
+        : 'property verify interrupted by navigation',
+    );
   }
 
   /**
@@ -1445,6 +1476,13 @@ function wrapPlaywrightPage(page: {
     predicate: (res: { url(): string }) => boolean,
     options?: { timeout?: number },
   ): Promise<unknown>;
+  waitForURL?(
+    url: RegExp | string,
+    options?: { timeout?: number },
+  ): Promise<unknown>;
+  waitForLoadState?(
+    state?: 'load' | 'domcontentloaded' | 'networkidle',
+  ): Promise<void>;
   evaluate<T>(fn: () => T | Promise<T>): Promise<T>;
   evaluate<T, A>(fn: (arg: A) => T | Promise<T>, arg: A): Promise<T>;
 }): HmsPage {
@@ -1455,15 +1493,40 @@ function wrapPlaywrightPage(page: {
         timeout: options?.timeout,
       });
     },
-    content: () => page.content(),
+    async content() {
+      try {
+        return await page.content();
+      } catch (err) {
+        if (!isNavigationRaceError(err)) throw err;
+        await page.waitForLoadState('domcontentloaded').catch(() => undefined);
+        await new Promise((r) => setTimeout(r, 200));
+        return page.content();
+      }
+    },
     close: () => page.close(),
     setDefaultTimeout: (ms) => page.setDefaultTimeout(ms),
     setDefaultNavigationTimeout: (ms) => page.setDefaultNavigationTimeout(ms),
     url: () => page.url(),
     title: () => page.title(),
     async readPropertyBinding() {
-      const html = await page.content();
-      const title = await page.title();
+      const html = await (async () => {
+        try {
+          return await page.content();
+        } catch (err) {
+          if (!isNavigationRaceError(err)) throw err;
+          await page.waitForLoadState('domcontentloaded').catch(() => undefined);
+          await new Promise((r) => setTimeout(r, 200));
+          return page.content();
+        }
+      })();
+      let title = '';
+      try {
+        title = await page.title();
+      } catch (err) {
+        if (!isNavigationRaceError(err)) throw err;
+        await new Promise((r) => setTimeout(r, 200));
+        title = await page.title();
+      }
       return extractPropertyBindingFromDom({
         html,
         title,
@@ -1489,13 +1552,23 @@ function wrapPlaywrightPage(page: {
       }
     },
     async submitLogin() {
+      const waitCommon = () =>
+        page
+          .waitForURL(/\/web\/base\/COMMON/i, { timeout: 20_000 })
+          .catch(() => undefined);
       try {
-        await page
-          .getByRole('button', { name: 'Sign in' })
-          .click();
+        await Promise.all([
+          waitCommon(),
+          page.getByRole('button', { name: 'Sign in' }).click(),
+        ]);
       } catch {
-        await page.locator('input[name="password"]').press('Enter');
+        await Promise.all([
+          waitCommon(),
+          page.locator('input[name="password"]').press('Enter'),
+        ]);
       }
+      await page.waitForLoadState('domcontentloaded').catch(() => undefined);
+      await new Promise((r) => setTimeout(r, 500));
     },
     async postForm(url, fields) {
       const postData = new URLSearchParams(fields).toString();

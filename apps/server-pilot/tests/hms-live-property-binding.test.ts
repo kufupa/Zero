@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   extractPropertyBindingFromDom,
   livePropertyNameSatisfied,
+  waitForAuthenticatedShell,
+  type HmsPage,
 } from '../src/hms/runtime.js';
 import {
   buildLiveGuestStayChromeGetRules,
@@ -60,6 +62,37 @@ describe('extractPropertyBindingFromDom (live + fixture)', () => {
         bindingPropertyName: null,
       }),
     ).toBe(false);
+  });
+
+  it('waitForAuthenticatedShell retries navigation races then succeeds', async () => {
+    let calls = 0;
+    const page = {
+      async content() {
+        calls += 1;
+        if (calls < 3) {
+          throw new Error(
+            'page.content: Unable to retrieve content because the page is navigating and changing the content.',
+          );
+        }
+        return '<div data-tenant="HMS_LEGACY" data-property-code="HRCEN" data-property-name="Centurion Hotel"></div>';
+      },
+      async title() {
+        return 'Infor HMS - HRCEN';
+      },
+      url() {
+        return 'https://example.test/web/base/COMMON';
+      },
+    } as unknown as HmsPage;
+    await waitForAuthenticatedShell(
+      page,
+      {
+        expectedTenant: 'HMS_LEGACY',
+        expectedPropertyCode: 'HRCEN',
+        expectedPropertyName: 'Centurion Hotel',
+      },
+      5_000,
+    );
+    expect(calls).toBeGreaterThanOrEqual(3);
   });
 });
 
