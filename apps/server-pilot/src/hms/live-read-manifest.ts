@@ -307,12 +307,27 @@ export function buildLiveGuestStayChromeGetRules(origin: string): RequestRule[] 
       path: '/web/jsp/interfaceStatusAlert.jsp',
       resourceTypes: ['xhr', 'fetch', 'document'],
       fixedQuery: {},
-      variableQuery: {},
+      variableQuery: {
+        // ExtJS cache-buster.
+        _dc: { pattern: '[0-9]{0,20}', maxLength: 20 },
+      },
       fixedBody: {},
       variableBody: {},
       maxBodyBytes: 65_536,
       redirectPolicy: 'same-reviewed-chain',
     },
+    getStaticRule(
+      origin,
+      'live-toolbar-mingle-share',
+      '/web/resources/inforhms/images/toolbar/mingle-share.svg',
+      ['image', 'other'],
+    ),
+    getStaticRule(
+      origin,
+      'live-login-font-bold',
+      '/web/resources/shared/css/SourceSansPro-font/SourceSansPro-Bold.ttf',
+      ['font'],
+    ),
   ];
 }
 

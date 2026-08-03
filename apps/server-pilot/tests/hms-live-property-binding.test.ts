@@ -71,17 +71,23 @@ describe('COMMON chrome soft-capture allowlist', () => {
     '/web/resources/inforhms/images/toolbar/user.svg',
     '/web/resources/inforhms/images/toolbar/help.svg',
     '/web/resources/inforhms/images/toolbar/save.svg',
+    '/web/resources/inforhms/images/toolbar/mingle-share.svg',
     '/web/resources/shared/css/SourceSansPro-font/SourceSansPro-Black.ttf',
-    '/web/jsp/interfaceStatusAlert.jsp',
+    '/web/resources/shared/css/SourceSansPro-font/SourceSansPro-Bold.ttf',
   ])('allows GET %s', (path) => {
     const decision = evaluateObservedRequest(manifest, {
       method: 'GET',
       url: `${ORIGIN}${path}`,
-      resourceType: path.endsWith('.ttf')
-        ? 'font'
-        : path.endsWith('.jsp')
-          ? 'xhr'
-          : 'image',
+      resourceType: path.endsWith('.ttf') ? 'font' : 'image',
+    });
+    expect(decision.action).toBe('allow');
+  });
+
+  it('allows interfaceStatusAlert.jsp with ExtJS _dc cache buster', () => {
+    const decision = evaluateObservedRequest(manifest, {
+      method: 'GET',
+      url: `${ORIGIN}/web/jsp/interfaceStatusAlert.jsp?_dc=1234567890`,
+      resourceType: 'xhr',
     });
     expect(decision.action).toBe('allow');
   });
