@@ -19,7 +19,7 @@ import { useOptimisticThreadState } from '@/components/mail/optimistic-thread-st
 import { focusedIndexAtom, useMailNavigation } from '@/hooks/use-mail-navigation';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useIsFetching, type UseQueryResult } from '@tanstack/react-query';
-import type { MailListThreadRow, MailSelectMode, ParsedMessage, ThreadProps } from '@/types';
+import type { MailSelectMode, ParsedMessage, ThreadProps } from '@/types';
 import type { ParsedDraft } from '@zero/server/driver/types';
 import { ThreadContextMenu } from '@/components/context/thread-context';
 import { useOptimisticActions } from '@/hooks/use-optimistic-actions';
@@ -30,14 +30,10 @@ import { useSearchValue } from '@/hooks/use-search-value';
 import { EmptyStateIcon } from '../icons/empty-state-svg';
 import { highlightText } from '@/lib/email-utils.client';
 import { mailListPlainPreview } from '@/lib/mail/mail-list-preview';
-import {
-  buildMailListVirtualRows,
-  type QueueSlug,
-} from '@/lib/mail/build-mail-list-virtual-rows';
+import { buildMailListVirtualRows } from '@/lib/mail/build-mail-list-virtual-rows';
 import type { MailDateBucket } from '@/lib/mail/thread-date-bucket';
 import { MailListSectionHeader } from '@/components/mail/mail-list-section-header';
 import { cn, FOLDERS, formatDateWithWeekdayAndTime } from '@/lib/utils';
-import { PILOT_CAPABILITIES } from '@/lib/pilot/capabilities';
 import { useTRPC } from '@/providers/query-provider';
 import { useThreadLabels } from '@/hooks/use-labels';
 import { useSettings } from '@/hooks/use-settings';
@@ -46,12 +42,7 @@ import { VList, type VListHandle } from 'virtua';
 import { BimiAvatar } from '../ui/bimi-avatar';
 import { RenderLabels } from './render-labels';
 import { CenturionCategoryPill } from './centurion-category-pill';
-import {
-  buildCategoryIdToSlugMap,
-  getHotelFolderPresentation,
-  HOTEL_PRIMARY_CATEGORY_SLUGS,
-  resolveThreadCategoryPresentation,
-} from '@/lib/mail/hotel-folder-presentation';
+import { buildCategoryIdToSlugMap } from '@/lib/mail/hotel-folder-presentation';
 import { useCategorySettings } from '@/hooks/use-categories';
 import { Badge } from '@/components/ui/badge';
 import { useDraft } from '@/hooks/use-drafts';
@@ -1020,35 +1011,7 @@ export const MailList = memo(function MailList() {
 
     const Comp = useMemo(() => (folder === FOLDERS.DRAFT ? Draft : Thread), [folder]);
 
-    const categorySettings = useCategorySettings();
-    const idToSlug = useMemo(
-      () => buildCategoryIdToSlugMap(categorySettings),
-      [categorySettings],
-    );
-
-    const isFolderInbox = folder === FOLDERS.INBOX || !folder;
-    const groupByQueue =
-      PILOT_CAPABILITIES.hotelCategories && isFolderInbox && !isFiltering;
-    const groupByDate = !isFiltering && !groupByQueue;
-
-    const queueLabels = useMemo(() => {
-      const labels = {} as Record<QueueSlug, string>;
-      for (const slug of HOTEL_PRIMARY_CATEGORY_SLUGS) {
-        labels[slug] = getHotelFolderPresentation(slug)?.title ?? slug;
-      }
-      return labels;
-    }, []);
-
-    const resolveQueue = useCallback(
-      (message: MailListThreadRow) => {
-        const { primarySlug, isUrgent } = resolveThreadCategoryPresentation(
-          message.categoryIds ?? [],
-          idToSlug,
-        );
-        return { primarySlug, isUrgent };
-      },
-      [idToSlug],
-    );
+    const groupByDate = !isFiltering;
 
     const toggleSection = useCallback((bucket: MailDateBucket) => {
       setCollapsedSections((prev) => {
@@ -1063,30 +1026,14 @@ export const MailList = memo(function MailList() {
       () =>
         buildMailListVirtualRows(filteredItems, new Date(), collapsedSections, {
           groupByDate,
-          ...(groupByQueue
-            ? {
-                groupByQueue: true,
-                queueOrder: HOTEL_PRIMARY_CATEGORY_SLUGS,
-                queueLabels,
-                resolveQueue,
-              }
-            : {}),
         }),
-      [filteredItems, collapsedSections, groupByDate, groupByQueue, queueLabels, resolveQueue],
+      [filteredItems, collapsedSections, groupByDate],
     );
 
     const vListRenderer = useCallback(
       (index: number) => {
         const row = virtualRows[index];
         if (!row) return <></>;
-
-        if (row.type === 'queue-header') {
-          return (
-            <div key={row.key} data-mail-list-queue={row.slug}>
-              <MailListSectionHeader label={row.label} expanded onToggle={() => {}} />
-            </div>
-          );
-        }
 
         if (row.type === 'header') {
           return (
