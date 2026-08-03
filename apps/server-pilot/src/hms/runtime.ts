@@ -1494,6 +1494,14 @@ function wrapPlaywrightPage(page: {
     role: string,
     opts: { name: string },
   ): { click(): Promise<void> };
+  getByText(
+    text: string,
+    opts?: { exact?: boolean },
+  ): {
+    first(): {
+      click(options?: { force?: boolean; timeout?: number }): Promise<void>;
+    };
+  };
   waitForResponse(
     predicate: (res: { url(): string }) => boolean,
     options?: { timeout?: number },
@@ -1610,6 +1618,62 @@ function wrapPlaywrightPage(page: {
       );
     },
     async click(selector) {
+      const textMatch = /^text=(.+)$/i.exec(selector);
+      if (textMatch) {
+        const label = textMatch[1]!;
+        // ExtJS tree labels often split text across child nodes; getByText /
+        // normalize-space(text()) hit the real leaf better than text= locator.
+        try {
+          await page
+            .getByText(label, { exact: true })
+            .first()
+            .click({ force: true, timeout: 5_000 });
+          return;
+        } catch {
+          /* try xpath */
+        }
+        try {
+          await page
+            .locator(`xpath=//*[normalize-space(text())=${JSON.stringify(label)}]`)
+            .first()
+            .click({ force: true, timeout: 5_000 });
+          return;
+        } catch {
+          /* fall through to evaluate */
+        }
+        const clicked = await page.evaluate((wanted: string) => {
+          const root = (
+            globalThis as unknown as {
+              document?: {
+                createTreeWalker(
+                  root: unknown,
+                  whatToShow: number,
+                  filter?: unknown,
+                ): {
+                  nextNode(): {
+                    textContent: string | null;
+                    parentElement: { click(): void } | null;
+                  } | null;
+                };
+                body: unknown;
+              };
+            }
+          ).document;
+          if (!root?.body) return false;
+          const walker = root.createTreeWalker(root.body, 4 /* SHOW_TEXT */);
+          let node = walker.nextNode();
+          while (node) {
+            if ((node.textContent || '').trim() === wanted && node.parentElement) {
+              node.parentElement.click();
+              return true;
+            }
+            node = walker.nextNode();
+          }
+          return false;
+        }, label);
+        if (clicked) return;
+      }
+
       const loc = page.locator(selector);
       const count = await loc.count().catch(() => 0);
       for (let i = 0; i < count; i += 1) {
@@ -1619,40 +1683,6 @@ function wrapPlaywrightPage(page: {
         await el.scrollIntoViewIfNeeded().catch(() => undefined);
         await el.click({ force: true, timeout: 5_000 });
         return;
-      }
-      // Live tree labels often have 0x0 rects until expanded; still dispatch click.
-      const textMatch = /^text=(.+)$/i.exec(selector);
-      if (textMatch) {
-        const label = textMatch[1]!;
-        const clicked = await page.evaluate((wanted: string) => {
-          const root = (
-            globalThis as unknown as {
-              document?: {
-                querySelectorAll(sel: string): ArrayLike<{
-                  textContent: string | null;
-                  click(): void;
-                }>;
-              };
-            }
-          ).document;
-          if (!root) return false;
-          const nodes = Array.from(
-            root.querySelectorAll('a, span, td, div, li, label, em'),
-          );
-          const exact = nodes.filter(
-            (n) => (n.textContent || '').trim() === wanted,
-          );
-          // Prefer shortest textContent (= leaf label, not parent row).
-          exact.sort(
-            (a, b) =>
-              (a.textContent || '').length - (b.textContent || '').length,
-          );
-          const match = exact[0];
-          if (!match) return false;
-          match.click();
-          return true;
-        }, label);
-        if (clicked) return;
       }
       await page.locator(selector).first().click({ force: true, timeout: 5_000 });
     },
