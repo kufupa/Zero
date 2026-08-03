@@ -322,7 +322,7 @@ export function extractPropertyBindingFromDom(input: {
   };
 }
 
-/** Live shell may omit data-property-name; require exact code+tenant+title+banner. */
+/** Live property name may omit data attr; require exact code+tenant+title+banner. */
 export function livePropertyNameSatisfied(input: {
   html: string;
   title: string;
@@ -337,6 +337,46 @@ export function livePropertyNameSatisfied(input: {
     'i',
   ).test(input.title);
   return titleOk && input.html.includes(input.expectedPropertyName);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Live login is async (COMMON shell + config JSON). Fixture returns attrs
+ * immediately. Poll until tenant+propertyCode extractable or budget exhausted.
+ */
+export async function waitForAuthenticatedShell(
+  page: HmsPage,
+  secret: Pick<
+    HmsSecret,
+    'expectedTenant' | 'expectedPropertyCode' | 'expectedPropertyName'
+  >,
+  timeoutMs: number,
+): Promise<void> {
+  const deadline = Date.now() + Math.max(500, timeoutMs);
+  while (Date.now() < deadline) {
+    const html = await page.content();
+    const title = await page.title();
+    const binding = extractPropertyBindingFromDom({
+      html,
+      title,
+      pageUrl: page.url(),
+    });
+    if (
+      binding.tenant === secret.expectedTenant &&
+      binding.propertyCode === secret.expectedPropertyCode
+    ) {
+      return;
+    }
+    // Fixture: data-tenant present even when secret binding uses same page.
+    if (extractAttr(html, 'data-tenant') && extractAttr(html, 'data-property-code')) {
+      return;
+    }
+    await sleep(200);
+  }
+  throw new HmsRuntimeError('AUTH_FAILED', 'post-login shell not ready');
 }
 
 /**
@@ -1133,6 +1173,11 @@ export function createHmsRuntime(options: HmsRuntimeOptions): HmsRuntime {
       });
       await page.fillLogin(secret.username, secret.password);
       await page.submitLogin();
+      await waitForAuthenticatedShell(
+        page,
+        secret,
+        remainingBudgetMs(input.signal, timeoutMs),
+      );
       await verifyProperty(page, secret);
 
       if (!started && input.allowUnstarted) {
