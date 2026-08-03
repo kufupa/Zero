@@ -441,7 +441,7 @@ export function MailLayout() {
             minSize={isDesktop ? MAIL_LIST_SPLIT.min : 100}
             maxSize={isDesktop ? MAIL_LIST_SPLIT.max : 100}
             className={cn(
-              `bg-panelLight dark:bg-panelDark mb-1 w-fit shadow-sm md:mr-[3px] md:rounded-2xl lg:flex lg:h-[calc(100dvh-8px)] lg:shadow-sm`,
+              `bg-panelLight dark:bg-panelDark mb-1 min-w-0 shadow-sm md:mr-[3px] md:rounded-2xl lg:flex lg:h-[calc(100dvh-8px)] lg:shadow-sm`,
               isDesktop && threadId && 'hidden lg:block',
             )}
             // onMouseEnter={handleMailListMouseEnter}
@@ -570,7 +570,7 @@ export function MailLayout() {
             <ResizablePanel
               id="mail-thread-panel"
               order={1}
-              className="bg-panelLight dark:bg-panelDark mb-1 mr-0.5 w-fit rounded-2xl shadow-sm lg:h-[calc(100dvh-8px)]"
+              className="bg-panelLight dark:bg-panelDark mb-1 mr-0.5 min-w-0 rounded-2xl shadow-sm lg:h-[calc(100dvh-8px)]"
               defaultSize={MAIL_THREAD_SPLIT.default}
               minSize={MAIL_THREAD_SPLIT.min}
               maxSize={MAIL_THREAD_SPLIT.max}
