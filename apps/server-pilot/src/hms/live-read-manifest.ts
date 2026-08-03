@@ -730,82 +730,84 @@ export type ExactReservationCandidate =
   | { id: string; kind: 'external_reference'; value: string };
 
 const EXACT_CHROME_FIXED = {
-  // Soft-captured ExtJS Guest Stay search (HRCEN, 2026-08-03): DATA_ONLY +
-  // dataspy 1941 / grid 1775. LIST_VIEW + 1001 returns "Unable to retrieve text".
+  // Soft-captured ExtJS Guest Stay dataspy "All" (HRCEN, 2026-08-03).
   COMPONENT_INFO_TYPE: 'DATA_ONLY',
   GRID_ID: '1775',
   GRID_NAME: 'OSRESS',
   DATASPY_ID: '1941',
   SYSTEM_FUNCTION_NAME: 'OSRESS',
-  USER_FUNCTION_NAME: 'OSRESS',
+  USER_FUNCTION_NAME: 'OSRESV',
   CURRENT_TAB_NAME: 'LST',
 } as const;
 
 /**
  * Reviewed soft-capture filter scaffold with exact candidate value pinned in
  * confirmation or external-reference slots. Alias/operator drift blocks.
+ * Dataspy 1941 uses date-window + BEGINS OR-chain (not the old equals scaffold).
  */
 export function buildExactOsressSearchBody(
   candidate: ExactReservationCandidate,
 ): Record<string, string> {
   const v = candidate.value;
+  const conf = candidate.kind === 'confirmation' ? v : '';
+  const ext = candidate.kind === 'external_reference' ? v : '';
   const body: Record<string, string> = {
     ...EXACT_CHROME_FIXED,
-    MADDON_FILTER_ALIAS_NAME_1: 'lastname',
-    MADDON_FILTER_OPERATOR_1: '=',
+    MADDON_FILTER_ALIAS_NAME_1: 'departuredate',
+    MADDON_FILTER_OPERATOR_1: '>=',
     MADDON_FILTER_JOINER_1: 'AND',
     MADDON_FILTER_SEQNUM_1: '1',
-    MADDON_FILTER_VALUE_1: '',
-    MADDON_FILTER_ALIAS_NAME_2: 'firstname',
-    MADDON_FILTER_OPERATOR_2: '=',
+    MADDON_FILTER_VALUE_1: '-30',
+    MADDON_FILTER_ALIAS_NAME_2: 'arrivaldate',
+    MADDON_FILTER_OPERATOR_2: '<=',
     MADDON_FILTER_JOINER_2: 'AND',
     MADDON_FILTER_SEQNUM_2: '2',
-    MADDON_FILTER_VALUE_2: '',
+    MADDON_FILTER_VALUE_2: '+30',
     MADDON_FILTER_ALIAS_NAME_3: 'confirmationnumber',
-    MADDON_FILTER_OPERATOR_3: 'equals',
+    MADDON_FILTER_OPERATOR_3: 'BEGINS',
     MADDON_FILTER_JOINER_3: 'OR',
     MADDON_FILTER_SEQNUM_3: '3',
-    MADDON_FILTER_VALUE_3: candidate.kind === 'confirmation' ? v : '',
+    MADDON_FILTER_VALUE_3: conf,
     MADDON_LPAREN_3: 'true',
     MADDON_FILTER_ALIAS_NAME_4: 'room',
     MADDON_FILTER_OPERATOR_4: '=',
     MADDON_FILTER_JOINER_4: 'OR',
     MADDON_FILTER_SEQNUM_4: '4',
     MADDON_FILTER_VALUE_4: '',
-    MADDON_FILTER_ALIAS_NAME_5: 'externalconfirm',
-    MADDON_FILTER_OPERATOR_5: 'equals',
+    MADDON_FILTER_ALIAS_NAME_5: 'lastname_filter',
+    MADDON_FILTER_OPERATOR_5: 'BEGINS',
     MADDON_FILTER_JOINER_5: 'OR',
     MADDON_FILTER_SEQNUM_5: '5',
-    MADDON_FILTER_VALUE_5: candidate.kind === 'external_reference' ? v : '',
-    MADDON_LPAREN_5: 'true',
-    MADDON_FILTER_ALIAS_NAME_6: 'guestNumber',
-    MADDON_FILTER_OPERATOR_6: 'equals',
+    MADDON_FILTER_VALUE_5: '',
+    MADDON_LPAREN_5: 'false',
+    MADDON_FILTER_ALIAS_NAME_6: 'secondlastname',
+    MADDON_FILTER_OPERATOR_6: 'BEGINS',
     MADDON_FILTER_JOINER_6: 'OR',
     MADDON_FILTER_SEQNUM_6: '6',
     MADDON_FILTER_VALUE_6: '',
-    MADDON_RPAREN_6: 'true',
-    MADDON_FILTER_ALIAS_NAME_7: 'reservationstayid',
-    MADDON_FILTER_OPERATOR_7: 'equals',
+    MADDON_RPAREN_6: 'false',
+    MADDON_FILTER_ALIAS_NAME_7: 'alternatelastname',
+    MADDON_FILTER_OPERATOR_7: 'BEGINS',
     MADDON_FILTER_JOINER_7: 'OR',
     MADDON_FILTER_SEQNUM_7: '7',
     MADDON_FILTER_VALUE_7: '',
-    MADDON_FILTER_ALIAS_NAME_8: 'accountnumber',
-    MADDON_FILTER_OPERATOR_8: 'equals',
+    MADDON_FILTER_ALIAS_NAME_8: 'aliaslastname',
+    MADDON_FILTER_OPERATOR_8: 'BEGINS',
     MADDON_FILTER_JOINER_8: 'OR',
     MADDON_FILTER_SEQNUM_8: '8',
     MADDON_FILTER_VALUE_8: '',
-    MADDON_FILTER_ALIAS_NAME_9: 'bookingdotcom',
-    MADDON_FILTER_OPERATOR_9: 'equals',
+    MADDON_FILTER_ALIAS_NAME_9: 'loyaltynumber',
+    MADDON_FILTER_OPERATOR_9: 'BEGINS',
     MADDON_FILTER_JOINER_9: 'OR',
     MADDON_FILTER_SEQNUM_9: '9',
     MADDON_FILTER_VALUE_9: '',
     MADDON_FILTER_ALIAS_NAME_10: 'externalconfirmation',
-    MADDON_FILTER_OPERATOR_10: 'equals',
+    MADDON_FILTER_OPERATOR_10: 'BEGINS',
     MADDON_FILTER_JOINER_10: 'OR',
     MADDON_FILTER_SEQNUM_10: '10',
-    MADDON_FILTER_VALUE_10: candidate.kind === 'external_reference' ? v : '',
+    MADDON_FILTER_VALUE_10: ext,
     MADDON_RPAREN_10: 'true',
-    externalconfirmation: candidate.kind === 'external_reference' ? v : '',
+    externalconfirmation: ext,
   };
   return body;
 }
