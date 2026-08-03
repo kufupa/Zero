@@ -280,6 +280,37 @@ describe('exact OSRESS.search candidate binding', () => {
     }
   });
 
+  it('binds confirmation to confirmation slot only; unused OR slots are non-empty fillers', async () => {
+    const { buildExactOsressSearchBody, OSRESS_OR_UNUSED_TOKEN } = await import(
+      '../src/hms/live-read-manifest.js'
+    );
+    const body = buildExactOsressSearchBody({
+      id: 'c1',
+      kind: 'confirmation',
+      value: 'EXACT-CONF-99',
+    });
+    expect(body.MADDON_FILTER_VALUE_3).toBe('EXACT-CONF-99');
+    expect(body.MADDON_FILTER_VALUE_4).toBe(OSRESS_OR_UNUSED_TOKEN);
+    expect(body.MADDON_FILTER_VALUE_10).toBe(OSRESS_OR_UNUSED_TOKEN);
+    expect(body.externalconfirmation).toBe(OSRESS_OR_UNUSED_TOKEN);
+    expect(body.MADDON_FILTER_VALUE_1).toBe('-365');
+    expect(body.MADDON_FILTER_VALUE_2).toBe('+365');
+  });
+
+  it('external_reference fills external slots; confirmation OR unused', async () => {
+    const { buildExactOsressSearchBody, OSRESS_OR_UNUSED_TOKEN } = await import(
+      '../src/hms/live-read-manifest.js'
+    );
+    const body = buildExactOsressSearchBody({
+      id: 'e1',
+      kind: 'external_reference',
+      value: 'EXT-REF-42',
+    });
+    expect(body.externalconfirmation).toBe('EXT-REF-42');
+    expect(body.MADDON_FILTER_VALUE_10).toBe('EXT-REF-42');
+    expect(body.MADDON_FILTER_VALUE_3).toBe(OSRESS_OR_UNUSED_TOKEN);
+  });
+
   it('binds external_reference candidate to externalconfirmation fixed value', async () => {
     const { buildExactOsressSearchManifest, buildExactOsressSearchBody } =
       await import('../src/hms/live-read-manifest.js');

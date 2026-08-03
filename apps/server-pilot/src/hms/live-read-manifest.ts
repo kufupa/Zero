@@ -741,73 +741,91 @@ const EXACT_CHROME_FIXED = {
 } as const;
 
 /**
+ * Non-empty filler for unused OR slots. Empty BEGINS/= slots are wildcards and
+ * return the full date-window grid; canary fills every slot with the same token.
+ */
+export const OSRESS_OR_UNUSED_TOKEN = '___NOMATCH___';
+
+/**
  * Reviewed soft-capture filter scaffold with exact candidate value pinned in
  * confirmation or external-reference slots. Alias/operator drift blocks.
  * Dataspy 1941 uses date-window + BEGINS OR-chain (not the old equals scaffold).
+ *
+ * Not-found canary: all OR slots = candidate (matches live quick-search fill).
+ * Real confirmation: only confirmation slot = value; other OR slots = unused.
+ * Real external_reference: only externalconfirmation slots = value.
  */
 export function buildExactOsressSearchBody(
   candidate: ExactReservationCandidate,
 ): Record<string, string> {
   const v = candidate.value;
-  // Live quick-search fills every OR slot with the same token; empty BEGINS/=
-  // slots act as wildcards and return the full date-window grid.
+  const isCanary = v === LIVE_NOTFOUND_CANARY;
+  const unused = OSRESS_OR_UNUSED_TOKEN;
+  const confVal = isCanary || candidate.kind === 'confirmation' ? v : unused;
+  const extVal =
+    isCanary || candidate.kind === 'external_reference' ? v : unused;
+  const otherOr = isCanary ? v : unused;
+  // Canary stays tight (±30). Real lookups widen so future-dated stays resolve.
+  const departWindow = isCanary ? '-30' : '-365';
+  const arriveWindow = isCanary ? '+30' : '+365';
+
   const body: Record<string, string> = {
     ...EXACT_CHROME_FIXED,
     MADDON_FILTER_ALIAS_NAME_1: 'departuredate',
     MADDON_FILTER_OPERATOR_1: '>=',
     MADDON_FILTER_JOINER_1: 'AND',
     MADDON_FILTER_SEQNUM_1: '1',
-    MADDON_FILTER_VALUE_1: '-30',
+    MADDON_FILTER_VALUE_1: departWindow,
     MADDON_FILTER_ALIAS_NAME_2: 'arrivaldate',
     MADDON_FILTER_OPERATOR_2: '<=',
     MADDON_FILTER_JOINER_2: 'AND',
     MADDON_FILTER_SEQNUM_2: '2',
-    MADDON_FILTER_VALUE_2: '+30',
+    MADDON_FILTER_VALUE_2: arriveWindow,
     MADDON_FILTER_ALIAS_NAME_3: 'confirmationnumber',
     MADDON_FILTER_OPERATOR_3: 'BEGINS',
     MADDON_FILTER_JOINER_3: 'OR',
     MADDON_FILTER_SEQNUM_3: '3',
-    MADDON_FILTER_VALUE_3: v,
+    MADDON_FILTER_VALUE_3: confVal,
     MADDON_LPAREN_3: 'true',
     MADDON_FILTER_ALIAS_NAME_4: 'room',
     MADDON_FILTER_OPERATOR_4: '=',
     MADDON_FILTER_JOINER_4: 'OR',
     MADDON_FILTER_SEQNUM_4: '4',
-    MADDON_FILTER_VALUE_4: v,
+    MADDON_FILTER_VALUE_4: otherOr,
     MADDON_FILTER_ALIAS_NAME_5: 'lastname_filter',
     MADDON_FILTER_OPERATOR_5: 'BEGINS',
     MADDON_FILTER_JOINER_5: 'OR',
     MADDON_FILTER_SEQNUM_5: '5',
-    MADDON_FILTER_VALUE_5: v,
+    MADDON_FILTER_VALUE_5: otherOr,
     MADDON_LPAREN_5: 'false',
     MADDON_FILTER_ALIAS_NAME_6: 'secondlastname',
     MADDON_FILTER_OPERATOR_6: 'BEGINS',
     MADDON_FILTER_JOINER_6: 'OR',
     MADDON_FILTER_SEQNUM_6: '6',
-    MADDON_FILTER_VALUE_6: v,
+    MADDON_FILTER_VALUE_6: otherOr,
     MADDON_RPAREN_6: 'false',
     MADDON_FILTER_ALIAS_NAME_7: 'alternatelastname',
     MADDON_FILTER_OPERATOR_7: 'BEGINS',
     MADDON_FILTER_JOINER_7: 'OR',
     MADDON_FILTER_SEQNUM_7: '7',
-    MADDON_FILTER_VALUE_7: v,
+    MADDON_FILTER_VALUE_7: otherOr,
     MADDON_FILTER_ALIAS_NAME_8: 'aliaslastname',
     MADDON_FILTER_OPERATOR_8: 'BEGINS',
     MADDON_FILTER_JOINER_8: 'OR',
     MADDON_FILTER_SEQNUM_8: '8',
-    MADDON_FILTER_VALUE_8: v,
+    MADDON_FILTER_VALUE_8: otherOr,
     MADDON_FILTER_ALIAS_NAME_9: 'loyaltynumber',
     MADDON_FILTER_OPERATOR_9: 'BEGINS',
     MADDON_FILTER_JOINER_9: 'OR',
     MADDON_FILTER_SEQNUM_9: '9',
-    MADDON_FILTER_VALUE_9: v,
+    MADDON_FILTER_VALUE_9: otherOr,
     MADDON_FILTER_ALIAS_NAME_10: 'externalconfirmation',
     MADDON_FILTER_OPERATOR_10: 'BEGINS',
     MADDON_FILTER_JOINER_10: 'OR',
     MADDON_FILTER_SEQNUM_10: '10',
-    MADDON_FILTER_VALUE_10: v,
+    MADDON_FILTER_VALUE_10: extVal,
     MADDON_RPAREN_10: 'true',
-    externalconfirmation: v,
+    externalconfirmation: extVal,
   };
   return body;
 }

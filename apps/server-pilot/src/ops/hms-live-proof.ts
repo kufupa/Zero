@@ -453,9 +453,10 @@ type ExactMailAnchor = {
   transportId: string;
 };
 
-async function selectOldestExactCandidate(
+async function selectOldestExactCandidates(
   databaseUrl: string,
-): Promise<ExactMailAnchor | null> {
+  limit = 30,
+): Promise<ExactMailAnchor[]> {
   const { db, conn } = createDb(databaseUrl);
   try {
     const rows = await db
@@ -477,6 +478,8 @@ async function selectOldestExactCandidate(
       )
       .orderBy(asc(message.receivedAt), asc(message.id));
 
+    const out: ExactMailAnchor[] = [];
+    const seen = new Set<string>();
     for (const row of rows) {
       const text = [
         row.subject ?? '',
@@ -486,19 +489,32 @@ async function selectOldestExactCandidate(
         }),
       ].join('\n');
       const exact = filterExactReservationCandidates(extractLookupCandidates(text));
-      if (exact.length === 1) {
-        return {
-          candidate: exact[0]!,
-          messageId: row.id,
-          threadId: row.threadId,
-          transportId: row.transportId,
-        };
-      }
+      if (exact.length !== 1) continue;
+      const candidate = exact[0]!;
+      // Skip obvious short false positives (live HRCEN confirmations are longer).
+      if (candidate.value.length < 6) continue;
+      const key = `${candidate.kind}:${candidate.value.toUpperCase()}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({
+        candidate,
+        messageId: row.id,
+        threadId: row.threadId,
+        transportId: row.transportId,
+      });
+      if (out.length >= limit) break;
     }
-    return null;
+    return out;
   } finally {
     await conn.end().catch(() => undefined);
   }
+}
+
+async function selectOldestExactCandidate(
+  databaseUrl: string,
+): Promise<ExactMailAnchor | null> {
+  const list = await selectOldestExactCandidates(databaseUrl, 1);
+  return list[0] ?? null;
 }
 
 async function snapshotForbiddenRows(transportId: string): Promise<{
@@ -605,8 +621,8 @@ async function runCanary(): Promise<void> {
   const nonterminal = await countNonterminalHmsLane();
   if (nonterminal > 0) emitFail('RUN_ISOLATION_BLOCKED');
 
-  const anchor = await selectOldestExactCandidate(env.DATABASE_URL);
-  if (!anchor) emitWait('NO_EXACT_CANDIDATE');
+  const anchors = await selectOldestExactCandidates(env.DATABASE_URL);
+  if (anchors.length === 0) emitWait('NO_EXACT_CANDIDATE');
 
   const hmsConfig = requireHmsWorkerRuntimeConfig({
     ...process.env,
@@ -631,8 +647,17 @@ async function runCanary(): Promise<void> {
       `HMS_LIVE_ROW_FINGERPRINT_OK schemaVersion=${fingerprint.schemaVersion} sha=${fingerprint.manifestSha256.slice(0, 12)}\n`,
     );
 
-    const search = await driver.searchExact(anchor!.candidate, signal);
-    if (search.outcome !== 'matched') emitFail('SCHEMA_DRIFT');
+    let matched = false;
+    for (const anchor of anchors!) {
+      const search = await driver.searchExact(anchor.candidate, signal);
+      if (search.outcome === 'matched') {
+        matched = true;
+        break;
+      }
+      if (search.outcome === 'ambiguous') emitFail('SCHEMA_DRIFT');
+      // not_found → try next oldest eligible exact candidate
+    }
+    if (!matched) emitWait('NO_EXACT_CANDIDATE');
     emitOk('HMS_LIVE_ROW_OK');
   } catch (err) {
     emitFail(mapRuntimeFail(err));
