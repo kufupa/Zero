@@ -1476,11 +1476,11 @@ function wrapPlaywrightPage(page: {
     predicate: (res: { url(): string }) => boolean,
     options?: { timeout?: number },
   ): Promise<unknown>;
-  waitForURL?(
+  waitForURL(
     url: RegExp | string,
     options?: { timeout?: number },
   ): Promise<unknown>;
-  waitForLoadState?(
+  waitForLoadState(
     state?: 'load' | 'domcontentloaded' | 'networkidle',
   ): Promise<void>;
   evaluate<T>(fn: () => T | Promise<T>): Promise<T>;
