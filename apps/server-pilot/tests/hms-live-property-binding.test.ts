@@ -94,6 +94,38 @@ describe('extractPropertyBindingFromDom (live + fixture)', () => {
     );
     expect(calls).toBeGreaterThanOrEqual(3);
   });
+
+  it('waitForAuthenticatedShell waits for live banner name after tenantid', async () => {
+    let calls = 0;
+    const page = {
+      async content() {
+        calls += 1;
+        if (calls < 3) {
+          return '{"tenantid":"HMS_LEGACY","property":"HRCEN"}';
+        }
+        return (
+          '{"tenantid":"HMS_LEGACY","property":"HRCEN"}' +
+          '<b>Legacy - The Centurion Hotel&nbsp;</b>'
+        );
+      },
+      async title() {
+        return 'Infor HMS - HRCEN';
+      },
+      url() {
+        return 'https://example.test/web/base/COMMON';
+      },
+    } as unknown as HmsPage;
+    await waitForAuthenticatedShell(
+      page,
+      {
+        expectedTenant: 'HMS_LEGACY',
+        expectedPropertyCode: 'HRCEN',
+        expectedPropertyName: 'Centurion Hotel',
+      },
+      5_000,
+    );
+    expect(calls).toBeGreaterThanOrEqual(3);
+  });
 });
 
 describe('COMMON chrome soft-capture allowlist', () => {

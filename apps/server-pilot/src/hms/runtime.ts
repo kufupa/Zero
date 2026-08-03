@@ -374,14 +374,22 @@ export async function waitForAuthenticatedShell(
       });
       if (
         binding.tenant === secret.expectedTenant &&
-        binding.propertyCode === secret.expectedPropertyCode
+        binding.propertyCode === secret.expectedPropertyCode &&
+        livePropertyNameSatisfied({
+          html,
+          title,
+          expectedPropertyCode: secret.expectedPropertyCode,
+          expectedPropertyName: secret.expectedPropertyName,
+          bindingPropertyName: binding.propertyName,
+        })
       ) {
         return;
       }
-      // Fixture: data-tenant present even when secret binding uses same page.
+      // Fixture: data-* attrs present (name included).
       if (
         extractAttr(html, 'data-tenant') &&
-        extractAttr(html, 'data-property-code')
+        extractAttr(html, 'data-property-code') &&
+        extractAttr(html, 'data-property-name')
       ) {
         return;
       }
