@@ -217,31 +217,100 @@ export function parseAndCorrelateGuestStayHtml(
   };
 }
 
+async function clickExactMenuLabel(
+  page: HmsPage,
+  label: 'Front Desk' | 'Guest Stay',
+): Promise<boolean> {
+  try {
+    if (label === 'Front Desk') {
+      return await page.evaluateStableDom(() => {
+        const nodes = Array.from(
+          document.querySelectorAll('td, span, div, a, label, li, em'),
+        );
+        for (const el of nodes) {
+          const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+          if (!/^Front Desk$/i.test(text)) continue;
+          (el as HTMLElement).click();
+          return true;
+        }
+        return false;
+      });
+    }
+    return await page.evaluateStableDom(() => {
+      const nodes = Array.from(
+        document.querySelectorAll('td, span, div, a, label, li, em'),
+      );
+      for (const el of nodes) {
+        const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+        if (!/^Guest Stay$/i.test(text)) continue;
+        (el as HTMLElement).click();
+        return true;
+      }
+      return false;
+    });
+  } catch {
+    await page.click(`text=${label}`).catch(() => undefined);
+    return false;
+  }
+}
+
+async function openGuestStayViaOsresvPost(
+  page: HmsPage,
+  origin: string,
+): Promise<void> {
+  // Live ExtJS opens Guest Stay as POST /web/base/OSRESV?FUNCTION_CLASS=&USER_FUNCTION_NAME=
+  await page.postForm(
+    `${origin}/web/base/OSRESV?FUNCTION_CLASS=SCREEN&USER_FUNCTION_NAME=OSRESV`,
+    {
+      SYSTEM_FUNCTION_NAME: 'OSRESV',
+      USER_FUNCTION_NAME: 'OSRESV',
+      CURRENT_TAB_NAME: 'HDR',
+      MENU_MODULE_KEY: '1',
+      FUNCTION_CLASS: 'SCREEN',
+      removescreenflows: 'false',
+    },
+  );
+}
+
 async function navigateGuestStay(page: HmsPage, origin: string): Promise<void> {
   // Fixture live-infor: direct OSRESV shell already has search field.
   try {
     await page.goto(`${origin}/web/base/OSRESV`, { timeout: 15_000 });
   } catch {
-    /* live menu path */
+    /* live menu / POST path */
   }
   let html = await page.content().catch(() => '');
   if (/name="search"|ff_confirmationnumber|data-testid="results"/i.test(html)) {
     return;
   }
 
-  // Live COMMON: Front Desk → Guest Stay triggers ExtJS POST OSRESV (+ HDR/LST).
-  // Bare GET /web/base/OSRESV does not establish the list component — OSRESS.search
-  // then returns { success:false, msg:"Unable to retrieve text" }.
-  await page.click('text=Front Desk').catch(() => undefined);
-  await new Promise((r) => setTimeout(r, 750));
-  await page.click('text=Guest Stay').catch(() => undefined);
+  // Live COMMON: expand Front Desk → Guest Stay (DOM click; locator often times out).
+  const front = await clickExactMenuLabel(page, 'Front Desk');
+  if (front) {
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  const guest = await clickExactMenuLabel(page, 'Guest Stay');
+  if (guest) {
+    await new Promise((r) => setTimeout(r, 2500));
+  }
 
-  const deadline = Date.now() + 20_000;
+  html = await page.content().catch(() => '');
+  if (/name="search"|ff_confirmationnumber/i.test(html)) {
+    return;
+  }
+
+  // Fallback: reviewed OSRESV open POST (query + body). Bare GET is insufficient.
+  try {
+    await openGuestStayViaOsresvPost(page, origin);
+  } catch {
+    /* continue wait loop */
+  }
+
+  const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
     html = await page.content().catch(() => '');
-    if (/name="search"|ff_confirmationnumber|Guest Stay/i.test(html)) {
-      // Prefer waiting until quick-search input exists when Guest Stay copy present.
-      if (/name="search"|ff_confirmationnumber/i.test(html)) return;
+    if (/name="search"|ff_confirmationnumber/i.test(html)) {
+      return;
     }
     await new Promise((r) => setTimeout(r, 300));
   }
