@@ -24,12 +24,12 @@ export async function clientLoader() {
   const fallbackProvider = [
     {
       id: 'zero',
-      name: 'Continue to Demo',
+      name: 'Email / Password',
       enabled: true,
       required: false,
       envVarStatus: [],
       isCustom: true,
-      customRedirectPath: '/mail/inbox',
+      customRedirectPath: '/zero/login',
     },
   ];
 

@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { signIn } from '@/lib/auth-client';
 import { useForm } from 'react-hook-form';
-import { Link, useNavigate } from 'react-router';
+import { useNavigate } from 'react-router';
 import { toast } from 'sonner';
 import { z } from 'zod';
 
@@ -71,15 +71,7 @@ export default function LoginZero() {
               name="password"
               render={({ field }) => (
                 <FormItem>
-                  <div className="flex items-center justify-between">
-                    <FormLabel className="text-muted-foreground">Password</FormLabel>
-                    <Link
-                      to="/forgot-password"
-                      className="text-muted-foreground text-xs hover:text-white"
-                    >
-                      Forgot your password?
-                    </Link>
-                  </div>
+                  <FormLabel className="text-muted-foreground">Password</FormLabel>
                   <FormControl>
                     <Input
                       type="password"
@@ -95,15 +87,6 @@ export default function LoginZero() {
             <Button type="submit" className="w-full">
               Login
             </Button>
-
-            <div className="mt-6 text-center text-sm">
-              <p className="text-muted-foreground">
-                Don't have an account?{' '}
-                <a href="/zero/signup" className="text-white underline hover:text-white/80">
-                  Sign up
-                </a>
-              </p>
-            </div>
           </form>
         </Form>
       </div>

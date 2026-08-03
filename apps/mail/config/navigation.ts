@@ -10,12 +10,10 @@ import {
   Tabs,
   ArrowLeft,
   Danger,
-  Sheet,
   Plane2,
   LockIcon,
   Clock,
 } from '@/components/icons/icons';
-import { MessageSquareIcon } from 'lucide-react';
 import { ShieldCheck } from 'lucide-react';
 import { m } from '@/paraglide/messages';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
@@ -261,23 +259,11 @@ export const navigationConfig: Record<string, NavConfig> = {
             icon: Stars,
           },
           {
-            title: m['navigation.settings.labels'](),
-            url: '/settings/labels',
-            icon: Sheet,
-            disabled: true,
-          },
-          {
             title: m['navigation.settings.categories'](),
             url: '/settings/categories',
             icon: Tabs,
             disabled: true,
             hidden: true,
-          },
-          {
-            title: m['navigation.settings.signatures'](),
-            url: '/settings/signatures',
-            icon: MessageSquareIcon,
-            disabled: true,
           },
           {
             title: m['navigation.settings.shortcuts'](),

@@ -124,21 +124,6 @@ export default function DeveloperPage() {
               </Card>
             ))}
           </div>
-
-          <div className="bg-card mt-8 rounded-lg border p-4 sm:mt-12 sm:p-6">
-            <div className="flex flex-col items-center gap-4 text-center sm:flex-row sm:text-left">
-              <div className="flex-1 space-y-1">
-                <h3 className="text-lg font-semibold sm:text-xl">Need Help?</h3>
-                <p className="text-muted-foreground text-sm">
-                  Can&apos;t find what you&apos;re looking for? Get in touch with our developer
-                  support team.
-                </p>
-              </div>
-              <Button asChild variant="default" className="w-full sm:w-auto">
-                <a href="/support">Contact Support</a>
-              </Button>
-            </div>
-          </div>
         </div>
       </div>
     </div>
