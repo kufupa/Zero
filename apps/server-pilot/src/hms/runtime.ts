@@ -1621,34 +1621,14 @@ function wrapPlaywrightPage(page: {
       const textMatch = /^text=(.+)$/i.exec(selector);
       if (textMatch) {
         const label = textMatch[1]!;
-        // ExtJS tree labels often split text across child nodes; getByText /
-        // normalize-space(text()) hit the real leaf better than text= locator.
-        try {
-          await page
-            .getByText(label, { exact: true })
-            .first()
-            .click({ force: true, timeout: 5_000 });
-          return;
-        } catch {
-          /* try xpath */
-        }
-        try {
-          await page
-            .locator(`xpath=//*[normalize-space(text())=${JSON.stringify(label)}]`)
-            .first()
-            .click({ force: true, timeout: 5_000 });
-          return;
-        } catch {
-          /* fall through to evaluate */
-        }
-        const clicked = await page.evaluate((wanted: string) => {
+        // ExtJS x-tree-node-text is often off-viewport; text-walker click first.
+        const walked = await page.evaluate((wanted: string) => {
           const root = (
             globalThis as unknown as {
               document?: {
                 createTreeWalker(
                   root: unknown,
                   whatToShow: number,
-                  filter?: unknown,
                 ): {
                   nextNode(): {
                     textContent: string | null;
@@ -1663,7 +1643,10 @@ function wrapPlaywrightPage(page: {
           const walker = root.createTreeWalker(root.body, 4 /* SHOW_TEXT */);
           let node = walker.nextNode();
           while (node) {
-            if ((node.textContent || '').trim() === wanted && node.parentElement) {
+            if (
+              (node.textContent || '').trim() === wanted &&
+              node.parentElement
+            ) {
               node.parentElement.click();
               return true;
             }
@@ -1671,7 +1654,27 @@ function wrapPlaywrightPage(page: {
           }
           return false;
         }, label);
-        if (clicked) return;
+        if (walked) return;
+        try {
+          await page
+            .getByText(label, { exact: true })
+            .first()
+            .click({ force: true, timeout: 5_000 });
+          return;
+        } catch {
+          /* try xpath */
+        }
+        try {
+          await page
+            .locator(
+              `xpath=//*[normalize-space(text())=${JSON.stringify(label)}]`,
+            )
+            .first()
+            .click({ force: true, timeout: 5_000 });
+          return;
+        } catch {
+          /* fall through */
+        }
       }
 
       const loc = page.locator(selector);
