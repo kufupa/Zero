@@ -286,7 +286,6 @@ async function navigateGuestStay(page: HmsPage, origin: string): Promise<void> {
     }
 
     if (menuReady) {
-      const urlBefore = page.url();
       await clickMenuLabel(page, 'Front Desk');
       await new Promise((r) => setTimeout(r, 1000));
       const gsDeadline = Date.now() + 8_000;
@@ -297,16 +296,18 @@ async function navigateGuestStay(page: HmsPage, origin: string): Promise<void> {
         await new Promise((r) => setTimeout(r, 300));
       }
       await clickMenuLabel(page, 'Guest Stay');
-      html = await page.content().catch(() => '');
-      if (hasGuestStaySearch(html)) return;
-      if (page.url() !== urlBefore || /OSRESV/i.test(page.url())) {
-        const deadline = Date.now() + 12_000;
-        while (Date.now() < deadline) {
-          html = await page.content().catch(() => '');
-          if (hasGuestStaySearch(html)) return;
-          await new Promise((r) => setTimeout(r, 300));
-        }
+      // Live Guest Stay is an ExtJS SPA: URL often stays /web/base/COMMON while
+      // the grid paints. Always wait for search fields — do not gate on URL
+      // change (that skipped the wait and fell through to OSRESV POST, which
+      // tears the shell and navigates to /web/base/loadlogin).
+      const paintDeadline = Date.now() + 15_000;
+      while (Date.now() < paintDeadline) {
+        html = await page.content().catch(() => '');
+        if (hasGuestStaySearch(html)) return;
+        await new Promise((r) => setTimeout(r, 300));
       }
+      // Menu path taken: never OSRESV POST fallback on live (session death).
+      return;
     }
   }
 
@@ -322,28 +323,30 @@ async function navigateGuestStay(page: HmsPage, origin: string): Promise<void> {
     if (hasGuestStaySearch(html)) return;
   }
 
-  // Fallback: reviewed OSRESV open POST (query + body). Must not setContent.
-  try {
-    await page.postForm(
-      `${origin}/web/base/OSRESV?FUNCTION_CLASS=SCREEN&USER_FUNCTION_NAME=OSRESV`,
-      {
-        SYSTEM_FUNCTION_NAME: 'OSRESV',
-        USER_FUNCTION_NAME: 'OSRESV',
-        CURRENT_TAB_NAME: 'HDR',
-        MENU_MODULE_KEY: '1',
-        FUNCTION_CLASS: 'SCREEN',
-        removescreenflows: 'false',
-      },
-    );
-  } catch {
-    /* continue wait loop */
-  }
+  // Fixture-only fallback: reviewed OSRESV open POST. Live menu path returns above.
+  if (fixtureShell) {
+    try {
+      await page.postForm(
+        `${origin}/web/base/OSRESV?FUNCTION_CLASS=SCREEN&USER_FUNCTION_NAME=OSRESV`,
+        {
+          SYSTEM_FUNCTION_NAME: 'OSRESV',
+          USER_FUNCTION_NAME: 'OSRESV',
+          CURRENT_TAB_NAME: 'HDR',
+          MENU_MODULE_KEY: '1',
+          FUNCTION_CLASS: 'SCREEN',
+          removescreenflows: 'false',
+        },
+      );
+    } catch {
+      /* continue wait loop */
+    }
 
-  const deadline = Date.now() + 15_000;
-  while (Date.now() < deadline) {
-    html = await page.content().catch(() => '');
-    if (hasGuestStaySearch(html)) return;
-    await new Promise((r) => setTimeout(r, 300));
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+      html = await page.content().catch(() => '');
+      if (hasGuestStaySearch(html)) return;
+      await new Promise((r) => setTimeout(r, 300));
+    }
   }
 }
 
