@@ -107,7 +107,7 @@ class FakePage implements HmsPage {
   async fillLogin(): Promise<void> {}
   async submitLogin(): Promise<void> {}
 
-  async postForm(url: string, fields: Record<string, string>): Promise<void> {
+  async postForm(url: string, fields: Record<string, string>): Promise<string> {
     const path = new URL(url).pathname;
     this.posts.push({ path, fields });
     this.navigations.push(path);
@@ -116,6 +116,7 @@ class FakePage implements HmsPage {
         ? this.#scenario.searchHtml(fields)
         : this.#scenario.searchHtml;
     this.#html = `${headerHtml(this.#scenario.property)}${html}`;
+    return this.#html;
   }
 
   async click(): Promise<void> {}

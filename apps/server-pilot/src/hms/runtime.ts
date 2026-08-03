@@ -81,8 +81,12 @@ export type HmsPage = {
   }>;
   fillLogin(username: string, password: string): Promise<void>;
   submitLogin(): Promise<void>;
-  /** POST url-encoded form through context route policy (canary / adapters). */
-  postForm(url: string, fields: Record<string, string>): Promise<void>;
+  /**
+   * POST url-encoded form through context route policy (canary / adapters).
+   * Returns response body text. Live Playwright must not replace the SPA via
+   * setContent — that destroys ExtJS and can trigger login form navigations.
+   */
+  postForm(url: string, fields: Record<string, string>): Promise<string>;
   click(selector: string): Promise<void>;
   /** Constrained fill — selector must be a reviewed static string. */
   fill(selector: string, value: string): Promise<void>;
@@ -554,10 +558,11 @@ export function createFetchBrowserFactory(
         const loc = res.headers.get('location');
         if (loc) {
           await this.goto(new URL(loc, url).toString());
-        } else {
-          this.#html = await res.text();
-          this.#url = url;
+          return this.#html;
         }
+        this.#html = await res.text();
+        this.#url = url;
+        return this.#html;
       }
 
       async click(selector: string) {
@@ -1580,7 +1585,9 @@ function wrapPlaywrightPage(page: {
     },
     async postForm(url, fields) {
       const postData = new URLSearchParams(fields).toString();
-      const html = await page.evaluate(
+      // Never page.setContent — live HMS is an ExtJS SPA; replacing the document
+      // tears down COMMON and has been observed to fire POST /web/base/logindisp.
+      return page.evaluate(
         async ({ url, postData }) => {
           const res = await fetch(url, {
             method: 'POST',
@@ -1592,9 +1599,6 @@ function wrapPlaywrightPage(page: {
         },
         { url, postData },
       );
-      if (page.setContent) {
-        await page.setContent(html);
-      }
     },
     async click(selector) {
       await page.locator(selector).click({ force: true });

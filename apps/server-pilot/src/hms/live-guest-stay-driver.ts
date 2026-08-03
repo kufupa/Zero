@@ -217,31 +217,54 @@ export function parseAndCorrelateGuestStayHtml(
   };
 }
 
+function hasGuestStaySearch(html: string): boolean {
+  return /name="search"|ff_confirmationnumber|data-testid="results"/i.test(
+    html,
+  );
+}
+
+async function clickMenuLabel(page: HmsPage, label: string): Promise<boolean> {
+  try {
+    await page.click(`text=${label}`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function navigateGuestStay(page: HmsPage, origin: string): Promise<void> {
+  let html = await page.content().catch(() => '');
+  if (hasGuestStaySearch(html)) return;
+
   // Fixture live-infor: direct OSRESV shell already has search field.
   try {
-    await page.goto(`${origin}/web/base/OSRESV`, { timeout: 15_000 });
+    await page.goto(`${origin}/web/base/OSRESV`, { timeout: 8_000 });
   } catch {
     /* live menu / POST path */
   }
-  let html = await page.content().catch(() => '');
-  if (/name="search"|ff_confirmationnumber|data-testid="results"/i.test(html)) {
-    return;
-  }
+  html = await page.content().catch(() => '');
+  if (hasGuestStaySearch(html)) return;
 
-  // Live COMMON: Front Desk expands; Guest Stay triggers ExtJS OSRESV POST.
-  // Playwright force-click — tree nodes are often covered / not actionability-clean.
-  await page.click('text=Front Desk').catch(() => undefined);
-  await new Promise((r) => setTimeout(r, 1200));
-  await page.click('text=Guest Stay').catch(() => undefined);
-  await new Promise((r) => setTimeout(r, 2500));
+  // Live: bare OSRESV GET drops COMMON menu. Return to COMMON, then tree nav.
+  // Do not force-click Guest Stay on the OSRESV shell — false matches / logout.
+  try {
+    await page.goto(`${origin}/web/base/COMMON`, { timeout: 15_000 });
+  } catch {
+    /* already on COMMON or nav race */
+  }
+  await new Promise((r) => setTimeout(r, 800));
+  html = await page.content().catch(() => '');
+  if (/Front Desk/i.test(html)) {
+    await clickMenuLabel(page, 'Front Desk');
+    await new Promise((r) => setTimeout(r, 1200));
+    await clickMenuLabel(page, 'Guest Stay');
+    await new Promise((r) => setTimeout(r, 3000));
+  }
 
   html = await page.content().catch(() => '');
-  if (/name="search"|ff_confirmationnumber/i.test(html)) {
-    return;
-  }
+  if (hasGuestStaySearch(html)) return;
 
-  // Fallback: reviewed OSRESV open POST (query + body). Bare GET is insufficient.
+  // Fallback: reviewed OSRESV open POST (query + body). Must not setContent.
   try {
     await page.postForm(
       `${origin}/web/base/OSRESV?FUNCTION_CLASS=SCREEN&USER_FUNCTION_NAME=OSRESV`,
@@ -261,9 +284,7 @@ async function navigateGuestStay(page: HmsPage, origin: string): Promise<void> {
   const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
     html = await page.content().catch(() => '');
-    if (/name="search"|ff_confirmationnumber/i.test(html)) {
-      return;
-    }
+    if (hasGuestStaySearch(html)) return;
     await new Promise((r) => setTimeout(r, 300));
   }
 }
@@ -286,12 +307,17 @@ async function submitExactSearch(
   const waitCorrelation = page.waitForCorrelatedResponse
     ? page.waitForCorrelatedResponse(LIVE_GUEST_STAY_SEARCH_PATH)
     : Promise.resolve();
-  await page.postForm(`${origin}${LIVE_GUEST_STAY_SEARCH_PATH}`, body);
+  const responseHtml = await page.postForm(
+    `${origin}${LIVE_GUEST_STAY_SEARCH_PATH}`,
+    body,
+  );
   try {
     await waitCorrelation;
   } catch {
     throw new HmsRuntimeError('SCHEMA_DRIFT', 'search correlation failed');
   }
+  // Prefer POST body (fixture + live XHR). Fall back to DOM for ExtJS-rendered grids.
+  if (responseHtml && responseHtml.length > 0) return responseHtml;
   return page.content();
 }
 

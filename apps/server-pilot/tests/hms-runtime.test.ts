@@ -587,7 +587,9 @@ describe('Task 2 production composition + browser guards', () => {
       },
       async fillLogin() {},
       async submitLogin() {},
-      async postForm() {},
+      async postForm() {
+        return '';
+      },
       async click() {},
       async evaluate() {
         return undefined;
