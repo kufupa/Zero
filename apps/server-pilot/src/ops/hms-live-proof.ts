@@ -581,11 +581,15 @@ function readHealthHeartbeat(): { ok: boolean; stale: boolean } {
   try {
     const raw = JSON.parse(readFileSync(path, 'utf8')) as {
       updatedAt?: string;
+      checkedAt?: string;
       state?: string;
       policyBlockCount?: number;
     };
-    const updated = raw.updatedAt ? Date.parse(raw.updatedAt) : NaN;
-    const stale = !Number.isFinite(updated) || Date.now() - updated > HEALTH_STALE_MS;
+    // Runtime heartbeat writes `checkedAt`; accept `updatedAt` alias.
+    const stamp = raw.checkedAt ?? raw.updatedAt;
+    const updated = stamp ? Date.parse(stamp) : NaN;
+    const stale =
+      !Number.isFinite(updated) || Date.now() - updated > HEALTH_STALE_MS;
     return { ok: raw.state === 'ready' || raw.state === 'idle', stale };
   } catch {
     return { ok: false, stale: true };
