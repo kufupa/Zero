@@ -232,34 +232,86 @@ async function clickMenuLabel(page: HmsPage, label: string): Promise<boolean> {
   }
 }
 
+/** Painted menu line check — label must be an exact body.innerText line. */
+async function menuLabelInDom(page: HmsPage, label: string): Promise<boolean> {
+  try {
+    // Hardcode labels so the evaluate fn has no free vars (Playwright serialize).
+    if (label === 'Front Desk') {
+      return await page.evaluateStableDom(() => {
+        const root = (
+          globalThis as unknown as {
+            document?: { body?: { innerText?: string } };
+          }
+        ).document;
+        const text = root?.body?.innerText || '';
+        return text
+          .split('\n')
+          .some((line) => line.trim() === 'Front Desk');
+      });
+    }
+    if (label === 'Guest Stay') {
+      return await page.evaluateStableDom(() => {
+        const root = (
+          globalThis as unknown as {
+            document?: { body?: { innerText?: string } };
+          }
+        ).document;
+        const text = root?.body?.innerText || '';
+        return text
+          .split('\n')
+          .some((line) => line.trim() === 'Guest Stay');
+      });
+    }
+    return false;
+  } catch {
+    // Fixture FetchPage has no document — treat as not ready (OSRESV path).
+    return false;
+  }
+}
+
 async function navigateGuestStay(page: HmsPage, origin: string): Promise<void> {
   let html = await page.content().catch(() => '');
   if (hasGuestStaySearch(html)) return;
 
-  // Live post-login session is already on COMMON with the tree.
-  // Never re-goto bare /web/base/COMMON — REQ_KEY is a required variable query
-  // key, so empty-query COMMON documents are blocked (invalid_variable_query).
-  if (/Front Desk/i.test(html)) {
-    const urlBefore = page.url();
-    await clickMenuLabel(page, 'Front Desk');
-    await new Promise((r) => setTimeout(r, 800));
-    await clickMenuLabel(page, 'Guest Stay');
-    html = await page.content().catch(() => '');
-    if (hasGuestStaySearch(html)) return;
-    // Live ExtJS usually leaves COMMON; fixture menu spans are no-ops — fail fast.
-    if (page.url() !== urlBefore || /OSRESV/i.test(page.url())) {
-      const deadline = Date.now() + 10_000;
-      while (Date.now() < deadline) {
-        html = await page.content().catch(() => '');
-        if (hasGuestStaySearch(html)) return;
+  const fixtureShell = /data-tenant=|data-property-code=/i.test(html);
+
+  // Live: wait until Front Desk is painted menu text (COMMON HTML may mention it
+  // only inside ExtJS config JSON before the tree paints). Fixture skips wait.
+  if (!fixtureShell) {
+    const menuReadyDeadline = Date.now() + 15_000;
+    let menuReady = await menuLabelInDom(page, 'Front Desk');
+    while (!menuReady && Date.now() < menuReadyDeadline) {
+      await new Promise((r) => setTimeout(r, 400));
+      menuReady = await menuLabelInDom(page, 'Front Desk');
+    }
+
+    if (menuReady) {
+      const urlBefore = page.url();
+      await clickMenuLabel(page, 'Front Desk');
+      await new Promise((r) => setTimeout(r, 1000));
+      const gsDeadline = Date.now() + 8_000;
+      while (
+        !(await menuLabelInDom(page, 'Guest Stay')) &&
+        Date.now() < gsDeadline
+      ) {
         await new Promise((r) => setTimeout(r, 300));
+      }
+      await clickMenuLabel(page, 'Guest Stay');
+      html = await page.content().catch(() => '');
+      if (hasGuestStaySearch(html)) return;
+      if (page.url() !== urlBefore || /OSRESV/i.test(page.url())) {
+        const deadline = Date.now() + 12_000;
+        while (Date.now() < deadline) {
+          html = await page.content().catch(() => '');
+          if (hasGuestStaySearch(html)) return;
+          await new Promise((r) => setTimeout(r, 300));
+        }
       }
     }
   }
 
-  // Fixture live-infor: data-* attrs + direct OSRESV shell with search field.
-  // Live: skip OSRESV document GET — after menu miss it has fired POST logindisp.
-  const fixtureShell = /data-tenant=|data-property-code=/i.test(html);
+  // Fixture live-infor: direct OSRESV shell with search field.
+  // Live: skip OSRESV document GET — has fired POST logindisp after menu miss.
   if (fixtureShell) {
     try {
       await page.goto(`${origin}/web/base/OSRESV`, { timeout: 8_000 });
@@ -382,14 +434,18 @@ export function createLiveGuestStayDriver(
           canary,
         );
         if (!NO_RESULTS_RE.test(html) && !/data-testid="no-results"/i.test(html)) {
-          if (/Unable to retrieve text|success"\s*:\s*false/i.test(html)) {
+          if (
+            /Unable to retrieve text|success"\s*:\s*false|loadLocalizedPage|allcookies/i.test(
+              html,
+            )
+          ) {
             throw new HmsRuntimeError(
               'SCHEMA_DRIFT',
               'Guest Stay search component not ready',
             );
           }
           throw new HmsRuntimeError(
-            'canary_reservation',
+            'SCHEMA_DRIFT',
             'not-found canary expected empty Guest Stay result',
           );
         }

@@ -1620,7 +1620,7 @@ function wrapPlaywrightPage(page: {
         await el.click({ force: true, timeout: 5_000 });
         return;
       }
-      // Live tree nodes can sit in overflow panes Playwright marks off-viewport.
+      // Live tree labels often have 0x0 rects until expanded; still dispatch click.
       const textMatch = /^text=(.+)$/i.exec(selector);
       if (textMatch) {
         const label = textMatch[1]!;
@@ -1630,7 +1630,6 @@ function wrapPlaywrightPage(page: {
               document?: {
                 querySelectorAll(sel: string): ArrayLike<{
                   textContent: string | null;
-                  getBoundingClientRect(): { width: number; height: number };
                   click(): void;
                 }>;
               };
@@ -1638,13 +1637,17 @@ function wrapPlaywrightPage(page: {
           ).document;
           if (!root) return false;
           const nodes = Array.from(
-            root.querySelectorAll('a, span, td, div, li, label'),
+            root.querySelectorAll('a, span, td, div, li, label, em'),
           );
-          const match = nodes.find((n) => {
-            if ((n.textContent || '').trim() !== wanted) return false;
-            const r = n.getBoundingClientRect();
-            return r.width > 0 && r.height > 0;
-          });
+          const exact = nodes.filter(
+            (n) => (n.textContent || '').trim() === wanted,
+          );
+          // Prefer shortest textContent (= leaf label, not parent row).
+          exact.sort(
+            (a, b) =>
+              (a.textContent || '').length - (b.textContent || '').length,
+          );
+          const match = exact[0];
           if (!match) return false;
           match.click();
           return true;
