@@ -218,18 +218,33 @@ export function parseAndCorrelateGuestStayHtml(
 }
 
 async function navigateGuestStay(page: HmsPage, origin: string): Promise<void> {
-  // Fixture live-infor: direct OSRESV shell. Live: Front Desk → Guest Stay click.
+  // Fixture live-infor: direct OSRESV shell already has search field.
   try {
     await page.goto(`${origin}/web/base/OSRESV`, { timeout: 15_000 });
   } catch {
     /* live menu path */
   }
-  const html = await page.content().catch(() => '');
-  if (/name="search"|ff_confirmationnumber|Guest Stay/i.test(html)) {
+  let html = await page.content().catch(() => '');
+  if (/name="search"|ff_confirmationnumber|data-testid="results"/i.test(html)) {
     return;
   }
+
+  // Live COMMON: Front Desk → Guest Stay triggers ExtJS POST OSRESV (+ HDR/LST).
+  // Bare GET /web/base/OSRESV does not establish the list component — OSRESS.search
+  // then returns { success:false, msg:"Unable to retrieve text" }.
   await page.click('text=Front Desk').catch(() => undefined);
+  await new Promise((r) => setTimeout(r, 750));
   await page.click('text=Guest Stay').catch(() => undefined);
+
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    html = await page.content().catch(() => '');
+    if (/name="search"|ff_confirmationnumber|Guest Stay/i.test(html)) {
+      // Prefer waiting until quick-search input exists when Guest Stay copy present.
+      if (/name="search"|ff_confirmationnumber/i.test(html)) return;
+    }
+    await new Promise((r) => setTimeout(r, 300));
+  }
 }
 
 async function submitExactSearch(
@@ -314,6 +329,12 @@ export function createLiveGuestStayDriver(
           canary,
         );
         if (!NO_RESULTS_RE.test(html) && !/data-testid="no-results"/i.test(html)) {
+          if (/Unable to retrieve text|success"\s*:\s*false/i.test(html)) {
+            throw new HmsRuntimeError(
+              'SCHEMA_DRIFT',
+              'Guest Stay search component not ready',
+            );
+          }
           throw new HmsRuntimeError(
             'canary_reservation',
             'not-found canary expected empty Guest Stay result',
