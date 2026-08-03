@@ -674,7 +674,7 @@ export function buildLiveGuestStayFunctionalRules(origin: string): RequestRule[]
         confirmationnumber: VAR64,
         facebookid: VAR64,
         firstname: VAR64,
-        guestNumber: VAR64,
+        guestnumber: VAR64,
         guestid: VAR64,
         hoteldate: VAR32,
         lastname: VAR64,

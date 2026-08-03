@@ -112,7 +112,7 @@ describe('live Guest Stay read manifest (HRCEN)', () => {
       confirmationnumber: '',
       reservationstayid: '',
       propertycode: '',
-      guestNumber: '',
+      guestnumber: '',
       account: '',
       guestid: '',
       hoteldate: '',

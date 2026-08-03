@@ -531,25 +531,22 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
   useEffect(() => {
     if (!demo) {
       if (activeReplyId === emailData.id) {
-        // Always expand the email being replied to
         setIsCollapsed(false);
       } else {
-        // For emails not being replied to, use the default behavior:
-        // - Last email should be expanded
-        // - All other emails should be collapsed
         setIsCollapsed(!isLastEmail);
-      }
-      // Set all emails to collapsed by default except the last one
-      if (totalEmails && index === totalEmails - 1) {
-        if (totalEmails > 5) {
-          setTimeout(() => {
-            const element = document.getElementById(`mail-${emailData.id}`);
-            element?.scrollIntoView({ behavior: 'smooth' });
-          }, 100);
-        }
       }
     }
   }, [demo, emailData.id, isLastEmail, activeReplyId]);
+
+  // Separate from collapse/reply toggles so mid-thread reply does not yank viewport to newest.
+  useEffect(() => {
+    if (!demo && isLastEmail && totalEmails && totalEmails > 5) {
+      setTimeout(() => {
+        const element = document.getElementById(`mail-${emailData.id}`);
+        element?.scrollIntoView({ behavior: 'smooth' });
+      }, 100);
+    }
+  }, [demo, emailData.id, isLastEmail, totalEmails]);
 
   //   const listUnsubscribeAction = useMemo(
   //     () =>
@@ -1126,10 +1123,10 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                     })()}
                   </div>
                 </div>
-                {threadAttachments && threadAttachments.length > 0 && (
-                  <ThreadAttachments attachments={threadAttachments} />
-                )}
               </>
+            )}
+            {threadAttachments && threadAttachments.length > 0 && (
+              <ThreadAttachments attachments={threadAttachments} />
             )}
           </div>
           <div className="flex cursor-pointer flex-col pb-2 duration-200" onClick={toggleCollapse}>

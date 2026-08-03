@@ -36,6 +36,7 @@ import { useIsMobile } from '@/hooks/use-mobile';
 import { Button } from '@/components/ui/button';
 import { cleanHtml } from '@/lib/email-utils';
 import { formatMailboxPlain } from '@/lib/mail/mailbox-format';
+import { orderMessagesNewestFirst } from '@/lib/mail/thread-display-order';
 import ReplyCompose from './reply-composer';
 import { NotesPanel } from './note-panel';
 import { ThreadAiMailsSection } from '@/components/mail/thread-ai-mails-section';
@@ -818,7 +819,7 @@ export function ThreadDisplay() {
       setTimeout(() => {
         const replyElement = document.getElementById(`reply-composer-${activeReplyId}`);
         if (replyElement) {
-          replyElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          replyElement.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         }
       }, 100); // Short delay to ensure the component is rendered
     }
@@ -1160,17 +1161,6 @@ export function ThreadDisplay() {
                   trailing={threadDraftSection}
                 />
               )}
-
-              {mode &&
-                activeReplyId &&
-                activeReplyId === emailData.messages[emailData.messages.length - 1]?.id && (
-                  <div
-                    className="border-border bg-panelLight dark:bg-panelDark sticky bottom-0 z-10 border-t px-4 py-2"
-                    id={`reply-composer-${activeReplyId}`}
-                  >
-                    <ReplyCompose messageId={activeReplyId} />
-                  </div>
-                )}
             </div>
           </>
         )}
@@ -1199,40 +1189,48 @@ const MessageList = ({
   activeReplyId,
   isMobile,
   trailing,
-}: MessageListProps) => (
-  <ScrollArea className={cn('min-w-0 flex-1', isMobile ? 'h-[calc(100%-1px)]' : 'h-full')} type="auto">
-    <div className="min-w-0 pb-4">
-      {(messages || []).map((message, index) => {
-        const isLastMessage = index === messages.length - 1;
-        const isReplyingToThisMessage = mode && activeReplyId === message.id;
+}: MessageListProps) => {
+  const displayMessages = orderMessagesNewestFirst(messages || []);
 
-        return (
-          <div
-            key={message.id}
-            className={cn('duration-200', index > 0 && 'border-border border-t')}
-          >
-            <MailDisplay
-              emailData={message}
-              isFullscreen={isFullscreen}
-              isMuted={false}
-              isLoading={false}
-              index={index}
-              totalEmails={totalReplies}
-              threadAttachments={index === 0 ? allThreadAttachments : undefined}
-            />
-            {isReplyingToThisMessage && !isLastMessage && (
-              <div className="px-4 py-2" id={`reply-composer-${message.id}`}>
-                <ReplyCompose messageId={message.id} />
-              </div>
-            )}
+  return (
+    <ScrollArea className={cn('min-w-0 flex-1', isMobile ? 'h-[calc(100%-1px)]' : 'h-full')} type="auto">
+      <div className="min-w-0 pb-4">
+        {displayMessages.map((message, index) => {
+          const isReplyingToThisMessage = Boolean(mode && activeReplyId === message.id);
+          // After newest-first reverse, last visual index is chronologically oldest.
+          const isChronologicallyOldest = index === displayMessages.length - 1;
+
+          return (
+            <div
+              key={message.id}
+              className={cn('duration-200', index > 0 && 'border-border border-t')}
+            >
+              {isReplyingToThisMessage ? (
+                <div
+                  className="border-border border-b px-4 py-3"
+                  id={`reply-composer-${message.id}`}
+                >
+                  <ReplyCompose messageId={message.id} />
+                </div>
+              ) : null}
+              <MailDisplay
+                emailData={message}
+                isFullscreen={isFullscreen}
+                isMuted={false}
+                isLoading={false}
+                index={index}
+                totalEmails={totalReplies}
+                threadAttachments={isChronologicallyOldest ? allThreadAttachments : undefined}
+              />
+            </div>
+          );
+        })}
+        {trailing ? (
+          <div className={cn('duration-200', displayMessages.length > 0 && 'border-border border-t')}>
+            {trailing}
           </div>
-        );
-      })}
-      {trailing ? (
-        <div className={cn('duration-200', (messages?.length ?? 0) > 0 && 'border-border border-t')}>
-          {trailing}
-        </div>
-      ) : null}
-    </div>
-  </ScrollArea>
-);
+        ) : null}
+      </div>
+    </ScrollArea>
+  );
+};
