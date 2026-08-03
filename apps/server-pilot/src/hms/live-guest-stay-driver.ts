@@ -236,31 +236,33 @@ async function navigateGuestStay(page: HmsPage, origin: string): Promise<void> {
   let html = await page.content().catch(() => '');
   if (hasGuestStaySearch(html)) return;
 
+  // Live post-login session is already on COMMON with the tree.
+  // Never re-goto bare /web/base/COMMON — REQ_KEY is a required variable query
+  // key, so empty-query COMMON documents are blocked (invalid_variable_query).
+  if (/Front Desk/i.test(html)) {
+    const urlBefore = page.url();
+    await clickMenuLabel(page, 'Front Desk');
+    await new Promise((r) => setTimeout(r, 400));
+    await clickMenuLabel(page, 'Guest Stay');
+    html = await page.content().catch(() => '');
+    if (hasGuestStaySearch(html)) return;
+    // Live ExtJS usually leaves COMMON; fixture menu spans are no-ops — fail fast.
+    if (page.url() !== urlBefore || /OSRESV/i.test(page.url())) {
+      const deadline = Date.now() + 8_000;
+      while (Date.now() < deadline) {
+        html = await page.content().catch(() => '');
+        if (hasGuestStaySearch(html)) return;
+        await new Promise((r) => setTimeout(r, 300));
+      }
+    }
+  }
+
   // Fixture live-infor: direct OSRESV shell already has search field.
   try {
     await page.goto(`${origin}/web/base/OSRESV`, { timeout: 8_000 });
   } catch {
     /* live menu / POST path */
   }
-  html = await page.content().catch(() => '');
-  if (hasGuestStaySearch(html)) return;
-
-  // Live: bare OSRESV GET drops COMMON menu. Return to COMMON, then tree nav.
-  // Do not force-click Guest Stay on the OSRESV shell — false matches / logout.
-  try {
-    await page.goto(`${origin}/web/base/COMMON`, { timeout: 15_000 });
-  } catch {
-    /* already on COMMON or nav race */
-  }
-  await new Promise((r) => setTimeout(r, 800));
-  html = await page.content().catch(() => '');
-  if (/Front Desk/i.test(html)) {
-    await clickMenuLabel(page, 'Front Desk');
-    await new Promise((r) => setTimeout(r, 1200));
-    await clickMenuLabel(page, 'Guest Stay');
-    await new Promise((r) => setTimeout(r, 3000));
-  }
-
   html = await page.content().catch(() => '');
   if (hasGuestStaySearch(html)) return;
 
