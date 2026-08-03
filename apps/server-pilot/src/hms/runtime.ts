@@ -1477,8 +1477,17 @@ function wrapPlaywrightPage(page: {
   title(): Promise<string>;
   locator(selector: string): {
     fill(value: string): Promise<void>;
-    click(options?: { force?: boolean }): Promise<void>;
+    click(options?: { force?: boolean; timeout?: number }): Promise<void>;
     press(key: string): Promise<void>;
+    count(): Promise<number>;
+    nth(index: number): {
+      isVisible(): Promise<boolean>;
+      scrollIntoViewIfNeeded(): Promise<void>;
+      click(options?: { force?: boolean; timeout?: number }): Promise<void>;
+    };
+    first(): {
+      click(options?: { force?: boolean; timeout?: number }): Promise<void>;
+    };
   };
   getByLabel(text: string): { fill(value: string): Promise<void> };
   getByRole(
@@ -1601,7 +1610,48 @@ function wrapPlaywrightPage(page: {
       );
     },
     async click(selector) {
-      await page.locator(selector).click({ force: true });
+      const loc = page.locator(selector);
+      const count = await loc.count().catch(() => 0);
+      for (let i = 0; i < count; i += 1) {
+        const el = loc.nth(i);
+        const visible = await el.isVisible().catch(() => false);
+        if (!visible) continue;
+        await el.scrollIntoViewIfNeeded().catch(() => undefined);
+        await el.click({ force: true, timeout: 5_000 });
+        return;
+      }
+      // Live tree nodes can sit in overflow panes Playwright marks off-viewport.
+      const textMatch = /^text=(.+)$/i.exec(selector);
+      if (textMatch) {
+        const label = textMatch[1]!;
+        const clicked = await page.evaluate((wanted: string) => {
+          const root = (
+            globalThis as unknown as {
+              document?: {
+                querySelectorAll(sel: string): ArrayLike<{
+                  textContent: string | null;
+                  getBoundingClientRect(): { width: number; height: number };
+                  click(): void;
+                }>;
+              };
+            }
+          ).document;
+          if (!root) return false;
+          const nodes = Array.from(
+            root.querySelectorAll('a, span, td, div, li, label'),
+          );
+          const match = nodes.find((n) => {
+            if ((n.textContent || '').trim() !== wanted) return false;
+            const r = n.getBoundingClientRect();
+            return r.width > 0 && r.height > 0;
+          });
+          if (!match) return false;
+          match.click();
+          return true;
+        }, label);
+        if (clicked) return;
+      }
+      await page.locator(selector).first().click({ force: true, timeout: 5_000 });
     },
     async fill(selector, value) {
       await page.locator(selector).fill(value);

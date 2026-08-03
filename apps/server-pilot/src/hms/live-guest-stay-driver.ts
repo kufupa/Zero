@@ -242,13 +242,13 @@ async function navigateGuestStay(page: HmsPage, origin: string): Promise<void> {
   if (/Front Desk/i.test(html)) {
     const urlBefore = page.url();
     await clickMenuLabel(page, 'Front Desk');
-    await new Promise((r) => setTimeout(r, 400));
+    await new Promise((r) => setTimeout(r, 800));
     await clickMenuLabel(page, 'Guest Stay');
     html = await page.content().catch(() => '');
     if (hasGuestStaySearch(html)) return;
     // Live ExtJS usually leaves COMMON; fixture menu spans are no-ops — fail fast.
     if (page.url() !== urlBefore || /OSRESV/i.test(page.url())) {
-      const deadline = Date.now() + 8_000;
+      const deadline = Date.now() + 10_000;
       while (Date.now() < deadline) {
         html = await page.content().catch(() => '');
         if (hasGuestStaySearch(html)) return;
@@ -257,14 +257,18 @@ async function navigateGuestStay(page: HmsPage, origin: string): Promise<void> {
     }
   }
 
-  // Fixture live-infor: direct OSRESV shell already has search field.
-  try {
-    await page.goto(`${origin}/web/base/OSRESV`, { timeout: 8_000 });
-  } catch {
-    /* live menu / POST path */
+  // Fixture live-infor: data-* attrs + direct OSRESV shell with search field.
+  // Live: skip OSRESV document GET — after menu miss it has fired POST logindisp.
+  const fixtureShell = /data-tenant=|data-property-code=/i.test(html);
+  if (fixtureShell) {
+    try {
+      await page.goto(`${origin}/web/base/OSRESV`, { timeout: 8_000 });
+    } catch {
+      /* continue */
+    }
+    html = await page.content().catch(() => '');
+    if (hasGuestStaySearch(html)) return;
   }
-  html = await page.content().catch(() => '');
-  if (hasGuestStaySearch(html)) return;
 
   // Fallback: reviewed OSRESV open POST (query + body). Must not setContent.
   try {
