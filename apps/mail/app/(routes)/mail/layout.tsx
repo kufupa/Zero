@@ -17,7 +17,7 @@ export default function MailLayout() {
   return (
     <HotkeyProviderWrapper>
       <AppSidebar />
-      <div className="bg-sidebar dark:bg-sidebar w-full">
+      <div className="bg-sidebar dark:bg-sidebar min-w-0 w-full">
         <Outlet />
       </div>
       <OnboardingWrapper />
