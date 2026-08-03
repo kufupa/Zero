@@ -9,7 +9,9 @@ import {
 } from '../src/hms/contracts.js';
 import {
   buildLiveGuestStayRowFingerprintV1,
+  extractOsressPageData,
   parseAndCorrelateGuestStayHtml,
+  parseLiveOsressGridRows,
   type ExactReservationCandidate,
 } from '../src/hms/live-guest-stay-driver.js';
 import { createReservationCandidateSession } from '../src/hms/reservation-candidate-session.js';
@@ -280,6 +282,107 @@ describe('guest stay HTML parser correlation', () => {
         ac.signal,
       ),
     ).toThrow(/abort/i);
+  });
+});
+
+describe('live OSRESS GRIDRESULT parser', () => {
+  const candidate = confCandidate();
+
+  function gridEnvelope(rows: unknown[], records?: string): string {
+    const rec =
+      records ??
+      (Array.isArray(rows) ? String(rows.length) : '0');
+    return ` { pageData: ${JSON.stringify({
+      fromCome: true,
+      grid: {
+        GRIDRESULT: {
+          type: 'LIST.DATA_ONLY.STORED',
+          DATASPY: { id: '1941', label: 'All' },
+          TOOLBAR: null,
+          GRID: {
+            METADATA: { RECORDS: rec, GRIDNAME: 'OSRESS' },
+            DATA: rows,
+          },
+        },
+      },
+      success: true,
+    })} } `;
+  }
+
+  it('extractOsressPageData parses unquoted pageData envelope', () => {
+    const text = gridEnvelope([]);
+    const pd = extractOsressPageData(text);
+    expect(pd).not.toBeNull();
+    expect(parseLiveOsressGridRows(pd!)).toEqual([]);
+  });
+
+  it('RECORDS 0 / empty DATA → not_found', () => {
+    const text = gridEnvelope([], '0');
+    expect(parseAndCorrelateGuestStayHtml(text, candidate)).toEqual({
+      outcome: 'not_found',
+      observations: [],
+      capped: false,
+    });
+  });
+
+  it('one exact confirmation row → matched; maps dd-mon-yyyy dates', () => {
+    const text = gridEnvelope([
+      {
+        id: '1',
+        confirmationnumber: SYNTH.conf,
+        externalconfirmation: SYNTH.ext,
+        primaryguest: SYNTH.guest,
+        arrivaldate: '15-Jan-2099',
+        departuredate: '18-Jan-2099',
+        status: 'Confirmed',
+        lastname: 'Syntherson',
+        firstname: 'Alpha',
+      },
+      {
+        id: '2',
+        confirmationnumber: SYNTH.confOther,
+        status: 'Confirmed',
+      },
+    ]);
+    const result = parseAndCorrelateGuestStayHtml(text, candidate);
+    expect(result.outcome).toBe('matched');
+    if (result.outcome !== 'matched') return;
+    expect(result.observations[0]).toMatchObject({
+      confirmationNumber: SYNTH.conf,
+      externalReference: SYNTH.ext,
+      guestName: SYNTH.guest,
+      arrivalDate: SYNTH.arrival,
+      departureDate: SYNTH.departure,
+      reservationStatus: 'Confirmed',
+      roomType: null,
+      ratePlan: null,
+    });
+  });
+
+  it('external_reference candidate correlates on externalconfirmation', () => {
+    const extCandidate: ExactReservationCandidate = {
+      id: 'ext1',
+      kind: 'external_reference',
+      value: SYNTH.ext,
+    };
+    const text = gridEnvelope([
+      {
+        confirmationnumber: SYNTH.confOther,
+        externalconfirmation: SYNTH.ext,
+        status: 'In House',
+      },
+    ]);
+    const result = parseAndCorrelateGuestStayHtml(text, extCandidate);
+    expect(result.outcome).toBe('matched');
+  });
+
+  it('unrelated rows only → not_found', () => {
+    const text = gridEnvelope([
+      { confirmationnumber: SYNTH.confOther, status: 'Confirmed' },
+    ]);
+    expect(parseAndCorrelateGuestStayHtml(text, candidate).outcome).toBe(
+      'not_found',
+    );
   });
 });
 

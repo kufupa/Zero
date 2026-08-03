@@ -88,9 +88,30 @@ function sha256Hex(input: string): string {
   return createHash('sha256').update(input).digest('hex');
 }
 
+const HMS_MON: Record<string, string> = {
+  JAN: '01',
+  FEB: '02',
+  MAR: '03',
+  APR: '04',
+  MAY: '05',
+  JUN: '06',
+  JUL: '07',
+  AUG: '08',
+  SEP: '09',
+  OCT: '10',
+  NOV: '11',
+  DEC: '12',
+};
+
 function parseIsoDateOrNull(raw: string | undefined | null): string | null {
   if (!raw) return null;
-  return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : null;
+  const trimmed = raw.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+  const mon = /^(\d{2})-([A-Za-z]{3})-(\d{4})$/.exec(trimmed);
+  if (!mon) return null;
+  const mm = HMS_MON[mon[2]!.toUpperCase()];
+  if (!mm) return null;
+  return `${mon[3]}-${mm}-${mon[1]}`;
 }
 
 function attrOrNull(
@@ -101,6 +122,134 @@ function attrOrNull(
   if (raw == null) return null;
   const trimmed = raw.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function strOrNull(raw: unknown): string | null {
+  if (raw == null) return null;
+  const trimmed = String(raw).trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/**
+ * Infor OSRESS.search returns `{ pageData: { ...json... } }` (unquoted key).
+ * Extract / parse the pageData object; null when not a grid envelope.
+ */
+export function extractOsressPageData(text: string): Record<string, unknown> | null {
+  const idx = text.indexOf('pageData:');
+  if (idx < 0) return null;
+  let i = text.indexOf('{', idx);
+  if (i < 0) return null;
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  let quote = '';
+  for (let j = i; j < text.length; j++) {
+    const ch = text[j]!;
+    if (inStr) {
+      if (esc) {
+        esc = false;
+        continue;
+      }
+      if (ch === '\\') {
+        esc = true;
+        continue;
+      }
+      if (ch === quote) inStr = false;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inStr = true;
+      quote = ch;
+      continue;
+    }
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) {
+        try {
+          return JSON.parse(text.slice(i, j + 1)) as Record<string, unknown>;
+        } catch {
+          return null;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function guestNameFromGridRow(row: Record<string, unknown>): string | null {
+  const primary = strOrNull(row.primaryguest);
+  if (primary) return primary;
+  const last = strOrNull(row.lastname);
+  const first = strOrNull(row.firstname);
+  if (last && first) return `${last}, ${first}`;
+  return last ?? first;
+}
+
+/**
+ * Map live GRIDRESULT.GRID.DATA objects → observations.
+ * Returns null when envelope is not a GRIDRESULT list response.
+ */
+export function parseLiveOsressGridRows(
+  pageData: Record<string, unknown>,
+): ReservationObservation[] | null {
+  const gridWrap = pageData.grid;
+  if (gridWrap == null || typeof gridWrap !== 'object') return null;
+  const gridResult = (gridWrap as Record<string, unknown>).GRIDRESULT;
+  if (gridResult == null || typeof gridResult !== 'object') return null;
+  const inner = (gridResult as Record<string, unknown>).GRID;
+  if (inner == null || typeof inner !== 'object') return null;
+  const data = (inner as Record<string, unknown>).DATA;
+  if (!Array.isArray(data)) return null;
+
+  const rows: ReservationObservation[] = [];
+  for (const item of data) {
+    if (!item || typeof item !== 'object') continue;
+    const row = item as Record<string, unknown>;
+    const confirmationNumber = strOrNull(row.confirmationnumber);
+    const externalReference = strOrNull(row.externalconfirmation);
+    if (!confirmationNumber && !externalReference) continue;
+    rows.push({
+      confirmationNumber,
+      externalReference,
+      guestName: guestNameFromGridRow(row),
+      arrivalDate: parseIsoDateOrNull(strOrNull(row.arrivaldate)),
+      departureDate: parseIsoDateOrNull(strOrNull(row.departuredate)),
+      reservationStatus: strOrNull(row.status),
+      roomType: null,
+      ratePlan: null,
+    });
+  }
+  return rows;
+}
+
+function correlateObservations(
+  fresh: ReservationObservation[],
+  candidate: ExactReservationCandidate,
+  emptySignal: boolean,
+): GuestStaySearchResult {
+  const correlated = fresh.filter((row) => rowMatchesCandidate(row, candidate));
+  if (correlated.length === 0 && (emptySignal || fresh.length === 0)) {
+    return { outcome: 'not_found', observations: [], capped: false };
+  }
+  if (correlated.length === 0) {
+    return { outcome: 'not_found', observations: [], capped: false };
+  }
+  if (correlated.length === 1) {
+    return {
+      outcome: 'matched',
+      observations: [correlated[0]!],
+      capped: false,
+    };
+  }
+  const capped = correlated.length > RESERVATION_MATCH_CAP;
+  return {
+    outcome: 'ambiguous',
+    observations: capped
+      ? correlated.slice(0, RESERVATION_MATCH_CAP)
+      : correlated,
+    capped,
+  };
 }
 
 /** Structural fingerprint — selector/column keys + structure hash; never values. */
@@ -168,7 +317,8 @@ function parseAllFreshRows(html: string): ReservationObservation[] {
 }
 
 /**
- * Parse Guest Stay HTML against structural fingerprint selectors.
+ * Parse Guest Stay search response against structural fingerprint.
+ * Prefer live OSRESS GRIDRESULT JSON; fall back to fixture HTML selectors.
  * Returns only rows correlated to the exact candidate. Never opens detail.
  */
 export function parseAndCorrelateGuestStayHtml(
@@ -177,6 +327,19 @@ export function parseAndCorrelateGuestStayHtml(
   signal?: AbortSignal,
 ): GuestStaySearchResult {
   throwIfAborted(signal);
+
+  const pageData = extractOsressPageData(html);
+  if (pageData) {
+    const gridRows = parseLiveOsressGridRows(pageData);
+    if (gridRows !== null) {
+      return correlateObservations(
+        gridRows,
+        candidate,
+        gridRows.length === 0 || NO_RESULTS_RE.test(html),
+      );
+    }
+  }
+
   const sel = LIVE_GUEST_STAY_ROW_SELECTORS;
   const $ = cheerio.load(html);
   if ($(sel.correlationFailed).length > 0) {
@@ -189,32 +352,11 @@ export function parseAndCorrelateGuestStayHtml(
   const fresh = parseAllFreshRows(html).filter(
     (row) => row.confirmationNumber || row.externalReference,
   );
-  const correlated = fresh.filter((row) => rowMatchesCandidate(row, candidate));
-
-  if (
-    correlated.length === 0 &&
-    ($(sel.noResults).length > 0 || NO_RESULTS_RE.test(html) || fresh.length === 0)
-  ) {
-    return { outcome: 'not_found', observations: [], capped: false };
-  }
-  if (correlated.length === 0) {
-    return { outcome: 'not_found', observations: [], capped: false };
-  }
-  if (correlated.length === 1) {
-    return {
-      outcome: 'matched',
-      observations: [correlated[0]!],
-      capped: false,
-    };
-  }
-  const capped = correlated.length > RESERVATION_MATCH_CAP;
-  return {
-    outcome: 'ambiguous',
-    observations: capped
-      ? correlated.slice(0, RESERVATION_MATCH_CAP)
-      : correlated,
-    capped,
-  };
+  return correlateObservations(
+    fresh,
+    candidate,
+    $(sel.noResults).length > 0 || NO_RESULTS_RE.test(html) || fresh.length === 0,
+  );
 }
 
 function hasGuestStaySearch(html: string): boolean {
