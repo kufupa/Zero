@@ -730,10 +730,12 @@ export type ExactReservationCandidate =
   | { id: string; kind: 'external_reference'; value: string };
 
 const EXACT_CHROME_FIXED = {
-  COMPONENT_INFO_TYPE: 'LIST_VIEW',
-  GRID_ID: 'grid',
+  // Soft-captured ExtJS Guest Stay search (HRCEN, 2026-08-03): DATA_ONLY +
+  // dataspy 1941 / grid 1775. LIST_VIEW + 1001 returns "Unable to retrieve text".
+  COMPONENT_INFO_TYPE: 'DATA_ONLY',
+  GRID_ID: '1775',
   GRID_NAME: 'OSRESS',
-  DATASPY_ID: '1001',
+  DATASPY_ID: '1941',
   SYSTEM_FUNCTION_NAME: 'OSRESS',
   USER_FUNCTION_NAME: 'OSRESS',
   CURRENT_TAB_NAME: 'LST',

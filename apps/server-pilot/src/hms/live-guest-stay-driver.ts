@@ -80,7 +80,7 @@ export type LiveGuestStayDriverOptions = {
 };
 
 const NO_RESULTS_RE =
-  /no reservations found|no records|no results|no data to display|0 records|0 items|not found|no matching/i;
+  /no reservations found|no records|no results|no data to display|0 records|0 items|not found|no matching|"RECORDS"\s*:\s*"?0"?/i;
 
 const RESERVATION_MATCH_CAP = 20;
 
