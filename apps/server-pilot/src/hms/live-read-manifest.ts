@@ -86,6 +86,20 @@ export function buildLiveGuestStayChromeGetRules(origin: string): RequestRule[] 
       '/web/resources/inforhms/images/shared/logo.svg',
       ['image'],
     ),
+    // Live login also fetches shared/images/logo.svg typed as Playwright "other".
+    {
+      id: 'live-login-shared-logo-svg',
+      origin,
+      method: 'GET',
+      path: '/web/resources/shared/images/logo.svg',
+      resourceTypes: ['image', 'other'],
+      fixedQuery: {},
+      variableQuery: {},
+      fixedBody: {},
+      variableBody: {},
+      maxBodyBytes: 4096,
+      redirectPolicy: 'same-reviewed-chain',
+    },
     getStaticRule(
       origin,
       'live-login-font-semibold',
