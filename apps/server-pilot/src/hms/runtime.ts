@@ -266,6 +266,79 @@ function extractAttr(html: string, attr: string): string | null {
   return m?.[1] ?? null;
 }
 
+/** First `"key": "value"` (or `"key":"value"`) occurrence in HTML/JSON blobs. */
+function extractJsonQuotedField(html: string, key: string): string | null {
+  const re = new RegExp(`"${key}"\\s*:\\s*"([^"]*)"`, 'i');
+  const m = re.exec(html);
+  return m?.[1] ?? null;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Fixture pages use data-* attrs. Live Infor COMMON shell embeds
+ * `"tenantid"` / `"property"` in config JSON and titles `Infor HMS - HRCEN`.
+ * Property display name often appears only in banner text (no data attr).
+ */
+export function extractPropertyBindingFromDom(input: {
+  html: string;
+  title: string;
+  pageUrl?: string;
+}): {
+  tenant: string | null;
+  propertyCode: string | null;
+  propertyName: string | null;
+} {
+  const { html, title, pageUrl } = input;
+  let urlTenant: string | null = null;
+  if (pageUrl) {
+    try {
+      urlTenant = new URL(pageUrl).searchParams.get('tenant');
+    } catch {
+      urlTenant = null;
+    }
+  }
+
+  const titleProperty = /Infor HMS\s*-\s*([A-Z0-9]+)/i.exec(title)?.[1] ?? null;
+  const propertyFromJson = extractJsonQuotedField(html, 'property');
+  const userOrg = extractJsonQuotedField(html, 'userorg');
+
+  return {
+    tenant:
+      extractAttr(html, 'data-tenant') ??
+      extractJsonQuotedField(html, 'tenantid') ??
+      urlTenant,
+    propertyCode:
+      extractAttr(html, 'data-property-code') ??
+      titleProperty ??
+      (/HRCEN/i.test(title) ? 'HRCEN' : null) ??
+      (propertyFromJson && /^[A-Z0-9]{2,16}$/i.test(propertyFromJson)
+        ? propertyFromJson
+        : null) ??
+      (userOrg && /^[A-Z0-9]{2,16}$/i.test(userOrg) ? userOrg : null),
+    propertyName: extractAttr(html, 'data-property-name'),
+  };
+}
+
+/** Live shell may omit data-property-name; require exact code+tenant+title+banner. */
+export function livePropertyNameSatisfied(input: {
+  html: string;
+  title: string;
+  expectedPropertyCode: string;
+  expectedPropertyName: string;
+  bindingPropertyName: string | null;
+}): boolean {
+  if (input.bindingPropertyName === input.expectedPropertyName) return true;
+  if (input.bindingPropertyName != null) return false;
+  const titleOk = new RegExp(
+    `Infor HMS\\s*-\\s*${escapeRegExp(input.expectedPropertyCode)}`,
+    'i',
+  ).test(input.title);
+  return titleOk && input.html.includes(input.expectedPropertyName);
+}
+
 /**
  * Fetch-backed page for fixture tests (no Chromium). Applies context route
  * handlers before network I/O so policy can abort unknown/mutation requests.
@@ -345,12 +418,11 @@ export function createFetchBrowserFactory(
       }
 
       async readPropertyBinding() {
-        const html = this.#html;
-        return {
-          tenant: extractAttr(html, 'data-tenant'),
-          propertyCode: extractAttr(html, 'data-property-code'),
-          propertyName: extractAttr(html, 'data-property-name'),
-        };
+        return extractPropertyBindingFromDom({
+          html: this.#html,
+          title: await this.title(),
+          pageUrl: this.#url,
+        });
       }
 
       async fillLogin(username: string, password: string) {
@@ -850,9 +922,21 @@ export function createHmsRuntime(options: HmsRuntimeOptions): HmsRuntime {
     if (binding.propertyCode !== secret.expectedPropertyCode) {
       throw new HmsRuntimeError('wrong_property', 'property code mismatch');
     }
-    if (binding.propertyName !== secret.expectedPropertyName) {
-      throw new HmsRuntimeError('wrong_property', 'property name mismatch');
+    if (binding.propertyName === secret.expectedPropertyName) return;
+    const html = await page.content();
+    const title = await page.title();
+    if (
+      livePropertyNameSatisfied({
+        html,
+        title,
+        expectedPropertyCode: secret.expectedPropertyCode,
+        expectedPropertyName: secret.expectedPropertyName,
+        bindingPropertyName: binding.propertyName,
+      })
+    ) {
+      return;
     }
+    throw new HmsRuntimeError('wrong_property', 'property name mismatch');
   }
 
   /**
@@ -1335,13 +1419,11 @@ function wrapPlaywrightPage(page: {
     async readPropertyBinding() {
       const html = await page.content();
       const title = await page.title();
-      return {
-        tenant: extractAttr(html, 'data-tenant'),
-        propertyCode:
-          extractAttr(html, 'data-property-code') ??
-          (/HRCEN/.test(title) ? 'HRCEN' : null),
-        propertyName: extractAttr(html, 'data-property-name'),
-      };
+      return extractPropertyBindingFromDom({
+        html,
+        title,
+        pageUrl: page.url(),
+      });
     },
     async fillLogin(username, password) {
       const userid = page.locator('input[name="userid"]');

@@ -29,7 +29,16 @@ function getStaticRule(
   origin: string,
   id: string,
   path: string,
-  resourceTypes: Array<'stylesheet' | 'script' | 'image' | 'font' | 'document'>,
+  resourceTypes: Array<
+    | 'stylesheet'
+    | 'script'
+    | 'image'
+    | 'font'
+    | 'document'
+    | 'other'
+    | 'xhr'
+    | 'fetch'
+  >,
 ): RequestRule {
   return {
     id,
@@ -118,6 +127,12 @@ export function buildLiveGuestStayChromeGetRules(origin: string): RequestRule[] 
       '/web/resources/shared/css/SourceSansPro-font/SourceSansPro-It.ttf',
       ['font'],
     ),
+    getStaticRule(
+      origin,
+      'live-login-font-black',
+      '/web/resources/shared/css/SourceSansPro-font/SourceSansPro-Black.ttf',
+      ['font'],
+    ),
     getStaticRule(origin, 'live-post-login-root', '/', ['document']),
     getStaticRule(
       origin,
@@ -176,6 +191,128 @@ export function buildLiveGuestStayChromeGetRules(origin: string): RequestRule[] 
       '/web/resources/inforhms/images/toolbar/new-document.svg',
       ['image'],
     ),
+    // Soft-capture COMMON chrome GETs only (2026-08-03). Never mutation POSTs.
+    getStaticRule(
+      origin,
+      'live-toolbar-user',
+      '/web/resources/inforhms/images/toolbar/user.svg',
+      ['image', 'other'],
+    ),
+    getStaticRule(
+      origin,
+      'live-toolbar-help',
+      '/web/resources/inforhms/images/toolbar/help.svg',
+      ['image', 'other'],
+    ),
+    getStaticRule(
+      origin,
+      'live-toolbar-info',
+      '/web/resources/inforhms/images/toolbar/info.svg',
+      ['image', 'other'],
+    ),
+    getStaticRule(
+      origin,
+      'live-toolbar-logout',
+      '/web/resources/inforhms/images/toolbar/logout.svg',
+      ['image', 'other'],
+    ),
+    getStaticRule(
+      origin,
+      'live-toolbar-overlay-line',
+      '/web/resources/inforhms/images/toolbar/overlay-line.svg',
+      ['image', 'other'],
+    ),
+    getStaticRule(
+      origin,
+      'live-toolbar-settings',
+      '/web/resources/inforhms/images/toolbar/settings.svg',
+      ['image', 'other'],
+    ),
+    getStaticRule(
+      origin,
+      'live-toolbar-save-icon',
+      '/web/resources/inforhms/images/toolbar/save.svg',
+      ['image', 'other'],
+    ),
+    getStaticRule(
+      origin,
+      'live-toolbar-refresh',
+      '/web/resources/inforhms/images/toolbar/refresh.svg',
+      ['image', 'other'],
+    ),
+    getStaticRule(
+      origin,
+      'live-toolbar-quick-access',
+      '/web/resources/inforhms/images/toolbar/quick-access.svg',
+      ['image', 'other'],
+    ),
+    getStaticRule(
+      origin,
+      'live-toolbar-caret-down',
+      '/web/resources/inforhms/images/toolbar/caret-down.svg',
+      ['image', 'other'],
+    ),
+    getStaticRule(
+      origin,
+      'live-toolbar-send-submit-icon',
+      '/web/resources/inforhms/images/toolbar/send-submit.svg',
+      ['image', 'other'],
+    ),
+    getStaticRule(
+      origin,
+      'live-toolbar-bullet-list',
+      '/web/resources/inforhms/images/toolbar/bullet-list.svg',
+      ['image', 'other'],
+    ),
+    getStaticRule(
+      origin,
+      'live-toolbar-expand-app-tray',
+      '/web/resources/inforhms/images/toolbar/expand-app-tray.svg',
+      ['image', 'other'],
+    ),
+    getStaticRule(
+      origin,
+      'live-grid-hd-btn',
+      '/web/resources/inforhms/images/grid/grid3-hd-btn.png',
+      ['image', 'other'],
+    ),
+    getStaticRule(
+      origin,
+      'live-tree-caret-down',
+      '/web/resources/inforhms/images/tree/caret-down.svg',
+      ['image', 'other'],
+    ),
+    getStaticRule(
+      origin,
+      'live-tree-folder',
+      '/web/resources/inforhms/images/tree/folder.svg',
+      ['image', 'other'],
+    ),
+    getStaticRule(
+      origin,
+      'live-slider-bg',
+      '/web/resources/inforhms/images/slider/slider-bg.png',
+      ['image', 'other'],
+    ),
+    getStaticRule(
+      origin,
+      'live-slider-thumb',
+      '/web/resources/inforhms/images/slider/slider-thumb.png',
+      ['image', 'other'],
+    ),
+    {
+      id: 'live-interface-status-alert',
+      origin,
+      method: 'GET',
+      path: '/web/jsp/interfaceStatusAlert.jsp',
+      resourceTypes: ['xhr', 'fetch', 'document'],
+      fixedQuery: {},
+      variableQuery: {},
+      fixedBody: {},
+      variableBody: {},
+      maxBodyBytes: 65_536,
+      redirectPolicy: 'same-reviewed-chain',
+    },
   ];
 }
 
