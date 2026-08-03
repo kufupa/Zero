@@ -25,9 +25,149 @@ const VAR64 = { pattern: '.{0,64}', maxLength: 64 } as const;
 const VAR32 = { pattern: '.{0,32}', maxLength: 32 } as const;
 const VAR16 = { pattern: '.{0,16}', maxLength: 16 } as const;
 
+function getStaticRule(
+  origin: string,
+  id: string,
+  path: string,
+  resourceTypes: Array<'stylesheet' | 'script' | 'image' | 'font' | 'document'>,
+): RequestRule {
+  return {
+    id,
+    origin,
+    method: 'GET',
+    path,
+    resourceTypes,
+    fixedQuery: {},
+    variableQuery: {},
+    fixedBody: {},
+    variableBody: {},
+    maxBodyBytes: 4096,
+    redirectPolicy: 'same-reviewed-chain',
+  };
+}
+
+/**
+ * Reviewed static chrome GETs from live-login-inventory (login + COMMON shell).
+ * Must merge into production manifests — any unknown_path aborts the Playwright context.
+ */
+export function buildLiveGuestStayChromeGetRules(origin: string): RequestRule[] {
+  return [
+    getStaticRule(origin, 'live-login-css', '/web/resources/inforhms/HMS-min.css', [
+      'stylesheet',
+    ]),
+    getStaticRule(
+      origin,
+      'live-login-jquery',
+      '/web/resources/shared/scripts/jquery-3.6.0.min.js',
+      ['script'],
+    ),
+    getStaticRule(
+      origin,
+      'live-login-jquery-json',
+      '/web/resources/shared/scripts/jquery.json-2.3.min.js',
+      ['script'],
+    ),
+    getStaticRule(
+      origin,
+      'live-login-companyon',
+      '/web/resources/shared/scripts/infor-companyon-client.js',
+      ['script'],
+    ),
+    getStaticRule(origin, 'live-login-all-js', '/web/base/login-all.js', ['script']),
+    getStaticRule(
+      origin,
+      'live-login-error-svg',
+      '/web/resources/inforhms/images/toolbar/error-solid.svg',
+      ['image'],
+    ),
+    getStaticRule(
+      origin,
+      'live-login-logo-svg',
+      '/web/resources/inforhms/images/shared/logo.svg',
+      ['image'],
+    ),
+    getStaticRule(
+      origin,
+      'live-login-font-semibold',
+      '/web/resources/shared/css/SourceSansPro-font/SourceSansPro-Semibold.ttf',
+      ['font'],
+    ),
+    getStaticRule(
+      origin,
+      'live-login-font-regular',
+      '/web/resources/shared/css/SourceSansPro-font/SourceSansPro-Regular.ttf',
+      ['font'],
+    ),
+    getStaticRule(
+      origin,
+      'live-login-font-it',
+      '/web/resources/shared/css/SourceSansPro-font/SourceSansPro-It.ttf',
+      ['font'],
+    ),
+    getStaticRule(origin, 'live-post-login-root', '/', ['document']),
+    getStaticRule(
+      origin,
+      'live-common-vault-utility',
+      '/web/resources/shared/scripts/vault/vaultUtility.js',
+      ['script'],
+    ),
+    getStaticRule(
+      origin,
+      'live-common-parent-facade',
+      '/web/resources/shared/scripts/vault/parentFacade.js',
+      ['script'],
+    ),
+    getStaticRule(
+      origin,
+      'live-common-parent-facade-impl',
+      '/web/resources/shared/scripts/vault/parentFacadeImpl.js',
+      ['script'],
+    ),
+    getStaticRule(
+      origin,
+      'live-common-aes',
+      '/web/resources/shared/scripts/cryptojs/aes.js',
+      ['script'],
+    ),
+    getStaticRule(
+      origin,
+      'live-common-pbkdf2',
+      '/web/resources/shared/scripts/cryptojs/pbkdf2.js',
+      ['script'],
+    ),
+    getStaticRule(
+      origin,
+      'live-common-aes-util',
+      '/web/resources/shared/scripts/cryptojs/AesUtil.js',
+      ['script'],
+    ),
+    getStaticRule(
+      origin,
+      'live-common-sha256',
+      '/web/resources/shared/scripts/cryptojs/sha256-min.js',
+      ['script'],
+    ),
+    getStaticRule(origin, 'live-common-all-classes', '/web/base/all-classes.js', [
+      'script',
+    ]),
+    getStaticRule(
+      origin,
+      'live-toolbar-dropdown',
+      '/web/resources/inforhms/images/toolbar/dropdown.svg',
+      ['image'],
+    ),
+    getStaticRule(
+      origin,
+      'live-toolbar-new-doc-icon',
+      '/web/resources/inforhms/images/toolbar/new-document.svg',
+      ['image'],
+    ),
+  ];
+}
+
 /**
  * Functional Guest Stay read POSTs (+ login/bootstrap) for a live origin.
- * Does not include chrome image/font/script GETs — callers merge those.
+ * Chrome image/font/script GETs come from buildLiveGuestStayChromeGetRules.
  * OSRESS.search omitted until exactSearchCandidate binds via
  * buildExactOsressSearchManifest (fail closed — no variable confirmation body).
  */
@@ -218,12 +358,15 @@ export function buildLiveGuestStayFunctionalRules(origin: string): RequestRule[]
   ];
 }
 
-/** Request-policy-only manifest for unit tests / future live session factory. */
+/** Request-policy-only manifest for unit tests / production live sessions. */
 export function buildLiveGuestStayReadManifest(
   origin: string,
 ): RequestPolicyManifest {
   return requestPolicyManifestSchema.parse({
-    rules: buildLiveGuestStayFunctionalRules(origin),
+    rules: [
+      ...buildLiveGuestStayChromeGetRules(origin),
+      ...buildLiveGuestStayFunctionalRules(origin),
+    ],
   });
 }
 
@@ -344,6 +487,7 @@ export function buildExactOsressSearchManifest(
 ): RequestPolicyManifest {
   return requestPolicyManifestSchema.parse({
     rules: [
+      ...buildLiveGuestStayChromeGetRules(origin),
       ...buildLiveGuestStayFunctionalRules(origin),
       buildExactOsressSearchRule(origin, candidate),
     ],

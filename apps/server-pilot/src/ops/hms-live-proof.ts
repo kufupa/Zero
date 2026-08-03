@@ -218,9 +218,13 @@ function mapRuntimeFail(err: unknown): HmsOperatorFailCode {
     if (/WEBSOCKET/i.test(err.code)) return 'WEBSOCKET_BLOCKED';
     if (/POPUP/i.test(err.code)) return 'POPUP_BLOCKED';
     if (/DOWNLOAD/i.test(err.code)) return 'DOWNLOAD_BLOCKED';
-    if (/POLICY/i.test(err.code)) return 'POLICY_BLOCK';
+    if (/POLICY|unknown_path|session_failed/i.test(err.code)) return 'POLICY_BLOCK';
     if (/SCHEMA|malformed|correlation/i.test(err.code)) return 'SCHEMA_DRIFT';
     if (/TRANSIENT|network|chromium/i.test(err.code)) return 'TRANSIENT_NETWORK';
+  }
+  const msg = err instanceof Error ? err.message : String(err);
+  if (/Target page, context or browser has been closed/i.test(msg)) {
+    return 'POLICY_BLOCK';
   }
   return 'UNKNOWN_SAFE';
 }
