@@ -217,61 +217,6 @@ export function parseAndCorrelateGuestStayHtml(
   };
 }
 
-async function clickExactMenuLabel(
-  page: HmsPage,
-  label: 'Front Desk' | 'Guest Stay',
-): Promise<boolean> {
-  try {
-    if (label === 'Front Desk') {
-      return await page.evaluateStableDom(() => {
-        const nodes = Array.from(
-          document.querySelectorAll('td, span, div, a, label, li, em'),
-        );
-        for (const el of nodes) {
-          const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
-          if (!/^Front Desk$/i.test(text)) continue;
-          (el as HTMLElement).click();
-          return true;
-        }
-        return false;
-      });
-    }
-    return await page.evaluateStableDom(() => {
-      const nodes = Array.from(
-        document.querySelectorAll('td, span, div, a, label, li, em'),
-      );
-      for (const el of nodes) {
-        const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
-        if (!/^Guest Stay$/i.test(text)) continue;
-        (el as HTMLElement).click();
-        return true;
-      }
-      return false;
-    });
-  } catch {
-    await page.click(`text=${label}`).catch(() => undefined);
-    return false;
-  }
-}
-
-async function openGuestStayViaOsresvPost(
-  page: HmsPage,
-  origin: string,
-): Promise<void> {
-  // Live ExtJS opens Guest Stay as POST /web/base/OSRESV?FUNCTION_CLASS=&USER_FUNCTION_NAME=
-  await page.postForm(
-    `${origin}/web/base/OSRESV?FUNCTION_CLASS=SCREEN&USER_FUNCTION_NAME=OSRESV`,
-    {
-      SYSTEM_FUNCTION_NAME: 'OSRESV',
-      USER_FUNCTION_NAME: 'OSRESV',
-      CURRENT_TAB_NAME: 'HDR',
-      MENU_MODULE_KEY: '1',
-      FUNCTION_CLASS: 'SCREEN',
-      removescreenflows: 'false',
-    },
-  );
-}
-
 async function navigateGuestStay(page: HmsPage, origin: string): Promise<void> {
   // Fixture live-infor: direct OSRESV shell already has search field.
   try {
@@ -284,15 +229,12 @@ async function navigateGuestStay(page: HmsPage, origin: string): Promise<void> {
     return;
   }
 
-  // Live COMMON: expand Front Desk → Guest Stay (DOM click; locator often times out).
-  const front = await clickExactMenuLabel(page, 'Front Desk');
-  if (front) {
-    await new Promise((r) => setTimeout(r, 1000));
-  }
-  const guest = await clickExactMenuLabel(page, 'Guest Stay');
-  if (guest) {
-    await new Promise((r) => setTimeout(r, 2500));
-  }
+  // Live COMMON: Front Desk expands; Guest Stay triggers ExtJS OSRESV POST.
+  // Playwright force-click — tree nodes are often covered / not actionability-clean.
+  await page.click('text=Front Desk').catch(() => undefined);
+  await new Promise((r) => setTimeout(r, 1200));
+  await page.click('text=Guest Stay').catch(() => undefined);
+  await new Promise((r) => setTimeout(r, 2500));
 
   html = await page.content().catch(() => '');
   if (/name="search"|ff_confirmationnumber/i.test(html)) {
@@ -301,7 +243,17 @@ async function navigateGuestStay(page: HmsPage, origin: string): Promise<void> {
 
   // Fallback: reviewed OSRESV open POST (query + body). Bare GET is insufficient.
   try {
-    await openGuestStayViaOsresvPost(page, origin);
+    await page.postForm(
+      `${origin}/web/base/OSRESV?FUNCTION_CLASS=SCREEN&USER_FUNCTION_NAME=OSRESV`,
+      {
+        SYSTEM_FUNCTION_NAME: 'OSRESV',
+        USER_FUNCTION_NAME: 'OSRESV',
+        CURRENT_TAB_NAME: 'HDR',
+        MENU_MODULE_KEY: '1',
+        FUNCTION_CLASS: 'SCREEN',
+        removescreenflows: 'false',
+      },
+    );
   } catch {
     /* continue wait loop */
   }

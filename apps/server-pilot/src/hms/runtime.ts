@@ -1464,7 +1464,7 @@ function wrapPlaywrightPage(page: {
   title(): Promise<string>;
   locator(selector: string): {
     fill(value: string): Promise<void>;
-    click(): Promise<void>;
+    click(options?: { force?: boolean }): Promise<void>;
     press(key: string): Promise<void>;
   };
   getByLabel(text: string): { fill(value: string): Promise<void> };
@@ -1589,7 +1589,7 @@ function wrapPlaywrightPage(page: {
       }
     },
     async click(selector) {
-      await page.locator(selector).click();
+      await page.locator(selector).click({ force: true });
     },
     async fill(selector, value) {
       await page.locator(selector).fill(value);
