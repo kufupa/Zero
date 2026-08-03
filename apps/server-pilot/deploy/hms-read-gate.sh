@@ -6,6 +6,7 @@
 #   bash apps/server-pilot/deploy/hms-read-gate.sh --fixture-only
 #   bash apps/server-pilot/deploy/hms-read-gate.sh --full   # still no live HMS from this script
 #
+# Never sources .env.production / .env into Vitest.
 # Outputs under .superpowers/sdd/hms-read-foundation/gates/ (gitignored via local .gitignore).
 set -euo pipefail
 
@@ -14,7 +15,6 @@ SERVER_PILOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 REPO_ROOT="$(cd "${SERVER_PILOT}/../.." && pwd)"
 GATE_DIR="${REPO_ROOT}/.superpowers/sdd/hms-read-foundation/gates"
 MODE="${1:---fixture-only}"
-ENV_FILE="${ENV_FILE:-${SERVER_PILOT}/.env.production}"
 
 mkdir -p "$GATE_DIR"
 cat > "${GATE_DIR}/.gitignore" <<'EOF'
@@ -25,21 +25,8 @@ EOF
 echo "== hms-read-gate: mode=${MODE} repo=${REPO_ROOT} =="
 cd "$REPO_ROOT"
 
-if [ -f "$ENV_FILE" ]; then
-  set -a
-  # shellcheck disable=SC1090
-  source "$ENV_FILE"
-  set +a
-fi
-
-if [ -n "${TEST_DATABASE_URL:-}" ]; then
-  export DATABASE_URL="$TEST_DATABASE_URL"
-  export HMS_DB_TEST_REQUIRED=1
-else
-  unset DATABASE_URL
-  export HMS_DB_TEST_REQUIRED=0
-fi
-unset VITEST_ALLOW_PILOT_RDS
+# Refuse pilot-RDS Vitest escape hatch and any inherited production DATABASE_URL.
+unset DATABASE_URL VITEST_ALLOW_PILOT_RDS
 
 export NODE_ENV=test
 export PATH="${HOME}/.local/share/pnpm:${HOME}/.nvm/versions/node/$(ls "${HOME}/.nvm/versions/node" 2>/dev/null | sort -V | tail -1)/bin:${PATH}"
@@ -50,16 +37,26 @@ fail() {
   exit 1
 }
 
-if [ "$MODE" = "--full" ] && [ "${HMS_DB_TEST_REQUIRED}" != "1" ]; then
-  fail "TEST_DATABASE_URL must point to a disposable non-production DB for --full"
-fi
+require_disposable_test_db() {
+  if [ -z "${TEST_DATABASE_URL:-}" ]; then
+    fail "TEST_DATABASE_URL must point to a disposable non-production DB for --full"
+  fi
+  if [ "${CONFIRM_DISPOSABLE_TEST_DB:-}" != "1" ]; then
+    fail "CONFIRM_DISPOSABLE_TEST_DB=1 required before DB Vitest"
+  fi
+  case "${TEST_DATABASE_URL}" in
+    *nava-zero-mail-pilot*)
+      fail "REFUSE TEST_DATABASE_URL pointing at pilot RDS (nava-zero-mail-pilot)"
+      ;;
+  esac
+}
 
 cd "$SERVER_PILOT"
 
 # Fixture boundary/eval suites are unit-only — run with DATABASE_URL unset.
 echo "== hms-read-gate: production-boundary + eval =="
 (
-  unset DATABASE_URL
+  unset DATABASE_URL VITEST_ALLOW_PILOT_RDS
   export HMS_DB_TEST_REQUIRED=0
   pnpm exec vitest run \
     tests/hms-production-boundary.test.ts \
@@ -69,14 +66,17 @@ echo "== hms-read-gate: production-boundary + eval =="
 
 echo "== hms-read-gate: shadow eval =="
 (
-  unset DATABASE_URL
+  unset DATABASE_URL VITEST_ALLOW_PILOT_RDS
   pnpm run eval:hms-shadow
 ) | tee "${GATE_DIR}/hms-shadow-eval.json" || fail "eval:hms-shadow failed"
 
 if [ "$MODE" = "--full" ]; then
-  if [ "${HMS_DB_TEST_REQUIRED}" = "1" ]; then
-    echo "== hms-read-gate: HMS vitest bundle (DB required, --full only) =="
-    pnpm exec vitest run \
+  require_disposable_test_db
+  echo "== hms-read-gate: HMS vitest bundle (DB required, --full only) =="
+  (
+    unset DATABASE_URL VITEST_ALLOW_PILOT_RDS
+    export HMS_DB_TEST_REQUIRED=1
+    DATABASE_URL="$TEST_DATABASE_URL" pnpm exec vitest run \
       tests/hms-contracts.test.ts \
       tests/hms-request-policy.test.ts \
       tests/hms-runtime.test.ts \
@@ -91,12 +91,12 @@ if [ "$MODE" = "--full" ]; then
       tests/ai-workflow-run-contract.test.ts \
       tests/ai-worker-contract.test.ts \
       tests/ai-eval-runner.test.ts \
-      --reporter=dot || fail "HMS vitest bundle failed"
-  fi
+      --reporter=dot
+  ) || fail "HMS vitest bundle failed"
 elif [ "$MODE" = "--fixture-only" ]; then
   echo "== hms-read-gate: non-DB HMS unit suite (fixture-only) =="
   (
-    unset DATABASE_URL
+    unset DATABASE_URL VITEST_ALLOW_PILOT_RDS
     export HMS_DB_TEST_REQUIRED=0
     pnpm exec vitest run \
       tests/hms-contracts.test.ts \
@@ -117,6 +117,7 @@ fi
 echo "== hms-read-gate: playwright fixture config (API journeys) =="
 cd "$REPO_ROOT"
 if command -v pnpm >/dev/null 2>&1; then
+  unset DATABASE_URL VITEST_ALLOW_PILOT_RDS
   pnpm --dir packages/testing exec playwright test \
     --config=playwright.hms-fixture.config.ts \
     || fail "playwright hms-fixture failed"
@@ -149,7 +150,7 @@ cat > "$REPORT_PATH" <<EOF
     "set shadow; run labelled corpus on EC2",
     "live read canary via SSM only after fixture/security gates",
     "review metrics + request-policy violations",
-    "set enabled only after hard/statistical gates",
+    "set shadow only after hard/statistical gates (enabled forbidden)",
     "rollback path: set off"
   ]
 }
@@ -163,5 +164,5 @@ echo "2. bash apps/server-pilot/deploy/ops-deploy.sh --migrate"
 echo "3. Keep HMS_DRAFT_ENRICHMENT_MODE=off until shadow green"
 echo "4. Shadow labelled corpus >=30 for statistical gates"
 echo "5. Live read canary via ssm-run-command.sh (approved reads only)"
-echo "6. Flip enabled only after hard+stat gates; else off"
+echo "6. Shadow only after hard+stat gates; enabled forever forbidden; else off"
 exit 0

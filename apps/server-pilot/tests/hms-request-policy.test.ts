@@ -694,3 +694,32 @@ describe('HMS fail-closed request matrix', () => {
     }
   });
 });
+
+describe('browser context WebSocket pre-connect guard contract', () => {
+  it('requires routeWebSocket install API before navigation helpers', async () => {
+    const { createFetchBrowserFactory } = await import('../src/hms/runtime.js');
+    const factory = createFetchBrowserFactory();
+    const browser = await factory({});
+    const context = await browser.newContext({
+      acceptDownloads: false,
+      serviceWorkers: 'block',
+    });
+    expect(typeof context.routeWebSocket).toBe('function');
+    const order: string[] = [];
+    await context.routeWebSocket('**/*', () => {
+      order.push('ws');
+    });
+    order.push('after-ws-route');
+    await context.route('**/*', async (route) => {
+      await route.continue();
+    });
+    order.push('after-http-route');
+    const page = await context.newPage();
+    order.push('page');
+    await page.close();
+    await context.close();
+    await browser.close();
+    expect(order.indexOf('after-ws-route')).toBeLessThan(order.indexOf('page'));
+    expect(order[0]).toBe('after-ws-route');
+  });
+});

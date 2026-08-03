@@ -90,6 +90,12 @@ while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
       log "attempt ${attempt}: pm2 http not online"
       ok=0
     fi
+    # Conditional HMS check: hms-ai-worker must stay off after boot.
+    # Sole starter = ops-hms-shadow.sh. Stale proofs invalidated by pm2-boot.
+    if pm2 jlist 2>/dev/null | grep -q '"name":"hms-ai-worker"'; then
+      log "attempt ${attempt}: unexpected hms-ai-worker present (HMS_OFF required after boot)"
+      ok=0
+    fi
   else
     log "attempt ${attempt}: pm2 missing"
     ok=0

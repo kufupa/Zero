@@ -51,6 +51,19 @@ export const aiRouter = tRouter({
   refreshHmsCandidate: mailboxProcedure
     .input(z.object({ threadId: z.string() }))
     .mutation(async ({ input, ctx }) => {
+      // Shadow: fixed block before any DB write (enqueue helper also gates).
+      const { parseEnv } = await import('../../env.js');
+      const { HMS_MANUAL_OPS_REQUIRED } = await import('../../ai/hms-shadow.js');
+      if (
+        parseEnv(process.env as Record<string, string | undefined>)
+          .HMS_DRAFT_ENRICHMENT_MODE === 'shadow'
+      ) {
+        throw new TRPCError({
+          code: 'FORBIDDEN',
+          message: HMS_MANUAL_OPS_REQUIRED,
+        });
+      }
+
       const db = getDb();
       const transportId = ctx.activeTransportId;
       await requireThreadForTransport(db, input.threadId, transportId);

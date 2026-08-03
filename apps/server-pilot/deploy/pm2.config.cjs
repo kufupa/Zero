@@ -12,6 +12,7 @@ module.exports = {
       max_restarts: 10,
       env: {
         NODE_ENV: 'production',
+        NAVA_BUILD_COMMIT: process.env.NAVA_BUILD_COMMIT ?? '',
       },
     },
     {
@@ -25,6 +26,7 @@ module.exports = {
       max_restarts: 10,
       env: {
         NODE_ENV: 'production',
+        NAVA_BUILD_COMMIT: process.env.NAVA_BUILD_COMMIT ?? '',
       },
     },
     {
@@ -44,33 +46,47 @@ module.exports = {
         AI_DRAFTS_ENABLED: process.env.AI_DRAFTS_ENABLED ?? 'false',
         AI_MODEL_ID: process.env.AI_MODEL_ID ?? 'amazon.nova-lite-v1:0',
         BEDROCK_REGION: process.env.BEDROCK_REGION ?? 'us-east-1',
+        NAVA_BUILD_COMMIT: process.env.NAVA_BUILD_COMMIT ?? '',
       },
     },
     {
+      // Started ONLY by ops-hms-shadow.sh start — never by deploy/restart/boot.
+      // Permanent failure must not loop: autorestart false.
       name: 'hms-ai-worker',
       script: 'dist/ai/worker.js',
       cwd: '/home/ubuntu/repos/zero/apps/server-pilot',
       instances: 1,
       exec_mode: 'fork',
-      autorestart: true,
+      autorestart: false,
       min_uptime: 10_000,
-      max_restarts: 10,
+      max_restarts: 0,
       env: {
         NODE_ENV: 'production',
         AI_WORKER_LANE: 'hms',
         HMS_DRAFT_ENRICHMENT_MODE: process.env.HMS_DRAFT_ENRICHMENT_MODE ?? 'off',
         HMS_READ_SECRET_ARN: process.env.HMS_READ_SECRET_ARN ?? '',
         HMS_CHROMIUM_EXECUTABLE_PATH:
-          process.env.HMS_CHROMIUM_EXECUTABLE_PATH ?? '',
+          process.env.HMS_CHROMIUM_EXECUTABLE_PATH ?? '/opt/nava/chromium/chrome',
+        HMS_READ_ROLE_PROOF_PATH:
+          process.env.HMS_READ_ROLE_PROOF_PATH ??
+          '/opt/nava/shared/hms-read-role-proof.v1.json',
         HMS_HEALTH_STATUS_PATH:
           process.env.HMS_HEALTH_STATUS_PATH ?? '/tmp/nava-zero-hms-health.json',
+        HMS_EXPECTED_TENANT: process.env.HMS_EXPECTED_TENANT ?? 'HMS_LEGACY',
+        HMS_EXPECTED_PROPERTY_CODE:
+          process.env.HMS_EXPECTED_PROPERTY_CODE ?? 'HRCEN',
+        HMS_EXPECTED_TRANSPORT_ID:
+          process.env.HMS_EXPECTED_TRANSPORT_ID ?? 'transport-centurion',
         HMS_RUN_DEADLINE_MS: process.env.HMS_RUN_DEADLINE_MS ?? '',
         HMS_CIRCUIT_COOLDOWN_MS: process.env.HMS_CIRCUIT_COOLDOWN_MS ?? '',
+        AI_WORKER_IDEMPOTENCY_PREFIX:
+          process.env.AI_WORKER_IDEMPOTENCY_PREFIX ?? '',
         AI_ENABLED: process.env.AI_ENABLED ?? 'true',
         AI_WRITE_GATE_ENABLED: process.env.AI_WRITE_GATE_ENABLED ?? 'false',
         AI_DRAFTS_ENABLED: process.env.AI_DRAFTS_ENABLED ?? 'false',
         AI_MODEL_ID: process.env.AI_MODEL_ID ?? 'amazon.nova-lite-v1:0',
         BEDROCK_REGION: process.env.BEDROCK_REGION ?? 'us-east-1',
+        NAVA_BUILD_COMMIT: process.env.NAVA_BUILD_COMMIT ?? '',
       },
     },
   ],

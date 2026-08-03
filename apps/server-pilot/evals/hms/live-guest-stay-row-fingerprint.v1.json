@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "selectorKeys": [
+    "arrivalAttr",
+    "confirmationAttr",
+    "correlationFailed",
+    "departureAttr",
+    "externalRefAttr",
+    "guestNameAttr",
+    "noResults",
+    "ratePlanAttr",
+    "resultRow",
+    "resultsTable",
+    "roomTypeAttr",
+    "staleRowAttr",
+    "statusAttr"
+  ],
+  "columnKeys": [
+    "confirmationNumber",
+    "externalReference",
+    "guestName",
+    "arrivalDate",
+    "departureDate",
+    "reservationStatus",
+    "roomType",
+    "ratePlan"
+  ],
+  "manifestSha256": "6808b0c580dc5adc36b0652556e4a1544926c2acc4df5a2b4ecda274c1db603f",
+  "valuesCaptured": false
+}

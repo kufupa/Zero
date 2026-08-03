@@ -2053,62 +2053,122 @@ describe('deploy config', () => {
     expect(syntax.status).toBe(0);
   });
 
-  it('production-env vitest gates require a disposable test database', async () => {
-    const { readdirSync, readFileSync } = await import('node:fs');
+  it('vitest-running gates unset pilot RDS vars and never source env files', async () => {
+    const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
     const { dirname, join } = await import('node:path');
     const here = dirname(fileURLToPath(import.meta.url));
     const deployDir = join(here, '..', 'deploy');
 
-    const sourcesProductionEnv = (script: string) =>
-      script.includes('.env.production') &&
-      (script.includes('source "$ENV_FILE"') ||
-        script.includes('source /home/ubuntu/.env.production') ||
-        script.includes('source .env.production'));
+    const vitestGates = [
+      'hms-read-gate.sh',
+      'mail-search-gate.sh',
+      'fixture-loopback-gate.sh',
+      'wire-gate.sh',
+      'ai-gate.sh',
+    ] as const;
 
-    const invokesVitest = (script: string) =>
-      /\bpnpm test\b/.test(script) || /\bpnpm exec vitest\b/.test(script);
+    const sourcesForbiddenEnv = (script: string) =>
+      /source\s+(?:\$ENV_FILE|"\$ENV_FILE"|'\$ENV_FILE')/.test(script) ||
+      /source\s+\/home\/ubuntu\/\.env\.production/.test(script) ||
+      /source\s+(?:\.\/)?\.env\.production/.test(script) ||
+      /source\s+(?:\$\{?SERVER_PILOT\}?\/)?\.env(?:\s|$|")/.test(script) ||
+      /source\s+"\$\{SERVER_PILOT\}\/\.env"/.test(script);
 
-    // AI/Bedrock gates stay DB-free and do not source production DB settings into Vitest.
-    const dbFreeGateNames = new Set(['ai-gate.sh', 'bedrock-live-gate.sh']);
-
-    const rdsVitestGates = readdirSync(deployDir)
-      .filter((name) => name.endsWith('.sh'))
-      .filter((name) => !dbFreeGateNames.has(name))
-      .filter((name) => {
-        const script = readFileSync(join(deployDir, name), 'utf8');
-        return sourcesProductionEnv(script) && invokesVitest(script);
-      });
-
-    expect(rdsVitestGates.length).toBeGreaterThanOrEqual(3);
-    for (const name of rdsVitestGates) {
+    for (const name of vitestGates) {
       const script = readFileSync(join(deployDir, name), 'utf8');
-      expect(script, `${name} must require TEST_DATABASE_URL`).toContain(
-        'TEST_DATABASE_URL',
+      expect(script, `${name} must unset DATABASE_URL VITEST_ALLOW_PILOT_RDS`).toMatch(
+        /unset\s+DATABASE_URL\s+VITEST_ALLOW_PILOT_RDS/,
       );
-      expect(script, `${name} must replace inherited DATABASE_URL`).toContain(
-        'export DATABASE_URL="$TEST_DATABASE_URL"',
-      );
-      expect(script, `${name} must clear the legacy escape hatch`).toContain(
-        'unset VITEST_ALLOW_PILOT_RDS',
-      );
-      expect(script, `${name} must never export the legacy escape hatch`).not.toContain(
-        'export VITEST_ALLOW_PILOT_RDS=1',
+      expect(
+        sourcesForbiddenEnv(script),
+        `${name} must never source .env.production/.env`,
+      ).toBe(false);
+      expect(script, `${name} must never export VITEST_ALLOW_PILOT_RDS=1`).not.toContain(
+        'VITEST_ALLOW_PILOT_RDS=1',
       );
       expect(script, `${name} must use pnpm exec vitest run`).toContain(
         'pnpm exec vitest run',
       );
     }
+  });
 
-    for (const name of [
+  it('DB vitest gates require disposable URL confirm and reject pilot host', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const deployDir = join(here, '..', 'deploy');
+
+    // Gates whose Vitest path always needs a disposable DB.
+    const alwaysDbVitestGates = [
       'mail-search-gate.sh',
       'fixture-loopback-gate.sh',
       'wire-gate.sh',
-    ]) {
-      expect(rdsVitestGates, `expected ${name} in RDS vitest gates`).toContain(
-        name,
+    ] as const;
+
+    for (const name of alwaysDbVitestGates) {
+      const script = readFileSync(join(deployDir, name), 'utf8');
+      expect(script, `${name} must require TEST_DATABASE_URL`).toContain(
+        'TEST_DATABASE_URL',
+      );
+      expect(script, `${name} must require CONFIRM_DISPOSABLE_TEST_DB=1`).toContain(
+        'CONFIRM_DISPOSABLE_TEST_DB',
+      );
+      expect(script, `${name} must reject nava-zero-mail-pilot`).toContain(
+        'nava-zero-mail-pilot',
+      );
+      // Map TEST_DATABASE_URL → DATABASE_URL on the Vitest invocation only.
+      expect(
+        script,
+        `${name} must map TEST_DATABASE_URL onto vitest command only`,
+      ).toMatch(/DATABASE_URL="\$TEST_DATABASE_URL"\s+pnpm exec vitest/);
+      expect(script, `${name} must not globally export DATABASE_URL from TEST`).not.toMatch(
+        /^\s*export DATABASE_URL="\$TEST_DATABASE_URL"/m,
       );
     }
+
+    // hms-read-gate: fixture-only is DB-free; --full DB path must still be disposable-safe.
+    const hmsGate = readFileSync(join(deployDir, 'hms-read-gate.sh'), 'utf8');
+    expect(hmsGate).toContain('TEST_DATABASE_URL');
+    expect(hmsGate).toContain('CONFIRM_DISPOSABLE_TEST_DB');
+    expect(hmsGate).toContain('nava-zero-mail-pilot');
+    expect(hmsGate).toMatch(/DATABASE_URL="\$TEST_DATABASE_URL"\s+pnpm exec vitest/);
+  });
+
+  it('test-db helper rejects dotenv load and implicit .env reads', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const helper = readFileSync(join(here, 'helpers', 'test-db.ts'), 'utf8');
+
+    expect(helper).not.toContain('loadTestEnvFromDotenv');
+    expect(helper).not.toMatch(/readFileSync\([^)]*\.env/);
+    expect(helper).not.toMatch(/['"]\.env['"]/);
+    expect(helper).toContain('TEST_DATABASE_URL');
+    expect(helper).toContain('CONFIRM_DISPOSABLE_TEST_DB');
+    expect(helper).toContain('nava-zero-mail-pilot');
+    // Ambient DATABASE_URL without CONFIRM must not open a DB.
+    expect(helper).toMatch(/Refuse ambient DATABASE_URL/);
+    expect(helper).toMatch(/confirm !== true|CONFIRM_DISPOSABLE_TEST_DB === ['"]1['"]/);
+    expect(helper).not.toMatch(/Legacy callers may already have DATABASE_URL/);
+  });
+
+  it('import-hms-secret.sh accepts only credentialMode=view_only', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const script = readFileSync(join(here, '..', 'deploy', 'import-hms-secret.sh'), 'utf8');
+
+    expect(script).toContain('view_only');
+    expect(script).toMatch(/HMS_CREDENTIAL_MODE/);
+    expect(script).not.toMatch(/HMS_CREDENTIAL_MODE=audited_write/);
+    const refuseIdx = script.search(/!=\s*"view_only"|==\s*"view_only"/);
+    const putIdx = script.indexOf('put-secret-value');
+    expect(refuseIdx).toBeGreaterThanOrEqual(0);
+    expect(putIdx).toBeGreaterThan(refuseIdx);
   });
 
   it('AI and Bedrock gates never bypass pilot-RDS Vitest guard', async () => {
@@ -2133,10 +2193,16 @@ describe('deploy config', () => {
       );
     }
 
-    // ai-gate is DB-free: never source production env into Vitest.
+    // ai-gate is DB-free by default: never source production env into Vitest.
     expect(aiGate).not.toMatch(/source\s+"?\$\{?ENV_FILE/);
     expect(aiGate).not.toContain('source .env.production');
     expect(aiGate).toContain('pnpm exec vitest run');
+    // Optional DB path must use canonical TEST_DATABASE_URL + CONFIRM, map on vitest only.
+    expect(aiGate).toContain('TEST_DATABASE_URL');
+    expect(aiGate).toContain('CONFIRM_DISPOSABLE_TEST_DB');
+    expect(aiGate).toContain('nava-zero-mail-pilot');
+    expect(aiGate).toMatch(/DATABASE_URL="\$TEST_DATABASE_URL"\s+pnpm exec vitest/);
+    expect(aiGate).not.toMatch(/^\s*export DATABASE_URL=/m);
 
     // bedrock-live may source Bedrock/AWS settings, but must never invoke Vitest.
     expect(bedrockGate).not.toMatch(/\bpnpm exec vitest\b/);
@@ -2843,5 +2909,124 @@ describe('deploy config', () => {
     expect(gitignore).toContain('Nava.zip');
     expect(gitignore).toContain('.cursor/debug-*.log');
     expect(gitignore).toContain('.superpowers/sdd/');
+  });
+
+  describe('Task 5 HMS shadow ops lifecycle (DB-free)', () => {
+    it('generic deploy/restart/boot keep HMS off and start default apps only', async () => {
+      const { readFileSync } = await import('node:fs');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const here = dirname(fileURLToPath(import.meta.url));
+      const deploy = join(here, '..', 'deploy');
+
+      const deployEc2 = readFileSync(join(deploy, 'deploy-ec2.sh'), 'utf8');
+      const opsRestart = readFileSync(join(deploy, 'ops-restart.sh'), 'utf8');
+      const pm2Boot = readFileSync(join(deploy, 'pm2-boot.sh'), 'utf8');
+      const opsDeploy = readFileSync(join(deploy, 'ops-deploy.sh'), 'utf8');
+
+      for (const [name, script] of [
+        ['deploy-ec2.sh', deployEc2],
+        ['ops-restart.sh', opsRestart],
+        ['pm2-boot.sh', pm2Boot],
+      ] as const) {
+        expect(script, name).toMatch(/pm2 delete hms-ai-worker|delete hms-ai-worker/);
+        expect(script, `${name} must not sole-start hms via --only hms`).not.toMatch(
+          /--only hms-ai-worker/,
+        );
+        expect(script, name).toMatch(/NAVA_BUILD_COMMIT/);
+      }
+
+      // Non-fixture start must not load full ecosystem (would start HMS).
+      expect(deployEc2).toMatch(/--only http/);
+      expect(deployEc2).toMatch(/--only ai-worker/);
+      expect(deployEc2).not.toMatch(
+        /pm2 start "\$\{SERVER_PILOT\}\/deploy\/pm2\.config\.cjs" --update-env\s*$/m,
+      );
+      expect(opsRestart).toMatch(/pm2 delete hms-ai-worker/);
+      expect(opsDeploy).toContain('sync-ec2-git-bundle.sh');
+    });
+
+    it('ops-hms-shadow.sh is sole HMS starter with canary/start/status/stop', async () => {
+      const { existsSync, readFileSync } = await import('node:fs');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const here = dirname(fileURLToPath(import.meta.url));
+      const path = join(here, '..', 'deploy', 'ops-hms-shadow.sh');
+      expect(existsSync(path)).toBe(true);
+      const script = readFileSync(path, 'utf8');
+      expect(script).toMatch(/canary|start|status|stop/);
+      expect(script).toMatch(/hms-live-proof\.js/);
+      expect(script).toMatch(/pm2 start.*hms-ai-worker|--only hms-ai-worker|hms-ai-worker/);
+      expect(script).not.toMatch(/vitest|VITEST_ALLOW_PILOT_RDS/);
+      // No raw candidate/thread/message argv passthrough.
+      expect(script).not.toMatch(/\$\{2\}|--confirmation|--thread|--message/);
+    });
+
+    it('hms-ai-worker uses autorestart false and permanent failure quiesces', async () => {
+      const { readFileSync } = await import('node:fs');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const { loadPm2Config } = await import('../src/deploy/load-pm2-config.js');
+      const here = dirname(fileURLToPath(import.meta.url));
+      const pm2 = loadPm2Config();
+      const hms = pm2.apps.find((app) => app.name === 'hms-ai-worker');
+      expect(hms).toBeDefined();
+      expect(hms?.autorestart).toBe(false);
+      expect(hms?.env?.AI_WORKER_LANE).toBe('hms');
+      expect(hms?.env?.HMS_READ_ROLE_PROOF_PATH).toBeDefined();
+      expect(hms?.env?.NAVA_BUILD_COMMIT).toBeDefined();
+
+      const proof = readFileSync(join(here, '..', 'src', 'ops', 'hms-live-proof.ts'), 'utf8');
+      expect(proof).toMatch(/RUN_ISOLATION_BLOCKED/);
+      expect(proof).toMatch(/NONTERMINAL_AI_RUN_STATES|nonterminal/);
+    });
+
+    it('install-hms-browser.sh uses /opt/nava bootstrap and exact revisions', async () => {
+      const { existsSync, readFileSync } = await import('node:fs');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const here = dirname(fileURLToPath(import.meta.url));
+      const path = join(here, '..', 'deploy', 'install-hms-browser.sh');
+      expect(existsSync(path)).toBe(true);
+      const script = readFileSync(path, 'utf8');
+      expect(script).toMatch(/\/opt\/nava/);
+      expect(script).toMatch(/1\.52\.0/);
+      expect(script).toMatch(/1169/);
+      expect(script).toMatch(/HMS_DEPENDENCIES_OK/);
+      expect(script).toMatch(/headless|chromium/i);
+      // Bare playwright install forbidden (must pin revision / path).
+      expect(script).not.toMatch(/^\s*npx playwright install\s*$/m);
+      expect(script).not.toMatch(/pnpm exec playwright install(?!\s+chromium)/);
+    });
+
+    it('post-boot and launch-readiness include conditional HMS checks', async () => {
+      const { readFileSync } = await import('node:fs');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const here = dirname(fileURLToPath(import.meta.url));
+      const deploy = join(here, '..', 'deploy');
+      const postBoot = readFileSync(join(deploy, 'post-boot-smoke.sh'), 'utf8');
+      const launch = readFileSync(join(deploy, 'launch-readiness.sh'), 'utf8');
+      for (const [name, script] of [
+        ['post-boot-smoke.sh', postBoot],
+        ['launch-readiness.sh', launch],
+      ] as const) {
+        expect(script, name).toMatch(/hms-ai-worker|HMS_/);
+        expect(script, name).toMatch(
+          /hms-reservation-canary-proof|hms-reservation-shadow-proof|HMS_OFF|hms-ai-worker/,
+        );
+      }
+    });
+
+    it('write-ec2-env exports NAVA_BUILD_COMMIT and HMS role-proof path', async () => {
+      const { readFileSync } = await import('node:fs');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const here = dirname(fileURLToPath(import.meta.url));
+      const script = readFileSync(join(here, '..', 'deploy', 'write-ec2-env.sh'), 'utf8');
+      expect(script).toMatch(/NAVA_BUILD_COMMIT/);
+      expect(script).toMatch(/HMS_READ_ROLE_PROOF_PATH/);
+      expect(script).toMatch(/HMS_EXPECTED_PROPERTY_CODE|HRCEN/);
+    });
   });
 });

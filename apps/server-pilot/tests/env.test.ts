@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { parseEnv } from '../src/env';
+import {
+  parseEnv,
+  parseHmsControlConfig,
+  requireHmsWorkerRuntimeConfig,
+} from '../src/env';
 
 function baseEnv(overrides: Record<string, string | undefined> = {}) {
   return {
@@ -12,6 +16,24 @@ function baseEnv(overrides: Record<string, string | undefined> = {}) {
     S3_BUCKET: 'nava-mail-artifacts-test',
     POP3_POLL_INTERVAL_MS: '30000',
     POP3_MAX_MESSAGES_PER_CYCLE: '500',
+    ...overrides,
+  };
+}
+
+function hmsShadowRuntimeEnv(
+  overrides: Record<string, string | undefined> = {},
+): Record<string, string | undefined> {
+  return {
+    HMS_DRAFT_ENRICHMENT_MODE: 'shadow',
+    HMS_READ_SECRET_ARN: 'arn:aws:secretsmanager:af-south-1:123:secret:hms-read',
+    HMS_CHROMIUM_EXECUTABLE_PATH: '/opt/nava/chromium/chrome',
+    HMS_READ_ROLE_PROOF_PATH: '/opt/nava/shared/hms-read-role-proof.v1.json',
+    HMS_HEALTH_STATUS_PATH: '/tmp/nava-zero-hms-health.json',
+    HMS_EXPECTED_TENANT: 'HMS_LEGACY',
+    HMS_EXPECTED_PROPERTY_CODE: 'HRCEN',
+    HMS_EXPECTED_TRANSPORT_ID: 'transport-centurion',
+    HMS_RUN_DEADLINE_MS: '150000',
+    HMS_CIRCUIT_COOLDOWN_MS: '30000',
     ...overrides,
   };
 }
@@ -223,5 +245,85 @@ describe('env', () => {
         [key]: 'secret-value',
       }),
     ).toThrow(/hosted observability/i);
+  });
+
+  it('rejects literal HMS_DRAFT_ENRICHMENT_MODE=enabled', () => {
+    expect(() => parseEnv(baseEnv({ HMS_DRAFT_ENRICHMENT_MODE: 'enabled' }))).toThrow(
+      /HMS_DRAFT_ENRICHMENT_MODE/,
+    );
+    expect(() => parseHmsControlConfig({ HMS_DRAFT_ENRICHMENT_MODE: 'enabled' })).toThrow(
+      /HMS_DRAFT_ENRICHMENT_MODE|enabled/i,
+    );
+  });
+
+  it('default worker parses off without HMS secret or browser values', () => {
+    const env = parseEnv(baseEnv({ HMS_DRAFT_ENRICHMENT_MODE: 'off' }));
+    expect(env.HMS_DRAFT_ENRICHMENT_MODE).toBe('off');
+    expect(env.HMS_READ_SECRET_ARN).toBeUndefined();
+    expect(env.HMS_CHROMIUM_EXECUTABLE_PATH).toBeUndefined();
+
+    const control = parseHmsControlConfig({
+      HMS_DRAFT_ENRICHMENT_MODE: 'off',
+    });
+    expect(control).toEqual({
+      mode: 'off',
+      healthPath: '/tmp/nava-zero-hms-health.json',
+    });
+  });
+
+  it('parseHmsControlConfig accepts shadow without secret/browser coupling', () => {
+    const control = parseHmsControlConfig({
+      HMS_DRAFT_ENRICHMENT_MODE: 'shadow',
+      HMS_HEALTH_STATUS_PATH: '/tmp/custom-hms-health.json',
+    });
+    expect(control).toEqual({
+      mode: 'shadow',
+      healthPath: '/tmp/custom-hms-health.json',
+    });
+  });
+
+  it('HMS worker shadow runtime requires secret ARN, Chromium, role-proof, health', () => {
+    expect(() =>
+      requireHmsWorkerRuntimeConfig({
+        HMS_DRAFT_ENRICHMENT_MODE: 'shadow',
+      }),
+    ).toThrow(/env HMS_/);
+
+    expect(() =>
+      requireHmsWorkerRuntimeConfig(
+        hmsShadowRuntimeEnv({ HMS_READ_SECRET_ARN: undefined }),
+      ),
+    ).toThrow(/HMS_READ_SECRET_ARN/);
+
+    expect(() =>
+      requireHmsWorkerRuntimeConfig(
+        hmsShadowRuntimeEnv({ HMS_CHROMIUM_EXECUTABLE_PATH: undefined }),
+      ),
+    ).toThrow(/HMS_CHROMIUM_EXECUTABLE_PATH/);
+
+    expect(() =>
+      requireHmsWorkerRuntimeConfig(
+        hmsShadowRuntimeEnv({ HMS_READ_ROLE_PROOF_PATH: undefined }),
+      ),
+    ).toThrow(/HMS_READ_ROLE_PROOF_PATH/);
+
+    expect(() =>
+      requireHmsWorkerRuntimeConfig(
+        hmsShadowRuntimeEnv({ HMS_HEALTH_STATUS_PATH: '' }),
+      ),
+    ).toThrow(/HMS_HEALTH_STATUS_PATH/);
+
+    const runtime = requireHmsWorkerRuntimeConfig(hmsShadowRuntimeEnv());
+    expect(runtime).toMatchObject({
+      secretArn: 'arn:aws:secretsmanager:af-south-1:123:secret:hms-read',
+      chromiumExecutablePath: '/opt/nava/chromium/chrome',
+      roleProofPath: '/opt/nava/shared/hms-read-role-proof.v1.json',
+      healthPath: '/tmp/nava-zero-hms-health.json',
+      expectedTenant: 'HMS_LEGACY',
+      expectedPropertyCode: 'HRCEN',
+      expectedTransportId: 'transport-centurion',
+      runDeadlineMs: 150_000,
+      circuitCooldownMs: 30_000,
+    });
   });
 });

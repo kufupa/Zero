@@ -312,6 +312,14 @@ fi
 echo "== pm2 =="
 # Fixture prod: do not keep a broken POP3 worker in the dump after reboot.
 TRANSPORT_MODE="${MAIL_TRANSPORT_MODE:-fixture}"
+export NAVA_BUILD_COMMIT="${NAVA_BUILD_COMMIT:-$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)}"
+
+# Always keep HMS off on generic deploy — ops-hms-shadow.sh start is sole HMS starter.
+# Invalidate canary/shadow proofs on build identity change.
+pm2 delete hms-ai-worker 2>/dev/null || true
+rm -f /opt/nava/shared/hms-reservation-canary-proof.v1.json \
+  /opt/nava/shared/hms-reservation-shadow-proof.v1.json 2>/dev/null || true
+
 if [ "$TRANSPORT_MODE" = "fixture" ]; then
   echo "== pm2: fixture mode — delete worker if present =="
   pm2 delete worker 2>/dev/null || true
@@ -321,12 +329,15 @@ if command -v pm2 >/dev/null 2>&1; then
   if [ "$TRANSPORT_MODE" = "fixture" ]; then
     pm2 delete worker 2>/dev/null || true
     # delete+start so --update-env actually replaces process env (reload keeps stale).
-    pm2 delete http ai-worker 2>/dev/null || true
+    # Never start hms-ai-worker here.
+    pm2 delete http ai-worker hms-ai-worker 2>/dev/null || true
     pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only http --update-env
     pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only ai-worker --update-env
   else
-    pm2 delete http worker ai-worker 2>/dev/null || true
-    pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --update-env
+    pm2 delete http worker ai-worker hms-ai-worker 2>/dev/null || true
+    pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only http --update-env
+    pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only worker --update-env
+    pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only ai-worker --update-env
   fi
   pm2 save
   bash "${SERVER_PILOT}/deploy/pm2-startup.sh"
@@ -336,12 +347,14 @@ else
   npm install -g pm2
   if [ "$TRANSPORT_MODE" = "fixture" ]; then
     pm2 delete worker 2>/dev/null || true
-    pm2 delete http ai-worker 2>/dev/null || true
+    pm2 delete http ai-worker hms-ai-worker 2>/dev/null || true
     pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only http --update-env
     pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only ai-worker --update-env
   else
-    pm2 delete http worker ai-worker 2>/dev/null || true
-    pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --update-env
+    pm2 delete http worker ai-worker hms-ai-worker 2>/dev/null || true
+    pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only http --update-env
+    pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only worker --update-env
+    pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only ai-worker --update-env
   fi
   pm2 save
   bash "${SERVER_PILOT}/deploy/pm2-startup.sh"

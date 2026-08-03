@@ -2,10 +2,11 @@
  * HMS production boundary — typed registry + import-graph proofs for read-only rollout.
  * No live HMS, no mutation enable flags, no write-lab/OCR/MCP/generic-browser in HMS graph.
  */
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname, extname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 import {
   allToolEffectsAreRead,
   candidateToolEffects,
@@ -112,6 +113,61 @@ export function hmsProductionSourceRoots(): string[] {
   ];
 }
 
+/** Strict shadow terminal writer modules (Task 4+). Must not import src/ai/drafts. */
+export function hmsShadowTerminalModules(): string[] {
+  return [join(srcRoot, 'ai', 'hms-shadow.ts')].filter((p) => existsSync(p));
+}
+
+function normalizeImportSpecifier(specifier: string): string {
+  return specifier.replace(/\\/g, '/').replace(/^\.\//, '');
+}
+
+/**
+ * Enumerate static imports, dynamic import(), and re-exports via TypeScript AST.
+ * Does not use regex expansion of import lines.
+ */
+export function collectModuleImportSpecifiers(filePath: string, sourceText: string): string[] {
+  const sourceFile = ts.createSourceFile(
+    filePath,
+    sourceText,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const specs: string[] = [];
+
+  const visit = (node: ts.Node) => {
+    if (ts.isImportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
+      specs.push(node.moduleSpecifier.text);
+    } else if (
+      ts.isExportDeclaration(node) &&
+      node.moduleSpecifier &&
+      ts.isStringLiteral(node.moduleSpecifier)
+    ) {
+      specs.push(node.moduleSpecifier.text);
+    } else if (
+      ts.isCallExpression(node) &&
+      node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+      node.arguments[0] &&
+      ts.isStringLiteralLike(node.arguments[0])
+    ) {
+      specs.push(node.arguments[0].text);
+    } else if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === 'require' &&
+      node.arguments[0] &&
+      ts.isStringLiteralLike(node.arguments[0])
+    ) {
+      specs.push(node.arguments[0].text);
+    }
+    ts.forEachChild(node, visit);
+  };
+
+  visit(sourceFile);
+  return specs.map(normalizeImportSpecifier);
+}
+
 export function collectForbiddenImports(
   roots: string[] = hmsProductionSourceRoots(),
 ): Array<{ file: string; match: string }> {
@@ -128,12 +184,10 @@ export function collectForbiddenImports(
       // Skip this module — it documents forbidden patterns as RegExp sources.
       if (file.replace(/\\/g, '/').endsWith('/hms/production-boundary.ts')) continue;
       const text = readFileSync(file, 'utf8');
-      const importLines = text
-        .split('\n')
-        .filter((line) => /^\s*(import|export)\b/.test(line) || /require\s*\(/.test(line));
-      const scanTarget = importLines.join('\n');
+      const importSpecs = collectModuleImportSpecifiers(file, text);
+      const scanTarget = importSpecs.join('\n');
       for (const pattern of FORBIDDEN_HMS_GRAPH_PATTERNS) {
-        if (pattern.test(scanTarget)) {
+        if (pattern.test(scanTarget) || importSpecs.some((s) => pattern.test(s))) {
           hits.push({
             file: relative(serverPilotRoot, file).replace(/\\/g, '/'),
             match: pattern.source,
@@ -142,6 +196,33 @@ export function collectForbiddenImports(
       }
     }
   }
+
+  for (const file of hmsShadowTerminalModules()) {
+    const text = readFileSync(file, 'utf8');
+    const importSpecs = collectModuleImportSpecifiers(file, text);
+    const fileDir = dirname(file);
+    for (const spec of importSpecs) {
+      let resolved = spec;
+      if (spec.startsWith('.')) {
+        resolved = join(fileDir, spec).replace(/\\/g, '/');
+      }
+      const normalized = resolved
+        .replace(/\\/g, '/')
+        .replace(/\.(ts|tsx|js|jsx|mjs|cjs)$/, '');
+      if (
+        normalized.endsWith('/ai/drafts') ||
+        normalized.includes('/ai/drafts/') ||
+        /(?:^|[\\/])ai\/drafts(?:\.(?:ts|js))?$/.test(spec) ||
+        spec.includes('ai/drafts')
+      ) {
+        hits.push({
+          file: relative(serverPilotRoot, file).replace(/\\/g, '/'),
+          match: 'ai/drafts',
+        });
+      }
+    }
+  }
+
   return hits;
 }
 
@@ -323,15 +404,18 @@ function hmsEv(
   toolId: string,
   claimKeys: string[],
   hashChar: string,
+  now: Date,
 ): ToolResult<unknown>['evidence'] {
+  const observedAt = new Date(now.getTime() - 2 * 60 * 60 * 1000).toISOString();
+  const expiresAt = new Date(now.getTime() + 2 * 60 * 60 * 1000).toISOString();
   return {
     kind: 'hms',
     id,
     toolId,
     toolVersion: '1',
     propertyCode: 'CENTURION',
-    observedAt: '2026-07-30T11:00:00.000Z',
-    expiresAt: '2026-07-30T13:00:00.000Z',
+    observedAt,
+    expiresAt,
     claimKeys,
     sourceHash: sha(hashChar),
   };
@@ -340,10 +424,14 @@ function hmsEv(
 /**
  * API-level fixture journeys (no live HMS / no full UI stack required).
  * Proves outcome matrix from plan Task 9 Step 3 against claim-safe agent + mocks.
+ * `now` freezes evidence TTL so journeys stay green as wall time advances.
  */
-export async function runHmsDraftPipelineJourneys(): Promise<HmsDraftJourneyResult[]> {
+export async function runHmsDraftPipelineJourneys(
+  now: Date = new Date(),
+): Promise<HmsDraftJourneyResult[]> {
   const results: HmsDraftJourneyResult[] = [];
   const live = new AbortController().signal;
+  const observedAt = new Date(now.getTime() - 2 * 60 * 60 * 1000).toISOString();
 
   {
     const session = createMockCandidateSession({
@@ -371,7 +459,7 @@ export async function runHmsDraftPipelineJourneys(): Promise<HmsDraftJourneyResu
             capped: false,
           },
           unresolvedFields: [],
-          evidence: hmsEv('ev-1', 'hms_find_reservation', ['reservation.status'], 'a'),
+          evidence: hmsEv('ev-1', 'hms_find_reservation', ['reservation.status'], 'a', now),
         }) as never,
     });
     const out = await runClaimSafeCandidateDraft({
@@ -379,6 +467,7 @@ export async function runHmsDraftPipelineJourneys(): Promise<HmsDraftJourneyResu
       normalizedThreadText: 'Please confirm reservation',
       signal: live,
       planModel: async ({ userPrompt }) => planFromAvailableClaims(userPrompt),
+      now,
     });
     results.push({
       id: 'reservation_exact_candidate',
@@ -398,7 +487,7 @@ export async function runHmsDraftPipelineJourneys(): Promise<HmsDraftJourneyResu
           draftReady: false,
           data: { matches: [{}, {}], matchCount: 2, capped: false },
           unresolvedFields: ['reservation.match'],
-          evidence: hmsEv('ev-amb', 'hms_find_reservation', [], 'b'),
+          evidence: hmsEv('ev-amb', 'hms_find_reservation', [], 'b', now),
         }) as never,
     });
     const out = await runClaimSafeCandidateDraft({
@@ -410,6 +499,7 @@ export async function runHmsDraftPipelineJourneys(): Promise<HmsDraftJourneyResu
         questionCodes: ['ambiguous_match'],
         unavailableSources: [],
       }),
+      now,
     });
     results.push({
       id: 'reservation_ambiguous_clarification',
@@ -438,7 +528,7 @@ export async function runHmsDraftPipelineJourneys(): Promise<HmsDraftJourneyResu
           draftReady: false,
           data: { inventoryObservations: [], rateObservations: [] },
           unresolvedFields: ['rate.amount', 'inventory.rooms'],
-          evidence: hmsEv('ev-q', 'hms_quote_stay', [], 'c'),
+          evidence: hmsEv('ev-q', 'hms_quote_stay', [], 'c', now),
         }) as never,
     });
     const out = await runClaimSafeCandidateDraft({
@@ -450,6 +540,7 @@ export async function runHmsDraftPipelineJourneys(): Promise<HmsDraftJourneyResu
         questionCodes: [],
         unavailableSources: ['hms'],
       }),
+      now,
     });
     results.push({
       id: 'quote_partial_no_candidate',
@@ -478,7 +569,7 @@ export async function runHmsDraftPipelineJourneys(): Promise<HmsDraftJourneyResu
             toolId: 'mail_read_artifact',
             toolVersion: '1',
             attachmentId: 'att-pdf',
-            observedAt: '2026-07-30T11:00:00.000Z',
+            observedAt,
             sourceHash: sha('d'),
             claimKeys: ['attachment.confirmation'],
           },
@@ -490,6 +581,7 @@ export async function runHmsDraftPipelineJourneys(): Promise<HmsDraftJourneyResu
       signal: live,
       probeAttachmentIds: ['att-pdf'],
       planModel: async ({ userPrompt }) => planFromAvailableClaims(userPrompt),
+      now,
     });
     results.push({
       id: 'pdf_text_candidate',
@@ -518,7 +610,7 @@ export async function runHmsDraftPipelineJourneys(): Promise<HmsDraftJourneyResu
             toolId: 'mail_read_artifact',
             toolVersion: '1',
             attachmentId: 'att-scan',
-            observedAt: '2026-07-30T11:00:00.000Z',
+            observedAt,
             sourceHash: sha('e'),
             claimKeys: [],
           },
@@ -534,6 +626,7 @@ export async function runHmsDraftPipelineJourneys(): Promise<HmsDraftJourneyResu
         questionCodes: [],
         unavailableSources: ['mail_attachment'],
       }),
+      now,
     });
     results.push({
       id: 'scanned_pdf_manual',
@@ -556,6 +649,7 @@ export async function runHmsDraftPipelineJourneys(): Promise<HmsDraftJourneyResu
       normalizedThreadText: 'lookup',
       signal: live,
       planModel: async ({ userPrompt }) => planFromAvailableClaims(userPrompt),
+      now,
     });
     results.push({
       id: 'unknown_request_abort',
@@ -587,6 +681,7 @@ export async function runHmsDraftPipelineJourneys(): Promise<HmsDraftJourneyResu
         session,
         normalizedThreadText: 'timeout',
         signal: controller.signal,
+        now,
       });
       passed = out.outcome !== 'candidate';
       detail = `outcome=${out.outcome}`;
@@ -640,12 +735,13 @@ export async function runHmsDraftPipelineJourneys(): Promise<HmsDraftJourneyResu
       latestDraftRevisionId: null,
     });
     const evidence = [
-      hmsEv('ev-stale', 'hms_find_reservation', ['reservation.status'], 'f'),
+      hmsEv('ev-stale', 'hms_find_reservation', ['reservation.status'], 'f', now),
     ];
     const freshness = evaluateHmsCandidateFreshness({
       threadStateVersion: atGeneration,
       liveThreadStateVersion: afterOutbound,
       evidence,
+      now,
     });
     const sendBlocked = hmsPromoteBlockedByFreshness({
       generation: {
@@ -654,6 +750,7 @@ export async function runHmsDraftPipelineJourneys(): Promise<HmsDraftJourneyResu
         evidence,
       },
       liveThreadStateVersion: afterOutbound,
+      now,
     });
     results.push({
       id: 'outbound_before_send_stale',

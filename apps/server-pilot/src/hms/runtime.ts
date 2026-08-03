@@ -49,6 +49,7 @@ export type HmsHealth = {
   lastErrorCode?: string;
   circuitOpenedAt?: string;
   checkedAt: string;
+  staleAfterMs: number;
 };
 
 export type HmsReadSession = {
@@ -83,15 +84,34 @@ export type HmsPage = {
   /** POST url-encoded form through context route policy (canary / adapters). */
   postForm(url: string, fields: Record<string, string>): Promise<void>;
   click(selector: string): Promise<void>;
+  /** Constrained fill — selector must be a reviewed static string. */
+  fill(selector: string, value: string): Promise<void>;
+  press(selector: string, key: string): Promise<void>;
+  url(): string;
+  title(): Promise<string>;
+  /** Wait for path-correlated response after an action (optional on stubs). */
+  waitForCorrelatedResponse?(pathSubstring: string): Promise<void>;
+  /** Stable DOM read only — no free-form script from model code. */
+  evaluateStableDom<T>(fn: () => T | Promise<T>): Promise<T>;
+  /** @deprecated Prefer evaluateStableDom — kept for fixture adapters. */
   evaluate<T>(fn: () => T | Promise<T>): Promise<T>;
 };
 
 export type HmsDownloadEvent = { cancel(): Promise<void> };
 
+export type HmsWebSocketRoute = {
+  close(): void;
+};
+
 export type HmsBrowserContext = {
   route(
     url: string,
     handler: (route: PolicyRoute) => Promise<void> | void,
+  ): Promise<void>;
+  /** Must be installed before first navigation. */
+  routeWebSocket(
+    url: string,
+    handler: (ws: HmsWebSocketRoute) => void,
   ): Promise<void>;
   newPage(): Promise<HmsPage>;
   close(): Promise<void>;
@@ -125,6 +145,10 @@ export type HmsRuntime = {
   openReadSession(input: {
     transportId: string;
     signal: AbortSignal;
+    /** Per-session exact OSRESS.search candidate binding. */
+    exactSearchCandidate?: import('./live-read-manifest.js').ExactReservationCandidate;
+    /** Allow open before start() when LiveGuestStayDriver owns canary. */
+    allowUnstarted?: boolean;
   }): Promise<HmsReadSession>;
   health(): HmsHealth;
   close(): Promise<void>;
@@ -134,6 +158,20 @@ export type HmsRuntime = {
     contextsClosed: number;
   };
 };
+
+export type HmsRoleProofLoader = (
+  path: string,
+  now?: Date,
+) => Promise<{
+  schemaVersion: 1;
+  propertyCode: 'HRCEN';
+  allowedSurfaces: readonly string[];
+  deniedActions: readonly string[];
+  issuedAt: string;
+  expiresAt: string;
+  evidenceRef: string;
+  evidenceSha256: string;
+}>;
 
 export type HmsRuntimeOptions = {
   manifest: RequestPolicyManifest;
@@ -151,7 +189,19 @@ export type HmsRuntimeOptions = {
   requireViewOnly?: boolean;
   /** Manifest origin must match secret.loginUrl origin. */
   expectedOrigin?: string;
+  /** Role-proof path — revalidated before every context creation when set. */
+  roleProofPath?: string;
+  loadRoleProof?: HmsRoleProofLoader;
+  /** Health heartbeat interval (ms). Default 10s when healthStatusPath set. */
+  healthHeartbeatMs?: number;
+  /** Stale threshold written into health JSON. Default 30s. */
+  healthStaleAfterMs?: number;
+  /** Skip fixture reservation canary (live driver owns Guest Stay canary). */
+  runStartupCanary?: boolean;
 };
+
+export const HEALTH_HEARTBEAT_MS = 10_000;
+export const HEALTH_STALE_AFTER_MS = 30_000;
 
 export class HmsRuntimeError extends Error {
   readonly code: string;
@@ -232,6 +282,7 @@ export function createFetchBrowserFactory(
       #defaultTimeout = 10_000;
       #navTimeout = 15_000;
       #closed = false;
+      #url = '';
       constructor(private readonly ctx: FetchContext) {}
 
       setDefaultTimeout(ms: number) {
@@ -239,6 +290,15 @@ export function createFetchBrowserFactory(
       }
       setDefaultNavigationTimeout(ms: number) {
         this.#navTimeout = ms;
+      }
+
+      url() {
+        return this.#url || this.ctx.lastOrigin || '';
+      }
+
+      async title() {
+        const m = /<title>([^<]*)<\/title>/i.exec(this.#html);
+        return m?.[1] ?? '';
       }
 
       async goto(url: string, options?: { timeout?: number }) {
@@ -273,6 +333,7 @@ export function createFetchBrowserFactory(
             }
           }
           this.#html = await res.text();
+          this.#url = url;
         } finally {
           clearTimeout(timer);
         }
@@ -294,7 +355,9 @@ export function createFetchBrowserFactory(
 
       async fillLogin(username: string, password: string) {
         this.#assertOpen();
-        if (!/name="username"/i.test(this.#html)) {
+        const hasUserid = /name="userid"/i.test(this.#html);
+        const hasUsername = /name="username"/i.test(this.#html);
+        if (!hasUserid && !hasUsername) {
           throw new HmsRuntimeError('malformed_dom', 'login form missing');
         }
         // Store for submit — no credentials in logs
@@ -309,19 +372,34 @@ export function createFetchBrowserFactory(
         const action = actionMatch?.[1] ?? '/session';
         const base = this.ctx.lastOrigin ?? 'http://127.0.0.1';
         const url = new URL(action, base).toString();
-        await this.postForm(url, {
-          username: creds.username,
-          password: creds.password,
-        });
+        const hasUserid = /name="userid"/i.test(this.#html);
+        if (hasUserid) {
+          await this.postForm(url, {
+            userid: creds.username,
+            password: creds.password,
+            tenant: 'HMS_LEGACY',
+            csrftckt: 'fixture',
+            resetpassword: '',
+            SYSTEM_FUNCTION_NAME: '',
+            USER_FUNCTION_NAME: '',
+          });
+        } else {
+          await this.postForm(url, {
+            username: creds.username,
+            password: creds.password,
+          });
+        }
       }
 
       async postForm(url: string, fields: Record<string, string>) {
         this.#assertOpen();
         const postData = new URLSearchParams(fields).toString();
+        const path = new URL(url).pathname;
+        const resourceType = path.includes('/web/') ? 'xhr' : 'document';
         const decision = await this.ctx.dispatchRoute({
           url,
           method: 'POST',
-          resourceType: 'document',
+          resourceType,
           headers: {
             'content-type': 'application/x-www-form-urlencoded',
           },
@@ -344,6 +422,7 @@ export function createFetchBrowserFactory(
           await this.goto(new URL(loc, url).toString());
         } else {
           this.#html = await res.text();
+          this.#url = url;
         }
       }
 
@@ -351,6 +430,53 @@ export function createFetchBrowserFactory(
         this.#assertOpen();
         void selector;
         void this.#defaultTimeout;
+      }
+
+      async fill(selector: string, value: string) {
+        this.#assertOpen();
+        // Reflect filled value into fixture HTML for canary field checks
+        const nameMatch = /name=["']([^"']+)["']/.exec(selector);
+        if (nameMatch) {
+          const name = nameMatch[1]!;
+          const re = new RegExp(
+            `(<input[^>]*name="${name}"[^>]*)(/?>)`,
+            'i',
+          );
+          if (re.test(this.#html)) {
+            this.#html = this.#html.replace(re, `$1 value="${value}"$2`);
+          } else {
+            this.#html += `<input name="${name}" value="${value}" />`;
+          }
+          this.ctx.pendingSearchValue = value;
+        }
+      }
+
+      async press(selector: string, key: string) {
+        this.#assertOpen();
+        if (key !== 'Enter') return;
+        const value = this.ctx.pendingSearchValue;
+        if (!value) return;
+        const origin = this.ctx.lastOrigin ?? 'http://127.0.0.1';
+        const { buildExactOsressSearchBody } = await import(
+          './live-read-manifest.js'
+        );
+        await this.postForm(
+          `${origin}/web/base/OSRESS.search`,
+          buildExactOsressSearchBody({
+            id: 'fixture',
+            kind: 'confirmation',
+            value,
+          }),
+        );
+        void selector;
+      }
+
+      async waitForCorrelatedResponse(_pathSubstring: string) {
+        this.#assertOpen();
+      }
+
+      async evaluateStableDom<T>(fn: () => T | Promise<T>): Promise<T> {
+        return this.evaluate(fn);
       }
 
       async evaluate<T>(fn: () => T | Promise<T>): Promise<T> {
@@ -372,6 +498,7 @@ export function createFetchBrowserFactory(
     class FetchContext implements HmsBrowserContext {
       closed = false;
       pendingLogin: { username: string; password: string } | null = null;
+      pendingSearchValue: string | null = null;
       lastOrigin: string | null = null;
       #pages: FetchPage[] = [];
       #handlers: Array<(route: PolicyRoute) => Promise<void>> = [
@@ -380,6 +507,7 @@ export function createFetchBrowserFactory(
       #pageListeners: Array<(page: HmsPage) => void> = [];
       #downloadListeners: Array<(download: HmsDownloadEvent) => void> = [];
       #websocketListeners: Array<() => void> = [];
+      #wsRouteInstalled = false;
       lastViolation: RequestDecision | null = null;
 
       async route(
@@ -389,6 +517,20 @@ export function createFetchBrowserFactory(
         this.#handlers.push(async (route) => {
           await handler(route);
         });
+      }
+
+      async routeWebSocket(
+        _url: string,
+        handler: (ws: HmsWebSocketRoute) => void,
+      ) {
+        this.#wsRouteInstalled = true;
+        this.#websocketListeners.push(() => {
+          handler({ close() {} });
+        });
+      }
+
+      get wsRouteInstalled() {
+        return this.#wsRouteInstalled;
       }
 
       async dispatchRoute(input: {
@@ -528,9 +670,19 @@ async function writeHealthFile(
   });
   await mkdir(dirname(path), { recursive: true });
   const temporary = `${path}.${process.pid}.tmp`;
-  await writeFile(temporary, payload, { mode: 0o600 });
-  await chmod(temporary, 0o600);
-  await rename(temporary, path);
+  try {
+    await writeFile(temporary, payload, { mode: 0o600 });
+    await chmod(temporary, 0o600);
+    await rename(temporary, path);
+  } catch {
+    // Windows may EPERM on rename while heartbeat overlaps close — direct write.
+    await writeFile(path, payload, { mode: 0o600 });
+  }
+  try {
+    await chmod(path, 0o600);
+  } catch {
+    /* windows may ignore */
+  }
 }
 
 function manifestOrigin(manifest: RequestPolicyManifest): string {
@@ -548,6 +700,9 @@ export function createHmsRuntime(options: HmsRuntimeOptions): HmsRuntime {
   const timeoutMs = options.defaultTimeoutMs ?? 15_000;
   const cooldownMs = options.circuitCooldownMs ?? 30_000;
   const requireViewOnly = options.requireViewOnly ?? true;
+  const staleAfterMs = options.healthStaleAfterMs ?? HEALTH_STALE_AFTER_MS;
+  const heartbeatMs = options.healthHeartbeatMs ?? HEALTH_HEARTBEAT_MS;
+  const runStartupCanary = options.runStartupCanary ?? true;
 
   let browser: HmsBrowser | null = null;
   let cachedSecret: HmsSecret | null = null;
@@ -560,6 +715,8 @@ export function createHmsRuntime(options: HmsRuntimeOptions): HmsRuntime {
   let lastErrorCode: string | undefined;
   let circuitOpenedAt: number | undefined;
   let started = false;
+  let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  let transientRetries = 0;
 
   const health = (): HmsHealth => ({
     state,
@@ -572,7 +729,45 @@ export function createHmsRuntime(options: HmsRuntimeOptions): HmsRuntime {
       ? new Date(circuitOpenedAt).toISOString()
       : undefined,
     checkedAt: new Date().toISOString(),
+    staleAfterMs,
   });
+
+  function stopHeartbeat() {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+  }
+
+  function startHeartbeat() {
+    stopHeartbeat();
+    if (!options.healthStatusPath) return;
+    heartbeatTimer = setInterval(() => {
+      void writeHealthFile(options.healthStatusPath, health());
+    }, heartbeatMs);
+    if (typeof heartbeatTimer === 'object' && 'unref' in heartbeatTimer) {
+      heartbeatTimer.unref();
+    }
+  }
+
+  async function revalidateRoleProof(): Promise<void> {
+    if (!options.roleProofPath) return;
+    const loader =
+      options.loadRoleProof ??
+      (async (path: string) => {
+        const { loadHmsReadRoleProof } = await import('./production-runtime.js');
+        return loadHmsReadRoleProof(path);
+      });
+    try {
+      await loader(options.roleProofPath, new Date());
+    } catch (err) {
+      if (err instanceof HmsRuntimeError) throw err;
+      throw new HmsRuntimeError(
+        'ROLE_PROOF_MISSING',
+        redactError(err),
+      );
+    }
+  }
 
   async function getSecret(signal?: AbortSignal): Promise<HmsSecret> {
     if (cachedSecret) return cachedSecret;
@@ -715,18 +910,33 @@ export function createHmsRuntime(options: HmsRuntimeOptions): HmsRuntime {
     transportId: string;
     signal: AbortSignal;
     canary?: boolean;
+    exactSearchCandidate?: import('./live-read-manifest.js').ExactReservationCandidate;
+    allowUnstarted?: boolean;
   }): Promise<HmsReadSession> {
     assertNotAborted(input.signal);
     if (!input.canary) assertCircuitClosed();
-    if (!started && !input.canary) {
+    if (!started && !input.canary && !input.allowUnstarted) {
       throw new HmsRuntimeError('not_started', 'HMS runtime not started');
     }
+
+    await revalidateRoleProof();
 
     const secret = await getSecret(input.signal);
     if (input.transportId !== secret.mailboxTransportId) {
       throw new HmsRuntimeError(
         'transport_mismatch',
         'transportId does not match secret mailboxTransportId',
+      );
+    }
+
+    let sessionManifest = options.manifest;
+    if (input.exactSearchCandidate) {
+      const { buildExactOsressSearchManifest } = await import(
+        './live-read-manifest.js'
+      );
+      sessionManifest = buildExactOsressSearchManifest(
+        new URL(secret.loginUrl).origin,
+        input.exactSearchCandidate,
       );
     }
 
@@ -738,7 +948,7 @@ export function createHmsRuntime(options: HmsRuntimeOptions): HmsRuntime {
     let terminal = false;
     let released = false;
     let closedCounted = false;
-    const guards = createBrowserEventGuards(options.manifest);
+    const guards = createBrowserEventGuards(sessionManifest);
 
     const releaseOnce = () => {
       if (released) return;
@@ -775,8 +985,17 @@ export function createHmsRuntime(options: HmsRuntimeOptions): HmsRuntime {
       context = await b.newContext(contextCreationOptions());
       contextsCreated += 1;
 
+      // Pre-connect WebSocket rejection BEFORE any navigation.
+      await context.routeWebSocket('**/*', (ws) => {
+        guards.handleWebSocket();
+        lastViolation = guards.lastBlock();
+        terminal = true;
+        ws.close();
+        void teardown();
+      });
+
       await context.route('**/*', async (route) => {
-        const decision = await enforceRequestPolicy(route, options.manifest, {
+        const decision = await enforceRequestPolicy(route, sessionManifest, {
           onDecision: (d) => {
             if (d.action === 'block') lastViolation = d;
           },
@@ -792,15 +1011,18 @@ export function createHmsRuntime(options: HmsRuntimeOptions): HmsRuntime {
         }
       });
 
+      let sawPrimaryPage = false;
       context.on('page', (page) => {
-        if (context!.pages().length > 1) {
-          void (async () => {
-            await guards.handlePopup(page);
-            lastViolation = guards.lastBlock();
-            terminal = true;
-            void teardown();
-          })();
+        if (!sawPrimaryPage) {
+          sawPrimaryPage = true;
+          return;
         }
+        void (async () => {
+          await guards.handlePopup(page);
+          lastViolation = guards.lastBlock();
+          terminal = true;
+          void teardown();
+        })();
       });
       context.on('download', (download) => {
         void (async () => {
@@ -818,6 +1040,7 @@ export function createHmsRuntime(options: HmsRuntimeOptions): HmsRuntime {
       });
 
       const page = await context.newPage();
+      sawPrimaryPage = true;
       page.setDefaultTimeout(timeoutMs);
       page.setDefaultNavigationTimeout(timeoutMs);
 
@@ -827,6 +1050,11 @@ export function createHmsRuntime(options: HmsRuntimeOptions): HmsRuntime {
       await page.fillLogin(secret.username, secret.password);
       await page.submitLogin();
       await verifyProperty(page, secret);
+
+      if (!started && input.allowUnstarted) {
+        started = true;
+        state = 'ready';
+      }
 
       const sessionId = randomUUID();
 
@@ -850,6 +1078,26 @@ export function createHmsRuntime(options: HmsRuntimeOptions): HmsRuntime {
       if (code === 'wrong_tenant' || code === 'wrong_property') {
         openCircuit(code);
         await writeHealthFile(options.healthStatusPath, health());
+      } else if (
+        code === 'chromium_failed' ||
+        code === 'TRANSIENT_NETWORK' ||
+        /net::|ECONNRESET|ETIMEDOUT/i.test(String(code))
+      ) {
+        // One bounded retry for transient browser/network only.
+        if (transientRetries < 1) {
+          transientRetries += 1;
+          cachedSecret = null;
+          browser = null;
+          throw new HmsRuntimeError('TRANSIENT_NETWORK', String(code));
+        }
+      } else if (
+        /ROLE_PROOF|AUTH_FAILED|POLICY_BLOCK|SCHEMA_DRIFT|credential|wrong_/i.test(
+          String(code),
+        )
+      ) {
+        // Permanent — stay quiesced / degraded, no retry.
+        state = state === 'circuit_open' ? state : 'degraded';
+        lastErrorCode = code;
       }
       cachedSecret = null;
       throw err instanceof HmsRuntimeError
@@ -876,15 +1124,21 @@ export function createHmsRuntime(options: HmsRuntimeOptions): HmsRuntime {
       state = 'starting';
       lastErrorCode = undefined;
       try {
+        await revalidateRoleProof();
         await getSecret(signal);
         await getBrowser(signal);
-        await runCanary(signal);
+        if (runStartupCanary) {
+          await runCanary(signal);
+        }
         started = true;
         state = 'ready';
         lastErrorCode = undefined;
+        transientRetries = 0;
         await writeHealthFile(options.healthStatusPath, health());
+        startHeartbeat();
       } catch (err) {
         started = false;
+        stopHeartbeat();
         const code =
           err instanceof HmsRuntimeError ? err.code : redactError(err);
         if (code === 'wrong_tenant' || code === 'wrong_property') {
@@ -901,7 +1155,12 @@ export function createHmsRuntime(options: HmsRuntimeOptions): HmsRuntime {
     },
 
     openReadSession(input) {
-      return openReadSessionInternal({ ...input, canary: false });
+      return openReadSessionInternal({
+        ...input,
+        canary: false,
+        exactSearchCandidate: input.exactSearchCandidate,
+        allowUnstarted: input.allowUnstarted,
+      });
     },
 
     health,
@@ -912,6 +1171,9 @@ export function createHmsRuntime(options: HmsRuntimeOptions): HmsRuntime {
       started = false;
       state = 'stopped';
       cachedSecret = null;
+      stopHeartbeat();
+      // Let in-flight heartbeat write settle before final write.
+      await new Promise((r) => setTimeout(r, 0));
       try {
         await browser?.close();
       } finally {
@@ -923,92 +1185,109 @@ export function createHmsRuntime(options: HmsRuntimeOptions): HmsRuntime {
   };
 }
 
+/** Required Playwright factory — production composition must use this (or equivalent). */
+export function createPlaywrightBrowserFactory(): BrowserFactory {
+  return async ({ executablePath, signal }) => {
+    assertNotAborted(signal ?? new AbortController().signal);
+    const pw = await import('playwright');
+    const browser = await pw.chromium.launch({
+      executablePath,
+      headless: true,
+    });
+    return {
+      async newContext(opts) {
+        const context = await browser.newContext(opts);
+        return {
+          async route(url, handler) {
+            await context.route(url, async (route) => {
+              const req = route.request();
+              const redirected = req.redirectedFrom();
+              const adapter: PolicyRoute = {
+                request: () => ({
+                  url: () => req.url(),
+                  method: () => req.method(),
+                  resourceType: () => req.resourceType(),
+                  headers: () => req.headers(),
+                  postData: () => req.postData(),
+                  redirectedFrom: () =>
+                    redirected ? { url: () => redirected.url() } : null,
+                  isNavigationRequest: () => req.isNavigationRequest(),
+                }),
+                continue: () => route.continue(),
+                abort: (code?: string) => route.abort(code),
+              };
+              await handler(adapter);
+            });
+          },
+          async routeWebSocket(url, handler) {
+            await context.routeWebSocket(url, (ws) => {
+              handler({
+                close() {
+                  try {
+                    ws.close();
+                  } catch {
+                    /* ignore */
+                  }
+                },
+              });
+            });
+          },
+          async newPage() {
+            const page = await context.newPage();
+            return wrapPlaywrightPage(page);
+          },
+          async close() {
+            await context.close();
+          },
+          pages() {
+            return context.pages().map(wrapPlaywrightPage);
+          },
+          on(
+            event: 'page' | 'download' | 'websocket',
+            handler:
+              | ((page: HmsPage) => void)
+              | ((download: HmsDownloadEvent) => void)
+              | (() => void),
+          ) {
+            if (event === 'page') {
+              context.on('page', (p) =>
+                (handler as (page: HmsPage) => void)(wrapPlaywrightPage(p)),
+              );
+            } else if (event === 'download') {
+              (
+                context as unknown as {
+                  on(
+                    event: 'download',
+                    listener: (download: { cancel(): Promise<void> }) => void,
+                  ): void;
+                }
+              ).on('download', (d) =>
+                (handler as (download: HmsDownloadEvent) => void)({
+                  cancel: () => d.cancel(),
+                }),
+              );
+            } else if (event === 'websocket') {
+              context.on('page', (p) => {
+                p.on('websocket', () => {
+                  (handler as () => void)();
+                });
+              });
+            }
+          },
+        };
+      },
+      async close() {
+        await browser.close();
+      },
+    };
+  };
+}
+
 /** Optional real Playwright factory — only when playwright is installed. */
 export async function tryCreatePlaywrightBrowserFactory(): Promise<BrowserFactory | null> {
   try {
-    const pw = await import('playwright');
-    return async ({ executablePath, signal }) => {
-      assertNotAborted(signal ?? new AbortController().signal);
-      const browser = await pw.chromium.launch({
-        executablePath,
-        headless: true,
-      });
-      return {
-        async newContext(opts) {
-          const context = await browser.newContext(opts);
-          return {
-            async route(url, handler) {
-              await context.route(url, async (route) => {
-                const req = route.request();
-                const redirected = req.redirectedFrom();
-                const adapter: PolicyRoute = {
-                  request: () => ({
-                    url: () => req.url(),
-                    method: () => req.method(),
-                    resourceType: () => req.resourceType(),
-                    headers: () => req.headers(),
-                    postData: () => req.postData(),
-                    redirectedFrom: () =>
-                      redirected ? { url: () => redirected.url() } : null,
-                    isNavigationRequest: () => req.isNavigationRequest(),
-                  }),
-                  continue: () => route.continue(),
-                  abort: (code?: string) => route.abort(code),
-                };
-                await handler(adapter);
-              });
-            },
-            async newPage() {
-              const page = await context.newPage();
-              return wrapPlaywrightPage(page);
-            },
-            async close() {
-              await context.close();
-            },
-            pages() {
-              return context.pages().map(wrapPlaywrightPage);
-            },
-            on(
-              event: 'page' | 'download' | 'websocket',
-              handler:
-                | ((page: HmsPage) => void)
-                | ((download: HmsDownloadEvent) => void)
-                | (() => void),
-            ) {
-              if (event === 'page') {
-                context.on('page', (p) =>
-                  (handler as (page: HmsPage) => void)(wrapPlaywrightPage(p)),
-                );
-              } else if (event === 'download') {
-                // Playwright BrowserContext download typing varies by version;
-                // bind via untyped emit so factory still compiles.
-                (
-                  context as unknown as {
-                    on(
-                      event: 'download',
-                      listener: (download: { cancel(): Promise<void> }) => void,
-                    ): void;
-                  }
-                ).on('download', (d) =>
-                  (handler as (download: HmsDownloadEvent) => void)({
-                    cancel: () => d.cancel(),
-                  }),
-                );
-              } else if (event === 'websocket') {
-                context.on('page', (p) => {
-                  p.on('websocket', () => {
-                    (handler as () => void)();
-                  });
-                });
-              }
-            },
-          };
-        },
-        async close() {
-          await browser.close();
-        },
-      };
-    };
+    await import('playwright');
+    return createPlaywrightBrowserFactory();
   } catch {
     return null;
   }
@@ -1021,15 +1300,22 @@ function wrapPlaywrightPage(page: {
   setDefaultTimeout(ms: number): void;
   setDefaultNavigationTimeout(ms: number): void;
   setContent?(html: string): Promise<void>;
+  url(): string;
+  title(): Promise<string>;
   locator(selector: string): {
     fill(value: string): Promise<void>;
     click(): Promise<void>;
+    press(key: string): Promise<void>;
   };
   getByLabel(text: string): { fill(value: string): Promise<void> };
   getByRole(
     role: string,
     opts: { name: string },
   ): { click(): Promise<void> };
+  waitForResponse(
+    predicate: (res: { url(): string }) => boolean,
+    options?: { timeout?: number },
+  ): Promise<unknown>;
   evaluate<T>(fn: () => T | Promise<T>): Promise<T>;
   evaluate<T, A>(fn: (arg: A) => T | Promise<T>, arg: A): Promise<T>;
 }): HmsPage {
@@ -1044,21 +1330,45 @@ function wrapPlaywrightPage(page: {
     close: () => page.close(),
     setDefaultTimeout: (ms) => page.setDefaultTimeout(ms),
     setDefaultNavigationTimeout: (ms) => page.setDefaultNavigationTimeout(ms),
+    url: () => page.url(),
+    title: () => page.title(),
     async readPropertyBinding() {
       const html = await page.content();
+      const title = await page.title();
       return {
         tenant: extractAttr(html, 'data-tenant'),
-        propertyCode: extractAttr(html, 'data-property-code'),
+        propertyCode:
+          extractAttr(html, 'data-property-code') ??
+          (/HRCEN/.test(title) ? 'HRCEN' : null),
         propertyName: extractAttr(html, 'data-property-name'),
       };
     },
     async fillLogin(username, password) {
-      await page.getByLabel('Username').fill(username);
-      await page.getByLabel('Password').fill(password);
+      const userid = page.locator('input[name="userid"]');
+      const userLegacy = page.locator('input[name="username"]');
+      try {
+        await userid.fill(username);
+      } catch {
+        try {
+          await page.getByLabel('Username').fill(username);
+        } catch {
+          await userLegacy.fill(username);
+        }
+      }
+      try {
+        await page.locator('input[name="password"]').fill(password);
+      } catch {
+        await page.getByLabel('Password').fill(password);
+      }
     },
     async submitLogin() {
-      await page.getByRole('button', { name: 'Sign in' }).click();
-      await page.goto; // navigation follows form
+      try {
+        await page
+          .getByRole('button', { name: 'Sign in' })
+          .click();
+      } catch {
+        await page.locator('input[name="password"]').press('Enter');
+      }
     },
     async postForm(url, fields) {
       const postData = new URLSearchParams(fields).toString();
@@ -1081,6 +1391,19 @@ function wrapPlaywrightPage(page: {
     async click(selector) {
       await page.locator(selector).click();
     },
+    async fill(selector, value) {
+      await page.locator(selector).fill(value);
+    },
+    async press(selector, key) {
+      await page.locator(selector).press(key);
+    },
+    async waitForCorrelatedResponse(pathSubstring) {
+      await page.waitForResponse(
+        (res) => res.url().includes(pathSubstring),
+        { timeout: 15_000 },
+      );
+    },
+    evaluateStableDom: (fn) => page.evaluate(fn),
     evaluate: (fn) => page.evaluate(fn),
   };
 }

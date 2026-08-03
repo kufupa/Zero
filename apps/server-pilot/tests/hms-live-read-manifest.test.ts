@@ -24,7 +24,7 @@ describe('live Guest Stay read manifest (HRCEN)', () => {
     expect(LIVE_NOTFOUND_CANARY.length).toBe(15);
   });
 
-  it('allows OSRESS.search with soft-capture body keys', () => {
+  it('blocks OSRESS.search on base manifest until exact candidate bound', () => {
     const body = formBody({
       MADDON_FILTER_ALIAS_NAME_1: 'lastname',
       MADDON_FILTER_OPERATOR_1: '=',
@@ -98,10 +98,13 @@ describe('live Guest Stay read manifest (HRCEN)', () => {
       },
       postData: body,
     });
-    expect(decision).toEqual({
-      action: 'allow',
-      ruleId: 'live-osress-search',
-    });
+    expect(decision.action).toBe('block');
+    if (decision.action === 'block') {
+      expect(decision.code).toBe(BLOCK_CODES.UNKNOWN_PATH);
+    }
+    expect(manifest.rules.some((r) => r.id === 'live-osress-search')).toBe(
+      false,
+    );
   });
 
   it('allows empty OSRESV.HDR propertycode (open shell)', () => {
@@ -168,5 +171,146 @@ describe('live Guest Stay read manifest (HRCEN)', () => {
       }),
     });
     expect(decision.action).toBe('block');
+  });
+});
+
+describe('exact OSRESS.search candidate binding', () => {
+  it('allows only body whose confirmation value equals selected candidate', async () => {
+    const { buildExactOsressSearchManifest, buildExactOsressSearchBody } =
+      await import('../src/hms/live-read-manifest.js');
+    const candidate = {
+      id: 'c1',
+      kind: 'confirmation' as const,
+      value: 'EXACT-CONF-99',
+    };
+    const bound = buildExactOsressSearchManifest(ORIGIN, candidate);
+    const good = evaluateObservedRequest(bound, {
+      method: 'POST',
+      url: `${ORIGIN}${LIVE_GUEST_STAY_SEARCH_PATH}`,
+      resourceType: 'xhr',
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+      },
+      postData: formBody(buildExactOsressSearchBody(candidate)),
+    });
+    expect(good).toEqual({ action: 'allow', ruleId: 'live-osress-search-exact' });
+  });
+
+  it('blocks altered value, extra key, alias drift, operator drift, mutation path', async () => {
+    const {
+      buildExactOsressSearchManifest,
+      buildExactOsressSearchBody,
+      LIVE_GUEST_STAY_SEARCH_PATH: searchPath,
+    } = await import('../src/hms/live-read-manifest.js');
+    const candidate = {
+      id: 'c1',
+      kind: 'confirmation' as const,
+      value: 'EXACT-CONF-99',
+    };
+    const bound = buildExactOsressSearchManifest(ORIGIN, candidate);
+    const base = buildExactOsressSearchBody(candidate);
+    const headers = {
+      'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+    };
+
+    const altered = evaluateObservedRequest(bound, {
+      method: 'POST',
+      url: `${ORIGIN}${searchPath}`,
+      resourceType: 'xhr',
+      headers,
+      postData: formBody({ ...base, MADDON_FILTER_VALUE_3: 'OTHER-VAL' }),
+    });
+    expect(altered.action).toBe('block');
+    if (altered.action === 'block') {
+      expect(altered.code).toBe(BLOCK_CODES.CHANGED_FIXED_BODY);
+    }
+
+    const extra = evaluateObservedRequest(bound, {
+      method: 'POST',
+      url: `${ORIGIN}${searchPath}`,
+      resourceType: 'xhr',
+      headers,
+      postData: formBody({ ...base, bonus: 'x' }),
+    });
+    expect(extra.action).toBe('block');
+    if (extra.action === 'block') {
+      expect(extra.code).toBe(BLOCK_CODES.EXTRA_BODY);
+    }
+
+    const aliasDrift = evaluateObservedRequest(bound, {
+      method: 'POST',
+      url: `${ORIGIN}${searchPath}`,
+      resourceType: 'xhr',
+      headers,
+      postData: formBody({
+        ...base,
+        MADDON_FILTER_ALIAS_NAME_3: 'confirmationNumber',
+      }),
+    });
+    expect(aliasDrift.action).toBe('block');
+    if (aliasDrift.action === 'block') {
+      expect(aliasDrift.code).toBe(BLOCK_CODES.CHANGED_FIXED_BODY);
+    }
+
+    const opDrift = evaluateObservedRequest(bound, {
+      method: 'POST',
+      url: `${ORIGIN}${searchPath}`,
+      resourceType: 'xhr',
+      headers,
+      postData: formBody({
+        ...base,
+        MADDON_FILTER_OPERATOR_3: 'contains',
+      }),
+    });
+    expect(opDrift.action).toBe('block');
+    if (opDrift.action === 'block') {
+      expect(opDrift.code).toBe(BLOCK_CODES.CHANGED_FIXED_BODY);
+    }
+
+    const mutation = evaluateObservedRequest(bound, {
+      method: 'POST',
+      url: `${ORIGIN}/web/base/OSRESV.save`,
+      resourceType: 'xhr',
+      headers,
+      postData: formBody({ action: 'save' }),
+    });
+    expect(mutation.action).toBe('block');
+    if (mutation.action === 'block') {
+      expect(mutation.code).toBe(BLOCK_CODES.UNKNOWN_PATH);
+    }
+  });
+
+  it('binds external_reference candidate to externalconfirmation fixed value', async () => {
+    const { buildExactOsressSearchManifest, buildExactOsressSearchBody } =
+      await import('../src/hms/live-read-manifest.js');
+    const candidate = {
+      id: 'e1',
+      kind: 'external_reference' as const,
+      value: 'EXT-REF-42',
+    };
+    const bound = buildExactOsressSearchManifest(ORIGIN, candidate);
+    const body = buildExactOsressSearchBody(candidate);
+    expect(body.externalconfirmation).toBe('EXT-REF-42');
+    const good = evaluateObservedRequest(bound, {
+      method: 'POST',
+      url: `${ORIGIN}${LIVE_GUEST_STAY_SEARCH_PATH}`,
+      resourceType: 'xhr',
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+      },
+      postData: formBody(body),
+    });
+    expect(good).toEqual({ action: 'allow', ruleId: 'live-osress-search-exact' });
+
+    const altered = evaluateObservedRequest(bound, {
+      method: 'POST',
+      url: `${ORIGIN}${LIVE_GUEST_STAY_SEARCH_PATH}`,
+      resourceType: 'xhr',
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+      },
+      postData: formBody({ ...body, externalconfirmation: 'WRONG' }),
+    });
+    expect(altered.action).toBe('block');
   });
 });

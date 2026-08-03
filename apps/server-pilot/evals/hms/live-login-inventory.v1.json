@@ -118,5 +118,5 @@
     "filterRowConfirmation": "ff_confirmationnumber"
   },
   "status": "login_property_shell_and_guest_stay_notfound_canary_green",
-  "deferredNext": "Next plan: live InforReadAdapter + session factory on live-read-manifest.ts; keep enabled off; inventory list-row selectors first"
+  "deferredNext": "Task 5 ops: ops-hms-shadow.sh canary/start/status/stop; see docs/infor-hms/live-reservation-shadow-runbook.md. Active tool only hms_find_reservation 1.1.0; writes deferred."
 }

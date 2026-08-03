@@ -23,6 +23,18 @@ import {
   type RequestDecision,
   type RedactedRequestSignature,
 } from '../src/hms/contracts.js';
+import {
+  LIVE_GUEST_STAY_SEARCH_PATH,
+  LIVE_NOTFOUND_CANARY,
+  buildExactOsressSearchBody,
+  buildExactOsressSearchRule,
+  buildLiveGuestStayFunctionalRules,
+  liveNotFoundCanaryCandidate,
+} from '../src/hms/live-read-manifest.js';
+// Canonical Guest Stay path for worker + probe: createLiveGuestStayDriver
+// (apps/server-pilot/src/hms/live-guest-stay-driver.ts). This script retains
+// inventory/debug capture; functional POST rules come from live-read-manifest.
+// OSRESS.search allow only via exact-bound canary rule (no variable base rule).
 
 type ProbeEvent = {
   decision: 'allow' | 'block';
@@ -63,566 +75,157 @@ function getStaticRule(
   };
 }
 
-/**
- * Abort-first inventory (2026-07-30 EC2 probe): document GET + exact static
- * GETs observed as unknown_path on first pass. No POST/credential submit here.
- */
 function minimalLoginManifest(origin: string): RequestPolicyManifest {
+  const chromeGets = [
+    {
+      id: 'live-login-get',
+      origin,
+      method: 'GET' as const,
+      path: '/web/base/logindisp',
+      resourceTypes: ['document'],
+      fixedQuery: {},
+      variableQuery: {
+        tenant: { pattern: 'HMS_LEGACY', maxLength: 32 },
+      },
+      fixedBody: {},
+      variableBody: {},
+      maxBodyBytes: 4096,
+      redirectPolicy: 'same-reviewed-chain' as const,
+    },
+    getStaticRule(origin, 'live-login-css', '/web/resources/inforhms/HMS-min.css', [
+      'stylesheet',
+    ]),
+    getStaticRule(
+      origin,
+      'live-login-jquery',
+      '/web/resources/shared/scripts/jquery-3.6.0.min.js',
+      ['script'],
+    ),
+    getStaticRule(
+      origin,
+      'live-login-jquery-json',
+      '/web/resources/shared/scripts/jquery.json-2.3.min.js',
+      ['script'],
+    ),
+    getStaticRule(
+      origin,
+      'live-login-companyon',
+      '/web/resources/shared/scripts/infor-companyon-client.js',
+      ['script'],
+    ),
+    getStaticRule(origin, 'live-login-all-js', '/web/base/login-all.js', [
+      'script',
+    ]),
+    getStaticRule(
+      origin,
+      'live-login-error-svg',
+      '/web/resources/inforhms/images/toolbar/error-solid.svg',
+      ['image'],
+    ),
+    getStaticRule(
+      origin,
+      'live-login-logo-svg',
+      '/web/resources/inforhms/images/shared/logo.svg',
+      ['image'],
+    ),
+    getStaticRule(
+      origin,
+      'live-login-font-semibold',
+      '/web/resources/shared/css/SourceSansPro-font/SourceSansPro-Semibold.ttf',
+      ['font'],
+    ),
+    getStaticRule(
+      origin,
+      'live-login-font-regular',
+      '/web/resources/shared/css/SourceSansPro-font/SourceSansPro-Regular.ttf',
+      ['font'],
+    ),
+    getStaticRule(
+      origin,
+      'live-login-font-it',
+      '/web/resources/shared/css/SourceSansPro-font/SourceSansPro-It.ttf',
+      ['font'],
+    ),
+    {
+      id: 'live-post-login-common',
+      origin,
+      method: 'GET' as const,
+      path: '/web/base/COMMON',
+      resourceTypes: ['document', 'xhr', 'fetch'],
+      fixedQuery: {},
+      variableQuery: {
+        REQ_KEY: { pattern: '[A-Za-z0-9._-]{8,128}', maxLength: 128 },
+      },
+      fixedBody: {},
+      variableBody: {},
+      maxBodyBytes: 4096,
+      redirectPolicy: 'same-reviewed-chain' as const,
+    },
+    getStaticRule(origin, 'live-post-login-root', '/', ['document']),
+    getStaticRule(
+      origin,
+      'live-common-vault-utility',
+      '/web/resources/shared/scripts/vault/vaultUtility.js',
+      ['script'],
+    ),
+    getStaticRule(
+      origin,
+      'live-common-parent-facade',
+      '/web/resources/shared/scripts/vault/parentFacade.js',
+      ['script'],
+    ),
+    getStaticRule(
+      origin,
+      'live-common-parent-facade-impl',
+      '/web/resources/shared/scripts/vault/parentFacadeImpl.js',
+      ['script'],
+    ),
+    getStaticRule(
+      origin,
+      'live-common-aes',
+      '/web/resources/shared/scripts/cryptojs/aes.js',
+      ['script'],
+    ),
+    getStaticRule(
+      origin,
+      'live-common-pbkdf2',
+      '/web/resources/shared/scripts/cryptojs/pbkdf2.js',
+      ['script'],
+    ),
+    getStaticRule(
+      origin,
+      'live-common-aes-util',
+      '/web/resources/shared/scripts/cryptojs/AesUtil.js',
+      ['script'],
+    ),
+    getStaticRule(
+      origin,
+      'live-common-sha256',
+      '/web/resources/shared/scripts/cryptojs/sha256-min.js',
+      ['script'],
+    ),
+    getStaticRule(origin, 'live-common-all-classes', '/web/base/all-classes.js', [
+      'script',
+    ]),
+  ];
+
+  // Share functional POST rules (login/OSRESV) with LiveGuestStayDriver.
+  // OSRESS.search only via exact-bound canary — no open variable confirmation body.
+  const functional = buildLiveGuestStayFunctionalRules(origin).filter(
+    (rule) =>
+      rule.id !== 'live-login-get' &&
+      rule.id !== 'live-common-get' &&
+      rule.id !== 'live-osresv-get',
+  );
+  const exactSearch = buildExactOsressSearchRule(
+    origin,
+    liveNotFoundCanaryCandidate(),
+  );
+
   return requestPolicyManifestSchema.parse({
-    rules: [
-      {
-        id: 'live-login-get',
-        origin,
-        method: 'GET',
-        path: '/web/base/logindisp',
-        resourceTypes: ['document'],
-        fixedQuery: {},
-        variableQuery: {
-          tenant: { pattern: 'HMS_LEGACY', maxLength: 32 },
-        },
-        fixedBody: {},
-        variableBody: {},
-        maxBodyBytes: 4096,
-        redirectPolicy: 'same-reviewed-chain',
-      },
-      getStaticRule(origin, 'live-login-css', '/web/resources/inforhms/HMS-min.css', [
-        'stylesheet',
-      ]),
-      getStaticRule(
-        origin,
-        'live-login-jquery',
-        '/web/resources/shared/scripts/jquery-3.6.0.min.js',
-        ['script'],
-      ),
-      getStaticRule(
-        origin,
-        'live-login-jquery-json',
-        '/web/resources/shared/scripts/jquery.json-2.3.min.js',
-        ['script'],
-      ),
-      getStaticRule(
-        origin,
-        'live-login-companyon',
-        '/web/resources/shared/scripts/infor-companyon-client.js',
-        ['script'],
-      ),
-      getStaticRule(origin, 'live-login-all-js', '/web/base/login-all.js', [
-        'script',
-      ]),
-      getStaticRule(
-        origin,
-        'live-login-error-svg',
-        '/web/resources/inforhms/images/toolbar/error-solid.svg',
-        ['image'],
-      ),
-      getStaticRule(
-        origin,
-        'live-login-logo-svg',
-        '/web/resources/inforhms/images/shared/logo.svg',
-        ['image'],
-      ),
-      getStaticRule(
-        origin,
-        'live-login-font-semibold',
-        '/web/resources/shared/css/SourceSansPro-font/SourceSansPro-Semibold.ttf',
-        ['font'],
-      ),
-      getStaticRule(
-        origin,
-        'live-login-font-regular',
-        '/web/resources/shared/css/SourceSansPro-font/SourceSansPro-Regular.ttf',
-        ['font'],
-      ),
-      getStaticRule(
-        origin,
-        'live-login-font-it',
-        '/web/resources/shared/css/SourceSansPro-font/SourceSansPro-It.ttf',
-        ['font'],
-      ),
-      {
-        id: 'live-login-post',
-        origin,
-        method: 'POST',
-        path: '/web/base/login',
-        resourceTypes: ['xhr', 'fetch', 'document'],
-        contentType: 'application/x-www-form-urlencoded',
-        fixedQuery: {},
-        variableQuery: {},
-        fixedBody: {
-          tenant: 'HMS_LEGACY',
-        },
-        variableBody: {
-          userid: { pattern: '.{1,64}', maxLength: 64 },
-          password: { pattern: '.{1,128}', maxLength: 128 },
-          csrftckt: { pattern: '.{0,256}', maxLength: 256 },
-          resetpassword: { pattern: '.{0,32}', maxLength: 32 },
-          SYSTEM_FUNCTION_NAME: { pattern: '.{0,64}', maxLength: 64 },
-          USER_FUNCTION_NAME: { pattern: '.{0,64}', maxLength: 64 },
-        },
-        maxBodyBytes: 4096,
-        redirectPolicy: 'same-reviewed-chain',
-      },
-      {
-        id: 'live-post-login-common',
-        origin,
-        method: 'GET',
-        path: '/web/base/COMMON',
-        resourceTypes: ['document', 'xhr', 'fetch'],
-        fixedQuery: {},
-        variableQuery: {
-          // Session REQ_KEY is opaque; constrain charset/length only.
-          // Do not treat COMMON as a write-form allow — stop on unknown POST
-          // (e.g. BSSTRT) before any mutation surface.
-          REQ_KEY: { pattern: '[A-Za-z0-9._-]{8,128}', maxLength: 128 },
-        },
-        fixedBody: {},
-        variableBody: {},
-        maxBodyBytes: 4096,
-        redirectPolicy: 'same-reviewed-chain',
-      },
-      getStaticRule(origin, 'live-post-login-root', '/', ['document']),
-      getStaticRule(
-        origin,
-        'live-common-vault-utility',
-        '/web/resources/shared/scripts/vault/vaultUtility.js',
-        ['script'],
-      ),
-      getStaticRule(
-        origin,
-        'live-common-parent-facade',
-        '/web/resources/shared/scripts/vault/parentFacade.js',
-        ['script'],
-      ),
-      getStaticRule(
-        origin,
-        'live-common-parent-facade-impl',
-        '/web/resources/shared/scripts/vault/parentFacadeImpl.js',
-        ['script'],
-      ),
-      getStaticRule(
-        origin,
-        'live-common-aes',
-        '/web/resources/shared/scripts/cryptojs/aes.js',
-        ['script'],
-      ),
-      getStaticRule(
-        origin,
-        'live-common-pbkdf2',
-        '/web/resources/shared/scripts/cryptojs/pbkdf2.js',
-        ['script'],
-      ),
-      getStaticRule(
-        origin,
-        'live-common-aes-util',
-        '/web/resources/shared/scripts/cryptojs/AesUtil.js',
-        ['script'],
-      ),
-      getStaticRule(
-        origin,
-        'live-common-sha256',
-        '/web/resources/shared/scripts/cryptojs/sha256-min.js',
-        ['script'],
-      ),
-      getStaticRule(origin, 'live-common-all-classes', '/web/base/all-classes.js', [
-        'script',
-      ]),
-      {
-        id: 'live-bsstrt',
-        origin,
-        method: 'POST',
-        path: '/web/base/BSSTRT',
-        resourceTypes: ['xhr', 'fetch'],
-        contentType: 'application/x-www-form-urlencoded',
-        fixedQuery: {},
-        variableQuery: {},
-        fixedBody: {},
-        variableBody: {
-          MENU_MODULE_KEY: { pattern: '.{0,64}', maxLength: 64 },
-          SYSTEM_FUNCTION_NAME: { pattern: '.{0,64}', maxLength: 64 },
-          USER_FUNCTION_NAME: { pattern: '.{0,64}', maxLength: 64 },
-          removescreenflows: { pattern: '.{0,16}', maxLength: 16 },
-        },
-        maxBodyBytes: 4096,
-        redirectPolicy: 'same-reviewed-chain',
-      },
-      {
-        id: 'live-bsstrt-hdr',
-        origin,
-        method: 'POST',
-        path: '/web/base/BSSTRT.HDR',
-        resourceTypes: ['xhr', 'fetch'],
-        contentType: 'application/x-www-form-urlencoded',
-        fixedQuery: {},
-        variableQuery: {},
-        fixedBody: {},
-        variableBody: {
-          SYSTEM_FUNCTION_NAME: { pattern: '.{0,64}', maxLength: 64 },
-          USER_FUNCTION_NAME: { pattern: '.{0,64}', maxLength: 64 },
-          manurefresh: { pattern: '.{0,16}', maxLength: 16 },
-        },
-        maxBodyBytes: 4096,
-        redirectPolicy: 'same-reviewed-chain',
-      },
-      {
-        id: 'live-interface-status',
-        origin,
-        method: 'GET',
-        path: '/web/jsp/interfaceStatusAlert.jsp',
-        resourceTypes: ['xhr', 'fetch'],
-        fixedQuery: {},
-        variableQuery: {
-          _dc: { pattern: '[0-9]{1,20}', maxLength: 20 },
-        },
-        fixedBody: {},
-        variableBody: {},
-        maxBodyBytes: 4096,
-        redirectPolicy: 'same-reviewed-chain',
-      },
-      getStaticRule(
-        origin,
-        'live-toolbar-user',
-        '/web/resources/inforhms/images/toolbar/user.svg',
-        ['image'],
-      ),
-      getStaticRule(
-        origin,
-        'live-toolbar-help',
-        '/web/resources/inforhms/images/toolbar/help.svg',
-        ['image'],
-      ),
-      getStaticRule(
-        origin,
-        'live-toolbar-info',
-        '/web/resources/inforhms/images/toolbar/info.svg',
-        ['image'],
-      ),
-      getStaticRule(
-        origin,
-        'live-toolbar-logout',
-        '/web/resources/inforhms/images/toolbar/logout.svg',
-        ['image'],
-      ),
-      getStaticRule(
-        origin,
-        'live-font-black',
-        '/web/resources/shared/css/SourceSansPro-font/SourceSansPro-Black.ttf',
-        ['font'],
-      ),
-      getStaticRule(
-        origin,
-        'live-grid-hd',
-        '/web/resources/inforhms/images/grid/grid3-hd-btn.png',
-        ['image'],
-      ),
-      getStaticRule(
-        origin,
-        'live-tree-caret',
-        '/web/resources/inforhms/images/tree/caret-down.svg',
-        ['image'],
-      ),
-      getStaticRule(
-        origin,
-        'live-tree-folder',
-        '/web/resources/inforhms/images/tree/folder.svg',
-        ['image'],
-      ),
-      getStaticRule(
-        origin,
-        'live-overlay-line',
-        '/web/resources/inforhms/images/toolbar/overlay-line.svg',
-        ['image'],
-      ),
-      getStaticRule(
-        origin,
-        'live-toolbar-settings',
-        '/web/resources/inforhms/images/toolbar/settings.svg',
-        ['image'],
-      ),
-      getStaticRule(
-        origin,
-        'live-toolbar-save-icon',
-        '/web/resources/inforhms/images/toolbar/save.svg',
-        ['image'],
-      ),
-      getStaticRule(
-        origin,
-        'live-toolbar-refresh',
-        '/web/resources/inforhms/images/toolbar/refresh.svg',
-        ['image'],
-      ),
-      getStaticRule(
-        origin,
-        'live-toolbar-quick',
-        '/web/resources/inforhms/images/toolbar/quick-access.svg',
-        ['image'],
-      ),
-      getStaticRule(
-        origin,
-        'live-toolbar-caret',
-        '/web/resources/inforhms/images/toolbar/caret-down.svg',
-        ['image'],
-      ),
-      getStaticRule(
-        origin,
-        'live-toolbar-send-icon',
-        '/web/resources/inforhms/images/toolbar/send-submit.svg',
-        ['image'],
-      ),
-      getStaticRule(
-        origin,
-        'live-slider-bg',
-        '/web/resources/inforhms/images/slider/slider-bg.png',
-        ['image'],
-      ),
-      getStaticRule(
-        origin,
-        'live-slider-thumb',
-        '/web/resources/inforhms/images/slider/slider-thumb.png',
-        ['image'],
-      ),
-      getStaticRule(
-        origin,
-        'live-toolbar-bullet',
-        '/web/resources/inforhms/images/toolbar/bullet-list.svg',
-        ['image'],
-      ),
-      getStaticRule(
-        origin,
-        'live-toolbar-expand',
-        '/web/resources/inforhms/images/toolbar/expand-app-tray.svg',
-        ['image'],
-      ),
-      getStaticRule(
-        origin,
-        'live-toolbar-mingle',
-        '/web/resources/inforhms/images/toolbar/mingle-share.svg',
-        ['image'],
-      ),
-      getStaticRule(
-        origin,
-        'live-font-bold',
-        '/web/resources/shared/css/SourceSansPro-font/SourceSansPro-Bold.ttf',
-        ['font'],
-      ),
-      getStaticRule(
-        origin,
-        'live-tree-open-folder',
-        '/web/resources/inforhms/images/tree/open-folder.svg',
-        ['image'],
-      ),
-      getStaticRule(
-        origin,
-        'live-tree-dot',
-        '/web/resources/inforhms/images/tree/dot.svg',
-        ['image'],
-      ),
-      getStaticRule(
-        origin,
-        'live-tree-plusminus',
-        '/web/resources/inforhms/images/tree/plusminus-folder-closed.svg',
-        ['image'],
-      ),
-      // Guest Stay toolbar chrome (GET images only — not action POSTs).
-      ...[
-        'dropdown',
-        'left-arrow',
-        'new-document',
-        'delete',
-        'previous-page',
-        'next-page',
-        'copy',
-        'reset',
-        'print',
-        'print-preview',
-        'expand-left',
-        'split-view',
-        'expand-right',
-        'money',
-        'inventory',
-      ].map((name) =>
-        getStaticRule(
-          origin,
-          `live-toolbar-${name}`,
-          `/web/resources/inforhms/images/toolbar/${name}.svg`,
-          ['image'],
-        ),
-      ),
-      ...[
-        'room-rate-availability',
-        'room-type-availability',
-        'room-availability',
-        'employee-directory',
-        'interface-status',
-      ].map((name) =>
-        getStaticRule(
-          origin,
-          `live-hms-toolbar-${name}`,
-          `/web/resources/inforhms/images/hms/toolbar/${name}.svg`,
-          ['image'],
-        ),
-      ),
-      {
-        id: 'live-osresv',
-        origin,
-        method: 'POST',
-        path: '/web/base/OSRESV',
-        resourceTypes: ['xhr', 'fetch', 'document'],
-        contentType: 'application/x-www-form-urlencoded',
-        fixedQuery: {},
-        variableQuery: {
-          FUNCTION_CLASS: { pattern: '.{0,64}', maxLength: 64 },
-          USER_FUNCTION_NAME: { pattern: '.{0,64}', maxLength: 64 },
-        },
-        fixedBody: {},
-        variableBody: {
-          CURRENT_TAB_NAME: { pattern: '.{0,64}', maxLength: 64 },
-          FUNCTION_CLASS: { pattern: '.{0,64}', maxLength: 64 },
-          MENU_MODULE_KEY: { pattern: '.{0,64}', maxLength: 64 },
-          SYSTEM_FUNCTION_NAME: { pattern: '.{0,64}', maxLength: 64 },
-          USER_FUNCTION_NAME: { pattern: '.{0,64}', maxLength: 64 },
-          removescreenflows: { pattern: '.{0,16}', maxLength: 16 },
-        },
-        maxBodyBytes: 8192,
-        redirectPolicy: 'same-reviewed-chain',
-      },
-      {
-        id: 'live-osresv-hdr',
-        origin,
-        method: 'POST',
-        path: '/web/base/OSRESV.HDR',
-        resourceTypes: ['xhr', 'fetch'],
-        contentType: 'application/x-www-form-urlencoded',
-        fixedQuery: {},
-        variableQuery: {},
-        fixedBody: {},
-        variableBody: {
-          CURRENT_TAB_NAME: { pattern: '.{0,64}', maxLength: 64 },
-          MENU_MODULE_KEY: { pattern: '.{0,64}', maxLength: 64 },
-          SYSTEM_FUNCTION_NAME: { pattern: '.{0,64}', maxLength: 64 },
-          USER_FUNCTION_NAME: { pattern: '.{0,64}', maxLength: 64 },
-          account: { pattern: '.{0,64}', maxLength: 64 },
-          bookingdotcomid: { pattern: '.{0,64}', maxLength: 64 },
-          confirmationnumber: { pattern: '.{0,64}', maxLength: 64 },
-          facebookid: { pattern: '.{0,64}', maxLength: 64 },
-          firstname: { pattern: '.{0,64}', maxLength: 64 },
-          guestNumber: { pattern: '.{0,64}', maxLength: 64 },
-          guestid: { pattern: '.{0,64}', maxLength: 64 },
-          hoteldate: { pattern: '.{0,32}', maxLength: 32 },
-          lastname: { pattern: '.{0,64}', maxLength: 64 },
-          propertycode: { pattern: 'HRCEN|', maxLength: 16 },
-          removescreenflows: { pattern: '.{0,16}', maxLength: 16 },
-          reservationstayid: { pattern: '.{0,64}', maxLength: 64 },
-          room: { pattern: '.{0,32}', maxLength: 32 },
-          tripadvisorid: { pattern: '.{0,64}', maxLength: 64 },
-          twitterid: { pattern: '.{0,64}', maxLength: 64 },
-        },
-        maxBodyBytes: 16_384,
-        redirectPolicy: 'same-reviewed-chain',
-      },
-      {
-        // Guest Stay quick-search (placeholder: Name, Confirmation, Room…).
-        // Observed 2026-07-30 soft-capture: NOTFOUND-CANARY → empty list.
-        id: 'live-osress-search',
-        origin,
-        method: 'POST',
-        path: '/web/base/OSRESS.search',
-        resourceTypes: ['xhr', 'fetch'],
-        contentType: 'application/x-www-form-urlencoded',
-        fixedQuery: {},
-        variableQuery: {},
-        fixedBody: {},
-        variableBody: {
-          COMPONENT_INFO_TYPE: { pattern: '.{0,64}', maxLength: 64 },
-          CURRENT_TAB_NAME: { pattern: '.{0,64}', maxLength: 64 },
-          DATASPY_ID: { pattern: '.{0,64}', maxLength: 64 },
-          GRID_ID: { pattern: '.{0,64}', maxLength: 64 },
-          GRID_NAME: { pattern: '.{0,64}', maxLength: 64 },
-          SYSTEM_FUNCTION_NAME: { pattern: '.{0,64}', maxLength: 64 },
-          USER_FUNCTION_NAME: { pattern: '.{0,64}', maxLength: 64 },
-          externalconfirmation: { pattern: '.{0,64}', maxLength: 64 },
-          MADDON_FILTER_ALIAS_NAME_1: { pattern: '.{0,64}', maxLength: 64 },
-          MADDON_FILTER_ALIAS_NAME_2: { pattern: '.{0,64}', maxLength: 64 },
-          MADDON_FILTER_ALIAS_NAME_3: { pattern: '.{0,64}', maxLength: 64 },
-          MADDON_FILTER_ALIAS_NAME_4: { pattern: '.{0,64}', maxLength: 64 },
-          MADDON_FILTER_ALIAS_NAME_5: { pattern: '.{0,64}', maxLength: 64 },
-          MADDON_FILTER_ALIAS_NAME_6: { pattern: '.{0,64}', maxLength: 64 },
-          MADDON_FILTER_ALIAS_NAME_7: { pattern: '.{0,64}', maxLength: 64 },
-          MADDON_FILTER_ALIAS_NAME_8: { pattern: '.{0,64}', maxLength: 64 },
-          MADDON_FILTER_ALIAS_NAME_9: { pattern: '.{0,64}', maxLength: 64 },
-          MADDON_FILTER_ALIAS_NAME_10: { pattern: '.{0,64}', maxLength: 64 },
-          MADDON_FILTER_JOINER_1: { pattern: '.{0,16}', maxLength: 16 },
-          MADDON_FILTER_JOINER_2: { pattern: '.{0,16}', maxLength: 16 },
-          MADDON_FILTER_JOINER_3: { pattern: '.{0,16}', maxLength: 16 },
-          MADDON_FILTER_JOINER_4: { pattern: '.{0,16}', maxLength: 16 },
-          MADDON_FILTER_JOINER_5: { pattern: '.{0,16}', maxLength: 16 },
-          MADDON_FILTER_JOINER_6: { pattern: '.{0,16}', maxLength: 16 },
-          MADDON_FILTER_JOINER_7: { pattern: '.{0,16}', maxLength: 16 },
-          MADDON_FILTER_JOINER_8: { pattern: '.{0,16}', maxLength: 16 },
-          MADDON_FILTER_JOINER_9: { pattern: '.{0,16}', maxLength: 16 },
-          MADDON_FILTER_JOINER_10: { pattern: '.{0,16}', maxLength: 16 },
-          MADDON_FILTER_OPERATOR_1: { pattern: '.{0,16}', maxLength: 16 },
-          MADDON_FILTER_OPERATOR_2: { pattern: '.{0,16}', maxLength: 16 },
-          MADDON_FILTER_OPERATOR_3: { pattern: '.{0,16}', maxLength: 16 },
-          MADDON_FILTER_OPERATOR_4: { pattern: '.{0,16}', maxLength: 16 },
-          MADDON_FILTER_OPERATOR_5: { pattern: '.{0,16}', maxLength: 16 },
-          MADDON_FILTER_OPERATOR_6: { pattern: '.{0,16}', maxLength: 16 },
-          MADDON_FILTER_OPERATOR_7: { pattern: '.{0,16}', maxLength: 16 },
-          MADDON_FILTER_OPERATOR_8: { pattern: '.{0,16}', maxLength: 16 },
-          MADDON_FILTER_OPERATOR_9: { pattern: '.{0,16}', maxLength: 16 },
-          MADDON_FILTER_OPERATOR_10: { pattern: '.{0,16}', maxLength: 16 },
-          MADDON_FILTER_SEQNUM_1: { pattern: '.{0,8}', maxLength: 8 },
-          MADDON_FILTER_SEQNUM_2: { pattern: '.{0,8}', maxLength: 8 },
-          MADDON_FILTER_SEQNUM_3: { pattern: '.{0,8}', maxLength: 8 },
-          MADDON_FILTER_SEQNUM_4: { pattern: '.{0,8}', maxLength: 8 },
-          MADDON_FILTER_SEQNUM_5: { pattern: '.{0,8}', maxLength: 8 },
-          MADDON_FILTER_SEQNUM_6: { pattern: '.{0,8}', maxLength: 8 },
-          MADDON_FILTER_SEQNUM_7: { pattern: '.{0,8}', maxLength: 8 },
-          MADDON_FILTER_SEQNUM_8: { pattern: '.{0,8}', maxLength: 8 },
-          MADDON_FILTER_SEQNUM_9: { pattern: '.{0,8}', maxLength: 8 },
-          MADDON_FILTER_SEQNUM_10: { pattern: '.{0,8}', maxLength: 8 },
-          MADDON_FILTER_VALUE_1: { pattern: '.{0,64}', maxLength: 64 },
-          MADDON_FILTER_VALUE_2: { pattern: '.{0,64}', maxLength: 64 },
-          MADDON_FILTER_VALUE_3: { pattern: '.{0,64}', maxLength: 64 },
-          MADDON_FILTER_VALUE_4: { pattern: '.{0,64}', maxLength: 64 },
-          MADDON_FILTER_VALUE_5: { pattern: '.{0,64}', maxLength: 64 },
-          MADDON_FILTER_VALUE_6: { pattern: '.{0,64}', maxLength: 64 },
-          MADDON_FILTER_VALUE_7: { pattern: '.{0,64}', maxLength: 64 },
-          MADDON_FILTER_VALUE_8: { pattern: '.{0,64}', maxLength: 64 },
-          MADDON_FILTER_VALUE_9: { pattern: '.{0,64}', maxLength: 64 },
-          MADDON_FILTER_VALUE_10: { pattern: '.{0,64}', maxLength: 64 },
-          MADDON_LPAREN_3: { pattern: '.{0,16}', maxLength: 16 },
-          MADDON_LPAREN_5: { pattern: '.{0,16}', maxLength: 16 },
-          MADDON_RPAREN_6: { pattern: '.{0,16}', maxLength: 16 },
-          MADDON_RPAREN_10: { pattern: '.{0,16}', maxLength: 16 },
-        },
-        maxBodyBytes: 16_384,
-        redirectPolicy: 'same-reviewed-chain',
-      },
-      {
-        id: 'live-osresv-lst',
-        origin,
-        method: 'POST',
-        path: '/web/base/OSRESV.LST',
-        resourceTypes: ['xhr', 'fetch'],
-        contentType: 'application/x-www-form-urlencoded',
-        fixedQuery: {},
-        variableQuery: {},
-        fixedBody: {},
-        variableBody: {
-          COMPONENT_INFO_TYPE: { pattern: '.{0,64}', maxLength: 64 },
-          CURRENT_TAB_NAME: { pattern: '.{0,64}', maxLength: 64 },
-          MENU_MODULE_KEY: { pattern: '.{0,64}', maxLength: 64 },
-          SYSTEM_FUNCTION_NAME: { pattern: '.{0,64}', maxLength: 64 },
-          USER_FUNCTION_NAME: { pattern: '.{0,64}', maxLength: 64 },
-          removescreenflows: { pattern: '.{0,16}', maxLength: 16 },
-        },
-        maxBodyBytes: 16_384,
-        redirectPolicy: 'same-reviewed-chain',
-      },
-    ],
+    rules: [...chromeGets, ...functional, exactSearch],
   });
 }
-
 function eventFromDecision(decision: RequestDecision): ProbeEvent {
   if (decision.action === 'allow') {
     return {
@@ -678,6 +281,14 @@ async function main(): Promise<void> {
     const context = await browser.newContext({
       acceptDownloads: false,
       serviceWorkers: 'block',
+    });
+    // Pre-connect WebSocket rejection before any navigation (same as runtime).
+    await context.routeWebSocket('**/*', (ws) => {
+      try {
+        ws.close();
+      } catch {
+        /* ignore */
+      }
     });
     await context.route('**/*', async (route) => {
       const req = route.request();
@@ -1028,25 +639,23 @@ async function main(): Promise<void> {
           await clickExactLabel('Guest Stay');
         }
 
-        // After OSRESV shell: quick-search only (never New Record).
-        // Live UX: input[name=search] placeholder "Search by Name, Confirmation…"
-        // → POST /web/base/OSRESS.search (soft-capture 2026-07-30).
+        // After OSRESV shell: exact-bound OSRESS.search (fill primes UI only).
+        // Live ExtJS Enter does not emit fixed MADDON scaffold — post exact body.
         if (clicked.some((c) => /guest\s*stay/i.test(c))) {
           await page!.waitForTimeout(4000);
           const searchLoc = page!.locator('input[name="search"]').first();
           let searchFilled: string | null = null;
           if (await searchLoc.count().catch(() => 0)) {
-            await searchLoc.fill('NOTFOUND-CANARY', { timeout: 5_000 });
+            await searchLoc.fill(LIVE_NOTFOUND_CANARY, { timeout: 5_000 });
             searchFilled = 'search';
           } else {
-            // Fallback: ExtJS filter-row confirmation field
             for (const name of [
               'ff_confirmationnumber',
               'confirmationnumber',
             ]) {
               const loc = page!.locator(`input[name="${name}"]`).first();
               if (await loc.count().catch(() => 0)) {
-                await loc.fill('NOTFOUND-CANARY', { timeout: 5_000 });
+                await loc.fill(LIVE_NOTFOUND_CANARY, { timeout: 5_000 });
                 searchFilled = name;
                 break;
               }
@@ -1054,19 +663,30 @@ async function main(): Promise<void> {
           }
           if (searchFilled) {
             clicked.push(`searchField:${searchFilled}`);
-            const filledLoc = page!
-              .locator(`input[name="${searchFilled}"]`)
-              .first();
-            await filledLoc
-              .press('Enter', { timeout: 5_000 })
-              .catch(async () => {
-                await page!.keyboard.press('Enter');
-              });
-            clicked.push('search:Enter');
-            await page!.waitForTimeout(5000);
           } else {
             clicked.push('searchField:missing');
           }
+          const canary = liveNotFoundCanaryCandidate();
+          const exactBody = buildExactOsressSearchBody(canary);
+          const postData = new URLSearchParams(exactBody).toString();
+          await page!.evaluate(
+            async ({ url, postData }) => {
+              await fetch(url, {
+                method: 'POST',
+                headers: {
+                  'content-type': 'application/x-www-form-urlencoded',
+                },
+                body: postData,
+                credentials: 'same-origin',
+              });
+            },
+            {
+              url: `${origin}${LIVE_GUEST_STAY_SEARCH_PATH}`,
+              postData,
+            },
+          );
+          clicked.push('search:exactOsressPost');
+          await page!.waitForTimeout(5000);
         }
       } catch (err) {
         const raw = err instanceof Error ? err.message : String(err);
@@ -1092,7 +712,7 @@ async function main(): Promise<void> {
             path: location.pathname,
             title: document.title.slice(0, 80),
             confirmFieldValueLen: filled.length,
-            confirmFieldLooksCanary: filled === 'NOTFOUND-CANARY',
+            confirmFieldLooksCanary: filled === LIVE_NOTFOUND_CANARY,
             listHint: {
               hasNoResults:
                 t.includes('no reservations') ||
@@ -1125,7 +745,7 @@ async function main(): Promise<void> {
       const osressSearchAllows = events.filter(
         (e) =>
           e.decision === 'allow' &&
-          e.redactedSignature.path === '/web/base/OSRESS.search',
+          e.redactedSignature.path === LIVE_GUEST_STAY_SEARCH_PATH,
       );
       const lstAfterSearch = events.filter(
         (e) =>

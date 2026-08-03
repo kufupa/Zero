@@ -26,7 +26,7 @@ import type { HmsPage, HmsReadSession } from './runtime.js';
 
 export const HMS_FIND_RESERVATION_TOOL_ID = 'hms_find_reservation';
 export const HMS_QUOTE_STAY_TOOL_ID = 'hms_quote_stay';
-export const HMS_FIND_RESERVATION_TOOL_VERSION = '1';
+export const HMS_FIND_RESERVATION_TOOL_VERSION = '1.1.0';
 export const HMS_QUOTE_STAY_TOOL_VERSION = '1';
 
 export const RESERVATION_EVIDENCE_TTL_MS = 5 * 60_000;

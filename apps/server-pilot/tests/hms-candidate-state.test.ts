@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import type { DB } from '../src/db/client.js';
@@ -86,6 +87,23 @@ describe('HMS candidate freshness helpers', () => {
         threadStateVersion: 'abc',
       }),
     ).toBe(`hms-refresh:t1:th1:abc:${HMS_CANDIDATE_TOOLSET_VERSION}`);
+  });
+
+  it('candidate-state activeRun query filters executorLane=hms', () => {
+    const source = readFileSync(
+      new URL('../src/trpc/routes/drafts.ts', import.meta.url),
+      'utf8',
+    );
+    expect(source).toMatch(/eq\(aiWorkflowRun\.executorLane, 'hms'\)/);
+  });
+
+  it('shadow mode blocks enqueueHmsCandidateRefresh with HMS_MANUAL_OPS_REQUIRED', () => {
+    const source = readFileSync(
+      new URL('../src/trpc/routes/drafts.ts', import.meta.url),
+      'utf8',
+    );
+    expect(source).toMatch(/hmsMode === 'shadow'/);
+    expect(source).toMatch(/HMS_MANUAL_OPS_REQUIRED/);
   });
 
   it('treats off-mode skeleton generations as not HMS-enriched', () => {

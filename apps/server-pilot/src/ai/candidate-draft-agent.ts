@@ -24,11 +24,19 @@ import { validateStructuredJsonOutput } from './security/policy.js';
 
 export const CANDIDATE_TOOL_BUDGET = 4;
 
+/** Bump when candidate tool registry / claim schemas change. Shadow owns this. */
+export const HMS_CANDIDATE_TOOLSET_VERSION = '1.1.0';
+
+/** Production hms_find_reservation tool version (reservation-only shadow). */
+export const HMS_FIND_RESERVATION_TOOLSET_VERSION = '1.1.0';
+
 export const candidateToolEffects = {
   hms_find_reservation: 'read',
   hms_quote_stay: 'read',
   mail_read_artifact: 'read',
 } as const;
+
+export type CandidateToolId = keyof typeof candidateToolEffects;
 
 export type CandidateToolEffect = (typeof candidateToolEffects)[keyof typeof candidateToolEffects];
 
@@ -45,7 +53,7 @@ const attachmentIdSchema = z
   .strict();
 
 export type CandidateToolCallRecord = {
-  toolId: keyof typeof candidateToolEffects;
+  toolId: CandidateToolId;
   ok: boolean;
   error?: string;
 };
@@ -67,6 +75,11 @@ export type CandidateToolSession = {
   lookupCandidates: ReadonlyMap<string, LookupCandidate>;
   /** Attachment IDs authorized for this thread context only. */
   authorizedAttachmentIds: ReadonlySet<string>;
+  /**
+   * Production: {'hms_find_reservation'} only.
+   * Fixture default (omit): all three handlers registered.
+   */
+  activeToolIds?: ReadonlySet<CandidateToolId>;
   close?: () => Promise<void>;
 };
 
@@ -208,20 +221,58 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
   }
 }
 
+/** Permanent / fatal errors must escape gathering; soft tool failures may continue. */
+export function isFatalCandidateGatheringError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  if (error.name === 'AbortError') return true;
+  if (error.name === 'HmsRuntimeError') return true;
+  return false;
+}
+
+function sessionHandlerPresent(
+  session: CandidateToolSession,
+  toolId: CandidateToolId,
+): boolean {
+  if (toolId === 'hms_find_reservation') {
+    return typeof session.findReservation === 'function';
+  }
+  if (toolId === 'hms_quote_stay') {
+    return typeof session.quoteStay === 'function';
+  }
+  return typeof session.readArtifact === 'function';
+}
+
 /**
  * Register strict read tools. Effects are code-owned (all `read`).
  * Inputs accept opaque IDs only — no raw property/guest/S3 fields.
+ * Registers only `session.activeToolIds` (default: all three for fixtures).
  */
-export function createCandidateTools(session: CandidateToolSession) {
+export function createCandidateTools(
+  session: CandidateToolSession,
+  options?: { now?: () => Date },
+) {
   const budget = { used: 0 };
   const calls: CandidateToolCallRecord[] = [];
   const claimMap = new Map<string, EvidenceClaim>();
   const evidenceResults: ToolResult<unknown>[] = [];
   const eligibleEvidenceIds = new Set<string>();
-  const now = () => new Date();
+  const now = options?.now ?? (() => new Date());
+
+  const activeToolIds =
+    session.activeToolIds ??
+    (new Set(Object.keys(candidateToolEffects) as CandidateToolId[]));
+
+  for (const toolId of activeToolIds) {
+    if (!(toolId in candidateToolEffects)) {
+      throw new Error(`unknown active tool id: ${toolId}`);
+    }
+    if (!sessionHandlerPresent(session, toolId)) {
+      throw new Error(`active tool ${toolId} missing handler`);
+    }
+  }
 
   async function withBudget<T>(
-    toolId: keyof typeof candidateToolEffects,
+    toolId: CandidateToolId,
     signal: AbortSignal | undefined,
     run: () => Promise<T>,
   ): Promise<T> {
@@ -333,12 +384,23 @@ export function createCandidateTools(session: CandidateToolSession) {
     },
   });
 
+  const allHandlers = {
+    hms_find_reservation: hmsFindReservation,
+    hms_quote_stay: hmsQuoteStay,
+    mail_read_artifact: mailReadArtifact,
+  } as const;
+
+  const tools = {} as {
+    hms_find_reservation: typeof hmsFindReservation;
+    hms_quote_stay: typeof hmsQuoteStay;
+    mail_read_artifact: typeof mailReadArtifact;
+  };
+  for (const id of activeToolIds) {
+    (tools as Record<string, unknown>)[id] = allHandlers[id];
+  }
+
   return {
-    tools: {
-      hms_find_reservation: hmsFindReservation,
-      hms_quote_stay: hmsQuoteStay,
-      mail_read_artifact: mailReadArtifact,
-    },
+    tools,
     budget,
     calls,
     claims: claimMap,
@@ -428,7 +490,10 @@ export async function runClaimSafeCandidateDraft(input: {
   }) => Promise<unknown>;
   now?: Date;
 }): Promise<ClaimSafeCandidateResult> {
-  const bundle = createCandidateTools(input.session);
+  const frozenNow = input.now;
+  const bundle = createCandidateTools(input.session, {
+    now: frozenNow ? () => frozenNow : undefined,
+  });
   const signal = input.signal;
 
   try {
@@ -446,33 +511,45 @@ export async function runClaimSafeCandidateDraft(input: {
       if (bundle.budget.used >= CANDIDATE_TOOL_BUDGET) break;
       const candidate = input.session.lookupCandidates.get(candidateId);
       if (!candidate) continue;
-      try {
-        if (candidate.kind === 'surname_dates') {
-          await bundle.tools.hms_quote_stay.execute!(
-            { candidateId },
-            { abortSignal: signal } as never,
-          );
-        } else {
-          await bundle.tools.hms_find_reservation.execute!(
-            { candidateId },
-            { abortSignal: signal } as never,
+      // surname_dates: prefer quote; when quote inactive (reservation-only
+      // session) route through find — session returns manual_required.
+      // Never silent-skip: that hid the required manual terminal.
+      let tool;
+      if (candidate.kind === 'surname_dates') {
+        tool =
+          bundle.tools.hms_quote_stay ?? bundle.tools.hms_find_reservation;
+        if (!tool) {
+          throw new Error(
+            'surname_dates requires hms_quote_stay or hms_find_reservation',
           );
         }
-      } catch {
-        // Failed calls already counted in budget; continue gathering.
+      } else {
+        tool = bundle.tools.hms_find_reservation;
+        if (!tool) continue;
+      }
+      try {
+        await tool.execute!(
+          { candidateId },
+          { abortSignal: signal } as never,
+        );
+      } catch (error) {
+        if (isFatalCandidateGatheringError(error)) throw error;
+        // Soft failures already counted in budget; continue gathering.
       }
     }
 
     for (const attachmentId of attachmentIds) {
       throwIfAborted(signal);
       if (bundle.budget.used >= CANDIDATE_TOOL_BUDGET) break;
+      const tool = bundle.tools.mail_read_artifact;
+      if (!tool) break;
       try {
-        await bundle.tools.mail_read_artifact.execute!(
+        await tool.execute!(
           { attachmentId },
           { abortSignal: signal } as never,
         );
-      } catch {
-        // counted
+      } catch (error) {
+        if (isFatalCandidateGatheringError(error)) throw error;
       }
     }
 

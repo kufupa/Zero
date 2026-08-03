@@ -42,6 +42,8 @@ if [ -f "$ENV_FILE" ]; then
   source "$ENV_FILE"
   set +a
 fi
+# Playwright is not Vitest, but never leave pilot DATABASE_URL in scope for accidental tests.
+unset DATABASE_URL VITEST_ALLOW_PILOT_RDS
 
 CANONICAL_ORIGIN="https://nava.legacyhotels.co.za"
 : "${BETTER_AUTH_URL:?BETTER_AUTH_URL missing from production environment}"

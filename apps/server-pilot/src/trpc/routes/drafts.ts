@@ -43,6 +43,7 @@ import {
   DEFAULT_AI_MODEL_ID,
   enqueueAiRun,
 } from '../../ai/run-ledger.js';
+import { parseEnv } from '../../env.js';
 
 function isPostgresUniqueViolation(err: unknown): boolean {
   if (err && typeof err === 'object' && 'code' in err) {
@@ -55,7 +56,10 @@ function isPostgresUniqueViolation(err: unknown): boolean {
 }
 
 /** Bump when candidate tool registry / claim schemas change. */
-export const HMS_CANDIDATE_TOOLSET_VERSION = 'hms-candidate-tools-v1';
+export {
+  HMS_CANDIDATE_TOOLSET_VERSION,
+} from '../../ai/candidate-draft-agent.js';
+import { HMS_CANDIDATE_TOOLSET_VERSION } from '../../ai/candidate-draft-agent.js';
 
 export const DEFAULT_HMS_CANDIDATE_PROMPT_VERSION = 'draft-v1';
 
@@ -309,6 +313,7 @@ export async function loadHmsCandidateState(input: {
         eq(aiWorkflowRun.transportId, input.transportId),
         eq(aiWorkflowRun.threadId, input.threadId),
         eq(aiWorkflowRun.runKind, 'candidate_draft'),
+        eq(aiWorkflowRun.executorLane, 'hms'),
         inArray(aiWorkflowRun.state, ['queued', 'claimed', 'running', 'retry_wait']),
       ),
     )
@@ -469,6 +474,18 @@ export async function enqueueHmsCandidateRefresh(input: {
   idempotencyKey: string;
   threadStateVersion: string;
 }> {
+  // Shadow mode: Task 5 isolated ops CLI is the only manual enqueue path.
+  // Fail before any insert — never pre-create aiDraftGeneration or unscoped run.
+  const hmsMode = parseEnv(
+    process.env as Record<string, string | undefined>,
+  ).HMS_DRAFT_ENRICHMENT_MODE;
+  if (hmsMode === 'shadow') {
+    throw new TRPCError({
+      code: 'FORBIDDEN',
+      message: 'HMS_MANUAL_OPS_REQUIRED',
+    });
+  }
+
   const threadStateVersion = await loadLiveThreadStateVersion(input.db, {
     transportId: input.transportId,
     threadId: input.threadId,

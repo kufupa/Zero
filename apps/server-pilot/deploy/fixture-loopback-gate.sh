@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # EC2 autonomous fixture loopback gate: vitest E2E + mail build after deploy.
-# Run on EC2 as ubuntu with apps/server-pilot/.env.production present and
-# TEST_DATABASE_URL pointing at a disposable non-production database.
+# Never sources .env.production / .env into Vitest.
+# Requires TEST_DATABASE_URL + CONFIRM_DISPOSABLE_TEST_DB=1 (disposable non-pilot).
 #
 # Usage (on instance):
-#   bash apps/server-pilot/deploy/fixture-loopback-gate.sh
+#   CONFIRM_DISPOSABLE_TEST_DB=1 TEST_DATABASE_URL=... \
+#     bash apps/server-pilot/deploy/fixture-loopback-gate.sh
 #
 # SSM (from laptop):
 #   bash apps/server-pilot/deploy/ssm-run-command.sh \
-#     'cd /home/ubuntu/repos/zero && bash apps/server-pilot/deploy/fixture-loopback-gate.sh'
+#     'cd /home/ubuntu/repos/zero && CONFIRM_DISPOSABLE_TEST_DB=1 TEST_DATABASE_URL=... bash apps/server-pilot/deploy/fixture-loopback-gate.sh'
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -19,24 +20,22 @@ ENV_FILE="${ENV_FILE:-${SERVER_PILOT}/.env.production}"
 echo "== fixture-loopback-gate: repo ${REPO_ROOT} =="
 cd "$REPO_ROOT"
 
-if [ -f "$ENV_FILE" ]; then
-  set -a
-  # shellcheck disable=SC1090
-  source "$ENV_FILE"
-  set +a
-elif [ -f /home/ubuntu/.env.production ]; then
-  set -a
-  # shellcheck disable=SC1090
-  source /home/ubuntu/.env.production
-  set +a
-fi
+unset DATABASE_URL VITEST_ALLOW_PILOT_RDS
 
 if [ -z "${TEST_DATABASE_URL:-}" ]; then
   echo "fixture-loopback-gate: TEST_DATABASE_URL must point to a disposable non-production DB" >&2
   exit 1
 fi
-export DATABASE_URL="$TEST_DATABASE_URL"
-unset VITEST_ALLOW_PILOT_RDS
+if [ "${CONFIRM_DISPOSABLE_TEST_DB:-}" != "1" ]; then
+  echo "fixture-loopback-gate: CONFIRM_DISPOSABLE_TEST_DB=1 required before DB Vitest" >&2
+  exit 1
+fi
+case "${TEST_DATABASE_URL}" in
+  *nava-zero-mail-pilot*)
+    echo "fixture-loopback-gate: REFUSE TEST_DATABASE_URL pointing at pilot RDS" >&2
+    exit 2
+    ;;
+esac
 
 export NODE_ENV=test
 export MAIL_TRANSPORT_MODE=fixture
@@ -48,7 +47,7 @@ pm2 stop worker || true
 
 echo "== vitest: fixture loopback suite =="
 cd "$SERVER_PILOT"
-pnpm exec vitest run \
+DATABASE_URL="$TEST_DATABASE_URL" pnpm exec vitest run \
   tests/fixture-loopback-e2e.test.ts \
   tests/fixture-loopback.test.ts \
   tests/seed-contract.test.ts \
@@ -62,6 +61,17 @@ cd "$REPO_ROOT"
 pnpm --filter @zero/mail build
 
 echo "== pm2: start worker =="
-pm2 start worker
+# Restore worker only when production MAIL_TRANSPORT_MODE line says wire/real.
+# Read that single non-secret line — never source the whole env file.
+PROD_MAIL_MODE="fixture"
+if [ -f "$ENV_FILE" ]; then
+  PROD_MAIL_MODE="$(grep -E '^MAIL_TRANSPORT_MODE=' "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d "'\"" || true)"
+  PROD_MAIL_MODE="${PROD_MAIL_MODE:-fixture}"
+fi
+if [ "$PROD_MAIL_MODE" = "wire" ] || [ "$PROD_MAIL_MODE" = "real" ]; then
+  pm2 start worker 2>/dev/null || pm2 start "${SCRIPT_DIR}/pm2.config.cjs" --only worker --update-env 2>/dev/null || true
+else
+  pm2 start worker 2>/dev/null || true
+fi
 
 echo "fixture-loopback-gate: PASS"

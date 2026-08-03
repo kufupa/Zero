@@ -11,15 +11,32 @@ export type NodeEnv = 'production' | 'development' | 'test';
 /** `fixture` (default) in-memory fake; `wire` TCP to Mailpit; `real` Exchange. */
 export type MailTransportMode = 'fixture' | 'wire' | 'real';
 export type AiExecutorLane = 'default' | 'hms';
-export type HmsDraftEnrichmentMode = 'off' | 'shadow' | 'enabled';
+/** Process-neutral HMS mode. Literal `enabled` is rejected forever. */
+export type HmsDraftEnrichmentMode = 'off' | 'shadow';
 
 const TRANSPORT_MODES: readonly MailTransportMode[] = ['fixture', 'wire', 'real'];
 const AI_WORKER_LANES: readonly AiExecutorLane[] = ['default', 'hms'];
-const HMS_DRAFT_ENRICHMENT_MODES: readonly HmsDraftEnrichmentMode[] = [
-  'off',
-  'shadow',
-  'enabled',
-];
+const HMS_DRAFT_ENRICHMENT_MODES: readonly HmsDraftEnrichmentMode[] = ['off', 'shadow'];
+const DEFAULT_HMS_HEALTH_PATH = '/tmp/nava-zero-hms-health.json';
+
+/** Process-neutral controls — safe for default worker / http without HMS secrets. */
+export type HmsControlConfig = {
+  mode: HmsDraftEnrichmentMode;
+  healthPath: string;
+};
+
+/** HMS-worker runtime requirements — only when shadow lane needs browser/secret. */
+export type HmsWorkerRuntimeConfig = {
+  secretArn: string;
+  chromiumExecutablePath: string;
+  roleProofPath: string;
+  healthPath: string;
+  expectedTenant: string;
+  expectedPropertyCode: 'HRCEN';
+  expectedTransportId: string;
+  runDeadlineMs: number;
+  circuitCooldownMs: number;
+};
 
 export interface MailEnv {
   NODE_ENV: NodeEnv;
@@ -117,6 +134,82 @@ function toBool(name: string, raw: string): boolean {
   if (raw === 'true' || raw === '1') return true;
   if (raw === 'false' || raw === '0') return false;
   throw new Error(`env ${name} must be boolean (true|false|1|0), got: ${raw}`);
+}
+
+function requireNonEmpty(name: string, raw: string | undefined): string {
+  if (raw === undefined || raw.trim() === '') {
+    throw new Error(`env ${name} is required`);
+  }
+  return raw;
+}
+
+/** Parse process-neutral HMS controls. Does not require secret/browser values. */
+export function parseHmsControlConfig(input: EnvInput): HmsControlConfig {
+  const rawHmsMode = input.HMS_DRAFT_ENRICHMENT_MODE ?? 'off';
+  if (rawHmsMode === 'enabled') {
+    throw new Error(
+      'env HMS_DRAFT_ENRICHMENT_MODE=enabled is forbidden (MODE_ENABLED_FORBIDDEN); use off|shadow',
+    );
+  }
+  if (!HMS_DRAFT_ENRICHMENT_MODES.includes(rawHmsMode as HmsDraftEnrichmentMode)) {
+    throw new Error(
+      `env HMS_DRAFT_ENRICHMENT_MODE must be one of ${HMS_DRAFT_ENRICHMENT_MODES.join(', ')}, got: ${rawHmsMode}`,
+    );
+  }
+  const healthPath = input.HMS_HEALTH_STATUS_PATH?.trim()
+    ? input.HMS_HEALTH_STATUS_PATH
+    : DEFAULT_HMS_HEALTH_PATH;
+  return {
+    mode: rawHmsMode as HmsDraftEnrichmentMode,
+    healthPath,
+  };
+}
+
+/**
+ * Require full HMS worker runtime config for shadow. Call from hms-ai-worker
+ * startup only — default worker must not invoke this.
+ */
+export function requireHmsWorkerRuntimeConfig(input: EnvInput): HmsWorkerRuntimeConfig {
+  const control = parseHmsControlConfig(input);
+  if (control.mode !== 'shadow') {
+    throw new Error(
+      `requireHmsWorkerRuntimeConfig requires HMS_DRAFT_ENRICHMENT_MODE=shadow, got: ${control.mode}`,
+    );
+  }
+  const healthPath = requireNonEmpty('HMS_HEALTH_STATUS_PATH', input.HMS_HEALTH_STATUS_PATH);
+  const expectedPropertyCode = requireNonEmpty(
+    'HMS_EXPECTED_PROPERTY_CODE',
+    input.HMS_EXPECTED_PROPERTY_CODE,
+  );
+  if (expectedPropertyCode !== 'HRCEN') {
+    throw new Error(
+      `env HMS_EXPECTED_PROPERTY_CODE must be HRCEN, got: ${expectedPropertyCode}`,
+    );
+  }
+  return {
+    secretArn: requireNonEmpty('HMS_READ_SECRET_ARN', input.HMS_READ_SECRET_ARN),
+    chromiumExecutablePath: requireNonEmpty(
+      'HMS_CHROMIUM_EXECUTABLE_PATH',
+      input.HMS_CHROMIUM_EXECUTABLE_PATH,
+    ),
+    roleProofPath: requireNonEmpty(
+      'HMS_READ_ROLE_PROOF_PATH',
+      input.HMS_READ_ROLE_PROOF_PATH,
+    ),
+    healthPath,
+    expectedTenant: requireNonEmpty('HMS_EXPECTED_TENANT', input.HMS_EXPECTED_TENANT),
+    expectedPropertyCode: 'HRCEN',
+    expectedTransportId: requireNonEmpty(
+      'HMS_EXPECTED_TRANSPORT_ID',
+      input.HMS_EXPECTED_TRANSPORT_ID,
+    ),
+    runDeadlineMs: input.HMS_RUN_DEADLINE_MS
+      ? toInt('HMS_RUN_DEADLINE_MS', input.HMS_RUN_DEADLINE_MS)
+      : 150_000,
+    circuitCooldownMs: input.HMS_CIRCUIT_COOLDOWN_MS
+      ? toInt('HMS_CIRCUIT_COOLDOWN_MS', input.HMS_CIRCUIT_COOLDOWN_MS)
+      : 30_000,
+  };
 }
 
 export function parseEnv(input: EnvInput): MailEnv {
@@ -219,40 +312,21 @@ export function parseEnv(input: EnvInput): MailEnv {
   }
   env.AI_WORKER_LANE = rawLane as AiExecutorLane;
 
-  const rawHmsMode = input.HMS_DRAFT_ENRICHMENT_MODE ?? 'off';
-  if (!HMS_DRAFT_ENRICHMENT_MODES.includes(rawHmsMode as HmsDraftEnrichmentMode)) {
-    throw new Error(
-      `env HMS_DRAFT_ENRICHMENT_MODE must be one of ${HMS_DRAFT_ENRICHMENT_MODES.join(', ')}, got: ${rawHmsMode}`,
-    );
-  }
-  env.HMS_DRAFT_ENRICHMENT_MODE = rawHmsMode as HmsDraftEnrichmentMode;
+  // Process-neutral HMS controls — secret/browser required only via
+  // requireHmsWorkerRuntimeConfig() on the HMS worker path.
+  const hmsControl = parseHmsControlConfig(input);
+  env.HMS_DRAFT_ENRICHMENT_MODE = hmsControl.mode;
+  env.HMS_HEALTH_STATUS_PATH = hmsControl.healthPath;
   env.HMS_RUN_DEADLINE_MS = input.HMS_RUN_DEADLINE_MS
     ? toInt('HMS_RUN_DEADLINE_MS', input.HMS_RUN_DEADLINE_MS)
     : 150_000;
-  env.HMS_HEALTH_STATUS_PATH =
-    input.HMS_HEALTH_STATUS_PATH ?? '/tmp/nava-zero-hms-health.json';
   env.HMS_CIRCUIT_COOLDOWN_MS = input.HMS_CIRCUIT_COOLDOWN_MS
     ? toInt('HMS_CIRCUIT_COOLDOWN_MS', input.HMS_CIRCUIT_COOLDOWN_MS)
     : 30_000;
 
-  if (env.HMS_DRAFT_ENRICHMENT_MODE !== 'off') {
-    if (!input.HMS_READ_SECRET_ARN) {
-      throw new Error(
-        'env HMS_READ_SECRET_ARN is required when HMS enrichment is enabled',
-      );
-    }
-    if (!input.HMS_CHROMIUM_EXECUTABLE_PATH) {
-      throw new Error(
-        'env HMS_CHROMIUM_EXECUTABLE_PATH is required when HMS enrichment is enabled',
-      );
-    }
-    env.HMS_READ_SECRET_ARN = input.HMS_READ_SECRET_ARN;
+  if (input.HMS_READ_SECRET_ARN) env.HMS_READ_SECRET_ARN = input.HMS_READ_SECRET_ARN;
+  if (input.HMS_CHROMIUM_EXECUTABLE_PATH) {
     env.HMS_CHROMIUM_EXECUTABLE_PATH = input.HMS_CHROMIUM_EXECUTABLE_PATH;
-  } else {
-    if (input.HMS_READ_SECRET_ARN) env.HMS_READ_SECRET_ARN = input.HMS_READ_SECRET_ARN;
-    if (input.HMS_CHROMIUM_EXECUTABLE_PATH) {
-      env.HMS_CHROMIUM_EXECUTABLE_PATH = input.HMS_CHROMIUM_EXECUTABLE_PATH;
-    }
   }
 
   if (aiEnabled) {

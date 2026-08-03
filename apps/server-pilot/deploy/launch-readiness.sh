@@ -145,9 +145,16 @@ PM2_SUMMARY="$(
               restarts: Number(app?.pm2_env?.restart_time ?? 0),
             };
           }
+          // Conditional HMS: hms-ai-worker must be absent at launch-readiness
+          // (HMS_OFF). Sole starter is ops-hms-shadow.sh; proofs under
+          // /opt/nava/shared/hms-reservation-*-proof.v1.json are ops-only.
+          const hms = apps.find((candidate) => candidate.name === "hms-ai-worker");
+          const hmsPresent = Boolean(hms);
           process.stdout.write(JSON.stringify({
             required,
             allOnline: requiredNames.every((name) => required[name].online),
+            hmsAiWorkerPresent: hmsPresent,
+            hmsOff: !hmsPresent,
           }));
         } catch {
           process.stdout.write(JSON.stringify({ required: {}, allOnline: false }));

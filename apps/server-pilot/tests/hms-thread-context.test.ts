@@ -4,7 +4,9 @@ import {
   buildThreadContext,
   computeThreadStateVersion,
   extractLookupCandidates,
+  filterExactReservationCandidates,
   normalizeMessageText,
+  type LookupCandidate,
   type ThreadContextMessage,
 } from '../src/ai/thread-context.js';
 
@@ -219,6 +221,24 @@ describe('hms thread context', () => {
       expect(c).toHaveProperty('id');
       expect(typeof c.id).toBe('string');
     }
+  });
+
+  it('filterExactReservationCandidates drops surname_dates for live session', () => {
+    const mixed: LookupCandidate[] = [
+      { id: 'c', kind: 'confirmation', value: 'CONF-1' },
+      { id: 'e', kind: 'external_reference', value: 'EXT-1' },
+      {
+        id: 's',
+        kind: 'surname_dates',
+        surname: 'Synthetic',
+        arrivalDate: '2099-01-01',
+        departureDate: '2099-01-03',
+      },
+    ];
+    expect(filterExactReservationCandidates(mixed)).toEqual([
+      { id: 'c', kind: 'confirmation', value: 'CONF-1' },
+      { id: 'e', kind: 'external_reference', value: 'EXT-1' },
+    ]);
   });
 
   it('changes threadStateVersion after inbound, outbound, or sent revision', () => {

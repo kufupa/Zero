@@ -1,6 +1,7 @@
 /**
  * Synthetic HMS HTTP fixture — single source of HTML/state/requests for Task 5+.
  * No static duplicate HTML trees. Request recorder + before/after state owned here.
+ * Supports legacy loopback paths and live-infor Guest Stay shape.
  */
 
 import { createServer, type IncomingMessage, type Server } from 'node:http';
@@ -23,6 +24,8 @@ export type HmsFixtureScenario =
   | 'malformed-dom'
   | 'timeout';
 
+export type HmsFixtureShape = 'legacy' | 'live-infor';
+
 export type HmsFixtureState = {
   loggedIn: boolean;
   mutationHits: number;
@@ -43,6 +46,8 @@ export type HmsFixtureServer = {
 const TENANT = 'HMS_LEGACY';
 const PROPERTY_CODE = 'centurion';
 const PROPERTY_NAME = 'Centurion Hotel';
+const LIVE_PROPERTY_CODE = 'HRCEN';
+const LIVE_PROPERTY_NAME = 'Centurion Hotel';
 
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -53,8 +58,8 @@ function readBody(req: IncomingMessage): Promise<string> {
   });
 }
 
-function html(body: string): string {
-  return `<!doctype html><html><head><title>HMS Fixture</title></head><body>${body}</body></html>`;
+function html(body: string, title = 'HMS Fixture'): string {
+  return `<!doctype html><html><head><title>${title}</title></head><body>${body}</body></html>`;
 }
 
 function propertyHeader(opts: {
@@ -73,9 +78,10 @@ function propertyHeader(opts: {
 }
 
 export async function startHmsFixtureServer(
-  options: { scenario?: HmsFixtureScenario } = {},
+  options: { scenario?: HmsFixtureScenario; shape?: HmsFixtureShape } = {},
 ): Promise<HmsFixtureServer> {
   let scenario: HmsFixtureScenario = options.scenario ?? 'default';
+  const shape: HmsFixtureShape = options.shape ?? 'legacy';
   const requests: FixtureRecordedRequest[] = [];
   const state: HmsFixtureState = {
     loggedIn: false,
@@ -107,17 +113,19 @@ export async function startHmsFixtureServer(
       res.end(payload);
     };
 
-    if (scenario === 'timeout' && url.pathname === '/login') {
-      // hang — client must abort/timeout
+    if (
+      scenario === 'timeout' &&
+      (url.pathname === '/login' || url.pathname === '/web/base/logindisp')
+    ) {
       return;
     }
 
-    // Blocked mutation surfaces — still recorded if policy fails to stop them
     if (
       (method === 'POST' &&
         (url.pathname === '/reservation/save' ||
           url.pathname === '/reservation/delete' ||
-          url.pathname === '/forms/submit')) ||
+          url.pathname === '/forms/submit' ||
+          /\/web\/base\/.*\.(save|delete)$/i.test(url.pathname))) ||
       (method === 'GET' && url.pathname === '/crs/check-availability')
     ) {
       state.mutationHits += 1;
@@ -128,6 +136,119 @@ export async function startHmsFixtureServer(
       };
       send(200, 'text/plain', 'MUTATED');
       return;
+    }
+
+    if (shape === 'live-infor') {
+      if (method === 'GET' && url.pathname === '/web/base/logindisp') {
+        if (scenario === 'malformed-dom') {
+          send(200, 'text/html', html('<div>broken login</div>'));
+          return;
+        }
+        send(
+          200,
+          'text/html',
+          html(`
+          <form id="login-form" action="/web/base/login" method="post">
+            <input name="userid" type="text" />
+            <input name="password" type="text" />
+            <input name="csrftckt" type="hidden" value="fixture-csrf" />
+            <input name="tenant" type="hidden" value="HMS_LEGACY" />
+            <button type="submit">Sign In</button>
+          </form>`),
+        );
+        return;
+      }
+
+      if (method === 'POST' && url.pathname === '/web/base/login') {
+        state.loggedIn = true;
+        res.statusCode = 302;
+        res.setHeader('location', '/web/base/COMMON?REQ_KEY=fixture-key');
+        res.end();
+        return;
+      }
+
+      if (method === 'GET' && url.pathname === '/web/base/COMMON') {
+        const tenant = scenario === 'wrong-tenant' ? 'OTHER_TENANT' : TENANT;
+        const propertyCode =
+          scenario === 'wrong-property' ? 'OTHER' : LIVE_PROPERTY_CODE;
+        const propertyName =
+          scenario === 'wrong-property' ? 'Other Hotel' : LIVE_PROPERTY_NAME;
+        send(
+          200,
+          'text/html',
+          html(
+            `${propertyHeader({ tenant, propertyCode, propertyName })}
+            <nav>
+              <span>Front Desk</span>
+              <span>Guest Stay</span>
+            </nav>`,
+            `Infor HMS - ${propertyCode}`,
+          ),
+        );
+        return;
+      }
+
+      if (method === 'GET' && url.pathname === '/web/base/OSRESV') {
+        send(
+          200,
+          'text/html',
+          html(
+            `${propertyHeader({
+              tenant: TENANT,
+              propertyCode: LIVE_PROPERTY_CODE,
+              propertyName: LIVE_PROPERTY_NAME,
+            })}
+            <h1>Guest Stay</h1>
+            <input name="search" placeholder="Search by Name, Confirmation…" />
+            <input name="ff_confirmationnumber" />
+            <table data-testid="prior-grid">
+              <tr data-testid="result-row" data-confirmation="STALE-OLD" data-stale-row="prior"><td>STALE-OLD</td></tr>
+            </table>
+            <div id="results"></div>`,
+            `Infor HMS - ${LIVE_PROPERTY_CODE}`,
+          ),
+        );
+        return;
+      }
+
+      if (method === 'POST' && url.pathname === '/web/base/OSRESS.search') {
+        const oneRow = scenario === 'reservation-one';
+        if (!oneRow) {
+          send(
+            200,
+            'text/html',
+            html(
+              `${propertyHeader({
+                tenant: TENANT,
+                propertyCode: LIVE_PROPERTY_CODE,
+                propertyName: LIVE_PROPERTY_NAME,
+              })}
+              <p data-testid="no-results">No reservations found</p>
+              <table data-testid="prior-grid">
+                <tr data-testid="result-row" data-confirmation="STALE-OLD" data-stale-row="prior"><td>STALE-OLD</td></tr>
+              </table>`,
+              `Infor HMS - ${LIVE_PROPERTY_CODE}`,
+            ),
+          );
+          return;
+        }
+        send(
+          200,
+          'text/html',
+          html(
+            `${propertyHeader({
+              tenant: TENANT,
+              propertyCode: LIVE_PROPERTY_CODE,
+              propertyName: LIVE_PROPERTY_NAME,
+            })}
+            <table data-testid="results">
+              <tr data-testid="result-row" data-confirmation="LIVE-1" data-external="EXT-1"><td>LIVE-1</td></tr>
+            </table>`,
+            `Infor HMS - ${LIVE_PROPERTY_CODE}`,
+          ),
+        );
+        return;
+      }
     }
 
     if (method === 'GET' && url.pathname === '/login') {
@@ -336,7 +457,6 @@ export async function startHmsFixtureServer(
     async close() {
       await new Promise<void>((resolve, reject) => {
         server.close((err) => (err ? reject(err) : resolve()));
-        // Destroy hung keep-alives (timeout scenario)
         server.closeAllConnections?.();
       });
     },
@@ -347,6 +467,7 @@ export const FIXTURE_IDS = {
   tenant: TENANT,
   propertyCode: PROPERTY_CODE,
   propertyName: PROPERTY_NAME,
+  livePropertyCode: LIVE_PROPERTY_CODE,
   canaryConfirmation: 'FIXTURE-1',
   transportId: 'transport-centurion',
 } as const;

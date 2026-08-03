@@ -382,3 +382,21 @@ export const centurionManifestSchema = z
 export type CenturionManifest = z.infer<typeof centurionManifestSchema>;
 export type ReservationSelectors = z.infer<typeof reservationSelectorsSchema>;
 export type QuoteSelectors = z.infer<typeof quoteSelectorsSchema>;
+
+/**
+ * Structural Guest Stay list-row fingerprint only.
+ * Never stores cardinality, cell values, HTML, screenshots, traces, or value hashes.
+ */
+export const liveGuestStayRowFingerprintV1Schema = z
+  .object({
+    schemaVersion: z.literal(1),
+    selectorKeys: z.array(z.string().min(1)).min(1),
+    columnKeys: z.array(z.string().min(1)).min(1),
+    manifestSha256: z.string().regex(/^[a-f0-9]{64}$/),
+    valuesCaptured: z.literal(false),
+  })
+  .strict();
+
+export type LiveGuestStayRowFingerprintV1 = z.infer<
+  typeof liveGuestStayRowFingerprintV1Schema
+>;

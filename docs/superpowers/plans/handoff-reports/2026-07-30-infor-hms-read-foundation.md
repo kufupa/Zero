@@ -73,3 +73,11 @@ Whole-branch Critical/Important addressed earlier:
 ## Key commits (live wave)
 
 `c0844b0a` PM2 HMS env · `db9a5918` form inventory · `fdb1db5e` OSRESS.search allow + not-found canary
+
+## Follow-on (2026-08-03 live reservation shadow Task 5)
+
+- Manual EC2 proof/status/rollback is mechanical via `ops-hms-shadow.sh` (`canary|start|status|stop`) → `dist/ops/hms-live-proof.js`.
+- Generic deploy/restart/boot keep `hms-ai-worker` **off** (`autorestart: false`); sole starter is `ops-hms-shadow.sh start`.
+- Browser bootstrap: `install-hms-browser.sh` → `HMS_DEPENDENCIES_OK` (Playwright 1.52.0 / Chromium 1169).
+- Runbook: `docs/infor-hms/live-reservation-shadow-runbook.md`.
+- Active production tool remains **only** `hms_find_reservation` `1.1.0`. Not an all-tools or write-capable agent.

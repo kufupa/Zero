@@ -178,7 +178,71 @@ describe('ai worker contract', () => {
     expect(source).toMatch(/AbortSignal\.timeout/);
     expect(source).toMatch(/AbortSignal\.any/);
     expect(source).toMatch(/RunDeadlineError/);
-    expect(source).toMatch(/lane === 'hms'/);
+    expect(source).toMatch(/lane === 'hms'|lane !== 'hms'/);
+  });
+
+  it('HMS shadow startup wires requireHmsWorkerRuntimeConfig fail-closed', async () => {
+    const source = readFileSync(join(here, '..', 'src', 'ai', 'worker.ts'), 'utf8');
+    expect(source).toMatch(/requireHmsWorkerRuntimeConfig/);
+    expect(source).toMatch(/assertHmsLaneRuntimeReady/);
+    expect(source).toMatch(/maybeInitHmsRuntime/);
+    expect(source).toMatch(/maybeInitHmsRuntime\(env\.AI_WORKER_LANE\)/);
+    expect(source).toMatch(/maybeInitHmsRuntime\(lane\)/);
+
+    const { assertHmsLaneRuntimeReady } = await import('../src/ai/worker.js');
+    const base = {
+      NODE_ENV: 'production',
+      PORT: '8788',
+      DATABASE_URL: 'postgres://zero:secret@host:5432/zero',
+      BETTER_AUTH_URL: 'https://nava.legacy.local',
+      BETTER_AUTH_SECRET: 'x'.repeat(32),
+      AWS_REGION: 'af-south-1',
+      S3_BUCKET: 'nava-mail-artifacts-test',
+      POP3_POLL_INTERVAL_MS: '30000',
+      POP3_MAX_MESSAGES_PER_CYCLE: '500',
+    };
+
+    // Default lane + shadow: no require (must not throw on missing HMS secrets).
+    expect(() =>
+      assertHmsLaneRuntimeReady({
+        ...base,
+        AI_WORKER_LANE: 'default',
+        HMS_DRAFT_ENRICHMENT_MODE: 'shadow',
+      }),
+    ).not.toThrow();
+
+    // HMS lane + off: secret-free.
+    expect(() =>
+      assertHmsLaneRuntimeReady({
+        ...base,
+        AI_WORKER_LANE: 'hms',
+        HMS_DRAFT_ENRICHMENT_MODE: 'off',
+      }),
+    ).not.toThrow();
+
+    // HMS lane + shadow without runtime fields: fail closed.
+    expect(() =>
+      assertHmsLaneRuntimeReady({
+        ...base,
+        AI_WORKER_LANE: 'hms',
+        HMS_DRAFT_ENRICHMENT_MODE: 'shadow',
+      }),
+    ).toThrow(/HMS_/);
+
+    expect(() =>
+      assertHmsLaneRuntimeReady({
+        ...base,
+        AI_WORKER_LANE: 'hms',
+        HMS_DRAFT_ENRICHMENT_MODE: 'shadow',
+        HMS_READ_SECRET_ARN: 'arn:aws:secretsmanager:af-south-1:123:secret:hms-read',
+        HMS_CHROMIUM_EXECUTABLE_PATH: '/opt/nava/chromium/chrome',
+        HMS_READ_ROLE_PROOF_PATH: '/opt/nava/shared/hms-read-role-proof.v1.json',
+        HMS_HEALTH_STATUS_PATH: '/tmp/nava-zero-hms-health.json',
+        HMS_EXPECTED_TENANT: 'HMS_LEGACY',
+        HMS_EXPECTED_PROPERTY_CODE: 'HRCEN',
+        HMS_EXPECTED_TRANSPORT_ID: 'transport-centurion',
+      }),
+    ).not.toThrow();
   });
 
   it('worker heartbeats lease and aborts on lost lease', () => {
@@ -217,6 +281,44 @@ describe('ai worker contract', () => {
     expect(drafts).toMatch(/assertThreadStateVersionFresh/);
     expect(drafts).toMatch(/loadLiveThreadStateVersion/);
     expect(drafts).toMatch(/ThreadStateStaleError/);
+  });
+
+  it('HMS lane shadow uses finishHmsShadowRun + async live factory; never mock fallback', () => {
+    const source = readFileSync(join(here, '..', 'src', 'ai', 'worker.ts'), 'utf8');
+    expect(source).toMatch(/finishHmsShadowRun/);
+    expect(source).toMatch(/failHmsShadowRun/);
+    expect(source).toMatch(/createLiveHmsCandidateSessionFactory/);
+    expect(source).toMatch(/CandidateSessionFactory/);
+    expect(source).toMatch(/Promise<import\('\.\/candidate-draft-agent\.js'\)\.CandidateToolSession>/);
+    expect(source).toMatch(/HMS_DRAFT_ENRICHMENT_MODE === 'off'/);
+    expect(source).toMatch(/executorLane === 'hms'/);
+    expect(source).toMatch(/probeAttachmentIds:\s*\[\s*\]/);
+    // HMS shadow block must not call mock or draft persist
+    const start = source.indexOf("run.executorLane === 'hms'");
+    const end = source.indexOf('Non-HMS claim-safe path');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const hmsBlock = source.slice(start, end);
+    expect(hmsBlock).not.toMatch(/createMockCandidateSession/);
+    expect(hmsBlock).not.toMatch(/persistAiCandidateDraft/);
+    expect(hmsBlock).toMatch(/resolveHmsShadowPreBrowser/);
+  });
+
+  it('hms-shadow module rejects drafts import (production-boundary contract)', async () => {
+    const shadow = readFileSync(join(here, '..', 'src', 'ai', 'hms-shadow.ts'), 'utf8');
+    expect(shadow).not.toMatch(/from ['"]\.\/drafts/);
+    expect(shadow).not.toMatch(/persistAiCandidateDraft\s*\(/);
+    expect(shadow).toMatch(/hmsShadowMetricsSchema/);
+    const { hmsShadowMetricsSchema } = await import('../src/ai/hms-shadow.js');
+    expect(() =>
+      hmsShadowMetricsSchema.parse({
+        outcome: 'candidate',
+        toolCalls: 0,
+        toolBudgetUsed: 0,
+        claimCount: 0,
+        rawEvidence: { guest: 'nope' },
+      }),
+    ).toThrow();
   });
 });
 
@@ -878,5 +980,80 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
       .from(aiWorkflowRun)
       .where(eq(aiWorkflowRun.id, retryRun.id));
     expect(stillWaiting?.state).toBe('retry_wait');
+  });
+});
+
+describe('Task 5 HMS live proof CLI (DB-free)', () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+
+  it('hms-live-proof accepts only canary/start/status/stop and rejects lookup argv', () => {
+    const source = readFileSync(join(here, '..', 'src', 'ops', 'hms-live-proof.ts'), 'utf8');
+    expect(source).toMatch(/action === 'canary'/);
+    expect(source).toMatch(/action === 'start'/);
+    expect(source).toMatch(/action === 'status'/);
+    expect(source).toMatch(/action === 'stop'/);
+    expect(source).toMatch(/assertNoLookupArgv/);
+    expect(source).toMatch(/confirmation|external|thread|message|candidate/);
+    expect(source).toMatch(/process\.exit\(3\)/);
+    expect(source).toMatch(/process\.exit\(10\)/);
+    expect(source).toMatch(/process\.exit\(20\)/);
+    expect(source).toMatch(/HMS_WAIT/);
+    expect(source).toMatch(/ROLLBACK_INCOMPLETE/);
+    expect(source).toMatch(/HmsOperatorFailCode|OPERATOR_FAIL_CODES/);
+  });
+
+  it('status validates build/deps/manifest/fingerprint/role/health/TTL/deltas', () => {
+    const source = readFileSync(join(here, '..', 'src', 'ops', 'hms-live-proof.ts'), 'utf8');
+    expect(source).toMatch(/NAVA_BUILD_COMMIT|buildCommit|runningProcessCommit/);
+    expect(source).toMatch(/playwright-1\.52\.0-chromium-1169/);
+    expect(source).toMatch(/manifestSha256/);
+    expect(source).toMatch(/rowFingerprintSha256/);
+    expect(source).toMatch(/roleProofSha256/);
+    expect(source).toMatch(/expiresAt|proof TTL|PROOF_TTL|24\s*\*\s*60|86400000/i);
+    expect(source).toMatch(/forbiddenRowDelta/);
+    expect(source).toMatch(/policyBlockDelta/);
+    expect(source).toMatch(/HEALTH_STALE|health/);
+    expect(source).toMatch(/HMS_SHADOW_VERIFIED|HMS_OFF_READY/);
+  });
+
+  it('start isolates proofAttemptId and refuses nonterminal HMS runs', () => {
+    const source = readFileSync(join(here, '..', 'src', 'ops', 'hms-live-proof.ts'), 'utf8');
+    expect(source).toMatch(/proofAttemptId/);
+    expect(source).toMatch(/randomUUID/);
+    expect(source).toMatch(/hms-proof:/);
+    expect(source).toMatch(/executorLane:\s*'hms'|executorLane === 'hms'/);
+    expect(source).toMatch(/generationId:\s*null|generationId === null/);
+    expect(source).toMatch(/idempotencyPrefix|AI_WORKER_IDEMPOTENCY_PREFIX/);
+    expect(source).toMatch(/RUN_ISOLATION_BLOCKED/);
+    expect(source).toMatch(/selectOldestExact|oldest/);
+    expect(source).toMatch(/forbiddenRowDelta|aiDraftGeneration|mailDraft/);
+    expect(source).toMatch(/HMS_SHADOW_OK/);
+    expect(source).toMatch(/HmsReservationCanaryProofV1|canary-proof|canaryProof/);
+    expect(source).toMatch(/mode ['"]0600['"]|0o600|mode: 0o600/);
+  });
+
+  it('stop dead-letters proof runs, deletes HMS PM2, emits HMS_ROLLBACK_OK', () => {
+    const source = readFileSync(join(here, '..', 'src', 'ops', 'hms-live-proof.ts'), 'utf8');
+    expect(source).toMatch(/HMS_ROLLBACK_OK/);
+    expect(source).toMatch(/dead_letter|markAiRunDeadLetter|dead-letter/i);
+    expect(source).toMatch(/pm2 delete hms-ai-worker|hms-ai-worker/);
+    expect(source).toMatch(/ROLLBACK_INCOMPLETE/);
+    expect(source).toMatch(/hms-shadow-disabled|disable.*start|preventStarts|setStartsDisabled/i);
+  });
+
+  it('worker loop honors AI_WORKER_IDEMPOTENCY_PREFIX for proof isolation', () => {
+    const source = readFileSync(join(here, '..', 'src', 'ai', 'worker.ts'), 'utf8');
+    expect(source).toMatch(/AI_WORKER_IDEMPOTENCY_PREFIX/);
+    expect(source).toMatch(/idempotencyPrefix/);
+  });
+
+  it('pm2 hms-ai-worker autorestart is false', async () => {
+    const { loadPm2Config } = await import('../src/deploy/load-pm2-config.js');
+    const pm2 = loadPm2Config();
+    const hms = pm2.apps.find((app) => app.name === 'hms-ai-worker');
+    expect(hms?.autorestart).toBe(false);
+    expect(
+      hms?.max_restarts === undefined || hms?.max_restarts === 0 || hms?.autorestart === false,
+    ).toBe(true);
   });
 });

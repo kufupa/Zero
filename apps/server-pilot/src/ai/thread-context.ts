@@ -18,6 +18,66 @@ export type LookupCandidate =
       departureDate: string;
     };
 
+/** Exact confirmation/external-ref candidates only — production live session entry. */
+export type ExactLookupCandidate = Extract<
+  LookupCandidate,
+  { kind: 'confirmation' | 'external_reference' }
+>;
+
+/** Drop surname_dates before live browser session creation. */
+export function filterExactReservationCandidates(
+  candidates: readonly LookupCandidate[],
+): ExactLookupCandidate[] {
+  return candidates.filter(
+    (c): c is ExactLookupCandidate =>
+      c.kind === 'confirmation' || c.kind === 'external_reference',
+  );
+}
+
+/**
+ * Manual / shadow eligibility: exactly one confirmation or external_reference.
+ * Rejects 0 and 2+ (ambiguous). Surname-only threads → null.
+ */
+export function requireExactlyOneExactCandidate(
+  candidates: readonly LookupCandidate[],
+): ExactLookupCandidate | null {
+  const exact = filterExactReservationCandidates(candidates);
+  return exact.length === 1 ? exact[0]! : null;
+}
+
+/** Oldest `receivedAt` then message id — canary / manual selection order. */
+export function compareOldestReceivedAtThenId(
+  a: { id: string; receivedAt: Date | null },
+  b: { id: string; receivedAt: Date | null },
+): number {
+  const at = a.receivedAt?.getTime() ?? 0;
+  const bt = b.receivedAt?.getTime() ?? 0;
+  if (at !== bt) return at - bt;
+  return a.id.localeCompare(b.id);
+}
+
+/**
+ * Walk rows oldest-first; return first with exactly one exact candidate.
+ * Shared by live canary + unit proofs (not newest-first).
+ */
+export function selectOldestWithExactlyOneExact<
+  T extends { id: string; receivedAt: Date | null },
+>(
+  rows: readonly T[],
+  textOf: (row: T) => string,
+): { row: T; candidate: ExactLookupCandidate } | null {
+  const sorted = [...rows].sort(compareOldestReceivedAtThenId);
+  for (const row of sorted) {
+    const exact = filterExactReservationCandidates(
+      extractLookupCandidates(textOf(row)),
+    );
+    if (exact.length === 1) {
+      return { row, candidate: exact[0]! };
+    }
+  }
+  return null;
+}
+
 export type ThreadContext = {
   transportId: string;
   threadId: string;

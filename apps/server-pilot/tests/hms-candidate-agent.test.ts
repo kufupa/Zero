@@ -20,6 +20,8 @@ import {
 } from '../src/ai/draft-evidence.js';
 import {
   CANDIDATE_TOOL_BUDGET,
+  HMS_CANDIDATE_TOOLSET_VERSION,
+  HMS_FIND_RESERVATION_TOOLSET_VERSION,
   allToolEffectsAreRead,
   assertToolRegistrySealed,
   candidateToolEffects,
@@ -34,6 +36,7 @@ import {
   assertThreadStateVersionFresh,
 } from '../src/ai/drafts.js';
 import { generateSkeletonDraft } from '../src/ai/workflows/candidate-draft.js';
+import { HMS_FIND_RESERVATION_TOOL_VERSION } from '../src/hms/adapter.js';
 
 const now = new Date('2026-07-30T12:00:00.000Z');
 
@@ -257,6 +260,12 @@ describe('hms typed evidence contracts', () => {
 });
 
 describe('claim-safe candidate agent', () => {
+  it('toolset and hms_find_reservation versions are 1.1.0', () => {
+    expect(HMS_CANDIDATE_TOOLSET_VERSION).toBe('1.1.0');
+    expect(HMS_FIND_RESERVATION_TOOLSET_VERSION).toBe('1.1.0');
+    expect(HMS_FIND_RESERVATION_TOOL_VERSION).toBe('1.1.0');
+  });
+
   it('tool registry effects are all read', () => {
     expect(allToolEffectsAreRead()).toBe(true);
     expect(candidateToolEffects).toEqual({
@@ -270,6 +279,28 @@ describe('claim-safe candidate agent', () => {
     expect(Object.keys(bundle.tools).sort()).toEqual(
       Object.keys(candidateToolEffects).sort(),
     );
+  });
+
+  it('fixture session may activate all three handlers; production allowlist is narrower', () => {
+    const fixture = createMockCandidateSession({
+      activeToolIds: new Set([
+        'hms_find_reservation',
+        'hms_quote_stay',
+        'mail_read_artifact',
+      ]),
+    });
+    expect(Object.keys(createCandidateTools(fixture).tools).sort()).toEqual([
+      'hms_find_reservation',
+      'hms_quote_stay',
+      'mail_read_artifact',
+    ]);
+
+    const production = createMockCandidateSession({
+      activeToolIds: new Set(['hms_find_reservation']),
+    });
+    expect(Object.keys(createCandidateTools(production).tools)).toEqual([
+      'hms_find_reservation',
+    ]);
   });
 
   it('only accepts opaque candidate IDs (no raw property/guest fields)', async () => {
@@ -637,6 +668,7 @@ describe('claim-safe candidate agent', () => {
         }),
         normalizedThreadText: 'Please confirm CONF-88421',
         signal: new AbortController().signal,
+        now,
         planModel: async () => ({
           outcome: 'candidate',
           salutation: 'generic',
@@ -659,6 +691,7 @@ describe('claim-safe candidate agent', () => {
       }),
       normalizedThreadText: 'Please confirm CONF-88421',
       signal: new AbortController().signal,
+      now,
       planModel: async () => ({
         outcome: 'candidate',
         salutation: 'generic',

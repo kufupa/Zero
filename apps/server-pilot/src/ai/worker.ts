@@ -9,7 +9,12 @@ import {
   mailThread,
   message,
 } from '../db/schema/mail.js';
-import { parseEnv, type AiExecutorLane } from '../env.js';
+import {
+  parseEnv,
+  requireHmsWorkerRuntimeConfig,
+  type AiExecutorLane,
+  type EnvInput,
+} from '../env.js';
 import { createMastraRuntime } from './mastra.js';
 import { persistAiCandidateDraft, loadLatestThreadAffectingDraftRevisionId } from './drafts.js';
 import { extractDraftFeedbackLabels } from './feedback.js';
@@ -39,6 +44,19 @@ import { validateTriageOutput } from './triage.js';
 
 function resolveWorkerLane(): AiExecutorLane {
   return parseEnv(process.env as Record<string, string | undefined>).AI_WORKER_LANE;
+}
+
+/**
+ * Fail-closed HMS shadow gate for hms-ai-worker. Default lane never invokes
+ * requireHmsWorkerRuntimeConfig; mode=off on HMS lane stays secret-free.
+ */
+export function assertHmsLaneRuntimeReady(
+  input: EnvInput = process.env as EnvInput,
+): void {
+  const env = parseEnv(input);
+  if (env.AI_WORKER_LANE !== 'hms') return;
+  if (env.HMS_DRAFT_ENRICHMENT_MODE !== 'shadow') return;
+  requireHmsWorkerRuntimeConfig(input);
 }
 
 export function aiWorkerOwnerId(lane: AiExecutorLane = resolveWorkerLane()): string {
@@ -205,13 +223,71 @@ async function failAiRun(
   return { runId: run.id, state: 'retry_wait' };
 }
 
-export type CandidateSessionFactory = (input: {
+export type CandidateSessionInput = {
   transportId: string;
   threadId: string;
-  lookupCandidates: import('./thread-context.js').LookupCandidate[];
-  authorizedAttachmentIds: string[];
+  lookupCandidates: readonly import('./thread-context.js').LookupCandidate[];
   signal: AbortSignal;
-}) => import('./candidate-draft-agent.js').CandidateToolSession;
+};
+
+export type CandidateSessionFactory = (
+  input: CandidateSessionInput,
+) => Promise<import('./candidate-draft-agent.js').CandidateToolSession>;
+
+/** Singleton production HMS runtime — one Chromium process per HMS worker. */
+let productionHmsRuntime:
+  | import('../hms/runtime.js').HmsRuntime
+  | null
+  | undefined;
+
+async function getOrCreateProductionHmsRuntime(): Promise<
+  import('../hms/runtime.js').HmsRuntime
+> {
+  if (productionHmsRuntime) return productionHmsRuntime;
+  const { createProductionHmsRuntime } = await import(
+    '../hms/production-runtime.js'
+  );
+  const config = requireHmsWorkerRuntimeConfig(
+    process.env as Record<string, string | undefined>,
+  );
+  const runtime = await createProductionHmsRuntime(config);
+  await runtime.start(AbortSignal.timeout(Math.min(60_000, config.runDeadlineMs)));
+  productionHmsRuntime = runtime;
+  return runtime;
+}
+
+/** Test / shutdown hook — closes singleton and clears handle. */
+export async function closeProductionHmsRuntimeForTests(): Promise<void> {
+  const rt = productionHmsRuntime;
+  productionHmsRuntime = null;
+  if (rt) await rt.close().catch(() => undefined);
+}
+
+export function createLiveHmsCandidateSessionFactory(): CandidateSessionFactory {
+  return async (input) => {
+    const runtime = await getOrCreateProductionHmsRuntime();
+    const { createLiveGuestStayDriver } = await import(
+      '../hms/live-guest-stay-driver.js'
+    );
+    const { createReservationCandidateSession } = await import(
+      '../hms/reservation-candidate-session.js'
+    );
+    const { filterExactReservationCandidates } = await import(
+      './thread-context.js'
+    );
+    const exact = filterExactReservationCandidates(input.lookupCandidates);
+    const driver = createLiveGuestStayDriver({
+      runtime,
+      transportId: input.transportId,
+    });
+    await driver.loginAndVerifyBinding(input.signal);
+    return createReservationCandidateSession({
+      driver,
+      candidates: new Map(exact.map((c) => [c.id, c])),
+      close: async () => undefined,
+    });
+  };
+}
 
 export async function executeAiRun(
   runId: string,
@@ -492,7 +568,150 @@ export async function executeAiRun(
         return { runId, state: 'succeeded' };
       }
 
-      // shadow | enabled: claim-safe path (mocked tools injectable via options).
+      // HMS lane + shadow: strict terminal writer — never persistAiCandidateDraft.
+      // Default lane never enters this branch (executorLane gate).
+      if (run.executorLane === 'hms' && hmsMode === 'shadow') {
+        const { runClaimSafeCandidateDraft } = await import(
+          './candidate-draft-agent.js'
+        );
+        const {
+          finishHmsShadowRun,
+          failHmsShadowRun,
+          resolveHmsShadowPreBrowser,
+        } = await import('./hms-shadow.js');
+
+        const loadThreadMessages = async () =>
+          db
+            .select({
+              id: message.id,
+              transportId: message.transportId,
+              threadId: message.threadId,
+              direction: message.direction,
+              textBody: message.textBody,
+              htmlBody: message.htmlBody,
+              subject: message.subject,
+              receivedAt: message.receivedAt,
+              sentAt: message.sentAt,
+            })
+            .from(message)
+            .where(
+              and(
+                eq(message.threadId, run.threadId),
+                eq(message.transportId, run.transportId),
+              ),
+            );
+
+        const mapMessages = (
+          threadMessages: Awaited<ReturnType<typeof loadThreadMessages>>,
+        ) =>
+          threadMessages.map((m) => ({
+            id: m.id,
+            transportId: m.transportId,
+            threadId: m.threadId,
+            direction: (m.direction === 'outbound' ? 'outbound' : 'inbound') as
+              | 'inbound'
+              | 'outbound',
+            textBody: m.textBody,
+            htmlBody: m.htmlBody,
+            subject: m.subject,
+            receivedAt: m.receivedAt,
+            sentAt: m.sentAt,
+            attachmentIds: [] as string[],
+          }));
+
+        try {
+          // Double freshness + exactly-one gate before browser context.
+          // Pass 2 reloads latestDraftRevisionId (must not reuse pass-1 id).
+          if (signal.aborted) throw new RunDeadlineError();
+          const pre = await resolveHmsShadowPreBrowser(
+            {
+              transportId: run.transportId,
+              threadId: run.threadId,
+              triggerMessageId: run.triggerMessageId,
+              loadLatestDraftRevisionId: () =>
+                loadLatestThreadAffectingDraftRevisionId(db, {
+                  transportId: run.transportId,
+                  threadId: run.threadId,
+                }),
+              loadMessages: async () => mapMessages(await loadThreadMessages()),
+            },
+            { signal },
+          );
+
+          if (pre.kind === 'stale_thread') {
+            const finished = await finishHmsShadowRun(fence, {
+              outcome: 'stale_thread',
+              toolCalls: 0,
+              toolBudgetUsed: 0,
+              claimCount: 0,
+            });
+            return {
+              runId,
+              state: finished ? 'succeeded' : 'retry_wait',
+            };
+          }
+
+          if (pre.kind === 'insufficient_evidence') {
+            const finished = await finishHmsShadowRun(fence, {
+              outcome: 'insufficient_evidence',
+              toolCalls: 0,
+              toolBudgetUsed: 0,
+              claimCount: 0,
+            });
+            return {
+              runId,
+              state: finished ? 'succeeded' : 'retry_wait',
+            };
+          }
+
+          if (signal.aborted) throw new RunDeadlineError();
+
+          const sessionFactory =
+            options.candidateSessionFactory ??
+            createLiveHmsCandidateSessionFactory();
+          // Production HMS lane refuses missing live factory (never mock).
+          if (!sessionFactory) {
+            throw new Error('HMS_LIVE_SESSION_FACTORY_REQUIRED');
+          }
+
+          // Exactly one exact candidate reaches the browser.
+          const session = await sessionFactory({
+            transportId: run.transportId,
+            threadId: run.threadId,
+            lookupCandidates: [pre.exact],
+            signal,
+          });
+
+          const claimSafe = await runClaimSafeCandidateDraft({
+            session,
+            normalizedThreadText: pre.context.normalizedText,
+            signal,
+            probeCandidateIds: [pre.exact.id],
+            probeAttachmentIds: [],
+            planModel: options.candidatePlanModel,
+          });
+
+          // Discard draft bodies / evidence — counters only.
+          const finished = await finishHmsShadowRun(fence, {
+            outcome: claimSafe.outcome,
+            toolCalls: Number(claimSafe.metrics.toolCalls ?? 0),
+            toolBudgetUsed: Number(claimSafe.metrics.toolBudgetUsed ?? 0),
+            claimCount: Number(claimSafe.metrics.claimCount ?? 0),
+          });
+          return {
+            runId,
+            state: finished ? 'succeeded' : 'retry_wait',
+          };
+        } catch (error) {
+          const state = await failHmsShadowRun(fence, error, {
+            attempts: run.attempts,
+          });
+          return { runId, state };
+        }
+      }
+
+      // Non-HMS claim-safe path (fixtures / default lane enrichment tests).
+      // HMS shadow never reaches here. enabled rejected at env parse.
       const { runClaimSafeCandidateDraft, createMockCandidateSession } = await import(
         './candidate-draft-agent.js'
       );
@@ -537,20 +756,19 @@ export async function executeAiRun(
         latestDraftRevisionId,
       });
 
-      const session =
-        options.candidateSessionFactory?.({
-          transportId: run.transportId,
-          threadId: run.threadId,
-          lookupCandidates: context.lookupCandidates,
-          authorizedAttachmentIds: context.authorizedAttachmentIds,
-          signal,
-        }) ??
-        createMockCandidateSession({
-          lookupCandidates: new Map(
-            context.lookupCandidates.map((c) => [c.id, c]),
-          ),
-          authorizedAttachmentIds: new Set(context.authorizedAttachmentIds),
-        });
+      const session = options.candidateSessionFactory
+        ? await options.candidateSessionFactory({
+            transportId: run.transportId,
+            threadId: run.threadId,
+            lookupCandidates: context.lookupCandidates,
+            signal,
+          })
+        : createMockCandidateSession({
+            lookupCandidates: new Map(
+              context.lookupCandidates.map((c) => [c.id, c]),
+            ),
+            authorizedAttachmentIds: new Set(context.authorizedAttachmentIds),
+          });
 
       const claimSafe = await runClaimSafeCandidateDraft({
         session,
@@ -559,8 +777,9 @@ export async function executeAiRun(
         planModel: options.candidatePlanModel,
       });
 
-      const persistDraft =
-        hmsMode === 'enabled' && claimSafe.outcome === 'candidate';
+      // HMS_DRAFT_ENRICHMENT_MODE=enabled is rejected at env parse; non-HMS
+      // shadow-like paths still use persistDraft=false lifecycle fencing.
+      const persistDraft = false;
       const { renderClarificationQuestions, textToSafeHtml } = await import(
         './draft-evidence.js'
       );
@@ -697,9 +916,9 @@ function scopeFromCli(args: AiWorkerCliArgs): AiRunScopeFilter {
 }
 
 function maybeInitHmsRuntime(lane: AiExecutorLane): void {
-  if (lane === 'hms') {
-    // HMS runtime init reserved for later tasks; only HMS lane may enter this path.
-  }
+  if (lane !== 'hms') return;
+  // Shadow must fail closed on secret/chromium/role-proof before accepting jobs.
+  assertHmsLaneRuntimeReady();
 }
 
 export type RunAiWorkerOnceOptions = { shutdownSignal?: AbortSignal } & AiRunScopeFilter;
@@ -707,12 +926,26 @@ export type RunAiWorkerOnceOptions = { shutdownSignal?: AbortSignal } & AiRunSco
 export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Promise<boolean> {
   const env = parseEnv(process.env as Record<string, string | undefined>);
   const lane = env.AI_WORKER_LANE;
+  // hms + off: worker present for ops but claims none.
+  if (lane === 'hms' && env.HMS_DRAFT_ENRICHMENT_MODE === 'off') {
+    return false;
+  }
   maybeInitHmsRuntime(lane);
+  // Eager singleton browser for HMS shadow (reuse across runs).
+  if (lane === 'hms' && env.HMS_DRAFT_ENRICHMENT_MODE === 'shadow') {
+    await getOrCreateProductionHmsRuntime();
+  }
   const owner = aiWorkerOwnerId(lane);
   const { shutdownSignal, ...scope } = options;
   const claimed = await claimNextAiRun({ ownerId: owner, lane, ...scope });
   if (!claimed) return false;
-  await executeAiRun(claimed.id, { shutdownSignal });
+  await executeAiRun(claimed.id, {
+    shutdownSignal,
+    // HMS lane: live factory only — never createMockCandidateSession.
+    ...(lane === 'hms'
+      ? { candidateSessionFactory: createLiveHmsCandidateSessionFactory() }
+      : {}),
+  });
   return true;
 }
 
@@ -783,11 +1016,14 @@ export async function runAiWorkerLoop(
     }
   }
 
+  // Close HMS browser before DB — lease loss / shutdown order.
+  await closeProductionHmsRuntimeForTests();
   await closeDb();
 }
 
 async function main() {
-  parseEnv(process.env as Record<string, string | undefined>);
+  const env = parseEnv(process.env as Record<string, string | undefined>);
+  maybeInitHmsRuntime(env.AI_WORKER_LANE);
   const args = parseAiWorkerCliArgs(process.argv.slice(2));
   const scoped =
     args.drainPrefix !== undefined ||
@@ -826,7 +1062,12 @@ async function main() {
     return;
   }
 
-  await runAiWorkerLoop();
+  // Proof isolation: ops-hms-shadow start sets AI_WORKER_IDEMPOTENCY_PREFIX.
+  const idempotencyPrefix = process.env.AI_WORKER_IDEMPOTENCY_PREFIX?.trim();
+  await runAiWorkerLoop(
+    5_000,
+    idempotencyPrefix ? { idempotencyPrefix } : {},
+  );
 }
 
 if (isCliEntry(import.meta.url, 'ai-worker')) {

@@ -104,14 +104,30 @@ describe('HMS production boundary', () => {
   });
 
   it('API fixture journeys cover Task 9 draft pipeline matrix', async () => {
-    const journeys = await runHmsDraftPipelineJourneys();
+    const wallPastHardcodedExpiry =
+      Date.now() > Date.parse('2026-07-30T13:00:00.000Z');
+    expect(wallPastHardcodedExpiry).toBe(true);
+
+    const journeys = await runHmsDraftPipelineJourneys(new Date());
     expect(journeys).toHaveLength(10);
     const failed = journeys.filter((j) => !j.passed);
     expect(failed, JSON.stringify(failed)).toEqual([]);
 
     const byId = Object.fromEntries(journeys.map((j) => [j.id, j]));
+    expect(byId.reservation_exact_candidate?.passed).toBe(true);
     expect(byId.refresh_failure_keeps_prior?.detail).toMatch(/visible=draft-prior/);
     expect(byId.outbound_before_send_stale?.detail).toMatch(/freshness=stale_thread/);
     expect(byId.off_mode_skeleton_promotable?.detail).toMatch(/enriched=false/);
+  });
+
+  it('HMS shadow terminal modules cannot import src/ai/drafts.ts', () => {
+    const hits = collectForbiddenImports();
+    const draftHits = hits.filter((h) => /ai\/drafts/.test(h.match) || /ai\/drafts/.test(h.file));
+    expect(draftHits).toEqual([]);
+    // Syntax-aware scan must reject drafts.ts on shadow terminal path when present.
+    const shadowDraftHits = collectForbiddenImports().filter((h) =>
+      h.match.includes('ai/drafts'),
+    );
+    expect(shadowDraftHits).toEqual([]);
   });
 });

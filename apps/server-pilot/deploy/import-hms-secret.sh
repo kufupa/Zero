@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Import HMS read secret into Secrets Manager without printing credentials.
 # Reads apps/server-pilot/.env.hms.local (gitignored). Prints ARN only.
+# Accepts only credentialMode=view_only (audited_write refused).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -15,10 +16,10 @@ HMS_LOGIN_URL=
 HMS_USERNAME=NAVAAI
 HMS_PASSWORD=
 HMS_EXPECTED_TENANT=HMS_LEGACY
-HMS_EXPECTED_PROPERTY_CODE=
+HMS_EXPECTED_PROPERTY_CODE=HRCEN
 HMS_EXPECTED_PROPERTY_NAME=
 HMS_MAILBOX_TRANSPORT_ID=
-HMS_CREDENTIAL_MODE=audited_write
+HMS_CREDENTIAL_MODE=view_only
 EOF
   exit 1
 fi
@@ -36,6 +37,12 @@ set +a
 : "${HMS_EXPECTED_PROPERTY_NAME:?HMS_EXPECTED_PROPERTY_NAME missing}"
 : "${HMS_MAILBOX_TRANSPORT_ID:?HMS_MAILBOX_TRANSPORT_ID missing}"
 : "${HMS_CREDENTIAL_MODE:?HMS_CREDENTIAL_MODE missing}"
+
+if [[ "${HMS_CREDENTIAL_MODE}" != "view_only" ]]; then
+  echo "import-hms-secret: REFUSE credentialMode=${HMS_CREDENTIAL_MODE} (only view_only allowed)" >&2
+  unset HMS_PASSWORD HMS_USERNAME HMS_LOGIN_URL
+  exit 2
+fi
 
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"; unset HMS_PASSWORD HMS_USERNAME HMS_LOGIN_URL' EXIT

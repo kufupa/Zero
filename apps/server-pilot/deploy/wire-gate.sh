@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Pre-IT wire gate: Mailpit TCP + wire vitest on disposable DB. NOT run every deploy.
+# Never sources .env.production / .env into Vitest.
+# Post-test worker restore reads only MAIL_TRANSPORT_MODE line from env file.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVER_PILOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -9,19 +11,22 @@ ENV_FILE="${ENV_FILE:-${SERVER_PILOT}/.env.production}"
 echo "== wire-gate: repo ${REPO_ROOT} =="
 cd "$REPO_ROOT"
 
-if [ -f "$ENV_FILE" ]; then
-  set -a
-  # shellcheck disable=SC1090
-  source "$ENV_FILE"
-  set +a
-fi
+unset DATABASE_URL VITEST_ALLOW_PILOT_RDS
 
 if [ -z "${TEST_DATABASE_URL:-}" ]; then
   echo "wire-gate: TEST_DATABASE_URL must point to a disposable non-production DB" >&2
   exit 1
 fi
-export DATABASE_URL="$TEST_DATABASE_URL"
-unset VITEST_ALLOW_PILOT_RDS
+if [ "${CONFIRM_DISPOSABLE_TEST_DB:-}" != "1" ]; then
+  echo "wire-gate: CONFIRM_DISPOSABLE_TEST_DB=1 required before DB Vitest" >&2
+  exit 1
+fi
+case "${TEST_DATABASE_URL}" in
+  *nava-zero-mail-pilot*)
+    echo "wire-gate: REFUSE TEST_DATABASE_URL pointing at pilot RDS" >&2
+    exit 2
+    ;;
+esac
 
 export PATH="${HOME}/.local/share/pnpm:${HOME}/.nvm/versions/node/$(ls "${HOME}/.nvm/versions/node" 2>/dev/null | sort -V | tail -1)/bin:${PATH}"
 
@@ -77,13 +82,14 @@ pm2 stop worker || true
 
 echo "== vitest: wire suite =="
 cd "$SERVER_PILOT"
-pnpm exec vitest run \
+DATABASE_URL="$TEST_DATABASE_URL" pnpm exec vitest run \
   tests/mailpit-lifecycle.test.ts \
   tests/mail-wire-e2e.test.ts \
   tests/transport-mode.test.ts \
   --reporter=dot
 
 echo "== pm2: start worker (wire/real pilot only) =="
+# Read only the non-secret MAIL_TRANSPORT_MODE line — never source the file.
 PROD_MAIL_MODE="fixture"
 if [ -f "$ENV_FILE" ]; then
   PROD_MAIL_MODE="$(grep -E '^MAIL_TRANSPORT_MODE=' "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d "'\"" || true)"
