@@ -18,6 +18,8 @@ import {
   NAVA_USER_ID,
   CENTURION_USER_EMAIL,
   CENTURION_USER_ID,
+  MARTHA_USER_EMAIL,
+  MARTHA_USER_ID,
   INGEST_EMAIL,
   TRANSPORT_EMAIL,
   TRANSPORT_OWNER_HEADER,
@@ -40,6 +42,7 @@ describe('seed identity constants', () => {
     expect(PILOT_USERS).toEqual([
       { id: NAVA_USER_ID, name: 'Nava AI', email: NAVA_USER_EMAIL },
       { id: CENTURION_USER_ID, name: 'Centurion', email: CENTURION_USER_EMAIL },
+      { id: MARTHA_USER_ID, name: 'Martha Mthembu', email: MARTHA_USER_EMAIL },
     ]);
   });
 
@@ -128,7 +131,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     );
 
     it(
-      'seeds Nava owner on every active transport; Centurion owns Centurion only',
+        'seeds Nava owner on every active transport; Centurion + Martha own Centurion only',
       async () => {
         const result = await withSeededTestDb(async (db) => {
           const active = await db
@@ -153,15 +156,17 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         expect(navaRows.find((r) => r.transportId === 'transport-nava')?.isDefault).toBe(true);
         expect(navaRows.filter((r) => r.isDefault)).toHaveLength(1);
 
-        const cenRows = result.access.filter((r) => r.userId === CENTURION_USER_ID);
-        expect(cenRows).toEqual([
-          {
-            userId: CENTURION_USER_ID,
-            transportId: 'transport-centurion',
-            role: 'owner',
-            isDefault: true,
-          },
-        ]);
+        for (const userId of [CENTURION_USER_ID, MARTHA_USER_ID]) {
+          const rows = result.access.filter((r) => r.userId === userId);
+          expect(rows).toEqual([
+            {
+              userId,
+              transportId: 'transport-centurion',
+              role: 'owner',
+              isDefault: true,
+            },
+          ]);
+        }
       },
       30000,
     );
@@ -194,7 +199,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     );
 
     it(
-      'transport-centurion has Nava + Centurion owner rows',
+      'transport-centurion has Nava + Centurion + Martha owner rows',
       async () => {
         const access = await withSeededTestDb(async (db) => {
           return db
@@ -205,11 +210,12 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             .from(mailboxAccess)
             .where(eq(mailboxAccess.transportId, 'transport-centurion'));
         });
-        expect(access).toHaveLength(2);
+        expect(access).toHaveLength(3);
         expect(access).toEqual(
           expect.arrayContaining([
             { userId: NAVA_USER_ID, role: 'owner' },
             { userId: CENTURION_USER_ID, role: 'owner' },
+            { userId: MARTHA_USER_ID, role: 'owner' },
           ]),
         );
       },
@@ -238,18 +244,27 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             .select({ transportId: mailboxAccess.transportId })
             .from(mailboxAccess)
             .where(eq(mailboxAccess.userId, CENTURION_USER_ID));
-          return { navaIds: nava.map((r) => r.transportId).sort(), cenIds: cen.map((r) => r.transportId) };
+          const martha = await db
+            .select({ transportId: mailboxAccess.transportId })
+            .from(mailboxAccess)
+            .where(eq(mailboxAccess.userId, MARTHA_USER_ID));
+          return {
+            navaIds: nava.map((r) => r.transportId).sort(),
+            cenIds: cen.map((r) => r.transportId),
+            marthaIds: martha.map((r) => r.transportId),
+          };
         });
         expect(outcome.navaIds).toContain('transport-davinci');
         expect(outcome.navaIds).toContain('transport-nava');
         expect(outcome.navaIds).toContain('transport-centurion');
         expect(outcome.cenIds).toEqual(['transport-centurion']);
+        expect(outcome.marthaIds).toEqual(['transport-centurion']);
       },
       30000,
     );
 
     it(
-      'seeds navaai@ and centurion@ pilot users with emailVerified=true',
+      'seeds navaai@, centurion@, and martha@ pilot users with emailVerified=true',
       async () => {
         const users = await withSeededTestDb(async (db) => {
           return db
@@ -260,7 +275,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             })
             .from(userTable);
         });
-        expect(users).toHaveLength(2);
+        expect(users).toHaveLength(3);
         expect(users).toEqual(
           expect.arrayContaining([
             {
@@ -271,6 +286,11 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             {
               id: CENTURION_USER_ID,
               email: CENTURION_USER_EMAIL,
+              emailVerified: true,
+            },
+            {
+              id: MARTHA_USER_ID,
+              email: MARTHA_USER_EMAIL,
               emailVerified: true,
             },
           ]),
@@ -299,9 +319,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           expect.arrayContaining([
             { id: NAVA_USER_ID, email: NAVA_USER_EMAIL },
             { id: CENTURION_USER_ID, email: CENTURION_USER_EMAIL },
+            { id: MARTHA_USER_ID, email: MARTHA_USER_EMAIL },
           ]),
         );
-        expect(remaining).toHaveLength(2);
+        expect(remaining).toHaveLength(3);
       },
       30000,
     );
