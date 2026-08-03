@@ -648,6 +648,7 @@ describe('HMS fail-closed request matrix', () => {
     expect(contextCreationOptions()).toEqual({
       acceptDownloads: false,
       serviceWorkers: 'block',
+      ignoreHTTPSErrors: true,
     });
   });
 

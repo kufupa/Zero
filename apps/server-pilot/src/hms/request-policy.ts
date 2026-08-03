@@ -96,10 +96,15 @@ export class FixtureRequestRecorder {
 export function contextCreationOptions(): {
   acceptDownloads: false;
   serviceWorkers: 'block';
+  ignoreHTTPSErrors: true;
 } {
   return {
     acceptDownloads: false,
     serviceWorkers: 'block',
+    // Live hotel HMS presents a private/VPN TLS chain; without this, Chromium
+    // aborts mid-session XHRs and ExtJS navigates to /web/base/loadlogin
+    // (unknown_path → session teardown → false POLICY_BLOCK).
+    ignoreHTTPSErrors: true,
   };
 }
 
