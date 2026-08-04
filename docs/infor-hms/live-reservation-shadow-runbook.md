@@ -35,6 +35,8 @@ bash apps/server-pilot/deploy/ssm-run-command.sh \
   'cd /home/ubuntu/repos/zero && bash apps/server-pilot/deploy/ops-hms-shadow.sh status'
 bash apps/server-pilot/deploy/ssm-run-command.sh \
   'cd /home/ubuntu/repos/zero && bash apps/server-pilot/deploy/ops-hms-shadow.sh stop'
+bash apps/server-pilot/deploy/ssm-run-command.sh \
+  'cd /home/ubuntu/repos/zero && bash apps/server-pilot/deploy/ops-hms-shadow.sh rearm'
 ```
 
 Expected tokens (stop at first `HMS_WAIT` / `HMS_FAIL`):
@@ -48,18 +50,40 @@ HMS_LIVE_ROW_OK
 HMS_SHADOW_OK                # start
 HMS_SHADOW_VERIFIED          # status (running)
 HMS_ROLLBACK_OK              # stop
+HMS_SHADOW_REARMED           # rearm (before next intentional canary/start)
 ```
 
 Proof mail = oldest Centurion inbound with exactly one confirmation/external_reference (server-selected). No argv lookup values.
+
+## After stop — rearm before next run
+
+`stop` writes `/opt/nava/shared/hms-shadow-disabled` so an accidental `start` fails with `RUN_ISOLATION_BLOCKED`. That latch stays until ops clears it.
+
+After a normal DoD `stop` (or before the next intentional shadow wave):
+
+```bash
+bash apps/server-pilot/deploy/ssm-run-command.sh \
+  'cd /home/ubuntu/repos/zero && bash apps/server-pilot/deploy/ops-hms-shadow.sh rearm'
+```
+
+Expected: `HMS_SHADOW_REARMED`. Leave the flag in place if you want HMS start locked off.
+
+## Mid-proof asset ship (http stays online)
+
+`ops-deploy.sh --quiesced` rebuilds/syncs assets **without** bouncing PM2. Online `http` / `ai-worker` is OK. Full bounce still uses plain `ops-deploy.sh`.
+
+`/opt/nava/shared` is ensured `ubuntu`-owned on every `deploy-ec2.sh` / `install-hms-browser.sh` so proof writes do not need manual `chown`.
 
 ## Lifecycle rules
 
 | Action | Behavior |
 | --- | --- |
 | Generic deploy / restart / reboot | Starts default apps only; deletes `hms-ai-worker`; invalidates canary/shadow proof files; exports `NAVA_BUILD_COMMIT` |
-| `ops-hms-shadow.sh start` | **Sole** HMS starter; requires fresh canary proof; refuses any nonterminal HMS-lane run; claims only `hms-proof:<proofAttemptId>:` |
+| `ops-deploy.sh --quiesced` | Assets only; no PM2 mutation; online `http` OK |
+| `ops-hms-shadow.sh start` | **Sole** HMS starter; requires fresh canary proof; refuses any nonterminal HMS-lane run; claims only `hms-proof:<proofAttemptId>:`; refuses if `hms-shadow-disabled` present |
 | `hms-ai-worker` PM2 | `autorestart: false` — permanent failure quiesces |
 | `stop` | Sets disable flag, dead-letters proof-attempt nonterminal rows, deletes HMS PM2, verifies defaults |
+| `rearm` | Clears `hms-shadow-disabled` after intentional stop |
 
 ## Failure recovery (fixed codes)
 
@@ -70,7 +94,7 @@ Proof mail = oldest Centurion inbound with exactly one confirmation/external_ref
 | `ROLE_PROOF_*` / `ROLE_SCOPE_INVALID` | 10 | Re-stage `/opt/nava/shared/hms-read-role-proof.v1.json` (path printed) |
 | `DEPENDENCY_MISMATCH` | 10 | Re-run `install-hms-browser.sh` |
 | `BUILD_MISMATCH` / `MANIFEST_MISMATCH` / `FINGERPRINT_MISMATCH` | 10 | Redeploy matching build; re-run canary |
-| `RUN_ISOLATION_BLOCKED` | 10 | Clear nonterminal HMS runs or remove disable flag after intentional stop |
+| `RUN_ISOLATION_BLOCKED` | 10 | Clear nonterminal HMS runs **or** `ops-hms-shadow.sh rearm` after intentional stop |
 | `FORBIDDEN_PERSISTENCE` | 10 | Abort; investigate Centurion transport draft/generation delta |
 | `ROLLBACK_INCOMPLETE` | 20 | Manually `pm2 delete hms-ai-worker`; restore http/ai-worker; re-run `stop` |
 | Other `HMS_FAIL code=…` | 10 | See operator fail enum; never bypass policy |

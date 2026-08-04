@@ -9,12 +9,12 @@ SERVER_PILOT="${REPO_ROOT}/apps/server-pilot"
 ACTION="${1:-}"
 
 usage() {
-  echo "usage: $0 {canary|start|status|stop}"
+  echo "usage: $0 {canary|start|status|stop|rearm}"
   exit 2
 }
 
 case "$ACTION" in
-  canary|start|status|stop) ;;
+  canary|start|status|stop|rearm) ;;
   -h|--help) usage ;;
   *) usage ;;
 esac

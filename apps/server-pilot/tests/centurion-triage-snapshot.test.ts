@@ -454,14 +454,12 @@ describe('quiesced deploy wrappers', () => {
       /if\s+\[\s*"\$\{?QUIESCED\}?"\s*=\s*"1"\s*\]/,
     );
     expect(deployQuiesced, 'deploy-ec2.sh must have QUIESCED=1 branch').toBeTruthy();
-    // Full branch (past nested fi): stop assert + exit 0, no PM2 mutate.
+    // Full branch: assets-only exit 0, no PM2 mutate; online http allowed.
     expect(deployQuiesced).toContain('quiesced deploy ok');
     expect(deployQuiesced).toMatch(/exit 0/);
-    expect(deployQuiesced).toMatch(/http/);
-    expect(deployQuiesced).toMatch(/worker/);
-    expect(deployQuiesced).toMatch(/ai-worker/);
-    expect(deployQuiesced).toMatch(/"\$status"\s*!=\s*"stopped"/);
-    expect(deployQuiesced).not.toMatch(/"\$status"\s*=\s*"online"/);
+    expect(deployQuiesced).toMatch(/online http OK/);
+    expect(deployQuiesced).not.toMatch(/must be stopped/);
+    expect(deployQuiesced).not.toMatch(/quiesced deploy refused/);
     expect(deployQuiesced).not.toMatch(/\bpm2\s+start\b/);
     expect(deployQuiesced).not.toMatch(/\bpm2\s+delete\b/);
     expect(deployQuiesced).not.toMatch(/\bpm2\s+save\b/);

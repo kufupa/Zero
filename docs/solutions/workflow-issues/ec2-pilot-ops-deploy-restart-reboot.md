@@ -68,6 +68,9 @@ bash apps/server-pilot/deploy/ops-deploy.sh
 # Ship + run db migrate before deploy
 bash apps/server-pilot/deploy/ops-deploy.sh --migrate
 
+# Assets only — rebuild/sync without bouncing PM2 (online http OK)
+bash apps/server-pilot/deploy/ops-deploy.sh --quiesced
+
 # Bounce PM2 apps without OS reboot or rebuild
 bash apps/server-pilot/deploy/ops-restart.sh
 
@@ -79,6 +82,7 @@ bash apps/server-pilot/deploy/ops-reboot.sh
 |------|---------|
 | Ship code | `ops-deploy.sh` |
 | Ship + migrate | `ops-deploy.sh --migrate` |
+| Assets only (http stays up) | `ops-deploy.sh --quiesced` |
 | Bounce apps only | `ops-restart.sh` |
 | Soft reboot + verify | `ops-reboot.sh` |
 

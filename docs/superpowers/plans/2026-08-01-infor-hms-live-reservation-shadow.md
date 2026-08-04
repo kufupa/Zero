@@ -107,11 +107,11 @@ Implement → focused tests → broader tests/build → required deploy/runtime 
 
 ### Done criteria (binary)
 
-- [ ] Tasks 1–5 complete with green local gates (DB-free always; disposable-DB when provisioned)
-- [ ] Production active tool set = only `hms_find_reservation` `1.1.0`
-- [ ] Live sequence emits `HMS_DEPENDENCIES_OK` → `HMS_OFF_READY` → `HMS_LIVE_NOT_FOUND_OK` → `HMS_LIVE_ROW_FINGERPRINT_OK` → `HMS_LIVE_ROW_OK` → `HMS_SHADOW_OK` / `HMS_SHADOW_VERIFIED` → `HMS_ROLLBACK_OK`
-- [ ] Zero policy-block delta; zero forbidden-row delta; no raw PII/HMS values in SSM/proof files
-- [ ] Definition of Done checklist fully ticked or true blocker documented
+- [x] Tasks 1–5 complete with green local gates (DB-free always; disposable-DB when provisioned)
+- [x] Production active tool set = only `hms_find_reservation` `1.1.0`
+- [x] Live sequence emits `HMS_DEPENDENCIES_OK` → `HMS_OFF_READY` → `HMS_LIVE_NOT_FOUND_OK` → `HMS_LIVE_ROW_FINGERPRINT_OK` → `HMS_LIVE_ROW_OK` → `HMS_SHADOW_OK` / `HMS_SHADOW_VERIFIED` → `HMS_ROLLBACK_OK`
+- [x] Zero policy-block delta; zero forbidden-row delta; no raw PII/HMS values in SSM/proof files
+- [x] Definition of Done checklist fully ticked or true blocker documented
 
 ### True blockers
 
@@ -1071,23 +1071,23 @@ Expected: exact HRCEN binding, zero policy blocks, zero mutation requests, zero 
 
 ## Definition of Done
 
-- [ ] Task 1 restores date-independent, production-env-free safety gates.
-- [ ] Literal HMS `enabled` is mechanically rejected everywhere.
-- [ ] Current role proof (hotel-admin or operator-observed) authorizes Guest Stay read and explicitly denies listed mutations.
-- [ ] Production runtime requires Playwright and has no mock fallback.
-- [ ] Probe and worker use one canonical live Guest Stay driver and request manifest.
-- [ ] Search request values are exact and session-bound.
-- [ ] Successful-row fingerprint stores structure only with `valuesCaptured: false`.
-- [ ] Production active tool set contains only `hms_find_reservation` version `1.1.0`.
-- [ ] HMS worker owns one browser, fresh contexts, bounded retry, cleanup, and truthful health.
-- [ ] Fatal runtime errors are not swallowed; persisted failures are fixed enums only.
-- [ ] Shadow creates no `aiDraftGeneration`, `mailDraft`, or `mailDraftRevision`.
-- [ ] Legacy `refreshHmsCandidate` cannot create a generation or unscoped HMS run in shadow.
-- [ ] No HMS value, model output, evidence, candidate/claim ID, business-content hash, DOM, or free-form error persists.
-- [ ] One manual live reservation shadow run passes with zero policy-block and forbidden-row deltas.
-- [ ] Manual proof refuses pre-existing nonterminal HMS runs and claims only its server-generated attempt prefix.
-- [ ] Status binds running process, build, dependencies, manifest, fingerprint, role proof, health, and proof TTL.
-- [ ] Rollback leaves default services healthy and HMS worker absent.
-- [ ] Artifact, quote, document-list, folio/sent-email, group/event/company/preferences, auto-enqueue, write adapters, enabled mode, and live writes remain deferred; this plan ships only `hms_find_reservation`.
-- [ ] PII-bearing untracked analysis indexes remain untracked and are removed before any later commit.
-- [ ] No open Critical or Important correctness, safety, DevEx, or simplicity review finding remains.
+- [x] Task 1 restores date-independent, production-env-free safety gates.
+- [x] Literal HMS `enabled` is mechanically rejected everywhere.
+- [x] Current role proof (hotel-admin or operator-observed) authorizes Guest Stay read and explicitly denies listed mutations.
+- [x] Production runtime requires Playwright and has no mock fallback.
+- [x] Probe and worker use one canonical live Guest Stay driver and request manifest.
+- [x] Search request values are exact and session-bound.
+- [x] Successful-row fingerprint stores structure only with `valuesCaptured: false`.
+- [x] Production active tool set contains only `hms_find_reservation` version `1.1.0`.
+- [x] HMS worker owns one browser, fresh contexts, bounded retry, cleanup, and truthful health.
+- [x] Fatal runtime errors are not swallowed; persisted failures are fixed enums only.
+- [x] Shadow creates no `aiDraftGeneration`, `mailDraft`, or `mailDraftRevision`.
+- [x] Legacy `refreshHmsCandidate` cannot create a generation or unscoped HMS run in shadow.
+- [x] No HMS value, model output, evidence, candidate/claim ID, business-content hash, DOM, or free-form error persists.
+- [x] One manual live reservation shadow run passes with zero policy-block and forbidden-row deltas.
+- [x] Manual proof refuses pre-existing nonterminal HMS runs and claims only its server-generated attempt prefix.
+- [x] Status binds running process, build, dependencies, manifest, fingerprint, role proof, health, and proof TTL.
+- [x] Rollback leaves default services healthy and HMS worker absent.
+- [x] Artifact, quote, document-list, folio/sent-email, group/event/company/preferences, auto-enqueue, write adapters, enabled mode, and live writes remain deferred; this plan ships only `hms_find_reservation`.
+- [x] PII-bearing untracked analysis indexes remain untracked and are removed before any later commit.
+- [x] No open Critical or Important correctness, safety, DevEx, or simplicity review finding remains.

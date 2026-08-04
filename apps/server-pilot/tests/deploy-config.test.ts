@@ -1884,7 +1884,7 @@ describe('deploy config', () => {
     expect(ops).toContain('db:migrate');
   });
 
-  it('quiesced deploy builds assets, asserts workers stopped, skips PM2/health, keeps VPN', async () => {
+  it('quiesced deploy builds assets, skips PM2/health, allows online http, keeps VPN', async () => {
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
     const { dirname, join } = await import('node:path');
@@ -1913,6 +1913,8 @@ describe('deploy config', () => {
     expect(deploy).toContain('--quiesced');
     expect(ops).toContain('--quiesced');
     expect(ops).toContain('vpn-health-assert.sh');
+    expect(deploy).toMatch(/\/opt\/nava\/shared/);
+    expect(deploy).toMatch(/chown ubuntu:ubuntu/);
 
     const deployQuiesced = extractBashIfBlock(
       deploy,
@@ -1921,12 +1923,10 @@ describe('deploy config', () => {
     expect(deployQuiesced, 'deploy-ec2.sh QUIESCED branch').toBeTruthy();
     expect(deployQuiesced).toContain('quiesced deploy ok');
     expect(deployQuiesced).toMatch(/exit 0/);
-    expect(deployQuiesced).toMatch(/http/);
-    expect(deployQuiesced).toMatch(/worker/);
-    expect(deployQuiesced).toMatch(/ai-worker/);
-    // Refuse any non-stopped status (errored/stopping/online/launching/…).
-    expect(deployQuiesced).toMatch(/"\$status"\s*!=\s*"stopped"/);
-    expect(deployQuiesced).not.toMatch(/"\$status"\s*=\s*"online"/);
+    expect(deployQuiesced).toMatch(/online http OK/);
+    // Must not refuse while pm2 http is online.
+    expect(deployQuiesced).not.toMatch(/must be stopped/);
+    expect(deployQuiesced).not.toMatch(/quiesced deploy refused/);
     expect(deployQuiesced).not.toMatch(/\bpm2\s+start\b/);
     expect(deployQuiesced).not.toMatch(/\bpm2\s+delete\b/);
     expect(deployQuiesced).not.toMatch(/\bpm2\s+save\b/);

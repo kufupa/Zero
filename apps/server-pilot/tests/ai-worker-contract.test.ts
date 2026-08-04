@@ -986,12 +986,14 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
 describe('Task 5 HMS live proof CLI (DB-free)', () => {
   const here = dirname(fileURLToPath(import.meta.url));
 
-  it('hms-live-proof accepts only canary/start/status/stop and rejects lookup argv', () => {
+  it('hms-live-proof accepts canary/start/status/stop/rearm and rejects lookup argv', () => {
     const source = readFileSync(join(here, '..', 'src', 'ops', 'hms-live-proof.ts'), 'utf8');
     expect(source).toMatch(/action === 'canary'/);
     expect(source).toMatch(/action === 'start'/);
     expect(source).toMatch(/action === 'status'/);
     expect(source).toMatch(/action === 'stop'/);
+    expect(source).toMatch(/action === 'rearm'/);
+    expect(source).toMatch(/HMS_SHADOW_REARMED/);
     expect(source).toMatch(/assertNoLookupArgv/);
     expect(source).toMatch(/confirmation|external|thread|message|candidate/);
     expect(source).toMatch(/process\.exit\(3\)/);

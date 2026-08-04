@@ -1,6 +1,6 @@
 /**
  * Purpose-built HMS live proof CLI (compiled to dist/ops/hms-live-proof.js).
- * Actions: canary | start | status | stop.
+ * Actions: canary | start | status | stop | rearm.
  * No tsx. Never accepts raw lookup / thread / message ID via argv.
  * Proof files store digests only — never guest/email/HMS/model values.
  */
@@ -922,11 +922,24 @@ async function runStop(): Promise<void> {
   emitOk('HMS_ROLLBACK_OK');
 }
 
+function runRearm(): void {
+  // Clears latch left by stop so next intentional canary/start can proceed.
+  setStartsDisabled(false);
+  if (startsDisabled()) emitFail('ROLLBACK_INCOMPLETE');
+  emitOk('HMS_SHADOW_REARMED');
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   assertNoLookupArgv(argv);
   const action = argv[0] ?? '';
-  if (action !== 'canary' && action !== 'start' && action !== 'status' && action !== 'stop') {
+  if (
+    action !== 'canary' &&
+    action !== 'start' &&
+    action !== 'status' &&
+    action !== 'stop' &&
+    action !== 'rearm'
+  ) {
     emitFail('UNKNOWN_SAFE');
   }
   try {
@@ -934,6 +947,7 @@ async function main(): Promise<void> {
     else if (action === 'start') await runStart();
     else if (action === 'status') await runStatus();
     else if (action === 'stop') await runStop();
+    else if (action === 'rearm') runRearm();
   } finally {
     await closeDb().catch(() => undefined);
   }

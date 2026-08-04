@@ -27,8 +27,9 @@ if [ "$PW_VER" != "$EXPECTED_PW" ]; then
   exit 10
 fi
 
-sudo mkdir -p "$NAVA_ROOT" "$CHROMIUM_DIR" "$BROWSERS_DIR"
+sudo mkdir -p "$NAVA_ROOT" "$CHROMIUM_DIR" "$BROWSERS_DIR" "${NAVA_ROOT}/shared"
 sudo chown -R ubuntu:ubuntu "$NAVA_ROOT"
+sudo chmod 755 "${NAVA_ROOT}/shared"
 
 export PLAYWRIGHT_BROWSERS_PATH="$BROWSERS_DIR"
 

@@ -15,7 +15,7 @@ for arg in "$@"; do
     -h|--help)
       echo "usage: $0 [--migrate] [--quiesced]"
       echo "  sync git bundle → optional db:migrate → deploy-ec2.sh → health"
-      echo "  --quiesced: deploy-ec2.sh --quiesced (no PM2/health); VPN assert retained"
+      echo "  --quiesced: assets only (no PM2/health); online pm2 http OK; VPN assert retained"
       exit 0
       ;;
     *)
