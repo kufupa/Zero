@@ -35,7 +35,13 @@ import {
   getHotelPillColorStyle,
   isHotelManagedCategorySlug,
 } from '@/lib/mail/hotel-folder-presentation';
+import {
+  shouldShowDesktopListPanel,
+  shouldShowDesktopThreadPanel,
+  shouldShowMailSplitHandle,
+} from '@/lib/mail/mail-panel-visibility';
 import { useAtom } from 'jotai';
+import type { ImperativePanelHandle } from 'react-resizable-panels';
 const ThreadDisplay = lazy(() =>
   import('@/components/mail/thread-display').then((module) => ({
     default: module.ThreadDisplay,
@@ -354,26 +360,54 @@ export function MailLayout() {
 
   const [{ isFetching, refetch: refetchThreads }] = useThreads();
   const isDesktop = useMediaQuery('(min-width: 768px)');
+  const isWideSplit = useMediaQuery('(min-width: 1024px)');
 
   const [threadId] = useQueryState('threadId');
+  const [listCollapsed, setListCollapsed] = useState(false);
+  const listPanelRef = useRef<ImperativePanelHandle>(null);
+
+  const showDesktopList = shouldShowDesktopListPanel({
+    isDesktop,
+    isWideSplit,
+    threadId,
+  });
+  const showDesktopThread = shouldShowDesktopThreadPanel({
+    isDesktop,
+    isWideSplit,
+    threadId,
+  });
+  // Mobile always keeps the list panel; desktop uses visibility helpers.
+  const showListPanel = !isDesktop || showDesktopList;
+  const showThreadPanel = showDesktopThread;
+  const showSplitHandle = shouldShowMailSplitHandle({
+    isWideSplit,
+    listCollapsed,
+    threadMounted: showThreadPanel,
+    listMounted: showListPanel,
+  });
+  const bothDesktopPanels = showListPanel && showThreadPanel && isDesktop;
 
   useEffect(() => {
-    if (threadId) {
-      console.log('Enabling thread-display scope, disabling mail-list');
+    if (!isWideSplit && listCollapsed) {
+      setListCollapsed(false);
+    }
+  }, [isWideSplit, listCollapsed]);
+
+  useEffect(() => {
+    const listHidden = Boolean(threadId) || (isWideSplit && listCollapsed);
+    if (listHidden) {
       enableScope('thread-display');
       disableScope('mail-list');
     } else {
-      console.log('Enabling mail-list scope, disabling thread-display');
       enableScope('mail-list');
       disableScope('thread-display');
     }
 
     return () => {
-      console.log('Cleaning up mail/thread scopes');
       disableScope('thread-display');
       disableScope('mail-list');
     };
-  }, [threadId, enableScope, disableScope]);
+  }, [threadId, isWideSplit, listCollapsed, enableScope, disableScope]);
 
   //   const handleMailListMouseEnter = useCallback(() => {
   //     enableScope('mail-list');
@@ -425,32 +459,78 @@ export function MailLayout() {
     setIsCommandPaletteOpen('true');
   }, [setIsCommandPaletteOpen]);
 
+  const handleToggleListCollapsed = useCallback(() => {
+    const panel = listPanelRef.current;
+    if (!panel) return;
+    if (panel.isCollapsed()) {
+      panel.expand();
+    } else {
+      panel.collapse();
+    }
+  }, []);
+
+  const handleListPanelCollapse = useCallback(() => {
+    setListCollapsed(true);
+  }, []);
+
+  const handleListPanelExpand = useCallback(() => {
+    setListCollapsed(false);
+  }, []);
+
   return (
     <TooltipProvider delayDuration={0}>
       <div className="rounded-inherit z-5 relative flex p-0 md:mr-0.5 md:mt-1">
         <ResizablePanelGroup
-          key={isDesktop ? 'mail-split-desktop' : 'mail-split-mobile'}
+          key={isWideSplit ? 'mail-split-wide' : isDesktop ? 'mail-split-mid' : 'mail-split-mobile'}
           direction="horizontal"
           className="rounded-inherit overflow-hidden"
-          autoSaveId={isDesktop ? 'mail-split-v2' : undefined}
+          autoSaveId={isWideSplit ? 'mail-split-v3' : undefined}
         >
+          {showListPanel ? (
           <ResizablePanel
             id="mail-list-panel"
             order={0}
-            defaultSize={isDesktop ? MAIL_LIST_SPLIT.default : 100}
-            minSize={isDesktop ? MAIL_LIST_SPLIT.min : 100}
-            maxSize={isDesktop ? MAIL_LIST_SPLIT.max : 100}
-            className={cn(
-              `bg-panelLight dark:bg-panelDark mb-1 min-w-0 shadow-sm md:mr-[3px] md:rounded-2xl lg:flex lg:h-[calc(100dvh-8px)] lg:shadow-sm`,
-              isDesktop && threadId && 'hidden lg:block',
-            )}
+            ref={listPanelRef}
+            collapsible={isWideSplit}
+            collapsedSize={0}
+            onCollapse={handleListPanelCollapse}
+            onExpand={handleListPanelExpand}
+            defaultSize={bothDesktopPanels ? MAIL_LIST_SPLIT.default : 100}
+            minSize={bothDesktopPanels ? MAIL_LIST_SPLIT.min : 100}
+            maxSize={bothDesktopPanels ? MAIL_LIST_SPLIT.max : 100}
+            className="bg-panelLight dark:bg-panelDark mb-1 min-w-0 shadow-sm md:mr-[3px] md:rounded-2xl lg:flex lg:h-[calc(100dvh-8px)] lg:shadow-sm"
             // onMouseEnter={handleMailListMouseEnter}
             // onMouseLeave={handleMailListMouseLeave}
           >
-            <div className="w-full md:h-[calc(100dvh-10px)]">
+            <div
+              className={cn(
+                'w-full md:h-[calc(100dvh-10px)]',
+                listCollapsed && 'pointer-events-none',
+              )}
+              aria-hidden={listCollapsed || undefined}
+            >
               <div className="z-15 sticky top-0 p-4 pb-0">
                 <div className="flex items-center gap-2">
                   <SidebarToggle className="h-10 w-10" />
+                  {isWideSplit && !listCollapsed ? (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          aria-expanded={!listCollapsed}
+                          aria-label="Hide inbox"
+                          onClick={handleToggleListCollapsed}
+                          className="border-none bg-transparent hover:bg-accent/50 h-10 w-10 rounded-lg transition-colors duration-150"
+                        >
+                          <CustomIcons.PanelLeftClose className="fill-iconLight dark:fill-iconDark" />
+                          <span className="sr-only">Hide inbox</span>
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom">Hide inbox</TooltipContent>
+                    </Tooltip>
+                  ) : null}
 
                   {mail.bulkSelected.length === 0 ? (
                     <>
@@ -558,30 +638,54 @@ export function MailLayout() {
               </div>
             </div>
           </ResizablePanel>
+          ) : null}
 
-          {isDesktop && (
+          {showSplitHandle ? (
             <ResizableHandle
               withHandle
               className="mr-0.5 hidden w-2 shrink-0 md:flex md:opacity-60 md:hover:opacity-100"
             />
-          )}
+          ) : null}
 
-          {isDesktop && (
+          {showThreadPanel ? (
             <ResizablePanel
               id="mail-thread-panel"
               order={1}
               className="bg-panelLight dark:bg-panelDark mb-1 mr-0.5 min-w-0 rounded-2xl shadow-sm lg:h-[calc(100dvh-8px)]"
-              defaultSize={MAIL_THREAD_SPLIT.default}
-              minSize={MAIL_THREAD_SPLIT.min}
-              maxSize={MAIL_THREAD_SPLIT.max}
+              defaultSize={bothDesktopPanels ? MAIL_THREAD_SPLIT.default : 100}
+              minSize={bothDesktopPanels ? MAIL_THREAD_SPLIT.min : 100}
+              maxSize={bothDesktopPanels ? MAIL_THREAD_SPLIT.max : 100}
             >
-              <div className="relative flex-1">
+              <div className="relative flex min-h-0 flex-1 flex-col">
+                {isWideSplit && listCollapsed ? (
+                  <div className="z-20 flex shrink-0 items-center gap-1 px-2 pt-2 pb-1">
+                    <SidebarToggle className="h-10 w-10" />
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          data-mail-list-expand
+                          aria-expanded={false}
+                          aria-label="Show inbox"
+                          onClick={handleToggleListCollapsed}
+                          className="border-none bg-transparent hover:bg-accent/50 h-10 w-10 rounded-lg transition-colors duration-150"
+                        >
+                          <CustomIcons.PanelLeftOpen className="fill-iconLight dark:fill-iconDark" />
+                          <span className="sr-only">Show inbox</span>
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom">Show inbox</TooltipContent>
+                    </Tooltip>
+                  </div>
+                ) : null}
                 <Suspense fallback={<div className="flex h-full items-center justify-center" />}>
                   <ThreadDisplay />
                 </Suspense>
               </div>
             </ResizablePanel>
-          )}
+          ) : null}
 
           {/* Mobile Thread View */}
           {isMobile && threadId && (

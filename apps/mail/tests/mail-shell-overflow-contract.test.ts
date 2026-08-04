@@ -56,4 +56,31 @@ describe('mail shell horizontal containment', () => {
       expect(classes).not.toContain('w-fit');
     },
   );
+
+  it('uses mail-split-v3 autoSave only for wide split', () => {
+    expect(mailSplitSource).toContain("mail-split-v3");
+    expect(mailSplitSource).not.toContain("mail-split-v2");
+    expect(mailSplitSource).toMatch(/autoSaveId=\{isWideSplit \? ['"]mail-split-v3['"] : undefined\}/);
+  });
+
+  it('avoids CSS hidden lg:block on the list panel for mid-width thread', () => {
+    expect(mailSplitSource).not.toContain('hidden lg:block');
+  });
+
+  it('gates desktop list/thread mount via mail-panel-visibility helpers', () => {
+    expect(mailSplitSource).toContain('shouldShowDesktopListPanel');
+    expect(mailSplitSource).toContain('shouldShowDesktopThreadPanel');
+    expect(mailSplitSource).toContain('shouldShowMailSplitHandle');
+    expect(mailSplitSource).toContain("from '@/lib/mail/mail-panel-visibility'");
+  });
+
+  it('keeps list expand affordance outside the collapsed list panel', () => {
+    expect(mailSplitSource).toContain('data-mail-list-expand');
+    const listPanelIdx = mailSplitSource.indexOf('id="mail-list-panel"');
+    const expandIdx = mailSplitSource.indexOf('data-mail-list-expand');
+    const threadPanelIdx = mailSplitSource.indexOf('id="mail-thread-panel"');
+    expect(listPanelIdx).toBeGreaterThanOrEqual(0);
+    expect(threadPanelIdx).toBeGreaterThan(listPanelIdx);
+    expect(expandIdx).toBeGreaterThan(threadPanelIdx);
+  });
 });
