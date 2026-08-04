@@ -31,6 +31,7 @@ On mid-width desktop, opening a thread hid the list via `hidden lg:block` while 
 1. Pure helpers in `apps/mail/lib/mail/mail-panel-visibility.ts` gate desktop list/thread mount: below `lg`, thread mounts only when `threadId` is set; Close → list-only.
 2. Drop CSS `hidden lg:block`; bump `autoSaveId` to `mail-split-v3` (wide split only).
 3. `lg+` list panel `collapsible` via existing `react-resizable-panels@2.1.7`; expand control migrates into thread chrome (`data-mail-list-expand`) so it is never trapped at `collapsedSize={0}`.
+4. Thread panel `maxSize` must be `100` on wide split — complement `max` (`100 - list.min` = 72) blocks `collapse()` because the sibling cannot absorb the freed percent.
 4. `SidebarToggle` state-true icons (`PanelLeftClose` / `PanelLeftOpen` in custom `icons.tsx`), tooltip, `aria-expanded`.
 
 ## Verification
