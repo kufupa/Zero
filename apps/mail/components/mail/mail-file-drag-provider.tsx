@@ -1,12 +1,14 @@
 'use client';
 
 import {
+  closestCenter,
   DndContext,
   DragOverlay,
   PointerSensor,
   pointerWithin,
   useSensor,
   useSensors,
+  type CollisionDetection,
   type DragEndEvent,
   type DragStartEvent,
 } from '@dnd-kit/core';
@@ -25,6 +27,13 @@ import { useCallback, useRef, useState, type ReactNode } from 'react';
 type ActiveFileDrag = {
   threadIds: string[];
   subject?: string | null;
+};
+
+/** Prefer pointer hit; fall back to closest center near folder edge. */
+export const mailFileCollisionDetection: CollisionDetection = (args) => {
+  const pointerHits = pointerWithin(args);
+  if (pointerHits.length > 0) return pointerHits;
+  return closestCenter(args);
 };
 
 /**
@@ -102,7 +111,7 @@ export function MailFileDragProvider({ children }: { children: ReactNode }) {
   return (
     <DndContext
       sensors={sensors}
-      collisionDetection={pointerWithin}
+      collisionDetection={mailFileCollisionDetection}
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
       onDragCancel={clearDrag}

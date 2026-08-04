@@ -77,7 +77,7 @@ export const RecursiveFolder = ({
       key={label.id}
       hide={activeAccount?.providerId === 'microsoft' || hasChildren}
     >
-      <div ref={canDrop ? setNodeRef : undefined}>
+      <div ref={canDrop ? setNodeRef : undefined} className="w-full min-h-[28px]">
         <Folder
           element={label.name}
           value={label.id}
