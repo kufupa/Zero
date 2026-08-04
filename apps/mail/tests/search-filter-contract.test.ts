@@ -6,6 +6,8 @@ import {
 import {
   buildListThreadsInput,
   categoryColorNavTheme,
+  isArchiveLikeMailFolder,
+  isUserFolderRouteParam,
   mergeCategoryIds,
   mergeLabelIds,
   resolveMailRouteFilter,
@@ -59,6 +61,16 @@ describe('mail route filter contract', () => {
       folder: 'archive',
       filters: { labelIds: [unknownId] },
     });
+  });
+
+  it('isArchiveLikeMailFolder covers archive + My folders UUID routes only', () => {
+    expect(isArchiveLikeMailFolder('archive')).toBe(true);
+    expect(isArchiveLikeMailFolder('archived')).toBe(true);
+    expect(isArchiveLikeMailFolder('00000000-0000-4000-8000-000000000099')).toBe(true);
+    expect(isArchiveLikeMailFolder('inbox')).toBe(false);
+    expect(isArchiveLikeMailFolder('new-bookings')).toBe(false);
+    expect(isUserFolderRouteParam('inbox')).toBe(false);
+    expect(isUserFolderRouteParam('00000000-0000-4000-8000-000000000099')).toBe(true);
   });
 
   it('category slug still wins over labelIdSet miss', () => {

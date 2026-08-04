@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   buildThreadFilingSnapshots,
   fileThreadsTo,
+  isActionAvailable,
   moveThreadsTo,
 } from '../lib/thread-actions';
 import { trpcClient } from '../providers/query-provider';
@@ -72,6 +73,29 @@ describe('thread action contract', () => {
         labelIds: [],
         isArchived: false,
         isSpam: true,
+        isTrashed: false,
+      },
+    ]);
+  });
+
+  it('isActionAvailable treats My folders UUID like archive for inbox/bin', () => {
+    const labelId = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
+    expect(isActionAvailable(labelId, 'inbox')).toBe(true);
+    expect(isActionAvailable(labelId, 'bin')).toBe(true);
+    expect(isActionAvailable(labelId, 'spam')).toBe(false);
+    expect(isActionAvailable(labelId, 'archive')).toBe(false);
+  });
+
+  it('buildThreadFilingSnapshots marks My folders UUID as archived', () => {
+    const labelId = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
+    expect(
+      buildThreadFilingSnapshots(['t1'], labelId, [{ id: 't1', labelIds: [labelId] }]),
+    ).toEqual([
+      {
+        threadId: 't1',
+        labelIds: [labelId],
+        isArchived: true,
+        isSpam: false,
         isTrashed: false,
       },
     ]);

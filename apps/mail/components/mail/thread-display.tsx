@@ -56,6 +56,7 @@ import { format } from 'date-fns';
 import { useAtom } from 'jotai';
 import { toast } from 'sonner';
 import { resolveImportantState } from '@/lib/mail/important-ui';
+import { isArchiveLikeMailFolder } from '@/lib/mail/route-filter';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { flushComposeBeforeLeave } from '@/lib/mail/compose-flush-registry';
 import { runComposeLeaveFlush } from '@/lib/mail/draft-persistence';
@@ -380,7 +381,7 @@ export function ThreadDisplay() {
     });
   };
 
-  const isInArchive = folder === FOLDERS.ARCHIVE;
+  const isInArchive = isArchiveLikeMailFolder(folder);
   const isInSpam = folder === FOLDERS.SPAM;
   const isInBin = folder === FOLDERS.BIN;
   const handleClose = useCallback(async () => {

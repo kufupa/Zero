@@ -1,5 +1,6 @@
 import { trpcClient } from '@/providers/query-provider';
 import { FOLDERS } from '@/lib/utils';
+import { isUserFolderRouteParam } from '@/lib/mail/route-filter';
 
 export type ThreadDestination = 'inbox' | 'archive' | 'spam' | 'bin' | 'snoozed' | null;
 export type FolderLocation = 'inbox' | 'archive' | 'spam' | 'sent' | 'bin' | string;
@@ -12,6 +13,11 @@ export interface MoveThreadOptions {
 
 export function isActionAvailable(folder: FolderLocation, action: ThreadDestination): boolean {
   if (!action) return false;
+
+  // My folders UUID routes list as archive+labelIds — same move chrome as archive.
+  if (isUserFolderRouteParam(folder)) {
+    return action === 'inbox' || action === 'bin';
+  }
 
   const pattern = `${folder}_to_${action}`;
 
@@ -93,7 +99,8 @@ export function buildThreadFilingSnapshots(
   cachedThreads: Array<{ id: string; labelIds?: string[] | null }>,
 ): ThreadFilingSnapshot[] {
   const folder = currentFolder.toLowerCase();
-  const isArchived = folder === 'archive' || folder === 'archived';
+  const isArchived =
+    folder === 'archive' || folder === 'archived' || isUserFolderRouteParam(currentFolder);
   const isSpam = folder === 'spam';
   const isTrashed = folder === 'bin' || folder === 'trash';
   const byId = new Map(cachedThreads.map((thread) => [thread.id, thread]));

@@ -49,6 +49,8 @@ Centurion FO needed Outlook-style custom folders: create folders, drag finished 
 
 Unfile = existing `moveThreads` → inbox (no second RPC). Folder list uses `folder:'archive'` + `labelIds`, so unarchived threads leave the folder view naturally.
 
+**UI gate:** Move to Inbox chrome must treat My folders UUID routes as archive-like (`isArchiveLikeMailFolder`). A bare `folder === 'archive'` check hides the action on `/mail/{labelId}`.
+
 ### Delete
 
 `labels.delete` scrubs the id from thread `labelIds` in a transaction; if no user labels remain and the thread was archived, set `isArchived=false` so mail does not vanish.

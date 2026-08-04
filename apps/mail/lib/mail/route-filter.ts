@@ -18,6 +18,25 @@ const SYSTEM_FOLDERS = new Set([
 const LABEL_ID_SHAPE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/** True when `/mail/{param}` is a user My folders label id (not system/hotel slug). */
+export function isUserFolderRouteParam(folder: string | undefined | null): boolean {
+  if (!folder) return false;
+  const raw = folder.trim();
+  if (!raw) return false;
+  const normalized = raw.toLowerCase();
+  if (SYSTEM_FOLDERS.has(normalized)) return false;
+  return LABEL_ID_SHAPE.test(raw);
+}
+
+/**
+ * Archive list chrome + Move to Inbox: system archive OR My folders UUID route
+ * (list filter is archive+labelIds for those paths).
+ */
+export function isArchiveLikeMailFolder(folder: string | undefined | null): boolean {
+  const normalized = (folder ?? '').trim().toLowerCase();
+  return normalized === 'archive' || normalized === 'archived' || isUserFolderRouteParam(folder);
+}
+
 export type MailListFolderSlug =
   | 'inbox'
   | 'sent'

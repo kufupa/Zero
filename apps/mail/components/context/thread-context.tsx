@@ -36,6 +36,7 @@ import { useTRPC } from '@/providers/query-provider';
 import { useMutation } from '@tanstack/react-query';
 import { useLabels } from '@/hooks/use-labels';
 import { FOLDERS, LABELS } from '@/lib/utils';
+import { isArchiveLikeMailFolder } from '@/lib/mail/route-filter';
 import { useMail } from '../mail/use-mail';
 import { Checkbox } from '../ui/checkbox';
 import { m } from '@/paraglide/messages';
@@ -217,7 +218,7 @@ export function ThreadContextMenu({
   const [mail, setMail] = useMail();
   const [{ isLoading, isFetching, refetch: refetchThreads }] = useThreads();
   const currentFolder = folder ?? '';
-  const isArchiveFolder = currentFolder === FOLDERS.ARCHIVE;
+  const isArchiveFolder = isArchiveLikeMailFolder(currentFolder);
   const isSnoozedFolder = currentFolder === FOLDERS.SNOOZED;
   const [, setMode] = useQueryState('mode');
   const [, setThreadId] = useQueryState('threadId');
