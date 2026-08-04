@@ -3,6 +3,7 @@ import {
   fileDragOverlayLabel,
   isUserFolderDroppableId,
   resolveFileDragThreadIds,
+  shouldFileOnDragEnd,
 } from '@/lib/mail/file-drag';
 
 describe('resolveFileDragThreadIds', () => {
@@ -31,6 +32,31 @@ describe('isUserFolderDroppableId', () => {
     expect(isUserFolderDroppableId('')).toBe(false);
     expect(isUserFolderDroppableId(null)).toBe(false);
     expect(isUserFolderDroppableId(undefined)).toBe(false);
+  });
+});
+
+describe('shouldFileOnDragEnd', () => {
+  const base = {
+    overId: '550e8400-e29b-41d4-a716-446655440000',
+    threadIds: ['t1'] as string[],
+    startTransportId: 'transport-a',
+    currentTransportId: 'transport-a',
+  };
+
+  it('files when droppable + threadIds + same transport', () => {
+    expect(shouldFileOnDragEnd(base)).toBe(true);
+  });
+
+  it('skips when activeDrag threadIds empty (stale state race)', () => {
+    expect(shouldFileOnDragEnd({ ...base, threadIds: [] })).toBe(false);
+  });
+
+  it('skips on transport switch or missing over', () => {
+    expect(
+      shouldFileOnDragEnd({ ...base, currentTransportId: 'transport-b' }),
+    ).toBe(false);
+    expect(shouldFileOnDragEnd({ ...base, overId: null })).toBe(false);
+    expect(shouldFileOnDragEnd({ ...base, overId: 'group-x' })).toBe(false);
   });
 });
 

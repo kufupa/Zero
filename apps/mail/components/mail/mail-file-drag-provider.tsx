@@ -15,8 +15,8 @@ import { useActiveConnection } from '@/hooks/use-connections';
 import { useMail } from '@/components/mail/use-mail';
 import {
   fileDragOverlayLabel,
-  isUserFolderDroppableId,
   resolveFileDragThreadIds,
+  shouldFileOnDragEnd,
   type FileDragData,
 } from '@/lib/mail/file-drag';
 import { useParams } from 'react-router';
@@ -30,6 +30,10 @@ type ActiveFileDrag = {
 /**
  * One live DndContext for list → My folders filing.
  * Nested note-panel DndContext stays isolated for note reorder.
+ *
+ * Drag payload lives in a ref as well as state: PointerSensor can fire
+ * dragEnd before React re-renders dragStart state, which would drop an
+ * empty threadIds list and skip filing.
  */
 export function MailFileDragProvider({ children }: { children: ReactNode }) {
   const sensors = useSensors(
@@ -46,6 +50,7 @@ export function MailFileDragProvider({ children }: { children: ReactNode }) {
   const folder = params?.folder ?? 'inbox';
 
   const dragStartTransportIdRef = useRef<string | null>(null);
+  const activeDragRef = useRef<ActiveFileDrag | null>(null);
   const [activeDrag, setActiveDrag] = useState<ActiveFileDrag | null>(null);
 
   const handleDragStart = useCallback(
@@ -53,16 +58,18 @@ export function MailFileDragProvider({ children }: { children: ReactNode }) {
       dragStartTransportIdRef.current = activeConnection?.id ?? null;
       const draggedId = String(event.active.id);
       const data = event.active.data.current as FileDragData | undefined;
-      const threadIds = resolveFileDragThreadIds(draggedId, mail.bulkSelected);
-      setActiveDrag({
-        threadIds,
+      const next: ActiveFileDrag = {
+        threadIds: resolveFileDragThreadIds(draggedId, mail.bulkSelected),
         subject: data?.subject ?? null,
-      });
+      };
+      activeDragRef.current = next;
+      setActiveDrag(next);
     },
     [activeConnection?.id, mail.bulkSelected],
   );
 
   const clearDrag = useCallback(() => {
+    activeDragRef.current = null;
     setActiveDrag(null);
     dragStartTransportIdRef.current = null;
   }, []);
@@ -70,24 +77,26 @@ export function MailFileDragProvider({ children }: { children: ReactNode }) {
   const handleDragEnd = useCallback(
     (event: DragEndEvent) => {
       const overId = event.over?.id != null ? String(event.over.id) : null;
-      const threadIds = activeDrag?.threadIds ?? [];
+      const threadIds = activeDragRef.current?.threadIds ?? [];
       const startTransportId = dragStartTransportIdRef.current;
       const currentTransportId = activeConnection?.id ?? null;
 
       clearDrag();
 
-      // Mailbox / transport switch mid-drag → cancel
-      if (startTransportId !== currentTransportId) {
+      if (
+        !shouldFileOnDragEnd({
+          overId,
+          threadIds,
+          startTransportId,
+          currentTransportId,
+        })
+      ) {
         return;
       }
 
-      if (!overId || !isUserFolderDroppableId(overId) || threadIds.length === 0) {
-        return;
-      }
-
-      optimisticFileThreads(threadIds, folder, overId);
+      optimisticFileThreads(threadIds, folder, overId!);
     },
-    [activeConnection?.id, activeDrag?.threadIds, clearDrag, folder, optimisticFileThreads],
+    [activeConnection?.id, clearDrag, folder, optimisticFileThreads],
   );
 
   return (

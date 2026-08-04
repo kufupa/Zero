@@ -18,6 +18,18 @@ export function isUserFolderDroppableId(id: string | null | undefined): boolean 
   return !id.startsWith('group-');
 }
 
+/** Pure gate for drag-end → file (keeps transport + droppable checks testable). */
+export function shouldFileOnDragEnd(opts: {
+  overId: string | null;
+  threadIds: readonly string[];
+  startTransportId: string | null;
+  currentTransportId: string | null;
+}): boolean {
+  if (opts.startTransportId !== opts.currentTransportId) return false;
+  if (!opts.overId || !isUserFolderDroppableId(opts.overId)) return false;
+  return opts.threadIds.length > 0;
+}
+
 export function fileDragOverlayLabel(
   threadIds: readonly string[],
   subject?: string | null,
