@@ -34,10 +34,12 @@ import { buildMailListVirtualRows } from '@/lib/mail/build-mail-list-virtual-row
 import type { MailDateBucket } from '@/lib/mail/thread-date-bucket';
 import { MailListSectionHeader } from '@/components/mail/mail-list-section-header';
 import { cn, FOLDERS, formatDateWithWeekdayAndTime } from '@/lib/utils';
+import type { FileDragData } from '@/lib/mail/file-drag';
 import { useTRPC } from '@/providers/query-provider';
 import { useThreadLabels } from '@/hooks/use-labels';
 import { useSettings } from '@/hooks/use-settings';
 import { useKeyState } from '@/hooks/use-hot-key';
+import { useDraggable } from '@dnd-kit/core';
 import { VList, type VListHandle } from 'virtua';
 import { BimiAvatar } from '../ui/bimi-avatar';
 import { RenderLabels } from './render-labels';
@@ -140,6 +142,21 @@ const Thread = memo(
     }, [getThreadData?.latest]);
 
     const optimisticState = useOptimisticThreadState(idToUse ?? '');
+
+    const {
+      attributes: dragAttributes,
+      listeners: dragListeners,
+      setNodeRef: setDragNodeRef,
+      isDragging,
+    } = useDraggable({
+      id: idToUse ?? message.id,
+      disabled: !idToUse,
+      data: {
+        type: 'mail-thread',
+        threadId: idToUse ?? message.id,
+        subject: latestMessage?.subject ?? null,
+      } satisfies FileDragData,
+    });
 
     const { displayStarred, displayImportant, displayUnread, optimisticLabels, emailContent } =
       useMemo(() => {
@@ -289,14 +306,11 @@ const Thread = memo(
 
       return (
         <div
-          className={cn('select-none border-b md:my-1 md:border-none')}
+          ref={setDragNodeRef}
+          className={cn('select-none border-b md:my-1 md:border-none', isDragging && 'opacity-40')}
           onClick={onClick ? onClick(latestMessage) : undefined}
-          //   onMouseEnter={() => {
-          //     window.dispatchEvent(new CustomEvent('emailHover', { detail: { id: idToUse } }));
-          //   }}
-          //   onMouseLeave={() => {
-          //     window.dispatchEvent(new CustomEvent('emailHover', { detail: { id: null } }));
-          //   }}
+          {...dragListeners}
+          {...dragAttributes}
         >
           <div
             data-thread-id={idToUse}
@@ -637,6 +651,20 @@ const Thread = memo(
       message.centurionCategory,
       message.categoryIds,
       idToSlug,
+      setDragNodeRef,
+      dragListeners,
+      dragAttributes,
+      isDragging,
+      isKeyboardFocused,
+      index,
+      cleanName,
+      displayStarred,
+      displayImportant,
+      hasDraft,
+      handleToggleStar,
+      handleToggleImportant,
+      moveThreadTo,
+      setMail,
     ]);
 
     return latestMessage ? (

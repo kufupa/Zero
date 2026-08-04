@@ -24,10 +24,11 @@ import {
   openThreadQueryPollingOptions,
   resolveThreadPollingMs,
 } from '@/lib/mail/thread-polling-policy';
-import { mergeCategoryIds, resolveMailRouteFilter } from '@/lib/mail/route-filter';
+import { mergeCategoryIds, mergeLabelIds, resolveMailRouteFilter } from '@/lib/mail/route-filter';
 import { resolveMailListSearch } from '@/lib/mail/search-filters';
 import { useCategorySettings } from './use-categories';
 import { isImageTrustedSender } from '@/lib/mail/trust-sender';
+import { useLabels } from './use-labels';
 
 const threadPollingMs = resolveThreadPollingMs(import.meta.env.VITE_MAIL_POLL_MS);
 const openThreadPolling = openThreadQueryPollingOptions(import.meta.env.VITE_MAIL_POLL_MS);
@@ -58,6 +59,7 @@ export const useThreads = (options?: UseThreadsOptions) => {
   const { labels } = useSearchLabels();
   const { categoryIds: queryCategoryIds } = useCategoryIds();
   const categories = useCategorySettings();
+  const { userLabels } = useLabels();
   const demoMode = isFrontendOnlyDemo();
   const debouncedSearchQ = useDebouncedValue(searchValue.value);
   const liveSearchQ = demoMode ? searchValue.value : debouncedSearchQ;
@@ -140,14 +142,21 @@ export const useThreads = (options?: UseThreadsOptions) => {
       ),
     [categories],
   );
-  const routeFilter = resolveMailRouteFilter(folderForQuery, categoryBySlug);
+  const labelIdSet = useMemo(() => {
+    const ids = new Set<string>();
+    for (const label of userLabels ?? []) {
+      if (label.id) ids.add(label.id.toLowerCase());
+    }
+    return ids;
+  }, [userLabels]);
+  const routeFilter = resolveMailRouteFilter(folderForQuery, categoryBySlug, labelIdSet);
 
   const baseListFilters = useMemo(
     () => ({
       categoryIds: mergeCategoryIds(routeFilter.filters.categoryIds, queryCategoryIds),
-      labelIds: labels,
+      labelIds: mergeLabelIds(routeFilter.filters.labelIds, labels),
     }),
-    [routeFilter.filters.categoryIds, queryCategoryIds, labels],
+    [routeFilter.filters.categoryIds, routeFilter.filters.labelIds, queryCategoryIds, labels],
   );
 
   const resolvedLiveSearch = useMemo(

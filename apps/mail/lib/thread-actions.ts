@@ -62,3 +62,80 @@ export async function moveThreadsTo({ threadIds, destination }: MoveThreadOption
     throw error;
   }
 }
+
+export interface FileThreadsOptions {
+  threadIds: string[];
+  labelId: string;
+}
+
+export async function fileThreadsTo({ threadIds, labelId }: FileThreadsOptions) {
+  try {
+    if (!threadIds.length || !labelId) return;
+    return trpcClient.mail.fileThreads.mutate({ threadIds, labelId });
+  } catch (error) {
+    console.error(`Error filing thread(s):`, error);
+    throw error;
+  }
+}
+
+/** Prior filing state for optimistic rollback / undo restore. */
+export type ThreadFilingSnapshot = {
+  threadId: string;
+  labelIds: string[];
+  isArchived: boolean;
+  isSpam: boolean;
+  isTrashed: boolean;
+};
+
+export function buildThreadFilingSnapshots(
+  threadIds: string[],
+  currentFolder: string,
+  cachedThreads: Array<{ id: string; labelIds?: string[] | null }>,
+): ThreadFilingSnapshot[] {
+  const folder = currentFolder.toLowerCase();
+  const isArchived = folder === 'archive' || folder === 'archived';
+  const isSpam = folder === 'spam';
+  const isTrashed = folder === 'bin' || folder === 'trash';
+  const byId = new Map(cachedThreads.map((thread) => [thread.id, thread]));
+
+  return threadIds.map((threadId) => {
+    const cached = byId.get(threadId);
+    return {
+      threadId,
+      labelIds: cached?.labelIds ? [...cached.labelIds] : [],
+      isArchived,
+      isSpam,
+      isTrashed,
+    };
+  });
+}
+
+/** Collect labelIds from any cached infinite list pages (best-effort). */
+export function collectCachedThreadLabelSources(
+  queryEntries: Array<[unknown, unknown]>,
+): Array<{ id: string; labelIds?: string[] | null }> {
+  const out: Array<{ id: string; labelIds?: string[] | null }> = [];
+  for (const [, data] of queryEntries) {
+    if (!data || typeof data !== 'object') continue;
+    const pages = (data as { pages?: unknown }).pages;
+    if (!Array.isArray(pages)) continue;
+    for (const page of pages) {
+      if (!page || typeof page !== 'object') continue;
+      const threads = (page as { threads?: unknown }).threads;
+      if (!Array.isArray(threads)) continue;
+      for (const thread of threads) {
+        if (!thread || typeof thread !== 'object') continue;
+        const id = (thread as { id?: unknown }).id;
+        if (typeof id !== 'string') continue;
+        const labelIds = (thread as { labelIds?: unknown }).labelIds;
+        out.push({
+          id,
+          labelIds: Array.isArray(labelIds)
+            ? labelIds.filter((value): value is string => typeof value === 'string')
+            : [],
+        });
+      }
+    }
+  }
+  return out;
+}

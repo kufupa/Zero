@@ -1,4 +1,5 @@
 import { HotkeyProviderWrapper } from '@/components/providers/hotkey-provider-wrapper';
+import { MailFileDragProvider } from '@/components/mail/mail-file-drag-provider';
 import { OnboardingWrapper } from '@/components/onboarding';
 import { AppSidebar } from '@/components/ui/app-sidebar';
 import { authProxy } from '@/lib/auth-proxy';
@@ -16,11 +17,13 @@ export async function clientLoader({ request }: Route.ClientLoaderArgs) {
 export default function MailLayout() {
   return (
     <HotkeyProviderWrapper>
-      <AppSidebar />
-      <div className="bg-sidebar dark:bg-sidebar min-w-0 w-full">
-        <Outlet />
-      </div>
-      <OnboardingWrapper />
+      <MailFileDragProvider>
+        <AppSidebar />
+        <div className="bg-sidebar dark:bg-sidebar min-w-0 w-full">
+          <Outlet />
+        </div>
+        <OnboardingWrapper />
+      </MailFileDragProvider>
     </HotkeyProviderWrapper>
   );
 }

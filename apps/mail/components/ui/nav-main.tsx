@@ -11,6 +11,10 @@ import { useTRPC } from '@/providers/query-provider';
 import { type NavItem } from '@/config/navigation';
 import type { Label as LabelType } from '@/types';
 import { serializeLabelColor } from '@/lib/label-colors';
+import {
+  MY_FOLDERS_SIDEBAR_TITLE,
+  shouldShowMyFoldersCreate,
+} from '@/lib/mail/my-folders-nav';
 import { Link, useLocation } from 'react-router';
 import { m } from '../../paraglide/messages.js';
 import { Button } from '@/components/ui/button';
@@ -296,10 +300,10 @@ export function NavMain({ items }: NavMainProps) {
                     className="text-muted-foreground hover:text-foreground flex items-center gap-1 text-[13px] dark:text-[#898989]"
                   >
                     <ChevronRight className="h-3 w-3 transition-transform group-data-[state=open]/collapsible:rotate-90" />
-                    Labels
+                    {MY_FOLDERS_SIDEBAR_TITLE}
                   </button>
                 </CollapsibleTrigger>
-                {activeAccount?.providerId === 'google' ? (
+                {shouldShowMyFoldersCreate(activeAccount?.providerId) ? (
                   <LabelDialog
                     trigger={
                       <Button

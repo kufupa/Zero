@@ -790,6 +790,60 @@ export const mailRouter = tRouter({
       return { updated: visibleIds.length };
     }),
 
+  fileThreads: mailboxProcedure
+    .input(
+      z.object({
+        threadIds: z.array(z.string()).min(1),
+        labelId: z.string(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const db = getDb();
+      const transportId = ctx.activeTransportId;
+      const labelRows = await db
+        .select({ id: mailLabel.id })
+        .from(mailLabel)
+        .where(
+          and(eq(mailLabel.id, input.labelId), eq(mailLabel.transportId, transportId)),
+        )
+        .limit(1);
+      if (labelRows.length === 0) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'NOT_FOUND: label not found' });
+      }
+
+      const visibleIds = await resolveVisibleThreadIds(db, transportId, input.threadIds);
+      if (visibleIds.length === 0) return { updated: 0 };
+
+      const userLabelRows = await db
+        .select({ id: mailLabel.id })
+        .from(mailLabel)
+        .where(eq(mailLabel.transportId, transportId));
+      const userLabelIds = new Set(userLabelRows.map((r) => r.id));
+
+      await db.transaction(async (tx) => {
+        for (const id of visibleIds) {
+          const row = await requireThreadForTransport(tx, id, transportId);
+          const current = row.labelIds ?? [];
+          const kept = current.filter((lid) => !userLabelIds.has(lid) || lid === input.labelId);
+          if (!kept.includes(input.labelId)) kept.push(input.labelId);
+          const hadSpam = row.spamAt != null;
+          const patch: Partial<typeof mailThread.$inferInsert> = {
+            labelIds: kept,
+            isArchived: true,
+            trashedAt: null,
+            spamAt: null,
+            updatedAt: new Date(),
+          };
+          if (hadSpam) patch.spamUserLockedAt = new Date();
+          await tx
+            .update(mailThread)
+            .set(patch)
+            .where(and(eq(mailThread.id, id), eq(mailThread.transportId, transportId)));
+        }
+      });
+      return { updated: visibleIds.length };
+    }),
+
   moveThreads: mailboxProcedure
     .input(moveThreadsInput)
     .mutation(async ({ input, ctx }) => {

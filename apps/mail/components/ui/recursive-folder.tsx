@@ -3,8 +3,11 @@ import { LabelSidebarContextMenu } from '../context/label-sidebar-context';
 import type { Label, Label as LabelType } from '@/types';
 import { useSidebar } from '../context/sidebar-context';
 import useSearchLabels from '@/hooks/use-labels-search';
+import { isUserFolderDroppableId } from '@/lib/mail/file-drag';
+import { shouldNavigateMyFolderRoute } from '@/lib/mail/my-folders-nav';
 import { Folder } from '../magicui/file-tree';
-import { useNavigate } from 'react-router';
+import { useLocation, useNavigate } from 'react-router';
+import { useDroppable } from '@dnd-kit/core';
 
 import { useCallback } from 'react';
 import * as React from 'react';
@@ -19,10 +22,18 @@ export const RecursiveFolder = ({
   count?: number;
 }) => {
   const { labels, setLabels } = useSearchLabels();
+  const location = useLocation();
   const isActive = labels?.includes(label.id);
-  const isFolderActive = isActive || window.location.pathname.includes(`/mail/label/${label.id}`);
+  const isFolderActive =
+    isActive || location.pathname.includes(`/mail/${label.id}`);
   const navigate = useNavigate();
   const { setOpenMobile, isMobile } = useSidebar();
+
+  const canDrop = isUserFolderDroppableId(label.id);
+  const { setNodeRef, isOver } = useDroppable({
+    id: label.id,
+    disabled: !canDrop,
+  });
 
   const handleFilterByLabel = useCallback(
     (labelToFilter: LabelType) => {
@@ -45,7 +56,7 @@ export const RecursiveFolder = ({
 
       const labelToUse = label;
 
-      if (activeAccount.providerId === 'microsoft') {
+      if (shouldNavigateMyFolderRoute(activeAccount.providerId)) {
         navigate(`/mail/${id}`);
       } else {
         handleFilterByLabel(labelToUse);
@@ -66,25 +77,27 @@ export const RecursiveFolder = ({
       key={label.id}
       hide={activeAccount?.providerId === 'microsoft' || hasChildren}
     >
-      <Folder
-        element={label.name}
-        value={label.id}
-        key={label.id}
-        hasChildren={hasChildren}
-        onFolderClick={handleFolderClick}
-        isSelect={isFolderActive}
-        count={count || 0}
-        className="max-w-[192px]"
-      >
-        {label.labels?.map((childLabel: any) => (
-          <RecursiveFolder
-            key={childLabel.id}
-            label={childLabel}
-            activeAccount={activeAccount}
-            count={count}
-          />
-        ))}
-      </Folder>
+      <div ref={canDrop ? setNodeRef : undefined}>
+        <Folder
+          element={label.name}
+          value={label.id}
+          key={label.id}
+          hasChildren={hasChildren}
+          onFolderClick={handleFolderClick}
+          isSelect={isFolderActive || (canDrop && isOver)}
+          count={count || 0}
+          className="max-w-[192px]"
+        >
+          {label.labels?.map((childLabel: any) => (
+            <RecursiveFolder
+              key={childLabel.id}
+              label={childLabel}
+              activeAccount={activeAccount}
+              count={count}
+            />
+          ))}
+        </Folder>
+      </div>
     </LabelSidebarContextMenu>
   );
 };

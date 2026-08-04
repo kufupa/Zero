@@ -4,9 +4,14 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 
 import { backgroundQueueAtom } from '@/store/backgroundQueue';
 import type { ThreadDestination } from '@/lib/thread-actions';
+import {
+  buildThreadFilingSnapshots,
+  collectCachedThreadLabelSources,
+  fileThreadsTo,
+  moveThreadsTo,
+} from '@/lib/thread-actions';
 import { useTRPC } from '@/providers/query-provider';
 import { useMail } from '@/components/mail/use-mail';
-import { moveThreadsTo } from '@/lib/thread-actions';
 import { m } from '@/paraglide/messages';
 import { useQueryState } from 'nuqs';
 import { useCallback } from 'react';
@@ -446,6 +451,92 @@ export function useOptimisticActions() {
     });
   }
 
+  function optimisticFileThreads(threadIds: string[], currentFolder: string, labelId: string) {
+    if (!threadIds.length || !labelId) return;
+
+    const cachedThreads = collectCachedThreadLabelSources(queryClient.getQueriesData({}));
+    // Snapshot prior labelIds + archive/spam/trash flags for undo/error restore.
+    const priorSnapshots = buildThreadFilingSnapshots(threadIds, currentFolder, cachedThreads);
+
+    const moveOptimisticId = addOptimisticAction({
+      type: 'MOVE',
+      threadIds,
+      destination: 'archive',
+    });
+    const labelOptimisticId = addOptimisticAction({
+      type: 'LABEL',
+      threadIds,
+      labelIds: [labelId],
+      add: true,
+    });
+
+    threadIds.forEach((id) => {
+      setBackgroundQueue({ type: 'add', threadId: `thread:${id}` });
+    });
+
+    if (threadId && threadIds.includes(threadId)) {
+      setThreadId(null);
+      setActiveReplyId(null);
+    }
+
+    const clearOptimistic = () => {
+      removeOptimisticAction(moveOptimisticId);
+      removeOptimisticAction(labelOptimisticId);
+    };
+
+    createPendingAction({
+      type: 'MOVE',
+      threadIds,
+      params: { currentFolder, destination: 'archive' },
+      optimisticId: moveOptimisticId,
+      execute: async () => {
+        try {
+          if (frontendOnlyDemo) {
+            await demoMoveThreadsTo({
+              threadIds,
+              currentFolder,
+              destination: 'archive',
+            });
+            await demoModifyLabels({
+              threadId: threadIds,
+              addLabels: [labelId],
+              removeLabels: [],
+            });
+          } else {
+            await fileThreadsTo({ threadIds, labelId });
+          }
+
+          if (mail.bulkSelected.length > 0) {
+            setMail({ ...mail, bulkSelected: [] });
+          }
+
+          threadIds.forEach((id) => {
+            setBackgroundQueue({ type: 'delete', threadId: `thread:${id}` });
+          });
+        } catch (error) {
+          clearOptimistic();
+          threadIds.forEach((id) => {
+            setBackgroundQueue({ type: 'delete', threadId: `thread:${id}` });
+          });
+          // priorSnapshots available if we later rehydrate cache from prior flags/labelIds
+          void priorSnapshots;
+          throw error;
+        }
+        removeOptimisticAction(labelOptimisticId);
+      },
+      undo: () => {
+        // Undo before mutate runs: restore list visibility + prior label chrome.
+        clearOptimistic();
+        threadIds.forEach((id) => {
+          setBackgroundQueue({ type: 'delete', threadId: `thread:${id}` });
+        });
+        void priorSnapshots;
+      },
+      toastMessage: m['common.actions.archived'](),
+      folders: [currentFolder, 'archive'],
+    });
+  }
+
   function optimisticDeleteThreads(threadIds: string[], currentFolder: string) {
     if (!threadIds.length) return;
 
@@ -697,6 +788,7 @@ export function useOptimisticActions() {
     optimisticMarkAsUnread,
     optimisticToggleStar,
     optimisticMoveThreadsTo,
+    optimisticFileThreads,
     optimisticDeleteThreads,
     optimisticToggleImportant,
     optimisticToggleLabel,

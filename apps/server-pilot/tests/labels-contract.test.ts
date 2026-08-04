@@ -86,5 +86,21 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       },
       30000,
     );
+
+    it(
+      'labels.create rejects reserved system folder and label names',
+      async () => {
+        await withSeededTestDb(async (db) => {
+          const caller = await callerFor('user-navaai', { db });
+          for (const name of ['Inbox', 'ARCHIVE', 'starred', 'IMPORTANT', 'Spam', 'drafts']) {
+            await expect(caller.labels.create({ name })).rejects.toSatisfy((err: unknown) => {
+              if (!(err instanceof TRPCError)) return false;
+              return err.code === 'BAD_REQUEST' || err.code === 'CONFLICT';
+            });
+          }
+        });
+      },
+      30000,
+    );
   },
 );

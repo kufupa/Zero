@@ -7,6 +7,7 @@ import {
   buildListThreadsInput,
   categoryColorNavTheme,
   mergeCategoryIds,
+  mergeLabelIds,
   resolveMailRouteFilter,
   toggleCategoryChip,
 } from '../lib/mail/route-filter';
@@ -27,6 +28,49 @@ describe('mail route filter contract', () => {
   it('keeps system folders as folders', () => {
     const result = resolveMailRouteFilter('spam', new Map([['spam', 'cat-spam']]));
     expect(result).toEqual({ folder: 'spam', filters: {} });
+  });
+
+  it('maps known user label UUID to archive + labelIds', () => {
+    const labelId = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
+    expect(resolveMailRouteFilter(labelId, new Map(), new Set([labelId]))).toEqual({
+      folder: 'archive',
+      filters: { labelIds: [labelId] },
+    });
+    // system folder still wins when path is a system slug
+    expect(resolveMailRouteFilter('inbox', new Map(), new Set([labelId]))).toEqual({
+      folder: 'inbox',
+      filters: {},
+    });
+  });
+
+  it('UUID-shaped path uses archive+labelIds before labelIdSet hydrates', () => {
+    const unknownId = '00000000-0000-4000-8000-000000000099';
+    expect(resolveMailRouteFilter(unknownId, new Map(), new Set())).toEqual({
+      folder: 'archive',
+      filters: { labelIds: [unknownId] },
+    });
+    expect(resolveMailRouteFilter('not-a-folder', new Map())).toEqual({
+      folder: 'inbox',
+      filters: {},
+    });
+    expect(
+      resolveMailRouteFilter(unknownId, new Map(), new Set(['other-label-id'])),
+    ).toEqual({
+      folder: 'archive',
+      filters: { labelIds: [unknownId] },
+    });
+  });
+
+  it('category slug still wins over labelIdSet miss', () => {
+    const result = resolveMailRouteFilter(
+      'new-bookings',
+      new Map([['new-bookings', 'cat-new-bookings']]),
+      new Set(['some-label']),
+    );
+    expect(result).toEqual({
+      folder: 'inbox',
+      filters: { categoryIds: ['cat-new-bookings'] },
+    });
   });
 
   it('hotel chip selection yields categoryIds not labelIds', () => {
@@ -57,6 +101,14 @@ describe('mail route filter contract', () => {
     expect(theme.className).toContain('bg-[var(--centurion-sidebar-bg)]');
     expect((theme.style as Record<string, string>)['--centurion-sidebar-bg']).toBe('#1E3A8A');
     expect(categoryColorNavTheme(null)).toEqual({});
+  });
+
+  it('merges route + search labelIds with dedupe', () => {
+    expect(mergeLabelIds(['label-route'], ['label-search', 'label-route'])).toEqual([
+      'label-route',
+      'label-search',
+    ]);
+    expect(mergeLabelIds(undefined, ['a'])).toEqual(['a']);
   });
 });
 

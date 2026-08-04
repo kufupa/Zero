@@ -14,6 +14,10 @@ const SYSTEM_FOLDERS = new Set([
   'all',
 ]);
 
+/** Lowercase UUID (with or without hyphens) — used before labelIdSet hydrates. */
+const LABEL_ID_SHAPE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export type MailListFolderSlug =
   | 'inbox'
   | 'sent'
@@ -30,12 +34,20 @@ export type MailListFolderSlug =
 export function resolveMailRouteFilter(
   folder: string | undefined,
   categoryBySlug: Map<string, string>,
-): { folder: MailListFolderSlug; filters: { categoryIds?: string[] } } {
-  const normalized = (folder ?? 'inbox').toLowerCase();
+  labelIdSet?: Set<string>,
+): {
+  folder: MailListFolderSlug;
+  filters: { categoryIds?: string[]; labelIds?: string[] };
+} {
+  const raw = (folder ?? 'inbox').trim();
+  const normalized = raw.toLowerCase();
   if (SYSTEM_FOLDERS.has(normalized))
     return { folder: normalized as MailListFolderSlug, filters: {} };
   const categoryId = categoryBySlug.get(normalized);
   if (categoryId) return { folder: 'inbox', filters: { categoryIds: [categoryId] } };
+  if (labelIdSet?.has(normalized) || LABEL_ID_SHAPE.test(raw)) {
+    return { folder: 'archive', filters: { labelIds: [normalized] } };
+  }
   return { folder: 'inbox', filters: {} };
 }
 
@@ -64,6 +76,14 @@ export function mergeCategoryIds(
   queryCategoryIds: string[],
 ): string[] {
   return [...new Set([...(routeCategoryIds ?? []), ...queryCategoryIds])];
+}
+
+/** Merge folder-route labelIds with search-hook labels (dedupe). */
+export function mergeLabelIds(
+  routeLabelIds: string[] | undefined,
+  searchLabelIds: string[],
+): string[] {
+  return [...new Set([...(routeLabelIds ?? []), ...searchLabelIds])];
 }
 
 export function parseCategoryIdsParam(raw: string | null | undefined): string[] {
