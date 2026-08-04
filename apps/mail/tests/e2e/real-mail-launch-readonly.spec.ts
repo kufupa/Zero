@@ -36,40 +36,29 @@ function recordForbiddenMailCalls(page: Page): string[] {
   return calls;
 }
 
-async function proveQueueSections(page: Page) {
-  // Sidebar folder links are the durable queue chrome (empty queues omit list headers).
+async function proveInboxListReady(page: Page) {
+  // Sidebar folder links are the durable queue chrome.
   for (const [slug, label] of QUEUES) {
     const link = page.locator(`[data-sidebar="menu-button"][href="/mail/${slug}"]`);
     await expect(link, `queue nav missing for ${slug}`).toBeVisible({ timeout: 30_000 });
     await expect(link).toContainText(label, { ignoreCase: true });
   }
 
-  const seen = new Set<string>();
   const scroll = page.locator('#mail-list-scroll');
   await expect(scroll).toBeVisible({ timeout: 30_000 });
 
-  for (let step = 0; step < 40 && seen.size < QUEUES.length; step++) {
-    const mounted = page.locator('[data-mail-list-queue]');
-    for (let index = 0; index < (await mounted.count()); index++) {
-      const section = mounted.nth(index);
-      const slug = await section.getAttribute('data-mail-list-queue');
-      if (!slug) continue;
-      const expected = QUEUES.find(([candidate]) => candidate === slug);
-      if (!expected) continue;
-      await expect(section).toContainText(expected[1], { ignoreCase: true });
-      seen.add(slug);
-    }
-    await scroll.evaluate((element) => {
-      element.scrollTop = Math.min(
-        element.scrollHeight,
-        element.scrollTop + Math.max(element.clientHeight, 400),
-      );
-    });
-    await page.waitForTimeout(150);
-  }
+  // List groups by date (`data-mail-list-section`), not by queue slug.
+  await expect
+    .poll(
+      async () => {
+        const threads = await page.locator('[data-thread-id]').count();
+        const sections = await page.locator('[data-mail-list-section]').count();
+        return threads + sections;
+      },
+      { message: 'Centurion inbox must show threads or date sections', timeout: 60_000 },
+    )
+    .toBeGreaterThan(0);
 
-  // Inbox group-by-queue headers only mount for queues that currently have threads.
-  expect(seen.size, 'Centurion inbox must show at least one queue list section').toBeGreaterThan(0);
   await scroll.evaluate((element) => {
     element.scrollTop = 0;
   });
@@ -117,7 +106,7 @@ test.describe('Centurion launch read-only UI proof', () => {
     }
     await expect(centurionActive).toBeVisible({ timeout: 30_000 });
 
-    await proveQueueSections(page);
+    await proveInboxListReady(page);
 
     const scroll = page.locator('#mail-list-scroll');
     let readRow = null;
@@ -203,6 +192,37 @@ test.describe('Centurion launch read-only UI proof', () => {
       })
       .toBe(true);
     await expect(page.locator('[data-thread-id]:visible').first()).toBeVisible();
+
+    // Mid-width close-to-inbox: no empty reading pane below lg.
+    await page.setViewportSize({ width: 900, height: 900 });
+    await expect(page.locator('[data-thread-id]:visible').first()).toBeVisible({ timeout: 30_000 });
+    await page.locator('[data-thread-id]:visible').first().click();
+    await expect(page).toHaveURL(/threadId=/, { timeout: 30_000 });
+    await expect(page.getByText("It's empty here")).toHaveCount(0);
+    await page
+      .getByRole('button', { name: 'Close', exact: true })
+      .filter({ visible: true })
+      .first()
+      .click({ force: true });
+    await expect
+      .poll(async () => !/threadId=/.test(page.url()), {
+        message: 'mid-width Close must clear threadId',
+        timeout: 30_000,
+      })
+      .toBe(true);
+    await expect(page.getByText("It's empty here")).toHaveCount(0);
+    await expect(page.locator('[data-thread-id]:visible').first()).toBeVisible({ timeout: 30_000 });
+
+    // Wide-split Hide/Show inbox chrome.
+    await page.setViewportSize({ width: 1400, height: 900 });
+    const hideInbox = page.getByRole('button', { name: 'Hide inbox', exact: true });
+    await expect(hideInbox).toBeVisible({ timeout: 30_000 });
+    await hideInbox.click();
+    await expect(page.getByRole('button', { name: 'Show inbox', exact: true })).toBeVisible({
+      timeout: 15_000,
+    });
+    await page.getByRole('button', { name: 'Show inbox', exact: true }).click();
+    await expect(hideInbox).toBeVisible({ timeout: 15_000 });
 
     expect(forbiddenCalls, 'read-only UI proof invoked a mutating mail procedure').toEqual([]);
   });
