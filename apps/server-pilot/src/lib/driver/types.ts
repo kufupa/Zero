@@ -121,6 +121,8 @@ export interface ThreadDetailResponse {
   messages: ParsedMessage[];
   drafts: ParsedDraft[];
   hasUnread: boolean;
+  /** True when any message on the thread is outbound (ever-replied). */
+  hasReplied: boolean;
   totalReplies: number;
   labels: MailLabelWire[];
   categories: MailCategory[];

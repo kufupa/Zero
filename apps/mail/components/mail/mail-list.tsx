@@ -46,7 +46,7 @@ import { buildCategoryIdToSlugMap } from '@/lib/mail/hotel-folder-presentation';
 import { useCategorySettings } from '@/hooks/use-categories';
 import { Badge } from '@/components/ui/badge';
 import { useDraft } from '@/hooks/use-drafts';
-import { Check, Star } from 'lucide-react';
+import { Check, Reply, Star } from 'lucide-react';
 import { Skeleton } from '../ui/skeleton';
 import { m } from '@/paraglide/messages';
 import { useParams } from 'react-router';
@@ -528,6 +528,18 @@ const Thread = memo(
                           </TooltipTrigger>
                           <TooltipContent className="p-1 text-xs">
                             {m['common.threadDisplay.draftTooltip']()}
+                          </TooltipContent>
+                        </Tooltip>
+                      ) : null}
+                      {!isFolderSent && getThreadData.hasReplied ? (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span className="text-muted-foreground inline-flex items-center">
+                              <Reply className="h-3 w-3" aria-hidden />
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent className="p-1 text-xs">
+                            {m['common.threadDisplay.repliedTooltip']()}
                           </TooltipContent>
                         </Tooltip>
                       ) : null}

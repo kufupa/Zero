@@ -57,6 +57,7 @@ import {
 } from '../../ai/run-ledger.js';
 import { refreshThreadSearchVector } from '../search/search-vector.js';
 import { getSenderPreference } from '../sender-preference.js';
+import { markThreadRead } from '../thread-read.js';
 import { ingestRequireOwnerHeader } from '../../env.js';
 
 const CENTURION_TRANSPORT_ID = 'transport-centurion';
@@ -277,7 +278,12 @@ export async function persistInboundMessage(
       rawMimeS3Key,
       receivedAt: parsed.receivedAt ?? new Date(),
       sentAt: parsed.receivedAt ?? null,
+      isRead: isHotelSent,
     });
+
+    if (isHotelSent) {
+      await markThreadRead(tx as unknown as DB, transport.id, [threadId]);
+    }
 
     if (parsed.attachments.length > 0) {
       await tx.insert(attachment).values(

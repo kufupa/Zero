@@ -180,11 +180,16 @@ export function getDemoThread(id: string): IGetThreadResponse {
   const latest = nonDraftMessages[nonDraftMessages.length - 1];
 
   const centurionCategory = toCenturionCategory(entry.thread.folder);
+  const hotelSentHint = /@legacyhotels?\.co\.za$|@legacyhotel\.com$/i;
+  const hasReplied = nonDraftMessages.some((message) =>
+    hotelSentHint.test(message.sender?.email ?? ''),
+  );
 
   return {
     messages: parsedMessages,
     latest,
     hasUnread: nonDraftMessages.some((message) => message.unread),
+    hasReplied,
     totalReplies: nonDraftMessages.length,
     labels: visibleLabels.map((label) => ({ id: label.id, name: label.name, type: 'system' as const })),
     drafts: [],

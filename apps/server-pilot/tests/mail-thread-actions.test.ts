@@ -163,7 +163,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     it('markAsRead bulk skips foreign ids without partial failure', async () => {
       await withSeededTestDb(async (db) => {
         await seedActionThread(db);
-        const caller = await callerFor('user-navaai', { db });
+        const caller = await callerFor('user-navaai', {
+          db,
+          requestedTransportId: 'transport-centurion',
+        });
         const result = await caller.mail.markAsRead({
           ids: [THREAD_ID, 'foreign-thread-id'],
         });
@@ -316,6 +319,45 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           if (prevUndo === undefined) delete process.env.UNDO_SEND_SECONDS;
           else process.env.UNDO_SEND_SECONDS = prevUndo;
         }
+      });
+    });
+
+    it('mail.get hasReplied false for inbound-only thread', async () => {
+      await withSeededTestDb(async (db) => {
+        await seedActionThread(db);
+        const caller = await callerFor('user-navaai', {
+          db,
+          requestedTransportId: 'transport-centurion',
+        });
+        const got = await caller.mail.get({ id: THREAD_ID });
+        expect(got.hasReplied).toBe(false);
+      });
+    });
+
+    it('mail.get hasReplied true when thread has outbound message', async () => {
+      await withSeededTestDb(async (db) => {
+        await seedActionThread(db);
+        await db.insert(message).values({
+          id: 'msg-actions-outbound-1',
+          transportId: 'transport-centurion',
+          threadId: THREAD_ID,
+          direction: 'outbound',
+          fromAddress: 'centurion@legacyhotel.com',
+          toAddresses: ['guest@example.com'],
+          ccAddresses: [],
+          bccAddresses: [],
+          subject: 'Re: Actions fixture',
+          textBody: 'reply body',
+          isRead: true,
+          isStarred: false,
+          receivedAt: new Date(),
+        });
+        const caller = await callerFor('user-navaai', {
+          db,
+          requestedTransportId: 'transport-centurion',
+        });
+        const got = await caller.mail.get({ id: THREAD_ID });
+        expect(got.hasReplied).toBe(true);
       });
     });
   },

@@ -978,3 +978,127 @@ describe('parseRawMessage (no DB)', () => {
     expect(parsed.fromAddress).toBe('guest1@example.com');
   });
 });
+
+describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
+  'hotel-sent ingest auto-read',
+  () => {
+    it('marks joined thread read when hotel-sent outbound is stored', async () => {
+      const storage = withFakeS3();
+      await withSeededTestDb(async (db) => {
+        await seedCenturionAliases(db);
+        const threadId = 'thread-hotel-sent-autoread-1';
+        const inboundHeader = 'guest-inbound-autoread@example.com';
+        await db.insert(mailThread).values({
+          id: threadId,
+          transportId: 'transport-centurion',
+          threadRootId: 'root-hotel-sent-autoread-1',
+          subject: 'Guest ask',
+          snippet: 'need room',
+          isArchived: false,
+          isStarred: false,
+          isRead: false,
+          labelIds: [],
+          latestMessageAt: new Date(),
+        });
+        await db.insert(message).values({
+          id: 'msg-hotel-sent-inbound-1',
+          transportId: 'transport-centurion',
+          threadId,
+          direction: 'inbound',
+          fromAddress: 'guest@example.com',
+          toAddresses: ['centurion@legacyhotel.com'],
+          ccAddresses: [],
+          bccAddresses: [],
+          subject: 'Guest ask',
+          textBody: 'need room',
+          messageIdHeader: inboundHeader,
+          references: [],
+          isRead: false,
+          isStarred: false,
+          receivedAt: new Date(),
+        });
+
+        const raw = Buffer.from(
+          [
+            'From: Centurion Reservations <centurion@legacyhotel.com>',
+            'To: guest@example.com',
+            'Subject: Re: Guest ask',
+            'Date: Thu, 09 Jul 2026 12:00:00 +0000',
+            `Message-ID: <hotel-sent-autoread-001@legacyhotel.com>`,
+            `In-Reply-To: <${inboundHeader}>`,
+            `References: <${inboundHeader}>`,
+            'X-Zero-Mailbox: centurion@legacyhotel.com',
+            'MIME-Version: 1.0',
+            'Content-Type: text/plain; charset=utf-8',
+            '',
+            'We can help.',
+          ].join('\r\n'),
+          'utf-8',
+        );
+        const messageId = generateMessageId();
+        const parsed = await parseRawMessage(raw, { messageId, storage });
+        const result = await persistInboundMessage(
+          parsed,
+          raw,
+          {
+            ingestMailboxId: 'ingest-nava-legacy',
+            pop3Uidl: `uidl-hotel-sent-${messageId}`,
+            messageId,
+          },
+          { db, storage },
+        );
+        expect(result.kind).toBe('stored');
+        if (result.kind !== 'stored') return;
+        expect(result.threadId).toBe(threadId);
+
+        const [threadRow] = await db
+          .select({ isRead: mailThread.isRead })
+          .from(mailThread)
+          .where(eq(mailThread.id, threadId));
+        expect(threadRow?.isRead).toBe(true);
+
+        const msgs = await db
+          .select({ isRead: message.isRead, direction: message.direction })
+          .from(message)
+          .where(eq(message.threadId, threadId));
+        expect(msgs.some((m) => m.direction === 'outbound')).toBe(true);
+        expect(msgs.every((m) => m.isRead)).toBe(true);
+      });
+    }, 30000);
+
+    it('keeps inbound-only thread unread', async () => {
+      const storage = withFakeS3();
+      await withSeededTestDb(async (db) => {
+        await seedCenturionAliases(db);
+        const raw = readFixture('centurion-stamped.eml');
+        const messageId = generateMessageId();
+        const parsed = await parseRawMessage(raw, { messageId, storage });
+        const result = await persistInboundMessage(
+          parsed,
+          raw,
+          {
+            ingestMailboxId: 'ingest-nava-legacy',
+            pop3Uidl: `uidl-inbound-unread-${messageId}`,
+            messageId,
+          },
+          { db, storage },
+        );
+        expect(result.kind).toBe('stored');
+        if (result.kind !== 'stored') return;
+
+        const [threadRow] = await db
+          .select({ isRead: mailThread.isRead })
+          .from(mailThread)
+          .where(eq(mailThread.id, result.threadId));
+        expect(threadRow?.isRead).toBe(false);
+
+        const [msgRow] = await db
+          .select({ isRead: message.isRead, direction: message.direction })
+          .from(message)
+          .where(eq(message.id, result.messageId));
+        expect(msgRow?.direction).toBe('inbound');
+        expect(msgRow?.isRead).toBe(false);
+      });
+    }, 30000);
+  },
+);

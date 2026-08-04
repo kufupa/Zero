@@ -19,6 +19,24 @@ import type { DB } from '../../src/db/client.js';
 import { getPostgresSslOptions } from '../../src/db/ssl-config.js';
 import { assertNotPilotProdDatabase } from './pilot-rds-guard.js';
 
+/** Local docker/disposable Postgres often has no TLS; RDS still uses CA SSL. */
+function testDbSslOptions(databaseUrl: string) {
+  try {
+    const parsed = new URL(databaseUrl);
+    const sslmode = parsed.searchParams.get('sslmode')?.toLowerCase();
+    if (sslmode === 'disable' || sslmode === 'allow' || sslmode === 'prefer') {
+      return false as const;
+    }
+    const host = parsed.hostname;
+    if (host === '127.0.0.1' || host === 'localhost' || host === '::1') {
+      return false as const;
+    }
+  } catch {
+    /* fall through to RDS SSL */
+  }
+  return getPostgresSslOptions();
+}
+
 function resolveDisposableTestDatabaseUrl(): string | undefined {
   const confirm = process.env.CONFIRM_DISPOSABLE_TEST_DB === '1';
   const testUrl = process.env.TEST_DATABASE_URL?.trim() || undefined;
@@ -66,7 +84,7 @@ async function probeDb(): Promise<boolean> {
     max: 1,
     idle_timeout: 5,
     connect_timeout: 4,
-    ssl: getPostgresSslOptions(),
+    ssl: testDbSslOptions(resolvedUrl),
   });
   try {
     await conn`select 1`;
@@ -97,7 +115,7 @@ export async function withTestDb<T>(cb: (db: DB) => Promise<T>): Promise<T> {
     max: 1,
     idle_timeout: 20,
     connect_timeout: 10,
-    ssl: getPostgresSslOptions(),
+    ssl: testDbSslOptions(resolvedUrl),
   });
   const db = drizzle(conn, { schema });
 

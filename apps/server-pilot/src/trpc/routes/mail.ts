@@ -29,6 +29,7 @@ import {
   mailThreadCategory,
 } from '../../db/schema/mail.js';
 import { assertHmsDraftFreshForAction } from './drafts.js';
+import { markThreadRead } from '../../mail/thread-read.js';
 import {
   requireThreadForTransport,
   requireMessageForTransport,
@@ -588,6 +589,7 @@ export const mailRouter = tRouter({
         };
       });
       const hasUnread = parsedMessages.some((m) => m.unread);
+      const hasReplied = messages.some((m) => m.direction === 'outbound');
       const labels = await db
         .select({ id: mailLabel.id, name: mailLabel.name })
         .from(mailLabel)
@@ -653,6 +655,7 @@ export const mailRouter = tRouter({
         messages: parsedMessages,
         latest,
         hasUnread,
+        hasReplied,
         totalReplies: Math.max(0, parsedMessages.length - 1),
         labels: threadLabels,
         drafts,
@@ -668,18 +671,7 @@ export const mailRouter = tRouter({
       const transportId = ctx.activeTransportId;
       const visibleIds = await resolveVisibleThreadIds(db, transportId, input.threadIds);
       if (visibleIds.length === 0) return { updated: 0 };
-      for (const id of visibleIds) {
-        await db
-          .update(mailThread)
-          .set({ isRead: true, updatedAt: new Date() })
-          .where(and(eq(mailThread.id, id), eq(mailThread.transportId, transportId)));
-        await db
-          .update(message)
-          .set({ isRead: true, updatedAt: new Date() })
-          .where(
-            and(eq(message.threadId, id), eq(message.transportId, transportId)),
-          );
-      }
+      await markThreadRead(db, transportId, visibleIds);
       return { updated: visibleIds.length };
     }),
 
@@ -1204,6 +1196,7 @@ export const mailRouter = tRouter({
           .update(mailThread)
           .set({ latestMessageAt: now, updatedAt: now })
           .where(and(eq(mailThread.id, threadId), eq(mailThread.transportId, transportId)));
+        await markThreadRead(tx as unknown as typeof db, transportId, [threadId]);
         await enqueueOutbound({
           transportId,
           messageId,

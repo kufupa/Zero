@@ -280,6 +280,41 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.send', () => {
       }
     });
   }, 30000);
+
+  it('reply marks entire thread read and sets hasReplied', async () => {
+    await withSeededTestDb(async (db) => {
+      const fake = new FakeSmtpTransport();
+      __setSmtpTransportForTests(fake);
+      try {
+        await seedCenturionThread(db);
+        const caller = await callerFor('user-navaai', {
+          db,
+          requestedTransportId: 'transport-centurion',
+        });
+        await caller.mail.send(validCenturionReply);
+
+        const [threadRow] = await db
+          .select({ isRead: mailThread.isRead })
+          .from(mailThread)
+          .where(eq(mailThread.id, 'thread-centurion-1'));
+        expect(threadRow?.isRead).toBe(true);
+
+        const msgs = await db
+          .select({ isRead: message.isRead, direction: message.direction })
+          .from(message)
+          .where(eq(message.threadId, 'thread-centurion-1'));
+        expect(msgs.length).toBeGreaterThanOrEqual(2);
+        expect(msgs.every((m) => m.isRead)).toBe(true);
+        expect(msgs.some((m) => m.direction === 'outbound')).toBe(true);
+
+        const got = await caller.mail.get({ id: 'thread-centurion-1' });
+        expect(got.hasUnread).toBe(false);
+        expect(got.hasReplied).toBe(true);
+      } finally {
+        __setSmtpTransportForTests(null);
+      }
+    });
+  }, 30000);
 });
 
 describe('withTransportSelfBcc', () => {
