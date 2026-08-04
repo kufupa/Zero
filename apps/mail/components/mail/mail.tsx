@@ -654,7 +654,8 @@ export function MailLayout() {
               className="bg-panelLight dark:bg-panelDark mb-1 mr-0.5 min-w-0 rounded-2xl shadow-sm lg:h-[calc(100dvh-8px)]"
               defaultSize={bothDesktopPanels ? MAIL_THREAD_SPLIT.default : 100}
               minSize={bothDesktopPanels ? MAIL_THREAD_SPLIT.min : 100}
-              maxSize={bothDesktopPanels ? MAIL_THREAD_SPLIT.max : 100}
+              // ponytail: MAIL_THREAD_SPLIT.max is 72; collapse() needs sibling max 100 to absorb list→0
+              maxSize={bothDesktopPanels ? (isWideSplit ? 100 : MAIL_THREAD_SPLIT.max) : 100}
             >
               <div className="relative flex min-h-0 flex-1 flex-col">
                 {isWideSplit && listCollapsed ? (

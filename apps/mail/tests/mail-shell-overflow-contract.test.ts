@@ -63,6 +63,12 @@ describe('mail shell horizontal containment', () => {
     expect(mailSplitSource).toMatch(/autoSaveId=\{isWideSplit \? ['"]mail-split-v3['"] : undefined\}/);
   });
 
+  it('lets thread panel grow to 100% when list collapses on wide split', () => {
+    expect(mailSplitSource).toMatch(
+      /maxSize=\{bothDesktopPanels \? \(isWideSplit \? 100 : MAIL_THREAD_SPLIT\.max\) : 100\}/,
+    );
+  });
+
   it('avoids CSS hidden lg:block on the list panel for mid-width thread', () => {
     expect(mailSplitSource).not.toContain('hidden lg:block');
   });
