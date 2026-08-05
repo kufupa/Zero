@@ -32,11 +32,56 @@ done
 echo "== deploy: repo ${REPO_ROOT} =="
 cd "$REPO_ROOT"
 
-# Proof/canary/shadow JSON + disable latch live here; root-owned tree → EACCES for ubuntu.
-echo "== ensure /opt/nava/shared writable by ubuntu =="
-sudo mkdir -p /opt/nava/shared
-sudo chown ubuntu:ubuntu /opt/nava /opt/nava/shared
-sudo chmod 755 /opt/nava/shared
+# Root owns trust-boundary parents; app owns only mutable runtime/artifact leaves.
+echo "== ensure protected HMS runtime hierarchy =="
+for path in /opt/nava /opt/nava/shared \
+  /opt/nava/shared/hms-browser-artifacts /opt/nava/shared/hms-runtime; do
+  [ ! -L "$path" ] || {
+    echo "unsafe HMS runtime symlink: $path" >&2
+    exit 20
+  }
+done
+sudo install -d -o root -g root -m 0755 /opt/nava /opt/nava/shared
+sudo install -d -o ubuntu -g ubuntu -m 0700 \
+  /opt/nava/shared/hms-browser-artifacts \
+  /opt/nava/shared/hms-runtime
+
+ensure_hms_absent() {
+  local state present
+  state="$(pm2 jlist)" || return 1
+  present="$(
+    HMS_PM2_STATE="$state" node -e '
+try {
+  const apps=JSON.parse(process.env.HMS_PM2_STATE||"");
+  process.stdout.write(apps.some((app)=>app?.name==="hms-ai-worker")?"1":"0");
+} catch { process.exit(2); }
+'
+  )" || return 1
+  if [ "$present" = "1" ]; then
+    pm2 delete hms-ai-worker >/dev/null || return 1
+  fi
+  pm2 save >/dev/null || return 1
+  state="$(pm2 jlist)" || return 1
+  present="$(
+    HMS_PM2_STATE="$state" node -e '
+try {
+  const apps=JSON.parse(process.env.HMS_PM2_STATE||"");
+  process.stdout.write(apps.some((app)=>app?.name==="hms-ai-worker")?"1":"0");
+} catch { process.exit(2); }
+'
+  )" || return 1
+  [ "$present" = "0" ]
+}
+
+invalidate_hms_proofs() {
+  local path
+  for path in \
+    /opt/nava/shared/hms-runtime/hms-reservation-canary-proof.v1.json \
+    /opt/nava/shared/hms-runtime/hms-reservation-shadow-proof.v1.json; do
+    rm -f -- "$path" || return 1
+    [ ! -e "$path" ] && [ ! -L "$path" ] || return 1
+  done
+}
 
 if [ -f "$ENV_FILE" ]; then
   set -a
@@ -310,25 +355,26 @@ export NAVA_BUILD_COMMIT="${NAVA_BUILD_COMMIT:-$(git -C "$REPO_ROOT" rev-parse H
 
 # Always keep HMS off on generic deploy — ops-hms-shadow.sh start is sole HMS starter.
 # Invalidate canary/shadow proofs on build identity change.
-pm2 delete hms-ai-worker 2>/dev/null || true
-rm -f /opt/nava/shared/hms-reservation-canary-proof.v1.json \
-  /opt/nava/shared/hms-reservation-shadow-proof.v1.json 2>/dev/null || true
-
-if [ "$TRANSPORT_MODE" = "fixture" ]; then
-  echo "== pm2: fixture mode — delete worker if present =="
-  pm2 delete worker 2>/dev/null || true
-fi
+invalidate_hms_proofs || {
+  echo "HMS proof invalidation failed" >&2
+  exit 20
+}
 
 if command -v pm2 >/dev/null 2>&1; then
+  ensure_hms_absent || {
+    echo "HMS process cleanup failed" >&2
+    exit 20
+  }
   if [ "$TRANSPORT_MODE" = "fixture" ]; then
+    echo "== pm2: fixture mode — delete worker if present =="
     pm2 delete worker 2>/dev/null || true
     # delete+start so --update-env actually replaces process env (reload keeps stale).
     # Never start hms-ai-worker here.
-    pm2 delete http ai-worker hms-ai-worker 2>/dev/null || true
+    pm2 delete http ai-worker 2>/dev/null || true
     pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only http --update-env
     pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only ai-worker --update-env
   else
-    pm2 delete http worker ai-worker hms-ai-worker 2>/dev/null || true
+    pm2 delete http worker ai-worker 2>/dev/null || true
     pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only http --update-env
     pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only worker --update-env
     pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only ai-worker --update-env
@@ -341,11 +387,11 @@ else
   npm install -g pm2
   if [ "$TRANSPORT_MODE" = "fixture" ]; then
     pm2 delete worker 2>/dev/null || true
-    pm2 delete http ai-worker hms-ai-worker 2>/dev/null || true
+    pm2 delete http ai-worker 2>/dev/null || true
     pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only http --update-env
     pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only ai-worker --update-env
   else
-    pm2 delete http worker ai-worker hms-ai-worker 2>/dev/null || true
+    pm2 delete http worker ai-worker 2>/dev/null || true
     pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only http --update-env
     pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only worker --update-env
     pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only ai-worker --update-env

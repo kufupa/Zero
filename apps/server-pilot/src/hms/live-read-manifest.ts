@@ -23,7 +23,6 @@ export const LIVE_NOTFOUND_CANARY = 'NOTFOUND-CANARY';
 
 const VAR64 = { pattern: '.{0,64}', maxLength: 64 } as const;
 const VAR32 = { pattern: '.{0,32}', maxLength: 32 } as const;
-const VAR16 = { pattern: '.{0,16}', maxLength: 16 } as const;
 
 function getStaticRule(
   origin: string,
@@ -602,13 +601,13 @@ export function buildLiveGuestStayFunctionalRules(origin: string): RequestRule[]
       contentType: 'application/x-www-form-urlencoded',
       fixedQuery: {},
       variableQuery: {},
-      fixedBody: {},
-      variableBody: {
-        MENU_MODULE_KEY: VAR64,
-        SYSTEM_FUNCTION_NAME: VAR64,
-        USER_FUNCTION_NAME: VAR64,
-        removescreenflows: VAR16,
+      fixedBody: {
+        MENU_MODULE_KEY: '0',
+        SYSTEM_FUNCTION_NAME: 'BSSTRT',
+        USER_FUNCTION_NAME: 'BSSTRT',
+        removescreenflows: 'yes',
       },
+      variableBody: {},
       maxBodyBytes: 4096,
       redirectPolicy: 'same-reviewed-chain',
     },
@@ -621,12 +620,12 @@ export function buildLiveGuestStayFunctionalRules(origin: string): RequestRule[]
       contentType: 'application/x-www-form-urlencoded',
       fixedQuery: {},
       variableQuery: {},
-      fixedBody: {},
-      variableBody: {
-        SYSTEM_FUNCTION_NAME: VAR64,
-        USER_FUNCTION_NAME: VAR64,
-        manurefresh: VAR16,
+      fixedBody: {
+        SYSTEM_FUNCTION_NAME: 'BSSTRT',
+        USER_FUNCTION_NAME: 'BSSTRT',
+        manurefresh: 'true',
       },
+      variableBody: {},
       maxBodyBytes: 4096,
       redirectPolicy: 'same-reviewed-chain',
     },
@@ -637,20 +636,20 @@ export function buildLiveGuestStayFunctionalRules(origin: string): RequestRule[]
       path: '/web/base/OSRESV',
       resourceTypes: ['xhr', 'fetch', 'document'],
       contentType: 'application/x-www-form-urlencoded',
-      fixedQuery: {},
-      variableQuery: {
-        FUNCTION_CLASS: VAR64,
-        USER_FUNCTION_NAME: VAR64,
+      fixedQuery: {
+        FUNCTION_CLASS: 'WEBL',
+        USER_FUNCTION_NAME: 'OSRESV',
       },
-      fixedBody: {},
-      variableBody: {
-        CURRENT_TAB_NAME: VAR64,
-        FUNCTION_CLASS: VAR64,
-        MENU_MODULE_KEY: VAR64,
-        SYSTEM_FUNCTION_NAME: VAR64,
-        USER_FUNCTION_NAME: VAR64,
-        removescreenflows: VAR16,
+      variableQuery: {},
+      fixedBody: {
+        CURRENT_TAB_NAME: '',
+        FUNCTION_CLASS: 'WEBL',
+        MENU_MODULE_KEY: '0',
+        SYSTEM_FUNCTION_NAME: 'OSRESV',
+        USER_FUNCTION_NAME: 'OSRESV',
+        removescreenflows: 'yes',
       },
+      variableBody: {},
       maxBodyBytes: 8192,
       redirectPolicy: 'same-reviewed-chain',
     },
@@ -663,12 +662,14 @@ export function buildLiveGuestStayFunctionalRules(origin: string): RequestRule[]
       contentType: 'application/x-www-form-urlencoded',
       fixedQuery: {},
       variableQuery: {},
-      fixedBody: {},
+      fixedBody: {
+        CURRENT_TAB_NAME: 'HDR',
+        MENU_MODULE_KEY: '0',
+        SYSTEM_FUNCTION_NAME: 'OSRESV',
+        USER_FUNCTION_NAME: 'OSRESV',
+        removescreenflows: 'yes',
+      },
       variableBody: {
-        CURRENT_TAB_NAME: VAR64,
-        MENU_MODULE_KEY: VAR64,
-        SYSTEM_FUNCTION_NAME: VAR64,
-        USER_FUNCTION_NAME: VAR64,
         account: VAR64,
         bookingdotcomid: VAR64,
         confirmationnumber: VAR64,
@@ -679,7 +680,6 @@ export function buildLiveGuestStayFunctionalRules(origin: string): RequestRule[]
         hoteldate: VAR32,
         lastname: VAR64,
         propertycode: { pattern: 'HRCEN|', maxLength: 16 },
-        removescreenflows: VAR16,
         reservationstayid: VAR64,
         room: VAR32,
         tripadvisorid: VAR64,
@@ -697,14 +697,15 @@ export function buildLiveGuestStayFunctionalRules(origin: string): RequestRule[]
       contentType: 'application/x-www-form-urlencoded',
       fixedQuery: {},
       variableQuery: {},
-      fixedBody: {},
+      fixedBody: {
+        CURRENT_TAB_NAME: 'LST',
+        MENU_MODULE_KEY: '0',
+        SYSTEM_FUNCTION_NAME: 'OSRESV',
+        USER_FUNCTION_NAME: 'OSRESV',
+        removescreenflows: 'yes',
+      },
       variableBody: {
         COMPONENT_INFO_TYPE: VAR64,
-        CURRENT_TAB_NAME: VAR64,
-        MENU_MODULE_KEY: VAR64,
-        SYSTEM_FUNCTION_NAME: VAR64,
-        USER_FUNCTION_NAME: VAR64,
-        removescreenflows: VAR16,
       },
       maxBodyBytes: 16_384,
       redirectPolicy: 'same-reviewed-chain',

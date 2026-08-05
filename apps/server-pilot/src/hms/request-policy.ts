@@ -78,8 +78,142 @@ type Multimap = Map<string, string[]>;
 const SUBMIT_KEY_RE =
   /^(submit|btn(save|delete|create|amend|cancel|ok|yes)|.*\.action)$/i;
 const MUTATION_ACTION_RE =
-  /^(delete|save|create|amend|cancel|checkavailability|check.?availability)$/i;
+  /^(delete|save|create|amend|cancel|post|settle|refund|send|print|export|submit|checkavailability|check.?availability)$/i;
+const MUTATION_ACTION_TOKEN_RE =
+  /(?:^|[.:/\\\s_-])(?:delete|save|create|amend|cancel|post|settle|refund|send|print|export|submit|check[\s._-]*availability)(?:$|[.:/\\\s_-])/i;
+const MUTATION_CONTROL_KEY_RE =
+  /(?:^|[_-])(?:action|function|command|event|button)(?:$|[_-])/i;
 const CRS_PATH_RE = /\/crs\/check-availability|checkavailability/i;
+const MUTATION_FIELD_MAX_BYTES = 8 * 1024;
+const AUTOSAVE_KEY_RE = /autosave|auto[_-]?save/i;
+
+/** Decode at most two percent-encoding rounds; residual %xx fails closed. */
+export function normalizeMutationFieldText(
+  raw: string,
+): { ok: true; value: string } | { ok: false; code: BlockCode } {
+  if (Buffer.byteLength(raw) > MUTATION_FIELD_MAX_BYTES) {
+    return { ok: false, code: BLOCK_CODES.OVERSIZED_BODY };
+  }
+  let current = raw;
+  for (let round = 0; round < 2; round++) {
+    if (hasMalformedPercentEncoding(current)) {
+      return { ok: false, code: BLOCK_CODES.MALFORMED_ENCODING };
+    }
+    if (!/%[0-9A-Fa-f]{2}/.test(current)) break;
+    try {
+      const next = decodeURIComponent(current.replace(/\+/g, ' '));
+      if (next === current) break;
+      current = next;
+    } catch {
+      return { ok: false, code: BLOCK_CODES.MALFORMED_ENCODING };
+    }
+  }
+  if (/%[0-9A-Fa-f]{2}/.test(current)) {
+    return { ok: false, code: BLOCK_CODES.MALFORMED_ENCODING };
+  }
+  return { ok: true, value: current };
+}
+
+function mutationShapeInText(
+  text: string,
+  allowEmbeddedTokens = false,
+): boolean {
+  const normalized = text.trim().toLowerCase().replace(/[\s_-]+/g, '');
+  if (
+    MUTATION_ACTION_RE.test(text.trim()) ||
+    (allowEmbeddedTokens && MUTATION_ACTION_TOKEN_RE.test(text.trim()))
+  ) {
+    return true;
+  }
+  if (
+    /^(delete|save|create|amend|cancel|post|settle|refund|send|print|export|submit|checkavailability)$/i.test(
+      normalized,
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/** Recursively inspect keys/values for mutation / autosave / encoded variants. */
+export function scanMultimapForMutation(map: Multimap): BlockCode | null {
+  for (const [key, values] of map) {
+    const keyNorm = normalizeMutationFieldText(key);
+    if (!keyNorm.ok) return keyNorm.code;
+    if (AUTOSAVE_KEY_RE.test(keyNorm.value)) {
+      return BLOCK_CODES.MUTATION_ACTION;
+    }
+    if (SUBMIT_KEY_RE.test(keyNorm.value)) {
+      return BLOCK_CODES.SUBMIT_BUTTON;
+    }
+    if (mutationShapeInText(keyNorm.value)) {
+      return BLOCK_CODES.MUTATION_ACTION;
+    }
+    const mutationControl = MUTATION_CONTROL_KEY_RE.test(keyNorm.value);
+    for (const value of values) {
+      const valNorm = normalizeMutationFieldText(value);
+      if (!valNorm.ok) return valNorm.code;
+      if (mutationShapeInText(valNorm.value, mutationControl)) {
+        return BLOCK_CODES.MUTATION_ACTION;
+      }
+      // Nested JSON string values (e.g. payload={"action":"save"})
+      if (
+        (valNorm.value.startsWith('{') && valNorm.value.endsWith('}')) ||
+        (valNorm.value.startsWith('[') && valNorm.value.endsWith(']'))
+      ) {
+        try {
+          const nested = JSON.parse(valNorm.value) as unknown;
+          const nestedHit = scanJsonForMutation(nested, 0, mutationControl);
+          if (nestedHit) return nestedHit;
+        } catch {
+          /* not JSON — continue */
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function scanJsonForMutation(
+  value: unknown,
+  depth = 0,
+  mutationControl = false,
+): BlockCode | null {
+  if (depth > 8) return BLOCK_CODES.MALFORMED_JSON;
+  if (typeof value === 'string') {
+    const norm = normalizeMutationFieldText(value);
+    if (!norm.ok) return norm.code;
+    return mutationShapeInText(norm.value, mutationControl)
+      ? BLOCK_CODES.MUTATION_ACTION
+      : null;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean' || value == null) {
+    return null;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const hit = scanJsonForMutation(item, depth + 1, mutationControl);
+      if (hit) return hit;
+    }
+    return null;
+  }
+  if (typeof value === 'object') {
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      const keyNorm = normalizeMutationFieldText(k);
+      if (!keyNorm.ok) return keyNorm.code;
+      if (AUTOSAVE_KEY_RE.test(keyNorm.value) || mutationShapeInText(keyNorm.value)) {
+        return BLOCK_CODES.MUTATION_ACTION;
+      }
+      const hit = scanJsonForMutation(
+        v,
+        depth + 1,
+        MUTATION_CONTROL_KEY_RE.test(keyNorm.value),
+      );
+      if (hit) return hit;
+    }
+  }
+  return null;
+}
 
 export class FixtureRequestRecorder {
   #items: Array<{ method: string; path: string; ruleId: string }> = [];
@@ -492,11 +626,18 @@ function evaluateAgainstRule(
 
   if (needsBody) {
     const bodyMap = input.bodyMap ?? emptyMultimap();
+    const mutationHit = scanMultimapForMutation(bodyMap);
+    if (mutationHit) {
+      return block(mutationHit, signature());
+    }
     // Mutation shortcuts even when fixed action differs
     const actionVals = bodyMap.get('action') ?? bodyMap.get('Action');
     if (
       actionVals &&
-      actionVals.some((value) => MUTATION_ACTION_RE.test(value)) &&
+      actionVals.some((value) => {
+        const n = normalizeMutationFieldText(value);
+        return n.ok && MUTATION_ACTION_RE.test(n.value);
+      }) &&
       !valuesEqual(
         actionVals,
         expectedValues(rule.fixedBody.action) ?? [],
@@ -515,6 +656,9 @@ function evaluateAgainstRule(
   } else if (input.postData.length > 0) {
     return block(BLOCK_CODES.EXTRA_BODY, signature());
   }
+
+  const queryMutation = scanMultimapForMutation(input.queryMap);
+  if (queryMutation) return block(queryMutation, signature());
 
   return { action: 'allow', ruleId: rule.id };
 }

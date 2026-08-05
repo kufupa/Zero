@@ -19,9 +19,11 @@ Related artifacts (same repo):
 | --- | --- |
 | `centurion-emails-dump.md` | Flat dump (gitignored, PII) |
 | `centurion-emails-by-thread.md` | Thread-collated dump (gitignored, PII) |
-| `docs/infor-hms/centurion-pms-tool-demand-2026-08-03.md` | Aggregate analysis + scores |
-| `docs/infor-hms/centurion-outbound-index-2026-08-03.md` | Outbound subject index |
-| `docs/infor-hms/centurion-thread-collation-summary-2026-08-03.md` | Thread size/direction histograms |
+| `centurion-emails-index.md` | Slim subject index (gitignored) |
+| `docs/infor-hms/centurion-pms-tool-demand-2026-08-04.md` | Aggregate analysis + scores (latest) |
+| `docs/infor-hms/centurion-outbound-index-2026-08-04.md` | Outbound subject index (latest) |
+| `docs/infor-hms/centurion-thread-collation-summary-2026-08-04.md` | Thread size/direction histograms (latest) |
+| `docs/infor-hms/centurion-pms-tool-demand-2026-08-03.md` | Prior analysis snapshot |
 | `docs/infor-hms/capability-matrix.md` | Infor HMS capability allow/deny matrix |
 | `docs/superpowers/plans/2026-07-29-infor-hms-full-tool-portfolio-roadmap.md` | Full read/write roadmap |
 | `apps/server-pilot/scripts/dump-centurion-emails-md.mjs` | RDS → Markdown dump |
@@ -167,14 +169,17 @@ Re-run §4.1–4.3 every few days as mailbox grows. Keep dated analysis files; r
 | --- | ---: | --- | ---: | --- |
 | ~27–29 Jul (roadmap baseline) | 223 | 197 / 26 | 193 | early sample |
 | 2026-08-01 | 526 | 458 / 68 | 434 | first full refresh in this workstream |
-| **2026-08-03** | **623** | **551 / 72** | **520** | +97 msgs vs Aug 1; +4 outbound |
+| 2026-08-03 | 623 | 551 / 72 | 520 | +97 msgs vs Aug 1; +4 outbound |
+| **2026-08-04** | **812** | **724 / 88** | **668** | +189 msgs vs Aug 3; +16 outbound |
 
-2026-08-03 highlights:
+2026-08-04 highlights:
 
-- Threads with ≥1 PMS-fact signal: **467** (~90%)  
-- Open inbound-looking PMS-reply-worthy (heuristic): **322**  
-- Outbound: **72** messages; **~70** are templated `Confirmation Letter` / `Payment Confirmation` subjects  
-- Multi-message threads: **53** (most threads are single inbound)
+- Threads with ≥1 PMS-fact signal: **599** (~90%)  
+- Open inbound-looking PMS-reply-worthy (heuristic): **420**  
+- Outbound: **88** messages across **86** threads; **~82** are templated `Confirmation Letter` / `Payment Confirmation` subjects  
+- Non-template outbound: Centurion test ×2, Nava access ×2, Comp ×2  
+- Multi-message threads: **63** (most threads still single inbound)
+- Window: 2026-07-27 → 2026-08-04 (~8 days)
 
 ---
 

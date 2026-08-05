@@ -3,6 +3,7 @@ import {
   buildDraftMutationInput,
   chooseDraftEditorState,
   nextAfterDialogChoice,
+  reduceDraftRevision,
   resolveComposeCloseAction,
   runComposeLeaveFlush,
   shouldEnsureEditableDraftForReply,
@@ -75,7 +76,7 @@ describe('draft persistence', () => {
 
   it('does not overwrite dirty local editor state with late server data', () => {
     const result = chooseDraftEditorState({
-      isDirty: true,
+      hasLocalEdits: true,
       localHtml: '<p>Human typed after load</p>',
       localSubject: 'Local subject',
       serverDraft: {
@@ -89,6 +90,44 @@ describe('draft persistence', () => {
       html: '<p>Human typed after load</p>',
       subject: 'Local subject',
       source: 'local-dirty',
+    });
+  });
+
+  it('keeps locally owned content after save acknowledgement when revisions are equal', () => {
+    const result = chooseDraftEditorState({
+      hasLocalEdits: true,
+      localHtml: '<p>Human typed and saved</p>',
+      localSubject: 'Local subject',
+      serverDraft: {
+        content: '<p>Server echo</p>',
+        subject: 'Server subject',
+        updatedAt: '2026-07-06T10:00:00.000Z',
+      },
+    });
+
+    expect(result).toEqual({
+      html: '<p>Human typed and saved</p>',
+      subject: 'Local subject',
+      source: 'local-dirty',
+    });
+  });
+
+  it('hydrates from server before any local edits', () => {
+    const result = chooseDraftEditorState({
+      hasLocalEdits: false,
+      localHtml: '',
+      localSubject: '',
+      serverDraft: {
+        content: '<p>Server draft</p>',
+        subject: 'Server subject',
+        updatedAt: '2026-07-06T10:00:00.000Z',
+      },
+    });
+
+    expect(result).toEqual({
+      html: '<p>Server draft</p>',
+      subject: 'Server subject',
+      source: 'server',
     });
   });
 
@@ -136,6 +175,34 @@ describe('draft persistence', () => {
         aiCandidateCount: 1,
       }),
     ).toEqual({ shouldEnsure: false });
+  });
+});
+
+describe('reduceDraftRevision', () => {
+  it('acknowledges only the revision captured by an in-flight save', () => {
+    let state = { localRevision: 0, savedRevision: 0 };
+    state = reduceDraftRevision(state, { type: 'edited' });
+    const capturedRevision = state.localRevision;
+    state = reduceDraftRevision(state, { type: 'edited' });
+    state = reduceDraftRevision(state, { type: 'saved', capturedRevision });
+
+    expect(state).toEqual({ localRevision: 2, savedRevision: 1 });
+  });
+
+  it('clears the revision gap when the latest save succeeds', () => {
+    const state = reduceDraftRevision(
+      { localRevision: 2, savedRevision: 1 },
+      { type: 'saved', capturedRevision: 2 },
+    );
+    expect(state).toEqual({ localRevision: 2, savedRevision: 2 });
+  });
+
+  it('never lets an older acknowledgement move saved revision backward', () => {
+    const state = reduceDraftRevision(
+      { localRevision: 3, savedRevision: 2 },
+      { type: 'saved', capturedRevision: 1 },
+    );
+    expect(state).toEqual({ localRevision: 3, savedRevision: 2 });
   });
 });
 

@@ -126,7 +126,7 @@ describe('live Guest Stay read manifest (HRCEN)', () => {
       SYSTEM_FUNCTION_NAME: 'OSRESV',
       USER_FUNCTION_NAME: 'OSRESV',
       CURRENT_TAB_NAME: 'HDR',
-      MENU_MODULE_KEY: '1',
+      MENU_MODULE_KEY: '0',
       removescreenflows: 'yes',
     });
     const decision = evaluateObservedRequest(manifest, {
@@ -139,6 +139,29 @@ describe('live Guest Stay read manifest (HRCEN)', () => {
       postData: body,
     });
     expect(decision).toEqual({ action: 'allow', ruleId: 'live-osresv-hdr' });
+  });
+
+  it('allows only observed BSSTRT.HDR refresh control', () => {
+    const request = (manurefresh: string) =>
+      evaluateObservedRequest(manifest, {
+        method: 'POST',
+        url: `${ORIGIN}/web/base/BSSTRT.HDR`,
+        resourceType: 'xhr',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        },
+        postData: formBody({
+          SYSTEM_FUNCTION_NAME: 'BSSTRT',
+          USER_FUNCTION_NAME: 'BSSTRT',
+          manurefresh,
+        }),
+      });
+
+    expect(request('true')).toEqual({
+      action: 'allow',
+      ruleId: 'live-bsstrt-hdr',
+    });
+    expect(request('false').action).toBe('block');
   });
 
   it('blocks mutation-looking save path as unknown_path', () => {
@@ -155,6 +178,49 @@ describe('live Guest Stay read manifest (HRCEN)', () => {
     if (decision.action === 'block') {
       expect(decision.code).toBe(BLOCK_CODES.UNKNOWN_PATH);
     }
+  });
+
+  it('blocks mutation action tokens embedded in reviewed control values', () => {
+    const decision = evaluateObservedRequest(manifest, {
+      method: 'POST',
+      url: `${ORIGIN}/web/base/OSRESV?FUNCTION_CLASS=WEBL&USER_FUNCTION_NAME=OSRESV`,
+      resourceType: 'xhr',
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded',
+      },
+      postData: formBody({
+        CURRENT_TAB_NAME: '',
+        FUNCTION_CLASS: 'WEBL',
+        MENU_MODULE_KEY: '0',
+        SYSTEM_FUNCTION_NAME: 'OSRESV.SAVE',
+        USER_FUNCTION_NAME: 'OSRESV',
+        removescreenflows: 'yes',
+      }),
+    });
+    expect(decision.action).toBe('block');
+    if (decision.action === 'block') {
+      expect(decision.code).toBe(BLOCK_CODES.MUTATION_ACTION);
+    }
+  });
+
+  it('blocks unreviewed OSRESV control values', () => {
+    const decision = evaluateObservedRequest(manifest, {
+      method: 'POST',
+      url: `${ORIGIN}/web/base/OSRESV?FUNCTION_CLASS=WEBL&USER_FUNCTION_NAME=OSRESV`,
+      resourceType: 'xhr',
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded',
+      },
+      postData: formBody({
+        CURRENT_TAB_NAME: '',
+        FUNCTION_CLASS: 'WEBL',
+        MENU_MODULE_KEY: '0',
+        SYSTEM_FUNCTION_NAME: 'OSRESV.UNREVIEWED',
+        USER_FUNCTION_NAME: 'OSRESV',
+        removescreenflows: 'yes',
+      }),
+    });
+    expect(decision.action).toBe('block');
   });
 
   it('blocks fixture reservation search on live origin', () => {

@@ -1,10 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { eq } from 'drizzle-orm';
-import { getDb } from '../src/db/client.js';
+import { eq, sql } from 'drizzle-orm';
+import { getDb, __setDbForTests, type DB } from '../src/db/client.js';
 import {
   aiWorkflowRun,
   aiDraftGeneration,
@@ -37,6 +37,38 @@ async function claimForExecute(
   expect(claimed?.id).toBe(runId);
   return claimed!;
 }
+
+/**
+ * Seed + run inside the rollback transaction AND point the worker's internal
+ * `getDb()` at that same tx handle. `executeAiRun`/`claimNextAiRun` call
+ * `getDb()` directly, so without this binding they'd open a separate committed
+ * connection that cannot see the uncommitted tx rows. Same mechanism the tRPC
+ * `callerFor` helper uses. Restores the cache on exit so committed-style tests
+ * (which rely on the per-test TRUNCATE) are unaffected.
+ */
+async function withWorkerDb<T>(cb: (db: DB) => Promise<T>): Promise<T> {
+  return withSeededTestDb(async (db) => {
+    __setDbForTests({ db, conn: null as never });
+    try {
+      return await cb(db);
+    } finally {
+      __setDbForTests(null);
+    }
+  });
+}
+
+/** Committed tables the db-contract tests write; truncated per test for isolation. */
+const WORKER_DB_TABLES = [
+  'ai_workflow_run',
+  'ai_draft_generation',
+  'mail_thread_category',
+  'mail_draft_revision',
+  'mail_draft',
+  'message',
+  'mail_thread',
+  'mail_category',
+  'mailbox_transport',
+] as const;
 describe('ai worker contract', () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -323,6 +355,18 @@ describe('ai worker contract', () => {
 });
 
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () => {
+  beforeEach(async () => {
+    // Committed seedInbound tests never roll back; clear leftover rows (incl.
+    // stale queued runs) so claimNextAiRun's oldest-in-lane pick is this test's
+    // own run. Also wipes cross-run pollution from prior invocations.
+    __setDbForTests(null);
+    await getDb().execute(
+      sql.raw(
+        `TRUNCATE ${WORKER_DB_TABLES.join(', ')} RESTART IDENTITY CASCADE`,
+      ),
+    );
+  });
+
   async function seedInbound() {
     const db = getDb();
     const transportId = randomUUID();
@@ -465,7 +509,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
   });
 
   it('shadow mode does not write categories or enqueue candidate draft', async () => {
-    await withSeededTestDb(async (db) => {
+    await withWorkerDb(async (db) => {
       const threadId = randomUUID();
       const messageId = randomUUID();
       await db.insert(mailThread).values({
@@ -535,7 +579,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
   });
 
   it('write and draft mode writes category and enqueues one candidate draft', async () => {
-    await withSeededTestDb(async (db) => {
+    await withWorkerDb(async (db) => {
       const threadId = randomUUID();
       const messageId = randomUUID();
       await db.insert(mailThread).values({
@@ -603,7 +647,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
   });
 
   it('retry same triage still enqueues only one candidate draft', async () => {
-    await withSeededTestDb(async (db) => {
+    await withWorkerDb(async (db) => {
       const threadId = randomUUID();
       const messageId = randomUUID();
       await db.insert(mailThread).values({
@@ -654,7 +698,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
   });
 
   it('spam triage sets spamAt and does not enqueue candidate draft', async () => {
-    await withSeededTestDb(async (db) => {
+    await withWorkerDb(async (db) => {
       const threadId = randomUUID();
       const messageId = randomUUID();
       await db.insert(mailThread).values({
@@ -708,7 +752,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
   });
 
   it('ops triage does not enqueue candidate draft when drafts enabled', async () => {
-    await withSeededTestDb(async (db) => {
+    await withWorkerDb(async (db) => {
       const threadId = randomUUID();
       const messageId = randomUUID();
       await db.insert(mailThread).values({
@@ -759,7 +803,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
   });
 
   it('new-bookings triage enqueues candidate draft when drafts enabled', async () => {
-    await withSeededTestDb(async (db) => {
+    await withWorkerDb(async (db) => {
       const threadId = randomUUID();
       const messageId = randomUUID();
       await db.insert(mailThread).values({
@@ -810,7 +854,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
   });
 
   it('does not enqueue candidate draft when thread already has spamAt', async () => {
-    await withSeededTestDb(async (db) => {
+    await withWorkerDb(async (db) => {
       const threadId = randomUUID();
       const messageId = randomUUID();
       await db.insert(mailThread).values({
@@ -907,6 +951,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
       modelId: 'amazon.nova-lite-v1:0',
       promptVersion: 'triage-v4',
     });
+    await claimForExecute(run.id);
 
     const spy = vi.spyOn(mastraModule, 'createMastraRuntime');
     const result = await executeAiRun(run.id);
@@ -996,9 +1041,9 @@ describe('Task 5 HMS live proof CLI (DB-free)', () => {
     expect(source).toMatch(/HMS_SHADOW_REARMED/);
     expect(source).toMatch(/assertNoLookupArgv/);
     expect(source).toMatch(/confirmation|external|thread|message|candidate/);
-    expect(source).toMatch(/process\.exit\(3\)/);
-    expect(source).toMatch(/process\.exit\(10\)/);
-    expect(source).toMatch(/process\.exit\(20\)/);
+    expect(source).toMatch(/new OperatorExit\(3/);
+    expect(source).toMatch(/new OperatorExit\(10/);
+    expect(source).toMatch(/new OperatorExit\(20/);
     expect(source).toMatch(/HMS_WAIT/);
     expect(source).toMatch(/ROLLBACK_INCOMPLETE/);
     expect(source).toMatch(/HmsOperatorFailCode|OPERATOR_FAIL_CODES/);
@@ -1007,7 +1052,9 @@ describe('Task 5 HMS live proof CLI (DB-free)', () => {
   it('status validates build/deps/manifest/fingerprint/role/health/TTL/deltas', () => {
     const source = readFileSync(join(here, '..', 'src', 'ops', 'hms-live-proof.ts'), 'utf8');
     expect(source).toMatch(/NAVA_BUILD_COMMIT|buildCommit|runningProcessCommit/);
-    expect(source).toMatch(/playwright-1\.52\.0-chromium-1169/);
+    expect(source).toMatch(
+      /playwright-1\.52\.0-chromium-1169/,
+    );
     expect(source).toMatch(/manifestSha256/);
     expect(source).toMatch(/rowFingerprintSha256/);
     expect(source).toMatch(/roleProofSha256/);

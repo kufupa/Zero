@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { randomUUID } from 'node:crypto';
 import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,10 +9,13 @@ import {
 } from '../src/hms/contracts.js';
 import {
   createFetchBrowserFactory,
+  createHmsLiveProofRuntime,
   createHmsRuntime,
+  createPlaywrightBrowserFactory,
   HmsRuntimeError,
   type HmsSecret,
 } from '../src/hms/runtime.js';
+import type { HmsBrowserArtifactStore } from '../src/hms/browser-artifacts.js';
 import {
   FIXTURE_IDS,
   startHmsFixtureServer,
@@ -157,7 +161,6 @@ describe('HMS fixture server', () => {
     }
   });
 });
-
 describe('HMS runtime', () => {
   const cleanup: Array<() => Promise<void>> = [];
   afterEach(async () => {
@@ -229,6 +232,56 @@ describe('HMS runtime', () => {
     await first.close();
     await secondPromise;
     expect(secondOpened).toBe(true);
+  });
+
+  it('removes aborted waiters from the one-session semaphore', async () => {
+    const server = await startHmsFixtureServer();
+    cleanup.push(server.close);
+    const { runtime, secret } = await boot(server);
+    await runtime.start(AbortSignal.timeout(15_000));
+    const first = await runtime.openReadSession({
+      transportId: secret.mailboxTransportId,
+      signal: AbortSignal.timeout(15_000),
+    });
+    const queuedAbort = new AbortController();
+    const queued = runtime.openReadSession({
+      transportId: secret.mailboxTransportId,
+      signal: queuedAbort.signal,
+    });
+    queuedAbort.abort();
+    await expect(queued).rejects.toMatchObject({ code: 'aborted' });
+    await first.close();
+    const next = await runtime.openReadSession({
+      transportId: secret.mailboxTransportId,
+      signal: AbortSignal.timeout(15_000),
+    });
+    await next.close();
+  });
+
+  it('normal runtime rejects caller-supplied live-proof capture', async () => {
+    const server = await startHmsFixtureServer();
+    cleanup.push(server.close);
+    const { runtime, secret } = await boot(server);
+    await runtime.start(AbortSignal.timeout(15_000));
+    await expect(
+      runtime.openReadSession({
+        transportId: secret.mailboxTransportId,
+        signal: AbortSignal.timeout(15_000),
+        auditSpec: {
+          operationId: randomUUID(),
+          toolId: 'hms_find_reservation',
+          toolVersion: '1.1.0',
+          dependencyRevision: 'test',
+          executionClass: 'live_proof',
+          inputClass: 'authorized_exact',
+          roleProofSha256: 'a'.repeat(64),
+          roleProofExpiresAt: '2026-09-01T00:00:00.000Z',
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: 'AUDIT_CAPTURE',
+      message: 'live_proof requires proof-only runtime composition',
+    });
   });
 
   it('wrong tenant opens circuit', async () => {
@@ -449,7 +502,6 @@ describe('HMS runtime', () => {
     expect(loadSecret).toHaveBeenCalled();
   });
 });
-
 describe('Playwright Chromium (optional)', () => {
   it(
     'skips when chromium unavailable; documents injectable factory path',
@@ -490,9 +542,132 @@ describe('Task 2 production composition + browser guards', () => {
         'utf8',
       ),
     );
-    expect(src).toMatch(/from ['"]playwright['"]/);
+    expect(src).toMatch(/createPlaywrightBrowserFactory/);
+    const runtimeSource = await import('node:fs/promises').then((fs) =>
+      fs.readFile(new URL('../src/hms/runtime.ts', import.meta.url), 'utf8'),
+    );
+    expect(runtimeSource).toMatch(/import\('playwright'\)/);
     expect(src).not.toMatch(/tryCreatePlaywrightBrowserFactory|createFetchBrowserFactory/);
     expect(src).toMatch(/runStartupCanary:\s*false/);
+  });
+
+  it('runtime close rejects a live-proof teardown timeout', async () => {
+    const source = await import('node:fs/promises').then((fs) =>
+      fs.readFile(new URL('../src/hms/runtime.ts', import.meta.url), 'utf8'),
+    );
+    const close = source.slice(
+      source.indexOf('    async close() {'),
+      source.indexOf('/** Required Playwright factory'),
+    );
+    expect(close).toMatch(/HMS_BROWSER_LIVE_PROOF_FINALIZE_TIMEOUT_MS/);
+    expect(close).toMatch(
+      /activeTeardown[\s\S]*new Promise<never>[\s\S]*TRACE_FINALIZE_FAILED/,
+    );
+    expect(source).toMatch(/async function poisonAfterFinalizeTimeout/);
+    expect(source).toMatch(
+      /timedOut = true[\s\S]*await poisonAfterFinalizeTimeout\(\)/,
+    );
+    expect(source).toMatch(
+      /poisonAfterFinalizeTimeout[\s\S]*closing = true[\s\S]*failedBrowser\.close\(\)/,
+    );
+  });
+
+  it('fails closed when audit capture is required without an artifact store', async () => {
+    const origin = 'http://127.0.0.1:17888';
+    const runtime = createHmsRuntime({
+      manifest: fixtureManifest(origin),
+      secretArn:
+        'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-test',
+      loadSecret: async () => {
+        throw new Error('secret load must not run');
+      },
+      browserFactory: createFetchBrowserFactory(),
+      runStartupCanary: false,
+      requireAuditCapture: true,
+    });
+    cleanup.push(() => runtime.close());
+
+    await expect(
+      runtime.openReadSession({
+        transportId: 'transport-centurion',
+        signal: AbortSignal.timeout(5_000),
+        allowUnstarted: true,
+        auditSpec: {
+          operationId: randomUUID(),
+          toolId: 'hms_find_reservation',
+          toolVersion: '1.1.0',
+          dependencyRevision:
+            'playwright-1.52.0-chromium-1169',
+          executionClass: 'normal',
+          inputClass: 'authorized_exact',
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'AUDIT_CAPTURE' });
+  });
+
+  it('Playwright adapter forwards downloads emitted by pages', async () => {
+    type FakeDownload = { cancel(): Promise<void> };
+    type FakePage = {
+      on(event: 'download', handler: (download: FakeDownload) => void): void;
+    };
+    let emitPage: ((page: FakePage) => void) | undefined;
+    let emitDownload: ((download: FakeDownload) => void) | undefined;
+    const page: FakePage = {
+      on(event, handler) {
+        if (event === 'download') emitDownload = handler;
+      },
+    };
+    const playwrightContext = {
+      tracing: {
+        async start() {},
+        async stop() {},
+      },
+      async route() {},
+      async routeWebSocket() {},
+      async newPage() {
+        return page;
+      },
+      async close() {},
+      pages() {
+        return [] as FakePage[];
+      },
+      on(event: string, handler: (page: FakePage) => void) {
+        if (event === 'page') emitPage = handler;
+      },
+    };
+    const playwrightBrowser = {
+      async newContext() {
+        return playwrightContext;
+      },
+      async close() {},
+    };
+    vi.doMock('playwright', () => ({
+      chromium: {
+        launch: vi.fn(async () => playwrightBrowser),
+      },
+    }));
+
+    try {
+      const browser = await createPlaywrightBrowserFactory()({});
+      const context = await browser.newContext({
+        acceptDownloads: false,
+        serviceWorkers: 'block',
+      });
+      const cancel = vi.fn(async () => {});
+      context.on('download', (download) => {
+        void download.cancel();
+      });
+
+      expect(emitPage).toBeTypeOf('function');
+      emitPage!(page);
+      expect(emitDownload).toBeTypeOf('function');
+      emitDownload!({ cancel });
+      await Promise.resolve();
+
+      expect(cancel).toHaveBeenCalledOnce();
+    } finally {
+      vi.doUnmock('playwright');
+    }
   });
 
   it('installs routeWebSocket before first navigation on session open', async () => {
@@ -574,8 +749,12 @@ describe('Task 2 production composition + browser guards', () => {
       signal: AbortSignal.timeout(15_000),
     });
     // Simulate second page (popup) after primary
+    let finishPopupClose: (() => void) | undefined;
     const popupPage = {
-      async close() {},
+      close: () =>
+        new Promise<void>((resolve) => {
+          finishPopupClose = resolve;
+        }),
       async goto() {},
       async content() {
         return '';
@@ -601,12 +780,13 @@ describe('Task 2 production composition + browser guards', () => {
     } as import('../src/hms/runtime.js').HmsPage;
     // Force pages().length > 1 path by emitting page event
     emitPopup?.(popupPage);
-    await new Promise((r) => setTimeout(r, 30));
     expect(session.terminal()).toBe(true);
     expect(session.violation()?.action).toBe('block');
     if (session.violation()?.action === 'block') {
       expect(session.violation()?.code).toMatch(/popup/i);
     }
+    finishPopupClose?.();
+    await new Promise((r) => setTimeout(r, 0));
   });
 
   it('download cancels and terminalizes context', async () => {
@@ -647,15 +827,19 @@ describe('Task 2 production composition + browser guards', () => {
       signal: AbortSignal.timeout(15_000),
     });
     const cancelled: string[] = [];
+    let finishCancel: (() => void) | undefined;
     emitDownload?.({
-      async cancel() {
-        cancelled.push('cancelled');
-      },
+      cancel: () =>
+        new Promise<void>((resolve) => {
+          cancelled.push('cancelled');
+          finishCancel = resolve;
+        }),
     });
-    await new Promise((r) => setTimeout(r, 30));
     expect(cancelled).toEqual(['cancelled']);
     expect(session.terminal()).toBe(true);
     expect(session.violation()?.code).toMatch(/download/i);
+    finishCancel?.();
+    await new Promise((r) => setTimeout(r, 0));
   });
 
   it('unreviewed redirect blocks before continue', async () => {
@@ -776,6 +960,60 @@ describe('Task 2 production composition + browser guards', () => {
     });
   });
 
+  it('rejects a role proof issued in the future', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'hms-role-future-'));
+    const proofPath = join(dir, 'role-proof.json');
+    const { writeFile } = await import('node:fs/promises');
+    const now = new Date('2026-08-05T00:00:00.000Z');
+    await writeFile(
+      proofPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        propertyCode: 'HRCEN',
+        allowedSurfaces: ['Guest Stay'],
+        deniedActions: [
+          'new_record',
+          'save',
+          'delete',
+          'duplicate',
+          'check_in',
+          'check_out',
+          'document_generate',
+          'document_send',
+        ],
+        issuedAt: new Date(now.getTime() + 60_000).toISOString(),
+        expiresAt: new Date(now.getTime() + 86_400_000).toISOString(),
+        evidenceRef: 'operator-observed-runtime-v1:abc',
+        evidenceSha256: 'c'.repeat(64),
+      }),
+      { mode: 0o600 },
+    );
+    const { loadHmsReadRoleProof } = await import(
+      '../src/hms/production-runtime.js'
+    );
+
+    await expect(loadHmsReadRoleProof(proofPath, now)).rejects.toMatchObject({
+      code: 'ROLE_SCOPE_INVALID',
+    });
+  });
+
+  it('requires receipts to bind a concrete source revision', async () => {
+    const { resolveHmsSourceRevision } = await import(
+      '../src/hms/production-runtime.js'
+    );
+    expect(
+      resolveHmsSourceRevision(undefined, {
+        NAVA_BUILD_COMMIT: '0123456789abcdef0123456789abcdef01234567',
+      }),
+    ).toBe('0123456789abcdef0123456789abcdef01234567');
+    expect(() => resolveHmsSourceRevision(undefined, {})).toThrowError(
+      expect.objectContaining({ code: 'AUDIT_CAPTURE' }),
+    );
+    expect(() =>
+      resolveHmsSourceRevision('production', {}),
+    ).toThrowError(expect.objectContaining({ code: 'AUDIT_CAPTURE' }));
+  });
+
   it('one Chromium process serves sequential fresh contexts', async () => {
     const server = await startHmsFixtureServer();
     cleanup.push(server.close);
@@ -834,6 +1072,44 @@ describe('Task 2 production composition + browser guards', () => {
     if (process.platform !== 'win32') {
       expect(mode).toBe(0o600);
     }
+  });
+
+  it('purges audited artifacts on startup, before sessions, and hourly', async () => {
+    const server = await startHmsFixtureServer();
+    cleanup.push(server.close);
+    const secret = fixtureSecret(server.origin);
+    let purgeCalls = 0;
+    const artifactStore = {
+      root: join(tmpdir(), 'hms-artifact-retention-test'),
+      intermediateDir: join(tmpdir(), 'hms-artifact-retention-test', 'playwright'),
+      beginCapture: vi.fn(),
+      async purgeExpired() {
+        purgeCalls += 1;
+        return 0;
+      },
+    } satisfies HmsBrowserArtifactStore;
+    const runtime = createHmsRuntime({
+      manifest: fixtureManifest(server.origin),
+      secretArn: 'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-test',
+      loadSecret: async () => secret,
+      browserFactory: createFetchBrowserFactory(),
+      runStartupCanary: false,
+      artifactStore,
+      requireAuditCapture: false,
+      artifactPurgeIntervalMs: 20,
+    });
+    cleanup.push(() => runtime.close());
+
+    await runtime.start(AbortSignal.timeout(15_000));
+    expect(purgeCalls).toBe(1);
+    const session = await runtime.openReadSession({
+      transportId: secret.mailboxTransportId,
+      signal: AbortSignal.timeout(15_000),
+    });
+    await session.close();
+    expect(purgeCalls).toBeGreaterThanOrEqual(2);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(purgeCalls).toBeGreaterThanOrEqual(3);
   });
 
   it('live-shaped fixture exposes Infor login + Guest Stay + OSRESS.search', async () => {
@@ -1005,6 +1281,258 @@ describe('Task 2 production composition + browser guards', () => {
       ).toBe(alteredBefore);
     } finally {
       await session.close();
+    }
+  });
+});
+
+describe("HMS browser audit capture order", () => {
+  it("withholds a successful session when capture finalizes incomplete", async () => {
+    const { randomUUID } = await import("node:crypto");
+    const { rm } = await import("node:fs/promises");
+    const {
+      createHmsBrowserArtifactStore,
+      ensureHmsBrowserArtifactRoot,
+    } = await import("../src/hms/browser-artifacts.js");
+    const server = await startHmsFixtureServer();
+    const root = join(tmpdir(), `hms-cap-incomplete-${randomUUID()}`);
+    await ensureHmsBrowserArtifactRoot(root);
+    const store = await createHmsBrowserArtifactStore({ root });
+    const beginCapture = store.beginCapture.bind(store);
+    store.beginCapture = async (spec) => {
+      const handle = await beginCapture(spec);
+      const finalize = handle.finalize.bind(handle);
+      handle.finalize = (input) => finalize({ ...input, complete: false });
+      return handle;
+    };
+    const secret = fixtureSecret(server.origin);
+    const runtime = createHmsRuntime({
+      manifest: fixtureManifest(server.origin),
+      secretArn:
+        "arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-test",
+      loadSecret: async () => secret,
+      browserFactory: createFetchBrowserFactory(),
+      requireViewOnly: true,
+      runStartupCanary: false,
+      artifactStore: store,
+      requireAuditCapture: true,
+      sourceRevision: "test-source",
+    });
+    try {
+      const session = await runtime.openReadSession({
+        transportId: secret.mailboxTransportId,
+        signal: AbortSignal.timeout(15_000),
+        allowUnstarted: true,
+        auditSpec: {
+          operationId: randomUUID(),
+          toolId: "hms_find_reservation",
+          toolVersion: "1.1.0",
+          dependencyRevision: "test-dependency",
+          executionClass: "normal",
+          inputClass: "authorized_exact",
+        },
+      });
+      await expect(session.close()).rejects.toMatchObject({
+        code: "AUDIT_CAPTURE",
+      });
+      const unhandled: unknown[] = [];
+      const recordUnhandled = (error: unknown) => {
+        unhandled.push(error);
+      };
+      process.on("unhandledRejection", recordUnhandled);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      process.off("unhandledRejection", recordUnhandled);
+      expect(unhandled).toEqual([]);
+      expect(session.lastReceipt()?.artifactState).toBe("incomplete");
+      expect(runtime.health().state).toBe("degraded");
+      await expect(runtime.close()).rejects.toMatchObject({
+        code: "AUDIT_CAPTURE",
+      });
+      expect(runtime.health().state).toBe("stopped");
+    } finally {
+      await server.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves login and audit-finalization failures together', async () => {
+    const { rm } = await import('node:fs/promises');
+    const {
+      createHmsBrowserArtifactStore,
+      ensureHmsBrowserArtifactRoot,
+    } = await import('../src/hms/browser-artifacts.js');
+    const server = await startHmsFixtureServer();
+    const root = join(tmpdir(), `hms-cap-login-fail-${randomUUID()}`);
+    await ensureHmsBrowserArtifactRoot(root);
+    const store = await createHmsBrowserArtifactStore({
+      root,
+      validateTraceFile: async () => true,
+      validateVideoFile: async () => true,
+    });
+    const secret = fixtureSecret(server.origin, {
+      expectedPropertyCode: 'WRONG',
+    });
+    const runtime = createHmsRuntime({
+      manifest: fixtureManifest(server.origin),
+      secretArn:
+        'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-test',
+      loadSecret: async () => secret,
+      browserFactory: createFetchBrowserFactory(),
+      requireViewOnly: true,
+      runStartupCanary: false,
+      artifactStore: store,
+      requireAuditCapture: true,
+      sourceRevision: 'test-source',
+    });
+    try {
+      let caught: unknown;
+      try {
+        await runtime.openReadSession({
+          transportId: secret.mailboxTransportId,
+          signal: AbortSignal.timeout(15_000),
+          allowUnstarted: true,
+          auditSpec: {
+            operationId: randomUUID(),
+            toolId: 'hms_find_reservation',
+            toolVersion: '1.1.0',
+            dependencyRevision: 'test-dependency',
+            executionClass: 'normal',
+            inputClass: 'authorized_exact',
+          },
+        });
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(AggregateError);
+      const errors = (caught as AggregateError).errors;
+      expect(errors.some((error) => error?.code === 'wrong_property')).toBe(true);
+      expect(errors.some((error) => error?.code === 'AUDIT_CAPTURE')).toBe(true);
+    } finally {
+      await runtime.close().catch(() => undefined);
+      await server.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('runtime omits normal video and starts proof tracing before page creation', async () => {
+    const { rm, writeFile } = await import('node:fs/promises');
+    const {
+      createHmsBrowserArtifactStore,
+      ensureHmsBrowserArtifactRoot,
+    } = await import('../src/hms/browser-artifacts.js');
+    const server = await startHmsFixtureServer();
+    const root = join(tmpdir(), `hms-cap-order-${randomUUID()}`);
+    await ensureHmsBrowserArtifactRoot(root);
+    const store = await createHmsBrowserArtifactStore({
+      root,
+      validateTraceFile: async () => true,
+      validateVideoFile: async () => true,
+    });
+    const events: string[] = [];
+    const baseFactory = createFetchBrowserFactory();
+    const factory: typeof baseFactory = async (input) => {
+      events.push(input.tracesDir ? 'launch:tracesDir' : 'launch:no-tracesDir');
+      const browser = await baseFactory(input);
+      return {
+        async newContext(opts) {
+          events.push(
+            opts.recordVideo
+              ? `context:video:${opts.recordVideo.dir}`
+              : 'context:no-video',
+          );
+          const context = await browser.newContext(opts);
+          const start = context.tracing.start.bind(context.tracing);
+          context.tracing.start = async (traceOptions) => {
+            events.push('trace:start');
+            return start(traceOptions);
+          };
+          const stop = context.tracing.stop.bind(context.tracing);
+          context.tracing.stop = async (traceOptions) => {
+            await stop(traceOptions);
+            if (traceOptions?.path) {
+              await writeFile(
+                traceOptions.path,
+                Buffer.concat([
+                  Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+                  Buffer.alloc(26),
+                  Buffer.from([0x50, 0x4b, 0x05, 0x06]),
+                  Buffer.alloc(18),
+                ]),
+              );
+            }
+          };
+          const newPage = context.newPage.bind(context);
+          context.newPage = async () => {
+            events.push('page:new');
+            return newPage();
+          };
+          return context;
+        },
+        close: () => browser.close(),
+      };
+    };
+    const secret = fixtureSecret(server.origin);
+    const runtime = createHmsLiveProofRuntime({
+      manifest: fixtureManifest(server.origin),
+      secretArn:
+        'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-test',
+      loadSecret: async () => secret,
+      browserFactory: factory,
+      requireViewOnly: true,
+      runStartupCanary: false,
+      artifactStore: store,
+      requireAuditCapture: true,
+      sourceRevision: 'test-source',
+    });
+    try {
+      await runtime.start(AbortSignal.timeout(15_000));
+      const normal = await runtime.openReadSession({
+        transportId: secret.mailboxTransportId,
+        signal: AbortSignal.timeout(15_000),
+        auditSpec: {
+          operationId: randomUUID(),
+          toolId: 'hms_find_reservation',
+          toolVersion: '1.1.0',
+          dependencyRevision: 'r1',
+          executionClass: 'normal',
+          inputClass: 'authorized_exact',
+        },
+      });
+      await normal.close();
+
+      const proof = await runtime.openReadSession({
+        transportId: secret.mailboxTransportId,
+        signal: AbortSignal.timeout(15_000),
+        auditSpec: {
+          operationId: randomUUID(),
+          toolId: 'hms_find_reservation',
+          toolVersion: '1.1.0',
+          dependencyRevision: 'r1',
+          executionClass: 'live_proof',
+          inputClass: 'authorized_exact',
+          roleProofSha256: 'a'.repeat(64),
+          roleProofExpiresAt: '2026-09-01T00:00:00.000Z',
+        },
+      });
+      await expect(proof.close()).rejects.toMatchObject({
+        code: 'AUDIT_CAPTURE',
+      });
+
+      expect(events[0]).toBe('launch:tracesDir');
+      expect(events).toContain('context:no-video');
+      expect(events.some((event) => event.startsWith('context:video:'))).toBe(
+        true,
+      );
+      const proofContext = events.findIndex((event) =>
+        event.startsWith('context:video:'),
+      );
+      const proofTrace = events.indexOf('trace:start', proofContext);
+      const proofPage = events.indexOf('page:new', proofContext);
+      expect(proofTrace).toBeGreaterThan(proofContext);
+      expect(proofTrace).toBeLessThan(proofPage);
+    } finally {
+      await runtime.close().catch(() => undefined);
+      await server.close();
+      await rm(root, { recursive: true, force: true });
     }
   });
 });

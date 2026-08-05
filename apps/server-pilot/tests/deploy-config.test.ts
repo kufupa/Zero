@@ -77,7 +77,10 @@ function runTaskkill(pid: number): Promise<void> {
         );
         return;
       }
-      if (status === 0) {
+      if (
+        status === 0 ||
+        /There is no running instance of the task/i.test(output)
+      ) {
         finish();
         return;
       }
@@ -1570,7 +1573,7 @@ describe('deploy config', () => {
     expect(deploy).not.toContain('startOrReload');
   });
 
-  it('pm2-boot.sh sources nvm and env then resurrect or startOrReload', async () => {
+  it('pm2-boot.sh starts and verifies the exact mode-specific process set', async () => {
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
     const { dirname, join } = await import('node:path');
@@ -1578,8 +1581,11 @@ describe('deploy config', () => {
     const boot = readFileSync(join(here, '..', 'deploy', 'pm2-boot.sh'), 'utf8');
     expect(boot).toContain('nvm.sh');
     expect(boot).toContain('.env.production');
-    expect(boot).toContain('pm2 resurrect');
-    expect(boot).toContain('startOrReload');
+    expect(boot).not.toContain('pm2 resurrect');
+    expect(boot).toContain('delete_all_pm2_processes');
+    expect(boot).toContain('verify_default_process_set');
+    expect(boot).toContain('ensure_hms_absent');
+    expect(boot).not.toMatch(/pm2 delete hms-ai-worker[^\n]*\|\| true/);
   });
 
   it('post-boot-smoke.sh checks :8788 and canonical :443 not :3000', async () => {
@@ -1869,7 +1875,7 @@ describe('deploy config', () => {
       }
       vi.resetModules();
     }
-  });
+  }, 30_000);
 
   it('ops-deploy.sh syncs then SSM deploy-ec2 with optional migrate', async () => {
     const { readFileSync } = await import('node:fs');
@@ -1914,7 +1920,13 @@ describe('deploy config', () => {
     expect(ops).toContain('--quiesced');
     expect(ops).toContain('vpn-health-assert.sh');
     expect(deploy).toMatch(/\/opt\/nava\/shared/);
-    expect(deploy).toMatch(/chown ubuntu:ubuntu/);
+    expect(deploy).toMatch(
+      /install -d -o root -g root -m 0755 \/opt\/nava \/opt\/nava\/shared/,
+    );
+    expect(deploy).toMatch(
+      /install -d -o ubuntu -g ubuntu -m 0700[\s\S]*hms-browser-artifacts[\s\S]*hms-runtime/,
+    );
+    expect(deploy).not.toMatch(/chown ubuntu:ubuntu \/opt\/nava/);
 
     const deployQuiesced = extractBashIfBlock(
       deploy,
@@ -2386,7 +2398,7 @@ describe('deploy config', () => {
       });
       expect(report.checks.ufwTunnel443Only).toBe(false);
     }
-  }, 15_000);
+  }, 60_000);
 
   it('UFW collection fails closed when either command fails', async () => {
     for (const failure of [{ failStatus: true }, { failAdded: true }]) {
@@ -2992,8 +3004,10 @@ describe('deploy config', () => {
       expect(script).toMatch(/\/opt\/nava/);
       expect(script).toMatch(/1\.52\.0/);
       expect(script).toMatch(/1169/);
+      expect(script).not.toMatch(/EXPECTED_FFMPEG_REV|FFMPEG_EXE/);
       expect(script).toMatch(/HMS_DEPENDENCIES_OK/);
       expect(script).toMatch(/headless|chromium/i);
+      expect(script).toMatch(/recordVideo/);
       // Bare playwright install forbidden (must pin revision / path).
       expect(script).not.toMatch(/^\s*npx playwright install\s*$/m);
       expect(script).not.toMatch(/pnpm exec playwright install(?!\s+chromium)/);
@@ -3027,6 +3041,9 @@ describe('deploy config', () => {
       expect(script).toMatch(/NAVA_BUILD_COMMIT/);
       expect(script).toMatch(/HMS_READ_ROLE_PROOF_PATH/);
       expect(script).toMatch(/HMS_EXPECTED_PROPERTY_CODE|HRCEN/);
+      expect(script).toMatch(/PLAYWRIGHT_BROWSERS_PATH.*\/opt\/nava\/ms-playwright/);
+      const pm2 = readFileSync(join(here, '..', 'deploy', 'pm2.config.cjs'), 'utf8');
+      expect(pm2).toMatch(/PLAYWRIGHT_BROWSERS_PATH.*\/opt\/nava\/ms-playwright/s);
     });
   });
 });

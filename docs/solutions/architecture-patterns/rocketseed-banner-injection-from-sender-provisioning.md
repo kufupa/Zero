@@ -1,6 +1,7 @@
 ---
 title: Rocketseed Banner Injection Keys Off From/Sender Provisioning, Not Relay Traversal or SMTP AUTH
 date: 2026-07-31
+last_updated: 2026-08-01
 category: architecture-patterns
 module: hotel outbound / Rocketseed branding relay
 problem_type: architecture_pattern
@@ -11,6 +12,9 @@ applies_when:
   - Comparing branded vs unbranded senders that share the same IP-trusted pilot relay path
   - Provisioning or excluding mailboxes (e.g. internal test/BCC sinks) in the Rocketseed tenant
   - Ruling out SMTP AUTH or pilot-IP exclusion as the branding gate
+  - Configuring or activating MAIL_TRANSPORT_MODE=real outbound SMTP
+  - Tempted to set SMTP_HOST to Zimbra 172.24.0.10 or any non-Rocketseed host
+  - Leftover SMTP_PASSWORD or secret still present and risk of AUTH 535 on Rocketseed
 related_components:
   - tooling
   - testing_framework
@@ -20,6 +24,9 @@ tags:
   - from-sender-provisioning
   - smtp-relay
   - ip-trusted
+  - sole-smtp-hop
+  - no-smtp-auth
+  - zimbra-pop3-only
   - centurion
   - navaai
   - hotel-outbound
@@ -29,9 +36,9 @@ tags:
 
 ## Context
 
-Hotel outbound branding on the Legacy Hotels path is performed by Rocketseed (`172.24.0.8` / `branding.legacyhotels.co.za`), then handed to Zimbra (`172.24.0.10`) for delivery and POP3 ingest. **Pilot canary / ops topology** used in this learning (not an app-enforced hop chain):
+Hotel outbound branding on the Legacy Hotels path is performed by Rocketseed (`172.24.0.8` / `branding.legacyhotels.co.za`), then handed to Zimbra (`172.24.0.10`) for delivery and POP3 ingest. As of the 2026-07-31 sole-hop cutover, **Zero enforces** that topology for `MAIL_TRANSPORT_MODE=real` (see [Mandatory sole SMTP hop](#mandatory-sole-smtp-hop)):
 
-**Zero (EC2 pilot) → Rocketseed `.8:587` (STARTTLS) → Zimbra `.10` → recipient**
+**Zero (EC2 pilot) → Rocketseed `.8:587` (STARTTLS, no AUTH) → Zimbra `.10` → recipient**
 
 During Rocketseed first-class work (`docs/superpowers/plans/2026-07-30-rocketseed-banner-first-class.md`), live canaries showed a confusing split: mail clearly traversed Rocketseed (Received hops through `.8`, Rocketseed-stamped headers present) yet arrived **without** signature/top/footer banners when the Header From was Nava (`navaai@...`). Historical store counts reinforced that: `navaai` had **0/11** branded messages; provisioned hotel senders (including Centurion) had branded samples.
 
@@ -81,7 +88,7 @@ So the branding selector Zero can change without Rocketseed admin work is **whic
 
 ### Self-BCC is not branding
 
-Audit self-BCC exists so Zimbra/Outlook can file a Sent copy; it is orthogonal to Rocketseed injection. As of this writing an uncommitted working-tree gate `MAIL_SELF_BCC` defaults on unless explicitly `false` / `0` / `off` (see `isSelfBccEnabled` in `apps/server-pilot/src/trpc/routes/mail.ts`). Committed HEAD still always appends the transport address when that gate is absent.
+Audit self-BCC exists so Zimbra/Outlook can file a Sent copy; it is orthogonal to Rocketseed injection. `MAIL_SELF_BCC` defaults on unless explicitly `false` / `0` / `off` (`isSelfBccEnabled` in `apps/server-pilot/src/trpc/routes/mail.ts`).
 
 ```99:120:apps/server-pilot/src/trpc/routes/mail.ts
 /** Audit self-BCC is on unless MAIL_SELF_BCC is explicitly disabled. */
@@ -107,19 +114,12 @@ Self-BCC proves the mailbox received a copy for reconciliation/ingest; **it does
 
 ### SMTP AUTH vs IP-trusted relay
 
-Do **not** claim live Rocketseed branding (or delivery) requires SMTP AUTH because some app code prefers authenticated real SMTP.
+Do **not** claim live Rocketseed branding (or delivery) requires SMTP AUTH.
 
 - **Live observation (session, not in-repo MIME fixtures):** Rocketseed rejected Zimbra creds with **535**; trusted-IP submission **without AUTH** accepted with **250** and relayed into Zimbra. Historical branded and unbranded samples were also unauthenticated (`esmtp`/`esmtps`, not `esmtpa`).
-- **Main tree `RealSmtpTransport`:** AUTH is **optional** -- nodemailer `auth` is set only when both user and password resolve:
+- **App contract (post sole-hop cutover):** On Rocketseed host `.8`, nodemailer `auth` is **always** `undefined` — even when leftover `SMTP_PASSWORD` / secret ARN remains in env. `buildRealSmtpNodemailerOptions` and `RealSmtpTransport.send` both force that omit (`apps/server-pilot/src/mail/send/smtp.ts`). Wire/Mailpit may still AUTH; real Rocketseed must not.
 
-```123:126:apps/server-pilot/src/mail/send/smtp.ts
-      auth:
-        this.opts.user && password
-          ? { user: this.opts.user, pass: password }
-          : undefined,
-```
-
-Credential strategy for cutover is a **transport contract**; From provisioning is a **tenant contract**. Keep them separate.
+Transport hop contract ≠ From provisioning (tenant) contract. Keep them separate. (session history) Earlier first-class plans assumed shared authenticated STARTTLS — that assumption is stale against live IP-trust proof.
 
 ### Headers that do not mean "branded"
 
@@ -164,7 +164,9 @@ Cutover plans that require "autonomous Nava proof of branding" before believing 
 - Ruling out SMTP AUTH or pilot-IP exclusion as the branding gate.
 - Writing or reviewing cutover plans that currently demand "Nava branded E2E" as the sole production-proof of banners.
 - Reading MIME for `X-BypassBranding` / `X-ExSBR-Direction` without treating them as banner success.
-- Asserting SMTP AUTH requirements -- read `mail.send` From authority and the active tree's `RealSmtpTransport` first; compare to live 535 vs trusted-IP 250 observations.
+- Asserting SMTP AUTH requirements -- read `mail.send` From authority and the active tree's Rocketseed AUTH-omit path first; compare to live 535 vs trusted-IP 250 observations.
+- Configuring `MAIL_TRANSPORT_MODE=real` SMTP host/port or re-running `activate-real-mail.sh` / `write-ec2-env.sh`.
+- Tempted to fall back to Zimbra `.10` SMTP when Rocketseed is down (must fail closed instead).
 
 ## Examples
 
@@ -194,21 +196,48 @@ Active Nava mailbox → From is Nava → even on a perfect Rocketseed path, expe
 
 ## Mandatory sole SMTP hop
 
-**App contract (as of 2026-07-31 cutover plan):** `MAIL_TRANSPORT_MODE=real` must submit only to Rocketseed `172.24.0.8:587` STARTTLS with SNI `branding.legacyhotels.co.za`. Zimbra `172.24.0.10` remains **POP3 only** — never an allowed real SMTP connect host. There is no Zimbra-direct SMTP fallback on Rocketseed failure (fail closed / queue errors).
+**App contract (cutover 2026-07-31, docs refreshed 2026-08-01):** `MAIL_TRANSPORT_MODE=real` must submit only to Rocketseed `172.24.0.8:587` STARTTLS with SNI `branding.legacyhotels.co.za`. Zimbra `172.24.0.10` remains **POP3 only** — never an allowed real SMTP connect host. There is no Zimbra-direct SMTP fallback on Rocketseed failure (fail closed / queue errors).
 
-**AUTH:** Never attach nodemailer `auth` on the Rocketseed hop, even when leftover `SMTP_PASSWORD` / secret ARN is still in env (Zimbra creds against Rocketseed return 535). Live hotel acceptance is IP-trusted.
+### Sole hop pin
 
-**Fixture / wire:** Unchanged — fake or Mailpit localhost; Rocketseed hop pin does not apply.
+1. `SMTP_HOST` must be exactly `172.24.0.8` (`ROCKETSEED_SMTP_HOST` in `apps/server-pilot/src/mail/send/smtp.ts`).
+2. `createSmtpTransport` calls `assertRealSmtpHop(host)` when mode is `real` — any other host throws.
+3. `activate-real-mail.sh` and `write-ec2-env.sh` default and fail closed on the same host; SMTP port is **587 only** (no 25 fallback).
+4. `fixture` / `wire` are carve-outs: fake or Mailpit localhost; hop pin does **not** apply. Do not "fix" wire by pointing it at `.8`.
 
-**Branding vs hop:** Traversing `.8` is mandatory for real outbound. Whether banners appear is still From/sender tenant provisioning (Centurion yes / Nava often no). Do not treat Nava unbranded mail as a hop failure.
+### AUTH never on Rocketseed (leftover-password footgun)
 
-Plan: [2026-07-31-rocketseed-sole-smtp-hop.md](../../superpowers/plans/2026-07-31-rocketseed-sole-smtp-hop.md).
+Rocketseed pilot submission is **IP-trusted**. For host `.8`, `buildRealSmtpNodemailerOptions` always sets `auth: undefined`, and `RealSmtpTransport.send` skips password resolution entirely — even when leftover `SMTP_PASSWORD` / `SMTP_SECRET_ARN` remains in `.env.production`. Sending Zimbra creds to Rocketseed yields **535** before `MAIL FROM` and looks like an outage. Activate smoke verifies STARTTLS with `auth: undefined`, not AUTH `verify()`.
+
+### TLS split
+
+| Path | Host | TLS posture |
+|------|------|-------------|
+| Real SMTP (Rocketseed) | `.8:587` STARTTLS | `requireTLS` + `rejectUnauthorized: true` + SNI `branding.legacyhotels.co.za` |
+| Real POP3 (Zimbra) | `.10` | May keep `MAIL_TLS_REJECT_UNAUTHORIZED=false` for expired hotel certs |
+| Wire SMTP | Mailpit | Shared loose/strict knob OK |
+
+Never loosen Rocketseed SMTP verify because POP3 needs a loose cert.
+
+### Branding vs hop
+
+Traversing `.8` is **mandatory** for real outbound. Whether banners appear is still From/sender tenant provisioning (Centurion yes / Nava often no). Do not treat Nava unbranded mail as a hop failure.
+
+Hop canaries (correlation ids in subjects — **not** git SHAs):
+
+| Subject prefix | Role |
+|----------------|------|
+| `ZERO-RS-HOP-2026-07-31T21-09-18` | Nava self sole-hop canary (SMTP accepted on `.8`) |
+| `ZERO-RS-CENT-HOP-2026-07-31T21-09-49` | Centurion→Gmail on same hop |
+
+Handoff: [2026-07-31-rocketseed-sole-smtp-hop.md](../../superpowers/plans/handoff-reports/2026-07-31-rocketseed-sole-smtp-hop.md). Plan: [2026-07-31-rocketseed-sole-smtp-hop.md](../../superpowers/plans/2026-07-31-rocketseed-sole-smtp-hop.md).
 
 ## Related
 
 - Plan (hop cutover): [2026-07-31-rocketseed-sole-smtp-hop.md](../../superpowers/plans/2026-07-31-rocketseed-sole-smtp-hop.md)
-- Plan (earlier first-class wave): [2026-07-30-rocketseed-banner-first-class.md](../../superpowers/plans/2026-07-30-rocketseed-banner-first-class.md) -- note original "shared authenticated STARTTLS" and "Nava E2E branding proof" assumptions need revisiting against this selector learning.
-- Architecture sibling: [mail-transport-mode-fixture-vs-real.md](./mail-transport-mode-fixture-vs-real.md) -- fixture/wire/real transport matrix (does not define Rocketseed branding).
+- Handoff (cutover evidence): [2026-07-31-rocketseed-sole-smtp-hop.md](../../superpowers/plans/handoff-reports/2026-07-31-rocketseed-sole-smtp-hop.md)
+- Plan (earlier first-class wave): [2026-07-30-rocketseed-banner-first-class.md](../../superpowers/plans/2026-07-30-rocketseed-banner-first-class.md) -- original "shared authenticated STARTTLS" assumption is stale.
+- Architecture sibling: [mail-transport-mode-fixture-vs-real.md](./mail-transport-mode-fixture-vs-real.md) -- fixture/wire/real matrix; **real SMTP row may still say Zimbra** until refreshed — treat Rocketseed sole hop here as source of truth for SMTP host.
 - Live pilot parity: [live-pilot-production-parity-real-mail.md](./live-pilot-production-parity-real-mail.md).
 - UI sibling (CID banners once MIME has parts): [email-html-images-cid-rewrite-and-trusted-sender-domains.md](../ui-bugs/email-html-images-cid-rewrite-and-trusted-sender-domains.md) -- render path after branding attachments exist; does not select whether Rocketseed injects them.
-- Reachability only: [ec2-pilot-nava-openvpn-always-on-health.md](../workflow-issues/ec2-pilot-nava-openvpn-always-on-health.md) -- `172.24.0.8` probe ≠ branding.
+- Reachability only: [ec2-pilot-nava-openvpn-always-on-health.md](../workflow-issues/ec2-pilot-nava-openvpn-always-on-health.md) -- `172.24.0.8` probe ≠ branding or hop pin.

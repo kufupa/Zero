@@ -43,6 +43,7 @@ export type AiFailureClass =
   | 'TRANSIENT_NETWORK'
   | 'BEDROCK_TRANSIENT'
   | 'ARTIFACT_TRANSIENT'
+  | 'AUDIT_CAPTURE'
   | 'UNKNOWN';
 
 const RETRYABLE_FAILURE_CLASSES: ReadonlySet<AiFailureClass> = new Set([

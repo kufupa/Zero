@@ -8,7 +8,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { chmod, mkdir, rename, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import type { RequestDecision, RequestPolicyManifest } from './contracts.js';
 import {
@@ -17,6 +17,16 @@ import {
   enforceRequestPolicy,
   type PolicyRoute,
 } from './request-policy.js';
+import {
+  HmsBrowserArtifactError,
+  HMS_BROWSER_CAPACITY_WATCHDOG_MS,
+  HMS_BROWSER_ARTIFACT_MAX_CAPTURE_BYTES,
+  HMS_BROWSER_ARTIFACT_MIN_LIVE_FREE_BYTES,
+  HMS_BROWSER_CAPTURE_FINALIZE_TIMEOUT_MS,
+  HMS_BROWSER_LIVE_PROOF_FINALIZE_TIMEOUT_MS,
+  type HmsBrowserAuditSpec,
+  type HmsBrowserCaptureHandle,
+} from './browser-artifacts.js';
 
 export const hmsSecretSchema = z
   .object({
@@ -61,7 +71,18 @@ export type HmsReadSession = {
   terminal(): boolean;
   /** Page surface for adapters / discovery (injectable browser). */
   page: HmsPage;
-  close(): Promise<void>;
+  /** Last finalized browser audit receipt for this session (digests only). */
+  lastReceipt(): import('./browser-artifacts.js').HmsBrowserArtifactReceiptV1 | null;
+  close(options?: {
+    outcome?: import('./browser-artifacts.js').HmsBrowserArtifactReceiptBaseV1['operationOutcome'];
+    terminalCode?: import('./browser-artifacts.js').HmsBrowserArtifactReceiptBaseV1['terminalCode'];
+    complete?: boolean;
+  }): Promise<void>;
+};
+
+export type HmsPageVideo = {
+  /** Absolute path once context has closed (Playwright Video API). */
+  path(): Promise<string>;
 };
 
 export type HmsPage = {
@@ -99,12 +120,35 @@ export type HmsPage = {
   evaluateStableDom<T>(fn: () => T | Promise<T>): Promise<T>;
   /** @deprecated Prefer evaluateStableDom — kept for fixture adapters. */
   evaluate<T>(fn: () => T | Promise<T>): Promise<T>;
+  /** Present when context was created with recordVideo (live_proof). */
+  video?(): HmsPageVideo | null;
 };
 
 export type HmsDownloadEvent = { cancel(): Promise<void> };
 
 export type HmsWebSocketRoute = {
   close(): void;
+};
+
+export type HmsTracing = {
+  start(options: {
+    screenshots: boolean;
+    snapshots: boolean;
+    sources: boolean;
+    title?: string;
+  }): Promise<void>;
+  stop(options?: { path?: string }): Promise<void>;
+};
+
+export type HmsNewContextOptions = {
+  acceptDownloads: false;
+  serviceWorkers: 'block';
+  ignoreHTTPSErrors?: true;
+  /** Only live_proof may set this — normal must omit. */
+  recordVideo?: {
+    dir: string;
+    size: { width: number; height: number };
+  };
 };
 
 export type HmsBrowserContext = {
@@ -123,19 +167,19 @@ export type HmsBrowserContext = {
   on(event: 'page', handler: (page: HmsPage) => void): void;
   on(event: 'download', handler: (download: HmsDownloadEvent) => void): void;
   on(event: 'websocket', handler: () => void): void;
+  tracing: HmsTracing;
 };
 
 export type HmsBrowser = {
-  newContext(options: {
-    acceptDownloads: false;
-    serviceWorkers: 'block';
-  }): Promise<HmsBrowserContext>;
+  newContext(options: HmsNewContextOptions): Promise<HmsBrowserContext>;
   close(): Promise<void>;
 };
 
 export type BrowserFactory = (input: {
   executablePath?: string;
   signal?: AbortSignal;
+  /** Protected Playwright tracesDir under artifact root. */
+  tracesDir?: string;
 }) => Promise<HmsBrowser>;
 
 /** Process-wide Secrets Manager client stand-in — injectable; tests never pass real ARNs to AWS. */
@@ -153,6 +197,8 @@ export type HmsRuntime = {
     exactSearchCandidate?: import('./live-read-manifest.js').ExactReservationCandidate;
     /** Allow open before start() when LiveGuestStayDriver owns canary. */
     allowUnstarted?: boolean;
+    /** Required when runtime.requireAuditCapture / production store wired. */
+    auditSpec?: import('./browser-artifacts.js').HmsBrowserAuditSpec;
   }): Promise<HmsReadSession>;
   health(): HmsHealth;
   close(): Promise<void>;
@@ -202,10 +248,20 @@ export type HmsRuntimeOptions = {
   healthStaleAfterMs?: number;
   /** Skip fixture reservation canary (live driver owns Guest Stay canary). */
   runStartupCanary?: boolean;
+  /** Private capture spool — when set, every session must supply auditSpec. */
+  artifactStore?: import('./browser-artifacts.js').HmsBrowserArtifactStore;
+  /** Fail closed if openReadSession omits auditSpec while store is present. */
+  requireAuditCapture?: boolean;
+  /** Expired artifact purge cadence. Default 1 hour. */
+  artifactPurgeIntervalMs?: number;
+  sourceRevision?: string;
+  playwrightRevision?: string;
+  chromiumRevision?: string;
 };
 
 export const HEALTH_HEARTBEAT_MS = 10_000;
 export const HEALTH_STALE_AFTER_MS = 30_000;
+export const ARTIFACT_PURGE_INTERVAL_MS = 60 * 60 * 1000;
 
 export class HmsRuntimeError extends Error {
   readonly code: string;
@@ -648,6 +704,21 @@ export function createFetchBrowserFactory(
       #websocketListeners: Array<() => void> = [];
       #wsRouteInstalled = false;
       lastViolation: RequestDecision | null = null;
+      #videoDir: string | null = null;
+      #primaryVideoPath: string | null = null;
+
+      tracing: HmsTracing = {
+        start: async () => undefined,
+        stop: async (opts) => {
+          if (opts?.path) {
+            await writeFile(opts.path, Buffer.from('PK\x03\x04fetch-trace'));
+          }
+        },
+      };
+
+      constructor(opts?: HmsNewContextOptions) {
+        this.#videoDir = opts?.recordVideo?.dir ?? null;
+      }
 
       async route(
         _url: string,
@@ -738,6 +809,17 @@ export function createFetchBrowserFactory(
 
       async newPage() {
         const page = new FetchPage(this);
+        if (this.#videoDir && !this.#primaryVideoPath) {
+          this.#primaryVideoPath = join(this.#videoDir, 'page.webm');
+          (page as HmsPage).video = () => ({
+            path: async () => {
+              if (!this.#primaryVideoPath) {
+                throw new HmsRuntimeError('VIDEO_FINALIZE_FAILED', 'no video');
+              }
+              return this.#primaryVideoPath;
+            },
+          });
+        }
         this.#pages.push(page);
         for (const listener of this.#pageListeners) listener(page);
         return page;
@@ -778,13 +860,19 @@ export function createFetchBrowserFactory(
         this.closed = true;
         for (const page of this.#pages) await page.close();
         this.#pages = [];
+        if (this.#primaryVideoPath) {
+          await writeFile(
+            this.#primaryVideoPath,
+            Buffer.from('fetch-webm-fixture'),
+          );
+        }
       }
     }
 
     return {
-      async newContext() {
+      async newContext(opts: HmsNewContextOptions) {
         if (closed) throw new HmsRuntimeError('browser_closed', 'browser closed');
-        const ctx = new FetchContext();
+        const ctx = new FetchContext(opts);
         contexts.push(ctx);
         return ctx;
       },
@@ -835,13 +923,26 @@ function manifestOrigin(manifest: RequestPolicyManifest): string {
   return [...origins][0]!;
 }
 
-export function createHmsRuntime(options: HmsRuntimeOptions): HmsRuntime {
+function createHmsRuntimeInternal(
+  options: HmsRuntimeOptions,
+  allowLiveProof: boolean,
+): HmsRuntime {
   const timeoutMs = options.defaultTimeoutMs ?? 15_000;
   const cooldownMs = options.circuitCooldownMs ?? 30_000;
   const requireViewOnly = options.requireViewOnly ?? true;
   const staleAfterMs = options.healthStaleAfterMs ?? HEALTH_STALE_AFTER_MS;
   const heartbeatMs = options.healthHeartbeatMs ?? HEALTH_HEARTBEAT_MS;
+  const artifactPurgeMs =
+    options.artifactPurgeIntervalMs ?? ARTIFACT_PURGE_INTERVAL_MS;
   const runStartupCanary = options.runStartupCanary ?? true;
+  let healthWriteQueue: Promise<void> = Promise.resolve();
+  const persistHealth = (): Promise<void> => {
+    const write = healthWriteQueue.then(() =>
+      writeHealthFile(options.healthStatusPath, health()),
+    );
+    healthWriteQueue = write.catch(() => undefined);
+    return write;
+  };
 
   let browser: HmsBrowser | null = null;
   let cachedSecret: HmsSecret | null = null;
@@ -854,7 +955,10 @@ export function createHmsRuntime(options: HmsRuntimeOptions): HmsRuntime {
   let lastErrorCode: string | undefined;
   let circuitOpenedAt: number | undefined;
   let started = false;
+  let closing = false;
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  let artifactPurgeTimer: ReturnType<typeof setInterval> | null = null;
+  let artifactPurgeQueue: Promise<void> = Promise.resolve();
   let transientRetries = 0;
 
   const health = (): HmsHealth => ({
@@ -882,11 +986,79 @@ export function createHmsRuntime(options: HmsRuntimeOptions): HmsRuntime {
     stopHeartbeat();
     if (!options.healthStatusPath) return;
     heartbeatTimer = setInterval(() => {
-      void writeHealthFile(options.healthStatusPath, health());
+      void persistHealth();
     }, heartbeatMs);
     if (typeof heartbeatTimer === 'object' && 'unref' in heartbeatTimer) {
       heartbeatTimer.unref();
     }
+  }
+
+  async function purgeArtifacts(): Promise<void> {
+    if (!options.artifactStore) return;
+    const purge = artifactPurgeQueue.then(async () => {
+      await options.artifactStore!.purgeExpired();
+    });
+    artifactPurgeQueue = purge.catch(() => undefined);
+    try {
+      await purge;
+    } catch {
+      state = 'degraded';
+      lastErrorCode = 'AUDIT_CAPTURE';
+      await persistHealth().catch(() => undefined);
+      throw new HmsRuntimeError(
+        'AUDIT_CAPTURE',
+        'artifact retention purge failed',
+      );
+    }
+  }
+
+  function stopArtifactPurge() {
+    if (artifactPurgeTimer) {
+      clearInterval(artifactPurgeTimer);
+      artifactPurgeTimer = null;
+    }
+  }
+
+  function startArtifactPurge() {
+    stopArtifactPurge();
+    if (!options.artifactStore) return;
+    artifactPurgeTimer = setInterval(() => {
+      void purgeArtifacts().catch(() => undefined);
+    }, artifactPurgeMs);
+    if (
+      typeof artifactPurgeTimer === 'object' &&
+      'unref' in artifactPurgeTimer
+    ) {
+      artifactPurgeTimer.unref();
+    }
+  }
+
+  async function poisonAfterFinalizeTimeout(): Promise<void> {
+    closing = true;
+    started = false;
+    state = 'degraded';
+    lastErrorCode = 'AUDIT_CAPTURE';
+    cachedSecret = null;
+    stopHeartbeat();
+    stopArtifactPurge();
+    const failedBrowser = browser;
+    browser = null;
+    if (failedBrowser) {
+      let closeTimer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          failedBrowser.close(),
+          new Promise<void>((resolveClose) => {
+            closeTimer = setTimeout(resolveClose, 5_000);
+          }),
+        ]);
+      } catch {
+        // Runtime remains poisoned; process-level supervisor owns hard recovery.
+      } finally {
+        if (closeTimer) clearTimeout(closeTimer);
+      }
+    }
+    await persistHealth().catch(() => undefined);
   }
 
   async function revalidateRoleProof(): Promise<void> {
@@ -950,6 +1122,7 @@ export function createHmsRuntime(options: HmsRuntimeOptions): HmsRuntime {
       browser = await options.browserFactory({
         executablePath: options.executablePath,
         signal,
+        tracesDir: options.artifactStore?.intermediateDir,
       });
       browserLaunches += 1;
       return browser;
@@ -1074,17 +1247,45 @@ export function createHmsRuntime(options: HmsRuntimeOptions): HmsRuntime {
     }
   }
 
+  let activeTeardown: Promise<void> = Promise.resolve();
+  let activeTeardownError: unknown;
+
   async function openReadSessionInternal(input: {
     transportId: string;
     signal: AbortSignal;
     canary?: boolean;
     exactSearchCandidate?: import('./live-read-manifest.js').ExactReservationCandidate;
     allowUnstarted?: boolean;
+    auditSpec?: HmsBrowserAuditSpec;
   }): Promise<HmsReadSession> {
     assertNotAborted(input.signal);
+    if (closing) {
+      throw new HmsRuntimeError('not_started', 'HMS runtime is closing');
+    }
     if (!input.canary) assertCircuitClosed();
     if (!started && !input.canary && !input.allowUnstarted) {
       throw new HmsRuntimeError('not_started', 'HMS runtime not started');
+    }
+
+    const store = options.artifactStore;
+    const requireCapture = options.requireAuditCapture ?? Boolean(store);
+    if (requireCapture && !store) {
+      throw new HmsRuntimeError(
+        'AUDIT_CAPTURE',
+        'artifact store required for audited HMS session',
+      );
+    }
+    if (requireCapture && !input.auditSpec && !input.canary) {
+      throw new HmsRuntimeError(
+        'AUDIT_CAPTURE',
+        'auditSpec required for audited HMS session',
+      );
+    }
+    if (input.auditSpec?.executionClass === 'live_proof' && !allowLiveProof) {
+      throw new HmsRuntimeError(
+        'AUDIT_CAPTURE',
+        'live_proof requires proof-only runtime composition',
+      );
     }
 
     await revalidateRoleProof();
@@ -1095,6 +1296,21 @@ export function createHmsRuntime(options: HmsRuntimeOptions): HmsRuntime {
         'transport_mismatch',
         'transportId does not match secret mailboxTransportId',
       );
+    }
+    if (requireViewOnly && secret.credentialMode !== 'view_only') {
+      throw new HmsRuntimeError(
+        'credential_mode',
+        'view_only required for read sessions',
+      );
+    }
+    if (options.expectedOrigin) {
+      const loginOrigin = new URL(secret.loginUrl).origin;
+      if (loginOrigin !== options.expectedOrigin) {
+        throw new HmsRuntimeError(
+          'origin_mismatch',
+          'secret login origin mismatch',
+        );
+      }
     }
 
     let sessionManifest = options.manifest;
@@ -1108,14 +1324,29 @@ export function createHmsRuntime(options: HmsRuntimeOptions): HmsRuntime {
       );
     }
 
-    const release = await acquireSessionLock();
+    let capture: HmsBrowserCaptureHandle | null = null;
+    let lastReceipt: import('./browser-artifacts.js').HmsBrowserArtifactReceiptV1 | null =
+      null;
+
+    const release = await acquireSessionLock(input.signal);
     activeSessions += 1;
 
     let context: HmsBrowserContext | null = null;
+    let primaryPage: HmsPage | null = null;
     let lastViolation: RequestDecision | null = null;
     let terminal = false;
     let released = false;
     let closedCounted = false;
+    let finalizeOnce: Promise<void> | null = null;
+    let traceStarted = false;
+    const ruleCounts = new Map<string, number>();
+    let blockedRequests = 0;
+    let mutationRequests = 0;
+    let popupCount = 0;
+    let downloadCount = 0;
+    let webSocketCount = 0;
+    let watchdog: ReturnType<typeof setInterval> | null = null;
+    let watchdogBusy = false;
     const guards = createBrowserEventGuards(sessionManifest);
 
     const releaseOnce = () => {
@@ -1125,57 +1356,384 @@ export function createHmsRuntime(options: HmsRuntimeOptions): HmsRuntime {
       release();
     };
 
-    const teardown = async () => {
-      input.signal.removeEventListener('abort', closeOnAbort);
+    const stopWatchdog = () => {
+      if (watchdog) {
+        clearInterval(watchdog);
+        watchdog = null;
+      }
+    };
+
+    const finalizeCapture = async (args: {
+      outcome: import('./browser-artifacts.js').HmsBrowserArtifactReceiptBaseV1['operationOutcome'];
+      terminalCode: import('./browser-artifacts.js').HmsBrowserArtifactReceiptBaseV1['terminalCode'];
+      terminalStage: import('./browser-artifacts.js').HmsBrowserArtifactReceiptBaseV1['terminalStage'];
+      complete: boolean;
+    }) => {
+      if (!capture) return;
+      stopWatchdog();
+      const budgetMs =
+        input.auditSpec?.executionClass === 'live_proof'
+          ? HMS_BROWSER_LIVE_PROOF_FINALIZE_TIMEOUT_MS
+          : HMS_BROWSER_CAPTURE_FINALIZE_TIMEOUT_MS;
+      const finalizeDeadline = Date.now() + budgetMs;
+      let finalizeTimedOut = false;
+      const withinFinalizeBudget = async <T>(
+        operation: () => Promise<T>,
+      ): Promise<T> => {
+        const remaining = finalizeDeadline - Date.now();
+        if (remaining <= 0) {
+          finalizeTimedOut = true;
+          await poisonAfterFinalizeTimeout();
+          throw new HmsRuntimeError('AUDIT_CAPTURE', 'TRACE_FINALIZE_FAILED');
+        }
+        const pending = operation();
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        let timedOut = false;
+        try {
+          return await Promise.race([
+            pending,
+            new Promise<never>((_, reject) => {
+              timer = setTimeout(
+                () => {
+                  timedOut = true;
+                  reject(
+                    new HmsRuntimeError(
+                      'AUDIT_CAPTURE',
+                      'TRACE_FINALIZE_FAILED',
+                    ),
+                  );
+                },
+                remaining,
+              );
+            }),
+          ]);
+        } catch (error) {
+          if (timedOut) {
+            finalizeTimedOut = true;
+            await poisonAfterFinalizeTimeout();
+          }
+          throw error;
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+      };
+      try {
+        if (context && traceStarted) {
+          await withinFinalizeBudget(() =>
+            context!.tracing.stop({
+              path: join(capture!.stagingDir, 'trace.zip'),
+            }),
+          );
+          capture.markMilestone('traceStoppedAt');
+        }
+      } catch {
+        args.complete = false;
+        args.terminalCode =
+          args.terminalCode === 'OK' ? 'TRACE_FINALIZE_FAILED' : args.terminalCode;
+        args.terminalStage = 'trace_stop';
+      }
+
+      let closeErr: unknown;
       try {
         if (context) {
-          await context.close();
+          const videoHandle =
+            input.auditSpec?.executionClass === 'live_proof' && primaryPage?.video
+              ? primaryPage.video()
+              : null;
+          await withinFinalizeBudget(() => context!.close());
+          capture.markMilestone('contextClosedAt');
           if (!closedCounted) {
             closedCounted = true;
             contextsClosed += 1;
           }
+          if (videoHandle && capture.videoDir) {
+            try {
+              const rawPath = await withinFinalizeBudget(() =>
+                videoHandle.path(),
+              );
+              await withinFinalizeBudget(
+                () => rename(rawPath, join(capture!.stagingDir, 'video.webm')),
+              );
+            } catch {
+              args.complete = false;
+              args.terminalCode = 'VIDEO_FINALIZE_FAILED';
+              args.terminalStage = 'video_finalize';
+            }
+          }
         }
-      } catch {
-        /* ignore close errors */
+      } catch (err) {
+        closeErr = err;
+        args.complete = false;
+        args.terminalCode = 'CONTEXT_CLOSE_FAILED';
+        args.terminalStage = 'context_close';
       } finally {
-        releaseOnce();
+        context = null;
       }
+
+      try {
+        const receipt = await withinFinalizeBudget(() =>
+          capture!.finalize({
+            outcome: args.outcome,
+            terminalCode: args.terminalCode,
+            terminalStage: args.terminalStage,
+            sourceRevision: options.sourceRevision ?? 'unknown',
+            playwrightRevision: options.playwrightRevision ?? '1.52.0',
+            chromiumRevision: options.chromiumRevision ?? 'unknown',
+            requestRules: [...ruleCounts.entries()].map(([ruleId, count]) => ({
+              ruleId,
+              count,
+            })),
+            blockedRequests,
+            mutationRequests,
+            popupCount,
+            downloadCount,
+            webSocketCount,
+            complete: args.complete,
+          }),
+        );
+        lastReceipt = receipt;
+        if (receipt.artifactState !== 'complete') {
+          state = 'degraded';
+          lastErrorCode = 'AUDIT_CAPTURE';
+          throw new HmsRuntimeError('AUDIT_CAPTURE', args.terminalCode);
+        }
+      } catch (err) {
+        if (!finalizeTimedOut) {
+          await capture.abandon().catch(() => undefined);
+        }
+        state = 'degraded';
+        lastErrorCode = 'AUDIT_CAPTURE';
+        if (closeErr) {
+          throw new AggregateError(
+            [err, closeErr],
+            'HMS capture finalize failed',
+          );
+        }
+        throw err instanceof HmsRuntimeError
+          ? err
+          : new HmsRuntimeError('AUDIT_CAPTURE', 'TRACE_FINALIZE_FAILED');
+      }
+      if (closeErr) {
+        throw closeErr instanceof Error
+          ? closeErr
+          : new HmsRuntimeError('AUDIT_CAPTURE', 'CONTEXT_CLOSE_FAILED');
+      }
+    };
+
+    const teardown = async (captureArgs?: {
+      outcome: import('./browser-artifacts.js').HmsBrowserArtifactReceiptBaseV1['operationOutcome'];
+      terminalCode: import('./browser-artifacts.js').HmsBrowserArtifactReceiptBaseV1['terminalCode'];
+      terminalStage: import('./browser-artifacts.js').HmsBrowserArtifactReceiptBaseV1['terminalStage'];
+      complete: boolean;
+    }) => {
+      if (finalizeOnce) return finalizeOnce;
+      finalizeOnce = (async () => {
+        input.signal.removeEventListener('abort', closeOnAbort);
+        try {
+          if (capture) {
+            await finalizeCapture(
+              captureArgs ?? {
+                outcome: 'aborted',
+                terminalCode: 'ABORTED',
+                terminalStage: 'context_close',
+                complete: false,
+              },
+            );
+          } else if (context) {
+            try {
+              await context.close();
+              if (!closedCounted) {
+                closedCounted = true;
+                contextsClosed += 1;
+              }
+            } catch {
+              /* ignore close errors when uncaptured */
+            }
+          }
+        } finally {
+          releaseOnce();
+        }
+      })();
+      const pendingFinalize = finalizeOnce;
+      activeTeardown = activeTeardown.then(async () => {
+        try {
+          await pendingFinalize;
+        } catch (error) {
+          activeTeardownError ??= error;
+        }
+      });
+      return finalizeOnce;
     };
 
     const closeOnAbort = () => {
       terminal = true;
-      void teardown();
+      void teardown({
+        outcome: 'aborted',
+        terminalCode: 'ABORTED',
+        terminalStage: 'tool',
+        complete: Boolean(capture && traceStarted),
+      }).catch(() => undefined);
     };
     input.signal.addEventListener('abort', closeOnAbort, { once: true });
 
     try {
+      assertNotAborted(input.signal);
+      if (closing) {
+        throw new HmsRuntimeError('not_started', 'HMS runtime is closing');
+      }
+      if (!input.canary) assertCircuitClosed();
+      await revalidateRoleProof();
+      const currentSecret = await getSecret(input.signal);
+      if (input.transportId !== currentSecret.mailboxTransportId) {
+        throw new HmsRuntimeError(
+          'transport_mismatch',
+          'transportId does not match secret mailboxTransportId',
+        );
+      }
+      if (requireViewOnly && currentSecret.credentialMode !== 'view_only') {
+        throw new HmsRuntimeError(
+          'credential_mode',
+          'view_only required for read sessions',
+        );
+      }
+      if (
+        options.expectedOrigin &&
+        new URL(currentSecret.loginUrl).origin !== options.expectedOrigin
+      ) {
+        throw new HmsRuntimeError(
+          'origin_mismatch',
+          'secret login origin mismatch',
+        );
+      }
+      if (store && input.auditSpec) {
+        try {
+          capture = await store.beginCapture(input.auditSpec);
+        } catch (err) {
+          state = 'degraded';
+          lastErrorCode = 'AUDIT_CAPTURE';
+          if (err instanceof HmsBrowserArtifactError) {
+            throw new HmsRuntimeError('AUDIT_CAPTURE', err.code);
+          }
+          throw new HmsRuntimeError(
+            'AUDIT_CAPTURE',
+            'TRACE_STORAGE_UNAVAILABLE',
+          );
+        }
+      }
       const b = await getBrowser(input.signal);
-      context = await b.newContext(contextCreationOptions());
+      const ctxOpts: HmsNewContextOptions = {
+        ...contextCreationOptions(),
+        ...(capture?.videoDir
+          ? {
+              recordVideo: {
+                dir: capture.videoDir,
+                size: { width: 1280, height: 720 },
+              },
+            }
+          : {}),
+      };
+      context = await b.newContext(ctxOpts);
       contextsCreated += 1;
+
+      if (capture) {
+        try {
+          await context.tracing.start({
+            screenshots: true,
+            snapshots: true,
+            sources: false,
+            title: `${input.auditSpec!.toolId}:${input.auditSpec!.operationId}`,
+          });
+          traceStarted = true;
+          capture.markMilestone('traceStartedAt');
+        } catch {
+          await capture.abandon().catch(() => undefined);
+          throw new HmsRuntimeError('AUDIT_CAPTURE', 'TRACE_START_FAILED');
+        }
+
+        watchdog = setInterval(() => {
+          if (watchdogBusy || terminal) return;
+          watchdogBusy = true;
+          void (async () => {
+            try {
+              const [bytes, freeBytes] = await Promise.all([
+                capture!.observeStagedBytes(),
+                capture!.observeFreeBytes(),
+              ]);
+              if (
+                bytes >= HMS_BROWSER_ARTIFACT_MAX_CAPTURE_BYTES ||
+                freeBytes <= HMS_BROWSER_ARTIFACT_MIN_LIVE_FREE_BYTES
+              ) {
+                terminal = true;
+                void teardown({
+                  outcome: 'failed',
+                  terminalCode: 'CAPTURE_CAPACITY_EXCEEDED',
+                  terminalStage: 'tool',
+                  complete: false,
+                }).catch(() => undefined);
+              }
+            } catch {
+              terminal = true;
+              void teardown({
+                outcome: 'failed',
+                terminalCode: 'CAPTURE_CAPACITY_EXCEEDED',
+                terminalStage: 'tool',
+                complete: false,
+              }).catch(() => undefined);
+            } finally {
+              watchdogBusy = false;
+            }
+          })();
+        }, HMS_BROWSER_CAPACITY_WATCHDOG_MS);
+        watchdog.unref?.();
+      }
 
       // Pre-connect WebSocket rejection BEFORE any navigation.
       await context.routeWebSocket('**/*', (ws) => {
         guards.handleWebSocket();
+        webSocketCount += 1;
         lastViolation = guards.lastBlock();
+        state = 'degraded';
+        lastErrorCode = lastViolation?.action === 'block'
+          ? lastViolation.code
+          : 'websocket_blocked';
         terminal = true;
         ws.close();
-        void teardown();
+        void teardown({
+          outcome: 'policy_blocked',
+          terminalCode: 'POLICY_BLOCK',
+          terminalStage: 'tool',
+          complete: Boolean(capture && traceStarted),
+        }).catch(() => undefined);
       });
 
       await context.route('**/*', async (route) => {
         const decision = await enforceRequestPolicy(route, sessionManifest, {
           onDecision: (d) => {
-            if (d.action === 'block') lastViolation = d;
+            if (d.action === 'allow' && d.ruleId) {
+              ruleCounts.set(d.ruleId, (ruleCounts.get(d.ruleId) ?? 0) + 1);
+            }
+            if (d.action === 'block') {
+              blockedRequests += 1;
+              if (d.code === 'mutation_action' || d.code === 'submit_button') {
+                mutationRequests += 1;
+              }
+              lastViolation = d;
+            }
           },
         });
         (route as PolicyRoute & { __decision?: RequestDecision }).__decision =
           decision;
         if (decision.action === 'block') {
           lastViolation = decision;
+          state = 'degraded';
+          lastErrorCode = decision.code;
           terminal = true;
-          // Do not await: Playwright context.close waits for active route
-          // handlers (PW 1.52+). Fire-and-forget matches abort/ws path.
-          void teardown();
+          void teardown({
+            outcome: 'policy_blocked',
+            terminalCode: 'POLICY_BLOCK',
+            terminalStage: 'tool',
+            complete: Boolean(capture && traceStarted),
+          }).catch(() => undefined);
         }
       });
 
@@ -1185,29 +1743,51 @@ export function createHmsRuntime(options: HmsRuntimeOptions): HmsRuntime {
           sawPrimaryPage = true;
           return;
         }
-        void (async () => {
-          await guards.handlePopup(page);
-          lastViolation = guards.lastBlock();
-          terminal = true;
-          void teardown();
-        })();
+        popupCount += 1;
+        void guards.handlePopup(page).catch(() => undefined);
+        lastViolation = guards.lastBlock();
+        state = 'degraded';
+        lastErrorCode = 'popup_blocked';
+        terminal = true;
+        void teardown({
+          outcome: 'policy_blocked',
+          terminalCode: 'POLICY_BLOCK',
+          terminalStage: 'tool',
+          complete: Boolean(capture && traceStarted),
+        }).catch(() => undefined);
       });
       context.on('download', (download) => {
-        void (async () => {
-          await guards.handleDownload(download);
-          lastViolation = guards.lastBlock();
-          terminal = true;
-          void teardown();
-        })();
+        downloadCount += 1;
+        void guards.handleDownload(download).catch(() => undefined);
+        lastViolation = guards.lastBlock();
+        state = 'degraded';
+        lastErrorCode = 'download_blocked';
+        terminal = true;
+        void teardown({
+          outcome: 'policy_blocked',
+          terminalCode: 'POLICY_BLOCK',
+          terminalStage: 'tool',
+          complete: Boolean(capture && traceStarted),
+        }).catch(() => undefined);
       });
       context.on('websocket', () => {
         guards.handleWebSocket();
+        webSocketCount += 1;
         lastViolation = guards.lastBlock();
+        state = 'degraded';
+        lastErrorCode = 'websocket_blocked';
         terminal = true;
-        void teardown();
+        void teardown({
+          outcome: 'policy_blocked',
+          terminalCode: 'POLICY_BLOCK',
+          terminalStage: 'tool',
+          complete: Boolean(capture && traceStarted),
+        }).catch(() => undefined);
       });
 
+      if (capture) capture.markMilestone('loginStartedAt');
       const page = await context.newPage();
+      primaryPage = page;
       sawPrimaryPage = true;
       page.setDefaultTimeout(timeoutMs);
       page.setDefaultNavigationTimeout(timeoutMs);
@@ -1230,6 +1810,7 @@ export function createHmsRuntime(options: HmsRuntimeOptions): HmsRuntime {
       }
 
       const sessionId = randomUUID();
+      if (capture) capture.markMilestone('toolStartedAt');
 
       return {
         id: sessionId,
@@ -1237,66 +1818,175 @@ export function createHmsRuntime(options: HmsRuntimeOptions): HmsRuntime {
         violation: () => lastViolation,
         terminal: () => terminal,
         page,
-        close: async () => {
+        lastReceipt: () => lastReceipt,
+        close: async (closeOpts) => {
           terminal = true;
-          await teardown();
+          if (capture) capture.markMilestone('toolFinishedAt');
+          const blocked =
+            lastViolation?.action === 'block' ||
+            blockedRequests > 0 ||
+            mutationRequests > 0 ||
+            popupCount > 0 ||
+            downloadCount > 0 ||
+            webSocketCount > 0;
+          await teardown({
+            outcome:
+              closeOpts?.outcome ??
+              (blocked ? 'policy_blocked' : 'succeeded'),
+            terminalCode:
+              closeOpts?.terminalCode ??
+              (blocked ? 'POLICY_BLOCK' : 'OK'),
+            terminalStage: 'receipt_finalize',
+            complete:
+              closeOpts?.complete ??
+              (Boolean(capture && traceStarted) && !blocked),
+          });
         },
       };
     } catch (err) {
       terminal = true;
-      await teardown();
+      const captureCode =
+        err instanceof HmsRuntimeError && err.code === 'AUDIT_CAPTURE'
+          ? err.message
+          : undefined;
+      let teardownError: unknown;
+      try {
+        await teardown({
+          outcome:
+            err instanceof HmsRuntimeError && err.code === 'aborted'
+              ? 'aborted'
+              : 'failed',
+          terminalCode:
+            captureCode === 'TRACE_START_FAILED'
+              ? 'TRACE_START_FAILED'
+              : captureCode === 'CAPTURE_CAPACITY_EXCEEDED'
+                ? 'CAPTURE_CAPACITY_EXCEEDED'
+                : 'TOOL_ERROR',
+          terminalStage: 'login',
+          complete: false,
+        });
+      } catch (error) {
+        teardownError = error;
+      }
 
       const code =
         err instanceof HmsRuntimeError ? err.code : redactError(err);
       if (code === 'wrong_tenant' || code === 'wrong_property') {
         openCircuit(code);
-        await writeHealthFile(options.healthStatusPath, health());
+        await persistHealth();
       } else if (
         code === 'chromium_failed' ||
         code === 'TRANSIENT_NETWORK' ||
         /net::|ECONNRESET|ETIMEDOUT/i.test(String(code))
       ) {
-        // One bounded retry for transient browser/network only.
-        if (transientRetries < 1) {
+        if (transientRetries < 1 && !teardownError) {
           transientRetries += 1;
           cachedSecret = null;
+          const failedBrowser = browser;
           browser = null;
+          if (failedBrowser) {
+            try {
+              await failedBrowser.close();
+            } catch {
+              state = 'degraded';
+              lastErrorCode = 'AUDIT_CAPTURE';
+              throw new HmsRuntimeError(
+                'AUDIT_CAPTURE',
+                'CONTEXT_CLOSE_FAILED',
+              );
+            }
+          }
           throw new HmsRuntimeError('TRANSIENT_NETWORK', String(code));
         }
       } else if (
-        /ROLE_PROOF|AUTH_FAILED|POLICY_BLOCK|SCHEMA_DRIFT|credential|wrong_/i.test(
+        /ROLE_PROOF|AUTH_FAILED|POLICY_BLOCK|SCHEMA_DRIFT|credential|wrong_|AUDIT_CAPTURE/i.test(
           String(code),
         )
       ) {
-        // Permanent — stay quiesced / degraded, no retry.
         state = state === 'circuit_open' ? state : 'degraded';
         lastErrorCode = code;
       }
       cachedSecret = null;
+      if (teardownError) {
+        state = state === 'circuit_open' ? state : 'degraded';
+        lastErrorCode = 'AUDIT_CAPTURE';
+        throw new AggregateError(
+          [err, teardownError],
+          'HMS session setup and audit finalization failed',
+        );
+      }
       throw err instanceof HmsRuntimeError
         ? err
         : new HmsRuntimeError('session_failed', String(code));
     }
   }
 
-  function acquireSessionLock(): Promise<() => void> {
+
+  function acquireSessionLock(signal: AbortSignal): Promise<() => void> {
+    if (closing) {
+      return Promise.reject(
+        new HmsRuntimeError('not_started', 'HMS runtime is closing'),
+      );
+    }
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
     const prev = sessionLock;
     sessionLock = prev.then(() => gate);
-    return prev.then(() => release);
+    return new Promise<() => void>((resolveLock, rejectLock) => {
+      let settled = false;
+      const rejectQueued = (error: HmsRuntimeError) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener('abort', onAbort);
+        release();
+        rejectLock(error);
+      };
+      const onAbort = () =>
+        rejectQueued(new HmsRuntimeError('aborted', 'operation aborted'));
+      signal.addEventListener('abort', onAbort, { once: true });
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      void prev.then(
+        () => {
+          if (settled) return;
+          if (closing) {
+            rejectQueued(
+              new HmsRuntimeError('not_started', 'HMS runtime is closing'),
+            );
+            return;
+          }
+          if (signal.aborted) {
+            onAbort();
+            return;
+          }
+          settled = true;
+          signal.removeEventListener('abort', onAbort);
+          resolveLock(release);
+        },
+        () =>
+          rejectQueued(
+            new HmsRuntimeError('session_failed', 'session lock failed'),
+          ),
+      );
+    });
   }
 
   return {
     async start(signal: AbortSignal) {
       assertNotAborted(signal);
+      if (closing) {
+        throw new HmsRuntimeError('not_started', 'HMS runtime is closing');
+      }
       if (started && state === 'ready') return;
       assertCircuitClosed();
       state = 'starting';
       lastErrorCode = undefined;
       try {
+        await purgeArtifacts();
         await revalidateRoleProof();
         await getSecret(signal);
         await getBrowser(signal);
@@ -1307,11 +1997,13 @@ export function createHmsRuntime(options: HmsRuntimeOptions): HmsRuntime {
         state = 'ready';
         lastErrorCode = undefined;
         transientRetries = 0;
-        await writeHealthFile(options.healthStatusPath, health());
+        await persistHealth();
         startHeartbeat();
+        startArtifactPurge();
       } catch (err) {
         started = false;
         stopHeartbeat();
+        stopArtifactPurge();
         const code =
           err instanceof HmsRuntimeError ? err.code : redactError(err);
         if (code === 'wrong_tenant' || code === 'wrong_property') {
@@ -1320,19 +2012,21 @@ export function createHmsRuntime(options: HmsRuntimeOptions): HmsRuntime {
           state = 'degraded';
           lastErrorCode = code;
         }
-        await writeHealthFile(options.healthStatusPath, health());
+        await persistHealth();
         throw err instanceof HmsRuntimeError
           ? err
           : new HmsRuntimeError('start_failed', String(code));
       }
     },
 
-    openReadSession(input) {
+    async openReadSession(input) {
+      await purgeArtifacts();
       return openReadSessionInternal({
         ...input,
         canary: false,
         exactSearchCandidate: input.exactSearchCandidate,
         allowUnstarted: input.allowUnstarted,
+        auditSpec: input.auditSpec,
       });
     },
 
@@ -1341,36 +2035,115 @@ export function createHmsRuntime(options: HmsRuntimeOptions): HmsRuntime {
     stats: () => ({ browserLaunches, contextsCreated, contextsClosed }),
 
     async close() {
+      closing = true;
       started = false;
       state = 'stopped';
       cachedSecret = null;
       stopHeartbeat();
+      stopArtifactPurge();
+      await artifactPurgeQueue;
+      let teardownError: unknown;
+      let teardownTimer: ReturnType<typeof setTimeout> | undefined;
+      // Drain active and already-queued sessions, then their capture teardowns.
+      try {
+        await Promise.race([
+          (async () => {
+            const queuedSessions = sessionLock;
+            await queuedSessions;
+            await activeTeardown;
+          })(),
+          new Promise<never>((_, reject) => {
+            teardownTimer = setTimeout(
+              () =>
+                reject(
+                  new HmsRuntimeError(
+                    'AUDIT_CAPTURE',
+                    'TRACE_FINALIZE_FAILED',
+                  ),
+                ),
+              HMS_BROWSER_LIVE_PROOF_FINALIZE_TIMEOUT_MS,
+            );
+          }),
+        ]);
+      } catch (error) {
+        teardownError = error;
+      } finally {
+        if (teardownTimer) clearTimeout(teardownTimer);
+      }
+      if (!teardownError && activeTeardownError) {
+        teardownError = activeTeardownError;
+      }
       // Let in-flight heartbeat write settle before final write.
       await new Promise((r) => setTimeout(r, 0));
+      let browserCloseError: unknown;
+      let browserCloseTimer: ReturnType<typeof setTimeout> | undefined;
       try {
-        await browser?.close();
+        if (browser) {
+          await Promise.race([
+            browser.close(),
+            new Promise<never>((_, reject) => {
+              browserCloseTimer = setTimeout(
+                () =>
+                  reject(
+                    new HmsRuntimeError(
+                      'AUDIT_CAPTURE',
+                      'CONTEXT_CLOSE_FAILED',
+                    ),
+                  ),
+                HMS_BROWSER_CAPTURE_FINALIZE_TIMEOUT_MS,
+              );
+            }),
+          ]);
+        }
+      } catch (error) {
+        browserCloseError = error;
       } finally {
+        if (browserCloseTimer) clearTimeout(browserCloseTimer);
         browser = null;
         activeSessions = 0;
-        await writeHealthFile(options.healthStatusPath, health());
+        await persistHealth();
       }
+      if (teardownError && browserCloseError) {
+        throw new AggregateError(
+          [teardownError, browserCloseError],
+          'HMS teardown and browser close failed',
+        );
+      }
+      if (teardownError) throw teardownError;
+      if (browserCloseError) throw browserCloseError;
     },
   };
 }
 
+export function createHmsRuntime(options: HmsRuntimeOptions): HmsRuntime {
+  return createHmsRuntimeInternal(options, false);
+}
+
+/** Explicit proof-only composition. Never import from normal workers. */
+export function createHmsLiveProofRuntime(
+  options: HmsRuntimeOptions,
+): HmsRuntime {
+  return createHmsRuntimeInternal(options, true);
+}
+
 /** Required Playwright factory — production composition must use this (or equivalent). */
 export function createPlaywrightBrowserFactory(): BrowserFactory {
-  return async ({ executablePath, signal }) => {
+  return async ({ executablePath, signal, tracesDir }) => {
     assertNotAborted(signal ?? new AbortController().signal);
     const pw = await import('playwright');
     const browser = await pw.chromium.launch({
       executablePath,
       headless: true,
+      ...(tracesDir ? { tracesDir } : {}),
     });
     return {
       async newContext(opts) {
         const context = await browser.newContext(opts);
         return {
+          tracing: {
+            start: (o) => context.tracing.start(o),
+            stop: (o) => context.tracing.stop(o),
+          },
           async route(url, handler) {
             await context.route(url, async (route) => {
               const req = route.request();
@@ -1427,18 +2200,17 @@ export function createPlaywrightBrowserFactory(): BrowserFactory {
                 (handler as (page: HmsPage) => void)(wrapPlaywrightPage(p)),
               );
             } else if (event === 'download') {
-              (
-                context as unknown as {
-                  on(
-                    event: 'download',
-                    listener: (download: { cancel(): Promise<void> }) => void,
-                  ): void;
-                }
-              ).on('download', (d) =>
-                (handler as (download: HmsDownloadEvent) => void)({
-                  cancel: () => d.cancel(),
-                }),
-              );
+              const attach = (
+                page: ReturnType<typeof context.pages>[number],
+              ) => {
+                page.on('download', (download) => {
+                  (handler as (event: HmsDownloadEvent) => void)({
+                    cancel: () => download.cancel(),
+                  });
+                });
+              };
+              for (const page of context.pages()) attach(page);
+              context.on('page', attach);
             } else if (event === 'websocket') {
               context.on('page', (p) => {
                 p.on('websocket', () => {
@@ -1515,6 +2287,7 @@ function wrapPlaywrightPage(page: {
   ): Promise<void>;
   evaluate<T>(fn: () => T | Promise<T>): Promise<T>;
   evaluate<T, A>(fn: (arg: A) => T | Promise<T>, arg: A): Promise<T>;
+  video?(): { path(): Promise<string> } | null;
 }): HmsPage {
   return {
     async goto(url, options) {
@@ -1703,5 +2476,10 @@ function wrapPlaywrightPage(page: {
     },
     evaluateStableDom: (fn) => page.evaluate(fn),
     evaluate: (fn) => page.evaluate(fn),
+    video: () => {
+      const v = page.video?.();
+      if (!v) return null;
+      return { path: () => v.path() };
+    },
   };
 }

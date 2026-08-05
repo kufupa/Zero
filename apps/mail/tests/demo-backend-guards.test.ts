@@ -658,6 +658,7 @@ describe('demo backend guard coverage', () => {
       control: {} as Control<any>,
       name: 'recipients',
       placeholder: 'Enter email',
+      onValueChange: () => {},
     });
 
     expect(useQueryMock).toHaveBeenCalledTimes(1);
@@ -676,6 +677,7 @@ describe('demo backend guard coverage', () => {
       control: {} as Control<any>,
       name: 'recipients',
       placeholder: 'Enter email',
+      onValueChange: () => {},
     });
 
     expect(useQueryMock).toHaveBeenCalledTimes(1);
@@ -691,6 +693,7 @@ describe('demo backend guard coverage', () => {
       control: {} as Control<any>,
       name: 'recipients',
       placeholder: 'Enter email',
+      onValueChange: () => {},
     });
 
     expect(useQueryMock).toHaveBeenCalledTimes(1);

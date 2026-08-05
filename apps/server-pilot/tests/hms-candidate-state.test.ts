@@ -236,7 +236,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('HMS candidate state (DB)', ()
       textBody: 'Need help',
       receivedAt: new Date('2026-07-30T10:00:00Z'),
     });
-    const mailbox = await resolveMailboxContext('user-navaai', undefined, db);
+    const mailbox = await resolveMailboxContext('user-navaai', TRANSPORT_ID, db);
     const sessionUser = { id: 'user-navaai', email: '', name: null };
     const dbClientModule = await import('../src/db/client.js');
     dbClientModule.__setDbForTests({ db, conn: null as never });

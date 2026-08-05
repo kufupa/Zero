@@ -16,7 +16,6 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   getStaleDraftRetryInput,
   isStaleDraftConflict,
-  StaleDraftSendCancelled,
 } from '@/lib/mail/draft-persistence';
 import {
   buildOutboundHeaderPreview,
@@ -63,9 +62,11 @@ export function CreateEmail({
   const [draftId, setDraftId] = useQueryState('draftId');
   const {
     data: draft,
-    isLoading: isDraftLoading,
     error: draftError,
   } = useDraft(draftId ?? propDraftId ?? null);
+  const initialDraftIdRef = useRef(draftId ?? propDraftId ?? null);
+  const shouldWaitForInitialDraft =
+    Boolean(initialDraftIdRef.current) && !draft && !draftError;
 
   const [, setIsDraftFailed] = useState(false);
   const trpc = useTRPC();
@@ -120,7 +121,8 @@ export function CreateEmail({
     attachments: File[];
     fromEmail?: string;
     scheduleAt?: string;
-  }) => {
+    draftId?: string;
+  }): Promise<boolean> => {
     const fromEmail =
       data.fromEmail || settings?.settings?.defaultEmailAlias || userEmail;
 
@@ -132,7 +134,7 @@ export function CreateEmail({
       message: data.message,
       attachments: await serializeFiles(data.attachments),
       fromEmail: userName.trim() ? `${userName.replace(/[<>]/g, '')} <${fromEmail}>` : fromEmail,
-      draftId: draftId ?? undefined,
+      draftId: data.draftId,
       scheduleAt: data.scheduleAt,
     };
 
@@ -143,10 +145,20 @@ export function CreateEmail({
     try {
       result = await sendWithInput(sendInput);
     } catch (error) {
-      if (!isStaleDraftConflict(error)) throw error;
+      if (!isStaleDraftConflict(error)) {
+        console.error('Error sending email:', error);
+        toast.error('Failed to send email');
+        return false;
+      }
       const confirmed = await confirmStaleDraftSend();
-      if (!confirmed) throw new StaleDraftSendCancelled();
-      result = await sendWithInput(getStaleDraftRetryInput(sendInput));
+      if (!confirmed) return false;
+      try {
+        result = await sendWithInput(getStaleDraftRetryInput(sendInput));
+      } catch (retryError) {
+        console.error('Error sending email:', retryError);
+        toast.error('Failed to send email');
+        return false;
+      }
     }
 
     setDraftId(null);
@@ -173,6 +185,7 @@ export function CreateEmail({
       fromEmail: data.fromEmail,
       scheduleAt: data.scheduleAt,
     });
+    return true;
   };
 
   useEffect(() => {
@@ -259,8 +272,12 @@ export function CreateEmail({
               </button>
             </DialogClose>
           </div>
-          {isDraftLoading ? (
-            <div className="flex h-[600px] w-[750px] items-center justify-center rounded-2xl border">
+          {shouldWaitForInitialDraft ? (
+            <div
+              role="status"
+              aria-live="polite"
+              className="flex h-[600px] w-[750px] items-center justify-center rounded-2xl border"
+            >
               <div className="text-center">
                 <div className="mx-auto mb-4 h-6 w-6 animate-spin rounded-full border-2 border-gray-300 border-t-blue-600"></div>
                 <p>Loading draft...</p>
@@ -268,7 +285,6 @@ export function CreateEmail({
             </div>
           ) : (
             <EmailComposer
-              key={typedDraft?.id || undoEmailData?.to?.join(',') || 'composer'}
               className="mb-12 rounded-2xl border"
               onSendEmail={handleSendEmail}
               initialMessage={

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# NVM-safe PM2 resurrect with startOrReload fallback. On-box / boot recovery.
+# NVM-safe PM2 boot with exact mode-specific default apps.
 # Never starts hms-ai-worker — ops-hms-shadow.sh start is the sole HMS starter.
 set -euo pipefail
 
@@ -27,28 +27,105 @@ export NAVA_BUILD_COMMIT="${NAVA_BUILD_COMMIT:-$(git -C "$REPO_ROOT" rev-parse H
 
 cd "$REPO_ROOT"
 
-# Drop HMS worker before resurrect so dump cannot bring it back online alone.
-pm2 delete hms-ai-worker 2>/dev/null || true
-rm -f /opt/nava/shared/hms-reservation-canary-proof.v1.json \
-  /opt/nava/shared/hms-reservation-shadow-proof.v1.json 2>/dev/null || true
-
-if pm2 resurrect 2>/dev/null; then
-  echo "pm2-boot: resurrected"
-  # Resurrect may restore hms-ai-worker from an old dump — delete again.
-  pm2 delete hms-ai-worker 2>/dev/null || true
-  pm2 save 2>/dev/null || true
-else
-  echo "pm2-boot: resurrect failed; start default apps only (HMS off)"
-  MODE="${MAIL_TRANSPORT_MODE:-fixture}"
-  if [ "$MODE" = "fixture" ]; then
-    pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only http --update-env
-    pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only ai-worker --update-env
-  else
-    pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only http --update-env
-    pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only worker --update-env
-    pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only ai-worker --update-env
+ensure_hms_absent() {
+  local state present
+  state="$(pm2 jlist)" || return 1
+  present="$(
+    HMS_PM2_STATE="$state" node -e '
+try {
+  const apps=JSON.parse(process.env.HMS_PM2_STATE||"");
+  process.stdout.write(apps.some((app)=>app?.name==="hms-ai-worker")?"1":"0");
+} catch { process.exit(2); }
+'
+  )" || return 1
+  if [ "$present" = "1" ]; then
+    pm2 delete hms-ai-worker >/dev/null || return 1
   fi
-  pm2 save
+  pm2 save >/dev/null || return 1
+  state="$(pm2 jlist)" || return 1
+  present="$(
+    HMS_PM2_STATE="$state" node -e '
+try {
+  const apps=JSON.parse(process.env.HMS_PM2_STATE||"");
+  process.stdout.write(apps.some((app)=>app?.name==="hms-ai-worker")?"1":"0");
+} catch { process.exit(2); }
+'
+  )" || return 1
+  [ "$present" = "0" ]
+}
+
+invalidate_hms_proofs() {
+  local path
+  for path in \
+    /opt/nava/shared/hms-runtime/hms-reservation-canary-proof.v1.json \
+    /opt/nava/shared/hms-runtime/hms-reservation-shadow-proof.v1.json; do
+    rm -f -- "$path" || return 1
+    [ ! -e "$path" ] && [ ! -L "$path" ] || return 1
+  done
+}
+
+delete_all_pm2_processes() {
+  local state count
+  state="$(pm2 jlist)" || return 1
+  count="$(
+    HMS_PM2_STATE="$state" node -e '
+try {
+  const apps=JSON.parse(process.env.HMS_PM2_STATE||"");
+  if(!Array.isArray(apps))process.exit(2);
+  process.stdout.write(String(apps.length));
+} catch { process.exit(2); }
+'
+  )" || return 1
+  if [ "$count" -gt 0 ]; then
+    pm2 delete all >/dev/null || return 1
+  fi
+  state="$(pm2 jlist)" || return 1
+  HMS_PM2_STATE="$state" node -e '
+const apps=JSON.parse(process.env.HMS_PM2_STATE||"");
+if(!Array.isArray(apps)||apps.length!==0)process.exit(1);
+'
+}
+
+verify_default_process_set() {
+  local mode="$1" state
+  state="$(pm2 jlist)" || return 1
+  HMS_PM2_STATE="$state" node - "$mode" <<'NODE'
+const apps=JSON.parse(process.env.HMS_PM2_STATE||"");
+const mode=process.argv[2];
+const expected=(mode==="fixture"
+  ?["ai-worker","http"]
+  :["ai-worker","http","worker"]).sort();
+const actual=apps.map((app)=>app?.name).sort();
+if(JSON.stringify(actual)!==JSON.stringify(expected)||
+  apps.some((app)=>app?.pm2_env?.status!=="online"))process.exit(1);
+NODE
+}
+
+invalidate_hms_proofs || {
+  echo "pm2-boot: HMS proof invalidation failed" >&2
+  exit 20
+}
+delete_all_pm2_processes || {
+  echo "pm2-boot: existing process cleanup failed" >&2
+  exit 20
+}
+
+MODE="${MAIL_TRANSPORT_MODE:-fixture}"
+if [ "$MODE" = "fixture" ]; then
+  pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only http --update-env
+  pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only ai-worker --update-env
+else
+  pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only http --update-env
+  pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only worker --update-env
+  pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only ai-worker --update-env
 fi
 
-pm2 status || true
+ensure_hms_absent || {
+  echo "pm2-boot: HMS process cleanup failed" >&2
+  exit 20
+}
+verify_default_process_set "$MODE" || {
+  echo "pm2-boot: default process set unhealthy" >&2
+  exit 20
+}
+pm2 status

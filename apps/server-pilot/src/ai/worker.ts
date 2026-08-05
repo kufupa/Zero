@@ -228,6 +228,8 @@ export type CandidateSessionInput = {
   threadId: string;
   lookupCandidates: readonly import('./thread-context.js').LookupCandidate[];
   signal: AbortSignal;
+  /** AI run UUID — becomes HMS browser audit operationId when capture is enabled. */
+  runId?: string;
 };
 
 export type CandidateSessionFactory = (
@@ -260,7 +262,7 @@ async function getOrCreateProductionHmsRuntime(): Promise<
 export async function closeProductionHmsRuntimeForTests(): Promise<void> {
   const rt = productionHmsRuntime;
   productionHmsRuntime = null;
-  if (rt) await rt.close().catch(() => undefined);
+  if (rt) await rt.close();
 }
 
 export function createLiveHmsCandidateSessionFactory(): CandidateSessionFactory {
@@ -279,12 +281,25 @@ export function createLiveHmsCandidateSessionFactory(): CandidateSessionFactory 
     const driver = createLiveGuestStayDriver({
       runtime,
       transportId: input.transportId,
+      auditSpecFor: input.runId
+        ? ({ inputClass }) => ({
+            operationId: input.runId!,
+            toolId: 'hms_find_reservation',
+            toolVersion: '1.1.0',
+            dependencyRevision:
+              'playwright-1.52.0-chromium-1169',
+            executionClass: 'normal',
+            inputClass,
+          })
+        : undefined,
     });
-    await driver.loginAndVerifyBinding(input.signal);
+    // openReadSession already authenticates + verifies property; do not open a
+    // second pre-tool login session (would create a second audited context).
     return createReservationCandidateSession({
       driver,
       candidates: new Map(exact.map((c) => [c.id, c])),
       close: async () => undefined,
+      runId: input.runId,
     });
   };
 }
@@ -680,6 +695,7 @@ export async function executeAiRun(
             threadId: run.threadId,
             lookupCandidates: [pre.exact],
             signal,
+            runId,
           });
 
           const claimSafe = await runClaimSafeCandidateDraft({
@@ -762,6 +778,7 @@ export async function executeAiRun(
             threadId: run.threadId,
             lookupCandidates: context.lookupCandidates,
             signal,
+            runId,
           })
         : createMockCandidateSession({
             lookupCandidates: new Map(
@@ -996,6 +1013,21 @@ export async function runAiWorkerDrain(
   }
 }
 
+async function closeAiWorkerResources(): Promise<void> {
+  let closeError: unknown;
+  try {
+    await closeProductionHmsRuntimeForTests();
+  } catch (error) {
+    closeError = error;
+  }
+  try {
+    await closeDb();
+  } catch (error) {
+    closeError ??= error;
+  }
+  if (closeError) throw closeError;
+}
+
 export async function runAiWorkerLoop(
   pollIntervalMs = 5_000,
   scope: AiRunScopeFilter = {},
@@ -1009,16 +1041,18 @@ export async function runAiWorkerLoop(
   process.on('SIGTERM', stop);
   process.on('SIGINT', stop);
 
-  while (!stopping) {
-    const worked = await runAiWorkerOnce({ ...scope, shutdownSignal: shutdown.signal });
-    if (!worked) {
-      await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+  try {
+    while (!stopping) {
+      const worked = await runAiWorkerOnce({ ...scope, shutdownSignal: shutdown.signal });
+      if (!worked) {
+        await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+      }
     }
+  } finally {
+    process.off('SIGTERM', stop);
+    process.off('SIGINT', stop);
+    await closeAiWorkerResources();
   }
-
-  // Close HMS browser before DB — lease loss / shutdown order.
-  await closeProductionHmsRuntimeForTests();
-  await closeDb();
 }
 
 async function main() {
@@ -1035,11 +1069,15 @@ async function main() {
     if (args.timeoutMs === undefined) {
       throw new Error('scoped drain requires --timeout-ms');
     }
-    const result = await runAiWorkerDrain({
-      ...scopeFromCli(args),
-      timeoutMs: args.timeoutMs,
-    });
-    await closeDb();
+    let result: RunAiWorkerDrainResult;
+    try {
+      result = await runAiWorkerDrain({
+        ...scopeFromCli(args),
+        timeoutMs: args.timeoutMs,
+      });
+    } finally {
+      await closeAiWorkerResources();
+    }
     if (!result.ok) {
       console.error(
         JSON.stringify({

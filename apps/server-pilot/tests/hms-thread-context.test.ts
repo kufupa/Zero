@@ -190,6 +190,48 @@ describe('hms thread context', () => {
     expect(candidates.some((c) => 'value' in c && c.value === 'hotel')).toBe(false);
   });
 
+  it('keeps complete multi-hyphen bare exact tokens', () => {
+    const candidates = extractLookupCandidates(
+      'Use CONF-ABC-123-Z and EXT-WHOLESALE-88-2.',
+    );
+    expect(
+      candidates
+        .filter((c) => c.kind !== 'surname_dates')
+        .map((c) => c.value),
+    ).toEqual(['CONF-ABC-123-Z', 'EXT-WHOLESALE-88-2']);
+  });
+
+  it('extracts Centurion n° confirmation-letter subjects', () => {
+    const text =
+      'The Centurion Hotel_Confirmation Letter_Synthetic Guest (n°79798256-1)';
+    const candidates = extractLookupCandidates(text);
+    expect(
+      candidates.some(
+        (c) => c.kind === 'confirmation' && c.value === '79798256-1',
+      ),
+    ).toBe(true);
+    expect(
+      candidates.some((c) => c.kind === 'confirmation' && c.value === 'LETTER'),
+    ).toBe(false);
+    const exact = filterExactReservationCandidates(candidates);
+    expect(exact).toHaveLength(1);
+    expect(exact[0]!.value).toBe('79798256-1');
+  });
+
+  it('filterExact drops pure-alpha false positives but keeps explicit prefixes', () => {
+    const mixed: LookupCandidate[] = [
+      { id: 'junk', kind: 'confirmation', value: 'LETTER' },
+      { id: 'ok', kind: 'confirmation', value: '79798256-1' },
+      { id: 'prefixed', kind: 'confirmation', value: 'CONF-ABC' },
+      { id: 'e', kind: 'external_reference', value: 'EXT-99102' },
+    ];
+    expect(filterExactReservationCandidates(mixed).map((c) => c.value)).toEqual([
+      '79798256-1',
+      'CONF-ABC',
+      'EXT-99102',
+    ]);
+  });
+
   it('never exposes S3 keys or arbitrary surname search to model', async () => {
     const trigger = msg({
       id: 'msg-trigger',
@@ -226,7 +268,7 @@ describe('hms thread context', () => {
   it('filterExactReservationCandidates drops surname_dates for live session', () => {
     const mixed: LookupCandidate[] = [
       { id: 'c', kind: 'confirmation', value: 'CONF-1' },
-      { id: 'e', kind: 'external_reference', value: 'EXT-1' },
+      { id: 'e', kind: 'external_reference', value: 'EXT-99102' },
       {
         id: 's',
         kind: 'surname_dates',
@@ -237,7 +279,7 @@ describe('hms thread context', () => {
     ];
     expect(filterExactReservationCandidates(mixed)).toEqual([
       { id: 'c', kind: 'confirmation', value: 'CONF-1' },
-      { id: 'e', kind: 'external_reference', value: 'EXT-1' },
+      { id: 'e', kind: 'external_reference', value: 'EXT-99102' },
     ]);
   });
 

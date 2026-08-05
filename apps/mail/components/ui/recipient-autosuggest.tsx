@@ -60,6 +60,7 @@ interface RecipientAutosuggestProps {
   disabled?: boolean;
   inputId?: string;
   inputName?: string;
+  onValueChange: () => void;
 }
 
 export function RecipientAutosuggest({
@@ -70,6 +71,7 @@ export function RecipientAutosuggest({
   disabled = false,
   inputId,
   inputName,
+  onValueChange,
 }: RecipientAutosuggestProps) {
 
   const {
@@ -128,20 +130,28 @@ export function RecipientAutosuggest({
     return emailRegex.test(email);
   }, []);
 
+  const commitRecipients = useCallback(
+    (next: string[]) => {
+      onRecipientsChange(next);
+      onValueChange();
+    },
+    [onRecipientsChange, onValueChange],
+  );
+
   const addRecipient = useCallback((email: string) => {
     const normalizedEmail = canonicalizeEmail(email);
     if (!canonicalRecipients.has(normalizedEmail) && isValidEmail(email)) {
-      onRecipientsChange([...recipients, email]);
+      commitRecipients([...recipients, email]);
       setInputValue('');
       setIsOpen(false);
       setSelectedIndex(-1);
     }
-  }, [canonicalRecipients, recipients, onRecipientsChange, isValidEmail]);
+  }, [canonicalRecipients, recipients, commitRecipients, isValidEmail]);
 
   const removeRecipient = useCallback((index: number) => {
     const newRecipients = recipients.filter((_: string, i: number) => i !== index);
-    onRecipientsChange(newRecipients);
-  }, [recipients, onRecipientsChange]);
+    commitRecipients(newRecipients);
+  }, [recipients, commitRecipients]);
 
   const handleInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
@@ -224,10 +234,10 @@ export function RecipientAutosuggest({
       .filter((entry): entry is string => !!entry);
 
     if (emailsToAdd.length > 0) {
-      onRecipientsChange([...recipients, ...emailsToAdd]);
+      commitRecipients([...recipients, ...emailsToAdd]);
     }
     setInputValue(remainingInput.join(', '));
-  }, [canonicalRecipients, inputValue, recipients, onRecipientsChange, isValidEmail]);
+  }, [canonicalRecipients, inputValue, recipients, commitRecipients, isValidEmail]);
 
   const handleClickOutside = useCallback((event: MouseEvent) => {
     if (

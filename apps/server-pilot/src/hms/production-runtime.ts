@@ -3,7 +3,6 @@
  * No fetch/mock browser factory fallback. Role-proof revalidated per context.
  */
 import { readFile } from 'node:fs/promises';
-import { chromium } from 'playwright';
 import {
   GetSecretValueCommand,
   SecretsManagerClient,
@@ -12,6 +11,12 @@ import { z } from 'zod';
 import type { HmsWorkerRuntimeConfig } from '../env.js';
 import { buildLiveGuestStayReadManifest } from './live-read-manifest.js';
 import {
+  CENTURION_HMS_PRODUCTION_ORIGIN,
+  createHmsBrowserArtifactStore,
+  ensureHmsBrowserArtifactRoot,
+} from './browser-artifacts.js';
+import {
+  createHmsLiveProofRuntime,
   createHmsRuntime,
   createPlaywrightBrowserFactory,
   hmsSecretSchema,
@@ -19,6 +24,8 @@ import {
   type HmsRuntime,
   type HmsSecretLoader,
 } from './runtime.js';
+
+export { CENTURION_HMS_PRODUCTION_ORIGIN };
 
 const DENIED_ACTIONS = [
   'new_record',
@@ -87,6 +94,12 @@ export async function loadHmsReadRoleProof(
   if (!Number.isFinite(issued) || !Number.isFinite(expires)) {
     throw new HmsRuntimeError('ROLE_SCOPE_INVALID', 'role proof dates invalid');
   }
+  if (issued > now.getTime() || expires <= issued) {
+    throw new HmsRuntimeError(
+      'ROLE_SCOPE_INVALID',
+      'role proof date order invalid',
+    );
+  }
   if (expires < now.getTime()) {
     throw new HmsRuntimeError('ROLE_PROOF_EXPIRED', 'role proof expired');
   }
@@ -126,33 +139,41 @@ function createSecretsManagerLoader(region?: string): HmsSecretLoader {
   };
 }
 
-/**
- * Production composition: Playwright Chromium required; role-proof path wired;
- * live Guest Stay manifest from secret login origin.
- */
-export async function createProductionHmsRuntime(
-  config: HmsWorkerRuntimeConfig,
-  options?: {
-    loadSecret?: HmsSecretLoader;
-    region?: string;
-  },
-): Promise<HmsRuntime> {
-  // Fail closed if Playwright Chromium cannot launch with configured binary.
-  // createPlaywrightBrowserFactory launches again on first session — accept
-  // one startup probe so missing binary fails before secret work continues.
-  try {
-    const probe = await chromium.launch({
-      executablePath: config.chromiumExecutablePath,
-      headless: true,
-    });
-    await probe.close();
-  } catch (err) {
+export function resolveHmsSourceRevision(
+  explicit?: string,
+  env: Record<string, string | undefined> = process.env,
+): string {
+  const revision = explicit?.trim() || env.NAVA_BUILD_COMMIT?.trim();
+  if (
+    !revision ||
+    revision.toLowerCase() === 'production' ||
+    revision.toLowerCase() === 'unknown'
+  ) {
     throw new HmsRuntimeError(
-      'chromium_failed',
-      err instanceof Error ? err.message.slice(0, 120) : 'chromium unavailable',
+      'AUDIT_CAPTURE',
+      'concrete HMS source revision required',
     );
   }
+  return revision;
+}
 
+/**
+ * Production composition: Playwright Chromium required; role-proof path wired;
+ * live Guest Stay manifest from secret login origin; mandatory private capture.
+ */
+type ProductionHmsRuntimeOptions = {
+  loadSecret?: HmsSecretLoader;
+  region?: string;
+  artifactRoot?: string;
+  sourceRevision?: string;
+};
+
+async function createProductionHmsRuntimeInternal(
+  config: HmsWorkerRuntimeConfig,
+  options: ProductionHmsRuntimeOptions | undefined,
+  liveProof: boolean,
+): Promise<HmsRuntime> {
+  const sourceRevision = resolveHmsSourceRevision(options?.sourceRevision);
   await loadHmsReadRoleProof(config.roleProofPath);
 
   const loadSecret =
@@ -160,6 +181,13 @@ export async function createProductionHmsRuntime(
   const rawSecret = await loadSecret({ secretArn: config.secretArn });
   const secret = hmsSecretSchema.parse(rawSecret);
   const origin = new URL(secret.loginUrl).origin;
+
+  if (origin !== CENTURION_HMS_PRODUCTION_ORIGIN) {
+    throw new HmsRuntimeError(
+      'PRODUCTION_ORIGIN_MISMATCH',
+      'secret login origin is not Centurion production HMS',
+    );
+  }
 
   if (secret.expectedPropertyCode !== config.expectedPropertyCode) {
     throw new HmsRuntimeError(
@@ -180,12 +208,35 @@ export async function createProductionHmsRuntime(
     );
   }
 
+  const manifest = buildLiveGuestStayReadManifest(origin);
+  for (const rule of manifest.rules) {
+    if (rule.origin !== CENTURION_HMS_PRODUCTION_ORIGIN) {
+      throw new HmsRuntimeError(
+        'PRODUCTION_ORIGIN_MISMATCH',
+        'manifest rule origin is not Centurion production HMS',
+      );
+    }
+  }
+
+  const artifactRoot =
+    options?.artifactRoot ??
+    process.env.HMS_BROWSER_ARTIFACT_ROOT ??
+    '/opt/nava/shared/hms-browser-artifacts';
+  await ensureHmsBrowserArtifactRoot(artifactRoot);
+  const artifactStore = await createHmsBrowserArtifactStore({
+    root: artifactRoot,
+  });
+  await artifactStore.purgeExpired();
+
   const browserFactory = createPlaywrightBrowserFactory();
 
   // Legacy /reservations canary is fixture-shaped and POLICY_BLOCK on live
   // OSRESS-only manifest. Readiness = LiveGuestStayDriver.runNotFoundCanary.
-  return createHmsRuntime({
-    manifest: buildLiveGuestStayReadManifest(origin),
+  const createRuntime = liveProof
+    ? createHmsLiveProofRuntime
+    : createHmsRuntime;
+  return createRuntime({
+    manifest,
     secretArn: config.secretArn,
     loadSecret: async () => secret,
     browserFactory,
@@ -194,11 +245,31 @@ export async function createProductionHmsRuntime(
     circuitCooldownMs: config.circuitCooldownMs,
     defaultTimeoutMs: Math.min(15_000, config.runDeadlineMs),
     requireViewOnly: true,
-    expectedOrigin: origin,
+    expectedOrigin: CENTURION_HMS_PRODUCTION_ORIGIN,
     roleProofPath: config.roleProofPath,
     loadRoleProof: loadHmsReadRoleProof,
     healthHeartbeatMs: 10_000,
     healthStaleAfterMs: 30_000,
     runStartupCanary: false,
+    artifactStore,
+    requireAuditCapture: true,
+    sourceRevision,
+    playwrightRevision: '1.52.0',
+    chromiumRevision: '1169',
   });
+}
+
+export function createProductionHmsRuntime(
+  config: HmsWorkerRuntimeConfig,
+  options?: ProductionHmsRuntimeOptions,
+): Promise<HmsRuntime> {
+  return createProductionHmsRuntimeInternal(config, options, false);
+}
+
+/** Proof CLI only. Normal workers must use createProductionHmsRuntime. */
+export function createProductionHmsProofRuntime(
+  config: HmsWorkerRuntimeConfig,
+  options?: ProductionHmsRuntimeOptions,
+): Promise<HmsRuntime> {
+  return createProductionHmsRuntimeInternal(config, options, true);
 }

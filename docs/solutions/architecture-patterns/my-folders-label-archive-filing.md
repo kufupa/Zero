@@ -59,7 +59,7 @@ Unfile = existing `moveThreads` → inbox (no second RPC). Folder list uses `fol
 
 Reuse LabelDialog, magicui Folder hover/select tokens, sidebar CSS vars. Drag with existing `@dnd-kit` (`MailFileDragProvider` in mail layout) — not bare HTML5. Drop highlight = `bg-sidebar-accent`, not neon/purple.
 
-**Drag-end race:** keep filing payload in a ref (`activeDragRef`). PointerSensor can emit `onDragEnd` before React re-renders `onDragStart` state; reading only `useState` → empty `threadIds` → silent no-op.
+**Drag-end race:** keep filing payload in a ref (`activeDragRef`). PointerSensor can emit `onDragEnd` before React re-renders `onDragStart` state; reading only `useState` → empty `threadIds` → silent no-op. Dedicated writeup: [dnd-kit dragEnd threadIds race](../logic-errors/dnd-kit-mail-file-drag-dragend-threadids-race.md).
 
 ### Route wiring
 

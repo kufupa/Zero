@@ -25,7 +25,7 @@ export function createDb(url: string): { db: DB; conn: Sql } {
     max: 10,
     idle_timeout: 20,
     connect_timeout: 10,
-    ssl: getPostgresSslOptions(),
+    ssl: getPostgresSslOptions(url),
   });
   const db = drizzle(conn, { schema });
   return { db, conn };

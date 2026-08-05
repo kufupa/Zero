@@ -112,13 +112,24 @@ opens in one transaction. Pushing those decisions to the client is why earlier
 attempts leaked wrong-context sends and duplicate drafts.
 
 ## Prevention
-- **Extract editor persistence decisions into pure functions** and unit-test them (`draft-persistence.test.ts`, `stale-draft-send-flow.test.ts`) — the data-loss logic must be provable without a browser.
+- **Extract editor persistence decisions into pure functions** and unit-test them (`draft-persistence.test.ts`, `stale-draft-send-flow.test.ts`, `compose-draft-ownership-contract.test.ts`) — the data-loss logic must be provable without a browser.
 - **Never let a refetch overwrite a dirty editor.** Make dirty-state the explicit tiebreaker anywhere server data hydrates a live input.
 - **Persist on meaningful change, not on completeness.** Guard autosave on "changed + non-empty", not "all required fields present".
 - **Make editor-open mutations idempotent and atomic** on the server (single transaction, unique active index) so double-click / multi-tab can't duplicate.
 - **Enforce stale checks server-side** with an explicit `confirmStaleDraft` retry; the client only detects the `CONFLICT` and asks the user.
 - **Invalidate every derived view** (drafts list, thread drafts, list indicators) after draft writes so counts don't drift up to `staleTime`.
 
+## Recurrence: typing kick-out after successful autosave (2026-08-04)
+
+Verified recurrence of the refetch-clobber class, with a sharper ownership bug:
+
+- **"Dirty" ≠ "locally owned."** Clearing `hasUnsavedChanges` after a save must not grant the server permission to rewrite an editor that already has a local edit history. Hydration now keys off lifetime local ownership (`localRevision > 0` / `hasLocalEdits`), not current dirty alone.
+- **Save acknowledgement covers only its captured revision.** A monotonic `reduceDraftRevision` ledger advances `savedRevision` only for the revision snapshotted before the first await; edits during flight stay dirty and queue a follow-up save.
+- **Successful autosave never grants same-ID refetch rewrite rights** on an edited mount. `chooseDraftEditorState({ hasLocalEdits: true })` keeps local HTML/subject even when dirty is false.
+- **Persistence ID ≠ React mount identity.** New-mail first create must not swap the composer for a loader or change `key` when `draftId` appears; spinner waits only on mount-time draft intent (`initialDraftIdRef`).
+- **Snapshot before attachment serialization; serialize saves.** Capture revision + raw fields before `serializeFiles`; at most one in-flight draft mutation per mount; autosave is single-shot, terminal actions drain via `flushDraftUntilCurrent`. Failed autosave suppresses automatic retry until the next local edit.
+
 ## Related
 - [fe-pilot-trpc-wire-contract-drift.md](../integration-issues/fe-pilot-trpc-wire-contract-drift.md) — FE↔server-pilot contract drift that the draft `drafts[]` / `ParsedDraft` wire shape resolves
 - `docs/superpowers/plans/2026-07-06-server-pilot-contract-convergence-sdd.md` — Task 6/7 (draft lifecycle + AI promotion contract) and Task 9 (refresh-safe draft persistence)
+- `docs/superpowers/plans/2026-08-04-compose-typing-kick-out.md` — revision ownership + mount stability fix for typing kick-out

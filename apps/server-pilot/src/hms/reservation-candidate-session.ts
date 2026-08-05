@@ -183,6 +183,8 @@ export type CreateReservationCandidateSessionInput = {
   extraLookupCandidates?: ReadonlyMap<string, LookupCandidate>;
   now?: () => Date;
   propertyCode?: string;
+  /** Opaque AI/run operation id for browser audit correlation. */
+  runId?: string;
 };
 
 /**
@@ -240,8 +242,9 @@ export function createReservationCandidateSession(
         });
       }
       const exact: ExactReservationCandidate = candidate;
-      const search = await input.driver.searchExact(exact, signal);
-      return mapSearchResult(search, now());
+      return input.driver.searchExactAndMap(exact, signal, (search) =>
+        mapSearchResult(search, now()),
+      );
     },
     quoteStay: async () => {
       throw new Error('hms_quote_stay not active in reservation session');

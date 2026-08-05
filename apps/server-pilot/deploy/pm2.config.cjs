@@ -67,9 +67,11 @@ module.exports = {
         HMS_READ_SECRET_ARN: process.env.HMS_READ_SECRET_ARN ?? '',
         HMS_CHROMIUM_EXECUTABLE_PATH:
           process.env.HMS_CHROMIUM_EXECUTABLE_PATH ?? '/opt/nava/chromium/chrome',
+        PLAYWRIGHT_BROWSERS_PATH:
+          process.env.PLAYWRIGHT_BROWSERS_PATH ?? '/opt/nava/ms-playwright',
         HMS_READ_ROLE_PROOF_PATH:
           process.env.HMS_READ_ROLE_PROOF_PATH ??
-          '/opt/nava/shared/hms-read-role-proof.v1.json',
+          '/etc/nava/hms-read-role-proof.v1.json',
         HMS_HEALTH_STATUS_PATH:
           process.env.HMS_HEALTH_STATUS_PATH ?? '/tmp/nava-zero-hms-health.json',
         HMS_EXPECTED_TENANT: process.env.HMS_EXPECTED_TENANT ?? 'HMS_LEGACY',

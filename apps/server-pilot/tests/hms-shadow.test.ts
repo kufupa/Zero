@@ -14,6 +14,7 @@ import {
   HMS_MANUAL_OPS_REQUIRED,
   resolveHmsShadowPreBrowser,
 } from '../src/ai/hms-shadow.js';
+import { shouldRetryAiFailure } from '../src/ai/run-ledger.js';
 import {
   filterExactReservationCandidates,
   requireExactlyOneExactCandidate,
@@ -33,6 +34,7 @@ import {
   probeTestDb,
   withSeededTestDb,
 } from './helpers/test-db.js';
+import { __setDbForTests } from '../src/db/client.js';
 import { eq, sql } from 'drizzle-orm';
 import {
   aiDraftGeneration,
@@ -95,6 +97,9 @@ describe('hms shadow lane/mode (DB-free)', () => {
     expect(source).toMatch(/lane !== 'hms'/);
     // off mode claims none
     expect(source).toMatch(/HMS_DRAFT_ENRICHMENT_MODE === 'off'/);
+    expect(source).toMatch(
+      /dependencyRevision:\s*'playwright-1\.52\.0-chromium-1169'/,
+    );
     // No production mock fallback on HMS path
     const hmsBlock = source.slice(
       source.indexOf("executorLane === 'hms'"),
@@ -102,6 +107,26 @@ describe('hms shadow lane/mode (DB-free)', () => {
     );
     expect(hmsBlock).not.toMatch(/createMockCandidateSession/);
     expect(hmsBlock).not.toMatch(/persistAiCandidateDraft/);
+  });
+
+  it('worker closes HMS runtime before DB on loop and scoped-drain failures', () => {
+    const source = readFileSync(join(here, '..', 'src', 'ai', 'worker.ts'), 'utf8');
+    const loop = source.slice(
+      source.indexOf('export async function runAiWorkerLoop'),
+      source.indexOf('async function main()'),
+    );
+    const main = source.slice(source.indexOf('async function main()'));
+    expect(loop).toMatch(
+      /try\s*\{[\s\S]*while \(!stopping\)[\s\S]*\}\s*finally\s*\{[\s\S]*await closeAiWorkerResources\(\)/,
+    );
+    expect(main).toMatch(
+      /if \(scoped\)[\s\S]*try\s*\{[\s\S]*runAiWorkerDrain[\s\S]*\}\s*finally\s*\{\s*await closeAiWorkerResources\(\)/,
+    );
+    const singletonClose = source.slice(
+      source.indexOf('export async function closeProductionHmsRuntimeForTests'),
+      source.indexOf('export function createLiveHmsCandidateSessionFactory'),
+    );
+    expect(singletonClose).not.toMatch(/\.close\(\)\.catch/);
   });
 
   it('CandidateSessionFactory is async Promise-returning', () => {
@@ -137,6 +162,33 @@ describe('hms shadow lane/mode (DB-free)', () => {
     const cls = classifyHmsShadowFailure(err);
     expect(cls).toBe('AUTH');
     expect(cls).not.toMatch(/Alice|CONF-SECRET|Fake St/);
+  });
+
+  it('AUDIT_CAPTURE is nonretryable and never echoes raw artifact paths', () => {
+    const err = Object.assign(new Error('TRACE_FINALIZE_FAILED'), {
+      code: 'AUDIT_CAPTURE',
+      name: 'HmsRuntimeError',
+    });
+    expect(classifyHmsShadowFailure(err)).toBe('AUDIT_CAPTURE');
+    expect(
+      classifyHmsShadowFailure(
+        Object.assign(new Error('/opt/nava/shared/hms-browser-artifacts/x'), {
+          code: 'TRACE_START_FAILED',
+        }),
+      ),
+    ).toBe('AUDIT_CAPTURE');
+    expect(
+      shouldRetryAiFailure({
+        failureClass: 'AUDIT_CAPTURE',
+        fence: {
+          runId: '00000000-0000-4000-8000-000000000001',
+          claimOwner: 't',
+          claimToken: 't',
+          deadlineAt: new Date(Date.now() + 60_000),
+        },
+        attempts: 0,
+      }),
+    ).toBe(false);
   });
 
   it('refresh route source fails closed with HMS_MANUAL_OPS_REQUIRED in shadow', () => {
@@ -227,13 +279,13 @@ describe('hms shadow lane/mode (DB-free)', () => {
     expect(requireExactlyOneExactCandidate([])).toBeNull();
     expect(
       requireExactlyOneExactCandidate([
-        { id: 'a', kind: 'confirmation', value: 'C1' },
-        { id: 'b', kind: 'confirmation', value: 'C2' },
+        { id: 'a', kind: 'confirmation', value: 'CONF-1001' },
+        { id: 'b', kind: 'confirmation', value: 'CONF-1002' },
       ]),
     ).toBeNull();
     expect(
       requireExactlyOneExactCandidate([
-        { id: 'a', kind: 'confirmation', value: 'C1' },
+        { id: 'a', kind: 'confirmation', value: 'CONF-1001' },
         {
           id: 's',
           kind: 'surname_dates',
@@ -250,12 +302,12 @@ describe('hms shadow lane/mode (DB-free)', () => {
       {
         id: 'new',
         receivedAt: new Date('2026-06-01T00:00:00Z'),
-        text: 'Confirmation NEW-CONF please',
+        text: 'Confirmation NEW-CONF-2 please',
       },
       {
         id: 'old',
         receivedAt: new Date('2026-01-01T00:00:00Z'),
-        text: 'Confirmation OLD-CONF please',
+        text: 'Confirmation OLD-CONF-1 please',
       },
       {
         id: 'mid-ambiguous',
@@ -265,7 +317,7 @@ describe('hms shadow lane/mode (DB-free)', () => {
     ];
     const picked = selectOldestWithExactlyOneExact(rows, (r) => r.text);
     expect(picked?.row.id).toBe('old');
-    expect(picked?.candidate.value).toMatch(/OLD-CONF/);
+    expect(picked?.candidate.value).toBe('OLD-CONF-1');
   });
 
   it('resolveHmsShadowPreBrowser reloads draft revision on pass 2', async () => {
@@ -276,7 +328,7 @@ describe('hms shadow lane/mode (DB-free)', () => {
       transportId: 't',
       threadId: 'th',
       direction: 'inbound' as const,
-      textBody: 'Confirmation ONLY-ONE please',
+      textBody: 'Confirmation ONLY-ONE-1 please',
       htmlBody: null,
       subject: 's',
       receivedAt: new Date('2026-01-01T00:00:00Z'),
@@ -290,7 +342,7 @@ describe('hms shadow lane/mode (DB-free)', () => {
       threadStateVersion: `v:${input.latestDraftRevisionId ?? 'null'}`,
       normalizedText: msg.textBody ?? '',
       lookupCandidates: [
-        { id: 'cand-1', kind: 'confirmation', value: 'ONLY-ONE' },
+        { id: 'cand-1', kind: 'confirmation', value: 'ONLY-ONE-1' },
       ],
       authorizedAttachmentIds: [],
     });
@@ -318,7 +370,7 @@ describe('hms shadow lane/mode (DB-free)', () => {
     });
     expect(ready.kind).toBe('ready');
     if (ready.kind === 'ready') {
-      expect(ready.exact.value).toBe('ONLY-ONE');
+      expect(ready.exact.value).toBe('ONLY-ONE-1');
     }
   });
 
@@ -346,8 +398,8 @@ describe('hms shadow lane/mode (DB-free)', () => {
         threadStateVersion: 'v1',
         normalizedText: 'x',
         lookupCandidates: [
-          { id: 'a', kind: 'confirmation', value: 'C1' },
-          { id: 'b', kind: 'confirmation', value: 'C2' },
+          { id: 'a', kind: 'confirmation', value: 'CONF-1001' },
+          { id: 'b', kind: 'confirmation', value: 'CONF-1002' },
         ],
         authorizedAttachmentIds: [],
       }),
@@ -454,6 +506,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('hms shadow persistence (dispo
 
   it('HMS shadow execute with injectable factory never writes draft tables; fail strips PII', async () => {
     await withSeededTestDb(async (db) => {
+      // executeAiRun resolves its handle via getDb(); point it at the tx handle
+      // so it sees rows seeded in this uncommitted transaction.
+      __setDbForTests({ db, conn: null as never });
+      try {
       process.env.HMS_DRAFT_ENRICHMENT_MODE = 'shadow';
       process.env.AI_DRAFTS_ENABLED = 'false';
       const transportId = TRANSPORT_ID;
@@ -523,6 +579,9 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('hms shadow persistence (dispo
 
       delete process.env.HMS_DRAFT_ENRICHMENT_MODE;
       delete process.env.AI_DRAFTS_ENABLED;
+      } finally {
+        __setDbForTests(null);
+      }
     });
   });
 

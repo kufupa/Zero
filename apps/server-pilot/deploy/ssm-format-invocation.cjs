@@ -42,7 +42,19 @@ function asciiSafe(text) {
 }
 
 const status = fetchField('Status').trim();
+const responseCodeRaw = fetchField('ResponseCode').trim();
+const statusDetails = asciiSafe(fetchField('StatusDetails'));
 const stdout = asciiSafe(fetchField('StandardOutputContent'));
 const stderr = asciiSafe(fetchField('StandardErrorContent'));
 
-console.log(JSON.stringify({ Status: status, Stdout: stdout, Stderr: stderr }));
+const responseCode = Number.parseInt(responseCodeRaw, 10);
+
+console.log(
+  JSON.stringify({
+    Status: status,
+    ResponseCode: Number.isFinite(responseCode) ? responseCode : null,
+    StatusDetails: statusDetails,
+    Stdout: stdout,
+    Stderr: stderr,
+  }),
+);

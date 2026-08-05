@@ -55,9 +55,11 @@ import {
   chooseDraftEditorState,
   isStaleDraftSendCancelled,
   nextAfterDialogChoice,
+  reduceDraftRevision,
   resolveComposeCloseAction,
   shouldPersistDraft,
   type ComposeDialogChoice,
+  type DraftRevisionState,
   type PersistDecisionInput,
 } from '@/lib/mail/draft-persistence';
 import { registerComposeFlush } from '@/lib/mail/compose-flush-registry';
@@ -91,7 +93,8 @@ interface EmailComposerProps {
     attachments: File[];
     fromEmail?: string;
     scheduleAt?: string;
-  }) => Promise<void>;
+    draftId?: string;
+  }) => Promise<boolean>;
   onClose?: () => void;
   className?: string;
   autofocus?: boolean;
@@ -141,6 +144,18 @@ export function EmailComposer({
   const [isLoading, setIsLoading] = useState(false);
   const [isSavingDraft, setIsSavingDraft] = useState(false);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const [autosaveSuppressedAfterFailure, setAutosaveSuppressedAfterFailure] = useState(false);
+  const revisionRef = useRef<DraftRevisionState>({
+    localRevision: 0,
+    savedRevision: 0,
+  });
+  const activeDraftIdRef = useRef<string | null>(null);
+  const saveInFlightRef = useRef<Promise<'saved' | 'skipped' | 'failed'> | null>(null);
+  const markUnsavedChanges = useCallback(() => {
+    revisionRef.current = reduceDraftRevision(revisionRef.current, { type: 'edited' });
+    setHasUnsavedChanges(true);
+    setAutosaveSuppressedAfterFailure(false);
+  }, []);
   const [messageLength, setMessageLength] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [threadId] = useQueryState('threadId');
@@ -148,6 +163,13 @@ export function EmailComposer({
   const { data: emailData } = useThread(threadId ?? null);
   const [draftId, setDraftId] = useQueryState('draftId');
   const { data: serverDraft } = useDraft(draftId ?? null);
+
+  useEffect(() => {
+    if (draftId) {
+      activeDraftIdRef.current = draftId;
+    }
+  }, [draftId]);
+
   const [aiGeneratedMessage, setAiGeneratedMessage] = useState<string | null>(null);
   const [aiIsLoading, setAiIsLoading] = useState(false);
   const [isGeneratingSubject, setIsGeneratingSubject] = useState(false);
@@ -186,7 +208,7 @@ export function EmailComposer({
           compressed: compressedFiles.length,
         });
         setValue('attachments', filesToProcess, { shouldDirty: true });
-        setHasUnsavedChanges(true);
+        markUnsavedChanges();
         if (showToast) {
           toast.error('Image compression failed, using original files');
         }
@@ -194,7 +216,7 @@ export function EmailComposer({
       }
 
       setValue('attachments', compressedFiles, { shouldDirty: true });
-      setHasUnsavedChanges(true);
+      markUnsavedChanges();
 
       if (showToast && quality !== 'original') {
         let totalOriginalSize = 0;
@@ -224,7 +246,7 @@ export function EmailComposer({
     } catch (error) {
       console.error('Error compressing images:', error);
       setValue('attachments', filesToProcess, { shouldDirty: true });
-      setHasUnsavedChanges(true);
+      markUnsavedChanges();
       if (showToast) {
         toast.error('Image compression failed, using original files');
       }
@@ -350,14 +372,14 @@ export function EmailComposer({
     const newOriginals = originalAttachments.filter((_, i) => i !== index);
     setOriginalAttachments(newOriginals);
     await processAndSetAttachments(newOriginals, imageQuality);
-    setHasUnsavedChanges(true);
+    markUnsavedChanges();
   };
 
   const editor = useComposeEditor({
     initialValue: initialMessage,
     isReadOnly: isLoading,
     onLengthChange: (length) => {
-      setHasUnsavedChanges(true);
+      markUnsavedChanges();
       setMessageLength(length);
     },
     onModEnter: () => {
@@ -385,7 +407,7 @@ export function EmailComposer({
     if (!editor || !serverDraft) return;
 
     const editorState = chooseDraftEditorState({
-      isDirty: hasUnsavedChanges,
+      hasLocalEdits: revisionRef.current.localRevision > 0,
       localHtml: editor.getHTML(),
       localSubject: subjectInput,
       serverDraft,
@@ -399,7 +421,7 @@ export function EmailComposer({
     if (editorState.subject !== subjectInput) {
       setValue('subject', editorState.subject, { shouldDirty: false });
     }
-  }, [editor, hasUnsavedChanges, serverDraft, setValue, subjectInput]);
+  }, [editor, serverDraft, setValue, subjectInput]);
 
   // Remove the TRPC query - we'll use the component's internal logic instead
   useEffect(() => {
@@ -444,12 +466,10 @@ export function EmailComposer({
 
   const proceedWithSend = async () => {
     try {
-      if (isLoading || isSavingDraft) return;
-
-      const values = getValues();
+      if (isLoading) return;
 
       // Validate recipient field
-      if (!values.to || values.to.length === 0) {
+      if (!getValues().to || getValues().to.length === 0) {
         toast.error('Recipient is required');
         return;
       }
@@ -461,10 +481,12 @@ export function EmailComposer({
 
       setIsLoading(true);
       setAiGeneratedMessage(null);
-      // Save draft before sending, we want to send drafts instead of sending new emails
-      if (hasUnsavedChanges) await saveDraft();
 
-      await onSendEmail({
+      const flushed = await flushDraftUntilCurrent();
+      if (!flushed) return;
+
+      const values = getValues();
+      const sent = await onSendEmail({
         to: values.to,
         cc: showCc ? values.cc : undefined,
         bcc: showBcc ? values.bcc : undefined,
@@ -473,9 +495,15 @@ export function EmailComposer({
         attachments: values.attachments || [],
         fromEmail: values.fromEmail,
         scheduleAt,
+        draftId: activeDraftIdRef.current ?? undefined,
       });
+      if (!sent) return;
+
+      activeDraftIdRef.current = null;
+      void setDraftId(null);
       setHasUnsavedChanges(false);
-      editor.commands.clearContent(true);
+      revisionRef.current = { localRevision: 0, savedRevision: 0 };
+      editor.commands.clearContent(false);
       form.reset();
       clearAttachmentState();
       setIsComposeOpen(null);
@@ -562,94 +590,141 @@ export function EmailComposer({
     }
   };
 
-  const saveDraft = useCallback(async (): Promise<boolean> => {
-    const values = getValues();
+  const persistDraftOnce = useCallback(async (): Promise<'saved' | 'skipped' | 'failed'> => {
+    if (saveInFlightRef.current) return saveInFlightRef.current;
 
-    if (!hasUnsavedChanges) return true;
-    const messageText = editor.getText();
-    const html = editor.getHTML();
-    const aiBlocked = Boolean(aiGeneratedMessage || aiIsLoading || isGeneratingSubject);
+    const capturedRevision = revisionRef.current.localRevision;
+    const values = getValues();
+    const snapshot = {
+      hasUnsavedChanges:
+        revisionRef.current.localRevision > revisionRef.current.savedRevision,
+      initialHtml: initialMessage ?? '',
+      aiBlocked: Boolean(aiGeneratedMessage || aiIsLoading || isGeneratingSubject),
+      draftId: activeDraftIdRef.current,
+      threadId: threadId ?? null,
+      replyToMessageId,
+      to: [...(values.to ?? [])],
+      cc: [...(values.cc ?? [])],
+      bcc: [...(values.bcc ?? [])],
+      subject: values.subject ?? '',
+      html: editor.getHTML(),
+      text: editor.getText(),
+      fromEmail: values.fromEmail || undefined,
+      attachments: [...(values.attachments ?? [])] as File[],
+    };
 
     if (
       !shouldPersistDraft({
-        hasUnsavedChanges,
-        initialHtml: initialMessage,
-        html,
-        text: messageText,
-        to: values.to,
-        subject: values.subject,
-        aiBlocked,
+        hasUnsavedChanges: snapshot.hasUnsavedChanges,
+        initialHtml: snapshot.initialHtml,
+        html: snapshot.html,
+        text: snapshot.text,
+        to: snapshot.to,
+        subject: snapshot.subject,
+        aiBlocked: snapshot.aiBlocked,
       })
     ) {
-      return true;
+      return 'skipped';
     }
 
-    try {
-      setIsSavingDraft(true);
-      const draftData = buildDraftMutationInput({
-        draftId: draftId ?? null,
-        threadId: threadId ?? null,
-        replyToMessageId,
-        to: values.to,
-        cc: values.cc ?? [],
-        bcc: values.bcc ?? [],
-        subject: values.subject,
-        html,
-        fromEmail: values.fromEmail ? values.fromEmail : undefined,
-        attachments: await serializeFiles(values.attachments ?? []),
-      });
+    let savePromise!: Promise<'saved' | 'skipped' | 'failed'>;
+    savePromise = (async (): Promise<'saved' | 'skipped' | 'failed'> => {
+      try {
+        setIsSavingDraft(true);
+        const draftData = buildDraftMutationInput({
+          draftId: snapshot.draftId,
+          threadId: snapshot.threadId,
+          replyToMessageId: snapshot.replyToMessageId,
+          to: snapshot.to,
+          cc: snapshot.cc,
+          bcc: snapshot.bcc,
+          subject: snapshot.subject,
+          html: snapshot.html,
+          fromEmail: snapshot.fromEmail,
+          attachments: await serializeFiles(snapshot.attachments),
+        });
 
-      const response = isFrontendOnlyDemo()
-        ? await demoUpsertDraft(draftData)
-        : await createDraft(draftData);
+        const response = isFrontendOnlyDemo()
+          ? await demoUpsertDraft(draftData)
+          : await createDraft(draftData);
 
-      if (response?.id && response.id !== draftId) {
-        setDraftId(response.id);
+        if (response?.id) {
+          activeDraftIdRef.current = response.id;
+          if (response.id !== draftId) {
+            void setDraftId(response.id);
+          }
+        }
+
+        if (isFrontendOnlyDemo()) {
+          void queryClient.invalidateQueries({ queryKey: [...DEMO_MAIL_LIST_DRAFTS_QUERY_PREFIX] });
+        } else {
+          const savedDraftId = response?.id ?? snapshot.draftId;
+          void Promise.all([
+            queryClient.invalidateQueries({ queryKey: trpc.drafts.list.queryKey() }),
+            savedDraftId
+              ? queryClient.invalidateQueries({
+                  queryKey: trpc.drafts.get.queryKey({ id: savedDraftId }),
+                })
+              : Promise.resolve(),
+            threadId
+              ? queryClient.invalidateQueries({ queryKey: trpc.mail.get.queryKey({ id: threadId }) })
+              : Promise.resolve(),
+            queryClient.invalidateQueries({ queryKey: trpc.mail.listThreads.infiniteQueryKey() }),
+          ]);
+        }
+
+        revisionRef.current = reduceDraftRevision(revisionRef.current, {
+          type: 'saved', capturedRevision,
+        });
+        setHasUnsavedChanges(
+          revisionRef.current.localRevision > revisionRef.current.savedRevision,
+        );
+        return 'saved';
+      } catch (error) {
+        console.error('Error saving draft:', error);
+        toast.error('Failed to save draft');
+        setAutosaveSuppressedAfterFailure(true);
+        return 'failed';
+      } finally {
+        if (saveInFlightRef.current === savePromise) {
+          saveInFlightRef.current = null;
+        }
+        setIsSavingDraft(false);
       }
-      if (isFrontendOnlyDemo()) {
-        void queryClient.invalidateQueries({ queryKey: [...DEMO_MAIL_LIST_DRAFTS_QUERY_PREFIX] });
-      } else {
-        const savedDraftId = response?.id ?? draftId;
-        // Do not await refetch — Save draft / flush-on-leave must resolve after create,
-        // not after listThreads/drafts.list refetch (can hang under pilot load).
-        void Promise.all([
-          queryClient.invalidateQueries({ queryKey: trpc.drafts.list.queryKey() }),
-          savedDraftId
-            ? queryClient.invalidateQueries({
-                queryKey: trpc.drafts.get.queryKey({ id: savedDraftId }),
-              })
-            : Promise.resolve(),
-          threadId
-            ? queryClient.invalidateQueries({ queryKey: trpc.mail.get.queryKey({ id: threadId }) })
-            : Promise.resolve(),
-          queryClient.invalidateQueries({ queryKey: trpc.mail.listThreads.infiniteQueryKey() }),
-        ]);
-      }
-      setHasUnsavedChanges(false);
-      return true;
-    } catch (error) {
-      console.error('Error saving draft:', error);
-      toast.error('Failed to save draft');
-      return false;
-    } finally {
-      setIsSavingDraft(false);
-    }
+    })();
+
+    saveInFlightRef.current = savePromise;
+    return savePromise;
   }, [
-    hasUnsavedChanges,
-    editor,
     aiGeneratedMessage,
     aiIsLoading,
-    isGeneratingSubject,
-    initialMessage,
-    draftId,
-    threadId,
-    replyToMessageId,
     createDraft,
-    queryClient,
-    trpc,
+    draftId,
+    editor,
     getValues,
+    initialMessage,
+    isGeneratingSubject,
+    queryClient,
+    replyToMessageId,
     setDraftId,
+    threadId,
+    trpc,
   ]);
+
+  const flushDraftUntilCurrent = useCallback(async (): Promise<boolean> => {
+    for (;;) {
+      const result = await persistDraftOnce();
+      if (result === 'failed') return false;
+      if (result === 'skipped') return true;
+      if (revisionRef.current.savedRevision >= revisionRef.current.localRevision) {
+        return true;
+      }
+    }
+  }, [persistDraftOnce]);
+
+  const saveDraft = useCallback(async (): Promise<boolean> => {
+    return flushDraftUntilCurrent();
+  }, [flushDraftUntilCurrent]);
 
   const buildPersistInput = useCallback((): PersistDecisionInput => {
     const values = getValues();
@@ -763,7 +838,7 @@ export function EmailComposer({
         ? await demoGenerateEmailSubject({ message: messageText })
         : await generateEmailSubject({ message: messageText });
       setValue('subject', subject);
-      setHasUnsavedChanges(true);
+      markUnsavedChanges();
     } catch (error) {
       console.error('Error generating subject:', error);
       toast.error('Failed to generate subject');
@@ -786,15 +861,19 @@ export function EmailComposer({
   }, [editor, showLeaveConfirmation]);
 
   useEffect(() => {
-    if (!hasUnsavedChanges) return;
+    if (isSavingDraft || !hasUnsavedChanges || autosaveSuppressedAfterFailure) return;
 
     const autoSaveTimer = setTimeout(() => {
-      console.log('timeout set');
-      saveDraft();
+      void persistDraftOnce();
     }, 3000);
 
     return () => clearTimeout(autoSaveTimer);
-  }, [hasUnsavedChanges, saveDraft]);
+  }, [
+    autosaveSuppressedAfterFailure,
+    hasUnsavedChanges,
+    isSavingDraft,
+    persistDraftOnce,
+  ]);
 
   useEffect(() => {
     const handlePasteFiles = (event: ClipboardEvent) => {
@@ -895,6 +974,7 @@ export function EmailComposer({
                 name="to"
                 placeholder="Enter email address"
                 disabled={isLoading}
+                onValueChange={markUnsavedChanges}
               />
             </div>
 
@@ -935,6 +1015,7 @@ export function EmailComposer({
                   name="cc"
                   placeholder="Enter email for Cc"
                   disabled={isLoading}
+                  onValueChange={markUnsavedChanges}
                 />
               </div>
             )}
@@ -948,6 +1029,7 @@ export function EmailComposer({
                   name="bcc"
                   placeholder="Enter email for Bcc"
                   disabled={isLoading}
+                  onValueChange={markUnsavedChanges}
                 />
               </div>
             )}
@@ -967,7 +1049,7 @@ export function EmailComposer({
               onChange={(e) => {
                 const value = replaceEmojiShortcodes(e.target.value);
                 setValue('subject', value);
-                setHasUnsavedChanges(true);
+                markUnsavedChanges();
               }}
             />
             <button
@@ -1039,6 +1121,7 @@ export function EmailComposer({
               cc={ccEmails ?? []}
               bcc={bccEmails ?? []}
               setRecipients={(field, val) => setValue(field, val)}
+              onApply={markUnsavedChanges}
             />
             <Input
               type="file"
@@ -1200,15 +1283,19 @@ export function EmailComposer({
                   <ContentPreview
                     content={aiGeneratedMessage}
                     onAccept={() => {
-                      editor.commands.setContent({
-                        type: 'doc',
-                        content: aiGeneratedMessage.split(/\r?\n/).map((line) => {
-                          return {
-                            type: 'paragraph',
-                            content: line.trim().length === 0 ? [] : [{ type: 'text', text: line }],
-                          };
-                        }),
-                      });
+                      editor.commands.setContent(
+                        {
+                          type: 'doc',
+                          content: aiGeneratedMessage.split(/\r?\n/).map((line) => {
+                            return {
+                              type: 'paragraph',
+                              content: line.trim().length === 0 ? [] : [{ type: 'text', text: line }],
+                            };
+                          }),
+                        },
+                        false,
+                      );
+                      markUnsavedChanges();
                       setAiGeneratedMessage(null);
                     }}
                     onReject={() => {

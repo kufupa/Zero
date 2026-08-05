@@ -24,13 +24,25 @@ export type ExactLookupCandidate = Extract<
   { kind: 'confirmation' | 'external_reference' }
 >;
 
-/** Drop surname_dates before live browser session creation. */
+/**
+ * Live HRCEN confirmations are digit-bearing (often `########-#` / `n°…`).
+ * Pure-alpha tokens from "Confirmation Letter_…" false-fire the labeled regex.
+ * Explicit `CONF-*` / `EXT-*` forms remain valid even without digits.
+ */
+export function isPlausibleExactReservationValue(value: string): boolean {
+  const v = value.trim().toUpperCase();
+  if (v.length < 6 || v.length > 32) return false;
+  if (!/^[A-Z0-9-]+$/.test(v)) return false;
+  return /\d/.test(v) || /^(?:CONF|EXT)-[A-Z0-9-]+$/.test(v);
+}
+
 export function filterExactReservationCandidates(
   candidates: readonly LookupCandidate[],
 ): ExactLookupCandidate[] {
   return candidates.filter(
     (c): c is ExactLookupCandidate =>
-      c.kind === 'confirmation' || c.kind === 'external_reference',
+      (c.kind === 'confirmation' || c.kind === 'external_reference') &&
+      isPlausibleExactReservationValue(c.value),
   );
 }
 
@@ -131,10 +143,12 @@ export type BuildThreadContextInput = {
 
 const CONFIRMATION_RE =
   /\b(?:confirmation|conf(?:irmation)?\s*(?:#|no\.?|number)?)\s*[:#]?\s*([A-Z0-9][A-Z0-9-]{3,31})\b/gi;
-const BARE_CONF_RE = /\b(CONF-[A-Z0-9]{2,28})\b/gi;
+const BARE_CONF_RE = /\b(CONF-[A-Z0-9-]{2,28})\b/gi;
+/** Centurion confirmation-letter subjects: `… (n°79798256-1)`. */
+const N_DEGREE_CONF_RE = /\bn[°ºo]\s*([0-9]{6,14}(?:-\d{1,4})?)\b/gi;
 const EXTERNAL_RE =
   /\b(?:external\s+reference|ext(?:ernal)?\s*(?:ref(?:erence)?)?)\s*[:#]?\s*([A-Z0-9][A-Z0-9-]{3,31})\b/gi;
-const BARE_EXT_RE = /\b(EXT-[A-Z0-9]{2,28})\b/gi;
+const BARE_EXT_RE = /\b(EXT-[A-Z0-9-]{2,28})\b/gi;
 const SURNAME_DATES_RE =
   /\b(?:guest|mr\.?|mrs\.?|ms\.?|surname)?\s*([A-Z][a-z]{1,40})\s+(?:arriv(?:ing|al)|check[- ]?in)\s+(\d{4}-\d{2}-\d{2})\s+(?:depart(?:ing|ure)|check[- ]?out)\s+(\d{4}-\d{2}-\d{2})\b/gi;
 
@@ -183,11 +197,12 @@ export function extractLookupCandidates(normalizedText: string): LookupCandidate
     out.push(c);
   };
 
-  for (const re of [CONFIRMATION_RE, BARE_CONF_RE]) {
+  for (const re of [CONFIRMATION_RE, BARE_CONF_RE, N_DEGREE_CONF_RE]) {
     re.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = re.exec(normalizedText)) !== null) {
       const value = m[1]!.toUpperCase();
+      if (!isPlausibleExactReservationValue(value)) continue;
       push({ id: candidateId('confirmation', value), kind: 'confirmation', value });
     }
   }
@@ -197,6 +212,7 @@ export function extractLookupCandidates(normalizedText: string): LookupCandidate
     let m: RegExpExecArray | null;
     while ((m = re.exec(normalizedText)) !== null) {
       const value = m[1]!.toUpperCase();
+      if (!isPlausibleExactReservationValue(value)) continue;
       push({
         id: candidateId('external_reference', value),
         kind: 'external_reference',

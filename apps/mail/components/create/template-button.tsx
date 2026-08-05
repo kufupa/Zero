@@ -52,6 +52,7 @@ interface TemplateButtonProps {
   cc: string[];
   bcc: string[];
   setRecipients: (field: RecipientField, value: string[]) => void;
+  onApply: () => void;
 }
 
 const TemplateButtonComponent: React.FC<TemplateButtonProps> = ({
@@ -62,6 +63,7 @@ const TemplateButtonComponent: React.FC<TemplateButtonProps> = ({
   cc,
   bcc,
   setRecipients,
+  onApply,
 }) => {
   if (!shouldRenderLegacySurface('templates')) {
     return null;
@@ -143,11 +145,12 @@ const TemplateButtonComponent: React.FC<TemplateButtonProps> = ({
     if (template.to) setRecipients('to', template.to);
     if (template.cc) setRecipients('cc', template.cc);
     if (template.bcc) setRecipients('bcc', template.bcc);
+    onApply();
     
     setTimeout(() => {
       editor.chain().focus('end').run();
     }, 200);
-  }, [editor, setSubject, setRecipients]);
+  }, [editor, setSubject, setRecipients, onApply]);
 
   const handleDeleteTemplate = useCallback(
     async (templateId: string) => {

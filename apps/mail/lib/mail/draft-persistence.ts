@@ -23,8 +23,17 @@ export type PersistDecisionInput = {
   aiBlocked: boolean;
 };
 
+export type DraftRevisionState = {
+  localRevision: number;
+  savedRevision: number;
+};
+
+export type DraftRevisionEvent =
+  | { type: 'edited' }
+  | { type: 'saved'; capturedRevision: number };
+
 type DraftEditorStateInput = {
-  isDirty: boolean;
+  hasLocalEdits: boolean;
   localHtml: string;
   localSubject: string;
   serverDraft?: {
@@ -33,6 +42,19 @@ type DraftEditorStateInput = {
     updatedAt?: string | null;
   } | null;
 };
+
+export function reduceDraftRevision(
+  state: DraftRevisionState,
+  event: DraftRevisionEvent,
+): DraftRevisionState {
+  if (event.type === 'edited') {
+    return { ...state, localRevision: state.localRevision + 1 };
+  }
+  return {
+    ...state,
+    savedRevision: Math.max(state.savedRevision, event.capturedRevision),
+  };
+}
 
 type EnsureEditableDraftInput = {
   demoMode: boolean;
@@ -69,7 +91,7 @@ export function buildDraftMutationInput(input: DraftMutationInput) {
 }
 
 export function chooseDraftEditorState(input: DraftEditorStateInput) {
-  if (input.isDirty) {
+  if (input.hasLocalEdits) {
     return {
       html: input.localHtml,
       subject: input.localSubject,

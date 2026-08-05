@@ -223,10 +223,19 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
 
 /** Permanent / fatal errors must escape gathering; soft tool failures may continue. */
 export function isFatalCandidateGatheringError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  if (error.name === 'AbortError') return true;
-  if (error.name === 'HmsRuntimeError') return true;
-  return false;
+  const seen = new Set<Error>();
+  const visit = (value: unknown): boolean => {
+    if (!(value instanceof Error) || seen.has(value)) return false;
+    seen.add(value);
+    if (value.name === 'AbortError' || value.name === 'HmsRuntimeError') {
+      return true;
+    }
+    if (value instanceof AggregateError && value.errors.some(visit)) {
+      return true;
+    }
+    return visit(value.cause);
+  };
+  return visit(error);
 }
 
 function sessionHandlerPresent(

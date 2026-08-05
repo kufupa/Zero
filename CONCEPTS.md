@@ -20,6 +20,26 @@ RDS `mailbox_access` row granting a user a role (`owner` / `admin` / `member`) o
 
 SPA chrome that calls `connections.setDefault` to flip `is_default` and rescope the mail cache to another granted transport. Shown only when the user has 2+ connections; hidden for single-inbox personas (e.g. Centurion-only login).
 
+### Mail shell
+
+Desktop reading chrome for the mail SPA: fixed app sidebar beside list and thread columns. Layout bands differ: Wide split mounts both columns; Mid-width exclusive panes mounts only one at a time. Wide thread content (Reply composer, long HTML) must scroll inside the thread column; it must not shove the inbox list sideways off the viewport. Distinct from Mailbox switcher (transport identity chrome) and from folder/category filters inside the list.
+
+### Wide split
+
+Mail-shell layout band where list and thread columns both mount and share a percentage split. The list may collapse to zero width; the thread column must be allowed to grow to fill the group when that happens. Distinct from Mid-width exclusive panes (selection-driven single column).
+
+### Mid-width exclusive panes
+
+Mail-shell layout band on desktop below Wide split where only the list or only the thread mounts, keyed off thread selection. Avoids leaving an empty reading pane when selection clears. Distinct from Wide split (both columns mounted).
+
+### Close-to-inbox
+
+Staff-facing Close/X contract on Mid-width exclusive panes: clearing thread selection returns a list-only shell, never an empty reading pane. Distinct from Compose-close honesty (draft leave prompts) and from Wide split list collapse (Hide inbox / Show inbox).
+
+### Newest-on-top thread display
+
+Reading-pane message order that shows the chronologically newest message first. Wire/`mail.get` order stays oldest → newest; the pane reverses only at the list boundary. `latest` remains the chronological last message (not the first visual row). Reply composer mounts above the target message. Distinct from Mail shell (column chrome) and from inbox list sort.
+
 ### Ingest mailbox
 
 The single POP3 sink account (`navaai@legacyhotels.co.za` on the hotel Zimbra pilot) that the EC2 worker drains. Hotel BCC / header-routing waves may still stamp `X-Zero-Mailbox` so messages land in the correct logical mailbox transport. Older docs may say `nava@legacyhotel.com` — that identity was replaced for the real-mail cutover.
@@ -103,6 +123,22 @@ Opaque pagination token encoding `(latestMessageAt|id)` used by `mail.listThread
 Pilot inbox listing includes only non-trashed, non-archived, non-spam threads (`spam_at` null) with at least one **inbound** message. Spam membership is the spam timestamp, not a user label named SPAM. Outbound-only compose threads belong in **sent**, not inbox. Test fixtures must seed inbound messages when asserting inbox visibility.
 
 *Avoid: treating a legacy SPAM user-label chip as folder truth; inbox eligibility is `spam_at IS NULL`.*
+
+### hasReplied
+
+Shared-inbox list signal meaning “this thread already has at least one outbound message from the mailbox” (ever replied or forwarded). Orthogonal to unread/grey: a guest follow-up can make the row bold again while the replied marker stays. Distinct from Ball-in-court auto-read (which clears unread when we last answered).
+
+*Avoid: treating opened/grey as “already replied.”*
+
+### Ball-in-court auto-read
+
+Shared-inbox product rule that greying means “ball not with us”: when the mailbox’s outbound is the latest answer transition (Nava send or Hotel-sent ingest), mark the whole thread and its messages read so bold/unread tracks work still needing hotel eyes. Distinct from hasReplied (ever answered) and from open-to-mark-read (someone looked).
+
+### Hotel-sent
+
+Inbound POP3/MIME copy whose From matches the active mailbox transport (or its send-from aliases)—typically an Outlook/Zimbra Sent copy filed back through the ingest sink. Persisted as outbound direction for the logical mailbox so shared-inbox reply state and Ball-in-court auto-read can treat it like a Nava send. Excludes self-recipient loopback copies that are not hotel-sent.
+
+*Avoid: treating hotel-sent as a second POP3 account; the sink remains the Ingest mailbox.*
 
 ### Draft lifecycle status
 
@@ -192,7 +228,25 @@ Routing posture where only the hotel LAN prefix goes over the VPN tunnel, while 
 
 ### Infor HMS
 
-Hotel property-management web application on the hotel LAN, opened in a browser over always-on OpenVPN. Staff and pilot automation use a hostname that must match the server TLS certificate; when that name is not in public DNS, the EC2 pilot maps it locally rather than adopting hotel DNS.
+Hotel property-management web application on the hotel LAN, opened in a browser over always-on OpenVPN. Staff and pilot automation use a hostname that must match the server TLS certificate; when that name is not in public DNS, the EC2 pilot maps it locally rather than adopting hotel DNS. Pilot automation also drives Guest Stay reads through a Chromium worker (not only interactive login).
+
+### OSRESS
+
+Infor Guest Stay list/search system function used for exact reservation lookups on the live property. Soft-captured dataspy filters pin confirmation or external-reference values; empty unused OR slots behave as wildcards over the date window.
+
+### Exact reservation candidate
+
+A fail-closed lookup key derived from authorized mail: either a confirmation number or an external reference, never a fuzzy guest-name search. Bound opaquely for `hms_find_reservation`; live DoD may walk several mail-derived exact candidates until one matches in HMS.
+
+### Live reservation shadow
+
+EC2 proof path that runs real Guest Stay search through the HMS worker and agent tool surface in shadow mode: queue/claim/audit digests only, no business persistence of live values, evidence, or drafts. Operator success is a fixed token chain ending in rollback.
+
+### Live-negative verification gate
+
+Discipline that forbids accepting a live PMS/HMS read's zero/empty/not_found as business truth until six layers are independently proven: request chrome, response transport shape, parser (fail-closed on unknown), filter scope (no accidental wildcard), date/paging window, and a green **known-positive control** through the same code path. A negative is treated as *unproven*, not *false*, until the gate passes. Distinct from False green gate (which is about unpersisted verification claims on our own tree); this gate is about false negatives manufactured by stacked wrong assumptions against a live third-party surface. Sits over OSRESS and Exact reservation candidate reads and is the checkable form of the empirical build-debug loop.
+
+*Avoid: reading fixture-green as live-green; concluding "PMS has no record" from a single candidate over a narrow window with no positive control.*
 
 ### HOST_ROUTE
 
@@ -309,7 +363,7 @@ Whether the mail reader may load remote `http(s)` images for a message. Defaults
 
 ### Hotel category
 
-An AI-managed mailbox classification (primary work queues: new-bookings, groups-events, at-risk, ops; overlay: urgent) stored as durable memberships on threads. Distinct from system folders (inbox/sent/spam/trash via thread flags) and from user Labels (soft tags / quarantine). Staff see them in the sidebar as **Folders**, and on `/mail` Inbox as segmented sections (same taxonomy). Legacy invent-WHO slugs (internal, individual, group, travel-agents) are remapped away.
+An AI-managed mailbox classification (primary work queues: new-bookings, groups-events, at-risk, ops; overlay: urgent) stored as durable memberships on threads. Distinct from system folders (inbox/sent/spam/trash via thread flags) and from My folders / user labels (filing tags). Staff see them in the sidebar as **Folders**, and on `/mail` Inbox as segmented sections (same taxonomy). Legacy invent-WHO slugs (internal, individual, group, travel-agents) are remapped away.
 
 ### categoryIds filter
 
@@ -323,9 +377,17 @@ Frontend overlay that maps managed category slugs to demo-grade titles, subtitle
 
 The pastel background/text pair used for primary hotel category chrome (nav rows and pills). Preferred over solid seed hex for managed slugs so live pilot matches the FE demo scanability.
 
+### My folders
+
+Sidebar user-filing surface for custom folders built on mailLabel rows (slash names for nesting). Staff drag finished mail here so inbox stays unactioned work. Distinct from hotel AI Folders (category queues) and from system places (inbox/archive/spam/bin flags). Schema and API names stay mailLabel / labelIds / labels.*.
+
+### File threads
+
+Exclusive user-label filing mutation: set the target user label on threads, archive them out of inbox, clear trash/spam placement, leave AI categoryIds untouched. Unfile is Move to Inbox (clear archive), which drops the thread from the folder list that filters archive+labelIds.
+
 ### Labels demotion
 
-Sidebar posture where the Labels tree stays available but secondary: always titled Labels (never Folders on mailbox), collapsed by default behind a real collapsible control, so hotel Folders remain the hero taxonomy.
+Historical sidebar posture that kept the Labels tree secondary to hotel Folders. Superseded for FO chrome: that tree is now titled My folders (still backed by labels). Hotel Folders must never re-use the My folders title.
 
 ### Honesty UI
 
@@ -363,10 +425,11 @@ Hard override that forbids Vitest (and similar runners) against pilot/production
 
 ## Flagged ambiguities
 
+- **"read" / grey list styling** had been treated as “already replied” in shared Centurion triage — unread/grey is Ball-in-court auto-read; ever answered is hasReplied.
 - **"Rocketseed branding"** had been conflated with “mail traversed 172.24.0.8” — branding is From/sender tenant provisioning; traversal alone is insufficient.
 - **"autonomous-plan"** had been used as if it were the full planning pipeline — Autonomous plan only stamps a mandate; Nava plan owns CE→paired review→writing-plans.
 - **"ponytail"** had been conflated with ponytail-review — persistent ponytail mode is OFF by default; the Paired plan gate uses ponytail-review only.
-- **"Folders" on mailbox provider** used to mean the Labels tree; hotel AI categories now own the Folders section title — Labels must never re-use Folders.
+- **"Folders" on mailbox provider** used to mean the Labels tree; hotel AI categories now own the Folders section title — user filing chrome is **My folders**, never Folders.
 - **category color** can mean seed DB hex or Centurion pastel presentation — for managed slugs, presentation wins in UI chrome.
 - **"honesty"** had been used for both Honesty UI (hide fake chrome) and Compose-close honesty (draft leave dialog) — these are distinct.
 - **"spam"** can mean Zimbra/server folder routing, a legacy SPAM user label, or app `spam_at` folder membership — app folder truth is `spam_at` only.

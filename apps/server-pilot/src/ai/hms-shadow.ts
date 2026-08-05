@@ -37,6 +37,7 @@ const AI_FAILURE_CLASSES = [
   'TRANSIENT_NETWORK',
   'BEDROCK_TRANSIENT',
   'ARTIFACT_TRANSIENT',
+  'AUDIT_CAPTURE',
   'UNKNOWN',
 ] as const satisfies readonly AiFailureClass[];
 
@@ -153,15 +154,29 @@ export function classifyHmsShadowFailure(error: unknown): AiFailureClass {
     const name = String((error as { name: string }).name);
     if (name === 'RunDeadlineError') return 'RUN_DEADLINE';
     if (name === 'AbortError') return 'LEASE_LOST';
+    if (name === 'HmsBrowserArtifactError') return 'AUDIT_CAPTURE';
   }
   if (error && typeof error === 'object' && 'code' in error) {
     const code = String((error as { code: string }).code);
+    if (
+      /AUDIT_CAPTURE|TRACE_|VIDEO_|CAPTURE_CAPACITY|CONTEXT_CLOSE|PRODUCTION_ORIGIN/i.test(
+        code,
+      )
+    ) {
+      return 'AUDIT_CAPTURE';
+    }
     if (/ROLE_PROOF|AUTH|login|credential/i.test(code)) return 'AUTH';
     if (/PROPERTY|wrong_property|wrong_tenant/i.test(code)) return 'PROPERTY_MISMATCH';
     if (/POLICY|WEBSOCKET|POPUP|DOWNLOAD/i.test(code)) return 'POLICY_BLOCK';
     if (/SCHEMA|malformed|correlation/i.test(code)) return 'SCHEMA_DRIFT';
     if (/TRANSIENT|network|chromium|ECONNRESET|ENOTFOUND/i.test(code)) {
       return 'TRANSIENT_NETWORK';
+    }
+  }
+  if (error instanceof AggregateError) {
+    for (const inner of error.errors) {
+      const cls = classifyHmsShadowFailure(inner);
+      if (cls === 'AUDIT_CAPTURE') return 'AUDIT_CAPTURE';
     }
   }
   const message = error instanceof Error ? error.message : String(error);

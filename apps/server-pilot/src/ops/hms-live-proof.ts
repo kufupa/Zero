@@ -1,6 +1,6 @@
 /**
  * Purpose-built HMS live proof CLI (compiled to dist/ops/hms-live-proof.js).
- * Actions: canary | start | status | stop | rearm.
+ * Actions: canary | start | status | stop | rearm | proof-video | purge-artifacts.
  * No tsx. Never accepts raw lookup / thread / message ID via argv.
  * Proof files store digests only — never guest/email/HMS/model values.
  */
@@ -15,10 +15,14 @@ import {
   chmodSync,
   openSync,
   closeSync,
+  fsyncSync,
+  rmSync,
+  statSync,
 } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { and, asc, count, eq, inArray, like } from 'drizzle-orm';
+import { and, asc, count, eq, inArray, like, sql } from 'drizzle-orm';
 import { createDb, getDb, closeDb } from '../db/client.js';
 import {
   aiDraftGeneration,
@@ -45,10 +49,21 @@ import {
   buildLiveGuestStayRowFingerprintV1,
   createLiveGuestStayDriver,
 } from '../hms/live-guest-stay-driver.js';
-import { createProductionHmsRuntime } from '../hms/production-runtime.js';
+import {
+  createProductionHmsProofRuntime,
+  createProductionHmsRuntime,
+} from '../hms/production-runtime.js';
 import { HmsRuntimeError } from '../hms/runtime.js';
+import {
+  purgeExpiredHmsBrowserArtifacts,
+  type HmsBrowserArtifactReceiptV1,
+} from '../hms/browser-artifacts.js';
 import type { ExactReservationCandidate } from '../hms/live-read-manifest.js';
-import { LIVE_GUEST_STAY_SEARCH_PATH } from '../hms/live-read-manifest.js';
+import {
+  buildExactOsressSearchManifest,
+  LIVE_GUEST_STAY_SEARCH_PATH,
+  liveNotFoundCanaryCandidate,
+} from '../hms/live-read-manifest.js';
 
 export const HMS_DEPENDENCY_REVISION =
   'playwright-1.52.0-chromium-1169' as const;
@@ -131,9 +146,13 @@ const OPERATOR_FAIL_CODES = new Set<string>([
 
 const PROOF_TTL_MS = 24 * 60 * 60 * 1000;
 const HEALTH_STALE_MS = 5 * 60 * 1000;
+const PHASE_A_PLAN_PATH =
+  'docs/superpowers/plans/2026-08-04-mail-read-artifact-reservation-chain.md';
 
 function sharedDir(): string {
-  return process.env.HMS_SHARED_DIR?.trim() || '/opt/nava/shared';
+  return (
+    process.env.HMS_SHARED_DIR?.trim() || '/opt/nava/shared/hms-runtime'
+  );
 }
 
 function canaryProofPath(): string {
@@ -160,35 +179,85 @@ function disableFlagPath(): string {
 function roleProofPath(): string {
   return (
     process.env.HMS_READ_ROLE_PROOF_PATH?.trim() ||
-    join(sharedDir(), 'hms-read-role-proof.v1.json')
+    '/etc/nava/hms-read-role-proof.v1.json'
   );
 }
 
 function dependencyStampPath(): string {
-  return join(sharedDir(), 'hms-dependency-revision.txt');
+  return (
+    process.env.HMS_DEPENDENCY_STAMP_PATH?.trim() ||
+    '/opt/nava/shared/hms-dependency-revision.txt'
+  );
+}
+
+function operationLockPath(): string {
+  return join(sharedDir(), '.hms-live-operation.lock');
+}
+
+function kernelOperationLockPath(): string {
+  return join(sharedDir(), '.hms-live-operation.v2.lock');
 }
 
 function sha256Hex(input: string | Buffer): string {
   return createHash('sha256').update(input).digest('hex');
 }
 
+const pendingOutputLines: string[] = [];
+
 function emitOk(token: string): void {
-  process.stdout.write(`${token}\n`);
+  pendingOutputLines.push(token);
+}
+
+class OperatorExit extends Error {
+  readonly exitCode: 0 | 3 | 10 | 20;
+  readonly line: string;
+  constructor(exitCode: 0 | 3 | 10 | 20, line: string) {
+    super(line);
+    this.name = 'OperatorExit';
+    this.exitCode = exitCode;
+    this.line = line;
+  }
 }
 
 function emitWait(code: string): never {
-  process.stdout.write(`HMS_WAIT code=${code}\n`);
-  process.exit(3);
+  const line = `HMS_WAIT code=${code}`;
+  throw new OperatorExit(3, line);
+}
+
+function emitG1Wait(): never {
+  const line = 'G1_WAIT code=PROOF_STALE';
+  throw new OperatorExit(3, line);
+}
+
+function emitG1Fail(gate?: PhaseAGateV1 | null): never {
+  if (
+    gate &&
+    (gate.state === 'awaiting_continue' || gate.state === 'accepted')
+  ) {
+    try {
+      writeAtomicJson(phaseAGatePath(), {
+        ...gate,
+        state: 'awaiting_continue',
+        writtenAt: new Date().toISOString(),
+        acceptedAt: undefined,
+      });
+    } catch {
+      const rollbackLine = 'G1_FAIL code=ROLLBACK_INCOMPLETE';
+      throw new OperatorExit(20, rollbackLine);
+    }
+  }
+  const line = 'G1_FAIL code=EVIDENCE_INVALID';
+  throw new OperatorExit(10, line);
 }
 
 function emitFail(code: string): never {
   if (code === 'ROLLBACK_INCOMPLETE') {
-    process.stdout.write(`HMS_FAIL code=ROLLBACK_INCOMPLETE\n`);
-    process.exit(20);
+    const line = 'HMS_FAIL code=ROLLBACK_INCOMPLETE';
+    throw new OperatorExit(20, line);
   }
   const safe = OPERATOR_FAIL_CODES.has(code) ? code : 'UNKNOWN_SAFE';
-  process.stdout.write(`HMS_FAIL code=${safe}\n`);
-  process.exit(10);
+  const line = `HMS_FAIL code=${safe}`;
+  throw new OperatorExit(10, line);
 }
 
 function assertNoLookupArgv(argv: string[]): void {
@@ -207,6 +276,9 @@ function mapRuntimeFail(err: unknown): HmsOperatorFailCode {
   if (err instanceof HmsRuntimeError) {
     if (OPERATOR_FAIL_CODES.has(err.code)) {
       return err.code as HmsOperatorFailCode;
+    }
+    if (/AUDIT_CAPTURE|TRACE_|VIDEO_|CAPTURE_CAPACITY|PRODUCTION_ORIGIN/i.test(err.code)) {
+      return 'POLICY_BLOCK';
     }
     if (/ROLE_PROOF_MISSING/i.test(err.code)) return 'ROLE_PROOF_MISSING';
     if (/ROLE_PROOF_EXPIRED/i.test(err.code)) return 'ROLE_PROOF_EXPIRED';
@@ -241,12 +313,47 @@ function buildCommit(): string {
 }
 
 function writeAtomicJson(path: string, value: unknown): void {
-  mkdirSync(dirname(path), { recursive: true });
+  const parent = dirname(path);
+  mkdirSync(parent, { recursive: true });
   const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
   writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
   chmodSync(tmp, 0o600);
+  const tmpFd = openSync(tmp, 'r');
+  try {
+    try {
+      fsyncSync(tmpFd);
+    } catch (error) {
+      if (process.platform !== 'win32') throw error;
+    }
+  } finally {
+    closeSync(tmpFd);
+  }
+  try {
+    const parentFd = openSync(parent, 'r');
+    try {
+      fsyncSync(parentFd);
+    } finally {
+      closeSync(parentFd);
+    }
+  } catch {
+    // Directory fsync is unavailable on some local Windows filesystems.
+  }
+  if (process.platform === 'win32' && existsSync(path)) {
+    // Windows rename cannot replace; production Linux retains atomic replace.
+    unlinkSync(path);
+  }
   renameSync(tmp, path);
   chmodSync(path, 0o600);
+  try {
+    const parentFd = openSync(parent, 'r');
+    try {
+      fsyncSync(parentFd);
+    } finally {
+      closeSync(parentFd);
+    }
+  } catch {
+    // Production proof host is Linux; retain portable local test behavior.
+  }
 }
 
 function readJsonFile<T>(path: string): T | null {
@@ -260,24 +367,46 @@ function readJsonFile<T>(path: string): T | null {
 
 function invalidateProofs(): void {
   for (const p of [canaryProofPath(), shadowProofPath()]) {
-    if (existsSync(p)) {
-      try {
-        unlinkSync(p);
-      } catch {
-        /* ignore */
-      }
-    }
+    if (existsSync(p)) unlinkSync(p);
+    if (existsSync(p)) throw new Error('proof invalidation incomplete');
   }
 }
 
 function assertDependenciesOk(): void {
+  const stampPath = dependencyStampPath();
   const stamp = existsSync(dependencyStampPath())
     ? readFileSync(dependencyStampPath(), 'utf8').trim()
     : '';
   const chrome =
     process.env.HMS_CHROMIUM_EXECUTABLE_PATH?.trim() ||
     '/opt/nava/chromium/chrome';
-  if (stamp !== HMS_DEPENDENCY_REVISION || !existsSync(chrome)) {
+  const browsers =
+    process.env.PLAYWRIGHT_BROWSERS_PATH?.trim() || '/opt/nava/ms-playwright';
+  let immutable = true;
+  if (process.platform !== 'win32') {
+    try {
+      immutable = [stampPath, chrome, dirname(chrome), browsers].every(
+        (path) => {
+          const info = statSync(path);
+          return info.uid === 0 && (info.mode & 0o222) === 0;
+        },
+      );
+    } catch {
+      immutable = false;
+    }
+  }
+  const unzip = spawnSync(
+    process.env.HMS_UNZIP_EXECUTABLE_PATH?.trim() || 'unzip',
+    ['-v'],
+    { stdio: 'ignore' },
+  );
+  if (
+    stamp !== HMS_DEPENDENCY_REVISION ||
+    !existsSync(chrome) ||
+    !immutable ||
+    unzip.status !== 0 ||
+    unzip.error
+  ) {
     emitFail('DEPENDENCY_MISMATCH');
   }
 }
@@ -287,6 +416,13 @@ function loadRoleProofDigest(): { sha256: string; expiresAt: string } {
   if (!existsSync(path)) {
     process.stdout.write(`roleProofPath=${path}\n`);
     emitFail('ROLE_PROOF_MISSING');
+  }
+  if (process.platform !== 'win32') {
+    const info = statSync(path);
+    if (info.uid !== 0 || (info.mode & 0o777) !== 0o444) {
+      process.stdout.write(`roleProofPath=${path}\n`);
+      emitFail('ROLE_SCOPE_INVALID');
+    }
   }
   let raw: string;
   try {
@@ -364,24 +500,32 @@ function codeArtifactDigests(): {
 }
 
 function pm2DescribeHms(): {
+  present: boolean;
   online: boolean;
   startedAt?: string;
   commit?: string;
+  execPath?: string;
 } {
   const out = spawnSync('pm2', ['jlist'], { encoding: 'utf8' });
-  if (out.status !== 0) return { online: false };
+  if (out.status !== 0 || out.error) {
+    throw new HmsRuntimeError(
+      'RUN_ISOLATION_BLOCKED',
+      'PM2 inspection failed',
+    );
+  }
   try {
     const apps = JSON.parse(out.stdout || '[]') as Array<{
       name?: string;
       pm2_env?: {
         status?: string;
         pm_uptime?: number;
+        pm_exec_path?: string;
         NAVA_BUILD_COMMIT?: string;
         env?: Record<string, string>;
       };
     }>;
     const hit = apps.find((a) => a.name === 'hms-ai-worker');
-    if (!hit) return { online: false };
+    if (!hit) return { present: false, online: false };
     const status = hit.pm2_env?.status;
     const online = status === 'online';
     const startedAt = hit.pm2_env?.pm_uptime
@@ -391,9 +535,18 @@ function pm2DescribeHms(): {
       hit.pm2_env?.NAVA_BUILD_COMMIT ||
       hit.pm2_env?.env?.NAVA_BUILD_COMMIT ||
       undefined;
-    return { online, startedAt, commit };
+    return {
+      present: true,
+      online,
+      startedAt,
+      commit,
+      execPath: hit.pm2_env?.pm_exec_path,
+    };
   } catch {
-    return { online: false };
+    throw new HmsRuntimeError(
+      'RUN_ISOLATION_BLOCKED',
+      'PM2 inspection malformed',
+    );
   }
 }
 
@@ -406,22 +559,37 @@ function pm2DefaultHealthy(): boolean {
       pm2_env?: { status?: string };
     }>;
     const http = apps.find((a) => a.name === 'http');
+    const worker = apps.find((a) => a.name === 'worker');
     const ai = apps.find((a) => a.name === 'ai-worker');
-    return http?.pm2_env?.status === 'online' && ai?.pm2_env?.status === 'online';
+    return (
+      http?.pm2_env?.status === 'online' &&
+      worker?.pm2_env?.status === 'online' &&
+      ai?.pm2_env?.status === 'online'
+    );
   } catch {
     return false;
   }
 }
 
 function deleteHmsPm2(): void {
-  spawnSync('pm2', ['delete', 'hms-ai-worker'], { encoding: 'utf8' });
-  spawnSync('pm2', ['save'], { encoding: 'utf8' });
+  const before = pm2DescribeHms();
+  if (before.present) {
+    const deleted = spawnSync('pm2', ['delete', 'hms-ai-worker'], {
+      encoding: 'utf8',
+    });
+    if (deleted.status !== 0 || deleted.error) {
+      emitFail('ROLLBACK_INCOMPLETE');
+    }
+  }
+  const saved = spawnSync('pm2', ['save'], { encoding: 'utf8' });
+  if (saved.status !== 0 || saved.error) emitFail('ROLLBACK_INCOMPLETE');
+  if (pm2DescribeHms().present) emitFail('ROLLBACK_INCOMPLETE');
 }
 
 function startHmsPm2(input: {
   proofAttemptId: string;
   buildCommit: string;
-}): void {
+}): { startedAt: string } {
   const repo =
     process.env.REPO_ROOT?.trim() || '/home/ubuntu/repos/zero';
   const config = join(repo, 'apps/server-pilot/deploy/pm2.config.cjs');
@@ -443,44 +611,82 @@ function startHmsPm2(input: {
   if (started.status !== 0) {
     emitFail('UNKNOWN_SAFE');
   }
-  spawnSync('pm2', ['save'], { encoding: 'utf8', env });
+  const running = pm2DescribeHms();
+  const expectedPath = join(repo, 'apps/server-pilot/dist/ai/worker.js');
+  if (
+    !running.present ||
+    !running.online ||
+    running.commit !== input.buildCommit ||
+    running.execPath !== expectedPath ||
+    !running.startedAt
+  ) {
+    emitFail('BUILD_MISMATCH');
+  }
+  return { startedAt: running.startedAt! };
 }
 
-type ExactMailAnchor = {
+export type ExactMailAnchor = {
   candidate: ExactReservationCandidate;
   messageId: string;
   threadId: string;
   transportId: string;
 };
 
-async function selectOldestExactCandidates(
-  databaseUrl: string,
-  limit = 12,
-): Promise<ExactMailAnchor[]> {
-  const { db, conn } = createDb(databaseUrl);
-  try {
-    const rows = await db
-      .select({
-        id: message.id,
-        threadId: message.threadId,
-        transportId: message.transportId,
-        textBody: message.textBody,
-        htmlBody: message.htmlBody,
-        subject: message.subject,
-        receivedAt: message.receivedAt,
-      })
-      .from(message)
-      .where(
-        and(
-          eq(message.transportId, CENTURION_TRANSPORT_ID),
-          eq(message.direction, 'inbound'),
-        ),
-      )
-      .orderBy(asc(message.receivedAt), asc(message.id));
+export type ProofCandidateMailRow = {
+  id: string;
+  threadId: string;
+  transportId: string;
+  textBody: string | null;
+  htmlBody: string | null;
+  subject: string | null;
+  receivedAt: Date | null;
+  sentAt: Date | null;
+};
 
-    const out: ExactMailAnchor[] = [];
-    const seen = new Set<string>();
-    for (const row of rows) {
+export function validateRequestRuleCounts(
+  requestRules: readonly { ruleId: string; count: number }[],
+  allowedRuleIds: ReadonlySet<string>,
+): boolean {
+  const seen = new Set<string>();
+  for (const { ruleId, count } of requestRules) {
+    if (
+      !allowedRuleIds.has(ruleId) ||
+      seen.has(ruleId) ||
+      !Number.isSafeInteger(count) ||
+      count <= 0
+    ) {
+      return false;
+    }
+    seen.add(ruleId);
+  }
+  return (
+    requestRules.find(({ ruleId }) => ruleId === 'live-osress-search-exact')
+      ?.count === 1
+  );
+}
+
+function liveProofAllowedRuleIds(): Set<string> {
+  return new Set(
+    buildExactOsressSearchManifest(
+      'https://appsrv-1.legacyhotels.co.za',
+      liveNotFoundCanaryCandidate(),
+    ).rules.map((rule) => rule.id),
+  );
+}
+
+export function rankExactMailCandidates(
+  rows: readonly ProofCandidateMailRow[],
+  limit = 24,
+  deadlineEpochMs = Number.POSITIVE_INFINITY,
+): ExactMailAnchor[] {
+  const ranked = rows
+    .map((row) => {
+      if (Date.now() > deadlineEpochMs) {
+        throw new HmsRuntimeError(
+          'TRANSIENT_NETWORK',
+          'candidate discovery deadline exceeded',
+        );
+      }
       const text = [
         row.subject ?? '',
         normalizeMessageText({
@@ -488,58 +694,182 @@ async function selectOldestExactCandidates(
           htmlBody: row.htmlBody,
         }),
       ].join('\n');
-      const exact = filterExactReservationCandidates(extractLookupCandidates(text));
-      if (exact.length !== 1) continue;
+      const exact = filterExactReservationCandidates(
+        extractLookupCandidates(text),
+      );
+      if (exact.length !== 1) return null;
       const candidate = exact[0]!;
-      // Skip obvious short false positives (live HRCEN confirmations are longer).
-      if (candidate.value.length < 6) continue;
-      const key = `${candidate.kind}:${candidate.value.toUpperCase()}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push({
-        candidate,
-        messageId: row.id,
-        threadId: row.threadId,
-        transportId: row.transportId,
-      });
-      if (out.length >= limit) break;
+      const value = candidate.value;
+      const rank = /^\d{6,14}-\d{1,4}$/.test(value)
+        ? 3
+        : /\d/.test(value) && value.includes('-')
+          ? 2
+          : 1;
+      return { row, candidate, rank };
+    })
+    .filter(
+      (
+        item,
+      ): item is {
+        row: ProofCandidateMailRow;
+        candidate: ExactReservationCandidate;
+        rank: number;
+      } => item !== null,
+    )
+    .sort((a, b) => {
+      const rankOrder = b.rank - a.rank;
+      if (rankOrder !== 0) return rankOrder;
+      const at = (a.row.receivedAt ?? a.row.sentAt)?.getTime() ?? 0;
+      const bt = (b.row.receivedAt ?? b.row.sentAt)?.getTime() ?? 0;
+      if (at !== bt) return at - bt;
+      return a.row.id.localeCompare(b.row.id);
+    });
+
+  const out: ExactMailAnchor[] = [];
+  const seen = new Set<string>();
+  for (const { row, candidate } of ranked) {
+    if (Date.now() > deadlineEpochMs) {
+      throw new HmsRuntimeError(
+        'TRANSIENT_NETWORK',
+        'candidate discovery deadline exceeded',
+      );
     }
-    return out;
+    const key = `${candidate.kind}:${candidate.value.toUpperCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      candidate,
+      messageId: row.id,
+      threadId: row.threadId,
+      transportId: row.transportId,
+    });
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+type PhaseAProofEvidence = {
+  schemaVersion: 1;
+  artifactId: string;
+  sourceRevision: string;
+  toolId: string;
+  toolVersion: string;
+  dependencyRevision: string;
+  playwrightRevision: string;
+  chromiumRevision: string;
+  productionOriginAttested: true;
+  credentialMode: 'view_only';
+  roleProofSha256: string;
+  roleProofExpiresAt: string;
+  trace: { sha256: string; bytes: number };
+  video: { sha256: string; bytes: number };
+  receiptSha256: string;
+  blockedRequests: number;
+  mutationRequests: number;
+  popupCount: number;
+  downloadCount: number;
+  webSocketCount: number;
+  expiresAt: string;
+};
+
+async function selectOldestExactCandidates(
+  databaseUrl: string,
+  transportId: string,
+  limit = 24,
+  maxRows = 5000,
+  statementTimeoutMs = 120_000,
+): Promise<ExactMailAnchor[]> {
+  const { db, conn } = createDb(databaseUrl);
+  const processingDeadline = Date.now() + Math.max(1, statementTimeoutMs);
+  try {
+    // Inbound guest mail + outbound confirmation-letter subjects (n°…).
+    // Do not cap at 250 — Centurion corpus needs a wide walk for live proof.
+    const rows = await db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select set_config('statement_timeout', ${String(
+          Math.max(1, statementTimeoutMs),
+        )}, true)`,
+      );
+      return tx
+        .select({
+          id: message.id,
+          threadId: message.threadId,
+          transportId: message.transportId,
+          textBody: sql<string | null>`left(${message.textBody}, 4096)`,
+          htmlBody: sql<string | null>`left(${message.htmlBody}, 4096)`,
+          subject: sql<string | null>`left(${message.subject}, 1024)`,
+          receivedAt: message.receivedAt,
+          sentAt: message.sentAt,
+        })
+        .from(message)
+        .where(eq(message.transportId, transportId))
+        .orderBy(
+          asc(sql`coalesce(${message.receivedAt}, ${message.sentAt})`),
+          asc(message.id),
+        )
+        .limit(maxRows);
+    });
+
+    // Prefer digit/dash Centurion n° shape (########-#) before other exact tokens.
+    return rankExactMailCandidates(rows, limit, processingDeadline);
   } finally {
-    await conn.end().catch(() => undefined);
+    try {
+      await conn.end();
+    } catch {
+      emitFail('ROLLBACK_INCOMPLETE');
+    }
   }
 }
 
 async function selectOldestExactCandidate(
   databaseUrl: string,
+  transportId: string,
 ): Promise<ExactMailAnchor | null> {
-  const list = await selectOldestExactCandidates(databaseUrl, 1);
+  const list = await selectOldestExactCandidates(databaseUrl, transportId, 1);
   return list[0] ?? null;
 }
 
 async function snapshotForbiddenRows(transportId: string): Promise<{
-  aiDraftGeneration: number;
-  mailDraft: number;
-  mailDraftRevision: number;
+  aiDraftGeneration: { count: number; fingerprint: string };
+  mailDraft: { count: number; fingerprint: string };
+  mailDraftRevision: { count: number; fingerprint: string };
 }> {
   const db = getDb();
   const [gens] = await db
-    .select({ c: count() })
+    .select({
+      c: count(),
+      fingerprint: sql<string>`md5(coalesce(string_agg(${aiDraftGeneration.id} || ':' || ${aiDraftGeneration.status} || ':' || coalesce(${aiDraftGeneration.outcome}, ''), ',' order by ${aiDraftGeneration.id}), ''))`,
+    })
     .from(aiDraftGeneration)
     .where(eq(aiDraftGeneration.transportId, transportId));
   const [drafts] = await db
-    .select({ c: count() })
+    .select({
+      c: count(),
+      fingerprint: sql<string>`md5(coalesce(string_agg(${mailDraft.id} || ':' || ${mailDraft.status}::text || ':' || ${mailDraft.isSent}::text || ':' || ${mailDraft.updatedAt}::text || ':' || coalesce(${mailDraft.generationId}, ''), ',' order by ${mailDraft.id}), ''))`,
+    })
     .from(mailDraft)
     .where(eq(mailDraft.transportId, transportId));
   const [revs] = await db
-    .select({ c: count() })
+    .select({
+      c: count(),
+      fingerprint: sql<string>`md5(coalesce(string_agg(${mailDraftRevision.id} || ':' || ${mailDraftRevision.kind}::text || ':' || ${mailDraftRevision.createdAt}::text || ':' || coalesce(${mailDraftRevision.generationId}, ''), ',' order by ${mailDraftRevision.id}), ''))`,
+    })
     .from(mailDraftRevision)
     .innerJoin(mailDraft, eq(mailDraftRevision.draftId, mailDraft.id))
     .where(eq(mailDraft.transportId, transportId));
   return {
-    aiDraftGeneration: Number(gens?.c ?? 0),
-    mailDraft: Number(drafts?.c ?? 0),
-    mailDraftRevision: Number(revs?.c ?? 0),
+    aiDraftGeneration: {
+      count: Number(gens?.c ?? 0),
+      fingerprint: String(gens?.fingerprint ?? ''),
+    },
+    mailDraft: {
+      count: Number(drafts?.c ?? 0),
+      fingerprint: String(drafts?.fingerprint ?? ''),
+    },
+    mailDraftRevision: {
+      count: Number(revs?.c ?? 0),
+      fingerprint: String(revs?.fingerprint ?? ''),
+    },
   };
 }
 
@@ -573,6 +903,134 @@ function setStartsDisabled(disabled: boolean): void {
   }
 }
 
+export function acquireHmsOperationLock(): () => void {
+  if (process.platform === 'linux') {
+    const path = kernelOperationLockPath();
+    mkdirSync(dirname(path), { recursive: true });
+    const fd = openSync(path, 'w', 0o600);
+    chmodSync(path, 0o600);
+    const locked = spawnSync('flock', ['-n', '3'], {
+      stdio: ['ignore', 'ignore', 'ignore', fd],
+    });
+    if (locked.status !== 0 || locked.error) {
+      closeSync(fd);
+      emitFail('RUN_ISOLATION_BLOCKED');
+    }
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const unlocked = spawnSync('flock', ['-u', '3'], {
+        stdio: ['ignore', 'ignore', 'ignore', fd],
+      });
+      closeSync(fd);
+      if (unlocked.status !== 0 || unlocked.error) {
+        throw new Error('HMS kernel operation lock release failed');
+      }
+    };
+  }
+  const path = operationLockPath();
+  mkdirSync(dirname(path), { recursive: true });
+  const bootId = (() => {
+    try {
+      return readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
+    } catch {
+      return `platform:${process.platform}`;
+    }
+  })();
+  const processStart = (pid: number): string | null => {
+    if (process.platform === 'linux') {
+      try {
+        const value = readFileSync(`/proc/${pid}/stat`, 'utf8');
+        const afterName = value.slice(value.lastIndexOf(')') + 2).split(' ');
+        return afterName[19] ?? null;
+      } catch {
+        return null;
+      }
+    }
+    try {
+      process.kill(pid, 0);
+      return `pid:${pid}`;
+    } catch {
+      return null;
+    }
+  };
+  const ownProcessStart = processStart(process.pid);
+  const create = (): void => {
+    const candidate = `${path}.acquire-${randomUUID()}`;
+    try {
+      mkdirSync(candidate, { mode: 0o700 });
+      writeFileSync(
+        join(candidate, 'owner.v1.json'),
+        `${JSON.stringify({
+          pid: process.pid,
+          bootId,
+          processStart: ownProcessStart,
+          startedAt: new Date().toISOString(),
+        })}\n`,
+        { mode: 0o600, flag: 'wx' },
+      );
+      renameSync(candidate, path);
+    } finally {
+      rmSync(candidate, { recursive: true, force: true });
+    }
+  };
+  try {
+    create();
+  } catch {
+    type LockOwner = {
+      pid?: unknown;
+      bootId?: unknown;
+      processStart?: unknown;
+    };
+    let owner: LockOwner | null = null;
+    try {
+      owner = JSON.parse(
+        readFileSync(join(path, 'owner.v1.json'), 'utf8'),
+      ) as LockOwner;
+    } catch {
+      owner = null;
+    }
+    const ownerPid =
+      typeof owner?.pid === 'number' && Number.isSafeInteger(owner.pid)
+        ? owner.pid
+        : null;
+    const ownerAlive =
+      ownerPid !== null &&
+      owner?.bootId === bootId &&
+      owner?.processStart === processStart(ownerPid);
+    if (ownerAlive) emitFail('RUN_ISOLATION_BLOCKED');
+
+    const tombstone = `${path}.stale-${randomUUID()}`;
+    try {
+      renameSync(path, tombstone);
+      try {
+        create();
+      } finally {
+        rmSync(tombstone, { recursive: true, force: true });
+      }
+    } catch {
+      emitFail('RUN_ISOLATION_BLOCKED');
+    }
+  }
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const owner = JSON.parse(
+      readFileSync(join(path, 'owner.v1.json'), 'utf8'),
+    ) as { pid?: unknown; bootId?: unknown; processStart?: unknown };
+    if (
+      owner.pid !== process.pid ||
+      owner.bootId !== bootId ||
+      owner.processStart !== ownProcessStart
+    ) {
+      throw new Error('HMS operation lock ownership changed');
+    }
+    rmSync(path, { recursive: true, force: false });
+  };
+}
+
 function readHealthHeartbeat(): { ok: boolean; stale: boolean } {
   const path =
     process.env.HMS_HEALTH_STATUS_PATH?.trim() ||
@@ -596,18 +1054,23 @@ function readHealthHeartbeat(): { ok: boolean; stale: boolean } {
   }
 }
 
-function isFreshProof(finishedAt: string, expiresAt: string): boolean {
+export function isFreshProof(
+  finishedAt: string,
+  expiresAt: string,
+  now = Date.now(),
+): boolean {
   const fin = Date.parse(finishedAt);
   const exp = Date.parse(expiresAt);
   if (!Number.isFinite(fin) || !Number.isFinite(exp)) return false;
+  if (fin > now || exp <= fin) return false;
   if (exp - fin > PROOF_TTL_MS + 1000) return false;
-  return exp > Date.now();
+  return exp > now;
 }
 
 async function runCanary(): Promise<void> {
   if (startsDisabled()) emitFail('RUN_ISOLATION_BLOCKED');
   const hms = pm2DescribeHms();
-  if (hms.online) emitFail('RUN_ISOLATION_BLOCKED');
+  if (hms.present) emitFail('RUN_ISOLATION_BLOCKED');
 
   assertDependenciesOk();
   const role = loadRoleProofDigest();
@@ -625,13 +1088,18 @@ async function runCanary(): Promise<void> {
   const nonterminal = await countNonterminalHmsLane();
   if (nonterminal > 0) emitFail('RUN_ISOLATION_BLOCKED');
 
-  const anchors = await selectOldestExactCandidates(env.DATABASE_URL);
-  if (anchors.length === 0) emitWait('NO_EXACT_CANDIDATE');
-
   const hmsConfig = requireHmsWorkerRuntimeConfig({
     ...process.env,
     HMS_DRAFT_ENRICHMENT_MODE: 'shadow',
   });
+  if (hmsConfig.expectedTransportId !== CENTURION_TRANSPORT_ID) {
+    emitFail('PROPERTY_MISMATCH');
+  }
+  const anchors = await selectOldestExactCandidates(
+    env.DATABASE_URL,
+    hmsConfig.expectedTransportId,
+  );
+  if (anchors.length === 0) emitWait('NO_EXACT_CANDIDATE');
   // Not-found + fingerprint + up to N exact searches each need a fresh login.
   const signal = AbortSignal.timeout(
     Math.max(
@@ -639,12 +1107,22 @@ async function runCanary(): Promise<void> {
       90_000 + anchors!.length * 90_000,
     ),
   );
-  const runtime = await createProductionHmsRuntime(hmsConfig);
+  const runtime = await createProductionHmsRuntime(hmsConfig, {
+    sourceRevision: commit,
+  });
   try {
     await runtime.start(signal);
     const driver = createLiveGuestStayDriver({
       runtime,
       transportId: hmsConfig.expectedTransportId,
+      auditSpecFor: ({ inputClass }) => ({
+        operationId: randomUUID(),
+        toolId: 'hms_find_reservation',
+        toolVersion: '1.1.0',
+        dependencyRevision: HMS_DEPENDENCY_REVISION,
+        executionClass: 'normal',
+        inputClass,
+      }),
     });
 
     await driver.loginAndVerifyBinding(signal);
@@ -670,9 +1148,14 @@ async function runCanary(): Promise<void> {
     if (!matched) emitWait('NO_EXACT_CANDIDATE');
     emitOk('HMS_LIVE_ROW_OK');
   } catch (err) {
+    if (err instanceof OperatorExit) throw err;
     emitFail(mapRuntimeFail(err));
   } finally {
-    await runtime.close().catch(() => undefined);
+    try {
+      await runtime.close();
+    } catch {
+      emitFail('ROLLBACK_INCOMPLETE');
+    }
   }
 
   const finishedAt = new Date().toISOString();
@@ -690,6 +1173,52 @@ async function runCanary(): Promise<void> {
   writeAtomicJson(canaryProofPath(), canary);
   // Canary does not leave HMS PM2 running.
   deleteHmsPm2();
+}
+
+async function deadLetterScopedProofRuns(prefix: string): Promise<void> {
+  const db = getDb();
+  const rows = await db
+    .select()
+    .from(aiWorkflowRun)
+    .where(
+      and(
+        eq(aiWorkflowRun.executorLane, 'hms'),
+        like(aiWorkflowRun.idempotencyKey, `${prefix}%`),
+        inArray(aiWorkflowRun.state, [...NONTERMINAL_AI_RUN_STATES]),
+      ),
+    );
+  for (const row of rows) {
+    if (row.claimOwner && row.claimToken) {
+      await markAiRunDeadLetter({
+        runId: row.id,
+        claimOwner: row.claimOwner,
+        claimToken: row.claimToken,
+        expectedStates: [...NONTERMINAL_AI_RUN_STATES],
+        lastError: 'UNKNOWN',
+        failureClass: 'UNKNOWN',
+      });
+    } else {
+      await db
+        .update(aiWorkflowRun)
+        .set({
+          state: 'dead_letter',
+          lastError: 'UNKNOWN',
+          failureClass: 'UNKNOWN',
+          updatedAt: new Date(),
+          claimOwner: null,
+          claimToken: null,
+        })
+        .where(
+          and(
+            eq(aiWorkflowRun.id, row.id),
+            inArray(aiWorkflowRun.state, [...NONTERMINAL_AI_RUN_STATES]),
+          ),
+        );
+    }
+  }
+  if ((await countNonterminalAiRuns({ idempotencyPrefix: prefix })) !== 0) {
+    throw new Error('proof runs remain nonterminal');
+  }
 }
 
 async function runStart(): Promise<void> {
@@ -718,99 +1247,137 @@ async function runStart(): Promise<void> {
 
   const env = parseEnv(process.env);
   process.env.DATABASE_URL = env.DATABASE_URL;
+  const hmsConfig = requireHmsWorkerRuntimeConfig({
+    ...process.env,
+    HMS_DRAFT_ENRICHMENT_MODE: 'shadow',
+  });
+  if (hmsConfig.expectedTransportId !== CENTURION_TRANSPORT_ID) {
+    emitFail('PROPERTY_MISMATCH');
+  }
 
   const nonterminal = await countNonterminalHmsLane();
   if (nonterminal > 0) emitFail('RUN_ISOLATION_BLOCKED');
 
   const hmsBefore = pm2DescribeHms();
-  if (hmsBefore.online) emitFail('RUN_ISOLATION_BLOCKED');
+  if (hmsBefore.present) emitFail('RUN_ISOLATION_BLOCKED');
 
   const proofAttemptId = randomUUID();
-  const anchor = await selectOldestExactCandidate(env.DATABASE_URL);
+  const anchor = await selectOldestExactCandidate(
+    env.DATABASE_URL,
+    hmsConfig.expectedTransportId,
+  );
   if (!anchor) emitWait('NO_EXACT_CANDIDATE');
 
   const before = await snapshotForbiddenRows(anchor!.transportId);
   const canaryProofSha256 = sha256Hex(readFileSync(canaryProofPath()));
 
+  if (startsDisabled()) emitFail('RUN_ISOLATION_BLOCKED');
   const idempotencyKey = `hms-proof:${proofAttemptId}:${anchor!.messageId}`;
-  // Shadow proof enqueue: generationId: null (never pre-create aiDraftGeneration).
-  const run = await enqueueAiRun({
-    transportId: anchor!.transportId,
-    threadId: anchor!.threadId,
-    triggerMessageId: anchor!.messageId,
-    runKind: 'candidate_draft',
-    idempotencyKey,
-    modelId: DEFAULT_AI_MODEL_ID,
-    promptVersion: 'draft-v1',
-    executorLane: 'hms',
-  });
-  if (run.generationId !== null) {
-    emitFail('FORBIDDEN_PERSISTENCE');
-  }
-
-  process.env.HMS_DRAFT_ENRICHMENT_MODE = 'shadow';
-  process.env.AI_DRAFTS_ENABLED = 'false';
-  process.env.NAVA_BUILD_COMMIT = commit;
-  process.env.AI_WORKER_IDEMPOTENCY_PREFIX = `hms-proof:${proofAttemptId}:`;
-
-  startHmsPm2({ proofAttemptId, buildCommit: commit });
-  const processStartedAt = new Date().toISOString();
-
   const prefix = `hms-proof:${proofAttemptId}:`;
-  const deadline = Date.now() + (env.HMS_RUN_DEADLINE_MS ?? 150_000) + 30_000;
-  let terminal: (typeof aiWorkflowRun.$inferSelect) | null = null;
-  while (Date.now() < deadline) {
-    const db = getDb();
-    const [row] = await db
-      .select()
-      .from(aiWorkflowRun)
-      .where(eq(aiWorkflowRun.id, run.id))
-      .limit(1);
-    if (row && (row.state === 'succeeded' || row.state === 'dead_letter')) {
-      terminal = row;
-      break;
+  let cleanupRequired = false;
+  try {
+    // Shadow proof enqueue: generationId: null (never pre-create aiDraftGeneration).
+    const run = await enqueueAiRun({
+      transportId: anchor!.transportId,
+      threadId: anchor!.threadId,
+      triggerMessageId: anchor!.messageId,
+      runKind: 'candidate_draft',
+      idempotencyKey,
+      modelId: DEFAULT_AI_MODEL_ID,
+      promptVersion: 'draft-v1',
+      executorLane: 'hms',
+    });
+    cleanupRequired = true;
+    if (run.generationId !== null) emitFail('FORBIDDEN_PERSISTENCE');
+
+    process.env.HMS_DRAFT_ENRICHMENT_MODE = 'shadow';
+    process.env.AI_DRAFTS_ENABLED = 'false';
+    process.env.NAVA_BUILD_COMMIT = commit;
+    process.env.AI_WORKER_IDEMPOTENCY_PREFIX = prefix;
+
+    if (startsDisabled()) emitFail('RUN_ISOLATION_BLOCKED');
+    const { startedAt: processStartedAt } = startHmsPm2({
+      proofAttemptId,
+      buildCommit: commit,
+    });
+    const deadline =
+      Date.now() + (env.HMS_RUN_DEADLINE_MS ?? 150_000) + 30_000;
+    let terminal: (typeof aiWorkflowRun.$inferSelect) | null = null;
+    while (Date.now() < deadline) {
+      const db = getDb();
+      const [row] = await db
+        .select()
+        .from(aiWorkflowRun)
+        .where(eq(aiWorkflowRun.id, run.id))
+        .limit(1);
+      if (row && (row.state === 'succeeded' || row.state === 'dead_letter')) {
+        terminal = row;
+        break;
+      }
+      await countNonterminalAiRuns({ idempotencyPrefix: prefix });
+      await new Promise((r) => setTimeout(r, 2000));
     }
-    // Scoped wait — only this proof prefix (never drain unrelated).
-    await countNonterminalAiRuns({ idempotencyPrefix: prefix });
-    await new Promise((r) => setTimeout(r, 2000));
+    if (!terminal || terminal.state !== 'succeeded') emitFail('UNKNOWN_SAFE');
+
+    const after = await snapshotForbiddenRows(anchor!.transportId);
+    const forbiddenChanged = (
+      Object.keys(before) as Array<keyof typeof before>
+    ).some(
+      (key) =>
+        after[key].count !== before[key].count ||
+        after[key].fingerprint !== before[key].fingerprint,
+    );
+    if (forbiddenChanged) emitFail('FORBIDDEN_PERSISTENCE');
+
+    const terminalMetrics =
+      terminal.metrics &&
+      typeof terminal.metrics === 'object' &&
+      !Array.isArray(terminal.metrics)
+        ? (terminal.metrics as Record<string, unknown>)
+        : {};
+    if (
+      terminal.failureClass === 'POLICY_BLOCK' ||
+      terminalMetrics.failureClass === 'POLICY_BLOCK'
+    ) {
+      emitFail('POLICY_BLOCK');
+    }
+    const shadow: HmsReservationShadowProofV1 = {
+      schemaVersion: 1,
+      proofAttemptId,
+      runId: run.id,
+      runningProcessCommit: commit,
+      processStartedAt,
+      manifestSha256: digests.manifestSha256,
+      rowFingerprintSha256: digests.rowFingerprintSha256,
+      canaryProofSha256,
+      dependencyRevision: HMS_DEPENDENCY_REVISION,
+      roleProofSha256: role.sha256,
+      shadowVerified: true,
+      forbiddenRowDelta: 0,
+      policyBlockDelta: 0,
+      finishedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + PROOF_TTL_MS).toISOString(),
+    };
+    writeAtomicJson(shadowProofPath(), shadow);
+    cleanupRequired = false;
+    // Leave worker idle — no automatic enqueue. Prefix scope prevents other claims.
+    emitOk('HMS_SHADOW_OK');
+  } finally {
+    if (cleanupRequired) {
+      let cleanupFailed = false;
+      try {
+        deleteHmsPm2();
+      } catch {
+        cleanupFailed = true;
+      }
+      try {
+        await deadLetterScopedProofRuns(prefix);
+      } catch {
+        cleanupFailed = true;
+      }
+      if (cleanupFailed) emitFail('ROLLBACK_INCOMPLETE');
+    }
   }
-
-  if (!terminal || terminal.state !== 'succeeded') {
-    emitFail('UNKNOWN_SAFE');
-  }
-
-  const after = await snapshotForbiddenRows(anchor!.transportId);
-  const forbiddenRowDelta =
-    after.aiDraftGeneration -
-    before.aiDraftGeneration +
-    (after.mailDraft - before.mailDraft) +
-    (after.mailDraftRevision - before.mailDraftRevision);
-  if (forbiddenRowDelta !== 0) emitFail('FORBIDDEN_PERSISTENCE');
-
-  const policyBlockDelta = 0;
-  const finishedAt = new Date().toISOString();
-  const expiresAt = new Date(Date.now() + PROOF_TTL_MS).toISOString();
-  const shadow: HmsReservationShadowProofV1 = {
-    schemaVersion: 1,
-    proofAttemptId,
-    runId: run.id,
-    runningProcessCommit: commit,
-    processStartedAt,
-    manifestSha256: digests.manifestSha256,
-    rowFingerprintSha256: digests.rowFingerprintSha256,
-    canaryProofSha256,
-    dependencyRevision: HMS_DEPENDENCY_REVISION,
-    roleProofSha256: role.sha256,
-    shadowVerified: true,
-    forbiddenRowDelta: 0,
-    policyBlockDelta: 0,
-    finishedAt,
-    expiresAt,
-  };
-  writeAtomicJson(shadowProofPath(), shadow);
-  // Leave worker idle — no automatic enqueue. Prefix scope prevents other claims.
-  void policyBlockDelta;
-  emitOk('HMS_SHADOW_OK');
 }
 
 async function runStatus(): Promise<void> {
@@ -820,7 +1387,7 @@ async function runStatus(): Promise<void> {
   const commit = buildCommit();
   const hms = pm2DescribeHms();
 
-  if (!hms.online) {
+  if (!hms.present) {
     if (!pm2DefaultHealthy()) emitFail('HEALTH_STALE');
     // Off + healthy defaults.
     const shadow = readJsonFile<HmsReservationShadowProofV1>(shadowProofPath());
@@ -830,8 +1397,17 @@ async function runStatus(): Promise<void> {
     emitOk('HMS_OFF_READY');
     return;
   }
-
-  if (hms.commit && hms.commit !== commit) emitFail('BUILD_MISMATCH');
+  if (!hms.online) emitFail('HEALTH_STALE');
+  const repo =
+    process.env.REPO_ROOT?.trim() || '/home/ubuntu/repos/zero';
+  const expectedPath = join(repo, 'apps/server-pilot/dist/ai/worker.js');
+  if (
+    hms.commit !== commit ||
+    hms.execPath !== expectedPath ||
+    !hms.startedAt
+  ) {
+    emitFail('BUILD_MISMATCH');
+  }
 
   const shadow = readJsonFile<HmsReservationShadowProofV1>(shadowProofPath());
   if (!shadow || shadow.schemaVersion !== 1) emitFail('BUILD_MISMATCH');
@@ -839,6 +1415,7 @@ async function runStatus(): Promise<void> {
     emitFail('BUILD_MISMATCH');
   }
   if (shadow!.runningProcessCommit !== commit) emitFail('BUILD_MISMATCH');
+  if (shadow!.processStartedAt !== hms.startedAt) emitFail('BUILD_MISMATCH');
   if (shadow!.dependencyRevision !== HMS_DEPENDENCY_REVISION) {
     emitFail('DEPENDENCY_MISMATCH');
   }
@@ -854,70 +1431,50 @@ async function runStatus(): Promise<void> {
   if (!shadow!.shadowVerified) emitFail('UNKNOWN_SAFE');
 
   const health = readHealthHeartbeat();
-  if (health.stale) emitFail('HEALTH_STALE');
+  if (!health.ok || health.stale) emitFail('HEALTH_STALE');
   if (!pm2DefaultHealthy()) emitFail('HEALTH_STALE');
 
   emitOk('HMS_SHADOW_VERIFIED');
 }
 
 async function runStop(): Promise<void> {
-  // preventStarts — disable future start until flag cleared by ops.
-  setStartsDisabled(true);
-
-  const env = parseEnv(process.env);
-  process.env.DATABASE_URL = env.DATABASE_URL;
-
-  const shadow = readJsonFile<HmsReservationShadowProofV1>(shadowProofPath());
-  const prefix = shadow?.proofAttemptId
-    ? `hms-proof:${shadow.proofAttemptId}:`
-    : null;
-
-  // Signal worker + delete PM2 app (autorestart false → no loop).
-  spawnSync('pm2', ['stop', 'hms-ai-worker'], { encoding: 'utf8' });
-
-  if (prefix) {
-    const db = getDb();
-    const rows = await db
-      .select()
-      .from(aiWorkflowRun)
-      .where(
-        and(
-          eq(aiWorkflowRun.executorLane, 'hms'),
-          like(aiWorkflowRun.idempotencyKey, `${prefix}%`),
-          inArray(aiWorkflowRun.state, [...NONTERMINAL_AI_RUN_STATES]),
-        ),
-      );
-    for (const row of rows) {
-      if (row.claimOwner && row.claimToken) {
-        await markAiRunDeadLetter({
-          runId: row.id,
-          claimOwner: row.claimOwner,
-          claimToken: row.claimToken,
-          expectedStates: [...NONTERMINAL_AI_RUN_STATES],
-          lastError: 'UNKNOWN',
-          failureClass: 'UNKNOWN',
-        });
-      } else {
-        await db
-          .update(aiWorkflowRun)
-          .set({
-            state: 'dead_letter',
-            lastError: 'UNKNOWN',
-            updatedAt: new Date(),
-            claimOwner: null,
-            claimToken: null,
-          })
-          .where(eq(aiWorkflowRun.id, row.id));
-      }
-    }
+  let cleanupFailed = false;
+  // Latch errors must not prevent PM2 and ledger cleanup.
+  try {
+    setStartsDisabled(true);
+  } catch {
+    cleanupFailed = true;
   }
-
-  deleteHmsPm2();
-  invalidateProofs();
-
-  const still = pm2DescribeHms();
-  if (still.online) emitFail('ROLLBACK_INCOMPLETE');
-  if (!pm2DefaultHealthy()) emitFail('ROLLBACK_INCOMPLETE');
+  try {
+    // Delete first so malformed env/DB state cannot leave browser work alive.
+    deleteHmsPm2();
+  } catch {
+    cleanupFailed = true;
+  }
+  try {
+    const env = parseEnv(process.env);
+    process.env.DATABASE_URL = env.DATABASE_URL;
+    await deadLetterScopedProofRuns('hms-proof:');
+  } catch {
+    cleanupFailed = true;
+  }
+  try {
+    invalidateProofs();
+  } catch {
+    cleanupFailed = true;
+  }
+  try {
+    if (
+      !startsDisabled() ||
+      pm2DescribeHms().present ||
+      !pm2DefaultHealthy()
+    ) {
+      cleanupFailed = true;
+    }
+  } catch {
+    cleanupFailed = true;
+  }
+  if (cleanupFailed) emitFail('ROLLBACK_INCOMPLETE');
 
   emitOk('HMS_ROLLBACK_OK');
 }
@@ -929,30 +1486,623 @@ function runRearm(): void {
   emitOk('HMS_SHADOW_REARMED');
 }
 
+function phaseAGatePath(): string {
+  return (
+    process.env.HMS_PHASE_A_GATE_PATH?.trim() ||
+    join(sharedDir(), 'hms-phase-a-gate.v1.json')
+  );
+}
+
+type PhaseAGateV1 = {
+  schemaVersion: 1;
+  state: 'provisional' | 'awaiting_continue' | 'accepted';
+  planPath: typeof PHASE_A_PLAN_PATH;
+  artifactId: string;
+  receiptSha256: string;
+  sourceRevision: string;
+  roleProofSha256: string;
+  roleProofExpiresAt: string;
+  writtenAt: string;
+  deliveryAttestedAt?: string;
+  acceptedAt?: string;
+};
+
+function resetPhaseAGateToAwaiting(gate: PhaseAGateV1): never {
+  writeAtomicJson(phaseAGatePath(), {
+    ...gate,
+    state: 'awaiting_continue',
+    writtenAt: new Date().toISOString(),
+    acceptedAt: undefined,
+  });
+  emitG1Wait();
+}
+
+export function runAcceptG1(): void {
+  const gate = readJsonFile<PhaseAGateV1>(phaseAGatePath());
+  if (
+    !gate ||
+    gate.schemaVersion !== 1 ||
+    gate.planPath !== PHASE_A_PLAN_PATH ||
+    (gate.state !== 'awaiting_continue' && gate.state !== 'accepted') ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      gate.artifactId ?? '',
+    ) ||
+    !/^[a-f0-9]{64}$/i.test(gate.receiptSha256 ?? '') ||
+    !/^phase-a-[A-Za-z0-9._-]+$/.test(gate.sourceRevision ?? '') ||
+    !/^[a-f0-9]{64}$/i.test(gate.roleProofSha256 ?? '') ||
+    !Number.isFinite(Date.parse(gate.roleProofExpiresAt ?? '')) ||
+    !Number.isFinite(Date.parse(gate.writtenAt ?? '')) ||
+    !Number.isFinite(Date.parse(gate.deliveryAttestedAt ?? '')) ||
+    Date.parse(gate.deliveryAttestedAt!) < Date.parse(gate.writtenAt) ||
+    Date.parse(gate.deliveryAttestedAt!) > Date.now() + 60_000
+  ) {
+    emitG1Fail(gate);
+  }
+  if (Date.parse(gate!.roleProofExpiresAt) <= Date.now()) {
+    resetPhaseAGateToAwaiting(gate!);
+  }
+
+  const revisionPath =
+    process.env.NAVA_PROOF_SOURCE_REVISION_PATH?.trim() ||
+    '/opt/nava/shared/nava-proof-source-revision';
+  let currentRevision: string;
+  try {
+    currentRevision = readFileSync(revisionPath, 'utf8').trim();
+  } catch {
+    resetPhaseAGateToAwaiting(gate!);
+  }
+  if (
+    !/^phase-a-[A-Za-z0-9._-]+$/.test(currentRevision!) ||
+    currentRevision! !== gate!.sourceRevision
+  ) {
+    resetPhaseAGateToAwaiting(gate!);
+  }
+
+  const artifactRoot =
+    process.env.HMS_BROWSER_ARTIFACT_ROOT?.trim() ||
+    '/opt/nava/shared/hms-browser-artifacts';
+  const artifactDir = join(artifactRoot, gate!.artifactId);
+  let receipt: HmsBrowserArtifactReceiptV1;
+  let receiptBody: Buffer;
+  try {
+    receiptBody = readFileSync(join(artifactDir, 'receipt.v1.json'));
+  } catch {
+    resetPhaseAGateToAwaiting(gate!);
+  }
+  if (sha256Hex(receiptBody!) !== gate!.receiptSha256) {
+    resetPhaseAGateToAwaiting(gate!);
+  }
+  try {
+    receipt = JSON.parse(receiptBody.toString('utf8')) as HmsBrowserArtifactReceiptV1;
+  } catch {
+    emitG1Fail(gate);
+  }
+  if (
+    receipt!.schemaVersion !== 1 ||
+    receipt!.artifactId !== gate!.artifactId ||
+    receipt!.sourceRevision !== gate!.sourceRevision ||
+    receipt!.roleProofSha256 !== gate!.roleProofSha256 ||
+    receipt!.roleProofExpiresAt !== gate!.roleProofExpiresAt
+  ) {
+    resetPhaseAGateToAwaiting(gate!);
+  }
+  for (const [name, meta] of [
+    ['trace.zip', receipt!.trace],
+    ['video.webm', receipt!.video],
+  ] as const) {
+    if (!meta) emitG1Fail(gate);
+    let bytes: Buffer;
+    try {
+      bytes = readFileSync(join(artifactDir, name));
+    } catch {
+      resetPhaseAGateToAwaiting(gate!);
+    }
+    if (
+      bytes!.byteLength !== meta!.bytes ||
+      sha256Hex(bytes!) !== meta!.sha256
+    ) {
+      resetPhaseAGateToAwaiting(gate!);
+    }
+  }
+
+  let roleBody: Buffer;
+  try {
+    if (process.platform !== 'win32') {
+      const roleInfo = statSync(roleProofPath());
+      if (roleInfo.uid !== 0 || (roleInfo.mode & 0o777) !== 0o444) {
+        emitG1Fail(gate);
+      }
+    }
+    roleBody = readFileSync(roleProofPath());
+  } catch (error) {
+    if (error instanceof OperatorExit) throw error;
+    resetPhaseAGateToAwaiting(gate!);
+  }
+  let currentRole: { expiresAt?: unknown };
+  try {
+    currentRole = JSON.parse(roleBody!.toString('utf8')) as {
+      expiresAt?: unknown;
+    };
+  } catch {
+    emitG1Fail(gate);
+  }
+  if (
+    sha256Hex(roleBody!) !== gate!.roleProofSha256 ||
+    currentRole!.expiresAt !== gate!.roleProofExpiresAt ||
+    Date.parse(gate!.roleProofExpiresAt) <= Date.now()
+  ) {
+    resetPhaseAGateToAwaiting(gate!);
+  }
+
+  const now = Date.now();
+  const expiresAt = Date.parse(receipt!.expiresAt);
+  if (!Number.isFinite(expiresAt) || expiresAt > now + PROOF_TTL_MS) {
+    emitG1Fail(gate);
+  }
+  if (expiresAt <= now) resetPhaseAGateToAwaiting(gate!);
+
+  const zeroUnsafe = [
+    receipt!.blockedRequests,
+    receipt!.mutationRequests,
+    receipt!.popupCount,
+    receipt!.downloadCount,
+    receipt!.webSocketCount,
+  ].every((value) => value === 0);
+  const milestoneTimes = [
+    'traceStartedAt',
+    'loginStartedAt',
+    'toolStartedAt',
+    'toolFinishedAt',
+    'traceStoppedAt',
+    'contextClosedAt',
+  ].map((key) =>
+    Date.parse(
+      receipt!.milestones[
+        key as keyof HmsBrowserArtifactReceiptV1['milestones']
+      ] ?? '',
+    ),
+  );
+  const milestonesValid =
+    milestoneTimes.every(Number.isFinite) &&
+    milestoneTimes.every(
+      (value, index) => index === 0 || value >= milestoneTimes[index - 1]!,
+    );
+  const revisionsValid =
+    receipt!.toolId === 'hms_find_reservation' &&
+    receipt!.toolVersion === '1.1.0' &&
+    receipt!.dependencyRevision === HMS_DEPENDENCY_REVISION &&
+    receipt!.playwrightRevision === '1.52.0' &&
+    receipt!.chromiumRevision === '1169';
+  const rulesValid = validateRequestRuleCounts(
+    receipt!.requestRules,
+    liveProofAllowedRuleIds(),
+  );
+  if (
+    receipt!.artifactState !== 'complete' ||
+    receipt!.operationOutcome !== 'succeeded' ||
+    receipt!.terminalCode !== 'OK' ||
+    receipt!.terminalStage !== 'receipt_finalize' ||
+    receipt!.executionClass !== 'live_proof' ||
+    receipt!.inputClass !== 'authorized_exact' ||
+    receipt!.credentialMode !== 'view_only' ||
+    !receipt!.trace ||
+    !receipt!.video ||
+    !zeroUnsafe ||
+    !milestonesValid ||
+    !revisionsValid ||
+    !rulesValid
+  ) {
+    emitG1Fail(gate);
+  }
+
+  if (gate!.state === 'accepted') {
+    emitOk('G1_ACCEPTED');
+    return;
+  }
+  writeAtomicJson(phaseAGatePath(), {
+    ...gate!,
+    state: 'accepted',
+    acceptedAt: new Date().toISOString(),
+  });
+  emitOk('G1_ACCEPTED');
+}
+
+async function assertServiceUserMailboxGrant(
+  databaseUrl: string,
+  transportId: string,
+): Promise<void> {
+  const userId = process.env.HMS_SHADOW_SERVICE_USER_ID?.trim();
+  if (!userId) emitFail('POLICY_BLOCK');
+  const { mailboxAccess } = await import('../db/schema/mail.js');
+  const { db, conn } = createDb(databaseUrl);
+  try {
+    const rows = await db
+      .select({ userId: mailboxAccess.userId })
+      .from(mailboxAccess)
+      .where(
+        and(
+          eq(mailboxAccess.userId, userId!),
+          eq(mailboxAccess.transportId, transportId),
+        ),
+      )
+      .limit(1);
+    if (rows.length === 0) emitFail('POLICY_BLOCK');
+  } finally {
+    try {
+      await conn.end();
+    } catch {
+      emitFail('ROLLBACK_INCOMPLETE');
+    }
+  }
+}
+
+/**
+ * Real-HMS Gate G1 proof: discover with normal (trace-only) registered tool
+ * calls, then one fresh live_proof session for the first single match.
+ */
+async function runProofVideo(): Promise<PhaseAProofEvidence> {
+  if (startsDisabled()) emitFail('RUN_ISOLATION_BLOCKED');
+  const hms = pm2DescribeHms();
+  if (hms.present) emitFail('RUN_ISOLATION_BLOCKED');
+  assertDependenciesOk();
+  const role = loadRoleProofDigest();
+  const commit =
+    process.env.NAVA_PROOF_SOURCE_REVISION?.trim() || buildCommit();
+
+  const env = parseEnv(process.env);
+  if (process.env.HMS_DRAFT_ENRICHMENT_MODE === 'enabled') {
+    emitFail('MODE_ENABLED_FORBIDDEN');
+  }
+  process.env.DATABASE_URL = env.DATABASE_URL;
+  const nonterminal = await countNonterminalHmsLane();
+  if (nonterminal > 0) emitFail('RUN_ISOLATION_BLOCKED');
+
+  const hmsConfig = requireHmsWorkerRuntimeConfig({
+    ...process.env,
+    HMS_DRAFT_ENRICHMENT_MODE: 'shadow',
+  });
+  if (hmsConfig.expectedTransportId !== CENTURION_TRANSPORT_ID) {
+    emitFail('PROPERTY_MISMATCH');
+  }
+  await assertServiceUserMailboxGrant(
+    env.DATABASE_URL,
+    hmsConfig.expectedTransportId,
+  );
+
+  const discoveryDeadline = Date.now() + 120_000;
+  const anchors = await selectOldestExactCandidates(
+    env.DATABASE_URL,
+    hmsConfig.expectedTransportId,
+    24,
+    5000,
+    Math.max(1, discoveryDeadline - Date.now()),
+  );
+  if (anchors.length === 0) emitWait('NO_EXACT_CANDIDATE');
+
+  const { createCandidateTools } = await import('../ai/candidate-draft-agent.js');
+  const { createReservationCandidateSession } = await import(
+    '../hms/reservation-candidate-session.js'
+  );
+  const { CENTURION_HMS_PRODUCTION_ORIGIN } = await import(
+    '../hms/browser-artifacts.js'
+  );
+
+  const runtime = await createProductionHmsProofRuntime(hmsConfig, {
+    sourceRevision: commit,
+  });
+  let closeFailed = false;
+  let operatorExit: OperatorExit | null = null;
+  let runtimeError: unknown;
+  let completedEvidence: PhaseAProofEvidence | null = null;
+  try {
+    await runtime.start(AbortSignal.timeout(60_000));
+
+    let matchedAnchor: ExactMailAnchor | null = null;
+    for (const anchor of anchors!) {
+      if (Date.now() > discoveryDeadline) emitWait('NO_EXACT_CANDIDATE');
+      const operationId = randomUUID();
+      const driver = createLiveGuestStayDriver({
+        runtime,
+        transportId: hmsConfig.expectedTransportId,
+        auditSpecFor: ({ inputClass }) => ({
+          operationId,
+          toolId: 'hms_find_reservation',
+          toolVersion: '1.1.0',
+          dependencyRevision: HMS_DEPENDENCY_REVISION,
+          executionClass: 'normal',
+          inputClass,
+        }),
+      });
+      const session = createReservationCandidateSession({
+        driver,
+        candidates: new Map([[anchor.candidate.id, anchor.candidate]]),
+        close: async () => undefined,
+        runId: operationId,
+      });
+      const tools = createCandidateTools(session);
+      const find = tools.tools.hms_find_reservation;
+      if (!find?.execute) emitFail('UNKNOWN_SAFE');
+      const signal = AbortSignal.timeout(
+        Math.max(1, discoveryDeadline - Date.now()),
+      );
+      let toolResult: { status: string; data?: { matchCount?: number } };
+      try {
+        toolResult = (await find.execute!(
+          { candidateId: anchor.candidate.id },
+          { abortSignal: signal } as never,
+        )) as typeof toolResult;
+      } catch (err) {
+        emitFail(mapRuntimeFail(err));
+      }
+      const matchCount = Number(toolResult.data?.matchCount ?? 0);
+      if (toolResult.status === 'not_found') continue;
+      if (matchCount === 1) {
+        matchedAnchor = anchor;
+        break;
+      }
+      if (matchCount > 1) emitFail('SCHEMA_DRIFT');
+    }
+
+    if (!matchedAnchor) emitWait('NO_EXACT_CANDIDATE');
+
+    const proofOperationId = randomUUID();
+    const proofDriver = createLiveGuestStayDriver({
+      runtime,
+      transportId: hmsConfig.expectedTransportId,
+      auditSpecFor: ({ inputClass }) => ({
+        operationId: proofOperationId,
+        toolId: 'hms_find_reservation',
+        toolVersion: '1.1.0',
+        dependencyRevision: HMS_DEPENDENCY_REVISION,
+        executionClass: 'live_proof',
+        inputClass,
+        roleProofSha256: role.sha256,
+        roleProofExpiresAt: role.expiresAt,
+      }),
+    });
+    const proofSession = createReservationCandidateSession({
+      driver: proofDriver,
+      candidates: new Map([
+        [matchedAnchor!.candidate.id, matchedAnchor!.candidate],
+      ]),
+      close: async () => undefined,
+      runId: proofOperationId,
+    });
+    const proofTools = createCandidateTools(proofSession);
+    const proofFind = proofTools.tools.hms_find_reservation;
+    if (!proofFind?.execute) emitFail('UNKNOWN_SAFE');
+    const proofResult = (await proofFind.execute!(
+      { candidateId: matchedAnchor!.candidate.id },
+      { abortSignal: AbortSignal.timeout(hmsConfig.runDeadlineMs) } as never,
+    )) as { status: string; data?: { matchCount?: number } };
+    if (Number(proofResult.data?.matchCount ?? 0) !== 1) {
+      emitFail('SCHEMA_DRIFT');
+    }
+
+    const receipt = proofDriver.lastAuditReceipt();
+    const allowedRuleIds = new Set(
+      buildExactOsressSearchManifest(
+        CENTURION_HMS_PRODUCTION_ORIGIN,
+        matchedAnchor!.candidate,
+      ).rules.map((rule) => rule.id),
+    );
+    const milestoneOrder = [
+      'traceStartedAt',
+      'loginStartedAt',
+      'toolStartedAt',
+      'toolFinishedAt',
+      'traceStoppedAt',
+      'contextClosedAt',
+    ] as const;
+    const milestoneTimes = milestoneOrder.map((key) =>
+      Date.parse(receipt?.milestones[key] ?? ''),
+    );
+    const milestonesValid =
+      milestoneTimes.every(Number.isFinite) &&
+      milestoneTimes.every(
+        (value, index) => index === 0 || value >= milestoneTimes[index - 1]!,
+      );
+    const rulesValid =
+      receipt !== null &&
+      validateRequestRuleCounts(receipt.requestRules, allowedRuleIds);
+    if (
+      !receipt ||
+      receipt.artifactState !== 'complete' ||
+      receipt.executionClass !== 'live_proof' ||
+      receipt.inputClass !== 'authorized_exact' ||
+      receipt.operationOutcome !== 'succeeded' ||
+      receipt.terminalCode !== 'OK' ||
+      receipt.terminalStage !== 'receipt_finalize' ||
+      receipt.sourceRevision !== commit ||
+      receipt.toolId !== 'hms_find_reservation' ||
+      receipt.toolVersion !== '1.1.0' ||
+      receipt.dependencyRevision !== HMS_DEPENDENCY_REVISION ||
+      receipt.playwrightRevision !== '1.52.0' ||
+      receipt.chromiumRevision !== '1169' ||
+      !receipt.trace ||
+      !receipt.video ||
+      receipt.blockedRequests !== 0 ||
+      receipt.mutationRequests !== 0 ||
+      receipt.popupCount !== 0 ||
+      receipt.downloadCount !== 0 ||
+      receipt.webSocketCount !== 0 ||
+      receipt.credentialMode !== 'view_only' ||
+      receipt.roleProofSha256 !== role.sha256 ||
+      receipt.roleProofExpiresAt !== role.expiresAt ||
+      !milestonesValid ||
+      !rulesValid
+    ) {
+      emitFail('POLICY_BLOCK');
+    }
+
+    completedEvidence = {
+      schemaVersion: 1 as const,
+      artifactId: receipt!.artifactId,
+      sourceRevision: receipt!.sourceRevision,
+      toolId: receipt!.toolId,
+      toolVersion: receipt!.toolVersion,
+      dependencyRevision: receipt!.dependencyRevision,
+      playwrightRevision: receipt!.playwrightRevision,
+      chromiumRevision: receipt!.chromiumRevision,
+      productionOriginAttested: true,
+      credentialMode: 'view_only' as const,
+      roleProofSha256: receipt!.roleProofSha256!,
+      roleProofExpiresAt: receipt!.roleProofExpiresAt!,
+      trace: receipt!.trace,
+      video: receipt!.video,
+      receiptSha256: sha256Hex(`${JSON.stringify(receipt!)}\n`),
+      blockedRequests: receipt!.blockedRequests,
+      mutationRequests: receipt!.mutationRequests,
+      popupCount: receipt!.popupCount,
+      downloadCount: receipt!.downloadCount,
+      webSocketCount: receipt!.webSocketCount,
+      expiresAt: receipt!.expiresAt,
+    };
+  } catch (err) {
+    if (err instanceof OperatorExit) operatorExit = err;
+    else runtimeError = err;
+  } finally {
+    try {
+      await runtime.close();
+    } catch {
+      closeFailed = true;
+    }
+  }
+  if (closeFailed) emitFail('ROLLBACK_INCOMPLETE');
+  if (operatorExit) throw operatorExit;
+  if (runtimeError) throw runtimeError;
+  if (!completedEvidence) emitFail('UNKNOWN_SAFE');
+  return completedEvidence;
+}
+
+async function runPurgeArtifacts(): Promise<void> {
+  const root =
+    process.env.HMS_BROWSER_ARTIFACT_ROOT?.trim() ||
+    '/opt/nava/shared/hms-browser-artifacts';
+  const removed = await purgeExpiredHmsBrowserArtifacts(root);
+  emitOk(`HMS_ARTIFACT_PURGE_OK removed=${removed}`);
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   assertNoLookupArgv(argv);
+  if (argv.length !== 1) emitFail('POLICY_BLOCK');
   const action = argv[0] ?? '';
   if (
     action !== 'canary' &&
     action !== 'start' &&
     action !== 'status' &&
     action !== 'stop' &&
-    action !== 'rearm'
+    action !== 'rearm' &&
+    action !== 'proof-video' &&
+    action !== 'purge-artifacts' &&
+    action !== 'accept-g1'
   ) {
     emitFail('UNKNOWN_SAFE');
   }
+  pendingOutputLines.length = 0;
+  let operatorExit: OperatorExit | null = null;
+  let proofEvidence: PhaseAProofEvidence | null = null;
+  let dbCloseFailed = false;
+  let lockReleaseFailed = false;
+  let releaseOperationLock: (() => void) | null = null;
   try {
+    if (
+      action === 'canary' ||
+      action === 'start' ||
+      action === 'stop' ||
+      action === 'rearm' ||
+      action === 'proof-video' ||
+      action === 'accept-g1'
+    ) {
+      releaseOperationLock = acquireHmsOperationLock();
+    }
     if (action === 'canary') await runCanary();
     else if (action === 'start') await runStart();
     else if (action === 'status') await runStatus();
     else if (action === 'stop') await runStop();
     else if (action === 'rearm') runRearm();
+    else if (action === 'proof-video') proofEvidence = await runProofVideo();
+    else if (action === 'purge-artifacts') await runPurgeArtifacts();
+    else if (action === 'accept-g1') runAcceptG1();
+  } catch (err) {
+    if (err instanceof OperatorExit) {
+      operatorExit = err;
+    } else {
+      try {
+        emitFail(mapRuntimeFail(err));
+      } catch (inner) {
+        operatorExit =
+          inner instanceof OperatorExit
+            ? inner
+            : new OperatorExit(10, 'HMS_FAIL code=UNKNOWN_SAFE');
+      }
+    }
   } finally {
-    await closeDb().catch(() => undefined);
+    try {
+      await closeDb();
+    } catch {
+      dbCloseFailed = true;
+    }
+    if (!dbCloseFailed && !operatorExit && proofEvidence) {
+      try {
+        writeAtomicJson(phaseAGatePath(), {
+          schemaVersion: 1,
+          state: 'provisional',
+          planPath: PHASE_A_PLAN_PATH,
+          artifactId: proofEvidence.artifactId,
+          receiptSha256: proofEvidence.receiptSha256,
+          sourceRevision: proofEvidence.sourceRevision,
+          roleProofSha256: proofEvidence.roleProofSha256,
+          roleProofExpiresAt: proofEvidence.roleProofExpiresAt,
+          writtenAt: new Date().toISOString(),
+        });
+      } catch {
+        operatorExit = new OperatorExit(10, 'HMS_FAIL code=UNKNOWN_SAFE');
+      }
+    }
+    try {
+      releaseOperationLock?.();
+    } catch {
+      lockReleaseFailed = true;
+    }
   }
+  if (dbCloseFailed || lockReleaseFailed) {
+    pendingOutputLines.length = 0;
+    process.stdout.write('HMS_FAIL code=ROLLBACK_INCOMPLETE\n');
+    process.exit(20);
+  }
+  if (operatorExit) {
+    pendingOutputLines.length = 0;
+    process.stdout.write(`${operatorExit.line}\n`);
+    process.exit(operatorExit.exitCode);
+  }
+  if (proofEvidence) {
+    emitOk('PHASE_A_PROOF_EVIDENCE_V1');
+    pendingOutputLines.push(JSON.stringify(proofEvidence));
+    emitOk('PHASE_A_PROOF_READY');
+  }
+  for (const line of pendingOutputLines) process.stdout.write(`${line}\n`);
+  pendingOutputLines.length = 0;
 }
 
-main().catch((err) => {
-  emitFail(mapRuntimeFail(err));
-});
+if (
+  process.argv[1] &&
+  resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))
+) {
+  main().catch((err) => {
+    if (err instanceof OperatorExit) {
+      process.stdout.write(`${err.line}\n`);
+      process.exit(err.exitCode);
+    }
+    try {
+      emitFail(mapRuntimeFail(err));
+    } catch (inner) {
+      if (inner instanceof OperatorExit) {
+        process.stdout.write(`${inner.line}\n`);
+        process.exit(inner.exitCode);
+      }
+      process.exit(10);
+    }
+  });
+}

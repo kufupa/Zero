@@ -30,7 +30,7 @@ Provisioned AWS resources for the mail pilot. All created via AWS CLI from lapto
 | S3 mail bucket | `nava-zero-mail-845242190536-af-south-1` |
 | S3 SSE | AES256 |
 | S3 public access block | all 4 blocks enabled (private) |
-| S3 lifecycle | `raw-mime/*` expire 30d, `attachments/*` expire 90d, incomplete multipart abort 1d |
+| S3 lifecycle | `raw-mime/*` expire 30d, `attachments/*` expire 90d, incomplete multipart abort 1d, `hms-browser-proof-transfer/v1/*` expire 1d |
 | S3 CORS | Cutover overlap: canonical + legacy + localhost GET/HEAD. Final after 24h: canonical + localhost GET/HEAD; legacy removed. No wildcard origins. |
 | Bootstrap bucket (Task 1) | `nava-zero-bootstrap-845242190536` |
 
@@ -102,7 +102,9 @@ NAVA_MAIL_BUCKET="nava-zero-mail-${AWS_ACCOUNT_ID}-af-south-1"
 aws s3api create-bucket --region "$AWS_REGION" --bucket "$NAVA_MAIL_BUCKET" --create-bucket-configuration LocationConstraint=af-south-1 || true
 aws s3api put-public-access-block --region "$AWS_REGION" --bucket "$NAVA_MAIL_BUCKET" --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
 aws s3api put-bucket-encryption --region "$AWS_REGION" --bucket "$NAVA_MAIL_BUCKET" --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
-aws s3api put-bucket-lifecycle-configuration --region "$AWS_REGION" --bucket "$NAVA_MAIL_BUCKET" --lifecycle-configuration '{"Rules":[{"ID":"expire-raw-mime-30d","Status":"Enabled","Filter":{"Prefix":"raw-mime/"},"Expiration":{"Days":30}},{"ID":"expire-attachments-90d","Status":"Enabled","Filter":{"Prefix":"attachments/"},"Expiration":{"Days":90}},{"ID":"abort-incomplete-multipart-1d","Status":"Enabled","Filter":{"Prefix":""},"AbortIncompleteMultipartUpload":{"DaysAfterInitiation":1}}]}'
+aws s3api put-bucket-lifecycle-configuration --region "$AWS_REGION" --bucket "$NAVA_MAIL_BUCKET" --lifecycle-configuration '{"Rules":[{"ID":"expire-raw-mime-30d","Status":"Enabled","Filter":{"Prefix":"raw-mime/"},"Expiration":{"Days":30}},{"ID":"expire-attachments-90d","Status":"Enabled","Filter":{"Prefix":"attachments/"},"Expiration":{"Days":90}},{"ID":"abort-incomplete-multipart-1d","Status":"Enabled","Filter":{"Prefix":""},"AbortIncompleteMultipartUpload":{"DaysAfterInitiation":1}},{"ID":"HmsBrowserProofTransferExpire1Day","Status":"Enabled","Filter":{"Prefix":"hms-browser-proof-transfer/v1/"},"Expiration":{"Days":1}}]}'
+# Proof wrappers semantically merge/read back this named rule; never replace
+# unrelated lifecycle rules during ordinary proof operation.
 # Browser attachment fetch during cutover overlap. Origin allowlist only — never *.
 aws s3api put-bucket-cors --region "$AWS_REGION" --bucket "$NAVA_MAIL_BUCKET" --cors-configuration '{"CORSRules":[{"AllowedOrigins":["https://nava.legacyhotels.co.za","https://nava.legacy.local","http://localhost:3000","https://localhost:3000"],"AllowedMethods":["GET","HEAD"],"AllowedHeaders":["*"],"ExposeHeaders":["Content-Disposition","Content-Type","Content-Length"],"MaxAgeSeconds":300}]}'
 

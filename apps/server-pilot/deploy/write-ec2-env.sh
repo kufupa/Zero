@@ -22,16 +22,34 @@ DATABASE_URL="$(
     --output text \
     | node -e 'let data=""; process.stdin.on("data", c => data += c); process.stdin.on("end", () => process.stdout.write(JSON.parse(data).DATABASE_URL));'
 )"
+if [[ -z "$DATABASE_URL" ]]; then
+  echo "database secret did not contain DATABASE_URL" >&2
+  exit 1
+fi
+
+# Real SMTP is Rocketseed-only (IP-trust). Validate before touching live env.
+if [[ "${MAIL_TRANSPORT_MODE:-fixture}" == "real" ]]; then
+  : "${SMTP_HOST:=172.24.0.8}"
+  : "${SMTP_PORT:=587}"
+  : "${SMTP_SECURE:=false}"
+  if [[ "${SMTP_HOST}" != "172.24.0.8" ]]; then
+    echo "SMTP_HOST must be 172.24.0.8 when MAIL_TRANSPORT_MODE=real (got ${SMTP_HOST})" >&2
+    exit 1
+  fi
+fi
 
 ENV_PATH="/home/ubuntu/repos/zero/apps/server-pilot/.env.production"
-install -o ubuntu -g ubuntu -m 600 /dev/null "$ENV_PATH"
+ENV_TMP="$(mktemp "${ENV_PATH}.tmp.XXXXXX")"
+cleanup_env_tmp() { rm -f -- "$ENV_TMP"; }
+trap cleanup_env_tmp EXIT
+install -o root -g root -m 600 /dev/null "$ENV_TMP"
 
 # Quote values so special chars in secrets/URLs cannot break shell parsing.
 quote_val() {
   printf "'%s'" "${1//\'/\'\\\'\'}"
 }
 
-cat > "$ENV_PATH" <<EOF
+cat > "$ENV_TMP" <<EOF
 NODE_ENV='production'
 PORT='8788'
 DATABASE_URL=$(quote_val "$DATABASE_URL")
@@ -51,7 +69,7 @@ append_env() {
   local key="$1"
   local val="${2:-}"
   if [[ -n "$val" ]]; then
-    printf '%s=%s\n' "$key" "$(quote_val "$val")" >> "$ENV_PATH"
+    printf '%s=%s\n' "$key" "$(quote_val "$val")" >> "$ENV_TMP"
   fi
 }
 
@@ -62,17 +80,6 @@ append_env POP3_TLS "${POP3_TLS:-}"
 append_env POP3_USER "${POP3_USER:-}"
 append_env POP3_PASSWORD "${POP3_PASSWORD:-}"
 append_env POP3_SECRET_ARN "${POP3_SECRET_ARN:-}"
-# Real SMTP is Rocketseed-only (IP-trust). Default + fail closed if mis-set.
-if [[ "${MAIL_TRANSPORT_MODE:-fixture}" == "real" ]]; then
-  : "${SMTP_HOST:=172.24.0.8}"
-  : "${SMTP_PORT:=587}"
-  : "${SMTP_SECURE:=false}"
-  if [[ "${SMTP_HOST}" != "172.24.0.8" ]]; then
-    echo "SMTP_HOST must be 172.24.0.8 when MAIL_TRANSPORT_MODE=real (got ${SMTP_HOST})" >&2
-    exit 1
-  fi
-fi
-
 append_env SMTP_HOST "${SMTP_HOST:-}"
 append_env SMTP_PORT "${SMTP_PORT:-}"
 append_env SMTP_SECURE "${SMTP_SECURE:-}"
@@ -96,8 +103,9 @@ append_env MAIL_TLS_REJECT_UNAUTHORIZED "${MAIL_TLS_REJECT_UNAUTHORIZED:-}"
 # Gate defaults: enrichment off; never emit mutation-enable keys.
 append_env HMS_DRAFT_ENRICHMENT_MODE "${HMS_DRAFT_ENRICHMENT_MODE:-off}"
 append_env HMS_READ_SECRET_ARN "${HMS_READ_SECRET_ARN:-}"
-append_env HMS_CHROMIUM_EXECUTABLE_PATH "${HMS_CHROMIUM_EXECUTABLE_PATH:-/opt/nava/chromium/chrome}"
-append_env HMS_READ_ROLE_PROOF_PATH "${HMS_READ_ROLE_PROOF_PATH:-/opt/nava/shared/hms-read-role-proof.v1.json}"
+append_env HMS_CHROMIUM_EXECUTABLE_PATH "/opt/nava/chromium/chrome"
+append_env PLAYWRIGHT_BROWSERS_PATH "${PLAYWRIGHT_BROWSERS_PATH:-/opt/nava/ms-playwright}"
+append_env HMS_READ_ROLE_PROOF_PATH "${HMS_READ_ROLE_PROOF_PATH:-/etc/nava/hms-read-role-proof.v1.json}"
 append_env HMS_HEALTH_STATUS_PATH "${HMS_HEALTH_STATUS_PATH:-/tmp/nava-zero-hms-health.json}"
 append_env HMS_EXPECTED_TENANT "${HMS_EXPECTED_TENANT:-HMS_LEGACY}"
 append_env HMS_EXPECTED_PROPERTY_CODE "${HMS_EXPECTED_PROPERTY_CODE:-HRCEN}"
@@ -106,9 +114,16 @@ append_env HMS_RUN_DEADLINE_MS "${HMS_RUN_DEADLINE_MS:-}"
 append_env HMS_CIRCUIT_COOLDOWN_MS "${HMS_CIRCUIT_COOLDOWN_MS:-}"
 append_env HMS_READ_GATE_VERSION "${HMS_READ_GATE_VERSION:-1}"
 append_env NAVA_BUILD_COMMIT "${NAVA_BUILD_COMMIT:-}"
+append_env HMS_SHADOW_SERVICE_USER_ID "${HMS_SHADOW_SERVICE_USER_ID:-}"
+append_env HMS_BROWSER_ARTIFACT_ROOT "${HMS_BROWSER_ARTIFACT_ROOT:-/opt/nava/shared/hms-browser-artifacts}"
 # Intentionally omitted (must never appear): HMS_MUTATION_ENABLED, HMS_WRITE_ENABLED,
 # HMS_WRITE_ADAPTERS, HMS_ALLOW_LIVE_WRITE, HMS_LIVE_MUTATION, INFOR_HMS_WRITE.
 
-chown ubuntu:ubuntu "$ENV_PATH"
-chmod 600 "$ENV_PATH"
+node -e 'const fs=require("fs");const fd=fs.openSync(process.argv[1],"r");try{fs.fsyncSync(fd)}finally{fs.closeSync(fd)}' "$ENV_TMP"
+chown ubuntu:ubuntu "$ENV_TMP"
+chmod 600 "$ENV_TMP"
+mv -f -- "$ENV_TMP" "$ENV_PATH"
+node -e 'const fs=require("fs");const fd=fs.openSync(process.argv[1],"r");try{fs.fsyncSync(fd)}finally{fs.closeSync(fd)}' "$(dirname "$ENV_PATH")"
+ENV_TMP=""
+trap - EXIT
 echo "Wrote $ENV_PATH owned by ubuntu with mode 600"

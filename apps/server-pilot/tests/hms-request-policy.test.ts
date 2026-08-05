@@ -723,4 +723,63 @@ describe('browser context WebSocket pre-connect guard contract', () => {
     expect(order.indexOf('after-ws-route')).toBeLessThan(order.indexOf('page'));
     expect(order[0]).toBe('after-ws-route');
   });
+
+  it('blocks percent-encoded and nested mutation spellings before continue', async () => {
+    const url = `${ORIGIN}/web/reservation/search?screen=guestStay&confirmationNumber=ABC123`;
+    const headers = { 'content-type': 'application/x-www-form-urlencoded' };
+
+    const encoded = await runPolicy({
+      url,
+      method: 'POST',
+      resourceType: 'xhr',
+      headers,
+      postData: formBody({
+        action: '%73%61%76%65', // save
+        tenant: 'FIXTURE',
+        property: 'centurion',
+        surname: 'Guest',
+      }),
+    });
+    expect(encoded.decision).toMatchObject({
+      action: 'block',
+      code: BLOCK_CODES.MUTATION_ACTION,
+    });
+    expect(encoded.recorder.requests()).toEqual([]);
+
+    const nested = await runPolicy({
+      url,
+      method: 'POST',
+      resourceType: 'xhr',
+      headers,
+      postData: formBody({
+        action: 'search',
+        tenant: 'FIXTURE',
+        property: 'centurion',
+        surname: 'Guest',
+        payload: JSON.stringify({ action: 'refund' }),
+      }),
+    });
+    expect(nested.decision).toMatchObject({
+      action: 'block',
+      code: BLOCK_CODES.MUTATION_ACTION,
+    });
+
+    const residual = await runPolicy({
+      url,
+      method: 'POST',
+      resourceType: 'xhr',
+      headers,
+      // After two decode rounds residual %xx remains → fail closed
+      postData: formBody({
+        action: '%252573%252561%252576%252565',
+        tenant: 'FIXTURE',
+        property: 'centurion',
+        surname: 'Guest',
+      }),
+    });
+    expect(residual.decision).toMatchObject({
+      action: 'block',
+      code: BLOCK_CODES.MALFORMED_ENCODING,
+    });
+  });
 });

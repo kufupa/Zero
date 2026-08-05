@@ -14,7 +14,6 @@ import {
   getStaleDraftRetryInput,
   isStaleDraftConflict,
   shouldEnsureEditableDraftForReply,
-  StaleDraftSendCancelled,
 } from '@/lib/mail/draft-persistence';
 import { m } from '@/paraglide/messages';
 import { deriveReplyRecipients } from '@/lib/mail/reply-recipients';
@@ -127,25 +126,26 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
     message: string;
     attachments: File[];
     scheduleAt?: string;
-  }) => {
+    draftId?: string;
+  }): Promise<boolean> => {
     if (!replyToMessage) {
       toast.error('No message available to reply to.');
-      return;
+      return false;
     }
     if (!activeConnection?.email) {
       toast.error('No active account is available.');
-      return;
+      return false;
     }
 
     try {
       const userEmail = activeConnection.email.toLowerCase();
       const userName = activeConnection.name || session?.user?.name || '';
 
-    const senderEmail =
-      (settings?.settings?.defaultEmailAlias || userEmail || '').trim();
-    const fromEmail = userName.trim()
-      ? `${userName.replace(/[<>]/g, '')} <${senderEmail}>`
-      : senderEmail;
+      const senderEmail =
+        (settings?.settings?.defaultEmailAlias || userEmail || '').trim();
+      const fromEmail = userName.trim()
+        ? `${userName.replace(/[<>]/g, '')} <${senderEmail}>`
+        : senderEmail;
 
       const toRecipients: Sender[] = data.to.map((email) => ({
         email,
@@ -191,30 +191,30 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
             );
 
       const sendInput = {
-            to: toRecipients,
-            cc: ccRecipients,
-            bcc: bccRecipients,
-            subject: data.subject,
-            message: emailBody,
-            attachments: await serializeFiles(data.attachments),
-            fromEmail: fromEmail,
-            draftId: draftId ?? undefined,
-            replyToMessageId: replyToMessage?.id,
-            headers: {
-              'In-Reply-To': replyToMessage?.messageId ?? '',
-              References: [
-                ...(replyToMessage?.references ? replyToMessage.references.split(' ') : []),
-                replyToMessage?.messageId,
-              ]
-                .filter(Boolean)
-                .join(' '),
-              'Thread-Id': replyToMessage?.threadId ?? '',
-            },
-            threadId: replyToMessage?.threadId,
-            isForward: mode === 'forward',
-            originalMessage: replyToMessage.decodedBody,
-            scheduleAt: data.scheduleAt,
-          };
+        to: toRecipients,
+        cc: ccRecipients,
+        bcc: bccRecipients,
+        subject: data.subject,
+        message: emailBody,
+        attachments: await serializeFiles(data.attachments),
+        fromEmail: fromEmail,
+        draftId: data.draftId,
+        replyToMessageId: replyToMessage?.id,
+        headers: {
+          'In-Reply-To': replyToMessage?.messageId ?? '',
+          References: [
+            ...(replyToMessage?.references ? replyToMessage.references.split(' ') : []),
+            replyToMessage?.messageId,
+          ]
+            .filter(Boolean)
+            .join(' '),
+          'Thread-Id': replyToMessage?.threadId ?? '',
+        },
+        threadId: replyToMessage?.threadId,
+        isForward: mode === 'forward',
+        originalMessage: replyToMessage.decodedBody,
+        scheduleAt: data.scheduleAt,
+      };
 
       const sendWithInput = async (input: typeof sendInput) =>
         isFrontendOnlyDemo() ? demoSendEmail(input) : sendEmail(input);
@@ -223,10 +223,20 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
       try {
         result = await sendWithInput(sendInput);
       } catch (error) {
-        if (!isStaleDraftConflict(error)) throw error;
+        if (!isStaleDraftConflict(error)) {
+          console.error('Error sending email:', error);
+          toast.error(m['pages.createEmail.failedToSendEmail']());
+          return false;
+        }
         const confirmed = await confirmStaleDraftSend();
-        if (!confirmed) throw new StaleDraftSendCancelled();
-        result = await sendWithInput(getStaleDraftRetryInput(sendInput));
+        if (!confirmed) return false;
+        try {
+          result = await sendWithInput(getStaleDraftRetryInput(sendInput));
+        } catch (retryError) {
+          console.error('Error sending email:', retryError);
+          toast.error(m['pages.createEmail.failedToSendEmail']());
+          return false;
+        }
       }
 
       posthog.capture('Reply Email Sent');
@@ -234,7 +244,7 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
       // Reset states
       setMode(null);
       await refetch();
-      
+
       handleUndoSend(result, settings, {
         to: data.to,
         cc: data.cc,
@@ -244,10 +254,11 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
         attachments: data.attachments,
         scheduleAt: data.scheduleAt,
       });
+      return true;
     } catch (error) {
-      if (error instanceof StaleDraftSendCancelled) throw error;
       console.error('Error sending email:', error);
       toast.error(m['pages.createEmail.failedToSendEmail']());
+      return false;
     }
   };
 
