@@ -1,6 +1,8 @@
 .ProseMirror {
-  font-size: 15px;
+  font-family: Calibri, Arial, sans-serif;
+  font-size: 11pt;
   font-weight: 400;
+  /* color: inherit from theme — do not force #000 (dark mode) */
 }
 
 /* Add placeholder styles */

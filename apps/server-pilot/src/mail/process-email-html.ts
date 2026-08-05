@@ -1,6 +1,7 @@
 import { projectCidImages, type CidAttachmentMeta } from './cid-images.js';
 import { sanitizeEmailHtml } from './sanitize-email-html.js';
 import { processQuotedContent } from './collapse-quoted-html.js';
+import { mailBodyDisplayStyleTag } from './mail-body-typography.js';
 
 export function processEmailHtmlForDisplay(input: {
   html: string;
@@ -17,7 +18,7 @@ export function processEmailHtmlForDisplay(input: {
     messageId: input.messageId,
     origin: input.origin,
   });
-  const processedHtml = processQuotedContent(projected.html, input.theme);
+  const processedHtml = `${mailBodyDisplayStyleTag()}${processQuotedContent(projected.html, input.theme)}`;
   return {
     processedHtml,
     hasBlockedImages: sanitized.hasBlockedImages || projected.hasBlockedImages,

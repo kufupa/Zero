@@ -382,8 +382,9 @@ export const constructReplyBody = (
   const senderEmail = originalSender?.email ? `&lt;${originalSender.email}&gt;` : '';
 
   // class=gmail_quote: Gmail/Outlook trim signal + one outermost collapse root in Zero.
+  // nava-mail-body: Outlook Calibri 11pt; mail.send skips re-wrap when class present.
   return `
-    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+    <div class="nava-mail-body" style="font-family: Calibri, Arial, sans-serif; font-size: 11pt;">
       <div style="">
         ${formattedMessage}
       </div>
@@ -410,7 +411,7 @@ export const constructForwardBody = (
   const recipientEmails = otherRecipients.map((r) => r.email).join(', ');
 
   return `
-    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+    <div class="nava-mail-body" style="font-family: Calibri, Arial, sans-serif; font-size: 11pt;">
       <div style="">
         ${formattedMessage}
       </div>

@@ -41,6 +41,7 @@ import {
   refreshThreadAfterMessageRemoved,
 } from './mail-helpers.js';
 import { resolveReplyHeaders } from '../../mail/send/resolve-reply-headers.js';
+import { prepareOutboundHtml } from '../../mail/prepare-outbound-html.js';
 import {
   cancelOutbound,
   enqueueOutbound,
@@ -1202,13 +1203,16 @@ export const mailRouter = tRouter({
       // Disabled when MAIL_SELF_BCC is false/0/off.
       const bcc = withTransportSelfBcc(input.bcc ?? [], ctx.transportEmail);
 
+      // Outlook Calibri 11pt wrap — same string for DB row + SMTP + draft revision.
+      const html = prepareOutboundHtml(input.html);
+
       const smtpPayload = {
         from: ctx.transportEmail,
         to: input.to,
         cc: input.cc,
         bcc,
         subject: input.subject,
-        html: input.html,
+        html,
         text: input.text,
         inReplyTo,
         references,
@@ -1237,7 +1241,7 @@ export const mailRouter = tRouter({
           bccAddresses: bcc,
           subject: input.subject || null,
           textBody: input.text || null,
-          htmlBody: input.html || null,
+          htmlBody: html || null,
           messageIdHeader: null,
           inReplyTo,
           references,
@@ -1281,7 +1285,7 @@ export const mailRouter = tRouter({
             bccAddresses: bcc,
             subject: input.subject || null,
             textBody: input.text || null,
-            htmlBody: input.html || null,
+            htmlBody: html || null,
             attachments: (input.attachments ?? []).map((a) => ({
               filename: a.name,
               mimeType: a.type,
