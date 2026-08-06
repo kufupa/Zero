@@ -33,8 +33,13 @@ Live discovery / role-proof-v2 / reviewed manifests / ops `PHASE_B_BLOCKED` latc
 - Plan DoD “all eight tools promoted” → overnight accepted named blockers (plan allows).
 - Empirical live RCA loop remains pending until human captures role-proof-v2.
 
-## Wake actions
+## Continue-autonomously follow-up (same night)
 
-1. Mint role-proof-v2 per surface
-2. Abort-first discovery + reviewed manifests
-3. Unlatch per-tool discovery; run registered proofs; promote independently
+| Item | Evidence |
+|------|----------|
+| Discovery preflight named blockers | `BLOCKED_NO_ROLE_PROOF_V2` (not blanket latch first) |
+| 1B deferred | deadline admission 145s; waiter cap=2 + maxWaitMs; claim envelopes |
+| Commit | `f32d86ff` |
+| Live HMS promote | still true-blocked until human role-proof-v2 + manifests |
+
+Wake actions unchanged: mint role-proof-v2 (root `0444`), reviewed manifests, then discovery can proceed past preflight to live wiring.
