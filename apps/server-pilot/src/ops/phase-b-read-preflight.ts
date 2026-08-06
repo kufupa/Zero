@@ -140,6 +140,10 @@ function roleProofV2Status(
   return 'ok';
 }
 
+/**
+ * Schema-only manifest presence check until Task 12 binds enabled branch /
+ * discovery-op against the tool under proof. Does not assert toolId/branch match.
+ */
 function reviewedManifestOk(path: string | null | undefined): boolean {
   if (!path || !path.trim()) return false;
   const file = readRegularFileStat(path.trim());
@@ -213,7 +217,11 @@ export type PhaseBPreflightInput = {
   roleProofV2Path?: string | null;
   reviewedRequestManifestPath?: string | null;
   now?: Date;
-  /** Explicit discovery evidence (receipt/digest). Defaults to static discoveryDigest. */
+  /**
+   * Explicit discovery evidence (receipt/digest). Defaults false — never
+   * auto-satisfied from static READ_TOOLS.evidenceRefs.discoveryDigest.
+   * Inject true or wire a live artifact path (Task 12+).
+   */
   discoveryEvidencePresent?: boolean;
   /** Registered driver + required controls ready for proof. */
   driverAndControlsReady?: boolean;
@@ -271,10 +279,8 @@ const gateProof: GateFn = (action, toolId, input, now) => {
     return fail(action, toolId, 'BLOCKED_NO_REVIEWED_REQUEST_MANIFEST');
   }
 
-  const discoveryPresent =
-    input.discoveryEvidencePresent ??
-    Boolean(READ_TOOLS[toolId].evidenceRefs.discoveryDigest);
-  if (!discoveryPresent) {
+  // Default false: static fixture discoveryDigest must not auto-satisfy proof.
+  if (input.discoveryEvidencePresent !== true) {
     return fail(action, toolId, 'BLOCKED_NO_DISCOVERY_EVIDENCE');
   }
 

@@ -54,6 +54,8 @@ describe('phase-b-doctor', () => {
       },
     });
     expect(report.productionActiveReadToolIds).toEqual(['hms_find_reservation']);
+    // Demotion-era: any snapshot-active tool flips decoupled false.
+    expect(report.productionActiveReadDecoupled).toBe(false);
     // Still fixture_verified in static contract rows — snapshot is activation only.
     const find = report.tools.find((t) => t.id === 'hms_find_reservation');
     expect(find?.capabilityState).toBe('fixture_verified');

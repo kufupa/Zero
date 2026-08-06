@@ -60,3 +60,17 @@ Excluded: `docs/superpowers/plans/2026-08-05-phase-b-hms-read-expansion.md`
 - `ops-hms-proof.sh` still emits stub `PHASE_B_BLOCKED` for some CLI paths — Task 12 owns live operator unlatch.
 - Proof/promote/rollback injectables (`discoveryEvidencePresent`, `driverAndControlsReady`, release/handler/registry flags) are explicit seams until live paths wire real artifacts (12/13).
 - `hms-contracts.test.ts` may still assert find-only productionActive — outside this slice suite; registry tests already expect `[]`.
+
+---
+
+## Review follow-ups (pre-11E)
+
+**Commit:** `fix(hms): restore meaningful Phase B doctor decoupled signal`
+
+| Finding | Fix |
+|---------|-----|
+| Important #1 tautology `productionActiveReadDecoupled` | Demotion-era: `=== (productionIds.length === 0)`; test asserts false when snapshot injects active tool |
+| Important #2 `reviewedManifestOk` schema-only | Code comment: Task 12 binds branch/discovery-op; no toolId match yet |
+| Important #3 discovery evidence footgun | Proof gate defaults `discoveryEvidencePresent` false; never auto-true from static `discoveryDigest` |
+
+**Verify:** `phase-b-doctor` / `phase-b-read-preflight` / `phase-b-status` vitest + `pnpm build` — pass. No plan file staged.

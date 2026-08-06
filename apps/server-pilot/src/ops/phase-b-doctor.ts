@@ -24,7 +24,10 @@ export type PhaseBDoctorReport = {
   schemaVersion: 1;
   liveReady: boolean;
   productionActiveReadToolIds: ReadToolId[];
-  /** True when production allowlist has no fixture-bleed from static READ_TOOLS. */
+  /**
+   * Demotion-era signal: true only while snapshot productionActive is empty.
+   * Flips false when any tool is snapshot-activated (real digests/releases later).
+   */
   productionActiveReadDecoupled: boolean;
   uniqueBlockerCodes: PhaseBPreflightCode[];
   tools: PhaseBDoctorToolRow[];
@@ -40,11 +43,9 @@ export function buildPhaseBDoctorReport(input: {
   const snapshot =
     input.snapshot ?? EMPTY_PHASE_B_RELEASE_CAPABILITY_SNAPSHOT;
   const productionIds = [...snapshot.productionActiveReadToolIds];
-  // Decoupled when activation comes only from snapshot and is empty until
-  // real digests/releases — static fixture contracts never auto-activate.
-  const productionActiveReadDecoupled = productionIds.every((id) =>
-    (READ_TOOL_IDS as readonly string[]).includes(id),
-  );
+  // Demotion era: decoupled iff no production activation yet. Snapshot injection
+  // of any active id means production is no longer fully decoupled from live path.
+  const productionActiveReadDecoupled = productionIds.length === 0;
 
   const tools: PhaseBDoctorToolRow[] = READ_TOOL_IDS.map((toolId) => {
     const status = toolStatusRow(toolId);
