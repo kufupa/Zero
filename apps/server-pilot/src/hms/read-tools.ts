@@ -272,8 +272,9 @@ export const READ_TOOLS: Readonly<Record<ReadToolId, ReadToolDefinition>> = {
     ],
     promotionEvidence: {
       fixture: true,
-      discovery: true,
-      live: true,
+      // No digests yet — flags must not claim discovery/live until real evidence returns.
+      discovery: false,
+      live: false,
       shadow: false,
     },
     // Fixture contract only. Discovery/live evidence must come from immutable
