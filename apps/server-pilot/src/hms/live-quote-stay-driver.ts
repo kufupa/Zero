@@ -281,35 +281,20 @@ export function parseLiveQuoteAvailability(
   };
 }
 
-async function forceClickExact(page: HmsPage, label: string): Promise<boolean> {
-  return page.evaluate((l) => {
-    const el = [
-      ...((globalThis as unknown as { document?: Document }).document?.querySelectorAll(
-        'span.x-tree-node-text',
-      ) ?? []),
-    ].find((n) => (n.textContent || '').trim() === l);
-    if (!el) return false;
-    el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    return true;
-  }, label);
-}
-
 async function navigateOsrrav(page: HmsPage, origin: string): Promise<void> {
   const html = await page.content().catch(() => '');
-  if (/name="roomtypes"|Room Type and Rate Availability/i.test(html)) return;
+  if (/name="roomtypes"/i.test(html)) return;
   if (/data-testid="room-type-rate-availability"/i.test(html)) {
     throw new HmsRuntimeError(
       'SCHEMA_DRIFT',
       'fixture HTML quote surface rejected in live navigate',
     );
   }
-  await page.click('text=AVAILABILITY SUMMARY').catch(() => undefined);
-  await new Promise((r) => setTimeout(r, 800));
-  await forceClickExact(page, 'Front Desk');
+  await page.click('text=Front Desk').catch(() => undefined);
   await new Promise((r) => setTimeout(r, 600));
-  await forceClickExact(page, 'Availability');
+  await page.click('text=Availability').catch(() => undefined);
   await new Promise((r) => setTimeout(r, 600));
-  await forceClickExact(page, 'Room Type and Rate Availability');
+  await page.click('text=Room Type and Rate Availability').catch(() => undefined);
   await new Promise((r) => setTimeout(r, 2500));
   let ready = await page.content().catch(() => '');
   if (/name="roomtypes"/i.test(ready)) return;
@@ -351,12 +336,16 @@ async function collectChromeDefaults(
       'ONLY_DATA_REQUIRED',
     ];
     const out: Record<string, string> = {};
-    const doc = (globalThis as unknown as { document?: Document }).document;
+    const doc = (
+      globalThis as unknown as {
+        document?: {
+          querySelector(s: string): { value?: string } | null;
+        };
+      }
+    ).document;
     if (!doc) return out;
     for (const name of names) {
-      const input = doc.querySelector(`input[name="${name}"]`) as
-        | HTMLInputElement
-        | null;
+      const input = doc.querySelector(`input[name="${name}"]`);
       if (input) out[name] = String(input.value ?? '');
     }
     return out;

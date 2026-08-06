@@ -35,6 +35,75 @@ import {
   type PhaseBReadAction,
   runPhaseBReadPreflight,
 } from './phase-b-read-preflight.js';
+import {
+  hasHandlerFor,
+} from '../hms/read-handler-index.js';
+import {
+  hmsActiveRegistryV2Schema,
+  hmsPortfolioToolReleaseV2Schema,
+  isRegistryCutoverComplete,
+} from '../hms/release-kernel.js';
+
+/** Sync filesystem probe — promote stays fail-closed until find+mail active. */
+function probePhaseBRegistryCutover(): {
+  registryCutoverComplete: boolean;
+  activeRegistryReady: boolean;
+} {
+  const registryPath =
+    process.env.HMS_ACTIVE_REGISTRY_PATH?.trim() ||
+    '/opt/nava/shared/hms-active-registry/active.json';
+  try {
+    if (!existsSync(registryPath)) {
+      return { registryCutoverComplete: false, activeRegistryReady: false };
+    }
+    const registry = hmsActiveRegistryV2Schema.parse(
+      JSON.parse(readFileSync(registryPath, 'utf8')),
+    );
+    const activeToolIds = new Set(
+      Object.entries(registry.active)
+        .filter(([, id]) => Boolean(id))
+        .map(([toolId]) => toolId as ReadToolId),
+    );
+    return {
+      activeRegistryReady: true,
+      registryCutoverComplete: isRegistryCutoverComplete({
+        activeToolIds,
+        handlerPathActive: true,
+      }),
+    };
+  } catch {
+    return { registryCutoverComplete: false, activeRegistryReady: false };
+  }
+}
+
+function probePromoteReleaseReady(releaseId: string | undefined): {
+  immutableReleaseReady: boolean;
+  loadableHandlerReady: boolean;
+} {
+  if (!releaseId) {
+    return { immutableReleaseReady: false, loadableHandlerReady: false };
+  }
+  const releaseRoot =
+    process.env.HMS_RELEASE_ROOT?.trim() || '/opt/nava/shared/hms-releases';
+  const path = join(releaseRoot, `${releaseId}.json`);
+  try {
+    if (!existsSync(path)) {
+      return { immutableReleaseReady: false, loadableHandlerReady: false };
+    }
+    const release = hmsPortfolioToolReleaseV2Schema.parse(
+      JSON.parse(readFileSync(path, 'utf8')),
+    );
+    return {
+      immutableReleaseReady: true,
+      loadableHandlerReady: hasHandlerFor(
+        release.toolId,
+        release.implementationSha256,
+      ),
+    };
+  } catch {
+    return { immutableReleaseReady: false, loadableHandlerReady: false };
+  }
+}
 
 export type PhaseBOperationStage =
   | 'created'
@@ -2046,9 +2115,21 @@ export function runPhaseBLocalOperator(input: {
     command.action === 'read-promote' ||
     command.action === 'read-rollback'
   ) {
+    const cutover = probePhaseBRegistryCutover();
+    const promoteReady =
+      command.action === 'read-promote'
+        ? probePromoteReleaseReady(command.releaseId)
+        : {
+            immutableReleaseReady: false,
+            loadableHandlerReady: false,
+          };
     const preflight = runPhaseBReadPreflight({
       action: command.action,
       toolId: command.toolId,
+      registryCutoverComplete: cutover.registryCutoverComplete,
+      activeRegistryReady: cutover.activeRegistryReady,
+      immutableReleaseReady: promoteReady.immutableReleaseReady,
+      loadableHandlerReady: promoteReady.loadableHandlerReady,
     });
     if (!preflight.ok) {
       return buildPhaseBOperatorResult({

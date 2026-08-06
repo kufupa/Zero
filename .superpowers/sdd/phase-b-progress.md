@@ -12,8 +12,8 @@ Task 11D: complete (commits 898e34c6..731ae669, review clean after Important fix
 Task 11E: complete (commits 731ae669..868eb26c, review clean after Important installed-LF pin; Step 6 GREEN)
 Task 11F: cancelled (Step 6 folded into 11E)
 Task 12: complete (commits 868eb26c..7f0b28a2, review clean after resume/store fix)
-Task 13: complete (local cutover + production wiring fix; EC2 live seed still deferred; promote blocked)
-Task 14: pending (blocked until EC2 cutover seed green)
+Task 13: complete (commits 7f0b28a2..113da418, review clean after Step 3 + C3 wiring; live seed deferred, promote BLOCKED)
+Task 14: in progress (base 113da418)
 Task 15: pending
 Task 16: pending
 Task 17: pending

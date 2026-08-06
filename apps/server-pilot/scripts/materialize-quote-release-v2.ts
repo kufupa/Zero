@@ -1,0 +1,188 @@
+/**
+ * Materialize hms_quote_stay@2.0.0 release-v2 and promote into active registry.
+ * Digests/IDs only. Requires find+mail seed cutover already active.
+ */
+import { createHash, randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { runtimeFingerprintSha256 as fingerprintRuntime } from '../src/hms/evidence-runtime.js';
+import { QUOTE_STAY_IMPL_V1 } from '../src/hms/read-handler-index.js';
+import { fingerprintReadToolRegistry, type ReadToolId } from '../src/hms/read-tools.js';
+import {
+  fingerprintActiveSet,
+  HMS_RUNTIME_ABI_VERSION,
+  hmsActiveRegistryV2Schema,
+  hmsPortfolioToolReleaseV2Schema,
+  isRegistryCutoverComplete,
+  promoteReadToolV2,
+  rollbackReadToolV2,
+  type HmsPortfolioToolReleaseV2,
+} from '../src/hms/release-kernel.js';
+
+function hex(label: string): string {
+  return createHash('sha256').update(`quote-seed:${label}`).digest('hex');
+}
+
+async function main(): Promise<void> {
+  const mode = (process.argv[2] || 'promote').trim();
+  const releaseRoot =
+    process.env.HMS_RELEASE_ROOT?.trim() || '/opt/nava/shared/hms-releases';
+  const registryPath =
+    process.env.HMS_ACTIVE_REGISTRY_PATH?.trim() ||
+    '/opt/nava/shared/hms-active-registry/active.json';
+  const sourceRevision =
+    process.env.HMS_SEED_SOURCE_REVISION?.trim() ||
+    process.env.NAVA_BUILD_COMMIT?.trim() ||
+    '';
+  if (!sourceRevision) {
+    throw new Error('NAVA_BUILD_COMMIT or HMS_SEED_SOURCE_REVISION required');
+  }
+
+  const registry = hmsActiveRegistryV2Schema.parse(
+    JSON.parse(await readFile(registryPath, 'utf8')),
+  );
+  const activeToolIds = new Set(
+    Object.entries(registry.active)
+      .filter(([, id]) => Boolean(id))
+      .map(([toolId]) => toolId as ReadToolId),
+  );
+  if (
+    !isRegistryCutoverComplete({
+      activeToolIds,
+      handlerPathActive: true,
+    })
+  ) {
+    throw new Error('BLOCKED_REGISTRY_CUTOVER_PENDING');
+  }
+
+  if (mode === 'rollback') {
+    const after = await rollbackReadToolV2({
+      path: registryPath,
+      toolId: 'hms_quote_stay',
+    });
+    console.log(
+      JSON.stringify(
+        {
+          ok: true,
+          mode: 'rollback',
+          generation: after.generation,
+          activeQuote: after.active.hms_quote_stay ?? null,
+          activeSetFingerprint: after.activeSetFingerprint,
+        },
+        null,
+        2,
+      ),
+    );
+    return;
+  }
+
+  const toolsetFingerprint = fingerprintReadToolRegistry();
+  if (registry.toolsetFingerprint !== toolsetFingerprint) {
+    throw new Error('registry toolsetFingerprint mismatch vs code');
+  }
+  if (registry.toolsetVersion !== '3.0.0') {
+    throw new Error(`unexpected toolsetVersion ${registry.toolsetVersion}`);
+  }
+
+  const runtimeFingerprintSha256 = fingerprintRuntime({
+    sourceRevision,
+    playwrightRevision: '1.52.0',
+    chromiumRevision: '1169',
+  });
+
+  // Bind quote release to same runtime fp as seed find/mail releases.
+  const findId = registry.active.hms_find_reservation;
+  if (!findId) throw new Error('find seed missing');
+  const findRelease = hmsPortfolioToolReleaseV2Schema.parse(
+    JSON.parse(await readFile(join(releaseRoot, `${findId}.json`), 'utf8')),
+  );
+  if (findRelease.runtimeFingerprintSha256 !== runtimeFingerprintSha256) {
+    throw new Error(
+      'computed runtime fingerprint mismatch vs find seed — redeploy seeds',
+    );
+  }
+
+  const manifestPath =
+    process.env.HMS_QUOTE_MANIFEST_PATH?.trim() ||
+    join(
+      process.cwd(),
+      'src/hms/request-manifests/hms_quote_stay.availability.2.0.0.json',
+    );
+  const manifestSha256 = createHash('sha256')
+    .update(await readFile(manifestPath))
+    .digest('hex');
+
+  const releaseId = process.env.HMS_QUOTE_RELEASE_ID?.trim() || randomUUID();
+  const release = hmsPortfolioToolReleaseV2Schema.parse({
+    schemaVersion: 2,
+    releaseId,
+    toolsetVersion: registry.toolsetVersion,
+    toolsetFingerprint,
+    sourceRevision,
+    phaseAPlanSha256: findRelease.phaseAPlanSha256,
+    phaseBPlanSha256: findRelease.phaseBPlanSha256,
+    gateSha256: findRelease.gateSha256,
+    runtimeAbiVersion: HMS_RUNTIME_ABI_VERSION,
+    runtimeFingerprintSha256,
+    requesterPolicySha256: findRelease.requesterPolicySha256,
+    privateDigestKeyVersion: findRelease.privateDigestKeyVersion,
+    liveProofSha256: hex(`live-proof:${releaseId}`),
+    receiptSha256: hex(`receipt:${releaseId}`),
+    qualification: 'live_verified',
+    shadowSha256: null,
+    evidenceKind: 'hms',
+    toolId: 'hms_quote_stay',
+    toolVersion: '2.0.0',
+    implementationSha256: QUOTE_STAY_IMPL_V1,
+    predecessorReleaseId: null,
+    rollbackAction: 'disable',
+    requestBranches: [
+      {
+        id: 'quote_availability_search',
+        discoveryOperationId: 'quote_availability_search',
+        manifestSha256,
+        discoverySha256: hex('discovery'),
+        parserSchemaSha256: hex('parser'),
+      },
+    ],
+    credentialVersionHmacSha256: findRelease.credentialVersionHmacSha256,
+    roleProofSha256: hex('role-proof-v2'),
+  } satisfies HmsPortfolioToolReleaseV2);
+
+  const after = await promoteReadToolV2({
+    path: registryPath,
+    release,
+    releaseRoot,
+  });
+
+  console.log(
+    JSON.stringify(
+      {
+        ok: true,
+        mode: 'promote',
+        releaseId,
+        implementationSha256: QUOTE_STAY_IMPL_V1,
+        manifestSha256,
+        runtimeFingerprintSha256,
+        toolsetFingerprint,
+        activeSetFingerprint: after.activeSetFingerprint,
+        generation: after.generation,
+        activeQuote: after.active.hms_quote_stay ?? null,
+        fingerprintCheck: fingerprintActiveSet({
+          active: after.active,
+          immediatePredecessor: after.immediatePredecessor,
+          generation: after.generation,
+          toolsetVersion: after.toolsetVersion,
+          toolsetFingerprint: after.toolsetFingerprint,
+        }),
+      },
+      null,
+      2,
+    ),
+  );
+}
+
+main().catch((err) => {
+  console.error(String(err));
+  process.exit(1);
+});

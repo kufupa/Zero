@@ -9,6 +9,7 @@ import {
   FIND_RESERVATION_IMPL_V1,
   FIND_RESERVATION_IMPL_V2,
   MAIL_ARTIFACT_IMPL_V1,
+  QUOTE_STAY_IMPL_V1,
   assertHandlerIndexCovers,
   createReadToolHandler,
   listHandlerIndexEntries,
@@ -85,6 +86,7 @@ export function availableImplementationDigestsFromHandlerIndex(): Map<
     ['hms_find_reservation', FIND_RESERVATION_IMPL_V1],
     ['hms_find_reservation', FIND_RESERVATION_IMPL_V2],
     ['mail_read_artifact', MAIL_ARTIFACT_IMPL_V1],
+    ['hms_quote_stay', QUOTE_STAY_IMPL_V1],
   ] as const) {
     let set = map.get(toolId);
     if (!set) {
