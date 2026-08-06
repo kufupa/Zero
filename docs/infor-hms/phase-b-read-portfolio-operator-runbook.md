@@ -11,19 +11,34 @@ Task 13+ (drivers + EC2 evidence).
 
 ## Capability reality
 
-| Tool | State | Production active-read |
-|------|-------|------------------------|
-| `hms_find_reservation` | live_verified (prior) | yes |
-| `mail_read_artifact` | artifact chain / not live allowlisted | no |
-| `hms_quote_stay` … `hms_event_read` | fixture_verified | no |
+| Tool | State | EC2 `active.json` |
+|------|-------|-------------------|
+| `hms_find_reservation` | fixture_verified contract; live release active | yes |
+| `mail_read_artifact` | fixture_verified; live release active | yes |
+| `hms_quote_stay` | fixture_verified; live release active | yes |
+| `hms_sent_email_audit` | discovery_verified; live release active | yes |
+| `hms_list_documents` | discovery_verified (sent-email branch); live release active | yes |
+| `hms_read_folio` | discovery_verified (folio_summary); live release active | yes |
+| `hms_company_account_read` | fixture_verified | **blocked** `BLOCKED_COMPANY_READ_SURFACE_UNPROVEN` |
+| Tax Invoice branch | — | **blocked** `BLOCKED_TAX_INVOICE_SURFACE_UNPROVEN` |
+| Deposit ledger branch | — | **blocked** `BLOCKED_DEPOSIT_LEDGER_RESERVATION_SCOPE_UNPROVEN` |
+| `hms_group_block_read` | fixture_verified | **blocked** `BLOCKED_GROUP_BLOCK_AGGREGATE_COUNTS_UNPROVEN` |
+| `hms_event_read` | fixture_verified | **blocked** `BLOCKED_EVENT_READ_SURFACE_UNPROVEN` |
 
-Full portfolio promotion is **blocked** pending role-proof-v2 + discovery for
-fixture-only tools (Task 13+). User may accept named blockers and revised scope.
+**Laptop vs EC2 status:** `ops-hms-proof.sh status|doctor` reads
+`/opt/nava/shared/hms-active-registry/active.json` on the local machine.
+On Windows laptop that path is missing → `registryLoadState=missing` and
+empty `productionActiveReadToolIds` (not a live wipe). Trust EC2 on-box
+status for activation truth. CAS refuse candidates that drop current actives.
+
+Accepted named blockers revise portfolio DoD; Phase C expansion stops until
+product holdout `ΔFull > 0` with promoted tools in ablation (source static
+allowlist stays empty by design).
 
 ```bash
 cd "/c/Users/gamin/Desktop/projs/emails hotels uis/zero/apps/server-pilot"
 unset DATABASE_URL VITEST_ALLOW_PILOT_RDS
-npm run eval:hms-portfolio-ablation
+pnpm eval:hms-portfolio-ablation
 ```
 
 ## Golden path

@@ -54,11 +54,17 @@ export type PhaseBReleaseCapabilitySnapshot = {
   activeReleaseIdByTool?: ReadonlyMap<ReadToolId, string>;
   /** Private artifact UUIDs per tool (index). Empty array when none yet. */
   privateArtifactIdsByTool?: ReadonlyMap<ReadToolId, readonly string[]>;
+  /**
+   * How the snapshot was loaded. Laptop without /opt/nava path → missing
+   * (empty actives are NOT a live wipe). Invalid JSON/schema → invalid.
+   */
+  registryLoadState?: 'ok' | 'missing' | 'invalid';
 };
 
 export const EMPTY_PHASE_B_RELEASE_CAPABILITY_SNAPSHOT: PhaseBReleaseCapabilitySnapshot =
   {
     productionActiveReadToolIds: [],
+    registryLoadState: 'missing',
   };
 
 export type PhaseBToolStatusRow = {
@@ -78,6 +84,8 @@ export type PhaseBToolStatusRow = {
 export type PhaseBStatusReport = {
   schemaVersion: 1;
   productionActiveReadToolIds: ReadToolId[];
+  /** Laptop without EC2 registry path → missing (empty ≠ wipe). */
+  registryLoadState: 'ok' | 'missing' | 'invalid';
   tools: PhaseBToolStatusRow[];
 };
 
@@ -126,20 +134,29 @@ export function loadPhaseBReleaseCapabilitySnapshotFromDisk(
   const privateArtifactIdsByTool = new Map<ReadToolId, string[]>();
   const productionActiveReadToolIds: ReadToolId[] = [];
 
-  if (existsSync(registryPath)) {
-    try {
-      const registry = hmsActiveRegistryV2Schema.parse(
-        JSON.parse(readFileSync(registryPath, 'utf8')),
-      );
-      for (const [toolIdRaw, releaseId] of Object.entries(registry.active)) {
-        if (!releaseId || !isReadToolId(toolIdRaw)) continue;
-        productionActiveReadToolIds.push(toolIdRaw);
-        activeReleaseIdByTool.set(toolIdRaw, releaseId);
-      }
-    } catch (error) {
-      // Soft: status stays offline-fixture when registry unreadable.
-      void error;
+  if (!existsSync(registryPath)) {
+    return {
+      productionActiveReadToolIds: [],
+      activeReleaseIdByTool,
+      privateArtifactIdsByTool,
+      registryLoadState: 'missing',
+    };
+  }
+
+  let registryLoadState: 'ok' | 'invalid' = 'ok';
+  try {
+    const registry = hmsActiveRegistryV2Schema.parse(
+      JSON.parse(readFileSync(registryPath, 'utf8')),
+    );
+    for (const [toolIdRaw, releaseId] of Object.entries(registry.active)) {
+      if (!releaseId || !isReadToolId(toolIdRaw)) continue;
+      productionActiveReadToolIds.push(toolIdRaw);
+      activeReleaseIdByTool.set(toolIdRaw, releaseId);
     }
+  } catch (error) {
+    // Soft: status stays offline-fixture when registry unreadable.
+    void error;
+    registryLoadState = 'invalid';
   }
 
   const indexEntries = loadProtectedArtifactIndexSync(indexPath);
@@ -162,6 +179,7 @@ export function loadPhaseBReleaseCapabilitySnapshotFromDisk(
     productionActiveReadToolIds,
     activeReleaseIdByTool,
     privateArtifactIdsByTool,
+    registryLoadState,
   };
 }
 
@@ -208,6 +226,7 @@ export function buildPhaseBStatusReport(
   return {
     schemaVersion: 1,
     productionActiveReadToolIds: [...productionActiveReadToolIds],
+    registryLoadState: snapshot.registryLoadState ?? 'missing',
     tools: ids.map((id) => toolStatusRow(id, snapshot)),
   };
 }
@@ -223,6 +242,7 @@ export function phaseBStatusJsonRecord(report: PhaseBStatusReport): {
   code: 'STATUS_OK';
   exitCode: 0;
   productionActiveReadToolIds: ReadToolId[];
+  registryLoadState: 'ok' | 'missing' | 'invalid';
   tools: PhaseBToolStatusRow[];
 } {
   return {
@@ -232,6 +252,7 @@ export function phaseBStatusJsonRecord(report: PhaseBStatusReport): {
     code: 'STATUS_OK',
     exitCode: 0,
     productionActiveReadToolIds: report.productionActiveReadToolIds,
+    registryLoadState: report.registryLoadState,
     tools: report.tools,
   };
 }

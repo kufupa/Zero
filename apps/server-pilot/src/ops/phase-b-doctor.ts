@@ -11,6 +11,7 @@ import {
 } from './phase-b-read-preflight.js';
 import {
   EMPTY_PHASE_B_RELEASE_CAPABILITY_SNAPSHOT,
+  loadPhaseBReleaseCapabilitySnapshotFromDisk,
   toolStatusRow,
   type PhaseBReleaseCapabilitySnapshot,
   type PhaseBToolStatusRow,
@@ -29,6 +30,8 @@ export type PhaseBDoctorReport = {
    * Flips false when any tool is snapshot-activated (real digests/releases later).
    */
   productionActiveReadDecoupled: boolean;
+  /** Propagated from status snapshot — missing on laptop ≠ live wipe. */
+  registryLoadState: 'ok' | 'missing' | 'invalid';
   uniqueBlockerCodes: PhaseBPreflightCode[];
   tools: PhaseBDoctorToolRow[];
 };
@@ -48,7 +51,7 @@ export function buildPhaseBDoctorReport(input: {
   const productionActiveReadDecoupled = productionIds.length === 0;
 
   const tools: PhaseBDoctorToolRow[] = READ_TOOL_IDS.map((toolId) => {
-    const status = toolStatusRow(toolId);
+    const status = toolStatusRow(toolId, snapshot);
     const preflight = runPhaseBReadPreflight({
       action: 'read-discovery',
       toolId,
@@ -82,6 +85,7 @@ export function buildPhaseBDoctorReport(input: {
     liveReady,
     productionActiveReadToolIds: productionIds,
     productionActiveReadDecoupled,
+    registryLoadState: snapshot.registryLoadState ?? 'missing',
     uniqueBlockerCodes,
     tools,
   };
@@ -99,6 +103,7 @@ export function phaseBDoctorJsonRecord(report: PhaseBDoctorReport): {
   exitCode: 0;
   liveReady: boolean;
   productionActiveReadDecoupled: boolean;
+  registryLoadState: 'ok' | 'missing' | 'invalid';
   productionActiveReadToolIds: ReadToolId[];
   uniqueBlockerCodes: PhaseBPreflightCode[];
   tools: PhaseBDoctorToolRow[];
@@ -111,6 +116,7 @@ export function phaseBDoctorJsonRecord(report: PhaseBDoctorReport): {
     exitCode: 0,
     liveReady: report.liveReady,
     productionActiveReadDecoupled: report.productionActiveReadDecoupled,
+    registryLoadState: report.registryLoadState,
     productionActiveReadToolIds: report.productionActiveReadToolIds,
     uniqueBlockerCodes: report.uniqueBlockerCodes,
     tools: report.tools,
@@ -136,7 +142,9 @@ export function main(argv: string[] = process.argv.slice(2)): number {
     process.stderr.write('usage: phase-b-doctor.ts [--json]\n');
     return 2;
   }
-  const report = buildPhaseBDoctorReport();
+  const report = buildPhaseBDoctorReport({
+    snapshot: loadPhaseBReleaseCapabilitySnapshotFromDisk(),
+  });
   process.stderr.write(`${formatPhaseBDoctorOkLine()}\n`);
   if (parsed.json) {
     process.stdout.write(`${JSON.stringify(phaseBDoctorJsonRecord(report))}\n`);

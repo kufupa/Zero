@@ -23,6 +23,7 @@ describe('phase-b-status', () => {
     const report = buildPhaseBStatusReport({ kind: 'all' });
     expect(report.schemaVersion).toBe(1);
     expect(report.productionActiveReadToolIds).toEqual([]);
+    expect(report.registryLoadState).toBe('missing');
     expect(report.tools.map((t) => t.id)).toEqual([...READ_TOOL_IDS]);
     for (const row of report.tools) {
       expect(row.version).toBe(READ_TOOLS[row.id].version);
@@ -148,6 +149,8 @@ describe('phase-b-status', () => {
       snap,
     );
     expect(report.productionActiveReadToolIds).toEqual(['hms_quote_stay']);
+    expect(report.registryLoadState).toBe('ok');
+    expect(snap.registryLoadState).toBe('ok');
     expect(report.tools[0]?.activeReleaseId).toBe(quoteReleaseId);
     expect(report.tools[0]?.privateArtifactIds).toEqual([artifactId]);
   });

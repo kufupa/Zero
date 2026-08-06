@@ -46,20 +46,27 @@ describe('phase-b-doctor', () => {
   });
 
   it('consumes explicit snapshot for productionActive without treating READ_TOOLS as activation', () => {
+    const releaseId = '00000000-0000-4000-8000-000000000099';
     const report = buildPhaseBDoctorReport({
       roleProofV2Path: null,
       reviewedRequestManifestPath: null,
       snapshot: {
         productionActiveReadToolIds: ['hms_find_reservation'],
+        activeReleaseIdByTool: new Map([
+          ['hms_find_reservation', releaseId],
+        ]),
+        registryLoadState: 'ok',
       },
     });
     expect(report.productionActiveReadToolIds).toEqual(['hms_find_reservation']);
+    expect(report.registryLoadState).toBe('ok');
     // Demotion-era: any snapshot-active tool flips decoupled false.
     expect(report.productionActiveReadDecoupled).toBe(false);
     // Still fixture_verified in static contract rows — snapshot is activation only.
     const find = report.tools.find((t) => t.id === 'hms_find_reservation');
     expect(find?.capabilityState).toBe('fixture_verified');
     expect(find?.discoveryDigestPresent).toBe(false);
+    expect(find?.activeReleaseId).toBe(releaseId);
   });
 
   it('formats DOCTOR_OK outcome for diagnosis', () => {
