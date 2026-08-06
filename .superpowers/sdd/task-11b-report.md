@@ -65,7 +65,7 @@ Excluded: `docs/superpowers/plans/2026-08-05-phase-b-hms-read-expansion.md`
 ## Review fix (Important #1 + #2)
 
 **Status:** DONE  
-**Commit:** `98692ce4` — `fix(hms): move role-proof loaders and bind negative evidence`
+**Commit:** `ca684e4c` — `fix(hms): move role-proof loaders and bind negative evidence`
 
 ### Changes
 
