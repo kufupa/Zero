@@ -13,9 +13,9 @@ under accepted named blockers.
 | Item | Value |
 |------|-------|
 | Feature branch | `phase-b-autonomous-read-expansion` |
-| Task 18 HEAD (laptop) | `a3838b875d712737d2ef188e4276ad1df2db06ff` |
+| Task 18 HEAD (laptop) | `c2795e1b64aad61e8329b2e065dfd5aa10af06dd` |
 | BASE (Task 17 Approved) | `1e66e739` |
-| EC2 HEAD (post-deploy) | `a3838b875d712737d2ef188e4276ad1df2db06ff` |
+| EC2 HEAD (post-deploy) | `c2795e1b64aad61e8329b2e065dfd5aa10af06dd` |
 | Deploy | `GIT_BRANCH=phase-b-autonomous-read-expansion` via `ops-deploy.sh` (bundle; no force; no `HMS_REGISTRY_CANDIDATE`) |
 | `/health` | 200 `{"ok":true,"service":"server-pilot"}` |
 | VPN | `VPN_HARD_OK` |
