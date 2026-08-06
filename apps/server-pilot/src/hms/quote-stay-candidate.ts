@@ -1,3 +1,7 @@
+/**
+ * Quote stay candidate: one authored segment with dates, occupancy, room type, rate plan.
+ * Live OSRRAV requires roomtypes+rateplans filters (unscoped search → result-limit error).
+ */
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
@@ -6,6 +10,9 @@ export const QUOTE_STAY_MAX_ROOMS = 4;
 export const QUOTE_STAY_MAX_GUESTS = 16;
 
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+const codeToken = z
+  .string()
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._/-]{0,31}$/, 'expected room/rate code');
 
 export const quoteStayCandidateSchema = z
   .object({
@@ -16,6 +23,8 @@ export const quoteStayCandidateSchema = z
     adults: z.number().int().min(1).max(QUOTE_STAY_MAX_GUESTS),
     children: z.number().int().min(0).max(QUOTE_STAY_MAX_GUESTS),
     rooms: z.number().int().min(1).max(QUOTE_STAY_MAX_ROOMS),
+    roomType: codeToken,
+    ratePlan: codeToken,
   })
   .strict()
   .superRefine((candidate, context) => {
@@ -81,26 +90,91 @@ export function parseQuoteStayCandidateFromAuthoredSegment(
     /\b(\d{1,2})\s*adults?\b[\s,;/&-]{0,12}\b(\d{1,2})\s*(?:children|child)\b[\s,;/&-]{0,12}\b(\d{1,2})\s*rooms?\b/gi,
     [1, 2, 3],
   );
-  if (dateTuples.length !== 1 || occupancyTuples.length !== 1) return null;
+  const roomTuples = captureAll(
+    authoredSegment,
+    /\b(?:room\s*type|roomtype)\s*[:=-]?\s*([A-Za-z0-9][A-Za-z0-9._/-]{0,31})\b/gi,
+    [1],
+  );
+  const rateTuples = captureAll(
+    authoredSegment,
+    /\b(?:rate\s*plan|rateplan)\s*[:=-]?\s*([A-Za-z0-9][A-Za-z0-9._/-]{0,31})\b/gi,
+    [1],
+  );
+  if (
+    dateTuples.length !== 1 ||
+    occupancyTuples.length !== 1 ||
+    roomTuples.length !== 1 ||
+    rateTuples.length !== 1
+  ) {
+    return null;
+  }
 
   const [arrivalDate, departureDate] = dateTuples[0]!;
   const [adultsRaw, childrenRaw, roomsRaw] = occupancyTuples[0]!;
+  const [roomType] = roomTuples[0]!;
+  const [ratePlan] = rateTuples[0]!;
   const canonical = [
     arrivalDate,
     departureDate,
     adultsRaw,
     childrenRaw,
     roomsRaw,
+    roomType.toUpperCase(),
+    ratePlan.toUpperCase(),
   ].join('|');
   return (
     quoteStayCandidateSchema.safeParse({
-      id: createHash('sha256').update(`quote_stay:${canonical}`).digest('hex').slice(0, 32),
+      id: createHash('sha256')
+        .update(`quote_stay:${canonical}`)
+        .digest('hex')
+        .slice(0, 32),
       kind: 'quote_stay',
       arrivalDate,
       departureDate,
       adults: Number(adultsRaw),
       children: Number(childrenRaw),
       rooms: Number(roomsRaw),
+      roomType: roomType.toUpperCase(),
+      ratePlan: ratePlan.toUpperCase(),
     }).data ?? null
   );
+}
+
+/** Contiguous ISO night dates [arrival, departure). */
+export function quoteStayNightDates(candidate: QuoteStayCandidate): string[] {
+  const nights: string[] = [];
+  let cursor = Date.parse(`${candidate.arrivalDate}T00:00:00.000Z`);
+  const end = Date.parse(`${candidate.departureDate}T00:00:00.000Z`);
+  if (!Number.isFinite(cursor) || !Number.isFinite(end) || end <= cursor) {
+    return nights;
+  }
+  while (cursor < end) {
+    nights.push(new Date(cursor).toISOString().slice(0, 10));
+    cursor += 86_400_000;
+  }
+  return nights;
+}
+
+/** HMS form Start Date: DD-MMM-YYYY (UTC calendar). */
+export function isoDateToHmsDisplay(iso: string): string {
+  const months = [
+    'JAN',
+    'FEB',
+    'MAR',
+    'APR',
+    'MAY',
+    'JUN',
+    'JUL',
+    'AUG',
+    'SEP',
+    'OCT',
+    'NOV',
+    'DEC',
+  ] as const;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  if (!m) throw new Error('invalid ISO date');
+  const day = m[3]!;
+  const month = months[Number(m[2]) - 1];
+  if (!month) throw new Error('invalid ISO month');
+  return `${day}-${month}-${m[1]}`;
 }

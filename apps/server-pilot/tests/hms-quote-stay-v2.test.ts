@@ -103,7 +103,7 @@ function adapterFor(html: string) {
 describe('quote stay candidate v2', () => {
   it('accepts one explicit authored tuple and mints an opaque candidate', () => {
     const parsed = parseQuoteStayCandidateFromAuthoredSegment(
-      'Please quote arrival 2026-09-10, departure 2026-09-12, 2 adults, 0 children, 1 room.',
+      'Please quote arrival 2026-09-10, departure 2026-09-12, 2 adults, 0 children, 1 room, room type STD, rate plan BAR.',
     );
     expect(parsed).toMatchObject({
       arrivalDate: '2026-09-10',
@@ -111,23 +111,33 @@ describe('quote stay candidate v2', () => {
       adults: 2,
       children: 0,
       rooms: 1,
+      roomType: 'STD',
+      ratePlan: 'BAR',
     });
     expect(parsed?.id).toMatch(/^[a-f0-9]{32}$/);
   });
 
   it.each([
-    ['missing occupancy', 'arrival 2026-09-10, departure 2026-09-12'],
+    ['missing occupancy', 'arrival 2026-09-10, departure 2026-09-12, room type STD, rate plan BAR'],
     [
       'conflicting dates',
-      'arrival 2026-09-10, departure 2026-09-12, arrival 2026-10-10, departure 2026-10-12, 2 adults, 0 children, 1 room',
+      'arrival 2026-09-10, departure 2026-09-12, arrival 2026-10-10, departure 2026-10-12, 2 adults, 0 children, 1 room, room type STD, rate plan BAR',
     ],
     [
       'multiple occupancy tuples',
-      'arrival 2026-09-10, departure 2026-09-12, 2 adults, 0 children, 1 room; 3 adults, 0 children, 1 room',
+      'arrival 2026-09-10, departure 2026-09-12, 2 adults, 0 children, 1 room; 3 adults, 0 children, 1 room, room type STD, rate plan BAR',
     ],
     [
       'ambiguous locale dates',
-      'arrival 10/09/2026, departure 12/09/2026, 2 adults, 0 children, 1 room',
+      'arrival 10/09/2026, departure 12/09/2026, 2 adults, 0 children, 1 room, room type STD, rate plan BAR',
+    ],
+    [
+      'missing room type',
+      'arrival 2026-09-10, departure 2026-09-12, 2 adults, 0 children, 1 room, rate plan BAR',
+    ],
+    [
+      'missing rate plan',
+      'arrival 2026-09-10, departure 2026-09-12, 2 adults, 0 children, 1 room, room type STD',
     ],
   ])('abstains on %s', (_name, segment) => {
     expect(parseQuoteStayCandidateFromAuthoredSegment(segment)).toBeNull();
@@ -136,7 +146,7 @@ describe('quote stay candidate v2', () => {
   it('rejects invalid calendar dates and overlong stays', () => {
     expect(
       parseQuoteStayCandidateFromAuthoredSegment(
-        'arrival 2026-02-30, departure 2026-03-02, 2 adults, 0 children, 1 room',
+        'arrival 2026-02-30, departure 2026-03-02, 2 adults, 0 children, 1 room, room type STD, rate plan BAR',
       ),
     ).toBeNull();
     const departure = new Date(
@@ -146,7 +156,7 @@ describe('quote stay candidate v2', () => {
       .slice(0, 10);
     expect(
       parseQuoteStayCandidateFromAuthoredSegment(
-        `arrival 2026-09-10, departure ${departure}, 2 adults, 0 children, 1 room`,
+        `arrival 2026-09-10, departure ${departure}, 2 adults, 0 children, 1 room, room type STD, rate plan BAR`,
       ),
     ).toBeNull();
   });

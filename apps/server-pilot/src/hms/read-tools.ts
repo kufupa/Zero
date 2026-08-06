@@ -326,7 +326,7 @@ export const READ_TOOLS: Readonly<Record<ReadToolId, ReadToolDefinition>> = {
       'click_result_row',
       'paging',
     ],
-    candidateRequirement: 'unambiguous_dates_occupancy_authored_segment',
+    candidateRequirement: 'unambiguous_dates_occupancy_room_rate_authored_segment',
     attemptCap: 1,
     discoveryOperationIds: ['quote_availability_search'],
     requestBranches: [

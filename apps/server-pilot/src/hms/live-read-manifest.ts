@@ -14,9 +14,16 @@ import {
   type RequestPolicyManifest,
   type RequestRule,
 } from './contracts.js';
+import {
+  isoDateToHmsDisplay,
+  type QuoteStayCandidate,
+} from './quote-stay-candidate.js';
 
 /** Guest Stay quick-search endpoint (not OSRESV). */
 export const LIVE_GUEST_STAY_SEARCH_PATH = '/web/base/OSRESS.search';
+
+/** Room Type and Rate Availability search (OSRRAV). */
+export const LIVE_QUOTE_STAY_SEARCH_PATH = '/web/base/OSRRAV.HDR.search';
 
 /** Canary confirmation token used in live not-found probes. */
 export const LIVE_NOTFOUND_CANARY = 'NOTFOUND-CANARY';
@@ -878,4 +885,158 @@ export function liveNotFoundCanaryCandidate(): ExactReservationCandidate {
     kind: 'confirmation',
     value: LIVE_NOTFOUND_CANARY,
   };
+}
+
+/**
+ * Exact OSRRAV.HDR.search body: chrome defaults from open surface + candidate binds.
+ * Official Search is view-only availability (never CRS Check Availability).
+ */
+export function buildExactOsrravSearchBody(
+  candidate: QuoteStayCandidate,
+  chrome: Record<string, string> = {},
+): Record<string, string> {
+  const start = isoDateToHmsDisplay(candidate.arrivalDate);
+  return {
+    extId: chrome.extId ?? '',
+    property: chrome.property ?? '',
+    roomtypes: candidate.roomType,
+    rateplans: candidate.ratePlan,
+    salesstrategy: chrome.salesstrategy ?? '',
+    showunavailable: chrome.showunavailable ?? '0',
+    ratetype: chrome.ratetype ?? '',
+    adults: String(candidate.adults),
+    showexclusiverates: chrome.showexclusiverates ?? '0',
+    showavailableforsale: chrome.showavailableforsale ?? 'on',
+    children: String(candidate.children),
+    startdate: start,
+    currency: chrome.currency ?? 'ZAR',
+    rowpagesize: chrome.rowpagesize ?? '14',
+    pravailable: '',
+    prsold: '',
+    prtransientsold: '',
+    prgroupsold: '',
+    prallocation: '',
+    prsellableinv: '',
+    prinvadjustment: '',
+    proutoforder: '',
+    proutofinv: '',
+    proverbookinglimit: '',
+    prphysicalinv: '',
+    rtavailable: '',
+    rtsold: '',
+    rttransientsold: '',
+    rtgroupsold: '',
+    rtallocation: '',
+    rtsellableinv: '',
+    rtinvadjustment: '',
+    rtoutoforder: '',
+    rtoutofinv: '',
+    rtoverbookinglimit: '',
+    rtphysicalinv: '',
+    salesstrategy_display:
+      chrome.salesstrategy_display ?? chrome.salesstrategy ?? '',
+    ratetype_display: chrome.ratetype_display ?? '',
+    adults_display: String(candidate.adults),
+    children_display: String(candidate.children),
+    currency_display: chrome.currency_display ?? '',
+    hoteldate: chrome.hoteldate ?? '',
+    firstcolumndate: chrome.firstcolumndate ?? start,
+    propertylabel: '',
+    roomtypelabel: '',
+    isPopup: '',
+    avDetailPropertyText: '',
+    avDetailRoomTypeText: '',
+    can_insert: '',
+    can_delete: '',
+    can_update: '',
+    pagemode: chrome.pagemode ?? 'display',
+    recordid: '',
+    ONLY_DATA_REQUIRED: chrome.ONLY_DATA_REQUIRED ?? 'true',
+    pageaction: '',
+    USER_FUNCTION_NAME: 'OSRRAV',
+    SYSTEM_FUNCTION_NAME: 'OSRRAV',
+    CURRENT_TAB_NAME: 'HDR',
+  };
+}
+
+export function buildExactOsrravSearchRule(
+  origin: string,
+  candidate: QuoteStayCandidate,
+  chrome: Record<string, string> = {},
+): RequestRule {
+  const body = buildExactOsrravSearchBody(candidate, chrome);
+  const fixedBody: Record<string, string> = {};
+  for (const [key, value] of Object.entries(body)) {
+    fixedBody[key] = value;
+  }
+  return {
+    id: 'live-osrrav-search-exact',
+    origin,
+    method: 'POST',
+    path: LIVE_QUOTE_STAY_SEARCH_PATH,
+    resourceTypes: ['xhr', 'fetch'],
+    contentType: 'application/x-www-form-urlencoded',
+    fixedQuery: {},
+    variableQuery: {},
+    fixedBody,
+    variableBody: {},
+    maxBodyBytes: 16_384,
+    redirectPolicy: 'same-reviewed-chain',
+  };
+}
+
+/** Base chrome + exact-bound OSRRAV.HDR.search (quote allow path). */
+export function buildExactOsrravSearchManifest(
+  origin: string,
+  candidate: QuoteStayCandidate,
+  chrome: Record<string, string> = {},
+): RequestPolicyManifest {
+  return requestPolicyManifestSchema.parse({
+    rules: [
+      ...buildLiveGuestStayChromeGetRules(origin),
+      {
+        id: 'live-osrrav-open',
+        origin,
+        method: 'POST',
+        path: '/web/base/OSRRAV',
+        resourceTypes: ['xhr', 'fetch'],
+        contentType: 'application/x-www-form-urlencoded',
+        fixedQuery: {},
+        variableQuery: {
+          USER_FUNCTION_NAME: VAR64,
+          FUNCTION_CLASS: VAR32,
+        },
+        fixedBody: {
+          USER_FUNCTION_NAME: 'OSRRAV',
+          SYSTEM_FUNCTION_NAME: 'OSRRAV',
+          FUNCTION_CLASS: 'WEBL',
+          CURRENT_TAB_NAME: '',
+          MENU_MODULE_KEY: '0',
+          removescreenflows: 'yes',
+        },
+        variableBody: {},
+        maxBodyBytes: 4096,
+        redirectPolicy: 'same-reviewed-chain',
+      },
+      {
+        id: 'live-osrrav-hdr',
+        origin,
+        method: 'POST',
+        path: '/web/base/OSRRAV.HDR',
+        resourceTypes: ['xhr', 'fetch'],
+        contentType: 'application/x-www-form-urlencoded',
+        fixedQuery: {},
+        variableQuery: {},
+        fixedBody: {
+          SYSTEM_FUNCTION_NAME: 'OSRRAV',
+          USER_FUNCTION_NAME: 'OSRRAV',
+          CURRENT_TAB_NAME: 'HDR',
+        },
+        variableBody: {},
+        maxBodyBytes: 4096,
+        redirectPolicy: 'same-reviewed-chain',
+      },
+      buildExactOsrravSearchRule(origin, candidate, chrome),
+    ],
+  });
 }
