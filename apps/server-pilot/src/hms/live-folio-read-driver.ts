@@ -16,14 +16,8 @@ import {
   type FolioReadData,
 } from './folio-read-contract.js';
 import { extractOsressPageData } from './live-guest-stay-driver.js';
-import {
-  LIVE_DEPOSIT_LEDGER_LIST_PATH,
-  LIVE_DEPOSIT_LEDGER_OPEN_PATH,
-  LIVE_FOLIO_OSRESS_OPEN_PATH,
-  LIVE_GUEST_STAY_SEARCH_PATH,
-  buildExactOsressSearchBody,
-  type ExactReservationCandidate,
-} from './live-read-manifest.js';
+import { createFolioReadFacade } from './folio-read-facade.js';
+import type { ExactReservationCandidate } from './live-read-manifest.js';
 import type { HmsSessionAuthorization } from './release-kernel.js';
 import { HmsRuntimeError, type HmsRuntime } from './runtime.js';
 
@@ -621,43 +615,13 @@ export function createLiveFolioReadDriver(
 
       try {
         assertNotAborted(signal);
-        await session.page
-          .postForm(
-            `${session.origin}${LIVE_FOLIO_OSRESS_OPEN_PATH}?FUNCTION_CLASS=WEBL&USER_FUNCTION_NAME=OSRESS`,
-            {
-              SYSTEM_FUNCTION_NAME: 'OSRESS',
-              USER_FUNCTION_NAME: 'OSRESS',
-              FUNCTION_CLASS: 'WEBL',
-              CURRENT_TAB_NAME: '',
-              MENU_MODULE_KEY: '0',
-              removescreenflows: 'yes',
-            },
-          )
-          .catch(() => undefined);
-
+        const facade = createFolioReadFacade(session);
         const candidate: ExactReservationCandidate = {
           id: child.id,
           kind: 'confirmation',
           value: expectedConfirmationToken,
         };
-        const body = buildExactOsressSearchBody(candidate);
-        const correlation = session.page.waitForCorrelatedResponse
-          ? session.page.waitForCorrelatedResponse(LIVE_GUEST_STAY_SEARCH_PATH)
-          : Promise.resolve();
-        const [post, correlated] = await Promise.allSettled([
-          session.page.postForm(
-            `${session.origin}${LIVE_GUEST_STAY_SEARCH_PATH}`,
-            body,
-          ),
-          correlation,
-        ]);
-        if (post.status === 'rejected') throw post.reason;
-        if (correlated.status === 'rejected') {
-          throw new HmsRuntimeError(
-            'SCHEMA_DRIFT',
-            'folio OSRESS.search correlation failed',
-          );
-        }
+        const text = await facade.openOsressAndSearch(candidate);
         if (session.terminal() || session.violation()) {
           return {
             status: 'manual_required',
@@ -672,7 +636,6 @@ export function createLiveFolioReadDriver(
           };
         }
 
-        const text = post.value || (await session.page.content());
         assertNotAborted(signal);
         const parsed = parseFolioBalanceTransport(text);
         const durationMs = Math.min(
@@ -763,41 +726,8 @@ export function createLiveFolioReadDriver(
 
       try {
         assertNotAborted(signal);
-        await session.page
-          .postForm(
-            `${session.origin}${LIVE_DEPOSIT_LEDGER_OPEN_PATH}?FUNCTION_CLASS=WEBL&USER_FUNCTION_NAME=OSLEDG`,
-            {
-              SYSTEM_FUNCTION_NAME: 'OSLEDG',
-              USER_FUNCTION_NAME: 'OSLEDG',
-              FUNCTION_CLASS: 'WEBL',
-              CURRENT_TAB_NAME: '',
-              MENU_MODULE_KEY: '0',
-              removescreenflows: 'yes',
-            },
-          )
-          .catch(() => undefined);
-
-        const correlation = session.page.waitForCorrelatedResponse
-          ? session.page.waitForCorrelatedResponse(LIVE_DEPOSIT_LEDGER_LIST_PATH)
-          : Promise.resolve();
-        const [post, correlated] = await Promise.allSettled([
-          session.page.postForm(
-            `${session.origin}${LIVE_DEPOSIT_LEDGER_LIST_PATH}`,
-            {
-              SYSTEM_FUNCTION_NAME: 'OSLEDG',
-              USER_FUNCTION_NAME: 'OSLEDG',
-              CURRENT_TAB_NAME: 'LST',
-            },
-          ),
-          correlation,
-        ]);
-        if (post.status === 'rejected') throw post.reason;
-        if (correlated.status === 'rejected') {
-          throw new HmsRuntimeError(
-            'SCHEMA_DRIFT',
-            'deposit OSLEDG.LST correlation failed',
-          );
-        }
+        const facade = createFolioReadFacade(session);
+        const text = await facade.openDepositLedgerList();
         if (session.terminal() || session.violation()) {
           return {
             status: 'manual_required',
@@ -812,7 +742,6 @@ export function createLiveFolioReadDriver(
           };
         }
 
-        const text = post.value || (await session.page.content());
         assertNotAborted(signal);
         const parsed = parseDepositLedgerTransport(
           text,

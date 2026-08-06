@@ -46,6 +46,7 @@ import {
   IncompleteRestoreError,
   SOURCE_REGISTRY_INCOMPLETE_RESTORE_EXIT,
   assertCandidateDoesNotOrphanReleases,
+  assertCandidatePreservesActiveTools,
   runSourceRegistryTransaction,
 } from '../src/hms/source-registry-transaction.js';
 
@@ -690,6 +691,23 @@ describe('Task 13 registry v2 cutover + plan-scoped authorization', () => {
         ]),
       }),
     ).toThrow(/orphan/);
+
+    assertCandidatePreservesActiveTools({
+      currentActive: { hms_find_reservation: 'r-find' },
+      candidateActive: {
+        hms_find_reservation: 'r-find',
+        mail_read_artifact: 'r-mail',
+      },
+    });
+    expect(() =>
+      assertCandidatePreservesActiveTools({
+        currentActive: {
+          hms_find_reservation: 'r-find',
+          hms_quote_stay: 'r-quote',
+        },
+        candidateActive: { hms_find_reservation: 'r-find' },
+      }),
+    ).toThrow(/drop active tool hms_quote_stay/);
 
     const root = await mkdtemp(join(tmpdir(), 'cas-'));
     const activeRegistry = join(root, 'active.json');

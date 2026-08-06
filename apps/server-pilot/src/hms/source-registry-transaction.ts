@@ -85,6 +85,11 @@ function maybeCrash(
 export async function runSourceRegistryTransaction(
   input: SourceRegistryTransactionInput,
 ): Promise<{ status: 'applied' | 'restored'; pointers: SourceRegistryPointers }> {
+  // Fail-closed: empty/sparse candidates cannot wipe live actives on source cutover.
+  const currentActive = await readRegistryActiveMap(input.activeRegistryPath);
+  const candidateActive = await readRegistryActiveMap(input.candidateRegistryFile);
+  assertCandidatePreservesActiveTools({ currentActive, candidateActive });
+
   const backupDir = join(
     input.backupRoot,
     `pre-${input.candidate.sourceRevision}-${Date.now()}`,
@@ -162,6 +167,44 @@ export async function runSourceRegistryTransaction(
     // Crash before any switch — still verify prior pair intact.
     await input.hooks.verifyHealth(input.current);
     return { status: 'restored', pointers: input.current };
+  }
+}
+
+/**
+ * Candidate deploy gate: refuse CAS that would drop currently-active tools.
+ * Per-tool disable must go through rollback, never an empty/sparse candidate swap.
+ */
+export function assertCandidatePreservesActiveTools(input: {
+  currentActive: Readonly<Record<string, string>>;
+  candidateActive: Readonly<Record<string, string>>;
+}): void {
+  for (const [toolId, releaseId] of Object.entries(input.currentActive)) {
+    if (!input.candidateActive[toolId]) {
+      throw new Error(
+        `candidate deploy would drop active tool ${toolId} (release ${releaseId})`,
+      );
+    }
+  }
+}
+
+async function readRegistryActiveMap(
+  path: string,
+): Promise<Record<string, string>> {
+  try {
+    const raw = JSON.parse(await readFile(path, 'utf8')) as {
+      active?: Record<string, unknown>;
+    };
+    if (!raw.active || typeof raw.active !== 'object') return {};
+    const out: Record<string, string> = {};
+    for (const [toolId, releaseId] of Object.entries(raw.active)) {
+      if (typeof releaseId === 'string' && releaseId.length > 0) {
+        out[toolId] = releaseId;
+      }
+    }
+    return out;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {};
+    throw error;
   }
 }
 

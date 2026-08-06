@@ -13,16 +13,9 @@ import {
   type QuoteStayCandidate,
 } from './quote-stay-candidate.js';
 import type { HmsSessionAuthorization } from './release-kernel.js';
-import {
-  HmsRuntimeError,
-  type HmsPage,
-  type HmsRuntime,
-} from './runtime.js';
+import { HmsRuntimeError, type HmsRuntime } from './runtime.js';
 import { extractOsressPageData } from './live-guest-stay-driver.js';
-import {
-  LIVE_QUOTE_STAY_SEARCH_PATH,
-  buildExactOsrravSearchBody,
-} from './live-read-manifest.js';
+import { createQuoteStayFacade } from './quote-stay-facade.js';
 
 export const LIVE_QUOTE_AVAILABILITY_ALIAS_KEYS = [
   'roomTypeCode',
@@ -281,77 +274,6 @@ export function parseLiveQuoteAvailability(
   };
 }
 
-async function navigateOsrrav(page: HmsPage, origin: string): Promise<void> {
-  const html = await page.content().catch(() => '');
-  if (/name="roomtypes"/i.test(html)) return;
-  if (/data-testid="room-type-rate-availability"/i.test(html)) {
-    throw new HmsRuntimeError(
-      'SCHEMA_DRIFT',
-      'fixture HTML quote surface rejected in live navigate',
-    );
-  }
-  await page.click('text=Front Desk').catch(() => undefined);
-  await new Promise((r) => setTimeout(r, 600));
-  await page.click('text=Availability').catch(() => undefined);
-  await new Promise((r) => setTimeout(r, 600));
-  await page.click('text=Room Type and Rate Availability').catch(() => undefined);
-  await new Promise((r) => setTimeout(r, 2500));
-  let ready = await page.content().catch(() => '');
-  if (/name="roomtypes"/i.test(ready)) return;
-  await page
-    .postForm(`${origin}/web/base/OSRRAV?FUNCTION_CLASS=WEBL&USER_FUNCTION_NAME=OSRRAV`, {
-      SYSTEM_FUNCTION_NAME: 'OSRRAV',
-      USER_FUNCTION_NAME: 'OSRRAV',
-      CURRENT_TAB_NAME: '',
-      MENU_MODULE_KEY: '0',
-      FUNCTION_CLASS: 'WEBL',
-      removescreenflows: 'yes',
-    })
-    .catch(() => undefined);
-  ready = await page.content().catch(() => '');
-  if (!/name="roomtypes"/i.test(ready)) {
-    throw new HmsRuntimeError('SCHEMA_DRIFT', 'OSRRAV surface not ready');
-  }
-}
-
-async function collectChromeDefaults(
-  page: HmsPage,
-): Promise<Record<string, string>> {
-  return page.evaluate(() => {
-    const names = [
-      'property',
-      'salesstrategy',
-      'showunavailable',
-      'ratetype',
-      'showexclusiverates',
-      'showavailableforsale',
-      'currency',
-      'rowpagesize',
-      'hoteldate',
-      'firstcolumndate',
-      'salesstrategy_display',
-      'ratetype_display',
-      'currency_display',
-      'pagemode',
-      'ONLY_DATA_REQUIRED',
-    ];
-    const out: Record<string, string> = {};
-    const doc = (
-      globalThis as unknown as {
-        document?: {
-          querySelector(s: string): { value?: string } | null;
-        };
-      }
-    ).document;
-    if (!doc) return out;
-    for (const name of names) {
-      const input = doc.querySelector(`input[name="${name}"]`);
-      if (input) out[name] = String(input.value ?? '');
-    }
-    return out;
-  });
-}
-
 function emptyQuoteData(rooms: number): QuoteStayReadData {
   return quoteStayReadDataSchema.parse({
     nightlyObservations: [],
@@ -461,23 +383,10 @@ export function createLiveQuoteStayDriver(input: {
 
       try {
         assertNotAborted(signal);
-        await navigateOsrrav(session.page, session.origin);
-        const chrome = await collectChromeDefaults(session.page);
-        const body = buildExactOsrravSearchBody(candidate, chrome);
-        const correlation = session.page.waitForCorrelatedResponse
-          ? session.page.waitForCorrelatedResponse(LIVE_QUOTE_STAY_SEARCH_PATH)
-          : Promise.resolve();
-        const [post, correlated] = await Promise.allSettled([
-          session.page.postForm(
-            `${session.origin}${LIVE_QUOTE_STAY_SEARCH_PATH}`,
-            body,
-          ),
-          correlation,
-        ]);
-        if (post.status === 'rejected') throw post.reason;
-        if (correlated.status === 'rejected') {
-          throw new HmsRuntimeError('SCHEMA_DRIFT', 'quote search correlation failed');
-        }
+        const facade = createQuoteStayFacade(session);
+        await facade.navigate();
+        const chrome = await facade.collectChromeDefaults();
+        const text = await facade.searchExact(candidate, chrome);
         if (session.terminal() || session.violation()) {
           return quoteToolResult({
             status: 'manual_required',
@@ -489,7 +398,6 @@ export function createLiveQuoteStayDriver(input: {
           });
         }
 
-        const text = post.value || (await session.page.content());
         assertNotAborted(signal);
         const parsed = parseLiveQuoteAvailability(text, candidate, observedAt);
         if (!parsed.envelopeRecognized) {
