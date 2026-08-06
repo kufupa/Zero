@@ -94,6 +94,18 @@ If a test requires Postgres, use a disposable test database. If none exists, use
 
 FAIL → reproduce → root cause (file:line) → fix → test → commit → resume. Do not stop at first failure.
 
+### Cursor execution-backend flake (not a human gate)
+
+Exact error: `Execution backend unavailable. Do not retry tool calls — the execution environment is down.`
+
+This is Cursor's agent tool bridge, not Zero app/AWS/RDS. Full playbook: `docs/solutions/workflow-issues/cursor-execution-backend-unavailable.md`.
+
+**Required agent behavior:**
+1. Do **not** ask the user to wait or re-invoke.
+2. Backoff-retry Shell/Write/StrReplace (≈5s → 15s → 45s) until `echo shell_ok` works or three attempts fail.
+3. On recovery: `git status`, read `.superpowers/sdd/*progress*`, resume mid-task (resume subagent or re-dispatch with existing uncommitted work).
+4. Only if retries exhaust **and** Shell still dead after ~5 minutes: record blocker in handoff with evidence; still do not invent an app RCA.
+
 ### Divergence authority
 
 Better path to done criteria → take it. Log in handoff report.

@@ -51,23 +51,19 @@ Do not RCA your repo when you see this error:
 - EC2 / RDS / Mailpit (untouched if no SSM ran)
 - Disk space (verify anyway, but unrelated to this specific error string)
 
-### Fix (no code change required)
+### Fix (agent-owned — never hand to human)
 
-1. **Wait 1–5 minutes** — backend usually self-heals after Cursor restart/update.
-2. **Retry the failed agent turn** — same commands; do not amend git or patch repo code for this error.
-3. **Reduce concurrency before retry:**
-   - Pause `t3mp3st` overnight swarms
-   - Avoid parallel `ce-compound` subagents + main deploy agent in same workspace
-   - Let `CodeSetup-stable-*.exe` finish before large autonomous runs
-4. **Verify recovery:**
+This is a **solo-dev autonomous harness flake**. The executing agent owns recovery. Never tell the user "when backend is back" or stop the overnight wave for this string alone.
 
-   ```bash
-   # In agent Shell tool or local terminal
-   echo shell_ok
-   git status -sb
-   ```
+1. **Silent backoff retry (same turn):** sleep ~5s → 15s → 45s; re-run the exact failed Shell/Write/StrReplace once per backoff. Harness message says "Do not retry" for that *call*; the *session* must still retry after a short pause because the bridge usually returns.
+2. **Verify recovery:** `echo shell_ok && git status -sb` (or worktree path). If green, continue.
+3. **Resume from durable ledger** (`.superpowers/sdd/phase-b-progress.md` / plan todos) — not from Task 1. Re-dispatch or resume the interrupted subagent with existing uncommitted work.
+4. **Reduce concurrency before next heavy wave:**
+   - Prefer one implementer at a time for shared-file slices
+   - Avoid stacking `ce-compound` + deploy + overnight swarm + Cursor `CodeSetup` update
+5. **Do not** patch application code, amend git, or invent an AWS/RDS RCA for this error string.
 
-5. **Resume autonomous wave** from the step that failed (push, sync, gate) — not from Task 1.
+Recurrence note (2026-08-06): Phase B `/nava-run` mid-Task-11B→11C handoff hit the same string after review approval; Shell recovered within the next user turn; worktree HEAD and ledger intact. Wrong response was pausing for the human.
 
 ### ce-compound subagent fallback
 
