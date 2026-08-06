@@ -346,9 +346,10 @@ async function main(): Promise<void> {
       return {
         taxInvoiceExactVisible: uniq.some((t) => /^Tax Invoice$/i.test(t)),
         taxInvoiceAnyVisible: uniq.some((t) => /Tax\s*Invoice/i.test(t)),
+        allTreeLabels: uniq.slice(0, 120),
         frontDeskChildrenDom: uniq
           .filter((t) =>
-            /tax|invoice|email|sent|folio|guest|deposit|ledger|stay|availability|room|rate/i.test(
+            /tax|invoice|email|sent|folio|guest|deposit|ledger|stay|availability|room|rate|plan|summary/i.test(
               t,
             ),
           )
@@ -356,6 +357,76 @@ async function main(): Promise<void> {
         totalUniq: uniq.length,
       };
     });
+
+    // MENU_MODULE_KEY sweep — structural labels only (role entitlement evidence)
+    const moduleSweep = await page.evaluate(async () => {
+      const found: Array<{
+        moduleKey: number;
+        status: number;
+        bytes: number;
+        hasTaxInvoice: boolean;
+        taxishLabels: string[];
+        sampleLabels: string[];
+      }> = [];
+      for (let k = 0; k <= 12; k++) {
+        try {
+          const r = await fetch('/web/base/BSSTRT', {
+            method: 'POST',
+            headers: { 'content-type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+              SYSTEM_FUNCTION_NAME: 'BSSTRT',
+              USER_FUNCTION_NAME: 'BSSTRT',
+              FUNCTION_CLASS: 'WEBL',
+              MENU_MODULE_KEY: String(k),
+              removescreenflows: 'yes',
+              manurefresh: 'yes',
+            }).toString(),
+            credentials: 'same-origin',
+          });
+          const text = await r.text();
+          const labels = [
+            ...new Set(
+              [...text.matchAll(/"itemLabel"\s*:\s*"([^"]+)"/g)].map(
+                (m) => m[1]!,
+              ),
+            ),
+          ];
+          // Also plain-text menu strings
+          const plain = [
+            ...new Set(
+              [
+                ...text.matchAll(
+                  /(Tax\s*Invoice|Sent Email|Guest Stay|Folio|Deposit Ledger|Stay\s*360|Room Plan|Availability)/gi,
+                ),
+              ].map((m) => m[1]!.replace(/\s+/g, ' ')),
+            ),
+          ];
+          found.push({
+            moduleKey: k,
+            status: r.status,
+            bytes: text.length,
+            hasTaxInvoice:
+              labels.some((l) => /Tax\s*Invoice/i.test(l)) ||
+              /Tax\s*Invoice/i.test(text),
+            taxishLabels: [...labels, ...plain]
+              .filter((l) => /tax|invoice|email|sent|folio|guest|deposit|stay/i.test(l))
+              .slice(0, 30),
+            sampleLabels: labels.slice(0, 20),
+          });
+        } catch {
+          found.push({
+            moduleKey: k,
+            status: 0,
+            bytes: 0,
+            hasTaxInvoice: false,
+            taxishLabels: [],
+            sampleLabels: [],
+          });
+        }
+      }
+      return found;
+    });
+    (report as Record<string, unknown>).moduleSweep = moduleSweep;
 
     const sigBeforeTaxClick = signatures.length;
     let taxInvoiceClicked = false;
@@ -446,6 +517,8 @@ async function main(): Promise<void> {
     };
 
     // --- Stay 360 fallback ONLY if Front Desk list path failed ---
+    // Menu label "STAY 360" ≠ Stay 360 chrome on find-opened stay.
+    // Always find-open a Guest Stay row first, then look for Tax Invoice tile.
     if (!listPathProven) {
       const stay360: Record<string, unknown> = {
         attempted: true,
@@ -453,14 +526,16 @@ async function main(): Promise<void> {
       };
       const sigBeforeStay = signatures.length;
 
-      await page
+      // Prefer Guest Stay menu; fall back to OSRESS open.
+      const guestStayClicked = await page
         .getByText('Guest Stay', { exact: true })
         .first()
         .click({ force: true, timeout: 10_000 })
-        .catch(() => undefined);
+        .then(() => true)
+        .catch(() => false);
+      stay360.guestStayClicked = guestStayClicked;
       await page.waitForTimeout(3_000);
 
-      // Open OSRESS shell (proven Guest Stay list) — structure only
       const osressOpen = await page.evaluate(async () => {
         const body = new URLSearchParams({
           USER_FUNCTION_NAME: 'OSRESS',
@@ -501,35 +576,43 @@ async function main(): Promise<void> {
         };
       });
       stay360.osressOpen = osressOpen;
+      await page.waitForTimeout(2_500);
 
-      // DOM: Stay 360 / Tax Invoice tile visibility without opening guest detail fields
-      const stayDom = await page.evaluate(() => {
-        const texts = [
-          ...document.querySelectorAll(
-            '.x-btn-inner, .x-menu-item-text, .x-tab-strip-text, .x-tree-node-text, span, a, img',
-          ),
-        ].map((el) => {
-          const t = (el.textContent || '').trim();
-          const title = el.getAttribute('title') || '';
-          const alt = el.getAttribute('alt') || '';
-          const aria = el.getAttribute('aria-label') || '';
-          return [t, title, alt, aria].filter(Boolean).join(' | ');
+      // Inventory toolbar/title attributes only (no cell values).
+      const inventoryChrome = () =>
+        page.evaluate(() => {
+          const texts = [
+            ...document.querySelectorAll(
+              '.x-btn-inner, .x-menu-item-text, .x-tab-strip-text, .x-tree-node-text, [title], [aria-label], img[alt]',
+            ),
+          ].map((el) => {
+            const t = (el.textContent || '').trim();
+            const title = el.getAttribute('title') || '';
+            const alt = el.getAttribute('alt') || '';
+            const aria = el.getAttribute('aria-label') || '';
+            return [t, title, alt, aria].filter(Boolean).join(' | ');
+          });
+          const uniq = [...new Set(texts)].filter(
+            (t) => t.length > 1 && t.length < 100,
+          );
+          return {
+            taxInvoiceTileVisible: uniq.some((t) => /Tax\s*Invoice/i.test(t)),
+            stay360Visible: uniq.some((t) => /Stay\s*360/i.test(t)),
+            guestStayTaxInvoicingVisible: uniq.some((t) =>
+              /Guest Stay Tax Invoic/i.test(t),
+            ),
+            interesting: uniq
+              .filter((t) =>
+                /tax|invoice|stay\s*360|print|email|resend|folio|guest stay/i.test(
+                  t,
+                ),
+              )
+              .slice(0, 50),
+          };
         });
-        const uniq = [...new Set(texts)].filter((t) => t.length > 1 && t.length < 100);
-        return {
-          taxInvoiceTileVisible: uniq.some((t) => /Tax\s*Invoice/i.test(t)),
-          stay360Visible: uniq.some((t) => /Stay\s*360/i.test(t)),
-          guestStayTaxInvoicingVisible: uniq.some((t) =>
-            /Guest Stay Tax Invoic/i.test(t),
-          ),
-          interesting: uniq
-            .filter((t) => /tax|invoice|stay\s*360|print|email|resend/i.test(t))
-            .slice(0, 40),
-        };
-      });
-      stay360.stayDomBeforeOpen = stayDom;
 
-      // Find-open: click first grid row if present (structure: row count only; no cell values)
+      stay360.stayDomBeforeOpen = await inventoryChrome();
+
       const gridMeta = await page.evaluate(() => {
         const rows = document.querySelectorAll(
           '.x-grid3-row, .x-grid-row, tr.x-grid3-row',
@@ -539,73 +622,85 @@ async function main(): Promise<void> {
       stay360.gridMeta = gridMeta;
 
       let taxTileClicked = false;
-      if (stayDom.taxInvoiceTileVisible || stayDom.stay360Visible) {
-        // Prefer exact Tax Invoice tile; never Print/Email
-        if (stayDom.taxInvoiceTileVisible) {
-          await page
-            .getByText(/Tax Invoice/i)
-            .first()
-            .click({ force: true, timeout: 8_000 })
-            .then(() => {
-              taxTileClicked = true;
-            })
-            .catch(() => undefined);
-        } else {
-          await page
-            .getByText(/Stay 360/i)
-            .first()
-            .click({ force: true, timeout: 8_000 })
-            .catch(() => undefined);
-          await page.waitForTimeout(2_000);
-          await page
-            .getByText(/Tax Invoice/i)
-            .first()
-            .click({ force: true, timeout: 8_000 })
-            .then(() => {
-              taxTileClicked = true;
-            })
-            .catch(() => undefined);
-        }
-        await page.waitForTimeout(3_000);
-      } else if (gridMeta.rowCount > 0) {
-        // Open first find row only to expose Stay 360 chrome — mask all values
+      // Find-open first: dblclick row to expose Stay 360 chrome on an open stay.
+      if (gridMeta.rowCount > 0) {
         await page
           .locator('.x-grid3-row, .x-grid-row')
           .first()
           .dblclick({ timeout: 8_000 })
-          .catch(() => undefined);
+          .catch(async () => {
+            await page
+              .locator('.x-grid3-row, .x-grid-row')
+              .first()
+              .click({ force: true, timeout: 5_000 })
+              .catch(() => undefined);
+          });
+        await page.waitForTimeout(4_000);
+        stay360.afterFindOpen = await inventoryChrome();
+      } else {
+        stay360.afterFindOpen = null;
+        stay360.findOpenSkipped = 'no_grid_rows';
+      }
+
+      const chromeAfterOpen =
+        (stay360.afterFindOpen as Record<string, unknown> | null) ??
+        (stay360.stayDomBeforeOpen as Record<string, unknown>);
+
+      if (chromeAfterOpen.taxInvoiceTileVisible) {
+        await page
+          .locator('[title*="Tax Invoice" i], [aria-label*="Tax Invoice" i]')
+          .first()
+          .click({ force: true, timeout: 8_000 })
+          .then(() => {
+            taxTileClicked = true;
+          })
+          .catch(async () => {
+            await page
+              .getByText(/Tax Invoice/i)
+              .first()
+              .click({ force: true, timeout: 5_000 })
+              .then(() => {
+                taxTileClicked = true;
+              })
+              .catch(() => undefined);
+          });
         await page.waitForTimeout(3_000);
-        const afterOpen = await page.evaluate(() => {
-          const texts = [
-            ...document.querySelectorAll(
-              '.x-btn-inner, .x-tab-strip-text, .x-menu-item-text, span, a',
-            ),
-          ]
-            .map((el) => (el.textContent || el.getAttribute('title') || '').trim())
-            .filter((t) => t.length > 1 && t.length < 80);
-          const uniq = [...new Set(texts)];
-          return {
-            taxInvoiceTileVisible: uniq.some((t) => /Tax\s*Invoice/i.test(t)),
-            stay360Visible: uniq.some((t) => /Stay\s*360/i.test(t)),
-            guestStayTaxInvoicingVisible: uniq.some((t) =>
-              /Guest Stay Tax Invoic/i.test(t),
-            ),
-            interesting: uniq
-              .filter((t) => /tax|invoice|stay\s*360|print|email|resend/i.test(t))
-              .slice(0, 40),
-            // Never return body text (PII risk)
-          };
-        });
-        stay360.afterFindOpen = afterOpen;
-        if (afterOpen.taxInvoiceTileVisible) {
+      } else if (chromeAfterOpen.stay360Visible) {
+        // Click Stay 360 control that is NOT the Front Desk menu label if possible
+        await page
+          .locator(
+            '.x-btn-inner:text-matches("STAY 360", "i"), [title*="Stay 360" i]',
+          )
+          .first()
+          .click({ force: true, timeout: 8_000 })
+          .catch(async () => {
+            await page
+              .getByText(/Stay 360/i)
+              .first()
+              .click({ force: true, timeout: 5_000 })
+              .catch(() => undefined);
+          });
+        await page.waitForTimeout(3_000);
+        stay360.afterStay360Click = await inventoryChrome();
+        const afterS360 = stay360.afterStay360Click as Record<string, unknown>;
+        if (afterS360.taxInvoiceTileVisible) {
           await page
-            .getByText(/Tax Invoice/i)
+            .locator('[title*="Tax Invoice" i], [aria-label*="Tax Invoice" i]')
             .first()
             .click({ force: true, timeout: 8_000 })
             .then(() => {
               taxTileClicked = true;
             })
-            .catch(() => undefined);
+            .catch(async () => {
+              await page
+                .getByText(/Tax Invoice/i)
+                .first()
+                .click({ force: true, timeout: 5_000 })
+                .then(() => {
+                  taxTileClicked = true;
+                })
+                .catch(() => undefined);
+            });
           await page.waitForTimeout(3_000);
         }
       }
@@ -704,10 +799,23 @@ async function main(): Promise<void> {
         taxInvoiceInDom: treeBeforeClick.taxInvoiceExactVisible,
         frontDeskChildrenHarvest: menuHarvest.frontDeskChildren,
         frontDeskChildrenDom: treeBeforeClick.frontDeskChildrenDom,
+        allTreeLabels: treeBeforeClick.allTreeLabels,
         taxInvoicePairs: menuHarvest.taxInvoicePairs,
+        moduleSweepTaxHits: (
+          (report as Record<string, unknown>).moduleSweep as Array<{
+            moduleKey: number;
+            hasTaxInvoice: boolean;
+            taxishLabels: string[];
+          }>
+        )
+          ?.filter((m) => m.hasTaxInvoice || m.taxishLabels.length > 0)
+          .slice(0, 15),
         stay360Attempted: Boolean(s360),
         stay360Tile: s360
           ? (s360.stayDomBeforeOpen as Record<string, unknown> | undefined)
+          : null,
+        stay360AfterFindOpen: s360
+          ? (s360.afterFindOpen as Record<string, unknown> | undefined)
           : null,
       };
     }
