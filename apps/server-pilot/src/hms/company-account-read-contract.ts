@@ -22,6 +22,10 @@ export const COMPANY_ACCOUNT_READ_PRIVACY_POLICY = {
   ],
 } as const;
 
+/** Live surface blocker — billing mode/terms/contract absent on safe linked form. */
+export const COMPANY_ACCOUNT_READ_SURFACE_BLOCKER =
+  'BLOCKED_COMPANY_READ_SURFACE_UNPROVEN';
+
 const sha256Hex = z.string().regex(/^[a-f0-9]{64}$/);
 const isoTimestamp = z.string().datetime();
 const billingModeSchema = z.enum([

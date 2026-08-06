@@ -4,29 +4,33 @@
   "symptom": "fixture_verified awaiting discovery",
   "structuralObservation": {
     "routeClass": "company_billing_read",
-    "envelopeDiscriminator": "fixture_only_unproven"
+    "envelopeDiscriminator": "surface_unproven"
   },
   "assumptionsVerified": [
     "fixture_contract_closed",
-    "promotion_evidence_fixture_only"
+    "arbitrary_profile_search_structurally_unavailable",
+    "live_fail_closed_observer_shipped"
   ],
-  "assumptionsInvalidated": [],
+  "assumptionsInvalidated": [
+    "company_billing_terms_on_osress",
+    "company_billing_terms_on_osacct_hdr"
+  ],
   "causalChain": [
-    "fixture_kernel_shipped",
-    "company_billing_surface_unproven",
-    "role_manifest_discovery_gap"
+    "abort_first_finance_discovery_2026-08-06",
+    "osress_osacct_field_inventory",
+    "billing_mode_terms_contract_absent",
+    "no_reservation_linked_manifest_authored"
   ],
-  "prediction": "Proven company billing surface with role-proof-v2 clears BLOCKED_COMPANY_READ_SURFACE_UNPROVEN",
+  "prediction": "Tenant view-only company billing surface with exact mode/terms/contract fields clears BLOCKED_COMPANY_READ_SURFACE_UNPROVEN",
   "verificationCommands": [
     "unset DATABASE_URL VITEST_ALLOW_PILOT_RDS",
-    "npx vitest run tests/hms-rca-dossier.test.ts"
+    "pnpm exec vitest run tests/hms-live-company-account-read.test.ts tests/hms-company-account-read.test.ts"
   ],
   "liveArtifactIds": [],
   "unresolvedGaps": [
     "BLOCKED_COMPANY_READ_SURFACE_UNPROVEN",
     "BLOCKED_NO_COMPANY_BILLING_ROLE_PROOF_V2",
-    "BLOCKED_NO_REVIEWED_REQUEST_MANIFEST",
-    "BLOCKED_TOOL_FIXTURE_ONLY"
+    "BLOCKED_NO_REVIEWED_REQUEST_MANIFEST"
   ],
-  "updatedAt": "2026-08-06T00:00:00.000Z"
+  "updatedAt": "2026-08-06T21:00:00.000Z"
 }

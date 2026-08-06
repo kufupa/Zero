@@ -1,32 +1,37 @@
 {
   "toolId": "hms_read_folio",
   "toolVersion": "1.0.0",
-  "symptom": "fixture_verified awaiting discovery",
+  "symptom": "discovery_verified awaiting live proof",
   "structuralObservation": {
     "routeClass": "folio_deposit_read",
-    "envelopeDiscriminator": "fixture_only_unproven"
+    "envelopeDiscriminator": "osress_foliobalance_osledg_lst"
   },
   "assumptionsVerified": [
     "fixture_contract_closed",
-    "promotion_evidence_fixture_only"
+    "folio_osress_foliobalance_field_present",
+    "deposit_osledg_lst_grid_proven",
+    "live_driver_binding_tests_green"
   ],
-  "assumptionsInvalidated": [],
+  "assumptionsInvalidated": [
+    "deposit_lst_includes_confirmationnumber"
+  ],
   "causalChain": [
-    "fixture_kernel_shipped",
-    "finance_role_proof_v2_absent",
-    "surface_manifest_discovery_operator_unproven"
+    "abort_first_finance_discovery_2026-08-06",
+    "folio_function_OSRESS",
+    "deposit_function_OSLEDG_LST",
+    "folio_manifest_authored",
+    "deposit_manifest_authored",
+    "deposit_reservation_scope_unproven_on_lst"
   ],
-  "prediction": "Finance role-proof-v2 plus reviewed folio manifest unblocks discovery operator",
+  "prediction": "Folio balance live proof proceeds via OSRESS; Deposit Ledger needs confirmation-correlated row or detail path before full merge",
   "verificationCommands": [
     "unset DATABASE_URL VITEST_ALLOW_PILOT_RDS",
-    "npx vitest run tests/hms-rca-dossier.test.ts"
+    "pnpm exec vitest run tests/hms-live-folio-read.test.ts tests/hms-folio-read.test.ts"
   ],
   "liveArtifactIds": [],
   "unresolvedGaps": [
-    "BLOCKED_NO_FINANCE_ROLE_PROOF_V2",
-    "BLOCKED_NO_ROLE_PROOF_V2",
-    "BLOCKED_NO_REVIEWED_REQUEST_MANIFEST",
-    "BLOCKED_TOOL_FIXTURE_ONLY"
+    "BLOCKED_DEPOSIT_LEDGER_RESERVATION_SCOPE_UNPROVEN",
+    "BLOCKED_NO_FINANCE_ROLE_PROOF_V2"
   ],
-  "updatedAt": "2026-08-06T00:00:00.000Z"
+  "updatedAt": "2026-08-06T21:00:00.000Z"
 }

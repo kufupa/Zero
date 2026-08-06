@@ -357,7 +357,7 @@ describe('folio recipient-class claims', () => {
 });
 
 describe('folio registry contract', () => {
-  it('registers closed fixture-only contract without live promotion', () => {
+  it('registers closed contract with discovery digest; live promotion still false', () => {
     expect(READ_TOOLS.hms_read_folio.observationSchema).toBe(
       folioReadDataSchema,
     );
@@ -367,6 +367,9 @@ describe('folio registry contract', () => {
       live: false,
       shadow: false,
     });
-    expect(capabilityStateFor('hms_read_folio')).toBe('fixture_verified');
+    expect(READ_TOOLS.hms_read_folio.evidenceRefs.discoveryDigest).toMatch(
+      /^[a-f0-9]{64}$/,
+    );
+    expect(capabilityStateFor('hms_read_folio')).toBe('discovery_verified');
   });
 });

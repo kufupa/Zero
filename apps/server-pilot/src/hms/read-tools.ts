@@ -486,6 +486,8 @@ export const READ_TOOLS: Readonly<Record<ReadToolId, ReadToolDefinition>> = {
     evidenceRefs: {
       fixtureDigest:
         '716018585f130515af72a506721849c0f1e5e22ccf521241136e03f96e653b65',
+      discoveryDigest:
+        '2a8ffeaecb91a5c59ee17b371e3154aab16c07628fd42399a891ce9c8c60bc82',
     },
     observationSchema: folioReadDataSchema,
     claimKinds: ['folio_deposit_summary'],

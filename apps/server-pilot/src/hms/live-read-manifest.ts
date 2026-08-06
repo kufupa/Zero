@@ -1041,6 +1041,13 @@ export function buildExactOsrravSearchManifest(
   });
 }
 
+/** Folio balance via Guest Stay shell (OSRESS) — proven 2026-08-06 abort-first discovery. */
+export const LIVE_FOLIO_OSRESS_OPEN_PATH = '/web/base/OSRESS';
+
+/** Deposit Ledger list (OSLEDG.LST) — proven 2026-08-06 abort-first discovery. */
+export const LIVE_DEPOSIT_LEDGER_OPEN_PATH = '/web/base/OSLEDG';
+export const LIVE_DEPOSIT_LEDGER_LIST_PATH = '/web/base/OSLEDG.LST';
+
 /** Sent Email list endpoint (PSSNEL.HDR) — proven 2026-08-06 abort-first discovery. */
 export const LIVE_SENT_EMAIL_OPEN_PATH = '/web/base/PSSNEL';
 export const LIVE_SENT_EMAIL_LIST_PATH = '/web/base/PSSNEL.HDR';
@@ -1196,4 +1203,191 @@ export function buildLiveSentEmailListManifest(
     ],
   });
 }
+
+/**
+ * Folio balance functional POSTs: OSRESS open + exact OSRESS.search only.
+ * Folio settlement / post / print / email / advance-deposit paths absent.
+ */
+export function buildLiveFolioFunctionalRules(origin: string): RequestRule[] {
+  return [
+    {
+      id: 'live-folio-osress-open',
+      origin,
+      method: 'POST',
+      path: LIVE_FOLIO_OSRESS_OPEN_PATH,
+      resourceTypes: ['xhr', 'fetch'],
+      contentType: 'application/x-www-form-urlencoded',
+      fixedQuery: {},
+      variableQuery: {
+        USER_FUNCTION_NAME: VAR64,
+        FUNCTION_CLASS: VAR32,
+      },
+      fixedBody: {
+        USER_FUNCTION_NAME: 'OSRESS',
+        SYSTEM_FUNCTION_NAME: 'OSRESS',
+        FUNCTION_CLASS: 'WEBL',
+        CURRENT_TAB_NAME: '',
+        MENU_MODULE_KEY: '0',
+        removescreenflows: 'yes',
+      },
+      variableBody: {},
+      maxBodyBytes: 4096,
+      redirectPolicy: 'same-reviewed-chain',
+    },
+    {
+      id: 'live-folio-osress-search',
+      origin,
+      method: 'POST',
+      path: LIVE_GUEST_STAY_SEARCH_PATH,
+      resourceTypes: ['xhr', 'fetch'],
+      contentType: 'application/x-www-form-urlencoded',
+      fixedQuery: {},
+      variableQuery: {},
+      fixedBody: {
+        COMPONENT_INFO_TYPE: 'DATA_ONLY',
+        GRID_ID: '1775',
+        GRID_NAME: 'OSRESS',
+        DATASPY_ID: '1941',
+        SYSTEM_FUNCTION_NAME: 'OSRESS',
+        USER_FUNCTION_NAME: 'OSRESV',
+        CURRENT_TAB_NAME: 'LST',
+      },
+      variableBody: {
+        MADDON_FILTER_ALIAS_NAME_1: { pattern: '.{0,64}', maxLength: 64 },
+        MADDON_FILTER_OPERATOR_1: { pattern: '.{0,16}', maxLength: 16 },
+        MADDON_FILTER_JOINER_1: { pattern: '.{0,8}', maxLength: 8 },
+        MADDON_FILTER_SEQNUM_1: { pattern: '.{0,8}', maxLength: 8 },
+        MADDON_FILTER_VALUE_1: { pattern: '.{0,64}', maxLength: 64 },
+        MADDON_FILTER_ALIAS_NAME_2: { pattern: '.{0,64}', maxLength: 64 },
+        MADDON_FILTER_OPERATOR_2: { pattern: '.{0,16}', maxLength: 16 },
+        MADDON_FILTER_JOINER_2: { pattern: '.{0,8}', maxLength: 8 },
+        MADDON_FILTER_SEQNUM_2: { pattern: '.{0,8}', maxLength: 8 },
+        MADDON_FILTER_VALUE_2: { pattern: '.{0,64}', maxLength: 64 },
+        MADDON_FILTER_ALIAS_NAME_3: { pattern: '.{0,64}', maxLength: 64 },
+        MADDON_FILTER_OPERATOR_3: { pattern: '.{0,16}', maxLength: 16 },
+        MADDON_FILTER_JOINER_3: { pattern: '.{0,8}', maxLength: 8 },
+        MADDON_FILTER_SEQNUM_3: { pattern: '.{0,8}', maxLength: 8 },
+        MADDON_FILTER_VALUE_3: { pattern: '.{0,128}', maxLength: 128 },
+        MADDON_LPAREN_3: { pattern: '.{0,8}', maxLength: 8 },
+        MADDON_FILTER_ALIAS_NAME_4: { pattern: '.{0,64}', maxLength: 64 },
+        MADDON_FILTER_OPERATOR_4: { pattern: '.{0,16}', maxLength: 16 },
+        MADDON_FILTER_JOINER_4: { pattern: '.{0,8}', maxLength: 8 },
+        MADDON_FILTER_SEQNUM_4: { pattern: '.{0,8}', maxLength: 8 },
+        MADDON_FILTER_VALUE_4: { pattern: '.{0,128}', maxLength: 128 },
+        MADDON_FILTER_ALIAS_NAME_5: { pattern: '.{0,64}', maxLength: 64 },
+        MADDON_FILTER_OPERATOR_5: { pattern: '.{0,16}', maxLength: 16 },
+        MADDON_FILTER_JOINER_5: { pattern: '.{0,8}', maxLength: 8 },
+        MADDON_FILTER_SEQNUM_5: { pattern: '.{0,8}', maxLength: 8 },
+        MADDON_FILTER_VALUE_5: { pattern: '.{0,128}', maxLength: 128 },
+        MADDON_LPAREN_5: { pattern: '.{0,8}', maxLength: 8 },
+        MADDON_FILTER_ALIAS_NAME_6: { pattern: '.{0,64}', maxLength: 64 },
+        MADDON_FILTER_OPERATOR_6: { pattern: '.{0,16}', maxLength: 16 },
+        MADDON_FILTER_JOINER_6: { pattern: '.{0,8}', maxLength: 8 },
+        MADDON_FILTER_SEQNUM_6: { pattern: '.{0,8}', maxLength: 8 },
+        MADDON_FILTER_VALUE_6: { pattern: '.{0,128}', maxLength: 128 },
+        MADDON_RPAREN_6: { pattern: '.{0,8}', maxLength: 8 },
+        MADDON_FILTER_ALIAS_NAME_7: { pattern: '.{0,64}', maxLength: 64 },
+        MADDON_FILTER_OPERATOR_7: { pattern: '.{0,16}', maxLength: 16 },
+        MADDON_FILTER_JOINER_7: { pattern: '.{0,8}', maxLength: 8 },
+        MADDON_FILTER_SEQNUM_7: { pattern: '.{0,8}', maxLength: 8 },
+        MADDON_FILTER_VALUE_7: { pattern: '.{0,128}', maxLength: 128 },
+        MADDON_FILTER_ALIAS_NAME_8: { pattern: '.{0,64}', maxLength: 64 },
+        MADDON_FILTER_OPERATOR_8: { pattern: '.{0,16}', maxLength: 16 },
+        MADDON_FILTER_JOINER_8: { pattern: '.{0,8}', maxLength: 8 },
+        MADDON_FILTER_SEQNUM_8: { pattern: '.{0,8}', maxLength: 8 },
+        MADDON_FILTER_VALUE_8: { pattern: '.{0,128}', maxLength: 128 },
+        MADDON_FILTER_ALIAS_NAME_9: { pattern: '.{0,64}', maxLength: 64 },
+        MADDON_FILTER_OPERATOR_9: { pattern: '.{0,16}', maxLength: 16 },
+        MADDON_FILTER_JOINER_9: { pattern: '.{0,8}', maxLength: 8 },
+        MADDON_FILTER_SEQNUM_9: { pattern: '.{0,8}', maxLength: 8 },
+        MADDON_FILTER_VALUE_9: { pattern: '.{0,128}', maxLength: 128 },
+        MADDON_FILTER_ALIAS_NAME_10: { pattern: '.{0,64}', maxLength: 64 },
+        MADDON_FILTER_OPERATOR_10: { pattern: '.{0,16}', maxLength: 16 },
+        MADDON_FILTER_JOINER_10: { pattern: '.{0,8}', maxLength: 8 },
+        MADDON_FILTER_SEQNUM_10: { pattern: '.{0,8}', maxLength: 8 },
+        MADDON_FILTER_VALUE_10: { pattern: '.{0,128}', maxLength: 128 },
+        MADDON_RPAREN_10: { pattern: '.{0,8}', maxLength: 8 },
+        externalconfirmation: { pattern: '.{0,128}', maxLength: 128 },
+      },
+      maxBodyBytes: 16_384,
+      redirectPolicy: 'same-reviewed-chain',
+    },
+  ];
+}
+
+export function buildLiveFolioReadManifest(
+  origin: string,
+): RequestPolicyManifest {
+  return requestPolicyManifestSchema.parse({
+    rules: [
+      ...buildLiveGuestStayChromeGetRules(origin),
+      ...buildLiveFolioFunctionalRules(origin),
+    ],
+  });
+}
+
+/**
+ * Deposit Ledger functional POSTs: OSLEDG open + OSLEDG.LST only.
+ * Advance Deposit form / post / refund / transfer / saveExcel absent.
+ */
+export function buildLiveDepositLedgerFunctionalRules(
+  origin: string,
+): RequestRule[] {
+  return [
+    {
+      id: 'live-osledg-open',
+      origin,
+      method: 'POST',
+      path: LIVE_DEPOSIT_LEDGER_OPEN_PATH,
+      resourceTypes: ['xhr', 'fetch'],
+      contentType: 'application/x-www-form-urlencoded',
+      fixedQuery: {},
+      variableQuery: {
+        USER_FUNCTION_NAME: VAR64,
+        FUNCTION_CLASS: VAR32,
+      },
+      fixedBody: {
+        USER_FUNCTION_NAME: 'OSLEDG',
+        SYSTEM_FUNCTION_NAME: 'OSLEDG',
+        FUNCTION_CLASS: 'WEBL',
+        CURRENT_TAB_NAME: '',
+        MENU_MODULE_KEY: '0',
+        removescreenflows: 'yes',
+      },
+      variableBody: {},
+      maxBodyBytes: 4096,
+      redirectPolicy: 'same-reviewed-chain',
+    },
+    {
+      id: 'live-osledg-lst',
+      origin,
+      method: 'POST',
+      path: LIVE_DEPOSIT_LEDGER_LIST_PATH,
+      resourceTypes: ['xhr', 'fetch'],
+      contentType: 'application/x-www-form-urlencoded',
+      fixedQuery: {},
+      variableQuery: {},
+      fixedBody: {
+        SYSTEM_FUNCTION_NAME: 'OSLEDG',
+        USER_FUNCTION_NAME: 'OSLEDG',
+        CURRENT_TAB_NAME: 'LST',
+      },
+      variableBody: {},
+      maxBodyBytes: 65_536,
+      redirectPolicy: 'same-reviewed-chain',
+    },
+  ];
+}
+
+export function buildLiveDepositLedgerManifest(
+  origin: string,
+): RequestPolicyManifest {
+  return requestPolicyManifestSchema.parse({
+    rules: [
+      ...buildLiveGuestStayChromeGetRules(origin),
+      ...buildLiveDepositLedgerFunctionalRules(origin),
+    ],
+  });
+}
+
 
