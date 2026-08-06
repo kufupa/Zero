@@ -16,7 +16,8 @@ Execute `docs/superpowers/plans/2026-08-05-phase-b-hms-read-expansion.md` under 
 | Build + ablation | green; `portfolioPromotionBlocked: true` |
 | Final review Important | fixed (mail gather allowlist) |
 | Live blocker dossier | `2026-08-06-phase-b-live-blocker.md` |
-| Ops deploy | `ops-deploy.sh` exit 0 (see overnight log) |
+| Ops deploy | `ops-deploy.sh` exit 0; EC2 HEAD `306ba7bd`; `/health` 200; `VPN_HARD_OK` |
+| Husky EACCES RCA | chmod + durable `deploy-ec2.sh` guard; solution doc committed |
 
 ## Production allowlist
 
