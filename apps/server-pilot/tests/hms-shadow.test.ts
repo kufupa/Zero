@@ -6,7 +6,7 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   classifyHmsShadowFailure,
   finishHmsShadowRun,
@@ -249,7 +249,7 @@ describe('hms shadow lane/mode (DB-free)', () => {
             kind: 'hms',
             id: 'ev-1',
             toolId: 'hms_find_reservation',
-            toolVersion: '1.1.0',
+            toolVersion: '1.2.0',
             propertyCode: 'HRCEN',
             observedAt: new Date().toISOString(),
             expiresAt: new Date(Date.now() + 60_000).toISOString(),
@@ -405,6 +405,224 @@ describe('hms shadow lane/mode (DB-free)', () => {
       }),
     });
     expect(result).toEqual({ kind: 'insufficient_evidence', exactCount: 2 });
+  });
+
+  it('runs authorized two-pass PDF fallback and keeps extracted text private', async () => {
+    const context = {
+      transportId: 't',
+      threadId: 'th',
+      triggerMessageId: 'm1',
+      includedMessageIds: ['m1'],
+      threadStateVersion: 'thread-v1',
+      normalizedText: 'Please locate attached booking.',
+      lookupCandidates: [],
+      authorizedAttachmentIds: ['att-1'],
+    } satisfies ThreadContext;
+    let snapshotCalls = 0;
+    const modelVisible: string[] = [];
+    const result = await resolveHmsShadowPreBrowser(
+      {
+        transportId: 't',
+        threadId: 'th',
+        triggerMessageId: 'm1',
+        loadLatestDraftRevisionId: async () => null,
+        loadMessages: async () => [],
+        loadArtifactSnapshot: async () => {
+          snapshotCalls += 1;
+          return {
+            grantDigest: 'grant-v1',
+            attachmentStateVersion: 'attachments-v1',
+            context,
+            pdfAttachmentIds: ['att-1'],
+          };
+        },
+        readArtifact: async () => ({
+          status: 'ok',
+          draftReady: false,
+          data: {
+            mimeType: 'application/pdf',
+            text: 'Confirmation CONF-88421',
+            pageCount: 1,
+            reason: 'text',
+          },
+          unresolvedFields: [],
+          evidence: {
+            kind: 'mail_attachment',
+            id: 'ev-artifact',
+            toolId: 'mail_read_artifact',
+            toolVersion: '2',
+            attachmentId: 'att-1',
+            observedAt: new Date().toISOString(),
+            sourceHash: 'a'.repeat(64),
+            claimKeys: [],
+          },
+        }),
+        recheckArtifactIdentity: async ({ expectedSha256 }) =>
+          expectedSha256 === 'a'.repeat(64),
+      },
+      {
+        signal: new AbortController().signal,
+        onModelVisible: (value) => modelVisible.push(JSON.stringify(value)),
+      },
+    );
+    expect(snapshotCalls).toBe(2);
+    expect(result).toMatchObject({
+      kind: 'ready',
+      exact: { kind: 'confirmation', value: 'CONF-88421' },
+      artifactMetrics: {
+        attempted: 1,
+        readable: 1,
+        manualRequired: 0,
+      },
+    });
+    expect(modelVisible.join('')).not.toContain('CONF-88421');
+  });
+
+  it('skips PDFs for body exact and dedupes identical artifact candidates', async () => {
+    const makeContext = (lookupCandidates: ThreadContext['lookupCandidates']) =>
+      ({
+        transportId: 't',
+        threadId: 'th',
+        triggerMessageId: 'm1',
+        includedMessageIds: ['m1'],
+        threadStateVersion: 'v1',
+        normalizedText: 'private body',
+        lookupCandidates,
+        authorizedAttachmentIds: ['a', 'b'],
+      }) satisfies ThreadContext;
+    const readArtifact = vi.fn(async (attachmentId: string) => ({
+      status: 'ok' as const,
+      draftReady: false,
+      data: {
+        mimeType: 'application/pdf' as const,
+        text: 'Confirmation CONF-SAME-100',
+        pageCount: 1,
+        reason: 'text' as const,
+      },
+      unresolvedFields: [],
+      evidence: {
+        kind: 'mail_attachment' as const,
+        id: `ev-${attachmentId}`,
+        toolId: 'mail_read_artifact' as const,
+        toolVersion: '2',
+        attachmentId,
+        observedAt: new Date().toISOString(),
+        sourceHash: 'a'.repeat(64),
+        claimKeys: [],
+      },
+    }));
+    const execute = async (context: ThreadContext) =>
+      resolveHmsShadowPreBrowser({
+        transportId: 't',
+        threadId: 'th',
+        triggerMessageId: 'm1',
+        loadLatestDraftRevisionId: async () => null,
+        loadMessages: async () => [],
+        loadArtifactSnapshot: async () => ({
+          grantDigest: 'grant',
+          attachmentStateVersion: 'attachments',
+          context,
+          pdfAttachmentIds: ['a', 'b'],
+        }),
+        readArtifact,
+        recheckArtifactIdentity: async () => true,
+      });
+    const bodyReady = await execute(
+      makeContext([
+        {
+          id: 'body',
+          kind: 'confirmation',
+          value: 'CONF-BODY-100',
+        },
+      ]),
+    );
+    expect(bodyReady.kind).toBe('ready');
+    expect(readArtifact).not.toHaveBeenCalled();
+
+    const artifactReady = await execute(makeContext([]));
+    expect(artifactReady).toMatchObject({
+      kind: 'ready',
+      exact: { value: 'CONF-SAME-100' },
+      artifactMetrics: { attempted: 2, readable: 2 },
+    });
+  });
+
+  it('rejects authorization, attachment, identity drift and more than three PDFs', async () => {
+    const base = {
+      transportId: 't',
+      threadId: 'th',
+      triggerMessageId: 'm1',
+      includedMessageIds: ['m1'],
+      threadStateVersion: 'thread-v1',
+      normalizedText: 'No exact reference.',
+      lookupCandidates: [],
+      authorizedAttachmentIds: ['a', 'b', 'c', 'd'],
+    } satisfies ThreadContext;
+    const run = async (second: {
+      grantDigest?: string | null;
+      attachmentStateVersion?: string;
+      identityOk?: boolean;
+      pdfs?: string[];
+    }) => {
+      let pass = 0;
+      return resolveHmsShadowPreBrowser({
+        transportId: 't',
+        threadId: 'th',
+        triggerMessageId: 'm1',
+        loadLatestDraftRevisionId: async () => null,
+        loadMessages: async () => [],
+        loadArtifactSnapshot: async () => {
+          pass += 1;
+          return {
+            grantDigest:
+              pass === 1
+                ? 'grant-v1'
+                : second.grantDigest === undefined
+                  ? 'grant-v1'
+                  : second.grantDigest,
+            attachmentStateVersion:
+              pass === 1
+                ? 'attachments-v1'
+                : (second.attachmentStateVersion ?? 'attachments-v1'),
+            context: base,
+            pdfAttachmentIds: second.pdfs ?? ['a'],
+          };
+        },
+        readArtifact: async (attachmentId) => ({
+          status: 'ok',
+          draftReady: false,
+          data: {
+            mimeType: 'application/pdf',
+            text: `Confirmation CONF-${attachmentId}-100`,
+            pageCount: 1,
+            reason: 'text',
+          },
+          unresolvedFields: [],
+          evidence: {
+            kind: 'mail_attachment',
+            id: `ev-${attachmentId}`,
+            toolId: 'mail_read_artifact',
+            toolVersion: '2',
+            attachmentId,
+            observedAt: new Date().toISOString(),
+            sourceHash: 'a'.repeat(64),
+            claimKeys: [],
+          },
+        }),
+        recheckArtifactIdentity: async () => second.identityOk ?? true,
+      });
+    };
+    await expect(run({ grantDigest: null })).resolves.toEqual({
+      kind: 'authorization_denied',
+    });
+    await expect(
+      run({ attachmentStateVersion: 'attachments-v2' }),
+    ).resolves.toEqual({ kind: 'stale_thread' });
+    await expect(run({ identityOk: false })).resolves.toEqual({
+      kind: 'stale_thread',
+    });
+    const four = await run({ pdfs: ['a', 'b', 'c', 'd'] });
+    expect(four).toEqual({ kind: 'insufficient_evidence', exactCount: 0 });
   });
 
   it('worker HMS path wires resolveHmsShadowPreBrowser + exactly-one session', () => {

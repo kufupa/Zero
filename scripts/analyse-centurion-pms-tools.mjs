@@ -718,6 +718,52 @@ a.push('- Do not commit gitignored dumps (PII).\n');
 
 fs.writeFileSync(ANALYSIS_OUT, a.join('\n') + '\n', 'utf8');
 
+/** Mutually exclusive primary-intent buckets — opaque thread IDs only (no body/subject). */
+const INTENT_PRIORITY = [
+  'quote_request',
+  'new_booking',
+  'confirmation_status',
+  'amendment',
+  'cancellation',
+  'payment_ops',
+  'invoice_docs',
+  'group_event',
+  'guest_service',
+  'confirmation_delivery',
+  'channel_ota',
+  'spam_noise',
+];
+const membershipBuckets = Object.fromEntries(INTENT_PRIORITY.map((k) => [k, []]));
+const membershipUncovered = [];
+for (const t of threads) {
+  const primary = INTENT_PRIORITY.find((intent) => t.intents.includes(intent));
+  if (!primary) {
+    membershipUncovered.push(t.tid);
+    continue;
+  }
+  membershipBuckets[primary].push(t.tid);
+}
+const MEMBERSHIP_OUT = path.join(OUT_DIR, 'centurion-intent-membership-nonoverlap.json');
+fs.writeFileSync(
+  MEMBERSHIP_OUT,
+  JSON.stringify(
+    {
+      schemaVersion: 1,
+      note: 'Non-overlapping primary-intent membership. Opaque thread IDs only. Do not sum keyword %.',
+      priority: INTENT_PRIORITY,
+      totals: Object.fromEntries([
+        ...INTENT_PRIORITY.map((k) => [k, membershipBuckets[k].length]),
+        ['uncovered', membershipUncovered.length],
+      ]),
+      buckets: membershipBuckets,
+      uncovered: membershipUncovered,
+    },
+    null,
+    2,
+  ) + '\n',
+  'utf8',
+);
+
 const summary = {
   messages: messages.length,
   inbound: inbound.length,
@@ -728,6 +774,6 @@ const summary = {
   pmsNeeding: pmsNeeding.length,
   openInboundNeedingReply: openInboundNeedingReply.length,
   topTools: scoredTools.slice(0, 8).map((t) => ({ id: t.id, score: t.score, phase: t.phase })),
-  wrote: [ANALYSIS_OUT, OUTBOUND_OUT, THREAD_OUT],
+  wrote: [ANALYSIS_OUT, OUTBOUND_OUT, THREAD_OUT, MEMBERSHIP_OUT],
 };
 console.log(JSON.stringify(summary, null, 2));

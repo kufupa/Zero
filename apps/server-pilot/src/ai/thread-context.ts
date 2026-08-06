@@ -291,7 +291,9 @@ export function selectBoundedMessages(input: {
   const retainedIds = new Set<string>([trigger.id, newest.id]);
 
   const normalize = (m: ThreadContextMessage): NormalizedMsg => {
-    const normalizedText = normalizeMessageText(m);
+    const body = normalizeMessageText(m);
+    const subject = m.subject?.trim() ?? '';
+    const normalizedText = [subject, body].filter(Boolean).join('\n');
     return {
       message: m,
       normalizedText,

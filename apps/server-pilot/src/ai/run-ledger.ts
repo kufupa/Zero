@@ -8,6 +8,7 @@ import type {
   aiWorkflowRunStateEnum,
 } from '../db/schema/mail.js';
 import { parseEnv } from '../env.js';
+import { READ_TOOLS, type ReadToolId } from '../hms/read-tools.js';
 
 export const DEFAULT_AI_MODEL_ID = 'amazon.nova-lite-v1:0';
 export const DEFAULT_TRIAGE_PROMPT_VERSION = 'triage-v5';
@@ -32,6 +33,122 @@ export type AiRunFence = {
   claimToken: string;
   deadlineAt: Date;
 };
+
+export type CandidateReadPlanKind =
+  | 'reservation'
+  | 'artifact_reservation'
+  | 'quote'
+  | 'group'
+  | 'event';
+
+export type ReadBudgetMetrics = {
+  total: number;
+  byTool: Partial<Record<ReadToolId, number>>;
+};
+
+const PLAN_TOTAL_CAPS: Readonly<Record<CandidateReadPlanKind, number>> = {
+  reservation: 3,
+  artifact_reservation: 6,
+  quote: 1,
+  group: 1,
+  event: 1,
+};
+
+export function mergeTerminalRunMetrics(
+  existing: unknown,
+  terminal: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  const base =
+    existing && typeof existing === 'object'
+      ? (existing as Record<string, unknown>)
+      : {};
+  const readBudget = base.readBudget;
+  return {
+    ...base,
+    ...terminal,
+    ...(readBudget === undefined ? {} : { readBudget }),
+  };
+}
+
+/**
+ * Pure budget step. Returns null when the persisted counters are unusable
+ * (non-finite, negative, non-numeric) or when a cap is already reached.
+ */
+export function nextReadBudget(
+  rawBudget: Partial<ReadBudgetMetrics>,
+  planKind: CandidateReadPlanKind,
+  toolId: ReadToolId,
+): ReadBudgetMetrics | null {
+  const byTool = { ...rawBudget.byTool };
+  const total = Number(rawBudget.total ?? 0);
+  const perTool = Number(byTool[toolId] ?? 0);
+  if (
+    !Number.isFinite(total) ||
+    !Number.isFinite(perTool) ||
+    total < 0 ||
+    perTool < 0
+  ) {
+    return null;
+  }
+  if (total >= PLAN_TOTAL_CAPS[planKind] || perTool >= READ_TOOLS[toolId].attemptCap) {
+    return null;
+  }
+  return { total: total + 1, byTool: { ...byTool, [toolId]: perTool + 1 } };
+}
+
+export async function reserveReadAttempt(
+  fence: AiRunFence,
+  planKind: CandidateReadPlanKind,
+  toolId: ReadToolId,
+  db: DB = getDb(),
+  now = new Date(),
+): Promise<ReadBudgetMetrics | null> {
+  if (fence.deadlineAt.getTime() - now.getTime() < CLEANUP_RESERVE_MS) return null;
+  return db.transaction(async (tx) => {
+    const [run] = await tx
+      .select()
+      .from(aiWorkflowRun)
+      .where(
+        and(
+          eq(aiWorkflowRun.id, fence.runId),
+          eq(aiWorkflowRun.claimOwner, fence.claimOwner),
+          eq(aiWorkflowRun.claimToken, fence.claimToken),
+          inArray(aiWorkflowRun.state, ['claimed', 'running']),
+        ),
+      )
+      .limit(1)
+      .for('update');
+    if (!run || !run.deadlineAt || run.deadlineAt.getTime() <= now.getTime()) {
+      return null;
+    }
+    const metrics =
+      run.metrics && typeof run.metrics === 'object'
+        ? (run.metrics as Record<string, unknown>)
+        : {};
+    const rawBudget =
+      metrics.readBudget && typeof metrics.readBudget === 'object'
+        ? (metrics.readBudget as Partial<ReadBudgetMetrics>)
+        : {};
+    const next = nextReadBudget(rawBudget, planKind, toolId);
+    if (!next) return null;
+    const [updated] = await tx
+      .update(aiWorkflowRun)
+      .set({
+        metrics: { ...metrics, readBudget: next },
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(aiWorkflowRun.id, fence.runId),
+          eq(aiWorkflowRun.claimOwner, fence.claimOwner),
+          eq(aiWorkflowRun.claimToken, fence.claimToken),
+          inArray(aiWorkflowRun.state, ['claimed', 'running']),
+        ),
+      )
+      .returning({ id: aiWorkflowRun.id });
+    return updated ? next : null;
+  });
+}
 
 export type AiFailureClass =
   | 'RUN_DEADLINE'
@@ -389,29 +506,37 @@ export async function countNonterminalAiRuns(
 
 export async function markAiRunSucceeded(input: MarkAiRunSucceededInput, db: DB = getDb()) {
   const now = new Date();
-  const [row] = await db
-    .update(aiWorkflowRun)
-    .set({
-      state: 'succeeded',
-      mastraTraceId: input.mastraTraceId,
-      mastraScorerId: input.mastraScorerId,
-      generationId: input.generationId,
-      metrics: input.metrics,
-      finishedAt: now,
-      updatedAt: now,
-      claimOwner: null,
-      claimToken: null,
-    })
-    .where(
-      and(
-        eq(aiWorkflowRun.id, input.runId),
-        eq(aiWorkflowRun.claimOwner, input.claimOwner),
-        eq(aiWorkflowRun.claimToken, input.claimToken),
-        inArray(aiWorkflowRun.state, input.expectedStates),
-      ),
-    )
-    .returning();
-  return row ?? null;
+  return db.transaction(async (tx) => {
+    const predicate = and(
+      eq(aiWorkflowRun.id, input.runId),
+      eq(aiWorkflowRun.claimOwner, input.claimOwner),
+      eq(aiWorkflowRun.claimToken, input.claimToken),
+      inArray(aiWorkflowRun.state, input.expectedStates),
+    );
+    const [current] = await tx
+      .select({ metrics: aiWorkflowRun.metrics })
+      .from(aiWorkflowRun)
+      .where(predicate)
+      .limit(1)
+      .for('update');
+    if (!current) return null;
+    const [row] = await tx
+      .update(aiWorkflowRun)
+      .set({
+        state: 'succeeded',
+        mastraTraceId: input.mastraTraceId,
+        mastraScorerId: input.mastraScorerId,
+        generationId: input.generationId,
+        metrics: mergeTerminalRunMetrics(current.metrics, input.metrics),
+        finishedAt: now,
+        updatedAt: now,
+        claimOwner: null,
+        claimToken: null,
+      })
+      .where(predicate)
+      .returning();
+    return row ?? null;
+  });
 }
 
 export async function markAiRunRetry(input: MarkAiRunRetryInput, db: DB = getDb()) {

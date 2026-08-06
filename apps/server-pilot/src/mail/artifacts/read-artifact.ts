@@ -16,7 +16,7 @@ export const ARTIFACT_MAX_INPUT_BYTES = 20 * 1024 * 1024;
 export const ARTIFACT_MAX_OUTPUT_BYTES = 256 * 1024;
 export const ARTIFACT_MAX_PAGES = 50;
 export const ARTIFACT_SUBPROCESS_TIMEOUT_MS = 10_000;
-export const MAIL_READ_ARTIFACT_TOOL_VERSION = '1';
+export const MAIL_READ_ARTIFACT_TOOL_VERSION = '2';
 
 export type ArtifactReason =
   | 'text'
@@ -26,6 +26,7 @@ export type ArtifactReason =
   | 'too_large'
   | 'too_many_pages'
   | 'timeout'
+  | 'parser_failure'
   | 'unsupported';
 
 export type ArtifactData = {
@@ -155,7 +156,8 @@ function okResult(args: {
 }): ArtifactReadResult {
   return {
     status: 'ok',
-    draftReady: true,
+    // Artifact text is server-only candidate material. It is never model evidence.
+    draftReady: false,
     data: {
       mimeType: args.mimeType,
       text: args.text,
@@ -165,7 +167,7 @@ function okResult(args: {
     unresolvedFields: [],
     evidence: {
       ...emptyEvidence(args.attachmentId, args.sourceHash, args.now),
-      claimKeys: ['attachment.text'],
+      claimKeys: [],
     },
   };
 }
@@ -376,6 +378,7 @@ export async function extractEmbeddedPdfText(
       info = await runner('pdfinfo', inputPath, linkedSignal);
     } catch (err) {
       if (isAbortError(err) || linkedSignal.aborted) {
+        if (options.signal?.aborted) throw err;
         return manualResult({
           attachmentId,
           mimeType,
@@ -384,7 +387,13 @@ export async function extractEmbeddedPdfText(
           now,
         });
       }
-      throw err;
+      return manualResult({
+        attachmentId,
+        mimeType,
+        reason: 'parser_failure',
+        sourceHash,
+        now,
+      });
     }
 
     if (info.exitCode !== 0) {
@@ -434,6 +443,7 @@ export async function extractEmbeddedPdfText(
       textResult = await runner('pdftotext', inputPath, linkedSignal);
     } catch (err) {
       if (isAbortError(err) || linkedSignal.aborted) {
+        if (options.signal?.aborted) throw err;
         return manualResult({
           attachmentId,
           mimeType,
@@ -443,7 +453,14 @@ export async function extractEmbeddedPdfText(
           now,
         });
       }
-      throw err;
+      return manualResult({
+        attachmentId,
+        mimeType,
+        reason: 'parser_failure',
+        sourceHash,
+        pageCount,
+        now,
+      });
     }
 
     if (textResult.exitCode !== 0) {
@@ -617,7 +634,11 @@ export async function readAuthorizedArtifact(input: {
   const maxBytes = Math.min(locator.sizeBytes, ARTIFACT_MAX_INPUT_BYTES);
   let object: { body: Buffer; contentType: string };
   try {
-    const fetched = await input.s3.getObjectBounded(locator.s3Key, maxBytes);
+    const fetched = await input.s3.getObjectBounded(
+      locator.s3Key,
+      maxBytes,
+      input.signal,
+    );
     if (!fetched) {
       return finish(
         manualResult({
@@ -741,4 +762,54 @@ export async function readAuthorizedArtifact(input: {
       },
     ),
   );
+}
+
+function sameLocator(a: AttachmentLocator, b: AttachmentLocator): boolean {
+  return (
+    a.s3Key === b.s3Key &&
+    a.mimeType === b.mimeType &&
+    a.sizeBytes === b.sizeBytes &&
+    a.messageId === b.messageId
+  );
+}
+
+/**
+ * Freshness-only re-read. Revalidates authorization + locator identity and
+ * hashes bounded bytes without parsing or exposing content.
+ */
+export async function recheckAuthorizedArtifactIdentity(input: {
+  attachmentId: string;
+  authorizedAttachmentIds: ReadonlySet<string>;
+  expectedLocator: AttachmentLocator;
+  expectedSha256: string;
+  s3: S3Storage;
+  signal: AbortSignal;
+  resolveLocator: (attachmentId: string) => Promise<AttachmentLocator | null>;
+}): Promise<boolean> {
+  if (input.signal.aborted) {
+    throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+  }
+  if (!input.authorizedAttachmentIds.has(input.attachmentId)) return false;
+  const current = await input.resolveLocator(input.attachmentId);
+  if (!current || !sameLocator(current, input.expectedLocator)) return false;
+  if (
+    current.sizeBytes < 0 ||
+    current.sizeBytes > ARTIFACT_MAX_INPUT_BYTES ||
+    !Number.isInteger(current.sizeBytes) ||
+    !current.s3Key.startsWith(`attachments/${current.messageId}/`)
+  ) {
+    return false;
+  }
+  try {
+    const object = await input.s3.getObjectBounded(
+      current.s3Key,
+      current.sizeBytes,
+      input.signal,
+    );
+    if (!object || object.body.byteLength !== current.sizeBytes) return false;
+    return sha256Hex(object.body) === input.expectedSha256;
+  } catch (error) {
+    if (isAbortError(error)) throw error;
+    return false;
+  }
 }

@@ -29,13 +29,12 @@ type CapabilityRow = {
 | --- | --- | --- | --- | --- | --- | --- |
 | `login` | [Starting HMS](https://docs.infor.com/hms/2025.x/en-us/hmsolh/s_t1424428565917.html) | `active_read` | `documented_read_screen` | `true` | auth session only; no PMS mutation beyond session establish | login URL origin = manifest; tenant/property header verify; redacted gate JSON on unknown request |
 | `reservation-search` | [Guest Stay](https://docs.infor.com/hms/3.8/en-us/hmsolh/pages/osresv_help.html) | `active_read` | `view_only` | `true` | Guest Stay list/search read; must not open New Record or Stay Wizard mutate paths | confirmation/external ref/bounded surname+date search; ambiguity handling; no create/amend controls |
-| `room-availability` | [Room Availability](https://docs.infor.com/hms/3.8.x/en-us/hmsolh/s_t1424428570987.html) | `active_read` | `view_only` | `true` | Front Desk > Availability > Room Availability inventory view only; never CRS Check Availability | start date + room type observation; inventory counts only; separate from Display Rates |
-| `display-rates` | [Display Rates](https://docs.infor.com/hms/2025.x/en-us/hmsolh/s_t1424428571268.html) | `active_read` | `view_only` | `true` | calculates prices; does not bind inventory or create reservation | rate plan + room cost; unresolved amount basis/currency/inclusions; `bookable` stays false |
+| `room-type-rate-availability` | [Room Type and Rate Availability](https://docs.infor.com/hms/3.8.x/en-us/useradminlist/HMS%203.8.4%20User%20Guide_70179.pdf) | `active_read` | `view_only` | `true` | one exact read-only search; never CRS Check Availability | complete contiguous nightly schedule; exact inventory/rate/currency/basis/restrictions; `bookable:false`, `stayTotal:null`, `occupancyPriced:false` |
 
 `activeDiscoveryCapabilities()` must equal:
 
 ```text
-login, reservation-search, room-availability, display-rates
+login, reservation-search, room-type-rate-availability
 ```
 
 ## Explicit discovery prohibitions
@@ -56,9 +55,34 @@ login, reservation-search, room-availability, display-rates
 
 `corpusThreadIds` on rows start empty. Denominator membership lives in `denominators.v1.json` (`draftEligible` = 56, `operationalPortfolio` = 116). Reference-only counts (`toolDependentHistorical` 61, `historicalWorkflow` 68, `replyWorthy` 97) are not executable membership until a later reconciliation artifact supplies thread IDs.
 
+Phase B portfolio baseline case file: `apps/server-pilot/evals/hms/portfolio-cases.v3.json` (56 opaque thread IDs; placeholder labels do not score). Ablation via `portfolioAblationReplay` in `read-tools.ts` — report raw eligible/attempted/exact/partial/manual and `ΔFull`; never sum overlapping keyword percentages.
+
+## Phase B read-tool portfolio (`READ_TOOLS`)
+
+Runtime SoT: `apps/server-pilot/src/hms/read-tools.ts`.
+
+Capability state ladder (contiguous evidence refs only):
+
+`planned → fixture_verified → discovery_verified → live_verified → shadow_enabled`
+
+| tool id | target version | production active-read (Task 1 freeze) | notes |
+| --- | --- | --- | --- |
+| `hms_find_reservation` | `1.1.0` → `1.2.0` in Task 2 | yes (`live_verified`) | Phase A proven; list-row enrich next |
+| `mail_read_artifact` | `1` → `2` in Task 3 | no | fixture only until chain proof |
+| `hms_quote_stay` | `2.0.0` | no | planned; single Room Type and Rate Availability surface |
+| `hms_list_documents` | `1.0.0` | no | planned; Tax Invoice + sent metadata |
+| `hms_sent_email_audit` | `1.0.0` | no | planned |
+| `hms_read_folio` | `1.0.0` | no | planned; Infor Folio + Deposit Ledger only |
+| `hms_company_account_read` | `1.0.0` | no | blocked until tenant view-only fields proven |
+| `hms_group_block_read` | `1.0.0` | no | planned |
+| `hms_event_read` | `1.0.0` | no | planned |
+
+Only `shadow_enabled` tools enter the active shadow registry. Unproven tools stay out of production `activeToolIds`.
+
 ## Discovery rules
 
 1. Live HMS: docs/Exa research only until orchestrator-approved canary. No chromium login in Task 0.
-2. Autonomous discovery surfaces **only**: `login`, `reservation-search`, `room-availability`, `display-rates`.
+2. Autonomous discovery surfaces **only**: `login`, `reservation-search`, `room-type-rate-availability`.
 3. Forbidden: `write-forms`, `crs-check-availability`, any mutation (submit, save, create, amend, cancel, assign, post, settle, refund, send, print, export, open write-form screens).
-4. Room Availability and Display Rates stay separate observations — never merge into a guaranteed offer.
+4. Quote v2 uses only Room Type and Rate Availability. It never visits CRS Check Availability and never claims a guaranteed or bookable offer.
+5. Folio/deposit facts live inside Infor HMS (Working with Folios + Deposit Ledger). Not a separate PMS.

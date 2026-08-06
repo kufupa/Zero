@@ -5,27 +5,27 @@
 import { createHash } from 'node:crypto';
 import * as cheerio from 'cheerio';
 import {
-  CENTURION_HMS_PRODUCTION_ORIGIN,
-} from './browser-artifacts.js';
-import {
+  liveGuestStayRowFingerprintV2Schema,
   liveGuestStayRowFingerprintV1Schema,
+  type LiveGuestStayRowFingerprintV2,
   type LiveGuestStayRowFingerprintV1,
   type ReservationObservation,
 } from './contracts.js';
 import {
-  buildExactOsressSearchBody,
   buildExactOsressSearchManifest,
   liveNotFoundCanaryCandidate,
-  LIVE_GUEST_STAY_SEARCH_PATH,
   LIVE_NOTFOUND_CANARY,
   type ExactReservationCandidate,
 } from './live-read-manifest.js';
 import {
   HmsRuntimeError,
-  type HmsPage,
   type HmsReadSession,
   type HmsRuntime,
 } from './runtime.js';
+import {
+  createFindReservationFacade,
+  type FindReservationFacade,
+} from './find-reservation-facade.js';
 
 export type { ExactReservationCandidate };
 
@@ -55,6 +55,20 @@ export const LIVE_GUEST_STAY_COLUMN_KEYS = [
   'reservationStatus',
   'roomType',
   'ratePlan',
+] as const;
+
+/** Exact live OSRESS GRIDRESULT keys reviewed for reservation list evidence. */
+export const LIVE_GUEST_STAY_ROW_ALIAS_KEYS = [
+  'arrivaldate',
+  'confirmationnumber',
+  'departuredate',
+  'externalconfirmation',
+  'firstname',
+  'lastname',
+  'primaryguest',
+  'rateplan',
+  'roomtype',
+  'status',
 ] as const;
 
 export type GuestStaySearchResult =
@@ -272,33 +286,14 @@ export function parseLiveOsressGridRows(
       arrivalDate: parseIsoDateOrNull(strOrNull(row.arrivaldate)),
       departureDate: parseIsoDateOrNull(strOrNull(row.departuredate)),
       reservationStatus: strOrNull(row.status),
-      roomType: null,
-      ratePlan: null,
+      roomType: strOrNull(row.roomtype),
+      ratePlan: strOrNull(row.rateplan),
     });
   }
   return rows;
 }
 
-function pickPrimaryObservation(
-  rows: readonly ReservationObservation[],
-): ReservationObservation {
-  const ranked = [...rows].sort((a, b) => {
-    const score = (r: ReservationObservation) =>
-      (r.guestName ? 4 : 0) +
-      (r.arrivalDate ? 2 : 0) +
-      (r.departureDate ? 2 : 0) +
-      (r.reservationStatus ? 1 : 0) +
-      (r.externalReference ? 1 : 0);
-    return score(b) - score(a);
-  });
-  return ranked[0]!;
-}
-
-/**
- * Multiple Guest Stay rows often share one confirmation (multi-guest / splits).
- * Same confirmation (or same external with one confirmation) → matched primary.
- * Distinct confirmations under one external ref → ambiguous.
- */
+/** Exactly one correlated Guest Stay list row may become matched evidence. */
 function correlateObservations(
   fresh: ReservationObservation[],
   candidate: ExactReservationCandidate,
@@ -319,32 +314,13 @@ function correlateObservations(
     };
   }
 
-  if (candidate.kind === 'confirmation') {
-    return {
-      outcome: 'matched',
-      observations: [pickPrimaryObservation(correlated)],
-      capped: false,
-    };
-  }
-
-  const confirmations = correlated.map((r) =>
-    (r.confirmationNumber ?? '').toUpperCase(),
-  );
-  const uniqueConfs = new Set(confirmations);
-  if (confirmations.every((v) => v.length > 0) && uniqueConfs.size === 1) {
-    return {
-      outcome: 'matched',
-      observations: [pickPrimaryObservation(correlated)],
-      capped: false,
-    };
-  }
-
   const capped = correlated.length > RESERVATION_MATCH_CAP;
+  const minimized = correlated.map((row) => ({ ...row, guestName: null }));
   return {
     outcome: 'ambiguous',
     observations: capped
-      ? correlated.slice(0, RESERVATION_MATCH_CAP)
-      : correlated,
+      ? minimized.slice(0, RESERVATION_MATCH_CAP)
+      : minimized,
     capped,
   };
 }
@@ -368,6 +344,33 @@ export function buildLiveGuestStayRowFingerprintV1(): LiveGuestStayRowFingerprin
     schemaVersion: 1,
     selectorKeys,
     columnKeys,
+    manifestSha256: sha256Hex(structurePayload),
+    valuesCaptured: false,
+  });
+}
+
+/** V2 structural fingerprint: selectors, output columns, and reviewed row keys. */
+export function buildLiveGuestStayRowFingerprintV2(): LiveGuestStayRowFingerprintV2 {
+  const selectorKeys = Object.keys(LIVE_GUEST_STAY_ROW_SELECTORS).sort();
+  const columnKeys = [...LIVE_GUEST_STAY_COLUMN_KEYS];
+  const rowAliasKeys = [...LIVE_GUEST_STAY_ROW_ALIAS_KEYS];
+  const structurePayload = JSON.stringify({
+    schemaVersion: 2,
+    selectors: Object.fromEntries(
+      selectorKeys.map((k) => [
+        k,
+        LIVE_GUEST_STAY_ROW_SELECTORS[k as keyof typeof LIVE_GUEST_STAY_ROW_SELECTORS],
+      ]),
+    ),
+    columnKeys,
+    rowAliasKeys,
+    valuesCaptured: false,
+  });
+  return liveGuestStayRowFingerprintV2Schema.parse({
+    schemaVersion: 2,
+    selectorKeys,
+    columnKeys,
+    rowAliasKeys,
     manifestSha256: sha256Hex(structurePayload),
     valuesCaptured: false,
   });
@@ -463,171 +466,6 @@ export function parseAndCorrelateGuestStayHtml(
   );
 }
 
-function hasGuestStaySearch(html: string): boolean {
-  return /name="search"|ff_confirmationnumber|data-testid="results"/i.test(
-    html,
-  );
-}
-
-async function clickMenuLabel(page: HmsPage, label: string): Promise<boolean> {
-  try {
-    await page.click(`text=${label}`);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/** Painted menu line check — label must be an exact body.innerText line. */
-async function menuLabelInDom(page: HmsPage, label: string): Promise<boolean> {
-  try {
-    // Hardcode labels so the evaluate fn has no free vars (Playwright serialize).
-    if (label === 'Front Desk') {
-      return await page.evaluateStableDom(() => {
-        const root = (
-          globalThis as unknown as {
-            document?: { body?: { innerText?: string } };
-          }
-        ).document;
-        const text = root?.body?.innerText || '';
-        return text
-          .split('\n')
-          .some((line) => line.trim() === 'Front Desk');
-      });
-    }
-    if (label === 'Guest Stay') {
-      return await page.evaluateStableDom(() => {
-        const root = (
-          globalThis as unknown as {
-            document?: { body?: { innerText?: string } };
-          }
-        ).document;
-        const text = root?.body?.innerText || '';
-        return text
-          .split('\n')
-          .some((line) => line.trim() === 'Guest Stay');
-      });
-    }
-    return false;
-  } catch {
-    // Fixture FetchPage has no document — treat as not ready (OSRESV path).
-    return false;
-  }
-}
-
-async function navigateGuestStay(page: HmsPage, origin: string): Promise<void> {
-  let html = await page.content().catch(() => '');
-  if (hasGuestStaySearch(html)) return;
-
-  const fixtureShell = /data-tenant=|data-property-code=/i.test(html);
-
-  // Live: wait until Front Desk is painted menu text (COMMON HTML may mention it
-  // only inside ExtJS config JSON before the tree paints). Fixture skips wait.
-  if (!fixtureShell) {
-    const menuReadyDeadline = Date.now() + 15_000;
-    let menuReady = await menuLabelInDom(page, 'Front Desk');
-    while (!menuReady && Date.now() < menuReadyDeadline) {
-      await new Promise((r) => setTimeout(r, 400));
-      menuReady = await menuLabelInDom(page, 'Front Desk');
-    }
-
-    if (menuReady) {
-      await clickMenuLabel(page, 'Front Desk');
-      await new Promise((r) => setTimeout(r, 1000));
-      const gsDeadline = Date.now() + 8_000;
-      while (
-        !(await menuLabelInDom(page, 'Guest Stay')) &&
-        Date.now() < gsDeadline
-      ) {
-        await new Promise((r) => setTimeout(r, 300));
-      }
-      await clickMenuLabel(page, 'Guest Stay');
-      // Live Guest Stay is an ExtJS SPA: URL often stays /web/base/COMMON while
-      // the grid paints. Always wait for search fields — do not gate on URL
-      // change (that skipped the wait and fell through to OSRESV POST, which
-      // tears the shell and navigates to /web/base/loadlogin).
-      const paintDeadline = Date.now() + 15_000;
-      while (Date.now() < paintDeadline) {
-        html = await page.content().catch(() => '');
-        if (hasGuestStaySearch(html)) return;
-        await new Promise((r) => setTimeout(r, 300));
-      }
-      // Menu path taken: never OSRESV POST fallback on live (session death).
-      return;
-    }
-  }
-
-  // Fixture live-infor: direct OSRESV shell with search field.
-  // Live: skip OSRESV document GET — has fired POST logindisp after menu miss.
-  if (fixtureShell) {
-    try {
-      await page.goto(`${origin}/web/base/OSRESV`, { timeout: 8_000 });
-    } catch {
-      /* continue */
-    }
-    html = await page.content().catch(() => '');
-    if (hasGuestStaySearch(html)) return;
-  }
-
-  // Fixture-only fallback: reviewed OSRESV open POST. Live menu path returns above.
-  if (fixtureShell) {
-    try {
-      await page.postForm(
-        `${origin}/web/base/OSRESV?FUNCTION_CLASS=WEBL&USER_FUNCTION_NAME=OSRESV`,
-        {
-          SYSTEM_FUNCTION_NAME: 'OSRESV',
-          USER_FUNCTION_NAME: 'OSRESV',
-          CURRENT_TAB_NAME: '',
-          MENU_MODULE_KEY: '0',
-          FUNCTION_CLASS: 'WEBL',
-          removescreenflows: 'yes',
-        },
-      );
-    } catch {
-      /* continue wait loop */
-    }
-
-    const deadline = Date.now() + 15_000;
-    while (Date.now() < deadline) {
-      html = await page.content().catch(() => '');
-      if (hasGuestStaySearch(html)) return;
-      await new Promise((r) => setTimeout(r, 300));
-    }
-  }
-}
-
-async function submitExactSearch(
-  page: HmsPage,
-  origin: string,
-  candidate: ExactReservationCandidate,
-): Promise<string> {
-  const body = buildExactOsressSearchBody(candidate);
-  // Optional UI priming only — policy-authoritative POST is exact scaffold.
-  const html = await page.content();
-  if (/name="search"/i.test(html)) {
-    await page.fill('input[name="search"]', candidate.value).catch(() => undefined);
-  } else if (/name="ff_confirmationnumber"/i.test(html)) {
-    await page
-      .fill('input[name="ff_confirmationnumber"]', candidate.value)
-      .catch(() => undefined);
-  }
-  const waitCorrelation = page.waitForCorrelatedResponse
-    ? page.waitForCorrelatedResponse(LIVE_GUEST_STAY_SEARCH_PATH)
-    : Promise.resolve();
-  const [postResult, correlationResult] = await Promise.allSettled([
-    page.postForm(`${origin}${LIVE_GUEST_STAY_SEARCH_PATH}`, body),
-    waitCorrelation,
-  ]);
-  if (postResult.status === 'rejected') throw postResult.reason;
-  if (correlationResult.status === 'rejected') {
-    throw new HmsRuntimeError('SCHEMA_DRIFT', 'search correlation failed');
-  }
-  const responseHtml = postResult.value;
-  // Prefer POST body (fixture + live XHR). Fall back to DOM for ExtJS-rendered grids.
-  if (responseHtml && responseHtml.length > 0) return responseHtml;
-  return page.content();
-}
-
 export function createLiveGuestStayDriver(
   options: LiveGuestStayDriverOptions,
 ): LiveGuestStayDriver {
@@ -638,10 +476,10 @@ export function createLiveGuestStayDriver(
   async function withSession<T>(
     signal: AbortSignal,
     candidate: ExactReservationCandidate | null,
-    fn: (session: HmsReadSession) => Promise<T>,
+    fn: (facade: FindReservationFacade) => Promise<T>,
     receiptForResult?: (result: T) => {
-      outcome: 'succeeded' | 'business_not_found';
-      terminalCode: 'OK' | 'BUSINESS_NOT_FOUND';
+      outcome: 'succeeded' | 'unverified_negative';
+      terminalCode: 'OK' | 'UNVERIFIED_NEGATIVE';
     },
   ): Promise<T> {
     const canary = liveNotFoundCanaryCandidate();
@@ -664,7 +502,7 @@ export function createLiveGuestStayDriver(
     let fnError: unknown;
     let result: T | undefined;
     try {
-      result = await fn(session);
+      result = await fn(createFindReservationFacade(session));
     } catch (err) {
       fnError = err;
     }
@@ -672,10 +510,11 @@ export function createLiveGuestStayDriver(
       !fnError && receiptForResult
         ? receiptForResult(result as T)
         : { outcome: 'succeeded' as const, terminalCode: 'OK' as const };
+    // A blocked request outranks any tool-level receipt, success included.
+    const blocked = session.violation()?.action === 'block';
     let closeError: unknown;
     try {
-      if (fnError) {
-        const blocked = session.violation()?.action === 'block';
+      if (fnError || blocked) {
         await session.close({
           outcome: blocked ? 'policy_blocked' : 'failed',
           terminalCode: blocked ? 'POLICY_BLOCK' : 'TOOL_ERROR',
@@ -698,6 +537,12 @@ export function createLiveGuestStayDriver(
     }
     if (fnError) throw fnError;
     if (closeError) throw closeError;
+    if (blocked) {
+      throw new HmsRuntimeError(
+        'POLICY_BLOCK',
+        'request policy blocked during read session',
+      );
+    }
     if (lastAuditReceipt) {
       const unsafe =
         lastAuditReceipt.operationOutcome === 'policy_blocked' ||
@@ -728,33 +573,15 @@ export function createLiveGuestStayDriver(
 
   return {
     async loginAndVerifyBinding(signal) {
-      await withSession(signal, null, async (session) => {
-        const binding = await session.page.readPropertyBinding();
-        if (!binding.tenant || !binding.propertyCode) {
-          const title = await session.page.title();
-          if (!/HRCEN|Centurion/i.test(title)) {
-            throw new HmsRuntimeError(
-              'PROPERTY_MISMATCH',
-              'property binding missing after login',
-            );
-          }
-        }
-        const url = session.page.url();
-        if (!url.startsWith(session.origin)) {
-          throw new HmsRuntimeError('AUTH_FAILED', 'post-login origin mismatch');
-        }
+      await withSession(signal, null, async (facade) => {
+        await facade.verifyBinding();
       });
     },
 
     async runNotFoundCanary(signal) {
       const canary = liveNotFoundCanaryCandidate();
-      const result = await withSession(signal, canary, async (session) => {
-        await navigateGuestStay(session.page, session.origin);
-        const html = await submitExactSearch(
-          session.page,
-          session.origin,
-          canary,
-        );
+      const result = await withSession(signal, canary, async (facade) => {
+        const html = await facade.searchExact(canary);
         if (
           /Unable to retrieve text|success"\s*:\s*false|loadLocalizedPage|allcookies/i.test(
             html,
@@ -771,7 +598,7 @@ export function createLiveGuestStayDriver(
           signal,
           {
             requireLiveEnvelope:
-              session.origin === CENTURION_HMS_PRODUCTION_ORIGIN,
+              facade.requireLiveEnvelope,
           },
         );
         if (search.outcome !== 'not_found') {
@@ -788,8 +615,8 @@ export function createLiveGuestStayDriver(
         }
         return html;
       }, () => ({
-        outcome: 'business_not_found',
-        terminalCode: 'BUSINESS_NOT_FOUND',
+        outcome: 'unverified_negative',
+        terminalCode: 'UNVERIFIED_NEGATIVE',
       }));
       void result;
       void LIVE_NOTFOUND_CANARY;
@@ -803,30 +630,17 @@ export function createLiveGuestStayDriver(
       return withSession(
         signal,
         candidate,
-        async (session) => {
-          await navigateGuestStay(session.page, session.origin);
-          const html = await submitExactSearch(
-            session.page,
-            session.origin,
-            candidate,
-          );
-          if (session.violation()?.action === 'block') {
-            const v = session.violation();
-            throw new HmsRuntimeError(
-              'POLICY_BLOCK',
-              v && v.action === 'block' ? v.code : 'policy_block',
-            );
-          }
+        async (facade) => {
+          const html = await facade.searchExact(candidate);
           return parseAndCorrelateGuestStayHtml(html, candidate, signal, {
-            requireLiveEnvelope:
-              session.origin === CENTURION_HMS_PRODUCTION_ORIGIN,
+            requireLiveEnvelope: facade.requireLiveEnvelope,
           });
         },
         (search) =>
           search.outcome === 'not_found'
             ? {
-                outcome: 'business_not_found',
-                terminalCode: 'BUSINESS_NOT_FOUND',
+                outcome: 'unverified_negative',
+                terminalCode: 'UNVERIFIED_NEGATIVE',
               }
             : { outcome: 'succeeded', terminalCode: 'OK' },
       );
@@ -839,27 +653,14 @@ export function createLiveGuestStayDriver(
       const wrapped = await withSession(
         signal,
         candidate,
-        async (session) => {
-          await navigateGuestStay(session.page, session.origin);
-          const html = await submitExactSearch(
-            session.page,
-            session.origin,
-            candidate,
-          );
-          if (session.violation()?.action === 'block') {
-            const v = session.violation();
-            throw new HmsRuntimeError(
-              'POLICY_BLOCK',
-              v && v.action === 'block' ? v.code : 'policy_block',
-            );
-          }
+        async (facade) => {
+          const html = await facade.searchExact(candidate);
           const search = await parseAndCorrelateGuestStayHtml(
             html,
             candidate,
             signal,
             {
-              requireLiveEnvelope:
-                session.origin === CENTURION_HMS_PRODUCTION_ORIGIN,
+              requireLiveEnvelope: facade.requireLiveEnvelope,
             },
           );
           return { search, mapped: await mapResult(search) };
@@ -867,8 +668,8 @@ export function createLiveGuestStayDriver(
         ({ search }) =>
           search.outcome === 'not_found'
             ? {
-                outcome: 'business_not_found',
-                terminalCode: 'BUSINESS_NOT_FOUND',
+                outcome: 'unverified_negative',
+                terminalCode: 'UNVERIFIED_NEGATIVE',
               }
             : { outcome: 'succeeded', terminalCode: 'OK' },
       );

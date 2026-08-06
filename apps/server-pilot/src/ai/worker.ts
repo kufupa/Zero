@@ -1,12 +1,15 @@
 import { isCliEntry } from '../lib/is-cli-entry.js';
+import { createHash } from 'node:crypto';
 import { and, asc, eq } from 'drizzle-orm';
 import { closeDb, getDb } from '../db/client.js';
 import {
   aiWorkflowRun,
+  attachment,
   aiDraftGeneration,
   mailDraft,
   mailDraftRevision,
   mailThread,
+  mailboxAccess,
   message,
 } from '../db/schema/mail.js';
 import {
@@ -30,6 +33,7 @@ import {
   markAiRunRunning,
   markAiRunSucceeded,
   remainingRunBudgetMs,
+  reserveReadAttempt,
   resolveDeployedTriagePromptVersion,
   RunDeadlineError,
   shouldRetryAiFailure,
@@ -38,6 +42,7 @@ import {
   type AiRunFence,
   type AiRunScopeFilter,
   type AiWorkflowRunKind,
+  type CandidateReadPlanKind,
 } from './run-ledger.js';
 import { buildCausalTriageMessages, type TriageMessageRow } from './triage-input.js';
 import { validateTriageOutput } from './triage.js';
@@ -230,6 +235,9 @@ export type CandidateSessionInput = {
   signal: AbortSignal;
   /** AI run UUID — becomes HMS browser audit operationId when capture is enabled. */
   runId?: string;
+  /** Claimed-run lease; tools reserve durable read budget against it before I/O. */
+  readFence?: AiRunFence;
+  readPlanKind?: CandidateReadPlanKind;
 };
 
 export type CandidateSessionFactory = (
@@ -285,7 +293,7 @@ export function createLiveHmsCandidateSessionFactory(): CandidateSessionFactory 
         ? ({ inputClass }) => ({
             operationId: input.runId!,
             toolId: 'hms_find_reservation',
-            toolVersion: '1.1.0',
+            toolVersion: '1.2.0',
             dependencyRevision:
               'playwright-1.52.0-chromium-1169',
             executionClass: 'normal',
@@ -300,6 +308,8 @@ export function createLiveHmsCandidateSessionFactory(): CandidateSessionFactory 
       candidates: new Map(exact.map((c) => [c.id, c])),
       close: async () => undefined,
       runId: input.runId,
+      readFence: input.readFence,
+      readPlanKind: input.readPlanKind ?? 'reservation',
     });
   };
 }
@@ -594,6 +604,11 @@ export async function executeAiRun(
           failHmsShadowRun,
           resolveHmsShadowPreBrowser,
         } = await import('./hms-shadow.js');
+        const {
+          readAuthorizedArtifact,
+          recheckAuthorizedArtifactIdentity,
+        } = await import('../mail/artifacts/read-artifact.js');
+        const { getS3Storage } = await import('../storage/s3.js');
 
         const loadThreadMessages = async () =>
           db
@@ -616,10 +631,38 @@ export async function executeAiRun(
               ),
             );
 
+        const loadThreadAttachments = async () =>
+          db
+            .select({
+              id: attachment.id,
+              messageId: attachment.messageId,
+              mimeType: attachment.mimeType,
+              sizeBytes: attachment.sizeBytes,
+              s3Key: attachment.s3Key,
+              isInline: attachment.isInline,
+              createdAt: attachment.createdAt,
+              direction: message.direction,
+            })
+            .from(attachment)
+            .innerJoin(message, eq(message.id, attachment.messageId))
+            .where(
+              and(
+                eq(message.threadId, run.threadId),
+                eq(message.transportId, run.transportId),
+              ),
+            );
+
         const mapMessages = (
           threadMessages: Awaited<ReturnType<typeof loadThreadMessages>>,
-        ) =>
-          threadMessages.map((m) => ({
+          threadAttachments: Awaited<ReturnType<typeof loadThreadAttachments>>,
+        ) => {
+          const attachmentIds = new Map<string, string[]>();
+          for (const row of threadAttachments) {
+            const ids = attachmentIds.get(row.messageId) ?? [];
+            ids.push(row.id);
+            attachmentIds.set(row.messageId, ids);
+          }
+          return threadMessages.map((m) => ({
             id: m.id,
             transportId: m.transportId,
             threadId: m.threadId,
@@ -631,13 +674,122 @@ export async function executeAiRun(
             subject: m.subject,
             receivedAt: m.receivedAt,
             sentAt: m.sentAt,
-            attachmentIds: [] as string[],
+            attachmentIds: attachmentIds.get(m.id) ?? [],
           }));
+        };
 
         try {
           // Double freshness + exactly-one gate before browser context.
           // Pass 2 reloads latestDraftRevisionId (must not reuse pass-1 id).
           if (signal.aborted) throw new RunDeadlineError();
+          const generationKey = run.generationId ?? `${run.id}-generation`;
+          const [generationOwner] = await db
+            .select({ requestedByUserId: aiDraftGeneration.requestedByUserId })
+            .from(aiDraftGeneration)
+            .where(eq(aiDraftGeneration.id, generationKey))
+            .limit(1);
+          const principalId =
+            generationOwner?.requestedByUserId ??
+            process.env.HMS_SHADOW_SERVICE_USER_ID?.trim();
+          if (!principalId) {
+            throw Object.assign(new Error('artifact authorization unavailable'), {
+              failureClass: 'AUTH' as const,
+            });
+          }
+
+          type ArtifactLocator = import('../mail/artifacts/read-artifact.js').AttachmentLocator;
+          let currentLocators = new Map<string, ArtifactLocator>();
+          const initialLocators = new Map<string, ArtifactLocator>();
+          let currentAuthorized = new Set<string>();
+          let artifactSnapshotPass = 0;
+          const loadArtifactSnapshot = async () => {
+            const [threadMessages, threadAttachments, grant] = await Promise.all([
+              loadThreadMessages(),
+              loadThreadAttachments(),
+              db
+                .select({
+                  id: mailboxAccess.id,
+                  role: mailboxAccess.role,
+                  updatedAt: mailboxAccess.updatedAt,
+                })
+                .from(mailboxAccess)
+                .where(
+                  and(
+                    eq(mailboxAccess.userId, principalId),
+                    eq(mailboxAccess.transportId, run.transportId),
+                  ),
+                )
+                .limit(1),
+            ]);
+            const latestDraftRevisionId =
+              await loadLatestThreadAffectingDraftRevisionId(db, {
+                transportId: run.transportId,
+                threadId: run.threadId,
+              });
+            const mapped = mapMessages(threadMessages, threadAttachments);
+            const context = await import('./thread-context.js').then(({ buildThreadContext }) =>
+              buildThreadContext({
+                transportId: run.transportId,
+                threadId: run.threadId,
+                triggerMessageId: run.triggerMessageId,
+                messages: mapped,
+                latestDraftRevisionId,
+              }),
+            );
+            const included = new Set(context.includedMessageIds);
+            const eligible = threadAttachments.filter(
+              (row) =>
+                included.has(row.messageId) &&
+                row.direction === 'inbound' &&
+                !row.isInline &&
+                row.mimeType === 'application/pdf',
+            );
+            currentLocators = new Map(
+              eligible.map((row) => [
+                row.id,
+                {
+                  s3Key: row.s3Key,
+                  mimeType: row.mimeType,
+                  sizeBytes: row.sizeBytes,
+                  messageId: row.messageId,
+                },
+              ]),
+            );
+            currentAuthorized = new Set(currentLocators.keys());
+            artifactSnapshotPass += 1;
+            if (artifactSnapshotPass === 1) {
+              for (const [id, locator] of currentLocators) {
+                initialLocators.set(id, locator);
+              }
+            }
+            const digest = (value: unknown) =>
+              createHash('sha256').update(JSON.stringify(value)).digest('hex');
+            return {
+              grantDigest: grant[0]
+                ? digest({
+                    id: grant[0].id,
+                    role: grant[0].role,
+                    updatedAt: grant[0].updatedAt.toISOString(),
+                  })
+                : null,
+              attachmentStateVersion: digest(
+                eligible
+                  .map((row) => ({
+                    id: row.id,
+                    messageId: row.messageId,
+                    mimeType: row.mimeType,
+                    sizeBytes: row.sizeBytes,
+                    inline: row.isInline,
+                    createdAt: row.createdAt.toISOString(),
+                    keyHash: digest(row.s3Key),
+                  }))
+                  .sort((a, b) => a.id.localeCompare(b.id)),
+              ),
+              context,
+              pdfAttachmentIds: [...currentAuthorized].sort(),
+            };
+          };
+
           const pre = await resolveHmsShadowPreBrowser(
             {
               transportId: run.transportId,
@@ -648,7 +800,55 @@ export async function executeAiRun(
                   transportId: run.transportId,
                   threadId: run.threadId,
                 }),
-              loadMessages: async () => mapMessages(await loadThreadMessages()),
+              loadMessages: async () =>
+                mapMessages(
+                  await loadThreadMessages(),
+                  await loadThreadAttachments(),
+                ),
+              loadArtifactSnapshot,
+              readArtifact: async (attachmentId, artifactSignal) => {
+                const reserved = await reserveReadAttempt(
+                  fence,
+                  'artifact_reservation',
+                  'mail_read_artifact',
+                );
+                if (!reserved) {
+                  throw Object.assign(new Error('LEASE_LOST'), {
+                    name: 'LeaseLostError',
+                    failureClass: 'LEASE_LOST' as const,
+                  });
+                }
+                const s3 = getS3Storage();
+                if (s3.kind !== 'real') {
+                  throw Object.assign(new Error('ARTIFACT_REAL_S3_REQUIRED'), {
+                    failureClass: 'AUTH' as const,
+                  });
+                }
+                return readAuthorizedArtifact({
+                  attachmentId,
+                  authorizedAttachmentIds: currentAuthorized,
+                  s3,
+                  signal: artifactSignal,
+                  resolveLocator: async (id) => currentLocators.get(id) ?? null,
+                });
+              },
+              recheckArtifactIdentity: async ({
+                attachmentId,
+                expectedSha256,
+                signal: artifactSignal,
+              }) => {
+                const expectedLocator = initialLocators.get(attachmentId);
+                if (!expectedLocator) return false;
+                return recheckAuthorizedArtifactIdentity({
+                  attachmentId,
+                  authorizedAttachmentIds: currentAuthorized,
+                  expectedLocator,
+                  expectedSha256,
+                  s3: getS3Storage(),
+                  signal: artifactSignal,
+                  resolveLocator: async (id) => currentLocators.get(id) ?? null,
+                });
+              },
             },
             { signal },
           );
@@ -664,6 +864,12 @@ export async function executeAiRun(
               runId,
               state: finished ? 'succeeded' : 'retry_wait',
             };
+          }
+
+          if (pre.kind === 'authorization_denied') {
+            throw Object.assign(new Error('artifact authorization denied'), {
+              failureClass: 'AUTH' as const,
+            });
           }
 
           if (pre.kind === 'insufficient_evidence') {
@@ -696,6 +902,11 @@ export async function executeAiRun(
             lookupCandidates: [pre.exact],
             signal,
             runId,
+            readFence: toAiRunFence(runWithFence) ?? fence,
+            readPlanKind:
+              (pre.artifactMetrics?.attempted ?? 0) > 0
+                ? 'artifact_reservation'
+                : 'reservation',
           });
 
           const claimSafe = await runClaimSafeCandidateDraft({
@@ -704,6 +915,7 @@ export async function executeAiRun(
             signal,
             probeCandidateIds: [pre.exact.id],
             probeAttachmentIds: [],
+            planMode: 'production',
             planModel: options.candidatePlanModel,
           });
 
@@ -713,6 +925,11 @@ export async function executeAiRun(
             toolCalls: Number(claimSafe.metrics.toolCalls ?? 0),
             toolBudgetUsed: Number(claimSafe.metrics.toolBudgetUsed ?? 0),
             claimCount: Number(claimSafe.metrics.claimCount ?? 0),
+            artifactAttempted: pre.artifactMetrics?.attempted ?? 0,
+            artifactReadable: pre.artifactMetrics?.readable ?? 0,
+            artifactManualRequired:
+              pre.artifactMetrics?.manualRequired ?? 0,
+            hmsLookupCalls: 1,
           });
           return {
             runId,
@@ -779,6 +996,13 @@ export async function executeAiRun(
             lookupCandidates: context.lookupCandidates,
             signal,
             runId,
+            // Only HMS-lane runs hold a durable read budget to reserve against.
+            ...(run.executorLane === 'hms'
+              ? {
+                  readFence: toAiRunFence(runWithFence) ?? fence,
+                  readPlanKind: 'reservation' as const,
+                }
+              : {}),
           })
         : createMockCandidateSession({
             lookupCandidates: new Map(

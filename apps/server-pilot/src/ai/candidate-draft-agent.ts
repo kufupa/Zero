@@ -18,9 +18,41 @@ import {
   type ToolResult,
 } from './draft-evidence.js';
 import type { ReservationReadData, StayOptionReadData } from '../hms/contracts.js';
+import {
+  buildWorkflowSummaryClaim,
+  executableToolIdsForPlan,
+  planCandidateReads,
+  type CandidateReadPlan,
+} from '../hms/candidate-read-plan.js';
+import {
+  companyAccountReadDataSchema,
+  mapCompanyBillingClaim,
+} from '../hms/company-account-read-contract.js';
+import {
+  documentListReadDataSchema,
+  mapDocumentMetadataClaim,
+} from '../hms/document-list-contract.js';
+import {
+  eventReadDataSchema,
+  mapEventSummaryClaim,
+} from '../hms/event-read-contract.js';
+import {
+  folioReadDataSchema,
+  mapFolioDepositClaim,
+} from '../hms/folio-read-contract.js';
+import {
+  groupBlockReadDataSchema,
+  mapGroupBlockClaim,
+} from '../hms/group-block-read-contract.js';
+import {
+  mapSentEmailAuditClaim,
+  sentEmailAuditReadDataSchema,
+} from '../hms/sent-email-audit-contract.js';
 import type { ArtifactData } from '../mail/artifacts/read-artifact.js';
 import { createModelAdapter } from './bedrock/factory.js';
 import { validateStructuredJsonOutput } from './security/policy.js';
+import { reserveReadAttempt } from './run-ledger.js';
+import type { AiRunFence, CandidateReadPlanKind } from './run-ledger.js';
 
 export const CANDIDATE_TOOL_BUDGET = 4;
 
@@ -28,7 +60,7 @@ export const CANDIDATE_TOOL_BUDGET = 4;
 export const HMS_CANDIDATE_TOOLSET_VERSION = '1.1.0';
 
 /** Production hms_find_reservation tool version (reservation-only shadow). */
-export const HMS_FIND_RESERVATION_TOOLSET_VERSION = '1.1.0';
+export const HMS_FIND_RESERVATION_TOOLSET_VERSION = '1.2.0';
 
 export const candidateToolEffects = {
   hms_find_reservation: 'read',
@@ -80,6 +112,9 @@ export type CandidateToolSession = {
    * Fixture default (omit): all three handlers registered.
    */
   activeToolIds?: ReadonlySet<CandidateToolId>;
+  /** Durable run lease. When present, every tool call must reserve budget first. */
+  readFence?: AiRunFence;
+  readPlanKind?: CandidateReadPlanKind;
   close?: () => Promise<void>;
 };
 
@@ -120,81 +155,156 @@ export function claimsFromToolResult(
     const matches = Array.isArray(data.matches) ? data.matches : [];
     const first = matches[0] ? asRecord(matches[0]) : null;
     if (!first) return [];
-    if (first.reservationStatus != null) {
-      claims.push({
-        id: claimId(`${evidenceId}:reservation_status`),
-        kind: 'reservation_status',
-        value: {
-          status: first.reservationStatus,
-          confirmation: first.confirmationNumber ?? null,
-        },
-        evidenceId,
-        expiresAt,
-      });
-    }
-    if (first.arrivalDate != null || first.departureDate != null) {
-      claims.push({
-        id: claimId(`${evidenceId}:stay_dates`),
-        kind: 'stay_dates',
-        value: {
-          arrivalDate: first.arrivalDate ?? null,
-          departureDate: first.departureDate ?? null,
-        },
-        evidenceId,
-        expiresAt,
-      });
-    }
+    claims.push({
+      id: claimId(`${evidenceId}:reservation_summary`),
+      kind: 'reservation_summary',
+      value: {
+        confirmationNumber: first.confirmationNumber ?? null,
+        externalReference: first.externalReference ?? null,
+        guestName: first.guestName ?? null,
+        arrivalDate: first.arrivalDate ?? null,
+        departureDate: first.departureDate ?? null,
+        reservationStatus: first.reservationStatus ?? null,
+        roomType: first.roomType ?? null,
+        ratePlan: first.ratePlan ?? null,
+      },
+      evidenceId,
+      expiresAt,
+    });
     return claims;
   }
 
   if (result.evidence.toolId === 'hms_quote_stay') {
-    const inventory = Array.isArray(data.inventoryObservations)
-      ? data.inventoryObservations
+    const observations = Array.isArray(data.nightlyObservations)
+      ? data.nightlyObservations.map(asRecord)
       : [];
-    const rates = Array.isArray(data.rateObservations) ? data.rateObservations : [];
-    const inv0 = inventory[0] ? asRecord(inventory[0]) : null;
-    if (inv0) {
-      claims.push({
-        id: claimId(`${evidenceId}:inventory`),
-        kind: 'inventory',
-        value: {
-          availableCount: inv0.availableCount ?? null,
-          roomType: inv0.roomType ?? null,
-        },
-        evidenceId,
-        expiresAt,
-      });
+    if (
+      observations.length === 0 ||
+      data.bookable !== false ||
+      data.stayTotal !== null ||
+      data.occupancyPriced !== false
+    ) {
+      return [];
     }
-    const rate0 = rates[0] ? asRecord(rates[0]) : null;
-    if (rate0 && rate0.amount != null) {
-      claims.push({
-        id: claimId(`${evidenceId}:displayed_rate`),
-        kind: 'displayed_rate',
-        value: {
-          amount: rate0.amount,
-          currency: rate0.currency ?? '',
-          basis: rate0.amountBasis ?? null,
-        },
-        evidenceId,
-        expiresAt,
-      });
-    }
-    return claims;
-  }
-
-  if (result.evidence.toolId === 'mail_read_artifact') {
-    const text = typeof data.text === 'string' ? data.text : null;
-    if (!text) return [];
-    const conf = text.match(/\b(CONF-[A-Z0-9-]{2,})\b/i)?.[1];
-    if (!conf) return [];
     claims.push({
-      id: claimId(`${evidenceId}:attachment_fact`),
-      kind: 'attachment_fact',
-      value: { label: 'Attachment confirmation', fact: conf.toUpperCase() },
+      id: claimId(`${evidenceId}:quote_stay_summary`),
+      kind: 'quote_stay_summary',
+      value: {
+        nights: observations.map((row) => ({
+          date: row.date,
+          roomType: row.roomType,
+          availableCount: row.availableCount,
+          ratePlan: row.ratePlan,
+          displayedAmount: row.displayedAmount,
+          currency: row.currency,
+          rateBasis: row.rateBasis,
+          restrictions: Array.isArray(row.restrictions)
+            ? row.restrictions.join(', ')
+            : '',
+        })),
+        bookable: false,
+        stayTotal: null,
+        occupancyPriced: false,
+      },
       evidenceId,
+      expiresAt,
     });
     return claims;
   }
+
+  if (result.evidence.toolId === 'hms_list_documents') {
+    const parsed = documentListReadDataSchema.safeParse(result.data);
+    if (!parsed.success || parsed.data.rows.length === 0) return [];
+    claims.push({
+      id: claimId(`${evidenceId}:document_metadata`),
+      kind: 'document_metadata',
+      value: mapDocumentMetadataClaim(parsed.data),
+      evidenceId,
+      expiresAt,
+    });
+    return claims;
+  }
+
+  if (result.evidence.toolId === 'hms_sent_email_audit') {
+    const parsed = sentEmailAuditReadDataSchema.safeParse(result.data);
+    if (!parsed.success || parsed.data.rows.length === 0) return [];
+    claims.push({
+      id: claimId(`${evidenceId}:sent_email_audit`),
+      kind: 'sent_email_audit',
+      value: mapSentEmailAuditClaim(parsed.data),
+      evidenceId,
+      expiresAt,
+    });
+    return claims;
+  }
+
+  if (result.evidence.toolId === 'hms_read_folio') {
+    if (result.status === 'unverified_negative') return [];
+    const parsed = folioReadDataSchema.safeParse(result.data);
+    if (!parsed.success) return [];
+    const value = mapFolioDepositClaim(parsed.data);
+    if (!value) return [];
+    claims.push({
+      id: claimId(`${evidenceId}:folio_deposit_summary`),
+      kind: 'folio_deposit_summary',
+      value,
+      evidenceId,
+      expiresAt,
+    });
+    return claims;
+  }
+
+  if (result.evidence.toolId === 'hms_company_account_read') {
+    if (result.status === 'unverified_negative') return [];
+    const parsed = companyAccountReadDataSchema.safeParse(result.data);
+    if (!parsed.success) return [];
+    const value = mapCompanyBillingClaim(parsed.data);
+    if (!value) return [];
+    claims.push({
+      id: claimId(`${evidenceId}:company_billing_summary`),
+      kind: 'company_billing_summary',
+      value,
+      evidenceId,
+      expiresAt,
+    });
+    return claims;
+  }
+
+  if (result.evidence.toolId === 'hms_group_block_read') {
+    if (result.status === 'unverified_negative') return [];
+    const parsed = groupBlockReadDataSchema.safeParse(result.data);
+    if (!parsed.success) return [];
+    const value = mapGroupBlockClaim(parsed.data);
+    if (!value) return [];
+    claims.push({
+      id: claimId(`${evidenceId}:group_block_summary`),
+      kind: 'group_block_summary',
+      value,
+      evidenceId,
+      expiresAt,
+    });
+    return claims;
+  }
+
+  if (result.evidence.toolId === 'hms_event_read') {
+    if (result.status === 'unverified_negative') return [];
+    const parsed = eventReadDataSchema.safeParse(result.data);
+    if (!parsed.success) return [];
+    const value = mapEventSummaryClaim(parsed.data);
+    if (!value) return [];
+    claims.push({
+      id: claimId(`${evidenceId}:event_summary`),
+      kind: 'event_summary',
+      value,
+      evidenceId,
+      expiresAt,
+    });
+    return claims;
+  }
+
+  // mail_read_artifact text is server-only lookup-candidate material.
+  // It never becomes evidence, claim content, or model output.
+  if (result.evidence.toolId === 'mail_read_artifact') return [];
 
   return claims;
 }
@@ -225,9 +335,21 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
 export function isFatalCandidateGatheringError(error: unknown): boolean {
   const seen = new Set<Error>();
   const visit = (value: unknown): boolean => {
+    if (!value || typeof value !== 'object') return false;
+    if (
+      'failureClass' in value &&
+      (value as { failureClass: unknown }).failureClass === 'LEASE_LOST'
+    ) {
+      return true;
+    }
     if (!(value instanceof Error) || seen.has(value)) return false;
     seen.add(value);
-    if (value.name === 'AbortError' || value.name === 'HmsRuntimeError') {
+    if (
+      value.name === 'AbortError' ||
+      value.name === 'HmsRuntimeError' ||
+      value.name === 'LeaseLostError' ||
+      /^LEASE_LOST\b/.test(value.message)
+    ) {
       return true;
     }
     if (value instanceof AggregateError && value.errors.some(visit)) {
@@ -236,6 +358,15 @@ export function isFatalCandidateGatheringError(error: unknown): boolean {
     return visit(value.cause);
   };
   return visit(error);
+}
+
+export function createLeaseLostError(
+  message = 'LEASE_LOST: durable read budget exhausted or run lease no longer held',
+): Error & { failureClass: 'LEASE_LOST' } {
+  return Object.assign(new Error(message), {
+    name: 'LeaseLostError',
+    failureClass: 'LEASE_LOST' as const,
+  });
 }
 
 function sessionHandlerPresent(
@@ -256,9 +387,15 @@ function sessionHandlerPresent(
  * Inputs accept opaque IDs only — no raw property/guest/S3 fields.
  * Registers only `session.activeToolIds` (default: all three for fixtures).
  */
+export type ReserveReadAttempt = (
+  fence: AiRunFence,
+  planKind: CandidateReadPlanKind,
+  toolId: CandidateToolId,
+) => Promise<{ total: number } | null>;
+
 export function createCandidateTools(
   session: CandidateToolSession,
-  options?: { now?: () => Date },
+  options?: { now?: () => Date; reserveReadAttempt?: ReserveReadAttempt },
 ) {
   const budget = { used: 0 };
   const calls: CandidateToolCallRecord[] = [];
@@ -280,6 +417,8 @@ export function createCandidateTools(
     }
   }
 
+  const reserveRead = options?.reserveReadAttempt ?? reserveReadAttempt;
+
   async function withBudget<T>(
     toolId: CandidateToolId,
     signal: AbortSignal | undefined,
@@ -288,6 +427,19 @@ export function createCandidateTools(
     throwIfAborted(signal);
     if (budget.used >= CANDIDATE_TOOL_BUDGET) {
       throw new Error('candidate tool budget exceeded');
+    }
+    // Durable reservation precedes any tool I/O: no row, no call.
+    if (session.readFence) {
+      const reserved = await reserveRead(
+        session.readFence,
+        session.readPlanKind ?? 'reservation',
+        toolId,
+      );
+      if (!reserved) {
+        const err = createLeaseLostError();
+        calls.push({ toolId, ok: false, error: err.message });
+        throw err;
+      }
     }
     budget.used += 1;
     try {
@@ -485,6 +637,7 @@ export type ClaimSafeCandidateResult =
 /**
  * Gather evidence via read tools (opaque IDs), build claims in code,
  * ask model for template/claim plan, render deterministically.
+ * Tool selection is code-owned CandidateReadPlan — no model-driven loops.
  */
 export async function runClaimSafeCandidateDraft(input: {
   session: CandidateToolSession;
@@ -493,6 +646,10 @@ export async function runClaimSafeCandidateDraft(input: {
   /** Optional pre-selected opaque IDs to probe (defaults: all lookup + attachments). */
   probeCandidateIds?: string[];
   probeAttachmentIds?: string[];
+  /** Closed read plan; derived from thread signals when omitted. */
+  readPlan?: CandidateReadPlan;
+  /** Production strips blocked followups from executable steps. */
+  planMode?: 'production' | 'fixture';
   planModel?: (prompt: {
     systemPrompt: string;
     userPrompt: string;
@@ -515,24 +672,52 @@ export async function runClaimSafeCandidateDraft(input: {
       input.probeAttachmentIds ??
       [...input.session.authorizedAttachmentIds].slice(0, 1);
 
+    const hasQuoteCandidate = probeIds.some((id) => {
+      const candidate = input.session.lookupCandidates.get(id);
+      return candidate?.kind === 'surname_dates';
+    });
+    const hasExactReservationCandidate = probeIds.some((id) => {
+      const candidate = input.session.lookupCandidates.get(id);
+      return candidate != null && candidate.kind !== 'surname_dates';
+    });
+
+    const readPlan =
+      input.readPlan ??
+      planCandidateReads({
+        authoredSegment: input.normalizedThreadText,
+        attachmentCount: attachmentIds.length,
+        hasExactReservationCandidate,
+        hasQuoteCandidate,
+        hasGroupRef: false,
+        hasEventRef: false,
+      });
+    const planMode = input.planMode ?? 'fixture';
+    const executableToolIds = new Set(
+      executableToolIdsForPlan(readPlan, planMode),
+    );
+
     for (const candidateId of probeIds) {
       throwIfAborted(signal);
       if (bundle.budget.used >= CANDIDATE_TOOL_BUDGET) break;
       const candidate = input.session.lookupCandidates.get(candidateId);
       if (!candidate) continue;
-      // surname_dates: prefer quote; when quote inactive (reservation-only
-      // session) route through find — session returns manual_required.
-      // Never silent-skip: that hid the required manual terminal.
+      // Empty production executable set = no gather (never fall through to
+      // any registered session tool).
+      if (executableToolIds.size === 0) continue;
+      // surname_dates: prefer quote when executable; else find. Never bypass
+      // the executable allowlist via bundle.tools fallthrough.
       let tool;
       if (candidate.kind === 'surname_dates') {
-        tool =
-          bundle.tools.hms_quote_stay ?? bundle.tools.hms_find_reservation;
-        if (!tool) {
-          throw new Error(
-            'surname_dates requires hms_quote_stay or hms_find_reservation',
-          );
-        }
+        const preferQuote =
+          executableToolIds.has('hms_quote_stay') && bundle.tools.hms_quote_stay;
+        tool = preferQuote
+          ? bundle.tools.hms_quote_stay
+          : executableToolIds.has('hms_find_reservation')
+            ? bundle.tools.hms_find_reservation
+            : undefined;
+        if (!tool) continue;
       } else {
+        if (!executableToolIds.has('hms_find_reservation')) continue;
         tool = bundle.tools.hms_find_reservation;
         if (!tool) continue;
       }
@@ -550,6 +735,12 @@ export async function runClaimSafeCandidateDraft(input: {
     for (const attachmentId of attachmentIds) {
       throwIfAborted(signal);
       if (bundle.budget.used >= CANDIDATE_TOOL_BUDGET) break;
+      if (
+        executableToolIds.size > 0 &&
+        !executableToolIds.has('mail_read_artifact')
+      ) {
+        break;
+      }
       const tool = bundle.tools.mail_read_artifact;
       if (!tool) break;
       try {
@@ -560,6 +751,18 @@ export async function runClaimSafeCandidateDraft(input: {
       } catch (error) {
         if (isFatalCandidateGatheringError(error)) throw error;
       }
+    }
+
+    // One code-owned workflow summary claim; model selects whole claim IDs only.
+    const eligibleEvidenceIds = [...bundle.eligibleEvidenceIds];
+    if (eligibleEvidenceIds.length > 0) {
+      const workflowClaim = buildWorkflowSummaryClaim({
+        plan: readPlan,
+        evidenceIds: eligibleEvidenceIds,
+        childClaimIds: [...bundle.claims.keys()],
+        toolIds: [...executableToolIds],
+      });
+      bundle.claims.set(workflowClaim.id, workflowClaim);
     }
 
     const availableClaimIds = [...bundle.claims.keys()];
@@ -596,6 +799,12 @@ export async function runClaimSafeCandidateDraft(input: {
           toolCalls: bundle.calls.length,
           toolBudgetUsed: bundle.budget.used,
           claimCount: bundle.claims.size,
+          readPlanKind: readPlan.kind,
+          readPlanFollowups:
+            readPlan.kind === 'reservation' ||
+            readPlan.kind === 'artifact_reservation'
+              ? readPlan.followups
+              : [],
           hmsMode: 'claim_safe',
         },
       };
@@ -631,6 +840,12 @@ export async function runClaimSafeCandidateDraft(input: {
         toolBudgetUsed: bundle.budget.used,
         claimCount: bundle.claims.size,
         selectedClaimIds: plan.selectedClaimIds,
+        readPlanKind: readPlan.kind,
+        readPlanFollowups:
+          readPlan.kind === 'reservation' ||
+          readPlan.kind === 'artifact_reservation'
+            ? readPlan.followups
+            : [],
         hmsMode: 'claim_safe',
       },
     };

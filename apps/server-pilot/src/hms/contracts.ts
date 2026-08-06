@@ -1,9 +1,63 @@
 /**
  * Docs/corpus-backed HMS capability contract for fail-closed read discovery.
  * Live HMS mutation surfaces stay out of autonomousAllowed / active_read.
+ *
+ * Phase B tool portfolio registry (versions, caps, promotion state):
+ * `./read-tools.ts` (`READ_TOOLS`, `capabilityStateFor`).
  */
 
 import { z } from 'zod';
+export {
+  documentListReadDataSchema,
+  documentMetadataClaimValueSchema,
+  documentMetadataRowSchema,
+  finalizedTaxInvoiceMetadataSchema,
+  mapDocumentMetadataClaim,
+  parseDocumentMetadataFixture,
+  sentAttachmentMetadataSchema,
+  type DocumentListReadData,
+  type DocumentMetadataClaimValue,
+} from './document-list-contract.js';
+export {
+  FOLIO_READ_PRIVACY_POLICY,
+  folioDepositClaimValueSchema,
+  folioReadDataSchema,
+  mapFolioDepositClaim,
+  parseFolioReadFixture,
+  type FolioDepositClaimValue,
+  type FolioReadData,
+} from './folio-read-contract.js';
+import {
+  quoteStayReadDataSchema,
+  type QuoteStayReadData,
+} from './quote-stay-contract.js';
+export {
+  quoteNightObservationSchema,
+  quoteStayReadDataSchema,
+  type QuoteNightObservation,
+  type QuoteStayReadData,
+} from './quote-stay-contract.js';
+export {
+  mapSentEmailAuditClaim,
+  parseSentEmailAuditFixture,
+  sentEmailAuditClaimValueSchema,
+  sentEmailAuditReadDataSchema,
+  sentEmailAuditRowSchema,
+  type SentEmailAuditClaimValue,
+  type SentEmailAuditReadData,
+} from './sent-email-audit-contract.js';
+export {
+  READ_TOOLS,
+  READ_TOOL_IDS,
+  capabilityStateFor,
+  deriveCapabilityState,
+  fingerprintReadToolRegistry,
+  listReadToolIds,
+  portfolioAblationReplay,
+  productionActiveReadToolIds,
+  type CapabilityState,
+  type ReadToolId,
+} from './read-tools.js';
 
 export type CapabilityRow = {
   id: string;
@@ -54,35 +108,19 @@ export const CAPABILITY_ROWS: readonly CapabilityRow[] = [
     ],
   },
   {
-    id: 'room-availability',
+    id: 'room-type-rate-availability',
     officialDocs: [
-      'https://docs.infor.com/hms/3.8.x/en-us/hmsolh/s_t1424428570987.html',
+      'https://docs.infor.com/hms/3.8.x/en-us/useradminlist/HMS%203.8.4%20User%20Guide_70179.pdf',
     ],
     corpusThreadIds: [],
     phase: 'active_read',
     credentialRequirement: 'view_only',
     autonomousAllowed: true,
-    mutationRisk: 'Front Desk > Availability > Room Availability is inventory view only; never CRS Check Availability',
+    mutationRisk: 'Single Room Type and Rate Availability read; never CRS Check Availability',
     evidenceNeeded: [
-      'start date + room type observation',
-      'inventory counts only',
-      'separate from Display Rates (no merged bookable offer)',
-    ],
-  },
-  {
-    id: 'display-rates',
-    officialDocs: [
-      'https://docs.infor.com/hms/2025.x/en-us/hmsolh/s_t1424428571268.html',
-    ],
-    corpusThreadIds: [],
-    phase: 'active_read',
-    credentialRequirement: 'view_only',
-    autonomousAllowed: true,
-    mutationRisk: 'Front Desk > Availability > Display Rates calculates prices; does not bind inventory or create reservation',
-    evidenceNeeded: [
-      'rate plan + room cost calculation',
-      'amount basis / currency / inclusions unresolved fields',
-      'bookable remains false until quote constraints resolve',
+      'one exact search and complete contiguous nightly schedule',
+      'available count + displayed nightly amount + currency + restrictions',
+      'bookable false; stay total null; occupancy pricing unverified',
     ],
   },
   {
@@ -285,19 +323,13 @@ export const rateObservationSchema = z
 export type RateObservation = z.infer<typeof rateObservationSchema>;
 
 /**
- * Stay-option / quote payload. Inventory + rates stay separate observations.
- * bookable is always false — separate screens never prove an executable offer.
+ * hms_quote_stay@2.0.0 payload. One Room Type and Rate Availability search
+ * yields a complete contiguous nightly schedule. Never represents a bookable
+ * offer, stay total, or occupancy-priced amount.
  */
-export const stayOptionReadDataSchema = z
-  .object({
-    inventoryObservations: z.array(inventoryObservationSchema).max(100),
-    rateObservations: z.array(rateObservationSchema).max(100),
-    bookable: z.literal(false),
-    requestedRooms: z.number().int().positive(),
-  })
-  .strict();
-
-export type StayOptionReadData = z.infer<typeof stayOptionReadDataSchema>;
+/** Compatibility export while callers migrate from v1 naming. */
+export const stayOptionReadDataSchema = quoteStayReadDataSchema;
+export type StayOptionReadData = QuoteStayReadData;
 
 /** Exact CSS / data-attr selectors — no loose record + parallel key list. */
 export const reservationSelectorsSchema = z
@@ -322,30 +354,19 @@ export const reservationSelectorsSchema = z
 
 export const quoteSelectorsSchema = z
   .object({
-    inventoryPagePath: z.string().startsWith('/'),
-    ratesPagePath: z.string().startsWith('/'),
-    inventoryRow: z.string().min(1),
-    inventoryDateAttr: z.string().min(1),
-    inventoryRoomTypeAttr: z.string().min(1),
-    inventoryAvailableAttr: z.string().min(1),
-    rateRow: z.string().min(1),
-    rateRoomTypeAttr: z.string().min(1),
+    pagePath: z.string().startsWith('/'),
+    searchPath: z.string().startsWith('/'),
+    resultsTable: z.string().min(1),
+    resultRow: z.string().min(1),
+    noResults: z.string().min(1),
+    dateAttr: z.string().min(1),
+    roomTypeAttr: z.string().min(1),
+    availableCountAttr: z.string().min(1),
     ratePlanAttr: z.string().min(1),
-    amountAttr: z.string().min(1),
+    displayedAmountAttr: z.string().min(1),
     currencyAttr: z.string().min(1),
-    amountBasisAttr: z.string().min(1),
-    taxIncludedAttr: z.string().min(1),
-    inclusionsAttr: z.string().min(1),
+    rateBasisAttr: z.string().min(1),
     restrictionsAttr: z.string().min(1),
-    boardBasisAttr: z.string().min(1),
-    orgEligibilityAttr: z.string().min(1),
-    amountBasisDefault: z.enum([
-      'nightly',
-      'weekly',
-      'monthly',
-      'stay_total',
-      'unknown',
-    ]),
   })
   .strict();
 
@@ -399,4 +420,23 @@ export const liveGuestStayRowFingerprintV1Schema = z
 
 export type LiveGuestStayRowFingerprintV1 = z.infer<
   typeof liveGuestStayRowFingerprintV1Schema
+>;
+
+/**
+ * V2 adds exact reviewed live GRIDRESULT row aliases.
+ * Keys only: no values, cardinality, HTML, or value-derived hashes.
+ */
+export const liveGuestStayRowFingerprintV2Schema = z
+  .object({
+    schemaVersion: z.literal(2),
+    selectorKeys: z.array(z.string().min(1)).min(1),
+    columnKeys: z.array(z.string().min(1)).min(1),
+    rowAliasKeys: z.array(z.string().min(1)).min(1),
+    manifestSha256: z.string().regex(/^[a-f0-9]{64}$/),
+    valuesCaptured: z.literal(false),
+  })
+  .strict();
+
+export type LiveGuestStayRowFingerprintV2 = z.infer<
+  typeof liveGuestStayRowFingerprintV2Schema
 >;

@@ -1,0 +1,99 @@
+# Phase B HMS read portfolio operator runbook
+
+Status: kernel stub + Task 10 portfolio grammar. Production discovery/proof/promote
+actions remain latched (`PHASE_B_BLOCKED`) until tool-specific role-proof-v2,
+discovery, release manifests, and health checks exist. Do not invent live proofs.
+
+## Capability reality (Task 10)
+
+| Tool | State | Production active-read |
+|------|-------|------------------------|
+| `hms_find_reservation` | live_verified (prior) | yes |
+| `mail_read_artifact` | artifact chain / not live allowlisted | no |
+| `hms_quote_stay` … `hms_event_read` | fixture_verified | no |
+
+Full portfolio promotion is **blocked** pending role-proof-v2 + discovery for
+fixture-only tools. User may accept named blockers and revised scope.
+
+Cumulative ablation / load-capacity replay runs against **currently promoted
+releases only** (`hms_find_reservation`). Never gate portfolio pass on
+company/group/event/folio/quote live promotion.
+
+```bash
+cd "/c/Users/gamin/Desktop/projs/emails hotels uis/zero/apps/server-pilot"
+unset DATABASE_URL VITEST_ALLOW_PILOT_RDS
+npm run eval:hms-portfolio-ablation
+```
+
+## Golden path
+
+Windows Git Bash (repository path may contain spaces):
+
+```bash
+cd "/c/Users/gamin/Desktop/projs/emails hotels uis/zero"
+bash apps/server-pilot/deploy/ops-hms-proof.sh --help
+bash apps/server-pilot/deploy/ops-hms-proof.sh doctor
+bash apps/server-pilot/deploy/hms-read-gate.sh --fixture-only --tool hms_find_reservation
+bash apps/server-pilot/deploy/ops-hms-proof.sh read-discovery hms_find_reservation
+bash apps/server-pilot/deploy/ops-hms-proof.sh read-proof hms_find_reservation
+bash apps/server-pilot/deploy/ops-hms-proof.sh artifacts hms_find_reservation --latest
+bash apps/server-pilot/deploy/ops-hms-proof.sh read-promote hms_find_reservation
+bash apps/server-pilot/deploy/ops-hms-proof.sh status --tool hms_find_reservation
+bash apps/server-pilot/deploy/ops-hms-proof.sh read-rollback hms_find_reservation
+```
+
+Linux Bash on EC2 uses same commands from release worktree. Never source
+`.env.production` into shell running Vitest. Before every test command:
+
+```bash
+unset DATABASE_URL VITEST_ALLOW_PILOT_RDS
+```
+
+## Phase B operator grammar (stubs)
+
+Public contract (help/grammar perform no AWS call; unknown IDs exit `2`):
+
+```text
+ops-hms-proof.sh --help
+ops-hms-proof.sh doctor [--json]
+ops-hms-proof.sh status [--tool <tool-id>|--wave <subwave-id>] [--json]
+ops-hms-proof.sh read-discovery <tool-id> [--json]
+ops-hms-proof.sh read-proof <tool-id> [--json]
+ops-hms-proof.sh read-wave <subwave-id> [--resume] [--json]
+ops-hms-proof.sh artifacts <tool-id> [--latest] [--json]
+ops-hms-proof.sh fetch-artifact <uuid> <receipt|video>
+ops-hms-proof.sh fetch-artifact <uuid> trace --confirm-sensitive
+ops-hms-proof.sh read-promote <tool-id> [--json]
+ops-hms-proof.sh read-rollback <tool-id> [--json]
+ops-hms-proof.sh rearm
+```
+
+Until discovery evidence exists, Phase B actions print fixed
+`HMS_WAIT code=PHASE_B_BLOCKED` and exit `3`. Keep that latch; do not fake
+live proofs. Waves `B0`–`B6` are grammar-valid IDs only.
+
+Closed `CandidateReadPlan`: one branch; reservation followups max two unique;
+no model-driven tool loops. Model selects whole claim IDs only (including
+optional `workflow_summary`).
+
+## RCA dossier v1
+
+Each tool dossier is private-value-free Markdown plus machine-readable digest refs:
+
+1. Tool ID/version and sanitized symptom.
+2. Real structural observation: route class, envelope discriminator, key-only fingerprint.
+3. Assumptions verified and invalidated.
+4. Causal chain from trigger to invalid transition to symptom.
+5. Falsifiable prediction.
+6. Failing regression test and RED command/result.
+7. Minimal fix and GREEN command/result.
+8. Verification commands and PII-free outcomes.
+9. Live artifact IDs/digests and expiry.
+10. Unresolved gaps/blockers.
+11. Native-request differential: ordered multimap digest comparison for method, path/query,
+    key order/multiplicity, encoding, content type, required header/token digests, session
+    binding, operators/joiners, request count, and trigger sequence.
+12. `NegativeResultCertificateV1` digest refs for all eight gates. Never record free-form
+    pass booleans or classify `BUSINESS_NOT_FOUND` before independent validation.
+
+Raw SSM commands belong in restricted debug appendix, not operator terminal records.

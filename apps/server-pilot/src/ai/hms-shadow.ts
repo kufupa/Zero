@@ -17,6 +17,7 @@ import {
 } from './run-ledger.js';
 import {
   buildThreadContext,
+  extractLookupCandidates,
   filterExactReservationCandidates,
   requireExactlyOneExactCandidate,
   type BuildThreadContextInput,
@@ -24,6 +25,8 @@ import {
   type ThreadContext,
   type ThreadContextMessage,
 } from './thread-context.js';
+import type { ToolResult } from './draft-evidence.js';
+import type { ArtifactData } from '../mail/artifacts/read-artifact.js';
 
 export const HMS_MANUAL_OPS_REQUIRED = 'HMS_MANUAL_OPS_REQUIRED' as const;
 
@@ -52,6 +55,10 @@ export const hmsShadowMetricsSchema = z
     toolCalls: z.number().int().nonnegative(),
     toolBudgetUsed: z.number().int().nonnegative(),
     claimCount: z.number().int().nonnegative(),
+    artifactAttempted: z.number().int().nonnegative().optional(),
+    artifactReadable: z.number().int().nonnegative().optional(),
+    artifactManualRequired: z.number().int().nonnegative().optional(),
+    hmsLookupCalls: z.number().int().nonnegative().optional(),
     failureClass: z.enum(AI_FAILURE_CLASSES).optional(),
   })
   .strict();
@@ -67,15 +74,41 @@ export type HmsShadowPreBrowserDeps = {
   transportId: string;
   threadId: string;
   triggerMessageId: string;
+  /** Optional artifact-v2 path. Loader performs current mailbox-grant check. */
+  loadArtifactSnapshot?: () => Promise<ArtifactAuthorizationSnapshot>;
+  readArtifact?: (
+    attachmentId: string,
+    signal: AbortSignal,
+  ) => Promise<ToolResult<ArtifactData>>;
+  recheckArtifactIdentity?: (input: {
+    attachmentId: string;
+    expectedSha256: string;
+    signal: AbortSignal;
+  }) => Promise<boolean>;
+};
+
+export type ArtifactAuthorizationSnapshot = {
+  grantDigest: string | null;
+  attachmentStateVersion: string;
+  context: ThreadContext;
+  pdfAttachmentIds: string[];
+};
+
+export type ArtifactChainMetrics = {
+  attempted: number;
+  readable: number;
+  manualRequired: number;
 };
 
 export type HmsShadowPreBrowserResult =
+  | { kind: 'authorization_denied' }
   | { kind: 'stale_thread' }
   | { kind: 'insufficient_evidence'; exactCount: number }
   | {
       kind: 'ready';
       context: ThreadContext;
       exact: ExactLookupCandidate;
+      artifactMetrics?: ArtifactChainMetrics;
     };
 
 function exactIdentityKey(exact: readonly ExactLookupCandidate[]): string {
@@ -92,9 +125,105 @@ function exactIdentityKey(exact: readonly ExactLookupCandidate[]): string {
  */
 export async function resolveHmsShadowPreBrowser(
   deps: HmsShadowPreBrowserDeps,
-  options: { signal?: AbortSignal } = {},
+  options: {
+    signal?: AbortSignal;
+    /** Test observability hook receives only sanitized model-facing values. */
+    onModelVisible?: (value: unknown) => void;
+  } = {},
 ): Promise<HmsShadowPreBrowserResult> {
   const build = deps.buildThreadContext ?? buildThreadContext;
+  const signal = options.signal ?? new AbortController().signal;
+
+  if (deps.loadArtifactSnapshot) {
+    const first = await deps.loadArtifactSnapshot();
+    if (!first.grantDigest) return { kind: 'authorization_denied' };
+    const bodyExact = filterExactReservationCandidates(
+      first.context.lookupCandidates,
+    );
+    const artifactMetrics: ArtifactChainMetrics = {
+      attempted: 0,
+      readable: 0,
+      manualRequired: 0,
+    };
+    const combined = [...bodyExact];
+    const identities: Array<{ attachmentId: string; expectedSha256: string }> = [];
+
+    if (bodyExact.length === 0) {
+      if (
+        first.pdfAttachmentIds.length === 0 ||
+        first.pdfAttachmentIds.length > 3 ||
+        !deps.readArtifact ||
+        !deps.recheckArtifactIdentity
+      ) {
+        return { kind: 'insufficient_evidence', exactCount: 0 };
+      }
+      for (const attachmentId of first.pdfAttachmentIds) {
+        if (signal.aborted) {
+          throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+        }
+        artifactMetrics.attempted += 1;
+        const result = await deps.readArtifact(attachmentId, signal);
+        if (result.status !== 'ok' || typeof result.data.text !== 'string') {
+          artifactMetrics.manualRequired += 1;
+          continue;
+        }
+        artifactMetrics.readable += 1;
+        identities.push({
+          attachmentId,
+          expectedSha256: result.evidence.sourceHash,
+        });
+        combined.push(
+          ...filterExactReservationCandidates(
+            extractLookupCandidates(result.data.text),
+          ),
+        );
+      }
+    }
+
+    // Authorization and attachment metadata are reloaded after extraction.
+    const second = await deps.loadArtifactSnapshot();
+    if (!second.grantDigest) return { kind: 'authorization_denied' };
+    if (
+      second.grantDigest !== first.grantDigest ||
+      second.attachmentStateVersion !== first.attachmentStateVersion ||
+      second.context.threadStateVersion !== first.context.threadStateVersion ||
+      exactIdentityKey(
+        filterExactReservationCandidates(second.context.lookupCandidates),
+      ) !== exactIdentityKey(bodyExact)
+    ) {
+      return { kind: 'stale_thread' };
+    }
+    for (const identity of identities) {
+      if (
+        !(await deps.recheckArtifactIdentity!({
+          ...identity,
+          signal,
+        }))
+      ) {
+        return { kind: 'stale_thread' };
+      }
+    }
+
+    const deduped = new Map<string, ExactLookupCandidate>();
+    for (const candidate of combined) {
+      deduped.set(`${candidate.kind}:${candidate.value.toUpperCase()}`, candidate);
+    }
+    const exact = [...deduped.values()];
+    if (exact.length !== 1) {
+      return { kind: 'insufficient_evidence', exactCount: exact.length };
+    }
+    // Only sanitized context and opaque candidate metadata may cross model edge.
+    options.onModelVisible?.({
+      status: 'artifact_candidate_ready',
+      candidateCount: 1,
+    });
+    return {
+      kind: 'ready',
+      context: second.context,
+      exact: exact[0]!,
+      artifactMetrics,
+    };
+  }
 
   const rev1 = await deps.loadLatestDraftRevisionId();
   const messages1 = await deps.loadMessages();
@@ -153,7 +282,7 @@ export function classifyHmsShadowFailure(error: unknown): AiFailureClass {
   if (error && typeof error === 'object' && 'name' in error) {
     const name = String((error as { name: string }).name);
     if (name === 'RunDeadlineError') return 'RUN_DEADLINE';
-    if (name === 'AbortError') return 'LEASE_LOST';
+    if (name === 'AbortError' || name === 'LeaseLostError') return 'LEASE_LOST';
     if (name === 'HmsBrowserArtifactError') return 'AUDIT_CAPTURE';
   }
   if (error && typeof error === 'object' && 'code' in error) {
@@ -180,6 +309,7 @@ export function classifyHmsShadowFailure(error: unknown): AiFailureClass {
     }
   }
   const message = error instanceof Error ? error.message : String(error);
+  if (/^LEASE_LOST\b/.test(message)) return 'LEASE_LOST';
   if (/timeout|ECONNRESET|ENOTFOUND|network/i.test(message)) return 'TRANSIENT_NETWORK';
   if (/bedrock|throttl|TooManyRequests|ServiceUnavailable/i.test(message)) {
     return 'BEDROCK_TRANSIENT';

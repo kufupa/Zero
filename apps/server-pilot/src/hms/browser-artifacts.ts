@@ -28,6 +28,10 @@ import {
   sep,
 } from 'node:path';
 import { platform } from 'node:os';
+import {
+  ExclusiveReceiptError,
+  resolveExclusiveReceiptFile,
+} from './receipt-exclusivity.js';
 
 export const HMS_BROWSER_ARTIFACT_TTL_MS = 24 * 60 * 60 * 1000;
 export const HMS_BROWSER_CAPTURE_FINALIZE_TIMEOUT_MS = 30_000;
@@ -70,6 +74,7 @@ export type HmsBrowserArtifactReceiptBaseV1 = {
   roleProofExpiresAt: string | null;
   operationOutcome:
     | 'succeeded'
+    | 'unverified_negative'
     | 'business_not_found'
     | 'failed'
     | 'timed_out'
@@ -97,6 +102,7 @@ export type HmsBrowserArtifactReceiptBaseV1 = {
   >;
   terminalCode:
     | 'OK'
+    | 'UNVERIFIED_NEGATIVE'
     | 'BUSINESS_NOT_FOUND'
     | 'TOOL_ERROR'
     | 'ABORTED'
@@ -880,17 +886,29 @@ export async function purgeExpiredHmsBrowserArtifacts(
     }
     if (entry.name.startsWith('.')) continue;
     const info = await lstat(dir).catch(() => null);
-    if (
+
+    let receiptPath: string | null = null;
+    try {
+      receiptPath = (await resolveExclusiveReceiptFile(dir)).path;
+    } catch (error) {
+      // Dual receipts are ambiguous: never destroy them, even when stale.
+      if (error instanceof ExclusiveReceiptError && error.reason === 'dual') {
+        continue;
+      }
+    }
+
+    const staleDirectory =
       UUID_RE.test(entry.name) &&
-      info &&
+      info !== null &&
       !info.isSymbolicLink() &&
-      info.mtimeMs <= staleBefore
-    ) {
+      info.mtimeMs <= staleBefore;
+
+    if (staleDirectory) {
       await rm(dir, { recursive: true, force: true });
       removed += 1;
       continue;
     }
-    const receiptPath = join(dir, 'receipt.v1.json');
+    if (!receiptPath) continue;
     try {
       const raw = await readFile(receiptPath, 'utf8');
       const receipt = JSON.parse(raw) as { expiresAt?: string };
@@ -902,15 +920,7 @@ export async function purgeExpiredHmsBrowserArtifacts(
         removed += 1;
       }
     } catch {
-      if (
-        UUID_RE.test(entry.name) &&
-        info &&
-        !info.isSymbolicLink() &&
-        info.mtimeMs <= staleBefore
-      ) {
-        await rm(dir, { recursive: true, force: true });
-        removed += 1;
-      }
+      // Unreadable receipt on a fresh directory: leave for the next TTL sweep.
     }
   }
   return removed;

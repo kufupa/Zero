@@ -4,10 +4,13 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  liveGuestStayRowFingerprintV2Schema,
   liveGuestStayRowFingerprintV1Schema,
+  type LiveGuestStayRowFingerprintV2,
   type LiveGuestStayRowFingerprintV1,
 } from '../src/hms/contracts.js';
 import {
+  buildLiveGuestStayRowFingerprintV2,
   buildLiveGuestStayRowFingerprintV1,
   createLiveGuestStayDriver,
   extractOsressPageData,
@@ -37,6 +40,10 @@ const here = dirname(fileURLToPath(import.meta.url));
 const fingerprintEvalPath = join(
   here,
   '../evals/hms/live-guest-stay-row-fingerprint.v1.json',
+);
+const fingerprintEvalV2Path = join(
+  here,
+  '../evals/hms/live-guest-stay-row-fingerprint.v2.json',
 );
 
 const SYNTH = {
@@ -76,12 +83,13 @@ function liveDriverWithSession(input: {
   page: Partial<HmsPage>;
   receipt?: HmsBrowserArtifactReceiptV1 | null;
   origin?: string;
+  violation?: HmsReadSession['violation'];
 }) {
   const close = vi.fn(async () => undefined);
   const session = {
     id: 'session-test',
     origin: input.origin ?? 'http://127.0.0.1:17888',
-    violation: () => null,
+    violation: input.violation ?? (() => null),
     terminal: () => false,
     page: input.page as HmsPage,
     lastReceipt: () => input.receipt ?? null,
@@ -100,6 +108,36 @@ function liveDriverWithSession(input: {
 }
 
 describe('live guest stay row fingerprint (structure only)', () => {
+  it('v2 freezes reviewed GRIDRESULT aliases without capturing values', () => {
+    const fp = buildLiveGuestStayRowFingerprintV2();
+    expect(liveGuestStayRowFingerprintV2Schema.parse(fp)).toEqual(fp);
+    expect(fp).toMatchObject({
+      schemaVersion: 2,
+      valuesCaptured: false,
+      rowAliasKeys: [
+        'arrivaldate',
+        'confirmationnumber',
+        'departuredate',
+        'externalconfirmation',
+        'firstname',
+        'lastname',
+        'primaryguest',
+        'rateplan',
+        'roomtype',
+        'status',
+      ],
+    });
+    expect(JSON.stringify(fp)).not.toContain(SYNTH.conf);
+  });
+
+  it('v2 eval artifact matches key-only structural fingerprint', () => {
+    const raw = JSON.parse(readFileSync(fingerprintEvalV2Path, 'utf8')) as unknown;
+    const fp = liveGuestStayRowFingerprintV2Schema.parse(
+      raw,
+    ) as LiveGuestStayRowFingerprintV2;
+    expect(fp).toEqual(buildLiveGuestStayRowFingerprintV2());
+  });
+
   it('schema rejects value capture and value-derived fields', () => {
     const fp = buildLiveGuestStayRowFingerprintV1();
     expect(fp.valuesCaptured).toBe(false);
@@ -236,7 +274,7 @@ describe('guest stay HTML parser correlation', () => {
     expect(result.outcome).toBe('matched');
   });
 
-  it('duplicate exact rows same confirmation → matched primary', () => {
+  it('duplicate exact rows same confirmation → ambiguous, never cherry-picks one row', () => {
     const html = grid([
       rowHtml({
         'data-confirmation': SYNTH.confDup,
@@ -250,11 +288,10 @@ describe('guest stay HTML parser correlation', () => {
       }),
     ]);
     const result = parseAndCorrelateGuestStayHtml(html, candidate);
-    expect(result.outcome).toBe('matched');
-    if (result.outcome !== 'matched') return;
-    expect(result.observations).toHaveLength(1);
-    expect(result.observations[0]!.guestName).toBe(SYNTH.guest);
-    expect(result.observations[0]!.reservationStatus).toBe('InHouse');
+    expect(result.outcome).toBe('ambiguous');
+    if (result.outcome !== 'ambiguous') return;
+    expect(result.observations).toHaveLength(2);
+    expect(result.observations.every((row) => row.guestName === null)).toBe(true);
   });
 
   it('unrelated rows stripped — only candidate-correlated count', () => {
@@ -265,7 +302,7 @@ describe('guest stay HTML parser correlation', () => {
     expect(parseAndCorrelateGuestStayHtml(html, candidate).outcome).toBe('not_found');
   });
 
-  it('many same-confirmation rows → matched primary (not ambiguous)', () => {
+  it('many same-confirmation rows → capped ambiguity', () => {
     const rows = Array.from({ length: 21 }, (_, i) =>
       rowHtml({
         'data-confirmation': SYNTH.conf,
@@ -274,10 +311,10 @@ describe('guest stay HTML parser correlation', () => {
       }),
     );
     const result = parseAndCorrelateGuestStayHtml(grid(rows), candidate);
-    expect(result.outcome).toBe('matched');
-    if (result.outcome !== 'matched') return;
-    expect(result.observations).toHaveLength(1);
-    expect(result.observations[0]!.confirmationNumber).toBe(SYNTH.conf);
+    expect(result.outcome).toBe('ambiguous');
+    if (result.outcome !== 'ambiguous') return;
+    expect(result.observations).toHaveLength(20);
+    expect(result.capped).toBe(true);
   });
 
   it('missing cells → matched with nulls', () => {
@@ -457,6 +494,8 @@ describe('live OSRESS GRIDRESULT parser', () => {
         arrivaldate: '15-Jan-2099',
         departuredate: '18-Jan-2099',
         status: 'Confirmed',
+        roomtype: 'STD',
+        rateplan: 'BAR',
         lastname: 'Syntherson',
         firstname: 'Alpha',
       },
@@ -476,9 +515,36 @@ describe('live OSRESS GRIDRESULT parser', () => {
       arrivalDate: SYNTH.arrival,
       departureDate: SYNTH.departure,
       reservationStatus: 'Confirmed',
-      roomType: null,
-      ratePlan: null,
+      roomType: 'STD',
+      ratePlan: 'BAR',
     });
+  });
+
+  it('rejects lookalike aliases and keeps absent reviewed room/rate aliases null', () => {
+    const lookalike = extractOsressPageData(
+      gridEnvelope([
+        {
+          confirmation_number: SYNTH.conf,
+          reservationstatus: 'Confirmed',
+        },
+      ]),
+    )!;
+    expect(() => parseLiveOsressGridRows(lookalike)).toThrowError(
+      expect.objectContaining({ code: 'SCHEMA_DRIFT' }),
+    );
+
+    const exact = parseLiveOsressGridRows(
+      extractOsressPageData(
+        gridEnvelope([
+          {
+            confirmationnumber: SYNTH.conf,
+            roomtypedescription: 'LOOKALIKE',
+            rateplandescription: 'LOOKALIKE',
+          },
+        ]),
+      )!,
+    );
+    expect(exact?.[0]).toMatchObject({ roomType: null, ratePlan: null });
   });
 
   it('external_reference candidate correlates on externalconfirmation', () => {
@@ -602,7 +668,32 @@ describe('live driver fail-closed boundaries', () => {
     expect(unhandled).toEqual([]);
   });
 
-  it('closes successful no-match searches as business_not_found', async () => {
+  it('closes a blocked session as policy_blocked even when the tool succeeded', async () => {
+    const { driver, close } = liveDriverWithSession({
+      violation: () =>
+        ({ action: 'block', ruleId: 'reservation-search' }) as ReturnType<
+          HmsReadSession['violation']
+        >,
+      page: {
+        content: async () => '<input name="search">',
+        fill: async () => undefined,
+        postForm: async () =>
+          grid([rowHtml({ 'data-confirmation': SYNTH.conf })]),
+        waitForCorrelatedResponse: async () => undefined,
+      },
+    });
+
+    await expect(
+      driver.searchExact(confCandidate(), AbortSignal.timeout(5_000)),
+    ).rejects.toMatchObject({ code: 'POLICY_BLOCK' });
+    expect(close).toHaveBeenCalledWith({
+      outcome: 'policy_blocked',
+      terminalCode: 'POLICY_BLOCK',
+      complete: true,
+    });
+  });
+
+  it('quarantines successful no-match search receipts', async () => {
     const makeDriver = () =>
       liveDriverWithSession({
         page: {
@@ -619,8 +710,8 @@ describe('live driver fail-closed boundaries', () => {
       direct.driver.searchExact(confCandidate(), AbortSignal.timeout(5_000)),
     ).resolves.toMatchObject({ outcome: 'not_found' });
     expect(direct.close).toHaveBeenCalledWith({
-      outcome: 'business_not_found',
-      terminalCode: 'BUSINESS_NOT_FOUND',
+      outcome: 'unverified_negative',
+      terminalCode: 'UNVERIFIED_NEGATIVE',
       complete: true,
     });
 
@@ -633,8 +724,8 @@ describe('live driver fail-closed boundaries', () => {
       ),
     ).resolves.toBe('not_found');
     expect(mapped.close).toHaveBeenCalledWith({
-      outcome: 'business_not_found',
-      terminalCode: 'BUSINESS_NOT_FOUND',
+      outcome: 'unverified_negative',
+      terminalCode: 'UNVERIFIED_NEGATIVE',
       complete: true,
     });
   });
@@ -700,6 +791,52 @@ describe('production candidates and reservation-only session', () => {
     expect(result.status).toBe('manual_required');
     expect(searchExact).not.toHaveBeenCalled();
     expect(searchExactAndMap).not.toHaveBeenCalled();
+  });
+
+  it('missing candidate ID is manual_required, not a PMS negative', async () => {
+    const driver: LiveGuestStayDriver = {
+      loginAndVerifyBinding: vi.fn(),
+      runNotFoundCanary: vi.fn(),
+      searchExact: vi.fn(),
+      searchExactAndMap: vi.fn(),
+      lastAuditReceipt: vi.fn(() => null),
+    };
+    const session = createReservationCandidateSession({
+      driver,
+      candidates: new Map(),
+      close: async () => undefined,
+    });
+    const result = await session.findReservation(
+      'missing',
+      new AbortController().signal,
+    );
+    expect(result.status).toBe('manual_required');
+    expect(result.unresolvedFields).toEqual(['candidateId']);
+    expect(driver.searchExactAndMap).not.toHaveBeenCalled();
+  });
+
+  it('maps parser not_found to unverified_negative', async () => {
+    const candidate = confCandidate();
+    const driver: LiveGuestStayDriver = {
+      loginAndVerifyBinding: vi.fn(),
+      runNotFoundCanary: vi.fn(),
+      searchExact: vi.fn(),
+      searchExactAndMap: vi.fn(async (_candidate, _signal, mapResult) =>
+        mapResult({ outcome: 'not_found', observations: [], capped: false }),
+      ),
+      lastAuditReceipt: vi.fn(() => null),
+    };
+    const session = createReservationCandidateSession({
+      driver,
+      candidates: new Map([[candidate.id, candidate]]),
+      close: async () => undefined,
+    });
+    const result = await session.findReservation(
+      candidate.id,
+      new AbortController().signal,
+    );
+    expect(result.status).toBe('unverified_negative');
+    expect(result.draftReady).toBe(false);
   });
 
   it('gather routes surname_dates via find when quote inactive → manual_required (not silent skip)', async () => {

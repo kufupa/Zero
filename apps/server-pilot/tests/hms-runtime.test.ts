@@ -270,7 +270,7 @@ describe('HMS runtime', () => {
         auditSpec: {
           operationId: randomUUID(),
           toolId: 'hms_find_reservation',
-          toolVersion: '1.1.0',
+          toolVersion: '1.2.0',
           dependencyRevision: 'test',
           executionClass: 'live_proof',
           inputClass: 'authorized_exact',
@@ -595,7 +595,7 @@ describe('Task 2 production composition + browser guards', () => {
         auditSpec: {
           operationId: randomUUID(),
           toolId: 'hms_find_reservation',
-          toolVersion: '1.1.0',
+          toolVersion: '1.2.0',
           dependencyRevision:
             'playwright-1.52.0-chromium-1169',
           executionClass: 'normal',
@@ -1325,7 +1325,7 @@ describe("HMS browser audit capture order", () => {
         auditSpec: {
           operationId: randomUUID(),
           toolId: "hms_find_reservation",
-          toolVersion: "1.1.0",
+          toolVersion: "1.2.0",
           dependencyRevision: "test-dependency",
           executionClass: "normal",
           inputClass: "authorized_exact",
@@ -1393,7 +1393,7 @@ describe("HMS browser audit capture order", () => {
           auditSpec: {
             operationId: randomUUID(),
             toolId: 'hms_find_reservation',
-            toolVersion: '1.1.0',
+            toolVersion: '1.2.0',
             dependencyRevision: 'test-dependency',
             executionClass: 'normal',
             inputClass: 'authorized_exact',
@@ -1491,7 +1491,7 @@ describe("HMS browser audit capture order", () => {
         auditSpec: {
           operationId: randomUUID(),
           toolId: 'hms_find_reservation',
-          toolVersion: '1.1.0',
+          toolVersion: '1.2.0',
           dependencyRevision: 'r1',
           executionClass: 'normal',
           inputClass: 'authorized_exact',
@@ -1505,7 +1505,7 @@ describe("HMS browser audit capture order", () => {
         auditSpec: {
           operationId: randomUUID(),
           toolId: 'hms_find_reservation',
-          toolVersion: '1.1.0',
+          toolVersion: '1.2.0',
           dependencyRevision: 'r1',
           executionClass: 'live_proof',
           inputClass: 'authorized_exact',

@@ -146,30 +146,27 @@
       "redirectPolicy": "same-reviewed-chain"
     },
     {
-      "id": "room-availability",
+      "id": "room-type-rate-availability-search",
       "origin": "http://127.0.0.1:17888",
-      "method": "GET",
-      "path": "/availability/rooms",
-      "resourceTypes": ["document"],
-      "fixedQuery": { "view": "inventory" },
-      "variableQuery": {
-        "startDate": { "pattern": "\\d{4}-\\d{2}-\\d{2}", "maxLength": 10 }
-      },
-      "fixedBody": {},
-      "variableBody": {},
-      "maxBodyBytes": 16384,
-      "redirectPolicy": "same-reviewed-chain"
-    },
-    {
-      "id": "display-rates",
-      "origin": "http://127.0.0.1:17888",
-      "method": "GET",
-      "path": "/availability/rates",
-      "resourceTypes": ["document"],
+      "method": "POST",
+      "path": "/availability/room-type-rate",
+      "resourceTypes": ["document", "xhr", "fetch"],
+      "contentType": "application/x-www-form-urlencoded",
       "fixedQuery": {},
       "variableQuery": {},
-      "fixedBody": {},
-      "variableBody": {},
+      "fixedBody": {
+        "action": "search"
+      },
+      "variableBody": {
+        "arrivalDate": { "pattern": "\\d{4}-\\d{2}-\\d{2}", "maxLength": 10 },
+        "departureDate": { "pattern": "\\d{4}-\\d{2}-\\d{2}", "maxLength": 10 },
+        "adults": { "pattern": "[1-9][0-9]?", "maxLength": 2 },
+        "children": { "pattern": "[0-9][0-9]?", "maxLength": 2 },
+        "rooms": { "pattern": "[1-4]", "maxLength": 1 },
+        "roomType": { "pattern": "[A-Za-z0-9 _-]{0,32}", "maxLength": 32 },
+        "ratePlan": { "pattern": "[A-Za-z0-9 _-]{0,32}", "maxLength": 32 },
+        "currency": { "pattern": "[A-Z]{3}", "maxLength": 3 }
+      },
       "maxBodyBytes": 16384,
       "redirectPolicy": "same-reviewed-chain"
     }
@@ -193,24 +190,19 @@
       "ratePlanAttr": "data-rate-plan"
     },
     "quote": {
-      "inventoryPagePath": "/availability/rooms",
-      "ratesPagePath": "/availability/rates",
-      "inventoryRow": "[data-testid=\"inventory\"] tr[data-room-type]",
-      "inventoryDateAttr": "data-date",
-      "inventoryRoomTypeAttr": "data-room-type",
-      "inventoryAvailableAttr": "data-available",
-      "rateRow": "[data-testid=\"rates\"] tr[data-rate-plan]",
-      "rateRoomTypeAttr": "data-room-type",
+      "pagePath": "/availability/room-type-rate",
+      "searchPath": "/availability/room-type-rate",
+      "resultsTable": "[data-testid=\"room-type-rate-availability\"]",
+      "resultRow": "[data-testid=\"room-type-rate-availability\"] [data-testid=\"quote-night\"]",
+      "noResults": "[data-testid=\"quote-no-results\"]",
+      "dateAttr": "data-date",
+      "roomTypeAttr": "data-room-type",
+      "availableCountAttr": "data-available",
       "ratePlanAttr": "data-rate-plan",
-      "amountAttr": "data-amount",
+      "displayedAmountAttr": "data-amount",
       "currencyAttr": "data-currency",
-      "amountBasisAttr": "data-amount-basis",
-      "taxIncludedAttr": "data-tax-included",
-      "inclusionsAttr": "data-inclusions",
-      "restrictionsAttr": "data-restrictions",
-      "boardBasisAttr": "data-board-basis",
-      "orgEligibilityAttr": "data-org-eligibility",
-      "amountBasisDefault": "nightly"
+      "rateBasisAttr": "data-rate-basis",
+      "restrictionsAttr": "data-restrictions"
     }
   }
 }

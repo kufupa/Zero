@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,9 +10,11 @@ import {
   ARTIFACT_MAX_OUTPUT_BYTES,
   ARTIFACT_MAX_PAGES,
   ARTIFACT_SUBPROCESS_TIMEOUT_MS,
+  MAIL_READ_ARTIFACT_TOOL_VERSION,
   assertPdfToolchain,
   createToolLedger,
   extractEmbeddedPdfText,
+  recheckAuthorizedArtifactIdentity,
   readAuthorizedArtifact,
   type AttachmentLocator,
   type SandboxRunner,
@@ -100,6 +103,34 @@ function fixtureRunner(input: {
 }
 
 describe('readAuthorizedArtifact', () => {
+  it('publishes v2 candidate-only evidence', async () => {
+    const body = Buffer.from('Confirmation CONF-88421', 'utf8');
+    const s3 = new FakeS3Storage('artifact-test');
+    await s3.putObject({
+      key: 'attachments/msg-1/000-note.txt',
+      body,
+      contentType: 'text/plain',
+    });
+    const result = await readAuthorizedArtifact({
+      attachmentId: 'att-v2',
+      authorizedAttachmentIds: new Set(['att-v2']),
+      s3,
+      signal: AbortSignal.timeout(5_000),
+      resolveLocator: resolveLocatorOf(
+        locator({
+          s3Key: 'attachments/msg-1/000-note.txt',
+          mimeType: 'text/plain',
+          sizeBytes: body.byteLength,
+        }),
+      ),
+    });
+    expect(MAIL_READ_ARTIFACT_TOOL_VERSION).toBe('2');
+    expect(result.status).toBe('ok');
+    expect(result.draftReady).toBe(false);
+    expect(result.evidence.claimKeys).toEqual([]);
+    expect(result.evidence.toolVersion).toBe('2');
+  });
+
   it('blocks unauthorized attachment ID before resolveLocator and S3', async () => {
     const s3 = new FakeS3Storage('artifact-test');
     const getSpy = vi.spyOn(s3, 'getObjectBounded');
@@ -194,6 +225,7 @@ describe('readAuthorizedArtifact', () => {
     expect(getSpy).toHaveBeenCalledWith(
       'attachments/msg-1/000-note.pdf',
       declared,
+      expect.any(AbortSignal),
     );
     await expect(getSpy.mock.results[0]?.value).rejects.toBeInstanceOf(
       S3ObjectTooLargeError,
@@ -224,7 +256,7 @@ describe('readAuthorizedArtifact', () => {
     });
 
     expect(result.status).toBe('ok');
-    expect(result.draftReady).toBe(true);
+    expect(result.draftReady).toBe(false);
     expect(result.data).toMatchObject({
       mimeType: 'text/plain',
       pageCount: null,
@@ -372,6 +404,28 @@ describe('readAuthorizedArtifact', () => {
     expect(getSpy).not.toHaveBeenCalled();
   });
 
+  it('maps parser dependency failure without exposing parser error text', async () => {
+    const body = pdfFixtureBody('parser-failure');
+    const result = await extractEmbeddedPdfText(
+      {
+        body,
+        declaredSize: body.byteLength,
+        declaredMime: 'application/pdf',
+        objectMime: 'application/pdf',
+      },
+      {
+        runner: async () => {
+          throw new Error('private parser stderr payload');
+        },
+      },
+    );
+    expect(result).toMatchObject({
+      status: 'manual_required',
+      data: { reason: 'parser_failure', text: null },
+    });
+    expect(JSON.stringify(result)).not.toContain('private parser stderr payload');
+  });
+
   it('enforces 20 MiB / 50 pages / 256 KiB / 10s limits', async () => {
     expect(ARTIFACT_MAX_INPUT_BYTES).toBe(20 * 1024 * 1024);
     expect(ARTIFACT_MAX_PAGES).toBe(50);
@@ -461,13 +515,90 @@ describe('readAuthorizedArtifact', () => {
     await new Promise((r) => setTimeout(r, 20));
     controller.abort();
 
-    const result = await pending;
-    expect(result.data.reason).toBe('timeout');
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
     expect(runner.killed()).toBe(true);
     expect(tempDirs.length).toBe(1);
     await expect(
       import('node:fs/promises').then((fs) => fs.access(tempDirs[0]!)),
     ).rejects.toThrow();
+  });
+
+  it('propagates caller abort during S3 read', async () => {
+    const controller = new AbortController();
+    const s3 = new FakeS3Storage('artifact-test');
+    const bounded = vi.spyOn(s3, 'getObjectBounded').mockImplementation(
+      async (_key, _max, signal) =>
+        await new Promise((_resolve, reject) => {
+          if (signal?.aborted) {
+            reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+            return;
+          }
+          signal?.addEventListener(
+            'abort',
+            () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })),
+            { once: true },
+          );
+        }),
+    );
+    const pending = readAuthorizedArtifact({
+      attachmentId: 'att-abort',
+      authorizedAttachmentIds: new Set(['att-abort']),
+      s3,
+      signal: controller.signal,
+      resolveLocator: resolveLocatorOf(locator()),
+    });
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(bounded).toHaveBeenCalledWith(
+      'attachments/msg-1/000-note.pdf',
+      pdfFixtureBody().byteLength,
+      controller.signal,
+    );
+  });
+
+  it('rechecks authorization, locator metadata, and S3 bytes without parsing', async () => {
+    const body = pdfFixtureBody('identity');
+    const s3 = new FakeS3Storage('artifact-test');
+    await s3.putObject({
+      key: 'attachments/msg-1/000-note.pdf',
+      body,
+      contentType: 'application/pdf',
+    });
+    const loc = locator({ sizeBytes: body.byteLength });
+    const expectedSha256 = createHash('sha256').update(body).digest('hex');
+    await expect(
+      recheckAuthorizedArtifactIdentity({
+        attachmentId: 'att-id',
+        authorizedAttachmentIds: new Set(['att-id']),
+        expectedLocator: loc,
+        expectedSha256,
+        s3,
+        signal: AbortSignal.timeout(5_000),
+        resolveLocator: resolveLocatorOf(loc),
+      }),
+    ).resolves.toBe(true);
+    await expect(
+      recheckAuthorizedArtifactIdentity({
+        attachmentId: 'att-id',
+        authorizedAttachmentIds: new Set(),
+        expectedLocator: loc,
+        expectedSha256,
+        s3,
+        signal: AbortSignal.timeout(5_000),
+        resolveLocator: resolveLocatorOf(loc),
+      }),
+    ).resolves.toBe(false);
+    await expect(
+      recheckAuthorizedArtifactIdentity({
+        attachmentId: 'att-id',
+        authorizedAttachmentIds: new Set(['att-id']),
+        expectedLocator: loc,
+        expectedSha256: '0'.repeat(64),
+        s3,
+        signal: AbortSignal.timeout(5_000),
+        resolveLocator: resolveLocatorOf(loc),
+      }),
+    ).resolves.toBe(false);
   });
 
   it('missing binaries fail startup gate helper', () => {

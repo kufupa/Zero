@@ -46,7 +46,7 @@ import {
 } from '../ai/run-ledger.js';
 import { parseEnv, requireHmsWorkerRuntimeConfig } from '../env.js';
 import {
-  buildLiveGuestStayRowFingerprintV1,
+  buildLiveGuestStayRowFingerprintV2,
   createLiveGuestStayDriver,
 } from '../hms/live-guest-stay-driver.js';
 import {
@@ -58,6 +58,7 @@ import {
   purgeExpiredHmsBrowserArtifacts,
   type HmsBrowserArtifactReceiptV1,
 } from '../hms/browser-artifacts.js';
+import { resolveExclusiveReceiptFileSync } from '../hms/receipt-exclusivity.js';
 import type { ExactReservationCandidate } from '../hms/live-read-manifest.js';
 import {
   buildExactOsressSearchManifest,
@@ -478,7 +479,7 @@ function codeArtifactDigests(): {
   manifestSha256: string;
   rowFingerprintSha256: string;
 } {
-  const fingerprint = buildLiveGuestStayRowFingerprintV1();
+  const fingerprint = buildLiveGuestStayRowFingerprintV2();
   if (fingerprint.valuesCaptured !== false) {
     emitFail('SCHEMA_DRIFT');
   }
@@ -1118,7 +1119,7 @@ async function runCanary(): Promise<void> {
       auditSpecFor: ({ inputClass }) => ({
         operationId: randomUUID(),
         toolId: 'hms_find_reservation',
-        toolVersion: '1.1.0',
+        toolVersion: '1.2.0',
         dependencyRevision: HMS_DEPENDENCY_REVISION,
         executionClass: 'normal',
         inputClass,
@@ -1129,7 +1130,7 @@ async function runCanary(): Promise<void> {
     await driver.runNotFoundCanary(signal);
     emitOk('HMS_LIVE_NOT_FOUND_OK');
 
-    const fingerprint = buildLiveGuestStayRowFingerprintV1();
+    const fingerprint = buildLiveGuestStayRowFingerprintV2();
     if (fingerprint.valuesCaptured !== false) emitFail('SCHEMA_DRIFT');
     process.stdout.write(
       `HMS_LIVE_ROW_FINGERPRINT_OK schemaVersion=${fingerprint.schemaVersion} sha=${fingerprint.manifestSha256.slice(0, 12)}\n`,
@@ -1565,7 +1566,7 @@ export function runAcceptG1(): void {
   let receipt: HmsBrowserArtifactReceiptV1;
   let receiptBody: Buffer;
   try {
-    receiptBody = readFileSync(join(artifactDir, 'receipt.v1.json'));
+    receiptBody = readFileSync(resolveExclusiveReceiptFileSync(artifactDir).path);
   } catch {
     resetPhaseAGateToAwaiting(gate!);
   }
@@ -1669,7 +1670,7 @@ export function runAcceptG1(): void {
     );
   const revisionsValid =
     receipt!.toolId === 'hms_find_reservation' &&
-    receipt!.toolVersion === '1.1.0' &&
+    receipt!.toolVersion === '1.2.0' &&
     receipt!.dependencyRevision === HMS_DEPENDENCY_REVISION &&
     receipt!.playwrightRevision === '1.52.0' &&
     receipt!.chromiumRevision === '1169';
@@ -1807,7 +1808,7 @@ async function runProofVideo(): Promise<PhaseAProofEvidence> {
         auditSpecFor: ({ inputClass }) => ({
           operationId,
           toolId: 'hms_find_reservation',
-          toolVersion: '1.1.0',
+          toolVersion: '1.2.0',
           dependencyRevision: HMS_DEPENDENCY_REVISION,
           executionClass: 'normal',
           inputClass,
@@ -1852,7 +1853,7 @@ async function runProofVideo(): Promise<PhaseAProofEvidence> {
       auditSpecFor: ({ inputClass }) => ({
         operationId: proofOperationId,
         toolId: 'hms_find_reservation',
-        toolVersion: '1.1.0',
+        toolVersion: '1.2.0',
         dependencyRevision: HMS_DEPENDENCY_REVISION,
         executionClass: 'live_proof',
         inputClass,
@@ -1915,7 +1916,7 @@ async function runProofVideo(): Promise<PhaseAProofEvidence> {
       receipt.terminalStage !== 'receipt_finalize' ||
       receipt.sourceRevision !== commit ||
       receipt.toolId !== 'hms_find_reservation' ||
-      receipt.toolVersion !== '1.1.0' ||
+      receipt.toolVersion !== '1.2.0' ||
       receipt.dependencyRevision !== HMS_DEPENDENCY_REVISION ||
       receipt.playwrightRevision !== '1.52.0' ||
       receipt.chromiumRevision !== '1169' ||

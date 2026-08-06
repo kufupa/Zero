@@ -74,7 +74,7 @@ export type HmsDraftJourneyId =
   | 'reservation_exact_candidate'
   | 'reservation_ambiguous_clarification'
   | 'quote_partial_no_candidate'
-  | 'pdf_text_candidate'
+  | 'artifact_candidate_private'
   | 'scanned_pdf_manual'
   | 'unknown_request_abort'
   | 'timeout_lease_no_generation'
@@ -223,6 +223,181 @@ export function collectForbiddenImports(
     }
   }
 
+  return hits;
+}
+
+const RAW_PAGE_APIS = new Set([
+  'goto',
+  'content',
+  'postForm',
+  'click',
+  'fill',
+  'press',
+  'locator',
+  'evaluate',
+  'evaluateStableDom',
+]);
+
+/** Syntax-aware proof that production drivers cannot reach raw browser APIs. */
+export function collectRawPageDriverAccess(
+  files?: readonly string[],
+): Array<{ file: string; api: string }> {
+  const hits: Array<{ file: string; api: string }> = [];
+  const targets =
+    files ??
+    walkTsFiles(join(srcRoot, 'hms')).filter((file) =>
+      file.replace(/\\/g, '/').endsWith('-driver.ts'),
+    );
+  for (const file of targets) {
+    const source = ts.createSourceFile(
+      file,
+      readFileSync(file, 'utf8'),
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS,
+    );
+    const record = (api: string) => {
+      hits.push({
+        file: relative(serverPilotRoot, file).replace(/\\/g, '/'),
+        api,
+      });
+    };
+    const visit = (node: ts.Node) => {
+      if (
+        ts.isImportSpecifier(node) &&
+        node.name.text === 'HmsPage'
+      ) {
+        record('HmsPage');
+      }
+      if (
+        ts.isPropertyAccessExpression(node) &&
+        RAW_PAGE_APIS.has(node.name.text)
+      ) {
+        record(node.name.text);
+      }
+      // page['goto'] and friends bypass property-access detection.
+      if (
+        ts.isElementAccessExpression(node) &&
+        ts.isStringLiteralLike(node.argumentExpression) &&
+        RAW_PAGE_APIS.has(node.argumentExpression.text)
+      ) {
+        record(node.argumentExpression.text);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+  }
+  return hits;
+}
+
+/**
+ * Promoted negative terminals may only be constructed by negative-result.ts.
+ * Legacy receipt type unions remain readable, but production paths cannot assign them.
+ */
+const PROMOTED_NEGATIVE_LITERALS = new Set([
+  'BUSINESS_NOT_FOUND',
+  'business_not_found',
+  'not_found',
+]);
+
+/** Assignment targets that carry a promoted terminal to model / receipt surfaces. */
+const PROMOTED_NEGATIVE_TARGETS = new Set(['status', 'outcome', 'terminalCode']);
+
+/**
+ * Parser-level `outcome: 'not_found'` stays legal (internal search vocabulary);
+ * only tool `status` and receipt `terminalCode` may not carry it as a value.
+ */
+const PROMOTED_NEGATIVE_PROPERTY_TARGETS = new Set(['status', 'terminalCode']);
+
+function assignmentTargetName(target: ts.Expression): string | null {
+  if (ts.isPropertyAccessExpression(target)) return target.name.text;
+  if (ts.isIdentifier(target)) return target.text;
+  if (ts.isElementAccessExpression(target) && ts.isStringLiteralLike(target.argumentExpression)) {
+    return target.argumentExpression.text;
+  }
+  return null;
+}
+
+export function collectBusinessNotFoundAssignments(
+  inputFiles?: readonly string[],
+): Array<{
+  file: string;
+  value: string;
+}> {
+  const files = (
+    inputFiles ?? [
+      ...walkTsFiles(join(srcRoot, 'hms')).filter((file) =>
+        /(?:-driver|reservation-candidate-session|adapter)\.ts$/.test(
+          file.replace(/\\/g, '/'),
+        ),
+      ),
+      join(srcRoot, 'ai', 'worker.ts'),
+    ]
+  ).filter((file) => existsSync(file));
+  const hits: Array<{ file: string; value: string }> = [];
+  for (const file of files) {
+    if (file.replace(/\\/g, '/').endsWith('/hms/negative-result.ts')) continue;
+    const source = ts.createSourceFile(
+      file,
+      readFileSync(file, 'utf8'),
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS,
+    );
+    const record = (value: string) => {
+      hits.push({
+        file: relative(serverPilotRoot, file).replace(/\\/g, '/'),
+        value,
+      });
+    };
+    const visit = (node: ts.Node) => {
+      if (
+        ts.isPropertyAssignment(node) &&
+        ts.isStringLiteralLike(node.initializer) &&
+        PROMOTED_NEGATIVE_LITERALS.has(node.initializer.text)
+      ) {
+        const name = ts.isIdentifier(node.name) || ts.isStringLiteralLike(node.name)
+          ? node.name.text
+          : null;
+        if (
+          node.initializer.text !== 'not_found' ||
+          (name !== null && PROMOTED_NEGATIVE_PROPERTY_TARGETS.has(name))
+        ) {
+          record(node.initializer.text);
+        }
+      }
+      // `status = 'not_found'` / `receipt.terminalCode = 'BUSINESS_NOT_FOUND'`.
+      if (
+        ts.isBinaryExpression(node) &&
+        node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+        ts.isStringLiteralLike(node.right) &&
+        PROMOTED_NEGATIVE_LITERALS.has(node.right.text)
+      ) {
+        const name = assignmentTargetName(node.left);
+        if (name !== null && PROMOTED_NEGATIVE_TARGETS.has(name)) {
+          record(node.right.text);
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+  }
+  if (inputFiles) return hits;
+  const opsPath = join(serverPilotRoot, 'deploy', 'ops-hms-proof.sh');
+  if (existsSync(opsPath)) {
+    for (const line of readFileSync(opsPath, 'utf8').split(/\r?\n/)) {
+      if (
+        /(?:status|outcome|terminalCode)\s*[:=]\s*["']?(?:BUSINESS_NOT_FOUND|business_not_found|not_found)\b/.test(
+          line,
+        )
+      ) {
+        hits.push({
+          file: relative(serverPilotRoot, opsPath).replace(/\\/g, '/'),
+          value: line.trim(),
+        });
+      }
+    }
+  }
   return hits;
 }
 
@@ -555,7 +730,7 @@ export async function runHmsDraftPipelineJourneys(
       readArtifact: async () =>
         ({
           status: 'ok',
-          draftReady: true,
+          draftReady: false,
           data: {
             mimeType: 'application/pdf' as const,
             text: 'Confirmation CONF-99 on file',
@@ -567,11 +742,11 @@ export async function runHmsDraftPipelineJourneys(
             kind: 'mail_attachment',
             id: 'ev-pdf',
             toolId: 'mail_read_artifact',
-            toolVersion: '1',
+            toolVersion: '2',
             attachmentId: 'att-pdf',
             observedAt,
             sourceHash: sha('d'),
-            claimKeys: ['attachment.confirmation'],
+            claimKeys: [],
           },
         }) as never,
     });
@@ -584,8 +759,8 @@ export async function runHmsDraftPipelineJourneys(
       now,
     });
     results.push({
-      id: 'pdf_text_candidate',
-      passed: out.outcome === 'candidate',
+      id: 'artifact_candidate_private',
+      passed: out.outcome === 'insufficient_evidence',
       detail: `outcome=${out.outcome}`,
     });
   }
@@ -608,7 +783,7 @@ export async function runHmsDraftPipelineJourneys(
             kind: 'mail_attachment',
             id: 'ev-scan',
             toolId: 'mail_read_artifact',
-            toolVersion: '1',
+            toolVersion: '2',
             attachmentId: 'att-scan',
             observedAt,
             sourceHash: sha('e'),

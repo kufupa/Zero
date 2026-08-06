@@ -1,0 +1,620 @@
+{
+  "schemaVersion": 3,
+  "denominator": "draftEligible",
+  "source": {
+    "denominators": "evals/hms/denominators.v1.json",
+    "labels": "evals/hms/shadow-labels.v1.json"
+  },
+  "note": "Opaque thread IDs only. Placeholder labels do not score. No message text.",
+  "cases": [
+    {
+      "threadId": 2,
+      "labelStatus": "adjudicated",
+      "outcome": "abstain",
+      "inventedFacts": 0,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "requirements": [],
+      "ablation": {
+        "baseline": "abstain"
+      }
+    },
+    {
+      "threadId": 4,
+      "labelStatus": "adjudicated",
+      "outcome": "useful_partial",
+      "inventedFacts": 0,
+      "materialFieldsCorrect": 2,
+      "materialFieldsTotal": 2,
+      "requirements": [],
+      "ablation": {
+        "baseline": "useful_partial"
+      }
+    },
+    {
+      "threadId": 5,
+      "labelStatus": "adjudicated",
+      "outcome": "full",
+      "inventedFacts": 0,
+      "materialFieldsCorrect": 3,
+      "materialFieldsTotal": 3,
+      "requirements": [],
+      "ablation": {
+        "baseline": "full"
+      }
+    },
+    {
+      "threadId": 6,
+      "labelStatus": "adjudicated",
+      "outcome": "abstain",
+      "inventedFacts": 0,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "requirements": [],
+      "ablation": {
+        "baseline": "abstain"
+      }
+    },
+    {
+      "threadId": 10,
+      "labelStatus": "adjudicated",
+      "outcome": "abstain",
+      "inventedFacts": 0,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "requirements": [],
+      "ablation": {
+        "baseline": "abstain"
+      }
+    },
+    {
+      "threadId": 13,
+      "labelStatus": "adjudicated",
+      "outcome": "abstain",
+      "inventedFacts": 0,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "requirements": [],
+      "ablation": {
+        "baseline": "abstain"
+      }
+    },
+    {
+      "threadId": 15,
+      "labelStatus": "adjudicated",
+      "outcome": "abstain",
+      "inventedFacts": 0,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "requirements": [],
+      "ablation": {
+        "baseline": "abstain"
+      }
+    },
+    {
+      "threadId": 17,
+      "labelStatus": "adjudicated",
+      "outcome": "abstain",
+      "inventedFacts": 0,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "requirements": [],
+      "ablation": {
+        "baseline": "abstain"
+      }
+    },
+    {
+      "threadId": 18,
+      "labelStatus": "adjudicated",
+      "outcome": "abstain",
+      "inventedFacts": 0,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "requirements": [],
+      "ablation": {
+        "baseline": "abstain"
+      }
+    },
+    {
+      "threadId": 19,
+      "labelStatus": "adjudicated",
+      "outcome": "abstain",
+      "inventedFacts": 0,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "requirements": [],
+      "ablation": {
+        "baseline": "abstain"
+      }
+    },
+    {
+      "threadId": 20,
+      "labelStatus": "adjudicated",
+      "outcome": "abstain",
+      "inventedFacts": 0,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "requirements": [],
+      "ablation": {
+        "baseline": "abstain"
+      }
+    },
+    {
+      "threadId": 22,
+      "labelStatus": "adjudicated",
+      "outcome": "abstain",
+      "inventedFacts": 0,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "requirements": [],
+      "ablation": {
+        "baseline": "abstain"
+      }
+    },
+    {
+      "threadId": 26,
+      "labelStatus": "adjudicated",
+      "outcome": "abstain",
+      "inventedFacts": 0,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "requirements": [],
+      "ablation": {
+        "baseline": "abstain"
+      }
+    },
+    {
+      "threadId": 27,
+      "labelStatus": "adjudicated",
+      "outcome": "abstain",
+      "inventedFacts": 0,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "requirements": [],
+      "ablation": {
+        "baseline": "abstain"
+      }
+    },
+    {
+      "threadId": 28,
+      "labelStatus": "adjudicated",
+      "outcome": "abstain",
+      "inventedFacts": 0,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "requirements": [],
+      "ablation": {
+        "baseline": "abstain"
+      }
+    },
+    {
+      "threadId": 29,
+      "labelStatus": "adjudicated",
+      "outcome": "abstain",
+      "inventedFacts": 0,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "requirements": [],
+      "ablation": {
+        "baseline": "abstain"
+      }
+    },
+    {
+      "threadId": 31,
+      "labelStatus": "adjudicated",
+      "outcome": "abstain",
+      "inventedFacts": 0,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "requirements": [],
+      "ablation": {
+        "baseline": "abstain"
+      }
+    },
+    {
+      "threadId": 45,
+      "labelStatus": "adjudicated",
+      "outcome": "abstain",
+      "inventedFacts": 0,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "requirements": [],
+      "ablation": {
+        "baseline": "abstain"
+      }
+    },
+    {
+      "threadId": 46,
+      "labelStatus": "adjudicated",
+      "outcome": "abstain",
+      "inventedFacts": 0,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "requirements": [],
+      "ablation": {
+        "baseline": "abstain"
+      }
+    },
+    {
+      "threadId": 47,
+      "labelStatus": "adjudicated",
+      "outcome": "abstain",
+      "inventedFacts": 0,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "requirements": [],
+      "ablation": {
+        "baseline": "abstain"
+      }
+    },
+    {
+      "threadId": 71,
+      "labelStatus": "adjudicated",
+      "outcome": "abstain",
+      "inventedFacts": 0,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "requirements": [],
+      "ablation": {
+        "baseline": "abstain"
+      }
+    },
+    {
+      "threadId": 72,
+      "labelStatus": "adjudicated",
+      "outcome": "abstain",
+      "inventedFacts": 0,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "requirements": [],
+      "ablation": {
+        "baseline": "abstain"
+      }
+    },
+    {
+      "threadId": 74,
+      "labelStatus": "adjudicated",
+      "outcome": "abstain",
+      "inventedFacts": 0,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "requirements": [],
+      "ablation": {
+        "baseline": "abstain"
+      }
+    },
+    {
+      "threadId": 76,
+      "labelStatus": "adjudicated",
+      "outcome": "abstain",
+      "inventedFacts": 0,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "requirements": [],
+      "ablation": {
+        "baseline": "abstain"
+      }
+    },
+    {
+      "threadId": 83,
+      "labelStatus": "adjudicated",
+      "outcome": "abstain",
+      "inventedFacts": 0,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "requirements": [],
+      "ablation": {
+        "baseline": "abstain"
+      }
+    },
+    {
+      "threadId": 85,
+      "labelStatus": "adjudicated",
+      "outcome": "abstain",
+      "inventedFacts": 0,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "requirements": [],
+      "ablation": {
+        "baseline": "abstain"
+      }
+    },
+    {
+      "threadId": 86,
+      "labelStatus": "adjudicated",
+      "outcome": "abstain",
+      "inventedFacts": 0,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "requirements": [],
+      "ablation": {
+        "baseline": "abstain"
+      }
+    },
+    {
+      "threadId": 87,
+      "labelStatus": "adjudicated",
+      "outcome": "abstain",
+      "inventedFacts": 0,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "requirements": [],
+      "ablation": {
+        "baseline": "abstain"
+      }
+    },
+    {
+      "threadId": 88,
+      "labelStatus": "adjudicated",
+      "outcome": "abstain",
+      "inventedFacts": 0,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "requirements": [],
+      "ablation": {
+        "baseline": "abstain"
+      }
+    },
+    {
+      "threadId": 92,
+      "labelStatus": "adjudicated",
+      "outcome": "abstain",
+      "inventedFacts": 0,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "requirements": [],
+      "ablation": {
+        "baseline": "abstain"
+      }
+    },
+    {
+      "threadId": 97,
+      "labelStatus": "adjudicated",
+      "outcome": "abstain",
+      "inventedFacts": 0,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "requirements": [],
+      "ablation": {
+        "baseline": "abstain"
+      }
+    },
+    {
+      "threadId": 98,
+      "labelStatus": "adjudicated",
+      "outcome": "abstain",
+      "inventedFacts": 0,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "requirements": [],
+      "ablation": {
+        "baseline": "abstain"
+      }
+    },
+    {
+      "threadId": 101,
+      "labelStatus": "adjudicated",
+      "outcome": "abstain",
+      "inventedFacts": 0,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "requirements": [],
+      "ablation": {
+        "baseline": "abstain"
+      }
+    },
+    {
+      "threadId": 102,
+      "labelStatus": "adjudicated",
+      "outcome": "abstain",
+      "inventedFacts": 0,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "requirements": [],
+      "ablation": {
+        "baseline": "abstain"
+      }
+    },
+    {
+      "threadId": 103,
+      "labelStatus": "adjudicated",
+      "outcome": "abstain",
+      "inventedFacts": 0,
+      "materialFieldsCorrect": 0,
+      "materialFieldsTotal": 0,
+      "requirements": [],
+      "ablation": {
+        "baseline": "abstain"
+      }
+    },
+    {
+      "threadId": 105,
+      "labelStatus": "placeholder",
+      "outcome": null,
+      "requirements": [],
+      "ablation": {
+        "baseline": null
+      }
+    },
+    {
+      "threadId": 107,
+      "labelStatus": "placeholder",
+      "outcome": null,
+      "requirements": [],
+      "ablation": {
+        "baseline": null
+      }
+    },
+    {
+      "threadId": 108,
+      "labelStatus": "placeholder",
+      "outcome": null,
+      "requirements": [],
+      "ablation": {
+        "baseline": null
+      }
+    },
+    {
+      "threadId": 109,
+      "labelStatus": "placeholder",
+      "outcome": null,
+      "requirements": [],
+      "ablation": {
+        "baseline": null
+      }
+    },
+    {
+      "threadId": 112,
+      "labelStatus": "placeholder",
+      "outcome": null,
+      "requirements": [],
+      "ablation": {
+        "baseline": null
+      }
+    },
+    {
+      "threadId": 115,
+      "labelStatus": "placeholder",
+      "outcome": null,
+      "requirements": [],
+      "ablation": {
+        "baseline": null
+      }
+    },
+    {
+      "threadId": 116,
+      "labelStatus": "placeholder",
+      "outcome": null,
+      "requirements": [],
+      "ablation": {
+        "baseline": null
+      }
+    },
+    {
+      "threadId": 119,
+      "labelStatus": "placeholder",
+      "outcome": null,
+      "requirements": [],
+      "ablation": {
+        "baseline": null
+      }
+    },
+    {
+      "threadId": 120,
+      "labelStatus": "placeholder",
+      "outcome": null,
+      "requirements": [],
+      "ablation": {
+        "baseline": null
+      }
+    },
+    {
+      "threadId": 124,
+      "labelStatus": "placeholder",
+      "outcome": null,
+      "requirements": [],
+      "ablation": {
+        "baseline": null
+      }
+    },
+    {
+      "threadId": 127,
+      "labelStatus": "placeholder",
+      "outcome": null,
+      "requirements": [],
+      "ablation": {
+        "baseline": null
+      }
+    },
+    {
+      "threadId": 129,
+      "labelStatus": "placeholder",
+      "outcome": null,
+      "requirements": [],
+      "ablation": {
+        "baseline": null
+      }
+    },
+    {
+      "threadId": 132,
+      "labelStatus": "placeholder",
+      "outcome": null,
+      "requirements": [],
+      "ablation": {
+        "baseline": null
+      }
+    },
+    {
+      "threadId": 136,
+      "labelStatus": "placeholder",
+      "outcome": null,
+      "requirements": [],
+      "ablation": {
+        "baseline": null
+      }
+    },
+    {
+      "threadId": 152,
+      "labelStatus": "placeholder",
+      "outcome": null,
+      "requirements": [],
+      "ablation": {
+        "baseline": null
+      }
+    },
+    {
+      "threadId": 159,
+      "labelStatus": "placeholder",
+      "outcome": null,
+      "requirements": [],
+      "ablation": {
+        "baseline": null
+      }
+    },
+    {
+      "threadId": 166,
+      "labelStatus": "placeholder",
+      "outcome": null,
+      "requirements": [],
+      "ablation": {
+        "baseline": null
+      }
+    },
+    {
+      "threadId": 172,
+      "labelStatus": "placeholder",
+      "outcome": null,
+      "requirements": [],
+      "ablation": {
+        "baseline": null
+      }
+    },
+    {
+      "threadId": 185,
+      "labelStatus": "placeholder",
+      "outcome": null,
+      "requirements": [],
+      "ablation": {
+        "baseline": null
+      }
+    },
+    {
+      "threadId": 187,
+      "labelStatus": "placeholder",
+      "outcome": null,
+      "requirements": [],
+      "ablation": {
+        "baseline": null
+      }
+    },
+    {
+      "threadId": 191,
+      "labelStatus": "placeholder",
+      "outcome": null,
+      "requirements": [],
+      "ablation": {
+        "baseline": null
+      }
+    }
+  ]
+}

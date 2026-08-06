@@ -190,6 +190,27 @@ describe('hms thread context', () => {
     expect(candidates.some((c) => 'value' in c && c.value === 'hotel')).toBe(false);
   });
 
+  it('extracts exact candidates from subject and dedupes body duplicates', async () => {
+    const trigger = msg({
+      id: 'msg-subject',
+      subject: 'Confirmation CONF-88421',
+      textBody: 'Please check confirmation CONF-88421.',
+    });
+    const ctx = await buildThreadContext({
+      transportId: trigger.transportId,
+      threadId: trigger.threadId,
+      triggerMessageId: trigger.id,
+      messages: [trigger],
+      latestDraftRevisionId: null,
+    });
+    expect(
+      ctx.lookupCandidates.filter(
+        (candidate) =>
+          candidate.kind === 'confirmation' && candidate.value === 'CONF-88421',
+      ),
+    ).toHaveLength(1);
+  });
+
   it('keeps complete multi-hyphen bare exact tokens', () => {
     const candidates = extractLookupCandidates(
       'Use CONF-ABC-123-Z and EXT-WHOLESALE-88-2.',

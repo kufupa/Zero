@@ -63,7 +63,11 @@ export interface S3Storage {
   putObject(opts: S3PutOptions): Promise<S3PutResult>;
   getObject(key: string): Promise<S3GetResult | null>;
   /** Read object only if body length ≤ maxBytes; abort/fail closed otherwise. */
-  getObjectBounded(key: string, maxBytes: number): Promise<S3GetResult | null>;
+  getObjectBounded(
+    key: string,
+    maxBytes: number,
+    signal?: AbortSignal,
+  ): Promise<S3GetResult | null>;
   copyObject(opts: S3CopyOptions): Promise<{ key: string; bucket: string }>;
 }
 
@@ -128,11 +132,14 @@ export class RealS3Storage implements S3Storage {
   async getObjectBounded(
     key: string,
     maxBytes: number,
+    signal?: AbortSignal,
   ): Promise<S3GetResult | null> {
     assertBoundedMaxBytes(maxBytes);
+    throwIfAborted(signal);
     try {
       const response = await this.client.send(
         new GetObjectCommand({ Bucket: this.bucket, Key: key }),
+        signal ? { abortSignal: signal } : undefined,
       );
       if (!response.Body) return null;
       const contentLength = response.ContentLength;
@@ -147,6 +154,7 @@ export class RealS3Storage implements S3Storage {
       const body = await streamToBufferBounded(
         response.Body as Readable,
         maxBytes,
+        signal,
       );
       return {
         body,
@@ -215,8 +223,10 @@ export class FakeS3Storage implements S3Storage {
   async getObjectBounded(
     key: string,
     maxBytes: number,
+    signal?: AbortSignal,
   ): Promise<S3GetResult | null> {
     assertBoundedMaxBytes(maxBytes);
+    throwIfAborted(signal);
     this.calls.push({ op: 'GET_BOUNDED', key });
     const entry = this.stored.get(key);
     if (!entry) return null;
@@ -329,12 +339,15 @@ async function streamToBuffer(stream: Readable): Promise<Buffer> {
 async function streamToBufferBounded(
   stream: Readable,
   maxBytes: number,
+  signal?: AbortSignal,
 ): Promise<Buffer> {
   assertBoundedMaxBytes(maxBytes);
+  throwIfAborted(signal);
   const chunks: Buffer[] = [];
   let total = 0;
   try {
     for await (const chunk of stream as AsyncIterable<Buffer>) {
+      throwIfAborted(signal);
       const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       total += buf.byteLength;
       if (total > maxBytes) {
@@ -354,6 +367,11 @@ async function streamToBufferBounded(
     throw err;
   }
   return Buffer.concat(chunks);
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  throw Object.assign(new Error('aborted'), { name: 'AbortError' });
 }
 
 function assertBoundedMaxBytes(maxBytes: number): void {

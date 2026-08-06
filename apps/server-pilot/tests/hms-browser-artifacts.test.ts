@@ -48,7 +48,7 @@ function baseSpec(
   return {
     operationId: randomUUID(),
     toolId: 'hms_find_reservation',
-    toolVersion: '1.1.0',
+    toolVersion: '1.2.0',
     dependencyRevision: 'playwright-1.52.0-chromium-1169',
     executionClass: 'normal',
     inputClass: 'authorized_exact',
@@ -739,6 +739,28 @@ describe('hms browser artifacts store', () => {
     );
     expect(removed).toBe(1);
     await expect(stat(artifact)).rejects.toThrow();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('never purges artifact directories holding ambiguous dual receipts', async () => {
+    const root = await tempRoot();
+    const artifact = join(root, randomUUID());
+    await mkdir(artifact);
+    await writeFile(
+      join(artifact, 'receipt.v1.json'),
+      `${JSON.stringify({ schemaVersion: 1, expiresAt: '2000-01-01T00:00:00.000Z' })}\n`,
+    );
+    await writeFile(
+      join(artifact, 'receipt.v2.json'),
+      `${JSON.stringify({ schemaVersion: 2, expiresAt: '2000-01-01T00:00:00.000Z' })}\n`,
+    );
+    const old = new Date('2026-08-01T00:00:00Z');
+    await utimes(artifact, old, old);
+
+    await expect(
+      purgeExpiredHmsBrowserArtifacts(root, new Date('2026-08-05T00:00:00Z')),
+    ).resolves.toBe(0);
+    await expect(stat(artifact)).resolves.toBeDefined();
     await rm(root, { recursive: true, force: true });
   });
 

@@ -16,8 +16,7 @@ import {
   reservationReadDataSchema,
   stayOptionReadDataSchema,
   type CenturionManifest,
-  type InventoryObservation,
-  type RateObservation,
+  type QuoteNightObservation,
   type ReservationObservation,
   type ReservationReadData,
   type StayOptionReadData,
@@ -26,8 +25,8 @@ import type { HmsPage, HmsReadSession } from './runtime.js';
 
 export const HMS_FIND_RESERVATION_TOOL_ID = 'hms_find_reservation';
 export const HMS_QUOTE_STAY_TOOL_ID = 'hms_quote_stay';
-export const HMS_FIND_RESERVATION_TOOL_VERSION = '1.1.0';
-export const HMS_QUOTE_STAY_TOOL_VERSION = '1';
+export const HMS_FIND_RESERVATION_TOOL_VERSION = '1.2.0';
+export const HMS_QUOTE_STAY_TOOL_VERSION = '2.0.0';
 
 export const RESERVATION_EVIDENCE_TTL_MS = 5 * 60_000;
 export const QUOTE_EVIDENCE_TTL_MS = 15 * 60_000;
@@ -174,9 +173,10 @@ function emptyReservationData(): ReservationReadData {
 
 function emptyStayData(rooms: number): StayOptionReadData {
   return stayOptionReadDataSchema.parse({
-    inventoryObservations: [],
-    rateObservations: [],
+    nightlyObservations: [],
     bookable: false as const,
+    stayTotal: null,
+    occupancyPriced: false,
     requestedRooms: rooms,
   });
 }
@@ -213,7 +213,7 @@ export class InforReadAdapter implements HmsReadAdapter {
     const candidate = candidates.get(input.candidateId);
     if (!candidate) {
       return this.#reservationResult({
-        status: 'not_found',
+        status: 'manual_required',
         data: emptyReservationData(),
         unresolvedFields: ['candidateId'],
         observedAt,
@@ -272,12 +272,27 @@ export class InforReadAdapter implements HmsReadAdapter {
 
     const html = await this.#page.content();
     const parsed = this.#parseReservationRows(html);
-    const capped = parsed.totalFound > RESERVATION_MATCH_CAP;
-    const matches = parsed.rows.slice(0, RESERVATION_MATCH_CAP);
+    const correlated =
+      candidate.kind === 'confirmation'
+        ? parsed.rows.filter(
+            (row) =>
+              (row.confirmationNumber ?? '').toUpperCase() ===
+              candidate.value.toUpperCase(),
+          )
+        : candidate.kind === 'external_reference'
+          ? parsed.rows.filter(
+              (row) =>
+                (row.externalReference ?? '').toUpperCase() ===
+                candidate.value.toUpperCase(),
+            )
+          : parsed.rows;
+    // Cap/ambiguity are correlation-scoped, not raw list length.
+    const capped = correlated.length > RESERVATION_MATCH_CAP;
+    const matches = correlated.slice(0, RESERVATION_MATCH_CAP);
 
     if (matches.length === 0) {
       return this.#reservationResult({
-        status: 'not_found',
+        status: 'unverified_negative',
         data: reservationReadDataSchema.parse({
           matches: [],
           matchCount: 0,
@@ -297,7 +312,7 @@ export class InforReadAdapter implements HmsReadAdapter {
         status,
         data: reservationReadDataSchema.parse({
           matches: minimized,
-          matchCount: capped ? parsed.totalFound : matches.length,
+          matchCount: correlated.length,
           capped,
         }),
         unresolvedFields: ['match_selection'],
@@ -332,14 +347,35 @@ export class InforReadAdapter implements HmsReadAdapter {
       }
     }
 
-    // Detect malformed non-ISO dates left as null while attr existed
+    // Detect malformed non-ISO dates on the correlated row only.
     const $ = cheerio.load(html);
-    const row = $(selectors.resultRow).first();
-    const rawArrival = row.attr(selectors.arrivalAttr);
-    const rawDeparture = row.attr(selectors.departureAttr);
-    if (rawArrival && !single.arrivalDate) unresolvedFields.push('arrivalDate');
-    if (rawDeparture && !single.departureDate) {
-      unresolvedFields.push('departureDate');
+    const matchedNode = $(selectors.resultRow)
+      .toArray()
+      .map((el) => $(el))
+      .find((node) => {
+        if (candidate.kind === 'confirmation') {
+          return (
+            (attrOrNull(node, selectors.confirmationAttr) ?? '').toUpperCase() ===
+            candidate.value.toUpperCase()
+          );
+        }
+        if (candidate.kind === 'external_reference') {
+          return (
+            (attrOrNull(node, selectors.externalRefAttr) ?? '').toUpperCase() ===
+            candidate.value.toUpperCase()
+          );
+        }
+        return false;
+      });
+    if (matchedNode) {
+      const rawArrival = matchedNode.attr(selectors.arrivalAttr);
+      const rawDeparture = matchedNode.attr(selectors.departureAttr);
+      if (rawArrival && !single.arrivalDate) {
+        unresolvedFields.push('arrivalDate');
+      }
+      if (rawDeparture && !single.departureDate) {
+        unresolvedFields.push('departureDate');
+      }
     }
 
     const statusLower = (single.reservationStatus ?? '').toLowerCase();
@@ -376,9 +412,13 @@ export class InforReadAdapter implements HmsReadAdapter {
       observedAt,
       claimKeys: [
         'matches.0.confirmationNumber',
+        'matches.0.externalReference',
+        'matches.0.guestName',
         'matches.0.reservationStatus',
         'matches.0.arrivalDate',
         'matches.0.departureDate',
+        'matches.0.roomType',
+        'matches.0.ratePlan',
       ],
       sourceSeed: `one:${single.confirmationNumber ?? single.externalReference}`,
       draftReady,
@@ -394,14 +434,22 @@ export class InforReadAdapter implements HmsReadAdapter {
     const selectors = this.#manifest.selectors.quote;
     const nights = eachNight(input.arrivalDate, input.departureDate);
 
-    if (nights.length === 0 || input.rooms < 1) {
+    if (
+      nights.length === 0 ||
+      nights.length > 30 ||
+      input.rooms < 1 ||
+      input.rooms > 4 ||
+      input.adults < input.rooms ||
+      input.adults + input.children > 16 ||
+      !/^[A-Z]{3}$/.test(input.currency)
+    ) {
       return this.#quoteResult({
         status: 'manual_required',
         data: emptyStayData(Math.max(1, input.rooms || 1)),
-        unresolvedFields: ['stay_dates'],
+        unresolvedFields: ['quote_input'],
         observedAt,
         claimKeys: [],
-        sourceSeed: 'bad-dates',
+        sourceSeed: 'invalid-quote-input',
         draftReady: false,
       });
     }
@@ -422,11 +470,22 @@ export class InforReadAdapter implements HmsReadAdapter {
       });
     }
 
-    // Room Availability — inventory only (never CRS).
-    const inventoryUrl = new URL(selectors.inventoryPagePath, this.#origin);
-    inventoryUrl.searchParams.set('view', 'inventory');
-    inventoryUrl.searchParams.set('startDate', input.arrivalDate);
-    await this.#goto(inventoryUrl.pathname + inventoryUrl.search);
+    const fields: Record<string, string> = {
+      action: 'search',
+      arrivalDate: input.arrivalDate,
+      departureDate: input.departureDate,
+      adults: String(input.adults),
+      children: String(input.children),
+      rooms: String(input.rooms),
+      roomType: input.roomType ?? '',
+      ratePlan: input.ratePlan ?? '',
+      currency: input.currency,
+    };
+    const html = await this.#page.postForm(
+      new URL(selectors.searchPath, this.#origin).toString(),
+      fields,
+    );
+    this.#onNavigate?.(selectors.searchPath);
     assertNotAborted(signal);
 
     if (this.#terminal() || this.#violation()) {
@@ -436,178 +495,64 @@ export class InforReadAdapter implements HmsReadAdapter {
         unresolvedFields: ['request_policy'],
         observedAt,
         claimKeys: [],
-        sourceSeed: 'policy-inventory',
+        sourceSeed: 'policy-quote-search',
         draftReady: false,
       });
     }
 
-    const inventoryHtml = await this.#page.content();
-    const inventoryObservations = this.#parseInventory(
-      inventoryHtml,
-      input.roomType,
-    );
-
-    // Display Rates — separate screen; never merge into a guaranteed offer.
-    await this.#goto(selectors.ratesPagePath);
-    assertNotAborted(signal);
-
-    if (this.#terminal() || this.#violation()) {
+    const parsed = this.#parseQuoteNights(html, observedAt, input);
+    const nightSet = new Set(nights);
+    const inWindowRows = parsed.rows.filter((row) => nightSet.has(row.date));
+    if (!parsed.envelopeRecognized) {
       return this.#quoteResult({
         status: 'manual_required',
-        data: stayOptionReadDataSchema.parse({
-          inventoryObservations,
-          rateObservations: [],
-          bookable: false,
-          requestedRooms: input.rooms,
-        }),
-        unresolvedFields: ['request_policy', 'displayed_rate'],
+        data: emptyStayData(input.rooms),
+        unresolvedFields: ['quote_surface_envelope'],
         observedAt,
         claimKeys: [],
-        sourceSeed: 'policy-rates',
+        sourceSeed: 'quote-envelope-unrecognized',
         draftReady: false,
       });
     }
-
-    const ratesHtml = await this.#page.content();
-    // Mismatched screens: rates page must not look like inventory-only, and vice versa
-    const ratesHasInventoryOnly =
-      cheerio.load(ratesHtml)('[data-testid="inventory"]').length > 0 &&
-      cheerio.load(ratesHtml)('[data-testid="rates"]').length === 0;
-    const inventoryHasRatesOnly =
-      cheerio.load(inventoryHtml)('[data-testid="rates"]').length > 0 &&
-      cheerio.load(inventoryHtml)('[data-testid="inventory"]').length === 0;
-
-    const rateObservations = ratesHasInventoryOnly
-      ? []
-      : this.#parseRates(ratesHtml, input);
-
+    if (inWindowRows.length === 0 && parsed.unresolvedFields.length === 0) {
+      return this.#quoteResult({
+        status: 'unverified_negative',
+        data: emptyStayData(input.rooms),
+        unresolvedFields: [],
+        observedAt,
+        claimKeys: [],
+        sourceSeed: 'quote-empty-unverified',
+        draftReady: false,
+      });
+    }
     const unresolvedFields: string[] = [];
-
-    if (inventoryHasRatesOnly || ratesHasInventoryOnly) {
-      unresolvedFields.push('screen_mismatch');
+    unresolvedFields.push(...parsed.unresolvedFields);
+    if (parsed.rows.some((row) => !nightSet.has(row.date))) {
+      unresolvedFields.push('nightly.out_of_window');
     }
-
-    const inventoryByNight = new Map(
-      inventoryObservations.map((row) => [row.date, row]),
-    );
-    let inventoryCoversEveryNight = true;
-    let inventorySupportsRooms = true;
+    const byNight = new Map<string, QuoteNightObservation[]>();
+    for (const row of inWindowRows) {
+      const matches = byNight.get(row.date) ?? [];
+      matches.push(row);
+      byNight.set(row.date, matches);
+    }
     for (const night of nights) {
-      const row = inventoryByNight.get(night);
-      if (!row) {
-        inventoryCoversEveryNight = false;
-        unresolvedFields.push(`inventory.${night}`);
-        continue;
-      }
-      if (row.availableCount === null) {
-        inventorySupportsRooms = false;
-        unresolvedFields.push(`inventory.${night}.availableCount`);
-      } else if (row.availableCount < input.rooms) {
-        inventorySupportsRooms = false;
-        unresolvedFields.push(`inventory.${night}.rooms`);
-      }
-      if (row.inventoryStatus === 'unknown') {
-        unresolvedFields.push(`inventory.${night}.status`);
-      }
-      if (
-        input.roomType &&
-        row.roomType.toLowerCase() !== input.roomType.toLowerCase()
-      ) {
-        unresolvedFields.push(`inventory.${night}.roomType`);
-        inventoryCoversEveryNight = false;
-      }
-    }
-
-    // Gap detection across observed inventory dates for requested room type
-    if (inventoryObservations.length > 0) {
-      const sorted = [...inventoryObservations]
-        .map((r) => r.date)
-        .sort();
-      for (let i = 1; i < sorted.length; i++) {
-        const prev = Date.parse(`${sorted[i - 1]}T00:00:00.000Z`);
-        const next = Date.parse(`${sorted[i]}T00:00:00.000Z`);
-        if (next - prev > 86_400_000) {
-          unresolvedFields.push('inventory.gap');
-          inventoryCoversEveryNight = false;
-        }
-      }
-    }
-
-    let rateMatchesRequest = rateObservations.length > 0;
-    if (rateObservations.length === 0) {
-      unresolvedFields.push('displayed_rate');
-      rateMatchesRequest = false;
-    }
-
-    for (const [index, rate] of rateObservations.entries()) {
-      if (rate.amount === null || rate.amount === '' || Number.isNaN(Number(rate.amount))) {
-        unresolvedFields.push(`rateObservations.${index}.amount`);
-        rateMatchesRequest = false;
-      }
-      if (rate.amountBasis === 'unknown') {
-        unresolvedFields.push(`rateObservations.${index}.amountBasis`);
-      }
-      if (rate.taxIncluded === null) {
-        unresolvedFields.push(`rateObservations.${index}.tax_inclusion`);
-      }
-      if (rate.inclusions.length === 0) {
-        unresolvedFields.push(`rateObservations.${index}.rate_inclusions`);
-      }
-      if (rate.restrictions.length === 0) {
-        // Empty restrictions can mean "none listed" — still unresolved until explicit.
-        unresolvedFields.push(`rateObservations.${index}.rate_restrictions`);
-      }
-      if (input.roomType && rate.roomType.toLowerCase() !== input.roomType.toLowerCase()) {
-        unresolvedFields.push(`rateObservations.${index}.roomType`);
-        rateMatchesRequest = false;
-      }
-      if (input.ratePlan && (rate.ratePlan ?? '').toLowerCase() !== input.ratePlan.toLowerCase()) {
-        unresolvedFields.push(`rateObservations.${index}.ratePlan`);
-        rateMatchesRequest = false;
-      }
-      if (
-        rate.currency === null ||
-        rate.currency.toUpperCase() !== input.currency.toUpperCase()
-      ) {
-        unresolvedFields.push(`rateObservations.${index}.currency`);
-        rateMatchesRequest = false;
-      }
-      if (input.boardBasis) {
-        if (
-          !rate.boardBasis ||
-          rate.boardBasis.toLowerCase() !== input.boardBasis.toLowerCase()
-        ) {
-          unresolvedFields.push(`rateObservations.${index}.board_basis`);
-        }
-      }
-      if (rate.organizationEligibility === 'unresolved') {
-        unresolvedFields.push(
-          `rateObservations.${index}.organization_eligibility`,
-        );
-      }
+      const rows = byNight.get(night) ?? [];
+      if (rows.length === 0) unresolvedFields.push(`nightly.${night}`);
+      if (rows.length > 1) unresolvedFields.push(`nightly.${night}.ambiguous`);
     }
 
     const uniqueUnresolved = [...new Set(unresolvedFields)];
-    const draftReady =
-      inventoryCoversEveryNight &&
-      inventorySupportsRooms &&
-      rateMatchesRequest &&
-      uniqueUnresolved.length === 0;
-
-    let status: ToolResult<StayOptionReadData>['status'] = 'ok';
-    if (
-      inventoryObservations.length === 0 &&
-      rateObservations.length === 0
-    ) {
-      status = 'not_found';
-    } else if (!draftReady) {
-      status = 'partial';
-    }
+    const draftReady = uniqueUnresolved.length === 0;
+    const status: ToolResult<StayOptionReadData>['status'] = draftReady
+      ? 'ok'
+      : 'manual_required';
 
     const data = stayOptionReadDataSchema.parse({
-      inventoryObservations,
-      rateObservations,
+      nightlyObservations: inWindowRows,
       bookable: false as const,
+      stayTotal: null,
+      occupancyPriced: false,
       requestedRooms: input.rooms,
     });
 
@@ -616,18 +561,17 @@ export class InforReadAdapter implements HmsReadAdapter {
       data,
       unresolvedFields: uniqueUnresolved,
       observedAt,
-      claimKeys: [
-        ...inventoryObservations.flatMap((_, i) => [
-          `inventoryObservations.${i}.date`,
-          `inventoryObservations.${i}.availableCount`,
-        ]),
-        ...rateObservations.flatMap((_, i) => [
-          `rateObservations.${i}.amount`,
-          `rateObservations.${i}.currency`,
-          `rateObservations.${i}.amountBasis`,
-        ]),
-      ],
-      sourceSeed: `quote:${input.arrivalDate}:${input.departureDate}:${inventoryObservations.length}:${rateObservations.length}`,
+      claimKeys: inWindowRows.flatMap((_, index) => [
+        `nightlyObservations.${index}.date`,
+        `nightlyObservations.${index}.roomType`,
+        `nightlyObservations.${index}.availableCount`,
+        `nightlyObservations.${index}.ratePlan`,
+        `nightlyObservations.${index}.displayedAmount`,
+        `nightlyObservations.${index}.currency`,
+        `nightlyObservations.${index}.rateBasis`,
+        `nightlyObservations.${index}.restrictions`,
+      ]),
+      sourceSeed: `quote-v2:${input.arrivalDate}:${input.departureDate}:${inWindowRows.length}`,
       draftReady,
     });
   }
@@ -674,7 +618,8 @@ export class InforReadAdapter implements HmsReadAdapter {
     const elements = $(selectors.resultRow).toArray();
     const totalFound = elements.length;
     const rows: ReservationObservation[] = [];
-    for (const el of elements.slice(0, RESERVATION_MATCH_CAP)) {
+    // Parse every list row before correlation; cap applies to correlated set.
+    for (const el of elements) {
       const node = $(el);
       rows.push({
         confirmationNumber: attrOrNull(node, selectors.confirmationAttr),
@@ -694,103 +639,105 @@ export class InforReadAdapter implements HmsReadAdapter {
     return { rows, totalFound };
   }
 
-  #parseInventory(
+  #parseQuoteNights(
     html: string,
-    roomTypeFilter?: string,
-  ): InventoryObservation[] {
+    observedAt: Date,
+    input: QuoteInput,
+  ): {
+    rows: QuoteNightObservation[];
+    unresolvedFields: string[];
+    envelopeRecognized: boolean;
+  } {
     const selectors = this.#manifest.selectors.quote;
     const $ = cheerio.load(html);
-    const out: InventoryObservation[] = [];
-    for (const el of $(selectors.inventoryRow).toArray()) {
+    const envelopeRecognized =
+      $(selectors.resultsTable).length > 0 ||
+      $(selectors.noResults).length > 0 ||
+      $(selectors.resultRow).length > 0;
+    const rows: QuoteNightObservation[] = [];
+    const unresolvedFields: string[] = [];
+    for (const [index, el] of $(selectors.resultRow).toArray().entries()) {
       const node = $(el);
-      const roomType = attrOrNull(node, selectors.inventoryRoomTypeAttr) ?? '';
-      if (
-        roomTypeFilter &&
-        roomType.toLowerCase() !== roomTypeFilter.toLowerCase()
-      ) {
-        continue;
-      }
-      const date =
-        parseIsoDateOrNull(attrOrNull(node, selectors.inventoryDateAttr)) ??
-        '';
-      if (!date) continue;
-      const rawCount = attrOrNull(node, selectors.inventoryAvailableAttr);
-      const parsedCount =
-        rawCount == null ? NaN : Number.parseInt(rawCount, 10);
-      const availableCount = Number.isFinite(parsedCount) ? parsedCount : null;
-      const inventoryStatus =
-        availableCount === null
-          ? 'unknown'
-          : availableCount > 0
-            ? 'available'
-            : 'unavailable';
-      out.push({
-        date,
-        roomType: roomType || 'UNKNOWN',
-        inventoryStatus,
-        availableCount,
-      });
-    }
-    return out.slice(0, 100);
-  }
-
-  #parseRates(html: string, input: QuoteInput): RateObservation[] {
-    const selectors = this.#manifest.selectors.quote;
-    const $ = cheerio.load(html);
-    const out: RateObservation[] = [];
-    for (const el of $(selectors.rateRow).toArray()) {
-      const node = $(el);
-      const roomType =
-        attrOrNull(node, selectors.rateRoomTypeAttr) ??
-        input.roomType ??
-        'UNKNOWN';
-      const basisRaw = attrOrNull(node, selectors.amountBasisAttr);
-      const amountBasis =
-        basisRaw === 'nightly' ||
-        basisRaw === 'weekly' ||
-        basisRaw === 'monthly' ||
-        basisRaw === 'stay_total'
-          ? basisRaw
-          : 'unknown';
-
-      const taxRaw = attrOrNull(node, selectors.taxIncludedAttr);
-      const taxIncluded =
-        taxRaw === null
-          ? null
-          : taxRaw === 'true' || taxRaw === '1'
-            ? true
-            : taxRaw === 'false' || taxRaw === '0'
-              ? false
-              : null;
-
-      const inclusionsRaw = attrOrNull(node, selectors.inclusionsAttr);
+      const dateRaw = attrOrNull(node, selectors.dateAttr);
+      const roomType = attrOrNull(node, selectors.roomTypeAttr);
+      const countRaw = attrOrNull(node, selectors.availableCountAttr);
+      const ratePlan = attrOrNull(node, selectors.ratePlanAttr);
+      const amount = attrOrNull(node, selectors.displayedAmountAttr);
+      const currency = attrOrNull(node, selectors.currencyAttr);
+      const rateBasis = attrOrNull(node, selectors.rateBasisAttr);
       const restrictionsRaw = attrOrNull(node, selectors.restrictionsAttr);
-      const orgRaw = attrOrNull(node, selectors.orgEligibilityAttr);
-      const organizationEligibility =
-        orgRaw === 'confirmed' ||
-        orgRaw === 'unresolved' ||
-        orgRaw === 'not_requested'
-          ? orgRaw
-          : 'not_requested';
-
-      out.push({
-        roomType,
-        ratePlan: attrOrNull(node, selectors.ratePlanAttr),
-        amount: attrOrNull(node, selectors.amountAttr),
-        amountBasis,
-        currency: attrOrNull(node, selectors.currencyAttr),
-        taxIncluded,
-        inclusions: inclusionsRaw
-          ? inclusionsRaw.split('|').map((s) => s.trim()).filter(Boolean)
-          : [],
-        restrictions: restrictionsRaw
-          ? restrictionsRaw.split('|').map((s) => s.trim()).filter(Boolean)
-          : [],
-        boardBasis: attrOrNull(node, selectors.boardBasisAttr),
-        organizationEligibility,
-      });
+      const date = parseIsoDateOrNull(dateRaw);
+      const count =
+        countRaw !== null && /^\d+$/.test(countRaw)
+          ? Number.parseInt(countRaw, 10)
+          : null;
+      const restrictions = restrictionsRaw
+        ? restrictionsRaw.split('|').map((value) => value.trim()).filter(Boolean)
+        : [];
+      const prefix = `nightly.row.${index}`;
+      if (!date) unresolvedFields.push(`${prefix}.date`);
+      if (!roomType) unresolvedFields.push(`${prefix}.roomType`);
+      if (count === null) unresolvedFields.push(`${prefix}.availableCount`);
+      if (!ratePlan) unresolvedFields.push(`${prefix}.ratePlan`);
+      if (!amount || !/^\d+(?:\.\d{1,2})?$/.test(amount)) {
+        unresolvedFields.push(`${prefix}.displayedAmount`);
+      }
+      if (!currency || !/^[A-Z]{3}$/.test(currency)) {
+        unresolvedFields.push(`${prefix}.currency`);
+      }
+      if (rateBasis !== 'nightly') {
+        unresolvedFields.push(`nightly.${date ?? `row.${index}`}.rateBasis`);
+      }
+      if (restrictions.length === 0) {
+        unresolvedFields.push(`${prefix}.restrictions`);
+      }
+      if (
+        input.roomType &&
+        roomType &&
+        roomType.toLowerCase() !== input.roomType.toLowerCase()
+      ) {
+        unresolvedFields.push(`${prefix}.roomType`);
+      }
+      if (
+        input.ratePlan &&
+        ratePlan &&
+        ratePlan.toLowerCase() !== input.ratePlan.toLowerCase()
+      ) {
+        unresolvedFields.push(`${prefix}.ratePlan`);
+      }
+      if (currency && currency !== input.currency) {
+        unresolvedFields.push(`${prefix}.currency`);
+      }
+      if (
+        date &&
+        roomType &&
+        count !== null &&
+        ratePlan &&
+        amount &&
+        /^\d+(?:\.\d{1,2})?$/.test(amount) &&
+        currency &&
+        /^[A-Z]{3}$/.test(currency) &&
+        rateBasis === 'nightly' &&
+        restrictions.length > 0
+      ) {
+        rows.push({
+          date,
+          roomType,
+          availableCount: count,
+          ratePlan,
+          displayedAmount: amount,
+          currency,
+          rateBasis,
+          restrictions,
+          observedAt: observedAt.toISOString(),
+        });
+      }
     }
-    return out.slice(0, 100);
+    return {
+      rows: rows.slice(0, 120),
+      unresolvedFields,
+      envelopeRecognized,
+    };
   }
 
   async #goto(pathWithOptionalQuery: string): Promise<void> {
@@ -841,9 +788,15 @@ export class InforReadAdapter implements HmsReadAdapter {
     sourceSeed: string;
     draftReady: boolean;
   }): ToolResult<StayOptionReadData> {
-    // bookable always false even when draftReady true
+    // Invariants always hold even when draftReady true.
     if (args.data.bookable !== false) {
       throw new Error('stay option must set bookable:false');
+    }
+    if (args.data.stayTotal !== null) {
+      throw new Error('stay option must set stayTotal:null');
+    }
+    if (args.data.occupancyPriced !== false) {
+      throw new Error('stay option must set occupancyPriced:false');
     }
     return {
       status: args.status,

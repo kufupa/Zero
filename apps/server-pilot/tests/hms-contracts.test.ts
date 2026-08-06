@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import denominators from '../evals/hms/denominators.v1.json';
-import { activeDiscoveryCapabilities } from '../src/hms/contracts';
+import {
+  activeDiscoveryCapabilities,
+  productionActiveReadToolIds,
+} from '../src/hms/contracts';
 
 describe('HMS evidence baseline contracts', () => {
   it('keeps coverage denominators disjointly named and immutable', () => {
@@ -20,10 +23,13 @@ describe('HMS evidence baseline contracts', () => {
     expect(activeDiscoveryCapabilities()).toEqual([
       'login',
       'reservation-search',
-      'room-availability',
-      'display-rates',
+      'room-type-rate-availability',
     ]);
     expect(activeDiscoveryCapabilities()).not.toContain('write-forms');
     expect(activeDiscoveryCapabilities()).not.toContain('crs-check-availability');
+  });
+
+  it('production active-read tool allowlist stays find-only until later waves', () => {
+    expect(productionActiveReadToolIds()).toEqual(['hms_find_reservation']);
   });
 });

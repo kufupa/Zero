@@ -27,16 +27,20 @@ import {
   candidateToolEffects,
   claimsFromToolResult,
   createCandidateTools,
+  createLeaseLostError,
   createMockCandidateSession,
+  isFatalCandidateGatheringError,
   minimizeToolResultForModel,
   runClaimSafeCandidateDraft,
 } from '../src/ai/candidate-draft-agent.js';
+import { classifyHmsShadowFailure } from '../src/ai/hms-shadow.js';
 import {
   ThreadStateStaleError,
   assertThreadStateVersionFresh,
 } from '../src/ai/drafts.js';
 import { generateSkeletonDraft } from '../src/ai/workflows/candidate-draft.js';
 import { HMS_FIND_RESERVATION_TOOL_VERSION } from '../src/hms/adapter.js';
+import { READ_TOOLS } from '../src/hms/read-tools.js';
 
 const now = new Date('2026-07-30T12:00:00.000Z');
 
@@ -260,10 +264,20 @@ describe('hms typed evidence contracts', () => {
 });
 
 describe('claim-safe candidate agent', () => {
-  it('toolset and hms_find_reservation versions are 1.1.0', () => {
+  it('treats durable LEASE_LOST as fatal gathering failure', () => {
+    const lost = createLeaseLostError();
+    expect(isFatalCandidateGatheringError(lost)).toBe(true);
+    expect(classifyHmsShadowFailure(lost)).toBe('LEASE_LOST');
+    expect(
+      isFatalCandidateGatheringError(new Error('transient parser blip')),
+    ).toBe(false);
+  });
+
+  it('keeps candidate toolset stable while find reservation advances to 1.2.0', () => {
     expect(HMS_CANDIDATE_TOOLSET_VERSION).toBe('1.1.0');
-    expect(HMS_FIND_RESERVATION_TOOLSET_VERSION).toBe('1.1.0');
-    expect(HMS_FIND_RESERVATION_TOOL_VERSION).toBe('1.1.0');
+    expect(HMS_FIND_RESERVATION_TOOLSET_VERSION).toBe('1.2.0');
+    expect(HMS_FIND_RESERVATION_TOOL_VERSION).toBe('1.2.0');
+    expect(READ_TOOLS.hms_find_reservation.version).toBe('1.2.0');
   });
 
   it('tool registry effects are all read', () => {
@@ -501,6 +515,27 @@ describe('claim-safe candidate agent', () => {
     ).toThrow(/ineligible evidence/i);
   });
 
+  it('builds one atomic reservation summary claim with all list-row fields', () => {
+    const claims = claimsFromToolResult(okReservationResult(), now);
+    expect(claims).toHaveLength(1);
+    expect(claims[0]).toMatchObject({
+      kind: 'reservation_summary',
+      value: {
+        confirmationNumber: 'CONF-88421',
+        externalReference: null,
+        guestName: 'Guest',
+        arrivalDate: '2026-08-01',
+        departureDate: '2026-08-03',
+        reservationStatus: 'Confirmed',
+        roomType: 'STD',
+        ratePlan: null,
+      },
+    });
+    expect(renderClaim(claims[0]!)).toBe(
+      'Reservation CONF-88421: Confirmed, Guest, 2026-08-01 to 2026-08-03, room STD, rate plan unavailable.',
+    );
+  });
+
   it('selected claim must exist and cite current eligible evidence', () => {
     const claims = claimsFromToolResult(okReservationResult(), now);
     const map = new Map(claims.map((c) => [c.id, c]));
@@ -638,6 +673,32 @@ describe('claim-safe candidate agent', () => {
         { abortSignal: new AbortController().signal },
       ),
     ).rejects.toThrow(/unknown opaque candidate id/i);
+  });
+
+  it('artifact v2 text creates no claim or model-visible fact', async () => {
+    const artifact = {
+      status: 'ok' as const,
+      draftReady: false,
+      data: {
+        mimeType: 'application/pdf' as const,
+        text: 'Confirmation CONF-PRIVATE-88421',
+        pageCount: 1,
+        reason: 'text' as const,
+      },
+      unresolvedFields: [],
+      evidence: {
+        ...mailEvidence(),
+        toolVersion: '2',
+        claimKeys: [],
+      },
+    };
+    expect(claimsFromToolResult(artifact, now)).toEqual([]);
+    const minimized = minimizeToolResultForModel(
+      artifact,
+      claimsFromToolResult(artifact, now),
+    );
+    expect(JSON.stringify(minimized)).not.toContain('CONF-PRIVATE-88421');
+    expect(minimized.claimIds).toEqual([]);
   });
 
   it('off mode still runs existing skeleton flow', async () => {

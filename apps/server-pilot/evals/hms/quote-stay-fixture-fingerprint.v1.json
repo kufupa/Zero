@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "toolId": "hms_quote_stay",
+  "toolVersion": "2.0.0",
+  "surface": "Room Type and Rate Availability",
+  "requestKeys": [
+    "action",
+    "adults",
+    "arrivalDate",
+    "children",
+    "currency",
+    "departureDate",
+    "ratePlan",
+    "rooms",
+    "roomType"
+  ],
+  "rowKeys": [
+    "availableCount",
+    "currency",
+    "date",
+    "displayedAmount",
+    "observedAt",
+    "rateBasis",
+    "ratePlan",
+    "restrictions",
+    "roomType"
+  ],
+  "forbiddenOperations": [
+    "click_result_row",
+    "crs_check_availability",
+    "paging"
+  ],
+  "valuesCaptured": false
+}

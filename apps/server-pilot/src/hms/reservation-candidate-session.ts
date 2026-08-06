@@ -6,6 +6,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { LookupCandidate } from '../ai/thread-context.js';
 import type { ToolResult } from '../ai/draft-evidence.js';
 import type { CandidateToolSession } from '../ai/candidate-draft-agent.js';
+import type { AiRunFence, CandidateReadPlanKind } from '../ai/run-ledger.js';
 import {
   reservationReadDataSchema,
   type ReservationObservation,
@@ -129,9 +130,13 @@ function mapMatchedRow(
     observedAt,
     claimKeys: [
       'matches.0.confirmationNumber',
+      'matches.0.externalReference',
+      'matches.0.guestName',
       'matches.0.reservationStatus',
       'matches.0.arrivalDate',
       'matches.0.departureDate',
+      'matches.0.roomType',
+      'matches.0.ratePlan',
     ],
     sourceSeed: `one:${row.confirmationNumber ?? row.externalReference ?? 'unknown'}`,
     draftReady,
@@ -144,7 +149,7 @@ function mapSearchResult(
 ): ToolResult<ReservationReadData> {
   if (result.outcome === 'not_found') {
     return reservationResult({
-      status: 'not_found',
+      status: 'unverified_negative',
       data: emptyReservationData(),
       unresolvedFields: [],
       observedAt,
@@ -185,6 +190,9 @@ export type CreateReservationCandidateSessionInput = {
   propertyCode?: string;
   /** Opaque AI/run operation id for browser audit correlation. */
   runId?: string;
+  /** Durable run lease enforcing read budget before every browser call. */
+  readFence?: AiRunFence;
+  readPlanKind?: CandidateReadPlanKind;
 };
 
 /**
@@ -210,6 +218,8 @@ export function createReservationCandidateSession(
     activeToolIds: new Set(['hms_find_reservation']),
     lookupCandidates,
     authorizedAttachmentIds: new Set(),
+    readFence: input.readFence,
+    readPlanKind: input.readPlanKind ?? 'reservation',
     findReservation: async (candidateId, signal) => {
       if (signal.aborted) {
         const err = new Error('reservation session aborted');
@@ -219,7 +229,7 @@ export function createReservationCandidateSession(
       const candidate = lookupCandidates.get(candidateId);
       if (!candidate) {
         return reservationResult({
-          status: 'not_found',
+          status: 'manual_required',
           data: emptyReservationData(),
           unresolvedFields: ['candidateId'],
           observedAt: now(),
