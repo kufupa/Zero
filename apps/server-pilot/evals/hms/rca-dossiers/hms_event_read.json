@@ -4,22 +4,27 @@
   "symptom": "fixture_verified awaiting discovery",
   "structuralObservation": {
     "routeClass": "event_summary_read",
-    "envelopeDiscriminator": "fixture_only_unproven"
+    "envelopeDiscriminator": "events_menu_absent"
   },
   "assumptionsVerified": [
     "fixture_contract_closed",
-    "promotion_evidence_fixture_only"
+    "group_sales_module_visible",
+    "events_label_absent_from_tree",
+    "heuristic_event_fn_opens_return_400"
   ],
-  "assumptionsInvalidated": [],
+  "assumptionsInvalidated": [
+    "event_reservation_list_on_view_only_role"
+  ],
   "causalChain": [
-    "fixture_kernel_shipped",
-    "event_list_summary_surface_unproven",
-    "role_manifest_discovery_gap"
+    "soft_capture_group_sales_tree",
+    "Events_Event_Reservation_labels_absent",
+    "GSEVNT_OSEVNT_PSEVNT_open_400",
+    "no_list_only_event_summary_path"
   ],
-  "prediction": "Proven event list-summary surface with inert detail nav clears BLOCKED_EVENT_READ_SURFACE_UNPROVEN",
+  "prediction": "View-only Event Reservation list with required summary columns clears BLOCKED_EVENT_READ_SURFACE_UNPROVEN",
   "verificationCommands": [
     "unset DATABASE_URL VITEST_ALLOW_PILOT_RDS",
-    "npx vitest run tests/hms-rca-dossier.test.ts"
+    "pnpm exec vitest run tests/hms-live-event-read.test.ts tests/hms-event-read.test.ts"
   ],
   "liveArtifactIds": [],
   "unresolvedGaps": [
@@ -28,5 +33,5 @@
     "BLOCKED_NO_REVIEWED_REQUEST_MANIFEST",
     "BLOCKED_TOOL_FIXTURE_ONLY"
   ],
-  "updatedAt": "2026-08-06T00:00:00.000Z"
+  "updatedAt": "2026-08-06T22:00:00.000Z"
 }

@@ -4,29 +4,33 @@
   "symptom": "fixture_verified awaiting discovery",
   "structuralObservation": {
     "routeClass": "group_block_read",
-    "envelopeDiscriminator": "fixture_only_unproven"
+    "envelopeDiscriminator": "gsgrpb_lst_lacks_counts"
   },
   "assumptionsVerified": [
     "fixture_contract_closed",
-    "promotion_evidence_fixture_only"
+    "gsgrpb_open_and_lst_reachable_view_only",
+    "lst_has_groupbookingreferencenumber_status_dates",
+    "mutation_paths_abortable"
   ],
-  "assumptionsInvalidated": [],
+  "assumptionsInvalidated": [
+    "list_only_con_blk_pickup_remaining_restriction_rows"
+  ],
   "causalChain": [
-    "fixture_kernel_shipped",
-    "group_block_surface_unproven",
-    "role_manifest_discovery_gap"
+    "menu_soft_capture_group_sales_opens_GSGRPB",
+    "GSGRPB.LST_grid_lacks_aggregate_count_columns",
+    "GSGRPB.BLK_empty_without_selected_record",
+    "detail_or_block_tab_required_for_contract_rows"
   ],
-  "prediction": "Inert group-block surface proof plus role-proof-v2 clears BLOCKED_GROUP_BLOCK_SURFACE_UNPROVEN",
+  "prediction": "List-only con/blk/pickup/remaining/restriction columns clear BLOCKED_GROUP_BLOCK_AGGREGATE_COUNTS_UNPROVEN",
   "verificationCommands": [
     "unset DATABASE_URL VITEST_ALLOW_PILOT_RDS",
-    "npx vitest run tests/hms-rca-dossier.test.ts"
+    "pnpm exec vitest run tests/hms-live-group-block.test.ts tests/hms-group-block-read.test.ts"
   ],
   "liveArtifactIds": [],
   "unresolvedGaps": [
-    "BLOCKED_GROUP_BLOCK_SURFACE_UNPROVEN",
+    "BLOCKED_GROUP_BLOCK_AGGREGATE_COUNTS_UNPROVEN",
     "BLOCKED_NO_GROUP_BLOCK_ROLE_PROOF_V2",
-    "BLOCKED_NO_REVIEWED_REQUEST_MANIFEST",
     "BLOCKED_TOOL_FIXTURE_ONLY"
   ],
-  "updatedAt": "2026-08-06T00:00:00.000Z"
+  "updatedAt": "2026-08-06T22:00:00.000Z"
 }

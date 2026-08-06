@@ -1390,4 +1390,76 @@ export function buildLiveDepositLedgerManifest(
   });
 }
 
+/** Group Booking open (GSGRPB) — Task 17 soft-capture. */
+export const LIVE_GROUP_BLOCK_OPEN_PATH = '/web/base/GSGRPB';
+
+/** Group Booking list grid. */
+export const LIVE_GROUP_BLOCK_LIST_PATH = '/web/base/GSGRPB.LST';
+
+/**
+ * Group block functional POSTs: GSGRPB open + GSGRPB.LST only.
+ * BLK/HDR detail, save, create, assign, rooming, focus/input absent.
+ */
+export function buildLiveGroupBlockFunctionalRules(
+  origin: string,
+): RequestRule[] {
+  return [
+    {
+      id: 'live-gsgrpb-open',
+      origin,
+      method: 'POST',
+      path: LIVE_GROUP_BLOCK_OPEN_PATH,
+      resourceTypes: ['xhr', 'fetch'],
+      contentType: 'application/x-www-form-urlencoded',
+      fixedQuery: {},
+      variableQuery: {
+        USER_FUNCTION_NAME: VAR64,
+        FUNCTION_CLASS: VAR32,
+      },
+      fixedBody: {
+        USER_FUNCTION_NAME: 'GSGRPB',
+        SYSTEM_FUNCTION_NAME: 'GSGRPB',
+        FUNCTION_CLASS: 'WEBL',
+        CURRENT_TAB_NAME: '',
+        MENU_MODULE_KEY: '0',
+        removescreenflows: 'yes',
+      },
+      variableBody: {},
+      maxBodyBytes: 4096,
+      redirectPolicy: 'same-reviewed-chain',
+    },
+    {
+      id: 'live-gsgrpb-lst',
+      origin,
+      method: 'POST',
+      path: LIVE_GROUP_BLOCK_LIST_PATH,
+      resourceTypes: ['xhr', 'fetch'],
+      contentType: 'application/x-www-form-urlencoded',
+      fixedQuery: {},
+      variableQuery: {},
+      fixedBody: {
+        SYSTEM_FUNCTION_NAME: 'GSGRPB',
+        USER_FUNCTION_NAME: 'GSGRPB',
+        CURRENT_TAB_NAME: 'LST',
+        COMPONENT_INFO_TYPE: 'DATA_ONLY',
+        GRID_NAME: 'GSGRPB',
+      },
+      variableBody: {},
+      maxBodyBytes: 65_536,
+      redirectPolicy: 'same-reviewed-chain',
+    },
+  ];
+}
+
+export function buildLiveGroupBlockListManifest(
+  origin: string,
+): RequestPolicyManifest {
+  return requestPolicyManifestSchema.parse({
+    rules: [
+      ...buildLiveGuestStayChromeGetRules(origin),
+      ...buildLiveGroupBlockFunctionalRules(origin),
+    ],
+  });
+}
+
 

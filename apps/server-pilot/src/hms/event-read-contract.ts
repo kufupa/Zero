@@ -25,6 +25,13 @@ export const EVENT_READ_PRIVACY_POLICY = {
   ],
 } as const;
 
+/**
+ * Live blocker — view_only Group Sales menu lacks Events / Event Reservation;
+ * heuristic event function opens return 400. Observed 2026-08-06 (Task 17).
+ */
+export const EVENT_READ_SURFACE_BLOCKER =
+  'BLOCKED_EVENT_READ_SURFACE_UNPROVEN';
+
 const sha256Hex = z.string().regex(/^[a-f0-9]{64}$/);
 const isoTimestamp = z.string().datetime();
 const currencyCode = z.string().regex(/^[A-Z]{3}$/);

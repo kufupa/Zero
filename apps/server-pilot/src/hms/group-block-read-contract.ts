@@ -33,6 +33,14 @@ export const GROUP_BLOCK_READ_PRIVACY_POLICY = {
   ],
 } as const;
 
+/**
+ * Live blocker — GSGRPB.LST has exact ref/status/dates but lacks
+ * con/blk/pickup/remaining/restriction rows; BLK tab empty without detail load.
+ * Observed 2026-08-06 (Task 17 discovery phases 4–6).
+ */
+export const GROUP_BLOCK_AGGREGATE_COUNTS_BLOCKER =
+  'BLOCKED_GROUP_BLOCK_AGGREGATE_COUNTS_UNPROVEN';
+
 const sha256Hex = z.string().regex(/^[a-f0-9]{64}$/);
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 const isoTimestamp = z.string().datetime();
