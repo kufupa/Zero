@@ -64,14 +64,11 @@ Seed implementation digests (public, not secret):
 
 ### EC2 live stage
 
-Live find/mail seed release-v2 + atomic switch on `i-008f737974a9ba9b3` requires:
+- Bundle sync: `GIT_BRANCH=phase-b-autonomous-read-expansion` → EC2 `HEAD is now at 0c74c927`
+- Remote Vitest (no pilot RDS): `tests/hms-registry-cutover.test.ts` → **9 passed** on instance
+- Fresh find/mail browser proofs + root-owned seed release files under `/opt/nava/shared/hms-releases` still require quiesced HMS lane + operator-observed evidence before flipping `registryCutoverComplete` / clearing `BLOCKED_REGISTRY_CUTOVER_PENDING` for new tool promotes
 
-1. Bundle sync `GIT_BRANCH=phase-b-autonomous-read-expansion` (do not use default `EC2-pilot`)
-2. Stage `/opt/nava/releases/<sourceRevision>/worktree` + seed release JSON under `/opt/nava/shared/hms-releases`
-3. Quiesce HMS lane → CAS via `runSourceRegistryTransaction` / ops markers → verify `activeSetFingerprint`
-4. Fresh find/mail proofs from staged worktree (mask before capture)
-
-**Friction classification:** agent-owned local cutover kernel GREEN. Live EC2 seed+browser proof deferred to first ops-deploy of this commit on the feature branch (VPN/HMS lane + operator-observed proofs). `read-promote` stays `BLOCKED_REGISTRY_CUTOVER_PENDING` until that seed pair is active — correct fail-closed.
+**Friction classification:** agent-owned cutover kernel GREEN locally + on EC2 HEAD. Live browser seed releases remain ops follow-up before Tasks 14+ promote. `read-promote` correctly stays `BLOCKED_REGISTRY_CUTOVER_PENDING` until that seed pair is active.
 
 ## Friction
 
@@ -83,4 +80,4 @@ Live find/mail seed release-v2 + atomic switch on `i-008f737974a9ba9b3` requires
 
 ## Commits
 
-See git log after `feat(hms): activate reads from plan-scoped immutable releases`.
+- `0c74c927` — `feat(hms): activate reads from plan-scoped immutable releases`
