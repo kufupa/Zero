@@ -27,6 +27,11 @@ import {
   type HmsBrowserAuditSpec,
   type HmsBrowserCaptureHandle,
 } from './browser-artifacts.js';
+import type {
+  HmsEvidenceHmacConfig,
+  HmsSecretVersionMetadata,
+} from './evidence-runtime.js';
+import { revalidateEvidenceBindings } from './evidence-runtime.js';
 
 export const hmsSecretSchema = z
   .object({
@@ -257,6 +262,16 @@ export type HmsRuntimeOptions = {
   sourceRevision?: string;
   playwrightRevision?: string;
   chromiumRevision?: string;
+  /**
+   * When set, revalidate AWSCURRENT + evidence-key version + runtime fingerprint
+   * before every context/claim. Inject fakes in tests — no live AWS.
+   */
+  evidenceBindings?: {
+    evidence: HmsEvidenceHmacConfig;
+    secretVersion: HmsSecretVersionMetadata;
+    expectedCredentialVersionHmacSha256?: string;
+    expectedRuntimeFingerprintSha256?: string;
+  };
 };
 
 export const HEALTH_HEARTBEAT_MS = 10_000;
@@ -1184,9 +1199,45 @@ function createHmsRuntimeInternal(
     if (!options.roleProofPath) return;
     const loader =
       options.loadRoleProof ??
-      (async (path: string) => {
-        const { loadHmsReadRoleProof } = await import('./release-kernel.js');
-        return loadHmsReadRoleProof(path);
+      (async (path: string, now?: Date) => {
+        const { loadHmsReadRoleProof, loadHmsReadRoleProofV2 } = await import(
+          './release-kernel.js'
+        );
+        const { READ_TOOLS } = await import('./read-tools.js');
+        if (/\.v2\.json$/i.test(path)) {
+          const toolId = path.match(/([a-z0-9_]+)\.v2\.json$/i)?.[1];
+          if (!toolId || !(toolId in READ_TOOLS) || toolId === 'mail_read_artifact') {
+            throw new HmsRuntimeError(
+              'ROLE_SCOPE_INVALID',
+              'role proof v2 requires HmsReadToolId',
+            );
+          }
+          const proof = await loadHmsReadRoleProofV2(
+            path,
+            READ_TOOLS[toolId as keyof typeof READ_TOOLS],
+            now,
+          );
+          return {
+            schemaVersion: 1 as const,
+            propertyCode: 'HRCEN' as const,
+            allowedSurfaces: ['Guest Stay'] as const,
+            deniedActions: [
+              'new_record',
+              'save',
+              'delete',
+              'duplicate',
+              'check_in',
+              'check_out',
+              'document_generate',
+              'document_send',
+            ] as const,
+            issuedAt: proof.issuedAt,
+            expiresAt: proof.expiresAt,
+            evidenceRef: `role-proof-v2:${proof.toolId}`,
+            evidenceSha256: proof.evidenceSha256,
+          };
+        }
+        return loadHmsReadRoleProof(path, now);
       });
     try {
       await loader(options.roleProofPath, new Date());
@@ -1199,6 +1250,30 @@ function createHmsRuntimeInternal(
     }
   }
 
+  function revalidateEvidenceIfConfigured(): void {
+    const bindings = options.evidenceBindings;
+    if (!bindings) return;
+    revalidateEvidenceBindings({
+      secretVersion: bindings.secretVersion,
+      evidence: bindings.evidence,
+      expectedCredentialVersionHmacSha256:
+        bindings.expectedCredentialVersionHmacSha256,
+      expectedRuntimeFingerprintSha256:
+        bindings.expectedRuntimeFingerprintSha256,
+      runtimeFingerprint:
+        options.sourceRevision &&
+        options.playwrightRevision &&
+        options.chromiumRevision
+          ? {
+              sourceRevision: options.sourceRevision,
+              playwrightRevision: options.playwrightRevision,
+              chromiumRevision: options.chromiumRevision,
+            }
+          : undefined,
+      hmsSecretArn: options.secretArn,
+    });
+  }
+
   async function getSecret(signal?: AbortSignal): Promise<HmsSecret> {
     if (cachedSecret) return cachedSecret;
     try {
@@ -1206,7 +1281,15 @@ function createHmsRuntimeInternal(
         secretArn: options.secretArn,
         signal,
       });
-      const secret = hmsSecretSchema.parse(raw);
+      // Accept plain secret or { secret, versionId, versionStages } from production.
+      const payload =
+        raw &&
+        typeof raw === 'object' &&
+        !Array.isArray(raw) &&
+        'secret' in (raw as object)
+          ? (raw as { secret: unknown }).secret
+          : raw;
+      const secret = hmsSecretSchema.parse(payload);
       const loginOrigin = new URL(secret.loginUrl).origin;
       const expected =
         options.expectedOrigin ?? manifestOrigin(options.manifest);
@@ -1408,6 +1491,7 @@ function createHmsRuntimeInternal(
     }
 
     await revalidateRoleProof();
+    revalidateEvidenceIfConfigured();
 
     const secret = await getSecret(input.signal);
     if (input.transportId !== secret.mailboxTransportId) {
@@ -1702,6 +1786,7 @@ function createHmsRuntimeInternal(
       }
       if (!input.canary) assertCircuitClosed();
       await revalidateRoleProof();
+      revalidateEvidenceIfConfigured();
       const currentSecret = await getSecret(input.signal);
       if (input.transportId !== currentSecret.mailboxTransportId) {
         throw new HmsRuntimeError(
@@ -2058,6 +2143,7 @@ function createHmsRuntimeInternal(
       try {
         await purgeArtifacts();
         await revalidateRoleProof();
+        revalidateEvidenceIfConfigured();
         await getSecret(signal);
         await getBrowser(signal);
         if (runStartupCanary) {

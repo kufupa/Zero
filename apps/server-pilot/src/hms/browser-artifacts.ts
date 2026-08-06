@@ -32,6 +32,11 @@ import {
   ExclusiveReceiptError,
   resolveExclusiveReceiptFile,
 } from './receipt-exclusivity.js';
+import {
+  hmsBrowserArtifactReceiptV2Schema,
+  type HmsBrowserArtifactReceiptV2,
+} from './release-kernel.js';
+import type { DiscoveryOperationId, HmsReadToolId } from './read-tools.js';
 
 export const HMS_BROWSER_ARTIFACT_TTL_MS = 24 * 60 * 60 * 1000;
 export const HMS_BROWSER_CAPTURE_FINALIZE_TIMEOUT_MS = 30_000;
@@ -137,6 +142,115 @@ export type HmsBrowserArtifactReceiptV1 =
       trace: { sha256: string; bytes: number } | null;
       video: { sha256: string; bytes: number } | null;
     });
+
+export type { HmsBrowserArtifactReceiptV2 };
+
+type ReceiptV2CommonInput = {
+  artifactId: string;
+  operationId: string;
+  toolId: HmsReadToolId;
+  discoveryOperationId: DiscoveryOperationId;
+  toolVersion: string;
+  sourceRevision: string;
+  credentialVersionHmacSha256: string;
+  runtimeFingerprintSha256: string;
+  privateDigestKeyVersion: string;
+  traceSha256: string;
+  videoSha256: string | null;
+  operationOutcome: HmsBrowserArtifactReceiptV2['operationOutcome'];
+  expiresAt: string;
+};
+
+/** Build/validate discovery receipt v2 — Phase A find writers stay on v1. */
+export function buildDiscoveryReceiptV2(
+  input: ReceiptV2CommonInput & {
+    structuralSignatureSha256: string;
+    candidateSnapshotSha256: string | null;
+  },
+): HmsBrowserArtifactReceiptV2 {
+  return hmsBrowserArtifactReceiptV2Schema.parse({
+    schemaVersion: 2,
+    executionClass: 'discovery',
+    artifactId: input.artifactId,
+    operationId: input.operationId,
+    toolId: input.toolId,
+    discoveryOperationId: input.discoveryOperationId,
+    toolVersion: input.toolVersion,
+    sourceRevision: input.sourceRevision,
+    credentialVersionHmacSha256: input.credentialVersionHmacSha256,
+    runtimeFingerprintSha256: input.runtimeFingerprintSha256,
+    privateDigestKeyVersion: input.privateDigestKeyVersion,
+    traceSha256: input.traceSha256,
+    videoSha256: input.videoSha256,
+    operationOutcome: input.operationOutcome,
+    expiresAt: input.expiresAt,
+    structuralSignatureSha256: input.structuralSignatureSha256,
+    candidateSnapshotSha256: input.candidateSnapshotSha256,
+  });
+}
+
+/** Build/validate proof receipt v2 — requires proof-only fields. */
+export function buildProofReceiptV2(
+  input: ReceiptV2CommonInput & {
+    requestBranchId: string;
+    candidateSnapshotSha256: string;
+    candidateHmacSha256: string;
+    scopeHmacSha256: string;
+    resultHmacSha256: string;
+    sourceRefHmacSha256: string;
+    roleProofSha256: string;
+    discoveryReceiptSha256: string;
+    oracleArtifactSha256: string;
+  },
+): HmsBrowserArtifactReceiptV2 {
+  return hmsBrowserArtifactReceiptV2Schema.parse({
+    schemaVersion: 2,
+    executionClass: 'proof',
+    artifactId: input.artifactId,
+    operationId: input.operationId,
+    toolId: input.toolId,
+    discoveryOperationId: input.discoveryOperationId,
+    toolVersion: input.toolVersion,
+    sourceRevision: input.sourceRevision,
+    credentialVersionHmacSha256: input.credentialVersionHmacSha256,
+    runtimeFingerprintSha256: input.runtimeFingerprintSha256,
+    privateDigestKeyVersion: input.privateDigestKeyVersion,
+    traceSha256: input.traceSha256,
+    videoSha256: input.videoSha256,
+    operationOutcome: input.operationOutcome,
+    expiresAt: input.expiresAt,
+    requestBranchId: input.requestBranchId,
+    candidateSnapshotSha256: input.candidateSnapshotSha256,
+    candidateHmacSha256: input.candidateHmacSha256,
+    scopeHmacSha256: input.scopeHmacSha256,
+    resultHmacSha256: input.resultHmacSha256,
+    sourceRefHmacSha256: input.sourceRefHmacSha256,
+    roleProofSha256: input.roleProofSha256,
+    discoveryReceiptSha256: input.discoveryReceiptSha256,
+    oracleArtifactSha256: input.oracleArtifactSha256,
+  });
+}
+
+/** Persist receipt.v2.json beside an artifact directory (exclusive with v1). */
+export async function writeBrowserArtifactReceiptV2(
+  artifactDir: string,
+  receipt: HmsBrowserArtifactReceiptV2,
+): Promise<string> {
+  const parsed = hmsBrowserArtifactReceiptV2Schema.parse(receipt);
+  const receiptPath = join(artifactDir, 'receipt.v2.json');
+  const body = `${JSON.stringify(parsed)}\n`;
+  const fh = await open(receiptPath, 'w', 0o600);
+  try {
+    await fh.writeFile(body, 'utf8');
+    await fh.sync();
+  } finally {
+    await fh.close();
+  }
+  if (platform() !== 'win32') {
+    await chmod(receiptPath, 0o600);
+  }
+  return receiptPath;
+}
 
 export class HmsBrowserArtifactError extends Error {
   readonly code:

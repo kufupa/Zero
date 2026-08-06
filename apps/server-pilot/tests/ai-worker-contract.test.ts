@@ -273,8 +273,13 @@ describe('ai worker contract', () => {
         HMS_EXPECTED_TENANT: 'HMS_LEGACY',
         HMS_EXPECTED_PROPERTY_CODE: 'HRCEN',
         HMS_EXPECTED_TRANSPORT_ID: 'transport-centurion',
+        HMS_EVIDENCE_HMAC_SECRET_ARN:
+          'arn:aws:secretsmanager:af-south-1:123:secret:hms-evidence-hmac',
+        HMS_EVIDENCE_HMAC_KEY_VERSION: 'evidence-key-v1',
       }),
     ).not.toThrow();
+
+    expect(source).toMatch(/requireHmsEvidenceHmacChildKey/);
   });
 
   it('worker heartbeats lease and aborts on lost lease', () => {

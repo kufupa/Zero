@@ -14,6 +14,7 @@ import {
 } from '../db/schema/mail.js';
 import {
   parseEnv,
+  requireHmsEvidenceHmacChildKey,
   requireHmsWorkerRuntimeConfig,
   type AiExecutorLane,
   type EnvInput,
@@ -260,7 +261,16 @@ async function getOrCreateProductionHmsRuntime(): Promise<
   const config = requireHmsWorkerRuntimeConfig(
     process.env as Record<string, string | undefined>,
   );
-  const runtime = await createProductionHmsRuntime(config);
+  const evidenceKey = requireHmsEvidenceHmacChildKey(
+    process.env as Record<string, string | undefined>,
+  );
+  const runtime = await createProductionHmsRuntime(config, {
+    evidenceHmac: {
+      secretArn: config.evidenceHmacSecretArn,
+      keyVersion: config.evidenceHmacKeyVersion,
+      key: evidenceKey.key,
+    },
+  });
   await runtime.start(AbortSignal.timeout(Math.min(60_000, config.runDeadlineMs)));
   productionHmsRuntime = runtime;
   return runtime;

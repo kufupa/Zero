@@ -1,11 +1,16 @@
 /**
  * Closed generic tool observation → typed summary claim envelopes.
  * Disclosure gate runs before claim creation; extra fields rejected.
+ * Requester trust comes only from separately issued TrustedRequesterAuthorizationV1.
  */
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type { EvidenceClaim } from '../ai/draft-evidence.js';
-import { reservationReadDataSchema } from './contracts.js';
+import {
+  type TrustedRequesterAuthorizationV1,
+  type TrustedRequesterClaimKind,
+  reservationReadDataSchema,
+} from './contracts.js';
 import {
   mapCompanyBillingClaim,
   companyAccountReadDataSchema,
@@ -32,6 +37,10 @@ import {
   sentEmailAuditReadDataSchema,
 } from './sent-email-audit-contract.js';
 import { READ_TOOL_IDS, type ReadToolId } from './read-tools.js';
+import {
+  validateTrustedRequesterAuthorization,
+  type TrustedRequesterSourceState,
+} from './requester-authorization.js';
 
 const claimableToolIds = [
   'hms_find_reservation',
@@ -43,6 +52,39 @@ const claimableToolIds = [
   'hms_group_block_read',
   'hms_event_read',
 ] as const satisfies readonly ReadToolId[];
+
+/** EvidenceClaim.kind → TrustedRequesterClaimKind (observations never set this). */
+const EVIDENCE_KIND_TO_TRUSTED_CLAIM = {
+  reservation_summary: 'reservation_summary',
+  quote_stay_summary: 'quote',
+  document_metadata: 'document_metadata',
+  sent_email_audit: 'sent_email_audit',
+  folio_deposit_summary: 'folio_status',
+  company_billing_summary: 'company_billing',
+  group_block_summary: 'group_status',
+  event_summary: 'event_status',
+} as const satisfies Partial<
+  Record<EvidenceClaim['kind'], TrustedRequesterClaimKind>
+>;
+
+export type MapEnvelopeRequesterAuthorization = {
+  authorization: unknown;
+  currentState: unknown;
+  key: string | Buffer;
+  expectedPrivateDigestKeyVersion: string;
+  now?: Date;
+};
+
+export type MapEnvelopeToClaimsOptions = {
+  expiresAt?: string;
+  /**
+   * Separately issued server authorization.
+   * - omit: Phase A compat path (no auth gate; observation still cannot mint trust)
+   * - null: explicit missing → no claims
+   * - object: must validate for the emitted claim kind
+   */
+  requesterAuthorization?: MapEnvelopeRequesterAuthorization | null;
+};
 
 export const claimEnvelopeSchema = z
   .object({
@@ -92,6 +134,50 @@ function withEvidenceIds(
   };
 }
 
+/**
+ * Observations must not carry requester/authorization trust fields.
+ * Any attempt to self-assert trust fails closed.
+ */
+function observationAttemptsSelfTrust(data: unknown): boolean {
+  const root = asRecord(data);
+  if (
+    'requesterAuthorization' in root ||
+    'trustedRequesterAuthorization' in root ||
+    'authorizationId' in root
+  ) {
+    return true;
+  }
+  const disclosure = asRecord(root.disclosure);
+  if (
+    'authorizationId' in disclosure ||
+    'requesterAuthorization' in disclosure ||
+    'trustedRequesterAuthorization' in disclosure
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function authorizeClaimKind(
+  auth: MapEnvelopeRequesterAuthorization | null | undefined,
+  claimKind: EvidenceClaim['kind'],
+): TrustedRequesterAuthorizationV1 | null {
+  if (auth === null || auth === undefined) return null;
+  const required =
+    EVIDENCE_KIND_TO_TRUSTED_CLAIM[
+      claimKind as keyof typeof EVIDENCE_KIND_TO_TRUSTED_CLAIM
+    ];
+  if (!required) return null;
+  return validateTrustedRequesterAuthorization({
+    authorization: auth.authorization,
+    currentState: auth.currentState,
+    requiredClaimKind: required,
+    key: auth.key,
+    expectedPrivateDigestKeyVersion: auth.expectedPrivateDigestKeyVersion,
+    now: auth.now ?? new Date(),
+  });
+}
+
 export function parseClaimEnvelope(
   raw: unknown,
 ): { success: true; data: ClaimEnvelope } | { success: false } {
@@ -103,10 +189,12 @@ export function parseClaimEnvelope(
 /**
  * Map a closed observation envelope to at most one typed summary claim.
  * Rejects unknown keys, non-claimable toolIds, and unverified_negative.
+ * When `requesterAuthorization` is provided (incl. null), auth gate applies;
+ * observations never mint requester trust.
  */
 export function mapEnvelopeToClaims(
   raw: unknown,
-  options?: { expiresAt?: string },
+  options?: MapEnvelopeToClaimsOptions,
 ): EvidenceClaim[] {
   const parsed = parseClaimEnvelope(raw);
   if (!parsed.success) return [];
@@ -117,15 +205,26 @@ export function mapEnvelopeToClaims(
     return [];
   }
   if (disclosureBlocksClaim(envelope.data)) return [];
+  if (observationAttemptsSelfTrust(envelope.data)) return [];
+
+  const authOpt = options?.requesterAuthorization;
+  const authRequired = authOpt !== undefined;
+  if (authRequired && authOpt === null) return [];
 
   const evidenceId = envelope.evidenceId;
   const expiresAt = options?.expiresAt;
+
+  const gate = (kind: EvidenceClaim['kind']): boolean => {
+    if (!authRequired) return true;
+    return authorizeClaimKind(authOpt, kind) !== null;
+  };
 
   if (envelope.toolId === 'hms_find_reservation') {
     const data = reservationReadDataSchema.safeParse(envelope.data);
     if (!data.success) return [];
     const first = data.data.matches[0];
     if (!first) return [];
+    if (!gate('reservation_summary')) return [];
     return [
       withEvidenceIds(
         {
@@ -161,6 +260,7 @@ export function mapEnvelopeToClaims(
     ) {
       return [];
     }
+    if (!gate('quote_stay_summary')) return [];
     return [
       withEvidenceIds(
         {
@@ -194,6 +294,7 @@ export function mapEnvelopeToClaims(
   if (envelope.toolId === 'hms_list_documents') {
     const data = documentListReadDataSchema.safeParse(envelope.data);
     if (!data.success || data.data.rows.length === 0) return [];
+    if (!gate('document_metadata')) return [];
     return [
       withEvidenceIds(
         {
@@ -211,6 +312,7 @@ export function mapEnvelopeToClaims(
   if (envelope.toolId === 'hms_sent_email_audit') {
     const data = sentEmailAuditReadDataSchema.safeParse(envelope.data);
     if (!data.success || data.data.rows.length === 0) return [];
+    if (!gate('sent_email_audit')) return [];
     return [
       withEvidenceIds(
         {
@@ -230,6 +332,7 @@ export function mapEnvelopeToClaims(
     if (!data.success) return [];
     const value = mapFolioDepositClaim(data.data);
     if (!value) return [];
+    if (!gate('folio_deposit_summary')) return [];
     return [
       withEvidenceIds(
         {
@@ -249,6 +352,7 @@ export function mapEnvelopeToClaims(
     if (!data.success) return [];
     const value = mapCompanyBillingClaim(data.data);
     if (!value) return [];
+    if (!gate('company_billing_summary')) return [];
     return [
       withEvidenceIds(
         {
@@ -268,6 +372,7 @@ export function mapEnvelopeToClaims(
     if (!data.success) return [];
     const value = mapGroupBlockClaim(data.data);
     if (!value) return [];
+    if (!gate('group_block_summary')) return [];
     return [
       withEvidenceIds(
         {
@@ -287,6 +392,7 @@ export function mapEnvelopeToClaims(
     if (!data.success) return [];
     const value = mapEventSummaryClaim(data.data);
     if (!value) return [];
+    if (!gate('event_summary')) return [];
     return [
       withEvidenceIds(
         {
@@ -324,3 +430,5 @@ export function toolResultToClaimEnvelope(result: {
     data: result.data,
   };
 }
+
+export type { TrustedRequesterSourceState, TrustedRequesterAuthorizationV1 };

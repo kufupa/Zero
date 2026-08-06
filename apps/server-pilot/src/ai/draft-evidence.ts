@@ -1,4 +1,9 @@
 import { z } from 'zod';
+import type {
+  QuarantinedNegative,
+  ValidatedBusinessNotFound,
+} from '../hms/negative-result.js';
+import { toBusinessNotFoundToolStatus } from '../hms/negative-result.js';
 
 export type HmsEvidenceRef = {
   kind: 'hms';
@@ -36,6 +41,16 @@ export type ToolResult<T> = {
   unresolvedFields: string[];
   evidence: HmsEvidenceRef | MailEvidenceRef;
 };
+
+/**
+ * Sole adapter from branded negative gate → ToolResult business `not_found`.
+ * Unbranded / quarantined negatives stay `unverified_negative`.
+ */
+export function toolResultStatusFromNegativeGate(
+  result: ValidatedBusinessNotFound | QuarantinedNegative,
+): Extract<ToolResult<unknown>['status'], 'not_found' | 'unverified_negative'> {
+  return toBusinessNotFoundToolStatus(result);
+}
 
 export type EvidenceClaim = {
   id: string;

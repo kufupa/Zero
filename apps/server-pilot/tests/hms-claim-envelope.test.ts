@@ -3,10 +3,80 @@ import {
   mapEnvelopeToClaims,
   parseClaimEnvelope,
 } from '../src/hms/claim-envelope.js';
+import {
+  issueTrustedRequesterAuthorization,
+} from '../src/hms/requester-authorization.js';
 
 const observedAt = '2026-08-06T12:00:00.000Z';
 const evidenceId = 'ev-envelope-1';
 const expiresAt = '2026-08-06T14:00:00.000Z';
+const KEY = Buffer.alloc(32, 0x41);
+const KEY_VERSION = 'requester-key-v1';
+const NOW = new Date('2026-08-06T12:00:00.000Z');
+
+function currentState(
+  overrides: {
+    allowedClaimKinds?: string[];
+    threadId?: string;
+    spoofed?: boolean;
+  } = {},
+) {
+  return {
+    operationId: 'operation-11c',
+    mailboxGrant: {
+      sha256: 'a'.repeat(64),
+      transportId: 'transport-private',
+      active: true,
+    },
+    thread: {
+      transportId: 'transport-private',
+      threadId: overrides.threadId ?? 'thread-private',
+      stateVersion: 'thread-state-v1',
+    },
+    requester: {
+      identity: 'requester-private',
+      requesterClass: 'reservation_guest',
+      inquiryClass: 'labelled_narrow_status',
+      allowedClaimKinds: overrides.allowedClaimKinds ?? [
+        'reservation_summary',
+        'folio_status',
+      ],
+      forwarded: false,
+      spoofed: overrides.spoofed ?? false,
+    },
+  };
+}
+
+function issueAuth(state: unknown = currentState()) {
+  return issueTrustedRequesterAuthorization(state, {
+    key: KEY,
+    keyVersion: KEY_VERSION,
+    issuedAt: NOW,
+    expiresAt: new Date(NOW.getTime() + 5 * 60_000),
+  });
+}
+
+function authOpts(
+  overrides: {
+    state?: unknown;
+    authorization?: unknown;
+    now?: Date;
+    keyVersion?: string;
+  } = {},
+) {
+  const state = overrides.state ?? currentState();
+  const authorization = overrides.authorization ?? issueAuth(state);
+  return {
+    expiresAt,
+    requesterAuthorization: {
+      authorization,
+      currentState: state,
+      key: KEY,
+      expectedPrivateDigestKeyVersion: overrides.keyVersion ?? KEY_VERSION,
+      now: overrides.now ?? NOW,
+    },
+  };
+}
 
 function findEnvelope(overrides: Record<string, unknown> = {}) {
   return {
@@ -44,7 +114,7 @@ describe('claim envelope', () => {
   });
 
   it('mapEnvelopeToClaims emits one reservation_summary with evidenceIds', () => {
-    const claims = mapEnvelopeToClaims(findEnvelope(), { expiresAt });
+    const claims = mapEnvelopeToClaims(findEnvelope(), authOpts());
     expect(claims).toHaveLength(1);
     expect(claims[0]).toMatchObject({
       kind: 'reservation_summary',
@@ -61,12 +131,81 @@ describe('claim envelope', () => {
     expect(
       mapEnvelopeToClaims(
         findEnvelope({ toolId: 'hms_quote_stay', data: { observedAt } }),
+        authOpts(),
       ),
     ).toEqual([]);
     expect(
-      mapEnvelopeToClaims(findEnvelope({ status: 'unverified_negative' })),
+      mapEnvelopeToClaims(findEnvelope({ status: 'unverified_negative' }), authOpts()),
     ).toEqual([]);
-    expect(mapEnvelopeToClaims(findEnvelope({ rogue: 1 }))).toEqual([]);
+    expect(mapEnvelopeToClaims(findEnvelope({ rogue: 1 }), authOpts())).toEqual(
+      [],
+    );
+  });
+
+  it('rejects missing, stale, cross-thread, spoofed, and claim-kind mismatch auth', () => {
+    expect(
+      mapEnvelopeToClaims(findEnvelope(), {
+        expiresAt,
+        requesterAuthorization: null,
+      }),
+    ).toEqual([]);
+
+    const auth = issueAuth();
+    expect(
+      mapEnvelopeToClaims(
+        findEnvelope(),
+        authOpts({
+          authorization: auth,
+          now: new Date(NOW.getTime() + 10 * 60_000),
+        }),
+      ),
+    ).toEqual([]);
+
+    expect(
+      mapEnvelopeToClaims(
+        findEnvelope(),
+        authOpts({
+          authorization: auth,
+          state: currentState({ threadId: 'other-thread' }),
+        }),
+      ),
+    ).toEqual([]);
+
+    expect(
+      mapEnvelopeToClaims(
+        findEnvelope(),
+        authOpts({
+          state: currentState({ spoofed: true }),
+        }),
+      ),
+    ).toEqual([]);
+
+    expect(
+      mapEnvelopeToClaims(
+        findEnvelope(),
+        authOpts({
+          state: currentState({ allowedClaimKinds: ['folio_status'] }),
+        }),
+      ),
+    ).toEqual([]);
+  });
+
+  it('rejects observation self-trust fields', () => {
+    expect(
+      mapEnvelopeToClaims(
+        findEnvelope({
+          data: {
+            ...findEnvelope().data,
+            authorizationId: 'forged',
+          },
+        }),
+        authOpts(),
+      ),
+    ).toEqual([]);
+  });
+
+  it('Phase A omit-auth still maps; auth path is opt-in gate', () => {
+    expect(mapEnvelopeToClaims(findEnvelope(), { expiresAt })).toHaveLength(1);
   });
 
   it('runs disclosure gate before folio claim creation', () => {
@@ -100,7 +239,7 @@ describe('claim envelope', () => {
         observedAt,
       },
     };
-    expect(mapEnvelopeToClaims(folioOk)).toHaveLength(1);
+    expect(mapEnvelopeToClaims(folioOk, authOpts())).toHaveLength(1);
 
     const blocked = {
       ...folioOk,
@@ -113,6 +252,6 @@ describe('claim envelope', () => {
         },
       },
     };
-    expect(mapEnvelopeToClaims(blocked)).toEqual([]);
+    expect(mapEnvelopeToClaims(blocked, authOpts())).toEqual([]);
   });
 });

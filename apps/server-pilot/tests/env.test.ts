@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   parseEnv,
   parseHmsControlConfig,
+  requireHmsEvidenceHmacChildKey,
   requireHmsWorkerRuntimeConfig,
 } from '../src/env';
 
@@ -34,6 +35,9 @@ function hmsShadowRuntimeEnv(
     HMS_EXPECTED_TRANSPORT_ID: 'transport-centurion',
     HMS_RUN_DEADLINE_MS: '150000',
     HMS_CIRCUIT_COOLDOWN_MS: '30000',
+    HMS_EVIDENCE_HMAC_SECRET_ARN:
+      'arn:aws:secretsmanager:af-south-1:123:secret:hms-evidence-hmac',
+    HMS_EVIDENCE_HMAC_KEY_VERSION: 'evidence-key-v1',
     ...overrides,
   };
 }
@@ -324,6 +328,32 @@ describe('env', () => {
       expectedTransportId: 'transport-centurion',
       runDeadlineMs: 150_000,
       circuitCooldownMs: 30_000,
+      evidenceHmacSecretArn:
+        'arn:aws:secretsmanager:af-south-1:123:secret:hms-evidence-hmac',
+      evidenceHmacKeyVersion: 'evidence-key-v1',
     });
+
+    expect(() =>
+      requireHmsWorkerRuntimeConfig(
+        hmsShadowRuntimeEnv({ HMS_EVIDENCE_HMAC_SECRET_ARN: undefined }),
+      ),
+    ).toThrow(/HMS_EVIDENCE_HMAC_SECRET_ARN/);
+    expect(() =>
+      requireHmsWorkerRuntimeConfig(
+        hmsShadowRuntimeEnv({ HMS_EVIDENCE_HMAC_KEY_VERSION: undefined }),
+      ),
+    ).toThrow(/HMS_EVIDENCE_HMAC_KEY_VERSION/);
+
+    const childKey = requireHmsEvidenceHmacChildKey({
+      HMS_EVIDENCE_HMAC_KEY: Buffer.alloc(32, 7).toString('base64'),
+    });
+    expect(childKey.key.byteLength).toBe(32);
+    expect(() => requireHmsEvidenceHmacChildKey({})).toThrow(
+      /HMS_EVIDENCE_HMAC_KEY/,
+    );
+
+    // parseEnv must never persist the child-only key onto MailEnv.
+    const env = parseEnv(baseEnv({ HMS_EVIDENCE_HMAC_KEY: 'should-not-land' }));
+    expect(env).not.toHaveProperty('HMS_EVIDENCE_HMAC_KEY');
   });
 });

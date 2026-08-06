@@ -1577,4 +1577,183 @@ describe("HMS browser audit capture order", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('revalidates evidence bindings before context; rejects non-AWSCURRENT', async () => {
+    const {
+      credentialVersionHmacSha256,
+      runtimeFingerprintSha256,
+    } = await import('../src/hms/evidence-runtime.js');
+    const server = await startHmsFixtureServer();
+    const secret = fixtureSecret(server.origin);
+    const key = Buffer.alloc(32, 9);
+    const keyVersion = 'evidence-key-v1';
+    const secretArn =
+      'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-test';
+    const versionId = 'version-current-1';
+    const credentialHmac = credentialVersionHmacSha256({
+      evidenceKey: key,
+      evidenceKeyVersion: keyVersion,
+      hmsSecretArn: secretArn,
+      hmsSecretVersionId: versionId,
+    });
+    const runtimeFp = runtimeFingerprintSha256({
+      sourceRevision: 'rev-11c',
+      playwrightRevision: '1.52.0',
+      chromiumRevision: '1169',
+    });
+
+    const okRuntime = createHmsRuntime({
+      manifest: fixtureManifest(server.origin),
+      secretArn,
+      loadSecret: async () => ({
+        secret,
+        versionId,
+        versionStages: ['AWSCURRENT'],
+      }),
+      browserFactory: createFetchBrowserFactory(),
+      sourceRevision: 'rev-11c',
+      playwrightRevision: '1.52.0',
+      chromiumRevision: '1169',
+      evidenceBindings: {
+        evidence: {
+          secretArn:
+            'arn:aws:secretsmanager:eu-west-1:000000000000:secret:evidence',
+          keyVersion,
+          key,
+        },
+        secretVersion: {
+          versionId,
+          versionStages: ['AWSCURRENT'],
+        },
+        expectedCredentialVersionHmacSha256: credentialHmac,
+        expectedRuntimeFingerprintSha256: runtimeFp,
+      },
+    });
+    try {
+      await okRuntime.start(AbortSignal.timeout(15_000));
+      await okRuntime
+        .openReadSession({
+          transportId: secret.mailboxTransportId,
+          signal: AbortSignal.timeout(15_000),
+        })
+        .then((s) => s.close());
+
+      const stale = createHmsRuntime({
+        manifest: fixtureManifest(server.origin),
+        secretArn,
+        loadSecret: async () => secret,
+        browserFactory: createFetchBrowserFactory(),
+        sourceRevision: 'rev-11c',
+        playwrightRevision: '1.52.0',
+        chromiumRevision: '1169',
+        evidenceBindings: {
+          evidence: {
+            secretArn:
+              'arn:aws:secretsmanager:eu-west-1:000000000000:secret:evidence',
+            keyVersion,
+            key,
+          },
+          secretVersion: {
+            versionId: 'old-version',
+            versionStages: ['AWSPREVIOUS'],
+          },
+          expectedCredentialVersionHmacSha256: credentialHmac,
+          expectedRuntimeFingerprintSha256: runtimeFp,
+        },
+      });
+      try {
+        await expect(
+          stale.start(AbortSignal.timeout(15_000)),
+        ).rejects.toMatchObject({ code: 'CREDENTIAL_VERSION_STALE' });
+      } finally {
+        await stale.close().catch(() => undefined);
+      }
+    } finally {
+      await okRuntime.close().catch(() => undefined);
+      await server.close();
+    }
+  });
+
+  it('loadProductionRoleProof accepts v1 and v2 path shapes', async () => {
+    const { loadProductionRoleProof } = await import(
+      '../src/hms/production-runtime.js'
+    );
+    const { roleProofV2Path } = await import('../src/hms/release-kernel.js');
+    const { writeFile, mkdir, rm } = await import('node:fs/promises');
+    const dir = await mkdtemp(join(tmpdir(), 'hms-role-dual-'));
+    try {
+      const v1Path = join(dir, 'role-proof.v1.json');
+      const now = Date.now();
+      await writeFile(
+        v1Path,
+        JSON.stringify({
+          schemaVersion: 1,
+          propertyCode: 'HRCEN',
+          allowedSurfaces: ['Guest Stay'],
+          deniedActions: [
+            'new_record',
+            'save',
+            'delete',
+            'duplicate',
+            'check_in',
+            'check_out',
+            'document_generate',
+            'document_send',
+          ],
+          issuedAt: new Date(now - 60_000).toISOString(),
+          expiresAt: new Date(now + 86_400_000).toISOString(),
+          evidenceRef: 'operator-observed-runtime-v1:abc',
+          evidenceSha256: 'a'.repeat(64),
+        }),
+        { mode: 0o600 },
+      );
+      await expect(loadProductionRoleProof(v1Path)).resolves.toMatchObject({
+        schemaVersion: 1,
+      });
+
+      const root = join(dir, 'proofs');
+      await mkdir(join(root, 'role-proofs'), { recursive: true });
+      const v2Path = roleProofV2Path(root, 'hms_find_reservation');
+      const { READ_TOOLS } = await import('../src/hms/read-tools.js');
+      const tool = READ_TOOLS.hms_find_reservation;
+      await writeFile(
+        v2Path,
+        JSON.stringify({
+          schemaVersion: 2,
+          attestationKind: 'operator_observed_runtime',
+          toolId: 'hms_find_reservation',
+          discoveryOperationId: 'guest_stay_search',
+          operationId: randomUUID(),
+          observerSourceRevision: 'rev',
+          evidenceArtifactId: randomUUID(),
+          privateDigestKeyVersion: 'v1',
+          actorHmacSha256: '1'.repeat(64),
+          credentialVersionHmacSha256: '2'.repeat(64),
+          runtimeFingerprintSha256: '3'.repeat(64),
+          roleFingerprintSha256: '4'.repeat(64),
+          propertyCode: 'HRCEN',
+          currency: 'ZAR',
+          credentialMode: 'view_only',
+          allowedSurfaces: [
+            ...new Set(
+              tool.requestBranches.flatMap((b) => [...b.requiredRoleSurfaces]),
+            ),
+          ],
+          deniedActions: [...tool.deniedActions],
+          issuedAt: new Date(now - 60_000).toISOString(),
+          expiresAt: new Date(now + 86_400_000).toISOString(),
+          evidenceSha256: '5'.repeat(64),
+        }),
+        { mode: 0o600 },
+      );
+      await expect(
+        loadProductionRoleProof(v2Path, { toolId: 'hms_find_reservation' }),
+      ).resolves.toMatchObject({
+        schemaVersion: 2,
+        toolId: 'hms_find_reservation',
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });

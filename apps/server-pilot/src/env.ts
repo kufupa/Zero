@@ -36,6 +36,18 @@ export type HmsWorkerRuntimeConfig = {
   expectedTransportId: string;
   runDeadlineMs: number;
   circuitCooldownMs: number;
+  /** Evidence HMAC secret ARN — metadata only; never the raw key. */
+  evidenceHmacSecretArn: string;
+  /** Evidence HMAC key VersionId / version label from Secrets Manager metadata. */
+  evidenceHmacKeyVersion: string;
+};
+
+/**
+ * Child-process-only evidence HMAC key. Never persisted in MailEnv or
+ * `.env.production` — injected at exec time via asm-exec.
+ */
+export type HmsEvidenceHmacChildKey = {
+  key: Buffer;
 };
 
 export interface MailEnv {
@@ -209,7 +221,32 @@ export function requireHmsWorkerRuntimeConfig(input: EnvInput): HmsWorkerRuntime
     circuitCooldownMs: input.HMS_CIRCUIT_COOLDOWN_MS
       ? toInt('HMS_CIRCUIT_COOLDOWN_MS', input.HMS_CIRCUIT_COOLDOWN_MS)
       : 30_000,
+    evidenceHmacSecretArn: requireNonEmpty(
+      'HMS_EVIDENCE_HMAC_SECRET_ARN',
+      input.HMS_EVIDENCE_HMAC_SECRET_ARN,
+    ),
+    evidenceHmacKeyVersion: requireNonEmpty(
+      'HMS_EVIDENCE_HMAC_KEY_VERSION',
+      input.HMS_EVIDENCE_HMAC_KEY_VERSION,
+    ),
   };
+}
+
+/**
+ * Read child-only evidence HMAC key. Call from HMS worker child after asm-exec;
+ * never assign into MailEnv or write to disk env files.
+ */
+export function requireHmsEvidenceHmacChildKey(
+  input: EnvInput,
+): HmsEvidenceHmacChildKey {
+  const raw = requireNonEmpty('HMS_EVIDENCE_HMAC_KEY', input.HMS_EVIDENCE_HMAC_KEY);
+  const key = Buffer.from(raw, 'base64');
+  if (key.byteLength < 32) {
+    throw new Error(
+      'env HMS_EVIDENCE_HMAC_KEY must be base64 for at least 32 bytes',
+    );
+  }
+  return { key };
 }
 
 export function parseEnv(input: EnvInput): MailEnv {
@@ -328,6 +365,7 @@ export function parseEnv(input: EnvInput): MailEnv {
   if (input.HMS_CHROMIUM_EXECUTABLE_PATH) {
     env.HMS_CHROMIUM_EXECUTABLE_PATH = input.HMS_CHROMIUM_EXECUTABLE_PATH;
   }
+  // Never persist HMS_EVIDENCE_HMAC_KEY into MailEnv — child-only via asm-exec.
 
   if (aiEnabled) {
     env.AI_MODEL_ID = input.AI_MODEL_ID ?? DEFAULT_AI_MODEL_ID;

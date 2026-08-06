@@ -1,6 +1,7 @@
 /**
  * Production HMS runtime composition — Playwright is a hard runtime dependency.
  * No fetch/mock browser factory fallback. Role-proof revalidated per context.
+ * Consumes role schemas from release-kernel (no reverse import).
  */
 import {
   GetSecretValueCommand,
@@ -14,10 +15,18 @@ import {
   ensureHmsBrowserArtifactRoot,
 } from './browser-artifacts.js';
 import {
+  revalidateEvidenceBindings,
+  type HmsEvidenceHmacConfig,
+  type HmsSecretVersionMetadata,
+} from './evidence-runtime.js';
+import {
   hmsReadRoleProofV1Schema,
   loadHmsReadRoleProof,
+  loadHmsReadRoleProofV2,
   type HmsReadRoleProofV1,
+  type HmsReadRoleProofV2,
 } from './release-kernel.js';
+import { READ_TOOLS, HMS_READ_TOOL_IDS, type HmsReadToolId } from './read-tools.js';
 import {
   createHmsLiveProofRuntime,
   createHmsRuntime,
@@ -32,6 +41,12 @@ export { CENTURION_HMS_PRODUCTION_ORIGIN };
 export { hmsReadRoleProofV1Schema, loadHmsReadRoleProof };
 export type { HmsReadRoleProofV1 };
 
+export type ProductionSecretLoadResult = {
+  secret: unknown;
+  versionId: string;
+  versionStages: string[];
+};
+
 function createSecretsManagerLoader(region?: string): HmsSecretLoader {
   return async ({ secretArn, signal: _signal }) => {
     void _signal;
@@ -44,8 +59,47 @@ function createSecretsManagerLoader(region?: string): HmsSecretLoader {
     if (!res.SecretString) {
       throw new HmsRuntimeError('secret_load_failed', 'secret empty');
     }
-    return hmsSecretSchema.parse(JSON.parse(res.SecretString));
+    if (!res.VersionId) {
+      throw new HmsRuntimeError(
+        'CREDENTIAL_VERSION_MISSING',
+        'Secrets Manager VersionId missing',
+      );
+    }
+    // Preserve VersionId for credentialVersionHmacSha256; never persist raw secret.
+    return {
+      secret: JSON.parse(res.SecretString),
+      versionId: res.VersionId,
+      versionStages: res.VersionStages ?? ['AWSCURRENT'],
+    };
   };
+}
+
+/** Normalize injectable loader payloads: plain secret or { secret, versionId, stages }. */
+export function normalizeLoadedSecret(raw: unknown): {
+  secret: unknown;
+  version: HmsSecretVersionMetadata | null;
+} {
+  if (
+    raw &&
+    typeof raw === 'object' &&
+    !Array.isArray(raw) &&
+    'secret' in raw &&
+    typeof (raw as { versionId?: unknown }).versionId === 'string'
+  ) {
+    const record = raw as {
+      secret: unknown;
+      versionId: string;
+      versionStages?: string[];
+    };
+    return {
+      secret: record.secret,
+      version: {
+        versionId: record.versionId,
+        versionStages: record.versionStages ?? ['AWSCURRENT'],
+      },
+    };
+  }
+  return { secret: raw, version: null };
 }
 
 export function resolveHmsSourceRevision(
@@ -67,6 +121,56 @@ export function resolveHmsSourceRevision(
 }
 
 /**
+ * Load role proof — v1 path stays for Phase A find; v2 when schemaVersion=2
+ * or path ends with `.v2.json` (toolId inferred from filename / override).
+ */
+export async function loadProductionRoleProof(
+  path: string,
+  options?: { toolId?: HmsReadToolId; now?: Date },
+): Promise<HmsReadRoleProofV1 | HmsReadRoleProofV2> {
+  const now = options?.now ?? new Date();
+  const isV2Path = /\.v2\.json$/i.test(path);
+  if (isV2Path) {
+    const toolId =
+      options?.toolId ??
+      (path.match(/([a-z0-9_]+)\.v2\.json$/i)?.[1] as HmsReadToolId | undefined);
+    if (!toolId || !(toolId in READ_TOOLS) || !HMS_READ_TOOL_IDS.includes(toolId as HmsReadToolId)) {
+      throw new HmsRuntimeError(
+        'ROLE_SCOPE_INVALID',
+        'role proof v2 requires HmsReadToolId',
+      );
+    }
+    return loadHmsReadRoleProofV2(path, READ_TOOLS[toolId as HmsReadToolId], now);
+  }
+  // Peek schemaVersion without failing v1 loaders on unknown keys.
+  const { readFile } = await import('node:fs/promises');
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await readFile(path, 'utf8'));
+  } catch {
+    throw new HmsRuntimeError('ROLE_PROOF_MISSING', `role proof missing at ${path}`);
+  }
+  if (
+    parsed &&
+    typeof parsed === 'object' &&
+    !Array.isArray(parsed) &&
+    (parsed as { schemaVersion?: unknown }).schemaVersion === 2
+  ) {
+    const toolId =
+      options?.toolId ??
+      ((parsed as { toolId?: unknown }).toolId as HmsReadToolId | undefined);
+    if (!toolId || !(toolId in READ_TOOLS) || !HMS_READ_TOOL_IDS.includes(toolId)) {
+      throw new HmsRuntimeError(
+        'ROLE_SCOPE_INVALID',
+        'role proof v2 requires HmsReadToolId',
+      );
+    }
+    return loadHmsReadRoleProofV2(path, READ_TOOLS[toolId], now);
+  }
+  return loadHmsReadRoleProof(path, now);
+}
+
+/**
  * Production composition: Playwright Chromium required; role-proof path wired;
  * live Guest Stay manifest from secret login origin; mandatory private capture.
  */
@@ -75,6 +179,11 @@ type ProductionHmsRuntimeOptions = {
   region?: string;
   artifactRoot?: string;
   sourceRevision?: string;
+  /** Child-only evidence HMAC config — inject fakes in tests; no AWS reads. */
+  evidenceHmac?: HmsEvidenceHmacConfig;
+  /** When set, revalidate credential HMAC against this expected digest. */
+  expectedCredentialVersionHmacSha256?: string;
+  expectedRuntimeFingerprintSha256?: string;
 };
 
 async function createProductionHmsRuntimeInternal(
@@ -83,11 +192,12 @@ async function createProductionHmsRuntimeInternal(
   liveProof: boolean,
 ): Promise<HmsRuntime> {
   const sourceRevision = resolveHmsSourceRevision(options?.sourceRevision);
-  await loadHmsReadRoleProof(config.roleProofPath);
+  await loadProductionRoleProof(config.roleProofPath);
 
   const loadSecret =
     options?.loadSecret ?? createSecretsManagerLoader(options?.region);
-  const rawSecret = await loadSecret({ secretArn: config.secretArn });
+  const rawLoaded = await loadSecret({ secretArn: config.secretArn });
+  const { secret: rawSecret, version } = normalizeLoadedSecret(rawLoaded);
   const secret = hmsSecretSchema.parse(rawSecret);
   const origin = new URL(secret.loginUrl).origin;
 
@@ -114,6 +224,47 @@ async function createProductionHmsRuntimeInternal(
     throw new HmsRuntimeError(
       'transport_mismatch',
       'secret transport does not match worker config',
+    );
+  }
+
+  const evidenceHmac: HmsEvidenceHmacConfig | undefined =
+    options?.evidenceHmac ??
+    (config.evidenceHmacSecretArn && config.evidenceHmacKeyVersion
+      ? {
+          secretArn: config.evidenceHmacSecretArn,
+          keyVersion: config.evidenceHmacKeyVersion,
+          // Child key must be injected separately; production composition without
+          // key skips binding until asm-exec child supplies it.
+          key: Buffer.alloc(0),
+        }
+      : undefined);
+
+  const evidenceKeyBytes = (key: string | Buffer): number =>
+    Buffer.isBuffer(key) ? key.byteLength : Buffer.byteLength(key, 'utf8');
+
+  let credentialHmac: string | undefined;
+  let runtimeFp: string | undefined;
+  if (evidenceHmac && evidenceKeyBytes(evidenceHmac.key) >= 32 && version) {
+    const bindings = revalidateEvidenceBindings({
+      secretVersion: version,
+      evidence: evidenceHmac,
+      expectedCredentialVersionHmacSha256:
+        options?.expectedCredentialVersionHmacSha256,
+      expectedRuntimeFingerprintSha256:
+        options?.expectedRuntimeFingerprintSha256,
+      runtimeFingerprint: {
+        sourceRevision,
+        playwrightRevision: '1.52.0',
+        chromiumRevision: '1169',
+      },
+      hmsSecretArn: config.secretArn,
+    });
+    credentialHmac = bindings.credentialVersionHmacSha256;
+    runtimeFp = bindings.runtimeFingerprintSha256 ?? undefined;
+  } else if (evidenceHmac && evidenceKeyBytes(evidenceHmac.key) >= 32 && !version) {
+    throw new HmsRuntimeError(
+      'CREDENTIAL_VERSION_MISSING',
+      'Secrets Manager VersionId required for evidence binding',
     );
   }
 
@@ -147,7 +298,11 @@ async function createProductionHmsRuntimeInternal(
   return createRuntime({
     manifest,
     secretArn: config.secretArn,
-    loadSecret: async () => secret,
+    loadSecret: async () => ({
+      secret,
+      versionId: version?.versionId,
+      versionStages: version?.versionStages,
+    }),
     browserFactory,
     executablePath: config.chromiumExecutablePath,
     healthStatusPath: config.healthPath,
@@ -156,7 +311,32 @@ async function createProductionHmsRuntimeInternal(
     requireViewOnly: true,
     expectedOrigin: CENTURION_HMS_PRODUCTION_ORIGIN,
     roleProofPath: config.roleProofPath,
-    loadRoleProof: loadHmsReadRoleProof,
+    loadRoleProof: async (path, now) => {
+      const proof = await loadProductionRoleProof(path, { now });
+      // Runtime v1 loader shape expects v1 fields; v2 is validated above.
+      if (proof.schemaVersion === 2) {
+        return {
+          schemaVersion: 1 as const,
+          propertyCode: 'HRCEN' as const,
+          allowedSurfaces: ['Guest Stay'] as const,
+          deniedActions: [
+            'new_record',
+            'save',
+            'delete',
+            'duplicate',
+            'check_in',
+            'check_out',
+            'document_generate',
+            'document_send',
+          ] as const,
+          issuedAt: proof.issuedAt,
+          expiresAt: proof.expiresAt,
+          evidenceRef: `role-proof-v2:${proof.toolId}`,
+          evidenceSha256: proof.evidenceSha256,
+        };
+      }
+      return proof;
+    },
     healthHeartbeatMs: 10_000,
     healthStaleAfterMs: 30_000,
     runStartupCanary: false,
@@ -165,6 +345,15 @@ async function createProductionHmsRuntimeInternal(
     sourceRevision,
     playwrightRevision: '1.52.0',
     chromiumRevision: '1169',
+    evidenceBindings:
+      evidenceHmac && evidenceKeyBytes(evidenceHmac.key) >= 32 && version
+        ? {
+            evidence: evidenceHmac,
+            secretVersion: version,
+            expectedCredentialVersionHmacSha256: credentialHmac,
+            expectedRuntimeFingerprintSha256: runtimeFp,
+          }
+        : undefined,
   });
 }
 

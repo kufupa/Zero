@@ -790,4 +790,81 @@ describe('hms browser artifacts store', () => {
     await mkdir(store.intermediateDir, { recursive: true });
     await rm(root, { recursive: true, force: true });
   });
+
+  it('builds discovery|proof receipt v2 helpers without breaking find v1 writers', async () => {
+    const {
+      buildDiscoveryReceiptV2,
+      buildProofReceiptV2,
+      writeBrowserArtifactReceiptV2,
+    } = await import('../src/hms/browser-artifacts.js');
+    const { loadExclusiveReceipt } = await import('../src/hms/artifact-index.js');
+    const h = (c: string) => c.repeat(64);
+    const common = {
+      artifactId: randomUUID(),
+      operationId: randomUUID(),
+      toolId: 'hms_quote_stay' as const,
+      discoveryOperationId: 'quote_availability_search' as const,
+      toolVersion: '1.0.0',
+      sourceRevision: 'rev-11c',
+      credentialVersionHmacSha256: h('a'),
+      runtimeFingerprintSha256: h('b'),
+      privateDigestKeyVersion: 'evidence-key-v1',
+      traceSha256: h('c'),
+      videoSha256: null,
+      operationOutcome: 'succeeded' as const,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    };
+    const discovery = buildDiscoveryReceiptV2({
+      ...common,
+      structuralSignatureSha256: h('d'),
+      candidateSnapshotSha256: null,
+    });
+    expect(discovery.executionClass).toBe('discovery');
+    expect('roleProofSha256' in discovery).toBe(false);
+
+    const proof = buildProofReceiptV2({
+      ...common,
+      requestBranchId: 'quote_availability_search',
+      candidateSnapshotSha256: h('e'),
+      candidateHmacSha256: h('f'),
+      scopeHmacSha256: h('1'),
+      resultHmacSha256: h('2'),
+      sourceRefHmacSha256: h('3'),
+      roleProofSha256: h('4'),
+      discoveryReceiptSha256: h('5'),
+      oracleArtifactSha256: h('6'),
+    });
+    expect(proof.executionClass).toBe('proof');
+
+    const root = await tempRoot();
+    const artifact = join(root, randomUUID());
+    await mkdir(artifact, { recursive: true });
+    await writeBrowserArtifactReceiptV2(artifact, discovery);
+    const loaded = await loadExclusiveReceipt(artifact);
+    expect(loaded.schema).toBe('v2');
+    expect(loaded.receipt).toMatchObject({ executionClass: 'discovery' });
+
+    // v1 find path still works
+    const store = await createHmsBrowserArtifactStore({ root });
+    const handle = await store.beginCapture(baseSpec());
+    await writeFile(join(handle.stagingDir, 'trace.zip'), validTraceZip());
+    const receipt = await handle.finalize({
+      sourceRevision: 'rev',
+      playwrightRevision: '1.52.0',
+      chromiumRevision: '1169',
+      outcome: 'succeeded',
+      terminalCode: 'OK',
+      terminalStage: 'receipt_finalize',
+      requestRules: [],
+      blockedRequests: 0,
+      mutationRequests: 0,
+      popupCount: 0,
+      downloadCount: 0,
+      webSocketCount: 0,
+      complete: true,
+    });
+    expect(receipt.schemaVersion).toBe(1);
+    expect(receipt.executionClass).toBe('normal');
+    await rm(root, { recursive: true, force: true });
+  });
 });
