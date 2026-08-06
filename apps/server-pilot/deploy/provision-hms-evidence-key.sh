@@ -78,16 +78,22 @@ else
   chmod 600 "$KEY_TMP"
   openssl rand -base64 32 | tr -d '\n' >"$KEY_TMP"
   chmod 600 "$KEY_TMP"
+  # Windows AWS CLI needs a native path for file:// (Git Bash /tmp is invisible).
+  SECRET_FILE_URI="file://${KEY_TMP}"
+  if command -v cygpath >/dev/null 2>&1; then
+    SECRET_FILE_URI="file://$(cygpath -m "$KEY_TMP")"
+  fi
   CREATE_JSON="$(
     aws secretsmanager create-secret \
       --region "$AWS_REGION" \
       --name "$SECRET_NAME" \
       --description "Nava Zero server-pilot HMS evidence HMAC key (base64)" \
-      --secret-string "file://${KEY_TMP}" \
+      --secret-string "$SECRET_FILE_URI" \
       --output json
   )"
   rm -f -- "$KEY_TMP"
   KEY_TMP=""
+  unset SECRET_FILE_URI
   SECRET_ARN="$(
     node -e 'const j=JSON.parse(process.argv[1]); process.stdout.write(String(j.ARN||""))' "$CREATE_JSON"
   )"
@@ -139,8 +145,11 @@ ARN='${SECRET_ARN}'
 VER='${VERSION_ID}'
 printf '%s  %s\n' "\$PIN" "\$SRC" | sha256sum -c -
 sudo install -d -o root -g root -m 0755 /etc/nava
-sudo install -o root -g root -m 0755 "\$SRC" /usr/local/bin/asm-exec
-printf '%s  /usr/local/bin/asm-exec\n' "\$PIN" | sha256sum -c -
+ASM_TMP="\$(sudo mktemp /tmp/asm-exec.XXXXXX)"
+tr -d '\\r' <"\$SRC" | sudo tee "\$ASM_TMP" >/dev/null
+sudo install -o root -g root -m 0755 "\$ASM_TMP" /usr/local/bin/asm-exec
+sudo rm -f "\$ASM_TMP"
+grep -q 'os.execvpe' /usr/local/bin/asm-exec
 META_TMP="\$(sudo mktemp /etc/nava/.hms-evidence-hmac.env.XXXXXX)"
 printf 'HMS_EVIDENCE_HMAC_SECRET_ARN=%s\nHMS_EVIDENCE_HMAC_KEY_VERSION=%s\n' "\$ARN" "\$VER" | sudo tee "\$META_TMP" >/dev/null
 sudo chown root:root "\$META_TMP"

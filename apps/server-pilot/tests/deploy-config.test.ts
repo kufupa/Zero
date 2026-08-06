@@ -3086,6 +3086,7 @@ describe('deploy config', () => {
       expect(install).toMatch(/\/usr\/local\/bin\/asm-exec/);
       expect(install).toMatch(new RegExp(pin));
       expect(install).toMatch(/install -o root -g root -m 0755/);
+      expect(install).toMatch(/tr -d ['"]\\r['"]|tr -d ['"]\\\\r['"]/);
 
       const writer = readFileSync(join(deploy, 'write-ec2-env.sh'), 'utf8');
       expect(writer).toMatch(/HMS_EVIDENCE_HMAC_SECRET_ARN/);

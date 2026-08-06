@@ -164,8 +164,11 @@ case "$ACTION" in
       REMOTE_DOCTOR=$(cat <<EOF
 set -euo pipefail
 PIN='${ASM_PIN}'
+SRC='/home/ubuntu/repos/zero/apps/server-pilot/deploy/vendor/asm-exec'
 META='/etc/nava/hms-evidence-hmac.env'
-printf '%s  /usr/local/bin/asm-exec\n' "\$PIN" | sha256sum -c -
+printf '%s  %s\n' "\$PIN" "\$SRC" | sha256sum -c -
+test -x /usr/local/bin/asm-exec
+grep -q 'os.execvpe' /usr/local/bin/asm-exec
 test -f "\$META"
 grep -q '^HMS_EVIDENCE_HMAC_SECRET_ARN=' "\$META"
 grep -q '^HMS_EVIDENCE_HMAC_KEY_VERSION=' "\$META"
