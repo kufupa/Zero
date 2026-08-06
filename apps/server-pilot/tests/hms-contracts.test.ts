@@ -29,7 +29,8 @@ describe('HMS evidence baseline contracts', () => {
     expect(activeDiscoveryCapabilities()).not.toContain('crs-check-availability');
   });
 
-  it('production active-read tool allowlist stays find-only until later waves', () => {
-    expect(productionActiveReadToolIds()).toEqual(['hms_find_reservation']);
+  it('production active-read tool allowlist stays empty until live registry promotion', () => {
+    // Source READ_TOOLS cannot pre-credit live; EC2 active.json is the allowlist.
+    expect(productionActiveReadToolIds()).toEqual([]);
   });
 });

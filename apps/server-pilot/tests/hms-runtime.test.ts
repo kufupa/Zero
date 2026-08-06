@@ -1102,13 +1102,23 @@ describe('Task 2 production composition + browser guards', () => {
     await runtime.start(AbortSignal.timeout(15_000));
     await new Promise((r) => setTimeout(r, 120));
     const { readFile, stat } = await import('node:fs/promises');
-    const raw = await readFile(healthPath, 'utf8');
-    const parsed = JSON.parse(raw);
-    expect(parsed.state).toMatch(/ready|degraded|starting|stopped|circuit_open/);
-    expect(typeof parsed.browserLaunches).toBe('number');
-    expect(typeof parsed.contextsCreated).toBe('number');
-    expect(parsed.checkedAt).toMatch(/^\d{4}-/);
-    expect(parsed.staleAfterMs).toBe(30_000);
+    // Windows rename fallback can race heartbeat; retry until JSON parses.
+    let parsed: Record<string, unknown> | null = null;
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      const raw = await readFile(healthPath, 'utf8');
+      try {
+        parsed = JSON.parse(raw) as Record<string, unknown>;
+        break;
+      } catch {
+        await new Promise((r) => setTimeout(r, 25));
+      }
+    }
+    expect(parsed).not.toBeNull();
+    expect(parsed!.state).toMatch(/ready|degraded|starting|stopped|circuit_open/);
+    expect(typeof parsed!.browserLaunches).toBe('number');
+    expect(typeof parsed!.contextsCreated).toBe('number');
+    expect(String(parsed!.checkedAt)).toMatch(/^\d{4}-/);
+    expect(parsed!.staleAfterMs).toBe(30_000);
     const mode = (await stat(healthPath)).mode & 0o777;
     // Windows may not preserve unix mode; assert when meaningful
     if (process.platform !== 'win32') {
