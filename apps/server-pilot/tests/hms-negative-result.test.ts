@@ -2,11 +2,14 @@ import { createHash, randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
   canonicalNegativeCertificateSha256,
+  evidenceArtifactForBinding,
   hmsEvidenceBindingV1Schema,
+  negativeGateEvidenceMatchesBinding,
   negativeResultCertificateV1Schema,
   toBusinessNotFoundToolStatus,
   validateNegativeResultCertificate,
   type HmsEvidenceBindingV1,
+  type NegativeGateEvidenceArtifact,
   type NegativeResultCertificateV1,
 } from '../src/hms/negative-result.js';
 import { READ_TOOLS } from '../src/hms/read-tools.js';
@@ -60,6 +63,20 @@ function certificate(
     candidateExhaustion: ref(),
     issuedAt: new Date(Date.now() - 1_000).toISOString(),
     expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    ...overrides,
+  });
+}
+
+/** Happy-path verifyEvidence: every gate returns artifact bound to certificate. */
+function verifyMatching(
+  overrides: Partial<NegativeGateEvidenceArtifact> = {},
+): (
+  gate: string,
+  ref: { evidenceId: string; sha256: string },
+  binding: HmsEvidenceBindingV1,
+) => Promise<NegativeGateEvidenceArtifact | null> {
+  return async (_gate, gateRef, b) => ({
+    ...evidenceArtifactForBinding(gateRef, b),
     ...overrides,
   });
 }
@@ -124,7 +141,7 @@ describe('NegativeResultCertificateV1 canonical digest', () => {
       validateNegativeResultCertificate({
         certificate: cert,
         certificateSha256: sha('wrong'),
-        verifyEvidence: async () => true,
+        verifyEvidence: verifyMatching(),
       }),
     ).resolves.toEqual({
       status: 'UNVERIFIED_NEGATIVE',
@@ -140,7 +157,7 @@ describe('NegativeResultCertificateV1 canonical digest', () => {
       validateNegativeResultCertificate({
         certificate: duped,
         certificateSha256: canonicalNegativeCertificateSha256(duped),
-        verifyEvidence: async () => true,
+        verifyEvidence: verifyMatching(),
       }),
     ).resolves.toEqual({
       status: 'UNVERIFIED_NEGATIVE',
@@ -156,7 +173,7 @@ describe('NegativeResultCertificateV1 canonical digest', () => {
       validateNegativeResultCertificate({
         certificate: driftedRaw,
         certificateSha256: sha('anything'),
-        verifyEvidence: async () => true,
+        verifyEvidence: verifyMatching(),
       }),
     ).resolves.toEqual({
       status: 'UNVERIFIED_NEGATIVE',
@@ -167,12 +184,108 @@ describe('NegativeResultCertificateV1 canonical digest', () => {
       validateNegativeResultCertificate({
         certificate: cert,
         certificateSha256: digest,
-        verifyEvidence: async () => true,
+        verifyEvidence: verifyMatching(),
       }),
     ).resolves.toMatchObject({
       status: 'BUSINESS_NOT_FOUND',
       certificateSha256: digest,
     });
+  });
+
+  it('rejects missing and cross-run gate evidence that does not match binding', async () => {
+    const cert = certificate();
+    const digest = canonicalNegativeCertificateSha256(cert);
+
+    await expect(
+      validateNegativeResultCertificate({
+        certificate: cert,
+        certificateSha256: digest,
+        verifyEvidence: async (gate, gateRef, b) =>
+          gate === 'surface' ? null : evidenceArtifactForBinding(gateRef, b),
+      }),
+    ).resolves.toEqual({
+      status: 'UNVERIFIED_NEGATIVE',
+      diagnostic: 'ROLE_OR_PROPERTY_SCOPE',
+    });
+
+    const crossRunOp = randomUUID();
+    expect(
+      negativeGateEvidenceMatchesBinding(
+        {
+          ...evidenceArtifactForBinding(cert.candidateSource, cert.binding),
+          operationId: crossRunOp,
+        },
+        cert.binding,
+      ),
+    ).toBe(false);
+
+    await expect(
+      validateNegativeResultCertificate({
+        certificate: cert,
+        certificateSha256: digest,
+        verifyEvidence: async (gate, gateRef, b) => {
+          const artifact = evidenceArtifactForBinding(gateRef, b);
+          return gate === 'candidateSource'
+            ? { ...artifact, operationId: crossRunOp }
+            : artifact;
+        },
+      }),
+    ).resolves.toEqual({
+      status: 'UNVERIFIED_NEGATIVE',
+      diagnostic: 'CANDIDATE_EXTRACTION_UNVERIFIED',
+    });
+  });
+
+  it('rejects binding drift on tool/version/snapshot/role/branch/source beyond verifierVersion', async () => {
+    const cert = certificate();
+    const digest = canonicalNegativeCertificateSha256(cert);
+    const drifts: Array<{
+      field: keyof HmsEvidenceBindingV1;
+      value: string;
+      gateDiagnostic: string;
+    }> = [
+      {
+        field: 'toolVersion',
+        value: '9.9.9',
+        gateDiagnostic: 'CANDIDATE_EXTRACTION_UNVERIFIED',
+      },
+      {
+        field: 'candidateSnapshotSha256',
+        value: sha('other-snap'),
+        gateDiagnostic: 'CANDIDATE_EXTRACTION_UNVERIFIED',
+      },
+      {
+        field: 'roleProofSha256',
+        value: sha('other-role'),
+        gateDiagnostic: 'CANDIDATE_EXTRACTION_UNVERIFIED',
+      },
+      {
+        field: 'requestBranchId',
+        value: 'folio_summary',
+        gateDiagnostic: 'CANDIDATE_EXTRACTION_UNVERIFIED',
+      },
+      {
+        field: 'sourceRevision',
+        value: 'other-rev',
+        gateDiagnostic: 'CANDIDATE_EXTRACTION_UNVERIFIED',
+      },
+    ];
+
+    for (const drift of drifts) {
+      await expect(
+        validateNegativeResultCertificate({
+          certificate: cert,
+          certificateSha256: digest,
+          verifyEvidence: async (_gate, gateRef, b) => ({
+            ...evidenceArtifactForBinding(gateRef, b),
+            [drift.field]: drift.value,
+          }),
+        }),
+      ).resolves.toEqual({
+        status: 'UNVERIFIED_NEGATIVE',
+        diagnostic: drift.gateDiagnostic,
+      });
+    }
   });
 
   it('maps only branded validator output to model-visible not_found', async () => {
@@ -181,7 +294,7 @@ describe('NegativeResultCertificateV1 canonical digest', () => {
     const validated = await validateNegativeResultCertificate({
       certificate: cert,
       certificateSha256: digest,
-      verifyEvidence: async () => true,
+      verifyEvidence: verifyMatching(),
     });
     expect(toBusinessNotFoundToolStatus(validated)).toBe('not_found');
     expect(
@@ -198,7 +311,10 @@ describe('NegativeResultCertificateV1 canonical digest', () => {
       validateNegativeResultCertificate({
         certificate: cert,
         certificateSha256: canonicalNegativeCertificateSha256(cert),
-        verifyEvidence: async (gate) => gate !== 'parserConservation',
+        verifyEvidence: async (gate, gateRef, b) =>
+          gate === 'parserConservation'
+            ? null
+            : evidenceArtifactForBinding(gateRef, b),
       }),
     ).resolves.toEqual({
       status: 'UNVERIFIED_NEGATIVE',

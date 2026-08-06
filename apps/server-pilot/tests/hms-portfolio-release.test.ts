@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
+import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import portfolioCases from '../evals/hms/portfolio-cases.v3.json';
 import {
   MAX_RESERVATION_FOLLOWUPS,
@@ -23,6 +26,8 @@ import {
   hmsBrowserArtifactReceiptV2Schema,
   hmsPortfolioToolReleaseV2Schema,
   hmsReadRoleProofV2Schema,
+  loadHmsReadRoleProofV2,
+  loadHmsReadRoleProofV2ForTool,
   roleProofV2Path,
   validateRoleProofV2ForTool,
 } from '../src/hms/release-kernel.js';
@@ -321,6 +326,26 @@ describe('Phase B evidence schemas (role proof / receipt / release v2)', () => {
     expect(roleProofV2Path('/opt/nava', 'hms_find_reservation')).toMatch(
       /role-proofs[/\\]hms_find_reservation\.v2\.json$/,
     );
+  });
+
+  it('loads v2 role proof from path helper and rejects cross-tool file', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'hms-role-proof-v2-'));
+    await mkdir(join(root, 'role-proofs'), { recursive: true });
+    const proof = validRoleProofV2();
+    const path = roleProofV2Path(root, 'hms_find_reservation');
+    await writeFile(path, `${JSON.stringify(proof)}\n`, { mode: 0o600 });
+
+    await expect(
+      loadHmsReadRoleProofV2ForTool(root, READ_TOOLS.hms_find_reservation),
+    ).resolves.toMatchObject({ toolId: 'hms_find_reservation', schemaVersion: 2 });
+
+    await expect(
+      loadHmsReadRoleProofV2(path, READ_TOOLS.hms_read_folio),
+    ).rejects.toMatchObject({ code: 'ROLE_SCOPE_INVALID' });
+
+    await expect(
+      loadHmsReadRoleProofV2ForTool(root, READ_TOOLS.mail_read_artifact),
+    ).rejects.toMatchObject({ code: 'ROLE_SCOPE_INVALID' });
   });
 
   it('discriminates discovery|proof receipts and blocks mail toolId', () => {

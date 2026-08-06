@@ -24,6 +24,8 @@ const EVIDENCE_GATES = [
   'candidateExhaustion',
 ] as const;
 
+export type NegativeEvidenceGate = (typeof EVIDENCE_GATES)[number];
+
 export const negativeResultCertificateV1Schema = z
   .object({
     schemaVersion: z.literal(1),
@@ -54,6 +56,74 @@ export const negativeResultCertificateV1Schema = z
 export type NegativeResultCertificateV1 = z.infer<
   typeof negativeResultCertificateV1Schema
 >;
+
+/** Gate artifact fields that must equal certificate `HmsEvidenceBindingV1`. */
+export type NegativeGateEvidenceArtifact = {
+  evidenceId: string;
+  sha256: string;
+  toolId: HmsEvidenceBindingV1['toolId'];
+  toolVersion: string;
+  operationId: string;
+  discoveryOperationId: HmsEvidenceBindingV1['discoveryOperationId'];
+  candidateSnapshotSha256: string;
+  propertyCode: HmsEvidenceBindingV1['propertyCode'];
+  credentialVersionHmacSha256: string;
+  runtimeFingerprintSha256: string;
+  privateDigestKeyVersion: string;
+  roleProofSha256: string;
+  requestBranchId: string;
+  sourceRevision: string;
+  verifierVersion: string;
+};
+
+const ARTIFACT_BINDING_KEYS = [
+  'toolId',
+  'toolVersion',
+  'operationId',
+  'discoveryOperationId',
+  'candidateSnapshotSha256',
+  'propertyCode',
+  'credentialVersionHmacSha256',
+  'runtimeFingerprintSha256',
+  'privateDigestKeyVersion',
+  'roleProofSha256',
+  'requestBranchId',
+  'sourceRevision',
+  'verifierVersion',
+] as const satisfies ReadonlyArray<keyof HmsEvidenceBindingV1>;
+
+export function evidenceArtifactForBinding(
+  ref: { evidenceId: string; sha256: string },
+  binding: HmsEvidenceBindingV1,
+): NegativeGateEvidenceArtifact {
+  return {
+    evidenceId: ref.evidenceId,
+    sha256: ref.sha256,
+    toolId: binding.toolId,
+    toolVersion: binding.toolVersion,
+    operationId: binding.operationId,
+    discoveryOperationId: binding.discoveryOperationId,
+    candidateSnapshotSha256: binding.candidateSnapshotSha256,
+    propertyCode: binding.propertyCode,
+    credentialVersionHmacSha256: binding.credentialVersionHmacSha256,
+    runtimeFingerprintSha256: binding.runtimeFingerprintSha256,
+    privateDigestKeyVersion: binding.privateDigestKeyVersion,
+    roleProofSha256: binding.roleProofSha256,
+    requestBranchId: binding.requestBranchId,
+    sourceRevision: binding.sourceRevision,
+    verifierVersion: binding.verifierVersion,
+  };
+}
+
+export function negativeGateEvidenceMatchesBinding(
+  artifact: NegativeGateEvidenceArtifact,
+  binding: HmsEvidenceBindingV1,
+): boolean {
+  for (const key of ARTIFACT_BINDING_KEYS) {
+    if (artifact[key] !== binding[key]) return false;
+  }
+  return true;
+}
 
 export type QuarantinedNegative = {
   status: 'UNVERIFIED_NEGATIVE';
@@ -178,10 +248,15 @@ export async function validateNegativeResultCertificate(input: {
   certificate: unknown;
   certificateSha256: string;
   now?: Date;
+  /**
+   * Load gate artifact. Return `null` when missing.
+   * Validator checks digest + binding correlation; callback must not skip that.
+   */
   verifyEvidence: (
-    gate: (typeof EVIDENCE_GATES)[number],
+    gate: NegativeEvidenceGate,
     ref: { evidenceId: string; sha256: string },
-  ) => Promise<boolean>;
+    binding: HmsEvidenceBindingV1,
+  ) => Promise<NegativeGateEvidenceArtifact | null>;
 }): Promise<ValidatedBusinessNotFound | QuarantinedNegative> {
   const parsed = negativeResultCertificateV1Schema.safeParse(input.certificate);
   if (!parsed.success || !digest.safeParse(input.certificateSha256).success) {
@@ -210,7 +285,14 @@ export async function validateNegativeResultCertificate(input: {
     'BLOCKED_NO_CANDIDATE_AFTER_VERIFIED_SOURCE_EXHAUSTION',
   ];
   for (const [index, gate] of EVIDENCE_GATES.entries()) {
-    if (!(await input.verifyEvidence(gate, cert[gate]))) {
+    const ref = cert[gate];
+    const artifact = await input.verifyEvidence(gate, ref, cert.binding);
+    if (
+      !artifact ||
+      artifact.evidenceId !== ref.evidenceId ||
+      artifact.sha256 !== ref.sha256 ||
+      !negativeGateEvidenceMatchesBinding(artifact, cert.binding)
+    ) {
       return { status: 'UNVERIFIED_NEGATIVE', diagnostic: diagnostics[index]! };
     }
   }

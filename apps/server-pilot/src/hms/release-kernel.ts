@@ -1,5 +1,5 @@
 /**
- * Phase B release / role-proof / receipt evidence schemas.
+ * Phase B release / role-proof / receipt evidence schemas + role-proof loaders.
  * production-runtime consumes these; do not reverse-import from production-runtime.
  */
 import { createHash } from 'node:crypto';
@@ -15,6 +15,7 @@ import {
   type ReadToolDefinition,
   type ReadToolId,
 } from './read-tools.js';
+import { HmsRuntimeError } from './runtime.js';
 
 const sha = z.string().regex(/^[a-f0-9]{64}$/);
 const uuid = z.string().uuid();
@@ -24,6 +25,18 @@ const discoveryOperationId = z.enum(DISCOVERY_OPERATION_IDS);
 const roleSurfaceId = z.enum(ROLE_SURFACE_IDS);
 
 const MAX_PROOF_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** Phase A v1 denied-action floor; kept for loader parity with schema tuple. */
+const V1_DENIED_ACTIONS = [
+  'new_record',
+  'save',
+  'delete',
+  'duplicate',
+  'check_in',
+  'check_out',
+  'document_generate',
+  'document_send',
+] as const;
 
 export const hmsReadRoleProofV1Schema = z
   .object({
@@ -323,6 +336,129 @@ export function validateRoleProofV2ForTool(
       throw new Error(`role proof missing denied action ${action}`);
     }
   }
+}
+
+/** Phase A v1 role-proof loader — path + TTL + denied-action floor. */
+export async function loadHmsReadRoleProof(
+  path: string,
+  now: Date = new Date(),
+): Promise<HmsReadRoleProofV1> {
+  let raw: string;
+  try {
+    raw = await readFile(path, 'utf8');
+  } catch {
+    throw new HmsRuntimeError(
+      'ROLE_PROOF_MISSING',
+      `role proof missing at ${path}`,
+    );
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new HmsRuntimeError('ROLE_SCOPE_INVALID', 'role proof JSON invalid');
+  }
+  let proof: HmsReadRoleProofV1;
+  try {
+    proof = hmsReadRoleProofV1Schema.parse(parsed);
+  } catch {
+    throw new HmsRuntimeError('ROLE_SCOPE_INVALID', 'role proof schema invalid');
+  }
+  const issued = Date.parse(proof.issuedAt);
+  const expires = Date.parse(proof.expiresAt);
+  if (!Number.isFinite(issued) || !Number.isFinite(expires)) {
+    throw new HmsRuntimeError('ROLE_SCOPE_INVALID', 'role proof dates invalid');
+  }
+  if (issued > now.getTime() || expires <= issued) {
+    throw new HmsRuntimeError(
+      'ROLE_SCOPE_INVALID',
+      'role proof date order invalid',
+    );
+  }
+  if (expires < now.getTime()) {
+    throw new HmsRuntimeError('ROLE_PROOF_EXPIRED', 'role proof expired');
+  }
+  if (expires - issued > MAX_PROOF_TTL_MS) {
+    throw new HmsRuntimeError('ROLE_SCOPE_INVALID', 'role proof TTL exceeds 30d');
+  }
+  if (proof.propertyCode !== 'HRCEN') {
+    throw new HmsRuntimeError('ROLE_SCOPE_INVALID', 'role proof property mismatch');
+  }
+  for (const action of V1_DENIED_ACTIONS) {
+    if (!proof.deniedActions.includes(action)) {
+      throw new HmsRuntimeError(
+        'ROLE_SCOPE_INVALID',
+        'role proof deniedActions incomplete',
+      );
+    }
+  }
+  if (!proof.allowedSurfaces.includes('Guest Stay')) {
+    throw new HmsRuntimeError('ROLE_SCOPE_INVALID', 'role proof surface invalid');
+  }
+  return proof;
+}
+
+/**
+ * Phase B v2 role-proof loader. Validates via `validateRoleProofV2ForTool`.
+ * Prefer `loadHmsReadRoleProofV2ForTool` when loading from the standard root path.
+ */
+export async function loadHmsReadRoleProofV2(
+  path: string,
+  tool: ReadToolDefinition,
+  now: Date = new Date(),
+): Promise<HmsReadRoleProofV2> {
+  let raw: string;
+  try {
+    raw = await readFile(path, 'utf8');
+  } catch {
+    throw new HmsRuntimeError(
+      'ROLE_PROOF_MISSING',
+      `role proof v2 missing at ${path}`,
+    );
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new HmsRuntimeError('ROLE_SCOPE_INVALID', 'role proof v2 JSON invalid');
+  }
+  let proof: HmsReadRoleProofV2;
+  try {
+    proof = hmsReadRoleProofV2Schema.parse(parsed);
+  } catch {
+    throw new HmsRuntimeError(
+      'ROLE_SCOPE_INVALID',
+      'role proof v2 schema invalid',
+    );
+  }
+  try {
+    validateRoleProofV2ForTool(proof, tool, now);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'role proof v2 invalid';
+    if (/expired/i.test(message)) {
+      throw new HmsRuntimeError('ROLE_PROOF_EXPIRED', message);
+    }
+    throw new HmsRuntimeError('ROLE_SCOPE_INVALID', message);
+  }
+  return proof;
+}
+
+export async function loadHmsReadRoleProofV2ForTool(
+  root: string,
+  tool: ReadToolDefinition,
+  now: Date = new Date(),
+): Promise<HmsReadRoleProofV2> {
+  if (tool.id === 'mail_read_artifact') {
+    throw new HmsRuntimeError(
+      'ROLE_SCOPE_INVALID',
+      'mail_read_artifact cannot enter HMS role proof v2',
+    );
+  }
+  return loadHmsReadRoleProofV2(
+    roleProofV2Path(root, tool.id),
+    tool,
+    now,
+  );
 }
 
 async function atomicWrite(path: string, value: unknown): Promise<void> {

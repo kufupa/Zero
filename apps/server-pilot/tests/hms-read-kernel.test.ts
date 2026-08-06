@@ -13,6 +13,7 @@ import {
   resolveReadCandidateChild,
 } from '../src/hms/candidate-graph.js';
 import {
+  evidenceArtifactForBinding,
   negativeResultCertificateV1Schema,
   toBusinessNotFoundToolStatus,
   validateNegativeResultCertificate,
@@ -25,12 +26,12 @@ import {
 import {
   hmsBrowserArtifactReceiptV2Schema,
   hmsReadRoleProofSchema,
+  hmsReadRoleProofV1Schema,
   loadActiveReadRegistry,
   promoteReadTool,
   rollbackReadTool,
   type HmsPortfolioToolReleaseV1,
 } from '../src/hms/release-kernel.js';
-import { hmsReadRoleProofV1Schema } from '../src/hms/production-runtime.js';
 import {
   markAiRunSucceeded,
   mergeTerminalRunMetrics,
@@ -574,14 +575,18 @@ describe('negative quarantine', () => {
       validateNegativeResultCertificate({
         certificate,
         certificateSha256: digest,
-        verifyEvidence: async () => true,
+        verifyEvidence: async (_gate, gateRef, b) =>
+          evidenceArtifactForBinding(gateRef, b),
       }),
     ).resolves.toMatchObject({ status: 'BUSINESS_NOT_FOUND' });
     await expect(
       validateNegativeResultCertificate({
         certificate,
         certificateSha256: digest,
-        verifyEvidence: async (gate) => gate !== 'nativeRequestDifferential',
+        verifyEvidence: async (gate, gateRef, b) =>
+          gate === 'nativeRequestDifferential'
+            ? null
+            : evidenceArtifactForBinding(gateRef, b),
       }),
     ).resolves.toEqual({
       status: 'UNVERIFIED_NEGATIVE',
@@ -632,7 +637,8 @@ describe('negative quarantine', () => {
     const validated = await validateNegativeResultCertificate({
       certificate,
       certificateSha256: canonicalNegativeCertificateSha256(certificate),
-      verifyEvidence: async () => true,
+      verifyEvidence: async (_gate, gateRef, b) =>
+        evidenceArtifactForBinding(gateRef, b),
     });
     expect(toBusinessNotFoundToolStatus(validated)).toBe('not_found');
   });

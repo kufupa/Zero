@@ -1185,7 +1185,7 @@ function createHmsRuntimeInternal(
     const loader =
       options.loadRoleProof ??
       (async (path: string) => {
-        const { loadHmsReadRoleProof } = await import('./production-runtime.js');
+        const { loadHmsReadRoleProof } = await import('./release-kernel.js');
         return loadHmsReadRoleProof(path);
       });
     try {

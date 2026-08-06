@@ -2,7 +2,6 @@
  * Production HMS runtime composition — Playwright is a hard runtime dependency.
  * No fetch/mock browser factory fallback. Role-proof revalidated per context.
  */
-import { readFile } from 'node:fs/promises';
 import {
   GetSecretValueCommand,
   SecretsManagerClient,
@@ -16,6 +15,7 @@ import {
 } from './browser-artifacts.js';
 import {
   hmsReadRoleProofV1Schema,
+  loadHmsReadRoleProof,
   type HmsReadRoleProofV1,
 } from './release-kernel.js';
 import {
@@ -29,80 +29,8 @@ import {
 } from './runtime.js';
 
 export { CENTURION_HMS_PRODUCTION_ORIGIN };
-export { hmsReadRoleProofV1Schema };
+export { hmsReadRoleProofV1Schema, loadHmsReadRoleProof };
 export type { HmsReadRoleProofV1 };
-
-const DENIED_ACTIONS = [
-  'new_record',
-  'save',
-  'delete',
-  'duplicate',
-  'check_in',
-  'check_out',
-  'document_generate',
-  'document_send',
-] as const;
-
-const MAX_PROOF_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-
-export async function loadHmsReadRoleProof(
-  path: string,
-  now: Date = new Date(),
-): Promise<HmsReadRoleProofV1> {
-  let raw: string;
-  try {
-    raw = await readFile(path, 'utf8');
-  } catch {
-    throw new HmsRuntimeError(
-      'ROLE_PROOF_MISSING',
-      `role proof missing at ${path}`,
-    );
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    throw new HmsRuntimeError('ROLE_SCOPE_INVALID', 'role proof JSON invalid');
-  }
-  let proof: HmsReadRoleProofV1;
-  try {
-    proof = hmsReadRoleProofV1Schema.parse(parsed);
-  } catch {
-    throw new HmsRuntimeError('ROLE_SCOPE_INVALID', 'role proof schema invalid');
-  }
-  const issued = Date.parse(proof.issuedAt);
-  const expires = Date.parse(proof.expiresAt);
-  if (!Number.isFinite(issued) || !Number.isFinite(expires)) {
-    throw new HmsRuntimeError('ROLE_SCOPE_INVALID', 'role proof dates invalid');
-  }
-  if (issued > now.getTime() || expires <= issued) {
-    throw new HmsRuntimeError(
-      'ROLE_SCOPE_INVALID',
-      'role proof date order invalid',
-    );
-  }
-  if (expires < now.getTime()) {
-    throw new HmsRuntimeError('ROLE_PROOF_EXPIRED', 'role proof expired');
-  }
-  if (expires - issued > MAX_PROOF_TTL_MS) {
-    throw new HmsRuntimeError('ROLE_SCOPE_INVALID', 'role proof TTL exceeds 30d');
-  }
-  if (proof.propertyCode !== 'HRCEN') {
-    throw new HmsRuntimeError('ROLE_SCOPE_INVALID', 'role proof property mismatch');
-  }
-  for (const action of DENIED_ACTIONS) {
-    if (!proof.deniedActions.includes(action)) {
-      throw new HmsRuntimeError(
-        'ROLE_SCOPE_INVALID',
-        'role proof deniedActions incomplete',
-      );
-    }
-  }
-  if (!proof.allowedSurfaces.includes('Guest Stay')) {
-    throw new HmsRuntimeError('ROLE_SCOPE_INVALID', 'role proof surface invalid');
-  }
-  return proof;
-}
 
 function createSecretsManagerLoader(region?: string): HmsSecretLoader {
   return async ({ secretArn, signal: _signal }) => {
