@@ -237,6 +237,15 @@ export async function writeBrowserArtifactReceiptV2(
   receipt: HmsBrowserArtifactReceiptV2,
 ): Promise<string> {
   const parsed = hmsBrowserArtifactReceiptV2Schema.parse(receipt);
+  // Match exclusivity contract: refuse dual receipt at write if v1 already present.
+  const v1Path = join(artifactDir, 'receipt.v1.json');
+  const v1Info = await lstat(v1Path).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+  if (v1Info) {
+    throw new ExclusiveReceiptError('dual');
+  }
   const receiptPath = join(artifactDir, 'receipt.v2.json');
   const body = `${JSON.stringify(parsed)}\n`;
   const fh = await open(receiptPath, 'w', 0o600);

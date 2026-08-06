@@ -98,6 +98,16 @@ export function revalidateEvidenceBindings(input: {
       'Secrets Manager VersionId missing',
     );
   }
+  // Missing/empty VersionStages = fail-closed (do not invent AWSCURRENT).
+  if (
+    !input.secretVersion.versionStages ||
+    input.secretVersion.versionStages.length === 0
+  ) {
+    throw new HmsRuntimeError(
+      'CREDENTIAL_VERSION_STAGES_MISSING',
+      'Secrets Manager VersionStages required for evidence binding',
+    );
+  }
   if (!input.secretVersion.versionStages.includes('AWSCURRENT')) {
     throw new HmsRuntimeError(
       'CREDENTIAL_VERSION_STALE',

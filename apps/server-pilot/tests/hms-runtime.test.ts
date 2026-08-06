@@ -1756,4 +1756,231 @@ describe("HMS browser audit capture order", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  it('createProductionHmsRuntime fail-closed when evidence ARN/version set but key missing or short', async () => {
+    const {
+      createProductionHmsRuntime,
+      createProductionHmsProofRuntime,
+      CENTURION_HMS_PRODUCTION_ORIGIN,
+    } = await import('../src/hms/production-runtime.js');
+    const { writeFile, mkdir, rm } = await import('node:fs/promises');
+    const dir = await mkdtemp(join(tmpdir(), 'hms-ev-key-'));
+    const artifactRoot = join(dir, 'artifacts');
+    const proofPath = join(dir, 'role-proof.json');
+    const now = Date.now();
+    await mkdir(artifactRoot, { recursive: true });
+    await writeFile(
+      proofPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        propertyCode: 'HRCEN',
+        allowedSurfaces: ['Guest Stay'],
+        deniedActions: [
+          'new_record',
+          'save',
+          'delete',
+          'duplicate',
+          'check_in',
+          'check_out',
+          'document_generate',
+          'document_send',
+        ],
+        issuedAt: new Date(now - 60_000).toISOString(),
+        expiresAt: new Date(now + 86_400_000).toISOString(),
+        evidenceRef: 'operator-observed-runtime-v1:abc',
+        evidenceSha256: 'a'.repeat(64),
+      }),
+      { mode: 0o600 },
+    );
+
+    const productionSecret = {
+      loginUrl: `${CENTURION_HMS_PRODUCTION_ORIGIN}/login`,
+      username: 'fixture-user',
+      password: 'fixture-password',
+      expectedTenant: 'HMS_LEGACY',
+      expectedPropertyCode: 'HRCEN',
+      expectedPropertyName: 'Centurion',
+      mailboxTransportId: 'transport-centurion',
+      credentialMode: 'view_only' as const,
+    };
+    const baseConfig = {
+      secretArn:
+        'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-hms',
+      chromiumExecutablePath: '/opt/nava/chromium/chrome',
+      roleProofPath: proofPath,
+      healthPath: join(dir, 'health.json'),
+      expectedTenant: 'HMS_LEGACY',
+      expectedPropertyCode: 'HRCEN' as const,
+      expectedTransportId: 'transport-centurion',
+      runDeadlineMs: 15_000,
+      circuitCooldownMs: 1_000,
+      evidenceHmacSecretArn:
+        'arn:aws:secretsmanager:eu-west-1:000000000000:secret:evidence',
+      evidenceHmacKeyVersion: 'evidence-key-v1',
+    };
+    const loadSecret = async () => ({
+      secret: productionSecret,
+      versionId: 'version-current-1',
+      versionStages: ['AWSCURRENT'],
+    });
+
+    await expect(
+      createProductionHmsRuntime(baseConfig, {
+        loadSecret,
+        artifactRoot,
+        sourceRevision: 'rev-11c-fix-evidence-key',
+      }),
+    ).rejects.toMatchObject({ code: 'EVIDENCE_KEY_MISSING' });
+
+    await expect(
+      createProductionHmsRuntime(baseConfig, {
+        loadSecret,
+        artifactRoot,
+        sourceRevision: 'rev-11c-fix-evidence-key',
+        evidenceHmac: {
+          secretArn: baseConfig.evidenceHmacSecretArn,
+          keyVersion: baseConfig.evidenceHmacKeyVersion,
+          key: Buffer.alloc(16, 1),
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'EVIDENCE_KEY_INVALID' });
+
+    // Live-proof composition shares the same fail-closed path.
+    await expect(
+      createProductionHmsProofRuntime(baseConfig, {
+        loadSecret,
+        artifactRoot,
+        sourceRevision: 'rev-11c-fix-evidence-key',
+      }),
+    ).rejects.toMatchObject({ code: 'EVIDENCE_KEY_MISSING' });
+
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('does not invent AWSCURRENT; fail-closed when evidence required and VersionStages missing', async () => {
+    const {
+      createProductionHmsRuntime,
+      normalizeLoadedSecret,
+      CENTURION_HMS_PRODUCTION_ORIGIN,
+    } = await import('../src/hms/production-runtime.js');
+    const { writeFile, mkdir, rm } = await import('node:fs/promises');
+
+    // Missing stages must stay empty — never fake AWSCURRENT.
+    const normalized = normalizeLoadedSecret({
+      secret: { ok: true },
+      versionId: 'version-no-stages',
+    });
+    expect(normalized.version).toEqual({
+      versionId: 'version-no-stages',
+      versionStages: [],
+    });
+
+    const dir = await mkdtemp(join(tmpdir(), 'hms-ev-stages-'));
+    const artifactRoot = join(dir, 'artifacts');
+    const proofPath = join(dir, 'role-proof.json');
+    const now = Date.now();
+    await mkdir(artifactRoot, { recursive: true });
+    await writeFile(
+      proofPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        propertyCode: 'HRCEN',
+        allowedSurfaces: ['Guest Stay'],
+        deniedActions: [
+          'new_record',
+          'save',
+          'delete',
+          'duplicate',
+          'check_in',
+          'check_out',
+          'document_generate',
+          'document_send',
+        ],
+        issuedAt: new Date(now - 60_000).toISOString(),
+        expiresAt: new Date(now + 86_400_000).toISOString(),
+        evidenceRef: 'operator-observed-runtime-v1:abc',
+        evidenceSha256: 'b'.repeat(64),
+      }),
+      { mode: 0o600 },
+    );
+
+    const productionSecret = {
+      loginUrl: `${CENTURION_HMS_PRODUCTION_ORIGIN}/login`,
+      username: 'fixture-user',
+      password: 'fixture-password',
+      expectedTenant: 'HMS_LEGACY',
+      expectedPropertyCode: 'HRCEN',
+      expectedPropertyName: 'Centurion',
+      mailboxTransportId: 'transport-centurion',
+      credentialMode: 'view_only' as const,
+    };
+    const key = Buffer.alloc(32, 9);
+    const config = {
+      secretArn:
+        'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-hms',
+      chromiumExecutablePath: '/opt/nava/chromium/chrome',
+      roleProofPath: proofPath,
+      healthPath: join(dir, 'health.json'),
+      expectedTenant: 'HMS_LEGACY',
+      expectedPropertyCode: 'HRCEN' as const,
+      expectedTransportId: 'transport-centurion',
+      runDeadlineMs: 15_000,
+      circuitCooldownMs: 1_000,
+      evidenceHmacSecretArn:
+        'arn:aws:secretsmanager:eu-west-1:000000000000:secret:evidence',
+      evidenceHmacKeyVersion: 'evidence-key-v1',
+    };
+
+    // Create-time snapshot limitation: session revalidation reuses VersionStages
+    // captured here; missing/non-AWSCURRENT stages must fail closed at create.
+    await expect(
+      createProductionHmsRuntime(config, {
+        loadSecret: async () => ({
+          secret: productionSecret,
+          versionId: 'version-missing-stages',
+          // omit versionStages — normalize must not invent AWSCURRENT
+        }),
+        artifactRoot,
+        sourceRevision: 'rev-11c-fix-stages',
+        evidenceHmac: {
+          secretArn: config.evidenceHmacSecretArn,
+          keyVersion: config.evidenceHmacKeyVersion,
+          key,
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: expect.stringMatching(
+        /CREDENTIAL_VERSION_STALE|CREDENTIAL_VERSION_STAGES_MISSING/,
+      ),
+    });
+
+    await expect(
+      createProductionHmsRuntime(config, {
+        loadSecret: async () => ({
+          secret: productionSecret,
+          versionId: 'version-previous',
+          versionStages: ['AWSPREVIOUS'],
+        }),
+        artifactRoot,
+        sourceRevision: 'rev-11c-fix-stages',
+        evidenceHmac: {
+          secretArn: config.evidenceHmacSecretArn,
+          keyVersion: config.evidenceHmacKeyVersion,
+          key,
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'CREDENTIAL_VERSION_STALE' });
+
+    // Source documents create-time VersionStages snapshot (no mid-session SM re-fetch).
+    const src = await import('node:fs/promises').then((fs) =>
+      fs.readFile(
+        new URL('../src/hms/production-runtime.ts', import.meta.url),
+        'utf8',
+      ),
+    );
+    expect(src).toMatch(/create-time.*VersionStages|VersionStages.*create-time/i);
+    expect(src).not.toMatch(/VersionStages \?\? \['AWSCURRENT'\]/);
+
+    await rm(dir, { recursive: true, force: true });
+  });
 });

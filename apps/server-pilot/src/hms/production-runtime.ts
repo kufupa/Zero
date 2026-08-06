@@ -66,10 +66,12 @@ function createSecretsManagerLoader(region?: string): HmsSecretLoader {
       );
     }
     // Preserve VersionId for credentialVersionHmacSha256; never persist raw secret.
+    // Do not invent AWSCURRENT when SDK omits VersionStages — empty stages fail-closed
+    // when evidence bindings are required.
     return {
       secret: JSON.parse(res.SecretString),
       versionId: res.VersionId,
-      versionStages: res.VersionStages ?? ['AWSCURRENT'],
+      versionStages: res.VersionStages ?? [],
     };
   };
 }
@@ -91,15 +93,55 @@ export function normalizeLoadedSecret(raw: unknown): {
       versionId: string;
       versionStages?: string[];
     };
+    // Missing VersionStages stay empty — never fake AWSCURRENT.
     return {
       secret: record.secret,
       version: {
         versionId: record.versionId,
-        versionStages: record.versionStages ?? ['AWSCURRENT'],
+        versionStages: record.versionStages ?? [],
       },
     };
   }
   return { secret: raw, version: null };
+}
+
+function evidenceKeyByteLength(key: string | Buffer): number {
+  return Buffer.isBuffer(key) ? key.byteLength : Buffer.byteLength(key, 'utf8');
+}
+
+/**
+ * Resolve evidence HMAC config. When ARN/version are configured, child key must
+ * be present and ≥32 bytes — never silently skip with Buffer.alloc(0).
+ */
+function requireEvidenceHmacForProduction(
+  config: HmsWorkerRuntimeConfig,
+  options: ProductionHmsRuntimeOptions | undefined,
+): HmsEvidenceHmacConfig | undefined {
+  const arn = config.evidenceHmacSecretArn?.trim();
+  const keyVersion = config.evidenceHmacKeyVersion?.trim();
+  const arnConfigured = Boolean(arn && keyVersion);
+  const evidence = options?.evidenceHmac;
+
+  if (!evidence) {
+    if (arnConfigured) {
+      throw new HmsRuntimeError(
+        'EVIDENCE_KEY_MISSING',
+        'evidence HMAC child key required when ARN/version configured',
+      );
+    }
+    return undefined;
+  }
+
+  const keyLen = evidenceKeyByteLength(evidence.key);
+  if (keyLen < 32) {
+    throw new HmsRuntimeError(
+      keyLen === 0 ? 'EVIDENCE_KEY_MISSING' : 'EVIDENCE_KEY_INVALID',
+      keyLen === 0
+        ? 'evidence HMAC child key required when ARN/version configured'
+        : 'evidence HMAC key must be at least 32 bytes',
+    );
+  }
+  return evidence;
 }
 
 export function resolveHmsSourceRevision(
@@ -227,24 +269,16 @@ async function createProductionHmsRuntimeInternal(
     );
   }
 
-  const evidenceHmac: HmsEvidenceHmacConfig | undefined =
-    options?.evidenceHmac ??
-    (config.evidenceHmacSecretArn && config.evidenceHmacKeyVersion
-      ? {
-          secretArn: config.evidenceHmacSecretArn,
-          keyVersion: config.evidenceHmacKeyVersion,
-          // Child key must be injected separately; production composition without
-          // key skips binding until asm-exec child supplies it.
-          key: Buffer.alloc(0),
-        }
-      : undefined);
-
-  const evidenceKeyBytes = (key: string | Buffer): number =>
-    Buffer.isBuffer(key) ? key.byteLength : Buffer.byteLength(key, 'utf8');
+  // Worker injects child key via options.evidenceHmac; ARN/version alone must not
+  // silently skip bindings (live-proof must not carry VersionId without revalidation).
+  const evidenceHmac = requireEvidenceHmacForProduction(config, options);
 
   let credentialHmac: string | undefined;
   let runtimeFp: string | undefined;
-  if (evidenceHmac && evidenceKeyBytes(evidenceHmac.key) >= 32 && version) {
+  if (evidenceHmac && version) {
+    // Create-time VersionStages snapshot: session revalidation reuses this
+    // metadata — Secrets Manager is not re-fetched for stage drift mid-process.
+    // Fail-closed here if stages omit AWSCURRENT; mid-life rotation requires restart.
     const bindings = revalidateEvidenceBindings({
       secretVersion: version,
       evidence: evidenceHmac,
@@ -261,7 +295,7 @@ async function createProductionHmsRuntimeInternal(
     });
     credentialHmac = bindings.credentialVersionHmacSha256;
     runtimeFp = bindings.runtimeFingerprintSha256 ?? undefined;
-  } else if (evidenceHmac && evidenceKeyBytes(evidenceHmac.key) >= 32 && !version) {
+  } else if (evidenceHmac && !version) {
     throw new HmsRuntimeError(
       'CREDENTIAL_VERSION_MISSING',
       'Secrets Manager VersionId required for evidence binding',
@@ -346,9 +380,10 @@ async function createProductionHmsRuntimeInternal(
     playwrightRevision: '1.52.0',
     chromiumRevision: '1169',
     evidenceBindings:
-      evidenceHmac && evidenceKeyBytes(evidenceHmac.key) >= 32 && version
+      evidenceHmac && version
         ? {
             evidence: evidenceHmac,
+            // Create-time VersionStages snapshot — see comment above revalidate.
             secretVersion: version,
             expectedCredentialVersionHmacSha256: credentialHmac,
             expectedRuntimeFingerprintSha256: runtimeFp,

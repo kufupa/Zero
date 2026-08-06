@@ -867,4 +867,47 @@ describe('hms browser artifacts store', () => {
     expect(receipt.executionClass).toBe('normal');
     await rm(root, { recursive: true, force: true });
   });
+
+  it('writeBrowserArtifactReceiptV2 refuses when v1 receipt already present', async () => {
+    const { writeBrowserArtifactReceiptV2, buildDiscoveryReceiptV2 } =
+      await import('../src/hms/browser-artifacts.js');
+    const { ExclusiveReceiptError } = await import(
+      '../src/hms/receipt-exclusivity.js'
+    );
+    const h = (c: string) => c.repeat(64);
+    const root = await tempRoot();
+    const artifact = join(root, randomUUID());
+    await mkdir(artifact, { recursive: true });
+    await writeFile(
+      join(artifact, 'receipt.v1.json'),
+      `${JSON.stringify({ schemaVersion: 1, expiresAt: '2099-01-01T00:00:00.000Z' })}\n`,
+    );
+
+    const discovery = buildDiscoveryReceiptV2({
+      artifactId: randomUUID(),
+      operationId: randomUUID(),
+      toolId: 'hms_quote_stay',
+      discoveryOperationId: 'quote_availability_search',
+      toolVersion: '1.0.0',
+      sourceRevision: 'rev-11c-fix',
+      credentialVersionHmacSha256: h('a'),
+      runtimeFingerprintSha256: h('b'),
+      privateDigestKeyVersion: 'evidence-key-v1',
+      traceSha256: h('c'),
+      videoSha256: null,
+      operationOutcome: 'succeeded',
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      structuralSignatureSha256: h('d'),
+      candidateSnapshotSha256: null,
+    });
+
+    await expect(
+      writeBrowserArtifactReceiptV2(artifact, discovery),
+    ).rejects.toBeInstanceOf(ExclusiveReceiptError);
+    await expect(
+      writeBrowserArtifactReceiptV2(artifact, discovery),
+    ).rejects.toMatchObject({ reason: 'dual' });
+    await expect(stat(join(artifact, 'receipt.v2.json'))).rejects.toThrow();
+    await rm(root, { recursive: true, force: true });
+  });
 });
