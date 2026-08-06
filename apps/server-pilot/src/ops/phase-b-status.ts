@@ -1,9 +1,15 @@
 /**
- * Offline Phase B capability status.
+ * Phase B capability status.
  * Static READ_TOOLS = contract + fixture evidence only.
- * Production activation comes from an explicit release/capability snapshot.
+ * Production activation + private artifact IDs come from registry + index snapshot.
  */
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import {
+  loadProtectedArtifactIndexSync,
+  privateArtifactIdsForTool,
+} from '../hms/artifact-index.js';
+import { hmsActiveRegistryV2Schema } from '../hms/release-kernel.js';
 import {
   READ_TOOL_IDS,
   READ_TOOLS,
@@ -44,6 +50,10 @@ export const PHASE_B_WAVE_TOOLS: Readonly<
  */
 export type PhaseBReleaseCapabilitySnapshot = {
   productionActiveReadToolIds: readonly ReadToolId[];
+  /** Active release UUID per tool (registry). Absent tool → null. */
+  activeReleaseIdByTool?: ReadonlyMap<ReadToolId, string>;
+  /** Private artifact UUIDs per tool (index). Empty array when none yet. */
+  privateArtifactIdsByTool?: ReadonlyMap<ReadToolId, readonly string[]>;
 };
 
 export const EMPTY_PHASE_B_RELEASE_CAPABILITY_SNAPSHOT: PhaseBReleaseCapabilitySnapshot =
@@ -59,6 +69,10 @@ export type PhaseBToolStatusRow = {
   fixtureDigestPresent: boolean;
   discoveryDigestPresent: boolean;
   liveProofDigestPresent: boolean;
+  /** Registry active release UUID; null when not promoted. */
+  activeReleaseId: string | null;
+  /** Current private artifact UUIDs (receipt/trace); empty if none. */
+  privateArtifactIds: string[];
 };
 
 export type PhaseBStatusReport = {
@@ -80,7 +94,81 @@ function isWaveId(value: string): value is PhaseBWaveId {
   return (PHASE_B_WAVE_IDS as readonly string[]).includes(value);
 }
 
-export function toolStatusRow(toolId: ReadToolId): PhaseBToolStatusRow {
+export function defaultPhaseBRegistryPath(
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  return (
+    env.HMS_ACTIVE_REGISTRY_PATH?.trim() ||
+    '/opt/nava/shared/hms-active-registry/active.json'
+  );
+}
+
+export function defaultPhaseBArtifactIndexPath(
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  return (
+    env.HMS_PROTECTED_ARTIFACT_INDEX_PATH?.trim() ||
+    '/opt/nava/shared/hms-browser-artifacts/index.v1.json'
+  );
+}
+
+/**
+ * Load registry + protected index for status binding.
+ * Missing registry → empty activation (fixture contract rows only).
+ * Invalid registry → empty (fail soft for offline laptop; promote stays fail-closed elsewhere).
+ */
+export function loadPhaseBReleaseCapabilitySnapshotFromDisk(
+  env: NodeJS.ProcessEnv = process.env,
+): PhaseBReleaseCapabilitySnapshot {
+  const registryPath = defaultPhaseBRegistryPath(env);
+  const indexPath = defaultPhaseBArtifactIndexPath(env);
+  const activeReleaseIdByTool = new Map<ReadToolId, string>();
+  const privateArtifactIdsByTool = new Map<ReadToolId, string[]>();
+  const productionActiveReadToolIds: ReadToolId[] = [];
+
+  if (existsSync(registryPath)) {
+    try {
+      const registry = hmsActiveRegistryV2Schema.parse(
+        JSON.parse(readFileSync(registryPath, 'utf8')),
+      );
+      for (const [toolIdRaw, releaseId] of Object.entries(registry.active)) {
+        if (!releaseId || !isReadToolId(toolIdRaw)) continue;
+        productionActiveReadToolIds.push(toolIdRaw);
+        activeReleaseIdByTool.set(toolIdRaw, releaseId);
+      }
+    } catch (error) {
+      // Soft: status stays offline-fixture when registry unreadable.
+      void error;
+    }
+  }
+
+  const indexEntries = loadProtectedArtifactIndexSync(indexPath);
+  for (const toolId of productionActiveReadToolIds) {
+    privateArtifactIdsByTool.set(
+      toolId,
+      privateArtifactIdsForTool(indexEntries, toolId, {
+        releaseId: activeReleaseIdByTool.get(toolId) ?? null,
+      }),
+    );
+  }
+  // Also surface index IDs for non-active tools when present (recovery).
+  for (const toolId of READ_TOOL_IDS) {
+    if (privateArtifactIdsByTool.has(toolId)) continue;
+    const ids = privateArtifactIdsForTool(indexEntries, toolId);
+    if (ids.length > 0) privateArtifactIdsByTool.set(toolId, ids);
+  }
+
+  return {
+    productionActiveReadToolIds,
+    activeReleaseIdByTool,
+    privateArtifactIdsByTool,
+  };
+}
+
+export function toolStatusRow(
+  toolId: ReadToolId,
+  snapshot: PhaseBReleaseCapabilitySnapshot = EMPTY_PHASE_B_RELEASE_CAPABILITY_SNAPSHOT,
+): PhaseBToolStatusRow {
   const tool = READ_TOOLS[toolId];
   const refs = tool.evidenceRefs;
   return {
@@ -91,6 +179,10 @@ export function toolStatusRow(toolId: ReadToolId): PhaseBToolStatusRow {
     fixtureDigestPresent: Boolean(refs.fixtureDigest),
     discoveryDigestPresent: Boolean(refs.discoveryDigest),
     liveProofDigestPresent: Boolean(refs.liveProofDigest),
+    activeReleaseId: snapshot.activeReleaseIdByTool?.get(toolId) ?? null,
+    privateArtifactIds: [
+      ...(snapshot.privateArtifactIdsByTool?.get(toolId) ?? []),
+    ],
   };
 }
 
@@ -116,7 +208,7 @@ export function buildPhaseBStatusReport(
   return {
     schemaVersion: 1,
     productionActiveReadToolIds: [...productionActiveReadToolIds],
-    tools: ids.map(toolStatusRow),
+    tools: ids.map((id) => toolStatusRow(id, snapshot)),
   };
 }
 
@@ -201,7 +293,8 @@ export function main(argv: string[] = process.argv.slice(2)): number {
     );
     return 2;
   }
-  const report = buildPhaseBStatusReport(parsed.filter);
+  const snapshot = loadPhaseBReleaseCapabilitySnapshotFromDisk();
+  const report = buildPhaseBStatusReport(parsed.filter, snapshot);
   process.stderr.write(`${formatPhaseBStatusOkLine()}\n`);
   if (parsed.json) {
     process.stdout.write(`${JSON.stringify(phaseBStatusJsonRecord(report))}\n`);

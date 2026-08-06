@@ -294,6 +294,81 @@ describe('live quote stay driver', () => {
     ).rejects.toMatchObject({ name: 'AbortError' });
   });
 
+  it('rejects on timeout abort signal', async () => {
+    const page: Partial<HmsPage> = {
+      async content() {
+        return '<input name="roomtypes" />';
+      },
+      async click() {},
+      async evaluate() {
+        return {};
+      },
+      async postForm() {
+        await new Promise((r) => setTimeout(r, 5_000));
+        return liveEnvelope([]);
+      },
+    };
+    const session = {
+      id: 'quote-timeout',
+      origin: ORIGIN,
+      page: page as HmsPage,
+      violation: () => null,
+      terminal: () => false,
+      close: vi.fn(async () => undefined),
+    };
+    const runtime = {
+      openReadSession: vi.fn(async () => {
+        await new Promise((r) => setTimeout(r, 50));
+        return session;
+      }),
+    } as unknown as HmsRuntime;
+    const driver = createLiveQuoteStayDriver({
+      runtime,
+      transportId: 'transport-centurion',
+    });
+    await expect(
+      driver.observeExactQuote(auth(), candidate(), AbortSignal.timeout(1)),
+    ).rejects.toSatisfy(
+      (err: unknown) =>
+        err instanceof Error &&
+        (err.name === 'TimeoutError' || err.name === 'AbortError'),
+    );
+  });
+
+  it('rejects denied wrong-scope request branch', async () => {
+    const { runtime } = mockRuntime(liveEnvelope([]));
+    const driver = createLiveQuoteStayDriver({
+      runtime,
+      transportId: 'transport-centurion',
+    });
+    await expect(
+      driver.observeExactQuote(
+        auth({ requestBranchId: 'guest_stay_search' }),
+        candidate(),
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({
+      code: 'ROLE_SCOPE_INVALID',
+    });
+  });
+
+  it('rejects stale expired authorization', async () => {
+    const { runtime } = mockRuntime(liveEnvelope([]));
+    const driver = createLiveQuoteStayDriver({
+      runtime,
+      transportId: 'transport-centurion',
+    });
+    await expect(
+      driver.observeExactQuote(
+        auth({ expiresAt: new Date(Date.now() - 1_000).toISOString() }),
+        candidate(),
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({
+      code: 'ROLE_PROOF_EXPIRED',
+    });
+  });
+
   it('builds exact manifest with OSRRAV search path only for search POST', () => {
     const c = candidate();
     const manifest = buildExactOsrravSearchManifest(ORIGIN, c);

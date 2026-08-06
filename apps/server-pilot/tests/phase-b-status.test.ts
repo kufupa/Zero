@@ -2,15 +2,21 @@
  * Phase B status — snapshot-backed capability report, no AWS/HMS.
  * Static READ_TOOLS is contract/fixture evidence only — not production activation.
  */
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
   PHASE_B_WAVE_TOOLS,
   buildPhaseBStatusReport,
   formatPhaseBStatusOkLine,
+  loadPhaseBReleaseCapabilitySnapshotFromDisk,
   phaseBStatusJsonRecord,
   toolStatusRow,
 } from '../src/ops/phase-b-status.js';
-import { READ_TOOL_IDS, READ_TOOLS } from '../src/hms/read-tools.js';
+import { READ_TOOL_IDS, READ_TOOLS, fingerprintReadToolRegistry } from '../src/hms/read-tools.js';
+import { fingerprintActiveSet } from '../src/hms/release-kernel.js';
 
 describe('phase-b-status', () => {
   it('emits schemaVersion, tool rows, and empty productionActive by default', () => {
@@ -25,6 +31,8 @@ describe('phase-b-status', () => {
       expect(typeof row.fixtureDigestPresent).toBe('boolean');
       expect(typeof row.discoveryDigestPresent).toBe('boolean');
       expect(typeof row.liveProofDigestPresent).toBe('boolean');
+      expect(row.activeReleaseId).toBeNull();
+      expect(row.privateArtifactIds).toEqual([]);
     }
   });
 
@@ -40,20 +48,108 @@ describe('phase-b-status', () => {
       fixtureDigestPresent: true,
       discoveryDigestPresent: false,
       liveProofDigestPresent: false,
+      activeReleaseId: null,
+      privateArtifactIds: [],
     });
     expect(report.productionActiveReadToolIds).toEqual([]);
   });
 
   it('consumes explicit release/capability snapshot for productionActive', () => {
+    const releaseId = randomUUID();
+    const artifactId = randomUUID();
     const report = buildPhaseBStatusReport(
       { kind: 'tool', toolId: 'hms_find_reservation' },
       {
         productionActiveReadToolIds: ['hms_find_reservation'],
+        activeReleaseIdByTool: new Map([
+          ['hms_find_reservation', releaseId],
+        ]),
+        privateArtifactIdsByTool: new Map([
+          ['hms_find_reservation', [artifactId]],
+        ]),
       },
     );
     expect(report.productionActiveReadToolIds).toEqual(['hms_find_reservation']);
+    expect(report.tools[0]?.activeReleaseId).toBe(releaseId);
+    expect(report.tools[0]?.privateArtifactIds).toEqual([artifactId]);
     // Snapshot does not invent digests onto static contract rows.
     expect(report.tools[0]?.discoveryDigestPresent).toBe(false);
+  });
+
+  it('binds quote active release + empty private IDs from registry snapshot', () => {
+    const quoteReleaseId = randomUUID();
+    const report = buildPhaseBStatusReport(
+      { kind: 'tool', toolId: 'hms_quote_stay' },
+      {
+        productionActiveReadToolIds: ['hms_quote_stay'],
+        activeReleaseIdByTool: new Map([['hms_quote_stay', quoteReleaseId]]),
+        privateArtifactIdsByTool: new Map([['hms_quote_stay', []]]),
+      },
+    );
+    expect(report.productionActiveReadToolIds).toContain('hms_quote_stay');
+    expect(report.tools[0]).toMatchObject({
+      id: 'hms_quote_stay',
+      activeReleaseId: quoteReleaseId,
+      privateArtifactIds: [],
+    });
+    // Not fixture_verified-only: release binding present.
+    expect(report.tools[0]?.activeReleaseId).not.toBeNull();
+  });
+
+  it('loads registry + index from disk for quote status bind', () => {
+    const root = mkdtempSync(join(tmpdir(), 'phase-b-status-'));
+    const registryPath = join(root, 'active.json');
+    const indexPath = join(root, 'index.v1.json');
+    const quoteReleaseId = randomUUID();
+    const artifactId = randomUUID();
+    const toolsetFingerprint = fingerprintReadToolRegistry();
+    const base = {
+      schemaVersion: 2 as const,
+      generation: 1,
+      toolsetVersion: '3.0.0',
+      toolsetFingerprint,
+      active: { hms_quote_stay: quoteReleaseId },
+      immediatePredecessor: {},
+    };
+    const registry = {
+      ...base,
+      activeSetFingerprint: fingerprintActiveSet(base),
+    };
+    writeFileSync(registryPath, `${JSON.stringify(registry)}\n`);
+    writeFileSync(
+      indexPath,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        entries: [
+          {
+            schemaVersion: 1,
+            artifactId,
+            toolId: 'hms_quote_stay',
+            toolVersion: '2.0.0',
+            releaseId: quoteReleaseId,
+            kinds: ['receipt', 'live_proof'],
+            receiptSchema: 'v2',
+            complete: true,
+            digestValid: true,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          },
+        ],
+      })}\n`,
+    );
+
+    const snap = loadPhaseBReleaseCapabilitySnapshotFromDisk({
+      HMS_ACTIVE_REGISTRY_PATH: registryPath,
+      HMS_PROTECTED_ARTIFACT_INDEX_PATH: indexPath,
+    } as NodeJS.ProcessEnv);
+    const report = buildPhaseBStatusReport(
+      { kind: 'tool', toolId: 'hms_quote_stay' },
+      snap,
+    );
+    expect(report.productionActiveReadToolIds).toEqual(['hms_quote_stay']);
+    expect(report.tools[0]?.activeReleaseId).toBe(quoteReleaseId);
+    expect(report.tools[0]?.privateArtifactIds).toEqual([artifactId]);
   });
 
   it('filters by known --wave sets', () => {
@@ -77,6 +173,8 @@ describe('phase-b-status', () => {
     expect(row.fixtureDigestPresent).toBe(true);
     expect(row.discoveryDigestPresent).toBe(false);
     expect(row.liveProofDigestPresent).toBe(false);
+    expect(row.activeReleaseId).toBeNull();
+    expect(row.privateArtifactIds).toEqual([]);
     expect(row.promotionEvidence).toEqual({
       fixture: true,
       discovery: false,

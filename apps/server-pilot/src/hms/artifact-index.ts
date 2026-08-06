@@ -1,7 +1,8 @@
+import { readFileSync } from 'node:fs';
 import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { z } from 'zod';
-import { READ_TOOL_IDS } from './read-tools.js';
+import { READ_TOOL_IDS, type ReadToolId } from './read-tools.js';
 import { hmsBrowserArtifactReceiptV2Schema } from './release-kernel.js';
 import { resolveExclusiveReceiptFile } from './receipt-exclusivity.js';
 
@@ -86,6 +87,41 @@ export async function writeProtectedArtifactIndex(
     entries,
   });
   await atomicProtectedWrite(path, index);
+}
+
+/** Sync load for status/operator — missing/invalid → empty (never invent IDs). */
+export function loadProtectedArtifactIndexSync(
+  path: string,
+): HmsProtectedArtifactIndexEntryV1[] {
+  try {
+    const raw = JSON.parse(readFileSync(path, 'utf8')) as unknown;
+    return hmsProtectedArtifactIndexV1Schema.parse(raw).entries;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Usable private artifact UUIDs for a tool (optionally scoped to release).
+ * IDs only — no guest/mail/credential values.
+ */
+export function privateArtifactIdsForTool(
+  entries: readonly HmsProtectedArtifactIndexEntryV1[],
+  toolId: ReadToolId,
+  options: { releaseId?: string | null; now?: Date } = {},
+): string[] {
+  const nowMs = (options.now ?? new Date()).getTime();
+  const releaseId = options.releaseId ?? null;
+  const ids: string[] = [];
+  for (const entry of entries) {
+    if (entry.toolId !== toolId) continue;
+    if (releaseId && entry.releaseId && entry.releaseId !== releaseId) continue;
+    if (entry.complete === false || entry.digestValid === false) continue;
+    const expires = Date.parse(entry.expiresAt);
+    if (Number.isFinite(expires) && expires <= nowMs) continue;
+    ids.push(entry.artifactId);
+  }
+  return [...new Set(ids)];
 }
 
 export type ExclusiveReceipt =

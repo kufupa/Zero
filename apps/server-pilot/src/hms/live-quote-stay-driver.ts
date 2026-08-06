@@ -429,6 +429,12 @@ export function createLiveQuoteStayDriver(input: {
           'authorization discoveryOperationId mismatch',
         );
       }
+      if (authorization.requestBranchId !== 'quote_availability_search') {
+        throw new HmsRuntimeError(
+          'ROLE_SCOPE_INVALID',
+          'authorization requestBranchId denied for quote stay',
+        );
+      }
       if (Date.parse(authorization.expiresAt) <= Date.now()) {
         throw new HmsRuntimeError('ROLE_PROOF_EXPIRED', 'authorization expired');
       }

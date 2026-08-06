@@ -13,11 +13,11 @@ Task 11E: complete (commits 731ae669..868eb26c, review clean after Important ins
 Task 11F: cancelled (Step 6 folded into 11E)
 Task 12: complete (commits 868eb26c..7f0b28a2, review clean after resume/store fix)
 Task 13: complete (commits 7f0b28a2..113da418, review clean after Step 3 + C3 wiring; live seed deferred, promote BLOCKED)
-Task 14: in progress (base 113da418)
+Task 14: complete (review FAIL Critical status/receipt-v2 FIXED; Important quoteStay wire + RED timeout/denied/stale; suites 69 pass + build)
 Task 15: pending
 Task 16: pending
 Task 17: pending
 Task 18: pending
 Minor carry: inactive-grant dedicated test; observation-mint cleaner case
 ops-deploy default GIT_BRANCH=EC2-pilot — use GIT_BRANCH=phase-b-autonomous-read-expansion for this worktree
-read-promote returns BLOCKED_REGISTRY_CUTOVER_PENDING until find+mail seeds + handler path active on EC2
+Seed cutover live on EC2 (find+mail); quote promoted after rollback drill

@@ -245,6 +245,62 @@ export function assertFindHandlerBound(
   createReadToolHandler(release, authorization);
 }
 
+export function buildHmsQuoteSessionAuthorization(input: {
+  operationId: string;
+  manifest: RequestPolicyManifest;
+  roleProofPath: string;
+  roleProofSha256: string;
+  credentialVersionHmacSha256: string;
+  runtimeFingerprintSha256: string;
+  privateDigestKeyVersion: string;
+  sourceRevision: string;
+  expiresAt?: string;
+  release?: HmsPortfolioToolReleaseV2 | null;
+}): HmsSessionAuthorization {
+  const release =
+    input.release && input.release.evidenceKind === 'hms'
+      ? input.release
+      : null;
+  const branch =
+    release?.requestBranches.find((b) => b.id === 'quote_availability_search') ??
+    release?.requestBranches[0] ??
+    null;
+  const computedManifestSha = createHash('sha256')
+    .update(JSON.stringify(input.manifest))
+    .digest('hex');
+
+  return {
+    operationId: input.operationId,
+    toolId: 'hms_quote_stay',
+    discoveryOperationId:
+      branch?.discoveryOperationId ?? 'quote_availability_search',
+    releaseId: release?.releaseId ?? randomUUID(),
+    requestBranchId: branch?.id ?? 'quote_availability_search',
+    manifest: input.manifest,
+    manifestSha256: branch?.manifestSha256 ?? computedManifestSha,
+    roleProofPath: input.roleProofPath,
+    roleProofSha256: release?.roleProofSha256 ?? input.roleProofSha256,
+    credentialVersionHmacSha256:
+      release?.credentialVersionHmacSha256 ??
+      input.credentialVersionHmacSha256,
+    runtimeFingerprintSha256:
+      release?.runtimeFingerprintSha256 ?? input.runtimeFingerprintSha256,
+    privateDigestKeyVersion:
+      release?.privateDigestKeyVersion ?? input.privateDigestKeyVersion,
+    sourceRevision: release?.sourceRevision ?? input.sourceRevision,
+    expiresAt:
+      input.expiresAt ?? new Date(Date.now() + 15 * 60_000).toISOString(),
+  };
+}
+
+/** Prove quote release+auth bind through the static handler index. */
+export function assertQuoteHandlerBound(
+  release: HmsPortfolioToolReleaseV2,
+  authorization: HmsSessionAuthorization,
+): void {
+  createReadToolHandler(release, authorization);
+}
+
 export function placeholderDigest(label: string): string {
   return sha256Hex(`phase-a-lease:${label}`);
 }

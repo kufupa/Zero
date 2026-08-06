@@ -26,10 +26,14 @@ import type {
   GuestStaySearchResult,
   LiveGuestStayDriver,
 } from './live-guest-stay-driver.js';
+import type { LiveQuoteStayDriver } from './live-quote-stay-driver.js';
+import type { QuoteStayCandidate } from './quote-stay-candidate.js';
 import type { HmsPortfolioToolReleaseV2 } from './release-kernel.js';
 import type { ReadToolId } from './read-tools.js';
 import { createReadToolHandler } from './read-handler-index.js';
 import type { HmsSessionAuthorization } from './release-kernel.js';
+import { quoteStayReadDataSchema } from './quote-stay-contract.js';
+import type { CandidateToolId } from '../ai/candidate-draft-agent.js';
 
 const ACTIVE_STATUSES = new Set([
   'reserved',
@@ -218,6 +222,14 @@ export type CreateReservationCandidateSessionInput = {
   bindFindAuthorization?: (
     authorization: HmsSessionAuthorization,
   ) => void;
+  /** When hms_quote_stay is active — live OSRRAV driver. */
+  quoteDriver?: LiveQuoteStayDriver;
+  /** Opaque id → authored quote candidate (room+rate scoped). */
+  quoteCandidates?: ReadonlyMap<string, QuoteStayCandidate>;
+  /** Build per-call quote authorization (release-bound). */
+  buildQuoteAuthorization?: (
+    candidate: QuoteStayCandidate,
+  ) => HmsSessionAuthorization;
 };
 
 /**
@@ -241,13 +253,19 @@ export function createReservationCandidateSession(
 
   const now = input.now ?? (() => new Date());
   const findRelease = input.activeReleases?.get('hms_find_reservation');
+  const quoteRelease = input.activeReleases?.get('hms_quote_stay');
   if (findRelease && input.handlerPathActive) {
     // Prove (toolId, implementationSha256) resolves — execute body stays driver.
     void createReadToolHandler;
   }
 
+  const activeToolIds = new Set<CandidateToolId>(['hms_find_reservation']);
+  if (quoteRelease && input.quoteDriver) {
+    activeToolIds.add('hms_quote_stay');
+  }
+
   return {
-    activeToolIds: new Set(['hms_find_reservation']),
+    activeToolIds,
     lookupCandidates,
     authorizedAttachmentIds: new Set(),
     readFence: input.readFence,
@@ -291,8 +309,53 @@ export function createReservationCandidateSession(
         mapSearchResult(search, now()),
       );
     },
-    quoteStay: async () => {
-      throw new Error('hms_quote_stay not active in reservation session');
+    quoteStay: async (candidateId, signal) => {
+      if (signal.aborted) {
+        const err = new Error('quote session aborted');
+        err.name = 'AbortError';
+        throw err;
+      }
+      if (!quoteRelease || !input.quoteDriver || !input.buildQuoteAuthorization) {
+        throw new Error('hms_quote_stay not active in reservation session');
+      }
+      const quoteCand = input.quoteCandidates?.get(candidateId);
+      if (!quoteCand) {
+        const observedAt = now();
+        return {
+          status: 'manual_required' as const,
+          draftReady: false,
+          data: quoteStayReadDataSchema.parse({
+            nightlyObservations: [],
+            bookable: false as const,
+            stayTotal: null,
+            occupancyPriced: false as const,
+            requestedRooms: 1,
+          }),
+          unresolvedFields: ['quote_candidate'],
+          evidence: {
+            kind: 'hms' as const,
+            id: '00000000-0000-4000-8000-000000000014',
+            toolId: 'hms_quote_stay' as const,
+            toolVersion: '2.0.0',
+            propertyCode: input.propertyCode ?? 'HRCEN',
+            observedAt: observedAt.toISOString(),
+            expiresAt: new Date(observedAt.getTime() + 15 * 60_000).toISOString(),
+            claimKeys: [],
+            sourceHash: createHash('sha256')
+              .update(`missing-quote:${candidateId}`)
+              .digest('hex'),
+          },
+        };
+      }
+      if (input.handlerPathActive) {
+        void createReadToolHandler;
+      }
+      const authorization = input.buildQuoteAuthorization(quoteCand);
+      return input.quoteDriver.observeExactQuote(
+        authorization,
+        quoteCand,
+        signal,
+      );
     },
     readArtifact: async () => {
       throw new Error('mail_read_artifact not active in reservation session');

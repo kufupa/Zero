@@ -27,6 +27,7 @@ import {
 import {
   PHASE_B_WAVE_IDS,
   PHASE_B_WAVE_TOOLS,
+  loadPhaseBReleaseCapabilitySnapshotFromDisk,
   type PhaseBWaveId,
 } from './phase-b-status.js';
 import {
@@ -2075,14 +2076,27 @@ export function runPhaseBLocalOperator(input: {
   let operationId = input.operationId;
 
   if (command.action === 'doctor' || command.action === 'status') {
+    const toolId = 'toolId' in command ? command.toolId ?? null : null;
+    const waveId = 'waveId' in command ? command.waveId ?? null : null;
+    let releaseId: string | null = null;
+    let artifactIds: string[] = [];
+    if (command.action === 'status') {
+      const snap = loadPhaseBReleaseCapabilitySnapshotFromDisk();
+      if (toolId) {
+        releaseId = snap.activeReleaseIdByTool?.get(toolId) ?? null;
+        artifactIds = [...(snap.privateArtifactIdsByTool?.get(toolId) ?? [])];
+      }
+    }
     return buildPhaseBOperatorResult({
       code: 'COMPLETE',
       action: command.action,
       stage: command.action,
       operationId: null,
       sourceRevision: input.sourceRevision,
-      toolId: 'toolId' in command ? command.toolId ?? null : null,
-      waveId: 'waveId' in command ? command.waveId ?? null : null,
+      toolId,
+      waveId,
+      releaseId,
+      artifactIds,
       elapsedMs: elapsed(),
     });
   }
@@ -2184,6 +2198,14 @@ export function runPhaseBLocalOperator(input: {
   }
 
   if (command.action === 'artifacts') {
+    const snap = loadPhaseBReleaseCapabilitySnapshotFromDisk();
+    const releaseId =
+      command.releaseId ??
+      snap.activeReleaseIdByTool?.get(command.toolId) ??
+      null;
+    const artifactIds = [
+      ...(snap.privateArtifactIdsByTool?.get(command.toolId) ?? []),
+    ];
     return buildPhaseBOperatorResult({
       code: 'COMPLETE',
       action: 'artifacts',
@@ -2191,7 +2213,8 @@ export function runPhaseBLocalOperator(input: {
       operationId: command.operationId ?? operationId,
       sourceRevision: input.sourceRevision,
       toolId: command.toolId,
-      releaseId: command.releaseId ?? null,
+      releaseId,
+      artifactIds,
       elapsedMs: elapsed(),
     });
   }

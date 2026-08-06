@@ -239,6 +239,11 @@ export type CandidateSessionInput = {
   /** Claimed-run lease; tools reserve durable read budget against it before I/O. */
   readFence?: AiRunFence;
   readPlanKind?: CandidateReadPlanKind;
+  /** Authored quote candidates when hms_quote_stay is active. */
+  quoteCandidates?: ReadonlyMap<
+    string,
+    import('../hms/quote-stay-candidate.js').QuoteStayCandidate
+  >;
 };
 
 export type CandidateSessionFactory = (
@@ -333,13 +338,19 @@ export function createLiveHmsCandidateSessionFactory(): CandidateSessionFactory 
     const {
       buildHmsFindSessionAuthorization,
       assertFindHandlerBound,
+      buildHmsQuoteSessionAuthorization,
+      assertQuoteHandlerBound,
       placeholderDigest,
     } = await import('../hms/active-read-runtime.js');
     const {
       buildExactOsressSearchManifest,
       buildLiveGuestStayReadManifest,
+      buildExactOsrravSearchManifest,
       liveNotFoundCanaryCandidate,
     } = await import('../hms/live-read-manifest.js');
+    const { createLiveQuoteStayDriver } = await import(
+      '../hms/live-quote-stay-driver.js'
+    );
     const { CENTURION_HMS_PRODUCTION_ORIGIN, resolveHmsSourceRevision } =
       await import('../hms/production-runtime.js');
     const { runtimeFingerprintSha256 } = await import(
@@ -358,6 +369,11 @@ export function createLiveHmsCandidateSessionFactory(): CandidateSessionFactory 
     const findRelease =
       findReleaseRaw && findReleaseRaw.evidenceKind === 'hms'
         ? findReleaseRaw
+        : null;
+    const quoteReleaseRaw = active?.releases.get('hms_quote_stay') ?? null;
+    const quoteRelease =
+      quoteReleaseRaw && quoteReleaseRaw.evidenceKind === 'hms'
+        ? quoteReleaseRaw
         : null;
     const exact = filterExactReservationCandidates(input.lookupCandidates);
     const operationId = input.runId ?? `hms-live-${Date.now()}`;
@@ -403,6 +419,12 @@ export function createLiveHmsCandidateSessionFactory(): CandidateSessionFactory 
         return auth;
       },
     });
+    const quoteDriver = quoteRelease
+      ? createLiveQuoteStayDriver({
+          runtime,
+          transportId: input.transportId,
+        })
+      : undefined;
     // openReadSession already authenticates + verifies property; do not open a
     // second pre-tool login session (would create a second audited context).
     const { resolvePlanScopedDraftGate } = await import(
@@ -425,6 +447,33 @@ export function createLiveHmsCandidateSessionFactory(): CandidateSessionFactory 
       handlerPathActive: active?.handlerPathActive === true,
       candidateBindings: planGate?.candidateBindings,
       requesterAuthorization: planGate?.requesterAuthorization,
+      quoteDriver,
+      quoteCandidates: input.quoteCandidates,
+      buildQuoteAuthorization: quoteRelease
+        ? (quoteCand) => {
+            const auth = buildHmsQuoteSessionAuthorization({
+              operationId,
+              manifest: buildExactOsrravSearchManifest(
+                CENTURION_HMS_PRODUCTION_ORIGIN,
+                quoteCand,
+              ),
+              roleProofPath: config.roleProofPath,
+              roleProofSha256:
+                quoteRelease.roleProofSha256 ?? placeholderDigest('quote-role'),
+              credentialVersionHmacSha256:
+                quoteRelease.credentialVersionHmacSha256 ??
+                placeholderDigest('quote-credential'),
+              runtimeFingerprintSha256:
+                quoteRelease.runtimeFingerprintSha256 ?? runtimeFp,
+              privateDigestKeyVersion:
+                quoteRelease.privateDigestKeyVersion ?? 'v1',
+              sourceRevision: quoteRelease.sourceRevision ?? sourceRevision,
+              release: quoteRelease,
+            });
+            assertQuoteHandlerBound(quoteRelease, auth);
+            return auth;
+          }
+        : undefined,
     });
   };
 }
