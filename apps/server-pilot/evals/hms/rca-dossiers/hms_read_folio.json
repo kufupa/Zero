@@ -1,0 +1,32 @@
+{
+  "toolId": "hms_read_folio",
+  "toolVersion": "1.0.0",
+  "symptom": "fixture_verified awaiting discovery",
+  "structuralObservation": {
+    "routeClass": "folio_deposit_read",
+    "envelopeDiscriminator": "fixture_only_unproven"
+  },
+  "assumptionsVerified": [
+    "fixture_contract_closed",
+    "promotion_evidence_fixture_only"
+  ],
+  "assumptionsInvalidated": [],
+  "causalChain": [
+    "fixture_kernel_shipped",
+    "finance_role_proof_v2_absent",
+    "surface_manifest_discovery_operator_unproven"
+  ],
+  "prediction": "Finance role-proof-v2 plus reviewed folio manifest unblocks discovery operator",
+  "verificationCommands": [
+    "unset DATABASE_URL VITEST_ALLOW_PILOT_RDS",
+    "npx vitest run tests/hms-rca-dossier.test.ts"
+  ],
+  "liveArtifactIds": [],
+  "unresolvedGaps": [
+    "BLOCKED_NO_FINANCE_ROLE_PROOF_V2",
+    "BLOCKED_NO_ROLE_PROOF_V2",
+    "BLOCKED_NO_REVIEWED_REQUEST_MANIFEST",
+    "BLOCKED_TOOL_FIXTURE_ONLY"
+  ],
+  "updatedAt": "2026-08-06T00:00:00.000Z"
+}

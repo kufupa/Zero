@@ -1,0 +1,32 @@
+{
+  "toolId": "hms_company_account_read",
+  "toolVersion": "1.0.0",
+  "symptom": "fixture_verified awaiting discovery",
+  "structuralObservation": {
+    "routeClass": "company_billing_read",
+    "envelopeDiscriminator": "fixture_only_unproven"
+  },
+  "assumptionsVerified": [
+    "fixture_contract_closed",
+    "promotion_evidence_fixture_only"
+  ],
+  "assumptionsInvalidated": [],
+  "causalChain": [
+    "fixture_kernel_shipped",
+    "company_billing_surface_unproven",
+    "role_manifest_discovery_gap"
+  ],
+  "prediction": "Proven company billing surface with role-proof-v2 clears BLOCKED_COMPANY_READ_SURFACE_UNPROVEN",
+  "verificationCommands": [
+    "unset DATABASE_URL VITEST_ALLOW_PILOT_RDS",
+    "npx vitest run tests/hms-rca-dossier.test.ts"
+  ],
+  "liveArtifactIds": [],
+  "unresolvedGaps": [
+    "BLOCKED_COMPANY_READ_SURFACE_UNPROVEN",
+    "BLOCKED_NO_COMPANY_BILLING_ROLE_PROOF_V2",
+    "BLOCKED_NO_REVIEWED_REQUEST_MANIFEST",
+    "BLOCKED_TOOL_FIXTURE_ONLY"
+  ],
+  "updatedAt": "2026-08-06T00:00:00.000Z"
+}

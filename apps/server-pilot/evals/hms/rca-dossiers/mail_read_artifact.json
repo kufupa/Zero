@@ -1,0 +1,30 @@
+{
+  "toolId": "mail_read_artifact",
+  "toolVersion": "2",
+  "symptom": "fixture_verified awaiting discovery",
+  "structuralObservation": {
+    "routeClass": "mail_server_artifact",
+    "envelopeDiscriminator": "mail_not_hms"
+  },
+  "assumptionsVerified": [
+    "fixture_contract_closed",
+    "privacy_class_mail_server_only"
+  ],
+  "assumptionsInvalidated": [],
+  "causalChain": [
+    "artifact_chain_fixture_shipped",
+    "not_live_allowlisted",
+    "hms_discovery_action_inapplicable"
+  ],
+  "prediction": "Artifact live allowlist stays decoupled from HMS discovery preflight",
+  "verificationCommands": [
+    "unset DATABASE_URL VITEST_ALLOW_PILOT_RDS",
+    "npx vitest run tests/hms-rca-dossier.test.ts"
+  ],
+  "liveArtifactIds": [],
+  "unresolvedGaps": [
+    "BLOCKED_MAIL_ARTIFACT_DISCOVERY",
+    "BLOCKED_TOOL_FIXTURE_ONLY"
+  ],
+  "updatedAt": "2026-08-06T00:00:00.000Z"
+}

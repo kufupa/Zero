@@ -85,7 +85,10 @@ Named wait codes (exit `3`, no Chromium/HMS):
 | `BLOCKED_TOOL_FIXTURE_ONLY` | registry `fixture_verified` (no discovery digest) |
 | `PHASE_B_BLOCKED` | evidence ok; live discovery/proof CLI still unimplemented |
 
-`doctor|status|read-wave|artifacts|rearm` stay `PHASE_B_BLOCKED` stubs.
+`doctor|read-wave|artifacts|rearm` stay `PHASE_B_BLOCKED` stubs.
+`status` is offline registry-only: exits `0` with `HMS_OK code=STATUS_OK` and
+emits capability rows (`capabilityState`, promotion flags, digest presence).
+No AWS/HMS. Filter with `--tool` / `--wave` (`B0`–`B6`); unknown wave exits `2`.
 Waves `B0`–`B6` are grammar-valid IDs only.
 
 Closed `CandidateReadPlan`: one branch; reservation followups max two unique;
@@ -93,6 +96,13 @@ no model-driven tool loops. Model selects whole claim IDs only (including
 optional `workflow_summary`).
 
 ## RCA dossier v1
+
+Machine-readable closed schema: `apps/server-pilot/src/hms/rca-dossier.ts`
+(`rcaDossierV1Schema`, optional `loadRcaDossier(toolId)`). Stub JSON lives under
+`apps/server-pilot/evals/hms/rca-dossiers/<toolId>.json` for each empirical-loop
+tool. Schema is `.strict()` — no PII fields, no free-form private-looking keys.
+`unresolvedGaps` holds named `BLOCKED_*` codes only. Digests are sha256 hex;
+`liveArtifactIds` are UUIDs only.
 
 Each tool dossier is private-value-free Markdown plus machine-readable digest refs:
 

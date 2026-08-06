@@ -1,0 +1,30 @@
+{
+  "toolId": "hms_find_reservation",
+  "toolVersion": "1.2.0",
+  "symptom": "fixture_verified awaiting discovery; live_verified registry but empirical matrix still standing",
+  "structuralObservation": {
+    "routeClass": "guest_stay_search",
+    "envelopeDiscriminator": "pageData_GRIDRESULT"
+  },
+  "assumptionsVerified": [
+    "registry_capability_live_verified",
+    "production_active_read_allowlisted"
+  ],
+  "assumptionsInvalidated": [],
+  "causalChain": [
+    "prior_live_proof_bound",
+    "empirical_real_example_matrix_incomplete",
+    "promotion_scorecard_awaits_matrix"
+  ],
+  "prediction": "Completing real-example matrix with RCA closeout unlocks shadow candidacy without inventing digests",
+  "verificationCommands": [
+    "unset DATABASE_URL VITEST_ALLOW_PILOT_RDS",
+    "npx vitest run tests/hms-rca-dossier.test.ts"
+  ],
+  "liveArtifactIds": [],
+  "unresolvedGaps": [
+    "BLOCKED_EMPIRICAL_MATRIX_STANDING",
+    "BLOCKED_NO_POSITIVE_CONTROL"
+  ],
+  "updatedAt": "2026-08-06T00:00:00.000Z"
+}

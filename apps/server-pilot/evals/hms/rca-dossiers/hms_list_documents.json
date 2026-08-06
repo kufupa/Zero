@@ -1,0 +1,32 @@
+{
+  "toolId": "hms_list_documents",
+  "toolVersion": "1.0.0",
+  "symptom": "fixture_verified awaiting discovery",
+  "structuralObservation": {
+    "routeClass": "document_list_read",
+    "envelopeDiscriminator": "fixture_only_unproven"
+  },
+  "assumptionsVerified": [
+    "fixture_contract_closed",
+    "promotion_evidence_fixture_only"
+  ],
+  "assumptionsInvalidated": [],
+  "causalChain": [
+    "fixture_kernel_shipped",
+    "role_proof_v2_absent",
+    "routes_and_positive_controls_unproven"
+  ],
+  "prediction": "Role-proof-v2, reviewed routes, and independent positive control enable abort-first discovery",
+  "verificationCommands": [
+    "unset DATABASE_URL VITEST_ALLOW_PILOT_RDS",
+    "npx vitest run tests/hms-rca-dossier.test.ts"
+  ],
+  "liveArtifactIds": [],
+  "unresolvedGaps": [
+    "BLOCKED_NO_ROLE_PROOF_V2",
+    "BLOCKED_NO_REVIEWED_REQUEST_MANIFEST",
+    "BLOCKED_NO_POSITIVE_CONTROL",
+    "BLOCKED_TOOL_FIXTURE_ONLY"
+  ],
+  "updatedAt": "2026-08-06T00:00:00.000Z"
+}

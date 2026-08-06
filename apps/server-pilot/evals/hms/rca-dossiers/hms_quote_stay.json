@@ -1,0 +1,32 @@
+{
+  "toolId": "hms_quote_stay",
+  "toolVersion": "2.0.0",
+  "symptom": "fixture_verified awaiting discovery",
+  "structuralObservation": {
+    "routeClass": "quote_stay_read",
+    "envelopeDiscriminator": "fixture_only_unproven"
+  },
+  "assumptionsVerified": [
+    "fixture_contract_closed",
+    "promotion_evidence_fixture_only"
+  ],
+  "assumptionsInvalidated": [],
+  "causalChain": [
+    "fixture_kernel_shipped",
+    "role_proof_v2_absent",
+    "discovery_operator_latched"
+  ],
+  "prediction": "Minted role-proof-v2 plus reviewed request manifest clears BLOCKED_QUOTE_DISCOVERY_ROLE_PROOF_UNAVAILABLE",
+  "verificationCommands": [
+    "unset DATABASE_URL VITEST_ALLOW_PILOT_RDS",
+    "npx vitest run tests/hms-rca-dossier.test.ts"
+  ],
+  "liveArtifactIds": [],
+  "unresolvedGaps": [
+    "BLOCKED_QUOTE_DISCOVERY_ROLE_PROOF_UNAVAILABLE",
+    "BLOCKED_NO_ROLE_PROOF_V2",
+    "BLOCKED_NO_REVIEWED_REQUEST_MANIFEST",
+    "BLOCKED_TOOL_FIXTURE_ONLY"
+  ],
+  "updatedAt": "2026-08-06T00:00:00.000Z"
+}

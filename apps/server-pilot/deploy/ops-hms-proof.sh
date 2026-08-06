@@ -108,7 +108,18 @@ case "$ACTION" in
     )
     exit $?
     ;;
-  doctor|status|read-wave|artifacts|rearm)
+  status)
+    SERVER_PILOT="${REPO_ROOT}/apps/server-pilot"
+    STATUS_TS="${SERVER_PILOT}/src/ops/phase-b-status.ts"
+    (
+      cd "$SERVER_PILOT"
+      unset DATABASE_URL VITEST_ALLOW_PILOT_RDS
+      shift
+      exec node --import tsx "$STATUS_TS" "$@"
+    )
+    exit $?
+    ;;
+  doctor|read-wave|artifacts|rearm)
     echo "HMS_WAIT code=PHASE_B_BLOCKED" >&2
     exit 3
     ;;
