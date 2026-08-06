@@ -735,12 +735,8 @@ export async function runClaimSafeCandidateDraft(input: {
     for (const attachmentId of attachmentIds) {
       throwIfAborted(signal);
       if (bundle.budget.used >= CANDIDATE_TOOL_BUDGET) break;
-      if (
-        executableToolIds.size > 0 &&
-        !executableToolIds.has('mail_read_artifact')
-      ) {
-        break;
-      }
+      // Empty executable or mail not planned → never fall through to registered mail tool.
+      if (!executableToolIds.has('mail_read_artifact')) break;
       const tool = bundle.tools.mail_read_artifact;
       if (!tool) break;
       try {
