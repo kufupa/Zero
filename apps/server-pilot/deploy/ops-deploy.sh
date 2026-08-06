@@ -59,8 +59,24 @@ bash "${SCRIPT_DIR}/ssm-run-command.sh" \
 echo "ops-deploy ok"
 
 # Phase B source+registry CAS (Task 13): when HMS_REGISTRY_CANDIDATE is set,
-# prevalidate → quiesce HMS → preserve prior source/registry → atomic switch →
-# restart hms-ai-worker → verify activeSetFingerprint. Incomplete restore: exit 20.
-# Crash injection points: before/after_source_switch, before/after_registry_rename,
-# before/after_pm2_restart, before/after_health_verdict.
-# See src/hms/source-registry-transaction.ts for the typed transaction.
+# invoke runSourceRegistryTransaction via source-registry-cas.sh.
+# Crash injection: before/after_source_switch, before/after_registry_rename,
+# before/after_pm2_restart, before/after_health_verdict (HMS_CAS_CRASH_AT).
+# Incomplete restore → exit 20 and halt the live lane.
+if [ -n "${HMS_REGISTRY_CANDIDATE:-}" ]; then
+  echo "== ops-deploy: source+registry CAS (source-registry-transaction) =="
+  bash "${SCRIPT_DIR}/ssm-run-command.sh" \
+    "${REMOTE_NVM}; cd /home/ubuntu/repos/zero && \
+      export HMS_REGISTRY_CANDIDATE='${HMS_REGISTRY_CANDIDATE}' \
+        HMS_SOURCE_REGISTRY_CURRENT='${HMS_SOURCE_REGISTRY_CURRENT:?}' \
+        HMS_SOURCE_REGISTRY_CANDIDATE='${HMS_SOURCE_REGISTRY_CANDIDATE:?}' \
+        HMS_CAS_CRASH_AT='${HMS_CAS_CRASH_AT:-}' && \
+      bash apps/server-pilot/deploy/source-registry-cas.sh" || {
+        status=$?
+        if [ "$status" -eq 20 ]; then
+          echo "ops-deploy: incomplete restore (exit 20) — halt live lane" >&2
+          exit 20
+        fi
+        exit "$status"
+      }
+fi

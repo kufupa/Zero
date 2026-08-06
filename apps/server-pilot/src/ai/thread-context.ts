@@ -47,6 +47,26 @@ export function filterExactReservationCandidates(
 }
 
 /**
+ * Plan signals for quote/group/event branches that need no reservation
+ * prerequisite (Task 13 executable plan).
+ */
+export function detectDirectReadPlanRefs(segment: string): {
+  hasGroupRef: boolean;
+  hasEventRef: boolean;
+} {
+  return {
+    hasGroupRef:
+      /\b(group\s+block|group\s+booking|block\s+code|group\s+reservation)\b/i.test(
+        segment,
+      ),
+    hasEventRef:
+      /\b(event\s+booking|banquet|function\s+room|event\s+reservation)\b/i.test(
+        segment,
+      ),
+  };
+}
+
+/**
  * Manual / shadow eligibility: exactly one confirmation or external_reference.
  * Rejects 0 and 2+ (ambiguous). Surname-only threads → null.
  */

@@ -3,7 +3,8 @@
  * No fetch/mock browser factory fallback. Role-proof revalidated per context.
  * Consumes role schemas from release-kernel (no reverse import).
  * Task 13: active registry v2 + per-context HmsSessionAuthorization own
- * production activation; process-wide Guest Stay manifest is Phase A fallback only.
+ * production activation; process-wide Guest Stay manifest is never sole
+ * live-session authority (requireSessionAuthorization + driver lease).
  */
 import {
   GetSecretValueCommand,
@@ -378,6 +379,8 @@ async function createProductionHmsRuntimeInternal(
     runStartupCanary: false,
     artifactStore,
     requireAuditCapture: true,
+    // Live opens must carry per-tool HmsSessionAuthorization.
+    requireSessionAuthorization: true,
     sourceRevision,
     playwrightRevision: '1.52.0',
     chromiumRevision: '1169',

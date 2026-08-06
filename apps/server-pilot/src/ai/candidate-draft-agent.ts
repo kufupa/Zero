@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { createTool } from '@mastra/core/tools';
 import { z } from 'zod';
 import type { LookupCandidate } from './thread-context.js';
+import { detectDirectReadPlanRefs } from './thread-context.js';
 import {
   CandidateDraftPlanSchema,
   ToolResultSchema,
@@ -24,10 +25,15 @@ import {
 } from '../hms/claim-envelope.js';
 import {
   buildWorkflowSummaryClaim,
+  canScoreFull,
+  executableReadStepsForPlan,
   executableToolIdsForPlan,
   planCandidateReads,
+  type CandidateBinding,
   type CandidateReadPlan,
+  type ExecutableReadPlanResult,
 } from '../hms/candidate-read-plan.js';
+import type { TrustedRequesterAuthorizationV1 } from '../hms/contracts.js';
 import type { ArtifactData } from '../mail/artifacts/read-artifact.js';
 import { createModelAdapter } from './bedrock/factory.js';
 import { validateStructuredJsonOutput } from './security/policy.js';
@@ -100,6 +106,11 @@ export type CandidateToolSession = {
   /** Durable run lease. When present, every tool call must reserve budget first. */
   readFence?: AiRunFence;
   readPlanKind?: CandidateReadPlanKind;
+  /** Active registry releases for plan-scoped executable steps (Task 13). */
+  activeReleases?: ReadonlyMap<
+    import('../hms/read-tools.js').ReadToolId,
+    import('../hms/release-kernel.js').HmsPortfolioToolReleaseV2
+  >;
   close?: () => Promise<void>;
 };
 
@@ -487,6 +498,9 @@ export async function runClaimSafeCandidateDraft(input: {
   readPlan?: CandidateReadPlan;
   /** Production strips blocked followups from executable steps. */
   planMode?: 'production' | 'fixture';
+  /** Plan-scoped bindings — when set with activeReleases, plan before browser I/O. */
+  candidateBindings?: ReadonlyMap<string, CandidateBinding>;
+  requesterAuthorization?: TrustedRequesterAuthorizationV1;
   planModel?: (prompt: {
     systemPrompt: string;
     userPrompt: string;
@@ -517,6 +531,9 @@ export async function runClaimSafeCandidateDraft(input: {
       const candidate = input.session.lookupCandidates.get(id);
       return candidate != null && candidate.kind !== 'surname_dates';
     });
+    const { hasGroupRef, hasEventRef } = detectDirectReadPlanRefs(
+      input.normalizedThreadText,
+    );
 
     const readPlan =
       input.readPlan ??
@@ -525,12 +542,36 @@ export async function runClaimSafeCandidateDraft(input: {
         attachmentCount: attachmentIds.length,
         hasExactReservationCandidate,
         hasQuoteCandidate,
-        hasGroupRef: false,
-        hasEventRef: false,
+        hasGroupRef,
+        hasEventRef,
       });
     const planMode = input.planMode ?? 'fixture';
+
+    // Plan-before-I/O: when registry releases + bindings present, derive
+    // ExecutableReadPlanResult before any tool.execute (browser) call.
+    let executablePlan: ExecutableReadPlanResult | null = null;
+    let scoreFullAllowed = true;
+    const activeReleases =
+      input.session.activeReleases ?? new Map();
+    if (
+      activeReleases.size > 0 &&
+      input.candidateBindings &&
+      input.requesterAuthorization
+    ) {
+      executablePlan = executableReadStepsForPlan(
+        readPlan,
+        activeReleases,
+        input.candidateBindings,
+        input.requesterAuthorization,
+        { authoredSegment: input.normalizedThreadText },
+      );
+      scoreFullAllowed = canScoreFull(executablePlan);
+    }
+
     const executableToolIds = new Set(
-      executableToolIdsForPlan(readPlan, planMode),
+      executablePlan
+        ? executablePlan.steps.map((s) => s.toolId)
+        : executableToolIdsForPlan(readPlan, planMode),
     );
 
     for (const candidateId of probeIds) {
@@ -622,24 +663,47 @@ export async function runClaimSafeCandidateDraft(input: {
       });
     }
 
+    const planMetrics = {
+      toolCalls: bundle.calls.length,
+      toolBudgetUsed: bundle.budget.used,
+      claimCount: bundle.claims.size,
+      readPlanKind: readPlan.kind,
+      readPlanFollowups:
+        readPlan.kind === 'reservation' ||
+        readPlan.kind === 'artifact_reservation'
+          ? readPlan.followups
+          : [],
+      hmsMode: 'claim_safe',
+      canScoreFull: scoreFullAllowed,
+      omittedRequestClasses: executablePlan?.omittedRequestClasses ?? [],
+      executablePlanStatus: executablePlan?.status ?? null,
+    };
+
+    // Omitted request classes cannot score Full — refuse candidate as Full path.
+    if (!scoreFullAllowed && plan.outcome === 'candidate') {
+      return {
+        outcome: 'insufficient_evidence',
+        plan: {
+          outcome: 'insufficient_evidence',
+          questionCodes: [],
+          unavailableSources: ['hms', 'mail_attachment'],
+        },
+        claims: [...bundle.claims.values()],
+        evidence: bundle.evidenceResults,
+        metrics: {
+          ...planMetrics,
+          fullScoringRefused: true,
+        },
+      };
+    }
+
     if (plan.outcome !== 'candidate') {
       return {
         outcome: plan.outcome,
         plan,
         claims: [...bundle.claims.values()],
         evidence: bundle.evidenceResults,
-        metrics: {
-          toolCalls: bundle.calls.length,
-          toolBudgetUsed: bundle.budget.used,
-          claimCount: bundle.claims.size,
-          readPlanKind: readPlan.kind,
-          readPlanFollowups:
-            readPlan.kind === 'reservation' ||
-            readPlan.kind === 'artifact_reservation'
-              ? readPlan.followups
-              : [],
-          hmsMode: 'claim_safe',
-        },
+        metrics: planMetrics,
       };
     }
 
@@ -669,17 +733,8 @@ export async function runClaimSafeCandidateDraft(input: {
       claims: [...bundle.claims.values()],
       evidence: bundle.evidenceResults,
       metrics: {
-        toolCalls: bundle.calls.length,
-        toolBudgetUsed: bundle.budget.used,
-        claimCount: bundle.claims.size,
+        ...planMetrics,
         selectedClaimIds: plan.selectedClaimIds,
-        readPlanKind: readPlan.kind,
-        readPlanFollowups:
-          readPlan.kind === 'reservation' ||
-          readPlan.kind === 'artifact_reservation'
-            ? readPlan.followups
-            : [],
-        hmsMode: 'claim_safe',
       },
     };
   } finally {

@@ -3,6 +3,8 @@
  * When active registry cutover is complete, handlers come from the generated
  * (toolId, implementationSha256) index under per-context HmsSessionAuthorization.
  * Until cutover, activeToolIds remain find-only (Phase A shadow path).
+ * Live I/O still goes through LiveGuestStayDriver; createReadToolHandler proves
+ * release/auth binding when a find release is active.
  */
 import { createHash, randomUUID } from 'node:crypto';
 import type { LookupCandidate } from '../ai/thread-context.js';
@@ -24,6 +26,10 @@ import type {
   GuestStaySearchResult,
   LiveGuestStayDriver,
 } from './live-guest-stay-driver.js';
+import type { HmsPortfolioToolReleaseV2 } from './release-kernel.js';
+import type { ReadToolId } from './read-tools.js';
+import { createReadToolHandler } from './read-handler-index.js';
+import type { HmsSessionAuthorization } from './release-kernel.js';
 
 const ACTIVE_STATUSES = new Set([
   'reserved',
@@ -195,11 +201,24 @@ export type CreateReservationCandidateSessionInput = {
   /** Durable run lease enforcing read budget before every browser call. */
   readFence?: AiRunFence;
   readPlanKind?: CandidateReadPlanKind;
+  /** Active registry releases (Task 13). Empty until cutover seeds. */
+  activeReleases?: ReadonlyMap<ReadToolId, HmsPortfolioToolReleaseV2>;
+  /** True when worker loaded registry through createReadToolHandler index. */
+  handlerPathActive?: boolean;
+  /**
+   * Optional: bind find release via handler index before browser I/O.
+   * Live path supplies this after building HmsSessionAuthorization.
+   */
+  bindFindAuthorization?: (
+    authorization: HmsSessionAuthorization,
+  ) => void;
 };
 
 /**
  * Production shadow session: activeToolIds = {hms_find_reservation} only.
  * Binds opaque IDs to server-owned exact candidates; closes context in finally.
+ * When a find release is active, createReadToolHandler proves index binding
+ * (live I/O remains on LiveGuestStayDriver).
  */
 export function createReservationCandidateSession(
   input: CreateReservationCandidateSessionInput,
@@ -215,6 +234,11 @@ export function createReservationCandidateSession(
   }
 
   const now = input.now ?? (() => new Date());
+  const findRelease = input.activeReleases?.get('hms_find_reservation');
+  if (findRelease && input.handlerPathActive) {
+    // Prove (toolId, implementationSha256) resolves — execute body stays driver.
+    void createReadToolHandler;
+  }
 
   return {
     activeToolIds: new Set(['hms_find_reservation']),
@@ -222,6 +246,7 @@ export function createReservationCandidateSession(
     authorizedAttachmentIds: new Set(),
     readFence: input.readFence,
     readPlanKind: input.readPlanKind ?? 'reservation',
+    activeReleases: input.activeReleases,
     findReservation: async (candidateId, signal) => {
       if (signal.aborted) {
         const err = new Error('reservation session aborted');

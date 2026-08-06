@@ -110,6 +110,14 @@ export type LiveGuestStayDriverOptions = {
     candidate: ExactReservationCandidate | null;
     inputClass: 'authorized_exact' | 'synthetic_not_found';
   }) => import('./browser-artifacts.js').HmsBrowserAuditSpec | undefined;
+  /**
+   * Per-tool plan-scoped lease. Production live path MUST supply this —
+   * openReadSession never falls back to process-wide Guest Stay union alone.
+   */
+  sessionAuthorizationFor?: (input: {
+    candidate: ExactReservationCandidate | null;
+    inputClass: 'authorized_exact' | 'synthetic_not_found';
+  }) => import('./release-kernel.js').HmsSessionAuthorization;
 };
 
 const NO_RESULTS_RE =
@@ -490,6 +498,10 @@ export function createLiveGuestStayDriver(
         ? 'synthetic_not_found'
         : 'authorized_exact';
     const auditSpec = options.auditSpecFor?.({ candidate, inputClass });
+    const sessionAuthorization = options.sessionAuthorizationFor?.({
+      candidate,
+      inputClass,
+    });
     const session = await runtime.openReadSession({
       transportId,
       signal,
@@ -497,6 +509,7 @@ export function createLiveGuestStayDriver(
       // Allow driver to open before/without fixture startup canary.
       allowUnstarted: true,
       auditSpec,
+      sessionAuthorization,
     });
     options.onSession?.(session);
     let fnError: unknown;

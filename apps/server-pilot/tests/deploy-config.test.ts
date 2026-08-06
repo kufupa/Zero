@@ -3156,14 +3156,23 @@ describe('deploy config', () => {
       expect(sync).toMatch(/before_source_switch/);
       expect(sync).toMatch(/after_registry_rename/);
       expect(sync).toMatch(/exit 20|incomplete restore/i);
+      expect(sync).toMatch(/source-registry-cas|runSourceRegistryTransaction/);
 
       const opsDeploy = readFileSync(join(deploy, 'ops-deploy.sh'), 'utf8');
       expect(opsDeploy).toMatch(/source\+registry CAS|source-registry-transaction/);
       expect(opsDeploy).toMatch(/exit 20/);
       expect(opsDeploy).toMatch(/before_pm2_restart|after_health_verdict/);
+      expect(opsDeploy).toMatch(/source-registry-cas\.sh/);
+      expect(opsDeploy).toMatch(/HMS_REGISTRY_CANDIDATE/);
 
       const deployEc2 = readFileSync(join(deploy, 'deploy-ec2.sh'), 'utf8');
       expect(deployEc2).toMatch(/source-registry-transaction|registry-candidate|exit 20/);
+      expect(deployEc2).toMatch(/source-registry-cas\.sh/);
+
+      const casSh = readFileSync(join(deploy, 'source-registry-cas.sh'), 'utf8');
+      expect(casSh).toMatch(/run-source-registry-cas/);
+      expect(casSh).toMatch(/exit 20/);
+      expect(casSh).toMatch(/HMS_REGISTRY_CANDIDATE/);
     });
   });
 });

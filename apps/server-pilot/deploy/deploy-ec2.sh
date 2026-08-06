@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Deploy server-pilot + mail SPA to EC2 (SSM-friendly, run as ubuntu).
-# Phase B Task 13: when promoting a registry-candidate, pair this deploy with
-# source-registry-transaction (CAS source + active.json). Incomplete restore
-# exits 20 and halts the HMS live lane (before/after_source_switch,
+# Phase B Task 13: when HMS_REGISTRY_CANDIDATE is set, invoke
+# source-registry-cas.sh → runSourceRegistryTransaction (CAS source + active.json).
+# Incomplete restore exits 20 and halts the HMS live lane (before/after_source_switch,
 # before/after_registry_rename, before/after_pm2_restart, health_verdict).
 set -euo pipefail
 
@@ -356,6 +356,13 @@ if [ "$QUIESCED" = "1" ]; then
   echo "== quiesced: skip PM2 mutation and HTTP health (online http OK) =="
   echo "quiesced deploy ok (assets synced; no PM2 mutation; no HTTP health)"
   exit 0
+fi
+
+# Optional registry-candidate CAS before generic PM2 start (Task 13).
+# Requires HMS_REGISTRY_CANDIDATE + pointer env; incomplete restore → exit 20.
+if [ -n "${HMS_REGISTRY_CANDIDATE:-}" ]; then
+  echo "== source-registry-transaction CAS =="
+  bash "${SERVER_PILOT}/deploy/source-registry-cas.sh"
 fi
 
 echo "== pm2 =="

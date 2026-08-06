@@ -414,6 +414,97 @@ describe('Task 13 registry v2 cutover + plan-scoped authorization', () => {
     expect(quotePlan.steps).toHaveLength(1);
     expect(canScoreFull(quotePlan)).toBe(true);
 
+    // Group / event: one direct candidate, no reservation prerequisite.
+    const groupRelease = hmsPortfolioToolReleaseV2Schema.parse({
+      ...baseReleaseFields(),
+      releaseId: randomUUID(),
+      qualification: 'live_verified',
+      shadowSha256: null,
+      predecessorReleaseId: null,
+      rollbackAction: 'disable',
+      evidenceKind: 'hms',
+      toolId: 'hms_group_block_read',
+      toolVersion: '1.0.0',
+      implementationSha256: hex(3),
+      requestBranches: [
+        {
+          id: 'group_block_list',
+          discoveryOperationId: 'group_block_list',
+          manifestSha256: hex(8),
+          discoverySha256: hex(9),
+          parserSchemaSha256: hex('a'),
+        },
+      ],
+      credentialVersionHmacSha256: hex('b'),
+      roleProofSha256: hex('c'),
+    });
+    const eventRelease = hmsPortfolioToolReleaseV2Schema.parse({
+      ...baseReleaseFields(),
+      releaseId: randomUUID(),
+      qualification: 'live_verified',
+      shadowSha256: null,
+      predecessorReleaseId: null,
+      rollbackAction: 'disable',
+      evidenceKind: 'hms',
+      toolId: 'hms_event_read',
+      toolVersion: '1.0.0',
+      implementationSha256: hex(4),
+      requestBranches: [
+        {
+          id: 'event_list',
+          discoveryOperationId: 'event_list',
+          manifestSha256: hex(8),
+          discoverySha256: hex(9),
+          parserSchemaSha256: hex('a'),
+        },
+      ],
+      credentialVersionHmacSha256: hex('b'),
+      roleProofSha256: hex('c'),
+    });
+    const groupPlan = executableReadStepsForPlan(
+      { kind: 'group', group: true },
+      new Map([['hms_group_block_read', groupRelease]]),
+      new Map([
+        [
+          'cand-group',
+          {
+            candidateId: 'cand-group',
+            toolId: 'hms_group_block_read',
+            allowedRequestBranchIds: ['group_block_list'],
+            parentEvidenceId: null,
+            requesterAuthorizationId: authId,
+          },
+        ],
+      ]),
+      requester,
+      { authoredSegment: 'Please check group block G-100 status' },
+    );
+    expect(groupPlan.steps).toHaveLength(1);
+    expect(groupPlan.steps[0]!.toolId).toBe('hms_group_block_read');
+    expect(canScoreFull(groupPlan)).toBe(true);
+
+    const eventPlan = executableReadStepsForPlan(
+      { kind: 'event', event: true },
+      new Map([['hms_event_read', eventRelease]]),
+      new Map([
+        [
+          'cand-event',
+          {
+            candidateId: 'cand-event',
+            toolId: 'hms_event_read',
+            allowedRequestBranchIds: ['event_list'],
+            parentEvidenceId: null,
+            requesterAuthorizationId: authId,
+          },
+        ],
+      ]),
+      requester,
+      { authoredSegment: 'Confirm banquet event booking for Friday' },
+    );
+    expect(eventPlan.steps).toHaveLength(1);
+    expect(eventPlan.steps[0]!.toolId).toBe('hms_event_read');
+    expect(canScoreFull(eventPlan)).toBe(true);
+
     const find = findRelease({
       releaseId: randomUUID(),
       implementationSha256: FIND_RESERVATION_IMPL_V1,

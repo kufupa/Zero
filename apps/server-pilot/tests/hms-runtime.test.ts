@@ -1991,5 +1991,82 @@ describe("HMS browser audit capture order", () => {
     expect(src).toMatch(/sessionAuthorization/);
     expect(src).toMatch(/HmsSessionAuthorization/);
     expect(src).toMatch(/session authorization expired|ROLE_PROOF_EXPIRED/);
+    expect(src).toMatch(/requireSessionAuthorization/);
+  });
+
+  it('Task 13: requireSessionAuthorization rejects open without lease (behavioral)', async () => {
+    const server = await startHmsFixtureServer();
+    try {
+      const secret = fixtureSecret(server.origin);
+      const runtime = createHmsRuntime({
+        manifest: fixtureManifest(server.origin),
+        secretArn:
+          'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-test',
+        loadSecret: async () => secret,
+        browserFactory: createFetchBrowserFactory(),
+        requireSessionAuthorization: true,
+        runStartupCanary: false,
+        requireAuditCapture: false,
+      });
+      try {
+        await runtime.start(AbortSignal.timeout(15_000));
+        await expect(
+          runtime.openReadSession({
+            transportId: secret.mailboxTransportId,
+            signal: AbortSignal.timeout(5_000),
+          }),
+        ).rejects.toMatchObject({
+          code: 'ROLE_SCOPE_INVALID',
+        });
+
+        const leaseManifest = fixtureManifest(server.origin);
+        const session = await runtime.openReadSession({
+          transportId: secret.mailboxTransportId,
+          signal: AbortSignal.timeout(5_000),
+          sessionAuthorization: {
+            operationId: randomUUID(),
+            toolId: 'hms_find_reservation',
+            discoveryOperationId: 'guest_stay_search',
+            releaseId: randomUUID(),
+            requestBranchId: 'guest_stay_search',
+            manifest: leaseManifest,
+            manifestSha256: 'a'.repeat(64),
+            roleProofPath: '/tmp/unused',
+            roleProofSha256: 'b'.repeat(64),
+            credentialVersionHmacSha256: 'c'.repeat(64),
+            runtimeFingerprintSha256: 'd'.repeat(64),
+            privateDigestKeyVersion: 'v1',
+            sourceRevision: 'test',
+            expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          },
+        });
+        await session.close();
+      } finally {
+        await runtime.close();
+      }
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('Task 13: live-guest-stay-driver passes sessionAuthorization into openReadSession', async () => {
+    const src = await import('node:fs/promises').then((fs) =>
+      fs.readFile(
+        new URL('../src/hms/live-guest-stay-driver.ts', import.meta.url),
+        'utf8',
+      ),
+    );
+    expect(src).toMatch(/sessionAuthorizationFor/);
+    expect(src).toMatch(/sessionAuthorization,/);
+  });
+
+  it('Task 13: worker loads active registry + wires createReadToolHandler path', async () => {
+    const src = await import('node:fs/promises').then((fs) =>
+      fs.readFile(new URL('../src/ai/worker.ts', import.meta.url), 'utf8'),
+    );
+    expect(src).toMatch(/loadWorkerActiveReadSet/);
+    expect(src).toMatch(/sessionAuthorizationFor/);
+    expect(src).toMatch(/buildHmsFindSessionAuthorization/);
+    expect(src).toMatch(/assertFindHandlerBound|createReadToolHandler/);
   });
 });

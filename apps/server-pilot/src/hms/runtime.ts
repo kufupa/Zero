@@ -277,6 +277,11 @@ export type HmsRuntimeOptions = {
     expectedCredentialVersionHmacSha256?: string;
     expectedRuntimeFingerprintSha256?: string;
   };
+  /**
+   * Production live path: every non-canary openReadSession must carry a
+   * per-tool HmsSessionAuthorization (never process-wide Guest Stay alone).
+   */
+  requireSessionAuthorization?: boolean;
 };
 
 export const HEALTH_HEARTBEAT_MS = 10_000;
@@ -1493,6 +1498,18 @@ function createHmsRuntimeInternal(
       throw new HmsRuntimeError(
         'AUDIT_CAPTURE',
         'live_proof requires proof-only runtime composition',
+      );
+    }
+
+    const requireSessionAuth = options.requireSessionAuthorization === true;
+    if (
+      requireSessionAuth &&
+      !input.canary &&
+      !input.sessionAuthorization
+    ) {
+      throw new HmsRuntimeError(
+        'ROLE_SCOPE_INVALID',
+        'sessionAuthorization required for live read session',
       );
     }
 

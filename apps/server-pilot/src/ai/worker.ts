@@ -251,12 +251,23 @@ let productionHmsRuntime:
   | null
   | undefined;
 
+let productionActiveReadState:
+  | import('../hms/active-read-runtime.js').ActiveReadRuntimeState
+  | null
+  | undefined;
+
 async function getOrCreateProductionHmsRuntime(): Promise<
   import('../hms/runtime.js').HmsRuntime
 > {
   if (productionHmsRuntime) return productionHmsRuntime;
-  const { createProductionHmsRuntime } = await import(
+  const { createProductionHmsRuntime, resolveHmsSourceRevision } = await import(
     '../hms/production-runtime.js'
+  );
+  const { runtimeFingerprintSha256 } = await import(
+    '../hms/evidence-runtime.js'
+  );
+  const { loadWorkerActiveReadSet } = await import(
+    '../hms/active-read-runtime.js'
   );
   const config = requireHmsWorkerRuntimeConfig(
     process.env as Record<string, string | undefined>,
@@ -264,12 +275,25 @@ async function getOrCreateProductionHmsRuntime(): Promise<
   const evidenceKey = requireHmsEvidenceHmacChildKey(
     process.env as Record<string, string | undefined>,
   );
+  const sourceRevision = resolveHmsSourceRevision();
+  const runtimeFp = runtimeFingerprintSha256({
+    sourceRevision,
+    playwrightRevision: '1.52.0',
+    chromiumRevision: '1169',
+  });
+  // Load active registry before browser start — fail closed if present+invalid.
+  productionActiveReadState = await loadWorkerActiveReadSet({
+    registryPath: config.activeRegistryPath,
+    releaseRoot: config.releaseRoot,
+    runtimeFingerprintSha256: runtimeFp,
+  });
   const runtime = await createProductionHmsRuntime(config, {
     evidenceHmac: {
       secretArn: config.evidenceHmacSecretArn,
       keyVersion: config.evidenceHmacKeyVersion,
       key: evidenceKey.key,
     },
+    sourceRevision,
   });
   await runtime.start(AbortSignal.timeout(Math.min(60_000, config.runDeadlineMs)));
   productionHmsRuntime = runtime;
@@ -280,12 +304,23 @@ async function getOrCreateProductionHmsRuntime(): Promise<
 export async function closeProductionHmsRuntimeForTests(): Promise<void> {
   const rt = productionHmsRuntime;
   productionHmsRuntime = null;
+  productionActiveReadState = null;
+  const { clearCachedActiveReadRuntimeForTests } = await import(
+    '../hms/active-read-runtime.js'
+  );
+  clearCachedActiveReadRuntimeForTests();
   if (rt) await rt.close();
 }
 
 export function createLiveHmsCandidateSessionFactory(): CandidateSessionFactory {
   return async (input) => {
     const runtime = await getOrCreateProductionHmsRuntime();
+    const active =
+      productionActiveReadState ??
+      (
+        await import('../hms/active-read-runtime.js')
+      ).getCachedActiveReadRuntime() ??
+      null;
     const { createLiveGuestStayDriver } = await import(
       '../hms/live-guest-stay-driver.js'
     );
@@ -295,7 +330,37 @@ export function createLiveHmsCandidateSessionFactory(): CandidateSessionFactory 
     const { filterExactReservationCandidates } = await import(
       './thread-context.js'
     );
+    const {
+      buildHmsFindSessionAuthorization,
+      assertFindHandlerBound,
+      placeholderDigest,
+    } = await import('../hms/active-read-runtime.js');
+    const {
+      buildExactOsressSearchManifest,
+      buildLiveGuestStayReadManifest,
+      liveNotFoundCanaryCandidate,
+    } = await import('../hms/live-read-manifest.js');
+    const { CENTURION_HMS_PRODUCTION_ORIGIN, resolveHmsSourceRevision } =
+      await import('../hms/production-runtime.js');
+    const { runtimeFingerprintSha256 } = await import(
+      '../hms/evidence-runtime.js'
+    );
+    const config = requireHmsWorkerRuntimeConfig(
+      process.env as Record<string, string | undefined>,
+    );
+    const sourceRevision = resolveHmsSourceRevision();
+    const runtimeFp = runtimeFingerprintSha256({
+      sourceRevision,
+      playwrightRevision: '1.52.0',
+      chromiumRevision: '1169',
+    });
+    const findReleaseRaw = active?.releases.get('hms_find_reservation') ?? null;
+    const findRelease =
+      findReleaseRaw && findReleaseRaw.evidenceKind === 'hms'
+        ? findReleaseRaw
+        : null;
     const exact = filterExactReservationCandidates(input.lookupCandidates);
+    const operationId = input.runId ?? `hms-live-${Date.now()}`;
     const driver = createLiveGuestStayDriver({
       runtime,
       transportId: input.transportId,
@@ -304,12 +369,39 @@ export function createLiveHmsCandidateSessionFactory(): CandidateSessionFactory 
             operationId: input.runId!,
             toolId: 'hms_find_reservation',
             toolVersion: '1.2.0',
-            dependencyRevision:
-              'playwright-1.52.0-chromium-1169',
+            dependencyRevision: 'playwright-1.52.0-chromium-1169',
             executionClass: 'normal',
             inputClass,
           })
         : undefined,
+      sessionAuthorizationFor: ({ candidate }) => {
+        const origin = CENTURION_HMS_PRODUCTION_ORIGIN;
+        const manifest = candidate
+          ? buildExactOsressSearchManifest(origin, candidate)
+          : buildLiveGuestStayReadManifest(origin);
+        // Canary / login still get a find-scoped lease — never process-wide alone.
+        void liveNotFoundCanaryCandidate;
+        const auth = buildHmsFindSessionAuthorization({
+          operationId,
+          manifest,
+          roleProofPath: config.roleProofPath,
+          roleProofSha256:
+            findRelease?.roleProofSha256 ?? placeholderDigest('role-proof'),
+          credentialVersionHmacSha256:
+            findRelease?.credentialVersionHmacSha256 ??
+            placeholderDigest('credential'),
+          runtimeFingerprintSha256:
+            findRelease?.runtimeFingerprintSha256 ?? runtimeFp,
+          privateDigestKeyVersion:
+            findRelease?.privateDigestKeyVersion ?? 'v1',
+          sourceRevision: findRelease?.sourceRevision ?? sourceRevision,
+          release: findRelease,
+        });
+        if (findRelease) {
+          assertFindHandlerBound(findRelease, auth);
+        }
+        return auth;
+      },
     });
     // openReadSession already authenticates + verifies property; do not open a
     // second pre-tool login session (would create a second audited context).
@@ -320,6 +412,8 @@ export function createLiveHmsCandidateSessionFactory(): CandidateSessionFactory 
       runId: input.runId,
       readFence: input.readFence,
       readPlanKind: input.readPlanKind ?? 'reservation',
+      activeReleases: active?.releases,
+      handlerPathActive: active?.handlerPathActive === true,
     });
   };
 }
