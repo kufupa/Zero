@@ -7,7 +7,6 @@ import {
   GetSecretValueCommand,
   SecretsManagerClient,
 } from '@aws-sdk/client-secrets-manager';
-import { z } from 'zod';
 import type { HmsWorkerRuntimeConfig } from '../env.js';
 import { buildLiveGuestStayReadManifest } from './live-read-manifest.js';
 import {
@@ -15,6 +14,10 @@ import {
   createHmsBrowserArtifactStore,
   ensureHmsBrowserArtifactRoot,
 } from './browser-artifacts.js';
+import {
+  hmsReadRoleProofV1Schema,
+  type HmsReadRoleProofV1,
+} from './release-kernel.js';
 import {
   createHmsLiveProofRuntime,
   createHmsRuntime,
@@ -26,6 +29,8 @@ import {
 } from './runtime.js';
 
 export { CENTURION_HMS_PRODUCTION_ORIGIN };
+export { hmsReadRoleProofV1Schema };
+export type { HmsReadRoleProofV1 };
 
 const DENIED_ACTIONS = [
   'new_record',
@@ -37,30 +42,6 @@ const DENIED_ACTIONS = [
   'document_generate',
   'document_send',
 ] as const;
-
-export const hmsReadRoleProofV1Schema = z
-  .object({
-    schemaVersion: z.literal(1),
-    propertyCode: z.literal('HRCEN'),
-    allowedSurfaces: z.tuple([z.literal('Guest Stay')]),
-    deniedActions: z.tuple([
-      z.literal('new_record'),
-      z.literal('save'),
-      z.literal('delete'),
-      z.literal('duplicate'),
-      z.literal('check_in'),
-      z.literal('check_out'),
-      z.literal('document_generate'),
-      z.literal('document_send'),
-    ]),
-    issuedAt: z.string().datetime(),
-    expiresAt: z.string().datetime(),
-    evidenceRef: z.string().min(1),
-    evidenceSha256: z.string().regex(/^[a-f0-9]{64}$/i),
-  })
-  .strict();
-
-export type HmsReadRoleProofV1 = z.infer<typeof hmsReadRoleProofV1Schema>;
 
 const MAX_PROOF_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 

@@ -6,6 +6,7 @@ import {
   assertSecurityMarkersAbsentOrRedacted,
   auditProductionBoundary,
   buildSecurityMarkerSurfacesFromInjectedPayloads,
+  collectBusinessNotFoundAssignments,
   collectForbiddenImports,
   runHmsDraftPipelineJourneys,
 } from '../src/hms/production-boundary.js';
@@ -129,5 +130,9 @@ describe('HMS production boundary', () => {
       h.match.includes('ai/drafts'),
     );
     expect(shadowDraftHits).toEqual([]);
+  });
+
+  it('sole path: parser/driver/receipt/claim/worker/proof cannot assign business not_found', () => {
+    expect(collectBusinessNotFoundAssignments()).toEqual([]);
   });
 });

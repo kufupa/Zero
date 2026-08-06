@@ -1,21 +1,72 @@
+/**
+ * Phase B release / role-proof / receipt evidence schemas.
+ * production-runtime consumes these; do not reverse-import from production-runtime.
+ */
+import { createHash } from 'node:crypto';
 import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { z } from 'zod';
-import { READ_TOOL_IDS } from './read-tools.js';
-import { hmsReadRoleProofV1Schema } from './production-runtime.js';
+import {
+  DISCOVERY_OPERATION_IDS,
+  HMS_READ_TOOL_IDS,
+  READ_TOOL_IDS,
+  ROLE_SURFACE_IDS,
+  type HmsReadToolId,
+  type ReadToolDefinition,
+  type ReadToolId,
+} from './read-tools.js';
 
 const sha = z.string().regex(/^[a-f0-9]{64}$/);
 const uuid = z.string().uuid();
 const toolId = z.enum(READ_TOOL_IDS);
+const hmsToolId = z.enum(HMS_READ_TOOL_IDS);
+const discoveryOperationId = z.enum(DISCOVERY_OPERATION_IDS);
+const roleSurfaceId = z.enum(ROLE_SURFACE_IDS);
+
+const MAX_PROOF_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+export const hmsReadRoleProofV1Schema = z
+  .object({
+    schemaVersion: z.literal(1),
+    propertyCode: z.literal('HRCEN'),
+    allowedSurfaces: z.tuple([z.literal('Guest Stay')]),
+    deniedActions: z.tuple([
+      z.literal('new_record'),
+      z.literal('save'),
+      z.literal('delete'),
+      z.literal('duplicate'),
+      z.literal('check_in'),
+      z.literal('check_out'),
+      z.literal('document_generate'),
+      z.literal('document_send'),
+    ]),
+    issuedAt: z.string().datetime(),
+    expiresAt: z.string().datetime(),
+    evidenceRef: z.string().min(1),
+    evidenceSha256: sha,
+  })
+  .strict();
+
+export type HmsReadRoleProofV1 = z.infer<typeof hmsReadRoleProofV1Schema>;
 
 export const hmsReadRoleProofV2Schema = z
   .object({
     schemaVersion: z.literal(2),
-    actorDigest: sha,
-    propertyCode: z.string().min(1).max(32),
-    currency: z.string().regex(/^[A-Z]{3}$/),
+    attestationKind: z.literal('operator_observed_runtime'),
+    toolId: hmsToolId,
+    discoveryOperationId,
+    operationId: uuid,
+    observerSourceRevision: z.string().min(1),
+    evidenceArtifactId: uuid,
+    privateDigestKeyVersion: z.string().min(1),
+    actorHmacSha256: sha,
+    credentialVersionHmacSha256: sha,
+    runtimeFingerprintSha256: sha,
+    roleFingerprintSha256: sha,
+    propertyCode: z.literal('HRCEN'),
+    currency: z.literal('ZAR'),
     credentialMode: z.literal('view_only'),
-    allowedSurfaces: z.array(z.string().min(1)).min(1),
+    allowedSurfaces: z.array(roleSurfaceId).min(1),
     deniedActions: z.array(z.string().min(1)).min(1),
     issuedAt: z.string().datetime(),
     expiresAt: z.string().datetime(),
@@ -23,25 +74,27 @@ export const hmsReadRoleProofV2Schema = z
   })
   .strict();
 
+export type HmsReadRoleProofV2 = z.infer<typeof hmsReadRoleProofV2Schema>;
+
 export const hmsReadRoleProofSchema = z.union([
   hmsReadRoleProofV1Schema,
   hmsReadRoleProofV2Schema,
 ]);
 
-export const hmsBrowserArtifactReceiptV2Schema = z
+export type HmsReadRoleProof = z.infer<typeof hmsReadRoleProofSchema>;
+
+const hmsArtifactReceiptCommonV2Schema = z
   .object({
     schemaVersion: z.literal(2),
     artifactId: uuid,
     operationId: uuid,
-    toolId,
+    toolId: hmsToolId,
+    discoveryOperationId,
     toolVersion: z.string().min(1),
-    candidateHash: sha,
-    scopeHash: sha,
-    resultHash: sha,
-    sourceHash: sha,
-    roleProofSha256: sha,
-    discoverySha256: sha,
     sourceRevision: z.string().min(1),
+    credentialVersionHmacSha256: sha,
+    runtimeFingerprintSha256: sha,
+    privateDigestKeyVersion: z.string().min(1),
     traceSha256: sha,
     videoSha256: sha.nullable(),
     operationOutcome: z.enum([
@@ -55,6 +108,125 @@ export const hmsBrowserArtifactReceiptV2Schema = z
     expiresAt: z.string().datetime(),
   })
   .strict();
+
+export const hmsBrowserArtifactReceiptV2Schema = z.discriminatedUnion(
+  'executionClass',
+  [
+    hmsArtifactReceiptCommonV2Schema.extend({
+      executionClass: z.literal('discovery'),
+      structuralSignatureSha256: sha,
+      candidateSnapshotSha256: sha.nullable(),
+    }),
+    hmsArtifactReceiptCommonV2Schema.extend({
+      executionClass: z.literal('proof'),
+      requestBranchId: z.string().min(1),
+      candidateSnapshotSha256: sha,
+      candidateHmacSha256: sha,
+      scopeHmacSha256: sha,
+      resultHmacSha256: sha,
+      sourceRefHmacSha256: sha,
+      roleProofSha256: sha,
+      discoveryReceiptSha256: sha,
+      oracleArtifactSha256: sha,
+    }),
+  ],
+);
+
+export type HmsBrowserArtifactReceiptV2 = z.infer<
+  typeof hmsBrowserArtifactReceiptV2Schema
+>;
+
+export const hmsEvidenceBindingV1Schema = z
+  .object({
+    toolId: hmsToolId,
+    toolVersion: z.string().min(1),
+    operationId: uuid,
+    discoveryOperationId,
+    candidateSnapshotSha256: sha,
+    propertyCode: z.literal('HRCEN'),
+    credentialVersionHmacSha256: sha,
+    runtimeFingerprintSha256: sha,
+    privateDigestKeyVersion: z.string().min(1),
+    roleProofSha256: sha,
+    requestBranchId: z.string().min(1),
+    sourceRevision: z.string().min(1),
+    verifierVersion: z.string().min(1).max(64),
+  })
+  .strict();
+
+export type HmsEvidenceBindingV1 = z.infer<typeof hmsEvidenceBindingV1Schema>;
+
+const releaseBaseFields = {
+  schemaVersion: z.literal(2),
+  releaseId: uuid,
+  toolsetVersion: z.string().min(1),
+  toolsetFingerprint: sha,
+  sourceRevision: z.string().min(1),
+  phaseAPlanSha256: sha,
+  phaseBPlanSha256: sha,
+  gateSha256: sha,
+  runtimeAbiVersion: z.string().min(1),
+  runtimeFingerprintSha256: sha,
+  implementationSha256: sha,
+  requesterPolicySha256: sha,
+  privateDigestKeyVersion: z.string().min(1),
+  liveProofSha256: sha,
+  receiptSha256: sha,
+  rollbackAction: z.enum(['restore_predecessor', 'disable']),
+} as const;
+
+const liveVerifiedFields = {
+  qualification: z.literal('live_verified'),
+  shadowSha256: z.null(),
+  predecessorReleaseId: uuid.nullable(),
+} as const;
+
+const shadowEnabledFields = {
+  qualification: z.literal('shadow_enabled'),
+  shadowSha256: sha,
+  predecessorReleaseId: uuid,
+} as const;
+
+const hmsEvidenceFields = {
+  evidenceKind: z.literal('hms'),
+  toolId: hmsToolId,
+  toolVersion: z.string().min(1),
+  requestBranches: z
+    .array(
+      z
+        .object({
+          id: z.string().min(1),
+          discoveryOperationId,
+          manifestSha256: sha,
+          discoverySha256: sha,
+          parserSchemaSha256: sha,
+        })
+        .strict(),
+    )
+    .min(1),
+  credentialVersionHmacSha256: sha,
+  roleProofSha256: sha,
+} as const;
+
+const mailEvidenceFields = {
+  evidenceKind: z.literal('mail'),
+  toolId: z.literal('mail_read_artifact'),
+  toolVersion: z.literal('2'),
+  grantPolicySha256: sha,
+  s3IdentitySha256: sha,
+  parserSandboxSha256: sha,
+} as const;
+
+export const hmsPortfolioToolReleaseV2Schema = z.union([
+  z.object({ ...releaseBaseFields, ...liveVerifiedFields, ...hmsEvidenceFields }).strict(),
+  z.object({ ...releaseBaseFields, ...shadowEnabledFields, ...hmsEvidenceFields }).strict(),
+  z.object({ ...releaseBaseFields, ...liveVerifiedFields, ...mailEvidenceFields }).strict(),
+  z.object({ ...releaseBaseFields, ...shadowEnabledFields, ...mailEvidenceFields }).strict(),
+]);
+
+export type HmsPortfolioToolReleaseV2 = z.infer<
+  typeof hmsPortfolioToolReleaseV2Schema
+>;
 
 export const hmsPortfolioToolReleaseV1Schema = z
   .object({
@@ -99,6 +271,59 @@ export type HmsPortfolioToolReleaseV1 = z.infer<
   typeof hmsPortfolioToolReleaseV1Schema
 >;
 export type HmsActiveRegistryV1 = z.infer<typeof hmsActiveRegistryV1Schema>;
+
+export function roleProofV2Path(root: string, toolId: HmsReadToolId): string {
+  return join(root, 'role-proofs', `${toolId}.v2.json`);
+}
+
+export function validateRoleProofV2ForTool(
+  proof: HmsReadRoleProofV2,
+  tool: ReadToolDefinition,
+  now: Date,
+): void {
+  const parsed = hmsReadRoleProofV2Schema.parse(proof);
+  if (tool.id === 'mail_read_artifact') {
+    throw new Error('mail_read_artifact cannot enter HMS role proof v2');
+  }
+  if (parsed.toolId !== tool.id) {
+    throw new Error('role proof toolId mismatch');
+  }
+  if (!tool.discoveryOperationIds.includes(parsed.discoveryOperationId)) {
+    throw new Error('role proof discoveryOperationId not enabled for tool');
+  }
+  const issued = Date.parse(parsed.issuedAt);
+  const expires = Date.parse(parsed.expiresAt);
+  if (!Number.isFinite(issued) || !Number.isFinite(expires)) {
+    throw new Error('role proof dates invalid');
+  }
+  if (issued > now.getTime()) {
+    throw new Error('role proof issued in the future');
+  }
+  if (expires <= issued) {
+    throw new Error('role proof TTL must be > 0');
+  }
+  if (expires <= now.getTime()) {
+    throw new Error('role proof expired');
+  }
+  const ttl = expires - issued;
+  if (ttl > MAX_PROOF_TTL_MS) {
+    throw new Error('role proof TTL exceeds 30d');
+  }
+  const requiredSurfaces = new Set(
+    tool.requestBranches.flatMap((branch) => branch.requiredRoleSurfaces),
+  );
+  if (
+    parsed.allowedSurfaces.length !== requiredSurfaces.size ||
+    parsed.allowedSurfaces.some((surface) => !requiredSurfaces.has(surface))
+  ) {
+    throw new Error('role proof allowedSurfaces must match branch surfaces');
+  }
+  for (const action of tool.deniedActions) {
+    if (!parsed.deniedActions.includes(action)) {
+      throw new Error(`role proof missing denied action ${action}`);
+    }
+  }
+}
 
 async function atomicWrite(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
@@ -145,7 +370,7 @@ export async function promoteReadTool(input: {
 
 export async function rollbackReadTool(input: {
   path: string;
-  toolId: z.infer<typeof toolId>;
+  toolId: ReadToolId;
 }): Promise<HmsActiveRegistryV1> {
   const current = await loadActiveReadRegistry(input.path);
   const retained = [...(current.retainedPredecessors[input.toolId] ?? [])];
@@ -165,4 +390,9 @@ export async function rollbackReadTool(input: {
   });
   await atomicWrite(input.path, next);
   return next;
+}
+
+/** Integrity digest helper for tests and callers hashing public artifacts. */
+export function sha256Hex(input: string): string {
+  return createHash('sha256').update(input).digest('hex');
 }

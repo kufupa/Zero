@@ -318,6 +318,10 @@ function assignmentTargetName(target: ts.Expression): string | null {
   return null;
 }
 
+/** Sole adapter path: only negative-result.ts may construct business not_found. */
+export const BUSINESS_NOT_FOUND_SOLE_ADAPTER =
+  'src/hms/negative-result.ts' as const;
+
 export function collectBusinessNotFoundAssignments(
   inputFiles?: readonly string[],
 ): Array<{
@@ -326,12 +330,16 @@ export function collectBusinessNotFoundAssignments(
 }> {
   const files = (
     inputFiles ?? [
-      ...walkTsFiles(join(srcRoot, 'hms')).filter((file) =>
-        /(?:-driver|reservation-candidate-session|adapter)\.ts$/.test(
-          file.replace(/\\/g, '/'),
-        ),
-      ),
+      ...walkTsFiles(join(srcRoot, 'hms')).filter((file) => {
+        const normalized = file.replace(/\\/g, '/');
+        return (
+          /(?:-driver|reservation-candidate-session|adapter|browser-artifacts|claim-envelope|quote-stay-contract|document-list-contract|sent-email-audit-contract|folio-read-contract|company-account-read-contract|group-block-read-contract|event-read-contract)\.ts$/.test(
+            normalized,
+          ) || /\/hms\/(?:adapter|browser-artifacts|claim-envelope)\.ts$/.test(normalized)
+        );
+      }),
       join(srcRoot, 'ai', 'worker.ts'),
+      join(srcRoot, 'ops', 'hms-live-proof.ts'),
     ]
   ).filter((file) => existsSync(file));
   const hits: Array<{ file: string; value: string }> = [];

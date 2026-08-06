@@ -536,10 +536,28 @@ describe('candidate parent/child graph', () => {
 
 describe('negative quarantine', () => {
   it('constructs BUSINESS_NOT_FOUND only after all independent gates verify', async () => {
-    const ref = () => ({ evidenceId: randomUUID(), sha256: 'b'.repeat(64) });
+    const { canonicalNegativeCertificateSha256, hmsEvidenceBindingV1Schema } =
+      await import('../src/hms/negative-result.js');
+    const binding = hmsEvidenceBindingV1Schema.parse({
+      toolId: 'hms_find_reservation',
+      toolVersion: '1.2.0',
+      operationId: randomUUID(),
+      discoveryOperationId: 'guest_stay_search',
+      candidateSnapshotSha256: 'a'.repeat(64),
+      propertyCode: 'HRCEN',
+      credentialVersionHmacSha256: 'b'.repeat(64),
+      runtimeFingerprintSha256: 'c'.repeat(64),
+      privateDigestKeyVersion: 'v1',
+      roleProofSha256: 'd'.repeat(64),
+      requestBranchId: 'guest_stay_search',
+      sourceRevision: 'rev1',
+      verifierVersion: '1',
+    });
+    const ref = () => ({ evidenceId: randomUUID(), sha256: 'e'.repeat(64) });
     const certificate = negativeResultCertificateV1Schema.parse({
       schemaVersion: 1,
       verifierVersion: '1',
+      binding,
       candidateSource: ref(),
       surface: ref(),
       nativeRequestDifferential: ref(),
@@ -551,17 +569,18 @@ describe('negative quarantine', () => {
       issuedAt: new Date(Date.now() - 1_000).toISOString(),
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
     });
+    const digest = canonicalNegativeCertificateSha256(certificate);
     await expect(
       validateNegativeResultCertificate({
         certificate,
-        certificateSha256: 'c'.repeat(64),
+        certificateSha256: digest,
         verifyEvidence: async () => true,
       }),
     ).resolves.toMatchObject({ status: 'BUSINESS_NOT_FOUND' });
     await expect(
       validateNegativeResultCertificate({
         certificate,
-        certificateSha256: 'c'.repeat(64),
+        certificateSha256: digest,
         verifyEvidence: async (gate) => gate !== 'nativeRequestDifferential',
       }),
     ).resolves.toEqual({
@@ -571,29 +590,48 @@ describe('negative quarantine', () => {
   });
 
   it('maps only validated certificates to model-visible not_found', async () => {
+    const { canonicalNegativeCertificateSha256, hmsEvidenceBindingV1Schema } =
+      await import('../src/hms/negative-result.js');
     const quarantined = {
       status: 'UNVERIFIED_NEGATIVE',
       diagnostic: 'REQUEST_DRIFT',
     } as const;
     expect(toBusinessNotFoundToolStatus(quarantined)).toBe('unverified_negative');
 
-    const ref = () => ({ evidenceId: randomUUID(), sha256: 'b'.repeat(64) });
+    const binding = hmsEvidenceBindingV1Schema.parse({
+      toolId: 'hms_find_reservation',
+      toolVersion: '1.2.0',
+      operationId: randomUUID(),
+      discoveryOperationId: 'guest_stay_search',
+      candidateSnapshotSha256: 'a'.repeat(64),
+      propertyCode: 'HRCEN',
+      credentialVersionHmacSha256: 'b'.repeat(64),
+      runtimeFingerprintSha256: 'c'.repeat(64),
+      privateDigestKeyVersion: 'v1',
+      roleProofSha256: 'd'.repeat(64),
+      requestBranchId: 'guest_stay_search',
+      sourceRevision: 'rev1',
+      verifierVersion: '1',
+    });
+    const ref = () => ({ evidenceId: randomUUID(), sha256: 'e'.repeat(64) });
+    const certificate = negativeResultCertificateV1Schema.parse({
+      schemaVersion: 1,
+      verifierVersion: '1',
+      binding,
+      candidateSource: ref(),
+      surface: ref(),
+      nativeRequestDifferential: ref(),
+      response: ref(),
+      parserConservation: ref(),
+      scopeCompleteness: ref(),
+      controlPair: ref(),
+      candidateExhaustion: ref(),
+      issuedAt: new Date(Date.now() - 1_000).toISOString(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    });
     const validated = await validateNegativeResultCertificate({
-      certificate: negativeResultCertificateV1Schema.parse({
-        schemaVersion: 1,
-        verifierVersion: '1',
-        candidateSource: ref(),
-        surface: ref(),
-        nativeRequestDifferential: ref(),
-        response: ref(),
-        parserConservation: ref(),
-        scopeCompleteness: ref(),
-        controlPair: ref(),
-        candidateExhaustion: ref(),
-        issuedAt: new Date(Date.now() - 1_000).toISOString(),
-        expiresAt: new Date(Date.now() + 60_000).toISOString(),
-      }),
-      certificateSha256: 'c'.repeat(64),
+      certificate,
+      certificateSha256: canonicalNegativeCertificateSha256(certificate),
       verifyEvidence: async () => true,
     });
     expect(toBusinessNotFoundToolStatus(validated)).toBe('not_found');
@@ -658,7 +696,7 @@ describe('protected artifact index and exclusive receipt', () => {
 });
 
 describe('v1/v2 compatibility and atomic release registry', () => {
-  it('accepts role proof v1/v2 and closed receipt v2', () => {
+  it('accepts role proof v1/v2 and discriminated receipt v2', () => {
     const v1 = hmsReadRoleProofV1Schema.parse({
       schemaVersion: 1,
       propertyCode: 'HRCEN',
@@ -673,24 +711,52 @@ describe('v1/v2 compatibility and atomic release registry', () => {
       evidenceSha256: 'd'.repeat(64),
     });
     expect(hmsReadRoleProofSchema.parse(v1).schemaVersion).toBe(1);
+    const common = {
+      schemaVersion: 2 as const,
+      artifactId: randomUUID(),
+      operationId: randomUUID(),
+      toolId: 'hms_find_reservation' as const,
+      discoveryOperationId: 'guest_stay_search' as const,
+      toolVersion: '1.2.0',
+      sourceRevision: 'rev',
+      credentialVersionHmacSha256: 'a'.repeat(64),
+      runtimeFingerprintSha256: 'b'.repeat(64),
+      privateDigestKeyVersion: 'v1',
+      traceSha256: '1'.repeat(64),
+      videoSha256: null,
+      operationOutcome: 'succeeded' as const,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    };
+    expect(
+      hmsBrowserArtifactReceiptV2Schema.parse({
+        ...common,
+        executionClass: 'discovery',
+        structuralSignatureSha256: 'c'.repeat(64),
+        candidateSnapshotSha256: null,
+      }).executionClass,
+    ).toBe('discovery');
     expect(() =>
       hmsBrowserArtifactReceiptV2Schema.parse({
-        schemaVersion: 2,
-        artifactId: randomUUID(),
-        operationId: randomUUID(),
-        toolId: 'hms_find_reservation',
-        toolVersion: '1.2.0',
-        candidateHash: 'a'.repeat(64),
-        scopeHash: 'b'.repeat(64),
-        resultHash: 'c'.repeat(64),
-        sourceHash: 'd'.repeat(64),
+        ...common,
+        executionClass: 'discovery',
+        structuralSignatureSha256: 'c'.repeat(64),
+        candidateSnapshotSha256: null,
         roleProofSha256: 'e'.repeat(64),
-        discoverySha256: 'f'.repeat(64),
-        sourceRevision: 'rev',
-        traceSha256: '1'.repeat(64),
-        videoSha256: null,
-        operationOutcome: 'succeeded',
-        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      }),
+    ).toThrow();
+    expect(() =>
+      hmsBrowserArtifactReceiptV2Schema.parse({
+        ...common,
+        executionClass: 'proof',
+        requestBranchId: 'guest_stay_search',
+        candidateSnapshotSha256: 'c'.repeat(64),
+        candidateHmacSha256: 'd'.repeat(64),
+        scopeHmacSha256: 'e'.repeat(64),
+        resultHmacSha256: 'f'.repeat(64),
+        sourceRefHmacSha256: '1'.repeat(64),
+        roleProofSha256: '2'.repeat(64),
+        discoveryReceiptSha256: '3'.repeat(64),
+        oracleArtifactSha256: '4'.repeat(64),
         extra: true,
       }),
     ).toThrow();
