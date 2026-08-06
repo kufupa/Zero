@@ -1,20 +1,34 @@
+import { useQuery } from '@tanstack/react-query';
 import { useSession } from '@/lib/auth-client';
+import { useTRPC } from '@/providers/query-provider';
 import { isAdminDashboardEnabled, describeAdminSource } from '@/lib/admin-dashboard/access';
 import { ADMIN_DASHBOARD_PLACEHOLDER_DATA } from '@/lib/admin-dashboard/demo-data';
-import type { AdminDashboardData } from '@/lib/admin-dashboard/types';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import type { AdminDashboardData, AdminDashboardMetrics } from '@/lib/admin-dashboard/types';
 
 export type AdminDashboardState = {
   canAccess: boolean;
   isLoading: boolean;
   isError: boolean;
   source: 'demo' | 'hosted';
+  /** Demo fixtures only — never used for hosted LIVE numbers. */
   data: AdminDashboardData | null;
+  /** Hosted compute-on-read metrics; null in demo mode. */
+  metrics: AdminDashboardMetrics | null;
 };
 
 export function useAdminDashboardData(): AdminDashboardState {
   const { data: session, isLoading: isSessionLoading, isError: isSessionError } = useSession();
   const source = describeAdminSource(session);
   const canAccess = isAdminDashboardEnabled(session);
+  const demoMode = isFrontendOnlyDemo();
+  const trpc = useTRPC();
+
+  const metricsQuery = useQuery(
+    trpc.adminDashboard.getMetrics.queryOptions(undefined, {
+      enabled: !demoMode && canAccess && !isSessionLoading && !isSessionError,
+    }),
+  );
 
   if (isSessionLoading) {
     return {
@@ -23,6 +37,7 @@ export function useAdminDashboardData(): AdminDashboardState {
       isError: false,
       source,
       data: null,
+      metrics: null,
     };
   }
 
@@ -33,16 +48,27 @@ export function useAdminDashboardData(): AdminDashboardState {
       isError: Boolean(isSessionError),
       source,
       data: null,
+      metrics: null,
+    };
+  }
+
+  if (demoMode) {
+    return {
+      canAccess: true,
+      isLoading: false,
+      isError: false,
+      source: 'demo',
+      data: ADMIN_DASHBOARD_PLACEHOLDER_DATA,
+      metrics: null,
     };
   }
 
   return {
     canAccess: true,
-    isLoading: false,
-    isError: false,
-    source,
-    // Hosted adapter placeholder: swap this static payload for a real backend call
-    // when the dashboard moves off demo mode.
-    data: ADMIN_DASHBOARD_PLACEHOLDER_DATA,
+    isLoading: metricsQuery.isLoading,
+    isError: metricsQuery.isError,
+    source: 'hosted',
+    data: null,
+    metrics: (metricsQuery.data as AdminDashboardMetrics | undefined) ?? null,
   };
 }

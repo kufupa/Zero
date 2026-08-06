@@ -24,7 +24,23 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { SettingsCard } from '@/components/settings/settings-card';
 import { useAdminDashboardData } from '@/hooks/use-admin-dashboard';
-import type { EmailAddressSeriesItem, TimelinePoint } from '@/lib/admin-dashboard/types';
+import type {
+  AdminDashboardData,
+  AdminDashboardMetrics,
+  EmailAddressSeriesItem,
+  TimelinePoint,
+} from '@/lib/admin-dashboard/types';
+import {
+  formatLiveNumber,
+  formatMetricCell,
+  summarizeTransportSeries,
+} from '@/lib/admin-dashboard/types';
+import {
+  LEGACY_HOTEL_PALETTE,
+  SPLIT_THEME,
+  TREND_LINE_COLORS,
+} from '@/lib/admin-dashboard/legacy-hotel-palette';
+import type { ReactNode } from 'react';
 
 type InboxOption = {
   id: string;
@@ -72,30 +88,6 @@ const SPLIT_LABELS: Record<InboundReservationSplitAggregate['type'], string> = {
   individual: 'Individual bookings',
   group: 'Group bookings',
   travelAgents: 'Travel agents',
-};
-
-const SPLIT_THEME: Record<
-  InboundReservationSplitAggregate['type'],
-  { border: string; label: string; value: string; bar: string }
-> = {
-  individual: {
-    border: 'border-sky-300 dark:border-sky-400/50',
-    label: 'text-sky-700 dark:text-sky-200',
-    value: 'text-sky-800 dark:text-sky-100',
-    bar: 'bg-sky-500',
-  },
-  group: {
-    border: 'border-amber-300 dark:border-amber-400/50',
-    label: 'text-amber-700 dark:text-amber-200',
-    value: 'text-amber-800 dark:text-amber-100',
-    bar: 'bg-amber-500',
-  },
-  travelAgents: {
-    border: 'border-violet-300 dark:border-violet-400/50',
-    label: 'text-violet-700 dark:text-violet-200',
-    value: 'text-violet-800 dark:text-violet-100',
-    bar: 'bg-violet-500',
-  },
 };
 
 const ZAR_FORMATTER = new Intl.NumberFormat('en-ZA', {
@@ -178,10 +170,22 @@ function aggregateEmailsByHotel(emails: EmailAddressSeriesItem[]): HotelAggregat
   return Array.from(aggregateMap.values());
 }
 
-const TREND_LINE_COLORS = ['#0ea5e9', '#16a34a', '#f59e0b', '#8b5cf6', '#ec4899', '#14b8a6', '#ef4444', '#0f766e'];
-
 function formatCurrency(value: number) {
   return ZAR_FORMATTER.format(value);
+}
+
+function ComingSoon({ children, className = '' }: { children: ReactNode; className?: string }) {
+  return (
+    <div
+      className={`relative opacity-60 pointer-events-none ${className}`}
+      aria-disabled="true"
+    >
+      <span className="absolute right-3 top-3 z-10 rounded border border-dashed border-muted-foreground/40 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+        Soon
+      </span>
+      <div className="rounded-lg border border-dashed border-muted-foreground/30">{children}</div>
+    </div>
+  );
 }
 
 function KpiMetric({
@@ -389,34 +393,40 @@ function computeReservationSplitAggregates(items: EmailAddressSeriesItem[]): Inb
 function ReservationSplitCard({
   split,
   title,
+  placeholder = false,
 }: {
   split: InboundReservationSplitAggregate;
   title: string;
+  /** Renders the card's colour shell with em-dashes instead of unearned zeros. */
+  placeholder?: boolean;
 }) {
   const theme = SPLIT_THEME[split.type];
+  const dash = '—';
 
   return (
     <Card className={`border ${theme.border}`}>
       <CardHeader className="pb-2">
         <CardTitle className={`text-sm font-medium ${theme.label}`}>{title}</CardTitle>
-        <p className={`text-lg font-semibold ${theme.value}`}>Inbound: {split.inboundEmails}</p>
+        <p className={`text-lg font-semibold ${theme.value}`}>
+          Inbound: {placeholder ? dash : split.inboundEmails}
+        </p>
       </CardHeader>
       <CardContent className="space-y-2">
         <div className={`flex justify-between ${theme.value}`}>
           <span>Avg chain size</span>
-          <span className="font-medium">{split.averageChainSize.toFixed(1)}</span>
+          <span className="font-medium">{placeholder ? dash : split.averageChainSize.toFixed(1)}</span>
         </div>
         <div className={`flex justify-between ${theme.value}`}>
           <span>Drafted</span>
-          <span className="font-medium">{split.draftedPercent.toFixed(1)}%</span>
+          <span className="font-medium">{placeholder ? dash : `${split.draftedPercent.toFixed(1)}%`}</span>
         </div>
         <div className={`flex justify-between ${theme.value}`}>
           <span>Booked</span>
-          <span className="font-medium">{split.bookedPercent.toFixed(1)}%</span>
+          <span className="font-medium">{placeholder ? dash : `${split.bookedPercent.toFixed(1)}%`}</span>
         </div>
         <div className={`flex justify-between ${theme.value}`}>
           <span>Total Revenue</span>
-          <span className="font-medium">{formatCurrency(split.totalRevenue)}</span>
+          <span className="font-medium">{placeholder ? dash : formatCurrency(split.totalRevenue)}</span>
         </div>
       </CardContent>
     </Card>
@@ -533,8 +543,11 @@ function AdminEmailComparisonTooltip({ active, payload, label }: AdminTooltipPro
           const percentageValue = formatComparisonPercentage(comparisonEntry.value);
           const rawValueLookup = dataKey ? `raw_${dataKey}` : '';
           const rawValue = comparisonEntry.payload && rawValueLookup ? comparisonEntry.payload[rawValueLookup] : 0;
-          const normalizedRawValue = typeof rawValue === 'number' ? rawValue : Number(rawValue);
-          const rawDisplay = Number.isFinite(normalizedRawValue) ? normalizedRawValue.toLocaleString() : '0';
+          const normalizedRawValue = rawValue == null ? null : Number(rawValue);
+          const rawDisplay =
+            normalizedRawValue != null && Number.isFinite(normalizedRawValue)
+              ? normalizedRawValue.toLocaleString()
+              : '—';
           const seriesName = comparisonEntry.name ?? dataKey;
 
           return (
@@ -587,7 +600,336 @@ function AdminDashboardTooltip({ active, payload, label }: AdminTooltipProps) {
 }
 
 export default function AdminDashboardPage() {
-  const { canAccess, isLoading, data, isError } = useAdminDashboardData();
+  const { canAccess, isLoading, data, metrics, isError, source } = useAdminDashboardData();
+
+  if (isLoading) {
+    return <div className="text-sm text-muted-foreground">Loading Admin dashboard…</div>;
+  }
+
+  if (!canAccess) {
+    return <Navigate to="/settings/general" replace />;
+  }
+
+  if (isError) {
+    return <div className="text-sm text-destructive">Failed to load dashboard.</div>;
+  }
+
+  if (source === 'hosted') {
+    if (!metrics) {
+      return <div className="text-sm text-muted-foreground">Loading Admin dashboard…</div>;
+    }
+    return <HostedAdminDashboardView metrics={metrics} />;
+  }
+
+  if (!data) {
+    return <Navigate to="/settings/general" replace />;
+  }
+
+  return <DemoAdminDashboardView data={data} />;
+}
+
+/**
+ * Hosted view: LIVE cells come from compute-on-read Centurion metrics.
+ * Nava-dependent metrics render as em-dash; roadmap tiles render greyed.
+ */
+function HostedAdminDashboardView({ metrics }: { metrics: AdminDashboardMetrics }) {
+  const transports = metrics.transports;
+  // Seeded on first render so KPI tiles never paint an unearned 0 before hydration.
+  const [selectedTransportIds, setSelectedTransportIds] = useState<string[]>(() =>
+    transports.map((item) => item.id),
+  );
+  const allIds = useMemo(() => transports.map((item) => item.id), [transports]);
+
+  useEffect(() => {
+    if (!allIds.length) return;
+    setSelectedTransportIds((prev) => {
+      const valid = prev.filter((id) => allIds.includes(id));
+      return valid.length > 0 ? valid : allIds;
+    });
+  }, [allIds]);
+
+  const selectedSet = useMemo(() => new Set(selectedTransportIds), [selectedTransportIds]);
+  const areAllSelected = selectedTransportIds.length === allIds.length;
+
+  const selectedLabel = useMemo(() => {
+    if (transports.length === 0) return 'No mailboxes available';
+    if (areAllSelected) return 'All mailboxes selected';
+    if (selectedTransportIds.length === 1) {
+      const only = transports.find((item) => item.id === selectedTransportIds[0]);
+      return only ? only.displayName?.trim() || only.email : '1 mailbox selected';
+    }
+    return `${selectedTransportIds.length} mailboxes selected`;
+  }, [transports, areAllSelected, selectedTransportIds]);
+
+  const selectedSummary = useMemo(
+    () => summarizeTransportSeries(metrics.perTransport.filter((row) => selectedSet.has(row.transportId))),
+    [metrics.perTransport, selectedSet],
+  );
+
+  const comparisonData = useMemo(() => {
+    return metrics.comparison
+      .filter((row) => selectedSet.has(row.transportId))
+      .map((row) => ({
+        hotel: row.label,
+        inbound: row.inbound > 0 ? 100 : 0,
+        // A mailbox with no eligible threads keeps null (rendered as a zero-height
+        // bar plus an em-dash tooltip) rather than claiming a measured 0% SLA.
+        respondedWithinSla: row.answeredWithin3hPercent,
+        raw_inbound: row.inbound,
+        raw_respondedWithinSla: row.answeredWithin3hPercent,
+      }))
+      .sort((a, b) => (b.respondedWithinSla ?? -1) - (a.respondedWithinSla ?? -1));
+  }, [metrics.comparison, selectedSet]);
+
+  const lineSeries = useMemo(() => {
+    return transports
+      .filter((item) => selectedSet.has(item.id))
+      .map((item, index) => ({
+        key: item.id,
+        label: item.displayName?.trim() || item.email,
+        color: TREND_LINE_COLORS[index % TREND_LINE_COLORS.length],
+      }));
+  }, [transports, selectedSet]);
+
+  const inboundPerDayData = useMemo<InboundTrendDataPoint[]>(() => {
+    return metrics.inboundPerDay.map((day) => {
+      const point: InboundTrendDataPoint = { period: day.period };
+      for (const series of lineSeries) {
+        point[series.key] = day.byTransport[series.key] ?? 0;
+      }
+      return point;
+    });
+  }, [metrics.inboundPerDay, lineSeries]);
+
+  const toggleTransport = (transportId: string) => {
+    setSelectedTransportIds((prev) => {
+      if (prev.length === allIds.length) return [transportId];
+      if (prev.includes(transportId)) {
+        if (prev.length <= 1) return prev;
+        return prev.filter((id) => id !== transportId);
+      }
+      return [...prev, transportId];
+    });
+  };
+
+  return (
+    <div className="grid gap-6">
+      <SettingsCard title="Admin dashboard">
+        <div className="space-y-4">
+          <div className="flex flex-wrap items-start justify-end gap-3 border-b pb-4">
+            <div className="flex items-center gap-2">
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm" className="gap-2">
+                    <Filter className="h-3.5 w-3.5" />
+                    {selectedLabel}
+                    <ChevronDown className="h-3.5 w-3.5 opacity-60" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-72">
+                  {transports.map((transport, index) => {
+                    const isChecked = selectedSet.has(transport.id);
+                    return (
+                      <div key={transport.id}>
+                        <DropdownMenuItem
+                          onSelect={(event) => {
+                            event.preventDefault();
+                            toggleTransport(transport.id);
+                          }}
+                          className="gap-2"
+                        >
+                          <span className="min-w-0 flex-1 truncate">
+                            {transport.displayName?.trim() || transport.email}
+                          </span>
+                          <span className={`text-muted-foreground ${isChecked ? 'opacity-100' : 'opacity-0'}`}>
+                            <Check className="h-4 w-4" />
+                          </span>
+                        </DropdownMenuItem>
+                        {index === transports.length - 1 ? null : <DropdownMenuSeparator />}
+                      </div>
+                    );
+                  })}
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onSelect={() => setSelectedTransportIds(allIds)} disabled={areAllSelected}>
+                    {areAllSelected ? 'All mailboxes selected' : 'Select all'}
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+              {areAllSelected ? null : (
+                <Button variant="ghost" size="sm" onClick={() => setSelectedTransportIds(allIds)}>
+                  Clear
+                </Button>
+              )}
+            </div>
+          </div>
+
+          <div className="grid gap-4 xl:grid-cols-4">
+            <KpiBlock
+              label="Inbound reservation emails"
+              value={`${selectedSummary.inbound}`}
+              subtitle="Centurion baseline"
+              subtitlePosition="right"
+            />
+            <ComingSoon>
+              <Card className="border-0">
+                <CardContent className="p-4">
+                  <KpiMetric
+                    label="Total revenue from emails"
+                    value="—"
+                    subtitle="Needs booking attribution"
+                  />
+                </CardContent>
+              </Card>
+            </ComingSoon>
+            <KpiPairBlock
+              firstLabel="Median response time"
+              firstValue={formatLiveNumber(selectedSummary.medianMinutes, (value) => `${value.toFixed(0)}m`)}
+              firstSubtitle={
+                selectedSummary.p90Minutes == null
+                  ? undefined
+                  : `p90 ${selectedSummary.p90Minutes.toFixed(0)}m`
+              }
+              secondLabel="Average time for draft creation"
+              secondValue="—"
+              secondSubtitle="Not available until Nava drafting is live"
+            />
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-3">
+            <KpiBlock
+              label="Answered within 3h"
+              value={formatLiveNumber(
+                selectedSummary.answeredWithin3hPercent,
+                (value) => `${value.toFixed(1)}%`,
+              )}
+              subtitle={`Legacy 3h target (RES005-aligned) · ${selectedSummary.unanswered} unanswered`}
+            />
+            <KpiBlock
+              label="AI-assisted send rate"
+              value={formatMetricCell(metrics.aiAssistedSendRate)}
+              subtitle="Not available until Nava drafting is live"
+            />
+            <KpiBlock
+              label="Median edit distance"
+              value={formatMetricCell(metrics.medianEditDistance)}
+              subtitle="Not available until Nava drafting is live"
+            />
+          </div>
+
+          <ComingSoon>
+            <Card className="border-0">
+              <CardHeader>
+                <CardTitle className="text-sm">Inbound reservation email splits</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="grid gap-4 md:grid-cols-3">
+                  {SPLIT_ORDER.map((type) => (
+                    <ReservationSplitCard
+                      key={type}
+                      placeholder
+                      split={{
+                        type,
+                        inboundEmails: 0,
+                        averageChainSize: 0,
+                        draftedPercent: 0,
+                        bookedPercent: 0,
+                        totalRevenue: 0,
+                      }}
+                      title={SPLIT_LABELS[type]}
+                    />
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          </ComingSoon>
+
+          <ComingSoon>
+            <Card className="border-0">
+              <CardHeader>
+                <CardTitle className="text-sm">Per-hotel portfolio</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="mb-3 text-xs text-muted-foreground">
+                  Per-hotel series unlock when the hotel-to-mailbox map lands. Colours reserved:
+                </p>
+                <div className="flex flex-wrap gap-3">
+                  {LEGACY_HOTEL_PALETTE.map((hotel) => (
+                    <span key={hotel.hotelId} className="inline-flex items-center gap-2 text-xs">
+                      <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: hotel.color }} />
+                      {hotel.name}
+                    </span>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          </ComingSoon>
+
+          <div className="mt-6 grid gap-6 lg:grid-cols-2">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm">Email account comparison</CardTitle>
+              </CardHeader>
+              <CardContent className="h-80">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={comparisonData}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="hotel" tick={false} interval={0} />
+                    <YAxis allowDecimals tickFormatter={(value) => `${value}%`} />
+                    <Tooltip content={<AdminEmailComparisonTooltip />} />
+                    <Legend />
+                    <Bar dataKey="inbound" name="Inbound" fill={TREND_LINE_COLORS[0]} radius={[4, 4, 0, 0]} />
+                    <Bar
+                      dataKey="respondedWithinSla"
+                      name="Responded within SLA"
+                      fill={TREND_LINE_COLORS[2]}
+                      radius={[4, 4, 0, 0]}
+                    />
+                  </BarChart>
+                </ResponsiveContainer>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Drafted series unavailable until Nava drafting is live.
+                </p>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm">Inbound emails per day</CardTitle>
+              </CardHeader>
+              <CardContent className="h-80">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={inboundPerDayData}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="period" />
+                    <YAxis allowDecimals={false} />
+                    <Tooltip content={<AdminDashboardTooltip />} />
+                    <Legend />
+                    {lineSeries.map((series) => (
+                      <Line
+                        key={series.key}
+                        type="monotone"
+                        dataKey={series.key}
+                        name={series.label}
+                        stroke={series.color}
+                      />
+                    ))}
+                  </LineChart>
+                </ResponsiveContainer>
+              </CardContent>
+            </Card>
+          </div>
+
+          <p className="mt-2 text-xs text-muted-foreground">
+            {metrics.footnote} Stats are for the past 7 days.
+          </p>
+        </div>
+      </SettingsCard>
+    </div>
+  );
+}
+
+/** Demo view: unchanged fixture-driven dashboard, used only in frontend-only demo mode. */
+function DemoAdminDashboardView({ data }: { data: AdminDashboardData }) {
   const [selectedInboxes, setSelectedInboxes] = useState<string[]>([]);
 
   const hotelOptions = useMemo<HotelGroupOption[]>(() => {
@@ -802,18 +1144,6 @@ export default function AdminDashboardPage() {
   const handleClearSelection = () => {
     setSelectedInboxes(allInboxes.map((item) => item.id));
   };
-
-  if (isLoading) {
-    return <div className="text-sm text-muted-foreground">Loading Admin dashboard…</div>;
-  }
-
-  if (!canAccess || !data) {
-    return <Navigate to="/settings/general" replace />;
-  }
-
-  if (isError) {
-    return <div className="text-sm text-destructive">Failed to load dashboard.</div>;
-  }
 
   return (
     <div className="grid gap-6">
