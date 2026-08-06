@@ -55,6 +55,8 @@ export type EvidenceClaim = {
     | 'workflow_summary';
   value: unknown;
   evidenceId: string;
+  /** Closed envelope claims always set evidenceIds (primary first). */
+  evidenceIds?: string[];
   expiresAt?: string;
 };
 
@@ -131,6 +133,7 @@ export const EvidenceClaimSchema = z
     ]),
     value: z.unknown(),
     evidenceId: z.string().min(1),
+    evidenceIds: z.array(z.string().min(1)).min(1).max(16).optional(),
     expiresAt: z.string().min(1).optional(),
   })
   .strict();

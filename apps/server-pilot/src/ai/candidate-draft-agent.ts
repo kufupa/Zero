@@ -2,7 +2,7 @@
  * Claim-safe HMS candidate draft generation.
  * Tools are read-only; claims are code-owned; model picks templates + claim IDs only.
  */
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { createTool } from '@mastra/core/tools';
 import { z } from 'zod';
 import type { LookupCandidate } from './thread-context.js';
@@ -19,40 +19,25 @@ import {
 } from './draft-evidence.js';
 import type { ReservationReadData, StayOptionReadData } from '../hms/contracts.js';
 import {
+  mapEnvelopeToClaims,
+  toolResultToClaimEnvelope,
+} from '../hms/claim-envelope.js';
+import {
   buildWorkflowSummaryClaim,
   executableToolIdsForPlan,
   planCandidateReads,
   type CandidateReadPlan,
 } from '../hms/candidate-read-plan.js';
-import {
-  companyAccountReadDataSchema,
-  mapCompanyBillingClaim,
-} from '../hms/company-account-read-contract.js';
-import {
-  documentListReadDataSchema,
-  mapDocumentMetadataClaim,
-} from '../hms/document-list-contract.js';
-import {
-  eventReadDataSchema,
-  mapEventSummaryClaim,
-} from '../hms/event-read-contract.js';
-import {
-  folioReadDataSchema,
-  mapFolioDepositClaim,
-} from '../hms/folio-read-contract.js';
-import {
-  groupBlockReadDataSchema,
-  mapGroupBlockClaim,
-} from '../hms/group-block-read-contract.js';
-import {
-  mapSentEmailAuditClaim,
-  sentEmailAuditReadDataSchema,
-} from '../hms/sent-email-audit-contract.js';
 import type { ArtifactData } from '../mail/artifacts/read-artifact.js';
 import { createModelAdapter } from './bedrock/factory.js';
 import { validateStructuredJsonOutput } from './security/policy.js';
-import { reserveReadAttempt } from './run-ledger.js';
-import type { AiRunFence, CandidateReadPlanKind } from './run-ledger.js';
+import {
+  RunDeadlineError,
+  reserveReadAttempt,
+  type AiRunFence,
+  type CandidateReadPlanKind,
+} from './run-ledger.js';
+import { admitReadBranch } from '../hms/read-admission.js';
 
 export const CANDIDATE_TOOL_BUDGET = 4;
 
@@ -127,16 +112,6 @@ export type MinimizedToolModelOutput = {
   claimKinds: EvidenceClaim['kind'][];
 };
 
-function claimId(parts: string): string {
-  return createHash('sha256').update(parts).digest('hex').slice(0, 16);
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
-
 /** Code-owned claim extraction — model never invents claim values. */
 export function claimsFromToolResult(
   result: ToolResult<unknown>,
@@ -145,168 +120,9 @@ export function claimsFromToolResult(
   const readiness = evaluateDraftReadiness(result, now);
   if (!readiness.draftReady) return [];
 
-  const claims: EvidenceClaim[] = [];
-  const evidenceId = result.evidence.id;
   const expiresAt =
     result.evidence.kind === 'hms' ? result.evidence.expiresAt : undefined;
-  const data = asRecord(result.data);
-
-  if (result.evidence.toolId === 'hms_find_reservation') {
-    const matches = Array.isArray(data.matches) ? data.matches : [];
-    const first = matches[0] ? asRecord(matches[0]) : null;
-    if (!first) return [];
-    claims.push({
-      id: claimId(`${evidenceId}:reservation_summary`),
-      kind: 'reservation_summary',
-      value: {
-        confirmationNumber: first.confirmationNumber ?? null,
-        externalReference: first.externalReference ?? null,
-        guestName: first.guestName ?? null,
-        arrivalDate: first.arrivalDate ?? null,
-        departureDate: first.departureDate ?? null,
-        reservationStatus: first.reservationStatus ?? null,
-        roomType: first.roomType ?? null,
-        ratePlan: first.ratePlan ?? null,
-      },
-      evidenceId,
-      expiresAt,
-    });
-    return claims;
-  }
-
-  if (result.evidence.toolId === 'hms_quote_stay') {
-    const observations = Array.isArray(data.nightlyObservations)
-      ? data.nightlyObservations.map(asRecord)
-      : [];
-    if (
-      observations.length === 0 ||
-      data.bookable !== false ||
-      data.stayTotal !== null ||
-      data.occupancyPriced !== false
-    ) {
-      return [];
-    }
-    claims.push({
-      id: claimId(`${evidenceId}:quote_stay_summary`),
-      kind: 'quote_stay_summary',
-      value: {
-        nights: observations.map((row) => ({
-          date: row.date,
-          roomType: row.roomType,
-          availableCount: row.availableCount,
-          ratePlan: row.ratePlan,
-          displayedAmount: row.displayedAmount,
-          currency: row.currency,
-          rateBasis: row.rateBasis,
-          restrictions: Array.isArray(row.restrictions)
-            ? row.restrictions.join(', ')
-            : '',
-        })),
-        bookable: false,
-        stayTotal: null,
-        occupancyPriced: false,
-      },
-      evidenceId,
-      expiresAt,
-    });
-    return claims;
-  }
-
-  if (result.evidence.toolId === 'hms_list_documents') {
-    const parsed = documentListReadDataSchema.safeParse(result.data);
-    if (!parsed.success || parsed.data.rows.length === 0) return [];
-    claims.push({
-      id: claimId(`${evidenceId}:document_metadata`),
-      kind: 'document_metadata',
-      value: mapDocumentMetadataClaim(parsed.data),
-      evidenceId,
-      expiresAt,
-    });
-    return claims;
-  }
-
-  if (result.evidence.toolId === 'hms_sent_email_audit') {
-    const parsed = sentEmailAuditReadDataSchema.safeParse(result.data);
-    if (!parsed.success || parsed.data.rows.length === 0) return [];
-    claims.push({
-      id: claimId(`${evidenceId}:sent_email_audit`),
-      kind: 'sent_email_audit',
-      value: mapSentEmailAuditClaim(parsed.data),
-      evidenceId,
-      expiresAt,
-    });
-    return claims;
-  }
-
-  if (result.evidence.toolId === 'hms_read_folio') {
-    if (result.status === 'unverified_negative') return [];
-    const parsed = folioReadDataSchema.safeParse(result.data);
-    if (!parsed.success) return [];
-    const value = mapFolioDepositClaim(parsed.data);
-    if (!value) return [];
-    claims.push({
-      id: claimId(`${evidenceId}:folio_deposit_summary`),
-      kind: 'folio_deposit_summary',
-      value,
-      evidenceId,
-      expiresAt,
-    });
-    return claims;
-  }
-
-  if (result.evidence.toolId === 'hms_company_account_read') {
-    if (result.status === 'unverified_negative') return [];
-    const parsed = companyAccountReadDataSchema.safeParse(result.data);
-    if (!parsed.success) return [];
-    const value = mapCompanyBillingClaim(parsed.data);
-    if (!value) return [];
-    claims.push({
-      id: claimId(`${evidenceId}:company_billing_summary`),
-      kind: 'company_billing_summary',
-      value,
-      evidenceId,
-      expiresAt,
-    });
-    return claims;
-  }
-
-  if (result.evidence.toolId === 'hms_group_block_read') {
-    if (result.status === 'unverified_negative') return [];
-    const parsed = groupBlockReadDataSchema.safeParse(result.data);
-    if (!parsed.success) return [];
-    const value = mapGroupBlockClaim(parsed.data);
-    if (!value) return [];
-    claims.push({
-      id: claimId(`${evidenceId}:group_block_summary`),
-      kind: 'group_block_summary',
-      value,
-      evidenceId,
-      expiresAt,
-    });
-    return claims;
-  }
-
-  if (result.evidence.toolId === 'hms_event_read') {
-    if (result.status === 'unverified_negative') return [];
-    const parsed = eventReadDataSchema.safeParse(result.data);
-    if (!parsed.success) return [];
-    const value = mapEventSummaryClaim(parsed.data);
-    if (!value) return [];
-    claims.push({
-      id: claimId(`${evidenceId}:event_summary`),
-      kind: 'event_summary',
-      value,
-      evidenceId,
-      expiresAt,
-    });
-    return claims;
-  }
-
-  // mail_read_artifact text is server-only lookup-candidate material.
-  // It never becomes evidence, claim content, or model output.
-  if (result.evidence.toolId === 'mail_read_artifact') return [];
-
-  return claims;
+  return mapEnvelopeToClaims(toolResultToClaimEnvelope(result), { expiresAt });
 }
 
 export function minimizeToolResultForModel(
@@ -418,6 +234,7 @@ export function createCandidateTools(
   }
 
   const reserveRead = options?.reserveReadAttempt ?? reserveReadAttempt;
+  let branchAdmitted = !session.readFence;
 
   async function withBudget<T>(
     toolId: CandidateToolId,
@@ -427,6 +244,26 @@ export function createCandidateTools(
     throwIfAborted(signal);
     if (budget.used >= CANDIDATE_TOOL_BUDGET) {
       throw new Error('candidate tool budget exceeded');
+    }
+    // Branch-start worst-case admission: refuse tool I/O when remaining < worst case.
+    if (session.readFence && !branchAdmitted) {
+      const admitted = admitReadBranch({
+        deadlineAt: session.readFence.deadlineAt,
+        now: now(),
+      });
+      if (!admitted.ok) {
+        const err =
+          admitted.code === 'RUN_DEADLINE'
+            ? new RunDeadlineError()
+            : Object.assign(new Error(admitted.code), {
+                name: 'DeadlineAdmissionError',
+                failureClass: 'RUN_DEADLINE' as const,
+                code: admitted.code,
+              });
+        calls.push({ toolId, ok: false, error: err.message });
+        throw err;
+      }
+      branchAdmitted = true;
     }
     // Durable reservation precedes any tool I/O: no row, no call.
     if (session.readFence) {

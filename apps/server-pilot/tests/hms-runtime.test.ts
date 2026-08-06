@@ -258,6 +258,48 @@ describe('HMS runtime', () => {
     await next.close();
   });
 
+  it('rejects excess session waiters at fixed cap without unbounded queue', async () => {
+    const {
+      CAPACITY_REJECTED,
+      HMS_SESSION_WAITER_CAP,
+      HMS_SESSION_WAITER_CAP_CODE,
+      createBoundedSessionLock,
+    } = await import('../src/hms/runtime.js');
+    expect(HMS_SESSION_WAITER_CAP).toBeGreaterThanOrEqual(2);
+    expect(HMS_SESSION_WAITER_CAP).toBeLessThanOrEqual(3);
+    const lock = createBoundedSessionLock({ waiterCap: 2 });
+    const release = await lock.acquire(new AbortController().signal);
+    const waitA = new AbortController();
+    const waitB = new AbortController();
+    const pA = lock.acquire(waitA.signal);
+    const pB = lock.acquire(waitB.signal);
+    await Promise.resolve();
+    expect(lock.waitingCount()).toBe(2);
+    await expect(lock.acquire(new AbortController().signal)).rejects.toMatchObject({
+      code: HMS_SESSION_WAITER_CAP_CODE,
+      message: CAPACITY_REJECTED,
+    });
+    release();
+    (await pA)();
+    (await pB)();
+  });
+
+  it('rejects session waiters that exceed maxWaitMs', async () => {
+    const {
+      CAPACITY_REJECTED,
+      HMS_SESSION_WAITER_CAP_CODE,
+      createBoundedSessionLock,
+    } = await import('../src/hms/runtime.js');
+    const lock = createBoundedSessionLock({ waiterCap: 2, maxWaitMs: 30 });
+    const release = await lock.acquire(new AbortController().signal);
+    const waiting = lock.acquire(new AbortController().signal);
+    await expect(waiting).rejects.toMatchObject({
+      code: HMS_SESSION_WAITER_CAP_CODE,
+      message: CAPACITY_REJECTED,
+    });
+    release();
+  });
+
   it('normal runtime rejects caller-supplied live-proof capture', async () => {
     const server = await startHmsFixtureServer();
     cleanup.push(server.close);

@@ -92,8 +92,23 @@ case "$ACTION" in
   rearm) [ "$#" -eq 1 ] || usage 2 ;;
 esac
 
+# Phase B tool actions: evidence preflight (named blockers). Never AWS/HMS here.
 case "$ACTION" in
-  doctor|status|read-discovery|read-proof|read-wave|artifacts|read-promote|read-rollback|rearm)
+  read-discovery|read-proof|read-promote|read-rollback)
+    SERVER_PILOT="${REPO_ROOT}/apps/server-pilot"
+    PREFLIGHT_TS="${SERVER_PILOT}/src/ops/phase-b-read-preflight.ts"
+    TOOL_ID="$2"
+    (
+      cd "$SERVER_PILOT"
+      unset DATABASE_URL VITEST_ALLOW_PILOT_RDS
+      if [ "$#" -eq 3 ] && [ "$3" = "--json" ]; then
+        exec node --import tsx "$PREFLIGHT_TS" "$ACTION" "$TOOL_ID" --json
+      fi
+      exec node --import tsx "$PREFLIGHT_TS" "$ACTION" "$TOOL_ID"
+    )
+    exit $?
+    ;;
+  doctor|status|read-wave|artifacts|rearm)
     echo "HMS_WAIT code=PHASE_B_BLOCKED" >&2
     exit 3
     ;;

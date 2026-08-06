@@ -263,6 +263,11 @@ export const HEALTH_HEARTBEAT_MS = 10_000;
 export const HEALTH_STALE_AFTER_MS = 30_000;
 export const ARTIFACT_PURGE_INTERVAL_MS = 60 * 60 * 1000;
 
+/** Max queued waiters for the one-session semaphore (holder not counted). */
+export const HMS_SESSION_WAITER_CAP = 2;
+export const HMS_SESSION_WAITER_CAP_CODE = 'HMS_SESSION_WAITER_CAP';
+export const CAPACITY_REJECTED = 'CAPACITY_REJECTED';
+
 export class HmsRuntimeError extends Error {
   readonly code: string;
   constructor(code: string, message: string) {
@@ -270,6 +275,116 @@ export class HmsRuntimeError extends Error {
     this.name = 'HmsRuntimeError';
     this.code = code;
   }
+}
+
+export type BoundedSessionLock = {
+  acquire(signal: AbortSignal): Promise<() => void>;
+  waitingCount(): number;
+  /** Resolves after active holder and all queued waiters finish. */
+  drain(): Promise<void>;
+};
+
+/**
+ * One-session promise chain with a hard waiter cap.
+ * Excess waiters reject immediately — no unbounded queue.
+ */
+export function createBoundedSessionLock(options?: {
+  waiterCap?: number;
+  /** Max time a waiter may sit on the queue before reject (plan QUEUE_WAIT_MS). */
+  maxWaitMs?: number;
+  isClosing?: () => boolean;
+}): BoundedSessionLock {
+  const waiterCap = options?.waiterCap ?? HMS_SESSION_WAITER_CAP;
+  const maxWaitMs = options?.maxWaitMs;
+  let sessionLock: Promise<void> = Promise.resolve();
+  let waiters = 0;
+
+  return {
+    waitingCount: () => waiters,
+    drain: () => sessionLock,
+    acquire(signal: AbortSignal): Promise<() => void> {
+      if (options?.isClosing?.()) {
+        return Promise.reject(
+          new HmsRuntimeError('not_started', 'HMS runtime is closing'),
+        );
+      }
+      if (waiters >= waiterCap) {
+        return Promise.reject(
+          new HmsRuntimeError(HMS_SESSION_WAITER_CAP_CODE, CAPACITY_REJECTED),
+        );
+      }
+      waiters += 1;
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const prev = sessionLock;
+      sessionLock = prev.then(() => gate);
+      return new Promise<() => void>((resolveLock, rejectLock) => {
+        let settled = false;
+        let waitTimer: ReturnType<typeof setTimeout> | undefined;
+        const finishWaiter = () => {
+          if (waiters > 0) waiters -= 1;
+        };
+        const clearWaitTimer = () => {
+          if (waitTimer !== undefined) {
+            clearTimeout(waitTimer);
+            waitTimer = undefined;
+          }
+        };
+        const rejectQueued = (error: HmsRuntimeError) => {
+          if (settled) return;
+          settled = true;
+          clearWaitTimer();
+          finishWaiter();
+          signal.removeEventListener('abort', onAbort);
+          release();
+          rejectLock(error);
+        };
+        const onAbort = () =>
+          rejectQueued(new HmsRuntimeError('aborted', 'operation aborted'));
+        signal.addEventListener('abort', onAbort, { once: true });
+        if (signal.aborted) {
+          onAbort();
+          return;
+        }
+        if (typeof maxWaitMs === 'number' && maxWaitMs > 0) {
+          waitTimer = setTimeout(() => {
+            rejectQueued(
+              new HmsRuntimeError(
+                HMS_SESSION_WAITER_CAP_CODE,
+                CAPACITY_REJECTED,
+              ),
+            );
+          }, maxWaitMs);
+        }
+        void prev.then(
+          () => {
+            if (settled) return;
+            if (options?.isClosing?.()) {
+              rejectQueued(
+                new HmsRuntimeError('not_started', 'HMS runtime is closing'),
+              );
+              return;
+            }
+            if (signal.aborted) {
+              onAbort();
+              return;
+            }
+            settled = true;
+            clearWaitTimer();
+            finishWaiter();
+            signal.removeEventListener('abort', onAbort);
+            resolveLock(release);
+          },
+          () =>
+            rejectQueued(
+              new HmsRuntimeError('session_failed', 'session lock failed'),
+            ),
+        );
+      });
+    },
+  };
 }
 
 function redactError(err: unknown): string {
@@ -950,7 +1065,11 @@ function createHmsRuntimeInternal(
   let contextsCreated = 0;
   let contextsClosed = 0;
   let activeSessions = 0;
-  let sessionLock: Promise<void> = Promise.resolve();
+  const sessionSemaphore = createBoundedSessionLock({
+    waiterCap: HMS_SESSION_WAITER_CAP,
+    maxWaitMs: 30_000,
+    isClosing: () => closing,
+  });
   let state: HmsHealthState = 'stopped';
   let lastErrorCode: string | undefined;
   let circuitOpenedAt: number | undefined;
@@ -1923,56 +2042,7 @@ function createHmsRuntimeInternal(
 
 
   function acquireSessionLock(signal: AbortSignal): Promise<() => void> {
-    if (closing) {
-      return Promise.reject(
-        new HmsRuntimeError('not_started', 'HMS runtime is closing'),
-      );
-    }
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const prev = sessionLock;
-    sessionLock = prev.then(() => gate);
-    return new Promise<() => void>((resolveLock, rejectLock) => {
-      let settled = false;
-      const rejectQueued = (error: HmsRuntimeError) => {
-        if (settled) return;
-        settled = true;
-        signal.removeEventListener('abort', onAbort);
-        release();
-        rejectLock(error);
-      };
-      const onAbort = () =>
-        rejectQueued(new HmsRuntimeError('aborted', 'operation aborted'));
-      signal.addEventListener('abort', onAbort, { once: true });
-      if (signal.aborted) {
-        onAbort();
-        return;
-      }
-      void prev.then(
-        () => {
-          if (settled) return;
-          if (closing) {
-            rejectQueued(
-              new HmsRuntimeError('not_started', 'HMS runtime is closing'),
-            );
-            return;
-          }
-          if (signal.aborted) {
-            onAbort();
-            return;
-          }
-          settled = true;
-          signal.removeEventListener('abort', onAbort);
-          resolveLock(release);
-        },
-        () =>
-          rejectQueued(
-            new HmsRuntimeError('session_failed', 'session lock failed'),
-          ),
-      );
-    });
+    return sessionSemaphore.acquire(signal);
   }
 
   return {
@@ -2048,7 +2118,7 @@ function createHmsRuntimeInternal(
       try {
         await Promise.race([
           (async () => {
-            const queuedSessions = sessionLock;
+            const queuedSessions = sessionSemaphore.drain();
             await queuedSessions;
             await activeTeardown;
           })(),

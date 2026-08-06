@@ -400,7 +400,7 @@ describe('durable read fence before tool I/O', () => {
     runId: randomUUID(),
     claimOwner: 'owner-a',
     claimToken: randomUUID(),
-    deadlineAt: new Date(Date.now() + 60_000),
+    deadlineAt: new Date(Date.now() + 150_000),
   };
 
   it('reserves once per tool call and passes the run plan kind', async () => {

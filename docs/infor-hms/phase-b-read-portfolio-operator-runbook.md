@@ -1,8 +1,11 @@
 # Phase B HMS read portfolio operator runbook
 
-Status: kernel stub + Task 10 portfolio grammar. Production discovery/proof/promote
-actions remain latched (`PHASE_B_BLOCKED`) until tool-specific role-proof-v2,
-discovery, release manifests, and health checks exist. Do not invent live proofs.
+Status: kernel stub + Task 10 portfolio grammar. Phase B tool actions
+(`read-discovery|read-proof|read-promote|read-rollback`) run fail-closed
+evidence preflight before any AWS/HMS. Missing role-proof-v2 / reviewed
+request manifest / fixture-only registry state emit **named** `HMS_WAIT`
+codes. `PHASE_B_BLOCKED` only after evidence passes but live browser action
+still unwired. Do not invent live proofs.
 
 ## Capability reality (Task 10)
 
@@ -68,9 +71,22 @@ ops-hms-proof.sh read-rollback <tool-id> [--json]
 ops-hms-proof.sh rearm
 ```
 
-Until discovery evidence exists, Phase B actions print fixed
-`HMS_WAIT code=PHASE_B_BLOCKED` and exit `3`. Keep that latch; do not fake
-live proofs. Waves `B0`–`B6` are grammar-valid IDs only.
+Preflight env (never auto-created):
+
+- `HMS_READ_ROLE_PROOF_V2_PATH` — file must parse `hmsReadRoleProofV2Schema`
+- `HMS_REVIEWED_REQUEST_MANIFEST_PATH` — file must parse `requestPolicyManifestSchema`
+
+Named wait codes (exit `3`, no Chromium/HMS):
+
+| Code | Meaning |
+|------|---------|
+| `BLOCKED_NO_ROLE_PROOF_V2` | path absent, symlink, invalid, or expired |
+| `BLOCKED_NO_REVIEWED_REQUEST_MANIFEST` | path absent/invalid after role-proof ok |
+| `BLOCKED_TOOL_FIXTURE_ONLY` | registry `fixture_verified` (no discovery digest) |
+| `PHASE_B_BLOCKED` | evidence ok; live discovery/proof CLI still unimplemented |
+
+`doctor|status|read-wave|artifacts|rearm` stay `PHASE_B_BLOCKED` stubs.
+Waves `B0`–`B6` are grammar-valid IDs only.
 
 Closed `CandidateReadPlan`: one branch; reservation followups max two unique;
 no model-driven tool loops. Model selects whole claim IDs only (including
