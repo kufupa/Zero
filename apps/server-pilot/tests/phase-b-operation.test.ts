@@ -1,6 +1,7 @@
 /**
  * Phase B operation store + terminal matrix contracts (no pilot RDS).
  */
+import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -16,11 +17,13 @@ import {
   evaluatePreTransmissionEvidence,
   hmacSha256Hex,
   installRoleProofAtomic,
+  mapPreflightBlockToTerminal,
   parsePhaseBArgv,
   phaseBTerminalMatrixFixtures,
   rejectArbitraryDiscoveryCliInput,
   rejectCrossDiscoveryOperationSwap,
   resolveClosedDiscoveryOperation,
+  runPhaseBLocalOperator,
   shouldPurgeSensitiveMedia,
   shouldRetainProtectedMetadata,
   type CandidateSnapshotV1,
@@ -655,6 +658,200 @@ describe('phase-b-operation proof install + receipts + GC', () => {
       'utf8',
     );
     expect(assertNoPhaseBBlockedInSource(source)).toBe(true);
+  });
+
+  it('local-operator honors resume id and store-backed rearm', () => {
+    const root = tempRoot();
+    const store = new PhaseBOperationStore({ rootDir: root });
+    store.create({
+      operationId: OP,
+      action: 'read-discovery',
+      target: { toolId: TOOL },
+      sourceRevision: 'rev-old',
+      inputDigestMaterial: { seed: 1 },
+    });
+
+    const rearmParsed = parsePhaseBArgv([
+      'rearm',
+      TOOL,
+      '--operation',
+      OP,
+      '--after-source',
+      AFTER,
+      '--resume',
+      SUCC,
+      '--json',
+    ]);
+    expect(rearmParsed.ok).toBe(true);
+    if (!rearmParsed.ok) return;
+
+    const rearmResult = runPhaseBLocalOperator({
+      command: rearmParsed.command,
+      operationId: SUCC,
+      sourceRevision: AFTER,
+      store,
+    });
+    expect(rearmResult.code).toBe('COMPLETE');
+    expect(rearmResult.operationId).toBe(SUCC);
+    expect(rearmResult.sourceRevision).toBe(AFTER);
+    expect(store.get(OP)?.lastCode).toBe('SUPERSEDED');
+    expect(store.get(SUCC)?.supersedesOperationId).toBe(OP);
+
+    // Resume attaches same operationId (does not mint a new one).
+    const freshId = '55555555-5555-4555-8555-555555555555';
+    const resumeArgv = [
+      'read-discovery',
+      TOOL,
+      '--resume',
+      freshId,
+      '--json',
+    ] as const;
+    const resumeCmd = parsePhaseBArgv([...resumeArgv]);
+    expect(resumeCmd.ok).toBe(true);
+    if (!resumeCmd.ok) return;
+    store.create({
+      operationId: freshId,
+      action: 'read-discovery',
+      target: { toolId: TOOL },
+      sourceRevision: AFTER,
+      inputDigestMaterial: resumeCmd.command,
+    });
+    const resumed = runPhaseBLocalOperator({
+      command: resumeCmd.command,
+      operationId: randomUUID(),
+      sourceRevision: AFTER,
+      store,
+    });
+    expect(resumed.operationId).toBe(freshId);
+    expect(resumed.code).not.toBe('PHASE_B_BLOCKED');
+  });
+
+  it('local-operator CLI --resume + store-backed rearm (integration)', () => {
+    const root = tempRoot();
+    const store = new PhaseBOperationStore({ rootDir: root });
+    store.create({
+      operationId: OP,
+      action: 'read-proof',
+      target: { toolId: TOOL },
+      sourceRevision: 'rev-old',
+      inputDigestMaterial: { seed: 'cli-rearm' },
+    });
+
+    const opTs = join(__dirname, '../src/ops/phase-b-operation.ts');
+    const env = {
+      ...process.env,
+      HMS_PHASE_B_OPERATION_ROOT: root,
+      NAVA_SOURCE_REVISION: AFTER,
+    };
+    delete env.DATABASE_URL;
+    delete env.VITEST_ALLOW_PILOT_RDS;
+
+    const result = spawnSync(
+      process.execPath,
+      [
+        '--import',
+        'tsx',
+        opTs,
+        'local-operator',
+        '--json',
+        'rearm',
+        TOOL,
+        '--operation',
+        OP,
+        '--after-source',
+        AFTER,
+        '--resume',
+        SUCC,
+      ],
+      { env, encoding: 'utf8', cwd: join(__dirname, '..') },
+    );
+    expect(result.status).toBe(0);
+    const body = JSON.parse(result.stdout.trim()) as {
+      operationId: string;
+      code: string;
+      sourceRevision: string;
+    };
+    expect(body.code).toBe('COMPLETE');
+    expect(body.operationId).toBe(SUCC);
+    expect(body.sourceRevision).toBe(AFTER);
+    expect(store.get(SUCC)?.supersedesOperationId).toBe(OP);
+
+    // Resume discovery preserves operationId through CLI.
+    const discId = '66666666-6666-4666-8666-666666666666';
+    const discCmd = parsePhaseBArgv([
+      'read-discovery',
+      TOOL,
+      '--resume',
+      discId,
+      '--json',
+    ]);
+    expect(discCmd.ok).toBe(true);
+    if (!discCmd.ok) return;
+    store.create({
+      operationId: discId,
+      action: 'read-discovery',
+      target: { toolId: TOOL },
+      sourceRevision: AFTER,
+      inputDigestMaterial: discCmd.command,
+    });
+    const resumeCli = spawnSync(
+      process.execPath,
+      [
+        '--import',
+        'tsx',
+        opTs,
+        'local-operator',
+        '--json',
+        'read-discovery',
+        TOOL,
+        '--resume',
+        discId,
+      ],
+      { env, encoding: 'utf8', cwd: join(__dirname, '..') },
+    );
+    const resumeBody = JSON.parse(resumeCli.stdout.trim()) as {
+      operationId: string | null;
+      code: string;
+    };
+    expect(resumeBody.operationId).toBe(discId);
+    expect(resumeBody.code).not.toBe('PHASE_B_BLOCKED');
+  });
+
+  it('TRANSPORT_UNCERTAIN rearm never emits pending placeholder', () => {
+    const withAfter = buildPhaseBOperatorResult({
+      code: 'TRANSPORT_UNCERTAIN',
+      action: 'rearm',
+      toolId: TOOL,
+      operationId: OP,
+      afterSource: AFTER,
+    });
+    expect(withAfter.nextCommand).toBe(
+      `rearm ${TOOL} --operation ${OP} --after-source ${AFTER} --resume ${OP} --json`,
+    );
+    expect(withAfter.nextCommand).not.toContain('pending');
+
+    const missing = buildPhaseBOperatorResult({
+      code: 'TRANSPORT_UNCERTAIN',
+      action: 'rearm',
+      toolId: TOOL,
+      operationId: OP,
+    });
+    expect(missing.nextCommand).toBeNull();
+  });
+
+  it('preflight blockers map to terminal matrix codes not always AGENT_REPAIR', () => {
+    expect(mapPreflightBlockToTerminal('BLOCKED_NO_REVIEWED_REQUEST_MANIFEST')).toBe(
+      'MANIFEST_SOURCE_CHANGE_REQUIRED',
+    );
+    expect(mapPreflightBlockToTerminal('BLOCKED_NO_DRIVER_OR_CONTROLS')).toBe(
+      'BLOCKED_NO_POSITIVE_CONTROL',
+    );
+    expect(mapPreflightBlockToTerminal('BLOCKED_ROLE_PROOF_V2_INSECURE')).toBe(
+      'POLICY_OR_EVIDENCE_REJECTED',
+    );
+    expect(mapPreflightBlockToTerminal('BLOCKED_NO_ROLE_PROOF_V2')).toBe(
+      'BLOCKED_EXTERNAL',
+    );
   });
 });
 

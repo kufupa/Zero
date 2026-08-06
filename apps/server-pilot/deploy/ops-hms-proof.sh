@@ -75,44 +75,11 @@ esac
 
 case "$ACTION" in
   doctor)
-    DOCTOR_TOOL=""
-    DOCTOR_ACTION=""
-    DOCTOR_JSON=0
-    DOCTOR_OFFLINE=0
-    shift
-    while [ "$#" -gt 0 ]; do
-      case "$1" in
-        --tool)
-          [ "$#" -ge 2 ] || usage 2
-          [ -z "$DOCTOR_TOOL" ] || usage 2
-          DOCTOR_TOOL="$2"
-          shift 2
-          ;;
-        --wave)
-          shift 2
-          ;;
-        --action)
-          [ "$#" -ge 2 ] || usage 2
-          [ -z "$DOCTOR_ACTION" ] || usage 2
-          DOCTOR_ACTION="$2"
-          shift 2
-          ;;
-        --json)
-          [ "$DOCTOR_JSON" -eq 0 ] || usage 2
-          DOCTOR_JSON=1
-          shift
-          ;;
-        --offline)
-          [ "$DOCTOR_OFFLINE" -eq 0 ] || usage 2
-          DOCTOR_OFFLINE=1
-          shift
-          ;;
-        *) usage 2 ;;
-      esac
-    done
-    if [ -n "$DOCTOR_TOOL" ] || [ -n "$DOCTOR_ACTION" ]; then
-      [ -n "$DOCTOR_TOOL" ] && [ -n "$DOCTOR_ACTION" ] || usage 2
-    fi
+    # Flags already validated by shared parser — extract from envelope (no second grammar).
+    DOCTOR_TOOL="$(node -e 'const j=JSON.parse(process.argv[1]);process.stdout.write((j.command&&j.command.toolId)||"")' "$PARSE_JSON")"
+    DOCTOR_ACTION="$(node -e 'const j=JSON.parse(process.argv[1]);process.stdout.write((j.command&&j.command.doctorAction)||"")' "$PARSE_JSON")"
+    DOCTOR_JSON="$(node -e 'const j=JSON.parse(process.argv[1]);process.stdout.write(j.command&&j.command.json?"1":"0")' "$PARSE_JSON")"
+    DOCTOR_OFFLINE="$(node -e 'const j=JSON.parse(process.argv[1]);process.stdout.write(j.command&&j.command.offline?"1":"0")' "$PARSE_JSON")"
     ;;
   status|read-discovery|read-proof|read-wave|artifacts|read-promote|read-rollback|rearm)
     # Grammar already validated by shared parser above.

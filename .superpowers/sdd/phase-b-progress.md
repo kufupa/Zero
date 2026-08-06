@@ -11,7 +11,7 @@ Task 11C: complete (commits 946d742b..898e34c6, review clean after Important fix
 Task 11D: complete (commits 898e34c6..731ae669, review clean after Important fixes)
 Task 11E: complete (commits 731ae669..868eb26c, review clean after Important installed-LF pin; Step 6 GREEN)
 Task 11F: cancelled (Step 6 folded into 11E)
-Task 12: complete (base 868eb26c; operator store + front-door unlatch; no PHASE_B_BLOCKED in executable source)
+Task 12: complete (review fixes: local-operator resume+store; base 5fa9f64d)
 Task 13: pending
 Task 14: pending
 Task 15: pending

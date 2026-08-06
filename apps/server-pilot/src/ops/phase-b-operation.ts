@@ -31,6 +31,7 @@ import {
 } from './phase-b-status.js';
 import {
   PHASE_B_READ_ACTIONS,
+  type PhaseBPreflightBlockCode,
   type PhaseBReadAction,
   runPhaseBReadPreflight,
 } from './phase-b-read-preflight.js';
@@ -275,6 +276,7 @@ export type NextCommandContext = {
   waveId?: PhaseBWaveId | null;
   operationId?: string | null;
   releaseId?: string | null;
+  afterSource?: string | null;
   nextAction?: string | null;
   nextToolId?: ReadToolId | null;
   nextWaveId?: PhaseBWaveId | null;
@@ -315,12 +317,10 @@ export function renderPhaseBNextCommand(
       if (action === 'rearm') {
         const tool = ctx.nextToolId ?? ctx.toolId;
         const superseded = ctx.operationId;
-        const after = ctx.nextOperationId;
-        if (!tool || !superseded) return null;
-        // Successor rearm command after source deploy uses --operation + --after-source.
-        return after
-          ? `rearm ${shellQuote(tool)} --operation ${shellQuote(superseded)} --after-source ${shellQuote(after)} --json`
-          : null;
+        const after = ctx.afterSource;
+        if (!tool || !superseded || !after) return null;
+        // Successor rearm after source deploy: real revision only (no placeholders).
+        return `rearm ${shellQuote(tool)} --operation ${shellQuote(superseded)} --after-source ${shellQuote(after)} --json`;
       }
       const tool = ctx.nextToolId ?? ctx.toolId;
       if (!tool) return null;
@@ -375,7 +375,9 @@ export function renderPhaseBNextCommand(
         return `read-wave ${shellQuote(ctx.waveId)} --resume ${shellQuote(ctx.operationId)} --json`;
       }
       if (ctx.action === 'rearm' && ctx.toolId) {
-        return `rearm ${shellQuote(ctx.toolId)} --operation ${shellQuote(ctx.operationId)} --after-source ${shellQuote(ctx.releaseId ?? 'pending')} --resume ${shellQuote(ctx.operationId)} --json`;
+        // Same-operation resume requires real --after-source; never emit placeholders.
+        if (!ctx.afterSource) return null;
+        return `rearm ${shellQuote(ctx.toolId)} --operation ${shellQuote(ctx.operationId)} --after-source ${shellQuote(ctx.afterSource)} --resume ${shellQuote(ctx.operationId)} --json`;
       }
       if (ctx.toolId) {
         const release =
@@ -465,6 +467,7 @@ export function buildPhaseBOperatorResult(input: {
   waveId?: PhaseBWaveId | null;
   artifactIds?: string[];
   releaseId?: string | null;
+  afterSource?: string | null;
   elapsedMs?: number;
   nextAction?: string | null;
   nextToolId?: ReadToolId | null;
@@ -482,6 +485,7 @@ export function buildPhaseBOperatorResult(input: {
     waveId: input.waveId,
     operationId,
     releaseId: input.releaseId,
+    afterSource: input.afterSource,
     nextAction: input.nextAction,
     nextToolId: input.nextToolId,
     nextWaveId: input.nextWaveId,
@@ -601,7 +605,7 @@ export function phaseBTerminalMatrixFixtures(ids: {
         operationId,
         nextAction: 'rearm',
         nextToolId: toolId,
-        nextOperationId: afterSource,
+        afterSource,
       }),
     },
     {
@@ -1847,6 +1851,146 @@ export function shouldPurgeSensitiveMedia(input: {
   return input.now.getTime() >= new Date(input.sensitiveMediaExpiresAt).getTime();
 }
 
+/** Map preflight blockers onto the canonical terminal ownership matrix. */
+export function mapPreflightBlockToTerminal(
+  code: PhaseBPreflightBlockCode,
+): PhaseBTerminalCode {
+  switch (code) {
+    case 'BLOCKED_NO_REVIEWED_REQUEST_MANIFEST':
+      return 'MANIFEST_SOURCE_CHANGE_REQUIRED';
+    case 'BLOCKED_NO_DRIVER_OR_CONTROLS':
+      return 'BLOCKED_NO_POSITIVE_CONTROL';
+    case 'BLOCKED_ROLE_PROOF_V2_INSECURE':
+    case 'BLOCKED_MAIL_ARTIFACT_DISCOVERY':
+    case 'BLOCKED_MAIL_ARTIFACT_PROOF':
+      return 'POLICY_OR_EVIDENCE_REJECTED';
+    case 'BLOCKED_UNKNOWN_TOOL':
+      return 'USAGE_ERROR';
+    case 'BLOCKED_NO_SEALED_FIXTURE':
+    case 'BLOCKED_NO_SAFE_BOOTSTRAP':
+    case 'BLOCKED_NO_ROLE_PROOF_V2':
+    case 'BLOCKED_NO_DISCOVERY_EVIDENCE':
+    case 'BLOCKED_NO_IMMUTABLE_RELEASE':
+    case 'BLOCKED_NO_LOADABLE_HANDLER':
+    case 'BLOCKED_NO_ACTIVE_REGISTRY':
+      return 'BLOCKED_EXTERNAL';
+    default:
+      return 'AGENT_REPAIR_REQUIRED';
+  }
+}
+
+function phaseBLocalOperationRoot(): string {
+  return (
+    process.env.HMS_PHASE_B_OPERATION_ROOT?.trim() ||
+    join(
+      process.env.HMS_SHARED_DIR?.trim() || '/opt/nava/shared/hms-runtime',
+      'phase-b-operations',
+    )
+  );
+}
+
+function resumeIdFromCommand(command: PhaseBParsedCommand): string | undefined {
+  return 'resumeOperationId' in command ? command.resumeOperationId : undefined;
+}
+
+/**
+ * Create or attach via durable store for claim/resume/cache.
+ * Returns a cached terminal result when one already exists.
+ */
+function ensureStoreOperation(input: {
+  store: PhaseBOperationStore;
+  command: PhaseBParsedCommand;
+  operationId: string;
+  sourceRevision: string;
+}):
+  | { kind: 'cached'; result: PhaseBOperatorResult }
+  | { kind: 'ready'; operationId: string }
+  | { kind: 'fail'; result: PhaseBOperatorResult } {
+  const { store, command, sourceRevision } = input;
+  const inputSha256 = sha256Hex(JSON.stringify(command));
+  const ownerToken = randomUUID();
+  const resumeId = resumeIdFromCommand(command);
+
+  if (resumeId) {
+    const attach = store.attachOrCachedTerminal({
+      operationId: resumeId,
+      inputSha256,
+      ownerToken,
+    });
+    if (attach.kind === 'cached') {
+      return { kind: 'cached', result: attach.result };
+    }
+    if (attach.kind === 'attached') {
+      return { kind: 'ready', operationId: attach.operation.operationId };
+    }
+    if (attach.kind === 'busy') {
+      return {
+        kind: 'fail',
+        result: buildPhaseBOperatorResult({
+          code: 'BLOCKED_EXTERNAL',
+          action: command.action,
+          operationId: resumeId,
+          sourceRevision,
+          toolId: 'toolId' in command ? command.toolId ?? null : null,
+          waveId: 'waveId' in command ? command.waveId ?? null : null,
+        }),
+      };
+    }
+    return {
+      kind: 'fail',
+      result: buildPhaseBOperatorResult({
+        code: 'AGENT_REPAIR_REQUIRED',
+        action: command.action,
+        operationId: resumeId,
+        sourceRevision,
+        toolId: 'toolId' in command ? command.toolId ?? null : null,
+        waveId: 'waveId' in command ? command.waveId ?? null : null,
+      }),
+    };
+  }
+
+  if (
+    command.action === 'read-discovery' ||
+    command.action === 'read-proof' ||
+    command.action === 'read-promote' ||
+    command.action === 'read-rollback'
+  ) {
+    store.create({
+      operationId: input.operationId,
+      action: command.action,
+      target: { toolId: command.toolId },
+      sourceRevision,
+      inputDigestMaterial: command,
+    });
+  } else if (command.action === 'read-wave') {
+    store.create({
+      operationId: input.operationId,
+      action: 'read-wave',
+      target: {
+        waveId: command.waveId,
+        toolIds: PHASE_B_WAVE_TOOLS[command.waveId],
+      },
+      sourceRevision,
+      inputDigestMaterial: command,
+    });
+  } else {
+    return { kind: 'ready', operationId: input.operationId };
+  }
+
+  const attach = store.attachOrCachedTerminal({
+    operationId: input.operationId,
+    inputSha256,
+    ownerToken,
+  });
+  if (attach.kind === 'cached') {
+    return { kind: 'cached', result: attach.result };
+  }
+  if (attach.kind === 'attached') {
+    return { kind: 'ready', operationId: attach.operation.operationId };
+  }
+  return { kind: 'ready', operationId: input.operationId };
+}
+
 /** Local offline operator path for doctor/status + unit-testable actions. */
 export function runPhaseBLocalOperator(input: {
   command: PhaseBParsedCommand;
@@ -1858,6 +2002,7 @@ export function runPhaseBLocalOperator(input: {
   const started = input.startedAt ?? Date.now();
   const elapsed = () => Date.now() - started;
   const { command } = input;
+  let operationId = input.operationId;
 
   if (command.action === 'doctor' || command.action === 'status') {
     return buildPhaseBOperatorResult({
@@ -1872,6 +2017,28 @@ export function runPhaseBLocalOperator(input: {
     });
   }
 
+  // Durable store: create/attach for claim/resume/cache on mutating actions.
+  if (
+    input.store &&
+    (command.action === 'read-discovery' ||
+      command.action === 'read-proof' ||
+      command.action === 'read-promote' ||
+      command.action === 'read-rollback' ||
+      command.action === 'read-wave')
+  ) {
+    const ensured = ensureStoreOperation({
+      store: input.store,
+      command,
+      operationId,
+      sourceRevision: input.sourceRevision,
+    });
+    if (ensured.kind === 'cached') return ensured.result;
+    if (ensured.kind === 'fail') {
+      return { ...ensured.result, elapsedMs: elapsed() };
+    }
+    operationId = ensured.operationId;
+  }
+
   if (
     command.action === 'read-discovery' ||
     command.action === 'read-proof' ||
@@ -1883,12 +2050,11 @@ export function runPhaseBLocalOperator(input: {
       toolId: command.toolId,
     });
     if (!preflight.ok) {
-      // Named preflight blockers map to agent/external wait — never generic blocked stub.
       return buildPhaseBOperatorResult({
-        code: 'AGENT_REPAIR_REQUIRED',
+        code: mapPreflightBlockToTerminal(preflight.code),
         action: command.action,
         stage: 'preflight',
-        operationId: input.operationId,
+        operationId,
         sourceRevision: input.sourceRevision,
         toolId: command.toolId,
         elapsedMs: elapsed(),
@@ -1899,7 +2065,7 @@ export function runPhaseBLocalOperator(input: {
         code: 'NEXT_ACTION_READY',
         action: command.action,
         stage: 'preflight',
-        operationId: input.operationId,
+        operationId,
         sourceRevision: input.sourceRevision,
         toolId: command.toolId,
         nextAction: 'read-proof',
@@ -1911,7 +2077,7 @@ export function runPhaseBLocalOperator(input: {
       code: 'COMPLETE',
       action: command.action,
       stage: 'preflight',
-      operationId: input.operationId,
+      operationId,
       sourceRevision: input.sourceRevision,
       toolId: command.toolId,
       releaseId: command.action === 'read-promote' ? command.releaseId : null,
@@ -1925,7 +2091,7 @@ export function runPhaseBLocalOperator(input: {
       code: 'NEXT_ACTION_READY',
       action: 'read-wave',
       stage: 'preflight',
-      operationId: input.operationId,
+      operationId,
       sourceRevision: input.sourceRevision,
       waveId: command.waveId,
       nextAction: toolIds[0] ? 'read-discovery' : 'status',
@@ -1940,7 +2106,7 @@ export function runPhaseBLocalOperator(input: {
       code: 'COMPLETE',
       action: 'artifacts',
       stage: 'terminal',
-      operationId: command.operationId ?? input.operationId,
+      operationId: command.operationId ?? operationId,
       sourceRevision: input.sourceRevision,
       toolId: command.toolId,
       releaseId: command.releaseId ?? null,
@@ -1958,7 +2124,7 @@ export function runPhaseBLocalOperator(input: {
         code: 'POLICY_OR_EVIDENCE_REJECTED',
         action: 'fetch-artifact',
         stage: 'terminal',
-        operationId: input.operationId,
+        operationId,
         elapsedMs: elapsed(),
       });
     }
@@ -1966,7 +2132,7 @@ export function runPhaseBLocalOperator(input: {
       code: 'COMPLETE',
       action: 'fetch-artifact',
       stage: 'terminal',
-      operationId: input.operationId,
+      operationId,
       artifactIds: [command.artifactId],
       elapsedMs: elapsed(),
     });
@@ -1978,7 +2144,7 @@ export function runPhaseBLocalOperator(input: {
         code: 'AGENT_REPAIR_REQUIRED',
         action: 'rearm',
         toolId: command.toolId,
-        operationId: input.operationId,
+        operationId,
         elapsedMs: elapsed(),
       });
     }
@@ -1986,7 +2152,7 @@ export function runPhaseBLocalOperator(input: {
       supersededOperationId: command.supersededOperationId,
       toolId: command.toolId,
       newSourceRevision: command.afterSource,
-      newOperationId: command.resumeOperationId ?? input.operationId,
+      newOperationId: command.resumeOperationId ?? operationId,
       inputDigestMaterial: command,
     });
     if (!result.ok) {
@@ -2057,11 +2223,18 @@ function parseCliMain(argv: string[]): number {
       else process.stderr.write(`HMS_FAIL code=${parsed.result.code}\n`);
       return parsed.result.exitCode;
     }
-    const operationId = randomUUID();
+    // Honor --resume and mount durable store (same contract as hms-live-proof).
+    const resumeId = resumeIdFromCommand(parsed.command);
+    const operationId = resumeId || randomUUID();
+    const sourceRevision = process.env.NAVA_SOURCE_REVISION?.trim() || 'local';
+    const store = new PhaseBOperationStore({
+      rootDir: phaseBLocalOperationRoot(),
+    });
     const result = runPhaseBLocalOperator({
       command: parsed.command,
       operationId,
-      sourceRevision: process.env.NAVA_SOURCE_REVISION?.trim() || 'local',
+      sourceRevision,
+      store,
     });
     if (json) process.stdout.write(`${JSON.stringify(result)}\n`);
     else {

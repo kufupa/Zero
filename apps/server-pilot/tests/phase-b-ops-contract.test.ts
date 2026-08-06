@@ -33,13 +33,17 @@ describe('phase-b-ops-contract', () => {
   it('ops front door uses shared argv parser + one canonical envelope', () => {
     const script = readFileSync(join(deploy, 'ops-hms-proof.sh'), 'utf8');
     expect(script).toMatch(/phase-b-operation/);
-    expect(script).toMatch(/parsePhaseBArgv|phase_b_operator|canonical/i);
+    expect(script).toMatch(/parsePhaseBArgv|phase_b_operator|canonical|phase_b_local_operator/i);
     expect(script).toMatch(/--resume/);
     expect(script).toMatch(/rearm .*--operation|--operation.*--after-source/s);
+    expect(script).toMatch(/local-operator/);
     // No second per-tool Phase B case grammar for discovery/proof.
     expect(script).not.toMatch(
       /case "\$TOOL_ID" in[\s\S]{0,80}hms_quote_stay/,
     );
+    // Doctor flags come from shared parse envelope (no second while-case grammar).
+    expect(script).toMatch(/j\.command&&j\.command\.toolId|command\.toolId/);
+    expect(script).not.toMatch(/while \[ "\$#" -gt 0 \]; do\s*case "\$1" in\s*--tool\)/);
   });
 
   it('hms-live-proof remains sole proof CLI and imports operation store', () => {
@@ -126,7 +130,7 @@ describe('phase-b-ops-contract', () => {
     expect(parsed.success).toBe(true);
   });
 
-  it('local operator emits DISCOVERY_READY next step without PHASE_B_BLOCKED', () => {
+  it('local operator emits named terminal code without PHASE_B_BLOCKED', () => {
     const parsed = parsePhaseBArgv([
       'read-discovery',
       'hms_find_reservation',
@@ -140,9 +144,15 @@ describe('phase-b-ops-contract', () => {
       sourceRevision: 'local-test',
     });
     expect(result.code).not.toBe('PHASE_B_BLOCKED');
-    expect(['NEXT_ACTION_READY', 'AGENT_REPAIR_REQUIRED', 'COMPLETE']).toContain(
-      result.code,
-    );
+    expect([
+      'NEXT_ACTION_READY',
+      'AGENT_REPAIR_REQUIRED',
+      'MANIFEST_SOURCE_CHANGE_REQUIRED',
+      'BLOCKED_EXTERNAL',
+      'BLOCKED_NO_POSITIVE_CONTROL',
+      'POLICY_OR_EVIDENCE_REJECTED',
+      'COMPLETE',
+    ]).toContain(result.code);
     expect(result.schemaVersion).toBe(1);
   });
 

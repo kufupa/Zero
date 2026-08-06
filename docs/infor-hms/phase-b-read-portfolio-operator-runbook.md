@@ -1,10 +1,13 @@
 # Phase B HMS read portfolio operator runbook
 
 Status: Task 12 live operator wired. Shared argv parser + atomic operation
-store + terminal matrix. Offline doctor/status/local-operator emit named
-codes only — never a generic blocked stub. Live browser discovery/proof still
-reuse Phase A login/chrome/guard/capture via `hms-live-proof.ts` (sole proof
-CLI). Do not invent live proofs or auto-approve unknown request rules.
+store + terminal matrix. Offline doctor keeps rich `phase-b-doctor.ts` path;
+mutating Phase B actions use `local-operator` with resume + durable store.
+Named terminal codes only — never a generic blocked stub. Live browser
+discovery/proof still reuse Phase A login/chrome/guard/capture via
+`hms-live-proof.ts` (sole proof CLI). Do not invent live proofs or
+auto-approve unknown request rules. Full live browser discovery remains
+Task 13+ (drivers + EC2 evidence).
 
 ## Capability reality
 

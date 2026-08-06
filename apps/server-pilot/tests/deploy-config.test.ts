@@ -3133,6 +3133,11 @@ describe('deploy config', () => {
       expect(opsProof).toMatch(/ASM_EXEC_INSTALLED_SHA256/);
       expect(opsProof).toMatch(new RegExp(installedPin));
       expect(opsProof).toMatch(/INSTALLED_PIN.*\/usr\/local\/bin\/asm-exec/);
+      // Task 12: shared local-operator envelope; no PHASE_B_BLOCKED; resume grammar.
+      expect(opsProof).toMatch(/local-operator|phase-b-operation/);
+      expect(opsProof).toMatch(/--resume/);
+      expect(opsProof).not.toMatch(/PHASE_B_BLOCKED/);
+      expect(opsProof).toMatch(/phase_b_local_operator|phase_b_parse/);
     });
   });
 });
