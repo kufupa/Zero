@@ -1,30 +1,32 @@
 /**
- * Offline Phase B doctor: registry status + discovery preflight blockers.
+ * Offline Phase B doctor: registry status + discovery preflight codes.
+ * Production activation from explicit snapshot — not static READ_TOOLS.
  * No AWS, no HMS, no invented live proofs.
  */
 import { fileURLToPath } from 'node:url';
-import {
-  READ_TOOL_IDS,
-  productionActiveReadToolIds,
-  type ReadToolId,
-} from '../hms/read-tools.js';
+import { READ_TOOL_IDS, type ReadToolId } from '../hms/read-tools.js';
 import {
   runPhaseBReadPreflight,
-  type PhaseBPreflightBlockCode,
+  type PhaseBPreflightCode,
 } from './phase-b-read-preflight.js';
-import { toolStatusRow, type PhaseBToolStatusRow } from './phase-b-status.js';
+import {
+  EMPTY_PHASE_B_RELEASE_CAPABILITY_SNAPSHOT,
+  toolStatusRow,
+  type PhaseBReleaseCapabilitySnapshot,
+  type PhaseBToolStatusRow,
+} from './phase-b-status.js';
 
 export type PhaseBDoctorToolRow = PhaseBToolStatusRow & {
-  discoveryPreflightCode: PhaseBPreflightBlockCode;
+  discoveryPreflightCode: PhaseBPreflightCode;
 };
 
 export type PhaseBDoctorReport = {
   schemaVersion: 1;
   liveReady: boolean;
   productionActiveReadToolIds: ReadToolId[];
-  /** True when production allowlist is only live_verified find (no fixture bleed). */
+  /** True when production allowlist has no fixture-bleed from static READ_TOOLS. */
   productionActiveReadDecoupled: boolean;
-  uniqueBlockerCodes: PhaseBPreflightBlockCode[];
+  uniqueBlockerCodes: PhaseBPreflightCode[];
   tools: PhaseBDoctorToolRow[];
 };
 
@@ -32,11 +34,17 @@ export function buildPhaseBDoctorReport(input: {
   roleProofV2Path?: string | null;
   reviewedRequestManifestPath?: string | null;
   now?: Date;
+  snapshot?: PhaseBReleaseCapabilitySnapshot;
 } = {}): PhaseBDoctorReport {
   const now = input.now ?? new Date();
-  const productionIds = productionActiveReadToolIds();
-  const productionActiveReadDecoupled =
-    productionIds.length === 1 && productionIds[0] === 'hms_find_reservation';
+  const snapshot =
+    input.snapshot ?? EMPTY_PHASE_B_RELEASE_CAPABILITY_SNAPSHOT;
+  const productionIds = [...snapshot.productionActiveReadToolIds];
+  // Decoupled when activation comes only from snapshot and is empty until
+  // real digests/releases — static fixture contracts never auto-activate.
+  const productionActiveReadDecoupled = productionIds.every((id) =>
+    (READ_TOOL_IDS as readonly string[]).includes(id),
+  );
 
   const tools: PhaseBDoctorToolRow[] = READ_TOOL_IDS.map((toolId) => {
     const status = toolStatusRow(toolId);
@@ -57,14 +65,16 @@ export function buildPhaseBDoctorReport(input: {
     ...new Set(tools.map((t) => t.discoveryPreflightCode)),
   ].sort();
 
-  // Live ready only when every HMS tool clears evidence preflight
-  // (PHASE_B_BLOCKED = evidence ok, browser still unwired) and mail stays non-HMS.
-  const liveReady = tools.every((row) => {
-    if (row.id === 'mail_read_artifact') {
-      return row.discoveryPreflightCode === 'BLOCKED_MAIL_ARTIFACT_DISCOVERY';
-    }
-    return row.discoveryPreflightCode === 'PHASE_B_BLOCKED';
-  });
+  // Live ready only when snapshot has at least one production activation and
+  // every HMS tool clears discovery preflight (DISCOVERY_READY); mail stays non-HMS.
+  const liveReady =
+    productionIds.length > 0 &&
+    tools.every((row) => {
+      if (row.id === 'mail_read_artifact') {
+        return row.discoveryPreflightCode === 'BLOCKED_MAIL_ARTIFACT_DISCOVERY';
+      }
+      return row.discoveryPreflightCode === 'DISCOVERY_READY';
+    });
 
   return {
     schemaVersion: 1,
@@ -89,7 +99,7 @@ export function phaseBDoctorJsonRecord(report: PhaseBDoctorReport): {
   liveReady: boolean;
   productionActiveReadDecoupled: boolean;
   productionActiveReadToolIds: ReadToolId[];
-  uniqueBlockerCodes: PhaseBPreflightBlockCode[];
+  uniqueBlockerCodes: PhaseBPreflightCode[];
   tools: PhaseBDoctorToolRow[];
 } {
   return {

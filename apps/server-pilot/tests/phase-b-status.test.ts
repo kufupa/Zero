@@ -1,5 +1,6 @@
 /**
- * Phase B status — registry-derived capability report, no AWS/HMS.
+ * Phase B status — snapshot-backed capability report, no AWS/HMS.
+ * Static READ_TOOLS is contract/fixture evidence only — not production activation.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -12,9 +13,10 @@ import {
 import { READ_TOOL_IDS, READ_TOOLS } from '../src/hms/read-tools.js';
 
 describe('phase-b-status', () => {
-  it('emits schemaVersion and full registry tool rows', () => {
+  it('emits schemaVersion, tool rows, and empty productionActive by default', () => {
     const report = buildPhaseBStatusReport({ kind: 'all' });
     expect(report.schemaVersion).toBe(1);
+    expect(report.productionActiveReadToolIds).toEqual([]);
     expect(report.tools.map((t) => t.id)).toEqual([...READ_TOOL_IDS]);
     for (const row of report.tools) {
       expect(row.version).toBe(READ_TOOLS[row.id].version);
@@ -26,7 +28,7 @@ describe('phase-b-status', () => {
     }
   });
 
-  it('filters by --tool', () => {
+  it('filters by --tool and reports find as fixture_verified (demoted)', () => {
     const report = buildPhaseBStatusReport({
       kind: 'tool',
       toolId: 'hms_find_reservation',
@@ -34,11 +36,24 @@ describe('phase-b-status', () => {
     expect(report.tools).toHaveLength(1);
     expect(report.tools[0]).toMatchObject({
       id: 'hms_find_reservation',
-      capabilityState: 'live_verified',
+      capabilityState: 'fixture_verified',
       fixtureDigestPresent: true,
-      discoveryDigestPresent: true,
-      liveProofDigestPresent: true,
+      discoveryDigestPresent: false,
+      liveProofDigestPresent: false,
     });
+    expect(report.productionActiveReadToolIds).toEqual([]);
+  });
+
+  it('consumes explicit release/capability snapshot for productionActive', () => {
+    const report = buildPhaseBStatusReport(
+      { kind: 'tool', toolId: 'hms_find_reservation' },
+      {
+        productionActiveReadToolIds: ['hms_find_reservation'],
+      },
+    );
+    expect(report.productionActiveReadToolIds).toEqual(['hms_find_reservation']);
+    // Snapshot does not invent digests onto static contract rows.
+    expect(report.tools[0]?.discoveryDigestPresent).toBe(false);
   });
 
   it('filters by known --wave sets', () => {
@@ -81,6 +96,7 @@ describe('phase-b-status', () => {
       stage: 'status',
       code: 'STATUS_OK',
       exitCode: 0,
+      productionActiveReadToolIds: [],
     });
     expect(json.tools).toHaveLength(1);
   });

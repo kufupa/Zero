@@ -1,6 +1,7 @@
 /**
- * Offline Phase B capability status from READ_TOOLS registry.
- * No AWS, no HMS, no invented live proofs.
+ * Offline Phase B capability status.
+ * Static READ_TOOLS = contract + fixture evidence only.
+ * Production activation comes from an explicit release/capability snapshot.
  */
 import { fileURLToPath } from 'node:url';
 import {
@@ -37,6 +38,19 @@ export const PHASE_B_WAVE_TOOLS: Readonly<
   B6: [...READ_TOOL_IDS],
 };
 
+/**
+ * Explicit release/capability snapshot — sole production-activation authority
+ * for status/doctor. Never derived from static READ_TOOLS digests alone.
+ */
+export type PhaseBReleaseCapabilitySnapshot = {
+  productionActiveReadToolIds: readonly ReadToolId[];
+};
+
+export const EMPTY_PHASE_B_RELEASE_CAPABILITY_SNAPSHOT: PhaseBReleaseCapabilitySnapshot =
+  {
+    productionActiveReadToolIds: [],
+  };
+
 export type PhaseBToolStatusRow = {
   id: ReadToolId;
   version: string;
@@ -49,6 +63,7 @@ export type PhaseBToolStatusRow = {
 
 export type PhaseBStatusReport = {
   schemaVersion: 1;
+  productionActiveReadToolIds: ReadToolId[];
   tools: PhaseBToolStatusRow[];
 };
 
@@ -81,6 +96,7 @@ export function toolStatusRow(toolId: ReadToolId): PhaseBToolStatusRow {
 
 export function buildPhaseBStatusReport(
   filter: PhaseBStatusFilter = { kind: 'all' },
+  snapshot: PhaseBReleaseCapabilitySnapshot = EMPTY_PHASE_B_RELEASE_CAPABILITY_SNAPSHOT,
 ): PhaseBStatusReport {
   let ids: readonly ReadToolId[];
   switch (filter.kind) {
@@ -94,8 +110,12 @@ export function buildPhaseBStatusReport(
       ids = PHASE_B_WAVE_TOOLS[filter.waveId];
       break;
   }
+  const productionActiveReadToolIds = snapshot.productionActiveReadToolIds.filter(
+    (id) => isReadToolId(id),
+  );
   return {
     schemaVersion: 1,
+    productionActiveReadToolIds: [...productionActiveReadToolIds],
     tools: ids.map(toolStatusRow),
   };
 }
@@ -110,6 +130,7 @@ export function phaseBStatusJsonRecord(report: PhaseBStatusReport): {
   stage: 'status';
   code: 'STATUS_OK';
   exitCode: 0;
+  productionActiveReadToolIds: ReadToolId[];
   tools: PhaseBToolStatusRow[];
 } {
   return {
@@ -118,6 +139,7 @@ export function phaseBStatusJsonRecord(report: PhaseBStatusReport): {
     stage: 'status',
     code: 'STATUS_OK',
     exitCode: 0,
+    productionActiveReadToolIds: report.productionActiveReadToolIds,
     tools: report.tools,
   };
 }

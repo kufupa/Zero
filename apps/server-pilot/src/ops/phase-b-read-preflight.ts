@@ -1,18 +1,24 @@
 /**
- * Fail-closed Phase B read-discovery/proof/promote/rollback preflight.
- * Named blockers only — never starts Chromium/HMS; never invents proofs.
+ * Fail-closed Phase B action-specific preflight.
+ * Table-driven ready codes — never starts Chromium/HMS; never invents proofs.
  */
 import { lstatSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { requestPolicyManifestSchema } from '../hms/contracts.js';
 import {
+  HMS_READ_TOOL_IDS,
   READ_TOOL_IDS,
   READ_TOOLS,
   capabilityStateFor,
   type CapabilityState,
+  type HmsReadToolDefinition,
+  type HmsReadToolId,
   type ReadToolId,
 } from '../hms/read-tools.js';
-import { hmsReadRoleProofV2Schema } from '../hms/release-kernel.js';
+import {
+  hmsReadRoleProofV2Schema,
+  validateRoleProofV2ForTool,
+} from '../hms/release-kernel.js';
 
 export const PHASE_B_READ_ACTIONS = [
   'read-discovery',
@@ -23,18 +29,35 @@ export const PHASE_B_READ_ACTIONS = [
 
 export type PhaseBReadAction = (typeof PHASE_B_READ_ACTIONS)[number];
 
+export const PHASE_B_READY_CODES = [
+  'DISCOVERY_READY',
+  'PROOF_READY',
+  'PROMOTE_READY',
+  'ROLLBACK_READY',
+] as const;
+
+export type PhaseBReadyCode = (typeof PHASE_B_READY_CODES)[number];
+
 export const PHASE_B_PREFLIGHT_BLOCK_CODES = [
   'BLOCKED_UNKNOWN_TOOL',
   'BLOCKED_MAIL_ARTIFACT_DISCOVERY',
+  'BLOCKED_MAIL_ARTIFACT_PROOF',
+  'BLOCKED_NO_SEALED_FIXTURE',
+  'BLOCKED_NO_SAFE_BOOTSTRAP',
   'BLOCKED_NO_ROLE_PROOF_V2',
   'BLOCKED_ROLE_PROOF_V2_INSECURE',
   'BLOCKED_NO_REVIEWED_REQUEST_MANIFEST',
-  'BLOCKED_TOOL_FIXTURE_ONLY',
-  'PHASE_B_BLOCKED',
+  'BLOCKED_NO_DISCOVERY_EVIDENCE',
+  'BLOCKED_NO_DRIVER_OR_CONTROLS',
+  'BLOCKED_NO_IMMUTABLE_RELEASE',
+  'BLOCKED_NO_LOADABLE_HANDLER',
+  'BLOCKED_NO_ACTIVE_REGISTRY',
 ] as const;
 
 export type PhaseBPreflightBlockCode =
   (typeof PHASE_B_PREFLIGHT_BLOCK_CODES)[number];
+
+export type PhaseBPreflightCode = PhaseBReadyCode | PhaseBPreflightBlockCode;
 
 export type PhaseBPreflightResult =
   | {
@@ -42,15 +65,14 @@ export type PhaseBPreflightResult =
       action: PhaseBReadAction;
       toolId: ReadToolId;
       capabilityState: CapabilityState;
-      /** Live browser discovery/proof still unimplemented after evidence checks. */
-      code: 'PHASE_B_BLOCKED';
-      exitCode: 3;
+      code: PhaseBReadyCode;
+      exitCode: 0;
     }
   | {
       ok: false;
       action: PhaseBReadAction | string;
       toolId: string;
-      code: Exclude<PhaseBPreflightBlockCode, 'PHASE_B_BLOCKED'>;
+      code: PhaseBPreflightBlockCode;
       exitCode: 3;
     };
 
@@ -59,6 +81,10 @@ const REVIEWED_MANIFEST_ENV = 'HMS_REVIEWED_REQUEST_MANIFEST_PATH';
 
 function isReadToolId(value: string): value is ReadToolId {
   return (READ_TOOL_IDS as readonly string[]).includes(value);
+}
+
+function isHmsReadToolId(value: string): value is HmsReadToolId {
+  return (HMS_READ_TOOL_IDS as readonly string[]).includes(value);
 }
 
 function isPhaseBReadAction(value: string): value is PhaseBReadAction {
@@ -83,7 +109,6 @@ function readRegularFileStat(path: string): { raw: string; mode: number; uid: nu
 function roleProofFileHardened(mode: number, uid: number): boolean {
   if ((mode & 0o222) !== 0) return false;
   if ((mode & 0o400) === 0) return false;
-  // EC2/production: require root ownership when explicitly enabled.
   if (process.env.HMS_ROLE_PROOF_V2_REQUIRE_ROOT === '1') {
     if (typeof process.getuid === 'function' && uid !== 0) return false;
   }
@@ -92,6 +117,7 @@ function roleProofFileHardened(mode: number, uid: number): boolean {
 
 function roleProofV2Status(
   path: string | null | undefined,
+  toolId: HmsReadToolId,
   now: Date,
 ): 'ok' | 'missing' | 'insecure' {
   if (!path || !path.trim()) return 'missing';
@@ -106,11 +132,11 @@ function roleProofV2Status(
   }
   const result = hmsReadRoleProofV2Schema.safeParse(parsed);
   if (!result.success) return 'missing';
-  const issued = Date.parse(result.data.issuedAt);
-  const expires = Date.parse(result.data.expiresAt);
-  if (!Number.isFinite(issued) || !Number.isFinite(expires)) return 'missing';
-  if (issued > now.getTime() || expires <= issued) return 'missing';
-  if (expires <= now.getTime()) return 'missing';
+  try {
+    validateRoleProofV2ForTool(result.data, READ_TOOLS[toolId], now);
+  } catch {
+    return 'missing';
+  }
   return 'ok';
 }
 
@@ -139,70 +165,101 @@ function resolveOptionalPath(
   return process.env[envName] ?? null;
 }
 
+function fail(
+  action: PhaseBReadAction | string,
+  toolId: string,
+  code: PhaseBPreflightBlockCode,
+): PhaseBPreflightResult {
+  return { ok: false, action, toolId, code, exitCode: 3 };
+}
+
+function ready(
+  action: PhaseBReadAction,
+  toolId: ReadToolId,
+  code: PhaseBReadyCode,
+): PhaseBPreflightResult {
+  return {
+    ok: true,
+    action,
+    toolId,
+    capabilityState: capabilityStateFor(toolId),
+    code,
+    exitCode: 0,
+  };
+}
+
+/** Sealed fixture = fixture digest present (fixture_verified or higher). */
+function hasSealedFixture(toolId: ReadToolId): boolean {
+  return Boolean(READ_TOOLS[toolId].evidenceRefs.fixtureDigest);
+}
+
 /**
- * Evidence preflight for Phase B tool actions.
- * Order: tool → role-proof-v2 → reviewed request manifest → registry capability.
- * On full evidence pass, still returns PHASE_B_BLOCKED (live action unwired).
+ * Safe bootstrap for abort-first discovery: closed discovery ops + request
+ * branches with control oracles. Does not require role-proof or prior digests.
  */
-export function runPhaseBReadPreflight(input: {
+function hasSafeBootstrap(toolId: ReadToolId): boolean {
+  if (!isHmsReadToolId(toolId)) return false;
+  const tool = READ_TOOLS[toolId] as HmsReadToolDefinition;
+  return (
+    tool.discoveryOperationIds.length > 0 &&
+    tool.requestBranches.length > 0 &&
+    tool.requestBranches.every((branch) => Boolean(branch.controlOracle))
+  );
+}
+
+export type PhaseBPreflightInput = {
   action: string;
   toolId: string;
   roleProofV2Path?: string | null;
   reviewedRequestManifestPath?: string | null;
   now?: Date;
-}): PhaseBPreflightResult {
-  const now = input.now ?? new Date();
-  if (!isPhaseBReadAction(input.action)) {
-    return {
-      ok: false,
-      action: input.action,
-      toolId: input.toolId,
-      code: 'BLOCKED_UNKNOWN_TOOL',
-      exitCode: 3,
-    };
-  }
-  const action = input.action;
+  /** Explicit discovery evidence (receipt/digest). Defaults to static discoveryDigest. */
+  discoveryEvidencePresent?: boolean;
+  /** Registered driver + required controls ready for proof. */
+  driverAndControlsReady?: boolean;
+  /** Immutable release artifact prevalidated for promote. */
+  immutableReleaseReady?: boolean;
+  /** Handler for release implementationSha256 is loadable. */
+  loadableHandlerReady?: boolean;
+  /** Active registry readable for rollback (ignores live evidence). */
+  activeRegistryReady?: boolean;
+};
 
-  if (!isReadToolId(input.toolId)) {
-    return {
-      ok: false,
-      action,
-      toolId: input.toolId,
-      code: 'BLOCKED_UNKNOWN_TOOL',
-      exitCode: 3,
-    };
-  }
-  const toolId = input.toolId;
+type GateFn = (
+  action: PhaseBReadAction,
+  toolId: ReadToolId,
+  input: PhaseBPreflightInput,
+  now: Date,
+) => PhaseBPreflightResult;
 
-  if (action === 'read-discovery' && toolId === 'mail_read_artifact') {
-    return {
-      ok: false,
-      action,
-      toolId,
-      code: 'BLOCKED_MAIL_ARTIFACT_DISCOVERY',
-      exitCode: 3,
-    };
+const gateDiscovery: GateFn = (action, toolId) => {
+  if (toolId === 'mail_read_artifact') {
+    return fail(action, toolId, 'BLOCKED_MAIL_ARTIFACT_DISCOVERY');
+  }
+  if (!hasSealedFixture(toolId)) {
+    return fail(action, toolId, 'BLOCKED_NO_SEALED_FIXTURE');
+  }
+  if (!hasSafeBootstrap(toolId)) {
+    return fail(action, toolId, 'BLOCKED_NO_SAFE_BOOTSTRAP');
+  }
+  return ready(action, toolId, 'DISCOVERY_READY');
+};
+
+const gateProof: GateFn = (action, toolId, input, now) => {
+  if (toolId === 'mail_read_artifact') {
+    return fail(action, toolId, 'BLOCKED_MAIL_ARTIFACT_PROOF');
+  }
+  if (!isHmsReadToolId(toolId)) {
+    return fail(action, toolId, 'BLOCKED_UNKNOWN_TOOL');
   }
 
   const rolePath = resolveOptionalPath(input, 'roleProofV2Path', ROLE_PROOF_V2_ENV);
-  const roleStatus = roleProofV2Status(rolePath, now);
+  const roleStatus = roleProofV2Status(rolePath, toolId, now);
   if (roleStatus === 'missing') {
-    return {
-      ok: false,
-      action,
-      toolId,
-      code: 'BLOCKED_NO_ROLE_PROOF_V2',
-      exitCode: 3,
-    };
+    return fail(action, toolId, 'BLOCKED_NO_ROLE_PROOF_V2');
   }
   if (roleStatus === 'insecure') {
-    return {
-      ok: false,
-      action,
-      toolId,
-      code: 'BLOCKED_ROLE_PROOF_V2_INSECURE',
-      exitCode: 3,
-    };
+    return fail(action, toolId, 'BLOCKED_ROLE_PROOF_V2_INSECURE');
   }
 
   const manifestPath = resolveOptionalPath(
@@ -211,35 +268,65 @@ export function runPhaseBReadPreflight(input: {
     REVIEWED_MANIFEST_ENV,
   );
   if (!reviewedManifestOk(manifestPath)) {
-    return {
-      ok: false,
-      action,
-      toolId,
-      code: 'BLOCKED_NO_REVIEWED_REQUEST_MANIFEST',
-      exitCode: 3,
-    };
+    return fail(action, toolId, 'BLOCKED_NO_REVIEWED_REQUEST_MANIFEST');
   }
 
-  const capabilityState = capabilityStateFor(toolId);
-  const refs = READ_TOOLS[toolId].evidenceRefs;
-  if (capabilityState === 'fixture_verified' || !refs.discoveryDigest) {
-    return {
-      ok: false,
-      action,
-      toolId,
-      code: 'BLOCKED_TOOL_FIXTURE_ONLY',
-      exitCode: 3,
-    };
+  const discoveryPresent =
+    input.discoveryEvidencePresent ??
+    Boolean(READ_TOOLS[toolId].evidenceRefs.discoveryDigest);
+  if (!discoveryPresent) {
+    return fail(action, toolId, 'BLOCKED_NO_DISCOVERY_EVIDENCE');
   }
 
-  return {
-    ok: true,
-    action,
-    toolId,
-    capabilityState,
-    code: 'PHASE_B_BLOCKED',
-    exitCode: 3,
-  };
+  if (input.driverAndControlsReady !== true) {
+    return fail(action, toolId, 'BLOCKED_NO_DRIVER_OR_CONTROLS');
+  }
+
+  return ready(action, toolId, 'PROOF_READY');
+};
+
+const gatePromote: GateFn = (action, toolId, input) => {
+  if (input.immutableReleaseReady !== true) {
+    return fail(action, toolId, 'BLOCKED_NO_IMMUTABLE_RELEASE');
+  }
+  if (input.loadableHandlerReady !== true) {
+    return fail(action, toolId, 'BLOCKED_NO_LOADABLE_HANDLER');
+  }
+  return ready(action, toolId, 'PROMOTE_READY');
+};
+
+const gateRollback: GateFn = (action, toolId, input) => {
+  if (input.activeRegistryReady !== true) {
+    return fail(action, toolId, 'BLOCKED_NO_ACTIVE_REGISTRY');
+  }
+  return ready(action, toolId, 'ROLLBACK_READY');
+};
+
+const ACTION_GATES: Record<PhaseBReadAction, GateFn> = {
+  'read-discovery': gateDiscovery,
+  'read-proof': gateProof,
+  'read-promote': gatePromote,
+  'read-rollback': gateRollback,
+};
+
+/**
+ * Evidence preflight for Phase B tool actions — action-specific, non-circular.
+ */
+export function runPhaseBReadPreflight(
+  input: PhaseBPreflightInput,
+): PhaseBPreflightResult {
+  const now = input.now ?? new Date();
+  if (!isPhaseBReadAction(input.action)) {
+    return fail(input.action, input.toolId, 'BLOCKED_UNKNOWN_TOOL');
+  }
+  const action = input.action;
+
+  if (!isReadToolId(input.toolId)) {
+    return fail(action, input.toolId, 'BLOCKED_UNKNOWN_TOOL');
+  }
+  const toolId = input.toolId;
+
+  return ACTION_GATES[action](action, toolId, input, now);
 }
 
 export function formatPhaseBPreflightWaitLine(
@@ -248,12 +335,16 @@ export function formatPhaseBPreflightWaitLine(
   return `HMS_WAIT code=${code}`;
 }
 
+export function formatPhaseBPreflightOkLine(code: PhaseBReadyCode): string {
+  return `HMS_OK code=${code}`;
+}
+
 export function phaseBPreflightJsonRecord(result: PhaseBPreflightResult): {
   schemaVersion: 1;
-  outcome: 'wait';
+  outcome: 'ok' | 'wait';
   stage: 'preflight';
-  code: PhaseBPreflightBlockCode;
-  exitCode: 3;
+  code: PhaseBPreflightCode;
+  exitCode: 0 | 3;
   action: PhaseBReadAction | string;
   toolId: string;
   toolVersion: string | null;
@@ -266,10 +357,10 @@ export function phaseBPreflightJsonRecord(result: PhaseBPreflightResult): {
       : null;
   return {
     schemaVersion: 1,
-    outcome: 'wait',
+    outcome: result.ok ? 'ok' : 'wait',
     stage: 'preflight',
     code: result.code,
-    exitCode: 3,
+    exitCode: result.exitCode,
     action: result.action,
     toolId: result.toolId,
     toolVersion,
@@ -302,8 +393,11 @@ export function main(argv: string[] = process.argv.slice(2)): number {
     action: parsed.action,
     toolId: parsed.toolId,
   });
-  const line = formatPhaseBPreflightWaitLine(result.code);
-  process.stderr.write(`${line}\n`);
+  if (result.ok) {
+    process.stderr.write(`${formatPhaseBPreflightOkLine(result.code)}\n`);
+  } else {
+    process.stderr.write(`${formatPhaseBPreflightWaitLine(result.code)}\n`);
+  }
   if (parsed.json) {
     process.stdout.write(`${JSON.stringify(phaseBPreflightJsonRecord(result))}\n`);
   }
