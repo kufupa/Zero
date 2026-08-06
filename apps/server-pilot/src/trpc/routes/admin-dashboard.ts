@@ -1,4 +1,4 @@
-import { and, inArray, sql } from 'drizzle-orm';
+import { and, gte, inArray, isNull, lt, or, sql } from 'drizzle-orm';
 import { privateProcedure, router as tRouter } from '../trpc.js';
 import { getDb } from '../../db/client.js';
 import { mailThread, mailboxTransport, message } from '../../db/schema/mail.js';
@@ -46,6 +46,7 @@ export async function loadAdminDashboardMetrics(
   }
 
   // Window-bounded message pull first; sargable so message_transport_received_idx applies.
+  // Use Drizzle gte/lt (not raw Date interpolation) — postgres.js rejects Date in sql``.
   const messageColumns = {
     id: message.id,
     threadId: message.threadId,
@@ -55,14 +56,15 @@ export async function loadAdminDashboardMetrics(
     sentAt: message.sentAt,
     createdAt: message.createdAt,
   };
-  const inWindow = (start: Date, end: Date) =>
-    sql`((${message.receivedAt} >= ${start} AND ${message.receivedAt} < ${end})
-      OR (${message.receivedAt} IS NULL AND ${message.createdAt} >= ${start} AND ${message.createdAt} < ${end}))`;
+  const inWindow = or(
+    and(gte(message.receivedAt, windowStart), lt(message.receivedAt, windowEnd)),
+    and(isNull(message.receivedAt), gte(message.createdAt, windowStart), lt(message.createdAt, windowEnd)),
+  );
 
   const messages = await db
     .select(messageColumns)
     .from(message)
-    .where(and(inArray(message.transportId, transportIds), inWindow(windowStart, windowEnd)));
+    .where(and(inArray(message.transportId, transportIds), inWindow));
 
   const threadIds = [...new Set(messages.map((row) => row.threadId))];
   if (threadIds.length === 0) {
@@ -87,6 +89,7 @@ export async function loadAdminDashboardMetrics(
     .where(inArray(mailThread.id, threadIds));
 
   // Replies can land after windowEnd, so extend the outbound pull forward only.
+  // Prefer sentAt; fall back to receivedAt/createdAt with the same sargable Date helpers.
   const outboundExtras = await db
     .select(messageColumns)
     .from(message)
@@ -94,7 +97,11 @@ export async function loadAdminDashboardMetrics(
       and(
         inArray(message.threadId, threadIds),
         sql`${message.direction} = 'outbound'`,
-        sql`coalesce(${message.sentAt}, ${message.receivedAt}, ${message.createdAt}) >= ${windowStart}`,
+        or(
+          gte(message.sentAt, windowStart),
+          and(isNull(message.sentAt), gte(message.receivedAt, windowStart)),
+          and(isNull(message.sentAt), isNull(message.receivedAt), gte(message.createdAt, windowStart)),
+        ),
       ),
     );
 
