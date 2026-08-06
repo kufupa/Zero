@@ -1,34 +1,81 @@
 {
   "toolId": "hms_list_documents",
   "toolVersion": "1.0.0",
-  "symptom": "discovery_verified awaiting live proof",
+  "symptom": "tax_invoice_branch_blocked_role_menu_absent",
   "structuralObservation": {
     "routeClass": "document_list_read",
-    "envelopeDiscriminator": "sent_email_shared_pssnel_tax_blocked"
+    "envelopeDiscriminator": "sent_email_shared_pssnel_tax_blocked",
+    "reproveDate": "2026-08-07",
+    "reproveScript": "scripts/hms-tax-invoice-reprove.ts",
+    "reproveSha": "8a807c878c",
+    "menuPathAttempted": "Front Desk > Tax Invoice",
+    "observedTopModules": [
+      "Front Desk",
+      "Reports",
+      "Group Sales",
+      "Profiles",
+      "Rate and Sales",
+      "Housekeeping"
+    ],
+    "observedLaunchCenterTiles": [
+      "STAY 360",
+      "ROOM PLAN",
+      "AVAILABILITY SUMMARY",
+      "KPIs"
+    ],
+    "taxInvoiceInDomTree": false,
+    "taxInvoiceInMenuHarvest": false,
+    "taxInvoiceInModuleSweep0to12": false,
+    "guestStayMenuLabelVisible": false,
+    "stay360Fallback": {
+      "attempted": true,
+      "guestStayClicked": false,
+      "findOpenRowCount": 6,
+      "taxInvoiceTileAfterFindOpen": false,
+      "taxInvoiceTileAfterStay360Click": false,
+      "guestStayTaxInvoicingVisible": false,
+      "observedTaxFunctionCodes": []
+    },
+    "deniedActions": {
+      "print": "never_clicked",
+      "email": "never_clicked",
+      "resend": "never_clicked",
+      "generate": "never_clicked"
+    }
   },
   "assumptionsVerified": [
     "fixture_contract_closed",
-    "sent_email_documents_branch_shares_pssnel_manifest"
+    "sent_email_documents_branch_shares_pssnel_manifest",
+    "infor_docs_name_front_desk_tax_invoice_display_only",
+    "view_only_role_menu_lacks_tax_invoice_label",
+    "stay360_tax_tile_absent_under_view_only_after_find_open"
   ],
   "assumptionsInvalidated": [
-    "tax_invoice_function_code_guessable"
+    "tax_invoice_function_code_guessable",
+    "ostxi_pstxi_open_proves_surface",
+    "docs_page_implies_tenant_role_entitlement"
   ],
   "causalChain": [
-    "sent_email_discovery_completed",
-    "tax_invoice_surface_unproven",
-    "tax_invoice_branch_remains_disabled"
+    "official_docs_document_front_desk_tax_invoice",
+    "menu_first_reprove_expand_front_desk",
+    "tax_invoice_label_absent_from_dom_tree_and_bsstrt_module_sweep",
+    "stay360_fallback_find_open_no_tax_invoice_tile",
+    "no_preTransmissionEvidence_for_list_transport",
+    "observeTaxInvoiceMetadata_remains_fail_closed"
   ],
-  "prediction": "Promote sent-email documents branch independently; tax invoice waits for proven function code",
+  "prediction": "Keep tax_invoice_documents disabled until hotel grants Front Desk > Tax Invoice (or Stay 360 Tax Invoice tile) to view_only role; then re-run hms-tax-invoice-reprove.ts and add manifest only with observed preTransmissionEvidence",
   "verificationCommands": [
     "unset DATABASE_URL VITEST_ALLOW_PILOT_RDS",
+    "HMS_DISCOVERY_ALLOW_LIVE=1 pnpm exec tsx scripts/hms-tax-invoice-reprove.ts",
     "npx vitest run tests/hms-live-communications-reads.test.ts"
   ],
-  "liveArtifactIds": [],
+  "liveArtifactIds": [
+    "/tmp/hms-tax-invoice-reprove.json"
+  ],
   "unresolvedGaps": [
     "BLOCKED_TAX_INVOICE_SURFACE_UNPROVEN",
     "BLOCKED_NO_ROLE_PROOF_V2",
-    "BLOCKED_NO_LIVE_PROOF_RECEIPT",
-    "BLOCKED_TOOL_DISCOVERY_ONLY"
+    "BLOCKED_NO_LIVE_PROOF_RECEIPT"
   ],
-  "updatedAt": "2026-08-06T20:00:00.000Z"
+  "updatedAt": "2026-08-07T00:00:00.000Z"
 }

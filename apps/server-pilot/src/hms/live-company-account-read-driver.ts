@@ -1,8 +1,10 @@
 /**
  * Reservation-linked company billing observer (Task 16).
  * Safe linked surfaces lack billingMode / paymentTermClass / contractStatus
- * (discovered 2026-08-06). Fail closed — never open editable company screens
- * or arbitrary profile search.
+ * (2026-08-06 OSRESS/OSACCT; reprove 2026-08-07 exact OSRESS.find → SOB keys
+ * only: company, companyname, bookingagency*, channel*, marketsegment*,
+ * sourceofbusiness*, group* — trio absent). Fail closed — never open editable
+ * company screens or arbitrary profile search. Folio stays independent.
  */
 import { createHash, randomUUID } from 'node:crypto';
 import type { ToolResult } from '../ai/draft-evidence.js';

@@ -103,8 +103,9 @@ function assertTaxAuth(
 
 /**
  * Live Tax Invoice metadata observer.
- * Fail-closed: tenant discovery did not prove a Tax Invoice function code
- * (Front Desk > Tax Invoice absent from role menu; OSTXI/PSTXI/… returned 400).
+ * Fail-closed: 2026-08-07 menu-first re-prove — Front Desk > Tax Invoice absent
+ * from view_only role tree + MENU_MODULE_KEY sweep; Stay 360 find-open showed
+ * no Tax Invoice tile. No preTransmissionEvidence → no list transport.
  */
 export async function observeTaxInvoiceMetadata(
   authorization: HmsSessionAuthorization,
