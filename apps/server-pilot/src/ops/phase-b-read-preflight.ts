@@ -52,6 +52,7 @@ export const PHASE_B_PREFLIGHT_BLOCK_CODES = [
   'BLOCKED_NO_IMMUTABLE_RELEASE',
   'BLOCKED_NO_LOADABLE_HANDLER',
   'BLOCKED_NO_ACTIVE_REGISTRY',
+  'BLOCKED_REGISTRY_CUTOVER_PENDING',
 ] as const;
 
 export type PhaseBPreflightBlockCode =
@@ -231,6 +232,11 @@ export type PhaseBPreflightInput = {
   loadableHandlerReady?: boolean;
   /** Active registry readable for rollback (ignores live evidence). */
   activeRegistryReady?: boolean;
+  /**
+   * Find+mail seed releases active and final handler path wired.
+   * Until true, read-promote returns BLOCKED_REGISTRY_CUTOVER_PENDING.
+   */
+  registryCutoverComplete?: boolean;
 };
 
 type GateFn = (
@@ -292,6 +298,11 @@ const gateProof: GateFn = (action, toolId, input, now) => {
 };
 
 const gatePromote: GateFn = (action, toolId, input) => {
+  // Cutover gate first: no new Phase B tool promotes until find/mail seeds +
+  // final handler path are active.
+  if (input.registryCutoverComplete !== true) {
+    return fail(action, toolId, 'BLOCKED_REGISTRY_CUTOVER_PENDING');
+  }
   if (input.immutableReleaseReady !== true) {
     return fail(action, toolId, 'BLOCKED_NO_IMMUTABLE_RELEASE');
   }

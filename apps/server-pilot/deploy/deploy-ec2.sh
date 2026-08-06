@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 # Deploy server-pilot + mail SPA to EC2 (SSM-friendly, run as ubuntu).
+# Phase B Task 13: when promoting a registry-candidate, pair this deploy with
+# source-registry-transaction (CAS source + active.json). Incomplete restore
+# exits 20 and halts the HMS live lane (before/after_source_switch,
+# before/after_registry_rename, before/after_pm2_restart, health_verdict).
 set -euo pipefail
 
 REPO_ROOT="${REPO_ROOT:-/home/ubuntu/repos/zero}"

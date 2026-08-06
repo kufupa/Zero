@@ -135,4 +135,13 @@ describe('HMS production boundary', () => {
   it('sole path: parser/driver/receipt/claim/worker/proof cannot assign business not_found', () => {
     expect(collectBusinessNotFoundAssignments()).toEqual([]);
   });
+
+  it('Task 13: pm2 carries active registry + release root paths', () => {
+    const pm2 = loadPm2Config() as {
+      apps: Array<{ name: string; env?: Record<string, string> }>;
+    };
+    const hms = pm2.apps.find((a) => a.name === 'hms-ai-worker');
+    expect(hms?.env?.HMS_ACTIVE_REGISTRY_PATH).toMatch(/hms-active-registry/);
+    expect(hms?.env?.HMS_RELEASE_ROOT).toMatch(/hms-releases/);
+  });
 });

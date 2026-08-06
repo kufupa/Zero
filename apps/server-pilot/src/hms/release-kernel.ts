@@ -6,11 +6,13 @@ import { createHash } from 'node:crypto';
 import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
+import type { RequestPolicyManifest } from './contracts.js';
 import {
   DISCOVERY_OPERATION_IDS,
   HMS_READ_TOOL_IDS,
   READ_TOOL_IDS,
   ROLE_SURFACE_IDS,
+  type DiscoveryOperationId,
   type HmsReadToolId,
   type ReadToolDefinition,
   type ReadToolId,
@@ -531,4 +533,374 @@ export async function rollbackReadTool(input: {
 /** Integrity digest helper for tests and callers hashing public artifacts. */
 export function sha256Hex(input: string): string {
   return createHash('sha256').update(input).digest('hex');
+}
+
+// --- Phase B active registry v2 + plan-scoped session authorization -----------
+
+export const HMS_RUNTIME_ABI_VERSION = 'phase-b-read-1';
+
+export const hmsActiveRegistryV2Schema = z
+  .object({
+    schemaVersion: z.literal(2),
+    generation: z.number().int().nonnegative(),
+    toolsetVersion: z.string().min(1),
+    toolsetFingerprint: sha,
+    activeSetFingerprint: sha,
+    active: z.record(toolId, uuid),
+    immediatePredecessor: z.record(toolId, uuid),
+  })
+  .strict();
+
+export type HmsActiveRegistryV2 = z.infer<typeof hmsActiveRegistryV2Schema>;
+
+export type HmsSessionAuthorization = {
+  operationId: string;
+  toolId: HmsReadToolId;
+  discoveryOperationId: DiscoveryOperationId;
+  releaseId: string;
+  requestBranchId: string;
+  manifest: RequestPolicyManifest;
+  manifestSha256: string;
+  roleProofPath: string;
+  roleProofSha256: string;
+  credentialVersionHmacSha256: string;
+  runtimeFingerprintSha256: string;
+  privateDigestKeyVersion: string;
+  sourceRevision: string;
+  expiresAt: string;
+};
+
+export type MailArtifactAuthorization = {
+  operationId: string;
+  releaseId: string;
+  grantPolicySha256: string;
+  s3IdentitySha256: string;
+  runtimeFingerprintSha256: string;
+  privateDigestKeyVersion: string;
+  sourceRevision: string;
+  expiresAt: string;
+};
+
+export function fingerprintActiveSet(input: {
+  active: Partial<Record<ReadToolId, string>>;
+  immediatePredecessor: Partial<Record<ReadToolId, string>>;
+  generation: number;
+  toolsetVersion: string;
+  toolsetFingerprint: string;
+}): string {
+  return sha256Hex(
+    JSON.stringify({
+      generation: input.generation,
+      toolsetVersion: input.toolsetVersion,
+      toolsetFingerprint: input.toolsetFingerprint,
+      active: Object.keys(input.active)
+        .sort()
+        .map((k) => [k, input.active[k as ReadToolId]]),
+      immediatePredecessor: Object.keys(input.immediatePredecessor)
+        .sort()
+        .map((k) => [k, input.immediatePredecessor[k as ReadToolId]]),
+    }),
+  );
+}
+
+export function emptyActiveRegistryV2(input: {
+  toolsetVersion: string;
+  toolsetFingerprint: string;
+}): HmsActiveRegistryV2 {
+  const base = {
+    schemaVersion: 2 as const,
+    generation: 0,
+    toolsetVersion: input.toolsetVersion,
+    toolsetFingerprint: input.toolsetFingerprint,
+    active: {},
+    immediatePredecessor: {},
+  };
+  return hmsActiveRegistryV2Schema.parse({
+    ...base,
+    activeSetFingerprint: fingerprintActiveSet(base),
+  });
+}
+
+/**
+ * Fail-closed registry load. Missing/invalid registry is an error —
+ * never silently activates fixture constants.
+ */
+export async function loadActiveReadRegistryV2(
+  path: string,
+): Promise<HmsActiveRegistryV2> {
+  let raw: string;
+  try {
+    raw = await readFile(path, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new Error('active registry v2 missing');
+    }
+    throw error;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error('active registry v2 JSON invalid');
+  }
+  const registry = hmsActiveRegistryV2Schema.parse(parsed);
+  const expected = fingerprintActiveSet(registry);
+  if (registry.activeSetFingerprint !== expected) {
+    throw new Error('activeSetFingerprint mismatch');
+  }
+  return registry;
+}
+
+export function validateReleasePredecessorRules(
+  release: HmsPortfolioToolReleaseV2,
+  activePredecessorId: string | null,
+): void {
+  if (activePredecessorId === null) {
+    if (release.predecessorReleaseId !== null) {
+      throw new Error('first live release requires predecessorReleaseId:null');
+    }
+    if (release.rollbackAction !== 'disable') {
+      throw new Error('first live release requires rollbackAction:disable');
+    }
+    return;
+  }
+  if (release.predecessorReleaseId !== activePredecessorId) {
+    throw new Error('upgrade predecessorReleaseId must equal active release');
+  }
+  if (release.rollbackAction !== 'restore_predecessor') {
+    throw new Error(
+      'upgrade/shadow successor requires rollbackAction:restore_predecessor',
+    );
+  }
+}
+
+export async function loadValidatedActiveReadSet(input: {
+  registryPath: string;
+  releaseRoot: string;
+  runtimeAbiVersion: string;
+  runtimeFingerprintSha256: string;
+  availableImplementationDigests: ReadonlyMap<ReadToolId, ReadonlySet<string>>;
+}): Promise<{
+  toolIds: Set<ReadToolId>;
+  releases: Map<ReadToolId, HmsPortfolioToolReleaseV2>;
+  registry: HmsActiveRegistryV2;
+  predecessors: Map<ReadToolId, HmsPortfolioToolReleaseV2>;
+}> {
+  const registry = await loadActiveReadRegistryV2(input.registryPath);
+  const releases = new Map<ReadToolId, HmsPortfolioToolReleaseV2>();
+  const predecessors = new Map<ReadToolId, HmsPortfolioToolReleaseV2>();
+
+  const loadRelease = async (releaseId: string): Promise<HmsPortfolioToolReleaseV2> => {
+    const path = join(input.releaseRoot, `${releaseId}.json`);
+    let raw: string;
+    try {
+      raw = await readFile(path, 'utf8');
+    } catch {
+      throw new Error(`release missing: ${releaseId}`);
+    }
+    return hmsPortfolioToolReleaseV2Schema.parse(JSON.parse(raw));
+  };
+
+  for (const [toolIdRaw, releaseId] of Object.entries(registry.active)) {
+    const toolId = toolIdRaw as ReadToolId;
+    if (!releaseId) continue;
+    const release = await loadRelease(releaseId);
+    if (release.toolId !== toolId) {
+      throw new Error(`release toolId mismatch for ${toolId}`);
+    }
+    if (release.runtimeAbiVersion !== input.runtimeAbiVersion) {
+      throw new Error(`runtime ABI mismatch for ${toolId}`);
+    }
+    if (release.runtimeFingerprintSha256 !== input.runtimeFingerprintSha256) {
+      throw new Error(`runtime fingerprint mismatch for ${toolId}`);
+    }
+    const available = input.availableImplementationDigests.get(toolId);
+    if (!available?.has(release.implementationSha256)) {
+      throw new Error(`implementation digest unloadable for ${toolId}`);
+    }
+    releases.set(toolId, release);
+  }
+
+  for (const [toolIdRaw, releaseId] of Object.entries(
+    registry.immediatePredecessor,
+  )) {
+    const toolId = toolIdRaw as ReadToolId;
+    if (!releaseId) continue;
+    const release = await loadRelease(releaseId);
+    if (release.toolId !== toolId) {
+      throw new Error(`predecessor toolId mismatch for ${toolId}`);
+    }
+    if (release.runtimeAbiVersion !== input.runtimeAbiVersion) {
+      throw new Error(`predecessor runtime ABI mismatch for ${toolId}`);
+    }
+    if (release.runtimeFingerprintSha256 !== input.runtimeFingerprintSha256) {
+      throw new Error(`predecessor runtime fingerprint mismatch for ${toolId}`);
+    }
+    const available = input.availableImplementationDigests.get(toolId);
+    if (!available?.has(release.implementationSha256)) {
+      throw new Error(`predecessor implementation unloadable for ${toolId}`);
+    }
+    const active = releases.get(toolId);
+    if (
+      active &&
+      active.implementationSha256 === release.implementationSha256
+    ) {
+      throw new Error(
+        `immediate predecessor for ${toolId} must differ in implementation digest`,
+      );
+    }
+    predecessors.set(toolId, release);
+  }
+
+  return {
+    toolIds: new Set(releases.keys()),
+    releases,
+    registry,
+    predecessors,
+  };
+}
+
+/**
+ * True when find + mail seed releases are active with loadable handlers.
+ * Until then read-promote returns BLOCKED_REGISTRY_CUTOVER_PENDING.
+ */
+export function isRegistryCutoverComplete(input: {
+  activeToolIds: ReadonlySet<ReadToolId>;
+  handlerPathActive: boolean;
+}): boolean {
+  return (
+    input.handlerPathActive &&
+    input.activeToolIds.has('hms_find_reservation') &&
+    input.activeToolIds.has('mail_read_artifact')
+  );
+}
+
+export async function promoteReadToolV2(input: {
+  path: string;
+  release: HmsPortfolioToolReleaseV2;
+  releaseRoot: string;
+}): Promise<HmsActiveRegistryV2> {
+  const release = hmsPortfolioToolReleaseV2Schema.parse(input.release);
+  await mkdir(input.releaseRoot, { recursive: true });
+  const releasePath = join(input.releaseRoot, `${release.releaseId}.json`);
+  try {
+    await writeFile(releasePath, `${JSON.stringify(release)}\n`, {
+      flag: 'wx',
+      mode: 0o600,
+    });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    // Immutable — existing file must byte-match.
+    const existing = hmsPortfolioToolReleaseV2Schema.parse(
+      JSON.parse(await readFile(releasePath, 'utf8')),
+    );
+    if (JSON.stringify(existing) !== JSON.stringify(release)) {
+      throw new Error('immutable release mutate rejected');
+    }
+  }
+
+  let current: HmsActiveRegistryV2;
+  try {
+    current = await loadActiveReadRegistryV2(input.path);
+  } catch {
+    current = emptyActiveRegistryV2({
+      toolsetVersion: release.toolsetVersion,
+      toolsetFingerprint: release.toolsetFingerprint,
+    });
+  }
+
+  if (
+    current.toolsetVersion !== release.toolsetVersion ||
+    current.toolsetFingerprint !== release.toolsetFingerprint
+  ) {
+    throw new Error('release toolset binding mismatch');
+  }
+
+  if (current.active[release.toolId] === release.releaseId) return current;
+
+  const predecessor = current.active[release.toolId] ?? null;
+  validateReleasePredecessorRules(release, predecessor);
+
+  const active = { ...current.active, [release.toolId]: release.releaseId };
+  const immediatePredecessor = { ...current.immediatePredecessor };
+  if (predecessor) {
+    immediatePredecessor[release.toolId] = predecessor;
+  } else {
+    delete immediatePredecessor[release.toolId];
+  }
+
+  const nextBase = {
+    schemaVersion: 2 as const,
+    generation: current.generation + 1,
+    toolsetVersion: current.toolsetVersion,
+    toolsetFingerprint: current.toolsetFingerprint,
+    active,
+    immediatePredecessor,
+  };
+  const next = hmsActiveRegistryV2Schema.parse({
+    ...nextBase,
+    activeSetFingerprint: fingerprintActiveSet(nextBase),
+  });
+  await atomicWrite(input.path, next);
+  return next;
+}
+
+export async function rollbackReadToolV2(input: {
+  path: string;
+  toolId: ReadToolId;
+}): Promise<HmsActiveRegistryV2> {
+  const current = await loadActiveReadRegistryV2(input.path);
+  const activeId = current.active[input.toolId];
+  if (!activeId) return current; // no-op success
+
+  const predecessorId = current.immediatePredecessor[input.toolId];
+  const active = { ...current.active };
+  const immediatePredecessor = { ...current.immediatePredecessor };
+
+  if (predecessorId) {
+    active[input.toolId] = predecessorId;
+    delete immediatePredecessor[input.toolId];
+  } else {
+    delete active[input.toolId];
+    delete immediatePredecessor[input.toolId];
+  }
+
+  if (active[input.toolId] === current.active[input.toolId]) return current;
+
+  const nextBase = {
+    schemaVersion: 2 as const,
+    generation: current.generation + 1,
+    toolsetVersion: current.toolsetVersion,
+    toolsetFingerprint: current.toolsetFingerprint,
+    active,
+    immediatePredecessor,
+  };
+  const next = hmsActiveRegistryV2Schema.parse({
+    ...nextBase,
+    activeSetFingerprint: fingerprintActiveSet(nextBase),
+  });
+  await atomicWrite(input.path, next);
+  return next;
+}
+
+export function assertAuthorizationNotExpired(
+  authorization: HmsSessionAuthorization | MailArtifactAuthorization,
+  now: Date = new Date(),
+): void {
+  if (Date.parse(authorization.expiresAt) <= now.getTime()) {
+    throw new Error('authorization expired');
+  }
+}
+
+export function assertHmsAuthorizationForTool(
+  authorization: HmsSessionAuthorization,
+  toolId: HmsReadToolId,
+  requestBranchId: string,
+): void {
+  if (authorization.toolId !== toolId) {
+    throw new Error('authorization tool mismatch');
+  }
+  if (authorization.requestBranchId !== requestBranchId) {
+    throw new Error('authorization branch mismatch — sibling swap rejected');
+  }
 }

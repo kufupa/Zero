@@ -1873,6 +1873,7 @@ export function mapPreflightBlockToTerminal(
     case 'BLOCKED_NO_IMMUTABLE_RELEASE':
     case 'BLOCKED_NO_LOADABLE_HANDLER':
     case 'BLOCKED_NO_ACTIVE_REGISTRY':
+    case 'BLOCKED_REGISTRY_CUTOVER_PENDING':
       return 'BLOCKED_EXTERNAL';
     default:
       return 'AGENT_REPAIR_REQUIRED';

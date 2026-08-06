@@ -2,6 +2,8 @@
  * Production HMS runtime composition — Playwright is a hard runtime dependency.
  * No fetch/mock browser factory fallback. Role-proof revalidated per context.
  * Consumes role schemas from release-kernel (no reverse import).
+ * Task 13: active registry v2 + per-context HmsSessionAuthorization own
+ * production activation; process-wide Guest Stay manifest is Phase A fallback only.
  */
 import {
   GetSecretValueCommand,

@@ -79,6 +79,11 @@ module.exports = {
         HMS_READ_ROLE_PROOF_PATH:
           process.env.HMS_READ_ROLE_PROOF_PATH ??
           '/etc/nava/hms-read-role-proof.v1.json',
+        HMS_ACTIVE_REGISTRY_PATH:
+          process.env.HMS_ACTIVE_REGISTRY_PATH ??
+          '/opt/nava/shared/hms-active-registry/active.json',
+        HMS_RELEASE_ROOT:
+          process.env.HMS_RELEASE_ROOT ?? '/opt/nava/shared/hms-releases',
         HMS_HEALTH_STATUS_PATH:
           process.env.HMS_HEALTH_STATUS_PATH ?? '/tmp/nava-zero-hms-health.json',
         HMS_EXPECTED_TENANT: process.env.HMS_EXPECTED_TENANT ?? 'HMS_LEGACY',

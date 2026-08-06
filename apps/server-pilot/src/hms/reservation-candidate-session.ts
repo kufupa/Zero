@@ -1,6 +1,8 @@
 /**
- * Production reservation-only candidate tool session.
- * Active tools: hms_find_reservation only. Quote/artifact deferred (not registered).
+ * Reservation candidate tool session.
+ * When active registry cutover is complete, handlers come from the generated
+ * (toolId, implementationSha256) index under per-context HmsSessionAuthorization.
+ * Until cutover, activeToolIds remain find-only (Phase A shadow path).
  */
 import { createHash, randomUUID } from 'node:crypto';
 import type { LookupCandidate } from '../ai/thread-context.js';

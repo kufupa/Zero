@@ -204,6 +204,11 @@ export type HmsRuntime = {
     allowUnstarted?: boolean;
     /** Required when runtime.requireAuditCapture / production store wired. */
     auditSpec?: import('./browser-artifacts.js').HmsBrowserAuditSpec;
+    /**
+     * Plan-scoped HMS session lease. When set, request firewall uses this
+     * tool/branch manifest — never a process-wide Guest Stay union.
+     */
+    sessionAuthorization?: import('./release-kernel.js').HmsSessionAuthorization;
   }): Promise<HmsReadSession>;
   health(): HmsHealth;
   close(): Promise<void>;
@@ -1459,6 +1464,7 @@ function createHmsRuntimeInternal(
     exactSearchCandidate?: import('./live-read-manifest.js').ExactReservationCandidate;
     allowUnstarted?: boolean;
     auditSpec?: HmsBrowserAuditSpec;
+    sessionAuthorization?: import('./release-kernel.js').HmsSessionAuthorization;
   }): Promise<HmsReadSession> {
     assertNotAborted(input.signal);
     if (closing) {
@@ -1517,7 +1523,21 @@ function createHmsRuntimeInternal(
     }
 
     let sessionManifest = options.manifest;
-    if (input.exactSearchCandidate) {
+    if (input.sessionAuthorization) {
+      const auth = input.sessionAuthorization;
+      if (Date.parse(auth.expiresAt) <= Date.now()) {
+        throw new HmsRuntimeError(
+          'ROLE_PROOF_EXPIRED',
+          'session authorization expired',
+        );
+      }
+      // Per-context lease: one tool/branch manifest — never process-wide union.
+      sessionManifest = auth.manifest;
+      const loader = options.loadRoleProof;
+      if (loader) {
+        await loader(auth.roleProofPath, new Date());
+      }
+    } else if (input.exactSearchCandidate) {
       const { buildExactOsressSearchManifest } = await import(
         './live-read-manifest.js'
       );

@@ -30,6 +30,10 @@ export type HmsWorkerRuntimeConfig = {
   secretArn: string;
   chromiumExecutablePath: string;
   roleProofPath: string;
+  /** Root-owned active registry v2 path — sole production activation authority. */
+  activeRegistryPath: string;
+  /** Immutable release JSON directory. */
+  releaseRoot: string;
   healthPath: string;
   expectedTenant: string;
   expectedPropertyCode: 'HRCEN';
@@ -208,6 +212,12 @@ export function requireHmsWorkerRuntimeConfig(input: EnvInput): HmsWorkerRuntime
       'HMS_READ_ROLE_PROOF_PATH',
       input.HMS_READ_ROLE_PROOF_PATH,
     ),
+    activeRegistryPath:
+      input.HMS_ACTIVE_REGISTRY_PATH?.trim() ||
+      '/opt/nava/shared/hms-active-registry/active.json',
+    releaseRoot:
+      input.HMS_RELEASE_ROOT?.trim() ||
+      '/opt/nava/shared/hms-releases',
     healthPath,
     expectedTenant: requireNonEmpty('HMS_EXPECTED_TENANT', input.HMS_EXPECTED_TENANT),
     expectedPropertyCode: 'HRCEN',

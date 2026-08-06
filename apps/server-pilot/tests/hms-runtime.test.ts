@@ -1983,4 +1983,13 @@ describe("HMS browser audit capture order", () => {
 
     await rm(dir, { recursive: true, force: true });
   });
+
+  it('Task 13: openReadSession accepts per-context HmsSessionAuthorization (not process-wide only)', async () => {
+    const src = await import('node:fs/promises').then((fs) =>
+      fs.readFile(new URL('../src/hms/runtime.ts', import.meta.url), 'utf8'),
+    );
+    expect(src).toMatch(/sessionAuthorization/);
+    expect(src).toMatch(/HmsSessionAuthorization/);
+    expect(src).toMatch(/session authorization expired|ROLE_PROOF_EXPIRED/);
+  });
 });

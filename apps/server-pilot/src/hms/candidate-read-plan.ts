@@ -5,10 +5,13 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type { EvidenceClaim } from '../ai/draft-evidence.js';
+import type { TrustedRequesterAuthorizationV1 } from './contracts.js';
+import type { HmsPortfolioToolReleaseV2 } from './release-kernel.js';
 import {
   isProductionActiveReadTool,
   portfolioAblationReplay,
   productionActiveReadToolIds,
+  READ_TOOLS,
   type AblationOutcome,
   type AblationReport,
   type PortfolioCaseV3,
@@ -16,6 +19,7 @@ import {
 } from './read-tools.js';
 
 export const MAX_RESERVATION_FOLLOWUPS = 2;
+export const MAX_TOTAL_READ_ATTEMPTS = 6;
 
 export const RESERVATION_FOLLOWUP_KINDS = [
   'documents',
@@ -128,13 +132,25 @@ const FOLLOWUP_SIGNAL_PRIORITY: ReadonlyArray<{
   { kind: 'company', pattern: /\b(company|agency|billing\s+terms|bill[\s-]?to)\b/i },
 ];
 
-function selectFollowups(segment: string): ReservationFollowupKind[] {
+/**
+ * Select followup *request classes* from authored segment without silently
+ * dropping overflow. Returns prioritized classes (may exceed MAX followups).
+ */
+export function selectRequestedFollowupClasses(
+  segment: string,
+): ReservationFollowupKind[] {
   const selected: ReservationFollowupKind[] = [];
   for (const entry of FOLLOWUP_SIGNAL_PRIORITY) {
-    if (selected.length >= MAX_RESERVATION_FOLLOWUPS) break;
     if (entry.pattern.test(segment)) selected.push(entry.kind);
   }
   return selected;
+}
+
+function selectFollowups(segment: string): ReservationFollowupKind[] {
+  return selectRequestedFollowupClasses(segment).slice(
+    0,
+    MAX_RESERVATION_FOLLOWUPS,
+  );
 }
 
 /**
@@ -143,7 +159,10 @@ function selectFollowups(segment: string): ReservationFollowupKind[] {
  */
 export function planCandidateReads(signals: PlanSignals): CandidateReadPlan {
   const segment = signals.authoredSegment.trim();
-  if (signals.hasQuoteCandidate && /\b(availab|quote|rate|night|occupanc)/i.test(segment)) {
+  if (
+    signals.hasQuoteCandidate &&
+    /\b(availab|quote|rate|night|occupanc)/i.test(segment)
+  ) {
     return candidateReadPlanSchema.parse({ kind: 'quote', quote: true });
   }
   if (signals.hasGroupRef) {
@@ -205,6 +224,287 @@ export function executableToolIdsForPlan(
   const planned = plannedToolIds(plan);
   if (mode === 'fixture') return planned;
   return planned.filter(isProductionActiveReadTool);
+}
+
+export type ExecutableReadStep = {
+  toolId: ReadToolId;
+  requestBranchId: string | null;
+  candidateId: string;
+  releaseId: string;
+  requesterAuthorizationId: string;
+  attemptCost: 1;
+};
+
+export type ExecutableReadPlanResult = {
+  status: 'complete' | 'manual_required';
+  steps: ExecutableReadStep[];
+  omittedRequestClasses: string[];
+};
+
+export type CandidateBinding = {
+  candidateId: string;
+  toolId: ReadToolId;
+  allowedRequestBranchIds: readonly string[];
+  parentEvidenceId: string | null;
+  requesterAuthorizationId: string;
+};
+
+export type ReadonlyCandidateBindings = ReadonlyMap<string, CandidateBinding>;
+
+/**
+ * Deterministic branch selection from authored segment + enabled release branches.
+ * Ambiguous or disabled → null (caller marks manual_required); never falls back.
+ */
+export function selectRequestBranchId(input: {
+  toolId: ReadToolId;
+  authoredSegment: string;
+  enabledBranchIds: readonly string[];
+}): string | null {
+  const enabled = new Set(input.enabledBranchIds);
+  const tool = READ_TOOLS[input.toolId];
+  if (tool.id === 'mail_read_artifact') return null;
+  const branches = tool.requestBranches.filter((b) => enabled.has(b.id));
+  if (branches.length === 0) return null;
+  if (branches.length === 1) return branches[0]!.id;
+
+  const matches = branches.filter((branch) => {
+    if (
+      branch.id.includes('tax_invoice') ||
+      branch.discoveryOperationId === 'tax_invoice_list'
+    ) {
+      return /\b(tax\s*invoice|invoice|pro[\s-]?forma)\b/i.test(
+        input.authoredSegment,
+      );
+    }
+    if (
+      branch.id.includes('sent_email') ||
+      branch.discoveryOperationId === 'sent_email_list'
+    ) {
+      return /\b(sent\s+email|email\s+sent|confirmation\s+email)\b/i.test(
+        input.authoredSegment,
+      );
+    }
+    if (branch.discoveryOperationId === 'folio_summary') {
+      return /\bfolio\b/i.test(input.authoredSegment);
+    }
+    if (branch.discoveryOperationId === 'deposit_ledger_summary') {
+      return /\b(deposit|ledger)\b/i.test(input.authoredSegment);
+    }
+    return false;
+  });
+  if (matches.length === 1) return matches[0]!.id;
+  return null;
+}
+
+/**
+ * Derive executable steps before any browser I/O.
+ * Reservation followup limit applies AFTER branch expansion.
+ * >2 requested classes → first two steps + manual_required + every omitted class.
+ * Total durable cap remains six.
+ */
+export function executableReadStepsForPlan(
+  plan: CandidateReadPlan,
+  activeReleases: ReadonlyMap<ReadToolId, HmsPortfolioToolReleaseV2>,
+  candidates: ReadonlyCandidateBindings,
+  requesterAuthorization: TrustedRequesterAuthorizationV1,
+  options?: {
+    authoredSegment?: string;
+    requestedFollowupClasses?: readonly ReservationFollowupKind[];
+  },
+): ExecutableReadPlanResult {
+  const authoredSegment = options?.authoredSegment ?? '';
+  const steps: ExecutableReadStep[] = [];
+  const omittedRequestClasses: string[] = [];
+  let status: 'complete' | 'manual_required' = 'complete';
+
+  const pushStep = (
+    toolId: ReadToolId,
+    candidateId: string,
+    requestBranchId: string | null,
+  ): boolean => {
+    if (steps.length >= MAX_TOTAL_READ_ATTEMPTS) {
+      omittedRequestClasses.push(toolId);
+      status = 'manual_required';
+      return false;
+    }
+    const release = activeReleases.get(toolId);
+    if (!release) {
+      omittedRequestClasses.push(toolId);
+      status = 'manual_required';
+      return false;
+    }
+    const binding = candidates.get(candidateId);
+    if (!binding || binding.toolId !== toolId) {
+      omittedRequestClasses.push(toolId);
+      status = 'manual_required';
+      return false;
+    }
+    if (
+      binding.requesterAuthorizationId !==
+      requesterAuthorization.authorizationId
+    ) {
+      throw new Error('stale or cross-thread requester authorization rejected');
+    }
+    if (requestBranchId !== null) {
+      if (!binding.allowedRequestBranchIds.includes(requestBranchId)) {
+        throw new Error('sibling-branch swap rejected');
+      }
+      if (release.evidenceKind === 'hms') {
+        const enabled = release.requestBranches.some(
+          (b) => b.id === requestBranchId,
+        );
+        if (!enabled) {
+          omittedRequestClasses.push(`${toolId}:${requestBranchId}`);
+          status = 'manual_required';
+          return false;
+        }
+      }
+    }
+    steps.push({
+      toolId,
+      requestBranchId,
+      candidateId,
+      releaseId: release.releaseId,
+      requesterAuthorizationId: requesterAuthorization.authorizationId,
+      attemptCost: 1,
+    });
+    return true;
+  };
+
+  const resolveBranch = (toolId: ReadToolId): string | null => {
+    const release = activeReleases.get(toolId);
+    if (!release || release.evidenceKind !== 'hms') return null;
+    const enabledIds = release.requestBranches.map((b) => b.id);
+    const selected = selectRequestBranchId({
+      toolId,
+      authoredSegment,
+      enabledBranchIds: enabledIds,
+    });
+    if (selected === null && enabledIds.length > 0) {
+      status = 'manual_required';
+      omittedRequestClasses.push(`${toolId}:ambiguous_or_disabled_branch`);
+    }
+    return selected;
+  };
+
+  const findCandidate = (toolId: ReadToolId): string | null => {
+    for (const [id, binding] of candidates) {
+      if (binding.toolId === toolId) return id;
+    }
+    return null;
+  };
+
+  const appendFollowups = (
+    followups: readonly ReservationFollowupKind[],
+  ): void => {
+    const requested = options?.requestedFollowupClasses ?? followups;
+    const taken = followups.slice(0, MAX_RESERVATION_FOLLOWUPS);
+    const omitted = requested.filter((k) => !taken.includes(k));
+    for (const kind of omitted) {
+      omittedRequestClasses.push(kind);
+      status = 'manual_required';
+    }
+    let followupCount = 0;
+    for (const kind of taken) {
+      if (followupCount >= MAX_RESERVATION_FOLLOWUPS) break;
+      const toolId = followupToToolId(kind);
+      const candidateId = findCandidate(toolId);
+      if (!candidateId) {
+        omittedRequestClasses.push(kind);
+        status = 'manual_required';
+        continue;
+      }
+      const binding = candidates.get(candidateId)!;
+      if (!binding.parentEvidenceId) {
+        omittedRequestClasses.push(`${kind}:missing_parent_evidence`);
+        status = 'manual_required';
+        continue;
+      }
+      const branch = resolveBranch(toolId);
+      if (!branch) {
+        status = 'manual_required';
+        continue;
+      }
+      if (pushStep(toolId, candidateId, branch)) followupCount += 1;
+    }
+  };
+
+  switch (plan.kind) {
+    case 'artifact_reservation': {
+      let artifactSteps = 0;
+      for (const [id, binding] of candidates) {
+        if (binding.toolId !== 'mail_read_artifact') continue;
+        if (artifactSteps >= Math.min(3, plan.artifacts)) break;
+        if (!pushStep('mail_read_artifact', id, null)) break;
+        artifactSteps += 1;
+      }
+      const findId = findCandidate('hms_find_reservation');
+      if (findId) {
+        const branch = resolveBranch('hms_find_reservation');
+        if (branch) pushStep('hms_find_reservation', findId, branch);
+        else status = 'manual_required';
+      } else {
+        omittedRequestClasses.push('hms_find_reservation');
+        status = 'manual_required';
+      }
+      appendFollowups(plan.followups);
+      break;
+    }
+    case 'reservation': {
+      const findId = findCandidate('hms_find_reservation');
+      if (findId) {
+        const branch = resolveBranch('hms_find_reservation');
+        if (branch) pushStep('hms_find_reservation', findId, branch);
+        else status = 'manual_required';
+      } else {
+        omittedRequestClasses.push('hms_find_reservation');
+        status = 'manual_required';
+      }
+      appendFollowups(plan.followups);
+      break;
+    }
+    case 'quote':
+    case 'group':
+    case 'event': {
+      const toolId =
+        plan.kind === 'quote'
+          ? 'hms_quote_stay'
+          : plan.kind === 'group'
+            ? 'hms_group_block_read'
+            : 'hms_event_read';
+      const candidateId = findCandidate(toolId);
+      if (!candidateId) {
+        omittedRequestClasses.push(toolId);
+        status = 'manual_required';
+        break;
+      }
+      const branch = resolveBranch(toolId);
+      if (branch) pushStep(toolId, candidateId, branch);
+      else status = 'manual_required';
+      break;
+    }
+    default: {
+      const _exhaustive: never = plan;
+      return _exhaustive;
+    }
+  }
+
+  if (steps.length > MAX_TOTAL_READ_ATTEMPTS) {
+    throw new Error('executable plan exceeded total cap of six');
+  }
+
+  return {
+    status,
+    steps,
+    omittedRequestClasses: [...new Set(omittedRequestClasses)],
+  };
+}
+
+/** Full scoring forbidden when plan omitted request classes. */
+export function canScoreFull(result: ExecutableReadPlanResult): boolean {
+  return (
+    result.status === 'complete' && result.omittedRequestClasses.length === 0
+  );
 }
 
 function claimId(parts: string): string {
@@ -308,11 +608,13 @@ export function replayLoadCapacity(
     const n = prev.samples + 1;
     byConcurrency[key] = {
       samples: n,
-      queueWaitMsAvg: (prev.queueWaitMsAvg * prev.samples + sample.queueWaitMs) / n,
+      queueWaitMsAvg:
+        (prev.queueWaitMsAvg * prev.samples + sample.queueWaitMs) / n,
       toolLatencyMsAvg:
         (prev.toolLatencyMsAvg * prev.samples + sample.toolLatencyMs) / n,
       endToEndLatencyMsAvg:
-        (prev.endToEndLatencyMsAvg * prev.samples + sample.endToEndLatencyMs) / n,
+        (prev.endToEndLatencyMsAvg * prev.samples + sample.endToEndLatencyMs) /
+        n,
       memoryBytesMax: Math.max(prev.memoryBytesMax, sample.memoryBytes),
       captureBytesMax: Math.max(prev.captureBytesMax, sample.captureBytes),
       contextClosed: prev.contextClosed + (sample.contextClosed ? 1 : 0),

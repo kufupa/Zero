@@ -472,11 +472,13 @@ describe('durable read fence before tool I/O', () => {
 });
 
 describe('candidate parent/child graph', () => {
-  it('binds child to session, parent, tool, property, scope, and expiry', () => {
+  it('binds child to session, parent, tool, branch, property, scope, and expiry', () => {
     const input = {
       sessionId: randomUUID(),
       parentEvidenceId: randomUUID(),
-      tools: ['hms_read_folio'] as const,
+      tools: [
+        { toolId: 'hms_read_folio' as const, requestBranchId: 'folio_summary' },
+      ],
       propertyCode: 'HRCEN',
       scopeHash: 'a'.repeat(64),
       expiresAt: new Date(Date.now() + 60_000),
@@ -489,6 +491,7 @@ describe('candidate parent/child graph', () => {
         sessionId: input.sessionId,
         parentEvidenceId: input.parentEvidenceId,
         toolId: 'hms_read_folio',
+        requestBranchId: 'folio_summary',
         propertyCode: input.propertyCode,
         scopeHash: input.scopeHash,
       }),
@@ -500,6 +503,19 @@ describe('candidate parent/child graph', () => {
         sessionId: randomUUID(),
         parentEvidenceId: input.parentEvidenceId,
         toolId: 'hms_read_folio',
+        requestBranchId: 'folio_summary',
+        propertyCode: input.propertyCode,
+        scopeHash: input.scopeHash,
+      }),
+    ).toThrow(/binding/);
+    expect(() =>
+      resolveReadCandidateChild({
+        candidates: [child!],
+        id: child!.id,
+        sessionId: input.sessionId,
+        parentEvidenceId: input.parentEvidenceId,
+        toolId: 'hms_read_folio',
+        requestBranchId: 'deposit_ledger_summary',
         propertyCode: input.propertyCode,
         scopeHash: input.scopeHash,
       }),
@@ -511,6 +527,7 @@ describe('candidate parent/child graph', () => {
         sessionId: input.sessionId,
         parentEvidenceId: input.parentEvidenceId,
         toolId: 'hms_read_folio',
+        requestBranchId: 'folio_summary',
         propertyCode: input.propertyCode,
         scopeHash: input.scopeHash,
       }),
@@ -523,9 +540,15 @@ describe('candidate parent/child graph', () => {
         sessionId: randomUUID(),
         parentEvidenceId: randomUUID(),
         tools: [
-          'hms_list_documents',
-          'hms_sent_email_audit',
-          'hms_read_folio',
+          {
+            toolId: 'hms_list_documents',
+            requestBranchId: 'tax_invoice_documents',
+          },
+          {
+            toolId: 'hms_sent_email_audit',
+            requestBranchId: 'sent_email_list',
+          },
+          { toolId: 'hms_read_folio', requestBranchId: 'folio_summary' },
         ],
         propertyCode: 'HRCEN',
         scopeHash: 'a'.repeat(64),

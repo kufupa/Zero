@@ -57,3 +57,10 @@ bash "${SCRIPT_DIR}/ssm-run-command.sh" \
   'bash /home/ubuntu/repos/zero/apps/server-pilot/deploy/vpn-health-assert.sh'
 
 echo "ops-deploy ok"
+
+# Phase B source+registry CAS (Task 13): when HMS_REGISTRY_CANDIDATE is set,
+# prevalidate → quiesce HMS → preserve prior source/registry → atomic switch →
+# restart hms-ai-worker → verify activeSetFingerprint. Incomplete restore: exit 20.
+# Crash injection points: before/after_source_switch, before/after_registry_rename,
+# before/after_pm2_restart, before/after_health_verdict.
+# See src/hms/source-registry-transaction.ts for the typed transaction.

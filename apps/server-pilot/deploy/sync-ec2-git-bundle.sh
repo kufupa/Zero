@@ -7,6 +7,14 @@ set -euo pipefail
 #
 # Also: --plan-snapshot <name> stages an allowlisted no-commit release under
 # /opt/nava/releases/<sourceRevision> without resetting the canonical EC2 repo.
+#
+# Phase B (Task 13): staged worktree may materialize registry-candidate + seed
+# release-v2 under /opt/nava/shared/hms-releases/ without replacing the active
+# app. Atomic source+registry CAS + rollback (exit 20 on incomplete restore) is
+# owned by ops-deploy / source-registry-transaction.ts crash points:
+# before_source_switch | after_source_switch | before_registry_rename |
+# after_registry_rename | before_pm2_restart | after_pm2_restart |
+# before_health_verdict | after_health_verdict.
 
 : "${AWS_REGION:=af-south-1}"
 : "${INSTANCE_ID:=i-008f737974a9ba9b3}"

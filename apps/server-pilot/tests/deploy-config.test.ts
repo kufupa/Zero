@@ -3139,5 +3139,31 @@ describe('deploy config', () => {
       expect(opsProof).not.toMatch(/PHASE_B_BLOCKED/);
       expect(opsProof).toMatch(/phase_b_local_operator|phase_b_parse/);
     });
+
+    it('Task 13: active registry env + source/registry CAS markers', async () => {
+      const { readFileSync } = await import('node:fs');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const here = dirname(fileURLToPath(import.meta.url));
+      const deploy = join(here, '..', 'deploy');
+
+      const pm2 = readFileSync(join(deploy, 'pm2.config.cjs'), 'utf8');
+      expect(pm2).toMatch(/HMS_ACTIVE_REGISTRY_PATH/);
+      expect(pm2).toMatch(/HMS_RELEASE_ROOT/);
+      expect(pm2).toMatch(/hms-active-registry\/active\.json/);
+
+      const sync = readFileSync(join(deploy, 'sync-ec2-git-bundle.sh'), 'utf8');
+      expect(sync).toMatch(/before_source_switch/);
+      expect(sync).toMatch(/after_registry_rename/);
+      expect(sync).toMatch(/exit 20|incomplete restore/i);
+
+      const opsDeploy = readFileSync(join(deploy, 'ops-deploy.sh'), 'utf8');
+      expect(opsDeploy).toMatch(/source\+registry CAS|source-registry-transaction/);
+      expect(opsDeploy).toMatch(/exit 20/);
+      expect(opsDeploy).toMatch(/before_pm2_restart|after_health_verdict/);
+
+      const deployEc2 = readFileSync(join(deploy, 'deploy-ec2.sh'), 'utf8');
+      expect(deployEc2).toMatch(/source-registry-transaction|registry-candidate|exit 20/);
+    });
   });
 });

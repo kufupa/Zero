@@ -317,19 +317,20 @@ describe('phase-b-read-preflight', () => {
     expect(ready.code).not.toBe('PHASE_B_BLOCKED');
   });
 
-  it('promote needs immutable release + loadable handler only', () => {
+  it('promote needs cutover + immutable release + loadable handler', () => {
     expect(
       runPhaseBReadPreflight({
         action: 'read-promote',
         toolId: 'hms_event_read',
         roleProofV2Path: null,
       }).code,
-    ).toBe('BLOCKED_NO_IMMUTABLE_RELEASE');
+    ).toBe('BLOCKED_REGISTRY_CUTOVER_PENDING');
 
     expect(
       runPhaseBReadPreflight({
         action: 'read-promote',
         toolId: 'hms_event_read',
+        registryCutoverComplete: true,
         immutableReleaseReady: true,
         loadableHandlerReady: false,
       }).code,
@@ -339,6 +340,7 @@ describe('phase-b-read-preflight', () => {
       runPhaseBReadPreflight({
         action: 'read-promote',
         toolId: 'hms_event_read',
+        registryCutoverComplete: true,
         immutableReleaseReady: true,
         loadableHandlerReady: true,
       }),

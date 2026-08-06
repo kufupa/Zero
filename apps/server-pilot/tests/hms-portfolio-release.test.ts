@@ -485,3 +485,5 @@ describe('Phase B evidence schemas (role proof / receipt / release v2)', () => {
     ).toThrow();
   });
 });
+
+// Task 13 cutover suites live in hms-registry-cutover.test.ts (imported APIs).
