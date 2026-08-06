@@ -94,10 +94,14 @@ async function main(): Promise<void> {
     hasCrsText: false,
   };
 
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch({
+    headless: true,
+    executablePath: process.env.HMS_CHROMIUM_EXECUTABLE_PATH || undefined,
+  });
   const ctx = await browser.newContext({
     acceptDownloads: false,
     serviceWorkers: 'block',
+    ignoreHTTPSErrors: true,
   });
 
   await ctx.route('**/*', async (route) => {
@@ -159,17 +163,20 @@ async function main(): Promise<void> {
   const page = await ctx.newPage();
   try {
     await page.goto(secret.loginUrl, { waitUntil: 'domcontentloaded', timeout: 60_000 });
-    await page.fill(
-      'input[name="username"], input[name="j_username"], input#username, input[type="text"]',
-      secret.username,
-    );
-    await page.fill(
-      'input[name="password"], input[name="j_password"], input#password, input[type="password"]',
-      secret.password,
-    );
+    try {
+      await page.locator('input[name=userid]').fill(secret.username);
+    } catch {
+      await page
+        .locator('input[name=username], input[name=j_username]')
+        .first()
+        .fill(secret.username);
+    }
+    await page.locator('input[name=password]').fill(secret.password);
     await Promise.all([
-      page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 60_000 }).catch(() => null),
-      page.click('button[type="submit"], input[type="submit"], button:has-text("Login"), button:has-text("Sign")'),
+      page.waitForURL(/\/web\/base\/COMMON/i, { timeout: 60_000 }).catch(() => null),
+      page.getByRole('button', { name: 'Sign in' }).click().catch(async () => {
+        await page.locator('input[name=password]').press('Enter');
+      }),
     ]);
 
     await page.waitForTimeout(3_000);
