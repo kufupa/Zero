@@ -10,10 +10,12 @@ import {
 import { resolveAdminDashboardWindow } from '../src/trpc/routes/admin-dashboard.js';
 
 describe('admin dashboard access', () => {
-  it('allows centurion allowlist email', () => {
+  it('allows centurion and ropperman allowlist emails', () => {
     expect(isAdminDashboardEmail('centurion@legacyhotels.co.za')).toBe(true);
     expect(isAdminDashboardEmail('  Centurion@LegacyHotels.co.za ')).toBe(true);
+    expect(isAdminDashboardEmail('ropperman@legacyhotels.co.za')).toBe(true);
     expect(() => assertAdminDashboardAccess('centurion@legacyhotels.co.za')).not.toThrow();
+    expect(() => assertAdminDashboardAccess('ropperman@legacyhotels.co.za')).not.toThrow();
   });
 
   it('denies non-allowlisted emails', () => {

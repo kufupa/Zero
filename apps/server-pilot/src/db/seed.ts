@@ -37,10 +37,15 @@ export const CENTURION_USER_EMAIL = 'centurion@legacyhotels.co.za';
 export const MARTHA_USER_ID = 'user-martha';
 export const MARTHA_USER_EMAIL = 'marthamthembu@legacyhotels.co.za';
 
+/** Centurion hotel IT login (Centurion mailbox + admin dashboard allowlist). */
+export const ROPPERMAN_USER_ID = 'user-ropperman';
+export const ROPPERMAN_USER_EMAIL = 'ropperman@legacyhotels.co.za';
+
 export const PILOT_USERS: PilotUserSpec[] = [
   { id: NAVA_USER_ID, name: 'Nava AI', email: NAVA_USER_EMAIL },
   { id: CENTURION_USER_ID, name: 'Centurion', email: CENTURION_USER_EMAIL },
   { id: MARTHA_USER_ID, name: 'Martha Mthembu', email: MARTHA_USER_EMAIL },
+  { id: ROPPERMAN_USER_ID, name: 'R Opperman', email: ROPPERMAN_USER_EMAIL },
 ];
 
 export const INGEST_EMAIL = 'navaai@legacyhotels.co.za';
@@ -74,7 +79,7 @@ function pilotUserIds(): string[] {
   return PILOT_USERS.map((u) => u.id);
 }
 
-/** Nava owns every active transport; Centurion + Martha own Centurion only. */
+/** Nava owns every active transport; Centurion-scoped staff own Centurion only. */
 export async function applyPilotMailboxAccess(db: DB): Promise<void> {
   const keepIds = pilotUserIds();
   await db.delete(mailboxAccess).where(inArray(mailboxAccess.userId, keepIds));
@@ -94,7 +99,7 @@ export async function applyPilotMailboxAccess(db: DB): Promise<void> {
     });
   }
 
-  for (const userId of [CENTURION_USER_ID, MARTHA_USER_ID]) {
+  for (const userId of [CENTURION_USER_ID, MARTHA_USER_ID, ROPPERMAN_USER_ID]) {
     await db.insert(mailboxAccess).values({
       id: `access-${userId}-${TRANSPORT_ID}`,
       userId,

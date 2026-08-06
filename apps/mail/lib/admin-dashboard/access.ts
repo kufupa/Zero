@@ -1,6 +1,9 @@
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 
-const ALLOWED_ADMIN_EMAILS = ['centurion@legacyhotels.co.za'] as const;
+const ALLOWED_ADMIN_EMAILS = [
+  'centurion@legacyhotels.co.za',
+  'ropperman@legacyhotels.co.za',
+] as const;
 
 type SessionLike =
   | {

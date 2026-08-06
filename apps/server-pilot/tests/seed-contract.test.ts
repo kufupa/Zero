@@ -20,6 +20,8 @@ import {
   CENTURION_USER_ID,
   MARTHA_USER_EMAIL,
   MARTHA_USER_ID,
+  ROPPERMAN_USER_EMAIL,
+  ROPPERMAN_USER_ID,
   INGEST_EMAIL,
   TRANSPORT_EMAIL,
   TRANSPORT_OWNER_HEADER,
@@ -43,6 +45,7 @@ describe('seed identity constants', () => {
       { id: NAVA_USER_ID, name: 'Nava AI', email: NAVA_USER_EMAIL },
       { id: CENTURION_USER_ID, name: 'Centurion', email: CENTURION_USER_EMAIL },
       { id: MARTHA_USER_ID, name: 'Martha Mthembu', email: MARTHA_USER_EMAIL },
+      { id: ROPPERMAN_USER_ID, name: 'R Opperman', email: ROPPERMAN_USER_EMAIL },
     ]);
   });
 
@@ -131,7 +134,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     );
 
     it(
-        'seeds Nava owner on every active transport; Centurion + Martha own Centurion only',
+        'seeds Nava owner on every active transport; Centurion-scoped staff own Centurion only',
       async () => {
         const result = await withSeededTestDb(async (db) => {
           const active = await db
@@ -156,7 +159,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         expect(navaRows.find((r) => r.transportId === 'transport-nava')?.isDefault).toBe(true);
         expect(navaRows.filter((r) => r.isDefault)).toHaveLength(1);
 
-        for (const userId of [CENTURION_USER_ID, MARTHA_USER_ID]) {
+        for (const userId of [CENTURION_USER_ID, MARTHA_USER_ID, ROPPERMAN_USER_ID]) {
           const rows = result.access.filter((r) => r.userId === userId);
           expect(rows).toEqual([
             {
@@ -199,7 +202,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     );
 
     it(
-      'transport-centurion has Nava + Centurion + Martha owner rows',
+      'transport-centurion has Nava + Centurion + Martha + Ropperman owner rows',
       async () => {
         const access = await withSeededTestDb(async (db) => {
           return db
@@ -210,12 +213,13 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             .from(mailboxAccess)
             .where(eq(mailboxAccess.transportId, 'transport-centurion'));
         });
-        expect(access).toHaveLength(3);
+        expect(access).toHaveLength(4);
         expect(access).toEqual(
           expect.arrayContaining([
             { userId: NAVA_USER_ID, role: 'owner' },
             { userId: CENTURION_USER_ID, role: 'owner' },
             { userId: MARTHA_USER_ID, role: 'owner' },
+            { userId: ROPPERMAN_USER_ID, role: 'owner' },
           ]),
         );
       },
@@ -248,10 +252,15 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             .select({ transportId: mailboxAccess.transportId })
             .from(mailboxAccess)
             .where(eq(mailboxAccess.userId, MARTHA_USER_ID));
+          const ropperman = await db
+            .select({ transportId: mailboxAccess.transportId })
+            .from(mailboxAccess)
+            .where(eq(mailboxAccess.userId, ROPPERMAN_USER_ID));
           return {
             navaIds: nava.map((r) => r.transportId).sort(),
             cenIds: cen.map((r) => r.transportId),
             marthaIds: martha.map((r) => r.transportId),
+            roppermanIds: ropperman.map((r) => r.transportId),
           };
         });
         expect(outcome.navaIds).toContain('transport-davinci');
@@ -259,12 +268,13 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         expect(outcome.navaIds).toContain('transport-centurion');
         expect(outcome.cenIds).toEqual(['transport-centurion']);
         expect(outcome.marthaIds).toEqual(['transport-centurion']);
+        expect(outcome.roppermanIds).toEqual(['transport-centurion']);
       },
       30000,
     );
 
     it(
-      'seeds navaai@, centurion@, and martha@ pilot users with emailVerified=true',
+      'seeds navaai@, centurion@, martha@, and ropperman@ pilot users with emailVerified=true',
       async () => {
         const users = await withSeededTestDb(async (db) => {
           return db
@@ -275,7 +285,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             })
             .from(userTable);
         });
-        expect(users).toHaveLength(3);
+        expect(users).toHaveLength(4);
         expect(users).toEqual(
           expect.arrayContaining([
             {
@@ -291,6 +301,11 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             {
               id: MARTHA_USER_ID,
               email: MARTHA_USER_EMAIL,
+              emailVerified: true,
+            },
+            {
+              id: ROPPERMAN_USER_ID,
+              email: ROPPERMAN_USER_EMAIL,
               emailVerified: true,
             },
           ]),
@@ -320,9 +335,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             { id: NAVA_USER_ID, email: NAVA_USER_EMAIL },
             { id: CENTURION_USER_ID, email: CENTURION_USER_EMAIL },
             { id: MARTHA_USER_ID, email: MARTHA_USER_EMAIL },
+            { id: ROPPERMAN_USER_ID, email: ROPPERMAN_USER_EMAIL },
           ]),
         );
-        expect(remaining).toHaveLength(3);
+        expect(remaining).toHaveLength(4);
       },
       30000,
     );
