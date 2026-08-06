@@ -42,4 +42,12 @@ Live discovery / role-proof-v2 / reviewed manifests / ops `PHASE_B_BLOCKED` latc
 | Commit | `f32d86ff` |
 | Live HMS promote | still true-blocked until human role-proof-v2 + manifests |
 
-Wake actions unchanged: mint role-proof-v2 (root `0444`), reviewed manifests, then discovery can proceed past preflight to live wiring.
+### Later continue (`b70bb607`)
+
+| Item | Evidence |
+|------|----------|
+| RCA dossier v1 + 9 stubs | `evals/hms/rca-dossiers/`; empirical gaps = named `BLOCKED_*` |
+| `ops-hms-proof.sh status` | registry capability, exit 0 `STATUS_OK`, no HMS |
+| EC2 | deploy after `b70bb607` |
+
+Wake actions unchanged: mint role-proof-v2 (root `0444`), reviewed manifests, then discovery can proceed past preflight to live wiring. Empirical RCA loop fills dossier stubs only after live evidence.
