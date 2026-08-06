@@ -8,7 +8,7 @@ Base: ffcc5cc73787f12ca457bfd1d0add2b37ce044f9
 Task 11A: complete (commits ffcc5cc7..2d3bbcae, review clean; Important: sibling suites expect find productionActive until status/release/preflight slices; promotionEvidence dual-signal fixed next)
 Task 11B: complete (commits d8d556d0..e98f70c6, review clean after Important fixes)
 Task 11C: complete (commits 946d742b..898e34c6, review clean after Important fixes)
-Task 11D: complete (commit pending pin; action-specific preflight/status/doctor gates)
+Task 11D: complete (commit a6e3c533; action-specific preflight/status/doctor gates)
 Task 11E–F: pending (deploy, provision)
 Task 12: pending
 Task 13: pending

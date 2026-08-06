@@ -2,7 +2,7 @@
 
 **Status:** DONE  
 **BASE_BEFORE_THIS_TASK:** `898e34c6`  
-**Commit:** (pending pin) — `feat(hms): restore Phase B action-specific evidence gates`  
+**Commit:** `a6e3c533` — `feat(hms): restore Phase B action-specific evidence gates`  
 **Slice:** preflight/status/doctor action matrix + role-proof v2 fixture update + find demotion absorption  
 **Out of scope (later):** asm-exec / provision / PM2 (11E), live operator (12), registry cutover (13)
 
