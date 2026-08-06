@@ -205,6 +205,12 @@ export type CreateReservationCandidateSessionInput = {
   activeReleases?: ReadonlyMap<ReadToolId, HmsPortfolioToolReleaseV2>;
   /** True when worker loaded registry through createReadToolHandler index. */
   handlerPathActive?: boolean;
+  /** Plan-scoped gate inputs — set when activeReleases non-empty. */
+  candidateBindings?: ReadonlyMap<
+    string,
+    import('./candidate-read-plan.js').CandidateBinding
+  >;
+  requesterAuthorization?: import('./contracts.js').TrustedRequesterAuthorizationV1;
   /**
    * Optional: bind find release via handler index before browser I/O.
    * Live path supplies this after building HmsSessionAuthorization.
@@ -247,6 +253,8 @@ export function createReservationCandidateSession(
     readFence: input.readFence,
     readPlanKind: input.readPlanKind ?? 'reservation',
     activeReleases: input.activeReleases,
+    candidateBindings: input.candidateBindings,
+    requesterAuthorization: input.requesterAuthorization,
     findReservation: async (candidateId, signal) => {
       if (signal.aborted) {
         const err = new Error('reservation session aborted');

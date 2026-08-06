@@ -1,6 +1,6 @@
 # Task 13 Report — Cut production to plan-scoped immutable releases
 
-**Status:** DONE (local GREEN + production wiring fix commit)  
+**Status:** DONE (local GREEN + C3 worker gate wiring)  
 **Branch:** `phase-b-autonomous-read-expansion`  
 **Base HEAD:** `7f0b28a2`  
 **Worktree:** `C:/Users/gamin/.config/superpowers/worktrees/zero/phase-b-autonomous-read-expansion`
@@ -22,10 +22,22 @@
 |---|---------|-----|
 | C1 | Live path process-wide Guest Stay | `live-guest-stay-driver` passes per-tool `sessionAuthorization`; production `requireSessionAuthorization: true` |
 | C2 | Worker never loads cutover | `loadWorkerActiveReadSet` at HMS runtime create; handlers via `createReadToolHandler` |
-| C3 | Plan-before-I/O + Full gate unwired | `candidate-draft-agent` calls `executableReadStepsForPlan` / `canScoreFull` before tool I/O; refuses Full on omissions |
+| C3 | Plan-before-I/O + Full gate unwired | Agent gate + **worker/session pass `candidateBindings` + `requesterAuthorization`** via `resolvePlanScopedDraftGate` whenever `activeReleases` non-empty; fail closed if releases present without bindings |
 | I4 | Deploy CAS comment-only | `deploy/source-registry-cas.sh` + `ops/run-source-registry-cas.ts` invoke `runSourceRegistryTransaction`; wired from `ops-deploy` / `deploy-ec2` |
 | I5 | Auth behavioral tests | `requireSessionAuthorization` reject without lease + accept with lease |
 | I6 | Group/event without reservation | Cutover suite covers group + event direct steps; `detectDirectReadPlanRefs` in thread-context |
+
+### C3 re-review fix (worker path)
+
+Prior FAIL: agent only gated when bindings/auth passed; worker called `runClaimSafeCandidateDraft` without them → fell back to `executableToolIdsForPlan`.
+
+| Wire | Where |
+|------|--------|
+| `resolvePlanScopedDraftGate` | `candidate-read-plan.ts` — mint auth + build bindings from lookup candidates + releases |
+| Live session factory | `worker.ts` `createLiveHmsCandidateSessionFactory` attaches gate onto session |
+| HMS + non-HMS draft calls | `worker.ts` passes `candidateBindings` + `requesterAuthorization` into `runClaimSafeCandidateDraft` |
+| Fail closed | `candidate-draft-agent.ts` — non-empty releases without bindings → no browser I/O (`planScopedGateMissing`) |
+| Behavioral proof | `hms-candidate-agent.test.ts` C3 case: releases+bindings → find executes / Full refused on omissions; empty releases → cutover-pending block |
 
 ## Suites (local)
 
@@ -42,7 +54,7 @@ pnpm exec vitest run \
   tests/deploy-config.test.ts
 ```
 
-**Result:** 8 files / **236 passed** / 12 skipped. `pnpm build` GREEN.
+**Result:** 8 files / **237 passed** / 12 skipped. `pnpm build` GREEN.
 
 ## Deferred (acceptable)
 
@@ -50,6 +62,7 @@ pnpm exec vitest run \
 - Production registry flip / `registryCutoverComplete=true` on EC2
 - Promote stays `BLOCKED_REGISTRY_CUTOVER_PENDING` until seeds + handler path active on instance
 - No new Phase B tool promotes
+- Real mailbox-issued `TrustedRequesterAuthorization` (plan gate uses run-scoped mint until mailbox trust path lands)
 
 ## Friction
 
@@ -62,4 +75,5 @@ pnpm exec vitest run \
 ## Commits
 
 - `0c74c927` — `feat(hms): activate reads from plan-scoped immutable releases`
-- (this fix) — `fix(hms): wire plan-scoped auth into live read path`
+- `f98dafa2` — `fix(hms): wire plan-scoped auth into live read path`
+- (this) — `fix(hms): pass candidate bindings into plan-scoped Full gate`

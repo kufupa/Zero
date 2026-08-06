@@ -111,6 +111,9 @@ export type CandidateToolSession = {
     import('../hms/read-tools.js').ReadToolId,
     import('../hms/release-kernel.js').HmsPortfolioToolReleaseV2
   >;
+  /** Plan-scoped bindings — set by worker/session when activeReleases non-empty. */
+  candidateBindings?: ReadonlyMap<string, CandidateBinding>;
+  requesterAuthorization?: TrustedRequesterAuthorizationV1;
   close?: () => Promise<void>;
 };
 
@@ -547,22 +550,46 @@ export async function runClaimSafeCandidateDraft(input: {
       });
     const planMode = input.planMode ?? 'fixture';
 
-    // Plan-before-I/O: when registry releases + bindings present, derive
-    // ExecutableReadPlanResult before any tool.execute (browser) call.
+    // Plan-before-I/O: when registry releases present, require bindings+auth
+    // and derive ExecutableReadPlanResult before any tool.execute (browser) call.
+    // Missing bindings with non-empty releases = fail closed (never legacy fallthrough).
     let executablePlan: ExecutableReadPlanResult | null = null;
     let scoreFullAllowed = true;
     const activeReleases =
       input.session.activeReleases ?? new Map();
-    if (
-      activeReleases.size > 0 &&
-      input.candidateBindings &&
-      input.requesterAuthorization
-    ) {
+    const candidateBindings =
+      input.candidateBindings ?? input.session.candidateBindings;
+    const requesterAuthorization =
+      input.requesterAuthorization ?? input.session.requesterAuthorization;
+    if (activeReleases.size > 0) {
+      if (!candidateBindings || !requesterAuthorization) {
+        return {
+          outcome: 'insufficient_evidence',
+          plan: {
+            outcome: 'insufficient_evidence',
+            questionCodes: [],
+            unavailableSources: ['hms', 'mail_attachment'],
+          },
+          claims: [],
+          evidence: [],
+          metrics: {
+            toolCalls: 0,
+            toolBudgetUsed: 0,
+            claimCount: 0,
+            readPlanKind: readPlan.kind,
+            hmsMode: 'claim_safe',
+            canScoreFull: false,
+            planScopedGateMissing: true,
+            omittedRequestClasses: [],
+            executablePlanStatus: null,
+          },
+        };
+      }
       executablePlan = executableReadStepsForPlan(
         readPlan,
         activeReleases,
-        input.candidateBindings,
-        input.requesterAuthorization,
+        candidateBindings,
+        requesterAuthorization,
         { authoredSegment: input.normalizedThreadText },
       );
       scoreFullAllowed = canScoreFull(executablePlan);

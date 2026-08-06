@@ -405,15 +405,26 @@ export function createLiveHmsCandidateSessionFactory(): CandidateSessionFactory 
     });
     // openReadSession already authenticates + verifies property; do not open a
     // second pre-tool login session (would create a second audited context).
+    const { resolvePlanScopedDraftGate } = await import(
+      '../hms/candidate-read-plan.js'
+    );
+    const candidates = new Map(exact.map((c) => [c.id, c]));
+    const planGate = resolvePlanScopedDraftGate({
+      activeReleases: active?.releases,
+      lookupCandidates: candidates,
+      operationId,
+    });
     return createReservationCandidateSession({
       driver,
-      candidates: new Map(exact.map((c) => [c.id, c])),
+      candidates,
       close: async () => undefined,
       runId: input.runId,
       readFence: input.readFence,
       readPlanKind: input.readPlanKind ?? 'reservation',
       activeReleases: active?.releases,
       handlerPathActive: active?.handlerPathActive === true,
+      candidateBindings: planGate?.candidateBindings,
+      requesterAuthorization: planGate?.requesterAuthorization,
     });
   };
 }
@@ -1013,6 +1024,15 @@ export async function executeAiRun(
                 : 'reservation',
           });
 
+          const { resolvePlanScopedDraftGate } = await import(
+            '../hms/candidate-read-plan.js'
+          );
+          const planGate = resolvePlanScopedDraftGate({
+            activeReleases: session.activeReleases,
+            lookupCandidates: session.lookupCandidates,
+            operationId: runId,
+            authorizedAttachmentIds: session.authorizedAttachmentIds,
+          });
           const claimSafe = await runClaimSafeCandidateDraft({
             session,
             normalizedThreadText: pre.context.normalizedText,
@@ -1021,6 +1041,12 @@ export async function executeAiRun(
             probeAttachmentIds: [],
             planMode: 'production',
             planModel: options.candidatePlanModel,
+            ...(planGate
+              ? {
+                  candidateBindings: planGate.candidateBindings,
+                  requesterAuthorization: planGate.requesterAuthorization,
+                }
+              : {}),
           });
 
           // Discard draft bodies / evidence — counters only.
@@ -1115,11 +1141,26 @@ export async function executeAiRun(
             authorizedAttachmentIds: new Set(context.authorizedAttachmentIds),
           });
 
+      const { resolvePlanScopedDraftGate } = await import(
+        '../hms/candidate-read-plan.js'
+      );
+      const planGate = resolvePlanScopedDraftGate({
+        activeReleases: session.activeReleases,
+        lookupCandidates: session.lookupCandidates,
+        operationId: runId,
+        authorizedAttachmentIds: session.authorizedAttachmentIds,
+      });
       const claimSafe = await runClaimSafeCandidateDraft({
         session,
         normalizedThreadText: context.normalizedText,
         signal,
         planModel: options.candidatePlanModel,
+        ...(planGate
+          ? {
+              candidateBindings: planGate.candidateBindings,
+              requesterAuthorization: planGate.requesterAuthorization,
+            }
+          : {}),
       });
 
       // HMS_DRAFT_ENRICHMENT_MODE=enabled is rejected at env parse; non-HMS

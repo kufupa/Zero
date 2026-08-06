@@ -2068,5 +2068,8 @@ describe("HMS browser audit capture order", () => {
     expect(src).toMatch(/sessionAuthorizationFor/);
     expect(src).toMatch(/buildHmsFindSessionAuthorization/);
     expect(src).toMatch(/assertFindHandlerBound|createReadToolHandler/);
+    expect(src).toMatch(/resolvePlanScopedDraftGate/);
+    expect(src).toMatch(/candidateBindings/);
+    expect(src).toMatch(/requesterAuthorization/);
   });
 });

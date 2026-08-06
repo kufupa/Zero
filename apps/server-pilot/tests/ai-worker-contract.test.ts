@@ -330,6 +330,9 @@ describe('ai worker contract', () => {
     expect(source).toMatch(/HMS_DRAFT_ENRICHMENT_MODE === 'off'/);
     expect(source).toMatch(/executorLane === 'hms'/);
     expect(source).toMatch(/probeAttachmentIds:\s*\[\s*\]/);
+    expect(source).toMatch(/resolvePlanScopedDraftGate/);
+    expect(source).toMatch(/candidateBindings/);
+    expect(source).toMatch(/requesterAuthorization/);
     // HMS shadow block must not call mock or draft persist
     const start = source.indexOf("run.executorLane === 'hms'");
     const end = source.indexOf('Non-HMS claim-safe path');
@@ -339,6 +342,7 @@ describe('ai worker contract', () => {
     expect(hmsBlock).not.toMatch(/createMockCandidateSession/);
     expect(hmsBlock).not.toMatch(/persistAiCandidateDraft/);
     expect(hmsBlock).toMatch(/resolveHmsShadowPreBrowser/);
+    expect(hmsBlock).toMatch(/resolvePlanScopedDraftGate/);
   });
 
   it('hms-shadow module rejects drafts import (production-boundary contract)', async () => {

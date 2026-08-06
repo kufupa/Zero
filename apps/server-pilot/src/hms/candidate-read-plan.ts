@@ -5,7 +5,10 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type { EvidenceClaim } from '../ai/draft-evidence.js';
-import type { TrustedRequesterAuthorizationV1 } from './contracts.js';
+import {
+  trustedRequesterAuthorizationV1Schema,
+  type TrustedRequesterAuthorizationV1,
+} from './contracts.js';
 import type { HmsPortfolioToolReleaseV2 } from './release-kernel.js';
 import {
   isProductionActiveReadTool,
@@ -505,6 +508,138 @@ export function canScoreFull(result: ExecutableReadPlanResult): boolean {
   return (
     result.status === 'complete' && result.omittedRequestClasses.length === 0
   );
+}
+
+/** Map lookup candidate kind → active release tool (null if no matching release). */
+export function toolIdForLookupCandidateKind(
+  kind: string,
+  activeReleases: ReadonlyMap<ReadToolId, HmsPortfolioToolReleaseV2>,
+): ReadToolId | null {
+  if (kind === 'confirmation' || kind === 'external_reference') {
+    return activeReleases.has('hms_find_reservation')
+      ? 'hms_find_reservation'
+      : null;
+  }
+  if (kind === 'surname_dates') {
+    if (activeReleases.has('hms_quote_stay')) return 'hms_quote_stay';
+    if (activeReleases.has('hms_find_reservation')) return 'hms_find_reservation';
+    return null;
+  }
+  return null;
+}
+
+/**
+ * Bind opaque candidates to active releases + requester auth id.
+ * Branch allow-list = release-enabled branches (selectRequestBranchId picks one).
+ */
+export function buildPlanScopedCandidateBindings(input: {
+  lookupCandidates: ReadonlyMap<string, { id: string; kind: string }>;
+  activeReleases: ReadonlyMap<ReadToolId, HmsPortfolioToolReleaseV2>;
+  requesterAuthorizationId: string;
+  authorizedAttachmentIds?: ReadonlySet<string>;
+}): Map<string, CandidateBinding> {
+  const out = new Map<string, CandidateBinding>();
+  for (const [id, cand] of input.lookupCandidates) {
+    const toolId = toolIdForLookupCandidateKind(
+      cand.kind,
+      input.activeReleases,
+    );
+    if (!toolId) continue;
+    const release = input.activeReleases.get(toolId);
+    if (!release) continue;
+    const allowedRequestBranchIds =
+      release.evidenceKind === 'hms'
+        ? release.requestBranches.map((b) => b.id)
+        : [];
+    out.set(id, {
+      candidateId: id,
+      toolId,
+      allowedRequestBranchIds,
+      parentEvidenceId: null,
+      requesterAuthorizationId: input.requesterAuthorizationId,
+    });
+  }
+  const mailRelease = input.activeReleases.get('mail_read_artifact');
+  if (mailRelease && input.authorizedAttachmentIds) {
+    for (const attachmentId of input.authorizedAttachmentIds) {
+      out.set(attachmentId, {
+        candidateId: attachmentId,
+        toolId: 'mail_read_artifact',
+        allowedRequestBranchIds: [],
+        parentEvidenceId: null,
+        requesterAuthorizationId: input.requesterAuthorizationId,
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * Run-scoped TrustedRequesterAuthorization for plan gate binding.
+ * Digests are deterministic from operationId (not mailbox-trust proof).
+ */
+export function mintPlanScopedRequesterAuthorization(input: {
+  operationId: string;
+  now?: Date;
+  ttlMs?: number;
+}): TrustedRequesterAuthorizationV1 {
+  const now = input.now ?? new Date();
+  const ttlMs = input.ttlMs ?? 15 * 60_000;
+  const digest = (purpose: string) =>
+    createHash('sha256')
+      .update(`plan-scoped:${purpose}:${input.operationId}`)
+      .digest('hex');
+  return trustedRequesterAuthorizationV1Schema.parse({
+    schemaVersion: 1,
+    authorizationId: digest('authorization'),
+    operationId: input.operationId,
+    mailboxGrantSha256: digest('mailbox'),
+    threadIdHmacSha256: digest('thread'),
+    threadStateVersion: '1',
+    requesterIdentityHmacSha256: digest('identity'),
+    requesterClass: 'reservation_guest',
+    inquiryClass: 'labelled_narrow_status',
+    allowedClaimKinds: ['reservation_summary'],
+    privateDigestKeyVersion: 'v1',
+    issuedAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + ttlMs).toISOString(),
+  });
+}
+
+export type PlanScopedDraftGate = {
+  candidateBindings: ReadonlyMap<string, CandidateBinding>;
+  requesterAuthorization: TrustedRequesterAuthorizationV1;
+};
+
+/**
+ * When activeReleases empty/absent → null (legacy executableToolIdsForPlan).
+ * When non-empty → bindings + auth so executableReadStepsForPlan / Full gate run.
+ */
+export function resolvePlanScopedDraftGate(input: {
+  activeReleases?: ReadonlyMap<
+    ReadToolId,
+    HmsPortfolioToolReleaseV2
+  > | null;
+  lookupCandidates: ReadonlyMap<string, { id: string; kind: string }>;
+  operationId: string;
+  authorizedAttachmentIds?: ReadonlySet<string>;
+  now?: Date;
+}): PlanScopedDraftGate | null {
+  const releases = input.activeReleases;
+  if (!releases || releases.size === 0) return null;
+  const requesterAuthorization = mintPlanScopedRequesterAuthorization({
+    operationId: input.operationId,
+    now: input.now,
+  });
+  return {
+    requesterAuthorization,
+    candidateBindings: buildPlanScopedCandidateBindings({
+      lookupCandidates: input.lookupCandidates,
+      activeReleases: releases,
+      requesterAuthorizationId: requesterAuthorization.authorizationId,
+      authorizedAttachmentIds: input.authorizedAttachmentIds,
+    }),
+  };
 }
 
 function claimId(parts: string): string {

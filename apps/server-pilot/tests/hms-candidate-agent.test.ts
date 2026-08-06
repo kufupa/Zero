@@ -772,4 +772,219 @@ describe('claim-safe candidate agent', () => {
       claims.length,
     );
   });
+
+  it('C3: worker-style gate — releases+bindings invoke plan steps; omissions refuse Full', async () => {
+    const { randomUUID } = await import('node:crypto');
+    const {
+      resolvePlanScopedDraftGate,
+      canScoreFull,
+      executableReadStepsForPlan,
+    } = await import('../src/hms/candidate-read-plan.js');
+    const {
+      hmsPortfolioToolReleaseV2Schema,
+      HMS_RUNTIME_ABI_VERSION,
+    } = await import('../src/hms/release-kernel.js');
+    const { fingerprintReadToolRegistry } = await import('../src/hms/read-tools.js');
+    const { FIND_RESERVATION_IMPL_V1 } = await import(
+      '../src/hms/read-handler-index.js'
+    );
+
+    const hex = (n: number | string) => String(n).repeat(64).slice(0, 64);
+    const findRel = hmsPortfolioToolReleaseV2Schema.parse({
+      schemaVersion: 2,
+      toolsetVersion: '3.0.0',
+      toolsetFingerprint: fingerprintReadToolRegistry(),
+      sourceRevision: 'abc1234',
+      phaseAPlanSha256: hex(1),
+      phaseBPlanSha256: hex(2),
+      gateSha256: hex(3),
+      runtimeAbiVersion: HMS_RUNTIME_ABI_VERSION,
+      runtimeFingerprintSha256: hex(4),
+      requesterPolicySha256: hex(5),
+      privateDigestKeyVersion: 'v1',
+      liveProofSha256: hex(6),
+      receiptSha256: hex(7),
+      releaseId: randomUUID(),
+      qualification: 'live_verified',
+      shadowSha256: null,
+      predecessorReleaseId: null,
+      rollbackAction: 'disable',
+      evidenceKind: 'hms',
+      toolId: 'hms_find_reservation',
+      toolVersion: '1.2.0',
+      implementationSha256: FIND_RESERVATION_IMPL_V1,
+      requestBranches: [
+        {
+          id: 'guest_stay_search',
+          discoveryOperationId: 'guest_stay_search',
+          manifestSha256: hex(8),
+          discoverySha256: hex(9),
+          parserSchemaSha256: hex('a'),
+        },
+      ],
+      credentialVersionHmacSha256: hex('b'),
+      roleProofSha256: hex('c'),
+    });
+    const activeReleases = new Map([['hms_find_reservation' as const, findRel]]);
+    const lookupCandidates = new Map([
+      [
+        'cand-1',
+        { id: 'cand-1', kind: 'confirmation' as const, value: 'CONF-88421' },
+      ],
+    ]);
+
+    // Empty releases → null gate (legacy / cutover pending).
+    expect(
+      resolvePlanScopedDraftGate({
+        activeReleases: new Map(),
+        lookupCandidates,
+        operationId: 'op-empty',
+      }),
+    ).toBeNull();
+
+    const planGate = resolvePlanScopedDraftGate({
+      activeReleases,
+      lookupCandidates,
+      operationId: 'op-c3-gate',
+      now,
+    });
+    expect(planGate).not.toBeNull();
+    expect(planGate!.candidateBindings.get('cand-1')?.toolId).toBe(
+      'hms_find_reservation',
+    );
+
+    // Complete reservation plan → executable find step, Full allowed.
+    const completePlan = executableReadStepsForPlan(
+      { kind: 'reservation', find: true, followups: [] },
+      activeReleases,
+      planGate!.candidateBindings,
+      planGate!.requesterAuthorization,
+      { authoredSegment: 'Please confirm CONF-88421' },
+    );
+    expect(completePlan.steps.map((s) => s.toolId)).toEqual([
+      'hms_find_reservation',
+    ]);
+    expect(canScoreFull(completePlan)).toBe(true);
+
+    let findCalls = 0;
+    const claims = claimsFromToolResult(okReservationResult(), now);
+    const completeRun = await runClaimSafeCandidateDraft({
+      session: createMockCandidateSession({
+        lookupCandidates,
+        activeReleases,
+        findReservation: async () => {
+          findCalls += 1;
+          return okReservationResult();
+        },
+      }),
+      normalizedThreadText: 'Please confirm CONF-88421',
+      signal: new AbortController().signal,
+      now,
+      planMode: 'production',
+      readPlan: { kind: 'reservation', find: true, followups: [] },
+      candidateBindings: planGate!.candidateBindings,
+      requesterAuthorization: planGate!.requesterAuthorization,
+      planModel: async () => ({
+        outcome: 'candidate',
+        salutation: 'generic',
+        openingTemplate: 'acknowledge_request',
+        selectedClaimIds: claims.map((c) => c.id),
+        closingTemplate: 'invite_questions',
+      }),
+    });
+    expect(findCalls).toBe(1);
+    expect(completeRun.outcome).toBe('candidate');
+    expect(completeRun.metrics.canScoreFull).toBe(true);
+    expect(completeRun.metrics.executablePlanStatus).toBe('complete');
+
+    // Followup omissions → Full refused on agent path (before scoring as candidate).
+    const omitRun = await runClaimSafeCandidateDraft({
+      session: createMockCandidateSession({
+        lookupCandidates,
+        activeReleases,
+        findReservation: async () => okReservationResult(),
+      }),
+      normalizedThreadText:
+        'Please confirm CONF-88421 and send folio plus documents',
+      signal: new AbortController().signal,
+      now,
+      planMode: 'production',
+      readPlan: {
+        kind: 'reservation',
+        find: true,
+        followups: ['documents', 'folio'],
+      },
+      candidateBindings: planGate!.candidateBindings,
+      requesterAuthorization: planGate!.requesterAuthorization,
+      planModel: async () => ({
+        outcome: 'candidate',
+        salutation: 'generic',
+        openingTemplate: 'acknowledge_request',
+        selectedClaimIds: claims.map((c) => c.id),
+        closingTemplate: 'invite_questions',
+      }),
+    });
+    expect(omitRun.outcome).toBe('insufficient_evidence');
+    expect(omitRun.metrics.canScoreFull).toBe(false);
+    expect(omitRun.metrics.fullScoringRefused).toBe(true);
+    expect(omitRun.metrics.omittedRequestClasses).toEqual(
+      expect.arrayContaining(['documents', 'folio']),
+    );
+
+    // Releases present but bindings missing → fail closed (no legacy tool I/O).
+    let leakedCalls = 0;
+    const missing = await runClaimSafeCandidateDraft({
+      session: createMockCandidateSession({
+        lookupCandidates,
+        activeReleases,
+        findReservation: async () => {
+          leakedCalls += 1;
+          return okReservationResult();
+        },
+      }),
+      normalizedThreadText: 'Please confirm CONF-88421',
+      signal: new AbortController().signal,
+      now,
+      planMode: 'production',
+      readPlan: { kind: 'reservation', find: true, followups: [] },
+      planModel: async () => ({
+        outcome: 'candidate',
+        salutation: 'generic',
+        openingTemplate: 'acknowledge_request',
+        selectedClaimIds: claims.map((c) => c.id),
+        closingTemplate: 'invite_questions',
+      }),
+    });
+    expect(leakedCalls).toBe(0);
+    expect(missing.outcome).toBe('insufficient_evidence');
+    expect(missing.metrics.planScopedGateMissing).toBe(true);
+
+    // Empty releases → production legacy allowlist empty (cutover pending) → no I/O.
+    let legacyCalls = 0;
+    const legacy = await runClaimSafeCandidateDraft({
+      session: createMockCandidateSession({
+        lookupCandidates,
+        findReservation: async () => {
+          legacyCalls += 1;
+          return okReservationResult();
+        },
+      }),
+      normalizedThreadText: 'Please confirm CONF-88421',
+      signal: new AbortController().signal,
+      now,
+      planMode: 'production',
+      readPlan: { kind: 'reservation', find: true, followups: [] },
+      planModel: async () => ({
+        outcome: 'candidate',
+        salutation: 'generic',
+        openingTemplate: 'acknowledge_request',
+        selectedClaimIds: claims.map((c) => c.id),
+        closingTemplate: 'invite_questions',
+      }),
+    });
+    expect(legacyCalls).toBe(0);
+    expect(legacy.outcome).toBe('insufficient_evidence');
+    expect(legacy.metrics.executablePlanStatus).toBeNull();
+    expect(legacy.metrics.planScopedGateMissing).toBeUndefined();
+  });
 });
