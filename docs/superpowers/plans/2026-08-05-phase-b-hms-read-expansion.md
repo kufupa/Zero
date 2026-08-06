@@ -150,10 +150,10 @@ Better path to done criteria → take it. Log in handoff report.
 ### Done criteria
 
 - [x] Tasks 1–10 fixture/kernel/portfolio grammar shipped with evidence
-- [ ] Live discovery + role-proof-v2 for each fixture_verified HMS tool, **or** named true blockers accepted in handoff
-- [ ] Production active-read stays decoupled from blocked surfaces
-- [ ] Push `EC2-pilot` + `ops-deploy.sh` when code green
-- [ ] Handoff report under `docs/superpowers/plans/handoff-reports/`
+- [x] Live discovery + role-proof-v2 for each fixture_verified HMS tool, **or** named true blockers accepted in handoff
+- [x] Production active-read stays decoupled from blocked surfaces
+- [x] Push `EC2-pilot` + `ops-deploy.sh` when code green
+- [x] Handoff report under `docs/superpowers/plans/handoff-reports/`
 
 ## Execution Mode
 

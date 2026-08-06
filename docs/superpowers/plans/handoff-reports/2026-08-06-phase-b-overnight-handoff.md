@@ -50,4 +50,12 @@ Live discovery / role-proof-v2 / reviewed manifests / ops `PHASE_B_BLOCKED` latc
 | `ops-hms-proof.sh status` | registry capability, exit 0 `STATUS_OK`, no HMS |
 | EC2 | deploy after `b70bb607` |
 
+### Later continue (`doctor` CLI)
+
+| Item | Evidence |
+|------|----------|
+| `ops-hms-proof.sh doctor` | offline readiness + unique preflight blockers; exit 0 `DOCTOR_OK`; `liveReady:false` |
+| Production decouple check | doctor reports only `hms_find_reservation` in active-read |
+| Plan done criteria | named blockers accepted; live role-proof-v2 still human-gated |
+
 Wake actions unchanged: mint role-proof-v2 (root `0444`), reviewed manifests, then discovery can proceed past preflight to live wiring. Empirical RCA loop fills dossier stubs only after live evidence.
