@@ -71,5 +71,20 @@ Excluded: plan file `docs/superpowers/plans/2026-08-05-phase-b-hms-read-expansio
 ## Concerns
 
 - Default `ops-deploy` / `sync-ec2-git-bundle` uses `GIT_BRANCH=EC2-pilot`; Phase B worktree must set `GIT_BRANCH=phase-b-autonomous-read-expansion` (or merge) before EC2 has Task 11E files.
-- Vendor asm-exec stays CRLF for pin; installed binary is LF — doctor pins vendor SRC, not `/usr/local/bin/asm-exec` bytes.
+- Vendor asm-exec stays CRLF for pin; installed binary is LF — both digests now pinned (`ASM_EXEC_INSTALLED_SHA256`); see follow-up below.
 - First Windows create attempt failed on `file://` before cygpath fix; secret may have been created on a later retry (this run used describe-only path).
+
+---
+
+## Follow-up: installed LF digest pin (Task 11E review Important)
+
+**Problem:** After `tr -d '\r'`, `/usr/local/bin/asm-exec` SHA ≠ vendor CRLF pin. Doctor/provision only hashed vendor SRC.
+
+**Fix commit:** `fix(hms): pin installed LF asm-exec digest after CRLF strip`
+
+| Pin | Constant | Digest |
+|-----|----------|--------|
+| Vendor SRC (CRLF) | `ASM_EXEC_PIN` / `DEFAULT_PIN` | `5f0c7f82827fe4eb89db0ba177aec694cd4cbf3acff003b09d1b545ea8595b7f` |
+| Installed (LF) | `ASM_EXEC_INSTALLED_SHA256` | `81fd29e1f039209282bc8cbe482cda033d331f07284533a46f990368228a7e65` |
+
+Updated: `install-hms-browser.sh`, provision remote, doctor SSM probe, `deploy-config.test.ts`, `aws-resources.md` digests section. Both pins verified post-install / in doctor.

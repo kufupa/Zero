@@ -159,15 +159,19 @@ case "$ACTION" in
     if [ -n "${DOCTOR_TOOL:-}" ] && [ -n "${DOCTOR_ACTION:-}" ]; then
       : "${AWS_REGION:=af-south-1}"
       : "${INSTANCE_ID:=i-008f737974a9ba9b3}"
+      # Vendor CRLF pin + installed LF pin (after tr -d '\r' strip).
       ASM_PIN='5f0c7f82827fe4eb89db0ba177aec694cd4cbf3acff003b09d1b545ea8595b7f'
+      ASM_EXEC_INSTALLED_SHA256='81fd29e1f039209282bc8cbe482cda033d331f07284533a46f990368228a7e65'
       # shellcheck disable=SC2016
       REMOTE_DOCTOR=$(cat <<EOF
 set -euo pipefail
 PIN='${ASM_PIN}'
+INSTALLED_PIN='${ASM_EXEC_INSTALLED_SHA256}'
 SRC='/home/ubuntu/repos/zero/apps/server-pilot/deploy/vendor/asm-exec'
 META='/etc/nava/hms-evidence-hmac.env'
 printf '%s  %s\n' "\$PIN" "\$SRC" | sha256sum -c -
 test -x /usr/local/bin/asm-exec
+printf '%s  %s\n' "\$INSTALLED_PIN" /usr/local/bin/asm-exec | sha256sum -c -
 grep -q 'os.execvpe' /usr/local/bin/asm-exec
 test -f "\$META"
 grep -q '^HMS_EVIDENCE_HMAC_SECRET_ARN=' "\$META"

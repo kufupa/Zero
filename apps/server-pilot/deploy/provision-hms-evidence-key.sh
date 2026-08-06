@@ -7,7 +7,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 ASM_EXEC_SRC="${REPO_ROOT}/apps/server-pilot/deploy/vendor/asm-exec"
+# Vendor CRLF bytes (source integrity). Installed path is LF after tr -d '\r'.
 DEFAULT_PIN='5f0c7f82827fe4eb89db0ba177aec694cd4cbf3acff003b09d1b545ea8595b7f'
+ASM_EXEC_INSTALLED_SHA256='81fd29e1f039209282bc8cbe482cda033d331f07284533a46f990368228a7e65'
 ROLE_NAME='nava-prod-public-ipv4-WorkerRole-bPmrMEkmdwLU'
 ACCOUNT_ID='845242190536'
 
@@ -134,11 +136,12 @@ aws iam put-role-policy \
   --policy-name NavaZeroSecretsRead \
   --policy-document "$POLICY_DOC" >/dev/null
 
-# EC2: pin asm-exec from synced repo + write metadata-only env (never key).
+# EC2: pin vendor SRC + installed LF asm-exec + write metadata-only env (never key).
 # shellcheck disable=SC2016
 REMOTE_CMD=$(cat <<EOF
 set -euo pipefail
 PIN='${ASM_EXEC_SHA256}'
+INSTALLED_PIN='${ASM_EXEC_INSTALLED_SHA256}'
 SRC='/home/ubuntu/repos/zero/apps/server-pilot/deploy/vendor/asm-exec'
 META='/etc/nava/hms-evidence-hmac.env'
 ARN='${SECRET_ARN}'
@@ -149,6 +152,7 @@ ASM_TMP="\$(sudo mktemp /tmp/asm-exec.XXXXXX)"
 tr -d '\\r' <"\$SRC" | sudo tee "\$ASM_TMP" >/dev/null
 sudo install -o root -g root -m 0755 "\$ASM_TMP" /usr/local/bin/asm-exec
 sudo rm -f "\$ASM_TMP"
+printf '%s  %s\n' "\$INSTALLED_PIN" /usr/local/bin/asm-exec | sha256sum -c -
 grep -q 'os.execvpe' /usr/local/bin/asm-exec
 META_TMP="\$(sudo mktemp /etc/nava/.hms-evidence-hmac.env.XXXXXX)"
 printf 'HMS_EVIDENCE_HMAC_SECRET_ARN=%s\nHMS_EVIDENCE_HMAC_KEY_VERSION=%s\n' "\$ARN" "\$VER" | sudo tee "\$META_TMP" >/dev/null

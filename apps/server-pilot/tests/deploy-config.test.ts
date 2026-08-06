@@ -3053,12 +3053,16 @@ describe('deploy config', () => {
       const { dirname, join } = await import('node:path');
       const here = dirname(fileURLToPath(import.meta.url));
       const deploy = join(here, '..', 'deploy');
-      const pin =
+      const vendorPin =
         '5f0c7f82827fe4eb89db0ba177aec694cd4cbf3acff003b09d1b545ea8595b7f';
+      const installedPin =
+        '81fd29e1f039209282bc8cbe482cda033d331f07284533a46f990368228a7e65';
       const asmPath = join(deploy, 'vendor', 'asm-exec');
       expect(existsSync(asmPath)).toBe(true);
       const asmBytes = readFileSync(asmPath);
-      expect(createHash('sha256').update(asmBytes).digest('hex')).toBe(pin);
+      expect(createHash('sha256').update(asmBytes).digest('hex')).toBe(vendorPin);
+      const lfBytes = Buffer.from(asmBytes.filter((byte) => byte !== 0x0d));
+      expect(createHash('sha256').update(lfBytes).digest('hex')).toBe(installedPin);
       const asmText = asmBytes.toString('utf8');
       expect(asmText).toMatch(/os\.execvpe\(args\[0\], args, os\.environ\.copy\(\)\)/);
       expect(asmText).not.toMatch(/result = subprocess\.run\(args\)/);
@@ -3081,10 +3085,16 @@ describe('deploy config', () => {
       expect(provision).toMatch(
         /nava-zero\/server-pilot\/hms-evidence-hmac-\*/,
       );
+      expect(provision).toMatch(/ASM_EXEC_INSTALLED_SHA256/);
+      expect(provision).toMatch(new RegExp(vendorPin));
+      expect(provision).toMatch(new RegExp(installedPin));
+      expect(provision).toMatch(/INSTALLED_PIN.*\/usr\/local\/bin\/asm-exec/);
 
       const install = readFileSync(join(deploy, 'install-hms-browser.sh'), 'utf8');
       expect(install).toMatch(/\/usr\/local\/bin\/asm-exec/);
-      expect(install).toMatch(new RegExp(pin));
+      expect(install).toMatch(new RegExp(vendorPin));
+      expect(install).toMatch(new RegExp(installedPin));
+      expect(install).toMatch(/ASM_EXEC_INSTALLED_SHA256/);
       expect(install).toMatch(/install -o root -g root -m 0755/);
       expect(install).toMatch(/tr -d ['"]\\r['"]|tr -d ['"]\\\\r['"]/);
 
@@ -3110,6 +3120,9 @@ describe('deploy config', () => {
       const awsResources = readFileSync(join(deploy, 'aws-resources.md'), 'utf8');
       expect(awsResources).toMatch(/hms-evidence-hmac-\*/);
       expect(awsResources).toMatch(/NavaZeroSecretsRead/);
+      expect(awsResources).toMatch(/ASM_EXEC_INSTALLED_SHA256|installed LF/);
+      expect(awsResources).toMatch(new RegExp(vendorPin));
+      expect(awsResources).toMatch(new RegExp(installedPin));
 
       const opsProof = readFileSync(join(deploy, 'ops-hms-proof.sh'), 'utf8');
       expect(opsProof).toMatch(
@@ -3117,6 +3130,9 @@ describe('deploy config', () => {
       );
       expect(opsProof).toMatch(/--action/);
       expect(opsProof).toMatch(/ASM_EXEC_SENTINEL_OK|asm-exec/);
+      expect(opsProof).toMatch(/ASM_EXEC_INSTALLED_SHA256/);
+      expect(opsProof).toMatch(new RegExp(installedPin));
+      expect(opsProof).toMatch(/INSTALLED_PIN.*\/usr\/local\/bin\/asm-exec/);
     });
   });
 });

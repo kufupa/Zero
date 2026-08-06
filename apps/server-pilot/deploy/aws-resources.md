@@ -44,7 +44,16 @@ Provisioned AWS resources for the mail pilot. All created via AWS CLI from lapto
 | `NavaZeroRDSConnect` | `rds-db:connect` on `dbuser:nava-zero-mail-pilot/zero_admin` (for future IAM DB auth; password auth used today via SG routing) |
 | `NavaZeroBedrockInvoke` | `bedrock:InvokeModel` on `arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-lite-v1:0`; optional `bedrock:ApplyGuardrail` when guardrail env vars set |
 
-## Provisioning commands (re-runnable, idempotent-ish)
+## asm-exec digests (Phase B evidence bootstrap)
+
+Vendored `apps/server-pilot/deploy/vendor/asm-exec` is CRLF on purpose (`.gitattributes -text`). Install strips CR before `/usr/local/bin/asm-exec`.
+
+| Pin | Bytes | SHA-256 |
+|-----|-------|---------|
+| Vendor SRC (`ASM_EXEC_PIN` / `DEFAULT_PIN`) | CRLF vendor file | `5f0c7f82827fe4eb89db0ba177aec694cd4cbf3acff003b09d1b545ea8595b7f` |
+| Installed (`ASM_EXEC_INSTALLED_SHA256`) | LF after `tr -d '\r'` | `81fd29e1f039209282bc8cbe482cda033d331f07284533a46f990368228a7e65` |
+
+Derive installed pin: `tr -d '\r' < apps/server-pilot/deploy/vendor/asm-exec | sha256sum`. Provision remote, `install-hms-browser.sh`, and scoped doctor verify both digests.
 
 Run from repo root on laptop. The password is generated locally and never printed; it is written to a 600-mode temp file then to Secrets Manager.
 

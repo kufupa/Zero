@@ -199,9 +199,11 @@ sudo chmod 0444 "$STAMP_TMP"
 sudo mv -T "$STAMP_TMP" "${NAVA_ROOT}/shared/hms-dependency-revision.txt"
 
 # Pinned process-replacing asm-exec (PM2 owns Node PID after execvpe).
-# Vendor artifact is CRLF-pinned; install strips CR so Linux shebang works.
+# Vendor SRC is CRLF-pinned; install strips CR so Linux shebang works.
+# Installed bytes are LF — pin separately (tr -d '\r' < vendor/asm-exec | sha256sum).
 ASM_EXEC_SRC="${SERVER_PILOT}/deploy/vendor/asm-exec"
 ASM_EXEC_PIN="5f0c7f82827fe4eb89db0ba177aec694cd4cbf3acff003b09d1b545ea8595b7f"
+ASM_EXEC_INSTALLED_SHA256="81fd29e1f039209282bc8cbe482cda033d331f07284533a46f990368228a7e65"
 if [ ! -f "$ASM_EXEC_SRC" ]; then
   echo "HMS_FAIL code=DEPENDENCY_MISMATCH" >&2
   echo "missing vendored asm-exec" >&2
@@ -215,6 +217,10 @@ ASM_EXEC_TMP="$(sudo mktemp /tmp/asm-exec.XXXXXX)"
 tr -d '\r' <"$ASM_EXEC_SRC" | sudo tee "$ASM_EXEC_TMP" >/dev/null
 sudo install -o root -g root -m 0755 "$ASM_EXEC_TMP" /usr/local/bin/asm-exec
 sudo rm -f "$ASM_EXEC_TMP"
+printf '%s  %s\n' "$ASM_EXEC_INSTALLED_SHA256" /usr/local/bin/asm-exec | sha256sum -c - >/dev/null || {
+  echo "HMS_FAIL code=DEPENDENCY_MISMATCH" >&2
+  exit 10
+}
 grep -q 'os.execvpe' /usr/local/bin/asm-exec || {
   echo "HMS_FAIL code=DEPENDENCY_MISMATCH" >&2
   exit 10
