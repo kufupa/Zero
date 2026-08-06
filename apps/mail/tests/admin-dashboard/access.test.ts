@@ -22,8 +22,9 @@ describe('isAdminDashboardEnabled', () => {
   it('only enables allowlist users when not in demo', () => {
     vi.mocked(runtime.isFrontendOnlyDemo).mockReturnValue(false);
 
-    expect(isAdminDashboardEnabled({ user: { email: 'centurion@legacyhotels.co.za' } })).toBe(true);
+    expect(isAdminDashboardEnabled({ user: { email: 'navaai@legacyhotels.co.za' } })).toBe(true);
     expect(isAdminDashboardEnabled({ user: { email: 'ropperman@legacyhotels.co.za' } })).toBe(true);
+    expect(isAdminDashboardEnabled({ user: { email: 'centurion@legacyhotels.co.za' } })).toBe(false);
     expect(isAdminDashboardEnabled({ user: { email: 'random@legacyhotels.co.za' } })).toBe(false);
     expect(isAdminDashboardEnabled(null)).toBe(false);
     expect(describeAdminSource({ user: { email: 'random@legacyhotels.co.za' } })).toBe('hosted');

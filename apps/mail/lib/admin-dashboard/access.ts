@@ -1,7 +1,7 @@
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 
 const ALLOWED_ADMIN_EMAILS = [
-  'centurion@legacyhotels.co.za',
+  'navaai@legacyhotels.co.za',
   'ropperman@legacyhotels.co.za',
 ] as const;
 
