@@ -198,6 +198,24 @@ sudo chown root:root "$STAMP_TMP"
 sudo chmod 0444 "$STAMP_TMP"
 sudo mv -T "$STAMP_TMP" "${NAVA_ROOT}/shared/hms-dependency-revision.txt"
 
+# Pinned process-replacing asm-exec (PM2 owns Node PID after execvpe).
+ASM_EXEC_SRC="${SERVER_PILOT}/deploy/vendor/asm-exec"
+ASM_EXEC_PIN="5f0c7f82827fe4eb89db0ba177aec694cd4cbf3acff003b09d1b545ea8595b7f"
+if [ ! -f "$ASM_EXEC_SRC" ]; then
+  echo "HMS_FAIL code=DEPENDENCY_MISMATCH" >&2
+  echo "missing vendored asm-exec" >&2
+  exit 10
+fi
+printf '%s  %s\n' "$ASM_EXEC_PIN" "$ASM_EXEC_SRC" | sha256sum -c - >/dev/null || {
+  echo "HMS_FAIL code=DEPENDENCY_MISMATCH" >&2
+  exit 10
+}
+sudo install -o root -g root -m 0755 "$ASM_EXEC_SRC" /usr/local/bin/asm-exec
+printf '%s  /usr/local/bin/asm-exec\n' "$ASM_EXEC_PIN" | sha256sum -c - >/dev/null || {
+  echo "HMS_FAIL code=DEPENDENCY_MISMATCH" >&2
+  exit 10
+}
+
 # Durable hourly retention: root-owned code, unprivileged purge process.
 NODE_BIN="$(command -v node)"
 PURGE_LIB_DIR="/usr/local/lib/nava"

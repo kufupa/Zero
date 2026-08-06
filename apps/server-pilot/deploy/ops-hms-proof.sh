@@ -9,7 +9,7 @@ ACTION="${1:-}"
 
 usage() {
   printf '%s\n' \
-    'usage: ops-hms-proof.sh doctor [--json]' \
+    'usage: ops-hms-proof.sh doctor [--tool <tool-id> --action <action>] [--json]' \
     '       ops-hms-proof.sh status [--tool <tool-id>|--wave <subwave-id>] [--json]' \
     '       ops-hms-proof.sh read-discovery <tool-id> [--json]' \
     '       ops-hms-proof.sh read-proof <tool-id> [--json]' \
@@ -44,7 +44,40 @@ is_wave_id() {
 
 case "$ACTION" in
   doctor)
-    { [ "$#" -eq 1 ] || { [ "$#" -eq 2 ] && [ "$2" = "--json" ]; }; } || usage 2
+    DOCTOR_TOOL=""
+    DOCTOR_ACTION=""
+    DOCTOR_JSON=0
+    shift
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --tool)
+          [ "$#" -ge 2 ] || usage 2
+          [ -z "$DOCTOR_TOOL" ] || usage 2
+          is_tool_id "$2" || usage 2
+          DOCTOR_TOOL="$2"
+          shift 2
+          ;;
+        --action)
+          [ "$#" -ge 2 ] || usage 2
+          [ -z "$DOCTOR_ACTION" ] || usage 2
+          case "$2" in
+            read-discovery|read-proof|read-promote|read-rollback) DOCTOR_ACTION="$2" ;;
+            *) usage 2 ;;
+          esac
+          shift 2
+          ;;
+        --json)
+          [ "$DOCTOR_JSON" -eq 0 ] || usage 2
+          DOCTOR_JSON=1
+          shift
+          ;;
+        *) usage 2 ;;
+      esac
+    done
+    # Scoped evidence bootstrap: both --tool and --action required together.
+    if [ -n "$DOCTOR_TOOL" ] || [ -n "$DOCTOR_ACTION" ]; then
+      [ -n "$DOCTOR_TOOL" ] && [ -n "$DOCTOR_ACTION" ] || usage 2
+    fi
     ;;
   status)
     case "$#" in
@@ -122,11 +155,57 @@ case "$ACTION" in
   doctor)
     SERVER_PILOT="${REPO_ROOT}/apps/server-pilot"
     DOCTOR_TS="${SERVER_PILOT}/src/ops/phase-b-doctor.ts"
+    # Scoped bootstrap verify (EC2 metadata + asm-exec sentinel). No HMS browser.
+    if [ -n "${DOCTOR_TOOL:-}" ] && [ -n "${DOCTOR_ACTION:-}" ]; then
+      : "${AWS_REGION:=af-south-1}"
+      : "${INSTANCE_ID:=i-008f737974a9ba9b3}"
+      ASM_PIN='5f0c7f82827fe4eb89db0ba177aec694cd4cbf3acff003b09d1b545ea8595b7f'
+      # shellcheck disable=SC2016
+      REMOTE_DOCTOR=$(cat <<EOF
+set -euo pipefail
+PIN='${ASM_PIN}'
+META='/etc/nava/hms-evidence-hmac.env'
+printf '%s  /usr/local/bin/asm-exec\n' "\$PIN" | sha256sum -c -
+test -f "\$META"
+grep -q '^HMS_EVIDENCE_HMAC_SECRET_ARN=' "\$META"
+grep -q '^HMS_EVIDENCE_HMAC_KEY_VERSION=' "\$META"
+! awk -F= '\$1=="HMS_EVIDENCE_HMAC_KEY"{found=1} END{exit found+0}' "\$META"
+OUT="\$(/usr/local/bin/asm-exec -- /bin/echo ASM_EXEC_SENTINEL_OK)"
+test "\$OUT" = 'ASM_EXEC_SENTINEL_OK'
+echo DOCTOR_EVIDENCE_BOOTSTRAP_OK
+EOF
+)
+      SSM="${SCRIPT_DIR}/ssm-run-command.sh"
+      DOCTOR_SSM_OUT="$(bash "$SSM" "$REMOTE_DOCTOR")"
+      echo "$DOCTOR_SSM_OUT" | grep -q 'DOCTOR_EVIDENCE_BOOTSTRAP_OK' || {
+        echo "HMS_FAIL code=EVIDENCE_BOOTSTRAP_UNREADY" >&2
+        exit 1
+      }
+      echo "HMS_OK code=DOCTOR_OK" >&2
+      if [ "${DOCTOR_JSON:-0}" -eq 1 ]; then
+        node -e '
+process.stdout.write(JSON.stringify({
+  schemaVersion:1,
+  outcome:"ok",
+  stage:"doctor",
+  code:"DOCTOR_OK",
+  exitCode:0,
+  toolId:process.argv[1],
+  action:process.argv[2],
+  evidenceBootstrapReady:true,
+  asmExecPinned:true,
+})+"\n");
+' "$DOCTOR_TOOL" "$DOCTOR_ACTION"
+      fi
+      exit 0
+    fi
     (
       cd "$SERVER_PILOT"
       unset DATABASE_URL VITEST_ALLOW_PILOT_RDS
-      shift
-      exec node --import tsx "$DOCTOR_TS" "$@"
+      if [ "${DOCTOR_JSON:-0}" -eq 1 ]; then
+        exec node --import tsx "$DOCTOR_TS" --json
+      fi
+      exec node --import tsx "$DOCTOR_TS"
     )
     exit $?
     ;;

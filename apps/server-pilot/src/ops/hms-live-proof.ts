@@ -613,7 +613,7 @@ function startHmsPm2(input: {
     emitFail('UNKNOWN_SAFE');
   }
   const running = pm2DescribeHms();
-  const expectedPath = join(repo, 'apps/server-pilot/dist/ai/worker.js');
+  const expectedPath = '/usr/local/bin/asm-exec';
   if (
     !running.present ||
     !running.online ||
@@ -1399,9 +1399,7 @@ async function runStatus(): Promise<void> {
     return;
   }
   if (!hms.online) emitFail('HEALTH_STALE');
-  const repo =
-    process.env.REPO_ROOT?.trim() || '/home/ubuntu/repos/zero';
-  const expectedPath = join(repo, 'apps/server-pilot/dist/ai/worker.js');
+  const expectedPath = '/usr/local/bin/asm-exec';
   if (
     hms.commit !== commit ||
     hms.execPath !== expectedPath ||

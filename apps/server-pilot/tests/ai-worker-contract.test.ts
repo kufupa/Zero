@@ -87,12 +87,12 @@ describe('ai worker contract', () => {
     expect(env.AI_WORKER_LANE).toBe('default');
   });
 
-  it('pm2 config adds hms-ai-worker on same worker entrypoint', async () => {
+  it('pm2 config adds hms-ai-worker via asm-exec worker entrypoint', async () => {
     const { loadPm2Config } = await import('../src/deploy/load-pm2-config.js');
     const pm2 = loadPm2Config();
     const hmsWorker = pm2.apps.find((app) => app.name === 'hms-ai-worker');
     expect(hmsWorker).toBeDefined();
-    expect(hmsWorker?.script).toBe('dist/ai/worker.js');
+    expect(hmsWorker?.script).toBe('/usr/local/bin/asm-exec');
     expect(hmsWorker?.instances).toBe(1);
     expect(hmsWorker?.exec_mode).toBe('fork');
     expect(hmsWorker?.env?.AI_WORKER_LANE).toBe('hms');

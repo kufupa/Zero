@@ -3045,5 +3045,77 @@ describe('deploy config', () => {
       const pm2 = readFileSync(join(here, '..', 'deploy', 'pm2.config.cjs'), 'utf8');
       expect(pm2).toMatch(/PLAYWRIGHT_BROWSERS_PATH.*\/opt\/nava\/ms-playwright/s);
     });
+
+    it('pins patched asm-exec process replacement and evidence-key bootstrap wiring', async () => {
+      const { createHash } = await import('node:crypto');
+      const { existsSync, readFileSync } = await import('node:fs');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const here = dirname(fileURLToPath(import.meta.url));
+      const deploy = join(here, '..', 'deploy');
+      const pin =
+        '5f0c7f82827fe4eb89db0ba177aec694cd4cbf3acff003b09d1b545ea8595b7f';
+      const asmPath = join(deploy, 'vendor', 'asm-exec');
+      expect(existsSync(asmPath)).toBe(true);
+      const asmBytes = readFileSync(asmPath);
+      expect(createHash('sha256').update(asmBytes).digest('hex')).toBe(pin);
+      const asmText = asmBytes.toString('utf8');
+      expect(asmText).toMatch(/os\.execvpe\(args\[0\], args, os\.environ\.copy\(\)\)/);
+      expect(asmText).not.toMatch(/result = subprocess\.run\(args\)/);
+      expect(asmText).not.toMatch(/sys\.exit\(result\.returncode\)/);
+
+      const provision = readFileSync(
+        join(deploy, 'provision-hms-evidence-key.sh'),
+        'utf8',
+      );
+      expect(provision).toMatch(/umask 077/);
+      expect(provision).toMatch(/chmod 600/);
+      expect(provision).toMatch(/create-secret|describe-secret/);
+      expect(provision).toMatch(/hms-evidence-hmac\.env/);
+      expect(provision).toMatch(/secretMetadataReady/);
+      expect(provision).toMatch(/instanceMetadataInstalled/);
+      expect(provision).toMatch(/asmExecPinned/);
+      expect(provision).not.toMatch(/get-secret-value/);
+      expect(provision).not.toMatch(/HMS_EVIDENCE_HMAC_KEY=/);
+      expect(provision).toMatch(/NavaZeroSecretsRead/);
+      expect(provision).toMatch(
+        /nava-zero\/server-pilot\/hms-evidence-hmac-\*/,
+      );
+
+      const install = readFileSync(join(deploy, 'install-hms-browser.sh'), 'utf8');
+      expect(install).toMatch(/\/usr\/local\/bin\/asm-exec/);
+      expect(install).toMatch(new RegExp(pin));
+      expect(install).toMatch(/install -o root -g root -m 0755/);
+
+      const writer = readFileSync(join(deploy, 'write-ec2-env.sh'), 'utf8');
+      expect(writer).toMatch(/HMS_EVIDENCE_HMAC_SECRET_ARN/);
+      expect(writer).toMatch(/HMS_EVIDENCE_HMAC_KEY_VERSION/);
+      expect(writer).toMatch(/hms-evidence-hmac\.env/);
+      expect(writer).not.toMatch(/append_env HMS_EVIDENCE_HMAC_KEY(?!_VERSION)/);
+      expect(writer).not.toMatch(/HMS_EVIDENCE_HMAC_KEY=/);
+
+      const pm2 = readFileSync(join(deploy, 'pm2.config.cjs'), 'utf8');
+      expect(pm2).toMatch(/\/usr\/local\/bin\/asm-exec/);
+      expect(pm2).toMatch(/interpreter:\s*['"]none['"]/);
+      expect(pm2).toMatch(
+        /\{\{resolve:secretsmanager:nava-zero\/server-pilot\/hms-evidence-hmac\}\}/,
+      );
+      expect(pm2).toMatch(/\/usr\/bin\/env HMS_EVIDENCE_HMAC_KEY=/);
+      expect(pm2).toMatch(/\/usr\/bin\/node dist\/ai\/worker\.js/);
+      expect(pm2).toMatch(/HMS_EVIDENCE_HMAC_SECRET_ARN/);
+      expect(pm2).toMatch(/HMS_EVIDENCE_HMAC_KEY_VERSION/);
+      expect(pm2).not.toMatch(/HMS_EVIDENCE_HMAC_KEY:\s/);
+
+      const awsResources = readFileSync(join(deploy, 'aws-resources.md'), 'utf8');
+      expect(awsResources).toMatch(/hms-evidence-hmac-\*/);
+      expect(awsResources).toMatch(/NavaZeroSecretsRead/);
+
+      const opsProof = readFileSync(join(deploy, 'ops-hms-proof.sh'), 'utf8');
+      expect(opsProof).toMatch(
+        /doctor.*--tool|--tool.*hms_find_reservation|doctor \[/,
+      );
+      expect(opsProof).toMatch(/--action/);
+      expect(opsProof).toMatch(/ASM_EXEC_SENTINEL_OK|asm-exec/);
+    });
   });
 });

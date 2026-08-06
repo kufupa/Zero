@@ -103,6 +103,18 @@ append_env MAIL_TLS_REJECT_UNAUTHORIZED "${MAIL_TLS_REJECT_UNAUTHORIZED:-}"
 # Gate defaults: enrichment off; never emit mutation-enable keys.
 append_env HMS_DRAFT_ENRICHMENT_MODE "${HMS_DRAFT_ENRICHMENT_MODE:-off}"
 append_env HMS_READ_SECRET_ARN "${HMS_READ_SECRET_ARN:-}"
+# Evidence HMAC: ARN + key version metadata only (never raw key).
+EVIDENCE_META="${HMS_EVIDENCE_HMAC_ENV_FILE:-/etc/nava/hms-evidence-hmac.env}"
+if [[ -f "$EVIDENCE_META" ]]; then
+  # shellcheck disable=SC1090
+  set -a
+  # shellcheck disable=SC1090
+  source "$EVIDENCE_META"
+  set +a
+fi
+append_env HMS_EVIDENCE_HMAC_SECRET_ARN "${HMS_EVIDENCE_HMAC_SECRET_ARN:-}"
+append_env HMS_EVIDENCE_HMAC_KEY_VERSION "${HMS_EVIDENCE_HMAC_KEY_VERSION:-}"
+# Intentionally omitted: HMS_EVIDENCE_HMAC_KEY (child-only via asm-exec).
 append_env HMS_CHROMIUM_EXECUTABLE_PATH "/opt/nava/chromium/chrome"
 append_env PLAYWRIGHT_BROWSERS_PATH "${PLAYWRIGHT_BROWSERS_PATH:-/opt/nava/ms-playwright}"
 append_env HMS_READ_ROLE_PROOF_PATH "${HMS_READ_ROLE_PROOF_PATH:-/etc/nava/hms-read-role-proof.v1.json}"

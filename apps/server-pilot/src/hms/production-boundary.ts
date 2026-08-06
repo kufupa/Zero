@@ -468,7 +468,7 @@ export function assertHmsBrowserOwnerIsolation(): {
   const hmsBrowserOwnerOnly =
     hmsWorker?.env?.AI_WORKER_LANE === 'hms' &&
     aiWorker?.env?.AI_WORKER_LANE === 'default' &&
-    hmsWorker?.script === 'dist/ai/worker.js';
+    hmsWorker?.script === '/usr/local/bin/asm-exec';
   const defaultWorkerCannotClaimHms = aiWorker?.env?.AI_WORKER_LANE !== 'hms';
   if (!hmsBrowserOwnerOnly) {
     throw new Error('HMS production boundary: HMS browser owner isolation failed in PM2');

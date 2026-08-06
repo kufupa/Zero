@@ -52,8 +52,11 @@ module.exports = {
     {
       // Started ONLY by ops-hms-shadow.sh start — never by deploy/restart/boot.
       // Permanent failure must not loop: autorestart false.
+      // Child-only HMS_EVIDENCE_HMAC_KEY via asm-exec resolve arg (never in env/config).
       name: 'hms-ai-worker',
-      script: 'dist/ai/worker.js',
+      script: '/usr/local/bin/asm-exec',
+      args: '-- /usr/bin/env HMS_EVIDENCE_HMAC_KEY={{resolve:secretsmanager:nava-zero/server-pilot/hms-evidence-hmac}} /usr/bin/node dist/ai/worker.js',
+      interpreter: 'none',
       cwd: '/home/ubuntu/repos/zero/apps/server-pilot',
       instances: 1,
       exec_mode: 'fork',
@@ -65,6 +68,10 @@ module.exports = {
         AI_WORKER_LANE: 'hms',
         HMS_DRAFT_ENRICHMENT_MODE: process.env.HMS_DRAFT_ENRICHMENT_MODE ?? 'off',
         HMS_READ_SECRET_ARN: process.env.HMS_READ_SECRET_ARN ?? '',
+        HMS_EVIDENCE_HMAC_SECRET_ARN:
+          process.env.HMS_EVIDENCE_HMAC_SECRET_ARN ?? '',
+        HMS_EVIDENCE_HMAC_KEY_VERSION:
+          process.env.HMS_EVIDENCE_HMAC_KEY_VERSION ?? '',
         HMS_CHROMIUM_EXECUTABLE_PATH:
           process.env.HMS_CHROMIUM_EXECUTABLE_PATH ?? '/opt/nava/chromium/chrome',
         PLAYWRIGHT_BROWSERS_PATH:
