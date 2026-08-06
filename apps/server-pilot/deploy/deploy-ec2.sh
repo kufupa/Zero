@@ -93,6 +93,12 @@ fi
 
 export PATH="${HOME}/.local/share/pnpm:${HOME}/.nvm/versions/node/$(ls "${HOME}/.nvm/versions/node" 2>/dev/null | sort -V | tail -1)/bin:${PATH}"
 
+# husky prepare copyFileSync needs owner-write on generated shim; prior deploys
+# can leave .husky/_/h mode 0444 and abort pnpm install with EACCES.
+if [ -e "${REPO_ROOT}/.husky/_/h" ]; then
+  chmod u+w "${REPO_ROOT}/.husky/_/h" || true
+fi
+
 echo "== pnpm install =="
 pnpm install --frozen-lockfile
 

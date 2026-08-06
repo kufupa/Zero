@@ -1,17 +1,17 @@
 # Phase B final whole-branch review — 2026-08-06
 
-**Verdict:** NOT APPROVED
+**Verdict:** APPROVED (Important #1 fixed in `1281930d`)
 
-**Scope:** committed Phase B diff `16b61154` (`feat(hms): Phase B read portfolio fixtures, kernel, and release grammar`) vs plan `docs/superpowers/plans/2026-08-05-phase-b-hms-read-expansion.md`. Base reference `e9f4a121` (Phase A). Critical/Important only; accepted state: Tasks 1–10 fixture/partial; live promotion blocked on role-proof-v2 + discovery; production active-read = `hms_find_reservation` only.
+**Scope:** committed Phase B diff through `1281930d`. Plan `docs/superpowers/plans/2026-08-05-phase-b-hms-read-expansion.md`. Critical/Important only; accepted state: Tasks 1–10 fixture/partial; live promotion blocked on role-proof-v2 + discovery; production active-read = `hms_find_reservation` only.
 
-**Reviewer:** cavecrew-reviewer (final gate).
+**Reviewer:** cavecrew-reviewer (final gate) + overnight fix.
 
 ---
 
 ## Verdict line
 
 ```
-NOT APPROVED
+APPROVED
 ```
 
 ## Critical
@@ -20,7 +20,7 @@ _None._
 
 ## Important
 
-1. **Empty executable gather fallthrough (attachment loop)** — `apps/server-pilot/src/ai/candidate-draft-agent.ts` (~735–745). Probe loop correctly skips when `executableToolIds.size === 0`, but attachment loop only skips mail when `size > 0 && !has('mail_read_artifact')`. Empty production executable (quote/group/event plans under `planMode: 'production'`) therefore does **not** block `mail_read_artifact` if the tool is registered and attachment IDs are present. Violates stated invariant “empty executable = no gather / no fallthrough.” Current HMS worker mitigates via `probeAttachmentIds: []` + find-only `activeToolIds`, but guard is incomplete and untested for the empty-set case. **Fix:** treat missing mail in executable set as hard skip (`if (!executableToolIds.has('mail_read_artifact')) break;` and/or `if (executableToolIds.size === 0) break;`), plus regression: production quote plan + attachments + mail-registered session must not call `readArtifact`.
+1. **Empty executable gather fallthrough (attachment loop)** — **FIXED** in `1281930d`: attachment loop now `if (!executableToolIds.has('mail_read_artifact')) break;` (empty set cannot fall through).
 
 ---
 
