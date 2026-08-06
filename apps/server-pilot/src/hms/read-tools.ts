@@ -397,6 +397,8 @@ export const READ_TOOLS: Readonly<Record<ReadToolId, ReadToolDefinition>> = {
     evidenceRefs: {
       fixtureDigest:
         '092f92a82592866fbc85e6e68cdffaa312e32a8dbfbc8d3cf1b596856567ba42',
+      discoveryDigest:
+        '45f2e1372e37187f4757dbcaf2a4ea95d1094acb6ab29c089e9fb39470c475b8',
     },
     observationSchema: documentListReadDataSchema,
     claimKinds: ['document_metadata'],
@@ -432,6 +434,8 @@ export const READ_TOOLS: Readonly<Record<ReadToolId, ReadToolDefinition>> = {
     evidenceRefs: {
       fixtureDigest:
         '80db0d4e4db89de7e86e1b65733943823913b8275fe59d86a438a34e842b1830',
+      discoveryDigest:
+        '45f2e1372e37187f4757dbcaf2a4ea95d1094acb6ab29c089e9fb39470c475b8',
     },
     observationSchema: sentEmailAuditReadDataSchema,
     claimKinds: ['sent_email_audit'],

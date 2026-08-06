@@ -103,7 +103,9 @@ describe('hms-rca-dossier', () => {
       const dossier = loadRcaDossier(toolId);
       expect(dossier.toolId).toBe(toolId);
       expect(dossier.toolVersion).toBe(READ_TOOLS[toolId].version);
-      expect(dossier.symptom).toMatch(/fixture_verified awaiting discovery/);
+      expect(dossier.symptom).toMatch(
+        /fixture_verified awaiting discovery|discovery_verified awaiting live proof|live_verified/,
+      );
       expect(dossier.unresolvedGaps.length).toBeGreaterThan(0);
       expect(
         dossier.unresolvedGaps.every((code) => /^BLOCKED_[A-Z0-9_]+$/.test(code)),

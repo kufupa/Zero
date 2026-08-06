@@ -75,6 +75,7 @@ import {
 
 /** Quote receipt-v2 + private index bind (masked digests only). */
 export { materializeMaskedQuoteProofArtifacts } from '../hms/quote-proof-artifacts.js';
+export { materializeMaskedCommsProofArtifacts } from '../hms/communications-proof-artifacts.js';
 
 export const HMS_DEPENDENCY_REVISION =
   'playwright-1.52.0-chromium-1169' as const;

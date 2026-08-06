@@ -1,0 +1,357 @@
+/**
+ * Abort-first soft-capture for Sent Email (PSSNEL) and Tax Invoice surfaces.
+ * Redacted structural signatures only — never body/query values, subjects,
+ * addresses, or attachment filenames.
+ * Orchestrator-only: requires HMS_DISCOVERY_ALLOW_LIVE=1.
+ */
+import { writeFile } from 'node:fs/promises';
+import { chromium, type Request } from 'playwright';
+import {
+  GetSecretValueCommand,
+  SecretsManagerClient,
+} from '@aws-sdk/client-secrets-manager';
+import { hmsSecretSchema } from '../src/hms/runtime.js';
+
+type SurfaceId = 'sent_email' | 'tax_invoice';
+
+type RedactedSig = {
+  method: string;
+  path: string;
+  resourceType: string;
+  queryKeys: string[];
+  bodyKeys: string[];
+  bodyBytes: number;
+  contentType: string | null;
+  decision: 'continue' | 'abort';
+  abortReason?: string;
+};
+
+function redact(req: Request): Omit<RedactedSig, 'decision' | 'abortReason'> {
+  const url = new URL(req.url());
+  const headers = req.headers();
+  const contentType =
+    (headers['content-type'] ?? '').split(';', 1)[0]!.trim() || null;
+  const raw = req.postData() ?? '';
+  let bodyKeys: string[] = [];
+  if (raw && (contentType === 'application/x-www-form-urlencoded' || !contentType)) {
+    bodyKeys = [...new URLSearchParams(raw).keys()];
+  } else if (raw && contentType === 'application/json') {
+    try {
+      bodyKeys = Object.keys(JSON.parse(raw) as Record<string, unknown>);
+    } catch {
+      bodyKeys = [];
+    }
+  }
+  return {
+    method: req.method().toUpperCase(),
+    path: url.pathname,
+    resourceType: req.resourceType(),
+    queryKeys: [...url.searchParams.keys()],
+    bodyKeys,
+    bodyBytes: Buffer.byteLength(raw),
+    contentType,
+  };
+}
+
+function shouldAbort(path: string, method: string): string | null {
+  if (
+    /(save|delete|duplicate|checkin|checkout|amend|cancel|post|settle|refund|send|resend|print|export|generate|submit|email|finalize|void)/i.test(
+      path,
+    )
+  ) {
+    return 'mutation_or_delivery_path';
+  }
+  if (method !== 'GET' && method !== 'POST' && method !== 'HEAD' && method !== 'OPTIONS') {
+    return 'unsafe_method';
+  }
+  return null;
+}
+
+function isShellOrLoginPost(path: string, body: string): boolean {
+  return (
+    /\/session|\/login|j_security|Authenticate|BSSTRT|COMMON/i.test(path) ||
+    /SYSTEM_FUNCTION_NAME|USER_FUNCTION_NAME/i.test(body)
+  );
+}
+
+/** List/search envelopes — abort until preTransmissionEvidence exists. */
+function isSurfaceSearchPost(path: string, body: string): boolean {
+  if (/\.search$/i.test(path)) return true;
+  if (/GRIDRESULT|ONLY_DATA_REQUIRED|pageaction=search/i.test(body)) return true;
+  if (/PSSNEL|OSTXI|OSTAX|OSINV/i.test(path) && /\.search|grid|list/i.test(path)) {
+    return true;
+  }
+  return false;
+}
+
+async function captureSurface(surface: SurfaceId): Promise<void> {
+  if (process.env.HMS_DISCOVERY_ALLOW_LIVE !== '1') {
+    throw new Error('refused: set HMS_DISCOVERY_ALLOW_LIVE=1');
+  }
+  const arn = process.env.HMS_READ_SECRET_ARN;
+  if (!arn) throw new Error('HMS_READ_SECRET_ARN required');
+  const outPath =
+    process.env.HMS_COMMS_CAPTURE_OUT ??
+    `/tmp/hms-${surface}-soft-capture.json`;
+
+  const client = new SecretsManagerClient({
+    region: process.env.AWS_REGION ?? 'af-south-1',
+  });
+  const res = await client.send(new GetSecretValueCommand({ SecretId: arn }));
+  if (!res.SecretString) throw new Error('secret empty');
+  const secret = hmsSecretSchema.parse(JSON.parse(res.SecretString));
+  if (secret.credentialMode !== 'view_only') {
+    throw new Error('refuse: credentialMode must be view_only');
+  }
+  const origin = new URL(secret.loginUrl).origin;
+
+  const signatures: RedactedSig[] = [];
+  const structure: Record<string, unknown> = {
+    surface,
+    menuLabelsSeen: [] as string[],
+    functionNames: [] as string[],
+    pageTitle: null as string | null,
+    hasTargetLabel: false,
+    hasPrintAction: false,
+    hasEmailAction: false,
+    hasResendAction: false,
+    hasAttachmentOpen: false,
+  };
+
+  const targetLabels =
+    surface === 'sent_email'
+      ? ['Front Desk', 'Sent Email', 'Email']
+      : ['Front Desk', 'Tax Invoice', 'Invoice'];
+
+  const browser = await chromium.launch({
+    headless: true,
+    executablePath: process.env.HMS_CHROMIUM_EXECUTABLE_PATH || undefined,
+  });
+  const ctx = await browser.newContext({
+    acceptDownloads: false,
+    serviceWorkers: 'block',
+    ignoreHTTPSErrors: true,
+  });
+
+  await ctx.route('**/*', async (route) => {
+    const req = route.request();
+    const url = req.url();
+    if (!url.startsWith(origin)) {
+      signatures.push({
+        ...redact(req),
+        decision: 'abort',
+        abortReason: 'cross_origin',
+      });
+      await route.abort();
+      return;
+    }
+    const path = new URL(url).pathname;
+    const abortReason = shouldAbort(path, req.method());
+    if (abortReason) {
+      signatures.push({
+        ...redact(req),
+        decision: 'abort',
+        abortReason,
+      });
+      await route.abort();
+      return;
+    }
+    if (req.method() === 'POST') {
+      const body = req.postData() ?? '';
+      const shellOrLogin = isShellOrLoginPost(path, body);
+      const surfaceSearch = isSurfaceSearchPost(path, body);
+      // Search/list posts always need independent preTransmissionEvidence.
+      if (surfaceSearch) {
+        signatures.push({
+          ...redact(req),
+          decision: 'abort',
+          abortReason: `${surface}_search_needs_preTransmissionEvidence`,
+        });
+        await route.abort();
+        return;
+      }
+      if (!shellOrLogin) {
+        signatures.push({
+          ...redact(req),
+          decision: 'abort',
+          abortReason: 'unknown_post_pending_evidence',
+        });
+        await route.abort();
+        return;
+      }
+    }
+    signatures.push({ ...redact(req), decision: 'continue' });
+    await route.continue();
+  });
+
+  const page = await ctx.newPage();
+  try {
+    await page.goto(secret.loginUrl, {
+      waitUntil: 'domcontentloaded',
+      timeout: 60_000,
+    });
+    try {
+      await page.locator('input[name=userid]').fill(secret.username);
+    } catch {
+      await page
+        .locator('input[name=username], input[name=j_username]')
+        .first()
+        .fill(secret.username);
+    }
+    await page.locator('input[name=password]').fill(secret.password);
+    await Promise.all([
+      page.waitForURL(/\/web\/base\/COMMON/i, { timeout: 60_000 }).catch(() => null),
+      page.getByRole('button', { name: 'Sign in' }).click().catch(async () => {
+        await page.locator('input[name=password]').press('Enter');
+      }),
+    ]);
+
+    await page.waitForTimeout(3_000);
+    structure.pageTitle = await page.title();
+
+    // Expand Front Desk then open target — force click for ExtJS tree.
+    for (const label of targetLabels) {
+      const loc = page.getByText(label, { exact: true }).first();
+      const visible = await loc.isVisible().catch(() => false);
+      if (visible) {
+        await loc.click({ force: true, timeout: 8_000 }).catch(() => undefined);
+        await page.waitForTimeout(2_500);
+      } else {
+        // Fallback substring match for ExtJS menu paint.
+        await page
+          .locator(`text=${label}`)
+          .first()
+          .click({ force: true, timeout: 5_000 })
+          .catch(() => undefined);
+        await page.waitForTimeout(2_000);
+      }
+    }
+
+    // Collect tree/menu node texts (structure labels only).
+    const treeLabels = await page.evaluate(() => {
+      const nodes = [
+        ...document.querySelectorAll(
+          '.x-tree-node-text, .x-menu-item-text, .x-btn-inner, a, span',
+        ),
+      ];
+      return nodes
+        .map((el) => (el.textContent ?? '').trim())
+        .filter((t) => t.length > 2 && t.length < 64)
+        .filter((t) =>
+          /Front Desk|Sent Email|Tax Invoice|Email|Invoice|Guest Stay|Folio|Availability/i.test(
+            t,
+          ),
+        )
+        .slice(0, 80);
+    });
+    structure.menuLabelsSeen = [...new Set(treeLabels)];
+
+    const afterNav = await page.evaluate(
+      () => document.body?.innerText?.slice(0, 6000) ?? '',
+    );
+    // Structure-only flags — never capture raw email/subject/filename text.
+    structure.hasTargetLabel =
+      surface === 'sent_email'
+        ? /Sent Email/i.test(afterNav)
+        : /Tax Invoice/i.test(afterNav);
+    structure.hasPrintAction = /\bPrint\b/i.test(afterNav);
+    structure.hasEmailAction = /\bE-?mail\b/i.test(afterNav);
+    structure.hasResendAction = /\bResend\b/i.test(afterNav);
+    structure.hasAttachmentOpen = /\bOpen Attachment|View Attachment\b/i.test(
+      afterNav,
+    );
+
+    const labels = afterNav
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l.length > 2 && l.length < 80)
+      .slice(0, 200);
+    const fromBody = labels.filter((l) =>
+      /Front Desk|Sent Email|Tax Invoice|Email|Invoice|Guest Stay|Folio/i.test(l),
+    );
+    structure.menuLabelsSeen = [
+      ...new Set([
+        ...((structure.menuLabelsSeen as string[]) ?? []),
+        ...fromBody,
+      ]),
+    ].slice(0, 80);
+    structure.functionNames = [
+      ...new Set(
+        [...afterNav.matchAll(/\b(OS[A-Z0-9]{3,8}|PS[A-Z0-9]{3,8})\b/g)].map(
+          (m) => m[1]!,
+        ),
+      ),
+    ].slice(0, 40);
+
+    const payload = {
+      schemaVersion: 1,
+      surface,
+      discoveryOperationId:
+        surface === 'sent_email' ? 'sent_email_list' : 'tax_invoice_list',
+      capturedAt: new Date().toISOString(),
+      originHost: new URL(origin).host,
+      structure,
+      signatures: signatures.slice(0, 400),
+      abortSummary: signatures
+        .filter((s) => s.decision === 'abort')
+        .reduce<Record<string, number>>((acc, s) => {
+          const key = s.abortReason ?? 'unknown';
+          acc[key] = (acc[key] ?? 0) + 1;
+          return acc;
+        }, {}),
+      continuedPostPaths: [
+        ...new Set(
+          signatures
+            .filter((s) => s.decision === 'continue' && s.method === 'POST')
+            .map((s) => s.path),
+        ),
+      ].slice(0, 40),
+      abortedPostPaths: [
+        ...new Set(
+          signatures
+            .filter((s) => s.decision === 'abort' && s.method === 'POST')
+            .map((s) => `${s.path}:${s.abortReason ?? ''}`),
+        ),
+      ].slice(0, 80),
+    };
+
+    await writeFile(outPath, `${JSON.stringify(payload, null, 2)}\n`, {
+      mode: 0o600,
+    });
+    // eslint-disable-next-line no-console
+    console.log(
+      JSON.stringify({
+        ok: true,
+        surface,
+        outPath,
+        hasTargetLabel: structure.hasTargetLabel,
+        functionNames: structure.functionNames,
+        abortSummary: payload.abortSummary,
+        abortedPostPaths: payload.abortedPostPaths.slice(0, 20),
+      }),
+    );
+  } finally {
+    await browser.close();
+  }
+}
+
+async function main(): Promise<void> {
+  const surfaceArg = (process.argv[2] || 'both').trim() as
+    | SurfaceId
+    | 'both';
+  if (surfaceArg === 'both') {
+    await captureSurface('sent_email');
+    await captureSurface('tax_invoice');
+    return;
+  }
+  if (surfaceArg !== 'sent_email' && surfaceArg !== 'tax_invoice') {
+    throw new Error('usage: hms-communications-soft-capture.ts [sent_email|tax_invoice|both]');
+  }
+  await captureSurface(surfaceArg);
+}
+
+main().catch((err) => {
+  // eslint-disable-next-line no-console
+  console.error(err instanceof Error ? err.message : String(err));
+  process.exit(1);
+});

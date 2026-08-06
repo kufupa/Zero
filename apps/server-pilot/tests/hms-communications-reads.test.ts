@@ -397,7 +397,7 @@ describe('hms_list_documents fixture kernel', () => {
 });
 
 describe('communications registry contracts', () => {
-  it('registers separate closed schemas as fixture-only capabilities', () => {
+  it('registers separate closed schemas with sent-email discovery proven', () => {
     expect(READ_TOOLS.hms_sent_email_audit.observationSchema).toBe(
       sentEmailAuditReadDataSchema,
     );
@@ -406,9 +406,23 @@ describe('communications registry contracts', () => {
     );
     expect(READ_TOOLS.hms_sent_email_audit.promotionEvidence.fixture).toBe(true);
     expect(READ_TOOLS.hms_list_documents.promotionEvidence.fixture).toBe(true);
-    expect(capabilityStateFor('hms_sent_email_audit')).toBe('fixture_verified');
-    expect(capabilityStateFor('hms_list_documents')).toBe('fixture_verified');
-    expect(READ_TOOLS.hms_sent_email_audit.promotionEvidence.discovery).toBe(false);
-    expect(READ_TOOLS.hms_list_documents.promotionEvidence.discovery).toBe(false);
+    expect(capabilityStateFor('hms_sent_email_audit')).toBe(
+      'discovery_verified',
+    );
+    expect(capabilityStateFor('hms_list_documents')).toBe('discovery_verified');
+    // Static promotionEvidence.discovery stays false until live promote CAS;
+    // discoveryDigest alone advances capabilityState.
+    expect(READ_TOOLS.hms_sent_email_audit.promotionEvidence.discovery).toBe(
+      false,
+    );
+    expect(READ_TOOLS.hms_list_documents.promotionEvidence.discovery).toBe(
+      false,
+    );
+    expect(
+      READ_TOOLS.hms_sent_email_audit.evidenceRefs.discoveryDigest,
+    ).toMatch(/^[a-f0-9]{64}$/);
+    expect(
+      READ_TOOLS.hms_list_documents.evidenceRefs.discoveryDigest,
+    ).toBe(READ_TOOLS.hms_sent_email_audit.evidenceRefs.discoveryDigest);
   });
 });

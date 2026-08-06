@@ -1,32 +1,34 @@
 {
   "toolId": "hms_list_documents",
   "toolVersion": "1.0.0",
-  "symptom": "fixture_verified awaiting discovery",
+  "symptom": "discovery_verified awaiting live proof",
   "structuralObservation": {
     "routeClass": "document_list_read",
-    "envelopeDiscriminator": "fixture_only_unproven"
+    "envelopeDiscriminator": "sent_email_shared_pssnel_tax_blocked"
   },
   "assumptionsVerified": [
     "fixture_contract_closed",
-    "promotion_evidence_fixture_only"
+    "sent_email_documents_branch_shares_pssnel_manifest"
   ],
-  "assumptionsInvalidated": [],
+  "assumptionsInvalidated": [
+    "tax_invoice_function_code_guessable"
+  ],
   "causalChain": [
-    "fixture_kernel_shipped",
-    "role_proof_v2_absent",
-    "routes_and_positive_controls_unproven"
+    "sent_email_discovery_completed",
+    "tax_invoice_surface_unproven",
+    "tax_invoice_branch_remains_disabled"
   ],
-  "prediction": "Role-proof-v2, reviewed routes, and independent positive control enable abort-first discovery",
+  "prediction": "Promote sent-email documents branch independently; tax invoice waits for proven function code",
   "verificationCommands": [
     "unset DATABASE_URL VITEST_ALLOW_PILOT_RDS",
-    "npx vitest run tests/hms-rca-dossier.test.ts"
+    "npx vitest run tests/hms-live-communications-reads.test.ts"
   ],
   "liveArtifactIds": [],
   "unresolvedGaps": [
+    "BLOCKED_TAX_INVOICE_SURFACE_UNPROVEN",
     "BLOCKED_NO_ROLE_PROOF_V2",
-    "BLOCKED_NO_REVIEWED_REQUEST_MANIFEST",
-    "BLOCKED_NO_POSITIVE_CONTROL",
-    "BLOCKED_TOOL_FIXTURE_ONLY"
+    "BLOCKED_NO_LIVE_PROOF_RECEIPT",
+    "BLOCKED_TOOL_DISCOVERY_ONLY"
   ],
-  "updatedAt": "2026-08-06T00:00:00.000Z"
+  "updatedAt": "2026-08-06T20:00:00.000Z"
 }

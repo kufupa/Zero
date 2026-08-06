@@ -1040,3 +1040,160 @@ export function buildExactOsrravSearchManifest(
     ],
   });
 }
+
+/** Sent Email list endpoint (PSSNEL.HDR) — proven 2026-08-06 abort-first discovery. */
+export const LIVE_SENT_EMAIL_OPEN_PATH = '/web/base/PSSNEL';
+export const LIVE_SENT_EMAIL_LIST_PATH = '/web/base/PSSNEL.HDR';
+
+/**
+ * Functional Sent Email POSTs: open PSSNEL + list HDR only.
+ * Search/print/email/resend/attachment paths are structurally absent.
+ */
+export function buildLiveSentEmailFunctionalRules(origin: string): RequestRule[] {
+  return [
+    {
+      id: 'live-login-post',
+      origin,
+      method: 'POST',
+      path: '/web/base/login',
+      resourceTypes: ['document', 'xhr', 'fetch'],
+      contentType: 'application/x-www-form-urlencoded',
+      fixedQuery: {},
+      variableQuery: {},
+      fixedBody: {},
+      variableBody: {
+        tenant: { pattern: '.{0,32}', maxLength: 32 },
+        USER_FUNCTION_NAME: { pattern: '.{0,64}', maxLength: 64 },
+        SYSTEM_FUNCTION_NAME: { pattern: '.{0,64}', maxLength: 64 },
+        userid: { pattern: '.{0,128}', maxLength: 128 },
+        password: { pattern: '.{0,256}', maxLength: 256 },
+        csrftckt: { pattern: '.{0,256}', maxLength: 256 },
+        resetpassword: { pattern: '.{0,8}', maxLength: 8 },
+      },
+      maxBodyBytes: 4096,
+      redirectPolicy: 'same-reviewed-chain',
+    },
+    {
+      id: 'live-login-get',
+      origin,
+      method: 'GET',
+      path: '/web/base/logindisp',
+      resourceTypes: ['document'],
+      fixedQuery: {},
+      variableQuery: {
+        tenant: { pattern: 'HMS_LEGACY', maxLength: 32 },
+      },
+      fixedBody: {},
+      variableBody: {},
+      maxBodyBytes: 4096,
+      redirectPolicy: 'same-reviewed-chain',
+    },
+    {
+      id: 'live-common-get',
+      origin,
+      method: 'GET',
+      path: '/web/base/COMMON',
+      resourceTypes: ['document', 'xhr', 'fetch'],
+      fixedQuery: {},
+      variableQuery: {
+        REQ_KEY: { pattern: '[A-Za-z0-9._-]{0,128}', maxLength: 128 },
+      },
+      fixedBody: {},
+      variableBody: {},
+      maxBodyBytes: 4096,
+      redirectPolicy: 'same-reviewed-chain',
+    },
+    {
+      id: 'live-bsstrt-open',
+      origin,
+      method: 'POST',
+      path: '/web/base/BSSTRT',
+      resourceTypes: ['xhr', 'fetch'],
+      contentType: 'application/x-www-form-urlencoded',
+      fixedQuery: {},
+      variableQuery: {},
+      fixedBody: {
+        SYSTEM_FUNCTION_NAME: 'BSSTRT',
+        USER_FUNCTION_NAME: 'BSSTRT',
+        MENU_MODULE_KEY: '0',
+        removescreenflows: 'yes',
+      },
+      variableBody: {},
+      maxBodyBytes: 4096,
+      redirectPolicy: 'same-reviewed-chain',
+    },
+    {
+      id: 'live-bsstrt-hdr',
+      origin,
+      method: 'POST',
+      path: '/web/base/BSSTRT.HDR',
+      resourceTypes: ['xhr', 'fetch'],
+      contentType: 'application/x-www-form-urlencoded',
+      fixedQuery: {},
+      variableQuery: {},
+      fixedBody: {
+        SYSTEM_FUNCTION_NAME: 'BSSTRT',
+        USER_FUNCTION_NAME: 'BSSTRT',
+        manurefresh: 'yes',
+      },
+      variableBody: {},
+      maxBodyBytes: 4096,
+      redirectPolicy: 'same-reviewed-chain',
+    },
+    {
+      id: 'live-pssnel-open',
+      origin,
+      method: 'POST',
+      path: LIVE_SENT_EMAIL_OPEN_PATH,
+      resourceTypes: ['xhr', 'fetch'],
+      contentType: 'application/x-www-form-urlencoded',
+      fixedQuery: {},
+      variableQuery: {
+        USER_FUNCTION_NAME: VAR64,
+        FUNCTION_CLASS: VAR32,
+      },
+      fixedBody: {
+        USER_FUNCTION_NAME: 'PSSNEL',
+        SYSTEM_FUNCTION_NAME: 'PSSNEL',
+        FUNCTION_CLASS: 'WEBL',
+        CURRENT_TAB_NAME: '',
+        MENU_MODULE_KEY: '0',
+        removescreenflows: 'yes',
+      },
+      variableBody: {},
+      maxBodyBytes: 4096,
+      redirectPolicy: 'same-reviewed-chain',
+    },
+    {
+      id: 'live-pssnel-hdr-list',
+      origin,
+      method: 'POST',
+      path: LIVE_SENT_EMAIL_LIST_PATH,
+      resourceTypes: ['xhr', 'fetch'],
+      contentType: 'application/x-www-form-urlencoded',
+      fixedQuery: {},
+      variableQuery: {},
+      fixedBody: {
+        SYSTEM_FUNCTION_NAME: 'PSSNEL',
+        USER_FUNCTION_NAME: 'PSSNEL',
+        CURRENT_TAB_NAME: 'HDR',
+      },
+      variableBody: {},
+      maxBodyBytes: 65_536,
+      redirectPolicy: 'same-reviewed-chain',
+    },
+  ];
+}
+
+/** Session manifest for Sent Email list (shared by audit + sent-document branches). */
+export function buildLiveSentEmailListManifest(
+  origin: string,
+): RequestPolicyManifest {
+  return requestPolicyManifestSchema.parse({
+    rules: [
+      ...buildLiveGuestStayChromeGetRules(origin),
+      ...buildLiveSentEmailFunctionalRules(origin),
+    ],
+  });
+}
+

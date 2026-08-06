@@ -51,6 +51,16 @@ export const QUOTE_STAY_IMPL_V1 = seedImplementationDigest(
   '2.0.0:v1',
 );
 
+export const SENT_EMAIL_AUDIT_IMPL_V1 = seedImplementationDigest(
+  'hms_sent_email_audit',
+  '1.0.0:v1',
+);
+
+export const LIST_DOCUMENTS_IMPL_V1 = seedImplementationDigest(
+  'hms_list_documents',
+  '1.0.0:v1',
+);
+
 function stubResult(
   toolId: ReadToolId,
   status: ToolResult<unknown>['status'] = 'manual_required',
@@ -182,6 +192,8 @@ const HANDLER_INDEX: ReadonlyMap<string, ReadHandlerFactory> = new Map([
   [`hms_find_reservation:${FIND_RESERVATION_IMPL_V2}`, makeFactory('hms_find_reservation', FIND_RESERVATION_IMPL_V2)],
   [`mail_read_artifact:${MAIL_ARTIFACT_IMPL_V1}`, makeFactory('mail_read_artifact', MAIL_ARTIFACT_IMPL_V1)],
   [`hms_quote_stay:${QUOTE_STAY_IMPL_V1}`, makeFactory('hms_quote_stay', QUOTE_STAY_IMPL_V1)],
+  [`hms_sent_email_audit:${SENT_EMAIL_AUDIT_IMPL_V1}`, makeFactory('hms_sent_email_audit', SENT_EMAIL_AUDIT_IMPL_V1)],
+  [`hms_list_documents:${LIST_DOCUMENTS_IMPL_V1}`, makeFactory('hms_list_documents', LIST_DOCUMENTS_IMPL_V1)],
 ]);
 
 export function handlerIndexKey(
