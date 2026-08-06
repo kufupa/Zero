@@ -1,8 +1,9 @@
 /**
  * Purpose-built HMS live proof CLI (compiled to dist/ops/hms-live-proof.js).
- * Actions: canary | start | status | stop | rearm | proof-video | purge-artifacts.
+ * Phase A: canary | start | status | stop | rearm | proof-video | purge-artifacts | accept-g1.
+ * Phase B: shared argv via phase-b-operation (doctor, status, read-*, artifacts, rearm, ...).
  * No tsx. Never accepts raw lookup / thread / message ID via argv.
- * Proof files store digests only — never guest/email/HMS/model values.
+ * Proof files store digests only - never guest/email/HMS/model values.
  */
 import { createHash, randomUUID } from 'node:crypto';
 import {
@@ -65,6 +66,12 @@ import {
   LIVE_GUEST_STAY_SEARCH_PATH,
   liveNotFoundCanaryCandidate,
 } from '../hms/live-read-manifest.js';
+import {
+  PhaseBOperationStore,
+  parsePhaseBArgv,
+  runPhaseBLocalOperator,
+  type PhaseBOperatorResult,
+} from './phase-b-operation.js';
 
 export const HMS_DEPENDENCY_REVISION =
   'playwright-1.52.0-chromium-1169' as const;
@@ -1982,9 +1989,85 @@ async function runPurgeArtifacts(): Promise<void> {
   emitOk(`HMS_ARTIFACT_PURGE_OK removed=${removed}`);
 }
 
+const PHASE_B_FRONT_ACTIONS = new Set([
+  'doctor',
+  'status',
+  'read-discovery',
+  'read-proof',
+  'read-wave',
+  'read-promote',
+  'read-rollback',
+  'artifacts',
+  'fetch-artifact',
+  'rearm',
+]);
+
+function isPhaseBArgv(argv: string[]): boolean {
+  const action = argv[0] ?? '';
+  if (!PHASE_B_FRONT_ACTIONS.has(action)) return false;
+  // Phase A keeps bare `status` and `rearm` (single token).
+  if ((action === 'status' || action === 'rearm') && argv.length === 1) {
+    return false;
+  }
+  return true;
+}
+
+function phaseBOperationRoot(): string {
+  return (
+    process.env.HMS_PHASE_B_OPERATION_ROOT?.trim() ||
+    join(sharedDir(), 'phase-b-operations')
+  );
+}
+
+function runPhaseBOperator(argv: string[]): PhaseBOperatorResult {
+  const parsed = parsePhaseBArgv(argv);
+  if (!parsed.ok) return parsed.result;
+  const operationId =
+    ('resumeOperationId' in parsed.command &&
+      parsed.command.resumeOperationId) ||
+    randomUUID();
+  const sourceRevision =
+    process.env.NAVA_SOURCE_REVISION?.trim() ||
+    (existsSync(
+      process.env.NAVA_PROOF_SOURCE_REVISION_PATH?.trim() ||
+        '/opt/nava/shared/nava-proof-source-revision',
+    )
+      ? readFileSync(
+          process.env.NAVA_PROOF_SOURCE_REVISION_PATH?.trim() ||
+            '/opt/nava/shared/nava-proof-source-revision',
+          'utf8',
+        ).trim()
+      : 'unknown');
+  const store = new PhaseBOperationStore({ rootDir: phaseBOperationRoot() });
+  return runPhaseBLocalOperator({
+    command: parsed.command,
+    operationId,
+    sourceRevision,
+    store,
+  });
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   assertNoLookupArgv(argv);
+
+  if (isPhaseBArgv(argv)) {
+    const result = runPhaseBOperator(argv);
+    const json = argv.includes('--json');
+    if (json) {
+      process.stdout.write(`${JSON.stringify(result)}\n`);
+    } else {
+      const tag =
+        result.outcome === 'ok'
+          ? 'HMS_OK'
+          : result.outcome === 'wait'
+            ? 'HMS_WAIT'
+            : 'HMS_FAIL';
+      process.stdout.write(`${tag} code=${result.code}\n`);
+    }
+    process.exit(result.exitCode);
+  }
+
   if (argv.length !== 1) emitFail('POLICY_BLOCK');
   const action = argv[0] ?? '';
   if (

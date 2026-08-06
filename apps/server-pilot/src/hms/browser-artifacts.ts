@@ -53,7 +53,7 @@ export type HmsExecutionClass = 'normal' | 'live_proof';
 
 export type HmsBrowserAuditSpec = {
   operationId: string;
-  toolId: 'hms_find_reservation';
+  toolId: HmsReadToolId;
   toolVersion: string;
   dependencyRevision: string;
   executionClass: HmsExecutionClass;

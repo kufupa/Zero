@@ -5,6 +5,8 @@
 # Usage:
 #   bash apps/server-pilot/deploy/hms-read-gate.sh --fixture-only
 #   bash apps/server-pilot/deploy/hms-read-gate.sh --full   # still no live HMS from this script
+#   bash apps/server-pilot/deploy/hms-read-gate.sh --fixture-only --tool hms_find_reservation
+#   bash apps/server-pilot/deploy/hms-read-gate.sh --fixture-only --wave B1
 #
 # Never sources .env.production / .env into Vitest.
 # Outputs under .superpowers/sdd/hms-read-foundation/gates/ (gitignored via local .gitignore).
@@ -14,18 +16,57 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVER_PILOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 REPO_ROOT="$(cd "${SERVER_PILOT}/../.." && pwd)"
 GATE_DIR="${REPO_ROOT}/.superpowers/sdd/hms-read-foundation/gates"
-if [ "$#" -gt 1 ]; then
-  echo "usage: $0 [--fixture-only|--full]" >&2
-  exit 2
-fi
-MODE="${1:---fixture-only}"
+
+MODE="--fixture-only"
+SCOPE_TOOL=""
+SCOPE_WAVE=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --fixture-only|--full)
+      MODE="$1"
+      shift
+      ;;
+    --tool)
+      [ "$#" -ge 2 ] || {
+        echo "usage: $0 [--fixture-only|--full] [--tool <tool-id>|--wave <subwave-id>]" >&2
+        exit 2
+      }
+      [ -z "$SCOPE_TOOL" ] && [ -z "$SCOPE_WAVE" ] || {
+        echo "usage: $0 [--fixture-only|--full] [--tool <tool-id>|--wave <subwave-id>]" >&2
+        exit 2
+      }
+      SCOPE_TOOL="$2"
+      shift 2
+      ;;
+    --wave)
+      [ "$#" -ge 2 ] || {
+        echo "usage: $0 [--fixture-only|--full] [--tool <tool-id>|--wave <subwave-id>]" >&2
+        exit 2
+      }
+      [ -z "$SCOPE_TOOL" ] && [ -z "$SCOPE_WAVE" ] || {
+        echo "usage: $0 [--fixture-only|--full] [--tool <tool-id>|--wave <subwave-id>]" >&2
+        exit 2
+      }
+      SCOPE_WAVE="$2"
+      shift 2
+      ;;
+    *)
+      echo "usage: $0 [--fixture-only|--full] [--tool <tool-id>|--wave <subwave-id>]" >&2
+      exit 2
+      ;;
+  esac
+done
 case "$MODE" in
   --fixture-only|--full) ;;
   *)
-    echo "usage: $0 [--fixture-only|--full]" >&2
+    echo "usage: $0 [--fixture-only|--full] [--tool <tool-id>|--wave <subwave-id>]" >&2
     exit 2
     ;;
 esac
+# Scope is recorded for orchestrator filtering; fixture suites remain portfolio-safe.
+if [ -n "$SCOPE_TOOL" ] || [ -n "$SCOPE_WAVE" ]; then
+  echo "== hms-read-gate: scope tool=${SCOPE_TOOL:--} wave=${SCOPE_WAVE:--} =="
+fi
 
 mkdir -p "$GATE_DIR"
 cat > "${GATE_DIR}/.gitignore" <<'EOF'

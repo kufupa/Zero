@@ -1,43 +1,48 @@
-# Task 12 Report — EC2 deploy + full U9 gate + handoff
+# Task 12 Report — Wire autonomous Phase B live operator
 
-**Status:** DONE_WITH_CONCERNS  
-**Branch:** `EC2-pilot`  
-**HEAD:** `71d6311d` (handoff)  
-**Instance:** `i-008f737974a9ba9b3` (`af-south-1`)
+**Status:** DONE  
+**Branch:** `phase-b-autonomous-read-expansion`  
+**Base HEAD:** `868eb26c`  
+**Worktree:** `C:/Users/gamin/.config/superpowers/worktrees/zero/phase-b-autonomous-read-expansion`
 
-## Gate
+## What landed
 
-- **Result:** PASS — `4 passed (2.8m)` (AE1, AE7, AE9, AE8)
-- **Command:** `ssm-run-command.sh "bash …/playwright-real-mail-ui-gate.sh"`
-- **SPA:** `https://nava.legacy.local`
-- **Env:** `BETTER_AUTH_URL=https://nava.legacy.local`, `UNDO_SEND_SECONDS=0`, `AI_WRITE_GATE_ENABLED=true`, `MAIL_TRANSPORT_MODE=real`, FE `VITE_MAIL_POLL_MS=15000`
+- Atomic operation store + shared argv parser + terminal matrix + nextCommand renderer in `apps/server-pilot/src/ops/phase-b-operation.ts`
+- `hms-live-proof.ts` remains sole proof CLI; Phase B argv routes through operation store (no second CLI)
+- `ops-hms-proof.sh` unlatched: shared local parser + one local-operator envelope; no `PHASE_B_BLOCKED` in executable source
+- `hms-read-gate.sh` accepts optional `--tool` / `--wave` scope
+- Artifact index extended with operation/source/release/completeness/digest/access-audit fields
+- `HmsBrowserAuditSpec.toolId` widened to `HmsReadToolId`; v1 find receipts preserved
+- Runbook updated for Task 12 grammar + terminal ownership matrix
 
-## Commits (Task 12 slice)
+## Test results
 
-| SHA | Message |
-|-----|---------|
-| `c5d8caec` | fix(mail): add .js extension to resolve-reply-headers import |
-| `d696d301` | fix(e2e): align Playwright base URL with BETTER_AUTH_URL host |
-| `1bcdb8ef` | fix(e2e): dismiss Nava onboarding overlay before compose editor |
-| `4f0fbe73` | fix(e2e): use UI login for AE7/8/9; tighten onboarding dismiss |
-| `80f051ab` | fix(e2e): open compose via sidebar click instead of hard goto |
-| `91270fac` | fix(e2e): match Reply button name including shortcut suffix |
-| `71d6311d` | docs(pilot): overnight parity handoff report |
+```text
+unset DATABASE_URL VITEST_ALLOW_PILOT_RDS
+pnpm exec vitest run \
+  tests/phase-b-operation.test.ts \
+  tests/phase-b-ops-contract.test.ts \
+  tests/hms-live-proof.test.ts \
+  tests/deploy-config.test.ts
+→ 4 files, 153 passed
 
-## Handoff
+pnpm build → ok
+bash -n ops-hms-proof.sh / hms-read-gate.sh → ok
+ops-hms-proof.sh --help → ok (no AWS/HMS)
+ops-hms-proof.sh doctor --json → one JSON object on stdout; HMS_OK on stderr
+rg PHASE_B_BLOCKED apps/server-pilot/{src,deploy} → none
+```
 
-`docs/superpowers/plans/handoff-reports/2026-07-23-live-pilot-parity-overnight.md`
+## Friction
 
-## Concerns / residuals
+| Item | Classification |
+|------|----------------|
+| Offline local-operator returns named preflight/next-step codes; full live browser discovery still needs EC2 evidence + Task 13+ drivers | agent-owned follow-on (Tasks 13–17) |
+| No new `request-manifests/*` files — none created without observed pre-transmission evidence | agent-owned intentional (brief: create on observed evidence only) |
+| Comment `*/` in block comment initially broke esbuild transform | agent-owned; fixed |
 
-1. `UNDO_SEND_SECONDS=0` left on PM2 for gate — restore `30` if product undo window needed.
-2. Env patched by SSM sed; future `write-ec2-env` / activate may overwrite — re-assert before next U9.
-3. Cookie mint in gate script unused (UI login preferred) — cleanup optional.
-4. First deploy failed on missing `.js` import (fixed); several e2e RCA rounds before green.
+## Out of scope (confirmed)
 
-## Post-gate fix (2026-07-23)
-
-- `handleDownloadAllAttachments` used `atob(attachment.body)` while API returns `body:''` → empty zip / fail.
-- Fix: reuse `getAttachment` signed-URL → blob path (same as single `downloadAttachment`); zip blobs.
-- Gate script: UNDO grep now strips both `"` and `'` quotes.
-- Commit: `fix(mail-ui): download-all via getAttachment signed URLs`
+- Task 13 registry cutover / new tool promote
+- Tasks 14–17 live tool drivers
+- Live EC2 proof of a new tool

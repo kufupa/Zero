@@ -1,6 +1,7 @@
 /**
  * Exactly-one receipt resolution for HMS browser artifact directories.
  * Dependency-free so purge, transfer, and index readers can share it.
+ * Phase B discovery/proof receipts use exclusive v2; Phase A find stays v1.
  */
 import { lstatSync } from 'node:fs';
 import { lstat } from 'node:fs/promises';

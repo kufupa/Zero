@@ -20,6 +20,8 @@ export const hmsProtectedArtifactIndexEntryV1Schema = z
     artifactId: uuid,
     toolId: z.enum(READ_TOOL_IDS),
     toolVersion: z.string().min(1).max(64),
+    operationId: uuid.optional(),
+    sourceRevision: z.string().min(1).max(256).optional(),
     releaseId: uuid.optional(),
     kinds: z
       .array(
@@ -36,6 +38,17 @@ export const hmsProtectedArtifactIndexEntryV1Schema = z
       )
       .min(1),
     receiptSchema: z.enum(['v1', 'v2']),
+    complete: z.boolean().optional(),
+    digestValid: z.boolean().optional(),
+    sensitiveMediaExpiresAt: z.string().datetime().optional(),
+    accessAudit: z
+      .object({
+        lastFetchAt: z.string().datetime().nullable(),
+        fetchCount: z.number().int().nonnegative(),
+        confirmSensitiveCount: z.number().int().nonnegative(),
+      })
+      .strict()
+      .optional(),
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
     expiresAt: z.string().datetime(),

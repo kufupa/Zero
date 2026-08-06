@@ -9,14 +9,16 @@ ACTION="${1:-}"
 
 usage() {
   printf '%s\n' \
-    'usage: ops-hms-proof.sh doctor [--tool <tool-id> --action <action>] [--json]' \
-    '       ops-hms-proof.sh status [--tool <tool-id>|--wave <subwave-id>] [--json]' \
-    '       ops-hms-proof.sh read-discovery <tool-id> [--json]' \
-    '       ops-hms-proof.sh read-proof <tool-id> [--json]' \
-    '       ops-hms-proof.sh read-wave <subwave-id> [--resume] [--json]' \
-    '       ops-hms-proof.sh artifacts <tool-id> [--latest] [--json]' \
-    '       ops-hms-proof.sh read-promote|read-rollback <tool-id> [--json]' \
-    '       ops-hms-proof.sh reservation|accept-g1|artifact-video|live-wave|rearm' \
+    'usage: ops-hms-proof.sh doctor [--offline] [--tool <tool-id>|--wave <subwave-id>] [--action <action>] [--json]' \
+    '       ops-hms-proof.sh status [--tool <tool-id>|--wave <subwave-id>|--operation <uuid>] [--json]' \
+    '       ops-hms-proof.sh read-discovery <tool-id> [--resume <operation-id>] [--json]' \
+    '       ops-hms-proof.sh read-proof <tool-id> [--resume <operation-id>] [--json]' \
+    '       ops-hms-proof.sh read-wave <subwave-id> [--resume <operation-id>] [--json]' \
+    '       ops-hms-proof.sh artifacts <tool-id> [--operation <uuid>|--release <uuid>|--latest-usable] [--json]' \
+    '       ops-hms-proof.sh read-promote <tool-id> --release <release-id> [--resume <operation-id>] [--json]' \
+    '       ops-hms-proof.sh read-rollback <tool-id> [--resume <operation-id>] [--json]' \
+    '       ops-hms-proof.sh rearm <tool-id> --operation <superseded-operation-id> --after-source <revision> [--resume <successor-operation-id>] [--json]' \
+    '       ops-hms-proof.sh reservation|accept-g1|artifact-video|live-wave' \
     '       ops-hms-proof.sh fetch-artifact <uuid> <receipt|video>' \
     '       ops-hms-proof.sh fetch-artifact <uuid> trace --confirm-sensitive' \
     '       ops-hms-proof.sh --help'
@@ -31,39 +33,68 @@ case "$ACTION" in
   *) usage 2 ;;
 esac
 
-is_tool_id() {
-  case "$1" in
-    mail_read_artifact|hms_find_reservation|hms_quote_stay|hms_list_documents|hms_sent_email_audit|hms_read_folio|hms_company_account_read|hms_group_block_read|hms_event_read) return 0 ;;
-    *) return 1 ;;
-  esac
+SERVER_PILOT="${REPO_ROOT}/apps/server-pilot"
+PHASE_B_OP_TS="${SERVER_PILOT}/src/ops/phase-b-operation.ts"
+
+# Shared Phase B argv parser — one grammar locally before AWS. No second case tree.
+phase_b_parse() {
+  (
+    cd "$SERVER_PILOT"
+    unset DATABASE_URL VITEST_ALLOW_PILOT_RDS
+    node --import tsx "$PHASE_B_OP_TS" parse --json "$@"
+  )
 }
 
-is_wave_id() {
-  case "$1" in B0|B1|B2|B3|B4|B5|B6) return 0 ;; *) return 1 ;; esac
+phase_b_local_operator() {
+  (
+    cd "$SERVER_PILOT"
+    unset DATABASE_URL VITEST_ALLOW_PILOT_RDS
+    node --import tsx "$PHASE_B_OP_TS" local-operator --json "$@"
+  )
 }
+
+case "$ACTION" in
+  doctor|status|read-discovery|read-proof|read-wave|artifacts|read-promote|read-rollback|rearm)
+  PARSE_JSON="$(phase_b_parse "$@" || true)"
+    PARSE_OK="$(node -e 'try{const j=JSON.parse(process.argv[1]);process.stdout.write(j.ok===true?"1":"0")}catch{process.stdout.write("0")}' "$PARSE_JSON")" || {
+      echo "HMS_FAIL code=USAGE_ERROR" >&2
+      exit 2
+    }
+    if [ "$PARSE_OK" != "1" ]; then
+      # parse CLI emits PhaseBOperatorResult on failure (no ok:true wrapper).
+      if node -e 'const j=JSON.parse(process.argv[1]);process.exit(j.schemaVersion===1&&j.code?0:1)' "$PARSE_JSON" 2>/dev/null; then
+        printf '%s\n' "$PARSE_JSON"
+        EXIT_CODE="$(node -e 'const j=JSON.parse(process.argv[1]);process.stdout.write(String(j.exitCode||2))' "$PARSE_JSON")"
+        exit "${EXIT_CODE:-2}"
+      fi
+      echo "HMS_FAIL code=USAGE_ERROR" >&2
+      exit 2
+    fi
+    ;;
+esac
 
 case "$ACTION" in
   doctor)
     DOCTOR_TOOL=""
     DOCTOR_ACTION=""
     DOCTOR_JSON=0
+    DOCTOR_OFFLINE=0
     shift
     while [ "$#" -gt 0 ]; do
       case "$1" in
         --tool)
           [ "$#" -ge 2 ] || usage 2
           [ -z "$DOCTOR_TOOL" ] || usage 2
-          is_tool_id "$2" || usage 2
           DOCTOR_TOOL="$2"
+          shift 2
+          ;;
+        --wave)
           shift 2
           ;;
         --action)
           [ "$#" -ge 2 ] || usage 2
           [ -z "$DOCTOR_ACTION" ] || usage 2
-          case "$2" in
-            read-discovery|read-proof|read-promote|read-rollback) DOCTOR_ACTION="$2" ;;
-            *) usage 2 ;;
-          esac
+          DOCTOR_ACTION="$2"
           shift 2
           ;;
         --json)
@@ -71,78 +102,38 @@ case "$ACTION" in
           DOCTOR_JSON=1
           shift
           ;;
+        --offline)
+          [ "$DOCTOR_OFFLINE" -eq 0 ] || usage 2
+          DOCTOR_OFFLINE=1
+          shift
+          ;;
         *) usage 2 ;;
       esac
     done
-    # Scoped evidence bootstrap: both --tool and --action required together.
     if [ -n "$DOCTOR_TOOL" ] || [ -n "$DOCTOR_ACTION" ]; then
       [ -n "$DOCTOR_TOOL" ] && [ -n "$DOCTOR_ACTION" ] || usage 2
     fi
     ;;
-  status)
-    case "$#" in
-      1) ;;
-      2) [ "$2" = "--json" ] || usage 2 ;;
-      3) { [ "$2" = "--tool" ] && is_tool_id "$3"; } ||
-        { [ "$2" = "--wave" ] && is_wave_id "$3"; } || usage 2 ;;
-      4) [ "$4" = "--json" ] &&
-        { { [ "$2" = "--tool" ] && is_tool_id "$3"; } ||
-          { [ "$2" = "--wave" ] && is_wave_id "$3"; }; } || usage 2 ;;
-      *) usage 2 ;;
-    esac
+  status|read-discovery|read-proof|read-wave|artifacts|read-promote|read-rollback|rearm)
+    # Grammar already validated by shared parser above.
     ;;
-  read-discovery|read-proof|read-promote|read-rollback)
-    { [ "$#" -eq 2 ] || { [ "$#" -eq 3 ] && [ "$3" = "--json" ]; }; } || usage 2
-    is_tool_id "$2" || usage 2
-    if [ "$ACTION" = "read-discovery" ] && [ "$2" = "mail_read_artifact" ]; then usage 2; fi
-    ;;
-  read-wave)
-    [ "$#" -ge 2 ] && [ "$#" -le 4 ] || usage 2
-    is_wave_id "$2" || usage 2
-    shift 2
-    seen_resume=0; seen_json=0
-    for arg in "$@"; do
-      case "$arg" in
-        --resume) [ "$seen_resume" -eq 0 ] || usage 2; seen_resume=1 ;;
-        --json) [ "$seen_json" -eq 0 ] || usage 2; seen_json=1 ;;
-        *) usage 2 ;;
-      esac
-    done
-    ;;
-  artifacts)
-    [ "$#" -ge 2 ] && [ "$#" -le 4 ] || usage 2
-    is_tool_id "$2" || usage 2
-    shift 2
-    seen_latest=0; seen_json=0
-    for arg in "$@"; do
-      case "$arg" in
-        --latest) [ "$seen_latest" -eq 0 ] || usage 2; seen_latest=1 ;;
-        --json) [ "$seen_json" -eq 0 ] || usage 2; seen_json=1 ;;
-        *) usage 2 ;;
-      esac
-    done
-    ;;
-  rearm) [ "$#" -eq 1 ] || usage 2 ;;
 esac
 
-# Phase B tool actions: evidence preflight (named blockers). Never AWS/HMS here.
+# Phase B tool actions: shared local operator envelope (canonical JSON). No HMS in offline path.
 case "$ACTION" in
-  read-discovery|read-proof|read-promote|read-rollback)
-    SERVER_PILOT="${REPO_ROOT}/apps/server-pilot"
-    PREFLIGHT_TS="${SERVER_PILOT}/src/ops/phase-b-read-preflight.ts"
-    TOOL_ID="$2"
-    (
-      cd "$SERVER_PILOT"
-      unset DATABASE_URL VITEST_ALLOW_PILOT_RDS
-      if [ "$#" -eq 3 ] && [ "$3" = "--json" ]; then
-        exec node --import tsx "$PREFLIGHT_TS" "$ACTION" "$TOOL_ID" --json
+  read-discovery|read-proof|read-promote|read-rollback|read-wave|artifacts|rearm)
+    RESULT_JSON="$(phase_b_local_operator "$@")" || {
+      RC=$?
+      if [ -n "${RESULT_JSON:-}" ]; then
+        printf '%s\n' "$RESULT_JSON"
       fi
-      exec node --import tsx "$PREFLIGHT_TS" "$ACTION" "$TOOL_ID"
-    )
-    exit $?
+      exit "$RC"
+    }
+    printf '%s\n' "$RESULT_JSON"
+    EXIT_CODE="$(node -e 'const j=JSON.parse(process.argv[1]);process.stdout.write(String(j.exitCode??0))' "$RESULT_JSON")"
+    exit "${EXIT_CODE:-0}"
     ;;
   status)
-    SERVER_PILOT="${REPO_ROOT}/apps/server-pilot"
     STATUS_TS="${SERVER_PILOT}/src/ops/phase-b-status.ts"
     (
       cd "$SERVER_PILOT"
@@ -153,10 +144,9 @@ case "$ACTION" in
     exit $?
     ;;
   doctor)
-    SERVER_PILOT="${REPO_ROOT}/apps/server-pilot"
     DOCTOR_TS="${SERVER_PILOT}/src/ops/phase-b-doctor.ts"
     # Scoped bootstrap verify (EC2 metadata + asm-exec sentinel). No HMS browser.
-    if [ -n "${DOCTOR_TOOL:-}" ] && [ -n "${DOCTOR_ACTION:-}" ]; then
+    if [ -n "${DOCTOR_TOOL:-}" ] && [ -n "${DOCTOR_ACTION:-}" ] && [ "${DOCTOR_OFFLINE:-0}" -eq 0 ]; then
       : "${AWS_REGION:=af-south-1}"
       : "${INSTANCE_ID:=i-008f737974a9ba9b3}"
       # Vendor CRLF pin + installed LF pin (after tr -d '\r' strip).
@@ -215,10 +205,6 @@ process.stdout.write(JSON.stringify({
       exec node --import tsx "$DOCTOR_TS"
     )
     exit $?
-    ;;
-  read-wave|artifacts|rearm)
-    echo "HMS_WAIT code=PHASE_B_BLOCKED" >&2
-    exit 3
     ;;
 esac
 
@@ -899,7 +885,7 @@ node "$PROOF_JS" accept-g1
     ;;
 
   artifact-video|live-wave)
-    echo "HMS_WAIT code=PHASE_B_BLOCKED" >&2
+    echo "HMS_WAIT code=AGENT_REPAIR_REQUIRED" >&2
     exit 3
     ;;
 
