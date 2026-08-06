@@ -27,6 +27,50 @@ export const READ_TOOL_IDS = [
 
 export type ReadToolId = (typeof READ_TOOL_IDS)[number];
 
+export const HMS_READ_TOOL_IDS = [
+  'hms_find_reservation',
+  'hms_quote_stay',
+  'hms_list_documents',
+  'hms_sent_email_audit',
+  'hms_read_folio',
+  'hms_company_account_read',
+  'hms_group_block_read',
+  'hms_event_read',
+] as const satisfies readonly ReadToolId[];
+
+export const hmsReadToolIdSchema = z.enum(HMS_READ_TOOL_IDS);
+export type HmsReadToolId = z.infer<typeof hmsReadToolIdSchema>;
+
+export const ROLE_SURFACE_IDS = [
+  'guest_stay',
+  'room_type_rate_availability',
+  'sent_email',
+  'tax_invoice',
+  'folio',
+  'deposit_ledger',
+  'company_account_billing',
+  'group_block',
+  'event_list',
+] as const;
+
+export const roleSurfaceIdSchema = z.enum(ROLE_SURFACE_IDS);
+export type RoleSurfaceId = z.infer<typeof roleSurfaceIdSchema>;
+
+export const DISCOVERY_OPERATION_IDS = [
+  'guest_stay_search',
+  'quote_availability_search',
+  'sent_email_list',
+  'tax_invoice_list',
+  'folio_summary',
+  'deposit_ledger_summary',
+  'reservation_linked_company_billing',
+  'group_block_list',
+  'event_list',
+] as const;
+
+export const discoveryOperationIdSchema = z.enum(DISCOVERY_OPERATION_IDS);
+export type DiscoveryOperationId = z.infer<typeof discoveryOperationIdSchema>;
+
 export const CAPABILITY_PROMOTION_ORDER = [
   'planned',
   'fixture_verified',
@@ -38,6 +82,62 @@ export const CAPABILITY_PROMOTION_ORDER = [
 export type CapabilityState = (typeof CAPABILITY_PROMOTION_ORDER)[number];
 
 const sha256Hex = z.string().regex(/^[a-f0-9]{64}$/);
+
+export const controlOracleDefinitionSchema = z
+  .object({
+    kind: z.enum([
+      'authorized_source_artifact',
+      'preexisting_record',
+      'independent_rendered_observation',
+    ]),
+    acquisitionOperationId: discoveryOperationIdSchema,
+    maxAgeMs: z.number().int().positive(),
+  })
+  .strict();
+
+export type ControlOracleDefinition = z.infer<
+  typeof controlOracleDefinitionSchema
+>;
+
+export const requestBranchDefinitionSchema = z
+  .object({
+    id: z.string().min(1),
+    discoveryOperationId: discoveryOperationIdSchema,
+    manifestPath: z.string().min(1),
+    requiredRoleSurfaces: z.array(roleSurfaceIdSchema).min(1),
+    parserSchemaSha256: sha256Hex,
+    requiredControlKinds: z
+      .array(z.enum(['positive', 'canonical_negative', 'ambiguity']))
+      .min(1),
+    controlOracle: controlOracleDefinitionSchema,
+  })
+  .strict()
+  .superRefine((branch, context) => {
+    if (
+      new Set(branch.requiredRoleSurfaces).size !==
+      branch.requiredRoleSurfaces.length
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['requiredRoleSurfaces'],
+        message: 'role surfaces must be unique',
+      });
+    }
+    if (
+      new Set(branch.requiredControlKinds).size !==
+      branch.requiredControlKinds.length
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['requiredControlKinds'],
+        message: 'control kinds must be unique',
+      });
+    }
+  });
+
+export type RequestBranchDefinition = z.infer<
+  typeof requestBranchDefinitionSchema
+>;
 
 export const capabilityEvidenceRefsSchema = z
   .object({
@@ -57,12 +157,11 @@ export type PromotionEvidenceFlags = {
   shadow: boolean;
 };
 
-export type ReadToolDefinition = {
-  id: ReadToolId;
+type ReadToolDefinitionBase<TId extends ReadToolId> = {
+  id: TId;
   version: string;
   effect: 'read';
   sourceUrls: readonly string[];
-  privacyClass: 'minimized_hms' | 'mail_server_only';
   deniedActions: readonly string[];
   candidateRequirement: string;
   attemptCap: number;
@@ -72,6 +171,22 @@ export type ReadToolDefinition = {
   observationSchema: z.ZodTypeAny;
   claimKinds: readonly string[];
 };
+
+export type HmsReadToolDefinition = ReadToolDefinitionBase<HmsReadToolId> & {
+  privacyClass: 'minimized_hms';
+  discoveryOperationIds: readonly DiscoveryOperationId[];
+  requestBranches: readonly RequestBranchDefinition[];
+};
+
+export type MailReadToolDefinition = ReadToolDefinitionBase<'mail_read_artifact'> & {
+  privacyClass: 'mail_server_only';
+  discoveryOperationIds?: never;
+  requestBranches?: never;
+};
+
+export type ReadToolDefinition =
+  | HmsReadToolDefinition
+  | MailReadToolDefinition;
 
 const deniedCommon = [
   'save',
@@ -96,6 +211,37 @@ const deniedCommon = [
 /** Closed observation placeholders — concrete schemas land with each tool task. */
 const opaqueObservationSchema = z.object({ observedAt: z.string().datetime() }).strict();
 
+const REQUEST_BRANCH_CONTROL_KINDS = [
+  'positive',
+  'canonical_negative',
+  'ambiguity',
+] as const;
+const CONTROL_ORACLE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+function defineRequestBranch(input: {
+  id: string;
+  discoveryOperationId: DiscoveryOperationId;
+  requiredRoleSurfaces: RoleSurfaceId[];
+  parserSchemaSha256: string;
+  oracleKind: ControlOracleDefinition['kind'];
+}): RequestBranchDefinition {
+  return requestBranchDefinitionSchema.parse({
+    id: input.id,
+    discoveryOperationId: input.discoveryOperationId,
+    // Path identity is static contract only. Release evidence separately proves
+    // an installed manifest before any branch can activate.
+    manifestPath: `src/hms/request-branches/${input.id}.manifest.json`,
+    requiredRoleSurfaces: input.requiredRoleSurfaces,
+    parserSchemaSha256: input.parserSchemaSha256,
+    requiredControlKinds: REQUEST_BRANCH_CONTROL_KINDS,
+    controlOracle: {
+      kind: input.oracleKind,
+      acquisitionOperationId: input.discoveryOperationId,
+      maxAgeMs: CONTROL_ORACLE_MAX_AGE_MS,
+    },
+  });
+}
+
 export const READ_TOOLS: Readonly<Record<ReadToolId, ReadToolDefinition>> = {
   hms_find_reservation: {
     id: 'hms_find_reservation',
@@ -113,24 +259,29 @@ export const READ_TOOLS: Readonly<Record<ReadToolId, ReadToolDefinition>> = {
     ],
     candidateRequirement: 'exact_confirmation_or_external_ref',
     attemptCap: 3,
+    discoveryOperationIds: ['guest_stay_search'],
+    requestBranches: [
+      defineRequestBranch({
+        id: 'guest_stay_search',
+        discoveryOperationId: 'guest_stay_search',
+        requiredRoleSurfaces: ['guest_stay'],
+        parserSchemaSha256:
+          '1fe75700f61799feb4ff2da9238af4ebd46396b422c94266356365f0df0da820',
+        oracleKind: 'preexisting_record',
+      }),
+    ],
     promotionEvidence: {
       fixture: true,
       discovery: true,
       live: true,
       shadow: false,
     },
-    // Digests are opaque presence markers for Task 1 state derivation tests;
-    // live proof IDs bind in release manifests (Task 1B+).
+    // Fixture contract only. Discovery/live evidence must come from immutable
+    // operator-observed artifacts and cannot be pre-credited in source.
     evidenceRefs: {
       // Fixture digest = live Guest Stay row fingerprint manifestSha256 (valuesCaptured:false).
       fixtureDigest:
         '1fe75700f61799feb4ff2da9238af4ebd46396b422c94266356365f0df0da820',
-      // Discovery/live digests are Phase A binding placeholders; Task 1B release
-      // manifests replace these with immutable proof/role digests.
-      discoveryDigest:
-        '2222222222222222222222222222222222222222222222222222222222222222',
-      liveProofDigest:
-        '3333333333333333333333333333333333333333333333333333333333333333',
     },
     observationSchema: opaqueObservationSchema,
     claimKinds: ['reservation_summary'],
@@ -176,6 +327,17 @@ export const READ_TOOLS: Readonly<Record<ReadToolId, ReadToolDefinition>> = {
     ],
     candidateRequirement: 'unambiguous_dates_occupancy_authored_segment',
     attemptCap: 1,
+    discoveryOperationIds: ['quote_availability_search'],
+    requestBranches: [
+      defineRequestBranch({
+        id: 'quote_availability_search',
+        discoveryOperationId: 'quote_availability_search',
+        requiredRoleSurfaces: ['room_type_rate_availability'],
+        parserSchemaSha256:
+          '909a0f6e086bca1464eaafae78bf54a0650c02bc9be90f5726d594e0e6d47bcc',
+        oracleKind: 'independent_rendered_observation',
+      }),
+    ],
     promotionEvidence: {
       fixture: true,
       discovery: false,
@@ -206,6 +368,25 @@ export const READ_TOOLS: Readonly<Record<ReadToolId, ReadToolDefinition>> = {
     ],
     candidateRequirement: 'exact_reservation_child_or_sent_email_scope',
     attemptCap: 2,
+    discoveryOperationIds: ['sent_email_list', 'tax_invoice_list'],
+    requestBranches: [
+      defineRequestBranch({
+        id: 'sent_email_documents',
+        discoveryOperationId: 'sent_email_list',
+        requiredRoleSurfaces: ['sent_email'],
+        parserSchemaSha256:
+          '092f92a82592866fbc85e6e68cdffaa312e32a8dbfbc8d3cf1b596856567ba42',
+        oracleKind: 'authorized_source_artifact',
+      }),
+      defineRequestBranch({
+        id: 'tax_invoice_documents',
+        discoveryOperationId: 'tax_invoice_list',
+        requiredRoleSurfaces: ['tax_invoice'],
+        parserSchemaSha256:
+          '092f92a82592866fbc85e6e68cdffaa312e32a8dbfbc8d3cf1b596856567ba42',
+        oracleKind: 'authorized_source_artifact',
+      }),
+    ],
     promotionEvidence: {
       fixture: true,
       discovery: false,
@@ -230,6 +411,17 @@ export const READ_TOOLS: Readonly<Record<ReadToolId, ReadToolDefinition>> = {
     deniedActions: [...deniedCommon, 'open_attachment', 'resend'],
     candidateRequirement: 'exact_reservation_or_account_scope',
     attemptCap: 2,
+    discoveryOperationIds: ['sent_email_list'],
+    requestBranches: [
+      defineRequestBranch({
+        id: 'sent_email_audit',
+        discoveryOperationId: 'sent_email_list',
+        requiredRoleSurfaces: ['sent_email'],
+        parserSchemaSha256:
+          '80db0d4e4db89de7e86e1b65733943823913b8275fe59d86a438a34e842b1830',
+        oracleKind: 'authorized_source_artifact',
+      }),
+    ],
     promotionEvidence: {
       fixture: true,
       discovery: false,
@@ -261,6 +453,25 @@ export const READ_TOOLS: Readonly<Record<ReadToolId, ReadToolDefinition>> = {
     ],
     candidateRequirement: 'exact_reservation_child',
     attemptCap: 2,
+    discoveryOperationIds: ['folio_summary', 'deposit_ledger_summary'],
+    requestBranches: [
+      defineRequestBranch({
+        id: 'folio_summary',
+        discoveryOperationId: 'folio_summary',
+        requiredRoleSurfaces: ['folio'],
+        parserSchemaSha256:
+          '716018585f130515af72a506721849c0f1e5e22ccf521241136e03f96e653b65',
+        oracleKind: 'preexisting_record',
+      }),
+      defineRequestBranch({
+        id: 'deposit_ledger_summary',
+        discoveryOperationId: 'deposit_ledger_summary',
+        requiredRoleSurfaces: ['deposit_ledger'],
+        parserSchemaSha256:
+          '716018585f130515af72a506721849c0f1e5e22ccf521241136e03f96e653b65',
+        oracleKind: 'preexisting_record',
+      }),
+    ],
     promotionEvidence: {
       fixture: true,
       discovery: false,
@@ -292,6 +503,17 @@ export const READ_TOOLS: Readonly<Record<ReadToolId, ReadToolDefinition>> = {
     ],
     candidateRequirement: 'exact_reservation_linked_organization',
     attemptCap: 1,
+    discoveryOperationIds: ['reservation_linked_company_billing'],
+    requestBranches: [
+      defineRequestBranch({
+        id: 'reservation_linked_company_billing',
+        discoveryOperationId: 'reservation_linked_company_billing',
+        requiredRoleSurfaces: ['company_account_billing'],
+        parserSchemaSha256:
+          '1f5433aae2fa18b9f839a7a1cacac95589bef375c77347a862718a2754b9ba1c',
+        oracleKind: 'preexisting_record',
+      }),
+    ],
     promotionEvidence: {
       fixture: true,
       discovery: false,
@@ -329,6 +551,17 @@ export const READ_TOOLS: Readonly<Record<ReadToolId, ReadToolDefinition>> = {
     ],
     candidateRequirement: 'exact_group_reference_plus_bounded_dates',
     attemptCap: 1,
+    discoveryOperationIds: ['group_block_list'],
+    requestBranches: [
+      defineRequestBranch({
+        id: 'group_block_list',
+        discoveryOperationId: 'group_block_list',
+        requiredRoleSurfaces: ['group_block'],
+        parserSchemaSha256:
+          'e7a031b4edfc8a943b54a4cf759e512912cc74cc905ea893f5751bb942738412',
+        oracleKind: 'preexisting_record',
+      }),
+    ],
     promotionEvidence: {
       fixture: true,
       discovery: false,
@@ -362,6 +595,17 @@ export const READ_TOOLS: Readonly<Record<ReadToolId, ReadToolDefinition>> = {
     ],
     candidateRequirement: 'exact_event_confirmation_or_reference',
     attemptCap: 1,
+    discoveryOperationIds: ['event_list'],
+    requestBranches: [
+      defineRequestBranch({
+        id: 'event_list',
+        discoveryOperationId: 'event_list',
+        requiredRoleSurfaces: ['event_list'],
+        parserSchemaSha256:
+          '93c95d304b1b3e814a787c060086771768b78f83c77be0d0edfeb092ec98b8e2',
+        oracleKind: 'preexisting_record',
+      }),
+    ],
     promotionEvidence: {
       fixture: true,
       discovery: false,
@@ -395,6 +639,28 @@ export function assertReadToolRegistrySealed(
     const tool = registry[id];
     if (!tool || tool.id !== id || tool.effect !== 'read') {
       throw new Error(`READ_TOOLS entry invalid for ${id}`);
+    }
+    if (tool.id === 'mail_read_artifact') {
+      if ('discoveryOperationIds' in tool || 'requestBranches' in tool) {
+        throw new Error('mail_read_artifact cannot declare HMS request contracts');
+      }
+      continue;
+    }
+    if (
+      tool.privacyClass !== 'minimized_hms' ||
+      !hmsReadToolIdSchema.safeParse(tool.id).success ||
+      tool.discoveryOperationIds.length === 0 ||
+      tool.requestBranches.length === 0
+    ) {
+      throw new Error(`READ_TOOLS HMS entry invalid for ${id}`);
+    }
+    for (const branch of tool.requestBranches) {
+      requestBranchDefinitionSchema.parse(branch);
+      if (!tool.discoveryOperationIds.includes(branch.discoveryOperationId)) {
+        throw new Error(
+          `READ_TOOLS branch operation drift for ${id}:${branch.id}`,
+        );
+      }
     }
   }
 }
@@ -452,6 +718,14 @@ export function fingerprintReadToolRegistry(): string {
       candidateRequirement: READ_TOOLS[id].candidateRequirement,
       claimKinds: READ_TOOLS[id].claimKinds,
       promotionEvidence: READ_TOOLS[id].promotionEvidence,
+      discoveryOperationIds:
+        READ_TOOLS[id].id === 'mail_read_artifact'
+          ? undefined
+          : READ_TOOLS[id].discoveryOperationIds,
+      requestBranches:
+        READ_TOOLS[id].id === 'mail_read_artifact'
+          ? undefined
+          : READ_TOOLS[id].requestBranches,
     }));
   return createHash('sha256').update(JSON.stringify(payload)).digest('hex');
 }

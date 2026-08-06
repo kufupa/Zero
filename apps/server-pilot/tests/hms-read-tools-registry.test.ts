@@ -3,7 +3,15 @@ import { describe, expect, it } from 'vitest';
 import denominators from '../evals/hms/denominators.v1.json';
 import portfolioCases from '../evals/hms/portfolio-cases.v3.json';
 import {
+  DISCOVERY_OPERATION_IDS,
+  ROLE_SURFACE_IDS,
+  controlOracleDefinitionSchema,
+  hmsReadToolIdSchema,
+  requestBranchDefinitionSchema,
+} from '../src/hms/contracts.js';
+import {
   CAPABILITY_PROMOTION_ORDER,
+  HMS_READ_TOOL_IDS,
   READ_TOOLS,
   activeShadowToolIds,
   assertReadToolRegistrySealed,
@@ -62,24 +70,61 @@ describe('READ_TOOLS portfolio registry', () => {
       if (tool.privacyClass === 'mail_server_only') {
         // Artifact text stays server-only; no model-visible claim kinds.
         expect(tool.claimKinds).toEqual([]);
+        expect(tool).not.toHaveProperty('discoveryOperationIds');
+        expect(tool).not.toHaveProperty('requestBranches');
       } else {
         expect(tool.claimKinds.length).toBeGreaterThan(0);
+        expect(tool.discoveryOperationIds.length).toBeGreaterThan(0);
+        expect(tool.requestBranches.length).toBeGreaterThan(0);
+        for (const branch of tool.requestBranches) {
+          expect(requestBranchDefinitionSchema.parse(branch)).toEqual(branch);
+          expect(tool.discoveryOperationIds).toContain(branch.discoveryOperationId);
+          expect(controlOracleDefinitionSchema.parse(branch.controlOracle)).toEqual(
+            branch.controlOracle,
+          );
+        }
       }
     }
   });
 
-  it('rejects unproven tools from production active-read allowlist', () => {
+  it('keeps closed HMS-only tool, surface, and discovery unions', () => {
+    expect(HMS_READ_TOOL_IDS).toEqual(
+      REQUIRED_TOOL_IDS.filter((id) => id !== 'mail_read_artifact'),
+    );
+    expect(hmsReadToolIdSchema.safeParse('mail_read_artifact').success).toBe(false);
+    expect(ROLE_SURFACE_IDS).toEqual([
+      'guest_stay',
+      'room_type_rate_availability',
+      'sent_email',
+      'tax_invoice',
+      'folio',
+      'deposit_ledger',
+      'company_account_billing',
+      'group_block',
+      'event_list',
+    ]);
+    expect(DISCOVERY_OPERATION_IDS).toEqual([
+      'guest_stay_search',
+      'quote_availability_search',
+      'sent_email_list',
+      'tax_invoice_list',
+      'folio_summary',
+      'deposit_ledger_summary',
+      'reservation_linked_company_billing',
+      'group_block_list',
+      'event_list',
+    ]);
+  });
+
+  it('does not treat fixture contracts as production activation evidence', () => {
     const active = productionActiveReadToolIds();
-    expect(active).toEqual(['hms_find_reservation']);
-    expect(active).not.toContain('hms_quote_stay');
-    expect(active).not.toContain('mail_read_artifact');
-    expect(active).not.toContain('hms_read_folio');
+    expect(active).toEqual([]);
+    expect(READ_TOOLS.hms_find_reservation.evidenceRefs).toEqual({
+      fixtureDigest:
+        '1fe75700f61799feb4ff2da9238af4ebd46396b422c94266356365f0df0da820',
+    });
 
     for (const id of listReadToolIds()) {
-      if (id === 'hms_find_reservation') {
-        expect(isProductionActiveReadTool(id)).toBe(true);
-        continue;
-      }
       expect(isProductionActiveReadTool(id)).toBe(false);
     }
   });
@@ -133,7 +178,7 @@ describe('READ_TOOLS portfolio registry', () => {
       }),
     ).toBe('planned');
 
-    expect(capabilityStateFor('hms_find_reservation')).toBe('live_verified');
+    expect(capabilityStateFor('hms_find_reservation')).toBe('fixture_verified');
     expect(capabilityStateFor('hms_quote_stay')).toBe('fixture_verified');
     expect(capabilityStateFor('hms_company_account_read')).toBe(
       'fixture_verified',
@@ -161,6 +206,14 @@ describe('READ_TOOLS portfolio registry', () => {
               candidateRequirement: READ_TOOLS[id].candidateRequirement,
               claimKinds: READ_TOOLS[id].claimKinds,
               promotionEvidence: READ_TOOLS[id].promotionEvidence,
+              discoveryOperationIds:
+                'discoveryOperationIds' in READ_TOOLS[id]
+                  ? READ_TOOLS[id].discoveryOperationIds
+                  : undefined,
+              requestBranches:
+                'requestBranches' in READ_TOOLS[id]
+                  ? READ_TOOLS[id].requestBranches
+                  : undefined,
             })),
         ),
       )

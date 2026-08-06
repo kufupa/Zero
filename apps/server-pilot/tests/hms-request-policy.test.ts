@@ -3,6 +3,7 @@ import {
   requestPolicyManifestSchema,
   requestRuleSchema,
 } from '../src/hms/contracts.js';
+import { hmacSha256PrivateValue } from '../src/hms/private-digests.js';
 import {
   BLOCK_CODES,
   FixtureRequestRecorder,
@@ -14,6 +15,17 @@ import {
 } from '../src/hms/request-policy.js';
 
 const ORIGIN = 'http://127.0.0.1:17888';
+const PRIVATE_DIGEST_KEY = Buffer.alloc(32, 0x2f);
+const PRIVATE_DIGEST_KEY_VERSION = 'request-policy-key-v1';
+
+function requestHeaderHmac(name: string, value: string): string {
+  return hmacSha256PrivateValue({
+    key: PRIVATE_DIGEST_KEY,
+    keyVersion: PRIVATE_DIGEST_KEY_VERSION,
+    purpose: 'request_header',
+    value: `${name.toLowerCase()}\0${value}`,
+  }).hmacSha256;
+}
 
 const reservationSearchRule = requestRuleSchema.parse({
   id: 'reservation-search',
@@ -135,6 +147,146 @@ describe('HMS request policy contracts', () => {
     ).toThrow();
     expect(reservationSearchRule.redirectPolicy).toBe('same-reviewed-chain');
     expect(reservationSearchRule.maxBodyBytes).toBe(4096);
+  });
+});
+
+describe('Phase B exact request-shape declarations', () => {
+  const exactRule = requestRuleSchema.parse({
+    id: 'phase-b-exact-search',
+    origin: ORIGIN,
+    method: 'POST',
+    path: '/phase-b/search',
+    resourceTypes: ['xhr'],
+    fixedQuery: { screen: 'guestStay' },
+    variableQuery: {
+      confirmationNumber: { pattern: '[A-Z0-9]{1,16}', maxLength: 16 },
+    },
+    requiredContentType: 'application/x-www-form-urlencoded',
+    requiredHeaderHmacs: {
+      'x-hms-session': {
+        purpose: 'request_header',
+        privateDigestKeyVersion: PRIVATE_DIGEST_KEY_VERSION,
+        hmacSha256: requestHeaderHmac('x-hms-session', 'session-private'),
+      },
+    },
+    queryKeySequence: ['screen', 'confirmationNumber'],
+    fixedBody: { action: 'search', tenant: 'FIXTURE' },
+    variableBody: {
+      surname: { pattern: "[A-Za-z'\\-]{1,40}", maxLength: 40 },
+    },
+    bodyKeySequence: ['action', 'tenant', 'surname'],
+    maxBodyBytes: 4096,
+    redirectPolicy: 'same-reviewed-chain',
+  });
+  const exactManifest = requestPolicyManifestSchema.parse({ rules: [exactRule] });
+  const privateDigest = {
+    key: PRIVATE_DIGEST_KEY,
+    keyVersion: PRIVATE_DIGEST_KEY_VERSION,
+  };
+  const observed = {
+    url: `${ORIGIN}/phase-b/search?screen=guestStay&confirmationNumber=ABC123`,
+    method: 'POST',
+    resourceType: 'xhr',
+    headers: {
+      'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+      'x-hms-session': 'session-private',
+    },
+    postData: 'action=search&tenant=FIXTURE&surname=Guest',
+  };
+
+  it('allows exact content type, header HMAC, key order, and multiplicity', () => {
+    expect(
+      evaluateObservedRequest(exactManifest, observed, { privateDigest }),
+    ).toEqual({
+      action: 'allow',
+      ruleId: 'phase-b-exact-search',
+    });
+  });
+
+  it('rejects required content-type and header HMAC drift', () => {
+    expect(
+      evaluateObservedRequest(
+        exactManifest,
+        { ...observed, headers: { 'x-hms-session': 'session-private' } },
+        { privateDigest },
+      ),
+    ).toMatchObject({
+      action: 'block',
+      code: BLOCK_CODES.REQUIRED_CONTENT_TYPE,
+    });
+    expect(
+      evaluateObservedRequest(
+        exactManifest,
+        {
+          ...observed,
+          headers: {
+            ...observed.headers,
+            'x-hms-session': 'changed-private',
+          },
+        },
+        { privateDigest },
+      ),
+    ).toMatchObject({
+      action: 'block',
+      code: BLOCK_CODES.REQUIRED_HEADER_HMAC,
+    });
+    expect(evaluateObservedRequest(exactManifest, observed)).toMatchObject({
+      action: 'block',
+      code: BLOCK_CODES.REQUIRED_HEADER_HMAC,
+    });
+  });
+
+  it('rejects query key order and multiplicity drift', () => {
+    const reordered = {
+      ...observed,
+      url: `${ORIGIN}/phase-b/search?confirmationNumber=ABC123&screen=guestStay`,
+    };
+    expect(
+      evaluateObservedRequest(exactManifest, reordered, { privateDigest }),
+    ).toMatchObject({
+      action: 'block',
+      code: BLOCK_CODES.QUERY_KEY_SEQUENCE,
+    });
+
+    const duplicated = {
+      ...observed,
+      url: `${observed.url}&confirmationNumber=ABC123`,
+    };
+    expect(
+      evaluateObservedRequest(exactManifest, duplicated, { privateDigest }),
+    ).toMatchObject({
+      action: 'block',
+      code: BLOCK_CODES.QUERY_KEY_SEQUENCE,
+    });
+  });
+
+  it('rejects body key order and multiplicity drift', () => {
+    expect(
+      evaluateObservedRequest(
+        exactManifest,
+        {
+          ...observed,
+          postData: 'tenant=FIXTURE&action=search&surname=Guest',
+        },
+        { privateDigest },
+      ),
+    ).toMatchObject({
+      action: 'block',
+      code: BLOCK_CODES.BODY_KEY_SEQUENCE,
+    });
+    expect(
+      evaluateObservedRequest(
+        exactManifest,
+        {
+          ...observed,
+          postData: `${observed.postData}&surname=Guest`,
+        },
+        { privateDigest },
+      ),
+    ).toMatchObject({
+      action: 'block',
+      code: BLOCK_CODES.BODY_KEY_SEQUENCE,
+    });
   });
 });
 

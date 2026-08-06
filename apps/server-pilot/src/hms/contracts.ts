@@ -47,16 +47,29 @@ export {
   type SentEmailAuditReadData,
 } from './sent-email-audit-contract.js';
 export {
+  DISCOVERY_OPERATION_IDS,
+  HMS_READ_TOOL_IDS,
   READ_TOOLS,
   READ_TOOL_IDS,
+  ROLE_SURFACE_IDS,
   capabilityStateFor,
+  controlOracleDefinitionSchema,
   deriveCapabilityState,
+  discoveryOperationIdSchema,
   fingerprintReadToolRegistry,
+  hmsReadToolIdSchema,
   listReadToolIds,
   portfolioAblationReplay,
   productionActiveReadToolIds,
+  requestBranchDefinitionSchema,
+  roleSurfaceIdSchema,
   type CapabilityState,
+  type ControlOracleDefinition,
+  type DiscoveryOperationId,
+  type HmsReadToolId,
   type ReadToolId,
+  type RequestBranchDefinition,
+  type RoleSurfaceId,
 } from './read-tools.js';
 
 export type CapabilityRow = {
@@ -195,6 +208,56 @@ const variableFieldSchema = z
   .strict();
 
 const multimapValueSchema = z.union([z.string(), z.array(z.string())]);
+const sha256HexSchema = z.string().regex(/^[a-f0-9]{64}$/);
+
+export const requiredHeaderHmacDeclarationSchema = z
+  .object({
+    purpose: z.literal('request_header'),
+    privateDigestKeyVersion: z.string().min(1),
+    hmacSha256: sha256HexSchema,
+  })
+  .strict();
+
+export type RequiredHeaderHmacDeclaration = z.infer<
+  typeof requiredHeaderHmacDeclarationSchema
+>;
+
+function expectedKeyMultiplicity(
+  fixed: Record<string, string | string[]>,
+  variable: Record<string, unknown>,
+): Map<string, number> {
+  const expected = new Map<string, number>();
+  for (const [key, value] of Object.entries(fixed)) {
+    expected.set(key, Array.isArray(value) ? value.length : 1);
+  }
+  for (const key of Object.keys(variable)) {
+    expected.set(key, 1);
+  }
+  return expected;
+}
+
+function keySequenceMatchesDeclarations(
+  sequence: readonly string[],
+  fixed: Record<string, string | string[]>,
+  variable: Record<string, unknown>,
+): boolean {
+  const expected = expectedKeyMultiplicity(fixed, variable);
+  if (
+    sequence.length !==
+    [...expected.values()].reduce((sum, count) => sum + count, 0)
+  ) {
+    return false;
+  }
+  const actual = new Map<string, number>();
+  for (const key of sequence) {
+    actual.set(key, (actual.get(key) ?? 0) + 1);
+  }
+  if (actual.size !== expected.size) return false;
+  for (const [key, count] of expected) {
+    if (actual.get(key) !== count) return false;
+  }
+  return true;
+}
 
 /**
  * Canonical HMS read request template. Fail closed: only exact reviewed
@@ -209,13 +272,72 @@ export const requestRuleSchema = z
     resourceTypes: z.array(z.string()).min(1),
     fixedQuery: z.record(multimapValueSchema).default({}),
     variableQuery: z.record(variableFieldSchema).default({}),
+    requiredContentType: z.string().min(1).optional(),
     contentType: z.string().optional(),
+    requiredHeaderHmacs: z
+      .record(requiredHeaderHmacDeclarationSchema)
+      .optional(),
+    queryKeySequence: z.array(z.string().min(1)).optional(),
     fixedBody: z.record(multimapValueSchema).default({}),
     variableBody: z.record(variableFieldSchema).default({}),
+    bodyKeySequence: z.array(z.string().min(1)).optional(),
     maxBodyBytes: z.number().int().positive().default(16_384),
     redirectPolicy: z.literal('same-reviewed-chain'),
   })
-  .strict();
+  .strict()
+  .superRefine((rule, context) => {
+    if (
+      rule.requiredContentType &&
+      rule.contentType &&
+      rule.requiredContentType !== rule.contentType
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['requiredContentType'],
+        message: 'requiredContentType conflicts with legacy contentType',
+      });
+    }
+    for (const name of Object.keys(rule.requiredHeaderHmacs ?? {})) {
+      if (
+        name !== name.toLowerCase() ||
+        !/^[a-z0-9!#$%&'*+.^_`|~-]+$/.test(name)
+      ) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['requiredHeaderHmacs', name],
+          message: 'header names must be lowercase HTTP tokens',
+        });
+      }
+    }
+    if (
+      rule.queryKeySequence &&
+      !keySequenceMatchesDeclarations(
+        rule.queryKeySequence,
+        rule.fixedQuery,
+        rule.variableQuery,
+      )
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['queryKeySequence'],
+        message: 'query key sequence must declare exact key multiplicity',
+      });
+    }
+    if (
+      rule.bodyKeySequence &&
+      !keySequenceMatchesDeclarations(
+        rule.bodyKeySequence,
+        rule.fixedBody,
+        rule.variableBody,
+      )
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['bodyKeySequence'],
+        message: 'body key sequence must declare exact key multiplicity',
+      });
+    }
+  });
 
 export type RequestRule = z.infer<typeof requestRuleSchema>;
 
@@ -252,6 +374,93 @@ export const requestPolicyManifestSchema = z
   .strict();
 
 export type RequestPolicyManifest = z.infer<typeof requestPolicyManifestSchema>;
+
+export const REQUESTER_CLASSES = [
+  'reservation_guest',
+  'authorized_booking_contact',
+  'internal_finance',
+  'third_party',
+  'unknown',
+] as const;
+
+export const INQUIRY_CLASSES = [
+  'labelled_narrow_status',
+  'refund_request',
+  'settlement_request',
+  'invoice_request',
+  'quote_request',
+  'document_request',
+  'group_status_request',
+  'event_status_request',
+  'other',
+] as const;
+
+export const TRUSTED_REQUESTER_CLAIM_KINDS = [
+  'reservation_summary',
+  'quote',
+  'document_metadata',
+  'sent_email_audit',
+  'folio_status',
+  'company_billing',
+  'group_status',
+  'event_status',
+] as const;
+
+export const requesterClassSchema = z.enum(REQUESTER_CLASSES);
+export const inquiryClassSchema = z.enum(INQUIRY_CLASSES);
+export const trustedRequesterClaimKindSchema = z.enum(
+  TRUSTED_REQUESTER_CLAIM_KINDS,
+);
+
+export type RequesterClass = z.infer<typeof requesterClassSchema>;
+export type InquiryClass = z.infer<typeof inquiryClassSchema>;
+export type TrustedRequesterClaimKind = z.infer<
+  typeof trustedRequesterClaimKindSchema
+>;
+
+export const trustedRequesterAuthorizationV1Schema = z
+  .object({
+    schemaVersion: z.literal(1),
+    authorizationId: z.string().min(1),
+    operationId: z.string().min(1),
+    mailboxGrantSha256: sha256HexSchema,
+    threadIdHmacSha256: sha256HexSchema,
+    threadStateVersion: z.string().min(1),
+    requesterIdentityHmacSha256: sha256HexSchema,
+    requesterClass: requesterClassSchema,
+    inquiryClass: inquiryClassSchema,
+    allowedClaimKinds: z.array(trustedRequesterClaimKindSchema),
+    privateDigestKeyVersion: z.string().min(1),
+    issuedAt: z.string().datetime(),
+    expiresAt: z.string().datetime(),
+  })
+  .strict()
+  .superRefine((authorization, context) => {
+    if (
+      new Set(authorization.allowedClaimKinds).size !==
+      authorization.allowedClaimKinds.length
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['allowedClaimKinds'],
+        message: 'allowed claim kinds must be unique',
+      });
+    }
+    if (
+      Date.parse(authorization.expiresAt) <=
+      Date.parse(authorization.issuedAt)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['expiresAt'],
+        message: 'authorization expiry must follow issuance',
+      });
+    }
+  });
+
+export type TrustedRequesterAuthorizationV1 = z.infer<
+  typeof trustedRequesterAuthorizationV1Schema
+>;
 
 const isoDateSchema = z
   .string()

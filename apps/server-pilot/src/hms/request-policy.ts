@@ -9,6 +9,10 @@ import type {
   RequestPolicyManifest,
   RequestRule,
 } from './contracts.js';
+import {
+  equalDigestHex,
+  hmacSha256PrivateValue,
+} from './private-digests.js';
 
 export const BLOCK_CODES = {
   UNKNOWN_ORIGIN: 'unknown_origin',
@@ -25,6 +29,10 @@ export const BLOCK_CODES = {
   DUPLICATE_BODY: 'duplicate_body',
   INVALID_VARIABLE_QUERY: 'invalid_variable_query',
   INVALID_VARIABLE_BODY: 'invalid_variable_body',
+  REQUIRED_CONTENT_TYPE: 'required_content_type',
+  REQUIRED_HEADER_HMAC: 'required_header_hmac',
+  QUERY_KEY_SEQUENCE: 'query_key_sequence',
+  BODY_KEY_SEQUENCE: 'body_key_sequence',
   MALFORMED_ENCODING: 'malformed_encoding',
   MALFORMED_JSON: 'malformed_json',
   MALFORMED_MULTIPART: 'malformed_multipart',
@@ -73,7 +81,15 @@ export type ObservedRequestInput = {
   redirectedFrom?: string | null;
 };
 
-type Multimap = Map<string, string[]>;
+export type RequestPolicyPrivateDigestContext = {
+  key: string | Buffer;
+  keyVersion: string;
+};
+
+const KEY_SEQUENCE = Symbol('requestKeySequence');
+type Multimap = Map<string, string[]> & {
+  [KEY_SEQUENCE]: string[];
+};
 
 const SUBMIT_KEY_RE =
   /^(submit|btn(save|delete|create|amend|cancel|ok|yes)|.*\.action)$/i;
@@ -273,16 +289,23 @@ function hasMalformedPercentEncoding(input: string): boolean {
 }
 
 function emptyMultimap(): Multimap {
-  return new Map();
+  const map = new Map<string, string[]>() as Multimap;
+  Object.defineProperty(map, KEY_SEQUENCE, {
+    value: [],
+    writable: false,
+    enumerable: false,
+  });
+  return map;
 }
 
 function appendMultimap(map: Multimap, key: string, value: string): void {
+  map[KEY_SEQUENCE].push(key);
   const existing = map.get(key);
   if (existing) existing.push(value);
   else map.set(key, [value]);
 }
 
-/** Parse query/body into a multimap. Caller sorts for compare. */
+/** Parse query/body into a multimap while retaining exact wire key order. */
 export function parseUrlEncodedMultimap(raw: string): Multimap {
   const map = emptyMultimap();
   if (!raw) return map;
@@ -355,8 +378,8 @@ function parseMultipartMultimap(
   return map;
 }
 
-function sortedKeys(map: Multimap): string[] {
-  return [...map.keys()].sort();
+function orderedKeys(map: Multimap): string[] {
+  return [...map[KEY_SEQUENCE]];
 }
 
 function expectedValues(
@@ -407,8 +430,8 @@ function buildRedactedSignature(input: {
     path: input.path,
     resourceType: input.resourceType,
     contentType: input.contentType,
-    queryKeys: [...input.queryKeys].sort(),
-    bodyKeys: [...input.bodyKeys].sort(),
+    queryKeys: [...input.queryKeys],
+    bodyKeys: [...input.bodyKeys],
     bodyBytes: input.bodyBytes,
   };
 }
@@ -562,6 +585,48 @@ function compareMultimapAgainstRule(
   return null;
 }
 
+function keySequencesEqual(
+  actual: readonly string[],
+  expected: readonly string[],
+): boolean {
+  return (
+    actual.length === expected.length &&
+    actual.every((key, index) => key === expected[index])
+  );
+}
+
+function requiredHeaderHmacsMatch(
+  rule: RequestRule,
+  headers: Record<string, string>,
+  privateDigest: RequestPolicyPrivateDigestContext | undefined,
+): boolean {
+  const declarations = Object.entries(rule.requiredHeaderHmacs ?? {});
+  if (declarations.length === 0) return true;
+  if (!privateDigest) return false;
+
+  try {
+    for (const [name, declaration] of declarations) {
+      const value = headerLookup(headers, name);
+      if (
+        value === undefined ||
+        declaration.privateDigestKeyVersion !== privateDigest.keyVersion
+      ) {
+        return false;
+      }
+      const observed = hmacSha256PrivateValue({
+        key: privateDigest.key,
+        keyVersion: privateDigest.keyVersion,
+        purpose: declaration.purpose,
+        value: `${name}\0${value}`,
+      }).hmacSha256;
+      if (!equalDigestHex(observed, declaration.hmacSha256)) return false;
+    }
+  } catch {
+    return false;
+  }
+  return true;
+}
+
 function evaluateAgainstRule(
   rule: RequestRule,
   input: {
@@ -573,6 +638,8 @@ function evaluateAgainstRule(
     bodyMap: Multimap | null;
     bodyParseError: BlockCode | null;
     contentType?: string;
+    headers: Record<string, string>;
+    privateDigest?: RequestPolicyPrivateDigestContext;
     bodyBytes: number;
   },
 ): RequestDecision | null {
@@ -586,8 +653,8 @@ function evaluateAgainstRule(
       path: rule.path,
       resourceType: input.resourceType,
       contentType: input.contentType,
-      queryKeys: sortedKeys(input.queryMap),
-      bodyKeys: input.bodyMap ? sortedKeys(input.bodyMap) : [],
+      queryKeys: orderedKeys(input.queryMap),
+      bodyKeys: input.bodyMap ? orderedKeys(input.bodyMap) : [],
       bodyBytes: input.bodyBytes,
     });
 
@@ -603,12 +670,32 @@ function evaluateAgainstRule(
     return block(input.bodyParseError, signature());
   }
 
-  if (rule.contentType) {
-    const expected = mediaTypeOf(rule.contentType);
+  const requiredContentType = rule.requiredContentType ?? rule.contentType;
+  if (requiredContentType) {
+    const expected = mediaTypeOf(requiredContentType);
     const actual = input.contentType;
     if (!expected || !actual || expected !== actual) {
-      return block(BLOCK_CODES.UNMATCHED_REQUEST, signature());
+      return block(
+        rule.requiredContentType
+          ? BLOCK_CODES.REQUIRED_CONTENT_TYPE
+          : BLOCK_CODES.UNMATCHED_REQUEST,
+        signature(),
+      );
     }
+  }
+
+  if (!requiredHeaderHmacsMatch(rule, input.headers, input.privateDigest)) {
+    return block(BLOCK_CODES.REQUIRED_HEADER_HMAC, signature());
+  }
+
+  if (
+    rule.queryKeySequence &&
+    !keySequencesEqual(
+      orderedKeys(input.queryMap),
+      rule.queryKeySequence,
+    )
+  ) {
+    return block(BLOCK_CODES.QUERY_KEY_SEQUENCE, signature());
   }
 
   const queryError = compareMultimapAgainstRule(
@@ -622,13 +709,19 @@ function evaluateAgainstRule(
   const needsBody =
     Object.keys(rule.fixedBody).length > 0 ||
     Object.keys(rule.variableBody).length > 0 ||
-    Boolean(rule.contentType);
+    Boolean(requiredContentType);
 
   if (needsBody) {
     const bodyMap = input.bodyMap ?? emptyMultimap();
     const mutationHit = scanMultimapForMutation(bodyMap);
     if (mutationHit) {
       return block(mutationHit, signature());
+    }
+    if (
+      rule.bodyKeySequence &&
+      !keySequencesEqual(orderedKeys(bodyMap), rule.bodyKeySequence)
+    ) {
+      return block(BLOCK_CODES.BODY_KEY_SEQUENCE, signature());
     }
     // Mutation shortcuts even when fixed action differs
     const actionVals = bodyMap.get('action') ?? bodyMap.get('Action');
@@ -666,6 +759,9 @@ function evaluateAgainstRule(
 export function evaluateObservedRequest(
   manifest: RequestPolicyManifest,
   observed: ObservedRequestInput,
+  options?: {
+    privateDigest?: RequestPolicyPrivateDigestContext;
+  },
 ): RequestDecision {
   const method = observed.method.toUpperCase();
   const resourceType = observed.resourceType;
@@ -760,7 +856,7 @@ export function evaluateObservedRequest(
       path,
       resourceType,
       contentType,
-      queryKeys: sortedKeys(queryMap),
+      queryKeys: orderedKeys(queryMap),
       bodyKeys: [],
       bodyBytes,
     });
@@ -822,7 +918,7 @@ export function evaluateObservedRequest(
   if (hasMalformedPercentEncoding(queryRaw)) {
     return block(BLOCK_CODES.MALFORMED_ENCODING, {
       ...baseSignature(),
-      bodyKeys: bodyMap ? sortedKeys(bodyMap) : [],
+      bodyKeys: bodyMap ? orderedKeys(bodyMap) : [],
     });
   }
 
@@ -837,6 +933,8 @@ export function evaluateObservedRequest(
       bodyMap,
       bodyParseError,
       contentType,
+      headers,
+      privateDigest: options?.privateDigest,
       bodyBytes,
     });
     if (!decision) continue;
@@ -848,7 +946,7 @@ export function evaluateObservedRequest(
     lastBlock ??
     block(BLOCK_CODES.UNMATCHED_REQUEST, {
       ...baseSignature(),
-      bodyKeys: bodyMap ? sortedKeys(bodyMap) : [],
+      bodyKeys: bodyMap ? orderedKeys(bodyMap) : [],
     })
   );
 }
@@ -859,18 +957,23 @@ export async function enforceRequestPolicy(
   options?: {
     recorder?: FixtureRequestRecorder;
     onDecision?: (decision: RequestDecision) => void;
+    privateDigest?: RequestPolicyPrivateDigestContext;
   },
 ): Promise<RequestDecision> {
   const req = route.request();
   const redirected = req.redirectedFrom();
-  const decision = evaluateObservedRequest(manifest, {
-    url: req.url(),
-    method: req.method(),
-    resourceType: req.resourceType(),
-    headers: req.headers(),
-    postData: req.postData(),
-    redirectedFrom: redirected ? redirected.url() : null,
-  });
+  const decision = evaluateObservedRequest(
+    manifest,
+    {
+      url: req.url(),
+      method: req.method(),
+      resourceType: req.resourceType(),
+      headers: req.headers(),
+      postData: req.postData(),
+      redirectedFrom: redirected ? redirected.url() : null,
+    },
+    { privateDigest: options?.privateDigest },
+  );
 
   options?.onDecision?.(decision);
 
@@ -903,6 +1006,7 @@ export async function installRequestPolicyRoute(
   options?: {
     recorder?: FixtureRequestRecorder;
     onDecision?: (decision: RequestDecision) => void;
+    privateDigest?: RequestPolicyPrivateDigestContext;
   },
 ): Promise<void> {
   await context.route('**/*', async (route) => {
