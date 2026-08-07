@@ -19,6 +19,15 @@ import {
 
 export const CENTURION_TRANSPORT_ID = 'transport-centurion';
 
+/** Mailbox locals we treat as Centurion shared inbox (not personal staff). */
+export function isCenturionMailboxFrom(fromAddress: string | null | undefined): boolean {
+  if (!fromAddress) return false;
+  const a = fromAddress.trim().toLowerCase();
+  const angle = a.match(/<([^>]+)>/);
+  const addr = (angle?.[1] ?? a).trim();
+  return addr.startsWith('centurion@');
+}
+
 export type GoldPairingKind =
   | 'centurion_outbound'
   | 'forward_or_external'
@@ -48,6 +57,16 @@ export type DraftEvalRecord = {
   /** Soft word Jaccard vs gold (0..1); PII-free aggregate only. */
   softWordOverlap?: number;
   draftMode?: string;
+  /** (1) facts we could cite vs gold critical tokens. */
+  toolCoverageRate?: number;
+  /** (1) unresolved brackets count. */
+  missingToolBracketCount?: number;
+  /** (2) gold critical tokens not covered (wrong/missing vs real reply). */
+  wrongOrMissingFactCount?: number;
+  /** (3) tone overlap alias of softWordOverlap. */
+  toneOverlap?: number;
+  /** Gold reply id hash — dedupe key for centurion-from-replies sample. */
+  goldMessageIdHash?: string;
 };
 
 export type FailureClass =
@@ -56,6 +75,7 @@ export type FailureClass =
   | 'NO_GOLD_REPLY'
   | 'FORWARD_OR_EXTERNAL'
   | 'LOW_GOLD_COVERAGE'
+  | 'LOW_TONE'
   | 'SOFT_OTHER';
 
 export type AggregateScorecard = {
@@ -65,6 +85,10 @@ export type AggregateScorecard = {
   inventedFactRate: number;
   meanGoldCriticalCoverage: number;
   meanSoftWordOverlap: number;
+  meanToolCoverageRate: number;
+  meanToneOverlap: number;
+  totalMissingToolBrackets: number;
+  totalWrongOrMissingFacts: number;
 };
 
 export type GoldCompareResult = {
@@ -72,6 +96,10 @@ export type GoldCompareResult = {
   softWordOverlap: number;
   goldTokenCount: number;
   uncoveredGoldTokens: number;
+  toolCoverageRate: number;
+  missingToolBracketCount: number;
+  wrongOrMissingFactCount: number;
+  toneOverlap: number;
 };
 
 const CRITICAL_TOKEN_RE =
@@ -128,6 +156,59 @@ export function pairCenturionGold(input: {
   };
 }
 
+/**
+ * Gold = message FROM centurion@ that replies on an existing thread
+ * (at least one prior message). Trigger = latest prior message.
+ * Direction ignored — BCC copies are often labeled inbound.
+ */
+export function pairCenturionFromReply(input: {
+  threadId: string;
+  goldMessageId: string;
+  messages: ReadonlyArray<{
+    id: string;
+    fromAddress?: string | null;
+    createdAt: string;
+    subject?: string | null;
+  }>;
+}): CorpusPair {
+  const gold = input.messages.find((m) => m.id === input.goldMessageId);
+  if (!gold) throw new Error('gold message required');
+  if (!isCenturionMailboxFrom(gold.fromAddress)) {
+    throw new Error('gold must be from centurion@ mailbox');
+  }
+  const goldAt = Date.parse(gold.createdAt);
+  const priors = input.messages
+    .filter(
+      (m) => m.id !== gold.id && Date.parse(m.createdAt) < goldAt,
+    )
+    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+
+  if (priors.length === 0) {
+    return {
+      threadId: input.threadId,
+      inboundMessageId: gold.id,
+      inboundMessageIdHash: hashOpaqueId(gold.id),
+      goldKind: 'no_gold_reply',
+      goldOutboundMessageId: null,
+    };
+  }
+
+  const trigger = priors[0]!;
+  const subj = (gold.subject ?? '').toLowerCase();
+  const goldKind: GoldPairingKind =
+    /\bfw:|\bfwd:|forward(ed)?\b/.test(subj) || /\bexternal\b/.test(subj)
+      ? 'forward_or_external'
+      : 'centurion_outbound';
+
+  return {
+    threadId: input.threadId,
+    inboundMessageId: trigger.id,
+    inboundMessageIdHash: hashOpaqueId(trigger.id),
+    goldKind,
+    goldOutboundMessageId: gold.id,
+  };
+}
+
 export function extractCriticalTokens(text: string): string[] {
   CRITICAL_TOKEN_RE.lastIndex = 0;
   const found = text.match(CRITICAL_TOKEN_RE) ?? [];
@@ -143,6 +224,7 @@ export function scoreDraftAgainstEvidence(input: {
   selectedClaimIds?: readonly string[];
   claims?: ReadonlyMap<string, EvidenceClaim>;
   goldCriticalCoverage?: number;
+  toneOverlap?: number;
 }): FailureClass[] {
   const classes: FailureClass[] = [];
   if (input.goldKind === 'no_gold_reply') classes.push('NO_GOLD_REPLY');
@@ -199,6 +281,14 @@ export function scoreDraftAgainstEvidence(input: {
     input.goldCriticalCoverage < 0.35
   ) {
     classes.push('LOW_GOLD_COVERAGE');
+  }
+
+  if (
+    typeof input.toneOverlap === 'number' &&
+    input.goldKind === 'centurion_outbound' &&
+    input.toneOverlap < 0.08
+  ) {
+    classes.push('LOW_TONE');
   }
 
   if (classes.length === 0) classes.push('SOFT_OTHER');
@@ -267,11 +357,21 @@ export function compareDraftToGold(input: {
   const union = draftWords.size + goldWords.size - inter;
   const softWordOverlap = union === 0 ? 0 : inter / union;
 
+  const missingToolBracketCount = (input.bracketLines ?? []).filter((l) =>
+    l.includes('[MISSING:'),
+  ).length;
+  const wrongOrMissingFactCount = goldTokens.length - hit;
+  const toolCoverageRate = goldCriticalCoverage;
+
   return {
     goldCriticalCoverage,
     softWordOverlap,
     goldTokenCount: goldTokens.length,
-    uncoveredGoldTokens: goldTokens.length - hit,
+    uncoveredGoldTokens: wrongOrMissingFactCount,
+    toolCoverageRate,
+    missingToolBracketCount,
+    wrongOrMissingFactCount,
+    toneOverlap: softWordOverlap,
   };
 }
 
@@ -372,12 +472,21 @@ export function loadScoredHashes(root: string, runId: string): Set<string> {
     if (!line.trim()) continue;
     try {
       const row = JSON.parse(line) as DraftEvalRecord;
-      if (row.inboundMessageIdHash) out.add(row.inboundMessageIdHash);
+      if (row.goldMessageIdHash) out.add(row.goldMessageIdHash);
+      else if (row.inboundMessageIdHash) out.add(row.inboundMessageIdHash);
     } catch {
       /* skip corrupt line */
     }
   }
   return out;
+}
+
+/** Prefer gold hash when present (one row per Centurion reply). */
+export function evalDedupeKey(record: {
+  inboundMessageIdHash: string;
+  goldMessageIdHash?: string;
+}): string {
+  return record.goldMessageIdHash ?? record.inboundMessageIdHash;
 }
 
 export function writeScorecard(
@@ -400,12 +509,19 @@ export function aggregateRecords(
     NO_GOLD_REPLY: 0,
     FORWARD_OR_EXTERNAL: 0,
     LOW_GOLD_COVERAGE: 0,
+    LOW_TONE: 0,
     SOFT_OTHER: 0,
   };
   let covSum = 0;
   let softSum = 0;
+  let toolSum = 0;
+  let toneSum = 0;
   let covN = 0;
   let softN = 0;
+  let toolN = 0;
+  let toneN = 0;
+  let missingBrackets = 0;
+  let wrongFacts = 0;
   for (const r of records) {
     for (const c of r.failureClasses) byClass[c] += 1;
     if (typeof r.goldCriticalCoverage === 'number') {
@@ -416,6 +532,16 @@ export function aggregateRecords(
       softSum += r.softWordOverlap;
       softN += 1;
     }
+    if (typeof r.toolCoverageRate === 'number') {
+      toolSum += r.toolCoverageRate;
+      toolN += 1;
+    }
+    if (typeof r.toneOverlap === 'number') {
+      toneSum += r.toneOverlap;
+      toneN += 1;
+    }
+    missingBrackets += r.missingToolBracketCount ?? 0;
+    wrongFacts += r.wrongOrMissingFactCount ?? 0;
   }
   const scored = records.length;
   return {
@@ -425,6 +551,10 @@ export function aggregateRecords(
     inventedFactRate: scored === 0 ? 0 : byClass.INVENTED_FACT / scored,
     meanGoldCriticalCoverage: covN === 0 ? 0 : covSum / covN,
     meanSoftWordOverlap: softN === 0 ? 0 : softSum / softN,
+    meanToolCoverageRate: toolN === 0 ? 0 : toolSum / toolN,
+    meanToneOverlap: toneN === 0 ? 0 : toneSum / toneN,
+    totalMissingToolBrackets: missingBrackets,
+    totalWrongOrMissingFacts: wrongFacts,
   };
 }
 

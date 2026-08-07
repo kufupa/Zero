@@ -6,6 +6,8 @@ import {
   compareDraftToGold,
   draftFromInboundSignals,
   extractCriticalTokens,
+  isCenturionMailboxFrom,
+  pairCenturionFromReply,
   pairCenturionGold,
   renderOfflineBracketDraft,
   scoreDraftAgainstEvidence,
@@ -71,6 +73,78 @@ describe('pairCenturionGold', () => {
         {
           id: 'in3',
           direction: 'inbound',
+          createdAt: '2026-08-01T10:00:00.000Z',
+        },
+      ],
+    });
+    expect(none.goldKind).toBe('no_gold_reply');
+    expect(none.goldOutboundMessageId).toBeNull();
+  });
+});
+
+describe('pairCenturionFromReply', () => {
+  it('pairs latest prior as trigger for centurion@ gold reply', () => {
+    const pair = pairCenturionFromReply({
+      threadId: 't1',
+      goldMessageId: 'gold1',
+      messages: [
+        {
+          id: 'guest1',
+          fromAddress: 'guest@example.com',
+          createdAt: '2026-08-01T09:00:00.000Z',
+        },
+        {
+          id: 'guest2',
+          fromAddress: 'guest@example.com',
+          createdAt: '2026-08-01T10:00:00.000Z',
+        },
+        {
+          id: 'gold1',
+          fromAddress: 'centurion@legacyhotels.co.za',
+          createdAt: '2026-08-01T11:00:00.000Z',
+          subject: 'Re: stay',
+        },
+      ],
+    });
+    expect(pair.goldKind).toBe('centurion_outbound');
+    expect(pair.goldOutboundMessageId).toBe('gold1');
+    expect(pair.inboundMessageId).toBe('guest2');
+  });
+
+  it('accepts angle-addr centurion@ and labels forward', () => {
+    expect(
+      isCenturionMailboxFrom('Centurion <centurion@legacyhotels.co.za>'),
+    ).toBe(true);
+    expect(isCenturionMailboxFrom('bongi@legacyhotels.co.za')).toBe(false);
+
+    const fwd = pairCenturionFromReply({
+      threadId: 't2',
+      goldMessageId: 'g2',
+      messages: [
+        {
+          id: 'in',
+          fromAddress: 'guest@example.com',
+          createdAt: '2026-08-01T10:00:00.000Z',
+        },
+        {
+          id: 'g2',
+          fromAddress: 'Centurion <centurion@legacyhotels.co.za>',
+          createdAt: '2026-08-01T11:00:00.000Z',
+          subject: 'Fw: external',
+        },
+      ],
+    });
+    expect(fwd.goldKind).toBe('forward_or_external');
+  });
+
+  it('marks no_gold_reply when centurion@ has no prior on thread', () => {
+    const none = pairCenturionFromReply({
+      threadId: 't3',
+      goldMessageId: 'solo',
+      messages: [
+        {
+          id: 'solo',
+          fromAddress: 'centurion@legacyhotels.co.za',
           createdAt: '2026-08-01T10:00:00.000Z',
         },
       ],
@@ -156,10 +230,24 @@ describe('compareDraftToGold + draftFromInboundSignals', () => {
     });
     expect(classes).toContain('LOW_GOLD_COVERAGE');
   });
+
+  it('flags LOW_TONE when tone overlap is poor', () => {
+    const classes = scoreDraftAgainstEvidence({
+      draftText: 'Thanks for writing.',
+      evidenceTokens: [],
+      bracketLines: [
+        '[MISSING: confirmation number | how: hms_find_reservation]',
+      ],
+      goldKind: 'centurion_outbound',
+      goldCriticalCoverage: 0.9,
+      toneOverlap: 0.02,
+    });
+    expect(classes).toContain('LOW_TONE');
+  });
 });
 
 describe('aggregate + safety', () => {
-  it('aggregates invented fact rate', () => {
+  it('aggregates invented fact rate and three-axis metrics', () => {
     const records: DraftEvalRecord[] = [
       {
         runId: 'r',
@@ -173,6 +261,10 @@ describe('aggregate + safety', () => {
         scoredAt: '2026-08-07T00:00:00.000Z',
         goldCriticalCoverage: 0.2,
         softWordOverlap: 0.1,
+        toolCoverageRate: 0.2,
+        missingToolBracketCount: 2,
+        wrongOrMissingFactCount: 3,
+        toneOverlap: 0.1,
       },
       {
         runId: 'r',
@@ -186,6 +278,10 @@ describe('aggregate + safety', () => {
         scoredAt: '2026-08-07T00:00:00.000Z',
         goldCriticalCoverage: 1,
         softWordOverlap: 0.5,
+        toolCoverageRate: 1,
+        missingToolBracketCount: 0,
+        wrongOrMissingFactCount: 0,
+        toneOverlap: 0.5,
       },
     ];
     const card = aggregateRecords('r', records);
@@ -193,6 +289,10 @@ describe('aggregate + safety', () => {
     expect(card.inventedFactRate).toBe(0.5);
     expect(card.meanGoldCriticalCoverage).toBeCloseTo(0.6);
     expect(card.meanSoftWordOverlap).toBeCloseTo(0.3);
+    expect(card.meanToolCoverageRate).toBeCloseTo(0.6);
+    expect(card.meanToneOverlap).toBeCloseTo(0.3);
+    expect(card.totalMissingToolBrackets).toBe(2);
+    expect(card.totalWrongOrMissingFacts).toBe(3);
   });
 
   it('refuses unsafe source patterns', () => {

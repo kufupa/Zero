@@ -26,8 +26,10 @@ import {
   assertBacktestSourceSafe,
   CENTURION_TRANSPORT_ID,
   compareDraftToGold,
+  evalDedupeKey,
   hashOpaqueId,
   loadScoredHashes,
+  pairCenturionFromReply,
   pairCenturionGold,
   scoreDraftAgainstEvidence,
   writeScorecard,
@@ -35,13 +37,15 @@ import {
   type DraftEvalRecord,
 } from '../src/ai/draft-backtest.js';
 
+type SampleMode = 'gold-pairs' | 'all-inbounds' | 'centurion-from-replies';
+
 function parseArgs(argv: string[]) {
   let limit = 25;
   let runId = randomUUID();
   let offline = false;
   let live = false;
   let draftMode: BacktestDraftMode = 'signals';
-  let sample: 'gold-pairs' | 'all-inbounds' = 'gold-pairs';
+  let sample: SampleMode = 'gold-pairs';
   let root =
     process.env.DRAFT_BACKTEST_ROOT?.trim() ||
     '/opt/nava/shared/draft-backtest';
@@ -54,8 +58,14 @@ function parseArgs(argv: string[]) {
     else if (a === '--root') root = String(argv[++i]);
     else if (a === '--sample') {
       const v = String(argv[++i]);
-      if (v !== 'gold-pairs' && v !== 'all-inbounds') {
-        throw new Error('--sample must be gold-pairs|all-inbounds');
+      if (
+        v !== 'gold-pairs' &&
+        v !== 'all-inbounds' &&
+        v !== 'centurion-from-replies'
+      ) {
+        throw new Error(
+          '--sample must be gold-pairs|all-inbounds|centurion-from-replies',
+        );
       }
       sample = v;
     } else if (a === '--draft') {
@@ -66,7 +76,7 @@ function parseArgs(argv: string[]) {
       draftMode = v;
     } else if (a === '--help' || a === '-h') {
       console.log(
-        'usage: run-centurion-draft-backtest.ts (--offline-fixtures|--live-corpus) [--limit N] [--run-id ID] [--root DIR] [--draft signals|claim-safe-stub] [--sample gold-pairs|all-inbounds]',
+        'usage: run-centurion-draft-backtest.ts (--offline-fixtures|--live-corpus) [--limit N] [--run-id ID] [--root DIR] [--draft signals|claim-safe-stub] [--sample gold-pairs|all-inbounds|centurion-from-replies]',
       );
       process.exit(0);
     }
@@ -123,6 +133,48 @@ function offlineFixturePairs(limit: number) {
   return pairs;
 }
 
+type LivePairBundle = {
+  pair: CorpusPair;
+  inboundText: string;
+  goldText: string | null;
+  goldMessageIdHash?: string;
+};
+
+function offlineCenturionFromReplyPairs(limit: number): LivePairBundle[] {
+  const bundles: LivePairBundle[] = [];
+  for (let i = 0; i < limit; i++) {
+    const triggerId = `fix-trig-${i}`;
+    const goldId = `fix-cent-${i}`;
+    const threadId = `fix-thread-cfr-${i}`;
+    const forward = i % 5 === 0;
+    const pair = pairCenturionFromReply({
+      threadId,
+      goldMessageId: goldId,
+      messages: [
+        {
+          id: triggerId,
+          fromAddress: 'guest@example.com',
+          createdAt: '2026-08-01T10:00:00.000Z',
+          subject: 'booking',
+        },
+        {
+          id: goldId,
+          fromAddress: 'centurion@legacyhotels.co.za',
+          createdAt: '2026-08-01T11:00:00.000Z',
+          subject: forward ? 'Fw: handle' : 'Re: booking',
+        },
+      ],
+    });
+    bundles.push({
+      pair,
+      inboundText: `Please confirm booking CONF-OFF${i} for 2026-09-0${(i % 9) + 1}.`,
+      goldText: `Re: booking CONF-OFF${i} confirmed for 2026-09-0${(i % 9) + 1}. Rate ZAR 1200.`,
+      goldMessageIdHash: hashOpaqueId(goldId),
+    });
+  }
+  return bundles;
+}
+
 function stripHtmlToText(html: string): string {
   return html
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
@@ -148,16 +200,10 @@ function messagePlainText(row: {
     .slice(0, 12_000);
 }
 
-type LivePairBundle = {
-  pair: CorpusPair;
-  inboundText: string;
-  goldText: string | null;
-};
-
 async function loadLivePairs(
   limit: number,
   serverRoot: string,
-  sample: 'gold-pairs' | 'all-inbounds',
+  sample: SampleMode,
 ): Promise<LivePairBundle[]> {
   const url = process.env.DATABASE_URL;
   if (!url) throw new Error('DATABASE_URL required for --live-corpus');
@@ -167,6 +213,77 @@ async function loadLivePairs(
     connect_timeout: 30,
   });
   try {
+    if (sample === 'centurion-from-replies') {
+      /**
+       * Gold = from centurion@ with ≥1 prior message on thread.
+       * Direction ignored (BCC often inbound).
+       */
+      const golds = await sql<{
+        id: string;
+        thread_id: string;
+      }[]>`
+        SELECT m.id, m.thread_id
+        FROM message m
+        WHERE m.transport_id = ${CENTURION_TRANSPORT_ID}
+          AND (
+            lower(m.from_address) LIKE 'centurion@%'
+            OR lower(m.from_address) LIKE '%<centurion@%'
+          )
+          AND EXISTS (
+            SELECT 1
+            FROM message p
+            WHERE p.thread_id = m.thread_id
+              AND p.id <> m.id
+              AND coalesce(p.received_at, p.sent_at, p.created_at)
+                < coalesce(m.received_at, m.sent_at, m.created_at)
+          )
+        ORDER BY coalesce(m.received_at, m.sent_at, m.created_at) DESC
+        LIMIT ${limit}
+      `;
+
+      const bundles: LivePairBundle[] = [];
+      for (const gold of golds) {
+        const msgs = await sql<{
+          id: string;
+          from_address: string | null;
+          created_at: string;
+          subject: string | null;
+          text_body: string | null;
+          html_body: string | null;
+        }[]>`
+          SELECT
+            m.id,
+            m.from_address,
+            coalesce(m.received_at, m.sent_at, m.created_at)::text AS created_at,
+            m.subject,
+            m.text_body,
+            m.html_body
+          FROM message m
+          WHERE m.thread_id = ${gold.thread_id}
+          ORDER BY coalesce(m.received_at, m.sent_at, m.created_at) ASC, m.id ASC
+        `;
+        const pair = pairCenturionFromReply({
+          threadId: gold.thread_id,
+          goldMessageId: gold.id,
+          messages: msgs.map((m) => ({
+            id: m.id,
+            fromAddress: m.from_address,
+            createdAt: m.created_at,
+            subject: m.subject,
+          })),
+        });
+        const triggerRow = msgs.find((m) => m.id === pair.inboundMessageId);
+        const goldRow = msgs.find((m) => m.id === gold.id);
+        bundles.push({
+          pair,
+          inboundText: triggerRow ? messagePlainText(triggerRow) : '',
+          goldText: goldRow ? messagePlainText(goldRow) : null,
+          goldMessageIdHash: hashOpaqueId(gold.id),
+        });
+      }
+      return bundles;
+    }
+
     if (sample === 'all-inbounds') {
       const inbounds = await sql<{
         id: string;
@@ -332,19 +449,25 @@ async function main(): Promise<void> {
   const ac = new AbortController();
 
   const bundles: LivePairBundle[] = offline
-    ? offlineFixturePairs(limit).map((pair, i) => ({
-        pair,
-        inboundText: `Please confirm booking CONF-OFF${i} for 2026-09-0${(i % 9) + 1}.`,
-        goldText:
-          pair.goldKind === 'no_gold_reply'
-            ? null
-            : `Re: booking CONF-OFF${i} confirmed for 2026-09-0${(i % 9) + 1}. Rate ZAR 1200.`,
-      }))
+    ? sample === 'centurion-from-replies'
+      ? offlineCenturionFromReplyPairs(limit)
+      : offlineFixturePairs(limit).map((pair, i) => ({
+          pair,
+          inboundText: `Please confirm booking CONF-OFF${i} for 2026-09-0${(i % 9) + 1}.`,
+          goldText:
+            pair.goldKind === 'no_gold_reply'
+              ? null
+              : `Re: booking CONF-OFF${i} confirmed for 2026-09-0${(i % 9) + 1}. Rate ZAR 1200.`,
+        }))
     : await loadLivePairs(limit, serverRoot, sample);
 
-  const pending = bundles.filter(
-    (b) => !already.has(b.pair.inboundMessageIdHash),
-  );
+  const pending = bundles.filter((b) => {
+    const key = evalDedupeKey({
+      inboundMessageIdHash: b.pair.inboundMessageIdHash,
+      goldMessageIdHash: b.goldMessageIdHash,
+    });
+    return !already.has(key);
+  });
 
   const records: DraftEvalRecord[] = [];
   for (const bundle of pending) {
@@ -366,6 +489,7 @@ async function main(): Promise<void> {
       bracketLines: drafted.bracketLines,
       goldKind: bundle.pair.goldKind,
       goldCriticalCoverage: goldCompare?.goldCriticalCoverage,
+      toneOverlap: goldCompare?.toneOverlap,
     });
     const record: DraftEvalRecord = {
       runId,
@@ -380,6 +504,11 @@ async function main(): Promise<void> {
       goldCriticalCoverage: goldCompare?.goldCriticalCoverage,
       softWordOverlap: goldCompare?.softWordOverlap,
       draftMode: drafted.draftMode,
+      toolCoverageRate: goldCompare?.toolCoverageRate,
+      missingToolBracketCount: goldCompare?.missingToolBracketCount,
+      wrongOrMissingFactCount: goldCompare?.wrongOrMissingFactCount,
+      toneOverlap: goldCompare?.toneOverlap,
+      goldMessageIdHash: bundle.goldMessageIdHash,
     };
     appendEvalRecord(root, runId, record);
     records.push(record);
