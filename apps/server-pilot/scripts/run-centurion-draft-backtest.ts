@@ -164,6 +164,7 @@ async function loadLivePairs(
         created_at: string;
         subject: string | null;
         text_body: string | null;
+        html_body: string | null;
       }[]>`
         SELECT
           m.id,
@@ -171,7 +172,8 @@ async function loadLivePairs(
           m.transport_id,
           coalesce(m.received_at, m.sent_at, m.created_at)::text AS created_at,
           m.subject,
-          m.text_body
+          m.text_body,
+          m.html_body
         FROM message m
         WHERE m.thread_id = ${inbound.thread_id}
         ORDER BY coalesce(m.received_at, m.sent_at, m.created_at) ASC, m.id ASC
@@ -193,19 +195,8 @@ async function loadLivePairs(
         : undefined;
       bundles.push({
         pair,
-        inboundText: [
-          inboundRow?.subject?.trim() ?? '',
-          inboundRow?.text_body?.trim() ?? '',
-        ]
-          .filter(Boolean)
-          .join('\n')
-          .slice(0, 12_000),
-        goldText: goldRow
-          ? [goldRow.subject?.trim() ?? '', goldRow.text_body?.trim() ?? '']
-              .filter(Boolean)
-              .join('\n')
-              .slice(0, 12_000)
-          : null,
+        inboundText: inboundRow ? messagePlainText(inboundRow) : '',
+        goldText: goldRow ? messagePlainText(goldRow) : null,
       });
     }
     return bundles;
