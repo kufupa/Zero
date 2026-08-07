@@ -205,41 +205,18 @@ export function scoreDraftAgainstEvidence(input: {
   return [...new Set(classes)];
 }
 
-/** Soft compare draft vs Centurion gold — never logs raw bodies. */
-export function compareDraftToGold(input: {
-  draftText: string;
-  goldText: string;
-  bracketLines?: readonly string[];
-}): GoldCompareResult {
-  const goldTokens = extractCriticalTokens(input.goldText);
-  const covered = new Set([
-    ...extractCriticalTokens(input.draftText),
-    ...(input.bracketLines ?? []).flatMap((l) => extractCriticalTokens(l)),
-  ]);
-  let hit = 0;
-  for (const t of goldTokens) {
-    if (covered.has(t) || structuralBracketCoversToken(t, input.bracketLines ?? [])) {
-      hit += 1;
-    }
-  }
-  const goldCriticalCoverage =
-    goldTokens.length === 0 ? 1 : hit / goldTokens.length;
+function softWordSet(text: string): Set<string> {
+  return new Set(
+    text
+      .toLocaleLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .filter((w) => w.length >= 4),
+  );
+}
 
-  const draftWords = softWordSet(input.draftText);
-  const goldWords = softWordSet(input.goldText);
-  let inter = 0;
-  for (const w of draftWords) {
-    if (goldWords.has(w)) inter += 1;
-  }
-  const union = draftWords.size + goldWords.size - inter;
-  const softWordOverlap = union === 0 ? 0 : inter / union;
-
-  return {
-    goldCriticalCoverage,
-    softWordOverlap,
-    goldTokenCount: goldTokens.length,
-    uncoveredGoldTokens: goldTokens.length - hit,
-  };
+function stripBracketLines(text: string): string {
+  return text.replace(/\[MISSING:[^\]]*\]/g, ' ');
 }
 
 /** Bracket kinds that structurally account for gold token classes (no value echo). */
@@ -261,14 +238,41 @@ function structuralBracketCoversToken(
   return false;
 }
 
-function softWordSet(text: string): Set<string> {
-  return new Set(
-    text
-      .toLocaleLowerCase()
-      .replace(/[^a-z0-9\s]/g, ' ')
-      .split(/\s+/)
-      .filter((w) => w.length >= 4),
-  );
+/** Soft compare draft vs Centurion gold — never logs raw bodies. */
+export function compareDraftToGold(input: {
+  draftText: string;
+  goldText: string;
+  bracketLines?: readonly string[];
+}): GoldCompareResult {
+  const goldTokens = extractCriticalTokens(input.goldText);
+  const covered = new Set([
+    ...extractCriticalTokens(input.draftText),
+    ...(input.bracketLines ?? []).flatMap((l) => extractCriticalTokens(l)),
+  ]);
+  let hit = 0;
+  for (const t of goldTokens) {
+    if (covered.has(t) || structuralBracketCoversToken(t, input.bracketLines ?? [])) {
+      hit += 1;
+    }
+  }
+  const goldCriticalCoverage =
+    goldTokens.length === 0 ? 1 : hit / goldTokens.length;
+
+  const draftWords = softWordSet(stripBracketLines(input.draftText));
+  const goldWords = softWordSet(input.goldText);
+  let inter = 0;
+  for (const w of draftWords) {
+    if (goldWords.has(w)) inter += 1;
+  }
+  const union = draftWords.size + goldWords.size - inter;
+  const softWordOverlap = union === 0 ? 0 : inter / union;
+
+  return {
+    goldCriticalCoverage,
+    softWordOverlap,
+    goldTokenCount: goldTokens.length,
+    uncoveredGoldTokens: goldTokens.length - hit,
+  };
 }
 
 /**
