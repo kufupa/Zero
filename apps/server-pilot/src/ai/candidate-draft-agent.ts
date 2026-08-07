@@ -527,9 +527,17 @@ export function createCandidateTools(
     hms_list_documents: hmsListDocuments,
   } as const;
 
-  const tools = {} as Record<CandidateToolId, (typeof allHandlers)[CandidateToolId]>;
+  const tools = {
+    hms_find_reservation: undefined as typeof hmsFindReservation | undefined,
+    hms_quote_stay: undefined as typeof hmsQuoteStay | undefined,
+    mail_read_artifact: undefined as typeof mailReadArtifact | undefined,
+    hms_read_folio: undefined as typeof hmsReadFolio | undefined,
+    hms_sent_email_audit: undefined as typeof hmsSentEmailAudit | undefined,
+    hms_list_documents: undefined as typeof hmsListDocuments | undefined,
+  };
   for (const id of activeToolIds) {
-    tools[id] = allHandlers[id];
+    // Assign per-id so execute() keeps distinct input schemas (not an intersection).
+    (tools as Record<string, unknown>)[id] = allHandlers[id];
   }
 
   return {
