@@ -448,6 +448,29 @@ export function renderCandidate(
   };
 }
 
+/**
+ * Square-bracket placeholder for facts we must not invent.
+ * Prefer naming the read tool or a named blocker over vague "unknown".
+ */
+export function formatMissingBracket(input: {
+  need: string;
+  acquisition: string;
+}): string {
+  const need = input.need.trim();
+  const acquisition = input.acquisition.trim();
+  if (!need) throw new Error('missing bracket need required');
+  if (!acquisition) throw new Error('missing bracket acquisition required');
+  return `[MISSING: ${need} | how: ${acquisition}]`;
+}
+
+export function listMissingBrackets(
+  fields: ReadonlyArray<{ field: string; acquisition: string }>,
+): string[] {
+  return fields.map((f) =>
+    formatMissingBracket({ need: f.field, acquisition: f.acquisition }),
+  );
+}
+
 /** Money / ISO date / confirmation-like tokens that must come from claims. */
 const CRITICAL_LITERAL_PATTERNS = [
   /\b(?:ZAR|R)\s?\d[\d,.]*/gi,
