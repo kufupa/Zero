@@ -110,6 +110,8 @@ Shadow consecutive holdout ≥30 for `shadow_enabled` successor: not created (fi
 
 Remaining external blockers: Tax Invoice entitlement, Company billing trio, Group Block-tab aggregates, Event Events menu. No further Phase B surface expansion without hotel grant / contract change.
 
+`origin/EC2-pilot` fast-forwarded to `58dbe787` (2026-08-07 overnight push). Runtime on box remains `a5a9945c` + folio gen 16; docs-only tip not re-deployed.
+
 ## User wake-up
 
 **Empty.** No true unresolved blocker requiring human action tonight beyond accepting the named surface blockers already in plan scope. Phase C write portfolio stays separate.
