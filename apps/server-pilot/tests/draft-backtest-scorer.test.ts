@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import {
   assertBacktestSourceSafe,
   aggregateRecords,
+  compareDraftToGold,
+  draftFromInboundSignals,
   extractCriticalTokens,
   pairCenturionGold,
   renderOfflineBracketDraft,
@@ -126,6 +128,34 @@ describe('renderOfflineBracketDraft', () => {
   });
 });
 
+describe('compareDraftToGold + draftFromInboundSignals', () => {
+  it('covers gold tokens present in draft evidence', () => {
+    const draft = draftFromInboundSignals({
+      inboundText: 'Please check CONF-88421 arrival 2026-08-01',
+    });
+    const cmp = compareDraftToGold({
+      draftText: draft.textBody,
+      goldText: 'CONF-88421 is confirmed for 2026-08-01. Rate ZAR 1500.',
+      bracketLines: draft.bracketLines,
+    });
+    expect(cmp.goldCriticalCoverage).toBeGreaterThan(0.3);
+    expect(draft.evidenceTokens.length).toBeGreaterThan(0);
+  });
+
+  it('flags LOW_GOLD_COVERAGE when coverage is poor', () => {
+    const classes = scoreDraftAgainstEvidence({
+      draftText: 'Thanks for writing.',
+      evidenceTokens: [],
+      bracketLines: [
+        '[MISSING: confirmation number | how: hms_find_reservation]',
+      ],
+      goldKind: 'centurion_outbound',
+      goldCriticalCoverage: 0.1,
+    });
+    expect(classes).toContain('LOW_GOLD_COVERAGE');
+  });
+});
+
 describe('aggregate + safety', () => {
   it('aggregates invented fact rate', () => {
     const records: DraftEvalRecord[] = [
@@ -139,6 +169,8 @@ describe('aggregate + safety', () => {
         bracketLines: [],
         failureClasses: ['INVENTED_FACT'],
         scoredAt: '2026-08-07T00:00:00.000Z',
+        goldCriticalCoverage: 0.2,
+        softWordOverlap: 0.1,
       },
       {
         runId: 'r',
@@ -150,11 +182,15 @@ describe('aggregate + safety', () => {
         bracketLines: [],
         failureClasses: ['NO_GOLD_REPLY'],
         scoredAt: '2026-08-07T00:00:00.000Z',
+        goldCriticalCoverage: 1,
+        softWordOverlap: 0.5,
       },
     ];
     const card = aggregateRecords('r', records);
     expect(card.scored).toBe(2);
     expect(card.inventedFactRate).toBe(0.5);
+    expect(card.meanGoldCriticalCoverage).toBeCloseTo(0.6);
+    expect(card.meanSoftWordOverlap).toBeCloseTo(0.3);
   });
 
   it('refuses unsafe source patterns', () => {

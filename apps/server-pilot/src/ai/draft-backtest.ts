@@ -43,6 +43,11 @@ export type DraftEvalRecord = {
   bracketLines: string[];
   failureClasses: FailureClass[];
   scoredAt: string;
+  /** Fraction of gold critical tokens covered by draft or brackets (0..1). */
+  goldCriticalCoverage?: number;
+  /** Soft word Jaccard vs gold (0..1); PII-free aggregate only. */
+  softWordOverlap?: number;
+  draftMode?: string;
 };
 
 export type FailureClass =
@@ -50,6 +55,7 @@ export type FailureClass =
   | 'MISSING_BRACKET'
   | 'NO_GOLD_REPLY'
   | 'FORWARD_OR_EXTERNAL'
+  | 'LOW_GOLD_COVERAGE'
   | 'SOFT_OTHER';
 
 export type AggregateScorecard = {
@@ -57,6 +63,15 @@ export type AggregateScorecard = {
   scored: number;
   byClass: Record<FailureClass, number>;
   inventedFactRate: number;
+  meanGoldCriticalCoverage: number;
+  meanSoftWordOverlap: number;
+};
+
+export type GoldCompareResult = {
+  goldCriticalCoverage: number;
+  softWordOverlap: number;
+  goldTokenCount: number;
+  uncoveredGoldTokens: number;
 };
 
 const CRITICAL_TOKEN_RE =
@@ -127,6 +142,7 @@ export function scoreDraftAgainstEvidence(input: {
   goldKind: GoldPairingKind;
   selectedClaimIds?: readonly string[];
   claims?: ReadonlyMap<string, EvidenceClaim>;
+  goldCriticalCoverage?: number;
 }): FailureClass[] {
   const classes: FailureClass[] = [];
   if (input.goldKind === 'no_gold_reply') classes.push('NO_GOLD_REPLY');
@@ -177,8 +193,120 @@ export function scoreDraftAgainstEvidence(input: {
     classes.push('MISSING_BRACKET');
   }
 
+  if (
+    typeof input.goldCriticalCoverage === 'number' &&
+    input.goldKind === 'centurion_outbound' &&
+    input.goldCriticalCoverage < 0.35
+  ) {
+    classes.push('LOW_GOLD_COVERAGE');
+  }
+
   if (classes.length === 0) classes.push('SOFT_OTHER');
   return [...new Set(classes)];
+}
+
+/** Soft compare draft vs Centurion gold — never logs raw bodies. */
+export function compareDraftToGold(input: {
+  draftText: string;
+  goldText: string;
+  bracketLines?: readonly string[];
+}): GoldCompareResult {
+  const goldTokens = extractCriticalTokens(input.goldText);
+  const covered = new Set([
+    ...extractCriticalTokens(input.draftText),
+    ...(input.bracketLines ?? []).flatMap((l) => extractCriticalTokens(l)),
+  ]);
+  let hit = 0;
+  for (const t of goldTokens) {
+    if (covered.has(t)) hit += 1;
+  }
+  const goldCriticalCoverage =
+    goldTokens.length === 0 ? 1 : hit / goldTokens.length;
+
+  const draftWords = softWordSet(input.draftText);
+  const goldWords = softWordSet(input.goldText);
+  let inter = 0;
+  for (const w of draftWords) {
+    if (goldWords.has(w)) inter += 1;
+  }
+  const union = draftWords.size + goldWords.size - inter;
+  const softWordOverlap = union === 0 ? 0 : inter / union;
+
+  return {
+    goldCriticalCoverage,
+    softWordOverlap,
+    goldTokenCount: goldTokens.length,
+    uncoveredGoldTokens: goldTokens.length - hit,
+  };
+}
+
+function softWordSet(text: string): Set<string> {
+  return new Set(
+    text
+      .toLocaleLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .filter((w) => w.length >= 4),
+  );
+}
+
+/**
+ * Evidence-aware offline draft from inbound signals only.
+ * Confirmation/dates present in inbound become citable evidence; PMS-only
+ * facts stay bracketed (never invented).
+ */
+export function draftFromInboundSignals(input: {
+  inboundText: string;
+  unresolvedExtras?: ReadonlyArray<{ need: string; acquisition: string }>;
+}): {
+  textBody: string;
+  bracketLines: string[];
+  evidenceTokens: string[];
+} {
+  const evidenceTokens = extractCriticalTokens(input.inboundText);
+  const unresolved: Array<{ need: string; acquisition: string }> = [];
+
+  const hasConf = /\b(?:CONF-|EXT-|\d{6,}(?:-\d)?)\b/i.test(input.inboundText);
+  if (!hasConf) {
+    unresolved.push({
+      need: 'confirmation number',
+      acquisition: 'hms_find_reservation',
+    });
+  }
+  if (!/\b\d{4}-\d{2}-\d{2}\b/.test(input.inboundText)) {
+    unresolved.push({
+      need: 'stay dates',
+      acquisition: 'hms_find_reservation | inbound clarification',
+    });
+  }
+  unresolved.push(
+    {
+      need: 'stay quote / availability',
+      acquisition: 'hms_quote_stay',
+    },
+    {
+      need: 'folio / deposit summary',
+      acquisition: 'hms_read_folio',
+    },
+    {
+      need: 'company billing terms',
+      acquisition: 'BLOCKED_COMPANY_READ_SURFACE_UNPROVEN',
+    },
+    ...(input.unresolvedExtras ?? []),
+  );
+
+  const cited =
+    evidenceTokens.length > 0
+      ? `We noted the following details from your message (pending PMS verification): ${evidenceTokens
+          .slice(0, 8)
+          .join(', ')}.`
+      : 'Thank you for your email. We are preparing a reply.';
+
+  const { textBody, bracketLines } = renderOfflineBracketDraft({
+    opening: cited,
+    unresolved,
+  });
+  return { textBody, bracketLines, evidenceTokens };
 }
 
 /** Offline draft: never invents — brackets unresolved PMS facts. */
@@ -247,10 +375,23 @@ export function aggregateRecords(
     MISSING_BRACKET: 0,
     NO_GOLD_REPLY: 0,
     FORWARD_OR_EXTERNAL: 0,
+    LOW_GOLD_COVERAGE: 0,
     SOFT_OTHER: 0,
   };
+  let covSum = 0;
+  let softSum = 0;
+  let covN = 0;
+  let softN = 0;
   for (const r of records) {
     for (const c of r.failureClasses) byClass[c] += 1;
+    if (typeof r.goldCriticalCoverage === 'number') {
+      covSum += r.goldCriticalCoverage;
+      covN += 1;
+    }
+    if (typeof r.softWordOverlap === 'number') {
+      softSum += r.softWordOverlap;
+      softN += 1;
+    }
   }
   const scored = records.length;
   return {
@@ -258,6 +399,8 @@ export function aggregateRecords(
     scored,
     byClass,
     inventedFactRate: scored === 0 ? 0 : byClass.INVENTED_FACT / scored,
+    meanGoldCriticalCoverage: covN === 0 ? 0 : covSum / covN,
+    meanSoftWordOverlap: softN === 0 ? 0 : softSum / softN,
   };
 }
 

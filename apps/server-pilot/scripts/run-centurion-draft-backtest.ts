@@ -5,6 +5,9 @@
  *   --offline-fixtures  synthetic pairs (laptop-safe)
  *   --live-corpus       read-only SELECT on DATABASE_URL (EC2; no Vitest)
  *
+ * Draft modes:
+ *   --draft signals (default) | claim-safe-stub
+ *
  * No SMTP. No HMS mutation. No product draft promote. Concurrency=1.
  */
 import { createHash, randomUUID } from 'node:crypto';
@@ -13,16 +16,22 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
 import {
+  draftClaimSafeStub,
+  draftSignalsOnly,
+  type BacktestDraftMode,
+} from '../src/ai/draft-backtest-agent.js';
+import {
   aggregateRecords,
   appendEvalRecord,
   assertBacktestSourceSafe,
   CENTURION_TRANSPORT_ID,
+  compareDraftToGold,
   hashOpaqueId,
   loadScoredHashes,
   pairCenturionGold,
-  renderOfflineBracketDraft,
   scoreDraftAgainstEvidence,
   writeScorecard,
+  type CorpusPair,
   type DraftEvalRecord,
 } from '../src/ai/draft-backtest.js';
 
@@ -31,6 +40,7 @@ function parseArgs(argv: string[]) {
   let runId = randomUUID();
   let offline = false;
   let live = false;
+  let draftMode: BacktestDraftMode = 'signals';
   let root =
     process.env.DRAFT_BACKTEST_ROOT?.trim() ||
     '/opt/nava/shared/draft-backtest';
@@ -41,9 +51,15 @@ function parseArgs(argv: string[]) {
     else if (a === '--limit') limit = Number(argv[++i]);
     else if (a === '--run-id') runId = String(argv[++i]);
     else if (a === '--root') root = String(argv[++i]);
-    else if (a === '--help' || a === '-h') {
+    else if (a === '--draft') {
+      const v = String(argv[++i]);
+      if (v !== 'signals' && v !== 'claim-safe-stub') {
+        throw new Error('--draft must be signals|claim-safe-stub');
+      }
+      draftMode = v;
+    } else if (a === '--help' || a === '-h') {
       console.log(
-        'usage: run-centurion-draft-backtest.ts (--offline-fixtures|--live-corpus) [--limit N] [--run-id ID] [--root DIR]',
+        'usage: run-centurion-draft-backtest.ts (--offline-fixtures|--live-corpus) [--limit N] [--run-id ID] [--root DIR] [--draft signals|claim-safe-stub]',
       );
       process.exit(0);
     }
@@ -54,7 +70,7 @@ function parseArgs(argv: string[]) {
   if (offline === live) {
     throw new Error('choose exactly one of --offline-fixtures | --live-corpus');
   }
-  return { limit, runId, offline, live, root };
+  return { limit, runId, offline, live, root, draftMode };
 }
 
 function sslOptions(rootDir: string) {
@@ -100,7 +116,16 @@ function offlineFixturePairs(limit: number) {
   return pairs;
 }
 
-async function loadLivePairs(limit: number, serverRoot: string) {
+type LivePairBundle = {
+  pair: CorpusPair;
+  inboundText: string;
+  goldText: string | null;
+};
+
+async function loadLivePairs(
+  limit: number,
+  serverRoot: string,
+): Promise<LivePairBundle[]> {
   const url = process.env.DATABASE_URL;
   if (!url) throw new Error('DATABASE_URL required for --live-corpus');
   const sql = postgres(url, {
@@ -130,7 +155,7 @@ async function loadLivePairs(limit: number, serverRoot: string) {
       LIMIT ${limit}
     `;
 
-    const pairs = [];
+    const bundles: LivePairBundle[] = [];
     for (const inbound of inbounds) {
       const msgs = await sql<{
         id: string;
@@ -138,50 +163,66 @@ async function loadLivePairs(limit: number, serverRoot: string) {
         transport_id: string | null;
         created_at: string;
         subject: string | null;
+        text_body: string | null;
       }[]>`
         SELECT
           m.id,
           m.direction,
           m.transport_id,
           coalesce(m.received_at, m.sent_at, m.created_at)::text AS created_at,
-          m.subject
+          m.subject,
+          m.text_body
         FROM message m
         WHERE m.thread_id = ${inbound.thread_id}
         ORDER BY coalesce(m.received_at, m.sent_at, m.created_at) ASC, m.id ASC
       `;
-      pairs.push(
-        pairCenturionGold({
-          threadId: inbound.thread_id,
-          inboundMessageId: inbound.id,
-          messages: msgs.map((m) => ({
-            id: m.id,
-            direction: m.direction,
-            transportId: m.transport_id,
-            createdAt: m.created_at,
-            subject: m.subject,
-          })),
-        }),
-      );
+      const pair = pairCenturionGold({
+        threadId: inbound.thread_id,
+        inboundMessageId: inbound.id,
+        messages: msgs.map((m) => ({
+          id: m.id,
+          direction: m.direction,
+          transportId: m.transport_id,
+          createdAt: m.created_at,
+          subject: m.subject,
+        })),
+      });
+      const inboundRow = msgs.find((m) => m.id === inbound.id);
+      const goldRow = pair.goldOutboundMessageId
+        ? msgs.find((m) => m.id === pair.goldOutboundMessageId)
+        : undefined;
+      bundles.push({
+        pair,
+        inboundText: [
+          inboundRow?.subject?.trim() ?? '',
+          inboundRow?.text_body?.trim() ?? '',
+        ]
+          .filter(Boolean)
+          .join('\n')
+          .slice(0, 12_000),
+        goldText: goldRow
+          ? [goldRow.subject?.trim() ?? '', goldRow.text_body?.trim() ?? '']
+              .filter(Boolean)
+              .join('\n')
+              .slice(0, 12_000)
+          : null,
+      });
     }
-    return pairs;
+    return bundles;
   } finally {
     await sql.end({ timeout: 5 });
   }
 }
 
-function draftForPair() {
-  return renderOfflineBracketDraft({
-    opening: 'Thank you for your email. We are preparing a reply.',
-    unresolved: [
-      { need: 'confirmation number', acquisition: 'hms_find_reservation' },
-      { need: 'stay quote / availability', acquisition: 'hms_quote_stay' },
-      { need: 'folio / deposit summary', acquisition: 'hms_read_folio' },
-      {
-        need: 'company billing terms',
-        acquisition: 'BLOCKED_COMPANY_READ_SURFACE_UNPROVEN',
-      },
-    ],
-  });
+async function draftForBundle(
+  mode: BacktestDraftMode,
+  inboundText: string,
+  signal: AbortSignal,
+) {
+  if (mode === 'claim-safe-stub') {
+    return draftClaimSafeStub({ inboundText, signal });
+  }
+  return draftSignalsOnly(inboundText);
 }
 
 async function main(): Promise<void> {
@@ -191,32 +232,65 @@ async function main(): Promise<void> {
   assertBacktestSourceSafe(
     readFileSync(join(serverRoot, 'src/ai/draft-backtest.ts'), 'utf8'),
   );
+  assertBacktestSourceSafe(
+    readFileSync(join(serverRoot, 'src/ai/draft-backtest-agent.ts'), 'utf8'),
+  );
 
-  const { limit, runId, offline, root } = parseArgs(process.argv.slice(2));
+  const { limit, runId, offline, root, draftMode } = parseArgs(
+    process.argv.slice(2),
+  );
   const already = loadScoredHashes(root, runId);
-  const pairs = (
-    offline ? offlineFixturePairs(limit) : await loadLivePairs(limit, serverRoot)
-  ).filter((p) => !already.has(p.inboundMessageIdHash));
+  const ac = new AbortController();
+
+  const bundles: LivePairBundle[] = offline
+    ? offlineFixturePairs(limit).map((pair, i) => ({
+        pair,
+        inboundText: `Please confirm booking CONF-OFF${i} for 2026-09-0${(i % 9) + 1}.`,
+        goldText:
+          pair.goldKind === 'no_gold_reply'
+            ? null
+            : `Re: booking CONF-OFF${i} confirmed for 2026-09-0${(i % 9) + 1}. Rate ZAR 1200.`,
+      }))
+    : await loadLivePairs(limit, serverRoot);
+
+  const pending = bundles.filter(
+    (b) => !already.has(b.pair.inboundMessageIdHash),
+  );
 
   const records: DraftEvalRecord[] = [];
-  for (const pair of pairs) {
-    const { textBody, bracketLines } = draftForPair();
+  for (const bundle of pending) {
+    const drafted = await draftForBundle(
+      draftMode,
+      bundle.inboundText,
+      ac.signal,
+    );
+    const goldCompare = bundle.goldText
+      ? compareDraftToGold({
+          draftText: drafted.textBody,
+          goldText: bundle.goldText,
+          bracketLines: drafted.bracketLines,
+        })
+      : null;
     const failureClasses = scoreDraftAgainstEvidence({
-      draftText: textBody,
-      evidenceTokens: [],
-      bracketLines,
-      goldKind: pair.goldKind,
+      draftText: drafted.textBody,
+      evidenceTokens: drafted.evidenceTokens,
+      bracketLines: drafted.bracketLines,
+      goldKind: bundle.pair.goldKind,
+      goldCriticalCoverage: goldCompare?.goldCriticalCoverage,
     });
     const record: DraftEvalRecord = {
       runId,
-      inboundMessageIdHash: pair.inboundMessageIdHash,
-      threadIdHash: hashOpaqueId(pair.threadId),
-      goldKind: pair.goldKind,
-      draftText: textBody,
-      evidenceTokens: [],
-      bracketLines,
+      inboundMessageIdHash: bundle.pair.inboundMessageIdHash,
+      threadIdHash: hashOpaqueId(bundle.pair.threadId),
+      goldKind: bundle.pair.goldKind,
+      draftText: drafted.textBody.slice(0, 4_000),
+      evidenceTokens: drafted.evidenceTokens,
+      bracketLines: drafted.bracketLines,
       failureClasses,
       scoredAt: new Date().toISOString(),
+      goldCriticalCoverage: goldCompare?.goldCriticalCoverage,
+      softWordOverlap: goldCompare?.softWordOverlap,
+      draftMode: drafted.draftMode,
     };
     appendEvalRecord(root, runId, record);
     records.push(record);
@@ -229,10 +303,11 @@ async function main(): Promise<void> {
       {
         ok: true,
         mode: offline ? 'offline-fixtures' : 'live-corpus',
+        draftMode,
         runId,
         root,
         corpusFingerprint: createHash('sha256')
-          .update(pairs.map((p) => p.inboundMessageIdHash).join(','))
+          .update(pending.map((b) => b.pair.inboundMessageIdHash).join(','))
           .digest('hex')
           .slice(0, 16),
         ...card,
