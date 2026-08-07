@@ -210,7 +210,7 @@ Better path to done criteria → take it. Log in handoff report.
 - [x] Tasks 11–18 autonomous live recovery complete (deposit unlocked 2026-08-07; Tax/Company/Group/Event remain named true blockers)
 - [x] Every target HMS tool has operator-observed role-proof-v2, reviewed manifest, live driver, masked private trace and video when mask-safe, receipt v2, immutable release, rollback proof, and explicit promotion; unsupported tools have observed true blockers
 - [x] Production handler set equals validated active registry; no fixture/static-evidence activation (six actives on EC2 gen 16)
-- [x] Push `EC2-pilot` and deploy every green release through `ops-deploy.sh` (origin `58dbe787`; runtime deploy HEAD `a5a9945c` + folio release `668c7395-…`)
+- [x] Push `EC2-pilot` and deploy every green release through `ops-deploy.sh` (origin `5c0f8101+`; runtime deploy HEAD `a5a9945c` + folio release `668c7395-…`)
 - [x] Final handoff links private artifact IDs and PII-free outcomes; it does not assign technical setup to the user
 
 ## Execution Mode
