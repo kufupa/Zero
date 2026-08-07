@@ -623,6 +623,27 @@ describe('Centurion outbound reply audit', () => {
       chunkDigest: chunk.digest,
     }));
 
+    expect(() =>
+      mergeSemanticReviewDecisions({
+        expectedOutboundRefs: [outbound],
+        snapshot,
+        workItems: [work!],
+        decisions: [
+          {
+            workItemId: work!.workItemId,
+            workItemDigest: work!.workItemDigest,
+            reviewerId: 'reviewer-one',
+            linkStatus: 'semantic_new',
+            parentRef: null,
+            relationKind: null,
+            method: 'full_corpus_exhausted',
+            evidence: ['full_corpus_exhausted'],
+            chunkReceipts: receipts,
+          },
+        ],
+      }),
+    ).toThrow('CENTURION_AUDIT_PARENT_UNKNOWN');
+
     expect(
       mergeSemanticReviewDecisions({
         expectedOutboundRefs: [outbound],
@@ -633,6 +654,17 @@ describe('Centurion outbound reply audit', () => {
             workItemId: work!.workItemId,
             workItemDigest: work!.workItemDigest,
             reviewerId: 'reviewer-one',
+            linkStatus: 'semantic_new',
+            parentRef: null,
+            relationKind: null,
+            method: 'full_corpus_exhausted',
+            evidence: ['full_corpus_exhausted'],
+            chunkReceipts: receipts,
+          },
+          {
+            workItemId: work!.workItemId,
+            workItemDigest: work!.workItemDigest,
+            reviewerId: 'reviewer-two',
             linkStatus: 'semantic_new',
             parentRef: null,
             relationKind: null,
@@ -670,6 +702,78 @@ describe('Centurion outbound reply audit', () => {
         ],
       }),
     ).toThrow('CENTURION_AUDIT_RECEIPT_INVALID');
+  });
+
+  it('requires independent automation consensus before finalization', () => {
+    const outbound = createAuditReference();
+    const context = createAuditReference();
+    const snapshot = [
+      {
+        auditRef: context,
+        createdAt: '2026-08-01T10:00:00.000Z',
+        direction: 'inbound' as const,
+        isCenturionSender: false,
+        subjectDigest: 'sha256:context',
+        participantDigests: ['sha256:guest'],
+        threadRef: 'thread-a',
+        quotedParentRefs: [],
+      },
+      {
+        auditRef: outbound,
+        createdAt: '2026-08-01T11:00:00.000Z',
+        direction: 'outbound' as const,
+        isCenturionSender: true,
+        subjectDigest: 'sha256:outbound',
+        participantDigests: ['sha256:guest'],
+        threadRef: 'thread-a',
+        quotedParentRefs: [],
+      },
+    ];
+    const [work] = buildSemanticReviewWorkItems({
+      runRef: createAuditReference(),
+      snapshotDigest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      sourceLedgerDigest: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      targetRefs: [outbound],
+      snapshot,
+    });
+    const receipts = work!.manifestChunks.map((chunk, chunkIndex) => ({
+      chunkIndex,
+      chunkDigest: chunk.digest,
+    }));
+    const decision = (reviewerId: string) => ({
+      workItemId: work!.workItemId,
+      workItemDigest: work!.workItemDigest,
+      reviewerId,
+      linkStatus: 'automation_system' as const,
+      parentRef: null,
+      relationKind: null,
+      method: 'automation_deterministic' as const,
+      evidence: ['automation_system_pattern'] as Array<'automation_system_pattern'>,
+      chunkReceipts: receipts,
+    });
+
+    expect(() =>
+      mergeSemanticReviewDecisions({
+        expectedOutboundRefs: [outbound],
+        snapshot,
+        workItems: [work!],
+        decisions: [decision('reviewer-one')],
+      }),
+    ).toThrow('CENTURION_AUDIT_PARENT_UNKNOWN');
+    expect(
+      mergeSemanticReviewDecisions({
+        expectedOutboundRefs: [outbound],
+        snapshot,
+        workItems: [work!],
+        decisions: [decision('reviewer-one'), decision('reviewer-two')],
+      }),
+    ).toMatchObject([
+      {
+        auditRef: outbound,
+        linkStatus: 'automation_system',
+        parentRef: null,
+      },
+    ]);
   });
 
   it('requires independent exact-parent consensus and rejects future links', () => {
@@ -990,6 +1094,18 @@ describe('Centurion outbound reply audit', () => {
       linkStatus: 'header_confirmed',
       parentRef: parent,
     });
+    expect(
+      finalizeDirectAuditRow({
+        auditRef: createAuditReference(),
+        parentRef: null,
+        label: 'automation_system',
+        classificationState: 'classified',
+        evidence: ['automation_system_pattern'],
+        reason: 'DETERMINISTIC_AUTOMATION',
+        candidateCount: 0,
+        corpusUse: 'exclude',
+      }),
+    ).toBeNull();
     expect(() =>
       assertCompleteFinalAuditRows({
         expectedOutboundRefs: [outbound, createAuditReference()],

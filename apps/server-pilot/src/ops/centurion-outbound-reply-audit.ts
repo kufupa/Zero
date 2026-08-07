@@ -1117,8 +1117,26 @@ export function mergeSemanticReviewDecisions(input: {
     }
 
     const statuses = new Set(decisions.map((decision) => decision.linkStatus));
-    if (statuses.size !== 1) throw new Error('CENTURION_AUDIT_PARENT_UNKNOWN');
-    const selected = decisions[0]!;
+    if (decisions.length < 2 || statuses.size !== 1) {
+      throw new Error('CENTURION_AUDIT_PARENT_UNKNOWN');
+    }
+    const groups = new Map<string, SemanticReviewDecision[]>();
+    for (const decision of decisions) {
+      const key = stableJson({
+        linkStatus: decision.linkStatus,
+        method: decision.method,
+        evidence: [...decision.evidence].sort(),
+      });
+      const group = groups.get(key) ?? [];
+      group.push(decision);
+      groups.set(key, group);
+    }
+    const consensus = [...groups.values()]
+      .filter((group) => new Set(group.map((decision) => decision.reviewerId)).size >= 2)
+      .sort((left, right) => right.length - left.length)
+      .at(0);
+    if (!consensus) throw new Error('CENTURION_AUDIT_PARENT_UNKNOWN');
+    const selected = consensus[0]!;
     rows.push(
       finalAuditResolutionSchema.parse({
         auditRef: workItem.outboundRef,
@@ -1128,7 +1146,7 @@ export function mergeSemanticReviewDecisions(input: {
         method: selected.method,
         evidence: selected.evidence,
         corpusUse: semanticCorpusUse(selected.linkStatus),
-        reviewReceiptDigest: receiptDigest(decisions),
+        reviewReceiptDigest: receiptDigest(consensus),
       }),
     );
   }
@@ -1148,18 +1166,6 @@ export function finalizeDirectAuditRow(input: OpaqueAuditRow): FinalAuditResolut
       evidence: input.evidence,
       corpusUse: 'paired_evaluation',
       reviewReceiptDigest: sha256({ auditRef: input.auditRef, parentRef: input.parentRef, input }),
-    });
-  }
-  if (input.label === 'automation_system') {
-    return finalAuditResolutionSchema.parse({
-      auditRef: input.auditRef,
-      parentRef: null,
-      linkStatus: 'automation_system',
-      relationKind: null,
-      method: 'automation_deterministic',
-      evidence: input.evidence,
-      corpusUse: 'exclude',
-      reviewReceiptDigest: sha256({ auditRef: input.auditRef, input }),
     });
   }
   return null;
