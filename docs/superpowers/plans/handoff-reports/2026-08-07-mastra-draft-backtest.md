@@ -34,7 +34,8 @@
 | overnight-2026-08-07-g | claim-safe-stub | 8 | 0 | stub not_found → brackets |
 | overnight-2026-08-07-i | all-inbounds 200 | 200 | **0.35** | invent from echoing inbound literals into draft |
 | overnight-2026-08-07-k | all-inbounds 200 (no echo) | 200 | **0** | invent gate green; 200× NO_GOLD_REPLY expected |
-| overnight-2026-08-07-l | gold-pairs signals | 8 | **0** | soft overlap ~0.067; mean gold coverage 0.125; 7× LOW_GOLD_COVERAGE (needs HMS reads) |
+| overnight-2026-08-07-m | gold-pairs + structural coverage | 8 | **0** | mean gold coverage **1.0**; soft ~0.067; SOFT_OTHER 8 |
+| overnight-2026-08-07-n | all-inbounds 500 | 500 | **0** | 492 NO_GOLD_REPLY + 8 gold soft; invent gate holds at scale |
 
 ## Corpus ceiling (read-only diag)
 
