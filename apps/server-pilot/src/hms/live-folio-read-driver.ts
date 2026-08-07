@@ -1,8 +1,9 @@
 /**
  * Live Folio + Deposit Ledger observers (Task 16).
  * Folio: OSRESS foliobalance / propertycurrency (display only).
- * Deposit: OSLEDG.LST — reservation confirmation column required for scope.
+ * Deposit: OSLEDG.LST date list → OSLEDG.DLD detail (confirmationnumber bind).
  * Observations never emit recipientClass/inquiryClass, card PAN, or guest names.
+ * paymentcardnumber on DLD is detected for leak flag only — never parsed into claims.
  */
 import { createHash, randomUUID } from 'node:crypto';
 import type { ToolResult } from '../ai/draft-evidence.js';
@@ -37,7 +38,13 @@ export const LIVE_DEPOSIT_LEDGER_ALIAS_KEYS = [
   'toguestledger',
   'fromdeposit',
   'confirmationnumber',
+  'amount',
+  'activitytype_display',
+  'toaccount',
 ] as const;
+
+/** Max LST date rows to open as DLD detail (abort-first budget). */
+export const DEPOSIT_LEDGER_MAX_DETAIL_DATES = 7;
 
 export type FolioBalanceKernelResult = {
   status: 'ok' | 'unverified_negative' | 'manual_required';
@@ -267,8 +274,83 @@ export function parseFolioBalanceTransport(text: string): {
   };
 }
 
+function addMoney(a: string, b: string): string {
+  const sum = cents(a) + cents(b);
+  const neg = sum < 0n;
+  const abs = neg ? -sum : sum;
+  const whole = abs / 100n;
+  const frac = abs % 100n;
+  return `${neg ? '-' : ''}${whole}.${String(frac).padStart(2, '0')}`;
+}
+
 /**
- * Parse OSLEDG.LST. Reservation correlation requires confirmationnumber on row.
+ * Classify DLD activitytype_display into deposit summary buckets.
+ * Unknown deposit-like activity → paid (fail closed on card/name only).
+ */
+export function classifyDepositActivity(
+  activityRaw: unknown,
+): 'paid' | 'refunded' | 'forfeited' | 'transferred' | 'due' {
+  const a = String(activityRaw ?? '')
+    .trim()
+    .toLowerCase();
+  if (/refund/.test(a)) return 'refunded';
+  if (/forfeit/.test(a)) return 'forfeited';
+  if (/transfer|guest\s*ledger|to\s*guest|to\s*a\/?r/.test(a)) {
+    return 'transferred';
+  }
+  if (/due|outstanding|balance/.test(a) && !/deposit/.test(a)) return 'due';
+  return 'paid';
+}
+
+export type DepositLedgerDateScope = {
+  closingdate: string;
+  property: string;
+};
+
+/**
+ * Extract closingdate + property from OSLEDG.LST date rows (keys for DLD only).
+ * Values stay in-memory for the read session — not logged by this helper.
+ */
+export function extractDepositLedgerDateScopes(
+  text: string,
+  maxDates = DEPOSIT_LEDGER_MAX_DETAIL_DATES,
+): DepositLedgerDateScope[] {
+  const pageData = parsePageData(text);
+  if (!pageData) return [];
+  const out: DepositLedgerDateScope[] = [];
+  const seen = new Set<string>();
+  for (const row of gridDataRows(pageData).slice(0, FOLIO_READ_MAX_ROWS)) {
+    const closingdate =
+      strOrEmpty(row.closingdate) ||
+      strOrEmpty(row.hoteldate) ||
+      strOrEmpty(row.closing_date);
+    const property = strOrEmpty(row.property);
+    if (!closingdate || !property) continue;
+    if (!/^[A-Z0-9]{2,16}$/i.test(property)) continue;
+    const key = `${property}|${closingdate}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      closingdate,
+      property: property.toUpperCase(),
+    });
+    if (out.length >= maxDates) break;
+  }
+  return out;
+}
+
+function depositCardLeak(text: string): boolean {
+  return (
+    /"cardnumber"\s*:\s*"[0-9]{12,}"/i.test(text) ||
+    /"paymentcardnumber"\s*:\s*"[0-9]{12,}"/i.test(text) ||
+    /"virtualcardnumber"\s*:\s*"[0-9]{12,}"/i.test(text)
+  );
+}
+
+/**
+ * Parse OSLEDG.DLD (preferred) or LST. Reservation correlation requires
+ * confirmationnumber on a detail row matching expectedConfirmationToken.
+ * Never reads name / paymentcardnumber into claims.
  */
 export function parseDepositLedgerTransport(
   text: string,
@@ -289,7 +371,7 @@ export function parseDepositLedgerTransport(
       'fixture HTML deposit fallback rejected in live observer',
     );
   }
-  const hasCardLeak = /"cardnumber"\s*:\s*"[0-9]{12,}"/i.test(text);
+  const hasCardLeak = depositCardLeak(text);
   const pageData = parsePageData(text);
   if (!pageData) {
     return {
@@ -305,8 +387,8 @@ export function parseDepositLedgerTransport(
 
   const rows = gridDataRows(pageData);
   const token = expectedConfirmationToken.trim();
-  let matched: Record<string, unknown> | null = null;
   let hasConfirmationColumn = false;
+  const matched: Record<string, unknown>[] = [];
 
   for (const row of rows.slice(0, FOLIO_READ_MAX_ROWS)) {
     if ('confirmationnumber' in row || 'confirmation' in row) {
@@ -315,12 +397,11 @@ export function parseDepositLedgerTransport(
     const conf =
       strOrEmpty(row.confirmationnumber) || strOrEmpty(row.confirmation);
     if (token && conf && conf === token) {
-      matched = row;
-      break;
+      matched.push(row);
     }
   }
 
-  if (!hasConfirmationColumn || !matched) {
+  if (!hasConfirmationColumn || matched.length === 0) {
     return {
       envelopeRecognized: true,
       reservationScopeProven: false,
@@ -332,18 +413,47 @@ export function parseDepositLedgerTransport(
     };
   }
 
-  const currency = normalizeCurrency(matched.currency);
-  const paid =
-    normalizeMoney(matched.newdeposits, { unsigned: true }) ?? '0.00';
-  const refunded =
-    normalizeMoney(matched.refunds, { unsigned: true }) ?? '0.00';
-  const forfeited =
-    normalizeMoney(matched.forfeits, { unsigned: true }) ?? '0.00';
-  const transferred =
-    normalizeMoney(matched.toguestledger, { unsigned: true }) ??
-    normalizeMoney(matched.fromdeposit, { unsigned: true }) ??
-    '0.00';
-  const due = normalizeMoney(matched.due, { unsigned: true }) ?? '0.00';
+  // Prefer single-row LST-style aggregates when present on the matched row.
+  const first = matched[0]!;
+  const lstStyle =
+    'newdeposits' in first ||
+    'refunds' in first ||
+    'forfeits' in first ||
+    'toguestledger' in first ||
+    'fromdeposit' in first ||
+    'due' in first;
+
+  let currency: string | null = null;
+  let paid = '0.00';
+  let refunded = '0.00';
+  let forfeited = '0.00';
+  let transferred = '0.00';
+  let due = '0.00';
+
+  if (lstStyle && matched.length === 1) {
+    currency = normalizeCurrency(first.currency);
+    paid = normalizeMoney(first.newdeposits, { unsigned: true }) ?? '0.00';
+    refunded = normalizeMoney(first.refunds, { unsigned: true }) ?? '0.00';
+    forfeited = normalizeMoney(first.forfeits, { unsigned: true }) ?? '0.00';
+    transferred =
+      normalizeMoney(first.toguestledger, { unsigned: true }) ??
+      normalizeMoney(first.fromdeposit, { unsigned: true }) ??
+      '0.00';
+    due = normalizeMoney(first.due, { unsigned: true }) ?? '0.00';
+  } else {
+    // DLD transaction rows: sum amount by activitytype_display.
+    for (const row of matched) {
+      currency = currency ?? normalizeCurrency(row.currency);
+      const amt = normalizeMoney(row.amount, { unsigned: true });
+      if (amt == null) continue;
+      const bucket = classifyDepositActivity(row.activitytype_display);
+      if (bucket === 'paid') paid = addMoney(paid, amt);
+      else if (bucket === 'refunded') refunded = addMoney(refunded, amt);
+      else if (bucket === 'forfeited') forfeited = addMoney(forfeited, amt);
+      else if (bucket === 'transferred') transferred = addMoney(transferred, amt);
+      else due = addMoney(due, amt);
+    }
+  }
 
   return {
     envelopeRecognized: true,
@@ -727,7 +837,7 @@ export function createLiveFolioReadDriver(
       try {
         assertNotAborted(signal);
         const facade = createFolioReadFacade(session);
-        const text = await facade.openDepositLedgerList();
+        const lstText = await facade.openDepositLedgerList();
         if (session.terminal() || session.violation()) {
           return {
             status: 'manual_required',
@@ -743,6 +853,38 @@ export function createLiveFolioReadDriver(
         }
 
         assertNotAborted(signal);
+        const scopes = extractDepositLedgerDateScopes(lstText);
+        let text = lstText;
+        if (scopes.length > 0) {
+          for (const scope of scopes) {
+            assertNotAborted(signal);
+            text = await facade.openDepositLedgerDetail(scope);
+            if (session.terminal() || session.violation()) {
+              return {
+                status: 'manual_required',
+                currency: null,
+                depositSummary: null,
+                evidenceId: null,
+                blocker: 'DEPOSIT_SESSION_VIOLATION',
+                observedAt: observedAt.toISOString(),
+                durationMs: 0,
+                bytesObserved: 0,
+                rowsScanned: 0,
+              };
+            }
+            const probe = parseDepositLedgerTransport(
+              text,
+              expectedConfirmationToken,
+            );
+            if (
+              probe.reservationScopeProven ||
+              /"confirmationnumber"\s*:/i.test(text)
+            ) {
+              break;
+            }
+          }
+        }
+
         const parsed = parseDepositLedgerTransport(
           text,
           expectedConfirmationToken,
@@ -759,6 +901,19 @@ export function createLiveFolioReadDriver(
             depositSummary: null,
             evidenceId: null,
             blocker: DEPOSIT_LEDGER_RESERVATION_SCOPE_BLOCKER,
+            observedAt: observedAt.toISOString(),
+            durationMs,
+            bytesObserved: parsed.bytesObserved,
+            rowsScanned: parsed.rowsScanned,
+          };
+        }
+        if (parsed.hasCardLeak) {
+          return {
+            status: 'manual_required',
+            currency: null,
+            depositSummary: null,
+            evidenceId: null,
+            blocker: 'DEPOSIT_CARD_FIELD_LEAK',
             observedAt: observedAt.toISOString(),
             durationMs,
             bytesObserved: parsed.bytesObserved,

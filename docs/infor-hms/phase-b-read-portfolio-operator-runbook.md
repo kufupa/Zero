@@ -21,7 +21,7 @@ Task 13+ (drivers + EC2 evidence).
 | `hms_read_folio` | discovery_verified (folio_summary); live release active | yes |
 | `hms_company_account_read` | fixture_verified | **blocked** `BLOCKED_COMPANY_READ_SURFACE_UNPROVEN` |
 | Tax Invoice branch | — | **blocked** `BLOCKED_TAX_INVOICE_SURFACE_UNPROVEN` (2026-08-07 menu-first re-prove: Front Desk > Tax Invoice absent; Stay 360 tile absent) |
-| Deposit ledger branch | — | **blocked** `BLOCKED_DEPOSIT_LEDGER_RESERVATION_SCOPE_UNPROVEN` |
+| Deposit ledger branch | OSLEDG.DLD `confirmationnumber` | **enabled** (2026-08-07 Property Ledger → Deposit Ledger → DLD) |
 | `hms_group_block_read` | fixture_verified | **blocked** `BLOCKED_GROUP_BLOCK_AGGREGATE_COUNTS_UNPROVEN` |
 | `hms_event_read` | fixture_verified | **blocked** `BLOCKED_EVENT_READ_SURFACE_UNPROVEN` |
 

@@ -1,7 +1,7 @@
 /**
- * Materialize + promote/rollback hms_read_folio (folio_summary branch primary).
- * Deposit ledger branch included in release when reservation scope proven;
- * current LST lacks confirmation — release ships folio_summary only.
+ * Materialize + promote/rollback hms_read_folio.
+ * Branches: folio_summary + deposit_ledger_summary (OSLEDG.DLD confirmation bind
+ * proven 2026-08-07 via Property Ledger → Deposit Ledger → date detail).
  * Company remains unpromoted (surface unproven).
  */
 import { createHash, randomUUID } from 'node:crypto';
@@ -116,6 +116,16 @@ async function main(): Promise<void> {
     .update(await readFile(manifestPath))
     .digest('hex');
 
+  const depositManifestPath =
+    process.env.HMS_DEPOSIT_MANIFEST_PATH?.trim() ||
+    join(
+      process.cwd(),
+      'src/hms/request-manifests/hms_read_folio.deposit-ledger.1.0.0.json',
+    );
+  const depositManifestSha256 = createHash('sha256')
+    .update(await readFile(depositManifestPath))
+    .digest('hex');
+
   const releaseId = process.env.HMS_FOLIO_RELEASE_ID?.trim() || randomUUID();
   const release = hmsPortfolioToolReleaseV2Schema.parse({
     schemaVersion: 2,
@@ -149,7 +159,13 @@ async function main(): Promise<void> {
         parserSchemaSha256:
           '716018585f130515af72a506721849c0f1e5e22ccf521241136e03f96e653b65',
       },
-      // deposit_ledger_summary omitted until reservation scope proven on LST/detail
+      {
+        id: 'deposit_ledger_summary',
+        discoveryOperationId: 'deposit_ledger_summary',
+        manifestSha256: depositManifestSha256,
+        discoverySha256: hex('discovery-deposit-dld-2026-08-07'),
+        parserSchemaSha256: hex('parser-deposit-dld-confirmation-v1'),
+      },
     ],
     credentialVersionHmacSha256: findRelease.credentialVersionHmacSha256,
     roleProofSha256: hex(`role-proof-v2:${toolArg}`),
@@ -170,8 +186,9 @@ async function main(): Promise<void> {
         releaseId,
         implementationSha256: FOLIO_READ_IMPL_V1,
         manifestSha256,
-        requestBranchId: 'folio_summary',
-        depositBranch: 'omitted_BLOCKED_DEPOSIT_LEDGER_RESERVATION_SCOPE_UNPROVEN',
+        depositManifestSha256,
+        requestBranchIds: ['folio_summary', 'deposit_ledger_summary'],
+        depositBranch: 'deposit_ledger_summary',
         runtimeFingerprintSha256,
         toolsetFingerprint,
         activeSetFingerprint: after.activeSetFingerprint,

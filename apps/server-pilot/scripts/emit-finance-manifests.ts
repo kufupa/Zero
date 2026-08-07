@@ -76,12 +76,15 @@ const depositSha = writeEnvelope({
   discoveryOperationId: 'deposit_ledger_summary',
   surface: 'deposit_ledger',
   functionName: 'OSLEDG',
-  listPath: '/web/base/OSLEDG.LST',
+  listPath: '/web/base/OSLEDG.DLD',
   preTransmissionEvidence: [
     'infor_user_guide_deposit_ledger',
     'soft_capture_abort_save_excel_advance_deposit',
     'live_osledg_open_deposit_property_ledger_2026-08-06',
     'live_osledg_lst_grid_envelope_2026-08-06',
+    'live_property_ledger_deposit_ledger_menu_2026-08-07',
+    'live_osledg_dld_confirmationnumber_2026-08-07',
+    'live_osledg_dld_body_closingdate_property_2026-08-07',
   ],
   deniedActions: [
     'post',
@@ -94,6 +97,7 @@ const depositSha = writeEnvelope({
     'export',
     'report_execution',
     'advance_deposit_form',
+    'payment_card_capture',
   ],
   manifest: buildLiveDepositLedgerManifest(origin),
 });

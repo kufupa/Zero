@@ -1047,6 +1047,8 @@ export const LIVE_FOLIO_OSRESS_OPEN_PATH = '/web/base/OSRESS';
 /** Deposit Ledger list (OSLEDG.LST) — proven 2026-08-06 abort-first discovery. */
 export const LIVE_DEPOSIT_LEDGER_OPEN_PATH = '/web/base/OSLEDG';
 export const LIVE_DEPOSIT_LEDGER_LIST_PATH = '/web/base/OSLEDG.LST';
+/** Deposit Ledger date-detail grid (confirmationnumber). Requires closingdate+property. */
+export const LIVE_DEPOSIT_LEDGER_DETAIL_PATH = '/web/base/OSLEDG.DLD';
 
 /** Sent Email list endpoint (PSSNEL.HDR) — proven 2026-08-06 abort-first discovery. */
 export const LIVE_SENT_EMAIL_OPEN_PATH = '/web/base/PSSNEL';
@@ -1327,8 +1329,10 @@ export function buildLiveFolioReadManifest(
 }
 
 /**
- * Deposit Ledger functional POSTs: OSLEDG open + OSLEDG.LST only.
- * Advance Deposit form / post / refund / transfer / saveExcel absent.
+ * Deposit Ledger functional POSTs: OSLEDG open + LST (date list) + DLD (detail).
+ * Advance Deposit form / post / refund / transfer / saveExcel / card capture absent.
+ * DLD soft-capture body keys: CURRENT_TAB_NAME, SYSTEM/USER_FUNCTION_NAME,
+ * closingdate, property (2026-08-07 Property Ledger → Deposit Ledger row activate).
  */
 export function buildLiveDepositLedgerFunctionalRules(
   origin: string,
@@ -1373,6 +1377,27 @@ export function buildLiveDepositLedgerFunctionalRules(
         CURRENT_TAB_NAME: 'LST',
       },
       variableBody: {},
+      maxBodyBytes: 65_536,
+      redirectPolicy: 'same-reviewed-chain',
+    },
+    {
+      id: 'live-osledg-dld',
+      origin,
+      method: 'POST',
+      path: LIVE_DEPOSIT_LEDGER_DETAIL_PATH,
+      resourceTypes: ['xhr', 'fetch'],
+      contentType: 'application/x-www-form-urlencoded',
+      fixedQuery: {},
+      variableQuery: {},
+      fixedBody: {
+        SYSTEM_FUNCTION_NAME: 'OSLEDG',
+        USER_FUNCTION_NAME: 'OSLEDG',
+        CURRENT_TAB_NAME: 'DLD',
+      },
+      variableBody: {
+        closingdate: { pattern: '.{1,32}', maxLength: 32 },
+        property: { pattern: '^[A-Z0-9]{2,16}$', maxLength: 16 },
+      },
       maxBodyBytes: 65_536,
       redirectPolicy: 'same-reviewed-chain',
     },

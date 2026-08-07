@@ -2,8 +2,10 @@ import { createHash, randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import {
   buildDepositSummary,
+  classifyDepositActivity,
   createLiveFolioReadDriver,
   DEPOSIT_LEDGER_RESERVATION_SCOPE_BLOCKER,
+  extractDepositLedgerDateScopes,
   mergeFolioEvidence,
   parseDepositLedgerTransport,
   parseFolioBalanceTransport,
@@ -13,6 +15,7 @@ import {
 import {
   buildLiveDepositLedgerManifest,
   buildLiveFolioReadManifest,
+  LIVE_DEPOSIT_LEDGER_DETAIL_PATH,
   LIVE_DEPOSIT_LEDGER_LIST_PATH,
   LIVE_GUEST_STAY_SEARCH_PATH,
 } from '../src/hms/live-read-manifest.js';
@@ -93,19 +96,26 @@ function child(
   };
 }
 
-function mockRuntime(htmlOrBody: string) {
+function mockRuntime(
+  htmlOrBody: string | ((path: string) => string),
+) {
   const posts: Array<{ path: string; fields: Record<string, string> }> = [];
+  const resolve = (path: string) =>
+    typeof htmlOrBody === 'function' ? htmlOrBody(path) : htmlOrBody;
   const page: Partial<HmsPage> = {
     async content() {
-      return htmlOrBody;
+      return typeof htmlOrBody === 'function'
+        ? htmlOrBody('')
+        : htmlOrBody;
     },
     async click() {},
     async evaluate() {
       return {};
     },
     async postForm(url: string, fields: Record<string, string>) {
-      posts.push({ path: new URL(url).pathname, fields });
-      return htmlOrBody;
+      const path = new URL(url).pathname;
+      posts.push({ path, fields });
+      return resolve(path);
     },
     waitForCorrelatedResponse: async () => undefined,
   };
@@ -188,6 +198,75 @@ describe('folio / deposit transport parsers', () => {
     const serialized = JSON.stringify(withConf);
     expect(serialized).not.toContain('REDACTED');
     expect(serialized).not.toMatch(/4111/);
+  });
+
+  it('parses OSLEDG.DLD activity rows by confirmationnumber; flags PAN leak', () => {
+    expect(classifyDepositActivity('Deposit Payment')).toBe('paid');
+    expect(classifyDepositActivity('Amount Refunded')).toBe('refunded');
+    expect(classifyDepositActivity('Transfer to Guest Ledger')).toBe(
+      'transferred',
+    );
+
+    const scopes = extractDepositLedgerDateScopes(
+      folioEnvelope([
+        {
+          hoteldate: '06-AUG-2026',
+          closingdate: '06-AUG-2026',
+          property: 'HRCEN',
+          currency: 'ZAR',
+          newdeposits: '1.00',
+        },
+      ]),
+    );
+    expect(scopes).toEqual([
+      { closingdate: '06-AUG-2026', property: 'HRCEN' },
+    ]);
+
+    const dld = parseDepositLedgerTransport(
+      folioEnvelope([
+        {
+          confirmationnumber: CONFIRM,
+          currency: 'ZAR',
+          amount: '50.00',
+          activitytype_display: 'Deposit Payment',
+          name: 'REDACTED',
+          paymentcardnumber: '****',
+          toaccount: 'ACC1',
+        },
+        {
+          confirmationnumber: CONFIRM,
+          currency: 'ZAR',
+          amount: '10.00',
+          activitytype_display: 'Amount Refunded',
+        },
+        {
+          confirmationnumber: 'OTHER',
+          currency: 'ZAR',
+          amount: '99.00',
+          activitytype_display: 'Deposit Payment',
+        },
+      ]),
+      CONFIRM,
+    );
+    expect(dld.reservationScopeProven).toBe(true);
+    expect(dld.depositSummary?.paid.amount).toBe('50.00');
+    expect(dld.depositSummary?.refunded.amount).toBe('10.00');
+    expect(JSON.stringify(dld)).not.toContain('REDACTED');
+    expect(JSON.stringify(dld)).not.toContain('ACC1');
+
+    const leak = parseDepositLedgerTransport(
+      folioEnvelope([
+        {
+          confirmationnumber: CONFIRM,
+          currency: 'ZAR',
+          amount: '1.00',
+          activitytype_display: 'Deposit Payment',
+          paymentcardnumber: '4111111111111111',
+        },
+      ]),
+      CONFIRM,
+    );
+    expect(leak.hasCardLeak).toBe(true);
   });
 });
 
@@ -402,6 +481,65 @@ describe('live folio driver binding + denied actions', () => {
     expect(posts.some((p) => p.path === LIVE_DEPOSIT_LEDGER_LIST_PATH)).toBe(
       true,
     );
+  });
+
+  it('deposit LST→DLD with confirmationnumber → ok; no card/name leakage', async () => {
+    const lst = folioEnvelope([
+      {
+        closingdate: '06-AUG-2026',
+        property: 'HRCEN',
+        currency: 'ZAR',
+        newdeposits: '10.00',
+      },
+    ]);
+    const dld = folioEnvelope([
+      {
+        confirmationnumber: CONFIRM,
+        currency: 'ZAR',
+        amount: '25.00',
+        activitytype_display: 'Deposit Payment',
+        name: 'REDACTED',
+        paymentcardnumber: '****',
+      },
+    ]);
+    const { runtime, posts } = mockRuntime((path) =>
+      path.includes('OSLEDG.DLD') ? dld : lst,
+    );
+    const driver = createLiveFolioReadDriver({
+      runtime,
+      transportId: 't1',
+      expectedConfirmationToken: CONFIRM,
+    });
+    const a = auth({ requestBranchId: 'deposit_ledger_summary' });
+    const c = child({
+      toolId: a.toolId,
+      requestBranchId: a.requestBranchId,
+    });
+    const result = await driver.observeDepositSummary(
+      a,
+      c,
+      new AbortController().signal,
+    );
+    expect(result.status).toBe('ok');
+    expect(result.depositSummary?.paid.amount).toBe('25.00');
+    expect(posts.some((p) => p.path === LIVE_DEPOSIT_LEDGER_LIST_PATH)).toBe(
+      true,
+    );
+    expect(posts.some((p) => p.path === LIVE_DEPOSIT_LEDGER_DETAIL_PATH)).toBe(
+      true,
+    );
+    const dldPost = posts.find((p) => p.path === LIVE_DEPOSIT_LEDGER_DETAIL_PATH);
+    expect(dldPost?.fields.closingdate).toBe('06-AUG-2026');
+    expect(dldPost?.fields.property).toBe('HRCEN');
+    expect(dldPost?.fields.CURRENT_TAB_NAME).toBe('DLD');
+    expect(JSON.stringify(result)).not.toContain('REDACTED');
+    expect(JSON.stringify(result)).not.toMatch(/4111/);
+    expect(
+      posts.every(
+        (p) =>
+          !/settle|refund|post|print|export|advance|transfer|void/i.test(p.path),
+      ),
+    ).toBe(true);
   });
 
   it('registry denies post/transfer/settle/refund/advance_deposit', () => {
