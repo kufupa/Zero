@@ -297,14 +297,15 @@ export function draftFromInboundSignals(input: {
 
   const cited =
     evidenceTokens.length > 0
-      ? `We noted the following details from your message (pending PMS verification): ${evidenceTokens
+      ? `Thank you for your email regarding your reservation enquiry. We have noted the following details from your message (pending PMS verification): ${evidenceTokens
           .slice(0, 8)
           .join(', ')}.`
-      : 'Thank you for your email. We are preparing a reply.';
+      : 'Thank you for your email regarding your reservation enquiry. We are preparing a reply.';
 
   const { textBody, bracketLines } = renderOfflineBracketDraft({
     opening: cited,
     unresolved,
+    closing: 'Kind regards,\nCenturion Hotel Reservations',
   });
   return { textBody, bracketLines, evidenceTokens };
 }
