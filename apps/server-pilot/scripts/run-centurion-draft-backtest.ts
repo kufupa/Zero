@@ -159,7 +159,11 @@ async function loadLivePairs(
     connect_timeout: 30,
   });
   try {
-    const inbounds = await sql<{
+    /**
+     * Outbound-centric: every Centurion reply with a prior inbound on the thread.
+     * Inbound-first sampling only found ~8 pairs; most gold lives on outbound side.
+     */
+    const outbounds = await sql<{
       id: string;
       thread_id: string;
       created_at: string;
@@ -167,21 +171,22 @@ async function loadLivePairs(
       SELECT m.id, m.thread_id, coalesce(m.received_at, m.sent_at, m.created_at)::text AS created_at
       FROM message m
       WHERE m.transport_id = ${CENTURION_TRANSPORT_ID}
-        AND m.direction = 'inbound'
+        AND m.direction = 'outbound'
         AND EXISTS (
           SELECT 1
-          FROM message o
-          WHERE o.thread_id = m.thread_id
-            AND o.direction = 'outbound'
-            AND coalesce(o.received_at, o.sent_at, o.created_at)
-              >= coalesce(m.received_at, m.sent_at, m.created_at)
+          FROM message i
+          WHERE i.thread_id = m.thread_id
+            AND i.direction = 'inbound'
+            AND coalesce(i.received_at, i.sent_at, i.created_at)
+              <= coalesce(m.received_at, m.sent_at, m.created_at)
         )
       ORDER BY coalesce(m.received_at, m.sent_at, m.created_at) DESC
       LIMIT ${limit}
     `;
 
     const bundles: LivePairBundle[] = [];
-    for (const inbound of inbounds) {
+    const seenInbound = new Set<string>();
+    for (const outbound of outbounds) {
       const msgs = await sql<{
         id: string;
         direction: 'inbound' | 'outbound';
@@ -200,11 +205,22 @@ async function loadLivePairs(
           m.text_body,
           m.html_body
         FROM message m
-        WHERE m.thread_id = ${inbound.thread_id}
+        WHERE m.thread_id = ${outbound.thread_id}
         ORDER BY coalesce(m.received_at, m.sent_at, m.created_at) ASC, m.id ASC
       `;
+      const outboundAt = Date.parse(outbound.created_at);
+      const priorInbounds = msgs
+        .filter(
+          (m) =>
+            m.direction === 'inbound' && Date.parse(m.created_at) <= outboundAt,
+        )
+        .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+      const inbound = priorInbounds[0];
+      if (!inbound || seenInbound.has(inbound.id)) continue;
+      seenInbound.add(inbound.id);
+
       const pair = pairCenturionGold({
-        threadId: inbound.thread_id,
+        threadId: outbound.thread_id,
         inboundMessageId: inbound.id,
         messages: msgs.map((m) => ({
           id: m.id,
@@ -214,13 +230,20 @@ async function loadLivePairs(
           subject: m.subject,
         })),
       });
-      const inboundRow = msgs.find((m) => m.id === inbound.id);
-      const goldRow = pair.goldOutboundMessageId
-        ? msgs.find((m) => m.id === pair.goldOutboundMessageId)
-        : undefined;
+      // Force gold to this outbound when pairing picked a different earlier one.
+      if (pair.goldOutboundMessageId !== outbound.id) {
+        pair.goldOutboundMessageId = outbound.id;
+        const subj =
+          msgs.find((m) => m.id === outbound.id)?.subject?.toLowerCase() ?? '';
+        pair.goldKind =
+          /\bfw:|\bfwd:|forward(ed)?\b/.test(subj) || /\bexternal\b/.test(subj)
+            ? 'forward_or_external'
+            : 'centurion_outbound';
+      }
+      const goldRow = msgs.find((m) => m.id === outbound.id);
       bundles.push({
         pair,
-        inboundText: inboundRow ? messagePlainText(inboundRow) : '',
+        inboundText: messagePlainText(inbound),
         goldText: goldRow ? messagePlainText(goldRow) : null,
       });
     }

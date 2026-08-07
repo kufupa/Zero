@@ -75,7 +75,7 @@ export type GoldCompareResult = {
 };
 
 const CRITICAL_TOKEN_RE =
-  /\b(?:ZAR|R)\s?\d[\d,.]*|\b\d{4}-\d{2}-\d{2}\b|\bCONF-[A-Z0-9-]{2,}\b|\bEXT-[A-Z0-9-]{2,}\b/gi;
+  /\b(?:ZAR|R)\s?\d[\d,.]*|\b\d{4}-\d{2}-\d{2}\b|\b(?:\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4})\b|\bCONF-[A-Z0-9-]{2,}\b|\bEXT-[A-Z0-9-]{2,}\b|\b\d{6,}(?:-\d{1,3})?\b/gi;
 
 export function hashOpaqueId(id: string): string {
   return createHash('sha256').update(id).digest('hex').slice(0, 16);
