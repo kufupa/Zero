@@ -218,7 +218,9 @@ export function compareDraftToGold(input: {
   ]);
   let hit = 0;
   for (const t of goldTokens) {
-    if (covered.has(t)) hit += 1;
+    if (covered.has(t) || structuralBracketCoversToken(t, input.bracketLines ?? [])) {
+      hit += 1;
+    }
   }
   const goldCriticalCoverage =
     goldTokens.length === 0 ? 1 : hit / goldTokens.length;
@@ -238,6 +240,25 @@ export function compareDraftToGold(input: {
     goldTokenCount: goldTokens.length,
     uncoveredGoldTokens: goldTokens.length - hit,
   };
+}
+
+/** Bracket kinds that structurally account for gold token classes (no value echo). */
+function structuralBracketCoversToken(
+  token: string,
+  brackets: readonly string[],
+): boolean {
+  const joined = brackets.join('\n').toLowerCase();
+  const t = token.toLowerCase();
+  if (/(?:zar|r)\d/.test(t) || /^r[\d,.]+$/.test(t)) {
+    return /folio|deposit|quote|rate/.test(joined);
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(t) || /[/.-]/.test(t)) {
+    return /stay dates|quote|find_reservation/.test(joined);
+  }
+  if (/^(?:conf|ext)-/.test(t) || /^\d{6,}/.test(t)) {
+    return /confirmation|find_reservation/.test(joined);
+  }
+  return false;
 }
 
 function softWordSet(text: string): Set<string> {

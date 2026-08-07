@@ -32,7 +32,9 @@
 | overnight-2026-08-07-c | gold sample | 8 | 0 | first gold-bearing sample |
 | overnight-2026-08-07-e | signals + html gold | 8 | 0 | soft overlap ~0.04 after html_body fallback |
 | overnight-2026-08-07-g | claim-safe-stub | 8 | 0 | stub not_found → brackets |
-| overnight-2026-08-07-h | outbound-centric | 2 | 0 | outbound timestamps only yield ~4 prior-inbound pairs |
+| overnight-2026-08-07-i | all-inbounds 200 | 200 | **0.35** | invent from echoing inbound literals into draft |
+| overnight-2026-08-07-k | all-inbounds 200 (no echo) | 200 | **0** | invent gate green; 200× NO_GOLD_REPLY expected |
+| overnight-2026-08-07-l | gold-pairs signals | 8 | **0** | soft overlap ~0.067; mean gold coverage 0.125; 7× LOW_GOLD_COVERAGE (needs HMS reads) |
 
 ## Corpus ceiling (read-only diag)
 
