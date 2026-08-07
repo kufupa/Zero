@@ -116,6 +116,31 @@ function offlineFixturePairs(limit: number) {
   return pairs;
 }
 
+function stripHtmlToText(html: string): string {
+  return html
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function messagePlainText(row: {
+  subject: string | null;
+  text_body: string | null;
+  html_body: string | null;
+}): string {
+  const body =
+    (row.text_body?.trim() || '') ||
+    (row.html_body ? stripHtmlToText(row.html_body) : '');
+  return [row.subject?.trim() ?? '', body]
+    .filter(Boolean)
+    .join('\n')
+    .slice(0, 12_000);
+}
+
 type LivePairBundle = {
   pair: CorpusPair;
   inboundText: string;
