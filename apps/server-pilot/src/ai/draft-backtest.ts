@@ -297,9 +297,7 @@ export function draftFromInboundSignals(input: {
 
   const cited =
     evidenceTokens.length > 0
-      ? `Thank you for your email regarding your reservation enquiry. We have noted the following details from your message (pending PMS verification): ${evidenceTokens
-          .slice(0, 8)
-          .join(', ')}.`
+      ? 'Thank you for your email regarding your reservation enquiry. We noted the reservation details from your message and will verify them in the PMS before confirming.'
       : 'Thank you for your email regarding your reservation enquiry. We are preparing a reply.';
 
   const { textBody, bracketLines } = renderOfflineBracketDraft({

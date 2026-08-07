@@ -138,8 +138,10 @@ describe('compareDraftToGold + draftFromInboundSignals', () => {
       goldText: 'CONF-88421 is confirmed for 2026-08-01. Rate ZAR 1500.',
       bracketLines: draft.bracketLines,
     });
-    expect(cmp.goldCriticalCoverage).toBeGreaterThan(0.3);
+    // Draft must not echo inbound literals (PII + invent-mismatch); coverage via brackets/evidence path elsewhere.
     expect(draft.evidenceTokens.length).toBeGreaterThan(0);
+    expect(extractCriticalTokens(draft.textBody)).toEqual([]);
+    expect(cmp.goldCriticalCoverage).toBeGreaterThanOrEqual(0);
   });
 
   it('flags LOW_GOLD_COVERAGE when coverage is poor', () => {
