@@ -10,7 +10,7 @@ todos:
     status: completed
   - id: empirical-debug-loop
     content: Run real-example discovery, RCA, regression, fix, and repeat loops for every tool
-    status: pending
+    status: completed
   - id: find-list-enrichment
     content: Enrich exact reservation list-row evidence and bump find to 1.2.0
     status: completed
@@ -37,19 +37,19 @@ todos:
     status: completed
   - id: autonomy-recovery
     content: Restore Phase A-style operator-observed autonomy and action-specific fail-closed gates
-    status: pending
+    status: completed
   - id: live-ops
     content: Wire discovery, proof, artifact, promote, rollback, wave, and rearm commands
-    status: pending
+    status: completed
   - id: live-drivers
     content: Build and empirically debug seven narrow live HMS read drivers
-    status: pending
+    status: completed
   - id: registry-activation
     content: Make immutable releases and the active registry authoritative for production handlers
-    status: pending
+    status: completed
   - id: live-proof-promotion
     content: Produce per-tool traces, videos, receipts, rollback drills, and independent promotions
-    status: pending
+    status: completed
 isProject: false
 ---
 
