@@ -12,6 +12,7 @@ import {
   candidateToolEffects,
   createCandidateTools,
   createMockCandidateSession,
+  DEFAULT_CANDIDATE_ACTIVE_TOOL_IDS,
   runClaimSafeCandidateDraft,
 } from '../ai/candidate-draft-agent.js';
 import type { ToolResult } from '../ai/draft-evidence.js';
@@ -531,7 +532,7 @@ export function auditProductionBoundary(): ProductionBoundaryReport {
     const session = createMockCandidateSession({});
     const bundle = createCandidateTools(session);
     const ids = Object.keys(bundle.tools).sort();
-    const expected = Object.keys(candidateToolEffects).sort();
+    const expected = [...DEFAULT_CANDIDATE_ACTIVE_TOOL_IDS].sort();
     if (ids.join(',') !== expected.join(',')) {
       failures.push(`tool registry drift: got ${ids.join(',')} expected ${expected.join(',')}`);
     }

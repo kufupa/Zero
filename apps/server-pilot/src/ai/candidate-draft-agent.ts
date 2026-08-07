@@ -45,10 +45,10 @@ import {
 } from './run-ledger.js';
 import { admitReadBranch } from '../hms/read-admission.js';
 
-export const CANDIDATE_TOOL_BUDGET = 4;
+export const CANDIDATE_TOOL_BUDGET = 6;
 
 /** Bump when candidate tool registry / claim schemas change. Shadow owns this. */
-export const HMS_CANDIDATE_TOOLSET_VERSION = '1.1.0';
+export const HMS_CANDIDATE_TOOLSET_VERSION = '1.2.0';
 
 /** Production hms_find_reservation tool version (reservation-only shadow). */
 export const HMS_FIND_RESERVATION_TOOLSET_VERSION = '1.2.0';
@@ -57,9 +57,19 @@ export const candidateToolEffects = {
   hms_find_reservation: 'read',
   hms_quote_stay: 'read',
   mail_read_artifact: 'read',
+  hms_read_folio: 'read',
+  hms_sent_email_audit: 'read',
+  hms_list_documents: 'read',
 } as const;
 
 export type CandidateToolId = keyof typeof candidateToolEffects;
+
+/** Fixture/production default when session.activeToolIds omitted. */
+export const DEFAULT_CANDIDATE_ACTIVE_TOOL_IDS: readonly CandidateToolId[] = [
+  'hms_find_reservation',
+  'hms_quote_stay',
+  'mail_read_artifact',
+];
 
 export type CandidateToolEffect = (typeof candidateToolEffects)[keyof typeof candidateToolEffects];
 
@@ -94,13 +104,26 @@ export type CandidateToolSession = {
     attachmentId: string,
     signal: AbortSignal,
   ) => Promise<ToolResult<ArtifactData>>;
+  /** Optional Phase B finance/comms reads — only when activeToolIds includes them. */
+  readFolio?: (
+    candidateId: string,
+    signal: AbortSignal,
+  ) => Promise<ToolResult<unknown>>;
+  readSentEmailAudit?: (
+    candidateId: string,
+    signal: AbortSignal,
+  ) => Promise<ToolResult<unknown>>;
+  listDocuments?: (
+    candidateId: string,
+    signal: AbortSignal,
+  ) => Promise<ToolResult<unknown>>;
   /** Opaque lookup map — raw guest values never accepted from model. */
   lookupCandidates: ReadonlyMap<string, LookupCandidate>;
   /** Attachment IDs authorized for this thread context only. */
   authorizedAttachmentIds: ReadonlySet<string>;
   /**
-   * Production: {'hms_find_reservation'} only.
-   * Fixture default (omit): all three handlers registered.
+   * Default: find/quote/artifact.
+   * Expand with Phase B actives only when handlers are present.
    */
   activeToolIds?: ReadonlySet<CandidateToolId>;
   /** Durable run lease. When present, every tool call must reserve budget first. */
@@ -209,13 +232,25 @@ function sessionHandlerPresent(
   if (toolId === 'hms_quote_stay') {
     return typeof session.quoteStay === 'function';
   }
-  return typeof session.readArtifact === 'function';
+  if (toolId === 'mail_read_artifact') {
+    return typeof session.readArtifact === 'function';
+  }
+  if (toolId === 'hms_read_folio') {
+    return typeof session.readFolio === 'function';
+  }
+  if (toolId === 'hms_sent_email_audit') {
+    return typeof session.readSentEmailAudit === 'function';
+  }
+  if (toolId === 'hms_list_documents') {
+    return typeof session.listDocuments === 'function';
+  }
+  return false;
 }
 
 /**
  * Register strict read tools. Effects are code-owned (all `read`).
  * Inputs accept opaque IDs only — no raw property/guest/S3 fields.
- * Registers only `session.activeToolIds` (default: all three for fixtures).
+ * Registers only `session.activeToolIds` (default: find/quote/artifact).
  */
 export type ReserveReadAttempt = (
   fence: AiRunFence,
@@ -235,8 +270,7 @@ export function createCandidateTools(
   const now = options?.now ?? (() => new Date());
 
   const activeToolIds =
-    session.activeToolIds ??
-    (new Set(Object.keys(candidateToolEffects) as CandidateToolId[]));
+    session.activeToolIds ?? new Set(DEFAULT_CANDIDATE_ACTIVE_TOOL_IDS);
 
   for (const toolId of activeToolIds) {
     if (!(toolId in candidateToolEffects)) {
@@ -396,19 +430,106 @@ export function createCandidateTools(
     },
   });
 
+  const hmsReadFolio = createTool({
+    id: 'hms_read_folio',
+    description:
+      'Read folio/deposit summary by opaque confirmation candidate ID (read-only).',
+    inputSchema: opaqueIdSchema,
+    outputSchema: ToolResultSchema,
+    toModelOutput: (output) =>
+      minimizeToolResultForModel(
+        output as ToolResult<unknown>,
+        claimsFromToolResult(output as ToolResult<unknown>),
+      ),
+    execute: async (input, context) => {
+      const signal = context?.abortSignal;
+      return withBudget('hms_read_folio', signal, async () => {
+        throwIfAborted(signal);
+        if (!session.lookupCandidates.has(input.candidateId)) {
+          throw new Error('unknown opaque candidate id');
+        }
+        if (!session.readFolio) throw new Error('folio handler missing');
+        const result = await session.readFolio(
+          input.candidateId,
+          signal ?? new AbortController().signal,
+        );
+        return ingest(result);
+      });
+    },
+  });
+
+  const hmsSentEmailAudit = createTool({
+    id: 'hms_sent_email_audit',
+    description:
+      'Read sent-email audit metadata by opaque confirmation candidate ID (read-only).',
+    inputSchema: opaqueIdSchema,
+    outputSchema: ToolResultSchema,
+    toModelOutput: (output) =>
+      minimizeToolResultForModel(
+        output as ToolResult<unknown>,
+        claimsFromToolResult(output as ToolResult<unknown>),
+      ),
+    execute: async (input, context) => {
+      const signal = context?.abortSignal;
+      return withBudget('hms_sent_email_audit', signal, async () => {
+        throwIfAborted(signal);
+        if (!session.lookupCandidates.has(input.candidateId)) {
+          throw new Error('unknown opaque candidate id');
+        }
+        if (!session.readSentEmailAudit) {
+          throw new Error('sent-email audit handler missing');
+        }
+        const result = await session.readSentEmailAudit(
+          input.candidateId,
+          signal ?? new AbortController().signal,
+        );
+        return ingest(result);
+      });
+    },
+  });
+
+  const hmsListDocuments = createTool({
+    id: 'hms_list_documents',
+    description:
+      'List document metadata by opaque confirmation candidate ID (read-only).',
+    inputSchema: opaqueIdSchema,
+    outputSchema: ToolResultSchema,
+    toModelOutput: (output) =>
+      minimizeToolResultForModel(
+        output as ToolResult<unknown>,
+        claimsFromToolResult(output as ToolResult<unknown>),
+      ),
+    execute: async (input, context) => {
+      const signal = context?.abortSignal;
+      return withBudget('hms_list_documents', signal, async () => {
+        throwIfAborted(signal);
+        if (!session.lookupCandidates.has(input.candidateId)) {
+          throw new Error('unknown opaque candidate id');
+        }
+        if (!session.listDocuments) {
+          throw new Error('list-documents handler missing');
+        }
+        const result = await session.listDocuments(
+          input.candidateId,
+          signal ?? new AbortController().signal,
+        );
+        return ingest(result);
+      });
+    },
+  });
+
   const allHandlers = {
     hms_find_reservation: hmsFindReservation,
     hms_quote_stay: hmsQuoteStay,
     mail_read_artifact: mailReadArtifact,
+    hms_read_folio: hmsReadFolio,
+    hms_sent_email_audit: hmsSentEmailAudit,
+    hms_list_documents: hmsListDocuments,
   } as const;
 
-  const tools = {} as {
-    hms_find_reservation: typeof hmsFindReservation;
-    hms_quote_stay: typeof hmsQuoteStay;
-    mail_read_artifact: typeof mailReadArtifact;
-  };
+  const tools = {} as Record<CandidateToolId, (typeof allHandlers)[CandidateToolId]>;
   for (const id of activeToolIds) {
-    (tools as Record<string, unknown>)[id] = allHandlers[id];
+    tools[id] = allHandlers[id];
   }
 
   return {

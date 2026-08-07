@@ -274,7 +274,7 @@ describe('claim-safe candidate agent', () => {
   });
 
   it('keeps candidate toolset stable while find reservation advances to 1.2.0', () => {
-    expect(HMS_CANDIDATE_TOOLSET_VERSION).toBe('1.1.0');
+    expect(HMS_CANDIDATE_TOOLSET_VERSION).toBe('1.2.0');
     expect(HMS_FIND_RESERVATION_TOOLSET_VERSION).toBe('1.2.0');
     expect(HMS_FIND_RESERVATION_TOOL_VERSION).toBe('1.2.0');
     expect(READ_TOOLS.hms_find_reservation.version).toBe('1.2.0');
@@ -286,13 +286,18 @@ describe('claim-safe candidate agent', () => {
       hms_find_reservation: 'read',
       hms_quote_stay: 'read',
       mail_read_artifact: 'read',
+      hms_read_folio: 'read',
+      hms_sent_email_audit: 'read',
+      hms_list_documents: 'read',
     });
     const session = createMockCandidateSession();
     const bundle = createCandidateTools(session);
     assertToolRegistrySealed(bundle.tools);
-    expect(Object.keys(bundle.tools).sort()).toEqual(
-      Object.keys(candidateToolEffects).sort(),
-    );
+    expect(Object.keys(bundle.tools).sort()).toEqual([
+      'hms_find_reservation',
+      'hms_quote_stay',
+      'mail_read_artifact',
+    ].sort());
   });
 
   it('fixture session may activate all three handlers; production allowlist is narrower', () => {
@@ -315,6 +320,50 @@ describe('claim-safe candidate agent', () => {
     expect(Object.keys(createCandidateTools(production).tools)).toEqual([
       'hms_find_reservation',
     ]);
+  });
+
+  it('Phase B folio tool activates only when handler present', async () => {
+    const session = createMockCandidateSession({
+      activeToolIds: new Set(['hms_find_reservation', 'hms_read_folio']),
+      lookupCandidates: new Map([
+        ['cand-1', { id: 'cand-1', kind: 'confirmation', value: 'CONF-1' }],
+      ]),
+      findReservation: async () => okReservationResult(),
+      readFolio: async () => ({
+        status: 'ok' as const,
+        draftReady: true,
+        data: {
+          reservationBinding: 'exact_parent_redacted',
+          guestPrivacy: 'identity_redacted',
+          currency: 'ZAR',
+          totalBalance: '0.00',
+          depositSummary: null,
+          due: null,
+          paid: null,
+          refunded: null,
+          forfeited: null,
+          transferStatus: null,
+          observedAt: '2026-08-07T00:00:00.000Z',
+          claimEligibility: 'partial',
+        },
+        unresolvedFields: [],
+        evidence: hmsEvidence({
+          toolId: 'hms_read_folio',
+          claimKeys: ['folio.balance'],
+        }),
+      }),
+    });
+    const bundle = createCandidateTools(session);
+    expect(Object.keys(bundle.tools).sort()).toEqual([
+      'hms_find_reservation',
+      'hms_read_folio',
+    ]);
+    await expect(
+      bundle.tools.hms_read_folio.execute!(
+        { candidateId: 'cand-1' },
+        { abortSignal: new AbortController().signal },
+      ),
+    ).resolves.toMatchObject({ status: 'ok', draftReady: true });
   });
 
   it('only accepts opaque candidate IDs (no raw property/guest fields)', async () => {
@@ -352,15 +401,15 @@ describe('claim-safe candidate agent', () => {
     ).rejects.toThrow(/unknown opaque candidate id/i);
   });
 
-  it('failed calls count toward four-call budget', async () => {
+  it('failed calls count toward six-call budget', async () => {
+    const ids = ['a', 'b', 'c', 'd', 'e', 'f'] as const;
     const session = createMockCandidateSession({
-      lookupCandidates: new Map([
-        ['a', { id: 'a', kind: 'confirmation', value: 'CONF-A' }],
-        ['b', { id: 'b', kind: 'confirmation', value: 'CONF-B' }],
-        ['c', { id: 'c', kind: 'confirmation', value: 'CONF-C' }],
-        ['d', { id: 'd', kind: 'confirmation', value: 'CONF-D' }],
-        ['e', { id: 'e', kind: 'confirmation', value: 'CONF-E' }],
-      ]),
+      lookupCandidates: new Map(
+        ids.map((id) => [
+          id,
+          { id, kind: 'confirmation' as const, value: `CONF-${id.toUpperCase()}` },
+        ]),
+      ),
       findReservation: async () => {
         throw new Error('hms down');
       },
@@ -371,7 +420,7 @@ describe('claim-safe candidate agent', () => {
     for (let i = 0; i < CANDIDATE_TOOL_BUDGET; i++) {
       await expect(
         bundle.tools.hms_find_reservation.execute!(
-          { candidateId: ['a', 'b', 'c', 'd'][i]! },
+          { candidateId: ids[i]! },
           { abortSignal: signal },
         ),
       ).rejects.toThrow(/hms down/);
@@ -381,7 +430,7 @@ describe('claim-safe candidate agent', () => {
 
     await expect(
       bundle.tools.hms_find_reservation.execute!(
-        { candidateId: 'e' },
+        { candidateId: 'a' },
         { abortSignal: signal },
       ),
     ).rejects.toThrow(/budget exceeded/i);
