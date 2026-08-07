@@ -89,9 +89,7 @@ export function pairCenturionGold(input: {
   const laterOutbound = input.messages
     .filter(
       (m) =>
-        m.direction === 'outbound' &&
-        Date.parse(m.createdAt) >= inboundAt &&
-        (m.transportId === CENTURION_TRANSPORT_ID || !m.transportId),
+        m.direction === 'outbound' && Date.parse(m.createdAt) >= inboundAt,
     )
     .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
 
