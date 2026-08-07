@@ -118,6 +118,14 @@ async function loadLivePairs(limit: number, serverRoot: string) {
       FROM message m
       WHERE m.transport_id = ${CENTURION_TRANSPORT_ID}
         AND m.direction = 'inbound'
+        AND EXISTS (
+          SELECT 1
+          FROM message o
+          WHERE o.thread_id = m.thread_id
+            AND o.direction = 'outbound'
+            AND coalesce(o.received_at, o.sent_at, o.created_at)
+              >= coalesce(m.received_at, m.sent_at, m.created_at)
+        )
       ORDER BY coalesce(m.received_at, m.sent_at, m.created_at) DESC
       LIMIT ${limit}
     `;
