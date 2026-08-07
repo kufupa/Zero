@@ -127,6 +127,10 @@ async function main(): Promise<void> {
     .digest('hex');
 
   const releaseId = process.env.HMS_FOLIO_RELEASE_ID?.trim() || randomUUID();
+  const activeFolioId = registry.active[toolArg] ?? null;
+  const predecessorReleaseId = activeFolioId;
+  const rollbackAction =
+    activeFolioId === null ? ('disable' as const) : ('restore_predecessor' as const);
   const release = hmsPortfolioToolReleaseV2Schema.parse({
     schemaVersion: 2,
     releaseId,
@@ -148,8 +152,8 @@ async function main(): Promise<void> {
     toolId: toolArg,
     toolVersion: '1.0.0',
     implementationSha256: FOLIO_READ_IMPL_V1,
-    predecessorReleaseId: null,
-    rollbackAction: 'disable',
+    predecessorReleaseId,
+    rollbackAction,
     requestBranches: [
       {
         id: 'folio_summary',
