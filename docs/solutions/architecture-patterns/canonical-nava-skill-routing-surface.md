@@ -34,7 +34,7 @@ After a skill-ecosystem audit of the Zero Cursor surface, planning and execution
 
 That routing table is easy to misuse in two ways. First, agents and humans treat `/autonomous-plan` as a substitute for the CE → paired review → `writing-plans` pipeline, when autonomous-plan only embeds a binding mandate into an existing implementation plan and does not replace planning. Second, teams skip or collapse the paired plan gate: `gstack-plan-eng-review` (completeness floor) and `ponytail-review` (simplicity ceiling) are both mandatory and must never substitute for each other (`.cursor/rules/nava-workflow.mdc:12`).
 
-Adjacent traps remain common after pruning: routing through removed or deprecated front doors when successors exist (`.cursor/rules/nava-workflow.mdc:18`); turning on ponytail persistent mode by default even though ponytail is OFF unless explicitly invoked and `ponytail-review` stays review-only (`.cursor/rules/nava-workflow.mdc:16`; `.claude/skills/ponytail/SKILL.md:9`, `:20-23`); using fast subagent variants when the contract requires standard non-fast models only (`.cursor/rules/nava-workflow.mdc:15`); and treating overnight autonomy as permission to weaken pilot-RDS test safety, which the safety rule and Nava routing say overrides plans, skills, review findings, autonomy, and “make tests green” pressure (`.cursor/rules/nava-workflow.mdc:19`; `.cursor/rules/pilot-rds-safety.mdc:8`, `:17-18`).
+Adjacent traps remain common after pruning: routing through removed or deprecated front doors when successors exist (`.cursor/rules/nava-workflow.mdc:18`); turning on ponytail persistent mode by default even though ponytail is OFF unless explicitly invoked and `ponytail-review` stays review-only (`.cursor/rules/nava-workflow.mdc:16`; `.claude/skills/ponytail/SKILL.md:9`, `:20-23`); using fast subagent variants when the contract requires standard non-fast models only (`.cursor/rules/nava-workflow.mdc:15`); and treating overnight autonomy as permission to weaken pilot-RDS test safety, which the safety rule and Nava routing say overrides plans, skills, review findings, autonomy, and “make tests green” pressure (`.cursor/rules/nava-workflow.mdc:19`; `.cursor/rules/pilot-rds-safety.mdc:8`, `:17-20`).
 
 Compatibility overlays and aliases still matter for muscle memory: `/overnight-autonomous-execution` and project `/overnight-autonomous-zero` remain supported while `/autonomous-plan` is the new canonical command (`.cursor/skills/overnight-autonomous-zero/SKILL.md:8`). The installed global continue-autonomously skill documents `/overnight-continue-working` as a compatibility alias. Durable non-obvious verified learnings belong in CE `docs/solutions/`; GStack learnings stay passive preference/tool memory (`.cursor/rules/nava-workflow.mdc:17`). User-kept Cursor skills such as `/adhd` and overnight compatibility aliases remain available alongside the Nava four-command surface; they are not defined by the Nava workflow rule itself.
 
@@ -69,7 +69,7 @@ Missing GStack assets: repair installation; do not silently skip the paired gate
 
 ### `/nava-run` execution contract
 
-Resolve the final plan, read full plan + rules + solutions + git status/diff + safety overlay, then preflight. If the plan is not implementation-ready, run `/nava-plan` rather than improvising. Repo rule requires TDD, SDD, per-task review, final CE code review, and fresh verification (`.cursor/rules/nava-workflow.mdc:14`). The installed global nava-run skill further specifies subagent-driven-development, test-driven-development, `ce-code-review mode:agent`, `verification-before-completion`, and headless `ce-compound` for non-obvious learnings.
+Resolve the final plan, read full plan + rules + solutions + PII-safe Git status/diff restricted to known non-PII paths + safety overlay, then preflight. If the plan is not implementation-ready, run `/nava-plan` rather than improvising. Repo rule requires TDD, SDD, per-task review, final CE code review, and fresh verification (`.cursor/rules/nava-workflow.mdc:14`). The installed global nava-run skill further specifies subagent-driven-development, test-driven-development, `ce-code-review mode:agent`, `verification-before-completion`, and headless `ce-compound` for non-obvious learnings.
 
 Per that installed skill, `/nava-run` authorizes plan-scoped edits and safe verification; it does not authorize commits, pushes, PRs, merges, deployments, destructive git, production writes, credential bypass, or unrelated cleanup unless the user explicitly requested them.
 
@@ -81,7 +81,7 @@ Autonomy authorizes safe reversible work, investigation, implementation, testing
 
 ### `/continue-autonomously` as queued fail-safe
 
-On receive: inspect conversation goal, active plan, git status/diff, completed tasks, and latest evidence before acting. Read the mandate, repo rules, and Zero overlay/safety files. Routine questions from a prior turn → choose safest reversible recommendation, record decision, proceed. Resume first incomplete or failed task; never repeat verified completed work. Failed tests/builds/deploys are not valid stop reasons; true blockers are missing credentials, human-only interaction, destructive ambiguity, safety-policy conflict, or external outage preventing required proof. The skill may be queued repeatedly; always inspect state first for idempotency.
+On receive: inspect conversation goal, active plan, PII-safe Git status/diff restricted to known non-PII paths (never render PII-bearing artifacts to terminal logs), completed tasks, and latest evidence before acting. Read the mandate, repo rules, and Zero overlay/safety files. Routine questions from a prior turn → choose safest reversible recommendation, record decision, proceed. Resume first incomplete or failed task; never repeat verified completed work. Failed tests/builds/deploys are not valid stop reasons; true blockers are missing credentials, human-only interaction, destructive ambiguity, safety-policy conflict, or external outage preventing required proof. The skill may be queued repeatedly; always inspect state first for idempotency.
 
 ### Ponytail: review vs persistent mode
 
@@ -95,12 +95,12 @@ Safety overrides plans, skills, review findings, autonomy, and requests to make 
 - Never set or use `VITEST_ALLOW_PILOT_RDS=1`; treat it as a prohibited legacy escape hatch (`.cursor/rules/pilot-rds-safety.mdc:11`).
 - Never source `.env.production` into a shell that will run tests (`.cursor/rules/pilot-rds-safety.mdc:12`).
 - Before Vitest on laptop or EC2: `unset DATABASE_URL VITEST_ALLOW_PILOT_RDS` (`.cursor/rules/pilot-rds-safety.mdc:13`).
-- Database-required tests use a disposable non-production database only; missing disposable DB is a safety blocker, including overnight autonomy (`.cursor/rules/pilot-rds-safety.mdc:14`, `:18`).
+- Database-required tests use a disposable non-production database only; missing disposable DB is a safety blocker, including overnight autonomy (`.cursor/rules/pilot-rds-safety.mdc:14`, `:17`).
 - Pilot verification uses read-only SQL/API checks, health checks, or purpose-built non-test scripts—not Vitest against pilot (`.cursor/rules/pilot-rds-safety.mdc:15`).
 - Existing plans or gate scripts that permit pilot-RDS Vitest are stale; do not execute that permission (`.cursor/rules/pilot-rds-safety.mdc:16`).
-- Never print database URLs, credentials, private mail bodies, addresses, or other PII into prompts, subagent inputs, logs, or SSM output (`.cursor/rules/pilot-rds-safety.mdc:19`).
+- For authorized local PII analysis, path-only subagent handoff, and prohibited egress/secrets, `.cursor/rules/pilot-rds-safety.mdc:18-20` is authoritative.
 
-`/nava-plan` and `/nava-run` skills (installed globally) restate the same Zero safety contract. The overnight overlay forbids Vitest pointed at pilot/production RDS and states no overnight escape hatch exists (`.cursor/skills/overnight-autonomous-zero/SKILL.md:78-91`).
+`/nava-plan` and `/nava-run` skills (installed globally) restate the same RDS test-safety contract. The overnight overlay forbids Vitest pointed at pilot/production RDS and states no overnight escape hatch exists (`.cursor/skills/overnight-autonomous-zero/SKILL.md:79`, `:81-91`).
 
 ### Routing hygiene and memory
 
@@ -110,7 +110,7 @@ Do not route through removed or deprecated front doors when canonical successors
 
 Collapsing `/nava-plan` and `/autonomous-plan` produces either under-reviewed overnight work or a meta-plan that never lands in the real artifact. Skipping one half of the paired gate yields plans that are complete but bloated, or simple but missing failure modes, security, and proof—exactly what the completeness floor and simplicity ceiling are meant to catch separately.
 
-Weakening pilot-RDS safety to “get green” has wiped or mutated pilot data in past Zero incidents (see `docs/solutions/database-issues/vitest-production-pilot-db-wipe.md`, also referenced from `.cursor/skills/overnight-autonomous-zero/SKILL.md`). The safety rule is therefore an absolute override, including during overnight autonomous execution (`.cursor/rules/pilot-rds-safety.mdc:8`, `:18`; `.cursor/rules/nava-workflow.mdc:19`).
+Weakening pilot-RDS safety to “get green” has wiped or mutated pilot data in past Zero incidents (see `docs/solutions/database-issues/vitest-production-pilot-db-wipe.md`, also referenced from `.cursor/skills/overnight-autonomous-zero/SKILL.md`). The safety rule is therefore an absolute override, including during overnight autonomous execution (`.cursor/rules/pilot-rds-safety.mdc:8`, `:17`; `.cursor/rules/nava-workflow.mdc:19`).
 
 Leaving ponytail persistent mode on by default fights the planning pipeline: continuous YAGNI pressure during research and completeness review can silently drop required behavior, while `ponytail-review` as a discrete gate keeps simplicity adjudication explicit (`.cursor/rules/nava-workflow.mdc:16`). Fast subagents undermine the review/implementer freshness contract that `/nava-run` and `/nava-plan` require.
 
@@ -163,7 +163,7 @@ Routing through deprecated front doors wastes turns and reintroduces skills the 
 unset DATABASE_URL VITEST_ALLOW_PILOT_RDS
 ```
 
-Use disposable non-production DB for DB-required tests; for pilot proof use read-only SQL/API, health checks, or non-test scripts (`.cursor/rules/pilot-rds-safety.mdc:13-15`). Missing disposable DB → safety blocker, including overnight (`.cursor/rules/pilot-rds-safety.mdc:18`).
+Use disposable non-production DB for DB-required tests; for pilot proof use read-only SQL/API, health checks, or non-test scripts (`.cursor/rules/pilot-rds-safety.mdc:13-15`). Missing disposable DB → safety blocker, including overnight (`.cursor/rules/pilot-rds-safety.mdc:17`).
 
 ### Before / after: ponytail
 
