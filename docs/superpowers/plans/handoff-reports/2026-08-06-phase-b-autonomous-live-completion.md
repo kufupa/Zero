@@ -90,12 +90,25 @@ Shadow consecutive holdout ≥30 for `shadow_enabled` successor: not created (fi
 
 ## Accepted true blockers (user-accepted scope)
 
-- `BLOCKED_TAX_INVOICE_SURFACE_UNPROVEN`
-- `BLOCKED_DEPOSIT_LEDGER_RESERVATION_SCOPE_UNPROVEN`
-- `BLOCKED_COMPANY_READ_SURFACE_UNPROVEN`
-- `BLOCKED_GROUP_BLOCK_AGGREGATE_COUNTS_UNPROVEN`
-- `BLOCKED_EVENT_READ_SURFACE_UNPROVEN`
+- `BLOCKED_TAX_INVOICE_SURFACE_UNPROVEN` — re-confirmed 2026-08-07 (entitlement)
+- ~~`BLOCKED_DEPOSIT_LEDGER_RESERVATION_SCOPE_UNPROVEN`~~ — **CLEARED 2026-08-07** (OSLEDG.DLD + promote gen 16)
+- `BLOCKED_COMPANY_READ_SURFACE_UNPROVEN` — re-confirmed (billing trio absent)
+- `BLOCKED_GROUP_BLOCK_AGGREGATE_COUNTS_UNPROVEN` — re-confirmed (list-only)
+- `BLOCKED_EVENT_READ_SURFACE_UNPROVEN` — re-confirmed (Events menu absent)
 - Missing disposable non-production DB (full gate only)
+
+## Addendum 2026-08-07 — deposit unlock + folio upgrade
+
+| Item | Value |
+|------|-------|
+| Laptop / EC2 HEAD | `a5a9945c` (`fix(hms): set folio release predecessor…`; prior `b7fb667f` DLD) |
+| Deploy | `GIT_BRANCH=EC2-pilot` `ops-deploy.sh` ok; health + VPN HARD ok |
+| Folio active | `668c7395-795a-400d-9881-52082d68b5c7` (gen **16**) |
+| Branches | `folio_summary` + `deposit_ledger_summary` |
+| Predecessor | `94f30a6d-…` / `restore_predecessor` (rollback drill → re-promote ok) |
+| Evidence | `.superpowers/sdd/deposit-ledger-reprove-2026-08-07.md`, `.superpowers/sdd/blocker-reprove-brief-2026-08-07.md` |
+
+Remaining external blockers: Tax Invoice entitlement, Company billing trio, Group Block-tab aggregates, Event Events menu. No further Phase B surface expansion without hotel grant / contract change.
 
 ## User wake-up
 
