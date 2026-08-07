@@ -98,6 +98,7 @@ debug-*.log
 centurion-emails-dump.md
 centurion-emails-index.md
 centurion-emails-by-thread.md
+apps/server-pilot/.tmp-centurion-outbound-audit/
 centurion-thread-summaries.json
 centurion-spam-audit.json
 centurion-category-analysis.md

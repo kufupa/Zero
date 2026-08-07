@@ -8,8 +8,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 ASM_EXEC_SRC="${REPO_ROOT}/apps/server-pilot/deploy/vendor/asm-exec"
 # Vendor CRLF bytes (source integrity). Installed path is LF after tr -d '\r'.
-DEFAULT_PIN='5f0c7f82827fe4eb89db0ba177aec694cd4cbf3acff003b09d1b545ea8595b7f'
-ASM_EXEC_INSTALLED_SHA256='81fd29e1f039209282bc8cbe482cda033d331f07284533a46f990368228a7e65'
+DEFAULT_PIN='c7e36d92d5e0712dbcecde3e435a4e3bb3b38d40994b36b32b3ddccc4518f6b8'
+ASM_EXEC_INSTALLED_SHA256='1df2c2683dfa623a42f34b4a37525290083ea47cb905292a5fe7b5e163729ffa'
 ROLE_NAME='nava-prod-public-ipv4-WorkerRole-bPmrMEkmdwLU'
 ACCOUNT_ID='845242190536'
 

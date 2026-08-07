@@ -202,8 +202,8 @@ sudo mv -T "$STAMP_TMP" "${NAVA_ROOT}/shared/hms-dependency-revision.txt"
 # Vendor SRC is CRLF-pinned; install strips CR so Linux shebang works.
 # Installed bytes are LF — pin separately (tr -d '\r' < vendor/asm-exec | sha256sum).
 ASM_EXEC_SRC="${SERVER_PILOT}/deploy/vendor/asm-exec"
-ASM_EXEC_PIN="5f0c7f82827fe4eb89db0ba177aec694cd4cbf3acff003b09d1b545ea8595b7f"
-ASM_EXEC_INSTALLED_SHA256="81fd29e1f039209282bc8cbe482cda033d331f07284533a46f990368228a7e65"
+ASM_EXEC_PIN="c7e36d92d5e0712dbcecde3e435a4e3bb3b38d40994b36b32b3ddccc4518f6b8"
+ASM_EXEC_INSTALLED_SHA256="1df2c2683dfa623a42f34b4a37525290083ea47cb905292a5fe7b5e163729ffa"
 if [ ! -f "$ASM_EXEC_SRC" ]; then
   echo "HMS_FAIL code=DEPENDENCY_MISMATCH" >&2
   echo "missing vendored asm-exec" >&2

@@ -1,2 +1,2 @@
 # Preserve exact CRLF bytes for pinned asm-exec SHA-256.
-apps/server-pilot/deploy/vendor/asm-exec -text
+apps/server-pilot/deploy/vendor/asm-exec -text whitespace=cr-at-eol

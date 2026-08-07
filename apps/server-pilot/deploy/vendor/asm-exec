@@ -36,6 +36,8 @@ PATTERN = re.compile(r'\{\{resolve:secretsmanager:([^}]+)\}\}')
 SMA_ENDPOINT = os.environ.get('AWS_SECRETS_MANAGER_AGENT_ENDPOINT', 'http://localhost:2773')
 SSRF_TOKEN = os.environ.get('AWS_SESSION_TOKEN', os.environ.get('AWS_TOKEN', ''))
 MCP_ENDPOINT = os.environ.get('ASM_EXEC_MCP_ENDPOINT', 'https://aws-mcp.us-east-1.api.aws/mcp')
+# MCP tool calls proxy an AWS CLI command and can exceed the short connection timeout.
+MCP_REQUEST_TIMEOUT_SECONDS = 45
 
 _sma_available = None
 
@@ -193,7 +195,7 @@ def _mcp_post(payload, session_id=None):
     for k, v in sig_headers.items():
         req.add_header(k, v)
 
-    resp = urllib.request.urlopen(req, timeout=10)
+    resp = urllib.request.urlopen(req, timeout=MCP_REQUEST_TIMEOUT_SECONDS)
     session_out = resp.headers.get('Mcp-Session-Id')
     raw = resp.read()
     parsed = json.loads(raw) if raw else {}
@@ -370,7 +372,11 @@ def main():
         sys.exit(1)
 
     args = [resolve_string(a) if PATTERN.search(a) else a for a in cmd_args]
-
+    # Windows has no POSIX exec; Python's emulation crashes when an MSYS child
+    # receives a URL-shaped argument such as DATABASE_URL. Keep replacement on EC2.
+    if os.name == 'nt':
+        returncode = subprocess.run(args, env=os.environ.copy()).returncode
+        sys.exit(returncode)
     os.execvpe(args[0], args, os.environ.copy())
 
 

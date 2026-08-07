@@ -4,54 +4,54 @@ Provisioned AWS resources for the mail pilot. All created via AWS CLI from lapto
 
 ## Identifiers
 
-| Resource | Value |
-|----------|-------|
-| Account | `845242190536` |
-| Region | `af-south-1` |
-| VPC | `vpc-0f078e17a5f0f8599` (default VPC) |
-| EC2 instance | `i-008f737974a9ba9b3` |
-| EC2 instance profile role | `nava-prod-public-ipv4-WorkerRole-bPmrMEkmdwLU` |
-| EC2 SG (source for RDS ingress) | `sg-00190151691bd66fa` (`nava-prod-public-ipv4-WorkerSecurityGroup-tYMRcvjFke7X`) |
-| RDS instance identifier | `nava-zero-mail-pilot` |
-| RDS endpoint | `nava-zero-mail-pilot.cpuaauo4kfyd.af-south-1.rds.amazonaws.com` |
-| RDS port | `5432` |
-| RDS class | `db.t4g.medium` |
-| RDS engine | `postgres 16` |
-| RDS storage | `gp3 100GB`, storage-encrypted |
-| RDS backup retention | `7` days |
-| RDS publicly accessible | `false` |
-| RDS DB name | `zero` |
-| RDS admin user | `zero_admin` |
-| RDS SG | `sg-0fbe865a67165678c` (`nava-zero-rds`) |
-| RDS subnet group | `nava-zero-mail` (subnets `subnet-0e6446aaaeaa8762e` af-south-1a + `subnet-094bf8643d98c22f6` af-south-1b) |
-| Secrets Manager secret name | `nava-zero/server-pilot/database-url` |
-| Secret ARN | `arn:aws:secretsmanager:af-south-1:845242190536:secret:nava-zero/server-pilot/database-url-RsBcd2` |
-| Secret contents | JSON `{"DATABASE_URL":"postgres://zero_admin:<redacted>@nava-zero-mail-pilot.cpuaauo4kfyd.af-south-1.rds.amazonaws.com:5432/zero"}` |
-| S3 mail bucket | `nava-zero-mail-845242190536-af-south-1` |
-| S3 SSE | AES256 |
-| S3 public access block | all 4 blocks enabled (private) |
-| S3 lifecycle | `raw-mime/*` expire 30d, `attachments/*` expire 90d, incomplete multipart abort 1d, `hms-browser-proof-transfer/v1/*` expire 1d |
-| S3 CORS | Cutover overlap: canonical + legacy + localhost GET/HEAD. Final after 24h: canonical + localhost GET/HEAD; legacy removed. No wildcard origins. |
-| Bootstrap bucket (Task 1) | `nava-zero-bootstrap-845242190536` |
+| Resource                        | Value                                                                                                                                           |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| Account                         | `845242190536`                                                                                                                                  |
+| Region                          | `af-south-1`                                                                                                                                    |
+| VPC                             | `vpc-0f078e17a5f0f8599` (default VPC)                                                                                                           |
+| EC2 instance                    | `i-008f737974a9ba9b3`                                                                                                                           |
+| EC2 instance profile role       | `nava-prod-public-ipv4-WorkerRole-bPmrMEkmdwLU`                                                                                                 |
+| EC2 SG (source for RDS ingress) | `sg-00190151691bd66fa` (`nava-prod-public-ipv4-WorkerSecurityGroup-tYMRcvjFke7X`)                                                               |
+| RDS instance identifier         | `nava-zero-mail-pilot`                                                                                                                          |
+| RDS endpoint                    | `nava-zero-mail-pilot.cpuaauo4kfyd.af-south-1.rds.amazonaws.com`                                                                                |
+| RDS port                        | `5432`                                                                                                                                          |
+| RDS class                       | `db.t4g.medium`                                                                                                                                 |
+| RDS engine                      | `postgres 16`                                                                                                                                   |
+| RDS storage                     | `gp3 100GB`, storage-encrypted                                                                                                                  |
+| RDS backup retention            | `7` days                                                                                                                                        |
+| RDS publicly accessible         | `false`                                                                                                                                         |
+| RDS DB name                     | `zero`                                                                                                                                          |
+| RDS admin user                  | `zero_admin`                                                                                                                                    |
+| RDS SG                          | `sg-0fbe865a67165678c` (`nava-zero-rds`)                                                                                                        |
+| RDS subnet group                | `nava-zero-mail` (subnets `subnet-0e6446aaaeaa8762e` af-south-1a + `subnet-094bf8643d98c22f6` af-south-1b)                                      |
+| Secrets Manager secret name     | `nava-zero/server-pilot/database-url`                                                                                                           |
+| Secret ARN                      | `arn:aws:secretsmanager:af-south-1:845242190536:secret:nava-zero/server-pilot/database-url-RsBcd2`                                              |
+| Secret contents                 | JSON `{"DATABASE_URL":"postgres://zero_admin:<redacted>@nava-zero-mail-pilot.cpuaauo4kfyd.af-south-1.rds.amazonaws.com:5432/zero"}`             |
+| S3 mail bucket                  | `nava-zero-mail-845242190536-af-south-1`                                                                                                        |
+| S3 SSE                          | AES256                                                                                                                                          |
+| S3 public access block          | all 4 blocks enabled (private)                                                                                                                  |
+| S3 lifecycle                    | `raw-mime/*` expire 30d, `attachments/*` expire 90d, incomplete multipart abort 1d, `hms-browser-proof-transfer/v1/*` expire 1d                 |
+| S3 CORS                         | Cutover overlap: canonical + legacy + localhost GET/HEAD. Final after 24h: canonical + localhost GET/HEAD; legacy removed. No wildcard origins. |
+| Bootstrap bucket (Task 1)       | `nava-zero-bootstrap-845242190536`                                                                                                              |
 
 ## EC2 instance profile inline policies
 
-| Policy name | Grants |
-|-------------|-------|
-| `NavaZeroBootstrapBundleRead` (Task 1) | `s3:GetObject` on `nava-zero-bootstrap-845242190536/git-bundles/*`, `vpn-nava/*`, and `mail-navaai/*`; `s3:ListBucket` on bootstrap bucket (prefixes `git-bundles/*`, `vpn-nava/*`, `mail-navaai/*`) |
-| `NavaZeroMailBucketAccess` | `s3:ListBucket` / `s3:GetBucketLocation` / `s3:ListBucketMultipartUploads` on mail bucket; `s3:GetObject` / `s3:PutObject` / `s3:DeleteObject` / `s3:AbortMultipartUpload` / `s3:ListMultipartUploadParts` on mail bucket `/*` |
-| `NavaZeroSecretsRead` | `secretsmanager:GetSecretValue` / `secretsmanager:DescribeSecret` on `nava-zero/server-pilot/database-url-*`, `nava-zero/server-pilot/infor-hms-read-*`, and `nava-zero/server-pilot/hms-evidence-hmac-*` |
-| `NavaZeroRDSConnect` | `rds-db:connect` on `dbuser:nava-zero-mail-pilot/zero_admin` (for future IAM DB auth; password auth used today via SG routing) |
-| `NavaZeroBedrockInvoke` | `bedrock:InvokeModel` on `arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-lite-v1:0`; optional `bedrock:ApplyGuardrail` when guardrail env vars set |
+| Policy name                            | Grants                                                                                                                                                                                                                         |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `NavaZeroBootstrapBundleRead` (Task 1) | `s3:GetObject` on `nava-zero-bootstrap-845242190536/git-bundles/*`, `vpn-nava/*`, and `mail-navaai/*`; `s3:ListBucket` on bootstrap bucket (prefixes `git-bundles/*`, `vpn-nava/*`, `mail-navaai/*`)                           |
+| `NavaZeroMailBucketAccess`             | `s3:ListBucket` / `s3:GetBucketLocation` / `s3:ListBucketMultipartUploads` on mail bucket; `s3:GetObject` / `s3:PutObject` / `s3:DeleteObject` / `s3:AbortMultipartUpload` / `s3:ListMultipartUploadParts` on mail bucket `/*` |
+| `NavaZeroSecretsRead`                  | `secretsmanager:GetSecretValue` / `secretsmanager:DescribeSecret` on `nava-zero/server-pilot/database-url-*`, `nava-zero/server-pilot/infor-hms-read-*`, and `nava-zero/server-pilot/hms-evidence-hmac-*`                      |
+| `NavaZeroRDSConnect`                   | `rds-db:connect` on `dbuser:nava-zero-mail-pilot/zero_admin` (for future IAM DB auth; password auth used today via SG routing)                                                                                                 |
+| `NavaZeroBedrockInvoke`                | `bedrock:InvokeModel` on `arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-lite-v1:0`; optional `bedrock:ApplyGuardrail` when guardrail env vars set                                                                    |
 
 ## asm-exec digests (Phase B evidence bootstrap)
 
 Vendored `apps/server-pilot/deploy/vendor/asm-exec` is CRLF on purpose (`.gitattributes -text`). Install strips CR before `/usr/local/bin/asm-exec`.
 
-| Pin | Bytes | SHA-256 |
-|-----|-------|---------|
-| Vendor SRC (`ASM_EXEC_PIN` / `DEFAULT_PIN`) | CRLF vendor file | `5f0c7f82827fe4eb89db0ba177aec694cd4cbf3acff003b09d1b545ea8595b7f` |
-| Installed (`ASM_EXEC_INSTALLED_SHA256`) | LF after `tr -d '\r'` | `81fd29e1f039209282bc8cbe482cda033d331f07284533a46f990368228a7e65` |
+| Pin                                         | Bytes                 | SHA-256                                                            |
+| ------------------------------------------- | --------------------- | ------------------------------------------------------------------ |
+| Vendor SRC (`ASM_EXEC_PIN` / `DEFAULT_PIN`) | CRLF vendor file      | `c7e36d92d5e0712dbcecde3e435a4e3bb3b38d40994b36b32b3ddccc4518f6b8` |
+| Installed (`ASM_EXEC_INSTALLED_SHA256`)     | LF after `tr -d '\r'` | `1df2c2683dfa623a42f34b4a37525290083ea47cb905292a5fe7b5e163729ffa` |
 
 Derive installed pin: `tr -d '\r' < apps/server-pilot/deploy/vendor/asm-exec | sha256sum`. Provision remote, `install-hms-browser.sh`, and scoped doctor verify both digests.
 

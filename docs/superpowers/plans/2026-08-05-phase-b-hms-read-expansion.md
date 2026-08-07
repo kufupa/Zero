@@ -147,16 +147,16 @@ Each tool has its own release and rollback; subwaves are ordered batches, not ac
 
 ### AWS / infra (use freely)
 
-| Resource | ID / path |
-|----------|-----------|
-| EC2 | `i-008f737974a9ba9b3` (`af-south-1`) |
-| RDS | `nava-zero-mail-pilot` (Postgres 16) |
-| S3 | `nava-zero-mail-845242190536-af-south-1` |
-| Repo on EC2 | `/home/ubuntu/repos/zero` |
-| **Primary deploy** | `apps/server-pilot/deploy/ops-deploy.sh` (`--migrate` when schema) |
-| **Primary app bounce** | `apps/server-pilot/deploy/ops-restart.sh` |
-| **Primary box reboot** | `apps/server-pilot/deploy/ops-reboot.sh` |
-| Guts (fallback) | `sync-ec2-git-bundle.sh`, `deploy-ec2.sh`, `ssm-run-command.sh` |
+| Resource               | ID / path                                                          |
+| ---------------------- | ------------------------------------------------------------------ |
+| EC2                    | `i-008f737974a9ba9b3` (`af-south-1`)                               |
+| RDS                    | `nava-zero-mail-pilot` (Postgres 16)                               |
+| S3                     | `nava-zero-mail-845242190536-af-south-1`                           |
+| Repo on EC2            | `/home/ubuntu/repos/zero`                                          |
+| **Primary deploy**     | `apps/server-pilot/deploy/ops-deploy.sh` (`--migrate` when schema) |
+| **Primary app bounce** | `apps/server-pilot/deploy/ops-restart.sh`                          |
+| **Primary box reboot** | `apps/server-pilot/deploy/ops-reboot.sh`                           |
+| Guts (fallback)        | `sync-ec2-git-bundle.sh`, `deploy-ec2.sh`, `ssm-run-command.sh`    |
 
 **Allowed:** ops wrappers, bundle sync, deploy, migrate (via `ops-deploy --migrate`), seed (no `--rotate` unless fix requires), read-only SSM checks, PM2 logs, health curl, tests against a disposable non-production database, purpose-built live HMS read probes, abort-first structural request capture, and root-owned operator-observed role-proof-v2 staging.
 
@@ -355,8 +355,17 @@ type ReadToolId =
 type HmsReadToolId = Exclude<ReadToolId, 'mail_read_artifact'>;
 
 type CandidateReadPlan =
-  | { kind: 'reservation'; find: true; followups: Array<'documents' | 'sent_email' | 'folio' | 'company'> }
-  | { kind: 'artifact_reservation'; artifacts: number; find: true; followups: Array<'documents' | 'sent_email' | 'folio' | 'company'> }
+  | {
+      kind: 'reservation';
+      find: true;
+      followups: Array<'documents' | 'sent_email' | 'folio' | 'company'>;
+    }
+  | {
+      kind: 'artifact_reservation';
+      artifacts: number;
+      find: true;
+      followups: Array<'documents' | 'sent_email' | 'folio' | 'company'>;
+    }
   | { kind: 'quote'; quote: true }
   | { kind: 'group'; group: true }
   | { kind: 'event'; event: true };
@@ -859,7 +868,7 @@ Do not add another generic result envelope. Live observers map existing per-tool
 
   Add runtime config `HMS_EVIDENCE_HMAC_SECRET_ARN`, `HMS_EVIDENCE_HMAC_KEY_VERSION`, and child-only `HMS_EVIDENCE_HMAC_KEY`. `provision-hms-evidence-key.sh` runs from the authorized operator host, sets `umask 077`, generates one base64-encoded 32-byte key into a `0600` temporary file, creates `nava-zero/server-pilot/hms-evidence-hmac` from that file, removes the file via `trap`, and prints only ARN/version metadata. Existing-secret flow uses `describe-secret` metadata only; it never calls `get-secret-value` or echoes a secret.
 
-  Vendor the AWS Secrets Manager skill’s `asm-exec` reference as `deploy/vendor/asm-exec` with one lifecycle patch: after resolving arguments, replace `subprocess.run` with `os.execvpe(args[0], args, os.environ.copy())` so PM2 owns the Node PID and SIGTERM cannot orphan a child. Pin patched SHA-256 `5f0c7f82827fe4eb89db0ba177aec694cd4cbf3acff003b09d1b545ea8595b7f` and install it root-owned `0755` at `/usr/local/bin/asm-exec`. Extend `NavaZeroSecretsRead` only with `secretsmanager:GetSecretValue|DescribeSecret` on `arn:aws:secretsmanager:af-south-1:845242190536:secret:nava-zero/server-pilot/hms-evidence-hmac-*`; no wildcard account/resource and no IAM pass-role.
+  Vendor the AWS Secrets Manager skill’s `asm-exec` reference as `deploy/vendor/asm-exec` with three runtime patches: use a 45-second MCP tool timeout, preserve POSIX `os.execvpe(args[0], args, os.environ.copy())` so PM2 owns Node PID and SIGTERM cannot orphan a child, and use `subprocess.run` only on Windows where Python exec emulation crashes on URL-shaped arguments. Pin patched SHA-256 `c7e36d92d5e0712dbcecde3e435a4e3bb3b38d40994b36b32b3ddccc4518f6b8` and install it root-owned `0755` at `/usr/local/bin/asm-exec`. Extend `NavaZeroSecretsRead` only with `secretsmanager:GetSecretValue|DescribeSecret` on `arn:aws:secretsmanager:af-south-1:845242190536:secret:nava-zero/server-pilot/hms-evidence-hmac-*`; no wildcard account/resource and no IAM pass-role.
 
   Windows Git Bash owns idempotent create/describe/IAM update and SSM transport. SSM atomically writes only ARN/version metadata to `/etc/nava/hms-evidence-hmac.env`; EC2 owns `asm-exec` resolution and runtime use. PM2 starts `hms-ai-worker` as `/usr/local/bin/asm-exec -- /usr/bin/env HMS_EVIDENCE_HMAC_KEY={{resolve:secretsmanager:nava-zero/server-pilot/hms-evidence-hmac}} /usr/bin/node dist/ai/worker.js`; the dynamic reference is a command argument because the pinned wrapper resolves arguments before `/usr/bin/env` creates the child-only variable. PM2/config/artifacts store only that reference, ARN, and `VersionId`. Runtime uses `node:crypto.createHmac`, no custom key service. Derive `credentialVersionHmacSha256` from the HMS secret ARN + current SDK-returned `VersionId`; never persist either raw input. Revalidate `AWSCURRENT`, evidence-key version, runtime fingerprint, requester authorization, and thread state before each context/claim. Canonicalize certificate hashes by hashing the Zod-parsed object in schema field order. Route every receipt/claim/terminal/model negative through the branded validator. All other modules may emit only `unverified_negative` plus a diagnostic.
 
@@ -889,7 +898,7 @@ Do not add another generic result envelope. Live observers map existing per-tool
   pnpm build
   bash -n deploy/provision-hms-evidence-key.sh
   printf '%s  %s\n' \
-    5f0c7f82827fe4eb89db0ba177aec694cd4cbf3acff003b09d1b545ea8595b7f \
+    c7e36d92d5e0712dbcecde3e435a4e3bb3b38d40994b36b32b3ddccc4518f6b8 \
     deploy/vendor/asm-exec | sha256sum -c -
   ```
 
@@ -908,7 +917,7 @@ Do not add another generic result envelope. Live observers map existing per-tool
     --region af-south-1 \
     --instance i-008f737974a9ba9b3 \
     --secret-name nava-zero/server-pilot/hms-evidence-hmac \
-    --asm-exec-sha256 5f0c7f82827fe4eb89db0ba177aec694cd4cbf3acff003b09d1b545ea8595b7f \
+    --asm-exec-sha256 c7e36d92d5e0712dbcecde3e435a4e3bb3b38d40994b36b32b3ddccc4518f6b8 \
     --json
   bash apps/server-pilot/deploy/ops-hms-proof.sh doctor \
     --tool hms_find_reservation \
@@ -953,9 +962,7 @@ type PhaseBOperationV1 = {
   operationId: string;
   supersedesOperationId: string | null;
   action: PhaseBReadAction | 'read-wave' | 'rearm';
-  target:
-    | { toolId: ReadToolId }
-    | { waveId: PhaseBWaveId; toolIds: readonly ReadToolId[] };
+  target: { toolId: ReadToolId } | { waveId: PhaseBWaveId; toolIds: readonly ReadToolId[] };
   sourceRevision: string;
   inputSha256: string;
   candidateSnapshotArtifactId: string | null;
@@ -1379,7 +1386,9 @@ export function observeSentEmailRows(
   signal: AbortSignal,
 ): Promise<MinimizedSentEmailRows>;
 
-export function toSentDocumentMetadata(rows: MinimizedSentEmailRows): ToolResult<DocumentListReadData>;
+export function toSentDocumentMetadata(
+  rows: MinimizedSentEmailRows,
+): ToolResult<DocumentListReadData>;
 export function toSentEmailAudit(rows: MinimizedSentEmailRows): ToolResult<SentEmailAuditReadData>;
 ```
 
@@ -1735,4 +1744,3 @@ Not blockers: absent role-proof-v2, absent reviewed manifests, fixture-only stat
 - Parallelization: contracts/fixtures/docs may run in parallel; all shared-kernel changes serialize first; live discovery/proof/promotion serialize through one HMS owner.
 - Unresolved planning blockers: none. Live execution may still produce only the named external/safety blockers in this plan.
 - Review verdict: **CLEARED FOR IMPLEMENTATION after user starts execution.**
-

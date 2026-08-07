@@ -117,8 +117,8 @@ case "$ACTION" in
       : "${AWS_REGION:=af-south-1}"
       : "${INSTANCE_ID:=i-008f737974a9ba9b3}"
       # Vendor CRLF pin + installed LF pin (after tr -d '\r' strip).
-      ASM_PIN='5f0c7f82827fe4eb89db0ba177aec694cd4cbf3acff003b09d1b545ea8595b7f'
-      ASM_EXEC_INSTALLED_SHA256='81fd29e1f039209282bc8cbe482cda033d331f07284533a46f990368228a7e65'
+      ASM_PIN='c7e36d92d5e0712dbcecde3e435a4e3bb3b38d40994b36b32b3ddccc4518f6b8'
+      ASM_EXEC_INSTALLED_SHA256='1df2c2683dfa623a42f34b4a37525290083ea47cb905292a5fe7b5e163729ffa'
       # shellcheck disable=SC2016
       REMOTE_DOCTOR=$(cat <<EOF
 set -euo pipefail
