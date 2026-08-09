@@ -41,6 +41,7 @@ import { m } from '@/paraglide/messages';
 import { useTheme } from 'next-themes';
 import { useQueryState } from 'nuqs';
 import { Button } from './button';
+import { SidebarToggle } from './sidebar-toggle';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
@@ -259,7 +260,8 @@ export function NavUser() {
     <div className="flex flex-col gap-2">
       <div className="flex items-center gap-3">
         {state === 'collapsed' ? (
-          activeAccount && (
+          <div className="flex flex-col items-center gap-2">
+            {activeAccount && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <div className="flex cursor-pointer items-center">
@@ -397,7 +399,9 @@ export function NavUser() {
                 </>
               </DropdownMenuContent>
             </DropdownMenu>
-          )
+            )}
+            <SidebarToggle className="h-7 w-7 shrink-0" />
+          </div>
         ) : (
           <div className="flex w-full flex-col gap-2">
             <div className="flex w-full items-center justify-between gap-2">
@@ -583,6 +587,7 @@ export function NavUser() {
                   </AddConnectionDialog>
                 )}
               </div>
+              <SidebarToggle className="h-7 w-7 shrink-0" />
             </div>
 
             <div className="flex items-start gap-2">

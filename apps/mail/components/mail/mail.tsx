@@ -511,7 +511,7 @@ export function MailLayout() {
             >
               <div className="z-15 sticky top-0 p-4 pb-0">
                 <div className="flex items-center gap-2">
-                  <SidebarToggle className="h-10 w-10" />
+                  <SidebarToggle className="h-10 w-10 md:hidden" />
                   {isWideSplit && !listCollapsed ? (
                     <Tooltip>
                       <TooltipTrigger asChild>
@@ -660,7 +660,6 @@ export function MailLayout() {
               <div className="relative flex min-h-0 flex-1 flex-col">
                 {isWideSplit && listCollapsed ? (
                   <div className="z-20 flex shrink-0 items-center gap-1 px-2 pt-2 pb-1">
-                    <SidebarToggle className="h-10 w-10" />
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <Button
