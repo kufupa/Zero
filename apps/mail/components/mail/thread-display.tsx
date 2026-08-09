@@ -2,10 +2,12 @@ import {
   Archive,
   ArchiveX,
   Folders,
+  Forward,
   Lightning,
   Mail,
   Printer,
   Reply,
+  ReplyAll,
   Star,
   ThreeDots,
   Trash,
@@ -947,11 +949,11 @@ export function ThreadDisplay() {
           <>
             <div
               className={cn(
-                'flex shrink-0 items-center px-1 pb-[10px] md:px-3 md:pb-[11px] md:pt-[12px]',
+                'flex shrink-0 min-w-0 flex-wrap items-center px-1 pb-[10px] md:px-3 md:pb-[11px] md:pt-[12px]',
                 isMobile && 'bg-panelLight dark:bg-panelDark sticky top-0 z-10 mt-2',
               )}
             >
-              <div className="flex flex-1 items-center gap-2">
+              <div className="flex min-w-0 flex-1 items-center gap-2">
                 <TooltipProvider delayDuration={0}>
                   <Tooltip>
                     <TooltipTrigger asChild>
@@ -974,21 +976,52 @@ export function ThreadDisplay() {
                   className="hidden md:flex"
                 />
               </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    openComposeForLatestMessage('replyAll');
-                  }}
-                  className="inline-flex h-7 items-center justify-center gap-1 overflow-hidden rounded-lg border bg-white px-1.5 dark:border-none dark:bg-[#313131] hover:bg-gray-100 dark:hover:bg-[#404040] transition-colors cursor-pointer"
+              <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
+                <div
+                  role="group"
+                  aria-label="Thread reply actions"
+                  className="flex min-w-0 flex-wrap items-center gap-1"
                 >
-                  <Reply className="fill-muted-foreground dark:fill-[#9B9B9B]" />
-                  <div className="flex items-center justify-center gap-2.5 pl-0.5 pr-1">
-                    <div className="justify-start whitespace-nowrap text-sm leading-none text-black dark:text-white">
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      openComposeForLatestMessage('reply');
+                    }}
+                    className="inline-flex h-7 items-center justify-center gap-1 overflow-hidden rounded-lg border bg-white px-1.5 dark:border-none dark:bg-[#313131] hover:bg-gray-100 dark:hover:bg-[#404040] transition-colors cursor-pointer"
+                  >
+                    <Reply className="fill-muted-foreground dark:fill-[#9B9B9B]" />
+                    <span className="whitespace-nowrap text-sm leading-none text-black dark:text-white">
+                      {m['common.mail.reply']()}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      openComposeForLatestMessage('replyAll');
+                    }}
+                    className="inline-flex h-7 items-center justify-center gap-1 overflow-hidden rounded-lg border bg-white px-1.5 dark:border-none dark:bg-[#313131] hover:bg-gray-100 dark:hover:bg-[#404040] transition-colors cursor-pointer"
+                  >
+                    <ReplyAll className="fill-muted-foreground dark:fill-[#9B9B9B]" />
+                    <span className="whitespace-nowrap text-sm leading-none text-black dark:text-white">
                       {m['common.threadDisplay.replyAll']()}
-                    </div>
-                  </div>
-                </button>
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      openComposeForLatestMessage('forward');
+                    }}
+                    className="inline-flex h-7 items-center justify-center gap-1 overflow-hidden rounded-lg border bg-white px-1.5 dark:border-none dark:bg-[#313131] hover:bg-gray-100 dark:hover:bg-[#404040] transition-colors cursor-pointer"
+                  >
+                    <Forward className="fill-muted-foreground dark:fill-[#9B9B9B]" />
+                    <span className="whitespace-nowrap text-sm leading-none text-black dark:text-white">
+                      {m['common.mail.forward']()}
+                    </span>
+                  </button>
+                </div>
                 <NotesPanel threadId={id} />
                 <TooltipProvider delayDuration={0}>
                   <Tooltip>

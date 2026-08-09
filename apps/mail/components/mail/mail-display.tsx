@@ -1378,8 +1378,8 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                           </DropdownMenu>
                         </div>
                       </div>
-                      <div className="flex justify-between">
-                        <div className="flex flex-wrap gap-1">
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div className="flex min-w-0 flex-1 flex-wrap gap-1">
                           <p className="text-muted-foreground text-sm font-medium dark:text-[#8C8C8C]">
                             {m['common.mailDisplay.to']()}:{' '}
                             {shouldCollapseRecipientToYou({
@@ -1406,6 +1406,39 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                                 .join('; ')}
                             </p>
                           )}
+                        </div>
+                        <div
+                          role="group"
+                          aria-label="Message reply actions"
+                          className="flex w-full max-w-full flex-wrap justify-end gap-2 sm:w-auto"
+                        >
+                          <ActionButton
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openComposeForMessage('reply');
+                            }}
+                            icon={<Reply className="fill-muted-foreground dark:fill-[#9B9B9B]" />}
+                            text={m['common.mail.reply']()}
+                            shortcut={isLastEmail ? 'r' : undefined}
+                          />
+                          <ActionButton
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openComposeForMessage('replyAll');
+                            }}
+                            icon={<ReplyAll className="fill-muted-foreground dark:fill-[#9B9B9B]" />}
+                            text={m['common.mail.replyAll']()}
+                            shortcut={isLastEmail ? 'a' : undefined}
+                          />
+                          <ActionButton
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openComposeForMessage('forward');
+                            }}
+                            icon={<Forward className="fill-muted-foreground dark:fill-[#9B9B9B]" />}
+                            text={m['common.mail.forward']()}
+                            shortcut={isLastEmail ? 'f' : undefined}
+                          />
                         </div>
                       </div>
                     </div>
@@ -1520,35 +1553,6 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                     senderEmail={emailData.sender.email}
                   />
                 ) : null}
-                <div className="my-2.5 flex gap-2 px-4">
-                  <ActionButton
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      openComposeForMessage('reply');
-                    }}
-                    icon={<Reply className="fill-muted-foreground dark:fill-[#9B9B9B]" />}
-                    text={m['common.mail.reply']()}
-                    shortcut={isLastEmail ? 'r' : undefined}
-                  />
-                  <ActionButton
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      openComposeForMessage('replyAll');
-                    }}
-                    icon={<ReplyAll className="fill-muted-foreground dark:fill-[#9B9B9B]" />}
-                    text={m['common.mail.replyAll']()}
-                    shortcut={isLastEmail ? 'a' : undefined}
-                  />
-                  <ActionButton
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      openComposeForMessage('forward');
-                    }}
-                    icon={<Forward className="fill-muted-foreground dark:fill-[#9B9B9B]" />}
-                    text={m['common.mail.forward']()}
-                    shortcut={isLastEmail ? 'f' : undefined}
-                  />
-                </div>
               </div>
             </div>
           </div>

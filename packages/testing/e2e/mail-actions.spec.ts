@@ -14,7 +14,8 @@ test.describe('Mail actions (pilot context menu)', () => {
 
     await firstEmail.click({ button: 'right' });
     await expect(page.getByRole('menuitem', { name: 'Reply', exact: true }).first()).toBeVisible({ timeout: 5000 });
-    await expect(page.getByRole('menuitem', { name: 'Forward' })).toBeVisible();
+    await expect(page.getByRole('menuitem', { name: 'Reply all', exact: true }).first()).toBeVisible();
+    await expect(page.getByRole('menuitem', { name: 'Forward', exact: true })).toBeVisible();
     console.log('Pilot thread context menu exposes reply actions');
   });
 });
