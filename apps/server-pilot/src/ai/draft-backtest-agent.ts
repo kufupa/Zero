@@ -12,11 +12,16 @@ import {
   draftFromInboundSignals,
   renderOfflineBracketDraft,
 } from './draft-backtest.js';
-import { formatMissingBracket } from './draft-evidence.js';
+import { formatMissingBracket, type ToolResult } from './draft-evidence.js';
 import {
   extractLookupCandidates,
   filterExactReservationCandidates,
 } from './thread-context.js';
+import type {
+  ReservationReadData,
+  StayOptionReadData,
+} from '../hms/contracts.js';
+import type { ArtifactData } from '../mail/artifacts/read-artifact.js';
 
 export type BacktestDraftMode = 'signals' | 'claim-safe-stub' | 'live-hms';
 
@@ -32,11 +37,11 @@ function extractBracketLines(text: string): string[] {
   return [...text.matchAll(/\[MISSING:[^\]]+\]/g)].map((m) => m[0]!);
 }
 
-function emptyNotFoundResult(toolId: string) {
+function emptyNotFoundResult<T>(toolId: string, data: T): ToolResult<T> {
   return {
     status: 'not_found' as const,
     draftReady: false,
-    data: {},
+    data,
     unresolvedFields: ['reservation'],
     evidence: {
       kind: 'hms' as const,
@@ -99,10 +104,29 @@ export async function draftClaimSafeStub(input: {
   const lookup = new Map(candidates.map((c) => [c.id, c]));
   const session = createMockCandidateSession({
     lookupCandidates: lookup,
-    findReservation: async () => emptyNotFoundResult('hms_find_reservation'),
-    quoteStay: async () => emptyNotFoundResult('hms_quote_stay'),
-    readArtifact: async () => emptyNotFoundResult('mail_read_artifact'),
-    readFolio: async () => emptyNotFoundResult('hms_read_folio'),
+    findReservation: async () =>
+      emptyNotFoundResult<ReservationReadData>('hms_find_reservation', {
+        matches: [],
+        matchCount: 0,
+        capped: false,
+      }),
+    quoteStay: async () =>
+      emptyNotFoundResult<StayOptionReadData>('hms_quote_stay', {
+        nightlyObservations: [],
+        bookable: false,
+        stayTotal: null,
+        occupancyPriced: false,
+        requestedRooms: 1,
+      }),
+    readArtifact: async () =>
+      emptyNotFoundResult<ArtifactData>('mail_read_artifact', {
+        mimeType: 'application/pdf',
+        text: null,
+        pageCount: null,
+        reason: 'unsupported',
+      }),
+    readFolio: async () =>
+      emptyNotFoundResult<unknown>('hms_read_folio', {}),
     activeToolIds: new Set([
       'hms_find_reservation',
       'hms_quote_stay',
