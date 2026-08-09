@@ -257,6 +257,21 @@ describe('mail wire contract — get returns ParsedMessage shape FE reads in use
     ]);
   });
 
+  it('converts text-only bodies into escaped line-preserving display HTML', () => {
+    const parsed = toParsedMessage(
+      {
+        ...GOLDEN_MESSAGE_ROW,
+        htmlBody: null,
+        textBody: 'Reservation Details:\r\nArrival: Monday\n<script>not markup</script>',
+      },
+      [],
+    );
+
+    expect(parsed.decodedBody).toBe(
+      '<div>Reservation Details:<br />Arrival: Monday<br />&lt;script&gt;not markup&lt;/script&gt;</div>',
+    );
+  });
+
   it('orders ascending when mapping multiple messages (oldest first)', () => {
     const older = toParsedMessage({
       ...GOLDEN_MESSAGE_ROW,

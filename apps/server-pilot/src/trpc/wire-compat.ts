@@ -188,13 +188,25 @@ function parseAddressList(addresses: string[]): { name?: string; email: string }
   return addresses.map((addr) => parseAddress(addr));
 }
 
+function plainTextToDisplayHtml(text: string): string {
+  if (!text) return text;
+  const escaped = text
+    .replace(/\r\n?/g, '\n')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+  return `<div>${escaped.replaceAll('\n', '<br />')}</div>`;
+}
+
 /** Map a DB message row (+ optional attachment metadata) to FE ParsedMessage. */
 export function toParsedMessage(
   row: MessageRow,
   attachments: AttachmentMeta[] = [],
 ): ParsedMessageWire {
   const bodyText = row.textBody ?? '';
-  const rawHtml = row.htmlBody ?? bodyText;
+  const rawHtml = row.htmlBody?.trim() ? row.htmlBody : plainTextToDisplayHtml(bodyText);
   // XSS strip only — remotes kept; render trust gate lives in processEmailContent.
   const sanitized =
     rawHtml && rawHtml.includes('<')

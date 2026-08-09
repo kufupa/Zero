@@ -29,11 +29,13 @@ describe('wrapMailBodyHtml', () => {
 });
 
 describe('mailBodyDisplayStyleTag', () => {
-  it('emits fixed Calibri 11pt CSS without forced black', () => {
+  it('emits fixed Calibri 11pt wrapping CSS without forced black', () => {
     const tag = mailBodyDisplayStyleTag();
     expect(tag).toContain('<style');
     expect(tag).toContain(MAIL_BODY_FONT_FAMILY);
     expect(tag).toContain(MAIL_BODY_FONT_SIZE);
+    expect(tag).toMatch(/white-space\s*:\s*normal/i);
+    expect(tag).toMatch(/overflow-wrap\s*:\s*anywhere/i);
     expect(tag).not.toMatch(/color\s*:\s*#000/i);
   });
 });

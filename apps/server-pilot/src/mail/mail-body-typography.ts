@@ -15,6 +15,8 @@ export function mailBodyDisplayStyleTag(): string {
 :host, .mail-content-root, .nava-mail-body {
   font-family: ${MAIL_BODY_FONT_FAMILY};
   font-size: ${MAIL_BODY_FONT_SIZE};
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 </style>`;
 }
