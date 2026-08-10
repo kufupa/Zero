@@ -40,6 +40,10 @@ Staff-facing Close/X contract on Mid-width exclusive panes: clearing thread sele
 
 Reading-pane message order that shows the chronologically newest message first. Wire/`mail.get` order stays oldest → newest; the pane reverses only at the list boundary. `latest` remains the chronological last message (not the first visual row). Reply composer mounts above the target message. Distinct from Mail shell (column chrome) and from inbox list sort.
 
+### Reply action scope
+
+Mail-view distinction between an action attached to a rendered message, which targets that message, and a toolbar, context-menu, or hotkey action, which targets the thread's chronological latest message. This remains true when the reading pane presents messages newest-first; visual position does not redefine the thread-level target.
+
 ### Ingest mailbox
 
 The single POP3 sink account (`navaai@legacyhotels.co.za` on the hotel Zimbra pilot) that the EC2 worker drains. Hotel BCC / header-routing waves may still stamp `X-Zero-Mailbox` so messages land in the correct logical mailbox transport. Older docs may say `nava@legacyhotel.com` — that identity was replaced for the real-mail cutover.
