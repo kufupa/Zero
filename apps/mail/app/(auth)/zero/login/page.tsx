@@ -43,7 +43,7 @@ export default function LoginZero() {
         <div className="mb-4 text-center">
           <h1 className="mb-2 text-4xl font-bold text-white">Login with Nava</h1>
           <p className="text-muted-foreground">
-            Enter your Nava email below to login to your account
+            Enter your email below to login to your account
           </p>
         </div>
 
