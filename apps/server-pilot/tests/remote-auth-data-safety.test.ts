@@ -6,9 +6,9 @@ import { describe, expect, it } from 'vitest';
 const here = dirname(fileURLToPath(import.meta.url));
 
 describe('remote auth data safety', () => {
-  it('keeps migration 0017 additive and exclusive to remote_session', () => {
+  it('keeps migration 0016 additive and exclusive to remote_session', () => {
     const migration = readFileSync(
-      join(here, '..', 'drizzle', '0017_remote_auth_session.sql'),
+      join(here, '..', 'drizzle', '0016_remote_auth_session.sql'),
       'utf8',
     );
 
