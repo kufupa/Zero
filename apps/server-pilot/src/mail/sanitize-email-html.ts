@@ -70,10 +70,13 @@ export function sanitizeEmailHtml(
         const src = attribs.src ?? '';
         if (src && !isAllowedImgSrc(src, opts.shouldLoadImages)) {
           hasBlockedImages = true;
+          const blockedAttribs = { ...attribs };
+          delete blockedAttribs.width;
+          delete blockedAttribs.height;
           return {
             tagName,
             attribs: {
-              ...attribs,
+              ...blockedAttribs,
               src: BLOCKED_IMAGE_PLACEHOLDER,
             },
           };

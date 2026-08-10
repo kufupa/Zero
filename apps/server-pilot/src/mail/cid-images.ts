@@ -57,7 +57,7 @@ export function projectCidImages(
     const att = id ? byCid.get(id) : undefined;
     if (!att) {
       hasBlockedImages = true;
-      $(el).attr('src', BLOCKED_IMAGE_PLACEHOLDER);
+      $(el).removeAttr('width').removeAttr('height').attr('src', BLOCKED_IMAGE_PLACEHOLDER);
       return;
     }
     $(el).attr(

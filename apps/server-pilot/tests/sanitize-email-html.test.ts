@@ -17,12 +17,14 @@ describe('sanitizeEmailHtml', () => {
 
   it('blocks remote images when shouldLoadImages is false', () => {
     const { html, hasBlockedImages } = sanitizeEmailHtml(
-      '<img src="https://evil.example/x.png">',
+      '<img src="https://evil.example/x.png" width="650" height="168">',
       { shouldLoadImages: false },
     );
     expect(hasBlockedImages).toBe(true);
     expect(html).not.toContain('https://evil.example');
     expect(html).toContain(BLOCKED_IMAGE_PLACEHOLDER);
+    expect(html).not.toMatch(/\bwidth=/i);
+    expect(html).not.toMatch(/\bheight=/i);
   });
 
   it('blocks protocol-relative images when shouldLoadImages is false', () => {

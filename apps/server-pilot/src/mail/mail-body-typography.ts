@@ -18,5 +18,15 @@ export function mailBodyDisplayStyleTag(): string {
   white-space: normal;
   overflow-wrap: anywhere;
 }
+:host table {
+  max-width: 100% !important;
+}
+:host img {
+  max-width: 100% !important;
+  object-fit: contain;
+}
+:host p.MsoNormal {
+  margin: 0;
+}
 </style>`;
 }

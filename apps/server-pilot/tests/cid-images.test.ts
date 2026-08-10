@@ -39,13 +39,15 @@ describe('projectCidImages', () => {
 
   it('placeholders missing cid and does not rewrite anchors', () => {
     const { html, hasBlockedImages } = projectCidImages(
-      '<a href="cid:banner001@rocketseed">x</a><img src="cid:missing@x">',
+      '<a href="cid:banner001@rocketseed">x</a><img src="cid:missing@x" width="650" height="168">',
       meta,
       { messageId: 'msg-1', origin: 'https://nava.legacy.local' },
     );
     expect(hasBlockedImages).toBe(true);
     expect(html).toContain('href="cid:banner001@rocketseed"');
     expect(html).toContain(`src="${BLOCKED_IMAGE_PLACEHOLDER}"`);
+    expect(html).not.toMatch(/\bwidth=/i);
+    expect(html).not.toMatch(/\bheight=/i);
   });
 
   it('blocks ambiguous duplicate content ids', () => {

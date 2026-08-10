@@ -38,4 +38,17 @@ describe('mailBodyDisplayStyleTag', () => {
     expect(tag).toMatch(/overflow-wrap\s*:\s*anywhere/i);
     expect(tag).not.toMatch(/color\s*:\s*#000/i);
   });
+
+  it('contains fixed-width email tables and images within the reader', () => {
+    const tag = mailBodyDisplayStyleTag();
+    expect(tag).toMatch(/table\s*\{[^}]*max-width\s*:\s*100%\s*!important/i);
+    expect(tag).toMatch(/img\s*\{[^}]*max-width\s*:\s*100%\s*!important/i);
+    expect(tag).toMatch(/img\s*\{[^}]*object-fit\s*:\s*contain/i);
+    expect(tag).not.toMatch(/height\s*:\s*auto\s*!important/i);
+  });
+
+  it('restores zero margins for sanitized Outlook MsoNormal paragraphs', () => {
+    const tag = mailBodyDisplayStyleTag();
+    expect(tag).toMatch(/p\.MsoNormal\s*\{[^}]*margin\s*:\s*0\s*;/i);
+  });
 });
