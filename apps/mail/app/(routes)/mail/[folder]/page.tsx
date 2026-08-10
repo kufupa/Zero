@@ -10,8 +10,10 @@ import type { Route } from './+types/page';
 
 const ALLOWED_FOLDERS = new Set(['inbox', 'draft', 'sent', 'spam', 'bin', 'archive', 'snoozed']);
 
-export async function clientLoader({ params }: Route.ClientLoaderArgs) {
-  if (!params.folder) return Response.redirect(`${import.meta.env.VITE_PUBLIC_APP_URL}/mail/inbox`);
+export async function clientLoader({ params, request }: Route.ClientLoaderArgs) {
+  if (!params.folder) {
+    return Response.redirect(new URL('/mail/inbox', new URL(request.url).origin));
+  }
   return {
     folder: params.folder,
   };

@@ -12,9 +12,9 @@ import type { Route } from './+types/page';
 export async function clientLoader({ request }: Route.ClientLoaderArgs) {
   const url = new URL(request.url);
   if (url.searchParams.get('to')?.startsWith('mailto:')) {
-    return Response.redirect(
-      `${import.meta.env.VITE_PUBLIC_APP_URL}/api/mailto-handler?mailto=${encodeURIComponent(url.searchParams.get('to') ?? '')}`,
-    );
+    const mailtoHandler = new URL('/mailto-handler', url.origin);
+    mailtoHandler.searchParams.set('mailto', url.searchParams.get('to') ?? '');
+    return Response.redirect(mailtoHandler);
   }
 
   return Object.fromEntries(url.searchParams.entries()) as {

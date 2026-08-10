@@ -32,10 +32,70 @@ export PATH="$HOME/.local/share/pnpm:$PATH"
 cd /home/ubuntu/repos/zero
 ENV_FILE=apps/server-pilot/.env.production
 [ -f "$ENV_FILE" ] || ENV_FILE=/home/ubuntu/.env.production
-set -a
-source "$ENV_FILE"
-set +a
+SERVER_PILOT=/home/ubuntu/repos/zero/apps/server-pilot
+REMOTE_COMMON_ENV="${SERVER_PILOT}/.env.remote-common"
+REMOTE_ADMIN_ENV="${SERVER_PILOT}/.env.remote-admin"
 export NAVA_BUILD_COMMIT="${NAVA_BUILD_COMMIT:-$(git rev-parse HEAD 2>/dev/null || true)}"
+
+validate_remote_env_files() {
+  bash "$SERVER_PILOT/deploy/write-ec2-remote-env.sh" --validate
+}
+
+start_remote_http() {
+  env -i \
+    HOME="$HOME" \
+    PATH="$PATH" \
+    NAVA_BUILD_COMMIT="$NAVA_BUILD_COMMIT" \
+    SERVER_PILOT="$SERVER_PILOT" \
+    REMOTE_COMMON_ENV="$REMOTE_COMMON_ENV" \
+    REMOTE_ADMIN_ENV="$REMOTE_ADMIN_ENV" \
+    bash -ceu '
+      set -a
+      source "$REMOTE_COMMON_ENV"
+      source "$REMOTE_ADMIN_ENV"
+      set +a
+      pm2 delete remote-http 2>/dev/null || true
+      pm2 start "$SERVER_PILOT/deploy/pm2.config.cjs" --only remote-http --update-env
+    '
+}
+
+start_legacy_processes() {
+  local mode
+  set -a
+  source "$ENV_FILE"
+  set +a
+  : "${BETTER_AUTH_URL:?BETTER_AUTH_URL required for legacy HTTP}"
+  mode="${MAIL_TRANSPORT_MODE:-fixture}"
+  if [ "$mode" = "fixture" ]; then
+    pm2 delete worker 2>/dev/null || true
+    pm2 delete http ai-worker 2>/dev/null || true
+    pm2 start apps/server-pilot/deploy/pm2.config.cjs --only http --update-env
+    pm2 start apps/server-pilot/deploy/pm2.config.cjs --only ai-worker --update-env
+  else
+    pm2 delete http worker ai-worker 2>/dev/null || true
+    pm2 start apps/server-pilot/deploy/pm2.config.cjs --only http --update-env
+    pm2 start apps/server-pilot/deploy/pm2.config.cjs --only worker --update-env
+    pm2 start apps/server-pilot/deploy/pm2.config.cjs --only ai-worker --update-env
+  fi
+}
+
+assert_http_loopback_only() {
+  local listeners
+  listeners="$(ss -ltnH '( sport = :8788 or sport = :8789 )')" || return 1
+  HTTP_LISTENERS="$listeners" node -e '
+const lines=(process.env.HTTP_LISTENERS||"").trim().split(/\n/).filter(Boolean);
+for (const port of [8788,8789]) {
+  const matches=lines.filter((line)=>line.split(/\s+/)[3]===`127.0.0.1:${port}`);
+  if (matches.length !== 1) process.exit(1);
+}
+if (lines.some((line)=>!/127\.0\.0\.1:(8788|8789)\b/.test(line))) process.exit(1);
+'
+}
+
+validate_remote_env_files || {
+  echo "remote HTTP environment validation failed before PM2 mutation" >&2
+  exit 20
+}
 
 pm2_state="$(pm2 jlist)"
 hms_present="$(
@@ -63,20 +123,19 @@ for path in \
   [ ! -e "$path" ] && [ ! -L "$path" ]
 done
 
-MODE="${MAIL_TRANSPORT_MODE:-fixture}"
-if [ "$MODE" = "fixture" ]; then
-  pm2 delete worker 2>/dev/null || true
-  pm2 delete http ai-worker 2>/dev/null || true
-  pm2 start apps/server-pilot/deploy/pm2.config.cjs --only http --update-env
-  pm2 start apps/server-pilot/deploy/pm2.config.cjs --only ai-worker --update-env
-else
-  pm2 delete http worker ai-worker 2>/dev/null || true
-  pm2 start apps/server-pilot/deploy/pm2.config.cjs --only http --update-env
-  pm2 start apps/server-pilot/deploy/pm2.config.cjs --only worker --update-env
-  pm2 start apps/server-pilot/deploy/pm2.config.cjs --only ai-worker --update-env
-fi
+start_legacy_processes
+start_remote_http
 pm2 save
-curl -fsS http://127.0.0.1:8788/health
+for health_url in http://127.0.0.1:8788/health http://127.0.0.1:8789/health; do
+  curl -fsS "$health_url"
+done
+for spa_origin in https://nava.legacyhotels.co.za https://nava-admin.trynava.io; do
+  spa_host="${spa_origin#https://}"
+  curl --disable --noproxy '*' -fsS \
+    --resolve "${spa_host}:443:127.0.0.1" \
+    "${spa_origin}/health" >/dev/null
+done
+assert_http_loopback_only
 REMOTE
 )"
 bash "${SCRIPT_DIR}/ssm-run-command.sh" "$REMOTE_COMMAND"

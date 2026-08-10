@@ -1216,22 +1216,54 @@ describe('deploy config', () => {
     expect(nginx).toContain('client_max_body_size 35m');
   });
 
-  it('nginx serves only the canonical host with the public fullchain', async () => {
+  it('nginx serves isolated legacy and remote SPA vhosts', async () => {
     const { readNginxConfig } = await import('../src/deploy/load-pm2-config.js');
     const nginx = readNginxConfig();
 
     expect(nginx).toContain('listen 80 default_server');
     expect(nginx).toContain('listen 443 ssl default_server');
     expect(nginx).toContain('server_name nava.legacyhotels.co.za');
+    expect(nginx).toContain('server_name nava-admin.trynava.io');
     expect(nginx).toContain(
       'ssl_certificate     /etc/nginx/ssl/nava.legacyhotels.co.za.fullchain.pem',
     );
     expect(nginx).toContain(
       'ssl_certificate_key /etc/nginx/ssl/nava.legacyhotels.co.za.key',
     );
+    expect(nginx).toContain(
+      'ssl_certificate     /etc/nginx/ssl/nava-admin.trynava.io.fullchain.pem',
+    );
+    expect(nginx).toContain(
+      'ssl_certificate_key /etc/nginx/ssl/nava-admin.trynava.io.key',
+    );
     expect(nginx).toContain('if ($host != nava.legacyhotels.co.za)');
+    expect(nginx).toContain('if ($host != nava-admin.trynava.io)');
     expect(nginx).toContain('return 444');
     expect(nginx).not.toContain('nava.legacy.local');
+  });
+
+  it('redirects legacy API mailto links before each API proxy', async () => {
+    const { readNginxConfig } = await import('../src/deploy/load-pm2-config.js');
+    const nginx = readNginxConfig();
+
+    expect(nginx).toContain('location = /api/mailto-handler {');
+    expect(nginx).toContain('return 302 /mailto-handler$is_args$args;');
+    expect(nginx.match(/location = \/api\/mailto-handler \{/g)).toHaveLength(2);
+    expect(nginx.match(/proxy_pass http:\/\/127\.0\.0\.1:878[89]\/api\//g)).toHaveLength(2);
+  });
+
+  it('probes both TLS vhosts without insecure bypasses', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+
+    for (const scriptName of ['deploy-ec2.sh', 'ops-restart.sh', 'post-boot-smoke.sh']) {
+      const source = readFileSync(join(here, '..', 'deploy', scriptName), 'utf8');
+      expect(source, scriptName).toContain('https://nava-admin.trynava.io');
+      expect(source, scriptName).toContain('--resolve');
+      expect(insecureCurlCommands(source), scriptName).toHaveLength(0);
+    }
   });
 
   it('nginx preserves security headers and allows only the exact S3 endpoint', async () => {
@@ -1399,7 +1431,7 @@ describe('deploy config', () => {
     expect(deploy).toContain('172.24.240.41');
   });
 
-  it('uses BETTER_AUTH_URL as the only production app-origin source', async () => {
+  it('builds the production SPA host-neutrally', async () => {
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
     const { dirname, join } = await import('node:path');
@@ -1411,11 +1443,15 @@ describe('deploy config', () => {
       ': "${BETTER_AUTH_URL:=https://nava.legacyhotels.co.za}"',
     );
     expect(deploy).toContain(
-      ': "${BETTER_AUTH_URL:?BETTER_AUTH_URL required before SPA build}"',
+      ': "${BETTER_AUTH_URL:?BETTER_AUTH_URL required for legacy HTTP}"',
     );
-    expect(deploy).toContain(
-      'export VITE_PUBLIC_APP_URL="${VITE_PUBLIC_APP_URL:-$BETTER_AUTH_URL}"',
-    );
+    expect(deploy).toContain('export VITE_PUBLIC_BACKEND_URL=""');
+    expect(deploy).toContain('unset VITE_PUBLIC_APP_URL');
+    expect(deploy).not.toContain('export VITE_PUBLIC_APP_URL');
+    expect(deploy.match(/pnpm --filter @zero\/mail build/g)).toHaveLength(1);
+    expect(
+      deploy.match(/rsync -a --delete "\$\{MAIL_APP\}\/build\/client\/" "\$\{WEB_ROOT\}\/"/g),
+    ).toHaveLength(1);
     expect(deploy).toContain('127.0.0.1 nava.legacyhotels.co.za');
     expect(deploy).not.toContain('127.0.0.1 nava.legacy.local');
   });
@@ -1596,7 +1632,8 @@ describe('deploy config', () => {
     const smoke = readFileSync(join(here, '..', 'deploy', 'post-boot-smoke.sh'), 'utf8');
     expect(smoke).toContain('127.0.0.1:8788/health');
     expect(smoke).toContain('BETTER_AUTH_URL');
-    expect(smoke).toContain('--resolve "${PUBLIC_HOST}:443:127.0.0.1"');
+    expect(smoke).toContain('REMOTE_ORIGIN="https://nava-admin.trynava.io"');
+    expect(smoke).toContain('--resolve "${spa_host}:443:127.0.0.1"');
     expect(smoke).not.toContain('"https://127.0.0.1');
     expect(smoke).not.toContain(':3000');
     expect(smoke).toContain('systemctl is-active');
@@ -3173,6 +3210,143 @@ describe('deploy config', () => {
       expect(casSh).toMatch(/run-source-registry-cas/);
       expect(casSh).toMatch(/exit 20/);
       expect(casSh).toMatch(/HMS_REGISTRY_CANDIDATE/);
+    });
+  });
+
+  describe('Task 2 remote HTTP lifecycle (DB-free)', () => {
+    it('defines isolated legacy and remote HTTP forks with fixed auth profiles', async () => {
+      const { readFileSync } = await import('node:fs');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const { resolveDatabasePoolMax } = await import('../src/lib/auth-profile.js');
+      const here = dirname(fileURLToPath(import.meta.url));
+      const pm2 = readFileSync(join(here, '..', 'deploy', 'pm2.config.cjs'), 'utf8');
+
+      expect(pm2).toMatch(
+        /name:\s*['"]http['"][\s\S]*?script:\s*['"]dist\/main\.js['"][\s\S]*?PORT:\s*['"]8788['"][\s\S]*?NAVA_AUTH_SESSION_PROFILE:\s*['"]legacy['"]/,
+      );
+      expect(pm2).toMatch(
+        /name:\s*['"]remote-http['"][\s\S]*?script:\s*['"]dist\/main\.js['"][\s\S]*?PORT:\s*['"]8789['"][\s\S]*?NAVA_AUTH_SESSION_PROFILE:\s*['"]remote['"]/,
+      );
+      expect(pm2).toMatch(
+        /name:\s*['"]remote-http['"][\s\S]*?instances:\s*1[\s\S]*?exec_mode:\s*['"]fork['"]/,
+      );
+      const remoteStart = pm2.indexOf("name: 'remote-http'");
+      const nextProcess = pm2.indexOf("name: 'worker'", remoteStart);
+      const remoteProcess = pm2.slice(remoteStart, nextProcess);
+      expect(remoteProcess).not.toContain('dist/mail/ingest/worker.js');
+      expect(remoteProcess).not.toContain('dist/ai/worker.js');
+      expect(resolveDatabasePoolMax('legacy')).toBe(10);
+      expect(resolveDatabasePoolMax('remote')).toBe(3);
+    });
+
+    it('allows remote HTTP to start without POP3 runtime values', async () => {
+      const { parseEnv } = await import('../src/env.js');
+
+      const env = parseEnv({
+        NODE_ENV: 'production',
+        PORT: '8789',
+        DATABASE_URL: 'postgres://example.invalid/zero',
+        BETTER_AUTH_URL: 'https://nava-admin.trynava.io',
+        BETTER_AUTH_SECRET: 'remote-signing-secret',
+        AWS_REGION: 'af-south-1',
+        S3_BUCKET: 'nava-test-bucket',
+      });
+
+      expect(env.POP3_POLL_INTERVAL_MS).toBe(30_000);
+      expect(env.POP3_MAX_MESSAGES_PER_CYCLE).toBe(500);
+    });
+
+    it('writes only explicitly allowlisted remote HTTP environment files', async () => {
+      const { existsSync, readFileSync } = await import('node:fs');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const here = dirname(fileURLToPath(import.meta.url));
+      const path = join(here, '..', 'deploy', 'write-ec2-remote-env.sh');
+
+      expect(existsSync(path)).toBe(true);
+      const writer = readFileSync(path, 'utf8');
+      expect(writer).toContain('.env.remote-common');
+      expect(writer).toContain('.env.remote-admin');
+      expect(writer).toContain('REMOTE_AUTH_SECRET_NAME:=nava-zero/server-pilot/remote-auth');
+      expect(writer).toContain('REMOTE_AUTH_URL:=https://nava-admin.trynava.io');
+      expect(writer).toContain('REMOTE_COMMON_ALLOWLIST=(');
+      expect(writer).toContain('--validate');
+      expect(writer).toContain('validate_remote_env_files');
+      expect(writer).toContain('DATABASE_URL');
+      expect(writer).toContain('S3_BUCKET');
+      expect(writer).toContain('SMTP_HOST');
+      expect(writer).toContain('AI_ENABLED');
+      const allowlist = writer.match(/REMOTE_COMMON_ALLOWLIST=\(\r?\n([\s\S]*?)\r?\n\)/)?.[1];
+      expect(allowlist).toBeTruthy();
+      expect(allowlist).not.toContain('BETTER_AUTH_');
+      expect(allowlist).not.toContain('POP3_');
+      expect(allowlist).not.toContain('HMS_');
+      expect(allowlist).not.toContain('GOOGLE_');
+      expect(writer).toContain('const parsed = JSON.parse(data);');
+      expect(writer).toContain('process.stdout.write(parsed.BETTER_AUTH_SECRET)');
+      expect(writer).toMatch(/Object\.keys\(parsed\).*BETTER_AUTH_SECRET/);
+      expect(writer).toMatch(/chmod 600 "\$REMOTE_COMMON_TMP"/);
+      expect(writer).toMatch(/chmod 600 "\$REMOTE_ADMIN_TMP"/);
+      expect(writer).not.toMatch(/echo[^\n]*BETTER_AUTH_SECRET/);
+      expect(writer).not.toMatch(/source[^\n]*\.env\.remote/);
+    });
+
+    it('validates remote files before PM2 mutation and isolates remote startup', async () => {
+      const { readFileSync } = await import('node:fs');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const here = dirname(fileURLToPath(import.meta.url));
+      const deploy = join(here, '..', 'deploy');
+
+      for (const file of ['deploy-ec2.sh', 'ops-restart.sh', 'pm2-boot.sh']) {
+        const source = readFileSync(join(deploy, file), 'utf8');
+        const validation = source.lastIndexOf('validate_remote_env_files');
+        const lifecycle = source.slice(validation);
+        const firstPm2Mutation = lifecycle.search(/\bpm2\s+(?:delete|start|save)\b/);
+        expect(validation, `${file} remote validation`).toBeGreaterThanOrEqual(0);
+        expect(firstPm2Mutation, `${file} PM2 mutation`).toBeGreaterThanOrEqual(0);
+        expect(firstPm2Mutation, `${file} validates before PM2`).toBeGreaterThan(0);
+        expect(source).toContain('.env.remote-common');
+        expect(source).toContain('.env.remote-admin');
+        expect(source).toContain('start_remote_http');
+
+        const remoteStart = source.match(
+          /start_remote_http\(\)\s*\{([\s\S]*?)^\}/m,
+        )?.[1];
+        expect(remoteStart, `${file} remote startup body`).toBeTruthy();
+        expect(remoteStart).toContain('env -i');
+        expect(remoteStart).toContain('source "$REMOTE_COMMON_ENV"');
+        expect(remoteStart).toContain('source "$REMOTE_ADMIN_ENV"');
+        expect(remoteStart).not.toContain('.env.production');
+        expect(remoteStart).toContain('--only remote-http');
+      }
+    });
+
+    it('keeps normal deploy, restart, and boot remote-aware without starting HMS', async () => {
+      const { readFileSync } = await import('node:fs');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const here = dirname(fileURLToPath(import.meta.url));
+      const deploy = join(here, '..', 'deploy');
+
+      for (const file of ['deploy-ec2.sh', 'ops-restart.sh', 'pm2-boot.sh']) {
+        const source = readFileSync(join(deploy, file), 'utf8');
+        expect(source, file).toMatch(/start_remote_http[\s\S]*--only remote-http/);
+        expect(source, file).not.toMatch(/--only hms-ai-worker/);
+      }
+
+      const reboot = readFileSync(join(deploy, 'ops-reboot.sh'), 'utf8');
+      expect(reboot).toContain('pm2-boot.sh');
+      expect(reboot.indexOf('pm2-boot.sh')).toBeLessThan(
+        reboot.lastIndexOf('post-boot-smoke.sh'),
+      );
+
+      const smoke = readFileSync(join(deploy, 'post-boot-smoke.sh'), 'utf8');
+      expect(smoke).toContain('127.0.0.1:8788/health');
+      expect(smoke).toContain('127.0.0.1:8789/health');
+      expect(smoke).toContain('remote-http');
+      expect(insecureCurlCommands(smoke)).toEqual([]);
     });
   });
 });

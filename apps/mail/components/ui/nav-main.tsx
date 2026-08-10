@@ -23,7 +23,6 @@ import { Badge } from '@/components/ui/badge';
 import { useStats } from '@/hooks/use-stats';
 import SidebarLabels from './sidebar-labels';
 import { useCallback, useRef } from 'react';
-import { BASE_URL } from '@/lib/constants';
 import { shouldShowSupportLinks } from '@/lib/demo/support-links';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { ChevronRight, Plus } from 'lucide-react';
@@ -104,9 +103,9 @@ export function NavMain({ items }: NavMainProps) {
     // Accept absolute paths as they are always internal
     if (url.startsWith('/')) return true;
     try {
-      const urlObj = new URL(url, BASE_URL);
+      const urlObj = new URL(url, window.location.origin);
       // Prevent redirects to external domains by checking against our base URL
-      return urlObj.origin === BASE_URL;
+      return urlObj.origin === window.location.origin;
     } catch {
       return false;
     }
@@ -188,10 +187,7 @@ export function NavMain({ items }: NavMainProps) {
 
   const isUrlActive = useCallback(
     (url: string) => {
-      const urlObj = new URL(
-        url,
-        typeof window === 'undefined' ? BASE_URL : window.location.origin,
-      );
+      const urlObj = new URL(url, window.location.origin);
       const cleanPath = pathname.replace(/\/$/, '');
       const cleanUrl = urlObj.pathname.replace(/\/$/, '');
 

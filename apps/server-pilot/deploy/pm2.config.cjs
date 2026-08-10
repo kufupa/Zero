@@ -12,6 +12,25 @@ module.exports = {
       max_restarts: 10,
       env: {
         NODE_ENV: 'production',
+        PORT: '8788',
+        NAVA_AUTH_SESSION_PROFILE: 'legacy',
+        NAVA_BUILD_COMMIT: process.env.NAVA_BUILD_COMMIT ?? '',
+      },
+    },
+    {
+      // Started only by isolated remote env shells in deploy/restart/boot.
+      name: 'remote-http',
+      script: 'dist/main.js',
+      cwd: '/home/ubuntu/repos/zero/apps/server-pilot',
+      instances: 1,
+      exec_mode: 'fork',
+      autorestart: true,
+      min_uptime: 10_000,
+      max_restarts: 10,
+      env: {
+        NODE_ENV: 'production',
+        PORT: '8789',
+        NAVA_AUTH_SESSION_PROFILE: 'remote',
         NAVA_BUILD_COMMIT: process.env.NAVA_BUILD_COMMIT ?? '',
       },
     },

@@ -108,8 +108,6 @@ const REQUIRED = [
   'BETTER_AUTH_SECRET',
   'AWS_REGION',
   'S3_BUCKET',
-  'POP3_POLL_INTERVAL_MS',
-  'POP3_MAX_MESSAGES_PER_CYCLE',
 ] as const;
 
 const NODE_ENVS: readonly NodeEnv[] = ['production', 'development', 'test'];
@@ -290,11 +288,11 @@ export function parseEnv(input: EnvInput): MailEnv {
     MAIL_TRANSPORT_MODE: rawTransportMode as MailTransportMode,
     POP3_POLL_INTERVAL_MS: toInt(
       'POP3_POLL_INTERVAL_MS',
-      input.POP3_POLL_INTERVAL_MS as string,
+      input.POP3_POLL_INTERVAL_MS ?? '30000',
     ),
     POP3_MAX_MESSAGES_PER_CYCLE: toInt(
       'POP3_MAX_MESSAGES_PER_CYCLE',
-      input.POP3_MAX_MESSAGES_PER_CYCLE as string,
+      input.POP3_MAX_MESSAGES_PER_CYCLE ?? '500',
     ),
     AI_ENABLED: false,
     AI_WRITE_GATE_ENABLED: false,

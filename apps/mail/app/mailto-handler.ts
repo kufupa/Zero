@@ -247,24 +247,24 @@ async function createDraftFromMailto(mailtoData: {
 }
 
 export async function clientLoader({ request }: Route.ClientLoaderArgs) {
-  const session = await authProxy.api.getSession({ headers: request.headers });
-  if (!session) return Response.redirect(`${import.meta.env.VITE_PUBLIC_APP_URL}/login`);
-
   const url = new URL(request.url);
+  const composeUrl = () => new URL('/mail/compose', url.origin);
+  const session = await authProxy.api.getSession({ headers: request.headers });
+  if (!session) return Response.redirect(new URL('/login', url.origin));
 
   // Get the mailto parameter from the URL
   const mailto = url.searchParams.get('mailto');
 
-  if (!mailto) return Response.redirect(`${import.meta.env.VITE_PUBLIC_APP_URL}/mail/compose`);
+  if (!mailto) return Response.redirect(composeUrl());
 
   // Parse the mailto URL
   const mailtoData = await parseMailtoUrl(mailto);
 
   // If parsing failed, redirect to empty compose
-  if (!mailtoData) return Response.redirect(`${import.meta.env.VITE_PUBLIC_APP_URL}/mail/compose`);
+  if (!mailtoData) return Response.redirect(composeUrl());
 
   if (isFrontendOnlyDemo()) {
-    const fallbackUrl = new URL(`${import.meta.env.VITE_PUBLIC_APP_URL}/mail/compose`);
+    const fallbackUrl = composeUrl();
     if (mailtoData.to) fallbackUrl.searchParams.append('to', mailtoData.to);
     if (mailtoData.subject) fallbackUrl.searchParams.append('subject', mailtoData.subject);
     if (mailtoData.body) fallbackUrl.searchParams.append('body', mailtoData.body);
@@ -278,7 +278,7 @@ export async function clientLoader({ request }: Route.ClientLoaderArgs) {
 
   // If draft creation failed, redirect to empty compose with the parsed data as a fallback
   if (!draftId) {
-    const fallbackUrl = new URL(`${import.meta.env.VITE_PUBLIC_APP_URL}/mail/compose`);
+    const fallbackUrl = composeUrl();
     if (mailtoData.to) fallbackUrl.searchParams.append('to', mailtoData.to);
     if (mailtoData.subject) fallbackUrl.searchParams.append('subject', mailtoData.subject);
     if (mailtoData.body) fallbackUrl.searchParams.append('body', mailtoData.body);
@@ -288,7 +288,7 @@ export async function clientLoader({ request }: Route.ClientLoaderArgs) {
   }
 
   // Redirect to compose with the draft ID
-  return Response.redirect(
-    `${import.meta.env.VITE_PUBLIC_APP_URL}/mail/compose?draftId=${draftId}`,
-  );
+  const destination = composeUrl();
+  destination.searchParams.set('draftId', draftId);
+  return Response.redirect(destination);
 }

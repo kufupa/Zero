@@ -4,7 +4,7 @@ export default [
   index('page.tsx'),
   route('/home', 'home/page.tsx'),
 
-  route('/api/mailto-handler', 'mailto-handler.ts'),
+  route('/mailto-handler', 'mailto-handler.ts'),
 
   layout('(full-width)/layout.tsx', [
     route('/about', '(full-width)/about.tsx'),
