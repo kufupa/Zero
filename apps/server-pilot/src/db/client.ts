@@ -3,6 +3,11 @@ import postgres, { type Sql } from 'postgres';
 import * as schema from './schema/index.js';
 import { parseEnv } from '../env.js';
 import { getPostgresSslOptions } from './ssl-config.js';
+import {
+  resolveAuthSessionProfile,
+  resolveDatabasePoolMax,
+  type AuthSessionProfile,
+} from '../lib/auth-profile.js';
 
 export type DB = PostgresJsDatabase<typeof schema>;
 export type { Sql };
@@ -20,9 +25,12 @@ export function __setDbForTests(handle: { db: DB; conn: Sql } | null): void {
   cached = handle;
 }
 
-export function createDb(url: string): { db: DB; conn: Sql } {
+export function createDb(
+  url: string,
+  profile: AuthSessionProfile = resolveAuthSessionProfile(),
+): { db: DB; conn: Sql } {
   const conn = postgres(url, {
-    max: 10,
+    max: resolveDatabasePoolMax(profile),
     idle_timeout: 20,
     connect_timeout: 10,
     ssl: getPostgresSslOptions(url),
@@ -34,14 +42,14 @@ export function createDb(url: string): { db: DB; conn: Sql } {
 export function getDb(): DB {
   if (cached) return cached.db;
   const env = parseEnv(process.env);
-  cached = createDb(env.DATABASE_URL);
+  cached = createDb(env.DATABASE_URL, resolveAuthSessionProfile(process.env));
   return cached.db;
 }
 
 export function getConn(): Sql {
   if (cached) return cached.conn;
   const env = parseEnv(process.env);
-  cached = createDb(env.DATABASE_URL);
+  cached = createDb(env.DATABASE_URL, resolveAuthSessionProfile(process.env));
   return cached.conn;
 }
 

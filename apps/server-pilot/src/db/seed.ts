@@ -9,7 +9,7 @@ import { count, eq, inArray, notInArray } from 'drizzle-orm';
 import { AI_MANAGED_CATEGORY_SEED_ROWS } from '../ai/categories.js';
 import { randomBytes } from 'node:crypto';
 import { hashPassword } from 'better-auth/crypto';
-import { account, user as userTable } from './schema/auth.js';
+import { account, remoteSession, session, user as userTable } from './schema/auth.js';
 import {
   mailCategory,
   mailIngestMailbox,
@@ -220,15 +220,6 @@ export async function seedAll(db: DB, opts: SeedOptions = {}): Promise<SeedResul
         .limit(1);
 
       const shouldRotate = rotatePasswords || existingAccount.length === 0;
-      let password: string | undefined;
-      let hashed: string | undefined;
-
-      if (shouldRotate) {
-        password =
-          precomputed[spec.email]?.password ?? randomBytes(18).toString('base64url');
-        hashed = await hashPassword(password);
-        pilotCredentials[spec.email] = { password };
-      }
 
       await tx
         .insert(userTable)
@@ -257,7 +248,15 @@ export async function seedAll(db: DB, opts: SeedOptions = {}): Promise<SeedResul
         throw new Error(`seed failed: user row missing for ${spec.email}`);
       }
 
-      if (shouldRotate && hashed) {
+      if (shouldRotate) {
+        await tx.delete(session).where(eq(session.userId, actualUserId));
+        await tx.delete(remoteSession).where(eq(remoteSession.userId, actualUserId));
+
+        const password =
+          precomputed[spec.email]?.password ?? randomBytes(18).toString('base64url');
+        const hashed = await hashPassword(password);
+        pilotCredentials[spec.email] = { password };
+
         await tx
           .insert(account)
           .values({

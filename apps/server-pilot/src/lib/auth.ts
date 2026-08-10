@@ -2,8 +2,23 @@ import { betterAuth, type BetterAuthOptions } from 'better-auth';
 import { APIError, createAuthMiddleware } from 'better-auth/api';
 import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { getSocialProviders } from './auth-providers.js';
+import {
+  resolveAuthProfilePolicy,
+  resolveAuthSessionProfile,
+  SESSION_COOKIE_CACHE_MAX_AGE_SEC,
+  SESSION_TTL_SEC,
+  SESSION_UPDATE_AGE_SEC,
+} from './auth-profile.js';
 import { getDb } from '../db/client.js';
 import * as schema from '../db/schema/index.js';
+
+export {
+  resolveAuthProfilePolicy,
+  resolveAuthSessionProfile,
+  SESSION_COOKIE_CACHE_MAX_AGE_SEC,
+  SESSION_TTL_SEC,
+  SESSION_UPDATE_AGE_SEC,
+} from './auth-profile.js';
 
 export type PilotSignupEnv = {
   PILOT_OPEN_SIGNUP?: string;
@@ -43,57 +58,36 @@ export function assertPilotSignupAllowed(
 export function resolvePilotTrustedOrigins(
   env: Record<string, string | undefined> = process.env,
 ): string[] {
-  const authURL = env.BETTER_AUTH_URL?.trim();
-  const base = [
-    authURL ? new URL(authURL).origin : undefined,
-    'https://127.0.0.1',
-    'http://127.0.0.1:3000',
-    'http://localhost:3000',
-  ].filter((origin): origin is string => Boolean(origin));
-  const extra = (env.BETTER_AUTH_TRUSTED_ORIGINS ?? '')
-    .split(',')
-    .map((origin) => origin.trim())
-    .filter(Boolean);
-  return [...new Set([...base, ...extra])];
+  return resolveAuthProfilePolicy(env).trustedOrigins;
 }
-
-/** Chrome caps Set-Cookie Max-Age at 400 days. */
-export const SESSION_TTL_SEC = 60 * 60 * 24 * 400;
-
-/** Signed cookie cache: server revalidates session against DB at this interval. */
-export const SESSION_COOKIE_CACHE_MAX_AGE_SEC = 60 * 60;
-
-/** Active user extends another 400d session each week. */
-export const SESSION_UPDATE_AGE_SEC = 60 * 60 * 24 * 7;
 
 /**
  * Pilot Better Auth instance.
  *
  * Wired against the RDS Postgres schema via the drizzle adapter, using
  * BETTER_AUTH_URL + BETTER_AUTH_SECRET from env. Email/password is enabled
- * for pilot users; Google social is enabled only when both
+ * for pilot users; Google social is enabled only for legacy processes when both
  * GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are present (pilot may omit them
  * and the server still boots).
  */
-export const createAuth = (
-  opts?: Partial<BetterAuthOptions>,
-): ReturnType<typeof betterAuth> => {
+export const createAuth = (): ReturnType<typeof betterAuth> => {
   const env = process.env as Record<string, string | undefined>;
   const secret =
     env.BETTER_AUTH_SECRET?.trim() ||
     (env.NODE_ENV === 'production'
       ? undefined
       : 'local-dev-better-auth-secret-min-32-characters-long');
-  const baseURL = env.BETTER_AUTH_URL;
-  const socialProviders = getSocialProviders(env as Record<string, string>);
+  const profile = resolveAuthSessionProfile(env);
+  const policy = resolveAuthProfilePolicy(env);
+  const socialProviders = getSocialProviders(env, profile);
   const db = getDb();
 
   const emailAndPasswordEnabled = env.PILOT_EMAIL_PASSWORD_DISABLED !== '1';
 
-  return betterAuth({
+  const options: BetterAuthOptions = {
     secret,
-    baseURL,
-    trustedOrigins: resolvePilotTrustedOrigins(env),
+    baseURL: policy.baseURL,
+    trustedOrigins: policy.trustedOrigins,
     database: drizzleAdapter(db, {
       provider: 'pg',
       schema: schema as Record<string, unknown>,
@@ -113,19 +107,20 @@ export const createAuth = (
     },
     advanced: {
       ipAddress: { disableIpTracking: true },
-      cookiePrefix:
-        env.NODE_ENV === 'development' ? 'better-auth-dev' : 'better-auth',
+      cookiePrefix: policy.cookiePrefix,
     },
     session: {
-      cookieCache: { enabled: true, maxAge: SESSION_COOKIE_CACHE_MAX_AGE_SEC },
-      expiresIn: SESSION_TTL_SEC,
-      updateAge: SESSION_UPDATE_AGE_SEC,
+      modelName: policy.sessionModelName,
+      cookieCache: policy.cookieCache,
+      expiresIn: policy.expiresIn,
+      updateAge: policy.updateAge,
+      disableSessionRefresh: policy.disableSessionRefresh,
     },
     account: {
       accountLinking: {
         enabled: true,
         allowDifferentEmails: false,
-        trustedProviders: ['google'],
+        trustedProviders: profile === 'remote' ? [] : ['google'],
       },
     },
     hooks: {
@@ -136,8 +131,9 @@ export const createAuth = (
         assertPilotSignupAllowed(email, env);
       }),
     },
-    ...opts,
-  });
+  };
+
+  return betterAuth(options);
 };
 
 export type Auth = ReturnType<typeof createAuth>;
