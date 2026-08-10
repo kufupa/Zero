@@ -1216,43 +1216,43 @@ describe('deploy config', () => {
     expect(nginx).toContain('client_max_body_size 35m');
   });
 
-  it('nginx serves isolated legacy and remote SPA vhosts', async () => {
+  it('nginx keeps public ingress legacy-only before ALB target configuration', async () => {
     const { readNginxConfig } = await import('../src/deploy/load-pm2-config.js');
     const nginx = readNginxConfig();
 
     expect(nginx).toContain('listen 80 default_server');
     expect(nginx).toContain('listen 443 ssl default_server');
     expect(nginx).toContain('server_name nava.legacyhotels.co.za');
-    expect(nginx).toContain('server_name nava-admin.trynava.io');
     expect(nginx).toContain(
       'ssl_certificate     /etc/nginx/ssl/nava.legacyhotels.co.za.fullchain.pem',
     );
     expect(nginx).toContain(
       'ssl_certificate_key /etc/nginx/ssl/nava.legacyhotels.co.za.key',
     );
-    expect(nginx).toContain(
-      'ssl_certificate     /etc/nginx/ssl/nava-admin.trynava.io.fullchain.pem',
-    );
-    expect(nginx).toContain(
-      'ssl_certificate_key /etc/nginx/ssl/nava-admin.trynava.io.key',
-    );
     expect(nginx).toContain('if ($host != nava.legacyhotels.co.za)');
-    expect(nginx).toContain('if ($host != nava-admin.trynava.io)');
     expect(nginx).toContain('return 444');
     expect(nginx).not.toContain('nava.legacy.local');
+    expect(nginx).not.toContain('nava-admin.trynava.io');
+    expect(nginx).not.toMatch(
+      /server\s*\{[^}]*\blisten\s+(?:80|443)(?:\s+[^;]+)?;[^}]*\bserver_name\s+nava-admin\.trynava\.io;/,
+    );
+    expect(nginx).not.toContain('127.0.0.1:8789/');
   });
 
-  it('redirects legacy API mailto links before each API proxy', async () => {
+  it('redirects legacy API mailto links before the legacy API proxy', async () => {
     const { readNginxConfig } = await import('../src/deploy/load-pm2-config.js');
     const nginx = readNginxConfig();
 
     expect(nginx).toContain('location = /api/mailto-handler {');
     expect(nginx).toContain('return 302 /mailto-handler$is_args$args;');
-    expect(nginx.match(/location = \/api\/mailto-handler \{/g)).toHaveLength(2);
-    expect(nginx.match(/proxy_pass http:\/\/127\.0\.0\.1:878[89]\/api\//g)).toHaveLength(2);
+    expect(nginx.match(/location = \/api\/mailto-handler \{/g)).toHaveLength(1);
+    expect(nginx.match(/proxy_pass http:\/\/127\.0\.0\.1:8788\/api\//g)).toHaveLength(1);
+    expect(nginx.indexOf('location = /api/mailto-handler {')).toBeLessThan(
+      nginx.indexOf('location /api/ {'),
+    );
   });
 
-  it('probes both TLS vhosts without insecure bypasses', async () => {
+  it('keeps remote health checks loopback-only without insecure TLS bypasses', async () => {
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
     const { dirname, join } = await import('node:path');
@@ -1260,8 +1260,9 @@ describe('deploy config', () => {
 
     for (const scriptName of ['deploy-ec2.sh', 'ops-restart.sh', 'post-boot-smoke.sh']) {
       const source = readFileSync(join(here, '..', 'deploy', scriptName), 'utf8');
-      expect(source, scriptName).toContain('https://nava-admin.trynava.io');
+      expect(source, scriptName).toContain('https://nava.legacyhotels.co.za');
       expect(source, scriptName).toContain('--resolve');
+      expect(source, scriptName).not.toContain('nava-admin.trynava.io');
       expect(insecureCurlCommands(source), scriptName).toHaveLength(0);
     }
   });
@@ -1624,16 +1625,18 @@ describe('deploy config', () => {
     expect(boot).not.toMatch(/pm2 delete hms-ai-worker[^\n]*\|\| true/);
   });
 
-  it('post-boot-smoke.sh checks :8788 and canonical :443 not :3000', async () => {
+  it('post-boot-smoke.sh checks both loopbacks and legacy :443 not :3000', async () => {
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
     const { dirname, join } = await import('node:path');
     const here = dirname(fileURLToPath(import.meta.url));
     const smoke = readFileSync(join(here, '..', 'deploy', 'post-boot-smoke.sh'), 'utf8');
     expect(smoke).toContain('127.0.0.1:8788/health');
+    expect(smoke).toContain('127.0.0.1:8789/health');
     expect(smoke).toContain('BETTER_AUTH_URL');
-    expect(smoke).toContain('REMOTE_ORIGIN="https://nava-admin.trynava.io"');
-    expect(smoke).toContain('--resolve "${spa_host}:443:127.0.0.1"');
+    expect(smoke).toContain('CANONICAL_ORIGIN="https://nava.legacyhotels.co.za"');
+    expect(smoke).toContain('--resolve "${PUBLIC_HOST}:443:127.0.0.1"');
+    expect(smoke).not.toContain('nava-admin.trynava.io');
     expect(smoke).not.toContain('"https://127.0.0.1');
     expect(smoke).not.toContain(':3000');
     expect(smoke).toContain('systemctl is-active');

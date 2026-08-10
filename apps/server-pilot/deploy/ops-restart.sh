@@ -129,12 +129,11 @@ pm2 save
 for health_url in http://127.0.0.1:8788/health http://127.0.0.1:8789/health; do
   curl -fsS "$health_url"
 done
-for spa_origin in https://nava.legacyhotels.co.za https://nava-admin.trynava.io; do
-  spa_host="${spa_origin#https://}"
-  curl --disable --noproxy '*' -fsS \
-    --resolve "${spa_host}:443:127.0.0.1" \
-    "${spa_origin}/health" >/dev/null
-done
+spa_origin="https://nava.legacyhotels.co.za"
+spa_host="${spa_origin#https://}"
+curl --disable --noproxy '*' -fsS \
+  --resolve "${spa_host}:443:127.0.0.1" \
+  "${spa_origin}/health" >/dev/null
 assert_http_loopback_only
 REMOTE
 )"

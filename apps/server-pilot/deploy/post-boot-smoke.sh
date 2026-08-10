@@ -47,7 +47,6 @@ case "$BETTER_AUTH_URL" in
 esac
 BETTER_AUTH_URL="$CANONICAL_ORIGIN"
 PUBLIC_HOST="${CANONICAL_ORIGIN#https://}"
-REMOTE_ORIGIN="https://nava-admin.trynava.io"
 
 attempt=1
 while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
@@ -70,19 +69,16 @@ while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
     ok=0
   fi
 
-  # Prefer /health on each TLS vhost; fall back to its SPA root.
-  for spa_origin in "$BETTER_AUTH_URL" "$REMOTE_ORIGIN"; do
-    spa_host="${spa_origin#https://}"
-    if ! curl --disable --noproxy '*' -fsS \
-      --resolve "${spa_host}:443:127.0.0.1" \
-      "${spa_origin%/}/health" >/dev/null 2>&1 \
-      && ! curl --disable --noproxy '*' -fsS \
-      --resolve "${spa_host}:443:127.0.0.1" \
-      "${spa_origin%/}/" >/dev/null 2>&1; then
-      log "attempt ${attempt}: trusted TLS vhost probe failed for ${spa_origin}"
-      ok=0
-    fi
-  done
+  # Prefer legacy TLS /health; fall back to its SPA root.
+  if ! curl --disable --noproxy '*' -fsS \
+    --resolve "${PUBLIC_HOST}:443:127.0.0.1" \
+    "${CANONICAL_ORIGIN}/health" >/dev/null 2>&1 \
+    && ! curl --disable --noproxy '*' -fsS \
+    --resolve "${PUBLIC_HOST}:443:127.0.0.1" \
+    "${CANONICAL_ORIGIN}/" >/dev/null 2>&1; then
+    log "attempt ${attempt}: trusted TLS vhost probe failed for ${CANONICAL_ORIGIN}"
+    ok=0
+  fi
 
   if command -v pm2 >/dev/null 2>&1; then
     for process_name in http remote-http; do

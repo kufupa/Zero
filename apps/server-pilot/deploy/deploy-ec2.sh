@@ -461,17 +461,14 @@ for HEALTH_URL in \
     sleep "$attempt"
   done
 done
-for SPA_ORIGIN in \
-  "https://nava.legacyhotels.co.za" \
-  "https://nava-admin.trynava.io"; do
-  SPA_HOST="${SPA_ORIGIN#https://}"
-  if ! curl --disable --noproxy '*' -fsS \
-    --resolve "${SPA_HOST}:443:127.0.0.1" \
-    "${SPA_ORIGIN}/health" >/dev/null; then
-    echo "TLS vhost health check failed for ${SPA_ORIGIN}" >&2
-    exit 1
-  fi
-done
+SPA_ORIGIN="https://nava.legacyhotels.co.za"
+SPA_HOST="${SPA_ORIGIN#https://}"
+if ! curl --disable --noproxy '*' -fsS \
+  --resolve "${SPA_HOST}:443:127.0.0.1" \
+  "${SPA_ORIGIN}/health" >/dev/null; then
+  echo "TLS vhost health check failed for ${SPA_ORIGIN}" >&2
+  exit 1
+fi
 assert_http_loopback_only || {
   echo "raw HTTP processes must listen only on 127.0.0.1" >&2
   exit 1
