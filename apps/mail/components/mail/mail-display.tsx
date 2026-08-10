@@ -44,7 +44,12 @@ import { CenturionCategoryPill } from './centurion-category-pill';
 import { buildCategoryIdToSlugMap } from '@/lib/mail/hotel-folder-presentation';
 import { useCategorySettings } from '@/hooks/use-categories';
 import { cleanHtml } from '@/lib/email-utils';
-import { cleanEmailDisplay, MailboxInline, formatMailboxPlain } from '@/lib/mail/mailbox-format';
+import {
+  cleanEmailDisplay,
+  MailboxInline,
+  formatMailboxEntries,
+  formatMailboxPlain,
+} from '@/lib/mail/mailbox-format';
 import { shouldCollapseRecipientToYou } from '@/lib/mail/recipient-you-label';
 import {
   canShowHeaderDebug,
@@ -217,15 +222,15 @@ const formatMailboxListForPrint = (mailboxes?: Sender[] | null) =>
   getFormattedMailboxes(mailboxes).map(escapePrintHtml).join('; ');
 
 const renderMailboxSummary = (mailboxes: Sender[]) => {
-  const recipients = getFormattedMailboxes(mailboxes);
+  const recipients = formatMailboxEntries(mailboxes);
   const visibleRecipients = recipients.slice(0, 3);
   const hiddenRecipients = recipients.slice(3);
 
   return (
     <>
-      {visibleRecipients.map((recipient, index) => (
-        <span key={recipient}>
-          {recipient}
+      {visibleRecipients.map(({ key, value }, index) => (
+        <span key={key}>
+          {value}
           {index < visibleRecipients.length - 1 ? '; ' : ''}
         </span>
       ))}
@@ -237,8 +242,8 @@ const renderMailboxSummary = (mailboxes: Sender[]) => {
               <span className="cursor-pointer">+{hiddenRecipients.length} others</span>
             </TooltipTrigger>
             <TooltipContent className="flex flex-col gap-1">
-              {hiddenRecipients.map((recipient) => (
-                <span key={recipient}>{recipient}</span>
+              {hiddenRecipients.map(({ key, value }) => (
+                <span key={key}>{value}</span>
               ))}
             </TooltipContent>
           </Tooltip>
