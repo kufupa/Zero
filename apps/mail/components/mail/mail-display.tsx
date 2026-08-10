@@ -224,7 +224,7 @@ const renderMailboxSummary = (mailboxes: Sender[]) => {
   return (
     <>
       {visibleRecipients.map((recipient, index) => (
-        <span key={`${recipient}-${index}`}>
+        <span key={recipient}>
           {recipient}
           {index < visibleRecipients.length - 1 ? '; ' : ''}
         </span>
@@ -237,8 +237,8 @@ const renderMailboxSummary = (mailboxes: Sender[]) => {
               <span className="cursor-pointer">+{hiddenRecipients.length} others</span>
             </TooltipTrigger>
             <TooltipContent className="flex flex-col gap-1">
-              {hiddenRecipients.map((recipient, index) => (
-                <span key={`${recipient}-${index}`}>{recipient}</span>
+              {hiddenRecipients.map((recipient) => (
+                <span key={recipient}>{recipient}</span>
               ))}
             </TooltipContent>
           </Tooltip>

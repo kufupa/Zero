@@ -26,6 +26,12 @@ import { toast } from 'sonner';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { setMailCacheScope } from '@/lib/mail/mail-cache-scope';
 
+const CONNECTION_SKELETON_KEYS = [
+  'connection-skeleton-one',
+  'connection-skeleton-two',
+  'connection-skeleton-three',
+];
+
 export async function runDisconnectConnection(params: {
   connectionId: string;
   isFrontendOnlyDemo: boolean;
@@ -130,9 +136,9 @@ export default function ConnectionsPage() {
         <div className="space-y-6">
           {isLoading ? (
             <div className="grid gap-4 md:grid-cols-3">
-              {Array.from({ length: 3 }).map((_, index) => (
+              {CONNECTION_SKELETON_KEYS.map((key) => (
                 <div
-                  key={`connection-skeleton-${index}`}
+                  key={key}
                   className="bg-popover flex items-center justify-between rounded-lg border p-4"
                 >
                   <div className="flex min-w-0 items-center gap-4">
