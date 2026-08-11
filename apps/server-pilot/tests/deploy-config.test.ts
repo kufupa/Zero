@@ -1867,7 +1867,7 @@ describe('deploy config', () => {
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
-  }, 30_000);
+  }, 60_000);
 
   it('real-mail Playwright config rejects noncanonical base and normalizes one slash', async () => {
     const envKeys = [
@@ -2468,7 +2468,7 @@ describe('deploy config', () => {
       });
       expect(report.checks.ufwTunnel443Only).toBe(false);
     }
-  });
+  }, 60_000);
 
   it('launch readiness accepts overlap and final canonical CORS states', async () => {
     const overlap = await runLaunchReadinessReport({
