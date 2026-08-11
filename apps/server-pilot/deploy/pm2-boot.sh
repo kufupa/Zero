@@ -44,6 +44,19 @@ start_remote_http() {
     '
 }
 
+assert_http_loopback_only() {
+  local listeners
+  listeners="$(ss -ltnH '( sport = :8788 or sport = :8789 )')" || return 1
+  HTTP_LISTENERS="$listeners" node -e '
+const lines=(process.env.HTTP_LISTENERS||"").trim().split(/\n/).filter(Boolean);
+for (const port of [8788,8789]) {
+  const matches=lines.filter((line)=>line.split(/\s+/)[3]===`127.0.0.1:${port}`);
+  if (matches.length !== 1) process.exit(1);
+}
+if (lines.some((line)=>!/127\.0\.0\.1:(8788|8789)\b/.test(line))) process.exit(1);
+'
+}
+
 start_legacy_processes() {
   local mode
   set -a
@@ -152,6 +165,10 @@ delete_all_pm2_processes || {
 
 start_legacy_processes
 start_remote_http
+assert_http_loopback_only || {
+  echo "pm2-boot: raw HTTP processes must listen only on 127.0.0.1" >&2
+  exit 20
+}
 MODE="${MAIL_TRANSPORT_MODE:-fixture}"
 
 ensure_hms_absent || {

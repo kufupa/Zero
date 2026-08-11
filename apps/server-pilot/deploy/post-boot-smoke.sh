@@ -48,6 +48,19 @@ esac
 BETTER_AUTH_URL="$CANONICAL_ORIGIN"
 PUBLIC_HOST="${CANONICAL_ORIGIN#https://}"
 
+assert_http_loopback_only() {
+  local listeners
+  listeners="$(ss -ltnH '( sport = :8788 or sport = :8789 )')" || return 1
+  HTTP_LISTENERS="$listeners" node -e '
+const lines=(process.env.HTTP_LISTENERS||"").trim().split(/\n/).filter(Boolean);
+for (const port of [8788,8789]) {
+  const matches=lines.filter((line)=>line.split(/\s+/)[3]===`127.0.0.1:${port}`);
+  if (matches.length !== 1) process.exit(1);
+}
+if (lines.some((line)=>!/127\.0\.0\.1:(8788|8789)\b/.test(line))) process.exit(1);
+'
+}
+
 attempt=1
 while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
   ok=1
@@ -66,6 +79,11 @@ while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
   if ! curl --disable --noproxy '*' -fsS \
     "http://127.0.0.1:8789/health" >/dev/null; then
     log "attempt ${attempt}: :8789/health failed"
+    ok=0
+  fi
+
+  if ! assert_http_loopback_only; then
+    log "attempt ${attempt}: raw HTTP processes must listen only on 127.0.0.1"
     ok=0
   fi
 

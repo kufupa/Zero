@@ -3295,6 +3295,74 @@ describe('deploy config', () => {
       expect(writer).not.toMatch(/source[^\n]*\.env\.remote/);
     });
 
+    it('rejects whitespace-only dedicated remote auth JSON secrets', async () => {
+      const { readFileSync } = await import('node:fs');
+      const { spawnSync } = await import('node:child_process');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const here = dirname(fileURLToPath(import.meta.url));
+      const writer = readFileSync(
+        join(here, '..', 'deploy', 'write-ec2-remote-env.sh'),
+        'utf8',
+      ).replaceAll('\r\n', '\n');
+      const parser = writer.match(/\|\s*node -e '\n([\s\S]*?)\n'\n\)/)?.[1];
+
+      expect(parser).toBeTruthy();
+      for (const secret of [' ', '\t', ' \t ']) {
+        const result = spawnSync(process.execPath, ['-e', parser!], {
+          input: JSON.stringify({ BETTER_AUTH_SECRET: secret }),
+          encoding: 'utf8',
+        });
+        expect(result.status, `dedicated JSON accepted ${JSON.stringify(secret)}`).toBe(2);
+        expect(result.stdout).toBe('');
+      }
+    });
+
+    it('rejects whitespace-only remote admin values during --validate', async () => {
+      const { mkdtempSync, readFileSync, rmSync, writeFileSync } = await import('node:fs');
+      const { spawnSync } = await import('node:child_process');
+      const { tmpdir } = await import('node:os');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const here = dirname(fileURLToPath(import.meta.url));
+      const writer = readFileSync(
+        join(here, '..', 'deploy', 'write-ec2-remote-env.sh'),
+        'utf8',
+      ).replaceAll('\r\n', '\n');
+      const start = 'node - "$path" "$kind" <<\'NODE\'\n';
+      const validatorStart = writer.indexOf(start);
+      const validatorEnd = writer.indexOf('\nNODE\n}', validatorStart);
+      const validator =
+        validatorStart < 0 || validatorEnd < 0
+          ? null
+          : writer.slice(validatorStart + start.length, validatorEnd);
+
+      expect(validator).toBeTruthy();
+      const tempDir = mkdtempSync(join(tmpdir(), 'nava-remote-auth-validate-test-'));
+      const adminEnv = join(tempDir, '.env.remote-admin');
+      try {
+        for (const secret of [' ', '\t', ' \t ']) {
+          writeFileSync(
+            adminEnv,
+            [
+              "BETTER_AUTH_URL='https://nava-admin.trynava.io'",
+              `BETTER_AUTH_SECRET='${secret}'`,
+              '',
+            ].join('\n'),
+            'utf8',
+          );
+          const result = spawnSync(process.execPath, ['-', adminEnv, 'admin'], {
+            input: validator!,
+            encoding: 'utf8',
+          });
+          expect(result.status, `--validate accepted ${JSON.stringify(secret)}`).toBe(2);
+          expect(result.stderr).toContain('remote env malformed');
+        }
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it('validates remote files before PM2 mutation and isolates remote startup', async () => {
       const { readFileSync } = await import('node:fs');
       const { fileURLToPath } = await import('node:url');
@@ -3350,6 +3418,40 @@ describe('deploy config', () => {
       expect(smoke).toContain('127.0.0.1:8789/health');
       expect(smoke).toContain('remote-http');
       expect(insecureCurlCommands(smoke)).toEqual([]);
+    });
+
+    it('reasserts raw HTTP loopback-only listeners after reboot', async () => {
+      const { readFileSync } = await import('node:fs');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const here = dirname(fileURLToPath(import.meta.url));
+      const deploy = join(here, '..', 'deploy');
+      const boot = readFileSync(join(deploy, 'pm2-boot.sh'), 'utf8');
+      const smoke = readFileSync(join(deploy, 'post-boot-smoke.sh'), 'utf8');
+
+      for (const [file, source] of [
+        ['pm2-boot.sh', boot],
+        ['post-boot-smoke.sh', smoke],
+      ] as const) {
+        const assertionStart = source.indexOf('assert_http_loopback_only() {');
+        expect(assertionStart, `${file} listener assertion`).toBeGreaterThanOrEqual(0);
+        const assertion = source.slice(assertionStart);
+        expect(assertion, file).toContain("ss -ltnH '( sport = :8788 or sport = :8789 )'");
+        expect(assertion, file).toContain('for (const port of [8788,8789]) {');
+        expect(assertion, file).toContain('line.split(/\\s+/)[3]===`127.0.0.1:${port}`');
+        expect(assertion, file).toContain(
+          '!/127\\.0\\.0\\.1:(8788|8789)\\b/.test(line)',
+        );
+      }
+
+      expect(boot.lastIndexOf('assert_http_loopback_only')).toBeGreaterThan(
+        boot.lastIndexOf('start_remote_http'),
+      );
+      expect(boot).toContain('raw HTTP processes must listen only on 127.0.0.1');
+      expect(smoke.lastIndexOf('assert_http_loopback_only')).toBeGreaterThan(
+        smoke.indexOf('127.0.0.1:8789/health'),
+      );
+      expect(smoke).toContain('raw HTTP processes must listen only on 127.0.0.1');
     });
   });
 });

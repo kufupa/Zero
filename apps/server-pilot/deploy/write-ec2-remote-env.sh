@@ -87,7 +87,11 @@ try {
     !values.has("BETTER_AUTH_URL") ||
     !values.has("BETTER_AUTH_SECRET") ||
     values.get("BETTER_AUTH_URL") !== "BETTER_AUTH_URL='https://nava-admin.trynava.io'" ||
-    values.get("BETTER_AUTH_SECRET") === "BETTER_AUTH_SECRET=''"
+    values
+      .get("BETTER_AUTH_SECRET")
+      ?.slice("BETTER_AUTH_SECRET='".length, -1)
+      .replace(/'\\''/g, "'")
+      .trim().length === 0
   ) {
     throw new Error("invalid");
   }
@@ -167,7 +171,7 @@ process.stdin.on("end", () => {
       Object.keys(parsed).length !== 1 ||
       Object.keys(parsed)[0] !== "BETTER_AUTH_SECRET" ||
       typeof parsed.BETTER_AUTH_SECRET !== "string" ||
-      parsed.BETTER_AUTH_SECRET.length === 0
+      parsed.BETTER_AUTH_SECRET.trim().length === 0
     ) {
       process.exit(2);
     }
