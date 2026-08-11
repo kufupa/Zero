@@ -7,6 +7,7 @@ set -euo pipefail
 : "${REMOTE_AUTH_SECRET_NAME:=nava-zero/server-pilot/remote-auth}"
 : "${REMOTE_AUTH_URL:=https://nava-admin.trynava.io}"
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="${REPO_ROOT:-/home/ubuntu/repos/zero}"
 SERVER_PILOT="${REPO_ROOT}/apps/server-pilot"
 LEGACY_ENV_FILE="${ENV_FILE:-${SERVER_PILOT}/.env.production}"
@@ -73,25 +74,24 @@ const common = new Set([
 try {
   const values = new Map();
   for (const line of fs.readFileSync(path, "utf8").split("\n").filter(Boolean)) {
-    const match = /^([A-Z][A-Z0-9_]*)='(?:[^']|'\\'')*'$/.exec(line);
+    const match = /^([A-Z][A-Z0-9_]*)='((?:[^']|'\\'')*)'$/.exec(line);
     if (!match || values.has(match[1])) throw new Error("invalid");
-    values.set(match[1], line);
+    values.set(match[1], match[2].replace(/'\\''/g, "'"));
   }
   if (kind === "common") {
     if (![...values.keys()].every((key) => common.has(key))) throw new Error("invalid");
-    for (const key of ["NODE_ENV", "DATABASE_URL", "AWS_REGION", "S3_BUCKET"]) {
-      if (!values.has(key)) throw new Error("invalid");
+    if (values.get("NODE_ENV") !== "production") throw new Error("invalid");
+    for (const key of ["DATABASE_URL", "AWS_REGION", "S3_BUCKET"]) {
+      if (!values.has(key) || values.get(key).trim().length === 0) {
+        throw new Error("invalid");
+      }
     }
   } else if (
     values.size !== 2 ||
     !values.has("BETTER_AUTH_URL") ||
     !values.has("BETTER_AUTH_SECRET") ||
-    values.get("BETTER_AUTH_URL") !== "BETTER_AUTH_URL='https://nava-admin.trynava.io'" ||
-    values
-      .get("BETTER_AUTH_SECRET")
-      ?.slice("BETTER_AUTH_SECRET='".length, -1)
-      .replace(/'\\''/g, "'")
-      .trim().length === 0
+    values.get("BETTER_AUTH_URL") !== "https://nava-admin.trynava.io" ||
+    values.get("BETTER_AUTH_SECRET")?.trim().length === 0
   ) {
     throw new Error("invalid");
   }
@@ -141,17 +141,10 @@ quote_val() {
   printf "'%s'" "${1//\'/\'\\\'\'}"
 }
 
-set -a
-# shellcheck disable=SC1090
-source "$LEGACY_ENV_FILE"
-set +a
-
-for key in DATABASE_URL AWS_REGION S3_BUCKET; do
-  if [ -z "${!key:-}" ]; then
-    echo "legacy runtime env missing required remote common key: $key" >&2
-    exit 2
-  fi
-done
+node "$SCRIPT_DIR/parse-ec2-legacy-env.mjs" \
+  "$LEGACY_ENV_FILE" \
+  "$REMOTE_COMMON_TMP" \
+  "${REMOTE_COMMON_ALLOWLIST[@]}"
 
 REMOTE_AUTH_SECRET="$(
   aws secretsmanager get-secret-value \
@@ -190,15 +183,6 @@ if [ -z "$REMOTE_AUTH_SECRET" ]; then
   exit 2
 fi
 
-{
-  printf "NODE_ENV='production'\n"
-  for key in "${REMOTE_COMMON_ALLOWLIST[@]}"; do
-    value="${!key:-}"
-    if [ -n "$value" ]; then
-      printf '%s=%s\n' "$key" "$(quote_val "$value")"
-    fi
-  done
-} >"$REMOTE_COMMON_TMP"
 printf 'BETTER_AUTH_URL=%s\nBETTER_AUTH_SECRET=%s\n' \
   "$(quote_val "$REMOTE_AUTH_URL")" \
   "$(quote_val "$REMOTE_AUTH_SECRET")" >"$REMOTE_ADMIN_TMP"

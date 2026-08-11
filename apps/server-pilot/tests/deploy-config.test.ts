@@ -3260,6 +3260,127 @@ describe('deploy config', () => {
       expect(env.POP3_MAX_MESSAGES_PER_CYCLE).toBe(500);
     });
 
+    it('treats the root-read legacy runtime file as data, never shell input', async () => {
+      const { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = await import(
+        'node:fs'
+      );
+      const { spawnSync } = await import('node:child_process');
+      const { tmpdir } = await import('node:os');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const here = dirname(fileURLToPath(import.meta.url));
+      const deploy = join(here, '..', 'deploy');
+      const writer = readFileSync(join(deploy, 'write-ec2-remote-env.sh'), 'utf8');
+      const parser = join(deploy, 'parse-ec2-legacy-env.mjs');
+
+      expect(writer).not.toMatch(/^\s*(?:source|\.)\s+"\$LEGACY_ENV_FILE"/m);
+      expect(existsSync(parser)).toBe(true);
+
+      const tempDir = mkdtempSync(join(tmpdir(), 'nava-legacy-env-parser-test-'));
+      const legacyEnv = join(tempDir, '.env.production');
+      const remoteCommon = join(tempDir, '.env.remote-common');
+      const marker = join(tempDir, 'legacy-shell-ran');
+      try {
+        writeFileSync(
+          legacyEnv,
+          [
+            "NODE_ENV='production'",
+            "DATABASE_URL='postgres://example.invalid/zero'",
+            "AWS_REGION='af-south-1'",
+            "S3_BUCKET='nava-test-bucket'",
+            `touch ${JSON.stringify(marker)}`,
+            '',
+          ].join('\n'),
+          'utf8',
+        );
+        writeFileSync(remoteCommon, 'untouched\n', 'utf8');
+
+        const result = spawnSync(
+          process.execPath,
+          [parser, legacyEnv, remoteCommon, 'DATABASE_URL', 'AWS_REGION', 'S3_BUCKET'],
+          { encoding: 'utf8' },
+        );
+
+        expect(result.status).toBe(2);
+        expect(result.stdout).toBe('');
+        expect(result.stderr).toContain('legacy runtime env malformed');
+        expect(existsSync(marker)).toBe(false);
+        expect(readFileSync(remoteCommon, 'utf8')).toBe('untouched\n');
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('renders quoted allowlisted legacy values without remote forbidden credentials', async () => {
+      const { mkdtempSync, readFileSync, rmSync, writeFileSync } = await import('node:fs');
+      const { spawnSync } = await import('node:child_process');
+      const { tmpdir } = await import('node:os');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const here = dirname(fileURLToPath(import.meta.url));
+      const parser = join(here, '..', 'deploy', 'parse-ec2-legacy-env.mjs');
+      const tempDir = mkdtempSync(join(tmpdir(), 'nava-legacy-env-parser-test-'));
+      const legacyEnv = join(tempDir, '.env.production');
+      const remoteCommon = join(tempDir, '.env.remote-common');
+
+      try {
+        writeFileSync(
+          legacyEnv,
+          [
+            "NODE_ENV='production'",
+            "DATABASE_URL='postgres://example.invalid/zero'",
+            "AWS_REGION='af-south-1'",
+            "S3_BUCKET='nava-test-bucket'",
+            "MAIL_TRANSPORT_MODE='real'",
+            "AI_MODEL_ID='model'\\''s'",
+            "BETTER_AUTH_SECRET='legacy-signing-secret'",
+            "POP3_PASSWORD='legacy-pop3-password'",
+            "HMS_READ_SECRET_ARN='arn:aws:secretsmanager:example'",
+            "GOOGLE_CLIENT_SECRET='legacy-google-secret'",
+            '',
+          ].join('\n'),
+          'utf8',
+        );
+
+        const result = spawnSync(
+          process.execPath,
+          [
+            parser,
+            legacyEnv,
+            remoteCommon,
+            'DATABASE_URL',
+            'AWS_REGION',
+            'S3_BUCKET',
+            'MAIL_TRANSPORT_MODE',
+            'AI_MODEL_ID',
+          ],
+          { encoding: 'utf8' },
+        );
+
+        expect(result.status).toBe(0);
+        expect(result.stdout).toBe('');
+        expect(result.stderr).toBe('');
+        const common = readFileSync(remoteCommon, 'utf8');
+        expect(common).toBe(
+          [
+            "NODE_ENV='production'",
+            "DATABASE_URL='postgres://example.invalid/zero'",
+            "AWS_REGION='af-south-1'",
+            "S3_BUCKET='nava-test-bucket'",
+            "MAIL_TRANSPORT_MODE='real'",
+            "AI_MODEL_ID='model'\\''s'",
+            '',
+          ].join('\n'),
+        );
+        expect(common).not.toContain('BETTER_AUTH_SECRET');
+        expect(common).not.toContain('POP3_PASSWORD');
+        expect(common).not.toContain('HMS_READ_SECRET_ARN');
+        expect(common).not.toContain('GOOGLE_CLIENT_SECRET');
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it('writes only explicitly allowlisted remote HTTP environment files', async () => {
       const { existsSync, readFileSync } = await import('node:fs');
       const { fileURLToPath } = await import('node:url');
@@ -3363,6 +3484,70 @@ describe('deploy config', () => {
       }
     });
 
+    it('decodes required remote-common values during --validate', async () => {
+      const { mkdtempSync, readFileSync, rmSync, writeFileSync } = await import('node:fs');
+      const { spawnSync } = await import('node:child_process');
+      const { tmpdir } = await import('node:os');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const here = dirname(fileURLToPath(import.meta.url));
+      const writer = readFileSync(
+        join(here, '..', 'deploy', 'write-ec2-remote-env.sh'),
+        'utf8',
+      ).replaceAll('\r\n', '\n');
+      const start = 'node - "$path" "$kind" <<\'NODE\'\n';
+      const validatorStart = writer.indexOf(start);
+      const validatorEnd = writer.indexOf('\nNODE\n}', validatorStart);
+      const validator =
+        validatorStart < 0 || validatorEnd < 0
+          ? null
+          : writer.slice(validatorStart + start.length, validatorEnd);
+
+      expect(validator).toBeTruthy();
+      const tempDir = mkdtempSync(join(tmpdir(), 'nava-remote-common-validate-test-'));
+      const commonEnv = join(tempDir, '.env.remote-common');
+      const valid = [
+        "NODE_ENV='production'",
+        "DATABASE_URL='postgres://example.invalid/zero'",
+        "AWS_REGION='af-south-1'",
+        "S3_BUCKET='nava-test-bucket'",
+        '',
+      ].join('\n');
+      try {
+        writeFileSync(commonEnv, valid, 'utf8');
+        const validResult = spawnSync(process.execPath, ['-', commonEnv, 'common'], {
+          input: validator!,
+          encoding: 'utf8',
+        });
+        expect(validResult.status).toBe(0);
+
+        for (const [label, replacement] of [
+          ['blank DATABASE_URL', "DATABASE_URL=' \t '"],
+          ['blank AWS_REGION', "AWS_REGION='\t'"],
+          ['blank S3_BUCKET', "S3_BUCKET='  '"],
+          ['incorrect NODE_ENV', "NODE_ENV='staging'"],
+          ['padded NODE_ENV', "NODE_ENV=' production '"],
+        ] as const) {
+          const lines = valid
+            .split('\n')
+            .map((line) =>
+              line.startsWith(replacement.slice(0, replacement.indexOf('=')))
+                ? replacement
+                : line,
+            );
+          writeFileSync(commonEnv, lines.join('\n'), 'utf8');
+          const result = spawnSync(process.execPath, ['-', commonEnv, 'common'], {
+            input: validator!,
+            encoding: 'utf8',
+          });
+          expect(result.status, `--validate accepted ${label}`).toBe(2);
+          expect(result.stderr).toContain('remote env malformed');
+        }
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it('validates remote files before PM2 mutation and isolates remote startup', async () => {
       const { readFileSync } = await import('node:fs');
       const { fileURLToPath } = await import('node:url');
@@ -3444,7 +3629,7 @@ describe('deploy config', () => {
         );
       }
 
-      expect(boot.lastIndexOf('assert_http_loopback_only')).toBeGreaterThan(
+      expect(boot.lastIndexOf('assert_http_loopback_with_retry')).toBeGreaterThan(
         boot.lastIndexOf('start_remote_http'),
       );
       expect(boot).toContain('raw HTTP processes must listen only on 127.0.0.1');
@@ -3452,6 +3637,45 @@ describe('deploy config', () => {
         smoke.indexOf('127.0.0.1:8789/health'),
       );
       expect(smoke).toContain('raw HTTP processes must listen only on 127.0.0.1');
+    });
+
+    it('refuses root before boot can source the legacy runtime environment', async () => {
+      const { readFileSync } = await import('node:fs');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const here = dirname(fileURLToPath(import.meta.url));
+      const boot = readFileSync(join(here, '..', 'deploy', 'pm2-boot.sh'), 'utf8');
+      const rootGuard = boot.indexOf('pm2-boot.sh must run as ubuntu');
+      const legacySource = boot.indexOf('source "$ENV_FILE"');
+
+      expect(rootGuard).toBeGreaterThanOrEqual(0);
+      expect(legacySource).toBeGreaterThan(rootGuard);
+      expect(boot).toMatch(
+        /if \[ "\$\(id -u\)" -eq 0 \]; then\s+echo "pm2-boot\.sh must run as ubuntu" >&2\s+exit 2\s+fi/,
+      );
+    });
+
+    it('uses a bounded loopback-listener retry after PM2 boot', async () => {
+      const { readFileSync } = await import('node:fs');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const here = dirname(fileURLToPath(import.meta.url));
+      const boot = readFileSync(join(here, '..', 'deploy', 'pm2-boot.sh'), 'utf8').replaceAll(
+        '\r\n',
+        '\n',
+      );
+      const retryStart = boot.indexOf('assert_http_loopback_with_retry() {');
+      const retryEnd = boot.indexOf('\n}\n', retryStart);
+      const retry = retryStart < 0 || retryEnd < 0 ? null : boot.slice(retryStart, retryEnd);
+
+      expect(retry).toBeTruthy();
+      expect(retry).toContain('for attempt in 1 2 3 4 5; do');
+      expect(retry).toContain('assert_http_loopback_only && return 0');
+      expect(retry).toMatch(/\bsleep\s+1\b/);
+      expect(retry).toContain('return 1');
+      expect(boot).toMatch(
+        /start_legacy_processes\s*\nstart_remote_http\s*\nassert_http_loopback_with_retry\s+\|\|/,
+      );
     });
   });
 });

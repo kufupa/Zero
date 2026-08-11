@@ -12,6 +12,11 @@ fi
 REMOTE_COMMON_ENV="${SERVER_PILOT}/.env.remote-common"
 REMOTE_ADMIN_ENV="${SERVER_PILOT}/.env.remote-admin"
 
+if [ "$(id -u)" -eq 0 ]; then
+  echo "pm2-boot.sh must run as ubuntu" >&2
+  exit 2
+fi
+
 export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 # shellcheck disable=SC1091
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
@@ -55,6 +60,15 @@ for (const port of [8788,8789]) {
 }
 if (lines.some((line)=>!/127\.0\.0\.1:(8788|8789)\b/.test(line))) process.exit(1);
 '
+}
+
+assert_http_loopback_with_retry() {
+  local attempt
+  for attempt in 1 2 3 4 5; do
+    assert_http_loopback_only && return 0
+    [ "$attempt" -lt 5 ] && sleep 1
+  done
+  return 1
 }
 
 start_legacy_processes() {
@@ -165,7 +179,7 @@ delete_all_pm2_processes || {
 
 start_legacy_processes
 start_remote_http
-assert_http_loopback_only || {
+assert_http_loopback_with_retry || {
   echo "pm2-boot: raw HTTP processes must listen only on 127.0.0.1" >&2
   exit 20
 }
