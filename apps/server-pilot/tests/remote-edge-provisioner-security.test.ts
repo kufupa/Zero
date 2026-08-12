@@ -71,7 +71,12 @@ type Mode =
   | 'alb-log-prefix-missing'
   | 'alb-log-prefix-malformed'
   | 'alb-provisioning'
-  | 'alb-stuck-provisioning';
+  | 'alb-stuck-provisioning'
+  | 'public-address-safe'
+  | 'public-address-broad-ingress'
+  | 'public-address-wrong-ufw'
+  | 'public-address-public-listener'
+  | 'public-address-ipv6-listener';
 
 type Harness = {
   root: string;
@@ -154,6 +159,7 @@ const stages = [
 
 const index = (name) => stages.indexOf(name);
 const at = (name) => index(state.stage) >= index(name);
+const publicAddressMode = state.mode.startsWith('public-address-');
 const save = () => writeFileSync(statePath, JSON.stringify(state));
 const log = (line) => appendFileSync(logPath, line + '\n');
 const emit = (value) => process.stdout.write(JSON.stringify(value));
@@ -527,19 +533,27 @@ switch (service + ' ' + operation) {
   case 'ec2 describe-instances': {
     const groups = [{ GroupId: legacySg, GroupName: 'legacy' }];
     if (at('TARGET_SG_ATTACHED')) groups.push({ GroupId: targetSg, GroupName: targetName });
+    const primaryNetworkInterface = {
+      Attachment: { DeviceIndex: 0, InstanceId: instance },
+      PrivateIpAddress: targetIp,
+      Groups: groups,
+    };
+    const instanceRecord = {
+      InstanceId: instance,
+      VpcId: vpc,
+      PrivateIpAddress: targetIp,
+      SecurityGroups: groups,
+      NetworkInterfaces: [primaryNetworkInterface],
+    };
+    if (publicAddressMode) {
+      instanceRecord.PublicIpAddress = '198.51.100.23';
+      instanceRecord.Ipv6Addresses = [{ Ipv6Address: '2001:db8::23' }];
+      primaryNetworkInterface.Association = { PublicIp: '198.51.100.23' };
+      primaryNetworkInterface.Ipv6Addresses = [{ Ipv6Address: '2001:db8::23' }];
+    }
     emit({
       Reservations: [{
-        Instances: [{
-          InstanceId: instance,
-          VpcId: vpc,
-          PrivateIpAddress: targetIp,
-          SecurityGroups: groups,
-          NetworkInterfaces: [{
-            Attachment: { DeviceIndex: 0, InstanceId: instance },
-            PrivateIpAddress: targetIp,
-            Groups: groups,
-          }],
-        }],
+        Instances: [instanceRecord],
       }],
     });
     break;
@@ -582,7 +596,10 @@ switch (service + ' ' + operation) {
     break;
   }
   case 'ec2 describe-security-groups': {
-    const legacyIngress = state.mode === 'legacy-public-ingress' ? [publicHttps] : [];
+    const legacyIngress = [
+      'legacy-public-ingress',
+      'public-address-broad-ingress',
+    ].includes(state.mode) ? [publicHttps] : [];
     const groups = [{
       GroupId: legacySg,
       GroupName: 'legacy',
@@ -861,10 +878,18 @@ const hostOutput = () => {
     statusRules.push('[ 3] 8443/tcp on ens5 ALLOW IN 172.31.32.0/20');
   }
   if (state.mode === 'ufw-shorthand') rules.push('ufw allow 8443/tcp');
+  if (state.mode === 'public-address-wrong-ufw') {
+    rules.push('ufw allow in on ens5 to any port 8443 proto tcp');
+  }
   if (state.mode === 'ufw-status-shorthand') {
     statusRules.push('[ 1] 8443/tcp ALLOW IN Anywhere');
   }
   if (state.mode === 'ufw-status-missing') statusRules.length = 0;
+  const targetListener = state.mode === 'public-address-public-listener'
+    ? 'LISTEN 0 511 0.0.0.0:8443 0.0.0.0:*'
+    : state.mode === 'public-address-ipv6-listener'
+      ? 'LISTEN 0 511 [::]:8443 [::]:*'
+      : 'LISTEN 0 511 172.31.12.112:8443 0.0.0.0:*';
   return [
     '__REMOTE_EDGE_UFW_STATUS__',
     'Status: active',
@@ -874,7 +899,9 @@ const hostOutput = () => {
     ...rules,
     '__REMOTE_EDGE_SOCKETS__',
     'LISTEN 0 511 0.0.0.0:443 0.0.0.0:*',
-    'LISTEN 0 511 0.0.0.0:8443 0.0.0.0:*',
+    'LISTEN 0 511 127.0.0.1:8788 0.0.0.0:*',
+    'LISTEN 0 511 127.0.0.1:8789 0.0.0.0:*',
+    targetListener,
     '__REMOTE_EDGE_ROUTE__',
     'default via 172.31.0.1 dev ens5',
     '',
@@ -1210,6 +1237,38 @@ describe('remote edge provisioner security contracts', () => {
       destroyHarness(harness);
     }
   }, 60_000);
+
+  it('accepts assigned public addresses only behind exact remote path controls', async () => {
+    const safe = createHarness('UFW_READY', 'public-address-safe');
+    try {
+      const result = await runProvisioner(safe, ['inspect']);
+      expect(result.status, resultDiagnostic(result, safe)).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        stage: 'UFW_READY',
+        action: 'PROVE_ALB_LOG_DELIVERY',
+      });
+      expect(`${result.stdout}\n${result.stderr}`).not.toContain('198.51.100.23');
+      expect(`${result.stdout}\n${result.stderr}`).not.toContain('2001:db8::23');
+    } finally {
+      destroyHarness(safe);
+    }
+
+    for (const mode of [
+      'public-address-broad-ingress',
+      'public-address-wrong-ufw',
+      'public-address-public-listener',
+      'public-address-ipv6-listener',
+    ] as const) {
+      const unsafe = createHarness('UFW_READY', mode);
+      try {
+        const result = await runProvisioner(unsafe, ['inspect']);
+        expect(result.status, `${mode}\n${resultDiagnostic(result, unsafe)}`).not.toBe(0);
+        expect(calls(unsafe).filter((entry) => entry.startsWith('mutate '))).toHaveLength(0);
+      } finally {
+        destroyHarness(unsafe);
+      }
+    }
+  }, 90_000);
 
   it('requires bounded body-discarded log delivery proof before pre-Gate-B readiness', async () => {
     const failing = createHarness('UFW_READY', 'log-proof-failure');

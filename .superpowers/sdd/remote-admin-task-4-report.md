@@ -548,3 +548,53 @@ Results: `46` hardened security fixtures, `11` provisioner fixtures, and `122` d
 ### Remaining concern
 
 No live `inspect` or `apply-one` execution was authorized or attempted. `apply-one` remains blocked pending re-review approval and fresh local `inspect`.
+
+stage: `UNKNOWN`
+action: `NONE`
+outcome: `BLOCKED — inspect returned blocked before classification; no mutation ran.`
+
+## Public-address boundary correction — 2026-08-12
+
+Status: `DONE` for local contract correction. No live AWS, SSM, ACM, Secrets Manager, database, Docker, environment-source, deployment, or runtime command ran.
+
+### Root cause and fix
+
+The prior local classifier and remote readiness treated assigned public IPv4/IPv6 as a direct target path. Task policy instead forbids reachable direct paths while allowing assigned addresses to remain stable outbound identity.
+
+- `remote-edge-state.mjs` now emits only boolean `publicAddressPresence` observation and excludes it from the pass/fail baseline.
+- Exact attached-SG ingress, exact default-deny UFW, loopback-only `:8788`/`:8789`, and an exclusive private `172.31.12.112:8443` listener now establish the direct-path boundary.
+- `launch-readiness.sh` records boolean address presence, keeps public-IPv6 rejection only for legacy mode, and requires remote listener safety alongside exact SG/UFW facts.
+- Remote Nginx `:8443` vhosts now bind only to `172.31.12.112`, never wildcard or IPv6.
+- No public-IP detach, release, or other address mutation path was added.
+
+### TDD and verification
+
+RED before implementation:
+
+```bash
+unset DATABASE_URL TEST_DATABASE_URL VITEST_ALLOW_PILOT_RDS CONFIRM_DISPOSABLE_TEST_DB HMS_DB_TEST_REQUIRED
+pnpm exec vitest run tests/remote-edge-provisioner.test.ts -t "treats public-address presence" --maxWorkers=1
+pnpm exec vitest run tests/remote-edge-provisioner-security.test.ts -t "accepts assigned public addresses" --maxWorkers=1
+pnpm exec vitest run tests/deploy-config.test.ts -t "treats remote public-address assignment" --maxWorkers=1
+```
+
+Expected failures proved that address-present safe paths were rejected and the readiness collector treated public IPv6 as direct exposure.
+
+GREEN serial DB-free verification:
+
+```bash
+unset DATABASE_URL TEST_DATABASE_URL VITEST_ALLOW_PILOT_RDS CONFIRM_DISPOSABLE_TEST_DB HMS_DB_TEST_REQUIRED
+pnpm exec vitest run tests/deploy-config.test.ts --testTimeout=90000 --maxWorkers=1 --fileParallelism=false
+pnpm exec vitest run tests/remote-edge-provisioner.test.ts --testTimeout=90000 --maxWorkers=1 --fileParallelism=false
+pnpm exec vitest run tests/remote-edge-provisioner-security.test.ts --testTimeout=90000 --maxWorkers=1 --fileParallelism=false
+pnpm exec tsc -p tsconfig.json --noEmit
+node --check deploy/remote-edge-state.mjs
+bash -n deploy/launch-readiness.sh deploy/deploy-ec2.sh
+git diff --check
+```
+
+Results: `123` deploy-config tests, `11` provisioner tests, and `52` hardened security tests passed. TypeScript, Node syntax, shell syntax, and whitespace checks passed.
+
+### Remaining concern
+
+No live boundary revalidation or mutation ran. On a future authorized operator run, use fresh read-only facts; do not detach or release assigned public addresses, and require the exact SG/UFW/listener gate before any later edge transition.

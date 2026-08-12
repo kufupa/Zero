@@ -191,6 +191,47 @@ if UFW_ADDED="$(sudo ufw show added 2>/dev/null)"; then
   fi
 fi
 
+LISTENER_SAFE=false
+if ss -ltnH 2>/dev/null | node -e '
+  let output = "";
+  process.stdin.on("data", (chunk) => (output += chunk));
+  process.stdin.on("end", () => {
+    const lines = output
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    const listenAddresses = (port) =>
+      lines.flatMap((line) => {
+        if (!/\bLISTEN\b/.test(line)) return [];
+        const suffix = `:${port}`;
+        const local = line.split(/\s+/).find((field) => field.endsWith(suffix));
+        return local ? [local.slice(0, -suffix.length)] : [];
+      });
+    const loopbackOnly = (port) => {
+      const addresses = listenAddresses(port);
+      return (
+        addresses.length > 0 &&
+        addresses.every(
+          (address) =>
+            address === "127.0.0.1" ||
+            address === "::1" ||
+            address === "[::1]",
+        )
+      );
+    };
+    const target8443 = listenAddresses(8443);
+    const safe =
+      !/\bUDP\b/i.test(output) &&
+      loopbackOnly(8788) &&
+      loopbackOnly(8789) &&
+      target8443.length === 1 &&
+      target8443[0] === "172.31.12.112";
+    process.exit(safe ? 0 : 1);
+  });
+'; then
+  LISTENER_SAFE=true
+fi
+
 PM2_SUMMARY="$(
   if command -v pm2 >/dev/null 2>&1; then
     pm2 jlist 2>/dev/null | node -e '
@@ -249,7 +290,7 @@ export HTTP_OK HTTPS_OK TLS_VALID HOTEL_PROBE_OK ENV_LOADED
 export DISK_USED_PERCENT DISK_FREE_MB DISK_SAFE
 export PM2_SUMMARY
 export UFW_STATUS_READ UFW_RULES_READ
-export UFW_ACTIVE UFW_DEFAULT_DENY UFW_TUN443 UFW_BROAD443_ABSENT UFW_REMOTE_ALB8443_ONLY
+export UFW_ACTIVE UFW_DEFAULT_DENY UFW_TUN443 UFW_BROAD443_ABSENT UFW_REMOTE_ALB8443_ONLY LISTENER_SAFE
 
 cd "$SERVER_PILOT"
 DB_SUMMARY="$(
@@ -363,6 +404,7 @@ const report = {
     tunnel443: bool("UFW_TUN443"),
     broad443Absent: bool("UFW_BROAD443_ABSENT"),
     remoteAlb8443Only: bool("UFW_REMOTE_ALB8443_ONLY"),
+    listenerSafe: bool("LISTENER_SAFE"),
   },
   config: {
     envLoaded: bool("ENV_LOADED"),
@@ -414,7 +456,7 @@ NODE
 )" || REMOTE_JSON=""
 
 if [ "$SSM_EXIT" -ne 0 ] || [ -z "$REMOTE_JSON" ]; then
-  REMOTE_JSON='{"health":{"http":false,"https":false,"tls":false},"pm2":{"required":{},"allOnline":false},"hotelProbe":false,"firewall":{"statusRead":false,"rulesRead":false,"active":false,"defaultDeny":false,"tunnel443":false,"broad443Absent":false},"config":{"envLoaded":false,"mailTransportModeReal":false,"betterAuthUrlCorrect":false,"undoSendSecondsCorrect":false,"aiWriteGateEnabled":false,"aiDraftsDisabled":false},"db":{"connected":false,"centurionActiveTransportCount":0,"centurionActiveCategoryCount":0,"workflowNonterminalCount":0,"workflowDeadLetterCount":0,"workflowDeadLetterRecentCount":0,"outboundNonterminalCount":0,"latestInboundAt":null,"counts":{"threads":0,"messages":0,"inboundMessages":0}},"disk":{"safe":false,"usedPercent":100,"freeMB":0}}'
+  REMOTE_JSON='{"health":{"http":false,"https":false,"tls":false},"pm2":{"required":{},"allOnline":false},"hotelProbe":false,"firewall":{"statusRead":false,"rulesRead":false,"active":false,"defaultDeny":false,"tunnel443":false,"broad443Absent":false,"listenerSafe":false},"config":{"envLoaded":false,"mailTransportModeReal":false,"betterAuthUrlCorrect":false,"undoSendSecondsCorrect":false,"aiWriteGateEnabled":false,"aiDraftsDisabled":false},"db":{"connected":false,"centurionActiveTransportCount":0,"centurionActiveCategoryCount":0,"workflowNonterminalCount":0,"workflowDeadLetterCount":0,"workflowDeadLetterRecentCount":0,"outboundNonterminalCount":0,"latestInboundAt":null,"counts":{"threads":0,"messages":0,"inboundMessages":0}},"disk":{"safe":false,"usedPercent":100,"freeMB":0}}'
 fi
 
 RDS_JSON="$(
@@ -554,7 +596,7 @@ collect_readiness_perimeter() {
     aws ec2 describe-instances \
       --region "$AWS_REGION" \
       --instance-ids "$INSTANCE_ID" \
-      --query 'Reservations[0].Instances[0].{securityGroups:SecurityGroups,ipv6:NetworkInterfaces[].Ipv6Addresses[].Ipv6Address}' \
+      --query 'Reservations[0].Instances[0].{securityGroups:SecurityGroups,publicIpv4:NetworkInterfaces[].Association.PublicIp,ipv6:NetworkInterfaces[].Ipv6Addresses[].Ipv6Address}' \
       --output json 2>/dev/null
   )"; then
     local sg_ids_text=""
@@ -567,6 +609,8 @@ collect_readiness_perimeter() {
           !Array.isArray(state) &&
           Array.isArray(state.securityGroups) &&
           state.securityGroups.length > 0 &&
+          Array.isArray(state.publicIpv4) &&
+          state.publicIpv4.every((address) => typeof address === "string") &&
           Array.isArray(state.ipv6) &&
           state.ipv6.every((address) => typeof address === "string") &&
           state.securityGroups.every(
@@ -907,6 +951,7 @@ const empty = {
   targetHealthy: false,
   targetSecurityGroupOnlyAlb: false,
   noDirectPublicTargetPath: false,
+  publicAddressPresence: { ipv4: false, ipv6: false },
   logBucketCompliant: false,
   wafCompliant: false,
 };
@@ -1132,6 +1177,10 @@ try {
     Array.isArray(permission?.UserIdGroupPairs) &&
     permission.UserIdGroupPairs.length === 1 &&
     permission.UserIdGroupPairs[0]?.GroupId === albSecurityGroup &&
+    (
+      permission.UserIdGroupPairs[0]?.UserId === undefined ||
+      permission.UserIdGroupPairs[0]?.UserId === ACCOUNT_ID
+    ) &&
     (!Array.isArray(permission?.IpRanges) || permission.IpRanges.length === 0) &&
     (!Array.isArray(permission?.Ipv6Ranges) || permission.Ipv6Ranges.length === 0) &&
     (!Array.isArray(permission?.PrefixListIds) || permission.PrefixListIds.length === 0);
@@ -1148,10 +1197,15 @@ try {
     Array.isArray(targetSecurityGroupRecord?.ingress) &&
     targetSecurityGroupRecord.ingress.length === 1 &&
     targetSecurityGroupRecord.ingress.every(isExactAlb8443);
-  empty.noDirectPublicTargetPath =
-    empty.targetSecurityGroupOnlyAlb &&
-    Array.isArray(instanceNetwork?.ipv6) &&
-    instanceNetwork.ipv6.length === 0;
+  empty.publicAddressPresence = {
+    ipv4:
+      Array.isArray(instanceNetwork?.publicIpv4) &&
+      instanceNetwork.publicIpv4.some((address) => typeof address === "string"),
+    ipv6:
+      Array.isArray(instanceNetwork?.ipv6) &&
+      instanceNetwork.ipv6.some((address) => typeof address === "string"),
+  };
+  empty.noDirectPublicTargetPath = empty.targetSecurityGroupOnlyAlb;
 
   const albAttributes = Array.isArray(albAttributesValue.Attributes)
     ? albAttributesValue.Attributes
@@ -1426,6 +1480,8 @@ const attachedRecordsValid =
       typeof group.GroupId === "string" &&
       sgIdPattern.test(group.GroupId),
   ) &&
+  Array.isArray(instanceNetwork.publicIpv4) &&
+  instanceNetwork.publicIpv4.every((address) => typeof address === "string") &&
   Array.isArray(instanceNetwork.ipv6) &&
   instanceNetwork.ipv6.every((address) => typeof address === "string");
 const attachedIds = attachedRecordsValid
@@ -1457,6 +1513,14 @@ const ingressEmpty =
   securityGroups.every((group) => group.ingress.length === 0);
 const instanceNetworkValid =
   instanceNetworkOk && attachedRecordsValid && attachedIdsUnique;
+const publicAddressPresence = {
+  ipv4:
+    instanceNetworkValid &&
+    instanceNetwork.publicIpv4.length > 0,
+  ipv6:
+    instanceNetworkValid &&
+    instanceNetwork.ipv6.length > 0,
+};
 const securityGroupsValid =
   securityGroupQueryOk &&
   inspectedRecordsValid &&
@@ -1515,11 +1579,11 @@ const checks = {
     publicAccess.IgnorePublicAcls === true &&
     publicAccess.BlockPublicPolicy === true &&
     publicAccess.RestrictPublicBuckets === true,
-  instanceHasNoPublicIpv6:
-    instanceNetworkValid && instanceNetwork.ipv6.length === 0,
 };
 if (!remoteAdminMode) {
   checks.securityGroupIngressEmpty = instanceNetworkValid && securityGroupsValid;
+  checks.instanceHasNoPublicIpv6 =
+    instanceNetworkValid && !publicAddressPresence.ipv6;
 }
 if (remoteAdminMode) {
   const remoteChecks = {
@@ -1531,6 +1595,7 @@ if (remoteAdminMode) {
     remoteNoDirectPublicTargetPath:
       remoteAdminFacts.noDirectPublicTargetPath === true,
     remoteUfwAlb8443Only: remote.firewall?.remoteAlb8443Only === true,
+    remoteListenerSafe: remote.firewall?.listenerSafe === true,
     s3CorsRemoteAdmin:
       s3CorsOk &&
       corsStructureValid &&
@@ -1572,7 +1637,9 @@ const report = {
     },
     network: {
       securityGroupIngressEmpty: checks.securityGroupIngressEmpty,
-      instanceHasNoPublicIpv6: checks.instanceHasNoPublicIpv6,
+      ...(remoteAdminMode
+        ? { publicAddressPresence }
+        : { instanceHasNoPublicIpv6: checks.instanceHasNoPublicIpv6 }),
     },
     cloudWatchAlarmCount,
     snsTopicCount,

@@ -300,7 +300,9 @@ if (operation === 'get-command-invocation') {
       'ufw allow in on tun0 to any port 443 proto tcp',
       '__REMOTE_EDGE_SOCKETS__',
       'LISTEN 0 511 0.0.0.0:443 0.0.0.0:*',
-      'LISTEN 0 511 0.0.0.0:8443 0.0.0.0:*',
+      'LISTEN 0 511 127.0.0.1:8788 0.0.0.0:*',
+      'LISTEN 0 511 127.0.0.1:8789 0.0.0.0:*',
+      'LISTEN 0 511 172.31.12.112:8443 0.0.0.0:*',
       '__REMOTE_EDGE_ROUTE__',
       'default via 172.31.0.1 dev ens5',
       '',
@@ -419,7 +421,7 @@ function strictFinalUnattachedFacts() {
       subnets: true,
       publicSubnetRoutes: true,
       certificateIssued: true,
-      noPublicTargetAddress: true,
+      publicAddressPresence: { ipv4: true, ipv6: true },
     },
     counts: {
       alb: 0,
@@ -459,7 +461,7 @@ describe('remote edge provisioner', () => {
     expect(existsSync(stateModulePath)).toBe(true);
   });
 
-  it('classifies only strict complete facts and maps final unattached SG state to attachment', () => {
+  it('treats public-address presence as observation and maps final unattached SG state to attachment', () => {
     if (!provisionerExists()) return;
     const moduleUrl = pathToFileURL(stateModulePath).href;
     const facts = strictFinalUnattachedFacts();
@@ -479,12 +481,10 @@ describe('remote edge provisioner', () => {
           'try { classifyFacts(facts); } catch { rejected = true; }',
           'if (!rejected) process.exit(4);',
           'delete facts.unexpectedExtra;',
-          'facts.baseline.noPublicTargetAddress = false;',
-          'rejected = false;',
-          'try { classifyFacts(facts); } catch { rejected = true; }',
-          'if (!rejected) process.exit(5);',
-          'facts.baseline.noPublicTargetAddress = true;',
-          'delete facts.baseline.noPublicTargetAddress;',
+          'facts.baseline.publicAddressPresence = { ipv4: false, ipv6: false };',
+          'const withoutPublicAddress = classifyFacts(facts);',
+          "if (withoutPublicAddress.stage !== 'SG_FINAL_UNATTACHED') process.exit(5);",
+          'delete facts.baseline.publicAddressPresence;',
           'rejected = false;',
           'try { classifyFacts(facts); } catch { rejected = true; }',
           'if (!rejected) process.exit(6);',

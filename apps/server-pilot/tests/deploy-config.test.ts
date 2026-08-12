@@ -329,6 +329,7 @@ const validCors = (origins: string[] = [CANONICAL_ORIGIN]) => ({
 
 const validInstanceNetwork = () => ({
   securityGroups: [{ GroupId: SG_ONE }, { GroupId: SG_TWO }],
+  publicIpv4: [],
   ipv6: [],
 });
 
@@ -345,6 +346,7 @@ type FirewallFacts = {
   tunnel443: boolean;
   broad443Absent: boolean;
   remoteAlb8443Only?: boolean;
+  listenerSafe?: boolean;
 };
 
 type LaunchReadinessReport = {
@@ -698,6 +700,7 @@ function validReportShellEnv(): Record<string, string> {
         defaultDeny: true,
         tunnel443: true,
         broad443Absent: true,
+        listenerSafe: true,
       },
       config: {
         envLoaded: true,
@@ -1070,6 +1073,7 @@ type RemoteCollectorFacts = {
   targetHealthy: boolean;
   targetSecurityGroupOnlyAlb: boolean;
   noDirectPublicTargetPath: boolean;
+  publicAddressPresence: { ipv4: boolean; ipv6: boolean };
   wafCompliant: boolean;
 };
 
@@ -1626,9 +1630,10 @@ describe('deploy config', () => {
   it('nginx keeps legacy ingress unchanged and exposes remote only through ALB :8443', async () => {
     const { readNginxConfig } = await import('../src/deploy/load-pm2-config.js');
     const nginx = readNginxConfig();
+    const remoteListen = `listen ${REMOTE_ALB_TARGET_PRIVATE_IP}:8443`;
     const remoteDefaultStart = nginx.lastIndexOf(
       'server {',
-      nginx.indexOf('listen 8443 default_server;'),
+      nginx.indexOf(`${remoteListen} default_server;`),
     );
     const remoteHealthStart = nginx.lastIndexOf(
       'server {',
@@ -1664,11 +1669,11 @@ describe('deploy config', () => {
     expect(legacyVhosts).not.toContain(REMOTE_ADMIN_HOST);
     expect(legacyVhosts).not.toContain('127.0.0.1:8789/');
 
-    expect(remoteDefaultVhost).toContain('listen 8443 default_server;');
+    expect(remoteDefaultVhost).toContain(`${remoteListen} default_server;`);
     expect(remoteDefaultVhost).toContain('server_name _;');
     expect(remoteDefaultVhost).toContain('return 444;');
 
-    expect(remoteHealthVhost).toContain('listen 8443;');
+    expect(remoteHealthVhost).toContain(`${remoteListen};`);
     expect(remoteHealthVhost).toContain(`server_name ${REMOTE_ALB_TARGET_PRIVATE_IP};`);
     expect(remoteHealthVhost).toContain(
       `if ($host != ${REMOTE_ALB_TARGET_PRIVATE_IP}) {`,
@@ -1684,7 +1689,7 @@ describe('deploy config', () => {
       remoteHealthVhost.indexOf('location / {'),
     );
 
-    expect(remoteAppVhost).toContain('listen 8443;');
+    expect(remoteAppVhost).toContain(`${remoteListen};`);
     expect(remoteAppVhost).toContain(`server_name ${REMOTE_ADMIN_HOST};`);
     expect(remoteAppVhost).toContain(`if ($host != ${REMOTE_ADMIN_HOST}) {`);
     expect(remoteAppVhost).toContain('root /var/www/nava-mail;');
@@ -1709,7 +1714,15 @@ describe('deploy config', () => {
       expect(remoteAppVhost).toContain(header);
     }
 
-    expect(nginx.match(/^\s*listen 8443(?:\s+default_server)?;$/gm)).toHaveLength(3);
+    expect(
+      nginx.match(
+        new RegExp(
+          `^\\s*listen ${REMOTE_ALB_TARGET_PRIVATE_IP.replaceAll('.', '\\.')}:8443(?:\\s+default_server)?;$`,
+          'gm',
+        ),
+      ),
+    ).toHaveLength(3);
+    expect(nginx).not.toMatch(/^\s*listen 8443(?:\s+default_server)?;$/gm);
     expect(nginx.match(/^\s*ssl_certificate(?:_key)?\s+/gm)).toHaveLength(2);
     expect(nginx).not.toMatch(/listen\s+8443\s+ssl/);
     expect(remoteDefaultVhost).not.toMatch(/listen\s+(?:80|443)|ssl_certificate/);
@@ -2951,6 +2964,7 @@ describe('deploy config', () => {
 
     const remoteInstanceNetwork = {
       securityGroups: [{ GroupId: SG_ONE }, { GroupId: SG_TWO }],
+      publicIpv4: [],
       ipv6: [],
     };
     const remoteSecurityGroups = [
@@ -3055,6 +3069,50 @@ describe('deploy config', () => {
     });
     expect(unhealthy.checks.remoteTargetHealthy).toBe(false);
   });
+
+  it('treats remote public-address assignment as sanitized observation', async () => {
+    const addressPresent = await runRemoteAdminPerimeterCollection((responses) => {
+      responses.instanceNetwork.publicIpv4 = ['198.51.100.23'];
+      responses.instanceNetwork.ipv6 = ['2001:db8::23'];
+    });
+
+    expect(addressPresent.status, addressPresent.stderr).toBe(0);
+    expect(addressPresent.facts).toMatchObject({
+      targetSecurityGroupOnlyAlb: true,
+      noDirectPublicTargetPath: true,
+      publicAddressPresence: { ipv4: true, ipv6: true },
+    });
+    expect(JSON.stringify(addressPresent.facts)).not.toContain('198.51.100.23');
+    expect(JSON.stringify(addressPresent.facts)).not.toContain('2001:db8::23');
+
+    const readiness = await runLaunchReadinessReport({
+      remoteAdminMode: true,
+      firewall: { remoteAlb8443Only: true, listenerSafe: true },
+      cors: validCors([CANONICAL_ORIGIN, `https://${REMOTE_ADMIN_HOST}`]),
+      instanceNetwork: {
+        securityGroups: [{ GroupId: SG_ONE }, { GroupId: SG_TWO }],
+        publicIpv4: ['198.51.100.23'],
+        ipv6: ['2001:db8::23'],
+      },
+    });
+    expect(readiness.checks).not.toHaveProperty('instanceHasNoPublicIpv6');
+    expect(readiness.checks.remoteListenerSafe).toBe(true);
+    expect(readiness.observations.network).toEqual({
+      publicAddressPresence: { ipv4: true, ipv6: true },
+    });
+
+    const exposedListener = await runLaunchReadinessReport({
+      remoteAdminMode: true,
+      firewall: { remoteAlb8443Only: true, listenerSafe: false },
+      cors: validCors([CANONICAL_ORIGIN, `https://${REMOTE_ADMIN_HOST}`]),
+      instanceNetwork: {
+        securityGroups: [{ GroupId: SG_ONE }, { GroupId: SG_TWO }],
+        publicIpv4: ['198.51.100.23'],
+        ipv6: ['2001:db8::23'],
+      },
+    });
+    expect(exposedListener.checks.remoteListenerSafe).toBe(false);
+  }, 30_000);
 
   it('remote collector rejects broad ingress, wrong target identity, and unsafe WAF rules', async () => {
     const valid = await runRemoteAdminPerimeterCollection();
@@ -3810,6 +3868,7 @@ describe('deploy config', () => {
     const report = await runLaunchReadinessReport({
       instanceNetwork: {
         securityGroups: [{ GroupId: SG_ONE }],
+        publicIpv4: [],
         ipv6: ['2001:db8::1'],
       },
       securityGroups: [{ id: SG_ONE, ingress: [] }],

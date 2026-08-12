@@ -1052,10 +1052,36 @@ function deriveHostFacts(projections) {
   }
   const defaultRouteOffTun0 =
     /^default\b/m.test(route) && !/^default\b.*\bdev tun0\b/m.test(route);
+  const socketLines = sockets
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const listenAddresses = (port) =>
+    socketLines.flatMap((line) => {
+      if (!/\bLISTEN\b/.test(line)) return [];
+      const suffix = `:${port}`;
+      const local = line.split(/\s+/).find((field) => field.endsWith(suffix));
+      return local ? [local.slice(0, -suffix.length)] : [];
+    });
+  const loopbackOnly = (port) => {
+    const addresses = listenAddresses(port);
+    return (
+      addresses.length > 0 &&
+      addresses.every(
+        (address) =>
+          address === '127.0.0.1' ||
+          address === '::1' ||
+          address === '[::1]',
+      )
+    );
+  };
+  const target8443 = listenAddresses(8443);
   const listenerSafe =
     sockets.length > 0 &&
     !/\bUDP\b/i.test(sockets) &&
-    !/\[::\]:8443\b/.test(sockets);
+    loopbackOnly(8788) &&
+    loopbackOnly(8789) &&
+    exactStrings(target8443, [TARGET_PRIVATE_IP]);
   if (
     !statusActive ||
     !defaultDeny ||
@@ -1082,20 +1108,23 @@ function deriveLogDeliveryProof(projections) {
   return boolean(proof.accessLogDelivered);
 }
 
-function hasNoPublicTargetAddress(instance) {
-  return (
-    instance.PublicIpAddress === undefined &&
-    arrays(instance, 'Ipv6Addresses').length === 0 &&
-    arrays(instance, 'NetworkInterfaces').every((networkInterface) => {
-      const value = object(networkInterface);
-      return (
-        (value.Association === undefined ||
-          (isObject(value.Association) &&
-            value.Association.PublicIp === undefined)) &&
-        arrays(value, 'Ipv6Addresses').length === 0
-      );
-    })
-  );
+function publicAddressPresence(instance) {
+  const interfaces = arrays(instance, 'NetworkInterfaces').map(object);
+  return {
+    ipv4:
+      instance.PublicIpAddress !== undefined ||
+      interfaces.some(
+        (networkInterface) =>
+          isObject(networkInterface.Association) &&
+          networkInterface.Association.PublicIp !== undefined,
+      ),
+    ipv6:
+      arrays(instance, 'Ipv6Addresses').length > 0 ||
+      interfaces.some(
+        (networkInterface) =>
+          arrays(networkInterface, 'Ipv6Addresses').length > 0,
+      ),
+  };
 }
 
 export function deriveFacts(projections) {
@@ -1119,7 +1148,7 @@ export function deriveFacts(projections) {
       certificate.DomainName === REMOTE_HOST &&
       certificate.Status === 'ISSUED' &&
       references.certificateArn.includes(`:${REGION}:${ACCOUNT_ID}:`),
-    noPublicTargetAddress: hasNoPublicTargetAddress(instance),
+    publicAddressPresence: publicAddressPresence(instance),
   };
   const security = deriveSecurity(value, references);
   const targetGroupStage = deriveTargetGroupStage(value, references);
@@ -1199,9 +1228,13 @@ export function validateFacts(facts) {
     'subnets',
     'publicSubnetRoutes',
     'certificateIssued',
-    'noPublicTargetAddress',
+    'publicAddressPresence',
   ]);
-  Object.values(facts.baseline).forEach(boolean);
+  const { publicAddressPresence: addressPresence, ...baselineControls } =
+    facts.baseline;
+  Object.values(baselineControls).forEach(boolean);
+  exactKeys(addressPresence, ['ipv4', 'ipv6']);
+  Object.values(addressPresence).forEach(boolean);
   exactKeys(facts.counts, [
     'alb',
     'targetGroup',
@@ -1423,8 +1456,10 @@ const STAGE_TABLE = Object.freeze([
 
 export function classifyFacts(input) {
   const facts = validateFacts(object(input));
+  const { publicAddressPresence: _addressPresence, ...baselineControls } =
+    facts.baseline;
   const safe =
-    Object.values(facts.baseline).every(Boolean) &&
+    Object.values(baselineControls).every(Boolean) &&
     facts.security.legacyIngressSafe &&
     !facts.security.unexpectedAttachment &&
     !facts.security.unexpectedPermission &&
