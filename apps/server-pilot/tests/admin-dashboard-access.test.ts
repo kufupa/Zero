@@ -10,12 +10,14 @@ import {
 import { resolveAdminDashboardWindow } from '../src/trpc/routes/admin-dashboard.js';
 
 describe('admin dashboard access', () => {
-  it('allows navaai and ropperman allowlist emails', () => {
+  it('allows navaai, ropperman, and darren allowlist emails', () => {
     expect(isAdminDashboardEmail('navaai@legacyhotels.co.za')).toBe(true);
     expect(isAdminDashboardEmail('  NavaAI@LegacyHotels.co.za ')).toBe(true);
     expect(isAdminDashboardEmail('ropperman@legacyhotels.co.za')).toBe(true);
+    expect(isAdminDashboardEmail('dbezuidenhout@legacyhotels.co.za')).toBe(true);
     expect(() => assertAdminDashboardAccess('navaai@legacyhotels.co.za')).not.toThrow();
     expect(() => assertAdminDashboardAccess('ropperman@legacyhotels.co.za')).not.toThrow();
+    expect(() => assertAdminDashboardAccess('dbezuidenhout@legacyhotels.co.za')).not.toThrow();
   });
 
   it('denies non-allowlisted emails', () => {

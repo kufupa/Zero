@@ -41,11 +41,16 @@ export const MARTHA_USER_EMAIL = 'marthamthembu@legacyhotels.co.za';
 export const ROPPERMAN_USER_ID = 'user-ropperman';
 export const ROPPERMAN_USER_EMAIL = 'ropperman@legacyhotels.co.za';
 
+/** Centurion hotel operations login (Centurion mailbox + admin dashboard allowlist). */
+export const DARREN_USER_ID = 'user-darren-bezuidenhout';
+export const DARREN_USER_EMAIL = 'dbezuidenhout@legacyhotels.co.za';
+
 export const PILOT_USERS: PilotUserSpec[] = [
   { id: NAVA_USER_ID, name: 'Nava AI', email: NAVA_USER_EMAIL },
   { id: CENTURION_USER_ID, name: 'Centurion', email: CENTURION_USER_EMAIL },
   { id: MARTHA_USER_ID, name: 'Martha Mthembu', email: MARTHA_USER_EMAIL },
   { id: ROPPERMAN_USER_ID, name: 'R Opperman', email: ROPPERMAN_USER_EMAIL },
+  { id: DARREN_USER_ID, name: 'Darren Bezuidenhout', email: DARREN_USER_EMAIL },
 ];
 
 export const INGEST_EMAIL = 'navaai@legacyhotels.co.za';
@@ -99,7 +104,12 @@ export async function applyPilotMailboxAccess(db: DB): Promise<void> {
     });
   }
 
-  for (const userId of [CENTURION_USER_ID, MARTHA_USER_ID, ROPPERMAN_USER_ID]) {
+  for (const userId of [
+    CENTURION_USER_ID,
+    MARTHA_USER_ID,
+    ROPPERMAN_USER_ID,
+    DARREN_USER_ID,
+  ]) {
     await db.insert(mailboxAccess).values({
       id: `access-${userId}-${TRANSPORT_ID}`,
       userId,

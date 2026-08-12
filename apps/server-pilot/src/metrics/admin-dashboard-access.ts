@@ -7,6 +7,7 @@ import { TRPCError } from '@trpc/server';
 export const ADMIN_DASHBOARD_ALLOWED_EMAILS = [
   'navaai@legacyhotels.co.za',
   'ropperman@legacyhotels.co.za',
+  'dbezuidenhout@legacyhotels.co.za',
 ] as const;
 
 export function isAdminDashboardEmail(email: string | null | undefined): boolean {
