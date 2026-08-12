@@ -397,3 +397,44 @@ The deploy-config suite's fork-pool run hit its unrelated existing Playwright-co
 ### Remaining concern
 
 No live `inspect` or `apply-one` execution was authorized or attempted. Future operator execution still requires re-review approval, a fresh local evidence root, and an `inspect` result that authorizes exactly one returned action.
+
+## Log proof and mutation-fixture re-review remediation — 2026-08-12
+
+Status: `DONE`
+
+Only local fixture binaries ran. No AWS, SSM, secrets, database, Docker, environment sourcing, deployment, DNS, or runtime mutation occurred.
+
+### RED
+
+Added a fresh S3 object fixture at `AWSLogs/845242190536/test-fixture.txt`. Before correction, `PROVE_ALB_LOG_DELIVERY` accepted it solely because its `LastModified` timestamp was newer than proof start:
+
+```bash
+pnpm exec vitest run tests/remote-edge-provisioner-security.test.ts -t "rejects a fresh object outside the exact ALB access-log hierarchy" --testTimeout=60000 --maxWorkers=1 --fileParallelism=false --pool=forks --reporter=dot
+```
+
+Result: expected failure; provisioner exited `0`.
+
+### Fixes
+
+1. Log proof now derives `app.nava-remote-admin-alb.<resource-id>` from exact named ALB ARN, then accepts only fresh keys with official account, region, valid `YYYY/MM/DD` hierarchy, access-log timestamp/IP/random suffix, and `.log.gz` extension. Missing or malformed keys, test objects, wrong account/region/ALB IDs, connection/health logs, and invalid calendar paths fail closed.
+2. Every fake AWS mutation now validates its critical CLI contract before advancing state: SG identities/source/ports, target-group protocol/port/health path, target attributes, ALB topology, bucket controls/policy, ALB logging attributes, WAF scope/default/rule actions, ACL association, listener protocol/port/certificate/fixed-404 action, and UFW SSM command/document/instance/CIDR.
+3. Fixture contract exposed Git Bash conversion of `/health`; provisioner now disables MSYS argument conversion for that exact AWS call so AWS CLI receives literal `/health`.
+
+### GREEN
+
+```bash
+unset DATABASE_URL TEST_DATABASE_URL VITEST_ALLOW_PILOT_RDS CONFIRM_DISPOSABLE_TEST_DB HMS_DB_TEST_REQUIRED
+pnpm exec vitest run tests/remote-edge-provisioner-security.test.ts --testTimeout=60000 --maxWorkers=1 --fileParallelism=false --pool=forks --reporter=dot
+pnpm exec vitest run tests/remote-edge-provisioner.test.ts --testTimeout=60000 --maxWorkers=1 --fileParallelism=false --pool=forks --reporter=dot
+pnpm exec vitest run tests/deploy-config.test.ts --testTimeout=60000 --maxWorkers=1 --fileParallelism=false --pool=forks --reporter=dot
+pnpm exec tsc -p tsconfig.json --noEmit
+bash -n deploy/remote-edge-provisioner.sh deploy/launch-readiness.sh deploy/post-boot-smoke.sh deploy/ops-deploy.sh deploy/ops-restart.sh deploy/ops-reboot.sh deploy/pm2-boot.sh
+node --check deploy/remote-edge-state.mjs
+git diff --check
+```
+
+Results: `39` hardened security fixtures, `11` provisioner fixtures, and `122` deploy-config fixtures passed. TypeScript, shell syntax, Node syntax, and whitespace checks passed.
+
+### Remaining concern
+
+No live `inspect` or `apply-one` execution was authorized or attempted. `apply-one` remains blocked pending re-review approval and fresh local `inspect`.

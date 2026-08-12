@@ -58,6 +58,7 @@ type Mode =
   | 'bucket-broad-principal'
   | 'log-proof-failure'
   | 'log-proof-boundary'
+  | 'log-proof-wrong-key'
   | 'alb-provisioning'
   | 'alb-stuck-provisioning';
 
@@ -157,6 +158,36 @@ const absent = (message) => {
   process.stderr.write(message);
   process.exit(22);
 };
+const option = (name) => {
+  const index = args.indexOf(name);
+  return index >= 0 ? args[index + 1] : undefined;
+};
+const requireOptions = (expected) => {
+  if (Object.entries(expected).some(([name, value]) => option(name) !== value)) {
+    log('invalid options ' + JSON.stringify(args));
+    fail();
+  }
+};
+const fileJson = (name) => {
+  const value = option(name);
+  if (typeof value !== 'string' || !value.startsWith('file://')) {
+    log('invalid file option ' + JSON.stringify(args));
+    fail();
+  }
+  try {
+    const path = value.slice('file://'.length);
+    const nativePath =
+      process.platform === 'win32' && path.startsWith('/')
+        ? process.env.REMOTE_EDGE_NATIVE_TMP + path.slice('/tmp'.length)
+        : path;
+    return JSON.parse(readFileSync(nativePath, 'utf8'));
+  } catch (error) {
+    log('unreadable file option ' + value + ' ' + String(error));
+    fail();
+  }
+};
+const exactJson = (actual, expected) =>
+  JSON.stringify(actual) === JSON.stringify(expected);
 
 log('aws ' + service + ' ' + operation);
 
@@ -291,61 +322,182 @@ const waf = () => ({
 });
 
 if (service === 'ec2' && operation === 'create-security-group') {
-  if (args.includes(albName)) mutation('FRESH', 'ALB_SG_CREATED', 'ec2 create-security-group');
-  if (args.includes(targetName)) mutation('ALB_SG_CREATED', 'SGS_CREATED', 'ec2 create-security-group');
+  if (option('--group-name') === albName) {
+    requireOptions({
+      '--vpc-id': vpc,
+      '--group-name': albName,
+      '--description': 'Nava remote admin ALB ingress only',
+    });
+    mutation('FRESH', 'ALB_SG_CREATED', 'ec2 create-security-group');
+  }
+  if (option('--group-name') === targetName) {
+    requireOptions({
+      '--vpc-id': vpc,
+      '--group-name': targetName,
+      '--description': 'Nava remote admin target only',
+    });
+    mutation('ALB_SG_CREATED', 'SGS_CREATED', 'ec2 create-security-group');
+  }
   fail();
 }
 if (service === 'ec2' && operation === 'authorize-security-group-ingress') {
-  if (state.stage === 'SGS_CREATED') mutation('SGS_CREATED', 'ALB_INGRESS_READY', 'ec2 authorize-security-group-ingress');
-  if (state.stage === 'ALB_EGRESS_READY') mutation('ALB_EGRESS_READY', 'SG_FINAL_UNATTACHED', 'ec2 authorize-security-group-ingress');
+  if (state.stage === 'SGS_CREATED') {
+    requireOptions({
+      '--group-id': albSg,
+      '--ip-permissions': 'IpProtocol=tcp,FromPort=443,ToPort=443,IpRanges=[{CidrIp=0.0.0.0/0}]',
+    });
+    mutation('SGS_CREATED', 'ALB_INGRESS_READY', 'ec2 authorize-security-group-ingress');
+  }
+  if (state.stage === 'ALB_EGRESS_READY') {
+    requireOptions({
+      '--group-id': targetSg,
+      '--ip-permissions': 'IpProtocol=tcp,FromPort=8443,ToPort=8443,UserIdGroupPairs=[{GroupId=sg-test-alb}]',
+    });
+    mutation('ALB_EGRESS_READY', 'SG_FINAL_UNATTACHED', 'ec2 authorize-security-group-ingress');
+  }
   fail();
 }
 if (service === 'ec2' && operation === 'revoke-security-group-egress') {
+  requireOptions({
+    '--group-id': albSg,
+    '--ip-permissions': 'IpProtocol=-1,IpRanges=[{CidrIp=0.0.0.0/0}]',
+  });
   mutation('ALB_INGRESS_READY', 'ALB_EGRESS_REVOKED', 'ec2 revoke-security-group-egress');
 }
 if (service === 'ec2' && operation === 'authorize-security-group-egress') {
+  requireOptions({
+    '--group-id': albSg,
+    '--ip-permissions': 'IpProtocol=tcp,FromPort=8443,ToPort=8443,UserIdGroupPairs=[{GroupId=sg-test-target}]',
+  });
   mutation('ALB_EGRESS_REVOKED', 'ALB_EGRESS_READY', 'ec2 authorize-security-group-egress');
 }
 if (service === 'ec2' && operation === 'modify-instance-attribute') {
+  if (
+    option('--instance-id') !== instance ||
+    args.slice(args.indexOf('--groups') + 1).join(',') !== legacySg + ',' + targetSg
+  ) {
+    fail();
+  }
   mutation('SG_FINAL_UNATTACHED', 'TARGET_SG_ATTACHED', 'ec2 modify-instance-attribute');
 }
 if (service === 'elbv2' && operation === 'create-target-group') {
+  requireOptions({
+    '--name': targetGroupName,
+    '--protocol': 'HTTP',
+    '--port': '8443',
+    '--vpc-id': vpc,
+    '--health-check-protocol': 'HTTP',
+    '--health-check-path': '/health',
+    '--matcher': 'HttpCode=200',
+    '--target-type': 'instance',
+  });
   mutation('TARGET_SG_ATTACHED', 'TARGET_GROUP_CREATED', 'elbv2 create-target-group');
 }
 if (service === 'elbv2' && operation === 'modify-target-group-attributes') {
+  requireOptions({
+    '--target-group-arn': targetGroupArn,
+    '--attributes': 'Key=deregistration_delay.timeout_seconds,Value=30',
+  });
   mutation('TARGET_GROUP_CREATED', 'TARGET_GROUP_READY', 'elbv2 modify-target-group-attributes');
 }
 if (service === 'elbv2' && operation === 'create-load-balancer') {
+  requireOptions({
+    '--name': albName,
+    '--scheme': 'internet-facing',
+    '--type': 'application',
+    '--ip-address-type': 'ipv4',
+    '--security-groups': albSg,
+  });
+  if (args.slice(args.indexOf('--subnets') + 1, args.indexOf('--security-groups')).join(',') !== 'subnet-0e6446aaaeaa8762e,subnet-094bf8643d98c22f6') fail();
   mutation('TARGET_GROUP_READY', 'ALB_CREATED', 'elbv2 create-load-balancer');
 }
 if (service === 's3api' && operation === 'create-bucket') {
+  requireOptions({
+    '--region': region,
+    '--bucket': bucket,
+    '--create-bucket-configuration': 'LocationConstraint=af-south-1',
+  });
   mutation('ALB_CREATED', 'LOG_BUCKET_CREATED', 's3api create-bucket');
 }
 if (service === 's3api' && operation === 'put-public-access-block') {
+  requireOptions({
+    '--bucket': bucket,
+    '--public-access-block-configuration': 'BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true',
+  });
   mutation('LOG_BUCKET_CREATED', 'LOG_BUCKET_PUBLIC_BLOCKED', 's3api put-public-access-block');
 }
 if (service === 's3api' && operation === 'put-bucket-ownership-controls') {
+  requireOptions({
+    '--bucket': bucket,
+    '--ownership-controls': '{"Rules":[{"ObjectOwnership":"BucketOwnerEnforced"}]}',
+  });
   mutation('LOG_BUCKET_PUBLIC_BLOCKED', 'LOG_BUCKET_OWNERSHIP_ENFORCED', 's3api put-bucket-ownership-controls');
 }
 if (service === 's3api' && operation === 'put-bucket-encryption') {
+  requireOptions({
+    '--bucket': bucket,
+    '--server-side-encryption-configuration': '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}',
+  });
   mutation('LOG_BUCKET_OWNERSHIP_ENFORCED', 'LOG_BUCKET_ENCRYPTED', 's3api put-bucket-encryption');
 }
 if (service === 's3api' && operation === 'put-bucket-lifecycle-configuration') {
+  requireOptions({
+    '--bucket': bucket,
+    '--lifecycle-configuration': '{"Rules":[{"ID":"expire-remote-alb-logs-365d","Status":"Enabled","Filter":{"Prefix":""},"Expiration":{"Days":365}}]}',
+  });
   mutation('LOG_BUCKET_ENCRYPTED', 'LOG_BUCKET_LIFECYCLE_READY', 's3api put-bucket-lifecycle-configuration');
 }
 if (service === 's3api' && operation === 'put-bucket-policy') {
+  if (option('--bucket') !== bucket || !exactJson(fileJson('--policy'), bucketPolicy())) {
+    log('invalid bucket policy ' + JSON.stringify(args));
+    fail();
+  }
   mutation('LOG_BUCKET_LIFECYCLE_READY', 'LOG_BUCKET_POLICY_READY', 's3api put-bucket-policy');
 }
 if (service === 'elbv2' && operation === 'modify-load-balancer-attributes') {
+  requireOptions({
+    '--load-balancer-arn': albArn,
+    '--attributes': 'Key=access_logs.s3.enabled,Value=true',
+  });
+  if (
+    args.slice(args.indexOf('--attributes') + 1).join(',') !==
+    'Key=access_logs.s3.enabled,Value=true,Key=access_logs.s3.bucket,Value=nava-zero-remote-alb-logs-845242190536-af-south-1'
+  ) {
+    fail();
+  }
   mutation('LOG_BUCKET_POLICY_READY', 'ALB_LOGGING_READY', 'elbv2 modify-load-balancer-attributes');
 }
 if (service === 'wafv2' && operation === 'create-web-acl') {
+  const definition = fileJson('--cli-input-json');
+  const rules = definition.Rules;
+  if (
+    definition.Scope !== 'REGIONAL' ||
+    JSON.stringify(definition.DefaultAction) !== JSON.stringify({ Allow: {} }) ||
+    !Array.isArray(rules) ||
+    rules.length !== 5 ||
+    rules.slice(0, 3).some((rule) => JSON.stringify(rule.OverrideAction) !== JSON.stringify({ None: {} })) ||
+    rules.slice(3).some((rule) => JSON.stringify(rule.Action) !== JSON.stringify({ Block: {} }))
+  ) {
+    log('invalid waf definition ' + JSON.stringify(definition));
+    fail();
+  }
   mutation('ALB_LOGGING_READY', 'WAF_CREATED', 'wafv2 create-web-acl');
 }
 if (service === 'wafv2' && operation === 'associate-web-acl') {
+  requireOptions({
+    '--web-acl-arn': wafArn,
+    '--resource-arn': albArn,
+  });
   mutation('WAF_CREATED', 'WAF_ASSOCIATED', 'wafv2 associate-web-acl');
 }
 if (service === 'elbv2' && operation === 'create-listener') {
+  requireOptions({
+    '--load-balancer-arn': albArn,
+    '--protocol': 'HTTPS',
+    '--port': '443',
+    '--certificates': 'CertificateArn=arn:aws:acm:af-south-1:845242190536:certificate/test',
+    '--default-actions': 'Type=fixed-response,FixedResponseConfig={StatusCode=404,ContentType=text/plain,MessageBody=Not Found}',
+  });
   mutation('WAF_ASSOCIATED', 'LISTENER_FIXED_404', 'elbv2 create-listener');
 }
 if (
@@ -598,6 +750,9 @@ switch (service + ' ' + operation) {
       Contents: state.mode === 'log-proof-failure'
         ? []
         : [{
+            Key: state.mode === 'log-proof-wrong-key'
+              ? 'AWSLogs/845242190536/test-fixture.txt'
+              : 'AWSLogs/845242190536/elasticloadbalancing/af-south-1/2030/01/01/845242190536_elasticloadbalancing_af-south-1_app.nava-remote-admin-alb.test_20300101T0000Z_172.31.0.1_fixture.log.gz',
             LastModified: state.mode === 'log-proof-boundary'
               ? '2030-01-01T00:00:00Z'
               : new Date().toISOString(),
@@ -617,6 +772,11 @@ import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 
 const args = process.argv.slice(2).filter((value) => value !== '--no-cli-pager');
 const [service, operation] = args;
+const instance = 'i-008f737974a9ba9b3';
+const option = (name) => {
+  const index = args.indexOf(name);
+  return index >= 0 ? args[index + 1] : undefined;
+};
 const statePath = process.env.REMOTE_EDGE_FAKE_STATE;
 const logPath = process.env.REMOTE_EDGE_FAKE_LOG;
 const state = JSON.parse(readFileSync(statePath, 'utf8'));
@@ -687,14 +847,39 @@ if (operation === 'send-command') {
   const parameters = args[args.indexOf('--parameters') + 1] ?? '';
   const isMutation = parameters.includes('ufw allow in on ens5 from');
   if (isMutation) {
+    const cidr =
+      state.stage === 'LISTENER_FIXED_404'
+        ? '172.31.0.0/20'
+        : state.stage === 'UFW_SUBNET_A_READY'
+          ? '172.31.32.0/20'
+          : '';
+    const expectedCommand =
+      'set -eu; ufw allow in on ens5 from ' + cidr +
+      ' to any port 8443 proto tcp; printf "__REMOTE_EDGE_UFW_STATUS__\\n"; ufw status numbered; printf "__REMOTE_EDGE_UFW_ADDED__\\n"; ufw show added; printf "__REMOTE_EDGE_SOCKETS__\\n"; ss -ltnH; printf "__REMOTE_EDGE_ROUTE__\\n"; ip route show default';
+    let command;
+    try {
+      const payload = JSON.parse(parameters);
+      command = payload.commands?.[0];
+    } catch {
+      log('invalid ssm parameters ' + parameters);
+      fail();
+    }
+    if (
+      option('--document-name') !== 'AWS-RunShellScript' ||
+      option('--instance-ids') !== instance ||
+      command !== expectedCommand
+    ) {
+      log('invalid ssm mutation ' + JSON.stringify(args) + ' command=' + String(command));
+      fail();
+    }
     if (
       state.stage === 'LISTENER_FIXED_404' &&
-      parameters.includes('172.31.0.0/20')
+      cidr === '172.31.0.0/20'
     ) {
       state.stage = 'UFW_SUBNET_A_READY';
     } else if (
       state.stage === 'UFW_SUBNET_A_READY' &&
-      parameters.includes('172.31.32.0/20')
+      cidr === '172.31.32.0/20'
     ) {
       state.stage = 'UFW_READY';
     } else {
@@ -780,6 +965,7 @@ printf '%s\n' '2030-01-01T00:00:00Z'
       REMOTE_EDGE_LOG_PROOF_MAX_ATTEMPTS: '3',
       REMOTE_EDGE_LOG_PROOF_INTERVAL_SECONDS: '0',
       REMOTE_EDGE_DATE_BIN: mode === 'log-proof-boundary' ? datePath : 'date',
+      REMOTE_EDGE_NATIVE_TMP: tmpdir(),
       AWS_PAGER: '',
     },
   };
@@ -1015,6 +1201,24 @@ describe('remote edge provisioner security contracts', () => {
       ).toHaveLength(3);
     } finally {
       destroyHarness(boundary);
+    }
+  }, 60_000);
+
+  it('rejects a fresh object outside the exact ALB access-log hierarchy', async () => {
+    const wrongKey = createHarness('UFW_READY', 'log-proof-wrong-key');
+    try {
+      const result = await runProvisioner(wrongKey, [
+        'apply-one',
+        '--action',
+        'PROVE_ALB_LOG_DELIVERY',
+      ]);
+      expect(result.status).not.toBe(0);
+      expect(calls(wrongKey)).toContain('mutate proof curl');
+      expect(
+        calls(wrongKey).filter((entry) => entry === 'aws s3api list-objects-v2'),
+      ).toHaveLength(3);
+    } finally {
+      destroyHarness(wrongKey);
     }
   }, 60_000);
 

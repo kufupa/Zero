@@ -598,16 +598,54 @@ JSON
 has_recent_alb_log() {
   local path="$1"
   local started_at="$2"
-  node - "$path" "$started_at" <<'NODE'
+  local alb_arn="$3"
+  node - "$path" "$started_at" "$alb_arn" <<'NODE'
 const fs = require('fs');
-const [path, startedAt] = process.argv.slice(2);
+const [path, startedAt, albArn] = process.argv.slice(2);
+const account = '845242190536';
+const region = 'af-south-1';
+const arnPrefix =
+  `arn:aws:elasticloadbalancing:${region}:${account}:loadbalancer/`;
+const escapeRegExp = (value) =>
+  value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const started = Date.parse(startedAt);
 const value = JSON.parse(fs.readFileSync(path, 'utf8'));
-if (!Number.isFinite(started) || !Array.isArray(value?.Contents)) process.exit(2);
-const found = value.Contents.some((item) =>
-  typeof item?.LastModified === 'string' &&
-  Number.isFinite(Date.parse(item.LastModified)) &&
-  Date.parse(item.LastModified) > started,
+if (
+  !Number.isFinite(started) ||
+  !Array.isArray(value?.Contents) ||
+  typeof albArn !== 'string' ||
+  !albArn.startsWith(arnPrefix)
+) {
+  process.exit(2);
+}
+const resource = albArn.slice(arnPrefix.length);
+if (!/^app\/nava-remote-admin-alb\/[A-Za-z0-9-]+$/.test(resource)) {
+  process.exit(2);
+}
+const normalizedResource = resource.replaceAll('/', '.');
+const accessLogKey = new RegExp(
+  `^AWSLogs/${account}/elasticloadbalancing/${region}/(\\d{4})/(\\d{2})/(\\d{2})/` +
+    `${account}_elasticloadbalancing_${region}_${escapeRegExp(normalizedResource)}_` +
+    '\\d{8}T\\d{4}Z_[^/]+_[^/]+\\.log\\.gz$',
+);
+const validAccessLogKey = (key) => {
+  if (typeof key !== 'string') return false;
+  const match = key.match(accessLogKey);
+  if (!match) return false;
+  const [year, month, day] = match.slice(1).map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return (
+    date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day
+  );
+};
+const found = value.Contents.some(
+  (item) =>
+    validAccessLogKey(item?.Key) &&
+    typeof item?.LastModified === 'string' &&
+    Number.isFinite(Date.parse(item.LastModified)) &&
+    Date.parse(item.LastModified) > started,
 );
 process.exit(found ? 0 : 1);
 NODE
@@ -615,11 +653,14 @@ NODE
 
 prove_alb_log_delivery() {
   local scratch="$1"
+  local alb_arn
   local alb_dns_name
   local started_at
   local attempt
   local curl_error="$scratch/log-proof-curl.error"
   local objects="$scratch/log-proof-objects.json"
+  alb_arn="$(reference "$scratch" albArn)" || die
+  [[ -n "$alb_arn" ]] || die
   alb_dns_name="$(reference "$scratch" albDnsName)" || die
   [[ -n "$alb_dns_name" ]] || die
   started_at="$("${DATE[@]}" -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -634,7 +675,7 @@ prove_alb_log_delivery() {
       --prefix "AWSLogs/${AWS_ACCOUNT_ID}/" \
       --output json >"$objects" 2>/dev/null || die
     chmod 600 -- "$objects"
-    if has_recent_alb_log "$objects" "$started_at"; then
+    if has_recent_alb_log "$objects" "$started_at" "$alb_arn"; then
       printf '%s\n' '{"accessLogDelivered":true}' >"$scratch/logProof.json"
       chmod 600 -- "$scratch/logProof.json"
       return
@@ -695,7 +736,7 @@ mutate_one() {
       "${AWS[@]}" --no-cli-pager ec2 modify-instance-attribute --region "$AWS_REGION" --instance-id "$INSTANCE_ID" --groups "${groups[@]}" "$target_sg" >/dev/null 2>/dev/null || die
       ;;
     TARGET_SG_ATTACHED)
-      "${AWS[@]}" --no-cli-pager elbv2 create-target-group --region "$AWS_REGION" --name "$TARGET_GROUP_NAME" --protocol HTTP --port 8443 --vpc-id "$VPC_ID" --health-check-protocol HTTP --health-check-path /health --matcher HttpCode=200 --target-type instance >/dev/null 2>/dev/null || die
+      MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' "${AWS[@]}" --no-cli-pager elbv2 create-target-group --region "$AWS_REGION" --name "$TARGET_GROUP_NAME" --protocol HTTP --port 8443 --vpc-id "$VPC_ID" --health-check-protocol HTTP --health-check-path /health --matcher HttpCode=200 --target-type instance >/dev/null 2>/dev/null || die
       ;;
     TARGET_GROUP_CREATED)
       target_group_arn="$(reference "$scratch" targetGroupArn)" || die
