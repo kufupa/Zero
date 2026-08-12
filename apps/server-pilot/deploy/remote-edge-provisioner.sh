@@ -645,10 +645,22 @@ const validAccessLogKey = (key) => {
     nodeAddress,
   ] = match.slice(1);
   if (
-    directoryYear !== timestampYear ||
-    directoryMonth !== timestampMonth ||
-    directoryDay !== timestampDay ||
     nodeAddress.split('.').some((part) => Number(part) > 255)
+  ) {
+    return false;
+  }
+  const [directoryYearNumber, directoryMonthNumber, directoryDayNumber] = [
+    directoryYear,
+    directoryMonth,
+    directoryDay,
+  ].map(Number);
+  const directoryDate = new Date(
+    Date.UTC(directoryYearNumber, directoryMonthNumber - 1, directoryDayNumber),
+  );
+  if (
+    directoryDate.getUTCFullYear() !== directoryYearNumber ||
+    directoryDate.getUTCMonth() !== directoryMonthNumber - 1 ||
+    directoryDate.getUTCDate() !== directoryDayNumber
   ) {
     return false;
   }

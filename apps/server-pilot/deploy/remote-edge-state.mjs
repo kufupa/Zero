@@ -583,8 +583,13 @@ function deriveAlbStage(projections, references) {
   const attributes = array(object(projections.albAttributes).Attributes);
   const accessLogsEnabled = findAttribute(attributes, 'access_logs.s3.enabled');
   const accessLogsBucket = findAttribute(attributes, 'access_logs.s3.bucket');
+  const accessLogsPrefix = findAttribute(attributes, 'access_logs.s3.prefix');
   if (accessLogsEnabled === 'false' && accessLogsBucket === '') return 'created';
-  if (accessLogsEnabled === 'true' && accessLogsBucket === LOG_BUCKET) {
+  if (
+    accessLogsEnabled === 'true' &&
+    accessLogsBucket === LOG_BUCKET &&
+    accessLogsPrefix === ''
+  ) {
     return 'logging-ready';
   }
   fail();

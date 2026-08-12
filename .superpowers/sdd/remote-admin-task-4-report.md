@@ -439,6 +439,41 @@ Results: `39` hardened security fixtures, `11` provisioner fixtures, and `122` d
 
 No live `inspect` or `apply-one` execution was authorized or attempted. `apply-one` remains blocked pending re-review approval and fresh local `inspect`.
 
+## Delivery-date and root-prefix correction — 2026-08-12
+
+Status: `DONE`
+
+Only local fixture binaries ran. No AWS, SSM, secrets, database, Docker, environment sourcing, deployment, DNS, or runtime mutation occurred.
+
+### RED
+
+The key matcher rejected a valid access log whose delivery-directory date differed from the independently valid filename end-time date. ALB logging readiness also accepted a nonempty S3 log prefix, despite proof only examining root `AWSLogs/<account>/`.
+
+### Fixes
+
+1. Directory delivery date and filename end time now validate independently as valid UTC calendar values; equality is no longer required. Exact account, region, root hierarchy, named ALB ID, IPv4, alphanumeric suffix, and `.log.gz` checks remain.
+2. Logging readiness now requires exactly one string `access_logs.s3.prefix` attribute with empty value. Fixtures cover nonempty, missing, and malformed prefix; each blocks state classification before mutation.
+
+### GREEN
+
+```bash
+unset DATABASE_URL TEST_DATABASE_URL VITEST_ALLOW_PILOT_RDS CONFIRM_DISPOSABLE_TEST_DB HMS_DB_TEST_REQUIRED
+pnpm exec vitest run tests/remote-edge-provisioner-security.test.ts -t "(accepts official ALB log with independent delivery date|rejects nonempty ALB access-log prefix)" --testTimeout=60000 --maxWorkers=1 --fileParallelism=false --pool=forks --reporter=dot
+pnpm exec vitest run tests/remote-edge-provisioner-security.test.ts --testTimeout=60000 --maxWorkers=1 --fileParallelism=false --pool=forks --reporter=dot
+pnpm exec vitest run tests/remote-edge-provisioner.test.ts --testTimeout=60000 --maxWorkers=1 --fileParallelism=false --pool=forks --reporter=dot
+pnpm exec vitest run tests/deploy-config.test.ts --testTimeout=60000 --maxWorkers=1 --fileParallelism=false --reporter=dot
+pnpm exec tsc -p tsconfig.json --noEmit
+bash -n deploy/remote-edge-provisioner.sh deploy/launch-readiness.sh deploy/post-boot-smoke.sh deploy/ops-deploy.sh deploy/ops-restart.sh deploy/ops-reboot.sh deploy/pm2-boot.sh
+node --check deploy/remote-edge-state.mjs
+git diff --check
+```
+
+Results: `51` hardened security fixtures, `11` provisioner fixtures, and `122` deploy-config fixtures passed. TypeScript, shell syntax, Node syntax, and whitespace checks passed.
+
+### Remaining concern
+
+No live `inspect` or `apply-one` execution was authorized or attempted. `apply-one` remains blocked pending re-review approval and fresh local `inspect`.
+
 ## Official access-log random-suffix correction — 2026-08-12
 
 Status: `DONE`

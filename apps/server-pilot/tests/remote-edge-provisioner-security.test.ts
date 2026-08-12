@@ -62,10 +62,14 @@ type Mode =
   | 'log-proof-invalid-time'
   | 'log-proof-invalid-ip'
   | 'log-proof-directory-mismatch'
+  | 'log-proof-differing-delivery-date'
   | 'log-proof-test-token'
   | 'log-proof-health-token'
   | 'log-proof-connection-token'
   | 'log-proof-official-token'
+  | 'alb-log-prefix'
+  | 'alb-log-prefix-missing'
+  | 'alb-log-prefix-malformed'
   | 'alb-provisioning'
   | 'alb-stuck-provisioning';
 
@@ -686,12 +690,24 @@ switch (service + ' ' + operation) {
     }] });
     break;
   }
-  case 'elbv2 describe-load-balancer-attributes':
-    emit({ Attributes: [
+  case 'elbv2 describe-load-balancer-attributes': {
+    const attributes = [
       { Key: 'access_logs.s3.enabled', Value: at('ALB_LOGGING_READY') ? 'true' : 'false' },
       { Key: 'access_logs.s3.bucket', Value: at('ALB_LOGGING_READY') ? bucket : '' },
-    ] });
+    ];
+    if (state.mode !== 'alb-log-prefix-missing') {
+      attributes.push({
+        Key: 'access_logs.s3.prefix',
+        Value: state.mode === 'alb-log-prefix-malformed'
+          ? 17
+          : state.mode === 'alb-log-prefix'
+            ? 'unexpected'
+            : '',
+      });
+    }
+    emit({ Attributes: attributes });
     break;
+  }
   case 'elbv2 describe-listeners':
     emit({ Listeners: at('LISTENER_FIXED_404') ? [{
       ListenerArn: 'arn:aws:elasticloadbalancing:af-south-1:845242190536:listener/app/nava-remote-admin-alb/test/listener',
@@ -761,7 +777,9 @@ switch (service + ' ' + operation) {
         : state.mode === 'log-proof-invalid-ip'
           ? 'AWSLogs/845242190536/elasticloadbalancing/af-south-1/2030/01/01/845242190536_elasticloadbalancing_af-south-1_app.nava-remote-admin-alb.test_20300101T0000Z_999.31.0.1_deadbeef.log.gz'
           : state.mode === 'log-proof-directory-mismatch'
-            ? 'AWSLogs/845242190536/elasticloadbalancing/af-south-1/2030/01/02/845242190536_elasticloadbalancing_af-south-1_app.nava-remote-admin-alb.test_20300101T0000Z_172.31.0.1_deadbeef.log.gz'
+            ? 'AWSLogs/845242190536/elasticloadbalancing/af-south-1/2030/02/30/845242190536_elasticloadbalancing_af-south-1_app.nava-remote-admin-alb.test_20300101T0000Z_172.31.0.1_deadbeef.log.gz'
+            : state.mode === 'log-proof-differing-delivery-date'
+              ? 'AWSLogs/845242190536/elasticloadbalancing/af-south-1/2030/01/02/845242190536_elasticloadbalancing_af-south-1_app.nava-remote-admin-alb.test_20300101T0000Z_172.31.0.1_20sg8hgm.log.gz'
             : state.mode === 'log-proof-test-token'
               ? 'AWSLogs/845242190536/elasticloadbalancing/af-south-1/2030/01/01/845242190536_elasticloadbalancing_af-south-1_app.nava-remote-admin-alb.test_20300101T0000Z_172.31.0.1_test-file.log.gz'
               : state.mode === 'log-proof-health-token'
@@ -1293,6 +1311,43 @@ describe('remote edge provisioner security contracts', () => {
       });
     } finally {
       destroyHarness(officialToken);
+    }
+  }, 60_000);
+
+  it('accepts official ALB log with independent delivery date', async () => {
+    const differingDate = createHarness('UFW_READY', 'log-proof-differing-delivery-date');
+    try {
+      const result = await runProvisioner(differingDate, [
+        'apply-one',
+        '--action',
+        'PROVE_ALB_LOG_DELIVERY',
+      ]);
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        stage: 'TASK4_PRE_GATE_B_READY',
+        action: 'STOP',
+      });
+    } finally {
+      destroyHarness(differingDate);
+    }
+  }, 60_000);
+
+  it.each([
+    'alb-log-prefix',
+    'alb-log-prefix-missing',
+    'alb-log-prefix-malformed',
+  ] as const)('rejects unsafe ALB access-log prefix before mutation: %s', async (mode) => {
+    const prefixed = createHarness('ALB_LOGGING_READY', mode);
+    try {
+      const result = await runProvisioner(prefixed, [
+        'apply-one',
+        '--action',
+        'CREATE_WAF',
+      ]);
+      expect(result.status).not.toBe(0);
+      expect(calls(prefixed).filter((entry) => entry.startsWith('mutate '))).toEqual([]);
+    } finally {
+      destroyHarness(prefixed);
     }
   }, 60_000);
 
