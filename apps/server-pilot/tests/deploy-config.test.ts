@@ -4,6 +4,8 @@ import { describe, expect, it, vi } from 'vitest';
 const CANONICAL_HOST = 'nava.legacyhotels.co.za';
 const CANONICAL_ORIGIN = `https://${CANONICAL_HOST}`;
 const CANONICAL_HOST_ENTRY = `127.0.0.1 ${CANONICAL_HOST}`;
+const REMOTE_ALB_TARGET_PRIVATE_IP = '172.31.12.112';
+const REMOTE_ADMIN_HOST = 'nava-admin.trynava.io';
 const BASH_CHILD_TIMEOUT_MS = 10_000;
 const BASH_CLEANUP_GRACE_MS = 1_000;
 const TASKKILL_TIMEOUT_MS = 1_000;
@@ -378,17 +380,20 @@ type NginxActivationScenario =
   | 'sigint'
   | 'sigterm'
   | 'unexpected-exit'
-  | 'cleanup-exit';
+  | 'cleanup-exit'
+  | 'target-ip';
 type NginxPriorState = 'absent' | 'present' | 'dangling';
 
 async function runNginxActivation({
   scenario,
   priorState,
   rollbackCopyFails = false,
+  ens5PrimaryIp = REMOTE_ALB_TARGET_PRIVATE_IP,
 }: {
   scenario: NginxActivationScenario;
   priorState: NginxPriorState;
   rollbackCopyFails?: boolean;
+  ens5PrimaryIp?: string;
 }): Promise<{
   status: number | null;
   stdout: string;
@@ -565,6 +570,17 @@ systemctl() {
     return 64
   fi
 }
+
+ip() {
+  case "$*" in
+    "-4 -o addr show dev ens5 scope global primary")
+      printf '2: ens5    inet %s/20 scope global ens5\\n' "$NGINX_TEST_ENS5_PRIMARY_IP"
+      ;;
+    *)
+      command ip "$@"
+      ;;
+  esac
+}
 `;
 
     const result = await runBash({
@@ -583,6 +599,7 @@ systemctl() {
         NGINX_TEST_NGINX_CALLS: toBashPath(nginxCallsPath),
         NGINX_TEST_RELOAD_CALLS: toBashPath(reloadCallsPath),
         NGINX_TEST_BACKUP_DIR: toBashPath(backupDir),
+        NGINX_TEST_ENS5_PRIMARY_IP: ens5PrimaryIp,
       },
     });
 
@@ -1216,40 +1233,160 @@ describe('deploy config', () => {
     expect(nginx).toContain('client_max_body_size 35m');
   });
 
-  it('nginx keeps public ingress legacy-only before ALB target configuration', async () => {
+  it('nginx keeps legacy ingress unchanged and exposes remote only through ALB :8443', async () => {
     const { readNginxConfig } = await import('../src/deploy/load-pm2-config.js');
     const nginx = readNginxConfig();
+    const remoteDefaultStart = nginx.lastIndexOf(
+      'server {',
+      nginx.indexOf('listen 8443 default_server;'),
+    );
+    const remoteHealthStart = nginx.lastIndexOf(
+      'server {',
+      nginx.indexOf(`server_name ${REMOTE_ALB_TARGET_PRIVATE_IP};`),
+    );
+    const remoteAppStart = nginx.lastIndexOf(
+      'server {',
+      nginx.indexOf(`server_name ${REMOTE_ADMIN_HOST};`),
+    );
+    const legacyVhosts = nginx.slice(0, remoteDefaultStart);
+    const remoteDefaultVhost = nginx.slice(remoteDefaultStart, remoteHealthStart);
+    const remoteHealthVhost = nginx.slice(remoteHealthStart, remoteAppStart);
+    const remoteAppVhost = nginx.slice(remoteAppStart);
 
-    expect(nginx).toContain('listen 80 default_server');
-    expect(nginx).toContain('listen 443 ssl default_server');
-    expect(nginx).toContain('server_name nava.legacyhotels.co.za');
-    expect(nginx).toContain(
+    expect(remoteDefaultStart).toBeGreaterThanOrEqual(0);
+    expect(remoteHealthStart).toBeGreaterThan(remoteDefaultStart);
+    expect(remoteAppStart).toBeGreaterThan(remoteHealthStart);
+
+    expect(legacyVhosts).toContain('listen 80 default_server');
+    expect(legacyVhosts).toContain('listen 443 ssl default_server');
+    expect(legacyVhosts).toContain(`server_name ${CANONICAL_HOST}`);
+    expect(legacyVhosts).toContain(
       'ssl_certificate     /etc/nginx/ssl/nava.legacyhotels.co.za.fullchain.pem',
     );
-    expect(nginx).toContain(
+    expect(legacyVhosts).toContain(
       'ssl_certificate_key /etc/nginx/ssl/nava.legacyhotels.co.za.key',
     );
-    expect(nginx).toContain('if ($host != nava.legacyhotels.co.za)');
-    expect(nginx).toContain('return 444');
-    expect(nginx).not.toContain('nava.legacy.local');
-    expect(nginx).not.toContain('nava-admin.trynava.io');
-    expect(nginx).not.toMatch(
-      /server\s*\{[^}]*\blisten\s+(?:80|443)(?:\s+[^;]+)?;[^}]*\bserver_name\s+nava-admin\.trynava\.io;/,
+    expect(legacyVhosts).toContain(`if ($host != ${CANONICAL_HOST})`);
+    expect(legacyVhosts).toContain(
+      "connect-src 'self' https://nava-zero-mail-845242190536-af-south-1.s3.af-south-1.amazonaws.com",
     );
-    expect(nginx).not.toContain('127.0.0.1:8789/');
+    expect(legacyVhosts).toContain('proxy_pass http://127.0.0.1:8788/api/');
+    expect(legacyVhosts).not.toContain(REMOTE_ADMIN_HOST);
+    expect(legacyVhosts).not.toContain('127.0.0.1:8789/');
+
+    expect(remoteDefaultVhost).toContain('listen 8443 default_server;');
+    expect(remoteDefaultVhost).toContain('server_name _;');
+    expect(remoteDefaultVhost).toContain('return 444;');
+
+    expect(remoteHealthVhost).toContain('listen 8443;');
+    expect(remoteHealthVhost).toContain(`server_name ${REMOTE_ALB_TARGET_PRIVATE_IP};`);
+    expect(remoteHealthVhost).toContain(
+      `if ($host != ${REMOTE_ALB_TARGET_PRIVATE_IP}) {`,
+    );
+    expect(remoteHealthVhost).toContain('location = /health {');
+    expect(remoteHealthVhost).toContain(
+      'proxy_pass http://127.0.0.1:8789/health;',
+    );
+    expect(remoteHealthVhost).not.toContain('proxy_pass http://127.0.0.1:8789/api/');
+    expect(remoteHealthVhost).toContain('location / {');
+    expect(remoteHealthVhost).toContain('return 444;');
+    expect(remoteHealthVhost.indexOf('location = /health {')).toBeLessThan(
+      remoteHealthVhost.indexOf('location / {'),
+    );
+
+    expect(remoteAppVhost).toContain('listen 8443;');
+    expect(remoteAppVhost).toContain(`server_name ${REMOTE_ADMIN_HOST};`);
+    expect(remoteAppVhost).toContain(`if ($host != ${REMOTE_ADMIN_HOST}) {`);
+    expect(remoteAppVhost).toContain('root /var/www/nava-mail;');
+    expect(remoteAppVhost).toContain('location = /health {');
+    expect(remoteAppVhost).toContain('return 404;');
+    expect(remoteAppVhost).toContain('proxy_pass http://127.0.0.1:8789/api/');
+    expect(remoteAppVhost).toContain('proxy_set_header Host $host;');
+    expect(remoteAppVhost).toContain(
+      'proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;',
+    );
+    expect(remoteAppVhost).toContain('proxy_set_header X-Forwarded-Proto https;');
+    expect(remoteAppVhost).toContain(
+      'add_header X-Robots-Tag "noindex, nofollow, noarchive" always;',
+    );
+    for (const header of [
+      'add_header Strict-Transport-Security',
+      'add_header X-Frame-Options "DENY" always;',
+      'add_header X-Content-Type-Options "nosniff" always;',
+      'add_header Referrer-Policy "strict-origin-when-cross-origin" always;',
+      'add_header Content-Security-Policy',
+    ]) {
+      expect(remoteAppVhost).toContain(header);
+    }
+
+    expect(nginx.match(/^\s*listen 8443(?:\s+default_server)?;$/gm)).toHaveLength(3);
+    expect(nginx.match(/^\s*ssl_certificate(?:_key)?\s+/gm)).toHaveLength(2);
+    expect(nginx).not.toMatch(/listen\s+8443\s+ssl/);
+    expect(remoteDefaultVhost).not.toMatch(/listen\s+(?:80|443)|ssl_certificate/);
+    expect(remoteHealthVhost).not.toMatch(/listen\s+(?:80|443)|ssl_certificate/);
+    expect(remoteAppVhost).not.toMatch(/listen\s+(?:80|443)|ssl_certificate/);
   });
 
-  it('redirects legacy API mailto links before the legacy API proxy', async () => {
+  it('redirects host-local API mailto links before each API proxy', async () => {
     const { readNginxConfig } = await import('../src/deploy/load-pm2-config.js');
     const nginx = readNginxConfig();
+    const legacyRedirect = nginx.indexOf('location = /api/mailto-handler {');
+    const remoteRedirect = nginx.indexOf('location = /api/mailto-handler {', legacyRedirect + 1);
+    const legacyApi = nginx.indexOf('proxy_pass http://127.0.0.1:8788/api/');
+    const remoteApi = nginx.indexOf('proxy_pass http://127.0.0.1:8789/api/');
 
     expect(nginx).toContain('location = /api/mailto-handler {');
     expect(nginx).toContain('return 302 /mailto-handler$is_args$args;');
-    expect(nginx.match(/location = \/api\/mailto-handler \{/g)).toHaveLength(1);
+    expect(nginx.match(/location = \/api\/mailto-handler \{/g)).toHaveLength(2);
     expect(nginx.match(/proxy_pass http:\/\/127\.0\.0\.1:8788\/api\//g)).toHaveLength(1);
-    expect(nginx.indexOf('location = /api/mailto-handler {')).toBeLessThan(
-      nginx.indexOf('location /api/ {'),
+    expect(nginx.match(/proxy_pass http:\/\/127\.0\.0\.1:8789\/api\//g)).toHaveLength(1);
+    expect(legacyRedirect).toBeLessThan(legacyApi);
+    expect(remoteRedirect).toBeLessThan(remoteApi);
+  });
+
+  it('deploy-ec2.sh verifies fixed ALB target identity before candidate reload', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const deploy = readFileSync(join(here, '..', 'deploy', 'deploy-ec2.sh'), 'utf8');
+    const validator = deploy.match(
+      /assert_remote_alb_target_private_ip\(\) \{([\s\S]*?)^\}/m,
+    )?.[1];
+    const activateNginx = deploy.match(/activate_nginx\(\) \{([\s\S]*?)^\}/m)?.[1];
+
+    expect(deploy).toContain(
+      `REMOTE_ALB_TARGET_PRIVATE_IP="${REMOTE_ALB_TARGET_PRIVATE_IP}"`,
     );
+    expect(validator).toBeTruthy();
+    expect(validator).toContain('ip -4 -o addr show dev ens5 scope global primary');
+    expect(validator).toContain('REMOTE_ALB_TARGET_PRIVATE_IP');
+    expect(activateNginx).toBeTruthy();
+    expect(activateNginx.indexOf('assert_remote_alb_target_private_ip')).toBeGreaterThan(
+      activateNginx.indexOf('sudo nginx -t'),
+    );
+    expect(activateNginx.indexOf('assert_remote_alb_target_private_ip')).toBeLessThan(
+      activateNginx.indexOf('sudo systemctl reload nginx'),
+    );
+  });
+
+  it('rolls back the Nginx candidate when primary ens5 does not own the ALB target IP', async () => {
+    const result = await runNginxActivation({
+      scenario: 'target-ip',
+      priorState: 'present',
+      ens5PrimaryIp: '172.31.12.113',
+    });
+
+    expect(result.status, result.stderr).toBe(1);
+    expect(result.stderr).toContain(
+      'remote ALB target private IP mismatch on primary ens5',
+    );
+    expect(result.site).toBe('previous nginx config\n');
+    expect(result.enabledState).toBe('valid');
+    expect(result.enabledTarget).toBe('../sites-available/previous-nava');
+    expect(result.nginxCalls).toBe(2);
+    expect(result.reloadCalls).toBe(1);
+    expect(result.backupEntries).toEqual([]);
   });
 
   it('keeps remote health checks loopback-only without insecure TLS bypasses', async () => {

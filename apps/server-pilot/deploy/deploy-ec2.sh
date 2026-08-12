@@ -228,6 +228,21 @@ if ! grep -qE '(^|[[:space:]])appsrv-1\.legacyhotels\.co\.za([[:space:]]|$)' /et
 fi
 
 echo "== nginx =="
+REMOTE_ALB_TARGET_PRIVATE_IP="172.31.12.112"
+
+assert_remote_alb_target_private_ip() {
+  local primary_ens5_ip
+  primary_ens5_ip="$(
+    ip -4 -o addr show dev ens5 scope global primary 2>/dev/null \
+      | awk 'NR == 1 { split($4, cidr, "/"); print cidr[1]; exit }'
+  )" || primary_ens5_ip=""
+
+  if [ "$primary_ens5_ip" != "$REMOTE_ALB_TARGET_PRIVATE_IP" ]; then
+    echo "remote ALB target private IP mismatch on primary ens5" >&2
+    return 1
+  fi
+}
+
 NGINX_SITE="${NGINX_SITE:-/etc/nginx/sites-available/nava-zero}"
 NGINX_ENABLED="${NGINX_ENABLED:-/etc/nginx/sites-enabled/nava-zero}"
 NGINX_SRC="${SERVER_PILOT}/deploy/nginx.conf"
@@ -342,6 +357,9 @@ if command -v nginx >/dev/null 2>&1; then
       return 1
     fi
     if ! sudo nginx -t; then
+      return 1
+    fi
+    if ! assert_remote_alb_target_private_ip; then
       return 1
     fi
     if ! sudo systemctl reload nginx; then
