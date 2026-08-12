@@ -58,6 +58,7 @@ export const INGEST_MAILBOX_ID = 'ingest-nava-legacy';
 export const TRANSPORT_ID = 'transport-centurion';
 export const TRANSPORT_EMAIL = 'centurion@legacyhotels.co.za';
 export const TRANSPORT_OWNER_HEADER = 'centurion@legacyhotels.co.za';
+export const CENTURION_TRANSPORT_DISPLAY_NAME = 'Centurion Hotel Reservations';
 export const TRANSPORT_ALIASES = [
   'centurion@legacyhotels.com',
   'centurion@legacyhotel.com',
@@ -179,7 +180,7 @@ export async function seedAll(db: DB, opts: SeedOptions = {}): Promise<SeedResul
       email: TRANSPORT_EMAIL,
       ownerHeaderValue: TRANSPORT_OWNER_HEADER,
       mailboxType: 'personal',
-      displayName: 'Centurion Transport',
+      displayName: CENTURION_TRANSPORT_DISPLAY_NAME,
       isActive: true,
       sendFromConfig: { aliases: [...TRANSPORT_ALIASES] },
     })
@@ -189,7 +190,7 @@ export async function seedAll(db: DB, opts: SeedOptions = {}): Promise<SeedResul
         email: TRANSPORT_EMAIL,
         ownerHeaderValue: TRANSPORT_OWNER_HEADER,
         mailboxType: 'personal',
-        displayName: 'Centurion Transport',
+        displayName: CENTURION_TRANSPORT_DISPLAY_NAME,
         isActive: true,
         sendFromConfig: { aliases: [...TRANSPORT_ALIASES] },
         updatedAt: new Date(),

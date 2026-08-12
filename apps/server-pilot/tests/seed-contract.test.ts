@@ -29,6 +29,7 @@ import {
   TRANSPORT_OWNER_HEADER,
   TRANSPORT_ALIASES,
 } from '../src/db/seed';
+import * as pilotSeed from '../src/db/seed';
 import {
   TEST_DB_AVAILABLE,
   probeTestDb,
@@ -50,6 +51,12 @@ describe('seed identity constants', () => {
       { id: ROPPERMAN_USER_ID, name: 'R Opperman', email: ROPPERMAN_USER_EMAIL },
       { id: DARREN_USER_ID, name: 'Darren Bezuidenhout', email: DARREN_USER_EMAIL },
     ]);
+  });
+
+  it('exports Centurion Hotel Reservations transport label', () => {
+    expect(pilotSeed.CENTURION_TRANSPORT_DISPLAY_NAME).toBe(
+      'Centurion Hotel Reservations',
+    );
   });
 
   it('uses centurion@legacyhotels.co.za as live Centurion primary', () => {
@@ -95,6 +102,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         });
         expect(transport).toBeDefined();
         expect(transport!.id).toBe('transport-centurion');
+        expect(transport!.displayName).toBe('Centurion Hotel Reservations');
         expect(transport!.email).toBe('centurion@legacyhotels.co.za');
         expect(transport!.ownerHeaderValue).toBe('centurion@legacyhotels.co.za');
         expect(transport!.mailboxType).toBe('personal');
@@ -129,6 +137,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         expect(transport).toBeDefined();
         expect(transport!.email).toBe('centurion@legacyhotels.co.za');
         expect(transport!.ownerHeaderValue).toBe('centurion@legacyhotels.co.za');
+        expect(transport!.displayName).toBe('Centurion Hotel Reservations');
         expect(transport!.sendFromConfig).toEqual({
           aliases: ['centurion@legacyhotels.com', 'centurion@legacyhotel.com'],
         });
