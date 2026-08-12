@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import {
   chmodSync,
   existsSync,
@@ -295,6 +295,7 @@ if (operation === 'get-command-invocation') {
       '__REMOTE_EDGE_UFW_STATUS__',
       'Status: active',
       'Default: deny (incoming), allow (outgoing), disabled (routed)',
+      '[ 1] 443/tcp on tun0 ALLOW IN Anywhere',
       '__REMOTE_EDGE_UFW_ADDED__',
       'ufw allow in on tun0 to any port 443 proto tcp',
       '__REMOTE_EDGE_SOCKETS__',
@@ -331,12 +332,59 @@ function destroyHarness(harness: Harness): void {
   rmSync(harness.root, { recursive: true, force: true });
 }
 
-function runProvisioner(harness: Harness, args: string[]) {
-  return spawnSync('bash', [provisionerPath, ...args, '--evidence-root', harness.evidenceRoot], {
-    cwd: deployDir,
-    env: harness.env,
-    encoding: 'utf8',
-    timeout: 30_000,
+type ProvisionerResult = {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+  error?: Error;
+};
+
+function runProvisioner(
+  harness: Harness,
+  args: string[],
+): Promise<ProvisionerResult> {
+  return new Promise((resolve) => {
+    const child = spawn(
+      'bash',
+      [provisionerPath, ...args, '--evidence-root', harness.evidenceRoot],
+      {
+        cwd: deployDir,
+        env: harness.env,
+      },
+    );
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const finish = (result: ProvisionerResult) => {
+      if (settled) return;
+      settled = true;
+      if (timeout) clearTimeout(timeout);
+      resolve(result);
+    };
+    timeout = setTimeout(() => {
+      child.kill();
+      finish({
+        status: null,
+        stdout,
+        stderr,
+        error: new Error('provisioner fixture timed out'),
+      });
+    }, 30_000);
+    child.stdout?.setEncoding('utf8');
+    child.stderr?.setEncoding('utf8');
+    child.stdout?.on('data', (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr?.on('data', (chunk: string) => {
+      stderr += chunk;
+    });
+    child.once('error', (error) => {
+      finish({ status: null, stdout, stderr, error });
+    });
+    child.once('close', (status) => {
+      finish({ status, stdout, stderr });
+    });
   });
 }
 
@@ -348,7 +396,7 @@ function loggedCalls(harness: Harness): string[] {
 }
 
 function provisionerDiagnostic(
-  result: ReturnType<typeof runProvisioner>,
+  result: ProvisionerResult,
   harness: Harness,
 ): string {
   return [
@@ -401,10 +449,7 @@ function strictFinalUnattachedFacts() {
       defaultRouteOffTun0: true,
       listenerSafe: true,
     },
-    cors: {
-      remoteOriginAbsent: true,
-      noWildcard: true,
-    },
+    logDeliveryProof: false,
   };
 }
 
@@ -451,12 +496,12 @@ describe('remote edge provisioner', () => {
     expect(result.status, result.stderr).toBe(0);
   });
 
-  it('inspects fresh state through explicit fake AWS and SSM binaries', () => {
+  it('inspects fresh state through explicit fake AWS and SSM binaries', async () => {
     if (!provisionerExists()) return;
     const harness = createHarness();
     try {
-      const first = runProvisioner(harness, ['inspect']);
-      const second = runProvisioner(harness, ['inspect']);
+      const first = await runProvisioner(harness, ['inspect']);
+      const second = await runProvisioner(harness, ['inspect']);
 
       expect(first.status, provisionerDiagnostic(first, harness)).toBe(0);
       expect(second.status, provisionerDiagnostic(second, harness)).toBe(0);
@@ -473,13 +518,13 @@ describe('remote edge provisioner', () => {
     } finally {
       destroyHarness(harness);
     }
-  });
+  }, 60_000);
 
-  it('collects fresh facts before and after one allowed target-SG attachment', () => {
+  it('collects fresh facts before and after one allowed target-SG attachment', async () => {
     if (!provisionerExists()) return;
     const harness = createHarness();
     try {
-      const result = runProvisioner(harness, [
+      const result = await runProvisioner(harness, [
         'apply-one',
         '--action',
         'ATTACH_TARGET_SECURITY_GROUP',
@@ -510,25 +555,26 @@ describe('remote edge provisioner', () => {
         expect(statSync(harness.evidenceRoot).mode & 0o777).toBe(0o700);
       }
       const source = readFileSync(provisionerPath, 'utf8');
-      expect(source).toContain('chmod 700 -- "$EVIDENCE_ROOT"');
+      expect(source).toContain('assert_safe_evidence_root');
+      expect(source).toContain('mkdir -m 700 -- "$EVIDENCE_ROOT"');
       expect(source).toContain('chmod 600 -- "$temporary"');
     } finally {
       destroyHarness(harness);
     }
-  });
+  }, 60_000);
 
-  it('blocks wrong actions and ignores supplied historical facts', () => {
+  it('blocks wrong actions and ignores supplied historical facts', async () => {
     if (!provisionerExists()) return;
     const harness = createHarness();
     try {
-      const wrongAction = runProvisioner(harness, [
+      const wrongAction = await runProvisioner(harness, [
         'apply-one',
         '--action',
         'CREATE_TARGET_GROUP',
       ]);
       expect(wrongAction.status).not.toBe(0);
 
-      const manualFacts = runProvisioner(harness, [
+      const manualFacts = await runProvisioner(harness, [
         'apply-one',
         '--action',
         'ATTACH_TARGET_SECURITY_GROUP',
@@ -542,15 +588,15 @@ describe('remote edge provisioner', () => {
     } finally {
       destroyHarness(harness);
     }
-  });
+  }, 60_000);
 
   it.each<FakeMode>(['read-error', 'malformed', 'duplicate', 'unsafe'])(
     'fails closed before mutation for %s collection state',
-    (mode) => {
+    async (mode) => {
       if (!provisionerExists()) return;
       const harness = createHarness(mode);
       try {
-        const result = runProvisioner(harness, [
+        const result = await runProvisioner(harness, [
           'apply-one',
           '--action',
           'ATTACH_TARGET_SECURITY_GROUP',
@@ -561,13 +607,14 @@ describe('remote edge provisioner', () => {
         destroyHarness(harness);
       }
     },
+    60_000,
   );
 
-  it('fails closed when post-mutation fresh readback diverges', () => {
+  it('fails closed when post-mutation fresh readback diverges', async () => {
     if (!provisionerExists()) return;
     const harness = createHarness('post-divergence');
     try {
-      const result = runProvisioner(harness, [
+      const result = await runProvisioner(harness, [
         'apply-one',
         '--action',
         'ATTACH_TARGET_SECURITY_GROUP',
@@ -579,7 +626,7 @@ describe('remote edge provisioner', () => {
     } finally {
       destroyHarness(harness);
     }
-  });
+  }, 60_000);
 
   it('has no Task 5 or public-listener mutation path', () => {
     if (!provisionerExists()) return;
@@ -592,10 +639,10 @@ describe('remote edge provisioner', () => {
       'host-forward',
       'apply-all',
       'while ',
-      'for ',
     ]) {
       expect(source.includes(forbidden), forbidden).toBe(false);
     }
+    expect(source).toContain('for ((');
     expect(source).not.toMatch(/create-listener[\s\S]{0,300}--protocol HTTP[\s\S]{0,100}--port 80/);
   });
 });

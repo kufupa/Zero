@@ -15,7 +15,12 @@ readonly TARGET_GROUP_NAME='nava-remote-admin'
 readonly TARGET_SECURITY_GROUP_NAME='nava-remote-admin-target'
 readonly WAF_NAME='nava-remote-admin-waf'
 readonly LOG_BUCKET='nava-zero-remote-alb-logs-845242190536-af-south-1'
-readonly MAIL_BUCKET='nava-zero-mail-845242190536-af-south-1'
+readonly SSM_POLL_MAX_ATTEMPTS="${REMOTE_EDGE_SSM_POLL_MAX_ATTEMPTS:-30}"
+readonly SSM_POLL_INTERVAL_SECONDS="${REMOTE_EDGE_SSM_POLL_INTERVAL_SECONDS:-2}"
+readonly ALB_POLL_MAX_ATTEMPTS="${REMOTE_EDGE_ALB_POLL_MAX_ATTEMPTS:-60}"
+readonly ALB_POLL_INTERVAL_SECONDS="${REMOTE_EDGE_ALB_POLL_INTERVAL_SECONDS:-15}"
+readonly LOG_PROOF_MAX_ATTEMPTS="${REMOTE_EDGE_LOG_PROOF_MAX_ATTEMPTS:-60}"
+readonly LOG_PROOF_INTERVAL_SECONDS="${REMOTE_EDGE_LOG_PROOF_INTERVAL_SECONDS:-15}"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly SCRIPT_DIR
@@ -35,10 +40,23 @@ usage() {
 
 require_safe_binary() {
   local value="$1"
-  if [[ "$value" == 'aws' ]]; then
+  local bare_name="$2"
+  if [[ "$value" == "$bare_name" ]]; then
     return 0
   fi
   [[ -f "$value" && -x "$value" ]] || die
+}
+
+require_bounded_integer() {
+  local value="$1"
+  local maximum="$2"
+  [[ "$value" =~ ^[0-9]+$ ]] || die
+  (( 10#$value <= maximum )) || die
+}
+
+sleep_bounded_interval() {
+  local seconds="$1"
+  [[ "$seconds" == '0' ]] || sleep "$seconds"
 }
 
 parse_cli() {
@@ -72,17 +90,104 @@ parse_cli() {
 }
 
 parse_cli "$@"
-require_safe_binary "${REMOTE_EDGE_AWS_BIN:-aws}"
-require_safe_binary "${REMOTE_EDGE_SSM_BIN:-${REMOTE_EDGE_AWS_BIN:-aws}}"
+require_safe_binary "${REMOTE_EDGE_AWS_BIN:-aws}" aws
+require_safe_binary "${REMOTE_EDGE_SSM_BIN:-${REMOTE_EDGE_AWS_BIN:-aws}}" aws
+require_safe_binary "${REMOTE_EDGE_CURL_BIN:-curl}" curl
+require_safe_binary "${REMOTE_EDGE_DATE_BIN:-date}" date
+require_bounded_integer "$SSM_POLL_MAX_ATTEMPTS" 60
+require_bounded_integer "$SSM_POLL_INTERVAL_SECONDS" 30
+require_bounded_integer "$ALB_POLL_MAX_ATTEMPTS" 60
+require_bounded_integer "$ALB_POLL_INTERVAL_SECONDS" 30
+require_bounded_integer "$LOG_PROOF_MAX_ATTEMPTS" 60
+require_bounded_integer "$LOG_PROOF_INTERVAL_SECONDS" 30
+(( 10#$SSM_POLL_MAX_ATTEMPTS >= 1 )) || die
+(( 10#$ALB_POLL_MAX_ATTEMPTS >= 1 )) || die
+(( 10#$LOG_PROOF_MAX_ATTEMPTS >= 1 )) || die
 AWS_BIN="${REMOTE_EDGE_AWS_BIN:-aws}"
 SSM_BIN="${REMOTE_EDGE_SSM_BIN:-$AWS_BIN}"
+REMOTE_EDGE_CURL_BIN="${REMOTE_EDGE_CURL_BIN:-curl}"
+REMOTE_EDGE_DATE_BIN="${REMOTE_EDGE_DATE_BIN:-date}"
 AWS=("$AWS_BIN")
 SSM=("$SSM_BIN")
+CURL=("$REMOTE_EDGE_CURL_BIN")
+DATE=("$REMOTE_EDGE_DATE_BIN")
 
 [[ -f "$STATE_MODULE" ]] || die
 umask 077
-mkdir -p -- "$EVIDENCE_ROOT"
-chmod 700 -- "$EVIDENCE_ROOT"
+
+assert_no_symlink_component() {
+  local path="$1"
+  local remainder="${path#/}"
+  local current=''
+  local component
+  local -a components
+  [[ "$path" == /* && -n "$remainder" ]] || die
+  case "/$remainder/" in
+    *//*|*/./*|*/../*)
+      die
+      ;;
+  esac
+  IFS='/' read -r -a components <<<"$remainder"
+  for component in "${components[@]}"; do
+    [[ -n "$component" ]] || die
+    current="${current}/$component"
+    [[ ! -L "$current" ]] || die
+  done
+}
+
+numeric_mode() {
+  local path="$1"
+  stat -c '%a' -- "$path" 2>/dev/null ||
+    stat -f '%Lp' -- "$path" 2>/dev/null ||
+    die
+}
+
+assert_safe_evidence_root() {
+  local path="$1"
+  local mode
+  local permissions
+  [[ -d "$path" && ! -L "$path" && -O "$path" ]] || die
+  mode="$(numeric_mode "$path")"
+  [[ "$mode" =~ ^[0-7]{3,4}$ ]] || die
+  permissions="${mode: -3}"
+  (( (8#$permissions & 8#077) == 0 )) || die
+}
+
+assert_safe_evidence_parent() {
+  local path="$1"
+  local mode
+  local permissions
+  [[ -d "$path" && ! -L "$path" && -O "$path" ]] || die
+  mode="$(numeric_mode "$path")"
+  [[ "$mode" =~ ^[0-7]{3,4}$ ]] || die
+  permissions="${mode: -3}"
+  (( (8#$permissions & 8#022) == 0 )) || die
+}
+
+normalize_evidence_root() {
+  if [[ "$EVIDENCE_ROOT" =~ ^[A-Za-z]:[\\/].* ]]; then
+    command -v cygpath >/dev/null 2>&1 || die
+    EVIDENCE_ROOT="$(cygpath -u -- "$EVIDENCE_ROOT")" || die
+  fi
+}
+
+prepare_evidence_root() {
+  local parent
+  [[ "$EVIDENCE_ROOT" != "/" ]] || die
+  assert_no_symlink_component "$EVIDENCE_ROOT"
+  parent="$(dirname -- "$EVIDENCE_ROOT")"
+  assert_safe_evidence_parent "$parent"
+  [[ -w "$parent" ]] || die
+  if [[ -e "$EVIDENCE_ROOT" || -L "$EVIDENCE_ROOT" ]]; then
+    assert_safe_evidence_root "$EVIDENCE_ROOT"
+    return
+  fi
+  mkdir -m 700 -- "$EVIDENCE_ROOT" || die
+  assert_safe_evidence_root "$EVIDENCE_ROOT"
+}
+
+normalize_evidence_root
+prepare_evidence_root
 SCRATCH_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/nava-remote-edge.XXXXXX")"
 chmod 700 -- "$SCRATCH_ROOT"
 trap 'rm -rf -- "$SCRATCH_ROOT"' EXIT
@@ -153,7 +258,7 @@ const names = [
   'listeners',
   'listenerRules',
   'albAttributes',
-  'mailCors',
+  'logProof',
   'host',
 ];
 const projections = Object.fromEntries(
@@ -195,6 +300,7 @@ const allowed = new Set([
   'wafId',
   'certificateArn',
   'listenerArn',
+  'albDnsName',
 ]);
 if (!allowed.has(field)) process.exit(2);
 const value = JSON.parse(fs.readFileSync(path, 'utf8'))[field];
@@ -237,27 +343,121 @@ if (value?.Status !== 'Success' || typeof value?.StandardOutputContent !== 'stri
 NODE
 }
 
+ssm_invocation_status() {
+  local path="$1"
+  node - "$path" <<'NODE'
+const fs = require('fs');
+const status = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'))?.Status;
+const allowed = new Set([
+  'Pending',
+  'InProgress',
+  'Delayed',
+  'Cancelling',
+  'Success',
+  'Cancelled',
+  'TimedOut',
+  'Failed',
+]);
+if (typeof status !== 'string' || !allowed.has(status)) process.exit(2);
+process.stdout.write(status);
+NODE
+}
+
+send_ssm_command() {
+  local scratch="$1"
+  local file="$2"
+  local parameters="$3"
+  "${SSM[@]}" --no-cli-pager ssm send-command \
+    --region "$AWS_REGION" \
+    --document-name AWS-RunShellScript \
+    --instance-ids "$INSTANCE_ID" \
+    --parameters "$parameters" \
+    --output json >"$scratch/$file" 2>/dev/null || die
+  chmod 600 -- "$scratch/$file"
+  command_id "$scratch/$file"
+}
+
+wait_for_ssm_success() {
+  local scratch="$1"
+  local file="$2"
+  local command_id_value="$3"
+  local attempt
+  local status
+  local pending_path="$scratch/.${file}.pending"
+  for ((attempt = 1; attempt <= SSM_POLL_MAX_ATTEMPTS; attempt += 1)); do
+    "${SSM[@]}" --no-cli-pager ssm get-command-invocation \
+      --region "$AWS_REGION" \
+      --command-id "$command_id_value" \
+      --instance-id "$INSTANCE_ID" \
+      --output json >"$pending_path" 2>/dev/null || die
+    chmod 600 -- "$pending_path"
+    status="$(ssm_invocation_status "$pending_path")" || die
+    case "$status" in
+      Success)
+        assert_ssm_success "$pending_path" || die
+        mv -f -- "$pending_path" "$scratch/$file"
+        chmod 600 -- "$scratch/$file"
+        return
+        ;;
+      Pending|InProgress|Delayed|Cancelling)
+        sleep_bounded_interval "$SSM_POLL_INTERVAL_SECONDS"
+        ;;
+      Cancelled|TimedOut|Failed)
+        die
+        ;;
+      *)
+        die
+        ;;
+    esac
+  done
+  die
+}
+
+alb_lifecycle_state() {
+  local path="$1"
+  node - "$path" <<'NODE'
+const fs = require('fs');
+const value = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+const albs = value?.LoadBalancers;
+if (!Array.isArray(albs) || albs.length !== 1) process.exit(2);
+const alb = albs[0];
+if (alb?.LoadBalancerName !== 'nava-remote-admin-alb') process.exit(2);
+const status = alb?.State?.Code;
+if (status !== 'provisioning' && status !== 'active') process.exit(2);
+process.stdout.write(status);
+NODE
+}
+
+wait_for_alb_active() {
+  local scratch="$1"
+  local attempt
+  local status
+  local poll_path="$scratch/alb-active-poll.json"
+  for ((attempt = 1; attempt <= ALB_POLL_MAX_ATTEMPTS; attempt += 1)); do
+    "${AWS[@]}" --no-cli-pager elbv2 describe-load-balancers \
+      --region "$AWS_REGION" \
+      --names "$ALB_NAME" \
+      --output json >"$poll_path" 2>/dev/null || die
+    chmod 600 -- "$poll_path"
+    status="$(alb_lifecycle_state "$poll_path")" || die
+    [[ "$status" == 'provisioning' ]] || return 0
+    sleep_bounded_interval "$ALB_POLL_INTERVAL_SECONDS"
+  done
+  die
+}
+
 observe_host() {
   local scratch="$1"
   local command_id_value
   local parameters
   parameters='{"commands":["set -eu; printf \"__REMOTE_EDGE_UFW_STATUS__\\n\"; ufw status numbered; printf \"__REMOTE_EDGE_UFW_ADDED__\\n\"; ufw show added; printf \"__REMOTE_EDGE_SOCKETS__\\n\"; ss -ltnH; printf \"__REMOTE_EDGE_ROUTE__\\n\"; ip route show default"]}'
-  "${SSM[@]}" --no-cli-pager ssm send-command \
-    --document-name AWS-RunShellScript \
-    --instance-ids "$INSTANCE_ID" \
-    --parameters "$parameters" \
-    --output json >"$scratch/host-command.json" 2>/dev/null || die
-  chmod 600 -- "$scratch/host-command.json"
-  command_id_value="$(command_id "$scratch/host-command.json")" || die
-  "${SSM[@]}" --no-cli-pager ssm get-command-invocation \
-    --command-id "$command_id_value" \
-    --instance-id "$INSTANCE_ID" \
-    --output json >"$scratch/host.json" 2>/dev/null || die
-  chmod 600 -- "$scratch/host.json"
+  command_id_value="$(send_ssm_command "$scratch" host-command.json "$parameters")" || die
+  wait_for_ssm_success "$scratch" host.json "$command_id_value"
 }
 
 collect_current() {
   local scratch="$1"
+  local proof_path="${2:-}"
   local certificate_arn
   local alb_arn
   local target_group_arn
@@ -276,7 +476,6 @@ collect_current() {
   capture "$scratch" targetGroups.json elbv2 describe-target-groups --region "$AWS_REGION" --output json
   capture "$scratch" wafs.json wafv2 list-web-acls --region "$AWS_REGION" --scope REGIONAL --output json
   capture "$scratch" buckets.json s3api list-buckets --output json
-  capture "$scratch" mailCors.json s3api get-bucket-cors --region "$AWS_REGION" --bucket "$MAIL_BUCKET" --output json
   write_refs "$scratch"
 
   certificate_arn="$(reference "$scratch" certificateArn)" || die
@@ -321,6 +520,11 @@ NODE
   fi
 
   observe_host "$scratch"
+  if [[ -n "$proof_path" ]]; then
+    [[ -f "$proof_path" && ! -L "$proof_path" ]] || die
+    cp -- "$proof_path" "$scratch/logProof.json" || die
+    chmod 600 -- "$scratch/logProof.json"
+  fi
   state_bridge "$scratch" result >"$scratch/result.json" 2>/dev/null || die
   chmod 600 -- "$scratch/result.json"
 }
@@ -391,25 +595,63 @@ JSON
   chmod 600 -- "$scratch/waf.json"
 }
 
+has_recent_alb_log() {
+  local path="$1"
+  local started_at="$2"
+  node - "$path" "$started_at" <<'NODE'
+const fs = require('fs');
+const [path, startedAt] = process.argv.slice(2);
+const started = Date.parse(startedAt);
+const value = JSON.parse(fs.readFileSync(path, 'utf8'));
+if (!Number.isFinite(started) || !Array.isArray(value?.Contents)) process.exit(2);
+const found = value.Contents.some((item) =>
+  typeof item?.LastModified === 'string' &&
+  Number.isFinite(Date.parse(item.LastModified)) &&
+  Date.parse(item.LastModified) > started,
+);
+process.exit(found ? 0 : 1);
+NODE
+}
+
+prove_alb_log_delivery() {
+  local scratch="$1"
+  local alb_dns_name
+  local started_at
+  local attempt
+  local curl_error="$scratch/log-proof-curl.error"
+  local objects="$scratch/log-proof-objects.json"
+  alb_dns_name="$(reference "$scratch" albDnsName)" || die
+  [[ -n "$alb_dns_name" ]] || die
+  started_at="$("${DATE[@]}" -u +%Y-%m-%dT%H:%M:%SZ)"
+  "${CURL[@]}" --silent --show-error --output /dev/null --max-time 10 \
+    --connect-to "${REMOTE_HOST}:443:${alb_dns_name}:443" \
+    "https://${REMOTE_HOST}/" >/dev/null 2>"$curl_error" || die
+  chmod 600 -- "$curl_error"
+  for ((attempt = 1; attempt <= LOG_PROOF_MAX_ATTEMPTS; attempt += 1)); do
+    "${AWS[@]}" --no-cli-pager s3api list-objects-v2 \
+      --region "$AWS_REGION" \
+      --bucket "$LOG_BUCKET" \
+      --prefix "AWSLogs/${AWS_ACCOUNT_ID}/" \
+      --output json >"$objects" 2>/dev/null || die
+    chmod 600 -- "$objects"
+    if has_recent_alb_log "$objects" "$started_at"; then
+      printf '%s\n' '{"accessLogDelivered":true}' >"$scratch/logProof.json"
+      chmod 600 -- "$scratch/logProof.json"
+      return
+    fi
+    sleep_bounded_interval "$LOG_PROOF_INTERVAL_SECONDS"
+  done
+  die
+}
+
 run_ssm_ufw_mutation() {
   local scratch="$1"
   local cidr="$2"
   local command_id_value
   local parameters
   parameters="{\"commands\":[\"set -eu; ufw allow in on ens5 from $cidr to any port 8443 proto tcp; printf \\\"__REMOTE_EDGE_UFW_STATUS__\\\\n\\\"; ufw status numbered; printf \\\"__REMOTE_EDGE_UFW_ADDED__\\\\n\\\"; ufw show added; printf \\\"__REMOTE_EDGE_SOCKETS__\\\\n\\\"; ss -ltnH; printf \\\"__REMOTE_EDGE_ROUTE__\\\\n\\\"; ip route show default\"]}"
-  "${SSM[@]}" --no-cli-pager ssm send-command \
-    --document-name AWS-RunShellScript \
-    --instance-ids "$INSTANCE_ID" \
-    --parameters "$parameters" \
-    --output json >"$scratch/ufw-mutation-command.json" 2>/dev/null || die
-  chmod 600 -- "$scratch/ufw-mutation-command.json"
-  command_id_value="$(command_id "$scratch/ufw-mutation-command.json")" || die
-  "${SSM[@]}" --no-cli-pager ssm get-command-invocation \
-    --command-id "$command_id_value" \
-    --instance-id "$INSTANCE_ID" \
-    --output json >"$scratch/ufw-mutation-result.json" 2>/dev/null || die
-  chmod 600 -- "$scratch/ufw-mutation-result.json"
-  assert_ssm_success "$scratch/ufw-mutation-result.json" || die
+  command_id_value="$(send_ssm_command "$scratch" ufw-mutation-command.json "$parameters")" || die
+  wait_for_ssm_success "$scratch" ufw-mutation-result.json "$command_id_value"
 }
 
 mutate_one() {
@@ -462,6 +704,7 @@ mutate_one() {
     TARGET_GROUP_READY)
       alb_sg="$(reference "$scratch" albSecurityGroupId)" || die
       "${AWS[@]}" --no-cli-pager elbv2 create-load-balancer --region "$AWS_REGION" --name "$ALB_NAME" --scheme internet-facing --type application --ip-address-type ipv4 --subnets "$ALB_SUBNET_A" "$ALB_SUBNET_B" --security-groups "$alb_sg" >/dev/null 2>/dev/null || die
+      wait_for_alb_active "$scratch"
       ;;
     ALB_CREATED)
       "${AWS[@]}" --no-cli-pager s3api create-bucket --region "$AWS_REGION" --bucket "$LOG_BUCKET" --create-bucket-configuration "LocationConstraint=$AWS_REGION" >/dev/null 2>/dev/null || die
@@ -505,6 +748,9 @@ mutate_one() {
     UFW_SUBNET_A_READY)
       run_ssm_ufw_mutation "$scratch" '172.31.32.0/20'
       ;;
+    UFW_READY)
+      prove_alb_log_delivery "$scratch"
+      ;;
     *)
       die
       ;;
@@ -514,6 +760,7 @@ mutate_one() {
 write_evidence() {
   local result_path="$1"
   local temporary
+  [[ ! -L "$EVIDENCE_ROOT/latest.json" ]] || die
   temporary="$(mktemp "$EVIDENCE_ROOT/.remote-edge.XXXXXX")"
   chmod 600 -- "$temporary"
   node - "$result_path" "$temporary" <<'NODE'
@@ -552,7 +799,11 @@ PRE_ACTION="$(result_action "$PRE_SCRATCH/result.json")" || die
 EXPECTED_NEXT="$(REMOTE_EDGE_STAGE="$PRE_STAGE" state_bridge "$PRE_SCRATCH" next 2>/dev/null)" || die
 [[ -n "$EXPECTED_NEXT" ]] || die
 mutate_one "$PRE_STAGE" "$PRE_SCRATCH"
-collect_current "$POST_SCRATCH"
+if [[ "$PRE_STAGE" == 'UFW_READY' ]]; then
+  collect_current "$POST_SCRATCH" "$PRE_SCRATCH/logProof.json"
+else
+  collect_current "$POST_SCRATCH"
+fi
 POST_STAGE="$(result_stage "$POST_SCRATCH/result.json")" || die
 [[ "$POST_STAGE" == "$EXPECTED_NEXT" ]] || die
 write_evidence "$POST_SCRATCH/result.json"

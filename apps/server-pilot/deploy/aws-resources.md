@@ -489,7 +489,7 @@ bash apps/server-pilot/deploy/remote-edge-provisioner.sh inspect --evidence-root
 bash apps/server-pilot/deploy/remote-edge-provisioner.sh apply-one --action ACTION --evidence-root /secure/operator/evidence
 ```
 
-`inspect` prints sanitized `stage` and next `action`. `apply-one` accepts only that exact action, writes only atomic sanitized stage/action evidence (`0700` directory, `0600` files), and fails closed on read errors, malformed or extra facts, duplicate names, unsafe SG/UFW/ALB/listener/WAF/CORS state, unexpected attachment, or a wrong successor. It never exposes IDs, ARNs, secrets, SSM output, or PII.
+`inspect` prints sanitized `stage` and next `action`. `apply-one` accepts only that exact action, writes only atomic sanitized stage/action evidence (`0700` directory, `0600` files), and fails closed on read errors, malformed or extra facts, duplicate names, unsafe SG/UFW/ALB/listener/WAF/bucket-policy state, unexpected attachment, or a wrong successor. Every SSM invocation is pinned to `af-south-1` and polled only to a bounded terminal state before the provisioner classifies or mutates again. It never exposes IDs, ARNs, secrets, SSM output, object keys, response bodies, or PII.
 
 `SG_FINAL_UNATTACHED` is recognized only when both named groups have their exact final rules, neither is attached to EC2, and no later deterministic named resource exists. Its sole action is `ATTACH_TARGET_SECURITY_GROUP`.
 
@@ -501,6 +501,8 @@ Resource definitions, transition mapping, and successor checks live only in the 
 REMOTE_ADMIN_MODE=1 REMOTE_TARGET_HEALTH_REQUIRED=0 \
   bash apps/server-pilot/deploy/launch-readiness.sh
 ```
+
+`UFW_READY` is not Task 4 pre-Gate-B readiness. Its sole action is `PROVE_ALB_LOG_DELIVERY`. The provisioner performs one harmless body-discarding HTTPS request through `--connect-to` using the remote Host against the ALB DNS name, while the listener remains fixed `404` and no target, host-forward rule, public DNS, or CORS change exists. It then polls `s3api list-objects-v2` for at most `REMOTE_EDGE_LOG_PROOF_MAX_ATTEMPTS` × `REMOTE_EDGE_LOG_PROOF_INTERVAL_SECONDS` (default 15 minutes), accepts only a log object newer than proof start, and passes only boolean evidence (`accessLogDelivered=true`) into fresh successor classification. Raw request output, S3 object keys, and list responses remain private scratch data; reports contain only stage/action evidence.
 
 ### Gate B and Task 5 handoff
 
@@ -612,46 +614,7 @@ aws elbv2 create-rule --region "$AWS_REGION" --listener-arn "$LISTENER_ARN" \
   --actions Type=forward,TargetGroupArn="$TARGET_GROUP_ARN"
 ```
 
-Prove ALB log delivery with one harmless body-discarding request and bounded polling. This emits only a boolean result: no request headers, response body, S3 key, secret, or PII.
-
-```bash
-: "${ALB_DNS_NAME:?ALB DNS name required}"
-LOG_PROOF_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-LOG_PROOF_DEADLINE=$(( $(date +%s) + 900 ))
-
-curl --silent --show-error --output /dev/null --max-time 10 \
-  --connect-to "${REMOTE_ADMIN_HOST}:443:${ALB_DNS_NAME}:443" \
-  "https://${REMOTE_ADMIN_HOST}/"
-
-LOG_DELIVERED=false
-while [ "$(date +%s)" -lt "$LOG_PROOF_DEADLINE" ]; do
-  if aws s3api list-objects-v2 --region "$AWS_REGION" \
-    --bucket "$REMOTE_LOG_BUCKET" \
-    --prefix "AWSLogs/$AWS_ACCOUNT_ID/" \
-    --output json |
-    node -e '
-      const chunks = [];
-      process.stdin.on("data", (chunk) => chunks.push(chunk));
-      process.stdin.on("end", () => {
-        const value = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-        const started = Date.parse(process.argv[1]);
-        const found = (value.Contents ?? []).some((item) =>
-          typeof item?.LastModified === "string" &&
-          Date.parse(item.LastModified) >= started,
-        );
-        process.exit(found ? 0 : 1);
-      });
-    ' "$LOG_PROOF_STARTED_AT"; then
-    LOG_DELIVERED=true
-    break
-  fi
-  sleep 15
-done
-test "$LOG_DELIVERED" = true
-printf '%s\n' '{"accessLogDelivered":true}'
-```
-
-Then require `REMOTE_ADMIN_MODE=1 REMOTE_TARGET_HEALTH_REQUIRED=1` readiness, exact fixed-404 listener fallback, exact host-forward rule, healthy target, proven bounded log delivery, and no direct target path.
+Then require `REMOTE_ADMIN_MODE=1 REMOTE_TARGET_HEALTH_REQUIRED=1` readiness, exact fixed-404 listener fallback, exact host-forward rule, healthy target, Task 4's already-proven bounded log delivery, and no direct target path.
 
 ## Resize / downgrade
 

@@ -3170,9 +3170,8 @@ describe('deploy config', () => {
       'remote-edge-provisioner.sh apply-one --action ACTION',
       'launch-readiness.sh',
       'canonicalizeCorsRules',
-      'LOG_PROOF_DEADLINE',
-      '--connect-to',
-      'list-objects-v2',
+      'PROVE_ALB_LOG_DELIVERY',
+      'REMOTE_EDGE_LOG_PROOF_MAX_ATTEMPTS',
       'Name=vpc-id,Values=$VPC_ID',
       'const main = tables.find',
       'const table = explicit ?? main;',
@@ -3185,8 +3184,12 @@ describe('deploy config', () => {
     expect(provisioner).toContain('collect_current');
     expect(provisioner).toContain('mutate_one');
     expect(provisioner).toContain('remote-edge: blocked');
-    expect(state).toContain('ACTION_BY_STAGE');
-    expect(state).toContain('NEXT_STAGE_BY_STAGE');
+    expect(state).toContain('STAGE_TABLE');
+    expect(state).not.toContain('ACTION_BY_STAGE');
+    expect(state).not.toContain('NEXT_STAGE_BY_STAGE');
+    expect(state).toContain('PROVE_ALB_LOG_DELIVERY');
+    expect(provisioner).toContain('prove_alb_log_delivery');
+    expect(provisioner).toContain('wait_for_ssm_success');
     expect(resources).not.toContain('LOVABLE_DNS_CONTROL_CONFIRMED');
     expect(resources.includes('secretsmanager get-secret-value')).toBe(false);
     expect(
@@ -3202,6 +3205,13 @@ describe('deploy config', () => {
     expect(companion).toContain('tun0:443');
     expect(companion).toContain('nava-admin.trynava.io');
     expect(companion).toContain(':8443');
+    const provisionerProcedure = resources.slice(
+      resources.indexOf('### Idempotent edge resources after Gate A'),
+      resources.indexOf('### Gate B and Task 5 handoff'),
+    );
+    expect(provisionerProcedure).toContain('PROVE_ALB_LOG_DELIVERY');
+    expect(provisionerProcedure).toContain('body-discarding');
+    expect(provisionerProcedure).toContain('only boolean');
   });
 
   it('documents live-readback resume for current final unattached security-group prefix', async () => {
@@ -3226,8 +3236,9 @@ describe('deploy config', () => {
     expect(procedure).toContain('SG_FINAL_UNATTACHED');
     expect(procedure).toContain('ATTACH_TARGET_SECURITY_GROUP');
     expect(provisioner).toContain('SG_FINAL_UNATTACHED)');
-    expect(state).toContain("SG_FINAL_UNATTACHED: 'ATTACH_TARGET_SECURITY_GROUP'");
-    expect(state).toContain("SG_FINAL_UNATTACHED: 'TARGET_SG_ATTACHED'");
+    expect(state).toContain("stage: 'SG_FINAL_UNATTACHED'");
+    expect(state).toContain("action: 'ATTACH_TARGET_SECURITY_GROUP'");
+    expect(state).toContain("next: 'TARGET_SG_ATTACHED'");
     expect(provisioner).not.toContain('--stage');
     expect(provisioner).not.toContain('--facts');
     expect(provisioner).not.toContain('--resume');
@@ -3299,11 +3310,14 @@ describe('deploy config', () => {
       ['WAF_CREATED', 'WAF_ASSOCIATED'],
       ['WAF_ASSOCIATED', 'LISTENER_FIXED_404'],
       ['LISTENER_FIXED_404', 'UFW_SUBNET_A_READY'],
-      ['UFW_SUBNET_A_READY', 'TASK4_PRE_GATE_B_READY'],
+      ['UFW_SUBNET_A_READY', 'UFW_READY'],
+      ['UFW_READY', 'TASK4_PRE_GATE_B_READY'],
     ];
 
     for (const [from, to] of transitions) {
-      expect(state, `${from} -> ${to}`).toContain(`${from}: '${to}'`);
+      expect(state, `${from} -> ${to}`).toMatch(
+        new RegExp(`stage: '${from}'[\\s\\S]{0,200}next: '${to}'`),
+      );
     }
     expect(provisioner).toContain('mutate_one "$PRE_STAGE" "$PRE_SCRATCH"');
     expect(provisioner).toContain('collect_current "$POST_SCRATCH"');

@@ -335,3 +335,65 @@ Result: `122` deploy-config tests and `11` provisioner tests passed; Node syntax
 ### Remaining concern
 
 No live provisioner invocation was attempted. On next authorized operator run, use fresh `inspect`, then invoke exactly its returned action. Current historical status does not authorize attachment or any later transition.
+
+## Executable provisioner security remediation — 2026-08-12
+
+Status: `DONE`
+
+This remediation ran only local fixture binaries. It did not invoke live AWS, SSM, ACM, Docker, database, runtime, DNS, HTTP endpoint, or deployment mutation; it did not source environment files or access secrets.
+
+### RED
+
+New fake-AWS/SSM/curl coverage first exposed the following unsafe acceptance paths:
+
+1. An empty `ufw status numbered` rule section could classify from `ufw show added` alone.
+2. An ALB log object timestamp equal to proof start could satisfy the proof.
+3. Public ingress on a legacy security group attached through a secondary EC2 ENI was not examined.
+
+Each new negative fixture initially returned successful `inspect`/`apply-one` classification. Existing all-stage fixture coverage also began RED while the bounded SSM, ALB lifecycle, evidence-root, policy, and proof behavior was absent.
+
+### Fixes
+
+1. All SSM `send-command` and `get-command-invocation` calls pin `af-south-1`, poll a bounded terminal state, and reject pending, failed, malformed, or inconsistent responses before another classification or mutation.
+2. UFW parsing now requires exact `ufw show added` and `ufw status numbered` rule sets. Shorthand, broad, missing, duplicate, or unexpected rules block.
+3. Security-group inspection now derives every EC2-attached ENI group, requires primary-ENI/top-level agreement, rejects legacy ingress on every attached group, and rejects the ALB group on any EC2 ENI or non-exact ALB ENI.
+4. ALB creation has bounded active-state polling; successor facts require an active IPv4 application ALB with exact named ALB ENIs.
+5. Bucket-policy validation accepts exactly two statements: constrained ELB log-delivery `PutObject` and TLS deny. Extra statements, principals, actions, resources, or conditions block.
+6. `UFW_READY` has only `PROVE_ALB_LOG_DELIVERY`. It sends one body-discarded remote-Host request through `--connect-to`, then requires a bounded log object strictly newer than proof start. Only `{"accessLogDelivered":true}` enters successor facts.
+7. Evidence roots reject `/`, symlinks, unsafe parents, ownership, modes, and unsafe `latest.json` links before an AWS/SSM binary can run.
+8. State action, successor, and shape data now live in one ordered table. Removed unused private error and state-only constants.
+9. Fixture subprocesses now run asynchronously, preventing Vitest worker-heartbeat timeouts while preserving serial fake-AWS/SSM execution.
+
+### GREEN
+
+Focused RED-to-GREEN checks included:
+
+```bash
+unset DATABASE_URL TEST_DATABASE_URL VITEST_ALLOW_PILOT_RDS CONFIRM_DISPOSABLE_TEST_DB HMS_DB_TEST_REQUIRED
+pnpm exec vitest run tests/remote-edge-provisioner-security.test.ts -t "rejects missing UFW status before mutation" --testTimeout=60000 --maxWorkers=1 --fileParallelism=false --pool=forks --reporter=dot
+pnpm exec vitest run tests/remote-edge-provisioner-security.test.ts -t "requires an ALB log object newer than proof start" --testTimeout=60000 --maxWorkers=1 --fileParallelism=false --pool=forks --reporter=dot
+pnpm exec vitest run tests/remote-edge-provisioner-security.test.ts -t "rejects legacy secondary-ENI public ingress before mutation" --testTimeout=60000 --maxWorkers=1 --fileParallelism=false --pool=forks --reporter=dot
+```
+
+Each passed after its minimal correction.
+
+Final serial DB-free verification:
+
+```bash
+unset DATABASE_URL TEST_DATABASE_URL VITEST_ALLOW_PILOT_RDS CONFIRM_DISPOSABLE_TEST_DB HMS_DB_TEST_REQUIRED
+pnpm exec vitest run tests/remote-edge-provisioner-security.test.ts --testTimeout=60000 --maxWorkers=1 --fileParallelism=false --pool=forks --reporter=dot
+pnpm exec vitest run tests/remote-edge-provisioner.test.ts --testTimeout=60000 --maxWorkers=1 --fileParallelism=false --pool=forks --reporter=dot
+pnpm exec vitest run tests/deploy-config.test.ts --testTimeout=60000 --maxWorkers=1 --fileParallelism=false --reporter=dot
+pnpm exec tsc -p tsconfig.json --noEmit
+bash -n deploy/remote-edge-provisioner.sh deploy/launch-readiness.sh deploy/post-boot-smoke.sh deploy/ops-deploy.sh deploy/ops-restart.sh deploy/ops-reboot.sh deploy/pm2-boot.sh
+node --check deploy/remote-edge-state.mjs
+git diff --check
+```
+
+Results: `38` security fixtures passed, `11` existing provisioner fixtures passed, and `122` deploy-config tests passed. TypeScript, Node syntax, shell syntax, and whitespace checks passed.
+
+The deploy-config suite's fork-pool run hit its unrelated existing Playwright-config timeout after `121` passing tests; isolated reproduction passed, and the same serial suite passed `122/122` using the default worker pool. No production behavior changed for that runner artifact.
+
+### Remaining concern
+
+No live `inspect` or `apply-one` execution was authorized or attempted. Future operator execution still requires re-review approval, a fresh local evidence root, and an `inspect` result that authorizes exactly one returned action.

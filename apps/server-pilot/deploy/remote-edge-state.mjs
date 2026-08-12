@@ -10,67 +10,9 @@ const TARGET_GROUP_NAME = 'nava-remote-admin';
 const TARGET_SECURITY_GROUP_NAME = 'nava-remote-admin-target';
 const WAF_NAME = 'nava-remote-admin-waf';
 const LOG_BUCKET = 'nava-zero-remote-alb-logs-845242190536-af-south-1';
-const MAIL_BUCKET = 'nava-zero-mail-845242190536-af-south-1';
-
-export const ACTION_BY_STAGE = Object.freeze({
-  FRESH: 'CREATE_ALB_SECURITY_GROUP',
-  ALB_SG_CREATED: 'CREATE_TARGET_SECURITY_GROUP',
-  SGS_CREATED: 'AUTHORIZE_ALB_HTTPS_INGRESS',
-  ALB_INGRESS_READY: 'REVOKE_ALB_DEFAULT_EGRESS',
-  ALB_EGRESS_REVOKED: 'AUTHORIZE_ALB_TARGET_EGRESS',
-  ALB_EGRESS_READY: 'AUTHORIZE_TARGET_ALB_INGRESS',
-  SG_FINAL_UNATTACHED: 'ATTACH_TARGET_SECURITY_GROUP',
-  TARGET_SG_ATTACHED: 'CREATE_TARGET_GROUP',
-  TARGET_GROUP_CREATED: 'SET_TARGET_GROUP_DEREGISTRATION_DELAY',
-  TARGET_GROUP_READY: 'CREATE_ALB',
-  ALB_CREATED: 'CREATE_LOG_BUCKET',
-  LOG_BUCKET_CREATED: 'BLOCK_LOG_BUCKET_PUBLIC_ACCESS',
-  LOG_BUCKET_PUBLIC_BLOCKED: 'ENFORCE_LOG_BUCKET_OWNERSHIP',
-  LOG_BUCKET_OWNERSHIP_ENFORCED: 'SET_LOG_BUCKET_AES256',
-  LOG_BUCKET_ENCRYPTED: 'SET_LOG_BUCKET_LIFECYCLE',
-  LOG_BUCKET_LIFECYCLE_READY: 'SET_LOG_BUCKET_POLICY',
-  LOG_BUCKET_POLICY_READY: 'ENABLE_ALB_LOGGING',
-  ALB_LOGGING_READY: 'CREATE_WAF',
-  WAF_CREATED: 'ASSOCIATE_WAF',
-  WAF_ASSOCIATED: 'CREATE_FIXED_404_LISTENER',
-  LISTENER_FIXED_404: 'ALLOW_UFW_SUBNET_A',
-  UFW_SUBNET_A_READY: 'ALLOW_UFW_SUBNET_B',
-  TASK4_PRE_GATE_B_READY: 'STOP',
-});
-
-export const NEXT_STAGE_BY_STAGE = Object.freeze({
-  FRESH: 'ALB_SG_CREATED',
-  ALB_SG_CREATED: 'SGS_CREATED',
-  SGS_CREATED: 'ALB_INGRESS_READY',
-  ALB_INGRESS_READY: 'ALB_EGRESS_REVOKED',
-  ALB_EGRESS_REVOKED: 'ALB_EGRESS_READY',
-  ALB_EGRESS_READY: 'SG_FINAL_UNATTACHED',
-  SG_FINAL_UNATTACHED: 'TARGET_SG_ATTACHED',
-  TARGET_SG_ATTACHED: 'TARGET_GROUP_CREATED',
-  TARGET_GROUP_CREATED: 'TARGET_GROUP_READY',
-  TARGET_GROUP_READY: 'ALB_CREATED',
-  ALB_CREATED: 'LOG_BUCKET_CREATED',
-  LOG_BUCKET_CREATED: 'LOG_BUCKET_PUBLIC_BLOCKED',
-  LOG_BUCKET_PUBLIC_BLOCKED: 'LOG_BUCKET_OWNERSHIP_ENFORCED',
-  LOG_BUCKET_OWNERSHIP_ENFORCED: 'LOG_BUCKET_ENCRYPTED',
-  LOG_BUCKET_ENCRYPTED: 'LOG_BUCKET_LIFECYCLE_READY',
-  LOG_BUCKET_LIFECYCLE_READY: 'LOG_BUCKET_POLICY_READY',
-  LOG_BUCKET_POLICY_READY: 'ALB_LOGGING_READY',
-  ALB_LOGGING_READY: 'WAF_CREATED',
-  WAF_CREATED: 'WAF_ASSOCIATED',
-  WAF_ASSOCIATED: 'LISTENER_FIXED_404',
-  LISTENER_FIXED_404: 'UFW_SUBNET_A_READY',
-  UFW_SUBNET_A_READY: 'TASK4_PRE_GATE_B_READY',
-});
-
-export class RemoteEdgeStateError extends Error {
-  constructor() {
-    super('invalid remote edge state');
-  }
-}
 
 function fail() {
-  throw new RemoteEdgeStateError();
+  throw new Error('invalid remote edge state');
 }
 
 function isObject(value) {
@@ -227,14 +169,6 @@ function exactPermissions(actual, expected) {
   );
 }
 
-function opensPort8443(permission) {
-  const actual = permissionParts(permission);
-  return (
-    actual.protocol === '-1' ||
-    (actual.protocol === 'tcp' && actual.from <= 8443 && actual.to >= 8443)
-  );
-}
-
 function groupPermissionArrays(group) {
   const value = object(group);
   return {
@@ -373,6 +307,7 @@ function referencesFromBase(projections) {
       ? safeReference(targetSecurityGroup.GroupId, 'sg-')
       : null,
     albArn: alb ? safeReference(alb.LoadBalancerArn, 'arn:aws:') : null,
+    albDnsName: alb ? safeReference(alb.DNSName, '') : null,
     targetGroupArn: targetGroup
       ? safeReference(targetGroup.TargetGroupArn, 'arn:aws:')
       : null,
@@ -394,6 +329,29 @@ export function deriveReferences(projections) {
     listenerArn:
       list.length === 0 ? null : safeReference(object(list[0]).ListenerArn, 'arn:aws:'),
   };
+}
+
+function isExactAlbNetworkInterface(networkInterface, references) {
+  const value = object(networkInterface);
+  const marker = ':loadbalancer/';
+  const arn = safeReference(references.albArn, 'arn:aws:');
+  const resource = arn.slice(arn.indexOf(marker) + marker.length);
+  if (!resource.startsWith(`app/${ALB_NAME}/`)) fail();
+  if (
+    value.Description !== `ELB ${resource}` ||
+    value.RequesterManaged !== true ||
+    value.RequesterId !== 'amazon-elb' ||
+    !exactStrings(
+      arrays(value, 'Groups').map((group) => object(group).GroupId),
+      [references.albSecurityGroupId],
+    )
+  ) {
+    return false;
+  }
+  return (
+    value.Attachment === undefined ||
+    (isObject(value.Attachment) && value.Attachment.InstanceId === undefined)
+  );
 }
 
 function deriveSecurity(projections, references) {
@@ -428,6 +386,30 @@ function deriveSecurity(projections, references) {
         (group) => object(group).GroupId === groupId,
       ),
     );
+  const instanceInterfaces = networkInterfaces.filter((networkInterface) => {
+    const attachment = object(networkInterface).Attachment;
+    return isObject(attachment) && attachment.InstanceId === INSTANCE_ID;
+  });
+  const primaryInstanceInterfaces = instanceInterfaces.filter(
+    (networkInterface) =>
+      object(object(networkInterface).Attachment).DeviceIndex === 0,
+  );
+  if (primaryInstanceInterfaces.length !== 1) fail();
+  const instanceAttachedGroupIds = instanceInterfaces.flatMap((networkInterface) =>
+    arrays(object(networkInterface), 'Groups').map((group) =>
+      safeReference(object(group).GroupId, 'sg-'),
+    ),
+  );
+  const primaryInstanceGroupIds = arrays(
+    object(primaryInstanceInterfaces[0]),
+    'Groups',
+  ).map((group) => safeReference(object(group).GroupId, 'sg-'));
+  if (
+    instanceAttachedGroupIds.length === 0 ||
+    !exactStrings(primaryInstanceGroupIds, references.instanceGroupIds)
+  ) {
+    fail();
+  }
   const attachedTarget = references.targetSecurityGroupId
     ? attachmentIds(references.targetSecurityGroupId)
     : [];
@@ -435,10 +417,10 @@ function deriveSecurity(projections, references) {
     ? attachmentIds(references.albSecurityGroupId)
     : [];
   const targetInInstance = references.targetSecurityGroupId
-    ? references.instanceGroupIds.includes(references.targetSecurityGroupId)
+    ? instanceAttachedGroupIds.includes(references.targetSecurityGroupId)
     : false;
   const albInInstance = references.albSecurityGroupId
-    ? references.instanceGroupIds.includes(references.albSecurityGroupId)
+    ? instanceAttachedGroupIds.includes(references.albSecurityGroupId)
     : false;
   const targetAttachmentExact =
     Boolean(references.targetSecurityGroupId) &&
@@ -456,11 +438,13 @@ function deriveSecurity(projections, references) {
     references.albSecurityGroupId === null
       ? false
       : albInInstance ||
-        (!references.alb && attachedAlb.length !== 0) ||
-        attachedAlb.some((networkInterface) =>
-          Boolean(object(networkInterface).Attachment?.InstanceId),
-        );
-  const legacyIngressSafe = references.instanceGroupIds.every((groupId) => {
+        (!references.alb
+          ? attachedAlb.length !== 0
+          : attachedAlb.length < 2 ||
+            attachedAlb.some((networkInterface) =>
+              !isExactAlbNetworkInterface(networkInterface, references),
+            ));
+  const legacyIngressSafe = instanceAttachedGroupIds.every((groupId) => {
     const group = groupsById.get(groupId);
     if (!group) return false;
     if (groupId === references.targetSecurityGroupId) {
@@ -470,7 +454,7 @@ function deriveSecurity(projections, references) {
         expectedDefaultEgress(),
       );
     }
-    return !groupPermissionArrays(group).ingress.some(opensPort8443);
+    return groupPermissionArrays(group).ingress.length === 0;
   });
 
   let stage = 'fresh';
@@ -718,28 +702,51 @@ function isExactBucketPolicy(value, references) {
   } catch {
     fail();
   }
-  const statements = arrays(object(policy), 'Statement');
+  exactKeys(policy, ['Version', 'Statement']);
+  if (policy.Version !== '2012-10-17') return false;
+  const statements = arrays(policy, 'Statement');
   if (statements.length !== 2) return false;
-  const allow = statements.find(
+  const allowMatches = statements.filter(
     (statement) => object(statement).Sid === 'AllowAlbLogDeliveryWrite',
   );
-  const deny = statements.find(
+  const denyMatches = statements.filter(
     (statement) => object(statement).Sid === 'DenyInsecureTransport',
   );
+  if (allowMatches.length !== 1 || denyMatches.length !== 1) return false;
+  const allow = allowMatches[0];
+  const deny = denyMatches[0];
   if (!allow || !deny) return false;
   const allowValue = object(allow);
   const denyValue = object(deny);
+  if (
+    Object.keys(allowValue).length !== 6 ||
+    Object.keys(denyValue).length !== 6 ||
+    !['Sid', 'Effect', 'Principal', 'Action', 'Resource', 'Condition'].every(
+      (key) => key in allowValue,
+    ) ||
+    !['Sid', 'Effect', 'Principal', 'Action', 'Resource', 'Condition'].every(
+      (key) => key in denyValue,
+    )
+  ) {
+    return false;
+  }
+  const allowPrincipal = object(allowValue.Principal);
+  const allowCondition = object(allowValue.Condition);
+  const allowAccount = object(allowCondition.StringEquals);
+  const allowSource = object(allowCondition.ArnLike);
+  const denyCondition = object(denyValue.Condition);
+  const denyTransport = object(denyCondition.Bool);
   return (
     allowValue.Effect === 'Allow' &&
-    isObject(allowValue.Principal) &&
-    allowValue.Principal.Service === 'logdelivery.elasticloadbalancing.amazonaws.com' &&
+    Object.keys(allowPrincipal).length === 1 &&
+    allowPrincipal.Service === 'logdelivery.elasticloadbalancing.amazonaws.com' &&
     allowValue.Action === 's3:PutObject' &&
     allowValue.Resource === `arn:aws:s3:::${LOG_BUCKET}/AWSLogs/${ACCOUNT_ID}/*` &&
-    isObject(allowValue.Condition) &&
-    isObject(allowValue.Condition.StringEquals) &&
-    allowValue.Condition.StringEquals['aws:SourceAccount'] === ACCOUNT_ID &&
-    isObject(allowValue.Condition.ArnLike) &&
-    allowValue.Condition.ArnLike['aws:SourceArn'] === references.albArn &&
+    Object.keys(allowCondition).length === 2 &&
+    Object.keys(allowAccount).length === 1 &&
+    allowAccount['aws:SourceAccount'] === ACCOUNT_ID &&
+    Object.keys(allowSource).length === 1 &&
+    allowSource['aws:SourceArn'] === references.albArn &&
     denyValue.Effect === 'Deny' &&
     denyValue.Principal === '*' &&
     denyValue.Action === 's3:*' &&
@@ -747,9 +754,9 @@ function isExactBucketPolicy(value, references) {
       `arn:aws:s3:::${LOG_BUCKET}`,
       `arn:aws:s3:::${LOG_BUCKET}/*`,
     ]) &&
-    isObject(denyValue.Condition) &&
-    isObject(denyValue.Condition.Bool) &&
-    denyValue.Condition.Bool['aws:SecureTransport'] === 'false'
+    Object.keys(denyCondition).length === 1 &&
+    Object.keys(denyTransport).length === 1 &&
+    denyTransport['aws:SecureTransport'] === 'false'
   );
 }
 
@@ -992,18 +999,52 @@ function deriveHostFacts(projections) {
     .split('\n')
     .map((rule) => rule.trim())
     .filter(Boolean);
-  const port443 = rules.filter((rule) => /\bport 443\b/.test(rule));
-  const port8443 = rules.filter((rule) => /\bport 8443\b/.test(rule));
   const intendedTunnel = 'ufw allow in on tun0 to any port 443 proto tcp';
   const subnetA =
     'ufw allow in on ens5 from 172.31.0.0/20 to any port 8443 proto tcp';
   const subnetB =
     'ufw allow in on ens5 from 172.31.32.0/20 to any port 8443 proto tcp';
-  const legacyTunnel443Exact = exactStrings(port443, [intendedTunnel]);
+  const allowedRules = new Set([intendedTunnel, subnetA, subnetB]);
+  if (!unique(rules) || rules.some((rule) => !allowedRules.has(rule))) {
+    fail();
+  }
+  const legacyTunnel443Exact = rules.includes(intendedTunnel);
   let ufwStage = 'invalid';
-  if (exactStrings(port8443, [])) ufwStage = 'none';
-  if (exactStrings(port8443, [subnetA])) ufwStage = 'subnet-a';
-  if (exactStrings(port8443, [subnetA, subnetB])) ufwStage = 'ready';
+  if (exactStrings(rules, [intendedTunnel])) ufwStage = 'none';
+  if (exactStrings(rules, [intendedTunnel, subnetA])) ufwStage = 'subnet-a';
+  if (exactStrings(rules, [intendedTunnel, subnetA, subnetB])) ufwStage = 'ready';
+  const statusRules = status
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(
+      (line) =>
+        line.length > 0 &&
+        !/^Status: active$/.test(line) &&
+        !line.startsWith('Default: deny (incoming),') &&
+        !/^To\s+Action\s+From$/.test(line) &&
+        !/^-+\s+-+\s+-+$/.test(line),
+    )
+    .map((line) =>
+      line.replace(/^\[\s*\d+\]\s*/, '').replace(/\s+/g, ' ').trim(),
+    );
+  const expectedStatusRules = {
+    none: ['443/tcp on tun0 ALLOW IN Anywhere'],
+    'subnet-a': [
+      '443/tcp on tun0 ALLOW IN Anywhere',
+      '8443/tcp on ens5 ALLOW IN 172.31.0.0/20',
+    ],
+    ready: [
+      '443/tcp on tun0 ALLOW IN Anywhere',
+      '8443/tcp on ens5 ALLOW IN 172.31.0.0/20',
+      '8443/tcp on ens5 ALLOW IN 172.31.32.0/20',
+    ],
+  };
+  if (
+    ufwStage === 'invalid' ||
+    !exactStrings(statusRules, expectedStatusRules[ufwStage])
+  ) {
+    fail();
+  }
   const defaultRouteOffTun0 =
     /^default\b/m.test(route) && !/^default\b.*\bdev tun0\b/m.test(route);
   const listenerSafe =
@@ -1029,14 +1070,11 @@ function deriveHostFacts(projections) {
   };
 }
 
-function deriveCorsFacts(projections) {
-  const cors = array(object(projections.mailCors).CORSRules);
-  const origins = cors.flatMap((rule) => arrays(object(rule), 'AllowedOrigins'));
-  if (origins.some((origin) => typeof origin !== 'string')) fail();
-  const remoteOriginAbsent = !origins.includes(`https://${REMOTE_HOST}`);
-  const noWildcard = !origins.includes('*');
-  if (!remoteOriginAbsent || !noWildcard) fail();
-  return { remoteOriginAbsent, noWildcard };
+function deriveLogDeliveryProof(projections) {
+  if (projections.logProof === undefined) return false;
+  const proof = object(projections.logProof);
+  exactKeys(proof, ['accessLogDelivered']);
+  return boolean(proof.accessLogDelivered);
 }
 
 function hasNoPublicTargetAddress(instance) {
@@ -1085,7 +1123,7 @@ export function deriveFacts(projections) {
   const wafStage = deriveWafStage(value, references);
   const listenerStage = deriveListenerStage(value, references);
   const host = deriveHostFacts(value);
-  const cors = deriveCorsFacts(value);
+  const logDeliveryProof = deriveLogDeliveryProof(value);
   return {
     version: 1,
     baseline,
@@ -1104,7 +1142,7 @@ export function deriveFacts(projections) {
     wafStage,
     listenerStage,
     host,
-    cors,
+    logDeliveryProof,
   };
 }
 
@@ -1144,7 +1182,7 @@ export function validateFacts(facts) {
     'wafStage',
     'listenerStage',
     'host',
-    'cors',
+    'logDeliveryProof',
   ]);
   if (facts.version !== 1) fail();
   exactKeys(facts.baseline, [
@@ -1206,8 +1244,7 @@ export function validateFacts(facts) {
     facts.host.defaultRouteOffTun0,
     facts.host.listenerSafe,
   ].forEach(boolean);
-  exactKeys(facts.cors, ['remoteOriginAbsent', 'noWildcard']);
-  [facts.cors.remoteOriginAbsent, facts.cors.noWildcard].forEach(boolean);
+  boolean(facts.logDeliveryProof);
   return facts;
 }
 
@@ -1227,9 +1264,157 @@ function matches(facts, expected) {
     facts.bucketStage === expected.bucketStage &&
     facts.wafStage === expected.wafStage &&
     facts.listenerStage === expected.listenerStage &&
-    facts.host.ufwStage === expected.ufwStage
+    facts.host.ufwStage === expected.ufwStage &&
+    facts.logDeliveryProof === expected.logDeliveryProof
   );
 }
+
+const STAGE_TABLE = Object.freeze([
+  {
+    stage: 'FRESH',
+    action: 'CREATE_ALB_SECURITY_GROUP',
+    next: 'ALB_SG_CREATED',
+    shape: { counts: [0, 0, 0, 0, 0, 0], securityStage: 'fresh', targetAttached: false, targetAttachmentExact: false, targetGroupStage: 'absent', albStage: 'absent', bucketStage: 'absent', wafStage: 'absent', listenerStage: 'absent', ufwStage: 'none', logDeliveryProof: false },
+  },
+  {
+    stage: 'ALB_SG_CREATED',
+    action: 'CREATE_TARGET_SECURITY_GROUP',
+    next: 'SGS_CREATED',
+    shape: { counts: [0, 0, 1, 0, 0, 0], securityStage: 'alb-created', targetAttached: false, targetAttachmentExact: false, targetGroupStage: 'absent', albStage: 'absent', bucketStage: 'absent', wafStage: 'absent', listenerStage: 'absent', ufwStage: 'none', logDeliveryProof: false },
+  },
+  {
+    stage: 'SGS_CREATED',
+    action: 'AUTHORIZE_ALB_HTTPS_INGRESS',
+    next: 'ALB_INGRESS_READY',
+    shape: { counts: [0, 0, 1, 1, 0, 0], securityStage: 'both-created', targetAttached: false, targetAttachmentExact: false, targetGroupStage: 'absent', albStage: 'absent', bucketStage: 'absent', wafStage: 'absent', listenerStage: 'absent', ufwStage: 'none', logDeliveryProof: false },
+  },
+  {
+    stage: 'ALB_INGRESS_READY',
+    action: 'REVOKE_ALB_DEFAULT_EGRESS',
+    next: 'ALB_EGRESS_REVOKED',
+    shape: { counts: [0, 0, 1, 1, 0, 0], securityStage: 'alb-ingress', targetAttached: false, targetAttachmentExact: false, targetGroupStage: 'absent', albStage: 'absent', bucketStage: 'absent', wafStage: 'absent', listenerStage: 'absent', ufwStage: 'none', logDeliveryProof: false },
+  },
+  {
+    stage: 'ALB_EGRESS_REVOKED',
+    action: 'AUTHORIZE_ALB_TARGET_EGRESS',
+    next: 'ALB_EGRESS_READY',
+    shape: { counts: [0, 0, 1, 1, 0, 0], securityStage: 'alb-egress-revoked', targetAttached: false, targetAttachmentExact: false, targetGroupStage: 'absent', albStage: 'absent', bucketStage: 'absent', wafStage: 'absent', listenerStage: 'absent', ufwStage: 'none', logDeliveryProof: false },
+  },
+  {
+    stage: 'ALB_EGRESS_READY',
+    action: 'AUTHORIZE_TARGET_ALB_INGRESS',
+    next: 'SG_FINAL_UNATTACHED',
+    shape: { counts: [0, 0, 1, 1, 0, 0], securityStage: 'alb-egress-ready', targetAttached: false, targetAttachmentExact: false, targetGroupStage: 'absent', albStage: 'absent', bucketStage: 'absent', wafStage: 'absent', listenerStage: 'absent', ufwStage: 'none', logDeliveryProof: false },
+  },
+  {
+    stage: 'SG_FINAL_UNATTACHED',
+    action: 'ATTACH_TARGET_SECURITY_GROUP',
+    next: 'TARGET_SG_ATTACHED',
+    shape: { counts: [0, 0, 1, 1, 0, 0], securityStage: 'final', targetAttached: false, targetAttachmentExact: false, targetGroupStage: 'absent', albStage: 'absent', bucketStage: 'absent', wafStage: 'absent', listenerStage: 'absent', ufwStage: 'none', logDeliveryProof: false },
+  },
+  {
+    stage: 'TARGET_SG_ATTACHED',
+    action: 'CREATE_TARGET_GROUP',
+    next: 'TARGET_GROUP_CREATED',
+    shape: { counts: [0, 0, 1, 1, 0, 0], securityStage: 'final', targetAttached: true, targetAttachmentExact: true, targetGroupStage: 'absent', albStage: 'absent', bucketStage: 'absent', wafStage: 'absent', listenerStage: 'absent', ufwStage: 'none', logDeliveryProof: false },
+  },
+  {
+    stage: 'TARGET_GROUP_CREATED',
+    action: 'SET_TARGET_GROUP_DEREGISTRATION_DELAY',
+    next: 'TARGET_GROUP_READY',
+    shape: { counts: [0, 1, 1, 1, 0, 0], securityStage: 'final', targetAttached: true, targetAttachmentExact: true, targetGroupStage: 'created', albStage: 'absent', bucketStage: 'absent', wafStage: 'absent', listenerStage: 'absent', ufwStage: 'none', logDeliveryProof: false },
+  },
+  {
+    stage: 'TARGET_GROUP_READY',
+    action: 'CREATE_ALB',
+    next: 'ALB_CREATED',
+    shape: { counts: [0, 1, 1, 1, 0, 0], securityStage: 'final', targetAttached: true, targetAttachmentExact: true, targetGroupStage: 'ready', albStage: 'absent', bucketStage: 'absent', wafStage: 'absent', listenerStage: 'absent', ufwStage: 'none', logDeliveryProof: false },
+  },
+  {
+    stage: 'ALB_CREATED',
+    action: 'CREATE_LOG_BUCKET',
+    next: 'LOG_BUCKET_CREATED',
+    shape: { counts: [1, 1, 1, 1, 0, 0], securityStage: 'final', targetAttached: true, targetAttachmentExact: true, targetGroupStage: 'ready', albStage: 'created', bucketStage: 'absent', wafStage: 'absent', listenerStage: 'absent', ufwStage: 'none', logDeliveryProof: false },
+  },
+  {
+    stage: 'LOG_BUCKET_CREATED',
+    action: 'BLOCK_LOG_BUCKET_PUBLIC_ACCESS',
+    next: 'LOG_BUCKET_PUBLIC_BLOCKED',
+    shape: { counts: [1, 1, 1, 1, 0, 1], securityStage: 'final', targetAttached: true, targetAttachmentExact: true, targetGroupStage: 'ready', albStage: 'created', bucketStage: 'created', wafStage: 'absent', listenerStage: 'absent', ufwStage: 'none', logDeliveryProof: false },
+  },
+  {
+    stage: 'LOG_BUCKET_PUBLIC_BLOCKED',
+    action: 'ENFORCE_LOG_BUCKET_OWNERSHIP',
+    next: 'LOG_BUCKET_OWNERSHIP_ENFORCED',
+    shape: { counts: [1, 1, 1, 1, 0, 1], securityStage: 'final', targetAttached: true, targetAttachmentExact: true, targetGroupStage: 'ready', albStage: 'created', bucketStage: 'public-blocked', wafStage: 'absent', listenerStage: 'absent', ufwStage: 'none', logDeliveryProof: false },
+  },
+  {
+    stage: 'LOG_BUCKET_OWNERSHIP_ENFORCED',
+    action: 'SET_LOG_BUCKET_AES256',
+    next: 'LOG_BUCKET_ENCRYPTED',
+    shape: { counts: [1, 1, 1, 1, 0, 1], securityStage: 'final', targetAttached: true, targetAttachmentExact: true, targetGroupStage: 'ready', albStage: 'created', bucketStage: 'ownership-enforced', wafStage: 'absent', listenerStage: 'absent', ufwStage: 'none', logDeliveryProof: false },
+  },
+  {
+    stage: 'LOG_BUCKET_ENCRYPTED',
+    action: 'SET_LOG_BUCKET_LIFECYCLE',
+    next: 'LOG_BUCKET_LIFECYCLE_READY',
+    shape: { counts: [1, 1, 1, 1, 0, 1], securityStage: 'final', targetAttached: true, targetAttachmentExact: true, targetGroupStage: 'ready', albStage: 'created', bucketStage: 'encrypted', wafStage: 'absent', listenerStage: 'absent', ufwStage: 'none', logDeliveryProof: false },
+  },
+  {
+    stage: 'LOG_BUCKET_LIFECYCLE_READY',
+    action: 'SET_LOG_BUCKET_POLICY',
+    next: 'LOG_BUCKET_POLICY_READY',
+    shape: { counts: [1, 1, 1, 1, 0, 1], securityStage: 'final', targetAttached: true, targetAttachmentExact: true, targetGroupStage: 'ready', albStage: 'created', bucketStage: 'lifecycle-ready', wafStage: 'absent', listenerStage: 'absent', ufwStage: 'none', logDeliveryProof: false },
+  },
+  {
+    stage: 'LOG_BUCKET_POLICY_READY',
+    action: 'ENABLE_ALB_LOGGING',
+    next: 'ALB_LOGGING_READY',
+    shape: { counts: [1, 1, 1, 1, 0, 1], securityStage: 'final', targetAttached: true, targetAttachmentExact: true, targetGroupStage: 'ready', albStage: 'created', bucketStage: 'policy-ready', wafStage: 'absent', listenerStage: 'absent', ufwStage: 'none', logDeliveryProof: false },
+  },
+  {
+    stage: 'ALB_LOGGING_READY',
+    action: 'CREATE_WAF',
+    next: 'WAF_CREATED',
+    shape: { counts: [1, 1, 1, 1, 0, 1], securityStage: 'final', targetAttached: true, targetAttachmentExact: true, targetGroupStage: 'ready', albStage: 'logging-ready', bucketStage: 'policy-ready', wafStage: 'absent', listenerStage: 'absent', ufwStage: 'none', logDeliveryProof: false },
+  },
+  {
+    stage: 'WAF_CREATED',
+    action: 'ASSOCIATE_WAF',
+    next: 'WAF_ASSOCIATED',
+    shape: { counts: [1, 1, 1, 1, 1, 1], securityStage: 'final', targetAttached: true, targetAttachmentExact: true, targetGroupStage: 'ready', albStage: 'logging-ready', bucketStage: 'policy-ready', wafStage: 'created', listenerStage: 'absent', ufwStage: 'none', logDeliveryProof: false },
+  },
+  {
+    stage: 'WAF_ASSOCIATED',
+    action: 'CREATE_FIXED_404_LISTENER',
+    next: 'LISTENER_FIXED_404',
+    shape: { counts: [1, 1, 1, 1, 1, 1], securityStage: 'final', targetAttached: true, targetAttachmentExact: true, targetGroupStage: 'ready', albStage: 'logging-ready', bucketStage: 'policy-ready', wafStage: 'associated', listenerStage: 'absent', ufwStage: 'none', logDeliveryProof: false },
+  },
+  {
+    stage: 'LISTENER_FIXED_404',
+    action: 'ALLOW_UFW_SUBNET_A',
+    next: 'UFW_SUBNET_A_READY',
+    shape: { counts: [1, 1, 1, 1, 1, 1], securityStage: 'final', targetAttached: true, targetAttachmentExact: true, targetGroupStage: 'ready', albStage: 'logging-ready', bucketStage: 'policy-ready', wafStage: 'associated', listenerStage: 'fixed-404', ufwStage: 'none', logDeliveryProof: false },
+  },
+  {
+    stage: 'UFW_SUBNET_A_READY',
+    action: 'ALLOW_UFW_SUBNET_B',
+    next: 'UFW_READY',
+    shape: { counts: [1, 1, 1, 1, 1, 1], securityStage: 'final', targetAttached: true, targetAttachmentExact: true, targetGroupStage: 'ready', albStage: 'logging-ready', bucketStage: 'policy-ready', wafStage: 'associated', listenerStage: 'fixed-404', ufwStage: 'subnet-a', logDeliveryProof: false },
+  },
+  {
+    stage: 'UFW_READY',
+    action: 'PROVE_ALB_LOG_DELIVERY',
+    next: 'TASK4_PRE_GATE_B_READY',
+    shape: { counts: [1, 1, 1, 1, 1, 1], securityStage: 'final', targetAttached: true, targetAttachmentExact: true, targetGroupStage: 'ready', albStage: 'logging-ready', bucketStage: 'policy-ready', wafStage: 'associated', listenerStage: 'fixed-404', ufwStage: 'ready', logDeliveryProof: false },
+  },
+  {
+    stage: 'TASK4_PRE_GATE_B_READY',
+    action: 'STOP',
+    next: null,
+    shape: { counts: [1, 1, 1, 1, 1, 1], securityStage: 'final', targetAttached: true, targetAttachmentExact: true, targetGroupStage: 'ready', albStage: 'logging-ready', bucketStage: 'policy-ready', wafStage: 'associated', listenerStage: 'fixed-404', ufwStage: 'ready', logDeliveryProof: true },
+  },
+]);
 
 export function classifyFacts(input) {
   const facts = validateFacts(object(input));
@@ -1241,85 +1426,17 @@ export function classifyFacts(input) {
     facts.host.ufwSafe &&
     facts.host.legacyTunnel443Exact &&
     facts.host.defaultRouteOffTun0 &&
-    facts.host.listenerSafe &&
-    facts.cors.remoteOriginAbsent &&
-    facts.cors.noWildcard;
+    facts.host.listenerSafe;
   if (!safe) fail();
 
-  const prefixes = [
-    ['FRESH', [0, 0, 0, 0, 0, 0], 'fresh', false, false, 'absent', 'absent', 'absent', 'absent', 'absent', 'none'],
-    ['ALB_SG_CREATED', [0, 0, 1, 0, 0, 0], 'alb-created', false, false, 'absent', 'absent', 'absent', 'absent', 'absent', 'none'],
-    ['SGS_CREATED', [0, 0, 1, 1, 0, 0], 'both-created', false, false, 'absent', 'absent', 'absent', 'absent', 'absent', 'none'],
-    ['ALB_INGRESS_READY', [0, 0, 1, 1, 0, 0], 'alb-ingress', false, false, 'absent', 'absent', 'absent', 'absent', 'absent', 'none'],
-    ['ALB_EGRESS_REVOKED', [0, 0, 1, 1, 0, 0], 'alb-egress-revoked', false, false, 'absent', 'absent', 'absent', 'absent', 'absent', 'none'],
-    ['ALB_EGRESS_READY', [0, 0, 1, 1, 0, 0], 'alb-egress-ready', false, false, 'absent', 'absent', 'absent', 'absent', 'absent', 'none'],
-    ['SG_FINAL_UNATTACHED', [0, 0, 1, 1, 0, 0], 'final', false, false, 'absent', 'absent', 'absent', 'absent', 'absent', 'none'],
-    ['TARGET_SG_ATTACHED', [0, 0, 1, 1, 0, 0], 'final', true, true, 'absent', 'absent', 'absent', 'absent', 'absent', 'none'],
-    ['TARGET_GROUP_CREATED', [0, 1, 1, 1, 0, 0], 'final', true, true, 'created', 'absent', 'absent', 'absent', 'absent', 'none'],
-    ['TARGET_GROUP_READY', [0, 1, 1, 1, 0, 0], 'final', true, true, 'ready', 'absent', 'absent', 'absent', 'absent', 'none'],
-    ['ALB_CREATED', [1, 1, 1, 1, 0, 0], 'final', true, true, 'ready', 'created', 'absent', 'absent', 'absent', 'none'],
-    ['LOG_BUCKET_CREATED', [1, 1, 1, 1, 0, 1], 'final', true, true, 'ready', 'created', 'created', 'absent', 'absent', 'none'],
-    ['LOG_BUCKET_PUBLIC_BLOCKED', [1, 1, 1, 1, 0, 1], 'final', true, true, 'ready', 'created', 'public-blocked', 'absent', 'absent', 'none'],
-    ['LOG_BUCKET_OWNERSHIP_ENFORCED', [1, 1, 1, 1, 0, 1], 'final', true, true, 'ready', 'created', 'ownership-enforced', 'absent', 'absent', 'none'],
-    ['LOG_BUCKET_ENCRYPTED', [1, 1, 1, 1, 0, 1], 'final', true, true, 'ready', 'created', 'encrypted', 'absent', 'absent', 'none'],
-    ['LOG_BUCKET_LIFECYCLE_READY', [1, 1, 1, 1, 0, 1], 'final', true, true, 'ready', 'created', 'lifecycle-ready', 'absent', 'absent', 'none'],
-    ['LOG_BUCKET_POLICY_READY', [1, 1, 1, 1, 0, 1], 'final', true, true, 'ready', 'created', 'policy-ready', 'absent', 'absent', 'none'],
-    ['ALB_LOGGING_READY', [1, 1, 1, 1, 0, 1], 'final', true, true, 'ready', 'logging-ready', 'policy-ready', 'absent', 'absent', 'none'],
-    ['WAF_CREATED', [1, 1, 1, 1, 1, 1], 'final', true, true, 'ready', 'logging-ready', 'policy-ready', 'created', 'absent', 'none'],
-    ['WAF_ASSOCIATED', [1, 1, 1, 1, 1, 1], 'final', true, true, 'ready', 'logging-ready', 'policy-ready', 'associated', 'absent', 'none'],
-    ['LISTENER_FIXED_404', [1, 1, 1, 1, 1, 1], 'final', true, true, 'ready', 'logging-ready', 'policy-ready', 'associated', 'fixed-404', 'none'],
-    ['UFW_SUBNET_A_READY', [1, 1, 1, 1, 1, 1], 'final', true, true, 'ready', 'logging-ready', 'policy-ready', 'associated', 'fixed-404', 'subnet-a'],
-    ['TASK4_PRE_GATE_B_READY', [1, 1, 1, 1, 1, 1], 'final', true, true, 'ready', 'logging-ready', 'policy-ready', 'associated', 'fixed-404', 'ready'],
-  ].map(
-    ([
-      stage,
-      counts,
-      securityStage,
-      targetAttached,
-      targetAttachmentExact,
-      targetGroupStage,
-      albStage,
-      bucketStage,
-      wafStage,
-      listenerStage,
-      ufwStage,
-    ]) => ({
-      stage,
-      counts,
-      securityStage,
-      targetAttached,
-      targetAttachmentExact,
-      targetGroupStage,
-      albStage,
-      bucketStage,
-      wafStage,
-      listenerStage,
-      ufwStage,
-    }),
-  );
-  const found = prefixes.filter((prefix) => matches(facts, prefix));
+  const found = STAGE_TABLE.filter((entry) => matches(facts, entry.shape));
   if (found.length !== 1) fail();
-  const stage = found[0].stage;
-  return { stage, action: ACTION_BY_STAGE[stage] };
+  return { stage: found[0].stage, action: found[0].action };
 }
 
 export function nextStage(stage) {
-  if (typeof stage !== 'string' || !(stage in ACTION_BY_STAGE)) fail();
-  return NEXT_STAGE_BY_STAGE[stage] ?? null;
+  if (typeof stage !== 'string') fail();
+  const entry = STAGE_TABLE.find((candidate) => candidate.stage === stage);
+  if (!entry) fail();
+  return entry.next;
 }
-
-export const REMOTE_EDGE_CONSTANTS = Object.freeze({
-  ACCOUNT_ID,
-  REGION,
-  VPC_ID,
-  INSTANCE_ID,
-  TARGET_PRIVATE_IP,
-  ALB_SUBNET_IDS,
-  REMOTE_HOST,
-  ALB_NAME,
-  TARGET_GROUP_NAME,
-  TARGET_SECURITY_GROUP_NAME,
-  WAF_NAME,
-  LOG_BUCKET,
-  MAIL_BUCKET,
-});
