@@ -480,265 +480,340 @@ Rotation sequence: generate new file-backed value → guarded `REMOTE_AUTH_ROTAT
 
 ### Idempotent edge resources after Gate A
 
-Re-runs are fail-closed. A run may create the complete named edge only when every deterministic resource is absent. A complete existing edge is reused only after semantic readback. Any partial or divergent state stops before a create, authorize, revoke, put, modify, attach, or UFW command.
+Re-runs are a strict, live-readback-derived prefix state machine. The Task 4 report, prior shell output, checkpoint files, and a human-supplied stage label are evidence only; none is an input to the next mutation. Every invocation reads current AWS/EC2/host facts again, classifies exactly one known prefix, performs exactly one state-changing command, then performs semantic readback of the required next prefix. The classifier must reject divergence: a read error, malformed response, duplicate named resource, unexpected named-SG attachment, unexpected rule/permission, or no exact prefix match is `unknown/non-prefix remote edge state` and exits before mutation.
+
+No transition invokes `register-targets`, `create-rule`, HTTP `:80`, or DNS mutation. Task 4 creates only a public HTTPS listener whose sole default action is fixed `404`; it never creates a public target path. Legacy `tun0:443` and zero legacy SG ingress stay outside this state machine.
+
+Start every invocation with fresh list/read calls; do not use `--query ... [0]` as a duplicate-name shortcut and do not convert an AWS read failure into absence:
 
 ```bash
-verify_remote_edge_state() {
-  REMOTE_ADMIN_MODE=1 REMOTE_TARGET_HEALTH_REQUIRED=0 \
-    bash apps/server-pilot/deploy/launch-readiness.sh
-}
+REMOTE_EDGE_LIVE_DIR="$EVIDENCE_DIR/remote-edge-live"
+mkdir -p "$REMOTE_EDGE_LIVE_DIR"
 
 aws elbv2 describe-load-balancers --region "$AWS_REGION" --output json \
-  >"$EVIDENCE_DIR/existing-albs.json"
+  >"$REMOTE_EDGE_LIVE_DIR/albs.json"
 aws elbv2 describe-target-groups --region "$AWS_REGION" --output json \
-  >"$EVIDENCE_DIR/existing-target-groups.json"
+  >"$REMOTE_EDGE_LIVE_DIR/target-groups.json"
 aws ec2 describe-security-groups --region "$AWS_REGION" \
   --filters "Name=vpc-id,Values=$VPC_ID" --output json \
-  >"$EVIDENCE_DIR/existing-security-groups.json"
+  >"$REMOTE_EDGE_LIVE_DIR/security-groups.json"
+aws ec2 describe-instances --region "$AWS_REGION" --instance-ids "$INSTANCE_ID" \
+  --output json >"$REMOTE_EDGE_LIVE_DIR/instance.json"
+aws ec2 describe-network-interfaces --region "$AWS_REGION" \
+  --filters "Name=vpc-id,Values=$VPC_ID" --output json \
+  >"$REMOTE_EDGE_LIVE_DIR/network-interfaces.json"
 aws wafv2 list-web-acls --region "$AWS_REGION" --scope REGIONAL --output json \
-  >"$EVIDENCE_DIR/existing-wafs.json"
-aws s3api list-buckets --query "Buckets[?Name=='$REMOTE_LOG_BUCKET'].Name" --output json \
-  >"$EVIDENCE_DIR/existing-log-bucket.json"
-
-EDGE_REUSE_STATE="$(
-  node - \
-    "$EVIDENCE_DIR/existing-albs.json" \
-    "$EVIDENCE_DIR/existing-target-groups.json" \
-    "$EVIDENCE_DIR/existing-security-groups.json" \
-    "$EVIDENCE_DIR/existing-wafs.json" \
-    "$EVIDENCE_DIR/existing-log-bucket.json" <<'NODE'
-const fs = require("fs");
-const [albsPath, groupsPath, securityGroupsPath, wafsPath, bucketPath] =
-  process.argv.slice(2);
-const albs = JSON.parse(fs.readFileSync(albsPath, "utf8")).LoadBalancers ?? [];
-const groups = JSON.parse(fs.readFileSync(groupsPath, "utf8")).TargetGroups ?? [];
-const securityGroups = JSON.parse(fs.readFileSync(securityGroupsPath, "utf8")).SecurityGroups ?? [];
-const wafs = JSON.parse(fs.readFileSync(wafsPath, "utf8")).WebACLs ?? [];
-const buckets = JSON.parse(fs.readFileSync(bucketPath, "utf8"));
-const count = (items, predicate) => items.filter(predicate).length;
-const present = [
-  count(albs, (item) => item.LoadBalancerName === "nava-remote-admin-alb"),
-  count(groups, (item) => item.TargetGroupName === "nava-remote-admin"),
-  count(securityGroups, (item) => item.GroupName === "nava-remote-admin-alb"),
-  count(securityGroups, (item) => item.GroupName === "nava-remote-admin-target"),
-  count(wafs, (item) => item.Name === "nava-remote-admin-waf"),
-  Array.isArray(buckets) ? buckets.length : -1,
-];
-if (present.every((value) => value === 0)) process.stdout.write("fresh");
-else if (present.every((value) => value === 1)) process.stdout.write("complete");
-else process.stdout.write("partial");
-NODE
-)"
-case "$EDGE_REUSE_STATE" in
-  fresh) ;;
-  complete)
-    verify_remote_edge_state
-    exit 0
-    ;;
-  *)
-    echo "remote edge state is partial; reject divergence before mutation" >&2
-    exit 2
-    ;;
-esac
+  >"$REMOTE_EDGE_LIVE_DIR/wafs.json"
+aws s3api list-buckets --output json >"$REMOTE_EDGE_LIVE_DIR/buckets.json"
 ```
 
-`verify_remote_edge_state` is semantic readback: it resolves the named resources and rejects divergent listener, target, target-SG, UFW, WAF, log, and CORS state. It requires an internet-facing application ALB with `IpAddressType === "ipv4"` and exact ALB-SG ingress/egress before reusing an existing edge. Run it after Gate B has established remote CORS. Before Gate B, a partial prior run is intentionally not resumed automatically.
+For a named resource which exists, collect its exact read-only child state before classifying it: target-group attributes; ALB attributes, listeners, and listener rules; WAF definition and association; bucket location, public-access block, ownership controls, encryption, lifecycle, and policy; and sanitized exact UFW/VPN facts. A missing optional bucket/WAF control is a valid *only* when AWS returns its documented not-configured error; any other error is fatal. The fresh collector writes only sanitized resource IDs/ARNs and booleans to `$REMOTE_EDGE_LIVE_DIR/facts.json`, mode `0600`; it never reads a secret value or consumes historical evidence.
+
+`classify_remote_edge_stage` validates JSON types, cardinality, VPC/account/instance identity, all named-SG ENI attachments, every SG rule, every child control, and returns one stage only. Its final predicate is an exclusive match: zero or two matching predicates fail closed.
 
 ```bash
-ALB_SG_ID="$(aws ec2 describe-security-groups --region "$AWS_REGION" \
-  --filters "Name=vpc-id,Values=$VPC_ID" "Name=group-name,Values=$REMOTE_ALB_NAME" \
-  --query 'SecurityGroups[0].GroupId' --output text)"
-if [ -z "$ALB_SG_ID" ] || [ "$ALB_SG_ID" = None ]; then
-  ALB_SG_ID="$(aws ec2 create-security-group --region "$AWS_REGION" \
-    --vpc-id "$VPC_ID" --group-name "$REMOTE_ALB_NAME" \
-    --description "NAVA remote admin ALB ingress only" \
-    --query GroupId --output text)"
-fi
-
-TARGET_SG_ID="$(aws ec2 describe-security-groups --region "$AWS_REGION" \
-  --filters "Name=vpc-id,Values=$VPC_ID" "Name=group-name,Values=$REMOTE_TARGET_SECURITY_GROUP_NAME" \
-  --query 'SecurityGroups[0].GroupId' --output text)"
-if [ -z "$TARGET_SG_ID" ] || [ "$TARGET_SG_ID" = None ]; then
-  TARGET_SG_ID="$(aws ec2 create-security-group --region "$AWS_REGION" \
-    --vpc-id "$VPC_ID" --group-name "$REMOTE_TARGET_SECURITY_GROUP_NAME" \
-    --description "NAVA remote admin ALB target only" \
-    --query GroupId --output text)"
-fi
-```
-
-Read both SGs after every write. Required final shape: ALB SG inbound TCP/443 only from `0.0.0.0/0`; ALB SG outbound TCP/8443 only to `$TARGET_SG_ID`; target SG inbound TCP/8443 only from `$ALB_SG_ID`. Revoke the new-SG default all-egress rule before adding the single ALB egress rule.
-
-```bash
-assert_sg_stage() {
-  local stage="$1"
-  local readback="$EVIDENCE_DIR/remote-sg-${stage}.json"
-  aws ec2 describe-security-groups --region "$AWS_REGION" \
-    --group-ids "$ALB_SG_ID" "$TARGET_SG_ID" --output json >"$readback"
-  node - "$readback" "$ALB_SG_ID" "$TARGET_SG_ID" "$stage" <<'NODE'
+classify_remote_edge_stage() {
+  node - "$REMOTE_EDGE_LIVE_DIR/facts.json" <<'NODE'
 const fs = require("fs");
-const [readbackPath, albId, targetId, stage] = process.argv.slice(2);
-const groups = JSON.parse(fs.readFileSync(readbackPath, "utf8")).SecurityGroups ?? [];
-const byId = new Map(groups.map((group) => [group.GroupId, group]));
-const alb = byId.get(albId);
-const target = byId.get(targetId);
-const emptySources = (permission) =>
-  ["IpRanges", "Ipv6Ranges", "PrefixListIds"].every(
-    (key) => !Array.isArray(permission?.[key]) || permission[key].length === 0,
-  );
-const exactPublic443 = (permission) =>
-  permission?.IpProtocol === "tcp" &&
-  permission?.FromPort === 443 &&
-  permission?.ToPort === 443 &&
-  Array.isArray(permission?.IpRanges) &&
-  permission.IpRanges.length === 1 &&
-  permission.IpRanges[0]?.CidrIp === "0.0.0.0/0" &&
-  (!Array.isArray(permission?.Ipv6Ranges) || permission.Ipv6Ranges.length === 0) &&
-  (!Array.isArray(permission?.PrefixListIds) || permission.PrefixListIds.length === 0) &&
-  (!Array.isArray(permission?.UserIdGroupPairs) || permission.UserIdGroupPairs.length === 0);
-const exactTarget8443 = (permission) =>
-  permission?.IpProtocol === "tcp" &&
-  permission?.FromPort === 8443 &&
-  permission?.ToPort === 8443 &&
-  emptySources(permission) &&
-  Array.isArray(permission?.UserIdGroupPairs) &&
-  permission.UserIdGroupPairs.length === 1 &&
-  permission.UserIdGroupPairs[0]?.GroupId === targetId;
-const exactAlb8443 = (permission) =>
-  permission?.IpProtocol === "tcp" &&
-  permission?.FromPort === 8443 &&
-  permission?.ToPort === 8443 &&
-  emptySources(permission) &&
-  Array.isArray(permission?.UserIdGroupPairs) &&
-  permission.UserIdGroupPairs.length === 1 &&
-  permission.UserIdGroupPairs[0]?.GroupId === albId;
-const defaultAllEgress = (permission) =>
-  permission?.IpProtocol === "-1" &&
-  Array.isArray(permission?.IpRanges) &&
-  permission.IpRanges.length === 1 &&
-  permission.IpRanges[0]?.CidrIp === "0.0.0.0/0" &&
-  (!Array.isArray(permission?.Ipv6Ranges) || permission.Ipv6Ranges.length === 0) &&
-  (!Array.isArray(permission?.PrefixListIds) || permission.PrefixListIds.length === 0) &&
-  (!Array.isArray(permission?.UserIdGroupPairs) || permission.UserIdGroupPairs.length === 0);
-const exact = (actual, predicate) =>
-  Array.isArray(actual) && actual.length === 1 && predicate(actual[0]);
-const valid =
-  groups.length === 2 &&
-  alb?.VpcId === "vpc-0f078e17a5f0f8599" &&
-  target?.VpcId === "vpc-0f078e17a5f0f8599" &&
-  exact(alb?.IpPermissions, exactPublic443) &&
-  (
-    stage === "after-alb-ingress"
-      ? exact(alb?.IpPermissionsEgress, defaultAllEgress) &&
-        Array.isArray(target?.IpPermissions) && target.IpPermissions.length === 0
-      : stage === "after-alb-egress-revoke"
-        ? Array.isArray(alb?.IpPermissionsEgress) &&
-          alb.IpPermissionsEgress.length === 0 &&
-          Array.isArray(target?.IpPermissions) && target.IpPermissions.length === 0
-        : stage === "after-alb-egress-authorize"
-          ? exact(alb?.IpPermissionsEgress, exactTarget8443) &&
-            Array.isArray(target?.IpPermissions) && target.IpPermissions.length === 0
-        : stage === "final"
-          ? exact(alb?.IpPermissionsEgress, exactTarget8443) &&
-            exact(target?.IpPermissions, exactAlb8443)
-          : false
-  );
-if (!valid) process.exit(2);
+const facts = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const fail = () => process.exit(2);
+const exact = (actual, expected) =>
+  Array.isArray(actual) &&
+  actual.length === expected.length &&
+  expected.every((value) => actual.includes(value));
+if (
+  facts?.account !== "845242190536" ||
+  facts?.region !== "af-south-1" ||
+  facts?.vpcId !== "vpc-0f078e17a5f0f8599" ||
+  facts?.instanceId !== "i-008f737974a9ba9b3" ||
+  !Array.isArray(facts?.namedResourceCounts) ||
+  facts.namedResourceCounts.length !== 6 ||
+  facts.namedResourceCounts.some((value) => !Number.isInteger(value) || value < 0 || value > 1) ||
+  facts?.malformed === true ||
+  facts?.unexpectedAttachment === true ||
+  facts?.unexpectedPermission === true
+) fail();
+const [alb, targetGroup, albSg, targetSg, waf, bucket] = facts.namedResourceCounts;
+const vector = `[ALB=${alb},TG=${targetGroup},ALB-SG=${albSg},target-SG=${targetSg},WAF=${waf},bucket=${bucket}]`;
+const matches = [
+  ["FRESH", vector === "[ALB=0,TG=0,ALB-SG=0,target-SG=0,WAF=0,bucket=0]"],
+  ["ALB_SG_CREATED", facts.sgStage === "alb-created" && vector === "[ALB=0,TG=0,ALB-SG=1,target-SG=0,WAF=0,bucket=0]"],
+  ["SGS_CREATED", facts.sgStage === "both-created" && vector === "[ALB=0,TG=0,ALB-SG=1,target-SG=1,WAF=0,bucket=0]"],
+  ["ALB_INGRESS_READY", facts.sgStage === "alb-ingress" && vector === "[ALB=0,TG=0,ALB-SG=1,target-SG=1,WAF=0,bucket=0]"],
+  ["ALB_EGRESS_REVOKED", facts.sgStage === "alb-egress-revoked" && vector === "[ALB=0,TG=0,ALB-SG=1,target-SG=1,WAF=0,bucket=0]"],
+  ["ALB_EGRESS_READY", facts.sgStage === "alb-egress-ready" && vector === "[ALB=0,TG=0,ALB-SG=1,target-SG=1,WAF=0,bucket=0]"],
+  ["SG_FINAL_UNATTACHED", facts.sgStage === "final" && facts.targetAttached === false && vector === "[ALB=0,TG=0,ALB-SG=1,target-SG=1,WAF=0,bucket=0]"],
+  ["TARGET_SG_ATTACHED", facts.sgStage === "final" && facts.targetAttached === true && facts.targetAttachmentExact === true && vector === "[ALB=0,TG=0,ALB-SG=1,target-SG=1,WAF=0,bucket=0]"],
+  ["TARGET_GROUP_CREATED", facts.targetGroupStage === "created" && vector === "[ALB=0,TG=1,ALB-SG=1,target-SG=1,WAF=0,bucket=0]"],
+  ["TARGET_GROUP_READY", facts.targetGroupStage === "ready" && vector === "[ALB=0,TG=1,ALB-SG=1,target-SG=1,WAF=0,bucket=0]"],
+  ["ALB_CREATED", facts.albStage === "created" && vector === "[ALB=1,TG=1,ALB-SG=1,target-SG=1,WAF=0,bucket=0]"],
+  ["LOG_BUCKET_CREATED", facts.bucketStage === "created" && vector === "[ALB=1,TG=1,ALB-SG=1,target-SG=1,WAF=0,bucket=1]"],
+  ["LOG_BUCKET_PUBLIC_BLOCKED", facts.bucketStage === "public-blocked" && vector === "[ALB=1,TG=1,ALB-SG=1,target-SG=1,WAF=0,bucket=1]"],
+  ["LOG_BUCKET_OWNERSHIP_ENFORCED", facts.bucketStage === "ownership-enforced" && vector === "[ALB=1,TG=1,ALB-SG=1,target-SG=1,WAF=0,bucket=1]"],
+  ["LOG_BUCKET_ENCRYPTED", facts.bucketStage === "encrypted" && vector === "[ALB=1,TG=1,ALB-SG=1,target-SG=1,WAF=0,bucket=1]"],
+  ["LOG_BUCKET_LIFECYCLE_READY", facts.bucketStage === "lifecycle-ready" && vector === "[ALB=1,TG=1,ALB-SG=1,target-SG=1,WAF=0,bucket=1]"],
+  ["LOG_BUCKET_POLICY_READY", facts.bucketStage === "policy-ready" && vector === "[ALB=1,TG=1,ALB-SG=1,target-SG=1,WAF=0,bucket=1]"],
+  ["ALB_LOGGING_READY", facts.albStage === "logging-ready" && vector === "[ALB=1,TG=1,ALB-SG=1,target-SG=1,WAF=0,bucket=1]"],
+  ["WAF_CREATED", facts.wafStage === "created" && vector === "[ALB=1,TG=1,ALB-SG=1,target-SG=1,WAF=1,bucket=1]"],
+  ["WAF_ASSOCIATED", facts.wafStage === "associated" && vector === "[ALB=1,TG=1,ALB-SG=1,target-SG=1,WAF=1,bucket=1]"],
+  ["LISTENER_FIXED_404", facts.listenerStage === "fixed-404" && facts.ufwStage === "none" && vector === "[ALB=1,TG=1,ALB-SG=1,target-SG=1,WAF=1,bucket=1]"],
+  ["UFW_SUBNET_A_READY", facts.listenerStage === "fixed-404" && facts.ufwStage === "subnet-a" && vector === "[ALB=1,TG=1,ALB-SG=1,target-SG=1,WAF=1,bucket=1]"],
+  ["TASK4_PRE_GATE_B_READY", facts.listenerStage === "fixed-404" && facts.ufwStage === "ready" && vector === "[ALB=1,TG=1,ALB-SG=1,target-SG=1,WAF=1,bucket=1]"],
+].filter(([, valid]) => valid);
+if (matches.length !== 1 || !exact(matches.map(([stage]) => stage), [matches[0][0]])) fail();
+process.stdout.write(matches[0][0]);
 NODE
 }
 
-# Fresh-only path after re-run guard. Every mutation has stage-specific semantic readback.
-aws ec2 authorize-security-group-ingress --region "$AWS_REGION" \
-  --group-id "$ALB_SG_ID" --ip-permissions \
-  "IpProtocol=tcp,FromPort=443,ToPort=443,IpRanges=[{CidrIp=0.0.0.0/0}]"
-assert_sg_stage after-alb-ingress
-aws ec2 revoke-security-group-egress --region "$AWS_REGION" \
-  --group-id "$ALB_SG_ID" --ip-permissions \
-  "IpProtocol=-1,IpRanges=[{CidrIp=0.0.0.0/0}]"
-assert_sg_stage after-alb-egress-revoke
-aws ec2 authorize-security-group-egress --region "$AWS_REGION" \
-  --group-id "$ALB_SG_ID" --ip-permissions \
-  "IpProtocol=tcp,FromPort=8443,ToPort=8443,UserIdGroupPairs=[{GroupId=$TARGET_SG_ID}]"
-assert_sg_stage after-alb-egress-authorize
-aws ec2 authorize-security-group-ingress --region "$AWS_REGION" \
-  --group-id "$TARGET_SG_ID" --ip-permissions \
-  "IpProtocol=tcp,FromPort=8443,ToPort=8443,UserIdGroupPairs=[{GroupId=$ALB_SG_ID}]"
-assert_sg_stage final
+assert_remote_edge_stage() {
+  local expected="$1"
+  local actual
+  actual="$(classify_remote_edge_stage)" || {
+    echo "malformed remote edge readback or unknown/non-prefix remote edge state" >&2
+    return 2
+  }
+  test "$actual" = "$expected" || {
+    echo "unknown/non-prefix remote edge state; expected $expected, found $actual" >&2
+    return 2
+  }
+}
 ```
 
-Attach target SG without replacing existing groups, then read every attached SG and enforce that all TCP/8443 permissions are ALB-SG-only:
+The fresh collector derives the semantic facts above only from live API/SSM output. It rejects a duplicate named remote resource, any all-protocol permission (`permission.IpProtocol === "-1"`), any public/IPv6/prefix-list/non-ALB `8443` source, an ALB SG attached to the EC2 instance, a target SG attached anywhere except the exact EC2 primary ENI once attachment is expected, non-exact default egress, a non-`ipv4` ALB (`IpAddressType === "ipv4"` is required), non-`404` listener/default rule, pre-registration target/rule, non-exact WAF/log controls, or non-exact UFW/VPN state. These are predicates, not operator assertions.
 
-```bash
-CURRENT_INSTANCE_SGS="$(aws ec2 describe-instances --region "$AWS_REGION" \
-  --instance-ids "$INSTANCE_ID" \
-  --query 'Reservations[0].Instances[0].SecurityGroups[].GroupId' --output text)"
-case " $CURRENT_INSTANCE_SGS " in *" $TARGET_SG_ID "*) ;; *)
-  aws ec2 modify-instance-attribute --region "$AWS_REGION" \
-    --instance-id "$INSTANCE_ID" --groups $CURRENT_INSTANCE_SGS "$TARGET_SG_ID"
-esac
-aws ec2 describe-security-groups --region "$AWS_REGION" \
-  --group-ids $CURRENT_INSTANCE_SGS "$TARGET_SG_ID" --output json \
-  >"$EVIDENCE_DIR/attached-security-groups-after-target.json"
+Known safe prefixes and their sole allowed state-changing transition:
+
+```text
+FRESH -> ALB_SG_CREATED
+ALB_SG_CREATED -> SGS_CREATED
+SGS_CREATED -> ALB_INGRESS_READY
+ALB_INGRESS_READY -> ALB_EGRESS_REVOKED
+ALB_EGRESS_REVOKED -> ALB_EGRESS_READY
+ALB_EGRESS_READY -> SG_FINAL_UNATTACHED
+SG_FINAL_UNATTACHED -> TARGET_SG_ATTACHED
+TARGET_SG_ATTACHED -> TARGET_GROUP_CREATED
+TARGET_GROUP_CREATED -> TARGET_GROUP_READY
+TARGET_GROUP_READY -> ALB_CREATED
+ALB_CREATED -> LOG_BUCKET_CREATED
+LOG_BUCKET_CREATED -> LOG_BUCKET_PUBLIC_BLOCKED
+LOG_BUCKET_PUBLIC_BLOCKED -> LOG_BUCKET_OWNERSHIP_ENFORCED
+LOG_BUCKET_OWNERSHIP_ENFORCED -> LOG_BUCKET_ENCRYPTED
+LOG_BUCKET_ENCRYPTED -> LOG_BUCKET_LIFECYCLE_READY
+LOG_BUCKET_LIFECYCLE_READY -> LOG_BUCKET_POLICY_READY
+LOG_BUCKET_POLICY_READY -> ALB_LOGGING_READY
+ALB_LOGGING_READY -> WAF_CREATED
+WAF_CREATED -> WAF_ASSOCIATED
+WAF_ASSOCIATED -> LISTENER_FIXED_404
+LISTENER_FIXED_404 -> UFW_SUBNET_A_READY
+UFW_SUBNET_A_READY -> TASK4_PRE_GATE_B_READY
 ```
 
-Create target group and ALB only when absent. Target group uses HTTP `:8443`, `/health`, matcher `200`, and 30-second deregistration. Public ALB uses only the two pinned public subnets.
+`SG_FINAL_UNATTACHED` is a safe resume prefix: both named SGs have their exact final rule shapes, no named ALB/target group/WAF/bucket exists, and neither named SG is attached to the target instance. This is the current live shape. It advances only by attaching the already-validated target SG, followed by a fresh attachment readback.
+
+`facts.json` includes only IDs resolved after duplicate rejection. Read them through this strict helper; it exits for a missing/wrong-typed field instead of falling back to an AWS `[0]` result:
 
 ```bash
-TARGET_GROUP_ARN="$(aws elbv2 describe-target-groups --region "$AWS_REGION" \
-  --names "$REMOTE_TARGET_GROUP_NAME" --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || true)"
-if [ -z "$TARGET_GROUP_ARN" ] || [ "$TARGET_GROUP_ARN" = None ]; then
-  TARGET_GROUP_ARN="$(aws elbv2 create-target-group --region "$AWS_REGION" \
-    --name "$REMOTE_TARGET_GROUP_NAME" --protocol HTTP --port 8443 --vpc-id "$VPC_ID" \
-    --health-check-protocol HTTP --health-check-path /health \
-    --matcher HttpCode=200 --target-type instance \
-    --query 'TargetGroups[0].TargetGroupArn' --output text)"
-fi
-aws elbv2 modify-target-group-attributes --region "$AWS_REGION" \
-  --target-group-arn "$TARGET_GROUP_ARN" \
-  --attributes Key=deregistration_delay.timeout_seconds,Value=30
+remote_edge_fact() {
+  node - "$REMOTE_EDGE_LIVE_DIR/facts.json" "$1" <<'NODE'
+const fs = require("fs");
+const [path, field] = process.argv.slice(2);
+const value = JSON.parse(fs.readFileSync(path, "utf8"))?.[field];
+if (typeof value !== "string" || value.length === 0) process.exit(2);
+process.stdout.write(value);
+NODE
+}
 
-ALB_ARN="$(aws elbv2 describe-load-balancers --region "$AWS_REGION" \
-  --names "$REMOTE_ALB_NAME" --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null || true)"
-if [ -z "$ALB_ARN" ] || [ "$ALB_ARN" = None ]; then
-  ALB_ARN="$(aws elbv2 create-load-balancer --region "$AWS_REGION" \
-    --name "$REMOTE_ALB_NAME" --scheme internet-facing --type application \
-    --ip-address-type ipv4 \
-    --subnets "$REMOTE_ALB_SUBNET_A" "$REMOTE_ALB_SUBNET_B" \
-    --security-groups "$ALB_SG_ID" \
-    --query 'LoadBalancers[0].LoadBalancerArn' --output text)"
-fi
+remote_edge_instance_group_ids() {
+  node - "$REMOTE_EDGE_LIVE_DIR/facts.json" <<'NODE'
+const fs = require("fs");
+const value = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+if (!Array.isArray(value?.instanceSecurityGroupIds) || value.instanceSecurityGroupIds.length === 0 ||
+  value.instanceSecurityGroupIds.some((id) => typeof id !== "string" || id.length === 0)) process.exit(2);
+process.stdout.write(value.instanceSecurityGroupIds.join(" "));
+NODE
+}
+
+transition_security_group_prefix_once() {
+  local stage="$1"
+  local next=""
+  local ALB_SG_ID TARGET_SG_ID CURRENT_INSTANCE_SGS
+
+  case "$stage" in
+    FRESH)
+      aws ec2 create-security-group --region "$AWS_REGION" \
+        --vpc-id "$VPC_ID" --group-name "$REMOTE_ALB_NAME" \
+        --description "NAVA remote admin ALB ingress only" >/dev/null
+      next=ALB_SG_CREATED
+      ;;
+    ALB_SG_CREATED)
+      aws ec2 create-security-group --region "$AWS_REGION" \
+        --vpc-id "$VPC_ID" --group-name "$REMOTE_TARGET_SECURITY_GROUP_NAME" \
+        --description "NAVA remote admin ALB target only" >/dev/null
+      next=SGS_CREATED
+      ;;
+    SGS_CREATED)
+      ALB_SG_ID="$(remote_edge_fact albSecurityGroupId)"
+      aws ec2 authorize-security-group-ingress --region "$AWS_REGION" \
+        --group-id "$ALB_SG_ID" --ip-permissions \
+        "IpProtocol=tcp,FromPort=443,ToPort=443,IpRanges=[{CidrIp=0.0.0.0/0}]"
+      next=ALB_INGRESS_READY
+      ;;
+    ALB_INGRESS_READY)
+      ALB_SG_ID="$(remote_edge_fact albSecurityGroupId)"
+      aws ec2 revoke-security-group-egress --region "$AWS_REGION" \
+        --group-id "$ALB_SG_ID" --ip-permissions \
+        "IpProtocol=-1,IpRanges=[{CidrIp=0.0.0.0/0}]"
+      next=ALB_EGRESS_REVOKED
+      ;;
+    ALB_EGRESS_REVOKED)
+      ALB_SG_ID="$(remote_edge_fact albSecurityGroupId)"
+      TARGET_SG_ID="$(remote_edge_fact targetSecurityGroupId)"
+      aws ec2 authorize-security-group-egress --region "$AWS_REGION" \
+        --group-id "$ALB_SG_ID" --ip-permissions \
+        "IpProtocol=tcp,FromPort=8443,ToPort=8443,UserIdGroupPairs=[{GroupId=$TARGET_SG_ID}]"
+      next=ALB_EGRESS_READY
+      ;;
+    ALB_EGRESS_READY)
+      ALB_SG_ID="$(remote_edge_fact albSecurityGroupId)"
+      TARGET_SG_ID="$(remote_edge_fact targetSecurityGroupId)"
+      aws ec2 authorize-security-group-ingress --region "$AWS_REGION" \
+        --group-id "$TARGET_SG_ID" --ip-permissions \
+        "IpProtocol=tcp,FromPort=8443,ToPort=8443,UserIdGroupPairs=[{GroupId=$ALB_SG_ID}]"
+      next=SG_FINAL_UNATTACHED
+      ;;
+    SG_FINAL_UNATTACHED)
+      TARGET_SG_ID="$(remote_edge_fact targetSecurityGroupId)"
+      CURRENT_INSTANCE_SGS="$(remote_edge_instance_group_ids)"
+      case " $CURRENT_INSTANCE_SGS " in
+        *" $TARGET_SG_ID "*) exit 2 ;;
+      esac
+      aws ec2 modify-instance-attribute --region "$AWS_REGION" \
+        --instance-id "$INSTANCE_ID" --groups $CURRENT_INSTANCE_SGS "$TARGET_SG_ID"
+      next=TARGET_SG_ATTACHED
+      ;;
+    *)
+      return 3
+      ;;
+  esac
+
+  REMOTE_EDGE_NEXT_STAGE="$next"
+  assert_remote_edge_stage "$REMOTE_EDGE_NEXT_STAGE"
+}
 ```
 
-Create remote log bucket in `af-south-1`, then enforce exact controls. Never use SSE-KMS for ALB logs.
+Create target group and ALB only through their matching prefixes. Target group stays HTTP `:8443`, `/health`, matcher `200`, and 30-second deregistration. Public ALB uses only pinned public subnets and the dedicated ALB SG. The availability waiter is read-only polling after the single create mutation.
 
 ```bash
-# Re-run guard proved this deterministic bucket absent. Do not use `head || create`:
-# access failure must never be mistaken for absence.
-aws s3api create-bucket --region "$AWS_REGION" --bucket "$REMOTE_LOG_BUCKET" \
-  --create-bucket-configuration LocationConstraint="$AWS_REGION"
-aws s3api put-public-access-block --region "$AWS_REGION" --bucket "$REMOTE_LOG_BUCKET" \
-  --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
-aws s3api put-bucket-ownership-controls --region "$AWS_REGION" --bucket "$REMOTE_LOG_BUCKET" \
-  --ownership-controls '{"Rules":[{"ObjectOwnership":"BucketOwnerEnforced"}]}'
-aws s3api put-bucket-encryption --region "$AWS_REGION" --bucket "$REMOTE_LOG_BUCKET" \
-  --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
-aws s3api put-bucket-lifecycle-configuration --region "$AWS_REGION" --bucket "$REMOTE_LOG_BUCKET" \
-  --lifecycle-configuration '{"Rules":[{"ID":"expire-remote-alb-logs-365d","Status":"Enabled","Filter":{"Prefix":""},"Expiration":{"Days":365}}]}'
-cat >"$EVIDENCE_DIR/remote-alb-log-bucket-policy.json" <<JSON
+transition_edge_service_prefix_once() {
+  local stage="$1"
+  local next=""
+  local TARGET_GROUP_ARN ALB_SG_ID ALB_ARN
+
+  case "$stage" in
+    TARGET_SG_ATTACHED)
+      aws elbv2 create-target-group --region "$AWS_REGION" \
+        --name "$REMOTE_TARGET_GROUP_NAME" --protocol HTTP --port 8443 --vpc-id "$VPC_ID" \
+        --health-check-protocol HTTP --health-check-path /health \
+        --matcher HttpCode=200 --target-type instance >/dev/null
+      next=TARGET_GROUP_CREATED
+      ;;
+    TARGET_GROUP_CREATED)
+      TARGET_GROUP_ARN="$(remote_edge_fact targetGroupArn)"
+      aws elbv2 modify-target-group-attributes --region "$AWS_REGION" \
+        --target-group-arn "$TARGET_GROUP_ARN" \
+        --attributes Key=deregistration_delay.timeout_seconds,Value=30
+      next=TARGET_GROUP_READY
+      ;;
+    TARGET_GROUP_READY)
+      ALB_SG_ID="$(remote_edge_fact albSecurityGroupId)"
+      ALB_ARN="$(aws elbv2 create-load-balancer --region "$AWS_REGION" \
+        --name "$REMOTE_ALB_NAME" --scheme internet-facing --type application \
+        --ip-address-type ipv4 \
+        --subnets "$REMOTE_ALB_SUBNET_A" "$REMOTE_ALB_SUBNET_B" \
+        --security-groups "$ALB_SG_ID" \
+        --query 'LoadBalancers[0].LoadBalancerArn' --output text)"
+      test -n "$ALB_ARN" && test "$ALB_ARN" != None
+      aws elbv2 wait load-balancer-available --region "$AWS_REGION" \
+        --load-balancer-arns "$ALB_ARN"
+      next=ALB_CREATED
+      ;;
+    *)
+      return 3
+      ;;
+  esac
+
+  REMOTE_EDGE_NEXT_STAGE="$next"
+  assert_remote_edge_stage "$REMOTE_EDGE_NEXT_STAGE"
+}
+```
+
+Create remote log bucket in `af-south-1` through one control at a time. Never use SSE-KMS for ALB logs. A list/read failure must never be mistaken for bucket absence.
+
+```bash
+transition_log_bucket_prefix_once() {
+  local stage="$1"
+  local next=""
+  local ALB_ARN
+
+  case "$stage" in
+    ALB_CREATED)
+      aws s3api create-bucket --region "$AWS_REGION" --bucket "$REMOTE_LOG_BUCKET" \
+        --create-bucket-configuration LocationConstraint="$AWS_REGION"
+      next=LOG_BUCKET_CREATED
+      ;;
+    LOG_BUCKET_CREATED)
+      aws s3api put-public-access-block --region "$AWS_REGION" --bucket "$REMOTE_LOG_BUCKET" \
+        --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+      next=LOG_BUCKET_PUBLIC_BLOCKED
+      ;;
+    LOG_BUCKET_PUBLIC_BLOCKED)
+      aws s3api put-bucket-ownership-controls --region "$AWS_REGION" --bucket "$REMOTE_LOG_BUCKET" \
+        --ownership-controls '{"Rules":[{"ObjectOwnership":"BucketOwnerEnforced"}]}'
+      next=LOG_BUCKET_OWNERSHIP_ENFORCED
+      ;;
+    LOG_BUCKET_OWNERSHIP_ENFORCED)
+      aws s3api put-bucket-encryption --region "$AWS_REGION" --bucket "$REMOTE_LOG_BUCKET" \
+        --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+      next=LOG_BUCKET_ENCRYPTED
+      ;;
+    LOG_BUCKET_ENCRYPTED)
+      aws s3api put-bucket-lifecycle-configuration --region "$AWS_REGION" --bucket "$REMOTE_LOG_BUCKET" \
+        --lifecycle-configuration '{"Rules":[{"ID":"expire-remote-alb-logs-365d","Status":"Enabled","Filter":{"Prefix":""},"Expiration":{"Days":365}}]}'
+      next=LOG_BUCKET_LIFECYCLE_READY
+      ;;
+    LOG_BUCKET_LIFECYCLE_READY)
+      ALB_ARN="$(remote_edge_fact albArn)"
+      cat >"$EVIDENCE_DIR/remote-alb-log-bucket-policy.json" <<JSON
 {"Version":"2012-10-17","Statement":[
   {"Sid":"AllowAlbLogDeliveryWrite","Effect":"Allow","Principal":{"Service":"logdelivery.elasticloadbalancing.amazonaws.com"},"Action":"s3:PutObject","Resource":"arn:aws:s3:::$REMOTE_LOG_BUCKET/AWSLogs/$AWS_ACCOUNT_ID/*","Condition":{"StringEquals":{"aws:SourceAccount":"$AWS_ACCOUNT_ID"},"ArnLike":{"aws:SourceArn":"$ALB_ARN"}}},
   {"Sid":"DenyInsecureTransport","Effect":"Deny","Principal":"*","Action":"s3:*","Resource":["arn:aws:s3:::$REMOTE_LOG_BUCKET","arn:aws:s3:::$REMOTE_LOG_BUCKET/*"],"Condition":{"Bool":{"aws:SecureTransport":"false"}}}
 ]}
 JSON
-aws s3api put-bucket-policy --region "$AWS_REGION" --bucket "$REMOTE_LOG_BUCKET" \
-  --policy "file://$EVIDENCE_DIR/remote-alb-log-bucket-policy.json"
-aws elbv2 modify-load-balancer-attributes --region "$AWS_REGION" \
-  --load-balancer-arn "$ALB_ARN" \
-  --attributes Key=access_logs.s3.enabled,Value=true Key=access_logs.s3.bucket,Value="$REMOTE_LOG_BUCKET"
+      aws s3api put-bucket-policy --region "$AWS_REGION" --bucket "$REMOTE_LOG_BUCKET" \
+        --policy "file://$EVIDENCE_DIR/remote-alb-log-bucket-policy.json"
+      next=LOG_BUCKET_POLICY_READY
+      ;;
+    LOG_BUCKET_POLICY_READY)
+      ALB_ARN="$(remote_edge_fact albArn)"
+      aws elbv2 modify-load-balancer-attributes --region "$AWS_REGION" \
+        --load-balancer-arn "$ALB_ARN" \
+        --attributes Key=access_logs.s3.enabled,Value=true Key=access_logs.s3.bucket,Value="$REMOTE_LOG_BUCKET"
+      next=ALB_LOGGING_READY
+      ;;
+    *)
+      return 3
+      ;;
+  esac
+
+  REMOTE_EDGE_NEXT_STAGE="$next"
+  assert_remote_edge_stage "$REMOTE_EDGE_NEXT_STAGE"
+}
 ```
 
-Create regional WAF with AWS managed baseline groups, source-IP 25/300-second `POST /api/auth/sign-in/email` rule, and source-IP 1000/300-second whole-remote-plane rule. Attach only to `$ALB_ARN`.
+Create regional WAF with AWS managed baseline groups, source-IP 25/300-second `POST /api/auth/sign-in/email` rule, and source-IP 1000/300-second whole-remote-plane rule. The `WAF_CREATED` readback requires exact definition before its one allowed association mutation.
 
 ```bash
+write_remote_admin_waf_definition() {
 cat >"$EVIDENCE_DIR/remote-admin-waf.json" <<'JSON'
 {
   "Name": "nava-remote-admin-waf",
@@ -754,55 +829,128 @@ cat >"$EVIDENCE_DIR/remote-admin-waf.json" <<'JSON'
   ]
 }
 JSON
-WAF_ID="$(aws wafv2 list-web-acls --region "$AWS_REGION" --scope REGIONAL \
-  --query "WebACLs[?Name=='$REMOTE_WAF_NAME'].Id | [0]" --output text)"
-if [ -z "$WAF_ID" ] || [ "$WAF_ID" = None ]; then
-  WAF_ARN="$(aws wafv2 create-web-acl --region "$AWS_REGION" \
-    --cli-input-json "file://$EVIDENCE_DIR/remote-admin-waf.json" \
-    --query Summary.ARN --output text)"
-else
-  WAF_ARN="$(aws wafv2 get-web-acl --region "$AWS_REGION" --scope REGIONAL \
-    --name "$REMOTE_WAF_NAME" --id "$WAF_ID" --query WebACL.ARN --output text)"
-fi
-CURRENT_WAF_ARN="$(aws wafv2 get-web-acl-for-resource --region "$AWS_REGION" \
-  --resource-arn "$ALB_ARN" --query WebACL.ARN --output text 2>/dev/null || true)"
-if [ "$CURRENT_WAF_ARN" != "$WAF_ARN" ]; then
-  test -z "$CURRENT_WAF_ARN" || test "$CURRENT_WAF_ARN" = None
-  aws wafv2 associate-web-acl --region "$AWS_REGION" \
-    --web-acl-arn "$WAF_ARN" --resource-arn "$ALB_ARN"
-fi
+}
+
+transition_waf_prefix_once() {
+  local stage="$1"
+  local next=""
+  local ALB_ARN WAF_ARN
+
+  case "$stage" in
+    ALB_LOGGING_READY)
+      write_remote_admin_waf_definition
+      aws wafv2 create-web-acl --region "$AWS_REGION" \
+        --cli-input-json "file://$EVIDENCE_DIR/remote-admin-waf.json" >/dev/null
+      next=WAF_CREATED
+      ;;
+    WAF_CREATED)
+      ALB_ARN="$(remote_edge_fact albArn)"
+      WAF_ARN="$(remote_edge_fact wafArn)"
+      aws wafv2 associate-web-acl --region "$AWS_REGION" \
+        --web-acl-arn "$WAF_ARN" --resource-arn "$ALB_ARN"
+      next=WAF_ASSOCIATED
+      ;;
+    *)
+      return 3
+      ;;
+  esac
+
+  REMOTE_EDGE_NEXT_STAGE="$next"
+  assert_remote_edge_stage "$REMOTE_EDGE_NEXT_STAGE"
+}
 ```
 
-Create one HTTPS listener only after ACM is `ISSUED`. Its sole default action is fixed `404`; no port-80 listener. Do not call `register-targets` or `create-rule` in Task 4.
+Create one HTTPS listener only after live ACM readback proves the exact certificate `ISSUED`. Its sole default action is fixed `404`; no port-80 listener. Then add UFW subnet rules one at a time. Each SSM call has one `ufw allow` mutation followed by only readback commands; `vpn-health-assert.sh` must keep default route off `tun0`.
 
 ```bash
-LISTENER_ARN="$(aws elbv2 describe-listeners --region "$AWS_REGION" \
-  --load-balancer-arn "$ALB_ARN" \
-  --query 'Listeners[?Protocol==`HTTPS` && Port==`443`].ListenerArn | [0]' \
-  --output text)"
-if [ -z "$LISTENER_ARN" ] || [ "$LISTENER_ARN" = None ]; then
-  LISTENER_ARN="$(aws elbv2 create-listener --region "$AWS_REGION" \
-    --load-balancer-arn "$ALB_ARN" --protocol HTTPS --port 443 \
-    --certificates CertificateArn="$CERTIFICATE_ARN" \
-    --default-actions Type=fixed-response,FixedResponseConfig='{StatusCode=404,ContentType=text/plain,MessageBody=Not\ Found}' \
-    --query 'Listeners[0].ListenerArn' --output text)"
-fi
+transition_listener_and_ufw_prefix_once() {
+  local stage="$1"
+  local next=""
+  local ALB_ARN CERTIFICATE_ARN
+
+  case "$stage" in
+    WAF_ASSOCIATED)
+      ALB_ARN="$(remote_edge_fact albArn)"
+      CERTIFICATE_ARN="$(remote_edge_fact certificateArn)"
+      aws elbv2 create-listener --region "$AWS_REGION" \
+        --load-balancer-arn "$ALB_ARN" --protocol HTTPS --port 443 \
+        --certificates CertificateArn="$CERTIFICATE_ARN" \
+        --default-actions Type=fixed-response,FixedResponseConfig='{StatusCode=404,ContentType=text/plain,MessageBody=Not\ Found}' \
+        >/dev/null
+      next=LISTENER_FIXED_404
+      ;;
+    LISTENER_FIXED_404)
+      bash apps/server-pilot/deploy/ssm-run-command.sh \
+        'set -euo pipefail
+         sudo ufw allow in on ens5 from 172.31.0.0/20 to any port 8443 proto tcp
+         sudo ufw status numbered
+         sudo ufw show added
+         ss -ltnH "( sport = :443 or sport = :8443 or sport = :8788 or sport = :8789 )"
+         bash /home/ubuntu/repos/zero/apps/server-pilot/deploy/vpn-health-assert.sh'
+      next=UFW_SUBNET_A_READY
+      ;;
+    UFW_SUBNET_A_READY)
+      bash apps/server-pilot/deploy/ssm-run-command.sh \
+        'set -euo pipefail
+         sudo ufw allow in on ens5 from 172.31.32.0/20 to any port 8443 proto tcp
+         sudo ufw status numbered
+         sudo ufw show added
+         ss -ltnH "( sport = :443 or sport = :8443 or sport = :8788 or sport = :8789 )"
+         bash /home/ubuntu/repos/zero/apps/server-pilot/deploy/vpn-health-assert.sh'
+      next=TASK4_PRE_GATE_B_READY
+      ;;
+    *)
+      return 3
+      ;;
+  esac
+
+  REMOTE_EDGE_NEXT_STAGE="$next"
+  assert_remote_edge_stage "$REMOTE_EDGE_NEXT_STAGE"
+}
+
+advance_remote_edge_once() {
+  local stage
+  stage="$(classify_remote_edge_stage)" || {
+    echo "unknown/non-prefix remote edge state; reject before mutation" >&2
+    return 2
+  }
+
+  case "$stage" in
+    FRESH|ALB_SG_CREATED|SGS_CREATED|ALB_INGRESS_READY|ALB_EGRESS_REVOKED|ALB_EGRESS_READY|SG_FINAL_UNATTACHED)
+      transition_security_group_prefix_once "$stage"
+      ;;
+    TARGET_SG_ATTACHED|TARGET_GROUP_CREATED|TARGET_GROUP_READY)
+      transition_edge_service_prefix_once "$stage"
+      ;;
+    ALB_CREATED|LOG_BUCKET_CREATED|LOG_BUCKET_PUBLIC_BLOCKED|LOG_BUCKET_OWNERSHIP_ENFORCED|LOG_BUCKET_ENCRYPTED|LOG_BUCKET_LIFECYCLE_READY|LOG_BUCKET_POLICY_READY)
+      transition_log_bucket_prefix_once "$stage"
+      ;;
+    ALB_LOGGING_READY|WAF_CREATED)
+      transition_waf_prefix_once "$stage"
+      ;;
+    WAF_ASSOCIATED|LISTENER_FIXED_404|UFW_SUBNET_A_READY)
+      transition_listener_and_ufw_prefix_once "$stage"
+      ;;
+    TASK4_PRE_GATE_B_READY)
+      echo "Task 4 pre-Gate-B edge complete; stop for Gate B" >&2
+      return 0
+      ;;
+    *)
+      echo "unknown/non-prefix remote edge state; reject before mutation" >&2
+      return 2
+      ;;
+  esac
+}
 ```
 
-Use SSM only after target SG attach to add exact host-firewall rules. Preserve exact `tun0:443`; accept ALB subnet traffic only on `ens5:8443`.
+Run `advance_remote_edge_once` once per invocation. Never loop it or paste several transition bodies into one shell. After Gate B has established remote CORS, `verify_remote_edge_state` is final semantic readback:
 
 ```bash
-bash apps/server-pilot/deploy/ssm-run-command.sh \
-  'set -euo pipefail
-   sudo ufw allow in on ens5 from 172.31.0.0/20 to any port 8443 proto tcp
-   sudo ufw allow in on ens5 from 172.31.32.0/20 to any port 8443 proto tcp
-   sudo ufw status numbered
-   sudo ufw show added
-   ss -ltnH "( sport = :443 or sport = :8443 or sport = :8788 or sport = :8789 )"
-   bash /home/ubuntu/repos/zero/apps/server-pilot/deploy/vpn-health-assert.sh'
+verify_remote_edge_state() {
+  REMOTE_ADMIN_MODE=1 REMOTE_TARGET_HEALTH_REQUIRED=0 \
+    bash apps/server-pilot/deploy/launch-readiness.sh
+}
 ```
-
-Capture only parsed booleans plus expected listener interfaces in evidence. `vpn-health-assert.sh` must keep default route off `tun0`.
 
 ### Gate B and Task 5 handoff
 

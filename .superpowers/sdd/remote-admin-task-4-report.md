@@ -186,3 +186,96 @@ git diff --check
 Result: `118 passed`; shell syntax and diff-whitespace checks passed.
 
 Remaining concern: no edge exists yet, so semantic readback and bounded log proof are contract-tested local procedures only. ACM remains intentionally unrequested; no AWS mutation is authorized until re-review approval.
+
+## Gate A attempt — 2026-08-12
+
+Status: `BLOCKED`
+
+Sanitized reason: required `IAM_POLICY_SOURCE_ARN` was unavailable, so the documented IAM policy simulation could not run. No AWS API call or ACM request was made. A mode-`0700` external evidence directory contains only a mode-`0600` sanitized blocker record.
+
+## Gate A retry — 2026-08-12
+
+Status: `GATE_A_READY`
+
+The earlier IAM-policy-source block was resolved by user-provided read-only STS identity evidence, not an authentication failure. Preflight used `arn:aws:iam::845242190536:user/ansh-cursor` exactly as `IAM_POLICY_SOURCE_ARN`.
+
+Sanitized preflight passed: expected account, principal, region, VPC, EC2 instance, private target IP, public ALB subnets/routes, and one attached SG with no TCP/8443 or all-protocol ingress; IAM simulation allowed all `55/55` documented actions. Mode-`0700` external evidence directories retain only mode-`0600` sanitized records.
+
+ACM certificate requested: `arn:aws:acm:af-south-1:845242190536:certificate/61956798-05ef-40ea-a003-55a0e8873fea`
+
+Validation CNAME:
+
+```text
+_cf5449169fe7418f020f5c0de210d3f0.nava-admin.trynava.io. CNAME _476c6f6537d7d4313c5f9a102d942fd4.jkddzztszm.acm-validations.aws.
+```
+
+Stopped after ACM list/request/describe. No other AWS mutation, secret/database/SSM/Docker/deploy action occurred.
+
+## Task 4 continuation — 2026-08-12
+
+ACM became `ISSUED` within the allowed polling window. Sanitized issuance evidence is retained outside the repository.
+
+Created and semantically read back the dedicated remote-auth secret, its exact instance read policy, and the two dedicated security groups. The initial secret-policy attempt failed before policy mutation because AWS CLI on Windows could not resolve an MSYS temporary-file path; the secret was never read, and the policy was then applied using a native temporary path and verified.
+
+Status: `BLOCKED`
+
+The edge is now a partial deterministic state after these authorized writes. The reviewed fail-closed procedure prohibits continuing a partial edge automatically; stop before target attachment, UFW, target group, ALB, listener, WAF, log bucket, or CORS changes. No target registration, host-forward rule, port-80 listener, or `nava-admin` DNS record was created.
+
+## Task 4 resumability correction — 2026-08-12
+
+Status: `DONE` for local procedure/test correction. No AWS, SSM, ACM, secret, database, Docker, environment-source, deployment, or runtime mutation ran during this correction.
+
+### Root cause
+
+The old classifier had only three outcomes: all six deterministic resources absent (`fresh`), all present (`complete`), or any other vector (`partial`). Its own safe SG sequence creates and validates both named SGs before target attachment, producing:
+
+```text
+[ALB=0,TG=0,ALB-SG=1,target-SG=1,WAF=0,bucket=0]
+```
+
+That exact `SG_FINAL_UNATTACHED` state was therefore rejected as partial even though it was the normal output of the preceding approved mutations.
+
+Fresh external read-only evidence, not this report, remains the authority for the next operator action: ACM is issued; remote-auth secret metadata and exact narrow instance policy exist without reading the secret value; both named SGs are in the expected VPC, unattached, and have the exact final ALB/target rules; named ALB, target group, WAF, and log bucket are absent.
+
+### Correction
+
+- Replaced binary fresh/complete/partial guard with exclusive known-safe prefix classification.
+- Added all staged prefixes from `FRESH` through `TASK4_PRE_GATE_B_READY`, including current `SG_FINAL_UNATTACHED`.
+- Each prefix has one allowed AWS/EC2/SSM state mutation followed by fresh semantic readback of the exact next prefix.
+- Live facts reject malformed/read-error output, duplicate deterministic names, unexpected named-SG attachment, broad/unexpected permissions, non-exact resource controls, target registration, listener rules, public HTTP, and DNS mutation.
+- Preserved legacy zero ingress and `tun0:443`; Task 4 listener remains HTTPS fixed-404 only. Target registration and exact host-forward remain Task 5 only.
+
+### TDD evidence
+
+RED before procedure implementation:
+
+```bash
+unset DATABASE_URL TEST_DATABASE_URL VITEST_ALLOW_PILOT_RDS CONFIRM_DISPOSABLE_TEST_DB HMS_DB_TEST_REQUIRED
+pnpm exec vitest run tests/deploy-config.test.ts -t "live-readback resume|unknown and malformed|one mutation and semantic|no early public exposure" --testTimeout=60000
+```
+
+Result: exit `1`; `4 failed | 118 skipped (122)`. Expected failures were missing live prefix classification, malformed/unknown-state rejection, ordered one-mutation transitions, and explicit early-exposure prohibition.
+
+Focused GREEN:
+
+```bash
+unset DATABASE_URL TEST_DATABASE_URL VITEST_ALLOW_PILOT_RDS CONFIRM_DISPOSABLE_TEST_DB HMS_DB_TEST_REQUIRED
+pnpm exec vitest run tests/deploy-config.test.ts -t "live-readback resume|unknown and malformed|one mutation and semantic|no early public exposure" --testTimeout=60000
+```
+
+Result: `4 passed | 118 skipped (122)`.
+
+The first full-suite attempt exposed a removed existing static phrase (`reject divergence`) and a separate 30-second Playwright-config timeout. Restoring the fail-closed phrase made the remote-admin documentation contract pass; the isolated Playwright test passed in `3.2s`. The repeat full run was clean:
+
+```bash
+unset DATABASE_URL TEST_DATABASE_URL VITEST_ALLOW_PILOT_RDS CONFIRM_DISPOSABLE_TEST_DB HMS_DB_TEST_REQUIRED
+pnpm exec vitest run tests/deploy-config.test.ts --testTimeout=60000
+bash -n deploy/launch-readiness.sh deploy/post-boot-smoke.sh deploy/ops-deploy.sh deploy/ops-restart.sh deploy/ops-reboot.sh deploy/pm2-boot.sh
+git diff --check
+```
+
+Result: `122 passed`; shell syntax and whitespace checks passed.
+
+### Remaining concern
+
+No live transition was attempted for this correction. On next authorized operator run, regenerate the live facts and resume only from the freshly derived `SG_FINAL_UNATTACHED` prefix with one target-SG attachment mutation followed by semantic readback. Do not treat this report or prior evidence as state authority.

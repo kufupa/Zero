@@ -3200,6 +3200,109 @@ describe('deploy config', () => {
     expect(companion).toContain(':8443');
   });
 
+  it('documents live-readback resume for current final unattached security-group prefix', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const resources = readFileSync(join(here, '..', 'deploy', 'aws-resources.md'), 'utf8');
+    const procedure = resources.slice(
+      resources.indexOf('### Idempotent edge resources after Gate A'),
+      resources.indexOf('### Gate B and Task 5 handoff'),
+    );
+
+    expect(procedure).toContain('classify_remote_edge_stage');
+    expect(procedure).toContain('SG_FINAL_UNATTACHED');
+    expect(procedure).toContain('[ALB=0,TG=0,ALB-SG=1,target-SG=1,WAF=0,bucket=0]');
+    expect(procedure).toContain(
+      '["SG_FINAL_UNATTACHED", facts.sgStage === "final"',
+    );
+    expect(procedure).toContain('targetAttached === false');
+    expect(procedure).toContain('advance_remote_edge_once');
+    expect(procedure).toContain('semantic readback');
+  });
+
+  it('documents rejection of unknown and malformed remote edge partial states', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const resources = readFileSync(join(here, '..', 'deploy', 'aws-resources.md'), 'utf8');
+    const procedure = resources.slice(
+      resources.indexOf('### Idempotent edge resources after Gate A'),
+      resources.indexOf('### Gate B and Task 5 handoff'),
+    );
+
+    expect(procedure).toContain('unknown/non-prefix remote edge state');
+    expect(procedure).toContain('duplicate named remote resource');
+    expect(procedure).toContain('malformed remote edge readback');
+    expect(procedure).not.toContain('EDGE_REUSE_STATE');
+  });
+
+  it('documents one mutation and semantic readback for every remote edge prefix transition', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const resources = readFileSync(join(here, '..', 'deploy', 'aws-resources.md'), 'utf8');
+    const procedure = resources.slice(
+      resources.indexOf('### Idempotent edge resources after Gate A'),
+      resources.indexOf('### Gate B and Task 5 handoff'),
+    );
+    const transitions = [
+      ['FRESH', 'ALB_SG_CREATED'],
+      ['ALB_SG_CREATED', 'SGS_CREATED'],
+      ['SGS_CREATED', 'ALB_INGRESS_READY'],
+      ['ALB_INGRESS_READY', 'ALB_EGRESS_REVOKED'],
+      ['ALB_EGRESS_REVOKED', 'ALB_EGRESS_READY'],
+      ['ALB_EGRESS_READY', 'SG_FINAL_UNATTACHED'],
+      ['SG_FINAL_UNATTACHED', 'TARGET_SG_ATTACHED'],
+      ['TARGET_SG_ATTACHED', 'TARGET_GROUP_CREATED'],
+      ['TARGET_GROUP_CREATED', 'TARGET_GROUP_READY'],
+      ['TARGET_GROUP_READY', 'ALB_CREATED'],
+      ['ALB_CREATED', 'LOG_BUCKET_CREATED'],
+      ['LOG_BUCKET_CREATED', 'LOG_BUCKET_PUBLIC_BLOCKED'],
+      ['LOG_BUCKET_PUBLIC_BLOCKED', 'LOG_BUCKET_OWNERSHIP_ENFORCED'],
+      ['LOG_BUCKET_OWNERSHIP_ENFORCED', 'LOG_BUCKET_ENCRYPTED'],
+      ['LOG_BUCKET_ENCRYPTED', 'LOG_BUCKET_LIFECYCLE_READY'],
+      ['LOG_BUCKET_LIFECYCLE_READY', 'LOG_BUCKET_POLICY_READY'],
+      ['LOG_BUCKET_POLICY_READY', 'ALB_LOGGING_READY'],
+      ['ALB_LOGGING_READY', 'WAF_CREATED'],
+      ['WAF_CREATED', 'WAF_ASSOCIATED'],
+      ['WAF_ASSOCIATED', 'LISTENER_FIXED_404'],
+      ['LISTENER_FIXED_404', 'UFW_SUBNET_A_READY'],
+      ['UFW_SUBNET_A_READY', 'TASK4_PRE_GATE_B_READY'],
+    ];
+
+    for (const [from, to] of transitions) {
+      expect(procedure, `${from} -> ${to}`).toContain(`${from} -> ${to}`);
+    }
+    expect(procedure).toContain('assert_remote_edge_stage "$REMOTE_EDGE_NEXT_STAGE"');
+  });
+
+  it('documents no early public exposure across provisioning transitions', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const resources = readFileSync(join(here, '..', 'deploy', 'aws-resources.md'), 'utf8');
+    const procedure = resources.slice(
+      resources.indexOf('### Idempotent edge resources after Gate A'),
+      resources.indexOf('### Gate B and Task 5 handoff'),
+    );
+
+    expect(procedure).toContain(
+      'No transition invokes `register-targets`, `create-rule`, HTTP `:80`, or DNS mutation.',
+    );
+    expect(procedure).not.toContain('aws elbv2 register-targets');
+    expect(procedure).not.toContain('aws elbv2 create-rule');
+    expect(procedure).not.toMatch(
+      /create-listener[\s\S]{0,400}--protocol HTTP\s+--port 80/,
+    );
+    expect(procedure).toContain('fixed-response');
+    expect(procedure).toContain('StatusCode=404');
+  });
+
   it('UFW collection accepts exactly one intended tunnel HTTPS allow', async () => {
     const exact = await runUfwCollection();
     expect(exact.status, exact.stderr).toBe(0);
