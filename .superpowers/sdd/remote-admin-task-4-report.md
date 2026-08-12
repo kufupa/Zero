@@ -439,6 +439,40 @@ Results: `39` hardened security fixtures, `11` provisioner fixtures, and `122` d
 
 No live `inspect` or `apply-one` execution was authorized or attempted. `apply-one` remains blocked pending re-review approval and fresh local `inspect`.
 
+## Official access-log random-suffix correction — 2026-08-12
+
+Status: `DONE`
+
+Only local fixture binaries ran. No AWS, SSM, secrets, database, Docker, environment sourcing, deployment, DNS, or runtime mutation occurred.
+
+### RED
+
+The prior exact-key matcher rejected official-example-style random suffix `20sg8hgm` because it incorrectly required an eight-character lowercase-hex token.
+
+### Fix
+
+The random suffix now accepts only a non-empty opaque alphanumeric token. All security-relevant fields remain exact: account, region, access-log hierarchy, slash-normalized named ALB resource ID, valid UTC timestamp matching the valid directory date, valid IPv4 ALB-node address, and `.log.gz`. Malformed and lookalike fixture keys remain rejected.
+
+### GREEN
+
+```bash
+unset DATABASE_URL TEST_DATABASE_URL VITEST_ALLOW_PILOT_RDS CONFIRM_DISPOSABLE_TEST_DB HMS_DB_TEST_REQUIRED
+pnpm exec vitest run tests/remote-edge-provisioner-security.test.ts -t "(accepts official-style alphanumeric|rejects malformed official ALB access-log key)" --testTimeout=60000 --maxWorkers=1 --fileParallelism=false --pool=forks --reporter=dot
+pnpm exec vitest run tests/remote-edge-provisioner-security.test.ts --testTimeout=60000 --maxWorkers=1 --fileParallelism=false --pool=forks --reporter=dot
+pnpm exec vitest run tests/remote-edge-provisioner.test.ts --testTimeout=60000 --maxWorkers=1 --fileParallelism=false --pool=forks --reporter=dot
+pnpm exec vitest run tests/deploy-config.test.ts --testTimeout=60000 --maxWorkers=1 --fileParallelism=false --reporter=dot
+pnpm exec tsc -p tsconfig.json --noEmit
+bash -n deploy/remote-edge-provisioner.sh deploy/launch-readiness.sh deploy/post-boot-smoke.sh deploy/ops-deploy.sh deploy/ops-restart.sh deploy/ops-reboot.sh deploy/pm2-boot.sh
+node --check deploy/remote-edge-state.mjs
+git diff --check
+```
+
+Results: targeted official/negative key contract passed; `47` hardened security fixtures, `11` provisioner fixtures, and `122` deploy-config fixtures passed. TypeScript, shell syntax, Node syntax, and whitespace checks passed.
+
+### Remaining concern
+
+No live `inspect` or `apply-one` execution was authorized or attempted. `apply-one` remains blocked pending re-review approval and fresh local `inspect`.
+
 ## Exact-key and regional-mutation re-review remediation — 2026-08-12
 
 Status: `DONE`

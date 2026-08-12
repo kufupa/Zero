@@ -65,6 +65,7 @@ type Mode =
   | 'log-proof-test-token'
   | 'log-proof-health-token'
   | 'log-proof-connection-token'
+  | 'log-proof-official-token'
   | 'alb-provisioning'
   | 'alb-stuck-provisioning';
 
@@ -762,11 +763,13 @@ switch (service + ' ' + operation) {
           : state.mode === 'log-proof-directory-mismatch'
             ? 'AWSLogs/845242190536/elasticloadbalancing/af-south-1/2030/01/02/845242190536_elasticloadbalancing_af-south-1_app.nava-remote-admin-alb.test_20300101T0000Z_172.31.0.1_deadbeef.log.gz'
             : state.mode === 'log-proof-test-token'
-              ? 'AWSLogs/845242190536/elasticloadbalancing/af-south-1/2030/01/01/845242190536_elasticloadbalancing_af-south-1_app.nava-remote-admin-alb.test_20300101T0000Z_172.31.0.1_test.log.gz'
+              ? 'AWSLogs/845242190536/elasticloadbalancing/af-south-1/2030/01/01/845242190536_elasticloadbalancing_af-south-1_app.nava-remote-admin-alb.test_20300101T0000Z_172.31.0.1_test-file.log.gz'
               : state.mode === 'log-proof-health-token'
-                ? 'AWSLogs/845242190536/elasticloadbalancing/af-south-1/2030/01/01/845242190536_elasticloadbalancing_af-south-1_app.nava-remote-admin-alb.test_20300101T0000Z_172.31.0.1_health.log.gz'
+                ? 'AWSLogs/845242190536/elasticloadbalancing/af-south-1/2030/01/01/845242190536_elasticloadbalancing_af-south-1_app.nava-remote-admin-alb.test_20300101T0000Z_172.31.0.1_health-check.log.gz'
                 : state.mode === 'log-proof-connection-token'
-                  ? 'AWSLogs/845242190536/elasticloadbalancing/af-south-1/2030/01/01/845242190536_elasticloadbalancing_af-south-1_app.nava-remote-admin-alb.test_20300101T0000Z_172.31.0.1_connection.log.gz'
+                  ? 'AWSLogs/845242190536/elasticloadbalancing/af-south-1/2030/01/01/845242190536_elasticloadbalancing_af-south-1_app.nava-remote-admin-alb.test_20300101T0000Z_172.31.0.1_connection.log'
+                  : state.mode === 'log-proof-official-token'
+                    ? 'AWSLogs/845242190536/elasticloadbalancing/af-south-1/2030/01/01/845242190536_elasticloadbalancing_af-south-1_app.nava-remote-admin-alb.test_20300101T0000Z_172.31.0.1_20sg8hgm.log.gz'
                   : 'AWSLogs/845242190536/elasticloadbalancing/af-south-1/2030/01/01/845242190536_elasticloadbalancing_af-south-1_app.nava-remote-admin-alb.test_20300101T0000Z_172.31.0.1_deadbeef.log.gz';
     emit({
       Contents: state.mode === 'log-proof-failure'
@@ -1272,6 +1275,24 @@ describe('remote edge provisioner security contracts', () => {
       ).toHaveLength(3);
     } finally {
       destroyHarness(malformed);
+    }
+  }, 60_000);
+
+  it('accepts official-style alphanumeric ALB access-log suffix', async () => {
+    const officialToken = createHarness('UFW_READY', 'log-proof-official-token');
+    try {
+      const result = await runProvisioner(officialToken, [
+        'apply-one',
+        '--action',
+        'PROVE_ALB_LOG_DELIVERY',
+      ]);
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        stage: 'TASK4_PRE_GATE_B_READY',
+        action: 'STOP',
+      });
+    } finally {
+      destroyHarness(officialToken);
     }
   }, 60_000);
 

@@ -627,7 +627,7 @@ const accessLogKey = new RegExp(
   `^AWSLogs/${account}/elasticloadbalancing/${region}/(\\d{4})/(\\d{2})/(\\d{2})/` +
     `${account}_elasticloadbalancing_${region}_${escapeRegExp(normalizedResource)}_` +
     '(\\d{4})(\\d{2})(\\d{2})T(\\d{2})(\\d{2})Z_' +
-    '(\\d{1,3}(?:\\.\\d{1,3}){3})_([0-9a-f]{8})\\.log\\.gz$',
+    '(\\d{1,3}(?:\\.\\d{1,3}){3})_([A-Za-z0-9]+)\\.log\\.gz$',
 );
 const validAccessLogKey = (key) => {
   if (typeof key !== 'string') return false;
