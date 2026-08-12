@@ -156,6 +156,7 @@ switch (service + ' ' + operation) {
           PrivateIpAddress: targetIp,
           SecurityGroups: groups,
           NetworkInterfaces: [{
+            NetworkInterfaceId: 'eni-test-primary',
             Attachment: { DeviceIndex: 0, InstanceId: instanceId },
             PrivateIpAddress: targetIp,
             Groups: groups,

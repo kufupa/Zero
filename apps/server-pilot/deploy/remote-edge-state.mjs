@@ -245,19 +245,98 @@ function hasPublicRoutes(routeTables) {
   });
 }
 
+function instanceNetworkInterfaceDetails(networkInterface, instanceId) {
+  const value = object(networkInterface);
+  const attachment = object(value.Attachment);
+  const id = safeReference(value.NetworkInterfaceId, 'eni-');
+  const deviceIndex = integer(attachment.DeviceIndex);
+  const groupIds = arrays(value, 'Groups').map((group) =>
+    safeReference(object(group).GroupId, 'sg-'),
+  );
+  if (
+    attachment.InstanceId !== instanceId ||
+    deviceIndex < 0 ||
+    groupIds.length === 0 ||
+    !unique(groupIds)
+  ) {
+    fail();
+  }
+  return { id, deviceIndex, groupIds, value };
+}
+
+function expectedInstanceNetworkInterfaces(instance) {
+  const instanceId = safeReference(instance.InstanceId, 'i-');
+  const interfaces = arrays(instance, 'NetworkInterfaces').map(
+    (networkInterface) =>
+      instanceNetworkInterfaceDetails(networkInterface, instanceId),
+  );
+  if (
+    interfaces.length === 0 ||
+    !unique(interfaces.map((networkInterface) => networkInterface.id)) ||
+    !unique(
+      interfaces.map((networkInterface) => networkInterface.deviceIndex),
+    ) ||
+    interfaces.filter((networkInterface) => networkInterface.deviceIndex === 0)
+      .length !== 1
+  ) {
+    fail();
+  }
+  return interfaces;
+}
+
+function correspondingGlobalInstanceInterfaces(instance, networkInterfaces) {
+  const instanceId = safeReference(instance.InstanceId, 'i-');
+  const expected = expectedInstanceNetworkInterfaces(instance);
+  const expectedIds = expected.map((networkInterface) => networkInterface.id);
+  for (const expectedInterface of expected) {
+    const matches = networkInterfaces.filter(
+      (networkInterface) =>
+        object(networkInterface).NetworkInterfaceId === expectedInterface.id,
+    );
+    if (matches.length !== 1) fail();
+    const actual = instanceNetworkInterfaceDetails(matches[0], instanceId);
+    if (
+      actual.deviceIndex !== expectedInterface.deviceIndex ||
+      !exactStrings(actual.groupIds, expectedInterface.groupIds)
+    ) {
+      fail();
+    }
+  }
+  const attached = networkInterfaces
+    .filter((networkInterface) => {
+      const attachment = object(networkInterface).Attachment;
+      return isObject(attachment) && attachment.InstanceId === instanceId;
+    })
+    .map((networkInterface) =>
+      instanceNetworkInterfaceDetails(networkInterface, instanceId),
+    );
+  if (
+    attached.length !== expected.length ||
+    !exactStrings(
+      attached.map((networkInterface) => networkInterface.id),
+      expectedIds,
+    ) ||
+    !unique(
+      attached.map((networkInterface) => networkInterface.deviceIndex),
+    )
+  ) {
+    fail();
+  }
+  return attached;
+}
+
 function primaryInstance(projections) {
   const reservations = array(object(projections.instance).Reservations);
   if (reservations.length !== 1) fail();
   const instances = array(object(reservations[0]).Instances);
   if (instances.length !== 1) fail();
   const instance = object(instances[0]);
-  const interfaces = arrays(instance, 'NetworkInterfaces');
-  const primary = interfaces.filter(
-    (networkInterface) =>
-      object(object(networkInterface).Attachment).DeviceIndex === 0,
+  const interfaces = expectedInstanceNetworkInterfaces(instance);
+  const primary = interfaces.find(
+    (networkInterface) => networkInterface.deviceIndex === 0,
   );
-  if (primary.length !== 1) fail();
-  return { instance, primary: object(primary[0]) };
+  if (!primary) fail();
+  return { instance, primary: primary.value };
 }
 
 function referencesFromBase(projections) {
@@ -359,6 +438,24 @@ function deriveSecurity(projections, references) {
   const networkInterfaces = array(
     object(projections.networkInterfaces).NetworkInterfaces,
   );
+  const instanceInterfaces = correspondingGlobalInstanceInterfaces(
+    references.instance,
+    networkInterfaces,
+  );
+  const primaryInstanceInterfaces = instanceInterfaces.filter(
+    (networkInterface) => networkInterface.deviceIndex === 0,
+  );
+  if (primaryInstanceInterfaces.length !== 1) fail();
+  const instanceAttachedGroupIds = instanceInterfaces.flatMap(
+    (networkInterface) => networkInterface.groupIds,
+  );
+  const primaryInstanceGroupIds = primaryInstanceInterfaces[0].groupIds;
+  if (
+    instanceAttachedGroupIds.length === 0 ||
+    !exactStrings(primaryInstanceGroupIds, references.instanceGroupIds)
+  ) {
+    fail();
+  }
   const groupsById = new Map(
     securityGroups.map((group) => {
       const value = object(group);
@@ -386,30 +483,6 @@ function deriveSecurity(projections, references) {
         (group) => object(group).GroupId === groupId,
       ),
     );
-  const instanceInterfaces = networkInterfaces.filter((networkInterface) => {
-    const attachment = object(networkInterface).Attachment;
-    return isObject(attachment) && attachment.InstanceId === INSTANCE_ID;
-  });
-  const primaryInstanceInterfaces = instanceInterfaces.filter(
-    (networkInterface) =>
-      object(object(networkInterface).Attachment).DeviceIndex === 0,
-  );
-  if (primaryInstanceInterfaces.length !== 1) fail();
-  const instanceAttachedGroupIds = instanceInterfaces.flatMap((networkInterface) =>
-    arrays(object(networkInterface), 'Groups').map((group) =>
-      safeReference(object(group).GroupId, 'sg-'),
-    ),
-  );
-  const primaryInstanceGroupIds = arrays(
-    object(primaryInstanceInterfaces[0]),
-    'Groups',
-  ).map((group) => safeReference(object(group).GroupId, 'sg-'));
-  if (
-    instanceAttachedGroupIds.length === 0 ||
-    !exactStrings(primaryInstanceGroupIds, references.instanceGroupIds)
-  ) {
-    fail();
-  }
   const attachedTarget = references.targetSecurityGroupId
     ? attachmentIds(references.targetSecurityGroupId)
     : [];

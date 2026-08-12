@@ -59,6 +59,8 @@ type Mode =
   | 'udp-8443-listener'
   | 'legacy-public-ingress'
   | 'legacy-secondary-public-ingress'
+  | 'secondary-eni-missing-global'
+  | 'secondary-eni-group-mismatch-global'
   | 'non-alb-eni'
   | 'bucket-broad-principal'
   | 'log-proof-failure'
@@ -539,16 +541,29 @@ switch (service + ' ' + operation) {
     const groups = [{ GroupId: legacySg, GroupName: 'legacy' }];
     if (at('TARGET_SG_ATTACHED')) groups.push({ GroupId: targetSg, GroupName: targetName });
     const primaryNetworkInterface = {
+      NetworkInterfaceId: 'eni-test-primary',
       Attachment: { DeviceIndex: 0, InstanceId: instance },
       PrivateIpAddress: targetIp,
       Groups: groups,
     };
+    const instanceNetworkInterfaces = [primaryNetworkInterface];
+    if ([
+      'legacy-secondary-public-ingress',
+      'secondary-eni-missing-global',
+      'secondary-eni-group-mismatch-global',
+    ].includes(state.mode)) {
+      instanceNetworkInterfaces.push({
+        NetworkInterfaceId: 'eni-test-secondary',
+        Attachment: { DeviceIndex: 1, InstanceId: instance },
+        Groups: [{ GroupId: legacySecondarySg, GroupName: 'legacy-secondary' }],
+      });
+    }
     const instanceRecord = {
       InstanceId: instance,
       VpcId: vpc,
       PrivateIpAddress: targetIp,
       SecurityGroups: groups,
-      NetworkInterfaces: [primaryNetworkInterface],
+      NetworkInterfaces: instanceNetworkInterfaces,
     };
     if (publicAddressMode) {
       instanceRecord.PublicIpAddress = '198.51.100.23';
@@ -571,11 +586,16 @@ switch (service + ' ' + operation) {
       Attachment: { InstanceId: instance, DeviceIndex: 0 },
       Groups: primaryGroups,
     }];
-    if (state.mode === 'legacy-secondary-public-ingress') {
+    if (
+      state.mode === 'legacy-secondary-public-ingress' ||
+      state.mode === 'secondary-eni-group-mismatch-global'
+    ) {
       interfaces.push({
         NetworkInterfaceId: 'eni-test-secondary',
         Attachment: { InstanceId: instance, DeviceIndex: 1 },
-        Groups: [{ GroupId: legacySecondarySg, GroupName: 'legacy-secondary' }],
+        Groups: state.mode === 'secondary-eni-group-mismatch-global'
+          ? [{ GroupId: legacySg, GroupName: 'legacy' }]
+          : [{ GroupId: legacySecondarySg, GroupName: 'legacy-secondary' }],
       });
     }
     if (at('ALB_CREATED')) {
@@ -1273,6 +1293,21 @@ describe('remote edge provisioner security contracts', () => {
     try {
       const result = await runProvisioner(harness, ['inspect']);
       expect(result.status).not.toBe(0);
+      expect(calls(harness).filter((entry) => entry.startsWith('mutate '))).toHaveLength(0);
+    } finally {
+      destroyHarness(harness);
+    }
+  }, 60_000);
+
+  it.each([
+    ['missing from global describe-network-interfaces', 'secondary-eni-missing-global'],
+    ['group-mismatched in global describe-network-interfaces', 'secondary-eni-group-mismatch-global'],
+  ] as const)('blocks instance secondary ENI %s before classification', async (_name, mode) => {
+    const harness = createHarness('SG_FINAL_UNATTACHED', mode);
+    try {
+      const result = await runProvisioner(harness, ['inspect']);
+      expect(result.status, resultDiagnostic(result, harness)).not.toBe(0);
+      expect(result.stdout).toBe('');
       expect(calls(harness).filter((entry) => entry.startsWith('mutate '))).toHaveLength(0);
     } finally {
       destroyHarness(harness);

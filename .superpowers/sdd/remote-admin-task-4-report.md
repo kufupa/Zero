@@ -637,3 +637,42 @@ Results: `125` deploy-config, `11` provisioner, and `59` provisioner-security te
 ### Remaining concern
 
 Fresh authorized read-only facts remain required before any future operator action. This local correction does not authorize nor substitute for remote proof, mutation, or Task 5 progression.
+
+## Exact ENI correspondence P1 remediation — 2026-08-13
+
+Status: `DONE` for local correction. No AWS/SSM, secret, database, Docker, environment-source, deployment, or live runtime command ran.
+
+### Root cause and fix
+
+`remote-edge-state.mjs` derived attached security groups from globally listed ENIs after validating only the global primary ENI. A secondary ENI reported by `describe-instances` could therefore be omitted from, duplicated in, or have a different group set in `describe-network-interfaces` without blocking classification.
+
+- The state validator now requires every instance-reported ENI ID exactly once in global results, with the same target-instance attachment, device index, and complete unique security-group set.
+- It rejects duplicate IDs/device indexes, missing or extra instance-attached ENIs, and malformed ENI/group data before deriving the attached-SG union or evaluating ingress.
+- New RED fixtures model an instance secondary ENI missing from global output and one with a globally mismatched group set. Both now fail without returning a stage/action or making a mutation.
+- Public-address observation, exact UFW policy, and TCP/UDP listener protections remain unchanged.
+
+### TDD and verification
+
+RED before state-validator change:
+
+```bash
+unset DATABASE_URL TEST_DATABASE_URL VITEST_ALLOW_PILOT_RDS CONFIRM_DISPOSABLE_TEST_DB HMS_DB_TEST_REQUIRED
+pnpm exec vitest run tests/remote-edge-provisioner-security.test.ts -t "blocks instance secondary ENI" --testTimeout=60000 --maxWorkers=1 --fileParallelism=false --pool=forks --reporter=dot
+```
+
+Result: both fixtures incorrectly returned `SG_FINAL_UNATTACHED` / `ATTACH_TARGET_SECURITY_GROUP`.
+
+GREEN and serial DB-free verification:
+
+```bash
+unset DATABASE_URL TEST_DATABASE_URL VITEST_ALLOW_PILOT_RDS CONFIRM_DISPOSABLE_TEST_DB HMS_DB_TEST_REQUIRED
+pnpm exec vitest run tests/remote-edge-provisioner-security.test.ts --testTimeout=90000 --maxWorkers=1 --fileParallelism=false --pool=forks --reporter=dot
+pnpm exec vitest run tests/remote-edge-provisioner.test.ts --testTimeout=90000 --maxWorkers=1 --fileParallelism=false --pool=forks --reporter=dot
+pnpm exec vitest run tests/deploy-config.test.ts --testTimeout=90000 --maxWorkers=1 --fileParallelism=false --pool=forks --reporter=dot
+pnpm exec tsc -p tsconfig.json --noEmit
+node --check deploy/remote-edge-state.mjs
+bash -n deploy/remote-edge-provisioner.sh deploy/launch-readiness.sh deploy/post-boot-smoke.sh deploy/ops-deploy.sh deploy/ops-restart.sh deploy/ops-reboot.sh deploy/pm2-boot.sh
+git diff --check
+```
+
+Results: targeted ENI regression `2/2` passed; serial DB-free suites passed (`61` security, `11` provisioner, `125` deploy-config). TypeScript, Node syntax, shell syntax, and whitespace checks passed.
