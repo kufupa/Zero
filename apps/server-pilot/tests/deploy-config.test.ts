@@ -1066,6 +1066,7 @@ printf 'AWS_REPORT=%s\\n' "$(build_readiness_report)"
 }
 
 type RemoteCollectorFacts = {
+  resourcesResolved: boolean;
   targetHealthy: boolean;
   targetSecurityGroupOnlyAlb: boolean;
   noDirectPublicTargetPath: boolean;
@@ -1106,6 +1107,7 @@ function validRemoteCollectorResponses(): Record<string, unknown> {
           LoadBalancerArn: albArn,
           Scheme: 'internet-facing',
           Type: 'application',
+          IpAddressType: 'ipv4',
           VpcId: 'vpc-0f078e17a5f0f8599',
           SecurityGroups: [SG_ONE],
           AvailabilityZones: [
@@ -1165,6 +1167,37 @@ function validRemoteCollectorResponses(): Record<string, unknown> {
           GroupId: SG_TWO,
           GroupName: REMOTE_TARGET_SECURITY_GROUP_NAME,
           VpcId: 'vpc-0f078e17a5f0f8599',
+        },
+      ],
+    },
+    albSecurityGroup: {
+      SecurityGroups: [
+        {
+          GroupId: SG_ONE,
+          GroupName: REMOTE_ALB_NAME,
+          VpcId: 'vpc-0f078e17a5f0f8599',
+          IpPermissions: [
+            {
+              IpProtocol: 'tcp',
+              FromPort: 443,
+              ToPort: 443,
+              IpRanges: [{ CidrIp: '0.0.0.0/0' }],
+              Ipv6Ranges: [],
+              PrefixListIds: [],
+              UserIdGroupPairs: [],
+            },
+          ],
+          IpPermissionsEgress: [
+            {
+              IpProtocol: 'tcp',
+              FromPort: 8443,
+              ToPort: 8443,
+              IpRanges: [],
+              Ipv6Ranges: [],
+              PrefixListIds: [],
+              UserIdGroupPairs: [{ GroupId: SG_TWO }],
+            },
+          ],
         },
       ],
     },
@@ -1302,7 +1335,13 @@ case "$1 $2" in
   "elbv2 describe-listeners") printf '%s' "$REMOTE_TEST_LISTENERS" ;;
   "elbv2 describe-rules") printf '%s' "$REMOTE_TEST_RULES" ;;
   "elbv2 describe-load-balancer-attributes") printf '%s' "$REMOTE_TEST_ALB_ATTRIBUTES" ;;
-  "ec2 describe-security-groups") printf '%s' "$REMOTE_TEST_TARGET_SG" ;;
+  "ec2 describe-security-groups")
+    if [[ "$*" == *"--group-ids"* ]]; then
+      printf '%s' "$REMOTE_TEST_ALB_SG"
+    else
+      printf '%s' "$REMOTE_TEST_TARGET_SG"
+    fi
+    ;;
   "wafv2 list-web-acls") printf '%s' "$REMOTE_TEST_WAF_LIST" ;;
   "wafv2 get-web-acl") printf '%s' "$REMOTE_TEST_WAF" ;;
   "wafv2 get-web-acl-for-resource") printf '%s' "$REMOTE_TEST_WAF_ASSOCIATION" ;;
@@ -1351,6 +1390,7 @@ printf 'REMOTE_FACTS=%s\\n' "$REMOTE_ADMIN_FACTS"
         REMOTE_TEST_RULES: JSON.stringify(responses.rules),
         REMOTE_TEST_ALB_ATTRIBUTES: JSON.stringify(responses.albAttributes),
         REMOTE_TEST_TARGET_SG: JSON.stringify(responses.targetSecurityGroup),
+        REMOTE_TEST_ALB_SG: JSON.stringify(responses.albSecurityGroup),
         REMOTE_TEST_WAF_LIST: JSON.stringify(responses.wafList),
         REMOTE_TEST_WAF: JSON.stringify(responses.waf),
         REMOTE_TEST_WAF_ASSOCIATION: JSON.stringify(responses.wafAssociation),
@@ -3020,6 +3060,7 @@ describe('deploy config', () => {
     const valid = await runRemoteAdminPerimeterCollection();
     expect(valid.status, valid.stderr).toBe(0);
     expect(valid.facts).toMatchObject({
+      resourcesResolved: true,
       targetHealthy: true,
       targetSecurityGroupOnlyAlb: true,
       noDirectPublicTargetPath: true,
@@ -3071,7 +3112,26 @@ describe('deploy config', () => {
       );
     });
     expect(broadSigninScope.facts?.wafCompliant).toBe(false);
-  }, 30_000);
+
+    const lowercaseMethodTransform = await runRemoteAdminPerimeterCollection((responses) => {
+      responses.waf.WebACL.Rules[3].Statement.RateBasedStatement.ScopeDownStatement.AndStatement.Statements[1]
+        .ByteMatchStatement.TextTransformations = [{ Priority: 0, Type: 'LOWERCASE' }];
+    });
+    expect(lowercaseMethodTransform.facts?.wafCompliant).toBe(false);
+
+    const dualstackAlb = await runRemoteAdminPerimeterCollection((responses) => {
+      responses.alb.LoadBalancers[0].IpAddressType = 'dualstack';
+    });
+    expect(dualstackAlb.facts?.resourcesResolved).toBe(false);
+
+    const broadAlbSecurityGroup = await runRemoteAdminPerimeterCollection((responses) => {
+      responses.albSecurityGroup.SecurityGroups[0].IpPermissions.push({
+        IpProtocol: '-1',
+        IpRanges: [{ CidrIp: '0.0.0.0/0' }],
+      });
+    });
+    expect(broadAlbSecurityGroup.facts?.resourcesResolved).toBe(false);
+  }, 60_000);
 
   it('documents gated, idempotent remote-admin edge provisioning without changing legacy access', async () => {
     const { existsSync, readFileSync } = await import('node:fs');
@@ -3103,6 +3163,12 @@ describe('deploy config', () => {
       'verify_remote_edge_state',
       'reject divergence',
       'semantic readback',
+      'permission.IpProtocol === "-1"',
+      'IpAddressType === "ipv4"',
+      'canonicalizeCorsRules',
+      'LOG_PROOF_DEADLINE',
+      '--connect-to',
+      'list-objects-v2',
       'Name=vpc-id,Values=$VPC_ID',
       'const main = tables.find',
       'const table = explicit ?? main;',

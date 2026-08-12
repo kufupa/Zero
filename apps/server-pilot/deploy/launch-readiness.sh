@@ -636,6 +636,7 @@ collect_remote_admin_perimeter() {
   local remote_rules_json=""
   local remote_alb_attributes_json=""
   local remote_target_sg_json=""
+  local remote_alb_sg_json=""
   local remote_waf_list_json=""
   local remote_waf_json=""
   local remote_waf_association_json=""
@@ -645,6 +646,7 @@ collect_remote_admin_perimeter() {
   local remote_log_policy_json=""
   local remote_log_lifecycle_json=""
   local remote_alb_context=""
+  local remote_alb_security_group_id=""
   local remote_target_group_arn=""
   local remote_listener_arn=""
   local remote_waf_id=""
@@ -672,6 +674,26 @@ try {
 NODE
   )"; then
     echo "launch-readiness: remote admin ALB response invalid" >&2
+    return 0
+  fi
+  if ! remote_alb_security_group_id="$(
+    node - "$remote_alb_json" 2>/dev/null <<'NODE'
+try {
+  const value = JSON.parse(process.argv[2]);
+  const loadBalancers = Array.isArray(value.LoadBalancers) ? value.LoadBalancers : [];
+  const securityGroups = Array.isArray(loadBalancers[0]?.SecurityGroups)
+    ? loadBalancers[0].SecurityGroups
+    : [];
+  if (securityGroups.length !== 1 || typeof securityGroups[0] !== "string" || securityGroups[0].length === 0) {
+    process.exit(1);
+  }
+  process.stdout.write(securityGroups[0]);
+} catch {
+  process.exit(1);
+}
+NODE
+  )"; then
+    echo "launch-readiness: remote admin ALB security group response invalid" >&2
     return 0
   fi
 
@@ -726,6 +748,11 @@ NODE
         --filters \
           "Name=vpc-id,Values=$REMOTE_VPC_ID" \
           "Name=group-name,Values=$REMOTE_TARGET_SECURITY_GROUP_NAME" \
+        --output json ||
+    ! remote_admin_query "ALB security group" remote_alb_sg_json \
+      aws ec2 describe-security-groups \
+        --region "$AWS_REGION" \
+        --group-ids "$remote_alb_security_group_id" \
         --output json ||
     ! remote_admin_query "WAF list" remote_waf_list_json \
       aws wafv2 list-web-acls \
@@ -829,6 +856,7 @@ NODE
       "$remote_rules_json" \
       "$remote_alb_attributes_json" \
       "$remote_target_sg_json" \
+      "$remote_alb_sg_json" \
       "$remote_waf_json" \
       "$remote_waf_association_json" \
       "$remote_log_encryption_json" \
@@ -847,6 +875,7 @@ const [
   rulesRaw,
   albAttributesRaw,
   targetSecurityGroupRaw,
+  albSecurityGroupRaw,
   wafRaw,
   wafAssociationRaw,
   logEncryptionRaw,
@@ -904,7 +933,11 @@ const isExactByteMatch = (statement, field, expected) => {
     !isRecord(byteMatch.FieldToMatch) ||
     Object.keys(byteMatch.FieldToMatch).length !== 1 ||
     !Object.hasOwn(byteMatch.FieldToMatch, field) ||
-    byteMatch.PositionalConstraint !== "EXACTLY"
+    byteMatch.PositionalConstraint !== "EXACTLY" ||
+    !Array.isArray(byteMatch.TextTransformations) ||
+    byteMatch.TextTransformations.length !== 1 ||
+    byteMatch.TextTransformations[0]?.Priority !== 0 ||
+    byteMatch.TextTransformations[0]?.Type !== "NONE"
   ) {
     return false;
   }
@@ -924,6 +957,7 @@ try {
   const rulesValue = parse(rulesRaw);
   const albAttributesValue = parse(albAttributesRaw);
   const targetSecurityGroupValue = parse(targetSecurityGroupRaw);
+  const albSecurityGroupValue = parse(albSecurityGroupRaw);
   const wafValue = parse(wafRaw);
   const wafAssociationValue = parse(wafAssociationRaw);
   const logEncryptionValue = parse(logEncryptionRaw);
@@ -944,9 +978,13 @@ try {
   const targetSecurityGroups = Array.isArray(targetSecurityGroupValue.SecurityGroups)
     ? targetSecurityGroupValue.SecurityGroups
     : [];
+  const albSecurityGroupRecords = Array.isArray(albSecurityGroupValue.SecurityGroups)
+    ? albSecurityGroupValue.SecurityGroups
+    : [];
   const [alb] = albs;
   const [targetGroup] = targetGroups;
   const [targetSecurityGroup] = targetSecurityGroups;
+  const [albSecurityGroupRecord] = albSecurityGroupRecords;
   const albArn = alb?.LoadBalancerArn;
   const targetGroupArn = targetGroup?.TargetGroupArn;
   const albSecurityGroups = Array.isArray(alb?.SecurityGroups) ? alb.SecurityGroups : [];
@@ -974,6 +1012,38 @@ try {
     Array.isArray(attributes)
       ? attributes.find((attribute) => attribute?.Key === key)?.Value
       : undefined;
+  const hasNoNetworkSources = (permission) =>
+    (!Array.isArray(permission?.IpRanges) || permission.IpRanges.length === 0) &&
+    (!Array.isArray(permission?.Ipv6Ranges) || permission.Ipv6Ranges.length === 0) &&
+    (!Array.isArray(permission?.PrefixListIds) || permission.PrefixListIds.length === 0);
+  const isExactPublic443Ingress = (permission) =>
+    permission?.IpProtocol === "tcp" &&
+    Number(permission?.FromPort) === 443 &&
+    Number(permission?.ToPort) === 443 &&
+    Array.isArray(permission?.IpRanges) &&
+    permission.IpRanges.length === 1 &&
+    permission.IpRanges[0]?.CidrIp === "0.0.0.0/0" &&
+    hasNoNetworkSources({ ...permission, IpRanges: [] }) &&
+    (!Array.isArray(permission?.UserIdGroupPairs) || permission.UserIdGroupPairs.length === 0);
+  const isExactTarget8443Egress = (permission) =>
+    permission?.IpProtocol === "tcp" &&
+    Number(permission?.FromPort) === 8443 &&
+    Number(permission?.ToPort) === 8443 &&
+    hasNoNetworkSources(permission) &&
+    Array.isArray(permission?.UserIdGroupPairs) &&
+    permission.UserIdGroupPairs.length === 1 &&
+    permission.UserIdGroupPairs[0]?.GroupId === targetSecurityGroup?.GroupId;
+  const albSecurityGroupCompliant =
+    albSecurityGroupRecords.length === 1 &&
+    albSecurityGroupRecord?.GroupId === albSecurityGroup &&
+    albSecurityGroupRecord?.GroupName === ALB_NAME &&
+    albSecurityGroupRecord?.VpcId === VPC_ID &&
+    Array.isArray(albSecurityGroupRecord?.IpPermissions) &&
+    albSecurityGroupRecord.IpPermissions.length === 1 &&
+    albSecurityGroupRecord.IpPermissions.every(isExactPublic443Ingress) &&
+    Array.isArray(albSecurityGroupRecord?.IpPermissionsEgress) &&
+    albSecurityGroupRecord.IpPermissionsEgress.length === 1 &&
+    albSecurityGroupRecord.IpPermissionsEgress.every(isExactTarget8443Egress);
 
   empty.resourcesResolved =
     albs.length === 1 &&
@@ -982,11 +1052,13 @@ try {
     alb?.LoadBalancerName === ALB_NAME &&
     alb?.Scheme === "internet-facing" &&
     alb?.Type === "application" &&
+    alb?.IpAddressType === "ipv4" &&
     alb?.VpcId === VPC_ID &&
     typeof albArn === "string" &&
     hasExactStrings(albSubnets, EXPECTED_SUBNETS) &&
     typeof albSecurityGroup === "string" &&
     albSecurityGroup.length > 0 &&
+    albSecurityGroupCompliant &&
     targetGroup?.TargetGroupName === TARGET_GROUP_NAME &&
     typeof targetGroupArn === "string" &&
     targetSecurityGroup?.GroupName === TARGET_SECURITY_GROUP_NAME &&

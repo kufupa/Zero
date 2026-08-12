@@ -269,9 +269,12 @@ node - "$EVIDENCE_DIR/attached-security-groups.json" <<'NODE'
 const fs = require("fs");
 const groups = JSON.parse(fs.readFileSync(process.argv[2], "utf8")).SecurityGroups ?? [];
 const opens8443 = (permission) =>
-  permission.IpProtocol === "tcp" &&
-  Number(permission.FromPort) <= 8443 &&
-  Number(permission.ToPort) >= 8443;
+  permission.IpProtocol === "-1" ||
+  (
+    permission.IpProtocol === "tcp" &&
+    Number(permission.FromPort) <= 8443 &&
+    Number(permission.ToPort) >= 8443
+  );
 if (groups.some((group) => (group.IpPermissions ?? []).some(opens8443))) {
   process.exit(2);
 }
@@ -539,7 +542,7 @@ case "$EDGE_REUSE_STATE" in
 esac
 ```
 
-`verify_remote_edge_state` is semantic readback: it resolves the named resources and rejects divergent listener, target, target-SG, UFW, WAF, log, and CORS state. Run it after Gate B has established remote CORS. Before Gate B, a partial prior run is intentionally not resumed automatically.
+`verify_remote_edge_state` is semantic readback: it resolves the named resources and rejects divergent listener, target, target-SG, UFW, WAF, log, and CORS state. It requires an internet-facing application ALB with `IpAddressType === "ipv4"` and exact ALB-SG ingress/egress before reusing an existing edge. Run it after Gate B has established remote CORS. Before Gate B, a partial prior run is intentionally not resumed automatically.
 
 ```bash
 ALB_SG_ID="$(aws ec2 describe-security-groups --region "$AWS_REGION" \
@@ -563,23 +566,103 @@ if [ -z "$TARGET_SG_ID" ] || [ "$TARGET_SG_ID" = None ]; then
 fi
 ```
 
-Read both SGs before each write. Required final shape: ALB SG inbound TCP/443 only from `0.0.0.0/0`; ALB SG outbound TCP/8443 only to `$TARGET_SG_ID`; target SG inbound TCP/8443 only from `$ALB_SG_ID`. Revoke the new-SG default all-egress rule before adding the single ALB egress rule. Use `describe-security-groups` semantic readback after every authorization/revocation and stop on any CIDR, IPv6, prefix-list, or second SG source for TCP/8443.
+Read both SGs after every write. Required final shape: ALB SG inbound TCP/443 only from `0.0.0.0/0`; ALB SG outbound TCP/8443 only to `$TARGET_SG_ID`; target SG inbound TCP/8443 only from `$ALB_SG_ID`. Revoke the new-SG default all-egress rule before adding the single ALB egress rule.
 
 ```bash
-# Fresh-only path after the re-run guard above. Re-read both groups after every
-# authorization/revocation; any non-exact final shape is reject divergence.
+assert_sg_stage() {
+  local stage="$1"
+  local readback="$EVIDENCE_DIR/remote-sg-${stage}.json"
+  aws ec2 describe-security-groups --region "$AWS_REGION" \
+    --group-ids "$ALB_SG_ID" "$TARGET_SG_ID" --output json >"$readback"
+  node - "$readback" "$ALB_SG_ID" "$TARGET_SG_ID" "$stage" <<'NODE'
+const fs = require("fs");
+const [readbackPath, albId, targetId, stage] = process.argv.slice(2);
+const groups = JSON.parse(fs.readFileSync(readbackPath, "utf8")).SecurityGroups ?? [];
+const byId = new Map(groups.map((group) => [group.GroupId, group]));
+const alb = byId.get(albId);
+const target = byId.get(targetId);
+const emptySources = (permission) =>
+  ["IpRanges", "Ipv6Ranges", "PrefixListIds"].every(
+    (key) => !Array.isArray(permission?.[key]) || permission[key].length === 0,
+  );
+const exactPublic443 = (permission) =>
+  permission?.IpProtocol === "tcp" &&
+  permission?.FromPort === 443 &&
+  permission?.ToPort === 443 &&
+  Array.isArray(permission?.IpRanges) &&
+  permission.IpRanges.length === 1 &&
+  permission.IpRanges[0]?.CidrIp === "0.0.0.0/0" &&
+  (!Array.isArray(permission?.Ipv6Ranges) || permission.Ipv6Ranges.length === 0) &&
+  (!Array.isArray(permission?.PrefixListIds) || permission.PrefixListIds.length === 0) &&
+  (!Array.isArray(permission?.UserIdGroupPairs) || permission.UserIdGroupPairs.length === 0);
+const exactTarget8443 = (permission) =>
+  permission?.IpProtocol === "tcp" &&
+  permission?.FromPort === 8443 &&
+  permission?.ToPort === 8443 &&
+  emptySources(permission) &&
+  Array.isArray(permission?.UserIdGroupPairs) &&
+  permission.UserIdGroupPairs.length === 1 &&
+  permission.UserIdGroupPairs[0]?.GroupId === targetId;
+const exactAlb8443 = (permission) =>
+  permission?.IpProtocol === "tcp" &&
+  permission?.FromPort === 8443 &&
+  permission?.ToPort === 8443 &&
+  emptySources(permission) &&
+  Array.isArray(permission?.UserIdGroupPairs) &&
+  permission.UserIdGroupPairs.length === 1 &&
+  permission.UserIdGroupPairs[0]?.GroupId === albId;
+const defaultAllEgress = (permission) =>
+  permission?.IpProtocol === "-1" &&
+  Array.isArray(permission?.IpRanges) &&
+  permission.IpRanges.length === 1 &&
+  permission.IpRanges[0]?.CidrIp === "0.0.0.0/0" &&
+  (!Array.isArray(permission?.Ipv6Ranges) || permission.Ipv6Ranges.length === 0) &&
+  (!Array.isArray(permission?.PrefixListIds) || permission.PrefixListIds.length === 0) &&
+  (!Array.isArray(permission?.UserIdGroupPairs) || permission.UserIdGroupPairs.length === 0);
+const exact = (actual, predicate) =>
+  Array.isArray(actual) && actual.length === 1 && predicate(actual[0]);
+const valid =
+  groups.length === 2 &&
+  alb?.VpcId === "vpc-0f078e17a5f0f8599" &&
+  target?.VpcId === "vpc-0f078e17a5f0f8599" &&
+  exact(alb?.IpPermissions, exactPublic443) &&
+  (
+    stage === "after-alb-ingress"
+      ? exact(alb?.IpPermissionsEgress, defaultAllEgress) &&
+        Array.isArray(target?.IpPermissions) && target.IpPermissions.length === 0
+      : stage === "after-alb-egress-revoke"
+        ? Array.isArray(alb?.IpPermissionsEgress) &&
+          alb.IpPermissionsEgress.length === 0 &&
+          Array.isArray(target?.IpPermissions) && target.IpPermissions.length === 0
+        : stage === "after-alb-egress-authorize"
+          ? exact(alb?.IpPermissionsEgress, exactTarget8443) &&
+            Array.isArray(target?.IpPermissions) && target.IpPermissions.length === 0
+        : stage === "final"
+          ? exact(alb?.IpPermissionsEgress, exactTarget8443) &&
+            exact(target?.IpPermissions, exactAlb8443)
+          : false
+  );
+if (!valid) process.exit(2);
+NODE
+}
+
+# Fresh-only path after re-run guard. Every mutation has stage-specific semantic readback.
 aws ec2 authorize-security-group-ingress --region "$AWS_REGION" \
   --group-id "$ALB_SG_ID" --ip-permissions \
   "IpProtocol=tcp,FromPort=443,ToPort=443,IpRanges=[{CidrIp=0.0.0.0/0}]"
+assert_sg_stage after-alb-ingress
 aws ec2 revoke-security-group-egress --region "$AWS_REGION" \
   --group-id "$ALB_SG_ID" --ip-permissions \
   "IpProtocol=-1,IpRanges=[{CidrIp=0.0.0.0/0}]"
+assert_sg_stage after-alb-egress-revoke
 aws ec2 authorize-security-group-egress --region "$AWS_REGION" \
   --group-id "$ALB_SG_ID" --ip-permissions \
   "IpProtocol=tcp,FromPort=8443,ToPort=8443,UserIdGroupPairs=[{GroupId=$TARGET_SG_ID}]"
+assert_sg_stage after-alb-egress-authorize
 aws ec2 authorize-security-group-ingress --region "$AWS_REGION" \
   --group-id "$TARGET_SG_ID" --ip-permissions \
   "IpProtocol=tcp,FromPort=8443,ToPort=8443,UserIdGroupPairs=[{GroupId=$ALB_SG_ID}]"
+assert_sg_stage final
 ```
 
 Attach target SG without replacing existing groups, then read every attached SG and enforce that all TCP/8443 permissions are ALB-SG-only:
@@ -780,6 +863,24 @@ const hasExactGetHeadMethods = (rule) =>
   rule.AllowedMethods.length === 2 &&
   rule.AllowedMethods.includes("GET") &&
   rule.AllowedMethods.includes("HEAD");
+const canonicalizeCorsRules = (value) => {
+  if (!Array.isArray(value?.CORSRules)) process.exit(2);
+  return value.CORSRules
+    .map((rule) => {
+      if (rule === null || typeof rule !== "object" || Array.isArray(rule)) process.exit(2);
+      return Object.fromEntries(
+        Object.entries(rule)
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([key, field]) => [
+            key,
+            Array.isArray(field)
+              ? [...field].sort()
+              : field,
+          ]),
+      );
+    })
+    .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+};
 const valid = [intended, applied].every((value) =>
   Array.isArray(value?.CORSRules) &&
   value.CORSRules.some((rule) =>
@@ -790,7 +891,13 @@ const valid = [intended, applied].every((value) =>
     hasExactGetHeadMethods(rule),
   ),
 );
-if (!valid) process.exit(2);
+if (
+  !valid ||
+  JSON.stringify(canonicalizeCorsRules(intended)) !==
+    JSON.stringify(canonicalizeCorsRules(applied))
+) {
+  process.exit(2);
+}
 NODE
 ```
 
@@ -807,7 +914,46 @@ aws elbv2 create-rule --region "$AWS_REGION" --listener-arn "$LISTENER_ARN" \
   --actions Type=forward,TargetGroupArn="$TARGET_GROUP_ARN"
 ```
 
-Then require `REMOTE_ADMIN_MODE=1 REMOTE_TARGET_HEALTH_REQUIRED=1` readiness, exact fixed-404 listener fallback, exact host-forward rule, healthy target, log delivery after harmless remote-host request within 15 minutes, and no direct target path.
+Prove ALB log delivery with one harmless body-discarding request and bounded polling. This emits only a boolean result: no request headers, response body, S3 key, secret, or PII.
+
+```bash
+: "${ALB_DNS_NAME:?ALB DNS name required}"
+LOG_PROOF_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+LOG_PROOF_DEADLINE=$(( $(date +%s) + 900 ))
+
+curl --silent --show-error --output /dev/null --max-time 10 \
+  --connect-to "${REMOTE_ADMIN_HOST}:443:${ALB_DNS_NAME}:443" \
+  "https://${REMOTE_ADMIN_HOST}/"
+
+LOG_DELIVERED=false
+while [ "$(date +%s)" -lt "$LOG_PROOF_DEADLINE" ]; do
+  if aws s3api list-objects-v2 --region "$AWS_REGION" \
+    --bucket "$REMOTE_LOG_BUCKET" \
+    --prefix "AWSLogs/$AWS_ACCOUNT_ID/" \
+    --output json |
+    node -e '
+      const chunks = [];
+      process.stdin.on("data", (chunk) => chunks.push(chunk));
+      process.stdin.on("end", () => {
+        const value = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        const started = Date.parse(process.argv[1]);
+        const found = (value.Contents ?? []).some((item) =>
+          typeof item?.LastModified === "string" &&
+          Date.parse(item.LastModified) >= started,
+        );
+        process.exit(found ? 0 : 1);
+      });
+    ' "$LOG_PROOF_STARTED_AT"; then
+    LOG_DELIVERED=true
+    break
+  fi
+  sleep 15
+done
+test "$LOG_DELIVERED" = true
+printf '%s\n' '{"accessLogDelivered":true}'
+```
+
+Then require `REMOTE_ADMIN_MODE=1 REMOTE_TARGET_HEALTH_REQUIRED=1` readiness, exact fixed-404 listener fallback, exact host-forward rule, healthy target, proven bounded log delivery, and no direct target path.
 
 ## Resize / downgrade
 

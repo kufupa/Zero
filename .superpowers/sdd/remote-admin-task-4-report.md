@@ -136,3 +136,52 @@ git diff --check
 Result: `118 passed`; shell syntax and whitespace checks passed. No Docker, database, runtime environment, AWS/SSM, ACM, or other external mutation ran during remediation.
 
 Remaining concern: ACM remains intentionally unrequested. Next authorized mutation is ACM-only Gate A, which must stop after returning its exact validation CNAME and certificate ARN.
+
+## Second re-review remediation
+
+Status: `DONE`
+
+No AWS, SSM, ACM, Docker, database, or runtime-environment command ran during this remediation.
+
+### RED
+
+Added pure/static contract coverage before changing production scripts or runbook procedures:
+
+```bash
+unset DATABASE_URL TEST_DATABASE_URL VITEST_ALLOW_PILOT_RDS CONFIRM_DISPOSABLE_TEST_DB HMS_DB_TEST_REQUIRED
+pnpm exec vitest run tests/deploy-config.test.ts -t "remote collector rejects|documents gated" --testTimeout=60000
+```
+
+Observed expected failures: the live collector accepted a `LOWERCASE` method transformation; the resource procedure lacked the all-protocol (`IpProtocol: "-1"`) preflight rejection. The same new static contract covered exact IPv4 ALB readback, exact CORS intended/applied comparison, and executable bounded log-delivery proof.
+
+### Fixes
+
+1. Preflight now treats `IpProtocol: "-1"` as exposing TCP/8443 and blocks it.
+2. WAF byte-match validation requires exactly one transformation: `Priority: 0`, `Type: NONE`; collector coverage rejects `LOWERCASE`.
+3. Remote collector now reads the ALB SG and requires: internet-facing IPv4 application ALB; exactly public IPv4 TCP/443 ingress; exactly TCP/8443 egress to the target SG; and target-only TCP/8443 ingress. Fresh provisioning has stage-specific semantic SG readback after every mutation.
+4. CORS readback canonicalizes and compares the full intended/applied rule sets, failing on concurrent additions, broadening, removal, or field changes.
+5. Runbook now includes a harmless body-discarding remote-host request and 15-minute bounded poll for an ALB log object newer than the proof start. It emits only `{"accessLogDelivered":true}` and never prints headers, bodies, object keys, secrets, or PII.
+
+### GREEN
+
+Focused GREEN:
+
+```bash
+unset DATABASE_URL TEST_DATABASE_URL VITEST_ALLOW_PILOT_RDS CONFIRM_DISPOSABLE_TEST_DB HMS_DB_TEST_REQUIRED
+pnpm exec vitest run tests/deploy-config.test.ts -t "documents gated" --testTimeout=60000
+```
+
+Result: `1 passed`.
+
+Full DB-free GREEN:
+
+```bash
+unset DATABASE_URL TEST_DATABASE_URL VITEST_ALLOW_PILOT_RDS CONFIRM_DISPOSABLE_TEST_DB HMS_DB_TEST_REQUIRED
+pnpm exec vitest run tests/deploy-config.test.ts --testTimeout=60000
+bash -n deploy/launch-readiness.sh deploy/post-boot-smoke.sh deploy/ops-deploy.sh deploy/ops-restart.sh deploy/ops-reboot.sh deploy/pm2-boot.sh
+git diff --check
+```
+
+Result: `118 passed`; shell syntax and diff-whitespace checks passed.
+
+Remaining concern: no edge exists yet, so semantic readback and bounded log proof are contract-tested local procedures only. ACM remains intentionally unrequested; no AWS mutation is authorized until re-review approval.
