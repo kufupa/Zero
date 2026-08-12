@@ -2,10 +2,11 @@
 
 ## Status
 
-`BLOCKED`
+`DONE`
 
 Branch: `feat/remote-admin-alb`  
-Implementation commit: `3ef26a70f242a328d2f131f35358829d10cb5838`
+Initial implementation commit: `3ef26a70f242a328d2f131f35358829d10cb5838`  
+Review-remediation commit: `595c5230a1a5ce9bf40378f73ece2486ae451a48`
 
 No AWS mutation occurred. In particular: no ACM certificate request, secret, ALB, target group, listener, security group, WAF, bucket, CORS change, target registration, host-forward rule, DNS record, or EC2/UFW change.
 
@@ -97,3 +98,41 @@ Required next input: explicit Lovable DNS-control confirmation. After that, reru
 - Corrected mode-specific readiness semantics so pre-registration requires no target/host-forward state and active mode requires exact healthy target/host-forward state.
 - Corrected route preflight to honor both explicit subnet associations and the VPC main route table.
 - Confirmed all mutations remain documentation-only behind Gate A/Gate B boundaries.
+
+## Review-remediation addendum
+
+This addendum supersedes the earlier DNS-attestation blocker. User-confirmed Lovable authority is sufficient; `LOVABLE_DNS_CONTROL_CONFIRMED` is removed. Gate A remains the ACM request followed by presentation of its exact CNAME.
+
+Fixed every P1/P2 finding:
+
+1. Remote collector rejects all-protocol, public-`443`, and every non-exact attached-SG ingress; only the single ALB-SG `tcp/8443` target permission is allowed.
+2. Active target requires exact instance `i-008f737974a9ba9b3`, port `8443`, and `healthy`.
+3. Remote CORS requires an exact `GET`/`HEAD` method set; the procedure rejects a pre-existing remote origin with `PUT` or another method.
+4. WAF requires exactly two rate rules, both `Block`: exact `POST /api/auth/sign-in/email` 25/300-second source-IP scope and whole-plane 1000/300-second source-IP scope.
+5. Provisioning now classifies deterministic named resources as fresh, complete, or partial. Complete edges use semantic readiness readback; partial/divergent state exits before mutation. Bucket access errors cannot be mistaken for absence.
+6. Added real collector/parser coverage using stubbed AWS JSON responses, including all-protocol SG, public-`443`, wrong target ID/port, WAF `Count`, and broadened sign-in scope negatives.
+
+### Remediation TDD evidence
+
+RED:
+
+```bash
+unset DATABASE_URL TEST_DATABASE_URL VITEST_ALLOW_PILOT_RDS CONFIRM_DISPOSABLE_TEST_DB HMS_DB_TEST_REQUIRED
+pnpm exec vitest run tests/deploy-config.test.ts -t "defines remote-admin readiness|remote collector|documents gated"
+pnpm exec vitest run tests/deploy-config.test.ts -t "remote collector rejects"
+```
+
+Observed failures: remote CORS accepted `PUT`; the real collector accepted all-traffic ingress; documentation retained the unplanned DNS variable and lacked fail-closed re-run semantics.
+
+GREEN:
+
+```bash
+unset DATABASE_URL TEST_DATABASE_URL VITEST_ALLOW_PILOT_RDS CONFIRM_DISPOSABLE_TEST_DB HMS_DB_TEST_REQUIRED
+pnpm exec vitest run tests/deploy-config.test.ts --testTimeout=30000
+bash -n deploy/launch-readiness.sh deploy/post-boot-smoke.sh deploy/ops-deploy.sh deploy/ops-restart.sh deploy/ops-reboot.sh deploy/pm2-boot.sh
+git diff --check
+```
+
+Result: `118 passed`; shell syntax and whitespace checks passed. No Docker, database, runtime environment, AWS/SSM, ACM, or other external mutation ran during remediation.
+
+Remaining concern: ACM remains intentionally unrequested. Next authorized mutation is ACM-only Gate A, which must stop after returning its exact validation CNAME and certificate ARN.
