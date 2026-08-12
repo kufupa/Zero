@@ -3140,6 +3140,12 @@ describe('deploy config', () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const repoRoot = join(here, '..', '..', '..');
     const resources = readFileSync(join(here, '..', 'deploy', 'aws-resources.md'), 'utf8');
+    const provisionerPath = join(here, '..', 'deploy', 'remote-edge-provisioner.sh');
+    const statePath = join(here, '..', 'deploy', 'remote-edge-state.mjs');
+    const provisioner = existsSync(provisionerPath)
+      ? readFileSync(provisionerPath, 'utf8')
+      : '';
+    const state = existsSync(statePath) ? readFileSync(statePath, 'utf8') : '';
     const readiness = readFileSync(join(here, '..', 'deploy', 'ops-deploy.sh'), 'utf8');
     const runbook = readFileSync(
       join(repoRoot, 'docs', 'runbooks', 'centurion-day-one-operations.md'),
@@ -3160,11 +3166,9 @@ describe('deploy config', () => {
       `REMOTE_WAF_NAME=${REMOTE_WAF_NAME}`,
       `REMOTE_LOG_BUCKET=${REMOTE_LOG_BUCKET}`,
       'aws acm request-certificate',
-      'verify_remote_edge_state',
-      'reject divergence',
-      'semantic readback',
-      'permission.IpProtocol === "-1"',
-      'IpAddressType === "ipv4"',
+      'remote-edge-provisioner.sh inspect',
+      'remote-edge-provisioner.sh apply-one --action ACTION',
+      'launch-readiness.sh',
       'canonicalizeCorsRules',
       'LOG_PROOF_DEADLINE',
       '--connect-to',
@@ -3172,17 +3176,17 @@ describe('deploy config', () => {
       'Name=vpc-id,Values=$VPC_ID',
       'const main = tables.find',
       'const table = explicit ?? main;',
-      'aws elbv2 create-load-balancer',
-      'aws wafv2 create-web-acl',
-      'aws s3api put-bucket-ownership-controls',
-      'aws s3api put-public-access-block',
-      'aws s3api put-bucket-encryption',
-      'aws s3api put-bucket-lifecycle-configuration',
-      'aws s3api put-bucket-policy',
       'aws s3api put-bucket-cors',
     ]) {
       expect(resources.includes(requiredFragment), requiredFragment).toBe(true);
     }
+    expect(existsSync(provisionerPath)).toBe(true);
+    expect(existsSync(statePath)).toBe(true);
+    expect(provisioner).toContain('collect_current');
+    expect(provisioner).toContain('mutate_one');
+    expect(provisioner).toContain('remote-edge: blocked');
+    expect(state).toContain('ACTION_BY_STAGE');
+    expect(state).toContain('NEXT_STAGE_BY_STAGE');
     expect(resources).not.toContain('LOVABLE_DNS_CONTROL_CONFIRMED');
     expect(resources.includes('secretsmanager get-secret-value')).toBe(false);
     expect(
@@ -3206,20 +3210,27 @@ describe('deploy config', () => {
     const { dirname, join } = await import('node:path');
     const here = dirname(fileURLToPath(import.meta.url));
     const resources = readFileSync(join(here, '..', 'deploy', 'aws-resources.md'), 'utf8');
+    const provisioner = readFileSync(
+      join(here, '..', 'deploy', 'remote-edge-provisioner.sh'),
+      'utf8',
+    );
+    const state = readFileSync(
+      join(here, '..', 'deploy', 'remote-edge-state.mjs'),
+      'utf8',
+    );
     const procedure = resources.slice(
       resources.indexOf('### Idempotent edge resources after Gate A'),
       resources.indexOf('### Gate B and Task 5 handoff'),
     );
 
-    expect(procedure).toContain('classify_remote_edge_stage');
     expect(procedure).toContain('SG_FINAL_UNATTACHED');
-    expect(procedure).toContain('[ALB=0,TG=0,ALB-SG=1,target-SG=1,WAF=0,bucket=0]');
-    expect(procedure).toContain(
-      '["SG_FINAL_UNATTACHED", facts.sgStage === "final"',
-    );
-    expect(procedure).toContain('targetAttached === false');
-    expect(procedure).toContain('advance_remote_edge_once');
-    expect(procedure).toContain('semantic readback');
+    expect(procedure).toContain('ATTACH_TARGET_SECURITY_GROUP');
+    expect(provisioner).toContain('SG_FINAL_UNATTACHED)');
+    expect(state).toContain("SG_FINAL_UNATTACHED: 'ATTACH_TARGET_SECURITY_GROUP'");
+    expect(state).toContain("SG_FINAL_UNATTACHED: 'TARGET_SG_ATTACHED'");
+    expect(provisioner).not.toContain('--stage');
+    expect(provisioner).not.toContain('--facts');
+    expect(provisioner).not.toContain('--resume');
   });
 
   it('documents rejection of unknown and malformed remote edge partial states', async () => {
@@ -3228,14 +3239,28 @@ describe('deploy config', () => {
     const { dirname, join } = await import('node:path');
     const here = dirname(fileURLToPath(import.meta.url));
     const resources = readFileSync(join(here, '..', 'deploy', 'aws-resources.md'), 'utf8');
+    const provisioner = readFileSync(
+      join(here, '..', 'deploy', 'remote-edge-provisioner.sh'),
+      'utf8',
+    );
+    const state = readFileSync(
+      join(here, '..', 'deploy', 'remote-edge-state.mjs'),
+      'utf8',
+    );
     const procedure = resources.slice(
       resources.indexOf('### Idempotent edge resources after Gate A'),
       resources.indexOf('### Gate B and Task 5 handoff'),
     );
 
-    expect(procedure).toContain('unknown/non-prefix remote edge state');
-    expect(procedure).toContain('duplicate named remote resource');
-    expect(procedure).toContain('malformed remote edge readback');
+    expect(procedure).toContain('fails closed');
+    expect(procedure).toContain('duplicate names');
+    expect(procedure).not.toContain('transition_security_group_prefix_once');
+    expect(procedure).not.toContain('advance_remote_edge_once');
+    expect(provisioner).toContain('state_bridge "$scratch" result');
+    expect(provisioner).toContain('remote-edge: blocked');
+    expect(state).toContain('exactKeys');
+    expect(state).toContain('deriveFacts');
+    expect(state).toContain('classifyFacts');
     expect(procedure).not.toContain('EDGE_REUSE_STATE');
   });
 
@@ -3244,10 +3269,13 @@ describe('deploy config', () => {
     const { fileURLToPath } = await import('node:url');
     const { dirname, join } = await import('node:path');
     const here = dirname(fileURLToPath(import.meta.url));
-    const resources = readFileSync(join(here, '..', 'deploy', 'aws-resources.md'), 'utf8');
-    const procedure = resources.slice(
-      resources.indexOf('### Idempotent edge resources after Gate A'),
-      resources.indexOf('### Gate B and Task 5 handoff'),
+    const provisioner = readFileSync(
+      join(here, '..', 'deploy', 'remote-edge-provisioner.sh'),
+      'utf8',
+    );
+    const state = readFileSync(
+      join(here, '..', 'deploy', 'remote-edge-state.mjs'),
+      'utf8',
     );
     const transitions = [
       ['FRESH', 'ALB_SG_CREATED'],
@@ -3275,9 +3303,11 @@ describe('deploy config', () => {
     ];
 
     for (const [from, to] of transitions) {
-      expect(procedure, `${from} -> ${to}`).toContain(`${from} -> ${to}`);
+      expect(state, `${from} -> ${to}`).toContain(`${from}: '${to}'`);
     }
-    expect(procedure).toContain('assert_remote_edge_stage "$REMOTE_EDGE_NEXT_STAGE"');
+    expect(provisioner).toContain('mutate_one "$PRE_STAGE" "$PRE_SCRATCH"');
+    expect(provisioner).toContain('collect_current "$POST_SCRATCH"');
+    expect(provisioner).toContain('[[ "$POST_STAGE" == "$EXPECTED_NEXT" ]]');
   });
 
   it('documents no early public exposure across provisioning transitions', async () => {
@@ -3285,22 +3315,19 @@ describe('deploy config', () => {
     const { fileURLToPath } = await import('node:url');
     const { dirname, join } = await import('node:path');
     const here = dirname(fileURLToPath(import.meta.url));
-    const resources = readFileSync(join(here, '..', 'deploy', 'aws-resources.md'), 'utf8');
-    const procedure = resources.slice(
-      resources.indexOf('### Idempotent edge resources after Gate A'),
-      resources.indexOf('### Gate B and Task 5 handoff'),
+    const provisioner = readFileSync(
+      join(here, '..', 'deploy', 'remote-edge-provisioner.sh'),
+      'utf8',
     );
 
-    expect(procedure).toContain(
-      'No transition invokes `register-targets`, `create-rule`, HTTP `:80`, or DNS mutation.',
-    );
-    expect(procedure).not.toContain('aws elbv2 register-targets');
-    expect(procedure).not.toContain('aws elbv2 create-rule');
-    expect(procedure).not.toMatch(
+    expect(provisioner).not.toContain('register-targets');
+    expect(provisioner).not.toContain('create-rule');
+    expect(provisioner).not.toContain('route53');
+    expect(provisioner).not.toMatch(
       /create-listener[\s\S]{0,400}--protocol HTTP\s+--port 80/,
     );
-    expect(procedure).toContain('fixed-response');
-    expect(procedure).toContain('StatusCode=404');
+    expect(provisioner).toContain('--protocol HTTPS --port 443');
+    expect(provisioner).toContain('StatusCode=404');
   });
 
   it('UFW collection accepts exactly one intended tunnel HTTPS allow', async () => {

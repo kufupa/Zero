@@ -279,3 +279,59 @@ Result: `122 passed`; shell syntax and whitespace checks passed.
 ### Remaining concern
 
 No live transition was attempted for this correction. On next authorized operator run, regenerate the live facts and resume only from the freshly derived `SG_FINAL_UNATTACHED` prefix with one target-SG attachment mutation followed by semantic readback. Do not treat this report or prior evidence as state authority.
+
+## Task 4 executable edge provisioner — 2026-08-12
+
+Status: `DONE` for local implementation and DB-free verification. No live AWS, SSM, ACM, Secrets Manager, Docker, database, environment-source, deployment, or runtime mutation ran. Tests used only explicit fake AWS/SSM binary overrides.
+
+### Delivered
+
+- Added `deploy/remote-edge-provisioner.sh` with only `inspect [--evidence-root DIR]` and `apply-one --action ACTION [--evidence-root DIR]`.
+- Added pure `deploy/remote-edge-state.mjs` for strict fact-schema validation, deterministic prefix classification, closed action mapping, and exact successor mapping.
+- Each inspection regenerates fixed AWS/EC2/host projections. `apply-one` repeats collection before and after exactly one mapped mutation; SSM readback is evidence only and raw SSM output stays private scratch data.
+- The classifier rejects stale/manual facts, missing/malformed/extra schema keys, duplicate names, unsafe perimeter controls, public target addresses, unexpected attachment, and successor divergence. External evidence contains only atomic sanitized stage/action JSON in mode-`0700` / mode-`0600` paths.
+- Replaced prose mutation bodies in `aws-resources.md` with invocation-only guidance. `launch-readiness.sh` remains the separate read-only final gate.
+
+### TDD evidence
+
+Initial RED before production files existed:
+
+```bash
+unset DATABASE_URL TEST_DATABASE_URL VITEST_ALLOW_PILOT_RDS CONFIRM_DISPOSABLE_TEST_DB HMS_DB_TEST_REQUIRED
+pnpm exec vitest run tests/remote-edge-provisioner.test.ts --testTimeout=30000
+```
+
+Result: exit `1`; expected failure because `remote-edge-provisioner.sh` and `remote-edge-state.mjs` were absent.
+
+Follow-up RED checks:
+
+```bash
+unset DATABASE_URL TEST_DATABASE_URL VITEST_ALLOW_PILOT_RDS CONFIRM_DISPOSABLE_TEST_DB HMS_DB_TEST_REQUIRED
+pnpm exec vitest run tests/remote-edge-provisioner.test.ts -t "classifies only strict" --testTimeout=30000
+pnpm exec vitest run tests/deploy-config.test.ts -t "documents gated|documents live-readback|documents rejection|documents one mutation|documents no early" --testTimeout=60000
+```
+
+Observed expected failures: strict schema initially lacked no-public-target-address coverage; old documentation tests still expected the removed pseudo-code source of truth.
+
+GREEN:
+
+```bash
+unset DATABASE_URL TEST_DATABASE_URL VITEST_ALLOW_PILOT_RDS CONFIRM_DISPOSABLE_TEST_DB HMS_DB_TEST_REQUIRED
+pnpm exec vitest run tests/deploy-config.test.ts --testTimeout=60000 --maxWorkers=1 --fileParallelism=false --reporter=dot
+pnpm exec vitest run tests/remote-edge-provisioner.test.ts --testTimeout=60000 --maxWorkers=1 --fileParallelism=false --reporter=dot
+node --check deploy/remote-edge-state.mjs
+bash -n deploy/remote-edge-provisioner.sh deploy/launch-readiness.sh deploy/post-boot-smoke.sh deploy/ops-deploy.sh deploy/ops-restart.sh deploy/ops-reboot.sh deploy/pm2-boot.sh
+git diff --check
+```
+
+Result: `122` deploy-config tests and `11` provisioner tests passed; Node syntax, shell syntax, and whitespace checks passed.
+
+### Divergence and fail-closed coverage
+
+- Fake state proves fresh pre- and post-mutation collection around one target-SG attachment; only `ec2 modify-instance-attribute` may mutate in that path.
+- Wrong action, supplied historical-fact flag, absent/read-error facts, malformed facts, duplicate names, unsafe ingress, and post-mutation divergence all block. Prohibited Task 5/public operations never execute.
+- A combined parallel Vitest run passed all `133` assertions but surfaced a Vitest `onTaskUpdate` RPC timeout. Serial re-runs above were clean; this was runner reporting contention, not an application test failure.
+
+### Remaining concern
+
+No live provisioner invocation was attempted. On next authorized operator run, use fresh `inspect`, then invoke exactly its returned action. Current historical status does not authorize attachment or any later transition.
