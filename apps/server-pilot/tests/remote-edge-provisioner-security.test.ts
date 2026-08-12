@@ -59,11 +59,18 @@ type Mode =
   | 'log-proof-failure'
   | 'log-proof-boundary'
   | 'log-proof-wrong-key'
+  | 'log-proof-invalid-time'
+  | 'log-proof-invalid-ip'
+  | 'log-proof-directory-mismatch'
+  | 'log-proof-test-token'
+  | 'log-proof-health-token'
+  | 'log-proof-connection-token'
   | 'alb-provisioning'
   | 'alb-stuck-provisioning';
 
 type Harness = {
   root: string;
+  awsPath: string;
   statePath: string;
   evidenceRoot: string;
   logPath: string;
@@ -147,7 +154,7 @@ const log = (line) => appendFileSync(logPath, line + '\n');
 const emit = (value) => process.stdout.write(JSON.stringify(value));
 const fail = () => process.exit(21);
 const mutation = (expected, next, label) => {
-  if (state.stage !== expected) fail();
+  if (state.stage !== expected || option('--region') !== region) fail();
   state.stage = next;
   save();
   log('mutate ' + label);
@@ -746,13 +753,26 @@ switch (service + ' ' + operation) {
     emit({ Policy: JSON.stringify(bucketPolicy()) });
     break;
   case 's3api list-objects-v2':
+    const key = state.mode === 'log-proof-wrong-key'
+      ? 'AWSLogs/845242190536/test-fixture.txt'
+      : state.mode === 'log-proof-invalid-time'
+        ? 'AWSLogs/845242190536/elasticloadbalancing/af-south-1/2030/01/01/845242190536_elasticloadbalancing_af-south-1_app.nava-remote-admin-alb.test_20300101T2460Z_172.31.0.1_deadbeef.log.gz'
+        : state.mode === 'log-proof-invalid-ip'
+          ? 'AWSLogs/845242190536/elasticloadbalancing/af-south-1/2030/01/01/845242190536_elasticloadbalancing_af-south-1_app.nava-remote-admin-alb.test_20300101T0000Z_999.31.0.1_deadbeef.log.gz'
+          : state.mode === 'log-proof-directory-mismatch'
+            ? 'AWSLogs/845242190536/elasticloadbalancing/af-south-1/2030/01/02/845242190536_elasticloadbalancing_af-south-1_app.nava-remote-admin-alb.test_20300101T0000Z_172.31.0.1_deadbeef.log.gz'
+            : state.mode === 'log-proof-test-token'
+              ? 'AWSLogs/845242190536/elasticloadbalancing/af-south-1/2030/01/01/845242190536_elasticloadbalancing_af-south-1_app.nava-remote-admin-alb.test_20300101T0000Z_172.31.0.1_test.log.gz'
+              : state.mode === 'log-proof-health-token'
+                ? 'AWSLogs/845242190536/elasticloadbalancing/af-south-1/2030/01/01/845242190536_elasticloadbalancing_af-south-1_app.nava-remote-admin-alb.test_20300101T0000Z_172.31.0.1_health.log.gz'
+                : state.mode === 'log-proof-connection-token'
+                  ? 'AWSLogs/845242190536/elasticloadbalancing/af-south-1/2030/01/01/845242190536_elasticloadbalancing_af-south-1_app.nava-remote-admin-alb.test_20300101T0000Z_172.31.0.1_connection.log.gz'
+                  : 'AWSLogs/845242190536/elasticloadbalancing/af-south-1/2030/01/01/845242190536_elasticloadbalancing_af-south-1_app.nava-remote-admin-alb.test_20300101T0000Z_172.31.0.1_deadbeef.log.gz';
     emit({
       Contents: state.mode === 'log-proof-failure'
         ? []
         : [{
-            Key: state.mode === 'log-proof-wrong-key'
-              ? 'AWSLogs/845242190536/test-fixture.txt'
-              : 'AWSLogs/845242190536/elasticloadbalancing/af-south-1/2030/01/01/845242190536_elasticloadbalancing_af-south-1_app.nava-remote-admin-alb.test_20300101T0000Z_172.31.0.1_fixture.log.gz',
+            Key: key,
             LastModified: state.mode === 'log-proof-boundary'
               ? '2030-01-01T00:00:00Z'
               : new Date().toISOString(),
@@ -948,6 +968,7 @@ printf '%s\n' '2030-01-01T00:00:00Z'
 
   return {
     root,
+    awsPath,
     statePath,
     evidenceRoot,
     logPath,
@@ -1029,6 +1050,14 @@ function runProvisioner(
     child.once('close', (status) => {
       finish({ status, stdout, stderr });
     });
+  });
+}
+
+function runFakeAws(harness: Harness, args: string[]): Promise<number | null> {
+  return new Promise((resolve) => {
+    const child = spawn('node', [harness.awsPath, ...args], { env: harness.env });
+    child.on('error', () => resolve(null));
+    child.on('close', (code) => resolve(code));
   });
 }
 
@@ -1221,6 +1250,52 @@ describe('remote edge provisioner security contracts', () => {
       destroyHarness(wrongKey);
     }
   }, 60_000);
+
+  it.each([
+    'log-proof-invalid-time',
+    'log-proof-invalid-ip',
+    'log-proof-directory-mismatch',
+    'log-proof-test-token',
+    'log-proof-health-token',
+    'log-proof-connection-token',
+  ] as const)('rejects malformed official ALB access-log key: %s', async (mode) => {
+    const malformed = createHarness('UFW_READY', mode);
+    try {
+      const result = await runProvisioner(malformed, [
+        'apply-one',
+        '--action',
+        'PROVE_ALB_LOG_DELIVERY',
+      ]);
+      expect(result.status).not.toBe(0);
+      expect(
+        calls(malformed).filter((entry) => entry === 'aws s3api list-objects-v2'),
+      ).toHaveLength(3);
+    } finally {
+      destroyHarness(malformed);
+    }
+  }, 60_000);
+
+  it('rejects a regional fake mutation with wrong region', async () => {
+    const wrongRegion = createHarness('FRESH', 'valid');
+    try {
+      const status = await runFakeAws(wrongRegion, [
+        '--no-cli-pager',
+        'ec2',
+        'create-security-group',
+        '--region',
+        'us-east-1',
+        '--vpc-id',
+        'vpc-0f078e17a5f0f8599',
+        '--group-name',
+        'nava-remote-admin-alb',
+        '--description',
+        'Nava remote admin ALB ingress only',
+      ]);
+      expect(status).not.toBe(0);
+    } finally {
+      destroyHarness(wrongRegion);
+    }
+  });
 
   it('rejects unsafe evidence roots before invoking fake AWS or SSM', async () => {
     const harness = createHarness('SG_FINAL_UNATTACHED', 'ufw-shorthand');

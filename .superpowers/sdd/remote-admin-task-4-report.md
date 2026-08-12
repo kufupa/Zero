@@ -438,3 +438,44 @@ Results: `39` hardened security fixtures, `11` provisioner fixtures, and `122` d
 ### Remaining concern
 
 No live `inspect` or `apply-one` execution was authorized or attempted. `apply-one` remains blocked pending re-review approval and fresh local `inspect`.
+
+## Exact-key and regional-mutation re-review remediation — 2026-08-12
+
+Status: `DONE`
+
+Only local fixture binaries ran. No AWS, SSM, secrets, database, Docker, environment sourcing, deployment, DNS, or runtime mutation occurred.
+
+### RED
+
+Fresh but malformed access-log objects initially advanced proof when their timestamp was newer than proof start:
+
+- invalid UTC time (`T2460Z`)
+- invalid ALB-node IPv4 (`999.31.0.1`)
+- directory date differing from filename timestamp date
+- `test`, `health`, and `connection` placeholder tokens
+
+The fake EC2 create-security-group mutation also accepted `--region us-east-1`.
+
+### Fixes
+
+1. Log proof now requires complete official filename semantics: exact account/region/named-ALB hierarchy, valid UTC timestamp, valid and matching directory date, valid IPv4 ALB-node address, exact eight-character lowercase-hex random token, and `.log.gz`.
+2. The fake mutation transition boundary now requires `--region af-south-1` for every AWS regional mutation. Production mutation commands already pin this region; all stage fixtures now enforce it.
+
+### GREEN
+
+```bash
+unset DATABASE_URL TEST_DATABASE_URL VITEST_ALLOW_PILOT_RDS CONFIRM_DISPOSABLE_TEST_DB HMS_DB_TEST_REQUIRED
+pnpm exec vitest run tests/remote-edge-provisioner-security.test.ts --testTimeout=60000 --maxWorkers=1 --fileParallelism=false --pool=forks --reporter=dot
+pnpm exec vitest run tests/remote-edge-provisioner.test.ts --testTimeout=60000 --maxWorkers=1 --fileParallelism=false --pool=forks --reporter=dot
+pnpm exec vitest run tests/deploy-config.test.ts --testTimeout=60000 --maxWorkers=1 --fileParallelism=false --pool=forks --reporter=dot
+pnpm exec tsc -p tsconfig.json --noEmit
+bash -n deploy/remote-edge-provisioner.sh deploy/launch-readiness.sh deploy/post-boot-smoke.sh deploy/ops-deploy.sh deploy/ops-restart.sh deploy/ops-reboot.sh deploy/pm2-boot.sh
+node --check deploy/remote-edge-state.mjs
+git diff --check
+```
+
+Results: `46` hardened security fixtures, `11` provisioner fixtures, and `122` deploy-config fixtures passed. TypeScript, shell syntax, Node syntax, and whitespace checks passed.
+
+### Remaining concern
+
+No live `inspect` or `apply-one` execution was authorized or attempted. `apply-one` remains blocked pending re-review approval and fresh local `inspect`.

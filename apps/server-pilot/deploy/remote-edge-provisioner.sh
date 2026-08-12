@@ -626,18 +626,46 @@ const normalizedResource = resource.replaceAll('/', '.');
 const accessLogKey = new RegExp(
   `^AWSLogs/${account}/elasticloadbalancing/${region}/(\\d{4})/(\\d{2})/(\\d{2})/` +
     `${account}_elasticloadbalancing_${region}_${escapeRegExp(normalizedResource)}_` +
-    '\\d{8}T\\d{4}Z_[^/]+_[^/]+\\.log\\.gz$',
+    '(\\d{4})(\\d{2})(\\d{2})T(\\d{2})(\\d{2})Z_' +
+    '(\\d{1,3}(?:\\.\\d{1,3}){3})_([0-9a-f]{8})\\.log\\.gz$',
 );
 const validAccessLogKey = (key) => {
   if (typeof key !== 'string') return false;
   const match = key.match(accessLogKey);
   if (!match) return false;
-  const [year, month, day] = match.slice(1).map(Number);
-  const date = new Date(Date.UTC(year, month - 1, day));
+  const [
+    directoryYear,
+    directoryMonth,
+    directoryDay,
+    timestampYear,
+    timestampMonth,
+    timestampDay,
+    timestampHour,
+    timestampMinute,
+    nodeAddress,
+  ] = match.slice(1);
+  if (
+    directoryYear !== timestampYear ||
+    directoryMonth !== timestampMonth ||
+    directoryDay !== timestampDay ||
+    nodeAddress.split('.').some((part) => Number(part) > 255)
+  ) {
+    return false;
+  }
+  const [year, month, day, hour, minute] = [
+    timestampYear,
+    timestampMonth,
+    timestampDay,
+    timestampHour,
+    timestampMinute,
+  ].map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day, hour, minute));
   return (
     date.getUTCFullYear() === year &&
     date.getUTCMonth() === month - 1 &&
-    date.getUTCDate() === day
+    date.getUTCDate() === day &&
+    date.getUTCHours() === hour &&
+    date.getUTCMinutes() === minute
   );
 };
 const found = value.Contents.some(
