@@ -61,6 +61,10 @@ if [ "$QUIESCED" != "1" ]; then
   echo "== ops-deploy: health =="
   bash "${SCRIPT_DIR}/ssm-run-command.sh" \
     'curl -fsS http://127.0.0.1:8788/health && curl -fsS http://127.0.0.1:8789/health'
+
+  echo "== ops-deploy: remote-admin pre-registration readiness =="
+  bash "${SCRIPT_DIR}/ssm-run-command.sh" \
+    'cd /home/ubuntu/repos/zero && REMOTE_ADMIN_MODE=1 REMOTE_TARGET_HEALTH_REQUIRED=0 bash apps/server-pilot/deploy/launch-readiness.sh'
 fi
 
 echo "== ops-deploy: VPN HARD assert =="

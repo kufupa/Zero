@@ -8,6 +8,38 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 : "${INSTANCE_ID:=i-008f737974a9ba9b3}"
 : "${RDS_INSTANCE_ID:=nava-zero-mail-pilot}"
 : "${S3_BUCKET:=nava-zero-mail-845242190536-af-south-1}"
+: "${REMOTE_ADMIN_MODE:=0}"
+: "${REMOTE_TARGET_HEALTH_REQUIRED:=0}"
+
+case "$REMOTE_ADMIN_MODE" in
+  0|1) ;;
+  *)
+    echo "launch-readiness: REMOTE_ADMIN_MODE must be 0 or 1" >&2
+    exit 2
+    ;;
+esac
+case "$REMOTE_TARGET_HEALTH_REQUIRED" in
+  0|1) ;;
+  *)
+    echo "launch-readiness: REMOTE_TARGET_HEALTH_REQUIRED must be 0 or 1" >&2
+    exit 2
+    ;;
+esac
+if [ "$REMOTE_ADMIN_MODE" != "1" ] && [ "$REMOTE_TARGET_HEALTH_REQUIRED" != "0" ]; then
+  echo "launch-readiness: REMOTE_TARGET_HEALTH_REQUIRED requires REMOTE_ADMIN_MODE=1" >&2
+  exit 2
+fi
+
+REMOTE_ADMIN_HOST="nava-admin.trynava.io"
+REMOTE_ALB_NAME="nava-remote-admin-alb"
+REMOTE_TARGET_GROUP_NAME="nava-remote-admin"
+REMOTE_TARGET_SECURITY_GROUP_NAME="nava-remote-admin-target"
+REMOTE_WAF_NAME="nava-remote-admin-waf"
+REMOTE_LOG_BUCKET="nava-zero-remote-alb-logs-845242190536-af-south-1"
+REMOTE_VPC_ID="vpc-0f078e17a5f0f8599"
+REMOTE_TARGET_PRIVATE_IP="172.31.12.112"
+REMOTE_ALB_SUBNET_A="subnet-0e6446aaaeaa8762e"
+REMOTE_ALB_SUBNET_B="subnet-094bf8643d98c22f6"
 
 for required_command in aws node bash; do
   if ! command -v "$required_command" >/dev/null 2>&1; then
@@ -23,6 +55,7 @@ set +x
 REPO_ROOT="${REPO_ROOT:-/home/ubuntu/repos/zero}"
 SERVER_PILOT="${REPO_ROOT}/apps/server-pilot"
 ENV_FILE="${ENV_FILE:-${SERVER_PILOT}/.env.production}"
+REMOTE_ADMIN_MODE="__REMOTE_ADMIN_MODE__"
 export REQUIRE_HOTEL_PROBE=1
 export PATH="${HOME}/.local/share/pnpm:${HOME}/.nvm/versions/node/$(ls "${HOME}/.nvm/versions/node" 2>/dev/null | sort -V | tail -1)/bin:${PATH}"
 
@@ -96,9 +129,12 @@ UFW_ACTIVE=false
 UFW_DEFAULT_DENY=false
 UFW_TUN443=false
 UFW_BROAD443_ABSENT=false
+UFW_REMOTE_ALB8443_ONLY=false
 UFW_VERBOSE=""
 UFW_ADDED=""
 EXPECTED_UFW_ALLOW='ufw allow in on tun0 to any port 443 proto tcp'
+EXPECTED_UFW_REMOTE_ALB_A='ufw allow in on ens5 from 172.31.0.0/20 to any port 8443 proto tcp'
+EXPECTED_UFW_REMOTE_ALB_B='ufw allow in on ens5 from 172.31.32.0/20 to any port 8443 proto tcp'
 
 if UFW_VERBOSE="$(sudo ufw status verbose 2>/dev/null)"; then
   UFW_STATUS_READ=true
@@ -111,7 +147,35 @@ if UFW_VERBOSE="$(sudo ufw status verbose 2>/dev/null)"; then
 fi
 if UFW_ADDED="$(sudo ufw show added 2>/dev/null)"; then
   UFW_RULES_READ=true
-  if printf '%s\n' "$UFW_ADDED" |
+  if [ "${REMOTE_ADMIN_MODE:-0}" = "1" ]; then
+    if printf '%s\n' "$UFW_ADDED" |
+      awk \
+        -v legacy="$EXPECTED_UFW_ALLOW" \
+        -v remote_a="$EXPECTED_UFW_REMOTE_ALB_A" \
+        -v remote_b="$EXPECTED_UFW_REMOTE_ALB_B" '
+        /^[[:space:]]*ufw([[:space:]]|$)/ {
+          line = $0
+          sub(/^[[:space:]]+/, "", line)
+          sub(/[[:space:]]+$/, "", line)
+          rule_count += 1
+          if (line == legacy) legacy_count += 1
+          else if (line == remote_a) remote_a_count += 1
+          else if (line == remote_b) remote_b_count += 1
+          else unexpected = 1
+        }
+        END {
+          exit rule_count == 3 &&
+            legacy_count == 1 &&
+            remote_a_count == 1 &&
+            remote_b_count == 1 &&
+            !unexpected ? 0 : 1
+        }
+      '; then
+      UFW_TUN443=true
+      UFW_BROAD443_ABSENT=true
+      UFW_REMOTE_ALB8443_ONLY=true
+    fi
+  elif printf '%s\n' "$UFW_ADDED" |
     awk -v expected="$EXPECTED_UFW_ALLOW" '
       /^[[:space:]]*ufw([[:space:]]|$)/ {
         line = $0
@@ -185,7 +249,7 @@ export HTTP_OK HTTPS_OK TLS_VALID HOTEL_PROBE_OK ENV_LOADED
 export DISK_USED_PERCENT DISK_FREE_MB DISK_SAFE
 export PM2_SUMMARY
 export UFW_STATUS_READ UFW_RULES_READ
-export UFW_ACTIVE UFW_DEFAULT_DENY UFW_TUN443 UFW_BROAD443_ABSENT
+export UFW_ACTIVE UFW_DEFAULT_DENY UFW_TUN443 UFW_BROAD443_ABSENT UFW_REMOTE_ALB8443_ONLY
 
 cd "$SERVER_PILOT"
 DB_SUMMARY="$(
@@ -298,6 +362,7 @@ const report = {
     defaultDeny: bool("UFW_DEFAULT_DENY"),
     tunnel443: bool("UFW_TUN443"),
     broad443Absent: bool("UFW_BROAD443_ABSENT"),
+    remoteAlb8443Only: bool("UFW_REMOTE_ALB8443_ONLY"),
   },
   config: {
     envLoaded: bool("ENV_LOADED"),
@@ -319,6 +384,7 @@ process.stdout.write(`NAVA_READINESS_REMOTE_JSON=${JSON.stringify(report)}\n`);
 NODE
 REMOTE
 )"
+REMOTE_COMMAND="${REMOTE_COMMAND//__REMOTE_ADMIN_MODE__/$REMOTE_ADMIN_MODE}"
 
 SSM_RESULT=""
 SSM_EXIT=0
@@ -547,6 +613,578 @@ collect_readiness_perimeter() {
 collect_readiness_perimeter
 # END_READINESS_PERIMETER_COLLECTION
 
+REMOTE_ADMIN_FACTS='{}'
+remote_admin_query() {
+  local label="$1"
+  local variable_name="$2"
+  shift 2
+  local value=""
+  if value="$("$@" 2>/dev/null)"; then
+    printf -v "$variable_name" '%s' "$value"
+    return 0
+  fi
+  echo "launch-readiness: remote admin ${label} query failed" >&2
+  return 1
+}
+
+collect_remote_admin_perimeter() {
+  local remote_alb_json=""
+  local remote_target_group_json=""
+  local remote_target_attributes_json=""
+  local remote_target_health_json=""
+  local remote_listeners_json=""
+  local remote_rules_json=""
+  local remote_alb_attributes_json=""
+  local remote_target_sg_json=""
+  local remote_waf_list_json=""
+  local remote_waf_json=""
+  local remote_waf_association_json=""
+  local remote_log_encryption_json=""
+  local remote_log_public_access_json=""
+  local remote_log_ownership_json=""
+  local remote_log_policy_json=""
+  local remote_log_lifecycle_json=""
+  local remote_alb_context=""
+  local remote_target_group_arn=""
+  local remote_listener_arn=""
+  local remote_waf_id=""
+
+  if ! remote_admin_query "ALB" remote_alb_json \
+    aws elbv2 describe-load-balancers \
+      --region "$AWS_REGION" \
+      --names "$REMOTE_ALB_NAME" \
+      --output json; then
+    return 0
+  fi
+  if ! remote_alb_context="$(
+    node - "$remote_alb_json" 2>/dev/null <<'NODE'
+try {
+  const value = JSON.parse(process.argv[2]);
+  const loadBalancers = Array.isArray(value.LoadBalancers) ? value.LoadBalancers : [];
+  if (loadBalancers.length !== 1) process.exit(1);
+  const [loadBalancer] = loadBalancers;
+  const arn = loadBalancer?.LoadBalancerArn;
+  if (typeof arn !== "string" || arn.length === 0) process.exit(1);
+  process.stdout.write(arn);
+} catch {
+  process.exit(1);
+}
+NODE
+  )"; then
+    echo "launch-readiness: remote admin ALB response invalid" >&2
+    return 0
+  fi
+
+  if ! remote_admin_query "target group" remote_target_group_json \
+    aws elbv2 describe-target-groups \
+      --region "$AWS_REGION" \
+      --names "$REMOTE_TARGET_GROUP_NAME" \
+      --output json; then
+    return 0
+  fi
+  if ! remote_target_group_arn="$(
+    node - "$remote_target_group_json" 2>/dev/null <<'NODE'
+try {
+  const value = JSON.parse(process.argv[2]);
+  const targetGroups = Array.isArray(value.TargetGroups) ? value.TargetGroups : [];
+  if (targetGroups.length !== 1) process.exit(1);
+  const arn = targetGroups[0]?.TargetGroupArn;
+  if (typeof arn !== "string" || arn.length === 0) process.exit(1);
+  process.stdout.write(arn);
+} catch {
+  process.exit(1);
+}
+NODE
+  )"; then
+    echo "launch-readiness: remote admin target group response invalid" >&2
+    return 0
+  fi
+
+  if ! remote_admin_query "target group attributes" remote_target_attributes_json \
+    aws elbv2 describe-target-group-attributes \
+      --region "$AWS_REGION" \
+      --target-group-arn "$remote_target_group_arn" \
+      --output json ||
+    ! remote_admin_query "target health" remote_target_health_json \
+      aws elbv2 describe-target-health \
+        --region "$AWS_REGION" \
+        --target-group-arn "$remote_target_group_arn" \
+        --output json ||
+    ! remote_admin_query "listeners" remote_listeners_json \
+      aws elbv2 describe-listeners \
+        --region "$AWS_REGION" \
+        --load-balancer-arn "$remote_alb_context" \
+        --output json ||
+    ! remote_admin_query "ALB attributes" remote_alb_attributes_json \
+      aws elbv2 describe-load-balancer-attributes \
+        --region "$AWS_REGION" \
+        --load-balancer-arn "$remote_alb_context" \
+        --output json ||
+    ! remote_admin_query "target security group" remote_target_sg_json \
+      aws ec2 describe-security-groups \
+        --region "$AWS_REGION" \
+        --filters \
+          "Name=vpc-id,Values=$REMOTE_VPC_ID" \
+          "Name=group-name,Values=$REMOTE_TARGET_SECURITY_GROUP_NAME" \
+        --output json ||
+    ! remote_admin_query "WAF list" remote_waf_list_json \
+      aws wafv2 list-web-acls \
+        --region "$AWS_REGION" \
+        --scope REGIONAL \
+        --output json ||
+    ! remote_admin_query "log bucket encryption" remote_log_encryption_json \
+      aws s3api get-bucket-encryption \
+        --region "$AWS_REGION" \
+        --bucket "$REMOTE_LOG_BUCKET" \
+        --output json ||
+    ! remote_admin_query "log bucket public access" remote_log_public_access_json \
+      aws s3api get-public-access-block \
+        --region "$AWS_REGION" \
+        --bucket "$REMOTE_LOG_BUCKET" \
+        --output json ||
+    ! remote_admin_query "log bucket ownership" remote_log_ownership_json \
+      aws s3api get-bucket-ownership-controls \
+        --region "$AWS_REGION" \
+        --bucket "$REMOTE_LOG_BUCKET" \
+        --output json ||
+    ! remote_admin_query "log bucket policy" remote_log_policy_json \
+      aws s3api get-bucket-policy \
+        --region "$AWS_REGION" \
+        --bucket "$REMOTE_LOG_BUCKET" \
+        --output json ||
+    ! remote_admin_query "log bucket lifecycle" remote_log_lifecycle_json \
+      aws s3api get-bucket-lifecycle-configuration \
+        --region "$AWS_REGION" \
+        --bucket "$REMOTE_LOG_BUCKET" \
+        --output json; then
+    return 0
+  fi
+
+  if ! remote_listener_arn="$(
+    node - "$remote_listeners_json" 2>/dev/null <<'NODE'
+try {
+  const value = JSON.parse(process.argv[2]);
+  const listeners = Array.isArray(value.Listeners) ? value.Listeners : [];
+  const listener = listeners.find(
+    (candidate) => candidate?.Protocol === "HTTPS" && candidate?.Port === 443,
+  );
+  const arn = listener?.ListenerArn;
+  if (typeof arn !== "string" || arn.length === 0) process.exit(1);
+  process.stdout.write(arn);
+} catch {
+  process.exit(1);
+}
+NODE
+  )"; then
+    echo "launch-readiness: remote admin listener response invalid" >&2
+    return 0
+  fi
+  if ! remote_admin_query "listener rules" remote_rules_json \
+    aws elbv2 describe-rules \
+      --region "$AWS_REGION" \
+      --listener-arn "$remote_listener_arn" \
+      --output json; then
+    return 0
+  fi
+
+  if ! remote_waf_id="$(
+    node - "$remote_waf_list_json" "$REMOTE_WAF_NAME" 2>/dev/null <<'NODE'
+try {
+  const value = JSON.parse(process.argv[2]);
+  const name = process.argv[3];
+  const webAcls = Array.isArray(value.WebACLs) ? value.WebACLs : [];
+  const matches = webAcls.filter((candidate) => candidate?.Name === name);
+  if (matches.length !== 1 || typeof matches[0]?.Id !== "string") process.exit(1);
+  process.stdout.write(matches[0].Id);
+} catch {
+  process.exit(1);
+}
+NODE
+  )"; then
+    echo "launch-readiness: remote admin WAF response invalid" >&2
+    return 0
+  fi
+  if ! remote_admin_query "WAF" remote_waf_json \
+    aws wafv2 get-web-acl \
+      --region "$AWS_REGION" \
+      --scope REGIONAL \
+      --name "$REMOTE_WAF_NAME" \
+      --id "$remote_waf_id" \
+      --output json ||
+    ! remote_admin_query "WAF association" remote_waf_association_json \
+      aws wafv2 get-web-acl-for-resource \
+        --region "$AWS_REGION" \
+        --resource-arn "$remote_alb_context" \
+        --output json; then
+    return 0
+  fi
+
+  REMOTE_ADMIN_FACTS="$(
+    node - \
+      "$remote_alb_json" \
+      "$remote_target_group_json" \
+      "$remote_target_attributes_json" \
+      "$remote_target_health_json" \
+      "$remote_listeners_json" \
+      "$remote_rules_json" \
+      "$remote_alb_attributes_json" \
+      "$remote_target_sg_json" \
+      "$remote_waf_json" \
+      "$remote_waf_association_json" \
+      "$remote_log_encryption_json" \
+      "$remote_log_public_access_json" \
+      "$remote_log_ownership_json" \
+      "$remote_log_policy_json" \
+      "$remote_log_lifecycle_json" \
+      "$INSTANCE_NETWORK" \
+      "$SG_STATE" <<'NODE'
+const [
+  albRaw,
+  targetGroupRaw,
+  targetAttributesRaw,
+  targetHealthRaw,
+  listenersRaw,
+  rulesRaw,
+  albAttributesRaw,
+  targetSecurityGroupRaw,
+  wafRaw,
+  wafAssociationRaw,
+  logEncryptionRaw,
+  logPublicAccessRaw,
+  logOwnershipRaw,
+  logPolicyRaw,
+  logLifecycleRaw,
+  instanceNetworkRaw,
+  securityGroupsRaw,
+] = process.argv.slice(2);
+
+const ACCOUNT_ID = "845242190536";
+const VPC_ID = "vpc-0f078e17a5f0f8599";
+const HOST = "nava-admin.trynava.io";
+const ALB_NAME = "nava-remote-admin-alb";
+const TARGET_GROUP_NAME = "nava-remote-admin";
+const TARGET_SECURITY_GROUP_NAME = "nava-remote-admin-target";
+const WAF_NAME = "nava-remote-admin-waf";
+const LOG_BUCKET = "nava-zero-remote-alb-logs-845242190536-af-south-1";
+const EXPECTED_SUBNETS = ["subnet-0e6446aaaeaa8762e", "subnet-094bf8643d98c22f6"];
+
+const empty = {
+  resourcesResolved: false,
+  targetGroupConfigured: false,
+  listenerDefault404: false,
+  preRegistrationClean: false,
+  hostForwardExact: false,
+  targetHealthy: false,
+  targetSecurityGroupOnlyAlb: false,
+  noDirectPublicTargetPath: false,
+  logBucketCompliant: false,
+  wafCompliant: false,
+};
+const parse = (raw) => JSON.parse(raw);
+const isRecord = (value) =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+const hasExactStrings = (actual, expected) =>
+  Array.isArray(actual) &&
+  actual.length === expected.length &&
+  actual.every((value) => typeof value === "string") &&
+  [...actual].sort().every((value, index) => value === [...expected].sort()[index]);
+const statementActions = (statement) =>
+  Array.isArray(statement?.Action)
+    ? statement.Action
+    : typeof statement?.Action === "string"
+      ? [statement.Action]
+      : [];
+const fieldSearchStringMatches = (statement, field, expected) => {
+  const byteMatch = statement?.ByteMatchStatement;
+  if (!isRecord(byteMatch) || !isRecord(byteMatch.FieldToMatch)) return false;
+  if (!Object.hasOwn(byteMatch.FieldToMatch, field)) return false;
+  const search = byteMatch.SearchString;
+  return (
+    search === expected ||
+    search === Buffer.from(expected, "utf8").toString("base64")
+  );
+};
+
+try {
+  const albValue = parse(albRaw);
+  const targetGroupValue = parse(targetGroupRaw);
+  const targetAttributesValue = parse(targetAttributesRaw);
+  const targetHealthValue = parse(targetHealthRaw);
+  const listenersValue = parse(listenersRaw);
+  const rulesValue = parse(rulesRaw);
+  const albAttributesValue = parse(albAttributesRaw);
+  const targetSecurityGroupValue = parse(targetSecurityGroupRaw);
+  const wafValue = parse(wafRaw);
+  const wafAssociationValue = parse(wafAssociationRaw);
+  const logEncryptionValue = parse(logEncryptionRaw);
+  const logPublicAccessValue = parse(logPublicAccessRaw);
+  const logOwnershipValue = parse(logOwnershipRaw);
+  const logPolicyResponse = parse(logPolicyRaw);
+  const logPolicyValue = parse(logPolicyResponse?.Policy ?? "");
+  const logLifecycleValue = parse(logLifecycleRaw);
+  const instanceNetwork = parse(instanceNetworkRaw);
+  const securityGroups = parse(securityGroupsRaw);
+
+  const albs = Array.isArray(albValue.LoadBalancers) ? albValue.LoadBalancers : [];
+  const targetGroups = Array.isArray(targetGroupValue.TargetGroups)
+    ? targetGroupValue.TargetGroups
+    : [];
+  const listeners = Array.isArray(listenersValue.Listeners) ? listenersValue.Listeners : [];
+  const rules = Array.isArray(rulesValue.Rules) ? rulesValue.Rules : [];
+  const targetSecurityGroups = Array.isArray(targetSecurityGroupValue.SecurityGroups)
+    ? targetSecurityGroupValue.SecurityGroups
+    : [];
+  const [alb] = albs;
+  const [targetGroup] = targetGroups;
+  const [targetSecurityGroup] = targetSecurityGroups;
+  const albArn = alb?.LoadBalancerArn;
+  const targetGroupArn = targetGroup?.TargetGroupArn;
+  const albSecurityGroups = Array.isArray(alb?.SecurityGroups) ? alb.SecurityGroups : [];
+  const albSecurityGroup = albSecurityGroups.length === 1 ? albSecurityGroups[0] : "";
+  const albSubnets = Array.isArray(alb?.AvailabilityZones)
+    ? alb.AvailabilityZones.map((zone) => zone?.SubnetId)
+    : [];
+  const targetAttributes = Array.isArray(targetAttributesValue.Attributes)
+    ? targetAttributesValue.Attributes
+    : [];
+  const targetHealth = Array.isArray(targetHealthValue.TargetHealthDescriptions)
+    ? targetHealthValue.TargetHealthDescriptions
+    : [];
+  const listener443 = listeners.find(
+    (listener) => listener?.Protocol === "HTTPS" && listener?.Port === 443,
+  );
+  const listenerDefaultActions = Array.isArray(listener443?.DefaultActions)
+    ? listener443.DefaultActions
+    : [];
+  const nonDefaultRules = rules.filter((rule) => rule?.IsDefault !== true);
+  const forwardRules = nonDefaultRules.filter((rule) =>
+    Array.isArray(rule?.Actions) && rule.Actions.some((action) => action?.Type === "forward"),
+  );
+  const attributeValue = (attributes, key) =>
+    Array.isArray(attributes)
+      ? attributes.find((attribute) => attribute?.Key === key)?.Value
+      : undefined;
+
+  empty.resourcesResolved =
+    albs.length === 1 &&
+    targetGroups.length === 1 &&
+    targetSecurityGroups.length === 1 &&
+    alb?.LoadBalancerName === ALB_NAME &&
+    alb?.Scheme === "internet-facing" &&
+    alb?.Type === "application" &&
+    alb?.VpcId === VPC_ID &&
+    typeof albArn === "string" &&
+    hasExactStrings(albSubnets, EXPECTED_SUBNETS) &&
+    typeof albSecurityGroup === "string" &&
+    albSecurityGroup.length > 0 &&
+    targetGroup?.TargetGroupName === TARGET_GROUP_NAME &&
+    typeof targetGroupArn === "string" &&
+    targetSecurityGroup?.GroupName === TARGET_SECURITY_GROUP_NAME &&
+    targetSecurityGroup?.VpcId === VPC_ID &&
+    typeof targetSecurityGroup?.GroupId === "string";
+
+  empty.targetGroupConfigured =
+    targetGroups.length === 1 &&
+    targetGroup?.Protocol === "HTTP" &&
+    targetGroup?.Port === 8443 &&
+    targetGroup?.VpcId === VPC_ID &&
+    targetGroup?.HealthCheckProtocol === "HTTP" &&
+    targetGroup?.HealthCheckPath === "/health" &&
+    targetGroup?.Matcher?.HttpCode === "200" &&
+    attributeValue(targetAttributes, "deregistration_delay.timeout_seconds") === "30";
+
+  empty.listenerDefault404 =
+    listeners.length === 1 &&
+    listener443 !== undefined &&
+    listenerDefaultActions.length === 1 &&
+    listenerDefaultActions[0]?.Type === "fixed-response" &&
+    listenerDefaultActions[0]?.FixedResponseConfig?.StatusCode === "404";
+
+  empty.preRegistrationClean =
+    targetHealth.length === 0 && nonDefaultRules.length === 0;
+
+  empty.hostForwardExact =
+    nonDefaultRules.length === 1 &&
+    forwardRules.length === 1 &&
+    forwardRules[0]?.Priority === "10" &&
+    Array.isArray(forwardRules[0]?.Conditions) &&
+    forwardRules[0].Conditions.length === 1 &&
+    forwardRules[0].Conditions[0]?.Field === "host-header" &&
+    hasExactStrings(forwardRules[0].Conditions[0]?.Values, [HOST]) &&
+    Array.isArray(forwardRules[0]?.Actions) &&
+    forwardRules[0].Actions.length === 1 &&
+    forwardRules[0].Actions[0]?.Type === "forward" &&
+    (
+      forwardRules[0].Actions[0]?.TargetGroupArn === targetGroupArn ||
+      (
+        Array.isArray(forwardRules[0].Actions[0]?.ForwardConfig?.TargetGroups) &&
+        forwardRules[0].Actions[0].ForwardConfig.TargetGroups.length === 1 &&
+        forwardRules[0].Actions[0].ForwardConfig.TargetGroups[0]?.TargetGroupArn === targetGroupArn
+      )
+    );
+
+  empty.targetHealthy =
+    targetHealth.length === 1 &&
+    targetHealth[0]?.TargetHealth?.State === "healthy";
+
+  const attachedSecurityGroups = Array.isArray(instanceNetwork?.securityGroups)
+    ? instanceNetwork.securityGroups
+    : [];
+  const targetSecurityGroupAttached = attachedSecurityGroups.some(
+    (group) => group?.GroupId === targetSecurityGroup?.GroupId,
+  );
+  const securityGroupById = new Map(
+    Array.isArray(securityGroups)
+      ? securityGroups.map((group) => [group?.id, group])
+      : [],
+  );
+  const attachedGroupRecords = attachedSecurityGroups
+    .map((group) => securityGroupById.get(group?.GroupId))
+    .filter(Boolean);
+  const permits8443 = (permission) =>
+    permission?.IpProtocol === "tcp" &&
+    Number(permission?.FromPort) <= 8443 &&
+    Number(permission?.ToPort) >= 8443;
+  const albOnly8443 = (permission) =>
+    permits8443(permission) &&
+    Array.isArray(permission?.UserIdGroupPairs) &&
+    permission.UserIdGroupPairs.length === 1 &&
+    permission.UserIdGroupPairs[0]?.GroupId === albSecurityGroup &&
+    (!Array.isArray(permission?.IpRanges) || permission.IpRanges.length === 0) &&
+    (!Array.isArray(permission?.Ipv6Ranges) || permission.Ipv6Ranges.length === 0) &&
+    (!Array.isArray(permission?.PrefixListIds) || permission.PrefixListIds.length === 0);
+  const all8443Permissions = attachedGroupRecords.flatMap((group) =>
+    Array.isArray(group?.ingress)
+      ? group.ingress.filter(permits8443)
+      : [],
+  );
+  empty.targetSecurityGroupOnlyAlb =
+    targetSecurityGroupAttached &&
+    attachedGroupRecords.length === attachedSecurityGroups.length &&
+    all8443Permissions.length > 0 &&
+    all8443Permissions.every(albOnly8443);
+  empty.noDirectPublicTargetPath =
+    empty.targetSecurityGroupOnlyAlb &&
+    Array.isArray(instanceNetwork?.ipv6) &&
+    instanceNetwork.ipv6.length === 0;
+
+  const albAttributes = Array.isArray(albAttributesValue.Attributes)
+    ? albAttributesValue.Attributes
+    : [];
+  const allPublicAccessBlocked = [
+    "BlockPublicAcls",
+    "IgnorePublicAcls",
+    "BlockPublicPolicy",
+    "RestrictPublicBuckets",
+  ].every((key) => logPublicAccessValue?.PublicAccessBlockConfiguration?.[key] === true);
+  const encryptedSseS3 =
+    Array.isArray(logEncryptionValue?.ServerSideEncryptionConfiguration?.Rules) &&
+    logEncryptionValue.ServerSideEncryptionConfiguration.Rules.length > 0 &&
+    logEncryptionValue.ServerSideEncryptionConfiguration.Rules.every(
+      (rule) => rule?.ApplyServerSideEncryptionByDefault?.SSEAlgorithm === "AES256",
+    );
+  const bucketOwnerEnforced =
+    Array.isArray(logOwnershipValue?.OwnershipControls?.Rules) &&
+    logOwnershipValue.OwnershipControls.Rules.some(
+      (rule) => rule?.ObjectOwnership === "BucketOwnerEnforced",
+    );
+  const lifecycle365 =
+    Array.isArray(logLifecycleValue?.Rules) &&
+    logLifecycleValue.Rules.some(
+      (rule) =>
+        rule?.Status === "Enabled" &&
+        rule?.Expiration?.Days === 365,
+    );
+  const policyStatements = Array.isArray(logPolicyValue?.Statement)
+    ? logPolicyValue.Statement
+    : [];
+  const tlsOnly = policyStatements.some(
+    (statement) =>
+      statement?.Effect === "Deny" &&
+      statement?.Condition?.Bool?.["aws:SecureTransport"] === "false",
+  );
+  const allowStatements = policyStatements.filter(
+    (statement) => statement?.Effect === "Allow",
+  );
+  const elbLogWriteOnly =
+    allowStatements.length === 1 &&
+    allowStatements[0]?.Principal?.Service ===
+      "logdelivery.elasticloadbalancing.amazonaws.com" &&
+    hasExactStrings(statementActions(allowStatements[0]), ["s3:PutObject"]) &&
+    allowStatements[0]?.Resource ===
+      `arn:aws:s3:::${LOG_BUCKET}/AWSLogs/${ACCOUNT_ID}/*` &&
+    allowStatements[0]?.Condition?.StringEquals?.["aws:SourceAccount"] === ACCOUNT_ID &&
+    allowStatements[0]?.Condition?.ArnLike?.["aws:SourceArn"] === albArn;
+  empty.logBucketCompliant =
+    attributeValue(albAttributes, "access_logs.s3.enabled") === "true" &&
+    attributeValue(albAttributes, "access_logs.s3.bucket") === LOG_BUCKET &&
+    encryptedSseS3 &&
+    allPublicAccessBlocked &&
+    bucketOwnerEnforced &&
+    tlsOnly &&
+    lifecycle365 &&
+    elbLogWriteOnly;
+
+  const webAcl = wafValue?.WebACL;
+  const wafRules = Array.isArray(webAcl?.Rules) ? webAcl.Rules : [];
+  const managedRuleNames = new Set(
+    wafRules
+      .filter((rule) => rule?.Statement?.ManagedRuleGroupStatement?.VendorName === "AWS")
+      .map((rule) => rule.Statement.ManagedRuleGroupStatement.Name),
+  );
+  const hasManagedBaseline = [
+    "AWSManagedRulesAmazonIpReputationList",
+    "AWSManagedRulesCommonRuleSet",
+    "AWSManagedRulesKnownBadInputsRuleSet",
+  ].every((name) => managedRuleNames.has(name));
+  const rateRules = wafRules.filter((rule) => isRecord(rule?.Statement?.RateBasedStatement));
+  const signinRateRule = rateRules.find((rule) => {
+    const rate = rule.Statement.RateBasedStatement;
+    const statements = rate?.ScopeDownStatement?.AndStatement?.Statements;
+    return (
+      rate?.Limit === 25 &&
+      rate?.AggregateKeyType === "IP" &&
+      rate?.EvaluationWindowSec === 300 &&
+      Array.isArray(statements) &&
+      statements.some((statement) =>
+        fieldSearchStringMatches(statement, "UriPath", "/api/auth/sign-in/email"),
+      ) &&
+      statements.some((statement) =>
+        fieldSearchStringMatches(statement, "Method", "POST"),
+      )
+    );
+  });
+  const planeRateRule = rateRules.find((rule) => {
+    const rate = rule.Statement.RateBasedStatement;
+    return (
+      rate?.Limit === 1000 &&
+      rate?.AggregateKeyType === "IP" &&
+      rate?.EvaluationWindowSec === 300 &&
+      rate?.ScopeDownStatement === undefined
+    );
+  });
+  empty.wafCompliant =
+    webAcl?.Name === WAF_NAME &&
+    wafAssociationValue?.WebACL?.ARN === webAcl?.ARN &&
+    hasManagedBaseline &&
+    signinRateRule !== undefined &&
+    planeRateRule !== undefined;
+} catch {
+  // Keep all remote facts false when any AWS response is missing or malformed.
+}
+
+process.stdout.write(JSON.stringify(empty));
+NODE
+  )" || {
+    REMOTE_ADMIN_FACTS='{}'
+    echo "launch-readiness: remote admin response invalid" >&2
+  }
+}
+
+if [ "$REMOTE_ADMIN_MODE" = "1" ]; then
+  collect_remote_admin_perimeter
+fi
+
 CLOUDWATCH_ALARM_COUNT="$(
   aws cloudwatch describe-alarms \
     --region "$AWS_REGION" \
@@ -577,7 +1215,9 @@ build_readiness_report() {
     "$INSTANCE_NETWORK_OK" \
     "$SG_QUERY_OK" \
     "$S3_CORS_OK" \
-    "$S3_PUBLIC_ACCESS_OK" <<'NODE'
+    "$S3_PUBLIC_ACCESS_OK" \
+    "${REMOTE_ADMIN_MODE:-0}" \
+    "${REMOTE_TARGET_HEALTH_REQUIRED:-0}" <<'NODE'
 const remote = JSON.parse(process.argv[2]);
 const rds = JSON.parse(process.argv[3] || "{}");
 const s3Available = process.argv[4] === "true";
@@ -594,7 +1234,19 @@ const instanceNetworkOk = process.argv[13] === "true";
 const securityGroupQueryOk = process.argv[14] === "true";
 const s3CorsOk = process.argv[15] === "true";
 const s3PublicAccessOk = process.argv[16] === "true";
+const remoteAdminMode = process.argv[17] === "1";
+const remoteTargetHealthRequired = process.argv[18] === "1";
+let remoteAdminFacts = {};
+try {
+  const parsed = JSON.parse(process.env.REMOTE_ADMIN_FACTS || "{}");
+  if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+    remoteAdminFacts = parsed;
+  }
+} catch {
+  remoteAdminFacts = {};
+}
 const canonicalOrigin = "https://nava.legacyhotels.co.za";
+const remoteAdminOrigin = "https://nava-admin.trynava.io";
 const isRecord = (value) =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 const isStringArray = (value, requireValue = false) =>
@@ -638,6 +1290,14 @@ const hasCanonicalCorsRule =
   corsRules.some(
     (rule) =>
       rule.AllowedOrigins.includes(canonicalOrigin) &&
+      rule.AllowedMethods.includes("GET") &&
+      rule.AllowedMethods.includes("HEAD"),
+  );
+const hasRemoteAdminCorsRule =
+  corsStructureValid &&
+  corsRules.some(
+    (rule) =>
+      rule.AllowedOrigins.includes(remoteAdminOrigin) &&
       rule.AllowedMethods.includes("GET") &&
       rule.AllowedMethods.includes("HEAD"),
   );
@@ -758,10 +1418,41 @@ const checks = {
     publicAccess.IgnorePublicAcls === true &&
     publicAccess.BlockPublicPolicy === true &&
     publicAccess.RestrictPublicBuckets === true,
-  securityGroupIngressEmpty: instanceNetworkValid && securityGroupsValid,
   instanceHasNoPublicIpv6:
     instanceNetworkValid && instanceNetwork.ipv6.length === 0,
 };
+if (!remoteAdminMode) {
+  checks.securityGroupIngressEmpty = instanceNetworkValid && securityGroupsValid;
+}
+if (remoteAdminMode) {
+  const remoteChecks = {
+    remoteResourcesResolved: remoteAdminFacts.resourcesResolved === true,
+    remoteTargetGroupConfigured: remoteAdminFacts.targetGroupConfigured === true,
+    remoteListenerDefault404: remoteAdminFacts.listenerDefault404 === true,
+    remoteTargetSecurityGroupOnlyAlb:
+      remoteAdminFacts.targetSecurityGroupOnlyAlb === true,
+    remoteNoDirectPublicTargetPath:
+      remoteAdminFacts.noDirectPublicTargetPath === true,
+    remoteUfwAlb8443Only: remote.firewall?.remoteAlb8443Only === true,
+    s3CorsRemoteAdmin:
+      s3CorsOk &&
+      corsStructureValid &&
+      !hasWildcardCorsOrigin &&
+      hasRemoteAdminCorsRule,
+    remoteAlbLoggingCompliant: remoteAdminFacts.logBucketCompliant === true,
+    remoteWafCompliant: remoteAdminFacts.wafCompliant === true,
+  };
+  if (remoteTargetHealthRequired) {
+    Object.assign(remoteChecks, {
+      remoteHostForwardExact: remoteAdminFacts.hostForwardExact === true,
+      remoteTargetHealthy: remoteAdminFacts.targetHealthy === true,
+    });
+  } else {
+    remoteChecks.remotePreRegistrationClean =
+      remoteAdminFacts.preRegistrationClean === true;
+  }
+  Object.assign(checks, remoteChecks);
+}
 const failures = Object.entries(checks)
   .filter(([, passed]) => !passed)
   .map(([name]) => name);
@@ -798,6 +1489,14 @@ const report = {
       aiWorker: Number(pm2Required["ai-worker"]?.restarts ?? 0),
     },
     disk: remote.disk ?? { safe: false, usedPercent: 100, freeMB: 0 },
+    accessMode: remoteAdminMode ? "remote-admin" : "legacy-only-recovery",
+    remoteAdmin: remoteAdminMode
+      ? {
+          targetHealthRequired: remoteTargetHealthRequired,
+          preRegistrationClean: remoteAdminFacts.preRegistrationClean === true,
+          targetHealthy: remoteAdminFacts.targetHealthy === true,
+        }
+      : undefined,
   },
 };
 process.stdout.write(JSON.stringify(report));

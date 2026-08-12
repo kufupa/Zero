@@ -15,6 +15,6 @@ Base: 3f3c2436fb13d6bb3b17acc5f5265b72c7622742
 Verification: Task 2 final DB-free proof passed
 Task 1: complete (commits 3f3c2436..cd00d911; focused DB-free tests and server build passed; review clean after migration/Drizzle fixes; remote process environment provenance is Task 2 scope)
 Task 2: complete (final security-review hardening removes root checkout execution, requires exact legacy file metadata, and rejects newline/CR/NUL remote secrets; DB-free deploy suite 113/113, shell/static checks, fresh multi-lens review, and independent validation passed)
-Task 3: pending
-Task 4: pending
+Task 3: complete (commit 96d656b8; independent DB-free deploy suite 115/115, shell syntax and merge-base whitespace checks passed; task-scoped review clean)
+Task 4: in progress (AWS edge contracts, runbook, remote-mode readiness; no AWS mutation before explicit human Gate A)
 Task 5: pending

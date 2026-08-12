@@ -6,6 +6,11 @@ const CANONICAL_ORIGIN = `https://${CANONICAL_HOST}`;
 const CANONICAL_HOST_ENTRY = `127.0.0.1 ${CANONICAL_HOST}`;
 const REMOTE_ALB_TARGET_PRIVATE_IP = '172.31.12.112';
 const REMOTE_ADMIN_HOST = 'nava-admin.trynava.io';
+const REMOTE_ALB_NAME = 'nava-remote-admin-alb';
+const REMOTE_TARGET_GROUP_NAME = 'nava-remote-admin';
+const REMOTE_TARGET_SECURITY_GROUP_NAME = 'nava-remote-admin-target';
+const REMOTE_WAF_NAME = 'nava-remote-admin-waf';
+const REMOTE_LOG_BUCKET = 'nava-zero-remote-alb-logs-845242190536-af-south-1';
 const BASH_CHILD_TIMEOUT_MS = 10_000;
 const BASH_CLEANUP_GRACE_MS = 1_000;
 const TASKKILL_TIMEOUT_MS = 1_000;
@@ -339,12 +344,39 @@ type FirewallFacts = {
   defaultDeny: boolean;
   tunnel443: boolean;
   broad443Absent: boolean;
+  remoteAlb8443Only?: boolean;
 };
 
 type LaunchReadinessReport = {
   checks: Record<string, boolean>;
   observations: Record<string, unknown>;
 };
+
+type RemoteAdminReadinessFacts = {
+  resourcesResolved: boolean;
+  targetGroupConfigured: boolean;
+  listenerDefault404: boolean;
+  preRegistrationClean: boolean;
+  hostForwardExact: boolean;
+  targetHealthy: boolean;
+  targetSecurityGroupOnlyAlb: boolean;
+  noDirectPublicTargetPath: boolean;
+  logBucketCompliant: boolean;
+  wafCompliant: boolean;
+};
+
+const validRemoteAdminReadinessFacts = (): RemoteAdminReadinessFacts => ({
+  resourcesResolved: true,
+  targetGroupConfigured: true,
+  listenerDefault404: true,
+  preRegistrationClean: true,
+  hostForwardExact: true,
+  targetHealthy: true,
+  targetSecurityGroupOnlyAlb: true,
+  noDirectPublicTargetPath: true,
+  logBucketCompliant: true,
+  wafCompliant: true,
+});
 
 type AwsPerimeterFacts = {
   cors: unknown;
@@ -719,6 +751,9 @@ async function runLaunchReadinessReport({
   instanceNetworkOk = true,
   securityGroupQueryOk = true,
   omitSecurityGroups = false,
+  remoteAdminMode = false,
+  remoteTargetHealthRequired = false,
+  remoteAdminFacts = validRemoteAdminReadinessFacts(),
 }: {
   firewall?: Partial<FirewallFacts>;
   cors?: unknown;
@@ -730,6 +765,9 @@ async function runLaunchReadinessReport({
   instanceNetworkOk?: boolean;
   securityGroupQueryOk?: boolean;
   omitSecurityGroups?: boolean;
+  remoteAdminMode?: boolean;
+  remoteTargetHealthRequired?: boolean;
+  remoteAdminFacts?: RemoteAdminReadinessFacts;
 } = {}): Promise<LaunchReadinessReport> {
   const source = await readLaunchReadiness();
   const reportBuilder = extractSourceBlock(
@@ -754,6 +792,9 @@ async function runLaunchReadinessReport({
       SG_QUERY_OK: String(securityGroupQueryOk),
       S3_CORS_OK: String(s3CorsOk),
       S3_PUBLIC_ACCESS_OK: String(s3PublicAccessOk),
+      REMOTE_ADMIN_MODE: remoteAdminMode ? '1' : '0',
+      REMOTE_TARGET_HEALTH_REQUIRED: remoteTargetHealthRequired ? '1' : '0',
+      REMOTE_ADMIN_FACTS: JSON.stringify(remoteAdminFacts),
     },
   });
   if (result.status !== 0) {
@@ -2537,6 +2578,173 @@ describe('deploy config', () => {
     expect(observations).not.toContain(CANONICAL_ORIGIN);
     expect(observations).not.toContain('AllowedOrigins');
     expect(observations).not.toContain(SG_ONE);
+  });
+
+  it('defines remote-admin readiness contracts for legacy, pre-registration, and active target paths', async () => {
+    const source = await readLaunchReadiness();
+    for (const requiredFragment of [
+      'REMOTE_ADMIN_MODE',
+      'REMOTE_TARGET_HEALTH_REQUIRED',
+      REMOTE_ALB_NAME,
+      REMOTE_TARGET_GROUP_NAME,
+      REMOTE_TARGET_SECURITY_GROUP_NAME,
+      REMOTE_WAF_NAME,
+      REMOTE_LOG_BUCKET,
+      'aws elbv2 describe-load-balancers',
+      'aws wafv2 get-web-acl',
+      'aws s3api get-bucket-ownership-controls',
+    ]) {
+      expect(source.includes(requiredFragment), requiredFragment).toBe(true);
+    }
+
+    const legacy = await runLaunchReadinessReport();
+    expect(legacy.checks.securityGroupIngressEmpty).toBe(true);
+
+    const remoteInstanceNetwork = {
+      securityGroups: [{ GroupId: SG_ONE }, { GroupId: SG_TWO }],
+      ipv6: [],
+    };
+    const remoteSecurityGroups = [
+      { id: SG_ONE, ingress: [] },
+      {
+        id: SG_TWO,
+        ingress: [
+          {
+            IpProtocol: 'tcp',
+            FromPort: 8443,
+            ToPort: 8443,
+            UserIdGroupPairs: [{ GroupId: SG_ONE }],
+          },
+        ],
+      },
+    ];
+    const preregistration = await runLaunchReadinessReport({
+      remoteAdminMode: true,
+      remoteTargetHealthRequired: false,
+      firewall: { remoteAlb8443Only: true },
+      cors: validCors([CANONICAL_ORIGIN, `https://${REMOTE_ADMIN_HOST}`]),
+      instanceNetwork: remoteInstanceNetwork,
+      securityGroups: remoteSecurityGroups,
+      remoteAdminFacts: {
+        ...validRemoteAdminReadinessFacts(),
+        hostForwardExact: false,
+        targetHealthy: false,
+      },
+    });
+    expect(preregistration.checks).toMatchObject({
+      remoteResourcesResolved: true,
+      remoteListenerDefault404: true,
+      remotePreRegistrationClean: true,
+      remoteUfwAlb8443Only: true,
+      s3CorsRemoteAdmin: true,
+    });
+    expect(preregistration.checks).not.toHaveProperty('securityGroupIngressEmpty');
+    expect(preregistration.checks).not.toHaveProperty('remoteTargetHealthy');
+    expect(preregistration.checks).not.toHaveProperty('remoteHostForwardExact');
+
+    const preregistrationDirty = await runLaunchReadinessReport({
+      remoteAdminMode: true,
+      remoteTargetHealthRequired: false,
+      firewall: { remoteAlb8443Only: true },
+      cors: validCors([CANONICAL_ORIGIN, `https://${REMOTE_ADMIN_HOST}`]),
+      instanceNetwork: remoteInstanceNetwork,
+      securityGroups: remoteSecurityGroups,
+      remoteAdminFacts: {
+        ...validRemoteAdminReadinessFacts(),
+        preRegistrationClean: false,
+        hostForwardExact: false,
+        targetHealthy: false,
+      },
+    });
+    expect(preregistrationDirty.checks.remotePreRegistrationClean).toBe(false);
+
+    const active = await runLaunchReadinessReport({
+      remoteAdminMode: true,
+      remoteTargetHealthRequired: true,
+      firewall: { remoteAlb8443Only: true },
+      cors: validCors([CANONICAL_ORIGIN, `https://${REMOTE_ADMIN_HOST}`]),
+    });
+    expect(active.checks).toMatchObject({
+      remoteResourcesResolved: true,
+      remoteTargetGroupConfigured: true,
+      remoteListenerDefault404: true,
+      remoteHostForwardExact: true,
+      remoteTargetHealthy: true,
+      remoteTargetSecurityGroupOnlyAlb: true,
+      remoteNoDirectPublicTargetPath: true,
+      remoteAlbLoggingCompliant: true,
+      remoteWafCompliant: true,
+    });
+    expect(active.checks).not.toHaveProperty('remotePreRegistrationClean');
+
+    const unhealthy = await runLaunchReadinessReport({
+      remoteAdminMode: true,
+      remoteTargetHealthRequired: true,
+      firewall: { remoteAlb8443Only: true },
+      cors: validCors([CANONICAL_ORIGIN, `https://${REMOTE_ADMIN_HOST}`]),
+      remoteAdminFacts: {
+        ...validRemoteAdminReadinessFacts(),
+        targetHealthy: false,
+      },
+    });
+    expect(unhealthy.checks.remoteTargetHealthy).toBe(false);
+  });
+
+  it('documents gated, idempotent remote-admin edge provisioning without changing legacy access', async () => {
+    const { existsSync, readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const repoRoot = join(here, '..', '..', '..');
+    const resources = readFileSync(join(here, '..', 'deploy', 'aws-resources.md'), 'utf8');
+    const readiness = readFileSync(join(here, '..', 'deploy', 'ops-deploy.sh'), 'utf8');
+    const runbook = readFileSync(
+      join(repoRoot, 'docs', 'runbooks', 'centurion-day-one-operations.md'),
+      'utf8',
+    );
+    const companionPath = join(
+      repoRoot,
+      'docs',
+      'solutions',
+      'architecture-patterns',
+      'nava-remote-admin-alb-companion.md',
+    );
+
+    for (const requiredFragment of [
+      `REMOTE_ALB_NAME=${REMOTE_ALB_NAME}`,
+      `REMOTE_TARGET_GROUP_NAME=${REMOTE_TARGET_GROUP_NAME}`,
+      `REMOTE_TARGET_SECURITY_GROUP_NAME=${REMOTE_TARGET_SECURITY_GROUP_NAME}`,
+      `REMOTE_WAF_NAME=${REMOTE_WAF_NAME}`,
+      `REMOTE_LOG_BUCKET=${REMOTE_LOG_BUCKET}`,
+      'aws acm request-certificate',
+      'Name=vpc-id,Values=$VPC_ID',
+      'const main = tables.find',
+      'const table = explicit ?? main;',
+      'aws elbv2 create-load-balancer',
+      'aws wafv2 create-web-acl',
+      'aws s3api put-bucket-ownership-controls',
+      'aws s3api put-public-access-block',
+      'aws s3api put-bucket-encryption',
+      'aws s3api put-bucket-lifecycle-configuration',
+      'aws s3api put-bucket-policy',
+      'aws s3api put-bucket-cors',
+    ]) {
+      expect(resources.includes(requiredFragment), requiredFragment).toBe(true);
+    }
+    expect(resources.includes('secretsmanager get-secret-value')).toBe(false);
+    expect(
+      readiness.includes(
+        'REMOTE_ADMIN_MODE=1 REMOTE_TARGET_HEALTH_REQUIRED=0 bash apps/server-pilot/deploy/launch-readiness.sh',
+      ),
+    ).toBe(true);
+    expect(runbook.includes('Gate A')).toBe(true);
+    expect(runbook.includes('ACM CNAME saved')).toBe(true);
+    expect(existsSync(companionPath)).toBe(true);
+    const companion = existsSync(companionPath) ? readFileSync(companionPath, 'utf8') : '';
+    expect(companion).toContain('nava.legacyhotels.co.za');
+    expect(companion).toContain('tun0:443');
+    expect(companion).toContain('nava-admin.trynava.io');
+    expect(companion).toContain(':8443');
   });
 
   it('UFW collection accepts exactly one intended tunnel HTTPS allow', async () => {
