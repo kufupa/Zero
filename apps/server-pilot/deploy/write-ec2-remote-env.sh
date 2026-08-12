@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Render isolated remote HTTP env files from the legacy runtime and remote auth secret.
-# Run as root on EC2; only the generated mode-0600 files are readable by ubuntu.
+# Run as ubuntu on EC2; generated mode-0600 files stay ubuntu-owned.
 set -euo pipefail
 
 : "${AWS_REGION:=af-south-1}"
@@ -91,7 +91,8 @@ try {
     !values.has("BETTER_AUTH_URL") ||
     !values.has("BETTER_AUTH_SECRET") ||
     values.get("BETTER_AUTH_URL") !== "https://nava-admin.trynava.io" ||
-    values.get("BETTER_AUTH_SECRET")?.trim().length === 0
+    values.get("BETTER_AUTH_SECRET")?.trim().length === 0 ||
+    /[\r\n\0]/.test(values.get("BETTER_AUTH_SECRET") ?? "")
   ) {
     throw new Error("invalid");
   }
@@ -107,6 +108,11 @@ validate_remote_env_files() {
   validate_remote_env_file "$REMOTE_ADMIN_ENV" admin
 }
 
+if [ "$(id -un)" != "ubuntu" ]; then
+  echo "write-ec2-remote-env.sh must run as ubuntu" >&2
+  exit 2
+fi
+
 case "${1:-}" in
   --validate)
     validate_remote_env_files
@@ -120,16 +126,19 @@ case "${1:-}" in
     ;;
 esac
 
-if [ "$(id -u)" -ne 0 ]; then
-  echo "write-ec2-remote-env.sh must run as root" >&2
+if [ ! -d "$SERVER_PILOT" ] || [ -L "$SERVER_PILOT" ]; then
+  echo "server-pilot directory missing or unsafe: $SERVER_PILOT" >&2
   exit 2
 fi
 if [ ! -f "$LEGACY_ENV_FILE" ] || [ -L "$LEGACY_ENV_FILE" ]; then
   echo "legacy runtime env missing or unsafe: $LEGACY_ENV_FILE" >&2
   exit 2
 fi
+if [ "$(stat -c '%a:%U:%G' "$LEGACY_ENV_FILE")" != "600:ubuntu:ubuntu" ]; then
+  echo "legacy runtime env must be ubuntu-owned mode 0600: $LEGACY_ENV_FILE" >&2
+  exit 2
+fi
 
-install -d -o ubuntu -g ubuntu -m 0700 "$SERVER_PILOT"
 REMOTE_COMMON_TMP="$(mktemp "${SERVER_PILOT}/.env.remote-common.tmp.XXXXXX")"
 REMOTE_ADMIN_TMP="$(mktemp "${SERVER_PILOT}/.env.remote-admin.tmp.XXXXXX")"
 cleanup() {
@@ -164,7 +173,8 @@ process.stdin.on("end", () => {
       Object.keys(parsed).length !== 1 ||
       Object.keys(parsed)[0] !== "BETTER_AUTH_SECRET" ||
       typeof parsed.BETTER_AUTH_SECRET !== "string" ||
-      parsed.BETTER_AUTH_SECRET.trim().length === 0
+      parsed.BETTER_AUTH_SECRET.trim().length === 0 ||
+      /[\r\n\0]/.test(parsed.BETTER_AUTH_SECRET)
     ) {
       process.exit(2);
     }
@@ -189,9 +199,13 @@ printf 'BETTER_AUTH_URL=%s\nBETTER_AUTH_SECRET=%s\n' \
 
 node -e 'const fs=require("fs"); for (const path of process.argv.slice(1)) { const fd=fs.openSync(path,"r"); try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); } }' \
   "$REMOTE_COMMON_TMP" "$REMOTE_ADMIN_TMP"
-chown ubuntu:ubuntu "$REMOTE_COMMON_TMP" "$REMOTE_ADMIN_TMP"
 chmod 600 "$REMOTE_COMMON_TMP"
 chmod 600 "$REMOTE_ADMIN_TMP"
+if [ "$(stat -c '%a:%U:%G' "$REMOTE_COMMON_TMP")" != "600:ubuntu:ubuntu" ] ||
+  [ "$(stat -c '%a:%U:%G' "$REMOTE_ADMIN_TMP")" != "600:ubuntu:ubuntu" ]; then
+  echo "remote env temporary files must be ubuntu-owned mode 0600" >&2
+  exit 2
+fi
 
 # All secret parsing and both temporary files complete before either live file changes.
 mv -f -- "$REMOTE_COMMON_TMP" "$REMOTE_COMMON_ENV"

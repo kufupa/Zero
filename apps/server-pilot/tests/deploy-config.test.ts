@@ -3260,7 +3260,178 @@ describe('deploy config', () => {
       expect(env.POP3_MAX_MESSAGES_PER_CYCLE).toBe(500);
     });
 
-    it('treats the root-read legacy runtime file as data, never shell input', async () => {
+    it('bootstraps remote env as ubuntu without root checkout execution', async () => {
+      const { readFileSync } = await import('node:fs');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const here = dirname(fileURLToPath(import.meta.url));
+      const deploy = join(here, '..', 'deploy');
+      const opsDeploy = readFileSync(join(deploy, 'ops-deploy.sh'), 'utf8');
+      const writer = readFileSync(join(deploy, 'write-ec2-remote-env.sh'), 'utf8');
+      const ubuntuGuard = writer.indexOf('write-ec2-remote-env.sh must run as ubuntu');
+      const modeDispatch = writer.indexOf('case "${1:-}" in');
+
+      expect(opsDeploy).toContain('bash apps/server-pilot/deploy/write-ec2-remote-env.sh;');
+      expect(opsDeploy).not.toContain(
+        'sudo -n bash apps/server-pilot/deploy/write-ec2-remote-env.sh;',
+      );
+      expect(ubuntuGuard).toBeGreaterThanOrEqual(0);
+      expect(ubuntuGuard).toBeLessThan(modeDispatch);
+      expect(writer).toMatch(
+        /if \[ "\$\(id -un\)" != "ubuntu" \]; then\s+echo "write-ec2-remote-env\.sh must run as ubuntu" >&2\s+exit 2\s+fi/,
+      );
+      expect(writer).not.toMatch(/\b(?:sudo|chown)\b/);
+      expect(writer).not.toMatch(/\binstall\s+-d\b/);
+    });
+
+    it('requires exact Ubuntu-owned 0600 legacy metadata before parsing', async () => {
+      const { readFileSync } = await import('node:fs');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const here = dirname(fileURLToPath(import.meta.url));
+      const writer = readFileSync(
+        join(here, '..', 'deploy', 'write-ec2-remote-env.sh'),
+        'utf8',
+      );
+      const legacyFileGuard = writer.indexOf('legacy runtime env missing or unsafe');
+      const legacyMetadataGuard = writer.indexOf(
+        'legacy runtime env must be ubuntu-owned mode 0600',
+      );
+      const parser = writer.indexOf('parse-ec2-legacy-env.mjs');
+
+      expect(writer).toMatch(
+        /if \[ ! -f "\$LEGACY_ENV_FILE" \] \|\| \[ -L "\$LEGACY_ENV_FILE" \]; then/,
+      );
+      expect(writer).toMatch(
+        /if \[ "\$\(stat -c '%a:%U:%G' "\$LEGACY_ENV_FILE"\)" != "600:ubuntu:ubuntu" \]; then/,
+      );
+      expect(legacyMetadataGuard).toBeGreaterThan(legacyFileGuard);
+      expect(parser).toBeGreaterThan(legacyMetadataGuard);
+    });
+
+    it('executes remote writer identity, metadata, and raw-secret gates', async () => {
+      const {
+        chmodSync,
+        existsSync,
+        mkdtempSync,
+        mkdirSync,
+        readFileSync,
+        rmSync,
+        writeFileSync,
+      } = await import('node:fs');
+      const { tmpdir } = await import('node:os');
+      const { delimiter, dirname, join } = await import('node:path');
+      const { fileURLToPath } = await import('node:url');
+      const here = dirname(fileURLToPath(import.meta.url));
+      const writer = join(here, '..', 'deploy', 'write-ec2-remote-env.sh');
+      const tempDir = mkdtempSync(join(tmpdir(), 'nava-remote-env-writer-test-'));
+      const repoRoot = join(tempDir, 'repo');
+      const serverPilot = join(repoRoot, 'apps', 'server-pilot');
+      const legacyEnv = join(serverPilot, '.env.production');
+      const stubDir = join(tempDir, 'bin');
+      const awsMarker = join(tempDir, 'aws-called');
+
+      try {
+        mkdirSync(serverPilot, { recursive: true });
+        mkdirSync(stubDir);
+        writeFileSync(
+          legacyEnv,
+          [
+            "NODE_ENV='production'",
+            "DATABASE_URL='postgres://example.invalid/zero'",
+            "AWS_REGION='af-south-1'",
+            "S3_BUCKET='nava-test-bucket'",
+            '',
+          ].join('\n'),
+          'utf8',
+        );
+
+        const idPath = join(stubDir, 'id');
+        writeFileSync(idPath, '#!/usr/bin/env bash\nprintf "%s\\n" "$FAKE_ID_USER"\n', 'utf8');
+        chmodSync(idPath, 0o755);
+
+        const statPath = join(stubDir, 'stat');
+        writeFileSync(
+          statPath,
+          `#!/usr/bin/env bash
+if [ "$3" = "$FAKE_LEGACY_ENV" ]; then
+  printf '%s\\n' "$FAKE_LEGACY_METADATA"
+else
+  printf '%s\\n' '600:ubuntu:ubuntu'
+fi
+`,
+          'utf8',
+        );
+        chmodSync(statPath, 0o755);
+
+        const awsPath = join(stubDir, 'aws');
+        writeFileSync(
+          awsPath,
+          `#!/usr/bin/env bash
+printf 'called\\n' >"$FAKE_AWS_MARKER"
+printf '%s' "$FAKE_AWS_SECRET_JSON"
+`,
+          'utf8',
+        );
+        chmodSync(awsPath, 0o755);
+
+        const runWriter = async ({
+          user = 'ubuntu',
+          metadata = '600:ubuntu:ubuntu',
+          secret = 'remote-signing-secret',
+        }: {
+          user?: string;
+          metadata?: string;
+          secret?: string;
+        } = {}) => {
+          rmSync(awsMarker, { force: true });
+          return runBash({
+            args: [toBashPath(writer)],
+            env: {
+              ...process.env,
+              PATH: `${toBashPath(stubDir)}${delimiter}${process.env.PATH ?? ''}`,
+              REPO_ROOT: toBashPath(repoRoot),
+              FAKE_ID_USER: user,
+              FAKE_LEGACY_ENV: toBashPath(legacyEnv),
+              FAKE_LEGACY_METADATA: metadata,
+              FAKE_AWS_MARKER: toBashPath(awsMarker),
+              FAKE_AWS_SECRET_JSON: JSON.stringify({ BETTER_AUTH_SECRET: secret }),
+            },
+          });
+        };
+
+        const root = await runWriter({ user: 'root' });
+        expect(root.status).toBe(2);
+        expect(root.stderr).toContain('must run as ubuntu');
+        expect(existsSync(awsMarker)).toBe(false);
+
+        const wrongMetadata = await runWriter({ metadata: '644:ubuntu:ubuntu' });
+        expect(wrongMetadata.status).toBe(2);
+        expect(wrongMetadata.stderr).toContain('must be ubuntu-owned mode 0600');
+        expect(existsSync(awsMarker)).toBe(false);
+
+        const valid = await runWriter();
+        expect(existsSync(awsMarker)).toBe(true);
+        if (process.platform === 'win32') {
+          // Windows temp volumes reject the production fsync syscall after every gate ran.
+          expect(valid.status).toBe(1);
+          expect(valid.stderr).toContain('fsync');
+        } else {
+          expect(valid.status, valid.stderr).toBe(0);
+          expect(readFileSync(join(serverPilot, '.env.remote-common'), 'utf8')).toContain(
+            "DATABASE_URL='postgres://example.invalid/zero'",
+          );
+        }
+
+        const rawNul = await runWriter({ secret: 'nonblank\0nul' });
+        expect(rawNul.status).toBe(2);
+        expect(rawNul.stderr).toContain('remote auth secret is missing or malformed');
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    }, 30_000);
+
+    it('treats the legacy runtime file as data, never shell input', async () => {
       const { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = await import(
         'node:fs'
       );
@@ -3416,7 +3587,7 @@ describe('deploy config', () => {
       expect(writer).not.toMatch(/source[^\n]*\.env\.remote/);
     });
 
-    it('rejects whitespace-only dedicated remote auth JSON secrets', async () => {
+    it('rejects blank or control-character dedicated remote auth JSON secrets', async () => {
       const { readFileSync } = await import('node:fs');
       const { spawnSync } = await import('node:child_process');
       const { fileURLToPath } = await import('node:url');
@@ -3429,7 +3600,14 @@ describe('deploy config', () => {
       const parser = writer.match(/\|\s*node -e '\n([\s\S]*?)\n'\n\)/)?.[1];
 
       expect(parser).toBeTruthy();
-      for (const secret of [' ', '\t', ' \t ']) {
+      for (const secret of [
+        ' ',
+        '\t',
+        ' \t ',
+        'nonblank\nnewline',
+        'nonblank\rcarriage-return',
+        'nonblank\0nul',
+      ]) {
         const result = spawnSync(process.execPath, ['-e', parser!], {
           input: JSON.stringify({ BETTER_AUTH_SECRET: secret }),
           encoding: 'utf8',
@@ -3439,7 +3617,7 @@ describe('deploy config', () => {
       }
     });
 
-    it('rejects whitespace-only remote admin values during --validate', async () => {
+    it('rejects blank or control-character remote admin values during --validate', async () => {
       const { mkdtempSync, readFileSync, rmSync, writeFileSync } = await import('node:fs');
       const { spawnSync } = await import('node:child_process');
       const { tmpdir } = await import('node:os');
@@ -3462,7 +3640,13 @@ describe('deploy config', () => {
       const tempDir = mkdtempSync(join(tmpdir(), 'nava-remote-auth-validate-test-'));
       const adminEnv = join(tempDir, '.env.remote-admin');
       try {
-        for (const secret of [' ', '\t', ' \t ']) {
+        for (const secret of [
+          ' ',
+          '\t',
+          ' \t ',
+          'nonblank\rcarriage-return',
+          'nonblank\0nul',
+        ]) {
           writeFileSync(
             adminEnv,
             [

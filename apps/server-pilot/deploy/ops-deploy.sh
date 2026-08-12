@@ -35,7 +35,7 @@ if [ "$QUIESCED" != "1" ]; then
   bash "${SCRIPT_DIR}/ssm-run-command.sh" \
     "${REMOTE_NVM}; cd /home/ubuntu/repos/zero && \
       if [ ! -e apps/server-pilot/.env.remote-common ] && [ ! -e apps/server-pilot/.env.remote-admin ]; then \
-        sudo -n bash apps/server-pilot/deploy/write-ec2-remote-env.sh; \
+        bash apps/server-pilot/deploy/write-ec2-remote-env.sh; \
       elif [ ! -f apps/server-pilot/.env.remote-common ] || [ ! -f apps/server-pilot/.env.remote-admin ]; then \
         echo 'remote HTTP env files must both exist or both be bootstrapped' >&2; exit 20; \
       fi"
