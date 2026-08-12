@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Sync local EC2-pilot branch to EC2 via private S3 git bundle (no git push).
+# Sync chosen local branch to EC2 via private S3 git bundle (no git push).
 # EC2 fetches the bundle directly from S3 using its instance profile role;
 # no presigned URLs are generated or persisted in SSM command history.
 #
@@ -19,10 +19,10 @@ set -euo pipefail
 
 : "${AWS_REGION:=af-south-1}"
 : "${INSTANCE_ID:=i-008f737974a9ba9b3}"
-: "${GIT_BRANCH:=EC2-pilot}"
+: "${GIT_BRANCH:=main}"
 : "${EC2_REPO_PATH:=/home/ubuntu/repos/zero}"
 : "${BOOTSTRAP_BUCKET:=nava-zero-bootstrap-845242190536}"
-: "${BUNDLE_KEY:=git-bundles/zero-EC2-pilot.bundle}"
+: "${BUNDLE_KEY:=git-bundles/zero-${GIT_BRANCH}.bundle}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
@@ -512,7 +512,7 @@ printf -v Q_GIT_BRANCH '%q' "$GIT_BRANCH"
 printf -v Q_BUNDLE_REF '%q' "bundle/${GIT_BRANCH}"
 printf -v Q_BUNDLE_URI '%q' "s3://${BOOTSTRAP_BUCKET}/${BUNDLE_KEY}"
 printf -v Q_AWS_REGION '%q' "$AWS_REGION"
-REMOTE_SCRIPT="set -euo pipefail; export AWS_DEFAULT_REGION=${Q_AWS_REGION}; export NVM_DIR=/home/ubuntu/.nvm; [ -s /home/ubuntu/.nvm/nvm.sh ] && . /home/ubuntu/.nvm/nvm.sh; aws s3 cp ${Q_BUNDLE_URI} ${Q_REMOTE_BUNDLE} --region ${Q_AWS_REGION}; mkdir -p /home/ubuntu/repos; if [ -d ${Q_REPO_PATH}/.git ]; then cd ${Q_REPO_PATH}; git fetch ${Q_REMOTE_BUNDLE} '+refs/heads/*:refs/remotes/bundle/*'; git checkout ${Q_GIT_BRANCH}; git reset --hard ${Q_BUNDLE_REF}; else git clone ${Q_REMOTE_BUNDLE} ${Q_REPO_PATH}; cd ${Q_REPO_PATH}; git checkout ${Q_GIT_BRANCH}; fi; rm -f ${Q_REMOTE_BUNDLE}; git status --short --branch; git log -1 --oneline; node --version; pnpm --version"
+REMOTE_SCRIPT="set -euo pipefail; export AWS_DEFAULT_REGION=${Q_AWS_REGION}; export NVM_DIR=/home/ubuntu/.nvm; [ -s /home/ubuntu/.nvm/nvm.sh ] && . /home/ubuntu/.nvm/nvm.sh; aws s3 cp ${Q_BUNDLE_URI} ${Q_REMOTE_BUNDLE} --region ${Q_AWS_REGION}; mkdir -p /home/ubuntu/repos; if [ -d ${Q_REPO_PATH}/.git ]; then cd ${Q_REPO_PATH}; git fetch ${Q_REMOTE_BUNDLE} '+refs/heads/*:refs/remotes/bundle/*'; git checkout -B ${Q_GIT_BRANCH} ${Q_BUNDLE_REF}; git reset --hard ${Q_BUNDLE_REF}; else git clone ${Q_REMOTE_BUNDLE} ${Q_REPO_PATH}; cd ${Q_REPO_PATH}; git checkout ${Q_GIT_BRANCH}; fi; rm -f ${Q_REMOTE_BUNDLE}; git status --short --branch; git log -1 --oneline; node --version; pnpm --version"
 
 echo "Deploying bundle to EC2 via SSM (instance-profile S3 access)..."
 bash "$SCRIPT_DIR/ssm-run-command.sh" "$REMOTE_SCRIPT"

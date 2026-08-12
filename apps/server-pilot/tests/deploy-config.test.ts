@@ -1890,6 +1890,21 @@ describe('deploy config', () => {
     expect(ops).toContain('db:migrate');
   });
 
+  it('sync deploys main by default and creates the fetched branch on EC2', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const sync = readFileSync(
+      join(here, '..', 'deploy', 'sync-ec2-git-bundle.sh'),
+      'utf8',
+    );
+
+    expect(sync).toContain(': "${GIT_BRANCH:=main}"');
+    expect(sync).toContain(': "${BUNDLE_KEY:=git-bundles/zero-${GIT_BRANCH}.bundle}"');
+    expect(sync).toContain('git checkout -B ${Q_GIT_BRANCH} ${Q_BUNDLE_REF}');
+  });
+
   it('quiesced deploy builds assets, skips PM2/health, allows online http, keeps VPN', async () => {
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
