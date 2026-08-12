@@ -192,23 +192,56 @@ if UFW_ADDED="$(sudo ufw show added 2>/dev/null)"; then
 fi
 
 LISTENER_SAFE=false
-if ss -ltnH 2>/dev/null | node -e '
+if {
+  printf "%s\n" "__READINESS_TCP_LISTENERS__"
+  ss -ltnH
+  printf "%s\n" "__READINESS_UDP_LISTENERS__"
+  ss -lunH
+} 2>/dev/null | node -e '
   let output = "";
   process.stdin.on("data", (chunk) => (output += chunk));
   process.stdin.on("end", () => {
-    const lines = output
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean);
-    const listenAddresses = (port) =>
+    const section = (start, end) => {
+      const startIndex = output.indexOf(start);
+      const endIndex = output.indexOf(end);
+      if (
+        startIndex < 0 ||
+        endIndex < 0 ||
+        startIndex >= endIndex ||
+        output.indexOf(start, startIndex + 1) >= 0 ||
+        output.indexOf(end, endIndex + 1) >= 0
+      ) {
+        return null;
+      }
+      return output
+        .slice(startIndex + start.length, endIndex)
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+    };
+    const tcpLines = section(
+      "__READINESS_TCP_LISTENERS__",
+      "__READINESS_UDP_LISTENERS__",
+    );
+    const udpStart = output.indexOf("__READINESS_UDP_LISTENERS__");
+    const udpLines =
+      udpStart < 0 || output.indexOf("__READINESS_UDP_LISTENERS__", udpStart + 1) >= 0
+        ? null
+        : output
+            .slice(udpStart + "__READINESS_UDP_LISTENERS__".length)
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter(Boolean);
+    if (tcpLines === null || udpLines === null) process.exit(1);
+    const listenAddresses = (lines, port, requireListen) =>
       lines.flatMap((line) => {
-        if (!/\bLISTEN\b/.test(line)) return [];
+        if (requireListen && !/\bLISTEN\b/.test(line)) return [];
         const suffix = `:${port}`;
         const local = line.split(/\s+/).find((field) => field.endsWith(suffix));
         return local ? [local.slice(0, -suffix.length)] : [];
       });
     const loopbackOnly = (port) => {
-      const addresses = listenAddresses(port);
+      const addresses = listenAddresses(tcpLines, port, true);
       return (
         addresses.length > 0 &&
         addresses.every(
@@ -219,13 +252,14 @@ if ss -ltnH 2>/dev/null | node -e '
         )
       );
     };
-    const target8443 = listenAddresses(8443);
+    const target8443 = listenAddresses(tcpLines, 8443, true);
+    const udp8443 = listenAddresses(udpLines, 8443, false);
     const safe =
-      !/\bUDP\b/i.test(output) &&
       loopbackOnly(8788) &&
       loopbackOnly(8789) &&
       target8443.length === 1 &&
-      target8443[0] === "172.31.12.112";
+      target8443[0] === "172.31.12.112" &&
+      udp8443.length === 0;
     process.exit(safe ? 0 : 1);
   });
 '; then
@@ -596,34 +630,83 @@ collect_readiness_perimeter() {
     aws ec2 describe-instances \
       --region "$AWS_REGION" \
       --instance-ids "$INSTANCE_ID" \
-      --query 'Reservations[0].Instances[0].{securityGroups:SecurityGroups,publicIpv4:NetworkInterfaces[].Association.PublicIp,ipv6:NetworkInterfaces[].Ipv6Addresses[].Ipv6Address}' \
+      --query 'Reservations[0].Instances[0].{securityGroups:SecurityGroups,networkInterfaces:NetworkInterfaces[].{id:NetworkInterfaceId,deviceIndex:Attachment.DeviceIndex,securityGroups:Groups,publicIpv4:Association.PublicIp,ipv6:Ipv6Addresses[].Ipv6Address},publicIpv4:NetworkInterfaces[].Association.PublicIp,ipv6:NetworkInterfaces[].Ipv6Addresses[].Ipv6Address}' \
       --output json 2>/dev/null
   )"; then
     local sg_ids_text=""
     if sg_ids_text="$(
       node -e '
         const state = JSON.parse(process.argv[1]);
-        const validRecord =
-          state &&
-          typeof state === "object" &&
-          !Array.isArray(state) &&
-          Array.isArray(state.securityGroups) &&
-          state.securityGroups.length > 0 &&
-          Array.isArray(state.publicIpv4) &&
-          state.publicIpv4.every((address) => typeof address === "string") &&
-          Array.isArray(state.ipv6) &&
-          state.ipv6.every((address) => typeof address === "string") &&
-          state.securityGroups.every(
+        const groupIdPattern = /^sg-[0-9a-f]{8,17}$/;
+        const groupIds = (groups) =>
+          Array.isArray(groups) &&
+          groups.length > 0 &&
+          groups.every(
             (group) =>
               group &&
               typeof group === "object" &&
               !Array.isArray(group) &&
               typeof group.GroupId === "string" &&
-              /^sg-[0-9a-f]{8,17}$/.test(group.GroupId),
+              groupIdPattern.test(group.GroupId),
+          )
+            ? groups.map((group) => group.GroupId)
+            : null;
+        const exactStrings = (actual, expected) =>
+          Array.isArray(actual) &&
+          actual.length === expected.length &&
+          [...actual].sort().every((value, index) => value === [...expected].sort()[index]);
+        const topLevelGroups = groupIds(state?.securityGroups);
+        const interfaces = Array.isArray(state?.networkInterfaces)
+          ? state.networkInterfaces
+          : [];
+        const validInterfaces =
+          state &&
+          typeof state === "object" &&
+          !Array.isArray(state) &&
+          topLevelGroups !== null &&
+          Array.isArray(state.publicIpv4) &&
+          state.publicIpv4.every((address) => typeof address === "string") &&
+          Array.isArray(state.ipv6) &&
+          state.ipv6.every((address) => typeof address === "string") &&
+          interfaces.length > 0 &&
+          interfaces.every(
+            (networkInterface) =>
+              networkInterface &&
+              typeof networkInterface === "object" &&
+              !Array.isArray(networkInterface) &&
+              typeof networkInterface.id === "string" &&
+              networkInterface.id.startsWith("eni-") &&
+              Number.isInteger(networkInterface.deviceIndex) &&
+              networkInterface.deviceIndex >= 0 &&
+              groupIds(networkInterface.securityGroups) !== null &&
+              (networkInterface.publicIpv4 === null ||
+                typeof networkInterface.publicIpv4 === "string") &&
+              Array.isArray(networkInterface.ipv6) &&
+              networkInterface.ipv6.every((address) => typeof address === "string"),
           );
-        if (!validRecord) process.exit(1);
-        const ids = state.securityGroups.map((group) => group.GroupId);
-        if (new Set(ids).size !== ids.length) process.exit(1);
+        if (!validInterfaces || new Set(topLevelGroups).size !== topLevelGroups.length) {
+          process.exit(1);
+        }
+        const primary = interfaces.filter((networkInterface) => networkInterface.deviceIndex === 0);
+        const interfaceIds = interfaces.map((networkInterface) => networkInterface.id);
+        const deviceIndexes = interfaces.map((networkInterface) => networkInterface.deviceIndex);
+        if (
+          primary.length !== 1 ||
+          new Set(interfaceIds).size !== interfaceIds.length ||
+          new Set(deviceIndexes).size !== deviceIndexes.length
+        ) {
+          process.exit(1);
+        }
+        const primaryGroups = groupIds(primary[0].securityGroups);
+        if (primaryGroups === null || !exactStrings(topLevelGroups, primaryGroups)) {
+          process.exit(1);
+        }
+        const ids = [
+          ...new Set(
+            interfaces.flatMap((networkInterface) => groupIds(networkInterface.securityGroups)),
+          ),
+        ];
+        if (ids.length === 0) process.exit(1);
         process.stdout.write(ids.join("\n"));
       ' "$instance_network_result" 2>/dev/null
     )"; then
@@ -992,6 +1075,86 @@ const isExactByteMatch = (statement, field, expected) => {
     search === Buffer.from(expected, "utf8").toString("base64")
   );
 };
+const securityGroupIdPattern = /^sg-[0-9a-f]{8,17}$/;
+const groupIds = (groups) => {
+  if (
+    !Array.isArray(groups) ||
+    groups.length === 0 ||
+    !groups.every(
+      (group) =>
+        isRecord(group) &&
+        typeof group.GroupId === "string" &&
+        securityGroupIdPattern.test(group.GroupId),
+    )
+  ) {
+    return null;
+  }
+  const ids = groups.map((group) => group.GroupId);
+  return new Set(ids).size === ids.length ? ids : null;
+};
+const describeInstanceNetwork = (value) => {
+  if (
+    !isRecord(value) ||
+    !Array.isArray(value.publicIpv4) ||
+    !value.publicIpv4.every((address) => typeof address === "string") ||
+    !Array.isArray(value.ipv6) ||
+    !value.ipv6.every((address) => typeof address === "string")
+  ) {
+    return null;
+  }
+  const topLevelGroupIds = groupIds(value.securityGroups);
+  const networkInterfaces = Array.isArray(value.networkInterfaces)
+    ? value.networkInterfaces
+    : [];
+  if (topLevelGroupIds === null || networkInterfaces.length === 0) return null;
+  const interfaces = networkInterfaces.map((networkInterface) => {
+    if (
+      !isRecord(networkInterface) ||
+      typeof networkInterface.id !== "string" ||
+      !networkInterface.id.startsWith("eni-") ||
+      !Number.isInteger(networkInterface.deviceIndex) ||
+      networkInterface.deviceIndex < 0 ||
+      (networkInterface.publicIpv4 !== null &&
+        typeof networkInterface.publicIpv4 !== "string") ||
+      !Array.isArray(networkInterface.ipv6) ||
+      !networkInterface.ipv6.every((address) => typeof address === "string")
+    ) {
+      return null;
+    }
+    const securityGroups = groupIds(networkInterface.securityGroups);
+    return securityGroups === null
+      ? null
+      : {
+          id: networkInterface.id,
+          deviceIndex: networkInterface.deviceIndex,
+          securityGroups,
+        };
+  });
+  if (interfaces.some((networkInterface) => networkInterface === null)) return null;
+  const validInterfaces = interfaces;
+  const primary = validInterfaces.filter(
+    (networkInterface) => networkInterface.deviceIndex === 0,
+  );
+  if (
+    primary.length !== 1 ||
+    new Set(validInterfaces.map((networkInterface) => networkInterface.id)).size !==
+      validInterfaces.length ||
+    new Set(validInterfaces.map((networkInterface) => networkInterface.deviceIndex)).size !==
+      validInterfaces.length ||
+    !hasExactStrings(topLevelGroupIds, primary[0].securityGroups)
+  ) {
+    return null;
+  }
+  return {
+    groupIds: [
+      ...new Set(
+        validInterfaces.flatMap((networkInterface) => networkInterface.securityGroups),
+      ),
+    ],
+    publicIpv4: value.publicIpv4,
+    ipv6: value.ipv6,
+  };
+};
 
 try {
   const albValue = parse(albRaw);
@@ -1156,20 +1319,37 @@ try {
     targetHealth[0]?.Target?.Port === 8443 &&
     targetHealth[0]?.TargetHealth?.State === "healthy";
 
-  const attachedSecurityGroups = Array.isArray(instanceNetwork?.securityGroups)
-    ? instanceNetwork.securityGroups
+  const attachedNetwork = describeInstanceNetwork(instanceNetwork);
+  const inspectedSecurityGroups = Array.isArray(securityGroups)
+    ? securityGroups
     : [];
-  const targetSecurityGroupAttached = attachedSecurityGroups.some(
-    (group) => group?.GroupId === targetSecurityGroup?.GroupId,
-  );
+  const securityGroupRecordsValid =
+    inspectedSecurityGroups.length > 0 &&
+    inspectedSecurityGroups.every(
+      (group) =>
+        isRecord(group) &&
+        typeof group.id === "string" &&
+        securityGroupIdPattern.test(group.id) &&
+        Array.isArray(group.ingress),
+    );
   const securityGroupById = new Map(
-    Array.isArray(securityGroups)
-      ? securityGroups.map((group) => [group?.id, group])
+    securityGroupRecordsValid
+      ? inspectedSecurityGroups.map((group) => [group.id, group])
       : [],
   );
-  const attachedGroupRecords = attachedSecurityGroups
-    .map((group) => securityGroupById.get(group?.GroupId))
-    .filter(Boolean);
+  const securityGroupCoverageComplete =
+    attachedNetwork !== null &&
+    securityGroupRecordsValid &&
+    securityGroupById.size === inspectedSecurityGroups.length &&
+    securityGroupById.size === attachedNetwork.groupIds.length &&
+    attachedNetwork.groupIds.every((id) => securityGroupById.has(id));
+  const attachedGroupRecords =
+    attachedNetwork === null
+      ? []
+      : attachedNetwork.groupIds.map((id) => securityGroupById.get(id));
+  const targetSecurityGroupAttached =
+    attachedNetwork !== null &&
+    attachedNetwork.groupIds.includes(targetSecurityGroup?.GroupId);
   const isExactAlb8443 = (permission) =>
     permission?.IpProtocol === "tcp" &&
     Number(permission?.FromPort) === 8443 &&
@@ -1187,23 +1367,25 @@ try {
   const targetSecurityGroupRecord = attachedGroupRecords.find(
     (group) => group?.id === targetSecurityGroup?.GroupId,
   );
-  const attachedIngressOnlyAlb8443 = attachedGroupRecords.every((group) =>
-    Array.isArray(group?.ingress) && group.ingress.every(isExactAlb8443),
-  );
-  empty.targetSecurityGroupOnlyAlb =
-    targetSecurityGroupAttached &&
-    attachedGroupRecords.length === attachedSecurityGroups.length &&
-    attachedIngressOnlyAlb8443 &&
+  const legacyIngressEmpty = attachedGroupRecords
+    .filter((group) => group?.id !== targetSecurityGroup?.GroupId)
+    .every((group) => Array.isArray(group?.ingress) && group.ingress.length === 0);
+  const targetIngressOnlyAlb8443 =
     Array.isArray(targetSecurityGroupRecord?.ingress) &&
     targetSecurityGroupRecord.ingress.length === 1 &&
     targetSecurityGroupRecord.ingress.every(isExactAlb8443);
+  empty.targetSecurityGroupOnlyAlb =
+    securityGroupCoverageComplete &&
+    targetSecurityGroupAttached &&
+    legacyIngressEmpty &&
+    targetIngressOnlyAlb8443;
   empty.publicAddressPresence = {
     ipv4:
-      Array.isArray(instanceNetwork?.publicIpv4) &&
-      instanceNetwork.publicIpv4.some((address) => typeof address === "string"),
+      attachedNetwork !== null &&
+      attachedNetwork.publicIpv4.some((address) => typeof address === "string"),
     ipv6:
-      Array.isArray(instanceNetwork?.ipv6) &&
-      instanceNetwork.ipv6.some((address) => typeof address === "string"),
+      attachedNetwork !== null &&
+      attachedNetwork.ipv6.some((address) => typeof address === "string"),
   };
   empty.noDirectPublicTargetPath = empty.targetSecurityGroupOnlyAlb;
 
@@ -1468,27 +1650,87 @@ const publicAccessStructureValid =
     (field) => typeof publicAccess[field] === "boolean",
   );
 const sgIdPattern = /^sg-[0-9a-f]{8,17}$/;
-const attachedGroups = Array.isArray(instanceNetwork.securityGroups)
-  ? instanceNetwork.securityGroups
+const groupIds = (groups) => {
+  if (
+    !Array.isArray(groups) ||
+    groups.length === 0 ||
+    !groups.every(
+      (group) =>
+        isRecord(group) &&
+        typeof group.GroupId === "string" &&
+        sgIdPattern.test(group.GroupId),
+    )
+  ) {
+    return null;
+  }
+  const ids = groups.map((group) => group.GroupId);
+  return new Set(ids).size === ids.length ? ids : null;
+};
+const sameStringSet = (actual, expected) =>
+  Array.isArray(actual) &&
+  actual.length === expected.length &&
+  [...actual].sort().every((value, index) => value === [...expected].sort()[index]);
+const topLevelGroupIds = isRecord(instanceNetwork)
+  ? groupIds(instanceNetwork.securityGroups)
+  : null;
+const rawNetworkInterfaces =
+  isRecord(instanceNetwork) && Array.isArray(instanceNetwork.networkInterfaces)
+    ? instanceNetwork.networkInterfaces
+    : [];
+const parsedNetworkInterfaces = rawNetworkInterfaces.map((networkInterface) => {
+  if (
+    !isRecord(networkInterface) ||
+    typeof networkInterface.id !== "string" ||
+    !networkInterface.id.startsWith("eni-") ||
+    !Number.isInteger(networkInterface.deviceIndex) ||
+    networkInterface.deviceIndex < 0 ||
+    (networkInterface.publicIpv4 !== null &&
+      typeof networkInterface.publicIpv4 !== "string") ||
+    !Array.isArray(networkInterface.ipv6) ||
+    !networkInterface.ipv6.every((address) => typeof address === "string")
+  ) {
+    return null;
+  }
+  const securityGroups = groupIds(networkInterface.securityGroups);
+  return securityGroups === null
+    ? null
+    : {
+        id: networkInterface.id,
+        deviceIndex: networkInterface.deviceIndex,
+        securityGroups,
+      };
+});
+const networkInterfacesValid =
+  rawNetworkInterfaces.length > 0 &&
+  !parsedNetworkInterfaces.some((networkInterface) => networkInterface === null);
+const networkInterfaces = networkInterfacesValid
+  ? parsedNetworkInterfaces
   : [];
-const attachedRecordsValid =
+const primaryNetworkInterfaces = networkInterfaces.filter(
+  (networkInterface) => networkInterface.deviceIndex === 0,
+);
+const instanceNetworkShapeValid =
   isRecord(instanceNetwork) &&
-  attachedGroups.length > 0 &&
-  attachedGroups.every(
-    (group) =>
-      isRecord(group) &&
-      typeof group.GroupId === "string" &&
-      sgIdPattern.test(group.GroupId),
-  ) &&
+  topLevelGroupIds !== null &&
   Array.isArray(instanceNetwork.publicIpv4) &&
   instanceNetwork.publicIpv4.every((address) => typeof address === "string") &&
   Array.isArray(instanceNetwork.ipv6) &&
-  instanceNetwork.ipv6.every((address) => typeof address === "string");
-const attachedIds = attachedRecordsValid
-  ? attachedGroups.map((group) => group.GroupId)
+  instanceNetwork.ipv6.every((address) => typeof address === "string") &&
+  networkInterfacesValid &&
+  primaryNetworkInterfaces.length === 1 &&
+  new Set(networkInterfaces.map((networkInterface) => networkInterface.id)).size ===
+    networkInterfaces.length &&
+  new Set(
+    networkInterfaces.map((networkInterface) => networkInterface.deviceIndex),
+  ).size === networkInterfaces.length &&
+  sameStringSet(topLevelGroupIds, primaryNetworkInterfaces[0].securityGroups);
+const attachedIds = instanceNetworkShapeValid
+  ? [
+      ...new Set(
+        networkInterfaces.flatMap((networkInterface) => networkInterface.securityGroups),
+      ),
+    ]
   : [];
-const attachedIdsUnique =
-  attachedRecordsValid && new Set(attachedIds).size === attachedIds.length;
 const inspectedRecordsValid =
   securityGroups.length > 0 &&
   securityGroups.every(
@@ -1504,7 +1746,7 @@ const inspectedIds = inspectedRecordsValid
 const inspectedIdsUnique =
   inspectedRecordsValid && new Set(inspectedIds).size === inspectedIds.length;
 const exactSecurityGroupSet =
-  attachedIdsUnique &&
+  instanceNetworkShapeValid &&
   inspectedIdsUnique &&
   attachedIds.length === inspectedIds.length &&
   attachedIds.every((id) => inspectedIds.includes(id));
@@ -1512,7 +1754,7 @@ const ingressEmpty =
   inspectedRecordsValid &&
   securityGroups.every((group) => group.ingress.length === 0);
 const instanceNetworkValid =
-  instanceNetworkOk && attachedRecordsValid && attachedIdsUnique;
+  instanceNetworkOk && instanceNetworkShapeValid;
 const publicAddressPresence = {
   ipv4:
     instanceNetworkValid &&
@@ -1527,6 +1769,11 @@ const securityGroupsValid =
   inspectedIdsUnique &&
   exactSecurityGroupSet &&
   ingressEmpty;
+const securityGroupCoverageValid =
+  securityGroupQueryOk &&
+  inspectedRecordsValid &&
+  inspectedIdsUnique &&
+  exactSecurityGroupSet;
 const pm2Required = remote.pm2?.required ?? {};
 const db = remote.db ?? {};
 
@@ -1594,6 +1841,8 @@ if (remoteAdminMode) {
       remoteAdminFacts.targetSecurityGroupOnlyAlb === true,
     remoteNoDirectPublicTargetPath:
       remoteAdminFacts.noDirectPublicTargetPath === true,
+    remoteEc2EniSecurityGroupsCovered:
+      instanceNetworkValid && securityGroupCoverageValid,
     remoteUfwAlb8443Only: remote.firewall?.remoteAlb8443Only === true,
     remoteListenerSafe: remote.firewall?.listenerSafe === true,
     s3CorsRemoteAdmin:

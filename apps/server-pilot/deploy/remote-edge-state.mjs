@@ -982,6 +982,11 @@ function deriveHostFacts(projections) {
     fail();
   }
   const output = host.StandardOutputContent.replace(/\r/g, '');
+  const verbose = markedSection(
+    output,
+    '__REMOTE_EDGE_UFW_VERBOSE__',
+    '__REMOTE_EDGE_UFW_STATUS__',
+  );
   const status = markedSection(
     output,
     '__REMOTE_EDGE_UFW_STATUS__',
@@ -998,12 +1003,22 @@ function deriveHostFacts(projections) {
     '__REMOTE_EDGE_ROUTE__',
   );
   const route = markedSection(output, '__REMOTE_EDGE_ROUTE__');
-  const statusActive = /^Status: active$/m.test(status);
-  const defaultDeny = /^Default: deny \(incoming\),/m.test(status);
-  const rules = added
+  const statusActive = /^Status: active$/m.test(verbose);
+  const defaultDeny = /^Default: deny \(incoming\),/m.test(verbose);
+  const addedLines = added
     .split('\n')
     .map((rule) => rule.trim())
     .filter(Boolean);
+  const addedHeader = "Added user rules (see 'ufw status numbered'):";
+  if (
+    addedLines.filter((line) => line === addedHeader).length > 1 ||
+    addedLines.some(
+      (line) => line !== addedHeader && !/^ufw(?:\s|$)/.test(line),
+    )
+  ) {
+    fail();
+  }
+  const rules = addedLines.filter((line) => /^ufw(?:\s|$)/.test(line));
   const intendedTunnel = 'ufw allow in on tun0 to any port 443 proto tcp';
   const subnetA =
     'ufw allow in on ens5 from 172.31.0.0/20 to any port 8443 proto tcp';
@@ -1032,6 +1047,14 @@ function deriveHostFacts(projections) {
     .map((line) =>
       line.replace(/^\[\s*\d+\]\s*/, '').replace(/\s+/g, ' ').trim(),
     );
+  const tunnelIpv6Display =
+    '443/tcp (v6) on tun0 ALLOW IN Anywhere (v6)';
+  const tunnelIpv6Displays = statusRules.filter(
+    (line) => line === tunnelIpv6Display,
+  );
+  const normalizedStatusRules = statusRules.filter(
+    (line) => line !== tunnelIpv6Display,
+  );
   const expectedStatusRules = {
     none: ['443/tcp on tun0 ALLOW IN Anywhere'],
     'subnet-a': [
@@ -1046,7 +1069,8 @@ function deriveHostFacts(projections) {
   };
   if (
     ufwStage === 'invalid' ||
-    !exactStrings(statusRules, expectedStatusRules[ufwStage])
+    tunnelIpv6Displays.length > 1 ||
+    !exactStrings(normalizedStatusRules, expectedStatusRules[ufwStage])
   ) {
     fail();
   }
@@ -1056,15 +1080,16 @@ function deriveHostFacts(projections) {
     .split('\n')
     .map((line) => line.trim())
     .filter(Boolean);
-  const listenAddresses = (port) =>
-    socketLines.flatMap((line) => {
-      if (!/\bLISTEN\b/.test(line)) return [];
+  const tcpSocketLines = socketLines.filter((line) => /\bLISTEN\b/.test(line));
+  const udpSocketLines = socketLines.filter((line) => !/\bLISTEN\b/.test(line));
+  const listenAddresses = (lines, port) =>
+    lines.flatMap((line) => {
       const suffix = `:${port}`;
       const local = line.split(/\s+/).find((field) => field.endsWith(suffix));
       return local ? [local.slice(0, -suffix.length)] : [];
     });
   const loopbackOnly = (port) => {
-    const addresses = listenAddresses(port);
+    const addresses = listenAddresses(tcpSocketLines, port);
     return (
       addresses.length > 0 &&
       addresses.every(
@@ -1075,13 +1100,14 @@ function deriveHostFacts(projections) {
       )
     );
   };
-  const target8443 = listenAddresses(8443);
+  const target8443 = listenAddresses(tcpSocketLines, 8443);
+  const udp8443 = listenAddresses(udpSocketLines, 8443);
   const listenerSafe =
-    sockets.length > 0 &&
-    !/\bUDP\b/i.test(sockets) &&
+    tcpSocketLines.length > 0 &&
     loopbackOnly(8788) &&
     loopbackOnly(8789) &&
-    exactStrings(target8443, [TARGET_PRIVATE_IP]);
+    exactStrings(target8443, [TARGET_PRIVATE_IP]) &&
+    udp8443.length === 0;
   if (
     !statusActive ||
     !defaultDeny ||

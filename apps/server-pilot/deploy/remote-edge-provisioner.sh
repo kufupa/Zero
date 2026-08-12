@@ -450,7 +450,7 @@ observe_host() {
   local scratch="$1"
   local command_id_value
   local parameters
-  parameters='{"commands":["set -eu; printf \"__REMOTE_EDGE_UFW_STATUS__\\n\"; ufw status numbered; printf \"__REMOTE_EDGE_UFW_ADDED__\\n\"; ufw show added; printf \"__REMOTE_EDGE_SOCKETS__\\n\"; ss -ltnH; printf \"__REMOTE_EDGE_ROUTE__\\n\"; ip route show default"]}'
+  parameters='{"commands":["set -eu; printf \"__REMOTE_EDGE_UFW_VERBOSE__\\n\"; ufw status verbose; printf \"__REMOTE_EDGE_UFW_STATUS__\\n\"; ufw status numbered; printf \"__REMOTE_EDGE_UFW_ADDED__\\n\"; ufw show added; printf \"__REMOTE_EDGE_SOCKETS__\\n\"; ss -ltnH; ss -lunH; printf \"__REMOTE_EDGE_ROUTE__\\n\"; ip route show default"]}'
   command_id_value="$(send_ssm_command "$scratch" host-command.json "$parameters")" || die
   wait_for_ssm_success "$scratch" host.json "$command_id_value"
 }
@@ -730,7 +730,7 @@ run_ssm_ufw_mutation() {
   local cidr="$2"
   local command_id_value
   local parameters
-  parameters="{\"commands\":[\"set -eu; ufw allow in on ens5 from $cidr to any port 8443 proto tcp; printf \\\"__REMOTE_EDGE_UFW_STATUS__\\\\n\\\"; ufw status numbered; printf \\\"__REMOTE_EDGE_UFW_ADDED__\\\\n\\\"; ufw show added; printf \\\"__REMOTE_EDGE_SOCKETS__\\\\n\\\"; ss -ltnH; printf \\\"__REMOTE_EDGE_ROUTE__\\\\n\\\"; ip route show default\"]}"
+  parameters="{\"commands\":[\"set -eu; ufw allow in on ens5 from $cidr to any port 8443 proto tcp; printf \\\"__REMOTE_EDGE_UFW_VERBOSE__\\\\n\\\"; ufw status verbose; printf \\\"__REMOTE_EDGE_UFW_STATUS__\\\\n\\\"; ufw status numbered; printf \\\"__REMOTE_EDGE_UFW_ADDED__\\\\n\\\"; ufw show added; printf \\\"__REMOTE_EDGE_SOCKETS__\\\\n\\\"; ss -ltnH; ss -lunH; printf \\\"__REMOTE_EDGE_ROUTE__\\\\n\\\"; ip route show default\"]}"
   command_id_value="$(send_ssm_command "$scratch" ufw-mutation-command.json "$parameters")" || die
   wait_for_ssm_success "$scratch" ufw-mutation-result.json "$command_id_value"
 }

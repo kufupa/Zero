@@ -52,6 +52,11 @@ type Mode =
   | 'ufw-shorthand'
   | 'ufw-status-shorthand'
   | 'ufw-status-missing'
+  | 'ufw-verbose-default-only'
+  | 'ufw-ipv6-display-companion'
+  | 'ufw-broad-rule'
+  | 'ufw-duplicate-rule'
+  | 'udp-8443-listener'
   | 'legacy-public-ingress'
   | 'legacy-secondary-public-ingress'
   | 'non-alb-eni'
@@ -878,6 +883,12 @@ const hostOutput = () => {
     statusRules.push('[ 3] 8443/tcp on ens5 ALLOW IN 172.31.32.0/20');
   }
   if (state.mode === 'ufw-shorthand') rules.push('ufw allow 8443/tcp');
+  if (state.mode === 'ufw-broad-rule') {
+    rules.push('ufw allow in on ens5 to any port 8443 proto tcp');
+  }
+  if (state.mode === 'ufw-duplicate-rule') {
+    rules.push('ufw allow in on tun0 to any port 443 proto tcp');
+  }
   if (state.mode === 'public-address-wrong-ufw') {
     rules.push('ufw allow in on ens5 to any port 8443 proto tcp');
   }
@@ -885,15 +896,19 @@ const hostOutput = () => {
     statusRules.push('[ 1] 8443/tcp ALLOW IN Anywhere');
   }
   if (state.mode === 'ufw-status-missing') statusRules.length = 0;
+  if (state.mode === 'ufw-ipv6-display-companion') {
+    statusRules.push('[ 2] 443/tcp (v6) on tun0 ALLOW IN Anywhere (v6)');
+  }
   const targetListener = state.mode === 'public-address-public-listener'
     ? 'LISTEN 0 511 0.0.0.0:8443 0.0.0.0:*'
     : state.mode === 'public-address-ipv6-listener'
       ? 'LISTEN 0 511 [::]:8443 [::]:*'
       : 'LISTEN 0 511 172.31.12.112:8443 0.0.0.0:*';
   return [
-    '__REMOTE_EDGE_UFW_STATUS__',
+    '__REMOTE_EDGE_UFW_VERBOSE__',
     'Status: active',
     'Default: deny (incoming), allow (outgoing), disabled (routed)',
+    '__REMOTE_EDGE_UFW_STATUS__',
     ...statusRules,
     '__REMOTE_EDGE_UFW_ADDED__',
     ...rules,
@@ -902,6 +917,9 @@ const hostOutput = () => {
     'LISTEN 0 511 127.0.0.1:8788 0.0.0.0:*',
     'LISTEN 0 511 127.0.0.1:8789 0.0.0.0:*',
     targetListener,
+    ...(state.mode === 'udp-8443-listener'
+      ? ['UNCONN 0 0 172.31.12.112:8443 0.0.0.0:*']
+      : []),
     '__REMOTE_EDGE_ROUTE__',
     'default via 172.31.0.1 dev ens5',
     '',
@@ -923,7 +941,7 @@ if (operation === 'send-command') {
           : '';
     const expectedCommand =
       'set -eu; ufw allow in on ens5 from ' + cidr +
-      ' to any port 8443 proto tcp; printf "__REMOTE_EDGE_UFW_STATUS__\\n"; ufw status numbered; printf "__REMOTE_EDGE_UFW_ADDED__\\n"; ufw show added; printf "__REMOTE_EDGE_SOCKETS__\\n"; ss -ltnH; printf "__REMOTE_EDGE_ROUTE__\\n"; ip route show default';
+      ' to any port 8443 proto tcp; printf "__REMOTE_EDGE_UFW_VERBOSE__\\n"; ufw status verbose; printf "__REMOTE_EDGE_UFW_STATUS__\\n"; ufw status numbered; printf "__REMOTE_EDGE_UFW_ADDED__\\n"; ufw show added; printf "__REMOTE_EDGE_SOCKETS__\\n"; ss -ltnH; ss -lunH; printf "__REMOTE_EDGE_ROUTE__\\n"; ip route show default';
     let command;
     try {
       const payload = JSON.parse(parameters);
@@ -954,6 +972,29 @@ if (operation === 'send-command') {
       fail();
     }
     log('mutate ssm ufw');
+  } else {
+    const expectedCommand =
+      'set -eu; printf "__REMOTE_EDGE_UFW_VERBOSE__\\n"; ufw status verbose; ' +
+      'printf "__REMOTE_EDGE_UFW_STATUS__\\n"; ufw status numbered; ' +
+      'printf "__REMOTE_EDGE_UFW_ADDED__\\n"; ufw show added; ' +
+      'printf "__REMOTE_EDGE_SOCKETS__\\n"; ss -ltnH; ss -lunH; ' +
+      'printf "__REMOTE_EDGE_ROUTE__\\n"; ip route show default';
+    let command;
+    try {
+      const payload = JSON.parse(parameters);
+      command = payload.commands?.[0];
+    } catch {
+      log('invalid observe parameters ' + parameters);
+      fail();
+    }
+    if (
+      option('--document-name') !== 'AWS-RunShellScript' ||
+      option('--instance-ids') !== instance ||
+      command !== expectedCommand
+    ) {
+      log('invalid ssm observe ' + JSON.stringify(args) + ' command=' + String(command));
+      fail();
+    }
   }
   state.commandCounter += 1;
   const commandId = 'command-' + state.commandCounter;
@@ -1232,6 +1273,49 @@ describe('remote edge provisioner security contracts', () => {
     try {
       const result = await runProvisioner(harness, ['inspect']);
       expect(result.status).not.toBe(0);
+      expect(calls(harness).filter((entry) => entry.startsWith('mutate '))).toHaveLength(0);
+    } finally {
+      destroyHarness(harness);
+    }
+  }, 60_000);
+
+  it('reads UFW default policy from verbose and normalizes only tunnel IPv6 display', async () => {
+    for (const mode of [
+      'ufw-verbose-default-only',
+      'ufw-ipv6-display-companion',
+    ] as const) {
+      const harness = createHarness('SG_FINAL_UNATTACHED', mode);
+      try {
+        const result = await runProvisioner(harness, ['inspect']);
+        expect(result.status, resultDiagnostic(result, harness)).toBe(0);
+      } finally {
+        destroyHarness(harness);
+      }
+    }
+  }, 60_000);
+
+  it.each([
+    'ufw-shorthand',
+    'ufw-status-shorthand',
+    'ufw-status-missing',
+    'ufw-broad-rule',
+    'ufw-duplicate-rule',
+  ] as const)('rejects unknown, broad, missing, or duplicate UFW state: %s', async (mode) => {
+    const harness = createHarness('UFW_READY', mode);
+    try {
+      const result = await runProvisioner(harness, ['inspect']);
+      expect(result.status, resultDiagnostic(result, harness)).not.toBe(0);
+      expect(calls(harness).filter((entry) => entry.startsWith('mutate '))).toHaveLength(0);
+    } finally {
+      destroyHarness(harness);
+    }
+  }, 60_000);
+
+  it('rejects UDP :8443 even when TCP target binding is exact', async () => {
+    const harness = createHarness('UFW_READY', 'udp-8443-listener');
+    try {
+      const result = await runProvisioner(harness, ['inspect']);
+      expect(result.status, resultDiagnostic(result, harness)).not.toBe(0);
       expect(calls(harness).filter((entry) => entry.startsWith('mutate '))).toHaveLength(0);
     } finally {
       destroyHarness(harness);

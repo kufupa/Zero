@@ -598,3 +598,42 @@ Results: `123` deploy-config tests, `11` provisioner tests, and `52` hardened se
 ### Remaining concern
 
 No live boundary revalidation or mutation ran. On a future authorized operator run, use fresh read-only facts; do not detach or release assigned public addresses, and require the exact SG/UFW/listener gate before any later edge transition.
+
+## Boundary-proof review correction — 2026-08-12
+
+Status: `DONE` for local Task 4 review correction. No AWS/SSM live command, secret, database, Docker, environment-source, deployment, Task 5, or public-operation path ran.
+
+### Root cause and fix
+
+1. `launch-readiness.sh` previously derived attached security groups from only the instance-level group list. It now captures every EC2 ENI, requires one matching primary ENI, derives the union of every ENI group, queries exactly that set, and fails legacy or remote readiness when coverage is partial, malformed, duplicate, or broad.
+2. Provisioner host facts now collect `ufw status verbose` for active/default-deny policy and use `ufw show added` as canonical rule configuration. Numbered status accepts only one normalized IPv6 display companion for the exact legacy `tun0:443` rule; broad, unknown, missing, shorthand, or duplicate state blocks.
+3. Readiness and provisioner host facts now collect `ss -ltnH` plus `ss -lunH`. TCP `:8443` must be exactly `172.31.12.112`; wildcard, IPv6, public, duplicate, and every UDP `:8443` listener block.
+4. Assigned public-address presence remains sanitized observation only. Legacy `tun0:443` remains required. No target registration, host-forward rule, public HTTP listener, DNS, or Task 5 action was added.
+
+### TDD and verification
+
+RED fixtures added before correction:
+
+- secondary ENI missing-security-group and broad-ingress coverage;
+- wildcard/IPv6/UDP `:8443` listener rejection;
+- verbose-policy plus numbered IPv6-display UFW acceptance;
+- broad, unknown, missing, shorthand, and duplicate UFW rejection.
+
+GREEN serial DB-free verification:
+
+```bash
+unset DATABASE_URL TEST_DATABASE_URL VITEST_ALLOW_PILOT_RDS CONFIRM_DISPOSABLE_TEST_DB HMS_DB_TEST_REQUIRED
+pnpm exec vitest run tests/deploy-config.test.ts --pool=forks --poolOptions.forks.singleFork=true
+pnpm exec vitest run tests/remote-edge-provisioner.test.ts --pool=forks --poolOptions.forks.singleFork=true
+pnpm exec vitest run tests/remote-edge-provisioner-security.test.ts --pool=forks --poolOptions.forks.singleFork=true
+pnpm exec tsc -p tsconfig.json --noEmit
+bash -n deploy/remote-edge-provisioner.sh deploy/launch-readiness.sh deploy/post-boot-smoke.sh deploy/ops-deploy.sh deploy/ops-restart.sh deploy/ops-reboot.sh deploy/pm2-boot.sh
+node --check deploy/remote-edge-state.mjs
+git diff --check
+```
+
+Results: `125` deploy-config, `11` provisioner, and `59` provisioner-security tests passed. TypeScript, shell syntax, Node syntax, and whitespace checks passed.
+
+### Remaining concern
+
+Fresh authorized read-only facts remain required before any future operator action. This local correction does not authorize nor substitute for remote proof, mutation, or Task 5 progression.

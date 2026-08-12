@@ -308,6 +308,7 @@ function activeCanonicalEntries(hosts: string): string[] {
 
 const SG_ONE = 'sg-0123456789abcdef0';
 const SG_TWO = 'sg-0fedcba9876543210';
+const SG_THREE = 'sg-00112233445566778';
 const INTENDED_UFW_ALLOW = 'ufw allow in on tun0 to any port 443 proto tcp';
 const ACTIVE_DEFAULT_DENY_UFW = [
   'Status: active',
@@ -329,6 +330,15 @@ const validCors = (origins: string[] = [CANONICAL_ORIGIN]) => ({
 
 const validInstanceNetwork = () => ({
   securityGroups: [{ GroupId: SG_ONE }, { GroupId: SG_TWO }],
+  networkInterfaces: [
+    {
+      id: 'eni-0123456789abcdef0',
+      deviceIndex: 0,
+      securityGroups: [{ GroupId: SG_ONE }, { GroupId: SG_TWO }],
+      publicIpv4: null,
+      ipv6: [],
+    },
+  ],
   publicIpv4: [],
   ipv6: [],
 });
@@ -904,6 +914,64 @@ printf 'UFW_FACTS=%s,%s,%s,%s,%s,%s\\n' \
   }
 }
 
+async function runListenerCollection({
+  tcp = [
+    'LISTEN 0 511 0.0.0.0:443 0.0.0.0:*',
+    'LISTEN 0 511 127.0.0.1:8788 0.0.0.0:*',
+    'LISTEN 0 511 127.0.0.1:8789 0.0.0.0:*',
+    'LISTEN 0 511 172.31.12.112:8443 0.0.0.0:*',
+  ].join('\n'),
+  udp = '',
+}: {
+  tcp?: string;
+  udp?: string;
+} = {}): Promise<boolean | null> {
+  const { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } = await import(
+    'node:fs',
+  );
+  const { tmpdir } = await import('node:os');
+  const { delimiter, join } = await import('node:path');
+  const tempDir = mkdtempSync(join(tmpdir(), 'nava-listener-collection-test-'));
+  const stubDir = join(tempDir, 'bin');
+
+  try {
+    mkdirSync(stubDir);
+    const ssPath = join(stubDir, 'ss');
+    writeFileSync(
+      ssPath,
+      `#!/usr/bin/env bash
+case "$*" in
+  "-ltnH") printf '%s\\n' "\${LISTENER_TEST_TCP}" ;;
+  "-lunH") printf '%s\\n' "\${LISTENER_TEST_UDP}" ;;
+  *) exit 97 ;;
+esac
+`,
+      'utf8',
+    );
+    chmodSync(ssPath, 0o755);
+    const block = extractSourceBlock(
+      await readLaunchReadiness(),
+      'LISTENER_SAFE=false',
+      'PM2_SUMMARY="$(',
+    );
+    const result = await runBash({
+      input: `set -euo pipefail
+${block}
+printf 'LISTENER_SAFE=%s\\n' "$LISTENER_SAFE"
+`,
+      env: {
+        ...process.env,
+        PATH: `${toBashPath(stubDir)}${delimiter}${process.env.PATH ?? ''}`,
+        LISTENER_TEST_TCP: tcp,
+        LISTENER_TEST_UDP: udp,
+      },
+    });
+    return result.stdout.match(/LISTENER_SAFE=(true|false)/)?.[1] === 'true';
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
 async function runAwsPerimeterCollection({
   cors = validCors(),
   instanceNetwork = validInstanceNetwork(),
@@ -1304,9 +1372,22 @@ function validRemoteCollectorResponses(): Record<string, unknown> {
       }),
     },
     logLifecycle: { Rules: [{ Status: 'Enabled', Expiration: { Days: 365 } }] },
-    instanceNetwork: validInstanceNetwork(),
+    instanceNetwork: {
+      securityGroups: [{ GroupId: SG_THREE }, { GroupId: SG_TWO }],
+      networkInterfaces: [
+        {
+          id: 'eni-remote-primary',
+          deviceIndex: 0,
+          securityGroups: [{ GroupId: SG_THREE }, { GroupId: SG_TWO }],
+          publicIpv4: null,
+          ipv6: [],
+        },
+      ],
+      publicIpv4: [],
+      ipv6: [],
+    },
     securityGroups: [
-      { id: SG_ONE, ingress: [] },
+      { id: SG_THREE, ingress: [] },
       { id: SG_TWO, ingress: [expectedTargetIngress] },
     ],
   };
@@ -2963,12 +3044,21 @@ describe('deploy config', () => {
     expect(legacy.checks.securityGroupIngressEmpty).toBe(true);
 
     const remoteInstanceNetwork = {
-      securityGroups: [{ GroupId: SG_ONE }, { GroupId: SG_TWO }],
+      securityGroups: [{ GroupId: SG_THREE }, { GroupId: SG_TWO }],
+      networkInterfaces: [
+        {
+          id: 'eni-remote-primary',
+          deviceIndex: 0,
+          securityGroups: [{ GroupId: SG_THREE }, { GroupId: SG_TWO }],
+          publicIpv4: null,
+          ipv6: [],
+        },
+      ],
       publicIpv4: [],
       ipv6: [],
     };
     const remoteSecurityGroups = [
-      { id: SG_ONE, ingress: [] },
+      { id: SG_THREE, ingress: [] },
       {
         id: SG_TWO,
         ingress: [
@@ -3091,6 +3181,15 @@ describe('deploy config', () => {
       cors: validCors([CANONICAL_ORIGIN, `https://${REMOTE_ADMIN_HOST}`]),
       instanceNetwork: {
         securityGroups: [{ GroupId: SG_ONE }, { GroupId: SG_TWO }],
+        networkInterfaces: [
+          {
+            id: 'eni-public-address',
+            deviceIndex: 0,
+            securityGroups: [{ GroupId: SG_ONE }, { GroupId: SG_TWO }],
+            publicIpv4: '198.51.100.23',
+            ipv6: ['2001:db8::23'],
+          },
+        ],
         publicIpv4: ['198.51.100.23'],
         ipv6: ['2001:db8::23'],
       },
@@ -3107,6 +3206,15 @@ describe('deploy config', () => {
       cors: validCors([CANONICAL_ORIGIN, `https://${REMOTE_ADMIN_HOST}`]),
       instanceNetwork: {
         securityGroups: [{ GroupId: SG_ONE }, { GroupId: SG_TWO }],
+        networkInterfaces: [
+          {
+            id: 'eni-public-address',
+            deviceIndex: 0,
+            securityGroups: [{ GroupId: SG_ONE }, { GroupId: SG_TWO }],
+            publicIpv4: '198.51.100.23',
+            ipv6: ['2001:db8::23'],
+          },
+        ],
         publicIpv4: ['198.51.100.23'],
         ipv6: ['2001:db8::23'],
       },
@@ -3189,6 +3297,29 @@ describe('deploy config', () => {
       });
     });
     expect(broadAlbSecurityGroup.facts?.resourcesResolved).toBe(false);
+
+    const secondaryEniBroadIngress = await runRemoteAdminPerimeterCollection((responses) => {
+      responses.instanceNetwork.networkInterfaces.push({
+        id: 'eni-remote-secondary',
+        deviceIndex: 1,
+        securityGroups: [{ GroupId: SG_ONE }],
+        publicIpv4: null,
+        ipv6: [],
+      });
+      responses.securityGroups.push({
+        id: SG_ONE,
+        ingress: [
+          {
+            IpProtocol: 'tcp',
+            FromPort: 443,
+            ToPort: 443,
+            IpRanges: [{ CidrIp: '0.0.0.0/0' }],
+          },
+        ],
+      });
+    });
+    expect(secondaryEniBroadIngress.facts?.targetSecurityGroupOnlyAlb).toBe(false);
+    expect(secondaryEniBroadIngress.facts?.noDirectPublicTargetPath).toBe(false);
   }, 60_000);
 
   it('documents gated, idempotent remote-admin edge provisioning without changing legacy access', async () => {
@@ -3470,6 +3601,42 @@ describe('deploy config', () => {
     }
   }, 60_000);
 
+  it('launch readiness collects TCP and UDP listeners for the private target boundary', async () => {
+    expect(await runListenerCollection()).toBe(true);
+
+    for (const [tcp, udp] of [
+      [
+        [
+          'LISTEN 0 511 0.0.0.0:443 0.0.0.0:*',
+          'LISTEN 0 511 127.0.0.1:8788 0.0.0.0:*',
+          'LISTEN 0 511 127.0.0.1:8789 0.0.0.0:*',
+          'LISTEN 0 511 0.0.0.0:8443 0.0.0.0:*',
+        ].join('\n'),
+        '',
+      ],
+      [
+        [
+          'LISTEN 0 511 0.0.0.0:443 0.0.0.0:*',
+          'LISTEN 0 511 127.0.0.1:8788 0.0.0.0:*',
+          'LISTEN 0 511 127.0.0.1:8789 0.0.0.0:*',
+          'LISTEN 0 511 [::]:8443 [::]:*',
+        ].join('\n'),
+        '',
+      ],
+      [
+        [
+          'LISTEN 0 511 0.0.0.0:443 0.0.0.0:*',
+          'LISTEN 0 511 127.0.0.1:8788 0.0.0.0:*',
+          'LISTEN 0 511 127.0.0.1:8789 0.0.0.0:*',
+          'LISTEN 0 511 172.31.12.112:8443 0.0.0.0:*',
+        ].join('\n'),
+        'UNCONN 0 0 172.31.12.112:8443 0.0.0.0:*',
+      ],
+    ] as const) {
+      expect(await runListenerCollection({ tcp, udp })).toBe(false);
+    }
+  });
+
   it('launch readiness accepts overlap and final canonical CORS states', async () => {
     const overlap = await runLaunchReadinessReport({
       cors: validCors([
@@ -3584,6 +3751,55 @@ describe('deploy config', () => {
       securityGroups: [{ id: SG_ONE, ingress: [] }],
     });
     expect(partial.checks.securityGroupIngressEmpty).toBe(false);
+  });
+
+  it('launch readiness enumerates every ENI and requires complete secondary-SG facts', async () => {
+    const withSecondaryEni = {
+      securityGroups: [{ GroupId: SG_ONE }],
+      networkInterfaces: [
+        {
+          id: 'eni-primary',
+          deviceIndex: 0,
+          securityGroups: [{ GroupId: SG_ONE }],
+          publicIpv4: null,
+          ipv6: [],
+        },
+        {
+          id: 'eni-secondary',
+          deviceIndex: 1,
+          securityGroups: [{ GroupId: SG_TWO }],
+          publicIpv4: null,
+          ipv6: [],
+        },
+      ],
+      publicIpv4: [],
+      ipv6: [],
+    };
+    const missingSecondary = await runLaunchReadinessReport({
+      instanceNetwork: withSecondaryEni,
+      securityGroups: [{ id: SG_ONE, ingress: [] }],
+    });
+    expect(missingSecondary.checks.securityGroupIngressEmpty).toBe(false);
+
+    const collected = await runAwsPerimeterCollection({
+      instanceNetwork: withSecondaryEni,
+      securityGroups: [
+        { id: SG_ONE, ingress: [] },
+        {
+          id: SG_TWO,
+          ingress: [
+            {
+              IpProtocol: 'tcp',
+              FromPort: 443,
+              ToPort: 443,
+              IpRanges: [{ CidrIp: '0.0.0.0/0' }],
+            },
+          ],
+        },
+      ],
+    });
+    expect(collected.securityGroupArgs).toContain(SG_TWO);
+    expect(collected.report?.checks.securityGroupIngressEmpty).toBe(false);
   });
 
   it('launch readiness rejects malformed or duplicate SG attachment/result records', async () => {
@@ -3868,6 +4084,15 @@ describe('deploy config', () => {
     const report = await runLaunchReadinessReport({
       instanceNetwork: {
         securityGroups: [{ GroupId: SG_ONE }],
+        networkInterfaces: [
+          {
+            id: 'eni-public-ipv6',
+            deviceIndex: 0,
+            securityGroups: [{ GroupId: SG_ONE }],
+            publicIpv4: null,
+            ipv6: ['2001:db8::1'],
+          },
+        ],
         publicIpv4: [],
         ipv6: ['2001:db8::1'],
       },

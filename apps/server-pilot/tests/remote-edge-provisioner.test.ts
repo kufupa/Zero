@@ -292,9 +292,10 @@ if (operation === 'get-command-invocation') {
   process.stdout.write(JSON.stringify({
     Status: 'Success',
     StandardOutputContent: [
-      '__REMOTE_EDGE_UFW_STATUS__',
+      '__REMOTE_EDGE_UFW_VERBOSE__',
       'Status: active',
       'Default: deny (incoming), allow (outgoing), disabled (routed)',
+      '__REMOTE_EDGE_UFW_STATUS__',
       '[ 1] 443/tcp on tun0 ALLOW IN Anywhere',
       '__REMOTE_EDGE_UFW_ADDED__',
       'ufw allow in on tun0 to any port 443 proto tcp',
