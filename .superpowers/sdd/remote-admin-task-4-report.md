@@ -140,6 +140,7 @@ Remaining concern: ACM remains intentionally unrequested. Next authorized mutati
 ## Second re-review remediation
 
 Status: `DONE`
+Remediation commit: `edf7b680`
 
 No AWS, SSM, ACM, Docker, database, or runtime-environment command ran during this remediation.
 
