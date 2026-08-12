@@ -860,6 +860,7 @@ const [
 
 const ACCOUNT_ID = "845242190536";
 const VPC_ID = "vpc-0f078e17a5f0f8599";
+const INSTANCE_ID = "i-008f737974a9ba9b3";
 const HOST = "nava-admin.trynava.io";
 const ALB_NAME = "nava-remote-admin-alb";
 const TARGET_GROUP_NAME = "nava-remote-admin";
@@ -894,10 +895,19 @@ const statementActions = (statement) =>
     : typeof statement?.Action === "string"
       ? [statement.Action]
       : [];
-const fieldSearchStringMatches = (statement, field, expected) => {
+const isExactByteMatch = (statement, field, expected) => {
   const byteMatch = statement?.ByteMatchStatement;
-  if (!isRecord(byteMatch) || !isRecord(byteMatch.FieldToMatch)) return false;
-  if (!Object.hasOwn(byteMatch.FieldToMatch, field)) return false;
+  if (
+    !isRecord(statement) ||
+    Object.keys(statement).length !== 1 ||
+    !isRecord(byteMatch) ||
+    !isRecord(byteMatch.FieldToMatch) ||
+    Object.keys(byteMatch.FieldToMatch).length !== 1 ||
+    !Object.hasOwn(byteMatch.FieldToMatch, field) ||
+    byteMatch.PositionalConstraint !== "EXACTLY"
+  ) {
+    return false;
+  }
   const search = byteMatch.SearchString;
   return (
     search === expected ||
@@ -1025,6 +1035,8 @@ try {
 
   empty.targetHealthy =
     targetHealth.length === 1 &&
+    targetHealth[0]?.Target?.Id === INSTANCE_ID &&
+    targetHealth[0]?.Target?.Port === 8443 &&
     targetHealth[0]?.TargetHealth?.State === "healthy";
 
   const attachedSecurityGroups = Array.isArray(instanceNetwork?.securityGroups)
@@ -1041,28 +1053,29 @@ try {
   const attachedGroupRecords = attachedSecurityGroups
     .map((group) => securityGroupById.get(group?.GroupId))
     .filter(Boolean);
-  const permits8443 = (permission) =>
+  const isExactAlb8443 = (permission) =>
     permission?.IpProtocol === "tcp" &&
-    Number(permission?.FromPort) <= 8443 &&
-    Number(permission?.ToPort) >= 8443;
-  const albOnly8443 = (permission) =>
-    permits8443(permission) &&
+    Number(permission?.FromPort) === 8443 &&
+    Number(permission?.ToPort) === 8443 &&
     Array.isArray(permission?.UserIdGroupPairs) &&
     permission.UserIdGroupPairs.length === 1 &&
     permission.UserIdGroupPairs[0]?.GroupId === albSecurityGroup &&
     (!Array.isArray(permission?.IpRanges) || permission.IpRanges.length === 0) &&
     (!Array.isArray(permission?.Ipv6Ranges) || permission.Ipv6Ranges.length === 0) &&
     (!Array.isArray(permission?.PrefixListIds) || permission.PrefixListIds.length === 0);
-  const all8443Permissions = attachedGroupRecords.flatMap((group) =>
-    Array.isArray(group?.ingress)
-      ? group.ingress.filter(permits8443)
-      : [],
+  const targetSecurityGroupRecord = attachedGroupRecords.find(
+    (group) => group?.id === targetSecurityGroup?.GroupId,
+  );
+  const attachedIngressOnlyAlb8443 = attachedGroupRecords.every((group) =>
+    Array.isArray(group?.ingress) && group.ingress.every(isExactAlb8443),
   );
   empty.targetSecurityGroupOnlyAlb =
     targetSecurityGroupAttached &&
     attachedGroupRecords.length === attachedSecurityGroups.length &&
-    all8443Permissions.length > 0 &&
-    all8443Permissions.every(albOnly8443);
+    attachedIngressOnlyAlb8443 &&
+    Array.isArray(targetSecurityGroupRecord?.ingress) &&
+    targetSecurityGroupRecord.ingress.length === 1 &&
+    targetSecurityGroupRecord.ingress.every(isExactAlb8443);
   empty.noDirectPublicTargetPath =
     empty.targetSecurityGroupOnlyAlb &&
     Array.isArray(instanceNetwork?.ipv6) &&
@@ -1138,7 +1151,11 @@ try {
     "AWSManagedRulesKnownBadInputsRuleSet",
   ].every((name) => managedRuleNames.has(name));
   const rateRules = wafRules.filter((rule) => isRecord(rule?.Statement?.RateBasedStatement));
-  const signinRateRule = rateRules.find((rule) => {
+  const hasExactBlockAction = (rule) =>
+    isRecord(rule?.Action) &&
+    Object.keys(rule.Action).length === 1 &&
+    Object.hasOwn(rule.Action, "Block");
+  const isExactSigninRateRule = (rule) => {
     const rate = rule.Statement.RateBasedStatement;
     const statements = rate?.ScopeDownStatement?.AndStatement?.Statements;
     return (
@@ -1146,29 +1163,33 @@ try {
       rate?.AggregateKeyType === "IP" &&
       rate?.EvaluationWindowSec === 300 &&
       Array.isArray(statements) &&
+      statements.length === 2 &&
+      hasExactBlockAction(rule) &&
       statements.some((statement) =>
-        fieldSearchStringMatches(statement, "UriPath", "/api/auth/sign-in/email"),
+        isExactByteMatch(statement, "UriPath", "/api/auth/sign-in/email"),
       ) &&
-      statements.some((statement) =>
-        fieldSearchStringMatches(statement, "Method", "POST"),
-      )
+      statements.some((statement) => isExactByteMatch(statement, "Method", "POST"))
     );
-  });
-  const planeRateRule = rateRules.find((rule) => {
+  };
+  const isExactPlaneRateRule = (rule) => {
     const rate = rule.Statement.RateBasedStatement;
     return (
       rate?.Limit === 1000 &&
       rate?.AggregateKeyType === "IP" &&
       rate?.EvaluationWindowSec === 300 &&
-      rate?.ScopeDownStatement === undefined
+      rate?.ScopeDownStatement === undefined &&
+      hasExactBlockAction(rule)
     );
-  });
+  };
+  const signinRateRules = rateRules.filter(isExactSigninRateRule);
+  const planeRateRules = rateRules.filter(isExactPlaneRateRule);
   empty.wafCompliant =
     webAcl?.Name === WAF_NAME &&
     wafAssociationValue?.WebACL?.ARN === webAcl?.ARN &&
     hasManagedBaseline &&
-    signinRateRule !== undefined &&
-    planeRateRule !== undefined;
+    rateRules.length === 2 &&
+    signinRateRules.length === 1 &&
+    planeRateRules.length === 1;
 } catch {
   // Keep all remote facts false when any AWS response is missing or malformed.
 }
@@ -1293,13 +1314,17 @@ const hasCanonicalCorsRule =
       rule.AllowedMethods.includes("GET") &&
       rule.AllowedMethods.includes("HEAD"),
   );
+const hasExactGetHeadMethods = (rule) =>
+  Array.isArray(rule?.AllowedMethods) &&
+  rule.AllowedMethods.length === 2 &&
+  rule.AllowedMethods.includes("GET") &&
+  rule.AllowedMethods.includes("HEAD");
 const hasRemoteAdminCorsRule =
   corsStructureValid &&
   corsRules.some(
     (rule) =>
       rule.AllowedOrigins.includes(remoteAdminOrigin) &&
-      rule.AllowedMethods.includes("GET") &&
-      rule.AllowedMethods.includes("HEAD"),
+      hasExactGetHeadMethods(rule),
   );
 const publicAccessFields = [
   "BlockPublicAcls",

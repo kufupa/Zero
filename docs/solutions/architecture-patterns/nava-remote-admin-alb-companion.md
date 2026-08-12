@@ -26,7 +26,7 @@ Remote administration is separate from hotel access:
 
 ## Gate sequence
 
-1. Read-only preflight must match account, region, VPC, instance, target private IP, ALB subnets, existing target ingress, DNS control, and required IAM actions.
+1. Read-only preflight must match account, region, VPC, instance, target private IP, ALB subnets, existing target ingress, and required IAM actions. Lovable DNS edit authority is already confirmed.
 2. Request ACM certificate for `nava-admin.trynava.io`; stop at Gate A and give operator exact validation CNAME. Do not create edge resources before Gate A approval.
 3. After certificate becomes `ISSUED`, create guarded ALB, target group, security groups, logs, WAF, and UFW controls. Listener default stays fixed `404`.
 4. Do not register target or create host-forward rule until Task 5 remote readiness is green.

@@ -278,12 +278,7 @@ if (groups.some((group) => (group.IpPermissions ?? []).some(opens8443))) {
 NODE
 ```
 
-DNS control is not an AWS fact. A Lovable DNS operator must confirm ability to save both required CNAME records before continuing:
-
-```bash
-: "${LOVABLE_DNS_CONTROL_CONFIRMED:?set only after operator confirms Lovable DNS control}"
-test "$LOVABLE_DNS_CONTROL_CONFIRMED" = 1
-```
+Lovable is already confirmed as authoritative DNS provider with edit access. No pre-ACM DNS attestation variable exists. Gate A begins only after ACM returns its exact validation CNAME for the operator to save.
 
 Confirm permissions read-only with IAM simulation. When STS returns an assumed-role ARN, the IAM owner must supply the corresponding role ARN as `IAM_POLICY_SOURCE_ARN`; do not infer or substitute one.
 
@@ -323,6 +318,7 @@ cat >"$EVIDENCE_DIR/required-actions.json" <<'JSON'
   "wafv2:GetWebACL",
   "wafv2:GetWebACLForResource",
   "s3:CreateBucket",
+  "s3:ListAllMyBuckets",
   "s3:ListBucket",
   "s3:GetBucketLocation",
   "s3:GetBucketEncryption",
@@ -360,7 +356,7 @@ if (evaluations.length === 0 || evaluations.some((result) => result.EvalDecision
 NODE
 ```
 
-Stop and report **BLOCKED** when any preflight assertion, DNS-control attestation, or required action fails. Do not compensate with broad policies, alternate subnets, or guessed IDs.
+Stop and report **BLOCKED** when any preflight assertion or required action fails. Do not compensate with broad policies, alternate subnets, or guessed IDs.
 
 ### Gate A — ACM request only
 
@@ -481,7 +477,69 @@ Rotation sequence: generate new file-backed value → guarded `REMOTE_AUTH_ROTAT
 
 ### Idempotent edge resources after Gate A
 
-Create or read each deterministic resource by name. If existing resource differs from this contract, stop; do not replace it.
+Re-runs are fail-closed. A run may create the complete named edge only when every deterministic resource is absent. A complete existing edge is reused only after semantic readback. Any partial or divergent state stops before a create, authorize, revoke, put, modify, attach, or UFW command.
+
+```bash
+verify_remote_edge_state() {
+  REMOTE_ADMIN_MODE=1 REMOTE_TARGET_HEALTH_REQUIRED=0 \
+    bash apps/server-pilot/deploy/launch-readiness.sh
+}
+
+aws elbv2 describe-load-balancers --region "$AWS_REGION" --output json \
+  >"$EVIDENCE_DIR/existing-albs.json"
+aws elbv2 describe-target-groups --region "$AWS_REGION" --output json \
+  >"$EVIDENCE_DIR/existing-target-groups.json"
+aws ec2 describe-security-groups --region "$AWS_REGION" \
+  --filters "Name=vpc-id,Values=$VPC_ID" --output json \
+  >"$EVIDENCE_DIR/existing-security-groups.json"
+aws wafv2 list-web-acls --region "$AWS_REGION" --scope REGIONAL --output json \
+  >"$EVIDENCE_DIR/existing-wafs.json"
+aws s3api list-buckets --query "Buckets[?Name=='$REMOTE_LOG_BUCKET'].Name" --output json \
+  >"$EVIDENCE_DIR/existing-log-bucket.json"
+
+EDGE_REUSE_STATE="$(
+  node - \
+    "$EVIDENCE_DIR/existing-albs.json" \
+    "$EVIDENCE_DIR/existing-target-groups.json" \
+    "$EVIDENCE_DIR/existing-security-groups.json" \
+    "$EVIDENCE_DIR/existing-wafs.json" \
+    "$EVIDENCE_DIR/existing-log-bucket.json" <<'NODE'
+const fs = require("fs");
+const [albsPath, groupsPath, securityGroupsPath, wafsPath, bucketPath] =
+  process.argv.slice(2);
+const albs = JSON.parse(fs.readFileSync(albsPath, "utf8")).LoadBalancers ?? [];
+const groups = JSON.parse(fs.readFileSync(groupsPath, "utf8")).TargetGroups ?? [];
+const securityGroups = JSON.parse(fs.readFileSync(securityGroupsPath, "utf8")).SecurityGroups ?? [];
+const wafs = JSON.parse(fs.readFileSync(wafsPath, "utf8")).WebACLs ?? [];
+const buckets = JSON.parse(fs.readFileSync(bucketPath, "utf8"));
+const count = (items, predicate) => items.filter(predicate).length;
+const present = [
+  count(albs, (item) => item.LoadBalancerName === "nava-remote-admin-alb"),
+  count(groups, (item) => item.TargetGroupName === "nava-remote-admin"),
+  count(securityGroups, (item) => item.GroupName === "nava-remote-admin-alb"),
+  count(securityGroups, (item) => item.GroupName === "nava-remote-admin-target"),
+  count(wafs, (item) => item.Name === "nava-remote-admin-waf"),
+  Array.isArray(buckets) ? buckets.length : -1,
+];
+if (present.every((value) => value === 0)) process.stdout.write("fresh");
+else if (present.every((value) => value === 1)) process.stdout.write("complete");
+else process.stdout.write("partial");
+NODE
+)"
+case "$EDGE_REUSE_STATE" in
+  fresh) ;;
+  complete)
+    verify_remote_edge_state
+    exit 0
+    ;;
+  *)
+    echo "remote edge state is partial; reject divergence before mutation" >&2
+    exit 2
+    ;;
+esac
+```
+
+`verify_remote_edge_state` is semantic readback: it resolves the named resources and rejects divergent listener, target, target-SG, UFW, WAF, log, and CORS state. Run it after Gate B has established remote CORS. Before Gate B, a partial prior run is intentionally not resumed automatically.
 
 ```bash
 ALB_SG_ID="$(aws ec2 describe-security-groups --region "$AWS_REGION" \
@@ -508,7 +566,8 @@ fi
 Read both SGs before each write. Required final shape: ALB SG inbound TCP/443 only from `0.0.0.0/0`; ALB SG outbound TCP/8443 only to `$TARGET_SG_ID`; target SG inbound TCP/8443 only from `$ALB_SG_ID`. Revoke the new-SG default all-egress rule before adding the single ALB egress rule. Use `describe-security-groups` semantic readback after every authorization/revocation and stop on any CIDR, IPv6, prefix-list, or second SG source for TCP/8443.
 
 ```bash
-# Run each authorization only after the required permission is absent in readback.
+# Fresh-only path after the re-run guard above. Re-read both groups after every
+# authorization/revocation; any non-exact final shape is reject divergence.
 aws ec2 authorize-security-group-ingress --region "$AWS_REGION" \
   --group-id "$ALB_SG_ID" --ip-permissions \
   "IpProtocol=tcp,FromPort=443,ToPort=443,IpRanges=[{CidrIp=0.0.0.0/0}]"
@@ -569,9 +628,10 @@ fi
 Create remote log bucket in `af-south-1`, then enforce exact controls. Never use SSE-KMS for ALB logs.
 
 ```bash
-aws s3api head-bucket --region "$AWS_REGION" --bucket "$REMOTE_LOG_BUCKET" >/dev/null 2>&1 ||
-  aws s3api create-bucket --region "$AWS_REGION" --bucket "$REMOTE_LOG_BUCKET" \
-    --create-bucket-configuration LocationConstraint="$AWS_REGION"
+# Re-run guard proved this deterministic bucket absent. Do not use `head || create`:
+# access failure must never be mistaken for absence.
+aws s3api create-bucket --region "$AWS_REGION" --bucket "$REMOTE_LOG_BUCKET" \
+  --create-bucket-configuration LocationConstraint="$AWS_REGION"
 aws s3api put-public-access-block --region "$AWS_REGION" --bucket "$REMOTE_LOG_BUCKET" \
   --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
 aws s3api put-bucket-ownership-controls --region "$AWS_REGION" --bucket "$REMOTE_LOG_BUCKET" \
@@ -681,6 +741,11 @@ const [beforePath, intendedPath] = process.argv.slice(2);
 const value = JSON.parse(fs.readFileSync(beforePath, "utf8"));
 const rules = Array.isArray(value?.CORSRules) ? value.CORSRules : [];
 const remoteOrigin = "https://nava-admin.trynava.io";
+const hasExactGetHeadMethods = (rule) =>
+  Array.isArray(rule?.AllowedMethods) &&
+  rule.AllowedMethods.length === 2 &&
+  rule.AllowedMethods.includes("GET") &&
+  rule.AllowedMethods.includes("HEAD");
 if (rules.length === 0 || rules.some((rule) =>
   !Array.isArray(rule?.AllowedOrigins) ||
   rule.AllowedOrigins.some((origin) => typeof origin !== "string" || origin.includes("*")) ||
@@ -688,8 +753,13 @@ if (rules.length === 0 || rules.some((rule) =>
 )) {
   process.exit(2);
 }
+if (rules.some((rule) =>
+  rule.AllowedOrigins.includes(remoteOrigin) && !hasExactGetHeadMethods(rule),
+)) {
+  process.exit(2);
+}
 const target = rules.find((rule) =>
-  rule.AllowedMethods.includes("GET") && rule.AllowedMethods.includes("HEAD"),
+  hasExactGetHeadMethods(rule),
 );
 if (!target) process.exit(2);
 if (!target.AllowedOrigins.includes(remoteOrigin)) target.AllowedOrigins.push(remoteOrigin);
@@ -705,6 +775,11 @@ const [intendedPath, appliedPath] = process.argv.slice(2);
 const intended = JSON.parse(fs.readFileSync(intendedPath, "utf8"));
 const applied = JSON.parse(fs.readFileSync(appliedPath, "utf8"));
 const remoteOrigin = "https://nava-admin.trynava.io";
+const hasExactGetHeadMethods = (rule) =>
+  Array.isArray(rule?.AllowedMethods) &&
+  rule.AllowedMethods.length === 2 &&
+  rule.AllowedMethods.includes("GET") &&
+  rule.AllowedMethods.includes("HEAD");
 const valid = [intended, applied].every((value) =>
   Array.isArray(value?.CORSRules) &&
   value.CORSRules.some((rule) =>
@@ -712,8 +787,7 @@ const valid = [intended, applied].every((value) =>
     Array.isArray(rule?.AllowedMethods) &&
     !rule.AllowedOrigins.some((origin) => origin.includes("*")) &&
     rule.AllowedOrigins.includes(remoteOrigin) &&
-    rule.AllowedMethods.includes("GET") &&
-    rule.AllowedMethods.includes("HEAD"),
+    hasExactGetHeadMethods(rule),
   ),
 );
 if (!valid) process.exit(2);

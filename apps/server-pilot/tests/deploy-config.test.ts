@@ -1065,6 +1065,315 @@ printf 'AWS_REPORT=%s\\n' "$(build_readiness_report)"
   }
 }
 
+type RemoteCollectorFacts = {
+  targetHealthy: boolean;
+  targetSecurityGroupOnlyAlb: boolean;
+  noDirectPublicTargetPath: boolean;
+  wafCompliant: boolean;
+};
+
+function validRemoteCollectorResponses(): Record<string, unknown> {
+  const albArn = 'arn:aws:elasticloadbalancing:af-south-1:845242190536:loadbalancer/app/nava-remote-admin-alb/test';
+  const targetGroupArn =
+    'arn:aws:elasticloadbalancing:af-south-1:845242190536:targetgroup/nava-remote-admin/test';
+  const listenerArn =
+    'arn:aws:elasticloadbalancing:af-south-1:845242190536:listener/app/nava-remote-admin-alb/test/test';
+  const wafArn = 'arn:aws:wafv2:af-south-1:845242190536:regional/webacl/nava-remote-admin-waf/test';
+  const expectedTargetIngress = {
+    IpProtocol: 'tcp',
+    FromPort: 8443,
+    ToPort: 8443,
+    UserIdGroupPairs: [{ GroupId: SG_ONE }],
+    IpRanges: [],
+    Ipv6Ranges: [],
+    PrefixListIds: [],
+  };
+  const block = { Block: {} };
+  const exactByteMatch = (field: 'UriPath' | 'Method', searchString: string) => ({
+    ByteMatchStatement: {
+      SearchString: searchString,
+      FieldToMatch: { [field]: {} },
+      TextTransformations: [{ Priority: 0, Type: 'NONE' }],
+      PositionalConstraint: 'EXACTLY',
+    },
+  });
+
+  return {
+    alb: {
+      LoadBalancers: [
+        {
+          LoadBalancerName: REMOTE_ALB_NAME,
+          LoadBalancerArn: albArn,
+          Scheme: 'internet-facing',
+          Type: 'application',
+          VpcId: 'vpc-0f078e17a5f0f8599',
+          SecurityGroups: [SG_ONE],
+          AvailabilityZones: [
+            { SubnetId: 'subnet-0e6446aaaeaa8762e' },
+            { SubnetId: 'subnet-094bf8643d98c22f6' },
+          ],
+        },
+      ],
+    },
+    targetGroup: {
+      TargetGroups: [
+        {
+          TargetGroupName: REMOTE_TARGET_GROUP_NAME,
+          TargetGroupArn: targetGroupArn,
+          Protocol: 'HTTP',
+          Port: 8443,
+          VpcId: 'vpc-0f078e17a5f0f8599',
+          HealthCheckProtocol: 'HTTP',
+          HealthCheckPath: '/health',
+          Matcher: { HttpCode: '200' },
+        },
+      ],
+    },
+    targetAttributes: {
+      Attributes: [{ Key: 'deregistration_delay.timeout_seconds', Value: '30' }],
+    },
+    targetHealth: {
+      TargetHealthDescriptions: [
+        {
+          Target: { Id: 'i-008f737974a9ba9b3', Port: 8443 },
+          TargetHealth: { State: 'healthy' },
+        },
+      ],
+    },
+    listeners: {
+      Listeners: [
+        {
+          ListenerArn: listenerArn,
+          Protocol: 'HTTPS',
+          Port: 443,
+          DefaultActions: [
+            { Type: 'fixed-response', FixedResponseConfig: { StatusCode: '404' } },
+          ],
+        },
+      ],
+    },
+    rules: { Rules: [] },
+    albAttributes: {
+      Attributes: [
+        { Key: 'access_logs.s3.enabled', Value: 'true' },
+        { Key: 'access_logs.s3.bucket', Value: REMOTE_LOG_BUCKET },
+      ],
+    },
+    targetSecurityGroup: {
+      SecurityGroups: [
+        {
+          GroupId: SG_TWO,
+          GroupName: REMOTE_TARGET_SECURITY_GROUP_NAME,
+          VpcId: 'vpc-0f078e17a5f0f8599',
+        },
+      ],
+    },
+    wafList: { WebACLs: [{ Name: REMOTE_WAF_NAME, Id: 'waf-test-id' }] },
+    waf: {
+      WebACL: {
+        Name: REMOTE_WAF_NAME,
+        ARN: wafArn,
+        Rules: [
+          {
+            Statement: {
+              ManagedRuleGroupStatement: {
+                VendorName: 'AWS',
+                Name: 'AWSManagedRulesAmazonIpReputationList',
+              },
+            },
+          },
+          {
+            Statement: {
+              ManagedRuleGroupStatement: {
+                VendorName: 'AWS',
+                Name: 'AWSManagedRulesCommonRuleSet',
+              },
+            },
+          },
+          {
+            Statement: {
+              ManagedRuleGroupStatement: {
+                VendorName: 'AWS',
+                Name: 'AWSManagedRulesKnownBadInputsRuleSet',
+              },
+            },
+          },
+          {
+            Action: block,
+            Statement: {
+              RateBasedStatement: {
+                Limit: 25,
+                AggregateKeyType: 'IP',
+                EvaluationWindowSec: 300,
+                ScopeDownStatement: {
+                  AndStatement: {
+                    Statements: [
+                      exactByteMatch('UriPath', '/api/auth/sign-in/email'),
+                      exactByteMatch('Method', 'POST'),
+                    ],
+                  },
+                },
+              },
+            },
+          },
+          {
+            Action: block,
+            Statement: {
+              RateBasedStatement: {
+                Limit: 1000,
+                AggregateKeyType: 'IP',
+                EvaluationWindowSec: 300,
+              },
+            },
+          },
+        ],
+      },
+    },
+    wafAssociation: { WebACL: { ARN: wafArn } },
+    logEncryption: {
+      ServerSideEncryptionConfiguration: {
+        Rules: [{ ApplyServerSideEncryptionByDefault: { SSEAlgorithm: 'AES256' } }],
+      },
+    },
+    logPublicAccess: {
+      PublicAccessBlockConfiguration: {
+        BlockPublicAcls: true,
+        IgnorePublicAcls: true,
+        BlockPublicPolicy: true,
+        RestrictPublicBuckets: true,
+      },
+    },
+    logOwnership: {
+      OwnershipControls: { Rules: [{ ObjectOwnership: 'BucketOwnerEnforced' }] },
+    },
+    logPolicy: {
+      Policy: JSON.stringify({
+        Statement: [
+          {
+            Effect: 'Allow',
+            Principal: { Service: 'logdelivery.elasticloadbalancing.amazonaws.com' },
+            Action: 's3:PutObject',
+            Resource: `arn:aws:s3:::${REMOTE_LOG_BUCKET}/AWSLogs/845242190536/*`,
+            Condition: {
+              StringEquals: { 'aws:SourceAccount': '845242190536' },
+              ArnLike: { 'aws:SourceArn': albArn },
+            },
+          },
+          {
+            Effect: 'Deny',
+            Condition: { Bool: { 'aws:SecureTransport': 'false' } },
+          },
+        ],
+      }),
+    },
+    logLifecycle: { Rules: [{ Status: 'Enabled', Expiration: { Days: 365 } }] },
+    instanceNetwork: validInstanceNetwork(),
+    securityGroups: [
+      { id: SG_ONE, ingress: [] },
+      { id: SG_TWO, ingress: [expectedTargetIngress] },
+    ],
+  };
+}
+
+async function runRemoteAdminPerimeterCollection(
+  mutate: (responses: Record<string, any>) => void = () => {},
+): Promise<{ status: number | null; stderr: string; facts: RemoteCollectorFacts | null }> {
+  const { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } = await import(
+    'node:fs'
+  );
+  const { tmpdir } = await import('node:os');
+  const { delimiter, join } = await import('node:path');
+  const tempDir = mkdtempSync(join(tmpdir(), 'nava-remote-admin-perimeter-test-'));
+  const stubDir = join(tempDir, 'bin');
+  const responses = validRemoteCollectorResponses() as Record<string, any>;
+  mutate(responses);
+
+  try {
+    mkdirSync(stubDir);
+    const awsPath = join(stubDir, 'aws');
+    writeFileSync(
+      awsPath,
+      `#!/usr/bin/env bash
+case "$1 $2" in
+  "elbv2 describe-load-balancers") printf '%s' "$REMOTE_TEST_ALB" ;;
+  "elbv2 describe-target-groups") printf '%s' "$REMOTE_TEST_TARGET_GROUP" ;;
+  "elbv2 describe-target-group-attributes") printf '%s' "$REMOTE_TEST_TARGET_ATTRIBUTES" ;;
+  "elbv2 describe-target-health") printf '%s' "$REMOTE_TEST_TARGET_HEALTH" ;;
+  "elbv2 describe-listeners") printf '%s' "$REMOTE_TEST_LISTENERS" ;;
+  "elbv2 describe-rules") printf '%s' "$REMOTE_TEST_RULES" ;;
+  "elbv2 describe-load-balancer-attributes") printf '%s' "$REMOTE_TEST_ALB_ATTRIBUTES" ;;
+  "ec2 describe-security-groups") printf '%s' "$REMOTE_TEST_TARGET_SG" ;;
+  "wafv2 list-web-acls") printf '%s' "$REMOTE_TEST_WAF_LIST" ;;
+  "wafv2 get-web-acl") printf '%s' "$REMOTE_TEST_WAF" ;;
+  "wafv2 get-web-acl-for-resource") printf '%s' "$REMOTE_TEST_WAF_ASSOCIATION" ;;
+  "s3api get-bucket-encryption") printf '%s' "$REMOTE_TEST_LOG_ENCRYPTION" ;;
+  "s3api get-public-access-block") printf '%s' "$REMOTE_TEST_LOG_PUBLIC_ACCESS" ;;
+  "s3api get-bucket-ownership-controls") printf '%s' "$REMOTE_TEST_LOG_OWNERSHIP" ;;
+  "s3api get-bucket-policy") printf '%s' "$REMOTE_TEST_LOG_POLICY" ;;
+  "s3api get-bucket-lifecycle-configuration") printf '%s' "$REMOTE_TEST_LOG_LIFECYCLE" ;;
+  *) exit 97 ;;
+esac
+`,
+      'utf8',
+    );
+    chmodSync(awsPath, 0o755);
+
+    const source = await readLaunchReadiness();
+    const collectionBlock = extractSourceBlock(
+      source,
+      "REMOTE_ADMIN_FACTS='{}'",
+      'CLOUDWATCH_ALARM_COUNT=',
+    );
+    const result = await runBash({
+      input: `set -euo pipefail
+AWS_REGION=af-south-1
+INSTANCE_ID=i-008f737974a9ba9b3
+REMOTE_ADMIN_MODE=1
+REMOTE_ALB_NAME=${REMOTE_ALB_NAME}
+REMOTE_TARGET_GROUP_NAME=${REMOTE_TARGET_GROUP_NAME}
+REMOTE_TARGET_SECURITY_GROUP_NAME=${REMOTE_TARGET_SECURITY_GROUP_NAME}
+REMOTE_WAF_NAME=${REMOTE_WAF_NAME}
+REMOTE_LOG_BUCKET=${REMOTE_LOG_BUCKET}
+REMOTE_VPC_ID=vpc-0f078e17a5f0f8599
+INSTANCE_NETWORK="$REMOTE_TEST_INSTANCE_NETWORK"
+SG_STATE="$REMOTE_TEST_SECURITY_GROUPS"
+${collectionBlock}
+printf 'REMOTE_FACTS=%s\\n' "$REMOTE_ADMIN_FACTS"
+`,
+      env: {
+        ...process.env,
+        PATH: `${toBashPath(stubDir)}${delimiter}${process.env.PATH ?? ''}`,
+        REMOTE_TEST_ALB: JSON.stringify(responses.alb),
+        REMOTE_TEST_TARGET_GROUP: JSON.stringify(responses.targetGroup),
+        REMOTE_TEST_TARGET_ATTRIBUTES: JSON.stringify(responses.targetAttributes),
+        REMOTE_TEST_TARGET_HEALTH: JSON.stringify(responses.targetHealth),
+        REMOTE_TEST_LISTENERS: JSON.stringify(responses.listeners),
+        REMOTE_TEST_RULES: JSON.stringify(responses.rules),
+        REMOTE_TEST_ALB_ATTRIBUTES: JSON.stringify(responses.albAttributes),
+        REMOTE_TEST_TARGET_SG: JSON.stringify(responses.targetSecurityGroup),
+        REMOTE_TEST_WAF_LIST: JSON.stringify(responses.wafList),
+        REMOTE_TEST_WAF: JSON.stringify(responses.waf),
+        REMOTE_TEST_WAF_ASSOCIATION: JSON.stringify(responses.wafAssociation),
+        REMOTE_TEST_LOG_ENCRYPTION: JSON.stringify(responses.logEncryption),
+        REMOTE_TEST_LOG_PUBLIC_ACCESS: JSON.stringify(responses.logPublicAccess),
+        REMOTE_TEST_LOG_OWNERSHIP: JSON.stringify(responses.logOwnership),
+        REMOTE_TEST_LOG_POLICY: JSON.stringify(responses.logPolicy),
+        REMOTE_TEST_LOG_LIFECYCLE: JSON.stringify(responses.logLifecycle),
+        REMOTE_TEST_INSTANCE_NETWORK: JSON.stringify(responses.instanceNetwork),
+        REMOTE_TEST_SECURITY_GROUPS: JSON.stringify(responses.securityGroups),
+      },
+    });
+    const serialized = result.stdout.match(/REMOTE_FACTS=([^\r\n]+)/)?.[1];
+    return {
+      status: result.status,
+      stderr: result.stderr,
+      facts: serialized ? (JSON.parse(serialized) as RemoteCollectorFacts) : null,
+    };
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
 const VPN_HEALTH_OUTPUT_SENTINELS = {
   route: 'default via',
   address: 'inet ',
@@ -2642,6 +2951,23 @@ describe('deploy config', () => {
     expect(preregistration.checks).not.toHaveProperty('remoteTargetHealthy');
     expect(preregistration.checks).not.toHaveProperty('remoteHostForwardExact');
 
+    const remoteCorsWithPut = await runLaunchReadinessReport({
+      remoteAdminMode: true,
+      remoteTargetHealthRequired: false,
+      firewall: { remoteAlb8443Only: true },
+      cors: {
+        CORSRules: [
+          {
+            ...validCors([CANONICAL_ORIGIN, `https://${REMOTE_ADMIN_HOST}`]).CORSRules[0],
+            AllowedMethods: ['GET', 'HEAD', 'PUT'],
+          },
+        ],
+      },
+      instanceNetwork: remoteInstanceNetwork,
+      securityGroups: remoteSecurityGroups,
+    });
+    expect(remoteCorsWithPut.checks.s3CorsRemoteAdmin).toBe(false);
+
     const preregistrationDirty = await runLaunchReadinessReport({
       remoteAdminMode: true,
       remoteTargetHealthRequired: false,
@@ -2690,6 +3016,63 @@ describe('deploy config', () => {
     expect(unhealthy.checks.remoteTargetHealthy).toBe(false);
   });
 
+  it('remote collector rejects broad ingress, wrong target identity, and unsafe WAF rules', async () => {
+    const valid = await runRemoteAdminPerimeterCollection();
+    expect(valid.status, valid.stderr).toBe(0);
+    expect(valid.facts).toMatchObject({
+      targetHealthy: true,
+      targetSecurityGroupOnlyAlb: true,
+      noDirectPublicTargetPath: true,
+      wafCompliant: true,
+    });
+
+    const allTrafficIngress = await runRemoteAdminPerimeterCollection((responses) => {
+      responses.securityGroups[0].ingress.push({
+        IpProtocol: '-1',
+        IpRanges: [{ CidrIp: '0.0.0.0/0' }],
+      });
+    });
+    expect(allTrafficIngress.facts?.targetSecurityGroupOnlyAlb).toBe(false);
+    expect(allTrafficIngress.facts?.noDirectPublicTargetPath).toBe(false);
+
+    const public443Ingress = await runRemoteAdminPerimeterCollection((responses) => {
+      responses.securityGroups[0].ingress.push({
+        IpProtocol: 'tcp',
+        FromPort: 443,
+        ToPort: 443,
+        IpRanges: [{ CidrIp: '0.0.0.0/0' }],
+      });
+    });
+    expect(public443Ingress.facts?.targetSecurityGroupOnlyAlb).toBe(false);
+
+    const wrongTarget = await runRemoteAdminPerimeterCollection((responses) => {
+      responses.targetHealth.TargetHealthDescriptions[0].Target = {
+        Id: 'i-00000000000000000',
+        Port: 9443,
+      };
+    });
+    expect(wrongTarget.facts?.targetHealthy).toBe(false);
+
+    const countRateRule = await runRemoteAdminPerimeterCollection((responses) => {
+      responses.waf.WebACL.Rules[3].Action = { Count: {} };
+    });
+    expect(countRateRule.facts?.wafCompliant).toBe(false);
+
+    const broadSigninScope = await runRemoteAdminPerimeterCollection((responses) => {
+      responses.waf.WebACL.Rules[3].Statement.RateBasedStatement.ScopeDownStatement.AndStatement.Statements.push(
+        {
+          ByteMatchStatement: {
+            SearchString: '/api/auth',
+            FieldToMatch: { UriPath: {} },
+            TextTransformations: [{ Priority: 0, Type: 'NONE' }],
+            PositionalConstraint: 'STARTS_WITH',
+          },
+        },
+      );
+    });
+    expect(broadSigninScope.facts?.wafCompliant).toBe(false);
+  }, 30_000);
+
   it('documents gated, idempotent remote-admin edge provisioning without changing legacy access', async () => {
     const { existsSync, readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
@@ -2717,6 +3100,9 @@ describe('deploy config', () => {
       `REMOTE_WAF_NAME=${REMOTE_WAF_NAME}`,
       `REMOTE_LOG_BUCKET=${REMOTE_LOG_BUCKET}`,
       'aws acm request-certificate',
+      'verify_remote_edge_state',
+      'reject divergence',
+      'semantic readback',
       'Name=vpc-id,Values=$VPC_ID',
       'const main = tables.find',
       'const table = explicit ?? main;',
@@ -2731,6 +3117,7 @@ describe('deploy config', () => {
     ]) {
       expect(resources.includes(requiredFragment), requiredFragment).toBe(true);
     }
+    expect(resources).not.toContain('LOVABLE_DNS_CONTROL_CONFIRMED');
     expect(resources.includes('secretsmanager get-secret-value')).toBe(false);
     expect(
       readiness.includes(
