@@ -204,3 +204,13 @@ pnpm-lock.yaml                                     | modified
   TypeScript build passed.
 - Next: retry bootstrap with a one-off unique `BUNDLE_KEY`, then use fresh
   read-only edge inspection before any staged AWS mutation.
+
+### ALB access-log compatibility — 2026-08-13
+
+- Cape Town ALB log validation can require legacy account
+  `arn:aws:iam::098369216593:root`; policy now keeps exact modern
+  `SourceArn` allow, adds only that scoped legacy `PutObject` allow, and retains
+  TLS-only deny.
+- Strict state detection rewrites only exact two-statement modern policy lacking
+  `SourceAccount`; former `SourceAccount` repair remains bounded. DB-free
+  security contract passed 72/72. No live AWS mutation ran.

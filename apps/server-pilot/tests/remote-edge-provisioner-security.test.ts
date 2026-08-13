@@ -36,6 +36,7 @@ const STAGES = [
   ['LOG_BUCKET_ENCRYPTED', 'SET_LOG_BUCKET_LIFECYCLE', 'LOG_BUCKET_LIFECYCLE_READY'],
   ['LOG_BUCKET_LIFECYCLE_READY', 'SET_LOG_BUCKET_POLICY', 'LOG_BUCKET_POLICY_READY'],
   ['LOG_BUCKET_POLICY_SOURCE_ACCOUNT_REWRITE', 'SET_LOG_BUCKET_POLICY', 'LOG_BUCKET_POLICY_READY'],
+  ['LOG_BUCKET_POLICY_LEGACY_ACCOUNT_REWRITE', 'SET_LOG_BUCKET_POLICY', 'LOG_BUCKET_POLICY_READY'],
   ['LOG_BUCKET_POLICY_READY', 'ENABLE_ALB_LOGGING', 'ALB_LOGGING_READY'],
   ['ALB_LOGGING_READY', 'CREATE_WAF', 'WAF_CREATED'],
   ['WAF_CREATED', 'ASSOCIATE_WAF', 'WAF_ASSOCIATED'],
@@ -65,6 +66,7 @@ type Mode =
   | 'non-alb-eni'
   | 'single-alb-eni'
   | 'bucket-broad-principal'
+  | 'bucket-legacy-broad-principal'
   | 'bucket-policy-source-account-wrong'
   | 'bucket-policy-source-account-extra-condition'
   | 'create-bucket-auto-hardening'
@@ -164,6 +166,7 @@ const stages = [
   'ALB_CREATED', 'LOG_BUCKET_CREATED', 'LOG_BUCKET_PUBLIC_BLOCKED',
   'LOG_BUCKET_OWNERSHIP_ENFORCED', 'LOG_BUCKET_ENCRYPTED',
   'LOG_BUCKET_LIFECYCLE_READY', 'LOG_BUCKET_POLICY_SOURCE_ACCOUNT_REWRITE',
+  'LOG_BUCKET_POLICY_LEGACY_ACCOUNT_REWRITE',
   'LOG_BUCKET_POLICY_READY',
   'ALB_LOGGING_READY', 'WAF_CREATED', 'WAF_ASSOCIATED',
   'LISTENER_FIXED_404', 'UFW_SUBNET_A_READY', 'UFW_READY',
@@ -264,7 +267,7 @@ const targetAlbIngress = {
   PrefixListIds: [],
   UserIdGroupPairs: [{ GroupId: albSg }],
 };
-const bucketPolicy = (includeSourceAccount = false) => {
+const bucketPolicy = (shape = 'final') => {
   const principal = { Service: 'logdelivery.elasticloadbalancing.amazonaws.com' };
   if (state.mode === 'bucket-broad-principal') principal.AWS = '*';
   const sourceAccount =
@@ -275,32 +278,46 @@ const bucketPolicy = (includeSourceAccount = false) => {
     state.mode === 'bucket-policy-source-account-extra-condition'
       ? { StringEqualsIfExists: { 'aws:SourceVpce': 'vpce-test' } }
       : {};
+  const statements = [
+    {
+      Sid: 'AllowAlbLogDeliveryWrite',
+      Effect: 'Allow',
+      Principal: principal,
+      Action: 's3:PutObject',
+      Resource: 'arn:aws:s3:::' + bucket + '/AWSLogs/' + account + '/*',
+      Condition: shape === 'source-account'
+        ? {
+            StringEquals: { 'aws:SourceAccount': sourceAccount },
+            ArnLike: { 'aws:SourceArn': albArn },
+            ...extraCondition,
+          }
+        : { ArnLike: { 'aws:SourceArn': albArn } },
+    },
+  ];
+  if (shape === 'final') {
+    statements.push({
+      Sid: 'AllowAlbLogDeliveryLegacyWrite',
+      Effect: 'Allow',
+      Principal: {
+        AWS: state.mode === 'bucket-legacy-broad-principal'
+          ? '*'
+          : 'arn:aws:iam::098369216593:root',
+      },
+      Action: 's3:PutObject',
+      Resource: 'arn:aws:s3:::' + bucket + '/AWSLogs/' + account + '/*',
+    });
+  }
+  statements.push({
+    Sid: 'DenyInsecureTransport',
+    Effect: 'Deny',
+    Principal: '*',
+    Action: 's3:*',
+    Resource: ['arn:aws:s3:::' + bucket, 'arn:aws:s3:::' + bucket + '/*'],
+    Condition: { Bool: { 'aws:SecureTransport': 'false' } },
+  });
   return {
     Version: '2012-10-17',
-    Statement: [
-      {
-        Sid: 'AllowAlbLogDeliveryWrite',
-        Effect: 'Allow',
-        Principal: principal,
-        Action: 's3:PutObject',
-        Resource: 'arn:aws:s3:::' + bucket + '/AWSLogs/' + account + '/*',
-        Condition: includeSourceAccount
-          ? {
-              StringEquals: { 'aws:SourceAccount': sourceAccount },
-              ArnLike: { 'aws:SourceArn': albArn },
-              ...extraCondition,
-            }
-          : { ArnLike: { 'aws:SourceArn': albArn } },
-      },
-      {
-        Sid: 'DenyInsecureTransport',
-        Effect: 'Deny',
-        Principal: '*',
-        Action: 's3:*',
-        Resource: ['arn:aws:s3:::' + bucket, 'arn:aws:s3:::' + bucket + '/*'],
-        Condition: { Bool: { 'aws:SecureTransport': 'false' } },
-      },
-    ],
+    Statement: statements,
   };
 };
 const waf = () => ({
@@ -516,7 +533,8 @@ if (service === 's3api' && operation === 'put-bucket-policy') {
   }
   if (
     state.stage !== 'LOG_BUCKET_LIFECYCLE_READY' &&
-    state.stage !== 'LOG_BUCKET_POLICY_SOURCE_ACCOUNT_REWRITE'
+    state.stage !== 'LOG_BUCKET_POLICY_SOURCE_ACCOUNT_REWRITE' &&
+    state.stage !== 'LOG_BUCKET_POLICY_LEGACY_ACCOUNT_REWRITE'
   ) fail();
   mutation(state.stage, 'LOG_BUCKET_POLICY_READY', 's3api put-bucket-policy');
 }
@@ -854,7 +872,11 @@ switch (service + ' ' + operation) {
     break;
   case 's3api get-bucket-policy':
     if (state.stage === 'LOG_BUCKET_POLICY_SOURCE_ACCOUNT_REWRITE') {
-      emit({ Policy: JSON.stringify(bucketPolicy(true)) });
+      emit({ Policy: JSON.stringify(bucketPolicy('source-account')) });
+      break;
+    }
+    if (state.stage === 'LOG_BUCKET_POLICY_LEGACY_ACCOUNT_REWRITE') {
+      emit({ Policy: JSON.stringify(bucketPolicy('modern-only')) });
       break;
     }
     if (!at('LOG_BUCKET_POLICY_READY')) absent('NoSuchBucketPolicy');
@@ -935,6 +957,7 @@ const stages = [
   'ALB_CREATED', 'LOG_BUCKET_CREATED', 'LOG_BUCKET_PUBLIC_BLOCKED',
   'LOG_BUCKET_OWNERSHIP_ENFORCED', 'LOG_BUCKET_ENCRYPTED',
   'LOG_BUCKET_LIFECYCLE_READY', 'LOG_BUCKET_POLICY_SOURCE_ACCOUNT_REWRITE',
+  'LOG_BUCKET_POLICY_LEGACY_ACCOUNT_REWRITE',
   'LOG_BUCKET_POLICY_READY',
   'ALB_LOGGING_READY', 'WAF_CREATED', 'WAF_ASSOCIATED',
   'LISTENER_FIXED_404', 'UFW_SUBNET_A_READY', 'UFW_READY',
@@ -1269,6 +1292,27 @@ describe('remote edge provisioner security contracts', () => {
     60_000,
   );
 
+  it('rewrites exact modern-only policy with bounded Cape Town legacy delivery', async () => {
+    const harness = createHarness('LOG_BUCKET_POLICY_LEGACY_ACCOUNT_REWRITE');
+    try {
+      const result = await runProvisioner(harness, [
+        'apply-one',
+        '--action',
+        'SET_LOG_BUCKET_POLICY',
+      ]);
+      expect(result.status, resultDiagnostic(result, harness)).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        stage: 'LOG_BUCKET_POLICY_READY',
+        action: 'ENABLE_ALB_LOGGING',
+      });
+      expect(
+        calls(harness).filter((entry) => entry.startsWith('mutate ')),
+      ).toEqual(['mutate s3api put-bucket-policy']);
+    } finally {
+      destroyHarness(harness);
+    }
+  }, 60_000);
+
   it('ignores cygpath when uname reports Linux for bucket-policy URI', async () => {
     const harness = createHarness('LOG_BUCKET_LIFECYCLE_READY');
     const fakeBin = join(harness.root, 'fake-unix-bin');
@@ -1477,6 +1521,7 @@ exit 1
     ['legacy secondary-ENI public ingress', 'SG_FINAL_UNATTACHED', 'legacy-secondary-public-ingress'],
     ['non-ALB ENI attachment', 'ALB_CREATED', 'non-alb-eni'],
     ['broadened bucket principal', 'LOG_BUCKET_POLICY_READY', 'bucket-broad-principal'],
+    ['broadened legacy bucket principal', 'LOG_BUCKET_POLICY_READY', 'bucket-legacy-broad-principal'],
   ] as const)('rejects %s before mutation', async (_name, stage, mode) => {
     const harness = createHarness(stage, mode);
     try {

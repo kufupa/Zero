@@ -597,6 +597,13 @@ const policy = {
       },
     },
     {
+      Sid: 'AllowAlbLogDeliveryLegacyWrite',
+      Effect: 'Allow',
+      Principal: { AWS: 'arn:aws:iam::098369216593:root' },
+      Action: 's3:PutObject',
+      Resource: `arn:aws:s3:::${bucket}/AWSLogs/${account}/*`,
+    },
+    {
       Sid: 'DenyInsecureTransport',
       Effect: 'Deny',
       Principal: '*',
@@ -827,7 +834,7 @@ mutate_one() {
     LOG_BUCKET_ENCRYPTED)
       "${AWS[@]}" --no-cli-pager s3api put-bucket-lifecycle-configuration --region "$AWS_REGION" --bucket "$LOG_BUCKET" --lifecycle-configuration '{"Rules":[{"ID":"expire-remote-alb-logs-365d","Status":"Enabled","Filter":{"Prefix":""},"Expiration":{"Days":365}}]}' >/dev/null 2>/dev/null || die
       ;;
-    LOG_BUCKET_LIFECYCLE_READY|LOG_BUCKET_POLICY_SOURCE_ACCOUNT_REWRITE)
+    LOG_BUCKET_LIFECYCLE_READY|LOG_BUCKET_POLICY_SOURCE_ACCOUNT_REWRITE|LOG_BUCKET_POLICY_LEGACY_ACCOUNT_REWRITE)
       write_bucket_policy "$scratch"
       file_uri="$(aws_file_uri "$scratch/log-bucket-policy.json")" || die
       MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' "${AWS[@]}" --no-cli-pager s3api put-bucket-policy --region "$AWS_REGION" --bucket "$LOG_BUCKET" --policy "$file_uri" >/dev/null 2>/dev/null || die

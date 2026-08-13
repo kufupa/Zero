@@ -780,7 +780,14 @@ function isExactLifecycle(value) {
   );
 }
 
-function isExactBucketPolicy(value, references, withSourceAccount = false) {
+function isExactBucketPolicy(value, references, shape = 'final') {
+  if (
+    shape !== 'final' &&
+    shape !== 'modern-only' &&
+    shape !== 'source-account'
+  ) {
+    fail();
+  }
   let policy;
   try {
     policy = JSON.parse(text(object(value).Policy));
@@ -790,25 +797,43 @@ function isExactBucketPolicy(value, references, withSourceAccount = false) {
   exactKeys(policy, ['Version', 'Statement']);
   if (policy.Version !== '2012-10-17') return false;
   const statements = arrays(policy, 'Statement');
-  if (statements.length !== 2) return false;
+  const hasLegacyAccount = shape === 'final';
+  const hasSourceAccount = shape === 'source-account';
+  if (statements.length !== (hasLegacyAccount ? 3 : 2)) return false;
   const allowMatches = statements.filter(
     (statement) => object(statement).Sid === 'AllowAlbLogDeliveryWrite',
+  );
+  const legacyAllowMatches = statements.filter(
+    (statement) => object(statement).Sid === 'AllowAlbLogDeliveryLegacyWrite',
   );
   const denyMatches = statements.filter(
     (statement) => object(statement).Sid === 'DenyInsecureTransport',
   );
-  if (allowMatches.length !== 1 || denyMatches.length !== 1) return false;
+  if (
+    allowMatches.length !== 1 ||
+    legacyAllowMatches.length !== (hasLegacyAccount ? 1 : 0) ||
+    denyMatches.length !== 1
+  ) {
+    return false;
+  }
   const allow = allowMatches[0];
+  const legacyAllow = legacyAllowMatches[0];
   const deny = denyMatches[0];
-  if (!allow || !deny) return false;
+  if (!allow || (hasLegacyAccount && !legacyAllow) || !deny) return false;
   const allowValue = object(allow);
+  const legacyAllowValue = hasLegacyAccount ? object(legacyAllow) : null;
   const denyValue = object(deny);
   if (
     Object.keys(allowValue).length !== 6 ||
+    (hasLegacyAccount && Object.keys(legacyAllowValue).length !== 5) ||
     Object.keys(denyValue).length !== 6 ||
     !['Sid', 'Effect', 'Principal', 'Action', 'Resource', 'Condition'].every(
       (key) => key in allowValue,
     ) ||
+    (hasLegacyAccount &&
+      !['Sid', 'Effect', 'Principal', 'Action', 'Resource'].every(
+        (key) => key in legacyAllowValue,
+      )) ||
     !['Sid', 'Effect', 'Principal', 'Action', 'Resource', 'Condition'].every(
       (key) => key in denyValue,
     )
@@ -817,10 +842,13 @@ function isExactBucketPolicy(value, references, withSourceAccount = false) {
   }
   const allowPrincipal = object(allowValue.Principal);
   const allowCondition = object(allowValue.Condition);
-  const allowAccount = withSourceAccount
+  const allowAccount = hasSourceAccount
     ? allowCondition.StringEquals
     : null;
   const allowSource = object(allowCondition.ArnLike);
+  const legacyAllowPrincipal = hasLegacyAccount
+    ? object(legacyAllowValue.Principal)
+    : null;
   const denyCondition = object(denyValue.Condition);
   const denyTransport = object(denyCondition.Bool);
   return (
@@ -829,13 +857,21 @@ function isExactBucketPolicy(value, references, withSourceAccount = false) {
     allowPrincipal.Service === 'logdelivery.elasticloadbalancing.amazonaws.com' &&
     allowValue.Action === 's3:PutObject' &&
     allowValue.Resource === `arn:aws:s3:::${LOG_BUCKET}/AWSLogs/${ACCOUNT_ID}/*` &&
-    Object.keys(allowCondition).length === (withSourceAccount ? 2 : 1) &&
-    (!withSourceAccount ||
+    Object.keys(allowCondition).length === (hasSourceAccount ? 2 : 1) &&
+    (!hasSourceAccount ||
       (isObject(allowAccount) &&
         Object.keys(allowAccount).length === 1 &&
         allowAccount['aws:SourceAccount'] === ACCOUNT_ID)) &&
     Object.keys(allowSource).length === 1 &&
     allowSource['aws:SourceArn'] === references.albArn &&
+    (!hasLegacyAccount ||
+      (legacyAllowValue.Sid === 'AllowAlbLogDeliveryLegacyWrite' &&
+        legacyAllowValue.Effect === 'Allow' &&
+        Object.keys(legacyAllowPrincipal).length === 1 &&
+        legacyAllowPrincipal.AWS === 'arn:aws:iam::098369216593:root' &&
+        legacyAllowValue.Action === 's3:PutObject' &&
+        legacyAllowValue.Resource ===
+          `arn:aws:s3:::${LOG_BUCKET}/AWSLogs/${ACCOUNT_ID}/*`)) &&
     denyValue.Effect === 'Deny' &&
     denyValue.Principal === '*' &&
     denyValue.Action === 's3:*' &&
@@ -917,7 +953,7 @@ function deriveBucketStage(projections, references) {
     isExactOwnership(ownership) &&
     isExactEncryption(encryption) &&
     isExactLifecycle(lifecycle) &&
-    isExactBucketPolicy(policy, references, true)
+    isExactBucketPolicy(policy, references, 'source-account')
   ) {
     return 'policy-source-account-rewrite';
   }
@@ -931,7 +967,21 @@ function deriveBucketStage(projections, references) {
     isExactOwnership(ownership) &&
     isExactEncryption(encryption) &&
     isExactLifecycle(lifecycle) &&
-    isExactBucketPolicy(policy, references)
+    isExactBucketPolicy(policy, references, 'modern-only')
+  ) {
+    return 'policy-legacy-account-rewrite';
+  }
+  if (
+    publicBlock &&
+    ownership &&
+    encryption &&
+    lifecycle &&
+    policy &&
+    isExactPublicBlock(publicBlock) &&
+    isExactOwnership(ownership) &&
+    isExactEncryption(encryption) &&
+    isExactLifecycle(lifecycle) &&
+    isExactBucketPolicy(policy, references, 'final')
   ) {
     return 'policy-ready';
   }
@@ -1326,6 +1376,7 @@ const BUCKET_STAGES = new Set([
   'encrypted',
   'lifecycle-ready',
   'policy-source-account-rewrite',
+  'policy-legacy-account-rewrite',
   'policy-ready',
 ]);
 const WAF_STAGES = new Set(['absent', 'created', 'associated']);
@@ -1537,6 +1588,12 @@ const STAGE_TABLE = Object.freeze([
     action: 'SET_LOG_BUCKET_POLICY',
     next: 'LOG_BUCKET_POLICY_READY',
     shape: { counts: [1, 1, 1, 1, 0, 1], securityStage: 'final', targetAttached: true, targetAttachmentExact: true, targetGroupStage: 'ready', albStage: 'created', bucketStage: 'policy-source-account-rewrite', wafStage: 'absent', listenerStage: 'absent', ufwStage: 'none', logDeliveryProof: false },
+  },
+  {
+    stage: 'LOG_BUCKET_POLICY_LEGACY_ACCOUNT_REWRITE',
+    action: 'SET_LOG_BUCKET_POLICY',
+    next: 'LOG_BUCKET_POLICY_READY',
+    shape: { counts: [1, 1, 1, 1, 0, 1], securityStage: 'final', targetAttached: true, targetAttachmentExact: true, targetGroupStage: 'ready', albStage: 'created', bucketStage: 'policy-legacy-account-rewrite', wafStage: 'absent', listenerStage: 'absent', ufwStage: 'none', logDeliveryProof: false },
   },
   {
     stage: 'LOG_BUCKET_POLICY_READY',
