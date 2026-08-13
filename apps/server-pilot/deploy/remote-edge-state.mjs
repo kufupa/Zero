@@ -1589,3 +1589,23 @@ export function nextStage(stage) {
   if (!entry) fail();
   return entry.next;
 }
+
+const ALB_CREATED_AUTO_HARDENED_STAGES = new Set([
+  'LOG_BUCKET_PUBLIC_BLOCKED',
+  'LOG_BUCKET_OWNERSHIP_ENFORCED',
+  'LOG_BUCKET_ENCRYPTED',
+]);
+
+export function validatePostMutationStage(stage, postStage) {
+  const successor = nextStage(stage);
+  if (
+    postStage !== successor &&
+    !(
+      stage === 'ALB_CREATED' &&
+      ALB_CREATED_AUTO_HARDENED_STAGES.has(postStage)
+    )
+  ) {
+    fail();
+  }
+  return postStage;
+}

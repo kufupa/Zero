@@ -64,6 +64,7 @@ type Mode =
   | 'non-alb-eni'
   | 'single-alb-eni'
   | 'bucket-broad-principal'
+  | 'create-bucket-auto-hardening'
   | 'log-proof-failure'
   | 'log-proof-boundary'
   | 'log-proof-wrong-key'
@@ -443,7 +444,13 @@ if (service === 's3api' && operation === 'create-bucket') {
     '--bucket': bucket,
     '--create-bucket-configuration': 'LocationConstraint=af-south-1',
   });
-  mutation('ALB_CREATED', 'LOG_BUCKET_CREATED', 's3api create-bucket');
+  mutation(
+    'ALB_CREATED',
+    state.mode === 'create-bucket-auto-hardening'
+      ? 'LOG_BUCKET_ENCRYPTED'
+      : 'LOG_BUCKET_CREATED',
+    's3api create-bucket',
+  );
 }
 if (service === 's3api' && operation === 'put-public-access-block') {
   requireOptions({
@@ -1221,6 +1228,60 @@ describe('remote edge provisioner security contracts', () => {
     },
     60_000,
   );
+
+  it('accepts CreateBucket auto-hardening through encrypted bucket state', async () => {
+    const harness = createHarness('ALB_CREATED', 'create-bucket-auto-hardening');
+    try {
+      const result = await runProvisioner(harness, [
+        'apply-one',
+        '--action',
+        'CREATE_LOG_BUCKET',
+      ]);
+      expect(result.status, resultDiagnostic(result, harness)).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        stage: 'LOG_BUCKET_ENCRYPTED',
+        action: 'SET_LOG_BUCKET_LIFECYCLE',
+      });
+      expect(
+        calls(harness).filter((entry) => entry === 'mutate s3api create-bucket'),
+      ).toHaveLength(1);
+    } finally {
+      destroyHarness(harness);
+    }
+  }, 60_000);
+
+  it('permits only bounded S3 auto-hardening after ALB creation', async () => {
+    const { validatePostMutationStage } = await import(
+      '../deploy/remote-edge-state.mjs'
+    );
+
+    for (const postStage of [
+      'LOG_BUCKET_CREATED',
+      'LOG_BUCKET_PUBLIC_BLOCKED',
+      'LOG_BUCKET_OWNERSHIP_ENFORCED',
+      'LOG_BUCKET_ENCRYPTED',
+    ]) {
+      expect(validatePostMutationStage('ALB_CREATED', postStage)).toBe(postStage);
+    }
+
+    for (const postStage of [
+      'LOG_BUCKET_LIFECYCLE_READY',
+      'LOG_BUCKET_POLICY_READY',
+      'ALB_LOGGING_READY',
+      'WAF_CREATED',
+    ]) {
+      expect(() => validatePostMutationStage('ALB_CREATED', postStage)).toThrow(
+        'invalid remote edge state',
+      );
+    }
+
+    expect(validatePostMutationStage('FRESH', 'ALB_SG_CREATED')).toBe(
+      'ALB_SG_CREATED',
+    );
+    expect(() => validatePostMutationStage('FRESH', 'LOG_BUCKET_CREATED')).toThrow(
+      'invalid remote edge state',
+    );
+  });
 
   it('pins every SSM call to af-south-1 and polls pending invocations to success', async () => {
     const harness = createHarness('SG_FINAL_UNATTACHED', 'pending-ssm');

@@ -271,8 +271,11 @@ if (mode === 'refs') {
   process.stdout.write(JSON.stringify(state.deriveReferences(projections)));
 } else if (mode === 'result') {
   process.stdout.write(JSON.stringify(state.classifyFacts(state.deriveFacts(projections))));
-} else if (mode === 'next') {
-  process.stdout.write(state.nextStage(process.env.REMOTE_EDGE_STAGE) ?? '');
+} else if (mode === 'post') {
+  state.validatePostMutationStage(
+    process.env.REMOTE_EDGE_STAGE,
+    process.env.REMOTE_EDGE_POST_STAGE,
+  );
 } else {
   process.exit(2);
 }
@@ -877,8 +880,6 @@ collect_current "$PRE_SCRATCH"
 PRE_STAGE="$(result_stage "$PRE_SCRATCH/result.json")" || die
 PRE_ACTION="$(result_action "$PRE_SCRATCH/result.json")" || die
 [[ "$ACTION" == "$PRE_ACTION" && "$PRE_ACTION" != 'STOP' ]] || die
-EXPECTED_NEXT="$(REMOTE_EDGE_STAGE="$PRE_STAGE" state_bridge "$PRE_SCRATCH" next 2>/dev/null)" || die
-[[ -n "$EXPECTED_NEXT" ]] || die
 mutate_one "$PRE_STAGE" "$PRE_SCRATCH"
 if [[ "$PRE_STAGE" == 'UFW_READY' ]]; then
   collect_current "$POST_SCRATCH" "$PRE_SCRATCH/logProof.json"
@@ -886,6 +887,7 @@ else
   collect_current "$POST_SCRATCH"
 fi
 POST_STAGE="$(result_stage "$POST_SCRATCH/result.json")" || die
-[[ "$POST_STAGE" == "$EXPECTED_NEXT" ]] || die
+REMOTE_EDGE_STAGE="$PRE_STAGE" REMOTE_EDGE_POST_STAGE="$POST_STAGE" \
+  state_bridge "$POST_SCRATCH" post >/dev/null 2>/dev/null || die
 write_evidence "$POST_SCRATCH/result.json"
 cat "$POST_SCRATCH/result.json"
