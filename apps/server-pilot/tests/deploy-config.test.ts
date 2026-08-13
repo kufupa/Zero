@@ -3440,6 +3440,21 @@ describe('deploy config', () => {
     expect(broadResourcePolicy.facts?.logBucketCompliant).toBe(false);
   }, 60_000);
 
+  it('remote collector rejects an extra ALB log-policy Allow statement', async () => {
+    const extraAllowPolicy = await runRemoteAdminPerimeterCollection((responses) => {
+      const policy = JSON.parse(responses.logPolicy.Policy);
+      const [modernAllow] = policy.Statement;
+      policy.Statement.push({
+        ...modernAllow,
+        Sid: 'AllowUnexpectedDuplicateLogDeliveryWrite',
+      });
+      responses.logPolicy.Policy = JSON.stringify(policy);
+    });
+
+    expect(extraAllowPolicy.status, extraAllowPolicy.stderr).toBe(0);
+    expect(extraAllowPolicy.facts?.logBucketCompliant).toBe(false);
+  }, 60_000);
+
   it('remote collector rejects an extra high-priority WAF Allow rule', async () => {
     const bypass = await runRemoteAdminPerimeterCollection((responses) => {
       responses.waf.WebACL.Rules.unshift({
