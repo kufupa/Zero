@@ -184,3 +184,23 @@ pnpm-lock.yaml                                     | modified
   resource mutation occurred during this diagnosis. The next safe step is to
   bootstrap the already-reviewed remote process and private `:8443` Nginx
   target before resuming staged edge provisioning.
+
+### Bootstrap sync recovery — 2026-08-13
+
+- First feature-branch sync downloaded a bundle advertising only `main`, then
+  failed before checkout. A local bundle inspection advertised
+  `refs/heads/feat/remote-admin-alb`; use of the shared S3 bundle key was
+  therefore unsafe under concurrent operator activity.
+- A unique transfer key isolated the retry. It exposed two real script gaps:
+  feature branches did not yet exist on EC2, and `git clone` from a
+  single-ref bundle has no checkoutable remote `HEAD`.
+- Fixes (`d6c13770` through `35d4a906`) create or reset the selected branch
+  from an exact per-branch bundle ref, reject stale/ambiguous references, and
+  verify the SHA advertised by the created bundle before EC2 checkout.
+- Evidence: focused deployment contract passed; local Git fixtures proved
+  fresh and stale checkout paths select the intended branch. The full DB-free
+  edge suite passed 198/199 checks; its sole failure is the pre-existing
+  `mailbox_access` cold-import timeout, which passes in isolation. Server
+  TypeScript build passed.
+- Next: retry bootstrap with a one-off unique `BUNDLE_KEY`, then use fresh
+  read-only edge inspection before any staged AWS mutation.
