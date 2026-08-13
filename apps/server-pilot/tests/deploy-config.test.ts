@@ -1232,6 +1232,7 @@ function validRemoteCollectorResponses(): Record<string, unknown> {
       Attributes: [
         { Key: 'access_logs.s3.enabled', Value: 'true' },
         { Key: 'access_logs.s3.bucket', Value: REMOTE_LOG_BUCKET },
+        { Key: 'access_logs.s3.prefix', Value: '' },
       ],
     },
     targetSecurityGroup: {
@@ -3427,6 +3428,25 @@ describe('deploy config', () => {
     expect(staleSourceAccountPolicy.facts?.logBucketCompliant).toBe(false);
   }, 60_000);
 
+  it('remote collector requires an empty ALB access-log prefix', async () => {
+    const missingPrefix = await runRemoteAdminPerimeterCollection((responses) => {
+      responses.albAttributes.Attributes = responses.albAttributes.Attributes.filter(
+        (attribute: { Key: string }) => attribute.Key !== 'access_logs.s3.prefix',
+      );
+    });
+    expect(missingPrefix.status, missingPrefix.stderr).toBe(0);
+    expect(missingPrefix.facts?.logBucketCompliant).toBe(false);
+
+    const nonemptyPrefix = await runRemoteAdminPerimeterCollection((responses) => {
+      const prefix = responses.albAttributes.Attributes.find(
+        (attribute: { Key: string }) => attribute.Key === 'access_logs.s3.prefix',
+      );
+      prefix.Value = 'unexpected-prefix';
+    });
+    expect(nonemptyPrefix.status, nonemptyPrefix.stderr).toBe(0);
+    expect(nonemptyPrefix.facts?.logBucketCompliant).toBe(false);
+  }, 60_000);
+
   it('remote collector rejects a broad ALB log-delivery resource', async () => {
     const broadResourcePolicy = await runRemoteAdminPerimeterCollection((responses) => {
       const policy = JSON.parse(responses.logPolicy.Policy);
@@ -3513,6 +3533,14 @@ describe('deploy config', () => {
       'architecture-patterns',
       'nava-remote-admin-alb-companion.md',
     );
+    const taskFourReportPath = join(
+      repoRoot,
+      'docs',
+      'superpowers',
+      'plans',
+      'handoff-reports',
+      'task-4-report.md',
+    );
 
     for (const requiredFragment of [
       `REMOTE_ALB_NAME=${REMOTE_ALB_NAME}`,
@@ -3530,10 +3558,31 @@ describe('deploy config', () => {
       'Name=vpc-id,Values=$VPC_ID',
       'const main = tables.find',
       'const table = explicit ?? main;',
+      'PREFLIGHT_SCRATCH_DIR',
+      'describe-network-interfaces',
+      'globalEniIdentityAndGroupCorrespondenceConfirmed',
+      'instanceNetworkInterfaceIds',
+      'rm -rf -- "$PREFLIGHT_SCRATCH_DIR"',
+      'CORS_SCRATCH_DIR',
+      'CORS_EVIDENCE_DIR',
+      'must not include `aws:SourceAccount`',
       'aws s3api put-bucket-cors',
     ]) {
       expect(resources.includes(requiredFragment), requiredFragment).toBe(true);
     }
+    expect(resources).not.toMatch(
+      />\s*"\$EVIDENCE_DIR\/(?:identity|instance|network-interfaces|subnets|routes|attached-security-groups|permission-simulation)\.json"/,
+    );
+    expect(resources).not.toMatch(
+      /CORS_(?:BEFORE|INTENDED|APPLIED)="\$EVIDENCE_DIR\//,
+    );
+    const preflightProcedure = resources.slice(
+      resources.indexOf('### Fixed names and preflight facts'),
+      resources.indexOf('Lovable is already confirmed'),
+    );
+    expect(preflightProcedure).toContain('globalForInstance');
+    expect(preflightProcedure).toContain('globalEniCorrespondence');
+    expect(preflightProcedure).not.toContain('instance?.SecurityGroups');
     expect(existsSync(provisionerPath)).toBe(true);
     expect(existsSync(statePath)).toBe(true);
     expect(provisioner).toContain('collect_current');
@@ -3567,11 +3616,17 @@ describe('deploy config', () => {
     expect(runbook.includes('Gate A')).toBe(true);
     expect(runbook.includes('ACM CNAME saved')).toBe(true);
     expect(existsSync(companionPath)).toBe(true);
+    expect(existsSync(taskFourReportPath)).toBe(true);
     const companion = existsSync(companionPath) ? readFileSync(companionPath, 'utf8') : '';
+    const taskFourReport = existsSync(taskFourReportPath)
+      ? readFileSync(taskFourReportPath, 'utf8')
+      : '';
     expect(companion).toContain('nava.legacyhotels.co.za');
     expect(companion).toContain('tun0:443');
     expect(companion).toContain('nava-admin.trynava.io');
     expect(companion).toContain(':8443');
+    expect(companion).toContain('must not include `aws:SourceAccount`');
+    expect(taskFourReport).toContain('must not include `aws:SourceAccount`');
     const provisionerProcedure = resources.slice(
       resources.indexOf('### Idempotent edge resources after Gate A'),
       resources.indexOf('### Gate B and Task 5 handoff'),

@@ -42,6 +42,10 @@ Remote administration is separate from hotel access:
 
 Both remote modes still run `vpn-health-assert.sh`; default route through `tun0` fails readiness.
 
+## ALB access-log compatibility
+
+Final logging requires empty ALB prefix, exact modern service-principal `SourceArn` Allow, Cape Town legacy root `098369216593` Allow, and TLS-only Deny. Modern Allow must not include `aws:SourceAccount`: live delivery succeeded without it, while prior live use returned `AccessDenied`. Treat a former `SourceAccount` policy only as bounded stale-state repair input.
+
 ## Why separate planes matter
 
 An ALB target SG is not permission to widen hotel access. Splitting hostnames, listeners, processes, security groups, and firewall interfaces lets public remote access be audited without turning legacy hotel traffic into public ingress.

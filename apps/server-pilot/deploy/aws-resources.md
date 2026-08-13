@@ -195,47 +195,154 @@ export REMOTE_AUTH_SECRET_NAME=nava-zero/server-pilot/remote-auth
 export REMOTE_ROLE_NAME=nava-prod-public-ipv4-WorkerRole-bPmrMEkmdwLU
 
 umask 077
-EVIDENCE_DIR="$(mktemp -d)"
-trap 'rm -rf "$EVIDENCE_DIR"' EXIT
+: "${EVIDENCE_ROOT:=${HOME}/.nava-evidence/remote-admin}"
+EVIDENCE_TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p -- "$EVIDENCE_ROOT"
+chmod 700 -- "$EVIDENCE_ROOT"
+EVIDENCE_DIR="$(mktemp -d "${EVIDENCE_ROOT%/}/${EVIDENCE_TIMESTAMP}-preflight.XXXXXX")"
+chmod 700 -- "$EVIDENCE_DIR"
+
+PREFLIGHT_SCRATCH_DIR="$(mktemp -d "${TMPDIR:-/tmp}/nava-remote-admin-preflight.XXXXXX")"
+chmod 700 -- "$PREFLIGHT_SCRATCH_DIR"
+cleanup_preflight_scratch() {
+  rm -rf -- "$PREFLIGHT_SCRATCH_DIR"
+}
+trap cleanup_preflight_scratch EXIT
 ```
 
 Use `$(aws_file_uri "$PATH")` for every AWS CLI file argument below. It converts Git-Bash paths to an AWS CLI-compatible Windows file URI; do not substitute a raw `file://` path.
 
-Before any mutation, run only these read calls. Save their sanitized resource metadata in the evidence directory; do not save command environments, credentials, mail data, or secret values.
+Before any mutation, run only these read calls. `EVIDENCE_DIR` is persistent, timestamped mode-0700 evidence containing sanitized mode-0600 metadata only. Every raw AWS response stays in mode-0700 `PREFLIGHT_SCRATCH_DIR`, which is deleted on failure by its EXIT trap and after successful preflight. Never write addresses, raw AWS responses, credentials, environment values, mail data, or secrets into `EVIDENCE_DIR`.
 
 ```bash
-aws sts get-caller-identity --output json >"$EVIDENCE_DIR/identity.json"
+aws sts get-caller-identity --output json >"$PREFLIGHT_SCRATCH_DIR/identity.json"
 aws ec2 describe-instances --region "$AWS_REGION" --instance-ids "$INSTANCE_ID" \
-  --output json >"$EVIDENCE_DIR/instance.json"
+  --output json >"$PREFLIGHT_SCRATCH_DIR/instance.json"
+aws ec2 describe-network-interfaces --region "$AWS_REGION" \
+  --filters "Name=vpc-id,Values=$VPC_ID" \
+  --output json >"$PREFLIGHT_SCRATCH_DIR/network-interfaces.json"
 aws ec2 describe-subnets --region "$AWS_REGION" \
   --subnet-ids "$REMOTE_ALB_SUBNET_A" "$REMOTE_ALB_SUBNET_B" \
-  --output json >"$EVIDENCE_DIR/subnets.json"
+  --output json >"$PREFLIGHT_SCRATCH_DIR/subnets.json"
 aws ec2 describe-route-tables --region "$AWS_REGION" \
   --filters "Name=vpc-id,Values=$VPC_ID" \
-  --output json >"$EVIDENCE_DIR/routes.json"
+  --output json >"$PREFLIGHT_SCRATCH_DIR/routes.json"
 
 node - \
-  "$EVIDENCE_DIR/identity.json" \
-  "$EVIDENCE_DIR/instance.json" \
-  "$EVIDENCE_DIR/subnets.json" \
-  "$EVIDENCE_DIR/routes.json" \
+  "$PREFLIGHT_SCRATCH_DIR/identity.json" \
+  "$PREFLIGHT_SCRATCH_DIR/instance.json" \
+  "$PREFLIGHT_SCRATCH_DIR/network-interfaces.json" \
+  "$PREFLIGHT_SCRATCH_DIR/subnets.json" \
+  "$PREFLIGHT_SCRATCH_DIR/routes.json" \
   "$EVIDENCE_DIR/remote-admin-preflight-evidence.json" <<'NODE'
 const fs = require("fs");
-const [identityPath, instancePath, subnetsPath, routesPath, outputPath] =
+const [identityPath, instancePath, networkInterfacesPath, subnetsPath, routesPath, outputPath] =
   process.argv.slice(2);
 const identity = JSON.parse(fs.readFileSync(identityPath, "utf8"));
 const instance = JSON.parse(fs.readFileSync(instancePath, "utf8"))
   .Reservations?.[0]?.Instances?.[0];
+const globalNetworkInterfaces = JSON.parse(
+  fs.readFileSync(networkInterfacesPath, "utf8"),
+).NetworkInterfaces;
 const subnets = JSON.parse(fs.readFileSync(subnetsPath, "utf8")).Subnets ?? [];
 const tables = JSON.parse(fs.readFileSync(routesPath, "utf8")).RouteTables ?? [];
 const expectedSubnets = new Set([
   "subnet-0e6446aaaeaa8762e",
   "subnet-094bf8643d98c22f6",
 ]);
-const attachedGroups = instance?.SecurityGroups?.map((group) => group.GroupId) ?? [];
-const primaryPrivateIp =
-  instance?.NetworkInterfaces?.find((eni) => eni.Attachment?.DeviceIndex === 0)
-    ?.PrivateIpAddress ?? instance?.PrivateIpAddress;
+const groupIdPattern = /^sg-[0-9a-f]{8,17}$/;
+const groupIds = (groups) => {
+  if (
+    !Array.isArray(groups) ||
+    groups.length === 0 ||
+    !groups.every((group) =>
+      group &&
+      typeof group === "object" &&
+      typeof group.GroupId === "string" &&
+      groupIdPattern.test(group.GroupId),
+    )
+  ) {
+    return null;
+  }
+  const ids = groups.map((group) => group.GroupId);
+  return new Set(ids).size === ids.length ? ids.sort() : null;
+};
+const sameStrings = (left, right) =>
+  Array.isArray(left) &&
+  Array.isArray(right) &&
+  left.length === right.length &&
+  [...left].sort().every((value, index) => value === [...right].sort()[index]);
+const embeddedNetworkInterfaces = Array.isArray(instance?.NetworkInterfaces)
+  ? instance.NetworkInterfaces
+  : [];
+const embedded = embeddedNetworkInterfaces.map((eni) => {
+  const id = eni?.NetworkInterfaceId;
+  const deviceIndex = eni?.Attachment?.DeviceIndex;
+  const groups = groupIds(eni?.Groups);
+  if (
+    typeof id !== "string" ||
+    !id.startsWith("eni-") ||
+    !Number.isInteger(deviceIndex) ||
+    deviceIndex < 0 ||
+    groups === null
+  ) {
+    return null;
+  }
+  return {
+    id,
+    deviceIndex,
+    groupIds: groups,
+    privateIp: eni?.PrivateIpAddress,
+  };
+});
+const globalForInstance = Array.isArray(globalNetworkInterfaces)
+  ? globalNetworkInterfaces
+      .filter((eni) => eni?.Attachment?.InstanceId === instance?.InstanceId)
+      .map((eni) => {
+        const id = eni?.NetworkInterfaceId;
+        const deviceIndex = eni?.Attachment?.DeviceIndex;
+        const groups = groupIds(eni?.Groups);
+        if (
+          typeof id !== "string" ||
+          !id.startsWith("eni-") ||
+          !Number.isInteger(deviceIndex) ||
+          deviceIndex < 0 ||
+          groups === null
+        ) {
+          return null;
+        }
+        return { id, deviceIndex, groupIds: groups };
+      })
+  : [];
+const primary = embedded.filter((eni) => eni?.deviceIndex === 0);
+const embeddedIds = embedded.map((eni) => eni?.id);
+const globalIds = globalForInstance.map((eni) => eni?.id);
+const globalById = new Map(
+  globalForInstance
+    .filter((eni) => eni !== null)
+    .map((eni) => [eni.id, eni]),
+);
+const globalEniCorrespondence =
+  embedded.length > 0 &&
+  !embedded.some((eni) => eni === null) &&
+  globalForInstance.length === embedded.length &&
+  !globalForInstance.some((eni) => eni === null) &&
+  new Set(embeddedIds).size === embedded.length &&
+  new Set(globalIds).size === globalForInstance.length &&
+  sameStrings(embeddedIds, globalIds) &&
+  embedded.every((eni) => {
+    const global = globalById.get(eni.id);
+    return (
+      global &&
+      global.deviceIndex === eni.deviceIndex &&
+      sameStrings(global.groupIds, eni.groupIds)
+    );
+  });
+const attachedGroups = [
+  ...new Set(
+    embedded.flatMap((eni) => eni?.groupIds ?? []),
+  ),
+].sort();
 const main = tables.find((table) =>
   table.Associations?.some((association) => association.Main === true),
 );
@@ -254,23 +361,30 @@ if (
   identity?.Account !== "845242190536" ||
   instance?.InstanceId !== "i-008f737974a9ba9b3" ||
   instance?.VpcId !== "vpc-0f078e17a5f0f8599" ||
-  primaryPrivateIp !== "172.31.12.112" ||
+  primary.length !== 1 ||
+  primary[0]?.privateIp !== "172.31.12.112" ||
+  !globalEniCorrespondence ||
+  attachedGroups.length === 0 ||
   subnets.length !== 2 ||
   new Set(subnets.map((subnet) => subnet.SubnetId)).size !== 2 ||
   !subnets.every((subnet) => expectedSubnets.has(subnet.SubnetId) &&
     subnet.VpcId === "vpc-0f078e17a5f0f8599") ||
-  !hasInternetGatewayRoute ||
-  attachedGroups.length === 0
+  !hasInternetGatewayRoute
 ) {
   process.exit(2);
 }
 fs.writeFileSync(outputPath, JSON.stringify({
+  schema: "remote-admin-preflight/v1",
   account: identity.Account,
   region: "af-south-1",
   vpcId: instance.VpcId,
   instanceId: instance.InstanceId,
-  primaryPrivateIp,
+  targetPrivateIpMatchesConfigured: true,
+  instanceNetworkInterfaceIds: embeddedIds.sort(),
+  instanceNetworkInterfaceCount: embedded.length,
   attachedSecurityGroupIds: attachedGroups,
+  attachedSecurityGroupCount: attachedGroups.length,
+  globalEniIdentityAndGroupCorrespondenceConfirmed: true,
   albSubnetIds: subnets.map((subnet) => subnet.SubnetId).sort(),
   publicAlbSubnetRoutesConfirmed: true,
 }, null, 2), { mode: 0o600 });
@@ -278,7 +392,7 @@ NODE
 chmod 600 "$EVIDENCE_DIR/remote-admin-preflight-evidence.json"
 ```
 
-Read every attached EC2 security group before creating the target SG. Stop if any current SG exposes TCP `8443` through an IPv4/IPv6 CIDR, prefix list, or non-ALB SG source. This blocks an accidental direct target path before it exists.
+Derive attached groups only from each embedded ENI `Groups` list and require exact identity/device-index/group correspondence with global `describe-network-interfaces` readback; `instance.SecurityGroups` is not authority. Read every derived EC2 security group before creating the target SG. Stop if any current SG exposes TCP `8443` through an IPv4/IPv6 CIDR, prefix list, or non-ALB SG source. This blocks an accidental direct target path before it exists.
 
 ```bash
 ATTACHED_SG_IDS="$(node - "$EVIDENCE_DIR/remote-admin-preflight-evidence.json" <<'NODE'
@@ -287,11 +401,27 @@ const value = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
 process.stdout.write(value.attachedSecurityGroupIds.join(" "));
 NODE
 )"
-aws ec2 describe-security-groups --region "$AWS_REGION" --group-ids $ATTACHED_SG_IDS \
-  --output json >"$EVIDENCE_DIR/attached-security-groups.json"
-node - "$EVIDENCE_DIR/attached-security-groups.json" <<'NODE'
+read -r -a ATTACHED_SG_ID_ARRAY <<<"$ATTACHED_SG_IDS"
+test "${#ATTACHED_SG_ID_ARRAY[@]}" -gt 0
+aws ec2 describe-security-groups --region "$AWS_REGION" \
+  --group-ids "${ATTACHED_SG_ID_ARRAY[@]}" \
+  --output json >"$PREFLIGHT_SCRATCH_DIR/attached-security-groups.json"
+node \
+  "$PREFLIGHT_SCRATCH_DIR/attached-security-groups.json" \
+  "$EVIDENCE_DIR/remote-admin-preflight-evidence.json" <<'NODE'
 const fs = require("fs");
-const groups = JSON.parse(fs.readFileSync(process.argv[2], "utf8")).SecurityGroups ?? [];
+const [groupsPath, evidencePath] = process.argv.slice(2);
+const groups = JSON.parse(fs.readFileSync(groupsPath, "utf8")).SecurityGroups ?? [];
+const evidence = JSON.parse(fs.readFileSync(evidencePath, "utf8"));
+const expectedIds = Array.isArray(evidence.attachedSecurityGroupIds)
+  ? evidence.attachedSecurityGroupIds
+  : [];
+const actualIds = groups.map((group) => group?.GroupId);
+const sameStrings = (left, right) =>
+  Array.isArray(left) &&
+  Array.isArray(right) &&
+  left.length === right.length &&
+  [...left].sort().every((value, index) => value === [...right].sort()[index]);
 const opens8443 = (permission) =>
   permission.IpProtocol === "-1" ||
   (
@@ -299,10 +429,19 @@ const opens8443 = (permission) =>
     Number(permission.FromPort) <= 8443 &&
     Number(permission.ToPort) >= 8443
   );
-if (groups.some((group) => (group.IpPermissions ?? []).some(opens8443))) {
+if (
+  !sameStrings(expectedIds, actualIds) ||
+  groups.some((group) => (group.IpPermissions ?? []).some(opens8443))
+) {
   process.exit(2);
 }
+fs.writeFileSync(evidencePath, JSON.stringify({
+  ...evidence,
+  attachedSecurityGroupReadbackConfirmed: true,
+  attachedSecurityGroupReadbackCount: actualIds.length,
+}, null, 2), { mode: 0o600 });
 NODE
+chmod 600 "$EVIDENCE_DIR/remote-admin-preflight-evidence.json"
 ```
 
 Lovable is already confirmed as authoritative DNS provider with edit access. No pre-ACM DNS attestation variable exists. Gate A begins only after ACM returns its exact validation CNAME for the operator to save.
@@ -311,7 +450,7 @@ Confirm permissions read-only with IAM simulation. When STS returns an assumed-r
 
 ```bash
 : "${IAM_POLICY_SOURCE_ARN:?IAM role/user ARN required for read-only permission simulation}"
-cat >"$EVIDENCE_DIR/required-actions.json" <<'JSON'
+cat >"$PREFLIGHT_SCRATCH_DIR/required-actions.json" <<'JSON'
 [
   "acm:ListCertificates",
   "acm:RequestCertificate",
@@ -370,20 +509,44 @@ cat >"$EVIDENCE_DIR/required-actions.json" <<'JSON'
   "ssm:GetCommandInvocation"
 ]
 JSON
-mapfile -t REQUIRED_ACTIONS < <(node -e 'for (const action of require(process.argv[1])) console.log(action)' "$EVIDENCE_DIR/required-actions.json")
+mapfile -t REQUIRED_ACTIONS < <(node -e 'for (const action of require(process.argv[1])) console.log(action)' "$PREFLIGHT_SCRATCH_DIR/required-actions.json")
 aws iam simulate-principal-policy --policy-source-arn "$IAM_POLICY_SOURCE_ARN" \
   --action-names "${REQUIRED_ACTIONS[@]}" --output json \
-  >"$EVIDENCE_DIR/permission-simulation.json"
-node - "$EVIDENCE_DIR/permission-simulation.json" <<'NODE'
+  >"$PREFLIGHT_SCRATCH_DIR/permission-simulation.json"
+node \
+  "$PREFLIGHT_SCRATCH_DIR/required-actions.json" \
+  "$PREFLIGHT_SCRATCH_DIR/permission-simulation.json" \
+  "$EVIDENCE_DIR/remote-admin-preflight-evidence.json" <<'NODE'
 const fs = require("fs");
-const evaluations = JSON.parse(fs.readFileSync(process.argv[2], "utf8")).EvaluationResults ?? [];
-if (evaluations.length === 0 || evaluations.some((result) => result.EvalDecision !== "allowed")) {
+const [actionsPath, permissionPath, evidencePath] = process.argv.slice(2);
+const actions = JSON.parse(fs.readFileSync(actionsPath, "utf8"));
+const evaluations = JSON.parse(
+  fs.readFileSync(permissionPath, "utf8"),
+).EvaluationResults ?? [];
+if (
+  !Array.isArray(actions) ||
+  evaluations.length !== actions.length ||
+  evaluations.some((result) => result.EvalDecision !== "allowed")
+) {
   process.exit(2);
 }
+const evidence = JSON.parse(fs.readFileSync(evidencePath, "utf8"));
+fs.writeFileSync(evidencePath, JSON.stringify({
+  ...evidence,
+  requiredIamActionsAllowed: true,
+  requiredIamActionCount: actions.length,
+}, null, 2), { mode: 0o600 });
 NODE
+chmod 600 "$EVIDENCE_DIR/remote-admin-preflight-evidence.json"
+rm -rf -- "$PREFLIGHT_SCRATCH_DIR"
+trap - EXIT
 ```
 
 Stop and report **BLOCKED** when any preflight assertion or required action fails. Do not compensate with broad policies, alternate subnets, or guessed IDs.
+
+### ALB access-log policy compatibility
+
+Final ALB logging uses the exact bucket, `access_logs.s3.prefix=""`, modern service principal `logdelivery.elasticloadbalancing.amazonaws.com` with only exact `ArnLike aws:SourceArn`, Cape Town legacy root `arn:aws:iam::098369216593:root`, and TLS-only deny. The modern Allow must not include `aws:SourceAccount`: AWS ALB guidance and the live bounded delivery proof use this shape, while the prior live `SourceAccount` attempt returned `AccessDenied`. Keep former `SourceAccount` handling only as a bounded stale-policy repair path; do not restore it to the final writer or readiness contract.
 
 ### Gate A — ACM request only
 
@@ -536,9 +699,21 @@ Only after DNS settles, use this additive mail-bucket CORS protocol. It preserve
 
 ```bash
 export MAIL_BUCKET=nava-zero-mail-845242190536-af-south-1
-CORS_BEFORE="$EVIDENCE_DIR/mail-cors-before.json"
-CORS_INTENDED="$EVIDENCE_DIR/mail-cors-intended.json"
-CORS_APPLIED="$EVIDENCE_DIR/mail-cors-applied.json"
+: "${EVIDENCE_ROOT:=${HOME}/.nava-evidence/remote-admin}"
+CORS_EVIDENCE_TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p -- "$EVIDENCE_ROOT"
+chmod 700 -- "$EVIDENCE_ROOT"
+CORS_EVIDENCE_DIR="$(mktemp -d "${EVIDENCE_ROOT%/}/${CORS_EVIDENCE_TIMESTAMP}-cors.XXXXXX")"
+chmod 700 -- "$CORS_EVIDENCE_DIR"
+CORS_SCRATCH_DIR="$(mktemp -d "${TMPDIR:-/tmp}/nava-remote-admin-cors.XXXXXX")"
+chmod 700 -- "$CORS_SCRATCH_DIR"
+cleanup_cors_scratch() {
+  rm -rf -- "$CORS_SCRATCH_DIR"
+}
+trap cleanup_cors_scratch EXIT
+CORS_BEFORE="$CORS_SCRATCH_DIR/mail-cors-before.json"
+CORS_INTENDED="$CORS_SCRATCH_DIR/mail-cors-intended.json"
+CORS_APPLIED="$CORS_SCRATCH_DIR/mail-cors-applied.json"
 
 aws s3api get-bucket-cors --region "$AWS_REGION" --bucket "$MAIL_BUCKET" \
   --output json >"$CORS_BEFORE"
@@ -623,9 +798,19 @@ if (
   process.exit(2);
 }
 NODE
+node - "$CORS_EVIDENCE_DIR/remote-admin-cors-evidence.json" <<'NODE'
+const fs = require("fs");
+const outputPath = process.argv[2];
+fs.writeFileSync(outputPath, JSON.stringify({
+  schema: "remote-admin-cors-evidence/v1",
+  remoteAdminOriginConfigured: true,
+  semanticReadbackPassed: true,
+}, null, 2), { mode: 0o600 });
+NODE
+chmod 600 "$CORS_EVIDENCE_DIR/remote-admin-cors-evidence.json"
 ```
 
-To roll back, first read current CORS into a new evidence file and semantically compare it to `$CORS_APPLIED`; only an exact match may restore `$CORS_BEFORE`, followed by the same immediate semantic readback. A mismatch means another operator changed CORS: stop and preserve both snapshots.
+To roll back in this same operator shell, first read current CORS into `$CORS_SCRATCH_DIR/mail-cors-current.json` and semantically compare it to `$CORS_APPLIED`; only an exact match may restore `$CORS_BEFORE`, followed by the same immediate semantic readback. A mismatch means another operator changed CORS: stop and preserve the scratch snapshots for this shell. All raw CORS responses stay in `CORS_SCRATCH_DIR` and its EXIT trap deletes them; persistent `CORS_EVIDENCE_DIR` retains only the sanitized boolean receipt. If the shell already exited, do not reconstruct a prior raw snapshot from evidence—stop and coordinate with the operator who owns the change.
 
 Only Task 5 may:
 

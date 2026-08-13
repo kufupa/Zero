@@ -1531,6 +1531,7 @@ try {
   empty.logBucketCompliant =
     attributeValue(albAttributes, "access_logs.s3.enabled") === "true" &&
     attributeValue(albAttributes, "access_logs.s3.bucket") === LOG_BUCKET &&
+    attributeValue(albAttributes, "access_logs.s3.prefix") === "" &&
     encryptedSseS3 &&
     allPublicAccessBlocked &&
     bucketOwnerEnforced &&
