@@ -512,7 +512,7 @@ printf -v Q_GIT_BRANCH '%q' "$GIT_BRANCH"
 printf -v Q_BUNDLE_REF '%q' "bundle/${GIT_BRANCH}"
 printf -v Q_BUNDLE_URI '%q' "s3://${BOOTSTRAP_BUCKET}/${BUNDLE_KEY}"
 printf -v Q_AWS_REGION '%q' "$AWS_REGION"
-REMOTE_SCRIPT="set -euo pipefail; export AWS_DEFAULT_REGION=${Q_AWS_REGION}; export NVM_DIR=/home/ubuntu/.nvm; [ -s /home/ubuntu/.nvm/nvm.sh ] && . /home/ubuntu/.nvm/nvm.sh; aws s3 cp ${Q_BUNDLE_URI} ${Q_REMOTE_BUNDLE} --region ${Q_AWS_REGION}; mkdir -p /home/ubuntu/repos; if [ -d ${Q_REPO_PATH}/.git ]; then cd ${Q_REPO_PATH}; git fetch ${Q_REMOTE_BUNDLE} '+refs/heads/*:refs/remotes/bundle/*'; git checkout -B ${Q_GIT_BRANCH} ${Q_BUNDLE_REF}; else git clone ${Q_REMOTE_BUNDLE} ${Q_REPO_PATH}; cd ${Q_REPO_PATH}; git checkout ${Q_GIT_BRANCH}; fi; rm -f ${Q_REMOTE_BUNDLE}; git status --short --branch; git log -1 --oneline; node --version; pnpm --version"
+REMOTE_SCRIPT="set -euo pipefail; export AWS_DEFAULT_REGION=${Q_AWS_REGION}; export NVM_DIR=/home/ubuntu/.nvm; [ -s /home/ubuntu/.nvm/nvm.sh ] && . /home/ubuntu/.nvm/nvm.sh; aws s3 cp ${Q_BUNDLE_URI} ${Q_REMOTE_BUNDLE} --region ${Q_AWS_REGION}; mkdir -p /home/ubuntu/repos; if [ -d ${Q_REPO_PATH}/.git ]; then cd ${Q_REPO_PATH}; git fetch ${Q_REMOTE_BUNDLE} '+refs/heads/*:refs/remotes/bundle/*'; git checkout -B ${Q_GIT_BRANCH} ${Q_BUNDLE_REF}; git reset --hard ${Q_BUNDLE_REF}; else git clone ${Q_REMOTE_BUNDLE} ${Q_REPO_PATH}; cd ${Q_REPO_PATH}; git checkout ${Q_GIT_BRANCH}; fi; rm -f ${Q_REMOTE_BUNDLE}; git status --short --branch; git log -1 --oneline; node --version; pnpm --version"
 
 echo "Deploying bundle to EC2 via SSM (instance-profile S3 access)..."
 bash "$SCRIPT_DIR/ssm-run-command.sh" "$REMOTE_SCRIPT"
