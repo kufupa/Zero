@@ -62,6 +62,7 @@ type Mode =
   | 'secondary-eni-missing-global'
   | 'secondary-eni-group-mismatch-global'
   | 'non-alb-eni'
+  | 'single-alb-eni'
   | 'bucket-broad-principal'
   | 'log-proof-failure'
   | 'log-proof-boundary'
@@ -609,13 +610,15 @@ switch (service + ' ' + operation) {
         RequesterId: 'amazon-elb',
         Groups: [{ GroupId: albSg, GroupName: albName }],
       });
-      interfaces.push({
-        NetworkInterfaceId: 'eni-test-alb-b',
-        Description: description,
-        RequesterManaged: true,
-        RequesterId: 'amazon-elb',
-        Groups: [{ GroupId: albSg, GroupName: albName }],
-      });
+      if (state.mode !== 'single-alb-eni') {
+        interfaces.push({
+          NetworkInterfaceId: 'eni-test-alb-b',
+          Description: description,
+          RequesterManaged: true,
+          RequesterId: 'amazon-elb',
+          Groups: [{ GroupId: albSg, GroupName: albName }],
+        });
+      }
     }
     emit({ NetworkInterfaces: interfaces });
     break;
@@ -1309,6 +1312,20 @@ describe('remote edge provisioner security contracts', () => {
       expect(result.status, resultDiagnostic(result, harness)).not.toBe(0);
       expect(result.stdout).toBe('');
       expect(calls(harness).filter((entry) => entry.startsWith('mutate '))).toHaveLength(0);
+    } finally {
+      destroyHarness(harness);
+    }
+  }, 60_000);
+
+  it('accepts an active ALB with one EC2-visible managed interface', async () => {
+    const harness = createHarness('ALB_CREATED', 'single-alb-eni');
+    try {
+      const result = await runProvisioner(harness, ['inspect']);
+      expect(result.status, resultDiagnostic(result, harness)).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        stage: 'ALB_CREATED',
+        action: 'CREATE_LOG_BUCKET',
+      });
     } finally {
       destroyHarness(harness);
     }

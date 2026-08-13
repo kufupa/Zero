@@ -27,6 +27,7 @@ type FakeMode =
   | 'unsafe'
   | 'global-owner-omitted'
   | 'unexpected-header'
+  | 'numbered-header'
   | 'post-divergence';
 
 type Harness = {
@@ -290,6 +291,8 @@ const [service, operation] = args;
 const state = JSON.parse(readFileSync(process.env.REMOTE_EDGE_FAKE_STATE, 'utf8'));
 const addedHeader = state.mode === 'unexpected-header'
   ? 'Unexpected UFW header:'
+  : state.mode === 'numbered-header'
+    ? "Added user rules (see 'ufw status numbered'):"
   : "Added user rules (see 'ufw status' for running firewall):";
 appendFileSync(process.env.REMOTE_EDGE_FAKE_LOG, 'ssm ' + service + ' ' + operation + '\n');
 if (service !== 'ssm') process.exit(22);
@@ -507,29 +510,36 @@ describe('remote edge provisioner', () => {
     expect(result.status, result.stderr).toBe(0);
   });
 
-  it('inspects fresh state through explicit fake AWS and SSM binaries', async () => {
-    if (!provisionerExists()) return;
-    const harness = createHarness();
-    try {
-      const first = await runProvisioner(harness, ['inspect']);
-      const second = await runProvisioner(harness, ['inspect']);
+  it.each<FakeMode>([
+    'valid',
+    'numbered-header',
+  ])(
+    'inspects fresh state through explicit fake AWS and SSM binaries for %s UFW header',
+    async (mode) => {
+      if (!provisionerExists()) return;
+      const harness = createHarness(mode);
+      try {
+        const first = await runProvisioner(harness, ['inspect']);
+        const second = await runProvisioner(harness, ['inspect']);
 
-      expect(first.status, provisionerDiagnostic(first, harness)).toBe(0);
-      expect(second.status, provisionerDiagnostic(second, harness)).toBe(0);
-      expect(JSON.parse(first.stdout)).toEqual({
-        stage: 'SG_FINAL_UNATTACHED',
-        action: 'ATTACH_TARGET_SECURITY_GROUP',
-      });
-      expect(first.stdout).not.toContain('sg-test');
-      expect(first.stdout).not.toContain('0.0.0.0');
-      const calls = loggedCalls(harness);
-      expect(calls.filter((call) => call === 'aws sts get-caller-identity')).toHaveLength(2);
-      expect(calls.filter((call) => call === 'ssm ssm send-command')).toHaveLength(2);
-      expect(calls.filter((call) => call === 'aws ec2 modify-instance-attribute')).toHaveLength(0);
-    } finally {
-      destroyHarness(harness);
-    }
-  }, 60_000);
+        expect(first.status, provisionerDiagnostic(first, harness)).toBe(0);
+        expect(second.status, provisionerDiagnostic(second, harness)).toBe(0);
+        expect(JSON.parse(first.stdout)).toEqual({
+          stage: 'SG_FINAL_UNATTACHED',
+          action: 'ATTACH_TARGET_SECURITY_GROUP',
+        });
+        expect(first.stdout).not.toContain('sg-test');
+        expect(first.stdout).not.toContain('0.0.0.0');
+        const calls = loggedCalls(harness);
+        expect(calls.filter((call) => call === 'aws sts get-caller-identity')).toHaveLength(2);
+        expect(calls.filter((call) => call === 'ssm ssm send-command')).toHaveLength(2);
+        expect(calls.filter((call) => call === 'aws ec2 modify-instance-attribute')).toHaveLength(0);
+      } finally {
+        destroyHarness(harness);
+      }
+    },
+    60_000,
+  );
 
   it('collects fresh facts before and after one allowed target-SG attachment', async () => {
     if (!provisionerExists()) return;

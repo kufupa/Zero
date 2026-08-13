@@ -520,7 +520,7 @@ function deriveSecurity(projections, references) {
       : albInInstance ||
         (!references.alb
           ? attachedAlb.length !== 0
-          : attachedAlb.length < 2 ||
+          : attachedAlb.length === 0 ||
             attachedAlb.some((networkInterface) =>
               !isExactAlbNetworkInterface(networkInterface, references),
             ));
