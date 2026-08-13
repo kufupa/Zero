@@ -1094,7 +1094,8 @@ function deriveWafStage(projections, references) {
   ];
   if (
     webAcl.Name !== WAF_NAME ||
-    webAcl.Scope !== 'REGIONAL' ||
+    webAcl.ARN !== references.wafArn ||
+    webAcl.Id !== references.wafId ||
     !isObject(webAcl.DefaultAction) ||
     !isObject(webAcl.DefaultAction.Allow) ||
     rules.length !== 5 ||

@@ -93,7 +93,9 @@ type Mode =
   | 'public-address-ipv6-listener'
   | 'waf-malformed-byte-match'
   | 'waf-noncanonical-byte-match'
-  | 'waf-wrong-byte-match';
+  | 'waf-wrong-byte-match'
+  | 'waf-mismatched-arn'
+  | 'waf-mismatched-id';
 
 type Harness = {
   root: string;
@@ -160,7 +162,8 @@ const legacySg = 'sg-test-legacy';
 const legacySecondarySg = 'sg-test-legacy-secondary';
 const albArn = 'arn:aws:elasticloadbalancing:af-south-1:845242190536:loadbalancer/app/nava-remote-admin-alb/test';
 const targetGroupArn = 'arn:aws:elasticloadbalancing:af-south-1:845242190536:targetgroup/nava-remote-admin/test';
-const wafArn = 'arn:aws:wafv2:af-south-1:845242190536:regional/webacl/nava-remote-admin-waf/test';
+const wafId = '4d2c6df0-a5a1-4e29-89c6-2f85bc9ae137';
+const wafArn = 'arn:aws:wafv2:af-south-1:845242190536:regional/webacl/nava-remote-admin-waf/4d2c6df0-a5a1-4e29-89c6-2f85bc9ae137';
 const certArn = 'arn:aws:acm:af-south-1:845242190536:certificate/test';
 const stages = [
   'FRESH', 'ALB_SG_CREATED', 'SGS_CREATED', 'ALB_INGRESS_READY',
@@ -331,10 +334,17 @@ const wafByteMatchSearchStrings =
       : state.mode === 'waf-wrong-byte-match'
         ? ['L2FwaS9hdXRoL3NpZ24taW4vZW1haWw=', 'R0VU']
         : ['L2FwaS9hdXRoL3NpZ24taW4vZW1haWw=', 'UE9TVA=='];
+const readbackWafArn = state.mode === 'waf-mismatched-arn'
+  ? 'arn:aws:wafv2:af-south-1:845242190536:regional/webacl/nava-remote-admin-waf/a9c8c95f-9f6f-4f6e-8e9b-071cbd1769ae'
+  : wafArn;
+const readbackWafId = state.mode === 'waf-mismatched-id'
+  ? 'a9c8c95f-9f6f-4f6e-8e9b-071cbd1769ae'
+  : wafId;
 const waf = () => ({
   WebACL: {
     Name: wafName,
-    Scope: 'REGIONAL',
+    Id: readbackWafId,
+    ARN: readbackWafArn,
     DefaultAction: { Allow: {} },
     Rules: [
       {
@@ -853,7 +863,7 @@ switch (service + ' ' + operation) {
     }] });
     break;
   case 'wafv2 list-web-acls':
-    emit({ WebACLs: at('WAF_CREATED') ? [{ Name: wafName, ARN: wafArn, Id: 'waf-test' }] : [] });
+    emit({ WebACLs: at('WAF_CREATED') ? [{ Name: wafName, ARN: wafArn, Id: wafId }] : [] });
     break;
   case 'wafv2 get-web-acl':
     emit(waf());
@@ -1316,7 +1326,7 @@ describe('remote edge provisioner security contracts', () => {
     60_000,
   );
 
-  it('accepts canonical AWS Base64 WAF readback after WAF creation', async () => {
+  it('accepts live-shaped scope-less canonical AWS WAF readback after WAF creation', async () => {
     const harness = createHarness('ALB_LOGGING_READY');
     try {
       const result = await runProvisioner(harness, [
@@ -1351,6 +1361,25 @@ describe('remote edge provisioner security contracts', () => {
     ['noncanonical', 'waf-noncanonical-byte-match'],
     ['wrong', 'waf-wrong-byte-match'],
   ] as const)('rejects %s WAF ByteMatch readback before association', async (_name, mode) => {
+    const harness = createHarness('WAF_CREATED', mode);
+    try {
+      const result = await runProvisioner(harness, [
+        'apply-one',
+        '--action',
+        'ASSOCIATE_WAF',
+      ]);
+      expect(result.status, resultDiagnostic(result, harness)).not.toBe(0);
+      expect(calls(harness)).toContain('aws wafv2 get-web-acl');
+      expect(calls(harness)).not.toContain('mutate wafv2 associate-web-acl');
+    } finally {
+      destroyHarness(harness);
+    }
+  }, 60_000);
+
+  it.each([
+    ['ARN', 'waf-mismatched-arn'],
+    ['ID', 'waf-mismatched-id'],
+  ] as const)('rejects WAF readback with mismatched %s before association', async (_field, mode) => {
     const harness = createHarness('WAF_CREATED', mode);
     try {
       const result = await runProvisioner(harness, [
