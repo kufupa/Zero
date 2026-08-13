@@ -2574,11 +2574,17 @@ describe('deploy config', () => {
       'git bundle create "$BUNDLE_FILE" "refs/heads/$GIT_BRANCH"',
     );
     expect(sync).toContain(
-      'git fetch ${Q_REMOTE_BUNDLE} ${Q_BUNDLE_REFSPEC}; git rev-parse --verify --quiet ${Q_BUNDLE_REF}^{commit} >/dev/null; git checkout -f -B ${Q_GIT_BRANCH} ${Q_BUNDLE_REF}; git reset --hard ${Q_BUNDLE_REF}',
+      'BUNDLE_COMMIT="$(git rev-parse --verify --quiet "refs/heads/$GIT_BRANCH^{commit}")"',
     );
     expect(sync).toContain(
-      'else git init ${Q_REPO_PATH}; cd ${Q_REPO_PATH}; git fetch ${Q_REMOTE_BUNDLE} ${Q_BUNDLE_REFSPEC}; git rev-parse --verify --quiet ${Q_BUNDLE_REF}^{commit} >/dev/null; git checkout -f -B ${Q_GIT_BRANCH} ${Q_BUNDLE_REF}; git reset --hard ${Q_BUNDLE_REF}; fi;',
+      'printf -v Q_BUNDLE_COMMIT \'%q\' "$BUNDLE_COMMIT"',
     );
+    expect(sync).toContain('git fetch ${Q_REMOTE_BUNDLE} ${Q_BUNDLE_REFSPEC}');
+    expect(sync).toContain('bundle commit mismatch');
+    expect(sync).toContain(
+      'git checkout -f -B ${Q_GIT_BRANCH} ${Q_BUNDLE_COMMIT}; git reset --hard ${Q_BUNDLE_COMMIT}',
+    );
+    expect(sync).toContain('else git init ${Q_REPO_PATH}; cd ${Q_REPO_PATH};');
     expect(sync).not.toContain('git clone ${Q_REMOTE_BUNDLE}');
     expect(sync).not.toContain(
       'git checkout ${Q_GIT_BRANCH}; git reset --hard ${Q_BUNDLE_REF}',
