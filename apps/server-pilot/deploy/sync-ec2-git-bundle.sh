@@ -478,13 +478,18 @@ if ! git check-ref-format --branch "$GIT_BRANCH" >/dev/null 2>&1; then
   echo "error: branch $GIT_BRANCH not found in $REPO_ROOT" >&2
   exit 1
 fi
-BUNDLE_COMMIT="$(git rev-parse --verify --quiet "refs/heads/$GIT_BRANCH^{commit}")" || {
-  echo "error: branch $GIT_BRANCH not found in $REPO_ROOT" >&2
-  exit 1
-}
 
 echo "Creating git bundle for $GIT_BRANCH..."
 git bundle create "$BUNDLE_FILE" "refs/heads/$GIT_BRANCH"
+
+BUNDLE_LINE="$(git bundle list-heads "$BUNDLE_FILE" "refs/heads/$GIT_BRANCH")"
+BUNDLE_COMMIT="${BUNDLE_LINE%% *}"
+BUNDLE_HEAD="${BUNDLE_LINE#* }"
+if [ "$BUNDLE_HEAD" != "refs/heads/$GIT_BRANCH" ] ||
+  ! git rev-parse --verify --quiet "$BUNDLE_COMMIT^{commit}" >/dev/null; then
+  echo "error: branch $GIT_BRANCH not found in $REPO_ROOT" >&2
+  exit 1
+fi
 
 if ! aws s3api head-bucket --bucket "$BOOTSTRAP_BUCKET" --region "$AWS_REGION" >/dev/null 2>&1; then
   echo "Creating private bootstrap bucket s3://$BOOTSTRAP_BUCKET ..."
