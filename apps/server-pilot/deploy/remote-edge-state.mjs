@@ -1002,7 +1002,7 @@ function isExactByteMatch(statement, field, search) {
   const value = object(statement).ByteMatchStatement;
   return (
     isObject(value) &&
-    value.SearchString === search &&
+    value.SearchString === Buffer.from(search, 'utf8').toString('base64') &&
     isObject(value.FieldToMatch) &&
     Object.keys(value.FieldToMatch).length === 1 &&
     isObject(value.FieldToMatch[field]) &&

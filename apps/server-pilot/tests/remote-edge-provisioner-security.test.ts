@@ -90,7 +90,10 @@ type Mode =
   | 'public-address-broad-ingress'
   | 'public-address-wrong-ufw'
   | 'public-address-public-listener'
-  | 'public-address-ipv6-listener';
+  | 'public-address-ipv6-listener'
+  | 'waf-malformed-byte-match'
+  | 'waf-noncanonical-byte-match'
+  | 'waf-wrong-byte-match';
 
 type Harness = {
   root: string;
@@ -320,6 +323,14 @@ const bucketPolicy = (shape = 'final') => {
     Statement: statements,
   };
 };
+const wafByteMatchSearchStrings =
+  state.mode === 'waf-malformed-byte-match'
+    ? ['L2FwaS9hdXRoL3NpZ24taW4vZW1haWw=', '%%%']
+    : state.mode === 'waf-noncanonical-byte-match'
+      ? ['L2FwaS9hdXRoL3NpZ24taW4vZW1haWw=', 'UE9TVA']
+      : state.mode === 'waf-wrong-byte-match'
+        ? ['L2FwaS9hdXRoL3NpZ24taW4vZW1haWw=', 'R0VU']
+        : ['L2FwaS9hdXRoL3NpZ24taW4vZW1haWw=', 'UE9TVA=='];
 const waf = () => ({
   WebACL: {
     Name: wafName,
@@ -358,7 +369,7 @@ const waf = () => ({
                 Statements: [
                   {
                     ByteMatchStatement: {
-                      SearchString: '/api/auth/sign-in/email',
+                      SearchString: wafByteMatchSearchStrings[0],
                       FieldToMatch: { UriPath: {} },
                       TextTransformations: [{ Priority: 0, Type: 'NONE' }],
                       PositionalConstraint: 'EXACTLY',
@@ -366,7 +377,7 @@ const waf = () => ({
                   },
                   {
                     ByteMatchStatement: {
-                      SearchString: 'POST',
+                      SearchString: wafByteMatchSearchStrings[1],
                       FieldToMatch: { Method: {} },
                       TextTransformations: [{ Priority: 0, Type: 'NONE' }],
                       PositionalConstraint: 'EXACTLY',
@@ -1305,7 +1316,7 @@ describe('remote edge provisioner security contracts', () => {
     60_000,
   );
 
-  it('sends base64 byte-match blobs in complete CreateWebACL JSON', async () => {
+  it('accepts canonical AWS Base64 WAF readback after WAF creation', async () => {
     const harness = createHarness('ALB_LOGGING_READY');
     try {
       const result = await runProvisioner(harness, [
@@ -1314,12 +1325,42 @@ describe('remote edge provisioner security contracts', () => {
         'CREATE_WAF',
       ]);
       expect(result.status, resultDiagnostic(result, harness)).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        stage: 'WAF_CREATED',
+        action: 'ASSOCIATE_WAF',
+      });
       expect(calls(harness)).toContain(
         'waf byte-match search strings ["L2FwaS9hdXRoL3NpZ24taW4vZW1haWw=","UE9TVA=="]',
       );
       expect(
         calls(harness).filter((entry) => entry.startsWith('mutate ')),
       ).toEqual(['mutate wafv2 create-web-acl']);
+      const recordedCalls = calls(harness);
+      const mutation = recordedCalls.indexOf('mutate wafv2 create-web-acl');
+      expect(mutation).toBeGreaterThanOrEqual(0);
+      expect(recordedCalls.slice(mutation + 1)).toContain(
+        'aws wafv2 get-web-acl',
+      );
+    } finally {
+      destroyHarness(harness);
+    }
+  }, 60_000);
+
+  it.each([
+    ['malformed', 'waf-malformed-byte-match'],
+    ['noncanonical', 'waf-noncanonical-byte-match'],
+    ['wrong', 'waf-wrong-byte-match'],
+  ] as const)('rejects %s WAF ByteMatch readback before association', async (_name, mode) => {
+    const harness = createHarness('WAF_CREATED', mode);
+    try {
+      const result = await runProvisioner(harness, [
+        'apply-one',
+        '--action',
+        'ASSOCIATE_WAF',
+      ]);
+      expect(result.status, resultDiagnostic(result, harness)).not.toBe(0);
+      expect(calls(harness)).toContain('aws wafv2 get-web-acl');
+      expect(calls(harness)).not.toContain('mutate wafv2 associate-web-acl');
     } finally {
       destroyHarness(harness);
     }
