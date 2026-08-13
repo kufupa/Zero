@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
@@ -203,8 +203,16 @@ const fileJson = (name) => {
   }
   try {
     const path = value.slice('file://'.length);
+    const fixturePlatform =
+      process.env.REMOTE_EDGE_FIXTURE_PLATFORM ?? process.platform;
+    if (fixturePlatform === 'win32' && !/^[A-Za-z]:\//.test(path)) {
+      log('invalid Windows file option ' + JSON.stringify(args));
+      fail();
+    }
     const nativePath =
-      process.platform === 'win32' && path.startsWith('/')
+      process.platform === 'win32' &&
+      fixturePlatform === 'linux' &&
+      path.startsWith('/tmp/')
         ? process.env.REMOTE_EDGE_NATIVE_TMP + path.slice('/tmp'.length)
         : path;
     return JSON.parse(readFileSync(nativePath, 'utf8'));
@@ -481,7 +489,13 @@ if (service === 's3api' && operation === 'put-bucket-lifecycle-configuration') {
   mutation('LOG_BUCKET_ENCRYPTED', 'LOG_BUCKET_LIFECYCLE_READY', 's3api put-bucket-lifecycle-configuration');
 }
 if (service === 's3api' && operation === 'put-bucket-policy') {
-  if (option('--bucket') !== bucket || !exactJson(fileJson('--policy'), bucketPolicy())) {
+  const policy = fileJson('--policy');
+  if (
+    process.env.MSYS_NO_PATHCONV !== '1' ||
+    process.env.MSYS2_ARG_CONV_EXCL !== '*' ||
+    option('--bucket') !== bucket ||
+    !exactJson(policy, bucketPolicy())
+  ) {
     log('invalid bucket policy ' + JSON.stringify(args));
     fail();
   }
@@ -504,6 +518,8 @@ if (service === 'wafv2' && operation === 'create-web-acl') {
   const definition = fileJson('--cli-input-json');
   const rules = definition.Rules;
   if (
+    process.env.MSYS_NO_PATHCONV !== '1' ||
+    process.env.MSYS2_ARG_CONV_EXCL !== '*' ||
     definition.Scope !== 'REGIONAL' ||
     JSON.stringify(definition.DefaultAction) !== JSON.stringify({ Allow: {} }) ||
     !Array.isArray(rules) ||
@@ -1228,6 +1244,91 @@ describe('remote edge provisioner security contracts', () => {
     },
     60_000,
   );
+
+  it('ignores cygpath when uname reports Linux for bucket-policy URI', async () => {
+    const harness = createHarness('LOG_BUCKET_LIFECYCLE_READY');
+    const fakeBin = join(harness.root, 'fake-unix-bin');
+    const toBashPath = (path: string) =>
+      path
+        .replace(/^([A-Za-z]):\\/, (_match, drive: string) => `/${drive.toLowerCase()}/`)
+        .replaceAll('\\', '/');
+    try {
+      mkdirSync(fakeBin, { mode: 0o700 });
+      writeExecutable(
+        join(fakeBin, 'uname'),
+        String.raw`#!/usr/bin/env bash
+printf '%s\n' 'Linux'
+`,
+      );
+      writeExecutable(
+        join(fakeBin, 'cygpath'),
+        String.raw`#!/usr/bin/env bash
+printf '%s\n' 'C:/bogus'
+`,
+      );
+      harness.env.PATH = `${toBashPath(fakeBin)}${delimiter}${harness.env.PATH ?? ''}`;
+      harness.env.REMOTE_EDGE_FIXTURE_PLATFORM = 'linux';
+
+      const result = await runProvisioner(
+        harness,
+        ['apply-one', '--action', 'SET_LOG_BUCKET_POLICY'],
+        toBashPath(harness.evidenceRoot),
+      );
+      expect(result.status, resultDiagnostic(result, harness)).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        stage: 'LOG_BUCKET_POLICY_READY',
+        action: 'ENABLE_ALB_LOGGING',
+      });
+      expect(
+        calls(harness).filter((entry) => entry.startsWith('mutate ')),
+      ).toEqual(['mutate s3api put-bucket-policy']);
+    } finally {
+      destroyHarness(harness);
+    }
+  }, 60_000);
+
+  it('blocks bucket-policy mutation when Windows URI conversion fails', async () => {
+    const harness = createHarness('LOG_BUCKET_LIFECYCLE_READY');
+    const fakeBin = join(harness.root, 'fake-windows-bin');
+    const toBashPath = (path: string) =>
+      path
+        .replace(/^([A-Za-z]):\\/, (_match, drive: string) => `/${drive.toLowerCase()}/`)
+        .replaceAll('\\', '/');
+    try {
+      mkdirSync(fakeBin, { mode: 0o700 });
+      writeExecutable(
+        join(fakeBin, 'uname'),
+        String.raw`#!/usr/bin/env bash
+printf '%s\n' 'MINGW64_NT-10.0'
+`,
+      );
+      writeExecutable(
+        join(fakeBin, 'cygpath'),
+        String.raw`#!/usr/bin/env bash
+printf '%s\n' "cygpath $*" >> "$REMOTE_EDGE_FAKE_LOG"
+exit 1
+`,
+      );
+      harness.env.PATH = `${toBashPath(fakeBin)}${delimiter}${harness.env.PATH ?? ''}`;
+
+      const result = await runProvisioner(
+        harness,
+        ['apply-one', '--action', 'SET_LOG_BUCKET_POLICY'],
+        toBashPath(harness.evidenceRoot),
+      );
+      const recordedCalls = calls(harness);
+      expect(result.status, resultDiagnostic(result, harness)).not.toBe(0);
+      expect(
+        recordedCalls.some((entry) => entry.startsWith('cygpath -w -- ')),
+      ).toBe(true);
+      expect(recordedCalls).not.toContain('aws s3api put-bucket-policy');
+      expect(
+        recordedCalls.filter((entry) => entry.startsWith('mutate ')),
+      ).toHaveLength(0);
+    } finally {
+      destroyHarness(harness);
+    }
+  }, 60_000);
 
   it('accepts CreateBucket auto-hardening through encrypted bucket state', async () => {
     const harness = createHarness('ALB_CREATED', 'create-bucket-auto-hardening');

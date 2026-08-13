@@ -171,6 +171,28 @@ normalize_evidence_root() {
   fi
 }
 
+is_windows_shell() {
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+aws_file_uri() {
+  local path="$1"
+  local converted_path
+  if is_windows_shell; then
+    command -v cygpath >/dev/null 2>&1 || return 1
+    converted_path="$(cygpath -w -- "$path")" || return 1
+    converted_path="${converted_path//\\//}"
+    [[ "$converted_path" =~ ^[A-Za-z]:/ ]] || return 1
+    printf 'file://%s\n' "$converted_path"
+    return 0
+  fi
+  [[ "$path" == /* ]] || return 1
+  printf 'file://%s\n' "$path"
+}
+
 prepare_evidence_root() {
   local parent
   [[ "$EVIDENCE_ROOT" != "/" ]] || die
@@ -747,6 +769,7 @@ mutate_one() {
   local alb_arn
   local waf_arn
   local groups
+  local file_uri
   case "$stage" in
     FRESH)
       "${AWS[@]}" --no-cli-pager ec2 create-security-group --region "$AWS_REGION" --vpc-id "$VPC_ID" --group-name "$ALB_NAME" --description 'Nava remote admin ALB ingress only' >/dev/null 2>/dev/null || die
@@ -807,7 +830,8 @@ mutate_one() {
       ;;
     LOG_BUCKET_LIFECYCLE_READY)
       write_bucket_policy "$scratch"
-      "${AWS[@]}" --no-cli-pager s3api put-bucket-policy --region "$AWS_REGION" --bucket "$LOG_BUCKET" --policy "file://$scratch/log-bucket-policy.json" >/dev/null 2>/dev/null || die
+      file_uri="$(aws_file_uri "$scratch/log-bucket-policy.json")" || die
+      MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' "${AWS[@]}" --no-cli-pager s3api put-bucket-policy --region "$AWS_REGION" --bucket "$LOG_BUCKET" --policy "$file_uri" >/dev/null 2>/dev/null || die
       ;;
     LOG_BUCKET_POLICY_READY)
       alb_arn="$(reference "$scratch" albArn)" || die
@@ -815,7 +839,8 @@ mutate_one() {
       ;;
     ALB_LOGGING_READY)
       write_waf_definition "$scratch"
-      "${AWS[@]}" --no-cli-pager wafv2 create-web-acl --region "$AWS_REGION" --cli-input-json "file://$scratch/waf.json" >/dev/null 2>/dev/null || die
+      file_uri="$(aws_file_uri "$scratch/waf.json")" || die
+      MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' "${AWS[@]}" --no-cli-pager wafv2 create-web-acl --region "$AWS_REGION" --cli-input-json "$file_uri" >/dev/null 2>/dev/null || die
       ;;
     WAF_CREATED)
       alb_arn="$(reference "$scratch" albArn)" || die
