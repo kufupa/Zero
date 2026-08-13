@@ -863,12 +863,26 @@ switch (service + ' ' + operation) {
     }] });
     break;
   case 'wafv2 list-web-acls':
+    requireOptions({
+      '--region': region,
+      '--scope': 'REGIONAL',
+    });
     emit({ WebACLs: at('WAF_CREATED') ? [{ Name: wafName, ARN: wafArn, Id: wafId }] : [] });
     break;
   case 'wafv2 get-web-acl':
+    requireOptions({
+      '--region': region,
+      '--scope': 'REGIONAL',
+      '--name': wafName,
+      '--id': wafId,
+    });
     emit(waf());
     break;
   case 'wafv2 list-resources-for-web-acl':
+    requireOptions({
+      '--region': region,
+      '--web-acl-arn': wafArn,
+    });
     emit({ ResourceArns: at('WAF_ASSOCIATED') ? [albArn] : [] });
     break;
   case 's3api list-buckets':
@@ -1921,6 +1935,26 @@ exit 1
       expect(status).not.toBe(0);
     } finally {
       destroyHarness(wrongRegion);
+    }
+  });
+
+  it('rejects WAF list reads with a wrong scope selector', async () => {
+    const wrongScope = createHarness('WAF_CREATED', 'valid');
+    try {
+      const status = await runFakeAws(wrongScope, [
+        '--no-cli-pager',
+        'wafv2',
+        'list-web-acls',
+        '--region',
+        'af-south-1',
+        '--scope',
+        'CLOUDFRONT',
+        '--output',
+        'json',
+      ]);
+      expect(status).not.toBe(0);
+    } finally {
+      destroyHarness(wrongScope);
     }
   });
 
