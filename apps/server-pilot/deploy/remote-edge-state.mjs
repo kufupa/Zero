@@ -1089,11 +1089,14 @@ function deriveHostFacts(projections) {
     .split('\n')
     .map((rule) => rule.trim())
     .filter(Boolean);
-  const addedHeader = "Added user rules (see 'ufw status numbered'):";
+  const addedHeaders = new Set([
+    "Added user rules (see 'ufw status' for running firewall):",
+    "Added user rules (see 'ufw status numbered'):",
+  ]);
   if (
-    addedLines.filter((line) => line === addedHeader).length > 1 ||
+    addedLines.filter((line) => addedHeaders.has(line)).length > 1 ||
     addedLines.some(
-      (line) => line !== addedHeader && !/^ufw(?:\s|$)/.test(line),
+      (line) => !addedHeaders.has(line) && !/^ufw(?:\s|$)/.test(line),
     )
   ) {
     fail();

@@ -26,6 +26,7 @@ type FakeMode =
   | 'duplicate'
   | 'unsafe'
   | 'global-owner-omitted'
+  | 'unexpected-header'
   | 'post-divergence';
 
 type Harness = {
@@ -282,10 +283,14 @@ switch (service + ' ' + operation) {
   writeExecutable(
     fakeSsmPath,
     String.raw`#!/usr/bin/env node
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, readFileSync } from 'node:fs';
 
 const args = process.argv.slice(2).filter((value) => value !== '--no-cli-pager');
 const [service, operation] = args;
+const state = JSON.parse(readFileSync(process.env.REMOTE_EDGE_FAKE_STATE, 'utf8'));
+const addedHeader = state.mode === 'unexpected-header'
+  ? 'Unexpected UFW header:'
+  : "Added user rules (see 'ufw status' for running firewall):";
 appendFileSync(process.env.REMOTE_EDGE_FAKE_LOG, 'ssm ' + service + ' ' + operation + '\n');
 if (service !== 'ssm') process.exit(22);
 if (operation === 'send-command') {
@@ -302,6 +307,7 @@ if (operation === 'get-command-invocation') {
       '__REMOTE_EDGE_UFW_STATUS__',
       '[ 1] 443/tcp on tun0 ALLOW IN Anywhere',
       '__REMOTE_EDGE_UFW_ADDED__',
+      addedHeader,
       'ufw allow in on tun0 to any port 443 proto tcp',
       '__REMOTE_EDGE_SOCKETS__',
       'LISTEN 0 511 0.0.0.0:443 0.0.0.0:*',
@@ -601,6 +607,7 @@ describe('remote edge provisioner', () => {
     'duplicate',
     'unsafe',
     'global-owner-omitted',
+    'unexpected-header',
   ])(
     'fails closed before mutation for %s collection state',
     async (mode) => {
