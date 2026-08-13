@@ -156,6 +156,28 @@ All commands accept only account-scoped resource IDs or ARNs discovered during r
 set -euo pipefail
 set +x
 
+is_windows_shell() {
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+aws_file_uri() {
+  local path="$1"
+  local converted_path
+  if is_windows_shell; then
+    command -v cygpath >/dev/null 2>&1 || return 1
+    converted_path="$(cygpath -w -- "$path")" || return 1
+    converted_path="${converted_path//\\//}"
+    [[ "$converted_path" =~ ^[A-Za-z]:/ ]] || return 1
+    printf 'file://%s\n' "$converted_path"
+    return 0
+  fi
+  [[ "$path" == /* ]] || return 1
+  printf 'file://%s\n' "$path"
+}
+
 export AWS_REGION=af-south-1
 export AWS_ACCOUNT_ID=845242190536
 export VPC_ID=vpc-0f078e17a5f0f8599
@@ -176,6 +198,8 @@ umask 077
 EVIDENCE_DIR="$(mktemp -d)"
 trap 'rm -rf "$EVIDENCE_DIR"' EXIT
 ```
+
+Use `$(aws_file_uri "$PATH")` for every AWS CLI file argument below. It converts Git-Bash paths to an AWS CLI-compatible Windows file URI; do not substitute a raw `file://` path.
 
 Before any mutation, run only these read calls. Save their sanitized resource metadata in the evidence directory; do not save command environments, credentials, mail data, or secret values.
 
@@ -422,12 +446,12 @@ if REMOTE_SECRET_ARN="$(aws secretsmanager describe-secret --region "$AWS_REGION
   --secret-id "$REMOTE_AUTH_SECRET_NAME" --query ARN --output text 2>/dev/null)"; then
   test "${REMOTE_AUTH_ROTATE:-0}" = 1
   aws secretsmanager put-secret-value --region "$AWS_REGION" \
-    --secret-id "$REMOTE_SECRET_ARN" --secret-string "file://$SECRET_FILE" >/dev/null
+    --secret-id "$REMOTE_SECRET_ARN" --secret-string "$(aws_file_uri "$SECRET_FILE")" >/dev/null
 else
   REMOTE_SECRET_ARN="$(aws secretsmanager create-secret --region "$AWS_REGION" \
     --name "$REMOTE_AUTH_SECRET_NAME" \
     --description "NAVA Zero remote-admin Better Auth signing secret" \
-    --secret-string "file://$SECRET_FILE" \
+    --secret-string "$(aws_file_uri "$SECRET_FILE")" \
     --query ARN --output text)"
 fi
 rm -f "$SECRET_FILE"
@@ -464,7 +488,7 @@ if (!match[0].Resource.includes(secretArn)) match[0].Resource.push(secretArn);
 fs.writeFileSync(output, JSON.stringify(policy), { mode: 0o600 });
 NODE
 aws iam put-role-policy --role-name "$REMOTE_ROLE_NAME" \
-  --policy-name NavaZeroSecretsRead --policy-document "file://$UPDATED_POLICY"
+  --policy-name NavaZeroSecretsRead --policy-document "$(aws_file_uri "$UPDATED_POLICY")"
 rm -f "$CURRENT_POLICY" "$UPDATED_POLICY"
 trap - EXIT
 ```
@@ -549,7 +573,7 @@ if (!target.AllowedOrigins.includes(remoteOrigin)) target.AllowedOrigins.push(re
 fs.writeFileSync(intendedPath, JSON.stringify({ CORSRules: rules }), { mode: 0o600 });
 NODE
 aws s3api put-bucket-cors --region "$AWS_REGION" --bucket "$MAIL_BUCKET" \
-  --cors-configuration "file://$CORS_INTENDED"
+  --cors-configuration "$(aws_file_uri "$CORS_INTENDED")"
 aws s3api get-bucket-cors --region "$AWS_REGION" --bucket "$MAIL_BUCKET" \
   --output json >"$CORS_APPLIED"
 node - "$CORS_INTENDED" "$CORS_APPLIED" <<'NODE'

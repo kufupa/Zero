@@ -1142,6 +1142,7 @@ type RemoteCollectorFacts = {
   targetSecurityGroupOnlyAlb: boolean;
   noDirectPublicTargetPath: boolean;
   publicAddressPresence: { ipv4: boolean; ipv6: boolean };
+  logBucketCompliant: boolean;
   wafCompliant: boolean;
 };
 
@@ -1277,9 +1278,14 @@ function validRemoteCollectorResponses(): Record<string, unknown> {
     waf: {
       WebACL: {
         Name: REMOTE_WAF_NAME,
+        Id: 'waf-test-id',
         ARN: wafArn,
+        DefaultAction: { Allow: {} },
         Rules: [
           {
+            Name: 'AWS-AmazonIpReputation',
+            Priority: 10,
+            OverrideAction: { None: {} },
             Statement: {
               ManagedRuleGroupStatement: {
                 VendorName: 'AWS',
@@ -1288,6 +1294,9 @@ function validRemoteCollectorResponses(): Record<string, unknown> {
             },
           },
           {
+            Name: 'AWS-Common',
+            Priority: 20,
+            OverrideAction: { None: {} },
             Statement: {
               ManagedRuleGroupStatement: {
                 VendorName: 'AWS',
@@ -1296,6 +1305,9 @@ function validRemoteCollectorResponses(): Record<string, unknown> {
             },
           },
           {
+            Name: 'AWS-KnownBadInputs',
+            Priority: 30,
+            OverrideAction: { None: {} },
             Statement: {
               ManagedRuleGroupStatement: {
                 VendorName: 'AWS',
@@ -1304,6 +1316,8 @@ function validRemoteCollectorResponses(): Record<string, unknown> {
             },
           },
           {
+            Name: 'signin-25-per-5m',
+            Priority: 40,
             Action: block,
             Statement: {
               RateBasedStatement: {
@@ -1313,8 +1327,8 @@ function validRemoteCollectorResponses(): Record<string, unknown> {
                 ScopeDownStatement: {
                   AndStatement: {
                     Statements: [
-                      exactByteMatch('UriPath', '/api/auth/sign-in/email'),
-                      exactByteMatch('Method', 'POST'),
+                      exactByteMatch('UriPath', 'L2FwaS9hdXRoL3NpZ24taW4vZW1haWw='),
+                      exactByteMatch('Method', 'UE9TVA=='),
                     ],
                   },
                 },
@@ -1322,6 +1336,8 @@ function validRemoteCollectorResponses(): Record<string, unknown> {
             },
           },
           {
+            Name: 'remote-plane-1000-per-5m',
+            Priority: 50,
             Action: block,
             Statement: {
               RateBasedStatement: {
@@ -1353,19 +1369,34 @@ function validRemoteCollectorResponses(): Record<string, unknown> {
     },
     logPolicy: {
       Policy: JSON.stringify({
+        Version: '2012-10-17',
         Statement: [
           {
+            Sid: 'AllowAlbLogDeliveryWrite',
             Effect: 'Allow',
             Principal: { Service: 'logdelivery.elasticloadbalancing.amazonaws.com' },
             Action: 's3:PutObject',
             Resource: `arn:aws:s3:::${REMOTE_LOG_BUCKET}/AWSLogs/845242190536/*`,
             Condition: {
-              StringEquals: { 'aws:SourceAccount': '845242190536' },
               ArnLike: { 'aws:SourceArn': albArn },
             },
           },
           {
+            Sid: 'AllowAlbLogDeliveryLegacyWrite',
+            Effect: 'Allow',
+            Principal: { AWS: 'arn:aws:iam::098369216593:root' },
+            Action: 's3:PutObject',
+            Resource: `arn:aws:s3:::${REMOTE_LOG_BUCKET}/AWSLogs/845242190536/*`,
+          },
+          {
+            Sid: 'DenyInsecureTransport',
             Effect: 'Deny',
+            Principal: '*',
+            Action: 's3:*',
+            Resource: [
+              `arn:aws:s3:::${REMOTE_LOG_BUCKET}`,
+              `arn:aws:s3:::${REMOTE_LOG_BUCKET}/*`,
+            ],
             Condition: { Bool: { 'aws:SecureTransport': 'false' } },
           },
         ],
@@ -3278,6 +3309,7 @@ describe('deploy config', () => {
       targetHealthy: true,
       targetSecurityGroupOnlyAlb: true,
       noDirectPublicTargetPath: true,
+      logBucketCompliant: true,
       wafCompliant: true,
     });
 
@@ -3370,6 +3402,58 @@ describe('deploy config', () => {
     expect(secondaryEniBroadIngress.facts?.noDirectPublicTargetPath).toBe(false);
   }, 60_000);
 
+  it('remote collector requires final ALB log policy and rejects stale source-account policy', async () => {
+    const exactFinalPolicy = await runRemoteAdminPerimeterCollection();
+    expect(exactFinalPolicy.status, exactFinalPolicy.stderr).toBe(0);
+    expect(exactFinalPolicy.facts?.logBucketCompliant).toBe(true);
+
+    const staleSourceAccountPolicy = await runRemoteAdminPerimeterCollection((responses) => {
+      const policy = JSON.parse(responses.logPolicy.Policy);
+      const [modernAllow, , tlsDeny] = policy.Statement;
+      modernAllow.Condition = {
+        StringEquals: { 'aws:SourceAccount': '845242190536' },
+        ArnLike: modernAllow.Condition.ArnLike,
+      };
+      policy.Statement = [modernAllow, tlsDeny];
+      responses.logPolicy.Policy = JSON.stringify(policy);
+    });
+    expect(staleSourceAccountPolicy.status, staleSourceAccountPolicy.stderr).toBe(0);
+    expect(staleSourceAccountPolicy.facts?.logBucketCompliant).toBe(false);
+  }, 60_000);
+
+  it('remote collector rejects an extra high-priority WAF Allow rule', async () => {
+    const bypass = await runRemoteAdminPerimeterCollection((responses) => {
+      responses.waf.WebACL.Rules.unshift({
+        Name: 'bypass-all',
+        Priority: 0,
+        Action: { Allow: {} },
+        Statement: {},
+      });
+    });
+
+    expect(bypass.status, bypass.stderr).toBe(0);
+    expect(bypass.facts?.wafCompliant).toBe(false);
+  }, 60_000);
+
+  it('remote collector rejects a non-Allow WAF default action', async () => {
+    const defaultBlock = await runRemoteAdminPerimeterCollection((responses) => {
+      responses.waf.WebACL.DefaultAction = { Block: {} };
+    });
+
+    expect(defaultBlock.status, defaultBlock.stderr).toBe(0);
+    expect(defaultBlock.facts?.wafCompliant).toBe(false);
+  }, 60_000);
+
+  it('remote collector requires API Base64 WAF byte-match strings', async () => {
+    const plaintextMethod = await runRemoteAdminPerimeterCollection((responses) => {
+      responses.waf.WebACL.Rules[3].Statement.RateBasedStatement.ScopeDownStatement.AndStatement.Statements[1]
+        .ByteMatchStatement.SearchString = 'POST';
+    });
+
+    expect(plaintextMethod.status, plaintextMethod.stderr).toBe(0);
+    expect(plaintextMethod.facts?.wafCompliant).toBe(false);
+  }, 60_000);
+
   it('documents gated, idempotent remote-admin edge provisioning without changing legacy access', async () => {
     const { existsSync, readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
@@ -3429,6 +3513,18 @@ describe('deploy config', () => {
     expect(provisioner).toContain('wait_for_ssm_success');
     expect(resources).not.toContain('LOVABLE_DNS_CONTROL_CONFIRMED');
     expect(resources.includes('secretsmanager get-secret-value')).toBe(false);
+    for (const requiredFragment of [
+      'aws_file_uri()',
+      'cygpath -w -- "$path"',
+      '--secret-string "$(aws_file_uri "$SECRET_FILE")"',
+      '--policy-document "$(aws_file_uri "$UPDATED_POLICY")"',
+      '--cors-configuration "$(aws_file_uri "$CORS_INTENDED")"',
+    ]) {
+      expect(resources.includes(requiredFragment), requiredFragment).toBe(true);
+    }
+    expect(resources).not.toMatch(
+      /(?:--secret-string|--policy-document|--cors-configuration)\s+"file:\/\/\$/,
+    );
     expect(
       readiness.includes(
         'REMOTE_ADMIN_MODE=1 REMOTE_TARGET_HEALTH_REQUIRED=0 bash apps/server-pilot/deploy/launch-readiness.sh',

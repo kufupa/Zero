@@ -4,8 +4,8 @@
 
 `DONE`
 
-Branch: `feat/remote-admin-alb`  
-Initial implementation commit: `3ef26a70f242a328d2f131f35358829d10cb5838`  
+Branch: `feat/remote-admin-alb`
+Initial implementation commit: `3ef26a70f242a328d2f131f35358829d10cb5838`
 Review-remediation commit: `595c5230a1a5ce9bf40378f73ece2486ae451a48`
 
 No AWS mutation occurred. In particular: no ACM certificate request, secret, ALB, target group, listener, security group, WAF, bucket, CORS change, target registration, host-forward rule, DNS record, or EC2/UFW change.

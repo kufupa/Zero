@@ -986,6 +986,7 @@ NODE
       "$remote_alb_sg_json" \
       "$remote_waf_json" \
       "$remote_waf_association_json" \
+      "$remote_waf_id" \
       "$remote_log_encryption_json" \
       "$remote_log_public_access_json" \
       "$remote_log_ownership_json" \
@@ -1005,6 +1006,7 @@ const [
   albSecurityGroupRaw,
   wafRaw,
   wafAssociationRaw,
+  expectedWafId,
   logEncryptionRaw,
   logPublicAccessRaw,
   logOwnershipRaw,
@@ -1046,34 +1048,37 @@ const hasExactStrings = (actual, expected) =>
   actual.length === expected.length &&
   actual.every((value) => typeof value === "string") &&
   [...actual].sort().every((value, index) => value === [...expected].sort()[index]);
-const statementActions = (statement) =>
-  Array.isArray(statement?.Action)
-    ? statement.Action
-    : typeof statement?.Action === "string"
-      ? [statement.Action]
-      : [];
+const hasExactObjectKeys = (value, expected) =>
+  isRecord(value) &&
+  Object.keys(value).length === expected.length &&
+  expected.every((key) => Object.hasOwn(value, key));
+const isExactEmptyObject = (value) =>
+  isRecord(value) && Object.keys(value).length === 0;
+const isExactAction = (value, name) =>
+  hasExactObjectKeys(value, [name]) && isExactEmptyObject(value[name]);
 const isExactByteMatch = (statement, field, expected) => {
   const byteMatch = statement?.ByteMatchStatement;
   if (
-    !isRecord(statement) ||
-    Object.keys(statement).length !== 1 ||
+    !hasExactObjectKeys(statement, ["ByteMatchStatement"]) ||
     !isRecord(byteMatch) ||
-    !isRecord(byteMatch.FieldToMatch) ||
-    Object.keys(byteMatch.FieldToMatch).length !== 1 ||
-    !Object.hasOwn(byteMatch.FieldToMatch, field) ||
+    !hasExactObjectKeys(byteMatch, [
+      "SearchString",
+      "FieldToMatch",
+      "TextTransformations",
+      "PositionalConstraint",
+    ]) ||
+    !hasExactObjectKeys(byteMatch.FieldToMatch, [field]) ||
+    !isExactEmptyObject(byteMatch.FieldToMatch[field]) ||
     byteMatch.PositionalConstraint !== "EXACTLY" ||
     !Array.isArray(byteMatch.TextTransformations) ||
     byteMatch.TextTransformations.length !== 1 ||
-    byteMatch.TextTransformations[0]?.Priority !== 0 ||
-    byteMatch.TextTransformations[0]?.Type !== "NONE"
+    !hasExactObjectKeys(byteMatch.TextTransformations[0], ["Priority", "Type"]) ||
+    byteMatch.TextTransformations[0].Priority !== 0 ||
+    byteMatch.TextTransformations[0].Type !== "NONE"
   ) {
     return false;
   }
-  const search = byteMatch.SearchString;
-  return (
-    search === expected ||
-    search === Buffer.from(expected, "utf8").toString("base64")
-  );
+  return byteMatch.SearchString === Buffer.from(expected, "utf8").toString("base64");
 };
 const securityGroupIdPattern = /^sg-[0-9a-f]{8,17}$/;
 const groupIds = (groups) => {
@@ -1419,54 +1424,155 @@ try {
   const policyStatements = Array.isArray(logPolicyValue?.Statement)
     ? logPolicyValue.Statement
     : [];
-  const tlsOnly = policyStatements.some(
-    (statement) =>
-      statement?.Effect === "Deny" &&
-      statement?.Condition?.Bool?.["aws:SecureTransport"] === "false",
-  );
-  const allowStatements = policyStatements.filter(
-    (statement) => statement?.Effect === "Allow",
-  );
-  const elbLogWriteOnly =
-    allowStatements.length === 1 &&
-    allowStatements[0]?.Principal?.Service ===
-      "logdelivery.elasticloadbalancing.amazonaws.com" &&
-    hasExactStrings(statementActions(allowStatements[0]), ["s3:PutObject"]) &&
-    allowStatements[0]?.Resource ===
-      `arn:aws:s3:::${LOG_BUCKET}/AWSLogs/${ACCOUNT_ID}/*` &&
-    allowStatements[0]?.Condition?.StringEquals?.["aws:SourceAccount"] === ACCOUNT_ID &&
-    allowStatements[0]?.Condition?.ArnLike?.["aws:SourceArn"] === albArn;
+  const exactModernLogDeliveryAllow = (statement) => {
+    if (
+      !hasExactObjectKeys(statement, [
+        "Sid",
+        "Effect",
+        "Principal",
+        "Action",
+        "Resource",
+        "Condition",
+      ]) ||
+      !hasExactObjectKeys(statement.Principal, ["Service"]) ||
+      !hasExactObjectKeys(statement.Condition, ["ArnLike"]) ||
+      !hasExactObjectKeys(statement.Condition.ArnLike, ["aws:SourceArn"])
+    ) {
+      return false;
+    }
+    return (
+      statement.Sid === "AllowAlbLogDeliveryWrite" &&
+      statement.Effect === "Allow" &&
+      statement.Principal.Service ===
+        "logdelivery.elasticloadbalancing.amazonaws.com" &&
+      statement.Action === "s3:PutObject" &&
+      statement.Resource ===
+        `arn:aws:s3:::${LOG_BUCKET}/AWSLogs/${ACCOUNT_ID}/*` &&
+      statement.Condition.ArnLike["aws:SourceArn"] === albArn
+    );
+  };
+  const exactLegacyLogDeliveryAllow = (statement) => {
+    if (
+      !hasExactObjectKeys(statement, [
+        "Sid",
+        "Effect",
+        "Principal",
+        "Action",
+        "Resource",
+      ]) ||
+      !hasExactObjectKeys(statement.Principal, ["AWS"])
+    ) {
+      return false;
+    }
+    return (
+      statement.Sid === "AllowAlbLogDeliveryLegacyWrite" &&
+      statement.Effect === "Allow" &&
+      statement.Principal.AWS === "arn:aws:iam::098369216593:root" &&
+      statement.Action === "s3:PutObject" &&
+      statement.Resource ===
+        `arn:aws:s3:::${LOG_BUCKET}/AWSLogs/${ACCOUNT_ID}/*`
+    );
+  };
+  const exactTlsOnlyDeny = (statement) => {
+    if (
+      !hasExactObjectKeys(statement, [
+        "Sid",
+        "Effect",
+        "Principal",
+        "Action",
+        "Resource",
+        "Condition",
+      ]) ||
+      !hasExactObjectKeys(statement.Condition, ["Bool"]) ||
+      !hasExactObjectKeys(statement.Condition.Bool, ["aws:SecureTransport"])
+    ) {
+      return false;
+    }
+    return (
+      statement.Sid === "DenyInsecureTransport" &&
+      statement.Effect === "Deny" &&
+      statement.Principal === "*" &&
+      statement.Action === "s3:*" &&
+      hasExactStrings(statement.Resource, [
+        `arn:aws:s3:::${LOG_BUCKET}`,
+        `arn:aws:s3:::${LOG_BUCKET}/*`,
+      ]) &&
+      statement.Condition.Bool["aws:SecureTransport"] === "false"
+    );
+  };
+  const exactLogBucketPolicy =
+    hasExactObjectKeys(logPolicyValue, ["Version", "Statement"]) &&
+    logPolicyValue.Version === "2012-10-17" &&
+    policyStatements.length === 3 &&
+    policyStatements.filter(
+      (statement) => statement?.Sid === "AllowAlbLogDeliveryWrite",
+    ).length === 1 &&
+    policyStatements.filter(
+      (statement) => statement?.Sid === "AllowAlbLogDeliveryLegacyWrite",
+    ).length === 1 &&
+    policyStatements.filter(
+      (statement) => statement?.Sid === "DenyInsecureTransport",
+    ).length === 1 &&
+    exactModernLogDeliveryAllow(
+      policyStatements.find(
+        (statement) => statement?.Sid === "AllowAlbLogDeliveryWrite",
+      ),
+    ) &&
+    exactLegacyLogDeliveryAllow(
+      policyStatements.find(
+        (statement) => statement?.Sid === "AllowAlbLogDeliveryLegacyWrite",
+      ),
+    ) &&
+    exactTlsOnlyDeny(
+      policyStatements.find(
+        (statement) => statement?.Sid === "DenyInsecureTransport",
+      ),
+    );
   empty.logBucketCompliant =
     attributeValue(albAttributes, "access_logs.s3.enabled") === "true" &&
     attributeValue(albAttributes, "access_logs.s3.bucket") === LOG_BUCKET &&
     encryptedSseS3 &&
     allPublicAccessBlocked &&
     bucketOwnerEnforced &&
-    tlsOnly &&
     lifecycle365 &&
-    elbLogWriteOnly;
+    exactLogBucketPolicy;
 
   const webAcl = wafValue?.WebACL;
   const wafRules = Array.isArray(webAcl?.Rules) ? webAcl.Rules : [];
-  const managedRuleNames = new Set(
-    wafRules
-      .filter((rule) => rule?.Statement?.ManagedRuleGroupStatement?.VendorName === "AWS")
-      .map((rule) => rule.Statement.ManagedRuleGroupStatement.Name),
-  );
-  const hasManagedBaseline = [
-    "AWSManagedRulesAmazonIpReputationList",
-    "AWSManagedRulesCommonRuleSet",
-    "AWSManagedRulesKnownBadInputsRuleSet",
-  ].every((name) => managedRuleNames.has(name));
-  const rateRules = wafRules.filter((rule) => isRecord(rule?.Statement?.RateBasedStatement));
-  const hasExactBlockAction = (rule) =>
-    isRecord(rule?.Action) &&
-    Object.keys(rule.Action).length === 1 &&
-    Object.hasOwn(rule.Action, "Block");
-  const isExactSigninRateRule = (rule) => {
-    const rate = rule.Statement.RateBasedStatement;
-    const statements = rate?.ScopeDownStatement?.AndStatement?.Statements;
+  const exactManagedRule = (rule, name, priority, groupName) => {
+    const managed = rule?.Statement?.ManagedRuleGroupStatement;
     return (
+      isRecord(rule) &&
+      rule.Name === name &&
+      rule.Priority === priority &&
+      !Object.hasOwn(rule, "Action") &&
+      isExactAction(rule.OverrideAction, "None") &&
+      hasExactObjectKeys(rule.Statement, ["ManagedRuleGroupStatement"]) &&
+      hasExactObjectKeys(managed, ["VendorName", "Name"]) &&
+      managed.VendorName === "AWS" &&
+      managed.Name === groupName
+    );
+  };
+  const hasExactBlockAction = (rule) =>
+    isExactAction(rule?.Action, "Block") && !Object.hasOwn(rule, "OverrideAction");
+  const isExactSigninRateRule = (rule) => {
+    const rate = rule?.Statement?.RateBasedStatement;
+    const scopeDown = rate?.ScopeDownStatement;
+    const andStatement = scopeDown?.AndStatement;
+    const statements = andStatement?.Statements;
+    return (
+      isRecord(rule) &&
+      rule.Name === "signin-25-per-5m" &&
+      rule.Priority === 40 &&
+      hasExactObjectKeys(rule.Statement, ["RateBasedStatement"]) &&
+      hasExactObjectKeys(rate, [
+        "Limit",
+        "AggregateKeyType",
+        "EvaluationWindowSec",
+        "ScopeDownStatement",
+      ]) &&
+      hasExactObjectKeys(scopeDown, ["AndStatement"]) &&
+      hasExactObjectKeys(andStatement, ["Statements"]) &&
       rate?.Limit === 25 &&
       rate?.AggregateKeyType === "IP" &&
       rate?.EvaluationWindowSec === 300 &&
@@ -1480,24 +1586,53 @@ try {
     );
   };
   const isExactPlaneRateRule = (rule) => {
-    const rate = rule.Statement.RateBasedStatement;
+    const rate = rule?.Statement?.RateBasedStatement;
     return (
+      isRecord(rule) &&
+      rule.Name === "remote-plane-1000-per-5m" &&
+      rule.Priority === 50 &&
+      hasExactObjectKeys(rule.Statement, ["RateBasedStatement"]) &&
+      hasExactObjectKeys(rate, [
+        "Limit",
+        "AggregateKeyType",
+        "EvaluationWindowSec",
+      ]) &&
       rate?.Limit === 1000 &&
       rate?.AggregateKeyType === "IP" &&
       rate?.EvaluationWindowSec === 300 &&
-      rate?.ScopeDownStatement === undefined &&
       hasExactBlockAction(rule)
     );
   };
-  const signinRateRules = rateRules.filter(isExactSigninRateRule);
-  const planeRateRules = rateRules.filter(isExactPlaneRateRule);
   empty.wafCompliant =
     webAcl?.Name === WAF_NAME &&
+    webAcl?.Id === expectedWafId &&
     wafAssociationValue?.WebACL?.ARN === webAcl?.ARN &&
-    hasManagedBaseline &&
-    rateRules.length === 2 &&
-    signinRateRules.length === 1 &&
-    planeRateRules.length === 1;
+    isExactAction(webAcl?.DefaultAction, "Allow") &&
+    wafRules.length === 5 &&
+    exactManagedRule(
+      wafRules.find((rule) => rule?.Name === "AWS-AmazonIpReputation"),
+      "AWS-AmazonIpReputation",
+      10,
+      "AWSManagedRulesAmazonIpReputationList",
+    ) &&
+    exactManagedRule(
+      wafRules.find((rule) => rule?.Name === "AWS-Common"),
+      "AWS-Common",
+      20,
+      "AWSManagedRulesCommonRuleSet",
+    ) &&
+    exactManagedRule(
+      wafRules.find((rule) => rule?.Name === "AWS-KnownBadInputs"),
+      "AWS-KnownBadInputs",
+      30,
+      "AWSManagedRulesKnownBadInputsRuleSet",
+    ) &&
+    isExactSigninRateRule(
+      wafRules.find((rule) => rule?.Name === "signin-25-per-5m"),
+    ) &&
+    isExactPlaneRateRule(
+      wafRules.find((rule) => rule?.Name === "remote-plane-1000-per-5m"),
+    );
 } catch {
   // Keep all remote facts false when any AWS response is missing or malformed.
 }
