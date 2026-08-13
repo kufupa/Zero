@@ -1610,29 +1610,25 @@ try {
     isExactAction(webAcl?.DefaultAction, "Allow") &&
     wafRules.length === 5 &&
     exactManagedRule(
-      wafRules.find((rule) => rule?.Name === "AWS-AmazonIpReputation"),
+      wafRules[0],
       "AWS-AmazonIpReputation",
       10,
       "AWSManagedRulesAmazonIpReputationList",
     ) &&
     exactManagedRule(
-      wafRules.find((rule) => rule?.Name === "AWS-Common"),
+      wafRules[1],
       "AWS-Common",
       20,
       "AWSManagedRulesCommonRuleSet",
     ) &&
     exactManagedRule(
-      wafRules.find((rule) => rule?.Name === "AWS-KnownBadInputs"),
+      wafRules[2],
       "AWS-KnownBadInputs",
       30,
       "AWSManagedRulesKnownBadInputsRuleSet",
     ) &&
-    isExactSigninRateRule(
-      wafRules.find((rule) => rule?.Name === "signin-25-per-5m"),
-    ) &&
-    isExactPlaneRateRule(
-      wafRules.find((rule) => rule?.Name === "remote-plane-1000-per-5m"),
-    );
+    isExactSigninRateRule(wafRules[3]) &&
+    isExactPlaneRateRule(wafRules[4]);
 } catch {
   // Keep all remote facts false when any AWS response is missing or malformed.
 }

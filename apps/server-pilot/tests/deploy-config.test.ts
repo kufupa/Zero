@@ -3345,6 +3345,12 @@ describe('deploy config', () => {
     });
     expect(countRateRule.facts?.wafCompliant).toBe(false);
 
+    const swappedWafRules = await runRemoteAdminPerimeterCollection((responses) => {
+      const rules = responses.waf.WebACL.Rules;
+      [rules[0], rules[1]] = [rules[1], rules[0]];
+    });
+    expect(swappedWafRules.facts?.wafCompliant).toBe(false);
+
     const broadSigninScope = await runRemoteAdminPerimeterCollection((responses) => {
       responses.waf.WebACL.Rules[3].Statement.RateBasedStatement.ScopeDownStatement.AndStatement.Statements.push(
         {
@@ -3409,16 +3415,29 @@ describe('deploy config', () => {
 
     const staleSourceAccountPolicy = await runRemoteAdminPerimeterCollection((responses) => {
       const policy = JSON.parse(responses.logPolicy.Policy);
-      const [modernAllow, , tlsDeny] = policy.Statement;
+      const [modernAllow, legacyAllow, tlsDeny] = policy.Statement;
       modernAllow.Condition = {
         StringEquals: { 'aws:SourceAccount': '845242190536' },
         ArnLike: modernAllow.Condition.ArnLike,
       };
-      policy.Statement = [modernAllow, tlsDeny];
+      policy.Statement = [modernAllow, legacyAllow, tlsDeny];
       responses.logPolicy.Policy = JSON.stringify(policy);
     });
     expect(staleSourceAccountPolicy.status, staleSourceAccountPolicy.stderr).toBe(0);
     expect(staleSourceAccountPolicy.facts?.logBucketCompliant).toBe(false);
+  }, 60_000);
+
+  it('remote collector rejects a broad ALB log-delivery resource', async () => {
+    const broadResourcePolicy = await runRemoteAdminPerimeterCollection((responses) => {
+      const policy = JSON.parse(responses.logPolicy.Policy);
+      const [modernAllow, legacyAllow, tlsDeny] = policy.Statement;
+      modernAllow.Resource = `arn:aws:s3:::${REMOTE_LOG_BUCKET}/*`;
+      policy.Statement = [modernAllow, legacyAllow, tlsDeny];
+      responses.logPolicy.Policy = JSON.stringify(policy);
+    });
+
+    expect(broadResourcePolicy.status, broadResourcePolicy.stderr).toBe(0);
+    expect(broadResourcePolicy.facts?.logBucketCompliant).toBe(false);
   }, 60_000);
 
   it('remote collector rejects an extra high-priority WAF Allow rule', async () => {
@@ -3652,9 +3671,20 @@ describe('deploy config', () => {
         new RegExp(`stage: '${from}'[\\s\\S]{0,200}next: '${to}'`),
       );
     }
+    expect(provisioner).toContain('collect_current "$PRE_SCRATCH"');
+    expect(provisioner).toContain(
+      'PRE_STAGE="$(result_stage "$PRE_SCRATCH/result.json")" || die',
+    );
     expect(provisioner).toContain('mutate_one "$PRE_STAGE" "$PRE_SCRATCH"');
     expect(provisioner).toContain('collect_current "$POST_SCRATCH"');
-    expect(provisioner).toContain('[[ "$POST_STAGE" == "$EXPECTED_NEXT" ]]');
+    expect(provisioner).toContain(
+      'POST_STAGE="$(result_stage "$POST_SCRATCH/result.json")" || die',
+    );
+    expect(provisioner).toContain('state.validatePostMutationStage(');
+    expect(provisioner).toMatch(
+      /REMOTE_EDGE_STAGE="\$PRE_STAGE" REMOTE_EDGE_POST_STAGE="\$POST_STAGE" \\\s+state_bridge "\$POST_SCRATCH" post/,
+    );
+    expect(provisioner).not.toContain('[[ "$POST_STAGE" == "$EXPECTED_NEXT" ]]');
   });
 
   it('documents no early public exposure across provisioning transitions', async () => {
