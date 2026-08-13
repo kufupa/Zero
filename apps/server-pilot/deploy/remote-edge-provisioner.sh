@@ -21,7 +21,7 @@ readonly ALB_POLL_MAX_ATTEMPTS="${REMOTE_EDGE_ALB_POLL_MAX_ATTEMPTS:-60}"
 readonly ALB_POLL_INTERVAL_SECONDS="${REMOTE_EDGE_ALB_POLL_INTERVAL_SECONDS:-15}"
 readonly LOG_PROOF_MAX_ATTEMPTS="${REMOTE_EDGE_LOG_PROOF_MAX_ATTEMPTS:-60}"
 readonly LOG_PROOF_INTERVAL_SECONDS="${REMOTE_EDGE_LOG_PROOF_INTERVAL_SECONDS:-15}"
-readonly LOG_PROOF_RECEIPT_MAX_AGE_SECONDS="${REMOTE_EDGE_LOG_PROOF_RECEIPT_MAX_AGE_SECONDS:-86400}"
+readonly LOG_PROOF_MAX_AGE_SECONDS="${REMOTE_EDGE_LOG_PROOF_MAX_AGE_SECONDS:-900}"
 readonly LOG_PROOF_RECEIPT_NAME='alb-log-delivery-proof.json'
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -102,11 +102,11 @@ require_bounded_integer "$ALB_POLL_MAX_ATTEMPTS" 60
 require_bounded_integer "$ALB_POLL_INTERVAL_SECONDS" 30
 require_bounded_integer "$LOG_PROOF_MAX_ATTEMPTS" 60
 require_bounded_integer "$LOG_PROOF_INTERVAL_SECONDS" 30
-require_bounded_integer "$LOG_PROOF_RECEIPT_MAX_AGE_SECONDS" 86400
+require_bounded_integer "$LOG_PROOF_MAX_AGE_SECONDS" 86400
 (( 10#$SSM_POLL_MAX_ATTEMPTS >= 1 )) || die
 (( 10#$ALB_POLL_MAX_ATTEMPTS >= 1 )) || die
 (( 10#$LOG_PROOF_MAX_ATTEMPTS >= 1 )) || die
-(( 10#$LOG_PROOF_RECEIPT_MAX_AGE_SECONDS >= 1 )) || die
+(( 10#$LOG_PROOF_MAX_AGE_SECONDS >= 1 )) || die
 AWS_BIN="${REMOTE_EDGE_AWS_BIN:-aws}"
 SSM_BIN="${REMOTE_EDGE_SSM_BIN:-$AWS_BIN}"
 REMOTE_EDGE_CURL_BIN="${REMOTE_EDGE_CURL_BIN:-curl}"
@@ -166,23 +166,6 @@ assert_safe_evidence_parent() {
   [[ "$mode" =~ ^[0-7]{3,4}$ ]] || die
   permissions="${mode: -3}"
   (( (8#$permissions & 8#022) == 0 )) || die
-}
-
-read_numeric_mode() {
-  local path="$1"
-  stat -c '%a' -- "$path" 2>/dev/null ||
-    stat -f '%Lp' -- "$path" 2>/dev/null
-}
-
-is_safe_private_evidence_file() {
-  local path="$1"
-  local mode
-  local permissions
-  [[ ! -L "$path" && -f "$path" && -O "$path" ]] || return 1
-  mode="$(read_numeric_mode "$path")" || return 1
-  [[ "$mode" =~ ^[0-7]{3,4}$ ]] || return 1
-  permissions="${mode: -3}"
-  [[ "$permissions" == '600' ]]
 }
 
 normalize_evidence_root() {
@@ -539,68 +522,10 @@ now_epoch_seconds() {
   printf '%s\n' "$value"
 }
 
-valid_log_proof_receipt() {
-  local path="$1"
-  local scope="$2"
-  local now="$3"
-  node - "$path" "$scope" "$now" "$LOG_PROOF_RECEIPT_MAX_AGE_SECONDS" <<'NODE'
-const fs = require('fs');
-const [path, scope, nowText, maxAgeText] = process.argv.slice(2);
-let receipt;
-try {
-  receipt = JSON.parse(fs.readFileSync(path, 'utf8'));
-} catch {
-  process.exit(1);
-}
-const now = Number(nowText);
-const maxAge = Number(maxAgeText);
-const valid =
-  receipt !== null &&
-  typeof receipt === 'object' &&
-  !Array.isArray(receipt) &&
-  Object.keys(receipt).length === 3 &&
-  Object.hasOwn(receipt, 'version') &&
-  Object.hasOwn(receipt, 'scope') &&
-  Object.hasOwn(receipt, 'issuedAt') &&
-  receipt.version === 1 &&
-  typeof receipt.scope === 'string' &&
-  /^[a-f0-9]{64}$/.test(receipt.scope) &&
-  receipt.scope === scope &&
-  Number.isSafeInteger(receipt.issuedAt) &&
-  Number.isSafeInteger(now) &&
-  Number.isSafeInteger(maxAge) &&
-  receipt.issuedAt >= 0 &&
-  now >= receipt.issuedAt &&
-  now - receipt.issuedAt <= maxAge;
-process.exit(valid ? 0 : 1);
-NODE
-}
-
-load_log_proof_receipt() {
-  local scratch="$1"
-  local scope
-  local now
-  if [[ ! -e "$LOG_PROOF_RECEIPT_PATH" && ! -L "$LOG_PROOF_RECEIPT_PATH" ]]; then
-    return 0
-  fi
-  is_safe_private_evidence_file "$LOG_PROOF_RECEIPT_PATH" || return 0
-  scope="$(log_proof_scope "$scratch/refs.json")" || return 0
-  now="$(now_epoch_seconds)" || return 0
-  valid_log_proof_receipt "$LOG_PROOF_RECEIPT_PATH" "$scope" "$now" || return 0
-  printf '%s\n' '{"accessLogDelivered":true}' >"$scratch/logProof.json"
-  chmod 600 -- "$scratch/logProof.json"
-}
-
-write_log_proof_receipt() {
-  local scratch="$1"
-  local scope
+write_log_proof_audit_receipt() {
+  local scope="$1"
   local now
   local temporary
-  [[ ! -L "$LOG_PROOF_RECEIPT_PATH" ]] || die
-  if [[ -e "$LOG_PROOF_RECEIPT_PATH" ]]; then
-    is_safe_private_evidence_file "$LOG_PROOF_RECEIPT_PATH" || die
-  fi
-  scope="$(log_proof_scope "$scratch/refs.json")" || die
   now="$(now_epoch_seconds)" || die
   temporary="$(mktemp "$EVIDENCE_ROOT/.remote-edge-log-proof.XXXXXX")"
   chmod 600 -- "$temporary"
@@ -621,15 +546,20 @@ fs.writeFileSync(
   { mode: 0o600 },
 );
 NODE
-  [[ ! -L "$LOG_PROOF_RECEIPT_PATH" ]] || die
   mv -f -- "$temporary" "$LOG_PROOF_RECEIPT_PATH"
   chmod 600 -- "$LOG_PROOF_RECEIPT_PATH"
-  is_safe_private_evidence_file "$LOG_PROOF_RECEIPT_PATH" || die
+}
+
+classify_current() {
+  local scratch="$1"
+  state_bridge "$scratch" result >"$scratch/result.json" 2>/dev/null || die
+  chmod 600 -- "$scratch/result.json"
 }
 
 collect_current() {
   local scratch="$1"
   local proof_path="${2:-}"
+  local classify_result="${3:-yes}"
   local certificate_arn
   local alb_arn
   local target_group_arn
@@ -649,7 +579,6 @@ collect_current() {
   capture "$scratch" wafs.json wafv2 list-web-acls --region "$AWS_REGION" --scope REGIONAL --output json
   capture "$scratch" buckets.json s3api list-buckets --output json
   write_refs "$scratch"
-  load_log_proof_receipt "$scratch"
 
   certificate_arn="$(reference "$scratch" certificateArn)" || die
   capture "$scratch" certificate.json acm describe-certificate --region "$AWS_REGION" --certificate-arn "$certificate_arn" --output json
@@ -697,9 +626,19 @@ NODE
     [[ -f "$proof_path" && ! -L "$proof_path" ]] || die
     cp -- "$proof_path" "$scratch/logProof.json" || die
     chmod 600 -- "$scratch/logProof.json"
+  else
+    derive_fresh_log_delivery_proof "$scratch"
   fi
-  state_bridge "$scratch" result >"$scratch/result.json" 2>/dev/null || die
-  chmod 600 -- "$scratch/result.json"
+  case "$classify_result" in
+    yes)
+      classify_current "$scratch"
+      ;;
+    no)
+      ;;
+    *)
+      die
+      ;;
+  esac
 }
 
 result_stage() {
@@ -868,6 +807,41 @@ const found = value.Contents.some(
 );
 process.exit(found ? 0 : 1);
 NODE
+}
+
+derive_fresh_log_delivery_proof() {
+  local scratch="$1"
+  local alb_arn
+  local now
+  local not_before
+  local objects="$scratch/log-proof-objects.json"
+  alb_arn="$(reference "$scratch" albArn)" || die
+  [[ -n "$alb_arn" ]] || return
+  log_proof_scope "$scratch/refs.json" >/dev/null 2>&1 || return
+  capture "$scratch" log-proof-objects.json s3api list-objects-v2 \
+    --region "$AWS_REGION" \
+    --bucket "$LOG_BUCKET" \
+    --prefix "AWSLogs/${AWS_ACCOUNT_ID}/" \
+    --output json
+  now="$(now_epoch_seconds)" || die
+  not_before="$(node - "$now" "$LOG_PROOF_MAX_AGE_SECONDS" <<'NODE'
+const [nowText, maxAgeText] = process.argv.slice(2);
+const now = Number(nowText);
+const maxAge = Number(maxAgeText);
+if (
+  !Number.isSafeInteger(now) ||
+  !Number.isSafeInteger(maxAge) ||
+  now < maxAge
+) {
+  process.exit(2);
+}
+process.stdout.write(new Date((now - maxAge) * 1000).toISOString());
+NODE
+)" || die
+  if has_recent_alb_log "$objects" "$not_before" "$alb_arn"; then
+    printf '%s\n' '{"accessLogDelivered":true}' >"$scratch/logProof.json"
+    chmod 600 -- "$scratch/logProof.json"
+  fi
 }
 
 prove_alb_log_delivery() {
@@ -1059,9 +1033,16 @@ collect_current "$PRE_SCRATCH"
 PRE_STAGE="$(result_stage "$PRE_SCRATCH/result.json")" || die
 PRE_ACTION="$(result_action "$PRE_SCRATCH/result.json")" || die
 [[ "$ACTION" == "$PRE_ACTION" && "$PRE_ACTION" != 'STOP' ]] || die
+PRE_LOG_PROOF_SCOPE=''
+if [[ "$PRE_STAGE" == 'UFW_READY' ]]; then
+  PRE_LOG_PROOF_SCOPE="$(log_proof_scope "$PRE_SCRATCH/refs.json")" || die
+fi
 mutate_one "$PRE_STAGE" "$PRE_SCRATCH"
 if [[ "$PRE_STAGE" == 'UFW_READY' ]]; then
-  collect_current "$POST_SCRATCH" "$PRE_SCRATCH/logProof.json"
+  collect_current "$POST_SCRATCH" "$PRE_SCRATCH/logProof.json" no
+  POST_LOG_PROOF_SCOPE="$(log_proof_scope "$POST_SCRATCH/refs.json")" || die
+  [[ "$PRE_LOG_PROOF_SCOPE" == "$POST_LOG_PROOF_SCOPE" ]] || die
+  classify_current "$POST_SCRATCH"
 else
   collect_current "$POST_SCRATCH"
 fi
@@ -1069,7 +1050,7 @@ POST_STAGE="$(result_stage "$POST_SCRATCH/result.json")" || die
 REMOTE_EDGE_STAGE="$PRE_STAGE" REMOTE_EDGE_POST_STAGE="$POST_STAGE" \
   state_bridge "$POST_SCRATCH" post >/dev/null 2>/dev/null || die
 if [[ "$PRE_STAGE" == 'UFW_READY' ]]; then
-  write_log_proof_receipt "$POST_SCRATCH"
+  write_log_proof_audit_receipt "$PRE_LOG_PROOF_SCOPE"
 fi
 write_evidence "$POST_SCRATCH/result.json"
 cat "$POST_SCRATCH/result.json"

@@ -28,7 +28,7 @@ Remote administration is separate from hotel access:
 
 1. Read-only preflight must match account, region, VPC, instance, target private IP, ALB subnets, existing target ingress, and required IAM actions. Lovable DNS edit authority is already confirmed.
 2. Request ACM certificate for `nava-admin.trynava.io`; stop at Gate A and give operator exact validation CNAME. Do not create edge resources before Gate A approval.
-3. After certificate becomes `ISSUED`, create guarded ALB, target group, security groups, logs, WAF, and UFW controls. Listener default stays fixed `404`. Before Task 4 reaches pre-Gate-B readiness, use that fixed-404 listener for a harmless body-discarded remote-host request and bounded ALB-log delivery proof; retain only boolean evidence.
+3. After certificate becomes `ISSUED`, create guarded ALB, target group, security groups, logs, WAF, and UFW controls. Listener default stays fixed `404`. Before Task 4 reaches pre-Gate-B readiness, use that fixed-404 listener for a harmless body-discarded remote-host request and bounded ALB-log delivery proof; retain only boolean evidence. Every terminal inspection independently validates fresh, bounded-age S3 log evidence for exact current ALB scope; any persistent receipt is sanitized audit metadata, never readiness input.
 4. Do not register target or create host-forward rule until Task 5 remote readiness is green.
 5. After operator saves public CNAME, complete Gate B DNS observation and additive S3 CORS change. Then remote active readiness requires a healthy target and exact host-forward rule.
 
