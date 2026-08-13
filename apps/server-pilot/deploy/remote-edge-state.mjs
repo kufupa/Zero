@@ -1014,14 +1014,21 @@ function isExactByteMatch(statement, field, search) {
 
 function exactManagedRule(rule, name, priority, groupName) {
   const value = object(rule);
-  const managed = object(object(value.Statement).ManagedRuleGroupStatement);
+  const statement = object(value.Statement);
+  const managed = object(statement.ManagedRuleGroupStatement);
   return (
     value.Name === name &&
     value.Priority === priority &&
+    !Object.hasOwn(value, 'Action') &&
     isObject(value.OverrideAction) &&
     Object.keys(value.OverrideAction).length === 1 &&
     isObject(value.OverrideAction.None) &&
     Object.keys(value.OverrideAction.None).length === 0 &&
+    Object.keys(statement).length === 1 &&
+    Object.hasOwn(statement, 'ManagedRuleGroupStatement') &&
+    Object.keys(managed).length === 2 &&
+    Object.hasOwn(managed, 'VendorName') &&
+    Object.hasOwn(managed, 'Name') &&
     managed.VendorName === 'AWS' &&
     managed.Name === groupName
   );
@@ -1068,6 +1075,11 @@ function deriveWafStage(projections, references) {
   if (!references.waf) return 'absent';
   const webAcl = object(object(projections.waf).WebACL);
   const rules = arrays(webAcl, 'Rules');
+  const defaultAllow =
+    isObject(webAcl.DefaultAction) &&
+    Object.keys(webAcl.DefaultAction).length === 1 &&
+    isObject(webAcl.DefaultAction.Allow) &&
+    Object.keys(webAcl.DefaultAction.Allow).length === 0;
   const required = [
     exactManagedRule(
       rules.find((rule) => object(rule).Name === 'AWS-AmazonIpReputation'),
@@ -1096,8 +1108,7 @@ function deriveWafStage(projections, references) {
     webAcl.Name !== WAF_NAME ||
     webAcl.ARN !== references.wafArn ||
     webAcl.Id !== references.wafId ||
-    !isObject(webAcl.DefaultAction) ||
-    !isObject(webAcl.DefaultAction.Allow) ||
+    !defaultAllow ||
     rules.length !== 5 ||
     required.some((valid) => !valid)
   ) {

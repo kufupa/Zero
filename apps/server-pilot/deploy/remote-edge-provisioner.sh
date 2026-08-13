@@ -21,6 +21,8 @@ readonly ALB_POLL_MAX_ATTEMPTS="${REMOTE_EDGE_ALB_POLL_MAX_ATTEMPTS:-60}"
 readonly ALB_POLL_INTERVAL_SECONDS="${REMOTE_EDGE_ALB_POLL_INTERVAL_SECONDS:-15}"
 readonly LOG_PROOF_MAX_ATTEMPTS="${REMOTE_EDGE_LOG_PROOF_MAX_ATTEMPTS:-60}"
 readonly LOG_PROOF_INTERVAL_SECONDS="${REMOTE_EDGE_LOG_PROOF_INTERVAL_SECONDS:-15}"
+readonly LOG_PROOF_RECEIPT_MAX_AGE_SECONDS="${REMOTE_EDGE_LOG_PROOF_RECEIPT_MAX_AGE_SECONDS:-86400}"
+readonly LOG_PROOF_RECEIPT_NAME='alb-log-delivery-proof.json'
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly SCRIPT_DIR
@@ -100,9 +102,11 @@ require_bounded_integer "$ALB_POLL_MAX_ATTEMPTS" 60
 require_bounded_integer "$ALB_POLL_INTERVAL_SECONDS" 30
 require_bounded_integer "$LOG_PROOF_MAX_ATTEMPTS" 60
 require_bounded_integer "$LOG_PROOF_INTERVAL_SECONDS" 30
+require_bounded_integer "$LOG_PROOF_RECEIPT_MAX_AGE_SECONDS" 86400
 (( 10#$SSM_POLL_MAX_ATTEMPTS >= 1 )) || die
 (( 10#$ALB_POLL_MAX_ATTEMPTS >= 1 )) || die
 (( 10#$LOG_PROOF_MAX_ATTEMPTS >= 1 )) || die
+(( 10#$LOG_PROOF_RECEIPT_MAX_AGE_SECONDS >= 1 )) || die
 AWS_BIN="${REMOTE_EDGE_AWS_BIN:-aws}"
 SSM_BIN="${REMOTE_EDGE_SSM_BIN:-$AWS_BIN}"
 REMOTE_EDGE_CURL_BIN="${REMOTE_EDGE_CURL_BIN:-curl}"
@@ -164,6 +168,23 @@ assert_safe_evidence_parent() {
   (( (8#$permissions & 8#022) == 0 )) || die
 }
 
+read_numeric_mode() {
+  local path="$1"
+  stat -c '%a' -- "$path" 2>/dev/null ||
+    stat -f '%Lp' -- "$path" 2>/dev/null
+}
+
+is_safe_private_evidence_file() {
+  local path="$1"
+  local mode
+  local permissions
+  [[ ! -L "$path" && -f "$path" && -O "$path" ]] || return 1
+  mode="$(read_numeric_mode "$path")" || return 1
+  [[ "$mode" =~ ^[0-7]{3,4}$ ]] || return 1
+  permissions="${mode: -3}"
+  [[ "$permissions" == '600' ]]
+}
+
 normalize_evidence_root() {
   if [[ "$EVIDENCE_ROOT" =~ ^[A-Za-z]:[\\/].* ]]; then
     command -v cygpath >/dev/null 2>&1 || die
@@ -210,6 +231,7 @@ prepare_evidence_root() {
 
 normalize_evidence_root
 prepare_evidence_root
+readonly LOG_PROOF_RECEIPT_PATH="$EVIDENCE_ROOT/$LOG_PROOF_RECEIPT_NAME"
 SCRATCH_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/nava-remote-edge.XXXXXX")"
 chmod 700 -- "$SCRATCH_ROOT"
 trap 'rm -rf -- "$SCRATCH_ROOT"' EXIT
@@ -480,6 +502,131 @@ observe_host() {
   wait_for_ssm_success "$scratch" host.json "$command_id_value"
 }
 
+log_proof_scope() {
+  local refs_path="$1"
+  node - "$refs_path" <<'NODE'
+const crypto = require('crypto');
+const fs = require('fs');
+const refs = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+const albArn = refs?.albArn;
+const bucket = refs?.bucket;
+const expectedAlb =
+  /^arn:aws:elasticloadbalancing:af-south-1:845242190536:loadbalancer\/app\/nava-remote-admin-alb\/[A-Za-z0-9-]+$/;
+if (
+  typeof albArn !== 'string' ||
+  !expectedAlb.test(albArn) ||
+  bucket === null ||
+  typeof bucket !== 'object' ||
+  Array.isArray(bucket) ||
+  bucket.Name !== 'nava-zero-remote-alb-logs-845242190536-af-south-1'
+) {
+  process.exit(2);
+}
+process.stdout.write(
+  crypto
+    .createHash('sha256')
+    .update(JSON.stringify({ version: 1, albArn, bucket: bucket.Name }))
+    .digest('hex'),
+);
+NODE
+}
+
+now_epoch_seconds() {
+  local value
+  value="$("${DATE[@]}" -u +%s)" || return 1
+  [[ "$value" =~ ^[0-9]+$ ]] || return 1
+  (( 10#$value <= 4102444800 )) || return 1
+  printf '%s\n' "$value"
+}
+
+valid_log_proof_receipt() {
+  local path="$1"
+  local scope="$2"
+  local now="$3"
+  node - "$path" "$scope" "$now" "$LOG_PROOF_RECEIPT_MAX_AGE_SECONDS" <<'NODE'
+const fs = require('fs');
+const [path, scope, nowText, maxAgeText] = process.argv.slice(2);
+let receipt;
+try {
+  receipt = JSON.parse(fs.readFileSync(path, 'utf8'));
+} catch {
+  process.exit(1);
+}
+const now = Number(nowText);
+const maxAge = Number(maxAgeText);
+const valid =
+  receipt !== null &&
+  typeof receipt === 'object' &&
+  !Array.isArray(receipt) &&
+  Object.keys(receipt).length === 3 &&
+  Object.hasOwn(receipt, 'version') &&
+  Object.hasOwn(receipt, 'scope') &&
+  Object.hasOwn(receipt, 'issuedAt') &&
+  receipt.version === 1 &&
+  typeof receipt.scope === 'string' &&
+  /^[a-f0-9]{64}$/.test(receipt.scope) &&
+  receipt.scope === scope &&
+  Number.isSafeInteger(receipt.issuedAt) &&
+  Number.isSafeInteger(now) &&
+  Number.isSafeInteger(maxAge) &&
+  receipt.issuedAt >= 0 &&
+  now >= receipt.issuedAt &&
+  now - receipt.issuedAt <= maxAge;
+process.exit(valid ? 0 : 1);
+NODE
+}
+
+load_log_proof_receipt() {
+  local scratch="$1"
+  local scope
+  local now
+  if [[ ! -e "$LOG_PROOF_RECEIPT_PATH" && ! -L "$LOG_PROOF_RECEIPT_PATH" ]]; then
+    return 0
+  fi
+  is_safe_private_evidence_file "$LOG_PROOF_RECEIPT_PATH" || return 0
+  scope="$(log_proof_scope "$scratch/refs.json")" || return 0
+  now="$(now_epoch_seconds)" || return 0
+  valid_log_proof_receipt "$LOG_PROOF_RECEIPT_PATH" "$scope" "$now" || return 0
+  printf '%s\n' '{"accessLogDelivered":true}' >"$scratch/logProof.json"
+  chmod 600 -- "$scratch/logProof.json"
+}
+
+write_log_proof_receipt() {
+  local scratch="$1"
+  local scope
+  local now
+  local temporary
+  [[ ! -L "$LOG_PROOF_RECEIPT_PATH" ]] || die
+  if [[ -e "$LOG_PROOF_RECEIPT_PATH" ]]; then
+    is_safe_private_evidence_file "$LOG_PROOF_RECEIPT_PATH" || die
+  fi
+  scope="$(log_proof_scope "$scratch/refs.json")" || die
+  now="$(now_epoch_seconds)" || die
+  temporary="$(mktemp "$EVIDENCE_ROOT/.remote-edge-log-proof.XXXXXX")"
+  chmod 600 -- "$temporary"
+  node - "$scope" "$now" "$temporary" <<'NODE'
+const fs = require('fs');
+const [scope, issuedAtText, outputPath] = process.argv.slice(2);
+const issuedAt = Number(issuedAtText);
+if (
+  !/^[a-f0-9]{64}$/.test(scope) ||
+  !Number.isSafeInteger(issuedAt) ||
+  issuedAt < 0
+) {
+  process.exit(2);
+}
+fs.writeFileSync(
+  outputPath,
+  JSON.stringify({ version: 1, scope, issuedAt }) + '\n',
+  { mode: 0o600 },
+);
+NODE
+  [[ ! -L "$LOG_PROOF_RECEIPT_PATH" ]] || die
+  mv -f -- "$temporary" "$LOG_PROOF_RECEIPT_PATH"
+  chmod 600 -- "$LOG_PROOF_RECEIPT_PATH"
+  is_safe_private_evidence_file "$LOG_PROOF_RECEIPT_PATH" || die
+}
+
 collect_current() {
   local scratch="$1"
   local proof_path="${2:-}"
@@ -502,6 +649,7 @@ collect_current() {
   capture "$scratch" wafs.json wafv2 list-web-acls --region "$AWS_REGION" --scope REGIONAL --output json
   capture "$scratch" buckets.json s3api list-buckets --output json
   write_refs "$scratch"
+  load_log_proof_receipt "$scratch"
 
   certificate_arn="$(reference "$scratch" certificateArn)" || die
   capture "$scratch" certificate.json acm describe-certificate --region "$AWS_REGION" --certificate-arn "$certificate_arn" --output json
@@ -920,5 +1068,8 @@ fi
 POST_STAGE="$(result_stage "$POST_SCRATCH/result.json")" || die
 REMOTE_EDGE_STAGE="$PRE_STAGE" REMOTE_EDGE_POST_STAGE="$POST_STAGE" \
   state_bridge "$POST_SCRATCH" post >/dev/null 2>/dev/null || die
+if [[ "$PRE_STAGE" == 'UFW_READY' ]]; then
+  write_log_proof_receipt "$POST_SCRATCH"
+fi
 write_evidence "$POST_SCRATCH/result.json"
 cat "$POST_SCRATCH/result.json"

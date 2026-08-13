@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -71,6 +72,7 @@ type Mode =
   | 'bucket-policy-source-account-extra-condition'
   | 'create-bucket-auto-hardening'
   | 'log-proof-failure'
+  | 'log-proof-post-state-divergence'
   | 'log-proof-boundary'
   | 'log-proof-wrong-key'
   | 'log-proof-invalid-time'
@@ -95,7 +97,12 @@ type Mode =
   | 'waf-noncanonical-byte-match'
   | 'waf-wrong-byte-match'
   | 'waf-mismatched-arn'
-  | 'waf-mismatched-id';
+  | 'waf-mismatched-id'
+  | 'waf-managed-scope-down'
+  | 'waf-managed-excluded-rules'
+  | 'waf-managed-rule-action-overrides'
+  | 'waf-managed-action'
+  | 'waf-default-allow-extra';
 
 type Harness = {
   root: string;
@@ -294,10 +301,10 @@ const bucketPolicy = (shape = 'final') => {
       Condition: shape === 'source-account'
         ? {
             StringEquals: { 'aws:SourceAccount': sourceAccount },
-            ArnLike: { 'aws:SourceArn': albArn },
+            ArnLike: { 'aws:SourceArn': currentAlbArn },
             ...extraCondition,
           }
-        : { ArnLike: { 'aws:SourceArn': albArn } },
+        : { ArnLike: { 'aws:SourceArn': currentAlbArn } },
     },
   ];
   if (shape === 'final') {
@@ -340,31 +347,58 @@ const readbackWafArn = state.mode === 'waf-mismatched-arn'
 const readbackWafId = state.mode === 'waf-mismatched-id'
   ? 'a9c8c95f-9f6f-4f6e-8e9b-071cbd1769ae'
   : wafId;
+const currentAlbArn = state.receiptIdentityMismatch
+  ? 'arn:aws:elasticloadbalancing:af-south-1:845242190536:loadbalancer/app/nava-remote-admin-alb/other'
+  : albArn;
+const currentAlbResource = currentAlbArn.slice(
+  currentAlbArn.indexOf(':loadbalancer/') + ':loadbalancer/'.length,
+);
+const managedStatement = (name) => {
+  const managed = { VendorName: 'AWS', Name: name };
+  if (state.mode === 'waf-managed-scope-down') {
+    managed.ScopeDownStatement = { NotStatement: { Statement: { GeoMatchStatement: { CountryCodes: ['ZA'] } } } };
+  }
+  if (state.mode === 'waf-managed-excluded-rules') {
+    managed.ExcludedRules = [{ Name: 'SizeRestrictions_BODY' }];
+  }
+  if (state.mode === 'waf-managed-rule-action-overrides') {
+    managed.RuleActionOverrides = [{
+      Name: 'SizeRestrictions_BODY',
+      ActionToUse: { Count: {} },
+    }];
+  }
+  return { ManagedRuleGroupStatement: managed };
+};
+const managedRule = (name, priority, groupName) => {
+  const rule = {
+    Name: name,
+    Priority: priority,
+    OverrideAction: { None: {} },
+    Statement: managedStatement(groupName),
+  };
+  if (state.mode === 'waf-managed-action') rule.Action = { Count: {} };
+  return rule;
+};
 const waf = () => ({
   WebACL: {
     Name: wafName,
     Id: readbackWafId,
     ARN: readbackWafArn,
-    DefaultAction: { Allow: {} },
+    DefaultAction: state.postProofUnsafe
+      ? { Block: {} }
+      : state.mode === 'waf-default-allow-extra'
+        ? {
+            Allow: {
+              CustomRequestHandling: {
+                InsertHeaders: [{ Name: 'X-Remote-Edge-Test', Value: '1' }],
+              },
+            },
+          }
+        : { Allow: {} },
     Rules: [
-      {
-        Name: 'AWS-AmazonIpReputation',
-        Priority: 10,
-        OverrideAction: { None: {} },
-        Statement: { ManagedRuleGroupStatement: { VendorName: 'AWS', Name: 'AWSManagedRulesAmazonIpReputationList' } },
-      },
-      {
-        Name: 'AWS-Common',
-        Priority: 20,
-        OverrideAction: { None: {} },
-        Statement: { ManagedRuleGroupStatement: { VendorName: 'AWS', Name: 'AWSManagedRulesCommonRuleSet' } },
-      },
-      {
-        Name: 'AWS-KnownBadInputs',
-        Priority: 30,
-        OverrideAction: { None: {} },
-        Statement: { ManagedRuleGroupStatement: { VendorName: 'AWS', Name: 'AWSManagedRulesKnownBadInputsRuleSet' } },
-      },
+      managedRule('AWS-AmazonIpReputation', 10, 'AWSManagedRulesAmazonIpReputationList'),
+      managedRule('AWS-Common', 20, 'AWSManagedRulesCommonRuleSet'),
+      managedRule('AWS-KnownBadInputs', 30, 'AWSManagedRulesKnownBadInputsRuleSet'),
       {
         Name: 'signin-25-per-5m',
         Priority: 40,
@@ -696,7 +730,7 @@ switch (service + ' ' + operation) {
     if (at('ALB_CREATED')) {
       const description = state.mode === 'non-alb-eni'
         ? 'ELB app/not-nava-remote-admin-alb/test'
-        : 'ELB app/nava-remote-admin-alb/test';
+        : 'ELB ' + currentAlbResource;
       interfaces.push({
         NetworkInterfaceId: 'eni-test-alb-a',
         Description: description,
@@ -814,7 +848,7 @@ switch (service + ' ' + operation) {
     save();
     emit({ LoadBalancers: [{
       LoadBalancerName: albName,
-      LoadBalancerArn: albArn,
+      LoadBalancerArn: currentAlbArn,
       DNSName: 'nava-remote-admin-alb-123.af-south-1.elb.amazonaws.com',
       VpcId: vpc,
       Scheme: 'internet-facing',
@@ -883,7 +917,7 @@ switch (service + ' ' + operation) {
       '--region': region,
       '--web-acl-arn': wafArn,
     });
-    emit({ ResourceArns: at('WAF_ASSOCIATED') ? [albArn] : [] });
+    emit({ ResourceArns: at('WAF_ASSOCIATED') ? [currentAlbArn] : [] });
     break;
   case 's3api list-buckets':
     emit({ Buckets: at('LOG_BUCKET_CREATED') ? [{ Name: bucket }] : [] });
@@ -931,6 +965,10 @@ switch (service + ' ' + operation) {
     emit({ Policy: JSON.stringify(bucketPolicy()) });
     break;
   case 's3api list-objects-v2':
+    if (state.mode === 'log-proof-post-state-divergence') {
+      state.postProofUnsafe = true;
+      save();
+    }
     const key = state.mode === 'log-proof-wrong-key'
       ? 'AWSLogs/845242190536/test-fixture.txt'
       : state.mode === 'log-proof-invalid-time'
@@ -1297,6 +1335,22 @@ function calls(harness: Harness): string[] {
     .filter(Boolean);
 }
 
+function logProofReceiptPath(harness: Harness): string {
+  return join(harness.evidenceRoot, 'alb-log-delivery-proof.json');
+}
+
+function updateHarnessState(
+  harness: Harness,
+  patch: Record<string, unknown>,
+): void {
+  const state = JSON.parse(readFileSync(harness.statePath, 'utf8'));
+  writeFileSync(
+    harness.statePath,
+    JSON.stringify({ ...state, ...patch }),
+    'utf8',
+  );
+}
+
 function resultDiagnostic(
   result: ProvisionerResult,
   harness: Harness,
@@ -1385,6 +1439,31 @@ describe('remote edge provisioner security contracts', () => {
       expect(result.status, resultDiagnostic(result, harness)).not.toBe(0);
       expect(calls(harness)).toContain('aws wafv2 get-web-acl');
       expect(calls(harness)).not.toContain('mutate wafv2 associate-web-acl');
+    } finally {
+      destroyHarness(harness);
+    }
+  }, 60_000);
+
+  it.each([
+    ['managed ScopeDownStatement', 'waf-managed-scope-down'],
+    ['managed ExcludedRules', 'waf-managed-excluded-rules'],
+    ['managed RuleActionOverrides', 'waf-managed-rule-action-overrides'],
+    ['managed rule Action', 'waf-managed-action'],
+    ['extra default Allow shape', 'waf-default-allow-extra'],
+  ] as const)('rejects %s before later WAF association', async (_name, mode) => {
+    const harness = createHarness('WAF_CREATED', mode);
+    try {
+      const result = await runProvisioner(harness, [
+        'apply-one',
+        '--action',
+        'ASSOCIATE_WAF',
+      ]);
+      expect(result.status, resultDiagnostic(result, harness)).not.toBe(0);
+      expect(calls(harness)).toContain('aws wafv2 get-web-acl');
+      expect(calls(harness)).not.toContain('mutate wafv2 associate-web-acl');
+      expect(JSON.parse(readFileSync(harness.statePath, 'utf8')).stage).toBe(
+        'WAF_CREATED',
+      );
     } finally {
       destroyHarness(harness);
     }
@@ -1800,6 +1879,159 @@ exit 1
       destroyHarness(failing);
     }
   }, 60_000);
+
+  it('persists sanitized scoped log-delivery proof and resumes Task 4 terminal evidence', async () => {
+    const harness = createHarness('UFW_READY');
+    try {
+      const proof = await runProvisioner(harness, [
+        'apply-one',
+        '--action',
+        'PROVE_ALB_LOG_DELIVERY',
+      ]);
+      expect(proof.status, resultDiagnostic(proof, harness)).toBe(0);
+      expect(JSON.parse(proof.stdout)).toEqual({
+        stage: 'TASK4_PRE_GATE_B_READY',
+        action: 'STOP',
+      });
+
+      const receiptPath = logProofReceiptPath(harness);
+      expect(existsSync(receiptPath)).toBe(true);
+      const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
+      expect(receipt).toEqual({
+        version: 1,
+        scope: expect.stringMatching(/^[a-f0-9]{64}$/),
+        issuedAt: expect.any(Number),
+      });
+      const serializedReceipt = JSON.stringify(receipt);
+      expect(serializedReceipt).not.toContain('arn:aws');
+      expect(serializedReceipt).not.toContain('AWSLogs');
+      expect(serializedReceipt).not.toContain('172.31.');
+
+      const resumed = await runProvisioner(harness, ['inspect']);
+      expect(resumed.status, resultDiagnostic(resumed, harness)).toBe(0);
+      expect(JSON.parse(resumed.stdout)).toEqual({
+        stage: 'TASK4_PRE_GATE_B_READY',
+        action: 'STOP',
+      });
+      expect(
+        calls(harness).filter((entry) => entry === 'mutate proof curl'),
+      ).toHaveLength(1);
+      expect(
+        JSON.parse(readFileSync(join(harness.evidenceRoot, 'latest.json'), 'utf8')),
+      ).toEqual({
+        stage: 'TASK4_PRE_GATE_B_READY',
+        action: 'STOP',
+      });
+    } finally {
+      destroyHarness(harness);
+    }
+  }, 60_000);
+
+  it('persists no log receipt before fresh post-proof state validation', async () => {
+    const harness = createHarness('UFW_READY', 'log-proof-post-state-divergence');
+    try {
+      const result = await runProvisioner(harness, [
+        'apply-one',
+        '--action',
+        'PROVE_ALB_LOG_DELIVERY',
+      ]);
+      expect(result.status, resultDiagnostic(result, harness)).not.toBe(0);
+      expect(calls(harness)).toContain('mutate proof curl');
+      expect(existsSync(logProofReceiptPath(harness))).toBe(false);
+    } finally {
+      destroyHarness(harness);
+    }
+  }, 60_000);
+
+  it.each([
+    ['tampered receipt', (harness: Harness, receiptPath: string) => {
+      const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
+      writeFileSync(
+        receiptPath,
+        JSON.stringify({ ...receipt, scope: '0'.repeat(64) }),
+        'utf8',
+      );
+    }],
+    ['expired receipt', (_harness: Harness, receiptPath: string) => {
+      const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
+      writeFileSync(
+        receiptPath,
+        JSON.stringify({ ...receipt, issuedAt: 0 }),
+        'utf8',
+      );
+    }],
+    ['ALB identity mismatch', (harness: Harness) => {
+      updateHarnessState(harness, { receiptIdentityMismatch: true });
+    }],
+  ] as const)(
+    'returns to log proof action for %s',
+    async (_name, invalidate) => {
+      const harness = createHarness('UFW_READY');
+      try {
+        const proof = await runProvisioner(harness, [
+          'apply-one',
+          '--action',
+          'PROVE_ALB_LOG_DELIVERY',
+        ]);
+        expect(proof.status, resultDiagnostic(proof, harness)).toBe(0);
+        const receiptPath = logProofReceiptPath(harness);
+        expect(existsSync(receiptPath)).toBe(true);
+        invalidate(harness, receiptPath);
+
+        const resumed = await runProvisioner(harness, ['inspect']);
+        expect(resumed.status, resultDiagnostic(resumed, harness)).toBe(0);
+        expect(JSON.parse(resumed.stdout)).toEqual({
+          stage: 'UFW_READY',
+          action: 'PROVE_ALB_LOG_DELIVERY',
+        });
+        expect(
+          calls(harness).filter((entry) => entry === 'mutate proof curl'),
+        ).toHaveLength(1);
+      } finally {
+        destroyHarness(harness);
+      }
+    },
+    60_000,
+  );
+
+  it.each([
+    ['group-readable', (harness: Harness, receiptPath: string) => {
+      chmodSync(receiptPath, 0o640);
+    }],
+    ['symlinked', (harness: Harness, receiptPath: string) => {
+      const target = join(harness.root, 'receipt-target.json');
+      writeFileSync(target, readFileSync(receiptPath, 'utf8'), 'utf8');
+      rmSync(receiptPath);
+      symlinkSync(target, receiptPath);
+    }],
+  ] as const)(
+    'rejects %s log receipt safely',
+    async (_name, invalidate) => {
+      if (process.platform === 'win32') return;
+      const harness = createHarness('UFW_READY');
+      try {
+        const proof = await runProvisioner(harness, [
+          'apply-one',
+          '--action',
+          'PROVE_ALB_LOG_DELIVERY',
+        ]);
+        expect(proof.status, resultDiagnostic(proof, harness)).toBe(0);
+        const receiptPath = logProofReceiptPath(harness);
+        expect(existsSync(receiptPath)).toBe(true);
+        invalidate(harness, receiptPath);
+
+        const resumed = await runProvisioner(harness, ['inspect']);
+        expect(resumed.status, resultDiagnostic(resumed, harness)).toBe(0);
+        expect(JSON.parse(resumed.stdout)).toEqual({
+          stage: 'UFW_READY',
+          action: 'PROVE_ALB_LOG_DELIVERY',
+        });
+      } finally {
+        destroyHarness(harness);
+      }
+    },
+    60_000,
+  );
 
   it('requires an ALB log object newer than proof start', async () => {
     const boundary = createHarness('UFW_READY', 'log-proof-boundary');
