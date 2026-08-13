@@ -2562,7 +2562,7 @@ describe('deploy config', () => {
     );
 
     expect(sync).toContain(
-      'git checkout -B ${Q_GIT_BRANCH} ${Q_BUNDLE_REF}; git reset --hard ${Q_BUNDLE_REF}',
+      'git checkout -f -B ${Q_GIT_BRANCH} ${Q_BUNDLE_REF}; git reset --hard ${Q_BUNDLE_REF}',
     );
     expect(sync).not.toContain(
       'git checkout ${Q_GIT_BRANCH}; git reset --hard ${Q_BUNDLE_REF}',
