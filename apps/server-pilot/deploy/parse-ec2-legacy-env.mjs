@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 
-const ASSIGNMENT = /^([A-Z][A-Z0-9_]*)='((?:[^']|'\\'')*)'$/;
+const QUOTED_ASSIGNMENT = /^([A-Z][A-Z0-9_]*)='((?:[^']|'\\'')*)'$/;
+const SAFE_UNQUOTED_ASSIGNMENT = /^([A-Z][A-Z0-9_]*)=([A-Za-z0-9_./:=?@%+,-]+)$/;
 const ENV_KEY = /^[A-Z][A-Z0-9_]*$/;
 
 function fail() {
@@ -19,9 +20,11 @@ function parseAssignments(source) {
 
   const values = new Map();
   for (const line of lines) {
-    const match = ASSIGNMENT.exec(line);
+    const quoted = QUOTED_ASSIGNMENT.exec(line);
+    const unquoted = SAFE_UNQUOTED_ASSIGNMENT.exec(line);
+    const match = quoted ?? unquoted;
     if (!match || values.has(match[1])) throw new Error('invalid');
-    values.set(match[1], match[2].replace(/'\\''/g, "'"));
+    values.set(match[1], quoted ? quoted[2].replace(/'\\''/g, "'") : unquoted[2]);
   }
   return values;
 }

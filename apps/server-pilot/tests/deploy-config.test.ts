@@ -4826,6 +4826,72 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
       }
     });
 
+    it('accepts safe unquoted legacy tokens without evaluating them', async () => {
+      const { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = await import(
+        'node:fs'
+      );
+      const { spawnSync } = await import('node:child_process');
+      const { tmpdir } = await import('node:os');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const here = dirname(fileURLToPath(import.meta.url));
+      const parser = join(here, '..', 'deploy', 'parse-ec2-legacy-env.mjs');
+      const tempDir = mkdtempSync(join(tmpdir(), 'nava-legacy-env-parser-test-'));
+      const legacyEnv = join(tempDir, '.env.production');
+      const remoteCommon = join(tempDir, '.env.remote-common');
+      const marker = join(tempDir, 'legacy-shell-ran');
+
+      try {
+        writeFileSync(
+          legacyEnv,
+          [
+            "NODE_ENV='production'",
+            "DATABASE_URL='postgres://example.invalid/zero'",
+            "AWS_REGION='af-south-1'",
+            "S3_BUCKET='nava-test-bucket'",
+            'HMS_READ_SECRET_ARN=arn:aws:secretsmanager:af-south-1:123456789012:secret:test',
+            'NAVA_BUILD_COMMIT=0123456789abcdef0123456789abcdef01234567',
+            '',
+          ].join('\n'),
+          'utf8',
+        );
+
+        const safe = spawnSync(
+          process.execPath,
+          [parser, legacyEnv, remoteCommon, 'DATABASE_URL', 'AWS_REGION', 'S3_BUCKET', 'NAVA_BUILD_COMMIT'],
+          { encoding: 'utf8' },
+        );
+        expect(safe.status, safe.stderr).toBe(0);
+        expect(readFileSync(remoteCommon, 'utf8')).toContain(
+          "NAVA_BUILD_COMMIT='0123456789abcdef0123456789abcdef01234567'",
+        );
+        expect(readFileSync(remoteCommon, 'utf8')).not.toContain('HMS_READ_SECRET_ARN');
+
+        writeFileSync(
+          legacyEnv,
+          [
+            "NODE_ENV='production'",
+            "DATABASE_URL='postgres://example.invalid/zero'",
+            "AWS_REGION='af-south-1'",
+            "S3_BUCKET='nava-test-bucket'",
+            'NAVA_BUILD_COMMIT=$(touch legacy-shell-ran)',
+            '',
+          ].join('\n'),
+          'utf8',
+        );
+        const unsafe = spawnSync(
+          process.execPath,
+          [parser, legacyEnv, remoteCommon, 'DATABASE_URL', 'AWS_REGION', 'S3_BUCKET', 'NAVA_BUILD_COMMIT'],
+          { cwd: tempDir, encoding: 'utf8' },
+        );
+        expect(unsafe.status).toBe(2);
+        expect(unsafe.stderr).toContain('legacy runtime env malformed');
+        expect(existsSync(marker)).toBe(false);
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it('writes only explicitly allowlisted remote HTTP environment files', async () => {
       const { existsSync, readFileSync } = await import('node:fs');
       const { fileURLToPath } = await import('node:url');
