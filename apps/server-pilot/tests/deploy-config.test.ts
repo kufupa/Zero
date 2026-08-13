@@ -2551,6 +2551,22 @@ describe('deploy config', () => {
     expect(ops).toContain('db:migrate');
   });
 
+  it('sync bundle creates its selected EC2 branch from the fetched ref', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const sync = readFileSync(
+      join(here, '..', 'deploy', 'sync-ec2-git-bundle.sh'),
+      'utf8',
+    );
+
+    expect(sync).toContain('git checkout -B ${Q_GIT_BRANCH} ${Q_BUNDLE_REF}');
+    expect(sync).not.toContain(
+      'git checkout ${Q_GIT_BRANCH}; git reset --hard ${Q_BUNDLE_REF}',
+    );
+  });
+
   it('quiesced deploy builds assets, skips PM2/health, allows online http, keeps VPN', async () => {
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
