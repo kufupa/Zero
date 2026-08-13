@@ -554,6 +554,15 @@ if (service === 'elbv2' && operation === 'modify-load-balancer-attributes') {
 if (service === 'wafv2' && operation === 'create-web-acl') {
   const definition = fileJson('--cli-input-json');
   const rules = definition.Rules;
+  const scopeDownStatements =
+    rules?.[3]?.Statement?.RateBasedStatement?.ScopeDownStatement?.AndStatement
+      ?.Statements;
+  const byteMatchSearchStrings = Array.isArray(scopeDownStatements)
+    ? scopeDownStatements.map(
+        (statement) => statement?.ByteMatchStatement?.SearchString,
+      )
+    : undefined;
+  log('waf byte-match search strings ' + JSON.stringify(byteMatchSearchStrings));
   if (
     process.env.MSYS_NO_PATHCONV !== '1' ||
     process.env.MSYS2_ARG_CONV_EXCL !== '*' ||
@@ -562,7 +571,11 @@ if (service === 'wafv2' && operation === 'create-web-acl') {
     !Array.isArray(rules) ||
     rules.length !== 5 ||
     rules.slice(0, 3).some((rule) => JSON.stringify(rule.OverrideAction) !== JSON.stringify({ None: {} })) ||
-    rules.slice(3).some((rule) => JSON.stringify(rule.Action) !== JSON.stringify({ Block: {} }))
+    rules.slice(3).some((rule) => JSON.stringify(rule.Action) !== JSON.stringify({ Block: {} })) ||
+    !exactJson(byteMatchSearchStrings, [
+      'L2FwaS9hdXRoL3NpZ24taW4vZW1haWw=',
+      'UE9TVA==',
+    ])
   ) {
     log('invalid waf definition ' + JSON.stringify(definition));
     fail();
@@ -1291,6 +1304,26 @@ describe('remote edge provisioner security contracts', () => {
     },
     60_000,
   );
+
+  it('sends base64 byte-match blobs in complete CreateWebACL JSON', async () => {
+    const harness = createHarness('ALB_LOGGING_READY');
+    try {
+      const result = await runProvisioner(harness, [
+        'apply-one',
+        '--action',
+        'CREATE_WAF',
+      ]);
+      expect(result.status, resultDiagnostic(result, harness)).toBe(0);
+      expect(calls(harness)).toContain(
+        'waf byte-match search strings ["L2FwaS9hdXRoL3NpZ24taW4vZW1haWw=","UE9TVA=="]',
+      );
+      expect(
+        calls(harness).filter((entry) => entry.startsWith('mutate ')),
+      ).toEqual(['mutate wafv2 create-web-acl']);
+    } finally {
+      destroyHarness(harness);
+    }
+  }, 60_000);
 
   it('rewrites exact modern-only policy with bounded Cape Town legacy delivery', async () => {
     const harness = createHarness('LOG_BUCKET_POLICY_LEGACY_ACCOUNT_REWRITE');
