@@ -2567,6 +2567,10 @@ describe('deploy config', () => {
     expect(sync).toContain(
       'git checkout -f -B ${Q_GIT_BRANCH} ${Q_BUNDLE_REF}; git reset --hard ${Q_BUNDLE_REF}',
     );
+    expect(sync).toContain(
+      'else git init ${Q_REPO_PATH}; cd ${Q_REPO_PATH}; git fetch ${Q_REMOTE_BUNDLE} \'+refs/heads/*:refs/remotes/bundle/*\'; git checkout -f -B ${Q_GIT_BRANCH} ${Q_BUNDLE_REF}; git reset --hard ${Q_BUNDLE_REF}; fi;',
+    );
+    expect(sync).not.toContain('git clone ${Q_REMOTE_BUNDLE}');
     expect(sync).not.toContain(
       'git checkout ${Q_GIT_BRANCH}; git reset --hard ${Q_BUNDLE_REF}',
     );
