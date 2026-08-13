@@ -25,6 +25,7 @@ type FakeMode =
   | 'malformed'
   | 'duplicate'
   | 'unsafe'
+  | 'global-owner-omitted'
   | 'post-divergence';
 
 type Harness = {
@@ -157,7 +158,7 @@ switch (service + ' ' + operation) {
           SecurityGroups: groups,
           NetworkInterfaces: [{
             NetworkInterfaceId: 'eni-test-primary',
-            Attachment: { DeviceIndex: 0, InstanceId: instanceId },
+            Attachment: { DeviceIndex: 0 },
             PrivateIpAddress: targetIp,
             Groups: groups,
           }],
@@ -172,7 +173,9 @@ switch (service + ' ' + operation) {
     emit({
       NetworkInterfaces: [{
         NetworkInterfaceId: 'eni-test-primary',
-        Attachment: { InstanceId: instanceId, DeviceIndex: 0 },
+        Attachment: state.mode === 'global-owner-omitted'
+          ? { DeviceIndex: 0 }
+          : { InstanceId: instanceId, DeviceIndex: 0 },
         Groups: groups,
       }],
     });
@@ -592,7 +595,13 @@ describe('remote edge provisioner', () => {
     }
   }, 60_000);
 
-  it.each<FakeMode>(['read-error', 'malformed', 'duplicate', 'unsafe'])(
+  it.each<FakeMode>([
+    'read-error',
+    'malformed',
+    'duplicate',
+    'unsafe',
+    'global-owner-omitted',
+  ])(
     'fails closed before mutation for %s collection state',
     async (mode) => {
       if (!provisionerExists()) return;

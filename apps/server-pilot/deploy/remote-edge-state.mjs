@@ -245,7 +245,11 @@ function hasPublicRoutes(routeTables) {
   });
 }
 
-function instanceNetworkInterfaceDetails(networkInterface, instanceId) {
+function instanceNetworkInterfaceDetails(
+  networkInterface,
+  instanceId,
+  allowOmittedAttachmentInstanceId = false,
+) {
   const value = object(networkInterface);
   const attachment = object(value.Attachment);
   const id = safeReference(value.NetworkInterfaceId, 'eni-');
@@ -253,8 +257,11 @@ function instanceNetworkInterfaceDetails(networkInterface, instanceId) {
   const groupIds = arrays(value, 'Groups').map((group) =>
     safeReference(object(group).GroupId, 'sg-'),
   );
+  const attachmentMatches =
+    attachment.InstanceId === instanceId ||
+    (allowOmittedAttachmentInstanceId && attachment.InstanceId === undefined);
   if (
-    attachment.InstanceId !== instanceId ||
+    !attachmentMatches ||
     deviceIndex < 0 ||
     groupIds.length === 0 ||
     !unique(groupIds)
@@ -268,7 +275,7 @@ function expectedInstanceNetworkInterfaces(instance) {
   const instanceId = safeReference(instance.InstanceId, 'i-');
   const interfaces = arrays(instance, 'NetworkInterfaces').map(
     (networkInterface) =>
-      instanceNetworkInterfaceDetails(networkInterface, instanceId),
+      instanceNetworkInterfaceDetails(networkInterface, instanceId, true),
   );
   if (
     interfaces.length === 0 ||
