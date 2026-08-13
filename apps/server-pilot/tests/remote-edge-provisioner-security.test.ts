@@ -35,6 +35,7 @@ const STAGES = [
   ['LOG_BUCKET_OWNERSHIP_ENFORCED', 'SET_LOG_BUCKET_AES256', 'LOG_BUCKET_ENCRYPTED'],
   ['LOG_BUCKET_ENCRYPTED', 'SET_LOG_BUCKET_LIFECYCLE', 'LOG_BUCKET_LIFECYCLE_READY'],
   ['LOG_BUCKET_LIFECYCLE_READY', 'SET_LOG_BUCKET_POLICY', 'LOG_BUCKET_POLICY_READY'],
+  ['LOG_BUCKET_POLICY_SOURCE_ACCOUNT_REWRITE', 'SET_LOG_BUCKET_POLICY', 'LOG_BUCKET_POLICY_READY'],
   ['LOG_BUCKET_POLICY_READY', 'ENABLE_ALB_LOGGING', 'ALB_LOGGING_READY'],
   ['ALB_LOGGING_READY', 'CREATE_WAF', 'WAF_CREATED'],
   ['WAF_CREATED', 'ASSOCIATE_WAF', 'WAF_ASSOCIATED'],
@@ -64,6 +65,8 @@ type Mode =
   | 'non-alb-eni'
   | 'single-alb-eni'
   | 'bucket-broad-principal'
+  | 'bucket-policy-source-account-wrong'
+  | 'bucket-policy-source-account-extra-condition'
   | 'create-bucket-auto-hardening'
   | 'log-proof-failure'
   | 'log-proof-boundary'
@@ -160,7 +163,8 @@ const stages = [
   'TARGET_SG_ATTACHED', 'TARGET_GROUP_CREATED', 'TARGET_GROUP_READY',
   'ALB_CREATED', 'LOG_BUCKET_CREATED', 'LOG_BUCKET_PUBLIC_BLOCKED',
   'LOG_BUCKET_OWNERSHIP_ENFORCED', 'LOG_BUCKET_ENCRYPTED',
-  'LOG_BUCKET_LIFECYCLE_READY', 'LOG_BUCKET_POLICY_READY',
+  'LOG_BUCKET_LIFECYCLE_READY', 'LOG_BUCKET_POLICY_SOURCE_ACCOUNT_REWRITE',
+  'LOG_BUCKET_POLICY_READY',
   'ALB_LOGGING_READY', 'WAF_CREATED', 'WAF_ASSOCIATED',
   'LISTENER_FIXED_404', 'UFW_SUBNET_A_READY', 'UFW_READY',
   'TASK4_PRE_GATE_B_READY',
@@ -260,9 +264,17 @@ const targetAlbIngress = {
   PrefixListIds: [],
   UserIdGroupPairs: [{ GroupId: albSg }],
 };
-const bucketPolicy = () => {
+const bucketPolicy = (includeSourceAccount = false) => {
   const principal = { Service: 'logdelivery.elasticloadbalancing.amazonaws.com' };
   if (state.mode === 'bucket-broad-principal') principal.AWS = '*';
+  const sourceAccount =
+    state.mode === 'bucket-policy-source-account-wrong'
+      ? '000000000000'
+      : account;
+  const extraCondition =
+    state.mode === 'bucket-policy-source-account-extra-condition'
+      ? { StringEqualsIfExists: { 'aws:SourceVpce': 'vpce-test' } }
+      : {};
   return {
     Version: '2012-10-17',
     Statement: [
@@ -272,10 +284,13 @@ const bucketPolicy = () => {
         Principal: principal,
         Action: 's3:PutObject',
         Resource: 'arn:aws:s3:::' + bucket + '/AWSLogs/' + account + '/*',
-        Condition: {
-          StringEquals: { 'aws:SourceAccount': account },
-          ArnLike: { 'aws:SourceArn': albArn },
-        },
+        Condition: includeSourceAccount
+          ? {
+              StringEquals: { 'aws:SourceAccount': sourceAccount },
+              ArnLike: { 'aws:SourceArn': albArn },
+              ...extraCondition,
+            }
+          : { ArnLike: { 'aws:SourceArn': albArn } },
       },
       {
         Sid: 'DenyInsecureTransport',
@@ -499,7 +514,11 @@ if (service === 's3api' && operation === 'put-bucket-policy') {
     log('invalid bucket policy ' + JSON.stringify(args));
     fail();
   }
-  mutation('LOG_BUCKET_LIFECYCLE_READY', 'LOG_BUCKET_POLICY_READY', 's3api put-bucket-policy');
+  if (
+    state.stage !== 'LOG_BUCKET_LIFECYCLE_READY' &&
+    state.stage !== 'LOG_BUCKET_POLICY_SOURCE_ACCOUNT_REWRITE'
+  ) fail();
+  mutation(state.stage, 'LOG_BUCKET_POLICY_READY', 's3api put-bucket-policy');
 }
 if (service === 'elbv2' && operation === 'modify-load-balancer-attributes') {
   requireOptions({
@@ -834,6 +853,10 @@ switch (service + ' ' + operation) {
     emit({ Rules: [{ ID: 'expire-remote-alb-logs-365d', Status: 'Enabled', Filter: { Prefix: '' }, Expiration: { Days: 365 } }] });
     break;
   case 's3api get-bucket-policy':
+    if (state.stage === 'LOG_BUCKET_POLICY_SOURCE_ACCOUNT_REWRITE') {
+      emit({ Policy: JSON.stringify(bucketPolicy(true)) });
+      break;
+    }
     if (!at('LOG_BUCKET_POLICY_READY')) absent('NoSuchBucketPolicy');
     emit({ Policy: JSON.stringify(bucketPolicy()) });
     break;
@@ -911,7 +934,8 @@ const stages = [
   'TARGET_SG_ATTACHED', 'TARGET_GROUP_CREATED', 'TARGET_GROUP_READY',
   'ALB_CREATED', 'LOG_BUCKET_CREATED', 'LOG_BUCKET_PUBLIC_BLOCKED',
   'LOG_BUCKET_OWNERSHIP_ENFORCED', 'LOG_BUCKET_ENCRYPTED',
-  'LOG_BUCKET_LIFECYCLE_READY', 'LOG_BUCKET_POLICY_READY',
+  'LOG_BUCKET_LIFECYCLE_READY', 'LOG_BUCKET_POLICY_SOURCE_ACCOUNT_REWRITE',
+  'LOG_BUCKET_POLICY_READY',
   'ALB_LOGGING_READY', 'WAF_CREATED', 'WAF_ASSOCIATED',
   'LISTENER_FIXED_404', 'UFW_SUBNET_A_READY', 'UFW_READY',
   'TASK4_PRE_GATE_B_READY',
@@ -1459,6 +1483,28 @@ exit 1
       const result = await runProvisioner(harness, ['inspect']);
       expect(result.status).not.toBe(0);
       expect(calls(harness).filter((entry) => entry.startsWith('mutate '))).toHaveLength(0);
+    } finally {
+      destroyHarness(harness);
+    }
+  }, 60_000);
+
+  it.each([
+    ['wrong SourceAccount', 'bucket-policy-source-account-wrong'],
+    ['extra condition key', 'bucket-policy-source-account-extra-condition'],
+  ] as const)('blocks malformed former SourceAccount policy: %s', async (_name, mode) => {
+    const harness = createHarness('LOG_BUCKET_POLICY_SOURCE_ACCOUNT_REWRITE', mode);
+    try {
+      const result = await runProvisioner(harness, [
+        'apply-one',
+        '--action',
+        'SET_LOG_BUCKET_POLICY',
+      ]);
+      expect(result.status, resultDiagnostic(result, harness)).not.toBe(0);
+      expect(calls(harness)).not.toContain('aws s3api put-bucket-policy');
+      expect(calls(harness).filter((entry) => entry.startsWith('mutate '))).toHaveLength(0);
+      expect(JSON.parse(readFileSync(harness.statePath, 'utf8')).stage).toBe(
+        'LOG_BUCKET_POLICY_SOURCE_ACCOUNT_REWRITE',
+      );
     } finally {
       destroyHarness(harness);
     }

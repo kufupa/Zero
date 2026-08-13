@@ -780,7 +780,7 @@ function isExactLifecycle(value) {
   );
 }
 
-function isExactBucketPolicy(value, references) {
+function isExactBucketPolicy(value, references, withSourceAccount = false) {
   let policy;
   try {
     policy = JSON.parse(text(object(value).Policy));
@@ -817,7 +817,9 @@ function isExactBucketPolicy(value, references) {
   }
   const allowPrincipal = object(allowValue.Principal);
   const allowCondition = object(allowValue.Condition);
-  const allowAccount = object(allowCondition.StringEquals);
+  const allowAccount = withSourceAccount
+    ? allowCondition.StringEquals
+    : null;
   const allowSource = object(allowCondition.ArnLike);
   const denyCondition = object(denyValue.Condition);
   const denyTransport = object(denyCondition.Bool);
@@ -827,9 +829,11 @@ function isExactBucketPolicy(value, references) {
     allowPrincipal.Service === 'logdelivery.elasticloadbalancing.amazonaws.com' &&
     allowValue.Action === 's3:PutObject' &&
     allowValue.Resource === `arn:aws:s3:::${LOG_BUCKET}/AWSLogs/${ACCOUNT_ID}/*` &&
-    Object.keys(allowCondition).length === 2 &&
-    Object.keys(allowAccount).length === 1 &&
-    allowAccount['aws:SourceAccount'] === ACCOUNT_ID &&
+    Object.keys(allowCondition).length === (withSourceAccount ? 2 : 1) &&
+    (!withSourceAccount ||
+      (isObject(allowAccount) &&
+        Object.keys(allowAccount).length === 1 &&
+        allowAccount['aws:SourceAccount'] === ACCOUNT_ID)) &&
     Object.keys(allowSource).length === 1 &&
     allowSource['aws:SourceArn'] === references.albArn &&
     denyValue.Effect === 'Deny' &&
@@ -902,6 +906,20 @@ function deriveBucketStage(projections, references) {
     !policy
   ) {
     return 'lifecycle-ready';
+  }
+  if (
+    publicBlock &&
+    ownership &&
+    encryption &&
+    lifecycle &&
+    policy &&
+    isExactPublicBlock(publicBlock) &&
+    isExactOwnership(ownership) &&
+    isExactEncryption(encryption) &&
+    isExactLifecycle(lifecycle) &&
+    isExactBucketPolicy(policy, references, true)
+  ) {
+    return 'policy-source-account-rewrite';
   }
   if (
     publicBlock &&
@@ -1307,6 +1325,7 @@ const BUCKET_STAGES = new Set([
   'ownership-enforced',
   'encrypted',
   'lifecycle-ready',
+  'policy-source-account-rewrite',
   'policy-ready',
 ]);
 const WAF_STAGES = new Set(['absent', 'created', 'associated']);
@@ -1512,6 +1531,12 @@ const STAGE_TABLE = Object.freeze([
     action: 'SET_LOG_BUCKET_POLICY',
     next: 'LOG_BUCKET_POLICY_READY',
     shape: { counts: [1, 1, 1, 1, 0, 1], securityStage: 'final', targetAttached: true, targetAttachmentExact: true, targetGroupStage: 'ready', albStage: 'created', bucketStage: 'lifecycle-ready', wafStage: 'absent', listenerStage: 'absent', ufwStage: 'none', logDeliveryProof: false },
+  },
+  {
+    stage: 'LOG_BUCKET_POLICY_SOURCE_ACCOUNT_REWRITE',
+    action: 'SET_LOG_BUCKET_POLICY',
+    next: 'LOG_BUCKET_POLICY_READY',
+    shape: { counts: [1, 1, 1, 1, 0, 1], securityStage: 'final', targetAttached: true, targetAttachmentExact: true, targetGroupStage: 'ready', albStage: 'created', bucketStage: 'policy-source-account-rewrite', wafStage: 'absent', listenerStage: 'absent', ufwStage: 'none', logDeliveryProof: false },
   },
   {
     stage: 'LOG_BUCKET_POLICY_READY',
