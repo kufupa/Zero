@@ -656,7 +656,7 @@ describe('remote edge provisioner', () => {
     }
   }, 60_000);
 
-  it('has no Task 5 or public-listener mutation path', () => {
+  it('has no Task 5/public-listener mutation and permits bounded log-proof prefix reads', () => {
     if (!provisionerExists()) return;
     const source = readFileSync(provisionerPath, 'utf8');
     for (const forbidden of [
@@ -666,11 +666,19 @@ describe('remote edge provisioner', () => {
       'change-resource-record-sets',
       'host-forward',
       'apply-all',
-      'while ',
     ]) {
       expect(source.includes(forbidden), forbidden).toBe(false);
     }
     expect(source).toContain('for ((');
+    expect(source).toContain(
+      'fresh_log_proof_prefixes "$not_before" "$now" >"$prefixes" || die',
+    );
+    expect(source).toContain(
+      'if (prefixes.length === 0 || prefixes.length > 2) process.exit(2);',
+    );
+    expect(source).toContain('while IFS= read -r prefix; do');
+    expect(source).toContain('done <"$prefixes"');
+    expect(source.match(/\bwhile\b/g)).toHaveLength(1);
     expect(source).not.toMatch(/create-listener[\s\S]{0,300}--protocol HTTP[\s\S]{0,100}--port 80/);
   });
 });
