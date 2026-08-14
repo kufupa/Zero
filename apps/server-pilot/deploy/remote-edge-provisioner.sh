@@ -505,10 +505,12 @@ if (albsPath) {
   if (matches.length !== 1) process.exit(2);
   albArn = matches[0]?.LoadBalancerArn;
 }
+if (albArn === null || bucket === null) {
+  process.exit(3);
+}
 if (
   typeof albArn !== 'string' ||
   !expectedAlb.test(albArn) ||
-  bucket === null ||
   typeof bucket !== 'object' ||
   Array.isArray(bucket) ||
   bucket.Name !== 'nava-zero-remote-alb-logs-845242190536-af-south-1'
@@ -940,14 +942,22 @@ derive_fresh_log_delivery_proof() {
   local now
   local not_before
   alb_arn="$(reference "$scratch" albArn)" || die
-  [[ -n "$alb_arn" ]] || return
-  log_proof_scope "$scratch/refs.json" >/dev/null 2>&1 || return
+  [[ -n "$alb_arn" ]] || return 0
+  if log_proof_scope "$scratch/refs.json" >/dev/null 2>&1; then
+    :
+  else
+    case "$?" in
+      3) return 0 ;;
+      *) die ;;
+    esac
+  fi
   now="$(now_epoch_seconds)" || die
   not_before="$(fresh_log_proof_cutoff "$now")" || die
   if has_bounded_recent_alb_log "$scratch" "$not_before" "$now" "$alb_arn"; then
     printf '%s\n' '{"accessLogDelivered":true}' >"$scratch/logProof.json"
     chmod 600 -- "$scratch/logProof.json"
   fi
+  return 0
 }
 
 prove_alb_log_delivery() {

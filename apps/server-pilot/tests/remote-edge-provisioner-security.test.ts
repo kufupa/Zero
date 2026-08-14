@@ -1470,6 +1470,24 @@ describe('remote edge provisioner security contracts', () => {
     60_000,
   );
 
+  it('classifies FRESH inspect without probing nonexistent ALB log delivery', async () => {
+    const harness = createHarness('FRESH');
+    try {
+      updateHarnessState(harness, { logProofDelivered: true });
+      const result = await runProvisioner(harness, ['inspect']);
+      expect(result.status, resultDiagnostic(result, harness)).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        stage: 'FRESH',
+        action: 'CREATE_ALB_SECURITY_GROUP',
+      });
+      expect(calls(harness)).not.toContain('aws s3api list-objects-v2');
+      expect(calls(harness)).not.toContain('date epoch');
+      expect(calls(harness)).not.toContain('mutate proof curl');
+    } finally {
+      destroyHarness(harness);
+    }
+  }, 60_000);
+
   it('accepts live-shaped scope-less canonical AWS WAF readback after WAF creation', async () => {
     const harness = createHarness('ALB_LOGGING_READY');
     try {
