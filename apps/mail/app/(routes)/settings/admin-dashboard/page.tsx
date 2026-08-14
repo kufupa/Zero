@@ -31,7 +31,6 @@ import type {
   TimelinePoint,
 } from '@/lib/admin-dashboard/types';
 import {
-  formatLiveNumber,
   formatMetricCell,
   summarizeTransportSeries,
 } from '@/lib/admin-dashboard/types';
@@ -629,8 +628,8 @@ export default function AdminDashboardPage() {
 }
 
 /**
- * Hosted view: LIVE cells come from compute-on-read Centurion metrics.
- * Nava-dependent metrics render as em-dash; roadmap tiles render greyed.
+ * Hosted view: inbound baseline cells come from compute-on-read Centurion metrics.
+ * Response metrics stay unavailable until their evidence contract is validated.
  */
 function HostedAdminDashboardView({ metrics }: { metrics: AdminDashboardMetrics }) {
   const transports = metrics.transports;
@@ -665,21 +664,6 @@ function HostedAdminDashboardView({ metrics }: { metrics: AdminDashboardMetrics 
     () => summarizeTransportSeries(metrics.perTransport.filter((row) => selectedSet.has(row.transportId))),
     [metrics.perTransport, selectedSet],
   );
-
-  const comparisonData = useMemo(() => {
-    return metrics.comparison
-      .filter((row) => selectedSet.has(row.transportId))
-      .map((row) => ({
-        hotel: row.label,
-        inbound: row.inbound > 0 ? 100 : 0,
-        // A mailbox with no eligible threads keeps null (rendered as a zero-height
-        // bar plus an em-dash tooltip) rather than claiming a measured 0% SLA.
-        respondedWithinSla: row.answeredWithin3hPercent,
-        raw_inbound: row.inbound,
-        raw_respondedWithinSla: row.answeredWithin3hPercent,
-      }))
-      .sort((a, b) => (b.respondedWithinSla ?? -1) - (a.respondedWithinSla ?? -1));
-  }, [metrics.comparison, selectedSet]);
 
   const lineSeries = useMemo(() => {
     return transports
@@ -781,29 +765,30 @@ function HostedAdminDashboardView({ metrics }: { metrics: AdminDashboardMetrics 
                 </CardContent>
               </Card>
             </ComingSoon>
-            <KpiPairBlock
-              firstLabel="Median response time"
-              firstValue={formatLiveNumber(selectedSummary.medianMinutes, (value) => `${value.toFixed(0)}m`)}
-              firstSubtitle={
-                selectedSummary.p90Minutes == null
-                  ? undefined
-                  : `p90 ${selectedSummary.p90Minutes.toFixed(0)}m`
-              }
-              secondLabel="Average time for draft creation"
-              secondValue="—"
-              secondSubtitle="Not available until Nava drafting is live"
-            />
+            <ComingSoon className="xl:col-span-2">
+              <KpiPairBlock
+                firstLabel="Median response time"
+                firstValue="—"
+                firstSubtitle="Response metrics temporarily unavailable"
+                secondLabel="Average time for draft creation"
+                secondValue="—"
+                secondSubtitle="Not available until Nava drafting is live"
+              />
+            </ComingSoon>
           </div>
 
           <div className="grid gap-4 md:grid-cols-3">
-            <KpiBlock
-              label="Answered within 3h"
-              value={formatLiveNumber(
-                selectedSummary.answeredWithin3hPercent,
-                (value) => `${value.toFixed(1)}%`,
-              )}
-              subtitle={`Legacy 3h target (RES005-aligned) · ${selectedSummary.unanswered} unanswered`}
-            />
+            <ComingSoon>
+              <Card className="border-0">
+                <CardContent className="p-4">
+                  <KpiMetric
+                    label="Answered within 3h"
+                    value="—"
+                    subtitle="Response metrics temporarily unavailable"
+                  />
+                </CardContent>
+              </Card>
+            </ComingSoon>
             <KpiBlock
               label="AI-assisted send rate"
               value={formatMetricCell(metrics.aiAssistedSendRate)}
@@ -865,32 +850,18 @@ function HostedAdminDashboardView({ metrics }: { metrics: AdminDashboardMetrics 
           </ComingSoon>
 
           <div className="mt-6 grid gap-6 lg:grid-cols-2">
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-sm">Email account comparison</CardTitle>
-              </CardHeader>
-              <CardContent className="h-80">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={comparisonData}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="hotel" tick={false} interval={0} />
-                    <YAxis allowDecimals tickFormatter={(value) => `${value}%`} />
-                    <Tooltip content={<AdminEmailComparisonTooltip />} />
-                    <Legend />
-                    <Bar dataKey="inbound" name="Inbound" fill={TREND_LINE_COLORS[0]} radius={[4, 4, 0, 0]} />
-                    <Bar
-                      dataKey="respondedWithinSla"
-                      name="Responded within SLA"
-                      fill={TREND_LINE_COLORS[2]}
-                      radius={[4, 4, 0, 0]}
-                    />
-                  </BarChart>
-                </ResponsiveContainer>
-                <p className="mt-2 text-xs text-muted-foreground">
-                  Drafted series unavailable until Nava drafting is live.
-                </p>
-              </CardContent>
-            </Card>
+            <ComingSoon>
+              <Card className="border-0">
+                <CardHeader>
+                  <CardTitle className="text-sm">Email account comparison</CardTitle>
+                </CardHeader>
+                <CardContent className="flex h-80 items-center justify-center">
+                  <p className="text-center text-sm text-muted-foreground">
+                    Response comparison temporarily unavailable
+                  </p>
+                </CardContent>
+              </Card>
+            </ComingSoon>
 
             <Card>
               <CardHeader>

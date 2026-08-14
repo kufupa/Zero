@@ -3,6 +3,7 @@ import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 const ALLOWED_ADMIN_EMAILS = [
   'navaai@legacyhotels.co.za',
   'ropperman@legacyhotels.co.za',
+  'dbezuidenhout@legacyhotels.co.za',
 ] as const;
 
 type SessionLike =

@@ -26,6 +26,26 @@ export const formatMailboxPlain = (sender?: { name?: string; email?: string }): 
   return `${name} <${addr}>`;
 };
 
+export type FormattedMailboxEntry = {
+  key: string;
+  value: string;
+};
+
+export const formatMailboxEntries = (
+  mailboxes?: Array<Pick<Sender, 'name' | 'email'>> | null,
+): FormattedMailboxEntry[] => {
+  const occurrenceByValue = new Map<string, number>();
+
+  return (mailboxes ?? []).flatMap((mailbox) => {
+    const value = formatMailboxPlain(mailbox);
+    if (!value) return [];
+
+    const occurrence = (occurrenceByValue.get(value) ?? 0) + 1;
+    occurrenceByValue.set(value, occurrence);
+    return [{ key: JSON.stringify([value, occurrence]), value }];
+  });
+};
+
 export const MailboxInline = ({ sender, className }: MailboxInlineProps) => {
   const addr = cleanEmailDisplay(sender?.email);
   const name = cleanNameDisplay(sender?.name);

@@ -2590,7 +2590,7 @@ describe('deploy config', () => {
     expect(ops).toContain('db:migrate');
   });
 
-  it('sync bundle creates its selected EC2 branch from the fetched ref', async () => {
+  it('sync deploys main by default and creates its selected EC2 branch from the verified fetched ref', async () => {
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
     const { dirname, join } = await import('node:path');
@@ -2600,6 +2600,8 @@ describe('deploy config', () => {
       'utf8',
     );
 
+    expect(sync).toContain(': "${GIT_BRANCH:=main}"');
+    expect(sync).toContain(': "${BUNDLE_KEY:=git-bundles/zero-${GIT_BRANCH}.bundle}"');
     expect(sync).toContain(
       'printf -v Q_BUNDLE_REF \'%q\' "refs/remotes/bundle/${GIT_BRANCH}"',
     );

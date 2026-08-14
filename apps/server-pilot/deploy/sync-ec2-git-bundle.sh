@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Sync local EC2-pilot branch to EC2 via private S3 git bundle (no git push).
+# Sync chosen local branch to EC2 via private S3 git bundle (no git push).
 # EC2 fetches the bundle directly from S3 using its instance profile role;
 # no presigned URLs are generated or persisted in SSM command history.
 #
@@ -19,10 +19,10 @@ set -euo pipefail
 
 : "${AWS_REGION:=af-south-1}"
 : "${INSTANCE_ID:=i-008f737974a9ba9b3}"
-: "${GIT_BRANCH:=EC2-pilot}"
+: "${GIT_BRANCH:=main}"
 : "${EC2_REPO_PATH:=/home/ubuntu/repos/zero}"
 : "${BOOTSTRAP_BUCKET:=nava-zero-bootstrap-845242190536}"
-: "${BUNDLE_KEY:=git-bundles/zero-EC2-pilot.bundle}"
+: "${BUNDLE_KEY:=git-bundles/zero-${GIT_BRANCH}.bundle}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
