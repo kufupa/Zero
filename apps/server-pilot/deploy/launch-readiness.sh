@@ -1684,7 +1684,7 @@ SNS_TOPIC_COUNT="$(
 
 # BEGIN_READINESS_REPORT_BUILDER
 build_readiness_report() {
-  node - \
+  REMOTE_ADMIN_FACTS="$REMOTE_ADMIN_FACTS" node - \
     "$REMOTE_JSON" \
     "$RDS_JSON" \
     "$S3_AVAILABLE" \

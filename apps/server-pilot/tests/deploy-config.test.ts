@@ -2732,6 +2732,38 @@ describe('deploy config', () => {
     expect(ops).toContain('ssm-run-command.sh');
   });
 
+  it('runs remote-admin readiness on the operator host after remote SSM actions', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const deployDir = join(here, '..', 'deploy');
+    const readinessCommand =
+      'REMOTE_ADMIN_MODE=1 REMOTE_TARGET_HEALTH_REQUIRED=0 REMOTE_ADMIN_LIFECYCLE_MODE=auto bash "${SCRIPT_DIR}/launch-readiness.sh"';
+
+    for (const scriptName of ['ops-deploy.sh', 'ops-restart.sh', 'ops-reboot.sh']) {
+      const source = readFileSync(join(deployDir, scriptName), 'utf8');
+      const marker = 'remote-admin lifecycle readiness';
+      const start = source.indexOf(marker);
+      expect(start, scriptName).toBeGreaterThanOrEqual(0);
+      const section = source.slice(start, source.indexOf('\necho', start + marker.length));
+      expect(section, scriptName).toContain(readinessCommand);
+      expect(section, scriptName).not.toContain('ssm-run-command.sh');
+      expect(section, scriptName).not.toContain('/home/ubuntu/repos/zero');
+    }
+  });
+
+  it('passes collected remote perimeter facts into the readiness report builder', async () => {
+    const readiness = await readLaunchReadiness();
+    const reportBuilder = extractSourceBlock(
+      readiness,
+      'build_readiness_report() {',
+      'REPORT_JSON="$(build_readiness_report)"',
+    );
+
+    expect(reportBuilder).toContain('REMOTE_ADMIN_FACTS="$REMOTE_ADMIN_FACTS" node -');
+  });
+
   it('pilot-db-wipe.sh requires CONFIRM_PILOT_WIPE=1 and passes bash -n', async () => {
     const { readFileSync } = await import('node:fs');
     const { spawnSync } = await import('node:child_process');

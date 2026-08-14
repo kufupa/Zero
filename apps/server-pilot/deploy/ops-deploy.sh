@@ -63,8 +63,7 @@ if [ "$QUIESCED" != "1" ]; then
     'curl -fsS http://127.0.0.1:8788/health && curl -fsS http://127.0.0.1:8789/health && curl --disable --noproxy "*" -fsS --connect-to "nava-admin.trynava.io:8443:172.31.12.112:8443" -H "Host: nava-admin.trynava.io" "http://nava-admin.trynava.io:8443/" >/dev/null'
 
   echo "== ops-deploy: remote-admin lifecycle readiness =="
-  bash "${SCRIPT_DIR}/ssm-run-command.sh" \
-    'cd /home/ubuntu/repos/zero && REMOTE_ADMIN_MODE=1 REMOTE_TARGET_HEALTH_REQUIRED=0 REMOTE_ADMIN_LIFECYCLE_MODE=auto bash apps/server-pilot/deploy/launch-readiness.sh'
+  REMOTE_ADMIN_MODE=1 REMOTE_TARGET_HEALTH_REQUIRED=0 REMOTE_ADMIN_LIFECYCLE_MODE=auto bash "${SCRIPT_DIR}/launch-readiness.sh"
 fi
 
 echo "== ops-deploy: VPN HARD assert =="
