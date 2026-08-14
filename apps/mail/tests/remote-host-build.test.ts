@@ -1,4 +1,6 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 const readSource = (relativePath: string) =>
@@ -13,6 +15,18 @@ const loaderSources = [
   '../app/(routes)/settings/layout.tsx',
   '../app/mailto-handler.ts',
 ].map((path) => [path, readSource(path)] as const);
+
+const servingHosts = ['nava.legacyhotels.co.za', 'nava-admin.trynava.io'];
+
+function generatedBrowserFiles(root: string): string[] {
+  return readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(root, entry.name);
+    if (entry.isDirectory()) return generatedBrowserFiles(path);
+    return /\.(?:css|html|js|json|map)$/i.test(entry.name) && statSync(path).isFile()
+      ? [path]
+      : [];
+  });
+}
 
 describe('remote host-neutral SPA contract', () => {
   it('derives all client-loader redirects from request URLs', () => {
@@ -69,6 +83,24 @@ describe('remote host-neutral SPA contract', () => {
     for (const source of browserSources) {
       expect(source).not.toContain('nava.legacyhotels.co.za');
       expect(source).not.toContain('nava-admin.trynava.io');
+    }
+  });
+
+  it('contains neither serving hostname in generated browser output', () => {
+    const appRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+    const clientBuild = join(appRoot, 'build', 'client');
+    expect(
+      existsSync(clientBuild),
+      'build/client missing; run pnpm build before this generated-output check',
+    ).toBe(true);
+    const files = generatedBrowserFiles(clientBuild);
+    expect(files.length).toBeGreaterThan(0);
+
+    for (const file of files) {
+      const contents = readFileSync(file, 'utf8');
+      for (const host of servingHosts) {
+        expect(contents, file).not.toContain(host);
+      }
     }
   });
 });

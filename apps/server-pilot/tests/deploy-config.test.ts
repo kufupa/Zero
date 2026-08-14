@@ -1905,7 +1905,7 @@ describe('deploy config', () => {
     expect(result.backupEntries).toEqual([]);
   });
 
-  it('keeps remote health checks loopback-only without insecure TLS bypasses', async () => {
+  it('keeps legacy TLS local and remote-vhost probes private without TLS bypasses', async () => {
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
     const { dirname, join } = await import('node:path');
@@ -1915,7 +1915,11 @@ describe('deploy config', () => {
       const source = readFileSync(join(here, '..', 'deploy', scriptName), 'utf8');
       expect(source, scriptName).toContain('https://nava.legacyhotels.co.za');
       expect(source, scriptName).toContain('--resolve');
-      expect(source, scriptName).not.toContain('nava-admin.trynava.io');
+      expect(source, scriptName).toContain('nava-admin.trynava.io');
+      expect(source, scriptName).toContain('--connect-to');
+      expect(source, scriptName).toMatch(
+        /-H "Host: (?:\$\{REMOTE_ADMIN_HOST\}|\$\{remote_host\}|nava-admin\.trynava\.io)"/,
+      );
       expect(insecureCurlCommands(source), scriptName).toHaveLength(0);
     }
   });
@@ -2278,7 +2282,7 @@ describe('deploy config', () => {
     expect(boot).not.toMatch(/pm2 delete hms-ai-worker[^\n]*\|\| true/);
   });
 
-  it('post-boot-smoke.sh checks both loopbacks and legacy :443 not :3000', async () => {
+  it('post-boot-smoke.sh checks both loopbacks, legacy :443, and private remote :8443', async () => {
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
     const { dirname, join } = await import('node:path');
@@ -2289,7 +2293,10 @@ describe('deploy config', () => {
     expect(smoke).toContain('BETTER_AUTH_URL');
     expect(smoke).toContain('CANONICAL_ORIGIN="https://nava.legacyhotels.co.za"');
     expect(smoke).toContain('--resolve "${PUBLIC_HOST}:443:127.0.0.1"');
-    expect(smoke).not.toContain('nava-admin.trynava.io');
+    expect(smoke).toContain('REMOTE_ADMIN_HOST="nava-admin.trynava.io"');
+    expect(smoke).toContain('--connect-to "${REMOTE_ADMIN_HOST}:8443:${REMOTE_ALB_TARGET_PRIVATE_IP}:8443"');
+    expect(smoke).toContain('-H "Host: ${REMOTE_ADMIN_HOST}"');
+    expect(smoke).not.toContain('https://nava-admin.trynava.io');
     expect(smoke).not.toContain('"https://127.0.0.1');
     expect(smoke).not.toContain(':3000');
     expect(smoke).toContain('systemctl is-active');
@@ -3610,7 +3617,7 @@ describe('deploy config', () => {
     );
     expect(
       readiness.includes(
-        'REMOTE_ADMIN_MODE=1 REMOTE_TARGET_HEALTH_REQUIRED=0 bash apps/server-pilot/deploy/launch-readiness.sh',
+        'REMOTE_ADMIN_MODE=1 REMOTE_TARGET_HEALTH_REQUIRED=0 REMOTE_ADMIN_LIFECYCLE_MODE=auto bash apps/server-pilot/deploy/launch-readiness.sh',
       ),
     ).toBe(true);
     expect(runbook.includes('Gate A')).toBe(true);

@@ -61,4 +61,8 @@ echo "== ops-reboot: post-boot-smoke =="
 bash "${SCRIPT_DIR}/ssm-run-command.sh" \
   'export NVM_DIR=/home/ubuntu/.nvm; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"; bash /home/ubuntu/repos/zero/apps/server-pilot/deploy/post-boot-smoke.sh'
 
+echo "== ops-reboot: remote-admin lifecycle readiness =="
+bash "${SCRIPT_DIR}/ssm-run-command.sh" \
+  'cd /home/ubuntu/repos/zero && REMOTE_ADMIN_MODE=1 REMOTE_TARGET_HEALTH_REQUIRED=0 REMOTE_ADMIN_LIFECYCLE_MODE=auto bash apps/server-pilot/deploy/launch-readiness.sh'
+
 echo "ops-reboot ok"

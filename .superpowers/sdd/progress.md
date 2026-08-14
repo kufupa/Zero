@@ -16,5 +16,5 @@ Verification: Task 2 final DB-free proof passed
 Task 1: complete (commits 3f3c2436..cd00d911; focused DB-free tests and server build passed; review clean after migration/Drizzle fixes; remote process environment provenance is Task 2 scope)
 Task 2: complete (final security-review hardening removes root checkout execution, requires exact legacy file metadata, and rejects newline/CR/NUL remote secrets; DB-free deploy suite 113/113, shell/static checks, fresh multi-lens review, and independent validation passed)
 Task 3: complete (commit 96d656b8; independent DB-free deploy suite 115/115, shell syntax and merge-base whitespace checks passed; task-scoped review clean)
-Task 4: in progress (Gate A complete; `6f1c9cf1` fixes embedded-ENI correlation; `35d4a906` hardens isolated EC2 bundle sync; host target bootstrap precedes resumed staged edge provisioning)
-Task 5: pending
+Task 4: complete (fresh read-only edge inspection reached `TASK4_PRE_GATE_B_READY`; bounded log-proof and perimeter contracts pass; final Task 4 review clean)
+Task 5: in progress (dual-host compatibility, rollback state, and staged cutover proof)

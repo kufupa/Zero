@@ -10,6 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 : "${S3_BUCKET:=nava-zero-mail-845242190536-af-south-1}"
 : "${REMOTE_ADMIN_MODE:=0}"
 : "${REMOTE_TARGET_HEALTH_REQUIRED:=0}"
+: "${REMOTE_ADMIN_LIFECYCLE_MODE:=}"
 
 case "$REMOTE_ADMIN_MODE" in
   0|1) ;;
@@ -28,6 +29,26 @@ esac
 if [ "$REMOTE_ADMIN_MODE" != "1" ] && [ "$REMOTE_TARGET_HEALTH_REQUIRED" != "0" ]; then
   echo "launch-readiness: REMOTE_TARGET_HEALTH_REQUIRED requires REMOTE_ADMIN_MODE=1" >&2
   exit 2
+fi
+case "$REMOTE_ADMIN_LIFECYCLE_MODE" in
+  ""|pre-registration|active|rollback|auto) ;;
+  *)
+    echo "launch-readiness: REMOTE_ADMIN_LIFECYCLE_MODE must be pre-registration, active, rollback, or auto" >&2
+    exit 2
+    ;;
+esac
+if [ "$REMOTE_ADMIN_MODE" != "1" ] && [ -n "$REMOTE_ADMIN_LIFECYCLE_MODE" ]; then
+  echo "launch-readiness: REMOTE_ADMIN_LIFECYCLE_MODE requires REMOTE_ADMIN_MODE=1" >&2
+  exit 2
+fi
+if [ "$REMOTE_ADMIN_MODE" = "1" ] && [ -z "$REMOTE_ADMIN_LIFECYCLE_MODE" ]; then
+  # Preserve Task 4 callers: 0 means its original pre-registration gate;
+  # 1 means its original active target-and-rule gate.
+  if [ "$REMOTE_TARGET_HEALTH_REQUIRED" = "1" ]; then
+    REMOTE_ADMIN_LIFECYCLE_MODE="compat-active"
+  else
+    REMOTE_ADMIN_LIFECYCLE_MODE="compat-pre-registration"
+  fi
 fi
 
 REMOTE_ADMIN_HOST="nava-admin.trynava.io"
@@ -1032,6 +1053,7 @@ const empty = {
   targetGroupConfigured: false,
   listenerDefault404: false,
   preRegistrationClean: false,
+  noNonDefaultListenerRules: false,
   hostForwardExact: false,
   targetHealthy: false,
   targetSecurityGroupOnlyAlb: false,
@@ -1297,6 +1319,7 @@ try {
 
   empty.preRegistrationClean =
     targetHealth.length === 0 && nonDefaultRules.length === 0;
+  empty.noNonDefaultListenerRules = nonDefaultRules.length === 0;
 
   empty.hostForwardExact =
     nonDefaultRules.length === 1 &&
@@ -1678,7 +1701,8 @@ build_readiness_report() {
     "$S3_CORS_OK" \
     "$S3_PUBLIC_ACCESS_OK" \
     "${REMOTE_ADMIN_MODE:-0}" \
-    "${REMOTE_TARGET_HEALTH_REQUIRED:-0}" <<'NODE'
+    "${REMOTE_TARGET_HEALTH_REQUIRED:-0}" \
+    "${REMOTE_ADMIN_LIFECYCLE_MODE:-}" <<'NODE'
 const remote = JSON.parse(process.argv[2]);
 const rds = JSON.parse(process.argv[3] || "{}");
 const s3Available = process.argv[4] === "true";
@@ -1697,6 +1721,13 @@ const s3CorsOk = process.argv[15] === "true";
 const s3PublicAccessOk = process.argv[16] === "true";
 const remoteAdminMode = process.argv[17] === "1";
 const remoteTargetHealthRequired = process.argv[18] === "1";
+const requestedRemoteAdminLifecycleMode = process.argv[19] || "";
+const remoteAdminLifecycleMode =
+  remoteAdminMode && requestedRemoteAdminLifecycleMode === ""
+    ? remoteTargetHealthRequired
+      ? "compat-active"
+      : "compat-pre-registration"
+    : requestedRemoteAdminLifecycleMode;
 let remoteAdminFacts = {};
 try {
   const parsed = JSON.parse(process.env.REMOTE_ADMIN_FACTS || "{}");
@@ -1908,6 +1939,7 @@ const securityGroupCoverageValid =
   exactSecurityGroupSet;
 const pm2Required = remote.pm2?.required ?? {};
 const db = remote.db ?? {};
+let detectedRemoteAdminState = "unknown";
 
 const checks = {
   httpHealthy: remote.health?.http === true,
@@ -1965,6 +1997,29 @@ if (!remoteAdminMode) {
     instanceNetworkValid && !publicAddressPresence.ipv6;
 }
 if (remoteAdminMode) {
+  const preRegistration =
+    remoteAdminFacts.preRegistrationClean === true &&
+    remoteAdminFacts.noNonDefaultListenerRules === true &&
+    remoteAdminFacts.hostForwardExact !== true &&
+    remoteAdminFacts.targetHealthy !== true;
+  const active =
+    remoteAdminFacts.preRegistrationClean !== true &&
+    remoteAdminFacts.noNonDefaultListenerRules !== true &&
+    remoteAdminFacts.hostForwardExact === true &&
+    remoteAdminFacts.targetHealthy === true;
+  const rollback =
+    remoteAdminFacts.preRegistrationClean !== true &&
+    remoteAdminFacts.noNonDefaultListenerRules === true &&
+    remoteAdminFacts.hostForwardExact !== true &&
+    remoteAdminFacts.targetHealthy === true;
+  detectedRemoteAdminState =
+    preRegistration && !active && !rollback
+      ? "pre-registration"
+      : active && !rollback
+        ? "active"
+        : rollback
+          ? "rollback"
+          : "unknown";
   const remoteChecks = {
     remoteResourcesResolved: remoteAdminFacts.resourcesResolved === true,
     remoteTargetGroupConfigured: remoteAdminFacts.targetGroupConfigured === true,
@@ -1985,14 +2040,19 @@ if (remoteAdminMode) {
     remoteAlbLoggingCompliant: remoteAdminFacts.logBucketCompliant === true,
     remoteWafCompliant: remoteAdminFacts.wafCompliant === true,
   };
-  if (remoteTargetHealthRequired) {
+  if (remoteAdminLifecycleMode === "compat-active") {
     Object.assign(remoteChecks, {
       remoteHostForwardExact: remoteAdminFacts.hostForwardExact === true,
       remoteTargetHealthy: remoteAdminFacts.targetHealthy === true,
     });
-  } else {
+  } else if (remoteAdminLifecycleMode === "compat-pre-registration") {
     remoteChecks.remotePreRegistrationClean =
       remoteAdminFacts.preRegistrationClean === true;
+  } else {
+    remoteChecks.remoteLifecycleStateKnown = detectedRemoteAdminState !== "unknown";
+    remoteChecks.remoteLifecycleStateExpected =
+      remoteAdminLifecycleMode === "auto" ||
+      detectedRemoteAdminState === remoteAdminLifecycleMode;
   }
   Object.assign(checks, remoteChecks);
 }
@@ -2037,8 +2097,12 @@ const report = {
     accessMode: remoteAdminMode ? "remote-admin" : "legacy-only-recovery",
     remoteAdmin: remoteAdminMode
       ? {
+          requestedLifecycleMode: remoteAdminLifecycleMode,
+          detectedState: detectedRemoteAdminState,
           targetHealthRequired: remoteTargetHealthRequired,
           preRegistrationClean: remoteAdminFacts.preRegistrationClean === true,
+          noNonDefaultListenerRules:
+            remoteAdminFacts.noNonDefaultListenerRules === true,
           targetHealthy: remoteAdminFacts.targetHealthy === true,
         }
       : undefined,

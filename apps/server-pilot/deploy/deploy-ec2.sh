@@ -487,6 +487,15 @@ if ! curl --disable --noproxy '*' -fsS \
   echo "TLS vhost health check failed for ${SPA_ORIGIN}" >&2
   exit 1
 fi
+REMOTE_ADMIN_HOST="nava-admin.trynava.io"
+REMOTE_ALB_TARGET_PRIVATE_IP="172.31.12.112"
+if ! curl --disable --noproxy '*' -fsS \
+  --connect-to "${REMOTE_ADMIN_HOST}:8443:${REMOTE_ALB_TARGET_PRIVATE_IP}:8443" \
+  -H "Host: ${REMOTE_ADMIN_HOST}" \
+  "http://${REMOTE_ADMIN_HOST}:8443/" >/dev/null; then
+  echo "remote :8443 vhost health check failed" >&2
+  exit 1
+fi
 assert_http_loopback_only || {
   echo "raw HTTP processes must listen only on 127.0.0.1" >&2
   exit 1

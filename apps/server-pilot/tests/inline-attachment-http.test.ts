@@ -3,12 +3,39 @@
  * Deps are injected — no real Better Auth / DB / S3.
  */
 import { describe, expect, it, vi } from 'vitest';
-import { createInlineAttachmentHandler } from '../src/http/inline-attachment.js';
+import {
+  createInlineAttachmentHandler,
+  createWiredInlineAttachmentHandler,
+} from '../src/http/inline-attachment.js';
 
 /** Minimal 1×1 GIF89a (logical screen descriptor). */
 const GIF89A = Buffer.from('GIF89a' + '\x01\x00\x01\x00\x00\x00\x00', 'binary');
 
 describe('inline attachment route', () => {
+  it.each([
+    'https://nava.legacyhotels.co.za',
+    'https://nava-admin.trynava.io',
+  ])('forwards same-origin cookie to wired session auth for %s', async (origin) => {
+    const getSession = vi.fn(async (_input: { headers: Headers }) => null);
+    const handler = createWiredInlineAttachmentHandler({
+      api: { getSession },
+    } as never);
+    const request = new Request(
+      `${origin}/api/mail/messages/m1/attachments/a1/inline`,
+      {
+        headers: { cookie: 'better-auth.session_token=host-scoped-session' },
+      },
+    );
+
+    const res = await handler(request, { messageId: 'm1', attachmentId: 'a1' });
+
+    expect(res.status).toBe(401);
+    expect(getSession).toHaveBeenCalledTimes(1);
+    expect(getSession.mock.calls[0]?.[0]?.headers.get('cookie')).toBe(
+      'better-auth.session_token=host-scoped-session',
+    );
+  });
+
   it('returns 401 without session', async () => {
     const handler = createInlineAttachmentHandler({
       getSession: async () => null,

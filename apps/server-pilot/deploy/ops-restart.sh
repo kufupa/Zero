@@ -134,10 +134,19 @@ spa_host="${spa_origin#https://}"
 curl --disable --noproxy '*' -fsS \
   --resolve "${spa_host}:443:127.0.0.1" \
   "${spa_origin}/health" >/dev/null
+remote_host="nava-admin.trynava.io"
+curl --disable --noproxy '*' -fsS \
+  --connect-to "${remote_host}:8443:172.31.12.112:8443" \
+  -H "Host: ${remote_host}" \
+  "http://${remote_host}:8443/" >/dev/null
 assert_http_loopback_only
 REMOTE
 )"
 bash "${SCRIPT_DIR}/ssm-run-command.sh" "$REMOTE_COMMAND"
+
+echo "== ops-restart: remote-admin lifecycle readiness =="
+bash "${SCRIPT_DIR}/ssm-run-command.sh" \
+  'cd /home/ubuntu/repos/zero && REMOTE_ADMIN_MODE=1 REMOTE_TARGET_HEALTH_REQUIRED=0 REMOTE_ADMIN_LIFECYCLE_MODE=auto bash apps/server-pilot/deploy/launch-readiness.sh'
 
 echo
 echo "ops-restart ok"

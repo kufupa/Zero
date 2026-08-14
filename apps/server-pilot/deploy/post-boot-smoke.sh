@@ -47,6 +47,8 @@ case "$BETTER_AUTH_URL" in
 esac
 BETTER_AUTH_URL="$CANONICAL_ORIGIN"
 PUBLIC_HOST="${CANONICAL_ORIGIN#https://}"
+REMOTE_ADMIN_HOST="nava-admin.trynava.io"
+REMOTE_ALB_TARGET_PRIVATE_IP="172.31.12.112"
 
 assert_http_loopback_only() {
   local listeners
@@ -95,6 +97,15 @@ while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
     --resolve "${PUBLIC_HOST}:443:127.0.0.1" \
     "${CANONICAL_ORIGIN}/" >/dev/null 2>&1; then
     log "attempt ${attempt}: trusted TLS vhost probe failed for ${CANONICAL_ORIGIN}"
+    ok=0
+  fi
+
+  # Private target-vhost smoke only. --connect-to pins ens5 and never probes ALB.
+  if ! curl --disable --noproxy '*' -fsS \
+    --connect-to "${REMOTE_ADMIN_HOST}:8443:${REMOTE_ALB_TARGET_PRIVATE_IP}:8443" \
+    -H "Host: ${REMOTE_ADMIN_HOST}" \
+    "http://${REMOTE_ADMIN_HOST}:8443/" >/dev/null; then
+    log "attempt ${attempt}: remote :8443 vhost smoke failed"
     ok=0
   fi
 
@@ -149,7 +160,7 @@ while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
   fi
 
   if [ "$ok" -eq 1 ]; then
-    log "PASS: nginx + :8788 + :8789 + :443 + pm2 HTTP processes online + VPN_HARD_OK"
+    log "PASS: nginx + :8788 + :8789 + legacy :443 + remote :8443 + pm2 HTTP processes online + VPN_HARD_OK"
     exit 0
   fi
 
