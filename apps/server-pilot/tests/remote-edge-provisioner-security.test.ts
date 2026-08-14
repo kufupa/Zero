@@ -75,6 +75,8 @@ type Mode =
   | 'log-proof-post-state-divergence'
   | 'log-proof-stale'
   | 'log-proof-scope-swap'
+  | 'inspect-log-proof-scope-swap'
+  | 'log-proof-bounded-prefixes'
   | 'log-proof-boundary'
   | 'log-proof-wrong-key'
   | 'log-proof-invalid-time'
@@ -967,12 +969,56 @@ switch (service + ' ' + operation) {
     if (!at('LOG_BUCKET_POLICY_READY')) absent('NoSuchBucketPolicy');
     emit({ Policy: JSON.stringify(bucketPolicy()) });
     break;
-  case 's3api list-objects-v2':
+  case 's3api list-objects-v2': {
+    const prefix = option('--prefix');
+    if (state.mode === 'log-proof-bounded-prefixes') {
+      const currentPrefix =
+        'AWSLogs/845242190536/elasticloadbalancing/af-south-1/2030/01/02/';
+      const previousPrefix =
+        'AWSLogs/845242190536/elasticloadbalancing/af-south-1/2030/01/01/';
+      if (
+        !args.includes('--no-paginate') ||
+        args.includes('--continuation-token') ||
+        args.includes('--starting-token') ||
+        ![currentPrefix, previousPrefix].includes(prefix)
+      ) {
+        fail();
+      }
+      log('bounded log prefix ' + prefix);
+      if (prefix === currentPrefix) {
+        emit({
+          IsTruncated: true,
+          NextContinuationToken: 'opaque-historical-page',
+          Contents: [{
+            Key: currentPrefix + 'historical-fixture.txt',
+            LastModified: '2030-01-02T00:00:01Z',
+          }],
+        });
+        break;
+      }
+      emit({
+        IsTruncated: true,
+        NextContinuationToken: 'opaque-historical-page',
+        Contents: [{
+          Key: previousPrefix +
+            '845242190536_elasticloadbalancing_af-south-1_app.nava-remote-admin-alb.test_20300101T2359Z_172.31.0.1_deadbeef.log.gz',
+          LastModified: '2030-01-02T00:00:01Z',
+        }],
+      });
+      break;
+    }
     if (state.mode === 'log-proof-post-state-divergence') {
       state.postProofUnsafe = true;
       save();
     }
     if (state.mode === 'log-proof-scope-swap' && state.logProofDelivered) {
+      state.logProofScopeSwapped = true;
+      save();
+    }
+    if (
+      state.mode === 'inspect-log-proof-scope-swap' &&
+      state.logProofDelivered
+    ) {
       state.logProofScopeSwapped = true;
       save();
     }
@@ -985,7 +1031,7 @@ switch (service + ' ' + operation) {
           : state.mode === 'log-proof-directory-mismatch'
             ? 'AWSLogs/845242190536/elasticloadbalancing/af-south-1/2030/02/30/845242190536_elasticloadbalancing_af-south-1_app.nava-remote-admin-alb.test_20300101T0000Z_172.31.0.1_deadbeef.log.gz'
             : state.mode === 'log-proof-differing-delivery-date'
-              ? 'AWSLogs/845242190536/elasticloadbalancing/af-south-1/2030/01/02/845242190536_elasticloadbalancing_af-south-1_app.nava-remote-admin-alb.test_20300101T0000Z_172.31.0.1_20sg8hgm.log.gz'
+              ? 'AWSLogs/845242190536/elasticloadbalancing/af-south-1/2030/01/01/845242190536_elasticloadbalancing_af-south-1_app.nava-remote-admin-alb.test_20291231T2359Z_172.31.0.1_20sg8hgm.log.gz'
             : state.mode === 'log-proof-test-token'
               ? 'AWSLogs/845242190536/elasticloadbalancing/af-south-1/2030/01/01/845242190536_elasticloadbalancing_af-south-1_app.nava-remote-admin-alb.test_20300101T0000Z_172.31.0.1_test-file.log.gz'
               : state.mode === 'log-proof-health-token'
@@ -1001,13 +1047,14 @@ switch (service + ' ' + operation) {
         : [{
             Key: key,
             LastModified: state.mode === 'log-proof-boundary'
-              ? '2030-01-01T00:00:00Z'
+              ? '2030-01-01T12:00:00Z'
               : state.mode === 'log-proof-stale'
-                ? new Date(Date.now() - 300_000).toISOString()
-                : new Date().toISOString(),
+                ? '2030-01-01T11:55:00Z'
+                : '2030-01-01T12:00:01Z',
           }],
     });
     break;
+  }
   default:
     fail();
 }
@@ -1240,11 +1287,23 @@ process.exit(0);
   writeExecutable(
     datePath,
     String.raw`#!/usr/bin/env bash
-printf '%s\n' 'date invoked' >> "$REMOTE_EDGE_FAKE_LOG"
-printf '%s\n' '2030-01-01T00:00:00Z'
+case "$*" in
+  *'+%Y-%m-%dT%H:%M:%SZ')
+    printf '%s\n' 'date iso' >> "$REMOTE_EDGE_FAKE_LOG"
+    printf '%s\n' "$REMOTE_EDGE_FAKE_DATE_ISO"
+    ;;
+  *'+%s')
+    printf '%s\n' 'date epoch' >> "$REMOTE_EDGE_FAKE_LOG"
+    printf '%s\n' "$REMOTE_EDGE_FAKE_DATE_EPOCH"
+    ;;
+  *)
+    exit 2
+    ;;
+esac
 `,
   );
 
+  const fakeDateIsMidnight = mode === 'log-proof-bounded-prefixes';
   return {
     root,
     awsPath,
@@ -1264,7 +1323,13 @@ printf '%s\n' '2030-01-01T00:00:00Z'
       REMOTE_EDGE_ALB_POLL_INTERVAL_SECONDS: '0',
       REMOTE_EDGE_LOG_PROOF_MAX_ATTEMPTS: '3',
       REMOTE_EDGE_LOG_PROOF_INTERVAL_SECONDS: '0',
-      REMOTE_EDGE_DATE_BIN: mode === 'log-proof-boundary' ? datePath : 'date',
+      REMOTE_EDGE_DATE_BIN: datePath,
+      REMOTE_EDGE_FAKE_DATE_ISO: fakeDateIsMidnight
+        ? '2030-01-02T00:00:00Z'
+        : '2030-01-01T12:00:00Z',
+      REMOTE_EDGE_FAKE_DATE_EPOCH: fakeDateIsMidnight
+        ? '1893542400'
+        : '1893499200',
       REMOTE_EDGE_NATIVE_TMP: tmpdir(),
       AWS_PAGER: '',
     },
@@ -2013,6 +2078,46 @@ exit 1
         calls(harness).filter((entry) => entry === 'aws s3api list-objects-v2'),
       ).toHaveLength(2);
       expect(existsSync(logProofReceiptPath(harness))).toBe(false);
+    } finally {
+      destroyHarness(harness);
+    }
+  }, 60_000);
+
+  it('fails closed when inspect ALB scope changes after fresh S3 proof', async () => {
+    const harness = createHarness('UFW_READY', 'inspect-log-proof-scope-swap');
+    try {
+      updateHarnessState(harness, { logProofDelivered: true });
+      const result = await runProvisioner(harness, ['inspect']);
+      expect(result.status, resultDiagnostic(result, harness)).not.toBe(0);
+      expect(result.stdout).toBe('');
+      expect(
+        calls(harness).filter(
+          (entry) => entry === 'aws elbv2 describe-load-balancers',
+        ),
+      ).toHaveLength(2);
+    } finally {
+      destroyHarness(harness);
+    }
+  }, 60_000);
+
+  it('bounds fresh inspect proof to adjacent UTC date prefixes without S3 pagination', async () => {
+    const harness = createHarness('UFW_READY', 'log-proof-bounded-prefixes');
+    try {
+      updateHarnessState(harness, { logProofDelivered: true });
+      const result = await runProvisioner(harness, ['inspect']);
+      expect(result.status, resultDiagnostic(result, harness)).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        stage: 'TASK4_PRE_GATE_B_READY',
+        action: 'STOP',
+      });
+      expect(
+        calls(harness).filter((entry) => entry.startsWith('bounded log prefix ')),
+      ).toEqual([
+        'bounded log prefix AWSLogs/845242190536/elasticloadbalancing/af-south-1/2030/01/02/',
+        'bounded log prefix AWSLogs/845242190536/elasticloadbalancing/af-south-1/2030/01/01/',
+      ]);
+      expect(calls(harness)).toContain('date epoch');
+      expect(calls(harness)).not.toContain('date iso');
     } finally {
       destroyHarness(harness);
     }

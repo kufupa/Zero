@@ -487,14 +487,24 @@ observe_host() {
 
 log_proof_scope() {
   local refs_path="$1"
-  node - "$refs_path" <<'NODE'
+  local albs_path="${2:-}"
+  node - "$refs_path" "$albs_path" <<'NODE'
 const crypto = require('crypto');
 const fs = require('fs');
-const refs = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
-const albArn = refs?.albArn;
+const [refsPath, albsPath] = process.argv.slice(2);
+const refs = JSON.parse(fs.readFileSync(refsPath, 'utf8'));
+let albArn = refs?.albArn;
 const bucket = refs?.bucket;
 const expectedAlb =
   /^arn:aws:elasticloadbalancing:af-south-1:845242190536:loadbalancer\/app\/nava-remote-admin-alb\/[A-Za-z0-9-]+$/;
+if (albsPath) {
+  const albs = JSON.parse(fs.readFileSync(albsPath, 'utf8'))?.LoadBalancers;
+  const matches = Array.isArray(albs)
+    ? albs.filter((alb) => alb?.LoadBalancerName === 'nava-remote-admin-alb')
+    : [];
+  if (matches.length !== 1) process.exit(2);
+  albArn = matches[0]?.LoadBalancerArn;
+}
 if (
   typeof albArn !== 'string' ||
   !expectedAlb.test(albArn) ||
@@ -514,12 +524,96 @@ process.stdout.write(
 NODE
 }
 
+assert_fresh_log_proof_scope() {
+  local scratch="$1"
+  local expected_scope
+  local current_scope
+  expected_scope="$(log_proof_scope "$scratch/refs.json")" || die
+  capture "$scratch" post-log-proof-albs.json elbv2 describe-load-balancers \
+    --region "$AWS_REGION" \
+    --names "$ALB_NAME" \
+    --output json
+  current_scope="$(
+    log_proof_scope \
+      "$scratch/refs.json" \
+      "$scratch/post-log-proof-albs.json"
+  )" || die
+  [[ "$expected_scope" == "$current_scope" ]] || die
+}
+
 now_epoch_seconds() {
   local value
   value="$("${DATE[@]}" -u +%s)" || return 1
   [[ "$value" =~ ^[0-9]+$ ]] || return 1
   (( 10#$value <= 4102444800 )) || return 1
   printf '%s\n' "$value"
+}
+
+fresh_log_proof_cutoff() {
+  local now="$1"
+  local started_at="${2:-}"
+  node - "$now" "$LOG_PROOF_MAX_AGE_SECONDS" "$started_at" <<'NODE'
+const [nowText, maxAgeText, startedAtText] = process.argv.slice(2);
+const now = Number(nowText);
+const maxAge = Number(maxAgeText);
+if (
+  !Number.isSafeInteger(now) ||
+  !Number.isSafeInteger(maxAge) ||
+  now < maxAge
+) {
+  process.exit(2);
+}
+let cutoff = (now - maxAge) * 1000;
+if (startedAtText) {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(startedAtText)) {
+    process.exit(2);
+  }
+  const startedAt = Date.parse(startedAtText);
+  if (!Number.isFinite(startedAt)) process.exit(2);
+  cutoff = Math.max(cutoff, startedAt);
+}
+process.stdout.write(new Date(cutoff).toISOString());
+NODE
+}
+
+fresh_log_proof_prefixes() {
+  local not_before="$1"
+  local now="$2"
+  node - "$not_before" "$now" <<'NODE'
+const [notBeforeText, nowText] = process.argv.slice(2);
+const notBefore = Date.parse(notBeforeText);
+const now = Number(nowText) * 1000;
+if (
+  !Number.isFinite(notBefore) ||
+  !Number.isFinite(now) ||
+  notBefore > now
+) {
+  process.exit(2);
+}
+const first = new Date(notBefore);
+const last = new Date(now);
+const firstDay = new Date(
+  Date.UTC(first.getUTCFullYear(), first.getUTCMonth(), first.getUTCDate()),
+);
+const lastDay = new Date(
+  Date.UTC(last.getUTCFullYear(), last.getUTCMonth(), last.getUTCDate()),
+);
+const prefixes = [];
+for (
+  let day = lastDay;
+  day.getTime() >= firstDay.getTime();
+  day = new Date(day.getTime() - 86_400_000)
+) {
+  const year = String(day.getUTCFullYear()).padStart(4, '0');
+  const month = String(day.getUTCMonth() + 1).padStart(2, '0');
+  const date = String(day.getUTCDate()).padStart(2, '0');
+  prefixes.push(
+    `AWSLogs/845242190536/elasticloadbalancing/af-south-1/${year}/${month}/${date}/`,
+  );
+}
+if (prefixes.length === 0 || prefixes.length > 2) process.exit(2);
+process.stdout.write(prefixes.join('\n') + '\n');
+NODE
 }
 
 write_log_proof_audit_receipt() {
@@ -628,6 +722,9 @@ NODE
     chmod 600 -- "$scratch/logProof.json"
   else
     derive_fresh_log_delivery_proof "$scratch"
+    if [[ -f "$scratch/logProof.json" ]]; then
+      assert_fresh_log_proof_scope "$scratch"
+    fi
   fi
   case "$classify_result" in
     yes)
@@ -809,36 +906,45 @@ process.exit(found ? 0 : 1);
 NODE
 }
 
+has_bounded_recent_alb_log() {
+  local scratch="$1"
+  local not_before="$2"
+  local now="$3"
+  local alb_arn="$4"
+  local prefixes="$scratch/log-proof-prefixes.txt"
+  local objects
+  local prefix
+  local index=0
+  fresh_log_proof_prefixes "$not_before" "$now" >"$prefixes" || die
+  chmod 600 -- "$prefixes"
+  while IFS= read -r prefix; do
+    [[ "$prefix" =~ ^AWSLogs/${AWS_ACCOUNT_ID}/elasticloadbalancing/${AWS_REGION}/[0-9]{4}/[0-9]{2}/[0-9]{2}/$ ]] || die
+    objects="$scratch/log-proof-objects-$index.json"
+    capture "$scratch" "log-proof-objects-$index.json" s3api list-objects-v2 \
+      --region "$AWS_REGION" \
+      --bucket "$LOG_BUCKET" \
+      --prefix "$prefix" \
+      --no-paginate \
+      --output json
+    if has_recent_alb_log "$objects" "$not_before" "$alb_arn"; then
+      return 0
+    fi
+    index=$((index + 1))
+  done <"$prefixes"
+  return 1
+}
+
 derive_fresh_log_delivery_proof() {
   local scratch="$1"
   local alb_arn
   local now
   local not_before
-  local objects="$scratch/log-proof-objects.json"
   alb_arn="$(reference "$scratch" albArn)" || die
   [[ -n "$alb_arn" ]] || return
   log_proof_scope "$scratch/refs.json" >/dev/null 2>&1 || return
-  capture "$scratch" log-proof-objects.json s3api list-objects-v2 \
-    --region "$AWS_REGION" \
-    --bucket "$LOG_BUCKET" \
-    --prefix "AWSLogs/${AWS_ACCOUNT_ID}/" \
-    --output json
   now="$(now_epoch_seconds)" || die
-  not_before="$(node - "$now" "$LOG_PROOF_MAX_AGE_SECONDS" <<'NODE'
-const [nowText, maxAgeText] = process.argv.slice(2);
-const now = Number(nowText);
-const maxAge = Number(maxAgeText);
-if (
-  !Number.isSafeInteger(now) ||
-  !Number.isSafeInteger(maxAge) ||
-  now < maxAge
-) {
-  process.exit(2);
-}
-process.stdout.write(new Date((now - maxAge) * 1000).toISOString());
-NODE
-)" || die
-  if has_recent_alb_log "$objects" "$not_before" "$alb_arn"; then
+  not_before="$(fresh_log_proof_cutoff "$now")" || die
+  if has_bounded_recent_alb_log "$scratch" "$not_before" "$now" "$alb_arn"; then
     printf '%s\n' '{"accessLogDelivered":true}' >"$scratch/logProof.json"
     chmod 600 -- "$scratch/logProof.json"
   fi
@@ -849,9 +955,10 @@ prove_alb_log_delivery() {
   local alb_arn
   local alb_dns_name
   local started_at
+  local now
+  local not_before
   local attempt
   local curl_error="$scratch/log-proof-curl.error"
-  local objects="$scratch/log-proof-objects.json"
   alb_arn="$(reference "$scratch" albArn)" || die
   [[ -n "$alb_arn" ]] || die
   alb_dns_name="$(reference "$scratch" albDnsName)" || die
@@ -862,13 +969,9 @@ prove_alb_log_delivery() {
     "https://${REMOTE_HOST}/" >/dev/null 2>"$curl_error" || die
   chmod 600 -- "$curl_error"
   for ((attempt = 1; attempt <= LOG_PROOF_MAX_ATTEMPTS; attempt += 1)); do
-    "${AWS[@]}" --no-cli-pager s3api list-objects-v2 \
-      --region "$AWS_REGION" \
-      --bucket "$LOG_BUCKET" \
-      --prefix "AWSLogs/${AWS_ACCOUNT_ID}/" \
-      --output json >"$objects" 2>/dev/null || die
-    chmod 600 -- "$objects"
-    if has_recent_alb_log "$objects" "$started_at" "$alb_arn"; then
+    now="$(now_epoch_seconds)" || die
+    not_before="$(fresh_log_proof_cutoff "$now" "$started_at")" || die
+    if has_bounded_recent_alb_log "$scratch" "$not_before" "$now" "$alb_arn"; then
       printf '%s\n' '{"accessLogDelivered":true}' >"$scratch/logProof.json"
       chmod 600 -- "$scratch/logProof.json"
       return
