@@ -7,15 +7,13 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/tooltip';
-import { Check, Command, Loader, Paperclip, Plus, Type, X as XIcon } from 'lucide-react';
+import { Command, Paperclip, Plus, Type, X as XIcon } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { TextEffect } from '@/components/motion-primitives/text-effect';
 import { ScheduleSendPicker } from './schedule-send-picker';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import useComposeEditor from '@/hooks/use-compose-editor';
-import { CurvedArrow, Sparkles, X } from '../icons/icons';
+import { CurvedArrow, X } from '../icons/icons';
 import { gitHubEmojis } from '@tiptap/extension-emoji';
-import { AnimatePresence, motion } from 'motion/react';
 import { zodResolver } from '@hookform/resolvers/zod';
 
 import { useTRPC } from '@/providers/query-provider';
@@ -23,14 +21,9 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useSettings } from '@/hooks/use-settings';
 import { DEMO_MAIL_LIST_DRAFTS_QUERY_PREFIX } from '@/lib/demo/demo-mail-query-keys';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
-import {
-  demoAiCompose,
-  demoGenerateEmailSubject,
-  demoUpsertDraft,
-} from '@/lib/demo/local-actions';
+import { demoUpsertDraft } from '@/lib/demo/local-actions';
 
 import { cn, formatFileSize } from '@/lib/utils';
-import { useThread } from '@/hooks/use-threads';
 import { serializeFiles } from '@/lib/schemas';
 import { Input } from '@/components/ui/input';
 import { EditorContent } from '@tiptap/react';
@@ -69,14 +62,6 @@ import { m } from '@/paraglide/messages';
 import { useDraft } from '@/hooks/use-drafts';
 import type { HeaderDebugLine } from '@/types';
 
-type ThreadContent = {
-  from: string;
-  to: string[];
-  body: string;
-  cc?: string[];
-  subject: string;
-}[];
-
 interface EmailComposerProps {
   initialTo?: string[];
   initialCc?: string[];
@@ -84,7 +69,6 @@ interface EmailComposerProps {
   initialSubject?: string;
   initialMessage?: string;
   initialAttachments?: File[];
-  replyingTo?: string;
   onSendEmail: (data: {
     to: string[];
     cc?: string[];
@@ -107,8 +91,6 @@ interface EmailComposerProps {
   headerPreview?: HeaderDebugLine[];
 }
 
-
-
 const schema = z.object({
   to: z.array(z.string().email()).min(1),
   subject: z.string().min(1),
@@ -128,7 +110,6 @@ export function EmailComposer({
   initialSubject = '',
   initialMessage = '',
   initialAttachments = [],
-  replyingTo,
   onSendEmail,
   onClose,
   className,
@@ -157,11 +138,9 @@ export function EmailComposer({
     setHasUnsavedChanges(true);
     setAutosaveSuppressedAfterFailure(false);
   }, []);
-  const [messageLength, setMessageLength] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [threadId] = useQueryState('threadId');
   const [isComposeOpen, setIsComposeOpen] = useQueryState('isComposeOpen');
-  const { data: emailData } = useThread(threadId ?? null);
   const [draftId, setDraftId] = useQueryState('draftId');
   const { data: serverDraft } = useDraft(draftId ?? null);
 
@@ -171,9 +150,6 @@ export function EmailComposer({
     }
   }, [draftId]);
 
-  const [aiGeneratedMessage, setAiGeneratedMessage] = useState<string | null>(null);
-  const [aiIsLoading, setAiIsLoading] = useState(false);
-  const [isGeneratingSubject, setIsGeneratingSubject] = useState(false);
   const [showLeaveConfirmation, setShowLeaveConfirmation] = useState(false);
   const [scheduleAt, setScheduleAt] = useState<string>();
   const [isScheduleValid, setIsScheduleValid] = useState<boolean>(true);
@@ -265,11 +241,7 @@ export function EmailComposer({
   const trpc = useTRPC();
   const queryClient = useQueryClient();
   const { optimisticDeleteDraft } = useOptimisticActions();
-  const { mutateAsync: aiCompose } = useMutation(trpc.ai.compose.mutationOptions());
   const { mutateAsync: createDraft } = useMutation(trpc.drafts.create.mutationOptions());
-  const { mutateAsync: generateEmailSubject } = useMutation(
-    trpc.ai.generateEmailSubject.mutationOptions(),
-  );
 
   const form = useForm<z.infer<typeof schema>>({
     resolver: zodResolver(schema),
@@ -379,9 +351,8 @@ export function EmailComposer({
   const editor = useComposeEditor({
     initialValue: initialMessage,
     isReadOnly: isLoading,
-    onLengthChange: (length) => {
+    onLengthChange: () => {
       markUnsavedChanges();
-      setMessageLength(length);
     },
     onModEnter: () => {
       void handleSend();
@@ -445,7 +416,7 @@ export function EmailComposer({
           text: editor.getText(),
           to: values.to ?? [],
           subject: values.subject ?? '',
-          aiBlocked: Boolean(aiGeneratedMessage || aiIsLoading || isGeneratingSubject),
+          aiBlocked: false,
         })
       ) {
         e.preventDefault();
@@ -460,9 +431,6 @@ export function EmailComposer({
     getValues,
     hasUnsavedChanges,
     initialMessage,
-    aiGeneratedMessage,
-    aiIsLoading,
-    isGeneratingSubject,
   ]);
 
   const proceedWithSend = async () => {
@@ -481,7 +449,6 @@ export function EmailComposer({
       }
 
       setIsLoading(true);
-      setAiGeneratedMessage(null);
 
       const flushed = await flushDraftUntilCurrent();
       if (!flushed) return;
@@ -533,64 +500,6 @@ export function EmailComposer({
     await proceedWithSend();
   };
 
-  const threadContent: ThreadContent = useMemo(() => {
-    if (!emailData) return [];
-    return emailData.messages.map((message) => {
-      return {
-        body: message.decodedBody ?? '',
-        from: message.sender.name ?? message.sender.email,
-        to: message.to.reduce<string[]>((to, recipient) => {
-          if (recipient.name) {
-            to.push(recipient.name);
-          }
-          return to;
-        }, []),
-        cc: message.cc?.reduce<string[]>((cc, recipient) => {
-          if (recipient.name) {
-            cc.push(recipient.name);
-          }
-          return cc;
-        }, []),
-        subject: message.subject,
-      };
-    });
-  }, [emailData]);
-
-  const handleAiGenerate = async () => {
-    try {
-      setIsLoading(true);
-      setAiIsLoading(true);
-      const values = getValues();
-
-      const result = isFrontendOnlyDemo()
-        ? await demoAiCompose({
-            prompt: editor.getText(),
-            emailSubject: values.subject,
-            to: values.to,
-            cc: values.cc,
-            threadMessages: threadContent,
-          })
-        : await aiCompose({
-            prompt: editor.getText(),
-            emailSubject: values.subject,
-            to: values.to,
-            cc: values.cc,
-            threadMessages: threadContent,
-          });
-
-      if ('newBody' in result) {
-        setAiGeneratedMessage(result.newBody);
-      }
-      // toast.success('Email generated successfully');
-    } catch (error) {
-      console.error('Error generating AI email:', error);
-      toast.error('Failed to generate email');
-    } finally {
-      setIsLoading(false);
-      setAiIsLoading(false);
-    }
-  };
-
   const persistDraftOnce = useCallback(async (): Promise<'saved' | 'skipped' | 'failed'> => {
     if (saveInFlightRef.current) return saveInFlightRef.current;
 
@@ -600,7 +509,7 @@ export function EmailComposer({
       hasUnsavedChanges:
         revisionRef.current.localRevision > revisionRef.current.savedRevision,
       initialHtml: initialMessage ?? '',
-      aiBlocked: Boolean(aiGeneratedMessage || aiIsLoading || isGeneratingSubject),
+      aiBlocked: false,
       draftId: activeDraftIdRef.current,
       threadId: threadId ?? null,
       replyToMessageId,
@@ -697,14 +606,11 @@ export function EmailComposer({
     saveInFlightRef.current = savePromise;
     return savePromise;
   }, [
-    aiGeneratedMessage,
-    aiIsLoading,
     createDraft,
     draftId,
     editor,
     getValues,
     initialMessage,
-    isGeneratingSubject,
     queryClient,
     replyToMessageId,
     setDraftId,
@@ -736,15 +642,12 @@ export function EmailComposer({
       text: editor?.getText() ?? '',
       to: values.to ?? [],
       subject: values.subject ?? '',
-      aiBlocked: Boolean(aiGeneratedMessage || aiIsLoading || isGeneratingSubject),
+      aiBlocked: false,
     };
   }, [
     hasUnsavedChanges,
     initialMessage,
     editor,
-    aiGeneratedMessage,
-    aiIsLoading,
-    isGeneratingSubject,
     getValues,
   ]);
 
@@ -803,7 +706,7 @@ export function EmailComposer({
         text: editor?.getText() ?? '',
         to: values.to ?? [],
         subject: values.subject ?? '',
-        aiBlocked: Boolean(aiGeneratedMessage || aiIsLoading || isGeneratingSubject),
+        aiBlocked: false,
         intent: 'threadSwitch',
       });
       if (action === 'flushAndLeave') {
@@ -816,9 +719,6 @@ export function EmailComposer({
     hasUnsavedChanges,
     initialMessage,
     editor,
-    aiGeneratedMessage,
-    aiIsLoading,
-    isGeneratingSubject,
     saveDraft,
     getValues,
   ]);
@@ -837,29 +737,6 @@ export function EmailComposer({
     document.addEventListener('keydown', handleKeyDown, true);
     return () => document.removeEventListener('keydown', handleKeyDown, true);
   }, [editor, handleEscapeClose]);
-
-  const handleGenerateSubject = async () => {
-    try {
-      setIsGeneratingSubject(true);
-      const messageText = editor.getText().trim();
-
-      if (!messageText) {
-        toast.error('Please enter some message content first');
-        return;
-      }
-
-      const { subject } = isFrontendOnlyDemo()
-        ? await demoGenerateEmailSubject({ message: messageText })
-        : await generateEmailSubject({ message: messageText });
-      setValue('subject', subject);
-      markUnsavedChanges();
-    } catch (error) {
-      console.error('Error generating subject:', error);
-      toast.error('Failed to generate subject');
-    } finally {
-      setIsGeneratingSubject(false);
-    }
-  };
 
   // Component unmount protection
   useEffect(() => {
@@ -908,19 +785,6 @@ export function EmailComposer({
     };
   }, [handleAttachment]);
 
-  // useHotkeys('meta+y', async (e) => {
-  //   if (!editor.getText().trim().length && !subjectInput.trim().length) {
-  //     toast.error('Please enter a subject or a message');
-  //     return;
-  //   }
-  //   if (!subjectInput.trim()) {
-  //     await handleGenerateSubject();
-  //   }
-  //   setAiGeneratedMessage(null);
-  //   await handleAiGenerate();
-  // });
-
-
   // keep fromEmail in sync when settings load
   useEffect(() => {
     const preferred =
@@ -953,8 +817,6 @@ export function EmailComposer({
       return emoji?.emoji ?? match;
     });
   };
-
-  const isReplyComposer = Boolean(replyingTo);
 
   const sendButton = (
     <Button size={'xs'} onClick={handleSend} disabled={isLoading || settingsLoading || !isScheduleValid}>
@@ -1066,21 +928,6 @@ export function EmailComposer({
                 markUnsavedChanges();
               }}
             />
-            <button
-              onClick={handleGenerateSubject}
-              disabled={isLoading || isGeneratingSubject || messageLength < 1}
-              className="hover:bg-gray-50 dark:hover:bg-[#404040] transition-colors cursor-pointer rounded p-1"
-            >
-              <div className="flex items-center justify-center gap-2.5 pl-0.5">
-                <div className="flex h-5 items-center justify-center gap-1 rounded-sm">
-                  {isGeneratingSubject ? (
-                    <Loader className="h-3.5 w-3.5 animate-spin fill-black dark:fill-white" />
-                  ) : (
-                    <Sparkles className="h-3.5 w-3.5 fill-black dark:fill-white" />
-                  )}
-                </div>
-              </div>
-            </button>
           </div>
         ) : null}
 
@@ -1101,11 +948,7 @@ export function EmailComposer({
             onClick={() => {
               editor.commands.focus();
             }}
-            className={cn(
-              `min-h-[200px] w-full`,
-              editorClassName,
-              aiGeneratedMessage !== null ? 'blur-sm' : '',
-            )}
+            className={cn(`min-h-[200px] w-full`, editorClassName)}
           >
             <EditorContent editor={editor} className="h-full w-full max-w-full overflow-x-auto" />
           </div>
@@ -1116,8 +959,8 @@ export function EmailComposer({
       <div className="inline-flex w-full shrink-0 items-end justify-between self-stretch rounded-b-2xl bg-[#FFFFFF] px-3 py-3 outline-white/5 dark:bg-[#202020]">
         <div className="flex flex-col items-start justify-start gap-2">
           {toggleToolbar && <Toolbar editor={editor} />}
-          <div className="flex items-center justify-start gap-2">
-            {!isReplyComposer ? sendButton : null}
+          <div className="flex flex-wrap items-center justify-start gap-2">
+            {sendButton}
             <ScheduleSendPicker
               value={scheduleAt}
               onChange={handleScheduleChange}
@@ -1273,7 +1116,6 @@ export function EmailComposer({
                 <TooltipTrigger asChild>
                   <Button
                     type="button"
-                    tabIndex={-1}
                     variant="ghost"
                     size="icon"
                     onClick={() => setToggleToolbar(!toggleToolbar)}
@@ -1286,66 +1128,6 @@ export function EmailComposer({
               </Tooltip>
             </TooltipProvider>
           </div>
-        </div>
-        <div className="flex items-start justify-start gap-2">
-          {isReplyComposer ? (
-            sendButton
-          ) : (
-            <div className="relative">
-              <AnimatePresence>
-                {aiGeneratedMessage !== null ? (
-                  <ContentPreview
-                    content={aiGeneratedMessage}
-                    onAccept={() => {
-                      editor.commands.setContent(
-                        {
-                          type: 'doc',
-                          content: aiGeneratedMessage.split(/\r?\n/).map((line) => {
-                            return {
-                              type: 'paragraph',
-                              content: line.trim().length === 0 ? [] : [{ type: 'text', text: line }],
-                            };
-                          }),
-                        },
-                        false,
-                      );
-                      markUnsavedChanges();
-                      setAiGeneratedMessage(null);
-                    }}
-                    onReject={() => {
-                      setAiGeneratedMessage(null);
-                    }}
-                  />
-                ) : null}
-              </AnimatePresence>
-              <Button
-                size={'xs'}
-                variant={'ghost'}
-                className="border border-[#8B5CF6] cursor-pointer"
-                onClick={async () => {
-                  if (!subjectInput.trim()) {
-                    await handleGenerateSubject();
-                  }
-                  setAiGeneratedMessage(null);
-                  await handleAiGenerate();
-                }}
-                disabled={isLoading || aiIsLoading || messageLength < 1}
-              >
-                <div className="flex items-center justify-center gap-2.5 pl-0.5">
-                  <div className="flex h-5 items-center justify-center gap-1 rounded-sm">
-                    {aiIsLoading ? (
-                      <Loader className="h-3.5 w-3.5 animate-spin fill-black dark:fill-white" />
-                    ) : (
-                      <Sparkles className="h-3.5 w-3.5 fill-black dark:fill-white" />
-                    )}
-                  </div>
-                  <div className="hidden text-center text-sm leading-none text-black md:block dark:text-white">
-                    Generate
-                  </div>
-                </div>
-              </Button>
-            </div>
-          )}
         </div>
       </div>
 
@@ -1414,118 +1196,3 @@ export function EmailComposer({
     </div>
   );
 }
-
-const animations = {
-  container: {
-    initial: { width: 32, opacity: 0 },
-    animate: (width: number) => ({
-      width: width < 640 ? '200px' : '400px',
-      opacity: 1,
-      transition: {
-        width: { type: 'spring', stiffness: 250, damping: 35 },
-        opacity: { duration: 0.4 },
-      },
-    }),
-    exit: {
-      width: 32,
-      opacity: 0,
-      transition: {
-        width: { type: 'spring', stiffness: 250, damping: 35 },
-        opacity: { duration: 0.4 },
-      },
-    },
-  },
-  content: {
-    initial: { opacity: 0 },
-    animate: { opacity: 1, transition: { delay: 0.15, duration: 0.4 } },
-    exit: { opacity: 0, transition: { duration: 0.3 } },
-  },
-  input: {
-    initial: { y: 10, opacity: 0 },
-    animate: { y: 0, opacity: 1, transition: { delay: 0.3, duration: 0.4 } },
-    exit: { y: 10, opacity: 0, transition: { duration: 0.3 } },
-  },
-  button: {
-    initial: { opacity: 0, scale: 0.8 },
-    animate: { opacity: 1, scale: 1, transition: { delay: 0.4, duration: 0.3 } },
-    exit: { opacity: 0, scale: 0.8, transition: { duration: 0.2 } },
-  },
-  card: {
-    initial: { opacity: 0, y: 10, scale: 0.95 },
-    animate: { opacity: 1, y: -10, scale: 1, transition: { duration: 0.3 } },
-    exit: { opacity: 0, y: 10, scale: 0.95, transition: { duration: 0.2 } },
-  },
-};
-
-const ContentPreview = ({
-  content,
-  onAccept,
-  onReject,
-}: {
-  content: string;
-  onAccept?: (value: string) => void | Promise<void>;
-  onReject?: () => void | Promise<void>;
-}) => (
-  <motion.div
-    variants={animations.card}
-    initial="initial"
-    animate="animate"
-    exit="exit"
-    className="dark:bg-subtleBlack absolute bottom-full right-0 z-30 z-50 w-[400px] overflow-hidden rounded-xl border bg-white p-1 shadow-md"
-  >
-    <div
-      className="max-h-60 min-h-[150px] overflow-auto rounded-md p-1 text-sm"
-      style={{
-        scrollbarGutter: 'stable',
-      }}
-    >
-      {(() => {
-        let previewLineIndex = 0;
-        return content.split('\n').map((line) => {
-          const key = `preview-line-${line}-${previewLineIndex}`;
-          previewLineIndex += 1;
-          return (
-            <TextEffect
-              per="char"
-              preset="blur"
-              as="div"
-              className="whitespace-pre-wrap"
-              speedReveal={3}
-              key={key}
-            >
-              {line}
-            </TextEffect>
-          );
-        });
-      })()}
-    </div>
-    <div className="flex justify-end gap-2 p-2">
-      <button
-        className="flex h-7 items-center gap-0.5 overflow-hidden rounded-md border bg-red-700 px-1.5 text-sm shadow-sm hover:bg-red-800 dark:border-none cursor-pointer transition-colors"
-        onClick={async () => {
-          if (onReject) {
-            await onReject();
-          }
-        }}
-      >
-        <div className="flex h-5 items-center justify-center gap-1 rounded-sm">
-          <XIcon className="h-3.5 w-3.5" />
-        </div>
-        <span>Reject</span>
-      </button>
-      <button
-        className="flex h-7 items-center gap-0.5 overflow-hidden rounded-md border bg-green-700 px-1.5 text-sm shadow-sm hover:bg-green-800 dark:border-none cursor-pointer transition-colors"
-        onClick={async () => {
-          if (onAccept) {
-            await onAccept(content);
-          }
-        }}
-      >
-        <div className="flex h-5 items-center justify-center gap-1 rounded-sm">
-          <Check className="h-3.5 w-3.5" />
-        </div>
-        <span>Accept</span>
-      </button>
-    </div>
-  </motion.div>
-);
