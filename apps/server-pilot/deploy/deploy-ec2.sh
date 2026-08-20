@@ -243,6 +243,35 @@ assert_remote_alb_target_private_ip() {
   fi
 }
 
+# Refuse one-sided Nginx candidates before install/reload so neither plane
+# can be wiped by a bad deploy. Independent of live ALB rule state.
+assert_dual_plane_nginx_candidate() {
+  local candidate="${1:-$NGINX_SRC}"
+  local missing=0
+
+  if [ ! -f "$candidate" ]; then
+    echo "nginx dual-plane candidate missing file: ${candidate}" >&2
+    return 1
+  fi
+
+  for required in \
+    'server_name nava.legacyhotels.co.za' \
+    'listen 443 ssl' \
+    'proxy_pass http://127.0.0.1:8788/api/' \
+    "listen ${REMOTE_ALB_TARGET_PRIVATE_IP}:8443" \
+    'server_name nava-admin.trynava.io' \
+    'proxy_pass http://127.0.0.1:8789/api/' \
+    'proxy_pass http://127.0.0.1:8789/health'
+  do
+    if ! grep -Fq "$required" "$candidate"; then
+      echo "nginx dual-plane candidate missing: ${required}" >&2
+      missing=1
+    fi
+  done
+
+  [ "$missing" -eq 0 ]
+}
+
 NGINX_SITE="${NGINX_SITE:-/etc/nginx/sites-available/nava-zero}"
 NGINX_ENABLED="${NGINX_ENABLED:-/etc/nginx/sites-enabled/nava-zero}"
 NGINX_SRC="${SERVER_PILOT}/deploy/nginx.conf"
@@ -400,6 +429,11 @@ if command -v nginx >/dev/null 2>&1; then
     NGINX_ENABLED_EXISTED=1
   elif sudo test -e "$NGINX_ENABLED"; then
     echo "nginx enabled path is not a symlink; candidate not installed" >&2
+    exit 1
+  fi
+
+  if ! assert_dual_plane_nginx_candidate "$NGINX_SRC"; then
+    echo "nginx candidate missing dual-plane contracts; prior site left untouched" >&2
     exit 1
   fi
 

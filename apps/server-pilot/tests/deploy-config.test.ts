@@ -425,8 +425,72 @@ type NginxActivationScenario =
   | 'sigterm'
   | 'unexpected-exit'
   | 'cleanup-exit'
-  | 'target-ip';
+  | 'target-ip'
+  | 'legacy-only'
+  | 'remote-only';
 type NginxPriorState = 'absent' | 'present' | 'dangling';
+
+const DUAL_PLANE_NGINX_CANDIDATE = `server {
+  listen 80 default_server;
+  server_name nava.legacyhotels.co.za;
+}
+server {
+  listen 443 ssl default_server;
+  server_name nava.legacyhotels.co.za;
+  location /api/ {
+    proxy_pass http://127.0.0.1:8788/api/;
+  }
+}
+server {
+  listen ${REMOTE_ALB_TARGET_PRIVATE_IP}:8443 default_server;
+  server_name _;
+  return 444;
+}
+server {
+  listen ${REMOTE_ALB_TARGET_PRIVATE_IP}:8443;
+  server_name ${REMOTE_ALB_TARGET_PRIVATE_IP};
+  location = /health {
+    proxy_pass http://127.0.0.1:8789/health;
+  }
+}
+server {
+  listen ${REMOTE_ALB_TARGET_PRIVATE_IP}:8443;
+  server_name nava-admin.trynava.io;
+  location /api/ {
+    proxy_pass http://127.0.0.1:8789/api/;
+  }
+}
+`;
+
+const LEGACY_ONLY_NGINX_CANDIDATE = `server {
+  listen 443 ssl default_server;
+  server_name nava.legacyhotels.co.za;
+  location /api/ {
+    proxy_pass http://127.0.0.1:8788/api/;
+  }
+}
+`;
+
+const REMOTE_ONLY_NGINX_CANDIDATE = `server {
+  listen ${REMOTE_ALB_TARGET_PRIVATE_IP}:8443 default_server;
+  server_name _;
+  return 444;
+}
+server {
+  listen ${REMOTE_ALB_TARGET_PRIVATE_IP}:8443;
+  server_name ${REMOTE_ALB_TARGET_PRIVATE_IP};
+  location = /health {
+    proxy_pass http://127.0.0.1:8789/health;
+  }
+}
+server {
+  listen ${REMOTE_ALB_TARGET_PRIVATE_IP}:8443;
+  server_name nava-admin.trynava.io;
+  location /api/ {
+    proxy_pass http://127.0.0.1:8789/api/;
+  }
+}
+`;
 
 async function runNginxActivation({
   scenario,
@@ -493,7 +557,15 @@ async function runNginxActivation({
     ]) {
       mkdirSync(directory, { recursive: true });
     }
-    writeFileSync(join(deployDir, 'nginx.conf'), 'candidate nginx config\n', 'utf8');
+    writeFileSync(
+      join(deployDir, 'nginx.conf'),
+      scenario === 'legacy-only'
+        ? LEGACY_ONLY_NGINX_CANDIDATE
+        : scenario === 'remote-only'
+          ? REMOTE_ONLY_NGINX_CANDIDATE
+          : DUAL_PLANE_NGINX_CANDIDATE,
+      'utf8',
+    );
     writeFileSync(nginxCallsPath, '0', 'utf8');
     writeFileSync(reloadCallsPath, '0', 'utf8');
     if (priorState !== 'absent') {
@@ -1905,6 +1977,71 @@ describe('deploy config', () => {
     expect(result.backupEntries).toEqual([]);
   });
 
+  it('refuses a legacy-only Nginx candidate before install and leaves the prior site', async () => {
+    const result = await runNginxActivation({
+      scenario: 'legacy-only',
+      priorState: 'present',
+    });
+
+    expect(result.status, result.stderr).toBe(1);
+    expect(result.stderr).toContain('nginx dual-plane candidate missing');
+    expect(result.stderr).toContain(
+      'nginx candidate missing dual-plane contracts; prior site left untouched',
+    );
+    expect(result.site).toBe('previous nginx config\n');
+    expect(result.enabledState).toBe('valid');
+    expect(result.enabledTarget).toBe('../sites-available/previous-nava');
+    expect(result.nginxCalls).toBe(0);
+    expect(result.reloadCalls).toBe(0);
+    expect(result.backupEntries).toEqual([]);
+  });
+
+  it('refuses a remote-only Nginx candidate before install and leaves the prior site', async () => {
+    const result = await runNginxActivation({
+      scenario: 'remote-only',
+      priorState: 'present',
+    });
+
+    expect(result.status, result.stderr).toBe(1);
+    expect(result.stderr).toContain('nginx dual-plane candidate missing');
+    expect(result.stderr).toContain(
+      'nginx candidate missing dual-plane contracts; prior site left untouched',
+    );
+    expect(result.site).toBe('previous nginx config\n');
+    expect(result.enabledState).toBe('valid');
+    expect(result.enabledTarget).toBe('../sites-available/previous-nava');
+    expect(result.nginxCalls).toBe(0);
+    expect(result.reloadCalls).toBe(0);
+    expect(result.backupEntries).toEqual([]);
+  });
+
+  it('deploy-ec2.sh asserts dual-plane Nginx contracts before activating the candidate', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const deploy = readFileSync(join(here, '..', 'deploy', 'deploy-ec2.sh'), 'utf8');
+    const assertor = deploy.match(
+      /assert_dual_plane_nginx_candidate\(\) \{([\s\S]*?)^\}/m,
+    )?.[1];
+    const nginxBlock = deploy.slice(
+      deploy.indexOf('echo "== nginx =="'),
+      deploy.indexOf('if [ "$QUIESCED" = "1" ]; then'),
+    );
+
+    expect(assertor).toBeTruthy();
+    expect(assertor).toContain('server_name nava.legacyhotels.co.za');
+    expect(assertor).toContain('proxy_pass http://127.0.0.1:8788/api/');
+    expect(assertor).toContain('server_name nava-admin.trynava.io');
+    expect(assertor).toContain('proxy_pass http://127.0.0.1:8789/api/');
+    expect(nginxBlock.indexOf('assert_dual_plane_nginx_candidate')).toBeGreaterThanOrEqual(
+      0,
+    );
+    expect(nginxBlock.indexOf('assert_dual_plane_nginx_candidate')).toBeLessThan(
+      nginxBlock.indexOf('NGINX_TRANSACTION_ACTIVE=1'),
+    );
+  });
+
   it('keeps legacy TLS local and remote-vhost probes private without TLS bypasses', async () => {
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
@@ -2046,7 +2183,7 @@ describe('deploy config', () => {
 
     expect(result.status).toBe(74);
     expect(result.stderr).not.toContain('restored previous config');
-    expect(result.site).toBe('candidate nginx config\n');
+    expect(result.site).toBe(DUAL_PLANE_NGINX_CANDIDATE);
     expect(result.enabledState).toBe('valid');
     expect(result.enabledTarget).toMatch(/\/sites-available\/nava-zero$/);
     expect(result.nginxCalls).toBe(1);
