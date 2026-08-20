@@ -5,25 +5,30 @@ type SidebarLabelNode = Omit<Label, 'labels'> & {
   originalLabel?: Label;
 };
 
-const visibleNameCollator = new Intl.Collator('en', {
-  numeric: true,
-  sensitivity: 'base',
-});
+const createVisibleNameCollator = (locale: string): Intl.Collator =>
+  new Intl.Collator(locale, {
+    numeric: true,
+    sensitivity: 'base',
+  });
 
 const sourceRawName = (node: SidebarLabelNode): string => node.originalLabel?.name ?? node.name;
 
-const compareVisibleNodes = (left: SidebarLabelNode, right: SidebarLabelNode): number => {
-  const visibleNameOrder = visibleNameCollator.compare(left.name, right.name);
-  if (visibleNameOrder !== 0) return visibleNameOrder;
-  const leftRawName = sourceRawName(left);
-  const rightRawName = sourceRawName(right);
-  if (leftRawName !== rightRawName) return leftRawName < rightRawName ? -1 : 1;
-  if (left.id === right.id) return 0;
-  return left.id < right.id ? -1 : 1;
-};
+const compareVisibleNodes =
+  (visibleNameCollator: Intl.Collator) =>
+  (left: SidebarLabelNode, right: SidebarLabelNode): number => {
+    const visibleNameOrder = visibleNameCollator.compare(left.name, right.name);
+    if (visibleNameOrder !== 0) return visibleNameOrder;
+    const leftRawName = sourceRawName(left);
+    const rightRawName = sourceRawName(right);
+    if (leftRawName !== rightRawName) return leftRawName < rightRawName ? -1 : 1;
+    if (left.id === right.id) return 0;
+    return left.id < right.id ? -1 : 1;
+  };
 
-const sortVisibleNodes = <T extends SidebarLabelNode>(nodes: readonly T[]): T[] =>
-  [...nodes].sort(compareVisibleNodes);
+const sortVisibleNodes = <T extends SidebarLabelNode>(
+  nodes: readonly T[],
+  visibleNameCollator: Intl.Collator,
+): T[] => [...nodes].sort(compareVisibleNodes(visibleNameCollator));
 
 const hasSlashChild = (name: string): boolean => /[^/]+\/[^/]+/.test(name);
 
@@ -38,9 +43,12 @@ const toSidebarLabelNode = (label: Label, name = label.name): SidebarLabelNode =
 export function buildMyFoldersSidebarTree(
   labels: readonly Label[],
   providerId: string | null | undefined,
+  locale = 'en',
 ): SidebarLabelNode[] {
+  const visibleNameCollator = createVisibleNameCollator(locale);
+
   if (providerId === 'microsoft') {
-    return sortVisibleNodes(labels);
+    return sortVisibleNodes(labels, visibleNameCollator);
   }
 
   const folderNames = new Set<string>();
@@ -71,7 +79,10 @@ export function buildMyFoldersSidebarTree(
 
   const roots: SidebarLabelNode[] = [
     ...Array.from(folders, ([groupName, children]) => {
-      const parent = sortVisibleNodes(labels.filter((label) => label.name === groupName))[0];
+      const parent = sortVisibleNodes(
+        labels.filter((label) => label.name === groupName),
+        visibleNameCollator,
+      )[0];
 
       return {
         id: parent?.id || `group-${groupName}`,
@@ -83,6 +94,7 @@ export function buildMyFoldersSidebarTree(
           children.map((label) =>
             toSidebarLabelNode(label, label.name.split('/').slice(1).join('/')),
           ),
+          visibleNameCollator,
         ),
       };
     }),
@@ -96,9 +108,10 @@ export function buildMyFoldersSidebarTree(
       type: 'folder',
       labels: sortVisibleNodes(
         brackets.map((label) => toSidebarLabelNode(label, label.name.replace(/\[|\]/g, ''))),
+        visibleNameCollator,
       ),
     });
   }
 
-  return sortVisibleNodes(roots);
+  return sortVisibleNodes(roots, visibleNameCollator);
 }

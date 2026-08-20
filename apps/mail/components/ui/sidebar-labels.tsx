@@ -3,6 +3,7 @@ import { useActiveConnection } from '@/hooks/use-connections';
 import { RecursiveFolder } from './recursive-folder';
 import { useStats } from '@/hooks/use-stats';
 import { buildMyFoldersSidebarTree } from '@/lib/mail/my-folders-sidebar-tree';
+import { getLocale } from '@/paraglide/runtime';
 import { Tree } from '../magicui/file-tree';
 import { useCallback } from 'react';
 
@@ -23,7 +24,7 @@ const SidebarLabels = ({ data }: Props) => {
     [stats],
   );
   const myFoldersTree = data
-    ? buildMyFoldersSidebarTree(data, activeAccount?.providerId)
+    ? buildMyFoldersSidebarTree(data, activeAccount?.providerId, getLocale())
     : [];
 
   return (

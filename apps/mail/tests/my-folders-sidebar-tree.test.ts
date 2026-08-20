@@ -35,20 +35,50 @@ describe('buildMyFoldersSidebarTree', () => {
       makeLabel('folder-two', 'folder 2'),
       makeLabel('upper-alpha', 'Alpha'),
       makeLabel('duplicate-a', 'duplicate'),
+      makeLabel('slash-child', 'Projects/Child'),
+      makeLabel('bracket-label', '[Archive]'),
     ];
 
     const tree = buildMyFoldersSidebarTree(labels, 'microsoft');
 
     expect(tree.map((node) => `${node.name}:${node.id}`)).toEqual([
+      '[Archive]:bracket-label',
       'Alpha:upper-alpha',
       'alpha:lower-alpha',
       'duplicate:duplicate-a',
       'duplicate:duplicate-b',
       'folder 2:folder-two',
       'Folder 10:folder-ten',
+      'Projects/Child:slash-child',
     ]);
     expect(tree.every((node) => node.labels === undefined)).toBe(true);
     expect(tree.every((node) => !node.id.startsWith('group-'))).toBe(true);
+    expect(tree.find((node) => node.id === 'bracket-label')).toMatchObject({
+      name: '[Archive]',
+    });
+    expect(tree.find((node) => node.id === 'slash-child')).toMatchObject({
+      name: 'Projects/Child',
+    });
+  });
+
+  it('sorts visible names by the active UI locale', () => {
+    const labels = [
+      makeLabel('isparta', 'Isparta'),
+      makeLabel('izmir-dotless', 'Izmir'),
+      makeLabel('isik', 'ışık'),
+      makeLabel('istanbul', 'istanbul'),
+      makeLabel('izmir-dotted', 'İzmir'),
+    ];
+
+    const tree = buildMyFoldersSidebarTree(labels, 'microsoft', 'tr');
+
+    expect(tree.map((node) => node.name)).toEqual([
+      'Isparta',
+      'ışık',
+      'Izmir',
+      'istanbul',
+      'İzmir',
+    ]);
   });
 
   it('sorts non-Microsoft roots and children after slash and bracket display transforms', () => {

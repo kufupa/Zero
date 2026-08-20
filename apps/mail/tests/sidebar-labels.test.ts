@@ -6,7 +6,10 @@ import { isUserFolderDroppableId } from '@/lib/mail/file-drag';
 
 const mocks = vi.hoisted(() => ({
   activeAccount: { providerId: 'google' },
-  recursiveFolder: vi.fn((_props: unknown) => null),
+  recursiveFolder: vi.fn((props: unknown) => {
+    void props;
+    return null;
+  }),
   stats: [
     { label: 'Archive', count: 17 },
     { label: 'Other', count: 9 },
@@ -23,6 +26,10 @@ vi.mock('@/hooks/use-stats', () => ({
   useStats: () => ({ data: mocks.stats }),
 }));
 
+vi.mock('@/paraglide/runtime', () => ({
+  getLocale: () => 'tr',
+}));
+
 vi.mock('../components/magicui/file-tree', () => ({
   Tree: ({ children }: { children?: ReactNode }) => children,
 }));
@@ -33,7 +40,7 @@ vi.mock('../components/ui/recursive-folder', () => ({
 
 import SidebarLabels from '@/components/ui/sidebar-labels';
 
-type SidebarLabel = Label & {
+type SidebarLabel = Omit<Label, 'labels'> & {
   labels?: SidebarLabel[];
   originalLabel?: Label;
 };
@@ -58,6 +65,7 @@ const makeLabel = (
 describe('SidebarLabels', () => {
   beforeEach(() => {
     vi.stubGlobal('React', React);
+    mocks.activeAccount = { providerId: 'google' };
     mocks.recursiveFolder.mockClear();
   });
 
@@ -129,6 +137,34 @@ describe('SidebarLabels', () => {
     expect(projectsRoot.labels?.map(({ originalLabel }) => originalLabel)).toEqual([
       projectChildTwo,
       projectChildTen,
+    ]);
+  });
+
+  it('uses the active UI locale to order Microsoft folder labels', () => {
+    mocks.activeAccount = { providerId: 'microsoft' };
+
+    renderToStaticMarkup(
+      createElement(SidebarLabels, {
+        data: [
+          makeLabel('isparta', 'Isparta'),
+          makeLabel('izmir-dotless', 'Izmir'),
+          makeLabel('isik', 'ışık'),
+          makeLabel('istanbul', 'istanbul'),
+          makeLabel('izmir-dotted', 'İzmir'),
+        ],
+      }),
+    );
+
+    const rendered = mocks.recursiveFolder.mock.calls.map(
+      ([props]) => props as RecursiveFolderProps,
+    );
+
+    expect(rendered.map(({ label }) => label.name)).toEqual([
+      'Isparta',
+      'ışık',
+      'Izmir',
+      'istanbul',
+      'İzmir',
     ]);
   });
 });
