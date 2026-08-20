@@ -981,7 +981,7 @@ export function EmailComposer({
         {/* To, Cc, Bcc */}
         <div className="shrink-0 overflow-visible border-b border-[#E7E7E7] pb-2 dark:border-[#252525]">
           <div className="flex justify-between px-3 pt-3">
-            <div className="flex w-full items-center gap-2">
+            <div className="flex min-w-0 flex-1 items-center gap-2">
               <p className="text-sm font-medium text-[#8C8C8C]">To:</p>
               <RecipientAutosuggest
                 control={form.control}
