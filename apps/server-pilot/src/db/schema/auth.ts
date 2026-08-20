@@ -43,6 +43,26 @@ export const session = pgTable(
   ],
 );
 
+export const remoteSession = pgTable(
+  'remote_session',
+  {
+    id: text('id').primaryKey(),
+    expiresAt: timestamp('expires_at').notNull(),
+    token: text('token').notNull().unique(),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow(),
+    ipAddress: text('ip_address'),
+    userAgent: text('user_agent'),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+  },
+  (t) => [
+    index('remote_session_user_id_idx').on(t.userId),
+    index('remote_session_expires_at_idx').on(t.expiresAt),
+  ],
+);
+
 export const account = pgTable(
   'account',
   {

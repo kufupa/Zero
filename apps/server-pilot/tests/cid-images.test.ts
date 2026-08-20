@@ -37,6 +37,22 @@ describe('projectCidImages', () => {
     expect(html).toContain('alt="b"');
   });
 
+  it.each([
+    'https://nava.legacyhotels.co.za',
+    'https://nava-admin.trynava.io',
+  ])('keeps CID inline URLs on requesting origin %s', (origin) => {
+    const { html, hasBlockedImages } = projectCidImages(
+      '<img src="cid:banner001@rocketseed">',
+      meta,
+      { messageId: 'msg-1', origin },
+    );
+
+    expect(hasBlockedImages).toBe(false);
+    expect(html).toContain(
+      `${origin}/api/mail/messages/msg-1/attachments/att-1/inline`,
+    );
+  });
+
   it('placeholders missing cid and does not rewrite anchors', () => {
     const { html, hasBlockedImages } = projectCidImages(
       '<a href="cid:banner001@rocketseed">x</a><img src="cid:missing@x" width="650" height="168">',

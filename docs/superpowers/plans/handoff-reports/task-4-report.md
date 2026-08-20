@@ -167,3 +167,50 @@ pnpm-lock.yaml                                     | modified
 - **Options considered:** (a) set `PYTHONIOENCODING=utf-8`/`LANG=C.UTF-8` in the remote env — didn't fix (the SSM agent's own Python, not the command's); (b) strip non-ASCII from stdout before SSM ships it.
 - **Fix chosen:** (b). Redirect command output to a logfile, then pipe the logfile through `LC_ALL=C tr -dc "\040-\176\012\015"` (keep only printable ASCII + newlines) before printing to stdout. SSM ships clean ASCII.
 - **Verification:** migrate command returned `Status: Success` with full ASCII-filtered output including `MIGRATE_EXIT=0` and `migrations applied successfully!`.
+
+## Remote-admin ALB edge inspection — 2026-08-13
+
+- The operator wrapper initially returned `INSPECTION_REFUSED`; direct read-only
+  inspection proved this was not an AWS resource failure.
+- Root cause: the `DescribeInstances` embedded ENI shape omits
+  `Attachment.InstanceId`, while the global `DescribeNetworkInterfaces` shape
+  includes it. The strict correlator incorrectly required the field in both
+  shapes and failed before host inspection.
+- Fix: permit the omitted owner only when reading the embedded instance
+  reference; preserve the exact owner requirement for global ENIs. Regression
+  coverage verifies the real embedded shape succeeds and a global owner
+  omission still fails closed before mutation.
+- Latest read-only inspection now reaches host-facts validation. No edge
+  resource mutation occurred during this diagnosis. The next safe step is to
+  bootstrap the already-reviewed remote process and private `:8443` Nginx
+  target before resuming staged edge provisioning.
+
+### Bootstrap sync recovery — 2026-08-13
+
+- First feature-branch sync downloaded a bundle advertising only `main`, then
+  failed before checkout. A local bundle inspection advertised
+  `refs/heads/feat/remote-admin-alb`; use of the shared S3 bundle key was
+  therefore unsafe under concurrent operator activity.
+- A unique transfer key isolated the retry. It exposed two real script gaps:
+  feature branches did not yet exist on EC2, and `git clone` from a
+  single-ref bundle has no checkoutable remote `HEAD`.
+- Fixes (`d6c13770` through `35d4a906`) create or reset the selected branch
+  from an exact per-branch bundle ref, reject stale/ambiguous references, and
+  verify the SHA advertised by the created bundle before EC2 checkout.
+- Evidence: focused deployment contract passed; local Git fixtures proved
+  fresh and stale checkout paths select the intended branch. The full DB-free
+  edge suite passed 198/199 checks; its sole failure is the pre-existing
+  `mailbox_access` cold-import timeout, which passes in isolation. Server
+  TypeScript build passed.
+- Next: retry bootstrap with a one-off unique `BUNDLE_KEY`, then use fresh
+  read-only edge inspection before any staged AWS mutation.
+
+### ALB access-log compatibility — 2026-08-13
+
+- Final policy shape is exact modern service-principal `SourceArn` allow, Cape
+  Town legacy account `arn:aws:iam::098369216593:root` `PutObject` allow, and
+  TLS-only deny. Modern allow must not include `aws:SourceAccount`: live
+  delivery succeeded without it, while prior live use returned `AccessDenied`.
+- Strict state detection accepts former `SourceAccount` only as bounded stale
+  policy repair input; final writer and readiness reject it. DB-free security
+  contract passed 72/72. No live AWS mutation ran.

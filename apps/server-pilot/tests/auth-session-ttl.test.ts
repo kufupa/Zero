@@ -1,20 +1,23 @@
 import { describe, expect, it } from 'vitest';
 import {
-  SESSION_COOKIE_CACHE_MAX_AGE_SEC,
-  SESSION_TTL_SEC,
-  SESSION_UPDATE_AGE_SEC,
-} from '../src/lib/auth';
+  resolveAuthProfilePolicy,
+  resolveDatabasePoolMax,
+} from '../src/lib/auth-profile';
 
 describe('auth session TTL', () => {
-  it('uses 400-day DB session lifetime', () => {
-    expect(SESSION_TTL_SEC).toBe(60 * 60 * 24 * 400);
+  it('preserves legacy 400-day sessions with weekly renewal and cookie cache', () => {
+    const policy = resolveAuthProfilePolicy({
+      BETTER_AUTH_URL: 'https://nava.legacyhotels.co.za',
+    });
+
+    expect(policy.expiresIn).toBe(60 * 60 * 24 * 400);
+    expect(policy.updateAge).toBe(60 * 60 * 24 * 7);
+    expect(policy.disableSessionRefresh).toBe(false);
+    expect(policy.cookieCache).toEqual({ enabled: true, maxAge: 60 * 60 });
   });
 
-  it('uses 1-hour signed cookie cache for DB revalidation', () => {
-    expect(SESSION_COOKIE_CACHE_MAX_AGE_SEC).toBe(60 * 60);
-  });
-
-  it('slides session on 7-day activity', () => {
-    expect(SESSION_UPDATE_AGE_SEC).toBe(60 * 60 * 24 * 7);
+  it('uses fixed pool maxima per profile', () => {
+    expect(resolveDatabasePoolMax('legacy')).toBe(10);
+    expect(resolveDatabasePoolMax('remote')).toBe(3);
   });
 });

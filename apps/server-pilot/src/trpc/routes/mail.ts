@@ -189,6 +189,18 @@ export const processEmailContentInput = z.object({
   theme: z.enum(['light', 'dark']).default('light'),
 });
 
+/**
+ * Project inline CID URLs through the parsed application origin used by the
+ * production mutation, rather than accepting a caller-supplied origin.
+ */
+export function processEmailContentForConfiguredOrigin(
+  input: Omit<Parameters<typeof processEmailHtmlForDisplay>[0], 'origin'>,
+  env: NodeJS.ProcessEnv = process.env,
+) {
+  const origin = new URL(parseEnv(env).BETTER_AUTH_URL).origin;
+  return processEmailHtmlForDisplay({ ...input, origin });
+}
+
 /** Test-only POP3 override for `forceSync` → `ingestOnce`. */
 let forceSyncPop3ForTests: Pop3Client | undefined;
 
@@ -1440,14 +1452,11 @@ export const mailRouter = tRouter({
         .from(attachment)
         .where(eq(attachment.messageId, input.messageId));
 
-      const origin = new URL(parseEnv(process.env).BETTER_AUTH_URL).origin;
-
-      return processEmailHtmlForDisplay({
+      return processEmailContentForConfiguredOrigin({
         html: input.html,
         messageId: input.messageId,
         shouldLoadImages: input.shouldLoadImages,
         theme: input.theme,
-        origin,
         attachments: rows,
       });
     }),

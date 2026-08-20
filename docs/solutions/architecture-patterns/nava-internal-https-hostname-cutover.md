@@ -200,6 +200,7 @@ bash apps/server-pilot/deploy/launch-readiness.sh
 
 ## Related
 
+- [Nava Remote Admin ALB Companion Plane](./nava-remote-admin-alb-companion.md) — separate public `nava-admin.trynava.io` plane; does not change this legacy `tun0:443` contract.
 - [EC2 Pilot Always-On Nava OpenVPN Restart and Health Asserts](../workflow-issues/ec2-pilot-nava-openvpn-always-on-health.md) — tunnel durability prerequisite
 - [EC2 Pilot Ops Deploy / Restart / Reboot](../workflow-issues/ec2-pilot-ops-deploy-restart-reboot.md) — deploy surface (refresh: still documents old `.local` auth URL)
 - [Live Pilot Production Parity (Real Mail)](./live-pilot-production-parity-real-mail.md) — auth host parity pattern (refresh: still pins `.local`)

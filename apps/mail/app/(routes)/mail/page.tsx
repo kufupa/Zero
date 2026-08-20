@@ -1,3 +1,5 @@
-export function clientLoader() {
-  return Response.redirect(`${import.meta.env.VITE_PUBLIC_APP_URL}/mail/inbox`);
+import type { Route } from './+types/page';
+
+export function clientLoader({ request }: Route.ClientLoaderArgs) {
+  return Response.redirect(new URL('/mail/inbox', new URL(request.url).origin));
 }

@@ -53,8 +53,15 @@ done
 # Extra settle for pm2 resurrect
 sleep 20
 
+echo "== ops-reboot: pm2-boot =="
+bash "${SCRIPT_DIR}/ssm-run-command.sh" \
+  'export NVM_DIR=/home/ubuntu/.nvm; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"; bash /home/ubuntu/repos/zero/apps/server-pilot/deploy/pm2-boot.sh'
+
 echo "== ops-reboot: post-boot-smoke =="
 bash "${SCRIPT_DIR}/ssm-run-command.sh" \
   'export NVM_DIR=/home/ubuntu/.nvm; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"; bash /home/ubuntu/repos/zero/apps/server-pilot/deploy/post-boot-smoke.sh'
+
+echo "== ops-reboot: remote-admin lifecycle readiness =="
+REMOTE_ADMIN_MODE=1 REMOTE_TARGET_HEALTH_REQUIRED=0 REMOTE_ADMIN_LIFECYCLE_MODE=auto bash "${SCRIPT_DIR}/launch-readiness.sh"
 
 echo "ops-reboot ok"

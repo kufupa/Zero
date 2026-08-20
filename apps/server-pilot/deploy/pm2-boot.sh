@@ -9,6 +9,13 @@ ENV_FILE="${ENV_FILE:-${SERVER_PILOT}/.env.production}"
 if [ ! -f "$ENV_FILE" ] && [ -f /home/ubuntu/.env.production ]; then
   ENV_FILE=/home/ubuntu/.env.production
 fi
+REMOTE_COMMON_ENV="${SERVER_PILOT}/.env.remote-common"
+REMOTE_ADMIN_ENV="${SERVER_PILOT}/.env.remote-admin"
+
+if [ "$(id -u)" -eq 0 ]; then
+  echo "pm2-boot.sh must run as ubuntu" >&2
+  exit 2
+fi
 
 export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 # shellcheck disable=SC1091
@@ -16,16 +23,71 @@ export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 
 export PATH="${HOME}/.local/share/pnpm:${HOME}/.nvm/versions/node/$(ls "${HOME}/.nvm/versions/node" 2>/dev/null | sort -V | tail -1)/bin:${PATH}"
 
-if [ -f "$ENV_FILE" ]; then
+export NAVA_BUILD_COMMIT="${NAVA_BUILD_COMMIT:-$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)}"
+
+cd "$REPO_ROOT"
+
+validate_remote_env_files() {
+  bash "$SERVER_PILOT/deploy/write-ec2-remote-env.sh" --validate
+}
+
+start_remote_http() {
+  env -i \
+    HOME="$HOME" \
+    PATH="$PATH" \
+    NAVA_BUILD_COMMIT="$NAVA_BUILD_COMMIT" \
+    SERVER_PILOT="$SERVER_PILOT" \
+    REMOTE_COMMON_ENV="$REMOTE_COMMON_ENV" \
+    REMOTE_ADMIN_ENV="$REMOTE_ADMIN_ENV" \
+    bash -ceu '
+      set -a
+      source "$REMOTE_COMMON_ENV"
+      source "$REMOTE_ADMIN_ENV"
+      set +a
+      pm2 delete remote-http 2>/dev/null || true
+      pm2 start "$SERVER_PILOT/deploy/pm2.config.cjs" --only remote-http --update-env
+    '
+}
+
+assert_http_loopback_only() {
+  local listeners
+  listeners="$(ss -ltnH '( sport = :8788 or sport = :8789 )')" || return 1
+  HTTP_LISTENERS="$listeners" node -e '
+const lines=(process.env.HTTP_LISTENERS||"").trim().split(/\n/).filter(Boolean);
+for (const port of [8788,8789]) {
+  const matches=lines.filter((line)=>line.split(/\s+/)[3]===`127.0.0.1:${port}`);
+  if (matches.length !== 1) process.exit(1);
+}
+if (lines.some((line)=>!/127\.0\.0\.1:(8788|8789)\b/.test(line))) process.exit(1);
+'
+}
+
+assert_http_loopback_with_retry() {
+  local attempt
+  for attempt in 1 2 3 4 5; do
+    assert_http_loopback_only && return 0
+    [ "$attempt" -lt 5 ] && sleep 1
+  done
+  return 1
+}
+
+start_legacy_processes() {
+  local mode
   set -a
   # shellcheck disable=SC1090
   source "$ENV_FILE"
   set +a
-fi
-
-export NAVA_BUILD_COMMIT="${NAVA_BUILD_COMMIT:-$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)}"
-
-cd "$REPO_ROOT"
+  : "${BETTER_AUTH_URL:?BETTER_AUTH_URL required for legacy HTTP}"
+  mode="${MAIL_TRANSPORT_MODE:-fixture}"
+  if [ "$mode" = "fixture" ]; then
+    pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only http --update-env
+    pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only ai-worker --update-env
+  else
+    pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only http --update-env
+    pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only worker --update-env
+    pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only ai-worker --update-env
+  fi
+}
 
 ensure_hms_absent() {
   local state present
@@ -93,12 +155,17 @@ verify_default_process_set() {
 const apps=JSON.parse(process.env.HMS_PM2_STATE||"");
 const mode=process.argv[2];
 const expected=(mode==="fixture"
-  ?["ai-worker","http"]
-  :["ai-worker","http","worker"]).sort();
+  ?["ai-worker","http","remote-http"]
+  :["ai-worker","http","remote-http","worker"]).sort();
 const actual=apps.map((app)=>app?.name).sort();
 if(JSON.stringify(actual)!==JSON.stringify(expected)||
   apps.some((app)=>app?.pm2_env?.status!=="online"))process.exit(1);
 NODE
+}
+
+validate_remote_env_files || {
+  echo "pm2-boot: remote HTTP environment validation failed before PM2 mutation" >&2
+  exit 20
 }
 
 invalidate_hms_proofs || {
@@ -110,15 +177,13 @@ delete_all_pm2_processes || {
   exit 20
 }
 
+start_legacy_processes
+start_remote_http
+assert_http_loopback_with_retry || {
+  echo "pm2-boot: raw HTTP processes must listen only on 127.0.0.1" >&2
+  exit 20
+}
 MODE="${MAIL_TRANSPORT_MODE:-fixture}"
-if [ "$MODE" = "fixture" ]; then
-  pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only http --update-env
-  pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only ai-worker --update-env
-else
-  pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only http --update-env
-  pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only worker --update-env
-  pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only ai-worker --update-env
-fi
 
 ensure_hms_absent || {
   echo "pm2-boot: HMS process cleanup failed" >&2
@@ -128,4 +193,5 @@ verify_default_process_set "$MODE" || {
   echo "pm2-boot: default process set unhealthy" >&2
   exit 20
 }
+pm2 save
 pm2 status

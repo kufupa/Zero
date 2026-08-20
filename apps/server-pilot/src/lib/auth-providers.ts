@@ -1,3 +1,5 @@
+import type { AuthSessionProfile } from './auth-profile.js';
+
 export interface EnvVarInfo {
   name: string;
   source: string;
@@ -15,6 +17,19 @@ export interface ProviderConfig {
   customRedirectPath?: string;
 }
 
+export interface PublicAuthProvider {
+  id: string;
+  name: string;
+  enabled: boolean;
+  required?: boolean;
+  isCustom?: boolean;
+  customRedirectPath?: string;
+  envVarInfo?: EnvVarInfo[];
+  envVarStatus: Array<EnvVarInfo & { set: boolean }>;
+}
+
+type AuthEnv = Record<string, string | undefined>;
+
 /** Pilot email/password entry — Google OAuth optional on EC2. */
 export const customProviders: ProviderConfig[] = [
   {
@@ -27,7 +42,7 @@ export const customProviders: ProviderConfig[] = [
   },
 ];
 
-export const authProviders = (env: Record<string, string>): ProviderConfig[] => [
+export const authProviders = (env: AuthEnv): ProviderConfig[] => [
   {
     id: 'google',
     name: 'Google',
@@ -55,7 +70,7 @@ export const authProviders = (env: Record<string, string>): ProviderConfig[] => 
 
 export function isProviderEnabled(
   provider: ProviderConfig,
-  env: Record<string, string>,
+  env: AuthEnv,
 ): boolean {
   if (provider.isCustom) return true;
   const hasEnvVars = provider.requiredEnvVars.every((envVar) => !!env[envVar]);
@@ -70,7 +85,12 @@ export function isProviderEnabled(
   return hasEnvVars;
 }
 
-export function getSocialProviders(env: Record<string, string>): Record<string, unknown> {
+export function getSocialProviders(
+  env: AuthEnv,
+  profile: AuthSessionProfile = 'legacy',
+): Record<string, unknown> {
+  if (profile === 'remote') return {};
+
   const socialProviders = Object.fromEntries(
     authProviders(env)
       .map((provider) => {
@@ -91,4 +111,37 @@ export function getSocialProviders(env: Record<string, string>): Record<string, 
       .filter((provider) => provider !== null),
   );
   return socialProviders;
+}
+
+export function getPublicAuthProviders(
+  env: AuthEnv,
+  profile: AuthSessionProfile,
+): PublicAuthProvider[] {
+  const customProviderStatus: PublicAuthProvider[] = customProviders.map((provider) => ({
+    id: provider.id,
+    name: provider.name,
+    enabled: true,
+    isCustom: provider.isCustom,
+    customRedirectPath: provider.customRedirectPath,
+    envVarStatus: [],
+  }));
+
+  if (profile === 'remote') return customProviderStatus;
+
+  const authProviderStatus: PublicAuthProvider[] = authProviders(env).map((provider) => {
+    const envVarStatus = (provider.envVarInfo ?? []).map((envVar) => ({
+      ...envVar,
+      set: Boolean(env[envVar.name]),
+    }));
+    return {
+      id: provider.id,
+      name: provider.name,
+      enabled: isProviderEnabled(provider, env),
+      required: provider.required,
+      envVarInfo: provider.envVarInfo,
+      envVarStatus,
+    };
+  });
+
+  return [...customProviderStatus, ...authProviderStatus];
 }

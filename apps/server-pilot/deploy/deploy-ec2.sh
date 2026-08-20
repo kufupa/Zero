@@ -14,6 +14,8 @@ ENV_FILE="${ENV_FILE:-${REPO_ROOT}/apps/server-pilot/.env.production}"
 if [ ! -f "$ENV_FILE" ] && [ -f /home/ubuntu/.env.production ]; then
   ENV_FILE=/home/ubuntu/.env.production
 fi
+REMOTE_COMMON_ENV="${SERVER_PILOT}/.env.remote-common"
+REMOTE_ADMIN_ENV="${SERVER_PILOT}/.env.remote-admin"
 
 QUIESCED=0
 for arg in "$@"; do
@@ -87,13 +89,66 @@ invalidate_hms_proofs() {
   done
 }
 
-if [ -f "$ENV_FILE" ]; then
+validate_remote_env_files() {
+  bash "${SERVER_PILOT}/deploy/write-ec2-remote-env.sh" --validate
+}
+
+start_remote_http() {
+  env -i \
+    HOME="$HOME" \
+    PATH="$PATH" \
+    NAVA_BUILD_COMMIT="$NAVA_BUILD_COMMIT" \
+    SERVER_PILOT="$SERVER_PILOT" \
+    REMOTE_COMMON_ENV="$REMOTE_COMMON_ENV" \
+    REMOTE_ADMIN_ENV="$REMOTE_ADMIN_ENV" \
+    bash -ceu '
+      set -a
+      source "$REMOTE_COMMON_ENV"
+      source "$REMOTE_ADMIN_ENV"
+      set +a
+      pm2 delete remote-http 2>/dev/null || true
+      pm2 start "$SERVER_PILOT/deploy/pm2.config.cjs" --only remote-http --update-env
+    '
+}
+
+start_legacy_processes() {
+  local transport_mode
   set -a
   # shellcheck disable=SC1090
   source "$ENV_FILE"
   set +a
-fi
-: "${BETTER_AUTH_URL:?BETTER_AUTH_URL required before SPA build}"
+  : "${BETTER_AUTH_URL:?BETTER_AUTH_URL required for legacy HTTP}"
+  transport_mode="${MAIL_TRANSPORT_MODE:-fixture}"
+  if [ "$transport_mode" = "fixture" ]; then
+    pm2 delete worker 2>/dev/null || true
+    pm2 delete http ai-worker 2>/dev/null || true
+    pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only http --update-env
+    pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only ai-worker --update-env
+  else
+    pm2 delete http worker ai-worker 2>/dev/null || true
+    pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only http --update-env
+    pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only worker --update-env
+    pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only ai-worker --update-env
+  fi
+}
+
+assert_http_loopback_only() {
+  local listeners
+  listeners="$(ss -ltnH '( sport = :8788 or sport = :8789 )')" || return 1
+  HTTP_LISTENERS="$listeners" node -e '
+const lines=(process.env.HTTP_LISTENERS||"").trim().split(/\n/).filter(Boolean);
+for (const port of [8788,8789]) {
+  const matches=lines.filter((line)=>line.split(/\s+/)[3]===`127.0.0.1:${port}`);
+  if (matches.length !== 1) process.exit(1);
+}
+if (lines.some((line)=>!/127\.0\.0\.1:(8788|8789)\b/.test(line))) process.exit(1);
+'
+}
+
+validate_remote_env_files || {
+  echo "remote HTTP environment validation failed before PM2 mutation" >&2
+  exit 20
+}
 
 export PATH="${HOME}/.local/share/pnpm:${HOME}/.nvm/versions/node/$(ls "${HOME}/.nvm/versions/node" 2>/dev/null | sort -V | tail -1)/bin:${PATH}"
 
@@ -110,10 +165,9 @@ echo "== build server-pilot =="
 pnpm --filter @zero/server build
 
 echo "== build mail SPA =="
-# Empty string = same-origin /api via nginx. Unset becomes literal "undefined" in the bundle.
-export VITE_PUBLIC_BACKEND_URL="${VITE_PUBLIC_BACKEND_URL-}"
-# Absolute app origin for RR redirects / metadata. Unset → literal "undefined/login" 404s.
-export VITE_PUBLIC_APP_URL="${VITE_PUBLIC_APP_URL:-$BETTER_AUTH_URL}"
+# Empty string = same-origin /api via nginx. No host is baked into this shared artifact.
+export VITE_PUBLIC_BACKEND_URL=""
+unset VITE_PUBLIC_APP_URL
 # Near-realtime thread list poll (policy min 15s; default baked for pilot).
 export VITE_MAIL_POLL_MS="${VITE_MAIL_POLL_MS:-15000}"
 pnpm --filter @zero/mail build
@@ -174,6 +228,21 @@ if ! grep -qE '(^|[[:space:]])appsrv-1\.legacyhotels\.co\.za([[:space:]]|$)' /et
 fi
 
 echo "== nginx =="
+REMOTE_ALB_TARGET_PRIVATE_IP="172.31.12.112"
+
+assert_remote_alb_target_private_ip() {
+  local primary_ens5_ip
+  primary_ens5_ip="$(
+    ip -4 -o addr show dev ens5 scope global primary 2>/dev/null \
+      | awk 'NR == 1 { split($4, cidr, "/"); print cidr[1]; exit }'
+  )" || primary_ens5_ip=""
+
+  if [ "$primary_ens5_ip" != "$REMOTE_ALB_TARGET_PRIVATE_IP" ]; then
+    echo "remote ALB target private IP mismatch on primary ens5" >&2
+    return 1
+  fi
+}
+
 NGINX_SITE="${NGINX_SITE:-/etc/nginx/sites-available/nava-zero}"
 NGINX_ENABLED="${NGINX_ENABLED:-/etc/nginx/sites-enabled/nava-zero}"
 NGINX_SRC="${SERVER_PILOT}/deploy/nginx.conf"
@@ -290,6 +359,9 @@ if command -v nginx >/dev/null 2>&1; then
     if ! sudo nginx -t; then
       return 1
     fi
+    if ! assert_remote_alb_target_private_ip; then
+      return 1
+    fi
     if ! sudo systemctl reload nginx; then
       return 1
     fi
@@ -366,8 +438,6 @@ if [ -n "${HMS_REGISTRY_CANDIDATE:-}" ]; then
 fi
 
 echo "== pm2 =="
-# Fixture prod: do not keep a broken POP3 worker in the dump after reboot.
-TRANSPORT_MODE="${MAIL_TRANSPORT_MODE:-fixture}"
 export NAVA_BUILD_COMMIT="${NAVA_BUILD_COMMIT:-$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)}"
 
 # Always keep HMS off on generic deploy — ops-hms-shadow.sh start is sole HMS starter.
@@ -377,58 +447,58 @@ invalidate_hms_proofs || {
   exit 20
 }
 
-if command -v pm2 >/dev/null 2>&1; then
-  ensure_hms_absent || {
-    echo "HMS process cleanup failed" >&2
-    exit 20
-  }
-  if [ "$TRANSPORT_MODE" = "fixture" ]; then
-    echo "== pm2: fixture mode — delete worker if present =="
-    pm2 delete worker 2>/dev/null || true
-    # delete+start so --update-env actually replaces process env (reload keeps stale).
-    # Never start hms-ai-worker here.
-    pm2 delete http ai-worker 2>/dev/null || true
-    pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only http --update-env
-    pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only ai-worker --update-env
-  else
-    pm2 delete http worker ai-worker 2>/dev/null || true
-    pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only http --update-env
-    pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only worker --update-env
-    pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only ai-worker --update-env
-  fi
-  pm2 save
-  bash "${SERVER_PILOT}/deploy/pm2-startup.sh"
-  pm2 status
-else
+if ! command -v pm2 >/dev/null 2>&1; then
   echo "pm2 not installed; installing globally"
   npm install -g pm2
-  if [ "$TRANSPORT_MODE" = "fixture" ]; then
-    pm2 delete worker 2>/dev/null || true
-    pm2 delete http ai-worker 2>/dev/null || true
-    pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only http --update-env
-    pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only ai-worker --update-env
-  else
-    pm2 delete http worker ai-worker 2>/dev/null || true
-    pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only http --update-env
-    pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only worker --update-env
-    pm2 start "${SERVER_PILOT}/deploy/pm2.config.cjs" --only ai-worker --update-env
-  fi
-  pm2 save
-  bash "${SERVER_PILOT}/deploy/pm2-startup.sh"
-  pm2 status
 fi
 
+ensure_hms_absent || {
+  echo "HMS process cleanup failed" >&2
+  exit 20
+}
+start_legacy_processes
+start_remote_http
+pm2 save
+bash "${SERVER_PILOT}/deploy/pm2-startup.sh"
+pm2 status
+
 echo "== health =="
-HEALTH_URL="http://127.0.0.1:8788/health"
-for attempt in $(seq 1 10); do
-  if curl -fsS "$HEALTH_URL"; then
-    echo
-    echo "deploy ok"
-    exit 0
-  fi
-  echo "health attempt ${attempt}/10 failed; retry in ${attempt}s"
-  sleep "$attempt"
+for HEALTH_URL in \
+  "http://127.0.0.1:8788/health" \
+  "http://127.0.0.1:8789/health"; do
+  for attempt in $(seq 1 10); do
+    if curl -fsS "$HEALTH_URL"; then
+      break
+    fi
+    if [ "$attempt" -eq 10 ]; then
+      echo "health check failed for ${HEALTH_URL}; pm2 logs http remote-http --lines 20" >&2
+      pm2 logs http remote-http --lines 20 --nostream || true
+      exit 1
+    fi
+    echo "health attempt ${attempt}/10 failed for ${HEALTH_URL}; retry in ${attempt}s"
+    sleep "$attempt"
+  done
 done
-echo "health check failed after retries; pm2 logs http --lines 20"
-pm2 logs http --lines 20 --nostream || true
-exit 1
+SPA_ORIGIN="https://nava.legacyhotels.co.za"
+SPA_HOST="${SPA_ORIGIN#https://}"
+if ! curl --disable --noproxy '*' -fsS \
+  --resolve "${SPA_HOST}:443:127.0.0.1" \
+  "${SPA_ORIGIN}/health" >/dev/null; then
+  echo "TLS vhost health check failed for ${SPA_ORIGIN}" >&2
+  exit 1
+fi
+REMOTE_ADMIN_HOST="nava-admin.trynava.io"
+REMOTE_ALB_TARGET_PRIVATE_IP="172.31.12.112"
+if ! curl --disable --noproxy '*' -fsS \
+  --connect-to "${REMOTE_ADMIN_HOST}:8443:${REMOTE_ALB_TARGET_PRIVATE_IP}:8443" \
+  -H "Host: ${REMOTE_ADMIN_HOST}" \
+  "http://${REMOTE_ADMIN_HOST}:8443/" >/dev/null; then
+  echo "remote :8443 vhost health check failed" >&2
+  exit 1
+fi
+assert_http_loopback_only || {
+  echo "raw HTTP processes must listen only on 127.0.0.1" >&2
+  exit 1
+}
+echo
+echo "deploy ok"

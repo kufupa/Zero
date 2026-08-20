@@ -1,8 +1,9 @@
 import { Hono } from 'hono';
 import { serve } from '@hono/node-server';
 import { fetchRequestHandler } from '@trpc/server/adapters/fetch';
-import { authProviders, customProviders, isProviderEnabled } from './lib/auth-providers.js';
+import { getPublicAuthProviders } from './lib/auth-providers.js';
 import { createAuth } from './lib/auth.js';
+import { resolveAuthSessionProfile } from './lib/auth-profile.js';
 import { closeDb } from './db/client.js';
 import { createWiredInlineAttachmentHandler } from './http/inline-attachment.js';
 import { appRouter } from './trpc/router.js';
@@ -15,40 +16,11 @@ app.get('/health', (c) =>
 
 // Public providers endpoint consumed by apps/mail login page.
 app.get('/api/public/providers', (c) => {
-  const env = process.env as Record<string, string>;
+  const env = process.env as Record<string, string | undefined>;
   const isProd = env.NODE_ENV === 'production';
 
-  const authProviderStatus = authProviders(env).map((provider) => {
-    const envVarStatus =
-      provider.envVarInfo?.map((envVar) => {
-        return {
-          name: envVar.name,
-          set: !!env[envVar.name],
-          source: envVar.source,
-          defaultValue: envVar.defaultValue,
-        };
-      }) || [];
-    return {
-      id: provider.id,
-      name: provider.name,
-      enabled: isProviderEnabled(provider, env),
-      required: provider.required,
-      envVarInfo: provider.envVarInfo,
-      envVarStatus,
-    };
-  });
-
-  const customProviderStatus = customProviders.map((provider) => ({
-    id: provider.id,
-    name: provider.name,
-    enabled: true,
-    isCustom: provider.isCustom,
-    customRedirectPath: provider.customRedirectPath,
-    envVarStatus: [],
-  }));
-
   return c.json({
-    allProviders: [...customProviderStatus, ...authProviderStatus],
+    allProviders: getPublicAuthProviders(env, resolveAuthSessionProfile(env)),
     isProd,
   });
 });
@@ -93,8 +65,8 @@ app.on(['GET', 'POST'], '/api/trpc/*', (c) =>
 
 const port = Number(process.env.PORT ?? 8788);
 
-const server = serve({ fetch: app.fetch, port }, (info) => {
-  console.log(`server-pilot listening on http://0.0.0.0:${info.port}`);
+const server = serve({ fetch: app.fetch, port, hostname: '127.0.0.1' }, (info) => {
+  console.log(`server-pilot listening on http://127.0.0.1:${info.port}`);
 });
 
 function shutdown(signal: string) {

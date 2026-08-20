@@ -8,9 +8,11 @@ export async function clientLoader({ request }: Route.ClientLoaderArgs) {
     body?: string;
   };
   const toParam = params.to || 'someone@someone.com';
-  return Response.redirect(
-    `${import.meta.env.VITE_PUBLIC_APP_URL}/mail/inbox?isComposeOpen=true&to=${encodeURIComponent(toParam)}${params.subject ? `&subject=${encodeURIComponent(params.subject)}` : ''}`,
-  );
+  const redirectUrl = new URL('/mail/inbox', url.origin);
+  redirectUrl.searchParams.set('isComposeOpen', 'true');
+  redirectUrl.searchParams.set('to', toParam);
+  if (params.subject) redirectUrl.searchParams.set('subject', params.subject);
+  return Response.redirect(redirectUrl);
 }
 
 // export async function generateMetadata({ searchParams }: any) {

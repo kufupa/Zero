@@ -4,6 +4,13 @@ import { describe, expect, it, vi } from 'vitest';
 const CANONICAL_HOST = 'nava.legacyhotels.co.za';
 const CANONICAL_ORIGIN = `https://${CANONICAL_HOST}`;
 const CANONICAL_HOST_ENTRY = `127.0.0.1 ${CANONICAL_HOST}`;
+const REMOTE_ALB_TARGET_PRIVATE_IP = '172.31.12.112';
+const REMOTE_ADMIN_HOST = 'nava-admin.trynava.io';
+const REMOTE_ALB_NAME = 'nava-remote-admin-alb';
+const REMOTE_TARGET_GROUP_NAME = 'nava-remote-admin';
+const REMOTE_TARGET_SECURITY_GROUP_NAME = 'nava-remote-admin-target';
+const REMOTE_WAF_NAME = 'nava-remote-admin-waf';
+const REMOTE_LOG_BUCKET = 'nava-zero-remote-alb-logs-845242190536-af-south-1';
 const BASH_CHILD_TIMEOUT_MS = 10_000;
 const BASH_CLEANUP_GRACE_MS = 1_000;
 const TASKKILL_TIMEOUT_MS = 1_000;
@@ -301,6 +308,7 @@ function activeCanonicalEntries(hosts: string): string[] {
 
 const SG_ONE = 'sg-0123456789abcdef0';
 const SG_TWO = 'sg-0fedcba9876543210';
+const SG_THREE = 'sg-00112233445566778';
 const INTENDED_UFW_ALLOW = 'ufw allow in on tun0 to any port 443 proto tcp';
 const ACTIVE_DEFAULT_DENY_UFW = [
   'Status: active',
@@ -322,6 +330,16 @@ const validCors = (origins: string[] = [CANONICAL_ORIGIN]) => ({
 
 const validInstanceNetwork = () => ({
   securityGroups: [{ GroupId: SG_ONE }, { GroupId: SG_TWO }],
+  networkInterfaces: [
+    {
+      id: 'eni-0123456789abcdef0',
+      deviceIndex: 0,
+      securityGroups: [{ GroupId: SG_ONE }, { GroupId: SG_TWO }],
+      publicIpv4: null,
+      ipv6: [],
+    },
+  ],
+  publicIpv4: [],
   ipv6: [],
 });
 
@@ -337,12 +355,40 @@ type FirewallFacts = {
   defaultDeny: boolean;
   tunnel443: boolean;
   broad443Absent: boolean;
+  remoteAlb8443Only?: boolean;
+  listenerSafe?: boolean;
 };
 
 type LaunchReadinessReport = {
   checks: Record<string, boolean>;
   observations: Record<string, unknown>;
 };
+
+type RemoteAdminReadinessFacts = {
+  resourcesResolved: boolean;
+  targetGroupConfigured: boolean;
+  listenerDefault404: boolean;
+  preRegistrationClean: boolean;
+  hostForwardExact: boolean;
+  targetHealthy: boolean;
+  targetSecurityGroupOnlyAlb: boolean;
+  noDirectPublicTargetPath: boolean;
+  logBucketCompliant: boolean;
+  wafCompliant: boolean;
+};
+
+const validRemoteAdminReadinessFacts = (): RemoteAdminReadinessFacts => ({
+  resourcesResolved: true,
+  targetGroupConfigured: true,
+  listenerDefault404: true,
+  preRegistrationClean: true,
+  hostForwardExact: true,
+  targetHealthy: true,
+  targetSecurityGroupOnlyAlb: true,
+  noDirectPublicTargetPath: true,
+  logBucketCompliant: true,
+  wafCompliant: true,
+});
 
 type AwsPerimeterFacts = {
   cors: unknown;
@@ -378,17 +424,20 @@ type NginxActivationScenario =
   | 'sigint'
   | 'sigterm'
   | 'unexpected-exit'
-  | 'cleanup-exit';
+  | 'cleanup-exit'
+  | 'target-ip';
 type NginxPriorState = 'absent' | 'present' | 'dangling';
 
 async function runNginxActivation({
   scenario,
   priorState,
   rollbackCopyFails = false,
+  ens5PrimaryIp = REMOTE_ALB_TARGET_PRIVATE_IP,
 }: {
   scenario: NginxActivationScenario;
   priorState: NginxPriorState;
   rollbackCopyFails?: boolean;
+  ens5PrimaryIp?: string;
 }): Promise<{
   status: number | null;
   stdout: string;
@@ -565,6 +614,17 @@ systemctl() {
     return 64
   fi
 }
+
+ip() {
+  case "$*" in
+    "-4 -o addr show dev ens5 scope global primary")
+      printf '2: ens5    inet %s/20 scope global ens5\\n' "$NGINX_TEST_ENS5_PRIMARY_IP"
+      ;;
+    *)
+      command ip "$@"
+      ;;
+  esac
+}
 `;
 
     const result = await runBash({
@@ -583,6 +643,7 @@ systemctl() {
         NGINX_TEST_NGINX_CALLS: toBashPath(nginxCallsPath),
         NGINX_TEST_RELOAD_CALLS: toBashPath(reloadCallsPath),
         NGINX_TEST_BACKUP_DIR: toBashPath(backupDir),
+        NGINX_TEST_ENS5_PRIMARY_IP: ens5PrimaryIp,
       },
     });
 
@@ -649,6 +710,7 @@ function validReportShellEnv(): Record<string, string> {
         defaultDeny: true,
         tunnel443: true,
         broad443Absent: true,
+        listenerSafe: true,
       },
       config: {
         envLoaded: true,
@@ -702,6 +764,9 @@ async function runLaunchReadinessReport({
   instanceNetworkOk = true,
   securityGroupQueryOk = true,
   omitSecurityGroups = false,
+  remoteAdminMode = false,
+  remoteTargetHealthRequired = false,
+  remoteAdminFacts = validRemoteAdminReadinessFacts(),
 }: {
   firewall?: Partial<FirewallFacts>;
   cors?: unknown;
@@ -713,6 +778,9 @@ async function runLaunchReadinessReport({
   instanceNetworkOk?: boolean;
   securityGroupQueryOk?: boolean;
   omitSecurityGroups?: boolean;
+  remoteAdminMode?: boolean;
+  remoteTargetHealthRequired?: boolean;
+  remoteAdminFacts?: RemoteAdminReadinessFacts;
 } = {}): Promise<LaunchReadinessReport> {
   const source = await readLaunchReadiness();
   const reportBuilder = extractSourceBlock(
@@ -737,6 +805,9 @@ async function runLaunchReadinessReport({
       SG_QUERY_OK: String(securityGroupQueryOk),
       S3_CORS_OK: String(s3CorsOk),
       S3_PUBLIC_ACCESS_OK: String(s3PublicAccessOk),
+      REMOTE_ADMIN_MODE: remoteAdminMode ? '1' : '0',
+      REMOTE_TARGET_HEALTH_REQUIRED: remoteTargetHealthRequired ? '1' : '0',
+      REMOTE_ADMIN_FACTS: JSON.stringify(remoteAdminFacts),
     },
   });
   if (result.status !== 0) {
@@ -838,6 +909,64 @@ printf 'UFW_FACTS=%s,%s,%s,%s,%s,%s\\n' \
             }
           : null,
     };
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+async function runListenerCollection({
+  tcp = [
+    'LISTEN 0 511 0.0.0.0:443 0.0.0.0:*',
+    'LISTEN 0 511 127.0.0.1:8788 0.0.0.0:*',
+    'LISTEN 0 511 127.0.0.1:8789 0.0.0.0:*',
+    'LISTEN 0 511 172.31.12.112:8443 0.0.0.0:*',
+  ].join('\n'),
+  udp = '',
+}: {
+  tcp?: string;
+  udp?: string;
+} = {}): Promise<boolean | null> {
+  const { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } = await import(
+    'node:fs',
+  );
+  const { tmpdir } = await import('node:os');
+  const { delimiter, join } = await import('node:path');
+  const tempDir = mkdtempSync(join(tmpdir(), 'nava-listener-collection-test-'));
+  const stubDir = join(tempDir, 'bin');
+
+  try {
+    mkdirSync(stubDir);
+    const ssPath = join(stubDir, 'ss');
+    writeFileSync(
+      ssPath,
+      `#!/usr/bin/env bash
+case "$*" in
+  "-ltnH") printf '%s\\n' "\${LISTENER_TEST_TCP}" ;;
+  "-lunH") printf '%s\\n' "\${LISTENER_TEST_UDP}" ;;
+  *) exit 97 ;;
+esac
+`,
+      'utf8',
+    );
+    chmodSync(ssPath, 0o755);
+    const block = extractSourceBlock(
+      await readLaunchReadiness(),
+      'LISTENER_SAFE=false',
+      'PM2_SUMMARY="$(',
+    );
+    const result = await runBash({
+      input: `set -euo pipefail
+${block}
+printf 'LISTENER_SAFE=%s\\n' "$LISTENER_SAFE"
+`,
+      env: {
+        ...process.env,
+        PATH: `${toBashPath(stubDir)}${delimiter}${process.env.PATH ?? ''}`,
+        LISTENER_TEST_TCP: tcp,
+        LISTENER_TEST_UDP: udp,
+      },
+    });
+    return result.stdout.match(/LISTENER_SAFE=(true|false)/)?.[1] === 'true';
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
@@ -1001,6 +1130,401 @@ printf 'AWS_REPORT=%s\\n' "$(build_readiness_report)"
       securityGroupArgs: existsSync(argsPath)
         ? readFileSync(argsPath, 'utf8').split(/\r?\n/).filter(Boolean)
         : [],
+    };
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+type RemoteCollectorFacts = {
+  resourcesResolved: boolean;
+  targetHealthy: boolean;
+  targetSecurityGroupOnlyAlb: boolean;
+  noDirectPublicTargetPath: boolean;
+  publicAddressPresence: { ipv4: boolean; ipv6: boolean };
+  logBucketCompliant: boolean;
+  wafCompliant: boolean;
+};
+
+function validRemoteCollectorResponses(): Record<string, unknown> {
+  const albArn = 'arn:aws:elasticloadbalancing:af-south-1:845242190536:loadbalancer/app/nava-remote-admin-alb/test';
+  const targetGroupArn =
+    'arn:aws:elasticloadbalancing:af-south-1:845242190536:targetgroup/nava-remote-admin/test';
+  const listenerArn =
+    'arn:aws:elasticloadbalancing:af-south-1:845242190536:listener/app/nava-remote-admin-alb/test/test';
+  const wafArn = 'arn:aws:wafv2:af-south-1:845242190536:regional/webacl/nava-remote-admin-waf/test';
+  const expectedTargetIngress = {
+    IpProtocol: 'tcp',
+    FromPort: 8443,
+    ToPort: 8443,
+    UserIdGroupPairs: [{ GroupId: SG_ONE }],
+    IpRanges: [],
+    Ipv6Ranges: [],
+    PrefixListIds: [],
+  };
+  const block = { Block: {} };
+  const exactByteMatch = (field: 'UriPath' | 'Method', searchString: string) => ({
+    ByteMatchStatement: {
+      SearchString: searchString,
+      FieldToMatch: { [field]: {} },
+      TextTransformations: [{ Priority: 0, Type: 'NONE' }],
+      PositionalConstraint: 'EXACTLY',
+    },
+  });
+
+  return {
+    alb: {
+      LoadBalancers: [
+        {
+          LoadBalancerName: REMOTE_ALB_NAME,
+          LoadBalancerArn: albArn,
+          Scheme: 'internet-facing',
+          Type: 'application',
+          IpAddressType: 'ipv4',
+          VpcId: 'vpc-0f078e17a5f0f8599',
+          SecurityGroups: [SG_ONE],
+          AvailabilityZones: [
+            { SubnetId: 'subnet-0e6446aaaeaa8762e' },
+            { SubnetId: 'subnet-094bf8643d98c22f6' },
+          ],
+        },
+      ],
+    },
+    targetGroup: {
+      TargetGroups: [
+        {
+          TargetGroupName: REMOTE_TARGET_GROUP_NAME,
+          TargetGroupArn: targetGroupArn,
+          Protocol: 'HTTP',
+          Port: 8443,
+          VpcId: 'vpc-0f078e17a5f0f8599',
+          HealthCheckProtocol: 'HTTP',
+          HealthCheckPath: '/health',
+          Matcher: { HttpCode: '200' },
+        },
+      ],
+    },
+    targetAttributes: {
+      Attributes: [{ Key: 'deregistration_delay.timeout_seconds', Value: '30' }],
+    },
+    targetHealth: {
+      TargetHealthDescriptions: [
+        {
+          Target: { Id: 'i-008f737974a9ba9b3', Port: 8443 },
+          TargetHealth: { State: 'healthy' },
+        },
+      ],
+    },
+    listeners: {
+      Listeners: [
+        {
+          ListenerArn: listenerArn,
+          Protocol: 'HTTPS',
+          Port: 443,
+          DefaultActions: [
+            { Type: 'fixed-response', FixedResponseConfig: { StatusCode: '404' } },
+          ],
+        },
+      ],
+    },
+    rules: { Rules: [] },
+    albAttributes: {
+      Attributes: [
+        { Key: 'access_logs.s3.enabled', Value: 'true' },
+        { Key: 'access_logs.s3.bucket', Value: REMOTE_LOG_BUCKET },
+        { Key: 'access_logs.s3.prefix', Value: '' },
+      ],
+    },
+    targetSecurityGroup: {
+      SecurityGroups: [
+        {
+          GroupId: SG_TWO,
+          GroupName: REMOTE_TARGET_SECURITY_GROUP_NAME,
+          VpcId: 'vpc-0f078e17a5f0f8599',
+        },
+      ],
+    },
+    albSecurityGroup: {
+      SecurityGroups: [
+        {
+          GroupId: SG_ONE,
+          GroupName: REMOTE_ALB_NAME,
+          VpcId: 'vpc-0f078e17a5f0f8599',
+          IpPermissions: [
+            {
+              IpProtocol: 'tcp',
+              FromPort: 443,
+              ToPort: 443,
+              IpRanges: [{ CidrIp: '0.0.0.0/0' }],
+              Ipv6Ranges: [],
+              PrefixListIds: [],
+              UserIdGroupPairs: [],
+            },
+          ],
+          IpPermissionsEgress: [
+            {
+              IpProtocol: 'tcp',
+              FromPort: 8443,
+              ToPort: 8443,
+              IpRanges: [],
+              Ipv6Ranges: [],
+              PrefixListIds: [],
+              UserIdGroupPairs: [{ GroupId: SG_TWO }],
+            },
+          ],
+        },
+      ],
+    },
+    wafList: { WebACLs: [{ Name: REMOTE_WAF_NAME, Id: 'waf-test-id' }] },
+    waf: {
+      WebACL: {
+        Name: REMOTE_WAF_NAME,
+        Id: 'waf-test-id',
+        ARN: wafArn,
+        DefaultAction: { Allow: {} },
+        Rules: [
+          {
+            Name: 'AWS-AmazonIpReputation',
+            Priority: 10,
+            OverrideAction: { None: {} },
+            Statement: {
+              ManagedRuleGroupStatement: {
+                VendorName: 'AWS',
+                Name: 'AWSManagedRulesAmazonIpReputationList',
+              },
+            },
+          },
+          {
+            Name: 'AWS-Common',
+            Priority: 20,
+            OverrideAction: { None: {} },
+            Statement: {
+              ManagedRuleGroupStatement: {
+                VendorName: 'AWS',
+                Name: 'AWSManagedRulesCommonRuleSet',
+              },
+            },
+          },
+          {
+            Name: 'AWS-KnownBadInputs',
+            Priority: 30,
+            OverrideAction: { None: {} },
+            Statement: {
+              ManagedRuleGroupStatement: {
+                VendorName: 'AWS',
+                Name: 'AWSManagedRulesKnownBadInputsRuleSet',
+              },
+            },
+          },
+          {
+            Name: 'signin-25-per-5m',
+            Priority: 40,
+            Action: block,
+            Statement: {
+              RateBasedStatement: {
+                Limit: 25,
+                AggregateKeyType: 'IP',
+                EvaluationWindowSec: 300,
+                ScopeDownStatement: {
+                  AndStatement: {
+                    Statements: [
+                      exactByteMatch('UriPath', 'L2FwaS9hdXRoL3NpZ24taW4vZW1haWw='),
+                      exactByteMatch('Method', 'UE9TVA=='),
+                    ],
+                  },
+                },
+              },
+            },
+          },
+          {
+            Name: 'remote-plane-1000-per-5m',
+            Priority: 50,
+            Action: block,
+            Statement: {
+              RateBasedStatement: {
+                Limit: 1000,
+                AggregateKeyType: 'IP',
+                EvaluationWindowSec: 300,
+              },
+            },
+          },
+        ],
+      },
+    },
+    wafAssociation: { WebACL: { ARN: wafArn } },
+    logEncryption: {
+      ServerSideEncryptionConfiguration: {
+        Rules: [{ ApplyServerSideEncryptionByDefault: { SSEAlgorithm: 'AES256' } }],
+      },
+    },
+    logPublicAccess: {
+      PublicAccessBlockConfiguration: {
+        BlockPublicAcls: true,
+        IgnorePublicAcls: true,
+        BlockPublicPolicy: true,
+        RestrictPublicBuckets: true,
+      },
+    },
+    logOwnership: {
+      OwnershipControls: { Rules: [{ ObjectOwnership: 'BucketOwnerEnforced' }] },
+    },
+    logPolicy: {
+      Policy: JSON.stringify({
+        Version: '2012-10-17',
+        Statement: [
+          {
+            Sid: 'AllowAlbLogDeliveryWrite',
+            Effect: 'Allow',
+            Principal: { Service: 'logdelivery.elasticloadbalancing.amazonaws.com' },
+            Action: 's3:PutObject',
+            Resource: `arn:aws:s3:::${REMOTE_LOG_BUCKET}/AWSLogs/845242190536/*`,
+            Condition: {
+              ArnLike: { 'aws:SourceArn': albArn },
+            },
+          },
+          {
+            Sid: 'AllowAlbLogDeliveryLegacyWrite',
+            Effect: 'Allow',
+            Principal: { AWS: 'arn:aws:iam::098369216593:root' },
+            Action: 's3:PutObject',
+            Resource: `arn:aws:s3:::${REMOTE_LOG_BUCKET}/AWSLogs/845242190536/*`,
+          },
+          {
+            Sid: 'DenyInsecureTransport',
+            Effect: 'Deny',
+            Principal: '*',
+            Action: 's3:*',
+            Resource: [
+              `arn:aws:s3:::${REMOTE_LOG_BUCKET}`,
+              `arn:aws:s3:::${REMOTE_LOG_BUCKET}/*`,
+            ],
+            Condition: { Bool: { 'aws:SecureTransport': 'false' } },
+          },
+        ],
+      }),
+    },
+    logLifecycle: { Rules: [{ Status: 'Enabled', Expiration: { Days: 365 } }] },
+    instanceNetwork: {
+      securityGroups: [{ GroupId: SG_THREE }, { GroupId: SG_TWO }],
+      networkInterfaces: [
+        {
+          id: 'eni-remote-primary',
+          deviceIndex: 0,
+          securityGroups: [{ GroupId: SG_THREE }, { GroupId: SG_TWO }],
+          publicIpv4: null,
+          ipv6: [],
+        },
+      ],
+      publicIpv4: [],
+      ipv6: [],
+    },
+    securityGroups: [
+      { id: SG_THREE, ingress: [] },
+      { id: SG_TWO, ingress: [expectedTargetIngress] },
+    ],
+  };
+}
+
+async function runRemoteAdminPerimeterCollection(
+  mutate: (responses: Record<string, any>) => void = () => {},
+): Promise<{ status: number | null; stderr: string; facts: RemoteCollectorFacts | null }> {
+  const { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } = await import(
+    'node:fs'
+  );
+  const { tmpdir } = await import('node:os');
+  const { delimiter, join } = await import('node:path');
+  const tempDir = mkdtempSync(join(tmpdir(), 'nava-remote-admin-perimeter-test-'));
+  const stubDir = join(tempDir, 'bin');
+  const responses = validRemoteCollectorResponses() as Record<string, any>;
+  mutate(responses);
+
+  try {
+    mkdirSync(stubDir);
+    const awsPath = join(stubDir, 'aws');
+    writeFileSync(
+      awsPath,
+      `#!/usr/bin/env bash
+case "$1 $2" in
+  "elbv2 describe-load-balancers") printf '%s' "$REMOTE_TEST_ALB" ;;
+  "elbv2 describe-target-groups") printf '%s' "$REMOTE_TEST_TARGET_GROUP" ;;
+  "elbv2 describe-target-group-attributes") printf '%s' "$REMOTE_TEST_TARGET_ATTRIBUTES" ;;
+  "elbv2 describe-target-health") printf '%s' "$REMOTE_TEST_TARGET_HEALTH" ;;
+  "elbv2 describe-listeners") printf '%s' "$REMOTE_TEST_LISTENERS" ;;
+  "elbv2 describe-rules") printf '%s' "$REMOTE_TEST_RULES" ;;
+  "elbv2 describe-load-balancer-attributes") printf '%s' "$REMOTE_TEST_ALB_ATTRIBUTES" ;;
+  "ec2 describe-security-groups")
+    if [[ "$*" == *"--group-ids"* ]]; then
+      printf '%s' "$REMOTE_TEST_ALB_SG"
+    else
+      printf '%s' "$REMOTE_TEST_TARGET_SG"
+    fi
+    ;;
+  "wafv2 list-web-acls") printf '%s' "$REMOTE_TEST_WAF_LIST" ;;
+  "wafv2 get-web-acl") printf '%s' "$REMOTE_TEST_WAF" ;;
+  "wafv2 get-web-acl-for-resource") printf '%s' "$REMOTE_TEST_WAF_ASSOCIATION" ;;
+  "s3api get-bucket-encryption") printf '%s' "$REMOTE_TEST_LOG_ENCRYPTION" ;;
+  "s3api get-public-access-block") printf '%s' "$REMOTE_TEST_LOG_PUBLIC_ACCESS" ;;
+  "s3api get-bucket-ownership-controls") printf '%s' "$REMOTE_TEST_LOG_OWNERSHIP" ;;
+  "s3api get-bucket-policy") printf '%s' "$REMOTE_TEST_LOG_POLICY" ;;
+  "s3api get-bucket-lifecycle-configuration") printf '%s' "$REMOTE_TEST_LOG_LIFECYCLE" ;;
+  *) exit 97 ;;
+esac
+`,
+      'utf8',
+    );
+    chmodSync(awsPath, 0o755);
+
+    const source = await readLaunchReadiness();
+    const collectionBlock = extractSourceBlock(
+      source,
+      "REMOTE_ADMIN_FACTS='{}'",
+      'CLOUDWATCH_ALARM_COUNT=',
+    );
+    const result = await runBash({
+      input: `set -euo pipefail
+AWS_REGION=af-south-1
+INSTANCE_ID=i-008f737974a9ba9b3
+REMOTE_ADMIN_MODE=1
+REMOTE_ALB_NAME=${REMOTE_ALB_NAME}
+REMOTE_TARGET_GROUP_NAME=${REMOTE_TARGET_GROUP_NAME}
+REMOTE_TARGET_SECURITY_GROUP_NAME=${REMOTE_TARGET_SECURITY_GROUP_NAME}
+REMOTE_WAF_NAME=${REMOTE_WAF_NAME}
+REMOTE_LOG_BUCKET=${REMOTE_LOG_BUCKET}
+REMOTE_VPC_ID=vpc-0f078e17a5f0f8599
+INSTANCE_NETWORK="$REMOTE_TEST_INSTANCE_NETWORK"
+SG_STATE="$REMOTE_TEST_SECURITY_GROUPS"
+${collectionBlock}
+printf 'REMOTE_FACTS=%s\\n' "$REMOTE_ADMIN_FACTS"
+`,
+      env: {
+        ...process.env,
+        PATH: `${toBashPath(stubDir)}${delimiter}${process.env.PATH ?? ''}`,
+        REMOTE_TEST_ALB: JSON.stringify(responses.alb),
+        REMOTE_TEST_TARGET_GROUP: JSON.stringify(responses.targetGroup),
+        REMOTE_TEST_TARGET_ATTRIBUTES: JSON.stringify(responses.targetAttributes),
+        REMOTE_TEST_TARGET_HEALTH: JSON.stringify(responses.targetHealth),
+        REMOTE_TEST_LISTENERS: JSON.stringify(responses.listeners),
+        REMOTE_TEST_RULES: JSON.stringify(responses.rules),
+        REMOTE_TEST_ALB_ATTRIBUTES: JSON.stringify(responses.albAttributes),
+        REMOTE_TEST_TARGET_SG: JSON.stringify(responses.targetSecurityGroup),
+        REMOTE_TEST_ALB_SG: JSON.stringify(responses.albSecurityGroup),
+        REMOTE_TEST_WAF_LIST: JSON.stringify(responses.wafList),
+        REMOTE_TEST_WAF: JSON.stringify(responses.waf),
+        REMOTE_TEST_WAF_ASSOCIATION: JSON.stringify(responses.wafAssociation),
+        REMOTE_TEST_LOG_ENCRYPTION: JSON.stringify(responses.logEncryption),
+        REMOTE_TEST_LOG_PUBLIC_ACCESS: JSON.stringify(responses.logPublicAccess),
+        REMOTE_TEST_LOG_OWNERSHIP: JSON.stringify(responses.logOwnership),
+        REMOTE_TEST_LOG_POLICY: JSON.stringify(responses.logPolicy),
+        REMOTE_TEST_LOG_LIFECYCLE: JSON.stringify(responses.logLifecycle),
+        REMOTE_TEST_INSTANCE_NETWORK: JSON.stringify(responses.instanceNetwork),
+        REMOTE_TEST_SECURITY_GROUPS: JSON.stringify(responses.securityGroups),
+      },
+    });
+    const serialized = result.stdout.match(/REMOTE_FACTS=([^\r\n]+)/)?.[1];
+    return {
+      status: result.status,
+      stderr: result.stderr,
+      facts: serialized ? (JSON.parse(serialized) as RemoteCollectorFacts) : null,
     };
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
@@ -1216,22 +1740,188 @@ describe('deploy config', () => {
     expect(nginx).toContain('client_max_body_size 35m');
   });
 
-  it('nginx serves only the canonical host with the public fullchain', async () => {
+  it('nginx keeps legacy ingress unchanged and exposes remote only through ALB :8443', async () => {
     const { readNginxConfig } = await import('../src/deploy/load-pm2-config.js');
     const nginx = readNginxConfig();
+    const remoteListen = `listen ${REMOTE_ALB_TARGET_PRIVATE_IP}:8443`;
+    const remoteDefaultStart = nginx.lastIndexOf(
+      'server {',
+      nginx.indexOf(`${remoteListen} default_server;`),
+    );
+    const remoteHealthStart = nginx.lastIndexOf(
+      'server {',
+      nginx.indexOf(`server_name ${REMOTE_ALB_TARGET_PRIVATE_IP};`),
+    );
+    const remoteAppStart = nginx.lastIndexOf(
+      'server {',
+      nginx.indexOf(`server_name ${REMOTE_ADMIN_HOST};`),
+    );
+    const legacyVhosts = nginx.slice(0, remoteDefaultStart);
+    const remoteDefaultVhost = nginx.slice(remoteDefaultStart, remoteHealthStart);
+    const remoteHealthVhost = nginx.slice(remoteHealthStart, remoteAppStart);
+    const remoteAppVhost = nginx.slice(remoteAppStart);
 
-    expect(nginx).toContain('listen 80 default_server');
-    expect(nginx).toContain('listen 443 ssl default_server');
-    expect(nginx).toContain('server_name nava.legacyhotels.co.za');
-    expect(nginx).toContain(
+    expect(remoteDefaultStart).toBeGreaterThanOrEqual(0);
+    expect(remoteHealthStart).toBeGreaterThan(remoteDefaultStart);
+    expect(remoteAppStart).toBeGreaterThan(remoteHealthStart);
+
+    expect(legacyVhosts).toContain('listen 80 default_server');
+    expect(legacyVhosts).toContain('listen 443 ssl default_server');
+    expect(legacyVhosts).toContain(`server_name ${CANONICAL_HOST}`);
+    expect(legacyVhosts).toContain(
       'ssl_certificate     /etc/nginx/ssl/nava.legacyhotels.co.za.fullchain.pem',
     );
-    expect(nginx).toContain(
+    expect(legacyVhosts).toContain(
       'ssl_certificate_key /etc/nginx/ssl/nava.legacyhotels.co.za.key',
     );
-    expect(nginx).toContain('if ($host != nava.legacyhotels.co.za)');
-    expect(nginx).toContain('return 444');
-    expect(nginx).not.toContain('nava.legacy.local');
+    expect(legacyVhosts).toContain(`if ($host != ${CANONICAL_HOST})`);
+    expect(legacyVhosts).toContain(
+      "connect-src 'self' https://nava-zero-mail-845242190536-af-south-1.s3.af-south-1.amazonaws.com",
+    );
+    expect(legacyVhosts).toContain('proxy_pass http://127.0.0.1:8788/api/');
+    expect(legacyVhosts).not.toContain(REMOTE_ADMIN_HOST);
+    expect(legacyVhosts).not.toContain('127.0.0.1:8789/');
+
+    expect(remoteDefaultVhost).toContain(`${remoteListen} default_server;`);
+    expect(remoteDefaultVhost).toContain('server_name _;');
+    expect(remoteDefaultVhost).toContain('return 444;');
+
+    expect(remoteHealthVhost).toContain(`${remoteListen};`);
+    expect(remoteHealthVhost).toContain(`server_name ${REMOTE_ALB_TARGET_PRIVATE_IP};`);
+    expect(remoteHealthVhost).toContain(
+      `if ($host != ${REMOTE_ALB_TARGET_PRIVATE_IP}) {`,
+    );
+    expect(remoteHealthVhost).toContain('location = /health {');
+    expect(remoteHealthVhost).toContain(
+      'proxy_pass http://127.0.0.1:8789/health;',
+    );
+    expect(remoteHealthVhost).not.toContain('proxy_pass http://127.0.0.1:8789/api/');
+    expect(remoteHealthVhost).toContain('location / {');
+    expect(remoteHealthVhost).toContain('return 444;');
+    expect(remoteHealthVhost.indexOf('location = /health {')).toBeLessThan(
+      remoteHealthVhost.indexOf('location / {'),
+    );
+
+    expect(remoteAppVhost).toContain(`${remoteListen};`);
+    expect(remoteAppVhost).toContain(`server_name ${REMOTE_ADMIN_HOST};`);
+    expect(remoteAppVhost).toContain(`if ($host != ${REMOTE_ADMIN_HOST}) {`);
+    expect(remoteAppVhost).toContain('root /var/www/nava-mail;');
+    expect(remoteAppVhost).toContain('location = /health {');
+    expect(remoteAppVhost).toContain('return 404;');
+    expect(remoteAppVhost).toContain('proxy_pass http://127.0.0.1:8789/api/');
+    expect(remoteAppVhost).toContain('proxy_set_header Host $host;');
+    expect(remoteAppVhost).toContain(
+      'proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;',
+    );
+    expect(remoteAppVhost).toContain('proxy_set_header X-Forwarded-Proto https;');
+    expect(remoteAppVhost).toContain(
+      'add_header X-Robots-Tag "noindex, nofollow, noarchive" always;',
+    );
+    for (const header of [
+      'add_header Strict-Transport-Security',
+      'add_header X-Frame-Options "DENY" always;',
+      'add_header X-Content-Type-Options "nosniff" always;',
+      'add_header Referrer-Policy "strict-origin-when-cross-origin" always;',
+      'add_header Content-Security-Policy',
+    ]) {
+      expect(remoteAppVhost).toContain(header);
+    }
+
+    expect(
+      nginx.match(
+        new RegExp(
+          `^\\s*listen ${REMOTE_ALB_TARGET_PRIVATE_IP.replaceAll('.', '\\.')}:8443(?:\\s+default_server)?;$`,
+          'gm',
+        ),
+      ),
+    ).toHaveLength(3);
+    expect(nginx).not.toMatch(/^\s*listen 8443(?:\s+default_server)?;$/gm);
+    expect(nginx.match(/^\s*ssl_certificate(?:_key)?\s+/gm)).toHaveLength(2);
+    expect(nginx).not.toMatch(/listen\s+8443\s+ssl/);
+    expect(remoteDefaultVhost).not.toMatch(/listen\s+(?:80|443)|ssl_certificate/);
+    expect(remoteHealthVhost).not.toMatch(/listen\s+(?:80|443)|ssl_certificate/);
+    expect(remoteAppVhost).not.toMatch(/listen\s+(?:80|443)|ssl_certificate/);
+  });
+
+  it('redirects host-local API mailto links before each API proxy', async () => {
+    const { readNginxConfig } = await import('../src/deploy/load-pm2-config.js');
+    const nginx = readNginxConfig();
+    const legacyRedirect = nginx.indexOf('location = /api/mailto-handler {');
+    const remoteRedirect = nginx.indexOf('location = /api/mailto-handler {', legacyRedirect + 1);
+    const legacyApi = nginx.indexOf('proxy_pass http://127.0.0.1:8788/api/');
+    const remoteApi = nginx.indexOf('proxy_pass http://127.0.0.1:8789/api/');
+
+    expect(nginx).toContain('location = /api/mailto-handler {');
+    expect(nginx).toContain('return 302 /mailto-handler$is_args$args;');
+    expect(nginx.match(/location = \/api\/mailto-handler \{/g)).toHaveLength(2);
+    expect(nginx.match(/proxy_pass http:\/\/127\.0\.0\.1:8788\/api\//g)).toHaveLength(1);
+    expect(nginx.match(/proxy_pass http:\/\/127\.0\.0\.1:8789\/api\//g)).toHaveLength(1);
+    expect(legacyRedirect).toBeLessThan(legacyApi);
+    expect(remoteRedirect).toBeLessThan(remoteApi);
+  });
+
+  it('deploy-ec2.sh verifies fixed ALB target identity before candidate reload', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const deploy = readFileSync(join(here, '..', 'deploy', 'deploy-ec2.sh'), 'utf8');
+    const validator = deploy.match(
+      /assert_remote_alb_target_private_ip\(\) \{([\s\S]*?)^\}/m,
+    )?.[1];
+    const activateNginx = deploy.match(/activate_nginx\(\) \{([\s\S]*?)^\}/m)?.[1];
+
+    expect(deploy).toContain(
+      `REMOTE_ALB_TARGET_PRIVATE_IP="${REMOTE_ALB_TARGET_PRIVATE_IP}"`,
+    );
+    expect(validator).toBeTruthy();
+    expect(validator).toContain('ip -4 -o addr show dev ens5 scope global primary');
+    expect(validator).toContain('REMOTE_ALB_TARGET_PRIVATE_IP');
+    expect(activateNginx).toBeTruthy();
+    expect(activateNginx.indexOf('assert_remote_alb_target_private_ip')).toBeGreaterThan(
+      activateNginx.indexOf('sudo nginx -t'),
+    );
+    expect(activateNginx.indexOf('assert_remote_alb_target_private_ip')).toBeLessThan(
+      activateNginx.indexOf('sudo systemctl reload nginx'),
+    );
+  });
+
+  it('rolls back the Nginx candidate when primary ens5 does not own the ALB target IP', async () => {
+    const result = await runNginxActivation({
+      scenario: 'target-ip',
+      priorState: 'present',
+      ens5PrimaryIp: '172.31.12.113',
+    });
+
+    expect(result.status, result.stderr).toBe(1);
+    expect(result.stderr).toContain(
+      'remote ALB target private IP mismatch on primary ens5',
+    );
+    expect(result.site).toBe('previous nginx config\n');
+    expect(result.enabledState).toBe('valid');
+    expect(result.enabledTarget).toBe('../sites-available/previous-nava');
+    expect(result.nginxCalls).toBe(2);
+    expect(result.reloadCalls).toBe(1);
+    expect(result.backupEntries).toEqual([]);
+  });
+
+  it('keeps legacy TLS local and remote-vhost probes private without TLS bypasses', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+
+    for (const scriptName of ['deploy-ec2.sh', 'ops-restart.sh', 'post-boot-smoke.sh']) {
+      const source = readFileSync(join(here, '..', 'deploy', scriptName), 'utf8');
+      expect(source, scriptName).toContain('https://nava.legacyhotels.co.za');
+      expect(source, scriptName).toContain('--resolve');
+      expect(source, scriptName).toContain('nava-admin.trynava.io');
+      expect(source, scriptName).toContain('--connect-to');
+      expect(source, scriptName).toMatch(
+        /-H "Host: (?:\$\{REMOTE_ADMIN_HOST\}|\$\{remote_host\}|nava-admin\.trynava\.io)"/,
+      );
+      expect(insecureCurlCommands(source), scriptName).toHaveLength(0);
+    }
   });
 
   it('nginx preserves security headers and allows only the exact S3 endpoint', async () => {
@@ -1399,7 +2089,7 @@ describe('deploy config', () => {
     expect(deploy).toContain('172.24.240.41');
   });
 
-  it('uses BETTER_AUTH_URL as the only production app-origin source', async () => {
+  it('builds the production SPA host-neutrally', async () => {
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
     const { dirname, join } = await import('node:path');
@@ -1411,11 +2101,15 @@ describe('deploy config', () => {
       ': "${BETTER_AUTH_URL:=https://nava.legacyhotels.co.za}"',
     );
     expect(deploy).toContain(
-      ': "${BETTER_AUTH_URL:?BETTER_AUTH_URL required before SPA build}"',
+      ': "${BETTER_AUTH_URL:?BETTER_AUTH_URL required for legacy HTTP}"',
     );
-    expect(deploy).toContain(
-      'export VITE_PUBLIC_APP_URL="${VITE_PUBLIC_APP_URL:-$BETTER_AUTH_URL}"',
-    );
+    expect(deploy).toContain('export VITE_PUBLIC_BACKEND_URL=""');
+    expect(deploy).toContain('unset VITE_PUBLIC_APP_URL');
+    expect(deploy).not.toContain('export VITE_PUBLIC_APP_URL');
+    expect(deploy.match(/pnpm --filter @zero\/mail build/g)).toHaveLength(1);
+    expect(
+      deploy.match(/rsync -a --delete "\$\{MAIL_APP\}\/build\/client\/" "\$\{WEB_ROOT\}\/"/g),
+    ).toHaveLength(1);
     expect(deploy).toContain('127.0.0.1 nava.legacyhotels.co.za');
     expect(deploy).not.toContain('127.0.0.1 nava.legacy.local');
   });
@@ -1588,15 +2282,21 @@ describe('deploy config', () => {
     expect(boot).not.toMatch(/pm2 delete hms-ai-worker[^\n]*\|\| true/);
   });
 
-  it('post-boot-smoke.sh checks :8788 and canonical :443 not :3000', async () => {
+  it('post-boot-smoke.sh checks both loopbacks, legacy :443, and private remote :8443', async () => {
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
     const { dirname, join } = await import('node:path');
     const here = dirname(fileURLToPath(import.meta.url));
     const smoke = readFileSync(join(here, '..', 'deploy', 'post-boot-smoke.sh'), 'utf8');
     expect(smoke).toContain('127.0.0.1:8788/health');
+    expect(smoke).toContain('127.0.0.1:8789/health');
     expect(smoke).toContain('BETTER_AUTH_URL');
+    expect(smoke).toContain('CANONICAL_ORIGIN="https://nava.legacyhotels.co.za"');
     expect(smoke).toContain('--resolve "${PUBLIC_HOST}:443:127.0.0.1"');
+    expect(smoke).toContain('REMOTE_ADMIN_HOST="nava-admin.trynava.io"');
+    expect(smoke).toContain('--connect-to "${REMOTE_ADMIN_HOST}:8443:${REMOTE_ALB_TARGET_PRIVATE_IP}:8443"');
+    expect(smoke).toContain('-H "Host: ${REMOTE_ADMIN_HOST}"');
+    expect(smoke).not.toContain('https://nava-admin.trynava.io');
     expect(smoke).not.toContain('"https://127.0.0.1');
     expect(smoke).not.toContain(':3000');
     expect(smoke).toContain('systemctl is-active');
@@ -1827,7 +2527,7 @@ describe('deploy config', () => {
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
-  }, 30_000);
+  }, 60_000);
 
   it('real-mail Playwright config rejects noncanonical base and normalizes one slash', async () => {
     const envKeys = [
@@ -1890,7 +2590,7 @@ describe('deploy config', () => {
     expect(ops).toContain('db:migrate');
   });
 
-  it('sync deploys main by default and creates the fetched branch on EC2', async () => {
+  it('sync deploys main by default and creates its selected EC2 branch from the verified fetched ref', async () => {
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
     const { dirname, join } = await import('node:path');
@@ -1902,7 +2602,42 @@ describe('deploy config', () => {
 
     expect(sync).toContain(': "${GIT_BRANCH:=main}"');
     expect(sync).toContain(': "${BUNDLE_KEY:=git-bundles/zero-${GIT_BRANCH}.bundle}"');
-    expect(sync).toContain('git checkout -B ${Q_GIT_BRANCH} ${Q_BUNDLE_REF}');
+    expect(sync).toContain(
+      'printf -v Q_BUNDLE_REF \'%q\' "refs/remotes/bundle/${GIT_BRANCH}"',
+    );
+    expect(sync).toContain(
+      'printf -v Q_BUNDLE_REFSPEC \'%q\' "+refs/heads/${GIT_BRANCH}:refs/remotes/bundle/${GIT_BRANCH}"',
+    );
+    expect(sync).toContain(
+      'git rev-parse --verify --quiet "$BUNDLE_COMMIT^{commit}"',
+    );
+    expect(sync).toContain(
+      'git bundle create "$BUNDLE_FILE" "refs/heads/$GIT_BRANCH"',
+    );
+    expect(sync).toContain('git bundle list-heads "$BUNDLE_FILE"');
+    expect(
+      sync.indexOf('git bundle create "$BUNDLE_FILE" "refs/heads/$GIT_BRANCH"'),
+    ).toBeLessThan(sync.indexOf('git bundle list-heads "$BUNDLE_FILE"'));
+    expect(sync).not.toContain(
+      'BUNDLE_COMMIT="$(git rev-parse --verify --quiet "refs/heads/$GIT_BRANCH^{commit}")"',
+    );
+    expect(sync).toContain(
+      'printf -v Q_BUNDLE_COMMIT \'%q\' "$BUNDLE_COMMIT"',
+    );
+    expect(
+      sync.match(/git fetch \$\{Q_REMOTE_BUNDLE\} \$\{Q_BUNDLE_REFSPEC\}/g),
+    ).toHaveLength(2);
+    expect(sync.match(/bundle commit mismatch/g)).toHaveLength(2);
+    expect(
+      sync.match(
+        /git checkout -f -B \$\{Q_GIT_BRANCH\} \$\{Q_BUNDLE_COMMIT\}; git reset --hard \$\{Q_BUNDLE_COMMIT\}/g,
+      ),
+    ).toHaveLength(2);
+    expect(sync).toContain('else git init ${Q_REPO_PATH}; cd ${Q_REPO_PATH};');
+    expect(sync).not.toContain('git clone ${Q_REMOTE_BUNDLE}');
+    expect(sync).not.toContain(
+      'git checkout ${Q_GIT_BRANCH}; git reset --hard ${Q_BUNDLE_REF}',
+    );
   });
 
   it('quiesced deploy builds assets, skips PM2/health, allows online http, keeps VPN', async () => {
@@ -1995,6 +2730,38 @@ describe('deploy config', () => {
     expect(ops).toContain('reboot-instances');
     expect(ops).toContain('post-boot-smoke.sh');
     expect(ops).toContain('ssm-run-command.sh');
+  });
+
+  it('runs remote-admin readiness on the operator host after remote SSM actions', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const deployDir = join(here, '..', 'deploy');
+    const readinessCommand =
+      'REMOTE_ADMIN_MODE=1 REMOTE_TARGET_HEALTH_REQUIRED=0 REMOTE_ADMIN_LIFECYCLE_MODE=auto bash "${SCRIPT_DIR}/launch-readiness.sh"';
+
+    for (const scriptName of ['ops-deploy.sh', 'ops-restart.sh', 'ops-reboot.sh']) {
+      const source = readFileSync(join(deployDir, scriptName), 'utf8');
+      const marker = 'remote-admin lifecycle readiness';
+      const start = source.indexOf(marker);
+      expect(start, scriptName).toBeGreaterThanOrEqual(0);
+      const section = source.slice(start, source.indexOf('\necho', start + marker.length));
+      expect(section, scriptName).toContain(readinessCommand);
+      expect(section, scriptName).not.toContain('ssm-run-command.sh');
+      expect(section, scriptName).not.toContain('/home/ubuntu/repos/zero');
+    }
+  });
+
+  it('passes collected remote perimeter facts into the readiness report builder', async () => {
+    const readiness = await readLaunchReadiness();
+    const reportBuilder = extractSourceBlock(
+      readiness,
+      'build_readiness_report() {',
+      'REPORT_JSON="$(build_readiness_report)"',
+    );
+
+    expect(reportBuilder).toContain('REMOTE_ADMIN_FACTS="$REMOTE_ADMIN_FACTS" node -');
   });
 
   it('pilot-db-wipe.sh requires CONFIRM_PILOT_WIPE=1 and passes bash -n', async () => {
@@ -2377,6 +3144,680 @@ describe('deploy config', () => {
     expect(observations).not.toContain(SG_ONE);
   });
 
+  it('defines remote-admin readiness contracts for legacy, pre-registration, and active target paths', async () => {
+    const source = await readLaunchReadiness();
+    for (const requiredFragment of [
+      'REMOTE_ADMIN_MODE',
+      'REMOTE_TARGET_HEALTH_REQUIRED',
+      REMOTE_ALB_NAME,
+      REMOTE_TARGET_GROUP_NAME,
+      REMOTE_TARGET_SECURITY_GROUP_NAME,
+      REMOTE_WAF_NAME,
+      REMOTE_LOG_BUCKET,
+      'aws elbv2 describe-load-balancers',
+      'aws wafv2 get-web-acl',
+      'aws s3api get-bucket-ownership-controls',
+    ]) {
+      expect(source.includes(requiredFragment), requiredFragment).toBe(true);
+    }
+
+    const legacy = await runLaunchReadinessReport();
+    expect(legacy.checks.securityGroupIngressEmpty).toBe(true);
+
+    const remoteInstanceNetwork = {
+      securityGroups: [{ GroupId: SG_THREE }, { GroupId: SG_TWO }],
+      networkInterfaces: [
+        {
+          id: 'eni-remote-primary',
+          deviceIndex: 0,
+          securityGroups: [{ GroupId: SG_THREE }, { GroupId: SG_TWO }],
+          publicIpv4: null,
+          ipv6: [],
+        },
+      ],
+      publicIpv4: [],
+      ipv6: [],
+    };
+    const remoteSecurityGroups = [
+      { id: SG_THREE, ingress: [] },
+      {
+        id: SG_TWO,
+        ingress: [
+          {
+            IpProtocol: 'tcp',
+            FromPort: 8443,
+            ToPort: 8443,
+            UserIdGroupPairs: [{ GroupId: SG_ONE }],
+          },
+        ],
+      },
+    ];
+    const preregistration = await runLaunchReadinessReport({
+      remoteAdminMode: true,
+      remoteTargetHealthRequired: false,
+      firewall: { remoteAlb8443Only: true },
+      cors: validCors([CANONICAL_ORIGIN, `https://${REMOTE_ADMIN_HOST}`]),
+      instanceNetwork: remoteInstanceNetwork,
+      securityGroups: remoteSecurityGroups,
+      remoteAdminFacts: {
+        ...validRemoteAdminReadinessFacts(),
+        hostForwardExact: false,
+        targetHealthy: false,
+      },
+    });
+    expect(preregistration.checks).toMatchObject({
+      remoteResourcesResolved: true,
+      remoteListenerDefault404: true,
+      remotePreRegistrationClean: true,
+      remoteUfwAlb8443Only: true,
+      s3CorsRemoteAdmin: true,
+    });
+    expect(preregistration.checks).not.toHaveProperty('securityGroupIngressEmpty');
+    expect(preregistration.checks).not.toHaveProperty('remoteTargetHealthy');
+    expect(preregistration.checks).not.toHaveProperty('remoteHostForwardExact');
+
+    const remoteCorsWithPut = await runLaunchReadinessReport({
+      remoteAdminMode: true,
+      remoteTargetHealthRequired: false,
+      firewall: { remoteAlb8443Only: true },
+      cors: {
+        CORSRules: [
+          {
+            ...validCors([CANONICAL_ORIGIN, `https://${REMOTE_ADMIN_HOST}`]).CORSRules[0],
+            AllowedMethods: ['GET', 'HEAD', 'PUT'],
+          },
+        ],
+      },
+      instanceNetwork: remoteInstanceNetwork,
+      securityGroups: remoteSecurityGroups,
+    });
+    expect(remoteCorsWithPut.checks.s3CorsRemoteAdmin).toBe(false);
+
+    const preregistrationDirty = await runLaunchReadinessReport({
+      remoteAdminMode: true,
+      remoteTargetHealthRequired: false,
+      firewall: { remoteAlb8443Only: true },
+      cors: validCors([CANONICAL_ORIGIN, `https://${REMOTE_ADMIN_HOST}`]),
+      instanceNetwork: remoteInstanceNetwork,
+      securityGroups: remoteSecurityGroups,
+      remoteAdminFacts: {
+        ...validRemoteAdminReadinessFacts(),
+        preRegistrationClean: false,
+        hostForwardExact: false,
+        targetHealthy: false,
+      },
+    });
+    expect(preregistrationDirty.checks.remotePreRegistrationClean).toBe(false);
+
+    const active = await runLaunchReadinessReport({
+      remoteAdminMode: true,
+      remoteTargetHealthRequired: true,
+      firewall: { remoteAlb8443Only: true },
+      cors: validCors([CANONICAL_ORIGIN, `https://${REMOTE_ADMIN_HOST}`]),
+    });
+    expect(active.checks).toMatchObject({
+      remoteResourcesResolved: true,
+      remoteTargetGroupConfigured: true,
+      remoteListenerDefault404: true,
+      remoteHostForwardExact: true,
+      remoteTargetHealthy: true,
+      remoteTargetSecurityGroupOnlyAlb: true,
+      remoteNoDirectPublicTargetPath: true,
+      remoteAlbLoggingCompliant: true,
+      remoteWafCompliant: true,
+    });
+    expect(active.checks).not.toHaveProperty('remotePreRegistrationClean');
+
+    const unhealthy = await runLaunchReadinessReport({
+      remoteAdminMode: true,
+      remoteTargetHealthRequired: true,
+      firewall: { remoteAlb8443Only: true },
+      cors: validCors([CANONICAL_ORIGIN, `https://${REMOTE_ADMIN_HOST}`]),
+      remoteAdminFacts: {
+        ...validRemoteAdminReadinessFacts(),
+        targetHealthy: false,
+      },
+    });
+    expect(unhealthy.checks.remoteTargetHealthy).toBe(false);
+  });
+
+  it('treats remote public-address assignment as sanitized observation', async () => {
+    const addressPresent = await runRemoteAdminPerimeterCollection((responses) => {
+      responses.instanceNetwork.publicIpv4 = ['198.51.100.23'];
+      responses.instanceNetwork.ipv6 = ['2001:db8::23'];
+    });
+
+    expect(addressPresent.status, addressPresent.stderr).toBe(0);
+    expect(addressPresent.facts).toMatchObject({
+      targetSecurityGroupOnlyAlb: true,
+      noDirectPublicTargetPath: true,
+      publicAddressPresence: { ipv4: true, ipv6: true },
+    });
+    expect(JSON.stringify(addressPresent.facts)).not.toContain('198.51.100.23');
+    expect(JSON.stringify(addressPresent.facts)).not.toContain('2001:db8::23');
+
+    const readiness = await runLaunchReadinessReport({
+      remoteAdminMode: true,
+      firewall: { remoteAlb8443Only: true, listenerSafe: true },
+      cors: validCors([CANONICAL_ORIGIN, `https://${REMOTE_ADMIN_HOST}`]),
+      instanceNetwork: {
+        securityGroups: [{ GroupId: SG_ONE }, { GroupId: SG_TWO }],
+        networkInterfaces: [
+          {
+            id: 'eni-public-address',
+            deviceIndex: 0,
+            securityGroups: [{ GroupId: SG_ONE }, { GroupId: SG_TWO }],
+            publicIpv4: '198.51.100.23',
+            ipv6: ['2001:db8::23'],
+          },
+        ],
+        publicIpv4: ['198.51.100.23'],
+        ipv6: ['2001:db8::23'],
+      },
+    });
+    expect(readiness.checks).not.toHaveProperty('instanceHasNoPublicIpv6');
+    expect(readiness.checks.remoteListenerSafe).toBe(true);
+    expect(readiness.observations.network).toEqual({
+      publicAddressPresence: { ipv4: true, ipv6: true },
+    });
+
+    const exposedListener = await runLaunchReadinessReport({
+      remoteAdminMode: true,
+      firewall: { remoteAlb8443Only: true, listenerSafe: false },
+      cors: validCors([CANONICAL_ORIGIN, `https://${REMOTE_ADMIN_HOST}`]),
+      instanceNetwork: {
+        securityGroups: [{ GroupId: SG_ONE }, { GroupId: SG_TWO }],
+        networkInterfaces: [
+          {
+            id: 'eni-public-address',
+            deviceIndex: 0,
+            securityGroups: [{ GroupId: SG_ONE }, { GroupId: SG_TWO }],
+            publicIpv4: '198.51.100.23',
+            ipv6: ['2001:db8::23'],
+          },
+        ],
+        publicIpv4: ['198.51.100.23'],
+        ipv6: ['2001:db8::23'],
+      },
+    });
+    expect(exposedListener.checks.remoteListenerSafe).toBe(false);
+  }, 30_000);
+
+  it('remote collector rejects broad ingress, wrong target identity, and unsafe WAF rules', async () => {
+    const valid = await runRemoteAdminPerimeterCollection();
+    expect(valid.status, valid.stderr).toBe(0);
+    expect(valid.facts).toMatchObject({
+      resourcesResolved: true,
+      targetHealthy: true,
+      targetSecurityGroupOnlyAlb: true,
+      noDirectPublicTargetPath: true,
+      logBucketCompliant: true,
+      wafCompliant: true,
+    });
+
+    const allTrafficIngress = await runRemoteAdminPerimeterCollection((responses) => {
+      responses.securityGroups[0].ingress.push({
+        IpProtocol: '-1',
+        IpRanges: [{ CidrIp: '0.0.0.0/0' }],
+      });
+    });
+    expect(allTrafficIngress.facts?.targetSecurityGroupOnlyAlb).toBe(false);
+    expect(allTrafficIngress.facts?.noDirectPublicTargetPath).toBe(false);
+
+    const public443Ingress = await runRemoteAdminPerimeterCollection((responses) => {
+      responses.securityGroups[0].ingress.push({
+        IpProtocol: 'tcp',
+        FromPort: 443,
+        ToPort: 443,
+        IpRanges: [{ CidrIp: '0.0.0.0/0' }],
+      });
+    });
+    expect(public443Ingress.facts?.targetSecurityGroupOnlyAlb).toBe(false);
+
+    const wrongTarget = await runRemoteAdminPerimeterCollection((responses) => {
+      responses.targetHealth.TargetHealthDescriptions[0].Target = {
+        Id: 'i-00000000000000000',
+        Port: 9443,
+      };
+    });
+    expect(wrongTarget.facts?.targetHealthy).toBe(false);
+
+    const countRateRule = await runRemoteAdminPerimeterCollection((responses) => {
+      responses.waf.WebACL.Rules[3].Action = { Count: {} };
+    });
+    expect(countRateRule.facts?.wafCompliant).toBe(false);
+
+    const swappedWafRules = await runRemoteAdminPerimeterCollection((responses) => {
+      const rules = responses.waf.WebACL.Rules;
+      [rules[0], rules[1]] = [rules[1], rules[0]];
+    });
+    expect(swappedWafRules.facts?.wafCompliant).toBe(false);
+
+    const broadSigninScope = await runRemoteAdminPerimeterCollection((responses) => {
+      responses.waf.WebACL.Rules[3].Statement.RateBasedStatement.ScopeDownStatement.AndStatement.Statements.push(
+        {
+          ByteMatchStatement: {
+            SearchString: '/api/auth',
+            FieldToMatch: { UriPath: {} },
+            TextTransformations: [{ Priority: 0, Type: 'NONE' }],
+            PositionalConstraint: 'STARTS_WITH',
+          },
+        },
+      );
+    });
+    expect(broadSigninScope.facts?.wafCompliant).toBe(false);
+
+    const lowercaseMethodTransform = await runRemoteAdminPerimeterCollection((responses) => {
+      responses.waf.WebACL.Rules[3].Statement.RateBasedStatement.ScopeDownStatement.AndStatement.Statements[1]
+        .ByteMatchStatement.TextTransformations = [{ Priority: 0, Type: 'LOWERCASE' }];
+    });
+    expect(lowercaseMethodTransform.facts?.wafCompliant).toBe(false);
+
+    const dualstackAlb = await runRemoteAdminPerimeterCollection((responses) => {
+      responses.alb.LoadBalancers[0].IpAddressType = 'dualstack';
+    });
+    expect(dualstackAlb.facts?.resourcesResolved).toBe(false);
+
+    const broadAlbSecurityGroup = await runRemoteAdminPerimeterCollection((responses) => {
+      responses.albSecurityGroup.SecurityGroups[0].IpPermissions.push({
+        IpProtocol: '-1',
+        IpRanges: [{ CidrIp: '0.0.0.0/0' }],
+      });
+    });
+    expect(broadAlbSecurityGroup.facts?.resourcesResolved).toBe(false);
+
+    const secondaryEniBroadIngress = await runRemoteAdminPerimeterCollection((responses) => {
+      responses.instanceNetwork.networkInterfaces.push({
+        id: 'eni-remote-secondary',
+        deviceIndex: 1,
+        securityGroups: [{ GroupId: SG_ONE }],
+        publicIpv4: null,
+        ipv6: [],
+      });
+      responses.securityGroups.push({
+        id: SG_ONE,
+        ingress: [
+          {
+            IpProtocol: 'tcp',
+            FromPort: 443,
+            ToPort: 443,
+            IpRanges: [{ CidrIp: '0.0.0.0/0' }],
+          },
+        ],
+      });
+    });
+    expect(secondaryEniBroadIngress.facts?.targetSecurityGroupOnlyAlb).toBe(false);
+    expect(secondaryEniBroadIngress.facts?.noDirectPublicTargetPath).toBe(false);
+  }, 60_000);
+
+  it('remote collector requires final ALB log policy and rejects stale source-account policy', async () => {
+    const exactFinalPolicy = await runRemoteAdminPerimeterCollection();
+    expect(exactFinalPolicy.status, exactFinalPolicy.stderr).toBe(0);
+    expect(exactFinalPolicy.facts?.logBucketCompliant).toBe(true);
+
+    const staleSourceAccountPolicy = await runRemoteAdminPerimeterCollection((responses) => {
+      const policy = JSON.parse(responses.logPolicy.Policy);
+      const [modernAllow, legacyAllow, tlsDeny] = policy.Statement;
+      modernAllow.Condition = {
+        StringEquals: { 'aws:SourceAccount': '845242190536' },
+        ArnLike: modernAllow.Condition.ArnLike,
+      };
+      policy.Statement = [modernAllow, legacyAllow, tlsDeny];
+      responses.logPolicy.Policy = JSON.stringify(policy);
+    });
+    expect(staleSourceAccountPolicy.status, staleSourceAccountPolicy.stderr).toBe(0);
+    expect(staleSourceAccountPolicy.facts?.logBucketCompliant).toBe(false);
+  }, 60_000);
+
+  it('remote collector requires an empty ALB access-log prefix', async () => {
+    const missingPrefix = await runRemoteAdminPerimeterCollection((responses) => {
+      responses.albAttributes.Attributes = responses.albAttributes.Attributes.filter(
+        (attribute: { Key: string }) => attribute.Key !== 'access_logs.s3.prefix',
+      );
+    });
+    expect(missingPrefix.status, missingPrefix.stderr).toBe(0);
+    expect(missingPrefix.facts?.logBucketCompliant).toBe(false);
+
+    const nonemptyPrefix = await runRemoteAdminPerimeterCollection((responses) => {
+      const prefix = responses.albAttributes.Attributes.find(
+        (attribute: { Key: string }) => attribute.Key === 'access_logs.s3.prefix',
+      );
+      prefix.Value = 'unexpected-prefix';
+    });
+    expect(nonemptyPrefix.status, nonemptyPrefix.stderr).toBe(0);
+    expect(nonemptyPrefix.facts?.logBucketCompliant).toBe(false);
+  }, 60_000);
+
+  it('remote collector rejects a broad ALB log-delivery resource', async () => {
+    const broadResourcePolicy = await runRemoteAdminPerimeterCollection((responses) => {
+      const policy = JSON.parse(responses.logPolicy.Policy);
+      const [modernAllow, legacyAllow, tlsDeny] = policy.Statement;
+      modernAllow.Resource = `arn:aws:s3:::${REMOTE_LOG_BUCKET}/*`;
+      policy.Statement = [modernAllow, legacyAllow, tlsDeny];
+      responses.logPolicy.Policy = JSON.stringify(policy);
+    });
+
+    expect(broadResourcePolicy.status, broadResourcePolicy.stderr).toBe(0);
+    expect(broadResourcePolicy.facts?.logBucketCompliant).toBe(false);
+  }, 60_000);
+
+  it('remote collector rejects an extra ALB log-policy Allow statement', async () => {
+    const extraAllowPolicy = await runRemoteAdminPerimeterCollection((responses) => {
+      const policy = JSON.parse(responses.logPolicy.Policy);
+      const [modernAllow] = policy.Statement;
+      policy.Statement.push({
+        ...modernAllow,
+        Sid: 'AllowUnexpectedDuplicateLogDeliveryWrite',
+      });
+      responses.logPolicy.Policy = JSON.stringify(policy);
+    });
+
+    expect(extraAllowPolicy.status, extraAllowPolicy.stderr).toBe(0);
+    expect(extraAllowPolicy.facts?.logBucketCompliant).toBe(false);
+  }, 60_000);
+
+  it('remote collector rejects an extra high-priority WAF Allow rule', async () => {
+    const bypass = await runRemoteAdminPerimeterCollection((responses) => {
+      responses.waf.WebACL.Rules.unshift({
+        Name: 'bypass-all',
+        Priority: 0,
+        Action: { Allow: {} },
+        Statement: {},
+      });
+    });
+
+    expect(bypass.status, bypass.stderr).toBe(0);
+    expect(bypass.facts?.wafCompliant).toBe(false);
+  }, 60_000);
+
+  it('remote collector rejects a non-Allow WAF default action', async () => {
+    const defaultBlock = await runRemoteAdminPerimeterCollection((responses) => {
+      responses.waf.WebACL.DefaultAction = { Block: {} };
+    });
+
+    expect(defaultBlock.status, defaultBlock.stderr).toBe(0);
+    expect(defaultBlock.facts?.wafCompliant).toBe(false);
+  }, 60_000);
+
+  it('remote collector requires API Base64 WAF byte-match strings', async () => {
+    const plaintextMethod = await runRemoteAdminPerimeterCollection((responses) => {
+      responses.waf.WebACL.Rules[3].Statement.RateBasedStatement.ScopeDownStatement.AndStatement.Statements[1]
+        .ByteMatchStatement.SearchString = 'POST';
+    });
+
+    expect(plaintextMethod.status, plaintextMethod.stderr).toBe(0);
+    expect(plaintextMethod.facts?.wafCompliant).toBe(false);
+  }, 60_000);
+
+  it('documents gated, idempotent remote-admin edge provisioning without changing legacy access', async () => {
+    const { existsSync, readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const repoRoot = join(here, '..', '..', '..');
+    const resources = readFileSync(join(here, '..', 'deploy', 'aws-resources.md'), 'utf8');
+    const provisionerPath = join(here, '..', 'deploy', 'remote-edge-provisioner.sh');
+    const statePath = join(here, '..', 'deploy', 'remote-edge-state.mjs');
+    const provisioner = existsSync(provisionerPath)
+      ? readFileSync(provisionerPath, 'utf8')
+      : '';
+    const state = existsSync(statePath) ? readFileSync(statePath, 'utf8') : '';
+    const readiness = readFileSync(join(here, '..', 'deploy', 'ops-deploy.sh'), 'utf8');
+    const runbook = readFileSync(
+      join(repoRoot, 'docs', 'runbooks', 'centurion-day-one-operations.md'),
+      'utf8',
+    );
+    const companionPath = join(
+      repoRoot,
+      'docs',
+      'solutions',
+      'architecture-patterns',
+      'nava-remote-admin-alb-companion.md',
+    );
+    const taskFourReportPath = join(
+      repoRoot,
+      'docs',
+      'superpowers',
+      'plans',
+      'handoff-reports',
+      'task-4-report.md',
+    );
+
+    for (const requiredFragment of [
+      `REMOTE_ALB_NAME=${REMOTE_ALB_NAME}`,
+      `REMOTE_TARGET_GROUP_NAME=${REMOTE_TARGET_GROUP_NAME}`,
+      `REMOTE_TARGET_SECURITY_GROUP_NAME=${REMOTE_TARGET_SECURITY_GROUP_NAME}`,
+      `REMOTE_WAF_NAME=${REMOTE_WAF_NAME}`,
+      `REMOTE_LOG_BUCKET=${REMOTE_LOG_BUCKET}`,
+      'aws acm request-certificate',
+      'remote-edge-provisioner.sh inspect',
+      'remote-edge-provisioner.sh apply-one --action ACTION',
+      'launch-readiness.sh',
+      'canonicalizeCorsRules',
+      'PROVE_ALB_LOG_DELIVERY',
+      'REMOTE_EDGE_LOG_PROOF_MAX_ATTEMPTS',
+      'Name=vpc-id,Values=$VPC_ID',
+      'const main = tables.find',
+      'const table = explicit ?? main;',
+      'PREFLIGHT_SCRATCH_DIR',
+      'describe-network-interfaces',
+      'globalEniIdentityAndGroupCorrespondenceConfirmed',
+      'instanceNetworkInterfaceIds',
+      'rm -rf -- "$PREFLIGHT_SCRATCH_DIR"',
+      'CORS_SCRATCH_DIR',
+      'CORS_EVIDENCE_DIR',
+      'must not include `aws:SourceAccount`',
+      'aws s3api put-bucket-cors',
+    ]) {
+      expect(resources.includes(requiredFragment), requiredFragment).toBe(true);
+    }
+    expect(resources).not.toMatch(
+      />\s*"\$EVIDENCE_DIR\/(?:identity|instance|network-interfaces|subnets|routes|attached-security-groups|permission-simulation)\.json"/,
+    );
+    expect(resources).not.toMatch(
+      /CORS_(?:BEFORE|INTENDED|APPLIED)="\$EVIDENCE_DIR\//,
+    );
+    const preflightProcedure = resources.slice(
+      resources.indexOf('### Fixed names and preflight facts'),
+      resources.indexOf('Lovable is already confirmed'),
+    );
+    expect(preflightProcedure).toContain('globalForInstance');
+    expect(preflightProcedure).toContain('globalEniCorrespondence');
+    expect(preflightProcedure).not.toContain('instance?.SecurityGroups');
+    expect(existsSync(provisionerPath)).toBe(true);
+    expect(existsSync(statePath)).toBe(true);
+    expect(provisioner).toContain('collect_current');
+    expect(provisioner).toContain('mutate_one');
+    expect(provisioner).toContain('remote-edge: blocked');
+    expect(state).toContain('STAGE_TABLE');
+    expect(state).not.toContain('ACTION_BY_STAGE');
+    expect(state).not.toContain('NEXT_STAGE_BY_STAGE');
+    expect(state).toContain('PROVE_ALB_LOG_DELIVERY');
+    expect(provisioner).toContain('prove_alb_log_delivery');
+    expect(provisioner).toContain('wait_for_ssm_success');
+    expect(resources).not.toContain('LOVABLE_DNS_CONTROL_CONFIRMED');
+    expect(resources.includes('secretsmanager get-secret-value')).toBe(false);
+    for (const requiredFragment of [
+      'aws_file_uri()',
+      'cygpath -w -- "$path"',
+      '--secret-string "$(aws_file_uri "$SECRET_FILE")"',
+      '--policy-document "$(aws_file_uri "$UPDATED_POLICY")"',
+      '--cors-configuration "$(aws_file_uri "$CORS_INTENDED")"',
+    ]) {
+      expect(resources.includes(requiredFragment), requiredFragment).toBe(true);
+    }
+    expect(resources).not.toMatch(
+      /(?:--secret-string|--policy-document|--cors-configuration)\s+"file:\/\/\$/,
+    );
+    expect(
+      readiness.includes(
+        'REMOTE_ADMIN_MODE=1 REMOTE_TARGET_HEALTH_REQUIRED=0 REMOTE_ADMIN_LIFECYCLE_MODE=auto bash apps/server-pilot/deploy/launch-readiness.sh',
+      ),
+    ).toBe(true);
+    expect(runbook.includes('Gate A')).toBe(true);
+    expect(runbook.includes('ACM CNAME saved')).toBe(true);
+    expect(existsSync(companionPath)).toBe(true);
+    expect(existsSync(taskFourReportPath)).toBe(true);
+    const companion = existsSync(companionPath) ? readFileSync(companionPath, 'utf8') : '';
+    const taskFourReport = existsSync(taskFourReportPath)
+      ? readFileSync(taskFourReportPath, 'utf8')
+      : '';
+    expect(companion).toContain('nava.legacyhotels.co.za');
+    expect(companion).toContain('tun0:443');
+    expect(companion).toContain('nava-admin.trynava.io');
+    expect(companion).toContain(':8443');
+    expect(companion).toContain('must not include `aws:SourceAccount`');
+    expect(taskFourReport).toContain('must not include `aws:SourceAccount`');
+    const provisionerProcedure = resources.slice(
+      resources.indexOf('### Idempotent edge resources after Gate A'),
+      resources.indexOf('### Gate B and Task 5 handoff'),
+    );
+    expect(provisionerProcedure).toContain('PROVE_ALB_LOG_DELIVERY');
+    expect(provisionerProcedure).toContain('body-discarding');
+    expect(provisionerProcedure).toContain('only boolean');
+  });
+
+  it('documents live-readback resume for current final unattached security-group prefix', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const resources = readFileSync(join(here, '..', 'deploy', 'aws-resources.md'), 'utf8');
+    const provisioner = readFileSync(
+      join(here, '..', 'deploy', 'remote-edge-provisioner.sh'),
+      'utf8',
+    );
+    const state = readFileSync(
+      join(here, '..', 'deploy', 'remote-edge-state.mjs'),
+      'utf8',
+    );
+    const procedure = resources.slice(
+      resources.indexOf('### Idempotent edge resources after Gate A'),
+      resources.indexOf('### Gate B and Task 5 handoff'),
+    );
+
+    expect(procedure).toContain('SG_FINAL_UNATTACHED');
+    expect(procedure).toContain('ATTACH_TARGET_SECURITY_GROUP');
+    expect(provisioner).toContain('SG_FINAL_UNATTACHED)');
+    expect(state).toContain("stage: 'SG_FINAL_UNATTACHED'");
+    expect(state).toContain("action: 'ATTACH_TARGET_SECURITY_GROUP'");
+    expect(state).toContain("next: 'TARGET_SG_ATTACHED'");
+    expect(provisioner).not.toContain('--stage');
+    expect(provisioner).not.toContain('--facts');
+    expect(provisioner).not.toContain('--resume');
+  });
+
+  it('documents rejection of unknown and malformed remote edge partial states', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const resources = readFileSync(join(here, '..', 'deploy', 'aws-resources.md'), 'utf8');
+    const provisioner = readFileSync(
+      join(here, '..', 'deploy', 'remote-edge-provisioner.sh'),
+      'utf8',
+    );
+    const state = readFileSync(
+      join(here, '..', 'deploy', 'remote-edge-state.mjs'),
+      'utf8',
+    );
+    const procedure = resources.slice(
+      resources.indexOf('### Idempotent edge resources after Gate A'),
+      resources.indexOf('### Gate B and Task 5 handoff'),
+    );
+
+    expect(procedure).toContain('fails closed');
+    expect(procedure).toContain('duplicate names');
+    expect(procedure).not.toContain('transition_security_group_prefix_once');
+    expect(procedure).not.toContain('advance_remote_edge_once');
+    expect(provisioner).toContain('state_bridge "$scratch" result');
+    expect(provisioner).toContain('remote-edge: blocked');
+    expect(state).toContain('exactKeys');
+    expect(state).toContain('deriveFacts');
+    expect(state).toContain('classifyFacts');
+    expect(procedure).not.toContain('EDGE_REUSE_STATE');
+  });
+
+  it('documents one mutation and semantic readback for every remote edge prefix transition', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const provisioner = readFileSync(
+      join(here, '..', 'deploy', 'remote-edge-provisioner.sh'),
+      'utf8',
+    );
+    const state = readFileSync(
+      join(here, '..', 'deploy', 'remote-edge-state.mjs'),
+      'utf8',
+    );
+    const transitions = [
+      ['FRESH', 'ALB_SG_CREATED'],
+      ['ALB_SG_CREATED', 'SGS_CREATED'],
+      ['SGS_CREATED', 'ALB_INGRESS_READY'],
+      ['ALB_INGRESS_READY', 'ALB_EGRESS_REVOKED'],
+      ['ALB_EGRESS_REVOKED', 'ALB_EGRESS_READY'],
+      ['ALB_EGRESS_READY', 'SG_FINAL_UNATTACHED'],
+      ['SG_FINAL_UNATTACHED', 'TARGET_SG_ATTACHED'],
+      ['TARGET_SG_ATTACHED', 'TARGET_GROUP_CREATED'],
+      ['TARGET_GROUP_CREATED', 'TARGET_GROUP_READY'],
+      ['TARGET_GROUP_READY', 'ALB_CREATED'],
+      ['ALB_CREATED', 'LOG_BUCKET_CREATED'],
+      ['LOG_BUCKET_CREATED', 'LOG_BUCKET_PUBLIC_BLOCKED'],
+      ['LOG_BUCKET_PUBLIC_BLOCKED', 'LOG_BUCKET_OWNERSHIP_ENFORCED'],
+      ['LOG_BUCKET_OWNERSHIP_ENFORCED', 'LOG_BUCKET_ENCRYPTED'],
+      ['LOG_BUCKET_ENCRYPTED', 'LOG_BUCKET_LIFECYCLE_READY'],
+      ['LOG_BUCKET_LIFECYCLE_READY', 'LOG_BUCKET_POLICY_READY'],
+      ['LOG_BUCKET_POLICY_READY', 'ALB_LOGGING_READY'],
+      ['ALB_LOGGING_READY', 'WAF_CREATED'],
+      ['WAF_CREATED', 'WAF_ASSOCIATED'],
+      ['WAF_ASSOCIATED', 'LISTENER_FIXED_404'],
+      ['LISTENER_FIXED_404', 'UFW_SUBNET_A_READY'],
+      ['UFW_SUBNET_A_READY', 'UFW_READY'],
+      ['UFW_READY', 'TASK4_PRE_GATE_B_READY'],
+    ];
+
+    for (const [from, to] of transitions) {
+      expect(state, `${from} -> ${to}`).toMatch(
+        new RegExp(`stage: '${from}'[\\s\\S]{0,200}next: '${to}'`),
+      );
+    }
+    expect(provisioner).toContain('collect_current "$PRE_SCRATCH"');
+    expect(provisioner).toContain(
+      'PRE_STAGE="$(result_stage "$PRE_SCRATCH/result.json")" || die',
+    );
+    expect(provisioner).toContain('mutate_one "$PRE_STAGE" "$PRE_SCRATCH"');
+    expect(provisioner).toContain('collect_current "$POST_SCRATCH"');
+    expect(provisioner).toContain(
+      'POST_STAGE="$(result_stage "$POST_SCRATCH/result.json")" || die',
+    );
+    expect(provisioner).toContain('state.validatePostMutationStage(');
+    expect(provisioner).toMatch(
+      /REMOTE_EDGE_STAGE="\$PRE_STAGE" REMOTE_EDGE_POST_STAGE="\$POST_STAGE" \\\s+state_bridge "\$POST_SCRATCH" post/,
+    );
+    expect(provisioner).not.toContain('[[ "$POST_STAGE" == "$EXPECTED_NEXT" ]]');
+  });
+
+  it('documents no early public exposure across provisioning transitions', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const provisioner = readFileSync(
+      join(here, '..', 'deploy', 'remote-edge-provisioner.sh'),
+      'utf8',
+    );
+
+    expect(provisioner).not.toContain('register-targets');
+    expect(provisioner).not.toContain('create-rule');
+    expect(provisioner).not.toContain('route53');
+    expect(provisioner).not.toMatch(
+      /create-listener[\s\S]{0,400}--protocol HTTP\s+--port 80/,
+    );
+    expect(provisioner).toContain('--protocol HTTPS --port 443');
+    expect(provisioner).toContain('StatusCode=404');
+  });
+
   it('UFW collection accepts exactly one intended tunnel HTTPS allow', async () => {
     const exact = await runUfwCollection();
     expect(exact.status, exact.stderr).toBe(0);
@@ -2442,6 +3883,42 @@ describe('deploy config', () => {
         firewall: collected.facts!,
       });
       expect(report.checks.ufwTunnel443Only).toBe(false);
+    }
+  }, 60_000);
+
+  it('launch readiness collects TCP and UDP listeners for the private target boundary', async () => {
+    expect(await runListenerCollection()).toBe(true);
+
+    for (const [tcp, udp] of [
+      [
+        [
+          'LISTEN 0 511 0.0.0.0:443 0.0.0.0:*',
+          'LISTEN 0 511 127.0.0.1:8788 0.0.0.0:*',
+          'LISTEN 0 511 127.0.0.1:8789 0.0.0.0:*',
+          'LISTEN 0 511 0.0.0.0:8443 0.0.0.0:*',
+        ].join('\n'),
+        '',
+      ],
+      [
+        [
+          'LISTEN 0 511 0.0.0.0:443 0.0.0.0:*',
+          'LISTEN 0 511 127.0.0.1:8788 0.0.0.0:*',
+          'LISTEN 0 511 127.0.0.1:8789 0.0.0.0:*',
+          'LISTEN 0 511 [::]:8443 [::]:*',
+        ].join('\n'),
+        '',
+      ],
+      [
+        [
+          'LISTEN 0 511 0.0.0.0:443 0.0.0.0:*',
+          'LISTEN 0 511 127.0.0.1:8788 0.0.0.0:*',
+          'LISTEN 0 511 127.0.0.1:8789 0.0.0.0:*',
+          'LISTEN 0 511 172.31.12.112:8443 0.0.0.0:*',
+        ].join('\n'),
+        'UNCONN 0 0 172.31.12.112:8443 0.0.0.0:*',
+      ],
+    ] as const) {
+      expect(await runListenerCollection({ tcp, udp })).toBe(false);
     }
   });
 
@@ -2559,6 +4036,55 @@ describe('deploy config', () => {
       securityGroups: [{ id: SG_ONE, ingress: [] }],
     });
     expect(partial.checks.securityGroupIngressEmpty).toBe(false);
+  });
+
+  it('launch readiness enumerates every ENI and requires complete secondary-SG facts', async () => {
+    const withSecondaryEni = {
+      securityGroups: [{ GroupId: SG_ONE }],
+      networkInterfaces: [
+        {
+          id: 'eni-primary',
+          deviceIndex: 0,
+          securityGroups: [{ GroupId: SG_ONE }],
+          publicIpv4: null,
+          ipv6: [],
+        },
+        {
+          id: 'eni-secondary',
+          deviceIndex: 1,
+          securityGroups: [{ GroupId: SG_TWO }],
+          publicIpv4: null,
+          ipv6: [],
+        },
+      ],
+      publicIpv4: [],
+      ipv6: [],
+    };
+    const missingSecondary = await runLaunchReadinessReport({
+      instanceNetwork: withSecondaryEni,
+      securityGroups: [{ id: SG_ONE, ingress: [] }],
+    });
+    expect(missingSecondary.checks.securityGroupIngressEmpty).toBe(false);
+
+    const collected = await runAwsPerimeterCollection({
+      instanceNetwork: withSecondaryEni,
+      securityGroups: [
+        { id: SG_ONE, ingress: [] },
+        {
+          id: SG_TWO,
+          ingress: [
+            {
+              IpProtocol: 'tcp',
+              FromPort: 443,
+              ToPort: 443,
+              IpRanges: [{ CidrIp: '0.0.0.0/0' }],
+            },
+          ],
+        },
+      ],
+    });
+    expect(collected.securityGroupArgs).toContain(SG_TWO);
+    expect(collected.report?.checks.securityGroupIngressEmpty).toBe(false);
   });
 
   it('launch readiness rejects malformed or duplicate SG attachment/result records', async () => {
@@ -2843,6 +4369,16 @@ describe('deploy config', () => {
     const report = await runLaunchReadinessReport({
       instanceNetwork: {
         securityGroups: [{ GroupId: SG_ONE }],
+        networkInterfaces: [
+          {
+            id: 'eni-public-ipv6',
+            deviceIndex: 0,
+            securityGroups: [{ GroupId: SG_ONE }],
+            publicIpv4: null,
+            ipv6: ['2001:db8::1'],
+          },
+        ],
+        publicIpv4: [],
         ipv6: ['2001:db8::1'],
       },
       securityGroups: [{ id: SG_ONE, ingress: [] }],
@@ -3188,6 +4724,719 @@ describe('deploy config', () => {
       expect(casSh).toMatch(/run-source-registry-cas/);
       expect(casSh).toMatch(/exit 20/);
       expect(casSh).toMatch(/HMS_REGISTRY_CANDIDATE/);
+    });
+  });
+
+  describe('Task 2 remote HTTP lifecycle (DB-free)', () => {
+    it('defines isolated legacy and remote HTTP forks with fixed auth profiles', async () => {
+      const { readFileSync } = await import('node:fs');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const { resolveDatabasePoolMax } = await import('../src/lib/auth-profile.js');
+      const here = dirname(fileURLToPath(import.meta.url));
+      const pm2 = readFileSync(join(here, '..', 'deploy', 'pm2.config.cjs'), 'utf8');
+
+      expect(pm2).toMatch(
+        /name:\s*['"]http['"][\s\S]*?script:\s*['"]dist\/main\.js['"][\s\S]*?PORT:\s*['"]8788['"][\s\S]*?NAVA_AUTH_SESSION_PROFILE:\s*['"]legacy['"]/,
+      );
+      expect(pm2).toMatch(
+        /name:\s*['"]remote-http['"][\s\S]*?script:\s*['"]dist\/main\.js['"][\s\S]*?PORT:\s*['"]8789['"][\s\S]*?NAVA_AUTH_SESSION_PROFILE:\s*['"]remote['"]/,
+      );
+      expect(pm2).toMatch(
+        /name:\s*['"]remote-http['"][\s\S]*?instances:\s*1[\s\S]*?exec_mode:\s*['"]fork['"]/,
+      );
+      const remoteStart = pm2.indexOf("name: 'remote-http'");
+      const nextProcess = pm2.indexOf("name: 'worker'", remoteStart);
+      const remoteProcess = pm2.slice(remoteStart, nextProcess);
+      expect(remoteProcess).not.toContain('dist/mail/ingest/worker.js');
+      expect(remoteProcess).not.toContain('dist/ai/worker.js');
+      expect(resolveDatabasePoolMax('legacy')).toBe(10);
+      expect(resolveDatabasePoolMax('remote')).toBe(3);
+    });
+
+    it('allows remote HTTP to start without POP3 runtime values', async () => {
+      const { parseEnv } = await import('../src/env.js');
+
+      const env = parseEnv({
+        NODE_ENV: 'production',
+        PORT: '8789',
+        DATABASE_URL: 'postgres://example.invalid/zero',
+        BETTER_AUTH_URL: 'https://nava-admin.trynava.io',
+        BETTER_AUTH_SECRET: 'remote-signing-secret',
+        AWS_REGION: 'af-south-1',
+        S3_BUCKET: 'nava-test-bucket',
+      });
+
+      expect(env.POP3_POLL_INTERVAL_MS).toBe(30_000);
+      expect(env.POP3_MAX_MESSAGES_PER_CYCLE).toBe(500);
+    });
+
+    it('bootstraps remote env as ubuntu without root checkout execution', async () => {
+      const { readFileSync } = await import('node:fs');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const here = dirname(fileURLToPath(import.meta.url));
+      const deploy = join(here, '..', 'deploy');
+      const opsDeploy = readFileSync(join(deploy, 'ops-deploy.sh'), 'utf8');
+      const writer = readFileSync(join(deploy, 'write-ec2-remote-env.sh'), 'utf8');
+      const ubuntuGuard = writer.indexOf('write-ec2-remote-env.sh must run as ubuntu');
+      const modeDispatch = writer.indexOf('case "${1:-}" in');
+
+      expect(opsDeploy).toContain('bash apps/server-pilot/deploy/write-ec2-remote-env.sh;');
+      expect(opsDeploy).not.toContain(
+        'sudo -n bash apps/server-pilot/deploy/write-ec2-remote-env.sh;',
+      );
+      expect(ubuntuGuard).toBeGreaterThanOrEqual(0);
+      expect(ubuntuGuard).toBeLessThan(modeDispatch);
+      expect(writer).toMatch(
+        /if \[ "\$\(id -un\)" != "ubuntu" \]; then\s+echo "write-ec2-remote-env\.sh must run as ubuntu" >&2\s+exit 2\s+fi/,
+      );
+      expect(writer).not.toMatch(/\b(?:sudo|chown)\b/);
+      expect(writer).not.toMatch(/\binstall\s+-d\b/);
+    });
+
+    it('requires exact Ubuntu-owned 0600 legacy metadata before parsing', async () => {
+      const { readFileSync } = await import('node:fs');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const here = dirname(fileURLToPath(import.meta.url));
+      const writer = readFileSync(
+        join(here, '..', 'deploy', 'write-ec2-remote-env.sh'),
+        'utf8',
+      );
+      const legacyFileGuard = writer.indexOf('legacy runtime env missing or unsafe');
+      const legacyMetadataGuard = writer.indexOf(
+        'legacy runtime env must be ubuntu-owned mode 0600',
+      );
+      const parser = writer.indexOf('parse-ec2-legacy-env.mjs');
+
+      expect(writer).toMatch(
+        /if \[ ! -f "\$LEGACY_ENV_FILE" \] \|\| \[ -L "\$LEGACY_ENV_FILE" \]; then/,
+      );
+      expect(writer).toMatch(
+        /if \[ "\$\(stat -c '%a:%U:%G' "\$LEGACY_ENV_FILE"\)" != "600:ubuntu:ubuntu" \]; then/,
+      );
+      expect(legacyMetadataGuard).toBeGreaterThan(legacyFileGuard);
+      expect(parser).toBeGreaterThan(legacyMetadataGuard);
+    });
+
+    it('executes remote writer identity, metadata, and raw-secret gates', async () => {
+      const {
+        chmodSync,
+        existsSync,
+        mkdtempSync,
+        mkdirSync,
+        readFileSync,
+        rmSync,
+        writeFileSync,
+      } = await import('node:fs');
+      const { tmpdir } = await import('node:os');
+      const { delimiter, dirname, join } = await import('node:path');
+      const { fileURLToPath } = await import('node:url');
+      const here = dirname(fileURLToPath(import.meta.url));
+      const writer = join(here, '..', 'deploy', 'write-ec2-remote-env.sh');
+      const tempDir = mkdtempSync(join(tmpdir(), 'nava-remote-env-writer-test-'));
+      const repoRoot = join(tempDir, 'repo');
+      const serverPilot = join(repoRoot, 'apps', 'server-pilot');
+      const legacyEnv = join(serverPilot, '.env.production');
+      const stubDir = join(tempDir, 'bin');
+      const awsMarker = join(tempDir, 'aws-called');
+
+      try {
+        mkdirSync(serverPilot, { recursive: true });
+        mkdirSync(stubDir);
+        writeFileSync(
+          legacyEnv,
+          [
+            "NODE_ENV='production'",
+            "DATABASE_URL='postgres://example.invalid/zero'",
+            "AWS_REGION='af-south-1'",
+            "S3_BUCKET='nava-test-bucket'",
+            '',
+          ].join('\n'),
+          'utf8',
+        );
+
+        const idPath = join(stubDir, 'id');
+        writeFileSync(idPath, '#!/usr/bin/env bash\nprintf "%s\\n" "$FAKE_ID_USER"\n', 'utf8');
+        chmodSync(idPath, 0o755);
+
+        const statPath = join(stubDir, 'stat');
+        writeFileSync(
+          statPath,
+          `#!/usr/bin/env bash
+if [ "$3" = "$FAKE_LEGACY_ENV" ]; then
+  printf '%s\\n' "$FAKE_LEGACY_METADATA"
+else
+  printf '%s\\n' '600:ubuntu:ubuntu'
+fi
+`,
+          'utf8',
+        );
+        chmodSync(statPath, 0o755);
+
+        const awsPath = join(stubDir, 'aws');
+        writeFileSync(
+          awsPath,
+          `#!/usr/bin/env bash
+printf 'called\\n' >"$FAKE_AWS_MARKER"
+printf '%s' "$FAKE_AWS_SECRET_JSON"
+`,
+          'utf8',
+        );
+        chmodSync(awsPath, 0o755);
+
+        const runWriter = async ({
+          user = 'ubuntu',
+          metadata = '600:ubuntu:ubuntu',
+          secret = 'remote-signing-secret',
+        }: {
+          user?: string;
+          metadata?: string;
+          secret?: string;
+        } = {}) => {
+          rmSync(awsMarker, { force: true });
+          return runBash({
+            args: [toBashPath(writer)],
+            env: {
+              ...process.env,
+              PATH: `${toBashPath(stubDir)}${delimiter}${process.env.PATH ?? ''}`,
+              REPO_ROOT: toBashPath(repoRoot),
+              FAKE_ID_USER: user,
+              FAKE_LEGACY_ENV: toBashPath(legacyEnv),
+              FAKE_LEGACY_METADATA: metadata,
+              FAKE_AWS_MARKER: toBashPath(awsMarker),
+              FAKE_AWS_SECRET_JSON: JSON.stringify({ BETTER_AUTH_SECRET: secret }),
+            },
+          });
+        };
+
+        const root = await runWriter({ user: 'root' });
+        expect(root.status).toBe(2);
+        expect(root.stderr).toContain('must run as ubuntu');
+        expect(existsSync(awsMarker)).toBe(false);
+
+        const wrongMetadata = await runWriter({ metadata: '644:ubuntu:ubuntu' });
+        expect(wrongMetadata.status).toBe(2);
+        expect(wrongMetadata.stderr).toContain('must be ubuntu-owned mode 0600');
+        expect(existsSync(awsMarker)).toBe(false);
+
+        const valid = await runWriter();
+        expect(existsSync(awsMarker)).toBe(true);
+        if (process.platform === 'win32') {
+          // Windows temp volumes reject the production fsync syscall after every gate ran.
+          expect(valid.status).toBe(1);
+          expect(valid.stderr).toContain('fsync');
+        } else {
+          expect(valid.status, valid.stderr).toBe(0);
+          expect(readFileSync(join(serverPilot, '.env.remote-common'), 'utf8')).toContain(
+            "DATABASE_URL='postgres://example.invalid/zero'",
+          );
+        }
+
+        const rawNul = await runWriter({ secret: 'nonblank\0nul' });
+        expect(rawNul.status).toBe(2);
+        expect(rawNul.stderr).toContain('remote auth secret is missing or malformed');
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    }, 30_000);
+
+    it('treats the legacy runtime file as data, never shell input', async () => {
+      const { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = await import(
+        'node:fs'
+      );
+      const { spawnSync } = await import('node:child_process');
+      const { tmpdir } = await import('node:os');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const here = dirname(fileURLToPath(import.meta.url));
+      const deploy = join(here, '..', 'deploy');
+      const writer = readFileSync(join(deploy, 'write-ec2-remote-env.sh'), 'utf8');
+      const parser = join(deploy, 'parse-ec2-legacy-env.mjs');
+
+      expect(writer).not.toMatch(/^\s*(?:source|\.)\s+"\$LEGACY_ENV_FILE"/m);
+      expect(existsSync(parser)).toBe(true);
+
+      const tempDir = mkdtempSync(join(tmpdir(), 'nava-legacy-env-parser-test-'));
+      const legacyEnv = join(tempDir, '.env.production');
+      const remoteCommon = join(tempDir, '.env.remote-common');
+      const marker = join(tempDir, 'legacy-shell-ran');
+      try {
+        writeFileSync(
+          legacyEnv,
+          [
+            "NODE_ENV='production'",
+            "DATABASE_URL='postgres://example.invalid/zero'",
+            "AWS_REGION='af-south-1'",
+            "S3_BUCKET='nava-test-bucket'",
+            `touch ${JSON.stringify(marker)}`,
+            '',
+          ].join('\n'),
+          'utf8',
+        );
+        writeFileSync(remoteCommon, 'untouched\n', 'utf8');
+
+        const result = spawnSync(
+          process.execPath,
+          [parser, legacyEnv, remoteCommon, 'DATABASE_URL', 'AWS_REGION', 'S3_BUCKET'],
+          { encoding: 'utf8' },
+        );
+
+        expect(result.status).toBe(2);
+        expect(result.stdout).toBe('');
+        expect(result.stderr).toContain('legacy runtime env malformed');
+        expect(existsSync(marker)).toBe(false);
+        expect(readFileSync(remoteCommon, 'utf8')).toBe('untouched\n');
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('renders quoted allowlisted legacy values without remote forbidden credentials', async () => {
+      const { mkdtempSync, readFileSync, rmSync, writeFileSync } = await import('node:fs');
+      const { spawnSync } = await import('node:child_process');
+      const { tmpdir } = await import('node:os');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const here = dirname(fileURLToPath(import.meta.url));
+      const parser = join(here, '..', 'deploy', 'parse-ec2-legacy-env.mjs');
+      const tempDir = mkdtempSync(join(tmpdir(), 'nava-legacy-env-parser-test-'));
+      const legacyEnv = join(tempDir, '.env.production');
+      const remoteCommon = join(tempDir, '.env.remote-common');
+
+      try {
+        writeFileSync(
+          legacyEnv,
+          [
+            "NODE_ENV='production'",
+            "DATABASE_URL='postgres://example.invalid/zero'",
+            "AWS_REGION='af-south-1'",
+            "S3_BUCKET='nava-test-bucket'",
+            "MAIL_TRANSPORT_MODE='real'",
+            "AI_MODEL_ID='model'\\''s'",
+            "BETTER_AUTH_SECRET='legacy-signing-secret'",
+            "POP3_PASSWORD='legacy-pop3-password'",
+            "HMS_READ_SECRET_ARN='arn:aws:secretsmanager:example'",
+            "GOOGLE_CLIENT_SECRET='legacy-google-secret'",
+            '',
+          ].join('\n'),
+          'utf8',
+        );
+
+        const result = spawnSync(
+          process.execPath,
+          [
+            parser,
+            legacyEnv,
+            remoteCommon,
+            'DATABASE_URL',
+            'AWS_REGION',
+            'S3_BUCKET',
+            'MAIL_TRANSPORT_MODE',
+            'AI_MODEL_ID',
+          ],
+          { encoding: 'utf8' },
+        );
+
+        expect(result.status).toBe(0);
+        expect(result.stdout).toBe('');
+        expect(result.stderr).toBe('');
+        const common = readFileSync(remoteCommon, 'utf8');
+        expect(common).toBe(
+          [
+            "NODE_ENV='production'",
+            "DATABASE_URL='postgres://example.invalid/zero'",
+            "AWS_REGION='af-south-1'",
+            "S3_BUCKET='nava-test-bucket'",
+            "MAIL_TRANSPORT_MODE='real'",
+            "AI_MODEL_ID='model'\\''s'",
+            '',
+          ].join('\n'),
+        );
+        expect(common).not.toContain('BETTER_AUTH_SECRET');
+        expect(common).not.toContain('POP3_PASSWORD');
+        expect(common).not.toContain('HMS_READ_SECRET_ARN');
+        expect(common).not.toContain('GOOGLE_CLIENT_SECRET');
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('accepts safe unquoted legacy tokens without evaluating them', async () => {
+      const { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = await import(
+        'node:fs'
+      );
+      const { spawnSync } = await import('node:child_process');
+      const { tmpdir } = await import('node:os');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const here = dirname(fileURLToPath(import.meta.url));
+      const parser = join(here, '..', 'deploy', 'parse-ec2-legacy-env.mjs');
+      const tempDir = mkdtempSync(join(tmpdir(), 'nava-legacy-env-parser-test-'));
+      const legacyEnv = join(tempDir, '.env.production');
+      const remoteCommon = join(tempDir, '.env.remote-common');
+      const marker = join(tempDir, 'legacy-shell-ran');
+
+      try {
+        writeFileSync(
+          legacyEnv,
+          [
+            "NODE_ENV='production'",
+            "DATABASE_URL='postgres://example.invalid/zero'",
+            "AWS_REGION='af-south-1'",
+            "S3_BUCKET='nava-test-bucket'",
+            'HMS_READ_SECRET_ARN=arn:aws:secretsmanager:af-south-1:123456789012:secret:test',
+            'NAVA_BUILD_COMMIT=0123456789abcdef0123456789abcdef01234567',
+            '',
+          ].join('\n'),
+          'utf8',
+        );
+
+        const safe = spawnSync(
+          process.execPath,
+          [parser, legacyEnv, remoteCommon, 'DATABASE_URL', 'AWS_REGION', 'S3_BUCKET', 'NAVA_BUILD_COMMIT'],
+          { encoding: 'utf8' },
+        );
+        expect(safe.status, safe.stderr).toBe(0);
+        expect(readFileSync(remoteCommon, 'utf8')).toContain(
+          "NAVA_BUILD_COMMIT='0123456789abcdef0123456789abcdef01234567'",
+        );
+        expect(readFileSync(remoteCommon, 'utf8')).not.toContain('HMS_READ_SECRET_ARN');
+
+        writeFileSync(
+          legacyEnv,
+          [
+            "NODE_ENV='production'",
+            "DATABASE_URL='postgres://example.invalid/zero'",
+            "AWS_REGION='af-south-1'",
+            "S3_BUCKET='nava-test-bucket'",
+            'NAVA_BUILD_COMMIT=$(touch legacy-shell-ran)',
+            '',
+          ].join('\n'),
+          'utf8',
+        );
+        const unsafe = spawnSync(
+          process.execPath,
+          [parser, legacyEnv, remoteCommon, 'DATABASE_URL', 'AWS_REGION', 'S3_BUCKET', 'NAVA_BUILD_COMMIT'],
+          { cwd: tempDir, encoding: 'utf8' },
+        );
+        expect(unsafe.status).toBe(2);
+        expect(unsafe.stderr).toContain('legacy runtime env malformed');
+        expect(existsSync(marker)).toBe(false);
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('writes only explicitly allowlisted remote HTTP environment files', async () => {
+      const { existsSync, readFileSync } = await import('node:fs');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const here = dirname(fileURLToPath(import.meta.url));
+      const path = join(here, '..', 'deploy', 'write-ec2-remote-env.sh');
+
+      expect(existsSync(path)).toBe(true);
+      const writer = readFileSync(path, 'utf8');
+      expect(writer).toContain('.env.remote-common');
+      expect(writer).toContain('.env.remote-admin');
+      expect(writer).toContain('REMOTE_AUTH_SECRET_NAME:=nava-zero/server-pilot/remote-auth');
+      expect(writer).toContain('REMOTE_AUTH_URL:=https://nava-admin.trynava.io');
+      expect(writer).toContain('REMOTE_COMMON_ALLOWLIST=(');
+      expect(writer).toContain('--validate');
+      expect(writer).toContain('validate_remote_env_files');
+      expect(writer).toContain('DATABASE_URL');
+      expect(writer).toContain('S3_BUCKET');
+      expect(writer).toContain('SMTP_HOST');
+      expect(writer).toContain('AI_ENABLED');
+      const allowlist = writer.match(/REMOTE_COMMON_ALLOWLIST=\(\r?\n([\s\S]*?)\r?\n\)/)?.[1];
+      expect(allowlist).toBeTruthy();
+      expect(allowlist).not.toContain('BETTER_AUTH_');
+      expect(allowlist).not.toContain('POP3_');
+      expect(allowlist).not.toContain('HMS_');
+      expect(allowlist).not.toContain('GOOGLE_');
+      expect(writer).toContain('const parsed = JSON.parse(data);');
+      expect(writer).toContain('process.stdout.write(parsed.BETTER_AUTH_SECRET)');
+      expect(writer).toMatch(/Object\.keys\(parsed\).*BETTER_AUTH_SECRET/);
+      expect(writer).toMatch(/chmod 600 "\$REMOTE_COMMON_TMP"/);
+      expect(writer).toMatch(/chmod 600 "\$REMOTE_ADMIN_TMP"/);
+      expect(writer).not.toMatch(/echo[^\n]*BETTER_AUTH_SECRET/);
+      expect(writer).not.toMatch(/source[^\n]*\.env\.remote/);
+    });
+
+    it('rejects blank or control-character dedicated remote auth JSON secrets', async () => {
+      const { readFileSync } = await import('node:fs');
+      const { spawnSync } = await import('node:child_process');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const here = dirname(fileURLToPath(import.meta.url));
+      const writer = readFileSync(
+        join(here, '..', 'deploy', 'write-ec2-remote-env.sh'),
+        'utf8',
+      ).replaceAll('\r\n', '\n');
+      const parser = writer.match(/\|\s*node -e '\n([\s\S]*?)\n'\n\)/)?.[1];
+
+      expect(parser).toBeTruthy();
+      for (const secret of [
+        ' ',
+        '\t',
+        ' \t ',
+        'nonblank\nnewline',
+        'nonblank\rcarriage-return',
+        'nonblank\0nul',
+      ]) {
+        const result = spawnSync(process.execPath, ['-e', parser!], {
+          input: JSON.stringify({ BETTER_AUTH_SECRET: secret }),
+          encoding: 'utf8',
+        });
+        expect(result.status, `dedicated JSON accepted ${JSON.stringify(secret)}`).toBe(2);
+        expect(result.stdout).toBe('');
+      }
+    });
+
+    it('rejects blank or control-character remote admin values during --validate', async () => {
+      const { mkdtempSync, readFileSync, rmSync, writeFileSync } = await import('node:fs');
+      const { spawnSync } = await import('node:child_process');
+      const { tmpdir } = await import('node:os');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const here = dirname(fileURLToPath(import.meta.url));
+      const writer = readFileSync(
+        join(here, '..', 'deploy', 'write-ec2-remote-env.sh'),
+        'utf8',
+      ).replaceAll('\r\n', '\n');
+      const start = 'node - "$path" "$kind" <<\'NODE\'\n';
+      const validatorStart = writer.indexOf(start);
+      const validatorEnd = writer.indexOf('\nNODE\n}', validatorStart);
+      const validator =
+        validatorStart < 0 || validatorEnd < 0
+          ? null
+          : writer.slice(validatorStart + start.length, validatorEnd);
+
+      expect(validator).toBeTruthy();
+      const tempDir = mkdtempSync(join(tmpdir(), 'nava-remote-auth-validate-test-'));
+      const adminEnv = join(tempDir, '.env.remote-admin');
+      try {
+        for (const secret of [
+          ' ',
+          '\t',
+          ' \t ',
+          'nonblank\rcarriage-return',
+          'nonblank\0nul',
+        ]) {
+          writeFileSync(
+            adminEnv,
+            [
+              "BETTER_AUTH_URL='https://nava-admin.trynava.io'",
+              `BETTER_AUTH_SECRET='${secret}'`,
+              '',
+            ].join('\n'),
+            'utf8',
+          );
+          const result = spawnSync(process.execPath, ['-', adminEnv, 'admin'], {
+            input: validator!,
+            encoding: 'utf8',
+          });
+          expect(result.status, `--validate accepted ${JSON.stringify(secret)}`).toBe(2);
+          expect(result.stderr).toContain('remote env malformed');
+        }
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('decodes required remote-common values during --validate', async () => {
+      const { mkdtempSync, readFileSync, rmSync, writeFileSync } = await import('node:fs');
+      const { spawnSync } = await import('node:child_process');
+      const { tmpdir } = await import('node:os');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const here = dirname(fileURLToPath(import.meta.url));
+      const writer = readFileSync(
+        join(here, '..', 'deploy', 'write-ec2-remote-env.sh'),
+        'utf8',
+      ).replaceAll('\r\n', '\n');
+      const start = 'node - "$path" "$kind" <<\'NODE\'\n';
+      const validatorStart = writer.indexOf(start);
+      const validatorEnd = writer.indexOf('\nNODE\n}', validatorStart);
+      const validator =
+        validatorStart < 0 || validatorEnd < 0
+          ? null
+          : writer.slice(validatorStart + start.length, validatorEnd);
+
+      expect(validator).toBeTruthy();
+      const tempDir = mkdtempSync(join(tmpdir(), 'nava-remote-common-validate-test-'));
+      const commonEnv = join(tempDir, '.env.remote-common');
+      const valid = [
+        "NODE_ENV='production'",
+        "DATABASE_URL='postgres://example.invalid/zero'",
+        "AWS_REGION='af-south-1'",
+        "S3_BUCKET='nava-test-bucket'",
+        '',
+      ].join('\n');
+      try {
+        writeFileSync(commonEnv, valid, 'utf8');
+        const validResult = spawnSync(process.execPath, ['-', commonEnv, 'common'], {
+          input: validator!,
+          encoding: 'utf8',
+        });
+        expect(validResult.status).toBe(0);
+
+        for (const [label, replacement] of [
+          ['blank DATABASE_URL', "DATABASE_URL=' \t '"],
+          ['blank AWS_REGION', "AWS_REGION='\t'"],
+          ['blank S3_BUCKET', "S3_BUCKET='  '"],
+          ['incorrect NODE_ENV', "NODE_ENV='staging'"],
+          ['padded NODE_ENV', "NODE_ENV=' production '"],
+        ] as const) {
+          const lines = valid
+            .split('\n')
+            .map((line) =>
+              line.startsWith(replacement.slice(0, replacement.indexOf('=')))
+                ? replacement
+                : line,
+            );
+          writeFileSync(commonEnv, lines.join('\n'), 'utf8');
+          const result = spawnSync(process.execPath, ['-', commonEnv, 'common'], {
+            input: validator!,
+            encoding: 'utf8',
+          });
+          expect(result.status, `--validate accepted ${label}`).toBe(2);
+          expect(result.stderr).toContain('remote env malformed');
+        }
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('validates remote files before PM2 mutation and isolates remote startup', async () => {
+      const { readFileSync } = await import('node:fs');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const here = dirname(fileURLToPath(import.meta.url));
+      const deploy = join(here, '..', 'deploy');
+
+      for (const file of ['deploy-ec2.sh', 'ops-restart.sh', 'pm2-boot.sh']) {
+        const source = readFileSync(join(deploy, file), 'utf8');
+        const validation = source.lastIndexOf('validate_remote_env_files');
+        const lifecycle = source.slice(validation);
+        const firstPm2Mutation = lifecycle.search(/\bpm2\s+(?:delete|start|save)\b/);
+        expect(validation, `${file} remote validation`).toBeGreaterThanOrEqual(0);
+        expect(firstPm2Mutation, `${file} PM2 mutation`).toBeGreaterThanOrEqual(0);
+        expect(firstPm2Mutation, `${file} validates before PM2`).toBeGreaterThan(0);
+        expect(source).toContain('.env.remote-common');
+        expect(source).toContain('.env.remote-admin');
+        expect(source).toContain('start_remote_http');
+
+        const remoteStart = source.match(
+          /start_remote_http\(\)\s*\{([\s\S]*?)^\}/m,
+        )?.[1];
+        expect(remoteStart, `${file} remote startup body`).toBeTruthy();
+        expect(remoteStart).toContain('env -i');
+        expect(remoteStart).toContain('source "$REMOTE_COMMON_ENV"');
+        expect(remoteStart).toContain('source "$REMOTE_ADMIN_ENV"');
+        expect(remoteStart).not.toContain('.env.production');
+        expect(remoteStart).toContain('--only remote-http');
+      }
+    });
+
+    it('keeps normal deploy, restart, and boot remote-aware without starting HMS', async () => {
+      const { readFileSync } = await import('node:fs');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const here = dirname(fileURLToPath(import.meta.url));
+      const deploy = join(here, '..', 'deploy');
+
+      for (const file of ['deploy-ec2.sh', 'ops-restart.sh', 'pm2-boot.sh']) {
+        const source = readFileSync(join(deploy, file), 'utf8');
+        expect(source, file).toMatch(/start_remote_http[\s\S]*--only remote-http/);
+        expect(source, file).not.toMatch(/--only hms-ai-worker/);
+      }
+
+      const reboot = readFileSync(join(deploy, 'ops-reboot.sh'), 'utf8');
+      expect(reboot).toContain('pm2-boot.sh');
+      expect(reboot.indexOf('pm2-boot.sh')).toBeLessThan(
+        reboot.lastIndexOf('post-boot-smoke.sh'),
+      );
+
+      const smoke = readFileSync(join(deploy, 'post-boot-smoke.sh'), 'utf8');
+      expect(smoke).toContain('127.0.0.1:8788/health');
+      expect(smoke).toContain('127.0.0.1:8789/health');
+      expect(smoke).toContain('remote-http');
+      expect(insecureCurlCommands(smoke)).toEqual([]);
+    });
+
+    it('reasserts raw HTTP loopback-only listeners after reboot', async () => {
+      const { readFileSync } = await import('node:fs');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const here = dirname(fileURLToPath(import.meta.url));
+      const deploy = join(here, '..', 'deploy');
+      const boot = readFileSync(join(deploy, 'pm2-boot.sh'), 'utf8');
+      const smoke = readFileSync(join(deploy, 'post-boot-smoke.sh'), 'utf8');
+
+      for (const [file, source] of [
+        ['pm2-boot.sh', boot],
+        ['post-boot-smoke.sh', smoke],
+      ] as const) {
+        const assertionStart = source.indexOf('assert_http_loopback_only() {');
+        expect(assertionStart, `${file} listener assertion`).toBeGreaterThanOrEqual(0);
+        const assertion = source.slice(assertionStart);
+        expect(assertion, file).toContain("ss -ltnH '( sport = :8788 or sport = :8789 )'");
+        expect(assertion, file).toContain('for (const port of [8788,8789]) {');
+        expect(assertion, file).toContain('line.split(/\\s+/)[3]===`127.0.0.1:${port}`');
+        expect(assertion, file).toContain(
+          '!/127\\.0\\.0\\.1:(8788|8789)\\b/.test(line)',
+        );
+      }
+
+      expect(boot.lastIndexOf('assert_http_loopback_with_retry')).toBeGreaterThan(
+        boot.lastIndexOf('start_remote_http'),
+      );
+      expect(boot).toContain('raw HTTP processes must listen only on 127.0.0.1');
+      expect(smoke.lastIndexOf('assert_http_loopback_only')).toBeGreaterThan(
+        smoke.indexOf('127.0.0.1:8789/health'),
+      );
+      expect(smoke).toContain('raw HTTP processes must listen only on 127.0.0.1');
+    });
+
+    it('refuses root before boot can source the legacy runtime environment', async () => {
+      const { readFileSync } = await import('node:fs');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const here = dirname(fileURLToPath(import.meta.url));
+      const boot = readFileSync(join(here, '..', 'deploy', 'pm2-boot.sh'), 'utf8');
+      const rootGuard = boot.indexOf('pm2-boot.sh must run as ubuntu');
+      const legacySource = boot.indexOf('source "$ENV_FILE"');
+
+      expect(rootGuard).toBeGreaterThanOrEqual(0);
+      expect(legacySource).toBeGreaterThan(rootGuard);
+      expect(boot).toMatch(
+        /if \[ "\$\(id -u\)" -eq 0 \]; then\s+echo "pm2-boot\.sh must run as ubuntu" >&2\s+exit 2\s+fi/,
+      );
+    });
+
+    it('uses a bounded loopback-listener retry after PM2 boot', async () => {
+      const { readFileSync } = await import('node:fs');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const here = dirname(fileURLToPath(import.meta.url));
+      const boot = readFileSync(join(here, '..', 'deploy', 'pm2-boot.sh'), 'utf8').replaceAll(
+        '\r\n',
+        '\n',
+      );
+      const retryStart = boot.indexOf('assert_http_loopback_with_retry() {');
+      const retryEnd = boot.indexOf('\n}\n', retryStart);
+      const retry = retryStart < 0 || retryEnd < 0 ? null : boot.slice(retryStart, retryEnd);
+
+      expect(retry).toBeTruthy();
+      expect(retry).toContain('for attempt in 1 2 3 4 5; do');
+      expect(retry).toContain('assert_http_loopback_only && return 0');
+      expect(retry).toMatch(/\bsleep\s+1\b/);
+      expect(retry).toContain('return 1');
+      expect(boot).toMatch(
+        /start_legacy_processes\s*\nstart_remote_http\s*\nassert_http_loopback_with_retry\s+\|\|/,
+      );
     });
   });
 });

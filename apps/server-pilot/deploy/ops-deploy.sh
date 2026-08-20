@@ -30,6 +30,17 @@ bash "${SCRIPT_DIR}/sync-ec2-git-bundle.sh"
 
 REMOTE_NVM='export NVM_DIR=/home/ubuntu/.nvm; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"; export PATH="$HOME/.local/share/pnpm:$PATH"'
 
+if [ "$QUIESCED" != "1" ]; then
+  echo "== ops-deploy: bootstrap isolated remote env when absent =="
+  bash "${SCRIPT_DIR}/ssm-run-command.sh" \
+    "${REMOTE_NVM}; cd /home/ubuntu/repos/zero && \
+      if [ ! -e apps/server-pilot/.env.remote-common ] && [ ! -e apps/server-pilot/.env.remote-admin ]; then \
+        bash apps/server-pilot/deploy/write-ec2-remote-env.sh; \
+      elif [ ! -f apps/server-pilot/.env.remote-common ] || [ ! -f apps/server-pilot/.env.remote-admin ]; then \
+        echo 'remote HTTP env files must both exist or both be bootstrapped' >&2; exit 20; \
+      fi"
+fi
+
 if [ "$DO_MIGRATE" -eq 1 ]; then
   echo "== ops-deploy: migrate =="
   bash "${SCRIPT_DIR}/ssm-run-command.sh" \
@@ -49,7 +60,10 @@ if [ "$QUIESCED" != "1" ]; then
 
   echo "== ops-deploy: health =="
   bash "${SCRIPT_DIR}/ssm-run-command.sh" \
-    'curl -fsS http://127.0.0.1:8788/health'
+    'curl -fsS http://127.0.0.1:8788/health && curl -fsS http://127.0.0.1:8789/health && curl --disable --noproxy "*" -fsS --connect-to "nava-admin.trynava.io:8443:172.31.12.112:8443" -H "Host: nava-admin.trynava.io" "http://nava-admin.trynava.io:8443/" >/dev/null'
+
+  echo "== ops-deploy: remote-admin lifecycle readiness =="
+  REMOTE_ADMIN_MODE=1 REMOTE_TARGET_HEALTH_REQUIRED=0 REMOTE_ADMIN_LIFECYCLE_MODE=auto bash "${SCRIPT_DIR}/launch-readiness.sh"
 fi
 
 echo "== ops-deploy: VPN HARD assert =="

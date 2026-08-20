@@ -9,6 +9,32 @@
 - Staff must close the old tab, finish pending draft/send work, open the canonical bookmark, and log in again. Browser-origin state does not migrate.
 - Direct attachments use five-minute presigned S3 URLs. S3 Block Public Access remains fully enabled.
 
+## Remote admin ALB gates
+
+Remote admin is companion plane only: `https://nava-admin.trynava.io` uses public ALB TLS `:443`, then target HTTP `:8443` to the isolated `remote-http` loopback process. It does not change legacy `https://nava.legacyhotels.co.za`, its internal DNS, zero legacy SG ingress, or exact `tun0:443` UFW rule.
+
+1. Run read-only preflight in `apps/server-pilot/deploy/aws-resources.md`. Stop if account `845242190536`, `af-south-1`, VPC `vpc-0f078e17a5f0f8599`, instance `i-008f737974a9ba9b3`, fixed target private IP, ALB subnets, existing target ingress, or required permissions do not match. Lovable DNS edit authority is already confirmed.
+2. Request only the ACM certificate for `nava-admin.trynava.io`; record certificate ARN and ACM validation CNAME in sanitized evidence. This is Gate A. Do not create secret, ALB, listener, target group, security group, WAF, bucket, CORS update, target registration, host rule, DNS record, or EC2/UFW change before approval.
+3. Operator saves ACM CNAME, then replies **“ACM CNAME saved”**. Poll certificate issuance for no more than 45 minutes. If it does not become `ISSUED`, record evidence and stop.
+4. After issuance, use idempotent provision steps in `aws-resources.md`. ALB listener must default to fixed `404`; do not register target or add priority-10 host-forward rule before Task 5 remote readiness is green.
+5. Gate B starts only after ALB DNS exists. Operator saves `nava-admin.trynava.io` CNAME, then replies **“nava-admin CNAME saved”**. Poll DNS no more than 45 minutes. Only after it settles may operator apply additive S3 GET/HEAD CORS through documented read-before-write, semantic-readback, and compare-before-rollback procedure.
+
+Normal deploy runs remote pre-registration readiness after loopback and Nginx health:
+
+```bash
+bash apps/server-pilot/deploy/ops-deploy.sh
+```
+
+It invokes:
+
+```bash
+cd /home/ubuntu/repos/zero && \
+  REMOTE_ADMIN_MODE=1 REMOTE_TARGET_HEALTH_REQUIRED=0 \
+  bash apps/server-pilot/deploy/launch-readiness.sh
+```
+
+Treat any remote readiness failure as a stop. Both remote modes retain `vpn-health-assert.sh`; a default route through `tun0` is a hard failure.
+
 ## Cutover gates
 
 1. Ronny's completion email is accepted as the network configuration handoff; runtime address and LAN/VPN checks still must pass.

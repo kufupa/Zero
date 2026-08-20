@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Post-boot / post-deploy health: nginx, :8788, :443, pm2 http online.
+# Post-boot / post-deploy health: nginx, both loopback HTTP processes, :443.
 set -euo pipefail
 
 LOG="${NAVA_POST_BOOT_SMOKE_LOG:-/var/log/nava-post-boot-smoke.log}"
@@ -47,6 +47,21 @@ case "$BETTER_AUTH_URL" in
 esac
 BETTER_AUTH_URL="$CANONICAL_ORIGIN"
 PUBLIC_HOST="${CANONICAL_ORIGIN#https://}"
+REMOTE_ADMIN_HOST="nava-admin.trynava.io"
+REMOTE_ALB_TARGET_PRIVATE_IP="172.31.12.112"
+
+assert_http_loopback_only() {
+  local listeners
+  listeners="$(ss -ltnH '( sport = :8788 or sport = :8789 )')" || return 1
+  HTTP_LISTENERS="$listeners" node -e '
+const lines=(process.env.HTTP_LISTENERS||"").trim().split(/\n/).filter(Boolean);
+for (const port of [8788,8789]) {
+  const matches=lines.filter((line)=>line.split(/\s+/)[3]===`127.0.0.1:${port}`);
+  if (matches.length !== 1) process.exit(1);
+}
+if (lines.some((line)=>!/127\.0\.0\.1:(8788|8789)\b/.test(line))) process.exit(1);
+'
+}
 
 attempt=1
 while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
@@ -63,33 +78,56 @@ while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
     ok=0
   fi
 
-  # Prefer /health on :443; fall back to root (SPA may not expose /health)
+  if ! curl --disable --noproxy '*' -fsS \
+    "http://127.0.0.1:8789/health" >/dev/null; then
+    log "attempt ${attempt}: :8789/health failed"
+    ok=0
+  fi
+
+  if ! assert_http_loopback_only; then
+    log "attempt ${attempt}: raw HTTP processes must listen only on 127.0.0.1"
+    ok=0
+  fi
+
+  # Prefer legacy TLS /health; fall back to its SPA root.
   if ! curl --disable --noproxy '*' -fsS \
     --resolve "${PUBLIC_HOST}:443:127.0.0.1" \
-    "${BETTER_AUTH_URL%/}/health" >/dev/null 2>&1 \
+    "${CANONICAL_ORIGIN}/health" >/dev/null 2>&1 \
     && ! curl --disable --noproxy '*' -fsS \
     --resolve "${PUBLIC_HOST}:443:127.0.0.1" \
-    "${BETTER_AUTH_URL%/}/" >/dev/null 2>&1; then
-    log "attempt ${attempt}: trusted :443 probe failed"
+    "${CANONICAL_ORIGIN}/" >/dev/null 2>&1; then
+    log "attempt ${attempt}: trusted TLS vhost probe failed for ${CANONICAL_ORIGIN}"
+    ok=0
+  fi
+
+  # Private target-vhost smoke only. --connect-to pins ens5 and never probes ALB.
+  if ! curl --disable --noproxy '*' -fsS \
+    --connect-to "${REMOTE_ADMIN_HOST}:8443:${REMOTE_ALB_TARGET_PRIVATE_IP}:8443" \
+    -H "Host: ${REMOTE_ADMIN_HOST}" \
+    "http://${REMOTE_ADMIN_HOST}:8443/" >/dev/null; then
+    log "attempt ${attempt}: remote :8443 vhost smoke failed"
     ok=0
   fi
 
   if command -v pm2 >/dev/null 2>&1; then
-    if ! pm2 jlist 2>/dev/null | grep -q '"name":"http"'; then
-      log "attempt ${attempt}: pm2 http missing"
-      ok=0
-    elif ! pm2 jlist 2>/dev/null | node -e '
+    for process_name in http remote-http; do
+      if ! pm2 jlist 2>/dev/null | grep -q "\"name\":\"${process_name}\""; then
+        log "attempt ${attempt}: pm2 ${process_name} missing"
+        ok=0
+      elif ! pm2 jlist 2>/dev/null | PM2_PROCESS_NAME="$process_name" node -e '
       let s=""; process.stdin.on("data",d=>s+=d); process.stdin.on("end",()=>{
         try {
           const apps=JSON.parse(s);
-          const http=apps.find(a=>a.name==="http");
-          if (!http || http.pm2_env?.status!=="online") process.exit(1);
+          const name=process.env.PM2_PROCESS_NAME;
+          const app=apps.find(a=>a.name===name);
+          if (!app || app.pm2_env?.status!=="online") process.exit(1);
         } catch { process.exit(1); }
       });
     '; then
-      log "attempt ${attempt}: pm2 http not online"
-      ok=0
-    fi
+        log "attempt ${attempt}: pm2 ${process_name} not online"
+        ok=0
+      fi
+    done
     # Conditional HMS check: hms-ai-worker must stay off after boot.
     # Sole starter = ops-hms-shadow.sh. Stale proofs invalidated by pm2-boot.
     if pm2 jlist 2>/dev/null | grep -q '"name":"hms-ai-worker"'; then
@@ -122,7 +160,7 @@ while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
   fi
 
   if [ "$ok" -eq 1 ]; then
-    log "PASS: nginx + :8788 + :443 + pm2 http online + VPN_HARD_OK"
+    log "PASS: nginx + :8788 + :8789 + legacy :443 + remote :8443 + pm2 HTTP processes online + VPN_HARD_OK"
     exit 0
   fi
 

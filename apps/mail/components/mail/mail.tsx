@@ -429,7 +429,7 @@ export function MailLayout() {
         // 2. Create a draft with these values
         // 3. Redirect to the compose page with just the draft ID
         // This ensures we don't keep the email content in the URL
-        navigator.registerProtocolHandler('mailto', `/api/mailto-handler?mailto=%s`);
+        navigator.registerProtocolHandler('mailto', `/mailto-handler?mailto=%s`);
       } catch (error) {
         console.error('Failed to register protocol handler:', error);
       }

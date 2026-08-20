@@ -1,30 +1,32 @@
 import { describe, expect, it } from 'vitest';
-import { resolvePilotTrustedOrigins } from '../src/lib/auth';
+import { resolveAuthProfilePolicy } from '../src/lib/auth-profile';
 
 const CANONICAL_ORIGIN = 'https://nava.legacyhotels.co.za';
-const LEGACY_ORIGIN = 'https://nava.legacy.local';
+const REMOTE_ORIGIN = 'https://admin.legacyhotels.co.za';
 
-describe('resolvePilotTrustedOrigins', () => {
-  it('derives the production origin from BETTER_AUTH_URL', () => {
-    const origins = resolvePilotTrustedOrigins({
+describe('auth profile trusted origins', () => {
+  it('keeps legacy origin isolated from remote plane', () => {
+    const policy = resolveAuthProfilePolicy({
       BETTER_AUTH_URL: `${CANONICAL_ORIGIN}/`,
     });
 
-    expect(origins).toContain(CANONICAL_ORIGIN);
-    expect(origins).not.toContain(LEGACY_ORIGIN);
-    expect(origins).toContain('https://127.0.0.1');
-    expect(origins).toContain('http://localhost:3000');
+    expect(policy.trustedOrigins).toContain(CANONICAL_ORIGIN);
+    expect(policy.trustedOrigins).not.toContain(REMOTE_ORIGIN);
+    expect(policy.cookiePrefix).toBe('better-auth');
+    expect(policy.sessionModelName).toBe('session');
   });
 
-  it('merges deliberate extras and removes duplicates', () => {
-    const origins = resolvePilotTrustedOrigins({
-      BETTER_AUTH_URL: CANONICAL_ORIGIN,
-      BETTER_AUTH_TRUSTED_ORIGINS:
-        `${CANONICAL_ORIGIN}, https://extra.example, http://localhost:3000`,
+  it('trusts exact remote origin without shared cookie domain', () => {
+    const policy = resolveAuthProfilePolicy({
+      NAVA_AUTH_SESSION_PROFILE: 'remote',
+      BETTER_AUTH_URL: `${REMOTE_ORIGIN}/`,
+      BETTER_AUTH_TRUSTED_ORIGINS: CANONICAL_ORIGIN,
     });
 
-    expect(origins.filter((origin) => origin === CANONICAL_ORIGIN)).toHaveLength(1);
-    expect(origins).toContain('https://extra.example');
-    expect(origins.filter((origin) => origin === 'http://localhost:3000')).toHaveLength(1);
+    expect(policy.baseURL).toBe(`${REMOTE_ORIGIN}/`);
+    expect(policy.trustedOrigins).toEqual([REMOTE_ORIGIN]);
+    expect(policy.cookiePrefix).toBe('better-auth-remote');
+    expect(policy.sessionModelName).toBe('remoteSession');
+    expect(policy.cookieDomain).toBeUndefined();
   });
 });
