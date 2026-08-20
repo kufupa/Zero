@@ -10,9 +10,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const SRC = 'centurion-emails-dump.md';
-const ANALYSIS_OUT = 'docs/infor-hms/centurion-pms-tool-demand-2026-08-04.md';
-const OUTBOUND_OUT = 'docs/infor-hms/centurion-outbound-index-2026-08-04.md';
-const THREAD_OUT = 'docs/infor-hms/centurion-thread-collation-summary-2026-08-04.md';
+const ANALYSIS_DATE = process.env.CENTURION_ANALYSIS_DATE ?? new Date().toISOString().slice(0, 10);
+if (!/^\d{4}-\d{2}-\d{2}$/.test(ANALYSIS_DATE)) {
+  throw new Error('CENTURION_ANALYSIS_DATE_INVALID');
+}
+const OUT_DIR = 'docs/infor-hms';
+const LOCAL_AUDIT_DIR = '.tmp-centurion-outbound-audit';
+const ANALYSIS_OUT = path.join(OUT_DIR, `centurion-pms-tool-demand-${ANALYSIS_DATE}.md`);
+const OUTBOUND_OUT = path.join(OUT_DIR, `centurion-outbound-index-${ANALYSIS_DATE}.md`);
+const THREAD_OUT = path.join(OUT_DIR, `centurion-thread-collation-summary-${ANALYSIS_DATE}.md`);
 
 const md = fs.readFileSync(SRC, 'utf8');
 const firstMsg = md.search(/^## Message \d+:/m);
@@ -467,15 +473,17 @@ function mdTable(rows, headers) {
 
 const genAt = new Date().toISOString();
 
-// --- outbound index (subjects only; no bodies) ---
+// --- outbound aggregate index (no bodies, subjects, addresses, or stable message IDs) ---
 const outParts = [];
 outParts.push('# Centurion outbound / response index\n');
 outParts.push(`- Generated: ${genAt}`);
-outParts.push(`- Source dump: local \`centurion-emails-dump.md\` (${messages.length} msgs; RDS read-only 2026-08-04)`);
+outParts.push(`- Source dump: local \`centurion-emails-dump.md\` (${messages.length} msgs; RDS read-only ${ANALYSIS_DATE})`);
 outParts.push(`- Outbound messages: **${outbound.length}**`);
 outParts.push(`- Threads with ≥1 outbound: **${withOutbound.length}**`);
-outParts.push('- Bodies omitted here (PII). Full text in gitignored dump / by-thread file.\n');
-outParts.push('## Outbound message index\n');
+outParts.push(
+  '- Bodies, subjects, addresses, and stable message identifiers are omitted to keep this tracked artifact free of raw PII. Full material remains in gitignored local artifacts.\n',
+);
+outParts.push('## Outbound message shape index\n');
 outParts.push(
   mdTable(
     outbound.map((m, i) => [
@@ -483,10 +491,9 @@ outParts.push(
       m.when.slice(0, 19),
       (m.intents[0] || 'unclassified').replace(/_/g, '\\_'),
       String(m.pmsFacts.length),
-      m.subject.replace(/\|/g, '\\|').slice(0, 90),
-      `\`${m.threadId.slice(0, 8)}…\``,
+      m.direction,
     ]),
-    ['#', 'When', 'Top intent', 'PMS facts', 'Subject', 'Thread'],
+    ['#', 'When', 'Top intent', 'PMS facts', 'Direction'],
   ),
 );
 outParts.push('\n## Outbound intent histogram\n');
@@ -538,27 +545,14 @@ thrParts.push(
     ['Pattern', 'Threads', '%'],
   ),
 );
-thrParts.push('\n## Top multi-message threads (subjects only)\n');
 thrParts.push(
-  mdTable(
-    multi
-      .slice()
-      .sort((a, b) => b.n - a.n)
-      .slice(0, 40)
-      .map((t) => [
-        String(t.n),
-        `\`${t.dirs}\``,
-        t.needsPms ? 'yes' : 'no',
-        t.subject.replace(/\|/g, '\\|').slice(0, 80),
-      ]),
-    ['Msgs', 'Dirs', 'Needs PMS', 'Subject'],
-  ),
+  '\nPer-thread subjects and identifiers are intentionally omitted to keep this tracked artifact free of raw PII. Use the gitignored local reading guide for authorized case review.\n',
 );
 fs.writeFileSync(THREAD_OUT, thrParts.join('\n') + '\n', 'utf8');
 
 // --- main analysis ---
 const a = [];
-a.push('# Centurion → PMS tool demand analysis (2026-08-04)\n');
+a.push(`# Centurion → PMS tool demand analysis (${ANALYSIS_DATE})\n`);
 a.push('> Read-only corpus analysis. No PMS mutation. Guest bodies stay in gitignored dumps; this doc is aggregates + recommendations.\n');
 a.push('## Snapshot\n');
 a.push(`- Generated: ${genAt}`);
@@ -566,10 +560,12 @@ a.push('- Dump source: pilot RDS `transport-centurion` via `dump-centurion-email
 a.push(`- Messages: **${messages.length}** (${inbound.length} inbound / ${outbound.length} outbound)`);
 a.push(`- Threads: **${threads.length}**`);
 a.push(`- Multi-message threads: **${multi.length}**`);
-a.push(`- Threads with staff outbound: **${withOutbound.length}**`);
+a.push(`- Threads with outbound: **${withOutbound.length}**`);
 a.push(`- Threads with ≥1 PMS-fact signal: **${pmsNeeding.length}** (${pct(pmsNeeding.length, threads.length)})`);
-a.push('- Prior dumps: 223 msgs (27–29 Jul) → 526 msgs (01 Aug) → 623 msgs (03 Aug) → **812 msgs (04 Aug)**.');
-a.push(`- Vs 03 Aug: **+${messages.length - 623} msgs**, +${outbound.length - 72} outbound, +${threads.length - 520} threads.\n`);
+a.push('- Previous documented baseline: 812 msgs (724 inbound / 88 outbound, 668 threads) on 2026-08-04.');
+a.push(
+  `- Vs previous documented baseline: **+${messages.length - 812} msgs**, +${inbound.length - 724} inbound, +${outbound.length - 88} outbound, +${threads.length - 668} threads.\n`,
+);
 
 a.push('## Method\n');
 a.push('1. Refresh flat dump from RDS (read-only).');
@@ -591,7 +587,7 @@ a.push(`| \`${ANALYSIS_OUT}\` | This analysis + tool recs | tracked |\n`);
 
 a.push('## 2) Thread collation\n');
 a.push(`- ${threads.length} threads; ${multi.length} conversations (2+ msgs).`);
-a.push(`- ${withOutbound.length} threads already have Centurion outbound (historical reply workflows).`);
+a.push(`- ${withOutbound.length} threads already have observed Centurion outbound.`);
 a.push(`- ${openInboundNeedingReply.length} inbound-only threads still look PMS-reply-worthy (heuristic).`);
 a.push(`- See \`${THREAD_OUT}\` for size + I/O pattern histograms.\n`);
 
@@ -690,7 +686,7 @@ a.push('- Any save/create/amend/cancel/post/settle/refund/send write.');
 a.push('- Live write-form exploration.\n');
 
 a.push('## Coverage story vs prior dumps\n');
-a.push('| Metric | 27–29 Jul | 01 Aug | 03 Aug |');
+a.push(`| Metric | 27–29 Jul | 01 Aug | ${ANALYSIS_DATE} |`);
 a.push('| --- | --- | --- | --- |');
 a.push(`| Messages | 223 | 526 | ${messages.length} |`);
 a.push(`| Threads | 193 | 434 | ${threads.length} |`);
@@ -743,7 +739,11 @@ for (const t of threads) {
   }
   membershipBuckets[primary].push(t.tid);
 }
-const MEMBERSHIP_OUT = path.join(OUT_DIR, 'centurion-intent-membership-nonoverlap.json');
+const MEMBERSHIP_OUT = path.join(
+  LOCAL_AUDIT_DIR,
+  `centurion-intent-membership-nonoverlap-${ANALYSIS_DATE}.json`,
+);
+fs.mkdirSync(path.dirname(MEMBERSHIP_OUT), { recursive: true });
 fs.writeFileSync(
   MEMBERSHIP_OUT,
   JSON.stringify(

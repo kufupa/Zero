@@ -17,4 +17,6 @@ Safety overrides plans, skills, review findings, autonomy, and requests to make 
 - Missing disposable database is a safety blocker, including during overnight autonomous execution.
 - Client-authorized raw PII, including mail bodies, addresses, and RDS-derived artifacts, may be read, quoted, and analyzed unredacted by Cursor Agent and standard local subagents for internal Zero work. Zero's approved local-only model route is authorized. Do not require pseudonymization, redaction, or repeated consent. This authorization never covers credentials, database URLs, keys, tokens, or other secrets.
 - For subagents, provide local file paths and task purpose; subagents read source directly. Never copy raw PII into a dispatch prompt.
-- Never send raw PII to web search, remote MCP/API, CI/terminal logs, SSM, Git, or other external output channels. Never disclose database URLs, credentials, keys, or tokens.
+- Client-authorized raw PII may be transmitted through user-authorized SSM and authenticated internal/operator web pages when needed for internal Zero work. Keep raw PII out of Git, public web search, and arbitrary remote MCP/API calls. Never disclose database URLs, credentials, keys, tokens, or other secrets.
+- When runtime access needs a secret, pass a `{{resolve:secretsmanager:...}}` reference through `asm-exec`; resolution must occur only in the child process.
+- Never call secret-value retrieval APIs or commands, or print, log, persist, copy, or disclose a resolved secret. Redact command output that could contain one.

@@ -1,0 +1,193 @@
+--- page 1 ---
+Legacy Hotels & Resorts 
+ 
+Policies & Procedures 
+Rooms Division, Reservations, Front Office 
+________________________________________________________________ 
+ 
+Signed copy on file – Head Office Finance 
+ 
+ Signed copy on file – Head Office Finance 
+ 
+MANAGING DIRECTOR SYSTEMS DEVELOPMENT MANAGER 
+NEIL YATES ANDREW WYTRYKOWSKI 
+ 
+ 
+ 
+Rooms Division, Reservations, Front Office – HMS_RES008    Page 1 of 4 
+ 
+ 
+Document ID Title 
+HMS_RES008 Guest Profiles 
+Revision:  3 Prepared By: Systems Development Date Revised: 03/05/2024 
+Issue Date:   Approved By: Andrew Wytrykowski Date Approved:  
+ 
+Responsibilities:   
+ 
+Reservations, Front Office and Reservations Manager 
+ 
+Policy: 
+ 
+• Guest Profiles allows INFOR HMS users access to profiles (Individual) held in the central 
+database.   
+• Organization Profiles allows INFOR HMS users access to profiles (Organization) held in the 
+central database.   
+• Agency Profiles allows INFOR HMS users access to profiles (Agent) held in the central 
+database.   
+ 
+Before creating a new profile in your INFOR HMS, always check the profile database to ensure the 
+profile does not already exist. 
+ 
+The guest profile is also extremely important for ensuring that the correct individual profile is used 
+when making a reservation for a LL (Legacy Lifestyle) member. Downloading the correct profile will 
+ensure that all the guest’s reservations will be attached to the correct profile and that the Lifestyle 
+Rands accumulate correctly.   
+ 
+ 
+ 
+Definitions:  
+ 
+INFOR HMS–Hotel Management System 
+  
+ 
+Procedure:  
+1. Creating a New Profile 
+ 
+1.1 When creating, a new profile, search your guest on guest profile to see if the profile does not already 
+exist.    
+ 
+1.2 Should the profile not exist, proceed to create the guest profile. 
+
+--- page 2 ---
+Legacy Hotels & Resorts 
+ 
+Policies & Procedures 
+Rooms Division, Reservations, Front Office 
+________________________________________________________________ 
+ 
+Signed copy on file – Head Office Finance 
+ 
+ Signed copy on file – Head Office Finance 
+ 
+MANAGING DIRECTOR SYSTEMS DEVELOPMENT MANAGER 
+NEIL YATES ANDREW WYTRYKOWSKI 
+ 
+ 
+ 
+Rooms Division, Reservations, Front Office – HMS_RES008    Page 2 of 4 
+ 
+ 
+ 
+ 
+ 
+1.3 Should the profile exist on the guest profile, you will be able to run and view the profile.  
+Select the correct profile when doing a lookup. It is imperative to ensure that you are downloading 
+the correct profile. If you are downloading a member profile, ensure that the correct membership 
+number is in the profile you have selected. Double check all the profile details i.e., last name, first 
+name / initials, address & contact numbers.  
+ 
+ 
+ 
+
+
+--- page 3 ---
+Legacy Hotels & Resorts 
+ 
+Policies & Procedures 
+Rooms Division, Reservations, Front Office 
+________________________________________________________________ 
+ 
+Signed copy on file – Head Office Finance 
+ 
+ Signed copy on file – Head Office Finance 
+ 
+MANAGING DIRECTOR SYSTEMS DEVELOPMENT MANAGER 
+NEIL YATES ANDREW WYTRYKOWSKI 
+ 
+ 
+ 
+Rooms Division, Reservations, Front Office – HMS_RES008    Page 3 of 4 
+ 
+ 
+      
+ 
+ 
+ 
+ 
+ 
+1.4 If you are unable to locate the profile in the Central Database, proceed to create a new profile. 
+                
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+
+
+--- page 4 ---
+Legacy Hotels & Resorts 
+ 
+Policies & Procedures 
+Rooms Division, Reservations, Front Office 
+________________________________________________________________ 
+ 
+Signed copy on file – Head Office Finance 
+ 
+ Signed copy on file – Head Office Finance 
+ 
+MANAGING DIRECTOR SYSTEMS DEVELOPMENT MANAGER 
+NEIL YATES ANDREW WYTRYKOWSKI 
+ 
+ 
+ 
+Rooms Division, Reservations, Front Office – HMS_RES008    Page 4 of 4 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+Associated Policies & Procedures  
+ 
+HMS_RES007 - Profiles 
+ 
+References: 
+ 
+A. No current reference at present. 
+ 
+Additional Resources: 
+ 
+A. No current additional resources at present 
+ 
+Forms/Records: 
+ 
+No forms applicable for this procedure. 
+ 
+ 
+ 
+ 
+Revision History: 
+ 
+Revision Date Description of Changes Requested by 
+1 30/11/2010 Format of document  Thomas Klingler 
+2 15/03/2017 New Screenshots of profile lookup Andrew Wytrykowski 
+3 03/05/2024 Amended for INFOR HMS Andrew WYtrykowski 
+    
+    
+ 
+ 

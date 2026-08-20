@@ -1,0 +1,201 @@
+--- page 1 ---
+Legacy Hotels & Resorts 
+ 
+Policies & Procedures 
+Rooms Division, Reservations 
+________________________________________________________________ 
+ 
+Signed copy on file – Head Office Finance 
+ 
+ Signed copy on file – Head Office Finance 
+ 
+MANAGING DIRECTOR SYSTEMS DEVELOPMENT MANAGER 
+NEIL YATES ANDREW WYTRYKOWSKI 
+ 
+ 
+ 
+Rooms Division, Reservations – HMS_RES042  Page 1 of 5 
+ 
+ 
+Document ID Title 
+HMS_RES042 AGENT ALLOCATIONS 
+Revision:  3 Prepared By: Systems Development Date Revised: 03/05/2024 
+Issue Date:   Approved By: Andrew Wytrykowski Date Approved: 16/05/2017 
+ 
+Responsibilities:   
+ 
+Reservations, Reservations Manager, Rooms Division Manager & General Manager 
+ 
+Policy: 
+ 
+Room allocations are given to agents/consortia by Legacy Hotels & Resorts by the sales & marketing 
+department.  The room allocation amount is approved by the Group Sales Manager and the General 
+Manager of the property. Allocations are given to agents to make the booking process easier for the 
+agent. 
+  
+Room allocations must be managed by the reservations department. Optimised yield of the allocation 
+stock needs to be monitored and managed with regards to release dates, allocations taken, and 
+available allocations not used. This must be adhered to maximise on occupancies of the hotel. 
+ 
+Purpose:   
+ 
+Scope:  
+ 
+Definitions:   
+ 
+Procedure:  
+ 
+1. Agent/Company Allocations 
+The Reservations Manager and/or Rooms Division Manager must draw up a list of the Agents/Companies 
+that have Allocations with the hotel. This list must have the agent’s name, number of rooms on allocations 
+and the release period.  The list must be given to the reservations department and all persons dealing with 
+allocations to be told and made aware of this list. 
+ 
+Allocations must  be inserted into the  INFOR HMS with the correct cut off days/Dates and close out 
+during close out specified dates. 
+ 
+  
+
+--- page 2 ---
+Legacy Hotels & Resorts 
+ 
+Policies & Procedures 
+Rooms Division, Reservations 
+________________________________________________________________ 
+ 
+Signed copy on file – Head Office Finance 
+ 
+ Signed copy on file – Head Office Finance 
+ 
+MANAGING DIRECTOR SYSTEMS DEVELOPMENT MANAGER 
+NEIL YATES ANDREW WYTRYKOWSKI 
+ 
+ 
+ 
+Rooms Division, Reservations – HMS_RES042  Page 2 of 5 
+ 
+1.1. Allotments - are built around contracts.  
+Step1: In the profile of the Agency / Organisation you are creating for  
+ 
+ 
+• Contracts 
+ 
+ 
+• Build the Contract 
+o Name of this allotment  
+o Dates period  
+o Release day  
+o Associate the rate plan 
+ 
+  
+
+
+--- page 3 ---
+Legacy Hotels & Resorts 
+ 
+Policies & Procedures 
+Rooms Division, Reservations 
+________________________________________________________________ 
+ 
+Signed copy on file – Head Office Finance 
+ 
+ Signed copy on file – Head Office Finance 
+ 
+MANAGING DIRECTOR SYSTEMS DEVELOPMENT MANAGER 
+NEIL YATES ANDREW WYTRYKOWSKI 
+ 
+ 
+ 
+Rooms Division, Reservations – HMS_RES042  Page 3 of 5 
+ 
+2. Assigning an Allotment Reservation  
+• Once the agents start booking the allocations, the reservationist must apply the allocation code to 
+the reservation so that it reduces the allocation amount for that specific agent.  
+• In the booking you can then assign a booking to this allotment contact 
+ 
+ 
+3. Allotment Viewable  
+ 
+ 
+ 
+ 
+  
+
+
+--- page 4 ---
+Legacy Hotels & Resorts 
+ 
+Policies & Procedures 
+Rooms Division, Reservations 
+________________________________________________________________ 
+ 
+Signed copy on file – Head Office Finance 
+ 
+ Signed copy on file – Head Office Finance 
+ 
+MANAGING DIRECTOR SYSTEMS DEVELOPMENT MANAGER 
+NEIL YATES ANDREW WYTRYKOWSKI 
+ 
+ 
+ 
+Rooms Division, Reservations – HMS_RES042  Page 4 of 5 
+ 
+ 
+Summary 
+ 
+ 
+ 
+Detailed 
+ 
+ 
+ 
+4. Opportunity 
+ 
+Availability Tick will affect the Summary opportunity because its already affecting the rooms 
+  
+
+
+--- page 5 ---
+Legacy Hotels & Resorts 
+ 
+Policies & Procedures 
+Rooms Division, Reservations 
+________________________________________________________________ 
+ 
+Signed copy on file – Head Office Finance 
+ 
+ Signed copy on file – Head Office Finance 
+ 
+MANAGING DIRECTOR SYSTEMS DEVELOPMENT MANAGER 
+NEIL YATES ANDREW WYTRYKOWSKI 
+ 
+ 
+ 
+Rooms Division, Reservations – HMS_RES042  Page 5 of 5 
+ 
+ 
+Associated Policies & Procedures  
+ 
+▪  
+References: 
+ 
+A. No current reference at present. 
+ 
+Additional Resources: 
+ 
+A. No current additional resources at present 
+ 
+Forms/Records: 
+ 
+▪ No forms applicable for this procedure. 
+ 
+Revision History: 
+ 
+Revision Date Description of Changes Requested by 
+1 30/11/2010 Format of document  Thomas Klingler 
+- 16/05/2017 Change of Signature Andrew Wytrykowski 
+2 25/01/2025 Amended for INFOR HMS Andrew Wytrykowski 
+3 26/06/2025 How to guide added Maxine Hattingh 
+    
+ 
+ 

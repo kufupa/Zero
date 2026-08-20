@@ -9,6 +9,8 @@ import {
   index,
   uniqueIndex,
   primaryKey,
+  foreignKey,
+  check,
   customType,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
@@ -259,6 +261,7 @@ export const mailThread = pgTable(
     updatedAt: timestamp('updated_at').notNull().defaultNow(),
   },
   (t) => [
+    uniqueIndex('mail_thread_id_transport_uidx').on(t.id, t.transportId),
     uniqueIndex('mail_thread_transport_root_uidx').on(t.transportId, t.threadRootId),
     index('mail_thread_transport_list_idx').on(
       t.transportId,
@@ -269,6 +272,261 @@ export const mailThread = pgTable(
       .on(t.snoozedUntil)
       .where(sql`${t.snoozedUntil} IS NOT NULL`),
     index('mail_thread_search_vector_idx').using('gin', t.searchVector),
+  ],
+);
+
+export const threadAuditSnapshotTrustStatusEnum = pgEnum(
+  'thread_audit_snapshot_trust_status',
+  ['valid', 'incomplete'],
+);
+
+export const threadAuditSnapshotTrustReasonEnum = pgEnum(
+  'thread_audit_snapshot_trust_reason',
+  [
+    'verified',
+    'source_coverage_limited',
+    'pending_manual_adjudication',
+    'source_not_ready',
+  ],
+);
+
+export const threadAuditSnapshotStateEnum = pgEnum('thread_audit_snapshot_state', [
+  'resolved',
+  'action_required',
+  'customer_acknowledgement_or_confirmation',
+  'automated_or_non_actionable',
+  'needs_manual_adjudication',
+]);
+
+export const threadAuditSnapshotEvidenceTierEnum = pgEnum(
+  'thread_audit_snapshot_evidence_tier',
+  [
+    'persisted_reply',
+    'quoted_reply',
+    'participant_subject_only_correlation',
+    'no_evidence',
+  ],
+);
+
+export const threadAuditSnapshotImpactClassEnum = pgEnum(
+  'thread_audit_snapshot_impact_class',
+  [
+    'commercial_follow_up_hypothesis',
+    'guest_trust',
+    'staff_time',
+    'data_quality',
+  ],
+);
+
+export const threadAuditSnapshotAgeBucketEnum = pgEnum(
+  'thread_audit_snapshot_age_bucket',
+  ['under_4h', 'four_to_24h', 'one_to_three_days', 'over_three_days', 'unknown'],
+);
+
+export const threadAuditSnapshotHandoffStateEnum = pgEnum(
+  'thread_audit_snapshot_handoff_state',
+  [
+    'no_handoff_observed',
+    'internal_handoff_observed',
+    'handoff_evidence_limited',
+  ],
+);
+
+export const threadAuditSnapshotNextHumanCheckEnum = pgEnum(
+  'thread_audit_snapshot_next_human_check',
+  [
+    'review_latest_action',
+    'verify_source_coverage',
+    'verify_quote_context',
+    'verify_identity_or_linkage',
+    'verify_event_time',
+    'verify_duplicate_or_ingest',
+    'collect_authoritative_pms_data',
+    'collect_attachment_or_document_data',
+    'create_draft_evaluation_cohort',
+    'review_pending_task3',
+    'rerun_task3_after_review',
+    'none',
+  ],
+);
+
+export const threadAuditSnapshotExampleSelectionReasonEnum = pgEnum(
+  'thread_audit_snapshot_example_selection_reason',
+  ['outlier', 'aged_action', 'ambiguity', 'impact'],
+);
+
+/**
+ * One current aggregate-only snapshot per mailbox transport. `id` is the
+ * scoped child-FK identity; publicationIncarnationId is a separate immutable
+ * primary incarnation for ABA-safe replacement decisions.
+ */
+export const threadAuditSnapshot = pgTable(
+  'thread_audit_snapshot',
+  {
+    publicationIncarnationId: text('publication_incarnation_id').primaryKey(),
+    id: text('id').notNull(),
+    transportId: text('transport_id')
+      .notNull()
+      .references(() => mailboxTransport.id, { onDelete: 'cascade' }),
+    trustStatus: threadAuditSnapshotTrustStatusEnum('trust_status').notNull(),
+    trustReasonCode: threadAuditSnapshotTrustReasonEnum('trust_reason_code').notNull(),
+    sourceManifestDigest: text('source_manifest_digest').notNull(),
+    sourceIdentityDigest: text('source_identity_digest').notNull(),
+    payloadDigest: text('payload_digest').notNull(),
+    sealedEnvelopeDigest: text('sealed_envelope_digest').notNull(),
+    publicationRevisionToken: text('publication_revision_token').notNull(),
+    sourceSchemaVersion: text('source_schema_version').notNull(),
+    identityRulesVersion: text('identity_rules_version').notNull(),
+    classifierVersion: text('classifier_version').notNull(),
+    metricDefinitionVersion: text('metric_definition_version').notNull(),
+    sourceEventCutoffAt: timestamp('source_event_cutoff_at', {
+      withTimezone: true,
+    }).notNull(),
+    sourceIngestCutoffAt: timestamp('source_ingest_cutoff_at', {
+      withTimezone: true,
+    }).notNull(),
+    verifiedAt: timestamp('verified_at', { withTimezone: true }).notNull(),
+    attemptedAt: timestamp('attempted_at', { withTimezone: true }).notNull(),
+    publishedAt: timestamp('published_at', { withTimezone: true }).notNull(),
+    messageCount: integer('message_count'),
+    componentCount: integer('component_count'),
+    persistedThreadCount: integer('persisted_thread_count'),
+    parserExceptionCount: integer('parser_exception_count'),
+    coverageExceptionCount: integer('coverage_exception_count'),
+    metricsAndInsights: jsonb('metrics_and_insights').$type<Record<string, unknown>>(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('thread_audit_snapshot_transport_uidx').on(t.transportId),
+    uniqueIndex('thread_audit_snapshot_id_transport_uidx').on(t.id, t.transportId),
+    check(
+      'thread_audit_snapshot_counter_check',
+      sql`
+        ("message_count" IS NULL OR "message_count" >= 0)
+        AND ("component_count" IS NULL OR "component_count" >= 0)
+        AND ("persisted_thread_count" IS NULL OR "persisted_thread_count" >= 0)
+        AND ("parser_exception_count" IS NULL OR "parser_exception_count" >= 0)
+        AND ("coverage_exception_count" IS NULL OR "coverage_exception_count" >= 0)
+      `,
+    ),
+    check(
+      'thread_audit_snapshot_trust_shape_check',
+      sql`
+        (
+          "trust_status" = 'valid'
+          AND "trust_reason_code" = 'verified'
+          AND "message_count" IS NOT NULL
+          AND "component_count" IS NOT NULL
+          AND "persisted_thread_count" IS NOT NULL
+          AND "parser_exception_count" IS NOT NULL
+          AND "coverage_exception_count" IS NOT NULL
+          AND "metrics_and_insights" IS NOT NULL
+          AND jsonb_typeof("metrics_and_insights") = 'object'
+        )
+        OR (
+          "trust_status" = 'incomplete'
+          AND "trust_reason_code" <> 'verified'
+          AND "message_count" IS NULL
+          AND "component_count" IS NULL
+          AND "persisted_thread_count" IS NULL
+          AND "parser_exception_count" IS NULL
+          AND "coverage_exception_count" IS NULL
+          AND "metrics_and_insights" IS NULL
+        )
+      `,
+    ),
+  ],
+);
+
+export const threadAuditSnapshotComponent = pgTable(
+  'thread_audit_snapshot_component',
+  {
+    snapshotId: text('snapshot_id').notNull(),
+    componentId: text('component_id').notNull(),
+    transportId: text('transport_id').notNull(),
+    finalState: threadAuditSnapshotStateEnum('final_state').notNull(),
+    reasonCodes: text('reason_codes').array().notNull(),
+    limitationCodes: text('limitation_codes').array().notNull(),
+    evidenceTier: threadAuditSnapshotEvidenceTierEnum('evidence_tier').notNull(),
+    impactClass: threadAuditSnapshotImpactClassEnum('impact_class').notNull(),
+    ageBucket: threadAuditSnapshotAgeBucketEnum('age_bucket').notNull(),
+    handoffState: threadAuditSnapshotHandoffStateEnum('handoff_state').notNull(),
+    nextHumanCheck: threadAuditSnapshotNextHumanCheckEnum('next_human_check').notNull(),
+    exampleSelectionReason: threadAuditSnapshotExampleSelectionReasonEnum(
+      'example_selection_reason',
+    ),
+    latestActionAt: timestamp('latest_action_at', { withTimezone: true }),
+    initialMappingCount: integer('initial_mapping_count').notNull(),
+    sortGroup: integer('sort_group').notNull(),
+    sortRank: integer('sort_rank').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({
+      columns: [t.snapshotId, t.componentId, t.transportId],
+    }),
+    foreignKey({
+      columns: [t.snapshotId, t.transportId],
+      foreignColumns: [threadAuditSnapshot.id, threadAuditSnapshot.transportId],
+      name: 'thread_audit_snapshot_component_snapshot_transport_fk',
+    }).onDelete('cascade'),
+    index('thread_audit_snapshot_component_snapshot_sort_idx').on(
+      t.snapshotId,
+      t.transportId,
+      t.sortGroup,
+      t.sortRank,
+      t.componentId,
+    ),
+    check(
+      'thread_audit_snapshot_component_count_check',
+      sql`"initial_mapping_count" >= 0 AND "sort_group" >= 0 AND "sort_group" <= 2 AND "sort_rank" >= 0`,
+    ),
+  ],
+);
+
+export const threadAuditSnapshotComponentThread = pgTable(
+  'thread_audit_snapshot_component_thread',
+  {
+    snapshotId: text('snapshot_id').notNull(),
+    componentId: text('component_id').notNull(),
+    transportId: text('transport_id').notNull(),
+    threadId: text('thread_id').notNull(),
+    sourceMembershipRank: integer('source_membership_rank').notNull(),
+    isPrimary: boolean('is_primary').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({
+      columns: [t.snapshotId, t.componentId, t.transportId, t.threadId],
+    }),
+    foreignKey({
+      columns: [t.snapshotId, t.componentId, t.transportId],
+      foreignColumns: [
+        threadAuditSnapshotComponent.snapshotId,
+        threadAuditSnapshotComponent.componentId,
+        threadAuditSnapshotComponent.transportId,
+      ],
+      name: 'thread_audit_snapshot_component_thread_component_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [t.threadId, t.transportId],
+      foreignColumns: [mailThread.id, mailThread.transportId],
+      name: 'thread_audit_snapshot_component_thread_thread_transport_fk',
+    }).onDelete('cascade'),
+    uniqueIndex('thread_audit_snapshot_component_thread_rank_uidx').on(
+      t.snapshotId,
+      t.componentId,
+      t.transportId,
+      t.sourceMembershipRank,
+    ),
+    uniqueIndex('thread_audit_snapshot_component_thread_primary_uidx')
+      .on(t.snapshotId, t.componentId, t.transportId)
+      .where(sql`${t.isPrimary}`),
+    check(
+      'thread_audit_snapshot_component_thread_rank_check',
+      sql`"source_membership_rank" >= 0`,
+    ),
   ],
 );
 

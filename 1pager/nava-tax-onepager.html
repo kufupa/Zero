@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Nava AI - Client Document Chase for UK Tax Practices</title>
+<style>
+  @page { size: A4; margin: 0; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 210mm;
+    height: 297mm;
+    font-family: "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+    color: #1a1f2e;
+    background: #fff;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .page {
+    width: 210mm;
+    height: 297mm;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ── Header ── */
+  .header {
+    background: linear-gradient(105deg, #0b1120 0%, #121c38 42%, #2a2460 78%, #5a4898 100%);
+    color: #fff;
+    padding: 7mm 12mm 6mm;
+    flex-shrink: 0;
+  }
+  .header-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 5mm;
+  }
+  .brand {
+    font-size: 20pt;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    line-height: 1;
+  }
+  .meta {
+    text-align: right;
+    font-size: 5.8pt;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    line-height: 1.5;
+    text-transform: uppercase;
+    opacity: 0.95;
+  }
+  .headline {
+    font-size: 14pt;
+    font-weight: 600;
+    line-height: 1.25;
+    max-width: 178mm;
+    margin-bottom: 2.5mm;
+  }
+  .headline .accent {
+    font-weight: 700;
+    color: #c8c4ef;
+  }
+  .lede {
+    font-size: 7.4pt;
+    line-height: 1.4;
+    font-weight: 400;
+    opacity: 0.92;
+    max-width: 186mm;
+  }
+
+  /* ── Body ── */
+  .body {
+    flex: 1 1 auto;
+    min-height: 0;
+    padding: 3.5mm 12mm 2.5mm;
+    display: flex;
+    flex-direction: column;
+    gap: 2.4mm;
+  }
+  .section-title {
+    font-size: 7.2pt;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #2e3c8a;
+    margin-bottom: 1.6mm;
+  }
+  .two-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 7mm;
+  }
+  .col p {
+    font-size: 7pt;
+    line-height: 1.38;
+    color: #2a2f3d;
+  }
+  .col p strong, .bench-note strong, .callout p strong {
+    font-weight: 700;
+    color: #1a1f2e;
+  }
+  hr.rule {
+    border: none;
+    border-top: 1px solid #e4e6ec;
+    margin: 0;
+  }
+
+  /* Benchmarks */
+  .bench-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 4mm;
+  }
+  .bench {
+    border: 1px solid #d8dbe3;
+    border-radius: 3px;
+    padding: 2.4mm 2mm 2.2mm;
+    text-align: center;
+  }
+  .bench .num {
+    font-size: 14.5pt;
+    font-weight: 700;
+    color: #121c38;
+    line-height: 1.1;
+    margin-bottom: 1.2mm;
+  }
+  .bench .cap {
+    font-size: 6pt;
+    line-height: 1.3;
+    color: #4a5160;
+  }
+  .bench-note {
+    font-size: 6.9pt;
+    line-height: 1.35;
+    color: #2a2f3d;
+    margin-top: 2mm;
+  }
+
+  /* HBR callout */
+  .callout {
+    background: #f3f5f9;
+    border-left: 2.5px solid #2e3c8a;
+    padding: 2.6mm 3.5mm 2.4mm;
+  }
+  .callout .section-title { margin-bottom: 1.4mm; }
+  .callout p {
+    font-size: 7pt;
+    line-height: 1.38;
+    color: #2a2f3d;
+  }
+  .callout .source {
+    margin-top: 1.4mm;
+    font-size: 5.6pt;
+    color: #6b7280;
+    font-style: italic;
+  }
+
+  /* How it works */
+  .how-list {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 1.3mm;
+  }
+  .how-list li {
+    font-size: 6.5pt;
+    line-height: 1.3;
+    color: #2a2f3d;
+    padding-left: 3.5mm;
+    position: relative;
+  }
+  .how-list li::before {
+    content: "-";
+    position: absolute;
+    left: 0;
+    color: #2e3c8a;
+    font-weight: 700;
+  }
+  .how-list strong { color: #121c38; font-weight: 700; }
+
+  /* Deliver */
+  .deliver-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 4mm;
+  }
+  .deliver .num {
+    font-size: 10pt;
+    font-weight: 700;
+    color: #2e3c8a;
+    line-height: 1;
+    margin-bottom: 1mm;
+  }
+  .deliver .title {
+    font-size: 7.1pt;
+    font-weight: 700;
+    color: #121c38;
+    margin-bottom: 1mm;
+    line-height: 1.2;
+  }
+  .deliver .desc {
+    font-size: 6.3pt;
+    line-height: 1.3;
+    color: #4a5160;
+  }
+
+  /* CTA */
+  .cta-section {
+    background: linear-gradient(105deg, #0b1120 0%, #121c38 42%, #2a2460 78%, #5a4898 100%);
+    color: #fff;
+    margin: 0 12mm;
+    padding: 5mm 6mm 4.5mm;
+    text-align: center;
+    border-radius: 3px;
+    flex-shrink: 0;
+  }
+  .cta-section .section-title {
+    color: #c8c4ef;
+    margin-bottom: 3mm;
+    text-align: center;
+    font-size: 7.5pt;
+  }
+  .cta-section a.cta-button {
+    display: inline-block;
+    font-size: 20pt;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    color: #121c38;
+    background: #fff;
+    text-decoration: none;
+    padding: 3.5mm 14mm;
+    border-radius: 3px;
+    line-height: 1.15;
+  }
+  .cta-section .cta-sub {
+    font-size: 6.8pt;
+    line-height: 1.4;
+    margin-top: 2.5mm;
+    opacity: 0.9;
+  }
+  .cta-section .cta-sub a {
+    color: #c8c4ef;
+    text-decoration: none;
+    font-weight: 600;
+  }
+
+  /* Footer */
+  .footer {
+    background: #0a0e18;
+    color: #fff;
+    padding: 3mm 12mm 3.5mm;
+    flex-shrink: 0;
+    margin-top: 2.5mm;
+  }
+  .footer .section-title {
+    color: #fff;
+    margin-bottom: 1.5mm;
+    opacity: 0.9;
+  }
+  .footer .team {
+    display: flex;
+    flex-direction: column;
+    gap: 1.4mm;
+    margin-bottom: 2mm;
+  }
+  .footer .person {
+    font-size: 7pt;
+    line-height: 1.35;
+  }
+  .footer .person a {
+    color: #fff;
+    font-weight: 700;
+    text-decoration: none;
+    border-bottom: 0.5px solid rgba(255,255,255,0.35);
+  }
+  .footer .person .role {
+    font-weight: 400;
+    opacity: 0.85;
+  }
+  .footer .links {
+    font-size: 5.8pt;
+    opacity: 0.7;
+    line-height: 1.35;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0;
+  }
+  .footer .links a {
+    color: #c8c4ef;
+    text-decoration: none;
+  }
+  .footer .links span { opacity: 0.45; margin: 0 1.5mm; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header class="header">
+    <div class="header-top">
+      <div class="brand">NAVA AI</div>
+    </div>
+    <div class="headline">
+      Every client reply turned into a job-ready file in <span class="accent">minutes, not days</span>.<br />
+      Around the clock.
+    </div>
+    <p class="lede">
+      Nava watches your practice inbox, runs structured checklists for Self Assessment, VAT and year-end, sends automatic
+      reminders - and when a client replies, extracts attachments, matches them to the right matter, flags what is
+      still missing and stages a job-ready file for your team to review. No portal clients ignore. Nothing is written
+      to tax software until your team approves.
+    </p>
+  </header>
+
+  <main class="body">
+
+    <div class="two-col">
+      <div class="col">
+        <div class="section-title">The problem we solve</div>
+        <p>
+          UK tax practices lose <strong>15-25 hours a week</strong> chasing clients for missing P60s, bank statements and
+          dividend vouchers - then re-filing the same attachments from Outlook one by one. Client portals fail because
+          clients email anyway. Admin and juniors run the chase; partners only see the backlog before January and
+          quarter-end deadlines.
+        </p>
+      </div>
+      <div class="col">
+        <div class="section-title">Why the timing is right</div>
+        <p>
+          Regulatory pressure and software upgrades mean every partner is revisiting workflows and client touchpoints
+          now. That is the cheapest moment to plug automation into Outlook and your existing practice stack - before
+          another manual season. Firms that fix intake now free capacity for advisory work competitors cannot scale
+          with headcount alone.
+        </p>
+      </div>
+    </div>
+
+    <hr class="rule" />
+
+    <section>
+      <div class="section-title">The cost of manual chase</div>
+      <div class="bench-grid">
+        <div class="bench">
+          <div class="num">15-25h</div>
+          <div class="cap">Typical weekly admin/junior time lost<br />to document chasing</div>
+        </div>
+        <div class="bench">
+          <div class="num">60%+</div>
+          <div class="cap">Of chased documents arrive only after<br />the second or third reminder</div>
+        </div>
+        <div class="bench">
+          <div class="num">24/7</div>
+          <div class="cap">Reminders and inbox monitoring<br />without adding headcount</div>
+        </div>
+      </div>
+      <p class="bench-note">
+        Industry estimates for UK practices (15-25h: practice workflow audits; 60%+: multi-reminder chase patterns).
+        Nava is built to cut the chase loop and process replies as they land - not another week later.
+      </p>
+    </section>
+
+    <hr class="rule" />
+
+    <section>
+      <div class="section-title">How it works - built for security and control</div>
+      <ul class="how-list">
+        <li><strong>Hosted in the UK.</strong> AWS London Region - client data stays in-country, aligned with UK GDPR and professional body expectations on client data.</li>
+        <li><strong>Outlook-native intake.</strong> Watches your shared mailbox, matches threads to clients and matters - clients keep emailing as they always have.</li>
+        <li><strong>Checklists built for UK workflows.</strong> Templates for Self Assessment, VAT, AML and year-end - with missing, overdue and complete items in one dashboard.</li>
+        <li><strong>Secure upload links.</strong> No client login. Send a link alongside reminders; uploads update the checklist automatically.</li>
+        <li><strong>Human-in-the-loop first.</strong> Nava classifies and stages; your qualified team reviews every file before anything touches TaxCalc, IRIS, CCH or Xero.</li>
+        <li><strong>Full audit trail.</strong> Every reminder, upload and extracted field logged - scoped access, confidence thresholds and escalation rules throughout.</li>
+        <li><strong>Plugs into the software you already run.</strong> Practice management, tax desktop and document stores connected in weeks, not months.</li>
+      </ul>
+    </section>
+
+    <hr class="rule" />
+
+    <section>
+      <div class="section-title">What Nava is designed to deliver</div>
+      <div class="deliver-grid">
+        <div class="deliver">
+          <div class="num">01</div>
+          <div class="title">Every client reply becomes a job-ready file</div>
+          <div class="desc">Documents extracted, matched to the right client, filed to your practice systems and missing items flagged - before your team re-opens the inbox.</div>
+        </div>
+        <div class="deliver">
+          <div class="num">02</div>
+          <div class="title">Stop the manual chase loop</div>
+          <div class="desc">Automated reminder sequences replace admin copy-paste - while clients who only respond to email finally get followed up on their terms.</div>
+        </div>
+        <div class="deliver">
+          <div class="num">03</div>
+          <div class="title">See what is still missing</div>
+          <div class="desc">One dashboard for outstanding SA, VAT and year-end items - no spreadsheet trackers or inbox archaeology before deadline week.</div>
+        </div>
+        <div class="deliver">
+          <div class="num">04</div>
+          <div class="title">Reclaim billable hours</div>
+          <div class="desc">Turn 15+ hours of weekly admin chase into review-and-approve - freeing seniors for tax planning and client work that actually pays.</div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <section class="cta-section">
+    <div class="section-title">Next step</div>
+    <a class="cta-button" href="https://calendar.app.google/93WZAtgrNs7YbDGL6">Book a call</a>
+    <p class="cta-sub">
+      <a href="mailto:aroransh17@gmail.com">aroransh17@gmail.com</a> ·
+      <a href="tel:+447505014078">+44 7505 014078</a>
+    </p>
+  </section>
+
+  <footer class="footer">
+    <div class="section-title">The team</div>
+    <div class="team">
+      <div class="person">
+        <a href="https://www.linkedin.com/in/ansh--arora/">Ansh Arora</a>
+        <span class="role"> - Ex-Palantir FDE, UK Police / National Fraud Intelligence Bureau (NFIB).</span>
+      </div>
+      <div class="person">
+        <a href="https://www.linkedin.com/in/cole-dd/">Cole Dorrestein</a>
+        <span class="role"> - Ex-Marex Quant. Capital-markets systems &amp; automation.</span>
+      </div>
+    </div>
+    <div class="links">
+      <a href="https://www.linkedin.com/in/ansh--arora/">linkedin.com/in/ansh--arora</a>
+      <span>·</span>
+      <a href="https://www.linkedin.com/in/cole-dd/">linkedin.com/in/cole-dd</a>
+    </div>
+  </footer>
+
+</div>
+</body>
+</html>

@@ -1,45 +1,45 @@
-# Centurion email → PMS tool demand handoff
+# Centurion email → PMS tool demand handoff (historical)
 
 **Date:** 2026-08-03  
 **Audience:** any LLM / engineer with **zero prior context**  
-**Purpose:** reproduce the email pull + analysis process, honor guardrails, and use the tool conclusions without re-deriving from chat history.
+**Purpose:** preserve dated tool-demand context and guardrails. This is not a current mail-pull, response-state, or operator-runbook authority.
 
-This doc consolidates:
+> **Historical / supersession notice (2026-08-10):** Snapshot descriptions and conclusions below remain historical. They must not be used to infer a current queue, response count, or case resolution. For current thread-state status, required evidence, and safe operator steps, use `centurion-thread-state-status-2026-08-10.md` and `centurion-thread-state-audit-runbook.md`.
+>
+> **Retired route:** `apps/server-pilot/scripts/dump-centurion-emails-md.mjs` and its S3 raw-dump transfer route are retired. Do not invoke, restore, or replace that route from this handoff.
 
-1. How we pull and analyse Centurion mailbox data  
-2. User goals and safety guardrails  
-3. Corpus snapshots and method caveats  
-4. What each recommended tool does and why  
-5. Write vs read policy (discovery vs shipped tools)  
-6. Revised ranking after clarifying that write tools should be **designed now** but **not submitted** during autonomous discovery  
+This historical doc records:
+
+1. How mail was pulled and analysed
+2. User goals and safety guardrails
+3. Corpus snapshots and method caveats
+4. What each recommended tool does and why
+5. Write vs read policy (discovery vs shipped tools)
+6. Revised ranking after clarifying that write tools should be **designed now** but **not submitted** during autonomous discovery
 
 Related artifacts (same repo):
 
 | File | Role |
 | --- | --- |
-| `centurion-emails-dump.md` | Flat dump (gitignored, PII) |
-| `centurion-emails-by-thread.md` | Thread-collated dump (gitignored, PII) |
-| `centurion-emails-index.md` | Slim subject index (gitignored) |
+| Historical local raw Markdown artifacts | Snapshot-bound, gitignored PII artifacts; do not refresh, transfer, or use as current runbook input |
 | `docs/infor-hms/centurion-pms-tool-demand-2026-08-04.md` | Aggregate analysis + scores (latest) |
-| `docs/infor-hms/centurion-outbound-index-2026-08-04.md` | Outbound subject index (latest) |
+| Historical outbound description in this handoff | Aggregate-only recurring template patterns and counts; no subject index or message-level detail |
 | `docs/infor-hms/centurion-thread-collation-summary-2026-08-04.md` | Thread size/direction histograms (latest) |
 | `docs/infor-hms/centurion-pms-tool-demand-2026-08-03.md` | Prior analysis snapshot |
 | `docs/infor-hms/capability-matrix.md` | Infor HMS capability allow/deny matrix |
 | `docs/superpowers/plans/2026-07-29-infor-hms-full-tool-portfolio-roadmap.md` | Full read/write roadmap |
-| `apps/server-pilot/scripts/dump-centurion-emails-md.mjs` | RDS → Markdown dump |
-| `scripts/regroup-centurion-by-thread.mjs` | Flat dump → by-thread |
-| `scripts/analyse-centurion-pms-tools.mjs` | Classifier + tool scoring |
-| `apps/server-pilot/deploy/ssm-run-command.sh` | Run commands on pilot EC2 via SSM |
+| `docs/infor-hms/centurion-thread-state-status-2026-08-10.md` | Current aggregate-only operational trust status |
+| `docs/infor-hms/centurion-thread-state-audit-runbook.md` | Current private read-only canonical export → adjudication → report flow |
 
 ---
 
 ## 1. Product context (one paragraph)
 
-Nava pilots Centurion Hotel mail. Triage already ships. The drafting agent must stop inventing rates, confirmation numbers, availability, folio balances, and bill-to details. Those facts live in **Infor HMS** (and sometimes in inbound PDF vouchers). The workstream builds **deterministic Playwright tools** that read (and later, gated-write) HMS so an AI drafting agent can ground replies. Staff outbound today is mostly templated confirmation / payment-confirmation letter delivery, not freeform essays.
+Nava pilots Centurion Hotel mail. Triage already ships. The drafting agent must stop inventing rates, confirmation numbers, availability, folio balances, and bill-to details. Those facts live in **Infor HMS** (and sometimes in inbound PDF vouchers). The workstream builds **deterministic Playwright tools** that read (and later, gated-write) HMS so an AI drafting agent can ground replies. Historically, staff outbound was mostly templated reservation- or payment-document delivery, not freeform essays.
 
 ---
 
-## 2. User goals (as stated)
+## 2. Historical user goals (as stated)
 
 1. Autonomously figure out which Infor / PMS tools are needed by exploring docs + the live PMS UI.  
 2. **Reading is fine.** **No side-effecting writes to production PMS while discovering / building.**  
@@ -59,11 +59,11 @@ Nava pilots Centurion Hotel mail. Triage already ships. The drafting agent must 
 
 ### 3.1 Pilot RDS / mail data
 
-- Read-only SQL / dump scripts against pilot are OK.  
+- Current operator access must use the dedicated canonical exporter in the current runbook; do not use generic SQL or dump scripts.
 - **Never** run Vitest (or any test runner) with `DATABASE_URL` pointing at pilot/production.  
 - Never set `VITEST_ALLOW_PILOT_RDS=1`.  
-- Never print database URLs, credentials, private mail bodies, addresses, or other PII into prompts, logs, or chat when avoidable.  
-- Full email bodies stay in **gitignored** dumps. Tracked docs are aggregates / subjects / redacted analysis only.
+- Never emit database URLs, credentials, private mail bodies, addresses, subjects, or other PII to stdout, logs, chat, Git, or prompts.
+- Raw email material stays in owner-controlled private artifacts. Tracked docs are aggregate-only or redacted analysis; never email subjects or other PII.
 
 ### 3.2 Live Infor HMS (production hotel PMS)
 
@@ -84,86 +84,29 @@ Nava pilots Centurion Hotel mail. Triage already ships. The drafting agent must 
 
 ## 4. Process: pull + analyse emails
 
-### 4.1 Refresh dump from pilot (read-only)
+### 4.1 Historical raw-dump route — retired
 
-Run on pilot EC2 via SSM (env sourced on the instance only; do not echo secrets):
+The prior refresh path materialized raw mailbox content and transferred it through an outdated route. It is retained nowhere in this handoff as an executable procedure. Do not copy, download, upload, or inspect historical raw dumps from this document.
 
-```bash
-# From laptop repo root
-STAMP=$(date -u +%Y%m%dT%H%M%SZ)
-bash apps/server-pilot/deploy/ssm-run-command.sh "
-  export NVM_DIR=/home/ubuntu/.nvm
-  [ -s \"\$NVM_DIR/nvm.sh\" ] && . \"\$NVM_DIR/nvm.sh\"
-  export PATH=\"\$HOME/.local/share/pnpm:\$PATH\"
-  cd /home/ubuntu/repos/zero/apps/server-pilot
-  ENV_FILE=.env.production
-  [ -f \"\$ENV_FILE\" ] || ENV_FILE=/home/ubuntu/.env.production
-  set -a; source \"\$ENV_FILE\"; set +a
-  unset VITEST_ALLOW_PILOT_RDS
-  OUT=/tmp/centurion-emails-dump-\${STAMP}.md
-  node scripts/dump-centurion-emails-md.mjs --out \"\$OUT\"
-  head -n 8 \"\$OUT\"
-  aws s3 cp \"\$OUT\" \
-    s3://nava-zero-mail-845242190536-af-south-1/ops/centurion-email-analysis/centurion-emails-dump-\${STAMP}.md \
-    --region af-south-1
-  echo S3_KEY=ops/centurion-email-analysis/centurion-emails-dump-\${STAMP}.md
-"
-```
+For a future authorized private run, follow `docs/infor-hms/centurion-thread-state-audit-runbook.md`: a canonical read-only export on a Linux private writer, local adjudication, then private reconciled reports. Source environment only inside the operation subshell; do not run a test runner there.
 
-Script: `apps/server-pilot/scripts/dump-centurion-emails-md.mjs`  
-- Queries `message` for transport Centurion  
-- Writes one Markdown file with index + per-message metadata + text/HTML bodies  
-- Read-only
+### 4.2 Historical collation
 
-Download locally (gitignored path):
+The former flat-dump collation step is historical only. It does not meet the current validated-canonical-corpus or thread-state evidence contract.
 
-```bash
-aws s3 cp \
-  "s3://nava-zero-mail-845242190536-af-south-1/ops/centurion-email-analysis/centurion-emails-dump-<STAMP>.md" \
-  "centurion-emails-dump.md" \
-  --region af-south-1
-```
+Current thread construction must come from the validated canonical corpus and its strict evidence rules.
 
-### 4.2 Collate by thread
+### 4.3 Historical tool-demand analysis
 
-```bash
-node scripts/regroup-centurion-by-thread.mjs
-# → centurion-emails-by-thread.md (gitignored)
-```
-
-Groups by `thread_id`, chronological order, preserves direction.
-
-### 4.3 Analyse (outbound index + fact/intent demand + tool scores)
-
-```bash
-# Ensure scripts/analyse-centurion-pms-tools.mjs OUTPUT paths use today's date
-node scripts/analyse-centurion-pms-tools.mjs
-```
-
-Writes tracked docs under `docs/infor-hms/`:
-
-- `centurion-pms-tool-demand-YYYY-MM-DD.md`  
-- `centurion-outbound-index-YYYY-MM-DD.md`  
-- `centurion-thread-collation-summary-YYYY-MM-DD.md`  
-
-Method:
-
-1. Parse every message subject + body  
-2. Regex-classify **intents** (confirm, new booking, quote, group, invoice, cancel, …)  
-3. Regex-classify **PMS fact types** (conf #, rates, dates, folio, company, docs, …)  
-4. Aggregate per thread  
-5. Score candidate tools: `score = 2×thread_fact_hits + 3×thread_intent_hits`  
-6. Emit outbound subject index (no bodies in tracked files)
-
-**Caveat:** classifiers are recall-oriented. Expect false positives. Especially the original `new_booking` regex matched any `\bbooking\b` / `\breserve\b` (including confirmation chatter). Treat scores as demand **signals**, not ticket counts. See §6 for corrected create-intent estimates.
+The historical classifier and tool scores remain dated demand signals, not response-state evidence or live operational counts. Future aggregate reporting must use the current thread-state runbook and its safe receipts; no raw material may enter tracked docs.
 
 ### 4.4 Re-run cadence
 
-Re-run §4.1–4.3 every few days as mailbox grows. Keep dated analysis files; refresh gitignored dumps in place.
+Do not re-run the retired raw-dump route. Preserve dated documents as history. A future fresh run follows `centurion-thread-state-audit-runbook.md` and publishes only an aggregate result after its receipt gate passes.
 
 ---
 
-## 5. Corpus snapshots
+## 5. Historical corpus snapshots
 
 | Dump | Messages | In / Out | Threads | Notes |
 | --- | ---: | --- | ---: | --- |
@@ -176,8 +119,8 @@ Re-run §4.1–4.3 every few days as mailbox grows. Keep dated analysis files; r
 
 - Threads with ≥1 PMS-fact signal: **599** (~90%)  
 - Open inbound-looking PMS-reply-worthy (heuristic): **420**  
-- Outbound: **88** messages across **86** threads; **~82** are templated `Confirmation Letter` / `Payment Confirmation` subjects  
-- Non-template outbound: Centurion test ×2, Nava access ×2, Comp ×2  
+- Outbound: **88** messages across **86** threads; **~82** used recurring reservation- or payment-document delivery templates
+- Non-template outbound: **6** messages across three internal or administrative categories (two each)
 - Multi-message threads: **63** (most threads still single inbound)
 - Window: 2026-07-27 → 2026-08-04 (~8 days)
 
@@ -200,10 +143,7 @@ Re-run §4.1–4.3 every few days as mailbox grows. Keep dated analysis files; r
 
 ## 7. What staff actually send (outbound)
 
-Almost all Centurion outbound in-corpus = **templated document delivery**:
-
-- `The Centurion Hotel_Confirmation Letter_<Guest> (n°…)`  
-- Newer: `The Centurion Hotel_Payment Confirmation_<Guest> (n°…)`  
+Almost all historical Centurion outbound used recurring reservation- or payment-document delivery templates. This aggregate description retains no email-subject text, guest details, or message identifiers.
 
 Implication: drafting “100% of *sent shape*” needs **document list/fetch/generate + attach**, not only prose. Many stays already exist in HMS (channel/SynXis/agent) before staff email goes out.
 
@@ -320,9 +260,9 @@ Live autonomy progress ladder (separate from this mail analysis): safety/fixture
 
 ## 12. Safety reminder for the next LLM
 
-- Prefer this handoff + dated `docs/infor-hms/centurion-*-2026-08-03.md` over chat memory.  
-- Do not commit gitignored email dumps.  
-- Do not paste guest bodies/PII into external tools.  
+- Prefer `centurion-thread-state-status-2026-08-10.md` and `centurion-thread-state-audit-runbook.md` over this historical handoff for current operations.
+- Do not commit, copy, upload, or inspect historical raw dumps through an unapproved route.
+- Do not paste guest bodies/PII into external tools, stdout, chat, or Git.
 - Do not treat CRS Check Availability as a read.  
 - Do not run tests against pilot RDS.  
 - Designing a write tool ≠ permission to submit on production.
@@ -340,9 +280,9 @@ Live autonomy progress ladder (separate from this mail analysis): safety/fixture
 
 ## 14. One-screen summary for another LLM
 
-**Job:** Infer Infor HMS tools for Nava Centurion AI drafting from real mail + Infor docs.  
-**Data:** Dump Centurion messages from pilot RDS (read-only SSM) → regroup by thread → regex analyse → scored tool list. Latest dump **623 msgs / 520 threads (2026-08-03)**.  
-**Outbound truth:** almost all staff sends are confirmation/payment letter templates.  
+**Job:** Historical tool-demand context for Nava Centurion AI drafting.
+**Data:** The snapshot figures below are historical only. Do not pull, regroup, or analyse raw mail through this handoff; use the current private thread-state runbook for a fresh authorized result.
+**Historical outbound pattern:** almost all staff sends used recurring reservation- or payment-document templates.
 **Reads to build first:** find reservation, mail artifact, quote (availability+rates), list documents, company, group, folio, sent-email audit.  
 **Writes to design now, never auto-submit on prod:** create reservation, generate/send confirmation, amend, cancel.  
 **Discovery rule:** explore up to the submit button; do not press it. CRS Check Availability creates a reservation — forbidden as a “read.”  

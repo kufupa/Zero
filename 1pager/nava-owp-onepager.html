@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Nava AI - Tax Practice Automation Suite | OWP Partners</title>
+<style>
+  @page { size: A4; margin: 0; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 210mm;
+    height: 297mm;
+    font-family: "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+    color: #1a1f2e;
+    background: #fff;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .page {
+    width: 210mm;
+    height: 297mm;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ── Header ── */
+  .header {
+    background: linear-gradient(105deg, #0b1120 0%, #121c38 42%, #2a2460 78%, #5a4898 100%);
+    color: #fff;
+    padding: 8mm 12mm 7mm;
+    flex-shrink: 0;
+  }
+  .header-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 5mm;
+  }
+  .brand {
+    font-size: 20pt;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    line-height: 1;
+  }
+  .meta {
+    text-align: right;
+    font-size: 5.8pt;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    line-height: 1.5;
+    text-transform: uppercase;
+    opacity: 0.95;
+  }
+  .headline {
+    font-size: 14pt;
+    font-weight: 600;
+    line-height: 1.25;
+    max-width: 178mm;
+    margin-bottom: 2.5mm;
+  }
+  .headline .accent {
+    font-weight: 700;
+    color: #c8c4ef;
+  }
+  .lede {
+    font-size: 7.4pt;
+    line-height: 1.4;
+    font-weight: 400;
+    opacity: 0.92;
+    max-width: 186mm;
+  }
+
+  /* ── Body ── */
+  .body {
+    flex: 1 1 auto;
+    min-height: 0;
+    padding: 4.5mm 12mm 3.5mm;
+    display: flex;
+    flex-direction: column;
+    gap: 3.2mm;
+  }
+  .section-title {
+    font-size: 7.2pt;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #2e3c8a;
+    margin-bottom: 1.6mm;
+  }
+  .two-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 7mm;
+  }
+  .col p {
+    font-size: 7pt;
+    line-height: 1.38;
+    color: #2a2f3d;
+  }
+  .col p strong, .bench-note strong, .callout p strong {
+    font-weight: 700;
+    color: #1a1f2e;
+  }
+  hr.rule {
+    border: none;
+    border-top: 1px solid #e4e6ec;
+    margin: 0;
+  }
+
+  /* Benchmarks */
+  .bench-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 4mm;
+  }
+  .bench {
+    border: 1px solid #d8dbe3;
+    border-radius: 3px;
+    padding: 2.4mm 2mm 2.2mm;
+    text-align: center;
+  }
+  .bench .num {
+    font-size: 14.5pt;
+    font-weight: 700;
+    color: #121c38;
+    line-height: 1.1;
+    margin-bottom: 1.2mm;
+  }
+  .bench .cap {
+    font-size: 6pt;
+    line-height: 1.3;
+    color: #4a5160;
+  }
+  .bench-note {
+    font-size: 6.9pt;
+    line-height: 1.35;
+    color: #2a2f3d;
+    margin-top: 2mm;
+  }
+
+  /* HBR callout */
+  .callout {
+    background: #f3f5f9;
+    border-left: 2.5px solid #2e3c8a;
+    padding: 2.6mm 3.5mm 2.4mm;
+  }
+  .callout .section-title { margin-bottom: 1.4mm; }
+  .callout p {
+    font-size: 7pt;
+    line-height: 1.38;
+    color: #2a2f3d;
+  }
+  .callout .source {
+    margin-top: 1.4mm;
+    font-size: 5.6pt;
+    color: #6b7280;
+    font-style: italic;
+  }
+
+  /* How it works */
+  .how-list {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 1.3mm;
+  }
+  .how-list li {
+    font-size: 6.9pt;
+    line-height: 1.34;
+    color: #2a2f3d;
+    padding-left: 3.5mm;
+    position: relative;
+  }
+  .how-list li::before {
+    content: "-";
+    position: absolute;
+    left: 0;
+    color: #2e3c8a;
+    font-weight: 700;
+  }
+  .how-list strong { color: #121c38; font-weight: 700; }
+
+  /* Deliver */
+  .deliver-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 4mm;
+  }
+  .deliver .num {
+    font-size: 10pt;
+    font-weight: 700;
+    color: #2e3c8a;
+    line-height: 1;
+    margin-bottom: 1mm;
+  }
+  .deliver .title {
+    font-size: 7.1pt;
+    font-weight: 700;
+    color: #121c38;
+    margin-bottom: 1mm;
+    line-height: 1.2;
+  }
+  .deliver .desc {
+    font-size: 6.3pt;
+    line-height: 1.3;
+    color: #4a5160;
+  }
+
+  /* Footer */
+  .footer {
+    background: #0a0e18;
+    color: #fff;
+    padding: 4mm 12mm 4.5mm;
+    flex-shrink: 0;
+  }
+  .footer .section-title {
+    color: #fff;
+    margin-bottom: 1.5mm;
+    opacity: 0.9;
+  }
+  .footer .team {
+    display: flex;
+    flex-direction: column;
+    gap: 1.4mm;
+    margin-bottom: 2mm;
+  }
+  .footer .person {
+    font-size: 7pt;
+    line-height: 1.35;
+  }
+  .footer .person a {
+    color: #fff;
+    font-weight: 700;
+    text-decoration: none;
+    border-bottom: 0.5px solid rgba(255,255,255,0.35);
+  }
+  .footer .person .role {
+    font-weight: 400;
+    opacity: 0.85;
+  }
+  .footer .links {
+    font-size: 5.8pt;
+    opacity: 0.7;
+    line-height: 1.35;
+  }
+  .footer .links a {
+    color: #c8c4ef;
+    text-decoration: none;
+  }
+  .footer .links span { opacity: 0.45; margin: 0 1.5mm; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header class="header">
+    <div class="header-top">
+      <div class="brand">NAVA AI</div>
+      <div class="meta">
+        TAX PRACTICE AUTOMATION SUITE<br />
+        PREPARED FOR OWP PARTNERS<br />
+        ATTN: ANDREW WELLSTED, DIRECTOR TAX
+      </div>
+    </div>
+    <div class="headline">
+      Every client tax enquiry, drafted in <span class="accent">73 seconds</span>.<br />
+      Around the clock. Fully POPIA compliant.
+    </div>
+    <p class="lede">
+      Nava is an AI tax operations layer that reads inbound client emails and documents, pulls live matter context from
+      your practice systems, and drafts on-brand responses instantly. But it doesn’t stop at the reply - Nava extracts
+      the data and writes it straight back into the systems you already run. In effect, a high-end, always-on practice
+      assistant that absorbs SARS, deal and dispute volume without dropping a single fee-bearing enquiry.
+    </p>
+  </header>
+
+  <main class="body">
+
+    <div class="two-col">
+      <div class="col">
+        <div class="section-title">The problem we solve</div>
+        <p>
+          Today the average response time to a client tax email is roughly <strong>four hours</strong> - and it’s
+          effectively random. Enquiries land in one queue, so a high-value cross-border structuring or SARS dispute sits
+          beside a routine document chase. Partners and associates open and service each thread one by one, with no way
+          to prioritise the matters that actually drive OWP’s margin. After 6&nbsp;pm and on weekends, no one is drafting
+          at all.
+        </p>
+      </div>
+      <div class="col">
+        <div class="section-title">Why the timing is right</div>
+        <p>
+          SARS complexity, VAT Modernisation and rising reporting obligations are already reshaping how your clients
+          engage - the ideal, lowest-cost moment to embed Nava. Practice workflows and client files are open and being
+          touched, so adding an AI layer now avoids a costly retrofit later. At the same time, enquiry volume is climbing
+          and peer firms are moving on AI. This is the window to lead rather than catch up - in line with OWP’s own view
+          that technology will disrupt professional services.
+        </p>
+      </div>
+    </div>
+
+    <hr class="rule" />
+
+    <section>
+      <div class="section-title">Benchmarks we are already hitting</div>
+      <div class="bench-grid">
+        <div class="bench">
+          <div class="num">15,000+</div>
+          <div class="cap">Emails processed per day, comfortably,<br />for a single client</div>
+        </div>
+        <div class="bench">
+          <div class="num">73s</div>
+          <div class="cap">Average response time - vs. a ~4-hour<br />industry norm</div>
+        </div>
+        <div class="bench">
+          <div class="num">24/7</div>
+          <div class="cap">Live every night, weekend and holiday -<br />never off the clock</div>
+        </div>
+      </div>
+      <p class="bench-note">
+        Nava prioritises client communications by revenue and complexity, drafts the moment they hit the inbox, and paces
+        replies deliberately so they read as human rather than robotic - commercial where it matters, never mechanical.
+      </p>
+    </section>
+
+    <hr class="rule" />
+
+    <section class="callout">
+      <div class="section-title">Why speed converts advisory work</div>
+      <p>
+        Harvard Business Review’s study of 1.25 million sales leads found that responding within an hour makes a company
+        <strong>nearly 7× more likely</strong> to convert an enquiry - and <strong>over 60× more likely</strong> than
+        waiting a day. Intent is highest the moment a corporate, fund or HNW client reaches out on a SARS, deal or
+        exchange-control matter - before they’ve taken the same question to another advisor. Nava drafts in seconds,
+        every time.
+      </p>
+      <p class="source">Source: Oldroyd, McElheran &amp; Elkington, “The Short Life of Online Sales Leads,” Harvard Business Review (2011).</p>
+    </section>
+
+    <hr class="rule" />
+
+    <section>
+      <div class="section-title">How it works - built for security and control</div>
+      <ul class="how-list">
+        <li><strong>Hosted in South Africa.</strong> Runs in the AWS Cape Town Region (af-south-1), so client personal information and sensitive tax matters stay in-country - aligned with POPIA and your data-residency obligations.</li>
+        <li><strong>AWS-native stack.</strong> Cloud-native architecture on Amazon Web Services, with email transport handled through Amazon SES for secure, scalable inbound and outbound client communication.</li>
+        <li><strong>Human-in-the-loop first.</strong> Nava drafts; your qualified practitioners review, edit and approve. Automation is switched on only per-partner and per-matter category, once draft quality is proven - never as a global default.</li>
+        <li><strong>Least-privilege access &amp; full audit.</strong> Scoped to only the client files and systems each workflow needs, with edit tracking, audit logs, confidence thresholds and escalation rules throughout.</li>
+        <li><strong>Plugs into the software you already run.</strong> Tell us which practice management, document and filing systems you use - we connect in under two weeks, with no code and no vendor API work required.<br />Computer-use agents sit as a layer on top of your stack, <strong>~8× faster</strong> than typical integration timelines.</li>
+      </ul>
+    </section>
+
+    <hr class="rule" />
+
+    <section>
+      <div class="section-title">What Nava is designed to deliver</div>
+      <div class="deliver-grid">
+        <div class="deliver">
+          <div class="num">01</div>
+          <div class="title">Scale without the headcount</div>
+          <div class="desc">Absorb rising SARS, VAT and cross-border enquiry volume without growing associate capacity in lockstep.</div>
+        </div>
+        <div class="deliver">
+          <div class="num">02</div>
+          <div class="title">Faster, higher-quality drafts</div>
+          <div class="desc">Cut first-response time and lift consistency across tax, exchange-control and dispute matters.</div>
+        </div>
+        <div class="deliver">
+          <div class="num">03</div>
+          <div class="title">Reclaim advisory margin</div>
+          <div class="desc">Automate triage and first drafts so partners stay on structuring, opinions and implementation - not inbox admin.</div>
+        </div>
+        <div class="deliver">
+          <div class="num">04</div>
+          <div class="title">Stay ahead in the AI race</div>
+          <div class="desc">Put OWP at the front of AI adoption in South African tax and legal practice, not a step behind peers.</div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="footer">
+    <div class="section-title">The team</div>
+    <div class="team">
+      <div class="person">
+        <a href="https://www.linkedin.com/in/ansh--arora/">Ansh Arora</a>
+        <span class="role"> - Ex-Palantir FDE, UK Police / National Fraud Intelligence Bureau (NFIB).</span>
+      </div>
+      <div class="person">
+        <a href="https://www.linkedin.com/in/cole-dd/">Cole Dorrestein</a>
+        <span class="role"> - Ex-Marex Quant. Capital-markets systems &amp; automation.</span>
+      </div>
+    </div>
+    <div class="links">
+      <a href="https://www.linkedin.com/in/ansh--arora/">linkedin.com/in/ansh--arora</a>
+      <span>·</span>
+      <a href="https://www.linkedin.com/in/cole-dd/">linkedin.com/in/cole-dd</a>
+    </div>
+  </footer>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,112 @@
+--- page 1 ---
+Legacy Hotels & Resorts 
+ 
+Policies & Procedures 
+Rooms Division, Reservations, Front Office 
+________________________________________________________________ 
+ 
+Signed copy on file – Head Office Finance 
+ 
+ Signed copy on file – Head Office Finance 
+ 
+MANAGING DIRECTOR SYSTEMS DEVELOPMENT MANAGER 
+NEIL YATES ANDREW WYTRYKOWSKI 
+ 
+ 
+ 
+Rooms Division, Reservations, Front Office – HMS_RES025  Page 1 of 2 
+ 
+ 
+Document ID Title 
+HMS_RES025 NO-SHOW POLICY  
+Revision:  3 Prepared By: Systems Development Date Revised: 03/05/2024 
+Issue Date:   Approved By: Andrew Wytrykowski Date Approved: 11/05/2017 
+ 
+Responsibilities:   
+ 
+Reservations  
+ 
+Policy: 
+ 
+A no-show is a guaranteed reservation that did not arrive on the date that was booked. 
+ 
+Purpose:   
+ 
+Scope:  
+ 
+Definitions:   
+ 
+Procedure:  
+ 
+1. No-show correspondence 
+ 
+1.1 See Cancellation policy for the procedure – HMS_RES024 – Cancellation Policy.  
+ 
+1.2 A file of the no shows must be kept in reservations with all the correspondence for the reservation.  
+ 
+1.3 At the end of each month a spreadsheet must be drawn up with all the No-shows and Cancellation 
+charges done for the month, and filed in the No Show file. The Rooms Division Manager should 
+receive a copy of the spreadsheet. 
+ 
+ 
+Deviations: 
+ 
+Please note that deviations to the above policy & procedure are permitted if the outcome of the above does not 
+have a negative impact on the business of the Hotel or Legacy Hotels & Resorts.  All deviations must be authorized 
+by the Supervisor or Manager of the Department and must be documented for auditing purposes. The Supervisor 
+and/or Manager must use their discretion on the deviation if it impacts negatively the relationship and future 
+business from the client, as long as the decision of the deviation is justifiable. 
+ 
+ 
+ 
+ 
+
+--- page 2 ---
+Legacy Hotels & Resorts 
+ 
+Policies & Procedures 
+Rooms Division, Reservations, Front Office 
+________________________________________________________________ 
+ 
+Signed copy on file – Head Office Finance 
+ 
+ Signed copy on file – Head Office Finance 
+ 
+MANAGING DIRECTOR SYSTEMS DEVELOPMENT MANAGER 
+NEIL YATES ANDREW WYTRYKOWSKI 
+ 
+ 
+ 
+Rooms Division, Reservations, Front Office – HMS_RES025  Page 2 of 2 
+ 
+ 
+Associated Policies & Procedures  
+ 
+▪ HMS_RES024 - Cancellation Policy 
+ 
+References: 
+ 
+A. No current reference at present. 
+ 
+ 
+ 
+ 
+Additional Resources: 
+ 
+A. No current additional resources at present 
+ 
+ 
+Forms/Records: 
+ 
+▪ No forms applicable for this procedure. 
+ 
+Revision History: 
+ 
+Revision Date Description of Changes Requested by 
+1 30/11/2010 Format of document  Thomas Klingler 
+2 11/05/2017 Added the Deviation section Andrew Wytrykowski 
+3 03/05/2024 Amended for INFOR HMS Andrew Wytrykowski 
+    
+    
+ 
+ 

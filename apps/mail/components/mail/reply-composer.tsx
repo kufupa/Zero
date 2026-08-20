@@ -384,7 +384,6 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
         syncReplyHeadersFromProps
         autofocus={true}
         settingsLoading={settingsLoading}
-        replyingTo={replyToMessage?.sender.email}
         replyToMessageId={replyToMessage?.id ?? null}
         headerPreview={headerPreview}
       />

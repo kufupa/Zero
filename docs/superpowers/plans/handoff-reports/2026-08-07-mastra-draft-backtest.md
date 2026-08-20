@@ -36,16 +36,18 @@
 | overnight-2026-08-07-k | all-inbounds 200 (no echo) | 200 | **0** | invent gate green; 200× NO_GOLD_REPLY expected |
 | overnight-2026-08-07-m | gold-pairs + structural coverage | 8 | **0** | mean gold coverage **1.0**; soft ~0.067; SOFT_OTHER 8 |
 | overnight-2026-08-07-n | all-inbounds 500 | 500 | **0** | 492 NO_GOLD_REPLY + 8 gold soft; invent gate holds at scale |
+| centurion-from-replies-2026-08-07 | `from` centurion@ + prior on thread; claim-safe-stub | **8** | **0** | mean tone ~0.079; toolCoverage structural 1.0; brackets 44; LOW_TONE 5 / SOFT_OTHER 3 |
 
 ## Corpus ceiling (read-only diag)
 
-- Centurion inbound ≈ **996**, outbound ≈ **122**
-- Inbounds with **later** same-thread outbound ≈ **8** (true gold pairs)
-- Inbounds with **any** same-thread outbound ≈ **32**
-- Outbounds with prior inbound by timestamp ≈ **4** (unique prior inbound ≈ **2**)
-- Outbound bodies: almost all **html-only** (`text_nonempty` ≈ 2 / 122)
+- Centurion inbound ≈ **1045**, outbound ≈ **122**
+- `from` starts `centurion@`: inbound **11** + outbound **122** = **133**
+- Of those, same-thread **prior** by timestamp ≈ **8** ← strict gold for one-pass backtest
+- Loose `%centurion%` inbound ≈ **89** (78 match “centurion” without `centurion@` in address — not mailbox local)
+- Guest then later `%centurion%` ≈ **24**; multi-msg threads ≈ **104**
+- Outbound bodies: almost all **html-only**
 
-**Implication:** full “compare draft vs every Centurion sent reply” cannot exceed ~8 high-quality timestamp-ordered pairs on current RDS thread linkage. Expand later via `in_reply_to` / `references` / better threading — not inventing gold.
+**Implication:** strict `centurion@` + reply-on-thread stays ~8 until `in_reply_to` / better threading or user widens gold beyond mailbox local.
 
 ## Draft path reality
 

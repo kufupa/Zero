@@ -1,0 +1,108 @@
+--- page 1 ---
+Legacy Hotels & Resorts 
+ 
+Policies & Procedures 
+Rooms Division, Reservations, Front Office 
+________________________________________________________________ 
+ 
+Signed copy on file – Head Office Finance 
+ 
+ Signed copy on file – Head Office Finance 
+ 
+MANAGING DIRECTOR SYSTEMS DEVELOPMENT MANAGER 
+NEIL YATES ANDREW WYTRYKOWSKI 
+ 
+ 
+ 
+Rooms Division, Reservations, Front Office – HMS_RES070  Page 1 of 2 
+ 
+ 
+Document ID Title 
+HMS_RES070 Infor Number Format 
+Revision:  1 Prepared By:  
+Systems Development Date Prepared: 01/11/2024 
+Issue Date:   Approved By:  Date Approved:  
+ 
+Responsibilities:   
+ 
+Reservations and/or Group Reservationist, Front Office, Guest Relations,  
+and Rooms Division Manager 
+ 
+ 
+Policy: 
+ 
+The number format for all local numbers entered on INFOR HMS should be entered using just one “0”  
+Then the rest of the home/business or mobile number can be entered. 
+ 
+The format for international numbers entered on INFOR HMS should be entered using “00"  
+Then the rest of the home/business or mobile number can be entered. 
+ 
+There should no spaces or lines in between. 
+ 
+ 
+Purpose: To ensure all numbers are entered correctly into the system.  
+ 
+ 
+Procedure:  
+The local home / business number should be entered as below: 
+ 
+ 
+The International home/business should be entered as below: 
+ 
+ 
+ 
+All local mobile numbers should be entered as below: 
+
+
+--- page 2 ---
+Legacy Hotels & Resorts 
+ 
+Policies & Procedures 
+Rooms Division, Reservations, Front Office 
+________________________________________________________________ 
+ 
+Signed copy on file – Head Office Finance 
+ 
+ Signed copy on file – Head Office Finance 
+ 
+MANAGING DIRECTOR SYSTEMS DEVELOPMENT MANAGER 
+NEIL YATES ANDREW WYTRYKOWSKI 
+ 
+ 
+ 
+Rooms Division, Reservations, Front Office – HMS_RES070  Page 2 of 2 
+ 
+ 
+ 
+All International mobile numbers should be entered as below: 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+Associated Policies & Procedures  
+ 
+ 
+References: 
+A. No current reference at present. 
+ 
+Additional Resources: 
+ 
+A. No current additional resources at present 
+ 
+Forms/Records: 
+ 
+▪ No forms applicable for this procedure. 
+ 
+Revision History: 
+ 
+Revision Date Description of Changes Requested by 
+1 30/11/2010 Format of document  Thomas Klingler 
+2 01/11/2023 Creation of policy Luleka Maluleka 
+    
+    
+ 
+ 

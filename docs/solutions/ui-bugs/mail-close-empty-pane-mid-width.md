@@ -1,15 +1,14 @@
 ---
 title: Mail Close Empty Pane Mid-Width and Panel Collapse
 date: 2026-08-04
-last_updated: 2026-08-05
+last_updated: 2026-08-10
 category: ui-bugs
-module: apps/mail mail-shell ResizablePanel list/thread + SidebarToggle
+module: apps/mail mail-shell ResizablePanel list/thread
 problem_type: ui_bug
 component: email_processing
 symptoms:
   - "Close/X on mid-width desktop (~768-1023px) left It's empty here empty reading pane instead of inbox list"
   - "Hide inbox collapse via react-resizable-panels appeared to click but did nothing (list could not collapse to 0)"
-  - "SidebarToggle icons always looked open; expand control needed to migrate off collapsed list chrome"
 root_cause: wrong_api
 resolution_type: code_fix
 severity: medium
@@ -27,7 +26,7 @@ tags:
 
 ## Problem
 
-On mid-width desktop, opening a thread hid the list via CSS while the thread panel stayed mounted. Close cleared `threadId` and showed the empty reading pane ("It's empty here") instead of returning to the inbox list. On wide split, Hide inbox appeared to click but `Panel.collapse()` was a no-op because the thread sibling `maxSize` could not absorb list → 0%. Staff also needed state-true collapse chrome for sidebar and inbox.
+On mid-width desktop, opening a thread hid the list via CSS while the thread panel stayed mounted. Close cleared `threadId` and showed the empty reading pane ("It's empty here") instead of returning to the inbox list. On wide split, Hide inbox appeared to click but `Panel.collapse()` was a no-op because the thread sibling `maxSize` could not absorb list → 0%.
 
 ## Symptoms
 
@@ -35,7 +34,6 @@ On mid-width desktop, opening a thread hid the list via CSS while the thread pan
 - Mid-width: empty thread chrome still occupies the shell after close.
 - Wide split: Hide inbox does nothing; Show inbox never appears.
 - Expand control trapped inside a zero-width list panel if collapse partially succeeds.
-- Sidebar toggle icon always looked open; no `aria-expanded`.
 - EC2 read-only Playwright gate failed first on stale `[data-mail-list-queue]`, then on Hide inbox noop until the `maxSize` fix.
 
 ## What Didn't Work
@@ -67,7 +65,7 @@ Remove `hidden lg:block` on the list panel. `ResizablePanelGroup` uses `key` per
 
 ### 3. Wide list collapse + Show inbox in thread chrome
 
-List: `collapsible={isWideSplit}`, `collapsedSize={0}`. When collapsed, Show inbox + SidebarToggle live on the thread panel (`data-mail-list-expand`) so controls are not trapped at zero width.
+List: `collapsible={isWideSplit}`, `collapsedSize={0}`. When collapsed, Show inbox lives on the thread panel (`data-mail-list-expand`) so the expand control is not trapped at zero width.
 
 ### 4. CRITICAL: thread `maxSize` must be 100 on wide split
 
@@ -81,9 +79,9 @@ maxSize={bothDesktopPanels ? (isWideSplit ? 100 : MAIL_THREAD_SPLIT.max) : 100}
 
 `collapse()` needs the sibling to absorb list → 0%. Contract test asserts the wide `maxSize` ternary.
 
-### 5. SidebarToggle state-true icons
+### 5. Keep sidebar navigation separate from inbox collapse
 
-Open → `PanelLeftClose` + “Hide sidebar”; closed → `PanelLeftOpen` + “Show sidebar”; `aria-expanded={open}`.
+`Hide inbox` and `Show inbox` remain mail-panel controls. Sidebar visibility now belongs to `NavUser`, derives its state from the active desktop/mobile sidebar state, and is covered separately in [mail-sidebar-toggle-placement](./mail-sidebar-toggle-placement.md).
 
 ### Verification
 
@@ -117,3 +115,4 @@ Wide Hide inbox was a **resizable-panels constraint** bug: collapse reallocates 
 
 - [mail-reply-inbox-list-horizontal-shift](./mail-reply-inbox-list-horizontal-shift.md) — shared ResizablePanel / overflow contract; still may cite pre-fix `hidden lg:block` / complement thread `maxSize` samples.
 - [compose-close-draft-honesty](../logic-errors/compose-close-draft-honesty.md) — Close path compose flush before clearing selection.
+- [mail-sidebar-toggle-placement](./mail-sidebar-toggle-placement.md) — navigation-sidebar visibility is separate from mail-list collapse.

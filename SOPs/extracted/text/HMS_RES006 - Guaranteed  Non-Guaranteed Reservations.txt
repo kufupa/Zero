@@ -1,0 +1,114 @@
+--- page 1 ---
+Legacy Hotels & Resorts 
+ 
+Policies & Procedures 
+Rooms Division, Reservations 
+________________________________________________________________ 
+           Signed copy on file – Head Office Finance                     Signed copy on file – Head Office Finance 
+   
+MANAGING DIRECTOR SYSTEMS DEVELOPMENT MANAGER 
+NEIL YATES ANDREW WYTRYKOWSKI 
+ 
+ 
+ 
+Rooms Division, Reservations –HMS_ RES006   Page 1 of 2 
+ 
+ 
+Document ID Title 
+HMS_RES006 GUARANTEED & NON-GUARANTEED RESERVATIONS    
+Revision:  4 Prepared By: Systems Development Date Revised: 18/04/2025 
+Issue Date:   Approved By:  Date Approved: 
+ 
+Responsibilities:  
+  
+Reservations  
+ 
+Policy: 
+1. Each guest, travel agent or tour operator making a booking should be advised that their booking is 
+not guaranteed unless one of the following is provided: 
+ 
+1.1 Travel agent voucher / voucher number (Voucher to be inserted into “Documents” on the 
+reservation if the property uses INFOR HMS) if the Travel Agency has credit facilities with 
+the hotel. 
+ 
+1.2 100% Deposit pre-paid into our bank account on FIT (Individual) bookings at least 72 hours 
+prior to the guest’s arrival (if a group then group contract applies) 
+ 
+1.3 Payment has been made in full and confirmed with the Accounts department that the 
+payment reflects in the bank. 
+ 
+1.4 Order number sent to the Hotel should the company have an account with the hotel. 
+ 
+1.5 Payment has been completed via the Legacy Online payment portal, monies have been 
+received into IVERI and reflect on the Hotels bank statement. 
+ 
+Procedure:  
+1. Cancellation Policy 
+ 
+If a booking has been guaranteed the guest must be advised of the cancellation policy.  
+ 
+1.1 Cancellations - for two or less rooms – within 48 hours prior to arrival will be subject to a full 
+cancellation fee of the value of the accommodation booked.   
+ 
+1.2 Cancellations - for three to nine rooms – within seven days prior to arrival will be subject to a full 
+cancellation fee of the value of the accommodation booked.  
+ 
+1.3 Cancellations – 10 rooms or more, the group cancellation policy will apply.  
+ 
+
+--- page 2 ---
+Legacy Hotels & Resorts 
+ 
+Policies & Procedures 
+Rooms Division, Reservations 
+________________________________________________________________ 
+           Signed copy on file – Head Office Finance                     Signed copy on file – Head Office Finance 
+   
+MANAGING DIRECTOR SYSTEMS DEVELOPMENT MANAGER 
+NEIL YATES ANDREW WYTRYKOWSKI 
+ 
+ 
+ 
+Rooms Division, Reservations –HMS_ RES006   Page 2 of 2 
+ 
+If a booking has not been guaranteed the guest must be advised that the hotel reserves the right to cancel the 
+booking at 6pm on the day of arrival or if otherwise stated on the terms and conditions on the confirmation 
+letter. 
+ 
+The hotel also reserves the right to make alternative accommodation arrangements for non -guaranteed 
+bookings if the hotel is fully booked. 
+ 
+Deviations: 
+ 
+Please note that deviations to the above policy & procedure are permitted if the outcome of the above does not 
+have a negative impact on the business of the Hotel or Legacy Hotels & Resorts.  All deviations must be authorized 
+by the Supervisor or Manager of the Department and must be documented for auditing purposes. The Supervisor 
+and/or Manager must use their discretion on the deviation if it impacts negatively the relationship and future 
+business from the client, as long as the decision of the deviation is justifiable 
+ 
+Associated Policies & Procedures  
+ 
+▪  
+References: 
+ 
+A. No current reference at present. 
+ 
+Additional Resources: 
+ 
+A. No current additional resources at present 
+ 
+Forms/Records: 
+ 
+▪ No forms applicable for this procedure. 
+ 
+Revision History: 
+ 
+Revision Date Description of Changes Requested by 
+1 30/11/2010 Format of document  Thomas Klingler 
+2 15/07/2015 Change of Policy Andrew Wytrykowski 
+3 11/05/2017 Amended point 1.3  and added the 
+deviations section. 
+Andrew Wytrykowski 
+4 07/02/2019 Added 1.5 Devin Smith 
+5 18/04/2024 Amended for INFOR HMS Andrew Wytrykowski 
+ 

@@ -1,0 +1,246 @@
+--- page 1 ---
+Legacy Hotels & Resorts 
+ 
+Policies & Procedures 
+Rooms Division, Reservations, Front Office 
+________________________________________________________________ 
+ 
+ 
+Signed copy on file – Head Office Finance 
+ 
+ Signed copy on file – Head Office Finance 
+ 
+MANAGING DIRECTOR SYSTEMS DEVELOPMENT MANAGER 
+NEIL YATES ANDREW WYTRYKOWSKI 
+ 
+ 
+ 
+Rooms Division, Reservations, Front Office – HMS_RES007    Page 1 of 4 
+ 
+ 
+ 
+ 
+Document ID Title 
+HMS_RES007 PROFILES 
+Revision:  4 Prepared By: Systems Development Date Revised: 20/04/2024 
+Issue Date:  04/04/2014 Approved By: Andrew Wytrykowski Date Approved: 13/09/2014 
+ 
+Responsibilities:   
+ 
+Reservations and Front office 
+ 
+Policy: 
+ 
+The information on the profiles is an integral part of the Hospitality management system and the 
+Reservation / Front Office Function. The information that you enter on the profiles influences various 
+other aspects of the business. It is important that you maintain your profiles so that the hotel can 
+extract true and accurate figures / information.   
+ 
+In order for Legacy Marketing to be able to track where our business comes from, we make use of 
+Business Segments.  Business Segments for first time visitors should only be completed by Front 
+Office upon check-in.   
+ 
+When making a booking for a returning guest using his/her existing profile, the Business Segment 
+should be left as is until check-in where reception will update the profile if required. 
+ 
+Purpose:   
+ 
+Scope:  
+ 
+Definitions: 
+   
+INFOR HMS – PMS - Hospitality Management System. 
+I.e. – That is to say. 
+LL - Legacy Lifestyle. 
+ 
+Procedure:  
+ 
+1. Creating a Profile 
+ 
+
+--- page 2 ---
+Legacy Hotels & Resorts 
+ 
+Policies & Procedures 
+Rooms Division, Reservations, Front Office 
+________________________________________________________________ 
+ 
+ 
+Signed copy on file – Head Office Finance 
+ 
+ Signed copy on file – Head Office Finance 
+ 
+MANAGING DIRECTOR SYSTEMS DEVELOPMENT MANAGER 
+NEIL YATES ANDREW WYTRYKOWSKI 
+ 
+ 
+ 
+Rooms Division, Reservations, Front Office – HMS_RES007    Page 2 of 4 
+ 
+1.1 When creating a new reservation, you must check to see if the profile does not already exist on INFOR 
+HMS. This can be done by clicking on the guest search icon. . If the profile exists you can link it 
+to the reservation. 
+1.2 If the profile does not exist, the you can create a new profile on the reservation screen.  
+ 
+1.3   Ensure that if the guest registered as a LL Member at another property a profile look -up is done to 
+ download the correct profile with the LL information. 
+ 
+1.4   The importance of maintaining your profiles is critical, for both the Hotel and Central Reservations, 
+ for statistical data and for the central profile database. 
+2. Profile Entries 
+ 
+2.1   When creating or amending a profile, the following group standard must be maintained: 
+ 
+2.1.1   All letters (except the first one) must be in Lower Case and all City names to be typed out in full  
+   I.e.       Johannesburg     NOT     JOHANNESBURG 
+      
+2.1.2   Names and Surnames must be typed out in full. 
+I.e.      Van Der Merwe   NOT     VD Merwe 
+ 
+2.1.3   First names and Second names. If the guest fills in his initials:  
+              I.e.                    PT Bond                NOT       P. T. Bond  
+            
+2.2   If the guest fills in a full first name and a full second name: The first name should be filled in the 
+ profile space provided as per normal and the second name should be filled in the space next to the first 
+ name.  
+ 
+2.3   The full postal address must be typed out in full.  The standard for inserting the postal address is as 
+ follows: 
+                PO Box                   NOT      Box or P.O. Box or P O Box 
+                Private Bag X         NOT      Bag or P/Bag 
+ 
+       2.4 The telephone and Fax numbers must have the area code, irrespective if it is in the same area code as    
+               your Hotel (please note no spaces). 
+ 
+i.e.  0113023800   NOT  302 3800 or (011) 302 3800 
+ 
+Cell:  0827777777   NOT  0827777777 or 082 777 7777 
+ 
+Overseas: 0044256389648652  NOT  +44  256389648652 
+ 
+       2.5  When inserting the mobile number as a membership number for legacy lifestyle it should be as follows: 
+ 
+i.e.  0712346766   NOT  071 2346766 
+  004425638964865  NOT  0044 256389648652 
+ 
+
+
+--- page 3 ---
+Legacy Hotels & Resorts 
+ 
+Policies & Procedures 
+Rooms Division, Reservations, Front Office 
+________________________________________________________________ 
+ 
+ 
+Signed copy on file – Head Office Finance 
+ 
+ Signed copy on file – Head Office Finance 
+ 
+MANAGING DIRECTOR SYSTEMS DEVELOPMENT MANAGER 
+NEIL YATES ANDREW WYTRYKOWSKI 
+ 
+ 
+ 
+Rooms Division, Reservations, Front Office – HMS_RES007    Page 3 of 4 
+ 
+ 
+ 2.6  When creating Travel Agent profiles the following must be adhered to: 
+ 
+         Rennies Travel Braamfontein    NOT   Rennies Braamfontein 
+               SAA City Centre                         NOT      SAA CC  
+ Exel Travel              NOT     XL Travel 
+ 
+  2.6.1   The main / generic e-mail address is to be inserted into the profile 
+ 
+ 2.6.2   All Profiles need to be completed as accurately as possible  
+ 
+ 2.6.3   Ensure that the Profile name corresponds with the Company’s registered Trading name.  
+ 
+      2.7   When there are two people sharing a room the following standard must be maintained: 
+ 
+ 2.7.1    If there are two conference delegates, a shared reservation must be created with two separate 
+             profiles; one for each guest updated with their individual information.  
+ 
+ 2.7.2    A husband and wife sharing should only have one profile, for example Mr/s Peter Brink. 
+ 
+ 2.7.3    A family with two rooms:  
+  First Room: Mr/s Smith 
+  Second Room: Family Smith 
+ 
+3.   Maintenance 
+ 
+      3.1   The Profile must at all times be complete and updated when necessary.  
+ 
+      3.2   All profiles that have incomplete addresses and have no room nights or revenue must be purged.  
+ 
+3.3   Duplicate profiles must be merged.  In INFOR HMS, always merge the profile that you do not require 
+        with the profile that you want to keep. 
+ 
+      3.4   Profiles must be purged once a month for 6 months history 
+ 
+4.   Profile Updates 
+ 
+      4.1   When a new corporate rate is issued to a Company by the Sales Manager, this information will be given      
+              in writing to the Key Account Manager and the following should be done: 
+ 
+ 4.1.1   New Company profile opened if there is not an existing one. 
+ 
+ 4.1.2   All contact person and address details checked 
+ 
+4.1.3   Negotiated rates loaded on property management system 
+ 
+4.1.4   All future reservations linked to this company should be checked and updated accordingly  
+ 
+
+--- page 4 ---
+Legacy Hotels & Resorts 
+ 
+Policies & Procedures 
+Rooms Division, Reservations, Front Office 
+________________________________________________________________ 
+ 
+ 
+Signed copy on file – Head Office Finance 
+ 
+ Signed copy on file – Head Office Finance 
+ 
+MANAGING DIRECTOR SYSTEMS DEVELOPMENT MANAGER 
+NEIL YATES ANDREW WYTRYKOWSKI 
+ 
+ 
+ 
+Rooms Division, Reservations, Front Office – HMS_RES007    Page 4 of 4 
+ 
+Associated Policies & Procedures  
+ 
+▪ HMS_RES008 – Central Profile Look-up 
+▪ HMS_RES050 – Legacy Lifestyle 
+▪ HMS_FRO002 – Check-In Procedure 
+▪ HMS_FRO003 – After Check-In Procedure 
+ 
+References: 
+ 
+A. No current reference at present. 
+ 
+Additional Resources: 
+ 
+A. No current additional resources at present 
+ 
+Forms/Records: 
+ 
+▪ No forms applicable for this procedure. 
+ 
+ 
+ 
+Revision History: 
+ 
+Revision Date Description of Changes Requested by 
+1 30/11/2010 Format of document  Thomas Klingler 
+2 14/09/2011 Changes to profile market 
+segmentation 
+A Wytrykowski 
+3 31/03/2014 Business Segments A Wytrykowski 
+4 30/04/2024 Update for INFOR HMS use A Wytrykowski 
+ 
+ 

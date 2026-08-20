@@ -1,0 +1,11 @@
+import postgres from 'postgres';
+import { readFileSync, existsSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+const root=join(dirname(fileURLToPath(import.meta.url)),'..');
+const ca=join(root,'deploy','rds-ca-global.pem');
+const ssl=existsSync(ca)?{rejectUnauthorized:true,ca:readFileSync(ca,'utf8')}:'require';
+const sql=postgres(process.env.DATABASE_URL,{ssl,max:1});
+const letters=await sql;
+console.log(JSON.stringify(letters[0],null,2));
+await sql.end({timeout:5});

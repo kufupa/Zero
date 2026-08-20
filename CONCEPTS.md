@@ -22,7 +22,11 @@ SPA chrome that calls `connections.setDefault` to flip `is_default` and rescope 
 
 ### Mail shell
 
-Desktop reading chrome for the mail SPA: fixed app sidebar beside list and thread columns. Layout bands differ: Wide split mounts both columns; Mid-width exclusive panes mounts only one at a time. Wide thread content (Reply composer, long HTML) must scroll inside the thread column; it must not shove the inbox list sideways off the viewport. Distinct from Mailbox switcher (transport identity chrome) and from folder/category filters inside the list.
+Desktop reading chrome for the mail SPA: fixed app sidebar beside list and thread columns. Layout bands differ: Wide split mounts both columns; Mid-width exclusive panes mounts only one at a time. Wide thread content (Reply composer, long HTML) must scroll inside the thread column; it must not shove the inbox list sideways off the viewport. Shell shrinkability does not automatically fix nested composer header rows — those need their own Compose header containment. Distinct from Mailbox switcher (transport identity chrome) and from folder/category filters inside the list.
+
+### Compose header containment
+
+Layout rule that the compose To recipient column shares a flex row with Cc / Bcc / close actions and must use shrinkable flex growth, never a full-width claim, so actions stay usable when the thread pane is narrow. Distinct from Mail shell (list/thread column containment) and from Typing kick-out (draft ownership / unmount).
 
 ### Wide split
 
@@ -150,7 +154,20 @@ Inbound POP3/MIME copy whose From matches the active mailbox transport (or its s
 
 ### Refresh-safe draft persistence
 
-Draft compose behavior where a body-first draft is persisted server-side early (via `shouldPersistDraft`, keyed on meaningful change not on complete recipients/subject) and a late server refetch never overwrites unsaved local edits (via `chooseDraftEditorState` dirty-state tiebreaker). Covers what to save and how not to clobber on refresh/refetch; for when leave/navigation must flush first, see Compose leave flush.
+Draft compose behavior where a body-first draft is persisted early (meaningful change, not complete recipients/subject) and a late server refetch never overwrites an edited mount. Ownership is a **lifetime** property of the mounted editor (any local edit history), not the transient dirty flag. A save acknowledges only the revision it captured before awaiting; persistence IDs must not change React editor identity. Complements Compose leave flush (when to save relative to navigation).
+
+### Local draft ownership
+
+Invariant that once a mounted compose/reply editor has any local edit history, server draft echoes cannot rewrite its body or subject for the rest of that mount — including after a successful autosave clears the dirty flag. Distinct from the transient dirty flag used for "should we persist?" decisions.
+
+### Typing kick-out
+
+Staff-facing symptom where mid-typing compose text is silently replaced by an older draft body, the editor remounts (focus/caret jump), **or the whole reply/compose pane exits**. Causes include: stale autosave acknowledgement handing ownership back to server hydrate; new-mail first draft ID remounting the composer; open-thread refetch / false thread-id mismatch unmounting ReplyCompose (which also resets local ownership); and Escape silent-close after autosave cleared dirty while the body still has text. Letter list/thread hotkeys are normally blocked on contenteditable; Escape is the shortcut class that can still kick out. Avoid treating this as AI streaming into the box.
+*Avoid: typing kick back*
+
+### Open-thread stability
+
+Open-thread (`mail.get`) contract that keeps the reading pane and reply composer mounted across refetch: resolve identity only from real thread ids (never a message-id fallback), blank UI only on positive thread-id mismatch, retain prior query payload while refetching, and do not skeleton-unmount a loaded thread solely because a fetch is in flight. Complements Refresh-safe draft persistence (which protects a *mounted* editor) and Typing kick-out (symptom when this contract fails).
 
 ### Stale draft (STALE_DRAFT)
 
@@ -170,7 +187,7 @@ Named leave path that persists the mounted reply/compose editor before navigatio
 
 ### Compose-close honesty
 
-Staff-facing close contract for reply compose: empty close is silent; dirty explicit close offers Keep editing / Save draft / Discard; dirty thread switch flushes without a lying "changes will be lost" Stay/Leave. Distinct from Honesty UI (removing fake chrome) — this is draft lifecycle truthfulness on leave.
+Staff-facing close contract for reply compose: empty close is silent; dirty explicit close offers Keep editing / Save draft / Discard; dirty thread switch flushes without a lying "changes will be lost" Stay/Leave. Escape after a successful autosave must still prompt when body/subject/to remain nonempty — dirty alone is not enough. Distinct from Honesty UI (removing fake chrome) — this is draft lifecycle truthfulness on leave.
 
 ## Deploy and ops
 
@@ -193,6 +210,10 @@ Autonomous-agent editing failure where a plan snippet is written as the entire f
 ### False green gate
 
 A verification gate (typecheck, test, or build) reported as passing in a hand-off summary but never executed against the actual working tree — the described fixes were never persisted or committed, so re-running the check on disk reveals the true failures. Distinct from Patch-fragment truncation, where edits are corrupted rather than absent; here the state simply never matched the claim. Detection and prevention is to re-run the exact gate on disk (ideally in CI) rather than trusting the reported status.
+
+### Cursor execution-backend flake
+
+Transient Cursor agent-tool-bridge outage where mutating tools (Shell, Write, StrReplace) fail with the exact harness string that the execution environment is down, while lighter read tools may still work. Not an app, AWS, EC2, or RDS failure. Correct recovery is agent-owned silent backoff-retry then resume from the durable SDD progress ledger — never a human "wait until backend back" gate. Distinct from Patch-fragment truncation (partial bad writes) and False green gate (claimed verify never ran).
 
 ### E2E session mint
 
@@ -436,6 +457,7 @@ Hard override that forbids Vitest (and similar runners) against pilot/production
 - **"Folders" on mailbox provider** used to mean the Labels tree; hotel AI categories now own the Folders section title — user filing chrome is **My folders**, never Folders.
 - **category color** can mean seed DB hex or Centurion pastel presentation — for managed slugs, presentation wins in UI chrome.
 - **"honesty"** had been used for both Honesty UI (hide fake chrome) and Compose-close honesty (draft leave dialog) — these are distinct.
+- **"dirty"** (unsaved-changes flag) had been treated as compose content ownership — dirty is transient persist intent; Local draft ownership is lifetime mount ownership after any local edit.
 - **"spam"** can mean Zimbra/server folder routing, a legacy SPAM user label, or app `spam_at` folder membership — app folder truth is `spam_at` only.
 - **"never-spam"** names the auto-triage allowlist (not a ban on manual mark-spam or ingest block); the same hotel domain list also seeds Image trust defaults — spam auto-path and image-loading are still distinct product surfaces.
 - **"nava URL"** after the hotel-HTTPS cutover means the Canonical origin on hotel DNS/VPN — not `nava.legacy.local` (legacy CORS overlap only).

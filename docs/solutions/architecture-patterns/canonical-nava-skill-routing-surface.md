@@ -69,7 +69,7 @@ Missing GStack assets: repair installation; do not silently skip the paired gate
 
 ### `/nava-run` execution contract
 
-Resolve the final plan, read full plan + rules + solutions + PII-safe Git status/diff restricted to known non-PII paths + safety overlay, then preflight. If the plan is not implementation-ready, run `/nava-plan` rather than improvising. Repo rule requires TDD, SDD, per-task review, final CE code review, and fresh verification (`.cursor/rules/nava-workflow.mdc:14`). The installed global nava-run skill further specifies subagent-driven-development, test-driven-development, `ce-code-review mode:agent`, `verification-before-completion`, and headless `ce-compound` for non-obvious learnings.
+Resolve the final plan, read full plan + rules + solutions + scoped Git status/diff, and preserve the ban on staging or committing PII-bearing artifacts; then preflight. If the plan is not implementation-ready, run `/nava-plan` rather than improvising. Repo rule requires TDD, SDD, per-task review, final CE code review, and fresh verification (`.cursor/rules/nava-workflow.mdc:14`). The installed global nava-run skill further specifies subagent-driven-development, test-driven-development, `ce-code-review mode:agent`, `verification-before-completion`, and headless `ce-compound` for non-obvious learnings.
 
 Per that installed skill, `/nava-run` authorizes plan-scoped edits and safe verification; it does not authorize commits, pushes, PRs, merges, deployments, destructive git, production writes, credential bypass, or unrelated cleanup unless the user explicitly requested them.
 
@@ -81,7 +81,7 @@ Autonomy authorizes safe reversible work, investigation, implementation, testing
 
 ### `/continue-autonomously` as queued fail-safe
 
-On receive: inspect conversation goal, active plan, PII-safe Git status/diff restricted to known non-PII paths (never render PII-bearing artifacts to terminal logs), completed tasks, and latest evidence before acting. Read the mandate, repo rules, and Zero overlay/safety files. Routine questions from a prior turn → choose safest reversible recommendation, record decision, proceed. Resume first incomplete or failed task; never repeat verified completed work. Failed tests/builds/deploys are not valid stop reasons; true blockers are missing credentials, human-only interaction, destructive ambiguity, safety-policy conflict, or external outage preventing required proof. The skill may be queued repeatedly; always inspect state first for idempotency.
+On receive: inspect conversation goal, active plan, scoped Git status/diff while keeping PII-bearing artifacts out of staging and commits, completed tasks, and latest evidence before acting. Read the mandate, repo rules, and Zero overlay/safety files. Routine questions from a prior turn → choose safest reversible recommendation, record decision, proceed. Resume first incomplete or failed task; never repeat verified completed work. Failed tests/builds/deploys are not valid stop reasons; true blockers are missing credentials, human-only interaction, destructive ambiguity, safety-policy conflict, or external outage preventing required proof. The skill may be queued repeatedly; always inspect state first for idempotency.
 
 ### Ponytail: review vs persistent mode
 

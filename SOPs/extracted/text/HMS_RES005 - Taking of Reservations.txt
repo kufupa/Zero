@@ -1,0 +1,118 @@
+--- page 1 ---
+Legacy Hotels & Resorts 
+ 
+Policies & Procedures 
+Rooms Division, Reservations 
+________________________________________________________________ 
+ 
+   
+MANAGING DIRECTOR SYSTEMS DEVELOPMENT MANAGER 
+NEIL YATES ANDREW WYTRYKOWSKI 
+ 
+ 
+ 
+Rooms Division, Reservations, Front Office –HMS_RES005   
+ Page 1 of 2 
+ 
+ 
+Document ID Title 
+HMS_RES005 TAKING OF RESERVATIONS  
+Revision:  4 Prepared By: Systems Development Revision Date: 24/11/2024 
+Issue Date:  29/09/2014 Approved By: Andrew Wytrykowski Date Approved: 24/08/2015 
+ 
+Responsibilities:   
+ 
+Reservations 
+ 
+Policy: 
+ 
+The reservationist needs to ensure that all reservations are done accurately and actioned in INFOR 
+HMS immediately upon receipt of the reservation. 
+ 
+Purpose:   
+ 
+To ensure correct procedure of taking a reservation 
+ 
+  
+ 
+Definitions: 
+ 
+INFOR HMS - Property Management System   
+ 
+Procedure: 
+ 
+1.1 When a guest / client indicates that they want to make a booking, the reservationist is to capture the details 
+on INFOR HMS.   
+ 
+1.2 A confirmation letter for each reservation must be sent to all guests, including t ravel agents and tour 
+operators within three hours of the enquiry. 
+ 
+1.3 When reservations are made by other Hotel staff, the confirmation letter is to be sent to client and also 
+printed and handed to reservations for them to check that it has been correctly entered and completed. 
+ 
+1.4 Below details must be captured for each booking: (The required fields *) 
+ 
+1.1.1. Date of arrival 
+1.1.2. Date of departure 
+1.1.3. Number of guests: (including children and their ages) 
+1.1.4. Source of Business. 
+1.1.5. Room Type  
+
+--- page 2 ---
+Legacy Hotels & Resorts 
+ 
+Policies & Procedures 
+Rooms Division, Reservations 
+________________________________________________________________ 
+ 
+   
+MANAGING DIRECTOR SYSTEMS DEVELOPMENT MANAGER 
+NEIL YATES ANDREW WYTRYKOWSKI 
+ 
+ 
+ 
+Rooms Division, Reservations, Front Office –HMS_RES005   
+ Page 2 of 2 
+ 
+1.1.6. Rate Plan 
+1.1.7. Market Segment 
+1.1.8. Guest details: (Name, surname) 
+1.1.9. Guest address details. 
+1.1.10. Guest E-mail Address 
+1.1.11. Guest Mobile Number 
+1.1.12. Company and postal details of the company making the reservation. 
+1.1.13. Legacy Lifestyle Membership details if applicable.  If the guest is not a member, LL should be 
+offered and explained to the guest.  If the guest shows interest, the LL Details are to be inserted 
+on the profile of the guest on INFOR HMS. 
+1.1.14. Settlement type 
+ 
+Should the enquiry be for a group and should it not have been converted to an actual booking, the details are to 
+be captured and handed to the relevant KAM for follow-up purposes. Preferably this should be sent to 
+legacyquotes@legacyhotels.co.za. 
+ 
+Associated Policies & Procedures  
+ 
+▪  
+References: 
+ 
+RES050 - Legacy Lifestyle 
+RES044 - Reservation Checklist 
+ 
+Additional Resources: 
+ 
+A. No current additional resources at present 
+ 
+Forms/Records: 
+ 
+▪ No forms applicable for this procedure. 
+ 
+Revision History: 
+ 
+Revision Date Description of Changes Requested by 
+1  Format of document  Thomas Klingler 
+2  Inclusion of Legacy Lifestyle Andrew Wytrykowski 
+3  Policy Amendment Robert Hodson 
+4 25/11/2024 Policy Amended to INFOR HMS standard Andrew Wytrykowski 
+    
+ 
+ 

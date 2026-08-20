@@ -1,0 +1,292 @@
+--- page 1 ---
+Legacy Hotels & Resorts 
+ 
+Policies & Procedures 
+Rooms Division, Reservations 
+________________________________________________________________ 
+ 
+   
+MANAGING DIRECTOR SYSTEMS DEVELOPMENT MANAGER 
+NEIL YATES ANDREW WYTRYKOWSKI 
+ 
+ 
+ 
+Rooms Division, Reservations, Front Office – HMS_RES004  Page 1 of 5 
+ 
+ 
+Document ID Title 
+HMS_RES004 RATE STRUCTURE (RATE CODES)  
+Revision:  4 Prepared By: Systems Development Revision Date: 
+Issue Date:   Approved By: Andrew Wytrykowski Date Approved:  
+ 
+Responsibilities:   
+ 
+Reservations Manager 
+ 
+Policy: 
+ 
+The Reservations Manager is responsible for ensuring that the correct rate codes are inserted into 
+Opera PMS. 
+ 
+Any other rate codes that need to be created must be authorized by the Group Sales Manager and 
+created by the Systems Development Department.  The Hotel may not create their own rate codes. 
+ 
+Should a client wish to apply for Organisation or Wholesale rates, this request is to be sent to Head 
+Office Sales who will then authorize the request, should the client be eligible. 
+ 
+Purpose:   
+ 
+Scope:  
+ 
+Definitions:  
+ 
+INFO HMS  - Property Management Systems 
+TRACK - System Sub-category for accounting purposes 
+ 
+Procedure:  
+ 
+1. Standard Legacy Hotels & Resorts rate structure 
+ 
+The following is a list and explanation of the standard Legacy Hotels & Resorts rate structure: 
+ 
+  
+
+--- page 2 ---
+Legacy Hotels & Resorts 
+ 
+Policies & Procedures 
+Rooms Division, Reservations 
+________________________________________________________________ 
+ 
+   
+MANAGING DIRECTOR SYSTEMS DEVELOPMENT MANAGER 
+NEIL YATES ANDREW WYTRYKOWSKI 
+ 
+ 
+ 
+Rooms Division, Reservations, Front Office – HMS_RES004  Page 2 of 5 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+Rates are categorized into 10 Market Segments 
+*as per the rate they are based off: 
+ 
+• BAR Rates – Best Available rates  
+– Rates based off BAR 
+o Website 
+o BAR GDS  
+o OTA  
+o Lifestyle  
+o BAR Weekend  
+ 
+• Airline  
+ 
+• Negotiated Contract 
+o BAR Corporate 
+o Corporate 
+o Negotiated GDS 
+o Government 
+ 
+• Domestic Leisure  
+ 
+• Group & Convention  
+ 
+• Casino 
+ 
+• Wholesale 
+o BAR Wholesale 
+o Group  
+o Series /Tour 
+o Transient  
+ 
+ 
+• Extended Stay 
+o Long Stay  
+ 
+• Other  
+o Educational / Site Inspection  
+o House Use 
+o Complimentary 
+o Promotional / Discount 
+ 
+• Timeshare / Villas 
+Indicates a rate sequence 
+B WSF 
+COR 
+ 
+1 
+Indicates Market Segment 
+B – Indicates a BAR derived rate 
+N/WS/GNC – Indicates a Market 
+segment direct rate 
+Indicates if the rate 
+includes any meal plan 
+RO/Blank – Room only 
+B – Breakfast inclusive 
+DB – Dinner & Breakfast 
+FI – Fully Inclusive 
+
+--- page 3 ---
+Legacy Hotels & Resorts 
+ 
+Policies & Procedures 
+Rooms Division, Reservations 
+________________________________________________________________ 
+ 
+   
+MANAGING DIRECTOR SYSTEMS DEVELOPMENT MANAGER 
+NEIL YATES ANDREW WYTRYKOWSKI 
+ 
+ 
+ 
+Rooms Division, Reservations, Front Office – HMS_RES004  Page 3 of 5 
+ 
+ 
+Market codes & Rate Codes as per below: 
+*Rates below illustrated as B – Breakfast – Rates can be DB / FI / FB – depending on property or 
+meal plan 
+BAR RATES 
+TRACK 
+Code Description Rate Code Rate Code Description 
+BAR BAR DIR  BAR System Best Available Rate (Adjustable) 
+  BAR Direct BARG/BDIR1B BAR FairBAR 
+  BARG/BDIR 2B BAR 65% - 69% Occupancy Rate 
+  BARG/BDIR 3B BAR 70% - 79% Occupancy Rate 
+  BARG/BDIR 4B BAR 80% - 89% Occupancy Rate 
+  BARG/BDIR 5B BAR 90% - 100% Occupancy Rate 
+LLC Lifestyle  BLLB LL rate = % off BAR 
+WEB/OWS Website  BWEBB OWS rate = to BAR 
+OTAA OTA BAR BOTAB OTA rate = to BAR 
+GDS GDS BAR BGDSB GDS rate = to BAR 
+BAR Rack Rate BRACB Properties without a base BAR rate 
+     
+ 
+AIRLINE RATES 
+AIR Airline Rate AIR1-5B Negotiated Rate for specific Airline Crews 
+    
+ 
+NEGOTIATED CONTRACT 
+COR BAR Corporate BCOR1-2B COR rate = 15% off BAR 
+ Neg. Corporate NCOR1-10B Negotiated Contracted Rates  
+GOV Government  NGOVB Local Government Rate 
+  GOVTDB TTS Government - DBB 
+NGDS Neg. GDS Contract NGDS1-∞ Negotiated Contracted  Rates * Based on Contract 
+ 
+DOMESTIC LEISURE 
+DOML Domestic Leisure DOMG Domestic Leisure - Gross 
+  DOMN Domestic Leisure - Nett 
+ 
+ 
+  
+
+--- page 4 ---
+Legacy Hotels & Resorts 
+ 
+Policies & Procedures 
+Rooms Division, Reservations 
+________________________________________________________________ 
+ 
+   
+MANAGING DIRECTOR SYSTEMS DEVELOPMENT MANAGER 
+NEIL YATES ANDREW WYTRYKOWSKI 
+ 
+ 
+ 
+Rooms Division, Reservations, Front Office – HMS_RES004  Page 4 of 5 
+ 
+ 
+GROUP & CONVENTION 
+GNC Grp & Conv. GNC1-9B Group and Convention  Rate 1 
+  GNCDIS Group Negotiated Rate 
+  GNCDSB GNC Management Approved 
+  GNCFI GNC Fully Inclusive 
+ 
+CASINO 
+CAS Casino  CAS80 Special Casino Rate - Cash 
+  CAS80C Casino Complimentary Rate 
+  CAS80P Special Casino Rate - Points 
+    
+ 
+WHOLESALE 
+WS Wholesale (STO) WSF1-3B Wholesale Contracted - Transient  
+  WSG1-7B Wholesale Contracted – Group / Series 
+  WSE1B Discounted Group Series 
+  WSTGB Tour Leader  
+  WSGCB Wholesale Complimentary  
+ 
+EXTENDED STAY 
+EXT Extended Stay EXST1R Long Stay Rack 
+  EXST2R Long Stay Negotiated 
+  EXST3R Long Stay Direct 
+ 
+OTHER 
+EDU Site Inspection EDU Educational / Site Inspection 
+HSE House Use HSE House Use 
+COMP Complimentary CMPB Complimentary  
+PROM Promotional  CEL1B Celebrate (Discount Rate) 
+BAR Day DAY Day Use 
+OWN Owner OWN Owner 
+ 
+TIMESHARE 
+TSO Timeshare TSO Timeshare Owner 
+VIL Villa  VIL20O/R/W Villa Accommodation 
+TSO Timeshare SPB Spacebank 
+  
+
+--- page 5 ---
+Legacy Hotels & Resorts 
+ 
+Policies & Procedures 
+Rooms Division, Reservations 
+________________________________________________________________ 
+ 
+   
+MANAGING DIRECTOR SYSTEMS DEVELOPMENT MANAGER 
+NEIL YATES ANDREW WYTRYKOWSKI 
+ 
+ 
+ 
+Rooms Division, Reservations, Front Office – HMS_RES004  Page 5 of 5 
+ 
+ 
+Associated Policies & Procedures  
+ 
+▪  
+References: 
+ 
+A. No current reference at present. 
+ 
+Additional Resources: 
+ 
+A. No current additional resources at present 
+ 
+Forms/Records: 
+ 
+▪ No forms applicable for this procedure. 
+ 
+Revision History: 
+ 
+Revision Date Description of Changes Requested by 
+1 30/11/2010 Format of document  Thomas Klingler 
+2 14/03/2012 Rate Code Explanation update Andrew Wytrykowski 
+3 14/02/2014 Market Code & Rate Code updates Andrew Wytrykowski 
+4 30/01/2025 Policy Amended to INFOR HMS Standard Andrew Wytrykowski  
+    
+ 
+ 

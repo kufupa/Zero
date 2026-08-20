@@ -1,0 +1,371 @@
+--- page 1 ---
+Legacy Hotels & Resorts 
+ 
+Policies & Procedures 
+Rooms Division, Reservations, Front Office 
+________________________________________________________________ 
+ 
+Signed copy on file – Head Office Finance 
+ 
+ Signed copy on file – Head Office Finance 
+ 
+MANAGING DIRECTOR SYSTEMS DEVELOPMENT MANAGER 
+NEIL YATES ANDREW WYTRYKOWSKI 
+ 
+ 
+ 
+Rooms Division, Reservations, Front Office – HMS_RES023  Page 1 of 9 
+ 
+ 
+Document ID Title 
+HMS_RES023 PRE-PAYMENTS POLICY 
+Revision:  5 Prepared By: Systems 
+Development Date Revised: 03/05/2024 
+Issue Date:   Approved By: Andrew 
+Wytrykowski Date Approved: 
+ 
+Responsibilities:   
+ 
+Reservations and/or Group Reservationist, Rooms Division Manager and Unit General Manager 
+ 
+Policy: 
+ 
+When you have requested a deposit to confirm the reservation (the full accommodation amount for the 
+total stay is required), the reservation department must give the hotel’s banking details into which the 
+client can deposit the prepayment.  
+ 
+The reservations department must complete the advance deposit on HMS, allocating the request to 
+either rooms or catering, and the date that the amount should be received by.  Daily, the “Deposits” 
+report must be printed and actioned should the prepayment amount not be received by the client on 
+the day that was specified on the reservation.  The “Deposits” report should be checked on a weekly 
+basis by the Rooms Division Manager and the Unit General Manager.  
+ 
+When payment is received and the accounts department confirms the money is in the bank, the 
+reservations or front office department must post the amount on the correct reservation in INFOR 
+HMS, allocating the deposit to either rooms or catering. 
+ 
+Purpose:   
+ 
+Scope:  
+ 
+Definitions: HMS – Hotel Management System ( INFOR)   
+ 
+Procedure:  
+ 
+1. Payment Procedure  
+ 
+The following procedure must be adhered to with regards to the following payments:  
+ 
+1.1 Bank Deposit: A copy of the bank deposit slip must be faxed / e-mailed through to the hotel; a copy 
+must be given to the accounts department.  The accounts department will confirm that the amount is in 
+the bank account.  Once the payment reflects on the hotel’s bank statement, the amount can be posted 
+on the reservation on HMS. 
+
+--- page 2 ---
+Legacy Hotels & Resorts 
+ 
+Policies & Procedures 
+Rooms Division, Reservations, Front Office 
+________________________________________________________________ 
+ 
+Signed copy on file – Head Office Finance 
+ 
+ Signed copy on file – Head Office Finance 
+ 
+MANAGING DIRECTOR SYSTEMS DEVELOPMENT MANAGER 
+NEIL YATES ANDREW WYTRYKOWSKI 
+ 
+ 
+ 
+Rooms Division, Reservations, Front Office – HMS_RES023  Page 2 of 9 
+ 
+ 
+1.2 Electronic Banking:  A copy of the electronic transfer confirmation page must be faxed / e-mailed 
+through to the hotel; a copy must be given to the accounts department.  The accounts department will 
+confirm that the amount is in the bank account.  Once the payment reflects o n the hotel’s bank 
+statement, then the amount can be posted on the reservation in HMS. 
+ 
+1.3 Cheque:  It is Legacy’s policy to not accept cheques as payment. 
+ 
+1.4 Payment has been completed via the Legacy Online payment portal, monies have been received into 
+IVERI and reflect on the Hotels bank statement. 
+ 
+At the end of the reservation staff member’s shift, banking should be done (see policy FRO011 – Cash-up 
+Procedure). 
+ 
+ 
+2. Advanced Deposit  
+Advanced Deposit are identified as payments for the reservation posted PRIOR to the arrival date.  
+ 
+These are to be posted: 
+ 
+• On Reservation → Record View → Deposit Received  
+ 
+ 
+➔ Accounts → Advanced Deposit  
+ 
+  
+
+
+--- page 3 ---
+Legacy Hotels & Resorts 
+ 
+Policies & Procedures 
+Rooms Division, Reservations, Front Office 
+________________________________________________________________ 
+ 
+Signed copy on file – Head Office Finance 
+ 
+ Signed copy on file – Head Office Finance 
+ 
+MANAGING DIRECTOR SYSTEMS DEVELOPMENT MANAGER 
+NEIL YATES ANDREW WYTRYKOWSKI 
+ 
+ 
+ 
+Rooms Division, Reservations, Front Office – HMS_RES023  Page 3 of 9 
+ 
+2.1 ACTIVITY: 
+ 
+ 
+2.1.1. Deposit - Post your received and accounts verified deposit amount here  
+o Select the Activity Deposit 
+ 
+ 
+o Select the appropriate Transaction code – Payment method  
+ 
+ 
+ 
+ 
+o Insert the deposit amount  
+  
+
+
+--- page 4 ---
+Legacy Hotels & Resorts 
+ 
+Policies & Procedures 
+Rooms Division, Reservations, Front Office 
+________________________________________________________________ 
+ 
+Signed copy on file – Head Office Finance 
+ 
+ Signed copy on file – Head Office Finance 
+ 
+MANAGING DIRECTOR SYSTEMS DEVELOPMENT MANAGER 
+NEIL YATES ANDREW WYTRYKOWSKI 
+ 
+ 
+ 
+Rooms Division, Reservations, Front Office – HMS_RES023  Page 4 of 9 
+ 
+o Comments – Use the bank paid date + reference / accounts folio number or the last 4 digit of 
+the card used to pay. 
+ 
+ 
+▪ Deposit Made  
+ 
+ 
+▪ Print Receipt  
+• Add receipt & proof of payment to daily cash-up paperwork for accounts 
+ 
+ 
+This will AUTO transfer to guest folio on check in.   
+
+
+--- page 5 ---
+Legacy Hotels & Resorts 
+ 
+Policies & Procedures 
+Rooms Division, Reservations, Front Office 
+________________________________________________________________ 
+ 
+Signed copy on file – Head Office Finance 
+ 
+ Signed copy on file – Head Office Finance 
+ 
+MANAGING DIRECTOR SYSTEMS DEVELOPMENT MANAGER 
+NEIL YATES ANDREW WYTRYKOWSKI 
+ 
+ 
+ 
+Rooms Division, Reservations, Front Office – HMS_RES023  Page 5 of 9 
+ 
+ 
+Deposit appears on Reservation Deposit Received  
+ 
+ 
+ 
+ 
+2.1.2. Forfeit – If the guest is a No Show or the deposit is NOT TO BE REFUNDED but rather forfeited 
+as accommodation charge  
+ 
+o Forfeit linked to a specified GL code 
+o Select the Activity Forfeit 
+o Select the Associated Deposit  
+ 
+ 
+ 
+ 
+ 
+ 
+  
+
+
+--- page 6 ---
+Legacy Hotels & Resorts 
+ 
+Policies & Procedures 
+Rooms Division, Reservations, Front Office 
+________________________________________________________________ 
+ 
+Signed copy on file – Head Office Finance 
+ 
+ Signed copy on file – Head Office Finance 
+ 
+MANAGING DIRECTOR SYSTEMS DEVELOPMENT MANAGER 
+NEIL YATES ANDREW WYTRYKOWSKI 
+ 
+ 
+ 
+Rooms Division, Reservations, Front Office – HMS_RES023  Page 6 of 9 
+ 
+ 
+2.1.3. Refund – To refund the deposit paid  
+ 
+o Select the Activity Refund 
+o Select the Associated Deposit  
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+  
+
+
+--- page 7 ---
+Legacy Hotels & Resorts 
+ 
+Policies & Procedures 
+Rooms Division, Reservations, Front Office 
+________________________________________________________________ 
+ 
+Signed copy on file – Head Office Finance 
+ 
+ Signed copy on file – Head Office Finance 
+ 
+MANAGING DIRECTOR SYSTEMS DEVELOPMENT MANAGER 
+NEIL YATES ANDREW WYTRYKOWSKI 
+ 
+ 
+ 
+Rooms Division, Reservations, Front Office – HMS_RES023  Page 7 of 9 
+ 
+ 
+2.1.4. To Guest Ledger – this is the move from Advanced Deposit → to the reservation Folio 
+▪ Guest Reservation – will automatically move on check in  
+▪ House Accounts – the below steps to be followed to move deposit  
+ 
+o Select the Activity To Guest Ledger  
+o Select the Associated Deposit  
+ 
+ 
+ 
+ 
+o Reservation Folio 
+ 
+ 
+  
+
+
+--- page 8 ---
+Legacy Hotels & Resorts 
+ 
+Policies & Procedures 
+Rooms Division, Reservations, Front Office 
+________________________________________________________________ 
+ 
+Signed copy on file – Head Office Finance 
+ 
+ Signed copy on file – Head Office Finance 
+ 
+MANAGING DIRECTOR SYSTEMS DEVELOPMENT MANAGER 
+NEIL YATES ANDREW WYTRYKOWSKI 
+ 
+ 
+ 
+Rooms Division, Reservations, Front Office – HMS_RES023  Page 8 of 9 
+ 
+ 
+2.1.5. Deposit Transfer – this Activity option deposit transfer is no longer in use. 
+To Transfer the Deposit to another reservation --  
+ 
+o Select the Activity Deposit 
+o Select From Account  
+▪ Search room that has the deposit you want to BRING TO THIS ROOM 
+ 
+ 
+o Select the Associated Deposit  --> Save 
+ 
+ 
+ 
+ 
+  
+
+
+--- page 9 ---
+Legacy Hotels & Resorts 
+ 
+Policies & Procedures 
+Rooms Division, Reservations, Front Office 
+________________________________________________________________ 
+ 
+Signed copy on file – Head Office Finance 
+ 
+ Signed copy on file – Head Office Finance 
+ 
+MANAGING DIRECTOR SYSTEMS DEVELOPMENT MANAGER 
+NEIL YATES ANDREW WYTRYKOWSKI 
+ 
+ 
+ 
+Rooms Division, Reservations, Front Office – HMS_RES023  Page 9 of 9 
+ 
+ 
+Deviations: 
+Please note that deviations to the above policy & procedure are permitted if the outcome of the above does not 
+have a negative impact on the business of the Hotel or Legacy Hotels & Resorts.  All deviations must be authorized 
+by the Supervisor or Manager of the Department and must be documented for auditing purposes. The Supervisor 
+and/or Manager must use their discretion on the deviation if it negatively impacts  the relationship and future 
+business from the client, if the decision of the deviation is justifiable. 
+ 
+Associated Policies & Procedures  
+ 
+▪ HMS_FRO011 – Cash-up Procedure 
+ 
+References: 
+A. No current reference at present. 
+ 
+Additional Resources: 
+ 
+A. No current additional resources at present 
+ 
+Forms/Records: 
+ 
+▪ No forms applicable for this procedure. 
+ 
+Revision History: 
+ 
+Revision Date Description of Changes Requested by 
+1 30/11/2010 Format of document  Thomas Klingler 
+2 22/01/2015 Policy Amendment Andrew Wytrykowski 
+3 11/05/2017 Added the Deviations section Andrew Wytrykowski 
+4 27/02/2019 Added 1.4 Devin Smith 
+5 03/05/2024 Amended for INFOR HMA Andrew Wytrykowski 
+6 26/06/2025 Addition of “how to guide” / 
+Advance deposit options  
+Maxine Hattingh 
+ 

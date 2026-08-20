@@ -1,0 +1,28 @@
+{
+  "package": "@firecrawl/pdf-inspector",
+  "version": "1.12.0",
+  "publishedGitHead": "98990cc55028a83aa8c712df938dd5dc19523350",
+  "lopdf": "0.41.0",
+  "backtestOnly": true,
+  "main": {
+    "integrity": "sha512-Gfn1ltmqyAwvrb+M46MwII0JZ7a1w1ZMItHMmJgC0aQmU8NoFJiP0YwTicm4pfc4dv3Upr7+shBqC9d/2QCwSw=="
+  },
+  "linuxPlatformPackages": {
+    "@firecrawl/pdf-inspector-linux-arm64-gnu": {
+      "version": "1.12.0",
+      "integrity": "sha512-c25eoPAWmnREixGOXqecPv59Md5gQyu9lWqmOfh1cTpKB7CaRkpeLrDmm6DSVg6TUpLZ21vwgnE7q40eFupesA=="
+    },
+    "@firecrawl/pdf-inspector-linux-arm64-musl": {
+      "version": "1.12.0",
+      "integrity": "sha512-IbC4PuuTZu7jxzN9rRAavz1kFst8C5qHq0/A5LW3CaxiCPA2X1SW6PvJNjCBVQCUtXjqhAL3Qpb2gbqdp+Gzuw=="
+    },
+    "@firecrawl/pdf-inspector-linux-x64-gnu": {
+      "version": "1.12.0",
+      "integrity": "sha512-EaydxMqBQn0AUEpG0kcoPbXIxIAOZwVYPCRQ1yCRbqGDYaoEtjF/KKBi0heoc3TzcO4G3BxdBATDduHU+4lJxQ=="
+    },
+    "@firecrawl/pdf-inspector-linux-x64-musl": {
+      "version": "1.12.0",
+      "integrity": "sha512-Jg+zyPHmjMNqTULCx3+hv6BOOK0JYXUqJ4IbZJBnis+ZnA+u+Kg/GCSMVPWCIlZT8edqskXXOMLC3VlNrpGbqw=="
+    }
+  }
+}

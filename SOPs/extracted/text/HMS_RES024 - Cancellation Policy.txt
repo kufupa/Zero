@@ -1,0 +1,110 @@
+--- page 1 ---
+Legacy Hotels & Resorts 
+ 
+Policies & Procedures 
+Rooms Division, Reservations, Front Office 
+________________________________________________________________ 
+ 
+Signed copy on file – Head Office Finance 
+ 
+ Signed copy on file – Head Office Finance 
+ 
+MANAGING DIRECTOR SYSTEMS DEVELOPMENT MANAGER 
+NEIL YATES ANDREW WYTRYKOWSKI 
+ 
+ 
+ 
+Rooms Division, Reservations, Front Office – HMS_RES024  Page 1 of 2 
+ 
+ 
+Document ID Title 
+HMS_RES024 CANCELLATION POLICY 
+Revision:  2 Prepared By: Systems Development Date Revised: 03/05/2024 
+Issue Date:   Approved By: Andrew Wytrykowski Date Approved:  
+ 
+Responsibilities:   
+ 
+Reservations and General Manager 
+ 
+Policy: 
+ 
+When the client cancels the reservation within the cancellation policy, the client must be advised of 
+the cancellation charge. Room revenue must be raised in INFOR HMS for the cancellation charge and 
+a copy of the invoice and letter sent to the client. 
+ 
+Should the reservations department deem that the cancellation charge should be waivered; this should 
+be given to the General Manager for approval. 
+ 
+Purpose:   
+ 
+Scope:  
+ 
+Definitions:   
+ 
+Procedure:  
+ 
+ 
+Deviations: 
+ 
+Please note that deviations to the above policy & procedure are permitted if the outcome of the above does not 
+have a negative impact on the business of the Hotel or Legacy Hotels & Resorts.  All deviations must be authorized 
+by the Supervisor or Manager of the Department and must be documented f or auditing purposes. The Supervisor 
+and/or Manager must use their discretion on the deviation if it impacts negatively the relationship and future 
+business from the client, as long as the decision of the deviation is justifiable.  
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+
+--- page 2 ---
+Legacy Hotels & Resorts 
+ 
+Policies & Procedures 
+Rooms Division, Reservations, Front Office 
+________________________________________________________________ 
+ 
+Signed copy on file – Head Office Finance 
+ 
+ Signed copy on file – Head Office Finance 
+ 
+MANAGING DIRECTOR SYSTEMS DEVELOPMENT MANAGER 
+NEIL YATES ANDREW WYTRYKOWSKI 
+ 
+ 
+ 
+Rooms Division, Reservations, Front Office – HMS_RES024  Page 2 of 2 
+ 
+ 
+Associated Policies & Procedures  
+ 
+▪ HMS_RES022 –WholesaleTerms & Conditions 
+▪ HMS_RES047 – Individual Terms & Conditions 
+ 
+References: 
+ 
+A. No current reference at present. 
+ 
+Additional Resources: 
+ 
+A. No current additional resources at present 
+ 
+ 
+ 
+Forms/Records: 
+ 
+▪ No forms applicable for this procedure. 
+ 
+Revision History: 
+ 
+Revision Date Description of Changes Requested by 
+1 30/11/2010 Format of document  Thomas Klingler 
+2 11/05/2017 Added the Deviations section Andrew Wytrykowski 
+3 03/05/2024 Amended for INFOR HMS Andrew Wytrykowski 
+    
+    
+ 
+ 

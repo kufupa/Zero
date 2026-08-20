@@ -19,12 +19,9 @@ describe('compose draft ownership wiring', () => {
     expect(emailComposerSource).toContain('onApply={markUnsavedChanges}');
     expect(recipientSource).toContain('onValueChange();');
     expect(templateSource).toContain('onApply();');
-
-    const acceptIdx = emailComposerSource.indexOf('onAccept={() => {');
-    expect(acceptIdx).toBeGreaterThanOrEqual(0);
-    const acceptBlock = emailComposerSource.slice(acceptIdx, acceptIdx + 900);
-    expect(acceptBlock).toContain('setContent');
-    expect(acceptBlock).toContain('markUnsavedChanges()');
+    expect(emailComposerSource).toMatch(
+      /onLengthChange:\s*\(\)\s*=>\s*\{\s*markUnsavedChanges\(\);\s*\}/,
+    );
   });
 
   it('serializes saves and acknowledges only captured revisions', () => {

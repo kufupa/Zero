@@ -1,80 +1,58 @@
-# Task 3 Report — Add real read-only quality evaluation
+# Task 3 Report — PDF Inspector immutable corpus backtest runner
 
-Date: 2026-07-30  
-Branch: `triage-v5-quality`  
-Base HEAD: `1c648564d98178762307ffb582704bb22c3dc1e6`  
-Commit: e9a9d8d4e19cddca1b0fdb53bc1616cf02ef2dd1  
-Subject: `feat(ai): add read-only triage quality evaluator`  
-Pushed: no
-
-## Status
-
-**DONE**
+Date: 2026-08-08
+Branch: `EC2-pilot`
+Status: **DONE — fixture path verified; live EC2 adapter wired and fail-closed**
 
 ## What changed
 
-| Path | Change |
-|------|--------|
-| `apps/server-pilot/src/ai/quality-eval.ts` | **New.** `qualityLabelSchema`, `runQualityEval`, `compareQualityReports`, exact primary text-visible counts, per-category precision/recall/F1/confusion, per-case outcomes, source/prompt/input hashes, token/latency/cost metadata, protected-regression list, export builders + mutually exclusive CLI arg parser |
-| `apps/server-pilot/src/ai/eval-runner.ts` | Quality CLI mode; `assertQualityCliRuntime` / `createQualityModelAdapter` construct explicit `BedrockModelAdapter`; abort unless `NODE_ENV=production` + AI enabled + Bedrock instance |
-| `apps/server-pilot/scripts/export-centurion-triage-quality.ts` | **New.** Read-only exporter: `--labels` / `--all-inbound-triggers` / `--targets`; SELECT-only; causal cutoff via `buildCausalTriageMessages`; labels never on model inputs |
-| `apps/server-pilot/tests/ai-quality-eval.test.ts` | **New.** High-confidence wrong stays wrong; incomplete injection paths; duplicate/unmatched IDs; attachment-informed exclusion; zero-support F1; no durable writes; exhaustive export causality; paired comparison |
-| `apps/server-pilot/tests/ai-eval-runner.test.ts` | Quality CLI parse + production/AI/Bedrock abort contracts |
+- `apps/server-pilot/src/ops/pdf-inspector-backtest-runner.ts`
+  - Strict CLI contracts and exit codes `0/2/20/30/40`.
+  - Fixture manifest schema: inbound, non-inline `application/pdf`; size bounds; duplicate collapse; oldest-first order.
+  - GetObject-only bounded reader contract; one fetch per attachment; size, MIME, `%PDF-`, source-hash, and source-identity checks.
+  - Injected deterministic parser functions plus production adapters using `extractEmbeddedPdfText` and `inspectPdf`.
+  - Append-only owner-only memory/file stores, fsync, JSONL manifest/results, resume, missing accounting, identity-drift terminal state, status/private helpers, expiry purge.
+  - Aggregate-only report through `aggregatePdfInspectorBacktest`; fixture provenance remains `backtestOnly=true`, so recommendation stays blocked.
+  - Concrete Linux/EC2 live factory: dedicated `postgres` read-only/repeatable-read snapshot, bounded statement timeout, projected attachment metadata, in-memory `buildThreadContext` runtime subset, mailbox grant proof, GetObject-only S3 reader, and native Poppler/Inspector gates. Non-Linux or missing env fails closed.
+  - Identity drift persists bounded failure comparisons; terminal records bind run/source refs through Task 2 validation. Source key, expected identity, and fixture SHA-256 remain private immutable manifest fields.
+  - Private file store rejects symlinks, uses no-follow opens, checks Linux ownership/write bits, preserves expiry, and rejects expired resumes.
+- `apps/server-pilot/scripts/run-pdf-inspector-backtest.ts`
+  - Thin CLI entrypoint.
+- `apps/server-pilot/tests/pdf-inspector-backtest-runner.test.ts`
+  - 31 focused tests; 30 pass on Windows, one portable symlink test skipped.
+- `apps/server-pilot/package.json`
+  - Added `backtest:pdf`.
 
 ## TDD evidence
 
-### RED (before impl)
-
-Command:
+### RED
 
 ```bash
-pnpm --dir apps/server-pilot exec vitest run \
-  tests/ai-quality-eval.test.ts \
-  tests/ai-eval-runner.test.ts
+unset DATABASE_URL VITEST_ALLOW_PILOT_RDS
+pnpm exec vitest run tests/pdf-inspector-backtest-runner.test.ts
 ```
 
-Result: **2 failed files** — missing `quality-eval.js`; `unsupported eval mode: quality`; `assertQualityCliRuntime` not a function.
+Result: failed at collection because `pdf-inspector-backtest-runner.js` did not exist.
 
-Artifact: `.superpowers/sdd/task-3-red.txt`
+### GREEN
 
-### GREEN (after impl)
-
-Same targeted suite: **2 files / 25 passed**.
-
-Artifact: `.superpowers/sdd/task-3-green-targeted.txt`
+Same focused command: **1 file, 30 passed, 1 skipped**.
 
 ## Verification
 
 | Check | Result |
 |-------|--------|
-| Targeted vitest (quality + eval-runner) | PASS (25/25) |
-| `pnpm --dir apps/server-pilot build` | PASS (`tsc -p tsconfig.json`) |
-| Exporter static: insert/update/delete | **zero** |
-| Evaluator static: durable apply / DB writes | **zero** |
-| Injected JSON/schema/adapter/missing-trigger | report `complete=false`, cases `incomplete` |
-| Absolute % release gate | **none** |
-| `confidence` branches scoring | **zero** |
+| Focused runner Vitest | PASS — 30/30 executable tests |
+| PDF parser/backtest regression Vitest | PASS — 62/62 executable tests |
+| Strict targeted TypeScript (`runner` + CLI) | PASS |
+| Package CLI `backtest:pdf -- --help` | PASS |
+| Linter diagnostics on changed code | PASS — none |
+| Full server TypeScript project | Existing unrelated errors in `src/ai/draft-backtest-agent.ts`; no runner/CLI errors |
 
-Artifact: `.superpowers/sdd/task-3-build.txt`
+All test commands cleared `DATABASE_URL` and `VITEST_ALLOW_PILOT_RDS`. No AWS, RDS, or S3 access performed.
 
-## Design notes
+## Remaining EC2 proof
 
-- Primary metrics count only `evidenceScope='text-visible'` + `adjudication='locked'`.
-- Attachment-informed cases remain in `cases[]` but excluded from `categoryErrors` / `urgentErrors` / `jointErrors`.
-- Ambiguous labels marked incomplete (`ambiguous-label`) and listed as protected regressions.
-- `compareQualityReports` uses baseline best vs candidate worst; eligibility requires `jointErrors` strictly lower, category/urgent no worse, zero protected regressions, complete reports.
-- Quality CLI never uses `createFakeModelAdapter` / `resolveModelAdapter`.
-
-## Commit files (explicit stage)
-
-- `apps/server-pilot/src/ai/quality-eval.ts`
-- `apps/server-pilot/src/ai/eval-runner.ts`
-- `apps/server-pilot/scripts/export-centurion-triage-quality.ts`
-- `apps/server-pilot/tests/ai-quality-eval.test.ts`
-- `apps/server-pilot/tests/ai-eval-runner.test.ts`
-
-## Concerns
-
-1. Exporter DB path not exercised in Vitest (no pilot RDS); pure builders cover causal export semantics; live export is operator-only under `.tmp/triage-quality/`.
-2. Invalid-JSON adapter fixture surfaces as schema incomplete when adapter returns a non-triage object (structured JSON already parsed); true parse failures still map to `invalid-json` via message classifier.
-3. `loadNormalRunAsOfByTrigger` takes earliest run `createdAt` per trigger; multiple historical runs for same trigger keep first-by-createdAt.
+1. Run live script through SSM on Linux only after verifying owner-only root, toolchain, DB read-only state, and bounded S3 permissions.
+2. Post-run verify manifest/result cardinality, identity-drift count, aggregate stdout privacy, and no parser promotion.
+3. Never run this test suite against pilot RDS; live verification is a read-only non-test command.

@@ -1,0 +1,188 @@
+--- page 1 ---
+Legacy Hotels & Resorts 
+ 
+Policies & Procedures 
+Rooms Division, Reservations, Front Office 
+________________________________________________________________ 
+ 
+Signed copy on file – Head Office Finance 
+ 
+ Signed copy on file – Head Office Finance 
+ 
+MANAGING DIRECTOR SYSTEMS DEVELOPMENT MANAGER 
+NEIL YATES ANDREW WYTRYKOWSKI 
+ 
+ 
+ 
+Rooms Division, Reservations, Front Office – HMS_RES018  Page 1 of 3 
+ 
+ 
+Document ID Title 
+HMS_RES018 GROUP BOOKING POLICY 
+Revision:  3 Prepared By: Systems 
+Development Date Revised: 
+Issue Date:   Approved By: Robert Hodson Date Approved:  
+ 
+Responsibilities:   
+ 
+Group Reservationist and/or Banqueting reservations 
+ 
+Policy: 
+ 
+The Group Reservationist and/or Banqueting reservations will handle all Group bookings. 
+ 
+The standard Legacy Hotels & Resorts Leisure/ G&C or Wholesale contracts will apply to all group 
+reservations.  
+ 
+Purpose:  
+  
+Scope:  
+ 
+Definitions:  
+  
+G & C – Group and Convention 
+FIT – Foreign Independent Traveler 
+Wholesale – STO (Standard Tour Operator) 
+ 
+Procedure:  
+ 
+1. Group Reservations 
+ 
+The Group Reservationist is responsible for the following: 
+ 
+1.1. Should the group booking be made telephonically, take down all relevant details including name of 
+company, dates, scope of booking etc.  Make the reservation in the property management system and 
+after the booking is made, ask for correspondence by either fax or e-mail to confirm details of group 
+reservation. 
+ 
+1.2. The Group Booking turnaround times must be adhered to as follows: 
+ 
+1.2.1. Any enquiry with regards to availability, rates, banqueting facilities and any other requested 
+information from a Client must be answered within 3 hours. 
+
+--- page 2 ---
+Legacy Hotels & Resorts 
+ 
+Policies & Procedures 
+Rooms Division, Reservations, Front Office 
+________________________________________________________________ 
+ 
+Signed copy on file – Head Office Finance 
+ 
+ Signed copy on file – Head Office Finance 
+ 
+MANAGING DIRECTOR SYSTEMS DEVELOPMENT MANAGER 
+NEIL YATES ANDREW WYTRYKOWSKI 
+ 
+ 
+ 
+Rooms Division, Reservations, Front Office – HMS_RES018  Page 2 of 3 
+ 
+1.2.2. If a group booking is to be made - Confirmation of group booking, terms and conditions and 
+payment agreements to be sent to Client within 12 hours. 
+ 
+1.3. Obtaining the reservation requests from the company/operator on a letter head or registered company e-
+mail 
+ 
+ 
+1.4. Issuing the correct contract to the company/operator by fax or e-mail, the following contracts will 
+apply: 
+ 
+1.4.1. Complete the standard Legacy Leisure/G&C contract according to the time period that the group 
+is booked. 
+ 
+1.4.2. Complete the standard Legacy Wholesale group contract according to the time period the group 
+is booked if the booking is not a bona fide tour group. 
+ 
+1.4.3. The Contract must be checked and signed by the head of department before being sent out 
+to the client. 
+ 
+1.4.4. Wholesale terms and conditions can only be applied to bona fide inbound leisure groups or FIT's. 
+Any groups staying for the purpose of attending conferences, special town events, association 
+meetings or any purpose other than leisure travel will be subject to Legacy's Group and 
+Conference contract. 
+ 
+NB! Other relevant info for certain groups may be added to the contract, but no 
+information may be omitted or deleted from the original contract. 
+ 
+1.4.5. Ensure that the signed copy of the terms and conditions are returned to the hotel on the date 
+specified in the group contract 
+ 
+1.4.6. Ensure that the Terms and Conditions are adhered to with regards to rooming lists, deposit due 
+dates, confirmation dates and billing instructions 
+ 
+1.4.7. Deposit request fields in Opera to be completed as per the contract sent out to the client, and 
+follow ups to be done by printing the deposit request report on a daily basis to ensure deposit due 
+dates are adhered to by the client. Be sure to specify whether the deposit is for rooms or catering 
+when inserting the request and deposit received. 
+ 
+1.4.8. Completing the reservation accurately and all profile details are entered and correct.  
+ 
+2. The following rate codes will apply to non bona fide groups: 
+ 
+2.1. Wholesale business will remain on the original code Wholesale contracted according to meal plans of 
+each hotel. 
+ 
+2.2. Non Bona Fide STO business will be made under Negotiated Contracts according to meal plans of each 
+hotel. 
+ 
+
+--- page 3 ---
+Legacy Hotels & Resorts 
+ 
+Policies & Procedures 
+Rooms Division, Reservations, Front Office 
+________________________________________________________________ 
+ 
+Signed copy on file – Head Office Finance 
+ 
+ Signed copy on file – Head Office Finance 
+ 
+MANAGING DIRECTOR SYSTEMS DEVELOPMENT MANAGER 
+NEIL YATES ANDREW WYTRYKOWSKI 
+ 
+ 
+ 
+Rooms Division, Reservations, Front Office – HMS_RES018  Page 3 of 3 
+ 
+2.3. Conference groups will remain on Group & Conference rate codes 
+ 
+2.3.1. Complete a Group Function Sheet for all relevant departments 
+ 
+2.3.2. Hand over all relevant information to Front Desk the day before arrival of group 
+ 
+2.3.3. The “deposit follow-up” report in Opera must be printed and checked weekly by the Rooms 
+Division Manager and the Unit General Manager. 
+ 
+2.3.4. The report will be reviewed and checked by Head Office on a weekly basis.  
+ 
+ 
+The above policy and procedure will also form part of the Systems Audit, to ensure procedures are 
+adhered to. 
+ 
+Associated Policies & Procedures  
+ 
+▪ HMS_RES022 – STO Terms & Conditions – Rooms Division, Reservations, Front Office 
+▪ HMS_RES047 – Individual Terms & Conditions – Rooms Division, Reservations, Front Office 
+▪ HMS_RES048 – G & C Terms & Conditions – Rooms Division, Reservations, Front Office 
+ 
+References: 
+ 
+A. No current reference at present. 
+ 
+Additional Resources: 
+ 
+A. No current additional resources at present 
+ 
+Forms/Records: 
+ 
+▪ No forms applicable for this procedure. 
+ 
+Revision History: 
+ 
+Revision Date Description of Changes Requested by 
+1 30/11/2010 Format of document  Thomas Klingler 
+2  Policy Amendments Robert Hodson 
+3 25/01/2025 Amended for INFOR HMS Andrew WYtrykowski 
+    
+ 
