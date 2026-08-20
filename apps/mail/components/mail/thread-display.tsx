@@ -61,6 +61,7 @@ import { resolveImportantState } from '@/lib/mail/important-ui';
 import { isArchiveLikeMailFolder } from '@/lib/mail/route-filter';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { flushComposeBeforeLeave } from '@/lib/mail/compose-flush-registry';
+import { shouldShowOpenThreadSkeleton } from '@/lib/mail/thread-open-stability';
 import { runComposeLeaveFlush } from '@/lib/mail/draft-persistence';
 import {
   clearReplyComposeContext,
@@ -832,7 +833,12 @@ export function ThreadDisplay() {
     setNavigationDirection(null);
   }, [setNavigationDirection]);
 
-  const shouldShowSkeleton = !emailData || isLoading || (isFetching && isThreadDataMismatch);
+  const shouldShowSkeleton = shouldShowOpenThreadSkeleton({
+    hasEmailData: Boolean(emailData),
+    isLoading,
+    isFetching,
+    isThreadDataMismatch,
+  });
 
   const threadDraftSection =
     draftVm || aiDraftCandidateVms.length > 0 ? (

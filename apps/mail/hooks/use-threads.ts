@@ -24,6 +24,10 @@ import {
   openThreadQueryPollingOptions,
   resolveThreadPollingMs,
 } from '@/lib/mail/thread-polling-policy';
+import {
+  resolveOpenThreadId,
+  shouldBlankOpenThreadData,
+} from '@/lib/mail/thread-open-stability';
 import { mergeCategoryIds, mergeLabelIds, resolveMailRouteFilter } from '@/lib/mail/route-filter';
 import { resolveMailListSearch } from '@/lib/mail/search-filters';
 import { useCategorySettings } from './use-categories';
@@ -32,17 +36,6 @@ import { useLabels } from './use-labels';
 
 const threadPollingMs = resolveThreadPollingMs(import.meta.env.VITE_MAIL_POLL_MS);
 const openThreadPolling = openThreadQueryPollingOptions(import.meta.env.VITE_MAIL_POLL_MS);
-
-const resolveThreadId = (threadData: IGetThreadResponse | undefined) => {
-  if (!threadData) return undefined;
-
-  if (threadData.latest) {
-    return threadData.latest.threadId ?? threadData.latest.id;
-  }
-
-  const firstMessage = threadData.messages?.[0];
-  return firstMessage?.threadId ?? firstMessage?.id;
-};
 
 export type UseThreadsOptions = {
   commandPaletteOpen?: string | null;
@@ -255,7 +248,7 @@ export const useThread = (threadId: string | null) => {
     queryFn: async () => getDemoThread(id!),
     enabled: demoMode && !!id,
     staleTime: 1000 * 60 * 60,
-    placeholderData: undefined,
+    placeholderData: (previousData) => previousData,
   });
 
   const threadQuery = useQuery(
@@ -266,7 +259,9 @@ export const useThread = (threadId: string | null) => {
       {
         enabled: !demoMode && !!id && !!session?.user?.id,
         staleTime: 1000 * 60 * 60,
-        placeholderData: undefined,
+        // Keep prior open-thread payload during key transitions / refetch so
+        // ReplyCompose is not unmounted mid-type (typing kick-out).
+        placeholderData: (previousData) => previousData,
         refetchInterval: openThreadPolling.refetchInterval,
         refetchIntervalInBackground: openThreadPolling.refetchIntervalInBackground,
         refetchOnWindowFocus: openThreadPolling.refetchOnWindowFocus,
@@ -274,12 +269,15 @@ export const useThread = (threadId: string | null) => {
     ),
   );
   const activeThreadQuery = demoMode ? demoThreadQuery : threadQuery;
-  const activeThreadData = activeThreadQuery.data as IGetThreadResponse | undefined;
+  const activeThreadData = activeThreadQuery.data as (IGetThreadResponse & { id?: string }) | undefined;
   const activeThreadId = useMemo(
-    () => resolveThreadId(activeThreadData),
+    () => resolveOpenThreadId(activeThreadData),
     [activeThreadData],
   );
-  const isThreadDataMismatch = Boolean(id && activeThreadId && activeThreadId !== id);
+  const isThreadDataMismatch = shouldBlankOpenThreadData({
+    requestedThreadId: id,
+    resolvedThreadId: activeThreadId,
+  });
 
   const { latestDraft, drafts, aiDraftCandidates, isGroupThread, finalData, latestMessage } =
     useMemo(() => {

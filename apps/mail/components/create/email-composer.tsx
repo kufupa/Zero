@@ -62,6 +62,7 @@ import {
   type DraftRevisionState,
   type PersistDecisionInput,
 } from '@/lib/mail/draft-persistence';
+import { resolveComposeEscapeAction } from '@/lib/mail/thread-open-stability';
 import { registerComposeFlush } from '@/lib/mail/compose-flush-registry';
 import { useOptimisticActions } from '@/hooks/use-optimistic-actions';
 import { m } from '@/paraglide/messages';
@@ -756,6 +757,19 @@ export function EmailComposer({
     setShowLeaveConfirmation(true);
   }, [buildPersistInput, onClose]);
 
+  const handleEscapeClose = useCallback(
+    (isComposing: boolean) => {
+      const action = resolveComposeEscapeAction({ ...buildPersistInput(), isComposing });
+      if (action === 'ignore') return;
+      if (action === 'closeSilent') {
+        onClose?.();
+        return;
+      }
+      setShowLeaveConfirmation(true);
+    },
+    [buildPersistInput, onClose],
+  );
+
   const handleDialogChoice = useCallback(
     async (choice: ComposeDialogChoice) => {
       const next = nextAfterDialogChoice(choice);
@@ -816,13 +830,13 @@ export function EmailComposer({
       if (e.key === 'Escape') {
         e.preventDefault();
         e.stopPropagation();
-        handleClose();
+        handleEscapeClose(e.isComposing);
       }
     };
 
     document.addEventListener('keydown', handleKeyDown, true);
     return () => document.removeEventListener('keydown', handleKeyDown, true);
-  }, [editor, handleClose]);
+  }, [editor, handleEscapeClose]);
 
   const handleGenerateSubject = async () => {
     try {
