@@ -287,7 +287,7 @@ export function NavMain({ items }: NavMainProps) {
           !isBottomNav &&
           state !== 'collapsed' &&
           !isFrontendOnlyDemo() && (
-          <Collapsible defaultOpen={false} className="group/collapsible flex-col">
+          <Collapsible defaultOpen={true} className="group/collapsible flex-col">
             <SidebarMenuItem className="mb-4" style={{ height: 'auto' }}>
               <div className="mx-2 mb-2 flex items-center justify-between">
                 <CollapsibleTrigger asChild>
