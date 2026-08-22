@@ -56,6 +56,8 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
   const { mutateAsync: sendEmail } = useMutation(trpc.mail.send.mutationOptions());
   const { mutateAsync: ensureEditableDraftForReply } = useEnsureEditableDraftForReply();
   const ensuredDraftKeyRef = useRef<string | null>(null);
+  const [replyComposeViewportElement, setReplyComposeViewportElement] =
+    useState<HTMLDivElement | null>(null);
   const [showStaleDraftConfirmation, setShowStaleDraftConfirmation] = useState(false);
   const staleDraftResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
   const { data: activeConnection } = useActiveConnection();
@@ -66,6 +68,28 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
   // Find the specific message to reply to
   const replyToMessage =
     (messageId && emailData?.messages.find((msg) => msg.id === messageId)) || emailData?.latest;
+
+  useEffect(() => {
+    if (!mode || !messageId || !replyComposeViewportElement) return;
+
+    const frameId = requestAnimationFrame(() => {
+      if (!replyComposeViewportElement.isConnected) return;
+
+      const behavior = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+        ? 'auto'
+        : 'smooth';
+
+      replyComposeViewportElement.scrollIntoView({
+        behavior,
+        block: 'end',
+        inline: 'nearest',
+      });
+    });
+
+    return () => {
+      cancelAnimationFrame(frameId);
+    };
+  }, [mode, messageId, replyComposeViewportElement]);
 
   const confirmStaleDraftSend = () =>
     new Promise<boolean>((resolve) => {
@@ -366,7 +390,7 @@ export default function ReplyCompose({ messageId }: ReplyComposeProps) {
   if (!mode || !emailData) return null;
 
   return (
-    <div className="w-full rounded-2xl overflow-visible border">
+    <div ref={setReplyComposeViewportElement} className="w-full rounded-2xl overflow-visible border">
       <EmailComposer
         key={`reply-compose-${replyComposeInstanceId}`}
         className="w-full max-w-none! pb-1 overflow-visible"

@@ -842,9 +842,9 @@ export function EmailComposer({
       <div className="no-scrollbar dark:bg-panelDark flex min-h-0 flex-1 flex-col overflow-y-auto rounded-2xl">
         {/* To, Cc, Bcc */}
         <div className="shrink-0 overflow-visible border-b border-[#E7E7E7] pb-2 dark:border-[#252525]">
-          <div className="flex justify-between px-3 pt-3">
+          <div className="flex min-w-0 justify-between px-3 pt-3">
             <div className="flex min-w-0 flex-1 items-center gap-2">
-              <p className="text-sm font-medium text-[#8C8C8C]">To:</p>
+              <p className="shrink-0 text-sm font-medium text-[#8C8C8C]">To:</p>
               <RecipientAutosuggest
                 control={form.control}
                 name="to"
@@ -854,16 +854,16 @@ export function EmailComposer({
               />
             </div>
 
-            <div className="flex gap-2">
+            <div className="flex shrink-0 gap-2">
               <button
-                tabIndex={-1}
+                type="button"
                 className="flex h-full items-center gap-2 text-sm font-medium text-[#8C8C8C] hover:text-[#A8A8A8] hover:bg-gray-50 dark:hover:bg-[#404040] transition-colors cursor-pointer rounded-sm px-1 py-0.5"
                 onClick={() => setShowCc(!showCc)}
               >
                 <span>Cc</span>
               </button>
               <button
-                tabIndex={-1}
+                type="button"
                 className="flex h-full items-center gap-2 text-sm font-medium text-[#8C8C8C] hover:text-[#A8A8A8] hover:bg-gray-50 dark:hover:bg-[#404040] transition-colors cursor-pointer rounded-sm px-1 py-0.5"
                 onClick={() => setShowBcc(!showBcc)}
               >
@@ -871,7 +871,8 @@ export function EmailComposer({
               </button>
               {onClose && (
                 <button
-                  tabIndex={-1}
+                  type="button"
+                  aria-label="Close composer"
                   className="flex h-full items-center gap-2 text-sm font-medium text-[#8C8C8C] hover:text-[#A8A8A8] hover:bg-gray-50 dark:hover:bg-[#404040] transition-colors cursor-pointer rounded-sm px-1 py-0.5"
                   onClick={handleClose}
                 >
@@ -884,8 +885,8 @@ export function EmailComposer({
           <div className={`flex flex-col gap-2 ${showCc || showBcc ? 'pt-2' : ''}`}>
             {/* CC Section */}
             {showCc && (
-              <div className="flex items-center gap-2 px-3">
-                <p className="text-sm font-medium text-[#8C8C8C]">Cc:</p>
+              <div className="flex min-w-0 items-center gap-2 px-3">
+                <p className="shrink-0 text-sm font-medium text-[#8C8C8C]">Cc:</p>
                 <RecipientAutosuggest
                   control={form.control}
                   name="cc"
@@ -898,8 +899,8 @@ export function EmailComposer({
 
             {/* BCC Section */}
             {showBcc && (
-              <div className="flex items-center gap-2 px-3">
-                <p className="text-sm font-medium text-[#8C8C8C]">Bcc:</p>
+              <div className="flex min-w-0 items-center gap-2 px-3">
+                <p className="shrink-0 text-sm font-medium text-[#8C8C8C]">Bcc:</p>
                 <RecipientAutosuggest
                   control={form.control}
                   name="bcc"

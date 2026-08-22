@@ -817,18 +817,6 @@ export function ThreadDisplay() {
 
   // Removed conflicting useEffect that was clearing activeReplyId
 
-  // Scroll to the active reply composer when it's opened
-  useEffect(() => {
-    if (mode && activeReplyId) {
-      setTimeout(() => {
-        const replyElement = document.getElementById(`reply-composer-${activeReplyId}`);
-        if (replyElement) {
-          replyElement.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-        }
-      }, 100); // Short delay to ensure the component is rendered
-    }
-  }, [mode, activeReplyId]);
-
   const handleAnimationComplete = useCallback(() => {
     setNavigationDirection(null);
   }, [setNavigationDirection]);

@@ -262,25 +262,26 @@ export function RecipientAutosuggest({
   }, [handleClickOutside]);
 
   return (
-    <div className={cn('relative w-full', className)}>
-      <div className="flex flex-wrap items-center gap-2 min-h-[32px]">
+    <div className={cn('relative min-w-0 flex-1', className)}>
+      <div className="flex min-w-0 flex-wrap items-center gap-2 min-h-[32px]">
         {recipients.map((email: string, index: number) => (
           <div
             key={`recipient-${email}`}
-            className="flex items-center gap-1 rounded-full border px-2 py-0.5"
+            className="flex min-w-0 max-w-full items-center gap-1 rounded-full border px-2 py-0.5"
           >
-            <span className="flex gap-1 py-0.5 text-sm text-black dark:text-white">
-              <Avatar className="h-5 w-5">
+            <span className="flex min-w-0 flex-1 items-center gap-1 py-0.5 text-sm text-black dark:text-white">
+              <Avatar className="h-5 w-5 shrink-0">
                 <AvatarFallback className="bg-offsetLight text-muted-foreground rounded-full text-xs font-bold dark:bg-[#373737] dark:text-[#9B9B9B]">
                   {email.charAt(0).toUpperCase()}
                 </AvatarFallback>
               </Avatar>
-              {email}
+              <span className="min-w-0 flex-1 truncate" title={email}>{email}</span>
             </span>
             <button
               type="button"
               onClick={() => removeRecipient(index)}
-              className="text-white/50 hover:text-white/90"
+              className="shrink-0 text-white/50 hover:text-white/90"
+              aria-label={`Remove ${email}`}
               disabled={disabled}
             >
               <X className="mt-0.5 h-3.5 w-3.5 fill-black dark:fill-[#9A9A9A]" />
@@ -301,7 +302,7 @@ export function RecipientAutosuggest({
           onCompositionStart={() => setIsComposing(true)}
           onCompositionEnd={() => setIsComposing(false)}
           placeholder={recipients.length === 0 ? placeholder : ''}
-          className="h-6 flex-1 bg-transparent text-sm font-normal leading-normal text-black placeholder:text-[#797979] focus:outline-none dark:text-white"
+          className="h-6 min-w-0 flex-1 bg-transparent text-sm font-normal leading-normal text-black placeholder:text-[#797979] focus:outline-none dark:text-white"
           disabled={disabled}
         />
       </div>
