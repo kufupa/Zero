@@ -2,8 +2,7 @@ import { z } from 'zod';
 
 export const CENTURION_THREAD_CORPUS_READINESS_CONFIG_VERSION =
   'centurion-thread-corpus-readiness-config-v1';
-export const CENTURION_THREAD_CORPUS_CONTRACT_ID =
-  'centurion-thread-corpus-v2';
+export const CENTURION_THREAD_CORPUS_CONTRACT_ID = 'centurion-thread-corpus-v2';
 export const CENTURION_THREAD_CORPUS_READINESS_REPORT_VERSION =
   'centurion-thread-corpus-readiness-report-v1';
 
@@ -14,6 +13,7 @@ export const centurionThreadCorpusReadinessConfigSchema = z
     version: z.literal(CENTURION_THREAD_CORPUS_READINESS_CONFIG_VERSION),
     expectedEc2: z
       .object({
+        instanceId: nonEmptyString,
         revision: nonEmptyString,
         worktree: nonEmptyString,
       })
@@ -33,15 +33,17 @@ export const centurionThreadCorpusReadinessConfigSchema = z
         prefix: nonEmptyString,
       })
       .strict(),
-    minimumSourceDiskHeadroomBytes: z
-      .number()
-      .int()
-      .positive()
-      .max(Number.MAX_SAFE_INTEGER),
+    minimumSourceDiskHeadroomBytes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
     corpusContractId: z.literal(CENTURION_THREAD_CORPUS_CONTRACT_ID),
     privateDestination: z
       .object({
         localTarget: nonEmptyString,
+      })
+      .strict(),
+    readOnlyCapabilityProbe: z
+      .object({
+        policySourceArn: nonEmptyString,
+        kmsKeyId: nonEmptyString,
       })
       .strict(),
   })
@@ -81,10 +83,7 @@ export const centurionThreadCorpusReadinessReportSchema = z
   .object({
     schemaVersion: z.literal(CENTURION_THREAD_CORPUS_READINESS_REPORT_VERSION),
     outcome: z.enum(['ready', 'blocked']),
-    code: z.enum([
-      'CENTURION_THREAD_CORPUS_READY',
-      'CENTURION_THREAD_CORPUS_BLOCKED',
-    ]),
+    code: z.enum(['CENTURION_THREAD_CORPUS_READY', 'CENTURION_THREAD_CORPUS_BLOCKED']),
     ready: z.boolean(),
     checks: centurionThreadCorpusReadinessChecksSchema,
   })
@@ -121,9 +120,7 @@ function blockedReport(): CenturionThreadCorpusReadinessReport {
   };
 }
 
-function parseConfig(
-  config: unknown,
-): CenturionThreadCorpusReadinessConfig | null {
+function parseConfig(config: unknown): CenturionThreadCorpusReadinessConfig | null {
   try {
     const result = centurionThreadCorpusReadinessConfigSchema.safeParse(config);
     return result.success ? result.data : null;
@@ -136,8 +133,7 @@ function parseObservations(
   observations: unknown,
 ): CenturionThreadCorpusReadinessObservations | null {
   try {
-    const result =
-      centurionThreadCorpusReadinessObservationsSchema.safeParse(observations);
+    const result = centurionThreadCorpusReadinessObservationsSchema.safeParse(observations);
     return result.success ? result.data : null;
   } catch {
     return null;
@@ -164,9 +160,7 @@ function reportFor(
   return {
     schemaVersion: CENTURION_THREAD_CORPUS_READINESS_REPORT_VERSION,
     outcome: ready ? 'ready' : 'blocked',
-    code: ready
-      ? 'CENTURION_THREAD_CORPUS_READY'
-      : 'CENTURION_THREAD_CORPUS_BLOCKED',
+    code: ready ? 'CENTURION_THREAD_CORPUS_READY' : 'CENTURION_THREAD_CORPUS_BLOCKED',
     ready,
     checks,
   };

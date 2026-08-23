@@ -1,11 +1,11 @@
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import ts from 'typescript';
-import { describe, expect, it } from 'vitest';
 import {
   evaluateCenturionThreadCorpusReadiness,
   type CenturionThreadCorpusReadinessReport,
 } from '../src/ops/centurion-thread-corpus-readiness.js';
+import { describe, expect, it } from 'vitest';
+import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
+import ts from 'typescript';
 
 const CHECK_NAMES = [
   'exactEc2RevisionWorktree',
@@ -31,6 +31,7 @@ function validConfig(): Record<string, unknown> {
   return {
     version: 'centurion-thread-corpus-readiness-config-v1',
     expectedEc2: {
+      instanceId: 'i-synthetic-instance',
       revision: 'synthetic-revision',
       worktree: 'synthetic-worktree',
     },
@@ -49,6 +50,10 @@ function validConfig(): Record<string, unknown> {
     corpusContractId: 'centurion-thread-corpus-v2',
     privateDestination: {
       localTarget: 'C:\\synthetic-private-target',
+    },
+    readOnlyCapabilityProbe: {
+      policySourceArn: 'arn:aws:iam::123456789012:role/synthetic-readonly-role',
+      kmsKeyId: 'synthetic-kms-key',
     },
   };
 }
@@ -69,9 +74,10 @@ function allPassingObservations(): Record<string, boolean> {
 }
 
 function fixedChecks(value: boolean): Record<(typeof CHECK_NAMES)[number], boolean> {
-  return Object.fromEntries(
-    CHECK_NAMES.map((check) => [check, value]),
-  ) as Record<(typeof CHECK_NAMES)[number], boolean>;
+  return Object.fromEntries(CHECK_NAMES.map((check) => [check, value])) as Record<
+    (typeof CHECK_NAMES)[number],
+    boolean
+  >;
 }
 
 function expectFixedShape(report: CenturionThreadCorpusReadinessReport): void {
@@ -83,9 +89,7 @@ function expectFixedShape(report: CenturionThreadCorpusReadinessReport): void {
     'schemaVersion',
   ]);
   expect(Object.keys(report.checks).sort()).toEqual([...CHECK_NAMES].sort());
-  expect(Object.values(report.checks).every((value) => typeof value === 'boolean')).toBe(
-    true,
-  );
+  expect(Object.values(report.checks).every((value) => typeof value === 'boolean')).toBe(true);
 }
 
 function expectBlocked(report: CenturionThreadCorpusReadinessReport): void {
@@ -100,10 +104,7 @@ function expectBlocked(report: CenturionThreadCorpusReadinessReport): void {
 
 describe('evaluateCenturionThreadCorpusReadiness', () => {
   it('returns ready only for a valid V1 private config and all passing gates', () => {
-    const report = evaluateCenturionThreadCorpusReadiness(
-      validConfig(),
-      allPassingObservations(),
-    );
+    const report = evaluateCenturionThreadCorpusReadiness(validConfig(), allPassingObservations());
 
     expect(report).toEqual({
       schemaVersion: 'centurion-thread-corpus-readiness-report-v1',
@@ -119,10 +120,7 @@ describe('evaluateCenturionThreadCorpusReadiness', () => {
     const observations = allPassingObservations();
     observations.sourceDiskHeadroom = false;
 
-    const report = evaluateCenturionThreadCorpusReadiness(
-      validConfig(),
-      observations,
-    );
+    const report = evaluateCenturionThreadCorpusReadiness(validConfig(), observations);
 
     expect(report).toEqual({
       schemaVersion: 'centurion-thread-corpus-readiness-report-v1',
@@ -205,10 +203,7 @@ describe('evaluateCenturionThreadCorpusReadiness', () => {
       },
     },
   ])('fails closed for $name', ({ config }) => {
-    const report = evaluateCenturionThreadCorpusReadiness(
-      config,
-      allPassingObservations(),
-    );
+    const report = evaluateCenturionThreadCorpusReadiness(config, allPassingObservations());
 
     expectBlocked(report);
     expect(JSON.stringify(report)).not.toContain(SENSITIVE_MARKERS[2]);
@@ -250,9 +245,7 @@ describe('evaluateCenturionThreadCorpusReadiness', () => {
       },
     },
   ])('fails closed for $name', ({ observations }) => {
-    expectBlocked(
-      evaluateCenturionThreadCorpusReadiness(validConfig(), observations),
-    );
+    expectBlocked(evaluateCenturionThreadCorpusReadiness(validConfig(), observations));
   });
 
   it('never serializes synthetic config or raw-error markers', () => {
@@ -273,10 +266,7 @@ describe('evaluateCenturionThreadCorpusReadiness', () => {
       prefix: 'synthetic-prefix',
     };
 
-    const report = evaluateCenturionThreadCorpusReadiness(
-      config,
-      allPassingObservations(),
-    );
+    const report = evaluateCenturionThreadCorpusReadiness(config, allPassingObservations());
     const serialized = JSON.stringify(report);
 
     for (const marker of SENSITIVE_MARKERS) {
@@ -331,10 +321,7 @@ function sourceBoundaryViolations(sourceText: string): string[] {
     ) {
       violations.push('Constructor-based execution is prohibited');
     }
-    if (
-      ts.isCallExpression(node) &&
-      node.expression.kind === ts.SyntaxKind.ImportKeyword
-    ) {
+    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
       violations.push('Dynamic import is prohibited');
     }
     ts.forEachChild(node, visit);
@@ -347,15 +334,10 @@ function sourceBoundaryViolations(sourceText: string): string[] {
 describe('centurion thread corpus readiness source boundary', () => {
   it('has no direct runtime, filesystem, network, cloud, database, mailbox, AI, UI, or logging capability', () => {
     const sourcePath = fileURLToPath(
-      new URL(
-        '../src/ops/centurion-thread-corpus-readiness.ts',
-        import.meta.url,
-      ),
+      new URL('../src/ops/centurion-thread-corpus-readiness.ts', import.meta.url),
     );
 
-    expect(sourceBoundaryViolations(readFileSync(sourcePath, 'utf8'))).toEqual(
-      [],
-    );
+    expect(sourceBoundaryViolations(readFileSync(sourcePath, 'utf8'))).toEqual([]);
   });
 
   it.each([
