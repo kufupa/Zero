@@ -323,6 +323,15 @@ function sourceBoundaryViolations(sourceText: string): string[] {
       violations.push(`Prohibited capability: ${node.text}`);
     }
     if (
+      (ts.isPropertyAccessExpression(node) && node.name.text === 'constructor') ||
+      (ts.isElementAccessExpression(node) &&
+        node.argumentExpression &&
+        ts.isStringLiteral(node.argumentExpression) &&
+        node.argumentExpression.text === 'constructor')
+    ) {
+      violations.push('Constructor-based execution is prohibited');
+    }
+    if (
       ts.isCallExpression(node) &&
       node.expression.kind === ts.SyntaxKind.ImportKeyword
     ) {
@@ -353,6 +362,7 @@ describe('centurion thread corpus readiness source boundary', () => {
     "eval('process.env');",
     "Function('return globalThis')();",
     "new Function('return process')();",
+    "({}).constructor.constructor('return globalThis')();",
   ])('rejects indirect runtime execution: %s', (fixture) => {
     expect(sourceBoundaryViolations(fixture)).not.toEqual([]);
   });
