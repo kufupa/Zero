@@ -31,6 +31,7 @@ export type CenturionRelayVerification =
       snapshotId: string;
       sourceManifestSha256: string;
       memberSetSha256: string;
+      relayManifestSha256: string;
     }
   | { outcome: 'blocked' };
 
@@ -91,6 +92,7 @@ const OPAQUE_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const LITERAL_ROOT_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const RAW_MIME_MEMBER = /^raw-mime\/([a-f0-9]{64})\.eml$/;
 const ATTACHMENT_TEXT_MEMBER = /^attachment-text\/([a-f0-9]{64})\.txt$/;
+const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder('utf-8', { fatal: true });
 
 function invalidRelayInput(): never {
@@ -112,6 +114,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   const actualKeys = Object.keys(value);
   return actualKeys.length === keys.length && keys.every((key) => Object.hasOwn(value, key));
+}
+
+function hasCanonicalKeyOrder(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actualKeys = Object.keys(value);
+  return actualKeys.length === keys.length && actualKeys.every((key, index) => key === keys[index]);
 }
 
 function isNonNegativeSafeInteger(value: unknown): value is number {
@@ -218,7 +225,7 @@ function validateRelayMember(value: unknown): ValidatedRelayMember {
 function validateRelayMemberMetadata(value: unknown): CenturionRelayMemberMetadata {
   if (
     !isRecord(value) ||
-    !hasExactKeys(value, ['path', 'bytes', 'sha256']) ||
+    !hasCanonicalKeyOrder(value, ['path', 'bytes', 'sha256']) ||
     typeof value.path !== 'string' ||
     !isPositiveSafeInteger(value.bytes) ||
     !isSha256Digest(value.sha256)
@@ -277,6 +284,14 @@ function validateSourceMembers(value: unknown, maxTotalBytes: unknown): Validate
 }
 
 function decodeUtf8(content: Uint8Array): string {
+  if (
+    content.byteLength >= 3 &&
+    content[0] === 0xef &&
+    content[1] === 0xbb &&
+    content[2] === 0xbf
+  ) {
+    return invalidRelayInput();
+  }
   return textDecoder.decode(content);
 }
 
@@ -332,7 +347,7 @@ function reconstructV2Snapshot(members: ValidatedSourceMembers): PrivateThreadCo
 function validateRelayManifest(value: unknown): CenturionRelayManifestV1 {
   if (
     !isRecord(value) ||
-    !hasExactKeys(value, [
+    !hasCanonicalKeyOrder(value, [
       'schemaVersion',
       'transferId',
       'snapshotId',
@@ -368,6 +383,23 @@ function validateRelayManifest(value: unknown): CenturionRelayManifestV1 {
     sourceManifestSha256: value.sourceManifestSha256,
     memberSetSha256: value.memberSetSha256,
     members,
+  };
+}
+
+function parseCanonicalRelayManifest(content: unknown): {
+  manifest: CenturionRelayManifestV1;
+  sha256: string;
+} {
+  if (!(content instanceof Uint8Array)) return invalidRelayInput();
+  const manifestJson = decodeUtf8(content);
+  const value = JSON.parse(manifestJson) as unknown;
+  if (!isRecord(value) || manifestJson !== `${JSON.stringify(value, null, 2)}\n`) {
+    return invalidRelayInput();
+  }
+
+  return {
+    manifest: validateRelayManifest(value),
+    sha256: sha256Bytes(content),
   };
 }
 
@@ -473,7 +505,11 @@ export function buildCenturionRelayManifest(
   transferId: string,
   members: readonly CenturionRelayMember[],
   maxTotalBytes: number,
-): { manifest: CenturionRelayManifestV1; manifestJson: string } {
+): {
+  manifest: CenturionRelayManifestV1;
+  manifestJson: string;
+  manifestBytes: Uint8Array;
+} {
   return runOrThrow(() => {
     if (!isCanonicalUuidV4(transferId)) return invalidRelayInput();
     const sourceMembers = validateSourceMembers(members, maxTotalBytes);
@@ -488,9 +524,11 @@ export function buildCenturionRelayManifest(
       memberSetSha256: canonicalMemberSetSha256(memberRows),
       members: memberRows,
     };
+    const manifestJson = `${JSON.stringify(manifest, null, 2)}\n`;
     return {
       manifest,
-      manifestJson: `${JSON.stringify(manifest, null, 2)}\n`,
+      manifestJson,
+      manifestBytes: textEncoder.encode(manifestJson),
     };
   });
 }
@@ -549,12 +587,13 @@ export function buildReceiverAcknowledgement(
 }
 
 export function verifyCenturionRelaySnapshot(
-  relayManifest: unknown,
+  relayManifestBytes: Uint8Array,
   members: readonly CenturionRelayMember[],
   maxTotalBytes: number,
 ): CenturionRelayVerification {
   try {
-    const candidate = validateRelayManifest(relayManifest);
+    const relayManifest = parseCanonicalRelayManifest(relayManifestBytes);
+    const candidate = relayManifest.manifest;
     const sourceMembers = validateSourceMembers(members, maxTotalBytes);
     const memberRows = sourceMembers.members.map(({ member }) => memberMetadata(member));
     const sourceManifestSha256 = sha256Bytes(sourceMembers.manifest.member.content);
@@ -577,6 +616,7 @@ export function verifyCenturionRelaySnapshot(
       snapshotId: snapshot.context.snapshotId,
       sourceManifestSha256,
       memberSetSha256: candidate.memberSetSha256,
+      relayManifestSha256: relayManifest.sha256,
     };
   } catch {
     return { outcome: 'blocked' };

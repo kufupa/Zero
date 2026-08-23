@@ -23,6 +23,7 @@ const MAX_TOTAL_BYTES = 1_000_000;
 const SYNTHETIC_BODY_MARKER = 'SYNTHETIC_RELAY_BODY_MARKER';
 const SYNTHETIC_ADDRESS_MARKER = 'relay-sender@example.test';
 const textEncoder = new TextEncoder();
+const UTF8_BOM = new Uint8Array([0xef, 0xbb, 0xbf]);
 
 function sha256(content: Uint8Array): string {
   return createHash('sha256').update(content).digest('hex');
@@ -40,6 +41,13 @@ function member(path: string, content: Uint8Array): CenturionRelayMember {
     sha256: sha256(content),
     content,
   };
+}
+
+function withUtf8Bom(content: Uint8Array): Uint8Array {
+  const prefixed = new Uint8Array(UTF8_BOM.byteLength + content.byteLength);
+  prefixed.set(UTF8_BOM);
+  prefixed.set(content, UTF8_BOM.byteLength);
+  return prefixed;
 }
 
 function syntheticSnapshot(): PrivateThreadCorpusSnapshot {
@@ -176,7 +184,11 @@ function memberSetSha256(members: readonly CenturionRelayMember[]): string {
   );
 }
 
-function unsafeRelayManifest(
+function relayManifestBytes(manifest: unknown): Uint8Array {
+  return textEncoder.encode(`${JSON.stringify(manifest, null, 2)}\n`);
+}
+
+function unsafeRelayManifestObject(
   snapshot: PrivateThreadCorpusSnapshot,
   members: readonly CenturionRelayMember[],
   transferId = TRANSFER_ID,
@@ -197,6 +209,14 @@ function unsafeRelayManifest(
   };
 }
 
+function unsafeRelayManifest(
+  snapshot: PrivateThreadCorpusSnapshot,
+  members: readonly CenturionRelayMember[],
+  transferId = TRANSFER_ID,
+): Uint8Array {
+  return relayManifestBytes(unsafeRelayManifestObject(snapshot, members, transferId));
+}
+
 function replaceMember(
   members: readonly CenturionRelayMember[],
   path: string,
@@ -206,11 +226,11 @@ function replaceMember(
 }
 
 function expectBlocked(
-  relayManifest: unknown,
+  relayManifestBytes: Uint8Array,
   members: readonly CenturionRelayMember[],
   maxTotalBytes = MAX_TOTAL_BYTES,
 ): void {
-  const result = verifyCenturionRelaySnapshot(relayManifest, members, maxTotalBytes);
+  const result = verifyCenturionRelaySnapshot(relayManifestBytes, members, maxTotalBytes);
   expect(result).toEqual({ outcome: 'blocked' });
   const safeOutput = JSON.stringify(result);
   expect(safeOutput).not.toContain(SYNTHETIC_BODY_MARKER);
@@ -223,7 +243,7 @@ describe('Centurion thread corpus relay', () => {
     validatePrivateThreadCorpusSnapshot(snapshot);
     const members = sourceMembers(snapshot);
 
-    const { manifest, manifestJson } = buildCenturionRelayManifest(
+    const { manifest, manifestJson, manifestBytes } = buildCenturionRelayManifest(
       TRANSFER_ID,
       members,
       MAX_TOTAL_BYTES,
@@ -233,18 +253,69 @@ describe('Centurion thread corpus relay', () => {
       members.map((candidate) => candidate.path),
     );
     expect(manifestJson).toBe(`${JSON.stringify(manifest, null, 2)}\n`);
-    expect(
-      verifyCenturionRelaySnapshot(JSON.parse(manifestJson), members, MAX_TOTAL_BYTES),
-    ).toEqual({
+    expect(manifestBytes).toEqual(textEncoder.encode(manifestJson));
+    expect(verifyCenturionRelaySnapshot(manifestBytes, members, MAX_TOTAL_BYTES)).toEqual({
       outcome: 'verified',
       snapshotId: snapshot.context.snapshotId,
       sourceManifestSha256: manifest.sourceManifestSha256,
       memberSetSha256: manifest.memberSetSha256,
+      relayManifestSha256: sha256(manifestBytes),
     });
 
     const safeOutput = JSON.stringify({ manifest, manifestJson });
     expect(safeOutput).not.toContain(SYNTHETIC_BODY_MARKER);
     expect(safeOutput).not.toContain(SYNTHETIC_ADDRESS_MARKER);
+  });
+
+  it('blocks rehashed BOM-prefixed V2 corpus and manifest bytes', () => {
+    const snapshot = syntheticSnapshot();
+    const members = sourceMembers(snapshot);
+    const corpus = members.find((candidate) => candidate.path === 'corpus.jsonl');
+    const manifest = members.find((candidate) => candidate.path === 'manifest.json');
+    expect(corpus).toBeDefined();
+    expect(manifest).toBeDefined();
+
+    const bomCorpus = replaceMember(
+      members,
+      corpus!.path,
+      member(corpus!.path, withUtf8Bom(corpus!.content)),
+    );
+    const bomManifest = replaceMember(
+      members,
+      manifest!.path,
+      member(manifest!.path, withUtf8Bom(manifest!.content)),
+    );
+
+    expectBlocked(unsafeRelayManifest(snapshot, bomCorpus), bomCorpus);
+    expectBlocked(unsafeRelayManifest(snapshot, bomManifest), bomManifest);
+  });
+
+  it('blocks noncanonical raw relay-manifest bytes', () => {
+    const snapshot = syntheticSnapshot();
+    const members = sourceMembers(snapshot);
+    const { manifest, manifestBytes } = buildCenturionRelayManifest(
+      TRANSFER_ID,
+      members,
+      MAX_TOTAL_BYTES,
+    );
+    const reordered = {
+      transferId: manifest.transferId,
+      schemaVersion: manifest.schemaVersion,
+      snapshotId: manifest.snapshotId,
+      sourceManifestSha256: manifest.sourceManifestSha256,
+      memberSetSha256: manifest.memberSetSha256,
+      members: manifest.members,
+    };
+    const whitespaceModified = new TextDecoder()
+      .decode(manifestBytes)
+      .replace('\n  "transferId"', '\n    "transferId"');
+
+    expectBlocked(textEncoder.encode(JSON.stringify(manifest)), members);
+    expectBlocked(relayManifestBytes(reordered), members);
+    expectBlocked(textEncoder.encode(whitespaceModified), members);
+    expectBlocked(withUtf8Bom(manifestBytes), members);
+    expectBlocked(new Uint8Array([0xff, 0xfe]), members);
+    expectBlocked(textEncoder.encode(`${new TextDecoder().decode(manifestBytes)} `), members);
   });
 
   it('blocks duplicate, missing, extra, noncanonical, and unsafe source member paths', () => {
@@ -329,19 +400,16 @@ describe('Centurion thread corpus relay', () => {
       ...artifact!,
       sha256: '0'.repeat(64),
     });
-    const manifest = unsafeRelayManifest(snapshot, members);
+    const manifest = unsafeRelayManifestObject(snapshot, members);
 
     expectBlocked(unsafeRelayManifest(snapshot, alteredBytes), alteredBytes);
     expectBlocked(unsafeRelayManifest(snapshot, alteredSize), alteredSize);
     expectBlocked(unsafeRelayManifest(snapshot, alteredHash), alteredHash);
-    expectBlocked({ ...manifest, unexpected: 'SYNTHETIC_EXTRA_FIELD' }, members);
     expectBlocked(
-      {
-        ...manifest,
-        members: undefined,
-      },
+      relayManifestBytes({ ...manifest, unexpected: 'SYNTHETIC_EXTRA_FIELD' }),
       members,
     );
+    expectBlocked(relayManifestBytes({ ...manifest, members: undefined }), members);
   });
 
   it('blocks V2 manifest, JSONL ordering, and artifact inventory tampering', () => {
@@ -389,12 +457,12 @@ describe('Centurion thread corpus relay', () => {
   it('builds only literal-root keys and canonical PII-free receipt and acknowledgement JSON', () => {
     const snapshot = syntheticSnapshot();
     const members = sourceMembers(snapshot);
-    const { manifest, manifestJson } = buildCenturionRelayManifest(
+    const { manifest, manifestBytes } = buildCenturionRelayManifest(
       TRANSFER_ID,
       members,
       MAX_TOTAL_BYTES,
     );
-    const relayManifestSha256 = sha256(textEncoder.encode(manifestJson));
+    const relayManifestSha256 = sha256(manifestBytes);
     const receiptInput = {
       transferId: TRANSFER_ID,
       snapshotId: snapshot.context.snapshotId,
