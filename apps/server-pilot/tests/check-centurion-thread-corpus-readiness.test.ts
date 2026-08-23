@@ -38,7 +38,6 @@ const CHECK_NAMES = [
 type Harness = {
   calls: string[];
   deps: CenturionThreadCorpusReadinessCommandDependencies;
-  stderr: string[];
   stdout: string[];
 };
 
@@ -109,7 +108,6 @@ function report(ready: boolean): string {
 function makeHarness(): Harness {
   const calls: string[] = [];
   const stdout: string[] = [];
-  const stderr: string[] = [];
   const deps: CenturionThreadCorpusReadinessCommandDependencies = {
     args: () => {
       calls.push('args');
@@ -216,12 +214,8 @@ function makeHarness(): Harness {
       calls.push('stdout');
       stdout.push(value);
     },
-    writeStderr: (value) => {
-      calls.push('stderr');
-      stderr.push(value);
-    },
   };
-  return { calls, deps, stderr, stdout };
+  return { calls, deps, stdout };
 }
 
 async function run(harness: Harness): Promise<number> {
@@ -229,7 +223,7 @@ async function run(harness: Harness): Promise<number> {
 }
 
 function expectNoPrivateOutput(harness: Harness): void {
-  const output = `${harness.stdout.join('')}${harness.stderr.join('')}`;
+  const output = harness.stdout.join('');
   for (const marker of [
     PRIVATE_ADDRESS_MARKER,
     PRIVATE_PATH_MARKER,
@@ -248,7 +242,6 @@ describe('check-centurion-thread-corpus-readiness command', () => {
 
     expect(await run(harness)).toBe(0);
     expect(harness.stdout).toEqual([report(true)]);
-    expect(harness.stderr).toEqual([]);
     expect(harness.calls).toEqual([
       'args',
       'platform',
@@ -276,7 +269,6 @@ describe('check-centurion-thread-corpus-readiness command', () => {
 
     expect(await run(harness)).toBe(2);
     expect(harness.stdout).toEqual([report(false)]);
-    expect(harness.stderr).toEqual([]);
     expectNoPrivateOutput(harness);
   });
 
@@ -426,7 +418,6 @@ describe('check-centurion-thread-corpus-readiness command', () => {
     expect(JSON.parse(harness.stdout[0]!) as { ready: boolean }).toMatchObject({
       ready: false,
     });
-    expect(harness.stderr).toEqual([]);
     expectNoPrivateOutput(harness);
   });
 

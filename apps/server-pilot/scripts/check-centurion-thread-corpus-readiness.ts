@@ -75,7 +75,6 @@ export type CenturionThreadCorpusReadinessCommandDependencies = {
     kmsKeyId: string;
   }): Promise<boolean>;
   writeStdout(value: string): void;
-  writeStderr(value: string): void;
 };
 
 function fail(): never {
@@ -642,7 +641,6 @@ export function createCenturionThreadCorpusReadinessCommand(
     simulateReadOnlyPolicy: defaultSimulateReadOnlyPolicy,
     probeS3AndKmsMetadata: defaultProbeS3AndKmsMetadata,
     writeStdout: (value) => process.stdout.write(value),
-    writeStderr: (value) => process.stderr.write(value),
     ...overrides,
   };
   return async (): Promise<number> => {
