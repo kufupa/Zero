@@ -1,7 +1,7 @@
 ---
 title: "Hotel Email HTML Images Missing: CID Rewrite Plus Remote Trust Gate"
 date: 2026-07-31
-last_updated: 2026-07-31
+last_updated: 2026-08-23
 category: ui-bugs
 module: mail / server-pilot email HTML rendering
 problem_type: ui_bug
@@ -128,7 +128,7 @@ Same pattern in `wire-compat.ts` `toParsedMessage`. Display pipeline: sanitize �
 
 `processEmailContent` requires `messageId`, authorizes the message for the active transport, loads that message’s attachments, and calls `processEmailHtmlForDisplay`.
 
-Frontend uses shared `isImageTrustedSender` (hotel domains from the never-spam allowlist family + exact email + domain entries in `trustedSenders`), cache key `email-content-v2`, and passes `messageId`.
+Frontend uses shared `isImageTrustedSender` (hotel domains from the never-spam allowlist family + exact email + domain entries in `trustedSenders`) and passes `messageId`. `MailContent` owns the visible processed-content query; its `email-content-v3` identity includes the message ID, a SHA-256 source digest, image permission, and processing theme. Raw HTML is not included in the query key.
 
 Server twin (`apps/server-pilot/src/mail/trust-sender.ts`) mirrors the FE predicate for tests/parity and uses `AUTO_TRIAGE_NEVER_SPAM_DOMAINS`; the FE twin hardcodes the same hotel domains to avoid importing never-spam into the mail app. **`processEmailContent` does not call the server twin** — remote images are gated by the client-supplied `shouldLoadImages` flag after mailbox authz.
 
@@ -151,7 +151,7 @@ Print paths in `mail-display.tsx` / `thread-display.tsx` still inject `cleanHtml
 - Never call `sanitizeEmailHtml(..., { shouldLoadImages: false })` on persist or wire paths that must later honor trust. Storage/wire = XSS only; image policy = `processEmailContent`.
 - Any new HTML render surface (print, export, mobile webview) must call `processEmailHtmlForDisplay` / `processEmailContent` with `messageId` and the same `isImageTrustedSender` predicate — do not paste `cleanHtml(decodedBody)`.
 - Keep FE `IMAGE_TRUSTED_DOMAINS` and server `AUTO_TRIAGE_NEVER_SPAM_DOMAINS` in sync when hotel domains change.
-- When changing `processEmailContent` input or trust semantics, bump the React Query key (`email-content-vN`).
+- When changing a client-supplied processed-content cache input or trust semantics, update the `email-content-vN` identity and its contract test. Source HTML must be represented by a digest rather than placed in a query key; retry and focus state must stay bound to the full identity.
 - Inline HTTP must stay cookie-session + mailbox_access join; never require `x-active-transport` for `<img>` routes.
 - Run `cid-images`, `safe-inline-image`, `inline-attachment-http`, `process-email-content`, `trust-sender`, `sanitize-email-html`, `ingest-html-sanitize`, `mail-html-sanitize` before claiming image-trust changes are done (never against pilot RDS).
 - Historical rows burned before the preserve-remotes fix need a MIME reparse / body rewrite job; new ingest alone will not heal them.
@@ -165,4 +165,5 @@ Print paths in `mail-display.tsx` / `thread-display.tsx` still inject `cleanHtml
 - [Folder-first spam_at folder matrix](../architecture-patterns/folder-first-spam-at-folder-matrix.md) — `AUTO_TRIAGE_NEVER_SPAM_DOMAINS` source reused for image trust defaults.
 - [Outlook calendar forward sender attribution](../logic-errors/outlook-calendar-forward-sender-attribution.md) — `fromAddress` feeds domain trust matching.
 - [Live pilot production parity real mail](../architecture-patterns/live-pilot-production-parity-real-mail.md) — attachment download ≠ CID projection.
+- [Safe mail-content processing cache ownership and retry identity](../logic-errors/mail-content-cache-ownership-retry-identity.md) — visible query ownership, source-digest cache identity, and retry isolation for this render boundary.
 - Plan / handoff: `docs/plans/2026-07-30-002-fix-cid-inline-images-and-trust-plan.md`, `docs/superpowers/plans/handoff-reports/2026-07-30-cid-inline-images-trust.md`
