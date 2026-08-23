@@ -20,6 +20,8 @@ export const centurionThreadCorpusReadinessConfigSchema = z
       .strict(),
     designatedSourceScope: z
       .object({
+        centurionTransportId: nonEmptyString,
+        designatedTransportId: nonEmptyString,
         mailboxIds: z.array(nonEmptyString).min(1),
         addresses: z.array(nonEmptyString).min(1),
       })

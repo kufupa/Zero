@@ -35,6 +35,8 @@ function validConfig(): Record<string, unknown> {
       worktree: 'synthetic-worktree',
     },
     designatedSourceScope: {
+      centurionTransportId: 'synthetic-centurion-transport-id',
+      designatedTransportId: 'synthetic-designated-transport-id',
       mailboxIds: ['synthetic-mailbox-id'],
       addresses: ['synthetic@example.invalid'],
     },
@@ -159,6 +161,8 @@ describe('evaluateCenturionThreadCorpusReadiness', () => {
       config: {
         ...validConfig(),
         designatedSourceScope: {
+          centurionTransportId: 'synthetic-centurion-transport-id',
+          designatedTransportId: 'synthetic-designated-transport-id',
           mailboxIds: [],
           addresses: ['synthetic@example.invalid'],
         },
@@ -169,8 +173,34 @@ describe('evaluateCenturionThreadCorpusReadiness', () => {
       config: {
         ...validConfig(),
         designatedSourceScope: {
+          centurionTransportId: 'synthetic-centurion-transport-id',
+          designatedTransportId: 'synthetic-designated-transport-id',
           mailboxIds: ['synthetic-mailbox-id'],
           addresses: [],
+        },
+      },
+    },
+    {
+      name: 'empty Centurion transport selector',
+      config: {
+        ...validConfig(),
+        designatedSourceScope: {
+          centurionTransportId: '',
+          designatedTransportId: 'synthetic-designated-transport-id',
+          mailboxIds: ['synthetic-mailbox-id'],
+          addresses: ['synthetic@example.invalid'],
+        },
+      },
+    },
+    {
+      name: 'empty designated transport selector',
+      config: {
+        ...validConfig(),
+        designatedSourceScope: {
+          centurionTransportId: 'synthetic-centurion-transport-id',
+          designatedTransportId: '',
+          mailboxIds: ['synthetic-mailbox-id'],
+          addresses: ['synthetic@example.invalid'],
         },
       },
     },
@@ -232,6 +262,8 @@ describe('evaluateCenturionThreadCorpusReadiness', () => {
       worktree: SENSITIVE_MARKERS[1],
     };
     config.designatedSourceScope = {
+      centurionTransportId: 'synthetic-centurion-transport-id',
+      designatedTransportId: 'synthetic-designated-transport-id',
       mailboxIds: ['synthetic-mailbox-id'],
       addresses: [SENSITIVE_MARKERS[0]],
     };
@@ -267,7 +299,9 @@ function sourceBoundaryViolations(sourceText: string): string[] {
     'Bun',
     'Deno',
     'console',
+    'eval',
     'fetch',
+    'Function',
     'global',
     'globalThis',
     'process',
@@ -313,5 +347,13 @@ describe('centurion thread corpus readiness source boundary', () => {
     expect(sourceBoundaryViolations(readFileSync(sourcePath, 'utf8'))).toEqual(
       [],
     );
+  });
+
+  it.each([
+    "eval('process.env');",
+    "Function('return globalThis')();",
+    "new Function('return process')();",
+  ])('rejects indirect runtime execution: %s', (fixture) => {
+    expect(sourceBoundaryViolations(fixture)).not.toEqual([]);
   });
 });
