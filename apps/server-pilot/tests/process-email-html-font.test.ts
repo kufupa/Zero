@@ -29,8 +29,7 @@ describe('processEmailHtmlForDisplay font default', () => {
     });
 
     expect(processedHtml).toContain('bgcolor="#ffffff"');
-    expect(processedHtml).not.toContain('background-color:#000000');
-    expect(processedHtml).not.toContain('color:#ffffff');
+    expect(processedHtml).not.toMatch(/<(?:table|span)\b[^>]*\sstyle=/i);
   });
 
   it('renders collapsed quotes with light-paper controls', () => {
