@@ -324,6 +324,11 @@ function objectProbeArn(bucket: string, prefix: string): string | null {
     !prefix ||
     prefix.includes('\\') ||
     prefix.includes('\0') ||
+    prefix.includes('*') ||
+    prefix.includes('?') ||
+    prefix.includes('$') ||
+    prefix.includes('{') ||
+    prefix.includes('}') ||
     prefix.split('/').some((segment) => !segment || segment === '.' || segment === '..')
   ) {
     return null;

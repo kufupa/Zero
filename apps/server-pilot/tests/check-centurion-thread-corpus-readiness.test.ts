@@ -19,6 +19,8 @@ const PRIVATE_ERROR_MARKER = 'PHASE_0A2_PRIVATE_ERROR_MARKER';
 const PRIVATE_PREFIX_MARKER = 'PHASE_0A2_PRIVATE_PREFIX_MARKER';
 const PRIVATE_DB_URL_MARKER = 'PHASE_0A2_PRIVATE_DATABASE_URL_MARKER';
 const PRIVATE_AWS_RESPONSE_MARKER = 'PHASE_0A2_PRIVATE_AWS_RESPONSE_MARKER';
+const PRIVATE_WILDCARD_PREFIX_MARKER = 'PHASE_0A2_PRIVATE_PREFIX_*';
+const PRIVATE_VARIABLE_PREFIX_MARKER = 'PHASE_0A2_PRIVATE_PREFIX_${aws:username}';
 
 const CHECK_NAMES = [
   'exactEc2RevisionWorktree',
@@ -452,6 +454,29 @@ describe('check-centurion-thread-corpus-readiness command', () => {
     });
     expectNoPrivateOutput(harness);
   });
+
+  it.each([PRIVATE_WILDCARD_PREFIX_MARKER, PRIVATE_VARIABLE_PREFIX_MARKER])(
+    'blocks wildcard or variable prefix %s before policy and metadata probes',
+    async (prefix) => {
+      const harness = makeHarness();
+      harness.deps.readProtectedConfig = async (request) =>
+        request.configPath === CONFIG_PATH
+          ? configText({
+              approvedExportTarget: {
+                region: 'synthetic-region-1',
+                bucket: 'synthetic-private-bucket',
+                prefix,
+              },
+            })
+          : operatorConfigText();
+
+      expect(await run(harness)).toBe(3);
+      expect(harness.calls).not.toContain('policySimulation');
+      expect(harness.calls).not.toContain('metadataProbes');
+      expect(harness.stdout[0]).not.toContain(prefix);
+      expectNoPrivateOutput(harness);
+    },
+  );
 });
 
 function sourceViolations(source: string): string[] {
