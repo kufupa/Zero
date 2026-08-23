@@ -2,6 +2,9 @@
 # Real-mail Playwright UI gate. --read-only proves launch UI without mail mutation.
 set -euo pipefail
 
+# Clear inherited test and Node preload configuration before any child process.
+unset DATABASE_URL VITEST_ALLOW_PILOT_RDS NODE_OPTIONS DOTENV_CONFIG_PATH
+
 READ_ONLY=0
 case "${1:-}" in
   "")
@@ -30,20 +33,6 @@ export ZERO_AUTO_START_BACKEND=0
 
 export PATH="${HOME}/.local/share/pnpm:${HOME}/.nvm/versions/node/$(ls "${HOME}/.nvm/versions/node" 2>/dev/null | sort -V | tail -1)/bin:${PATH}"
 export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-/opt/nava/playwright-browsers}"
-if [ -f /opt/nava/ec2-playwright-chromium/env.sh ]; then
-  # shellcheck disable=SC1091
-  source /opt/nava/ec2-playwright-chromium/env.sh
-fi
-
-ENV_FILE="${ENV_FILE:-apps/server-pilot/.env.production}"
-if [ -f "$ENV_FILE" ]; then
-  set -a
-  # shellcheck disable=SC1090
-  source "$ENV_FILE"
-  set +a
-fi
-# Playwright is not Vitest, but never leave pilot DATABASE_URL in scope for accidental tests.
-unset DATABASE_URL VITEST_ALLOW_PILOT_RDS
 
 CANONICAL_ORIGIN="https://nava.legacyhotels.co.za"
 : "${BETTER_AUTH_URL:?BETTER_AUTH_URL missing from production environment}"
@@ -86,14 +75,6 @@ fi
 export PLAYWRIGHT_IGNORE_HTTPS_ERRORS=0
 export PLAYWRIGHT_REAL_MAIL_USER="${PLAYWRIGHT_REAL_MAIL_USER:-navaai@legacyhotels.co.za}"
 
-# Re-assert after sourcing production env (file may have demo flags — still refuse).
-if [ "${ZERO_DEMO_FRONTEND_ONLY:-0}" = "1" ] || [ "${VITE_FRONTEND_ONLY:-0}" = "1" ]; then
-  echo "refusing: frontend-only demo mode set in env file for real-mail gate" >&2
-  exit 2
-fi
-export ZERO_DEMO_FRONTEND_ONLY=0
-export VITE_FRONTEND_ONLY=0
-
 # Read-only launch proof must run against day-one product config. Mutating loopback
 # proof remains opt-in and keeps its immediate-send requirement.
 if [ "$READ_ONLY" -eq 1 ]; then
@@ -102,10 +83,7 @@ else
   EXPECTED_UNDO_SEND_SECONDS=0
 fi
 
-UNDO_VAL="${UNDO_SEND_SECONDS:-}"
-if [ -z "$UNDO_VAL" ] && [ -f "$ENV_FILE" ]; then
-  UNDO_VAL="$(grep -E '^UNDO_SEND_SECONDS=' "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d "\"'" || true)"
-fi
+UNDO_VAL="${UNDO_SEND_SECONDS:?UNDO_SEND_SECONDS must be explicitly set by operator}"
 if [ "${UNDO_VAL:-}" != "$EXPECTED_UNDO_SEND_SECONDS" ]; then
   echo "refusing: UNDO_SEND_SECONDS must be ${EXPECTED_UNDO_SEND_SECONDS} for this UI gate mode" >&2
   exit 2

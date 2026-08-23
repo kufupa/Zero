@@ -49,10 +49,32 @@ interface MailContentProps {
   senderEmail: string;
 }
 
+type ContentDigestState = {
+  html: string;
+  digest: string | null;
+  hasError: boolean;
+};
+
+async function digestMailHtml(html: string) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(html));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
 export function MailContent({ id, html, senderEmail }: MailContentProps) {
   const { data, refetch } = useSettings();
   const queryClient = useQueryClient();
   const frontendOnlyDemo = isFrontendOnlyDemo();
+  const shouldProcessContent = !frontendOnlyDemo && Boolean(html);
+  const [contentDigestRetry, setContentDigestRetry] = useState(0);
+  const [contentDigestState, setContentDigestState] = useState<ContentDigestState>({
+    html,
+    digest: null,
+    hasError: false,
+  });
+  const contentDigest =
+    contentDigestState.html === html ? contentDigestState.digest : null;
+  const contentDigestFailed =
+    contentDigestState.html === html && contentDigestState.hasError;
   const isTrustedSender = useMemo(
     () =>
       isImageTrustedSender({
@@ -64,10 +86,59 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
   );
   const [cspViolation, setCspViolation] = useState(false);
   const [temporaryImagesEnabled, setTemporaryImagesEnabled] = useState(false);
+  const [retryingContentKey, setRetryingContentKey] = useState<string | null>(null);
   const hostRef = useRef<HTMLDivElement>(null);
   const shadowRootRef = useRef<ShadowRoot | null>(null);
   const { resolvedTheme } = useTheme();
   const trpc = useTRPC();
+  const shouldLoadImages = isTrustedSender || temporaryImagesEnabled;
+  const processingTheme = (resolvedTheme as 'light' | 'dark') || 'light';
+  const contentQueryKey = [
+    'email-content-v3',
+    id,
+    contentDigest,
+    shouldLoadImages,
+    processingTheme,
+  ] as const;
+  const contentQueryIdentity = JSON.stringify(contentQueryKey);
+  const retryInFlightRef = useRef<string | null>(null);
+  const focusContentAfterRetryRef = useRef<string | null>(null);
+  const focusContentQueryIdentityRef = useRef(contentQueryIdentity);
+
+  useEffect(() => {
+    if (!shouldProcessContent) return;
+
+    let cancelled = false;
+    setContentDigestState({
+      html,
+      digest: null,
+      hasError: false,
+    });
+    void digestMailHtml(html).then(
+      (digest) => {
+        if (!cancelled) {
+          setContentDigestState({
+            html,
+            digest,
+            hasError: false,
+          });
+        }
+      },
+      () => {
+        if (!cancelled) {
+          setContentDigestState({
+            html,
+            digest: null,
+            hasError: true,
+          });
+        }
+      },
+    );
+
+    return () => {
+      cancelled = true;
+    };
+  }, [contentDigestRetry, html, shouldProcessContent]);
 
   const { mutateAsync: saveUserSettings } = useMutation({
     ...trpc.settings.save.mutationOptions(),
@@ -101,14 +172,21 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
     trpc.mail.processEmailContent.mutationOptions(),
   );
 
-  const { data: processedData } = useQuery({
-    queryKey: ['email-content-v2', id, isTrustedSender || temporaryImagesEnabled, resolvedTheme],
+  const {
+    data: processedData,
+    isError: isProcessingError,
+    isFetching: isProcessingFetching,
+    isPending: isProcessingPending,
+    isSuccess: isProcessingSuccess,
+    refetch: refetchProcessedContent,
+  } = useQuery({
+    queryKey: contentQueryKey,
     queryFn: async () => {
       const result = await processEmailContent({
         html,
         messageId: id,
-        shouldLoadImages: isTrustedSender || temporaryImagesEnabled,
-        theme: (resolvedTheme as 'light' | 'dark') || 'light',
+        shouldLoadImages,
+        theme: processingTheme,
       });
 
       return {
@@ -118,10 +196,66 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
     },
     staleTime: 30 * 60 * 1000,
     gcTime: 60 * 60 * 1000,
+    retry: false,
     refetchOnWindowFocus: false,
     refetchOnMount: false,
-    enabled: !frontendOnlyDemo && Boolean(html),
+    enabled: shouldProcessContent && Boolean(contentDigest),
   });
+
+  const isRetryingContent =
+    shouldProcessContent &&
+    (retryingContentKey === contentQueryIdentity || (isProcessingError && isProcessingFetching));
+  const isContentDigestPending =
+    shouldProcessContent && !contentDigest && !contentDigestFailed;
+  const isLoadingContent =
+    isContentDigestPending || (shouldProcessContent && isProcessingPending && !isRetryingContent);
+  const isProcessingErrorState =
+    shouldProcessContent && (contentDigestFailed || isProcessingError);
+  const shouldRenderContent =
+    frontendOnlyDemo ||
+    !shouldProcessContent ||
+    (!isContentDigestPending && !contentDigestFailed && isProcessingSuccess);
+
+  const handleRetry = useCallback(() => {
+    if (contentDigestFailed) {
+      setContentDigestState({
+        html,
+        digest: null,
+        hasError: false,
+      });
+      setContentDigestRetry((attempt) => attempt + 1);
+      return;
+    }
+
+    const retryKey = contentQueryIdentity;
+    if (retryInFlightRef.current === retryKey || isProcessingFetching) return;
+
+    retryInFlightRef.current = retryKey;
+    focusContentAfterRetryRef.current = retryKey;
+    setRetryingContentKey(retryKey);
+    void refetchProcessedContent()
+      .then(
+        (result) => result.isSuccess,
+        () => false,
+      )
+      .then((isSuccess) => {
+        if (!isSuccess && focusContentAfterRetryRef.current === retryKey) {
+          focusContentAfterRetryRef.current = null;
+        }
+      })
+      .finally(() => {
+        if (retryInFlightRef.current === retryKey) {
+          retryInFlightRef.current = null;
+        }
+        setRetryingContentKey((currentKey) => (currentKey === retryKey ? null : currentKey));
+      });
+  }, [
+    contentDigestFailed,
+    contentQueryIdentity,
+    html,
+    isProcessingFetching,
+    refetchProcessedContent,
+  ]);
 
   const resolvedHtml = useMemo(
     () =>
@@ -134,24 +268,62 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
   );
 
   useEffect(() => {
-    if (processedData) {
-      if (processedData.hasBlockedImages) {
-        setCspViolation(true);
-      }
+    if (isProcessingSuccess && processedData) {
+      setCspViolation(processedData.hasBlockedImages);
     }
-  }, [processedData]);
+  }, [isProcessingSuccess, processedData]);
 
   useEffect(() => {
-    if (!hostRef.current || shadowRootRef.current) return;
-
-    shadowRootRef.current = hostRef.current.attachShadow({ mode: 'open' });
-  }, []);
+    if (focusContentQueryIdentityRef.current !== contentQueryIdentity) {
+      focusContentQueryIdentityRef.current = contentQueryIdentity;
+      focusContentAfterRetryRef.current = null;
+    }
+  }, [contentQueryIdentity]);
 
   useEffect(() => {
-    if (!shadowRootRef.current || !resolvedHtml) return;
+    const host = hostRef.current;
+    if (!shouldRenderContent || !host) {
+      shadowRootRef.current = null;
+      return;
+    }
+
+    const root = host.shadowRoot ?? host.attachShadow({ mode: 'open' });
+    shadowRootRef.current = root;
+
+    return () => {
+      if (shadowRootRef.current === root) {
+        shadowRootRef.current = null;
+      }
+    };
+  }, [shouldRenderContent]);
+
+  useEffect(() => {
+    if (!shouldRenderContent || !shadowRootRef.current || !resolvedHtml) return;
 
     shadowRootRef.current.innerHTML = resolvedHtml;
-  }, [resolvedHtml]);
+  }, [resolvedHtml, shouldRenderContent]);
+
+  useEffect(() => {
+    if (
+      focusContentAfterRetryRef.current !== contentQueryIdentity ||
+      !isProcessingSuccess ||
+      !shouldRenderContent ||
+      !hostRef.current
+    ) {
+      return;
+    }
+
+    const activeElement = document.activeElement;
+    const focusWasVacated =
+      !activeElement ||
+      activeElement === document.body ||
+      activeElement === document.documentElement ||
+      !document.contains(activeElement);
+    if (focusWasVacated) {
+      hostRef.current.focus();
+    }
+    focusContentAfterRetryRef.current = null;
+  }, [contentQueryIdentity, isProcessingSuccess, shouldRenderContent]);
 
   const handleImageError = useCallback(
     (e: Event) => {
@@ -172,7 +344,7 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
   );
 
   useEffect(() => {
-    if (!shadowRootRef.current) return;
+    if (!shouldRenderContent || !shadowRootRef.current) return;
 
     const root = shadowRootRef.current;
 
@@ -198,13 +370,47 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
       root.removeEventListener('error', handleImageError, true);
       root.removeEventListener('click', handleClick);
     };
-  }, [resolvedHtml, handleImageError]);
+  }, [resolvedHtml, handleImageError, shouldRenderContent]);
 
   useEffect(() => {
     if (isTrustedSender || temporaryImagesEnabled) {
       setCspViolation(false);
     }
   }, [isTrustedSender, temporaryImagesEnabled]);
+
+  if (isLoadingContent) {
+    return (
+      <div role="status" aria-live="polite" className="px-4 py-3 text-sm">
+        Loading message content safely…
+      </div>
+    );
+  }
+
+  if (isProcessingErrorState || isRetryingContent) {
+    return (
+      <div
+        role={isRetryingContent ? 'status' : 'alert'}
+        aria-live={isRetryingContent ? 'polite' : undefined}
+        className="px-4 py-3 text-sm"
+      >
+        <p>
+          {isRetryingContent
+            ? 'Retrying message content…'
+            : 'Unable to load message content safely. Please try again.'}
+        </p>
+        <button
+          type="button"
+          onClick={handleRetry}
+          disabled={isRetryingContent}
+          aria-busy={isRetryingContent}
+          aria-label="Retry message content"
+          className="mt-2 cursor-pointer underline disabled:cursor-not-allowed"
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
 
   return (
     <>
@@ -233,7 +439,13 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
           </button>
         </div>
       )}
-      <div ref={hostRef} className={cn('mail-content w-full flex-1 overflow-scroll no-scrollbar px-4 text-black dark:text-white')} />
+      <div
+        ref={hostRef}
+        role="region"
+        aria-label="Message content"
+        tabIndex={-1}
+        className={cn('mail-content w-full flex-1 overflow-scroll no-scrollbar px-4 text-black dark:text-white')}
+      />
     </>
   );
 }

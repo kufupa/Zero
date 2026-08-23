@@ -27,6 +27,17 @@ const actionGroupSource = () => {
   return source.slice(actionGroupStart, actionGroupEnd + '</div>'.length);
 };
 
+const actionButtonSource = () => {
+  const actionButtonStart = source.indexOf('const ActionButton =');
+  const actionButtonEnd = source.indexOf('const downloadAttachment', actionButtonStart);
+
+  if (actionButtonStart < 0 || actionButtonEnd <= actionButtonStart) {
+    throw new Error('Could not bound per-message ActionButton');
+  }
+
+  return source.slice(actionButtonStart, actionButtonEnd);
+};
+
 const threadToolbarActionGroupIndexes = () =>
   [...threadSource.matchAll(threadToolbarActionGroupPattern)].map((match) => match.index ?? -1);
 
@@ -180,6 +191,26 @@ describe('per-message reply actions', () => {
     expect(source).toMatch(
       /const ActionButton =[\s\S]*?<button\s+[\s\S]*?type="button"[\s\S]*?\{text\}/,
     );
+  });
+
+  it('keeps recipient summaries and action controls pane-contained without visual hotkey badges', () => {
+    const recipientHeaderIndex = source.indexOf(
+      'className="flex flex-wrap items-start justify-between gap-2"',
+    );
+    const mailBodyIndex = source.indexOf(mailBodyAnchor);
+    const recipientHeader = source.slice(recipientHeaderIndex, mailBodyIndex);
+    const actionGroup = actionGroupSource();
+    const actionButton = actionButtonSource();
+
+    expect(recipientHeader.match(/min-w-0 break-all/g) ?? []).toHaveLength(3);
+    expect(actionGroup).toContain('flex w-full max-w-full flex-wrap');
+    expect(actionGroup).not.toContain('sm:w-auto');
+    expect(actionButton).toContain('shrink-0');
+    expect(actionButton).toContain('whitespace-nowrap');
+    expect(actionButton).not.toContain('shortcut?: string');
+    expect(actionButton).not.toContain('shortcut &&');
+    expect(actionButton).not.toContain('<kbd');
+    expect(actionGroup).not.toContain('shortcut={');
   });
 });
 

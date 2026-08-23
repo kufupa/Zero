@@ -6,11 +6,14 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-dotenv.config({ path: path.resolve(__dirname, '../../.env') });
-
 const CANONICAL_ORIGIN = 'https://nava.legacyhotels.co.za';
 /** Set by playwright-real-mail-ui-gate.sh — AE1/AE7/AE9 against real transport. */
 const realMailGate = process.env.REAL_MAIL_UI_GATE === '1';
+
+if (!realMailGate) {
+  dotenv.config({ path: path.resolve(__dirname, '../../.env') });
+}
+
 const configuredBaseURL = process.env.PLAYWRIGHT_BASE_URL;
 const realMailBaseURL =
   configuredBaseURL === `${CANONICAL_ORIGIN}/` ? CANONICAL_ORIGIN : configuredBaseURL;

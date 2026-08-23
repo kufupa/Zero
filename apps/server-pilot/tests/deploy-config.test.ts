@@ -2504,6 +2504,13 @@ describe('deploy config', () => {
       join(here, '..', '..', '..', 'packages', 'testing', 'playwright.config.ts'),
       'utf8',
     );
+    expect(config.replace(/\r\n/g, '\n')).toContain(
+      `const realMailGate = process.env.REAL_MAIL_UI_GATE === '1';
+
+if (!realMailGate) {
+  dotenv.config({ path: path.resolve(__dirname, '../../.env') });
+}`,
+    );
     expect(config).not.toContain('|| realMailGate');
     expect(config).toContain('Real-mail Playwright requires PLAYWRIGHT_BASE_URL');
     expect(config).toContain('Real-mail Playwright forbids ignored HTTPS errors');
@@ -4577,6 +4584,16 @@ describe('deploy config', () => {
     expect(readOnlySpecs).not.toMatch(/compose|reply|force-sync|forceSync|send/i);
     expect(script).not.toContain('api/auth/sign-in/email');
     expect(script).not.toMatch(/echo[^\n]*PLAYWRIGHT_REAL_MAIL_PASSWORD/);
+    expect(script).not.toMatch(/(?:^|\n)\s*(?:source|\.)\s+/m);
+    expect(script).not.toContain('ENV_FILE');
+    expect(script).not.toContain('.env.production');
+    expect(script.replace(/\r\n/g, '\n')).toMatch(
+      /set -euo pipefail\s*\n(?:\s*#[^\n]*\n)*\s*unset DATABASE_URL VITEST_ALLOW_PILOT_RDS NODE_OPTIONS DOTENV_CONFIG_PATH/,
+    );
+    expect(script).not.toMatch(/grep[^\n]*UNDO_SEND_SECONDS/);
+    expect(script).toContain(
+      'UNDO_VAL="${UNDO_SEND_SECONDS:?UNDO_SEND_SECONDS must be explicitly set by operator}"',
+    );
   });
 
   it('task-owned operations files never stage the whole worktree', async () => {

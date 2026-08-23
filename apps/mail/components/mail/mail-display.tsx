@@ -307,30 +307,19 @@ type ActionButtonProps = {
   onClick: (e: React.MouseEvent) => void;
   icon: React.ReactNode;
   text: string;
-  shortcut?: string;
 };
 
-const ActionButton = ({ onClick, icon, text, shortcut }: ActionButtonProps) => {
+const ActionButton = ({ onClick, icon, text }: ActionButtonProps) => {
   return (
     <button
       type="button"
       onClick={onClick}
-      className="inline-flex h-7 items-center justify-center gap-1 overflow-hidden rounded-md border bg-white px-1.5 dark:border-none dark:bg-[#313131] cursor-pointer hover:bg-gray-100 dark:hover:bg-[#3d3d3d] transition-colors"
+      className="inline-flex h-7 shrink-0 items-center justify-center gap-1 overflow-hidden whitespace-nowrap rounded-md border bg-white px-1.5 dark:border-none dark:bg-[#313131] cursor-pointer hover:bg-gray-100 dark:hover:bg-[#3d3d3d] transition-colors"
     >
       {icon}
-      <div className="flex items-center justify-center gap-2.5 pl-0.5 pr-1">
+      <div className="flex shrink-0 items-center justify-center gap-2.5 whitespace-nowrap pl-0.5 pr-1">
         <div className="justify-start text-sm leading-none text-black dark:text-white">{text}</div>
       </div>
-      {shortcut && (
-        <kbd
-          className={cn(
-            'border-muted-foreground/10 bg-accent h-6 rounded-[6px] border px-1.5 font-mono text-xs leading-6',
-            '-me-1 ms-auto hidden max-h-full items-center md:inline-flex',
-          )}
-        >
-          {shortcut}
-        </kbd>
-      )}
     </button>
   );
 };
@@ -1385,7 +1374,7 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                       </div>
                       <div className="flex flex-wrap items-start justify-between gap-2">
                         <div className="flex min-w-0 flex-1 flex-wrap gap-1">
-                          <p className="text-muted-foreground text-sm font-medium dark:text-[#8C8C8C]">
+                          <p className="text-muted-foreground min-w-0 break-all text-sm font-medium dark:text-[#8C8C8C]">
                             {m['common.mailDisplay.to']()}:{' '}
                             {shouldCollapseRecipientToYou({
                               folder,
@@ -1398,13 +1387,13 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                               : renderMailboxSummary(emailData?.to || [])}
                           </p>
                           {(emailData?.cc?.length || 0) > 0 && (
-                            <p className="text-muted-foreground text-sm font-medium dark:text-[#8C8C8C]">
+                            <p className="text-muted-foreground min-w-0 break-all text-sm font-medium dark:text-[#8C8C8C]">
                               {m['common.mailDisplay.cc']()}:{' '}
                               {renderMailboxSummary(emailData?.cc || [])}
                             </p>
                           )}
                           {(emailData?.bcc?.length || 0) > 0 && (
-                            <p className="text-muted-foreground text-sm font-medium dark:text-[#8C8C8C]">
+                            <p className="text-muted-foreground min-w-0 break-all text-sm font-medium dark:text-[#8C8C8C]">
                               Bcc:{' '}
                               {(emailData?.bcc || [])
                                 .map((recipient) => formatMailboxPlain(recipient))
@@ -1415,7 +1404,7 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                         <div
                           role="group"
                           aria-label="Message reply actions"
-                          className="flex w-full max-w-full flex-wrap justify-end gap-2 sm:w-auto"
+                          className="flex w-full max-w-full flex-wrap justify-end gap-2"
                         >
                           <ActionButton
                             onClick={(e) => {
@@ -1424,7 +1413,6 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                             }}
                             icon={<Reply className="fill-muted-foreground dark:fill-[#9B9B9B]" />}
                             text={m['common.mail.reply']()}
-                            shortcut={isLastEmail ? 'r' : undefined}
                           />
                           <ActionButton
                             onClick={(e) => {
@@ -1433,7 +1421,6 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                             }}
                             icon={<ReplyAll className="fill-muted-foreground dark:fill-[#9B9B9B]" />}
                             text={m['common.mail.replyAll']()}
-                            shortcut={isLastEmail ? 'a' : undefined}
                           />
                           <ActionButton
                             onClick={(e) => {
@@ -1442,7 +1429,6 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                             }}
                             icon={<Forward className="fill-muted-foreground dark:fill-[#9B9B9B]" />}
                             text={m['common.mail.forward']()}
-                            shortcut={isLastEmail ? 'f' : undefined}
                           />
                         </div>
                       </div>

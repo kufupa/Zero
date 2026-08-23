@@ -1,5 +1,5 @@
 import { backgroundQueueAtom, isThreadInBackgroundQueueAtom } from '@/store/backgroundQueue';
-import { useInfiniteQuery, useQuery, useMutation } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import type { IGetThreadResponse, ThreadListItem } from '@zero/server/driver/types';
 import { useSearchValue } from '@/hooks/use-search-value';
 import { useTRPC } from '@/providers/query-provider';
@@ -12,9 +12,7 @@ import { normalizeDemoMailFolderSlug } from '@/lib/demo/folder-map';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { listDemoDrafts } from '@/lib/demo/local-store';
 import { useAtom, useAtomValue } from 'jotai';
-import { useSettings } from './use-settings';
 import { useParams } from 'react-router';
-import { useTheme } from 'next-themes';
 import { useQueryState } from 'nuqs';
 import { useMemo } from 'react';
 import useDebouncedValue from '@/hooks/use-debounce';
@@ -31,7 +29,6 @@ import {
 import { mergeCategoryIds, mergeLabelIds, resolveMailRouteFilter } from '@/lib/mail/route-filter';
 import { resolveMailListSearch } from '@/lib/mail/search-filters';
 import { useCategorySettings } from './use-categories';
-import { isImageTrustedSender } from '@/lib/mail/trust-sender';
 import { useLabels } from './use-labels';
 
 const threadPollingMs = resolveThreadPollingMs(import.meta.env.VITE_MAIL_POLL_MS);
@@ -236,11 +233,7 @@ export const useThread = (threadId: string | null) => {
   const { data: session } = useSession();
   const [_threadId] = useQueryState('threadId');
   const id = threadId ? threadId : _threadId;
-  const [mode] = useQueryState('mode');
-  const [isComposeOpen] = useQueryState('isComposeOpen');
   const trpc = useTRPC();
-  const { data: settings } = useSettings();
-  const { theme: systemTheme } = useTheme();
   const demoMode = isFrontendOnlyDemo();
 
   const demoThreadQuery = useQuery({
@@ -279,7 +272,7 @@ export const useThread = (threadId: string | null) => {
     resolvedThreadId: activeThreadId,
   });
 
-  const { latestDraft, drafts, aiDraftCandidates, isGroupThread, finalData, latestMessage } =
+  const { latestDraft, drafts, aiDraftCandidates, isGroupThread, finalData } =
     useMemo(() => {
     const threadData = isThreadDataMismatch ? undefined : activeThreadData;
 
@@ -290,7 +283,6 @@ export const useThread = (threadId: string | null) => {
         aiDraftCandidates: [],
         isGroupThread: false,
         finalData: undefined,
-        latestMessage: undefined,
       };
     }
 
@@ -315,72 +307,13 @@ export const useThread = (threadId: string | null) => {
     const nonDraftMessages = threadData.messages.filter(
       (message: IGetThreadResponse['messages'][number]) => !message.isDraft,
     );
-    const latestMessage = nonDraftMessages[nonDraftMessages.length - 1];
-
     const finalData: IGetThreadResponse = {
       ...threadData,
       messages: nonDraftMessages,
     };
 
-    return { latestDraft, drafts, aiDraftCandidates, isGroupThread, finalData, latestMessage };
+    return { latestDraft, drafts, aiDraftCandidates, isGroupThread, finalData };
   }, [activeThreadData, isThreadDataMismatch]);
-
-  const { mutateAsync: processEmailContent } = useMutation(
-    trpc.mail.processEmailContent.mutationOptions(),
-  );
-
-  // Extract image loading condition to avoid duplication
-  const shouldLoadImages = useMemo(() => {
-    if (!settings?.settings || !latestMessage?.sender?.email) return false;
-
-    return isImageTrustedSender({
-      senderEmail: latestMessage.sender.email,
-      externalImages: settings.settings.externalImages,
-      trustedSenders: settings.settings.trustedSenders,
-    });
-  }, [settings?.settings, latestMessage?.sender?.email]);
-
-  const isActiveThread = !!id && id === _threadId;
-  const isComposeMode = isComposeOpen === 'true' || !!mode;
-
-  // Prefetch query - intentionally unused, just for caching
-  useQuery({
-    queryKey: [
-      'email-content-v2',
-      latestMessage?.id,
-      shouldLoadImages,
-      systemTheme,
-    ],
-    queryFn: async () => {
-      if (!latestMessage?.decodedBody || !settings?.settings || !latestMessage?.id) return null;
-
-      const userTheme =
-        settings.settings.colorTheme === 'system' ? systemTheme : settings.settings.colorTheme;
-      const theme = userTheme === 'dark' ? 'dark' : 'light';
-
-      const result = await processEmailContent({
-        html: latestMessage.decodedBody,
-        messageId: latestMessage.id,
-        shouldLoadImages,
-        theme,
-      });
-
-      return {
-        html: result.processedHtml,
-        hasBlockedImages: result.hasBlockedImages,
-      };
-    },
-    enabled:
-      !demoMode &&
-      !!latestMessage?.decodedBody &&
-      !!settings?.settings &&
-      isActiveThread &&
-      !isComposeMode,
-    staleTime: 30 * 60 * 1000, // 30 minutes
-    gcTime: 60 * 60 * 1000, // 1 hour
-    refetchOnWindowFocus: false,
-    refetchOnMount: false,
-  });
 
   return {
     ...activeThreadQuery,
