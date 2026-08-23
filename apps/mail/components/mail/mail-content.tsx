@@ -5,8 +5,6 @@ import { useTRPC } from '@/providers/query-provider';
 import { getBrowserTimezone } from '@/lib/timezones';
 import { useSettings } from '@/hooks/use-settings';
 import { m } from '@/paraglide/messages';
-import { useTheme } from 'next-themes';
-import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { resolveMailDisplayHtml } from '@/lib/mail/resolve-mail-display-html';
@@ -89,10 +87,9 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
   const [retryingContentKey, setRetryingContentKey] = useState<string | null>(null);
   const hostRef = useRef<HTMLDivElement>(null);
   const shadowRootRef = useRef<ShadowRoot | null>(null);
-  const { resolvedTheme } = useTheme();
   const trpc = useTRPC();
   const shouldLoadImages = isTrustedSender || temporaryImagesEnabled;
-  const processingTheme = (resolvedTheme as 'light' | 'dark') || 'light';
+  const processingTheme = 'light';
   const contentQueryKey = [
     'email-content-v3',
     id,
@@ -444,7 +441,12 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
         role="region"
         aria-label="Message content"
         tabIndex={-1}
-        className={cn('mail-content w-full flex-1 overflow-scroll no-scrollbar px-4 text-black dark:text-white')}
+        className="mail-content w-full flex-1 overflow-scroll no-scrollbar px-4"
+        style={{
+          backgroundColor: '#ffffff',
+          color: '#000000',
+          colorScheme: 'light',
+        }}
       />
     </>
   );

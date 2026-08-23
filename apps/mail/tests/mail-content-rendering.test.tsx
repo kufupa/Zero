@@ -12,7 +12,6 @@ import { MailContent } from '../components/mail/mail-content';
 const mocks = vi.hoisted(() => ({
   frontendOnlyDemo: false,
   processEmailContent: vi.fn(),
-  resolvedTheme: 'light',
   saveUserSettings: vi.fn(),
   refetchSettings: vi.fn(),
 }));
@@ -58,12 +57,6 @@ vi.mock('@/providers/query-provider', () => ({
         }),
       },
     },
-  }),
-}));
-
-vi.mock('next-themes', () => ({
-  useTheme: () => ({
-    resolvedTheme: mocks.resolvedTheme,
   }),
 }));
 
@@ -130,7 +123,6 @@ async function waitForProcessingCallCount(count: number) {
 beforeEach(() => {
   mocks.frontendOnlyDemo = false;
   mocks.processEmailContent.mockReset();
-  mocks.resolvedTheme = 'light';
   mocks.saveUserSettings.mockReset();
   mocks.refetchSettings.mockReset();
 });
@@ -332,10 +324,9 @@ describe('MailContent processing states', () => {
     document.body.appendChild(externalControl);
     externalControl.focus();
 
-    mocks.resolvedTheme = 'dark';
     rerender(
       <QueryClientProvider client={queryClient}>
-        <MailContent id="message-42" html={RAW_HTML} senderEmail="reader@example.test" />
+        <MailContent id="message-42" html={SECOND_RAW_HTML} senderEmail="reader@example.test" />
       </QueryClientProvider>,
     );
 
@@ -518,6 +509,36 @@ describe('MailContent processing states', () => {
     expect(renderedHost()).toBeNull();
   });
 
+  it('processes legacy mail onto a fixed light-paper surface', async () => {
+    mocks.processEmailContent.mockResolvedValue({
+      processedHtml:
+        '<table bgcolor="#ffffff"><tr><td><span data-legacy-mail="true">Readable</span></td></tr></table>',
+      hasBlockedImages: false,
+    });
+
+    renderMailContent();
+
+    await waitFor(() => {
+      expect(mocks.processEmailContent).toHaveBeenCalledWith({
+        html: RAW_HTML,
+        messageId: 'message-42',
+        shouldLoadImages: false,
+        theme: 'light',
+      });
+      expect(renderedHost()?.shadowRoot?.querySelector('[data-legacy-mail="true"]')?.textContent).toBe(
+        'Readable',
+      );
+    });
+
+    const host = renderedHost();
+    expect(host?.className).not.toContain('text-black');
+    expect(host?.className).not.toContain('dark:text-white');
+    expect(host?.style.getPropertyValue('background-color')).toBe('#ffffff');
+    expect(host?.style.getPropertyValue('color')).toBe('#000000');
+    expect(host?.style.getPropertyValue('color-scheme')).toBe('light');
+    expect(host?.style.getPropertyValue('forced-color-adjust')).toBe('');
+  });
+
   it('keeps frontend-only demo on its local rendering path', async () => {
     mocks.frontendOnlyDemo = true;
 
@@ -531,5 +552,8 @@ describe('MailContent processing states', () => {
       );
     });
     expect(mocks.processEmailContent).not.toHaveBeenCalled();
+    expect(renderedHost()?.style.getPropertyValue('background-color')).toBe('#ffffff');
+    expect(renderedHost()?.style.getPropertyValue('color')).toBe('#000000');
+    expect(renderedHost()?.style.getPropertyValue('color-scheme')).toBe('light');
   });
 });
