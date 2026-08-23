@@ -75,6 +75,7 @@ export type CenturionRelayVerification =
       snapshotId: string;
       sourceManifestSha256: string;
       memberSetSha256: string;
+      relayManifestSha256: string;
     }
   | { outcome: 'blocked' };
 
@@ -101,7 +102,11 @@ export function buildCenturionRelayManifest(
   transferId: string,
   members: readonly CenturionRelayMember[],
   maxTotalBytes: number,
-): { manifest: CenturionRelayManifestV1; manifestJson: string };
+): {
+  manifest: CenturionRelayManifestV1;
+  manifestJson: string;
+  manifestBytes: Uint8Array;
+};
 
 export function relayObjectKey(
   literalRelayRoot: string,
@@ -116,7 +121,7 @@ export function buildReceiverAcknowledgement(
 ): string;
 
 export function verifyCenturionRelaySnapshot(
-  relayManifest: unknown,
+  relayManifestBytes: Uint8Array,
   members: readonly CenturionRelayMember[],
   maxTotalBytes: number,
 ): CenturionRelayVerification;
@@ -127,7 +132,7 @@ export function verifyCenturionRelaySnapshot(
 - Validate all input before constructing a result. Reject duplicate paths, noncanonical ordering, path traversal, backslashes, hidden/temp names, invalid UUID/digest/byte count, oversized totals, `relay-manifest.v1.json`, acknowledgement names, and unknown members.
 - Derive artifact kind/id from closed member paths, reconstruct `PrivateThreadCorpusSnapshot` from `corpus.jsonl`, `manifest.json`, and artifact bytes, then call exported `validatePrivateThreadCorpusSnapshot`. Do not copy/reimplement the private V2 record comparators.
 - Parse manifest from exact pretty-printed V2 bytes. Derive source manifest SHA-256 and member-set SHA-256 deterministically from sorted path/size/hash rows. Return only `blocked` for every invalid/mismatched condition; no exception text or content escapes.
-- Relay manifest, receipt, and acknowledgement JSON must be canonical pretty JSON with trailing newline and exact keys. All S3 relative keys come only from Task 1 literal-root key helpers; no adapter or script may concatenate root/transfer/member strings. `relay-manifest.v1.json` and `receiver-ack.v1.json` never appear in source `members`. Finalizer accepts acknowledgement only when all receipt/ack/stage bindings and digests match exactly.
+- Relay manifest, receipt, and acknowledgement JSON must be canonical pretty JSON with trailing newline and exact keys. Relay verification consumes raw `Uint8Array` manifest bytes, rejects BOM/noncanonical bytes before object validation, and returns exact byte digest for receipt/ack binding. All S3 relative keys come only from Task 1 literal-root key helpers; no adapter or script may concatenate root/transfer/member strings. `relay-manifest.v1.json` and `receiver-ack.v1.json` never appear in source `members`. Finalizer accepts acknowledgement only when all receipt/ack/stage bindings and digests match exactly.
 
 **TDD steps:**
 
