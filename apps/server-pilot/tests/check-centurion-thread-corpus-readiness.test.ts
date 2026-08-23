@@ -12,6 +12,7 @@ const SCRIPT_PATH =
   '/synthetic/zero/apps/server-pilot/scripts/check-centurion-thread-corpus-readiness.ts';
 const CORPUS_ROOT = `${REPO_ROOT}/.private/centurion-thread-corpus`;
 const CONFIG_PATH = `${CORPUS_ROOT}/readiness-config.json`;
+const OPERATOR_CONFIG_PATH = `${CORPUS_ROOT}/operator-config.json`;
 const PRIVATE_ADDRESS_MARKER = 'PHASE_0A2_PRIVATE_ADDRESS_MARKER';
 const PRIVATE_PATH_MARKER = 'PHASE_0A2_PRIVATE_PATH_MARKER';
 const PRIVATE_ERROR_MARKER = 'PHASE_0A2_PRIVATE_ERROR_MARKER';
@@ -71,6 +72,19 @@ function configText(input: Record<string, unknown> = {}): string {
   });
 }
 
+function operatorConfigText(input: Record<string, unknown> = {}): string {
+  return JSON.stringify({
+    version: 1,
+    source: {
+      centurionTransportId: 'synthetic-centurion-transport',
+      designatedTransportId: 'synthetic-designated-transport',
+      designatedIngestMailboxIds: ['synthetic-mailbox'],
+      designatedAddresses: [` ${PRIVATE_ADDRESS_MARKER} `],
+    },
+    ...input,
+  });
+}
+
 function checks(value: boolean): Record<(typeof CHECK_NAMES)[number], boolean> {
   return Object.fromEntries(CHECK_NAMES.map((name) => [name, value])) as Record<
     (typeof CHECK_NAMES)[number],
@@ -112,13 +126,22 @@ function makeHarness(): Harness {
       return instanceId === 'i-synthetic-approved';
     },
     readProtectedConfig: async (request) => {
-      calls.push('config');
+      if (request.configPath === CONFIG_PATH) {
+        calls.push('readinessConfig');
+        expect(request).toEqual({
+          repoRoot: REPO_ROOT,
+          corpusRoot: CORPUS_ROOT,
+          configPath: CONFIG_PATH,
+        });
+        return configText();
+      }
+      calls.push('operatorConfig');
       expect(request).toEqual({
         repoRoot: REPO_ROOT,
         corpusRoot: CORPUS_ROOT,
-        configPath: CONFIG_PATH,
+        configPath: OPERATOR_CONFIG_PATH,
       });
-      return configText();
+      return operatorConfigText();
     },
     environment: () => {
       calls.push('environment');
@@ -156,10 +179,29 @@ function makeHarness(): Harness {
       calls.push('policySimulation');
       expect(request.region).toBe('synthetic-region-1');
       expect(request.bucket).toBe('synthetic-private-bucket');
+      expect(request.prefix).toBe(PRIVATE_PREFIX_MARKER);
+      expect(request.kmsKeyId).toBe('arn:aws:kms:synthetic-region-1:123456789012:key/synthetic');
       expect(request.policySourceArn).toBe(
         'arn:aws:iam::123456789012:role/synthetic-readonly-role',
       );
-      return true;
+      return [
+        { action: 'rds:DescribeDBInstances', resource: '*', decision: 'allowed' },
+        {
+          action: 's3:ListBucket',
+          resource: 'arn:aws:s3:::synthetic-private-bucket',
+          decision: 'allowed',
+        },
+        {
+          action: 's3:GetObject',
+          resource: `arn:aws:s3:::synthetic-private-bucket/${PRIVATE_PREFIX_MARKER}/readiness-probe`,
+          decision: 'allowed',
+        },
+        {
+          action: 'kms:DescribeKey',
+          resource: 'arn:aws:kms:synthetic-region-1:123456789012:key/synthetic',
+          decision: 'allowed',
+        },
+      ];
     },
     probeS3AndKmsMetadata: async (request) => {
       calls.push('metadataProbes');
@@ -209,12 +251,13 @@ describe('check-centurion-thread-corpus-readiness command', () => {
       'args',
       'platform',
       'scriptPath',
-      'config',
-      'imds',
+      'readinessConfig',
+      'operatorConfig',
       'environment',
       'git:revision',
       'git:worktree',
       'git:status',
+      'imds',
       'disk',
       'ignored',
       'windowsTarget',
@@ -252,6 +295,22 @@ describe('check-centurion-thread-corpus-readiness command', () => {
       name: 'malformed protected config',
       configure: (harness: Harness) => {
         harness.deps.readProtectedConfig = async () => `{${PRIVATE_ERROR_MARKER}}`;
+      },
+    },
+    {
+      name: 'divergent canonical source scope',
+      configure: (harness: Harness) => {
+        harness.deps.readProtectedConfig = async (request) =>
+          request.configPath === CONFIG_PATH
+            ? configText()
+            : operatorConfigText({
+                source: {
+                  centurionTransportId: 'different-transport',
+                  designatedTransportId: 'synthetic-designated-transport',
+                  designatedIngestMailboxIds: ['synthetic-mailbox'],
+                  designatedAddresses: [` ${PRIVATE_ADDRESS_MARKER} `],
+                },
+              });
       },
     },
     {
@@ -321,7 +380,34 @@ describe('check-centurion-thread-corpus-readiness command', () => {
     {
       name: 'failed policy simulation',
       configure: (harness: Harness) => {
-        harness.deps.simulateReadOnlyPolicy = async () => false;
+        harness.deps.simulateReadOnlyPolicy = async () => [
+          { action: 'rds:DescribeDBInstances', resource: '*', decision: 'allowed' },
+          { action: 's3:ListBucket', resource: 'wrong-resource', decision: 'allowed' },
+          { action: 's3:GetObject', resource: 'wrong-resource', decision: 'denied' },
+        ];
+      },
+    },
+    {
+      name: 'wrong policy action result',
+      configure: (harness: Harness) => {
+        harness.deps.simulateReadOnlyPolicy = async () => [
+          { action: 'rds:DescribeDBInstances', resource: '*', decision: 'allowed' },
+          {
+            action: 's3:ListObjectsV2',
+            resource: 'arn:aws:s3:::synthetic-private-bucket',
+            decision: 'allowed',
+          },
+          {
+            action: 's3:GetObject',
+            resource: `arn:aws:s3:::synthetic-private-bucket/${PRIVATE_PREFIX_MARKER}/readiness-probe`,
+            decision: 'allowed',
+          },
+          {
+            action: 'kms:DescribeKey',
+            resource: 'arn:aws:kms:synthetic-region-1:123456789012:key/synthetic',
+            decision: 'allowed',
+          },
+        ];
       },
     },
     {
@@ -335,8 +421,35 @@ describe('check-centurion-thread-corpus-readiness command', () => {
     configure(harness);
 
     expect(await run(harness)).toBe(3);
-    expect(harness.stdout).toEqual([report(false)]);
+    expect(JSON.parse(harness.stdout[0]!) as { ready: boolean }).toMatchObject({
+      ready: false,
+    });
     expect(harness.stderr).toEqual([]);
+    expectNoPrivateOutput(harness);
+  });
+
+  it('preserves completed safe checks when a later metadata probe blocks readiness', async () => {
+    const harness = makeHarness();
+    harness.deps.probeS3AndKmsMetadata = async () => false;
+
+    expect(await run(harness)).toBe(3);
+    expect(
+      JSON.parse(harness.stdout[0]!) as { ready: boolean; checks: Record<string, boolean> },
+    ).toMatchObject({
+      ready: false,
+      checks: {
+        exactEc2RevisionWorktree: true,
+        imdsV2Identity: true,
+        protectedConfig: true,
+        designatedMailboxScope: true,
+        regionBucketPrefixAllowlist: true,
+        readOnlyDbS3KmsCapabilities: false,
+        sourceDiskHeadroom: true,
+        privateDestinationIgnored: true,
+        windowsLocalAclTarget: true,
+        v2Semantics: true,
+      },
+    });
     expectNoPrivateOutput(harness);
   });
 });
@@ -393,6 +506,9 @@ describe('check readiness command source boundary', () => {
     expect(source).toContain('fstatSync');
     expect(source).toContain('realpathSync');
     expect(source).toContain('simulate-principal-policy');
+    expect(source).toContain('--resource-arns');
+    expect(source).toContain('rds:DescribeDBInstances');
+    expect(source).toContain('s3:GetObject');
     expect(source).toContain('head-bucket');
     expect(source).toContain('describe-key');
     expect(source).toContain('shell: false');

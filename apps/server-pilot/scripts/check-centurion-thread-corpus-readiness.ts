@@ -21,6 +21,8 @@ import path from 'node:path';
 
 const CORPUS_PATH_SEGMENTS = ['.private', 'centurion-thread-corpus'] as const;
 const CONFIG_FILE_NAME = 'readiness-config.json';
+const OPERATOR_CONFIG_FILE_NAME = 'operator-config.json';
+const READINESS_PROBE_OBJECT_NAME = 'readiness-probe';
 const IMDS_HOST = '169.254.169.254';
 const IMDS_TIMEOUT_MS = 1_000;
 const IMDS_MAX_RESPONSE_BYTES = 1_024;
@@ -32,6 +34,22 @@ type ProtectedConfigRequest = {
 };
 
 type GitCheck = 'revision' | 'worktree' | 'status';
+
+type PolicySimulationResult = {
+  action: string;
+  resource: string;
+  decision: string;
+};
+
+type OperatorConfig = {
+  version: 1;
+  source: {
+    centurionTransportId: string;
+    designatedTransportId: string;
+    designatedIngestMailboxIds: string[];
+    designatedAddresses: string[];
+  };
+};
 
 export type CenturionThreadCorpusReadinessCommandDependencies = {
   args(): readonly string[];
@@ -47,8 +65,10 @@ export type CenturionThreadCorpusReadinessCommandDependencies = {
   simulateReadOnlyPolicy(request: {
     region: string;
     bucket: string;
+    prefix: string;
     policySourceArn: string;
-  }): Promise<boolean>;
+    kmsKeyId: string;
+  }): Promise<readonly PolicySimulationResult[] | null>;
   probeS3AndKmsMetadata(request: {
     region: string;
     bucket: string;
@@ -125,9 +145,11 @@ function trustedConfigLeaf(configPath: string): { dev: number; ino: number } {
 
 async function defaultReadProtectedConfig(request: ProtectedConfigRequest): Promise<string> {
   const expectedCorpusRoot = corpusRootFor(request.repoRoot);
+  const readinessPath = path.posix.join(expectedCorpusRoot, CONFIG_FILE_NAME);
+  const operatorPath = path.posix.join(expectedCorpusRoot, OPERATOR_CONFIG_FILE_NAME);
   if (
     request.corpusRoot !== expectedCorpusRoot ||
-    request.configPath !== path.posix.join(expectedCorpusRoot, CONFIG_FILE_NAME)
+    (request.configPath !== readinessPath && request.configPath !== operatorPath)
   ) {
     return fail();
   }
@@ -292,50 +314,106 @@ function successfulAws(result: ReturnType<typeof spawnSync>): boolean {
   return result.error === undefined && result.signal === null && result.status === 0;
 }
 
+function isSafeBucketName(bucket: string): boolean {
+  return /^[a-z0-9](?:[a-z0-9.-]{1,61})?[a-z0-9]$/.test(bucket);
+}
+
+function objectProbeArn(bucket: string, prefix: string): string | null {
+  if (
+    !isSafeBucketName(bucket) ||
+    !prefix ||
+    prefix.includes('\\') ||
+    prefix.includes('\0') ||
+    prefix.split('/').some((segment) => !segment || segment === '.' || segment === '..')
+  ) {
+    return null;
+  }
+  return `arn:aws:s3:::${bucket}/${prefix}/${READINESS_PROBE_OBJECT_NAME}`;
+}
+
+function isKmsKeyArn(value: string): boolean {
+  return /^arn:(aws|aws-us-gov|aws-cn):kms:[a-z0-9-]+:\d{12}:key\/[A-Za-z0-9-]+$/.test(value);
+}
+
+function expectedPolicyPairs(request: {
+  bucket: string;
+  prefix: string;
+  kmsKeyId: string;
+}): Array<{ action: string; resource: string }> | null {
+  const objectArn = objectProbeArn(request.bucket, request.prefix);
+  if (!objectArn || !isKmsKeyArn(request.kmsKeyId)) return null;
+  return [
+    { action: 'rds:DescribeDBInstances', resource: '*' },
+    { action: 's3:ListBucket', resource: `arn:aws:s3:::${request.bucket}` },
+    { action: 's3:GetObject', resource: objectArn },
+    { action: 'kms:DescribeKey', resource: request.kmsKeyId },
+  ];
+}
+
 function defaultSimulateReadOnlyPolicy(request: {
   region: string;
   bucket: string;
+  prefix: string;
   policySourceArn: string;
-}): Promise<boolean> {
+  kmsKeyId: string;
+}): Promise<readonly PolicySimulationResult[] | null> {
+  const pairs = expectedPolicyPairs(request);
+  if (pairs === null) return Promise.resolve(null);
   try {
-    const simulation = spawnSync(
-      'aws',
-      [
-        'iam',
-        'simulate-principal-policy',
-        '--policy-source-arn',
-        request.policySourceArn,
-        '--action-names',
-        'rds:DescribeDBInstances',
-        's3:ListBucket',
-        'kms:DescribeKey',
-        '--no-cli-pager',
-        '--output',
-        'json',
-      ],
-      {
-        encoding: 'utf8',
-        shell: false,
-        stdio: ['ignore', 'pipe', 'ignore'],
-        windowsHide: true,
-      },
-    );
-    if (!successfulAws(simulation) || typeof simulation.stdout !== 'string') {
-      return Promise.resolve(false);
+    const results: PolicySimulationResult[] = [];
+    for (const pair of pairs) {
+      const simulation = spawnSync(
+        'aws',
+        [
+          'iam',
+          'simulate-principal-policy',
+          '--policy-source-arn',
+          request.policySourceArn,
+          '--action-names',
+          pair.action,
+          '--resource-arns',
+          pair.resource,
+          '--no-cli-pager',
+          '--output',
+          'json',
+        ],
+        {
+          encoding: 'utf8',
+          shell: false,
+          stdio: ['ignore', 'pipe', 'ignore'],
+          windowsHide: true,
+        },
+      );
+      if (!successfulAws(simulation) || typeof simulation.stdout !== 'string') {
+        return Promise.resolve(null);
+      }
+      const parsed = JSON.parse(simulation.stdout) as {
+        EvaluationResults?: Array<{
+          EvalActionName?: unknown;
+          EvalResourceName?: unknown;
+          EvalDecision?: unknown;
+        }>;
+      };
+      if (!Array.isArray(parsed.EvaluationResults) || parsed.EvaluationResults.length !== 1) {
+        return Promise.resolve(null);
+      }
+      const result = parsed.EvaluationResults[0]!;
+      if (
+        typeof result.EvalActionName !== 'string' ||
+        typeof result.EvalResourceName !== 'string' ||
+        typeof result.EvalDecision !== 'string'
+      ) {
+        return Promise.resolve(null);
+      }
+      results.push({
+        action: result.EvalActionName,
+        resource: result.EvalResourceName,
+        decision: result.EvalDecision,
+      });
     }
-    const parsed = JSON.parse(simulation.stdout) as {
-      EvaluationResults?: Array<{ EvalDecision?: unknown }>;
-    };
-    if (
-      !Array.isArray(parsed.EvaluationResults) ||
-      parsed.EvaluationResults.length !== 3 ||
-      parsed.EvaluationResults.some((result) => result.EvalDecision !== 'allowed')
-    ) {
-      return Promise.resolve(false);
-    }
-    return Promise.resolve(true);
+    return Promise.resolve(results);
   } catch {
-    return Promise.resolve(false);
+    return Promise.resolve(null);
   }
 }
 
@@ -400,6 +478,116 @@ function parseConfig(value: string): CenturionThreadCorpusReadinessConfig | null
   } catch {
     return null;
   }
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actual = Object.keys(value);
+  return actual.length === keys.length && keys.every((key) => Object.hasOwn(value, key));
+}
+
+function opaqueId(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value : null;
+}
+
+function opaqueIds(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  const ids = value.map(opaqueId);
+  return ids.every((id): id is string => id !== null) ? ids : null;
+}
+
+function normalizedAddresses(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  const addresses = value.map((address) =>
+    typeof address === 'string' && address.trim() ? address.trim() : null,
+  );
+  return addresses.every((address): address is string => address !== null) ? addresses : null;
+}
+
+function parseOperatorConfig(value: string): OperatorConfig | null {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (
+      !isPlainRecord(parsed) ||
+      !hasExactKeys(parsed, ['version', 'source']) ||
+      parsed.version !== 1 ||
+      !isPlainRecord(parsed.source) ||
+      !hasExactKeys(parsed.source, [
+        'centurionTransportId',
+        'designatedTransportId',
+        'designatedIngestMailboxIds',
+        'designatedAddresses',
+      ])
+    ) {
+      return null;
+    }
+    const centurionTransportId = opaqueId(parsed.source.centurionTransportId);
+    const designatedTransportId = opaqueId(parsed.source.designatedTransportId);
+    const designatedIngestMailboxIds = opaqueIds(parsed.source.designatedIngestMailboxIds);
+    const designatedAddresses = normalizedAddresses(parsed.source.designatedAddresses);
+    if (
+      centurionTransportId === null ||
+      designatedTransportId === null ||
+      designatedIngestMailboxIds === null ||
+      designatedAddresses === null
+    ) {
+      return null;
+    }
+    return {
+      version: 1,
+      source: {
+        centurionTransportId,
+        designatedTransportId,
+        designatedIngestMailboxIds,
+        designatedAddresses,
+      },
+    };
+  } catch {
+    return null;
+  }
+}
+
+function normalizedSet(values: readonly string[]): string[] {
+  return [...new Set(values)].sort();
+}
+
+function sameSourceScope(
+  config: CenturionThreadCorpusReadinessConfig,
+  operator: OperatorConfig,
+): boolean {
+  const readiness = config.designatedSourceScope;
+  const canonical = operator.source;
+  return (
+    readiness.centurionTransportId === canonical.centurionTransportId &&
+    readiness.designatedTransportId === canonical.designatedTransportId &&
+    JSON.stringify(normalizedSet(readiness.mailboxIds)) ===
+      JSON.stringify(normalizedSet(canonical.designatedIngestMailboxIds)) &&
+    JSON.stringify(normalizedSet(readiness.addresses)) ===
+      JSON.stringify(normalizedSet(canonical.designatedAddresses))
+  );
+}
+
+function hasExpectedPolicyResults(
+  results: readonly PolicySimulationResult[] | null,
+  request: { bucket: string; prefix: string; kmsKeyId: string },
+): boolean {
+  const expected = expectedPolicyPairs(request);
+  if (results === null || expected === null || results.length !== expected.length) {
+    return false;
+  }
+  return expected.every((pair) =>
+    results.some(
+      (result) =>
+        result.action === pair.action &&
+        result.resource === pair.resource &&
+        result.decision === 'allowed',
+    ),
+  );
 }
 
 function blockedReport(): CenturionThreadCorpusReadinessReport {
@@ -476,49 +664,61 @@ export function createCenturionThreadCorpusReadinessCommand(
         }),
       );
       if (config === null) return fail();
-      const imdsV2Identity = await dependencies.attestImdsV2(config.expectedEc2.instanceId);
+      const operator = parseOperatorConfig(
+        await dependencies.readProtectedConfig({
+          repoRoot,
+          corpusRoot,
+          configPath: path.posix.join(corpusRoot, OPERATOR_CONFIG_FILE_NAME),
+        }),
+      );
       const environment = dependencies.environment();
-      const allReady =
-        imdsV2Identity &&
+      const protectedConfig = operator !== null;
+      const regionBucketPrefixAllowlist =
         environment.AWS_REGION === config.approvedExportTarget.region &&
         environment.S3_BUCKET === config.approvedExportTarget.bucket &&
-        isExactGitState(dependencies, config, repoRoot) &&
-        (() => {
+        objectProbeArn(config.approvedExportTarget.bucket, config.approvedExportTarget.prefix) !==
+          null;
+      const observations = {
+        exactEc2RevisionWorktree: isExactGitState(dependencies, config, repoRoot),
+        imdsV2Identity: await dependencies.attestImdsV2(config.expectedEc2.instanceId),
+        protectedConfig,
+        designatedMailboxScope: operator !== null && sameSourceScope(config, operator),
+        regionBucketPrefixAllowlist,
+        readOnlyDbS3KmsCapabilities: false,
+        sourceDiskHeadroom: (() => {
           const availableBytes = dependencies.availableBytes(repoRoot);
           return availableBytes !== null && availableBytes >= config.minimumSourceDiskHeadroomBytes;
-        })() &&
-        dependencies.isIgnored({
+        })(),
+        privateDestinationIgnored: dependencies.isIgnored({
           repoRoot,
           relativePath: CORPUS_PATH_SEGMENTS.join('/'),
-        }) &&
-        dependencies.isStructurallySafeWindowsTarget(config.privateDestination.localTarget) &&
-        (await dependencies.simulateReadOnlyPolicy({
+        }),
+        windowsLocalAclTarget: dependencies.isStructurallySafeWindowsTarget(
+          config.privateDestination.localTarget,
+        ),
+        v2Semantics: true,
+      };
+      if (regionBucketPrefixAllowlist) {
+        const policyResults = await dependencies.simulateReadOnlyPolicy({
           region: config.approvedExportTarget.region,
           bucket: config.approvedExportTarget.bucket,
+          prefix: config.approvedExportTarget.prefix,
           policySourceArn: config.readOnlyCapabilityProbe.policySourceArn,
-        })) &&
-        (await dependencies.probeS3AndKmsMetadata({
+          kmsKeyId: config.readOnlyCapabilityProbe.kmsKeyId,
+        });
+        const metadataProbe = await dependencies.probeS3AndKmsMetadata({
           region: config.approvedExportTarget.region,
           bucket: config.approvedExportTarget.bucket,
           kmsKeyId: config.readOnlyCapabilityProbe.kmsKeyId,
-        }));
-      const report = evaluateCenturionThreadCorpusReadiness(
-        config,
-        allReady
-          ? {
-              exactEc2RevisionWorktree: true,
-              imdsV2Identity: true,
-              protectedConfig: true,
-              designatedMailboxScope: true,
-              regionBucketPrefixAllowlist: true,
-              readOnlyDbS3KmsCapabilities: true,
-              sourceDiskHeadroom: true,
-              privateDestinationIgnored: true,
-              windowsLocalAclTarget: true,
-              v2Semantics: true,
-            }
-          : null,
-      );
+        });
+        observations.readOnlyDbS3KmsCapabilities =
+          hasExpectedPolicyResults(policyResults, {
+            bucket: config.approvedExportTarget.bucket,
+            prefix: config.approvedExportTarget.prefix,
+            kmsKeyId: config.readOnlyCapabilityProbe.kmsKeyId,
+          }) && metadataProbe;
+      }
+      const report = evaluateCenturionThreadCorpusReadiness(config, observations);
       writeReport(dependencies, report);
       return report.ready ? 0 : 3;
     } catch {
