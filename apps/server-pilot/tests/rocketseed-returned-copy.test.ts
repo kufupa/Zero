@@ -7,23 +7,23 @@ import { describe, expect, it } from 'vitest';
 const trustedReceivedPrefix = [
   {
     key: 'received',
-    line: 'Received: from 172.24.0.10 by local-hop-a;',
+    line: 'Received: from 172.24.0.10 by local-hop-a; Mon, 24 Aug 2026 12:00:00 +0000',
   },
   {
     key: 'received',
-    line: 'Received: from localhost by local-hop-b;',
+    line: 'Received: from localhost by local-hop-b; Mon, 24 Aug 2026 12:00:01 +0000',
   },
   {
     key: 'received',
-    line: 'Received: from localhost by rocketseed-edge-a;',
+    line: 'Received: from localhost by rocketseed-edge-a; Mon, 24 Aug 2026 12:00:02 +0000',
   },
   {
     key: 'received',
-    line: 'Received: from 172.24.0.8 by rocketseed-edge-b;',
+    line: 'Received: from 172.24.0.8 by rocketseed-edge-b; Mon, 24 Aug 2026 12:00:03 +0000',
   },
   {
     key: 'received',
-    line: 'Received: from branding.legacyhotels.co.za by archive.local;',
+    line: 'Received: from branding.legacyhotels.co.za by archive.local; Mon, 24 Aug 2026 12:00:04 +0000',
   },
 ];
 
@@ -56,7 +56,7 @@ describe('evaluateRocketseedReturnedCopyTrust', () => {
       trustedReceivedPrefix[2]!,
       {
         key: 'received',
-        line: 'Received: from local-hop-c by local-hop-d;',
+        line: 'Received: from local-hop-c by local-hop-d; Mon, 24 Aug 2026 12:00:03 +0000',
       },
       trustedReceivedPrefix[3]!,
       trustedReceivedPrefix[4]!,
@@ -70,10 +70,13 @@ describe('evaluateRocketseedReturnedCopyTrust', () => {
 
   it('rejects lookalike Received source identities', () => {
     const lookalikes = [
-      [0, 'Received: from 172.24.0.100 by local-hop-a;'],
-      [1, 'Received: from localhost.evil.test by local-hop-b;'],
-      [3, 'Received: from 172.24.0.80 by rocketseed-edge-b;'],
-      [4, 'Received: from branding.legacyhotels.co.za.evil by archive.local;'],
+      [0, 'Received: from 172.24.0.100 by local-hop-a; Mon, 24 Aug 2026 12:00:00 +0000'],
+      [1, 'Received: from localhost.evil.test by local-hop-b; Mon, 24 Aug 2026 12:00:01 +0000'],
+      [3, 'Received: from 172.24.0.80 by rocketseed-edge-b; Mon, 24 Aug 2026 12:00:03 +0000'],
+      [
+        4,
+        'Received: from branding.legacyhotels.co.za.evil by archive.local; Mon, 24 Aug 2026 12:00:04 +0000',
+      ],
     ] as const;
 
     for (const [index, line] of lookalikes) {
@@ -108,6 +111,31 @@ describe('evaluateRocketseedReturnedCopyTrust', () => {
     ];
 
     expect(evaluateRocketseedReturnedCopyTrust(folded)).toEqual({
+      trusted: false,
+      reason: 'received_malformed',
+    });
+  });
+
+  it('rejects Received values without a by identity or date tail', () => {
+    const missingByIdentity = validInput();
+    missingByIdentity.parsed.rawHeaderLines = [
+      {
+        key: 'received',
+        line: 'Received: from 172.24.0.10 by ; Mon, 24 Aug 2026 12:00:00 +0000',
+      },
+      ...trustedReceivedPrefix.slice(1),
+    ];
+    expect(evaluateRocketseedReturnedCopyTrust(missingByIdentity)).toEqual({
+      trusted: false,
+      reason: 'received_malformed',
+    });
+
+    const missingDateTail = validInput();
+    missingDateTail.parsed.rawHeaderLines = [
+      { key: 'received', line: 'Received: from 172.24.0.10 by local-hop-a;' },
+      ...trustedReceivedPrefix.slice(1),
+    ];
+    expect(evaluateRocketseedReturnedCopyTrust(missingDateTail)).toEqual({
       trusted: false,
       reason: 'received_malformed',
     });
@@ -197,7 +225,7 @@ describe('evaluateRocketseedReturnedCopyTrust', () => {
       ...trustedReceivedPrefix,
       {
         key: 'received',
-        line: 'Received: from older-hop.example by archive.local;',
+        line: 'Received: from older-hop.example by archive.local; Mon, 24 Aug 2026 11:59:59 +0000',
       },
     ];
 

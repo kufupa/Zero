@@ -110,9 +110,10 @@ function receivedRole(value: string): ReceivedRole {
 }
 
 function receivedSourceIdentity(value: string): string | null {
-  const source = /^received:\s+from\s+(\[[^\]\s]+\]|[^\s(]+)(?:\s+\([^)]*\))?\s+by\s+/i.exec(
-    value,
-  )?.[1];
+  const source =
+    /^received:\s+from\s+(\[[^\]\s]+\]|[^\s(]+)(?:\s+\([^)]*\))?\s+by\s+[^\s;]+\s*;\s*\S.*$/i.exec(
+      value,
+    )?.[1];
   if (!source) return null;
   const unbracketed = source.startsWith('[') && source.endsWith(']') ? source.slice(1, -1) : source;
   return unbracketed.toLowerCase();
