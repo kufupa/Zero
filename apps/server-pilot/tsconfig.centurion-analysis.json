@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": ".",
+    "types": ["node", "vitest/globals"]
+  },
+  "include": [
+    "src/ops/centurion-thread-corpus-analysis.ts",
+    "src/ops/centurion-thread-corpus-analysis-workspace.ts",
+    "src/ops/centurion-thread-corpus-evidence.ts",
+    "scripts/analyze-centurion-thread-corpus.ts",
+    "scripts/export-thread-corpus.ts",
+    "tests/analyze-centurion-thread-corpus.test.ts"
+  ],
+  "exclude": ["node_modules", "dist"]
+}

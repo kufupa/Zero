@@ -89,6 +89,7 @@ packages/testing/test-results/
 Nava.ovpn
 Nava.zip
 .private/centurion-thread-corpus/
+.private/centurion-thread-analysis/
 *.mbox
 *.mailbox-dump*
 .tmp*
