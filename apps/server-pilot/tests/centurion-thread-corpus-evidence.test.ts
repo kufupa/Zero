@@ -478,6 +478,12 @@ describe('Centurion aggregate thread corpus evidence', () => {
     const { bundle, prepared, reconciled } = requireReconciled(snapshot);
     const firstItem = reconciled.items[0]!;
     const firstDecision = reconciled.decisions[0]!;
+    const stalePrepared = preparePrivateAnalysis(snapshot, {
+      maxPacketBytes: 0,
+      maxTotalPacketBytes: 1_000_000,
+    });
+    if (!stalePrepared) throw new Error('Expected stale synthetic preparation');
+    expect(stalePrepared.manifestSha256).not.toBe(prepared.manifestSha256);
 
     expect(
       buildCenturionCorpusEvidenceReport(snapshot, {
@@ -502,6 +508,12 @@ describe('Centurion aggregate thread corpus evidence', () => {
       buildCenturionCorpusEvidenceReport(snapshot, {
         ...reconciled,
         preparedManifestSha256: '0'.repeat(64),
+      }),
+    ).toBeNull();
+    expect(
+      buildCenturionCorpusEvidenceReport(snapshot, {
+        ...reconciled,
+        preparedManifestSha256: stalePrepared.manifestSha256,
       }),
     ).toBeNull();
     expect(

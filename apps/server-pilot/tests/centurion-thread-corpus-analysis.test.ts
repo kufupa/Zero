@@ -4,6 +4,7 @@ import {
   deriveAnalysisItemId,
   preparePrivateAnalysis,
   reconcileAnalystDecisionBundle,
+  validateReconciledAnalystDecisions,
   type AnalystDecisionBundleV1,
   type PreparedPrivateAnalysisV1,
   type PrivateAnalysisPacketV1,
@@ -813,6 +814,68 @@ describe('Centurion private thread corpus analysis', () => {
         ),
       }),
     ).toBeNull();
+  });
+
+  it('revalidates reconciled decisions against complete deterministic provenance', () => {
+    const snapshot = syntheticSnapshot();
+    const prepared = requirePrepared(snapshot);
+    const reconciled = reconcileAnalystDecisionBundle(
+      snapshot,
+      prepared.manifest,
+      validDecisionBundle(prepared),
+    );
+    if (!reconciled) throw new Error('Expected reconciled synthetic decisions');
+
+    expect(reconciled.preparedManifest).toEqual(prepared.manifest);
+    expect(validateReconciledAnalystDecisions(snapshot, reconciled)).toEqual(reconciled);
+
+    const stalePrepared = requirePrepared(snapshot, {
+      maxPacketBytes: 0,
+      maxTotalPacketBytes: 1_000_000,
+    });
+    expect(stalePrepared.manifestSha256).not.toBe(prepared.manifestSha256);
+    expect(
+      validateReconciledAnalystDecisions(snapshot, {
+        ...reconciled,
+        preparedManifestSha256: stalePrepared.manifestSha256,
+      }),
+    ).toBeNull();
+    expect(
+      validateReconciledAnalystDecisions(snapshot, {
+        ...reconciled,
+        preparedManifest: stalePrepared.manifest,
+      }),
+    ).toBeNull();
+    expect(
+      validateReconciledAnalystDecisions(snapshot, {
+        ...reconciled,
+        unexpected: BODY_MARKER,
+      }),
+    ).toBeNull();
+
+    const constrainedReconciled = reconcileAnalystDecisionBundle(
+      snapshot,
+      stalePrepared.manifest,
+      validDecisionBundle(stalePrepared),
+    );
+    if (!constrainedReconciled) throw new Error('Expected constrained reconciliation');
+    expect(
+      validateReconciledAnalystDecisions(snapshot, {
+        ...constrainedReconciled,
+        decisions: constrainedReconciled.decisions.map((decision, index) =>
+          index === 0
+            ? {
+                ...decision,
+                workflow: 'reservation_new',
+                risk: 'none',
+                confidence: 'high',
+                attention: 'routine',
+              }
+            : decision,
+        ),
+      }),
+    ).toBeNull();
+    expectNoFixtureLeaks({ reconciled, constrainedReconciled });
   });
 
   it('keeps core source free of runtime and dynamic-execution capabilities', () => {

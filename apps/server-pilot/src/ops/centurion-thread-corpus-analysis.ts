@@ -108,6 +108,7 @@ export type ReconciledAnalystDecisionsV1 = {
   snapshotId: string;
   snapshotDigest: string;
   preparedManifestSha256: string;
+  preparedManifest: PreparedAnalysisManifestV1;
   items: AnalysisItemV1[];
   decisions: AnalystDecisionV1[];
 };
@@ -123,6 +124,15 @@ type ReconstructedV2Snapshot = {
   snapshot: PrivateThreadCorpusSnapshot;
   records: SnapshotRecord[];
   snapshotDigest: string;
+};
+
+type SuppliedReconciledAnalystDecisions = {
+  snapshotId: string;
+  snapshotDigest: string;
+  preparedManifestSha256: string;
+  preparedManifest: PreparedAnalysisManifestV1;
+  items: unknown[];
+  decisions: unknown[];
 };
 
 const SHA256_DIGEST = /^[a-f0-9]{64}$/;
@@ -679,6 +689,76 @@ function samePreparedManifest(
   return preparedManifestJson(left) === preparedManifestJson(right);
 }
 
+function analysisItemForPacket(packet: PrivateAnalysisPacketV1): AnalysisItemV1 {
+  return {
+    schemaVersion: packet.schemaVersion,
+    analysisItemId: packet.analysisItemId,
+    unitType: packet.unitType,
+    sourceMembership: [...packet.sourceMembership],
+    artifactState: packet.artifactState,
+    responseEvidenceState: packet.responseEvidenceState,
+  };
+}
+
+function matchesAnalysisItem(value: unknown, expected: AnalysisItemV1): boolean {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, [
+      'schemaVersion',
+      'analysisItemId',
+      'unitType',
+      'sourceMembership',
+      'artifactState',
+      'responseEvidenceState',
+    ]) &&
+    value.schemaVersion === expected.schemaVersion &&
+    value.analysisItemId === expected.analysisItemId &&
+    value.unitType === expected.unitType &&
+    Array.isArray(value.sourceMembership) &&
+    value.sourceMembership.every((sourceMembership) => typeof sourceMembership === 'string') &&
+    value.sourceMembership.length === expected.sourceMembership.length &&
+    value.sourceMembership.every(
+      (sourceMembership, index) => sourceMembership === expected.sourceMembership[index],
+    ) &&
+    value.artifactState === expected.artifactState &&
+    value.responseEvidenceState === expected.responseEvidenceState
+  );
+}
+
+function parseReconciledAnalystDecisions(
+  value: unknown,
+): SuppliedReconciledAnalystDecisions | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      'snapshotId',
+      'snapshotDigest',
+      'preparedManifestSha256',
+      'preparedManifest',
+      'items',
+      'decisions',
+    ]) ||
+    typeof value.snapshotId !== 'string' ||
+    !isSha256Digest(value.snapshotDigest) ||
+    !isSha256Digest(value.preparedManifestSha256) ||
+    !Array.isArray(value.items) ||
+    !Array.isArray(value.decisions)
+  ) {
+    return null;
+  }
+
+  const preparedManifest = parsePreparedManifest(value.preparedManifest);
+  if (!preparedManifest) return null;
+  return {
+    snapshotId: value.snapshotId,
+    snapshotDigest: value.snapshotDigest,
+    preparedManifestSha256: value.preparedManifestSha256,
+    preparedManifest,
+    items: value.items,
+    decisions: value.decisions,
+  };
+}
+
 export function deriveAnalysisItemId(
   snapshotId: string,
   unitType: AnalysisUnitType,
@@ -758,6 +838,65 @@ export function preparePrivateAnalysis(
   }
 }
 
+export function validateReconciledAnalystDecisions(
+  snapshot: PrivateThreadCorpusSnapshot,
+  reconciled: unknown,
+): ReconciledAnalystDecisionsV1 | null {
+  try {
+    validatePrivateThreadCorpusSnapshot(snapshot);
+    const supplied = parseReconciledAnalystDecisions(reconciled);
+    if (!supplied) return null;
+
+    const prepared = preparePrivateAnalysis(snapshot, {
+      maxPacketBytes: supplied.preparedManifest.maxPacketBytes,
+      maxTotalPacketBytes: supplied.preparedManifest.maxTotalPacketBytes,
+    });
+    if (
+      !prepared ||
+      supplied.snapshotId !== prepared.manifest.snapshotId ||
+      supplied.snapshotDigest !== prepared.manifest.snapshotDigest ||
+      supplied.preparedManifestSha256 !== prepared.manifestSha256 ||
+      !samePreparedManifest(supplied.preparedManifest, prepared.manifest) ||
+      supplied.items.length !== prepared.packets.length ||
+      supplied.decisions.length !== prepared.packets.length
+    ) {
+      return null;
+    }
+
+    const decisions: AnalystDecisionV1[] = [];
+    for (const [index, packet] of prepared.packets.entries()) {
+      if (!matchesAnalysisItem(supplied.items[index], analysisItemForPacket(packet))) {
+        return null;
+      }
+
+      const parsedDecision = analystDecisionSchema.safeParse(supplied.decisions[index]);
+      if (
+        !parsedDecision.success ||
+        parsedDecision.data.analysisItemId !== packet.analysisItemId ||
+        (packet.packetState !== 'complete' &&
+          (parsedDecision.data.workflow !== 'unknown' ||
+            parsedDecision.data.risk !== 'human_review' ||
+            parsedDecision.data.confidence !== 'low' ||
+            parsedDecision.data.attention !== 'human_review'))
+      ) {
+        return null;
+      }
+      decisions.push(parsedDecision.data);
+    }
+
+    return {
+      snapshotId: prepared.manifest.snapshotId,
+      snapshotDigest: prepared.manifest.snapshotDigest,
+      preparedManifestSha256: prepared.manifestSha256,
+      preparedManifest: prepared.manifest,
+      items: prepared.packets.map(analysisItemForPacket),
+      decisions,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function reconcileAnalystDecisionBundle(
   snapshot: PrivateThreadCorpusSnapshot,
   preparedManifest: PreparedAnalysisManifestV1,
@@ -808,13 +947,14 @@ export function reconcileAnalystDecisionBundle(
     const decisions = prepared.packets.map(
       (packet) => decisionsByItemId.get(packet.analysisItemId)!,
     );
-    return {
+    return validateReconciledAnalystDecisions(snapshot, {
       snapshotId: prepared.manifest.snapshotId,
       snapshotDigest: prepared.manifest.snapshotDigest,
       preparedManifestSha256: prepared.manifestSha256,
+      preparedManifest: prepared.manifest,
       items,
       decisions,
-    };
+    });
   } catch {
     return null;
   }
