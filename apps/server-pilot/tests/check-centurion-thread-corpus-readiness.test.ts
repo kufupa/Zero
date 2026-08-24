@@ -116,7 +116,7 @@ function syntheticPolicyResults(): Array<{ action: string; resource: string; dec
   const objectArn = `${bucketArn}/${PRIVATE_PREFIX_MARKER}/readiness-probe`;
   const keyArn = 'arn:aws:kms:synthetic-region-1:123456789012:key/synthetic';
   return [
-    { action: 'rds:DescribeDBInstances', resource: DB_INSTANCE_ARN, decision: 'allowed' },
+    { action: 'rds:DescribeDBInstances', resource: '*', decision: 'allowed' },
     { action: 's3:ListBucket', resource: bucketArn, decision: 'allowed' },
     { action: 's3:GetObject', resource: objectArn, decision: 'allowed' },
     { action: 'kms:DescribeKey', resource: keyArn, decision: 'allowed' },
@@ -426,12 +426,14 @@ describe('check-centurion-thread-corpus-readiness command', () => {
     },
     {
       name: 'non-IAM policy source ARN',
+      expectNoPolicyProbes: true,
       configure: (harness: Harness) => {
         harness.deps.readProtectedConfig = async () =>
           configText({
             readOnlyCapabilityProbe: {
               policySourceArn: 'arn:aws:sts::123456789012:assumed-role/synthetic/session',
-              kmsKeyId: 'synthetic-kms-key',
+              kmsKeyId: 'arn:aws:kms:synthetic-region-1:123456789012:key/synthetic',
+              dbInstanceArn: DB_INSTANCE_ARN,
             },
           });
       },
@@ -527,16 +529,23 @@ describe('check-centurion-thread-corpus-readiness command', () => {
         harness.deps.probeS3AndKmsMetadata = async () => false;
       },
     },
-  ])('fails closed for $name without leaking private values', async ({ configure }) => {
-    const harness = makeHarness();
-    configure(harness);
+  ])(
+    'fails closed for $name without leaking private values',
+    async ({ configure, expectNoPolicyProbes = false }) => {
+      const harness = makeHarness();
+      configure(harness);
 
-    expect(await run(harness)).toBe(3);
-    expect(JSON.parse(harness.stdout[0]!) as { ready: boolean }).toMatchObject({
-      ready: false,
-    });
-    expectNoPrivateOutput(harness);
-  });
+      expect(await run(harness)).toBe(3);
+      expect(JSON.parse(harness.stdout[0]!) as { ready: boolean }).toMatchObject({
+        ready: false,
+      });
+      if (expectNoPolicyProbes) {
+        expect(harness.calls).not.toContain('policySimulation');
+        expect(harness.calls).not.toContain('metadataProbes');
+      }
+      expectNoPrivateOutput(harness);
+    },
+  );
 
   it('preserves completed safe checks when a later metadata probe blocks readiness', async () => {
     const harness = makeHarness();

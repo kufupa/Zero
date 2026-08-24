@@ -420,7 +420,7 @@ function expectedPolicyPairs(request: {
   return [
     {
       action: 'rds:DescribeDBInstances',
-      resource: request.dbInstanceArn,
+      resource: '*',
       requiredDecision: 'allowed',
     },
     {
