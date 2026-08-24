@@ -46,6 +46,7 @@
 - Modify: `apps/server-pilot/src/ops/centurion-thread-corpus-relay-producer.ts`
 - Modify: `apps/server-pilot/src/ops/centurion-thread-corpus-relay-receiver.ts`
 - Modify: `apps/server-pilot/src/ops/centurion-thread-corpus-analysis-workspace.ts`
+- Modify: `apps/server-pilot/src/mail/artifacts/read-artifact.ts`
 - Create: `apps/server-pilot/tsconfig.centurion-phase-0.json`
 - Modify: `apps/server-pilot/package.json`
 - Modify: focused fake-only command tests as required
@@ -71,13 +72,17 @@ type TrustedExecutableInspector = {
 
 - [ ] **Step 1: Write failing source-boundary and compile tests**
 
-Inventory every `spawn`, `spawnSync`, `execFile`, `execFileSync`, or PowerShell/Git/AWS invocation in all Phase 0 source/command paths. Add AST tests proving only approved narrow adapters invoke child processes and each call uses the exact OS-specific constant:
+Inventory every `spawn`, `spawnSync`, `execFile`, `execFileSync`, or PowerShell/Git/AWS invocation in the full transitive runtime-import closure of Phase 0 sources/commands, including V2 hydrator's PDF artifact sandbox. Add AST tests proving only approved narrow adapters invoke child processes and each call uses the exact OS-specific constant:
 
 ```ts
 const EC2_GIT = '/usr/bin/git';
 const EC2_AWS = '/usr/local/bin/aws';
 const WINDOWS_POWERSHELL = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
 const WINDOWS_GIT = 'C:\\Program Files\\Git\\cmd\\git.exe';
+const EC2_BWRAP = '/usr/bin/bwrap';
+const EC2_PRLIMIT = '/usr/bin/prlimit';
+const EC2_PDFINFO = '/usr/bin/pdfinfo';
+const EC2_PDFTOTEXT = '/usr/bin/pdftotext';
 ```
 
 The command fails closed on an AMI without an expected executable; it never discovers a binary from PATH. Fake tests prove inherited `PATH`, `PATHEXT`, `HOME`, `GIT_*`, `AWS_*`, endpoint, proxy, and pager variables cannot alter invocation. Tests must not launch a real process.
@@ -95,7 +100,7 @@ Expected: ambient executable/static-inventory and missing typecheck command fail
 
 - [ ] **Step 3: Pin every process boundary**
 
-Use fixed constants and trusted executable identity checks inside narrow injected runners only. EC2 runners use the Linux constants; Windows runners use the Windows constants. The fixed executable, arguments, environment, working directory, and identity are all verified before use. Keep existing no-shell PowerShell encoded-command behavior; only its executable changes from an ambient name to the fixed path. Do not add a generic command execution abstraction outside these adapters.
+Use fixed constants and trusted executable identity checks inside narrow injected runners only. EC2 runners use the Linux constants; Windows runners use the Windows constants. The fixed executable, arguments, environment, working directory, and identity are all verified before use. Pin and inspect the PDF sandbox's bwrap/prlimit/Poppler binaries as a single fixed Linux toolchain, with a fixed parent cwd and scrubbed environment, before it reads a private hydrated artifact. Keep existing no-shell PowerShell encoded-command behavior; only its executable changes from an ambient name to the fixed path. Do not add a generic command execution abstraction outside these adapters.
 
 Make the Phase 0 tsconfig exact and run it after every remaining task in this plan.
 
@@ -104,12 +109,12 @@ Make the Phase 0 tsconfig exact and run it after every remaining task in this pl
 ```bash
 unset DATABASE_URL VITEST_ALLOW_PILOT_RDS && pnpm exec vitest run tests/export-centurion-thread-corpus-live.test.ts tests/check-centurion-thread-corpus-readiness.test.ts tests/centurion-thread-corpus-relay-receiver.test.ts tests/analyze-centurion-thread-corpus.test.ts
 pnpm run typecheck:centurion-phase-0
-pnpm exec prettier --write scripts/export-centurion-thread-corpus-live.ts scripts/check-centurion-thread-corpus-readiness.ts scripts/stage-centurion-thread-corpus-relay.ts scripts/finalize-centurion-thread-corpus-relay.ts scripts/receive-centurion-thread-corpus-relay.ts scripts/analyze-centurion-thread-corpus.ts src/ops/centurion-thread-corpus-relay-producer.ts src/ops/centurion-thread-corpus-relay-receiver.ts src/ops/centurion-thread-corpus-analysis-workspace.ts tsconfig.centurion-phase-0.json package.json
+pnpm exec prettier --write scripts/export-centurion-thread-corpus-live.ts scripts/check-centurion-thread-corpus-readiness.ts scripts/stage-centurion-thread-corpus-relay.ts scripts/finalize-centurion-thread-corpus-relay.ts scripts/receive-centurion-thread-corpus-relay.ts scripts/analyze-centurion-thread-corpus.ts src/ops/centurion-thread-corpus-relay-producer.ts src/ops/centurion-thread-corpus-relay-receiver.ts src/ops/centurion-thread-corpus-analysis-workspace.ts src/mail/artifacts/read-artifact.ts tsconfig.centurion-phase-0.json package.json
 git diff --check
 ```
 
 ```bash
-git add apps/server-pilot/scripts/export-centurion-thread-corpus-live.ts apps/server-pilot/scripts/check-centurion-thread-corpus-readiness.ts apps/server-pilot/scripts/stage-centurion-thread-corpus-relay.ts apps/server-pilot/scripts/finalize-centurion-thread-corpus-relay.ts apps/server-pilot/scripts/receive-centurion-thread-corpus-relay.ts apps/server-pilot/scripts/analyze-centurion-thread-corpus.ts apps/server-pilot/src/ops/centurion-thread-corpus-relay-producer.ts apps/server-pilot/src/ops/centurion-thread-corpus-relay-receiver.ts apps/server-pilot/src/ops/centurion-thread-corpus-analysis-workspace.ts apps/server-pilot/tsconfig.centurion-phase-0.json apps/server-pilot/package.json apps/server-pilot/tests/export-centurion-thread-corpus-live.test.ts apps/server-pilot/tests/check-centurion-thread-corpus-readiness.test.ts apps/server-pilot/tests/centurion-thread-corpus-relay-producer.test.ts apps/server-pilot/tests/centurion-thread-corpus-relay-receiver.test.ts apps/server-pilot/tests/analyze-centurion-thread-corpus.test.ts
+git add apps/server-pilot/scripts/export-centurion-thread-corpus-live.ts apps/server-pilot/scripts/check-centurion-thread-corpus-readiness.ts apps/server-pilot/scripts/stage-centurion-thread-corpus-relay.ts apps/server-pilot/scripts/finalize-centurion-thread-corpus-relay.ts apps/server-pilot/scripts/receive-centurion-thread-corpus-relay.ts apps/server-pilot/scripts/analyze-centurion-thread-corpus.ts apps/server-pilot/src/ops/centurion-thread-corpus-relay-producer.ts apps/server-pilot/src/ops/centurion-thread-corpus-relay-receiver.ts apps/server-pilot/src/ops/centurion-thread-corpus-analysis-workspace.ts apps/server-pilot/src/mail/artifacts/read-artifact.ts apps/server-pilot/tsconfig.centurion-phase-0.json apps/server-pilot/package.json apps/server-pilot/tests/export-centurion-thread-corpus-live.test.ts apps/server-pilot/tests/check-centurion-thread-corpus-readiness.test.ts apps/server-pilot/tests/centurion-thread-corpus-relay-producer.test.ts apps/server-pilot/tests/centurion-thread-corpus-relay-receiver.test.ts apps/server-pilot/tests/analyze-centurion-thread-corpus.test.ts apps/server-pilot/tests/hms-artifact.test.ts
 git commit -m "fix(corpus): pin phase zero process boundaries"
 ```
 
