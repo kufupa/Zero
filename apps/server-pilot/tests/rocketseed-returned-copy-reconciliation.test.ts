@@ -551,7 +551,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
     expect(result.attachmentRows).toHaveLength(1);
   }, 30000);
 
-  it('drains a later physical copy without another attachment', async () => {
+  it('removes candidate attachment objects for a later physical copy', async () => {
     const storage = new FakeS3Storage('test-mail-bucket');
     const result = await withSeededTestDb(async (db) => {
       const canonical = await seedCanonicalOutbound(db);
@@ -601,13 +601,27 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
         .select()
         .from(attachment)
         .where(eq(attachment.messageId, canonical.canonicalMessageId));
-      return { attachmentRows, first, rows, second };
+      return {
+        attachmentRows,
+        canonicalAttachmentKey: firstParsed.attachments[0]?.s3Key,
+        candidateAttachmentKey: secondParsed.attachments[0]?.s3Key,
+        first,
+        rows,
+        second,
+      };
     });
 
     expect(result.first.kind).toBe('reconciled');
     expect(result.second.kind).toBe('duplicate');
     expect(result.rows).toHaveLength(1);
     expect(result.attachmentRows).toHaveLength(1);
+    expect(result.canonicalAttachmentKey).toBeTruthy();
+    expect(result.candidateAttachmentKey).toBeTruthy();
+    if (!result.canonicalAttachmentKey || !result.candidateAttachmentKey) return;
+    expect(storage.get(result.canonicalAttachmentKey)).toBeDefined();
+    expect(storage.get(result.candidateAttachmentKey)).toBeUndefined();
+    expect(storage.get(result.first.rawMimeS3Key)).toBeDefined();
+    expect(storage.get(result.second.rawMimeS3Key)).toBeDefined();
   }, 30000);
 
   it('uses ordinary ingest when Task 1 sender, owner, or topology checks reject', async () => {

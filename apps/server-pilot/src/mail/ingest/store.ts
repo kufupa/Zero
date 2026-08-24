@@ -186,6 +186,12 @@ export async function persistInboundMessage(
 
   const existingMessage = await findExistingInboundMessage(db, meta);
   if (existingMessage) {
+    await cleanupCandidateAttachmentObjects(
+      storage,
+      parsed.attachments,
+      meta.messageId,
+      existingMessage.id,
+    );
     return {
       kind: 'duplicate',
       transportId: existingMessage.transportId,
@@ -241,6 +247,7 @@ export async function persistInboundMessage(
   const messageId = meta.messageId;
   let threadId = '';
   let duplicate: PersistDuplicateResult | null = null;
+  let duplicateCanonicalMessageId = messageId;
   let reconciliation: PersistReconciledResult | null = null;
   await db.transaction(async (tx) => {
     const transactionDb = tx as unknown as DB;
@@ -274,6 +281,7 @@ export async function persistInboundMessage(
           messageId: canonical.id,
           rawMimeS3Key,
         };
+        duplicateCanonicalMessageId = canonical.id;
         return;
       }
       await transactionDb
@@ -448,7 +456,15 @@ export async function persistInboundMessage(
     }
   });
 
-  if (duplicate) return duplicate;
+  if (duplicate) {
+    await cleanupCandidateAttachmentObjects(
+      storage,
+      parsed.attachments,
+      messageId,
+      duplicateCanonicalMessageId,
+    );
+    return duplicate;
+  }
   if (reconciliation) return reconciliation;
 
   return {
@@ -459,6 +475,25 @@ export async function persistInboundMessage(
     rawMimeS3Key,
     attachmentCount: parsed.attachments.length,
   };
+}
+
+async function cleanupCandidateAttachmentObjects(
+  storage: S3Storage,
+  attachments: ParsedInboundMessage['attachments'],
+  candidateMessageId: string,
+  canonicalMessageId: string,
+): Promise<void> {
+  if (candidateMessageId === canonicalMessageId) return;
+
+  const candidatePrefix = `attachments/${candidateMessageId}/`;
+  const keys = [
+    ...new Set(
+      attachments
+        .map((attachment) => attachment.s3Key)
+        .filter((key) => key.startsWith(candidatePrefix)),
+    ),
+  ];
+  await Promise.allSettled(keys.map((key) => storage.deleteObject(key)));
 }
 
 /**
