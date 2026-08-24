@@ -102,64 +102,36 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       async () => {
         resetS3Storage();
         setS3Storage(new FakeS3Storage('worker-err-bucket'));
-        // Only the stamped Centurion fixture, but inject a DB that fails on
-        // insert. The mock has to be faithful enough that:
-        //   - the transport lookup select returns the Centurion transport,
-        //   - the duplicate-check select returns [] (no prior row),
-        //   - the thread lookup select returns [],
-        //   - the first insert (thread OR message) throws.
-        // We track select-call count to differentiate the transport lookup
-        // (1st) from the duplicate check (2nd) and thread lookup (3rd).
         const fakePop3 = new FakePop3Client({
           messages: [{ uidl: 'uidl-err', raw: readFixture('centurion-stamped.eml') }],
         });
+        const persistSpy = vi
+          .spyOn(ingestStore, 'persistInboundMessage')
+          .mockRejectedValue(new Error('simulated PG failure'));
 
-        let selectCount = 0;
-        const throwingTx = {
-          select: () => ({
-            from: () => ({
-              where: () => ({
-                limit: async () => {
-                  selectCount += 1;
-                  if (selectCount === 3) {
-                    return [
-                      {
-                        id: 'transport-centurion',
-                        email: 'centurion@legacyhotel.com',
-                      },
-                    ];
-                  }
-                  return [];
-                },
-              }),
+        try {
+          const result = await withSeededTestDb(async (db) =>
+            ingestOnce({
+              pop3: fakePop3,
+              db,
+              ingestMailboxId: 'ingest-nava-legacy',
+              maxMessages: 10,
             }),
-          }),
-          insert: () => {
-            throw new Error('simulated PG failure');
-          },
-        };
-        const throwingDb = {
-          ...throwingTx,
-          transaction: async (fn: (tx: typeof throwingTx) => Promise<unknown>) => fn(throwingTx),
-        };
+          );
 
-        const result = await ingestOnce({
-          pop3: fakePop3,
-          db: throwingDb as unknown as import('../src/db/client').DB,
-          ingestMailboxId: 'ingest-nava-legacy',
-          maxMessages: 10,
-        });
-
-        expect(result.processed).toBe(1);
-        expect(result.deled).toBe(0); // not DELEd
-        expect(result.items[0]!.status).toBe('error');
-        if (result.items[0]!.status === 'error') {
-          expect(result.items[0]!.error).toContain('simulated PG failure');
+          expect(result.processed).toBe(1);
+          expect(result.deled).toBe(0); // not DELEd
+          expect(result.items[0]!.status).toBe('error');
+          if (result.items[0]!.status === 'error') {
+            expect(result.items[0]!.error).toContain('simulated PG failure');
+          }
+          // DELE never called.
+          expect(fakePop3.deleLog).toEqual([]);
+          // QUIT still called (cycle completes after the error).
+          expect(fakePop3.callLog.map((c) => c.op)).toContain('quit');
+        } finally {
+          persistSpy.mockRestore();
         }
-        // DELE never called.
-        expect(fakePop3.deleLog).toEqual([]);
-        // QUIT still called (cycle completes after the error).
-        expect(fakePop3.callLog.map((c) => c.op)).toContain('quit');
       },
       30000,
     );
