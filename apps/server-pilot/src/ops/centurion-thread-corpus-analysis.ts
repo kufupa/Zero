@@ -89,18 +89,6 @@ export type PreparedPrivateAnalysisV1 = {
   packets: PrivateAnalysisPacketV1[];
 };
 
-type PreparedPacketBinding = AnalysisItemV1 & {
-  packetState: PreparedAnalysisManifestV1['packets'][number]['packetState'];
-  packetSha256: string | null;
-};
-
-type PreparedAnalysisBinding = {
-  manifest: PreparedAnalysisManifestV1;
-  manifestJson: string;
-  manifestSha256: string;
-  packets: PreparedPacketBinding[];
-};
-
 export type AnalystDecisionV1 = {
   schemaVersion: typeof CENTURION_THREAD_CORPUS_ANALYSIS_VERSION;
   analysisItemId: string;
@@ -138,48 +126,20 @@ type ReconstructedV2Snapshot = {
   snapshotDigest: string;
 };
 
-type SnapshotReconstructionCacheEntry = {
-  corpusJsonl: string;
-  manifestJson: string;
-  contextFingerprint: string;
-  manifestFingerprint: string;
-  artifactFiles: PrivateThreadCorpusArtifactFile[];
-  artifacts: Array<{
-    artifact: PrivateThreadCorpusArtifactFile;
-    kind: PrivateThreadCorpusArtifactFile['kind'];
-    id: string;
-    sha256: string;
-    bytes: number;
-    content: Uint8Array;
-    contentSha256: string;
-  }>;
-  reconstructed: ReconstructedV2Snapshot;
-};
-
 type SuppliedReconciledAnalystDecisions = {
   snapshotId: string;
   snapshotDigest: string;
   preparedManifestSha256: string;
   preparedManifest: PreparedAnalysisManifestV1;
-  preparedManifestCacheKey: PreparedAnalysisManifestV1;
   items: unknown[];
   decisions: unknown[];
 };
 
 const SHA256_DIGEST = /^[a-f0-9]{64}$/;
 const textEncoder = new TextEncoder();
-const snapshotReconstructionCache = new WeakMap<
-  PrivateThreadCorpusSnapshot,
-  SnapshotReconstructionCacheEntry
->();
-const preparedAnalysisBindingCache = new WeakMap<
-  PreparedAnalysisManifestV1,
-  PreparedAnalysisBinding
->();
 export const MAX_PRIVATE_ANALYSIS_PACKET_BYTES = 16 * 1024 * 1024;
 export const MAX_CANONICAL_JSON_CHUNK_BYTES = 1024;
 const MIN_PRIVATE_ANALYSIS_PACKET_BYTES = 256;
-const MAX_SNAPSHOT_CACHE_METADATA_BYTES = 64 * 1024;
 const BYTE_VALUE_TOKENS = Array.from({ length: 256 }, (_, value) => String(value));
 const ANALYSIS_SOURCE_MEMBERSHIP = [
   'centurion_transport',
@@ -596,30 +556,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function hasOrderedDataProperties(
-  value: unknown,
-  keys: readonly string[],
-): value is Record<string, unknown> {
-  if (
-    !isRecord(value) ||
-    (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) ||
-    Object.getOwnPropertySymbols(value).length > 0
-  ) {
-    return false;
-  }
-  const propertyNames = Object.getOwnPropertyNames(value);
-  if (
-    propertyNames.length !== keys.length ||
-    propertyNames.some((propertyName, index) => propertyName !== keys[index])
-  ) {
-    return false;
-  }
-  return keys.every((key) => {
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    return descriptor !== undefined && descriptor.enumerable && Object.hasOwn(descriptor, 'value');
-  });
-}
-
 function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   const actualKeys = Object.keys(value);
   return actualKeys.length === keys.length && keys.every((key) => Object.hasOwn(value, key));
@@ -715,178 +651,10 @@ function canonicalSnapshotDigest(
   return sink.digestHex();
 }
 
-function snapshotCacheMetadataFingerprint(value: unknown): string | null {
-  const sink = new BoundedCanonicalByteSink(MAX_SNAPSHOT_CACHE_METADATA_BYTES, false);
-  return serializeCanonicalToSink(value, sink) === 'ok' ? sink.digestHex() : null;
-}
-
-function hasSnapshotReconstructionCacheShape(snapshot: PrivateThreadCorpusSnapshot): boolean {
-  if (
-    !hasOrderedDataProperties(snapshot, [
-      'context',
-      'corpusJsonl',
-      'manifestJson',
-      'manifest',
-      'artifactFiles',
-    ]) ||
-    !hasOrderedDataProperties(snapshot.context, [
-      'snapshotId',
-      'scope',
-      'asOf',
-      'exporterVersion',
-      'unscopedQuarantineExcluded',
-    ]) ||
-    !hasOrderedDataProperties(snapshot.context.scope, [
-      'scopeKeys',
-      'transportIds',
-      'participantAddressRef',
-      'messagePredicate',
-      'quarantinePredicate',
-    ]) ||
-    !hasOrderedDataProperties(snapshot.manifest, [
-      'schemaVersion',
-      'snapshotId',
-      'scope',
-      'window',
-      'exporterVersion',
-      'orderedRecordSha256',
-      'localObjectSha256',
-      'artifactInventorySha256',
-      'counts',
-      'sourceObject',
-    ]) ||
-    !hasOrderedDataProperties(snapshot.manifest.scope, [
-      'scopeKeys',
-      'transportIds',
-      'participantAddressRef',
-      'messagePredicate',
-      'quarantinePredicate',
-    ]) ||
-    !hasOrderedDataProperties(snapshot.manifest.window, ['startInclusive', 'endExclusive']) ||
-    !hasOrderedDataProperties(snapshot.manifest.counts, [
-      'sourceRows',
-      'logicalMessages',
-      'unresolvedDuplicateCandidates',
-      'threads',
-      'attachments',
-      'drafts',
-      'revisions',
-      'quarantine',
-      'rawMimeAvailable',
-      'rawMimeUnavailable',
-      'attachmentTextAvailable',
-      'attachmentTextUnavailable',
-      'scopedQuarantine',
-      'unscopedQuarantineExcluded',
-      'messagesByScope',
-    ]) ||
-    !hasOrderedDataProperties(snapshot.manifest.counts.messagesByScope, [
-      'centurion_transport',
-      'designated_reservationist_mailbox',
-    ]) ||
-    !hasOrderedDataProperties(snapshot.manifest.sourceObject, ['integrity'])
-  ) {
-    return false;
-  }
-  return true;
-}
-
-function artifactCacheEntries(
-  artifactFiles: unknown,
-): SnapshotReconstructionCacheEntry['artifacts'] | null {
-  if (!Array.isArray(artifactFiles)) return null;
-  const entries: SnapshotReconstructionCacheEntry['artifacts'] = [];
-  for (const artifact of artifactFiles) {
-    if (
-      !hasOrderedDataProperties(artifact, ['kind', 'id', 'sha256', 'bytes', 'content']) ||
-      !(artifact.content instanceof Uint8Array) ||
-      artifact.bytes !== artifact.content.byteLength ||
-      typeof artifact.sha256 !== 'string'
-    ) {
-      return null;
-    }
-    const contentSha256 = createHash('sha256').update(artifact.content).digest('hex');
-    if (contentSha256 !== artifact.sha256) return null;
-    entries.push({
-      artifact: artifact as PrivateThreadCorpusArtifactFile,
-      kind: artifact.kind as PrivateThreadCorpusArtifactFile['kind'],
-      id: artifact.id as string,
-      sha256: artifact.sha256,
-      bytes: artifact.bytes as number,
-      content: artifact.content,
-      contentSha256,
-    });
-  }
-  return entries;
-}
-
-function snapshotReconstructionCacheEntry(
-  suppliedSnapshot: PrivateThreadCorpusSnapshot,
-  reconstructed: ReconstructedV2Snapshot,
-): SnapshotReconstructionCacheEntry | null {
-  if (!hasSnapshotReconstructionCacheShape(suppliedSnapshot)) return null;
-  const artifacts = artifactCacheEntries(suppliedSnapshot.artifactFiles);
-  const contextFingerprint = snapshotCacheMetadataFingerprint(suppliedSnapshot.context);
-  const manifestFingerprint = snapshotCacheMetadataFingerprint(suppliedSnapshot.manifest);
-  if (!artifacts || !contextFingerprint || !manifestFingerprint) return null;
-  return {
-    corpusJsonl: suppliedSnapshot.corpusJsonl,
-    manifestJson: suppliedSnapshot.manifestJson,
-    contextFingerprint,
-    manifestFingerprint,
-    artifactFiles: suppliedSnapshot.artifactFiles,
-    artifacts,
-    reconstructed,
-  };
-}
-
-function matchesSnapshotReconstructionCache(
-  suppliedSnapshot: PrivateThreadCorpusSnapshot,
-  cached: SnapshotReconstructionCacheEntry,
-): boolean {
-  if (
-    !hasSnapshotReconstructionCacheShape(suppliedSnapshot) ||
-    suppliedSnapshot.corpusJsonl !== cached.corpusJsonl ||
-    suppliedSnapshot.manifestJson !== cached.manifestJson ||
-    suppliedSnapshot.artifactFiles !== cached.artifactFiles
-  ) {
-    return false;
-  }
-  const contextFingerprint = snapshotCacheMetadataFingerprint(suppliedSnapshot.context);
-  const manifestFingerprint = snapshotCacheMetadataFingerprint(suppliedSnapshot.manifest);
-  if (
-    contextFingerprint === null ||
-    manifestFingerprint === null ||
-    contextFingerprint !== cached.contextFingerprint ||
-    manifestFingerprint !== cached.manifestFingerprint
-  ) {
-    return false;
-  }
-  const artifacts = artifactCacheEntries(suppliedSnapshot.artifactFiles);
-  return (
-    artifacts !== null &&
-    artifacts.length === cached.artifacts.length &&
-    artifacts.every(
-      (artifact, index) =>
-        artifact.artifact === cached.artifacts[index]?.artifact &&
-        artifact.kind === cached.artifacts[index]?.kind &&
-        artifact.id === cached.artifacts[index]?.id &&
-        artifact.sha256 === cached.artifacts[index]?.sha256 &&
-        artifact.bytes === cached.artifacts[index]?.bytes &&
-        artifact.content === cached.artifacts[index]?.content &&
-        artifact.contentSha256 === cached.artifacts[index]?.contentSha256,
-    )
-  );
-}
-
 function reconstructV2Snapshot(
   suppliedSnapshot: PrivateThreadCorpusSnapshot,
 ): ReconstructedV2Snapshot | null {
   try {
-    const cached = snapshotReconstructionCache.get(suppliedSnapshot);
-    if (cached && matchesSnapshotReconstructionCache(suppliedSnapshot, cached)) {
-      return cached.reconstructed;
-    }
     validatePrivateThreadCorpusSnapshot(suppliedSnapshot);
     const manifest = JSON.parse(suppliedSnapshot.manifestJson) as SnapshotManifestV2;
     const corpusLines = suppliedSnapshot.corpusJsonl.slice(0, -1).split('\n');
@@ -899,14 +667,11 @@ function reconstructV2Snapshot(
       artifactFiles: suppliedSnapshot.artifactFiles.map(cloneArtifactFile),
     };
     validatePrivateThreadCorpusSnapshot(snapshot);
-    const reconstructed = {
+    return {
       snapshot,
       records,
       snapshotDigest: canonicalSnapshotDigest(snapshot, records),
     };
-    const cacheEntry = snapshotReconstructionCacheEntry(suppliedSnapshot, reconstructed);
-    if (cacheEntry) snapshotReconstructionCache.set(suppliedSnapshot, cacheEntry);
-    return reconstructed;
   } catch {
     return null;
   }
@@ -1308,39 +1073,6 @@ function analysisItemForPacket(packet: AnalysisItemV1): AnalysisItemV1 {
   };
 }
 
-function preparedAnalysisBinding(prepared: PreparedPrivateAnalysisV1): PreparedAnalysisBinding {
-  const manifest: PreparedAnalysisManifestV1 = {
-    ...prepared.manifest,
-    packets: prepared.manifest.packets.map((packet) => ({ ...packet })),
-  };
-  return {
-    manifest,
-    manifestJson: preparedManifestJson(manifest),
-    manifestSha256: prepared.manifestSha256,
-    packets: prepared.packets.map((packet) => ({
-      ...analysisItemForPacket(packet),
-      packetState: packet.packetState,
-      packetSha256: packet.packetSha256,
-    })),
-  };
-}
-
-function cachedPreparedAnalysisBinding(
-  suppliedManifestObject: PreparedAnalysisManifestV1,
-  suppliedManifest: PreparedAnalysisManifestV1,
-  reconstructed: ReconstructedV2Snapshot,
-): PreparedAnalysisBinding | null {
-  const cached = preparedAnalysisBindingCache.get(suppliedManifestObject);
-  if (
-    !cached ||
-    cached.manifest.snapshotDigest !== reconstructed.snapshotDigest ||
-    preparedManifestJson(suppliedManifest) !== cached.manifestJson
-  ) {
-    return null;
-  }
-  return cached;
-}
-
 function matchesAnalysisItem(value: unknown, expected: AnalysisItemV1): boolean {
   return (
     isRecord(value) &&
@@ -1395,7 +1127,6 @@ function parseReconciledAnalystDecisions(
     snapshotDigest: value.snapshotDigest,
     preparedManifestSha256: value.preparedManifestSha256,
     preparedManifest,
-    preparedManifestCacheKey: value.preparedManifest as PreparedAnalysisManifestV1,
     items: value.items,
     decisions: value.decisions,
   };
@@ -1486,11 +1217,7 @@ export function preparePrivateAnalysis(
     }
     const reconstructed = reconstructV2Snapshot(snapshot);
     if (!reconstructed) return null;
-    const prepared = preparePrivateAnalysisFromReconstructed(reconstructed, limits);
-    if (prepared) {
-      preparedAnalysisBindingCache.set(prepared.manifest, preparedAnalysisBinding(prepared));
-    }
-    return prepared;
+    return preparePrivateAnalysisFromReconstructed(reconstructed, limits);
   } catch {
     return null;
   }
@@ -1498,7 +1225,7 @@ export function preparePrivateAnalysis(
 
 function validateReconciledAnalystDecisionsForPrepared(
   supplied: SuppliedReconciledAnalystDecisions,
-  prepared: PreparedAnalysisBinding,
+  prepared: PreparedPrivateAnalysisV1,
 ): ReconciledAnalystDecisionsV1 | null {
   if (
     supplied.snapshotId !== prepared.manifest.snapshotId ||
@@ -1552,20 +1279,11 @@ export function validateReconciledAnalystDecisions(
     const supplied = parseReconciledAnalystDecisions(reconciled);
     if (!supplied) return null;
 
-    let prepared = cachedPreparedAnalysisBinding(
-      supplied.preparedManifestCacheKey,
-      supplied.preparedManifest,
-      reconstructed,
-    );
-    if (!prepared) {
-      const freshPrepared = preparePrivateAnalysisFromReconstructed(reconstructed, {
-        maxPacketBytes: supplied.preparedManifest.maxPacketBytes,
-        maxTotalPacketBytes: supplied.preparedManifest.maxTotalPacketBytes,
-      });
-      if (!freshPrepared) return null;
-      prepared = preparedAnalysisBinding(freshPrepared);
-      preparedAnalysisBindingCache.set(supplied.preparedManifestCacheKey, prepared);
-    }
+    const prepared = preparePrivateAnalysisFromReconstructed(reconstructed, {
+      maxPacketBytes: supplied.preparedManifest.maxPacketBytes,
+      maxTotalPacketBytes: supplied.preparedManifest.maxTotalPacketBytes,
+    });
+    if (!prepared) return null;
     return validateReconciledAnalystDecisionsForPrepared(supplied, prepared);
   } catch {
     return null;
@@ -1582,17 +1300,11 @@ export function reconcileAnalystDecisionBundle(
     if (!suppliedManifest) return null;
     const reconstructed = reconstructV2Snapshot(snapshot);
     if (!reconstructed) return null;
-    let prepared = cachedPreparedAnalysisBinding(preparedManifest, suppliedManifest, reconstructed);
-    if (!prepared) {
-      const freshPrepared = preparePrivateAnalysisFromReconstructed(reconstructed, {
-        maxPacketBytes: suppliedManifest.maxPacketBytes,
-        maxTotalPacketBytes: suppliedManifest.maxTotalPacketBytes,
-      });
-      if (!freshPrepared) return null;
-      prepared = preparedAnalysisBinding(freshPrepared);
-      preparedAnalysisBindingCache.set(preparedManifest, prepared);
-    }
-    preparedAnalysisBindingCache.set(prepared.manifest, prepared);
+    const prepared = preparePrivateAnalysisFromReconstructed(reconstructed, {
+      maxPacketBytes: suppliedManifest.maxPacketBytes,
+      maxTotalPacketBytes: suppliedManifest.maxTotalPacketBytes,
+    });
+    if (!prepared) return null;
     if (!samePreparedManifest(suppliedManifest, prepared.manifest)) {
       return null;
     }

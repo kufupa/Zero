@@ -996,7 +996,7 @@ describe('Centurion private thread corpus analysis', () => {
     expectNoFixtureLeaks(error);
   });
 
-  it('invalidates cached reconstructions when artifact bytes mutate', () => {
+  it('rejects mutated artifact bytes after repeated preparation', () => {
     const snapshot = syntheticSnapshot();
     requirePrepared(snapshot);
     const artifact = snapshot.artifactFiles[0];
@@ -1046,11 +1046,11 @@ describe('Centurion private thread corpus analysis', () => {
         decisionBundle,
       ),
     ).toBeNull();
-    const cacheGuardPrepared = requirePrepared(snapshot);
-    const cacheGuardBundle = validDecisionBundle(cacheGuardPrepared);
-    cacheGuardPrepared.manifest.maxPacketBytes = 0;
+    const mutatedPrepared = requirePrepared(snapshot);
+    const mutatedBundle = validDecisionBundle(mutatedPrepared);
+    mutatedPrepared.manifest.maxPacketBytes = 0;
     expect(
-      reconcileAnalystDecisionBundle(snapshot, cacheGuardPrepared.manifest, cacheGuardBundle),
+      reconcileAnalystDecisionBundle(snapshot, mutatedPrepared.manifest, mutatedBundle),
     ).toBeNull();
 
     const decisions = decisionBundle.decisions;
@@ -1211,6 +1211,33 @@ describe('Centurion private thread corpus analysis', () => {
       }),
     ).toBeNull();
     expectNoFixtureLeaks({ reconciled, constrainedReconciled });
+  });
+
+  it('reprepares deterministic bindings without stateful caches', () => {
+    const sourcePath = fileURLToPath(
+      new URL('../src/ops/centurion-thread-corpus-analysis.ts', import.meta.url),
+    );
+    const source = parseTypeScript(sourcePath);
+    const identifiers = collectNodes(source, ts.isIdentifier).map((node) => node.text);
+    expect(identifiers).not.toEqual(
+      expect.arrayContaining([
+        'snapshotReconstructionCache',
+        'preparedAnalysisBindingCache',
+        'cachedPreparedAnalysisBinding',
+      ]),
+    );
+
+    const snapshot = syntheticSnapshot();
+    const first = requirePrepared(snapshot);
+    const second = requirePrepared(snapshot);
+    expect(second).toEqual(first);
+    const reconciled = reconcileAnalystDecisionBundle(
+      snapshot,
+      first.manifest,
+      validDecisionBundle(first),
+    );
+    expect(reconciled).not.toBeNull();
+    expect(validateReconciledAnalystDecisions(snapshot, reconciled)).toEqual(reconciled);
   });
 
   it('keeps core source free of runtime and dynamic-execution capabilities', () => {
