@@ -77,6 +77,56 @@ function trustedReturnedCopy(args: {
   );
 }
 
+function richTrustedReturnedCopy(args: {
+  messageId: string;
+  outboundId: string;
+  transportAddress: string;
+}): Buffer {
+  return Buffer.from(
+    [
+      `X-Zero-Mailbox: ${args.transportAddress}`,
+      `X-Zero-Outbound-Id: ${args.outboundId}`,
+      `Message-ID: <${args.messageId}>`,
+      `In-Reply-To: <delivered-parent@zero.test>`,
+      'References: <root@zero.test> <delivered-parent@zero.test>',
+      `From: ${args.transportAddress}`,
+      `To: ${args.transportAddress}`,
+      'Cc: cc@zero.test',
+      'Bcc: bcc@zero.test',
+      'Subject: delivered Rocketseed representation',
+      'Date: Mon, 24 Aug 2026 12:00:03 +0000',
+      'Received: from 172.24.0.10 by zimbra-a; Mon, 24 Aug 2026 12:00:00 +0000',
+      'Received: from localhost by local-a; Mon, 24 Aug 2026 12:00:01 +0000',
+      'Received: from localhost by local-b; Mon, 24 Aug 2026 12:00:02 +0000',
+      'Received: from 172.24.0.8 by rocket-a; Mon, 24 Aug 2026 12:00:03 +0000',
+      'Received: from 172.24.0.8 by rocket-b; Mon, 24 Aug 2026 12:00:04 +0000',
+      'MIME-Version: 1.0',
+      'Content-Type: multipart/mixed; boundary="mixed-boundary"',
+      '',
+      '--mixed-boundary',
+      'Content-Type: multipart/alternative; boundary="alternative-boundary"',
+      '',
+      '--alternative-boundary',
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      'Delivered plain text body.',
+      '--alternative-boundary',
+      'Content-Type: text/html; charset=utf-8',
+      '',
+      '<p>Delivered <strong>HTML</strong> body.</p>',
+      '--alternative-boundary--',
+      '--mixed-boundary',
+      'Content-Type: application/octet-stream; name="delivered.bin"',
+      'Content-Disposition: attachment; filename="delivered.bin"',
+      'Content-Transfer-Encoding: base64',
+      '',
+      'ZGVsaXZlcmVk',
+      '--mixed-boundary--',
+    ].join('\r\n'),
+    'utf-8',
+  );
+}
+
 async function seedCanonicalOutbound(
   db: import('../src/db/client.js').DB,
   opts: {
@@ -242,7 +292,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
         await seedCanonicalOutbound(db);
       const candidateMessageId = randomUUID();
 
-      const raw = trustedReturnedCopy({
+      const raw = richTrustedReturnedCopy({
         outboundId: canonicalMessageId,
         messageId: returnedMessageId,
         transportAddress,
@@ -258,6 +308,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
           ingestMailboxId: 'ingest-nava-legacy',
           pop3Uidl: `task-2-${randomUUID()}`,
           messageId: candidateMessageId,
+          rawMimeS3Key: 'raw-mime/task-2-enriched.eml',
         },
         { db, storage, skipAiEnqueue: true },
       );
@@ -274,7 +325,15 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
         .from(attachment)
         .where(eq(attachment.messageId, canonicalMessageId));
 
-      return { persistResult, rows, threadRows, attachmentRows, canonicalMessageId };
+      return {
+        attachmentRows,
+        canonicalMessageId,
+        expectedRawMimeS3Key: 'raw-mime/task-2-enriched.eml',
+        parsed,
+        persistResult,
+        rows,
+        threadRows,
+      };
     });
 
     expect(result.persistResult.kind).toBe('reconciled');
@@ -283,13 +342,32 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
     expect(result.rows[0]?.direction).toBe('outbound');
     expect(result.rows[0]?.isRead).toBe(false);
     expect(result.rows[0]?.isStarred).toBe(true);
-    expect(result.rows[0]?.rawMimeS3Key).toBeTruthy();
+    expect(result.rows[0]).toMatchObject({
+      bccAddresses: result.parsed.bccAddresses,
+      ccAddresses: result.parsed.ccAddresses,
+      fromAddress: result.parsed.fromAddress,
+      htmlBody: result.parsed.htmlBody,
+      inReplyTo: result.parsed.inReplyTo,
+      messageIdHeader: result.parsed.messageId,
+      ownerHeaderValue: result.parsed.ownerHeaderValue,
+      rawMimeS3Key: result.expectedRawMimeS3Key,
+      receivedAt: result.parsed.receivedAt,
+      references: result.parsed.references,
+      subject: result.parsed.subject,
+      textBody: result.parsed.textBody,
+      toAddresses: result.parsed.toAddresses,
+    });
     expect(result.threadRows).toHaveLength(1);
     expect(result.threadRows[0]?.isArchived).toBe(true);
     expect(result.threadRows[0]?.isStarred).toBe(true);
     expect(result.threadRows[0]?.isRead).toBe(false);
     expect(result.threadRows[0]?.labelIds).toEqual(['task-2-preserved']);
-    expect(result.attachmentRows).toHaveLength(0);
+    expect(result.attachmentRows).toHaveLength(1);
+    expect(result.attachmentRows[0]).toMatchObject({
+      filename: result.parsed.attachments[0]?.filename,
+      messageId: result.canonicalMessageId,
+      s3Key: result.parsed.attachments[0]?.s3Key,
+    });
   }, 30000);
 
   it('uses ordinary ingest without live POP3 reconciliation opt-in', async () => {
@@ -862,10 +940,12 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
     const setup = openConcurrentTestDb();
     const firstConnection = openConcurrentTestDb();
     const secondConnection = openConcurrentTestDb();
+    let ingestMailboxId: string | undefined;
     let transportId: string | undefined;
 
     try {
       const canonical = await seedConcurrentCanonical(setup.db);
+      ingestMailboxId = canonical.ingestMailboxId;
       transportId = canonical.transportId;
       const raw = trustedReturnedCopy({
         includeAttachment: true,
@@ -934,6 +1014,14 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
     } finally {
       if (transportId) {
         await setup.db.delete(mailboxTransport).where(eq(mailboxTransport.id, transportId));
+      }
+      if (ingestMailboxId) {
+        await setup.db.delete(mailIngestMailbox).where(eq(mailIngestMailbox.id, ingestMailboxId));
+        const remainingMailboxRows = await setup.db
+          .select({ id: mailIngestMailbox.id })
+          .from(mailIngestMailbox)
+          .where(eq(mailIngestMailbox.id, ingestMailboxId));
+        expect(remainingMailboxRows).toHaveLength(0);
       }
       await Promise.all([
         firstConnection.client.end(),
