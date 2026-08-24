@@ -23,4 +23,10 @@ Content-Disposition: attachment; filename="ordinary.pdf"
 Content-ID: <ordinary@rocketseed.test>
 
 JVBERi0xLjQK
+--rocketseed-task-4-boundary
+Content-Type: image/gif; name="related-no-disposition.gif"
+Content-Transfer-Encoding: base64
+Content-ID: <related-no-disposition@rocketseed.test>
+
+R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7
 --rocketseed-task-4-boundary--

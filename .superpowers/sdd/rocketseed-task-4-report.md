@@ -114,3 +114,108 @@ errors, and no-network CI boundary are enforced at each applicable boundary.
 The mail build exited successfully but emitted non-fatal Vite/Rollup source-map,
 third-party PURE-comment, and CSS-minifier warnings. Task 4 does not touch
 those mail UI build inputs.
+
+## Review-fix follow-up — direct inline attachment parity
+
+### Design rationale
+
+- `findUniqueEligibleInlineAttachment()` is now the single metadata resolver
+  used by both CID projection and direct inline HTTP serving. It normalizes the
+  requested CID with `normalizeContentId()`, rejects ambiguous ownership across
+  the full message attachment set, and applies the shared explicit-inline,
+  raster-MIME, safe-positive-size, and `MAX_INLINE_IMAGE_BYTES` gate.
+- `isSupportedInlineImageMime()` now comes from `safe-inline-image.ts`, so
+  declared MIME eligibility uses the same raster set as byte-level serve-time
+  validation.
+- `loadAuthorizedAttachment()` preserves the existing target
+  attachment/message/mailbox-access join, then loads every sibling's CID
+  metadata for the same authorized message. The handler includes the target
+  plus siblings in the shared resolver before it can read object storage.
+- Metadata failures, missing/invalid CIDs, and CID ambiguity now return empty
+  `404` responses before S3. Object-size and byte-safety checks after a
+  metadata-eligible read retain their existing opaque `413`/`415` behavior.
+
+No returned-copy, SMTP, queue, schema, migration, host/TLS, or Rocketseed
+no-AUTH behavior changed.
+
+### RED evidence
+
+Added opaque HTTP tests for non-raster, zero/fractional/unsafe/oversize
+metadata, duplicate normalized CID, null CID, empty CID, and malformed CID.
+Every pre-storage rejection asserts an empty `404` body and no
+`getObjectBounded()` call.
+
+```sh
+unset DATABASE_URL VITEST_ALLOW_PILOT_RDS && pnpm --dir apps/server-pilot exec vitest run tests/inline-attachment-http.test.ts tests/rocketseed-flow.test.ts
+```
+
+Result: expected RED, `9 failed | 18 passed` across two files. The new route
+tests proved non-raster/invalid metadata and duplicate/null/empty/malformed
+CIDs still reached storage or returned `413`; the synthetic flow remained
+green (`6` tests).
+
+Added a `multipart/related` fixture part with a CID and no
+`Content-Disposition`, plus a dedicated parser assertion that it remains
+`isInline: false`. Because the parser behavior already existed, temporarily
+mutated its gate to:
+
+```ts
+part.contentDisposition?.trim().toLowerCase() === 'inline' || !!part.related
+```
+
+Then ran:
+
+```sh
+unset DATABASE_URL VITEST_ALLOW_PILOT_RDS && pnpm --dir apps/server-pilot exec vitest run tests/rocketseed-flow.test.ts
+```
+
+Result: expected RED, `2 failed | 4 passed`; both the original synthetic
+ordinary related attachment and the new no-disposition CID attachment became
+`isInline: true`. Reverted the controlled mutation before GREEN.
+
+### GREEN evidence
+
+```sh
+unset DATABASE_URL VITEST_ALLOW_PILOT_RDS && pnpm --dir apps/server-pilot exec vitest run tests/inline-attachment-http.test.ts tests/cid-images.test.ts tests/rocketseed-flow.test.ts
+```
+
+Result: `3` files, `41` tests passed.
+
+```sh
+unset DATABASE_URL TEST_DATABASE_URL CONFIRM_DISPOSABLE_TEST_DB VITEST_ALLOW_PILOT_RDS && pnpm --dir apps/server-pilot exec vitest run tests/cid-images.test.ts tests/inline-attachment-http.test.ts tests/process-email-content.test.ts tests/rocketseed-flow.test.ts tests/safe-inline-image.test.ts
+```
+
+Result: `5` files passed, `58 passed | 1 skipped`. The skipped test is the
+existing DB-gated `process-email-content` case; no database was configured or
+used.
+
+```sh
+unset DATABASE_URL TEST_DATABASE_URL CONFIRM_DISPOSABLE_TEST_DB VITEST_ALLOW_PILOT_RDS && export MAIL_TRANSPORT_MODE=fixture && pnpm --dir apps/server-pilot run test:rocketseed
+```
+
+Result: `11` files, `106` tests passed. Fixture transport only; no database,
+EC2, secrets, real SMTP/POP3, or object storage used.
+
+```sh
+pnpm exec prettier --check apps/server-pilot/src/http/inline-attachment.ts apps/server-pilot/src/mail/cid-images.ts apps/server-pilot/src/mail/safe-inline-image.ts apps/server-pilot/tests/attachment-access.test.ts apps/server-pilot/tests/inline-attachment-http.test.ts apps/server-pilot/tests/rocketseed-flow.test.ts
+pnpm dlx oxlint@latest --deny-warnings apps/server-pilot/src/http/inline-attachment.ts apps/server-pilot/src/mail/cid-images.ts apps/server-pilot/src/mail/safe-inline-image.ts apps/server-pilot/tests/attachment-access.test.ts apps/server-pilot/tests/inline-attachment-http.test.ts apps/server-pilot/tests/rocketseed-flow.test.ts
+pnpm --dir apps/server-pilot build
+pnpm --dir apps/mail build
+git diff --check
+```
+
+Result: Prettier and scoped OXLint passed; server TypeScript build and mail
+application build and `git diff --check` exited `0`. Mail build emitted
+non-fatal existing source-map/PURE-comment/CSS-minifier/chunk-size warnings
+outside this scope.
+
+### Changed paths
+
+- `apps/server-pilot/src/http/inline-attachment.ts`
+- `apps/server-pilot/src/mail/cid-images.ts`
+- `apps/server-pilot/src/mail/safe-inline-image.ts`
+- `apps/server-pilot/tests/attachment-access.test.ts`
+- `apps/server-pilot/tests/fixtures/rocketseed-task-4-related.eml`
+- `apps/server-pilot/tests/inline-attachment-http.test.ts`
+- `apps/server-pilot/tests/rocketseed-flow.test.ts`
+- `.superpowers/sdd/rocketseed-task-4-report.md`

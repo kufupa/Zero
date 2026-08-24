@@ -1,5 +1,5 @@
+import { isSupportedInlineImageMime, MAX_INLINE_IMAGE_BYTES } from './safe-inline-image.js';
 import { BLOCKED_IMAGE_PLACEHOLDER } from './sanitize-email-html.js';
-import { MAX_INLINE_IMAGE_BYTES } from './safe-inline-image.js';
 import { load } from 'cheerio';
 
 export type CidAttachmentMeta = {
@@ -25,19 +25,36 @@ export function normalizeContentId(raw: string): string | null {
   return s;
 }
 
-function isImageMime(mime: string): boolean {
-  const m = mime.toLowerCase().split(';')[0]!.trim();
-  return m === 'image/png' || m === 'image/jpeg' || m === 'image/gif' || m === 'image/webp';
-}
-
-function isEligibleInlineImage(attachment: CidAttachmentMeta): boolean {
+/** Shared metadata gate for CID projection and direct inline-attachment serving. */
+export function isEligibleInlineImageMetadata(attachment: CidAttachmentMeta): boolean {
   return (
     attachment.isInline === true &&
-    isImageMime(attachment.mimeType) &&
+    isSupportedInlineImageMime(attachment.mimeType) &&
     Number.isSafeInteger(attachment.sizeBytes) &&
     attachment.sizeBytes > 0 &&
     attachment.sizeBytes <= MAX_INLINE_IMAGE_BYTES
   );
+}
+
+/**
+ * Resolve a CID only when exactly one message attachment owns its normalized
+ * ID and that attachment passes the shared inline-image metadata gate.
+ */
+export function findUniqueEligibleInlineAttachment(
+  rawContentId: string | null,
+  attachments: readonly CidAttachmentMeta[],
+): CidAttachmentMeta | null {
+  const contentId = rawContentId ? normalizeContentId(rawContentId) : null;
+  if (!contentId) return null;
+
+  let matched: CidAttachmentMeta | null = null;
+  for (const attachment of attachments) {
+    if (!attachment.contentId || normalizeContentId(attachment.contentId) !== contentId) continue;
+    if (matched) return null;
+    matched = attachment;
+  }
+
+  return matched && isEligibleInlineImageMetadata(matched) ? matched : null;
 }
 
 export function projectCidImages(
@@ -45,29 +62,14 @@ export function projectCidImages(
   attachments: CidAttachmentMeta[],
   opts: { messageId: string; origin: string },
 ): { html: string; hasBlockedImages: boolean } {
-  const byCid = new Map<string, CidAttachmentMeta>();
-  const ambiguous = new Set<string>();
-  for (const a of attachments) {
-    if (!a.contentId) continue;
-    const id = normalizeContentId(a.contentId);
-    if (!id) continue;
-    if (byCid.has(id) || ambiguous.has(id)) {
-      byCid.delete(id);
-      ambiguous.add(id);
-      continue;
-    }
-    byCid.set(id, a);
-  }
-
   const origin = opts.origin.replace(/\/$/, '');
   let hasBlockedImages = false;
   const $ = load(html, null, false);
   $('img[src]').each((_i, el) => {
     const src = $(el).attr('src') ?? '';
     if (!/^cid:/i.test(src.trim())) return;
-    const id = normalizeContentId(src);
-    const att = id ? byCid.get(id) : undefined;
-    if (!att || !isEligibleInlineImage(att)) {
+    const att = findUniqueEligibleInlineAttachment(src, attachments);
+    if (!att) {
       hasBlockedImages = true;
       $(el).removeAttr('width').removeAttr('height').attr('src', BLOCKED_IMAGE_PLACEHOLDER);
       return;

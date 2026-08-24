@@ -38,6 +38,11 @@ function mimeToKind(mime: string): RasterKind | null {
   }
 }
 
+/** Whether declared metadata names a raster type safe for inline image handling. */
+export function isSupportedInlineImageMime(mimeType: string): boolean {
+  return mimeToKind(normalizeMime(mimeType)) !== null;
+}
+
 function detectKind(bytes: Buffer): RasterKind | null {
   if (
     bytes.length >= 8 &&
@@ -138,10 +143,8 @@ function readWebpDimensions(bytes: Buffer): { width: number; height: number } {
   if (chunk === 'VP8X') {
     // canvas size is 24-bit LE stored as (dim - 1) at offsets 24..29
     if (bytes.length < 30) throw new InlineImageUnsupportedError('Truncated VP8X');
-    const width =
-      1 + (bytes[24]! | (bytes[25]! << 8) | (bytes[26]! << 16));
-    const height =
-      1 + (bytes[27]! | (bytes[28]! << 8) | (bytes[29]! << 16));
+    const width = 1 + (bytes[24]! | (bytes[25]! << 8) | (bytes[26]! << 16));
+    const height = 1 + (bytes[27]! | (bytes[28]! << 8) | (bytes[29]! << 16));
     return { width, height };
   }
   if (chunk === 'VP8 ') {

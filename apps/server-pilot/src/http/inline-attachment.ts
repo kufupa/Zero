@@ -9,18 +9,17 @@ import {
   InlineImageTooLargeError,
   MAX_INLINE_IMAGE_BYTES,
 } from '../mail/safe-inline-image.js';
+import { findUniqueEligibleInlineAttachment, type CidAttachmentMeta } from '../mail/cid-images.js';
 import { attachment, mailboxAccess, message } from '../db/schema/mail.js';
 import { getS3Storage, S3ObjectTooLargeError } from '../storage/s3.js';
 import type { Auth } from '../lib/auth.js';
 import type { DB } from '../db/client.js';
+import { and, eq, ne } from 'drizzle-orm';
 import { getDb } from '../db/client.js';
-import { and, eq } from 'drizzle-orm';
 
-export type InlineAttachmentMeta = {
+export type InlineAttachmentMeta = CidAttachmentMeta & {
   s3Key: string;
-  mimeType: string;
-  sizeBytes: number;
-  isInline: boolean;
+  siblingAttachments: CidAttachmentMeta[];
 };
 
 export type InlineAttachmentDeps = {
@@ -46,7 +45,9 @@ export async function loadAuthorizedAttachment(
 ): Promise<InlineAttachmentMeta | null> {
   const rows = await db
     .select({
+      attachmentId: attachment.id,
       s3Key: attachment.s3Key,
+      contentId: attachment.contentId,
       mimeType: attachment.mimeType,
       sizeBytes: attachment.sizeBytes,
       isInline: attachment.isInline,
@@ -62,7 +63,21 @@ export async function loadAuthorizedAttachment(
       ),
     )
     .limit(1);
-  return rows[0] ?? null;
+  const target = rows[0];
+  if (!target) return null;
+
+  const siblingAttachments = await db
+    .select({
+      attachmentId: attachment.id,
+      contentId: attachment.contentId,
+      mimeType: attachment.mimeType,
+      sizeBytes: attachment.sizeBytes,
+      isInline: attachment.isInline,
+    })
+    .from(attachment)
+    .where(and(eq(attachment.messageId, args.messageId), ne(attachment.id, args.attachmentId)));
+
+  return { ...target, siblingAttachments };
 }
 
 function opaque(status: number): Response {
@@ -85,11 +100,16 @@ export function createInlineAttachmentHandler(deps: InlineAttachmentDeps) {
         messageId: params.messageId,
         attachmentId: params.attachmentId,
       });
-      if (!meta || meta.isInline !== true) {
+      if (!meta) {
         return opaque(404);
       }
-      if (meta.sizeBytes > MAX_INLINE_IMAGE_BYTES) {
-        return opaque(413);
+
+      const eligible = findUniqueEligibleInlineAttachment(meta.contentId, [
+        meta,
+        ...meta.siblingAttachments,
+      ]);
+      if (!eligible || eligible.attachmentId !== meta.attachmentId) {
+        return opaque(404);
       }
 
       let obj: { body: Buffer; contentType?: string } | null;

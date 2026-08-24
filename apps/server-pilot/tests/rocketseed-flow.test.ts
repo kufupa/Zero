@@ -11,6 +11,7 @@ import { describe, expect, it } from 'vitest';
 const ORIGIN = 'https://mail.zero.test';
 const MESSAGE_ID = 'synthetic-message-1';
 const INLINE_CID = 'banner@rocketseed.test';
+const RELATED_ONLY_CID = 'related-no-disposition@rocketseed.test';
 
 describe('synthetic Rocketseed MIME flow', () => {
   it('parses, sanitizes, projects, and serves only an explicit-inline raster CID', async () => {
@@ -64,10 +65,21 @@ describe('synthetic Rocketseed MIME flow', () => {
       loadAuthorizedAttachment: async ({ userId, attachmentId }) => {
         if (userId !== 'allowed' || attachmentId !== banner!.s3Key) return null;
         return {
+          attachmentId: banner!.s3Key,
           s3Key: banner!.s3Key,
+          contentId: banner!.contentId,
           mimeType: banner!.mimeType,
           sizeBytes: banner!.sizeBytes,
           isInline: banner!.isInline,
+          siblingAttachments: parsed.attachments
+            .filter((attachment) => attachment.s3Key !== banner!.s3Key)
+            .map((attachment) => ({
+              attachmentId: attachment.s3Key,
+              contentId: attachment.contentId,
+              mimeType: attachment.mimeType,
+              sizeBytes: attachment.sizeBytes,
+              isInline: attachment.isInline,
+            })),
         };
       },
       getObjectBounded: (key, maxBytes) => storage.getObjectBounded(key, maxBytes),
@@ -92,6 +104,21 @@ describe('synthetic Rocketseed MIME flow', () => {
     );
     expect(denied.status).toBe(404);
     expect(await denied.text()).toBe('');
+  });
+
+  it('does not infer inline from multipart/related CID without Content-Disposition', async () => {
+    const parsed = await parseRawMessage(readFixture('rocketseed-task-4-related.eml'), {
+      messageId: `${MESSAGE_ID}-related-only`,
+      storage: new FakeS3Storage('synthetic-rocketseed-related-only'),
+    });
+
+    expect(
+      parsed.attachments.find((attachment) => attachment.contentId === RELATED_ONLY_CID),
+    ).toMatchObject({
+      contentId: RELATED_ONLY_CID,
+      mimeType: 'image/gif',
+      isInline: false,
+    });
   });
 
   it.each([
