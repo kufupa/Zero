@@ -580,9 +580,9 @@ Review record:
 - Maintainability review: added `.gitignore` coverage for `apps/mail/test-results/`; `git check-ignore -v apps/mail/test-results/.last-run.json` passed.
 - Simplicity review: retained the 13-line Playwright config. It deliberately isolates this synthetic browser contract from repository-wide E2E defaults, auth state, servers, and unrelated specs.
 
-Fresh evidence: mail build passed; subsequent full mail suite passed 81 files / 406 tests after `build/client` existed; server font suite passed; Chromium isolation proof passed 1 test; scoped ESLint passed. All Vitest commands ran with `DATABASE_URL` and `VITEST_ALLOW_PILOT_RDS` unset.
+Fresh evidence: after rebasing onto latest `origin/main`, mail build passed; subsequent full mail suite passed 86 files / 433 tests after `build/client` existed; server font suite passed 3 tests; Chromium isolation proof passed 1 test; scoped ESLint passed. All Vitest commands ran with `DATABASE_URL` and `VITEST_ALLOW_PILOT_RDS` unset.
 
-- [ ] **Step 3: Commit plan, review evidence, and implementation**
+- [x] **Step 3: Commit plan, review evidence, and implementation**
 
 Run:
 
@@ -597,7 +597,7 @@ EOF
 
 Expected: clean feature branch with all task commits recorded.
 
-- [ ] **Step 4: Remove generated setup output before landing**
+- [x] **Step 4: Remove generated setup output before landing**
 
 Run:
 
@@ -608,7 +608,7 @@ git status --short
 
 Expected: no generated Paraglide artifact remains; only intentionally staged or committed theme-fix files may appear. Do not remove any tracked or user-authored file.
 
-- [ ] **Step 5: Rebase safely onto latest remote main**
+- [x] **Step 5: Rebase safely onto latest remote main**
 
 Run:
 
