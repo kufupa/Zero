@@ -30,6 +30,7 @@ export const EMPTY_SEARCH_VALUE: SearchValueState = {
 };
 
 const RECENT_SEARCHES_KEY = 'mail-recent-searches';
+const MAX_SEARCH_QUERY_LENGTH = 512;
 
 export function mergeSearchQuery(term: string, filters: ActiveSearchFilter[]): string {
   const parts = [term.trim(), ...filters.map((filter) => filter.value.trim())].filter(Boolean);
@@ -83,7 +84,8 @@ export function isUnsupportedSearchOperatorError(error: unknown): boolean {
 export function loadRecentSearches(): string[] {
   try {
     const raw = localStorage.getItem(RECENT_SEARCHES_KEY);
-    return raw ? (JSON.parse(raw) as string[]) : [];
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) && parsed.every((item) => typeof item === 'string') ? parsed : [];
   } catch {
     return [];
   }
@@ -129,10 +131,14 @@ export function resolveSearchListRequest(input: {
     };
   }
 
+  if (merged.length > MAX_SEARCH_QUERY_LENGTH) {
+    throw new RangeError(`Search query must be ${MAX_SEARCH_QUERY_LENGTH} characters or fewer`);
+  }
+
   if (input.scope === 'all') {
     const { categoryIds: _categoryIds, labelIds: _labelIds, ...kept } = input.baseFilters;
     const resolved = resolveMailListSearch(merged, kept);
-    const q = resolved.q ?? (input.filters.length > 0 ? merged : undefined);
+    const q = resolved.q ?? merged;
     return {
       folder: 'all',
       filters: resolved.filters,
@@ -142,7 +148,7 @@ export function resolveSearchListRequest(input: {
   }
 
   const resolved = resolveMailListSearch(merged, input.baseFilters);
-  const q = resolved.q ?? (input.filters.length > 0 ? merged : undefined);
+  const q = resolved.q ?? merged;
   return {
     folder: input.routeResolved.folder,
     filters: resolved.filters,

@@ -1,9 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { resolveMailRouteFilter } from '../lib/mail/route-filter';
 import {
   attachmentFilter,
   fromFilter,
   last7DaysFilter,
+  loadRecentSearches,
   mergeSearchQuery,
   resolveSearchListRequest,
   toggleSearchFilter,
@@ -96,6 +97,50 @@ describe('search-list helpers', () => {
     });
     expect(result.q).toBe('is:unread');
     expect(result.folder).toBe('inbox');
+  });
+
+  it('keeps typed status-only grammar in q and structured filters', () => {
+    const result = resolveSearchListRequest({
+      scope: 'folder',
+      query: 'is:unread',
+      filters: [],
+      routeResolved: resolveMailRouteFilter('inbox', new Map()),
+      baseFilters: {},
+    });
+    expect(result.q).toBe('is:unread');
+    expect(result.filters).toEqual({ unread: true });
+  });
+
+  it('rejects a request query longer than server limit', () => {
+    const query = 'x'.repeat(512);
+    const routeResolved = resolveMailRouteFilter('inbox', new Map());
+    expect(
+      resolveSearchListRequest({
+        scope: 'folder',
+        query,
+        filters: [],
+        routeResolved,
+        baseFilters: {},
+      }).q,
+    ).toBe(query);
+    expect(() =>
+      resolveSearchListRequest({
+        scope: 'folder',
+        query,
+        filters: [unreadFilter()],
+        routeResolved,
+        baseFilters: {},
+      }),
+    ).toThrow('Search query must be 512 characters or fewer');
+  });
+
+  it('rejects non-string recent-search storage entries', () => {
+    vi.stubGlobal('localStorage', { getItem: () => JSON.stringify(['valid', 1]) });
+    try {
+      expect(loadRecentSearches()).toEqual([]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('searches all folders for filter-only all scope', () => {
