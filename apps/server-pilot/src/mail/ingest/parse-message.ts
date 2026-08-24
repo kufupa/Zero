@@ -118,8 +118,7 @@ export async function parseRawMessage(
         index: idx,
         filename,
       });
-      const isInline =
-        part.contentDisposition === 'inline' || !!part.related;
+      const isInline = part.contentDisposition?.trim().toLowerCase() === 'inline';
       const attachment: ParsedAttachment = {
         s3Key,
         filename,

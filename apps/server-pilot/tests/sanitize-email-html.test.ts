@@ -1,16 +1,15 @@
-import { describe, expect, it } from 'vitest';
 import {
   BLOCKED_IMAGE_PLACEHOLDER,
   sanitizeEmailHtml,
   sanitizeHtmlBodyForStorage,
 } from '../src/mail/sanitize-email-html.js';
+import { describe, expect, it } from 'vitest';
 
 describe('sanitizeEmailHtml', () => {
   it('strips script tags and event handlers', () => {
-    const { html } = sanitizeEmailHtml(
-      '<p onclick="alert(1)">hi</p><script>alert(1)</script>',
-      { shouldLoadImages: false },
-    );
+    const { html } = sanitizeEmailHtml('<p onclick="alert(1)">hi</p><script>alert(1)</script>', {
+      shouldLoadImages: false,
+    });
     expect(html).not.toContain('<script');
     expect(html).not.toContain('onclick');
   });
@@ -28,21 +27,34 @@ describe('sanitizeEmailHtml', () => {
   });
 
   it('blocks protocol-relative images when shouldLoadImages is false', () => {
-    const { html, hasBlockedImages } = sanitizeEmailHtml(
-      '<img src="//evil.example/x.png">',
-      { shouldLoadImages: false },
-    );
+    const { html, hasBlockedImages } = sanitizeEmailHtml('<img src="//evil.example/x.png">', {
+      shouldLoadImages: false,
+    });
     expect(hasBlockedImages).toBe(true);
     expect(html).not.toContain('evil.example');
   });
 
   it('blocks scheme-less images when shouldLoadImages is false', () => {
-    const { html, hasBlockedImages } = sanitizeEmailHtml(
-      '<img src="/images/tracking.png">',
-      { shouldLoadImages: false },
-    );
+    const { html, hasBlockedImages } = sanitizeEmailHtml('<img src="/images/tracking.png">', {
+      shouldLoadImages: false,
+    });
     expect(hasBlockedImages).toBe(true);
     expect(html).not.toContain('/images/tracking.png');
+  });
+
+  it('blocks arbitrary image data URLs and CID links when remote images are enabled', () => {
+    const arbitraryDataUrl = 'data:image/png;base64,AA==';
+    const paddedDataUrl = ` ${arbitraryDataUrl}`;
+    const { html, hasBlockedImages } = sanitizeEmailHtml(
+      `<img src="${arbitraryDataUrl}"><img src="${paddedDataUrl}"><a href="cid:banner@rocketseed.test">banner</a>`,
+      { shouldLoadImages: true },
+    );
+
+    expect(hasBlockedImages).toBe(true);
+    expect(html).not.toContain(arbitraryDataUrl);
+    expect(html).toContain(`src="${BLOCKED_IMAGE_PLACEHOLDER}"`);
+    expect(html.split(BLOCKED_IMAGE_PLACEHOLDER)).toHaveLength(3);
+    expect(html).not.toContain('href="cid:banner@rocketseed.test"');
   });
 });
 

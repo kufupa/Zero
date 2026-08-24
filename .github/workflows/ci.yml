@@ -26,3 +26,15 @@ jobs:
 
       - name: Lint JS
         run: pnpm dlx oxlint@latest --deny-warnings
+
+      - name: Test Rocketseed mail flow
+        shell: bash
+        run: |
+          unset DATABASE_URL TEST_DATABASE_URL CONFIRM_DISPOSABLE_TEST_DB VITEST_ALLOW_PILOT_RDS
+          export MAIL_TRANSPORT_MODE=fixture
+          pnpm --dir apps/server-pilot run test:rocketseed
+
+      - name: Build mail applications
+        run: |
+          pnpm --dir apps/server-pilot build
+          pnpm --dir apps/mail build

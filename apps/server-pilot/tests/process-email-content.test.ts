@@ -45,6 +45,7 @@ describe('processEmailHtmlForDisplay', () => {
           contentId: '<banner001@rocketseed>',
           mimeType: 'image/gif',
           sizeBytes: 10,
+          isInline: true,
         },
       ],
     });
@@ -78,6 +79,7 @@ describe('processEmailHtmlForDisplay', () => {
           contentId: '<banner001@rocketseed>',
           mimeType: 'image/gif',
           sizeBytes: 10,
+          isInline: true,
         },
       ],
     });
@@ -102,6 +104,7 @@ describe('processEmailHtmlForDisplay', () => {
           contentId: '<banner001@rocketseed>',
           mimeType: 'image/gif',
           sizeBytes: 10,
+          isInline: true,
         },
       ],
     });
@@ -129,6 +132,7 @@ describe('configured mail CID origin', () => {
             contentId: string;
             mimeType: string;
             sizeBytes: number;
+            isInline: boolean;
           }>;
         }, env: NodeJS.ProcessEnv) => Promise<{ processedHtml: string }>;
       }
@@ -149,6 +153,7 @@ describe('configured mail CID origin', () => {
             contentId: '<banner001@rocketseed>',
             mimeType: 'image/gif',
             sizeBytes: 10,
+            isInline: true,
           },
         ],
       },

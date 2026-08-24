@@ -1,11 +1,13 @@
-import { load } from 'cheerio';
 import { BLOCKED_IMAGE_PLACEHOLDER } from './sanitize-email-html.js';
+import { MAX_INLINE_IMAGE_BYTES } from './safe-inline-image.js';
+import { load } from 'cheerio';
 
 export type CidAttachmentMeta = {
   attachmentId: string;
   contentId: string | null;
   mimeType: string;
   sizeBytes: number;
+  isInline: boolean;
 };
 
 export function normalizeContentId(raw: string): string | null {
@@ -28,6 +30,16 @@ function isImageMime(mime: string): boolean {
   return m === 'image/png' || m === 'image/jpeg' || m === 'image/gif' || m === 'image/webp';
 }
 
+function isEligibleInlineImage(attachment: CidAttachmentMeta): boolean {
+  return (
+    attachment.isInline === true &&
+    isImageMime(attachment.mimeType) &&
+    Number.isSafeInteger(attachment.sizeBytes) &&
+    attachment.sizeBytes > 0 &&
+    attachment.sizeBytes <= MAX_INLINE_IMAGE_BYTES
+  );
+}
+
 export function projectCidImages(
   html: string,
   attachments: CidAttachmentMeta[],
@@ -36,7 +48,7 @@ export function projectCidImages(
   const byCid = new Map<string, CidAttachmentMeta>();
   const ambiguous = new Set<string>();
   for (const a of attachments) {
-    if (!a.contentId || !isImageMime(a.mimeType)) continue;
+    if (!a.contentId) continue;
     const id = normalizeContentId(a.contentId);
     if (!id) continue;
     if (byCid.has(id) || ambiguous.has(id)) {
@@ -55,7 +67,7 @@ export function projectCidImages(
     if (!/^cid:/i.test(src.trim())) return;
     const id = normalizeContentId(src);
     const att = id ? byCid.get(id) : undefined;
-    if (!att) {
+    if (!att || !isEligibleInlineImage(att)) {
       hasBlockedImages = true;
       $(el).removeAttr('width').removeAttr('height').attr('src', BLOCKED_IMAGE_PLACEHOLDER);
       return;

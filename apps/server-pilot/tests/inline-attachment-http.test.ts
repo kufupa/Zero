@@ -2,39 +2,38 @@
  * Unit tests for the authenticated inline attachment HTTP handler.
  * Deps are injected — no real Better Auth / DB / S3.
  */
-import { describe, expect, it, vi } from 'vitest';
 import {
   createInlineAttachmentHandler,
   createWiredInlineAttachmentHandler,
 } from '../src/http/inline-attachment.js';
+import { S3ObjectTooLargeError } from '../src/storage/s3.js';
+import { describe, expect, it, vi } from 'vitest';
 
 /** Minimal 1×1 GIF89a (logical screen descriptor). */
 const GIF89A = Buffer.from('GIF89a' + '\x01\x00\x01\x00\x00\x00\x00', 'binary');
 
 describe('inline attachment route', () => {
-  it.each([
-    'https://nava.legacyhotels.co.za',
-    'https://nava-admin.trynava.io',
-  ])('forwards same-origin cookie to wired session auth for %s', async (origin) => {
-    const getSession = vi.fn(async (_input: { headers: Headers }) => null);
-    const handler = createWiredInlineAttachmentHandler({
-      api: { getSession },
-    } as never);
-    const request = new Request(
-      `${origin}/api/mail/messages/m1/attachments/a1/inline`,
-      {
+  it.each(['https://nava.legacyhotels.co.za', 'https://nava-admin.trynava.io'])(
+    'forwards same-origin cookie to wired session auth for %s',
+    async (origin) => {
+      const getSession = vi.fn(async (_input: { headers: Headers }) => null);
+      const handler = createWiredInlineAttachmentHandler({
+        api: { getSession },
+      } as never);
+      const request = new Request(`${origin}/api/mail/messages/m1/attachments/a1/inline`, {
         headers: { cookie: 'better-auth.session_token=host-scoped-session' },
-      },
-    );
+      });
 
-    const res = await handler(request, { messageId: 'm1', attachmentId: 'a1' });
+      const res = await handler(request, { messageId: 'm1', attachmentId: 'a1' });
 
-    expect(res.status).toBe(401);
-    expect(getSession).toHaveBeenCalledTimes(1);
-    expect(getSession.mock.calls[0]?.[0]?.headers.get('cookie')).toBe(
-      'better-auth.session_token=host-scoped-session',
-    );
-  });
+      expect(res.status).toBe(401);
+      expect(await res.text()).toBe('');
+      expect(getSession).toHaveBeenCalledTimes(1);
+      expect(getSession.mock.calls[0]?.[0]?.headers.get('cookie')).toBe(
+        'better-auth.session_token=host-scoped-session',
+      );
+    },
+  );
 
   it('returns 401 without session', async () => {
     const handler = createInlineAttachmentHandler({
@@ -42,11 +41,12 @@ describe('inline attachment route', () => {
       loadAuthorizedAttachment: async () => null,
       getObjectBounded: async () => null,
     });
-    const res = await handler(
-      new Request('http://x/api/mail/messages/m1/attachments/a1/inline'),
-      { messageId: 'm1', attachmentId: 'a1' },
-    );
+    const res = await handler(new Request('http://x/api/mail/messages/m1/attachments/a1/inline'), {
+      messageId: 'm1',
+      attachmentId: 'a1',
+    });
     expect(res.status).toBe(401);
+    expect(await res.text()).toBe('');
   });
 
   it('returns 200 bytes for authorized gif', async () => {
@@ -56,13 +56,14 @@ describe('inline attachment route', () => {
         s3Key: 'attachments/m1/000-x.gif',
         mimeType: 'image/gif',
         sizeBytes: GIF89A.length,
+        isInline: true,
       }),
       getObjectBounded: async () => ({ body: GIF89A, contentType: 'image/gif' }),
     });
-    const res = await handler(
-      new Request('http://x/api/mail/messages/m1/attachments/a1/inline'),
-      { messageId: 'm1', attachmentId: 'a1' },
-    );
+    const res = await handler(new Request('http://x/api/mail/messages/m1/attachments/a1/inline'), {
+      messageId: 'm1',
+      attachmentId: 'a1',
+    });
     expect(res.status).toBe(200);
     expect(res.headers.get('Content-Type')).toBe('image/gif');
     expect(res.headers.get('Cache-Control')).toBe('private, max-age=300');
@@ -85,6 +86,7 @@ describe('inline attachment route', () => {
       { messageId: 'msg-centurion', attachmentId: 'att-c1' },
     );
     expect(res.status).toBe(404);
+    expect(await res.text()).toBe('');
     expect(loadAuthorizedAttachment).toHaveBeenCalledWith({
       userId: 'u-frontdesk',
       messageId: 'msg-centurion',
@@ -100,14 +102,16 @@ describe('inline attachment route', () => {
         s3Key: 'attachments/m1/000-x.pdf',
         mimeType: 'image/gif',
         sizeBytes: pdfBytes.length,
+        isInline: true,
       }),
       getObjectBounded: async () => ({ body: pdfBytes, contentType: 'application/pdf' }),
     });
-    const res = await handler(
-      new Request('http://x/api/mail/messages/m1/attachments/a1/inline'),
-      { messageId: 'm1', attachmentId: 'a1' },
-    );
+    const res = await handler(new Request('http://x/api/mail/messages/m1/attachments/a1/inline'), {
+      messageId: 'm1',
+      attachmentId: 'a1',
+    });
     expect(res.status).toBe(415);
+    expect(await res.text()).toBe('');
   });
 
   it('returns 413 when metadata sizeBytes exceeds max', async () => {
@@ -118,14 +122,16 @@ describe('inline attachment route', () => {
         s3Key: 'attachments/m1/000-huge.gif',
         mimeType: 'image/gif',
         sizeBytes: 5 * 1024 * 1024 + 1,
+        isInline: true,
       }),
       getObjectBounded,
     });
-    const res = await handler(
-      new Request('http://x/api/mail/messages/m1/attachments/a1/inline'),
-      { messageId: 'm1', attachmentId: 'a1' },
-    );
+    const res = await handler(new Request('http://x/api/mail/messages/m1/attachments/a1/inline'), {
+      messageId: 'm1',
+      attachmentId: 'a1',
+    });
     expect(res.status).toBe(413);
+    expect(await res.text()).toBe('');
     expect(getObjectBounded).not.toHaveBeenCalled();
   });
 
@@ -136,13 +142,108 @@ describe('inline attachment route', () => {
         s3Key: 'attachments/m1/000-missing.gif',
         mimeType: 'image/gif',
         sizeBytes: GIF89A.length,
+        isInline: true,
       }),
       getObjectBounded: async () => null,
     });
-    const res = await handler(
-      new Request('http://x/api/mail/messages/m1/attachments/a1/inline'),
-      { messageId: 'm1', attachmentId: 'a1' },
-    );
+    const res = await handler(new Request('http://x/api/mail/messages/m1/attachments/a1/inline'), {
+      messageId: 'm1',
+      attachmentId: 'a1',
+    });
     expect(res.status).toBe(404);
+    expect(await res.text()).toBe('');
+  });
+
+  it('returns opaque 404 before storage for non-inline metadata', async () => {
+    const getObjectBounded = vi.fn();
+    const handler = createInlineAttachmentHandler({
+      getSession: async () => ({ user: { id: 'u1' } }),
+      loadAuthorizedAttachment: async () => ({
+        s3Key: 'attachments/m1/ordinary.gif',
+        mimeType: 'image/gif',
+        sizeBytes: GIF89A.length,
+        isInline: false,
+      }),
+      getObjectBounded,
+    });
+
+    const res = await handler(new Request('http://x/api/mail/messages/m1/attachments/a1/inline'), {
+      messageId: 'm1',
+      attachmentId: 'a1',
+    });
+
+    expect(res.status).toBe(404);
+    expect(await res.text()).toBe('');
+    expect(getObjectBounded).not.toHaveBeenCalled();
+  });
+
+  it('returns opaque 413 when bounded storage rejects an oversized object', async () => {
+    const handler = createInlineAttachmentHandler({
+      getSession: async () => ({ user: { id: 'u1' } }),
+      loadAuthorizedAttachment: async () => ({
+        s3Key: 'attachments/m1/oversized.gif',
+        mimeType: 'image/gif',
+        sizeBytes: GIF89A.length,
+        isInline: true,
+      }),
+      getObjectBounded: async () => {
+        throw new S3ObjectTooLargeError(5 * 1024 * 1024, 5 * 1024 * 1024 + 1);
+      },
+    });
+
+    const res = await handler(new Request('http://x/api/mail/messages/m1/attachments/a1/inline'), {
+      messageId: 'm1',
+      attachmentId: 'a1',
+    });
+
+    expect(res.status).toBe(413);
+    expect(await res.text()).toBe('');
+  });
+
+  it.each([
+    {
+      label: 'session lookup fails',
+      deps: {
+        getSession: async () => {
+          throw new Error('synthetic session failure');
+        },
+        loadAuthorizedAttachment: async () => null,
+        getObjectBounded: async () => null,
+      },
+    },
+    {
+      label: 'attachment lookup fails',
+      deps: {
+        getSession: async () => ({ user: { id: 'u1' } }),
+        loadAuthorizedAttachment: async () => {
+          throw new Error('synthetic lookup failure');
+        },
+        getObjectBounded: async () => null,
+      },
+    },
+    {
+      label: 'object storage fails',
+      deps: {
+        getSession: async () => ({ user: { id: 'u1' } }),
+        loadAuthorizedAttachment: async () => ({
+          s3Key: 'attachments/m1/failure.gif',
+          mimeType: 'image/gif',
+          sizeBytes: GIF89A.length,
+          isInline: true,
+        }),
+        getObjectBounded: async () => {
+          throw new Error('synthetic storage failure');
+        },
+      },
+    },
+  ])('returns opaque 500 when $label', async ({ deps }) => {
+    const handler = createInlineAttachmentHandler(deps);
+    const res = await handler(new Request('http://x/api/mail/messages/m1/attachments/a1/inline'), {
+      messageId: 'm1',
+      attachmentId: 'a1',
+    });
+
+    expect(res.status).toBe(500);
+    expect(await res.text()).toBe('');
   });
 });

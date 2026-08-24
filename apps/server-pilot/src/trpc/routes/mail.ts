@@ -1453,6 +1453,7 @@ export const mailRouter = tRouter({
           contentId: attachment.contentId,
           mimeType: attachment.mimeType,
           sizeBytes: attachment.sizeBytes,
+          isInline: attachment.isInline,
         })
         .from(attachment)
         .where(eq(attachment.messageId, input.messageId));

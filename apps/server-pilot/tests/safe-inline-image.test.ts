@@ -1,9 +1,10 @@
-import { describe, expect, it } from 'vitest';
 import {
   assertSafeInlineRaster,
   InlineImageTooLargeError,
   InlineImageUnsupportedError,
+  MAX_INLINE_IMAGE_BYTES,
 } from '../src/mail/safe-inline-image.js';
+import { describe, expect, it } from 'vitest';
 
 /** Minimal 1×1 PNG (IHDR width=1, height=1). */
 function png(width: number, height: number): Buffer {
@@ -69,6 +70,10 @@ function webp(width: number, height: number): Buffer {
 }
 
 describe('assertSafeInlineRaster', () => {
+  it('exports the shared inline image byte limit', () => {
+    expect(MAX_INLINE_IMAGE_BYTES).toBe(5 * 1024 * 1024);
+  });
+
   it('accepts valid PNG JPEG GIF WebP', () => {
     expect(() => assertSafeInlineRaster(png(1, 1), 'image/png')).not.toThrow();
     expect(() => assertSafeInlineRaster(jpeg(1, 1), 'image/jpeg')).not.toThrow();
@@ -90,9 +95,15 @@ describe('assertSafeInlineRaster', () => {
   });
 
   it('rejects MIME/signature mismatch', () => {
-    expect(() => assertSafeInlineRaster(png(1, 1), 'image/jpeg')).toThrow(InlineImageUnsupportedError);
-    expect(() => assertSafeInlineRaster(jpeg(1, 1), 'image/png')).toThrow(InlineImageUnsupportedError);
-    expect(() => assertSafeInlineRaster(gif(1, 1), 'image/webp')).toThrow(InlineImageUnsupportedError);
+    expect(() => assertSafeInlineRaster(png(1, 1), 'image/jpeg')).toThrow(
+      InlineImageUnsupportedError,
+    );
+    expect(() => assertSafeInlineRaster(jpeg(1, 1), 'image/png')).toThrow(
+      InlineImageUnsupportedError,
+    );
+    expect(() => assertSafeInlineRaster(gif(1, 1), 'image/webp')).toThrow(
+      InlineImageUnsupportedError,
+    );
   });
 
   it('rejects truncated headers', () => {

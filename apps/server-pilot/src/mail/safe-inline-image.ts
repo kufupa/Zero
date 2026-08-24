@@ -1,4 +1,5 @@
-const MAX_BYTES = 5 * 1024 * 1024;
+/** Shared projection and serving limit for an inline raster attachment. */
+export const MAX_INLINE_IMAGE_BYTES = 5 * 1024 * 1024;
 const MAX_DIMENSION = 10_000;
 const MAX_PIXELS = 25_000_000;
 
@@ -180,7 +181,7 @@ function readDimensions(kind: RasterKind, bytes: Buffer): { width: number; heigh
  * Magic bytes must match declared MIME; dimensions must stay within hard limits.
  */
 export function assertSafeInlineRaster(bytes: Buffer, mimeType: string): void {
-  if (bytes.length > MAX_BYTES) {
+  if (bytes.length > MAX_INLINE_IMAGE_BYTES) {
     throw new InlineImageTooLargeError();
   }
   const mime = normalizeMime(mimeType);
