@@ -1,10 +1,14 @@
 import {
   CENTURION_THREAD_CORPUS_ANALYSIS_VERSION,
+  MAX_CANONICAL_JSON_CHUNK_BYTES,
+  MAX_PRIVATE_ANALYSIS_PACKET_BYTES,
   createAnalysisItems,
   deriveAnalysisItemId,
   preparePrivateAnalysis,
   reconcileAnalystDecisionBundle,
+  serializeCanonicalToSink,
   validateReconciledAnalystDecisions,
+  type CanonicalByteSink,
   type AnalystDecisionBundleV1,
   type PreparedPrivateAnalysisV1,
   type PrivateAnalysisPacketV1,
@@ -32,6 +36,9 @@ const SOURCE_ROW_TWO = 'synthetic-analysis-row-two';
 const SOURCE_ROW_UNKNOWN = 'synthetic-analysis-row-unknown';
 const SOURCE_ROW_QUARANTINE_ONE = 'synthetic-analysis-quarantine-one';
 const SOURCE_ROW_QUARANTINE_TWO = 'synthetic-analysis-quarantine-two';
+const NORMAL_PACKET_BYTES = 4451;
+const NORMAL_PACKET_SHA256 = '274c4dc0b0ed07008a35cf00f76b12453e65012845a8bcf718ab14dd8ca5d671';
+const NORMAL_SNAPSHOT_DIGEST = '34a56621fc9cadeaf87fa4536cde033adca03676dbbd09a2cf80da329a13d9bd';
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
@@ -47,6 +54,7 @@ function syntheticRow(input: {
   rawMimeStatus?: 'available' | 'missing';
   quarantined?: boolean;
   withoutPrivateMessage?: boolean;
+  body?: string;
 }): ThreadCorpusSourceRow {
   const {
     sourceRowId,
@@ -56,6 +64,7 @@ function syntheticRow(input: {
     rawMimeStatus = 'missing',
     quarantined = false,
     withoutPrivateMessage = false,
+    body = `${BODY_MARKER}:${sourceRowId}`,
   } = input;
   return {
     sourceRowId,
@@ -67,7 +76,7 @@ function syntheticRow(input: {
     messageId,
     contentFingerprint: `content-${sourceRowId}`,
     provenanceFingerprint: `provenance-${sourceRowId}`,
-    body: `${BODY_MARKER}:${sourceRowId}`,
+    body,
     ...(quarantined ? { isQuarantined: true } : {}),
     ...(withoutPrivateMessage
       ? {}
@@ -112,7 +121,12 @@ function syntheticRow(input: {
   };
 }
 
-function syntheticSnapshot(): PrivateThreadCorpusSnapshot {
+function syntheticSnapshot(
+  input: {
+    body?: string;
+    artifactContent?: Uint8Array;
+  } = {},
+): PrivateThreadCorpusSnapshot {
   const formatted = formatLogicalMessages([
     syntheticRow({
       sourceRowId: SOURCE_ROW_ONE,
@@ -120,6 +134,7 @@ function syntheticSnapshot(): PrivateThreadCorpusSnapshot {
       messageId: '<synthetic-analysis-one@example.test>',
       deliveryStatus: 'smtp_accepted',
       rawMimeStatus: 'available',
+      body: input.body,
     }),
     syntheticRow({
       sourceRowId: SOURCE_ROW_TWO,
@@ -168,7 +183,7 @@ function syntheticSnapshot(): PrivateThreadCorpusSnapshot {
           kind: 'raw_mime',
           sourceRowId: SOURCE_ROW_ONE,
           status: 'available',
-          content: textEncoder.encode(ARTIFACT_MARKER),
+          content: input.artifactContent ?? textEncoder.encode(ARTIFACT_MARKER),
         },
       ],
     },
@@ -225,6 +240,84 @@ function requirePrepared(
   const prepared = preparePrivateAnalysis(snapshot, limits);
   if (!prepared) throw new Error('Expected synthetic analysis preparation');
   return prepared;
+}
+
+function prepareWithBoundedSerializationInstrumentation(
+  snapshot: PrivateThreadCorpusSnapshot,
+  limits: { maxPacketBytes: number; maxTotalPacketBytes: number },
+): {
+  prepared: PreparedPrivateAnalysisV1 | null;
+  encodedChunkCount: number;
+  maximumEncodedChunkBytes: number;
+  oversizedArtifactIterationCount: number;
+} {
+  const textEncoderDescriptor = Object.getOwnPropertyDescriptor(TextEncoder.prototype, 'encode');
+  const uint8IteratorDescriptor = Object.getOwnPropertyDescriptor(
+    Uint8Array.prototype,
+    Symbol.iterator,
+  );
+
+  const originalEncode = TextEncoder.prototype.encode;
+  const originalIterator = Uint8Array.prototype[Symbol.iterator];
+  let encodedChunkCount = 0;
+  let maximumEncodedChunkBytes = 0;
+  let oversizedArtifactIterationCount = 0;
+  Object.defineProperty(TextEncoder.prototype, 'encode', {
+    configurable: true,
+    enumerable: false,
+    writable: true,
+    value: (value?: string): Uint8Array => {
+      const bytes = originalEncode.call(textEncoder, value);
+      encodedChunkCount += 1;
+      maximumEncodedChunkBytes = Math.max(maximumEncodedChunkBytes, bytes.byteLength);
+      if (bytes.byteLength > MAX_CANONICAL_JSON_CHUNK_BYTES) {
+        throw new Error('Synthetic oversized JSON encoding chunk');
+      }
+      return bytes;
+    },
+  });
+  Object.defineProperty(Uint8Array.prototype, Symbol.iterator, {
+    configurable: true,
+    enumerable: false,
+    writable: true,
+    value: function (this: Uint8Array): ArrayIterator<number> {
+      if (this.byteLength > MAX_CANONICAL_JSON_CHUNK_BYTES) {
+        oversizedArtifactIterationCount += 1;
+        throw new Error('Synthetic expanded artifact byte array');
+      }
+      return originalIterator.call(this);
+    },
+  });
+
+  try {
+    return {
+      prepared: preparePrivateAnalysis(snapshot, limits),
+      encodedChunkCount,
+      maximumEncodedChunkBytes,
+      oversizedArtifactIterationCount,
+    };
+  } finally {
+    if (textEncoderDescriptor) {
+      Object.defineProperty(TextEncoder.prototype, 'encode', textEncoderDescriptor);
+    } else {
+      Reflect.deleteProperty(TextEncoder.prototype, 'encode');
+    }
+    if (uint8IteratorDescriptor) {
+      Object.defineProperty(Uint8Array.prototype, Symbol.iterator, uint8IteratorDescriptor);
+    } else {
+      Reflect.deleteProperty(Uint8Array.prototype, Symbol.iterator);
+    }
+  }
+}
+
+function discardingCanonicalSink(): CanonicalByteSink {
+  return {
+    writeAscii: () => 'ok',
+    writeJsonString: () => 'ok',
+    writeByteValue: () => 'ok',
+    digestHex: () => '0'.repeat(64),
+    finishBytes: () => null,
+  };
 }
 
 function decisionFor(
@@ -398,12 +491,19 @@ const FORBIDDEN_CORE_ROOTS = new Set(['globalThis', 'global', 'Reflect']);
 const DANGEROUS_OBJECT_REFLECTION_METHODS = new Set([
   'getOwnPropertyDescriptor',
   'getOwnPropertyDescriptors',
+  'getOwnPropertyNames',
+  'getOwnPropertySymbols',
   'getPrototypeOf',
   'defineProperty',
   'defineProperties',
 ]);
 
-const CORE_REQUIRED_OBJECT_UTILITIES = new Set(['getOwnPropertyDescriptor', 'getPrototypeOf']);
+const CORE_REQUIRED_OBJECT_UTILITIES = new Set([
+  'getOwnPropertyDescriptor',
+  'getOwnPropertyNames',
+  'getOwnPropertySymbols',
+  'getPrototypeOf',
+]);
 
 function stringLiteralText(node: ts.Expression): string | null {
   return ts.isStringLiteralLike(node) ? node.text : null;
@@ -630,6 +730,114 @@ describe('Centurion private thread corpus analysis', () => {
     }
   });
 
+  it('keeps normal packet bytes and digest exactly stable', () => {
+    const prepared = requirePrepared(syntheticSnapshot());
+    const complete = prepared.packets.find(
+      (packet): packet is Extract<PrivateAnalysisPacketV1, { packetState: 'complete' }> =>
+        packet.packetState === 'complete' && packet.unitType === 'logical_message',
+    );
+    if (!complete) throw new Error('Expected complete synthetic packet');
+
+    expect({
+      snapshotDigest: prepared.manifest.snapshotDigest,
+      packetBytes: complete.privatePacketBytes.byteLength,
+      packetSha256: complete.packetSha256,
+    }).toEqual({
+      snapshotDigest: NORMAL_SNAPSHOT_DIGEST,
+      packetBytes: NORMAL_PACKET_BYTES,
+      packetSha256: NORMAL_PACKET_SHA256,
+    });
+  });
+
+  it('preserves JSON.stringify string escaping for private packet leaves', () => {
+    const body = [
+      'quote:"',
+      'backslash:\\',
+      'controls:\u0000\u0001\b\t\n\f\r\u001f',
+      'unicode:é漢',
+      'paired:\uD83D\uDE00',
+      'unpaired-high:\uD800',
+      'unpaired-low:\uDC00',
+    ].join('|');
+    const prepared = requirePrepared(syntheticSnapshot({ body }));
+    const complete = prepared.packets.find(
+      (packet): packet is Extract<PrivateAnalysisPacketV1, { packetState: 'complete' }> =>
+        packet.packetState === 'complete' && packet.unitType === 'logical_message',
+    );
+    if (!complete) throw new Error('Expected complete synthetic packet');
+
+    const packetText = textDecoder.decode(complete.privatePacketBytes);
+    const packet = JSON.parse(packetText) as {
+      record: { messages: Array<{ sourceRows: Array<{ body: string }> }> };
+    };
+    expect(packetText).toContain(`"body":${JSON.stringify(body)}`);
+    expect(packet.record.messages[0]?.sourceRows[0]?.body).toBe(body);
+  });
+
+  it('rejects unsupported canonical values without array-key bypasses', () => {
+    const arrayWithNonIndexProperty = [1] as number[] & Record<string, number>;
+    Object.defineProperty(arrayWithNonIndexProperty, '4294967295', {
+      configurable: true,
+      enumerable: true,
+      value: 2,
+      writable: true,
+    });
+    const sparseArray: unknown[] = [];
+    sparseArray.length = 1;
+    const accessorArray = [1];
+    Object.defineProperty(accessorArray, '0', {
+      configurable: true,
+      enumerable: true,
+      get: () => 1,
+    });
+
+    expect(serializeCanonicalToSink(arrayWithNonIndexProperty, discardingCanonicalSink())).toBe(
+      'invalid',
+    );
+    expect(serializeCanonicalToSink(sparseArray, discardingCanonicalSink())).toBe('invalid');
+    expect(serializeCanonicalToSink(accessorArray, discardingCanonicalSink())).toBe('invalid');
+    expect(serializeCanonicalToSink({ unsupported: undefined }, discardingCanonicalSink())).toBe(
+      'invalid',
+    );
+  });
+
+  it('streams oversized synthetic bodies and artifacts without expanded payload allocations', () => {
+    const oversizedBody = `${BODY_MARKER}:${'a'.repeat(128 * 1024)}`;
+    const oversizedArtifact = new Uint8Array(128 * 1024).fill(65);
+    const instrumented = prepareWithBoundedSerializationInstrumentation(
+      syntheticSnapshot({
+        body: oversizedBody,
+        artifactContent: oversizedArtifact,
+      }),
+      {
+        maxPacketBytes: 128,
+        maxTotalPacketBytes: 0,
+      },
+    );
+
+    expect(instrumented.prepared).not.toBeNull();
+    if (!instrumented.prepared) throw new Error('Expected bounded synthetic preparation');
+    expect(instrumented.prepared.packets).toHaveLength(5);
+    expect(
+      instrumented.prepared.packets.every(
+        (packet) =>
+          packet.packetState === 'truncated' && packet.omissionReason === 'per_packet_limit',
+      ),
+    ).toBe(true);
+    expect(
+      instrumented.prepared.packets.every((packet) => !Object.hasOwn(packet, 'privatePacketBytes')),
+    ).toBe(true);
+    expect(instrumented.oversizedArtifactIterationCount).toBe(0);
+    expect(instrumented.encodedChunkCount).toBeGreaterThan(0);
+    expect(instrumented.maximumEncodedChunkBytes).toBeLessThanOrEqual(
+      MAX_CANONICAL_JSON_CHUNK_BYTES,
+    );
+    expectNoFixtureLeaks({
+      manifest: instrumented.prepared.manifest,
+      packets: instrumented.prepared.packets.map(publicPacket),
+    });
+  });
+
   it('truncates packets against per-packet and aggregate safe-integer budgets', () => {
     const snapshot = syntheticSnapshot();
     const full = requirePrepared(snapshot);
@@ -666,6 +874,22 @@ describe('Centurion private thread corpus analysis', () => {
         maxTotalPacketBytes: 1_000_000,
       }),
     ).toBeNull();
+    expect(
+      preparePrivateAnalysis(snapshot, {
+        maxPacketBytes: MAX_PRIVATE_ANALYSIS_PACKET_BYTES + 1,
+        maxTotalPacketBytes: MAX_PRIVATE_ANALYSIS_PACKET_BYTES + 1,
+      }),
+    ).toBeNull();
+    const perPacketWins = requirePrepared(snapshot, {
+      maxPacketBytes: 0,
+      maxTotalPacketBytes: 0,
+    });
+    expect(
+      perPacketWins.packets.every(
+        (packet) =>
+          packet.packetState === 'truncated' && packet.omissionReason === 'per_packet_limit',
+      ),
+    ).toBe(true);
     expectNoFixtureLeaks(aggregate.packets.map(publicPacket));
   });
 
@@ -685,6 +909,21 @@ describe('Centurion private thread corpus analysis', () => {
     const error = capturedError(() => createAnalysisItems(tampered));
     expect(error.message).not.toBe('no-error');
     expectNoFixtureLeaks(error);
+  });
+
+  it('invalidates cached reconstructions when artifact bytes mutate', () => {
+    const snapshot = syntheticSnapshot();
+    requirePrepared(snapshot);
+    const artifact = snapshot.artifactFiles[0];
+    if (!artifact) throw new Error('Expected synthetic artifact');
+    artifact.content[0] = (artifact.content[0]! + 1) % 256;
+
+    expect(
+      preparePrivateAnalysis(snapshot, {
+        maxPacketBytes: 1_000_000,
+        maxTotalPacketBytes: 1_000_000,
+      }),
+    ).toBeNull();
   });
 
   it('binds strict closed analyst decisions to an exact prepared manifest', () => {
@@ -721,6 +960,12 @@ describe('Centurion private thread corpus analysis', () => {
         },
         decisionBundle,
       ),
+    ).toBeNull();
+    const cacheGuardPrepared = requirePrepared(snapshot);
+    const cacheGuardBundle = validDecisionBundle(cacheGuardPrepared);
+    cacheGuardPrepared.manifest.maxPacketBytes = 0;
+    expect(
+      reconcileAnalystDecisionBundle(snapshot, cacheGuardPrepared.manifest, cacheGuardBundle),
     ).toBeNull();
 
     const decisions = decisionBundle.decisions;
@@ -896,8 +1141,13 @@ describe('Centurion private thread corpus analysis', () => {
     const forbiddenFixture = ts.createSourceFile(
       'synthetic-forbidden-analysis.ts',
       [
+        "import { readFileSync } from 'node:fs';",
+        "import { createConnection } from 'node:net';",
         "import { request } from 'node:https';",
+        "import { S3Client } from '@aws-sdk/client-s3';",
+        "import { Mastra } from '@mastra/core';",
         "import { Client } from 'pg';",
+        "import { eq } from 'drizzle-orm';",
         "import { fetch as undiciFetch } from 'undici';",
         'void process.env;',
         'void fetch;',
@@ -933,6 +1183,8 @@ describe('Centurion private thread corpus analysis', () => {
         'void Reflect;',
         "void Object.getOwnPropertyDescriptor(globalThis, 'fetch')!.value;",
         'void Object.getOwnPropertyDescriptors(globalThis);',
+        'void Object.getOwnPropertyNames(globalThis);',
+        'void Object.getOwnPropertySymbols(globalThis);',
         'void Object.getPrototypeOf(globalThis);',
         "void Object.defineProperty({}, 'synthetic', {});",
         'void Object.defineProperties({}, {});',
@@ -964,6 +1216,11 @@ describe('Centurion private thread corpus analysis', () => {
         'global:process',
         'global:tls',
         'global:undici',
+        'import:@aws-sdk/client-s3',
+        'import:@mastra/core',
+        'import:drizzle-orm',
+        'import:node:fs',
+        'import:node:net',
         'import:node:https',
         'import:pg',
         'import:undici',
@@ -982,9 +1239,69 @@ describe('Centurion private thread corpus analysis', () => {
         'object-reflection:defineProperty',
         'object-reflection:getOwnPropertyDescriptor',
         'object-reflection:getOwnPropertyDescriptors',
+        'object-reflection:getOwnPropertyNames',
+        'object-reflection:getOwnPropertySymbols',
         'object-reflection:getPrototypeOf',
       ]),
     );
     expect(sourceBoundaryViolations(source, CORE_REQUIRED_OBJECT_UTILITIES)).toEqual([]);
+
+    const declaredFunctions = collectNodes(source, ts.isFunctionDeclaration)
+      .map((node) => node.name?.text)
+      .filter((name): name is string => name !== undefined);
+    expect(declaredFunctions).not.toEqual(
+      expect.arrayContaining(['canonicalPacketJson', 'canonicalPacketBytes']),
+    );
+    const artifactContentSpreads = collectNodes(
+      source,
+      (node): node is ts.SpreadElement =>
+        ts.isSpreadElement(node) &&
+        ts.isPropertyAccessExpression(node.expression) &&
+        node.expression.name.text === 'content',
+    );
+    expect(artifactContentSpreads).toHaveLength(0);
+    const artifactContentCopies = collectNodes(
+      source,
+      (node): node is ts.NewExpression =>
+        ts.isNewExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === 'Uint8Array' &&
+        node.arguments !== undefined &&
+        node.arguments.some(
+          (argument) => ts.isPropertyAccessExpression(argument) && argument.name.text === 'content',
+        ),
+    );
+    expect(artifactContentCopies).toHaveLength(0);
+    const jsonStringifyCalls = collectNodes(
+      source,
+      (node): node is ts.CallExpression =>
+        ts.isCallExpression(node) &&
+        ts.isPropertyAccessExpression(node.expression) &&
+        ts.isIdentifier(node.expression.expression) &&
+        node.expression.expression.text === 'JSON' &&
+        node.expression.name.text === 'stringify',
+    );
+    expect(jsonStringifyCalls).toHaveLength(1);
+    const canonicalJsonCalls = collectNodes(
+      source,
+      (node): node is ts.CallExpression =>
+        ts.isCallExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === 'canonicalJson',
+    );
+    expect(canonicalJsonCalls).toHaveLength(2);
+  });
+
+  it('includes analysis and evidence tests in its scoped typecheck', () => {
+    const configPath = fileURLToPath(
+      new URL('../tsconfig.centurion-analysis.json', import.meta.url),
+    );
+    const config = JSON.parse(readFileSync(configPath, 'utf8')) as { include?: unknown };
+    expect(config.include).toEqual(
+      expect.arrayContaining([
+        'tests/centurion-thread-corpus-analysis.test.ts',
+        'tests/centurion-thread-corpus-evidence.test.ts',
+      ]),
+    );
   });
 });

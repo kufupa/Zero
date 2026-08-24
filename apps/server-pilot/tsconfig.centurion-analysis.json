@@ -11,6 +11,8 @@
     "src/ops/centurion-thread-corpus-evidence.ts",
     "scripts/analyze-centurion-thread-corpus.ts",
     "scripts/export-thread-corpus.ts",
+    "tests/centurion-thread-corpus-analysis.test.ts",
+    "tests/centurion-thread-corpus-evidence.test.ts",
     "tests/analyze-centurion-thread-corpus.test.ts"
   ],
   "exclude": ["node_modules", "dist"]
