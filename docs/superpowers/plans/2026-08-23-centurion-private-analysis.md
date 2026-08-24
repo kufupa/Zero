@@ -144,6 +144,7 @@ export type ReconciledAnalystDecisionsV1 = {
   snapshotId: string;
   snapshotDigest: string;
   preparedManifestSha256: string;
+  preparedManifest: PreparedAnalysisManifestV1;
   items: AnalysisItemV1[];
   decisions: AnalystDecisionV1[];
 };
@@ -162,6 +163,10 @@ export function reconcileAnalystDecisionBundle(
   snapshot: PrivateThreadCorpusSnapshot,
   preparedManifest: PreparedAnalysisManifestV1,
   decisionBundle: unknown,
+): ReconciledAnalystDecisionsV1 | null;
+export function validateReconciledAnalystDecisions(
+  snapshot: PrivateThreadCorpusSnapshot,
+  reconciled: unknown,
 ): ReconciledAnalystDecisionsV1 | null;
 ```
 
@@ -297,7 +302,7 @@ Expected: module/API-not-found failure.
 
 - [ ] **Step 3: Implement aggregate-only evidence**
 
-Revalidate the snapshot and reconciled decision bundle. Compute every statistic from the item-level logical-union list, never directly from source-row-grain manifest availability counts. Use fixed enums; never serialize item IDs, source-row IDs, paths, per-thread values, raw hashes, raw decision arrays, or free text. A released partition serializes only ordered positive category/count pairs with each count at least five, never a full enum record or zero count; a suppressed partition serializes no cells or total. Preserve only the allowed snapshot digest, as-of timestamp, fixed limitations, and aggregate states.
+Call `validateReconciledAnalystDecisions` to revalidate the snapshot, rebuild the deterministic prepared manifest using its bound limits, compare its canonical digest, and re-enforce packet-state decision rules before aggregating. Compute every statistic from the item-level logical-union list, never directly from source-row-grain manifest availability counts. Use fixed enums; never serialize item IDs, source-row IDs, paths, per-thread values, raw hashes, raw decision arrays, prepared manifest data, or free text. A released partition serializes only ordered positive category/count pairs with each count at least five, never a full enum record or zero count; a suppressed partition serializes no cells or total. Preserve only the allowed snapshot digest, as-of timestamp, fixed limitations, and aggregate states.
 
 - [ ] **Step 4: Add leak and source-boundary tests**
 
