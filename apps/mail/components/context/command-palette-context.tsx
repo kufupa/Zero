@@ -249,14 +249,6 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
       if (saved) {
         const filters = JSON.parse(saved);
         setActiveFilters(filters);
-        const query = filters.map((f: ActiveFilter) => f.value).join(' ');
-        if (query) {
-          setSearchValue({
-            ...EMPTY_SEARCH_VALUE,
-            value: query,
-            highlight: getMainSearchTerm(query),
-          });
-        }
       }
     } catch (error) {
       console.error('Failed to load active filters:', error);
@@ -488,11 +480,6 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
         addFilter(searchFilter);
       }
 
-      const filterQuery = activeFilters.map((f) => f.value).join(' ');
-      if (filterQuery) {
-        finalQuery = `${finalQuery} ${filterQuery}`.trim();
-      }
-
       setSearchValue({
         ...EMPTY_SEARCH_VALUE,
         value: finalQuery,
@@ -503,7 +490,7 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
         description: finalQuery,
       });
     },
-    [activeFilters, setSearchValue, addFilter],
+    [setSearchValue, addFilter],
   );
 
   const quickFilterOptions = useMemo(
@@ -621,11 +608,6 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
           addFilter(searchFilter);
         }
 
-        const filterQuery = activeFilters.map((f) => f.value).join(' ');
-        if (filterQuery) {
-          finalQuery = `${finalQuery} ${filterQuery}`.trim();
-        }
-
         if (query && query.trim()) {
           saveRecentSearch(query);
           setRecentSearches(getRecentSearches());
@@ -649,7 +631,7 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
         setIsProcessing(false);
       }
     },
-    [activeFilters, isProcessing],
+    [isProcessing],
   );
 
   const quickSearchResults = useMemo(() => {

@@ -53,6 +53,11 @@ describe('useThread content-query ownership', () => {
     expect(commandPaletteSource).not.toContain('isLoading:');
   });
 
+  it('does not merge persisted legacy filters into committed search text', () => {
+    expect(commandPaletteSource).not.toContain('filters.map((f: ActiveFilter) => f.value).join');
+    expect(commandPaletteSource).not.toContain('activeFilters.map((f) => f.value).join');
+  });
+
   it('gates select-all fetches on the resolved list request', () => {
     expect(selectAllSource).toContain('searchList.isValid');
     expect(selectAllSource).toContain('folder: searchList.folder');
