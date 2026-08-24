@@ -618,18 +618,6 @@ function snapshotContextFromManifest(
   };
 }
 
-function cloneArtifactFile(
-  artifact: PrivateThreadCorpusArtifactFile,
-): PrivateThreadCorpusArtifactFile {
-  return {
-    kind: artifact.kind,
-    id: artifact.id,
-    sha256: artifact.sha256,
-    bytes: artifact.bytes,
-    content: artifact.content,
-  };
-}
-
 function canonicalSnapshotDigest(
   snapshot: PrivateThreadCorpusSnapshot,
   records: readonly SnapshotRecord[],
@@ -664,7 +652,7 @@ function reconstructV2Snapshot(
       corpusJsonl: suppliedSnapshot.corpusJsonl,
       manifestJson: suppliedSnapshot.manifestJson,
       manifest,
-      artifactFiles: suppliedSnapshot.artifactFiles.map(cloneArtifactFile),
+      artifactFiles: suppliedSnapshot.artifactFiles,
     };
     validatePrivateThreadCorpusSnapshot(snapshot);
     return {
@@ -894,13 +882,6 @@ function serializeSelectedArtifactFiles(
   return sink.writeAscii(']');
 }
 
-function selectedArtifactFiles(
-  selectedSourceRows: readonly SnapshotSourceRow[],
-  artifactFiles: readonly PrivateThreadCorpusArtifactFile[],
-): CanonicalSelectedArtifactFiles {
-  return new CanonicalSelectedArtifactFiles(selectedSourceRows, artifactFiles);
-}
-
 type SerializedPrivatePacket =
   | { state: 'complete'; packetBytes: Uint8Array; packetSha256: string }
   | { state: 'exceeded' }
@@ -922,7 +903,7 @@ function serializePrivatePacket(
         sourceRowIds: descriptor.sourceRowIds,
       },
       record: descriptor.record,
-      artifactFiles: selectedArtifactFiles(
+      artifactFiles: new CanonicalSelectedArtifactFiles(
         descriptor.selectedSourceRows,
         reconstructed.snapshot.artifactFiles,
       ),

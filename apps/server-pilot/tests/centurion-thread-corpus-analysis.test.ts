@@ -1409,7 +1409,6 @@ describe('Centurion private thread corpus analysis', () => {
       'isSelectedArtifact',
       'serializeByteValues',
       'serializeCanonicalToSink',
-      'selectedArtifactFiles',
       'serializeSelectedArtifactFiles',
       'serializePrivatePacket',
     ]);
