@@ -1,7 +1,7 @@
 import { defineConfig, devices } from '@playwright/test';
+import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import path from 'path';
-import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -18,6 +18,9 @@ const configuredBaseURL = process.env.PLAYWRIGHT_BASE_URL;
 const realMailBaseURL =
   configuredBaseURL === `${CANONICAL_ORIGIN}/` ? CANONICAL_ORIGIN : configuredBaseURL;
 const ignoreHTTPSErrors = process.env.PLAYWRIGHT_IGNORE_HTTPS_ERRORS === '1';
+const hasPlaywrightSession = Boolean(
+  process.env.PLAYWRIGHT_SESSION_TOKEN && process.env.PLAYWRIGHT_SESSION_DATA,
+);
 
 if (realMailGate && !configuredBaseURL) {
   throw new Error('Real-mail Playwright requires PLAYWRIGHT_BASE_URL');
@@ -39,9 +42,7 @@ export default defineConfig({
   ...(realMailGate ? { timeout: 180_000, expect: { timeout: 90_000 } } : {}),
   reporter: realMailGate ? [['line'], ['html', { open: 'never' }]] : 'html',
   use: {
-    baseURL: realMailGate
-      ? realMailBaseURL
-      : (configuredBaseURL ?? 'http://localhost:3000'),
+    baseURL: realMailGate ? realMailBaseURL : (configuredBaseURL ?? 'http://localhost:3000'),
     ignoreHTTPSErrors,
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
@@ -53,19 +54,26 @@ export default defineConfig({
           use: { ...devices['Desktop Chrome'] },
         },
       ]
-    : [
-        {
-          name: 'setup',
-          testMatch: /.*\.setup\.ts/,
-          use: { ...devices['Desktop Chrome'] },
-        },
-        {
-          name: 'chromium',
-          use: {
-            ...devices['Desktop Chrome'],
-            storageState: 'playwright/.auth/user.json',
+    : hasPlaywrightSession
+      ? [
+          {
+            name: 'setup',
+            testMatch: /.*\.setup\.ts/,
+            use: { ...devices['Desktop Chrome'] },
           },
-          dependencies: ['setup'],
-        },
-      ],
+          {
+            name: 'chromium',
+            use: {
+              ...devices['Desktop Chrome'],
+              storageState: 'playwright/.auth/user.json',
+            },
+            dependencies: ['setup'],
+          },
+        ]
+      : [
+          {
+            name: 'chromium',
+            use: { ...devices['Desktop Chrome'] },
+          },
+        ],
 });

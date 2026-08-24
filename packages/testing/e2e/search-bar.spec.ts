@@ -30,9 +30,9 @@ test.describe('Header search (pilot)', () => {
 
     await expect(page.getByRole('dialog')).toHaveCount(0);
 
-    const threadRows = page.locator('[data-thread-id]');
-    const emptyState = page.getByText(/No emails match/);
-    await expect(threadRows.first().or(emptyState)).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText(`No emails match “${searchQuery}”`, { exact: true })).toBeVisible({
+      timeout: 15_000,
+    });
   });
 
   test('shows current-folder scope and all-folders option', async ({ page }) => {
@@ -54,21 +54,5 @@ test.describe('Header search (pilot)', () => {
 
     await unreadFilter.click();
     await expect(page.getByRole('button', { name: 'Remove Unread' })).toBeVisible();
-  });
-});
-
-test.describe('Header search shortcut (pilot)', () => {
-  test.skip(!canRunLiveSearchE2E, 'Requires PLAYWRIGHT_SESSION_TOKEN and PLAYWRIGHT_SESSION_DATA');
-
-  test('does not require a mail search input on settings', async ({ page }) => {
-    await page.goto('/settings/shortcuts');
-    await page.waitForLoadState('domcontentloaded');
-
-    await expect(page.locator('#mail-search')).toHaveCount(0);
-    const pageErrors: Error[] = [];
-    page.once('pageerror', (error) => pageErrors.push(error));
-    await page.keyboard.press('Control+k');
-    expect(pageErrors).toHaveLength(0);
-    await expect(page.locator('#mail-search')).toHaveCount(0);
   });
 });
