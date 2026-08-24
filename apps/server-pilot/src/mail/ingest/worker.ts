@@ -175,7 +175,7 @@ export async function ingestOnce(
           pop3Uidl: uidl,
           messageId,
           rawMimeS3Key: rawKey,
-        }, { db, storage });
+        }, { db, storage, ingestSource: 'live-pop3' });
 
         if (result.kind === 'duplicate') {
           duplicateAttachmentCleanupFailureCount += result.candidateAttachmentCleanupFailureCount;

@@ -239,6 +239,9 @@ describe('ingestOnce returned-copy results', () => {
         uidl: 'uidl-reconciled',
         result: { kind: 'reconciled' },
       });
+      expect(persistSpy.mock.calls[0]?.[3]).toMatchObject({
+        ingestSource: 'live-pop3',
+      });
     } finally {
       persistSpy.mockRestore();
     }

@@ -142,6 +142,11 @@ export interface PersistOptions {
   /** S3 storage override (tests inject a fake). */
   storage?: S3Storage;
   /**
+   * Returned-copy reconciliation is only valid for newly retrieved POP3
+   * messages. Historical promotion and rehydration must use ordinary ingest.
+   */
+  ingestSource?: 'live-pop3';
+  /**
    * Promote path: skip existing-quarantine short-circuit and delete this row
    * atomically when the message insert commits.
    */
@@ -260,7 +265,7 @@ export async function persistInboundMessage(
           ? parsed.messageId
           : null;
     const useMessageIdFallback = parsed.outboundCorrelation.kind === 'absent';
-    const canonical = correlationId
+    const canonical = opts.ingestSource === 'live-pop3' && correlationId
       ? await findEligibleCanonicalOutbound(
           transactionDb,
           transport.id,

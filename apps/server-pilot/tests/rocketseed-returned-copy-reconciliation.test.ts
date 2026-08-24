@@ -6,9 +6,9 @@ import {
   message,
   outboundSendQueue,
 } from '../src/db/schema/mail.js';
+import { persistInboundMessage as persistInboundMessageImpl } from '../src/mail/ingest/store.js';
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
 import { parseRawMessage } from '../src/mail/ingest/parse-message.js';
-import { persistInboundMessage } from '../src/mail/ingest/store.js';
 import { FakeS3Storage } from '../src/storage/s3.js';
 import * as schema from '../src/db/schema/index.js';
 import { drizzle } from 'drizzle-orm/postgres-js';
@@ -19,6 +19,15 @@ import { randomUUID } from 'node:crypto';
 import postgres from 'postgres';
 
 const reachable = await probeTestDb();
+
+type PersistInboundArgs = Parameters<typeof persistInboundMessageImpl>;
+
+function persistInboundMessage(...[parsed, raw, meta, opts]: PersistInboundArgs) {
+  return persistInboundMessageImpl(parsed, raw, meta, {
+    ...opts,
+    ingestSource: 'live-pop3',
+  });
+}
 
 function trustedReturnedCopy(args: {
   fromAddress?: string;
@@ -281,6 +290,41 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
     expect(result.threadRows[0]?.isRead).toBe(false);
     expect(result.threadRows[0]?.labelIds).toEqual(['task-2-preserved']);
     expect(result.attachmentRows).toHaveLength(0);
+  }, 30000);
+
+  it('uses ordinary ingest without live POP3 reconciliation opt-in', async () => {
+    const storage = new FakeS3Storage('test-mail-bucket');
+    const result = await withSeededTestDb(async (db) => {
+      const canonical = await seedCanonicalOutbound(db);
+      const candidateMessageId = randomUUID();
+      const raw = trustedReturnedCopy({
+        outboundId: canonical.canonicalMessageId,
+        messageId: canonical.returnedMessageId,
+        transportAddress: canonical.transportAddress,
+      });
+      const parsed = await parseRawMessage(raw, {
+        messageId: candidateMessageId,
+        storage,
+      });
+      const persisted = await persistInboundMessageImpl(
+        parsed,
+        raw,
+        {
+          ingestMailboxId: 'ingest-nava-legacy',
+          pop3Uidl: `task-2-${randomUUID()}`,
+          messageId: candidateMessageId,
+        },
+        { db, storage, skipAiEnqueue: true },
+      );
+      const rows = await db
+        .select({ id: message.id })
+        .from(message)
+        .where(inArray(message.id, [canonical.canonicalMessageId, candidateMessageId]));
+      return { persisted, rows };
+    });
+
+    expect(result.persisted.kind).toBe('stored');
+    expect(result.rows).toHaveLength(2);
   }, 30000);
 
   it('uses ordinary ingest when correlation points at an inbound row', async () => {
