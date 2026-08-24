@@ -1022,6 +1022,51 @@ describe('bounded descriptor reads', () => {
   });
 });
 
+describe('final retry ACL batches', () => {
+  it('locks and reasserts 4,097 files in stable 4,096-path batches', async () => {
+    type TrustedFile = {
+      path: string;
+      identity: { stableIdentity: string; volumeId: string };
+    };
+    type LockAndReassert = (
+      acl: WindowsPrivateAcl,
+      expectedVolume: string,
+      files: readonly TrustedFile[],
+    ) => Promise<boolean>;
+    const exported = receiverModule as unknown as {
+      lockAndReassertFileAclBatches?: LockAndReassert;
+    };
+    const files = Array.from({ length: 4_097 }, (_, index) => ({
+      path: `C:\\synthetic\\safe-final\\member-${String(index).padStart(4, '0')}`,
+      identity: {
+        stableIdentity: `safe-identity-${String(index)}`,
+        volumeId: 'safe-volume-a',
+      },
+    }));
+    const identities = new Map(files.map((file) => [file.path, file.identity]));
+    const batches: string[][] = [];
+    const acl: WindowsPrivateAcl = {
+      assertTrustedPath: async (pathValue) => {
+        const identity = identities.get(pathValue);
+        return identity ? { ...identity } : null;
+      },
+      lockDownDirectory: async () => true,
+      lockDownFiles: async (paths) => {
+        batches.push([...paths]);
+        return batches.length === 1;
+      },
+      promoteNoReplace: async () => true,
+      fsyncReceipt: async () => true,
+    };
+
+    expect(exported.lockAndReassertFileAclBatches).toEqual(expect.any(Function));
+    expect(await exported.lockAndReassertFileAclBatches!(acl, 'safe-volume-a', files)).toBe(false);
+    expect(batches.map((batch) => batch.length)).toEqual([4_096, 1]);
+    expect(batches[0]![0]).toBe(files[0]!.path);
+    expect(batches[1]![0]).toBe(files[4_096]!.path);
+  });
+});
+
 describe('receive Centurion relay command', () => {
   it('takes exactly one UUID and emits only fixed PII-free receipt JSON', async () => {
     const harness = createHarness();

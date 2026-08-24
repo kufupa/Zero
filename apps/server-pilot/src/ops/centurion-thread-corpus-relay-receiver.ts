@@ -127,6 +127,7 @@ const RECEIPT_FILENAME = 'receive-receipt.v1.json';
 const RELAY_MANIFEST_FILENAME = 'relay-manifest.v1.json';
 const MAX_RELAY_MANIFEST_BYTES = 1_000_000;
 const MAX_RECEIPT_BYTES = 64 * 1024;
+const MAX_ACL_BATCH_PATHS = 4_096;
 const UUID_V4 = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const SHA256_DIGEST = /^[a-f0-9]{64}$/;
 const OPAQUE_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -750,6 +751,34 @@ async function assertTrustedPath(
   return trusted && trusted.volumeId === expectedVolume ? trusted : null;
 }
 
+export type TrustedAclFile = {
+  path: string;
+  identity: TrustedPath;
+};
+
+export async function lockAndReassertFileAclBatches(
+  acl: WindowsPrivateAcl,
+  expectedVolume: string,
+  files: readonly TrustedAclFile[],
+): Promise<boolean> {
+  if (files.length === 0) return false;
+  for (let offset = 0; offset < files.length; offset += MAX_ACL_BATCH_PATHS) {
+    const batch = files.slice(offset, offset + MAX_ACL_BATCH_PATHS);
+    if (!(await acl.lockDownFiles(batch.map((file) => file.path)))) return false;
+    const verified = await Promise.all(
+      batch.map((file) => assertTrustedPath(acl, file.path, expectedVolume)),
+    );
+    if (
+      verified.some(
+        (identity, index) => !identity || !sameTrustedPath(batch[index]!.identity, identity),
+      )
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 async function verifyFinalSnapshot(input: {
   config: RelayReceiverRuntimeConfig;
   transferId: string;
@@ -782,27 +811,18 @@ async function verifyFinalSnapshot(input: {
         assertTrustedPath(input.acl, filePath, input.rootAcl.volumeId),
       ),
     );
+    const trustedFiles = beforeFiles.flatMap((identity, index) =>
+      identity ? [{ path: expectedFiles[index]!, identity }] : [],
+    );
     if (
-      beforeFiles.some((fileIdentity) => fileIdentity === null) ||
+      trustedFiles.length !== expectedFiles.length ||
       !(await input.acl.lockDownDirectory(input.finalPath)) ||
-      !(await input.acl.lockDownFiles(expectedFiles))
+      !(await lockAndReassertFileAclBatches(input.acl, input.rootAcl.volumeId, trustedFiles))
     ) {
       return null;
     }
     const after = await assertTrustedPath(input.acl, input.finalPath, input.rootAcl.volumeId);
-    const afterFiles = await Promise.all(
-      expectedFiles.map((filePath) =>
-        assertTrustedPath(input.acl, filePath, input.rootAcl.volumeId),
-      ),
-    );
-    if (
-      !after ||
-      !sameTrustedPath(before, after) ||
-      afterFiles.some(
-        (fileIdentity, index) =>
-          !fileIdentity || !sameTrustedPath(beforeFiles[index]!, fileIdentity),
-      )
-    ) {
+    if (!after || !sameTrustedPath(before, after)) {
       return null;
     }
     const members = await materializeLocalMembers({
