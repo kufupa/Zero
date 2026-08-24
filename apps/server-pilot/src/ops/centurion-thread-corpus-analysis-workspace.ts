@@ -92,25 +92,31 @@ export type AnalysisCliResult =
   | { outcome: 'reconciled' }
   | { outcome: 'blocked' };
 
-type FixedGitIgnoreOptions = {
-  cwd: string;
-  env: Readonly<Record<'ComSpec' | 'SystemRoot', string>>;
-  shell: false;
-  stdio: 'ignore';
-  windowsHide: true;
-};
-
 export type GitIgnoreProcessRunner = {
   run(input: {
-    executable: 'C:\\Program Files\\Git\\cmd\\git.exe';
-    arguments: readonly ['check-ignore', '--no-index', '--quiet', '--', string];
+    executable: typeof WINDOWS_GIT;
+    args: readonly ['check-ignore', '--no-index', '--quiet', '--', string];
     cwd: string;
-    options: FixedGitIgnoreOptions;
+    env: Readonly<Record<string, string>>;
+    shell: false;
   }): { failed: boolean; status: number | null };
 };
 
 export type GitIgnoreRunner = {
-  isIgnored(input: { checkoutRoot: string; candidate: string }): boolean;
+  isIgnored(input: { checkoutRoot: string; candidate: string }): Promise<boolean>;
+};
+
+export type TrustedExecutableInspection = {
+  path: string;
+  stableIdentity: string;
+  regularFile: true;
+  symbolicLink: false;
+  owner: 'root' | 'trusted-system';
+  writableByOthers: false;
+};
+
+export type TrustedExecutableInspector = {
+  inspect(executable: string): Promise<TrustedExecutableInspection | null>;
 };
 
 type TrustedPath = {
@@ -145,6 +151,19 @@ const MAX_RECEIVED_BYTES = 256 * 1024 * 1024;
 const MAX_PACKET_FILES = 100_000;
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder('utf-8', { fatal: true });
+export const WINDOWS_GIT = 'C:\\Program Files\\Git\\cmd\\git.exe';
+const WINDOWS_GIT_ENV = Object.freeze({
+  GIT_CONFIG_COUNT: '3',
+  GIT_CONFIG_GLOBAL: 'NUL',
+  GIT_CONFIG_KEY_0: 'core.fsmonitor',
+  GIT_CONFIG_KEY_1: 'core.hooksPath',
+  GIT_CONFIG_KEY_2: 'core.excludesFile',
+  GIT_CONFIG_NOSYSTEM: '1',
+  GIT_CONFIG_VALUE_0: 'false',
+  GIT_CONFIG_VALUE_1: 'NUL',
+  GIT_CONFIG_VALUE_2: 'NUL',
+  GIT_OPTIONAL_LOCKS: '0',
+});
 const REQUIRED_GIT_IGNORE_CANDIDATES = [
   '.private/centurion-thread-corpus/',
   '.private/centurion-thread-analysis/',
@@ -214,21 +233,116 @@ function isRequiredGitIgnoreCandidate(value: unknown): value is string {
   );
 }
 
-function boundedGitEnvironment(): FixedGitIgnoreOptions['env'] {
-  return {
-    ComSpec: process.env.ComSpec ?? '',
-    SystemRoot: process.env.SystemRoot ?? '',
-  };
+function sameWindowsGitExecutablePath(left: string, right: string): boolean {
+  return (
+    path.win32.isAbsolute(left) &&
+    path.win32.isAbsolute(right) &&
+    path.win32.normalize(left).toLowerCase() === path.win32.normalize(right).toLowerCase()
+  );
 }
 
-const fixedGitIgnoreProcessRunner: GitIgnoreProcessRunner = {
-  run(input) {
+function trustedWindowsGitExecutable(
+  inspection: TrustedExecutableInspection | null,
+): inspection is TrustedExecutableInspection {
+  return (
+    inspection !== null &&
+    sameWindowsGitExecutablePath(inspection.path, WINDOWS_GIT) &&
+    inspection.stableIdentity.length > 0 &&
+    inspection.regularFile === true &&
+    inspection.symbolicLink === false &&
+    inspection.owner === 'trusted-system' &&
+    inspection.writableByOthers === false
+  );
+}
+
+function inspectDefaultWindowsGitExecutable(
+  executable: string,
+): TrustedExecutableInspection | null {
+  try {
+    if (executable !== WINDOWS_GIT || !path.win32.isAbsolute(executable)) return null;
+    let current = executable;
+    let executableStats: ReturnType<typeof lstatSync> | null = null;
+    const volumeRoot = path.win32.parse(executable).root;
+    while (true) {
+      const stats = lstatSync(current);
+      if (stats.isSymbolicLink() || !sameWindowsGitExecutablePath(realpathSync(current), current)) {
+        return null;
+      }
+      if (sameWindowsGitExecutablePath(current, executable)) {
+        if (!stats.isFile()) return null;
+        executableStats = stats;
+      } else if (!stats.isDirectory()) {
+        return null;
+      }
+      if (sameWindowsGitExecutablePath(current, volumeRoot)) break;
+      current = path.win32.dirname(current);
+    }
+    if (!executableStats) return null;
+    return {
+      path: executable,
+      stableIdentity: `${String(executableStats.dev)}:${String(executableStats.ino)}`,
+      regularFile: true,
+      symbolicLink: false,
+      owner: 'trusted-system',
+      writableByOthers: false,
+    };
+  } catch {
+    return null;
+  }
+}
+
+const defaultWindowsGitExecutableInspector: TrustedExecutableInspector = {
+  async inspect(executable) {
+    return inspectDefaultWindowsGitExecutable(executable);
+  },
+};
+
+function exactGitIgnoreArgs(
+  args: readonly ['check-ignore', '--no-index', '--quiet', '--', string],
+): boolean {
+  return (
+    args.length === 5 &&
+    args[0] === 'check-ignore' &&
+    args[1] === '--no-index' &&
+    args[2] === '--quiet' &&
+    args[3] === '--' &&
+    isRequiredGitIgnoreCandidate(args[4])
+  );
+}
+
+function validWindowsGitEnvironment(environment: Readonly<Record<string, string>>): boolean {
+  const entries = Object.entries(environment);
+  return (
+    entries.length === Object.keys(WINDOWS_GIT_ENV).length &&
+    entries.every(([key, value]) => WINDOWS_GIT_ENV[key as keyof typeof WINDOWS_GIT_ENV] === value)
+  );
+}
+
+class WindowsGitIgnoreProcessAdapter implements GitIgnoreProcessRunner {
+  run(input: {
+    executable: typeof WINDOWS_GIT;
+    args: readonly ['check-ignore', '--no-index', '--quiet', '--', string];
+    cwd: string;
+    env: Readonly<Record<string, string>>;
+    shell: false;
+  }): { failed: boolean; status: number | null } {
+    if (
+      input.executable !== WINDOWS_GIT ||
+      input.shell !== false ||
+      !isCanonicalWindowsPath(input.cwd) ||
+      !exactGitIgnoreArgs(input.args) ||
+      !validWindowsGitEnvironment(input.env)
+    ) {
+      return { failed: true, status: null };
+    }
     try {
-      const result = spawnSync(
-        'C:\\Program Files\\Git\\cmd\\git.exe',
-        ['check-ignore', '--no-index', '--quiet', '--', input.arguments[4]],
-        input.options,
-      );
+      const result = spawnSync(WINDOWS_GIT, input.args, {
+        cwd: input.cwd,
+        env: input.env,
+        shell: false,
+        stdio: 'ignore',
+        windowsHide: true,
+      });
       return {
         failed: result.error !== undefined || result.signal !== null || result.status === null,
         status: result.status,
@@ -236,31 +350,28 @@ const fixedGitIgnoreProcessRunner: GitIgnoreProcessRunner = {
     } catch {
       return { failed: true, status: null };
     }
-  },
-};
+  }
+}
 
 export function createFixedGitIgnoreRunner(
-  processRunner: GitIgnoreProcessRunner = fixedGitIgnoreProcessRunner,
+  processRunner: GitIgnoreProcessRunner = new WindowsGitIgnoreProcessAdapter(),
+  inspector: TrustedExecutableInspector = defaultWindowsGitExecutableInspector,
 ): GitIgnoreRunner {
   return {
-    isIgnored(input) {
+    async isIgnored(input): Promise<boolean> {
       if (
         !isCanonicalWindowsPath(input.checkoutRoot) ||
-        !isRequiredGitIgnoreCandidate(input.candidate)
+        !isRequiredGitIgnoreCandidate(input.candidate) ||
+        !trustedWindowsGitExecutable(await inspector.inspect(WINDOWS_GIT).catch(() => null))
       ) {
         return false;
       }
       const result = processRunner.run({
-        executable: 'C:\\Program Files\\Git\\cmd\\git.exe',
-        arguments: ['check-ignore', '--no-index', '--quiet', '--', input.candidate],
+        executable: WINDOWS_GIT,
+        args: ['check-ignore', '--no-index', '--quiet', '--', input.candidate],
         cwd: input.checkoutRoot,
-        options: {
-          cwd: input.checkoutRoot,
-          env: boundedGitEnvironment(),
-          shell: false,
-          stdio: 'ignore',
-          windowsHide: true,
-        },
+        env: WINDOWS_GIT_ENV,
+        shell: false,
       });
       return !result.failed && result.status === 0;
     },
@@ -270,10 +381,12 @@ export function createFixedGitIgnoreRunner(
 export function requiredAnalysisRootsAreIgnored(
   checkoutRoot: string,
   runner: GitIgnoreRunner,
-): boolean {
-  return REQUIRED_GIT_IGNORE_CANDIDATES.every((candidate) =>
-    runner.isIgnored({ checkoutRoot, candidate }),
-  );
+): Promise<boolean> {
+  return Promise.all(
+    REQUIRED_GIT_IGNORE_CANDIDATES.map((candidate) =>
+      runner.isIgnored({ checkoutRoot, candidate }),
+    ),
+  ).then((results) => results.every(Boolean));
 }
 
 function expectedReceivedRoot(checkoutRoot: string): string {
@@ -1257,7 +1370,7 @@ class WindowsAnalysisWorkspacePort implements AnalysisWorkspacePort {
         checkout.volumeId !== privateRoot.volumeId ||
         checkout.volumeId !== received.volumeId ||
         checkout.volumeId !== analysis.volumeId ||
-        !this.hasRequiredIgnoredRoots(input.checkoutRoot)
+        !(await this.hasRequiredIgnoredRoots(input.checkoutRoot))
       ) {
         return null;
       }
@@ -1608,8 +1721,8 @@ class WindowsAnalysisWorkspacePort implements AnalysisWorkspacePort {
     }
   }
 
-  private hasRequiredIgnoredRoots(checkoutRoot: string): boolean {
-    return requiredAnalysisRootsAreIgnored(checkoutRoot, this.gitIgnoreRunner);
+  private async hasRequiredIgnoredRoots(checkoutRoot: string): Promise<boolean> {
+    return await requiredAnalysisRootsAreIgnored(checkoutRoot, this.gitIgnoreRunner);
   }
 
   private workspaceForPath(pathValue: string): string {

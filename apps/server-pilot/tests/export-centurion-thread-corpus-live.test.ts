@@ -1,7 +1,3 @@
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import ts from 'typescript';
-import { describe, expect, it } from 'vitest';
 import {
   createCenturionThreadCorpusLiveExportCommand,
   directImdsRequest,
@@ -17,6 +13,10 @@ import type {
 } from '../src/ops/centurion-thread-corpus-exporter.js';
 import type { ThreadCorpusPostgresReaderOptions } from '../src/ops/centurion-thread-corpus-postgres-reader.js';
 import type { S3Storage } from '../src/storage/s3.js';
+import { describe, expect, it } from 'vitest';
+import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
+import ts from 'typescript';
 
 const REPO_ROOT = '/synthetic/zero';
 const SCRIPT_PATH =
@@ -58,10 +58,12 @@ type Harness = {
   readonly storageReceiver: unknown;
 };
 
-function operatorConfig(input: {
-  source?: Partial<OperatorConfig['source']>;
-  root?: Record<string, unknown>;
-} = {}): OperatorConfig {
+function operatorConfig(
+  input: {
+    source?: Partial<OperatorConfig['source']>;
+    root?: Record<string, unknown>;
+  } = {},
+): OperatorConfig {
   return {
     version: 1,
     source: {
@@ -303,20 +305,23 @@ describe('export-centurion-thread-corpus-live command', () => {
       },
       expectsAttest: false,
     },
-  ])('fails preflight for $name before config, environment, or clients', async ({ configure, expectsAttest }) => {
-    const harness = makeHarness();
-    configure(harness);
+  ])(
+    'fails preflight for $name before config, environment, or clients',
+    async ({ configure, expectsAttest }) => {
+      const harness = makeHarness();
+      configure(harness);
 
-    await expectFailure(harness, 'preflight_failed');
+      await expectFailure(harness, 'preflight_failed');
 
-    expect(harness.calls.includes('attest')).toBe(expectsAttest);
-    expect(harness.calls).not.toContain('config');
-    expect(harness.calls).not.toContain('uuid');
-    expect(harness.calls).not.toContain('ignored');
-    expect(harness.calls).not.toContain('environment');
-    expectNoClients(harness);
-    expectNoPrivateOutput(harness, [PRIVATE_IMDS_MARKER]);
-  });
+      expect(harness.calls.includes('attest')).toBe(expectsAttest);
+      expect(harness.calls).not.toContain('config');
+      expect(harness.calls).not.toContain('uuid');
+      expect(harness.calls).not.toContain('ignored');
+      expect(harness.calls).not.toContain('environment');
+      expectNoClients(harness);
+      expectNoPrivateOutput(harness, [PRIVATE_IMDS_MARKER]);
+    },
+  );
 
   it.each([
     {
@@ -378,26 +383,32 @@ describe('export-centurion-thread-corpus-live command', () => {
           },
         }),
     },
-  ])('fails protected-config preflight for $name without leaking config detail', async ({ config }) => {
-    const harness = makeHarness();
-    harness.deps.readProtectedConfig = async (input) => {
-      harness.calls.push('config');
-      expect(input.configPath).toBe(CONFIG_PATH);
-      return await config();
-    };
+  ])(
+    'fails protected-config preflight for $name without leaking config detail',
+    async ({ config }) => {
+      const harness = makeHarness();
+      harness.deps.readProtectedConfig = async (input) => {
+        harness.calls.push('config');
+        expect(input.configPath).toBe(CONFIG_PATH);
+        return await config();
+      };
 
-    await expectFailure(harness, 'preflight_failed');
+      await expectFailure(harness, 'preflight_failed');
 
-    expect(harness.calls).toContain('config');
-    expect(harness.calls).not.toContain('uuid');
-    expect(harness.calls).not.toContain('ignored');
-    expect(harness.calls).not.toContain('environment');
-    expectNoClients(harness);
-    expectNoPrivateOutput(harness, [PRIVATE_CONFIG_MARKER]);
-  });
+      expect(harness.calls).toContain('config');
+      expect(harness.calls).not.toContain('uuid');
+      expect(harness.calls).not.toContain('ignored');
+      expect(harness.calls).not.toContain('environment');
+      expectNoClients(harness);
+      expectNoPrivateOutput(harness, [PRIVATE_CONFIG_MARKER]);
+    },
+  );
 
   it.each([
-    ['missing DATABASE_URL', { AWS_REGION: 'synthetic-region-1', S3_BUCKET: 'synthetic-private-bucket' }],
+    [
+      'missing DATABASE_URL',
+      { AWS_REGION: 'synthetic-region-1', S3_BUCKET: 'synthetic-private-bucket' },
+    ],
     [
       'blank DATABASE_URL',
       {
@@ -418,10 +429,7 @@ describe('export-centurion-thread-corpus-live command', () => {
         S3_BUCKET: 'synthetic-private-bucket',
       },
     ],
-    [
-      'missing S3_BUCKET',
-      { DATABASE_URL: DATABASE_URL_MARKER, AWS_REGION: 'synthetic-region-1' },
-    ],
+    ['missing S3_BUCKET', { DATABASE_URL: DATABASE_URL_MARKER, AWS_REGION: 'synthetic-region-1' }],
     [
       'blank S3_BUCKET',
       {
@@ -552,34 +560,40 @@ describe('export-centurion-thread-corpus-live command', () => {
 
   it.each([
     ['outside directory', '/synthetic/outside/live-123e4567-e89b-12d3-a456-426614174000-allocated'],
-    ['wrong corpus parent', '/synthetic/zero/.private/wrong/live-123e4567-e89b-12d3-a456-426614174000-allocated'],
+    [
+      'wrong corpus parent',
+      '/synthetic/zero/.private/wrong/live-123e4567-e89b-12d3-a456-426614174000-allocated',
+    ],
     ['wrong prefix', `${CORPUS_ROOT}/other-allocated`],
     ['traversal spelling', `${CORPUS_ROOT}/../escape/${SNAPSHOT_ID}-allocated`],
     ['Windows separator spelling', `.private\\centurion-thread-corpus\\${SNAPSHOT_ID}-allocated`],
-  ])('maps invalid allocated Task 7 result (%s) to safe export failure', async (_name, poisonedOutDir) => {
-    const harness = makeHarness();
-    harness.deps.createExporter = (dependencies) => {
-      harness.calls.push('createExporter');
-      return async (_request) => {
-        harness.calls.push('export');
-        dependencies.createReader();
-        return {
-          outDir: poisonedOutDir,
-          summary: { ...SAFE_SUMMARY },
+  ])(
+    'maps invalid allocated Task 7 result (%s) to safe export failure',
+    async (_name, poisonedOutDir) => {
+      const harness = makeHarness();
+      harness.deps.createExporter = (dependencies) => {
+        harness.calls.push('createExporter');
+        return async (_request) => {
+          harness.calls.push('export');
+          dependencies.createReader();
+          return {
+            outDir: poisonedOutDir,
+            summary: { ...SAFE_SUMMARY },
+          };
         };
       };
-    };
-    harness.deps.validateAllocatedDir = (input) => {
-      harness.calls.push('validate');
-      expect(input.outDir).toBe(poisonedOutDir);
-      throw new Error(`${PRIVATE_PATH_MARKER}:${poisonedOutDir}`);
-    };
+      harness.deps.validateAllocatedDir = (input) => {
+        harness.calls.push('validate');
+        expect(input.outDir).toBe(poisonedOutDir);
+        throw new Error(`${PRIVATE_PATH_MARKER}:${poisonedOutDir}`);
+      };
 
-    await expectFailure(harness, 'export_failed');
+      await expectFailure(harness, 'export_failed');
 
-    expect(harness.calls).toContain('validate');
-    expectNoPrivateOutput(harness, [PRIVATE_PATH_MARKER, poisonedOutDir]);
-  });
+      expect(harness.calls).toContain('validate');
+      expectNoPrivateOutput(harness, [PRIVATE_PATH_MARKER, poisonedOutDir]);
+    },
+  );
 
   it('writes one exact safe success JSON object with a cloned six-field summary', async () => {
     const harness = makeHarness();
@@ -913,7 +927,7 @@ function liveCliSourceGuardViolations(source: string): string[] {
   };
   const isFixedGitIgnore = (node: ts.CallExpression): boolean => {
     if (callName(node) !== 'spawnSync') return false;
-    if (textOf(node.arguments[0]) !== 'git') return false;
+    if (!ts.isIdentifier(node.arguments[0]) || node.arguments[0].text !== 'EC2_GIT') return false;
     const argv = node.arguments[1];
     if (!argv || !ts.isArrayLiteralExpression(argv) || argv.elements.length !== 4) return false;
     return (

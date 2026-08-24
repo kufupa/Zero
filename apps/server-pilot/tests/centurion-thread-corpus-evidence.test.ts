@@ -12,6 +12,7 @@ import {
   CENTURION_CORPUS_EVIDENCE_VERSION,
   buildCenturionCorpusEvidenceReport,
   type CenturionCorpusEvidenceReportV1,
+  type EvidenceCategory,
   type EvidencePartition,
 } from '../src/ops/centurion-thread-corpus-evidence.js';
 import {
@@ -239,7 +240,7 @@ function requireReport(
   return report;
 }
 
-function noCells<T extends string>(
+function noCells<T extends EvidenceCategory>(
   partition: EvidencePartition<T>,
 ): asserts partition is Exclude<EvidencePartition<T>, { state: 'observed' }> {
   expect(partition).not.toHaveProperty('cells');
@@ -273,6 +274,11 @@ function parseTypeScript(filePath: string): ts.SourceFile {
   );
 }
 
+function collectNodes<T extends ts.Node>(
+  source: ts.SourceFile,
+  predicate: (node: ts.Node) => node is T,
+): T[];
+function collectNodes(source: ts.SourceFile, predicate: (node: ts.Node) => boolean): ts.Node[];
 function collectNodes(source: ts.SourceFile, predicate: (node: ts.Node) => boolean): ts.Node[] {
   const nodes: ts.Node[] = [];
   const visit = (node: ts.Node): void => {

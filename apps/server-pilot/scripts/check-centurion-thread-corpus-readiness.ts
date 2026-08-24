@@ -26,6 +26,27 @@ const READINESS_PROBE_OBJECT_NAME = 'readiness-probe';
 const IMDS_HOST = '169.254.169.254';
 const IMDS_TIMEOUT_MS = 1_000;
 const IMDS_MAX_RESPONSE_BYTES = 1_024;
+export const EC2_GIT = '/usr/bin/git';
+export const EC2_AWS = '/usr/local/bin/aws';
+const EC2_GIT_ENV = Object.freeze({
+  GIT_CONFIG_COUNT: '3',
+  GIT_CONFIG_GLOBAL: '/dev/null',
+  GIT_CONFIG_KEY_0: 'core.fsmonitor',
+  GIT_CONFIG_KEY_1: 'core.hooksPath',
+  GIT_CONFIG_KEY_2: 'core.excludesFile',
+  GIT_CONFIG_NOSYSTEM: '1',
+  GIT_CONFIG_VALUE_0: 'false',
+  GIT_CONFIG_VALUE_1: '/dev/null',
+  GIT_CONFIG_VALUE_2: '/dev/null',
+  GIT_OPTIONAL_LOCKS: '0',
+});
+const EC2_AWS_ENV = Object.freeze({
+  AWS_CONFIG_FILE: '/dev/null',
+  AWS_EC2_METADATA_DISABLED: 'false',
+  AWS_PAGER: '',
+  AWS_SHARED_CREDENTIALS_FILE: '/dev/null',
+  NO_PROXY: '169.254.169.254',
+});
 
 type ProtectedConfigRequest = {
   repoRoot: string;
@@ -34,6 +55,76 @@ type ProtectedConfigRequest = {
 };
 
 type GitCheck = 'revision' | 'worktree' | 'status';
+
+export type TrustedExecutableInspection = {
+  path: string;
+  stableIdentity: string;
+  regularFile: true;
+  symbolicLink: false;
+  owner: 'root' | 'trusted-system';
+  writableByOthers: false;
+};
+
+export type TrustedExecutableInspector = {
+  inspect(executable: string): Promise<TrustedExecutableInspection | null>;
+};
+
+type Ec2GitArgs =
+  | readonly ['rev-parse', 'HEAD']
+  | readonly ['rev-parse', '--show-toplevel']
+  | readonly ['status', '--porcelain=v1', '--untracked-files=all']
+  | readonly ['check-ignore', '-q', '--no-index', string];
+
+export type Ec2GitProcessInvocation = {
+  executable: typeof EC2_GIT;
+  args: Ec2GitArgs;
+  cwd: string;
+  env: Readonly<Record<string, string>>;
+  shell: false;
+};
+
+export type Ec2GitProcessRunner = {
+  run(invocation: Ec2GitProcessInvocation): {
+    failed: boolean;
+    status: number | null;
+    stdout: string | null;
+  };
+};
+
+type Ec2AwsArgs =
+  | readonly [
+      'iam',
+      'simulate-principal-policy',
+      '--policy-source-arn',
+      string,
+      '--action-names',
+      string,
+      '--resource-arns',
+      string,
+      '--region',
+      string,
+      '--no-cli-pager',
+      '--output',
+      'json',
+    ]
+  | readonly ['s3api', 'head-bucket', '--bucket', string, '--region', string, '--no-cli-pager']
+  | readonly ['kms', 'describe-key', '--key-id', string, '--region', string, '--no-cli-pager'];
+
+export type Ec2AwsProcessInvocation = {
+  executable: typeof EC2_AWS;
+  args: Ec2AwsArgs;
+  cwd: '/';
+  env: Readonly<Record<string, string>>;
+  shell: false;
+};
+
+export type Ec2AwsProcessRunner = {
+  run(invocation: Ec2AwsProcessInvocation): {
+    failed: boolean;
+    status: number | null;
+    stdout: string | null;
+  };
+};
 
 type PolicySimulationResult = {
   action: string;
@@ -58,9 +149,9 @@ export type CenturionThreadCorpusReadinessCommandDependencies = {
   attestImdsV2(instanceId: string): Promise<boolean>;
   readProtectedConfig(request: ProtectedConfigRequest): Promise<string>;
   environment(): Readonly<{ AWS_REGION?: string; S3_BUCKET?: string }>;
-  inspectGit(request: { check: GitCheck; cwd: string }): string | null;
+  inspectGit(request: { check: GitCheck; cwd: string }): string | null | Promise<string | null>;
   availableBytes(root: string): number | null;
-  isIgnored(request: { repoRoot: string; relativePath: string }): boolean;
+  isIgnored(request: { repoRoot: string; relativePath: string }): boolean | Promise<boolean>;
   isStructurallySafeWindowsTarget(target: string): boolean;
   simulateReadOnlyPolicy(request: {
     region: string;
@@ -256,31 +347,6 @@ async function defaultAttestImdsV2(instanceId: string): Promise<boolean> {
   return actualInstanceId === instanceId;
 }
 
-function defaultInspectGit(request: { check: GitCheck; cwd: string }): string | null {
-  const args =
-    request.check === 'revision'
-      ? ['rev-parse', 'HEAD']
-      : request.check === 'worktree'
-        ? ['rev-parse', '--show-toplevel']
-        : ['status', '--porcelain=v1', '--untracked-files=all'];
-  const result = spawnSync('git', args, {
-    cwd: request.cwd,
-    encoding: 'utf8',
-    shell: false,
-    stdio: ['ignore', 'pipe', 'ignore'],
-    windowsHide: true,
-  });
-  if (
-    result.error !== undefined ||
-    result.signal !== null ||
-    result.status !== 0 ||
-    typeof result.stdout !== 'string'
-  ) {
-    return null;
-  }
-  return result.stdout;
-}
-
 function defaultAvailableBytes(root: string): number | null {
   try {
     const stats = statfsSync(root);
@@ -291,26 +357,12 @@ function defaultAvailableBytes(root: string): number | null {
   }
 }
 
-function defaultIsIgnored(request: { repoRoot: string; relativePath: string }): boolean {
-  const result = spawnSync('git', ['check-ignore', '-q', '--no-index', request.relativePath], {
-    cwd: request.repoRoot,
-    shell: false,
-    stdio: 'ignore',
-    windowsHide: true,
-  });
-  return result.error === undefined && result.signal === null && result.status === 0;
-}
-
 function defaultIsStructurallySafeWindowsTarget(target: string): boolean {
   return (
     /^[A-Za-z]:\\(?:[^\\/:*?"<>|]+\\)*[^\\/:*?"<>|]$/.test(target) &&
     !target.includes('..') &&
     !target.endsWith('\\')
   );
-}
-
-function successfulAws(result: ReturnType<typeof spawnSync>): boolean {
-  return result.error === undefined && result.signal === null && result.status === 0;
 }
 
 function isSafeBucketName(bucket: string): boolean {
@@ -354,117 +406,382 @@ function expectedPolicyPairs(request: {
   ];
 }
 
-function defaultSimulateReadOnlyPolicy(request: {
+function trustedEc2Executable(
+  inspection: TrustedExecutableInspection | null,
+  executable: typeof EC2_GIT | typeof EC2_AWS,
+): inspection is TrustedExecutableInspection {
+  return (
+    inspection !== null &&
+    inspection.path === executable &&
+    inspection.stableIdentity.length > 0 &&
+    inspection.regularFile === true &&
+    inspection.symbolicLink === false &&
+    inspection.owner === 'root' &&
+    inspection.writableByOthers === false &&
+    path.posix.isAbsolute(inspection.path) &&
+    path.posix.normalize(inspection.path) === inspection.path
+  );
+}
+
+function inspectDefaultEc2Executable(
+  executable: typeof EC2_GIT | typeof EC2_AWS,
+): TrustedExecutableInspection | null {
+  try {
+    if (!path.posix.isAbsolute(executable)) return null;
+    let current: string = executable;
+    let executableStats: ReturnType<typeof lstatSync> | null = null;
+    while (true) {
+      const stats = lstatSync(current);
+      if (
+        stats.isSymbolicLink() ||
+        stats.uid !== 0 ||
+        (stats.mode & 0o022) !== 0 ||
+        realpathSync(current) !== current
+      ) {
+        return null;
+      }
+      if (current === executable) {
+        if (!stats.isFile()) return null;
+        executableStats = stats;
+      } else if (!stats.isDirectory()) {
+        return null;
+      }
+      if (current === '/') break;
+      current = path.posix.dirname(current);
+    }
+    if (!executableStats) return null;
+    return {
+      path: executable,
+      stableIdentity: `${String(executableStats.dev)}:${String(executableStats.ino)}`,
+      regularFile: true,
+      symbolicLink: false,
+      owner: 'root',
+      writableByOthers: false,
+    };
+  } catch {
+    return null;
+  }
+}
+
+const defaultEc2ExecutableInspector: TrustedExecutableInspector = {
+  async inspect(executable) {
+    if (executable !== EC2_GIT && executable !== EC2_AWS) return null;
+    return inspectDefaultEc2Executable(executable);
+  },
+};
+
+function exactEc2GitArgs(args: Ec2GitArgs): boolean {
+  return (
+    (args.length === 2 && args[0] === 'rev-parse' && args[1] === 'HEAD') ||
+    (args.length === 2 && args[0] === 'rev-parse' && args[1] === '--show-toplevel') ||
+    (args.length === 3 &&
+      args[0] === 'status' &&
+      args[1] === '--porcelain=v1' &&
+      args[2] === '--untracked-files=all') ||
+    (args.length === 4 &&
+      args[0] === 'check-ignore' &&
+      args[1] === '-q' &&
+      args[2] === '--no-index')
+  );
+}
+
+function exactEc2AwsArgs(args: Ec2AwsArgs): boolean {
+  return (
+    (args.length === 13 &&
+      args[0] === 'iam' &&
+      args[1] === 'simulate-principal-policy' &&
+      args[2] === '--policy-source-arn' &&
+      args[4] === '--action-names' &&
+      args[6] === '--resource-arns' &&
+      args[8] === '--region' &&
+      args[10] === '--no-cli-pager' &&
+      args[11] === '--output' &&
+      args[12] === 'json') ||
+    (args.length === 7 &&
+      args[0] === 's3api' &&
+      args[1] === 'head-bucket' &&
+      args[2] === '--bucket' &&
+      args[4] === '--region' &&
+      args[6] === '--no-cli-pager') ||
+    (args.length === 7 &&
+      args[0] === 'kms' &&
+      args[1] === 'describe-key' &&
+      args[2] === '--key-id' &&
+      args[4] === '--region' &&
+      args[6] === '--no-cli-pager')
+  );
+}
+
+function sameFixedEnvironment(
+  actual: Readonly<Record<string, string>>,
+  expected: Readonly<Record<string, string>>,
+): boolean {
+  const entries = Object.entries(actual);
+  return (
+    entries.length === Object.keys(expected).length &&
+    entries.every(([key, value]) => expected[key as keyof typeof expected] === value)
+  );
+}
+
+class Ec2GitProcessAdapter implements Ec2GitProcessRunner {
+  run(invocation: Ec2GitProcessInvocation): {
+    failed: boolean;
+    status: number | null;
+    stdout: string | null;
+  } {
+    if (
+      invocation.executable !== EC2_GIT ||
+      invocation.shell !== false ||
+      !canonicalAbsolutePath(invocation.cwd) ||
+      !exactEc2GitArgs(invocation.args) ||
+      !sameFixedEnvironment(invocation.env, EC2_GIT_ENV)
+    ) {
+      return { failed: true, status: null, stdout: null };
+    }
+    try {
+      const result = spawnSync(EC2_GIT, invocation.args, {
+        cwd: invocation.cwd,
+        encoding: 'utf8',
+        env: invocation.env,
+        maxBuffer: 64 * 1024,
+        shell: false,
+        stdio: ['ignore', 'pipe', 'ignore'],
+        windowsHide: true,
+      });
+      return {
+        failed: result.error !== undefined || result.signal !== null,
+        status: result.status,
+        stdout: typeof result.stdout === 'string' ? result.stdout : null,
+      };
+    } catch {
+      return { failed: true, status: null, stdout: null };
+    }
+  }
+}
+
+class Ec2AwsProcessAdapter implements Ec2AwsProcessRunner {
+  run(invocation: Ec2AwsProcessInvocation): {
+    failed: boolean;
+    status: number | null;
+    stdout: string | null;
+  } {
+    if (
+      invocation.executable !== EC2_AWS ||
+      invocation.cwd !== '/' ||
+      invocation.shell !== false ||
+      !exactEc2AwsArgs(invocation.args) ||
+      !sameFixedEnvironment(invocation.env, EC2_AWS_ENV)
+    ) {
+      return { failed: true, status: null, stdout: null };
+    }
+    try {
+      const result = spawnSync(EC2_AWS, invocation.args, {
+        cwd: '/',
+        encoding: 'utf8',
+        env: invocation.env,
+        maxBuffer: 64 * 1024,
+        shell: false,
+        stdio: ['ignore', 'pipe', 'ignore'],
+        windowsHide: true,
+      });
+      return {
+        failed: result.error !== undefined || result.signal !== null,
+        status: result.status,
+        stdout: typeof result.stdout === 'string' ? result.stdout : null,
+      };
+    } catch {
+      return { failed: true, status: null, stdout: null };
+    }
+  }
+}
+
+type ReadinessProcessAdapters = {
+  inspectGit(request: { check: GitCheck; cwd: string }): Promise<string | null>;
+  isIgnored(request: { repoRoot: string; relativePath: string }): Promise<boolean>;
+  simulateReadOnlyPolicy(request: {
+    region: string;
+    bucket: string;
+    prefix: string;
+    policySourceArn: string;
+    kmsKeyId: string;
+  }): Promise<readonly PolicySimulationResult[] | null>;
+  probeS3AndKmsMetadata(request: {
+    region: string;
+    bucket: string;
+    kmsKeyId: string;
+  }): Promise<boolean>;
+};
+
+export function createFixedReadinessProcessAdapters(
+  inspector: TrustedExecutableInspector = defaultEc2ExecutableInspector,
+  gitRunner: Ec2GitProcessRunner = new Ec2GitProcessAdapter(),
+  awsRunner: Ec2AwsProcessRunner = new Ec2AwsProcessAdapter(),
+): ReadinessProcessAdapters {
+  const trusted = async (executable: typeof EC2_GIT | typeof EC2_AWS): Promise<boolean> =>
+    trustedEc2Executable(await inspector.inspect(executable).catch(() => null), executable);
+  const successful = (result: { failed: boolean; status: number | null }): boolean =>
+    !result.failed && result.status === 0;
+
+  return {
+    async inspectGit(request): Promise<string | null> {
+      if (!canonicalAbsolutePath(request.cwd) || !(await trusted(EC2_GIT))) return null;
+      const args: Ec2GitArgs =
+        request.check === 'revision'
+          ? ['rev-parse', 'HEAD']
+          : request.check === 'worktree'
+            ? ['rev-parse', '--show-toplevel']
+            : ['status', '--porcelain=v1', '--untracked-files=all'];
+      const result = gitRunner.run({
+        executable: EC2_GIT,
+        args,
+        cwd: request.cwd,
+        env: EC2_GIT_ENV,
+        shell: false,
+      });
+      return successful(result) && typeof result.stdout === 'string' ? result.stdout : null;
+    },
+
+    async isIgnored(request): Promise<boolean> {
+      if (!canonicalAbsolutePath(request.repoRoot) || !(await trusted(EC2_GIT))) {
+        return false;
+      }
+      const result = gitRunner.run({
+        executable: EC2_GIT,
+        args: ['check-ignore', '-q', '--no-index', request.relativePath],
+        cwd: request.repoRoot,
+        env: EC2_GIT_ENV,
+        shell: false,
+      });
+      return successful(result);
+    },
+
+    async simulateReadOnlyPolicy(request): Promise<readonly PolicySimulationResult[] | null> {
+      const pairs = expectedPolicyPairs(request);
+      if (pairs === null || !(await trusted(EC2_AWS))) return null;
+      try {
+        const results: PolicySimulationResult[] = [];
+        for (const pair of pairs) {
+          const simulation = awsRunner.run({
+            executable: EC2_AWS,
+            args: [
+              'iam',
+              'simulate-principal-policy',
+              '--policy-source-arn',
+              request.policySourceArn,
+              '--action-names',
+              pair.action,
+              '--resource-arns',
+              pair.resource,
+              '--region',
+              request.region,
+              '--no-cli-pager',
+              '--output',
+              'json',
+            ],
+            cwd: '/',
+            env: EC2_AWS_ENV,
+            shell: false,
+          });
+          if (!successful(simulation) || typeof simulation.stdout !== 'string') return null;
+          const parsed = JSON.parse(simulation.stdout) as {
+            EvaluationResults?: Array<{
+              EvalActionName?: unknown;
+              EvalResourceName?: unknown;
+              EvalDecision?: unknown;
+            }>;
+          };
+          if (!Array.isArray(parsed.EvaluationResults) || parsed.EvaluationResults.length !== 1) {
+            return null;
+          }
+          const result = parsed.EvaluationResults[0]!;
+          if (
+            typeof result.EvalActionName !== 'string' ||
+            typeof result.EvalResourceName !== 'string' ||
+            typeof result.EvalDecision !== 'string'
+          ) {
+            return null;
+          }
+          results.push({
+            action: result.EvalActionName,
+            resource: result.EvalResourceName,
+            decision: result.EvalDecision,
+          });
+        }
+        return results;
+      } catch {
+        return null;
+      }
+    },
+
+    async probeS3AndKmsMetadata(request): Promise<boolean> {
+      if (!(await trusted(EC2_AWS))) return false;
+      const bucketProbe = awsRunner.run({
+        executable: EC2_AWS,
+        args: [
+          's3api',
+          'head-bucket',
+          '--bucket',
+          request.bucket,
+          '--region',
+          request.region,
+          '--no-cli-pager',
+        ],
+        cwd: '/',
+        env: EC2_AWS_ENV,
+        shell: false,
+      });
+      const keyProbe = awsRunner.run({
+        executable: EC2_AWS,
+        args: [
+          'kms',
+          'describe-key',
+          '--key-id',
+          request.kmsKeyId,
+          '--region',
+          request.region,
+          '--no-cli-pager',
+        ],
+        cwd: '/',
+        env: EC2_AWS_ENV,
+        shell: false,
+      });
+      return successful(bucketProbe) && successful(keyProbe);
+    },
+  };
+}
+
+const fixedReadinessProcessAdapters = createFixedReadinessProcessAdapters();
+
+async function defaultInspectGit(request: {
+  check: GitCheck;
+  cwd: string;
+}): Promise<string | null> {
+  return await fixedReadinessProcessAdapters.inspectGit(request);
+}
+
+async function defaultIsIgnored(request: {
+  repoRoot: string;
+  relativePath: string;
+}): Promise<boolean> {
+  return await fixedReadinessProcessAdapters.isIgnored(request);
+}
+
+async function defaultSimulateReadOnlyPolicy(request: {
   region: string;
   bucket: string;
   prefix: string;
   policySourceArn: string;
   kmsKeyId: string;
 }): Promise<readonly PolicySimulationResult[] | null> {
-  const pairs = expectedPolicyPairs(request);
-  if (pairs === null) return Promise.resolve(null);
-  try {
-    const results: PolicySimulationResult[] = [];
-    for (const pair of pairs) {
-      const simulation = spawnSync(
-        'aws',
-        [
-          'iam',
-          'simulate-principal-policy',
-          '--policy-source-arn',
-          request.policySourceArn,
-          '--action-names',
-          pair.action,
-          '--resource-arns',
-          pair.resource,
-          '--no-cli-pager',
-          '--output',
-          'json',
-        ],
-        {
-          encoding: 'utf8',
-          shell: false,
-          stdio: ['ignore', 'pipe', 'ignore'],
-          windowsHide: true,
-        },
-      );
-      if (!successfulAws(simulation) || typeof simulation.stdout !== 'string') {
-        return Promise.resolve(null);
-      }
-      const parsed = JSON.parse(simulation.stdout) as {
-        EvaluationResults?: Array<{
-          EvalActionName?: unknown;
-          EvalResourceName?: unknown;
-          EvalDecision?: unknown;
-        }>;
-      };
-      if (!Array.isArray(parsed.EvaluationResults) || parsed.EvaluationResults.length !== 1) {
-        return Promise.resolve(null);
-      }
-      const result = parsed.EvaluationResults[0]!;
-      if (
-        typeof result.EvalActionName !== 'string' ||
-        typeof result.EvalResourceName !== 'string' ||
-        typeof result.EvalDecision !== 'string'
-      ) {
-        return Promise.resolve(null);
-      }
-      results.push({
-        action: result.EvalActionName,
-        resource: result.EvalResourceName,
-        decision: result.EvalDecision,
-      });
-    }
-    return Promise.resolve(results);
-  } catch {
-    return Promise.resolve(null);
-  }
+  return await fixedReadinessProcessAdapters.simulateReadOnlyPolicy(request);
 }
 
-function defaultProbeS3AndKmsMetadata(request: {
+async function defaultProbeS3AndKmsMetadata(request: {
   region: string;
   bucket: string;
   kmsKeyId: string;
 }): Promise<boolean> {
-  try {
-    const bucketProbe = spawnSync(
-      'aws',
-      [
-        's3api',
-        'head-bucket',
-        '--bucket',
-        request.bucket,
-        '--region',
-        request.region,
-        '--no-cli-pager',
-      ],
-      {
-        shell: false,
-        stdio: 'ignore',
-        windowsHide: true,
-      },
-    );
-    const keyProbe = spawnSync(
-      'aws',
-      [
-        'kms',
-        'describe-key',
-        '--key-id',
-        request.kmsKeyId,
-        '--region',
-        request.region,
-        '--no-cli-pager',
-      ],
-      {
-        shell: false,
-        stdio: 'ignore',
-        windowsHide: true,
-      },
-    );
-    return Promise.resolve(successfulAws(bucketProbe) && successfulAws(keyProbe));
-  } catch {
-    return Promise.resolve(false);
-  }
+  return await fixedReadinessProcessAdapters.probeS3AndKmsMetadata(request);
 }
 
 function parseConfig(value: string): CenturionThreadCorpusReadinessConfig | null {
@@ -607,17 +924,17 @@ function writeReport(
   } catch {}
 }
 
-function isExactGitState(
+async function isExactGitState(
   dependencies: CenturionThreadCorpusReadinessCommandDependencies,
   config: CenturionThreadCorpusReadinessConfig,
   repoRoot: string,
-): boolean {
+): Promise<boolean> {
   return (
-    dependencies.inspectGit({ check: 'revision', cwd: repoRoot }) ===
+    (await dependencies.inspectGit({ check: 'revision', cwd: repoRoot })) ===
       `${config.expectedEc2.revision}\n` &&
-    dependencies.inspectGit({ check: 'worktree', cwd: repoRoot }) ===
+    (await dependencies.inspectGit({ check: 'worktree', cwd: repoRoot })) ===
       `${config.expectedEc2.worktree}\n` &&
-    dependencies.inspectGit({ check: 'status', cwd: repoRoot }) === ''
+    (await dependencies.inspectGit({ check: 'status', cwd: repoRoot })) === ''
   );
 }
 
@@ -682,7 +999,7 @@ export function createCenturionThreadCorpusReadinessCommand(
         objectProbeArn(config.approvedExportTarget.bucket, config.approvedExportTarget.prefix) !==
           null;
       const observations = {
-        exactEc2RevisionWorktree: isExactGitState(dependencies, config, repoRoot),
+        exactEc2RevisionWorktree: await isExactGitState(dependencies, config, repoRoot),
         imdsV2Identity: await dependencies.attestImdsV2(config.expectedEc2.instanceId),
         protectedConfig,
         designatedMailboxScope: operator !== null && sameSourceScope(config, operator),
@@ -692,7 +1009,7 @@ export function createCenturionThreadCorpusReadinessCommand(
           const availableBytes = dependencies.availableBytes(repoRoot);
           return availableBytes !== null && availableBytes >= config.minimumSourceDiskHeadroomBytes;
         })(),
-        privateDestinationIgnored: dependencies.isIgnored({
+        privateDestinationIgnored: await dependencies.isIgnored({
           repoRoot,
           relativePath: CORPUS_PATH_SEGMENTS.join('/'),
         }),

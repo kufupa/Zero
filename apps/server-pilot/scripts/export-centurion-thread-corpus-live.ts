@@ -1,17 +1,3 @@
-import { spawnSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
-import {
-  closeSync,
-  constants as fsConstants,
-  fstatSync,
-  lstatSync,
-  openSync,
-  readFileSync,
-  realpathSync,
-} from 'node:fs';
-import { request as httpRequest } from 'node:http';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import {
   createCenturionThreadCorpusExporter,
   type ClosableThreadCorpusReader,
@@ -23,7 +9,21 @@ import {
   createThreadCorpusPostgresReader,
   type ThreadCorpusPostgresReaderOptions,
 } from '../src/ops/centurion-thread-corpus-postgres-reader.js';
+import {
+  closeSync,
+  constants as fsConstants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+} from 'node:fs';
 import { RealS3Storage, type S3Storage } from '../src/storage/s3.js';
+import { request as httpRequest } from 'node:http';
+import { spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
 
 const APPROVED_INSTANCE_ID = 'i-008f737974a9ba9b3';
 const CONFIG_FILE_NAME = 'operator-config.json';
@@ -32,6 +32,19 @@ const EXPORTER_VERSION = 'centurion-thread-corpus-live-v1';
 const IMDS_HOST = '169.254.169.254';
 const IMDS_MAX_RESPONSE_BYTES = 1024;
 const IMDS_TIMEOUT_MS = 1_000;
+export const EC2_GIT = '/usr/bin/git';
+const EC2_GIT_ENV = Object.freeze({
+  GIT_CONFIG_COUNT: '3',
+  GIT_CONFIG_GLOBAL: '/dev/null',
+  GIT_CONFIG_KEY_0: 'core.fsmonitor',
+  GIT_CONFIG_KEY_1: 'core.hooksPath',
+  GIT_CONFIG_KEY_2: 'core.excludesFile',
+  GIT_CONFIG_NOSYSTEM: '1',
+  GIT_CONFIG_VALUE_0: 'false',
+  GIT_CONFIG_VALUE_1: '/dev/null',
+  GIT_CONFIG_VALUE_2: '/dev/null',
+  GIT_OPTIONAL_LOCKS: '0',
+});
 const SAFE_SUMMARY_KEYS = [
   'asOf',
   'includedMessageCount',
@@ -61,6 +74,34 @@ type ProtectedConfigRequest = {
 type IgnoredDestinationRequest = {
   repoRoot: string;
   relativePath: string;
+};
+
+export type TrustedExecutableInspection = {
+  path: string;
+  stableIdentity: string;
+  regularFile: true;
+  symbolicLink: false;
+  owner: 'root' | 'trusted-system';
+  writableByOthers: false;
+};
+
+export type TrustedExecutableInspector = {
+  inspect(executable: string): Promise<TrustedExecutableInspection | null>;
+};
+
+export type Ec2GitIgnoreProcessInvocation = {
+  executable: typeof EC2_GIT;
+  args: readonly ['check-ignore', '-q', '--no-index', string];
+  cwd: string;
+  env: Readonly<Record<string, string>>;
+  shell: false;
+};
+
+export type Ec2GitIgnoreProcessRunner = {
+  run(invocation: Ec2GitIgnoreProcessInvocation): {
+    failed: boolean;
+    status: number | null;
+  };
 };
 
 type AllocatedDirectoryRequest = {
@@ -100,10 +141,7 @@ type ImdsRequestOptions = {
 };
 
 export type DirectImdsRequestDependencies = {
-  request(
-    options: ImdsRequestOptions,
-    onResponse: (response: ImdsResponse) => void,
-  ): ImdsRequest;
+  request(options: ImdsRequestOptions, onResponse: (response: ImdsResponse) => void): ImdsRequest;
   setTimeout(callback: () => void, milliseconds: number): unknown;
   clearTimeout(timer: unknown): void;
 };
@@ -227,6 +265,131 @@ function isCanonicalAbsolutePath(value: string): boolean {
   );
 }
 
+function trustedEc2Executable(
+  inspection: TrustedExecutableInspection | null,
+): inspection is TrustedExecutableInspection {
+  return (
+    inspection !== null &&
+    inspection.path === EC2_GIT &&
+    inspection.stableIdentity.length > 0 &&
+    inspection.regularFile === true &&
+    inspection.symbolicLink === false &&
+    inspection.owner === 'root' &&
+    inspection.writableByOthers === false &&
+    path.posix.isAbsolute(inspection.path) &&
+    path.posix.normalize(inspection.path) === inspection.path
+  );
+}
+
+function inspectDefaultEc2GitExecutable(executable: string): TrustedExecutableInspection | null {
+  try {
+    if (executable !== EC2_GIT || !path.posix.isAbsolute(executable)) return null;
+    let current = executable;
+    let executableStats: ReturnType<typeof lstatSync> | null = null;
+    while (true) {
+      const stats = lstatSync(current);
+      if (
+        stats.isSymbolicLink() ||
+        stats.uid !== 0 ||
+        (stats.mode & 0o022) !== 0 ||
+        realpathSync(current) !== current
+      ) {
+        return null;
+      }
+      if (current === executable) {
+        if (!stats.isFile()) return null;
+        executableStats = stats;
+      } else if (!stats.isDirectory()) {
+        return null;
+      }
+      if (current === '/') break;
+      current = path.posix.dirname(current);
+    }
+    if (!executableStats) return null;
+    return {
+      path: executable,
+      stableIdentity: `${String(executableStats.dev)}:${String(executableStats.ino)}`,
+      regularFile: true,
+      symbolicLink: false,
+      owner: 'root',
+      writableByOthers: false,
+    };
+  } catch {
+    return null;
+  }
+}
+
+const defaultEc2GitExecutableInspector: TrustedExecutableInspector = {
+  async inspect(executable) {
+    return inspectDefaultEc2GitExecutable(executable);
+  },
+};
+
+function sameEc2GitEnvironment(environment: Readonly<Record<string, string>>): boolean {
+  const entries = Object.entries(environment);
+  return (
+    entries.length === Object.keys(EC2_GIT_ENV).length &&
+    entries.every(([key, value]) => EC2_GIT_ENV[key as keyof typeof EC2_GIT_ENV] === value)
+  );
+}
+
+class Ec2GitIgnoreProcessAdapter implements Ec2GitIgnoreProcessRunner {
+  run(invocation: Ec2GitIgnoreProcessInvocation): { failed: boolean; status: number | null } {
+    if (
+      invocation.executable !== EC2_GIT ||
+      invocation.shell !== false ||
+      !isCanonicalAbsolutePath(invocation.cwd) ||
+      invocation.args.length !== 4 ||
+      invocation.args[0] !== 'check-ignore' ||
+      invocation.args[1] !== '-q' ||
+      invocation.args[2] !== '--no-index' ||
+      !sameEc2GitEnvironment(invocation.env)
+    ) {
+      return { failed: true, status: null };
+    }
+    try {
+      const result = spawnSync(EC2_GIT, ['check-ignore', '-q', '--no-index', invocation.args[3]], {
+        cwd: invocation.cwd,
+        env: invocation.env,
+        shell: false,
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+      return {
+        failed: result.error !== undefined || result.signal !== null,
+        status: result.status,
+      };
+    } catch {
+      return { failed: true, status: null };
+    }
+  }
+}
+
+export function createFixedEc2GitIgnoreRunner(
+  inspector: TrustedExecutableInspector = defaultEc2GitExecutableInspector,
+  processRunner: Ec2GitIgnoreProcessRunner = new Ec2GitIgnoreProcessAdapter(),
+): {
+  isIgnored(request: IgnoredDestinationRequest): Promise<boolean>;
+} {
+  return {
+    async isIgnored(request): Promise<boolean> {
+      if (!isCanonicalAbsolutePath(request.repoRoot)) return false;
+      const inspection = await inspector.inspect(EC2_GIT).catch(() => null);
+      if (!trustedEc2Executable(inspection)) return false;
+      const result = processRunner.run({
+        executable: EC2_GIT,
+        args: ['check-ignore', '-q', '--no-index', request.relativePath],
+        cwd: request.repoRoot,
+        env: EC2_GIT_ENV,
+        shell: false,
+      });
+      return !result.failed && result.status === 0;
+    },
+  };
+}
+
+const fixedEc2GitIgnoreRunner = createFixedEc2GitIgnoreRunner();
+
 function repoRootFromScript(scriptPath: string): string {
   if (!isCanonicalAbsolutePath(scriptPath)) return failPreflight();
   return path.posix.resolve(path.posix.dirname(scriptPath), '../../..');
@@ -298,16 +461,9 @@ async function defaultReadProtectedConfig(request: ProtectedConfigRequest): Prom
   try {
     identities = directories.map(trustedDirectory);
     const preOpen = trustedConfigLeaf(request.configPath);
-    descriptor = openSync(
-      request.configPath,
-      fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
-    );
+    descriptor = openSync(request.configPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
     const opened = fstatSync(descriptor);
-    if (
-      !opened.isFile() ||
-      preOpen.dev !== opened.dev ||
-      preOpen.ino !== opened.ino
-    ) {
+    if (!opened.isFile() || preOpen.dev !== opened.dev || preOpen.ino !== opened.ino) {
       return failPreflight();
     }
     const content = readFileSync(descriptor, 'utf8');
@@ -426,18 +582,8 @@ async function defaultAttestImdsV2(): Promise<boolean> {
   return instanceId === APPROVED_INSTANCE_ID;
 }
 
-function defaultIsIgnored(request: IgnoredDestinationRequest): boolean {
-  const result = spawnSync(
-    'git',
-    ['check-ignore', '-q', '--no-index', request.relativePath],
-    {
-      cwd: request.repoRoot,
-      shell: false,
-      stdio: 'ignore',
-      windowsHide: true,
-    },
-  );
-  return result.error === undefined && result.signal === null && result.status === 0;
+async function defaultIsIgnored(request: IgnoredDestinationRequest): Promise<boolean> {
+  return await fixedEc2GitIgnoreRunner.isIgnored(request);
 }
 
 function defaultValidateAllocatedDir(request: AllocatedDirectoryRequest): string {
@@ -490,7 +636,9 @@ function isTask7CompatibleIsoTimestamp(value: unknown): value is string {
   const year = Number(match[1]);
   const month = Number(match[2]);
   const day = Number(match[3]);
-  return month >= 1 && month <= 12 && day >= 1 && day <= new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return (
+    month >= 1 && month <= 12 && day >= 1 && day <= new Date(Date.UTC(year, month, 0)).getUTCDate()
+  );
 }
 
 function cloneSafeSummary(value: unknown): ThreadCorpusExportSafeResult['summary'] {
@@ -519,9 +667,7 @@ function cloneSafeSummary(value: unknown): ThreadCorpusExportSafeResult['summary
   };
 }
 
-function failureJson(
-  code: 'invalid_arguments' | 'preflight_failed' | 'export_failed',
-): string {
+function failureJson(code: 'invalid_arguments' | 'preflight_failed' | 'export_failed'): string {
   return `${JSON.stringify({
     event: 'centurion_thread_corpus_export.failed',
     code,
@@ -602,8 +748,7 @@ function defaultDependencies(): LiveCenturionThreadCorpusDependencies {
     }),
     createReader: (options) => createThreadCorpusPostgresReader(options),
     createRealStorage: ({ region, bucket }) => new RealS3Storage(region, bucket),
-    createExporter: ({ createReader }) =>
-      createCenturionThreadCorpusExporter({ createReader }),
+    createExporter: ({ createReader }) => createCenturionThreadCorpusExporter({ createReader }),
     validateAllocatedDir: defaultValidateAllocatedDir,
     writeStdout: (value) => {
       process.stdout.write(value);
@@ -678,8 +823,7 @@ export async function runCenturionThreadCorpusLiveExport(
 function isEntryScript(): boolean {
   const entryPath = process.argv[1];
   return (
-    typeof entryPath === 'string' &&
-    fileURLToPath(import.meta.url) === path.resolve(entryPath)
+    typeof entryPath === 'string' && fileURLToPath(import.meta.url) === path.resolve(entryPath)
   );
 }
 

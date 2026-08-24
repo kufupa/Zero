@@ -446,6 +446,11 @@ function parseTypeScript(filePath: string): ts.SourceFile {
   );
 }
 
+function collectNodes<T extends ts.Node>(
+  source: ts.SourceFile,
+  predicate: (node: ts.Node) => node is T,
+): T[];
+function collectNodes(source: ts.SourceFile, predicate: (node: ts.Node) => boolean): ts.Node[];
 function collectNodes(source: ts.SourceFile, predicate: (node: ts.Node) => boolean): ts.Node[] {
   const nodes: ts.Node[] = [];
   const visit = (node: ts.Node): void => {

@@ -281,6 +281,19 @@ class FakeGitIgnoreProcessRunner implements GitIgnoreProcessRunner {
   }
 }
 
+function trustedWindowsGitInspector() {
+  return {
+    inspect: async () => ({
+      path: 'C:\\Program Files\\Git\\cmd\\git.exe',
+      stableIdentity: 'safe-git-identity',
+      regularFile: true as const,
+      symbolicLink: false as const,
+      owner: 'trusted-system' as const,
+      writableByOthers: false as const,
+    }),
+  };
+}
+
 class FakeAnalysisWorkspacePort implements AnalysisWorkspacePort {
   readonly calls: string[] = [];
   readonly files = new Map<string, Uint8Array>();
@@ -509,18 +522,31 @@ function isFixedGitIgnoreSpawnSyncCall(call: ts.CallExpression): boolean {
     !ts.isIdentifier(call.expression) ||
     call.expression.text !== 'spawnSync' ||
     call.arguments.length !== 3 ||
-    !ts.isStringLiteral(call.arguments[0]) ||
-    call.arguments[0].text !== 'C:\\Program Files\\Git\\cmd\\git.exe' ||
-    !ts.isArrayLiteralExpression(call.arguments[1])
+    !ts.isIdentifier(call.arguments[0]) ||
+    call.arguments[0].text !== 'WINDOWS_GIT' ||
+    !ts.isPropertyAccessExpression(call.arguments[1]) ||
+    !ts.isIdentifier(call.arguments[1].expression) ||
+    call.arguments[1].expression.text !== 'input' ||
+    call.arguments[1].name.text !== 'args'
   ) {
     return false;
   }
-  const argumentsValue = call.arguments[1].elements;
+  const options = call.arguments[2];
   return (
-    argumentsValue.length === 5 &&
-    ['check-ignore', '--no-index', '--quiet', '--'].every(
-      (expected, index) =>
-        ts.isStringLiteral(argumentsValue[index]) && argumentsValue[index].text === expected,
+    options !== undefined &&
+    ts.isObjectLiteralExpression(options) &&
+    options.properties.some(
+      (property) =>
+        ts.isPropertyAssignment(property) &&
+        ts.isIdentifier(property.name) &&
+        property.name.text === 'shell' &&
+        property.initializer.kind === ts.SyntaxKind.FalseKeyword,
+    ) &&
+    options.properties.some(
+      (property) =>
+        ts.isPropertyAssignment(property) &&
+        ts.isIdentifier(property.name) &&
+        property.name.text === 'env',
     )
   );
 }
@@ -537,13 +563,7 @@ function allowedProcessReference(
   }
   const first = identifier.parent;
   if (fileKind === 'workspace') {
-    if (first.name.text === 'platform') return true;
-    return (
-      first.name.text === 'env' &&
-      ts.isPropertyAccessExpression(first.parent) &&
-      first.parent.expression === first &&
-      ['ComSpec', 'SystemRoot'].includes(first.parent.name.text)
-    );
+    return first.name.text === 'platform';
   }
   if (first.name.text === 'argv' || first.name.text === 'exitCode') return true;
   return (
@@ -661,12 +681,12 @@ function sourceBoundaryViolations(
 }
 
 describe('fixed Git-ignore adapter', () => {
-  it('uses fixed absolute Git arguments with shell disabled and bounded environment', () => {
+  it('uses fixed absolute Git arguments with shell disabled and scrubbed environment', async () => {
     const processRunner = new FakeGitIgnoreProcessRunner();
-    const runner = createFixedGitIgnoreRunner(processRunner);
+    const runner = createFixedGitIgnoreRunner(processRunner, trustedWindowsGitInspector());
 
     expect(
-      runner.isIgnored({
+      await runner.isIgnored({
         checkoutRoot: CHECKOUT_ROOT,
         candidate: '.private/centurion-thread-analysis/',
       }),
@@ -674,33 +694,31 @@ describe('fixed Git-ignore adapter', () => {
     expect(processRunner.calls).toHaveLength(1);
     expect(processRunner.calls[0]).toMatchObject({
       executable: 'C:\\Program Files\\Git\\cmd\\git.exe',
-      arguments: [
-        'check-ignore',
-        '--no-index',
-        '--quiet',
-        '--',
-        '.private/centurion-thread-analysis/',
-      ],
+      args: ['check-ignore', '--no-index', '--quiet', '--', '.private/centurion-thread-analysis/'],
       cwd: CHECKOUT_ROOT,
-      options: {
-        shell: false,
-        stdio: 'ignore',
-        windowsHide: true,
+      env: {
+        GIT_CONFIG_COUNT: '3',
+        GIT_CONFIG_GLOBAL: 'NUL',
+        GIT_CONFIG_KEY_0: 'core.fsmonitor',
+        GIT_CONFIG_KEY_1: 'core.hooksPath',
+        GIT_CONFIG_KEY_2: 'core.excludesFile',
+        GIT_CONFIG_NOSYSTEM: '1',
+        GIT_CONFIG_VALUE_0: 'false',
+        GIT_CONFIG_VALUE_1: 'NUL',
+        GIT_CONFIG_VALUE_2: 'NUL',
+        GIT_OPTIONAL_LOCKS: '0',
       },
+      shell: false,
     });
-    expect(Object.keys(processRunner.calls[0]!.options.env).sort()).toEqual([
-      'ComSpec',
-      'SystemRoot',
-    ]);
   });
 
-  it('keeps a synthetic PATH shadow out of the Git invocation', () => {
+  it('keeps a synthetic PATH shadow out of the Git invocation', async () => {
     const processRunner = new FakeGitIgnoreProcessRunner();
     const originalPath = process.env.PATH;
     process.env.PATH = 'C:\\synthetic\\planted-git';
     try {
       expect(
-        createFixedGitIgnoreRunner(processRunner).isIgnored({
+        await createFixedGitIgnoreRunner(processRunner, trustedWindowsGitInspector()).isIgnored({
           checkoutRoot: CHECKOUT_ROOT,
           candidate: '.private/centurion-thread-analysis/',
         }),
@@ -712,17 +730,20 @@ describe('fixed Git-ignore adapter', () => {
     expect(processRunner.calls[0]).toMatchObject({
       executable: 'C:\\Program Files\\Git\\cmd\\git.exe',
     });
-    expect(processRunner.calls[0]!.options.env).not.toHaveProperty('PATH');
-    expect(processRunner.calls[0]!.options.env).not.toHaveProperty('PATHEXT');
+    expect(processRunner.calls[0]!.env).not.toHaveProperty('PATH');
+    expect(processRunner.calls[0]!.env).not.toHaveProperty('PATHEXT');
   });
 
-  it('blocks a later Git negation and process failures', () => {
+  it('blocks a later Git negation and process failures', async () => {
     const negated = new FakeGitIgnoreProcessRunner();
     negated.results.push({ failed: false, status: 0 }, { failed: false, status: 1 });
     expect(
-      requiredAnalysisRootsAreIgnored(CHECKOUT_ROOT, createFixedGitIgnoreRunner(negated)),
+      await requiredAnalysisRootsAreIgnored(
+        CHECKOUT_ROOT,
+        createFixedGitIgnoreRunner(negated, trustedWindowsGitInspector()),
+      ),
     ).toBe(false);
-    expect(negated.calls.map((call) => call.arguments.at(-1))).toEqual([
+    expect(negated.calls.map((call) => call.args.at(-1))).toEqual([
       '.private/centurion-thread-corpus/',
       '.private/centurion-thread-analysis/',
     ]);
@@ -730,17 +751,17 @@ describe('fixed Git-ignore adapter', () => {
     const failed = new FakeGitIgnoreProcessRunner();
     failed.results.push({ failed: true, status: null });
     expect(
-      createFixedGitIgnoreRunner(failed).isIgnored({
+      await createFixedGitIgnoreRunner(failed, trustedWindowsGitInspector()).isIgnored({
         checkoutRoot: CHECKOUT_ROOT,
         candidate: '.private/centurion-thread-corpus/',
       }),
     ).toBe(false);
   });
 
-  it('rejects noncanonical candidates before process execution', () => {
+  it('rejects noncanonical candidates before process execution', async () => {
     const processRunner = new FakeGitIgnoreProcessRunner();
     expect(
-      createFixedGitIgnoreRunner(processRunner).isIgnored({
+      await createFixedGitIgnoreRunner(processRunner, trustedWindowsGitInspector()).isIgnored({
         checkoutRoot: CHECKOUT_ROOT,
         candidate: '.private/centurion-thread-analysis/;unsafe',
       }),
@@ -1282,17 +1303,15 @@ describe('Centurion analysis workspace source boundaries', () => {
     if (
       !gitCall ||
       gitCall.arguments.length !== 3 ||
-      !ts.isStringLiteral(gitCall.arguments[0]) ||
-      gitCall.arguments[0].text !== 'C:\\Program Files\\Git\\cmd\\git.exe' ||
-      !ts.isArrayLiteralExpression(gitCall.arguments[1])
+      !ts.isIdentifier(gitCall.arguments[0]) ||
+      gitCall.arguments[0].text !== 'WINDOWS_GIT' ||
+      !ts.isPropertyAccessExpression(gitCall.arguments[1]) ||
+      !ts.isIdentifier(gitCall.arguments[1].expression) ||
+      gitCall.arguments[1].expression.text !== 'input' ||
+      gitCall.arguments[1].name.text !== 'args'
     ) {
       throw new Error('Expected fixed Git-ignore process adapter');
     }
-    expect(
-      gitCall.arguments[1].elements
-        .slice(0, 4)
-        .map((argument) => (ts.isStringLiteral(argument) ? argument.text : null)),
-    ).toEqual(['check-ignore', '--no-index', '--quiet', '--']);
 
     const fixture = ts.createSourceFile(
       'synthetic-forbidden-workspace.ts',

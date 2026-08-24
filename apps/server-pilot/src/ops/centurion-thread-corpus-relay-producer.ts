@@ -168,6 +168,53 @@ const OPAQUE_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const IMDS_HOST = '169.254.169.254';
 const IMDS_TIMEOUT_MS = 1_000;
 const IMDS_MAX_RESPONSE_BYTES = 1_024;
+export const EC2_GIT = '/usr/bin/git';
+const EC2_GIT_ENV = Object.freeze({
+  GIT_CONFIG_COUNT: '3',
+  GIT_CONFIG_GLOBAL: '/dev/null',
+  GIT_CONFIG_KEY_0: 'core.fsmonitor',
+  GIT_CONFIG_KEY_1: 'core.hooksPath',
+  GIT_CONFIG_KEY_2: 'core.excludesFile',
+  GIT_CONFIG_NOSYSTEM: '1',
+  GIT_CONFIG_VALUE_0: 'false',
+  GIT_CONFIG_VALUE_1: '/dev/null',
+  GIT_CONFIG_VALUE_2: '/dev/null',
+  GIT_OPTIONAL_LOCKS: '0',
+});
+
+export type TrustedExecutableInspection = {
+  path: string;
+  stableIdentity: string;
+  regularFile: true;
+  symbolicLink: false;
+  owner: 'root' | 'trusted-system';
+  writableByOthers: false;
+};
+
+export type TrustedExecutableInspector = {
+  inspect(executable: string): Promise<TrustedExecutableInspection | null>;
+};
+
+type Ec2GitInspectionArgs =
+  | readonly ['rev-parse', 'HEAD']
+  | readonly ['rev-parse', '--show-toplevel']
+  | readonly ['status', '--porcelain=v1', '--untracked-files=all'];
+
+export type Ec2GitProcessInvocation = {
+  executable: typeof EC2_GIT;
+  args: Ec2GitInspectionArgs;
+  cwd: string;
+  env: Readonly<Record<string, string>>;
+  shell: false;
+};
+
+export type Ec2GitProcessRunner = {
+  run(invocation: Ec2GitProcessInvocation): {
+    failed: boolean;
+    status: number | null;
+    stdout: string | null;
+  };
+};
 
 type TrustedIdentity = {
   dev: number;
@@ -1618,39 +1665,182 @@ async function attestImdsV2(instanceId: string): Promise<boolean> {
   return actual === instanceId;
 }
 
-function inspectGit(check: 'revision' | 'worktree' | 'status', cwd: string): string | null {
-  const args =
-    check === 'revision'
-      ? ['rev-parse', 'HEAD']
-      : check === 'worktree'
-        ? ['rev-parse', '--show-toplevel']
-        : ['status', '--porcelain=v1', '--untracked-files=all'];
+function trustedEc2GitExecutable(
+  inspection: TrustedExecutableInspection | null,
+): inspection is TrustedExecutableInspection {
+  return (
+    inspection !== null &&
+    inspection.path === EC2_GIT &&
+    inspection.stableIdentity.length > 0 &&
+    inspection.regularFile === true &&
+    inspection.symbolicLink === false &&
+    inspection.owner === 'root' &&
+    inspection.writableByOthers === false &&
+    path.posix.isAbsolute(inspection.path) &&
+    path.posix.normalize(inspection.path) === inspection.path
+  );
+}
+
+function inspectDefaultEc2GitExecutable(executable: string): TrustedExecutableInspection | null {
   try {
-    const result = spawnSync('git', args, {
-      cwd,
-      encoding: 'utf8',
-      shell: false,
-      stdio: ['ignore', 'pipe', 'ignore'],
-      windowsHide: true,
-    });
-    if (
-      result.error !== undefined ||
-      result.signal !== null ||
-      result.status !== 0 ||
-      typeof result.stdout !== 'string'
-    ) {
-      return null;
+    if (executable !== EC2_GIT || !path.posix.isAbsolute(executable)) return null;
+    let current = executable;
+    let executableStats: ReturnType<typeof lstatSync> | null = null;
+    while (true) {
+      const stats = lstatSync(current);
+      if (
+        stats.isSymbolicLink() ||
+        stats.uid !== 0 ||
+        (stats.mode & 0o022) !== 0 ||
+        realpathSync(current) !== current
+      ) {
+        return null;
+      }
+      if (current === executable) {
+        if (!stats.isFile()) return null;
+        executableStats = stats;
+      } else if (!stats.isDirectory()) {
+        return null;
+      }
+      if (current === '/') break;
+      current = path.posix.dirname(current);
     }
-    return result.stdout;
+    if (!executableStats) return null;
+    return {
+      path: executable,
+      stableIdentity: `${String(executableStats.dev)}:${String(executableStats.ino)}`,
+      regularFile: true,
+      symbolicLink: false,
+      owner: 'root',
+      writableByOthers: false,
+    };
   } catch {
     return null;
   }
+}
+
+const defaultEc2GitExecutableInspector: TrustedExecutableInspector = {
+  async inspect(executable) {
+    return inspectDefaultEc2GitExecutable(executable);
+  },
+};
+
+function exactEc2GitInspectionArgs(args: Ec2GitInspectionArgs): boolean {
+  return (
+    (args.length === 2 && args[0] === 'rev-parse' && args[1] === 'HEAD') ||
+    (args.length === 2 && args[0] === 'rev-parse' && args[1] === '--show-toplevel') ||
+    (args.length === 3 &&
+      args[0] === 'status' &&
+      args[1] === '--porcelain=v1' &&
+      args[2] === '--untracked-files=all')
+  );
+}
+
+function sameEc2GitEnvironment(environment: Readonly<Record<string, string>>): boolean {
+  const entries = Object.entries(environment);
+  return (
+    entries.length === Object.keys(EC2_GIT_ENV).length &&
+    entries.every(([key, value]) => EC2_GIT_ENV[key as keyof typeof EC2_GIT_ENV] === value)
+  );
+}
+
+class Ec2GitProcessAdapter implements Ec2GitProcessRunner {
+  run(invocation: Ec2GitProcessInvocation): {
+    failed: boolean;
+    status: number | null;
+    stdout: string | null;
+  } {
+    if (
+      invocation.executable !== EC2_GIT ||
+      invocation.shell !== false ||
+      !isCanonicalAbsolutePath(invocation.cwd) ||
+      !exactEc2GitInspectionArgs(invocation.args) ||
+      !sameEc2GitEnvironment(invocation.env)
+    ) {
+      return { failed: true, status: null, stdout: null };
+    }
+    try {
+      const result = spawnSync(EC2_GIT, invocation.args, {
+        cwd: invocation.cwd,
+        encoding: 'utf8',
+        env: invocation.env,
+        maxBuffer: 64 * 1024,
+        shell: false,
+        stdio: ['ignore', 'pipe', 'ignore'],
+        windowsHide: true,
+      });
+      return {
+        failed: result.error !== undefined || result.signal !== null,
+        status: result.status,
+        stdout: typeof result.stdout === 'string' ? result.stdout : null,
+      };
+    } catch {
+      return { failed: true, status: null, stdout: null };
+    }
+  }
+}
+
+function createEc2GitInspectionBoundary(
+  inspector: TrustedExecutableInspector = defaultEc2GitExecutableInspector,
+  processRunner: Ec2GitProcessRunner = new Ec2GitProcessAdapter(),
+  defaultTrustCheck?: () => boolean,
+): {
+  assertTrustedExecutable(): Promise<boolean>;
+  inspect(request: { check: 'revision' | 'worktree' | 'status'; cwd: string }): string | null;
+} {
+  let trusted = defaultTrustCheck?.() ?? false;
+  return {
+    async assertTrustedExecutable(): Promise<boolean> {
+      trusted = trustedEc2GitExecutable(await inspector.inspect(EC2_GIT).catch(() => null));
+      return trusted;
+    },
+    inspect(request): string | null {
+      if (
+        !trusted ||
+        (defaultTrustCheck !== undefined && !defaultTrustCheck()) ||
+        !isCanonicalAbsolutePath(request.cwd)
+      ) {
+        return null;
+      }
+      const args: Ec2GitInspectionArgs =
+        request.check === 'revision'
+          ? ['rev-parse', 'HEAD']
+          : request.check === 'worktree'
+            ? ['rev-parse', '--show-toplevel']
+            : ['status', '--porcelain=v1', '--untracked-files=all'];
+      const result = processRunner.run({
+        executable: EC2_GIT,
+        args,
+        cwd: request.cwd,
+        env: EC2_GIT_ENV,
+        shell: false,
+      });
+      return !result.failed && result.status === 0 && typeof result.stdout === 'string'
+        ? result.stdout
+        : null;
+    },
+  };
+}
+
+export function createFixedEc2GitInspectionBoundary(
+  inspector: TrustedExecutableInspector = defaultEc2GitExecutableInspector,
+  processRunner: Ec2GitProcessRunner = new Ec2GitProcessAdapter(),
+): {
+  assertTrustedExecutable(): Promise<boolean>;
+  inspect(request: { check: 'revision' | 'worktree' | 'status'; cwd: string }): string | null;
+} {
+  return createEc2GitInspectionBoundary(inspector, processRunner);
 }
 
 export function createDefaultRelaySourceRuntime(
   repoRoot = defaultRepoRoot(),
 ): RelaySourceRuntimePort {
   const layout = sourcePathLayout(repoRoot);
+  const gitBoundary = createEc2GitInspectionBoundary(
+    defaultEc2GitExecutableInspector,
+    new Ec2GitProcessAdapter(),
+    () => trustedEc2GitExecutable(inspectDefaultEc2GitExecutable(EC2_GIT)),
+  );
   return {
     platform: () => process.platform,
     attestImdsV2,
@@ -1661,7 +1851,7 @@ export function createDefaultRelaySourceRuntime(
         throw new Error('protected config unavailable');
       }
     },
-    inspectGit: (check) => inspectGit(check, layout.repoRoot),
+    inspectGit: (check) => gitBoundary.inspect({ check, cwd: layout.repoRoot }),
     inspectTrustedSnapshot: async (input) => inspectTrustedSnapshot(layout, input),
     readBoundedTrustedSnapshot: async (input) => readBoundedTrustedSnapshot(layout, input),
     writeStageIntent: async (intent) => {

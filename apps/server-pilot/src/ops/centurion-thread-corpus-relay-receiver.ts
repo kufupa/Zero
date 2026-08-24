@@ -78,13 +78,43 @@ export type ReceiverResult =
     }
   | { outcome: 'blocked' };
 
+export const WINDOWS_POWERSHELL = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+export const WINDOWS_GIT = 'C:\\Program Files\\Git\\cmd\\git.exe';
+const WINDOWS_SYSTEM32 = 'C:\\Windows\\System32';
+const WINDOWS_GIT_ENV = Object.freeze({
+  GIT_CONFIG_COUNT: '3',
+  GIT_CONFIG_GLOBAL: 'NUL',
+  GIT_CONFIG_KEY_0: 'core.fsmonitor',
+  GIT_CONFIG_KEY_1: 'core.hooksPath',
+  GIT_CONFIG_KEY_2: 'core.excludesFile',
+  GIT_CONFIG_NOSYSTEM: '1',
+  GIT_CONFIG_VALUE_0: 'false',
+  GIT_CONFIG_VALUE_1: 'NUL',
+  GIT_CONFIG_VALUE_2: 'NUL',
+  GIT_OPTIONAL_LOCKS: '0',
+});
+
+export type TrustedExecutableInspection = {
+  path: string;
+  stableIdentity: string;
+  regularFile: true;
+  symbolicLink: false;
+  owner: 'root' | 'trusted-system';
+  writableByOthers: false;
+};
+
+export type TrustedExecutableInspector = {
+  inspect(executable: string): Promise<TrustedExecutableInspection | null>;
+};
+
 export type WindowsCommandInvocation = {
-  executable: 'powershell.exe';
+  executable: typeof WINDOWS_POWERSHELL;
   args: readonly ['-NoProfile', '-NonInteractive', '-EncodedCommand', string];
   options: {
     shell: false;
     windowsHide: true;
     stdio: readonly ['ignore', 'pipe', 'ignore'];
+    cwd: typeof WINDOWS_SYSTEM32;
     env: Readonly<Record<string, string>>;
   };
 };
@@ -94,6 +124,21 @@ export type WindowsCommandRunner = {
     status: number | null;
     stdout: string | null;
   }>;
+};
+
+export type WindowsGitIgnoreProcessInvocation = {
+  executable: typeof WINDOWS_GIT;
+  args: readonly ['check-ignore', '-q', '--', string];
+  cwd: string;
+  env: Readonly<Record<string, string>>;
+  shell: false;
+};
+
+export type WindowsGitIgnoreProcessRunner = {
+  run(invocation: WindowsGitIgnoreProcessInvocation): {
+    failed: boolean;
+    status: number | null;
+  };
 };
 
 type RemoteMember = {
@@ -1169,20 +1214,133 @@ export async function receiveCenturionThreadCorpusRelay(input: {
   }
 }
 
+function sameWindowsExecutablePath(left: string, right: string): boolean {
+  return (
+    path.win32.isAbsolute(left) &&
+    path.win32.isAbsolute(right) &&
+    path.win32.normalize(left).toLowerCase() === path.win32.normalize(right).toLowerCase()
+  );
+}
+
+function trustedWindowsExecutable(
+  inspection: TrustedExecutableInspection | null,
+  executable: typeof WINDOWS_POWERSHELL | typeof WINDOWS_GIT,
+): inspection is TrustedExecutableInspection {
+  return (
+    inspection !== null &&
+    sameWindowsExecutablePath(inspection.path, executable) &&
+    inspection.stableIdentity.length > 0 &&
+    inspection.regularFile === true &&
+    inspection.symbolicLink === false &&
+    inspection.owner === 'trusted-system' &&
+    inspection.writableByOthers === false
+  );
+}
+
+function inspectDefaultWindowsExecutable(
+  executable: typeof WINDOWS_POWERSHELL | typeof WINDOWS_GIT,
+): TrustedExecutableInspection | null {
+  try {
+    if (!path.win32.isAbsolute(executable)) return null;
+    let current: string = executable;
+    let executableStats: ReturnType<typeof lstatSync> | null = null;
+    const volumeRoot = path.win32.parse(executable).root;
+    while (true) {
+      const stats = lstatSync(current);
+      if (stats.isSymbolicLink() || !sameWindowsExecutablePath(realpathSync(current), current)) {
+        return null;
+      }
+      if (sameWindowsExecutablePath(current, executable)) {
+        if (!stats.isFile()) return null;
+        executableStats = stats;
+      } else if (!stats.isDirectory()) {
+        return null;
+      }
+      if (sameWindowsExecutablePath(current, volumeRoot)) break;
+      current = path.win32.dirname(current);
+    }
+    if (!executableStats) return null;
+    return {
+      path: executable,
+      stableIdentity: `${String(executableStats.dev)}:${String(executableStats.ino)}`,
+      regularFile: true,
+      symbolicLink: false,
+      owner: 'trusted-system',
+      writableByOthers: false,
+    };
+  } catch {
+    return null;
+  }
+}
+
+const defaultWindowsExecutableInspector: TrustedExecutableInspector = {
+  async inspect(executable) {
+    try {
+      if (
+        (executable !== WINDOWS_POWERSHELL && executable !== WINDOWS_GIT) ||
+        !path.win32.isAbsolute(executable)
+      ) {
+        return null;
+      }
+      return inspectDefaultWindowsExecutable(executable);
+    } catch {
+      return null;
+    }
+  },
+};
+
+function validAclEnvironment(env: Readonly<Record<string, string>>): boolean {
+  const operation = env.CENTURION_RELAY_OPERATION;
+  const allowedKeys =
+    operation === 'assert' || operation === 'lock-directory' || operation === 'fsync-receipt'
+      ? ['CENTURION_RELAY_OPERATION', 'CENTURION_RELAY_PATH']
+      : operation === 'lock-files'
+        ? ['CENTURION_RELAY_OPERATION', 'CENTURION_RELAY_PATHS']
+        : operation === 'promote'
+          ? ['CENTURION_RELAY_OPERATION', 'CENTURION_RELAY_PATH', 'CENTURION_RELAY_FINAL_PATH']
+          : [];
+  return (
+    allowedKeys.length > 0 &&
+    Object.keys(env).length === allowedKeys.length &&
+    allowedKeys.every((key) => typeof env[key] === 'string' && env[key]!.length > 0)
+  );
+}
+
+function validAclInvocation(invocation: WindowsCommandInvocation): boolean {
+  return (
+    invocation.executable === WINDOWS_POWERSHELL &&
+    invocation.args.length === 4 &&
+    invocation.args[0] === '-NoProfile' &&
+    invocation.args[1] === '-NonInteractive' &&
+    invocation.args[2] === '-EncodedCommand' &&
+    invocation.args[3] === WINDOWS_PRIVATE_ACL_ENCODED_COMMAND &&
+    invocation.options.shell === false &&
+    invocation.options.windowsHide === true &&
+    invocation.options.stdio[0] === 'ignore' &&
+    invocation.options.stdio[1] === 'pipe' &&
+    invocation.options.stdio[2] === 'ignore' &&
+    invocation.options.cwd === WINDOWS_SYSTEM32 &&
+    validAclEnvironment(invocation.options.env)
+  );
+}
+
 class WindowsPrivateAclProcessAdapter implements WindowsCommandRunner {
   async run(
     invocation: WindowsCommandInvocation,
   ): Promise<{ status: number | null; stdout: string | null }> {
+    if (!validAclInvocation(invocation)) return { status: null, stdout: null };
     try {
-      const result = spawnSync(invocation.executable, invocation.args, {
-        shell: invocation.options.shell,
-        windowsHide: invocation.options.windowsHide,
-        stdio: [...invocation.options.stdio],
+      const result = spawnSync(WINDOWS_POWERSHELL, invocation.args, {
+        shell: false,
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'ignore'],
+        cwd: WINDOWS_SYSTEM32,
         env: invocation.options.env,
         encoding: 'utf8',
+        maxBuffer: 64 * 1024,
       });
       return {
-        status: result.status,
+        status: result.error === undefined ? result.status : null,
         stdout: typeof result.stdout === 'string' ? result.stdout : null,
       };
     } catch {
@@ -1219,42 +1377,58 @@ function parseAclResponse(
   }
 }
 
-function invokeAcl(
+async function invokeAcl(
   runner: WindowsCommandRunner,
+  inspector: TrustedExecutableInspector,
   operation: 'assert' | 'lock-directory' | 'lock-files' | 'promote' | 'fsync-receipt',
   env: Record<string, string>,
   responseKind: 'assert' | 'ok',
 ): Promise<TrustedPath | true | null> {
-  return runner
-    .run({
-      executable: 'powershell.exe',
-      args: [
-        '-NoProfile',
-        '-NonInteractive',
-        '-EncodedCommand',
-        WINDOWS_PRIVATE_ACL_ENCODED_COMMAND,
-      ],
-      options: {
-        shell: false,
-        windowsHide: true,
-        stdio: ['ignore', 'pipe', 'ignore'],
-        env: {
-          CENTURION_RELAY_OPERATION: operation,
-          ...env,
+  if (
+    !trustedWindowsExecutable(
+      await inspector.inspect(WINDOWS_POWERSHELL).catch(() => null),
+      WINDOWS_POWERSHELL,
+    )
+  ) {
+    return null;
+  }
+  try {
+    return parseAclResponse(
+      await runner.run({
+        executable: WINDOWS_POWERSHELL,
+        args: [
+          '-NoProfile',
+          '-NonInteractive',
+          '-EncodedCommand',
+          WINDOWS_PRIVATE_ACL_ENCODED_COMMAND,
+        ],
+        options: {
+          shell: false,
+          windowsHide: true,
+          stdio: ['ignore', 'pipe', 'ignore'],
+          cwd: WINDOWS_SYSTEM32,
+          env: {
+            CENTURION_RELAY_OPERATION: operation,
+            ...env,
+          },
         },
-      },
-    })
-    .then((response) => parseAclResponse(response, responseKind))
-    .catch(() => null);
+      }),
+      responseKind,
+    );
+  } catch {
+    return null;
+  }
 }
 
 export function createWindowsPrivateAcl(
   runner: WindowsCommandRunner = new WindowsPrivateAclProcessAdapter(),
+  inspector: TrustedExecutableInspector = defaultWindowsExecutableInspector,
 ): WindowsPrivateAcl {
   return {
     async assertTrustedPath(pathValue: string): Promise<TrustedPath | null> {
       const result = await invokeAcl(
         runner,
+        inspector,
         'assert',
         { CENTURION_RELAY_PATH: pathValue },
         'assert',
@@ -1263,8 +1437,13 @@ export function createWindowsPrivateAcl(
     },
     async lockDownDirectory(pathValue: string): Promise<boolean> {
       return (
-        (await invokeAcl(runner, 'lock-directory', { CENTURION_RELAY_PATH: pathValue }, 'ok')) ===
-        true
+        (await invokeAcl(
+          runner,
+          inspector,
+          'lock-directory',
+          { CENTURION_RELAY_PATH: pathValue },
+          'ok',
+        )) === true
       );
     },
     async lockDownFiles(paths: readonly string[]): Promise<boolean> {
@@ -1279,6 +1458,7 @@ export function createWindowsPrivateAcl(
       return (
         (await invokeAcl(
           runner,
+          inspector,
           'lock-files',
           { CENTURION_RELAY_PATHS: JSON.stringify(paths) },
           'ok',
@@ -1289,6 +1469,7 @@ export function createWindowsPrivateAcl(
       return (
         (await invokeAcl(
           runner,
+          inspector,
           'promote',
           {
             CENTURION_RELAY_PATH: partialPath,
@@ -1300,8 +1481,13 @@ export function createWindowsPrivateAcl(
     },
     async fsyncReceipt(pathValue: string): Promise<boolean> {
       return (
-        (await invokeAcl(runner, 'fsync-receipt', { CENTURION_RELAY_PATH: pathValue }, 'ok')) ===
-        true
+        (await invokeAcl(
+          runner,
+          inspector,
+          'fsync-receipt',
+          { CENTURION_RELAY_PATH: pathValue },
+          'ok',
+        )) === true
       );
     },
   };
@@ -1561,8 +1747,91 @@ class WindowsReceiverFileSystem implements ReceiverFileSystem {
   }
 }
 
+function exactWindowsGitIgnoreArgs(args: WindowsGitIgnoreProcessInvocation['args']): boolean {
+  return (
+    args.length === 4 &&
+    args[0] === 'check-ignore' &&
+    args[1] === '-q' &&
+    args[2] === '--' &&
+    args[3] === '.private/centurion-thread-corpus'
+  );
+}
+
+function validWindowsGitEnvironment(environment: Readonly<Record<string, string>>): boolean {
+  const entries = Object.entries(environment);
+  return (
+    entries.length === Object.keys(WINDOWS_GIT_ENV).length &&
+    entries.every(([key, value]) => WINDOWS_GIT_ENV[key as keyof typeof WINDOWS_GIT_ENV] === value)
+  );
+}
+
+class WindowsGitIgnoreProcessAdapter implements WindowsGitIgnoreProcessRunner {
+  run(invocation: WindowsGitIgnoreProcessInvocation): {
+    failed: boolean;
+    status: number | null;
+  } {
+    if (
+      invocation.executable !== WINDOWS_GIT ||
+      invocation.shell !== false ||
+      !isCanonicalWindowsPath(invocation.cwd) ||
+      !exactWindowsGitIgnoreArgs(invocation.args) ||
+      !validWindowsGitEnvironment(invocation.env)
+    ) {
+      return { failed: true, status: null };
+    }
+    try {
+      const result = spawnSync(WINDOWS_GIT, invocation.args, {
+        cwd: invocation.cwd,
+        env: invocation.env,
+        shell: false,
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+      return {
+        failed: result.error !== undefined || result.signal !== null,
+        status: result.status,
+      };
+    } catch {
+      return { failed: true, status: null };
+    }
+  }
+}
+
+export function createFixedWindowsGitIgnoreRunner(
+  inspector: TrustedExecutableInspector = defaultWindowsExecutableInspector,
+  processRunner: WindowsGitIgnoreProcessRunner = new WindowsGitIgnoreProcessAdapter(),
+): {
+  isIgnored(request: { checkoutRoot: string; candidate: string }): Promise<boolean>;
+} {
+  return {
+    async isIgnored(request): Promise<boolean> {
+      if (
+        !path.win32.isAbsolute(request.checkoutRoot) ||
+        request.candidate !== '.private/centurion-thread-corpus' ||
+        !trustedWindowsExecutable(
+          await inspector.inspect(WINDOWS_GIT).catch(() => null),
+          WINDOWS_GIT,
+        )
+      ) {
+        return false;
+      }
+      const result = processRunner.run({
+        executable: WINDOWS_GIT,
+        args: ['check-ignore', '-q', '--', request.candidate],
+        cwd: request.checkoutRoot,
+        env: WINDOWS_GIT_ENV,
+        shell: false,
+      });
+      return !result.failed && result.status === 0;
+    },
+  };
+}
+
 class WindowsCheckoutRuntimeAdapter implements RelayReceiverRuntimePort {
-  constructor(private readonly checkoutRoot: string) {}
+  constructor(
+    private readonly checkoutRoot: string,
+    private readonly gitIgnore = createFixedWindowsGitIgnoreRunner(),
+  ) {}
 
   platform(): string {
     return process.platform;
@@ -1627,13 +1896,12 @@ class WindowsCheckoutRuntimeAdapter implements RelayReceiverRuntimePort {
         .relative(input.checkoutRoot, input.destinationRoot)
         .replaceAll('\\', '/');
       if (gitIgnoredPath !== '.private/centurion-thread-corpus') return null;
-      const result = spawnSync('git', ['check-ignore', '-q', '--', gitIgnoredPath], {
-        cwd: input.checkoutRoot,
-        shell: false,
-        stdio: 'ignore',
-        windowsHide: true,
-      });
-      return result.status === 0 ? { gitignored: true, ...identity } : null;
+      return (await this.gitIgnore.isIgnored({
+        checkoutRoot: input.checkoutRoot,
+        candidate: gitIgnoredPath,
+      }))
+        ? { gitignored: true, ...identity }
+        : null;
     } catch {
       return null;
     }

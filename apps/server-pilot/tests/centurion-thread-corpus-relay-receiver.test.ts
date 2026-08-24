@@ -1,4 +1,5 @@
 import {
+  WINDOWS_POWERSHELL,
   WINDOWS_PRIVATE_ACL_ENCODED_COMMAND,
   createWindowsPrivateAcl,
   parseRelayReceiverRuntimeConfig,
@@ -47,6 +48,19 @@ const SAFE_BODY_MARKER = 'SAFE_RECEIVER_BODY_MARKER';
 const SAFE_PATH_MARKER = 'C:\\synthetic\\safe-private-path';
 const SAFE_CONFIG_MARKER = 'synthetic-private-relay';
 const textEncoder = new TextEncoder();
+
+function trustedWindowsPowerShellInspector() {
+  return {
+    inspect: async () => ({
+      path: WINDOWS_POWERSHELL,
+      stableIdentity: 'safe-powershell-identity',
+      regularFile: true as const,
+      symbolicLink: false as const,
+      owner: 'trusted-system' as const,
+      writableByOthers: false as const,
+    }),
+  };
+}
 
 const relayConfig: RelayBucketConfig = {
   region: 'synthetic-region-1',
@@ -572,7 +586,7 @@ function replaceRemoteMemberAndRelayManifest(
         .join(''),
     ),
   );
-  const forgedManifest = {
+  const forgedManifest: ReceiverHarness['manifest'] = {
     schemaVersion: 'centurion-thread-corpus-relay-v1',
     transferId: TRANSFER_ID,
     snapshotId: harness.snapshot.context.snapshotId,
@@ -616,6 +630,11 @@ function parseTypeScript(filePath: string): ts.SourceFile {
   );
 }
 
+function collectNodes<T extends ts.Node>(
+  source: ts.SourceFile,
+  predicate: (node: ts.Node) => node is T,
+): T[];
+function collectNodes(source: ts.SourceFile, predicate: (node: ts.Node) => boolean): ts.Node[];
 function collectNodes(source: ts.SourceFile, predicate: (node: ts.Node) => boolean): ts.Node[] {
   const nodes: ts.Node[] = [];
   const visit = (node: ts.Node): void => {
@@ -930,14 +949,14 @@ describe('Windows private ACL process adapter', () => {
         stdout: '{"ok":true,"stableIdentity":"safe-handle-identity","volumeId":"safe-volume-a"}',
       })),
     };
-    const acl = createWindowsPrivateAcl(runner);
+    const acl = createWindowsPrivateAcl(runner, trustedWindowsPowerShellInspector());
 
     expect(await acl.assertTrustedPath(SAFE_PATH_MARKER)).toEqual({
       stableIdentity: 'safe-handle-identity',
       volumeId: 'safe-volume-a',
     });
     expect(runner.run).toHaveBeenCalledWith({
-      executable: 'powershell.exe',
+      executable: WINDOWS_POWERSHELL,
       args: [
         '-NoProfile',
         '-NonInteractive',
@@ -948,6 +967,7 @@ describe('Windows private ACL process adapter', () => {
         shell: false,
         windowsHide: true,
         stdio: ['ignore', 'pipe', 'ignore'],
+        cwd: 'C:\\Windows\\System32',
         env: {
           CENTURION_RELAY_OPERATION: 'assert',
           CENTURION_RELAY_PATH: SAFE_PATH_MARKER,
@@ -961,7 +981,7 @@ describe('Windows private ACL process adapter', () => {
     const runner: WindowsCommandRunner = {
       run: vi.fn(async () => ({ status: 1, stdout: null })),
     };
-    const acl = createWindowsPrivateAcl(runner);
+    const acl = createWindowsPrivateAcl(runner, trustedWindowsPowerShellInspector());
 
     expect(await acl.assertTrustedPath(hostilePath)).toBeNull();
     const invocation = vi.mocked(runner.run).mock.calls[0]?.[0];
@@ -1141,7 +1161,7 @@ describe('receiver source boundaries', () => {
     expect(processCalls).not.toHaveLength(0);
     expect(
       processCalls.every((call) =>
-        ['WindowsPrivateAclProcessAdapter', 'WindowsCheckoutRuntimeAdapter'].includes(
+        ['WindowsPrivateAclProcessAdapter', 'WindowsGitIgnoreProcessAdapter'].includes(
           containingClassName(call) ?? '',
         ),
       ),

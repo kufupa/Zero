@@ -14,6 +14,7 @@
   "scripts": {
     "dev": "tsx watch src/main.ts",
     "build": "tsc -p tsconfig.json",
+    "typecheck:centurion-phase-0": "tsc -p tsconfig.centurion-phase-0.json --noEmit",
     "start": "node dist/main.js",
     "worker": "node dist/mail/ingest/worker.js",
     "ai-worker": "node dist/ai/worker.js",
