@@ -387,35 +387,48 @@ const FORBIDDEN_COMPUTED_CAPABILITIES = new Set([
   'import',
 ]);
 
+const FORBIDDEN_CORE_ROOTS = new Set(['globalThis', 'global', 'Reflect']);
+
+const DANGEROUS_OBJECT_REFLECTION_METHODS = new Set([
+  'getOwnPropertyDescriptor',
+  'getOwnPropertyDescriptors',
+  'getPrototypeOf',
+  'defineProperty',
+  'defineProperties',
+]);
+
+const CORE_REQUIRED_OBJECT_UTILITIES = new Set(['getOwnPropertyDescriptor', 'getPrototypeOf']);
+
 function stringLiteralText(node: ts.Expression): string | null {
   return ts.isStringLiteralLike(node) ? node.text : null;
 }
 
-function isReflectGet(expression: ts.Expression): boolean {
-  if (
-    ts.isPropertyAccessExpression(expression) &&
-    ts.isIdentifier(expression.expression) &&
-    expression.expression.text === 'Reflect'
-  ) {
-    return expression.name.text === 'get';
+function objectReflectionMethodName(
+  access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+): string | null {
+  if (!ts.isIdentifier(access.expression) || access.expression.text !== 'Object') {
+    return null;
   }
-  return (
-    ts.isElementAccessExpression(expression) &&
-    ts.isIdentifier(expression.expression) &&
-    expression.expression.text === 'Reflect' &&
-    expression.argumentExpression !== undefined &&
-    stringLiteralText(expression.argumentExpression) === 'get'
-  );
+  return ts.isPropertyAccessExpression(access)
+    ? access.name.text
+    : access.argumentExpression === undefined
+      ? null
+      : stringLiteralText(access.argumentExpression);
 }
 
-function sourceBoundaryViolations(source: ts.SourceFile): string[] {
+function sourceBoundaryViolations(
+  source: ts.SourceFile,
+  allowedObjectReflectionMethods: ReadonlySet<string> = new Set(),
+): string[] {
   const violations = collectNodes(source, ts.isImportDeclaration).flatMap((node) =>
     ts.isStringLiteral(node.moduleSpecifier) && !ALLOWED_CORE_IMPORTS.has(node.moduleSpecifier.text)
       ? [`import:${node.moduleSpecifier.text}`]
       : [],
   );
   for (const identifier of collectNodes(source, ts.isIdentifier)) {
-    if (FORBIDDEN_CORE_GLOBALS.has(identifier.text)) {
+    if (FORBIDDEN_CORE_ROOTS.has(identifier.text)) {
+      violations.push(`root:${identifier.text}`);
+    } else if (FORBIDDEN_CORE_GLOBALS.has(identifier.text)) {
       violations.push(`global:${identifier.text}`);
     }
   }
@@ -443,12 +456,23 @@ function sourceBoundaryViolations(source: ts.SourceFile): string[] {
     if (propertyName && FORBIDDEN_COMPUTED_CAPABILITIES.has(propertyName)) {
       violations.push(`computed:${propertyName}`);
     }
+    const objectMethod = objectReflectionMethodName(access);
+    if (
+      objectMethod &&
+      DANGEROUS_OBJECT_REFLECTION_METHODS.has(objectMethod) &&
+      !allowedObjectReflectionMethods.has(objectMethod)
+    ) {
+      violations.push(`object-reflection:${objectMethod}`);
+    }
   }
-  for (const call of collectNodes(source, ts.isCallExpression)) {
-    if (!isReflectGet(call.expression) || call.arguments.length < 2) continue;
-    const propertyName = stringLiteralText(call.arguments[1]!);
-    if (propertyName && FORBIDDEN_COMPUTED_CAPABILITIES.has(propertyName)) {
-      violations.push(`reflect:${propertyName}`);
+  for (const access of collectNodes(source, ts.isPropertyAccessExpression)) {
+    const objectMethod = objectReflectionMethodName(access);
+    if (
+      objectMethod &&
+      DANGEROUS_OBJECT_REFLECTION_METHODS.has(objectMethod) &&
+      !allowedObjectReflectionMethods.has(objectMethod)
+    ) {
+      violations.push(`object-reflection:${objectMethod}`);
     }
   }
   return [...new Set(violations)].sort();
@@ -836,6 +860,14 @@ describe('Centurion private thread corpus analysis', () => {
         "void globalThis['eval'];",
         "void globalThis['require'];",
         "void globalThis['import'];",
+        'void globalThis;',
+        'void global;',
+        'void Reflect;',
+        "void Object.getOwnPropertyDescriptor(globalThis, 'fetch')!.value;",
+        'void Object.getOwnPropertyDescriptors(globalThis);',
+        'void Object.getPrototypeOf(globalThis);',
+        "void Object.defineProperty({}, 'synthetic', {});",
+        'void Object.defineProperties({}, {});',
       ].join('\n'),
       ts.ScriptTarget.Latest,
       true,
@@ -875,9 +907,16 @@ describe('Centurion private thread corpus analysis', () => {
         'computed:import',
         'computed:process',
         'computed:require',
-        'reflect:fetch',
+        'root:globalThis',
+        'root:global',
+        'root:Reflect',
+        'object-reflection:defineProperties',
+        'object-reflection:defineProperty',
+        'object-reflection:getOwnPropertyDescriptor',
+        'object-reflection:getOwnPropertyDescriptors',
+        'object-reflection:getPrototypeOf',
       ]),
     );
-    expect(sourceBoundaryViolations(source)).toEqual([]);
+    expect(sourceBoundaryViolations(source, CORE_REQUIRED_OBJECT_UTILITIES)).toEqual([]);
   });
 });
