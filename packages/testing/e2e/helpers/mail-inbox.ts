@@ -38,8 +38,7 @@ export async function expectAiDraftCardVisible(page: Page) {
   await expect(page.getByText('AI draft').first()).toBeVisible();
 }
 
-export async function openCommandPalette(page: Page) {
+export async function focusMailSearch(page: Page) {
   await page.keyboard.press('Control+k');
-  const dialogLocator = page.locator('[cmdk-dialog], [role="dialog"]');
-  await expect(dialogLocator.first()).toBeVisible({ timeout: 5000 });
+  await expect(page.locator('#mail-search')).toBeFocused({ timeout: 5000 });
 }
