@@ -1,6 +1,8 @@
 import {
+  CENTURION_THREAD_CORPUS_ANALYSIS_VERSION,
   preparePrivateAnalysis,
   reconcileAnalystDecisionBundle,
+  type AnalystDecisionBundleV1,
   type PreparedPrivateAnalysisV1,
   type PrivateAnalysisPacketV1,
   type ReconciledAnalystDecisionsV1,
@@ -14,6 +16,7 @@ import {
   mkdirSync,
   openSync,
   readdirSync,
+  readFileSync,
   realpathSync,
   renameSync,
   writeFileSync,
@@ -29,8 +32,7 @@ import {
   type WindowsPrivateAcl,
 } from './centurion-thread-corpus-relay-receiver.js';
 import { buildCenturionCorpusEvidenceReport } from './centurion-thread-corpus-evidence.js';
-import { spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -212,6 +214,34 @@ function statePath(analysisRoot: string, transferId: string): string {
   return path.win32.join(analysisRoot, 'state', `${transferId}.v1.json`);
 }
 
+type StateTemporaryReservation = 'reserved' | 'collision' | 'blocked';
+
+export function reserveUniqueStateTemporaryPath(input: {
+  finalPath: string;
+  nextUuid: () => string;
+  reserve: (candidate: string) => StateTemporaryReservation;
+  maximumAttempts?: number;
+}): string | null {
+  const maximumAttempts = input.maximumAttempts ?? 8;
+  if (
+    !isCanonicalWindowsPath(input.finalPath) ||
+    !Number.isSafeInteger(maximumAttempts) ||
+    maximumAttempts < 1 ||
+    maximumAttempts > 64
+  ) {
+    return null;
+  }
+  for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
+    const uuid = input.nextUuid();
+    if (!isUuidV4(uuid)) return null;
+    const candidate = `${input.finalPath}.partial-${uuid}`;
+    const result = input.reserve(candidate);
+    if (result === 'reserved') return candidate;
+    if (result !== 'collision') return null;
+  }
+  return null;
+}
+
 function packetRelativePath(index: number): string {
   return `packets/packet-${String(index).padStart(6, '0')}.v1.json`;
 }
@@ -300,6 +330,22 @@ function preparedManifestBytes(prepared: PreparedPrivateAnalysisV1): Uint8Array 
   return textEncoder.encode(JSON.stringify(prepared.manifest));
 }
 
+function worstCaseDecisionBundleBytes(prepared: PreparedPrivateAnalysisV1): Uint8Array {
+  const decisionBundle = {
+    schemaVersion: CENTURION_THREAD_CORPUS_ANALYSIS_VERSION,
+    preparedManifestSha256: prepared.manifestSha256,
+    decisions: prepared.packets.map((packet) => ({
+      schemaVersion: CENTURION_THREAD_CORPUS_ANALYSIS_VERSION,
+      analysisItemId: packet.analysisItemId,
+      workflow: 'reservation_change',
+      risk: 'cancellation_fee',
+      confidence: 'medium',
+      attention: 'human_review',
+    })),
+  } satisfies AnalystDecisionBundleV1;
+  return textEncoder.encode(JSON.stringify(decisionBundle));
+}
+
 function stateFor(
   transferId: string,
   prepared: PreparedPrivateAnalysisV1,
@@ -383,20 +429,8 @@ async function readExactPrivateFile(
     content !== null &&
     after !== null &&
     sameTrustedPath(before, after) &&
+    sha256(content) === sha256(expected) &&
     equalBytes(content, expected)
-  );
-}
-
-async function writeAndLockPrivateFile(
-  port: AnalysisWorkspacePort,
-  pathValue: string,
-  content: Uint8Array,
-  expectedVolumeId: string,
-): Promise<boolean> {
-  return (
-    (await port.writeCreateNewProtected(pathValue, content)) &&
-    (await lockAndReassertFile(port.acl, pathValue, expectedVolumeId)) &&
-    (await readExactPrivateFile(port, port.acl, pathValue, content, expectedVolumeId))
   );
 }
 
@@ -406,12 +440,7 @@ async function writeOrVerifyPrivateFile(
   content: Uint8Array,
   expectedVolumeId: string,
 ): Promise<boolean> {
-  if (await port.writeCreateNewProtected(pathValue, content)) {
-    return (
-      (await lockAndReassertFile(port.acl, pathValue, expectedVolumeId)) &&
-      (await readExactPrivateFile(port, port.acl, pathValue, content, expectedVolumeId))
-    );
-  }
+  await port.writeCreateNewProtected(pathValue, content);
   return (
     (await lockAndReassertFile(port.acl, pathValue, expectedVolumeId)) &&
     (await readExactPrivateFile(port, port.acl, pathValue, content, expectedVolumeId))
@@ -788,8 +817,10 @@ function contextFromManifest(
 
 export function parseAnalysisWorkspaceConfig(value: string): AnalysisWorkspaceConfigV1 | null {
   try {
+    if (textEncoder.encode(value).byteLength > MAX_CONFIG_BYTES) return null;
     const parsed: unknown = JSON.parse(value);
     if (
+      value !== JSON.stringify(parsed) ||
       !isRecord(parsed) ||
       !hasExactKeys(parsed, [
         'version',
@@ -899,7 +930,8 @@ export async function runCenturionThreadCorpusAnalysis(input: {
       !prepared ||
       prepared.packets.length > MAX_PACKET_FILES ||
       prepared.manifest.snapshotDigest !== received.snapshotDigest ||
-      preparedManifestBytes(prepared).byteLength > MAX_MANIFEST_BYTES
+      preparedManifestBytes(prepared).byteLength > MAX_MANIFEST_BYTES ||
+      worstCaseDecisionBundleBytes(prepared).byteLength > config.maxDecisionBytes
     ) {
       return blocked();
     }
@@ -954,7 +986,7 @@ export async function runCenturionThreadCorpusAnalysis(input: {
         if (
           packet.packetBytes !== packetBytes.byteLength ||
           packet.packetSha256 !== sha256(packetBytes) ||
-          !(await writeAndLockPrivateFile(
+          !(await writeOrVerifyPrivateFile(
             input.port,
             workspaceFilePath(workspace.path, packetRelativePath(index)),
             packetBytes,
@@ -965,7 +997,7 @@ export async function runCenturionThreadCorpusAnalysis(input: {
         }
       }
       if (
-        !(await writeAndLockPrivateFile(
+        !(await writeOrVerifyPrivateFile(
           input.port,
           workspaceFilePath(workspace.path, 'prepared-manifest.v1.json'),
           preparedManifestBytes(prepared),
@@ -1066,7 +1098,6 @@ export async function runCenturionThreadCorpusAnalysis(input: {
 class WindowsAnalysisWorkspacePort implements AnalysisWorkspacePort {
   readonly acl: WindowsPrivateAcl;
   private readonly workspaces = new Set<string>();
-  private stateSequence = 0;
 
   constructor(
     private readonly checkoutRoot: string,
@@ -1398,13 +1429,27 @@ class WindowsAnalysisWorkspacePort implements AnalysisWorkspacePort {
       if (!stateRootAcl || !(await this.acl.lockDownDirectory(stateRoot))) return false;
       const finalPath = statePath(analysisRoot, state.transferId);
       if (path.win32.dirname(finalPath) !== stateRoot) return false;
-      const temporaryPath = `${finalPath}.partial-${String(++this.stateSequence)}`;
       const content = textEncoder.encode(JSON.stringify(state));
-      descriptor = openSync(
-        temporaryPath,
-        fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
-        0o600,
-      );
+      const temporaryPath = reserveUniqueStateTemporaryPath({
+        finalPath,
+        nextUuid: randomUUID,
+        reserve: (candidate) => {
+          try {
+            descriptor = openSync(
+              candidate,
+              fsConstants.O_WRONLY |
+                fsConstants.O_CREAT |
+                fsConstants.O_EXCL |
+                fsConstants.O_NOFOLLOW,
+              0o600,
+            );
+            return 'reserved';
+          } catch (error) {
+            return isRecord(error) && error.code === 'EEXIST' ? 'collision' : 'blocked';
+          }
+        },
+      });
+      if (!temporaryPath || descriptor === undefined) return false;
       writeFileSync(descriptor, content);
       fsyncSync(descriptor);
       const opened = fstatSync(descriptor);
@@ -1469,15 +1514,18 @@ class WindowsAnalysisWorkspacePort implements AnalysisWorkspacePort {
   }
 
   private hasRequiredIgnoredRoots(checkoutRoot: string): boolean {
-    return ['.private/centurion-thread-corpus/', '.private/centurion-thread-analysis/'].every(
-      (relativePath) =>
-        spawnSync('git', ['check-ignore', '-q', '--', relativePath], {
-          cwd: checkoutRoot,
-          shell: false,
-          stdio: 'ignore',
-          windowsHide: true,
-        }).status === 0,
-    );
+    try {
+      const entries = new Set(
+        readFileSync(path.win32.join(checkoutRoot, '.gitignore'), 'utf8')
+          .split(/\r?\n/u)
+          .map((entry) => entry.trim()),
+      );
+      return ['.private/centurion-thread-corpus/', '.private/centurion-thread-analysis/'].every(
+        (relativePath) => entries.has(relativePath),
+      );
+    } catch {
+      return false;
+    }
   }
 
   private workspaceForPath(pathValue: string): string {

@@ -1,5 +1,6 @@
 import {
   parseAnalysisWorkspaceConfig,
+  reserveUniqueStateTemporaryPath,
   runCenturionThreadCorpusAnalysis,
   type AnalysisWorkspaceConfigV1,
   type AnalysisWorkspacePort,
@@ -44,7 +45,9 @@ function sha256(content: string | Uint8Array): string {
   return createHash('sha256').update(content).digest('hex');
 }
 
-function syntheticSnapshot(): PrivateThreadCorpusSnapshot {
+function syntheticSnapshot(messageCount = 1): PrivateThreadCorpusSnapshot {
+  const rowId = (index: number): string =>
+    index === 0 ? 'synthetic-analysis-workspace-row' : `synthetic-analysis-workspace-row-${index}`;
   return buildPrivateThreadCorpusSnapshot({
     context: {
       snapshotId: 'synthetic-analysis-workspace-snapshot-001',
@@ -59,15 +62,27 @@ function syntheticSnapshot(): PrivateThreadCorpusSnapshot {
       exporterVersion: 'synthetic-analysis-workspace-test-v1',
       unscopedQuarantineExcluded: 0,
     },
-    formatted: formatLogicalMessages([
-      {
-        sourceRowId: 'synthetic-analysis-workspace-row',
+    formatted: formatLogicalMessages(
+      Array.from({ length: messageCount }, (_, index) => ({
+        sourceRowId: rowId(index),
         scopeMembership: ['centurion_transport', 'designated_reservationist_mailbox'],
         receivedAt: '2026-08-23T10:00:00.000Z',
-        threadId: 'synthetic-analysis-workspace-thread',
-        messageId: '<synthetic-analysis-workspace@example.test>',
-        contentFingerprint: 'synthetic-analysis-workspace-content',
-        provenanceFingerprint: 'synthetic-analysis-workspace-provenance',
+        threadId:
+          index === 0
+            ? 'synthetic-analysis-workspace-thread'
+            : `synthetic-analysis-workspace-thread-${index}`,
+        messageId:
+          index === 0
+            ? '<synthetic-analysis-workspace@example.test>'
+            : `<synthetic-analysis-workspace-${index}@example.test>`,
+        contentFingerprint:
+          index === 0
+            ? 'synthetic-analysis-workspace-content'
+            : `synthetic-analysis-workspace-content-${index}`,
+        provenanceFingerprint:
+          index === 0
+            ? 'synthetic-analysis-workspace-provenance'
+            : `synthetic-analysis-workspace-provenance-${index}`,
         body: PRIVATE_BODY_MARKER,
         privateMessage: {
           subject: PRIVATE_BODY_MARKER,
@@ -89,7 +104,10 @@ function syntheticSnapshot(): PrivateThreadCorpusSnapshot {
           },
           sentAt: null,
           rawMime: {
-            locator: `${PRIVATE_PATH_MARKER}\\message.eml`,
+            locator:
+              index === 0
+                ? `${PRIVATE_PATH_MARKER}\\message.eml`
+                : `${PRIVATE_PATH_MARKER}\\message-${index}.eml`,
             status: 'available',
           },
           attachments: [],
@@ -101,21 +119,22 @@ function syntheticSnapshot(): PrivateThreadCorpusSnapshot {
           sourceMetadata: {
             transportId: 'synthetic-centurion-transport',
             ingestMailboxId: null,
-            uidl: 'synthetic-analysis-workspace-uidl',
+            uidl:
+              index === 0
+                ? 'synthetic-analysis-workspace-uidl'
+                : `synthetic-analysis-workspace-uidl-${index}`,
           },
         },
-      },
-    ]),
+      })),
+    ),
     hydration: {
       attachmentLocators: [],
-      payloads: [
-        {
-          kind: 'raw_mime',
-          sourceRowId: 'synthetic-analysis-workspace-row',
-          status: 'available',
-          content: textEncoder.encode(PRIVATE_ARTIFACT_MARKER),
-        },
-      ],
+      payloads: Array.from({ length: messageCount }, (_, index) => ({
+        kind: 'raw_mime',
+        sourceRowId: rowId(index),
+        status: 'available',
+        content: textEncoder.encode(PRIVATE_ARTIFACT_MARKER),
+      })),
     },
   });
 }
@@ -383,6 +402,17 @@ function createHarness(snapshot = syntheticSnapshot()): FakeAnalysisWorkspacePor
   return new FakeAnalysisWorkspacePort(snapshot);
 }
 
+function freshProcessFrom(port: FakeAnalysisWorkspacePort): FakeAnalysisWorkspacePort {
+  const fresh = createHarness(port.received.snapshot);
+  for (const [filePath, content] of port.files) {
+    fresh.files.set(filePath, cloneBytes(content));
+  }
+  for (const [transferId, state] of port.states) {
+    fresh.states.set(transferId, cloneState(state));
+  }
+  return fresh;
+}
+
 async function runCommand(
   port: FakeAnalysisWorkspacePort,
   args: readonly string[],
@@ -429,6 +459,126 @@ function collectNodes(source: ts.SourceFile, predicate: (node: ts.Node) => boole
   };
   visit(source);
   return nodes;
+}
+
+function sourceImports(source: ts.SourceFile): string[] {
+  return collectNodes(source, ts.isImportDeclaration).flatMap((node) =>
+    ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)
+      ? [node.moduleSpecifier.text]
+      : [],
+  );
+}
+
+function allowedProcessReference(
+  identifier: ts.Identifier,
+  fileKind: 'workspace' | 'script',
+): boolean {
+  if (
+    !ts.isPropertyAccessExpression(identifier.parent) ||
+    identifier.parent.expression !== identifier
+  ) {
+    return false;
+  }
+  const first = identifier.parent;
+  if (fileKind === 'workspace') return first.name.text === 'platform';
+  if (first.name.text === 'argv' || first.name.text === 'exitCode') return true;
+  return (
+    first.name.text === 'stdout' &&
+    ts.isPropertyAccessExpression(first.parent) &&
+    first.parent.expression === first &&
+    first.parent.name.text === 'write'
+  );
+}
+
+function sourceBoundaryViolations(
+  source: ts.SourceFile,
+  fileKind: 'workspace' | 'script',
+  allowedImports: ReadonlySet<string>,
+): string[] {
+  const violations = sourceImports(source)
+    .filter((moduleName) => !allowedImports.has(moduleName))
+    .map((moduleName) => `import:${moduleName}`);
+  const forbiddenIdentifiers = new Set([
+    'AWS',
+    'Bedrock',
+    'Function',
+    'Mastra',
+    'WebSocket',
+    'XMLHttpRequest',
+    'aws',
+    'bedrock',
+    'console',
+    'eval',
+    'fetch',
+    'global',
+    'globalThis',
+    'mastra',
+    'require',
+    'Reflect',
+  ]);
+  const forbiddenCalls = new Set([
+    'connect',
+    'exec',
+    'execFile',
+    'execFileSync',
+    'execSync',
+    'fetch',
+    'fork',
+    'require',
+    'request',
+    'send',
+    'spawn',
+    'spawnSync',
+  ]);
+
+  for (const node of collectNodes(source, ts.isIdentifier)) {
+    if (!ts.isIdentifier(node)) continue;
+    const identifier = node;
+    if (identifier.text === 'process') {
+      if (!allowedProcessReference(identifier, fileKind)) {
+        violations.push('process');
+      }
+    } else if (forbiddenIdentifiers.has(identifier.text)) {
+      violations.push(`global:${identifier.text}`);
+    }
+  }
+  if (collectNodes(source, ts.isImportEqualsDeclaration).length > 0) {
+    violations.push('import-equals');
+  }
+  for (const call of collectNodes(source, ts.isCallExpression)) {
+    if (!ts.isCallExpression(call)) continue;
+    if (call.expression.kind === ts.SyntaxKind.ImportKeyword) {
+      violations.push('dynamic-import');
+    } else if (ts.isIdentifier(call.expression) && forbiddenCalls.has(call.expression.text)) {
+      violations.push(`call:${call.expression.text}`);
+    } else if (
+      ts.isPropertyAccessExpression(call.expression) &&
+      forbiddenCalls.has(call.expression.name.text)
+    ) {
+      violations.push(`call:${call.expression.name.text}`);
+    }
+  }
+  for (const access of collectNodes(source, ts.isElementAccessExpression)) {
+    if (
+      !ts.isElementAccessExpression(access) ||
+      !ts.isStringLiteralLike(access.argumentExpression)
+    ) {
+      continue;
+    }
+    if (
+      ['constructor', 'eval', 'fetch', 'Function', 'import', 'process', 'require'].includes(
+        access.argumentExpression.text,
+      )
+    ) {
+      violations.push(`computed:${access.argumentExpression.text}`);
+    }
+  }
+  for (const access of collectNodes(source, ts.isPropertyAccessExpression)) {
+    if (ts.isPropertyAccessExpression(access) && access.name.text === 'constructor') {
+      violations.push('constructor');
+    }
+  }
+  return [...new Set(violations)].sort();
 }
 
 describe('Centurion private analysis workspace command', () => {
@@ -511,6 +661,30 @@ describe('Centurion private analysis workspace command', () => {
         }),
       ),
     ).toBeNull();
+    expect(
+      parseAnalysisWorkspaceConfig(
+        JSON.stringify(CONFIG).replace(
+          '"version":"centurion-thread-corpus-analysis-workspace-config-v1"',
+          '"version":"centurion-thread-corpus-analysis-workspace-config-v1","version":"centurion-thread-corpus-analysis-workspace-config-v1"',
+        ),
+      ),
+    ).toBeNull();
+  });
+
+  it.each([
+    ['one-byte decision limit', syntheticSnapshot(), 1],
+    ['too-many prepared items for decision limit', syntheticSnapshot(2), 400],
+  ])('blocks %s before private packet writes', async (_kind, snapshot, maxDecisionBytes) => {
+    const port = createHarness(snapshot);
+    port.configResult = JSON.stringify({ ...CONFIG, maxDecisionBytes });
+
+    expect(await runCommand(port, ['prepare', '--transfer-id', TRANSFER_ID])).toEqual({
+      code: 3,
+      stdout: ['{"outcome":"blocked"}\n'],
+    });
+    expect(port.calls.some((call) => call.startsWith('write:'))).toBe(false);
+    expect(port.states.get(TRANSFER_ID)).toBeUndefined();
+    expectNoPrivateLeak(port.files);
   });
 
   it('creates immutable private packets and a bound prepared state before fixed safe output', async () => {
@@ -662,6 +836,60 @@ describe('Centurion private analysis workspace command', () => {
       code: 3,
       stdout: ['{"outcome":"blocked"}\n'],
     });
+  });
+
+  it('recovers a fresh process after packets and manifest persist before prepared state', async () => {
+    const crashed = createHarness();
+    crashed.deniedStateTransitions.add('prepared');
+
+    expect(await runCommand(crashed, ['prepare', '--transfer-id', TRANSFER_ID])).toEqual({
+      code: 3,
+      stdout: ['{"outcome":"blocked"}\n'],
+    });
+    expect(crashed.states.get(TRANSFER_ID)).toBeUndefined();
+    expect(crashed.fileEnding('prepared-manifest.v1.json')).toBeDefined();
+
+    const retry = freshProcessFrom(crashed);
+    expect(await runCommand(retry, ['prepare', '--transfer-id', TRANSFER_ID])).toEqual({
+      code: 0,
+      stdout: ['{"outcome":"prepared"}\n'],
+    });
+    expect(retry.states.get(TRANSFER_ID)?.state).toBe('prepared');
+
+    const conflictingRetry = freshProcessFrom(crashed);
+    const packetPath = conflictingRetry.fileEnding(
+      'packets/packet-000000.v1.json'.replaceAll('/', '\\'),
+    );
+    conflictingRetry.files.set(packetPath, textEncoder.encode('SAFE_PACKET_CONFLICT'));
+    expect(await runCommand(conflictingRetry, ['prepare', '--transfer-id', TRANSFER_ID])).toEqual({
+      code: 3,
+      stdout: ['{"outcome":"blocked"}\n'],
+    });
+    expect(conflictingRetry.states.get(TRANSFER_ID)).toBeUndefined();
+  });
+
+  it('skips a persisted state-temp collision after simulated restart', () => {
+    const finalPath = `${ANALYSIS_ROOT}\\state\\${TRANSFER_ID}.v1.json`;
+    const firstUuid = '11111111-1111-4111-8111-111111111111';
+    const secondUuid = '22222222-2222-4222-8222-222222222222';
+    const firstPath = `${finalPath}.partial-${firstUuid}`;
+    const reserved = new Set([firstPath]);
+    const attempted: string[] = [];
+    const values = [firstUuid, secondUuid];
+
+    const result = reserveUniqueStateTemporaryPath({
+      finalPath,
+      nextUuid: () => values.shift() ?? '',
+      reserve: (candidate) => {
+        attempted.push(candidate);
+        if (reserved.has(candidate)) return 'collision';
+        reserved.add(candidate);
+        return 'reserved';
+      },
+    });
+
+    expect(result).toBe(`${finalPath}.partial-${secondUuid}`);
+    expect(attempted).toEqual([firstPath, result]);
   });
 
   it('writes decision_written before private report then reconciled with fixed safe output', async () => {
@@ -847,7 +1075,7 @@ describe('Centurion private analysis workspace command', () => {
 });
 
 describe('Centurion analysis workspace source boundaries', () => {
-  it('contains no cloud, database, model, browser, mailbox, category, dynamic execution, or raw logging capabilities', () => {
+  it('allows only fixed local imports and rejects aliased execution or egress bypasses', () => {
     const workspacePath = fileURLToPath(
       new URL('../src/ops/centurion-thread-corpus-analysis-workspace.ts', import.meta.url),
     );
@@ -856,52 +1084,70 @@ describe('Centurion analysis workspace source boundaries', () => {
     );
     const workspace = parseTypeScript(workspacePath);
     const script = parseTypeScript(scriptPath);
-    const source = `${workspace.text}\n${script.text}`;
-    const imports = [workspace, script].flatMap((file) =>
-      collectNodes(file, ts.isImportDeclaration).flatMap((node) => {
-        if (!ts.isImportDeclaration(node) || !ts.isStringLiteral(node.moduleSpecifier)) return [];
-        return [node.moduleSpecifier.text];
-      }),
-    );
-    const forbiddenImports = [
-      '@aws-sdk/',
-      'bedrock',
-      'database',
-      'drizzle',
-      'mastra',
-      'playwright',
-      'postgres',
-      'puppeteer',
-      'ssm',
-    ];
+    const workspaceImports = new Set([
+      './centurion-thread-corpus-analysis.js',
+      './centurion-thread-corpus-evidence.js',
+      './centurion-thread-corpus-relay-receiver.js',
+      '../../scripts/export-thread-corpus.js',
+      'node:crypto',
+      'node:fs',
+      'node:path',
+      'node:url',
+    ]);
+    const scriptImports = new Set([
+      '../src/ops/centurion-thread-corpus-analysis-workspace.js',
+      'node:path',
+      'node:url',
+    ]);
+    expect(sourceBoundaryViolations(workspace, 'workspace', workspaceImports)).toEqual([]);
+    expect(sourceBoundaryViolations(script, 'script', scriptImports)).toEqual([]);
 
-    expect(
-      imports.filter((moduleName) =>
-        forbiddenImports.some((forbidden) => moduleName.toLowerCase().includes(forbidden)),
-      ),
-    ).toEqual([]);
-    expect(source).not.toMatch(/\b(?:AWS|Bedrock|Mastra|mailbox|category)\b/i);
-    expect(source).not.toMatch(/\b(?:eval|Function)\b/);
-    expect(source).not.toContain('import(');
-    expect(source).not.toContain('console.');
-    expect(source).not.toContain('process.stderr');
-    expect(source).not.toContain('powershell.exe');
-    expect(source).not.toContain('spawn(');
-    const gitChecks = collectNodes(
-      workspace,
-      (node): node is ts.CallExpression =>
-        ts.isCallExpression(node) &&
-        ts.isIdentifier(node.expression) &&
-        node.expression.text === 'spawnSync',
-    ) as ts.CallExpression[];
-    expect(gitChecks).toHaveLength(1);
-    const gitCheck = gitChecks[0];
-    if (!gitCheck || !ts.isStringLiteral(gitCheck.arguments[0])) {
-      throw new Error('Expected fixed git ignore check');
-    }
-    expect(gitCheck.arguments[0].text).toBe('git');
-    expect(source).toContain('shell: false');
-    expect(source).toContain("stdio: 'ignore'");
-    expect(source).toContain('createWindowsPrivateAcl');
+    const fixture = ts.createSourceFile(
+      'synthetic-forbidden-workspace.ts',
+      [
+        "import { request as httpsRequest } from 'node:https';",
+        "import { spawnSync as safeRunner } from 'node:child_process';",
+        "import processAlias from 'node:process';",
+        "import * as networkAlias from 'node:net';",
+        "import { Client as databaseAlias } from 'pg';",
+        "import { S3Client as cloudAlias } from '@aws-sdk/client-s3';",
+        "import { Mastra as modelAlias } from '@mastra/core';",
+        'void httpsRequest;',
+        'void safeRunner;',
+        'void processAlias;',
+        'void networkAlias;',
+        'void databaseAlias;',
+        'void cloudAlias;',
+        'void modelAlias;',
+        'void process.env;',
+        'void globalThis["fetch"];',
+        'void global["process"];',
+        'void Reflect.get(globalThis, "fetch");',
+        'void ({}).constructor;',
+        'void import("synthetic-module");',
+      ].join('\n'),
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS,
+    );
+    expect(sourceBoundaryViolations(fixture, 'workspace', new Set())).toEqual(
+      expect.arrayContaining([
+        'computed:fetch',
+        'computed:process',
+        'constructor',
+        'dynamic-import',
+        'global:Reflect',
+        'global:global',
+        'global:globalThis',
+        'import:@aws-sdk/client-s3',
+        'import:@mastra/core',
+        'import:node:child_process',
+        'import:node:https',
+        'import:node:net',
+        'import:node:process',
+        'import:pg',
+        'process',
+      ]),
+    );
   });
 });
