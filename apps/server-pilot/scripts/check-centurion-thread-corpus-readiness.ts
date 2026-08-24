@@ -543,7 +543,7 @@ class Ec2GitProcessAdapter implements Ec2GitProcessRunner {
         cwd: invocation.cwd,
         encoding: 'utf8',
         env: invocation.env,
-        maxBuffer: 64 * 1024,
+        maxBuffer: 65_536,
         shell: false,
         stdio: ['ignore', 'pipe', 'ignore'],
         windowsHide: true,
@@ -579,7 +579,7 @@ class Ec2AwsProcessAdapter implements Ec2AwsProcessRunner {
         cwd: '/',
         encoding: 'utf8',
         env: invocation.env,
-        maxBuffer: 64 * 1024,
+        maxBuffer: 65_536,
         shell: false,
         stdio: ['ignore', 'pipe', 'ignore'],
         windowsHide: true,
@@ -752,38 +752,6 @@ export function createFixedReadinessProcessAdapters(
 
 const fixedReadinessProcessAdapters = createFixedReadinessProcessAdapters();
 
-async function defaultInspectGit(request: {
-  check: GitCheck;
-  cwd: string;
-}): Promise<string | null> {
-  return await fixedReadinessProcessAdapters.inspectGit(request);
-}
-
-async function defaultIsIgnored(request: {
-  repoRoot: string;
-  relativePath: string;
-}): Promise<boolean> {
-  return await fixedReadinessProcessAdapters.isIgnored(request);
-}
-
-async function defaultSimulateReadOnlyPolicy(request: {
-  region: string;
-  bucket: string;
-  prefix: string;
-  policySourceArn: string;
-  kmsKeyId: string;
-}): Promise<readonly PolicySimulationResult[] | null> {
-  return await fixedReadinessProcessAdapters.simulateReadOnlyPolicy(request);
-}
-
-async function defaultProbeS3AndKmsMetadata(request: {
-  region: string;
-  bucket: string;
-  kmsKeyId: string;
-}): Promise<boolean> {
-  return await fixedReadinessProcessAdapters.probeS3AndKmsMetadata(request);
-}
-
 function parseConfig(value: string): CenturionThreadCorpusReadinessConfig | null {
   try {
     const parsed = centurionThreadCorpusReadinessConfigSchema.safeParse(JSON.parse(value));
@@ -951,12 +919,12 @@ export function createCenturionThreadCorpusReadinessCommand(
       AWS_REGION: process.env.AWS_REGION,
       S3_BUCKET: process.env.S3_BUCKET,
     }),
-    inspectGit: defaultInspectGit,
+    inspectGit: fixedReadinessProcessAdapters.inspectGit,
     availableBytes: defaultAvailableBytes,
-    isIgnored: defaultIsIgnored,
+    isIgnored: fixedReadinessProcessAdapters.isIgnored,
     isStructurallySafeWindowsTarget: defaultIsStructurallySafeWindowsTarget,
-    simulateReadOnlyPolicy: defaultSimulateReadOnlyPolicy,
-    probeS3AndKmsMetadata: defaultProbeS3AndKmsMetadata,
+    simulateReadOnlyPolicy: fixedReadinessProcessAdapters.simulateReadOnlyPolicy,
+    probeS3AndKmsMetadata: fixedReadinessProcessAdapters.probeS3AndKmsMetadata,
     writeStdout: (value) => process.stdout.write(value),
     ...overrides,
   };

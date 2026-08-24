@@ -116,7 +116,7 @@ export type TrustedExecutableInspection = {
 };
 
 export type TrustedExecutableInspector = {
-  inspect(executable: string): Promise<TrustedExecutableInspection | null>;
+  inspect(executable: string, cwd: string): Promise<TrustedExecutableInspection | null>;
 };
 
 type TrustedPath = {
@@ -255,45 +255,11 @@ function trustedWindowsGitExecutable(
   );
 }
 
-function inspectDefaultWindowsGitExecutable(
-  executable: string,
-): TrustedExecutableInspection | null {
-  try {
-    if (executable !== WINDOWS_GIT || !path.win32.isAbsolute(executable)) return null;
-    let current = executable;
-    let executableStats: ReturnType<typeof lstatSync> | null = null;
-    const volumeRoot = path.win32.parse(executable).root;
-    while (true) {
-      const stats = lstatSync(current);
-      if (stats.isSymbolicLink() || !sameWindowsGitExecutablePath(realpathSync(current), current)) {
-        return null;
-      }
-      if (sameWindowsGitExecutablePath(current, executable)) {
-        if (!stats.isFile()) return null;
-        executableStats = stats;
-      } else if (!stats.isDirectory()) {
-        return null;
-      }
-      if (sameWindowsGitExecutablePath(current, volumeRoot)) break;
-      current = path.win32.dirname(current);
-    }
-    if (!executableStats) return null;
-    return {
-      path: executable,
-      stableIdentity: `${String(executableStats.dev)}:${String(executableStats.ino)}`,
-      regularFile: true,
-      symbolicLink: false,
-      owner: 'trusted-system',
-      writableByOthers: false,
-    };
-  } catch {
-    return null;
-  }
-}
-
 const defaultWindowsGitExecutableInspector: TrustedExecutableInspector = {
-  async inspect(executable) {
-    return inspectDefaultWindowsGitExecutable(executable);
+  async inspect() {
+    // Node does not expose NTFS owner or effective DACL information. Never
+    // substitute reparse-point checks for an OS-native executable trust proof.
+    return null;
   },
 };
 
@@ -362,7 +328,9 @@ export function createFixedGitIgnoreRunner(
       if (
         !isCanonicalWindowsPath(input.checkoutRoot) ||
         !isRequiredGitIgnoreCandidate(input.candidate) ||
-        !trustedWindowsGitExecutable(await inspector.inspect(WINDOWS_GIT).catch(() => null))
+        !trustedWindowsGitExecutable(
+          await inspector.inspect(WINDOWS_GIT, input.checkoutRoot).catch(() => null),
+        )
       ) {
         return false;
       }

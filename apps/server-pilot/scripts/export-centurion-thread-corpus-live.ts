@@ -582,10 +582,6 @@ async function defaultAttestImdsV2(): Promise<boolean> {
   return instanceId === APPROVED_INSTANCE_ID;
 }
 
-async function defaultIsIgnored(request: IgnoredDestinationRequest): Promise<boolean> {
-  return await fixedEc2GitIgnoreRunner.isIgnored(request);
-}
-
 function defaultValidateAllocatedDir(request: AllocatedDirectoryRequest): string {
   if (
     !isCanonicalAbsolutePath(request.repoRoot) ||
@@ -739,7 +735,7 @@ function defaultDependencies(): LiveCenturionThreadCorpusDependencies {
     scriptPath: () => fileURLToPath(import.meta.url),
     attestImdsV2: defaultAttestImdsV2,
     readProtectedConfig: defaultReadProtectedConfig,
-    isIgnored: defaultIsIgnored,
+    isIgnored: fixedEc2GitIgnoreRunner.isIgnored,
     uuid: randomUUID,
     environment: () => ({
       DATABASE_URL: process.env.DATABASE_URL,

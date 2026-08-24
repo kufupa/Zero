@@ -1764,7 +1764,7 @@ class Ec2GitProcessAdapter implements Ec2GitProcessRunner {
         cwd: invocation.cwd,
         encoding: 'utf8',
         env: invocation.env,
-        maxBuffer: 64 * 1024,
+        maxBuffer: 65_536,
         shell: false,
         stdio: ['ignore', 'pipe', 'ignore'],
         windowsHide: true,

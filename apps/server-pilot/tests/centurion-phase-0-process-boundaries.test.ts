@@ -119,17 +119,6 @@ const WINDOWS_GIT_ENV = {
 
 type DynamicModule = Record<string, unknown>;
 
-function parseSource(relativePath: string): ts.SourceFile {
-  const absolutePath = path.join(SERVER_ROOT, relativePath);
-  return ts.createSourceFile(
-    absolutePath,
-    readFileSync(absolutePath, 'utf8'),
-    ts.ScriptTarget.Latest,
-    true,
-    ts.ScriptKind.TS,
-  );
-}
-
 function collect<T extends ts.Node>(source: ts.Node, predicate: (node: ts.Node) => node is T): T[] {
   const found: T[] = [];
   const visit = (node: ts.Node): void => {
@@ -140,10 +129,13 @@ function collect<T extends ts.Node>(source: ts.Node, predicate: (node: ts.Node) 
   return found;
 }
 
-type ChildProcessBindings = {
-  named: ReadonlyMap<string, string>;
-  namespaces: ReadonlySet<string>;
-};
+function isChildProcessModuleSpecifier(expression: ts.Expression | undefined): boolean {
+  return (
+    expression !== undefined &&
+    ts.isStringLiteral(expression) &&
+    (expression.text === 'node:child_process' || expression.text === 'child_process')
+  );
+}
 
 function isChildProcessRequire(expression: ts.Expression | undefined): boolean {
   return (
@@ -152,74 +144,54 @@ function isChildProcessRequire(expression: ts.Expression | undefined): boolean {
     ts.isIdentifier(expression.expression) &&
     expression.expression.text === 'require' &&
     expression.arguments.length === 1 &&
-    ts.isStringLiteral(expression.arguments[0]) &&
-    (expression.arguments[0].text === 'node:child_process' ||
-      expression.arguments[0].text === 'child_process')
+    isChildProcessModuleSpecifier(expression.arguments[0])
   );
 }
 
-function childProcessBindings(source: ts.SourceFile): ChildProcessBindings {
-  const named = new Map<string, string>();
-  const namespaces = new Set<string>();
-  for (const declaration of collect(
-    source,
-    (node): node is ts.ImportDeclaration =>
-      ts.isImportDeclaration(node) &&
-      ts.isStringLiteral(node.moduleSpecifier) &&
-      (node.moduleSpecifier.text === 'node:child_process' ||
-        node.moduleSpecifier.text === 'child_process'),
-  )) {
-    const bindings = declaration.importClause?.namedBindings;
-    if (!bindings) continue;
-    if (ts.isNamespaceImport(bindings)) {
-      namespaces.add(bindings.name.text);
-      continue;
-    }
-    for (const element of bindings.elements) {
-      const imported = element.propertyName?.text ?? element.name.text;
-      if (CHILD_PROCESS_CALLS.has(imported)) named.set(element.name.text, imported);
-    }
-  }
-  for (const declaration of collect(
-    source,
-    (node): node is ts.VariableDeclaration =>
-      ts.isVariableDeclaration(node) &&
-      ts.isObjectBindingPattern(node.name) &&
-      isChildProcessRequire(node.initializer),
-  )) {
-    if (!ts.isObjectBindingPattern(declaration.name)) continue;
-    for (const element of declaration.name.elements) {
-      if (!ts.isIdentifier(element.name)) continue;
-      const imported = element.propertyName?.getText(source) ?? element.name.text;
-      if (CHILD_PROCESS_CALLS.has(imported)) named.set(element.name.text, imported);
-    }
-  }
-  return { named, namespaces };
+function phaseZeroProgram(): ts.Program {
+  const configPath = path.join(SERVER_ROOT, 'tsconfig.centurion-phase-0.json');
+  const config = JSON.parse(readFileSync(configPath, 'utf8')) as object;
+  const parsed = ts.parseJsonConfigFileContent(config, ts.sys, SERVER_ROOT, undefined, configPath);
+  return ts.createProgram(parsed.fileNames, parsed.options);
 }
 
-function childProcessCallName(
-  call: ts.CallExpression,
-  bindings: ChildProcessBindings,
-): string | null {
-  if (ts.isIdentifier(call.expression)) {
-    const imported = bindings.named.get(call.expression.text);
-    return (
-      imported ?? (CHILD_PROCESS_CALLS.has(call.expression.text) ? call.expression.text : null)
-    );
-  }
-  if (
-    ts.isPropertyAccessExpression(call.expression) &&
-    CHILD_PROCESS_CALLS.has(call.expression.name.text) &&
-    ((ts.isIdentifier(call.expression.expression) &&
-      bindings.namespaces.has(call.expression.expression.text)) ||
-      isChildProcessRequire(call.expression.expression))
-  ) {
-    return call.expression.name.text;
-  }
-  return null;
+function virtualProgram(sources: Readonly<Record<string, string>>): ts.Program {
+  const options: ts.CompilerOptions = {
+    noLib: true,
+    noResolve: true,
+    target: ts.ScriptTarget.ESNext,
+  };
+  const host = ts.createCompilerHost(options);
+  const virtualSources = new Map(
+    Object.entries(sources).map(([fileName, text]) => [
+      path.resolve(fileName).replaceAll('\\', '/'),
+      text,
+    ]),
+  );
+  const textFor = (fileName: string): string | undefined =>
+    virtualSources.get(path.resolve(fileName).replaceAll('\\', '/'));
+  return ts.createProgram({
+    rootNames: [...virtualSources.keys()],
+    options,
+    host: {
+      ...host,
+      fileExists: (fileName) => textFor(fileName) !== undefined || host.fileExists(fileName),
+      getSourceFile: (fileName, languageVersion) =>
+        textFor(fileName) !== undefined
+          ? ts.createSourceFile(
+              fileName,
+              textFor(fileName)!,
+              languageVersion,
+              true,
+              ts.ScriptKind.TS,
+            )
+          : host.getSourceFile(fileName, languageVersion),
+      readFile: (fileName) => textFor(fileName) ?? host.readFile(fileName),
+    },
+  });
 }
 
-function isFiniteArgumentSource(argument: ts.Expression | undefined): boolean {
+function isProcessArgumentExpression(argument: ts.Expression | undefined): boolean {
   if (
     argument &&
     ts.isPropertyAccessExpression(argument) &&
@@ -253,65 +225,182 @@ function enclosingClassName(node: ts.Node): string | null {
   return null;
 }
 
-function executableConstants(source: ts.SourceFile): Map<string, string> {
-  const constants = new Map<string, string>();
-  for (const declaration of collect(
-    source,
-    (node): node is ts.VariableDeclaration =>
-      ts.isVariableDeclaration(node) &&
-      ts.isIdentifier(node.name) &&
-      node.initializer !== undefined &&
-      ts.isStringLiteral(node.initializer),
-  )) {
-    const initializer = declaration.initializer;
-    if (ts.isIdentifier(declaration.name) && initializer && ts.isStringLiteral(initializer)) {
-      constants.set(declaration.name.text, initializer.text);
+function isExactStdio(value: ts.Expression | undefined): boolean {
+  return (
+    (value !== undefined && ts.isStringLiteral(value) && value.text === 'ignore') ||
+    (value !== undefined &&
+      ts.isArrayLiteralExpression(value) &&
+      value.elements.length === 3 &&
+      value.elements.every(
+        (element, index) =>
+          ts.isStringLiteral(element) && element.text === (index === 1 ? 'pipe' : 'ignore'),
+      ))
+  );
+}
+
+function isAdapterMember(value: ts.Expression | undefined, property: 'env' | 'cwd'): boolean {
+  const direct =
+    value !== undefined &&
+    ts.isPropertyAccessExpression(value) &&
+    ts.isIdentifier(value.expression) &&
+    (value.expression.text === 'invocation' || value.expression.text === 'input') &&
+    value.name.text === property;
+  const nestedEnvironment =
+    property === 'env' &&
+    value !== undefined &&
+    ts.isPropertyAccessExpression(value) &&
+    value.name.text === 'env' &&
+    ts.isPropertyAccessExpression(value.expression) &&
+    ts.isIdentifier(value.expression.expression) &&
+    value.expression.expression.text === 'invocation' &&
+    value.expression.name.text === 'options';
+  return direct || nestedEnvironment;
+}
+
+function hasExactProcessOptions(call: ts.CallExpression): boolean {
+  const options = call.arguments[2];
+  if (!options || !ts.isObjectLiteralExpression(options)) return false;
+  const properties = new Map<string, ts.Expression>();
+  for (const property of options.properties) {
+    if (
+      !ts.isPropertyAssignment(property) ||
+      ts.isComputedPropertyName(property.name) ||
+      (!ts.isIdentifier(property.name) && !ts.isStringLiteral(property.name))
+    ) {
+      return false;
     }
+    const name = property.name.text;
+    if (properties.has(name)) return false;
+    properties.set(name, property.initializer);
   }
-  return constants;
+  const keys = [...properties.keys()].sort();
+  const allowed = new Set(['cwd', 'encoding', 'env', 'maxBuffer', 'shell', 'stdio', 'windowsHide']);
+  if (
+    keys.some((key) => !allowed.has(key)) ||
+    !properties.has('cwd') ||
+    !properties.has('env') ||
+    !properties.has('shell') ||
+    !properties.has('stdio') ||
+    !properties.has('windowsHide')
+  ) {
+    return false;
+  }
+  const shell = properties.get('shell');
+  const cwd = properties.get('cwd');
+  const env = properties.get('env');
+  const windowsHide = properties.get('windowsHide');
+  const encoding = properties.get('encoding');
+  const maxBuffer = properties.get('maxBuffer');
+  return (
+    shell?.kind === ts.SyntaxKind.FalseKeyword &&
+    isAdapterMember(env, 'env') &&
+    (isAdapterMember(cwd, 'cwd') ||
+      (cwd !== undefined && ts.isStringLiteral(cwd) && cwd.text === '/') ||
+      (cwd !== undefined && ts.isIdentifier(cwd) && cwd.text === 'WINDOWS_SYSTEM32')) &&
+    isExactStdio(properties.get('stdio')) &&
+    windowsHide?.kind === ts.SyntaxKind.TrueKeyword &&
+    (encoding === undefined || (ts.isStringLiteral(encoding) && encoding.text === 'utf8')) &&
+    (maxBuffer === undefined || ts.isNumericLiteral(maxBuffer))
+  );
+}
+
+function sourceRelativePath(source: ts.SourceFile): string {
+  return path.relative(SERVER_ROOT, path.resolve(source.fileName)).split(path.sep).join('/');
+}
+
+function sourceIsWithinServerRoot(source: ts.SourceFile): boolean {
+  const root = path.resolve(SERVER_ROOT).toLowerCase();
+  const fileName = path.resolve(source.fileName).toLowerCase();
+  return fileName === root || fileName.startsWith(`${root}${path.sep}`);
 }
 
 function processBoundaryViolations(
-  source: ts.SourceFile,
-  allowedAdapters: ReadonlySet<string>,
-  allowedConstants: Readonly<Record<string, string>>,
+  program: ts.Program,
+  scopeToManifest = true,
+  requireServerRoot = true,
 ): string[] {
-  const constants = executableConstants(source);
+  const requirements = new Map<string, (typeof PROCESS_SOURCES)[number]>(
+    PROCESS_SOURCES.map((requirement) => [requirement.path, requirement]),
+  );
   const violations: string[] = [];
-  const bindings = childProcessBindings(source);
-  for (const [name, value] of Object.entries(allowedConstants)) {
-    if (constants.get(name) !== value) violations.push(`constant:${name}`);
-  }
-  for (const call of collect(
-    source,
-    (node): node is ts.CallExpression =>
-      ts.isCallExpression(node) && childProcessCallName(node, bindings) !== null,
-  )) {
-    const name = childProcessCallName(call, bindings);
-    if (name !== 'spawnSync') {
-      violations.push(`unsupported:${name}`);
+  for (const source of program.getSourceFiles()) {
+    if (
+      (requireServerRoot && !sourceIsWithinServerRoot(source)) ||
+      source.isDeclarationFile ||
+      !source.fileName.endsWith('.ts') ||
+      (scopeToManifest &&
+        !PHASE_ZERO_FILES.includes(sourceRelativePath(source) as (typeof PHASE_ZERO_FILES)[number]))
+    ) {
       continue;
     }
-    if (!allowedAdapters.has(enclosingClassName(call) ?? '')) {
-      violations.push(`adapter:${enclosingClassName(call) ?? 'none'}`);
+    const relativePath = sourceRelativePath(source);
+    const requirement = requirements.get(relativePath);
+    const scanned = ts.createSourceFile(
+      source.fileName,
+      source.text,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS,
+    );
+    for (const declaration of collect(scanned, ts.isImportDeclaration)) {
+      if (!isChildProcessModuleSpecifier(declaration.moduleSpecifier)) continue;
+      const bindings = declaration.importClause?.namedBindings;
+      const onlyDirectSpawnSync =
+        declaration.importClause?.name === undefined &&
+        bindings !== undefined &&
+        ts.isNamedImports(bindings) &&
+        bindings.elements.length === 1 &&
+        bindings.elements[0]!.name.text === 'spawnSync' &&
+        bindings.elements[0]!.propertyName === undefined;
+      if (!requirement || !onlyDirectSpawnSync) {
+        violations.push(`${relativePath}:child-process-import`);
+      }
     }
-    const executable = call.arguments[0];
-    if (!executable || !ts.isIdentifier(executable) || !(executable.text in allowedConstants)) {
-      violations.push('ambient-executable');
+    for (const call of collect(scanned, ts.isCallExpression)) {
+      if (isChildProcessRequire(call)) {
+        violations.push(`${relativePath}:child-process-require`);
+        continue;
+      }
+      if (
+        call.expression.kind === ts.SyntaxKind.ImportKeyword &&
+        call.arguments.length === 1 &&
+        isChildProcessModuleSpecifier(call.arguments[0])
+      ) {
+        violations.push(`${relativePath}:child-process-dynamic-import`);
+        continue;
+      }
+      if (!ts.isIdentifier(call.expression) || !CHILD_PROCESS_CALLS.has(call.expression.text)) {
+        continue;
+      }
+      if (call.expression.text !== 'spawnSync') {
+        violations.push(`${relativePath}:unsupported-${call.expression.text}`);
+        continue;
+      }
+      if (!requirement || !requirement.adapters.has(enclosingClassName(call) ?? '')) {
+        violations.push(`${relativePath}:unapproved-spawnSync`);
+      }
+      const executable = call.arguments[0];
+      if (
+        !executable ||
+        !ts.isIdentifier(executable) ||
+        !(executable.text in (requirement?.constants ?? {}))
+      ) {
+        violations.push(`${relativePath}:ambient-executable`);
+      }
+      if (!isProcessArgumentExpression(call.arguments[1])) {
+        violations.push(`${relativePath}:non-finite-arguments`);
+      }
+      if (!hasExactProcessOptions(call)) {
+        violations.push(`${relativePath}:unsafe-options`);
+      }
     }
-    if (!isFiniteArgumentSource(call.arguments[1])) {
-      violations.push('non-finite-arguments');
-    }
-    const options = call.arguments[2];
-    const optionsText = options?.getText(source) ?? '';
-    if (
-      !optionsText.includes('shell: false') ||
-      !optionsText.includes('env:') ||
-      !optionsText.includes('cwd:') ||
-      !optionsText.includes('stdio') ||
-      optionsText.includes('process.env')
-    ) {
-      violations.push('unsafe-options');
+    for (const identifier of collect(scanned, ts.isIdentifier)) {
+      if (identifier.text !== 'spawnSync') continue;
+      const parent = identifier.parent;
+      if (parent !== undefined && ts.isImportSpecifier(parent)) continue;
+      if (!ts.isCallExpression(parent) || parent.expression !== identifier) {
+        violations.push(`${relativePath}:child-process-alias-acquisition`);
+      }
     }
   }
   return [...new Set(violations)].sort();
@@ -365,71 +454,65 @@ async function hostileEnvironment(run: () => Promise<void>): Promise<void> {
 }
 
 describe('Phase 0 process boundary inventory', () => {
-  it('permits child-process calls only in fixed narrow adapters', () => {
-    const requirements = new Map<string, (typeof PROCESS_SOURCES)[number]>(
-      PROCESS_SOURCES.map((requirement) => [requirement.path, requirement]),
-    );
-    for (const filePath of PHASE_ZERO_FILES) {
-      const source = parseSource(filePath);
-      const requirement = requirements.get(filePath);
-      expect(
-        processBoundaryViolations(
-          source,
-          requirement?.adapters ?? new Set<string>(),
-          requirement?.constants ?? {},
-        ),
-        filePath,
-      ).toEqual([]);
-    }
-  });
+  it('scans every manifest-reachable TypeScript source', () => {
+    const program = phaseZeroProgram();
+    const reachable = program
+      .getSourceFiles()
+      .filter(
+        (source) =>
+          sourceIsWithinServerRoot(source) &&
+          !source.isDeclarationFile &&
+          source.fileName.endsWith('.ts') &&
+          PHASE_ZERO_FILES.includes(
+            sourceRelativePath(source) as (typeof PHASE_ZERO_FILES)[number],
+          ),
+      )
+      .map(sourceRelativePath);
+    expect(reachable).toEqual(expect.arrayContaining([...PHASE_ZERO_FILES]));
+    expect(processBoundaryViolations(program)).toEqual([]);
+  }, 30_000);
 
-  it('rejects ambient executables and inherited environment fixtures', () => {
-    const fixture = ts.createSourceFile(
-      'ambient-executable.ts',
-      [
+  it('rejects aliases, acquisition bypasses, and nonliteral options', () => {
+    const program = virtualProgram({
+      [path.join(SERVER_ROOT, 'scripts/export-centurion-thread-corpus-live.ts')]: [
         "import { spawnSync } from 'node:child_process';",
-        "spawnSync('git', ['status'], { shell: false, env: process.env, stdio: 'ignore' });",
+        'const copied = spawnSync;',
+        'const chained = copied;',
+        "require('node:child_process');",
+        "import('node:child_process');",
+        'class Ec2GitIgnoreProcessAdapter {',
+        '  run(invocation: { args: readonly string[]; env: Record<string, string>; cwd: string }) {',
+        "    spawnSync(EC2_GIT, invocation.args, { ...{}, shell: false, env: invocation.env, cwd: invocation.cwd, stdio: 'ignore', windowsHide: true });",
+        '  }',
+        '}',
       ].join('\n'),
-      ts.ScriptTarget.Latest,
-      true,
-      ts.ScriptKind.TS,
-    );
-    expect(
-      processBoundaryViolations(fixture, new Set(['SafeAdapter']), {
-        EC2_GIT: '/usr/bin/git',
-      }),
-    ).toEqual(expect.arrayContaining(['ambient-executable', 'adapter:none', 'constant:EC2_GIT']));
-
-    const aliases = ts.createSourceFile(
-      'child-process-aliases.ts',
-      [
-        "import { spawnSync as run } from 'node:child_process';",
-        "import * as processTools from 'node:child_process';",
-        "const { execSync: shellOut } = require('node:child_process');",
-        "run('/usr/bin/git', ['status'], { shell: false, env: {}, stdio: 'ignore' });",
-        "const ambientArgs = ['status'];",
-        "run('/usr/bin/git', ambientArgs, { shell: false, env: {}, cwd: '/', stdio: 'ignore' });",
-        "processTools.execFile('/usr/bin/git', ['status']);",
-        "shellOut('git status');",
-        "require('node:child_process').fork('synthetic-worker');",
+      [path.join(SERVER_ROOT, 'src/ops/centurion-thread-corpus-relay-producer.ts')]: [
+        "import defaultChildProcess from 'node:child_process';",
+        "import * as childProcess from 'node:child_process';",
+        "import { spawnSync as renamedSpawn } from 'node:child_process';",
+        "childProcess.execFile('/usr/bin/git', []);",
+        "defaultChildProcess.spawnSync('/usr/bin/git', []);",
+        "renamedSpawn('/usr/bin/git', []);",
       ].join('\n'),
-      ts.ScriptTarget.Latest,
-      true,
-      ts.ScriptKind.TS,
-    );
-    expect(
-      processBoundaryViolations(aliases, new Set(['SafeAdapter']), {
-        EC2_GIT: '/usr/bin/git',
-      }),
-    ).toEqual(
+      [path.join(SERVER_ROOT, 'scripts/check-centurion-thread-corpus-readiness.ts')]: [
+        "import { spawnSync } from 'node:child_process';",
+        'class Ec2GitProcessAdapter {',
+        '  run(invocation: { args: readonly string[]; env: Record<string, string>; cwd: string }) {',
+        "    spawnSync(EC2_GIT, invocation.args, { shell: Boolean(0), env: invocation.env, cwd: invocation.cwd, stdio: 'ignore', windowsHide: true });",
+        "    spawnSync(EC2_GIT, invocation.args, { ['shell']: false, env: invocation.env, cwd: invocation.cwd, stdio: 'ignore', windowsHide: true });",
+        "    spawnSync(EC2_GIT, invocation.args, { shell: false, env: approvedEnv, cwd: invocation.cwd, stdio: 'ignore', windowsHide: true });",
+        '  }',
+        '}',
+      ].join('\n'),
+    });
+    expect(processBoundaryViolations(program, false, false)).toEqual(
       expect.arrayContaining([
-        'adapter:none',
-        'ambient-executable',
-        'constant:EC2_GIT',
-        'non-finite-arguments',
-        'unsupported:execFile',
-        'unsupported:execSync',
-        'unsupported:fork',
+        'scripts/export-centurion-thread-corpus-live.ts:child-process-alias-acquisition',
+        'scripts/export-centurion-thread-corpus-live.ts:child-process-require',
+        'scripts/export-centurion-thread-corpus-live.ts:child-process-dynamic-import',
+        'scripts/export-centurion-thread-corpus-live.ts:unsafe-options',
+        'src/ops/centurion-thread-corpus-relay-producer.ts:child-process-import',
+        'scripts/check-centurion-thread-corpus-readiness.ts:unsafe-options',
       ]),
     );
   });
@@ -613,6 +696,33 @@ describe('Phase 0 fake process adapters', () => {
       env: WINDOWS_GIT_ENV,
     });
     expect(JSON.stringify(gitCalls[0])).not.toContain('synthetic-pager');
+  });
+
+  it('fails closed by default before launching Windows processes', async () => {
+    const aclCalls: unknown[] = [];
+    const acl = relayReceiver.createWindowsPrivateAcl({
+      run: async (invocation) => {
+        aclCalls.push(invocation);
+        return { status: 0, stdout: '{"ok":true,"stableIdentity":"safe","volumeId":"safe"}' };
+      },
+    });
+    expect(await acl.assertTrustedPath('C:\\synthetic\\private')).toBeNull();
+    expect(aclCalls).toEqual([]);
+
+    const gitCalls: unknown[] = [];
+    const git = relayReceiver.createFixedWindowsGitIgnoreRunner(undefined, {
+      run: (invocation) => {
+        gitCalls.push(invocation);
+        return { failed: false, status: 0 };
+      },
+    });
+    expect(
+      await git.isIgnored({
+        checkoutRoot: 'C:\\synthetic\\zero',
+        candidate: '.private/centurion-thread-corpus',
+      }),
+    ).toBe(false);
+    expect(gitCalls).toEqual([]);
   });
 
   it('blocks analysis Git invocation when inspector rejects its fixed executable', async () => {

@@ -104,7 +104,7 @@ export type TrustedExecutableInspection = {
 };
 
 export type TrustedExecutableInspector = {
-  inspect(executable: string): Promise<TrustedExecutableInspection | null>;
+  inspect(executable: string, cwd: string): Promise<TrustedExecutableInspection | null>;
 };
 
 export type WindowsCommandInvocation = {
@@ -1237,55 +1237,11 @@ function trustedWindowsExecutable(
   );
 }
 
-function inspectDefaultWindowsExecutable(
-  executable: typeof WINDOWS_POWERSHELL | typeof WINDOWS_GIT,
-): TrustedExecutableInspection | null {
-  try {
-    if (!path.win32.isAbsolute(executable)) return null;
-    let current: string = executable;
-    let executableStats: ReturnType<typeof lstatSync> | null = null;
-    const volumeRoot = path.win32.parse(executable).root;
-    while (true) {
-      const stats = lstatSync(current);
-      if (stats.isSymbolicLink() || !sameWindowsExecutablePath(realpathSync(current), current)) {
-        return null;
-      }
-      if (sameWindowsExecutablePath(current, executable)) {
-        if (!stats.isFile()) return null;
-        executableStats = stats;
-      } else if (!stats.isDirectory()) {
-        return null;
-      }
-      if (sameWindowsExecutablePath(current, volumeRoot)) break;
-      current = path.win32.dirname(current);
-    }
-    if (!executableStats) return null;
-    return {
-      path: executable,
-      stableIdentity: `${String(executableStats.dev)}:${String(executableStats.ino)}`,
-      regularFile: true,
-      symbolicLink: false,
-      owner: 'trusted-system',
-      writableByOthers: false,
-    };
-  } catch {
-    return null;
-  }
-}
-
 const defaultWindowsExecutableInspector: TrustedExecutableInspector = {
-  async inspect(executable) {
-    try {
-      if (
-        (executable !== WINDOWS_POWERSHELL && executable !== WINDOWS_GIT) ||
-        !path.win32.isAbsolute(executable)
-      ) {
-        return null;
-      }
-      return inspectDefaultWindowsExecutable(executable);
-    } catch {
-      return null;
-    }
+  async inspect() {
+    // Node does not expose NTFS owner or effective DACL information. Never
+    // substitute reparse-point checks for an OS-native executable trust proof.
+    return null;
   },
 };
 
@@ -1337,7 +1293,7 @@ class WindowsPrivateAclProcessAdapter implements WindowsCommandRunner {
         cwd: WINDOWS_SYSTEM32,
         env: invocation.options.env,
         encoding: 'utf8',
-        maxBuffer: 64 * 1024,
+        maxBuffer: 65_536,
       });
       return {
         status: result.error === undefined ? result.status : null,
@@ -1386,7 +1342,7 @@ async function invokeAcl(
 ): Promise<TrustedPath | true | null> {
   if (
     !trustedWindowsExecutable(
-      await inspector.inspect(WINDOWS_POWERSHELL).catch(() => null),
+      await inspector.inspect(WINDOWS_POWERSHELL, WINDOWS_SYSTEM32).catch(() => null),
       WINDOWS_POWERSHELL,
     )
   ) {
@@ -1809,7 +1765,7 @@ export function createFixedWindowsGitIgnoreRunner(
         !path.win32.isAbsolute(request.checkoutRoot) ||
         request.candidate !== '.private/centurion-thread-corpus' ||
         !trustedWindowsExecutable(
-          await inspector.inspect(WINDOWS_GIT).catch(() => null),
+          await inspector.inspect(WINDOWS_GIT, request.checkoutRoot).catch(() => null),
           WINDOWS_GIT,
         )
       ) {
