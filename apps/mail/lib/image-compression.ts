@@ -55,8 +55,12 @@ export async function compressImage(
       canvas.toBlob(
         (blob) => {
           if (blob) {
+            if (blob.type !== file.type) {
+              resolve(file);
+              return;
+            }
             const compressedFile = new File([blob], file.name, {
-              type: file.type,
+              type: blob.type,
               lastModified: file.lastModified,
             });
             resolve(compressedFile);

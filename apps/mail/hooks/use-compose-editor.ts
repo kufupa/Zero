@@ -120,6 +120,7 @@ const useComposeEditor = ({
   myInfo,
   sender,
   autofocus = false,
+  enableInlineFileHandling = true,
 }: {
   initialValue?: Record<string, unknown> | string | null;
   isReadOnly?: boolean;
@@ -145,57 +146,62 @@ const useComposeEditor = ({
     email?: string;
   };
   autofocus?: boolean;
+  enableInlineFileHandling?: boolean;
 }) => {
   const extensions = [
     ...defaultExtensions,
     Markdown,
     Image,
-    FileHandler.configure({
-      allowedMimeTypes: ['image/png', 'image/jpeg', 'image/gif', 'image/webp'],
-      onDrop: (currentEditor, files, pos) => {
-        files.forEach((file) => {
-          const fileReader = new FileReader();
+    ...(enableInlineFileHandling
+      ? [
+          FileHandler.configure({
+            allowedMimeTypes: ['image/png', 'image/jpeg', 'image/gif', 'image/webp'],
+            onDrop: (currentEditor, files, pos) => {
+              files.forEach((file) => {
+                const fileReader = new FileReader();
 
-          fileReader.readAsDataURL(file);
-          fileReader.onload = () => {
-            currentEditor
-              .chain()
-              .insertContentAt(pos, {
-                type: 'image',
-                attrs: {
-                  src: fileReader.result,
-                },
-              })
-              .focus()
-              .run();
-          };
-        });
-      },
-      onPaste: (currentEditor, files, htmlContent) => {
-        files.forEach((file) => {
-          if (htmlContent) {
-            console.log(htmlContent); // eslint-disable-line no-console
-            return false;
-          }
+                fileReader.readAsDataURL(file);
+                fileReader.onload = () => {
+                  currentEditor
+                    .chain()
+                    .insertContentAt(pos, {
+                      type: 'image',
+                      attrs: {
+                        src: fileReader.result,
+                      },
+                    })
+                    .focus()
+                    .run();
+                };
+              });
+            },
+            onPaste: (currentEditor, files, htmlContent) => {
+              files.forEach((file) => {
+                if (htmlContent) {
+                  console.log(htmlContent); // eslint-disable-line no-console
+                  return false;
+                }
 
-          const fileReader = new FileReader();
+                const fileReader = new FileReader();
 
-          fileReader.readAsDataURL(file);
-          fileReader.onload = () => {
-            currentEditor
-              .chain()
-              .insertContentAt(currentEditor.state.selection.anchor, {
-                type: 'image',
-                attrs: {
-                  src: fileReader.result,
-                },
-              })
-              .focus()
-              .run();
-          };
-        });
-      },
-    }),
+                fileReader.readAsDataURL(file);
+                fileReader.onload = () => {
+                  currentEditor
+                    .chain()
+                    .insertContentAt(currentEditor.state.selection.anchor, {
+                      type: 'image',
+                      attrs: {
+                        src: fileReader.result,
+                      },
+                    })
+                    .focus()
+                    .run();
+                };
+              });
+            },
+          }),
+        ]
+      : []),
     AutoCompleteExtension({
       myInfo,
       sender,

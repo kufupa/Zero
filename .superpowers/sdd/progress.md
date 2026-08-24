@@ -18,3 +18,16 @@ Task 2: complete (final security-review hardening removes root checkout executio
 Task 3: complete (commit 96d656b8; independent DB-free deploy suite 115/115, shell syntax and merge-base whitespace checks passed; task-scoped review clean)
 Task 4: complete (fresh read-only edge inspection reached `TASK4_PRE_GATE_B_READY`; bounded log-proof and perimeter contracts pass; final Task 4 review clean)
 Task 5: in progress (dual-host compatibility, rollback state, and staged cutover proof)
+
+# Outlook-style Compose File Drop
+Plan: docs/superpowers/plans/2026-08-23-outlook-compose-file-drop.md
+Started: 2026-08-23
+Branch: feat/centurion-thread-corpus-export
+Worktree: current checkout (user-selected feature branch; unrelated changes preserved)
+Base: b216b4d93231bca2282922da23a7bdcf5a311007
+HEAD at start: 4d6813291034aee4415280065fdf5cbc3c911d47
+Verification baseline: not run; pre-existing unrelated edits only in CONCEPTS.md and documentation
+Task 1: complete (fresh Vitest 6/6 and targeted ESLint exit 0; task review clean after MIME fallback boundary fix)
+Task 2: complete (fresh Vitest 3/3; task review clean; FileHandler body inspected unchanged when enabled; targeted ESLint 0 errors with pre-existing warning)
+Task 3: complete (TDD evidence recorded; two P1 review findings fixed and fresh re-review approved)
+Task 3 final verification: complete (post-review clipboard P1 fixed and fresh re-review approved; DB-safe compose suite 32/32, changed-file lint 0 errors, and mail build exit 0. Full mail lint remains blocked by 284 errors outside plan scope; no local browser server available for optional manual smoke.)

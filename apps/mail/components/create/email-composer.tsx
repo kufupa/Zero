@@ -7,7 +7,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/tooltip';
-import { Command, Paperclip, Plus, Type, X as XIcon } from 'lucide-react';
+import { Command, ImagePlus, Paperclip, Plus, Type, X as XIcon } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { ScheduleSendPicker } from './schedule-send-picker';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -61,6 +61,14 @@ import { useOptimisticActions } from '@/hooks/use-optimistic-actions';
 import { m } from '@/paraglide/messages';
 import { useDraft } from '@/hooks/use-drafts';
 import type { HeaderDebugLine } from '@/types';
+import {
+  COMPOSE_ATTACHMENT_ACCEPT,
+  partitionComposeAttachmentFiles,
+} from '@/lib/compose-attachment-policy';
+import { drainAttachmentIntakeQueue } from '@/lib/attachment-intake-queue';
+
+const hasFileDrag = (dataTransfer: DataTransfer | null): boolean =>
+  dataTransfer !== null && Array.from(dataTransfer.types).includes('Files');
 
 interface EmailComposerProps {
   initialTo?: string[];
@@ -103,6 +111,16 @@ const schema = z.object({
   fromEmail: z.string().optional(),
 });
 
+type AttachmentEntry = {
+  id: string;
+  file: File;
+};
+
+type AttachmentPreviewUrlRecord = {
+  file: File;
+  url: string;
+};
+
 export function EmailComposer({
   initialTo = [],
   initialCc = [],
@@ -139,6 +157,7 @@ export function EmailComposer({
     setAutosaveSuppressedAfterFailure(false);
   }, []);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const inlineImageInputRef = useRef<HTMLInputElement>(null);
   const [threadId] = useQueryState('threadId');
   const [isComposeOpen, setIsComposeOpen] = useQueryState('isComposeOpen');
   const [draftId, setDraftId] = useQueryState('draftId');
@@ -154,81 +173,32 @@ export function EmailComposer({
   const [scheduleAt, setScheduleAt] = useState<string>();
   const [isScheduleValid, setIsScheduleValid] = useState<boolean>(true);
   const [showAttachmentWarning, setShowAttachmentWarning] = useState(false);
-  const [originalAttachments, setOriginalAttachments] = useState<File[]>(initialAttachments);
+  const attachmentEntryIdRef = useRef(initialAttachments.length);
+  const initialAttachmentEntries = initialAttachments.map((file, index) => ({
+    id: `attachment-${index}`,
+    file,
+  }));
+  const [attachmentEntries, setAttachmentEntries] = useState<AttachmentEntry[]>(() =>
+    initialAttachmentEntries,
+  );
+  const originalAttachmentsRef = useRef<AttachmentEntry[]>(
+    initialAttachmentEntries,
+  );
+  const attachmentQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const pendingAttachmentWorkRef = useRef(0);
+  const inlineImageQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const pendingInlineImageWorkRef = useRef(0);
+  const sendInFlightRef = useRef(false);
+  const fileDragDepthRef = useRef(0);
+  const [isFileDragActive, setIsFileDragActive] = useState(false);
+  const [attachmentStatus, setAttachmentStatus] = useState('');
   const [attachmentPreviewUrls, setAttachmentPreviewUrls] = useState<Record<string, string>>({});
-  const attachmentPreviewUrlMapRef = useRef(new Map<string, string>());
+  const attachmentPreviewUrlMapRef = useRef(new Map<string, AttachmentPreviewUrlRecord>());
   const [imageQuality, setImageQuality] = useState<ImageQuality>(
     settings?.settings?.imageCompression || 'medium',
   );
   const [activeReplyId] = useQueryState('activeReplyId');
   const [toggleToolbar, setToggleToolbar] = useState(false);
-  const processAndSetAttachments = async (
-    filesToProcess: File[],
-    quality: ImageQuality,
-    showToast: boolean = false,
-  ) => {
-    if (filesToProcess.length === 0) {
-      setValue('attachments', [], { shouldDirty: true });
-      return;
-    }
-
-    try {
-      const compressedFiles = await compressImages(filesToProcess, {
-        quality,
-        maxWidth: 1920,
-        maxHeight: 1080,
-      });
-
-      if (compressedFiles.length !== filesToProcess.length) {
-        console.warn('Compressed files array length mismatch:', {
-          original: filesToProcess.length,
-          compressed: compressedFiles.length,
-        });
-        setValue('attachments', filesToProcess, { shouldDirty: true });
-        markUnsavedChanges();
-        if (showToast) {
-          toast.error('Image compression failed, using original files');
-        }
-        return;
-      }
-
-      setValue('attachments', compressedFiles, { shouldDirty: true });
-      markUnsavedChanges();
-
-      if (showToast && quality !== 'original') {
-        let totalOriginalSize = 0;
-        let totalCompressedSize = 0;
-
-        const imageFilesExist = filesToProcess.some((f) => f.type.startsWith('image/'));
-
-        if (imageFilesExist) {
-          filesToProcess.forEach((originalFile, index) => {
-            if (originalFile.type.startsWith('image/') && compressedFiles[index]) {
-              totalOriginalSize += originalFile.size;
-              totalCompressedSize += compressedFiles[index].size;
-            }
-          });
-
-          if (totalOriginalSize > totalCompressedSize) {
-            const savings = (
-              ((totalOriginalSize - totalCompressedSize) / totalOriginalSize) *
-              100
-            ).toFixed(1);
-            if (parseFloat(savings) > 0.1) {
-              toast.success(`Images compressed: ${savings}% smaller`);
-            }
-          }
-        }
-      }
-    } catch (error) {
-      console.error('Error compressing images:', error);
-      setValue('attachments', filesToProcess, { shouldDirty: true });
-      markUnsavedChanges();
-      if (showToast) {
-        toast.error('Image compression failed, using original files');
-      }
-    }
-  };
 
   const attachmentKeywords = [
     'attachment',
@@ -260,6 +230,103 @@ export function EmailComposer({
 
   const { watch, setValue, getValues } = form;
 
+  const createAttachmentEntry = useCallback(
+    (file: File): AttachmentEntry => ({
+      id: `attachment-${attachmentEntryIdRef.current++}`,
+      file,
+    }),
+    [],
+  );
+
+  const hasSynchronousDraftChanges = useCallback(
+    () =>
+      hasUnsavedChanges ||
+      revisionRef.current.localRevision > revisionRef.current.savedRevision ||
+      pendingAttachmentWorkRef.current > 0 ||
+      pendingInlineImageWorkRef.current > 0,
+    [hasUnsavedChanges],
+  );
+
+  const processAndSetAttachments = useCallback(
+    async (
+      entriesToProcess: AttachmentEntry[],
+      quality: ImageQuality,
+      showToast: boolean = false,
+    ) => {
+      const filesToProcess = entriesToProcess.map((entry) => entry.file);
+      if (filesToProcess.length === 0) {
+        setValue('attachments', [], { shouldDirty: true });
+        setAttachmentEntries([]);
+        return;
+      }
+
+      try {
+        const compressedFiles = await compressImages(filesToProcess, {
+          quality,
+          maxWidth: 1920,
+          maxHeight: 1080,
+        });
+
+        if (compressedFiles.length !== filesToProcess.length) {
+          console.warn('Compressed files array length mismatch:', {
+            original: filesToProcess.length,
+            compressed: compressedFiles.length,
+          });
+          setValue('attachments', filesToProcess, { shouldDirty: true });
+          setAttachmentEntries(entriesToProcess);
+          markUnsavedChanges();
+          if (showToast) {
+            toast.error('Image compression failed, using original files');
+          }
+          return;
+        }
+
+        const compressedEntries = entriesToProcess.map((entry, index) => ({
+          id: entry.id,
+          file: compressedFiles[index],
+        }));
+        setValue('attachments', compressedFiles, { shouldDirty: true });
+        setAttachmentEntries(compressedEntries);
+        markUnsavedChanges();
+
+        if (showToast && quality !== 'original') {
+          let totalOriginalSize = 0;
+          let totalCompressedSize = 0;
+
+          const imageFilesExist = filesToProcess.some((file) => file.type.startsWith('image/'));
+
+          if (imageFilesExist) {
+            filesToProcess.forEach((originalFile, index) => {
+              if (originalFile.type.startsWith('image/') && compressedFiles[index]) {
+                totalOriginalSize += originalFile.size;
+                totalCompressedSize += compressedFiles[index].size;
+              }
+            });
+
+            if (totalOriginalSize > totalCompressedSize) {
+              const savings = (
+                ((totalOriginalSize - totalCompressedSize) / totalOriginalSize) *
+                100
+              ).toFixed(1);
+              if (parseFloat(savings) > 0.1) {
+                toast.success(`Images compressed: ${savings}% smaller`);
+              }
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Error compressing images:', error);
+        setValue('attachments', filesToProcess, { shouldDirty: true });
+        setAttachmentEntries(entriesToProcess);
+        markUnsavedChanges();
+        if (showToast) {
+          toast.error('Image compression failed, using original files');
+        }
+      }
+    },
+    [markUnsavedChanges, setValue],
+  );
+
   const externalHeaderSyncKey = useMemo(
     () =>
       [
@@ -289,64 +356,204 @@ export function EmailComposer({
   const subjectInput = watch('subject');
   const attachments = watch('attachments');
   const fromEmail = watch('fromEmail');
-  const getAttachmentKey = useCallback(
-    (file: File) => `${file.name}-${file.size}-${file.lastModified}`,
-    [],
-  );
 
   const clearAttachmentState = useCallback(() => {
-    setOriginalAttachments([]);
+    originalAttachmentsRef.current = [];
     setValue('attachments', [], { shouldDirty: false });
+    setAttachmentEntries([]);
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
   }, [setValue]);
 
   useEffect(() => {
-    const files = (attachments ?? []) as File[];
     const previousMap = attachmentPreviewUrlMapRef.current;
-    const nextMap = new Map<string, string>();
+    const nextMap = new Map<string, AttachmentPreviewUrlRecord>();
 
-    files.forEach((file) => {
+    attachmentEntries.forEach((attachmentEntry) => {
+      const { file } = attachmentEntry;
       if (!file.type.startsWith('image/')) return;
-      const key = getAttachmentKey(file);
-      const existingUrl = previousMap.get(key);
-      nextMap.set(key, existingUrl ?? URL.createObjectURL(file));
+      const existingPreview = previousMap.get(attachmentEntry.id);
+      if (existingPreview?.file === file) {
+        nextMap.set(attachmentEntry.id, existingPreview);
+        return;
+      }
+      if (existingPreview) {
+        URL.revokeObjectURL(existingPreview.url);
+      }
+      nextMap.set(attachmentEntry.id, {
+        file,
+        url: URL.createObjectURL(file),
+      });
     });
 
-    previousMap.forEach((url, key) => {
+    previousMap.forEach((record, key) => {
       if (!nextMap.has(key)) {
-        URL.revokeObjectURL(url);
+        URL.revokeObjectURL(record.url);
       }
     });
 
     attachmentPreviewUrlMapRef.current = nextMap;
-    setAttachmentPreviewUrls(Object.fromEntries(nextMap));
-  }, [attachments, getAttachmentKey]);
+    setAttachmentPreviewUrls(
+      Object.fromEntries(
+        Array.from(nextMap, ([attachmentId, record]) => [attachmentId, record.url]),
+      ),
+    );
+  }, [attachmentEntries]);
 
   useEffect(() => {
     return () => {
-      attachmentPreviewUrlMapRef.current.forEach((url) => {
-        URL.revokeObjectURL(url);
+      attachmentPreviewUrlMapRef.current.forEach((record) => {
+        URL.revokeObjectURL(record.url);
       });
       attachmentPreviewUrlMapRef.current.clear();
     };
   }, []);
 
-  const handleAttachment = async (newFiles: File[]) => {
-    if (newFiles && newFiles.length > 0) {
-      const newOriginals = [...originalAttachments, ...newFiles];
-      setOriginalAttachments(newOriginals);
-      await processAndSetAttachments(newOriginals, imageQuality, true);
-    }
-  };
+  const rejectFileChangeDuringSend = useCallback(() => {
+    const message = 'File changes are unavailable while sending';
+    setAttachmentStatus(message);
+    toast.error(message);
+  }, []);
 
-  const removeAttachment = async (index: number) => {
-    const newOriginals = originalAttachments.filter((_, i) => i !== index);
-    setOriginalAttachments(newOriginals);
-    await processAndSetAttachments(newOriginals, imageQuality);
-    markUnsavedChanges();
-  };
+  const enqueueAttachmentTask = useCallback(
+    (
+      task: () => Promise<void>,
+      { marksDraftDirty = false }: { marksDraftDirty?: boolean } = {},
+    ) => {
+      if (marksDraftDirty) {
+        pendingAttachmentWorkRef.current += 1;
+        markUnsavedChanges();
+      }
+
+      const runTask = async () => {
+        try {
+          await task();
+        } finally {
+          if (marksDraftDirty) {
+            pendingAttachmentWorkRef.current = Math.max(
+              0,
+              pendingAttachmentWorkRef.current - 1,
+            );
+          }
+        }
+      };
+      const queuedTask = attachmentQueueRef.current.then(runTask, runTask);
+      attachmentQueueRef.current = queuedTask.catch((error) => {
+        console.error('Failed to update attachments:', error);
+        setAttachmentStatus('Unable to update attachments');
+        toast.error('Unable to update attachments');
+      });
+      return attachmentQueueRef.current;
+    },
+    [markUnsavedChanges],
+  );
+
+  const queueAttachmentCandidates = useCallback(
+    (candidates: File[]) => {
+      if (sendInFlightRef.current) {
+        rejectFileChangeDuringSend();
+        return;
+      }
+
+      const { accepted, rejected } = partitionComposeAttachmentFiles(candidates);
+      const rejectedMessage =
+        rejected.length > 0
+          ? `${pluralize('unsupported file', rejected.length, true)} not attached`
+          : null;
+
+      if (rejectedMessage) {
+        toast.error(rejectedMessage);
+        setAttachmentStatus(rejectedMessage);
+      }
+      if (accepted.length === 0) return;
+
+      const acceptedEntries = accepted.map(createAttachmentEntry);
+      originalAttachmentsRef.current = [...originalAttachmentsRef.current, ...acceptedEntries];
+
+      return enqueueAttachmentTask(
+        async () => {
+          await processAndSetAttachments(
+            originalAttachmentsRef.current,
+            imageQuality,
+            true,
+          );
+
+          const acceptedMessage = `${pluralize('file', accepted.length, true)} attached`;
+          toast.success(acceptedMessage);
+          setAttachmentStatus(
+            [acceptedMessage, rejectedMessage]
+              .filter((message): message is string => Boolean(message))
+              .join('. '),
+          );
+        },
+        { marksDraftDirty: true },
+      );
+    },
+    [
+      createAttachmentEntry,
+      enqueueAttachmentTask,
+      imageQuality,
+      processAndSetAttachments,
+      rejectFileChangeDuringSend,
+    ],
+  );
+
+  const handleAttachment = useCallback(
+    (newFiles: File[]) => queueAttachmentCandidates(newFiles),
+    [queueAttachmentCandidates],
+  );
+
+  const enqueueInlineImageTask = useCallback(
+    (task: () => Promise<void>) => {
+      pendingInlineImageWorkRef.current += 1;
+      markUnsavedChanges();
+
+      const runTask = async () => {
+        try {
+          await task();
+        } finally {
+          pendingInlineImageWorkRef.current = Math.max(
+            0,
+            pendingInlineImageWorkRef.current - 1,
+          );
+        }
+      };
+      const queuedTask = inlineImageQueueRef.current.then(runTask, runTask);
+      inlineImageQueueRef.current = queuedTask.catch((error) => {
+        console.error('Failed to insert inline image:', error);
+        setAttachmentStatus('Unable to insert image');
+        toast.error('Unable to insert image');
+      });
+      return inlineImageQueueRef.current;
+    },
+    [markUnsavedChanges],
+  );
+
+  const removeAttachment = useCallback(
+    (attachmentId: string) => {
+      if (sendInFlightRef.current) {
+        rejectFileChangeDuringSend();
+        return;
+      }
+
+      return enqueueAttachmentTask(
+        async () => {
+          const newOriginals = originalAttachmentsRef.current.filter(
+            (entry) => entry.id !== attachmentId,
+          );
+          originalAttachmentsRef.current = newOriginals;
+          await processAndSetAttachments(
+            newOriginals,
+            imageQuality,
+          );
+          setAttachmentStatus('Attachment removed');
+        },
+        { marksDraftDirty: true },
+      );
+    },
+    [enqueueAttachmentTask, imageQuality, processAndSetAttachments, rejectFileChangeDuringSend],
+  );
 
   const editor = useComposeEditor({
     initialValue: initialMessage,
@@ -361,6 +568,7 @@ export function EmailComposer({
     onAttachmentsChange: async (files) => {
       await handleAttachment(files);
     },
+    enableInlineFileHandling: false,
     placeholder: 'Start your email here',
     autofocus,
   });
@@ -410,7 +618,7 @@ export function EmailComposer({
       const values = getValues();
       if (
         shouldPersistDraft({
-          hasUnsavedChanges,
+          hasUnsavedChanges: hasSynchronousDraftChanges(),
           initialHtml: initialMessage ?? '',
           html: editor.getHTML(),
           text: editor.getText(),
@@ -429,13 +637,66 @@ export function EmailComposer({
   }, [
     editor,
     getValues,
-    hasUnsavedChanges,
+    hasSynchronousDraftChanges,
     initialMessage,
   ]);
 
-  const proceedWithSend = async () => {
+  const drainAttachmentWork = useCallback(async () => {
+    for (;;) {
+      const queue = attachmentQueueRef.current;
+      await drainAttachmentIntakeQueue(
+        () => attachmentQueueRef.current,
+        () => pendingAttachmentWorkRef.current,
+      );
+
+      if (queue === attachmentQueueRef.current && pendingAttachmentWorkRef.current === 0) {
+        return;
+      }
+    }
+  }, []);
+
+  const drainInlineImageWork = useCallback(async () => {
+    for (;;) {
+      const queue = inlineImageQueueRef.current;
+      await drainAttachmentIntakeQueue(
+        () => inlineImageQueueRef.current,
+        () => pendingInlineImageWorkRef.current,
+      );
+
+      if (queue === inlineImageQueueRef.current && pendingInlineImageWorkRef.current === 0) {
+        return;
+      }
+    }
+  }, []);
+
+  const drainComposeFileWork = useCallback(async () => {
+    for (;;) {
+      const attachmentQueue = attachmentQueueRef.current;
+      const inlineImageQueue = inlineImageQueueRef.current;
+      await drainAttachmentWork();
+      await drainInlineImageWork();
+
+      if (
+        attachmentQueue === attachmentQueueRef.current &&
+        inlineImageQueue === inlineImageQueueRef.current &&
+        pendingAttachmentWorkRef.current === 0 &&
+        pendingInlineImageWorkRef.current === 0
+      ) {
+        return;
+      }
+    }
+  }, [drainAttachmentWork, drainInlineImageWork]);
+
+  const proceedWithSend = async (sendAlreadyGuarded = false) => {
+    const ownsSendGuard = !sendAlreadyGuarded;
+    if (ownsSendGuard) {
+      if (sendInFlightRef.current) return;
+      sendInFlightRef.current = true;
+    }
+
     try {
       if (isLoading) return;
+      await drainComposeFileWork();
 
       // Validate recipient field
       if (!getValues().to || getValues().to.length === 0) {
@@ -480,66 +741,76 @@ export function EmailComposer({
       console.error('Error sending email:', error);
       toast.error('Failed to send email');
     } finally {
+      if (ownsSendGuard) {
+        sendInFlightRef.current = false;
+      }
       setIsLoading(false);
     }
   };
 
   const handleSend = async () => {
-    const values = getValues();
-    const messageText = editor.getText().toLowerCase();
-    const hasAttachmentKeywords = attachmentKeywords.some((keyword) => {
-      const regex = new RegExp(`\\b${keyword.replace(/\s+/g, '\\s+')}\\b`, 'i');
-      return regex.test(messageText);
-    });
+    if (sendInFlightRef.current) return;
+    sendInFlightRef.current = true;
 
-    if (hasAttachmentKeywords && (!values.attachments || values.attachments.length === 0)) {
-      setShowAttachmentWarning(true);
-      return;
+    try {
+      await drainComposeFileWork();
+      const values = getValues();
+      const messageText = editor.getText().toLowerCase();
+      const hasAttachmentKeywords = attachmentKeywords.some((keyword) => {
+        const regex = new RegExp(`\\b${keyword.replace(/\s+/g, '\\s+')}\\b`, 'i');
+        return regex.test(messageText);
+      });
+
+      if (hasAttachmentKeywords && (!values.attachments || values.attachments.length === 0)) {
+        setShowAttachmentWarning(true);
+        return;
+      }
+
+      await proceedWithSend(true);
+    } finally {
+      sendInFlightRef.current = false;
     }
-
-    await proceedWithSend();
   };
 
-  const persistDraftOnce = useCallback(async (): Promise<'saved' | 'skipped' | 'failed'> => {
+  const persistDraftOnce = useCallback((): Promise<'saved' | 'skipped' | 'failed'> => {
     if (saveInFlightRef.current) return saveInFlightRef.current;
 
-    const capturedRevision = revisionRef.current.localRevision;
-    const values = getValues();
-    const snapshot = {
-      hasUnsavedChanges:
-        revisionRef.current.localRevision > revisionRef.current.savedRevision,
-      initialHtml: initialMessage ?? '',
-      aiBlocked: false,
-      draftId: activeDraftIdRef.current,
-      threadId: threadId ?? null,
-      replyToMessageId,
-      to: [...(values.to ?? [])],
-      cc: [...(values.cc ?? [])],
-      bcc: [...(values.bcc ?? [])],
-      subject: values.subject ?? '',
-      html: editor.getHTML(),
-      text: editor.getText(),
-      fromEmail: values.fromEmail || undefined,
-      attachments: [...(values.attachments ?? [])] as File[],
-    };
-
-    if (
-      !shouldPersistDraft({
-        hasUnsavedChanges: snapshot.hasUnsavedChanges,
-        initialHtml: snapshot.initialHtml,
-        html: snapshot.html,
-        text: snapshot.text,
-        to: snapshot.to,
-        subject: snapshot.subject,
-        aiBlocked: snapshot.aiBlocked,
-      })
-    ) {
-      return 'skipped';
-    }
-
-    let savePromise!: Promise<'saved' | 'skipped' | 'failed'>;
-    savePromise = (async (): Promise<'saved' | 'skipped' | 'failed'> => {
+    const savePromise = (async (): Promise<'saved' | 'skipped' | 'failed'> => {
       try {
+        await drainComposeFileWork();
+        const capturedRevision = revisionRef.current.localRevision;
+        const values = getValues();
+        const snapshot = {
+          hasUnsavedChanges: hasSynchronousDraftChanges(),
+          initialHtml: initialMessage ?? '',
+          aiBlocked: false,
+          draftId: activeDraftIdRef.current,
+          threadId: threadId ?? null,
+          replyToMessageId,
+          to: [...(values.to ?? [])],
+          cc: [...(values.cc ?? [])],
+          bcc: [...(values.bcc ?? [])],
+          subject: values.subject ?? '',
+          html: editor.getHTML(),
+          text: editor.getText(),
+          fromEmail: values.fromEmail || undefined,
+          attachments: [...(values.attachments ?? [])] as File[],
+        };
+
+        if (
+          !shouldPersistDraft({
+            hasUnsavedChanges: snapshot.hasUnsavedChanges,
+            initialHtml: snapshot.initialHtml,
+            html: snapshot.html,
+            text: snapshot.text,
+            to: snapshot.to,
+            subject: snapshot.subject,
+            aiBlocked: snapshot.aiBlocked,
+          })
+        ) {
+          return 'skipped';
+        }
+
         setIsSavingDraft(true);
         const draftData = buildDraftMutationInput({
           draftId: snapshot.draftId,
@@ -609,7 +880,9 @@ export function EmailComposer({
     createDraft,
     draftId,
     editor,
+    drainComposeFileWork,
     getValues,
+    hasSynchronousDraftChanges,
     initialMessage,
     queryClient,
     replyToMessageId,
@@ -636,7 +909,7 @@ export function EmailComposer({
   const buildPersistInput = useCallback((): PersistDecisionInput => {
     const values = getValues();
     return {
-      hasUnsavedChanges,
+      hasUnsavedChanges: hasSynchronousDraftChanges(),
       initialHtml: initialMessage ?? '',
       html: editor?.getHTML() ?? '',
       text: editor?.getText() ?? '',
@@ -645,7 +918,7 @@ export function EmailComposer({
       aiBlocked: false,
     };
   }, [
-    hasUnsavedChanges,
+    hasSynchronousDraftChanges,
     initialMessage,
     editor,
     getValues,
@@ -700,7 +973,7 @@ export function EmailComposer({
     const flush = async () => {
       const values = getValues();
       const action = resolveComposeCloseAction({
-        hasUnsavedChanges,
+        hasUnsavedChanges: hasSynchronousDraftChanges(),
         initialHtml: initialMessage ?? '',
         html: editor?.getHTML() ?? '',
         text: editor?.getText() ?? '',
@@ -716,7 +989,7 @@ export function EmailComposer({
     registerComposeFlush(flush);
     return () => registerComposeFlush(null);
   }, [
-    hasUnsavedChanges,
+    hasSynchronousDraftChanges,
     initialMessage,
     editor,
     saveDraft,
@@ -766,25 +1039,6 @@ export function EmailComposer({
     persistDraftOnce,
   ]);
 
-  useEffect(() => {
-    const handlePasteFiles = (event: ClipboardEvent) => {
-      const clipboardData = event.clipboardData;
-      if (!clipboardData || !clipboardData.files.length) return;
-
-      const pastedFiles = Array.from(clipboardData.files);
-      if (pastedFiles.length > 0) {
-        event.preventDefault();
-        handleAttachment(pastedFiles);
-        toast.success(`${pluralize('file', pastedFiles.length, true)} attached`);
-      }
-    };
-
-    document.addEventListener('paste', handlePasteFiles);
-    return () => {
-      document.removeEventListener('paste', handlePasteFiles);
-    };
-  }, [handleAttachment]);
-
   // keep fromEmail in sync when settings load
   useEffect(() => {
     const preferred =
@@ -795,10 +1049,153 @@ export function EmailComposer({
     }
   }, [settings?.settings?.defaultEmailAlias, getValues, setValue]);
 
-  const handleQualityChange = async (newQuality: ImageQuality) => {
+  const handleFileDragEnter = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    if (!hasFileDrag(event.dataTransfer)) return;
+
+    event.preventDefault();
+    fileDragDepthRef.current += 1;
+    setIsFileDragActive(true);
+    setAttachmentStatus('Drop files to attach');
+  }, []);
+
+  const handleFileDragOver = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    if (!hasFileDrag(event.dataTransfer)) return;
+
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+  }, []);
+
+  const handleFileDragLeave = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    if (!hasFileDrag(event.dataTransfer)) return;
+
+    fileDragDepthRef.current = Math.max(0, fileDragDepthRef.current - 1);
+    if (fileDragDepthRef.current === 0) {
+      setIsFileDragActive(false);
+      setAttachmentStatus('');
+    }
+  }, []);
+
+  const handleFileDrop = useCallback(
+    (event: React.DragEvent<HTMLDivElement>) => {
+      if (!hasFileDrag(event.dataTransfer)) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      fileDragDepthRef.current = 0;
+      setIsFileDragActive(false);
+
+      const droppedFiles = Array.from(event.dataTransfer.files);
+      if (droppedFiles.length === 0) {
+        setAttachmentStatus('No files to attach');
+        return;
+      }
+
+      setAttachmentStatus('Attaching files');
+      void queueAttachmentCandidates(droppedFiles);
+    },
+    [queueAttachmentCandidates],
+  );
+
+  const handlePasteFiles = useCallback(
+    (event: React.ClipboardEvent<HTMLDivElement>) => {
+      const clipboardData = event.clipboardData;
+      if (!clipboardData || !clipboardData.files.length) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      setAttachmentStatus('Attaching files');
+      void queueAttachmentCandidates(Array.from(clipboardData.files));
+    },
+    [queueAttachmentCandidates],
+  );
+
+  const handleInlineImage = useCallback(
+    (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      event.target.value = '';
+      if (!file || !editor) return;
+
+      if (sendInFlightRef.current) {
+        rejectFileChangeDuringSend();
+        return;
+      }
+
+      if (!file.type.startsWith('image/')) {
+        const message = 'Only image files can be inserted inline';
+        setAttachmentStatus(message);
+        toast.error(message);
+        return;
+      }
+
+      return enqueueInlineImageTask(
+        () =>
+          new Promise<void>((resolve) => {
+            const reader = new FileReader();
+            const fail = () => {
+              setAttachmentStatus('Unable to insert image');
+              toast.error('Unable to insert image');
+              resolve();
+            };
+
+            reader.onload = () => {
+              if (typeof reader.result !== 'string') {
+                fail();
+                return;
+              }
+
+              try {
+                editor
+                  .chain()
+                  .insertContentAt(editor.state.selection.anchor, {
+                    type: 'image',
+                    attrs: {
+                      src: reader.result,
+                    },
+                  })
+                  .focus()
+                  .run();
+                setAttachmentStatus('Image inserted into email');
+                resolve();
+              } catch {
+                fail();
+              }
+            };
+            reader.onerror = fail;
+            reader.onabort = fail;
+            reader.readAsDataURL(file);
+          }),
+      );
+    },
+    [editor, enqueueInlineImageTask, rejectFileChangeDuringSend],
+  );
+
+  const handleQualityChange = (newQuality: ImageQuality) => {
+    if (sendInFlightRef.current) {
+      rejectFileChangeDuringSend();
+      return;
+    }
+
     setImageQuality(newQuality);
-    await processAndSetAttachments(originalAttachments, newQuality, true);
+    return enqueueAttachmentTask(
+      async () => {
+        await processAndSetAttachments(
+          originalAttachmentsRef.current,
+          newQuality,
+          true,
+        );
+        setAttachmentStatus('Attachment compression updated');
+      },
+      { marksDraftDirty: true },
+    );
   };
+
+  const handleInlineImagePickerClick = useCallback(() => {
+    if (sendInFlightRef.current) {
+      rejectFileChangeDuringSend();
+      return;
+    }
+    inlineImageInputRef.current?.click();
+  }, [rejectFileChangeDuringSend]);
 
   const handleScheduleChange = useCallback((value?: string) => {
     setScheduleAt(value);
@@ -834,11 +1231,29 @@ export function EmailComposer({
 
   return (
     <div
+      onPasteCapture={handlePasteFiles}
+      onDragEnter={handleFileDragEnter}
+      onDragOver={handleFileDragOver}
+      onDragLeave={handleFileDragLeave}
+      onDropCapture={handleFileDrop}
       className={cn(
-        'flex max-h-[500px] w-full max-w-[750px] flex-col overflow-hidden rounded-2xl bg-[#FAFAFA] shadow-sm dark:bg-[#202020]',
+        'relative flex max-h-[500px] w-full max-w-[750px] flex-col overflow-hidden rounded-2xl bg-[#FAFAFA] shadow-sm dark:bg-[#202020]',
         className,
       )}
     >
+      <div role="status" aria-live="polite" className="sr-only">
+        {attachmentStatus}
+      </div>
+      {isFileDragActive ? (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-black/20"
+        >
+          <span className="rounded-md bg-background px-4 py-2 text-sm font-medium shadow-sm">
+            Drop files to attach
+          </span>
+        </div>
+      ) : null}
       <div className="no-scrollbar dark:bg-panelDark flex min-h-0 flex-1 flex-col overflow-y-auto rounded-2xl">
         {/* To, Cc, Bcc */}
         <div className="shrink-0 overflow-visible border-b border-[#E7E7E7] pb-2 dark:border-[#252525]">
@@ -967,9 +1382,27 @@ export function EmailComposer({
               onChange={handleScheduleChange}
               onValidityChange={handleScheduleValidityChange}
             />
-            <Button variant={'secondary'} size={'xs'} onClick={() => fileInputRef.current?.click()} className="bg-background border hover:bg-gray-50 dark:hover:bg-[#404040] transition-colors cursor-pointer">
+            <Button
+              variant={'secondary'}
+              size={'xs'}
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isLoading}
+              className="bg-background border hover:bg-gray-50 dark:hover:bg-[#404040] transition-colors cursor-pointer"
+            >
               <Plus className="h-3 w-3 fill-[#9A9A9A]" />
               <span className="hidden px-0.5 text-sm md:block">Add</span>
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              size="xs"
+              aria-label="Insert image"
+              onClick={handleInlineImagePickerClick}
+              disabled={isLoading}
+              className="bg-background border hover:bg-gray-50 dark:hover:bg-[#404040] transition-colors cursor-pointer"
+            >
+              <ImagePlus className="h-3 w-3" />
+              <span className="px-0.5 text-sm">Insert image</span>
             </Button>
             <TemplateButton
               editor={editor}
@@ -985,16 +1418,27 @@ export function EmailComposer({
               type="file"
               id="attachment-input"
               className="hidden"
-              onChange={async (event) => {
+              onChange={(event) => {
                 const fileList = event.target.files;
                 if (fileList) {
-                  await handleAttachment(Array.from(fileList));
+                  void queueAttachmentCandidates(Array.from(fileList));
                 }
+                event.target.value = '';
               }}
               multiple
-              accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.txt"
+              accept={COMPOSE_ATTACHMENT_ACCEPT}
+              disabled={isLoading}
               ref={fileInputRef}
               style={{ zIndex: 100 }}
+            />
+            <Input
+              type="file"
+              id="inline-image-input"
+              className="hidden"
+              accept="image/*"
+              disabled={isLoading}
+              ref={inlineImageInputRef}
+              onChange={handleInlineImage}
             />
             {attachments && attachments.length > 0 && (
               <Popover modal={true}>
@@ -1031,8 +1475,9 @@ export function EmailComposer({
                     </div>
 
                     <div className="max-h-[250px] flex-1 space-y-0.5 overflow-y-auto p-1.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-                      {attachments.map((file: File, index: number) => {
-                        const attachmentKey = getAttachmentKey(file);
+                      {attachmentEntries.map((attachmentEntry) => {
+                        const { file } = attachmentEntry;
+                        const attachmentKey = attachmentEntry.id;
                         const nameParts = file.name.split('.');
                         const extension = nameParts.length > 1 ? nameParts.pop() : undefined;
                         const nameWithoutExt = nameParts.join('.');
@@ -1043,7 +1488,7 @@ export function EmailComposer({
                             : nameWithoutExt;
                         return (
                             <div
-                              key={attachmentKey}
+                              key={attachmentEntry.id}
                             className="group flex items-center justify-between gap-3 rounded-md px-1.5 py-1.5 hover:bg-black/5 dark:hover:bg-white/10"
                           >
                             <div className="flex min-w-0 flex-1 items-center gap-3">
@@ -1093,7 +1538,7 @@ export function EmailComposer({
                                 e.stopPropagation();
 
                                 try {
-                                  await removeAttachment(index);
+                                  await removeAttachment(attachmentEntry.id);
                                 } catch (error) {
                                   console.error('Failed to remove attachment:', error);
                                   toast.error('Failed to remove attachment');
