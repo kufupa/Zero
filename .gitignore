@@ -82,6 +82,7 @@ apps/server-pilot/.env.*
 # playwright artifacts (regenerated per run)
 packages/testing/playwright-report/
 packages/testing/test-results/
+apps/mail/test-results/
 .gstack/
 
 # Centurion production/private operator artifacts (never commit)
