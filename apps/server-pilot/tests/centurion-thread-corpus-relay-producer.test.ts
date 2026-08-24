@@ -51,6 +51,7 @@ const TRANSFER_ID = '3479ca40-b5a1-4bb3-aef1-02fcbefc949c';
 const SAFE_BODY_MARKER = 'SAFE_RELAY_FIXTURE_BODY';
 const SAFE_ADDRESS_MARKER = 'safe-relay@example.test';
 const SAFE_PATH_MARKER = '/synthetic/safe-relay-snapshot';
+const SAFE_JOURNAL_MARKER = 'SAFE_RELAY_JOURNAL_DETAIL';
 const textEncoder = new TextEncoder();
 
 const relayConfig: RelayBucketConfig = {
@@ -336,11 +337,39 @@ class FakeRelayStore implements RelayObjectStore {
   }
 }
 
+type FakeResumableStageDiscovery =
+  | { outcome: 'none' }
+  | { outcome: 'one'; transferId: string }
+  | { outcome: 'blocked' };
+
+type FakeSourceRuntimeState = {
+  stageIntents: Map<string, StageIntentV2>;
+  finalizeJournals: Map<string, FinalizeJournalV1>;
+  sourceStageLease: string | null;
+  acquireCalls: number;
+  releaseCalls: number;
+  releaseResult: boolean;
+};
+
+function createFakeSourceRuntimeState(): FakeSourceRuntimeState {
+  return {
+    stageIntents: new Map(),
+    finalizeJournals: new Map(),
+    sourceStageLease: null,
+    acquireCalls: 0,
+    releaseCalls: 0,
+    releaseResult: true,
+  };
+}
+
 class FakeSourceRuntime implements RelaySourceRuntimePort {
   readonly calls: string[] = [];
-  readonly stageIntents = new Map<string, StageIntentV2>();
-  readonly finalizeJournals = new Map<string, FinalizeJournalV1>();
+  readonly stageIntents: Map<string, StageIntentV2>;
+  readonly finalizeJournals: Map<string, FinalizeJournalV1>;
   readonly members = sourceMembers();
+  private heldSourceStageLeaseId: string | null = null;
+  discoveryOverride: FakeResumableStageDiscovery | null = null;
+  afterSourceStageLeaseAcquire: (() => void) | null = null;
   inspectResult: {
     canonicalPath: string;
     stableIdentity: string;
@@ -368,6 +397,11 @@ class FakeSourceRuntime implements RelaySourceRuntimePort {
     worktree: `${runtimeConfig.expectedEc2.worktree}\n`,
     status: '',
   };
+
+  constructor(private readonly state: FakeSourceRuntimeState = createFakeSourceRuntimeState()) {
+    this.stageIntents = state.stageIntents;
+    this.finalizeJournals = state.finalizeJournals;
+  }
 
   platform(): string {
     this.calls.push('platform');
@@ -444,6 +478,71 @@ class FakeSourceRuntime implements RelaySourceRuntimePort {
       : { outcome: 'absent' };
   }
 
+  async findSingleResumableStage(): Promise<FakeResumableStageDiscovery> {
+    this.calls.push('find-resumable-stage');
+    if (
+      this.heldSourceStageLeaseId === null ||
+      this.state.sourceStageLease !== this.heldSourceStageLeaseId
+    ) {
+      return { outcome: 'blocked' };
+    }
+    if (this.discoveryOverride) return this.discoveryOverride;
+    const finalized = new Set<string>();
+    for (const [transferId, journal] of this.finalizeJournals) {
+      if (
+        journal.schemaVersion !== 'centurion-thread-corpus-relay-finalize-journal-v1' ||
+        journal.stageIntent.transferId !== transferId
+      ) {
+        return { outcome: 'blocked' };
+      }
+      if (journal.state !== 'complete') return { outcome: 'blocked' };
+      finalized.add(transferId);
+    }
+    const candidates: string[] = [];
+    for (const [transferId, intent] of this.stageIntents) {
+      if (
+        intent.schemaVersion !== 'centurion-thread-corpus-relay-stage-intent-v2' ||
+        intent.transferId !== transferId ||
+        (intent.state !== 'staging' && intent.state !== 'staged')
+      ) {
+        return { outcome: 'blocked' };
+      }
+      if (!finalized.has(transferId)) candidates.push(transferId);
+    }
+    return candidates.length === 0
+      ? { outcome: 'none' }
+      : candidates.length === 1
+        ? { outcome: 'one', transferId: candidates[0]! }
+        : { outcome: 'blocked' };
+  }
+
+  async acquireSourceStageLease(): Promise<{ leaseId: string } | null> {
+    this.calls.push('acquire-source-stage-lease');
+    this.state.acquireCalls += 1;
+    if (this.state.sourceStageLease !== null) return null;
+    const leaseId = 'safe-source-stage-lease';
+    this.state.sourceStageLease = leaseId;
+    this.heldSourceStageLeaseId = leaseId;
+    this.afterSourceStageLeaseAcquire?.();
+    return { leaseId };
+  }
+
+  async releaseSourceStageLease(input: { leaseId: string }): Promise<boolean> {
+    this.calls.push('release-source-stage-lease');
+    this.state.releaseCalls += 1;
+    if (
+      !this.state.releaseResult ||
+      this.heldSourceStageLeaseId !== input.leaseId ||
+      this.state.sourceStageLease === null ||
+      input.leaseId !== this.state.sourceStageLease
+    ) {
+      return false;
+    }
+    this.state.sourceStageLease = null;
+    this.heldSourceStageLeaseId = null;
+    return true;
+  }
+
   async removeTrustedSnapshot(): Promise<boolean> {
     this.calls.push('remove');
     return this.removeResult;
@@ -465,6 +564,30 @@ function stage(
   });
 }
 
+function stageCommand(input: {
+  args: readonly string[];
+  source: FakeSourceRuntime;
+  store: FakeRelayStore;
+  createTransferId?: () => string;
+  objectStoreFor?: () => FakeRelayStore;
+}) {
+  const stdout: string[] = [];
+  return {
+    stdout,
+    command: createStageCenturionThreadCorpusRelayCommand({
+      args: () => input.args,
+      createTransferId: input.createTransferId ?? (() => TRANSFER_ID),
+      runtime: input.source,
+      objectStoreFor: input.objectStoreFor ?? (() => input.store),
+      assessReadiness: async () => ({
+        report: allGreenReadinessReport,
+        attestation: readinessAttestation,
+      }),
+      writeStdout: (value) => stdout.push(value),
+    }),
+  };
+}
+
 function expectedStageKeys(): string[] {
   const members = sourceMembers();
   return [
@@ -480,6 +603,7 @@ function assertNoSafeFixtureLeak(value: unknown): void {
   expect(output).not.toContain(SAFE_BODY_MARKER);
   expect(output).not.toContain(SAFE_ADDRESS_MARKER);
   expect(output).not.toContain(SAFE_PATH_MARKER);
+  expect(output).not.toContain(SAFE_JOURNAL_MARKER);
 }
 
 function parseTypeScript(filePath: string): ts.SourceFile {
@@ -1212,6 +1336,293 @@ describe('stage Centurion relay command', () => {
     expect(source.calls).toEqual([]);
     assertNoSafeFixtureLeak(stdout);
   });
+
+  it.each([
+    ['missing transfer ID', ['--transfer-id']],
+    ['invalid transfer ID', ['--transfer-id', 'safe-not-a-uuid']],
+    ['duplicate transfer ID flag', ['--transfer-id', TRANSFER_ID, '--transfer-id', TRANSFER_ID]],
+    ['unknown flag', ['--unexpected']],
+    ['extra argument', ['--transfer-id', TRANSFER_ID, 'safe-extra']],
+  ] as const)('blocks %s before protected configuration', async (_name, args) => {
+    const source = new FakeSourceRuntime();
+    const createTransferId = vi.fn(() => TRANSFER_ID);
+    const { command, stdout } = stageCommand({
+      args,
+      source,
+      store: new FakeRelayStore(),
+      createTransferId,
+    });
+
+    expect(await command()).toBe(2);
+    expect(source.calls).toEqual([]);
+    expect(createTransferId).not.toHaveBeenCalled();
+    expect(stdout).toEqual([
+      '{"schemaVersion":"centurion-thread-corpus-relay-stage-offer-v1","outcome":"blocked"}\n',
+    ]);
+  });
+
+  it('suppresses raw discovery state from blocked stage output', async () => {
+    const state = createFakeSourceRuntimeState();
+    const source = new FakeSourceRuntime(state);
+    source.discoveryOverride = {
+      outcome: 'blocked',
+      transferId: TRANSFER_ID,
+      journal: SAFE_JOURNAL_MARKER,
+    } as unknown as FakeResumableStageDiscovery;
+    const { command, stdout } = stageCommand({
+      args: [],
+      source,
+      store: new FakeRelayStore(),
+    });
+
+    expect(await command()).toBe(3);
+    expect(stdout).toEqual([
+      '{"schemaVersion":"centurion-thread-corpus-relay-stage-offer-v1","outcome":"blocked"}\n',
+    ]);
+    expect(stdout.join('')).not.toContain(TRANSFER_ID);
+    assertNoSafeFixtureLeak(stdout);
+  });
+
+  it('reuses exactly one durable staging intent from a fresh fake runtime without creating a UUID', async () => {
+    const state = createFakeSourceRuntimeState();
+    const store = new FakeRelayStore();
+    const crashedRuntime = new FakeSourceRuntime(state);
+    expect(await stage(store, crashedRuntime)).toMatchObject({ outcome: 'staged' });
+    const persisted = state.stageIntents.get(TRANSFER_ID)!;
+    state.stageIntents.set(TRANSFER_ID, {
+      ...persisted,
+      state: 'staging',
+    });
+
+    const recoveredRuntime = new FakeSourceRuntime(state);
+    const createTransferId = vi.fn(() => {
+      throw new Error('fresh transfer ID must not be created for a durable stage');
+    });
+    const { command, stdout } = stageCommand({
+      args: [],
+      source: recoveredRuntime,
+      store,
+      createTransferId,
+    });
+
+    expect(await command()).toBe(0);
+    expect(createTransferId).not.toHaveBeenCalled();
+    expect(recoveredRuntime.calls.indexOf('acquire-source-stage-lease')).toBeGreaterThan(-1);
+    expect(recoveredRuntime.calls.indexOf('find-resumable-stage')).toBeGreaterThan(
+      recoveredRuntime.calls.indexOf('acquire-source-stage-lease'),
+    );
+    expect(recoveredRuntime.calls).toContain('release-source-stage-lease');
+    expect(stdout.join('')).toContain(`"transferId":"${TRANSFER_ID}"`);
+  });
+
+  it.each(['ambiguous', 'corrupt', 'finalizing'] as const)(
+    'blocks %s discovery without generating a transfer ID or constructing an object store',
+    async (kind) => {
+      const state = createFakeSourceRuntimeState();
+      const source = new FakeSourceRuntime(state);
+      const store = new FakeRelayStore();
+      if (kind === 'ambiguous') {
+        expect(await stage(store, source)).toMatchObject({ outcome: 'staged' });
+        const valid = source.stageIntents.get(TRANSFER_ID)!;
+        state.stageIntents.set(
+          'd36ad443-1c49-4d7e-8645-111111111111',
+          structuredClone({
+            ...valid,
+            transferId: 'd36ad443-1c49-4d7e-8645-111111111111',
+          }),
+        );
+      } else if (kind === 'corrupt') {
+        state.stageIntents.set(TRANSFER_ID, {
+          schemaVersion: 'centurion-thread-corpus-relay-stage-intent-v1',
+          transferId: TRANSFER_ID,
+        } as unknown as StageIntentV2);
+      } else {
+        expect(await stage(store, source)).toMatchObject({ outcome: 'staged' });
+        const intent = source.stageIntents.get(TRANSFER_ID)!;
+        state.finalizeJournals.set(TRANSFER_ID, {
+          schemaVersion: 'centurion-thread-corpus-relay-finalize-journal-v1',
+          stageIntent: intent,
+          receiveReceiptSha256: '1'.repeat(64),
+          acknowledgementSha256: '2'.repeat(64),
+          state: 'ack_verified',
+        });
+      }
+      const recoveredRuntime = new FakeSourceRuntime(state);
+      const createTransferId = vi.fn(() => 'd36ad443-1c49-4d7e-8645-111111111111');
+      const objectStoreFor = vi.fn(() => store);
+      const stdout: string[] = [];
+      const command = createStageCenturionThreadCorpusRelayCommand({
+        args: () => [],
+        createTransferId,
+        runtime: recoveredRuntime,
+        assessReadiness: async () => ({
+          report: allGreenReadinessReport,
+          attestation: readinessAttestation,
+        }),
+        objectStoreFor,
+        writeStdout: (value) => stdout.push(value),
+      });
+
+      expect(await command()).toBe(3);
+      expect(createTransferId).not.toHaveBeenCalled();
+      expect(objectStoreFor).not.toHaveBeenCalled();
+      expect(recoveredRuntime.calls).toContain('acquire-source-stage-lease');
+      expect(recoveredRuntime.calls).toContain('find-resumable-stage');
+      expect(recoveredRuntime.calls).toContain('release-source-stage-lease');
+      expect(stdout).toEqual([
+        '{"schemaVersion":"centurion-thread-corpus-relay-stage-offer-v1","outcome":"blocked"}\n',
+      ]);
+    },
+  );
+
+  it('permits a completed finalization to discover none and generate a new transfer ID', async () => {
+    const state = createFakeSourceRuntimeState();
+    const store = new FakeRelayStore();
+    const source = new FakeSourceRuntime(state);
+    expect(await stage(store, source)).toMatchObject({ outcome: 'staged' });
+    const intent = state.stageIntents.get(TRANSFER_ID)!;
+    state.finalizeJournals.set(TRANSFER_ID, {
+      schemaVersion: 'centurion-thread-corpus-relay-finalize-journal-v1',
+      stageIntent: intent,
+      receiveReceiptSha256: '1'.repeat(64),
+      acknowledgementSha256: '2'.repeat(64),
+      state: 'complete',
+    });
+    const recoveredRuntime = new FakeSourceRuntime(state);
+    const freshTransferId = 'd36ad443-1c49-4d7e-8645-111111111111';
+    const createTransferId = vi.fn(() => freshTransferId);
+    const { command } = stageCommand({
+      args: [],
+      source: recoveredRuntime,
+      store,
+      createTransferId,
+    });
+
+    expect(await command()).toBe(0);
+    expect(createTransferId).toHaveBeenCalledTimes(1);
+    expect(state.stageIntents.get(freshTransferId)?.state).toBe('staged');
+  });
+
+  it('accepts an explicit UUID only when no competing durable stage exists', async () => {
+    const state = createFakeSourceRuntimeState();
+    const source = new FakeSourceRuntime(state);
+    const store = new FakeRelayStore();
+    expect(await stage(store, source)).toMatchObject({ outcome: 'staged' });
+    const explicitTransferId = 'd36ad443-1c49-4d7e-8645-111111111111';
+    const createTransferId = vi.fn(() => {
+      throw new Error('explicit transfer ID must not generate another ID');
+    });
+    const { command, stdout } = stageCommand({
+      args: ['--transfer-id', explicitTransferId],
+      source: new FakeSourceRuntime(state),
+      store,
+      createTransferId,
+    });
+
+    expect(await command()).toBe(3);
+    expect(createTransferId).not.toHaveBeenCalled();
+    expect(stdout).toEqual([
+      '{"schemaVersion":"centurion-thread-corpus-relay-stage-offer-v1","outcome":"blocked"}\n',
+    ]);
+  });
+
+  it('allows two fresh fake processes to acquire only one global source-stage lease', async () => {
+    const state = createFakeSourceRuntimeState();
+    const first = new FakeSourceRuntime(state);
+    const second = new FakeSourceRuntime(state);
+    const firstTransferId = vi.fn(() => TRANSFER_ID);
+    const secondTransferId = vi.fn(() => 'd36ad443-1c49-4d7e-8645-111111111111');
+    const firstCommand = stageCommand({
+      args: [],
+      source: first,
+      store: new FakeRelayStore(),
+      createTransferId: firstTransferId,
+    }).command;
+    const secondCommand = stageCommand({
+      args: [],
+      source: second,
+      store: new FakeRelayStore(),
+      createTransferId: secondTransferId,
+    }).command;
+
+    const outcomes = await Promise.all([firstCommand(), secondCommand()]);
+
+    expect(outcomes.filter((outcome) => outcome === 0)).toHaveLength(1);
+    expect(outcomes.filter((outcome) => outcome === 3)).toHaveLength(1);
+    expect(state.acquireCalls).toBe(2);
+    expect(state.releaseCalls).toBe(1);
+    expect(firstTransferId.mock.calls.length + secondTransferId.mock.calls.length).toBe(1);
+    expect(
+      [...first.calls, ...second.calls].filter((call) => call === 'find-resumable-stage'),
+    ).toHaveLength(1);
+  });
+
+  it('blocks an unreleased stale source-stage lease rather than stealing it', async () => {
+    const state = createFakeSourceRuntimeState();
+    state.sourceStageLease = 'safe-stale-source-stage-lease';
+    const source = new FakeSourceRuntime(state);
+    const createTransferId = vi.fn(() => TRANSFER_ID);
+    const { command, stdout } = stageCommand({
+      args: [],
+      source,
+      store: new FakeRelayStore(),
+      createTransferId,
+    });
+
+    expect(await command()).toBe(3);
+    expect(source.calls).toContain('acquire-source-stage-lease');
+    expect(source.calls).not.toContain('find-resumable-stage');
+    expect(createTransferId).not.toHaveBeenCalled();
+    expect(state.sourceStageLease).toBe('safe-stale-source-stage-lease');
+    expect(stdout).toEqual([
+      '{"schemaVersion":"centurion-thread-corpus-relay-stage-offer-v1","outcome":"blocked"}\n',
+    ]);
+  });
+
+  it('blocks before discovery when source-stage lease ownership changes', async () => {
+    const state = createFakeSourceRuntimeState();
+    const source = new FakeSourceRuntime(state);
+    source.afterSourceStageLeaseAcquire = () => {
+      state.sourceStageLease = 'safe-competing-source-stage-lease';
+    };
+    const createTransferId = vi.fn(() => TRANSFER_ID);
+    const objectStoreFor = vi.fn(() => new FakeRelayStore());
+    const { command, stdout } = stageCommand({
+      args: [],
+      source,
+      store: new FakeRelayStore(),
+      createTransferId,
+      objectStoreFor,
+    });
+
+    expect(await command()).toBe(3);
+    expect(source.calls).toContain('find-resumable-stage');
+    expect(source.calls).not.toContain('platform');
+    expect(createTransferId).not.toHaveBeenCalled();
+    expect(objectStoreFor).not.toHaveBeenCalled();
+    expect(state.sourceStageLease).toBe('safe-competing-source-stage-lease');
+    expect(stdout).toEqual([
+      '{"schemaVersion":"centurion-thread-corpus-relay-stage-offer-v1","outcome":"blocked"}\n',
+    ]);
+  });
+
+  it('blocks a staged result when exact source-stage lease release cannot be verified', async () => {
+    const state = createFakeSourceRuntimeState();
+    state.releaseResult = false;
+    const source = new FakeSourceRuntime(state);
+    const { command, stdout } = stageCommand({
+      args: [],
+      source,
+      store: new FakeRelayStore(),
+    });
+
+    expect(await command()).toBe(3);
+    expect(state.releaseCalls).toBe(1);
+    expect(state.sourceStageLease).toBe('safe-source-stage-lease');
+    expect(stdout).toEqual([
+      '{"schemaVersion":"centurion-thread-corpus-relay-stage-offer-v1","outcome":"blocked"}\n',
+    ]);
+  });
 });
 
 describe('producer source boundaries', () => {
@@ -1238,6 +1649,17 @@ describe('producer source boundaries', () => {
 
   it('keeps S3 command construction in object-store adapter across all Task 2 sources', () => {
     expect(() => assertTask2RelaySourceBoundaries(relaySources())).not.toThrow();
+  });
+
+  it('uses canonical V2 validation when discovering durable resumable state', () => {
+    const producer = relaySources().find((source) => source.name === 'producer')!.file;
+
+    expect(producer.text).toContain(
+      'return validateStageIntent(value, config, transferId) !== null;',
+    );
+    expect(producer.text).toContain(
+      'const config = parseRelaySourceRuntimeConfig(readTrustedConfig(layout));',
+    );
   });
 
   it('rejects an out-of-adapter S3 mutation constructor fixture', () => {
@@ -1305,16 +1727,49 @@ describe('producer source boundaries', () => {
         ts.isPropertyAccessExpression(node.expression) &&
         node.expression.name.text === 'writeStdout',
     );
+    const offerCalls = collectNodes(
+      stage,
+      (node): node is ts.CallExpression =>
+        ts.isCallExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === 'writeOffer',
+    );
 
     expect(dynamicImports).toEqual([]);
     expect(forbiddenIdentifiers).toEqual([]);
     expect(forbiddenModules).toEqual([]);
     expect(stdoutCalls).toHaveLength(1);
+    expect(stage.text).not.toContain('process.stderr');
+    expect(stage.text).not.toContain('console.');
+    expect(
+      offerCalls.every((call) => {
+        const value = call.arguments[1];
+        return (
+          (value !== undefined && ts.isIdentifier(value) && value.text === 'offer') ||
+          (value !== undefined &&
+            ts.isCallExpression(value) &&
+            ts.isIdentifier(value.expression) &&
+            value.expression.text === 'blockedOffer')
+        );
+      }),
+    ).toBe(true);
     expect(stage.text.indexOf('const expectedAttestation')).toBeGreaterThan(
       stage.text.indexOf('const config'),
     );
     expect(stage.text.indexOf('objectStoreFor(config.relay)')).toBeGreaterThan(
       stage.text.indexOf('const expectedAttestation'),
     );
+    expect(
+      stage.text.indexOf('const lease = await recovery.acquireSourceStageLease()'),
+    ).toBeGreaterThan(stage.text.indexOf('const config'));
+    expect(
+      stage.text.indexOf('const discovery = await recovery.findSingleResumableStage()'),
+    ).toBeGreaterThan(stage.text.indexOf('const lease = await recovery.acquireSourceStageLease()'));
+    expect(stage.text.indexOf('dependencies.createTransferId()')).toBeGreaterThan(
+      stage.text.indexOf('const discovery = await recovery.findSingleResumableStage()'),
+    );
+    expect(
+      stage.text.indexOf('recovery.releaseSourceStageLease({ leaseId: lease.leaseId })'),
+    ).toBeGreaterThan(stage.text.indexOf('stageCenturionThreadCorpusRelay({'));
   });
 });

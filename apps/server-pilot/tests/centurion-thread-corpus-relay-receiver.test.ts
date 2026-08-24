@@ -275,10 +275,28 @@ class FakeRelayStore implements RelayObjectStore {
   }
 }
 
+type FakeReceiverFileSystemState = {
+  roots: Map<string, Map<string, Uint8Array>>;
+  partialLease: string | null;
+  partialLeaseAcquireCalls: number;
+  partialLeaseReleaseCalls: number;
+  partialLeaseReleaseResult: boolean;
+};
+
+function createFakeReceiverFileSystemState(): FakeReceiverFileSystemState {
+  return {
+    roots: new Map(),
+    partialLease: null,
+    partialLeaseAcquireCalls: 0,
+    partialLeaseReleaseCalls: 0,
+    partialLeaseReleaseResult: true,
+  };
+}
+
 class FakeReceiverFileSystem implements ReceiverFileSystem {
   readonly calls: string[] = [];
   readonly timeline: string[] = [];
-  readonly roots = new Map<string, Map<string, Uint8Array>>();
+  readonly roots: Map<string, Map<string, Uint8Array>>;
   readonly listingOverrides = new Map<string, readonly string[] | null>();
   checkoutResult = {
     root: PRIVATE_ROOT,
@@ -286,8 +304,19 @@ class FakeReceiverFileSystem implements ReceiverFileSystem {
     volumeId: 'safe-volume-a',
   };
   createPartialResult = true;
+  acquirePartialDirectoryResult = true;
   currentPartial: string | null = null;
   removeCalls = 0;
+  failMemberWriteAt: number | null = null;
+  memberWriteAttempts = 0;
+  receiptWriteResult = true;
+  beforeReadFile: ((filePath: string) => void) | null = null;
+
+  constructor(
+    private readonly state: FakeReceiverFileSystemState = createFakeReceiverFileSystemState(),
+  ) {
+    this.roots = state.roots;
+  }
 
   async assertGitignoredPrivateRoot(): Promise<{
     root: string;
@@ -309,8 +338,54 @@ class FakeReceiverFileSystem implements ReceiverFileSystem {
     return PARTIAL_PATH;
   }
 
+  async acquirePartialLease(transferId: string): Promise<{ leaseId: string } | null> {
+    this.calls.push(`acquire-partial-lease:${transferId}`);
+    this.timeline.push('acquire-partial-lease');
+    this.state.partialLeaseAcquireCalls += 1;
+    if (transferId !== TRANSFER_ID || this.state.partialLease !== null) return null;
+    this.state.partialLease = 'safe-partial-lease';
+    return { leaseId: this.state.partialLease };
+  }
+
+  async releasePartialLease(input: { transferId: string; leaseId: string }): Promise<boolean> {
+    this.calls.push(`release-partial-lease:${input.transferId}`);
+    this.state.partialLeaseReleaseCalls += 1;
+    if (
+      input.transferId !== TRANSFER_ID ||
+      !this.state.partialLeaseReleaseResult ||
+      this.state.partialLease === null ||
+      input.leaseId !== this.state.partialLease
+    ) {
+      return false;
+    }
+    this.state.partialLease = null;
+    return true;
+  }
+
+  async acquirePartialDirectory(transferId: string): Promise<{
+    path: string;
+    created: boolean;
+    stableIdentity: string;
+    volumeId: string;
+  } | null> {
+    this.calls.push(`acquire-partial-directory:${transferId}`);
+    this.timeline.push('acquire-partial-directory');
+    if (!this.acquirePartialDirectoryResult || transferId !== TRANSFER_ID) return null;
+    const created = !this.roots.has(PARTIAL_PATH);
+    if (created) this.roots.set(PARTIAL_PATH, new Map());
+    this.currentPartial = PARTIAL_PATH;
+    return {
+      path: PARTIAL_PATH,
+      created,
+      stableIdentity: 'safe-partial-identity',
+      volumeId: 'safe-volume-a',
+    };
+  }
+
   async writeCreateNew(filePath: string, content: Uint8Array): Promise<boolean> {
     this.calls.push(`write:${filePath}`);
+    this.memberWriteAttempts += 1;
+    if (this.failMemberWriteAt === this.memberWriteAttempts) return false;
     const relative = this.relative(PARTIAL_PATH, filePath);
     const files = this.roots.get(PARTIAL_PATH);
     if (!relative || !files || files.has(relative)) return false;
@@ -320,6 +395,7 @@ class FakeReceiverFileSystem implements ReceiverFileSystem {
 
   async readFile(filePath: string, maxBytes: number): Promise<Uint8Array | null> {
     this.calls.push(`read:${filePath}`);
+    this.beforeReadFile?.(filePath);
     for (const [root, files] of [...this.roots.entries()].sort(
       ([left], [right]) => right.length - left.length,
     )) {
@@ -339,7 +415,7 @@ class FakeReceiverFileSystem implements ReceiverFileSystem {
 
   async writeReceiveReceipt(receiptJson: string): Promise<{ path: string; sha256: string } | null> {
     this.calls.push('write-receipt');
-    if (!this.currentPartial) return null;
+    if (!this.receiptWriteResult || !this.currentPartial) return null;
     const files = this.roots.get(this.currentPartial);
     if (!files || files.has('receive-receipt.v1.json')) return null;
     const content = textEncoder.encode(receiptJson);
@@ -371,6 +447,13 @@ class FakeReceiverFileSystem implements ReceiverFileSystem {
   seedFinal(files: readonly [string, Uint8Array][]): void {
     this.roots.set(
       FINAL_PATH,
+      new Map(files.map(([memberPath, content]) => [memberPath, cloneBytes(content)])),
+    );
+  }
+
+  seedPartial(files: readonly [string, Uint8Array][]): void {
+    this.roots.set(
+      PARTIAL_PATH,
       new Map(files.map(([memberPath, content]) => [memberPath, cloneBytes(content)])),
     );
   }
@@ -425,6 +508,13 @@ class FakeWindowsPrivateAcl implements WindowsPrivateAcl {
     if (this.rejectedPaths.has(pathValue)) return null;
     const trusted = this.trusted.get(pathValue);
     if (trusted) return { ...trusted };
+    const partialMember = path.win32.relative(PARTIAL_PATH, pathValue).replaceAll('\\', '/');
+    if (this.fileSystem.roots.get(PARTIAL_PATH)?.has(partialMember)) {
+      return {
+        stableIdentity: `safe-partial-file-${partialMember.replaceAll('/', '-')}`,
+        volumeId: 'safe-volume-a',
+      };
+    }
     const finalMember = path.win32.relative(FINAL_PATH, pathValue).replaceAll('\\', '/');
     return this.fileSystem.roots.get(FINAL_PATH)?.has(finalMember)
       ? {
@@ -544,6 +634,16 @@ function receive(harness: ReceiverHarness) {
     acl: harness.acl,
     runtime: harness.runtime,
   });
+}
+
+function useFreshReceiverFileSystem(
+  harness: ReceiverHarness,
+  state: FakeReceiverFileSystemState,
+): FakeReceiverFileSystem {
+  const fileSystem = new FakeReceiverFileSystem(state);
+  harness.fileSystem = fileSystem;
+  harness.acl = new FakeWindowsPrivateAcl(fileSystem);
+  return fileSystem;
 }
 
 function expectedReceipt(harness: ReceiverHarness): string {
@@ -691,6 +791,231 @@ describe('Centurion relay receiver', () => {
     assertNoFixtureLeak(result);
   });
 
+  it('validates remote manifest, heads, and inventory before acquiring the partial lease', async () => {
+    const harness = createHarness();
+    const order: string[] = [];
+    const originalAssert = harness.store.assertRelayBucket.bind(harness.store);
+    const originalHead = harness.store.head.bind(harness.store);
+    const originalGet = harness.store.getBounded.bind(harness.store);
+    const originalList = harness.store.listAll.bind(harness.store);
+    const originalAcquire = harness.fileSystem.acquirePartialLease.bind(harness.fileSystem);
+    vi.spyOn(harness.store, 'assertRelayBucket').mockImplementation(async (config) => {
+      order.push('remote-bucket');
+      return originalAssert(config);
+    });
+    vi.spyOn(harness.store, 'head').mockImplementation(async (key) => {
+      order.push(`remote-head:${key}`);
+      return originalHead(key);
+    });
+    vi.spyOn(harness.store, 'getBounded').mockImplementation(async (key, maxBytes) => {
+      order.push(`remote-get:${key}`);
+      return originalGet(key, maxBytes);
+    });
+    vi.spyOn(harness.store, 'listAll').mockImplementation(async (prefix) => {
+      order.push(`remote-list:${prefix}`);
+      return originalList(prefix);
+    });
+    vi.spyOn(harness.fileSystem, 'acquirePartialLease').mockImplementation(async (transferId) => {
+      expect(order).toContain('remote-bucket');
+      expect(order).toContain(
+        `remote-head:${relayManifestKey(relayConfig.literalRelayRoot, TRANSFER_ID)}`,
+      );
+      expect(order).toContain(
+        `remote-get:${relayManifestKey(relayConfig.literalRelayRoot, TRANSFER_ID)}`,
+      );
+      expect(order).toContain(`remote-list:${relayPrefix()}`);
+      for (const candidate of harness.members) {
+        expect(order).toContain(
+          `remote-head:${relayObjectKey(relayConfig.literalRelayRoot, TRANSFER_ID, candidate.path)}`,
+        );
+      }
+      order.push('partial-lease');
+      return originalAcquire(transferId);
+    });
+
+    expect(await receive(harness)).toMatchObject({ outcome: 'received' });
+    expect(order).toContain('partial-lease');
+  });
+
+  it('resumes exact cached members from a fresh fake filesystem after a mid-download interruption', async () => {
+    const state = createFakeReceiverFileSystemState();
+    const harness = createHarness();
+    const interruptedFileSystem = useFreshReceiverFileSystem(harness, state);
+    interruptedFileSystem.failMemberWriteAt = 2;
+
+    expect(await receive(harness)).toEqual({ outcome: 'blocked' });
+    const cached = harness.members[0]!;
+    expect(state.roots.get(PARTIAL_PATH)?.get(cached.path)).toEqual(cached.content);
+
+    const recoveredFileSystem = useFreshReceiverFileSystem(harness, state);
+    harness.store.calls.length = 0;
+    expect(await receive(harness)).toMatchObject({ outcome: 'received' });
+    expect(recoveredFileSystem.calls).toContain(`acquire-partial-lease:${TRANSFER_ID}`);
+    expect(recoveredFileSystem.calls).toContain(`acquire-partial-directory:${TRANSFER_ID}`);
+    expect(harness.store.calls).not.toContain(
+      `get:${relayObjectKey(relayConfig.literalRelayRoot, TRANSFER_ID, cached.path)}`,
+    );
+    expect(await recoveredFileSystem.listRelativePaths(FINAL_PATH)).toEqual([
+      ...harness.members.map((candidate) => candidate.path),
+      'receive-receipt.v1.json',
+    ]);
+  });
+
+  it.each([
+    'extra partial member',
+    'tampered cached member',
+    'incomplete receipt',
+    'bad complete receipt',
+    'wrong partial ACL',
+    'wrong partial volume',
+  ] as const)('blocks %s without deleting private state or acknowledging', async (kind) => {
+    const state = createFakeReceiverFileSystemState();
+    const harness = createHarness();
+    const fileSystem = useFreshReceiverFileSystem(harness, state);
+    const first = harness.members[0]!;
+    if (kind === 'extra partial member') {
+      fileSystem.seedPartial([
+        [first.path, first.content],
+        ['safe-extra-partial-member', textEncoder.encode('SAFE_EXTRA_PARTIAL')],
+      ]);
+    } else if (kind === 'tampered cached member') {
+      fileSystem.seedPartial([[first.path, textEncoder.encode('SAFE_TAMPERED_PARTIAL')]]);
+    } else if (kind === 'incomplete receipt') {
+      fileSystem.seedPartial([
+        [first.path, first.content],
+        ['receive-receipt.v1.json', textEncoder.encode('{"safe":"incomplete"}\n')],
+      ]);
+    } else if (kind === 'bad complete receipt') {
+      fileSystem.seedPartial([
+        ...harness.members.map(
+          (candidate) => [candidate.path, candidate.content] as [string, Uint8Array],
+        ),
+        ['receive-receipt.v1.json', textEncoder.encode('{"safe":"wrong"}\n')],
+      ]);
+    } else {
+      fileSystem.seedPartial([[first.path, first.content]]);
+      if (kind === 'wrong partial ACL') {
+        harness.acl.rejectedPaths.add(PARTIAL_PATH);
+      } else {
+        harness.acl.trusted.set(PARTIAL_PATH, {
+          stableIdentity: 'safe-partial-identity',
+          volumeId: 'safe-volume-b',
+        });
+      }
+    }
+
+    expect(await receive(harness)).toEqual({ outcome: 'blocked' });
+    expect(fileSystem.calls).toContain(`acquire-partial-lease:${TRANSFER_ID}`);
+    expect(fileSystem.removeCalls).toBe(0);
+    expect(harness.store.putInputs).toEqual([]);
+    expect(state.roots.has(PARTIAL_PATH)).toBe(true);
+  });
+
+  it('blocks a cached partial member whose identity changes after ACL verification', async () => {
+    const state = createFakeReceiverFileSystemState();
+    const harness = createHarness();
+    const fileSystem = useFreshReceiverFileSystem(harness, state);
+    const cached = harness.members[0]!;
+    const cachedPath = path.win32.join(PARTIAL_PATH, ...cached.path.split('/'));
+    fileSystem.seedPartial([[cached.path, cached.content]]);
+    let swapped = false;
+    fileSystem.beforeReadFile = (filePath) => {
+      if (swapped || filePath !== cachedPath) return;
+      swapped = true;
+      harness.acl.trusted.set(cachedPath, {
+        stableIdentity: 'safe-swapped-partial-member',
+        volumeId: 'safe-volume-a',
+      });
+    };
+
+    expect(await receive(harness)).toEqual({ outcome: 'blocked' });
+    expect(swapped).toBe(true);
+    expect(harness.store.putInputs).toEqual([]);
+    expect(fileSystem.removeCalls).toBe(0);
+    expect(state.roots.has(PARTIAL_PATH)).toBe(true);
+  });
+
+  it('blocks an unreleased stale partial lease without inspecting or acknowledging private state', async () => {
+    const state = createFakeReceiverFileSystemState();
+    state.partialLease = 'safe-stale-partial-lease';
+    const harness = createHarness();
+    const fileSystem = useFreshReceiverFileSystem(harness, state);
+
+    expect(await receive(harness)).toEqual({ outcome: 'blocked' });
+    expect(fileSystem.calls).toContain(`acquire-partial-lease:${TRANSFER_ID}`);
+    expect(fileSystem.calls).not.toContain(`acquire-partial-directory:${TRANSFER_ID}`);
+    expect(harness.store.putInputs).toEqual([]);
+    expect(state.partialLease).toBe('safe-stale-partial-lease');
+  });
+
+  it('allows only one concurrent fake receiver to acquire a fresh partial lease', async () => {
+    const state = createFakeReceiverFileSystemState();
+    const first = createHarness();
+    const second = createHarness();
+    useFreshReceiverFileSystem(first, state);
+    useFreshReceiverFileSystem(second, state);
+
+    const outcomes = await Promise.all([receive(first), receive(second)]);
+
+    expect(outcomes.filter((outcome) => outcome.outcome === 'received')).toHaveLength(1);
+    expect(outcomes.filter((outcome) => outcome.outcome === 'blocked')).toHaveLength(1);
+    expect(state.partialLeaseAcquireCalls).toBe(2);
+    expect(state.partialLeaseReleaseCalls).toBe(1);
+    expect(first.store.putInputs.length + second.store.putInputs.length).toBe(1);
+  });
+
+  it('retries receipt writing from a complete trusted partial without re-downloading members', async () => {
+    const state = createFakeReceiverFileSystemState();
+    const harness = createHarness();
+    const failedFileSystem = useFreshReceiverFileSystem(harness, state);
+    failedFileSystem.receiptWriteResult = false;
+
+    expect(await receive(harness)).toEqual({ outcome: 'blocked' });
+    expect(state.roots.get(PARTIAL_PATH)?.size).toBe(harness.members.length);
+
+    const retryFileSystem = useFreshReceiverFileSystem(harness, state);
+    harness.store.calls.length = 0;
+    expect(await receive(harness)).toMatchObject({ outcome: 'received' });
+    expect(retryFileSystem.calls).toContain('write-receipt');
+    for (const candidate of harness.members) {
+      expect(harness.store.calls).not.toContain(
+        `get:${relayObjectKey(relayConfig.literalRelayRoot, TRANSFER_ID, candidate.path)}`,
+      );
+    }
+  });
+
+  it('retries promotion from a receipt-bound trusted partial without rewriting receipt or members', async () => {
+    const state = createFakeReceiverFileSystemState();
+    const harness = createHarness();
+    useFreshReceiverFileSystem(harness, state);
+    harness.acl.promoteResult = false;
+
+    expect(await receive(harness)).toEqual({ outcome: 'blocked' });
+    expect(state.roots.get(PARTIAL_PATH)?.has('receive-receipt.v1.json')).toBe(true);
+
+    const retryFileSystem = useFreshReceiverFileSystem(harness, state);
+    harness.store.calls.length = 0;
+    expect(await receive(harness)).toMatchObject({ outcome: 'received' });
+    expect(retryFileSystem.calls).not.toContain('write-receipt');
+    for (const candidate of harness.members) {
+      expect(harness.store.calls).not.toContain(
+        `get:${relayObjectKey(relayConfig.literalRelayRoot, TRANSFER_ID, candidate.path)}`,
+      );
+    }
+  });
+
+  it('blocks after acknowledgement when exact partial-lease release cannot be verified', async () => {
+    const state = createFakeReceiverFileSystemState();
+    state.partialLeaseReleaseResult = false;
+    const harness = createHarness();
+    useFreshReceiverFileSystem(harness, state);
+
+    expect(await receive(harness)).toEqual({ outcome: 'blocked' });
+    expect(harness.store.putInputs).toHaveLength(1);
+    expect(state.partialLeaseReleaseCalls).toBe(1);
+    expect(state.partialLease).toBe('safe-partial-lease');
+  });
+
   it.each([
     'non-Windows platform',
     'unsafe private root',
@@ -804,14 +1129,15 @@ describe('Centurion relay receiver', () => {
     expect(harness.store.putInputs).toEqual([]);
   });
 
-  it('locks private root and partial parent before creating a partial directory', async () => {
+  it('takes partial lease before locking root and acquiring partial directory', async () => {
     const harness = createHarness();
 
     expect(await receive(harness)).toMatchObject({ outcome: 'received' });
-    expect(harness.fileSystem.timeline.slice(0, 3)).toEqual([
+    expect(harness.fileSystem.timeline.slice(0, 4)).toEqual([
+      'acquire-partial-lease',
       `lock-directory:${PRIVATE_ROOT}`,
       `lock-directory:${PARTIAL_ROOT}`,
-      'create-partial',
+      'acquire-partial-directory',
     ]);
   });
 
@@ -1168,5 +1494,56 @@ describe('receiver source boundaries', () => {
     ).toBe(true);
     expect(script.text).not.toContain('process.stderr');
     expect(script.text).not.toContain('console.');
+  });
+
+  it('orders remote validation, partial recovery, and acknowledgement without cleanup escape hatches', () => {
+    const receiverPath = fileURLToPath(
+      new URL('../src/ops/centurion-thread-corpus-relay-receiver.ts', import.meta.url),
+    );
+    const receiver = parseTypeScript(receiverPath);
+    const partialLeaseCalls = collectNodes(
+      receiver,
+      (node): node is ts.CallExpression =>
+        ts.isCallExpression(node) &&
+        ts.isPropertyAccessExpression(node.expression) &&
+        node.expression.name.text === 'acquirePartialLease',
+    );
+    const partialDirectoryCalls = collectNodes(
+      receiver,
+      (node): node is ts.CallExpression =>
+        ts.isCallExpression(node) &&
+        ts.isPropertyAccessExpression(node.expression) &&
+        node.expression.name.text === 'acquirePartialDirectory',
+    );
+    const acknowledgementCalls = collectNodes(
+      receiver,
+      (node): node is ts.CallExpression =>
+        ts.isCallExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === 'acknowledge',
+    );
+
+    expect(partialLeaseCalls).toHaveLength(1);
+    expect(partialDirectoryCalls).toHaveLength(1);
+    expect(acknowledgementCalls).toHaveLength(2);
+    expect(receiver.text).not.toContain('removePartial');
+    expect(
+      receiver.text.indexOf('const lease = await input.fileSystem.acquirePartialLease'),
+    ).toBeGreaterThan(receiver.text.indexOf('const remoteInventory = await input.store.listAll'));
+    expect(receiver.text.indexOf('const result = await receiveWithPartialLease')).toBeGreaterThan(
+      receiver.text.indexOf('const lease = await input.fileSystem.acquirePartialLease'),
+    );
+    expect(receiver.text.indexOf('!(await input.acl.promoteNoReplace')).toBeGreaterThan(
+      receiver.text.indexOf(
+        'const acquiredPartial = await input.fileSystem.acquirePartialDirectory',
+      ),
+    );
+    expect(
+      acknowledgementCalls.every(
+        (call) =>
+          call.getStart(receiver) >
+          receiver.text.indexOf('const final = await verifyFinalSnapshot'),
+      ),
+    ).toBe(true);
   });
 });

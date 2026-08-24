@@ -122,6 +122,11 @@ export type RelayJournalRead<T> =
   | { outcome: 'present'; value: T }
   | { outcome: 'blocked' };
 
+export type ResumableStageDiscovery =
+  | { outcome: 'none' }
+  | { outcome: 'one'; transferId: string }
+  | { outcome: 'blocked' };
+
 export type RelaySourceRuntimeConfig = {
   version: 'centurion-thread-corpus-relay-source-config-v1';
   expectedEc2: { instanceId: string; revision: string; worktree: string };
@@ -152,6 +157,9 @@ export type RelaySourceRuntimePort = {
   writeFinalizeJournal(journal: FinalizeJournalV1): Promise<boolean>;
   readFinalizeJournal(transferId: string): Promise<RelayJournalRead<FinalizeJournalV1>>;
   removeTrustedSnapshot(snapshot: StageIntentV2['sourceSnapshot']): Promise<boolean>;
+  findSingleResumableStage?(): Promise<ResumableStageDiscovery>;
+  acquireSourceStageLease?(): Promise<{ leaseId: string } | null>;
+  releaseSourceStageLease?(input: { leaseId: string }): Promise<boolean>;
 };
 
 export type StageRelayResult =
@@ -170,6 +178,7 @@ export type RelayS3Client = {
 const STAGE_INTENT_VERSION = 'centurion-thread-corpus-relay-stage-intent-v2';
 const SOURCE_CONFIG_VERSION = 'centurion-thread-corpus-relay-source-config-v1';
 const RELAY_MANIFEST_FILENAME = 'relay-manifest.v1.json';
+const SOURCE_STAGE_LEASE_FILENAME = 'source-stage.lease';
 const UUID_V4 = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const SHA256_DIGEST = /^[a-f0-9]{64}$/;
 const DIRECT_CHILD_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -1657,7 +1666,7 @@ function readAtomicJson(destination: string): RelayJournalRead<unknown> {
     if (!opened.isFile() || !sameIdentity(before, opened)) return { outcome: 'blocked' };
     const content = readFileSync(descriptor, 'utf8');
     if (!sameIdentity(before, trustedConfigLeaf(destination))) return { outcome: 'blocked' };
-    return { outcome: 'present', value: JSON.parse(content) as unknown };
+    return { outcome: 'present', value: parseJsonWithoutDuplicateKeys(content) };
   } catch (error) {
     return { outcome: classifyRelayJournalReadFailure(error) };
   } finally {
@@ -1680,6 +1689,175 @@ function isMissingFilesystemEntry(error: unknown): boolean {
 
 export function classifyRelayJournalReadFailure(error: unknown): 'absent' | 'blocked' {
   return isMissingFilesystemEntry(error) ? 'absent' : 'blocked';
+}
+
+function sourceStageLeasePath(layout: TrustedPathLayout): string {
+  return path.posix.join(layout.stateRoot, SOURCE_STAGE_LEASE_FILENAME);
+}
+
+function validStageIntentForDiscovery(
+  value: unknown,
+  config: RelaySourceRuntimeConfig,
+  transferId: string,
+): boolean {
+  return validateStageIntent(value, config, transferId) !== null;
+}
+
+function validFinalizeJournalForDiscovery(
+  value: unknown,
+  config: RelaySourceRuntimeConfig,
+  transferId: string,
+): FinalizeJournalV1['state'] | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      'schemaVersion',
+      'stageIntent',
+      'receiveReceiptSha256',
+      'acknowledgementSha256',
+      'state',
+    ]) ||
+    value.schemaVersion !== 'centurion-thread-corpus-relay-finalize-journal-v1' ||
+    !isSha256(value.receiveReceiptSha256) ||
+    !isSha256(value.acknowledgementSha256) ||
+    !validStageIntentForDiscovery(value.stageIntent, config, transferId) ||
+    ![
+      'ack_verified',
+      'relay_delete_started',
+      'relay_empty',
+      'source_delete_started',
+      'complete',
+    ].includes(value.state as string)
+  ) {
+    return null;
+  }
+  return value.state as FinalizeJournalV1['state'];
+}
+
+function discoverSingleResumableStage(
+  layout: TrustedPathLayout,
+  expectedLeaseId: string,
+): ResumableStageDiscovery {
+  try {
+    if (!isUuidV4(expectedLeaseId)) return { outcome: 'blocked' };
+    ensureTrustedStateRoot(layout);
+    const config = parseRelaySourceRuntimeConfig(readTrustedConfig(layout));
+    if (!config) return { outcome: 'blocked' };
+    const entries = readdirSync(layout.stateRoot, { withFileTypes: true });
+    const stages = new Map<string, unknown>();
+    const finalizations = new Map<string, unknown>();
+    let leaseSeen = false;
+
+    for (const entry of entries) {
+      if (entry.name === SOURCE_STAGE_LEASE_FILENAME) {
+        if (!entry.isFile() || entry.isSymbolicLink() || leaseSeen) return { outcome: 'blocked' };
+        const lease = readAtomicJson(sourceStageLeasePath(layout));
+        if (
+          lease.outcome !== 'present' ||
+          !isRecord(lease.value) ||
+          !hasExactKeys(lease.value, ['leaseId']) ||
+          lease.value.leaseId !== expectedLeaseId
+        ) {
+          return { outcome: 'blocked' };
+        }
+        leaseSeen = true;
+        continue;
+      }
+
+      const stageMatch =
+        /^stage-([a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12})\.json$/.exec(
+          entry.name,
+        );
+      const finalizeMatch =
+        /^finalize-([a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12})\.json$/.exec(
+          entry.name,
+        );
+      if ((!stageMatch && !finalizeMatch) || !entry.isFile() || entry.isSymbolicLink()) {
+        return { outcome: 'blocked' };
+      }
+      const transferId = stageMatch?.[1] ?? finalizeMatch?.[1];
+      if (!transferId || !isUuidV4(transferId)) return { outcome: 'blocked' };
+      const read = readAtomicJson(
+        stateFilePath(layout, stageMatch ? 'stage' : 'finalize', transferId),
+      );
+      if (read.outcome !== 'present') return { outcome: 'blocked' };
+      const target = stageMatch ? stages : finalizations;
+      if (target.has(transferId)) return { outcome: 'blocked' };
+      target.set(transferId, read.value);
+    }
+    if (!leaseSeen) return { outcome: 'blocked' };
+
+    const completed = new Set<string>();
+    for (const [transferId, journal] of finalizations) {
+      const state = validFinalizeJournalForDiscovery(journal, config, transferId);
+      if (state === null || state !== 'complete') return { outcome: 'blocked' };
+      if (!stages.has(transferId)) return { outcome: 'blocked' };
+      completed.add(transferId);
+    }
+
+    const resumable: string[] = [];
+    for (const [transferId, intent] of stages) {
+      if (!validStageIntentForDiscovery(intent, config, transferId)) return { outcome: 'blocked' };
+      if (!completed.has(transferId)) resumable.push(transferId);
+    }
+    if (resumable.length === 0) return { outcome: 'none' };
+    return resumable.length === 1
+      ? { outcome: 'one', transferId: resumable[0]! }
+      : { outcome: 'blocked' };
+  } catch {
+    return { outcome: 'blocked' };
+  }
+}
+
+function acquireSourceStageLease(layout: TrustedPathLayout): { leaseId: string } | null {
+  let descriptor: number | undefined;
+  try {
+    ensureTrustedStateRoot(layout);
+    const leaseId = randomUUID();
+    if (!isUuidV4(leaseId)) return null;
+    descriptor = openSync(
+      sourceStageLeasePath(layout),
+      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
+      0o600,
+    );
+    writeFileSync(descriptor, `${JSON.stringify({ leaseId })}\n`, 'utf8');
+    fsyncSync(descriptor);
+    const opened = fstatSync(descriptor);
+    if (!opened.isFile() || (opened.mode & 0o077) !== 0) return null;
+    closeSync(descriptor);
+    descriptor = undefined;
+    fsyncDirectory(layout.stateRoot);
+    return { leaseId };
+  } catch {
+    return null;
+  } finally {
+    if (descriptor !== undefined) {
+      try {
+        closeSync(descriptor);
+      } catch {}
+    }
+  }
+}
+
+function releaseSourceStageLease(layout: TrustedPathLayout, input: { leaseId: string }): boolean {
+  try {
+    if (!isUuidV4(input.leaseId)) return false;
+    ensureTrustedStateRoot(layout);
+    const lease = readAtomicJson(sourceStageLeasePath(layout));
+    if (
+      lease.outcome !== 'present' ||
+      !isRecord(lease.value) ||
+      !hasExactKeys(lease.value, ['leaseId']) ||
+      lease.value.leaseId !== input.leaseId
+    ) {
+      return false;
+    }
+    rmSync(sourceStageLeasePath(layout), { force: false, maxRetries: 0 });
+    fsyncDirectory(layout.stateRoot);
+    return snapshotIsAbsent(sourceStageLeasePath(layout));
+  } catch {
+    return false;
+  }
 }
 
 function snapshotIsAbsent(snapshotPath: string): boolean {
@@ -1932,6 +2110,7 @@ export function createDefaultRelaySourceRuntime(
   repoRoot = defaultRepoRoot(),
 ): RelaySourceRuntimePort {
   const layout = sourcePathLayout(repoRoot);
+  let heldSourceStageLeaseId: string | null = null;
   const gitBoundary = createEc2GitInspectionBoundary(
     defaultEc2GitExecutableInspector,
     new Ec2GitProcessAdapter(),
@@ -1950,6 +2129,22 @@ export function createDefaultRelaySourceRuntime(
     inspectGit: (check) => gitBoundary.inspect({ check, cwd: layout.repoRoot }),
     inspectTrustedSnapshot: async (input) => inspectTrustedSnapshot(layout, input),
     readBoundedTrustedSnapshot: async (input) => readBoundedTrustedSnapshot(layout, input),
+    findSingleResumableStage: async () =>
+      heldSourceStageLeaseId === null
+        ? { outcome: 'blocked' }
+        : discoverSingleResumableStage(layout, heldSourceStageLeaseId),
+    acquireSourceStageLease: async () => {
+      if (heldSourceStageLeaseId !== null) return null;
+      const lease = acquireSourceStageLease(layout);
+      if (lease) heldSourceStageLeaseId = lease.leaseId;
+      return lease;
+    },
+    releaseSourceStageLease: async (input) => {
+      if (heldSourceStageLeaseId !== input.leaseId) return false;
+      const released = releaseSourceStageLease(layout, input);
+      if (released) heldSourceStageLeaseId = null;
+      return released;
+    },
     writeStageIntent: async (intent) => {
       try {
         ensureTrustedStateRoot(layout);

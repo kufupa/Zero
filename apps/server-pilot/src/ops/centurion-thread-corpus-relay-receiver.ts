@@ -27,8 +27,9 @@ import type {
   RelayObjectMetadata,
   RelayObjectStore,
 } from './centurion-thread-corpus-relay-producer.js';
+import { parseJsonWithoutDuplicateKeys } from './centurion-thread-corpus-readiness.js';
+import { createHash, randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -40,18 +41,26 @@ export type WindowsPrivateAcl = {
   fsyncReceipt(path: string): Promise<boolean>;
 };
 
+export type AcquiredPartialDirectory = {
+  path: string;
+  created: boolean;
+  stableIdentity: string;
+  volumeId: string;
+};
+
 export type ReceiverFileSystem = {
   assertGitignoredPrivateRoot(): Promise<{
     root: string;
     stableIdentity: string;
     volumeId: string;
   } | null>;
-  createPartialDirectory(transferId: string): Promise<string | null>;
+  acquirePartialDirectory(transferId: string): Promise<AcquiredPartialDirectory | null>;
+  acquirePartialLease(transferId: string): Promise<{ leaseId: string } | null>;
+  releasePartialLease(input: { transferId: string; leaseId: string }): Promise<boolean>;
   writeCreateNew(path: string, content: Uint8Array): Promise<boolean>;
   readFile(path: string, maxBytes: number): Promise<Uint8Array | null>;
   listRelativePaths(root: string): Promise<readonly string[] | null>;
   writeReceiveReceipt(receiptJson: string): Promise<{ path: string; sha256: string } | null>;
-  removePartial(path: string): Promise<boolean>;
 };
 
 export type RelayReceiverRuntimeConfig = {
@@ -824,6 +833,155 @@ export async function lockAndReassertFileAclBatches(
   return true;
 }
 
+type PartialInventory = {
+  cachedPaths: Set<string>;
+  hasReceipt: boolean;
+};
+
+type InspectedPartial = {
+  members: Map<string, CenturionRelayMember>;
+  receiptPath: string | null;
+};
+
+function exactPartialInventory(
+  actual: readonly string[] | null,
+  expectedMembers: readonly RemoteMember[],
+): PartialInventory | null {
+  if (!actual || new Set(actual).size !== actual.length) return null;
+  const expectedPaths = new Set(expectedMembers.map((member) => member.path));
+  const cachedPaths = new Set<string>();
+  let hasReceipt = false;
+  for (const candidate of actual) {
+    if (candidate === RECEIPT_FILENAME) {
+      if (hasReceipt) return null;
+      hasReceipt = true;
+    } else if (!expectedPaths.has(candidate) || cachedPaths.has(candidate)) {
+      return null;
+    } else {
+      cachedPaths.add(candidate);
+    }
+  }
+  return { cachedPaths, hasReceipt };
+}
+
+function samePartialInventory(left: PartialInventory, right: PartialInventory): boolean {
+  return (
+    left.hasReceipt === right.hasReceipt &&
+    left.cachedPaths.size === right.cachedPaths.size &&
+    [...left.cachedPaths].every((pathValue) => right.cachedPaths.has(pathValue))
+  );
+}
+
+function validAcquiredPartialDirectory(
+  partial: AcquiredPartialDirectory,
+  expectedPath: string,
+  expectedVolume: string,
+): boolean {
+  return (
+    partial.path === expectedPath &&
+    typeof partial.created === 'boolean' &&
+    isOpaqueIdentifier(partial.stableIdentity) &&
+    partial.volumeId === expectedVolume
+  );
+}
+
+async function inspectResumablePartial(input: {
+  fileSystem: ReceiverFileSystem;
+  acl: WindowsPrivateAcl;
+  partial: AcquiredPartialDirectory;
+  rootAcl: TrustedPath;
+  manifest: ParsedRelayManifest;
+}): Promise<InspectedPartial | null> {
+  try {
+    const initial = await assertTrustedPath(input.acl, input.partial.path, input.rootAcl.volumeId);
+    if (
+      !initial ||
+      initial.stableIdentity !== input.partial.stableIdentity ||
+      !sameTrustedPath(initial, {
+        stableIdentity: input.partial.stableIdentity,
+        volumeId: input.partial.volumeId,
+      }) ||
+      !(await input.acl.lockDownDirectory(input.partial.path))
+    ) {
+      return null;
+    }
+    const relocked = await assertTrustedPath(input.acl, input.partial.path, input.rootAcl.volumeId);
+    if (!relocked || !sameTrustedPath(initial, relocked)) return null;
+
+    const inventory = exactPartialInventory(
+      await input.fileSystem.listRelativePaths(input.partial.path),
+      input.manifest.members,
+    );
+    if (!inventory) return null;
+
+    const files: TrustedAclFile[] = [];
+    const cachedMemberIdentities = new Map<string, TrustedPath>();
+    for (const memberPath of inventory.cachedPaths) {
+      const localPath = localMemberPath(input.partial.path, memberPath);
+      if (!localPath) return null;
+      const identity = await assertTrustedPath(input.acl, localPath, input.rootAcl.volumeId);
+      if (!identity) return null;
+      files.push({ path: localPath, identity });
+      cachedMemberIdentities.set(memberPath, identity);
+    }
+    const receiptPath = path.win32.join(input.partial.path, RECEIPT_FILENAME);
+    if (inventory.hasReceipt) {
+      if (path.win32.dirname(receiptPath) !== input.partial.path) return null;
+      const identity = await assertTrustedPath(input.acl, receiptPath, input.rootAcl.volumeId);
+      if (!identity) return null;
+      files.push({ path: receiptPath, identity });
+    }
+    if (
+      files.length > 0 &&
+      !(await lockAndReassertFileAclBatches(input.acl, input.rootAcl.volumeId, files))
+    ) {
+      return null;
+    }
+
+    const members = new Map<string, CenturionRelayMember>();
+    for (const expected of input.manifest.members) {
+      if (!inventory.cachedPaths.has(expected.path)) continue;
+      const localPath = localMemberPath(input.partial.path, expected.path);
+      if (!localPath) return null;
+      const content = await input.fileSystem.readFile(localPath, expected.bytes);
+      const afterReadIdentity = await assertTrustedPath(
+        input.acl,
+        localPath,
+        input.rootAcl.volumeId,
+      );
+      if (
+        !content ||
+        content.byteLength !== expected.bytes ||
+        sha256(content) !== expected.sha256 ||
+        !afterReadIdentity ||
+        !sameTrustedPath(cachedMemberIdentities.get(expected.path)!, afterReadIdentity)
+      ) {
+        return null;
+      }
+      members.set(expected.path, {
+        path: expected.path,
+        bytes: expected.bytes,
+        sha256: expected.sha256,
+        content,
+      });
+    }
+    if (inventory.hasReceipt && members.size !== input.manifest.members.length) return null;
+
+    const rechecked = exactPartialInventory(
+      await input.fileSystem.listRelativePaths(input.partial.path),
+      input.manifest.members,
+    );
+    if (!rechecked || !samePartialInventory(inventory, rechecked)) return null;
+    for (const file of files) {
+      const verified = await assertTrustedPath(input.acl, file.path, input.rootAcl.volumeId);
+      if (!verified || !sameTrustedPath(file.identity, verified)) return null;
+    }
+    return { members, receiptPath: inventory.hasReceipt ? receiptPath : null };
+  } catch {
+    return null;
+  }
+}
+
 async function verifyFinalSnapshot(input: {
   config: RelayReceiverRuntimeConfig;
   transferId: string;
@@ -955,20 +1113,34 @@ async function acknowledge(input: {
   }
 }
 
-export async function receiveCenturionThreadCorpusRelay(input: {
+function verifiedSnapshotMatchesManifest(
+  verification: ReturnType<typeof verifyCenturionRelaySnapshot>,
+  manifest: ParsedRelayManifest,
+): verification is Extract<
+  ReturnType<typeof verifyCenturionRelaySnapshot>,
+  { outcome: 'verified' }
+> {
+  return (
+    verification.outcome === 'verified' &&
+    verification.snapshotId === manifest.snapshotId &&
+    verification.sourceManifestSha256 === manifest.sourceManifestSha256 &&
+    verification.memberSetSha256 === manifest.memberSetSha256 &&
+    verification.relayManifestSha256 === manifest.sha256
+  );
+}
+
+async function receiveWithPartialLease(input: {
   config: RelayReceiverRuntimeConfig;
   transferId: string;
   store: RelayObjectStore;
   fileSystem: ReceiverFileSystem;
   acl: WindowsPrivateAcl;
   runtime: RelayReceiverRuntimePort;
+  manifest: ParsedRelayManifest;
+  remoteInventory: readonly RelayObjectMetadata[];
 }): Promise<ReceiverResult> {
   try {
-    const config = parseRelayReceiverRuntimeConfig(JSON.stringify(input.config));
-    if (!config || !isUuidV4(input.transferId) || input.runtime.platform() !== 'win32') {
-      return blocked();
-    }
-    const inspected = await input.runtime.inspectCheckout(config.privateDestination);
+    const inspected = await input.runtime.inspectCheckout(input.config.privateDestination);
     const privateRoot = await input.fileSystem.assertGitignoredPrivateRoot();
     if (
       !inspected ||
@@ -976,7 +1148,7 @@ export async function receiveCenturionThreadCorpusRelay(input: {
       !isOpaqueIdentifier(inspected.stableIdentity) ||
       !isOpaqueIdentifier(inspected.volumeId) ||
       !privateRoot ||
-      privateRoot.root !== config.privateDestination.destinationRoot ||
+      privateRoot.root !== input.config.privateDestination.destinationRoot ||
       privateRoot.stableIdentity !== inspected.stableIdentity ||
       privateRoot.volumeId !== inspected.volumeId
     ) {
@@ -1010,6 +1182,232 @@ export async function receiveCenturionThreadCorpusRelay(input: {
     }
     const finalAlreadyExists = initialFinal !== null;
 
+    if (
+      !exactRemoteInventory(
+        input.remoteInventory,
+        input.manifest,
+        input.config,
+        input.transferId,
+        finalAlreadyExists,
+      )
+    ) {
+      return blocked();
+    }
+
+    if (finalAlreadyExists) {
+      const final = await verifyFinalSnapshot({
+        config: input.config,
+        transferId: input.transferId,
+        fileSystem: input.fileSystem,
+        acl: input.acl,
+        finalPath,
+        rootAcl,
+        manifest: input.manifest,
+      });
+      if (
+        !final ||
+        !(await acknowledge({
+          config: input.config,
+          transferId: input.transferId,
+          manifest: input.manifest,
+          receiptSha256: final.receiptSha256,
+          store: input.store,
+        }))
+      ) {
+        return blocked();
+      }
+      return {
+        outcome: 'received',
+        transferId: input.transferId,
+        sourceManifestSha256: input.manifest.sourceManifestSha256,
+        memberSetSha256: input.manifest.memberSetSha256,
+      };
+    }
+
+    const acquiredPartial = await input.fileSystem.acquirePartialDirectory(input.transferId);
+    if (
+      !acquiredPartial ||
+      !validAcquiredPartialDirectory(acquiredPartial, partialPath, rootAcl.volumeId)
+    ) {
+      return blocked();
+    }
+    const inspectedPartial = await inspectResumablePartial({
+      fileSystem: input.fileSystem,
+      acl: input.acl,
+      partial: acquiredPartial,
+      rootAcl,
+      manifest: input.manifest,
+    });
+    if (!inspectedPartial) return blocked();
+
+    const localMembers = new Map(inspectedPartial.members);
+    for (const expected of input.manifest.members) {
+      if (localMembers.has(expected.path)) continue;
+      const key = relayObjectKey(
+        input.config.relay.literalRelayRoot,
+        input.transferId,
+        expected.path,
+      );
+      const content = await input.store.getBounded(key, expected.bytes);
+      const localPath = localMemberPath(acquiredPartial.path, expected.path);
+      if (
+        !content ||
+        !localPath ||
+        content.byteLength !== expected.bytes ||
+        sha256(content) !== expected.sha256 ||
+        !sameMetadata(await input.store.head(key), {
+          key,
+          bytes: expected.bytes,
+          sha256: expected.sha256,
+          kmsKeyArn: input.config.relay.kmsKeyArn,
+        }) ||
+        !(await input.fileSystem.writeCreateNew(localPath, content))
+      ) {
+        return blocked();
+      }
+      const writtenIdentity = await assertTrustedPath(input.acl, localPath, rootAcl.volumeId);
+      const written = await input.fileSystem.readFile(localPath, expected.bytes);
+      if (
+        !writtenIdentity ||
+        !written ||
+        written.byteLength !== expected.bytes ||
+        sha256(written) !== expected.sha256 ||
+        !(await input.acl.lockDownFiles([localPath]))
+      ) {
+        return blocked();
+      }
+      const relockedIdentity = await assertTrustedPath(input.acl, localPath, rootAcl.volumeId);
+      if (!relockedIdentity || !sameTrustedPath(writtenIdentity, relockedIdentity)) {
+        return blocked();
+      }
+      localMembers.set(expected.path, {
+        path: expected.path,
+        bytes: expected.bytes,
+        sha256: expected.sha256,
+        content: written,
+      });
+    }
+
+    const orderedLocalMembers = input.manifest.members.map((expected) =>
+      localMembers.get(expected.path),
+    );
+    if (
+      orderedLocalMembers.some((member) => !member) ||
+      !exactLocalInventory(await input.fileSystem.listRelativePaths(acquiredPartial.path), [
+        ...input.manifest.members.map((member) => member.path),
+        ...(inspectedPartial.receiptPath ? [RECEIPT_FILENAME] : []),
+      ])
+    ) {
+      return blocked();
+    }
+    const verification = verifyCenturionRelaySnapshot(
+      input.manifest.bytes,
+      orderedLocalMembers as CenturionRelayMember[],
+      input.config.relay.maxSnapshotBytes,
+    );
+    if (!verifiedSnapshotMatchesManifest(verification, input.manifest)) return blocked();
+    const receiptJson = buildReceiveReceipt({
+      transferId: input.transferId,
+      snapshotId: verification.snapshotId,
+      sourceManifestSha256: verification.sourceManifestSha256,
+      relayManifestSha256: verification.relayManifestSha256,
+      memberSetSha256: verification.memberSetSha256,
+    });
+    const receiptBytes = textEncoder.encode(receiptJson);
+    const receiptPath = path.win32.join(acquiredPartial.path, RECEIPT_FILENAME);
+    if (path.win32.dirname(receiptPath) !== acquiredPartial.path) return blocked();
+    if (inspectedPartial.receiptPath) {
+      const existingReceipt = await input.fileSystem.readFile(receiptPath, MAX_RECEIPT_BYTES);
+      if (
+        !existingReceipt ||
+        existingReceipt.byteLength !== receiptBytes.byteLength ||
+        sha256(existingReceipt) !== sha256(receiptBytes) ||
+        textDecoder.decode(existingReceipt) !== receiptJson ||
+        !(await input.acl.fsyncReceipt(receiptPath))
+      ) {
+        return blocked();
+      }
+    } else {
+      const receipt = await input.fileSystem.writeReceiveReceipt(receiptJson);
+      const writtenReceipt = receipt
+        ? await input.fileSystem.readFile(receipt.path, MAX_RECEIPT_BYTES)
+        : null;
+      const receiptIdentity = receipt
+        ? await assertTrustedPath(input.acl, receipt.path, rootAcl.volumeId)
+        : null;
+      if (
+        !receipt ||
+        receipt.path !== receiptPath ||
+        receipt.sha256 !== sha256(receiptBytes) ||
+        !writtenReceipt ||
+        writtenReceipt.byteLength !== receiptBytes.byteLength ||
+        textDecoder.decode(writtenReceipt) !== receiptJson ||
+        !receiptIdentity ||
+        !(await input.acl.lockDownFiles([receipt.path])) ||
+        !(await input.acl.fsyncReceipt(receipt.path))
+      ) {
+        return blocked();
+      }
+      const relockedReceipt = await assertTrustedPath(input.acl, receipt.path, rootAcl.volumeId);
+      if (!relockedReceipt || !sameTrustedPath(receiptIdentity, relockedReceipt)) {
+        return blocked();
+      }
+    }
+    if (
+      !exactLocalInventory(await input.fileSystem.listRelativePaths(acquiredPartial.path), [
+        ...input.manifest.members.map((member) => member.path),
+        RECEIPT_FILENAME,
+      ]) ||
+      !(await input.acl.promoteNoReplace(acquiredPartial.path, finalPath))
+    ) {
+      return blocked();
+    }
+
+    const final = await verifyFinalSnapshot({
+      config: input.config,
+      transferId: input.transferId,
+      fileSystem: input.fileSystem,
+      acl: input.acl,
+      finalPath,
+      rootAcl,
+      manifest: input.manifest,
+    });
+    if (
+      !final ||
+      !(await acknowledge({
+        config: input.config,
+        transferId: input.transferId,
+        manifest: input.manifest,
+        receiptSha256: final.receiptSha256,
+        store: input.store,
+      }))
+    ) {
+      return blocked();
+    }
+    return {
+      outcome: 'received',
+      transferId: input.transferId,
+      sourceManifestSha256: input.manifest.sourceManifestSha256,
+      memberSetSha256: input.manifest.memberSetSha256,
+    };
+  } catch {
+    return blocked();
+  }
+}
+
+export async function receiveCenturionThreadCorpusRelay(input: {
+  config: RelayReceiverRuntimeConfig;
+  transferId: string;
+  store: RelayObjectStore;
+  fileSystem: ReceiverFileSystem;
+  acl: WindowsPrivateAcl;
+  runtime: RelayReceiverRuntimePort;
+}): Promise<ReceiverResult> {
+  try {
+    const config = parseRelayReceiverRuntimeConfig(JSON.stringify(input.config));
+    if (!config || !isUuidV4(input.transferId) || input.runtime.platform() !== 'win32') {
+      return blocked();
+    }
     if (!(await input.store.assertRelayBucket(config.relay))) return blocked();
     const manifestKey = relayManifestKey(config.relay.literalRelayRoot, input.transferId);
     const manifestHead = await input.store.head(manifestKey);
@@ -1029,15 +1427,13 @@ export async function receiveCenturionThreadCorpusRelay(input: {
       return blocked();
     }
     const manifest = parseRemoteManifest(manifestBytes, config, input.transferId);
+    if (!manifest) return blocked();
+    const remoteInventory = await input.store.listAll(
+      relayPrefix(config.relay.literalRelayRoot, input.transferId),
+    );
     if (
-      !manifest ||
-      !exactRemoteInventory(
-        await input.store.listAll(relayPrefix(config.relay.literalRelayRoot, input.transferId)),
-        manifest,
-        config,
-        input.transferId,
-        finalAlreadyExists,
-      )
+      remoteInventory === null ||
+      !exactRemoteInventory(remoteInventory, manifest, config, input.transferId, true)
     ) {
       return blocked();
     }
@@ -1054,161 +1450,22 @@ export async function receiveCenturionThreadCorpusRelay(input: {
         return blocked();
       }
     }
-
-    if (finalAlreadyExists) {
-      const final = await verifyFinalSnapshot({
-        config,
-        transferId: input.transferId,
-        fileSystem: input.fileSystem,
-        acl: input.acl,
-        finalPath,
-        rootAcl,
-        manifest,
-      });
-      if (
-        !final ||
-        !(await acknowledge({
-          config,
-          transferId: input.transferId,
-          manifest,
-          receiptSha256: final.receiptSha256,
-          store: input.store,
-        }))
-      ) {
-        return blocked();
-      }
-      return {
-        outcome: 'received',
-        transferId: input.transferId,
-        sourceManifestSha256: manifest.sourceManifestSha256,
-        memberSetSha256: manifest.memberSetSha256,
-      };
-    }
-
-    const createdPartial = await input.fileSystem.createPartialDirectory(input.transferId);
-    if (createdPartial !== partialPath) return blocked();
-    const partialAcl = await assertTrustedPath(input.acl, createdPartial, rootAcl.volumeId);
-    if (!partialAcl || !(await input.acl.lockDownDirectory(createdPartial))) return blocked();
-    const relockedPartial = await assertTrustedPath(input.acl, createdPartial, rootAcl.volumeId);
-    if (!relockedPartial || !sameTrustedPath(partialAcl, relockedPartial)) return blocked();
-
-    const localMembers: CenturionRelayMember[] = [];
-    for (const expected of manifest.members) {
-      const key = relayObjectKey(config.relay.literalRelayRoot, input.transferId, expected.path);
-      const content = await input.store.getBounded(key, expected.bytes);
-      const localPath = localMemberPath(createdPartial, expected.path);
-      if (
-        !content ||
-        !localPath ||
-        content.byteLength !== expected.bytes ||
-        sha256(content) !== expected.sha256 ||
-        !sameMetadata(await input.store.head(key), {
-          key,
-          bytes: expected.bytes,
-          sha256: expected.sha256,
-          kmsKeyArn: config.relay.kmsKeyArn,
-        }) ||
-        !(await input.fileSystem.writeCreateNew(localPath, content))
-      ) {
-        return blocked();
-      }
-      const written = await input.fileSystem.readFile(localPath, expected.bytes);
-      if (
-        !written ||
-        written.byteLength !== expected.bytes ||
-        sha256(written) !== expected.sha256 ||
-        !(await input.acl.lockDownFiles([localPath]))
-      ) {
-        return blocked();
-      }
-      localMembers.push({
-        path: expected.path,
-        bytes: expected.bytes,
-        sha256: expected.sha256,
-        content: written,
-      });
-    }
-
-    if (
-      !exactLocalInventory(
-        await input.fileSystem.listRelativePaths(createdPartial),
-        manifest.members.map((member) => member.path),
-      )
-    ) {
-      return blocked();
-    }
-    const verification = verifyCenturionRelaySnapshot(
-      manifest.bytes,
-      localMembers,
-      config.relay.maxSnapshotBytes,
-    );
-    if (
-      verification.outcome !== 'verified' ||
-      verification.snapshotId !== manifest.snapshotId ||
-      verification.sourceManifestSha256 !== manifest.sourceManifestSha256 ||
-      verification.memberSetSha256 !== manifest.memberSetSha256 ||
-      verification.relayManifestSha256 !== manifest.sha256
-    ) {
-      return blocked();
-    }
-    const receiptJson = buildReceiveReceipt({
-      transferId: input.transferId,
-      snapshotId: verification.snapshotId,
-      sourceManifestSha256: verification.sourceManifestSha256,
-      relayManifestSha256: verification.relayManifestSha256,
-      memberSetSha256: verification.memberSetSha256,
-    });
-    const receipt = await input.fileSystem.writeReceiveReceipt(receiptJson);
-    const receiptPath = path.win32.join(createdPartial, RECEIPT_FILENAME);
-    const receiptBytes = textEncoder.encode(receiptJson);
-    const writtenReceipt = receipt
-      ? await input.fileSystem.readFile(receipt.path, MAX_RECEIPT_BYTES)
-      : null;
-    if (
-      !receipt ||
-      receipt.path !== receiptPath ||
-      receipt.sha256 !== sha256(receiptBytes) ||
-      !writtenReceipt ||
-      writtenReceipt.byteLength !== receiptBytes.byteLength ||
-      textDecoder.decode(writtenReceipt) !== receiptJson ||
-      !(await input.acl.lockDownFiles([receipt.path])) ||
-      !(await input.acl.fsyncReceipt(receipt.path)) ||
-      !exactLocalInventory(await input.fileSystem.listRelativePaths(createdPartial), [
-        ...manifest.members.map((member) => member.path),
-        RECEIPT_FILENAME,
-      ])
-    ) {
-      return blocked();
-    }
-    if (!(await input.acl.promoteNoReplace(createdPartial, finalPath))) return blocked();
-
-    const final = await verifyFinalSnapshot({
+    const lease = await input.fileSystem.acquirePartialLease(input.transferId);
+    if (!lease || !isOpaqueIdentifier(lease.leaseId)) return blocked();
+    const result = await receiveWithPartialLease({
+      ...input,
       config,
-      transferId: input.transferId,
-      fileSystem: input.fileSystem,
-      acl: input.acl,
-      finalPath,
-      rootAcl,
       manifest,
+      remoteInventory,
     });
-    if (
-      !final ||
-      !(await acknowledge({
-        config,
+    let released = false;
+    try {
+      released = await input.fileSystem.releasePartialLease({
         transferId: input.transferId,
-        manifest,
-        receiptSha256: final.receiptSha256,
-        store: input.store,
-      }))
-    ) {
-      return blocked();
-    }
-    return {
-      outcome: 'received',
-      transferId: input.transferId,
-      sourceManifestSha256: manifest.sourceManifestSha256,
-      memberSetSha256: manifest.memberSetSha256,
-    };
+        leaseId: lease.leaseId,
+      });
+    } catch {}
+    return released ? result : blocked();
   } catch {
     return blocked();
   }
@@ -1520,6 +1777,21 @@ function sourceMemberPath(value: string): boolean {
   );
 }
 
+function partialLeasePath(partialRoot: string, transferId: string): string | null {
+  if (!isUuidV4(transferId)) return null;
+  const candidate = path.win32.join(partialRoot, `${transferId}.lease`);
+  return path.win32.dirname(candidate) === partialRoot ? candidate : null;
+}
+
+function isMissingLocalEntry(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code?: unknown }).code === 'ENOENT'
+  );
+}
+
 class WindowsReceiverFileSystem implements ReceiverFileSystem {
   private partialPath: string | null = null;
 
@@ -1538,17 +1810,122 @@ class WindowsReceiverFileSystem implements ReceiverFileSystem {
     }
   }
 
-  async createPartialDirectory(transferId: string): Promise<string | null> {
+  async acquirePartialLease(transferId: string): Promise<{ leaseId: string } | null> {
+    let descriptor: number | undefined;
+    try {
+      if (!isUuidV4(transferId)) return null;
+      const partialRoot = path.win32.join(this.privateRoot, '.partial');
+      assertLocalDirectory(partialRoot);
+      const leasePath = partialLeasePath(partialRoot, transferId);
+      const leaseId = randomUUID();
+      if (!leasePath || !isUuidV4(leaseId)) return null;
+      descriptor = openSync(
+        leasePath,
+        fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
+        0o600,
+      );
+      writeFileSync(descriptor, `${JSON.stringify({ leaseId })}\n`, 'utf8');
+      fsyncSync(descriptor);
+      const opened = fstatSync(descriptor);
+      if (!opened.isFile() || (opened.mode & 0o077) !== 0) return null;
+      closeSync(descriptor);
+      descriptor = undefined;
+      assertLocalDirectory(partialRoot);
+      return { leaseId };
+    } catch {
+      return null;
+    } finally {
+      if (descriptor !== undefined) {
+        try {
+          closeSync(descriptor);
+        } catch {}
+      }
+    }
+  }
+
+  async releasePartialLease(input: { transferId: string; leaseId: string }): Promise<boolean> {
+    let descriptor: number | undefined;
+    try {
+      if (!isUuidV4(input.transferId) || !isUuidV4(input.leaseId)) return false;
+      const partialRoot = path.win32.join(this.privateRoot, '.partial');
+      assertLocalDirectory(partialRoot);
+      const leasePath = partialLeasePath(partialRoot, input.transferId);
+      if (!leasePath) return false;
+      const before = assertLocalFile(leasePath);
+      descriptor = openSync(leasePath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+      const opened = fstatSync(descriptor);
+      if (
+        !opened.isFile() ||
+        !sameLocalIdentity(before, localIdentity(opened)) ||
+        opened.size !== before.bytes ||
+        (opened.mode & 0o077) !== 0
+      ) {
+        return false;
+      }
+      const content = readExactBoundedDescriptor(descriptor, before.bytes);
+      const after = assertLocalFile(leasePath);
+      if (
+        !content ||
+        !sameLocalIdentity(before, after) ||
+        !sameLocalIdentity(before, localIdentity(fstatSync(descriptor))) ||
+        after.bytes !== before.bytes
+      ) {
+        return false;
+      }
+      const parsed = parseJsonWithoutDuplicateKeys(textDecoder.decode(content));
+      if (
+        !isRecord(parsed) ||
+        !hasCanonicalKeys(parsed, ['leaseId']) ||
+        parsed.leaseId !== input.leaseId
+      ) {
+        return false;
+      }
+      closeSync(descriptor);
+      descriptor = undefined;
+      rmSync(leasePath, { force: false, maxRetries: 0 });
+      assertLocalDirectory(partialRoot);
+      try {
+        lstatSync(leasePath);
+        return false;
+      } catch (error) {
+        return isMissingLocalEntry(error);
+      }
+    } catch {
+      return false;
+    } finally {
+      if (descriptor !== undefined) {
+        try {
+          closeSync(descriptor);
+        } catch {}
+      }
+    }
+  }
+
+  async acquirePartialDirectory(transferId: string): Promise<AcquiredPartialDirectory | null> {
     try {
       if (!isUuidV4(transferId)) return null;
       const partialRoot = path.win32.join(this.privateRoot, '.partial');
       assertLocalDirectory(partialRoot);
       const candidate = path.win32.join(partialRoot, transferId);
       if (path.win32.dirname(candidate) !== partialRoot) return null;
-      mkdirSync(candidate, { recursive: false, mode: 0o700 });
-      assertLocalDirectory(candidate);
+      let created = false;
+      try {
+        mkdirSync(candidate, { recursive: false, mode: 0o700 });
+        created = true;
+      } catch (error) {
+        if (
+          typeof error !== 'object' ||
+          error === null ||
+          !('code' in error) ||
+          (error as { code?: unknown }).code !== 'EEXIST'
+        ) {
+          return null;
+        }
+      }
+      const identity = assertLocalDirectory(candidate);
+      if (!sameLocalIdentity(identity, assertLocalDirectory(candidate))) return null;
       this.partialPath = candidate;
-      return candidate;
+      return { path: candidate, created, ...identity };
     } catch {
       return null;
     }
@@ -1661,18 +2038,6 @@ class WindowsReceiverFileSystem implements ReceiverFileSystem {
       return { path: receiptPath, sha256: sha256(content) };
     } catch {
       return null;
-    }
-  }
-
-  async removePartial(partialPath: string): Promise<boolean> {
-    try {
-      if (!this.partialPath || this.partialPath !== partialPath) return false;
-      assertLocalDirectory(partialPath);
-      rmSync(partialPath, { recursive: true, force: false, maxRetries: 0 });
-      this.partialPath = null;
-      return true;
-    } catch {
-      return false;
     }
   }
 
