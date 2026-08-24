@@ -161,7 +161,7 @@ const globalShortcuts: Shortcut[] = [
     keys: ['mod', 'k'],
     action: 'commandPalette',
     type: 'combination',
-    description: 'Open command palette',
+    description: 'Focus search',
     scope: 'global',
   },
   {

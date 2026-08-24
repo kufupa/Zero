@@ -34,8 +34,7 @@ const threadPollingMs = resolveThreadPollingMs(import.meta.env.VITE_MAIL_POLL_MS
 const openThreadPolling = openThreadQueryPollingOptions(import.meta.env.VITE_MAIL_POLL_MS);
 const invalidListQueryFn = async () => ({ threads: [], nextPageToken: null });
 
-export const useThreads = (_unusedOptions?: unknown) => {
-  void _unusedOptions;
+export const useThreads = () => {
   const { folder: routeFolder } = useParams<{ folder: string }>();
   const canonicalRouteFolder = routeFolder?.toLowerCase();
   const [searchValue] = useSearchValue();

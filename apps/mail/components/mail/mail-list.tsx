@@ -1060,6 +1060,10 @@ export const MailList = memo(function MailList() {
       setSearchValue(EMPTY_SEARCH_VALUE);
     };
 
+    const tryAllFolders = () => {
+      setSearchValue({ ...searchValue, scope: 'all' });
+    };
+
     const filteredItems = useMemo(() => items.filter((item) => item.id), [items]);
 
     const Comp = useMemo(() => (folder === FOLDERS.DRAFT ? Draft : Thread), [folder]);
@@ -1151,13 +1155,31 @@ export const MailList = memo(function MailList() {
                 <div className="flex flex-col items-center justify-center gap-2 text-center">
                   <EmptyStateIcon width={200} height={200} />
                   <div className="mt-5">
-                    <p className="text-lg">It's empty here</p>
-                    <p className="text-md text-muted-foreground dark:text-white/50">
-                      Search for another email or{' '}
-                      <button type="button" className="underline cursor-pointer" onClick={clearFilters}>
-                        clear filters
-                      </button>
-                    </p>
+                    {activeSearch ? (
+                      <>
+                        <p className="text-lg">No emails match “{activeSearch}”</p>
+                        <div className="mt-3 flex flex-wrap justify-center gap-2">
+                          <Button type="button" size="sm" variant="secondary" onClick={clearFilters}>
+                            Clear
+                          </Button>
+                          {searchValue.scope !== 'all' ? (
+                            <Button type="button" size="sm" variant="outline" onClick={tryAllFolders}>
+                              Try All folders
+                            </Button>
+                          ) : null}
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <p className="text-lg">It&apos;s empty here</p>
+                        <p className="text-md text-muted-foreground dark:text-white/50">
+                          Search for another email or{' '}
+                          <button type="button" className="underline cursor-pointer" onClick={clearFilters}>
+                            clear filters
+                          </button>
+                        </p>
+                      </>
+                    )}
                   </div>
                 </div>
               </div>

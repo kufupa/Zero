@@ -9,13 +9,14 @@
 - Preflight resolution: `value` stores committed query text, including existing explicit grammar such as `label:<name>` from label clicks. New search-bar chips alone live in `filters[]`; chip tokens are never copied into `value`.
 - Pilot production deployment/backfill: blocked pending explicit production-write authorization from user; no Vitest may target pilot RDS.
 - Task 1: complete (commits fdd53c4d..cc570aaf; 17 focused tests passed; task review clean)
-- Task 2: complete (committed-search atom, valid-request-only list dispatch, demo all-folder parity; 38 focused and 461 full mail tests passed)
-- Task 3: pending
-- Task 4: pending
-- Task 5: pending
+- Task 2: complete (commits cc570aaf..70954a0e; committed-search atom, valid-request-only list dispatch, demo all-folder parity; 38 focused and 461 full mail tests passed; review gate passed)
+- Task 3: blocked — `TEST_DATABASE_URL` and `CONFIRM_DISPOSABLE_TEST_DB=1` unset; safety policy forbids DB-backed FTS implementation/proof without a confirmed disposable database
+- Task 4: complete (commits 70954a0e..f9e3ea4b; 26 focused component/helper tests and scoped lint passed; task review clean)
+- Task 5: complete (header search replaces palette wiring; palette context deleted; 9 focused and 471 full mail tests passed; grep clean; review fixes applied)
 - Task 6: pending
 - Task 7: blocked — deployment/backfill authorization required
 - Cross-task contract: Task 2 narrows `SearchListRequest.isValid` before any list query; `QUERY_TOO_LONG` dispatches no request. Task 4 prevents or visibly reports an over-limit effective query.
+- Deferred minor: `use-threads-content-query-ownership.test.ts` uses source-text assertions; Task 6/final review should assess adding behavior-level hook/tRPC dispatch coverage.
 # SDD Progress — cid-inline-images-trust
 Plan: docs/superpowers/plans/2026-07-30-cid-inline-images-trust.md
 Started: 2026-07-30

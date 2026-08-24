@@ -116,8 +116,8 @@ describe('MailSearchBar', () => {
 
     expect(screen.getByRole('searchbox', { name: /search mail/i })).toBeTruthy();
     expect(screen.queryByText('Compose Email')).toBeNull();
-    expect(screen.queryByText('Search Emails')).toBeNull();
-    expect(screen.queryByText('Try Natural Language')).toBeNull();
+    expect(screen.queryByText(/Search\s+Emails/)).toBeNull();
+    expect(screen.queryByText(/Try\s+Natural\s+Language/)).toBeNull();
   });
 
   it('toggles unread without committing free text', () => {

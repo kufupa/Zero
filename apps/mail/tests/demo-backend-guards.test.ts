@@ -6,7 +6,6 @@ import { useTemplates } from '../hooks/use-templates';
 import { useThreadNotes } from '../hooks/use-notes';
 import { useSummary } from '../hooks/use-summary';
 import { RecipientAutosuggest } from '../components/ui/recipient-autosuggest';
-import { resolveCommandPaletteSearchQuery } from '../components/context/command-palette-context';
 import { createLabelInThreadContext } from '../components/context/thread-context';
 import { deleteLabelInSidebarContext } from '../components/context/label-sidebar-context';
 import { handleGeneralSettingsSave } from '../app/(routes)/settings/general/page';
@@ -513,72 +512,6 @@ describe('demo backend guard coverage', () => {
     expect(templateQuery.queryKey).toEqual(['templates', 'list']);
     expect(typeof templateQuery.queryFn).toBe('function');
     expect(listDemoTemplatesMock).not.toHaveBeenCalled();
-  });
-
-  it('uses local command-palette search expansion in demo mode', async () => {
-    const backendGenerateSearchQuery = vi.fn(async (input: { query: string }) => ({
-      query: `${input.query} (backend)`,
-    }));
-
-    const result = await resolveCommandPaletteSearchQuery({
-      query: 'follow up client',
-      isFrontendOnlyDemoMode: true,
-      generateSearchQuery: backendGenerateSearchQuery,
-    });
-
-    expect(backendGenerateSearchQuery).not.toHaveBeenCalled();
-    expect(result.query).toBe('follow up client');
-  });
-
-  it('keeps demo command-palette expansion deterministic for empty/whitespace query input', async () => {
-    const backendGenerateSearchQuery = vi.fn(async (input: { query: string }) => ({
-      query: `${input.query} (backend)`,
-    }));
-
-    const result = await resolveCommandPaletteSearchQuery({
-      query: '   ',
-      isFrontendOnlyDemoMode: true,
-      generateSearchQuery: backendGenerateSearchQuery,
-    });
-
-    expect(backendGenerateSearchQuery).not.toHaveBeenCalled();
-    expect(result.query).toBe('query');
-  });
-
-  it('keeps demo command-palette expansion deterministic for trimmed punctuation-heavy query', async () => {
-    const backendGenerateSearchQuery = vi.fn(async (input: { query: string }) => ({
-      query: `${input.query} (backend)`,
-    }));
-    const longQuery = `   !!!???%%${'x'.repeat(96)}&&& spaced query!!!   `;
-
-    const resultA = await resolveCommandPaletteSearchQuery({
-      query: longQuery,
-      isFrontendOnlyDemoMode: true,
-      generateSearchQuery: backendGenerateSearchQuery,
-    });
-    const resultB = await resolveCommandPaletteSearchQuery({
-      query: longQuery,
-      isFrontendOnlyDemoMode: true,
-      generateSearchQuery: backendGenerateSearchQuery,
-    });
-
-    expect(resultA).toEqual(resultB);
-    expect(resultA.query).toBe(`!!!???%%${'x'.repeat(96)}&&& spaced query!!!`);
-  });
-
-  it('passthrough command-palette query when demo off but pilot NL search disabled', async () => {
-    const backendGenerateSearchQuery = vi.fn(async (input: { query: string }) => ({
-      query: `${input.query} (backend)`,
-    }));
-
-    const result = await resolveCommandPaletteSearchQuery({
-      query: 'follow up client',
-      isFrontendOnlyDemoMode: false,
-      generateSearchQuery: backendGenerateSearchQuery,
-    });
-
-    expect(backendGenerateSearchQuery).not.toHaveBeenCalled();
-    expect(result.query).toBe('follow up client');
   });
 
   it('uses local notes reads for useThreadNotes when frontend-only demo mode is active', () => {
