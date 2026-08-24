@@ -181,7 +181,6 @@ export function buildCenturionCorpusEvidenceReport(
       snapshot.manifest.counts.logicalMessages + snapshot.manifest.counts.scopedQuarantine;
     if (
       !isAggregateSafeCount(manifestDenominator) ||
-      !isAggregateSafeCount(expectedItems.length) ||
       expectedItems.length !== manifestDenominator ||
       !isAggregateSafeCount(snapshot.context.unscopedQuarantineExcluded)
     ) {
