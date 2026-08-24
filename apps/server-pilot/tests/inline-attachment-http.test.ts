@@ -137,11 +137,9 @@ describe('inline attachment route', () => {
   });
 
   const ineligibleMetadata: Array<[string, Partial<TestInlineAttachmentMeta>]> = [
-    ['non-raster MIME', { mimeType: 'image/svg+xml' }],
     ['zero size', { sizeBytes: 0 }],
     ['fractional size', { sizeBytes: 1.5 }],
     ['unsafe integer size', { sizeBytes: Number.MAX_SAFE_INTEGER + 1 }],
-    ['oversized size', { sizeBytes: MAX_INLINE_IMAGE_BYTES + 1 }],
   ];
 
   it.each(ineligibleMetadata)('returns opaque 404 before storage for $0', async (_label, patch) => {
@@ -155,6 +153,75 @@ describe('inline attachment route', () => {
       messageId: 'm1',
       attachmentId: 'a1',
     });
+    expect(res.status).toBe(404);
+    expect(await res.text()).toBe('');
+    expect(getObjectBounded).not.toHaveBeenCalled();
+  });
+
+  it('returns opaque 413 before storage for oversized declared metadata', async () => {
+    const getObjectBounded = vi.fn();
+    const handler = createInlineAttachmentHandler({
+      getSession: async () => ({ user: { id: 'u1' } }),
+      loadAuthorizedAttachment: async () => inlineMeta({ sizeBytes: MAX_INLINE_IMAGE_BYTES + 1 }),
+      getObjectBounded,
+    });
+
+    const res = await handler(new Request('http://x/api/mail/messages/m1/attachments/a1/inline'), {
+      messageId: 'm1',
+      attachmentId: 'a1',
+    });
+
+    expect(res.status).toBe(413);
+    expect(await res.text()).toBe('');
+    expect(getObjectBounded).not.toHaveBeenCalled();
+  });
+
+  it('returns opaque 415 before storage for unsupported declared MIME metadata', async () => {
+    const getObjectBounded = vi.fn();
+    const handler = createInlineAttachmentHandler({
+      getSession: async () => ({ user: { id: 'u1' } }),
+      loadAuthorizedAttachment: async () => inlineMeta({ mimeType: 'image/svg+xml' }),
+      getObjectBounded,
+    });
+
+    const res = await handler(new Request('http://x/api/mail/messages/m1/attachments/a1/inline'), {
+      messageId: 'm1',
+      attachmentId: 'a1',
+    });
+
+    expect(res.status).toBe(415);
+    expect(await res.text()).toBe('');
+    expect(getObjectBounded).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['oversized declared metadata', { sizeBytes: MAX_INLINE_IMAGE_BYTES + 1 }],
+    ['unsupported declared MIME metadata', { mimeType: 'image/svg+xml' }],
+  ])('returns opaque 404 before storage for ambiguous CID with $0', async (_label, patch) => {
+    const getObjectBounded = vi.fn();
+    const handler = createInlineAttachmentHandler({
+      getSession: async () => ({ user: { id: 'u1' } }),
+      loadAuthorizedAttachment: async () =>
+        inlineMeta({
+          ...patch,
+          siblingAttachments: [
+            {
+              attachmentId: 'a2',
+              contentId: 'CID:banner%40rocketseed.test',
+              mimeType: 'image/gif',
+              sizeBytes: GIF89A.length,
+              isInline: true,
+            },
+          ],
+        }),
+      getObjectBounded,
+    });
+
+    const res = await handler(new Request('http://x/api/mail/messages/m1/attachments/a1/inline'), {
+      messageId: 'm1',
+      attachmentId: 'a1',
+    });
+
     expect(res.status).toBe(404);
     expect(await res.text()).toBe('');
     expect(getObjectBounded).not.toHaveBeenCalled();

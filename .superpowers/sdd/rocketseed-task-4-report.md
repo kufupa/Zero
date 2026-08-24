@@ -219,3 +219,73 @@ outside this scope.
 - `apps/server-pilot/tests/inline-attachment-http.test.ts`
 - `apps/server-pilot/tests/rocketseed-flow.test.ts`
 - `.superpowers/sdd/rocketseed-task-4-report.md`
+
+## Review-fix follow-up — opaque metadata status classification
+
+### Design
+
+- `findUniqueEligibleInlineAttachment()` now returns a shared discriminated
+  metadata result rather than collapsing every rejected attachment to `null`.
+  CID projection rewrites only the `eligible` result; it still replaces every
+  other result with the existing blocked-image placeholder.
+- Direct inline serving maps that shared result before object storage:
+  invalid, missing, ambiguous, non-inline, and invalid-size metadata remain
+  empty `404`; declared metadata over `MAX_INLINE_IMAGE_BYTES` is empty `413`;
+  and an unsupported declared MIME is empty `415`.
+- CID ambiguity is resolved before per-attachment status classification, so a
+  duplicate normalized CID remains an empty `404` even if the target metadata
+  is oversized or declares an unsupported MIME. Existing object-size `413`,
+  byte-safety/mime-mismatch `415`, dependency-failure `500`, authorization,
+  and empty-body behavior remain unchanged.
+
+No schema, migration, SMTP, queue, returned-copy, mailbox authorization, or
+storage-read policy changed. All metadata rejections remain pre-S3.
+
+### TDD evidence
+
+Added two route regressions before production changes:
+
+- oversized declared metadata -> empty `413`, no `getObjectBounded()` call;
+- unsupported declared MIME metadata -> empty `415`, no
+  `getObjectBounded()` call.
+
+```sh
+unset DATABASE_URL VITEST_ALLOW_PILOT_RDS && pnpm --dir apps/server-pilot exec vitest run tests/inline-attachment-http.test.ts
+```
+
+Result: expected RED, `2 failed | 19 passed`. Both new tests received `404`
+where they required `413` and `415`, respectively.
+
+The follow-up review identified a precedence coverage gap. Added DB-free cases
+for ambiguous normalized CIDs combined with oversized and unsupported target
+metadata. They assert empty `404` responses and zero storage reads. Since the
+correct ambiguity behavior already existed, a temporary mutation changed the
+duplicate-CID result to `metadata-too-large`; the focused run failed
+`2` cases with received `413`, then the mutation was reverted.
+
+### GREEN and verification
+
+```sh
+unset DATABASE_URL VITEST_ALLOW_PILOT_RDS && pnpm --dir apps/server-pilot exec vitest run tests/inline-attachment-http.test.ts tests/cid-images.test.ts
+unset DATABASE_URL VITEST_ALLOW_PILOT_RDS && pnpm --dir apps/server-pilot run test:rocketseed
+pnpm --dir apps/server-pilot build
+```
+
+Results:
+
+- Targeted inline/CID tests: `2` files, `37` tests passed.
+- DB-free Rocketseed suite: `11` files, `108` tests passed.
+- Server TypeScript build passed.
+- Scoped Prettier, OXLint with `--deny-warnings`, and `git diff --check`
+  passed.
+- Final focused review found no actionable correctness, test, security,
+  reliability, or API-contract defect. Cross-model review was not run because
+  the Cursor host serving family was not attestable; local adversarial review
+  found and the new test closed the ambiguity-precedence coverage gap.
+
+### Changed paths
+
+- `apps/server-pilot/src/mail/cid-images.ts`
+- `apps/server-pilot/src/http/inline-attachment.ts`
+- `apps/server-pilot/tests/inline-attachment-http.test.ts`
+- `.superpowers/sdd/rocketseed-task-4-report.md`

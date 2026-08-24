@@ -104,11 +104,20 @@ export function createInlineAttachmentHandler(deps: InlineAttachmentDeps) {
         return opaque(404);
       }
 
-      const eligible = findUniqueEligibleInlineAttachment(meta.contentId, [
+      const resolved = findUniqueEligibleInlineAttachment(meta.contentId, [
         meta,
         ...meta.siblingAttachments,
       ]);
-      if (!eligible || eligible.attachmentId !== meta.attachmentId) {
+      if (resolved.kind !== 'eligible') {
+        return opaque(
+          resolved.kind === 'metadata-too-large'
+            ? 413
+            : resolved.kind === 'unsupported-mime'
+              ? 415
+              : 404,
+        );
+      }
+      if (resolved.attachment.attachmentId !== meta.attachmentId) {
         return opaque(404);
       }
 

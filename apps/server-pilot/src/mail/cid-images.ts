@@ -10,6 +10,16 @@ export type CidAttachmentMeta = {
   isInline: boolean;
 };
 
+type InlineImageMetadataEligibility =
+  | 'eligible'
+  | 'not-found'
+  | 'metadata-too-large'
+  | 'unsupported-mime';
+
+export type UniqueInlineAttachmentResult =
+  | { kind: 'eligible'; attachment: CidAttachmentMeta }
+  | { kind: Exclude<InlineImageMetadataEligibility, 'eligible'> };
+
 export function normalizeContentId(raw: string): string | null {
   let s = raw.trim();
   if (/^cid:/i.test(s)) s = s.slice(4);
@@ -25,36 +35,49 @@ export function normalizeContentId(raw: string): string | null {
   return s;
 }
 
+function classifyInlineImageMetadata(
+  attachment: CidAttachmentMeta,
+): InlineImageMetadataEligibility {
+  if (
+    attachment.isInline !== true ||
+    !Number.isSafeInteger(attachment.sizeBytes) ||
+    attachment.sizeBytes <= 0
+  ) {
+    return 'not-found';
+  }
+  if (attachment.sizeBytes > MAX_INLINE_IMAGE_BYTES) return 'metadata-too-large';
+  if (!isSupportedInlineImageMime(attachment.mimeType)) return 'unsupported-mime';
+  return 'eligible';
+}
+
 /** Shared metadata gate for CID projection and direct inline-attachment serving. */
 export function isEligibleInlineImageMetadata(attachment: CidAttachmentMeta): boolean {
-  return (
-    attachment.isInline === true &&
-    isSupportedInlineImageMime(attachment.mimeType) &&
-    Number.isSafeInteger(attachment.sizeBytes) &&
-    attachment.sizeBytes > 0 &&
-    attachment.sizeBytes <= MAX_INLINE_IMAGE_BYTES
-  );
+  return classifyInlineImageMetadata(attachment) === 'eligible';
 }
 
 /**
  * Resolve a CID only when exactly one message attachment owns its normalized
- * ID and that attachment passes the shared inline-image metadata gate.
+ * ID. Projection only uses `eligible`; inline HTTP maps metadata failures to
+ * its opaque status contract without reading storage.
  */
 export function findUniqueEligibleInlineAttachment(
   rawContentId: string | null,
   attachments: readonly CidAttachmentMeta[],
-): CidAttachmentMeta | null {
+): UniqueInlineAttachmentResult {
   const contentId = rawContentId ? normalizeContentId(rawContentId) : null;
-  if (!contentId) return null;
+  if (!contentId) return { kind: 'not-found' };
 
   let matched: CidAttachmentMeta | null = null;
   for (const attachment of attachments) {
     if (!attachment.contentId || normalizeContentId(attachment.contentId) !== contentId) continue;
-    if (matched) return null;
+    if (matched) return { kind: 'not-found' };
     matched = attachment;
   }
 
-  return matched && isEligibleInlineImageMetadata(matched) ? matched : null;
+  if (!matched) return { kind: 'not-found' };
+  const metadataEligibility = classifyInlineImageMetadata(matched);
+  if (metadataEligibility !== 'eligible') return { kind: metadataEligibility };
+  return { kind: 'eligible', attachment: matched };
 }
 
 export function projectCidImages(
@@ -68,12 +91,13 @@ export function projectCidImages(
   $('img[src]').each((_i, el) => {
     const src = $(el).attr('src') ?? '';
     if (!/^cid:/i.test(src.trim())) return;
-    const att = findUniqueEligibleInlineAttachment(src, attachments);
-    if (!att) {
+    const resolved = findUniqueEligibleInlineAttachment(src, attachments);
+    if (resolved.kind !== 'eligible') {
       hasBlockedImages = true;
       $(el).removeAttr('width').removeAttr('height').attr('src', BLOCKED_IMAGE_PLACEHOLDER);
       return;
     }
+    const { attachment: att } = resolved;
     $(el).attr(
       'src',
       `${origin}/api/mail/messages/${encodeURIComponent(opts.messageId)}/attachments/${encodeURIComponent(att.attachmentId)}/inline`,
