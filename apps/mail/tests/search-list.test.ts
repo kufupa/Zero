@@ -11,6 +11,12 @@ import {
   unreadFilter,
 } from '../lib/mail/search-list';
 
+function expectValidSearchListRequest(result: ReturnType<typeof resolveSearchListRequest>) {
+  expect(result.isValid).toBe(true);
+  if (!result.isValid) throw new Error(result.error);
+  return result;
+}
+
 describe('search-list helpers', () => {
   it('merges free text with optional filter tokens', () => {
     expect(mergeSearchQuery('Isaac', [])).toBe('Isaac');
@@ -42,13 +48,13 @@ describe('search-list helpers', () => {
       'new-bookings',
       new Map([['new-bookings', 'cat-new-bookings']]),
     );
-    const result = resolveSearchListRequest({
+    const result = expectValidSearchListRequest(resolveSearchListRequest({
       scope: 'folder',
       query: 'deposit',
       filters: [],
       routeResolved,
       baseFilters: { categoryIds: ['cat-new-bookings'] },
-    });
+    }));
     expect(result.folder).toBe('inbox');
     expect(result.filters.categoryIds).toEqual(['cat-new-bookings']);
     expect(result.q).toBe('deposit');
@@ -60,13 +66,13 @@ describe('search-list helpers', () => {
       'new-bookings',
       new Map([['new-bookings', 'cat-new-bookings']]),
     );
-    const result = resolveSearchListRequest({
+    const result = expectValidSearchListRequest(resolveSearchListRequest({
       scope: 'all',
       query: 'deposit',
       filters: [],
       routeResolved,
       baseFilters: { categoryIds: ['cat-new-bookings'] },
-    });
+    }));
     expect(result.folder).toBe('all');
     expect(result.filters.categoryIds).toBeUndefined();
     expect(result.useDraftsList).toBe(false);
@@ -74,13 +80,13 @@ describe('search-list helpers', () => {
 
   it('empty query ignores all-folders so mailbox list is not dumped', () => {
     const routeResolved = resolveMailRouteFilter('inbox', new Map());
-    const result = resolveSearchListRequest({
+    const result = expectValidSearchListRequest(resolveSearchListRequest({
       scope: 'all',
       query: '',
       filters: [],
       routeResolved,
       baseFilters: {},
-    });
+    }));
     expect(result.folder).toBe('inbox');
     expect(result.q).toBeUndefined();
     expect(result.useDraftsList).toBe(false);
@@ -88,50 +94,56 @@ describe('search-list helpers', () => {
 
   it('treats filter-only query as active search', () => {
     const routeResolved = resolveMailRouteFilter('inbox', new Map());
-    const result = resolveSearchListRequest({
+    const result = expectValidSearchListRequest(resolveSearchListRequest({
       scope: 'folder',
       query: '',
       filters: [unreadFilter()],
       routeResolved,
       baseFilters: {},
-    });
+    }));
     expect(result.q).toBe('is:unread');
     expect(result.folder).toBe('inbox');
   });
 
   it('keeps typed status-only grammar in q and structured filters', () => {
-    const result = resolveSearchListRequest({
+    const result = expectValidSearchListRequest(resolveSearchListRequest({
       scope: 'folder',
       query: 'is:unread',
       filters: [],
       routeResolved: resolveMailRouteFilter('inbox', new Map()),
       baseFilters: {},
-    });
+    }));
     expect(result.q).toBe('is:unread');
     expect(result.filters).toEqual({ unread: true });
   });
 
-  it('rejects a request query longer than server limit', () => {
+  it('returns a non-forwardable invalid result over server query limit', () => {
     const query = 'x'.repeat(512);
     const routeResolved = resolveMailRouteFilter('inbox', new Map());
-    expect(
-      resolveSearchListRequest({
-        scope: 'folder',
-        query,
-        filters: [],
-        routeResolved,
-        baseFilters: {},
-      }).q,
-    ).toBe(query);
-    expect(() =>
-      resolveSearchListRequest({
-        scope: 'folder',
-        query,
-        filters: [unreadFilter()],
-        routeResolved,
-        baseFilters: {},
-      }),
-    ).toThrow('Search query must be 512 characters or fewer');
+    const valid = expectValidSearchListRequest(resolveSearchListRequest({
+      scope: 'folder',
+      query,
+      filters: [],
+      routeResolved,
+      baseFilters: {},
+    }));
+    expect(valid).toMatchObject({ isValid: true, effectiveQuery: query, q: query });
+
+    const invalid = resolveSearchListRequest({
+      scope: 'folder',
+      query,
+      filters: [unreadFilter()],
+      routeResolved,
+      baseFilters: {},
+    });
+    expect(invalid).toEqual({
+      isValid: false,
+      error: 'QUERY_TOO_LONG',
+      effectiveQuery: `${query} is:unread`,
+    });
+    expect('q' in invalid).toBe(false);
+    expect('folder' in invalid).toBe(false);
+    expect('filters' in invalid).toBe(false);
   });
 
   it('rejects non-string recent-search storage entries', () => {
@@ -145,36 +157,36 @@ describe('search-list helpers', () => {
 
   it('searches all folders for filter-only all scope', () => {
     const routeResolved = resolveMailRouteFilter('inbox', new Map());
-    const result = resolveSearchListRequest({
+    const result = expectValidSearchListRequest(resolveSearchListRequest({
       scope: 'all',
       query: '',
       filters: [unreadFilter()],
       routeResolved,
       baseFilters: {},
-    });
+    }));
     expect(result.folder).toBe('all');
     expect(result.q).toBe('is:unread');
   });
 
   it('keeps draft folder search on drafts.list but uses mail for all folders', () => {
     const routeResolved = resolveMailRouteFilter('draft', new Map());
-    const inDrafts = resolveSearchListRequest({
+    const inDrafts = expectValidSearchListRequest(resolveSearchListRequest({
       scope: 'folder',
       query: 'menu',
       filters: [],
       routeResolved,
       baseFilters: {},
-    });
+    }));
     expect(inDrafts.useDraftsList).toBe(true);
     expect(inDrafts.folder).toBe('draft');
 
-    const allMail = resolveSearchListRequest({
+    const allMail = expectValidSearchListRequest(resolveSearchListRequest({
       scope: 'all',
       query: 'menu',
       filters: [],
       routeResolved,
       baseFilters: {},
-    });
+    }));
     expect(allMail.useDraftsList).toBe(false);
     expect(allMail.folder).toBe('all');
   });

@@ -102,6 +102,23 @@ export function saveRecentSearch(search: string): void {
   }
 }
 
+export type ValidSearchListRequest = {
+  isValid: true;
+  effectiveQuery: string;
+  folder: MailListFolderSlug;
+  filters: MailListStructuredFilters;
+  q?: string;
+  useDraftsList: boolean;
+};
+
+export type InvalidSearchListRequest = {
+  isValid: false;
+  error: 'QUERY_TOO_LONG';
+  effectiveQuery: string;
+};
+
+export type SearchListRequest = ValidSearchListRequest | InvalidSearchListRequest;
+
 export function resolveSearchListRequest(input: {
   scope: SearchScope;
   query: string;
@@ -111,12 +128,7 @@ export function resolveSearchListRequest(input: {
     filters: { categoryIds?: string[]; labelIds?: string[] };
   };
   baseFilters: MailListStructuredFilters;
-}): {
-  folder: MailListFolderSlug;
-  filters: MailListStructuredFilters;
-  q?: string;
-  useDraftsList: boolean;
-} {
+}): SearchListRequest {
   const merged = mergeSearchQuery(input.query, input.filters);
   const hasQuery = merged.length > 0;
   const isDraftRoute =
@@ -124,6 +136,8 @@ export function resolveSearchListRequest(input: {
 
   if (!hasQuery) {
     return {
+      isValid: true,
+      effectiveQuery: merged,
       folder: input.routeResolved.folder,
       filters: input.baseFilters,
       q: undefined,
@@ -132,7 +146,11 @@ export function resolveSearchListRequest(input: {
   }
 
   if (merged.length > MAX_SEARCH_QUERY_LENGTH) {
-    throw new RangeError(`Search query must be ${MAX_SEARCH_QUERY_LENGTH} characters or fewer`);
+    return {
+      isValid: false,
+      error: 'QUERY_TOO_LONG',
+      effectiveQuery: merged,
+    };
   }
 
   if (input.scope === 'all') {
@@ -140,6 +158,8 @@ export function resolveSearchListRequest(input: {
     const resolved = resolveMailListSearch(merged, kept);
     const q = resolved.q ?? merged;
     return {
+      isValid: true,
+      effectiveQuery: merged,
       folder: 'all',
       filters: resolved.filters,
       q,
@@ -150,6 +170,8 @@ export function resolveSearchListRequest(input: {
   const resolved = resolveMailListSearch(merged, input.baseFilters);
   const q = resolved.q ?? merged;
   return {
+    isValid: true,
+    effectiveQuery: merged,
     folder: input.routeResolved.folder,
     filters: resolved.filters,
     q,
