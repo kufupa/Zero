@@ -1,10 +1,13 @@
 import {
+  createFixedGitIgnoreRunner,
   parseAnalysisWorkspaceConfig,
+  requiredAnalysisRootsAreIgnored,
   reserveUniqueStateTemporaryPath,
   runCenturionThreadCorpusAnalysis,
   type AnalysisWorkspaceConfigV1,
   type AnalysisWorkspacePort,
   type AnalysisWorkspaceStateV1,
+  type GitIgnoreProcessRunner,
   type VerifiedReceivedAnalysisInput,
 } from '../src/ops/centurion-thread-corpus-analysis-workspace.js';
 import {
@@ -266,6 +269,18 @@ class FakeWindowsPrivateAcl implements WindowsPrivateAcl {
   }
 }
 
+class FakeGitIgnoreProcessRunner implements GitIgnoreProcessRunner {
+  readonly calls: Array<Parameters<GitIgnoreProcessRunner['run']>[0]> = [];
+  readonly results: Array<ReturnType<GitIgnoreProcessRunner['run']>> = [];
+
+  run(
+    input: Parameters<GitIgnoreProcessRunner['run']>[0],
+  ): ReturnType<GitIgnoreProcessRunner['run']> {
+    this.calls.push(input);
+    return this.results.shift() ?? { failed: false, status: 0 };
+  }
+}
+
 class FakeAnalysisWorkspacePort implements AnalysisWorkspacePort {
   readonly calls: string[] = [];
   readonly files = new Map<string, Uint8Array>();
@@ -469,6 +484,47 @@ function sourceImports(source: ts.SourceFile): string[] {
   );
 }
 
+function isFixedGitIgnoreChildProcessImport(node: ts.ImportDeclaration): boolean {
+  if (
+    !ts.isStringLiteral(node.moduleSpecifier) ||
+    node.moduleSpecifier.text !== 'node:child_process' ||
+    !node.importClause ||
+    node.importClause.name ||
+    !node.importClause.namedBindings ||
+    !ts.isNamedImports(node.importClause.namedBindings) ||
+    node.importClause.namedBindings.elements.length !== 1
+  ) {
+    return false;
+  }
+  const specifier = node.importClause.namedBindings.elements[0];
+  return (
+    specifier !== undefined &&
+    specifier.name.text === 'spawnSync' &&
+    (!specifier.propertyName || specifier.propertyName.text === 'spawnSync')
+  );
+}
+
+function isFixedGitIgnoreSpawnSyncCall(call: ts.CallExpression): boolean {
+  if (
+    !ts.isIdentifier(call.expression) ||
+    call.expression.text !== 'spawnSync' ||
+    call.arguments.length !== 3 ||
+    !ts.isStringLiteral(call.arguments[0]) ||
+    call.arguments[0].text !== 'git' ||
+    !ts.isArrayLiteralExpression(call.arguments[1])
+  ) {
+    return false;
+  }
+  const argumentsValue = call.arguments[1].elements;
+  return (
+    argumentsValue.length === 5 &&
+    ['check-ignore', '--no-index', '--quiet', '--'].every(
+      (expected, index) =>
+        ts.isStringLiteral(argumentsValue[index]) && argumentsValue[index].text === expected,
+    )
+  );
+}
+
 function allowedProcessReference(
   identifier: ts.Identifier,
   fileKind: 'workspace' | 'script',
@@ -480,7 +536,15 @@ function allowedProcessReference(
     return false;
   }
   const first = identifier.parent;
-  if (fileKind === 'workspace') return first.name.text === 'platform';
+  if (fileKind === 'workspace') {
+    if (first.name.text === 'platform') return true;
+    return (
+      first.name.text === 'env' &&
+      ts.isPropertyAccessExpression(first.parent) &&
+      first.parent.expression === first &&
+      ['ComSpec', 'PATH', 'PATHEXT', 'SystemRoot'].includes(first.parent.name.text)
+    );
+  }
   if (first.name.text === 'argv' || first.name.text === 'exitCode') return true;
   return (
     first.name.text === 'stdout' &&
@@ -498,6 +562,16 @@ function sourceBoundaryViolations(
   const violations = sourceImports(source)
     .filter((moduleName) => !allowedImports.has(moduleName))
     .map((moduleName) => `import:${moduleName}`);
+  for (const node of collectNodes(source, ts.isImportDeclaration)) {
+    if (ts.isImportDeclaration(node) && !isFixedGitIgnoreChildProcessImport(node)) {
+      if (
+        ts.isStringLiteral(node.moduleSpecifier) &&
+        node.moduleSpecifier.text === 'node:child_process'
+      ) {
+        violations.push('child-process-import');
+      }
+    }
+  }
   const forbiddenIdentifiers = new Set([
     'AWS',
     'Bedrock',
@@ -528,7 +602,6 @@ function sourceBoundaryViolations(
     'request',
     'send',
     'spawn',
-    'spawnSync',
   ]);
 
   for (const node of collectNodes(source, ts.isIdentifier)) {
@@ -549,6 +622,12 @@ function sourceBoundaryViolations(
     if (!ts.isCallExpression(call)) continue;
     if (call.expression.kind === ts.SyntaxKind.ImportKeyword) {
       violations.push('dynamic-import');
+    } else if (
+      ts.isIdentifier(call.expression) &&
+      call.expression.text === 'spawnSync' &&
+      !isFixedGitIgnoreSpawnSyncCall(call)
+    ) {
+      violations.push('call:spawnSync');
     } else if (ts.isIdentifier(call.expression) && forbiddenCalls.has(call.expression.text)) {
       violations.push(`call:${call.expression.text}`);
     } else if (
@@ -580,6 +659,75 @@ function sourceBoundaryViolations(
   }
   return [...new Set(violations)].sort();
 }
+
+describe('fixed Git-ignore adapter', () => {
+  it('uses fixed Git arguments with shell disabled and bounded environment', () => {
+    const processRunner = new FakeGitIgnoreProcessRunner();
+    const runner = createFixedGitIgnoreRunner(processRunner);
+
+    expect(
+      runner.isIgnored({
+        checkoutRoot: CHECKOUT_ROOT,
+        candidate: '.private/centurion-thread-analysis/',
+      }),
+    ).toBe(true);
+    expect(processRunner.calls).toHaveLength(1);
+    expect(processRunner.calls[0]).toMatchObject({
+      executable: 'git',
+      arguments: [
+        'check-ignore',
+        '--no-index',
+        '--quiet',
+        '--',
+        '.private/centurion-thread-analysis/',
+      ],
+      cwd: CHECKOUT_ROOT,
+      options: {
+        shell: false,
+        stdio: 'ignore',
+        windowsHide: true,
+      },
+    });
+    expect(Object.keys(processRunner.calls[0]!.options.env).sort()).toEqual([
+      'ComSpec',
+      'PATH',
+      'PATHEXT',
+      'SystemRoot',
+    ]);
+  });
+
+  it('blocks a later Git negation and process failures', () => {
+    const negated = new FakeGitIgnoreProcessRunner();
+    negated.results.push({ failed: false, status: 0 }, { failed: false, status: 1 });
+    expect(
+      requiredAnalysisRootsAreIgnored(CHECKOUT_ROOT, createFixedGitIgnoreRunner(negated)),
+    ).toBe(false);
+    expect(negated.calls.map((call) => call.arguments.at(-1))).toEqual([
+      '.private/centurion-thread-corpus/',
+      '.private/centurion-thread-analysis/',
+    ]);
+
+    const failed = new FakeGitIgnoreProcessRunner();
+    failed.results.push({ failed: true, status: null });
+    expect(
+      createFixedGitIgnoreRunner(failed).isIgnored({
+        checkoutRoot: CHECKOUT_ROOT,
+        candidate: '.private/centurion-thread-corpus/',
+      }),
+    ).toBe(false);
+  });
+
+  it('rejects noncanonical candidates before process execution', () => {
+    const processRunner = new FakeGitIgnoreProcessRunner();
+    expect(
+      createFixedGitIgnoreRunner(processRunner).isIgnored({
+        checkoutRoot: CHECKOUT_ROOT,
+        candidate: '.private/centurion-thread-analysis/;unsafe',
+      }),
+    ).toBe(false);
+    expect(processRunner.calls).toEqual([]);
+  });
+});
 
 describe('Centurion private analysis workspace command', () => {
   it('requires an exact command and UUID before any runtime port call', async () => {
@@ -1089,6 +1237,7 @@ describe('Centurion analysis workspace source boundaries', () => {
       './centurion-thread-corpus-evidence.js',
       './centurion-thread-corpus-relay-receiver.js',
       '../../scripts/export-thread-corpus.js',
+      'node:child_process',
       'node:crypto',
       'node:fs',
       'node:path',
@@ -1101,12 +1250,36 @@ describe('Centurion analysis workspace source boundaries', () => {
     ]);
     expect(sourceBoundaryViolations(workspace, 'workspace', workspaceImports)).toEqual([]);
     expect(sourceBoundaryViolations(script, 'script', scriptImports)).toEqual([]);
+    const gitCalls = collectNodes(
+      workspace,
+      (node): node is ts.CallExpression =>
+        ts.isCallExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === 'spawnSync',
+    ) as ts.CallExpression[];
+    expect(gitCalls).toHaveLength(1);
+    const gitCall = gitCalls[0];
+    if (
+      !gitCall ||
+      gitCall.arguments.length !== 3 ||
+      !ts.isStringLiteral(gitCall.arguments[0]) ||
+      gitCall.arguments[0].text !== 'git' ||
+      !ts.isArrayLiteralExpression(gitCall.arguments[1])
+    ) {
+      throw new Error('Expected fixed Git-ignore process adapter');
+    }
+    expect(
+      gitCall.arguments[1].elements
+        .slice(0, 4)
+        .map((argument) => (ts.isStringLiteral(argument) ? argument.text : null)),
+    ).toEqual(['check-ignore', '--no-index', '--quiet', '--']);
 
     const fixture = ts.createSourceFile(
       'synthetic-forbidden-workspace.ts',
       [
         "import { request as httpsRequest } from 'node:https';",
         "import { spawnSync as safeRunner } from 'node:child_process';",
+        "import { spawnSync } from 'node:child_process';",
         "import processAlias from 'node:process';",
         "import * as networkAlias from 'node:net';",
         "import { Client as databaseAlias } from 'pg';",
@@ -1114,6 +1287,7 @@ describe('Centurion analysis workspace source boundaries', () => {
         "import { Mastra as modelAlias } from '@mastra/core';",
         'void httpsRequest;',
         'void safeRunner;',
+        "void spawnSync('powershell.exe', [], { shell: false });",
         'void processAlias;',
         'void networkAlias;',
         'void databaseAlias;',
@@ -1134,6 +1308,8 @@ describe('Centurion analysis workspace source boundaries', () => {
       expect.arrayContaining([
         'computed:fetch',
         'computed:process',
+        'child-process-import',
+        'call:spawnSync',
         'constructor',
         'dynamic-import',
         'global:Reflect',
@@ -1141,7 +1317,6 @@ describe('Centurion analysis workspace source boundaries', () => {
         'global:globalThis',
         'import:@aws-sdk/client-s3',
         'import:@mastra/core',
-        'import:node:child_process',
         'import:node:https',
         'import:node:net',
         'import:node:process',
