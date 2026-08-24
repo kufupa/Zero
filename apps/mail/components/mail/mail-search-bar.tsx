@@ -56,6 +56,7 @@ export function MailSearchBar({ folderTitle }: MailSearchBarProps) {
   const setSearchBarFocused = useSetAtom(mailSearchBarFocusedAtom);
   const inputRef = useRef<HTMLInputElement>(null);
   const searchFieldRef = useRef<HTMLDivElement>(null);
+  const suggestionListRef = useRef<HTMLUListElement>(null);
   const [localSearch, setLocalSearch] = useState('');
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
   const [recentOpen, setRecentOpen] = useState(false);
@@ -68,8 +69,13 @@ export function MailSearchBar({ folderTitle }: MailSearchBarProps) {
     if (term) return [{ kind: 'from', value: term }];
     return recentSearches.map((value) => ({ kind: 'recent', value }));
   }, [localSearch, recentSearches]);
+  const isSuggestionPopupOpen = recentOpen && suggestions.length > 0;
 
   const effectiveQuery = mergeSearchQuery(searchValue.value, searchValue.filters);
+  useEffect(() => {
+    setLocalSearch(searchValue.value);
+  }, [searchValue.value]);
+
   const canUseEffectiveQuery = useCallback((query: string) => {
     if (query.length <= MAX_EFFECTIVE_SEARCH_LENGTH) return true;
     toast.error(QUERY_TOO_LONG_MESSAGE);
@@ -110,6 +116,11 @@ export function MailSearchBar({ folderTitle }: MailSearchBarProps) {
     [canUseEffectiveQuery, searchValue, setSearchValue],
   );
 
+  const toggleLast7DaysFilter = useCallback(() => {
+    const activeDateFilter = searchValue.filters.find((filter) => filter.type === 'date');
+    return toggleFilter(activeDateFilter ?? last7DaysFilter());
+  }, [searchValue.filters, toggleFilter]);
+
   const addFromFilter = useCallback(() => {
     const filter = fromFilter(localSearch);
     if (!filter) {
@@ -148,8 +159,11 @@ export function MailSearchBar({ folderTitle }: MailSearchBarProps) {
     };
 
     window.addEventListener('keydown', focusSearch);
-    return () => window.removeEventListener('keydown', focusSearch);
-  }, []);
+    return () => {
+      window.removeEventListener('keydown', focusSearch);
+      setSearchBarFocused(false);
+    };
+  }, [setSearchBarFocused]);
 
   const selectScope = useCallback(
     (scope: SearchScope) => {
@@ -246,8 +260,8 @@ export function MailSearchBar({ folderTitle }: MailSearchBarProps) {
 
           <input
             aria-autocomplete="list"
-            aria-controls="mail-search-suggestions"
-            aria-expanded={recentOpen}
+            aria-controls={isSuggestionPopupOpen ? 'mail-search-suggestions' : undefined}
+            aria-expanded={isSuggestionPopupOpen}
             aria-activedescendant={
               highlightedSuggestion >= 0 && suggestions[highlightedSuggestion]
                 ? `mail-search-suggestion-${highlightedSuggestion}`
@@ -257,7 +271,9 @@ export function MailSearchBar({ folderTitle }: MailSearchBarProps) {
             id="mail-search"
             onBlur={(event) => {
               setSearchBarFocused(false);
-              if (!searchFieldRef.current?.contains(event.relatedTarget)) closeRecentSearches();
+              if (!suggestionListRef.current?.contains(event.relatedTarget)) {
+                closeRecentSearches();
+              }
             }}
             onChange={(event) => {
               setLocalSearch(event.target.value);
@@ -304,10 +320,11 @@ export function MailSearchBar({ folderTitle }: MailSearchBarProps) {
             </Button>
           )}
 
-          {recentOpen && suggestions.length > 0 && (
+          {isSuggestionPopupOpen && (
             <ul
               className="bg-popover text-popover-foreground absolute top-full right-0 left-0 z-50 mt-1 max-h-[40vh] overflow-y-auto rounded-md border p-1 shadow-md"
               id="mail-search-suggestions"
+              ref={suggestionListRef}
               role="listbox"
             >
               {suggestions.map((suggestion, index) => {
@@ -365,7 +382,7 @@ export function MailSearchBar({ folderTitle }: MailSearchBarProps) {
             <DropdownMenuCheckboxItem
               checked={searchValue.filters.some((filter) => filter.type === 'date')}
               onSelect={() => {
-                toggleFilter(last7DaysFilter());
+                toggleLast7DaysFilter();
                 setFiltersMenuOpen(false);
               }}
             >

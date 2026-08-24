@@ -2,10 +2,12 @@
  * @vitest-environment happy-dom
  */
 import { fireEvent, render, screen, cleanup } from '@testing-library/react';
-import { Provider, useAtomValue } from 'jotai';
+import { useEffect } from 'react';
+import { createStore, Provider, useAtomValue } from 'jotai';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MailSearchBar } from '../components/mail/mail-search-bar';
 import { mailSearchBarFocusedAtom, useSearchValue } from '../hooks/use-search-value';
+import { EMPTY_SEARCH_VALUE, type SearchValueState } from '../lib/mail/search-list';
 
 const mocks = vi.hoisted(() => ({
   toastError: vi.fn(),
@@ -27,7 +29,67 @@ function SearchFocusProbe() {
   return <output data-testid="search-focused">{String(focused)}</output>;
 }
 
-function renderMailSearchBar() {
+function SearchValueInitializer({ state }: { state: SearchValueState }) {
+  const [, setSearchValue] = useSearchValue();
+
+  useEffect(() => {
+    setSearchValue(state);
+  }, [setSearchValue, state]);
+
+  return null;
+}
+
+function ExternalSearchValueControls() {
+  const [state, setSearchValue] = useSearchValue();
+
+  return (
+    <>
+      <button type="button" onClick={() => setSearchValue({ ...state })}>
+        Re-emit committed search
+      </button>
+      <button
+        type="button"
+        onClick={() =>
+          setSearchValue({
+            ...state,
+            value: 'label:vip',
+            highlight: 'label:vip',
+          })
+        }
+      >
+        Set external search
+      </button>
+      <button type="button" onClick={() => setSearchValue(EMPTY_SEARCH_VALUE)}>
+        Clear external search
+      </button>
+    </>
+  );
+}
+
+function renderMailSearchBar({
+  initialSearchValue,
+  includeExternalControls = false,
+  store = createStore(),
+}: {
+  initialSearchValue?: SearchValueState;
+  includeExternalControls?: boolean;
+  store?: ReturnType<typeof createStore>;
+} = {}) {
+  return {
+    ...render(
+      <Provider store={store}>
+        {initialSearchValue && <SearchValueInitializer state={initialSearchValue} />}
+        {includeExternalControls && <ExternalSearchValueControls />}
+        <MailSearchBar folderTitle="Inbox" />
+        <SearchValueProbe />
+        <SearchFocusProbe />
+      </Provider>,
+    ),
+    store,
+  };
+}
+
+function renderMailSearchBarWithoutControls() {
   return render(
     <Provider>
       <MailSearchBar folderTitle="Inbox" />
@@ -50,7 +112,7 @@ afterEach(() => {
 
 describe('MailSearchBar', () => {
   it('renders a search input and does not show command items', () => {
-    renderMailSearchBar();
+    renderMailSearchBarWithoutControls();
 
     expect(screen.getByRole('searchbox', { name: /search mail/i })).toBeTruthy();
     expect(screen.queryByText('Compose Email')).toBeNull();
@@ -59,7 +121,7 @@ describe('MailSearchBar', () => {
   });
 
   it('toggles unread without committing free text', () => {
-    renderMailSearchBar();
+    renderMailSearchBarWithoutControls();
 
     openMenu('Filters');
     fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Unread' }));
@@ -75,7 +137,7 @@ describe('MailSearchBar', () => {
   });
 
   it('switches scope to all folders', () => {
-    renderMailSearchBar();
+    renderMailSearchBarWithoutControls();
 
     openMenu('Inbox');
     fireEvent.click(screen.getByRole('menuitemradio', { name: 'All folders' }));
@@ -84,7 +146,7 @@ describe('MailSearchBar', () => {
   });
 
   it('keeps typed text local until Enter', () => {
-    renderMailSearchBar();
+    renderMailSearchBarWithoutControls();
     const input = screen.getByRole('searchbox', { name: /search mail/i });
 
     fireEvent.change(input, { target: { value: 'deposit' } });
@@ -98,7 +160,7 @@ describe('MailSearchBar', () => {
 
   it('opens recents with ArrowDown and applies highlighted recent on Enter', () => {
     localStorage.setItem('mail-recent-searches', JSON.stringify(['invoice']));
-    renderMailSearchBar();
+    renderMailSearchBarWithoutControls();
     const input = screen.getByRole('searchbox', { name: /search mail/i });
 
     fireEvent.focus(input);
@@ -112,7 +174,7 @@ describe('MailSearchBar', () => {
   });
 
   it('tracks input focus and supports Command or Control K', () => {
-    renderMailSearchBar();
+    renderMailSearchBarWithoutControls();
     const input = screen.getByRole('searchbox', { name: /search mail/i });
 
     fireEvent.focus(input);
@@ -129,7 +191,7 @@ describe('MailSearchBar', () => {
   });
 
   it('rejects an over-limit committed query without truncating it', () => {
-    renderMailSearchBar();
+    renderMailSearchBarWithoutControls();
     const input = screen.getByRole('searchbox', { name: /search mail/i });
     const tooLong = 'x'.repeat(513);
 
@@ -144,7 +206,7 @@ describe('MailSearchBar', () => {
   });
 
   it('rejects an over-limit filter chip without changing filters', () => {
-    renderMailSearchBar();
+    renderMailSearchBarWithoutControls();
     const input = screen.getByRole('searchbox', { name: /search mail/i });
 
     fireEvent.change(input, { target: { value: 'x'.repeat(512) } });
@@ -158,5 +220,88 @@ describe('MailSearchBar', () => {
     expect(mocks.toastError).toHaveBeenCalledWith(
       'Search query must be 512 characters or fewer.',
     );
+  });
+
+  it('syncs local text only when an external committed value changes', () => {
+    renderMailSearchBar({ includeExternalControls: true });
+    const input = screen.getByRole('searchbox', { name: /search mail/i }) as HTMLInputElement;
+
+    fireEvent.change(input, { target: { value: 'draft text' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Re-emit committed search' }));
+    expect(input.value).toBe('draft text');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Set external search' }));
+    expect(input.value).toBe('label:vip');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear external search' }));
+    expect(input.value).toBe('');
+  });
+
+  it('resets focused atom when unmounted', () => {
+    const store = createStore();
+    const { unmount } = renderMailSearchBar({ store });
+    const input = screen.getByRole('searchbox', { name: /search mail/i });
+
+    fireEvent.focus(input);
+    expect(store.get(mailSearchBarFocusedAtom)).toBe(true);
+
+    unmount();
+    expect(store.get(mailSearchBarFocusedAtom)).toBe(false);
+  });
+
+  it('closes recents for controls and only exposes popup attributes while rendered', () => {
+    localStorage.setItem('mail-recent-searches', JSON.stringify(['invoice']));
+    renderMailSearchBarWithoutControls();
+    const input = screen.getByRole('searchbox', { name: /search mail/i });
+    const scopeButton = screen.getByRole('button', { name: 'Inbox' });
+
+    expect(input.getAttribute('aria-controls')).toBeNull();
+    expect(input.getAttribute('aria-expanded')).toBe('false');
+
+    fireEvent.focus(input);
+    expect(screen.getByRole('listbox')).toBeTruthy();
+    expect(input.getAttribute('aria-controls')).toBe('mail-search-suggestions');
+    expect(input.getAttribute('aria-expanded')).toBe('true');
+
+    fireEvent.blur(input, { relatedTarget: scopeButton });
+
+    expect(screen.queryByRole('listbox')).toBeNull();
+    expect(input.getAttribute('aria-controls')).toBeNull();
+    expect(input.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('keeps a focused suggestion available until it applies', () => {
+    localStorage.setItem('mail-recent-searches', JSON.stringify(['invoice']));
+    renderMailSearchBarWithoutControls();
+    const input = screen.getByRole('searchbox', { name: /search mail/i });
+
+    fireEvent.focus(input);
+    const suggestion = screen.getByRole('option', { name: 'invoice' });
+    fireEvent.blur(input, { relatedTarget: suggestion });
+    fireEvent.click(suggestion);
+
+    expect(screen.getByTestId('committed').textContent).toBe('invoice');
+  });
+
+  it('removes an existing date chip instead of replacing its old UTC token', () => {
+    renderMailSearchBar({
+      initialSearchValue: {
+        ...EMPTY_SEARCH_VALUE,
+        filters: [
+          {
+            type: 'date',
+            value: 'after:2000/01/01',
+            display: 'Last 7 days',
+          },
+        ],
+      },
+    });
+
+    expect(screen.getByRole('button', { name: 'Remove Last 7 days' })).toBeTruthy();
+
+    openMenu('Filters');
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Last 7 days' }));
+
+    expect(screen.queryByRole('button', { name: 'Remove Last 7 days' })).toBeNull();
   });
 });
