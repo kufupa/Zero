@@ -1,29 +1,36 @@
 import {
-  PersistQueryClientProvider,
-  type PersistedClient,
-  type Persister,
-} from '@tanstack/react-query-persist-client';
-import { QueryCache, QueryClient, hashKey, type InfiniteData } from '@tanstack/react-query';
-import { createTRPCContext } from '@trpc/tanstack-react-query';
-import { createTRPCClient, httpBatchLink, type TRPCClient } from '@trpc/client';
-import { useMemo, useRef, useSyncExternalStore, type PropsWithChildren } from 'react';
-import type { AppRouter } from '@zero/server/trpc';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
-import { resolveDemoQueryPolicy } from '@/lib/demo/query-policy';
-import { CACHE_BURST_KEY } from '@/lib/constants';
-import { signOut } from '@/lib/auth-client';
-import { get, set, del } from 'idb-keyval';
-import superjson from 'superjson';
-import { resolveQueryHashPrefix, runLogoutCleanup } from '@/lib/mail/query-cache-policy';
-import { PERSIST_MAX_AGE, QUERY_GC_TIME } from '@/lib/mail/cache-ttl';
-import {
   getMailCacheScope,
   idbCacheKeyForScope,
   setMailCacheScope,
   subscribeMailCacheScope,
 } from '@/lib/mail/mail-cache-scope';
-import { useSession } from '@/lib/auth-client';
+import {
+  PersistQueryClientProvider,
+  type PersistedClient,
+  type Persister,
+} from '@tanstack/react-query-persist-client';
+import {
+  MutationCache,
+  QueryCache,
+  QueryClient,
+  hashKey,
+  type InfiniteData,
+} from '@tanstack/react-query';
+import { createAuthBoundaryRecovery, isUnauthorizedTrpcError } from '@/lib/mail/auth-boundary';
+import { resolveQueryHashPrefix, runLogoutCleanup } from '@/lib/mail/query-cache-policy';
+import { useMemo, useRef, useSyncExternalStore, type PropsWithChildren } from 'react';
+import { createTRPCClient, httpBatchLink, type TRPCClient } from '@trpc/client';
+import { PERSIST_MAX_AGE, QUERY_GC_TIME } from '@/lib/mail/cache-ttl';
+import { resolveDemoQueryPolicy } from '@/lib/demo/query-policy';
+import { createTRPCContext } from '@trpc/tanstack-react-query';
 import { useActiveConnection } from '@/hooks/use-connections';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import type { AppRouter } from '@zero/server/trpc';
+import { CACHE_BURST_KEY } from '@/lib/constants';
+import { useSession } from '@/lib/auth-client';
+import { signOut } from '@/lib/auth-client';
+import { get, set, del } from 'idb-keyval';
+import superjson from 'superjson';
 import { useEffect } from 'react';
 import { toast } from 'sonner';
 
@@ -99,6 +106,7 @@ const createDemoTrpcClient = (): unknown => createDemoProcedureNode([]);
 const LEGACY_IDB_CACHE_KEY = 'zero-query-cache-default';
 
 let idbPersistDegraded = false;
+const recoverFromAuthBoundary = createAuthBoundaryRecovery();
 
 function isIdbAvailable(): boolean {
   return typeof indexedDB !== 'undefined';
@@ -117,6 +125,26 @@ async function handleForbiddenSignOut(queryClient: QueryClient): Promise<void> {
         if (window.location.href.includes('/login')) return;
         window.location.href = '/login?error=required_scopes_missing';
       },
+    },
+  });
+}
+
+async function handleUnauthorizedSignOut(queryClient: QueryClient): Promise<void> {
+  await recoverFromAuthBoundary({
+    queryClient,
+    clearIdb: async () => {
+      await del(idbCacheKeyForScope(getMailCacheScope()));
+    },
+    signOut: () => signOut(),
+    redirect: (path) => {
+      if (typeof window === 'undefined' || window.location.pathname.includes('/login')) return;
+      window.location.href = path;
+    },
+    onError: (error) => {
+      console.error(
+        '[auth] session recovery failed:',
+        error instanceof Error ? error.message : 'unknown error',
+      );
     },
   });
 }
@@ -170,15 +198,28 @@ function createIDBPersister(idbValidKey: IDBValidKey = 'zero-query-cache') {
   } satisfies Persister;
 }
 
-export const makeQueryClient = (_legacyConnectionId?: string | null) => {
+export const makeQueryClient = () => {
   const queryClient = new QueryClient({
+    mutationCache: new MutationCache({
+      onError: (err, _variables, _onMutateResult, mutation) => {
+        const { meta } = mutation.options;
+        if (isFrontendOnlyDemo()) return;
+        if (meta && meta.noGlobalError === true) return;
+        if (isUnauthorizedTrpcError(err)) {
+          void handleUnauthorizedSignOut(queryClient);
+        }
+      },
+    }),
     queryCache: new QueryCache({
       onError: (err, query) => {
         const { meta } = query;
         if (isFrontendOnlyDemo()) return;
         if (meta && meta.noGlobalError === true) return;
-        if (meta && typeof meta.customError === 'string') console.error(meta.customError);
-        else if (err.message === 'NO_MAILBOX') {
+        if (isUnauthorizedTrpcError(err)) {
+          void handleUnauthorizedSignOut(queryClient);
+        } else if (meta && typeof meta.customError === 'string') {
+          console.error(meta.customError);
+        } else if (err.message === 'NO_MAILBOX') {
           toast.error('No mailbox assigned');
         } else if (
           err.message === 'Required scopes missing' ||
@@ -308,25 +349,19 @@ export function QueryProvider({ children }: PropsWithChildren) {
     void del(LEGACY_IDB_CACHE_KEY).catch(() => undefined);
   }, []);
 
-  const persister = useMemo(
-    () => createIDBPersister(scopeKey),
-    [scopeKey],
-  );
-  const policyAwarePersister = useMemo(
-    () => {
-      const gatedPersister = {
-        persistClient: async () => undefined,
-        restoreClient: async () => undefined,
-        removeClient: persister.removeClient,
-      } satisfies Persister;
+  const persister = useMemo(() => createIDBPersister(scopeKey), [scopeKey]);
+  const policyAwarePersister = useMemo(() => {
+    const gatedPersister = {
+      persistClient: async () => undefined,
+      restoreClient: async () => undefined,
+      removeClient: persister.removeClient,
+    } satisfies Persister;
 
-      if (!demoQueryPolicy.shouldHydratePersistedQueries || !scopeReady) {
-        return gatedPersister;
-      }
-      return persister;
-    },
-    [demoQueryPolicy.shouldHydratePersistedQueries, persister, scopeReady],
-  );
+    if (!demoQueryPolicy.shouldHydratePersistedQueries || !scopeReady) {
+      return gatedPersister;
+    }
+    return persister;
+  }, [demoQueryPolicy.shouldHydratePersistedQueries, persister, scopeReady]);
   const queryClient = useMemo(() => getQueryClient(), []);
 
   useEffect(() => {
