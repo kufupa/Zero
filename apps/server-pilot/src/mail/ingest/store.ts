@@ -50,7 +50,10 @@ import {
   parseRawMessage,
   generateMessageId,
 } from './parse-message.js';
-import { evaluateRocketseedReturnedCopyTrust } from './rocketseed-returned-copy.js';
+import {
+  evaluateRocketseedReturnedCopyTrust,
+  normalizeRocketseedMailbox,
+} from './rocketseed-returned-copy.js';
 import { parsePersistedDeliveryOutcome } from '../send/outbound-queue.js';
 import { sanitizeHtmlBodyForStorage } from '../sanitize-email-html.js';
 import {
@@ -287,7 +290,7 @@ export async function persistInboundMessage(
       activeTransportId: canonical?.transportId ?? null,
       expectedTransportId: transport.id,
       expectedTransportAddress: transport.email,
-      hasEligibleLocalSentQueueRow: hasEligibleLocalQueueRow,
+      hasEligibleLocalQueueRow,
       parsed,
     });
     if (canonical && returnedCopyTrust.trusted) {
@@ -745,11 +748,14 @@ function hasProvenPersistedSendingDelivery(args: {
     const outcome = parsePersistedDeliveryOutcome(args.smtpPayload);
     if (!outcome || outcome.messageId !== args.parsedMessageId) return false;
 
-    const expectedTransportAddress = normalizeEmailAddress(args.expectedTransportAddress);
-    if (!expectedTransportAddress) return false;
+    const normalizedExpectedTransportAddress = normalizeRocketseedMailbox(
+      args.expectedTransportAddress,
+    );
+    if (!normalizedExpectedTransportAddress) return false;
     if (
       !outcome.accepted.some(
-        (recipient) => normalizeEmailAddress(recipient) === expectedTransportAddress,
+        (recipient) =>
+          normalizeRocketseedMailbox(recipient) === normalizedExpectedTransportAddress,
       )
     ) {
       return false;

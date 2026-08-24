@@ -544,6 +544,12 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
         includeOutboundId: true,
       },
       {
+        name: 'malformed accepted transport recipient wrapper',
+        queueStatus: 'sending',
+        outcomeKind: 'malformed-transport-recipient',
+        includeOutboundId: true,
+      },
+      {
         name: 'canonical message ID mismatch',
         queueStatus: 'sending',
         outcomeKind: 'valid',
@@ -604,6 +610,15 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
                 messageId: canonical.returnedMessageId,
                 accepted: ['other@zero.test'],
                 rejected: [canonical.transportAddress],
+              },
+            };
+            break;
+          case 'malformed-transport-recipient':
+            smtpPayload = {
+              deliveryOutcome: {
+                messageId: canonical.returnedMessageId,
+                accepted: [`junk <${canonical.transportAddress}> trailing`],
+                rejected: [],
               },
             };
             break;

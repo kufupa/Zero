@@ -32,7 +32,7 @@ function validInput(): RocketseedReturnedCopyTrustInput {
     activeTransportId: 'transport-centurion',
     expectedTransportId: 'transport-centurion',
     expectedTransportAddress: 'centurion@legacyhotels.co.za',
-    hasEligibleLocalSentQueueRow: true,
+    hasEligibleLocalQueueRow: true,
     parsed: {
       ownerHeaderValue: '<CENTURION@LEGACYHOTELS.CO.ZA>',
       fromAddress: 'Centurion <CENTURION@LEGACYHOTELS.CO.ZA>',
@@ -209,13 +209,13 @@ describe('evaluateRocketseedReturnedCopyTrust', () => {
     });
   });
 
-  it('rejects absent eligible local sent-queue row', () => {
+  it('rejects absent eligible local queue row', () => {
     const input = validInput();
-    input.hasEligibleLocalSentQueueRow = false;
+    input.hasEligibleLocalQueueRow = false;
 
     expect(evaluateRocketseedReturnedCopyTrust(input)).toEqual({
       trusted: false,
-      reason: 'sent_queue_row_missing',
+      reason: 'eligible_queue_row_missing',
     });
   });
 

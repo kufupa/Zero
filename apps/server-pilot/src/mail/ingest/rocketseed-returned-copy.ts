@@ -2,7 +2,7 @@ export type RocketseedReturnedCopyTrustReason =
   | 'transport_identity_mismatch'
   | 'owner_mismatch'
   | 'sender_mismatch'
-  | 'sent_queue_row_missing'
+  | 'eligible_queue_row_missing'
   | 'received_missing'
   | 'received_malformed'
   | 'received_topology_mismatch';
@@ -15,7 +15,7 @@ export interface RocketseedReturnedCopyTrustInput {
   activeTransportId: string | null;
   expectedTransportId: string;
   expectedTransportAddress: string;
-  hasEligibleLocalSentQueueRow: boolean;
+  hasEligibleLocalQueueRow: boolean;
   parsed: {
     ownerHeaderValue: string | null;
     fromAddress: string | null;
@@ -49,17 +49,20 @@ export function evaluateRocketseedReturnedCopyTrust(
     return rejected('transport_identity_mismatch');
   }
 
-  const expectedAddress = normalizeAddress(input.expectedTransportAddress);
-  if (!expectedAddress || normalizeAddress(input.parsed.ownerHeaderValue) !== expectedAddress) {
+  const expectedAddress = normalizeRocketseedMailbox(input.expectedTransportAddress);
+  if (
+    !expectedAddress ||
+    normalizeRocketseedMailbox(input.parsed.ownerHeaderValue) !== expectedAddress
+  ) {
     return rejected('owner_mismatch');
   }
 
-  if (normalizeAddress(input.parsed.fromAddress) !== expectedAddress) {
+  if (normalizeRocketseedMailbox(input.parsed.fromAddress) !== expectedAddress) {
     return rejected('sender_mismatch');
   }
 
-  if (!input.hasEligibleLocalSentQueueRow) {
-    return rejected('sent_queue_row_missing');
+  if (!input.hasEligibleLocalQueueRow) {
+    return rejected('eligible_queue_row_missing');
   }
 
   return verifyReceivedTopology(input.parsed.rawHeaderLines);
@@ -84,7 +87,7 @@ function verifyReceivedTopology(
   return hasTrustedPrefix ? { trusted: true } : rejected('received_topology_mismatch');
 }
 
-function normalizeAddress(value: string | null): string | null {
+export function normalizeRocketseedMailbox(value: string | null): string | null {
   if (!value) return null;
   const trimmed = value.trim();
   const bracketed = /^(?:(?<display>[^<>]+?)\s+)?<(?<mailbox>[^<>\s]+)>$/.exec(trimmed);
