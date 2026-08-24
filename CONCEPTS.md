@@ -272,6 +272,18 @@ Systemd oneshot (`nava-post-boot-smoke.service`) that runs after PM2 (and wants 
 
 The single staff-facing HTTPS origin for the Centurion pilot (`https://nava.legacyhotels.co.za`). Auth `baseURL` / trusted origins, SPA `VITE_PUBLIC_APP_URL`, Nginx `server_name` + TLS paths, S3 CORS, and production browser gates must all agree on this origin. Hotel internal DNS points it at the EC2 OpenVPN address; public DNS stays absent.
 
+### Dual-plane Nginx
+
+One Nginx site on the pilot that must always carry both the hotel Legacy plane (`:80/:443` → loopback `http`) and the Remote admin plane (private `:8443` → loopback `remote-http`). A candidate that omits either plane is refused before install/reload so a hotel-only edit cannot wipe public admin ingress.
+
+### Remote admin plane
+
+Public operator access to the pilot mail UI via `nava-admin.trynava.io`: TLS terminates at a dedicated ALB; the ALB forwards only that host to the instance private `:8443` target. Distinct from Canonical origin, which stays hotel-VPN-only and must not gain public ingress through this path.
+
+### Remote admin lifecycle state
+
+Fail-closed classification of ALB listener rules plus target health into a small set of safe shapes (`pre-registration`, `active`, `rollback`). Any mixed, broad, or non-healthy arrangement is `unknown` and must not be mutated by cutover scripts. After the host-forward rule is deleted, AWS often reports the target as unused rather than healthy — that is `unknown`, not `rollback`.
+
 *Avoid: treating `nava.legacy.local` as the live staff URL after the hotel-HTTPS cutover; that name is legacy overlap only.*
 
 ### Closed deploy then open

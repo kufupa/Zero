@@ -89,6 +89,7 @@ apps/mail/test-results/
 /live real data connection/
 Nava.ovpn
 Nava.zip
+.private/centurion-thread-corpus/
 *.mbox
 *.mailbox-dump*
 .tmp*
