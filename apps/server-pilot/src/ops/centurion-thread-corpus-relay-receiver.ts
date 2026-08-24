@@ -55,7 +55,12 @@ export type ReceiverFileSystem = {
     volumeId: string;
   } | null>;
   acquirePartialDirectory(transferId: string): Promise<AcquiredPartialDirectory | null>;
-  acquirePartialLease(transferId: string): Promise<{ leaseId: string } | null>;
+  acquirePartialLease(transferId: string): Promise<{
+    leaseId: string;
+    path: string;
+    stableIdentity: string;
+    volumeId: string;
+  } | null>;
   assertPartialLease(input: { transferId: string; leaseId: string }): Promise<boolean>;
   releasePartialLease(input: { transferId: string; leaseId: string }): Promise<boolean>;
   writeCreateNew(path: string, content: Uint8Array): Promise<boolean>;
@@ -830,14 +835,23 @@ async function assertTrustedPath(
 
 async function assertPartialLease(input: {
   fileSystem: ReceiverFileSystem;
+  acl: WindowsPrivateAcl;
   transferId: string;
   leaseId: string;
+  leasePath: string;
+  leaseIdentity: TrustedPath;
+  expectedVolume: string;
 }): Promise<boolean> {
   try {
-    return await input.fileSystem.assertPartialLease({
-      transferId: input.transferId,
-      leaseId: input.leaseId,
-    });
+    const trusted = await assertTrustedPath(input.acl, input.leasePath, input.expectedVolume);
+    return (
+      trusted !== null &&
+      sameTrustedPath(trusted, input.leaseIdentity) &&
+      (await input.fileSystem.assertPartialLease({
+        transferId: input.transferId,
+        leaseId: input.leaseId,
+      }))
+    );
   } catch {
     return false;
   }
@@ -1210,6 +1224,8 @@ async function receiveWithPartialLease(input: {
   config: RelayReceiverRuntimeConfig;
   transferId: string;
   leaseId: string;
+  leasePath: string;
+  leaseIdentity: TrustedPath;
   store: RelayObjectStore;
   fileSystem: ReceiverFileSystem;
   acl: WindowsPrivateAcl;
@@ -1247,7 +1263,18 @@ async function receiveWithPartialLease(input: {
     if (!rootAcl || !sameTrustedPath(initialRootAcl, rootAcl) || !partialRootAcl) {
       return blocked();
     }
-    if (!(await assertPartialLease(input))) return blocked();
+    const expectedLeasePath = partialLeasePath(partialRoot, input.transferId);
+    if (
+      !expectedLeasePath ||
+      input.leasePath !== expectedLeasePath ||
+      input.leaseIdentity.volumeId !== rootAcl.volumeId ||
+      !(await lockAndReassertFileAclBatches(input.acl, rootAcl.volumeId, [
+        { path: input.leasePath, identity: input.leaseIdentity },
+      ])) ||
+      !(await assertPartialLease({ ...input, expectedVolume: rootAcl.volumeId }))
+    ) {
+      return blocked();
+    }
     const partialPath = path.win32.join(partialRoot, input.transferId);
     const finalPath = path.win32.join(privateRoot.root, input.transferId);
     const initialFinal = await input.acl.assertTrustedPath(finalPath);
@@ -1291,7 +1318,7 @@ async function receiveWithPartialLease(input: {
           await input.fileSystem.listRelativePaths(finalPath),
           [...input.manifest.members.map((member) => member.path), RECEIPT_FILENAME],
         )) ||
-        !(await assertPartialLease(input)) ||
+        !(await assertPartialLease({ ...input, expectedVolume: rootAcl.volumeId })) ||
         !(await acknowledge({
           config: input.config,
           transferId: input.transferId,
@@ -1325,7 +1352,8 @@ async function receiveWithPartialLease(input: {
       manifest: input.manifest,
     });
     if (!inspectedPartial) return blocked();
-    if (!(await assertPartialLease(input))) return blocked();
+    if (!(await assertPartialLease({ ...input, expectedVolume: rootAcl.volumeId })))
+      return blocked();
 
     const localMembers = new Map(inspectedPartial.members);
     for (const expected of input.manifest.members) {
@@ -1405,7 +1433,7 @@ async function receiveWithPartialLease(input: {
         input.manifest.members.map((member) => member.path),
         rootAcl.volumeId,
       )) ||
-      !(await assertPartialLease(input))
+      !(await assertPartialLease({ ...input, expectedVolume: rootAcl.volumeId }))
     ) {
       return blocked();
     }
@@ -1457,14 +1485,14 @@ async function receiveWithPartialLease(input: {
       }
     }
     if (
-      !(await assertPartialLease(input)) ||
+      !(await assertPartialLease({ ...input, expectedVolume: rootAcl.volumeId })) ||
       !(await exactLocalInventory(
         input.fileSystem,
         acquiredPartial.path,
         await input.fileSystem.listRelativePaths(acquiredPartial.path),
         [...input.manifest.members.map((member) => member.path), RECEIPT_FILENAME],
       )) ||
-      !(await assertPartialLease(input)) ||
+      !(await assertPartialLease({ ...input, expectedVolume: rootAcl.volumeId })) ||
       !(await input.acl.promoteNoReplace(acquiredPartial.path, finalPath))
     ) {
       return blocked();
@@ -1487,7 +1515,7 @@ async function receiveWithPartialLease(input: {
         await input.fileSystem.listRelativePaths(finalPath),
         [...input.manifest.members.map((member) => member.path), RECEIPT_FILENAME],
       )) ||
-      !(await assertPartialLease(input)) ||
+      !(await assertPartialLease({ ...input, expectedVolume: rootAcl.volumeId })) ||
       !(await acknowledge({
         config: input.config,
         transferId: input.transferId,
@@ -1565,11 +1593,20 @@ export async function receiveCenturionThreadCorpusRelay(input: {
       }
     }
     const lease = await input.fileSystem.acquirePartialLease(input.transferId);
-    if (!lease || !isOpaqueIdentifier(lease.leaseId)) return blocked();
+    if (
+      !lease ||
+      !isOpaqueIdentifier(lease.leaseId) ||
+      !isOpaqueIdentifier(lease.stableIdentity) ||
+      !isOpaqueIdentifier(lease.volumeId)
+    ) {
+      return blocked();
+    }
     const result = await receiveWithPartialLease({
       ...input,
       config,
       leaseId: lease.leaseId,
+      leasePath: lease.path,
+      leaseIdentity: { stableIdentity: lease.stableIdentity, volumeId: lease.volumeId },
       manifest,
       remoteInventory,
     });
@@ -1925,7 +1962,12 @@ class WindowsReceiverFileSystem implements ReceiverFileSystem {
     }
   }
 
-  async acquirePartialLease(transferId: string): Promise<{ leaseId: string } | null> {
+  async acquirePartialLease(transferId: string): Promise<{
+    leaseId: string;
+    path: string;
+    stableIdentity: string;
+    volumeId: string;
+  } | null> {
     let descriptor: number | undefined;
     try {
       if (!isUuidV4(transferId)) return null;
@@ -1946,7 +1988,8 @@ class WindowsReceiverFileSystem implements ReceiverFileSystem {
       closeSync(descriptor);
       descriptor = undefined;
       assertLocalDirectory(partialRoot);
-      return { leaseId };
+      const identity = assertLocalFile(leasePath);
+      return { leaseId, path: leasePath, ...identity };
     } catch {
       return null;
     } finally {

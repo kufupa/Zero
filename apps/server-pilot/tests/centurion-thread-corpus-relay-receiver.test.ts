@@ -43,6 +43,7 @@ const CHECKOUT_ROOT = 'C:\\synthetic\\zero';
 const PRIVATE_ROOT = `${CHECKOUT_ROOT}\\.private\\centurion-thread-corpus`;
 const PARTIAL_ROOT = `${PRIVATE_ROOT}\\.partial`;
 const PARTIAL_PATH = `${PARTIAL_ROOT}\\${TRANSFER_ID}`;
+const PARTIAL_LEASE_PATH = `${PARTIAL_ROOT}\\${TRANSFER_ID}.lease`;
 const FINAL_PATH = `${PRIVATE_ROOT}\\${TRANSFER_ID}`;
 const SAFE_BODY_MARKER = 'SAFE_RECEIVER_BODY_MARKER';
 const SAFE_PATH_MARKER = 'C:\\synthetic\\safe-private-path';
@@ -304,7 +305,6 @@ class FakeReceiverFileSystem implements ReceiverFileSystem {
     stableIdentity: 'safe-private-root-identity',
     volumeId: 'safe-volume-a',
   };
-  acquirePartialDirectoryResult = true;
   currentPartial: string | null = null;
   failMemberWriteAt: number | null = null;
   memberWriteAttempts = 0;
@@ -327,13 +327,23 @@ class FakeReceiverFileSystem implements ReceiverFileSystem {
     return { ...this.checkoutResult };
   }
 
-  async acquirePartialLease(transferId: string): Promise<{ leaseId: string } | null> {
+  async acquirePartialLease(transferId: string): Promise<{
+    leaseId: string;
+    path: string;
+    stableIdentity: string;
+    volumeId: string;
+  } | null> {
     this.calls.push(`acquire-partial-lease:${transferId}`);
     this.timeline.push('acquire-partial-lease');
     this.state.partialLeaseAcquireCalls += 1;
     if (transferId !== TRANSFER_ID || this.state.partialLease !== null) return null;
     this.state.partialLease = 'safe-partial-lease';
-    return { leaseId: this.state.partialLease };
+    return {
+      leaseId: this.state.partialLease,
+      path: PARTIAL_LEASE_PATH,
+      stableIdentity: 'safe-partial-lease-identity',
+      volumeId: 'safe-volume-a',
+    };
   }
 
   async assertPartialLease(input: { transferId: string; leaseId: string }): Promise<boolean> {
@@ -370,7 +380,7 @@ class FakeReceiverFileSystem implements ReceiverFileSystem {
   } | null> {
     this.calls.push(`acquire-partial-directory:${transferId}`);
     this.timeline.push('acquire-partial-directory');
-    if (!this.acquirePartialDirectoryResult || transferId !== TRANSFER_ID) return null;
+    if (transferId !== TRANSFER_ID) return null;
     const created = !this.roots.has(PARTIAL_PATH);
     if (created) this.roots.set(PARTIAL_PATH, new Map());
     this.currentPartial = PARTIAL_PATH;
@@ -496,6 +506,13 @@ class FakeWindowsPrivateAcl implements WindowsPrivateAcl {
       PARTIAL_PATH,
       {
         stableIdentity: 'safe-partial-identity',
+        volumeId: 'safe-volume-a',
+      },
+    ],
+    [
+      PARTIAL_LEASE_PATH,
+      {
+        stableIdentity: 'safe-partial-lease-identity',
         volumeId: 'safe-volume-a',
       },
     ],
@@ -1485,6 +1502,23 @@ describe('receive Centurion relay command', () => {
 
     expect(await receive(harness)).toEqual({ outcome: 'blocked' });
     expect(harness.acl.calls).not.toContain(`promote:${PARTIAL_PATH}:${FINAL_PATH}`);
+    expect(harness.store.putInputs).toHaveLength(0);
+  });
+
+  it('blocks when partial lease ACL lock cannot be reasserted before downloads', async () => {
+    const harness = createHarness();
+    harness.acl.deniedFilePaths.add(PARTIAL_LEASE_PATH);
+
+    expect(await receive(harness)).toEqual({ outcome: 'blocked' });
+    expect(
+      harness.store.calls.filter((call) =>
+        harness.members.some(
+          (member) =>
+            call ===
+            `get:${relayObjectKey(relayConfig.literalRelayRoot, TRANSFER_ID, member.path)}`,
+        ),
+      ),
+    ).toEqual([]);
     expect(harness.store.putInputs).toHaveLength(0);
   });
 
