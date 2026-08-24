@@ -11,6 +11,7 @@ import {
 import {
   buildPrivateThreadCorpusSnapshot,
   formatLogicalMessages,
+  validatePrivateThreadCorpusSnapshot,
   type PrivateThreadCorpusSnapshot,
   type ThreadCorpusSourceRow,
 } from '../scripts/export-thread-corpus.js';
@@ -86,7 +87,8 @@ function syntheticRow(input: {
               bcc: [],
             },
             canonicalHeaders: {
-              'x-synthetic-analysis': [HEADER_MARKER],
+              'x-synthetic-analysis-a': [HEADER_MARKER],
+              'x-synthetic-analysis-b': [`${HEADER_MARKER}:secondary`],
             },
             sentAt: null,
             rawMime: {
@@ -170,6 +172,49 @@ function syntheticSnapshot(): PrivateThreadCorpusSnapshot {
       ],
     },
   });
+}
+
+function headerPermutedSnapshot(
+  snapshot: PrivateThreadCorpusSnapshot,
+): PrivateThreadCorpusSnapshot {
+  const corpusLines = snapshot.corpusJsonl.slice(0, -1).split('\n');
+  const metadata = JSON.parse(corpusLines[0]!) as Record<string, unknown>;
+  const records = corpusLines.slice(1).map((line) => JSON.parse(line)) as Array<{
+    recordType: string;
+    messages?: Array<{
+      sourceRows: Array<{
+        privateMessage?: {
+          canonicalHeaders: Record<string, string[]>;
+        };
+      }>;
+    }>;
+  }>;
+  const firstPrivateMessage = records
+    .find((record) => record.recordType === 'thread')
+    ?.messages?.flatMap((message) => message.sourceRows)
+    .find((sourceRow) => sourceRow.privateMessage)?.privateMessage;
+  if (!firstPrivateMessage) throw new Error('Expected synthetic private message');
+  firstPrivateMessage.canonicalHeaders = Object.fromEntries(
+    Object.entries(firstPrivateMessage.canonicalHeaders).reverse(),
+  );
+
+  const orderedRecordJsonl = `${records.map((record) => JSON.stringify(record)).join('\n')}\n`;
+  const nextMetadata = {
+    ...metadata,
+    orderedRecordSha256: sha256(orderedRecordJsonl),
+  };
+  const corpusJsonl = `${JSON.stringify(nextMetadata)}\n${orderedRecordJsonl}`;
+  const manifest = {
+    ...snapshot.manifest,
+    orderedRecordSha256: sha256(orderedRecordJsonl),
+    localObjectSha256: sha256(corpusJsonl),
+  };
+  return {
+    ...snapshot,
+    corpusJsonl,
+    manifestJson: `${JSON.stringify(manifest, null, 2)}\n`,
+    manifest,
+  };
 }
 
 function requirePrepared(
@@ -306,21 +351,66 @@ function collectNodes(source: ts.SourceFile, predicate: (node: ts.Node) => boole
   return nodes;
 }
 
-function isForbiddenCoreModule(moduleName: string): boolean {
-  const runtimeModule = moduleName.replace(/^node:/, '').split('/')[0];
-  return (
-    runtimeModule === 'fs' ||
-    runtimeModule === 'child_process' ||
-    runtimeModule === 'process' ||
-    runtimeModule === 'net' ||
-    runtimeModule === 'http' ||
-    runtimeModule === 'https' ||
-    runtimeModule === 'tls' ||
-    runtimeModule === 'dgram' ||
-    runtimeModule === 'worker_threads' ||
-    runtimeModule === 'cluster' ||
-    /aws|bedrock|mastra|drizzle|postgres|database|react|hono|playwright|puppeteer/i.test(moduleName)
+const ALLOWED_CORE_IMPORTS = new Set([
+  '../../scripts/export-thread-corpus.js',
+  'node:crypto',
+  'zod',
+]);
+
+const FORBIDDEN_CORE_GLOBALS = new Set([
+  'Function',
+  'AWS',
+  'WebSocket',
+  'XMLHttpRequest',
+  'aws',
+  'Bedrock',
+  'bedrock',
+  'console',
+  'env',
+  'eval',
+  'fetch',
+  'http',
+  'https',
+  'Mastra',
+  'mastra',
+  'net',
+  'pg',
+  'process',
+  'require',
+  'tls',
+  'undici',
+]);
+
+function sourceBoundaryViolations(source: ts.SourceFile): string[] {
+  const violations = collectNodes(source, ts.isImportDeclaration).flatMap((node) =>
+    ts.isStringLiteral(node.moduleSpecifier) && !ALLOWED_CORE_IMPORTS.has(node.moduleSpecifier.text)
+      ? [`import:${node.moduleSpecifier.text}`]
+      : [],
   );
+  for (const identifier of collectNodes(source, ts.isIdentifier)) {
+    if (FORBIDDEN_CORE_GLOBALS.has(identifier.text)) {
+      violations.push(`global:${identifier.text}`);
+    }
+  }
+  if (
+    collectNodes(
+      source,
+      (node): node is ts.CallExpression =>
+        ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword,
+    ).length > 0
+  ) {
+    violations.push('dynamic-import');
+  }
+  if (
+    collectNodes(
+      source,
+      (node): node is ts.PropertyAccessExpression =>
+        ts.isPropertyAccessExpression(node) && node.name.text === 'constructor',
+    ).length > 0
+  ) {
+    violations.push('constructor');
+  }
+  return [...new Set(violations)].sort();
 }
 
 describe('Centurion private thread corpus analysis', () => {
@@ -441,6 +531,32 @@ describe('Centurion private thread corpus analysis', () => {
       unavailable,
       publicPackets: prepared.packets.map(publicPacket),
     });
+  });
+
+  it('canonicalizes complete packets and prepared manifests across valid header key permutations', () => {
+    const snapshot = syntheticSnapshot();
+    const permuted = headerPermutedSnapshot(snapshot);
+    expect(permuted.corpusJsonl).not.toBe(snapshot.corpusJsonl);
+    expect(() => validatePrivateThreadCorpusSnapshot(permuted)).not.toThrow();
+
+    const prepared = requirePrepared(snapshot);
+    const preparedPermuted = requirePrepared(permuted);
+    expect(preparedPermuted.manifestSha256).toBe(prepared.manifestSha256);
+    for (const packet of prepared.packets) {
+      if (packet.packetState !== 'complete') continue;
+      const matching = preparedPermuted.packets.find(
+        (candidate) => candidate.analysisItemId === packet.analysisItemId,
+      );
+      expect(matching).toMatchObject({
+        packetState: 'complete',
+        packetSha256: packet.packetSha256,
+        packetBytes: packet.packetBytes,
+      });
+      if (!matching || matching.packetState !== 'complete') {
+        throw new Error('Expected matching complete canonical packet');
+      }
+      expect(matching.privatePacketBytes).toEqual(packet.privatePacketBytes);
+    }
   });
 
   it('truncates packets against per-packet and aggregate safe-integer budgets', () => {
@@ -642,45 +758,68 @@ describe('Centurion private thread corpus analysis', () => {
     const imports = collectNodes(source, ts.isImportDeclaration).flatMap((node) =>
       ts.isStringLiteral(node.moduleSpecifier) ? [node.moduleSpecifier.text] : [],
     );
-    expect(
-      ['node:fs', 'node:fs/promises', 'node:child_process', '@aws-sdk/client-s3'].every(
-        isForbiddenCoreModule,
-      ),
-    ).toBe(true);
-    expect(isForbiddenCoreModule('node:crypto')).toBe(false);
-    expect(imports.filter(isForbiddenCoreModule)).toEqual([]);
-    expect(
-      collectNodes(
-        source,
-        (node): node is ts.CallExpression =>
-          ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword,
-      ),
-    ).toEqual([]);
-    expect(
-      collectNodes(
-        source,
-        (node): node is ts.Identifier =>
-          ts.isIdentifier(node) &&
-          ['process', 'console', 'eval', 'Function', 'require'].includes(node.text),
-      ),
-    ).toEqual([]);
-    expect(
-      collectNodes(
-        source,
-        (node): node is ts.NewExpression =>
-          ts.isNewExpression(node) &&
-          ts.isPropertyAccessExpression(node.expression) &&
-          node.expression.name.text === 'constructor',
-      ),
-    ).toEqual([]);
-    expect(
-      collectNodes(
-        source,
-        (node): node is ts.CallExpression =>
-          ts.isCallExpression(node) &&
-          ts.isPropertyAccessExpression(node.expression) &&
-          node.expression.name.text === 'constructor',
-      ),
-    ).toEqual([]);
+    expect(imports.every((moduleName) => ALLOWED_CORE_IMPORTS.has(moduleName))).toBe(true);
+
+    const forbiddenFixture = ts.createSourceFile(
+      'synthetic-forbidden-analysis.ts',
+      [
+        "import { request } from 'node:https';",
+        "import { Client } from 'pg';",
+        "import { fetch as undiciFetch } from 'undici';",
+        'void process.env;',
+        'void fetch;',
+        'void WebSocket;',
+        'void XMLHttpRequest;',
+        'void eval;',
+        'void Function;',
+        'void env;',
+        'void http;',
+        'void https;',
+        'void net;',
+        'void tls;',
+        'void aws;',
+        'void AWS;',
+        'void Bedrock;',
+        'void bedrock;',
+        'void Mastra;',
+        'void mastra;',
+        'void pg;',
+        'void undici;',
+        'void import("synthetic-module");',
+        'void ({}).constructor;',
+      ].join('\n'),
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS,
+    );
+    expect(sourceBoundaryViolations(forbiddenFixture)).toEqual(
+      expect.arrayContaining([
+        'constructor',
+        'dynamic-import',
+        'global:Function',
+        'global:WebSocket',
+        'global:XMLHttpRequest',
+        'global:AWS',
+        'global:aws',
+        'global:Bedrock',
+        'global:bedrock',
+        'global:env',
+        'global:eval',
+        'global:fetch',
+        'global:http',
+        'global:https',
+        'global:Mastra',
+        'global:mastra',
+        'global:net',
+        'global:pg',
+        'global:process',
+        'global:tls',
+        'global:undici',
+        'import:node:https',
+        'import:pg',
+        'import:undici',
+      ]),
+    );
+    expect(sourceBoundaryViolations(source)).toEqual([]);
   });
 });

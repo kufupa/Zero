@@ -201,6 +201,74 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
+function canonicalPacketJson(value: unknown): string {
+  const ancestors = new Set<object>();
+  const serialize = (candidate: unknown): string => {
+    if (candidate === null) return 'null';
+    if (typeof candidate === 'string' || typeof candidate === 'boolean') {
+      return JSON.stringify(candidate);
+    }
+    if (typeof candidate === 'number') {
+      if (!Number.isSafeInteger(candidate) || Object.is(candidate, -0)) {
+        return invalidPrivateAnalysisInput();
+      }
+      return JSON.stringify(candidate);
+    }
+    if (candidate instanceof Uint8Array) {
+      return `{"$centurionUint8Array":${serialize([...candidate])}}`;
+    }
+    if (Array.isArray(candidate)) {
+      if (
+        ancestors.has(candidate) ||
+        Object.getOwnPropertySymbols(candidate).length > 0 ||
+        Object.keys(candidate).length !== candidate.length ||
+        [...candidate.keys()].some((index) => !Object.hasOwn(candidate, index))
+      ) {
+        return invalidPrivateAnalysisInput();
+      }
+      ancestors.add(candidate);
+      try {
+        return `[${candidate.map(serialize).join(',')}]`;
+      } finally {
+        ancestors.delete(candidate);
+      }
+    }
+    if (
+      typeof candidate !== 'object' ||
+      candidate === undefined ||
+      ancestors.has(candidate) ||
+      (Object.getPrototypeOf(candidate) !== Object.prototype &&
+        Object.getPrototypeOf(candidate) !== null) ||
+      Object.getOwnPropertySymbols(candidate).length > 0 ||
+      Object.getOwnPropertyNames(candidate).length !== Object.keys(candidate).length
+    ) {
+      return invalidPrivateAnalysisInput();
+    }
+
+    ancestors.add(candidate);
+    try {
+      return `{${Object.keys(candidate)
+        .sort(compareText)
+        .map((key) => {
+          const descriptor = Object.getOwnPropertyDescriptor(candidate, key);
+          if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, 'value')) {
+            return invalidPrivateAnalysisInput();
+          }
+          return `${JSON.stringify(key)}:${serialize(descriptor.value)}`;
+        })
+        .join(',')}}`;
+    } finally {
+      ancestors.delete(candidate);
+    }
+  };
+
+  return serialize(value);
+}
+
+function canonicalPacketBytes(value: unknown): Uint8Array {
+  return textEncoder.encode(canonicalPacketJson(value));
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -275,6 +343,20 @@ function cloneArtifactFile(
   };
 }
 
+function canonicalSnapshotDigest(
+  snapshot: PrivateThreadCorpusSnapshot,
+  records: readonly SnapshotRecord[],
+): string {
+  return sha256Bytes(
+    canonicalPacketBytes({
+      schemaVersion: snapshot.manifest.schemaVersion,
+      context: snapshot.context,
+      records,
+      artifactFiles: snapshot.artifactFiles,
+    }),
+  );
+}
+
 function reconstructV2Snapshot(
   suppliedSnapshot: PrivateThreadCorpusSnapshot,
 ): ReconstructedV2Snapshot | null {
@@ -294,7 +376,7 @@ function reconstructV2Snapshot(
     return {
       snapshot,
       records,
-      snapshotDigest: sha256Text(snapshot.manifestJson),
+      snapshotDigest: canonicalSnapshotDigest(snapshot, records),
     };
   } catch {
     return null;
@@ -464,21 +546,19 @@ function privatePacketBytes(
   reconstructed: ReconstructedV2Snapshot,
   descriptor: AnalysisDescriptor,
 ): Uint8Array {
-  return textEncoder.encode(
-    canonicalJson({
-      schemaVersion: CENTURION_THREAD_CORPUS_ANALYSIS_VERSION,
-      snapshotId: reconstructed.snapshot.context.snapshotId,
-      unit: {
-        unitType: descriptor.item.unitType,
-        sourceRowIds: descriptor.sourceRowIds,
-      },
-      record: descriptor.record,
-      artifactFiles: selectedArtifactFiles(
-        descriptor.selectedSourceRows,
-        reconstructed.snapshot.artifactFiles,
-      ),
-    }),
-  );
+  return canonicalPacketBytes({
+    schemaVersion: CENTURION_THREAD_CORPUS_ANALYSIS_VERSION,
+    snapshotId: reconstructed.snapshot.context.snapshotId,
+    unit: {
+      unitType: descriptor.item.unitType,
+      sourceRowIds: descriptor.sourceRowIds,
+    },
+    record: descriptor.record,
+    artifactFiles: selectedArtifactFiles(
+      descriptor.selectedSourceRows,
+      reconstructed.snapshot.artifactFiles,
+    ),
+  });
 }
 
 function unavailablePacket(item: AnalysisItemV1): PrivateAnalysisPacketV1 {
