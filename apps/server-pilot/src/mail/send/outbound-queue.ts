@@ -47,6 +47,16 @@ export type SmtpDeliveryOutcome = {
   rejected: string[];
 };
 
+type QueueRow = typeof outboundSendQueue.$inferSelect;
+type ClaimedQueueRow = QueueRow & { claimedAt: Date };
+
+class OutboundClaimLostError extends Error {
+  constructor() {
+    super('outbound queue claim lost');
+    this.name = 'OutboundClaimLostError';
+  }
+}
+
 export function getUndoSendSeconds(): number {
   const n = Number(process.env.UNDO_SEND_SECONDS ?? '20');
   return Number.isFinite(n) && n >= 0 ? n : 20;
@@ -256,10 +266,18 @@ export async function cancelOutbound(
   return Boolean(updated);
 }
 
+function claimFence(row: ClaimedQueueRow) {
+  return and(
+    eq(outboundSendQueue.id, row.id),
+    eq(outboundSendQueue.status, 'sending'),
+    eq(outboundSendQueue.attempts, row.attempts),
+  );
+}
+
 async function claimDue(
   db: DB,
   opts: { limit: number; messageId?: string; transportId?: string },
-): Promise<(typeof outboundSendQueue.$inferSelect)[]> {
+): Promise<ClaimedQueueRow[]> {
   const now = new Date();
   const staleBefore = new Date(now.getTime() - RECLAIM_SENDING_AFTER_MS);
 
@@ -288,7 +306,7 @@ async function claimDue(
       .limit(opts.limit)
       .for('update', { skipLocked: true });
 
-    const claimed: (typeof outboundSendQueue.$inferSelect)[] = [];
+    const claimed: ClaimedQueueRow[] = [];
     for (const row of candidates) {
       const [updated] = await tx
         .update(outboundSendQueue)
@@ -311,26 +329,57 @@ async function claimDue(
           ),
         )
         .returning();
-      if (updated) claimed.push(updated);
+      if (updated?.claimedAt) claimed.push(updated as ClaimedQueueRow);
     }
     return claimed;
   });
 }
 
-async function markQueueSent(
-  rowId: string,
+async function renewClaimLease(
+  row: ClaimedQueueRow,
   db: DB,
-  now: Date = new Date(),
-  deliveryWarning: string | null = null,
-): Promise<void> {
-  await db
+): Promise<boolean> {
+  const now = new Date();
+  const [renewed] = await db
     .update(outboundSendQueue)
-    .set({ status: 'sent', lastError: deliveryWarning, updatedAt: now })
-    .where(eq(outboundSendQueue.id, rowId));
+    .set({ claimedAt: now, updatedAt: now })
+    .where(claimFence(row))
+    .returning({ id: outboundSendQueue.id });
+  return Boolean(renewed);
+}
+
+function startClaimLeaseRenewal(row: ClaimedQueueRow, db: DB): {
+  stop: () => Promise<boolean>;
+} {
+  let stopped = false;
+  let lost = false;
+  let pending = Promise.resolve();
+  const renew = async () => {
+    if (stopped || lost) return;
+    try {
+      if (!(await renewClaimLease(row, db))) lost = true;
+    } catch {
+      lost = true;
+    }
+  };
+  const tick = async () => {
+    pending = pending.then(renew);
+    await pending;
+  };
+  const timer = setInterval(tick, Math.max(1, Math.floor(RECLAIM_SENDING_AFTER_MS / 3)));
+
+  return {
+    async stop() {
+      stopped = true;
+      clearInterval(timer);
+      await pending;
+      return !lost;
+    },
+  };
 }
 
 async function persistDeliveryOutcome(
-  row: typeof outboundSendQueue.$inferSelect,
+  row: ClaimedQueueRow,
   outcome: SmtpDeliveryOutcome,
   db: DB,
 ): Promise<void> {
@@ -347,73 +396,92 @@ async function persistDeliveryOutcome(
     })
     .where(
       and(
-        eq(outboundSendQueue.id, row.id),
         eq(outboundSendQueue.messageId, row.messageId),
         eq(outboundSendQueue.transportId, row.transportId),
-        eq(outboundSendQueue.status, 'sending'),
+        claimFence(row),
       ),
     )
     .returning({ id: outboundSendQueue.id });
   if (!updated) {
-    throw new Error('outbound delivery outcome could not be bound to claimed queue row');
+    throw new OutboundClaimLostError();
   }
 }
 
 async function finalizePersistedDelivery(
-  row: typeof outboundSendQueue.$inferSelect,
+  row: ClaimedQueueRow,
   payload: OutboundMailPayload,
   outcome: SmtpDeliveryOutcome,
   db: DB,
 ): Promise<SmtpSendResult> {
-  const [existing] = await db
-    .select({ messageIdHeader: message.messageIdHeader })
-    .from(message)
-    .where(and(eq(message.id, row.messageId), eq(message.transportId, row.transportId)))
-    .limit(1);
-  if (!existing) {
-    throw new Error('outbound message missing for claimed queue row');
-  }
-  if (
-    hasPersistedSmtpDelivery(existing.messageIdHeader) &&
-    existing.messageIdHeader !== outcome.messageId
-  ) {
-    throw new Error('outbound delivery outcome message ID mismatch');
-  }
+  return db.transaction(async (tx) => {
+    const [claimed] = await tx
+      .select({ id: outboundSendQueue.id })
+      .from(outboundSendQueue)
+      .where(claimFence(row))
+      .limit(1)
+      .for('update');
+    if (!claimed) throw new OutboundClaimLostError();
 
-  const now = new Date();
-  if (existing.messageIdHeader === outcome.messageId) {
-    await db
-      .update(message)
-      .set({ sentAt: now, receivedAt: now, updatedAt: now })
-      .where(and(eq(message.id, row.messageId), eq(message.transportId, row.transportId)));
-  } else {
-    const [updated] = await db
-      .update(message)
-      .set({
-        messageIdHeader: outcome.messageId,
-        sentAt: now,
-        receivedAt: now,
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(message.id, row.messageId),
-          eq(message.transportId, row.transportId),
-          or(isNull(message.messageIdHeader), eq(message.messageIdHeader, '')),
-        ),
-      )
-      .returning({ id: message.id });
-    if (!updated) {
+    const [existing] = await tx
+      .select({ messageIdHeader: message.messageIdHeader })
+      .from(message)
+      .where(and(eq(message.id, row.messageId), eq(message.transportId, row.transportId)))
+      .limit(1)
+      .for('update');
+    if (!existing) {
+      throw new Error('outbound message missing for claimed queue row');
+    }
+    if (
+      hasPersistedSmtpDelivery(existing.messageIdHeader) &&
+      existing.messageIdHeader !== outcome.messageId
+    ) {
       throw new Error('outbound delivery outcome message ID mismatch');
     }
-  }
 
-  await markQueueSent(row.id, db, now, partialDeliveryWarning(payload, outcome));
-  return cloneDeliveryOutcome(outcome);
+    const now = new Date();
+    if (existing.messageIdHeader === outcome.messageId) {
+      await tx
+        .update(message)
+        .set({ sentAt: now, receivedAt: now, updatedAt: now })
+        .where(and(eq(message.id, row.messageId), eq(message.transportId, row.transportId)));
+    } else {
+      const [updated] = await tx
+        .update(message)
+        .set({
+          messageIdHeader: outcome.messageId,
+          sentAt: now,
+          receivedAt: now,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(message.id, row.messageId),
+            eq(message.transportId, row.transportId),
+            or(isNull(message.messageIdHeader), eq(message.messageIdHeader, '')),
+          ),
+        )
+        .returning({ id: message.id });
+      if (!updated) {
+        throw new Error('outbound delivery outcome message ID mismatch');
+      }
+    }
+
+    const [marked] = await tx
+      .update(outboundSendQueue)
+      .set({
+        status: 'sent',
+        lastError: partialDeliveryWarning(payload, outcome),
+        updatedAt: now,
+      })
+      .where(claimFence(row))
+      .returning({ id: outboundSendQueue.id });
+    if (!marked) throw new OutboundClaimLostError();
+    return cloneDeliveryOutcome(outcome);
+  });
 }
 
 async function deliverClaimed(
-  row: typeof outboundSendQueue.$inferSelect,
+  row: ClaimedQueueRow,
   db: DB,
 ): Promise<SmtpSendResult> {
   const persistedOutcome = parsePersistedDeliveryOutcome(row.smtpPayload);
@@ -427,6 +495,7 @@ async function deliverClaimed(
     throw new Error('outbound message missing for claimed queue row');
   }
 
+  if (!(await renewClaimLease(row, db))) throw new OutboundClaimLostError();
   if (persistedOutcome) {
     return finalizePersistedDelivery(row, payload, persistedOutcome, db);
   }
@@ -434,7 +503,22 @@ async function deliverClaimed(
     throw new Error('outbound message has SMTP ID without persisted delivery outcome');
   }
 
-  const smtpResult = validateSmtpOutcome(await getSmtpTransport().send(payload));
+  const leaseRenewal = startClaimLeaseRenewal(row, db);
+  let rawSmtpResult: SmtpSendResult | undefined;
+  let smtpFailed = false;
+  let smtpError: unknown;
+  try {
+    rawSmtpResult = await getSmtpTransport().send(payload);
+  } catch (err) {
+    smtpFailed = true;
+    smtpError = err;
+  }
+  const leaseOwned = await leaseRenewal.stop();
+  if (!leaseOwned) throw new OutboundClaimLostError();
+  if (smtpFailed) throw smtpError;
+  if (!(await renewClaimLease(row, db))) throw new OutboundClaimLostError();
+
+  const smtpResult = validateSmtpOutcome(rawSmtpResult!);
   if (smtpResult.accepted.length === 0) {
     throw new Error('SMTP accepted no recipients');
   }
@@ -456,17 +540,19 @@ async function deliverClaimed(
 }
 
 async function markFlushError(
-  rowId: string,
+  row: ClaimedQueueRow,
   err: unknown,
   db: DB,
-): Promise<void> {
+): Promise<boolean> {
   const now = new Date();
   const lastError = err instanceof Error ? err.message : String(err);
   // Leave status=sending so reclaim can retry after RECLAIM_SENDING_AFTER_MS.
-  await db
+  const [updated] = await db
     .update(outboundSendQueue)
     .set({ lastError, updatedAt: now })
-    .where(eq(outboundSendQueue.id, rowId));
+    .where(claimFence(row))
+    .returning({ id: outboundSendQueue.id });
+  return Boolean(updated);
 }
 
 export async function flushDue(opts?: {
@@ -475,14 +561,16 @@ export async function flushDue(opts?: {
 }): Promise<{ flushed: number }> {
   const db = opts?.db ?? getDb();
   const limit = opts?.limit ?? 20;
-  const claimed = await claimDue(db, { limit });
   let flushed = 0;
-  for (const row of claimed) {
+  for (let index = 0; index < limit; index += 1) {
+    const [row] = await claimDue(db, { limit: 1 });
+    if (!row) break;
     try {
       await deliverClaimed(row, db);
       flushed += 1;
     } catch (err) {
-      await markFlushError(row.id, err, db);
+      if (err instanceof OutboundClaimLostError) continue;
+      await markFlushError(row, err, db);
       console.error(
         'outbound-queue: flushDue failed',
         row.messageId,
@@ -548,7 +636,7 @@ export async function flushOne(
   try {
     return await deliverClaimed(claimed[0]!, db);
   } catch (err) {
-    await markFlushError(claimed[0]!.id, err, db);
+    await markFlushError(claimed[0]!, err, db);
     throw err;
   }
 }

@@ -65,6 +65,29 @@ assertNotPilotProdDatabase(resolvedUrl);
 
 export const TEST_DB_AVAILABLE = !!resolvedUrl;
 
+/** Independent disposable DB session for real multi-session race tests. */
+export function openTestDbSession(): {
+  db: DB;
+  close: () => Promise<void>;
+} {
+  if (!resolvedUrl) {
+    throw new Error(
+      'disposable TEST_DATABASE_URL + CONFIRM_DISPOSABLE_TEST_DB=1 required for test DB session',
+    );
+  }
+  assertNotPilotProdDatabase(resolvedUrl);
+  const conn = postgres(resolvedUrl, {
+    max: 1,
+    idle_timeout: 20,
+    connect_timeout: 10,
+    ssl: testDbSslOptions(resolvedUrl),
+  });
+  return {
+    db: drizzle(conn, { schema }),
+    close: () => conn.end(),
+  };
+}
+
 /**
  * HMS release gate: when HMS_DB_TEST_REQUIRED=1, missing disposable DB must throw
  * (fail closed). General suites retain skipIf(!TEST_DB_AVAILABLE) behavior.
