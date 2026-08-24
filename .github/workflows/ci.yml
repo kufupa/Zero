@@ -92,13 +92,15 @@ jobs:
           DISPOSABLE_POSTGRES_PORT: ${{ job.services.postgres.ports[5432] }}
         run: |
           set -euo pipefail
-          unset DATABASE_URL TEST_DATABASE_URL VITEST_ALLOW_PILOT_RDS HMS_DB_TEST_REQUIRED
+          unset DATABASE_URL TEST_DATABASE_URL VITEST_ALLOW_PILOT_RDS HMS_DB_TEST_REQUIRED ROCKETSEED_TRANSACTIONAL_TEST_REQUIRED
           printf -v TEST_DATABASE_URL '%s%s%s%s%s%s%s%s%s%s%s' \
             'postgres' 'ql://' "$DISPOSABLE_POSTGRES_USER" '@' \
             "$DISPOSABLE_POSTGRES_HOST" ':' "$DISPOSABLE_POSTGRES_PORT" '/' \
             "$DISPOSABLE_POSTGRES_DB" '?sslmode=' "$DISPOSABLE_POSTGRES_SSLMODE"
           export TEST_DATABASE_URL
-          MAIL_TRANSPORT_MODE=fixture CONFIRM_DISPOSABLE_TEST_DB=1 pnpm --dir apps/server-pilot exec vitest run \
+          MAIL_TRANSPORT_MODE=fixture CONFIRM_DISPOSABLE_TEST_DB=1 ROCKETSEED_TRANSACTIONAL_TEST_REQUIRED=1 pnpm --dir apps/server-pilot exec vitest run --maxWorkers=1 \
             tests/rocketseed-returned-copy-reconciliation.test.ts \
             tests/outbound-delivery-outcome.test.ts \
-            tests/outbound-claim-lease.test.ts
+            tests/outbound-claim-lease.test.ts \
+            tests/attachment-access.test.ts \
+            tests/pop3-worker.test.ts

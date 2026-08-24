@@ -1,4 +1,5 @@
 // @ts-nocheck
+import { isPartialSendResult, isUncertainSendResult } from '@/lib/email-utils';
 import { trpcClient } from '@/providers/query-provider';
 const getCurrentThreadId = () => {
   if (typeof window !== 'undefined') {
@@ -85,12 +86,28 @@ export const toolExecutors = {
     threadId: string;
   }) => {
     try {
-      await trpcClient.mail.send.mutate({
+      const result = await trpcClient.mail.send.mutate({
         to: params.to.map((email: string) => ({ email })),
         subject: params.subject,
         message: params.message,
         threadId: params.threadId,
       });
+      if (isPartialSendResult(result)) {
+        return {
+          success: false,
+          partial: true,
+          message: 'Email partially delivered',
+          accepted: result.accepted,
+          rejected: result.rejected,
+        };
+      }
+      if (isUncertainSendResult(result)) {
+        return {
+          success: false,
+          partial: true,
+          message: 'Email delivery status unknown',
+        };
+      }
       return { success: true, message: 'Email sent successfully' };
     } catch (error: any) {
       return { success: false, error: error.message };

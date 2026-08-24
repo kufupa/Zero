@@ -538,6 +538,103 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
     }
   }, 30000);
 
+  it('preserves durable SMTP identity when UUID copies rewrite or omit Message-ID', async () => {
+    const smtp = new FakeSmtpTransport();
+    __setSmtpTransportForTests(smtp);
+
+    try {
+      const storage = new FakeS3Storage('test-mail-bucket');
+      const results = await withSeededTestDb(async (db) => {
+        const cases = [
+          { name: 'missing', returnedMessageId: null },
+          { name: 'rewritten', returnedMessageId: `rewritten-${randomUUID()}@zero.test` },
+        ] as const;
+        const persisted = [];
+
+        for (const testCase of cases) {
+          const canonical = await seedCanonicalOutbound(db, { queueStatus: 'sending' });
+          const durableMessageId = `durable-${randomUUID()}@zero.test`;
+          await db
+            .update(message)
+            .set({ messageIdHeader: null })
+            .where(eq(message.id, canonical.canonicalMessageId));
+          await db
+            .update(outboundSendQueue)
+            .set({
+              claimedAt: new Date(Date.now() - RECLAIM_SENDING_AFTER_MS - 1),
+              smtpPayload: {
+                from: canonical.transportAddress,
+                to: [canonical.transportAddress],
+                cc: [],
+                bcc: [],
+                subject: 'durable outcome identity',
+                html: '<p>durable outcome identity</p>',
+                text: 'durable outcome identity',
+                deliveryOutcome: {
+                  messageId: durableMessageId,
+                  accepted: [canonical.transportAddress],
+                  rejected: [],
+                },
+              },
+            })
+            .where(eq(outboundSendQueue.id, canonical.queueId));
+
+          const candidateMessageId = randomUUID();
+          const raw = trustedReturnedCopy({
+            outboundId: canonical.canonicalMessageId,
+            messageId: testCase.returnedMessageId,
+            transportAddress: canonical.transportAddress,
+          });
+          const parsed = await parseRawMessage(raw, {
+            messageId: candidateMessageId,
+            storage,
+          });
+          const reconcileResult = await persistInboundMessage(
+            parsed,
+            raw,
+            {
+              ingestMailboxId: 'ingest-nava-legacy',
+              pop3Uidl: `durable-id-${randomUUID()}`,
+              messageId: candidateMessageId,
+            },
+            { db, storage, skipAiEnqueue: true },
+          );
+          const flushed = await flushDue({ db });
+          const [canonicalRow] = await db
+            .select({ messageIdHeader: message.messageIdHeader })
+            .from(message)
+            .where(eq(message.id, canonical.canonicalMessageId))
+            .limit(1);
+          const [queue] = await db
+            .select({ status: outboundSendQueue.status })
+            .from(outboundSendQueue)
+            .where(eq(outboundSendQueue.id, canonical.queueId))
+            .limit(1);
+
+          persisted.push({
+            canonicalRow,
+            durableMessageId,
+            flushed,
+            queue,
+            reconcileResult,
+          });
+        }
+
+        return persisted;
+      });
+
+      for (const result of results) {
+        expect(result.reconcileResult.kind).toBe('reconciled');
+        expect(result.flushed).toEqual({ flushed: 1 });
+        expect(result.canonicalRow?.messageIdHeader).toBe(result.durableMessageId);
+        expect(result.queue?.status).toBe('sent');
+      }
+      expect(smtp.sent).toHaveLength(0);
+    } finally {
+      __setSmtpTransportForTests(null);
+    }
+  }, 30000);
+
   it('uses ordinary ingest for unproven sending rows, non-sent candidates, and legacy fallback', async () => {
     const cases = [
       {

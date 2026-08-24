@@ -1,21 +1,3 @@
-import type { Control } from 'react-hook-form';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import * as React from 'react';
-import { useDraft } from '../hooks/use-drafts';
-import { useTemplates } from '../hooks/use-templates';
-import { useThreadNotes } from '../hooks/use-notes';
-import { useSummary } from '../hooks/use-summary';
-import { RecipientAutosuggest } from '../components/ui/recipient-autosuggest';
-import { resolveCommandPaletteSearchQuery } from '../components/context/command-palette-context';
-import { createLabelInThreadContext } from '../components/context/thread-context';
-import { deleteLabelInSidebarContext } from '../components/context/label-sidebar-context';
-import { handleGeneralSettingsSave } from '../app/(routes)/settings/general/page';
-import { persistTrustedSender } from '../components/mail/mail-content';
-import { runDisconnectConnection, runReconnectConnection } from '../app/(routes)/settings/connections/page';
-import { runDeleteAccount } from '../app/(routes)/settings/danger-zone/page';
-import { runForceSyncAction } from '../components/ui/nav-user';
-import { default as useDeleteFn } from '../hooks/driver/use-delete';
-import { useUndoSend } from '../hooks/use-undo-send';
 import {
   demoAiCompose,
   demoCreateLabel,
@@ -30,8 +12,29 @@ import {
   demoUpsertTemplate,
   demoUpdateNote,
 } from '../lib/demo/local-actions';
-import { useLabels } from '../hooks/use-labels';
+import {
+  runDisconnectConnection,
+  runReconnectConnection,
+} from '../app/(routes)/settings/connections/page';
+import { resolveCommandPaletteSearchQuery } from '../components/context/command-palette-context';
+import { deleteLabelInSidebarContext } from '../components/context/label-sidebar-context';
+import { handleGeneralSettingsSave } from '../app/(routes)/settings/general/page';
+import { createLabelInThreadContext } from '../components/context/thread-context';
 import { getDemoStore, resetDemoStoreForTests } from '../lib/demo/local-store';
+import { RecipientAutosuggest } from '../components/ui/recipient-autosuggest';
+import { runDeleteAccount } from '../app/(routes)/settings/danger-zone/page';
+import { persistTrustedSender } from '../components/mail/mail-content';
+import { default as useDeleteFn } from '../hooks/driver/use-delete';
+import { runForceSyncAction } from '../components/ui/nav-user';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { useTemplates } from '../hooks/use-templates';
+import { useUndoSend } from '../hooks/use-undo-send';
+import { useThreadNotes } from '../hooks/use-notes';
+import { useSummary } from '../hooks/use-summary';
+import { useLabels } from '../hooks/use-labels';
+import { useDraft } from '../hooks/use-drafts';
+import type { Control } from 'react-hook-form';
+import * as React from 'react';
 
 const useQueryMock = vi.fn();
 const useTRPCMock = vi.fn();
@@ -50,12 +53,15 @@ const useStatsMock = vi.fn();
 const useBackgroundQueueMock = vi.fn();
 const deleteThreadMock = vi.fn();
 const unsendEmailMock = vi.fn();
-const toastPromiseMock = vi.fn((promise: Promise<unknown>, options?: { finally?: () => Promise<void> | void }) => {
-  return Promise.resolve(promise).finally(() => options?.finally?.());
-});
+const toastPromiseMock = vi.fn(
+  (promise: Promise<unknown>, options?: { finally?: () => Promise<void> | void }) => {
+    return Promise.resolve(promise).finally(() => options?.finally?.());
+  },
+);
 const toastSuccessMock = vi.fn();
 const toastInfoMock = vi.fn();
 const toastErrorMock = vi.fn();
+const toastWarningMock = vi.fn();
 const demoUnsendEmailMock = vi.fn();
 const refetchThreadsMock = vi.fn();
 const refetchStatsMock = vi.fn();
@@ -129,6 +135,7 @@ vi.mock('sonner', () => ({
     success: (...args: unknown[]) => toastSuccessMock(...args),
     info: (...args: unknown[]) => toastInfoMock(...args),
     error: (...args: unknown[]) => toastErrorMock(...args),
+    warning: (...args: unknown[]) => toastWarningMock(...args),
   },
 }));
 
@@ -156,7 +163,9 @@ vi.mock('@/components/mail/use-mail', () => ({
 }));
 
 vi.mock('@/lib/email-utils', () => ({
+  isPartialSendResult: vi.fn(() => false),
   isSendResult: vi.fn(() => true),
+  isUncertainSendResult: vi.fn(() => false),
 }));
 
 vi.mock('@/hooks/use-threads', () => ({
@@ -168,7 +177,9 @@ vi.mock('@/hooks/use-stats', () => ({
 }));
 
 vi.mock('@/lib/demo/local-actions', async () => {
-  const actual = await vi.importActual<typeof import('../lib/demo/local-actions')>('../lib/demo/local-actions');
+  const actual = await vi.importActual<typeof import('../lib/demo/local-actions')>(
+    '../lib/demo/local-actions',
+  );
   return {
     ...actual,
     demoUnsendEmail: (...args: unknown[]) => demoUnsendEmailMock(...args),
@@ -215,7 +226,8 @@ vi.mock('@/lib/demo/local-suggestions', () => ({
 }));
 
 vi.mock('@/lib/demo/local-store', async () => {
-  const actual = await vi.importActual<typeof import('../lib/demo/local-store')>('../lib/demo/local-store');
+  const actual =
+    await vi.importActual<typeof import('../lib/demo/local-store')>('../lib/demo/local-store');
   return {
     ...actual,
     getDemoDraft: (...args: unknown[]) => getDemoDraftMock(...args),
@@ -252,11 +264,13 @@ function makeTrpc() {
     },
     notes: {
       list: {
-        queryOptions: vi.fn((input: { threadId: string }, options: Record<string, unknown> = {}) => ({
-          queryKey: ['notes', 'list', input.threadId],
-          queryFn: vi.fn(),
-          ...options,
-        })),
+        queryOptions: vi.fn(
+          (input: { threadId: string }, options: Record<string, unknown> = {}) => ({
+            queryKey: ['notes', 'list', input.threadId],
+            queryFn: vi.fn(),
+            ...options,
+          }),
+        ),
       },
     },
     templates: {
@@ -273,48 +287,52 @@ function makeTrpc() {
         mutationOptions: vi.fn(),
       },
       suggestRecipients: {
-        queryOptions: vi.fn((input: { query: string; limit: number }, options: Record<string, unknown> = {}) => ({
-          queryKey: ['mail', 'suggestRecipients', input.query, input.limit],
-          queryFn: vi.fn(),
-          ...options,
-        })),
+        queryOptions: vi.fn(
+          (input: { query: string; limit: number }, options: Record<string, unknown> = {}) => ({
+            queryKey: ['mail', 'suggestRecipients', input.query, input.limit],
+            queryFn: vi.fn(),
+            ...options,
+          }),
+        ),
       },
       unsend: {
         mutationOptions: vi.fn(),
       },
     },
-  ai: {
-    webSearch: {
-      mutationOptions: vi.fn((options: Record<string, unknown> = {}) => ({
-        mutationFn: vi.fn(async (input: { query: string }) => ({
-          text: `Backend web search for ${input.query}`,
-          sources: [{ id: 'source-1', title: 'Backend source', url: 'https://example.com' }],
+    ai: {
+      webSearch: {
+        mutationOptions: vi.fn((options: Record<string, unknown> = {}) => ({
+          mutationFn: vi.fn(async (input: { query: string }) => ({
+            text: `Backend web search for ${input.query}`,
+            sources: [{ id: 'source-1', title: 'Backend source', url: 'https://example.com' }],
+          })),
+          ...options,
         })),
-        ...options,
-      })),
+      },
     },
-  },
-  brain: {
-    generateSummary: {
-      queryOptions: vi.fn((input: { threadId: string }, options: Record<string, unknown> = {}) => ({
-        queryKey: ['brain', 'generateSummary', input.threadId],
-        queryFn: vi.fn(async () => ({
-          data: {
-            short: `Backend summary for thread ${input.threadId}`,
-            long: `Backend long summary for thread ${input.threadId}`,
-          },
+    brain: {
+      generateSummary: {
+        queryOptions: vi.fn(
+          (input: { threadId: string }, options: Record<string, unknown> = {}) => ({
+            queryKey: ['brain', 'generateSummary', input.threadId],
+            queryFn: vi.fn(async () => ({
+              data: {
+                short: `Backend summary for thread ${input.threadId}`,
+                long: `Backend long summary for thread ${input.threadId}`,
+              },
+            })),
+            ...options,
+          }),
+        ),
+      },
+      getState: {
+        queryOptions: vi.fn((options: Record<string, unknown> = {}) => ({
+          queryKey: ['brain', 'getState'],
+          queryFn: vi.fn(),
+          ...options,
         })),
-        ...options,
-      })),
+      },
     },
-    getState: {
-      queryOptions: vi.fn((options: Record<string, unknown> = {}) => ({
-        queryKey: ['brain', 'getState'],
-        queryFn: vi.fn(),
-        ...options,
-      })),
-    },
-  },
   };
 }
 
@@ -354,7 +372,11 @@ beforeEach(() => {
   listDemoNotesMock.mockReturnValue([]);
   listDemoTemplatesMock.mockReturnValue([]);
   useQueryMock.mockImplementation(
-    (queryOptions?: { enabled?: unknown; queryFn?: () => Promise<unknown> | unknown; initialData?: unknown }) => {
+    (queryOptions?: {
+      enabled?: unknown;
+      queryFn?: () => Promise<unknown> | unknown;
+      initialData?: unknown;
+    }) => {
       if (queryOptions?.enabled && queryOptions.queryFn) {
         queryOptions.queryFn();
       }
@@ -386,6 +408,7 @@ beforeEach(() => {
   toastSuccessMock.mockClear();
   toastInfoMock.mockClear();
   toastErrorMock.mockClear();
+  toastWarningMock.mockClear();
   demoUnsendEmailMock.mockClear();
   refetchThreadsMock.mockClear();
   refetchStatsMock.mockClear();
@@ -433,15 +456,18 @@ describe('demo backend guard coverage', () => {
     useDraft('draft-123');
 
     const draftQuery = useQueryMock.mock.calls[0]?.[0] as {
-      queryFn?: () => Promise<{
-        id: string;
-        subject?: string;
-        content?: string;
-        to?: string[];
-        cc?: string[];
-        bcc?: string[];
-        rawMessage?: { internalDate?: string | null };
-      } | undefined>;
+      queryFn?: () => Promise<
+        | {
+            id: string;
+            subject?: string;
+            content?: string;
+            to?: string[];
+            cc?: string[];
+            bcc?: string[];
+            rawMessage?: { internalDate?: string | null };
+          }
+        | undefined
+      >;
     };
     const queryFn = draftQuery.queryFn;
     expect(queryFn).toBeDefined();
@@ -662,7 +688,10 @@ describe('demo backend guard coverage', () => {
     });
 
     expect(useQueryMock).toHaveBeenCalledTimes(1);
-    const suggestionQuery = useQueryMock.mock.calls[0]?.[0] as { queryKey: unknown[]; enabled: boolean };
+    const suggestionQuery = useQueryMock.mock.calls[0]?.[0] as {
+      queryKey: unknown[];
+      enabled: boolean;
+    };
 
     expect(suggestionQuery.queryKey[0]).toBe('demo');
     expect(suggestionQuery.enabled).toBe(false);
@@ -746,10 +775,12 @@ describe('demo backend guard coverage', () => {
     useMutationMock.mockImplementation(() => ({ mutateAsync: unsendEmailMock }));
     demoUnsendEmailMock.mockResolvedValue({ success: true });
     let capturedUndoAction: (() => Promise<void> | void) | undefined;
-    toastSuccessMock.mockImplementation((_message: string, options?: { action?: { onClick: () => Promise<void> | void } }) => {
-      capturedUndoAction = options?.action?.onClick;
-      return undefined;
-    });
+    toastSuccessMock.mockImplementation(
+      (_message: string, options?: { action?: { onClick: () => Promise<void> | void } }) => {
+        capturedUndoAction = options?.action?.onClick;
+        return undefined;
+      },
+    );
 
     const { handleUndoSend } = useUndoSend();
     handleUndoSend(
@@ -769,10 +800,12 @@ describe('demo backend guard coverage', () => {
     useMutationMock.mockImplementation(() => ({ mutateAsync: unsendEmailMock }));
     unsendEmailMock.mockResolvedValue({ success: true });
     let capturedUndoAction: (() => Promise<void> | void) | undefined;
-    toastSuccessMock.mockImplementation((_message: string, options?: { action?: { onClick: () => Promise<void> | void } }) => {
-      capturedUndoAction = options?.action?.onClick;
-      return undefined;
-    });
+    toastSuccessMock.mockImplementation(
+      (_message: string, options?: { action?: { onClick: () => Promise<void> | void } }) => {
+        capturedUndoAction = options?.action?.onClick;
+        return undefined;
+      },
+    );
 
     const { handleUndoSend } = useUndoSend();
     handleUndoSend(
@@ -884,9 +917,13 @@ describe('demo backend guard coverage', () => {
       body: 'Body',
     });
     const sendNow = await demoSendEmail({ scheduleAt: undefined });
-    const sendQueued = await demoSendEmail({ scheduleAt: new Date('2026-01-01T00:00:00Z').toISOString() });
+    const sendQueued = await demoSendEmail({
+      scheduleAt: new Date('2026-01-01T00:00:00Z').toISOString(),
+    });
     const ai = await demoAiCompose({ prompt: 'Draft a concise follow-up message.' });
-    const generated = await demoGenerateEmailSubject({ message: 'Quarterly planning update for Q3' });
+    const generated = await demoGenerateEmailSubject({
+      message: 'Quarterly planning update for Q3',
+    });
 
     expect(draft.id).toBeTruthy();
     expect(sendNow).toEqual({ success: true });
@@ -1072,7 +1109,9 @@ describe('demo backend guard coverage', () => {
     expect(saveUserSettingsMock).not.toHaveBeenCalled();
     expect(demoSetSettingsMock).toHaveBeenCalledWith({ ...currentSettings, ...nextValues });
     expect(queryDataMock).toHaveBeenCalledWith(['demo', 'settings'], expect.any(Function));
-    const update = queryDataMock.mock.calls[0]?.[1] as (updater?: { settings?: typeof currentSettings }) => unknown;
+    const update = queryDataMock.mock.calls[0]?.[1] as (updater?: {
+      settings?: typeof currentSettings;
+    }) => unknown;
     expect(typeof update).toBe('function');
     expect(update({ settings: currentSettings })).toEqual({
       settings: {
@@ -1146,7 +1185,10 @@ describe('demo backend guard coverage', () => {
       },
     };
 
-    const demoSetSettingsMock = vi.fn(async () => ({ ...data.settings, trustedSenders: ['alice@example.com'] }));
+    const demoSetSettingsMock = vi.fn(async () => ({
+      ...data.settings,
+      trustedSenders: ['alice@example.com'],
+    }));
     const saveUserSettingsMock = vi.fn(async () => ({ success: true }));
 
     const mode = await persistTrustedSender({
@@ -1185,7 +1227,10 @@ describe('demo backend guard coverage', () => {
       },
     };
 
-    const demoSetSettingsMock = vi.fn(async () => ({ ...data.settings, trustedSenders: ['existing@example.com', 'alice@example.com'] }));
+    const demoSetSettingsMock = vi.fn(async () => ({
+      ...data.settings,
+      trustedSenders: ['existing@example.com', 'alice@example.com'],
+    }));
     const saveUserSettingsMock = vi.fn(async () => ({ success: true }));
 
     const mode = await persistTrustedSender({
@@ -1303,11 +1348,20 @@ describe('demo backend guard coverage', () => {
     const onDeleteError = vi.fn();
     const onSettled = vi.fn();
 
-    const deleteAccountMock = vi.fn(async (_input: void, callbacks?: { onSuccess?: (value: { success?: boolean; message?: string }) => Promise<void> | void; onError?: (error: unknown) => void; onSettled?: () => void }) => {
-      await callbacks?.onSuccess?.({ success: true, message: 'deleted' } as never);
-      callbacks?.onSettled?.();
-      return { success: true, message: 'deleted' };
-    });
+    const deleteAccountMock = vi.fn(
+      async (
+        _input: void,
+        callbacks?: {
+          onSuccess?: (value: { success?: boolean; message?: string }) => Promise<void> | void;
+          onError?: (error: unknown) => void;
+          onSettled?: () => void;
+        },
+      ) => {
+        await callbacks?.onSuccess?.({ success: true, message: 'deleted' } as never);
+        callbacks?.onSettled?.();
+        return { success: true, message: 'deleted' };
+      },
+    );
 
     const mode = await runDeleteAccount({
       confirmText: 'DELETE',
@@ -1376,7 +1430,10 @@ describe('demo backend guard coverage', () => {
     });
 
     expect(mode).toBe('backend');
-    expect(deleteConnectionMock).toHaveBeenCalledWith({ connectionId: 'connection-live' }, expect.objectContaining({ onError }));
+    expect(deleteConnectionMock).toHaveBeenCalledWith(
+      { connectionId: 'connection-live' },
+      expect.objectContaining({ onError }),
+    );
     expect(onSuccess).toHaveBeenCalledTimes(1);
     expect(refetchConnections).toHaveBeenCalledTimes(1);
     expect(refetchSession).toHaveBeenCalledTimes(1);

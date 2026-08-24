@@ -1,4 +1,8 @@
-import { normalizeContentId, projectCidImages } from '../src/mail/cid-images.js';
+import {
+  buildCidEligibilityIndex,
+  normalizeContentId,
+  projectCidImages,
+} from '../src/mail/cid-images.js';
 import { BLOCKED_IMAGE_PLACEHOLDER } from '../src/mail/sanitize-email-html.js';
 import { MAX_INLINE_IMAGE_BYTES } from '../src/mail/safe-inline-image.js';
 import { describe, expect, it } from 'vitest';
@@ -140,5 +144,41 @@ describe('projectCidImages', () => {
     expect(hasBlockedImages).toBe(true);
     expect(html).toContain(`src="${BLOCKED_IMAGE_PLACEHOLDER}"`);
     expect(html).not.toContain('/attachments/att-1/inline');
+  });
+
+  it('builds one CID eligibility index for repeated render references', () => {
+    const repeatedContentId = 'repeat-banner@rocketseed';
+    const attachments = [
+      {
+        attachmentId: 'repeat-banner',
+        contentId: `<${repeatedContentId}>`,
+        mimeType: 'image/gif',
+        sizeBytes: 1200,
+        isInline: true,
+      },
+      ...Array.from({ length: 200 }, (_value, index) => ({
+        attachmentId: `unrelated-${index}`,
+        contentId: `<unrelated-${index}@rocketseed>`,
+        mimeType: 'image/png',
+        sizeBytes: 64,
+        isInline: true,
+      })),
+    ];
+    const eligibility = buildCidEligibilityIndex(attachments);
+    const { html, hasBlockedImages } = projectCidImages(
+      Array.from(
+        { length: 200 },
+        () => `<img src="cid:${repeatedContentId}" alt="Rocketseed banner">`,
+      ).join(''),
+      attachments,
+      { messageId: 'msg-1', origin: 'https://nava.legacy.local' },
+    );
+
+    expect(eligibility.get(repeatedContentId)).toMatchObject({
+      kind: 'eligible',
+      attachment: { attachmentId: 'repeat-banner' },
+    });
+    expect(hasBlockedImages).toBe(false);
+    expect(html.match(/attachments\/repeat-banner\/inline/g)).toHaveLength(200);
   });
 });

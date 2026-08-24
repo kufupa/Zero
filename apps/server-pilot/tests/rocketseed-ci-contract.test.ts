@@ -13,6 +13,7 @@ const workflow = readFileSync(join(repoRoot, '.github', 'workflows', 'ci.yml'), 
 const mailRoute = readFileSync(join(serverRoot, 'src', 'trpc', 'routes', 'mail.ts'), 'utf8');
 const inlineRoute = readFileSync(join(serverRoot, 'src', 'http', 'inline-attachment.ts'), 'utf8');
 const cidImages = readFileSync(join(serverRoot, 'src', 'mail', 'cid-images.ts'), 'utf8');
+const testDbHelper = readFileSync(join(serverRoot, 'tests', 'helpers', 'test-db.ts'), 'utf8');
 
 describe('Rocketseed CI contract', () => {
   it('runs only the focused DB-free Rocketseed suite', () => {
@@ -26,6 +27,7 @@ describe('Rocketseed CI contract', () => {
       'tests/rocketseed-returned-copy.test.ts',
       'tests/rocketseed-returned-copy-correlation.test.ts',
       'tests/cid-images.test.ts',
+      'tests/ingest-duplicate-cleanup.test.ts',
       'tests/sanitize-email-html.test.ts',
       'tests/safe-inline-image.test.ts',
       'tests/inline-attachment-http.test.ts',
@@ -60,15 +62,18 @@ describe('Rocketseed CI contract', () => {
       'DATABASE_URL="$TEST_DATABASE_URL" pnpm --dir apps/server-pilot db:migrate',
     );
     expect(transactionalJob).toContain(
-      'unset DATABASE_URL TEST_DATABASE_URL VITEST_ALLOW_PILOT_RDS HMS_DB_TEST_REQUIRED',
+      'unset DATABASE_URL TEST_DATABASE_URL VITEST_ALLOW_PILOT_RDS HMS_DB_TEST_REQUIRED ROCKETSEED_TRANSACTIONAL_TEST_REQUIRED',
     );
     expect(transactionalJob).toContain(
-      'MAIL_TRANSPORT_MODE=fixture CONFIRM_DISPOSABLE_TEST_DB=1 pnpm --dir apps/server-pilot exec vitest run',
+      'MAIL_TRANSPORT_MODE=fixture CONFIRM_DISPOSABLE_TEST_DB=1 ROCKETSEED_TRANSACTIONAL_TEST_REQUIRED=1 pnpm --dir apps/server-pilot exec vitest run',
     );
+    expect(transactionalJob).toContain('vitest run --maxWorkers=1');
     for (const testFile of [
       'tests/rocketseed-returned-copy-reconciliation.test.ts',
       'tests/outbound-delivery-outcome.test.ts',
       'tests/outbound-claim-lease.test.ts',
+      'tests/attachment-access.test.ts',
+      'tests/pop3-worker.test.ts',
     ]) {
       expect(transactionalJob).toContain(testFile);
     }
@@ -83,7 +88,7 @@ describe('Rocketseed CI contract', () => {
       transactionalJob.indexOf('Test transactional Rocketseed mail flow'),
     );
     const clearDbEnvironment =
-      'unset DATABASE_URL TEST_DATABASE_URL VITEST_ALLOW_PILOT_RDS HMS_DB_TEST_REQUIRED';
+      'unset DATABASE_URL TEST_DATABASE_URL VITEST_ALLOW_PILOT_RDS HMS_DB_TEST_REQUIRED ROCKETSEED_TRANSACTIONAL_TEST_REQUIRED';
     const runtimeUrlBuilder = "printf -v TEST_DATABASE_URL '%s%s%s%s%s%s%s%s%s%s%s'";
 
     expect(transactionalJob).toContain('DISPOSABLE_POSTGRES_HOST: 127.0.0.1');
@@ -111,6 +116,14 @@ describe('Rocketseed CI contract', () => {
     expect(transactionalTestStep).not.toMatch(/\bexport\s+DATABASE_URL(?:=|\b)/);
     expect(transactionalJob).not.toContain(['postgres', 'ql://'].join(''));
     expect(transactionalJob).not.toMatch(/\becho\b/);
+  });
+
+  it('fails closed when transactional Rocketseed DB setup or probe is unavailable', () => {
+    expect(testDbHelper).toContain('ROCKETSEED_TRANSACTIONAL_TEST_REQUIRED');
+    expect(testDbHelper).toContain('await probeTestDb()');
+    expect(testDbHelper).toContain(
+      'Rocketseed transactional tests require a reachable disposable DB',
+    );
   });
 
   it('loads isInline metadata for CID projection and inline authorization', () => {

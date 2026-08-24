@@ -89,6 +89,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('outbound SMTP delivery outcom
 
       expect(result).toMatchObject({
         sent: true,
+        delivery: 'full',
         accepted: outcome.accepted,
         rejected: outcome.rejected,
       });
@@ -219,6 +220,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('outbound SMTP delivery outcom
 
       expect(result).toMatchObject({
         sent: true,
+        delivery: 'partial',
         accepted: outcome.accepted,
         rejected: outcome.rejected,
       });
@@ -255,6 +257,12 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('outbound SMTP delivery outcom
         text: 'missing recipient outcome',
       });
 
+      expect(result).toMatchObject({
+        sent: true,
+        delivery: 'partial',
+        accepted: outcome.accepted,
+        rejected: outcome.rejected,
+      });
       const queue = await queueForMessage(db, result.messageId);
       expect(queue.status).toBe('sent');
       expect(JSON.parse(queue.lastError ?? '')).toMatchObject({
@@ -406,7 +414,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('outbound SMTP delivery outcom
     });
   }, 30000);
 
-  it('fails closed when a message SMTP ID exists without a persisted outcome', async () => {
+  it('terminally recovers a legacy header-only sending row without SMTP or recipient evidence', async () => {
     await withSeededTestDb(async (db) => {
       const outcome: SmtpSendResult = {
         messageId: 'header-only-outcome@zero.test',
@@ -441,12 +449,16 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('outbound SMTP delivery outcom
 
       const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
       try {
-        await expect(flushDue({ db })).resolves.toEqual({ flushed: 0 });
+        await expect(flushDue({ db })).resolves.toEqual({ flushed: 1 });
       } finally {
         error.mockRestore();
       }
-      const failedQueue = await queueForMessage(db, result.messageId);
-      expect(failedQueue.status).toBe('sending');
+      const recoveredQueue = await queueForMessage(db, result.messageId);
+      expect(recoveredQueue.status).toBe('sent');
+      expect(recoveredQueue.smtpPayload).not.toHaveProperty('deliveryOutcome');
+      expect(JSON.parse(recoveredQueue.lastError ?? '')).toMatchObject({
+        code: 'LEGACY_HEADER_ONLY_DELIVERY',
+      });
       expect(scripted.send).toHaveBeenCalledTimes(1);
     });
   }, 30000);

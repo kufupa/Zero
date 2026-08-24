@@ -12,12 +12,12 @@
  * Ambient DATABASE_URL without CONFIRM is ignored (not used).
  * Never reads `.env` / `.env.production`. Never sources production env.
  */
-import { drizzle } from 'drizzle-orm/postgres-js';
-import postgres from 'postgres';
-import * as schema from '../../src/db/schema/index.js';
-import type { DB } from '../../src/db/client.js';
 import { getPostgresSslOptions } from '../../src/db/ssl-config.js';
 import { assertNotPilotProdDatabase } from './pilot-rds-guard.js';
+import * as schema from '../../src/db/schema/index.js';
+import { drizzle } from 'drizzle-orm/postgres-js';
+import type { DB } from '../../src/db/client.js';
+import postgres from 'postgres';
 
 /** Local docker/disposable Postgres often has no TLS; RDS still uses CA SSL. */
 function testDbSslOptions(databaseUrl: string) {
@@ -97,6 +97,9 @@ if (process.env.HMS_DB_TEST_REQUIRED === '1' && !resolvedUrl) {
     'HMS_DB_TEST_REQUIRED=1 but disposable TEST_DATABASE_URL/CONFIRM unset — fail closed (no skip)',
   );
 }
+if (process.env.ROCKETSEED_TRANSACTIONAL_TEST_REQUIRED === '1' && !resolvedUrl) {
+  throw new Error('Rocketseed transactional tests require a reachable disposable DB');
+}
 
 let probePromise: Promise<boolean> | undefined;
 
@@ -123,6 +126,10 @@ async function probeDb(): Promise<boolean> {
 export function probeTestDb(): Promise<boolean> {
   if (!probePromise) probePromise = probeDb();
   return probePromise;
+}
+
+if (process.env.ROCKETSEED_TRANSACTIONAL_TEST_REQUIRED === '1' && !(await probeTestDb())) {
+  throw new Error('Rocketseed transactional tests require a reachable disposable DB');
 }
 
 const ROLLBACK = '___test_rollback___';

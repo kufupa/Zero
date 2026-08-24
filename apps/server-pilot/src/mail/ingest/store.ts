@@ -28,9 +28,12 @@
  * Tests run this inside `withTestDb` so the transaction is rolled back; in
  * production the transaction commits for real.
  */
-import { and, eq, inArray } from 'drizzle-orm';
-import { randomUUID } from 'node:crypto';
-import type { DB } from '../../db/client.js';
+import {
+  emitRocketseedReturnedCopyTrustRejection,
+  evaluateRocketseedReturnedCopyTrust,
+  evaluateRocketseedReturnedCopyPrecheck,
+  normalizeRocketseedMailbox,
+} from './rocketseed-returned-copy.js';
 import {
   attachment,
   mailIngestQuarantine,
@@ -41,34 +44,24 @@ import {
   outboundSendQueue,
 } from '../../db/schema/mail.js';
 import {
-  rawMimeKey,
-  getS3Storage,
-  type S3Storage,
-} from '../../storage/s3.js';
-import {
-  type ParsedInboundMessage,
-  parseRawMessage,
-  generateMessageId,
-} from './parse-message.js';
-import {
-  emitRocketseedReturnedCopyTrustRejection,
-  evaluateRocketseedReturnedCopyTrust,
-  evaluateRocketseedReturnedCopyPrecheck,
-  normalizeRocketseedMailbox,
-} from './rocketseed-returned-copy.js';
-import { parsePersistedDeliveryOutcome } from '../send/outbound-queue.js';
-import { sanitizeHtmlBodyForStorage } from '../sanitize-email-html.js';
-import {
   DEFAULT_AI_MODEL_ID,
   DEFAULT_TRIAGE_PROMPT_VERSION,
   enqueueAiRun,
 } from '../../ai/run-ledger.js';
+import { type ParsedInboundMessage, parseRawMessage, generateMessageId } from './parse-message.js';
+import { rawMimeKey, getS3Storage, type S3Storage } from '../../storage/s3.js';
+import { parsePersistedDeliveryOutcome } from '../send/outbound-queue.js';
 import { refreshThreadSearchVector } from '../search/search-vector.js';
+import { sanitizeHtmlBodyForStorage } from '../sanitize-email-html.js';
 import { getSenderPreference } from '../sender-preference.js';
-import { markThreadRead } from '../thread-read.js';
 import { ingestRequireOwnerHeader } from '../../env.js';
+import { markThreadRead } from '../thread-read.js';
+import { and, eq, inArray } from 'drizzle-orm';
+import type { DB } from '../../db/client.js';
+import { randomUUID } from 'node:crypto';
 
 const CENTURION_TRANSPORT_ID = 'transport-centurion';
+export const CANDIDATE_ATTACHMENT_DELETE_CONCURRENCY = 4;
 
 type RoutedTransport = {
   id: string;
@@ -184,10 +177,12 @@ export async function persistInboundMessage(
   const { db } = opts;
   const storage = opts.storage ?? getS3Storage();
 
-  const rawMimeS3Key = meta.rawMimeS3Key ?? rawMimeKey({
-    ingestMailboxId: meta.ingestMailboxId,
-    pop3Uidl: meta.pop3Uidl,
-  });
+  const rawMimeS3Key =
+    meta.rawMimeS3Key ??
+    rawMimeKey({
+      ingestMailboxId: meta.ingestMailboxId,
+      pop3Uidl: meta.pop3Uidl,
+    });
   if (!meta.rawMimeS3Key) {
     await storage.putObject({
       key: rawMimeS3Key,
@@ -325,16 +320,19 @@ export async function persistInboundMessage(
         duplicateCanonicalMessageId = canonical.id;
         return;
       }
+      const durableSmtpMessageId =
+        parsed.outboundCorrelation.kind === 'valid' &&
+        canonical.queueStatus === 'sending' &&
+        canonical.messageIdHeader === null
+          ? (parsePersistedDeliveryOutcome(canonical.smtpPayload)?.messageId ?? null)
+          : null;
       await transactionDb
         .update(message)
         .set({
           ingestMailboxId: meta.ingestMailboxId,
           pop3Uidl: meta.pop3Uidl,
           ownerHeaderValue: parsed.ownerHeaderValue,
-          messageIdHeader:
-            parsed.outboundCorrelation.kind === 'valid' && canonical.messageIdHeader !== null
-              ? canonical.messageIdHeader
-              : parsed.messageId,
+          messageIdHeader: canonical.messageIdHeader ?? durableSmtpMessageId ?? parsed.messageId,
           inReplyTo: parsed.inReplyTo,
           references: parsed.references,
           fromAddress: parsed.fromAddress ?? '',
@@ -348,12 +346,7 @@ export async function persistInboundMessage(
           receivedAt: parsed.receivedAt ?? new Date(),
           updatedAt: new Date(),
         })
-        .where(
-          and(
-            eq(message.id, canonical.id),
-            eq(message.transportId, canonical.transportId),
-          ),
-        );
+        .where(and(eq(message.id, canonical.id), eq(message.transportId, canonical.transportId)));
       if (parsed.attachments.length > 0) {
         await transactionDb.insert(attachment).values(
           parsed.attachments.map((a) => ({
@@ -393,17 +386,11 @@ export async function persistInboundMessage(
       ...parsed.ccAddresses,
       ...parsed.bccAddresses,
     ].map(normalizeEmailAddress);
-    const transportIdentities = transportIdentitySet(
-      transport.email,
-      transport.sendFromConfig,
-    );
+    const transportIdentities = transportIdentitySet(transport.email, transport.sendFromConfig);
     const isSelfIngestLoopback =
-      transportIdentities.size > 0 &&
-      recipientEmails.some((a) => transportIdentities.has(a));
+      transportIdentities.size > 0 && recipientEmails.some((a) => transportIdentities.has(a));
     const isHotelSent =
-      Boolean(fromEmail) &&
-      transportIdentities.has(fromEmail) &&
-      !isSelfIngestLoopback;
+      Boolean(fromEmail) && transportIdentities.has(fromEmail) && !isSelfIngestLoopback;
 
     await tx.insert(message).values({
       id: messageId,
@@ -455,10 +442,7 @@ export async function persistInboundMessage(
       process.env.AI_WRITE_GATE_ENABLED !== 'true' &&
       isExternalFromDomain(fromEmail, transportEmail)
     ) {
-      const softLabelId = await ensureSoftQuarantineLabel(
-        tx as unknown as DB,
-        transport.id,
-      );
+      const softLabelId = await ensureSoftQuarantineLabel(tx as unknown as DB, transport.id);
       await applyThreadLabels(tx as unknown as DB, threadId, [softLabelId]);
     }
 
@@ -524,7 +508,7 @@ export async function persistInboundMessage(
   };
 }
 
-async function cleanupCandidateAttachmentObjects(
+export async function cleanupCandidateAttachmentObjects(
   storage: S3Storage,
   attachments: ParsedInboundMessage['attachments'],
   candidateMessageId: string,
@@ -540,8 +524,26 @@ async function cleanupCandidateAttachmentObjects(
         .filter((key) => key.startsWith(candidatePrefix)),
     ),
   ];
-  const results = await Promise.allSettled(keys.map((key) => storage.deleteObject(key)));
-  return results.filter((result) => result.status === 'rejected').length;
+  let nextKeyIndex = 0;
+  let failureCount = 0;
+  const deleteWorker = async () => {
+    while (nextKeyIndex < keys.length) {
+      const key = keys[nextKeyIndex++];
+      if (!key) return;
+      try {
+        await storage.deleteObject(key);
+      } catch {
+        failureCount += 1;
+      }
+    }
+  };
+  await Promise.all(
+    Array.from(
+      { length: Math.min(CANDIDATE_ATTACHMENT_DELETE_CONCURRENCY, keys.length) },
+      deleteWorker,
+    ),
+  );
+  return failureCount;
 }
 
 function withCandidateAttachmentCleanupFailures(
@@ -662,12 +664,7 @@ async function findEligibleCanonicalOutbound(
   useMessageIdFallback: boolean,
 ): Promise<CanonicalOutbound | undefined> {
   if (!useMessageIdFallback) {
-    return findCanonicalOutboundWithQueueLock(
-      db,
-      transportId,
-      correlationId,
-      ['sent', 'sending'],
-    );
+    return findCanonicalOutboundWithQueueLock(db, transportId, correlationId, ['sent', 'sending']);
   }
 
   // Legacy Message-ID correlation remains sent-only. This unlocked join only
@@ -693,13 +690,7 @@ async function findEligibleCanonicalOutbound(
     .limit(1);
   if (!candidate) return undefined;
 
-  return findCanonicalOutboundWithQueueLock(
-    db,
-    transportId,
-    candidate.id,
-    ['sent'],
-    correlationId,
-  );
+  return findCanonicalOutboundWithQueueLock(db, transportId, candidate.id, ['sent'], correlationId);
 }
 
 async function findCanonicalOutboundWithQueueLock(
@@ -784,8 +775,7 @@ function hasProvenPersistedSendingDelivery(args: {
     if (!normalizedExpectedTransportAddress) return false;
     if (
       !outcome.accepted.some(
-        (recipient) =>
-          normalizeRocketseedMailbox(recipient) === normalizedExpectedTransportAddress,
+        (recipient) => normalizeRocketseedMailbox(recipient) === normalizedExpectedTransportAddress,
       )
     ) {
       return false;
@@ -845,9 +835,7 @@ async function findDirectToTransport(
     .where(eq(mailboxTransport.isActive, true));
 
   return (
-    transports.find((transport) =>
-      directTo.has(normalizeEmailAddress(transport.email)),
-    ) ?? null
+    transports.find((transport) => directTo.has(normalizeEmailAddress(transport.email))) ?? null
   );
 }
 
@@ -877,12 +865,7 @@ function transportIdentitySet(email: string, sendFromConfig: unknown): Set<strin
 }
 
 function equatedAddresses(parsed: ParsedInboundMessage): string[] {
-  return [
-    parsed.fromAddress,
-    ...parsed.toAddresses,
-    ...parsed.ccAddresses,
-    ...parsed.bccAddresses,
-  ]
+  return [parsed.fromAddress, ...parsed.toAddresses, ...parsed.ccAddresses, ...parsed.bccAddresses]
     .filter((address): address is string => Boolean(address))
     .map(normalizeEmailAddress)
     .filter(Boolean);
@@ -904,16 +887,13 @@ async function findTransportByStamp(
     .where(eq(mailboxTransport.isActive, true));
 
   const byOwnerHeader = transports.find(
-    (transport) =>
-      normalizeEmailAddress(transport.ownerHeaderValue) === normalizedHeader,
+    (transport) => normalizeEmailAddress(transport.ownerHeaderValue) === normalizedHeader,
   );
   if (byOwnerHeader) return byOwnerHeader;
 
   return (
     transports.find((transport) =>
-      transportIdentitySet(transport.email, transport.sendFromConfig).has(
-        normalizedHeader,
-      ),
+      transportIdentitySet(transport.email, transport.sendFromConfig).has(normalizedHeader),
     ) ?? null
   );
 }
@@ -930,30 +910,21 @@ async function findCenturionEquatedTransport(
     })
     .from(mailboxTransport)
     .where(
-      and(
-        eq(mailboxTransport.id, CENTURION_TRANSPORT_ID),
-        eq(mailboxTransport.isActive, true),
-      ),
+      and(eq(mailboxTransport.id, CENTURION_TRANSPORT_ID), eq(mailboxTransport.isActive, true)),
     )
     .limit(1);
 
   const centurion = centurionRows[0];
   if (!centurion) return null;
 
-  const identities = transportIdentitySet(
-    centurion.email,
-    centurion.sendFromConfig,
-  );
+  const identities = transportIdentitySet(centurion.email, centurion.sendFromConfig);
   if (equatedAddresses(parsed).some((address) => identities.has(address))) {
     return centurion;
   }
   return null;
 }
 
-async function ensureSoftQuarantineLabel(
-  db: DB,
-  transportId: string,
-): Promise<string> {
+async function ensureSoftQuarantineLabel(db: DB, transportId: string): Promise<string> {
   const id = `label-soft-quarantine-${transportId}`;
   await db
     .insert(mailLabel)
@@ -963,13 +934,8 @@ async function ensureSoftQuarantineLabel(
 }
 
 /** From domain outside transport domain (minimal allowlist = transport domain). */
-function isExternalFromDomain(
-  fromEmail: string,
-  transportEmail: string,
-): boolean {
-  const fromDomain = fromEmail.includes('@')
-    ? fromEmail.slice(fromEmail.lastIndexOf('@') + 1)
-    : '';
+function isExternalFromDomain(fromEmail: string, transportEmail: string): boolean {
+  const fromDomain = fromEmail.includes('@') ? fromEmail.slice(fromEmail.lastIndexOf('@') + 1) : '';
   const transportDomain = transportEmail.includes('@')
     ? transportEmail.slice(transportEmail.lastIndexOf('@') + 1)
     : '';
@@ -977,11 +943,7 @@ function isExternalFromDomain(
   return fromDomain !== transportDomain;
 }
 
-async function applyThreadLabels(
-  tx: DB,
-  threadId: string,
-  labelIds: string[],
-): Promise<void> {
+async function applyThreadLabels(tx: DB, threadId: string, labelIds: string[]): Promise<void> {
   if (labelIds.length === 0) return;
   const rows = await tx
     .select({ labelIds: mailThread.labelIds })
@@ -1040,14 +1002,11 @@ async function resolveThreadId(args: {
 }): Promise<string> {
   const { tx, transportId, parsed, pop3Uidl } = args;
   const now = parsed.receivedAt ?? new Date();
-  const snippet = parsed.textBody
-    ? parsed.textBody.slice(0, 200)
-    : parsed.subject ?? '';
+  const snippet = parsed.textBody ? parsed.textBody.slice(0, 200) : (parsed.subject ?? '');
 
-  const candidates = [
-    ...(parsed.inReplyTo ? [parsed.inReplyTo] : []),
-    ...parsed.references,
-  ].filter(Boolean);
+  const candidates = [...(parsed.inReplyTo ? [parsed.inReplyTo] : []), ...parsed.references].filter(
+    Boolean,
+  );
   const uniqueCandidates = [...new Set(candidates)];
 
   if (uniqueCandidates.length > 0) {
@@ -1080,12 +1039,7 @@ async function resolveThreadId(args: {
   const existing = await tx
     .select({ id: mailThread.id })
     .from(mailThread)
-    .where(
-      and(
-        eq(mailThread.transportId, transportId),
-        eq(mailThread.threadRootId, threadRootId),
-      ),
-    )
+    .where(and(eq(mailThread.transportId, transportId), eq(mailThread.threadRootId, threadRootId)))
     .limit(1);
   if (existing.length > 0) {
     const threadId = existing[0]!.id;

@@ -55,6 +55,30 @@ export function isEligibleInlineImageMetadata(attachment: CidAttachmentMeta): bo
   return classifyInlineImageMetadata(attachment) === 'eligible';
 }
 
+/** Build normalized CID eligibility once for a complete message attachment set. */
+export function buildCidEligibilityIndex(
+  attachments: readonly CidAttachmentMeta[],
+): Map<string, UniqueInlineAttachmentResult> {
+  const byCid = new Map<string, UniqueInlineAttachmentResult>();
+  for (const attachment of attachments) {
+    const contentId = attachment.contentId ? normalizeContentId(attachment.contentId) : null;
+    if (!contentId) continue;
+    if (byCid.has(contentId)) {
+      byCid.set(contentId, { kind: 'not-found' });
+      continue;
+    }
+
+    const metadataEligibility = classifyInlineImageMetadata(attachment);
+    byCid.set(
+      contentId,
+      metadataEligibility === 'eligible'
+        ? { kind: 'eligible', attachment }
+        : { kind: metadataEligibility },
+    );
+  }
+  return byCid;
+}
+
 /**
  * Resolve a CID only when exactly one message attachment owns its normalized
  * ID. Projection only uses `eligible`; inline HTTP maps metadata failures to
@@ -66,18 +90,7 @@ export function findUniqueEligibleInlineAttachment(
 ): UniqueInlineAttachmentResult {
   const contentId = rawContentId ? normalizeContentId(rawContentId) : null;
   if (!contentId) return { kind: 'not-found' };
-
-  let matched: CidAttachmentMeta | null = null;
-  for (const attachment of attachments) {
-    if (!attachment.contentId || normalizeContentId(attachment.contentId) !== contentId) continue;
-    if (matched) return { kind: 'not-found' };
-    matched = attachment;
-  }
-
-  if (!matched) return { kind: 'not-found' };
-  const metadataEligibility = classifyInlineImageMetadata(matched);
-  if (metadataEligibility !== 'eligible') return { kind: metadataEligibility };
-  return { kind: 'eligible', attachment: matched };
+  return buildCidEligibilityIndex(attachments).get(contentId) ?? { kind: 'not-found' };
 }
 
 export function projectCidImages(
@@ -86,12 +99,16 @@ export function projectCidImages(
   opts: { messageId: string; origin: string },
 ): { html: string; hasBlockedImages: boolean } {
   const origin = opts.origin.replace(/\/$/, '');
+  const eligibility = buildCidEligibilityIndex(attachments);
   let hasBlockedImages = false;
   const $ = load(html, null, false);
   $('img[src]').each((_i, el) => {
     const src = $(el).attr('src') ?? '';
     if (!/^cid:/i.test(src.trim())) return;
-    const resolved = findUniqueEligibleInlineAttachment(src, attachments);
+    const contentId = normalizeContentId(src);
+    const resolved: UniqueInlineAttachmentResult = contentId
+      ? (eligibility.get(contentId) ?? { kind: 'not-found' })
+      : { kind: 'not-found' };
     if (resolved.kind !== 'eligible') {
       hasBlockedImages = true;
       $(el).removeAttr('width').removeAttr('height').attr('src', BLOCKED_IMAGE_PLACEHOLDER);

@@ -49,6 +49,35 @@ describe('evaluateRocketseedReturnedCopyTrust', () => {
     });
   });
 
+  it('accepts standard relay clauses after an exact by identity', () => {
+    const input = validInput();
+    input.parsed.rawHeaderLines = trustedReceivedPrefix.map((header, index) => ({
+      ...header,
+      line: header.line.replace(
+        '; Mon',
+        ` with ESMTP via TCP id relay-${index} for <centurion@legacyhotels.co.za>; Mon`,
+      ),
+    }));
+
+    expect(evaluateRocketseedReturnedCopyTrust(input)).toEqual({ trusted: true });
+
+    for (const malformedLine of [
+      'Received: from 172.24.0.10 by local-hop-a with; Mon, 24 Aug 2026 12:00:00 +0000',
+      'Received: from 172.24.0.10 by local-hop-a unexpected-clause; Mon, 24 Aug 2026 12:00:00 +0000',
+    ]) {
+      const malformed = validInput();
+      malformed.parsed.rawHeaderLines = [
+        { key: 'received', line: malformedLine },
+        ...trustedReceivedPrefix.slice(1),
+      ];
+
+      expect(evaluateRocketseedReturnedCopyTrust(malformed)).toEqual({
+        trusted: false,
+        reason: 'received_malformed',
+      });
+    }
+  });
+
   it('requires returned-copy topology, owner, and sender before legacy lookup', () => {
     const trusted = validInput();
     expect(

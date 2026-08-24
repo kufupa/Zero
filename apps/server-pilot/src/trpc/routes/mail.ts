@@ -11,25 +11,6 @@
  * This task wires the route + access guard + outbound row shape, leaving
  * transport as a no-op that records an outbound `message` row.
  */
-import { TRPCError } from '@trpc/server';
-import { assertSafeOutboundFields } from '../../mail/send/validate-outbound.js';
-import { z } from 'zod';
-import { and, eq, asc, desc, isNotNull, isNull, inArray, sql, exists, or, lte } from 'drizzle-orm';
-import { randomUUID } from 'node:crypto';
-import { mailboxProcedure, router as tRouter } from '../trpc.js';
-import { getDb } from '../../db/client.js';
-import {
-  mailThread,
-  message,
-  attachment,
-  mailLabel,
-  mailDraft,
-  mailDraftRevision,
-  mailCategory,
-  mailThreadCategory,
-} from '../../db/schema/mail.js';
-import { assertHmsDraftFreshForAction } from './drafts.js';
-import { markThreadRead } from '../../mail/thread-read.js';
 import {
   requireThreadForTransport,
   requireMessageForTransport,
@@ -40,22 +21,23 @@ import {
   resolveVisibleThreadIds,
   refreshThreadAfterMessageRemoved,
 } from './mail-helpers.js';
-import { resolveReplyHeaders } from '../../mail/send/resolve-reply-headers.js';
-import { prepareOutboundHtml } from '../../mail/prepare-outbound-html.js';
+import {
+  mailThread,
+  message,
+  attachment,
+  mailLabel,
+  mailDraft,
+  mailDraftRevision,
+  mailCategory,
+  mailThreadCategory,
+} from '../../db/schema/mail.js';
 import {
   cancelOutbound,
   enqueueOutbound,
   flushOne,
+  getSmtpDeliveryStatus,
   getUndoSendSeconds,
 } from '../../mail/send/outbound-queue.js';
-import { formatContentDispositionFilename } from '../../mail/attachment-filename.js';
-import { processEmailHtmlForDisplay } from '../../mail/process-email-html.js';
-import {
-  getLatestInboundFromAddress,
-  upsertSenderPreference,
-} from '../../mail/sender-preference.js';
-import { withMailboxIngestLock } from '../../mail/ingest/mailbox-ingest-lock.js';
-import type { Pop3Client } from '../../mail/ingest/pop3-client.js';
 import {
   DEFAULT_AI_MODEL_ID,
   DEFAULT_FEEDBACK_PROMPT_VERSION,
@@ -67,10 +49,29 @@ import {
   toParsedMessage,
   buildMetadataDebugHeaders,
 } from '../wire-compat.js';
-import { toDraftWire } from './draft-wire.js';
+import {
+  getLatestInboundFromAddress,
+  upsertSenderPreference,
+} from '../../mail/sender-preference.js';
+import { and, eq, asc, desc, isNotNull, isNull, inArray, sql, exists, or, lte } from 'drizzle-orm';
+import { formatContentDispositionFilename } from '../../mail/attachment-filename.js';
+import { withMailboxIngestLock } from '../../mail/ingest/mailbox-ingest-lock.js';
+import { assertSafeOutboundFields } from '../../mail/send/validate-outbound.js';
+import { resolveReplyHeaders } from '../../mail/send/resolve-reply-headers.js';
+import { processEmailHtmlForDisplay } from '../../mail/process-email-html.js';
+import { prepareOutboundHtml } from '../../mail/prepare-outbound-html.js';
 import { buildThreadSearchConditions } from '../../mail/search/query.js';
 import { parseSearchQueryOrThrow } from '../../mail/search/trpc.js';
+import type { Pop3Client } from '../../mail/ingest/pop3-client.js';
+import { mailboxProcedure, router as tRouter } from '../trpc.js';
+import { markThreadRead } from '../../mail/thread-read.js';
+import { assertHmsDraftFreshForAction } from './drafts.js';
+import { toDraftWire } from './draft-wire.js';
+import { getDb } from '../../db/client.js';
+import { TRPCError } from '@trpc/server';
+import { randomUUID } from 'node:crypto';
 import { parseEnv } from '../../env.js';
+import { z } from 'zod';
 
 /** FE + pilot folder slugs accepted by listThreads. */
 export const MAIL_FOLDER_VALUES = [
@@ -99,18 +100,13 @@ function toIsoDateTime(value: string | Date): string {
 }
 
 /** Audit self-BCC is on unless MAIL_SELF_BCC is explicitly disabled. */
-export function isSelfBccEnabled(
-  env: NodeJS.ProcessEnv = process.env,
-): boolean {
+export function isSelfBccEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const raw = env.MAIL_SELF_BCC?.trim().toLowerCase();
   return raw !== 'false' && raw !== '0' && raw !== 'off';
 }
 
 /** Deduped BCC list that always includes the active mailbox address. */
-export function withTransportSelfBcc(
-  bcc: string[],
-  transportEmail: string,
-): string[] {
+export function withTransportSelfBcc(bcc: string[], transportEmail: string): string[] {
   if (!isSelfBccEnabled()) return [...bcc];
   const self = transportEmail.trim();
   if (!self) return [...bcc];
@@ -218,9 +214,7 @@ type ForceSyncCycleStub = () => Promise<{
 
 let forceSyncIngestOnceForTests: ForceSyncCycleStub | undefined;
 
-export function __setForceSyncIngestOnceForTests(
-  stub: ForceSyncCycleStub | undefined,
-): void {
+export function __setForceSyncIngestOnceForTests(stub: ForceSyncCycleStub | undefined): void {
   forceSyncIngestOnceForTests = stub;
 }
 
@@ -282,9 +276,7 @@ async function loadThreadCategoriesForGet(
       sortOrder: mailCategory.sortOrder,
     })
     .from(mailCategory)
-    .where(
-      and(eq(mailCategory.transportId, transportId), inArray(mailCategory.id, categoryIds)),
-    );
+    .where(and(eq(mailCategory.transportId, transportId), inArray(mailCategory.id, categoryIds)));
 
   return { categoryIds, categories };
 }
@@ -303,505 +295,473 @@ export const mailRouter = tRouter({
    *   drafts   -> handled by drafts.list, but returns empty here
    *   all      -> no folder filter
    */
-  listThreads: mailboxProcedure
-    .input(listThreadsInput)
-    .query(async ({ input, ctx }) => {
-      const db = getDb();
-      const transportId = ctx.activeTransportId;
-      const limit = input.limit;
+  listThreads: mailboxProcedure.input(listThreadsInput).query(async ({ input, ctx }) => {
+    const db = getDb();
+    const transportId = ctx.activeTransportId;
+    const limit = input.limit;
 
-      // Lazy-clear expired snoozes so they reappear in inbox without a cron.
-      await db
-        .update(mailThread)
-        .set({ snoozedUntil: null, updatedAt: new Date() })
-        .where(
-          and(
-            eq(mailThread.transportId, transportId),
-            isNotNull(mailThread.snoozedUntil),
-            lte(mailThread.snoozedUntil, sql`now()`),
-          ),
+    // Lazy-clear expired snoozes so they reappear in inbox without a cron.
+    await db
+      .update(mailThread)
+      .set({ snoozedUntil: null, updatedAt: new Date() })
+      .where(
+        and(
+          eq(mailThread.transportId, transportId),
+          isNotNull(mailThread.snoozedUntil),
+          lte(mailThread.snoozedUntil, sql`now()`),
+        ),
+      );
+
+    if (input.folder === 'drafts' || input.folder === 'draft') {
+      return { threads: [] as { id: string; transportId: string }[], nextPageToken: null };
+    }
+
+    const conditions = [eq(mailThread.transportId, transportId)];
+
+    if (input.folder === 'bin') {
+      conditions.push(isNotNull(mailThread.trashedAt));
+    } else {
+      conditions.push(isNull(mailThread.trashedAt));
+    }
+
+    if (input.folder === 'spam') {
+      conditions.push(isNotNull(mailThread.spamAt));
+    } else {
+      conditions.push(isNull(mailThread.spamAt));
+    }
+
+    if (input.folder === 'inbox') {
+      conditions.push(eq(mailThread.isArchived, false));
+      conditions.push(
+        or(isNull(mailThread.snoozedUntil), lte(mailThread.snoozedUntil, sql`now()`))!,
+      );
+      // Inbox = has inbound mail; outbound-only compose threads live in sent.
+      conditions.push(
+        exists(
+          db
+            .select({ one: sql`1` })
+            .from(message)
+            .where(
+              and(
+                eq(message.threadId, mailThread.id),
+                eq(message.transportId, transportId),
+                eq(message.direction, 'inbound'),
+              ),
+            ),
+        ),
+      );
+    } else if (input.folder === 'archived' || input.folder === 'archive') {
+      conditions.push(eq(mailThread.isArchived, true));
+    } else if (input.folder === 'starred') {
+      conditions.push(eq(mailThread.isStarred, true));
+    } else if (input.folder === 'snoozed') {
+      conditions.push(isNotNull(mailThread.snoozedUntil));
+    }
+
+    if (input.folder === 'sent') {
+      conditions.push(
+        exists(
+          db
+            .select({ one: sql`1` })
+            .from(message)
+            .where(
+              and(
+                eq(message.threadId, mailThread.id),
+                eq(message.transportId, transportId),
+                eq(message.direction, 'outbound'),
+              ),
+            ),
+        ),
+      );
+    }
+
+    if (input.labelIds && input.labelIds.length > 0) {
+      conditions.push(
+        sql`${mailThread.labelIds} ?| array[${sql.join(
+          input.labelIds.map((id) => sql`${id}`),
+          sql`, `,
+        )}]`,
+      );
+    }
+
+    const filterLabelIds = input.filters?.labelIds ?? [];
+    if (filterLabelIds.length > 0) {
+      conditions.push(
+        sql`${mailThread.labelIds} ?| array[${sql.join(
+          filterLabelIds.map((id) => sql`${id}`),
+          sql`, `,
+        )}]`,
+      );
+    }
+
+    // Structured filters AND parsed q operators both apply (e.g. filters.unread + is:read).
+    if (input.filters?.unread === true) {
+      conditions.push(eq(mailThread.isRead, false));
+    }
+
+    if (input.filters?.starred === true) {
+      conditions.push(eq(mailThread.isStarred, true));
+    }
+
+    if (input.filters?.important === true) {
+      conditions.push(sql`${mailThread.labelIds} ? 'IMPORTANT'`);
+    }
+
+    const filterCategoryIds = input.filters?.categoryIds ?? [];
+    if (filterCategoryIds.length > 0) {
+      conditions.push(
+        exists(
+          db
+            .select({ one: sql`1` })
+            .from(mailThreadCategory)
+            .where(
+              and(
+                eq(mailThreadCategory.threadId, mailThread.id),
+                eq(mailThreadCategory.transportId, transportId),
+                inArray(mailThreadCategory.categoryId, filterCategoryIds),
+              ),
+            ),
+        ),
+      );
+    }
+
+    if (input.q && input.q.trim()) {
+      const parsed = parseSearchQueryOrThrow(input.q);
+      conditions.push(...buildThreadSearchConditions(db, parsed, { transportId }));
+    }
+
+    if (input.cursor) {
+      const decoded = decodePageCursor(input.cursor);
+      if (decoded) {
+        conditions.push(
+          keysetBefore(mailThread.latestMessageAt, mailThread.id, decoded.ts, decoded.id),
         );
-
-      if (input.folder === 'drafts' || input.folder === 'draft') {
-        return { threads: [] as { id: string; transportId: string }[], nextPageToken: null };
-      }
-
-      const conditions = [eq(mailThread.transportId, transportId)];
-
-      if (input.folder === 'bin') {
-        conditions.push(isNotNull(mailThread.trashedAt));
       } else {
-        conditions.push(isNull(mailThread.trashedAt));
-      }
-
-      if (input.folder === 'spam') {
-        conditions.push(isNotNull(mailThread.spamAt));
-      } else {
-        conditions.push(isNull(mailThread.spamAt));
-      }
-
-      if (input.folder === 'inbox') {
-        conditions.push(eq(mailThread.isArchived, false));
-        conditions.push(
-          or(
-            isNull(mailThread.snoozedUntil),
-            lte(mailThread.snoozedUntil, sql`now()`),
-          )!,
-        );
-        // Inbox = has inbound mail; outbound-only compose threads live in sent.
-        conditions.push(
-          exists(
-            db
-              .select({ one: sql`1` })
-              .from(message)
-              .where(
-                and(
-                  eq(message.threadId, mailThread.id),
-                  eq(message.transportId, transportId),
-                  eq(message.direction, 'inbound'),
-                ),
-              ),
-          ),
-        );
-      } else if (input.folder === 'archived' || input.folder === 'archive') {
-        conditions.push(eq(mailThread.isArchived, true));
-      } else if (input.folder === 'starred') {
-        conditions.push(eq(mailThread.isStarred, true));
-      } else if (input.folder === 'snoozed') {
-        conditions.push(isNotNull(mailThread.snoozedUntil));
-      }
-
-      if (input.folder === 'sent') {
-        conditions.push(
-          exists(
-            db
-              .select({ one: sql`1` })
-              .from(message)
-              .where(
-                and(
-                  eq(message.threadId, mailThread.id),
-                  eq(message.transportId, transportId),
-                  eq(message.direction, 'outbound'),
-                ),
-              ),
-          ),
-        );
-      }
-
-      if (input.labelIds && input.labelIds.length > 0) {
-        conditions.push(
-          sql`${mailThread.labelIds} ?| array[${sql.join(
-            input.labelIds.map((id) => sql`${id}`),
-            sql`, `,
-          )}]`,
-        );
-      }
-
-      const filterLabelIds = input.filters?.labelIds ?? [];
-      if (filterLabelIds.length > 0) {
-        conditions.push(
-          sql`${mailThread.labelIds} ?| array[${sql.join(
-            filterLabelIds.map((id) => sql`${id}`),
-            sql`, `,
-          )}]`,
-        );
-      }
-
-      // Structured filters AND parsed q operators both apply (e.g. filters.unread + is:read).
-      if (input.filters?.unread === true) {
-        conditions.push(eq(mailThread.isRead, false));
-      }
-
-      if (input.filters?.starred === true) {
-        conditions.push(eq(mailThread.isStarred, true));
-      }
-
-      if (input.filters?.important === true) {
-        conditions.push(sql`${mailThread.labelIds} ? 'IMPORTANT'`);
-      }
-
-      const filterCategoryIds = input.filters?.categoryIds ?? [];
-      if (filterCategoryIds.length > 0) {
-        conditions.push(
-          exists(
-            db
-              .select({ one: sql`1` })
-              .from(mailThreadCategory)
-              .where(
-                and(
-                  eq(mailThreadCategory.threadId, mailThread.id),
-                  eq(mailThreadCategory.transportId, transportId),
-                  inArray(mailThreadCategory.categoryId, filterCategoryIds),
-                ),
-              ),
-          ),
-        );
-      }
-
-      if (input.q && input.q.trim()) {
-        const parsed = parseSearchQueryOrThrow(input.q);
-        conditions.push(
-          ...buildThreadSearchConditions(db, parsed, { transportId }),
-        );
-      }
-
-      if (input.cursor) {
-        const decoded = decodePageCursor(input.cursor);
-        if (decoded) {
+        const cursorThread = await db
+          .select({
+            latestMessageAt: mailThread.latestMessageAt,
+            id: mailThread.id,
+          })
+          .from(mailThread)
+          .where(and(eq(mailThread.id, input.cursor), eq(mailThread.transportId, transportId)))
+          .limit(1);
+        if (cursorThread.length > 0) {
+          const row = cursorThread[0]!;
           conditions.push(
             keysetBefore(
               mailThread.latestMessageAt,
               mailThread.id,
-              decoded.ts,
-              decoded.id,
+              row.latestMessageAt ?? new Date(0),
+              row.id,
             ),
           );
-        } else {
-          const cursorThread = await db
-            .select({
-              latestMessageAt: mailThread.latestMessageAt,
-              id: mailThread.id,
-            })
-            .from(mailThread)
-            .where(
-              and(eq(mailThread.id, input.cursor), eq(mailThread.transportId, transportId)),
-            )
-            .limit(1);
-          if (cursorThread.length > 0) {
-            const row = cursorThread[0]!;
-            conditions.push(
-              keysetBefore(
-                mailThread.latestMessageAt,
-                mailThread.id,
-                row.latestMessageAt ?? new Date(0),
-                row.id,
-              ),
-            );
-          }
         }
       }
+    }
 
-      let rows = await db
-        .select({
-          id: mailThread.id,
-          transportId: mailThread.transportId,
-          subject: mailThread.subject,
-          snippet: mailThread.snippet,
-          isArchived: mailThread.isArchived,
-          isStarred: mailThread.isStarred,
-          isRead: mailThread.isRead,
-          labelIds: mailThread.labelIds,
-          snoozedUntil: mailThread.snoozedUntil,
-          trashedAt: mailThread.trashedAt,
-          latestMessageAt: mailThread.latestMessageAt,
-          updatedAt: mailThread.updatedAt,
-        })
-        .from(mailThread)
-        .where(and(...conditions))
-        .orderBy(descNullsLast(mailThread.latestMessageAt), desc(mailThread.id))
-        .limit(limit + 1);
+    let rows = await db
+      .select({
+        id: mailThread.id,
+        transportId: mailThread.transportId,
+        subject: mailThread.subject,
+        snippet: mailThread.snippet,
+        isArchived: mailThread.isArchived,
+        isStarred: mailThread.isStarred,
+        isRead: mailThread.isRead,
+        labelIds: mailThread.labelIds,
+        snoozedUntil: mailThread.snoozedUntil,
+        trashedAt: mailThread.trashedAt,
+        latestMessageAt: mailThread.latestMessageAt,
+        updatedAt: mailThread.updatedAt,
+      })
+      .from(mailThread)
+      .where(and(...conditions))
+      .orderBy(descNullsLast(mailThread.latestMessageAt), desc(mailThread.id))
+      .limit(limit + 1);
 
-      let nextPageToken: string | null = null;
-      if (rows.length > limit) {
-        const last = rows[limit - 1]!;
-        rows = rows.slice(0, limit);
-        nextPageToken = encodePageCursor(last.latestMessageAt, last.id);
-      }
+    let nextPageToken: string | null = null;
+    if (rows.length > limit) {
+      const last = rows[limit - 1]!;
+      rows = rows.slice(0, limit);
+      nextPageToken = encodePageCursor(last.latestMessageAt, last.id);
+    }
 
-      const threadIds = rows.map((row) => row.id);
-      const categoryIdsByThread = await loadCategoryIdsByThreadIds(db, transportId, threadIds);
+    const threadIds = rows.map((row) => row.id);
+    const categoryIdsByThread = await loadCategoryIdsByThreadIds(db, transportId, threadIds);
 
-      const draftCountRows =
-        threadIds.length > 0
-          ? await db
-              .select({
-                threadId: mailDraft.threadId,
-                count: sql<number>`count(*)::int`,
-              })
-              .from(mailDraft)
-              .where(
-                and(
-                  eq(mailDraft.transportId, transportId),
-                  inArray(mailDraft.threadId, threadIds),
-                  eq(mailDraft.isSent, false),
-                  inArray(mailDraft.status, ['active', 'candidate']),
-                ),
-              )
-              .groupBy(mailDraft.threadId)
-          : [];
-      const draftCountByThread = new Map(
-        draftCountRows
-          .filter((row): row is { threadId: string; count: number } => Boolean(row.threadId))
-          .map((row) => [row.threadId, row.count]),
-      );
+    const draftCountRows =
+      threadIds.length > 0
+        ? await db
+            .select({
+              threadId: mailDraft.threadId,
+              count: sql<number>`count(*)::int`,
+            })
+            .from(mailDraft)
+            .where(
+              and(
+                eq(mailDraft.transportId, transportId),
+                inArray(mailDraft.threadId, threadIds),
+                eq(mailDraft.isSent, false),
+                inArray(mailDraft.status, ['active', 'candidate']),
+              ),
+            )
+            .groupBy(mailDraft.threadId)
+        : [];
+    const draftCountByThread = new Map(
+      draftCountRows
+        .filter((row): row is { threadId: string; count: number } => Boolean(row.threadId))
+        .map((row) => [row.threadId, row.count]),
+    );
 
-      return {
-        threads: rows.map((r) => ({
-          id: r.id,
-          transportId: r.transportId,
-          subject: r.subject,
-          snippet: r.snippet,
-          isArchived: r.isArchived,
-          isStarred: r.isStarred,
-          isRead: r.isRead,
-          labelIds: r.labelIds,
-          snoozedUntil: r.snoozedUntil,
-          trashedAt: r.trashedAt,
-          latestMessageAt: r.latestMessageAt,
-          historyId: null as string | null,
-          categoryIds: categoryIdsByThread.get(r.id) ?? [],
-          hasDraft: (draftCountByThread.get(r.id) ?? 0) > 0,
-          draftCount: draftCountByThread.get(r.id) ?? 0,
-        })),
-        nextPageToken,
-      };
-    }),
+    return {
+      threads: rows.map((r) => ({
+        id: r.id,
+        transportId: r.transportId,
+        subject: r.subject,
+        snippet: r.snippet,
+        isArchived: r.isArchived,
+        isStarred: r.isStarred,
+        isRead: r.isRead,
+        labelIds: r.labelIds,
+        snoozedUntil: r.snoozedUntil,
+        trashedAt: r.trashedAt,
+        latestMessageAt: r.latestMessageAt,
+        historyId: null as string | null,
+        categoryIds: categoryIdsByThread.get(r.id) ?? [],
+        hasDraft: (draftCountByThread.get(r.id) ?? 0) > 0,
+        draftCount: draftCountByThread.get(r.id) ?? 0,
+      })),
+      nextPageToken,
+    };
+  }),
 
   /**
    * Fetch a single thread with its messages, scoped to the caller's mailbox.
    */
-  get: mailboxProcedure
-    .input(z.object({ id: z.string() }))
-    .query(async ({ input, ctx }) => {
-      const db = getDb();
-      const transportId = ctx.activeTransportId;
-      const thread = await requireThreadForTransport(db, input.id, transportId);
-      const messages = await db
-        .select()
-        .from(message)
-        .where(
-          and(eq(message.threadId, thread.id), eq(message.transportId, transportId)),
-        )
-        .orderBy(asc(message.receivedAt));
-      const messageIds = messages.map((m) => m.id);
-      const attachmentRows =
-        messageIds.length > 0
-          ? await db
-              .select({
-                messageId: attachment.messageId,
-                attachmentId: attachment.id,
-                filename: attachment.filename,
-                mimeType: attachment.mimeType,
-                size: attachment.sizeBytes,
-              })
-              .from(attachment)
-              .where(inArray(attachment.messageId, messageIds))
-          : [];
-      const attachmentsByMessage = new Map<string, typeof attachmentRows>();
-      for (const row of attachmentRows) {
-        const list = attachmentsByMessage.get(row.messageId) ?? [];
-        list.push(row);
-        attachmentsByMessage.set(row.messageId, list);
-      }
-      const parsedMessages = messages.map((m) => {
-        const parsed = toParsedMessage(m, attachmentsByMessage.get(m.id) ?? []);
-        if (transportId !== 'transport-nava') return parsed;
-        return {
-          ...parsed,
-          debugHeaders: buildMetadataDebugHeaders(m, ctx.transportEmail),
-        };
-      });
-      const hasUnread = parsedMessages.some((m) => m.unread);
-      const hasReplied = messages.some((m) => m.direction === 'outbound');
-      const labels = await db
-        .select({ id: mailLabel.id, name: mailLabel.name })
-        .from(mailLabel)
-        .where(eq(mailLabel.transportId, transportId));
-      const threadLabelIds = new Set(thread.labelIds ?? []);
-      const threadLabels = labels.filter((l) => threadLabelIds.has(l.id));
-      const latest = parsedMessages[parsedMessages.length - 1];
+  get: mailboxProcedure.input(z.object({ id: z.string() })).query(async ({ input, ctx }) => {
+    const db = getDb();
+    const transportId = ctx.activeTransportId;
+    const thread = await requireThreadForTransport(db, input.id, transportId);
+    const messages = await db
+      .select()
+      .from(message)
+      .where(and(eq(message.threadId, thread.id), eq(message.transportId, transportId)))
+      .orderBy(asc(message.receivedAt));
+    const messageIds = messages.map((m) => m.id);
+    const attachmentRows =
+      messageIds.length > 0
+        ? await db
+            .select({
+              messageId: attachment.messageId,
+              attachmentId: attachment.id,
+              filename: attachment.filename,
+              mimeType: attachment.mimeType,
+              size: attachment.sizeBytes,
+            })
+            .from(attachment)
+            .where(inArray(attachment.messageId, messageIds))
+        : [];
+    const attachmentsByMessage = new Map<string, typeof attachmentRows>();
+    for (const row of attachmentRows) {
+      const list = attachmentsByMessage.get(row.messageId) ?? [];
+      list.push(row);
+      attachmentsByMessage.set(row.messageId, list);
+    }
+    const parsedMessages = messages.map((m) => {
+      const parsed = toParsedMessage(m, attachmentsByMessage.get(m.id) ?? []);
+      if (transportId !== 'transport-nava') return parsed;
+      return {
+        ...parsed,
+        debugHeaders: buildMetadataDebugHeaders(m, ctx.transportEmail),
+      };
+    });
+    const hasUnread = parsedMessages.some((m) => m.unread);
+    const hasReplied = messages.some((m) => m.direction === 'outbound');
+    const labels = await db
+      .select({ id: mailLabel.id, name: mailLabel.name })
+      .from(mailLabel)
+      .where(eq(mailLabel.transportId, transportId));
+    const threadLabelIds = new Set(thread.labelIds ?? []);
+    const threadLabels = labels.filter((l) => threadLabelIds.has(l.id));
+    const latest = parsedMessages[parsedMessages.length - 1];
 
-      const draftRows = await db
-        .select()
-        .from(mailDraft)
-        .where(
-          and(
-            eq(mailDraft.threadId, input.id),
-            eq(mailDraft.transportId, transportId),
-            eq(mailDraft.isSent, false),
-            inArray(mailDraft.status, ['active', 'candidate']),
-          ),
-        )
-        .orderBy(
-          sql`CASE ${mailDraft.status} WHEN 'active' THEN 0 WHEN 'candidate' THEN 1 ELSE 2 END`,
-          desc(mailDraft.updatedAt),
-          desc(mailDraft.id),
-        );
-
-      const messageById = new Map(messages.map((row) => [row.id, row]));
-      const latestInbound = messages
-        .filter((row) => row.direction === 'inbound')
-        .toSorted((a, b) => {
-          const aTime = (a.receivedAt ?? a.createdAt).getTime();
-          const bTime = (b.receivedAt ?? b.createdAt).getTime();
-          return bTime - aTime;
-        })[0];
-      const latestInboundTime = latestInbound?.receivedAt ?? latestInbound?.createdAt ?? null;
-
-      const drafts = draftRows.map((draft) => {
-        const parent = draft.replyToMessageId ? messageById.get(draft.replyToMessageId) : undefined;
-        const parentTime = parent?.receivedAt ?? parent?.sentAt ?? parent?.createdAt ?? null;
-        const isStale =
-          parentTime !== null &&
-          latestInboundTime !== null &&
-          latestInboundTime.getTime() > parentTime.getTime();
-        return toDraftWire(draft, isStale);
-      });
-
-      const { categoryIds, categories } = await loadThreadCategoriesForGet(
-        db,
-        transportId,
-        thread.id,
+    const draftRows = await db
+      .select()
+      .from(mailDraft)
+      .where(
+        and(
+          eq(mailDraft.threadId, input.id),
+          eq(mailDraft.transportId, transportId),
+          eq(mailDraft.isSent, false),
+          inArray(mailDraft.status, ['active', 'candidate']),
+        ),
+      )
+      .orderBy(
+        sql`CASE ${mailDraft.status} WHEN 'active' THEN 0 WHEN 'candidate' THEN 1 ELSE 2 END`,
+        desc(mailDraft.updatedAt),
+        desc(mailDraft.id),
       );
 
-      return {
-        id: thread.id,
-        transportId: thread.transportId,
-        subject: thread.subject,
-        snippet: thread.snippet,
-        isArchived: thread.isArchived,
-        isStarred: thread.isStarred,
-        isRead: thread.isRead,
-        labelIds: thread.labelIds,
-        snoozedUntil: thread.snoozedUntil,
-        latestMessageAt: thread.latestMessageAt,
-        messages: parsedMessages,
-        latest,
-        hasUnread,
-        hasReplied,
-        totalReplies: Math.max(0, parsedMessages.length - 1),
-        labels: threadLabels,
-        drafts,
-        categoryIds,
-        categories,
-      };
-    }),
+    const messageById = new Map(messages.map((row) => [row.id, row]));
+    const latestInbound = messages
+      .filter((row) => row.direction === 'inbound')
+      .toSorted((a, b) => {
+        const aTime = (a.receivedAt ?? a.createdAt).getTime();
+        const bTime = (b.receivedAt ?? b.createdAt).getTime();
+        return bTime - aTime;
+      })[0];
+    const latestInboundTime = latestInbound?.receivedAt ?? latestInbound?.createdAt ?? null;
 
-  markAsRead: mailboxProcedure
-    .input(bulkIdsInput)
-    .mutation(async ({ input, ctx }) => {
-      const db = getDb();
-      const transportId = ctx.activeTransportId;
-      const visibleIds = await resolveVisibleThreadIds(db, transportId, input.threadIds);
-      if (visibleIds.length === 0) return { updated: 0 };
-      await markThreadRead(db, transportId, visibleIds);
-      return { updated: visibleIds.length };
-    }),
+    const drafts = draftRows.map((draft) => {
+      const parent = draft.replyToMessageId ? messageById.get(draft.replyToMessageId) : undefined;
+      const parentTime = parent?.receivedAt ?? parent?.sentAt ?? parent?.createdAt ?? null;
+      const isStale =
+        parentTime !== null &&
+        latestInboundTime !== null &&
+        latestInboundTime.getTime() > parentTime.getTime();
+      return toDraftWire(draft, isStale);
+    });
 
-  markAsUnread: mailboxProcedure
-    .input(bulkIdsInput)
-    .mutation(async ({ input, ctx }) => {
-      const db = getDb();
-      const transportId = ctx.activeTransportId;
-      const visibleIds = await resolveVisibleThreadIds(db, transportId, input.threadIds);
-      if (visibleIds.length === 0) return { updated: 0 };
-      for (const id of visibleIds) {
-        await db
-          .update(mailThread)
-          .set({ isRead: false, updatedAt: new Date() })
-          .where(and(eq(mailThread.id, id), eq(mailThread.transportId, transportId)));
-        await db
-          .update(message)
-          .set({ isRead: false, updatedAt: new Date() })
-          .where(
-            and(eq(message.threadId, id), eq(message.transportId, transportId)),
-          );
+    const { categoryIds, categories } = await loadThreadCategoriesForGet(
+      db,
+      transportId,
+      thread.id,
+    );
+
+    return {
+      id: thread.id,
+      transportId: thread.transportId,
+      subject: thread.subject,
+      snippet: thread.snippet,
+      isArchived: thread.isArchived,
+      isStarred: thread.isStarred,
+      isRead: thread.isRead,
+      labelIds: thread.labelIds,
+      snoozedUntil: thread.snoozedUntil,
+      latestMessageAt: thread.latestMessageAt,
+      messages: parsedMessages,
+      latest,
+      hasUnread,
+      hasReplied,
+      totalReplies: Math.max(0, parsedMessages.length - 1),
+      labels: threadLabels,
+      drafts,
+      categoryIds,
+      categories,
+    };
+  }),
+
+  markAsRead: mailboxProcedure.input(bulkIdsInput).mutation(async ({ input, ctx }) => {
+    const db = getDb();
+    const transportId = ctx.activeTransportId;
+    const visibleIds = await resolveVisibleThreadIds(db, transportId, input.threadIds);
+    if (visibleIds.length === 0) return { updated: 0 };
+    await markThreadRead(db, transportId, visibleIds);
+    return { updated: visibleIds.length };
+  }),
+
+  markAsUnread: mailboxProcedure.input(bulkIdsInput).mutation(async ({ input, ctx }) => {
+    const db = getDb();
+    const transportId = ctx.activeTransportId;
+    const visibleIds = await resolveVisibleThreadIds(db, transportId, input.threadIds);
+    if (visibleIds.length === 0) return { updated: 0 };
+    for (const id of visibleIds) {
+      await db
+        .update(mailThread)
+        .set({ isRead: false, updatedAt: new Date() })
+        .where(and(eq(mailThread.id, id), eq(mailThread.transportId, transportId)));
+      await db
+        .update(message)
+        .set({ isRead: false, updatedAt: new Date() })
+        .where(and(eq(message.threadId, id), eq(message.transportId, transportId)));
+    }
+    return { updated: visibleIds.length };
+  }),
+
+  toggleStar: mailboxProcedure.input(bulkIdsInput).mutation(async ({ input, ctx }) => {
+    const db = getDb();
+    const transportId = ctx.activeTransportId;
+    const visibleIds = await resolveVisibleThreadIds(db, transportId, input.threadIds);
+    if (visibleIds.length === 0) return { updated: 0 };
+    const rows = await db
+      .select({ id: mailThread.id, isStarred: mailThread.isStarred })
+      .from(mailThread)
+      .where(and(eq(mailThread.transportId, transportId), inArray(mailThread.id, visibleIds)));
+    const targetStarred = rows.some((r) => !r.isStarred);
+    for (const row of rows) {
+      await db
+        .update(mailThread)
+        .set({ isStarred: targetStarred, updatedAt: new Date() })
+        .where(and(eq(mailThread.id, row.id), eq(mailThread.transportId, transportId)));
+    }
+    return { updated: rows.length };
+  }),
+
+  toggleImportant: mailboxProcedure.input(bulkIdsInput).mutation(async ({ input, ctx }) => {
+    const db = getDb();
+    const transportId = ctx.activeTransportId;
+    const visibleIds = await resolveVisibleThreadIds(db, transportId, input.threadIds);
+    if (visibleIds.length === 0) return { updated: 0 };
+    const IMPORTANT = 'IMPORTANT';
+    for (const id of visibleIds) {
+      const row = await requireThreadForTransport(db, id, transportId);
+      const current = new Set(row.labelIds ?? []);
+      let next: string[];
+      if (current.has(IMPORTANT)) {
+        current.delete(IMPORTANT);
+        next = [...current];
+      } else {
+        current.add(IMPORTANT);
+        next = [...current];
       }
-      return { updated: visibleIds.length };
-    }),
+      await db
+        .update(mailThread)
+        .set({ labelIds: next, updatedAt: new Date() })
+        .where(and(eq(mailThread.id, id), eq(mailThread.transportId, transportId)));
+    }
+    return { updated: visibleIds.length };
+  }),
 
-  toggleStar: mailboxProcedure
-    .input(bulkIdsInput)
-    .mutation(async ({ input, ctx }) => {
-      const db = getDb();
-      const transportId = ctx.activeTransportId;
-      const visibleIds = await resolveVisibleThreadIds(db, transportId, input.threadIds);
-      if (visibleIds.length === 0) return { updated: 0 };
-      const rows = await db
-        .select({ id: mailThread.id, isStarred: mailThread.isStarred })
-        .from(mailThread)
-        .where(
-          and(eq(mailThread.transportId, transportId), inArray(mailThread.id, visibleIds)),
-        );
-      const targetStarred = rows.some((r) => !r.isStarred);
-      for (const row of rows) {
-        await db
-          .update(mailThread)
-          .set({ isStarred: targetStarred, updatedAt: new Date() })
-          .where(and(eq(mailThread.id, row.id), eq(mailThread.transportId, transportId)));
+  modifyLabels: mailboxProcedure.input(modifyLabelsInput).mutation(async ({ input, ctx }) => {
+    const db = getDb();
+    const transportId = ctx.activeTransportId;
+    const visibleIds = await resolveVisibleThreadIds(db, transportId, input.threadIds);
+    if (visibleIds.length === 0) return { updated: 0 };
+    const addSet = new Set(input.addLabels);
+    const removeSet = new Set(input.removeLabels);
+    const trashAdded = addSet.delete('TRASH');
+    const trashRemoved = removeSet.delete('TRASH');
+    addSet.delete('INBOX');
+    removeSet.delete('INBOX');
+    removeSet.delete('SENT');
+    removeSet.delete('SPAM');
+    removeSet.delete('SNOOZED');
+    addSet.delete('SENT');
+    addSet.delete('SPAM');
+    addSet.delete('SNOOZED');
+    for (const id of visibleIds) {
+      const row = await requireThreadForTransport(db, id, transportId);
+      const current = new Set(row.labelIds ?? []);
+      for (const a of addSet) current.add(a);
+      for (const r of removeSet) current.delete(r);
+      const patch: {
+        labelIds: string[];
+        updatedAt: Date;
+        trashedAt?: Date | null;
+        spamAt?: Date | null;
+      } = { labelIds: [...current], updatedAt: new Date() };
+      if (trashAdded) {
+        patch.trashedAt = new Date();
+        patch.spamAt = null;
       }
-      return { updated: rows.length };
-    }),
-
-  toggleImportant: mailboxProcedure
-    .input(bulkIdsInput)
-    .mutation(async ({ input, ctx }) => {
-      const db = getDb();
-      const transportId = ctx.activeTransportId;
-      const visibleIds = await resolveVisibleThreadIds(db, transportId, input.threadIds);
-      if (visibleIds.length === 0) return { updated: 0 };
-      const IMPORTANT = 'IMPORTANT';
-      for (const id of visibleIds) {
-        const row = await requireThreadForTransport(db, id, transportId);
-        const current = new Set(row.labelIds ?? []);
-        let next: string[];
-        if (current.has(IMPORTANT)) {
-          current.delete(IMPORTANT);
-          next = [...current];
-        } else {
-          current.add(IMPORTANT);
-          next = [...current];
-        }
-        await db
-          .update(mailThread)
-          .set({ labelIds: next, updatedAt: new Date() })
-          .where(and(eq(mailThread.id, id), eq(mailThread.transportId, transportId)));
-      }
-      return { updated: visibleIds.length };
-    }),
-
-  modifyLabels: mailboxProcedure
-    .input(modifyLabelsInput)
-    .mutation(async ({ input, ctx }) => {
-      const db = getDb();
-      const transportId = ctx.activeTransportId;
-      const visibleIds = await resolveVisibleThreadIds(db, transportId, input.threadIds);
-      if (visibleIds.length === 0) return { updated: 0 };
-      const addSet = new Set(input.addLabels);
-      const removeSet = new Set(input.removeLabels);
-      const trashAdded = addSet.delete('TRASH');
-      const trashRemoved = removeSet.delete('TRASH');
-      addSet.delete('INBOX');
-      removeSet.delete('INBOX');
-      removeSet.delete('SENT');
-      removeSet.delete('SPAM');
-      removeSet.delete('SNOOZED');
-      addSet.delete('SENT');
-      addSet.delete('SPAM');
-      addSet.delete('SNOOZED');
-      for (const id of visibleIds) {
-        const row = await requireThreadForTransport(db, id, transportId);
-        const current = new Set(row.labelIds ?? []);
-        for (const a of addSet) current.add(a);
-        for (const r of removeSet) current.delete(r);
-        const patch: {
-          labelIds: string[];
-          updatedAt: Date;
-          trashedAt?: Date | null;
-          spamAt?: Date | null;
-        } = { labelIds: [...current], updatedAt: new Date() };
-        if (trashAdded) {
-          patch.trashedAt = new Date();
-          patch.spamAt = null;
-        }
-        if (trashRemoved) patch.trashedAt = null;
-        await db
-          .update(mailThread)
-          .set(patch)
-          .where(and(eq(mailThread.id, id), eq(mailThread.transportId, transportId)));
-      }
-      return { updated: visibleIds.length };
-    }),
+      if (trashRemoved) patch.trashedAt = null;
+      await db
+        .update(mailThread)
+        .set(patch)
+        .where(and(eq(mailThread.id, id), eq(mailThread.transportId, transportId)));
+    }
+    return { updated: visibleIds.length };
+  }),
 
   fileThreads: mailboxProcedure
     .input(
@@ -816,9 +776,7 @@ export const mailRouter = tRouter({
       const labelRows = await db
         .select({ id: mailLabel.id })
         .from(mailLabel)
-        .where(
-          and(eq(mailLabel.id, input.labelId), eq(mailLabel.transportId, transportId)),
-        )
+        .where(and(eq(mailLabel.id, input.labelId), eq(mailLabel.transportId, transportId)))
         .limit(1);
       if (labelRows.length === 0) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'NOT_FOUND: label not found' });
@@ -857,79 +815,75 @@ export const mailRouter = tRouter({
       return { updated: visibleIds.length };
     }),
 
-  moveThreads: mailboxProcedure
-    .input(moveThreadsInput)
-    .mutation(async ({ input, ctx }) => {
-      const db = getDb();
-      const transportId = ctx.activeTransportId;
-      const visibleIds = await resolveVisibleThreadIds(db, transportId, input.threadIds);
-      if (visibleIds.length === 0) return { updated: 0, preferences: [] };
+  moveThreads: mailboxProcedure.input(moveThreadsInput).mutation(async ({ input, ctx }) => {
+    const db = getDb();
+    const transportId = ctx.activeTransportId;
+    const visibleIds = await resolveVisibleThreadIds(db, transportId, input.threadIds);
+    if (visibleIds.length === 0) return { updated: 0, preferences: [] };
 
-      const patch: Partial<typeof mailThread.$inferInsert> = { updatedAt: new Date() };
-      if (input.destination === 'archive') {
-        patch.isArchived = true;
-        patch.trashedAt = null;
-        patch.spamAt = null;
-      }
-      if (input.destination === 'bin') {
-        patch.trashedAt = new Date();
-        patch.spamAt = null;
-        patch.isArchived = false;
-      }
-      if (input.destination === 'spam') {
-        patch.spamAt = new Date();
-        patch.spamUserLockedAt = new Date();
-        patch.trashedAt = null;
-        patch.isArchived = false;
-      }
-      if (input.destination === 'inbox') {
-        patch.isArchived = false;
-        patch.trashedAt = null;
-        patch.spamAt = null;
-        patch.spamUserLockedAt = new Date();
-        patch.snoozedUntil = null;
-      }
+    const patch: Partial<typeof mailThread.$inferInsert> = { updatedAt: new Date() };
+    if (input.destination === 'archive') {
+      patch.isArchived = true;
+      patch.trashedAt = null;
+      patch.spamAt = null;
+    }
+    if (input.destination === 'bin') {
+      patch.trashedAt = new Date();
+      patch.spamAt = null;
+      patch.isArchived = false;
+    }
+    if (input.destination === 'spam') {
+      patch.spamAt = new Date();
+      patch.spamUserLockedAt = new Date();
+      patch.trashedAt = null;
+      patch.isArchived = false;
+    }
+    if (input.destination === 'inbox') {
+      patch.isArchived = false;
+      patch.trashedAt = null;
+      patch.spamAt = null;
+      patch.spamUserLockedAt = new Date();
+      patch.snoozedUntil = null;
+    }
 
+    await db
+      .update(mailThread)
+      .set(patch)
+      .where(and(eq(mailThread.transportId, transportId), inArray(mailThread.id, visibleIds)));
+
+    const preferences: { email: string; kind: 'block' | 'allow' }[] = [];
+    if (input.destination === 'spam' || input.destination === 'inbox') {
+      const kind = input.destination === 'spam' ? 'block' : 'allow';
+      for (const threadId of visibleIds) {
+        const fromAddress = await getLatestInboundFromAddress(db, transportId, threadId);
+        if (!fromAddress) continue;
+        preferences.push(
+          await upsertSenderPreference({
+            db,
+            transportId,
+            emailRaw: fromAddress,
+            kind,
+          }),
+        );
+      }
+    }
+
+    return { updated: visibleIds.length, preferences };
+  }),
+
+  bulkArchive: mailboxProcedure.input(bulkIdsInput).mutation(async ({ input, ctx }) => {
+    const db = getDb();
+    const transportId = ctx.activeTransportId;
+    const visibleIds = await resolveVisibleThreadIds(db, transportId, input.threadIds);
+    if (visibleIds.length === 0) return { updated: 0 };
+    for (const id of visibleIds) {
       await db
         .update(mailThread)
-        .set(patch)
-        .where(and(eq(mailThread.transportId, transportId), inArray(mailThread.id, visibleIds)));
-
-      const preferences: { email: string; kind: 'block' | 'allow' }[] = [];
-      if (input.destination === 'spam' || input.destination === 'inbox') {
-        const kind = input.destination === 'spam' ? 'block' : 'allow';
-        for (const threadId of visibleIds) {
-          const fromAddress = await getLatestInboundFromAddress(db, transportId, threadId);
-          if (!fromAddress) continue;
-          preferences.push(
-            await upsertSenderPreference({
-              db,
-              transportId,
-              emailRaw: fromAddress,
-              kind,
-            }),
-          );
-        }
-      }
-
-      return { updated: visibleIds.length, preferences };
-    }),
-
-  bulkArchive: mailboxProcedure
-    .input(bulkIdsInput)
-    .mutation(async ({ input, ctx }) => {
-      const db = getDb();
-      const transportId = ctx.activeTransportId;
-      const visibleIds = await resolveVisibleThreadIds(db, transportId, input.threadIds);
-      if (visibleIds.length === 0) return { updated: 0 };
-      for (const id of visibleIds) {
-        await db
-          .update(mailThread)
-          .set({ isArchived: true, updatedAt: new Date() })
-          .where(and(eq(mailThread.id, id), eq(mailThread.transportId, transportId)));
-      }
-      return { updated: visibleIds.length };
-    }),
+        .set({ isArchived: true, updatedAt: new Date() })
+        .where(and(eq(mailThread.id, id), eq(mailThread.transportId, transportId)));
+    }
+    return { updated: visibleIds.length };
+  }),
 
   bulkDelete: mailboxProcedure
     .input(
@@ -971,61 +925,51 @@ export const mailRouter = tRouter({
       return { updated: visibleIds.length };
     }),
 
-  delete: mailboxProcedure
-    .input(z.object({ id: z.string() }))
-    .mutation(async ({ input, ctx }) => {
-      const db = getDb();
-      const transportId = ctx.activeTransportId;
-      const row = await requireThreadForTransport(db, input.id, transportId);
-      if (row.trashedAt) {
-        await db
-          .delete(mailThread)
-          .where(
-            and(eq(mailThread.id, input.id), eq(mailThread.transportId, transportId)),
-          );
-      } else {
-        await db
-          .update(mailThread)
-          .set({ trashedAt: new Date(), spamAt: null, updatedAt: new Date() })
-          .where(
-            and(eq(mailThread.id, input.id), eq(mailThread.transportId, transportId)),
-          );
-      }
-      return { deleted: true };
-    }),
+  delete: mailboxProcedure.input(z.object({ id: z.string() })).mutation(async ({ input, ctx }) => {
+    const db = getDb();
+    const transportId = ctx.activeTransportId;
+    const row = await requireThreadForTransport(db, input.id, transportId);
+    if (row.trashedAt) {
+      await db
+        .delete(mailThread)
+        .where(and(eq(mailThread.id, input.id), eq(mailThread.transportId, transportId)));
+    } else {
+      await db
+        .update(mailThread)
+        .set({ trashedAt: new Date(), spamAt: null, updatedAt: new Date() })
+        .where(and(eq(mailThread.id, input.id), eq(mailThread.transportId, transportId)));
+    }
+    return { deleted: true };
+  }),
 
-  snoozeThreads: mailboxProcedure
-    .input(snoozeThreadsInput)
-    .mutation(async ({ input, ctx }) => {
-      const db = getDb();
-      const transportId = ctx.activeTransportId;
-      const until = new Date(input.snoozedUntil);
-      const visibleIds = await resolveVisibleThreadIds(db, transportId, input.threadIds);
-      if (visibleIds.length === 0) return { updated: 0 };
-      for (const id of visibleIds) {
-        await db
-          .update(mailThread)
-          .set({ snoozedUntil: until, updatedAt: new Date() })
-          .where(and(eq(mailThread.id, id), eq(mailThread.transportId, transportId)));
-      }
-      return { updated: visibleIds.length };
-    }),
+  snoozeThreads: mailboxProcedure.input(snoozeThreadsInput).mutation(async ({ input, ctx }) => {
+    const db = getDb();
+    const transportId = ctx.activeTransportId;
+    const until = new Date(input.snoozedUntil);
+    const visibleIds = await resolveVisibleThreadIds(db, transportId, input.threadIds);
+    if (visibleIds.length === 0) return { updated: 0 };
+    for (const id of visibleIds) {
+      await db
+        .update(mailThread)
+        .set({ snoozedUntil: until, updatedAt: new Date() })
+        .where(and(eq(mailThread.id, id), eq(mailThread.transportId, transportId)));
+    }
+    return { updated: visibleIds.length };
+  }),
 
-  unsnoozeThreads: mailboxProcedure
-    .input(bulkIdsInput)
-    .mutation(async ({ input, ctx }) => {
-      const db = getDb();
-      const transportId = ctx.activeTransportId;
-      const visibleIds = await resolveVisibleThreadIds(db, transportId, input.threadIds);
-      if (visibleIds.length === 0) return { updated: 0 };
-      for (const id of visibleIds) {
-        await db
-          .update(mailThread)
-          .set({ snoozedUntil: null, updatedAt: new Date() })
-          .where(and(eq(mailThread.id, id), eq(mailThread.transportId, transportId)));
-      }
-      return { updated: visibleIds.length };
-    }),
+  unsnoozeThreads: mailboxProcedure.input(bulkIdsInput).mutation(async ({ input, ctx }) => {
+    const db = getDb();
+    const transportId = ctx.activeTransportId;
+    const visibleIds = await resolveVisibleThreadIds(db, transportId, input.threadIds);
+    if (visibleIds.length === 0) return { updated: 0 };
+    for (const id of visibleIds) {
+      await db
+        .update(mailThread)
+        .set({ snoozedUntil: null, updatedAt: new Date() })
+        .where(and(eq(mailThread.id, id), eq(mailThread.transportId, transportId)));
+    }
+    return { updated: visibleIds.length };
+  }),
 
   /** Soft-trash every spam folder thread for the active transport (clear spamAt). */
   emptySpam: mailboxProcedure.mutation(async ({ ctx }) => {
@@ -1057,301 +1001,310 @@ export const mailRouter = tRouter({
    * Uses fake SMTP transport in pilot pass; production adapter interface is
    * ready for Exchange Send As / SMTP relay when real mail is enabled.
    */
-  send: mailboxProcedure
-    .input(sendInput)
-    .mutation(async ({ input, ctx }) => {
-      assertSafeOutboundFields({
-        to: input.to,
-        cc: input.cc,
-        bcc: input.bcc,
-        subject: input.subject,
-      });
-      if (input.fromEmail) {
-        const bareFrom = parseFromEmail(input.fromEmail);
-        if (bareFrom !== ctx.transportEmail) {
-          throw new TRPCError({ code: 'FORBIDDEN', message: 'FORBIDDEN: spoofed from address' });
-        }
+  send: mailboxProcedure.input(sendInput).mutation(async ({ input, ctx }) => {
+    assertSafeOutboundFields({
+      to: input.to,
+      cc: input.cc,
+      bcc: input.bcc,
+      subject: input.subject,
+    });
+    if (input.fromEmail) {
+      const bareFrom = parseFromEmail(input.fromEmail);
+      if (bareFrom !== ctx.transportEmail) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'FORBIDDEN: spoofed from address' });
       }
-      const db = getDb();
-      const transportId = ctx.activeTransportId;
-      let threadId = input.threadId;
-      let selectedMessage: {
-        messageIdHeader: string | null;
-        references: string[] | null;
-      } | null = null;
-      let latestThreadPrior: {
-        messageIdHeader: string | null;
-        references: string[] | null;
-      } | null = null;
+    }
+    const db = getDb();
+    const transportId = ctx.activeTransportId;
+    let threadId = input.threadId;
+    let selectedMessage: {
+      messageIdHeader: string | null;
+      references: string[] | null;
+    } | null = null;
+    let latestThreadPrior: {
+      messageIdHeader: string | null;
+      references: string[] | null;
+    } | null = null;
 
-      if (threadId) {
-        await requireThreadForTransport(db, threadId, transportId);
-        if (input.replyToMessageId) {
-          const selected = await db
-            .select({
-              messageIdHeader: message.messageIdHeader,
-              references: message.references,
-            })
-            .from(message)
-            .where(
-              and(
-                eq(message.id, input.replyToMessageId),
-                eq(message.threadId, threadId),
-                eq(message.transportId, transportId),
-              ),
-            )
-            .limit(1);
-          if (!selected[0]) {
-            throw new TRPCError({ code: 'NOT_FOUND', message: 'REPLY_TO_MESSAGE_NOT_FOUND' });
-          }
-          selectedMessage = selected[0]!;
-        } else if (!input.inReplyTo) {
-          const prior = await db
-            .select({
-              messageIdHeader: message.messageIdHeader,
-              references: message.references,
-            })
-            .from(message)
-            .where(
-              and(eq(message.threadId, threadId), eq(message.transportId, transportId)),
-            )
-            .orderBy(desc(message.receivedAt))
-            .limit(1);
-          latestThreadPrior = prior[0] ?? null;
-        }
-      } else {
-        threadId = randomUUID();
-        await db.insert(mailThread).values({
-          id: threadId,
-          transportId,
-          threadRootId: `outbound-${threadId}`,
-          subject: input.subject || null,
-          snippet: input.text.slice(0, 200) || input.subject || '',
-          isArchived: false,
-          isStarred: false,
-          isRead: true,
-          labelIds: [],
-          latestMessageAt: new Date(),
-        });
-      }
-
-      let sendingDraft: typeof mailDraft.$inferSelect | null = null;
-      if (input.draftId) {
-        const draftRows = await db
-          .select()
-          .from(mailDraft)
+    if (threadId) {
+      await requireThreadForTransport(db, threadId, transportId);
+      if (input.replyToMessageId) {
+        const selected = await db
+          .select({
+            messageIdHeader: message.messageIdHeader,
+            references: message.references,
+          })
+          .from(message)
           .where(
             and(
-              eq(mailDraft.id, input.draftId),
-              eq(mailDraft.transportId, transportId),
-              eq(mailDraft.isSent, false),
-              eq(mailDraft.status, 'active'),
+              eq(message.id, input.replyToMessageId),
+              eq(message.threadId, threadId),
+              eq(message.transportId, transportId),
             ),
           )
           .limit(1);
-        sendingDraft = draftRows[0] ?? null;
-        if (!sendingDraft) {
-          throw new TRPCError({ code: 'NOT_FOUND', message: 'DRAFT_NOT_FOUND' });
+        if (!selected[0]) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'REPLY_TO_MESSAGE_NOT_FOUND' });
         }
-        if (threadId && sendingDraft.replyToMessageId) {
-          const parentRows = await db
-            .select({ receivedAt: message.receivedAt, sentAt: message.sentAt, createdAt: message.createdAt })
+        selectedMessage = selected[0]!;
+      } else if (!input.inReplyTo) {
+        const prior = await db
+          .select({
+            messageIdHeader: message.messageIdHeader,
+            references: message.references,
+          })
+          .from(message)
+          .where(and(eq(message.threadId, threadId), eq(message.transportId, transportId)))
+          .orderBy(desc(message.receivedAt))
+          .limit(1);
+        latestThreadPrior = prior[0] ?? null;
+      }
+    } else {
+      threadId = randomUUID();
+      await db.insert(mailThread).values({
+        id: threadId,
+        transportId,
+        threadRootId: `outbound-${threadId}`,
+        subject: input.subject || null,
+        snippet: input.text.slice(0, 200) || input.subject || '',
+        isArchived: false,
+        isStarred: false,
+        isRead: true,
+        labelIds: [],
+        latestMessageAt: new Date(),
+      });
+    }
+
+    let sendingDraft: typeof mailDraft.$inferSelect | null = null;
+    if (input.draftId) {
+      const draftRows = await db
+        .select()
+        .from(mailDraft)
+        .where(
+          and(
+            eq(mailDraft.id, input.draftId),
+            eq(mailDraft.transportId, transportId),
+            eq(mailDraft.isSent, false),
+            eq(mailDraft.status, 'active'),
+          ),
+        )
+        .limit(1);
+      sendingDraft = draftRows[0] ?? null;
+      if (!sendingDraft) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'DRAFT_NOT_FOUND' });
+      }
+      if (threadId && sendingDraft.replyToMessageId) {
+        const parentRows = await db
+          .select({
+            receivedAt: message.receivedAt,
+            sentAt: message.sentAt,
+            createdAt: message.createdAt,
+          })
+          .from(message)
+          .where(
+            and(
+              eq(message.id, sendingDraft.replyToMessageId),
+              eq(message.transportId, transportId),
+              eq(message.threadId, threadId),
+            ),
+          )
+          .limit(1);
+        const parent = parentRows[0];
+        const parentTime = parent?.receivedAt ?? parent?.sentAt ?? parent?.createdAt ?? null;
+        let hasNewerInbound = false;
+        if (parentTime) {
+          const inboundRows = await db
+            .select({ receivedAt: message.receivedAt, createdAt: message.createdAt })
             .from(message)
             .where(
               and(
-                eq(message.id, sendingDraft.replyToMessageId),
-                eq(message.transportId, transportId),
                 eq(message.threadId, threadId),
+                eq(message.transportId, transportId),
+                eq(message.direction, 'inbound'),
               ),
-            )
-            .limit(1);
-          const parent = parentRows[0];
-          const parentTime = parent?.receivedAt ?? parent?.sentAt ?? parent?.createdAt ?? null;
-          let hasNewerInbound = false;
-          if (parentTime) {
-            const inboundRows = await db
-              .select({ receivedAt: message.receivedAt, createdAt: message.createdAt })
-              .from(message)
-              .where(
-                and(
-                  eq(message.threadId, threadId),
-                  eq(message.transportId, transportId),
-                  eq(message.direction, 'inbound'),
-                ),
-              );
-            hasNewerInbound = inboundRows.some((row) => {
-              const rowTime = row.receivedAt ?? row.createdAt;
-              return rowTime.getTime() > parentTime.getTime();
-            });
-          }
-          // HMS-enriched AI drafts: evidence/thread freshness cannot use confirmStaleDraft.
-          await assertHmsDraftFreshForAction({
-            db,
-            transportId,
-            draft: sendingDraft,
-            conflict: 'STALE_AI_DRAFT',
+            );
+          hasNewerInbound = inboundRows.some((row) => {
+            const rowTime = row.receivedAt ?? row.createdAt;
+            return rowTime.getTime() > parentTime.getTime();
           });
-          if (hasNewerInbound && !input.confirmStaleDraft) {
-            throw new TRPCError({ code: 'CONFLICT', message: 'STALE_DRAFT' });
-          }
+        }
+        // HMS-enriched AI drafts: evidence/thread freshness cannot use confirmStaleDraft.
+        await assertHmsDraftFreshForAction({
+          db,
+          transportId,
+          draft: sendingDraft,
+          conflict: 'STALE_AI_DRAFT',
+        });
+        if (hasNewerInbound && !input.confirmStaleDraft) {
+          throw new TRPCError({ code: 'CONFLICT', message: 'STALE_DRAFT' });
         }
       }
+    }
 
-      const { inReplyTo, references } = resolveReplyHeaders({
-        selectedMessage,
-        explicitInReplyTo: input.inReplyTo,
-        explicitReferences: input.references,
-        latestThreadPrior,
-      });
+    const { inReplyTo, references } = resolveReplyHeaders({
+      selectedMessage,
+      explicitInReplyTo: input.inReplyTo,
+      explicitReferences: input.references,
+      latestThreadPrior,
+    });
 
-      const smtpAttachments = (input.attachments ?? []).map((a) => ({
-        filename: a.name,
-        content: Buffer.from(a.base64, 'base64'),
-        contentType: a.type,
-      }));
+    const smtpAttachments = (input.attachments ?? []).map((a) => ({
+      filename: a.name,
+      content: Buffer.from(a.base64, 'base64'),
+      contentType: a.type,
+    }));
 
-      // BCC the active mailbox (e.g. Centurion→Centurion) so Zimbra/Outlook can
-      // file a Sent copy via filter. Covers every FE/API caller of mail.send.
-      // Disabled when MAIL_SELF_BCC is false/0/off.
-      const bcc = withTransportSelfBcc(input.bcc ?? [], ctx.transportEmail);
+    // BCC the active mailbox (e.g. Centurion→Centurion) so Zimbra/Outlook can
+    // file a Sent copy via filter. Covers every FE/API caller of mail.send.
+    // Disabled when MAIL_SELF_BCC is false/0/off.
+    const bcc = withTransportSelfBcc(input.bcc ?? [], ctx.transportEmail);
 
-      // Outlook Calibri 11pt wrap — same string for DB row + SMTP + draft revision.
-      const html = prepareOutboundHtml(input.html);
-      const messageId = randomUUID();
+    // Outlook Calibri 11pt wrap — same string for DB row + SMTP + draft revision.
+    const html = prepareOutboundHtml(input.html);
+    const messageId = randomUUID();
 
-      const smtpPayload = {
-        from: ctx.transportEmail,
-        to: input.to,
-        cc: input.cc,
-        bcc,
-        subject: input.subject,
-        html,
-        text: input.text,
+    const smtpPayload = {
+      from: ctx.transportEmail,
+      to: input.to,
+      cc: input.cc,
+      bcc,
+      subject: input.subject,
+      html,
+      text: input.text,
+      inReplyTo,
+      references,
+      extraHeaders: {
+        'X-Zero-Mailbox': ctx.transportEmail,
+        'X-Zero-Outbound-Id': messageId,
+      },
+      attachments: smtpAttachments,
+    };
+
+    const undoSecs = getUndoSendSeconds();
+    const now = new Date();
+    const scheduleAtMs = input.scheduleAt ? Date.parse(input.scheduleAt) : NaN;
+    const isUserScheduled = Boolean(input.scheduleAt) && Number.isFinite(scheduleAtMs);
+    const sendAt = isUserScheduled
+      ? new Date(scheduleAtMs)
+      : new Date(now.getTime() + undoSecs * 1000);
+
+    await db.transaction(async (tx) => {
+      await tx.insert(message).values({
+        id: messageId,
+        transportId,
+        threadId,
+        direction: 'outbound',
+        fromAddress: ctx.transportEmail,
+        toAddresses: input.to,
+        ccAddresses: input.cc,
+        bccAddresses: bcc,
+        subject: input.subject || null,
+        textBody: input.text || null,
+        htmlBody: html || null,
+        messageIdHeader: null,
         inReplyTo,
         references,
-        extraHeaders: {
-          'X-Zero-Mailbox': ctx.transportEmail,
-          'X-Zero-Outbound-Id': messageId,
-        },
-        attachments: smtpAttachments,
-      };
-
-      const undoSecs = getUndoSendSeconds();
-      const now = new Date();
-      const scheduleAtMs = input.scheduleAt ? Date.parse(input.scheduleAt) : NaN;
-      const isUserScheduled = Boolean(input.scheduleAt) && Number.isFinite(scheduleAtMs);
-      const sendAt = isUserScheduled
-        ? new Date(scheduleAtMs)
-        : new Date(now.getTime() + undoSecs * 1000);
-
-      await db.transaction(async (tx) => {
-        await tx.insert(message).values({
-          id: messageId,
-          transportId,
-          threadId,
-          direction: 'outbound',
-          fromAddress: ctx.transportEmail,
+        isRead: true,
+        isStarred: false,
+        sentAt: null,
+        receivedAt: now,
+      });
+      await tx
+        .update(mailThread)
+        .set({ latestMessageAt: now, updatedAt: now })
+        .where(and(eq(mailThread.id, threadId), eq(mailThread.transportId, transportId)));
+      await markThreadRead(tx as unknown as typeof db, transportId, [threadId]);
+      await enqueueOutbound({
+        transportId,
+        messageId,
+        sendAt,
+        smtpPayload,
+        db: tx as unknown as typeof db,
+      });
+      if (input.draftId) {
+        await tx
+          .update(mailDraft)
+          .set({
+            isSent: true,
+            status: 'sent',
+            sentMessageId: messageId,
+            updatedAt: now,
+          })
+          .where(and(eq(mailDraft.id, input.draftId), eq(mailDraft.transportId, transportId)));
+        await tx.insert(mailDraftRevision).values({
+          id: randomUUID(),
+          draftId: input.draftId,
+          sentMessageId: messageId,
+          actorUserId: ctx.sessionUser.id,
+          kind: 'sent',
           toAddresses: input.to,
           ccAddresses: input.cc,
           bccAddresses: bcc,
           subject: input.subject || null,
           textBody: input.text || null,
           htmlBody: html || null,
-          messageIdHeader: null,
-          inReplyTo,
-          references,
-          isRead: true,
-          isStarred: false,
-          sentAt: null,
-          receivedAt: now,
+          attachments: (input.attachments ?? []).map((a) => ({
+            filename: a.name,
+            mimeType: a.type,
+            sizeBytes: a.size,
+            s3Key: '',
+          })),
         });
-        await tx
-          .update(mailThread)
-          .set({ latestMessageAt: now, updatedAt: now })
-          .where(and(eq(mailThread.id, threadId), eq(mailThread.transportId, transportId)));
-        await markThreadRead(tx as unknown as typeof db, transportId, [threadId]);
-        await enqueueOutbound({
-          transportId,
-          messageId,
-          sendAt,
-          smtpPayload,
-          db: tx as unknown as typeof db,
-        });
-        if (input.draftId) {
-          await tx
-            .update(mailDraft)
-            .set({
-              isSent: true,
-              status: 'sent',
-              sentMessageId: messageId,
-              updatedAt: now,
-            })
-            .where(
-              and(eq(mailDraft.id, input.draftId), eq(mailDraft.transportId, transportId)),
-            );
-          await tx.insert(mailDraftRevision).values({
-            id: randomUUID(),
-            draftId: input.draftId,
-            sentMessageId: messageId,
-            actorUserId: ctx.sessionUser.id,
-            kind: 'sent',
-            toAddresses: input.to,
-            ccAddresses: input.cc,
-            bccAddresses: bcc,
-            subject: input.subject || null,
-            textBody: input.text || null,
-            htmlBody: html || null,
-            attachments: (input.attachments ?? []).map((a) => ({
-              filename: a.name,
-              mimeType: a.type,
-              sizeBytes: a.size,
-              s3Key: '',
-            })),
-          });
-          if (sendingDraft?.generationId) {
-            await enqueueAiRun(
-              {
-                transportId,
-                threadId,
-                triggerMessageId: messageId,
-                runKind: 'feedback_extraction',
-                idempotencyKey: `feedback:${input.draftId}`,
-                modelId: DEFAULT_AI_MODEL_ID,
-                promptVersion: DEFAULT_FEEDBACK_PROMPT_VERSION,
-              },
-              tx as unknown as typeof db,
-            );
-          }
+        if (sendingDraft?.generationId) {
+          await enqueueAiRun(
+            {
+              transportId,
+              threadId,
+              triggerMessageId: messageId,
+              runKind: 'feedback_extraction',
+              idempotencyKey: `feedback:${input.draftId}`,
+              modelId: DEFAULT_AI_MODEL_ID,
+              promptVersion: DEFAULT_FEEDBACK_PROMPT_VERSION,
+            },
+            tx as unknown as typeof db,
+          );
         }
-      });
-
-      if (isUserScheduled) {
-        return {
-          scheduled: true as const,
-          messageId,
-          sendAt: sendAt.getTime(),
-        };
       }
+    });
 
-      if (undoSecs === 0) {
-        const smtpResult = await flushOne(messageId, transportId, db);
+    if (isUserScheduled) {
+      return {
+        scheduled: true as const,
+        messageId,
+        sendAt: sendAt.getTime(),
+      };
+    }
+
+    if (undoSecs === 0) {
+      const smtpResult = await flushOne(messageId, transportId, db);
+      if ('deliveryEvidence' in smtpResult) {
         return {
           sent: true as const,
+          delivery: 'unknown' as const,
           messageId,
           threadId,
           fromEmail: ctx.transportEmail,
           smtpMessageId: smtpResult.messageId,
-          accepted: smtpResult.accepted,
-          rejected: smtpResult.rejected,
         };
       }
-
       return {
-        queued: true as const,
+        sent: true as const,
+        delivery: getSmtpDeliveryStatus(smtpPayload, smtpResult),
         messageId,
-        sendAt: sendAt.getTime(),
+        threadId,
+        fromEmail: ctx.transportEmail,
+        smtpMessageId: smtpResult.messageId,
+        accepted: smtpResult.accepted,
+        rejected: smtpResult.rejected,
       };
-    }),
+    }
+
+    return {
+      queued: true as const,
+      messageId,
+      sendAt: sendAt.getTime(),
+    };
+  }),
 
   /**
    * Undo send — cancel pending queue row if still before sendAt; delete message.
@@ -1380,9 +1333,7 @@ export const mailRouter = tRouter({
         }
         await tx
           .delete(message)
-          .where(
-            and(eq(message.id, input.messageId), eq(message.transportId, transportId)),
-          );
+          .where(and(eq(message.id, input.messageId), eq(message.transportId, transportId)));
         await refreshThreadAfterMessageRemoved(
           tx as unknown as typeof db,
           msg.threadId,
@@ -1540,9 +1491,7 @@ export const mailRouter = tRouter({
    * mailbox cannot fetch attachments for messages in that mailbox.
    */
   getAttachment: mailboxProcedure
-    .input(
-      z.object({ messageId: z.string(), attachmentId: z.string() }),
-    )
+    .input(z.object({ messageId: z.string(), attachmentId: z.string() }))
     .query(async ({ input, ctx }) => {
       const db = getDb();
       const transportId = ctx.activeTransportId;
@@ -1558,10 +1507,7 @@ export const mailRouter = tRouter({
         })
         .from(attachment)
         .where(
-          and(
-            eq(attachment.id, input.attachmentId),
-            eq(attachment.messageId, input.messageId),
-          ),
+          and(eq(attachment.id, input.attachmentId), eq(attachment.messageId, input.messageId)),
         )
         .limit(1);
       if (rows.length === 0) {
