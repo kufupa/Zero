@@ -5,7 +5,7 @@
  * RECLAIM_SENDING_AFTER_MS (5 min) → reclaimable after crash mid-SMTP.
  */
 import { randomUUID } from 'node:crypto';
-import { and, eq, gt, lte, or } from 'drizzle-orm';
+import { and, eq, gt, isNull, lte, or } from 'drizzle-orm';
 import { getDb, type DB } from '../../db/client.js';
 import { message, outboundSendQueue } from '../../db/schema/mail.js';
 import { maybeEnqueueLoopback } from '../fixture-loopback.js';
@@ -37,6 +37,14 @@ export type QueuedSmtpPayload = {
   references?: string[];
   extraHeaders?: Record<string, string>;
   attachments?: QueuedSmtpAttachment[];
+  deliveryOutcome?: SmtpDeliveryOutcome;
+};
+
+/** Exact SMTP evidence retained after SMTP accepts at least one recipient. */
+export type SmtpDeliveryOutcome = {
+  messageId: string;
+  accepted: string[];
+  rejected: string[];
 };
 
 export function getUndoSendSeconds(): number {
@@ -86,6 +94,93 @@ export function deserializeSmtpPayload(raw: QueuedSmtpPayload): OutboundMailPayl
   };
 }
 
+function requireRecord(raw: unknown, error: string): Record<string, unknown> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error(error);
+  }
+  return raw as Record<string, unknown>;
+}
+
+function cloneDeliveryOutcome(outcome: SmtpDeliveryOutcome): SmtpSendResult {
+  return {
+    messageId: outcome.messageId,
+    accepted: [...outcome.accepted],
+    rejected: [...outcome.rejected],
+  };
+}
+
+function parsePersistedDeliveryOutcome(rawPayload: unknown): SmtpDeliveryOutcome | null {
+  const payload = requireRecord(rawPayload, 'outbound SMTP payload malformed');
+  if (!Object.hasOwn(payload, 'deliveryOutcome')) return null;
+
+  const outcome = requireRecord(payload.deliveryOutcome, 'outbound delivery outcome malformed');
+  if (
+    typeof outcome.messageId !== 'string' ||
+    outcome.messageId.length === 0 ||
+    !Array.isArray(outcome.accepted) ||
+    outcome.accepted.length === 0 ||
+    !Array.isArray(outcome.rejected) ||
+    !outcome.accepted.every((recipient) => typeof recipient === 'string') ||
+    !outcome.rejected.every((recipient) => typeof recipient === 'string')
+  ) {
+    throw new Error('outbound delivery outcome malformed');
+  }
+
+  return {
+    messageId: outcome.messageId,
+    accepted: [...outcome.accepted],
+    rejected: [...outcome.rejected],
+  };
+}
+
+function validateSmtpOutcome(result: SmtpSendResult): SmtpDeliveryOutcome {
+  if (
+    typeof result.messageId !== 'string' ||
+    result.messageId.length === 0 ||
+    !Array.isArray(result.accepted) ||
+    !Array.isArray(result.rejected) ||
+    !result.accepted.every((recipient) => typeof recipient === 'string') ||
+    !result.rejected.every((recipient) => typeof recipient === 'string')
+  ) {
+    throw new Error('SMTP result malformed');
+  }
+
+  return {
+    messageId: result.messageId,
+    accepted: [...result.accepted],
+    rejected: [...result.rejected],
+  };
+}
+
+function partialDeliveryWarning(
+  payload: OutboundMailPayload,
+  outcome: SmtpDeliveryOutcome,
+): string | null {
+  const requested = new Set(
+    [...payload.to, ...payload.cc, ...payload.bcc].map((recipient) =>
+      recipient.trim().toLowerCase(),
+    ),
+  );
+  const accepted = new Set(
+    outcome.accepted.map((recipient) => recipient.trim().toLowerCase()),
+  );
+  const missingRequestedRecipientCount = [...requested].filter(
+    (recipient) => !accepted.has(recipient),
+  ).length;
+
+  if (outcome.accepted.length === 0) return null;
+  if (outcome.rejected.length === 0 && missingRequestedRecipientCount === 0) {
+    return null;
+  }
+
+  return JSON.stringify({
+    code: 'PARTIAL_REJECTION',
+    acceptedCount: outcome.accepted.length,
+    rejectedCount: outcome.rejected.length,
+    missingRequestedRecipientCount,
+  });
+}
+
 /** Pure claim eligibility — used by unit tests + claimDue. */
 export function isOutboundClaimable(
   row: { status: string; sendAt: Date; claimedAt: Date | null },
@@ -103,7 +198,7 @@ export function isOutboundClaimable(
   return false;
 }
 
-/** True if outbound msg already has SMTP Message-ID → skip re-send on reclaim. */
+/** True if outbound message already has an SMTP Message-ID. */
 export function hasPersistedSmtpDelivery(
   messageIdHeader: string | null | undefined,
 ): boolean {
@@ -222,55 +317,142 @@ async function claimDue(
   });
 }
 
-async function markQueueSent(rowId: string, db: DB, now: Date = new Date()): Promise<void> {
+async function markQueueSent(
+  rowId: string,
+  db: DB,
+  now: Date = new Date(),
+  deliveryWarning: string | null = null,
+): Promise<void> {
   await db
     .update(outboundSendQueue)
-    .set({ status: 'sent', lastError: null, updatedAt: now })
+    .set({ status: 'sent', lastError: deliveryWarning, updatedAt: now })
     .where(eq(outboundSendQueue.id, rowId));
+}
+
+async function persistDeliveryOutcome(
+  row: typeof outboundSendQueue.$inferSelect,
+  outcome: SmtpDeliveryOutcome,
+  db: DB,
+): Promise<void> {
+  const payload = requireRecord(row.smtpPayload, 'outbound SMTP payload malformed');
+  const now = new Date();
+  const [updated] = await db
+    .update(outboundSendQueue)
+    .set({
+      smtpPayload: {
+        ...payload,
+        deliveryOutcome: cloneDeliveryOutcome(outcome),
+      },
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(outboundSendQueue.id, row.id),
+        eq(outboundSendQueue.messageId, row.messageId),
+        eq(outboundSendQueue.transportId, row.transportId),
+        eq(outboundSendQueue.status, 'sending'),
+      ),
+    )
+    .returning({ id: outboundSendQueue.id });
+  if (!updated) {
+    throw new Error('outbound delivery outcome could not be bound to claimed queue row');
+  }
+}
+
+async function finalizePersistedDelivery(
+  row: typeof outboundSendQueue.$inferSelect,
+  payload: OutboundMailPayload,
+  outcome: SmtpDeliveryOutcome,
+  db: DB,
+): Promise<SmtpSendResult> {
+  const [existing] = await db
+    .select({ messageIdHeader: message.messageIdHeader })
+    .from(message)
+    .where(and(eq(message.id, row.messageId), eq(message.transportId, row.transportId)))
+    .limit(1);
+  if (!existing) {
+    throw new Error('outbound message missing for claimed queue row');
+  }
+  if (
+    hasPersistedSmtpDelivery(existing.messageIdHeader) &&
+    existing.messageIdHeader !== outcome.messageId
+  ) {
+    throw new Error('outbound delivery outcome message ID mismatch');
+  }
+
+  const now = new Date();
+  if (existing.messageIdHeader === outcome.messageId) {
+    await db
+      .update(message)
+      .set({ sentAt: now, receivedAt: now, updatedAt: now })
+      .where(and(eq(message.id, row.messageId), eq(message.transportId, row.transportId)));
+  } else {
+    const [updated] = await db
+      .update(message)
+      .set({
+        messageIdHeader: outcome.messageId,
+        sentAt: now,
+        receivedAt: now,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(message.id, row.messageId),
+          eq(message.transportId, row.transportId),
+          or(isNull(message.messageIdHeader), eq(message.messageIdHeader, '')),
+        ),
+      )
+      .returning({ id: message.id });
+    if (!updated) {
+      throw new Error('outbound delivery outcome message ID mismatch');
+    }
+  }
+
+  await markQueueSent(row.id, db, now, partialDeliveryWarning(payload, outcome));
+  return cloneDeliveryOutcome(outcome);
 }
 
 async function deliverClaimed(
   row: typeof outboundSendQueue.$inferSelect,
   db: DB,
 ): Promise<SmtpSendResult> {
-  // Reclaim path: SMTP may already have succeeded; message row has Message-ID.
+  const persistedOutcome = parsePersistedDeliveryOutcome(row.smtpPayload);
+  const payload = deserializeSmtpPayload(row.smtpPayload as unknown as QueuedSmtpPayload);
   const [existing] = await db
     .select({ messageIdHeader: message.messageIdHeader })
     .from(message)
     .where(and(eq(message.id, row.messageId), eq(message.transportId, row.transportId)))
     .limit(1);
-
-  if (hasPersistedSmtpDelivery(existing?.messageIdHeader)) {
-    await markQueueSent(row.id, db);
-    return {
-      messageId: existing!.messageIdHeader!,
-      accepted: [],
-    };
+  if (!existing) {
+    throw new Error('outbound message missing for claimed queue row');
   }
 
-  const payload = deserializeSmtpPayload(row.smtpPayload as unknown as QueuedSmtpPayload);
-  const smtpResult = await getSmtpTransport().send(payload);
+  if (persistedOutcome) {
+    return finalizePersistedDelivery(row, payload, persistedOutcome, db);
+  }
+  if (hasPersistedSmtpDelivery(existing.messageIdHeader)) {
+    throw new Error('outbound message has SMTP ID without persisted delivery outcome');
+  }
+
+  const smtpResult = validateSmtpOutcome(await getSmtpTransport().send(payload));
+  if (smtpResult.accepted.length === 0) {
+    throw new Error('SMTP accepted no recipients');
+  }
+
+  /*
+   * SMTP acceptance precedes this durable write. A process crash in that narrow
+   * interval may resend after reclaim; once the outcome is persisted, reclaim
+   * finalizes it without calling SMTP again.
+   */
+  await persistDeliveryOutcome(row, smtpResult, db);
+  const finalized = await finalizePersistedDelivery(row, payload, smtpResult, db);
 
   const mode =
     process.env.MAIL_TRANSPORT_MODE === 'real' || process.env.MAIL_TRANSPORT_MODE === 'wire'
       ? (process.env.MAIL_TRANSPORT_MODE as 'real' | 'wire')
       : 'fixture';
-  maybeEnqueueLoopback(payload, smtpResult, mode, payload.extraHeaders);
-
-  const now = new Date();
-  // Persist smtp id on message FIRST so reclaim can skip SMTP if queue mark fails.
-  await db
-    .update(message)
-    .set({
-      messageIdHeader: smtpResult.messageId,
-      sentAt: now,
-      receivedAt: now,
-      updatedAt: now,
-    })
-    .where(and(eq(message.id, row.messageId), eq(message.transportId, row.transportId)));
-  await markQueueSent(row.id, db, now);
-
-  return smtpResult;
+  maybeEnqueueLoopback(payload, finalized, mode, payload.extraHeaders);
+  return finalized;
 }
 
 async function markFlushError(
@@ -331,9 +513,12 @@ export async function flushOne(
 
   const claimed = await claimDue(db, { limit: 1, messageId, transportId });
   if (claimed.length === 0) {
-    // Already sent (idempotent) — load message header.
+    // Already sent (idempotent) — return durable exact delivery evidence.
     const [existing] = await db
-      .select({ status: outboundSendQueue.status })
+      .select({
+        status: outboundSendQueue.status,
+        smtpPayload: outboundSendQueue.smtpPayload,
+      })
       .from(outboundSendQueue)
       .where(
         and(
@@ -343,15 +528,19 @@ export async function flushOne(
       )
       .limit(1);
     if (existing?.status === 'sent') {
+      const outcome = parsePersistedDeliveryOutcome(existing.smtpPayload);
+      if (!outcome) {
+        throw new Error('outbound sent queue lacks persisted delivery outcome');
+      }
       const [msg] = await db
         .select({ messageIdHeader: message.messageIdHeader })
         .from(message)
         .where(and(eq(message.id, messageId), eq(message.transportId, transportId)))
         .limit(1);
-      return {
-        messageId: msg?.messageIdHeader ?? messageId,
-        accepted: [],
-      };
+      if (!msg || msg.messageIdHeader !== outcome.messageId) {
+        throw new Error('outbound sent queue delivery outcome message ID mismatch');
+      }
+      return cloneDeliveryOutcome(outcome);
     }
     throw new Error(`outbound flushOne: nothing to claim for ${messageId}`);
   }

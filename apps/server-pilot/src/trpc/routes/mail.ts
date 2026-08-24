@@ -1341,6 +1341,8 @@ export const mailRouter = tRouter({
           threadId,
           fromEmail: ctx.transportEmail,
           smtpMessageId: smtpResult.messageId,
+          accepted: smtpResult.accepted,
+          rejected: smtpResult.rejected,
         };
       }
 

@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import nodemailer from 'nodemailer';
+import { describe, expect, it, vi } from 'vitest';
 import {
   createPop3Client,
   FakePop3Client,
@@ -227,6 +228,21 @@ describe('MAIL_TRANSPORT_MODE factories', () => {
       expect(['fake', 'real']).toContain(transport.kind);
     }
   });
+
+  it('FakeSmtpTransport accepts every requested recipient and rejects none', async () => {
+    const result = await new FakeSmtpTransport().send({
+      from: 'sender@zero.test',
+      to: ['to@zero.test'],
+      cc: ['cc@zero.test'],
+      bcc: ['bcc@zero.test'],
+      subject: 'fake result',
+      html: '<p>fake result</p>',
+      text: 'fake result',
+    });
+
+    expect(result.accepted).toEqual(['to@zero.test', 'cc@zero.test', 'bcc@zero.test']);
+    expect(result.rejected).toEqual([]);
+  });
 });
 
 describe('Rocketseed real SMTP hop options', () => {
@@ -272,5 +288,41 @@ describe('Rocketseed real SMTP hop options', () => {
     expect(opts.auth).toEqual({ user: 'u', pass: 'p' });
     expect(opts.tls.servername).toBeUndefined();
     expect(opts.requireTLS).toBeUndefined();
+  });
+
+  it('preserves Nodemailer empty accepted and rejected recipient arrays', async () => {
+    const sendMail = vi.fn().mockResolvedValue({
+      messageId: 'smtp-outcome@zero.test',
+      accepted: [],
+      rejected: ['rejected@zero.test'],
+    });
+    const createTransport = vi
+      .spyOn(nodemailer, 'createTransport')
+      .mockReturnValue({ sendMail } as never);
+
+    try {
+      const transport = new RealSmtpTransport({
+        host: '127.0.0.1',
+        port: 11025,
+        secure: false,
+      });
+      const result = await transport.send({
+        from: 'sender@zero.test',
+        to: ['rejected@zero.test'],
+        cc: [],
+        bcc: [],
+        subject: 'test',
+        html: '<p>test</p>',
+        text: 'test',
+      });
+
+      expect(result).toEqual({
+        messageId: 'smtp-outcome@zero.test',
+        accepted: [],
+        rejected: ['rejected@zero.test'],
+      });
+    } finally {
+      createTransport.mockRestore();
+    }
   });
 });
