@@ -157,6 +157,12 @@ function isChildProcessModuleSpecifier(expression: ts.Expression | undefined): b
   );
 }
 
+function isLocalModuleSpecifier(expression: ts.Expression | undefined): boolean {
+  return (
+    expression !== undefined && ts.isStringLiteral(expression) && expression.text.startsWith('.')
+  );
+}
+
 function isChildProcessRequire(expression: ts.Expression | undefined): boolean {
   return (
     expression !== undefined &&
@@ -429,6 +435,23 @@ function processBoundaryViolations(
       }
     }
     for (const call of collect(scanned, ts.isCallExpression)) {
+      if (
+        ts.isIdentifier(call.expression) &&
+        call.expression.text === 'require' &&
+        call.arguments.length === 1 &&
+        isLocalModuleSpecifier(call.arguments[0])
+      ) {
+        violations.push(`${relativePath}:local-require`);
+        continue;
+      }
+      if (
+        call.expression.kind === ts.SyntaxKind.ImportKeyword &&
+        call.arguments.length === 1 &&
+        isLocalModuleSpecifier(call.arguments[0])
+      ) {
+        violations.push(`${relativePath}:local-dynamic-import`);
+        continue;
+      }
       if (isChildProcessRequire(call)) {
         violations.push(`${relativePath}:child-process-require`);
         continue;
@@ -576,6 +599,10 @@ describe('Phase 0 process boundary inventory', () => {
         "import { spawn } from 'node:child_process';",
         "spawn('/usr/bin/bwrap', [], { shell: false, env: {}, cwd: '/', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });",
       ].join('\n'),
+      [path.join(SERVER_ROOT, 'src/ops/centurion-thread-corpus-analysis.ts')]: [
+        "import('./synthetic-runtime.js');",
+        "require('./synthetic-runtime.js');",
+      ].join('\n'),
     });
     expect(processBoundaryViolations(program, undefined, false)).toEqual(
       expect.arrayContaining([
@@ -587,6 +614,8 @@ describe('Phase 0 process boundary inventory', () => {
         'scripts/check-centurion-thread-corpus-readiness.ts:unsafe-options',
         'src/mail/artifacts/read-artifact.ts:unapproved-spawn',
         'src/mail/artifacts/read-artifact.ts:ambient-executable',
+        'src/ops/centurion-thread-corpus-analysis.ts:local-dynamic-import',
+        'src/ops/centurion-thread-corpus-analysis.ts:local-require',
       ]),
     );
   });

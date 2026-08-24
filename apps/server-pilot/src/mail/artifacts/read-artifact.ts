@@ -81,6 +81,8 @@ export type TrustedLinuxExecutableInspector = {
 
 export type PdfSandboxProcessInvocation = {
   executable: typeof LINUX_BWRAP;
+  tool: 'pdfinfo' | 'pdftotext';
+  inputPath: string;
   args: readonly string[];
   cwd: typeof PDF_SANDBOX_CWD;
   env: Readonly<Record<string, string>>;
@@ -352,23 +354,40 @@ function sandboxArgs(tool: 'pdfinfo' | 'pdftotext', inputPath: string): readonly
   ] as const;
 }
 
-function validPdfSandboxInvocation(invocation: PdfSandboxProcessInvocation): boolean {
+function trustedPrivateInputPath(inputPath: string): boolean {
+  return (
+    path.isAbsolute(inputPath) &&
+    path.normalize(inputPath) === inputPath &&
+    path.basename(inputPath) === 'document.pdf' &&
+    path.dirname(inputPath) !== path.parse(inputPath).root
+  );
+}
+
+export function isValidPdfSandboxInvocation(invocation: PdfSandboxProcessInvocation): boolean {
+  const expectedArgs = sandboxArgs(invocation.tool, invocation.inputPath);
   return (
     invocation.executable === LINUX_BWRAP &&
+    trustedPrivateInputPath(invocation.inputPath) &&
     invocation.cwd === PDF_SANDBOX_CWD &&
     invocation.shell === false &&
     Object.keys(invocation.env).length === 0 &&
-    invocation.args.includes(LINUX_PRLIMIT) &&
-    invocation.args.includes(LINUX_PDFINFO) !== invocation.args.includes(LINUX_PDFTOTEXT) &&
-    invocation.args.includes('--clearenv') &&
-    invocation.args.includes('--unshare-net') &&
-    invocation.args.includes('--ro-bind')
+    invocation.args.length === expectedArgs.length &&
+    invocation.args.every((value, index) => value === expectedArgs[index])
   );
+}
+
+export async function runValidatedPdfSandboxInvocation(
+  invocation: PdfSandboxProcessInvocation,
+  processRunner: PdfSandboxProcessRunner,
+): Promise<SandboxResult> {
+  if (!isValidPdfSandboxInvocation(invocation)) {
+    throw new Error('invalid PDF sandbox invocation');
+  }
+  return await processRunner.run(invocation);
 }
 
 class PdfSandboxProcessAdapter implements PdfSandboxProcessRunner {
   async run(invocation: PdfSandboxProcessInvocation): Promise<SandboxResult> {
-    if (!validPdfSandboxInvocation(invocation)) throw new Error('invalid PDF sandbox invocation');
     return await new Promise((resolve, reject) => {
       if (invocation.signal?.aborted) {
         reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
@@ -419,26 +438,21 @@ export function createFixedPdfSandboxRunner(
     if (!path.isAbsolute(inputPath) || !(await trustedPdfToolchain(inspector))) {
       throw new Error('untrusted PDF toolchain');
     }
-    return await processRunner.run({
+    const invocation: PdfSandboxProcessInvocation = {
       executable: LINUX_BWRAP,
+      tool,
+      inputPath,
       args: sandboxArgs(tool, inputPath),
       cwd: PDF_SANDBOX_CWD,
       env: PDF_SANDBOX_ENV,
       shell: false,
       signal,
-    });
+    };
+    return await runValidatedPdfSandboxInvocation(invocation, processRunner);
   };
 }
 
-const fixedPdfSandboxRunner = createFixedPdfSandboxRunner();
-
-export async function runPdfSandbox(
-  tool: 'pdfinfo' | 'pdftotext',
-  inputPath: string,
-  signal?: AbortSignal,
-): Promise<SandboxResult> {
-  return await fixedPdfSandboxRunner(tool, inputPath, signal);
-}
+export const fixedPdfSandboxRunner = createFixedPdfSandboxRunner();
 
 export async function extractEmbeddedPdfText(
   source: {
@@ -510,7 +524,7 @@ export async function extractEmbeddedPdfText(
     const inputPath = join(directory, 'document.pdf');
     await writeFile(inputPath, source.body, { mode: 0o600 });
 
-    const runner = options.runner ?? runPdfSandbox;
+    const runner = options.runner ?? fixedPdfSandboxRunner;
     if (options.runner === undefined) {
       assertPdfToolchain();
     }

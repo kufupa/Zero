@@ -9,14 +9,17 @@ import {
   LINUX_PDFTOTEXT,
   LINUX_PRLIMIT,
   MAIL_READ_ARTIFACT_TOOL_VERSION,
+  isValidPdfSandboxInvocation,
   assertPdfToolchain,
   createToolLedger,
   extractEmbeddedPdfText,
   recheckAuthorizedArtifactIdentity,
   readAuthorizedArtifact,
   type AttachmentLocator,
+  type PdfSandboxProcessInvocation,
   type SandboxRunner,
   type SandboxResult,
+  runValidatedPdfSandboxInvocation,
 } from '../src/mail/artifacts/read-artifact.js';
 import { MailEvidenceRefSchema, ToolResultSchema } from '../src/ai/draft-evidence.js';
 import { FakeS3Storage, S3ObjectTooLargeError } from '../src/storage/s3.js';
@@ -141,7 +144,7 @@ describe('readAuthorizedArtifact', () => {
   });
 
   it('uses trusted fixed PDF toolchain through fake sandbox runner', async () => {
-    const calls: Array<Record<string, unknown>> = [];
+    const calls: PdfSandboxProcessInvocation[] = [];
     const runner = createFixedPdfSandboxRunner(
       {
         inspect: async (executable) => ({
@@ -158,7 +161,7 @@ describe('readAuthorizedArtifact', () => {
           calls.push(invocation);
           return {
             stdout: Buffer.from(
-              (invocation.args as readonly string[]).includes(LINUX_PDFINFO)
+              invocation.args.includes(LINUX_PDFINFO)
                 ? 'Pages: 1\nEncrypted: no\n'
                 : 'Synthetic PDF body\n',
             ),
@@ -192,15 +195,52 @@ describe('readAuthorizedArtifact', () => {
         }),
       ]),
     );
-    expect(calls.every((call) => (call.args as readonly string[]).includes(LINUX_PRLIMIT))).toBe(
-      true,
-    );
-    expect(calls.some((call) => (call.args as readonly string[]).includes(LINUX_PDFINFO))).toBe(
-      true,
-    );
-    expect(calls.some((call) => (call.args as readonly string[]).includes(LINUX_PDFTOTEXT))).toBe(
-      true,
-    );
+    expect(calls.every((call) => call.args.includes(LINUX_PRLIMIT))).toBe(true);
+    expect(calls.some((call) => call.args.includes(LINUX_PDFINFO))).toBe(true);
+    expect(calls.some((call) => call.args.includes(LINUX_PDFTOTEXT))).toBe(true);
+    for (const invocation of calls) {
+      const args = invocation.args;
+      const rejectedCalls: PdfSandboxProcessInvocation[] = [];
+      for (const [index, value] of args.entries()) {
+        const mutated = [...args];
+        mutated[index] = `${value}-mutated`;
+        expect(
+          isValidPdfSandboxInvocation({
+            ...invocation,
+            args: mutated,
+          }),
+        ).toBe(false);
+        await expect(
+          runValidatedPdfSandboxInvocation(
+            { ...invocation, args: mutated },
+            {
+              run: async (rejected) => {
+                rejectedCalls.push(rejected);
+                return { stdout: Buffer.alloc(0), stderr: Buffer.alloc(0), exitCode: 0 };
+              },
+            },
+          ),
+        ).rejects.toThrow('invalid PDF sandbox invocation');
+      }
+      expect(
+        isValidPdfSandboxInvocation({
+          ...invocation,
+          args: [...args, '--bind', '/private', '/private'],
+        }),
+      ).toBe(false);
+      await expect(
+        runValidatedPdfSandboxInvocation(
+          { ...invocation, args: [...args, '--bind', '/private', '/private'] },
+          {
+            run: async (rejected) => {
+              rejectedCalls.push(rejected);
+              return { stdout: Buffer.alloc(0), stderr: Buffer.alloc(0), exitCode: 0 };
+            },
+          },
+        ),
+      ).rejects.toThrow('invalid PDF sandbox invocation');
+      expect(rejectedCalls).toEqual([]);
+    }
   });
 
   it('publishes v2 candidate-only evidence', async () => {
