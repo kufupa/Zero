@@ -94,7 +94,7 @@ export type AnalysisCliResult =
 
 type FixedGitIgnoreOptions = {
   cwd: string;
-  env: Readonly<Record<'ComSpec' | 'PATH' | 'PATHEXT' | 'SystemRoot', string>>;
+  env: Readonly<Record<'ComSpec' | 'SystemRoot', string>>;
   shell: false;
   stdio: 'ignore';
   windowsHide: true;
@@ -102,7 +102,7 @@ type FixedGitIgnoreOptions = {
 
 export type GitIgnoreProcessRunner = {
   run(input: {
-    executable: 'git';
+    executable: 'C:\\Program Files\\Git\\cmd\\git.exe';
     arguments: readonly ['check-ignore', '--no-index', '--quiet', '--', string];
     cwd: string;
     options: FixedGitIgnoreOptions;
@@ -217,8 +217,6 @@ function isRequiredGitIgnoreCandidate(value: unknown): value is string {
 function boundedGitEnvironment(): FixedGitIgnoreOptions['env'] {
   return {
     ComSpec: process.env.ComSpec ?? '',
-    PATH: process.env.PATH ?? '',
-    PATHEXT: process.env.PATHEXT ?? '',
     SystemRoot: process.env.SystemRoot ?? '',
   };
 }
@@ -227,7 +225,7 @@ const fixedGitIgnoreProcessRunner: GitIgnoreProcessRunner = {
   run(input) {
     try {
       const result = spawnSync(
-        'git',
+        'C:\\Program Files\\Git\\cmd\\git.exe',
         ['check-ignore', '--no-index', '--quiet', '--', input.arguments[4]],
         input.options,
       );
@@ -253,7 +251,7 @@ export function createFixedGitIgnoreRunner(
         return false;
       }
       const result = processRunner.run({
-        executable: 'git',
+        executable: 'C:\\Program Files\\Git\\cmd\\git.exe',
         arguments: ['check-ignore', '--no-index', '--quiet', '--', input.candidate],
         cwd: input.checkoutRoot,
         options: {
