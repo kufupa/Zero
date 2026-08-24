@@ -473,14 +473,144 @@ function importedModuleNames(source: ts.SourceFile): string[] {
   );
 }
 
-function directCallNames(source: ts.SourceFile): string[] {
+type RelaySourceName = 'producer' | 'finalizer' | 'stage-script' | 'finalize-script';
+
+type RelaySource = {
+  name: RelaySourceName;
+  file: ts.SourceFile;
+};
+
+const S3_MODULE = '@aws-sdk/client-s3';
+const REQUIRED_S3_IMPORTS = new Set([
+  'DeleteObjectsCommand',
+  'GetBucketEncryptionCommand',
+  'GetBucketLifecycleConfigurationCommand',
+  'GetBucketOwnershipControlsCommand',
+  'GetBucketVersioningCommand',
+  'GetObjectCommand',
+  'GetPublicAccessBlockCommand',
+  'HeadBucketCommand',
+  'HeadObjectCommand',
+  'ListObjectsV2Command',
+  'PutObjectCommand',
+  'S3Client',
+]);
+const REQUIRED_S3_COMMANDS = new Set(
+  [...REQUIRED_S3_IMPORTS].filter((name) => name.endsWith('Command')),
+);
+const S3_MUTATION_COMMAND = /^(Abort|Complete|Copy|Create|Delete|Put|Restore|Upload)/;
+
+function dynamicAwsModuleNames(source: ts.SourceFile): string[] {
+  return collectNodes(
+    source,
+    (node): node is ts.CallExpression =>
+      ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword,
+  ).flatMap((node) => {
+    const argument = node.arguments[0];
+    return argument && ts.isStringLiteral(argument) ? [argument.text] : [];
+  });
+}
+
+function staticS3ImportNames(source: ts.SourceFile): string[] | null {
+  const imports = collectNodes(
+    source,
+    (node): node is ts.ImportDeclaration =>
+      ts.isImportDeclaration(node) &&
+      ts.isStringLiteral(node.moduleSpecifier) &&
+      node.moduleSpecifier.text === S3_MODULE,
+  ) as ts.ImportDeclaration[];
+  if (imports.length !== 1) return null;
+  const clause = imports[0]?.importClause;
+  if (!clause || clause.name || !clause.namedBindings || !ts.isNamedImports(clause.namedBindings)) {
+    return null;
+  }
+  return clause.namedBindings.elements.map((element) => element.name.text);
+}
+
+function sameSet(actual: readonly string[], expected: ReadonlySet<string>): boolean {
+  return actual.length === expected.size && actual.every((value) => expected.has(value));
+}
+
+function commandConstructors(source: ts.SourceFile): ts.NewExpression[] {
+  return collectNodes(
+    source,
+    (node): node is ts.NewExpression =>
+      ts.isNewExpression(node) &&
+      identifierName(node.expression) !== null &&
+      REQUIRED_S3_COMMANDS.has(identifierName(node.expression)!),
+  ) as ts.NewExpression[];
+}
+
+function mutationCalls(source: ts.SourceFile): Array<ts.CallExpression | ts.NewExpression> {
   return collectNodes(
     source,
     (node): node is ts.CallExpression | ts.NewExpression =>
-      ts.isCallExpression(node) || ts.isNewExpression(node),
-  )
-    .map((node) => identifierName(node.expression))
-    .filter((name): name is string => name !== null);
+      (ts.isCallExpression(node) || ts.isNewExpression(node)) &&
+      identifierName(node.expression) !== null &&
+      S3_MUTATION_COMMAND.test(identifierName(node.expression)!),
+  ) as Array<ts.CallExpression | ts.NewExpression>;
+}
+
+function assertTask2RelaySourceBoundaries(sources: readonly RelaySource[]): void {
+  const expectedNames = new Set<RelaySourceName>([
+    'producer',
+    'finalizer',
+    'stage-script',
+    'finalize-script',
+  ]);
+  if (
+    sources.length !== expectedNames.size ||
+    sources.some((source) => !expectedNames.has(source.name))
+  ) {
+    throw new Error('Task 2 relay source set changed');
+  }
+
+  const producer = sources.find((source) => source.name === 'producer');
+  if (!producer) throw new Error('Missing relay producer source');
+  for (const source of sources) {
+    const staticAwsImports = importedModuleNames(source.file).filter((moduleName) =>
+      moduleName.startsWith('@aws-sdk/'),
+    );
+    const dynamicAwsImports = dynamicAwsModuleNames(source.file).filter((moduleName) =>
+      moduleName.startsWith('@aws-sdk/'),
+    );
+    if (source.name === 'producer') {
+      if (!sameSet(staticAwsImports, new Set([S3_MODULE]))) {
+        throw new Error('Unexpected AWS SDK import in relay producer');
+      }
+      if (dynamicAwsImports.length !== 0) {
+        throw new Error('Dynamic AWS SDK import in relay producer');
+      }
+      continue;
+    }
+    if (staticAwsImports.length !== 0 || dynamicAwsImports.length !== 0) {
+      throw new Error(`AWS SDK import outside relay adapter: ${source.name}`);
+    }
+  }
+
+  const importedNames = staticS3ImportNames(producer.file);
+  if (!importedNames || !sameSet(importedNames, REQUIRED_S3_IMPORTS)) {
+    throw new Error('Unexpected S3 SDK import surface');
+  }
+  const constructors = commandConstructors(producer.file);
+  if (constructors.some((node) => containingClassName(node) !== 'AwsRelayObjectStore')) {
+    throw new Error('S3 command outside AwsRelayObjectStore');
+  }
+  if (
+    !sameSet(
+      constructors
+        .map((node) => identifierName(node.expression))
+        .filter((name): name is string => name !== null),
+      REQUIRED_S3_COMMANDS,
+    )
+  ) {
+    throw new Error('Unexpected S3 command construction');
+  }
+  if (
+    mutationCalls(producer.file).some((node) => containingClassName(node) !== 'AwsRelayObjectStore')
+  ) {
+    throw new Error('S3 mutation outside AwsRelayObjectStore');
+  }
 }
 
 describe('Centurion relay producer', () => {
@@ -876,9 +1006,12 @@ describe('stage Centurion relay command', () => {
 });
 
 describe('producer source boundaries', () => {
-  it('keeps S3 mutations in object-store adapter and permits only local journal/source writes', () => {
+  function relaySources(): RelaySource[] {
     const producerPath = fileURLToPath(
       new URL('../src/ops/centurion-thread-corpus-relay-producer.ts', import.meta.url),
+    );
+    const finalizerPath = fileURLToPath(
+      new URL('../src/ops/centurion-thread-corpus-relay-finalizer.ts', import.meta.url),
     );
     const stageScriptPath = fileURLToPath(
       new URL('../scripts/stage-centurion-thread-corpus-relay.ts', import.meta.url),
@@ -886,35 +1019,55 @@ describe('producer source boundaries', () => {
     const finalizeScriptPath = fileURLToPath(
       new URL('../scripts/finalize-centurion-thread-corpus-relay.ts', import.meta.url),
     );
-    const producer = parseTypeScript(producerPath);
-    const scripts = [parseTypeScript(stageScriptPath), parseTypeScript(finalizeScriptPath)];
-    const mutationCommands = new Set(['PutObjectCommand', 'DeleteObjectsCommand']);
-    const mutations = collectNodes(
-      producer,
-      (node): node is ts.NewExpression =>
-        ts.isNewExpression(node) &&
-        identifierName(node.expression) !== null &&
-        mutationCommands.has(identifierName(node.expression)!),
-    ) as ts.NewExpression[];
+    return [
+      { name: 'producer', file: parseTypeScript(producerPath) },
+      { name: 'finalizer', file: parseTypeScript(finalizerPath) },
+      { name: 'stage-script', file: parseTypeScript(stageScriptPath) },
+      { name: 'finalize-script', file: parseTypeScript(finalizeScriptPath) },
+    ];
+  }
 
-    expect(new Set(mutations.map((node) => identifierName(node.expression)))).toEqual(
-      mutationCommands,
-    );
-    expect(mutations.every((node) => containingClassName(node) === 'AwsRelayObjectStore')).toBe(
+  it('keeps S3 command construction in object-store adapter across all Task 2 sources', () => {
+    expect(() => assertTask2RelaySourceBoundaries(relaySources())).not.toThrow();
+  });
+
+  it('rejects an out-of-adapter S3 mutation constructor fixture', () => {
+    const sources = relaySources();
+    const producer = sources.find((source) => source.name === 'producer')!;
+    const injected = ts.createSourceFile(
+      producer.file.fileName,
+      `${producer.file.text}\nnew PutObjectCommand({});\n`,
+      ts.ScriptTarget.Latest,
       true,
+      ts.ScriptKind.TS,
     );
-    expect(directCallNames(producer)).toEqual(
-      expect.arrayContaining(['writeFileSync', 'renameSync', 'rmSync']),
-    );
-    expect(
-      importedModuleNames(producer).filter((moduleName) => moduleName.startsWith('@aws-sdk/')),
-    ).toEqual(['@aws-sdk/client-s3']);
 
-    for (const script of scripts) {
-      expect(
-        importedModuleNames(script).filter((moduleName) => moduleName.startsWith('@aws-sdk/')),
-      ).toEqual([]);
-      expect(directCallNames(script).filter((name) => mutationCommands.has(name))).toEqual([]);
-    }
+    expect(() =>
+      assertTask2RelaySourceBoundaries(
+        sources.map((source) =>
+          source.name === 'producer' ? { ...source, file: injected } : source,
+        ),
+      ),
+    ).toThrow('S3 command outside AwsRelayObjectStore');
+  });
+
+  it('rejects a dynamic S3 import fixture outside adapter boundary', () => {
+    const sources = relaySources();
+    const finalizer = sources.find((source) => source.name === 'finalizer')!;
+    const injected = ts.createSourceFile(
+      finalizer.file.fileName,
+      `${finalizer.file.text}\nvoid import('@aws-sdk/client-s3');\n`,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS,
+    );
+
+    expect(() =>
+      assertTask2RelaySourceBoundaries(
+        sources.map((source) =>
+          source.name === 'finalizer' ? { ...source, file: injected } : source,
+        ),
+      ),
+    ).toThrow('AWS SDK import outside relay adapter: finalizer');
   });
 });
