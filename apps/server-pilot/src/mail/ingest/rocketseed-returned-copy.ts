@@ -32,6 +32,11 @@ const TRUSTED_RECEIVED_PREFIX: readonly ReceivedRole[] = [
   'rocket',
   'rocket',
 ];
+const ZIMBRA_SOURCE_IDENTITIES = new Set(['172.24.0.10']);
+const LOCAL_SOURCE_IDENTITIES = new Set(['localhost']);
+const ROCKETSEED_SOURCE_IDENTITIES = new Set(['172.24.0.8', 'branding.legacyhotels.co.za']);
+const MAILBOX =
+  /^[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9](?:[A-Z0-9-]*[A-Z0-9])?(?:\.[A-Z0-9](?:[A-Z0-9-]*[A-Z0-9])?)*$/i;
 
 export function evaluateRocketseedReturnedCopyTrust(
   input: RocketseedReturnedCopyTrustInput,
@@ -82,36 +87,35 @@ function verifyReceivedTopology(
 function normalizeAddress(value: string | null): string | null {
   if (!value) return null;
   const trimmed = value.trim();
-  const bracketed = trimmed.match(/<([^<>]+)>/)?.[1]?.trim();
-  const address = bracketed ?? trimmed;
-  return address ? address.toLowerCase() : null;
+  const bracketed = /^(?:(?<display>[^<>]+?)\s+)?<(?<mailbox>[^<>\s]+)>$/.exec(trimmed);
+  const display = bracketed?.groups?.display?.trim();
+  const address = bracketed?.groups?.mailbox ?? trimmed;
+  if (!address || !MAILBOX.test(address) || (display && /[,@;]/.test(display))) {
+    return null;
+  }
+  return address.toLowerCase();
 }
 
 function isMalformedReceivedHeader(value: string): boolean {
-  return (
-    !value ||
-    value.includes('\r') ||
-    value.includes('\n') ||
-    !/^received:\s+from\s+\S.+\s+by\s+\S/i.test(value)
-  );
+  return !value || value.includes('\r') || value.includes('\n') || !receivedSourceIdentity(value);
 }
 
 function receivedRole(value: string): ReceivedRole {
-  const source = /^received:\s+from\s+(.+?)\s+by\s+/i.exec(value)?.[1];
-  if (!source) return 'other';
-  const normalized = source.toLowerCase();
-  if (
-    normalized.includes('rocketseed') ||
-    normalized.includes('branding.legacyhotels.co.za') ||
-    normalized.includes('172.24.0.8')
-  ) {
-    return 'rocket';
-  }
-  if (normalized.includes('zimbra') || normalized.includes('172.24.0.10')) {
-    return 'zimbra';
-  }
-  if (/\blocal(?:host)?\b/.test(normalized)) return 'local';
+  const sourceIdentity = receivedSourceIdentity(value);
+  if (!sourceIdentity) return 'other';
+  if (ROCKETSEED_SOURCE_IDENTITIES.has(sourceIdentity)) return 'rocket';
+  if (ZIMBRA_SOURCE_IDENTITIES.has(sourceIdentity)) return 'zimbra';
+  if (LOCAL_SOURCE_IDENTITIES.has(sourceIdentity)) return 'local';
   return 'other';
+}
+
+function receivedSourceIdentity(value: string): string | null {
+  const source = /^received:\s+from\s+(\[[^\]\s]+\]|[^\s(]+)(?:\s+\([^)]*\))?\s+by\s+/i.exec(
+    value,
+  )?.[1];
+  if (!source) return null;
+  const unbracketed = source.startsWith('[') && source.endsWith(']') ? source.slice(1, -1) : source;
+  return unbracketed.toLowerCase();
 }
 
 function rejected(reason: RocketseedReturnedCopyTrustReason): RocketseedReturnedCopyTrustResult {

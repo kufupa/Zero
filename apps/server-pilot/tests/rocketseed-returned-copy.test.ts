@@ -7,23 +7,23 @@ import { describe, expect, it } from 'vitest';
 const trustedReceivedPrefix = [
   {
     key: 'received',
-    line: 'Received: from zimbra.local by local-hop-a;',
+    line: 'Received: from 172.24.0.10 by local-hop-a;',
   },
   {
     key: 'received',
-    line: 'Received: from local-hop-a by local-hop-b;',
+    line: 'Received: from localhost by local-hop-b;',
   },
   {
     key: 'received',
-    line: 'Received: from local-hop-b by rocketseed-edge-a;',
+    line: 'Received: from localhost by rocketseed-edge-a;',
   },
   {
     key: 'received',
-    line: 'Received: from rocketseed-edge-a by rocketseed-edge-b;',
+    line: 'Received: from 172.24.0.8 by rocketseed-edge-b;',
   },
   {
     key: 'received',
-    line: 'Received: from rocketseed-edge-b by archive.local;',
+    line: 'Received: from branding.legacyhotels.co.za by archive.local;',
   },
 ];
 
@@ -68,6 +68,27 @@ describe('evaluateRocketseedReturnedCopyTrust', () => {
     });
   });
 
+  it('rejects lookalike Received source identities', () => {
+    const lookalikes = [
+      [0, 'Received: from 172.24.0.100 by local-hop-a;'],
+      [1, 'Received: from localhost.evil.test by local-hop-b;'],
+      [3, 'Received: from 172.24.0.80 by rocketseed-edge-b;'],
+      [4, 'Received: from branding.legacyhotels.co.za.evil by archive.local;'],
+    ] as const;
+
+    for (const [index, line] of lookalikes) {
+      const input = validInput();
+      input.parsed.rawHeaderLines = trustedReceivedPrefix.map((header, headerIndex) =>
+        headerIndex === index ? { ...header, line } : header,
+      );
+
+      expect(evaluateRocketseedReturnedCopyTrust(input)).toEqual({
+        trusted: false,
+        reason: 'received_topology_mismatch',
+      });
+    }
+  });
+
   it('fails closed for missing or folded Received values', () => {
     const missing = validInput();
     missing.parsed.rawHeaderLines = [];
@@ -100,6 +121,36 @@ describe('evaluateRocketseedReturnedCopyTrust', () => {
       trusted: false,
       reason: 'sender_mismatch',
     });
+  });
+
+  it('rejects malformed or multi-address owner and sender values', () => {
+    const invalidOwners = [
+      'junk <centurion@legacyhotels.co.za> trailing',
+      '<centurion@legacyhotels.co.za>, <other@legacyhotels.co.za>',
+    ];
+    for (const ownerHeaderValue of invalidOwners) {
+      const input = validInput();
+      input.parsed.ownerHeaderValue = ownerHeaderValue;
+
+      expect(evaluateRocketseedReturnedCopyTrust(input)).toEqual({
+        trusted: false,
+        reason: 'owner_mismatch',
+      });
+    }
+
+    const invalidSenders = [
+      'Centurion <centurion@legacyhotels.co.za> trailing',
+      '<centurion@legacyhotels.co.za>, <other@legacyhotels.co.za>',
+    ];
+    for (const fromAddress of invalidSenders) {
+      const input = validInput();
+      input.parsed.fromAddress = fromAddress;
+
+      expect(evaluateRocketseedReturnedCopyTrust(input)).toEqual({
+        trusted: false,
+        reason: 'sender_mismatch',
+      });
+    }
   });
 
   it('rejects wrong active transport or owner stamp', () => {
