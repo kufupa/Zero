@@ -119,7 +119,7 @@ function cloneDeliveryOutcome(outcome: SmtpDeliveryOutcome): SmtpSendResult {
   };
 }
 
-function parsePersistedDeliveryOutcome(rawPayload: unknown): SmtpDeliveryOutcome | null {
+export function parsePersistedDeliveryOutcome(rawPayload: unknown): SmtpDeliveryOutcome | null {
   const payload = requireRecord(rawPayload, 'outbound SMTP payload malformed');
   if (!Object.hasOwn(payload, 'deliveryOutcome')) return null;
 

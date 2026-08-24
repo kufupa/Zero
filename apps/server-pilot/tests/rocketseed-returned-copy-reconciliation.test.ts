@@ -7,6 +7,8 @@ import {
   outboundSendQueue,
 } from '../src/db/schema/mail.js';
 import { persistInboundMessage as persistInboundMessageImpl } from '../src/mail/ingest/store.js';
+import { FakeSmtpTransport, __setSmtpTransportForTests } from '../src/mail/send/smtp.js';
+import { RECLAIM_SENDING_AFTER_MS, flushDue } from '../src/mail/send/outbound-queue.js';
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
 import { parseRawMessage } from '../src/mail/ingest/parse-message.js';
 import { FakeS3Storage } from '../src/storage/s3.js';
@@ -132,6 +134,7 @@ async function seedCanonicalOutbound(
   opts: {
     direction?: 'inbound' | 'outbound';
     queueStatus?: string;
+    returnedMessageId?: string;
   } = {},
 ) {
   const transportId = 'transport-centurion';
@@ -145,7 +148,8 @@ async function seedCanonicalOutbound(
 
   const canonicalMessageId = randomUUID();
   const canonicalThreadId = randomUUID();
-  const returnedMessageId = `returned-${randomUUID()}@zero.test`;
+  const queueId = randomUUID();
+  const returnedMessageId = opts.returnedMessageId ?? `returned-${randomUUID()}@zero.test`;
   const timestamp = new Date('2026-08-24T12:00:00.000Z');
 
   await db.insert(mailThread).values({
@@ -178,7 +182,7 @@ async function seedCanonicalOutbound(
     receivedAt: timestamp,
   });
   await db.insert(outboundSendQueue).values({
-    id: randomUUID(),
+    id: queueId,
     transportId,
     messageId: canonicalMessageId,
     sendAt: timestamp,
@@ -194,6 +198,7 @@ async function seedCanonicalOutbound(
   return {
     canonicalMessageId,
     canonicalThreadId,
+    queueId,
     returnedMessageId,
     transportAddress,
     transportId,
@@ -370,6 +375,303 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
     });
   }, 30000);
 
+  it('reconciles strict UUID correlation from a sending row with durable accepted delivery', async () => {
+    const storage = new FakeS3Storage('test-mail-bucket');
+    const result = await withSeededTestDb(async (db) => {
+      const canonical = await seedCanonicalOutbound(db, { queueStatus: 'sending' });
+      await db
+        .update(message)
+        .set({ messageIdHeader: null })
+        .where(eq(message.id, canonical.canonicalMessageId));
+      await db
+        .update(outboundSendQueue)
+        .set({
+          smtpPayload: {
+            deliveryOutcome: {
+              messageId: canonical.returnedMessageId,
+              accepted: [`Mailbox <${canonical.transportAddress.toUpperCase()}>`],
+              rejected: [],
+            },
+          },
+        })
+        .where(eq(outboundSendQueue.id, canonical.queueId));
+      const candidateMessageId = randomUUID();
+      const raw = trustedReturnedCopy({
+        outboundId: canonical.canonicalMessageId,
+        messageId: canonical.returnedMessageId,
+        transportAddress: canonical.transportAddress,
+      });
+      const parsed = await parseRawMessage(raw, {
+        messageId: candidateMessageId,
+        storage,
+      });
+      const persistResult = await persistInboundMessage(
+        parsed,
+        raw,
+        {
+          ingestMailboxId: 'ingest-nava-legacy',
+          pop3Uidl: `task-2b-${randomUUID()}`,
+          messageId: candidateMessageId,
+        },
+        { db, storage, skipAiEnqueue: true },
+      );
+      const rows = await db
+        .select({ id: message.id })
+        .from(message)
+        .where(inArray(message.id, [canonical.canonicalMessageId, candidateMessageId]));
+      const [queue] = await db
+        .select({ status: outboundSendQueue.status })
+        .from(outboundSendQueue)
+        .where(eq(outboundSendQueue.id, canonical.queueId));
+      return { canonical, persistResult, queue, rows };
+    });
+
+    expect(result.persistResult.kind).toBe('reconciled');
+    expect(result.rows).toEqual([{ id: result.canonical.canonicalMessageId }]);
+    expect(result.queue?.status).toBe('sending');
+  }, 30000);
+
+  it('finalizes a reconciled persisted outcome without another SMTP send', async () => {
+    const smtp = new FakeSmtpTransport();
+    __setSmtpTransportForTests(smtp);
+
+    try {
+      const storage = new FakeS3Storage('test-mail-bucket');
+      const result = await withSeededTestDb(async (db) => {
+        const canonical = await seedCanonicalOutbound(db, { queueStatus: 'sending' });
+        await db
+          .update(message)
+          .set({ messageIdHeader: null })
+          .where(eq(message.id, canonical.canonicalMessageId));
+        await db
+          .update(outboundSendQueue)
+          .set({
+            claimedAt: new Date(Date.now() - RECLAIM_SENDING_AFTER_MS - 1),
+            smtpPayload: {
+              from: canonical.transportAddress,
+              to: [canonical.transportAddress],
+              cc: [],
+              bcc: [],
+              subject: 'reconciled persisted outcome',
+              html: '<p>reconciled persisted outcome</p>',
+              text: 'reconciled persisted outcome',
+              deliveryOutcome: {
+                messageId: canonical.returnedMessageId,
+                accepted: [canonical.transportAddress],
+                rejected: [],
+              },
+            },
+          })
+          .where(eq(outboundSendQueue.id, canonical.queueId));
+        const candidateMessageId = randomUUID();
+        const raw = trustedReturnedCopy({
+          outboundId: canonical.canonicalMessageId,
+          messageId: canonical.returnedMessageId,
+          transportAddress: canonical.transportAddress,
+        });
+        const parsed = await parseRawMessage(raw, {
+          messageId: candidateMessageId,
+          storage,
+        });
+        const reconcileResult = await persistInboundMessage(
+          parsed,
+          raw,
+          {
+            ingestMailboxId: 'ingest-nava-legacy',
+            pop3Uidl: `task-2b-${randomUUID()}`,
+            messageId: candidateMessageId,
+          },
+          { db, storage, skipAiEnqueue: true },
+        );
+        const [queueBeforeFinalize] = await db
+          .select({ status: outboundSendQueue.status })
+          .from(outboundSendQueue)
+          .where(eq(outboundSendQueue.id, canonical.queueId));
+        const flushed = await flushDue({ db });
+        const [queueAfterFinalize] = await db
+          .select({ status: outboundSendQueue.status })
+          .from(outboundSendQueue)
+          .where(eq(outboundSendQueue.id, canonical.queueId));
+        const rows = await db
+          .select({ id: message.id })
+          .from(message)
+          .where(inArray(message.id, [canonical.canonicalMessageId, candidateMessageId]));
+        return {
+          canonical,
+          flushed,
+          queueAfterFinalize,
+          queueBeforeFinalize,
+          reconcileResult,
+          rows,
+        };
+      });
+
+      expect(result.reconcileResult.kind).toBe('reconciled');
+      expect(result.queueBeforeFinalize?.status).toBe('sending');
+      expect(result.flushed).toEqual({ flushed: 1 });
+      expect(result.queueAfterFinalize?.status).toBe('sent');
+      expect(result.rows).toEqual([{ id: result.canonical.canonicalMessageId }]);
+      expect(smtp.sent).toHaveLength(0);
+    } finally {
+      __setSmtpTransportForTests(null);
+    }
+  }, 30000);
+
+  it('uses ordinary ingest for unproven sending rows and non-sent candidates', async () => {
+    const cases = [
+      {
+        name: 'missing outcome',
+        queueStatus: 'sending',
+        outcomeKind: 'missing',
+        includeOutboundId: true,
+      },
+      {
+        name: 'malformed outcome',
+        queueStatus: 'sending',
+        outcomeKind: 'malformed',
+        includeOutboundId: true,
+      },
+      {
+        name: 'mismatched outcome message ID',
+        queueStatus: 'sending',
+        outcomeKind: 'wrong-message-id',
+        includeOutboundId: true,
+      },
+      {
+        name: 'missing accepted transport recipient',
+        queueStatus: 'sending',
+        outcomeKind: 'missing-transport-recipient',
+        includeOutboundId: true,
+      },
+      {
+        name: 'canonical message ID mismatch',
+        queueStatus: 'sending',
+        outcomeKind: 'valid',
+        includeOutboundId: true,
+        mismatchCanonicalMessageId: true,
+      },
+      {
+        name: 'pending queue',
+        queueStatus: 'pending',
+        outcomeKind: 'valid',
+        includeOutboundId: true,
+      },
+      {
+        name: 'cancelled queue',
+        queueStatus: 'cancelled',
+        outcomeKind: 'valid',
+        includeOutboundId: true,
+      },
+      {
+        name: 'message ID-only fallback while sending',
+        queueStatus: 'sending',
+        outcomeKind: 'valid',
+        includeOutboundId: false,
+      },
+    ] as const;
+    const storage = new FakeS3Storage('test-mail-bucket');
+    const results = await withSeededTestDb(async (db) => {
+      const persisted = [];
+      for (const testCase of cases) {
+        const canonical = await seedCanonicalOutbound(db, {
+          queueStatus: testCase.queueStatus,
+        });
+        let smtpPayload: Record<string, unknown>;
+        switch (testCase.outcomeKind) {
+          case 'missing':
+            smtpPayload = {};
+            break;
+          case 'malformed':
+            smtpPayload = {
+              deliveryOutcome: {
+                messageId: canonical.returnedMessageId,
+                accepted: [canonical.transportAddress],
+              },
+            };
+            break;
+          case 'wrong-message-id':
+            smtpPayload = {
+              deliveryOutcome: {
+                messageId: `different-${randomUUID()}@zero.test`,
+                accepted: [canonical.transportAddress],
+                rejected: [],
+              },
+            };
+            break;
+          case 'missing-transport-recipient':
+            smtpPayload = {
+              deliveryOutcome: {
+                messageId: canonical.returnedMessageId,
+                accepted: ['other@zero.test'],
+                rejected: [canonical.transportAddress],
+              },
+            };
+            break;
+          case 'valid':
+            smtpPayload = {
+              deliveryOutcome: {
+                messageId: canonical.returnedMessageId,
+                accepted: [canonical.transportAddress],
+                rejected: [],
+              },
+            };
+            break;
+        }
+        if ('mismatchCanonicalMessageId' in testCase) {
+          await db
+            .update(message)
+            .set({ messageIdHeader: `other-${randomUUID()}@zero.test` })
+            .where(eq(message.id, canonical.canonicalMessageId));
+        }
+        await db
+          .update(outboundSendQueue)
+          .set({
+            claimedAt: testCase.queueStatus === 'sending' ? new Date() : null,
+            smtpPayload,
+          })
+          .where(eq(outboundSendQueue.id, canonical.queueId));
+        const candidateMessageId = randomUUID();
+        const raw = trustedReturnedCopy({
+          outboundId: testCase.includeOutboundId ? canonical.canonicalMessageId : undefined,
+          messageId: canonical.returnedMessageId,
+          transportAddress: canonical.transportAddress,
+        });
+        const parsed = await parseRawMessage(raw, {
+          messageId: candidateMessageId,
+          storage,
+        });
+        const persistResult = await persistInboundMessage(
+          parsed,
+          raw,
+          {
+            ingestMailboxId: 'ingest-nava-legacy',
+            pop3Uidl: `task-2b-${randomUUID()}`,
+            messageId: candidateMessageId,
+          },
+          { db, storage, skipAiEnqueue: true },
+        );
+        const rows = await db
+          .select({ id: message.id })
+          .from(message)
+          .where(inArray(message.id, [canonical.canonicalMessageId, candidateMessageId]));
+        persisted.push({
+          kind: persistResult.kind,
+          name: testCase.name,
+          rowCount: rows.length,
+        });
+      }
+      return persisted;
+    });
+
+    expect(results).toEqual(
+      cases.map(({ name }) => ({
+        kind: 'stored',
+        name,
+        rowCount: 2,
+      })),
+    );
+  }, 30000);
+
   it('uses ordinary ingest without live POP3 reconciliation opt-in', async () => {
     const storage = new FakeS3Storage('test-mail-bucket');
     const result = await withSeededTestDb(async (db) => {
@@ -475,10 +777,15 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
     expect(result.rows).toHaveLength(2);
   }, 30000);
 
-  it('reconciles an absent correlation header by exact Message-ID', async () => {
+  it('reconciles an absent correlation header against a sent Message-ID match', async () => {
     const storage = new FakeS3Storage('test-mail-bucket');
     const result = await withSeededTestDb(async (db) => {
-      const canonical = await seedCanonicalOutbound(db);
+      const returnedMessageId = `returned-${randomUUID()}@zero.test`;
+      const pending = await seedCanonicalOutbound(db, {
+        queueStatus: 'pending',
+        returnedMessageId,
+      });
+      const canonical = await seedCanonicalOutbound(db, { returnedMessageId });
       const candidateMessageId = randomUUID();
       const raw = trustedReturnedCopy({
         messageId: canonical.returnedMessageId,
@@ -501,12 +808,20 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
       const rows = await db
         .select({ id: message.id })
         .from(message)
-        .where(inArray(message.id, [canonical.canonicalMessageId, candidateMessageId]));
-      return { persistResult, rows };
+        .where(
+          inArray(message.id, [
+            pending.canonicalMessageId,
+            canonical.canonicalMessageId,
+            candidateMessageId,
+          ]),
+        );
+      return { canonical, pending, persistResult, rows };
     });
 
     expect(result.persistResult.kind).toBe('reconciled');
-    expect(result.rows).toHaveLength(1);
+    expect(result.rows.map((row) => row.id).sort()).toEqual(
+      [result.pending.canonicalMessageId, result.canonical.canonicalMessageId].sort(),
+    );
   }, 30000);
 
   it('does not fall back to Message-ID for malformed or unknown outbound IDs', async () => {

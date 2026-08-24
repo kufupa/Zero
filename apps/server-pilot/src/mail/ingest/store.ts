@@ -51,6 +51,7 @@ import {
   generateMessageId,
 } from './parse-message.js';
 import { evaluateRocketseedReturnedCopyTrust } from './rocketseed-returned-copy.js';
+import { parsePersistedDeliveryOutcome } from '../send/outbound-queue.js';
 import { sanitizeHtmlBodyForStorage } from '../sanitize-email-html.js';
 import {
   DEFAULT_AI_MODEL_ID,
@@ -273,11 +274,20 @@ export async function persistInboundMessage(
           useMessageIdFallback,
         )
       : undefined;
+    const hasEligibleLocalQueueRow =
+      canonical?.queueStatus === 'sent' ||
+      (canonical?.queueStatus === 'sending' &&
+        hasProvenPersistedSendingDelivery({
+          expectedTransportAddress: transport.email,
+          messageIdHeader: canonical.messageIdHeader,
+          parsedMessageId: parsed.messageId,
+          smtpPayload: canonical.smtpPayload,
+        }));
     const returnedCopyTrust = evaluateRocketseedReturnedCopyTrust({
       activeTransportId: canonical?.transportId ?? null,
       expectedTransportId: transport.id,
       expectedTransportAddress: transport.email,
-      hasEligibleLocalSentQueueRow: Boolean(canonical),
+      hasEligibleLocalSentQueueRow: hasEligibleLocalQueueRow,
       parsed,
     });
     if (canonical && returnedCopyTrust.trusted) {
@@ -608,27 +618,35 @@ async function findExistingInboundMessage(
   return rows[0];
 }
 
+type CanonicalOutbound = {
+  id: string;
+  transportId: string;
+  ingestMailboxId: string | null;
+  pop3Uidl: string | null;
+  messageIdHeader: string | null;
+  queueStatus: string;
+  smtpPayload: unknown;
+};
+
 async function findEligibleCanonicalOutbound(
   db: DB,
   transportId: string,
   correlationId: string,
   useMessageIdFallback: boolean,
-): Promise<
-  | {
-      id: string;
-      transportId: string;
-      ingestMailboxId: string | null;
-      pop3Uidl: string | null;
-    }
-  | undefined
-> {
-  const rows = await db
-    .select({
-      id: message.id,
-      transportId: message.transportId,
-      ingestMailboxId: message.ingestMailboxId,
-      pop3Uidl: message.pop3Uidl,
-    })
+): Promise<CanonicalOutbound | undefined> {
+  if (!useMessageIdFallback) {
+    return findCanonicalOutboundWithQueueLock(
+      db,
+      transportId,
+      correlationId,
+      ['sent', 'sending'],
+    );
+  }
+
+  // Legacy Message-ID correlation remains sent-only. This unlocked join only
+  // identifies a sent candidate; locking follows queue first, then message.
+  const [candidate] = await db
+    .select({ id: message.id })
     .from(message)
     .innerJoin(
       outboundSendQueue,
@@ -639,17 +657,108 @@ async function findEligibleCanonicalOutbound(
     )
     .where(
       and(
-        useMessageIdFallback
-          ? eq(message.messageIdHeader, correlationId)
-          : eq(message.id, correlationId),
+        eq(message.messageIdHeader, correlationId),
         eq(message.transportId, transportId),
         eq(message.direction, 'outbound'),
         eq(outboundSendQueue.status, 'sent'),
       ),
     )
+    .limit(1);
+  if (!candidate) return undefined;
+
+  return findCanonicalOutboundWithQueueLock(
+    db,
+    transportId,
+    candidate.id,
+    ['sent'],
+    correlationId,
+  );
+}
+
+async function findCanonicalOutboundWithQueueLock(
+  db: DB,
+  transportId: string,
+  canonicalMessageId: string,
+  allowedQueueStatuses: readonly string[],
+  expectedMessageIdHeader?: string,
+): Promise<CanonicalOutbound | undefined> {
+  const [queue] = await db
+    .select({
+      messageId: outboundSendQueue.messageId,
+      transportId: outboundSendQueue.transportId,
+      queueStatus: outboundSendQueue.status,
+      smtpPayload: outboundSendQueue.smtpPayload,
+    })
+    .from(outboundSendQueue)
+    .where(
+      and(
+        eq(outboundSendQueue.messageId, canonicalMessageId),
+        eq(outboundSendQueue.transportId, transportId),
+        inArray(outboundSendQueue.status, allowedQueueStatuses),
+      ),
+    )
     .limit(1)
     .for('update');
-  return rows[0];
+  if (!queue) return undefined;
+
+  const [canonical] = await db
+    .select({
+      id: message.id,
+      transportId: message.transportId,
+      ingestMailboxId: message.ingestMailboxId,
+      pop3Uidl: message.pop3Uidl,
+      messageIdHeader: message.messageIdHeader,
+    })
+    .from(message)
+    .where(
+      expectedMessageIdHeader === undefined
+        ? and(
+            eq(message.id, queue.messageId),
+            eq(message.transportId, queue.transportId),
+            eq(message.direction, 'outbound'),
+          )
+        : and(
+            eq(message.id, queue.messageId),
+            eq(message.transportId, queue.transportId),
+            eq(message.direction, 'outbound'),
+            eq(message.messageIdHeader, expectedMessageIdHeader),
+          ),
+    )
+    .limit(1)
+    .for('update');
+  if (!canonical) return undefined;
+
+  return {
+    ...canonical,
+    queueStatus: queue.queueStatus,
+    smtpPayload: queue.smtpPayload,
+  };
+}
+
+function hasProvenPersistedSendingDelivery(args: {
+  smtpPayload: unknown;
+  parsedMessageId: string | null;
+  expectedTransportAddress: string;
+  messageIdHeader: string | null;
+}): boolean {
+  try {
+    const outcome = parsePersistedDeliveryOutcome(args.smtpPayload);
+    if (!outcome || outcome.messageId !== args.parsedMessageId) return false;
+
+    const expectedTransportAddress = normalizeEmailAddress(args.expectedTransportAddress);
+    if (!expectedTransportAddress) return false;
+    if (
+      !outcome.accepted.some(
+        (recipient) => normalizeEmailAddress(recipient) === expectedTransportAddress,
+      )
+    ) {
+      return false;
+    }
+
+    return !args.messageIdHeader || args.messageIdHeader === outcome.messageId;
+  } catch {
+    return false;
+  }
 }
 
 async function findExistingQuarantine(
