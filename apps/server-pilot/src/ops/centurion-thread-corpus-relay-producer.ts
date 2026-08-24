@@ -13,6 +13,13 @@ import {
   S3Client,
 } from '@aws-sdk/client-s3';
 import {
+  centurionThreadCorpusReadinessAttestationSchema,
+  matchesCenturionThreadCorpusReadinessAttestation,
+  parseJsonWithoutDuplicateKeys,
+  type CenturionThreadCorpusReadinessAttestationV1,
+  type ReadinessAttestationBindingInputV1,
+} from './centurion-thread-corpus-readiness.js';
+import {
   closeSync,
   constants as fsConstants,
   fsyncSync,
@@ -82,7 +89,6 @@ export type StageIntentV1 = {
   literalRelayRoot: string;
   sourceSnapshot: {
     directChildName: string;
-    canonicalPath: string;
     stableIdentity: string;
   };
   snapshotId: string;
@@ -93,9 +99,14 @@ export type StageIntentV1 = {
   state: 'staging' | 'staged';
 };
 
+export type StageIntentV2 = Omit<StageIntentV1, 'schemaVersion'> & {
+  schemaVersion: 'centurion-thread-corpus-relay-stage-intent-v2';
+  readinessAttestation: CenturionThreadCorpusReadinessAttestationV1;
+};
+
 export type FinalizeJournalV1 = {
   schemaVersion: 'centurion-thread-corpus-relay-finalize-journal-v1';
-  stageIntent: StageIntentV1;
+  stageIntent: StageIntentV2;
   receiveReceiptSha256: string;
   acknowledgementSha256: string;
   state:
@@ -116,6 +127,7 @@ export type RelaySourceRuntimeConfig = {
   expectedEc2: { instanceId: string; revision: string; worktree: string };
   relay: RelayBucketConfig;
   sourceSnapshot: { directChildName: string };
+  readinessAttestationBinding: ReadinessAttestationBindingInputV1;
 };
 
 export type RelaySourceRuntimePort = {
@@ -135,11 +147,11 @@ export type RelaySourceRuntimePort = {
     members: readonly { path: string; bytes: number; stableIdentity: string }[];
     maxTotalBytes: number;
   }): Promise<readonly CenturionRelayMember[] | null>;
-  writeStageIntent(intent: StageIntentV1): Promise<boolean>;
-  readStageIntent(transferId: string): Promise<RelayJournalRead<StageIntentV1>>;
+  writeStageIntent(intent: StageIntentV2): Promise<boolean>;
+  readStageIntent(transferId: string): Promise<RelayJournalRead<StageIntentV2>>;
   writeFinalizeJournal(journal: FinalizeJournalV1): Promise<boolean>;
   readFinalizeJournal(transferId: string): Promise<RelayJournalRead<FinalizeJournalV1>>;
-  removeTrustedSnapshot(snapshot: StageIntentV1['sourceSnapshot']): Promise<boolean>;
+  removeTrustedSnapshot(snapshot: StageIntentV2['sourceSnapshot']): Promise<boolean>;
 };
 
 export type StageRelayResult =
@@ -155,7 +167,7 @@ export type RelayS3Client = {
   send(command: unknown): Promise<unknown>;
 };
 
-const STAGE_INTENT_VERSION = 'centurion-thread-corpus-relay-stage-intent-v1';
+const STAGE_INTENT_VERSION = 'centurion-thread-corpus-relay-stage-intent-v2';
 const SOURCE_CONFIG_VERSION = 'centurion-thread-corpus-relay-source-config-v1';
 const RELAY_MANIFEST_FILENAME = 'relay-manifest.v1.json';
 const UUID_V4 = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
@@ -238,7 +250,7 @@ type TrustedPathLayout = {
 };
 
 type NormalizedStage = {
-  intent: StageIntentV1;
+  intent: StageIntentV2;
   expectedKeys: string[];
 };
 
@@ -375,12 +387,69 @@ function validateRelayBucketConfig(value: unknown): RelayBucketConfig | null {
   };
 }
 
+function validateReadinessAttestationBinding(
+  value: unknown,
+  expectedEc2: RelaySourceRuntimeConfig['expectedEc2'],
+): ReadinessAttestationBindingInputV1 | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      'corpusContractId',
+      'expectedInstanceId',
+      'expectedRevision',
+      'expectedWorktree',
+      'designatedSourceScope',
+    ]) ||
+    value.corpusContractId !== 'centurion-thread-corpus-v2' ||
+    value.expectedInstanceId !== expectedEc2.instanceId ||
+    value.expectedRevision !== expectedEc2.revision ||
+    value.expectedWorktree !== expectedEc2.worktree ||
+    !isRecord(value.designatedSourceScope) ||
+    !hasExactKeys(value.designatedSourceScope, [
+      'centurionTransportId',
+      'designatedTransportId',
+      'mailboxIds',
+      'addresses',
+    ]) ||
+    !isOpaqueIdentifier(value.designatedSourceScope.centurionTransportId) ||
+    !isOpaqueIdentifier(value.designatedSourceScope.designatedTransportId) ||
+    !Array.isArray(value.designatedSourceScope.mailboxIds) ||
+    !Array.isArray(value.designatedSourceScope.addresses) ||
+    value.designatedSourceScope.mailboxIds.length === 0 ||
+    value.designatedSourceScope.addresses.length === 0 ||
+    !value.designatedSourceScope.mailboxIds.every(isOpaqueIdentifier) ||
+    !value.designatedSourceScope.addresses.every(
+      (address) => typeof address === 'string' && address.trim().length > 0,
+    )
+  ) {
+    return null;
+  }
+  return {
+    corpusContractId: 'centurion-thread-corpus-v2',
+    expectedInstanceId: expectedEc2.instanceId,
+    expectedRevision: expectedEc2.revision,
+    expectedWorktree: expectedEc2.worktree,
+    designatedSourceScope: {
+      centurionTransportId: value.designatedSourceScope.centurionTransportId,
+      designatedTransportId: value.designatedSourceScope.designatedTransportId,
+      mailboxIds: [...value.designatedSourceScope.mailboxIds],
+      addresses: [...value.designatedSourceScope.addresses],
+    },
+  };
+}
+
 export function parseRelaySourceRuntimeConfig(value: string): RelaySourceRuntimeConfig | null {
   try {
-    const parsed: unknown = JSON.parse(value);
+    const parsed = parseJsonWithoutDuplicateKeys(value);
     if (
       !isRecord(parsed) ||
-      !hasExactKeys(parsed, ['version', 'expectedEc2', 'relay', 'sourceSnapshot']) ||
+      !hasExactKeys(parsed, [
+        'version',
+        'expectedEc2',
+        'relay',
+        'sourceSnapshot',
+        'readinessAttestationBinding',
+      ]) ||
       parsed.version !== SOURCE_CONFIG_VERSION ||
       !isRecord(parsed.expectedEc2) ||
       !hasExactKeys(parsed.expectedEc2, ['instanceId', 'revision', 'worktree']) ||
@@ -395,16 +464,22 @@ export function parseRelaySourceRuntimeConfig(value: string): RelaySourceRuntime
       return null;
     }
     const relay = validateRelayBucketConfig(parsed.relay);
-    if (!relay) return null;
+    const expectedEc2 = {
+      instanceId: parsed.expectedEc2.instanceId,
+      revision: parsed.expectedEc2.revision,
+      worktree: parsed.expectedEc2.worktree,
+    };
+    const readinessAttestationBinding = validateReadinessAttestationBinding(
+      parsed.readinessAttestationBinding,
+      expectedEc2,
+    );
+    if (!relay || !readinessAttestationBinding) return null;
     return {
       version: SOURCE_CONFIG_VERSION,
-      expectedEc2: {
-        instanceId: parsed.expectedEc2.instanceId,
-        revision: parsed.expectedEc2.revision,
-        worktree: parsed.expectedEc2.worktree,
-      },
+      expectedEc2,
       relay,
       sourceSnapshot: { directChildName: parsed.sourceSnapshot.directChildName },
+      readinessAttestationBinding,
     };
   } catch {
     return null;
@@ -480,6 +555,7 @@ function validateStageIntent(
         'members',
         'createdKeys',
         'state',
+        'readinessAttestation',
       ]) ||
       value.schemaVersion !== STAGE_INTENT_VERSION ||
       value.transferId !== transferId ||
@@ -492,10 +568,21 @@ function validateStageIntent(
       !Array.isArray(value.createdKeys) ||
       (value.state !== 'staging' && value.state !== 'staged') ||
       !isRecord(value.sourceSnapshot) ||
-      !hasExactKeys(value.sourceSnapshot, ['directChildName', 'canonicalPath', 'stableIdentity']) ||
+      !hasExactKeys(value.sourceSnapshot, ['directChildName', 'stableIdentity']) ||
       value.sourceSnapshot.directChildName !== config.sourceSnapshot.directChildName ||
-      !isCanonicalAbsolutePath(value.sourceSnapshot.canonicalPath) ||
       !isOpaqueIdentifier(value.sourceSnapshot.stableIdentity)
+    ) {
+      return null;
+    }
+    const readinessAttestation = centurionThreadCorpusReadinessAttestationSchema.safeParse(
+      value.readinessAttestation,
+    );
+    if (
+      !readinessAttestation.success ||
+      !matchesCenturionThreadCorpusReadinessAttestation(
+        readinessAttestation.data,
+        config.readinessAttestationBinding,
+      )
     ) {
       return null;
     }
@@ -546,7 +633,6 @@ function validateStageIntent(
         literalRelayRoot: config.relay.literalRelayRoot,
         sourceSnapshot: {
           directChildName: config.sourceSnapshot.directChildName,
-          canonicalPath: value.sourceSnapshot.canonicalPath,
           stableIdentity: value.sourceSnapshot.stableIdentity,
         },
         snapshotId: value.snapshotId,
@@ -555,6 +641,7 @@ function validateStageIntent(
         members,
         createdKeys: [...value.createdKeys],
         state: value.state,
+        readinessAttestation: readinessAttestation.data,
       },
       expectedKeys,
     };
@@ -567,15 +654,12 @@ export function validateRelayStageIntent(
   value: unknown,
   config: RelaySourceRuntimeConfig,
   transferId: string,
-): StageIntentV1 | null {
+): StageIntentV2 | null {
   return validateStageIntent(value, config, transferId)?.intent ?? null;
 }
 
-function sameIntentSource(intent: StageIntentV1, inventory: TrustedSnapshotInventory): boolean {
-  return (
-    intent.sourceSnapshot.canonicalPath === inventory.canonicalPath &&
-    intent.sourceSnapshot.stableIdentity === inventory.stableIdentity
-  );
+function sameIntentSource(intent: StageIntentV2, inventory: TrustedSnapshotInventory): boolean {
+  return intent.sourceSnapshot.stableIdentity === inventory.stableIdentity;
 }
 
 function exactGitState(source: RelaySourceRuntimePort, config: RelaySourceRuntimeConfig): boolean {
@@ -649,7 +733,7 @@ function sameMemberRows(
 
 async function rollbackKnownStage(
   store: RelayObjectStore,
-  intent: StageIntentV1 | undefined,
+  intent: StageIntentV2 | undefined,
 ): Promise<void> {
   if (!intent) return;
   try {
@@ -664,13 +748,23 @@ async function rollbackKnownStage(
 export async function stageCenturionThreadCorpusRelay(input: {
   config: RelaySourceRuntimeConfig;
   transferId: string;
+  readinessAttestation: CenturionThreadCorpusReadinessAttestationV1;
   store: RelayObjectStore;
   source: RelaySourceRuntimePort;
 }): Promise<StageRelayResult> {
-  let currentIntent: StageIntentV1 | undefined;
+  let currentIntent: StageIntentV2 | undefined;
   try {
     const config = parseRelaySourceRuntimeConfig(JSON.stringify(input.config));
-    if (!config || !isUuidV4(input.transferId)) return blockedStage();
+    if (
+      !config ||
+      !isUuidV4(input.transferId) ||
+      !matchesCenturionThreadCorpusReadinessAttestation(
+        input.readinessAttestation,
+        config.readinessAttestationBinding,
+      )
+    ) {
+      return blockedStage();
+    }
     if (input.source.platform() !== 'linux') return blockedStage();
     if (!(await input.source.attestImdsV2(config.expectedEc2.instanceId))) return blockedStage();
     if (!exactGitState(input.source, config)) return blockedStage();
@@ -722,7 +816,6 @@ export async function stageCenturionThreadCorpusRelay(input: {
     );
     const sourceSnapshot = {
       directChildName: config.sourceSnapshot.directChildName,
-      canonicalPath: inspected.canonicalPath,
       stableIdentity: inspected.stableIdentity,
     };
 
@@ -734,6 +827,8 @@ export async function stageCenturionThreadCorpusRelay(input: {
         currentIntent.memberSetSha256 !== built.manifest.memberSetSha256 ||
         JSON.stringify(currentIntent.members) !== JSON.stringify(memberRows) ||
         JSON.stringify(currentIntent.sourceSnapshot) !== JSON.stringify(sourceSnapshot) ||
+        JSON.stringify(currentIntent.readinessAttestation) !==
+          JSON.stringify(input.readinessAttestation) ||
         JSON.stringify(normalizedPrevious.expectedKeys) !== JSON.stringify(expectedKeys)
       ) {
         return blockedStage();
@@ -780,6 +875,7 @@ export async function stageCenturionThreadCorpusRelay(input: {
         members: memberRows,
         createdKeys: [],
         state: 'staging',
+        readinessAttestation: input.readinessAttestation,
       };
       if (!(await input.source.writeStageIntent(currentIntent))) return blockedStage();
     }
@@ -1867,7 +1963,7 @@ export function createDefaultRelaySourceRuntime(
         ensureTrustedStateRoot(layout);
         const read = readAtomicJson(stateFilePath(layout, 'stage', transferId));
         return read.outcome === 'present' && isRecord(read.value)
-          ? { outcome: 'present', value: read.value as StageIntentV1 }
+          ? { outcome: 'present', value: read.value as StageIntentV2 }
           : read.outcome === 'present'
             ? { outcome: 'blocked' }
             : read;
@@ -1903,29 +1999,28 @@ export function createDefaultRelaySourceRuntime(
       try {
         if (
           !isDirectChildName(snapshot.directChildName) ||
-          !isCanonicalAbsolutePath(snapshot.canonicalPath) ||
-          !isOpaqueIdentifier(snapshot.stableIdentity) ||
-          snapshot.canonicalPath !== path.posix.join(layout.snapshotsRoot, snapshot.directChildName)
+          !isOpaqueIdentifier(snapshot.stableIdentity)
         ) {
           return false;
         }
+        const snapshotPath = path.posix.join(layout.snapshotsRoot, snapshot.directChildName);
         const parents = trustedParents(layout);
-        if (snapshotIsAbsent(snapshot.canonicalPath)) return true;
+        if (snapshotIsAbsent(snapshotPath)) return true;
         const inspected = inspectTrustedSnapshot(layout, {
           name: snapshot.directChildName,
           maxTotalBytes: Number.MAX_SAFE_INTEGER,
         });
         if (
           !inspected ||
-          inspected.canonicalPath !== snapshot.canonicalPath ||
+          inspected.canonicalPath !== snapshotPath ||
           inspected.stableIdentity !== snapshot.stableIdentity
         ) {
           return false;
         }
         try {
-          rmSync(snapshot.canonicalPath, { recursive: true, force: false, maxRetries: 0 });
+          rmSync(snapshotPath, { recursive: true, force: false, maxRetries: 0 });
         } catch (error) {
-          if (!isMissingFilesystemEntry(error) || !snapshotIsAbsent(snapshot.canonicalPath)) {
+          if (!isMissingFilesystemEntry(error) || !snapshotIsAbsent(snapshotPath)) {
             return false;
           }
         }

@@ -7,6 +7,11 @@ import {
   type RelayObjectStore,
   type RelaySourceRuntimePort,
 } from '../src/ops/centurion-thread-corpus-relay-producer.js';
+import {
+  assessCenturionThreadCorpusReadiness,
+  type CenturionThreadCorpusReadinessAssessment,
+} from './check-centurion-thread-corpus-readiness.js';
+import { buildCenturionThreadCorpusReadinessAttestation } from '../src/ops/centurion-thread-corpus-readiness.js';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -15,6 +20,7 @@ type StageCommandDependencies = {
   args(): readonly string[];
   createTransferId(): string;
   runtime: RelaySourceRuntimePort;
+  assessReadiness(): Promise<CenturionThreadCorpusReadinessAssessment>;
   objectStoreFor(config: RelayBucketConfig): RelayObjectStore;
   writeStdout(value: string): void;
 };
@@ -52,6 +58,7 @@ export function createStageCenturionThreadCorpusRelayCommand(
     args: () => process.argv.slice(2),
     createTransferId: randomUUID,
     runtime: createDefaultRelaySourceRuntime(),
+    assessReadiness: assessCenturionThreadCorpusReadiness,
     objectStoreFor: createAwsRelayObjectStore,
     writeStdout: (value) => process.stdout.write(value),
     ...overrides,
@@ -69,9 +76,23 @@ export function createStageCenturionThreadCorpusRelayCommand(
         writeOffer(dependencies, blockedOffer());
         return 3;
       }
+      const assessment = await dependencies.assessReadiness();
+      const expectedAttestation = buildCenturionThreadCorpusReadinessAttestation(
+        assessment.report,
+        config.readinessAttestationBinding,
+      );
+      if (
+        expectedAttestation === null ||
+        assessment.attestation === null ||
+        JSON.stringify(assessment.attestation) !== JSON.stringify(expectedAttestation)
+      ) {
+        writeOffer(dependencies, blockedOffer());
+        return 3;
+      }
       const result = await stageCenturionThreadCorpusRelay({
         config,
         transferId: dependencies.createTransferId(),
+        readinessAttestation: assessment.attestation,
         store: dependencies.objectStoreFor(config.relay),
         source: dependencies.runtime,
       });

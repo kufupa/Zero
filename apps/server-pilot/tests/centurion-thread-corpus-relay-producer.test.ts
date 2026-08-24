@@ -11,7 +11,7 @@ import {
   type RelayPutInput,
   type RelaySourceRuntimeConfig,
   type RelaySourceRuntimePort,
-  type StageIntentV1,
+  type StageIntentV2,
 } from '../src/ops/centurion-thread-corpus-relay-producer.js';
 import {
   GetBucketEncryptionCommand,
@@ -25,6 +25,11 @@ import {
   PutObjectCommand,
 } from '@aws-sdk/client-s3';
 import {
+  buildCenturionThreadCorpusReadinessAttestation,
+  type CenturionThreadCorpusReadinessAttestationV1,
+  type ReadinessAttestationBindingInputV1,
+} from '../src/ops/centurion-thread-corpus-readiness.js';
+import {
   buildPrivateThreadCorpusSnapshot,
   formatLogicalMessages,
   type PrivateThreadCorpusSnapshot,
@@ -34,6 +39,7 @@ import {
   relayObjectKey,
   type CenturionRelayMember,
 } from '../src/ops/centurion-thread-corpus-relay.js';
+import type { CenturionThreadCorpusReadinessAssessment } from '../scripts/check-centurion-thread-corpus-readiness.js';
 import { createStageCenturionThreadCorpusRelayCommand } from '../scripts/stage-centurion-thread-corpus-relay.js';
 import { describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
@@ -58,6 +64,38 @@ const relayConfig: RelayBucketConfig = {
   maxSnapshotBytes: 1_000_000,
 };
 
+const readinessBinding: ReadinessAttestationBindingInputV1 = {
+  corpusContractId: 'centurion-thread-corpus-v2',
+  expectedInstanceId: 'i-synthetic-approved',
+  expectedRevision: 'f4581cf6',
+  expectedWorktree: '/synthetic/zero',
+  designatedSourceScope: {
+    centurionTransportId: 'synthetic-centurion-transport',
+    designatedTransportId: 'synthetic-designated-transport',
+    mailboxIds: ['synthetic-mailbox-b', 'synthetic-mailbox-a'],
+    addresses: [` ${SAFE_ADDRESS_MARKER.toUpperCase()} `],
+  },
+};
+
+const allGreenReadinessReport = {
+  schemaVersion: 'centurion-thread-corpus-readiness-report-v1',
+  outcome: 'ready',
+  code: 'CENTURION_THREAD_CORPUS_READY',
+  ready: true,
+  checks: {
+    exactEc2RevisionWorktree: true,
+    imdsV2Identity: true,
+    protectedConfig: true,
+    designatedMailboxScope: true,
+    regionBucketPrefixAllowlist: true,
+    readOnlyDbS3KmsCapabilities: true,
+    sourceDiskHeadroom: true,
+    privateDestinationIgnored: true,
+    windowsLocalAclTarget: true,
+    v2Semantics: true,
+  },
+} as const;
+
 const runtimeConfig: RelaySourceRuntimeConfig = {
   version: 'centurion-thread-corpus-relay-source-config-v1',
   expectedEc2: {
@@ -69,7 +107,13 @@ const runtimeConfig: RelaySourceRuntimeConfig = {
   sourceSnapshot: {
     directChildName: 'safe-relay-snapshot',
   },
+  readinessAttestationBinding: readinessBinding,
 };
+
+const readinessAttestation = buildCenturionThreadCorpusReadinessAttestation(
+  allGreenReadinessReport,
+  readinessBinding,
+)!;
 
 function sha256(content: Uint8Array): string {
   return createHash('sha256').update(content).digest('hex');
@@ -294,7 +338,7 @@ class FakeRelayStore implements RelayObjectStore {
 
 class FakeSourceRuntime implements RelaySourceRuntimePort {
   readonly calls: string[] = [];
-  readonly stageIntents = new Map<string, StageIntentV1>();
+  readonly stageIntents = new Map<string, StageIntentV2>();
   readonly finalizeJournals = new Map<string, FinalizeJournalV1>();
   readonly members = sourceMembers();
   inspectResult: {
@@ -317,7 +361,7 @@ class FakeSourceRuntime implements RelaySourceRuntimePort {
   imdsResult = true;
   writeStageIntentResult = true;
   removeResult = true;
-  stageReadOverride: RelayJournalRead<StageIntentV1> | null = null;
+  stageReadOverride: RelayJournalRead<StageIntentV2> | null = null;
   finalizeReadOverride: RelayJournalRead<FinalizeJournalV1> | null = null;
   git = {
     revision: `${runtimeConfig.expectedEc2.revision}\n`,
@@ -371,14 +415,14 @@ class FakeSourceRuntime implements RelaySourceRuntimePort {
     return this.readResult;
   }
 
-  async writeStageIntent(intent: StageIntentV1): Promise<boolean> {
+  async writeStageIntent(intent: StageIntentV2): Promise<boolean> {
     this.calls.push(`write-stage:${intent.state}:${intent.createdKeys.length}`);
     if (!this.writeStageIntentResult) return false;
     this.stageIntents.set(intent.transferId, structuredClone(intent));
     return true;
   }
 
-  async readStageIntent(transferId: string): Promise<RelayJournalRead<StageIntentV1>> {
+  async readStageIntent(transferId: string): Promise<RelayJournalRead<StageIntentV2>> {
     this.calls.push('read-stage');
     if (this.stageReadOverride) return this.stageReadOverride;
     const intent = this.stageIntents.get(transferId);
@@ -410,12 +454,14 @@ function stage(
   store = new FakeRelayStore(),
   source = new FakeSourceRuntime(),
   transferId = TRANSFER_ID,
+  attestation: unknown = readinessAttestation,
 ) {
   return stageCenturionThreadCorpusRelay({
     config: runtimeConfig,
     transferId,
     store,
     source,
+    readinessAttestation: attestation as CenturionThreadCorpusReadinessAttestationV1,
   });
 }
 
@@ -656,6 +702,48 @@ describe('Centurion relay producer', () => {
   });
 
   it.each([
+    { name: 'missing', attestation: null },
+    {
+      name: 'malformed',
+      attestation: {
+        schemaVersion: 'centurion-thread-corpus-readiness-attestation-v1',
+        bindingSha256: 'not-a-digest',
+      },
+    },
+    {
+      name: 'binding-mismatched',
+      attestation: buildCenturionThreadCorpusReadinessAttestation(allGreenReadinessReport, {
+        ...readinessBinding,
+        expectedRevision: 'different-synthetic-revision',
+      }),
+    },
+  ])('blocks $name readiness attestation before any runtime work', async ({ attestation }) => {
+    const store = new FakeRelayStore();
+    const source = new FakeSourceRuntime();
+
+    expect(await stage(store, source, TRANSFER_ID, attestation)).toEqual({ outcome: 'blocked' });
+    expect(source.calls).toEqual([]);
+    expect(store.calls).toEqual([]);
+    expect(source.stageIntents.size).toBe(0);
+  });
+
+  it('persists only a V2 intent with the PII-free readiness attestation', async () => {
+    const store = new FakeRelayStore();
+    const source = new FakeSourceRuntime();
+
+    expect(await stage(store, source)).toMatchObject({ outcome: 'staged' });
+    const intent = source.stageIntents.get(TRANSFER_ID)!;
+
+    expect(intent.schemaVersion).toBe('centurion-thread-corpus-relay-stage-intent-v2');
+    expect(intent.readinessAttestation).toEqual(readinessAttestation);
+    const serialized = JSON.stringify(intent);
+    expect(serialized).not.toContain(SAFE_BODY_MARKER);
+    expect(serialized).not.toContain(SAFE_ADDRESS_MARKER);
+    expect(serialized).not.toContain(SAFE_PATH_MARKER);
+    expect(serialized).not.toContain('synthetic-centurion-transport');
+  });
+
+  it.each([
     'policy gate false',
     'invalid source',
     'source leaf symlink',
@@ -785,7 +873,53 @@ describe('Centurion relay producer', () => {
         }),
       ),
     ).toBeNull();
+    expect(
+      parseRelaySourceRuntimeConfig(
+        JSON.stringify(runtimeConfig).replace(
+          '"version":"centurion-thread-corpus-relay-source-config-v1"',
+          '"version":"centurion-thread-corpus-relay-source-config-v1","version":"centurion-thread-corpus-relay-source-config-v1"',
+        ),
+      ),
+    ).toBeNull();
   });
+
+  it.each([
+    {
+      name: 'legacy V1 intent',
+      tamper: (intent: StageIntentV2) => ({
+        ...intent,
+        schemaVersion: 'centurion-thread-corpus-relay-stage-intent-v1',
+      }),
+    },
+    {
+      name: 'tampered persisted attestation',
+      tamper: (intent: StageIntentV2) => ({
+        ...intent,
+        readinessAttestation: {
+          ...intent.readinessAttestation,
+          bindingSha256: '0'.repeat(64),
+        },
+      }),
+    },
+  ])(
+    'blocks $name before retry can read source bytes or write relay objects',
+    async ({ tamper }) => {
+      const store = new FakeRelayStore();
+      const source = new FakeSourceRuntime();
+      expect(await stage(store, source)).toMatchObject({ outcome: 'staged' });
+      source.stageIntents.set(
+        TRANSFER_ID,
+        tamper(source.stageIntents.get(TRANSFER_ID)!) as StageIntentV2,
+      );
+      source.calls.length = 0;
+      store.calls.length = 0;
+
+      expect(await stage(store, source)).toEqual({ outcome: 'blocked' });
+      expect(source.calls).toContain('read-stage');
+      expect(source.calls).not.toContain('read');
+      expect(store.calls.filter((call) => call.startsWith('put:'))).toEqual([]);
+    },
+  );
 
   it('treats only verified ENOENT as an absent durable stage journal', () => {
     expect(classifyRelayJournalReadFailure({ code: 'ENOENT' })).toBe('absent');
@@ -973,6 +1107,10 @@ describe('stage Centurion relay command', () => {
       createTransferId: () => TRANSFER_ID,
       runtime: source,
       objectStoreFor: () => store,
+      assessReadiness: async () => ({
+        report: allGreenReadinessReport,
+        attestation: readinessAttestation,
+      }),
       writeStdout: (value) => stdout.push(value),
     });
 
@@ -988,6 +1126,72 @@ describe('stage Centurion relay command', () => {
     ]);
     assertNoSafeFixtureLeak(stdout);
   });
+
+  it.each([
+    {
+      name: 'missing',
+      assessment: {
+        report: allGreenReadinessReport,
+        attestation: null,
+      },
+    },
+    {
+      name: 'blocked',
+      assessment: {
+        report: {
+          ...allGreenReadinessReport,
+          outcome: 'blocked',
+          code: 'CENTURION_THREAD_CORPUS_BLOCKED',
+          ready: false,
+        },
+        attestation: null,
+      },
+    },
+    {
+      name: 'malformed',
+      assessment: {
+        report: allGreenReadinessReport,
+        attestation: {
+          schemaVersion: 'centurion-thread-corpus-readiness-attestation-v1',
+          bindingSha256: 'invalid',
+        },
+      },
+    },
+    {
+      name: 'binding-mismatched',
+      assessment: {
+        report: allGreenReadinessReport,
+        attestation: buildCenturionThreadCorpusReadinessAttestation(allGreenReadinessReport, {
+          ...readinessBinding,
+          expectedWorktree: '/synthetic/other-worktree',
+        }),
+      },
+    },
+  ])(
+    'blocks $name readiness assessment before object-store or source runtime work',
+    async ({ assessment }) => {
+      const store = new FakeRelayStore();
+      const source = new FakeSourceRuntime();
+      const objectStoreFor = vi.fn(() => store);
+      const stdout: string[] = [];
+      const command = createStageCenturionThreadCorpusRelayCommand({
+        args: () => [],
+        createTransferId: () => TRANSFER_ID,
+        runtime: source,
+        objectStoreFor,
+        assessReadiness: async () => assessment as CenturionThreadCorpusReadinessAssessment,
+        writeStdout: (value) => stdout.push(value),
+      });
+
+      expect(await command()).toBe(3);
+      expect(objectStoreFor).not.toHaveBeenCalled();
+      expect(source.calls).toEqual(['config']);
+      expect(stdout).toEqual([
+        '{"schemaVersion":"centurion-thread-corpus-relay-stage-offer-v1","outcome":"blocked"}\n',
+      ]);
+      assertNoSafeFixtureLeak(stdout);
+    },
+  );
 
   it('blocks arguments before reading protected configuration', async () => {
     const store = new FakeRelayStore();
@@ -1074,5 +1278,43 @@ describe('producer source boundaries', () => {
         ),
       ),
     ).toThrow('AWS SDK import outside relay adapter: finalizer');
+  });
+
+  it('keeps stage assessment before object-store construction with no execution bypass', () => {
+    const stage = relaySources().find((source) => source.name === 'stage-script')!.file;
+    const dynamicImports = collectNodes(
+      stage,
+      (node): node is ts.CallExpression =>
+        ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword,
+    );
+    const forbiddenIdentifiers = collectNodes(
+      stage,
+      (node): node is ts.Identifier =>
+        ts.isIdentifier(node) && ['eval', 'Function', 'require'].includes(node.text),
+    );
+    const forbiddenModules = importedModuleNames(stage).filter(
+      (moduleName) =>
+        moduleName === 'node:child_process' ||
+        moduleName === 'node:fs' ||
+        moduleName.startsWith('@aws-sdk/'),
+    );
+    const stdoutCalls = collectNodes(
+      stage,
+      (node): node is ts.CallExpression =>
+        ts.isCallExpression(node) &&
+        ts.isPropertyAccessExpression(node.expression) &&
+        node.expression.name.text === 'writeStdout',
+    );
+
+    expect(dynamicImports).toEqual([]);
+    expect(forbiddenIdentifiers).toEqual([]);
+    expect(forbiddenModules).toEqual([]);
+    expect(stdoutCalls).toHaveLength(1);
+    expect(stage.text.indexOf('const expectedAttestation')).toBeGreaterThan(
+      stage.text.indexOf('const config'),
+    );
+    expect(stage.text.indexOf('objectStoreFor(config.relay)')).toBeGreaterThan(
+      stage.text.indexOf('const expectedAttestation'),
+    );
   });
 });

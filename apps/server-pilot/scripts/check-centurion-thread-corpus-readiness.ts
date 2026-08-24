@@ -1,8 +1,13 @@
 import {
+  buildCenturionThreadCorpusReadinessAttestation,
   centurionThreadCorpusReadinessConfigSchema,
   evaluateCenturionThreadCorpusReadiness,
+  parseJsonWithoutDuplicateKeys,
+  type CapabilityExpectation,
+  type CenturionThreadCorpusReadinessAttestationV1,
   type CenturionThreadCorpusReadinessConfig,
   type CenturionThreadCorpusReadinessReport,
+  type ReadinessAttestationBindingInputV1,
 } from '../src/ops/centurion-thread-corpus-readiness.js';
 import {
   closeSync,
@@ -159,6 +164,7 @@ export type CenturionThreadCorpusReadinessCommandDependencies = {
     prefix: string;
     policySourceArn: string;
     kmsKeyId: string;
+    dbInstanceArn: string;
   }): Promise<readonly PolicySimulationResult[] | null>;
   probeS3AndKmsMetadata(request: {
     region: string;
@@ -391,18 +397,51 @@ function isKmsKeyArn(value: string): boolean {
   return /^arn:(aws|aws-us-gov|aws-cn):kms:[a-z0-9-]+:\d{12}:key\/[A-Za-z0-9-]+$/.test(value);
 }
 
+function isExactRdsInstanceArn(value: string): boolean {
+  return /^arn:(aws|aws-us-gov|aws-cn):rds:[a-z0-9-]+:\d{12}:db:[A-Za-z](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/.test(
+    value,
+  );
+}
+
 function expectedPolicyPairs(request: {
   bucket: string;
   prefix: string;
   kmsKeyId: string;
-}): Array<{ action: string; resource: string }> | null {
+  dbInstanceArn: string;
+}): CapabilityExpectation[] | null {
   const objectArn = objectProbeArn(request.bucket, request.prefix);
-  if (!objectArn || !isKmsKeyArn(request.kmsKeyId)) return null;
+  if (
+    !objectArn ||
+    !isKmsKeyArn(request.kmsKeyId) ||
+    !isExactRdsInstanceArn(request.dbInstanceArn)
+  ) {
+    return null;
+  }
   return [
-    { action: 'rds:DescribeDBInstances', resource: '*' },
-    { action: 's3:ListBucket', resource: `arn:aws:s3:::${request.bucket}` },
-    { action: 's3:GetObject', resource: objectArn },
-    { action: 'kms:DescribeKey', resource: request.kmsKeyId },
+    {
+      action: 'rds:DescribeDBInstances',
+      resource: request.dbInstanceArn,
+      requiredDecision: 'allowed',
+    },
+    {
+      action: 's3:ListBucket',
+      resource: `arn:aws:s3:::${request.bucket}`,
+      requiredDecision: 'allowed',
+    },
+    { action: 's3:GetObject', resource: objectArn, requiredDecision: 'allowed' },
+    { action: 'kms:DescribeKey', resource: request.kmsKeyId, requiredDecision: 'allowed' },
+    {
+      action: 'rds:ModifyDBInstance',
+      resource: request.dbInstanceArn,
+      requiredDecision: 'not_allowed',
+    },
+    { action: 's3:PutObject', resource: objectArn, requiredDecision: 'not_allowed' },
+    {
+      action: 's3:PutBucketPolicy',
+      resource: `arn:aws:s3:::${request.bucket}`,
+      requiredDecision: 'not_allowed',
+    },
+    { action: 'kms:PutKeyPolicy', resource: request.kmsKeyId, requiredDecision: 'not_allowed' },
   ];
 }
 
@@ -604,6 +643,7 @@ type ReadinessProcessAdapters = {
     prefix: string;
     policySourceArn: string;
     kmsKeyId: string;
+    dbInstanceArn: string;
   }): Promise<readonly PolicySimulationResult[] | null>;
   probeS3AndKmsMetadata(request: {
     region: string;
@@ -683,14 +723,13 @@ export function createFixedReadinessProcessAdapters(
             shell: false,
           });
           if (!successful(simulation) || typeof simulation.stdout !== 'string') return null;
-          const parsed = JSON.parse(simulation.stdout) as {
-            EvaluationResults?: Array<{
-              EvalActionName?: unknown;
-              EvalResourceName?: unknown;
-              EvalDecision?: unknown;
-            }>;
-          };
-          if (!Array.isArray(parsed.EvaluationResults) || parsed.EvaluationResults.length !== 1) {
+          const parsed = parseJsonWithoutDuplicateKeys(simulation.stdout);
+          if (
+            !isPlainRecord(parsed) ||
+            !hasExactKeys(parsed, ['EvaluationResults']) ||
+            !Array.isArray(parsed.EvaluationResults) ||
+            parsed.EvaluationResults.length !== 1
+          ) {
             return null;
           }
           const result = parsed.EvaluationResults[0]!;
@@ -754,7 +793,9 @@ const fixedReadinessProcessAdapters = createFixedReadinessProcessAdapters();
 
 function parseConfig(value: string): CenturionThreadCorpusReadinessConfig | null {
   try {
-    const parsed = centurionThreadCorpusReadinessConfigSchema.safeParse(JSON.parse(value));
+    const parsed = centurionThreadCorpusReadinessConfigSchema.safeParse(
+      parseJsonWithoutDuplicateKeys(value),
+    );
     if (
       !parsed.success ||
       !/^arn:(aws|aws-us-gov|aws-cn):iam::\d{12}:(user|group|role)\/[A-Za-z0-9+=,.@_/-]+$/.test(
@@ -800,7 +841,7 @@ function normalizedAddresses(value: unknown): string[] | null {
 
 function parseOperatorConfig(value: string): OperatorConfig | null {
   try {
-    const parsed: unknown = JSON.parse(value);
+    const parsed = parseJsonWithoutDuplicateKeys(value);
     if (
       !isPlainRecord(parsed) ||
       !hasExactKeys(parsed, ['version', 'source']) ||
@@ -863,19 +904,31 @@ function sameSourceScope(
 
 function hasExpectedPolicyResults(
   results: readonly PolicySimulationResult[] | null,
-  request: { bucket: string; prefix: string; kmsKeyId: string },
+  request: { bucket: string; prefix: string; kmsKeyId: string; dbInstanceArn: string },
 ): boolean {
   const expected = expectedPolicyPairs(request);
   if (results === null || expected === null || results.length !== expected.length) {
     return false;
   }
-  return expected.every((pair) =>
-    results.some(
+  return (
+    results.every(
       (result) =>
-        result.action === pair.action &&
-        result.resource === pair.resource &&
-        result.decision === 'allowed',
-    ),
+        typeof result.action === 'string' &&
+        typeof result.resource === 'string' &&
+        typeof result.decision === 'string' &&
+        expected.some((pair) => pair.action === result.action && pair.resource === result.resource),
+    ) &&
+    expected.every((pair) => {
+      const matches = results.filter(
+        (result) => result.action === pair.action && result.resource === pair.resource,
+      );
+      return (
+        matches.length === 1 &&
+        (pair.requiredDecision === 'allowed'
+          ? matches[0]!.decision === 'allowed'
+          : matches[0]!.decision === 'implicitDeny' || matches[0]!.decision === 'explicitDeny')
+      );
+    })
   );
 }
 
@@ -906,10 +959,15 @@ async function isExactGitState(
   );
 }
 
-export function createCenturionThreadCorpusReadinessCommand(
-  overrides: Partial<CenturionThreadCorpusReadinessCommandDependencies> = {},
-): () => Promise<number> {
-  const dependencies: CenturionThreadCorpusReadinessCommandDependencies = {
+export type CenturionThreadCorpusReadinessAssessment = {
+  report: CenturionThreadCorpusReadinessReport;
+  attestation: CenturionThreadCorpusReadinessAttestationV1 | null;
+};
+
+function readinessDependencies(
+  overrides: Partial<CenturionThreadCorpusReadinessCommandDependencies>,
+): CenturionThreadCorpusReadinessCommandDependencies {
+  return {
     args: () => process.argv.slice(2),
     platform: () => process.platform,
     scriptPath: () => fileURLToPath(import.meta.url),
@@ -928,6 +986,119 @@ export function createCenturionThreadCorpusReadinessCommand(
     writeStdout: (value) => process.stdout.write(value),
     ...overrides,
   };
+}
+
+function readinessBindingFor(
+  config: CenturionThreadCorpusReadinessConfig,
+): ReadinessAttestationBindingInputV1 {
+  return {
+    corpusContractId: config.corpusContractId,
+    expectedInstanceId: config.expectedEc2.instanceId,
+    expectedRevision: config.expectedEc2.revision,
+    expectedWorktree: config.expectedEc2.worktree,
+    designatedSourceScope: {
+      centurionTransportId: config.designatedSourceScope.centurionTransportId,
+      designatedTransportId: config.designatedSourceScope.designatedTransportId,
+      mailboxIds: config.designatedSourceScope.mailboxIds,
+      addresses: config.designatedSourceScope.addresses,
+    },
+  };
+}
+
+async function assessReadiness(
+  dependencies: CenturionThreadCorpusReadinessCommandDependencies,
+): Promise<CenturionThreadCorpusReadinessAssessment> {
+  try {
+    if (dependencies.platform() !== 'linux') return { report: blockedReport(), attestation: null };
+    const repoRoot = repoRootFromScript(dependencies.scriptPath());
+    const corpusRoot = corpusRootFor(repoRoot);
+    const config = parseConfig(
+      await dependencies.readProtectedConfig({
+        repoRoot,
+        corpusRoot,
+        configPath: path.posix.join(corpusRoot, CONFIG_FILE_NAME),
+      }),
+    );
+    if (config === null) return { report: blockedReport(), attestation: null };
+    const operator = parseOperatorConfig(
+      await dependencies.readProtectedConfig({
+        repoRoot,
+        corpusRoot,
+        configPath: path.posix.join(corpusRoot, OPERATOR_CONFIG_FILE_NAME),
+      }),
+    );
+    const environment = dependencies.environment();
+    const protectedConfig = operator !== null;
+    const regionBucketPrefixAllowlist =
+      environment.AWS_REGION === config.approvedExportTarget.region &&
+      environment.S3_BUCKET === config.approvedExportTarget.bucket &&
+      objectProbeArn(config.approvedExportTarget.bucket, config.approvedExportTarget.prefix) !==
+        null;
+    const observations = {
+      exactEc2RevisionWorktree: await isExactGitState(dependencies, config, repoRoot),
+      imdsV2Identity: await dependencies.attestImdsV2(config.expectedEc2.instanceId),
+      protectedConfig,
+      designatedMailboxScope: operator !== null && sameSourceScope(config, operator),
+      regionBucketPrefixAllowlist,
+      readOnlyDbS3KmsCapabilities: false,
+      sourceDiskHeadroom: (() => {
+        const availableBytes = dependencies.availableBytes(repoRoot);
+        return availableBytes !== null && availableBytes >= config.minimumSourceDiskHeadroomBytes;
+      })(),
+      privateDestinationIgnored: await dependencies.isIgnored({
+        repoRoot,
+        relativePath: CORPUS_PATH_SEGMENTS.join('/'),
+      }),
+      windowsLocalAclTarget: dependencies.isStructurallySafeWindowsTarget(
+        config.privateDestination.localTarget,
+      ),
+      v2Semantics: true,
+    };
+    if (regionBucketPrefixAllowlist) {
+      const policyResults = await dependencies.simulateReadOnlyPolicy({
+        region: config.approvedExportTarget.region,
+        bucket: config.approvedExportTarget.bucket,
+        prefix: config.approvedExportTarget.prefix,
+        policySourceArn: config.readOnlyCapabilityProbe.policySourceArn,
+        kmsKeyId: config.readOnlyCapabilityProbe.kmsKeyId,
+        dbInstanceArn: config.readOnlyCapabilityProbe.dbInstanceArn,
+      });
+      const metadataProbe = await dependencies.probeS3AndKmsMetadata({
+        region: config.approvedExportTarget.region,
+        bucket: config.approvedExportTarget.bucket,
+        kmsKeyId: config.readOnlyCapabilityProbe.kmsKeyId,
+      });
+      observations.readOnlyDbS3KmsCapabilities =
+        hasExpectedPolicyResults(policyResults, {
+          bucket: config.approvedExportTarget.bucket,
+          prefix: config.approvedExportTarget.prefix,
+          kmsKeyId: config.readOnlyCapabilityProbe.kmsKeyId,
+          dbInstanceArn: config.readOnlyCapabilityProbe.dbInstanceArn,
+        }) && metadataProbe;
+    }
+    const report = evaluateCenturionThreadCorpusReadiness(config, observations);
+    return {
+      report,
+      attestation: buildCenturionThreadCorpusReadinessAttestation(
+        report,
+        readinessBindingFor(config),
+      ),
+    };
+  } catch {
+    return { report: blockedReport(), attestation: null };
+  }
+}
+
+export async function assessCenturionThreadCorpusReadiness(
+  overrides: Partial<CenturionThreadCorpusReadinessCommandDependencies> = {},
+): Promise<CenturionThreadCorpusReadinessAssessment> {
+  return await assessReadiness(readinessDependencies(overrides));
+}
+
+export function createCenturionThreadCorpusReadinessCommand(
+  overrides: Partial<CenturionThreadCorpusReadinessCommandDependencies> = {},
+): () => Promise<number> {
+  const dependencies = readinessDependencies(overrides);
   return async (): Promise<number> => {
     let args: readonly string[];
     try {
@@ -940,79 +1111,9 @@ export function createCenturionThreadCorpusReadinessCommand(
       writeReport(dependencies, blockedReport());
       return 2;
     }
-    try {
-      if (dependencies.platform() !== 'linux') return fail();
-      const repoRoot = repoRootFromScript(dependencies.scriptPath());
-      const corpusRoot = corpusRootFor(repoRoot);
-      const config = parseConfig(
-        await dependencies.readProtectedConfig({
-          repoRoot,
-          corpusRoot,
-          configPath: path.posix.join(corpusRoot, CONFIG_FILE_NAME),
-        }),
-      );
-      if (config === null) return fail();
-      const operator = parseOperatorConfig(
-        await dependencies.readProtectedConfig({
-          repoRoot,
-          corpusRoot,
-          configPath: path.posix.join(corpusRoot, OPERATOR_CONFIG_FILE_NAME),
-        }),
-      );
-      const environment = dependencies.environment();
-      const protectedConfig = operator !== null;
-      const regionBucketPrefixAllowlist =
-        environment.AWS_REGION === config.approvedExportTarget.region &&
-        environment.S3_BUCKET === config.approvedExportTarget.bucket &&
-        objectProbeArn(config.approvedExportTarget.bucket, config.approvedExportTarget.prefix) !==
-          null;
-      const observations = {
-        exactEc2RevisionWorktree: await isExactGitState(dependencies, config, repoRoot),
-        imdsV2Identity: await dependencies.attestImdsV2(config.expectedEc2.instanceId),
-        protectedConfig,
-        designatedMailboxScope: operator !== null && sameSourceScope(config, operator),
-        regionBucketPrefixAllowlist,
-        readOnlyDbS3KmsCapabilities: false,
-        sourceDiskHeadroom: (() => {
-          const availableBytes = dependencies.availableBytes(repoRoot);
-          return availableBytes !== null && availableBytes >= config.minimumSourceDiskHeadroomBytes;
-        })(),
-        privateDestinationIgnored: await dependencies.isIgnored({
-          repoRoot,
-          relativePath: CORPUS_PATH_SEGMENTS.join('/'),
-        }),
-        windowsLocalAclTarget: dependencies.isStructurallySafeWindowsTarget(
-          config.privateDestination.localTarget,
-        ),
-        v2Semantics: true,
-      };
-      if (regionBucketPrefixAllowlist) {
-        const policyResults = await dependencies.simulateReadOnlyPolicy({
-          region: config.approvedExportTarget.region,
-          bucket: config.approvedExportTarget.bucket,
-          prefix: config.approvedExportTarget.prefix,
-          policySourceArn: config.readOnlyCapabilityProbe.policySourceArn,
-          kmsKeyId: config.readOnlyCapabilityProbe.kmsKeyId,
-        });
-        const metadataProbe = await dependencies.probeS3AndKmsMetadata({
-          region: config.approvedExportTarget.region,
-          bucket: config.approvedExportTarget.bucket,
-          kmsKeyId: config.readOnlyCapabilityProbe.kmsKeyId,
-        });
-        observations.readOnlyDbS3KmsCapabilities =
-          hasExpectedPolicyResults(policyResults, {
-            bucket: config.approvedExportTarget.bucket,
-            prefix: config.approvedExportTarget.prefix,
-            kmsKeyId: config.readOnlyCapabilityProbe.kmsKeyId,
-          }) && metadataProbe;
-      }
-      const report = evaluateCenturionThreadCorpusReadiness(config, observations);
-      writeReport(dependencies, report);
-      return report.ready ? 0 : 3;
-    } catch {
-      writeReport(dependencies, blockedReport());
-      return 3;
-    }
+    const assessment = await assessReadiness(dependencies);
+    writeReport(dependencies, assessment.report);
+    return assessment.report.ready ? 0 : 3;
   };
 }
 

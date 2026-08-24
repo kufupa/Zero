@@ -1,6 +1,8 @@
 import {
+  buildCenturionThreadCorpusReadinessAttestation,
   evaluateCenturionThreadCorpusReadiness,
   type CenturionThreadCorpusReadinessReport,
+  type ReadinessAttestationBindingInputV1,
 } from '../src/ops/centurion-thread-corpus-readiness.js';
 import { describe, expect, it } from 'vitest';
 import { fileURLToPath } from 'node:url';
@@ -54,6 +56,7 @@ function validConfig(): Record<string, unknown> {
     readOnlyCapabilityProbe: {
       policySourceArn: 'arn:aws:iam::123456789012:role/synthetic-readonly-role',
       kmsKeyId: 'synthetic-kms-key',
+      dbInstanceArn: 'arn:aws:rds:synthetic-region-1:123456789012:db:synthetic-source-db',
     },
   };
 }
@@ -70,6 +73,24 @@ function allPassingObservations(): Record<string, boolean> {
     privateDestinationIgnored: true,
     windowsLocalAclTarget: true,
     v2Semantics: true,
+  };
+}
+
+function attestationBinding(
+  overrides: Partial<ReadinessAttestationBindingInputV1> = {},
+): ReadinessAttestationBindingInputV1 {
+  return {
+    corpusContractId: 'centurion-thread-corpus-v2',
+    expectedInstanceId: 'i-synthetic-instance',
+    expectedRevision: 'synthetic-revision',
+    expectedWorktree: 'synthetic-worktree',
+    designatedSourceScope: {
+      centurionTransportId: 'synthetic-centurion-transport-id',
+      designatedTransportId: 'synthetic-designated-transport-id',
+      mailboxIds: ['synthetic-mailbox-b', 'synthetic-mailbox-a'],
+      addresses: [' SECOND@EXAMPLE.INVALID ', 'First@example.invalid'],
+    },
+    ...overrides,
   };
 }
 
@@ -114,6 +135,60 @@ describe('evaluateCenturionThreadCorpusReadiness', () => {
       checks: fixedChecks(true),
     });
     expectFixedShape(report);
+  });
+
+  it('requires an exact source DB instance ARN', () => {
+    const missing = validConfig();
+    delete (missing.readOnlyCapabilityProbe as Record<string, unknown>).dbInstanceArn;
+    expectBlocked(evaluateCenturionThreadCorpusReadiness(missing, allPassingObservations()));
+
+    const wildcard = validConfig();
+    (wildcard.readOnlyCapabilityProbe as Record<string, unknown>).dbInstanceArn =
+      'arn:aws:rds:synthetic-region-1:123456789012:db:*';
+    expectBlocked(evaluateCenturionThreadCorpusReadiness(wildcard, allPassingObservations()));
+
+    const report = evaluateCenturionThreadCorpusReadiness(validConfig(), allPassingObservations());
+    expect(report.outcome).toBe('ready');
+  });
+
+  it('builds a PII-free canonical attestation only from an all-green strict report', () => {
+    const ready = evaluateCenturionThreadCorpusReadiness(validConfig(), allPassingObservations());
+    const blocked = evaluateCenturionThreadCorpusReadiness(validConfig(), {
+      ...allPassingObservations(),
+      imdsV2Identity: false,
+    });
+
+    expect(
+      buildCenturionThreadCorpusReadinessAttestation(blocked, attestationBinding()),
+    ).toBeNull();
+
+    const attestation = buildCenturionThreadCorpusReadinessAttestation(ready, attestationBinding());
+    const reordered = buildCenturionThreadCorpusReadinessAttestation(
+      ready,
+      attestationBinding({
+        designatedSourceScope: {
+          centurionTransportId: 'synthetic-centurion-transport-id',
+          designatedTransportId: 'synthetic-designated-transport-id',
+          mailboxIds: ['synthetic-mailbox-a', 'synthetic-mailbox-b'],
+          addresses: ['first@EXAMPLE.invalid', 'second@example.invalid'],
+        },
+      }),
+    );
+
+    expect(attestation).toEqual({
+      schemaVersion: 'centurion-thread-corpus-readiness-attestation-v1',
+      corpusContractId: 'centurion-thread-corpus-v2',
+      readinessReportVersion: 'centurion-thread-corpus-readiness-report-v1',
+      bindingSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    expect(reordered).toEqual(attestation);
+
+    const serialized = JSON.stringify(attestation);
+    for (const marker of SENSITIVE_MARKERS) {
+      expect(serialized).not.toContain(marker);
+    }
+    expect(serialized).not.toContain('synthetic-mailbox-a');
+    expect(serialized).not.toContain('first@example.invalid');
   });
 
   it('blocks on one failed gate while preserving fixed report shape', () => {
@@ -302,9 +377,21 @@ function sourceBoundaryViolations(sourceText: string): string[] {
     if (
       ts.isImportDeclaration(node) &&
       ts.isStringLiteral(node.moduleSpecifier) &&
-      node.moduleSpecifier.text !== 'zod'
+      node.moduleSpecifier.text !== 'zod' &&
+      node.moduleSpecifier.text !== 'node:crypto'
     ) {
       violations.push(`Unexpected import: ${node.moduleSpecifier.text}`);
+    }
+    if (
+      ts.isImportDeclaration(node) &&
+      ts.isStringLiteral(node.moduleSpecifier) &&
+      node.moduleSpecifier.text === 'node:crypto' &&
+      (!node.importClause?.namedBindings ||
+        !ts.isNamedImports(node.importClause.namedBindings) ||
+        node.importClause.namedBindings.elements.length !== 1 ||
+        node.importClause.namedBindings.elements[0]?.name.text !== 'createHash')
+    ) {
+      violations.push('Unexpected crypto capability');
     }
     if (ts.isImportEqualsDeclaration(node)) {
       violations.push('Import equals is prohibited');

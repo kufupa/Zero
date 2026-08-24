@@ -6,7 +6,7 @@ import {
   type RelayObjectStore,
   type RelaySourceRuntimeConfig,
   type RelaySourceRuntimePort,
-  type StageIntentV1,
+  type StageIntentV2,
 } from './centurion-thread-corpus-relay-producer.js';
 import {
   receiverAcknowledgementKey,
@@ -92,7 +92,7 @@ function exactGitState(source: RelaySourceRuntimePort, config: RelaySourceRuntim
   );
 }
 
-function sameStageIntent(left: StageIntentV1, right: StageIntentV1): boolean {
+function sameStageIntent(left: StageIntentV2, right: StageIntentV2): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
@@ -226,7 +226,7 @@ function containsOnlyKnownKeys(
 async function verifyAcknowledgement(input: {
   config: RelaySourceRuntimeConfig;
   transferId: string;
-  stageIntent: StageIntentV1;
+  stageIntent: StageIntentV2;
   store: RelayObjectStore;
 }): Promise<VerifiedAcknowledgement | null> {
   try {
@@ -296,7 +296,7 @@ async function verifyAcknowledgement(input: {
 function inventoryForVerifiedAcknowledgement(input: {
   config: RelaySourceRuntimeConfig;
   transferId: string;
-  stageIntent: StageIntentV1;
+  stageIntent: StageIntentV2;
   verified: VerifiedAcknowledgement;
 }): Array<{ key: string; bytes: number; sha256: string; kmsKeyArn: string }> {
   return [
@@ -460,7 +460,11 @@ export async function finalizeCenturionThreadCorpusRelay(input: {
     if (journal.state === 'source_delete_started') {
       const remaining = await input.store.listAll(prefix);
       if (remaining === null || remaining.length !== 0) return blocked();
-      if (!(await input.source.removeTrustedSnapshot(stageIntent.sourceSnapshot))) return blocked();
+      const revalidatedStage = validateRelayStageIntent(stageIntent, config, input.transferId);
+      if (!revalidatedStage || revalidatedStage.state !== 'staged') return blocked();
+      if (!(await input.source.removeTrustedSnapshot(revalidatedStage.sourceSnapshot))) {
+        return blocked();
+      }
       journal = { ...journal, state: 'complete' };
       if (!(await writeJournal(input.source, journal))) return blocked();
       return { outcome: 'complete', transferId: input.transferId };

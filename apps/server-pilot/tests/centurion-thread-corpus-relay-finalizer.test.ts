@@ -6,7 +6,7 @@ import {
   type RelayObjectStore,
   type RelaySourceRuntimeConfig,
   type RelaySourceRuntimePort,
-  type StageIntentV1,
+  type StageIntentV2,
 } from '../src/ops/centurion-thread-corpus-relay-producer.js';
 import {
   buildReceiverAcknowledgement,
@@ -14,6 +14,10 @@ import {
   relayManifestKey,
   relayObjectKey,
 } from '../src/ops/centurion-thread-corpus-relay.js';
+import {
+  buildCenturionThreadCorpusReadinessAttestation,
+  type ReadinessAttestationBindingInputV1,
+} from '../src/ops/centurion-thread-corpus-readiness.js';
 import { createFinalizeCenturionThreadCorpusRelayCommand } from '../scripts/finalize-centurion-thread-corpus-relay.js';
 import { finalizeCenturionThreadCorpusRelay } from '../src/ops/centurion-thread-corpus-relay-finalizer.js';
 import { describe, expect, it } from 'vitest';
@@ -35,6 +39,38 @@ const relayConfig: RelayBucketConfig = {
   maxSnapshotBytes: 1_000_000,
 };
 
+const readinessBinding: ReadinessAttestationBindingInputV1 = {
+  corpusContractId: 'centurion-thread-corpus-v2',
+  expectedInstanceId: 'i-synthetic-approved',
+  expectedRevision: 'f4581cf6',
+  expectedWorktree: '/synthetic/zero',
+  designatedSourceScope: {
+    centurionTransportId: 'synthetic-centurion-transport',
+    designatedTransportId: 'synthetic-designated-transport',
+    mailboxIds: ['synthetic-mailbox'],
+    addresses: [' safe-finalize@example.test '],
+  },
+};
+
+const allGreenReadinessReport = {
+  schemaVersion: 'centurion-thread-corpus-readiness-report-v1',
+  outcome: 'ready',
+  code: 'CENTURION_THREAD_CORPUS_READY',
+  ready: true,
+  checks: {
+    exactEc2RevisionWorktree: true,
+    imdsV2Identity: true,
+    protectedConfig: true,
+    designatedMailboxScope: true,
+    regionBucketPrefixAllowlist: true,
+    readOnlyDbS3KmsCapabilities: true,
+    sourceDiskHeadroom: true,
+    privateDestinationIgnored: true,
+    windowsLocalAclTarget: true,
+    v2Semantics: true,
+  },
+} as const;
+
 const runtimeConfig: RelaySourceRuntimeConfig = {
   version: 'centurion-thread-corpus-relay-source-config-v1',
   expectedEc2: {
@@ -46,7 +82,13 @@ const runtimeConfig: RelaySourceRuntimeConfig = {
   sourceSnapshot: {
     directChildName: 'safe-finalize-snapshot',
   },
+  readinessAttestationBinding: readinessBinding,
 };
+
+const readinessAttestation = buildCenturionThreadCorpusReadinessAttestation(
+  allGreenReadinessReport,
+  readinessBinding,
+)!;
 
 function sha256(content: Uint8Array): string {
   return createHash('sha256').update(content).digest('hex');
@@ -72,7 +114,7 @@ function relayPrefix(): string {
   return key.slice(0, -'relay-manifest.v1.json'.length);
 }
 
-function stageIntent(): StageIntentV1 {
+function stageIntent(): StageIntentV2 {
   const corpus = textEncoder.encode('SAFE_FINALIZE_CORPUS');
   const manifest = textEncoder.encode('SAFE_FINALIZE_MANIFEST');
   const members = [
@@ -80,12 +122,11 @@ function stageIntent(): StageIntentV1 {
     { path: 'manifest.json', bytes: manifest.byteLength, sha256: sha256(manifest) },
   ];
   return {
-    schemaVersion: 'centurion-thread-corpus-relay-stage-intent-v1',
+    schemaVersion: 'centurion-thread-corpus-relay-stage-intent-v2',
     transferId: TRANSFER_ID,
     literalRelayRoot: relayConfig.literalRelayRoot,
     sourceSnapshot: {
       directChildName: runtimeConfig.sourceSnapshot.directChildName,
-      canonicalPath: SAFE_SOURCE_PATH,
       stableIdentity: 'safe-source-identity',
     },
     snapshotId: 'safe-snapshot-001',
@@ -105,6 +146,7 @@ function stageIntent(): StageIntentV1 {
       relayManifestKey(relayConfig.literalRelayRoot, TRANSFER_ID),
     ],
     state: 'staged',
+    readinessAttestation,
   };
 }
 
@@ -161,12 +203,12 @@ class FakeRelayStore implements RelayObjectStore {
 class FakeSourceRuntime implements RelaySourceRuntimePort {
   readonly calls: string[] = [];
   readonly journalWrites: FinalizeJournalV1[] = [];
-  stage: StageIntentV1 | null = stageIntent();
+  stage: StageIntentV2 | null = stageIntent();
   journal: FinalizeJournalV1 | null = null;
   removeResult = true;
   platformResult = 'linux';
   imdsResult = true;
-  stageReadOverride: RelayJournalRead<StageIntentV1> | null = null;
+  stageReadOverride: RelayJournalRead<StageIntentV2> | null = null;
   journalReadOverride: RelayJournalRead<FinalizeJournalV1> | null = null;
   git = {
     revision: `${runtimeConfig.expectedEc2.revision}\n`,
@@ -206,7 +248,7 @@ class FakeSourceRuntime implements RelaySourceRuntimePort {
     throw new Error('finalizer must not rewrite stage intent');
   }
 
-  async readStageIntent(transferId: string): Promise<RelayJournalRead<StageIntentV1>> {
+  async readStageIntent(transferId: string): Promise<RelayJournalRead<StageIntentV2>> {
     this.calls.push('read-stage');
     expect(transferId).toBe(TRANSFER_ID);
     if (this.stageReadOverride) return this.stageReadOverride;
@@ -231,7 +273,7 @@ class FakeSourceRuntime implements RelaySourceRuntimePort {
       : { outcome: 'absent' };
   }
 
-  async removeTrustedSnapshot(snapshot: StageIntentV1['sourceSnapshot']): Promise<boolean> {
+  async removeTrustedSnapshot(snapshot: StageIntentV2['sourceSnapshot']): Promise<boolean> {
     this.calls.push('remove-source');
     expect(snapshot).toEqual(
       this.stage?.sourceSnapshot ?? this.journal?.stageIntent.sourceSnapshot,
@@ -372,6 +414,52 @@ describe('Centurion relay finalizer', () => {
       expect(source.calls).not.toContain('remove-source');
     },
   );
+
+  it.each([
+    {
+      name: 'legacy V1 stage intent',
+      configure: (source: FakeSourceRuntime) => {
+        source.stage = {
+          ...source.stage!,
+          schemaVersion: 'centurion-thread-corpus-relay-stage-intent-v1',
+        } as unknown as StageIntentV2;
+      },
+    },
+    {
+      name: 'tampered persisted stage attestation',
+      configure: (source: FakeSourceRuntime) => {
+        source.stage = {
+          ...source.stage!,
+          readinessAttestation: {
+            ...source.stage!.readinessAttestation,
+            bindingSha256: '0'.repeat(64),
+          },
+        };
+      },
+    },
+    {
+      name: 'tampered durable finalization attestation',
+      configure: (source: FakeSourceRuntime) => {
+        source.journal = {
+          ...journalFor(source, '4'.repeat(64), '3'.repeat(64), 'ack_verified'),
+          stageIntent: {
+            ...source.stage!,
+            readinessAttestation: {
+              ...source.stage!.readinessAttestation,
+              bindingSha256: '0'.repeat(64),
+            },
+          },
+        };
+      },
+    },
+  ])('blocks $name before relay or source deletion', async ({ configure }) => {
+    const { store, source } = acknowledgedHarness();
+    configure(source);
+
+    expect(await finalize(store, source)).toEqual({ outcome: 'blocked' });
+    expect(store.deleteCalls).toEqual([]);
+    expect(source.calls).not.toContain('remove-source');
+  });
 
   it('blocks an unreadable finalize journal before relay or source deletion', async () => {
     const { store, source } = acknowledgedHarness();
