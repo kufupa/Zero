@@ -38,3 +38,55 @@ jobs:
         run: |
           pnpm --dir apps/server-pilot build
           pnpm --dir apps/mail build
+
+  rocketseed-transactional:
+    timeout-minutes: 10
+    runs-on: ${{ vars.RUNNER_IMAGE || 'ubuntu-latest' }}
+    env:
+      DISPOSABLE_POSTGRES_DB: zero_transactional
+      DISPOSABLE_POSTGRES_USER: postgres
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: zero_transactional
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432/tcp
+        options: >-
+          --health-cmd "pg_isready -U postgres -d zero_transactional"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Checkout Code 🛎
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm 🌟
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node 📦
+        uses: actions/setup-node@v4
+
+      - name: Install dependencies 📦
+        run: pnpm install
+
+      - name: Migrate disposable Postgres
+        shell: bash
+        run: |
+          set -euo pipefail
+          export TEST_DATABASE_URL="postgresql://${DISPOSABLE_POSTGRES_USER}@127.0.0.1:${{ job.services.postgres.ports[5432] }}/${DISPOSABLE_POSTGRES_DB}?sslmode=disable"
+          DATABASE_URL="$TEST_DATABASE_URL" pnpm --dir apps/server-pilot db:migrate
+
+      - name: Test transactional Rocketseed mail flow
+        shell: bash
+        run: |
+          set -euo pipefail
+          export TEST_DATABASE_URL="postgresql://${DISPOSABLE_POSTGRES_USER}@127.0.0.1:${{ job.services.postgres.ports[5432] }}/${DISPOSABLE_POSTGRES_DB}?sslmode=disable"
+          unset DATABASE_URL VITEST_ALLOW_PILOT_RDS HMS_DB_TEST_REQUIRED
+          export MAIL_TRANSPORT_MODE=fixture
+          CONFIRM_DISPOSABLE_TEST_DB=1 TEST_DATABASE_URL="$TEST_DATABASE_URL" pnpm --dir apps/server-pilot exec vitest run \
+            tests/rocketseed-returned-copy-reconciliation.test.ts \
+            tests/outbound-delivery-outcome.test.ts \
+            tests/outbound-claim-lease.test.ts

@@ -23,6 +23,11 @@ export interface RocketseedReturnedCopyTrustInput {
   };
 }
 
+export type RocketseedReturnedCopyPrecheckInput = Pick<
+  RocketseedReturnedCopyTrustInput,
+  'expectedTransportAddress' | 'parsed'
+>;
+
 type ReceivedRole = 'zimbra' | 'local' | 'rocket' | 'other';
 
 const TRUSTED_RECEIVED_PREFIX: readonly ReceivedRole[] = [
@@ -37,6 +42,7 @@ const LOCAL_SOURCE_IDENTITIES = new Set(['localhost']);
 const ROCKETSEED_SOURCE_IDENTITIES = new Set(['172.24.0.8', 'branding.legacyhotels.co.za']);
 const MAILBOX =
   /^[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9](?:[A-Z0-9-]*[A-Z0-9])?(?:\.[A-Z0-9](?:[A-Z0-9-]*[A-Z0-9])?)*$/i;
+const TRUST_REJECTION_MESSAGE_TYPE = 'rocketseed_returned_copy_trust_rejected';
 
 export function evaluateRocketseedReturnedCopyTrust(
   input: RocketseedReturnedCopyTrustInput,
@@ -49,6 +55,43 @@ export function evaluateRocketseedReturnedCopyTrust(
     return rejected('transport_identity_mismatch');
   }
 
+  const addressCheck = evaluateExpectedAddressing(input);
+  if (addressCheck) return addressCheck;
+
+  if (!input.hasEligibleLocalQueueRow) {
+    return rejected('eligible_queue_row_missing');
+  }
+
+  return verifyReceivedTopology(input.parsed.rawHeaderLines);
+}
+
+/**
+ * Queue-independent gate for legacy Message-ID candidate lookup. The complete
+ * trust evaluator still runs after canonical lookup before reconciliation.
+ */
+export function evaluateRocketseedReturnedCopyPrecheck(
+  input: RocketseedReturnedCopyPrecheckInput,
+): RocketseedReturnedCopyTrustResult {
+  const addressCheck = evaluateExpectedAddressing(input);
+  if (addressCheck) return addressCheck;
+  return verifyReceivedTopology(input.parsed.rawHeaderLines);
+}
+
+/** Deliberately omit all message metadata from aggregate trust diagnostics. */
+export function emitRocketseedReturnedCopyTrustRejection(
+  reason: RocketseedReturnedCopyTrustReason,
+): void {
+  console.warn(
+    JSON.stringify({
+      messageType: TRUST_REJECTION_MESSAGE_TYPE,
+      reason,
+    }),
+  );
+}
+
+function evaluateExpectedAddressing(
+  input: RocketseedReturnedCopyPrecheckInput,
+): Extract<RocketseedReturnedCopyTrustResult, { trusted: false }> | null {
   const expectedAddress = normalizeRocketseedMailbox(input.expectedTransportAddress);
   if (
     !expectedAddress ||
@@ -56,16 +99,10 @@ export function evaluateRocketseedReturnedCopyTrust(
   ) {
     return rejected('owner_mismatch');
   }
-
   if (normalizeRocketseedMailbox(input.parsed.fromAddress) !== expectedAddress) {
     return rejected('sender_mismatch');
   }
-
-  if (!input.hasEligibleLocalQueueRow) {
-    return rejected('eligible_queue_row_missing');
-  }
-
-  return verifyReceivedTopology(input.parsed.rawHeaderLines);
+  return null;
 }
 
 function verifyReceivedTopology(
@@ -122,6 +159,8 @@ function receivedSourceIdentity(value: string): string | null {
   return unbracketed.toLowerCase();
 }
 
-function rejected(reason: RocketseedReturnedCopyTrustReason): RocketseedReturnedCopyTrustResult {
+function rejected(
+  reason: RocketseedReturnedCopyTrustReason,
+): Extract<RocketseedReturnedCopyTrustResult, { trusted: false }> {
   return { trusted: false, reason };
 }

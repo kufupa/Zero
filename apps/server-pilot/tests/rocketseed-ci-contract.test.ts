@@ -51,6 +51,32 @@ describe('Rocketseed CI contract', () => {
     expect(workflow).not.toContain('VITEST_ALLOW_PILOT_RDS=1');
   });
 
+  it('runs transactional mail-flow suites on an ephemeral Postgres service', () => {
+    const transactionalJob = workflow.slice(workflow.indexOf('rocketseed-transactional:'));
+
+    expect(transactionalJob).toContain('image: postgres:16');
+    expect(transactionalJob).toContain('POSTGRES_HOST_AUTH_METHOD: trust');
+    expect(transactionalJob).toContain(
+      'DATABASE_URL="$TEST_DATABASE_URL" pnpm --dir apps/server-pilot db:migrate',
+    );
+    expect(transactionalJob).toContain(
+      'unset DATABASE_URL VITEST_ALLOW_PILOT_RDS HMS_DB_TEST_REQUIRED',
+    );
+    expect(transactionalJob).toContain(
+      'CONFIRM_DISPOSABLE_TEST_DB=1 TEST_DATABASE_URL="$TEST_DATABASE_URL" pnpm --dir apps/server-pilot exec vitest run',
+    );
+    for (const testFile of [
+      'tests/rocketseed-returned-copy-reconciliation.test.ts',
+      'tests/outbound-delivery-outcome.test.ts',
+      'tests/outbound-claim-lease.test.ts',
+    ]) {
+      expect(transactionalJob).toContain(testFile);
+    }
+    expect(transactionalJob).not.toContain('nava-zero-mail-pilot');
+    expect(transactionalJob).not.toContain('.env.production');
+    expect(transactionalJob).not.toContain('VITEST_ALLOW_PILOT_RDS=1');
+  });
+
   it('loads isInline metadata for CID projection and inline authorization', () => {
     const processEmailContent = mailRoute.slice(
       mailRoute.indexOf('processEmailContent:'),

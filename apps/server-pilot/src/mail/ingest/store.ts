@@ -51,7 +51,9 @@ import {
   generateMessageId,
 } from './parse-message.js';
 import {
+  emitRocketseedReturnedCopyTrustRejection,
   evaluateRocketseedReturnedCopyTrust,
+  evaluateRocketseedReturnedCopyPrecheck,
   normalizeRocketseedMailbox,
 } from './rocketseed-returned-copy.js';
 import { parsePersistedDeliveryOutcome } from '../send/outbound-queue.js';
@@ -269,14 +271,24 @@ export async function persistInboundMessage(
           ? parsed.messageId
           : null;
     const useMessageIdFallback = parsed.outboundCorrelation.kind === 'absent';
-    const canonical = opts.ingestSource === 'live-pop3' && correlationId
-      ? await findEligibleCanonicalOutbound(
-          transactionDb,
-          transport.id,
-          correlationId,
-          useMessageIdFallback,
-        )
-      : undefined;
+    const hasEligibleLegacyReturnedCopyPrecheck =
+      useMessageIdFallback &&
+      correlationId !== null &&
+      evaluateRocketseedReturnedCopyPrecheck({
+        expectedTransportAddress: transport.email,
+        parsed,
+      }).trusted;
+    const canonical =
+      opts.ingestSource === 'live-pop3' &&
+      correlationId &&
+      (!useMessageIdFallback || hasEligibleLegacyReturnedCopyPrecheck)
+        ? await findEligibleCanonicalOutbound(
+            transactionDb,
+            transport.id,
+            correlationId,
+            useMessageIdFallback,
+          )
+        : undefined;
     const hasEligibleLocalQueueRow =
       canonical?.queueStatus === 'sent' ||
       (canonical?.queueStatus === 'sending' &&
@@ -284,6 +296,7 @@ export async function persistInboundMessage(
           expectedTransportAddress: transport.email,
           messageIdHeader: canonical.messageIdHeader,
           parsedMessageId: parsed.messageId,
+          requiresExactReturnedMessageId: parsed.outboundCorrelation.kind !== 'valid',
           smtpPayload: canonical.smtpPayload,
         }));
     const returnedCopyTrust = evaluateRocketseedReturnedCopyTrust({
@@ -293,6 +306,13 @@ export async function persistInboundMessage(
       hasEligibleLocalQueueRow,
       parsed,
     });
+    if (
+      opts.ingestSource === 'live-pop3' &&
+      parsed.outboundCorrelation.kind === 'valid' &&
+      !returnedCopyTrust.trusted
+    ) {
+      emitRocketseedReturnedCopyTrustRejection(returnedCopyTrust.reason);
+    }
     if (canonical && returnedCopyTrust.trusted) {
       if (canonical.ingestMailboxId || canonical.pop3Uidl) {
         duplicate = {
@@ -311,7 +331,10 @@ export async function persistInboundMessage(
           ingestMailboxId: meta.ingestMailboxId,
           pop3Uidl: meta.pop3Uidl,
           ownerHeaderValue: parsed.ownerHeaderValue,
-          messageIdHeader: parsed.messageId,
+          messageIdHeader:
+            parsed.outboundCorrelation.kind === 'valid' && canonical.messageIdHeader !== null
+              ? canonical.messageIdHeader
+              : parsed.messageId,
           inReplyTo: parsed.inReplyTo,
           references: parsed.references,
           fromAddress: parsed.fromAddress ?? '',
@@ -615,6 +638,7 @@ async function findExistingInboundMessage(
       and(
         eq(message.ingestMailboxId, meta.ingestMailboxId),
         eq(message.pop3Uidl, meta.pop3Uidl),
+        eq(message.direction, 'inbound'),
       ),
     )
     .limit(1);
@@ -741,12 +765,18 @@ async function findCanonicalOutboundWithQueueLock(
 function hasProvenPersistedSendingDelivery(args: {
   smtpPayload: unknown;
   parsedMessageId: string | null;
+  requiresExactReturnedMessageId: boolean;
   expectedTransportAddress: string;
   messageIdHeader: string | null;
 }): boolean {
   try {
     const outcome = parsePersistedDeliveryOutcome(args.smtpPayload);
-    if (!outcome || outcome.messageId !== args.parsedMessageId) return false;
+    if (
+      !outcome ||
+      (args.requiresExactReturnedMessageId && outcome.messageId !== args.parsedMessageId)
+    ) {
+      return false;
+    }
 
     const normalizedExpectedTransportAddress = normalizeRocketseedMailbox(
       args.expectedTransportAddress,
@@ -761,7 +791,11 @@ function hasProvenPersistedSendingDelivery(args: {
       return false;
     }
 
-    return !args.messageIdHeader || args.messageIdHeader === outcome.messageId;
+    return (
+      !args.requiresExactReturnedMessageId ||
+      !args.messageIdHeader ||
+      args.messageIdHeader === outcome.messageId
+    );
   } catch {
     return false;
   }

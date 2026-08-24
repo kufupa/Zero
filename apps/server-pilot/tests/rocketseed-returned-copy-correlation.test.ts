@@ -14,6 +14,17 @@ function returnedCopyWithOutboundId(outboundId: string): Buffer {
   );
 }
 
+function returnedCopyWithOutboundIds(outboundIds: string[]): Buffer {
+  return Buffer.from(
+    [
+      ...outboundIds.map((outboundId) => `X-Zero-Outbound-Id: ${outboundId}`),
+      'Message-ID: <parser-correlation@zero.test>',
+      '',
+      'parser correlation test',
+    ].join('\r\n'),
+  );
+}
+
 describe('returned-copy outbound correlation parsing', () => {
   it('parses a valid X-Zero-Outbound-Id as outbound correlation', async () => {
     const outboundId = randomUUID();
@@ -43,5 +54,27 @@ describe('returned-copy outbound correlation parsing', () => {
 
     expect(absent.outboundCorrelation).toEqual({ kind: 'absent' });
     expect(malformed.outboundCorrelation).toEqual({ kind: 'malformed' });
+  });
+
+  it('uses only the final duplicate X-Zero-Outbound-Id value', async () => {
+    const earlierOutboundId = randomUUID();
+    const finalOutboundId = randomUUID();
+    const storage = new FakeS3Storage('test-mail-bucket');
+    const [validFinal, malformedFinal] = await Promise.all([
+      parseRawMessage(returnedCopyWithOutboundIds([earlierOutboundId, finalOutboundId]), {
+        messageId: randomUUID(),
+        storage,
+      }),
+      parseRawMessage(returnedCopyWithOutboundIds([earlierOutboundId, 'not-a-uuid']), {
+        messageId: randomUUID(),
+        storage,
+      }),
+    ]);
+
+    expect(validFinal.outboundCorrelation).toEqual({
+      kind: 'valid',
+      outboundId: finalOutboundId,
+    });
+    expect(malformedFinal.outboundCorrelation).toEqual({ kind: 'malformed' });
   });
 });

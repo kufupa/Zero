@@ -1,5 +1,6 @@
 import {
   evaluateRocketseedReturnedCopyTrust,
+  evaluateRocketseedReturnedCopyPrecheck,
   type RocketseedReturnedCopyTrustInput,
 } from '../src/mail/ingest/rocketseed-returned-copy.js';
 import { describe, expect, it } from 'vitest';
@@ -45,6 +46,40 @@ describe('evaluateRocketseedReturnedCopyTrust', () => {
   it('trusts observed route when local correlations hold', () => {
     expect(evaluateRocketseedReturnedCopyTrust(validInput())).toEqual({
       trusted: true,
+    });
+  });
+
+  it('requires returned-copy topology, owner, and sender before legacy lookup', () => {
+    const trusted = validInput();
+    expect(
+      evaluateRocketseedReturnedCopyPrecheck({
+        expectedTransportAddress: trusted.expectedTransportAddress,
+        parsed: trusted.parsed,
+      }),
+    ).toEqual({ trusted: true });
+
+    const ordinaryInbound = validInput();
+    ordinaryInbound.parsed.rawHeaderLines = [];
+    expect(
+      evaluateRocketseedReturnedCopyPrecheck({
+        expectedTransportAddress: ordinaryInbound.expectedTransportAddress,
+        parsed: ordinaryInbound.parsed,
+      }),
+    ).toEqual({
+      trusted: false,
+      reason: 'received_missing',
+    });
+
+    const wrongSender = validInput();
+    wrongSender.parsed.fromAddress = 'other@legacyhotels.co.za';
+    expect(
+      evaluateRocketseedReturnedCopyPrecheck({
+        expectedTransportAddress: wrongSender.expectedTransportAddress,
+        parsed: wrongSender.parsed,
+      }),
+    ).toEqual({
+      trusted: false,
+      reason: 'sender_mismatch',
     });
   });
 

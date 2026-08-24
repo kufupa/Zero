@@ -6,23 +6,26 @@ import {
   message,
   outboundSendQueue,
 } from '../src/db/schema/mail.js';
+import {
+  openTestDbSession,
+  TEST_DB_AVAILABLE,
+  probeTestDb,
+  withSeededTestDb,
+} from './helpers/test-db.js';
 import { persistInboundMessage as persistInboundMessageImpl } from '../src/mail/ingest/store.js';
 import { FakeSmtpTransport, __setSmtpTransportForTests } from '../src/mail/send/smtp.js';
 import { RECLAIM_SENDING_AFTER_MS, flushDue } from '../src/mail/send/outbound-queue.js';
-import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
 import { parseRawMessage } from '../src/mail/ingest/parse-message.js';
 import { FakeS3Storage } from '../src/storage/s3.js';
-import * as schema from '../src/db/schema/index.js';
-import { drizzle } from 'drizzle-orm/postgres-js';
+import { describe, expect, it, vi } from 'vitest';
 import type { DB } from '../src/db/client.js';
 import { eq, inArray, ne } from 'drizzle-orm';
-import { describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import postgres from 'postgres';
 
 const reachable = await probeTestDb();
 
 type PersistInboundArgs = Parameters<typeof persistInboundMessageImpl>;
+type TestSession = ReturnType<typeof openTestDbSession>;
 
 function persistInboundMessage(...[parsed, raw, meta, opts]: PersistInboundArgs) {
   return persistInboundMessageImpl(parsed, raw, meta, {
@@ -37,7 +40,7 @@ function trustedReturnedCopy(args: {
   outboundId?: string;
   ownerHeaderValue?: string;
   receivedLines?: string[];
-  messageId: string;
+  messageId: string | null;
   transportAddress: string;
 }): Buffer {
   const body = args.includeAttachment
@@ -70,7 +73,7 @@ function trustedReturnedCopy(args: {
     [
       `X-Zero-Mailbox: ${args.ownerHeaderValue ?? args.transportAddress}`,
       ...(args.outboundId ? [`X-Zero-Outbound-Id: ${args.outboundId}`] : []),
-      `Message-ID: <${args.messageId}>`,
+      ...(args.messageId ? [`Message-ID: <${args.messageId}>`] : []),
       `From: ${args.fromAddress ?? args.transportAddress}`,
       `To: ${args.transportAddress}`,
       ...receivedLines,
@@ -202,16 +205,6 @@ async function seedCanonicalOutbound(
     returnedMessageId,
     transportAddress,
     transportId,
-  };
-}
-
-function openConcurrentTestDb(): { client: ReturnType<typeof postgres>; db: DB } {
-  const testDatabaseUrl = process.env.TEST_DATABASE_URL;
-  if (!testDatabaseUrl) throw new Error('missing disposable test database');
-  const client = postgres(testDatabaseUrl, { max: 1, ssl: false });
-  return {
-    client,
-    db: drizzle(client, { schema }) as unknown as DB,
   };
 }
 
@@ -375,63 +368,83 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
     });
   }, 30000);
 
-  it('reconciles strict UUID correlation from a sending row with durable accepted delivery', async () => {
+  it('reconciles strict UUID correlation from a sending row when returned Message-ID is missing or rewritten', async () => {
     const storage = new FakeS3Storage('test-mail-bucket');
-    const result = await withSeededTestDb(async (db) => {
-      const canonical = await seedCanonicalOutbound(db, { queueStatus: 'sending' });
-      await db
-        .update(message)
-        .set({ messageIdHeader: null })
-        .where(eq(message.id, canonical.canonicalMessageId));
-      await db
-        .update(outboundSendQueue)
-        .set({
-          smtpPayload: {
-            deliveryOutcome: {
-              messageId: canonical.returnedMessageId,
-              accepted: [`Mailbox <${canonical.transportAddress.toUpperCase()}>`],
-              rejected: [],
+    const cases = [
+      { name: 'missing', returnedMessageId: null },
+      {
+        name: 'rewritten',
+        returnedMessageId: `rewritten-${randomUUID()}@zero.test`,
+      },
+    ] as const;
+    const results = await withSeededTestDb(async (db) => {
+      const persisted = [];
+      for (const testCase of cases) {
+        const canonical = await seedCanonicalOutbound(db, { queueStatus: 'sending' });
+        await db
+          .update(outboundSendQueue)
+          .set({
+            smtpPayload: {
+              deliveryOutcome: {
+                messageId: canonical.returnedMessageId,
+                accepted: [`Mailbox <${canonical.transportAddress.toUpperCase()}>`],
+                rejected: [],
+              },
             },
-          },
-        })
-        .where(eq(outboundSendQueue.id, canonical.queueId));
-      const candidateMessageId = randomUUID();
-      const raw = trustedReturnedCopy({
-        outboundId: canonical.canonicalMessageId,
-        messageId: canonical.returnedMessageId,
-        transportAddress: canonical.transportAddress,
-      });
-      const parsed = await parseRawMessage(raw, {
-        messageId: candidateMessageId,
-        storage,
-      });
-      const persistResult = await persistInboundMessage(
-        parsed,
-        raw,
-        {
-          ingestMailboxId: 'ingest-nava-legacy',
-          pop3Uidl: `task-2b-${randomUUID()}`,
+          })
+          .where(eq(outboundSendQueue.id, canonical.queueId));
+        const candidateMessageId = randomUUID();
+        const raw = trustedReturnedCopy({
+          outboundId: canonical.canonicalMessageId,
+          messageId: testCase.returnedMessageId,
+          transportAddress: canonical.transportAddress,
+        });
+        const parsed = await parseRawMessage(raw, {
           messageId: candidateMessageId,
-        },
-        { db, storage, skipAiEnqueue: true },
-      );
-      const rows = await db
-        .select({ id: message.id })
-        .from(message)
-        .where(inArray(message.id, [canonical.canonicalMessageId, candidateMessageId]));
-      const [queue] = await db
-        .select({ status: outboundSendQueue.status })
-        .from(outboundSendQueue)
-        .where(eq(outboundSendQueue.id, canonical.queueId));
-      return { canonical, persistResult, queue, rows };
+          storage,
+        });
+        const persistResult = await persistInboundMessage(
+          parsed,
+          raw,
+          {
+            ingestMailboxId: 'ingest-nava-legacy',
+            pop3Uidl: `task-2b-${randomUUID()}`,
+            messageId: candidateMessageId,
+          },
+          { db, storage, skipAiEnqueue: true, ingestSource: 'live-pop3' },
+        );
+        const rows = await db
+          .select({ id: message.id })
+          .from(message)
+          .where(inArray(message.id, [canonical.canonicalMessageId, candidateMessageId]));
+        const [canonicalRow] = await db
+          .select({
+            messageIdHeader: message.messageIdHeader,
+            threadId: message.threadId,
+          })
+          .from(message)
+          .where(eq(message.id, canonical.canonicalMessageId));
+        const [queue] = await db
+          .select({ status: outboundSendQueue.status })
+          .from(outboundSendQueue)
+          .where(eq(outboundSendQueue.id, canonical.queueId));
+        persisted.push({ canonical, canonicalRow, persistResult, queue, rows });
+      }
+      return persisted;
     });
 
-    expect(result.persistResult.kind).toBe('reconciled');
-    expect(result.rows).toEqual([{ id: result.canonical.canonicalMessageId }]);
-    expect(result.queue?.status).toBe('sending');
+    for (const result of results) {
+      expect(result.persistResult.kind).toBe('reconciled');
+      expect(result.rows).toEqual([{ id: result.canonical.canonicalMessageId }]);
+      expect(result.queue?.status).toBe('sending');
+      expect(result.canonicalRow).toEqual({
+        messageIdHeader: result.canonical.returnedMessageId,
+        threadId: result.canonical.canonicalThreadId,
+      });
+    }
   }, 30000);
 
-  it('finalizes a reconciled persisted outcome without another SMTP send', async () => {
+  it('finalizes a UUID-reconciled persisted outcome without another SMTP send', async () => {
     const smtp = new FakeSmtpTransport();
     __setSmtpTransportForTests(smtp);
 
@@ -439,10 +452,6 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
       const storage = new FakeS3Storage('test-mail-bucket');
       const result = await withSeededTestDb(async (db) => {
         const canonical = await seedCanonicalOutbound(db, { queueStatus: 'sending' });
-        await db
-          .update(message)
-          .set({ messageIdHeader: null })
-          .where(eq(message.id, canonical.canonicalMessageId));
         await db
           .update(outboundSendQueue)
           .set({
@@ -466,7 +475,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
         const candidateMessageId = randomUUID();
         const raw = trustedReturnedCopy({
           outboundId: canonical.canonicalMessageId,
-          messageId: canonical.returnedMessageId,
+          messageId: `rewritten-${randomUUID()}@zero.test`,
           transportAddress: canonical.transportAddress,
         });
         const parsed = await parseRawMessage(raw, {
@@ -496,8 +505,16 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
           .select({ id: message.id })
           .from(message)
           .where(inArray(message.id, [canonical.canonicalMessageId, candidateMessageId]));
+        const [canonicalRow] = await db
+          .select({
+            messageIdHeader: message.messageIdHeader,
+            threadId: message.threadId,
+          })
+          .from(message)
+          .where(eq(message.id, canonical.canonicalMessageId));
         return {
           canonical,
+          canonicalRow,
           flushed,
           queueAfterFinalize,
           queueBeforeFinalize,
@@ -511,13 +528,17 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
       expect(result.flushed).toEqual({ flushed: 1 });
       expect(result.queueAfterFinalize?.status).toBe('sent');
       expect(result.rows).toEqual([{ id: result.canonical.canonicalMessageId }]);
+      expect(result.canonicalRow).toEqual({
+        messageIdHeader: result.canonical.returnedMessageId,
+        threadId: result.canonical.canonicalThreadId,
+      });
       expect(smtp.sent).toHaveLength(0);
     } finally {
       __setSmtpTransportForTests(null);
     }
   }, 30000);
 
-  it('uses ordinary ingest for unproven sending rows and non-sent candidates', async () => {
+  it('uses ordinary ingest for unproven sending rows, non-sent candidates, and legacy fallback', async () => {
     const cases = [
       {
         name: 'missing outcome',
@@ -532,12 +553,6 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
         includeOutboundId: true,
       },
       {
-        name: 'mismatched outcome message ID',
-        queueStatus: 'sending',
-        outcomeKind: 'wrong-message-id',
-        includeOutboundId: true,
-      },
-      {
         name: 'missing accepted transport recipient',
         queueStatus: 'sending',
         outcomeKind: 'missing-transport-recipient',
@@ -548,13 +563,6 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
         queueStatus: 'sending',
         outcomeKind: 'malformed-transport-recipient',
         includeOutboundId: true,
-      },
-      {
-        name: 'canonical message ID mismatch',
-        queueStatus: 'sending',
-        outcomeKind: 'valid',
-        includeOutboundId: true,
-        mismatchCanonicalMessageId: true,
       },
       {
         name: 'pending queue',
@@ -595,15 +603,6 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
               },
             };
             break;
-          case 'wrong-message-id':
-            smtpPayload = {
-              deliveryOutcome: {
-                messageId: `different-${randomUUID()}@zero.test`,
-                accepted: [canonical.transportAddress],
-                rejected: [],
-              },
-            };
-            break;
           case 'missing-transport-recipient':
             smtpPayload = {
               deliveryOutcome: {
@@ -631,12 +630,6 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
               },
             };
             break;
-        }
-        if ('mismatchCanonicalMessageId' in testCase) {
-          await db
-            .update(message)
-            .set({ messageIdHeader: `other-${randomUUID()}@zero.test` })
-            .where(eq(message.id, canonical.canonicalMessageId));
         }
         await db
           .update(outboundSendQueue)
@@ -943,7 +936,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
     expect(result.attachmentRows).toHaveLength(1);
   }, 30000);
 
-  it('drains a replayed UIDL without a duplicate canonical attachment', async () => {
+  it('drains a reconciled outbound UIDL replay without a duplicate canonical attachment', async () => {
     const storage = new FakeS3Storage('test-mail-bucket');
     const result = await withSeededTestDb(async (db) => {
       const canonical = await seedCanonicalOutbound(db);
@@ -1001,6 +994,80 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
     expect(result.second.kind).toBe('duplicate');
     expect(result.rows).toHaveLength(1);
     expect(result.attachmentRows).toHaveLength(1);
+  }, 30000);
+
+  it('uses inbound UIDL replay lookup without shadowing an outbound canonical row', async () => {
+    const storage = new FakeS3Storage('test-mail-bucket');
+    const result = await withSeededTestDb(async (db) => {
+      const canonical = await seedCanonicalOutbound(db);
+      const pop3Uidl = `inbound-replay-${randomUUID()}`;
+      await db
+        .update(message)
+        .set({
+          ingestMailboxId: 'ingest-nava-legacy',
+          pop3Uidl,
+        })
+        .where(eq(message.id, canonical.canonicalMessageId));
+
+      const candidateMessageId = randomUUID();
+      const raw = trustedReturnedCopy({
+        messageId: `ordinary-inbound-${randomUUID()}@zero.test`,
+        transportAddress: canonical.transportAddress,
+      });
+      const firstParsed = await parseRawMessage(raw, {
+        messageId: candidateMessageId,
+        storage,
+      });
+      const first = await persistInboundMessage(
+        firstParsed,
+        raw,
+        {
+          ingestMailboxId: 'ingest-nava-legacy',
+          pop3Uidl,
+          messageId: candidateMessageId,
+        },
+        { db, storage, skipAiEnqueue: true },
+      );
+
+      const replayMessageId = randomUUID();
+      const replayParsed = await parseRawMessage(raw, {
+        messageId: replayMessageId,
+        storage,
+      });
+      const replay = await persistInboundMessage(
+        replayParsed,
+        raw,
+        {
+          ingestMailboxId: 'ingest-nava-legacy',
+          pop3Uidl,
+          messageId: replayMessageId,
+        },
+        { db, storage, skipAiEnqueue: true },
+      );
+      const rows = await db
+        .select({
+          direction: message.direction,
+          id: message.id,
+        })
+        .from(message)
+        .where(
+          inArray(message.id, [canonical.canonicalMessageId, candidateMessageId, replayMessageId]),
+        );
+      return { candidateMessageId, canonical, first, replay, rows };
+    });
+
+    expect(result.first.kind).toBe('stored');
+    expect(result.replay).toMatchObject({
+      kind: 'duplicate',
+      messageId: result.candidateMessageId,
+    });
+    expect(result.rows).toEqual(
+      expect.arrayContaining([
+        { direction: 'outbound', id: result.canonical.canonicalMessageId },
+        { direction: 'inbound', id: result.candidateMessageId },
+      ]),
+    );
+    expect(result.rows).toHaveLength(2);
   }, 30000);
 
   it('removes candidate attachment objects for a later physical copy', async () => {
@@ -1141,76 +1208,99 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
   }, 30000);
 
   it('uses ordinary ingest when Task 1 sender, owner, or topology checks reject', async () => {
-    const result = await withSeededTestDb(async (db) => {
-      const storage = new FakeS3Storage('test-mail-bucket');
-      const canonical = await seedCanonicalOutbound(db);
-      const ownerAlias = `task-2-alias-${randomUUID()}@zero.test`;
-      await db
-        .update(mailboxTransport)
-        .set({ sendFromConfig: { aliases: [ownerAlias] } })
-        .where(eq(mailboxTransport.id, canonical.transportId));
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const result = await withSeededTestDb(async (db) => {
+        const storage = new FakeS3Storage('test-mail-bucket');
+        const canonical = await seedCanonicalOutbound(db);
+        const ownerAlias = `task-2-alias-${randomUUID()}@zero.test`;
+        await db
+          .update(mailboxTransport)
+          .set({ sendFromConfig: { aliases: [ownerAlias] } })
+          .where(eq(mailboxTransport.id, canonical.transportId));
 
-      const attempts = [
-        trustedReturnedCopy({
-          fromAddress: `task-2-sender-${randomUUID()}@zero.test`,
-          outboundId: canonical.canonicalMessageId,
-          messageId: canonical.returnedMessageId,
-          transportAddress: canonical.transportAddress,
-        }),
-        trustedReturnedCopy({
-          outboundId: canonical.canonicalMessageId,
-          ownerHeaderValue: ownerAlias,
-          messageId: canonical.returnedMessageId,
-          transportAddress: canonical.transportAddress,
-        }),
-        trustedReturnedCopy({
-          outboundId: canonical.canonicalMessageId,
-          messageId: canonical.returnedMessageId,
-          receivedLines: [
-            'Received: from 203.0.113.1 by zimbra-a; Mon, 24 Aug 2026 12:00:00 +0000',
-            'Received: from localhost by local-a; Mon, 24 Aug 2026 12:00:01 +0000',
-            'Received: from localhost by local-b; Mon, 24 Aug 2026 12:00:02 +0000',
-            'Received: from 172.24.0.8 by rocket-a; Mon, 24 Aug 2026 12:00:03 +0000',
-            'Received: from 172.24.0.8 by rocket-b; Mon, 24 Aug 2026 12:00:04 +0000',
-          ],
-          transportAddress: canonical.transportAddress,
-        }),
-      ];
-      const candidateMessageIds: string[] = [];
-      const persistResults = [];
-      for (const raw of attempts) {
-        const candidateMessageId = randomUUID();
-        candidateMessageIds.push(candidateMessageId);
-        const parsed = await parseRawMessage(raw, {
-          messageId: candidateMessageId,
-          storage,
-        });
-        persistResults.push(
-          await persistInboundMessage(
-            parsed,
-            raw,
-            {
-              ingestMailboxId: 'ingest-nava-legacy',
-              pop3Uidl: `task-2-${randomUUID()}`,
-              messageId: candidateMessageId,
-            },
-            { db, storage, skipAiEnqueue: true },
-          ),
-        );
+        const attempts = [
+          trustedReturnedCopy({
+            fromAddress: `task-2-sender-${randomUUID()}@zero.test`,
+            outboundId: canonical.canonicalMessageId,
+            messageId: canonical.returnedMessageId,
+            transportAddress: canonical.transportAddress,
+          }),
+          trustedReturnedCopy({
+            outboundId: canonical.canonicalMessageId,
+            ownerHeaderValue: ownerAlias,
+            messageId: canonical.returnedMessageId,
+            transportAddress: canonical.transportAddress,
+          }),
+          trustedReturnedCopy({
+            outboundId: canonical.canonicalMessageId,
+            messageId: canonical.returnedMessageId,
+            receivedLines: [
+              'Received: from 203.0.113.1 by zimbra-a; Mon, 24 Aug 2026 12:00:00 +0000',
+              'Received: from localhost by local-a; Mon, 24 Aug 2026 12:00:01 +0000',
+              'Received: from localhost by local-b; Mon, 24 Aug 2026 12:00:02 +0000',
+              'Received: from 172.24.0.8 by rocket-a; Mon, 24 Aug 2026 12:00:03 +0000',
+              'Received: from 172.24.0.8 by rocket-b; Mon, 24 Aug 2026 12:00:04 +0000',
+            ],
+            transportAddress: canonical.transportAddress,
+          }),
+        ];
+        const candidateMessageIds: string[] = [];
+        const persistResults = [];
+        for (const raw of attempts) {
+          const candidateMessageId = randomUUID();
+          candidateMessageIds.push(candidateMessageId);
+          const parsed = await parseRawMessage(raw, {
+            messageId: candidateMessageId,
+            storage,
+          });
+          persistResults.push(
+            await persistInboundMessage(
+              parsed,
+              raw,
+              {
+                ingestMailboxId: 'ingest-nava-legacy',
+                pop3Uidl: `task-2-${randomUUID()}`,
+                messageId: candidateMessageId,
+              },
+              { db, storage, skipAiEnqueue: true },
+            ),
+          );
+        }
+        const rows = await db
+          .select({ id: message.id })
+          .from(message)
+          .where(inArray(message.id, [canonical.canonicalMessageId, ...candidateMessageIds]));
+        return { persistResults, rows };
+      });
+
+      expect(result.persistResults.map((entry) => entry.kind)).toEqual([
+        'stored',
+        'stored',
+        'stored',
+      ]);
+      expect(result.rows).toHaveLength(4);
+      const diagnostics = warning.mock.calls.map(([event]) => JSON.parse(String(event)));
+      expect(diagnostics).toEqual([
+        {
+          messageType: 'rocketseed_returned_copy_trust_rejected',
+          reason: 'sender_mismatch',
+        },
+        {
+          messageType: 'rocketseed_returned_copy_trust_rejected',
+          reason: 'owner_mismatch',
+        },
+        {
+          messageType: 'rocketseed_returned_copy_trust_rejected',
+          reason: 'received_topology_mismatch',
+        },
+      ]);
+      for (const diagnostic of diagnostics) {
+        expect(Object.keys(diagnostic).sort()).toEqual(['messageType', 'reason']);
       }
-      const rows = await db
-        .select({ id: message.id })
-        .from(message)
-        .where(inArray(message.id, [canonical.canonicalMessageId, ...candidateMessageIds]));
-      return { persistResults, rows };
-    });
-
-    expect(result.persistResults.map((entry) => entry.kind)).toEqual([
-      'stored',
-      'stored',
-      'stored',
-    ]);
-    expect(result.rows).toHaveLength(4);
+    } finally {
+      warning.mockRestore();
+    }
   }, 30000);
 
   it('uses ordinary ingest when returned copy arrives through another transport', async () => {
@@ -1267,9 +1357,9 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
   }, 30000);
 
   it('locks concurrent copies so only one reconciliation attaches', async () => {
-    const setup = openConcurrentTestDb();
-    const firstConnection = openConcurrentTestDb();
-    const secondConnection = openConcurrentTestDb();
+    const setup: TestSession = openTestDbSession();
+    const firstConnection: TestSession = openTestDbSession();
+    const secondConnection: TestSession = openTestDbSession();
     let ingestMailboxId: string | undefined;
     let transportId: string | undefined;
 
@@ -1353,11 +1443,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
           .where(eq(mailIngestMailbox.id, ingestMailboxId));
         expect(remainingMailboxRows).toHaveLength(0);
       }
-      await Promise.all([
-        firstConnection.client.end(),
-        secondConnection.client.end(),
-        setup.client.end(),
-      ]);
+      await Promise.all([firstConnection.close(), secondConnection.close(), setup.close()]);
     }
   }, 60000);
 });
