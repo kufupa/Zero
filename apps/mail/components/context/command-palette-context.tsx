@@ -26,7 +26,6 @@ import {
   useContext,
   useEffect,
   useMemo,
-  useRef,
   useState,
   type ComponentType,
 } from 'react';
@@ -58,11 +57,11 @@ import { m } from '@/paraglide/messages';
 import { Pencil2 } from '../icons/icons';
 import { Button } from '../ui/button';
 import { useQueryState } from 'nuqs';
-import { TRPCClientError } from '@trpc/client';
 import { toast } from 'sonner';
 import { demoGenerateSearchQuery } from '@/lib/demo/local-actions';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { labelColorStyles } from '@/lib/label-colors';
+import { EMPTY_SEARCH_VALUE } from '@/lib/mail/search-list';
 import {
   canUseNaturalLanguageSearch,
   PILOT_CAPABILITIES,
@@ -104,15 +103,6 @@ interface SavedSearch {
 export type CommandPaletteSearchResult = {
   query: string;
 };
-
-export function isUnsupportedSearchOperatorError(error: unknown): boolean {
-  if (!(error instanceof TRPCClientError)) return false;
-  return (
-    error.data?.code === 'BAD_REQUEST' &&
-    typeof error.message === 'string' &&
-    error.message.includes('unsupported search operator')
-  );
-}
 
 export const resolveCommandPaletteSearchQuery = async ({
   query,
@@ -225,8 +215,8 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
   const [dateRangeStart, setDateRangeStart] = useState<Date | undefined>(undefined);
   const [dateRangeEnd, setDateRangeEnd] = useState<Date | undefined>(undefined);
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchValue, setSearchValue] = useSearchValue();
-  const [threadsQuery, threads] = useThreads({ commandPaletteOpen: open });
+  const [, setSearchValue] = useSearchValue();
+  const [, threads] = useThreads({ commandPaletteOpen: open });
   const [activeFilters, setActiveFilters] = useState<ActiveFilter[]>([]);
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
   const [savedSearches, setSavedSearches] = useState<SavedSearch[]>([]);
@@ -249,7 +239,6 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
     },
     [trpcClient],
   );
-  const lastSearchErrorRef = useRef<string | null>(null);
 
   useEffect(() => {
     setRecentSearches(getRecentSearches());
@@ -263,7 +252,7 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
         const query = filters.map((f: ActiveFilter) => f.value).join(' ');
         if (query) {
           setSearchValue({
-            ...searchValue,
+            ...EMPTY_SEARCH_VALUE,
             value: query,
             highlight: getMainSearchTerm(query),
           });
@@ -288,29 +277,6 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
       setEmailSuggestions(Array.from(emails).slice(0, 20));
     }
   }, [threads]);
-
-  useEffect(() => {
-    if (!PILOT_CAPABILITIES.gmailSearchGrammar) return;
-
-    const query = searchValue.value.trim();
-    if (!query) {
-      lastSearchErrorRef.current = null;
-      return;
-    }
-
-    if (!threadsQuery.isError || !threadsQuery.error) {
-      if (!threadsQuery.isError) lastSearchErrorRef.current = null;
-      return;
-    }
-
-    if (!isUnsupportedSearchOperatorError(threadsQuery.error)) return;
-
-    const errorKey = `${query}:${threadsQuery.error.message}`;
-    if (lastSearchErrorRef.current === errorKey) return;
-
-    lastSearchErrorRef.current = errorKey;
-    toast.error(threadsQuery.error.message);
-  }, [searchValue.value, threadsQuery.error, threadsQuery.isError]);
 
   useEffect(() => {
     if (!open) {
@@ -489,13 +455,8 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
     } catch (error) {
       console.error('Failed to clear filters:', error);
     }
-    setSearchValue({
-      value: '',
-      highlight: '',
-      folder: searchValue.folder,
-      isAISearching: false,
-    });
-  }, [searchValue.folder, setSearchValue]);
+    setSearchValue(EMPTY_SEARCH_VALUE);
+  }, [setSearchValue]);
 
   const executeSearch = useCallback(
     (query: string, isNaturalLanguage = false) => {
@@ -533,17 +494,16 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
       }
 
       setSearchValue({
+        ...EMPTY_SEARCH_VALUE,
         value: finalQuery,
         highlight: getMainSearchTerm(finalQuery),
-        folder: searchValue.folder,
-        isAISearching: isNaturalLanguage,
       });
 
       console.warn('Search applied', {
         description: finalQuery,
       });
     },
-    [activeFilters, searchValue.folder, setSearchValue, addFilter],
+    [activeFilters, setSearchValue, addFilter],
   );
 
   const quickFilterOptions = useMemo(
@@ -642,11 +602,9 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
           setOpen(null);
 
           return setSearchValue({
+            ...EMPTY_SEARCH_VALUE,
             value: finalQuery,
             highlight: getMainSearchTerm(query),
-            folder: searchValue.folder,
-            isAISearching: useNaturalLanguage,
-            isLoading: true,
           });
         }
 
@@ -674,11 +632,9 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
         }
 
         setSearchValue({
+          ...EMPTY_SEARCH_VALUE,
           value: finalQuery,
           highlight: getMainSearchTerm(query),
-          folder: searchValue.folder,
-          isAISearching: useNaturalLanguage,
-          isLoading: true,
         });
 
         console.warn('Search applied', {
@@ -693,7 +649,7 @@ export function CommandPalette({ children }: { children: React.ReactNode }) {
         setIsProcessing(false);
       }
     },
-    [activeFilters, searchValue.folder, isProcessing],
+    [activeFilters, isProcessing],
   );
 
   const quickSearchResults = useMemo(() => {

@@ -106,6 +106,14 @@ describe('demo adapter', () => {
     expect(threadMatchesDemoListFolder(spam, 'spam')).toBe(true);
   });
 
+  it('all folders includes non-spam threads', () => {
+    const t = minimalThread('1', 'new-bookings');
+    const spam = minimalThread('2', 'spam');
+
+    expect(threadMatchesDemoListFolder(t, 'all')).toBe(true);
+    expect(threadMatchesDemoListFolder(spam, 'all')).toBe(false);
+  });
+
   it('omits removed demo labels from thread labels and message tags', () => {
     const list = listDemoThreads({
       folder: 'inbox',

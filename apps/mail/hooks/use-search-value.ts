@@ -1,23 +1,9 @@
 import { atom, useAtom } from 'jotai';
-import { canUseNaturalLanguageSearch } from '@/lib/pilot/capabilities';
+import { EMPTY_SEARCH_VALUE, type SearchValueState } from '@/lib/mail/search-list';
 
-export { canUseNaturalLanguageSearch };
+const configAtom = atom<SearchValueState>(EMPTY_SEARCH_VALUE);
 
-type Config = {
-  value: string;
-  highlight: string;
-  folder: string;
-  isLoading?: boolean;
-  isAISearching?: boolean;
-};
-
-const configAtom = atom<Config>({
-  value: '',
-  highlight: '',
-  folder: '',
-  isLoading: false,
-  isAISearching: false,
-});
+export const mailSearchBarFocusedAtom = atom(false);
 
 export function useSearchValue() {
   return useAtom(configAtom);

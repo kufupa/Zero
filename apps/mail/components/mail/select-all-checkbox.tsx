@@ -1,31 +1,17 @@
-import React, { useCallback, useMemo, useRef, useState, useEffect } from 'react';
-import { useSearchValue } from '@/hooks/use-search-value';
+import { useCallback, useMemo, useRef, useState, useEffect } from 'react';
 import { trpcClient } from '@/providers/query-provider';
 import { useMail } from '@/components/mail/use-mail';
 import { Checkbox } from '@/components/ui/checkbox';
 import { useThreads } from '@/hooks/use-threads';
-import { useParams } from 'react-router';
 import { Check } from '../icons/icons';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 
 export default function SelectAllCheckbox({ className }: { className?: string }) {
   const [mail, setMail] = useMail();
-  const [, loadedThreads] = useThreads();
-  const [{ value: query }] = useSearchValue();
-  const { folder: routeFolder = 'inbox' } = useParams<{ folder: string }>() ?? {};
-  const folder = routeFolder.toLowerCase() as
-    | 'all'
-    | 'sent'
-    | 'inbox'
-    | 'drafts'
-    | 'draft'
-    | 'archived'
-    | 'archive'
-    | 'bin'
-    | 'spam'
-    | 'starred'
-    | 'snoozed';
+  const [, loadedThreads, , , searchList] = useThreads();
+  const demoMode = isFrontendOnlyDemo();
 
   const [isFetchingIds, setIsFetchingIds] = useState(false);
   const allIdsCache = useRef<string[] | null>(null);
@@ -33,6 +19,14 @@ export default function SelectAllCheckbox({ className }: { className?: string })
   const checkboxRef = useRef<HTMLButtonElement>(null);
 
   const loadedIds = useMemo(() => loadedThreads.map((t) => t.id), [loadedThreads]);
+  const listRequestKey = searchList.isValid
+    ? JSON.stringify({
+        folder: searchList.folder,
+        q: searchList.q,
+        filters: searchList.filters,
+        useDraftsList: searchList.useDraftsList,
+      })
+    : `invalid:${searchList.effectiveQuery}`;
 
   const isAllLoadedSelected = useMemo(() => {
     if (loadedIds.length === 0) return false;
@@ -44,31 +38,40 @@ export default function SelectAllCheckbox({ className }: { className?: string })
   }, [mail.bulkSelected.length, isAllLoadedSelected]);
 
   const fetchAllMatchingThreadIds = useCallback(async (): Promise<string[]> => {
+    if (!searchList.isValid || demoMode) return loadedIds;
+
     const ids: string[] = [];
     let cursor = '';
-    const MAX_PER_PAGE = 500;
+    const MAX_PER_PAGE = 100;
 
     try {
       while (true) {
-        const page = await trpcClient.mail.listThreads.query({
-          folder,
-          q: query,
-          limit: MAX_PER_PAGE,
-          cursor,
-        });
+        const page = searchList.useDraftsList
+          ? await trpcClient.drafts.list.query({
+              q: searchList.q ?? '',
+              limit: MAX_PER_PAGE,
+              cursor,
+            })
+          : await trpcClient.mail.listThreads.query({
+              folder: searchList.folder,
+              q: searchList.q,
+              filters: searchList.filters,
+              limit: MAX_PER_PAGE,
+              cursor,
+            });
         if (page?.threads?.length) {
           ids.push(...page.threads.map((t: { id: string }) => t.id));
         }
         if (!page?.nextPageToken) break;
         cursor = page.nextPageToken;
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Failed to fetch all thread IDs', err);
-      toast.error(err?.message ?? 'Failed to select all emails');
+      toast.error(err instanceof Error ? err.message : 'Failed to select all emails');
     }
 
     return ids;
-  }, [folder, query]);
+  }, [demoMode, loadedIds, searchList]);
 
   const handleToggle = useCallback(() => {
     if (isFetchingIds) return;
@@ -108,7 +111,7 @@ export default function SelectAllCheckbox({ className }: { className?: string })
 
   useEffect(() => {
     allIdsCache.current = null;
-  }, [folder, query]);
+  }, [listRequestKey]);
 
   return (
     <div className="flex items-center gap-2">

@@ -59,6 +59,12 @@ import { useAtom } from 'jotai';
 import { resolveImportantState } from '@/lib/mail/important-ui';
 import { flushComposeBeforeLeave } from '@/lib/mail/compose-flush-registry';
 import { runComposeLeaveFlush } from '@/lib/mail/draft-persistence';
+import {
+  EMPTY_SEARCH_VALUE,
+  isUnsupportedSearchOperatorError,
+  mergeSearchQuery,
+} from '@/lib/mail/search-list';
+import { toast } from 'sonner';
 
 function mailListSectionLabel(bucket: MailDateBucket): string {
   switch (bucket) {
@@ -876,8 +882,8 @@ export const MailList = memo(function MailList() {
       };
     }, [setAnchorIndex]);
 
-    const [{ refetch, isLoading, isFetching, isFetchingNextPage, hasNextPage }, items, , loadMore] =
-      useThreads();
+    const [threadsQuery, items, , loadMore] = useThreads();
+    const { refetch, isLoading, isFetching, isFetchingNextPage, hasNextPage } = threadsQuery;
     const trpc = useTRPC();
     const isFetchingMail = useIsFetching({ queryKey: trpc.mail.get.queryKey() }) > 0;
     const itemsRef = useRef(items);
@@ -1028,23 +1034,30 @@ export const MailList = memo(function MailList() {
       ],
     );
 
-    const isFiltering = searchValue.value.trim().length > 0;
+    const activeSearch = mergeSearchQuery(searchValue.value, searchValue.filters ?? []);
+    const isFiltering = activeSearch.length > 0;
 
+    const lastUnsupportedSearchErrorRef = useRef<string | null>(null);
     useEffect(() => {
-      if (isFiltering && !isLoading) {
-        setSearchValue({
-          ...searchValue,
-          isLoading: false,
-        });
+      if (!activeSearch) {
+        lastUnsupportedSearchErrorRef.current = null;
+        return;
       }
-    }, [isLoading, isFiltering, setSearchValue]);
+      if (!threadsQuery.isError || !threadsQuery.error) {
+        if (!threadsQuery.isError) lastUnsupportedSearchErrorRef.current = null;
+        return;
+      }
+      if (!isUnsupportedSearchOperatorError(threadsQuery.error)) return;
+
+      const errorKey = `${activeSearch}:${threadsQuery.error.message}`;
+      if (lastUnsupportedSearchErrorRef.current === errorKey) return;
+
+      lastUnsupportedSearchErrorRef.current = errorKey;
+      toast.error(threadsQuery.error.message);
+    }, [activeSearch, threadsQuery.error, threadsQuery.isError]);
 
     const clearFilters = () => {
-      setSearchValue({
-        value: '',
-        highlight: '',
-        folder: '',
-      });
+      setSearchValue(EMPTY_SEARCH_VALUE);
     };
 
     const filteredItems = useMemo(() => items.filter((item) => item.id), [items]);
