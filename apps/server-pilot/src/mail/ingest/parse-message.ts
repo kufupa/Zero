@@ -36,9 +36,16 @@ export interface ParsedAttachment {
   isInline: boolean;
 }
 
+export type OutboundCorrelation =
+  | { kind: 'absent' }
+  | { kind: 'valid'; outboundId: string }
+  | { kind: 'malformed' };
+
 export interface ParsedInboundMessage {
   /** `X-Zero-Mailbox` header value, lowercased; null when absent. */
   ownerHeaderValue: string | null;
+  /** Strict local outbound correlation header state. */
+  outboundCorrelation: OutboundCorrelation;
   messageId: string | null;
   inReplyTo: string | null;
   references: string[];
@@ -200,6 +207,7 @@ function buildParsedMessage(args: {
   const { headers, rawHeaderLines, text, html, attachments } = args;
 
   const ownerHeaderValue = lastHeader(headers, 'x-zero-mailbox');
+  const outboundCorrelation = parseOutboundCorrelation(headers);
   const messageIdRaw = firstHeader(headers, 'message-id');
   const messageId = messageIdRaw ? stripAngles(messageIdRaw) : null;
   const inReplyToRaw = firstHeader(headers, 'in-reply-to');
@@ -230,6 +238,7 @@ function buildParsedMessage(args: {
 
   return {
     ownerHeaderValue: ownerHeaderValue ? ownerHeaderValue.toLowerCase() : null,
+    outboundCorrelation,
     messageId,
     inReplyTo,
     references,
@@ -266,6 +275,22 @@ function lastHeader(headers: Headers, name: string): string | null {
     if (typeof s === 'string' && s.trim()) return s.trim();
   }
   return null;
+}
+
+function parseOutboundCorrelation(headers: Headers): OutboundCorrelation {
+  const value = headers.get('x-zero-outbound-id');
+  if (value === undefined) return { kind: 'absent' };
+
+  const values = Array.isArray(value) ? value : [value];
+  const last = values.at(-1);
+  if (typeof last !== 'string') return { kind: 'malformed' };
+
+  const outboundId = last.trim();
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(outboundId)) {
+    return { kind: 'malformed' };
+  }
+
+  return { kind: 'valid', outboundId: outboundId.toLowerCase() };
 }
 
 function normalizeReferences(v: unknown): string[] {

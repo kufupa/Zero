@@ -209,6 +209,42 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
   },
 );
 
+describe('ingestOnce returned-copy results', () => {
+  it('DELEs a reconciled returned copy after persistence succeeds', async () => {
+    const storage = new FakeS3Storage('worker-reconciliation-bucket');
+    resetS3Storage();
+    setS3Storage(storage);
+    const fakePop3 = new FakePop3Client({
+      messages: [{ uidl: 'uidl-reconciled', raw: readFixture('centurion-stamped.eml') }],
+    });
+    const persistSpy = vi.spyOn(ingestStore, 'persistInboundMessage').mockResolvedValue({
+      kind: 'reconciled',
+      transportId: 'transport-centurion',
+      messageId: 'reconciled-message',
+      rawMimeS3Key: 'raw-mime/test.eml',
+      attachmentCount: 0,
+    });
+
+    try {
+      const result = await ingestOnce({
+        pop3: fakePop3,
+        db: {} as import('../src/db/client').DB,
+        ingestMailboxId: 'ingest-nava-legacy',
+      });
+
+      expect(result.deled).toBe(1);
+      expect(fakePop3.deleLog).toEqual(['uidl-reconciled']);
+      expect(result.items[0]).toMatchObject({
+        status: 'ok',
+        uidl: 'uidl-reconciled',
+        result: { kind: 'reconciled' },
+      });
+    } finally {
+      persistSpy.mockRestore();
+    }
+  });
+});
+
 // Unit tests (no DB) for the fake pop3 path with no real env.
 describe('ingestOnce without DB-backed persist (fake pop3 only)', () => {
   it('returns a cycleError when real mode has no pop3 configured', async () => {

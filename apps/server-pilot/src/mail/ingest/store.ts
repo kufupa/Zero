@@ -38,6 +38,7 @@ import {
   mailboxTransport,
   message,
   mailThread,
+  outboundSendQueue,
 } from '../../db/schema/mail.js';
 import {
   rawMimeKey,
@@ -49,6 +50,7 @@ import {
   parseRawMessage,
   generateMessageId,
 } from './parse-message.js';
+import { evaluateRocketseedReturnedCopyTrust } from './rocketseed-returned-copy.js';
 import { sanitizeHtmlBodyForStorage } from '../sanitize-email-html.js';
 import {
   DEFAULT_AI_MODEL_ID,
@@ -74,7 +76,7 @@ export type QuarantineReason =
   | 'message_too_large'
   | 'parse_failure';
 
-export type PersistKind = 'stored' | 'quarantined' | 'duplicate';
+export type PersistKind = 'stored' | 'quarantined' | 'duplicate' | 'reconciled';
 
 export interface IngestMeta {
   /** Mailbox id the message was ingested from (e.g. `ingest-nava-legacy`). */
@@ -119,10 +121,19 @@ export interface PersistDuplicateResult {
   rawMimeS3Key: string;
 }
 
+export interface PersistReconciledResult {
+  kind: 'reconciled';
+  transportId: string;
+  messageId: string;
+  rawMimeS3Key: string;
+  attachmentCount: number;
+}
+
 export type PersistResult =
   | PersistStoredResult
   | PersistQuarantinedResult
-  | PersistDuplicateResult;
+  | PersistDuplicateResult
+  | PersistReconciledResult;
 
 export interface PersistOptions {
   /** DB handle (production: getDb(); tests: transaction-scoped handle). */
@@ -229,7 +240,92 @@ export async function persistInboundMessage(
 
   const messageId = meta.messageId;
   let threadId = '';
+  let duplicate: PersistDuplicateResult | null = null;
+  let reconciliation: PersistReconciledResult | null = null;
   await db.transaction(async (tx) => {
+    const transactionDb = tx as unknown as DB;
+    const correlationId =
+      parsed.outboundCorrelation.kind === 'valid'
+        ? parsed.outboundCorrelation.outboundId
+        : parsed.outboundCorrelation.kind === 'absent'
+          ? parsed.messageId
+          : null;
+    const useMessageIdFallback = parsed.outboundCorrelation.kind === 'absent';
+    const canonical = correlationId
+      ? await findEligibleCanonicalOutbound(
+          transactionDb,
+          transport.id,
+          correlationId,
+          useMessageIdFallback,
+        )
+      : undefined;
+    const returnedCopyTrust = evaluateRocketseedReturnedCopyTrust({
+      activeTransportId: canonical?.transportId ?? null,
+      expectedTransportId: transport.id,
+      expectedTransportAddress: transport.email,
+      hasEligibleLocalSentQueueRow: Boolean(canonical),
+      parsed,
+    });
+    if (canonical && returnedCopyTrust.trusted) {
+      if (canonical.ingestMailboxId || canonical.pop3Uidl) {
+        duplicate = {
+          kind: 'duplicate',
+          transportId: canonical.transportId,
+          messageId: canonical.id,
+          rawMimeS3Key,
+        };
+        return;
+      }
+      await transactionDb
+        .update(message)
+        .set({
+          ingestMailboxId: meta.ingestMailboxId,
+          pop3Uidl: meta.pop3Uidl,
+          ownerHeaderValue: parsed.ownerHeaderValue,
+          messageIdHeader: parsed.messageId,
+          inReplyTo: parsed.inReplyTo,
+          references: parsed.references,
+          fromAddress: parsed.fromAddress ?? '',
+          toAddresses: parsed.toAddresses,
+          ccAddresses: parsed.ccAddresses,
+          bccAddresses: parsed.bccAddresses,
+          subject: parsed.subject,
+          textBody: parsed.textBody,
+          htmlBody: sanitizeHtmlBodyForStorage(parsed.htmlBody),
+          rawMimeS3Key,
+          receivedAt: parsed.receivedAt ?? new Date(),
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(message.id, canonical.id),
+            eq(message.transportId, canonical.transportId),
+          ),
+        );
+      if (parsed.attachments.length > 0) {
+        await transactionDb.insert(attachment).values(
+          parsed.attachments.map((a) => ({
+            id: randomUUID(),
+            messageId: canonical.id,
+            filename: a.filename,
+            mimeType: a.mimeType,
+            sizeBytes: a.sizeBytes,
+            s3Key: a.s3Key,
+            contentId: a.contentId,
+            isInline: a.isInline,
+          })),
+        );
+      }
+      reconciliation = {
+        kind: 'reconciled',
+        transportId: canonical.transportId,
+        messageId: canonical.id,
+        rawMimeS3Key,
+        attachmentCount: parsed.attachments.length,
+      };
+      return;
+    }
+
     threadId = await resolveThreadId({
       tx: tx as unknown as DB,
       transportId: transport.id,
@@ -352,6 +448,9 @@ export async function persistInboundMessage(
     }
   });
 
+  if (duplicate) return duplicate;
+  if (reconciliation) return reconciliation;
+
   return {
     kind: 'stored',
     transportId: transport.id,
@@ -449,10 +548,53 @@ async function findExistingInboundMessage(
       and(
         eq(message.ingestMailboxId, meta.ingestMailboxId),
         eq(message.pop3Uidl, meta.pop3Uidl),
-        eq(message.direction, 'inbound'),
       ),
     )
     .limit(1);
+  return rows[0];
+}
+
+async function findEligibleCanonicalOutbound(
+  db: DB,
+  transportId: string,
+  correlationId: string,
+  useMessageIdFallback: boolean,
+): Promise<
+  | {
+      id: string;
+      transportId: string;
+      ingestMailboxId: string | null;
+      pop3Uidl: string | null;
+    }
+  | undefined
+> {
+  const rows = await db
+    .select({
+      id: message.id,
+      transportId: message.transportId,
+      ingestMailboxId: message.ingestMailboxId,
+      pop3Uidl: message.pop3Uidl,
+    })
+    .from(message)
+    .innerJoin(
+      outboundSendQueue,
+      and(
+        eq(outboundSendQueue.messageId, message.id),
+        eq(outboundSendQueue.transportId, message.transportId),
+      ),
+    )
+    .where(
+      and(
+        useMessageIdFallback
+          ? eq(message.messageIdHeader, correlationId)
+          : eq(message.id, correlationId),
+        eq(message.transportId, transportId),
+        eq(message.direction, 'outbound'),
+        eq(outboundSendQueue.status, 'sent'),
+      ),
+    )
+    .limit(1)
+    .for('update');
   return rows[0];
 }
 
