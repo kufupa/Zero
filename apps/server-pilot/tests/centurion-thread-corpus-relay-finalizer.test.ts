@@ -1,6 +1,7 @@
 import {
   type FinalizeJournalV1,
   type RelayBucketConfig,
+  type RelayJournalRead,
   type RelayObjectMetadata,
   type RelayObjectStore,
   type RelaySourceRuntimeConfig,
@@ -17,8 +18,6 @@ import { createFinalizeCenturionThreadCorpusRelayCommand } from '../scripts/fina
 import { finalizeCenturionThreadCorpusRelay } from '../src/ops/centurion-thread-corpus-relay-finalizer.js';
 import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
-import { fileURLToPath } from 'node:url';
-import { readFileSync } from 'node:fs';
 
 const TRANSFER_ID = '3479ca40-b5a1-4bb3-aef1-02fcbefc949c';
 const SAFE_SOURCE_PATH = '/synthetic/safe-finalize-snapshot';
@@ -167,6 +166,8 @@ class FakeSourceRuntime implements RelaySourceRuntimePort {
   removeResult = true;
   platformResult = 'linux';
   imdsResult = true;
+  stageReadOverride: RelayJournalRead<StageIntentV1> | null = null;
+  journalReadOverride: RelayJournalRead<FinalizeJournalV1> | null = null;
   git = {
     revision: `${runtimeConfig.expectedEc2.revision}\n`,
     worktree: `${runtimeConfig.expectedEc2.worktree}\n`,
@@ -205,10 +206,13 @@ class FakeSourceRuntime implements RelaySourceRuntimePort {
     throw new Error('finalizer must not rewrite stage intent');
   }
 
-  async readStageIntent(transferId: string): Promise<StageIntentV1 | null> {
+  async readStageIntent(transferId: string): Promise<RelayJournalRead<StageIntentV1>> {
     this.calls.push('read-stage');
     expect(transferId).toBe(TRANSFER_ID);
-    return this.stage ? structuredClone(this.stage) : null;
+    if (this.stageReadOverride) return this.stageReadOverride;
+    return this.stage
+      ? { outcome: 'present', value: structuredClone(this.stage) }
+      : { outcome: 'absent' };
   }
 
   async writeFinalizeJournal(journal: FinalizeJournalV1): Promise<boolean> {
@@ -218,10 +222,13 @@ class FakeSourceRuntime implements RelaySourceRuntimePort {
     return true;
   }
 
-  async readFinalizeJournal(transferId: string): Promise<FinalizeJournalV1 | null> {
+  async readFinalizeJournal(transferId: string): Promise<RelayJournalRead<FinalizeJournalV1>> {
     this.calls.push('read-journal');
     expect(transferId).toBe(TRANSFER_ID);
-    return this.journal ? structuredClone(this.journal) : null;
+    if (this.journalReadOverride) return this.journalReadOverride;
+    return this.journal
+      ? { outcome: 'present', value: structuredClone(this.journal) }
+      : { outcome: 'absent' };
   }
 
   async removeTrustedSnapshot(snapshot: StageIntentV1['sourceSnapshot']): Promise<boolean> {
@@ -366,6 +373,15 @@ describe('Centurion relay finalizer', () => {
     },
   );
 
+  it('blocks an unreadable finalize journal before relay or source deletion', async () => {
+    const { store, source } = acknowledgedHarness();
+    source.journalReadOverride = { outcome: 'blocked' };
+
+    expect(await finalize(store, source)).toEqual({ outcome: 'blocked' });
+    expect(store.deleteCalls).toEqual([]);
+    expect(source.calls).not.toContain('remove-source');
+  });
+
   it('persists delete-start before a failed delete and never removes source', async () => {
     const { store, source } = acknowledgedHarness();
     store.deleteResult = false;
@@ -471,34 +487,5 @@ describe('finalize Centurion relay command', () => {
     ]);
     expect(source.calls).toEqual([]);
     assertNoFixtureLeak(stdout);
-  });
-});
-
-describe('finalizer source boundaries', () => {
-  it('keeps cleanup orchestration and command free of AWS mutation/config leakage', () => {
-    const finalizerPath = fileURLToPath(
-      new URL('../src/ops/centurion-thread-corpus-relay-finalizer.ts', import.meta.url),
-    );
-    const scriptPath = fileURLToPath(
-      new URL('../scripts/finalize-centurion-thread-corpus-relay.ts', import.meta.url),
-    );
-    const finalizerSource = readFileSync(finalizerPath, 'utf8');
-    const scriptSource = readFileSync(scriptPath, 'utf8');
-
-    for (const forbidden of [
-      '@aws-sdk/client-s3',
-      'PutObjectCommand',
-      'DeleteObjectsCommand',
-      'SSM',
-      'DATABASE_URL',
-      'rds:',
-      'mailbox',
-      'console.error',
-    ]) {
-      expect(finalizerSource).not.toContain(forbidden);
-      expect(scriptSource).not.toContain(forbidden);
-    }
-    expect(finalizerSource).toContain('relay_empty');
-    expect(finalizerSource).toContain('source_delete_started');
   });
 });

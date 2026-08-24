@@ -1,9 +1,11 @@
 import {
+  classifyRelayJournalReadFailure,
   createAwsRelayObjectStore,
   parseRelaySourceRuntimeConfig,
   stageCenturionThreadCorpusRelay,
   type FinalizeJournalV1,
   type RelayBucketConfig,
+  type RelayJournalRead,
   type RelayObjectMetadata,
   type RelayObjectStore,
   type RelayPutInput,
@@ -37,6 +39,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
+import ts from 'typescript';
 
 const TRANSFER_ID = '3479ca40-b5a1-4bb3-aef1-02fcbefc949c';
 const SAFE_BODY_MARKER = 'SAFE_RELAY_FIXTURE_BODY';
@@ -314,6 +317,8 @@ class FakeSourceRuntime implements RelaySourceRuntimePort {
   imdsResult = true;
   writeStageIntentResult = true;
   removeResult = true;
+  stageReadOverride: RelayJournalRead<StageIntentV1> | null = null;
+  finalizeReadOverride: RelayJournalRead<FinalizeJournalV1> | null = null;
   git = {
     revision: `${runtimeConfig.expectedEc2.revision}\n`,
     worktree: `${runtimeConfig.expectedEc2.worktree}\n`,
@@ -373,10 +378,11 @@ class FakeSourceRuntime implements RelaySourceRuntimePort {
     return true;
   }
 
-  async readStageIntent(transferId: string): Promise<StageIntentV1 | null> {
+  async readStageIntent(transferId: string): Promise<RelayJournalRead<StageIntentV1>> {
     this.calls.push('read-stage');
+    if (this.stageReadOverride) return this.stageReadOverride;
     const intent = this.stageIntents.get(transferId);
-    return intent ? structuredClone(intent) : null;
+    return intent ? { outcome: 'present', value: structuredClone(intent) } : { outcome: 'absent' };
   }
 
   async writeFinalizeJournal(journal: FinalizeJournalV1): Promise<boolean> {
@@ -385,10 +391,13 @@ class FakeSourceRuntime implements RelaySourceRuntimePort {
     return true;
   }
 
-  async readFinalizeJournal(transferId: string): Promise<FinalizeJournalV1 | null> {
+  async readFinalizeJournal(transferId: string): Promise<RelayJournalRead<FinalizeJournalV1>> {
     this.calls.push('read-finalize');
+    if (this.finalizeReadOverride) return this.finalizeReadOverride;
     const journal = this.finalizeJournals.get(transferId);
-    return journal ? structuredClone(journal) : null;
+    return journal
+      ? { outcome: 'present', value: structuredClone(journal) }
+      : { outcome: 'absent' };
   }
 
   async removeTrustedSnapshot(): Promise<boolean> {
@@ -425,6 +434,53 @@ function assertNoSafeFixtureLeak(value: unknown): void {
   expect(output).not.toContain(SAFE_BODY_MARKER);
   expect(output).not.toContain(SAFE_ADDRESS_MARKER);
   expect(output).not.toContain(SAFE_PATH_MARKER);
+}
+
+function parseTypeScript(filePath: string): ts.SourceFile {
+  return ts.createSourceFile(
+    filePath,
+    readFileSync(filePath, 'utf8'),
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+}
+
+function collectNodes(source: ts.SourceFile, predicate: (node: ts.Node) => boolean): ts.Node[] {
+  const nodes: ts.Node[] = [];
+  const visit = (node: ts.Node): void => {
+    if (predicate(node)) nodes.push(node);
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return nodes;
+}
+
+function identifierName(node: ts.Expression): string | null {
+  return ts.isIdentifier(node) ? node.text : null;
+}
+
+function containingClassName(node: ts.Node): string | null {
+  for (let current = node.parent; current; current = current.parent) {
+    if (ts.isClassDeclaration(current)) return current.name?.text ?? null;
+  }
+  return null;
+}
+
+function importedModuleNames(source: ts.SourceFile): string[] {
+  return collectNodes(source, ts.isImportDeclaration).flatMap((node) =>
+    ts.isStringLiteral(node.moduleSpecifier) ? [node.moduleSpecifier.text] : [],
+  );
+}
+
+function directCallNames(source: ts.SourceFile): string[] {
+  return collectNodes(
+    source,
+    (node): node is ts.CallExpression | ts.NewExpression =>
+      ts.isCallExpression(node) || ts.isNewExpression(node),
+  )
+    .map((node) => identifierName(node.expression))
+    .filter((name): name is string => name !== null);
 }
 
 describe('Centurion relay producer', () => {
@@ -497,6 +553,16 @@ describe('Centurion relay producer', () => {
     expect(await stage(store, source)).toEqual({ outcome: 'blocked' });
     expect(source.calls).toContain('inspect');
     expect(source.calls).not.toContain('read');
+  });
+
+  it('blocks an unreadable stage journal before it can overwrite durable state', async () => {
+    const store = new FakeRelayStore();
+    const source = new FakeSourceRuntime();
+    source.stageReadOverride = { outcome: 'blocked' };
+
+    expect(await stage(store, source)).toEqual({ outcome: 'blocked' });
+    expect(store.calls.filter((call) => call.startsWith('put:'))).toEqual([]);
+    expect(source.calls.filter((call) => call.startsWith('write-stage:'))).toEqual([]);
   });
 
   it('blocks metadata-mismatched conditional collision without deleting unowned objects', async () => {
@@ -584,6 +650,14 @@ describe('Centurion relay producer', () => {
         }),
       ),
     ).toBeNull();
+  });
+
+  it('treats only verified ENOENT as an absent durable stage journal', () => {
+    expect(classifyRelayJournalReadFailure({ code: 'ENOENT' })).toBe('absent');
+    expect(classifyRelayJournalReadFailure({ code: 'EACCES' })).toBe('blocked');
+    expect(classifyRelayJournalReadFailure(new Error('safe synthetic parse failure'))).toBe(
+      'blocked',
+    );
   });
 });
 
@@ -701,6 +775,19 @@ describe('Centurion relay S3 object-store adapter', () => {
     expect(client.send).not.toHaveBeenCalled();
   });
 
+  it('treats an omitted ListObjectsV2 Contents field as an empty relay prefix', async () => {
+    const client = {
+      send: vi.fn(async (command: unknown) => {
+        if (command instanceof ListObjectsV2Command) return { IsTruncated: false };
+        throw new Error('unexpected synthetic command');
+      }),
+    };
+    const store = createAwsRelayObjectStore(relayConfig, client);
+
+    expect(await store.listAll('private-relay/empty/')).toEqual([]);
+    expect(client.send).toHaveBeenCalledTimes(1);
+  });
+
   it('fully paginates over more than one thousand keys before returning metadata', async () => {
     const allKeys = Array.from({ length: 1_001 }, (_, index) => `private-relay/${String(index)}`);
     const client = {
@@ -789,28 +876,45 @@ describe('stage Centurion relay command', () => {
 });
 
 describe('producer source boundaries', () => {
-  it('keeps S3 mutations inside object-store adapter and scripts free of cloud/config output', () => {
+  it('keeps S3 mutations in object-store adapter and permits only local journal/source writes', () => {
     const producerPath = fileURLToPath(
       new URL('../src/ops/centurion-thread-corpus-relay-producer.ts', import.meta.url),
     );
     const stageScriptPath = fileURLToPath(
       new URL('../scripts/stage-centurion-thread-corpus-relay.ts', import.meta.url),
     );
-    const producerSource = readFileSync(producerPath, 'utf8');
-    const scriptSource = readFileSync(stageScriptPath, 'utf8');
+    const finalizeScriptPath = fileURLToPath(
+      new URL('../scripts/finalize-centurion-thread-corpus-relay.ts', import.meta.url),
+    );
+    const producer = parseTypeScript(producerPath);
+    const scripts = [parseTypeScript(stageScriptPath), parseTypeScript(finalizeScriptPath)];
+    const mutationCommands = new Set(['PutObjectCommand', 'DeleteObjectsCommand']);
+    const mutations = collectNodes(
+      producer,
+      (node): node is ts.NewExpression =>
+        ts.isNewExpression(node) &&
+        identifierName(node.expression) !== null &&
+        mutationCommands.has(identifierName(node.expression)!),
+    ) as ts.NewExpression[];
 
-    expect(producerSource).toContain('O_NOFOLLOW');
-    expect(producerSource).toContain('fsyncSync');
-    expect(producerSource).toContain('renameSync');
-    expect(producerSource).toContain('PutObjectCommand');
-    expect(producerSource).toContain('DeleteObjectsCommand');
-    expect(producerSource).not.toContain('S3Storage');
-    for (const forbidden of ['SSM', 'DATABASE_URL', 'rds:', 'mailbox', 'console.error']) {
-      expect(producerSource).not.toContain(forbidden);
-      expect(scriptSource).not.toContain(forbidden);
+    expect(new Set(mutations.map((node) => identifierName(node.expression)))).toEqual(
+      mutationCommands,
+    );
+    expect(mutations.every((node) => containingClassName(node) === 'AwsRelayObjectStore')).toBe(
+      true,
+    );
+    expect(directCallNames(producer)).toEqual(
+      expect.arrayContaining(['writeFileSync', 'renameSync', 'rmSync']),
+    );
+    expect(
+      importedModuleNames(producer).filter((moduleName) => moduleName.startsWith('@aws-sdk/')),
+    ).toEqual(['@aws-sdk/client-s3']);
+
+    for (const script of scripts) {
+      expect(
+        importedModuleNames(script).filter((moduleName) => moduleName.startsWith('@aws-sdk/')),
+      ).toEqual([]);
+      expect(directCallNames(script).filter((name) => mutationCommands.has(name))).toEqual([]);
     }
-    expect(scriptSource).not.toContain('@aws-sdk/client-s3');
-    expect(scriptSource).not.toContain('PutObjectCommand');
-    expect(scriptSource).not.toContain('DeleteObjectsCommand');
   });
 });

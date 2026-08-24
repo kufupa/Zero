@@ -106,6 +106,11 @@ export type FinalizeJournalV1 = {
     | 'complete';
 };
 
+export type RelayJournalRead<T> =
+  | { outcome: 'absent' }
+  | { outcome: 'present'; value: T }
+  | { outcome: 'blocked' };
+
 export type RelaySourceRuntimeConfig = {
   version: 'centurion-thread-corpus-relay-source-config-v1';
   expectedEc2: { instanceId: string; revision: string; worktree: string };
@@ -131,9 +136,9 @@ export type RelaySourceRuntimePort = {
     maxTotalBytes: number;
   }): Promise<readonly CenturionRelayMember[] | null>;
   writeStageIntent(intent: StageIntentV1): Promise<boolean>;
-  readStageIntent(transferId: string): Promise<StageIntentV1 | null>;
+  readStageIntent(transferId: string): Promise<RelayJournalRead<StageIntentV1>>;
   writeFinalizeJournal(journal: FinalizeJournalV1): Promise<boolean>;
-  readFinalizeJournal(transferId: string): Promise<FinalizeJournalV1 | null>;
+  readFinalizeJournal(transferId: string): Promise<RelayJournalRead<FinalizeJournalV1>>;
   removeTrustedSnapshot(snapshot: StageIntentV1['sourceSnapshot']): Promise<boolean>;
 };
 
@@ -633,7 +638,9 @@ export async function stageCenturionThreadCorpusRelay(input: {
     );
     if (!inspected) return blockedStage();
 
-    const previous = await input.source.readStageIntent(input.transferId);
+    const previousRead = await input.source.readStageIntent(input.transferId);
+    if (previousRead.outcome === 'blocked') return blockedStage();
+    const previous = previousRead.outcome === 'present' ? previousRead.value : null;
     const normalizedPrevious = previous
       ? validateStageIntent(previous, config, input.transferId)
       : null;
@@ -1016,8 +1023,8 @@ class AwsRelayObjectStore implements RelayObjectStore {
           NextContinuationToken?: unknown;
           Contents?: Array<{ Key?: unknown; Size?: unknown }>;
         };
-        if (!Array.isArray(response.Contents)) return null;
-        for (const object of response.Contents) {
+        if (response.Contents !== undefined && !Array.isArray(response.Contents)) return null;
+        for (const object of response.Contents ?? []) {
           if (typeof object.Key !== 'string' || !isSafeInteger(object.Size, 0)) return null;
           keys.push(object.Key);
         }
@@ -1498,18 +1505,18 @@ function writeAtomicJson(destination: string, value: unknown): boolean {
   }
 }
 
-function readAtomicJson(destination: string): unknown | null {
+function readAtomicJson(destination: string): RelayJournalRead<unknown> {
   let descriptor: number | undefined;
   try {
     const before = trustedConfigLeaf(destination);
     descriptor = openSync(destination, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
     const opened = fstatSync(descriptor);
-    if (!opened.isFile() || !sameIdentity(before, opened)) return null;
+    if (!opened.isFile() || !sameIdentity(before, opened)) return { outcome: 'blocked' };
     const content = readFileSync(descriptor, 'utf8');
-    if (!sameIdentity(before, trustedConfigLeaf(destination))) return null;
-    return JSON.parse(content) as unknown;
-  } catch {
-    return null;
+    if (!sameIdentity(before, trustedConfigLeaf(destination))) return { outcome: 'blocked' };
+    return { outcome: 'present', value: JSON.parse(content) as unknown };
+  } catch (error) {
+    return { outcome: classifyRelayJournalReadFailure(error) };
   } finally {
     if (descriptor !== undefined) {
       try {
@@ -1526,6 +1533,10 @@ function isMissingFilesystemEntry(error: unknown): boolean {
     'code' in error &&
     (error as { code?: unknown }).code === 'ENOENT'
   );
+}
+
+export function classifyRelayJournalReadFailure(error: unknown): 'absent' | 'blocked' {
+  return isMissingFilesystemEntry(error) ? 'absent' : 'blocked';
 }
 
 function snapshotIsAbsent(snapshotPath: string): boolean {
@@ -1664,10 +1675,14 @@ export function createDefaultRelaySourceRuntime(
     readStageIntent: async (transferId) => {
       try {
         ensureTrustedStateRoot(layout);
-        const parsed = readAtomicJson(stateFilePath(layout, 'stage', transferId));
-        return isRecord(parsed) ? (parsed as StageIntentV1) : null;
+        const read = readAtomicJson(stateFilePath(layout, 'stage', transferId));
+        return read.outcome === 'present' && isRecord(read.value)
+          ? { outcome: 'present', value: read.value as StageIntentV1 }
+          : read.outcome === 'present'
+            ? { outcome: 'blocked' }
+            : read;
       } catch {
-        return null;
+        return { outcome: 'blocked' };
       }
     },
     writeFinalizeJournal: async (journal) => {
@@ -1684,10 +1699,14 @@ export function createDefaultRelaySourceRuntime(
     readFinalizeJournal: async (transferId) => {
       try {
         ensureTrustedStateRoot(layout);
-        const parsed = readAtomicJson(stateFilePath(layout, 'finalize', transferId));
-        return isRecord(parsed) ? (parsed as FinalizeJournalV1) : null;
+        const read = readAtomicJson(stateFilePath(layout, 'finalize', transferId));
+        return read.outcome === 'present' && isRecord(read.value)
+          ? { outcome: 'present', value: read.value as FinalizeJournalV1 }
+          : read.outcome === 'present'
+            ? { outcome: 'blocked' }
+            : read;
       } catch {
-        return null;
+        return { outcome: 'blocked' };
       }
     },
     removeTrustedSnapshot: async (snapshot) => {

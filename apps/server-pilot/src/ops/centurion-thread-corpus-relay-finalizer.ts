@@ -346,7 +346,9 @@ export async function finalizeCenturionThreadCorpusRelay(input: {
     if (!exactGitState(input.source, config)) return blocked();
     if (!(await input.store.assertRelayBucket(config.relay))) return blocked();
 
-    const stageFromRuntime = await input.source.readStageIntent(input.transferId);
+    const stageRead = await input.source.readStageIntent(input.transferId);
+    if (stageRead.outcome === 'blocked') return blocked();
+    const stageFromRuntime = stageRead.outcome === 'present' ? stageRead.value : null;
     const validatedRuntimeStage = stageFromRuntime
       ? validateRelayStageIntent(stageFromRuntime, config, input.transferId)
       : null;
@@ -354,7 +356,9 @@ export async function finalizeCenturionThreadCorpusRelay(input: {
       return blocked();
     }
 
-    const rawJournal = await input.source.readFinalizeJournal(input.transferId);
+    const journalRead = await input.source.readFinalizeJournal(input.transferId);
+    if (journalRead.outcome === 'blocked') return blocked();
+    const rawJournal = journalRead.outcome === 'present' ? journalRead.value : null;
     let journal = rawJournal ? validateFinalizeJournal(rawJournal, config, input.transferId) : null;
     if (rawJournal && !journal) return blocked();
     if (
