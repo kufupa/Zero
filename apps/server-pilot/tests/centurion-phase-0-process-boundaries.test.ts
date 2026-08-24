@@ -11,7 +11,14 @@ import ts from 'typescript';
 
 const SERVER_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-const PROCESS_SOURCES = [
+type ProcessSource = {
+  path: string;
+  adapters: ReadonlySet<string>;
+  constants: Readonly<Record<string, string>>;
+  processApi?: 'spawn' | 'spawnSync';
+};
+
+const PROCESS_SOURCES: readonly ProcessSource[] = [
   {
     path: 'scripts/export-centurion-thread-corpus-live.ts',
     adapters: new Set(['Ec2GitIgnoreProcessAdapter']),
@@ -45,7 +52,18 @@ const PROCESS_SOURCES = [
       WINDOWS_GIT: 'C:\\Program Files\\Git\\cmd\\git.exe',
     },
   },
-] as const;
+  {
+    path: 'src/mail/artifacts/read-artifact.ts',
+    adapters: new Set(['PdfSandboxProcessAdapter']),
+    processApi: 'spawn',
+    constants: {
+      LINUX_BWRAP: '/usr/bin/bwrap',
+      LINUX_PDFINFO: '/usr/bin/pdfinfo',
+      LINUX_PDFTOTEXT: '/usr/bin/pdftotext',
+      LINUX_PRLIMIT: '/usr/bin/prlimit',
+    },
+  },
+];
 
 const PHASE_ZERO_FILES = [
   'src/ops/centurion-thread-corpus-readiness.ts',
@@ -64,6 +82,7 @@ const PHASE_ZERO_FILES = [
   'scripts/export-thread-corpus.ts',
   'src/ops/centurion-thread-corpus-exporter.ts',
   'src/ops/centurion-thread-corpus-hydrator.ts',
+  'src/mail/artifacts/read-artifact.ts',
   'src/ops/centurion-thread-corpus-postgres-reader.ts',
   'src/storage/s3.ts',
   'scripts/export-centurion-thread-corpus-live.ts',
@@ -78,6 +97,7 @@ const PHASE_ZERO_FILES = [
   'tests/analyze-centurion-thread-corpus.test.ts',
   'tests/centurion-thread-corpus-postgres-reader.test.ts',
   'tests/centurion-thread-corpus-hydrator.test.ts',
+  'tests/hms-artifact.test.ts',
   'tests/centurion-thread-corpus-exporter.test.ts',
   'tests/export-centurion-thread-corpus-live.test.ts',
   'tests/centurion-phase-0-process-boundaries.test.ts',
@@ -233,12 +253,18 @@ function isExactStdio(value: ts.Expression | undefined): boolean {
       value.elements.length === 3 &&
       value.elements.every(
         (element, index) =>
-          ts.isStringLiteral(element) && element.text === (index === 1 ? 'pipe' : 'ignore'),
+          ts.isStringLiteral(element) &&
+          (index === 1
+            ? element.text === 'pipe'
+            : element.text === 'ignore' || element.text === 'pipe'),
       ))
   );
 }
 
-function isAdapterMember(value: ts.Expression | undefined, property: 'env' | 'cwd'): boolean {
+function isAdapterMember(
+  value: ts.Expression | undefined,
+  property: 'env' | 'cwd' | 'signal',
+): boolean {
   const direct =
     value !== undefined &&
     ts.isPropertyAccessExpression(value) &&
@@ -274,7 +300,16 @@ function hasExactProcessOptions(call: ts.CallExpression): boolean {
     properties.set(name, property.initializer);
   }
   const keys = [...properties.keys()].sort();
-  const allowed = new Set(['cwd', 'encoding', 'env', 'maxBuffer', 'shell', 'stdio', 'windowsHide']);
+  const allowed = new Set([
+    'cwd',
+    'encoding',
+    'env',
+    'maxBuffer',
+    'shell',
+    'signal',
+    'stdio',
+    'windowsHide',
+  ]);
   if (
     keys.some((key) => !allowed.has(key)) ||
     !properties.has('cwd') ||
@@ -300,7 +335,8 @@ function hasExactProcessOptions(call: ts.CallExpression): boolean {
     isExactStdio(properties.get('stdio')) &&
     windowsHide?.kind === ts.SyntaxKind.TrueKeyword &&
     (encoding === undefined || (ts.isStringLiteral(encoding) && encoding.text === 'utf8')) &&
-    (maxBuffer === undefined || ts.isNumericLiteral(maxBuffer))
+    (maxBuffer === undefined || ts.isNumericLiteral(maxBuffer)) &&
+    (properties.get('signal') === undefined || isAdapterMember(properties.get('signal'), 'signal'))
   );
 }
 
@@ -314,9 +350,44 @@ function sourceIsWithinServerRoot(source: ts.SourceFile): boolean {
   return fileName === root || fileName.startsWith(`${root}${path.sep}`);
 }
 
+function runtimePhaseZeroSources(program: ts.Program): readonly ts.SourceFile[] {
+  const sourcesByPath = new Map(
+    program.getSourceFiles().map((source) => [path.resolve(source.fileName), source]),
+  );
+  const reachable = new Set<string>();
+  const visit = (source: ts.SourceFile): void => {
+    const resolvedPath = path.resolve(source.fileName);
+    if (reachable.has(resolvedPath)) return;
+    reachable.add(resolvedPath);
+    for (const declaration of collect(source, ts.isImportDeclaration)) {
+      if (
+        declaration.importClause?.isTypeOnly ||
+        !ts.isStringLiteral(declaration.moduleSpecifier) ||
+        !declaration.moduleSpecifier.text.startsWith('.')
+      ) {
+        continue;
+      }
+      const resolution = ts.resolveModuleName(
+        declaration.moduleSpecifier.text,
+        source.fileName,
+        program.getCompilerOptions(),
+        ts.sys,
+      ).resolvedModule?.resolvedFileName;
+      const dependency = resolution ? sourcesByPath.get(path.resolve(resolution)) : undefined;
+      if (dependency && !dependency.isDeclarationFile) visit(dependency);
+    }
+  };
+  for (const filePath of PHASE_ZERO_FILES) {
+    if (filePath.startsWith('tests/')) continue;
+    const source = sourcesByPath.get(path.resolve(SERVER_ROOT, filePath));
+    if (source) visit(source);
+  }
+  return [...reachable].map((fileName) => sourcesByPath.get(fileName)!);
+}
+
 function processBoundaryViolations(
   program: ts.Program,
-  scopeToManifest = true,
+  sourcePaths?: ReadonlySet<string>,
   requireServerRoot = true,
 ): string[] {
   const requirements = new Map<string, (typeof PROCESS_SOURCES)[number]>(
@@ -328,8 +399,7 @@ function processBoundaryViolations(
       (requireServerRoot && !sourceIsWithinServerRoot(source)) ||
       source.isDeclarationFile ||
       !source.fileName.endsWith('.ts') ||
-      (scopeToManifest &&
-        !PHASE_ZERO_FILES.includes(sourceRelativePath(source) as (typeof PHASE_ZERO_FILES)[number]))
+      (sourcePaths !== undefined && !sourcePaths.has(path.resolve(source.fileName)))
     ) {
       continue;
     }
@@ -344,15 +414,17 @@ function processBoundaryViolations(
     );
     for (const declaration of collect(scanned, ts.isImportDeclaration)) {
       if (!isChildProcessModuleSpecifier(declaration.moduleSpecifier)) continue;
+      if (declaration.importClause?.isTypeOnly) continue;
       const bindings = declaration.importClause?.namedBindings;
-      const onlyDirectSpawnSync =
+      const expectedProcessApi = requirement?.processApi ?? 'spawnSync';
+      const onlyDirectProcessApi =
         declaration.importClause?.name === undefined &&
         bindings !== undefined &&
         ts.isNamedImports(bindings) &&
         bindings.elements.length === 1 &&
-        bindings.elements[0]!.name.text === 'spawnSync' &&
+        bindings.elements[0]!.name.text === expectedProcessApi &&
         bindings.elements[0]!.propertyName === undefined;
-      if (!requirement || !onlyDirectSpawnSync) {
+      if (!requirement || !onlyDirectProcessApi) {
         violations.push(`${relativePath}:child-process-import`);
       }
     }
@@ -372,12 +444,12 @@ function processBoundaryViolations(
       if (!ts.isIdentifier(call.expression) || !CHILD_PROCESS_CALLS.has(call.expression.text)) {
         continue;
       }
-      if (call.expression.text !== 'spawnSync') {
+      if (call.expression.text !== (requirement?.processApi ?? 'spawnSync')) {
         violations.push(`${relativePath}:unsupported-${call.expression.text}`);
         continue;
       }
       if (!requirement || !requirement.adapters.has(enclosingClassName(call) ?? '')) {
-        violations.push(`${relativePath}:unapproved-spawnSync`);
+        violations.push(`${relativePath}:unapproved-${call.expression.text}`);
       }
       const executable = call.arguments[0];
       if (
@@ -395,7 +467,7 @@ function processBoundaryViolations(
       }
     }
     for (const identifier of collect(scanned, ts.isIdentifier)) {
-      if (identifier.text !== 'spawnSync') continue;
+      if (identifier.text !== 'spawnSync' && identifier.text !== 'spawn') continue;
       const parent = identifier.parent;
       if (parent !== undefined && ts.isImportSpecifier(parent)) continue;
       if (!ts.isCallExpression(parent) || parent.expression !== identifier) {
@@ -456,20 +528,16 @@ async function hostileEnvironment(run: () => Promise<void>): Promise<void> {
 describe('Phase 0 process boundary inventory', () => {
   it('scans every manifest-reachable TypeScript source', () => {
     const program = phaseZeroProgram();
-    const reachable = program
-      .getSourceFiles()
-      .filter(
-        (source) =>
-          sourceIsWithinServerRoot(source) &&
-          !source.isDeclarationFile &&
-          source.fileName.endsWith('.ts') &&
-          PHASE_ZERO_FILES.includes(
-            sourceRelativePath(source) as (typeof PHASE_ZERO_FILES)[number],
-          ),
-      )
-      .map(sourceRelativePath);
-    expect(reachable).toEqual(expect.arrayContaining([...PHASE_ZERO_FILES]));
-    expect(processBoundaryViolations(program)).toEqual([]);
+    const reachable = runtimePhaseZeroSources(program);
+    expect(reachable.map(sourceRelativePath)).toEqual(
+      expect.arrayContaining(PHASE_ZERO_FILES.filter((filePath) => !filePath.startsWith('tests/'))),
+    );
+    expect(
+      processBoundaryViolations(
+        program,
+        new Set(reachable.map((source) => path.resolve(source.fileName))),
+      ),
+    ).toEqual([]);
   }, 30_000);
 
   it('rejects aliases, acquisition bypasses, and nonliteral options', () => {
@@ -504,8 +572,12 @@ describe('Phase 0 process boundary inventory', () => {
         '  }',
         '}',
       ].join('\n'),
+      [path.join(SERVER_ROOT, 'src/mail/artifacts/read-artifact.ts')]: [
+        "import { spawn } from 'node:child_process';",
+        "spawn('/usr/bin/bwrap', [], { shell: false, env: {}, cwd: '/', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });",
+      ].join('\n'),
     });
-    expect(processBoundaryViolations(program, false, false)).toEqual(
+    expect(processBoundaryViolations(program, undefined, false)).toEqual(
       expect.arrayContaining([
         'scripts/export-centurion-thread-corpus-live.ts:child-process-alias-acquisition',
         'scripts/export-centurion-thread-corpus-live.ts:child-process-require',
@@ -513,6 +585,8 @@ describe('Phase 0 process boundary inventory', () => {
         'scripts/export-centurion-thread-corpus-live.ts:unsafe-options',
         'src/ops/centurion-thread-corpus-relay-producer.ts:child-process-import',
         'scripts/check-centurion-thread-corpus-readiness.ts:unsafe-options',
+        'src/mail/artifacts/read-artifact.ts:unapproved-spawn',
+        'src/mail/artifacts/read-artifact.ts:ambient-executable',
       ]),
     );
   });

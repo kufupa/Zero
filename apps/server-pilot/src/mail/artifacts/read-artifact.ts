@@ -3,14 +3,15 @@
  * No OCR. No raw text persistence. Hash-bound MailEvidenceRef only.
  * Model never receives S3 keys.
  */
-import { createHash, randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
-import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { spawn } from 'node:child_process';
-import type { ToolResult } from '../../ai/draft-evidence.js';
 import { S3ObjectTooLargeError, type S3Storage } from '../../storage/s3.js';
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { existsSync, lstatSync, realpathSync } from 'node:fs';
+import type { ToolResult } from '../../ai/draft-evidence.js';
+import type { ChildProcess } from 'node:child_process';
+import { createHash, randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
+import path, { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 export const ARTIFACT_MAX_INPUT_BYTES = 20 * 1024 * 1024;
 export const ARTIFACT_MAX_OUTPUT_BYTES = 256 * 1024;
@@ -58,6 +59,39 @@ export type SandboxRunner = (
   signal?: AbortSignal,
 ) => Promise<SandboxResult>;
 
+export const LINUX_BWRAP = '/usr/bin/bwrap';
+export const LINUX_PRLIMIT = '/usr/bin/prlimit';
+export const LINUX_PDFINFO = '/usr/bin/pdfinfo';
+export const LINUX_PDFTOTEXT = '/usr/bin/pdftotext';
+const PDF_SANDBOX_CWD = '/';
+const PDF_SANDBOX_ENV = Object.freeze({});
+
+export type TrustedLinuxExecutableInspection = {
+  path: string;
+  stableIdentity: string;
+  regularFile: true;
+  symbolicLink: false;
+  owner: 'root';
+  writableByOthers: false;
+};
+
+export type TrustedLinuxExecutableInspector = {
+  inspect(executable: string, cwd: string): Promise<TrustedLinuxExecutableInspection | null>;
+};
+
+export type PdfSandboxProcessInvocation = {
+  executable: typeof LINUX_BWRAP;
+  args: readonly string[];
+  cwd: typeof PDF_SANDBOX_CWD;
+  env: Readonly<Record<string, string>>;
+  shell: false;
+  signal?: AbortSignal;
+};
+
+export type PdfSandboxProcessRunner = {
+  run(invocation: PdfSandboxProcessInvocation): Promise<SandboxResult>;
+};
+
 export type ToolLedger = {
   record(result: ArtifactReadResult): void;
   entries(): readonly ArtifactReadResult[];
@@ -75,17 +109,10 @@ export function createToolLedger(): ToolLedger {
   };
 }
 
-const PDF_BINS = [
-  '/usr/bin/pdfinfo',
-  '/usr/bin/pdftotext',
-  '/usr/bin/bwrap',
-  '/usr/bin/prlimit',
-] as const;
+const PDF_BINS = [LINUX_BWRAP, LINUX_PRLIMIT, LINUX_PDFINFO, LINUX_PDFTOTEXT] as const;
 
 /** Startup gate: missing Poppler/bwrap/prlimit fail closed. */
-export function assertPdfToolchain(
-  exists: (path: string) => boolean = existsSync,
-): void {
+export function assertPdfToolchain(exists: (path: string) => boolean = existsSync): void {
   for (const bin of PDF_BINS) {
     if (!exists(bin)) {
       throw new Error(`pdf toolchain missing: ${bin}`);
@@ -186,17 +213,89 @@ function isAbortError(err: unknown): boolean {
  * Run pdfinfo/pdftotext under bubblewrap + prlimit.
  * Never retries unsandboxed. No OCR binaries.
  */
-export async function runPdfSandbox(
-  tool: 'pdfinfo' | 'pdftotext',
-  inputPath: string,
-  signal?: AbortSignal,
-): Promise<SandboxResult> {
+function trustedLinuxExecutable(
+  inspection: TrustedLinuxExecutableInspection | null,
+  executable: (typeof PDF_BINS)[number],
+): inspection is TrustedLinuxExecutableInspection {
+  return (
+    inspection !== null &&
+    inspection.path === executable &&
+    inspection.stableIdentity.length > 0 &&
+    inspection.regularFile === true &&
+    inspection.symbolicLink === false &&
+    inspection.owner === 'root' &&
+    inspection.writableByOthers === false
+  );
+}
+
+function inspectDefaultLinuxExecutable(
+  executable: (typeof PDF_BINS)[number],
+): TrustedLinuxExecutableInspection | null {
+  try {
+    if (!path.posix.isAbsolute(executable)) return null;
+    let current: string = executable;
+    let executableStats: ReturnType<typeof lstatSync> | null = null;
+    while (true) {
+      const stats = lstatSync(current);
+      if (
+        stats.isSymbolicLink() ||
+        stats.uid !== 0 ||
+        (stats.mode & 0o022) !== 0 ||
+        realpathSync(current) !== current
+      ) {
+        return null;
+      }
+      if (current === executable) {
+        if (!stats.isFile()) return null;
+        executableStats = stats;
+      } else if (!stats.isDirectory()) {
+        return null;
+      }
+      if (current === '/') break;
+      current = path.posix.dirname(current);
+    }
+    if (!executableStats) return null;
+    return {
+      path: executable,
+      stableIdentity: `${String(executableStats.dev)}:${String(executableStats.ino)}`,
+      regularFile: true,
+      symbolicLink: false,
+      owner: 'root',
+      writableByOthers: false,
+    };
+  } catch {
+    return null;
+  }
+}
+
+const defaultLinuxExecutableInspector: TrustedLinuxExecutableInspector = {
+  async inspect(executable) {
+    if (!PDF_BINS.includes(executable as (typeof PDF_BINS)[number])) return null;
+    return inspectDefaultLinuxExecutable(executable as (typeof PDF_BINS)[number]);
+  },
+};
+
+async function trustedPdfToolchain(inspector: TrustedLinuxExecutableInspector): Promise<boolean> {
+  for (const executable of PDF_BINS) {
+    if (
+      !trustedLinuxExecutable(
+        await inspector.inspect(executable, PDF_SANDBOX_CWD).catch(() => null),
+        executable,
+      )
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function sandboxArgs(tool: 'pdfinfo' | 'pdftotext', inputPath: string): readonly string[] {
   const toolArgs =
     tool === 'pdfinfo'
       ? ['/input/document.pdf']
       : ['-layout', '-enc', 'UTF-8', '-eol', 'unix', '/input/document.pdf', '-'];
 
-  const argv = [
+  return [
     '--die-with-parent',
     '--new-session',
     '--unshare-user',
@@ -240,7 +339,7 @@ export async function runPdfSandbox(
     '--chdir',
     '/tmp',
     '--',
-    '/usr/bin/prlimit',
+    LINUX_PRLIMIT,
     '--cpu=5:5',
     '--as=536870912:536870912',
     `--fsize=${ARTIFACT_MAX_OUTPUT_BYTES}:${ARTIFACT_MAX_OUTPUT_BYTES}`,
@@ -248,47 +347,97 @@ export async function runPdfSandbox(
     '--nproc=16:16',
     '--core=0:0',
     '--',
-    `/usr/bin/${tool}`,
+    tool === 'pdfinfo' ? LINUX_PDFINFO : LINUX_PDFTOTEXT,
     ...toolArgs,
-  ];
+  ] as const;
+}
 
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
-      return;
-    }
+function validPdfSandboxInvocation(invocation: PdfSandboxProcessInvocation): boolean {
+  return (
+    invocation.executable === LINUX_BWRAP &&
+    invocation.cwd === PDF_SANDBOX_CWD &&
+    invocation.shell === false &&
+    Object.keys(invocation.env).length === 0 &&
+    invocation.args.includes(LINUX_PRLIMIT) &&
+    invocation.args.includes(LINUX_PDFINFO) !== invocation.args.includes(LINUX_PDFTOTEXT) &&
+    invocation.args.includes('--clearenv') &&
+    invocation.args.includes('--unshare-net') &&
+    invocation.args.includes('--ro-bind')
+  );
+}
 
-    const child = spawn('/usr/bin/bwrap', argv, {
-      shell: false,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: { PATH: '/usr/bin:/bin' },
-      signal,
-    });
-
-    const stdout: Buffer[] = [];
-    const stderr: Buffer[] = [];
-    let stdoutBytes = 0;
-
-    child.stdout?.on('data', (chunk: Buffer) => {
-      stdoutBytes += chunk.byteLength;
-      if (stdoutBytes > ARTIFACT_MAX_OUTPUT_BYTES) {
-        child.kill('SIGKILL');
-      } else {
-        stdout.push(chunk);
+class PdfSandboxProcessAdapter implements PdfSandboxProcessRunner {
+  async run(invocation: PdfSandboxProcessInvocation): Promise<SandboxResult> {
+    if (!validPdfSandboxInvocation(invocation)) throw new Error('invalid PDF sandbox invocation');
+    return await new Promise((resolve, reject) => {
+      if (invocation.signal?.aborted) {
+        reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+        return;
       }
-    });
-    child.stderr?.on('data', (chunk: Buffer) => {
-      if (Buffer.concat(stderr).byteLength < 64 * 1024) stderr.push(chunk);
-    });
-    child.once('error', reject);
-    child.once('close', (exitCode) => {
-      resolve({
-        stdout: Buffer.concat(stdout),
-        stderr: Buffer.concat(stderr),
-        exitCode: exitCode ?? -1,
+
+      const child: ChildProcess = spawn(LINUX_BWRAP, invocation.args, {
+        cwd: invocation.cwd,
+        shell: false,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: invocation.env,
+        signal: invocation.signal,
+        windowsHide: true,
+      });
+
+      const stdout: Buffer[] = [];
+      const stderr: Buffer[] = [];
+      let stdoutBytes = 0;
+
+      child.stdout?.on('data', (chunk: Buffer) => {
+        stdoutBytes += chunk.byteLength;
+        if (stdoutBytes > ARTIFACT_MAX_OUTPUT_BYTES) {
+          child.kill('SIGKILL');
+        } else {
+          stdout.push(chunk);
+        }
+      });
+      child.stderr?.on('data', (chunk: Buffer) => {
+        if (Buffer.concat(stderr).byteLength < 64 * 1024) stderr.push(chunk);
+      });
+      child.once('error', reject);
+      child.once('close', (exitCode) => {
+        resolve({
+          stdout: Buffer.concat(stdout),
+          stderr: Buffer.concat(stderr),
+          exitCode: exitCode ?? -1,
+        });
       });
     });
-  });
+  }
+}
+
+export function createFixedPdfSandboxRunner(
+  inspector: TrustedLinuxExecutableInspector = defaultLinuxExecutableInspector,
+  processRunner: PdfSandboxProcessRunner = new PdfSandboxProcessAdapter(),
+): SandboxRunner {
+  return async (tool, inputPath, signal) => {
+    if (!path.isAbsolute(inputPath) || !(await trustedPdfToolchain(inspector))) {
+      throw new Error('untrusted PDF toolchain');
+    }
+    return await processRunner.run({
+      executable: LINUX_BWRAP,
+      args: sandboxArgs(tool, inputPath),
+      cwd: PDF_SANDBOX_CWD,
+      env: PDF_SANDBOX_ENV,
+      shell: false,
+      signal,
+    });
+  };
+}
+
+const fixedPdfSandboxRunner = createFixedPdfSandboxRunner();
+
+export async function runPdfSandbox(
+  tool: 'pdfinfo' | 'pdftotext',
+  inputPath: string,
+  signal?: AbortSignal,
+): Promise<SandboxResult> {
+  return await fixedPdfSandboxRunner(tool, inputPath, signal);
 }
 
 export async function extractEmbeddedPdfText(
@@ -310,10 +459,7 @@ export async function extractEmbeddedPdfText(
   const now = options.now ?? new Date();
   const mimeType = 'application/pdf' as const;
 
-  if (
-    source.declaredMime !== 'application/pdf' ||
-    source.objectMime !== 'application/pdf'
-  ) {
+  if (source.declaredMime !== 'application/pdf' || source.objectMime !== 'application/pdf') {
     return manualResult({
       attachmentId,
       mimeType,
@@ -531,9 +677,7 @@ export async function readAuthorizedArtifact(input: {
   s3: S3Storage;
   signal: AbortSignal;
   /** Server-side resolve by attachmentId (DB in prod; fixture map in tests). */
-  resolveLocator: (
-    attachmentId: string,
-  ) => Promise<AttachmentLocator | null>;
+  resolveLocator: (attachmentId: string) => Promise<AttachmentLocator | null>;
   runner?: SandboxRunner;
   ledger?: ToolLedger;
   now?: Date;
@@ -593,8 +737,7 @@ export async function readAuthorizedArtifact(input: {
     return finish(
       manualResult({
         attachmentId: input.attachmentId,
-        mimeType:
-          locator.mimeType === 'text/plain' ? 'text/plain' : 'application/pdf',
+        mimeType: locator.mimeType === 'text/plain' ? 'text/plain' : 'application/pdf',
         reason: 'malformed',
         sourceHash: sha256Hex(''),
         now,
@@ -607,8 +750,7 @@ export async function readAuthorizedArtifact(input: {
     return finish(
       manualResult({
         attachmentId: input.attachmentId,
-        mimeType:
-          locator.mimeType === 'text/plain' ? 'text/plain' : 'application/pdf',
+        mimeType: locator.mimeType === 'text/plain' ? 'text/plain' : 'application/pdf',
         reason: 'too_large',
         sourceHash: sha256Hex(''),
         now,
@@ -616,10 +758,7 @@ export async function readAuthorizedArtifact(input: {
     );
   }
 
-  if (
-    locator.mimeType !== 'text/plain' &&
-    locator.mimeType !== 'application/pdf'
-  ) {
+  if (locator.mimeType !== 'text/plain' && locator.mimeType !== 'application/pdf') {
     return finish(
       manualResult({
         attachmentId: input.attachmentId,
@@ -634,11 +773,7 @@ export async function readAuthorizedArtifact(input: {
   const maxBytes = Math.min(locator.sizeBytes, ARTIFACT_MAX_INPUT_BYTES);
   let object: { body: Buffer; contentType: string };
   try {
-    const fetched = await input.s3.getObjectBounded(
-      locator.s3Key,
-      maxBytes,
-      input.signal,
-    );
+    const fetched = await input.s3.getObjectBounded(locator.s3Key, maxBytes, input.signal);
     if (!fetched) {
       return finish(
         manualResult({
@@ -674,19 +809,14 @@ export async function readAuthorizedArtifact(input: {
         attachmentId: input.attachmentId,
         mimeType: locator.mimeType,
         reason: 'malformed',
-        sourceHash: sha256Hex(
-          object.body.subarray(0, Math.min(object.body.byteLength, 64)),
-        ),
+        sourceHash: sha256Hex(object.body.subarray(0, Math.min(object.body.byteLength, 64))),
         now,
       }),
     );
   }
 
   if (locator.mimeType === 'text/plain') {
-    if (
-      object.contentType &&
-      object.contentType !== 'text/plain'
-    ) {
+    if (object.contentType && object.contentType !== 'text/plain') {
       return finish(
         manualResult({
           attachmentId: input.attachmentId,
@@ -750,9 +880,7 @@ export async function readAuthorizedArtifact(input: {
         declaredSize: locator.sizeBytes,
         declaredMime: locator.mimeType,
         objectMime:
-          object.contentType === 'application/pdf'
-            ? 'application/pdf'
-            : object.contentType,
+          object.contentType === 'application/pdf' ? 'application/pdf' : object.contentType,
       },
       {
         runner: input.runner,
@@ -801,11 +929,7 @@ export async function recheckAuthorizedArtifactIdentity(input: {
     return false;
   }
   try {
-    const object = await input.s3.getObjectBounded(
-      current.s3Key,
-      current.sizeBytes,
-      input.signal,
-    );
+    const object = await input.s3.getObjectBounded(current.s3Key, current.sizeBytes, input.signal);
     if (!object || object.body.byteLength !== current.sizeBytes) return false;
     return sha256Hex(object.body) === input.expectedSha256;
   } catch (error) {

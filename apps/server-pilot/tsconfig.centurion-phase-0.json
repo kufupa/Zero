@@ -28,6 +28,7 @@
     "scripts/export-thread-corpus.ts",
     "src/ops/centurion-thread-corpus-exporter.ts",
     "src/ops/centurion-thread-corpus-hydrator.ts",
+    "src/mail/artifacts/read-artifact.ts",
     "src/ops/centurion-thread-corpus-postgres-reader.ts",
     "src/storage/s3.ts",
     "scripts/export-centurion-thread-corpus-live.ts",
@@ -42,6 +43,7 @@
     "tests/analyze-centurion-thread-corpus.test.ts",
     "tests/centurion-thread-corpus-postgres-reader.test.ts",
     "tests/centurion-thread-corpus-hydrator.test.ts",
+    "tests/hms-artifact.test.ts",
     "tests/centurion-thread-corpus-exporter.test.ts",
     "tests/export-centurion-thread-corpus-live.test.ts",
     "tests/centurion-phase-0-process-boundaries.test.ts"

@@ -1,15 +1,13 @@
-import { describe, expect, it, vi } from 'vitest';
-import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { FakeS3Storage, S3ObjectTooLargeError } from '../src/storage/s3.js';
-import { MailEvidenceRefSchema, ToolResultSchema } from '../src/ai/draft-evidence.js';
 import {
   ARTIFACT_MAX_INPUT_BYTES,
   ARTIFACT_MAX_OUTPUT_BYTES,
   ARTIFACT_MAX_PAGES,
   ARTIFACT_SUBPROCESS_TIMEOUT_MS,
+  createFixedPdfSandboxRunner,
+  LINUX_BWRAP,
+  LINUX_PDFINFO,
+  LINUX_PDFTOTEXT,
+  LINUX_PRLIMIT,
   MAIL_READ_ARTIFACT_TOOL_VERSION,
   assertPdfToolchain,
   createToolLedger,
@@ -20,16 +18,17 @@ import {
   type SandboxRunner,
   type SandboxResult,
 } from '../src/mail/artifacts/read-artifact.js';
+import { MailEvidenceRefSchema, ToolResultSchema } from '../src/ai/draft-evidence.js';
+import { FakeS3Storage, S3ObjectTooLargeError } from '../src/storage/s3.js';
+import { describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
-const gateScript = readFileSync(
-  join(here, '../deploy/pdf-text-gate.sh'),
-  'utf8',
-);
-const implSource = readFileSync(
-  join(here, '../src/mail/artifacts/read-artifact.ts'),
-  'utf8',
-);
+const gateScript = readFileSync(join(here, '../deploy/pdf-text-gate.sh'), 'utf8');
+const implSource = readFileSync(join(here, '../src/mail/artifacts/read-artifact.ts'), 'utf8');
 
 function pdfFixtureBody(label = 'fixture'): Buffer {
   // Minimal PDF magic; real Poppler not required — runner is mocked.
@@ -103,6 +102,107 @@ function fixtureRunner(input: {
 }
 
 describe('readAuthorizedArtifact', () => {
+  it('blocks an untrusted PDF toolchain before fake sandbox launch', async () => {
+    const calls: unknown[] = [];
+    const runner = createFixedPdfSandboxRunner(
+      {
+        inspect: async (executable) =>
+          executable === LINUX_BWRAP
+            ? null
+            : {
+                path: executable,
+                stableIdentity: 'synthetic-tool',
+                regularFile: true,
+                symbolicLink: false,
+                owner: 'root',
+                writableByOthers: false,
+              },
+      },
+      {
+        run: async (invocation) => {
+          calls.push(invocation);
+          return { stdout: Buffer.alloc(0), stderr: Buffer.alloc(0), exitCode: 0 };
+        },
+      },
+    );
+
+    const result = await extractEmbeddedPdfText(
+      {
+        body: pdfFixtureBody('untrusted'),
+        declaredSize: pdfFixtureBody('untrusted').byteLength,
+        declaredMime: 'application/pdf',
+        objectMime: 'application/pdf',
+      },
+      { runner },
+    );
+
+    expect(result.data.reason).toBe('parser_failure');
+    expect(calls).toEqual([]);
+  });
+
+  it('uses trusted fixed PDF toolchain through fake sandbox runner', async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const runner = createFixedPdfSandboxRunner(
+      {
+        inspect: async (executable) => ({
+          path: executable,
+          stableIdentity: 'synthetic-tool',
+          regularFile: true,
+          symbolicLink: false,
+          owner: 'root',
+          writableByOthers: false,
+        }),
+      },
+      {
+        run: async (invocation) => {
+          calls.push(invocation);
+          return {
+            stdout: Buffer.from(
+              (invocation.args as readonly string[]).includes(LINUX_PDFINFO)
+                ? 'Pages: 1\nEncrypted: no\n'
+                : 'Synthetic PDF body\n',
+            ),
+            stderr: Buffer.alloc(0),
+            exitCode: 0,
+          };
+        },
+      },
+    );
+
+    const body = pdfFixtureBody('trusted');
+    const result = await extractEmbeddedPdfText(
+      {
+        body,
+        declaredSize: body.byteLength,
+        declaredMime: 'application/pdf',
+        objectMime: 'application/pdf',
+      },
+      { runner },
+    );
+
+    expect(result.data.text).toBe('Synthetic PDF body');
+    expect(calls).toHaveLength(2);
+    expect(calls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          executable: LINUX_BWRAP,
+          cwd: '/',
+          env: {},
+          shell: false,
+        }),
+      ]),
+    );
+    expect(calls.every((call) => (call.args as readonly string[]).includes(LINUX_PRLIMIT))).toBe(
+      true,
+    );
+    expect(calls.some((call) => (call.args as readonly string[]).includes(LINUX_PDFINFO))).toBe(
+      true,
+    );
+    expect(calls.some((call) => (call.args as readonly string[]).includes(LINUX_PDFTOTEXT))).toBe(
+      true,
+    );
+  });
+
   it('publishes v2 candidate-only evidence', async () => {
     const body = Buffer.from('Confirmation CONF-88421', 'utf8');
     const s3 = new FakeS3Storage('artifact-test');
@@ -214,9 +314,7 @@ describe('readAuthorizedArtifact', () => {
       authorizedAttachmentIds: new Set(['att-mismatch']),
       s3,
       signal: AbortSignal.timeout(5_000),
-      resolveLocator: resolveLocatorOf(
-        locator({ sizeBytes: declared }),
-      ),
+      resolveLocator: resolveLocatorOf(locator({ sizeBytes: declared })),
       runner: fixtureRunner({}),
     });
 
@@ -227,9 +325,7 @@ describe('readAuthorizedArtifact', () => {
       declared,
       expect.any(AbortSignal),
     );
-    await expect(getSpy.mock.results[0]?.value).rejects.toBeInstanceOf(
-      S3ObjectTooLargeError,
-    );
+    await expect(getSpy.mock.results[0]?.value).rejects.toBeInstanceOf(S3ObjectTooLargeError);
   });
 
   it('reads text/plain with UTF-8 normalization', async () => {
@@ -602,9 +698,7 @@ describe('readAuthorizedArtifact', () => {
   });
 
   it('missing binaries fail startup gate helper', () => {
-    expect(() =>
-      assertPdfToolchain((p) => p !== '/usr/bin/bwrap'),
-    ).toThrow(/bwrap/);
+    expect(() => assertPdfToolchain((p) => p !== '/usr/bin/bwrap')).toThrow(/bwrap/);
   });
 
   it('records hash-bound mail evidence on common tool ledger', async () => {
@@ -663,9 +757,7 @@ describe('readAuthorizedArtifact', () => {
       authorizedAttachmentIds: new Set(['att-nan']),
       s3,
       signal: AbortSignal.timeout(5_000),
-      resolveLocator: resolveLocatorOf(
-        locator({ sizeBytes: Number.NaN }),
-      ),
+      resolveLocator: resolveLocatorOf(locator({ sizeBytes: Number.NaN })),
       runner: fixtureRunner({}),
     });
     expect(result.status).toBe('manual_required');
