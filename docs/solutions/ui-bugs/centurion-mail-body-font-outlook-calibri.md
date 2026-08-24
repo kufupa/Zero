@@ -41,6 +41,8 @@ Centurion reservations staff (Outlook 2016 / Word HTML front end) saw Zero-compo
 
 Three independent font contracts (Geist compose, system-stack reply wrap, stripped inbound) with no single Outlook-compatible default. Sanitize correctly blocks style XSS but also removes legitimate Outlook font styles; display had no replacement default.
 
+Sanitized inbound mail keeps structural `bgcolor` but removes arbitrary authored `style`; an unstyled fragment therefore inherits `color` through the Shadow DOM host. `mailBodyDisplayStyleTag()` owns fixed Calibri/wrapping behavior only and must not force reader text color.
+
 ## Fix
 
 Canonical hotel **mail body** stack: `Calibri, Arial, sans-serif` @ `11pt`. App chrome stays Geist.
@@ -48,8 +50,11 @@ Canonical hotel **mail body** stack: `Calibri, Arial, sans-serif` @ `11pt`. App 
 1. `wrapMailBodyHtml` / `prepareOutboundHtml` — idempotent wrap with `class="nava-mail-body"` (survives sanitize; `data-*` / `style` do not).
 2. `mail.send` — single choke point; same wrapped HTML → DB row + SMTP + draft revision.
 3. FE `constructReplyBody` / `constructForwardBody` — same class + stack for WYSIWYG; send skips re-wrap.
-4. `processEmailHtmlForDisplay` — prepend fixed `mailBodyDisplayStyleTag()` after sanitize (no user HTML in `<style>`; no forced `#000` for dark mode).
-5. `.ProseMirror` — Calibri 11pt; color inherits theme.
+4. `processEmailHtmlForDisplay` — prepend fixed `mailBodyDisplayStyleTag()` after sanitize (no user HTML in `<style>`; fixed Calibri/wrapping only).
+5. `MailContent` owns the fixed light-paper display surface (`#ffffff` / `#000000` / `color-scheme: light`) so a dark Zero shell cannot produce white text on retained white legacy mail.
+6. `.ProseMirror` — Calibri 11pt; color inherits theme.
+
+Boundary: fixed host guarantees only legacy light-paper inherited-text case. It intentionally does no dynamic per-node contrast rewriting and makes no recoloring or contrast guarantee for arbitrary retained dark/tinted `bgcolor` templates.
 
 ## Prevention
 

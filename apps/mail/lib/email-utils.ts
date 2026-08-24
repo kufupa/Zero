@@ -1,58 +1,7 @@
 import * as emailAddresses from 'email-addresses';
 import type { Sender } from '@/types';
 import DOMPurify from 'dompurify';
-import Color from 'color';
 import { z } from 'zod';
-
-export const fixNonReadableColors = (
-  rootElement: HTMLElement,
-  options?: { minContrast?: number; defaultBackground?: string },
-) => {
-  const { minContrast = 3.5, defaultBackground = '#ffffff' } = options || {};
-  const elements = Array.from<HTMLElement>(rootElement.querySelectorAll('*'));
-  elements.unshift(rootElement);
-
-  for (const el of elements) {
-    const style = getComputedStyle(el);
-    if (style.display === 'none' || style.visibility === 'hidden') continue;
-
-    // Skip if the color is a CSS variable or special value
-    if (
-      style.color.startsWith('var(') ||
-      style.color === 'transparent' ||
-      style.color === 'inherit'
-    ) {
-      continue;
-    }
-
-    try {
-      const textColor = Color(style.color);
-      const effectiveBg = getEffectiveBackgroundColor(el, defaultBackground);
-
-      const blendedText =
-        textColor.alpha() < 1 ? effectiveBg.mix(textColor, effectiveBg.alpha()) : textColor;
-      const contrast = blendedText.contrast(effectiveBg);
-
-      if (contrast < minContrast) {
-        const blackContrast = Color('#000000').contrast(effectiveBg);
-        const whiteContrast = Color('#ffffff').contrast(effectiveBg);
-        el.style.color = blackContrast >= whiteContrast ? '#000000' : '#ffffff';
-      }
-    } catch (error) {
-      console.error('Error fixing non-readable colors:', error);
-    }
-  }
-};
-
-const getEffectiveBackgroundColor = (element: HTMLElement, defaultBackground: string) => {
-  let current: HTMLElement | null = element;
-  while (current) {
-    const bg = Color(getComputedStyle(current).backgroundColor);
-    if (bg.alpha() >= 1) return bg.rgb();
-    current = current.parentElement;
-  }
-  return Color(defaultBackground);
-};
 
 type ListUnsubscribeAction =
   | { type: 'get'; url: string; host: string }
