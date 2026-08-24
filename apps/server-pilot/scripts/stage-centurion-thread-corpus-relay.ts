@@ -1,7 +1,7 @@
 import {
   createAwsRelayObjectStore,
   createDefaultRelaySourceRuntime,
-  parseRelaySourceRuntimeConfig,
+  parseRelaySourceRuntimeConfigSnapshot,
   stageCenturionThreadCorpusRelay,
   type RelayBucketConfig,
   type RelayObjectStore,
@@ -33,7 +33,10 @@ type StageSelector =
 type SourceStageRecoveryRuntime = Required<
   Pick<
     RelaySourceRuntimePort,
-    'findSingleResumableStage' | 'acquireSourceStageLease' | 'releaseSourceStageLease'
+    | 'assertSourceStageConfig'
+    | 'findSingleResumableStage'
+    | 'acquireSourceStageLease'
+    | 'releaseSourceStageLease'
   >
 >;
 
@@ -90,6 +93,7 @@ function sourceStageRecoveryRuntime(
   runtime: RelaySourceRuntimePort,
 ): SourceStageRecoveryRuntime | null {
   return typeof runtime.findSingleResumableStage === 'function' &&
+    typeof runtime.assertSourceStageConfig === 'function' &&
     typeof runtime.acquireSourceStageLease === 'function' &&
     typeof runtime.releaseSourceStageLease === 'function'
     ? (runtime as SourceStageRecoveryRuntime)
@@ -125,13 +129,14 @@ export function createStageCenturionThreadCorpusRelayCommand(
         writeOffer(dependencies, blockedOffer());
         return 2;
       }
-      const config = parseRelaySourceRuntimeConfig(
+      const configSnapshot = parseRelaySourceRuntimeConfigSnapshot(
         await dependencies.runtime.readProtectedConfig(),
       );
-      if (!config) {
+      if (!configSnapshot) {
         writeOffer(dependencies, blockedOffer());
         return 3;
       }
+      const { config, digest: configDigest } = configSnapshot;
       const recovery = sourceStageRecoveryRuntime(dependencies.runtime);
       if (!recovery) {
         writeOffer(dependencies, blockedOffer());
@@ -150,7 +155,7 @@ export function createStageCenturionThreadCorpusRelayCommand(
         writeOffer(dependencies, blockedOffer());
         return 3;
       }
-      const lease = await recovery.acquireSourceStageLease();
+      const lease = await recovery.acquireSourceStageLease({ configDigest });
       if (!lease || !isLeaseId(lease.leaseId)) {
         writeOffer(dependencies, blockedOffer());
         return 3;
@@ -158,7 +163,7 @@ export function createStageCenturionThreadCorpusRelayCommand(
       let offer: StageOffer = blockedOffer();
       let exitCode = 3;
       try {
-        const discovery = await recovery.findSingleResumableStage();
+        const discovery = await recovery.findSingleResumableStage({ config, configDigest });
         if (!validDiscovery(discovery) || discovery.outcome === 'blocked') {
           throw new Error('stage discovery blocked');
         }
@@ -171,8 +176,12 @@ export function createStageCenturionThreadCorpusRelayCommand(
               ? selector.transferId
               : dependencies.createTransferId();
         if (!isUuidV4(transferId)) throw new Error('stage selector blocked');
+        if (!(await recovery.assertSourceStageConfig({ config, configDigest }))) {
+          throw new Error('source config changed');
+        }
         const result = await stageCenturionThreadCorpusRelay({
           config,
+          configDigest,
           transferId,
           readinessAttestation: assessment.attestation,
           store: dependencies.objectStoreFor(config.relay),

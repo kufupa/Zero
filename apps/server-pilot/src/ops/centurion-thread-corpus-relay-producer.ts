@@ -135,10 +135,19 @@ export type RelaySourceRuntimeConfig = {
   readinessAttestationBinding: ReadinessAttestationBindingInputV1;
 };
 
+export type RelaySourceRuntimeConfigSnapshot = {
+  config: RelaySourceRuntimeConfig;
+  digest: string;
+};
+
 export type RelaySourceRuntimePort = {
   platform(): string;
   attestImdsV2(instanceId: string): Promise<boolean>;
   readProtectedConfig(): Promise<string>;
+  assertSourceStageConfig?(input: {
+    config: RelaySourceRuntimeConfig;
+    configDigest: string;
+  }): Promise<boolean>;
   inspectGit(check: 'revision' | 'worktree' | 'status'): string | null;
   inspectTrustedSnapshot(input: { name: string; maxTotalBytes: number }): Promise<{
     canonicalPath: string;
@@ -157,8 +166,11 @@ export type RelaySourceRuntimePort = {
   writeFinalizeJournal(journal: FinalizeJournalV1): Promise<boolean>;
   readFinalizeJournal(transferId: string): Promise<RelayJournalRead<FinalizeJournalV1>>;
   removeTrustedSnapshot(snapshot: StageIntentV2['sourceSnapshot']): Promise<boolean>;
-  findSingleResumableStage?(): Promise<ResumableStageDiscovery>;
-  acquireSourceStageLease?(): Promise<{ leaseId: string } | null>;
+  findSingleResumableStage?(input: {
+    config: RelaySourceRuntimeConfig;
+    configDigest: string;
+  }): Promise<ResumableStageDiscovery>;
+  acquireSourceStageLease?(input: { configDigest: string }): Promise<{ leaseId: string } | null>;
   releaseSourceStageLease?(input: { leaseId: string }): Promise<boolean>;
 };
 
@@ -495,6 +507,17 @@ export function parseRelaySourceRuntimeConfig(value: string): RelaySourceRuntime
   }
 }
 
+function protectedConfigDigest(value: string): string {
+  return createHash('sha256').update(value, 'utf8').digest('hex');
+}
+
+export function parseRelaySourceRuntimeConfigSnapshot(
+  value: string,
+): RelaySourceRuntimeConfigSnapshot | null {
+  const config = parseRelaySourceRuntimeConfig(value);
+  return config === null ? null : { config, digest: protectedConfigDigest(value) };
+}
+
 function relayPrefix(literalRelayRoot: string, transferId: string): string {
   const manifestKey = relayManifestKey(literalRelayRoot, transferId);
   return manifestKey.slice(0, -RELAY_MANIFEST_FILENAME.length);
@@ -756,6 +779,7 @@ async function rollbackKnownStage(
 
 export async function stageCenturionThreadCorpusRelay(input: {
   config: RelaySourceRuntimeConfig;
+  configDigest: string;
   transferId: string;
   readinessAttestation: CenturionThreadCorpusReadinessAttestationV1;
   store: RelayObjectStore;
@@ -766,11 +790,18 @@ export async function stageCenturionThreadCorpusRelay(input: {
     const config = parseRelaySourceRuntimeConfig(JSON.stringify(input.config));
     if (
       !config ||
+      !isSha256(input.configDigest) ||
       !isUuidV4(input.transferId) ||
       !matchesCenturionThreadCorpusReadinessAttestation(
         input.readinessAttestation,
         config.readinessAttestationBinding,
       )
+    ) {
+      return blockedStage();
+    }
+    if (
+      !input.source.assertSourceStageConfig ||
+      !(await input.source.assertSourceStageConfig({ config, configDigest: input.configDigest }))
     ) {
       return blockedStage();
     }
@@ -1699,15 +1730,15 @@ function validStageIntentForDiscovery(
   value: unknown,
   config: RelaySourceRuntimeConfig,
   transferId: string,
-): boolean {
-  return validateStageIntent(value, config, transferId) !== null;
+): StageIntentV2 | null {
+  return validateStageIntent(value, config, transferId)?.intent ?? null;
 }
 
 function validFinalizeJournalForDiscovery(
   value: unknown,
   config: RelaySourceRuntimeConfig,
   transferId: string,
-): FinalizeJournalV1['state'] | null {
+): { state: FinalizeJournalV1['state']; stageIntent: StageIntentV2 } | null {
   if (
     !isRecord(value) ||
     !hasExactKeys(value, [
@@ -1720,7 +1751,6 @@ function validFinalizeJournalForDiscovery(
     value.schemaVersion !== 'centurion-thread-corpus-relay-finalize-journal-v1' ||
     !isSha256(value.receiveReceiptSha256) ||
     !isSha256(value.acknowledgementSha256) ||
-    !validStageIntentForDiscovery(value.stageIntent, config, transferId) ||
     ![
       'ack_verified',
       'relay_delete_started',
@@ -1731,18 +1761,25 @@ function validFinalizeJournalForDiscovery(
   ) {
     return null;
   }
-  return value.state as FinalizeJournalV1['state'];
+  const stageIntent = validStageIntentForDiscovery(value.stageIntent, config, transferId);
+  return stageIntent === null
+    ? null
+    : { state: value.state as FinalizeJournalV1['state'], stageIntent };
+}
+
+function sameStageIntent(left: StageIntentV2, right: StageIntentV2): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function discoverSingleResumableStage(
   layout: TrustedPathLayout,
+  config: RelaySourceRuntimeConfig,
+  configDigest: string,
   expectedLeaseId: string,
 ): ResumableStageDiscovery {
   try {
-    if (!isUuidV4(expectedLeaseId)) return { outcome: 'blocked' };
+    if (!isUuidV4(expectedLeaseId) || !isSha256(configDigest)) return { outcome: 'blocked' };
     ensureTrustedStateRoot(layout);
-    const config = parseRelaySourceRuntimeConfig(readTrustedConfig(layout));
-    if (!config) return { outcome: 'blocked' };
     const entries = readdirSync(layout.stateRoot, { withFileTypes: true });
     const stages = new Map<string, unknown>();
     const finalizations = new Map<string, unknown>();
@@ -1755,8 +1792,9 @@ function discoverSingleResumableStage(
         if (
           lease.outcome !== 'present' ||
           !isRecord(lease.value) ||
-          !hasExactKeys(lease.value, ['leaseId']) ||
-          lease.value.leaseId !== expectedLeaseId
+          !hasExactKeys(lease.value, ['leaseId', 'configDigest']) ||
+          lease.value.leaseId !== expectedLeaseId ||
+          lease.value.configDigest !== configDigest
         ) {
           return { outcome: 'blocked' };
         }
@@ -1787,17 +1825,29 @@ function discoverSingleResumableStage(
     }
     if (!leaseSeen) return { outcome: 'blocked' };
 
-    const completed = new Set<string>();
-    for (const [transferId, journal] of finalizations) {
-      const state = validFinalizeJournalForDiscovery(journal, config, transferId);
-      if (state === null || state !== 'complete') return { outcome: 'blocked' };
-      if (!stages.has(transferId)) return { outcome: 'blocked' };
-      completed.add(transferId);
-    }
-
+    const normalizedStages = new Map<string, StageIntentV2>();
     const resumable: string[] = [];
     for (const [transferId, intent] of stages) {
-      if (!validStageIntentForDiscovery(intent, config, transferId)) return { outcome: 'blocked' };
+      const normalized = validStageIntentForDiscovery(intent, config, transferId);
+      if (normalized === null) return { outcome: 'blocked' };
+      normalizedStages.set(transferId, normalized);
+    }
+    const completed = new Set<string>();
+    for (const [transferId, journal] of finalizations) {
+      const finalized = validFinalizeJournalForDiscovery(journal, config, transferId);
+      const staged = normalizedStages.get(transferId);
+      if (
+        finalized === null ||
+        finalized.state !== 'complete' ||
+        staged === undefined ||
+        staged.state !== 'staged' ||
+        !sameStageIntent(staged, finalized.stageIntent)
+      ) {
+        return { outcome: 'blocked' };
+      }
+      completed.add(transferId);
+    }
+    for (const transferId of normalizedStages.keys()) {
       if (!completed.has(transferId)) resumable.push(transferId);
     }
     if (resumable.length === 0) return { outcome: 'none' };
@@ -1809,9 +1859,18 @@ function discoverSingleResumableStage(
   }
 }
 
-function acquireSourceStageLease(layout: TrustedPathLayout): { leaseId: string } | null {
+function acquireSourceStageLease(
+  layout: TrustedPathLayout,
+  configDigest: string,
+): { leaseId: string } | null {
   let descriptor: number | undefined;
   try {
+    if (
+      !isSha256(configDigest) ||
+      protectedConfigDigest(readTrustedConfig(layout)) !== configDigest
+    ) {
+      return null;
+    }
     ensureTrustedStateRoot(layout);
     const leaseId = randomUUID();
     if (!isUuidV4(leaseId)) return null;
@@ -1820,7 +1879,7 @@ function acquireSourceStageLease(layout: TrustedPathLayout): { leaseId: string }
       fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
       0o600,
     );
-    writeFileSync(descriptor, `${JSON.stringify({ leaseId })}\n`, 'utf8');
+    writeFileSync(descriptor, `${JSON.stringify({ leaseId, configDigest })}\n`, 'utf8');
     fsyncSync(descriptor);
     const opened = fstatSync(descriptor);
     if (!opened.isFile() || (opened.mode & 0o077) !== 0) return null;
@@ -1839,16 +1898,20 @@ function acquireSourceStageLease(layout: TrustedPathLayout): { leaseId: string }
   }
 }
 
-function releaseSourceStageLease(layout: TrustedPathLayout, input: { leaseId: string }): boolean {
+function releaseSourceStageLease(
+  layout: TrustedPathLayout,
+  input: { leaseId: string; configDigest: string },
+): boolean {
   try {
-    if (!isUuidV4(input.leaseId)) return false;
+    if (!isUuidV4(input.leaseId) || !isSha256(input.configDigest)) return false;
     ensureTrustedStateRoot(layout);
     const lease = readAtomicJson(sourceStageLeasePath(layout));
     if (
       lease.outcome !== 'present' ||
       !isRecord(lease.value) ||
-      !hasExactKeys(lease.value, ['leaseId']) ||
-      lease.value.leaseId !== input.leaseId
+      !hasExactKeys(lease.value, ['leaseId', 'configDigest']) ||
+      lease.value.leaseId !== input.leaseId ||
+      lease.value.configDigest !== input.configDigest
     ) {
       return false;
     }
@@ -2111,6 +2174,7 @@ export function createDefaultRelaySourceRuntime(
 ): RelaySourceRuntimePort {
   const layout = sourcePathLayout(repoRoot);
   let heldSourceStageLeaseId: string | null = null;
+  let heldSourceStageConfigDigest: string | null = null;
   const gitBoundary = createEc2GitInspectionBoundary(
     defaultEc2GitExecutableInspector,
     new Ec2GitProcessAdapter(),
@@ -2126,23 +2190,51 @@ export function createDefaultRelaySourceRuntime(
         throw new Error('protected config unavailable');
       }
     },
+    assertSourceStageConfig: async (input) => {
+      try {
+        const snapshot = parseRelaySourceRuntimeConfigSnapshot(readTrustedConfig(layout));
+        return (
+          snapshot !== null &&
+          snapshot.digest === input.configDigest &&
+          JSON.stringify(snapshot.config) === JSON.stringify(input.config)
+        );
+      } catch {
+        return false;
+      }
+    },
     inspectGit: (check) => gitBoundary.inspect({ check, cwd: layout.repoRoot }),
     inspectTrustedSnapshot: async (input) => inspectTrustedSnapshot(layout, input),
     readBoundedTrustedSnapshot: async (input) => readBoundedTrustedSnapshot(layout, input),
-    findSingleResumableStage: async () =>
-      heldSourceStageLeaseId === null
+    findSingleResumableStage: async (input) =>
+      heldSourceStageLeaseId === null || heldSourceStageConfigDigest !== input.configDigest
         ? { outcome: 'blocked' }
-        : discoverSingleResumableStage(layout, heldSourceStageLeaseId),
-    acquireSourceStageLease: async () => {
+        : discoverSingleResumableStage(
+            layout,
+            input.config,
+            input.configDigest,
+            heldSourceStageLeaseId,
+          ),
+    acquireSourceStageLease: async (input) => {
       if (heldSourceStageLeaseId !== null) return null;
-      const lease = acquireSourceStageLease(layout);
-      if (lease) heldSourceStageLeaseId = lease.leaseId;
+      const lease = acquireSourceStageLease(layout, input.configDigest);
+      if (lease) {
+        heldSourceStageLeaseId = lease.leaseId;
+        heldSourceStageConfigDigest = input.configDigest;
+      }
       return lease;
     },
     releaseSourceStageLease: async (input) => {
-      if (heldSourceStageLeaseId !== input.leaseId) return false;
-      const released = releaseSourceStageLease(layout, input);
-      if (released) heldSourceStageLeaseId = null;
+      if (heldSourceStageLeaseId !== input.leaseId || heldSourceStageConfigDigest === null) {
+        return false;
+      }
+      const released = releaseSourceStageLease(layout, {
+        ...input,
+        configDigest: heldSourceStageConfigDigest,
+      });
+      if (released) {
+        heldSourceStageLeaseId = null;
+        heldSourceStageConfigDigest = null;
+      }
       return released;
     },
     writeStageIntent: async (intent) => {

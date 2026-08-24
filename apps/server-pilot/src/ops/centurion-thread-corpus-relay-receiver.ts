@@ -56,10 +56,12 @@ export type ReceiverFileSystem = {
   } | null>;
   acquirePartialDirectory(transferId: string): Promise<AcquiredPartialDirectory | null>;
   acquirePartialLease(transferId: string): Promise<{ leaseId: string } | null>;
+  assertPartialLease(input: { transferId: string; leaseId: string }): Promise<boolean>;
   releasePartialLease(input: { transferId: string; leaseId: string }): Promise<boolean>;
   writeCreateNew(path: string, content: Uint8Array): Promise<boolean>;
   readFile(path: string, maxBytes: number): Promise<Uint8Array | null>;
   listRelativePaths(root: string): Promise<readonly string[] | null>;
+  listRelativeDirectories(root: string): Promise<readonly string[] | null>;
   writeReceiveReceipt(receiptJson: string): Promise<{ path: string; sha256: string } | null>;
 };
 
@@ -736,15 +738,36 @@ function exactRemoteInventory(
   }
 }
 
-function exactLocalInventory(
+function expectedDirectoryPaths(expected: readonly string[]): string[] {
+  return [
+    ...new Set(
+      expected.flatMap((entry) => {
+        const parts = entry.split('/');
+        return parts.slice(0, -1).map((_, index) => parts.slice(0, index + 1).join('/'));
+      }),
+    ),
+  ].sort();
+}
+
+async function exactLocalInventory(
+  fileSystem: ReceiverFileSystem,
+  root: string,
   actual: readonly string[] | null,
   expected: readonly string[],
-): boolean {
+): Promise<boolean> {
   if (!actual || actual.length !== expected.length || new Set(actual).size !== actual.length) {
     return false;
   }
   const actualSet = new Set(actual);
-  return expected.every((entry) => actualSet.has(entry));
+  const directories = await fileSystem.listRelativeDirectories(root);
+  const expectedDirectories = expectedDirectoryPaths(expected);
+  return (
+    directories !== null &&
+    directories.length === expectedDirectories.length &&
+    new Set(directories).size === directories.length &&
+    expected.every((entry) => actualSet.has(entry)) &&
+    expectedDirectories.every((entry) => directories.includes(entry))
+  );
 }
 
 function localMemberPath(root: string, memberPath: string): string | null {
@@ -803,6 +826,38 @@ async function assertTrustedPath(
 ): Promise<TrustedPath | null> {
   const trusted = await acl.assertTrustedPath(pathValue);
   return trusted && trusted.volumeId === expectedVolume ? trusted : null;
+}
+
+async function assertPartialLease(input: {
+  fileSystem: ReceiverFileSystem;
+  transferId: string;
+  leaseId: string;
+}): Promise<boolean> {
+  try {
+    return await input.fileSystem.assertPartialLease({
+      transferId: input.transferId,
+      leaseId: input.leaseId,
+    });
+  } catch {
+    return false;
+  }
+}
+
+async function lockAndReassertDirectories(
+  acl: WindowsPrivateAcl,
+  root: string,
+  expectedFiles: readonly string[],
+  expectedVolume: string,
+): Promise<boolean> {
+  for (const relative of expectedDirectoryPaths(expectedFiles)) {
+    const directory = localMemberPath(root, `${relative}/safe`)?.replace(/\\safe$/, '');
+    if (!directory) return false;
+    const before = await assertTrustedPath(acl, directory, expectedVolume);
+    if (!before || !(await acl.lockDownDirectory(directory))) return false;
+    const after = await assertTrustedPath(acl, directory, expectedVolume);
+    if (!after || !sameTrustedPath(before, after)) return false;
+  }
+  return true;
 }
 
 export type TrustedAclFile = {
@@ -913,6 +968,16 @@ async function inspectResumablePartial(input: {
       input.manifest.members,
     );
     if (!inventory) return null;
+    if (
+      !(await lockAndReassertDirectories(
+        input.acl,
+        input.partial.path,
+        [...inventory.cachedPaths, ...(inventory.hasReceipt ? [RECEIPT_FILENAME] : [])],
+        input.rootAcl.volumeId,
+      ))
+    ) {
+      return null;
+    }
 
     const files: TrustedAclFile[] = [];
     const cachedMemberIdentities = new Map<string, TrustedPath>();
@@ -999,10 +1064,22 @@ async function verifyFinalSnapshot(input: {
     ];
     if (
       !before ||
-      !exactLocalInventory(
+      !(await exactLocalInventory(
+        input.fileSystem,
+        input.finalPath,
         await input.fileSystem.listRelativePaths(input.finalPath),
         expectedInventory,
-      )
+      ))
+    ) {
+      return null;
+    }
+    if (
+      !(await lockAndReassertDirectories(
+        input.acl,
+        input.finalPath,
+        expectedInventory,
+        input.rootAcl.volumeId,
+      ))
     ) {
       return null;
     }
@@ -1132,6 +1209,7 @@ function verifiedSnapshotMatchesManifest(
 async function receiveWithPartialLease(input: {
   config: RelayReceiverRuntimeConfig;
   transferId: string;
+  leaseId: string;
   store: RelayObjectStore;
   fileSystem: ReceiverFileSystem;
   acl: WindowsPrivateAcl;
@@ -1169,6 +1247,7 @@ async function receiveWithPartialLease(input: {
     if (!rootAcl || !sameTrustedPath(initialRootAcl, rootAcl) || !partialRootAcl) {
       return blocked();
     }
+    if (!(await assertPartialLease(input))) return blocked();
     const partialPath = path.win32.join(partialRoot, input.transferId);
     const finalPath = path.win32.join(privateRoot.root, input.transferId);
     const initialFinal = await input.acl.assertTrustedPath(finalPath);
@@ -1206,6 +1285,13 @@ async function receiveWithPartialLease(input: {
       });
       if (
         !final ||
+        !(await exactLocalInventory(
+          input.fileSystem,
+          finalPath,
+          await input.fileSystem.listRelativePaths(finalPath),
+          [...input.manifest.members.map((member) => member.path), RECEIPT_FILENAME],
+        )) ||
+        !(await assertPartialLease(input)) ||
         !(await acknowledge({
           config: input.config,
           transferId: input.transferId,
@@ -1239,6 +1325,7 @@ async function receiveWithPartialLease(input: {
       manifest: input.manifest,
     });
     if (!inspectedPartial) return blocked();
+    if (!(await assertPartialLease(input))) return blocked();
 
     const localMembers = new Map(inspectedPartial.members);
     for (const expected of input.manifest.members) {
@@ -1293,10 +1380,15 @@ async function receiveWithPartialLease(input: {
     );
     if (
       orderedLocalMembers.some((member) => !member) ||
-      !exactLocalInventory(await input.fileSystem.listRelativePaths(acquiredPartial.path), [
-        ...input.manifest.members.map((member) => member.path),
-        ...(inspectedPartial.receiptPath ? [RECEIPT_FILENAME] : []),
-      ])
+      !(await exactLocalInventory(
+        input.fileSystem,
+        acquiredPartial.path,
+        await input.fileSystem.listRelativePaths(acquiredPartial.path),
+        [
+          ...input.manifest.members.map((member) => member.path),
+          ...(inspectedPartial.receiptPath ? [RECEIPT_FILENAME] : []),
+        ],
+      ))
     ) {
       return blocked();
     }
@@ -1306,6 +1398,17 @@ async function receiveWithPartialLease(input: {
       input.config.relay.maxSnapshotBytes,
     );
     if (!verifiedSnapshotMatchesManifest(verification, input.manifest)) return blocked();
+    if (
+      !(await lockAndReassertDirectories(
+        input.acl,
+        acquiredPartial.path,
+        input.manifest.members.map((member) => member.path),
+        rootAcl.volumeId,
+      )) ||
+      !(await assertPartialLease(input))
+    ) {
+      return blocked();
+    }
     const receiptJson = buildReceiveReceipt({
       transferId: input.transferId,
       snapshotId: verification.snapshotId,
@@ -1354,10 +1457,14 @@ async function receiveWithPartialLease(input: {
       }
     }
     if (
-      !exactLocalInventory(await input.fileSystem.listRelativePaths(acquiredPartial.path), [
-        ...input.manifest.members.map((member) => member.path),
-        RECEIPT_FILENAME,
-      ]) ||
+      !(await assertPartialLease(input)) ||
+      !(await exactLocalInventory(
+        input.fileSystem,
+        acquiredPartial.path,
+        await input.fileSystem.listRelativePaths(acquiredPartial.path),
+        [...input.manifest.members.map((member) => member.path), RECEIPT_FILENAME],
+      )) ||
+      !(await assertPartialLease(input)) ||
       !(await input.acl.promoteNoReplace(acquiredPartial.path, finalPath))
     ) {
       return blocked();
@@ -1374,6 +1481,13 @@ async function receiveWithPartialLease(input: {
     });
     if (
       !final ||
+      !(await exactLocalInventory(
+        input.fileSystem,
+        finalPath,
+        await input.fileSystem.listRelativePaths(finalPath),
+        [...input.manifest.members.map((member) => member.path), RECEIPT_FILENAME],
+      )) ||
+      !(await assertPartialLease(input)) ||
       !(await acknowledge({
         config: input.config,
         transferId: input.transferId,
@@ -1455,6 +1569,7 @@ export async function receiveCenturionThreadCorpusRelay(input: {
     const result = await receiveWithPartialLease({
       ...input,
       config,
+      leaseId: lease.leaseId,
       manifest,
       remoteInventory,
     });
@@ -1843,6 +1958,39 @@ class WindowsReceiverFileSystem implements ReceiverFileSystem {
     }
   }
 
+  async assertPartialLease(input: { transferId: string; leaseId: string }): Promise<boolean> {
+    let descriptor: number | undefined;
+    try {
+      if (!isUuidV4(input.transferId) || !isUuidV4(input.leaseId)) return false;
+      const partialRoot = path.win32.join(this.privateRoot, '.partial');
+      const leasePath = partialLeasePath(partialRoot, input.transferId);
+      if (!leasePath) return false;
+      const before = assertLocalFile(leasePath);
+      descriptor = openSync(leasePath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+      const opened = fstatSync(descriptor);
+      if (!opened.isFile() || !sameLocalIdentity(before, localIdentity(opened))) return false;
+      const content = readExactBoundedDescriptor(descriptor, before.bytes);
+      const after = assertLocalFile(leasePath);
+      const parsed = content ? parseJsonWithoutDuplicateKeys(textDecoder.decode(content)) : null;
+      return (
+        !!content &&
+        sameLocalIdentity(before, after) &&
+        sameLocalIdentity(before, localIdentity(fstatSync(descriptor))) &&
+        isRecord(parsed) &&
+        hasCanonicalKeys(parsed, ['leaseId']) &&
+        parsed.leaseId === input.leaseId
+      );
+    } catch {
+      return false;
+    } finally {
+      if (descriptor !== undefined) {
+        try {
+          closeSync(descriptor);
+        } catch {}
+      }
+    }
+  }
+
   async releasePartialLease(input: { transferId: string; leaseId: string }): Promise<boolean> {
     let descriptor: number | undefined;
     try {
@@ -2023,6 +2171,27 @@ class WindowsReceiverFileSystem implements ReceiverFileSystem {
       };
       visit(root, '');
       return paths.sort(compareText);
+    } catch {
+      return null;
+    }
+  }
+
+  async listRelativeDirectories(root: string): Promise<readonly string[] | null> {
+    try {
+      const directories: string[] = [];
+      const visit = (directory: string, prefix: string): void => {
+        assertLocalDirectory(directory);
+        for (const entry of readdirSync(directory, { withFileTypes: true })) {
+          if (entry.isSymbolicLink()) throw new Error('unsafe entry');
+          if (!entry.isDirectory()) continue;
+          const absolute = path.win32.join(directory, entry.name);
+          const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+          directories.push(relative);
+          visit(absolute, relative);
+        }
+      };
+      visit(root, '');
+      return directories.sort(compareText);
     } catch {
       return null;
     }
