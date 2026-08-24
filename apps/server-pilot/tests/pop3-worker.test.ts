@@ -243,6 +243,41 @@ describe('ingestOnce returned-copy results', () => {
       persistSpy.mockRestore();
     }
   });
+
+  it('warns once while draining duplicate copies with cleanup failures', async () => {
+    const storage = new FakeS3Storage('worker-reconciliation-bucket');
+    resetS3Storage();
+    setS3Storage(storage);
+    const fakePop3 = new FakePop3Client({
+      messages: [{ uidl: 'uidl-duplicate', raw: readFixture('centurion-stamped.eml') }],
+    });
+    const persistSpy = vi.spyOn(ingestStore, 'persistInboundMessage').mockResolvedValue({
+      kind: 'duplicate',
+      transportId: 'transport-centurion',
+      messageId: 'canonical-message',
+      rawMimeS3Key: 'raw-mime/test.eml',
+      candidateAttachmentCleanupFailureCount: 1,
+    });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    try {
+      const result = await ingestOnce({
+        pop3: fakePop3,
+        db: {} as import('../src/db/client').DB,
+        ingestMailboxId: 'ingest-nava-legacy',
+      });
+
+      expect(result.deled).toBe(1);
+      expect(result.duplicateAttachmentCleanupFailureCount).toBe(1);
+      expect(fakePop3.deleLog).toEqual(['uidl-duplicate']);
+      expect(warnSpy).toHaveBeenCalledWith(
+        'worker: duplicate candidate attachment cleanup failures=1',
+      );
+    } finally {
+      warnSpy.mockRestore();
+      persistSpy.mockRestore();
+    }
+  });
 });
 
 // Unit tests (no DB) for the fake pop3 path with no real env.

@@ -87,6 +87,8 @@ export interface IngestCycleResult {
   usedFakePop3: boolean;
   /** Error that aborted the whole cycle, if any. */
   cycleError?: string;
+  /** Best-effort duplicate attachment cleanup failures. */
+  duplicateAttachmentCleanupFailureCount: number;
 }
 
 /**
@@ -111,6 +113,7 @@ export async function ingestOnce(
   const maxMessages =
     opts.maxMessages ?? env?.POP3_MAX_MESSAGES_PER_CYCLE ?? 500;
   const failureCounts = opts.failureCounts ?? new Map<string, number>();
+  let duplicateAttachmentCleanupFailureCount = 0;
 
   const pop3 = opts.pop3 ?? (env ? createPop3Client(env) : null);
   const usedFakePop3 = pop3?.kind === 'fake';
@@ -122,6 +125,7 @@ export async function ingestOnce(
       deled: 0,
       items: [],
       usedFakePop3: false,
+      duplicateAttachmentCleanupFailureCount,
       cycleError:
         env?.MAIL_TRANSPORT_MODE === 'real' ||
           env?.MAIL_TRANSPORT_MODE === 'wire'
@@ -172,6 +176,10 @@ export async function ingestOnce(
           messageId,
           rawMimeS3Key: rawKey,
         }, { db, storage });
+
+        if (result.kind === 'duplicate') {
+          duplicateAttachmentCleanupFailureCount += result.candidateAttachmentCleanupFailureCount;
+        }
 
         if (result.kind === 'quarantined') {
           await archiveQuarantineRawMime(storage, rawKey, {
@@ -249,12 +257,32 @@ export async function ingestOnce(
       }
     }
 
+    if (duplicateAttachmentCleanupFailureCount > 0) {
+      console.warn(
+        `worker: duplicate candidate attachment cleanup failures=${duplicateAttachmentCleanupFailureCount}`,
+      );
+    }
     await pop3.quit();
-    return { listed, processed, deled, items, usedFakePop3 };
+    return {
+      listed,
+      processed,
+      deled,
+      items,
+      usedFakePop3,
+      duplicateAttachmentCleanupFailureCount,
+    };
   } catch (err) {
     const cycleError = err instanceof Error ? err.message : String(err);
     await pop3.close().catch(() => undefined);
-    return { listed, processed, deled, items, usedFakePop3, cycleError };
+    return {
+      listed,
+      processed,
+      deled,
+      items,
+      usedFakePop3,
+      duplicateAttachmentCleanupFailureCount,
+      cycleError,
+    };
   }
 }
 

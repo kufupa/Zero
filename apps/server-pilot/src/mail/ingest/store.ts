@@ -119,6 +119,7 @@ export interface PersistDuplicateResult {
   transportId: string;
   messageId: string;
   rawMimeS3Key: string;
+  candidateAttachmentCleanupFailureCount: number;
 }
 
 export interface PersistReconciledResult {
@@ -186,7 +187,7 @@ export async function persistInboundMessage(
 
   const existingMessage = await findExistingInboundMessage(db, meta);
   if (existingMessage) {
-    await cleanupCandidateAttachmentObjects(
+    const candidateAttachmentCleanupFailureCount = await cleanupCandidateAttachmentObjects(
       storage,
       parsed.attachments,
       meta.messageId,
@@ -197,6 +198,7 @@ export async function persistInboundMessage(
       transportId: existingMessage.transportId,
       messageId: existingMessage.id,
       rawMimeS3Key,
+      candidateAttachmentCleanupFailureCount,
     };
   }
 
@@ -280,6 +282,7 @@ export async function persistInboundMessage(
           transportId: canonical.transportId,
           messageId: canonical.id,
           rawMimeS3Key,
+          candidateAttachmentCleanupFailureCount: 0,
         };
         duplicateCanonicalMessageId = canonical.id;
         return;
@@ -457,13 +460,16 @@ export async function persistInboundMessage(
   });
 
   if (duplicate) {
-    await cleanupCandidateAttachmentObjects(
+    const candidateAttachmentCleanupFailureCount = await cleanupCandidateAttachmentObjects(
       storage,
       parsed.attachments,
       messageId,
       duplicateCanonicalMessageId,
     );
-    return duplicate;
+    return withCandidateAttachmentCleanupFailures(
+      duplicate,
+      candidateAttachmentCleanupFailureCount,
+    );
   }
   if (reconciliation) return reconciliation;
 
@@ -482,8 +488,8 @@ async function cleanupCandidateAttachmentObjects(
   attachments: ParsedInboundMessage['attachments'],
   candidateMessageId: string,
   canonicalMessageId: string,
-): Promise<void> {
-  if (candidateMessageId === canonicalMessageId) return;
+): Promise<number> {
+  if (candidateMessageId === canonicalMessageId) return 0;
 
   const candidatePrefix = `attachments/${candidateMessageId}/`;
   const keys = [
@@ -493,7 +499,15 @@ async function cleanupCandidateAttachmentObjects(
         .filter((key) => key.startsWith(candidatePrefix)),
     ),
   ];
-  await Promise.allSettled(keys.map((key) => storage.deleteObject(key)));
+  const results = await Promise.allSettled(keys.map((key) => storage.deleteObject(key)));
+  return results.filter((result) => result.status === 'rejected').length;
+}
+
+function withCandidateAttachmentCleanupFailures(
+  result: PersistDuplicateResult,
+  candidateAttachmentCleanupFailureCount: number,
+): PersistDuplicateResult {
+  return { ...result, candidateAttachmentCleanupFailureCount };
 }
 
 /**

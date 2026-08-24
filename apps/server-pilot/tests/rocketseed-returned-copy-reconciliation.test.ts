@@ -624,6 +624,70 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
     expect(storage.get(result.second.rawMimeS3Key)).toBeDefined();
   }, 30000);
 
+  it('reports candidate attachment cleanup failure without blocking duplicate drain', async () => {
+    const storage = new FakeS3Storage('test-mail-bucket');
+    const result = await withSeededTestDb(async (db) => {
+      const canonical = await seedCanonicalOutbound(db);
+      const raw = trustedReturnedCopy({
+        includeAttachment: true,
+        outboundId: canonical.canonicalMessageId,
+        messageId: canonical.returnedMessageId,
+        transportAddress: canonical.transportAddress,
+      });
+      const firstMessageId = randomUUID();
+      const firstParsed = await parseRawMessage(raw, {
+        messageId: firstMessageId,
+        storage,
+      });
+      const first = await persistInboundMessage(
+        firstParsed,
+        raw,
+        {
+          ingestMailboxId: 'ingest-nava-legacy',
+          pop3Uidl: `task-2-${randomUUID()}`,
+          messageId: firstMessageId,
+        },
+        { db, storage, skipAiEnqueue: true },
+      );
+      const secondMessageId = randomUUID();
+      const secondParsed = await parseRawMessage(raw, {
+        messageId: secondMessageId,
+        storage,
+      });
+      storage.deleteObject = async () => {
+        throw new Error('injected candidate cleanup failure');
+      };
+      const second = await persistInboundMessage(
+        secondParsed,
+        raw,
+        {
+          ingestMailboxId: 'ingest-nava-legacy',
+          pop3Uidl: `task-2-${randomUUID()}`,
+          messageId: secondMessageId,
+        },
+        { db, storage, skipAiEnqueue: true },
+      );
+      return {
+        candidateAttachmentKey: secondParsed.attachments[0]?.s3Key,
+        canonicalAttachmentKey: firstParsed.attachments[0]?.s3Key,
+        first,
+        second,
+      };
+    });
+
+    expect(result.first.kind).toBe('reconciled');
+    expect(result.second.kind).toBe('duplicate');
+    if (result.second.kind !== 'duplicate') return;
+    expect(result.second.candidateAttachmentCleanupFailureCount).toBe(1);
+    expect(result.canonicalAttachmentKey).toBeTruthy();
+    expect(result.candidateAttachmentKey).toBeTruthy();
+    if (!result.canonicalAttachmentKey || !result.candidateAttachmentKey) return;
+    expect(storage.get(result.canonicalAttachmentKey)).toBeDefined();
+    expect(storage.get(result.candidateAttachmentKey)).toBeDefined();
+    expect(storage.get(result.first.rawMimeS3Key)).toBeDefined();
+    expect(storage.get(result.second.rawMimeS3Key)).toBeDefined();
+  }, 30000);
+
   it('uses ordinary ingest when Task 1 sender, owner, or topology checks reject', async () => {
     const result = await withSeededTestDb(async (db) => {
       const storage = new FakeS3Storage('test-mail-bucket');
