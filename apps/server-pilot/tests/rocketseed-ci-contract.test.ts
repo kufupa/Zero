@@ -60,10 +60,10 @@ describe('Rocketseed CI contract', () => {
       'DATABASE_URL="$TEST_DATABASE_URL" pnpm --dir apps/server-pilot db:migrate',
     );
     expect(transactionalJob).toContain(
-      'unset DATABASE_URL VITEST_ALLOW_PILOT_RDS HMS_DB_TEST_REQUIRED',
+      'unset DATABASE_URL TEST_DATABASE_URL VITEST_ALLOW_PILOT_RDS HMS_DB_TEST_REQUIRED',
     );
     expect(transactionalJob).toContain(
-      'CONFIRM_DISPOSABLE_TEST_DB=1 TEST_DATABASE_URL="$TEST_DATABASE_URL" pnpm --dir apps/server-pilot exec vitest run',
+      'MAIL_TRANSPORT_MODE=fixture CONFIRM_DISPOSABLE_TEST_DB=1 pnpm --dir apps/server-pilot exec vitest run',
     );
     for (const testFile of [
       'tests/rocketseed-returned-copy-reconciliation.test.ts',
@@ -75,6 +75,42 @@ describe('Rocketseed CI contract', () => {
     expect(transactionalJob).not.toContain('nava-zero-mail-pilot');
     expect(transactionalJob).not.toContain('.env.production');
     expect(transactionalJob).not.toContain('VITEST_ALLOW_PILOT_RDS=1');
+  });
+
+  it('builds an unlogged disposable database URL after clearing inherited test config', () => {
+    const transactionalJob = workflow.slice(workflow.indexOf('rocketseed-transactional:'));
+    const transactionalTestStep = transactionalJob.slice(
+      transactionalJob.indexOf('Test transactional Rocketseed mail flow'),
+    );
+    const clearDbEnvironment =
+      'unset DATABASE_URL TEST_DATABASE_URL VITEST_ALLOW_PILOT_RDS HMS_DB_TEST_REQUIRED';
+    const runtimeUrlBuilder = "printf -v TEST_DATABASE_URL '%s%s%s%s%s%s%s%s%s%s%s'";
+
+    expect(transactionalJob).toContain('DISPOSABLE_POSTGRES_HOST: 127.0.0.1');
+    expect(transactionalJob).toContain(
+      'DISPOSABLE_POSTGRES_PORT: ${{ job.services.postgres.ports[5432] }}',
+    );
+    expect(transactionalTestStep).toContain(clearDbEnvironment);
+    expect(transactionalTestStep).toContain(runtimeUrlBuilder);
+    expect(transactionalTestStep).toContain('export TEST_DATABASE_URL');
+    expect(transactionalTestStep.indexOf(clearDbEnvironment)).toBeLessThan(
+      transactionalTestStep.indexOf(runtimeUrlBuilder),
+    );
+    expect(transactionalTestStep.indexOf(runtimeUrlBuilder)).toBeLessThan(
+      transactionalTestStep.indexOf('export TEST_DATABASE_URL'),
+    );
+    for (const component of [
+      'DISPOSABLE_POSTGRES_USER',
+      'DISPOSABLE_POSTGRES_HOST',
+      'DISPOSABLE_POSTGRES_PORT',
+      'DISPOSABLE_POSTGRES_DB',
+      'DISPOSABLE_POSTGRES_SSLMODE',
+    ]) {
+      expect(transactionalTestStep).toContain(`$${component}`);
+    }
+    expect(transactionalTestStep).not.toMatch(/\bexport\s+DATABASE_URL(?:=|\b)/);
+    expect(transactionalJob).not.toContain(['postgres', 'ql://'].join(''));
+    expect(transactionalJob).not.toMatch(/\becho\b/);
   });
 
   it('loads isInline metadata for CID projection and inline authorization', () => {
