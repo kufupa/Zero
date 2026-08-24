@@ -29,6 +29,7 @@ import {
   type PrivateThreadCorpusSnapshot,
 } from '../scripts/export-thread-corpus.js';
 import { createReceiveCenturionThreadCorpusRelayCommand } from '../scripts/receive-centurion-thread-corpus-relay.js';
+import * as receiverModule from '../src/ops/centurion-thread-corpus-relay-receiver.js';
 import { describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -262,6 +263,7 @@ class FakeRelayStore implements RelayObjectStore {
 
 class FakeReceiverFileSystem implements ReceiverFileSystem {
   readonly calls: string[] = [];
+  readonly timeline: string[] = [];
   readonly roots = new Map<string, Map<string, Uint8Array>>();
   readonly listingOverrides = new Map<string, readonly string[] | null>();
   checkoutResult = {
@@ -284,6 +286,7 @@ class FakeReceiverFileSystem implements ReceiverFileSystem {
 
   async createPartialDirectory(transferId: string): Promise<string | null> {
     this.calls.push(`create-partial:${transferId}`);
+    this.timeline.push('create-partial');
     if (!this.createPartialResult || transferId !== TRANSFER_ID || this.roots.has(PARTIAL_PATH)) {
       return null;
     }
@@ -392,6 +395,8 @@ class FakeWindowsPrivateAcl implements WindowsPrivateAcl {
     ],
   ]);
   readonly rejectedPaths = new Set<string>();
+  readonly deniedDirectories = new Set<string>();
+  readonly deniedFilePaths = new Set<string>();
   directoryResult = true;
   filesResult = true;
   promoteResult = true;
@@ -405,17 +410,25 @@ class FakeWindowsPrivateAcl implements WindowsPrivateAcl {
     this.calls.push(`assert:${pathValue}`);
     if (this.rejectedPaths.has(pathValue)) return null;
     const trusted = this.trusted.get(pathValue);
-    return trusted ? { ...trusted } : null;
+    if (trusted) return { ...trusted };
+    const finalMember = path.win32.relative(FINAL_PATH, pathValue).replaceAll('\\', '/');
+    return this.fileSystem.roots.get(FINAL_PATH)?.has(finalMember)
+      ? {
+          stableIdentity: `safe-final-file-${finalMember.replaceAll('/', '-')}`,
+          volumeId: 'safe-volume-a',
+        }
+      : null;
   }
 
   async lockDownDirectory(pathValue: string): Promise<boolean> {
     this.calls.push(`lock-directory:${pathValue}`);
-    return this.directoryResult;
+    this.fileSystem.timeline.push(`lock-directory:${pathValue}`);
+    return this.directoryResult && !this.deniedDirectories.has(pathValue);
   }
 
   async lockDownFiles(paths: readonly string[]): Promise<boolean> {
     this.calls.push(`lock-files:${paths.join(',')}`);
-    return this.filesResult;
+    return this.filesResult && !paths.some((pathValue) => this.deniedFilePaths.has(pathValue));
   }
 
   async promoteNoReplace(partialPath: string, finalPath: string): Promise<boolean> {
@@ -644,11 +657,6 @@ describe('Centurion relay receiver', () => {
     ]);
     expect(harness.acl.calls).toContain(`lock-directory:${PARTIAL_PATH}`);
     expect(harness.acl.calls).toContain(`lock-directory:${FINAL_PATH}`);
-    expect(harness.acl.calls.indexOf(`lock-directory:${PARTIAL_PATH}`)).toBeLessThan(
-      harness.store.calls.indexOf(
-        `get:${relayObjectKey(relayConfig.literalRelayRoot, TRANSFER_ID, harness.members[0]!.path)}`,
-      ),
-    );
     expect(
       harness.acl.calls.indexOf(
         `fsync:${path.win32.join(PARTIAL_PATH, 'receive-receipt.v1.json')}`,
@@ -777,6 +785,26 @@ describe('Centurion relay receiver', () => {
     expect(harness.store.putInputs).toEqual([]);
   });
 
+  it('locks private root and partial parent before creating a partial directory', async () => {
+    const harness = createHarness();
+
+    expect(await receive(harness)).toMatchObject({ outcome: 'received' });
+    expect(harness.fileSystem.timeline.slice(0, 3)).toEqual([
+      `lock-directory:${PRIVATE_ROOT}`,
+      `lock-directory:${PARTIAL_ROOT}`,
+      'create-partial',
+    ]);
+  });
+
+  it('blocks before partial creation when private root or partial parent lockdown fails', async () => {
+    const harness = createHarness();
+    harness.acl.deniedDirectories.add(PARTIAL_ROOT);
+
+    expect(await receive(harness)).toEqual({ outcome: 'blocked' });
+    expect(harness.fileSystem.calls).not.toContain(`create-partial:${TRANSFER_ID}`);
+    expect(harness.store.putInputs).toEqual([]);
+  });
+
   it('blocks an existing final-path collision with an extra local path', async () => {
     const harness = createHarness();
     seedVerifiedFinal(harness);
@@ -788,6 +816,16 @@ describe('Centurion relay receiver', () => {
 
     expect(await receive(harness)).toEqual({ outcome: 'blocked' });
     expect(harness.acl.calls).not.toContain(`promote:${PARTIAL_PATH}:${FINAL_PATH}`);
+    expect(harness.store.putInputs).toEqual([]);
+    expect(harness.fileSystem.removeCalls).toBe(0);
+  });
+
+  it('blocks acknowledgement retry when a final member ACL cannot be restricted', async () => {
+    const harness = createHarness();
+    seedVerifiedFinal(harness);
+    harness.acl.deniedFilePaths.add(path.win32.join(FINAL_PATH, harness.members[0]!.path));
+
+    expect(await receive(harness)).toEqual({ outcome: 'blocked' });
     expect(harness.store.putInputs).toEqual([]);
     expect(harness.fileSystem.removeCalls).toBe(0);
   });
@@ -946,6 +984,41 @@ describe('Windows private ACL process adapter', () => {
       'New-Object IO.FileStream($PathValue, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)',
     );
     expect(script).toContain('$stream.Flush($true)');
+  });
+});
+
+describe('bounded descriptor reads', () => {
+  it('rejects a file that grows beyond its checked length without an oversized read', () => {
+    type DescriptorReader = (
+      descriptor: number,
+      buffer: Uint8Array,
+      offset: number,
+      length: number,
+      position: number,
+    ) => number;
+    type BoundedReader = (
+      descriptor: number,
+      expectedBytes: number,
+      reader: DescriptorReader,
+    ) => Uint8Array | null;
+    const exported = receiverModule as unknown as {
+      readExactBoundedDescriptor?: BoundedReader;
+    };
+    const reads: Array<readonly [number, number]> = [];
+    const reader: DescriptorReader = (_descriptor, buffer, offset, length, position) => {
+      reads.push([position, length]);
+      const source = position === 0 ? new Uint8Array([1, 2]) : new Uint8Array([3]);
+      const copied = Math.min(length, source.byteLength);
+      buffer.set(source.subarray(0, copied), offset);
+      return copied;
+    };
+
+    expect(exported.readExactBoundedDescriptor).toEqual(expect.any(Function));
+    expect(exported.readExactBoundedDescriptor!(17, 2, reader)).toBeNull();
+    expect(reads).toEqual([
+      [0, 2],
+      [2, 1],
+    ]);
   });
 });
 

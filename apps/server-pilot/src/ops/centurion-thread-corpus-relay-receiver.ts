@@ -16,6 +16,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readSync,
   readdirSync,
   realpathSync,
   rmSync,
@@ -760,18 +761,46 @@ async function verifyFinalSnapshot(input: {
 }): Promise<VerifiedFinal | null> {
   try {
     const before = await assertTrustedPath(input.acl, input.finalPath, input.rootAcl.volumeId);
-    if (!before || !(await input.acl.lockDownDirectory(input.finalPath))) return null;
-    const after = await assertTrustedPath(input.acl, input.finalPath, input.rootAcl.volumeId);
-    if (!after || !sameTrustedPath(before, after)) return null;
-
     const expectedInventory = [
       ...input.manifest.members.map((member) => member.path),
       RECEIPT_FILENAME,
     ];
     if (
+      !before ||
       !exactLocalInventory(
         await input.fileSystem.listRelativePaths(input.finalPath),
         expectedInventory,
+      )
+    ) {
+      return null;
+    }
+    const expectedFiles = expectedInventory.map((entry) =>
+      path.win32.join(input.finalPath, ...entry.split('/')),
+    );
+    const beforeFiles = await Promise.all(
+      expectedFiles.map((filePath) =>
+        assertTrustedPath(input.acl, filePath, input.rootAcl.volumeId),
+      ),
+    );
+    if (
+      beforeFiles.some((fileIdentity) => fileIdentity === null) ||
+      !(await input.acl.lockDownDirectory(input.finalPath)) ||
+      !(await input.acl.lockDownFiles(expectedFiles))
+    ) {
+      return null;
+    }
+    const after = await assertTrustedPath(input.acl, input.finalPath, input.rootAcl.volumeId);
+    const afterFiles = await Promise.all(
+      expectedFiles.map((filePath) =>
+        assertTrustedPath(input.acl, filePath, input.rootAcl.volumeId),
+      ),
+    );
+    if (
+      !after ||
+      !sameTrustedPath(before, after) ||
+      afterFiles.some(
+        (fileIdentity, index) =>
+          !fileIdentity || !sameTrustedPath(beforeFiles[index]!, fileIdentity),
       )
     ) {
       return null;
@@ -889,9 +918,18 @@ export async function receiveCenturionThreadCorpusRelay(input: {
       return blocked();
     }
 
-    const rootAcl = await input.acl.assertTrustedPath(privateRoot.root);
+    const initialRootAcl = await input.acl.assertTrustedPath(privateRoot.root);
     const partialRoot = path.win32.join(privateRoot.root, '.partial');
-    if (!rootAcl || !(await assertTrustedPath(input.acl, partialRoot, rootAcl.volumeId))) {
+    if (
+      !initialRootAcl ||
+      !(await input.acl.lockDownDirectory(privateRoot.root)) ||
+      !(await input.acl.lockDownDirectory(partialRoot))
+    ) {
+      return blocked();
+    }
+    const rootAcl = await assertTrustedPath(input.acl, privateRoot.root, initialRootAcl.volumeId);
+    const partialRootAcl = await assertTrustedPath(input.acl, partialRoot, initialRootAcl.volumeId);
+    if (!rootAcl || !sameTrustedPath(initialRootAcl, rootAcl) || !partialRootAcl) {
       return blocked();
     }
     const partialPath = path.win32.join(partialRoot, input.transferId);
@@ -1285,6 +1323,32 @@ function assertLocalFile(filePath: string): LocalIdentity & { bytes: number } {
   return { ...localIdentity(stats), bytes: stats.size };
 }
 
+type DescriptorReader = (
+  descriptor: number,
+  buffer: Uint8Array,
+  offset: number,
+  length: number,
+  position: number,
+) => number;
+
+export function readExactBoundedDescriptor(
+  descriptor: number,
+  expectedBytes: number,
+  reader: DescriptorReader = readSync,
+): Uint8Array | null {
+  if (!isSafeInteger(expectedBytes, 1)) return null;
+  const content = new Uint8Array(expectedBytes);
+  let offset = 0;
+  while (offset < content.byteLength) {
+    const remaining = content.byteLength - offset;
+    const bytesRead = reader(descriptor, content, offset, remaining, offset);
+    if (!isSafeInteger(bytesRead, 1) || bytesRead > remaining) return null;
+    offset += bytesRead;
+  }
+  const trailingByte = new Uint8Array(1);
+  return reader(descriptor, trailingByte, 0, 1, content.byteLength) === 0 ? content : null;
+}
+
 function sourceMemberPath(value: string): boolean {
   return (
     value === 'corpus.jsonl' ||
@@ -1375,10 +1439,11 @@ class WindowsReceiverFileSystem implements ReceiverFileSystem {
       ) {
         return null;
       }
-      const content = new Uint8Array(readFileSync(descriptor));
+      const content = readExactBoundedDescriptor(descriptor, before.bytes);
       const after = assertLocalFile(filePath);
       const afterOpen = fstatSync(descriptor);
       if (
+        !content ||
         content.byteLength !== before.bytes ||
         !sameLocalIdentity(before, after) ||
         !sameLocalIdentity(before, localIdentity(afterOpen)) ||
