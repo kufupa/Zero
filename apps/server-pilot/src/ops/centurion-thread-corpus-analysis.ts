@@ -178,6 +178,7 @@ const preparedAnalysisBindingCache = new WeakMap<
 >();
 export const MAX_PRIVATE_ANALYSIS_PACKET_BYTES = 16 * 1024 * 1024;
 export const MAX_CANONICAL_JSON_CHUNK_BYTES = 1024;
+const MIN_PRIVATE_ANALYSIS_PACKET_BYTES = 256;
 const MAX_SNAPSHOT_CACHE_METADATA_BYTES = 64 * 1024;
 const BYTE_VALUE_TOKENS = Array.from({ length: 256 }, (_, value) => String(value));
 const ANALYSIS_SOURCE_MEMBERSHIP = [
@@ -452,10 +453,6 @@ class BoundedCanonicalByteSink implements CanonicalByteSink {
   }
 }
 
-class CanonicalByteValues {
-  constructor(readonly bytes: Uint8Array) {}
-}
-
 function serializeByteValues(value: Uint8Array, sink: CanonicalByteSink): CanonicalWriteResult {
   let token = '[';
   let tokenByteLength = 1;
@@ -500,10 +497,8 @@ export function serializeCanonicalToSink(
       }
       return sink.writeAscii(String(candidate));
     }
-    if (candidate instanceof CanonicalByteValues) {
-      return candidate.bytes instanceof Uint8Array
-        ? serializeByteValues(candidate.bytes, sink)
-        : 'invalid';
+    if (candidate instanceof CanonicalSelectedArtifactFiles) {
+      return serializeSelectedArtifactFiles(candidate, sink);
     }
     if (candidate instanceof Uint8Array) {
       let result = sink.writeAscii('{');
@@ -1041,39 +1036,104 @@ function analysisDescriptors(reconstructed: ReconstructedV2Snapshot): AnalysisDe
   return descriptors;
 }
 
-function selectedArtifactFiles(
+class CanonicalSelectedArtifactFiles {
+  constructor(
+    readonly selectedSourceRows: readonly SnapshotSourceRow[],
+    readonly artifactFiles: readonly PrivateThreadCorpusArtifactFile[],
+  ) {}
+}
+
+function isSelectedArtifact(
+  artifact: PrivateThreadCorpusArtifactFile,
   selectedSourceRows: readonly SnapshotSourceRow[],
-  artifactFiles: readonly PrivateThreadCorpusArtifactFile[],
-): Array<{
-  kind: PrivateThreadCorpusArtifactFile['kind'];
-  id: string;
-  sha256: string;
-  bytes: number;
-  content: CanonicalByteValues;
-}> {
-  const selectedArtifactKeys = new Set<string>();
-  for (const sourceRow of selectedSourceRows) {
-    const privateMessage = sourceRow.privateMessage;
+): boolean {
+  for (let sourceRowIndex = 0; sourceRowIndex < selectedSourceRows.length; sourceRowIndex += 1) {
+    const privateMessage = selectedSourceRows[sourceRowIndex]!.privateMessage;
     if (!privateMessage) continue;
-    if (privateMessage.rawMime.artifact) {
-      selectedArtifactKeys.add(`raw_mime\u0000${privateMessage.rawMime.artifact.id}`);
+    const rawMimeArtifact = privateMessage.rawMime.artifact;
+    if (rawMimeArtifact && artifact.kind === 'raw_mime' && artifact.id === rawMimeArtifact.id) {
+      return true;
     }
-    for (const attachment of privateMessage.attachments) {
-      if (attachment.textArtifact?.artifact) {
-        selectedArtifactKeys.add(`attachment_text\u0000${attachment.textArtifact.artifact.id}`);
+    for (
+      let attachmentIndex = 0;
+      attachmentIndex < privateMessage.attachments.length;
+      attachmentIndex += 1
+    ) {
+      const textArtifact = privateMessage.attachments[attachmentIndex]!.textArtifact?.artifact;
+      if (textArtifact && artifact.kind === 'attachment_text' && artifact.id === textArtifact.id) {
+        return true;
       }
     }
   }
+  return false;
+}
 
-  return artifactFiles
-    .filter((artifact) => selectedArtifactKeys.has(`${artifact.kind}\u0000${artifact.id}`))
-    .map((artifact) => ({
-      kind: artifact.kind,
-      id: artifact.id,
-      sha256: artifact.sha256,
-      bytes: artifact.bytes,
-      content: new CanonicalByteValues(artifact.content),
-    }));
+function serializeSelectedArtifactFiles(
+  selection: CanonicalSelectedArtifactFiles,
+  sink: CanonicalByteSink,
+): CanonicalWriteResult {
+  let result = sink.writeAscii('[');
+  if (result !== 'ok') return result;
+  let selectedCount = 0;
+  for (let index = 0; index < selection.artifactFiles.length; index += 1) {
+    const artifact = selection.artifactFiles[index]!;
+    if (!isSelectedArtifact(artifact, selection.selectedSourceRows)) continue;
+    if (selectedCount > 0) {
+      result = sink.writeAscii(',');
+      if (result !== 'ok') return result;
+    }
+    result = sink.writeAscii('{');
+    if (result !== 'ok') return result;
+    result = sink.writeJsonString('bytes');
+    if (result !== 'ok') return result;
+    result = sink.writeAscii(':');
+    if (result !== 'ok') return result;
+    result = sink.writeAscii(String(artifact.bytes));
+    if (result !== 'ok') return result;
+    result = sink.writeAscii(',');
+    if (result !== 'ok') return result;
+    result = sink.writeJsonString('content');
+    if (result !== 'ok') return result;
+    result = sink.writeAscii(':');
+    if (result !== 'ok') return result;
+    result = serializeByteValues(artifact.content, sink);
+    if (result !== 'ok') return result;
+    result = sink.writeAscii(',');
+    if (result !== 'ok') return result;
+    result = sink.writeJsonString('id');
+    if (result !== 'ok') return result;
+    result = sink.writeAscii(':');
+    if (result !== 'ok') return result;
+    result = sink.writeJsonString(artifact.id);
+    if (result !== 'ok') return result;
+    result = sink.writeAscii(',');
+    if (result !== 'ok') return result;
+    result = sink.writeJsonString('kind');
+    if (result !== 'ok') return result;
+    result = sink.writeAscii(':');
+    if (result !== 'ok') return result;
+    result = sink.writeJsonString(artifact.kind);
+    if (result !== 'ok') return result;
+    result = sink.writeAscii(',');
+    if (result !== 'ok') return result;
+    result = sink.writeJsonString('sha256');
+    if (result !== 'ok') return result;
+    result = sink.writeAscii(':');
+    if (result !== 'ok') return result;
+    result = sink.writeJsonString(artifact.sha256);
+    if (result !== 'ok') return result;
+    result = sink.writeAscii('}');
+    if (result !== 'ok') return result;
+    selectedCount += 1;
+  }
+  return sink.writeAscii(']');
+}
+
+function selectedArtifactFiles(
+  selectedSourceRows: readonly SnapshotSourceRow[],
+  artifactFiles: readonly PrivateThreadCorpusArtifactFile[],
+): CanonicalSelectedArtifactFiles {
+  return new CanonicalSelectedArtifactFiles(selectedSourceRows, artifactFiles);
 }
 
 type SerializedPrivatePacket =
@@ -1086,6 +1146,7 @@ function serializePrivatePacket(
   descriptor: AnalysisDescriptor,
   maxPacketBytes: number,
 ): SerializedPrivatePacket {
+  if (maxPacketBytes < MIN_PRIVATE_ANALYSIS_PACKET_BYTES) return { state: 'exceeded' };
   const sink = new BoundedCanonicalByteSink(maxPacketBytes, true);
   const result = serializeCanonicalToSink(
     {
