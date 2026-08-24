@@ -19,7 +19,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
-import * as threadCorpus from '../scripts/export-thread-corpus';
+import * as threadCorpus from '../src/ops/centurion-thread-corpus-snapshot';
 
 const {
   formatLogicalMessages,
@@ -2898,7 +2898,10 @@ describe('hydration-ready thread corpus source contract', () => {
 describe('export thread corpus source boundary', () => {
   it('enforces an AST allowlist for local private-artifact imports and calls', () => {
     const sourcePath = fileURLToPath(
-      new URL('../scripts/export-thread-corpus.ts', import.meta.url),
+      new URL(
+        '../src/ops/centurion-thread-corpus-snapshot.ts',
+        import.meta.url,
+      ),
     );
     const source = readFileSync(sourcePath, 'utf8');
     expect(sourceGuardViolations(source)).toEqual([]);

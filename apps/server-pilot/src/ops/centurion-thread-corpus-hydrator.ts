@@ -11,7 +11,7 @@ import type {
   ThreadCorpusAttachmentLocator,
   ThreadCorpusHydrationInput,
   ThreadCorpusHydrationPayload,
-} from '../../scripts/export-thread-corpus.js';
+} from './centurion-thread-corpus-snapshot.js';
 
 export type ThreadCorpusHydrationLimits = Readonly<{
   maxRawMimeBytes: number;

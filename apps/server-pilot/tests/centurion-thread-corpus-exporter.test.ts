@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
@@ -16,7 +16,7 @@ import type {
   ThreadCorpusSnapshotLoadResult,
   ThreadCorpusSnapshotReadSession,
   ThreadCorpusSnapshotSafeSummary,
-} from '../scripts/export-thread-corpus.js';
+} from '../src/ops/centurion-thread-corpus-snapshot.js';
 
 const AS_OF = '2026-08-22T12:00:00.000Z';
 const PRIVATE_ADDRESS_MARKER = 'TASK9_PRIVATE_ADDRESS_MARKER';
@@ -809,6 +809,17 @@ function exporterSourceGuardViolations(sourceText: string): string[] {
 }
 
 describe('centurion thread corpus exporter source boundary', () => {
+  it('keeps shared snapshot code under the server source root', () => {
+    const sourcePath = fileURLToPath(
+      new URL(
+        '../src/ops/centurion-thread-corpus-snapshot.ts',
+        import.meta.url,
+      ),
+    );
+
+    expect(existsSync(sourcePath)).toBe(true);
+  });
+
   it('has no direct environment, database, AWS, filesystem, CLI, network, or console capability', () => {
     const sourcePath = fileURLToPath(
       new URL(

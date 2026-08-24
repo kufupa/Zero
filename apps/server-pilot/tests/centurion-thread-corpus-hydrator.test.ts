@@ -10,7 +10,7 @@ import {
   type ThreadCorpusAttachmentDescriptor,
   type ThreadCorpusAttachmentLocator,
   type ThreadCorpusSourceRow,
-} from '../scripts/export-thread-corpus.js';
+} from '../src/ops/centurion-thread-corpus-snapshot.js';
 import {
   DEFAULT_THREAD_CORPUS_HYDRATION_LIMITS,
   hydrateThreadCorpusArtifacts,

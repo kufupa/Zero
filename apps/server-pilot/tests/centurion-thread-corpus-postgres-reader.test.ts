@@ -6,7 +6,7 @@ import {
   createThreadCorpusPostgresReader,
   type ThreadCorpusPostgresClient,
 } from '../src/ops/centurion-thread-corpus-postgres-reader';
-import { createThreadCorpusSnapshotLoader } from '../scripts/export-thread-corpus';
+import { createThreadCorpusSnapshotLoader } from '../src/ops/centurion-thread-corpus-snapshot';
 
 type QueryRecord = {
   text: string;

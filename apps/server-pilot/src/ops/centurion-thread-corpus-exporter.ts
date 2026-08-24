@@ -7,7 +7,7 @@ import {
   type ThreadCorpusSnapshotLoadResult,
   type ThreadCorpusSnapshotReader,
   type ThreadCorpusSnapshotSafeSummary,
-} from '../../scripts/export-thread-corpus.js';
+} from './centurion-thread-corpus-snapshot.js';
 import { hydrateThreadCorpusArtifacts } from './centurion-thread-corpus-hydrator.js';
 
 export type ClosableThreadCorpusReader = ThreadCorpusSnapshotReader & {
