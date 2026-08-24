@@ -381,6 +381,33 @@ const FORBIDDEN_CORE_GLOBALS = new Set([
   'undici',
 ]);
 
+const FORBIDDEN_COMPUTED_CAPABILITIES = new Set([
+  ...FORBIDDEN_CORE_GLOBALS,
+  'constructor',
+  'import',
+]);
+
+function stringLiteralText(node: ts.Expression): string | null {
+  return ts.isStringLiteralLike(node) ? node.text : null;
+}
+
+function isReflectGet(expression: ts.Expression): boolean {
+  if (
+    ts.isPropertyAccessExpression(expression) &&
+    ts.isIdentifier(expression.expression) &&
+    expression.expression.text === 'Reflect'
+  ) {
+    return expression.name.text === 'get';
+  }
+  return (
+    ts.isElementAccessExpression(expression) &&
+    ts.isIdentifier(expression.expression) &&
+    expression.expression.text === 'Reflect' &&
+    expression.argumentExpression !== undefined &&
+    stringLiteralText(expression.argumentExpression) === 'get'
+  );
+}
+
 function sourceBoundaryViolations(source: ts.SourceFile): string[] {
   const violations = collectNodes(source, ts.isImportDeclaration).flatMap((node) =>
     ts.isStringLiteral(node.moduleSpecifier) && !ALLOWED_CORE_IMPORTS.has(node.moduleSpecifier.text)
@@ -409,6 +436,20 @@ function sourceBoundaryViolations(source: ts.SourceFile): string[] {
     ).length > 0
   ) {
     violations.push('constructor');
+  }
+  for (const access of collectNodes(source, ts.isElementAccessExpression)) {
+    const propertyName =
+      access.argumentExpression === undefined ? null : stringLiteralText(access.argumentExpression);
+    if (propertyName && FORBIDDEN_COMPUTED_CAPABILITIES.has(propertyName)) {
+      violations.push(`computed:${propertyName}`);
+    }
+  }
+  for (const call of collectNodes(source, ts.isCallExpression)) {
+    if (!isReflectGet(call.expression) || call.arguments.length < 2) continue;
+    const propertyName = stringLiteralText(call.arguments[1]!);
+    if (propertyName && FORBIDDEN_COMPUTED_CAPABILITIES.has(propertyName)) {
+      violations.push(`reflect:${propertyName}`);
+    }
   }
   return [...new Set(violations)].sort();
 }
@@ -787,6 +828,14 @@ describe('Centurion private thread corpus analysis', () => {
         'void undici;',
         'void import("synthetic-module");',
         'void ({}).constructor;',
+        "void globalThis['fetch'];",
+        "void globalThis['process']['env'];",
+        "void ({})['constructor'];",
+        "void Reflect.get(globalThis, 'fetch');",
+        "void globalThis['Function'];",
+        "void globalThis['eval'];",
+        "void globalThis['require'];",
+        "void globalThis['import'];",
       ].join('\n'),
       ts.ScriptTarget.Latest,
       true,
@@ -818,6 +867,15 @@ describe('Centurion private thread corpus analysis', () => {
         'import:node:https',
         'import:pg',
         'import:undici',
+        'computed:Function',
+        'computed:constructor',
+        'computed:env',
+        'computed:eval',
+        'computed:fetch',
+        'computed:import',
+        'computed:process',
+        'computed:require',
+        'reflect:fetch',
       ]),
     );
     expect(sourceBoundaryViolations(source)).toEqual([]);
