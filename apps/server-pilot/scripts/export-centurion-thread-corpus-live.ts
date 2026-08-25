@@ -9,7 +9,7 @@ import {
   createThreadCorpusPostgresReader,
   type ThreadCorpusPostgresReaderOptions,
 } from '../src/ops/centurion-thread-corpus-postgres-reader.js';
-import { isIgnoredPrivateOutputDirectory } from '../src/ops/private-output.js';
+import { preflightPrivateThreadCorpusOutputDestination } from '../src/ops/centurion-thread-corpus-snapshot.js';
 import { RealS3Storage, type S3Storage } from '../src/storage/s3.js';
 import { request as httpRequest } from 'node:http';
 import { randomUUID } from 'node:crypto';
@@ -31,11 +31,6 @@ const SAFE_SUMMARY_KEYS = [
   'threadCount',
 ] as const;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-type IgnoredDestinationRequest = {
-  repoRoot: string;
-  relativePath: string;
-};
 
 type AllocatedDirectoryRequest = {
   repoRoot: string;
@@ -84,7 +79,7 @@ export type LiveCenturionThreadCorpusDependencies = {
   platform(): string;
   scriptPath(): string;
   attestImdsV2(): Promise<boolean>;
-  isIgnored(request: IgnoredDestinationRequest): boolean | Promise<boolean>;
+  preflightOutputDestination(repoRoot: string, outDir: string): Promise<void>;
   uuid(): string;
   environment(): Readonly<{
     DATABASE_URL?: string;
@@ -247,11 +242,8 @@ async function defaultAttestImdsV2(): Promise<boolean> {
   return instanceId === APPROVED_INSTANCE_ID;
 }
 
-function defaultIsIgnored(request: IgnoredDestinationRequest): boolean {
-  return (
-    request.relativePath === `${CORPUS_PATH_SEGMENTS.join('/')}/` &&
-    isIgnoredPrivateOutputDirectory(request.repoRoot, PRIVATE_CORPUS_DIRECTORY_NAME)
-  );
+async function defaultPreflightOutputDestination(repoRoot: string, outDir: string): Promise<void> {
+  await preflightPrivateThreadCorpusOutputDestination(repoRoot, outDir);
 }
 
 function defaultValidateAllocatedDir(request: AllocatedDirectoryRequest): void {
@@ -360,8 +352,7 @@ async function prepareExport(
   if (!UUID_PATTERN.test(uuid)) return failPreflight();
   const snapshotId = `live-${uuid}`;
   const outDir = path.posix.join(corpusRoot, snapshotId);
-  const relativePath = `${CORPUS_PATH_SEGMENTS.join('/')}/`;
-  if (!(await dependencies.isIgnored({ repoRoot, relativePath }))) return failPreflight();
+  await dependencies.preflightOutputDestination(repoRoot, outDir);
   const environment = dependencies.environment();
   const databaseUrl = nonBlankEnvironmentValue(environment.DATABASE_URL);
   const region = nonBlankEnvironmentValue(environment.AWS_REGION);
@@ -394,7 +385,7 @@ function defaultDependencies(): LiveCenturionThreadCorpusDependencies {
     platform: () => process.platform,
     scriptPath: () => fileURLToPath(import.meta.url),
     attestImdsV2: defaultAttestImdsV2,
-    isIgnored: defaultIsIgnored,
+    preflightOutputDestination: defaultPreflightOutputDestination,
     uuid: randomUUID,
     environment: () => ({
       DATABASE_URL: process.env.DATABASE_URL,

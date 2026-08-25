@@ -6,8 +6,9 @@ import {
   createConnectedMailboxMarkdownDump,
   type ConnectedMailboxDumpPostgresClient,
 } from '../src/ops/connected-mailbox-markdown-dump';
+import { prepareTrustedPrivateOutputRoot } from '../src/ops/private-output';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
@@ -148,6 +149,7 @@ function createDumpHarness(fake: FakePostgres) {
   const dump = createConnectedMailboxMarkdownDump({
     client: fake.client,
     repoRoot: REPO_ROOT,
+    preflightOutputRoot: async () => undefined,
     createWriter: (configuration) => {
       writerConfigurations.push(configuration);
       return {
@@ -185,6 +187,40 @@ describe('connected mailbox Markdown dump', () => {
       await expect(dump({ outputName: 'reservationist-inbox.md' })).rejects.toThrow(
         'Private output root is not ignored',
       );
+
+      expect(fake.beginOptions).toEqual([]);
+      expect(fake.queries).toEqual([]);
+      expect(writerCreateCalls).toBe(0);
+      expect(writerOutputCalls).toBe(0);
+    });
+  });
+
+  it('fails unsafe physical output roots before opening a database snapshot or writer output', async () => {
+    await withTemporaryGitRoot(async (repoRoot) => {
+      await writeFile(
+        path.join(repoRoot, '.gitignore'),
+        '/.private/connected-mailbox-corpus/\n',
+        'utf8',
+      );
+      await writeFile(path.join(repoRoot, '.private'), 'not-a-directory', 'utf8');
+      const fake = createFakePostgres();
+      let writerCreateCalls = 0;
+      let writerOutputCalls = 0;
+      const dump = createConnectedMailboxMarkdownDump({
+        client: fake.client,
+        repoRoot,
+        createWriter: () => {
+          writerCreateCalls += 1;
+          return {
+            async write() {
+              writerOutputCalls += 1;
+              return path.join(repoRoot, '.private', 'connected-mailbox-corpus', 'output.md');
+            },
+          };
+        },
+      });
+
+      await expect(dump({ outputName: 'reservationist-inbox.md' })).rejects.toThrow();
 
       expect(fake.beginOptions).toEqual([]);
       expect(fake.queries).toEqual([]);
@@ -294,7 +330,9 @@ function createCommandHarness(args: readonly string[] = []) {
     args: () => args,
     environment: () => ({ DATABASE_URL: 'postgresql://localhost/synthetic' }),
     repoRoot: () => '/synthetic/zero',
-    isIgnored: () => true,
+    preflightOutputRoot: async () => {
+      calls.push('preflight');
+    },
     createClient: () => {
       calls.push('createClient');
       return Object.assign(fake.client, {
@@ -327,16 +365,16 @@ function createCommandHarness(args: readonly string[] = []) {
 }
 
 describe('connected mailbox Markdown dump command', () => {
-  it('fails closed before environment, client, or dump when private dump root is not ignored', async () => {
+  it('fails closed before environment, client, or dump when output preflight rejects', async () => {
     const harness = createCommandHarness(['--out', 'reservationist-inbox.md']);
     let environmentCalls = 0;
     let createClientCalls = 0;
     let createDumpCalls = 0;
     const dependencies = {
       ...harness.dependencies,
-      isIgnored: () => {
-        harness.calls.push('isIgnored');
-        return false;
+      preflightOutputRoot: async () => {
+        harness.calls.push('preflight');
+        throw new Error('unsafe output root');
       },
       environment: () => {
         environmentCalls += 1;
@@ -358,11 +396,56 @@ describe('connected mailbox Markdown dump command', () => {
     expect(environmentCalls).toBe(0);
     expect(createClientCalls).toBe(0);
     expect(createDumpCalls).toBe(0);
-    expect(harness.calls).toEqual(['isIgnored', 'stderr']);
+    expect(harness.calls).toEqual(['preflight', 'stderr']);
     expect(harness.stdout).toEqual([]);
     expect(harness.stderr).toEqual([
       `${JSON.stringify({ event: 'connected_mailbox_markdown_dump.failed', code: 'dump_failed' })}\n`,
     ]);
+  });
+
+  it('fails unsafe physical output roots before environment, client, or dump setup', async () => {
+    await withTemporaryGitRoot(async (repoRoot) => {
+      await writeFile(
+        path.join(repoRoot, '.gitignore'),
+        '/.private/connected-mailbox-corpus/\n',
+        'utf8',
+      );
+      await writeFile(path.join(repoRoot, '.private'), 'not-a-directory', 'utf8');
+      const harness = createCommandHarness(['--out', 'reservationist-inbox.md']);
+      let environmentCalls = 0;
+      let createClientCalls = 0;
+      let createDumpCalls = 0;
+      const dependencies = {
+        ...harness.dependencies,
+        repoRoot: () => repoRoot,
+        preflightOutputRoot: async (config) => {
+          await prepareTrustedPrivateOutputRoot(config);
+        },
+        environment: () => {
+          environmentCalls += 1;
+          return { DATABASE_URL: 'postgresql://localhost/synthetic' };
+        },
+        createClient: () => {
+          createClientCalls += 1;
+          throw new Error('client must not be created');
+        },
+        createDump: () => {
+          createDumpCalls += 1;
+          throw new Error('dump must not be created');
+        },
+      } as unknown as ConnectedMailboxMarkdownDumpCommandDependencies;
+
+      const code = await createConnectedMailboxMarkdownDumpCommand(dependencies)();
+
+      expect(code).toBe(1);
+      expect(environmentCalls).toBe(0);
+      expect(createClientCalls).toBe(0);
+      expect(createDumpCalls).toBe(0);
+      expect(harness.stdout).toEqual([]);
+      expect(harness.stderr).toEqual([
+        `${JSON.stringify({ event: 'connected_mailbox_markdown_dump.failed', code: 'dump_failed' })}\n`,
+      ]);
+    });
   });
 
   it('rejects unsafe --out before creating a client or private output', async () => {

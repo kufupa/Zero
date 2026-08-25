@@ -870,14 +870,46 @@ describe('private snapshot publication', () => {
         await expect(readFile(artifactPath)).resolves.toEqual(Buffer.from(artifact.content));
       }
       if (process.platform !== 'win32') {
-        const [directory, corpus, manifest] = await Promise.all([
+        const [privateDirectory, corpusDirectory, directory, corpus, manifest] = await Promise.all([
+          stat(path.join(temporaryRoot, '.private')),
+          stat(path.join(temporaryRoot, '.private', 'connected-mailbox-corpus')),
           stat(published.outDir),
           stat(path.join(published.outDir, 'corpus.jsonl')),
           stat(path.join(published.outDir, 'manifest.json')),
         ]);
-        expect(directory.mode & 0o777).toBe(0o500);
-        expect(corpus.mode & 0o077).toBe(0);
-        expect(manifest.mode & 0o077).toBe(0);
+        expect(privateDirectory.mode & 0o777).toBe(0o700);
+        expect(corpusDirectory.mode & 0o777).toBe(0o700);
+        expect(directory.mode & 0o777).toBe(0o700);
+        expect(corpus.mode & 0o777).toBe(0o600);
+        expect(manifest.mode & 0o777).toBe(0o600);
+      }
+    });
+  });
+
+  it('tightens weak pre-existing private and corpus root modes before publication', async () => {
+    const fixture = sealedArtifactFixture();
+    await withTemporaryRepo(async (temporaryRoot) => {
+      const privateRoot = path.join(temporaryRoot, '.private');
+      const corpusRoot = path.join(privateRoot, 'connected-mailbox-corpus');
+      await mkdir(corpusRoot, { recursive: true });
+      await chmod(privateRoot, 0o755);
+      await chmod(corpusRoot, 0o755);
+
+      await createTestPublisher()({
+        repoRoot: temporaryRoot,
+        outDir: path.join(corpusRoot, 'weak-mode'),
+        context: snapshotContext(),
+        formatted: fixture.formatted,
+        hydration: fixture.hydration,
+      });
+
+      if (process.platform !== 'win32') {
+        const [privateStats, corpusStats] = await Promise.all([
+          stat(privateRoot),
+          stat(corpusRoot),
+        ]);
+        expect(privateStats.mode & 0o777).toBe(0o700);
+        expect(corpusStats.mode & 0o777).toBe(0o700);
       }
     });
   });
@@ -943,8 +975,94 @@ describe('private snapshot publication', () => {
           formatted: fixture.formatted,
           hydration: fixture.hydration,
         }),
-      ).rejects.toThrow(/symlink|trusted/i);
+      ).rejects.toThrow(/symlink|trusted|preflight/i);
       await expect(readdir(outsideRoot)).resolves.toEqual([]);
+    });
+  });
+
+  it('revalidates allocated snapshot identity before every content rename', async () => {
+    const fixture = sealedArtifactFixture();
+    await withTemporaryRepo(async (temporaryRoot) => {
+      const corpusRoot = path.join(temporaryRoot, '.private', 'connected-mailbox-corpus');
+      let allocatedOutDir = '';
+      let wroteTemporaryContent = false;
+      let renameCalls = 0;
+      const publisher = createTestPublisher({
+        ...localPrivateArtifactFileSystem,
+        async mkdtemp(...args: Parameters<typeof mkdtemp>) {
+          allocatedOutDir = await mkdtemp(...args);
+          return allocatedOutDir;
+        },
+        async writeFile(...args: Parameters<typeof writeFile>) {
+          const result = await writeFile(...args);
+          wroteTemporaryContent = true;
+          return result;
+        },
+        async realpath(target: Parameters<typeof realpath>[0]) {
+          if (
+            wroteTemporaryContent &&
+            path.resolve(String(target)) === path.resolve(allocatedOutDir)
+          ) {
+            return path.join(temporaryRoot, 'swapped-allocation');
+          }
+          return realpath(target);
+        },
+        async rename(...args: Parameters<typeof rename>) {
+          renameCalls += 1;
+          return rename(...args);
+        },
+      });
+
+      await expect(
+        publisher({
+          repoRoot: temporaryRoot,
+          outDir: path.join(corpusRoot, 'allocation-race'),
+          context: snapshotContext(),
+          formatted: fixture.formatted,
+          hydration: fixture.hydration,
+        }),
+      ).rejects.toThrow(/trusted|allocation|changed/i);
+
+      expect(renameCalls).toBe(0);
+      await expect(readdir(corpusRoot)).resolves.toEqual([]);
+    });
+  });
+
+  it('rejects a replaced artifact directory before writing artifact bytes', async () => {
+    const fixture = sealedArtifactFixture();
+    await withTemporaryRepo(async (temporaryRoot) => {
+      const corpusRoot = path.join(temporaryRoot, '.private', 'connected-mailbox-corpus');
+      const outsideRoot = path.join(temporaryRoot, 'outside-artifacts');
+      const probeLink = path.join(temporaryRoot, 'artifact-link-probe');
+      await mkdir(outsideRoot, { recursive: true });
+      if (!(await tryCreateDirectoryLink(outsideRoot, probeLink))) return;
+      await rm(probeLink, { recursive: true, force: true });
+
+      const publisher = createTestPublisher({
+        ...localPrivateArtifactFileSystem,
+        async mkdir(...args: Parameters<typeof mkdir>) {
+          const directory = String(args[0]);
+          const result = await mkdir(...args);
+          if (path.basename(directory) === 'raw-mime') {
+            await rm(directory, { recursive: true, force: true });
+            await tryCreateDirectoryLink(outsideRoot, directory);
+          }
+          return result;
+        },
+      });
+
+      await expect(
+        publisher({
+          repoRoot: temporaryRoot,
+          outDir: path.join(corpusRoot, 'artifact-link'),
+          context: snapshotContext(),
+          formatted: fixture.formatted,
+          hydration: fixture.hydration,
+        }),
+      ).rejects.toThrow(/symlink|trusted|artifact/i);
+
+      await expect(readdir(outsideRoot)).resolves.toEqual([]);
+      await expect(readdir(corpusRoot)).resolves.toEqual([]);
     });
   });
 
@@ -1358,11 +1476,25 @@ function sourceGuardViolations(sourceText: string): string[] {
     [
       'node:fs/promises',
       {
-        named: ['chmod', 'lstat', 'mkdir', 'mkdtemp', 'realpath', 'rename', 'rm', 'writeFile'],
+        named: ['chmod', 'lstat', 'mkdir', 'mkdtemp', 'realpath', 'rename', 'rm', 'stat', 'writeFile'],
       },
     ],
     ['node:path', { defaultName: 'path' }],
-    ['./private-output.js', { named: ['isIgnoredPrivateOutputDirectory'] }],
+    [
+      './private-output.js',
+      {
+        named: [
+          'assertTrustedPrivateDirectory',
+          'ensureTrustedPrivateDirectory',
+          'prepareExistingTrustedPrivateOutputRoot',
+          'prepareTrustedPrivateOutputRoot',
+          'samePrivateOutputPath',
+          'setPrivateOutputMode',
+          'PrivateOutputRootVerifier',
+          'TrustedPrivateOutputRoot',
+        ],
+      },
+    ],
   ]);
   const violations: string[] = [];
 

@@ -16,6 +16,8 @@ import {
 import {
   createPrivateInputReader,
   createPrivateOutputWriter,
+  prepareExistingTrustedPrivateOutputRoot,
+  prepareTrustedPrivateOutputRoot,
   type PrivateInputReader,
   type PrivateOutputWriter,
   type PrivateOutputWriterConfig,
@@ -23,14 +25,12 @@ import {
 import { DEFAULT_AI_MODEL_ID, DEFAULT_TRIAGE_PROMPT_VERSION } from '../src/ai/run-ledger.js';
 import type { TriageMessageRow } from '../src/ai/triage-input.js';
 import { getPostgresSslOptions } from '../src/db/ssl-config.js';
-import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
 import path from 'node:path';
 import { z } from 'zod';
 
 const PRIVATE_DIRECTORY_NAME = 'connected-mailbox-corpus';
-const PRIVATE_ROOT_RELATIVE_PATH = `.private/${PRIVATE_DIRECTORY_NAME}/`;
 const READ_ONLY_REPEATABLE_SNAPSHOT = 'isolation level repeatable read read only';
 const COMPLETED_EVENT = 'triage_quality_export.completed';
 const FAILED_EVENT = 'triage_quality_export.failed';
@@ -108,15 +108,11 @@ export type TriageQualityPostgresReaderOptions = {
   ) => QualityPostgresClient;
 };
 
-export type IgnoredPrivatePathRequest = {
-  repoRoot: string;
-  relativePath: string;
-};
-
 export type TriageQualityExportDependencies = {
   repoRoot(): string;
   databaseUrl(): string;
-  isIgnored(request: IgnoredPrivatePathRequest): boolean | Promise<boolean>;
+  preflightInputRoot(config: PrivateOutputWriterConfig): Promise<void>;
+  preflightOutputRoot(config: PrivateOutputWriterConfig): Promise<void>;
   createReader(options: TriageQualityPostgresReaderOptions): QualitySnapshotReader;
   createPrivateInputReader(config: PrivateOutputWriterConfig): PrivateInputReader;
   createPrivateOutputWriter(config: PrivateOutputWriterConfig): PrivateOutputWriter;
@@ -701,16 +697,6 @@ async function exportAllInboundTriggers(
   return exported;
 }
 
-function defaultIsIgnored(request: IgnoredPrivatePathRequest): boolean {
-  const result = spawnSync('git', ['check-ignore', '-q', '--no-index', request.relativePath], {
-    cwd: request.repoRoot,
-    shell: false,
-    stdio: 'ignore',
-    windowsHide: true,
-  });
-  return result.error === undefined && result.signal === null && result.status === 0;
-}
-
 function requiredDatabaseUrl(): string {
   const databaseUrl = process.env.DATABASE_URL?.trim();
   if (!databaseUrl) return exportFailure('Quality export database is not configured');
@@ -722,7 +708,12 @@ function defaultDependencies(): TriageQualityExportCommandDependencies {
     args: () => process.argv.slice(2),
     repoRoot: () => path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..'),
     databaseUrl: requiredDatabaseUrl,
-    isIgnored: defaultIsIgnored,
+    preflightInputRoot: async (config) => {
+      await prepareExistingTrustedPrivateOutputRoot(config);
+    },
+    preflightOutputRoot: async (config) => {
+      await prepareTrustedPrivateOutputRoot(config);
+    },
     createReader: createTriageQualityPostgresReader,
     createPrivateInputReader,
     createPrivateOutputWriter,
@@ -745,7 +736,8 @@ export function createTriageQualityExporter(
   const dependencies: TriageQualityExportDependencies = {
     repoRoot: overrides.repoRoot ?? defaults.repoRoot,
     databaseUrl: overrides.databaseUrl ?? defaults.databaseUrl,
-    isIgnored: overrides.isIgnored ?? defaults.isIgnored,
+    preflightInputRoot: overrides.preflightInputRoot ?? defaults.preflightInputRoot,
+    preflightOutputRoot: overrides.preflightOutputRoot ?? defaults.preflightOutputRoot,
     createReader: overrides.createReader ?? defaults.createReader,
     createPrivateInputReader:
       overrides.createPrivateInputReader ?? defaults.createPrivateInputReader,
@@ -758,16 +750,12 @@ export function createTriageQualityExporter(
   return async (argv) => {
     const args = parseQualityExportArgs([...argv]);
     const repoRoot = path.resolve(dependencies.repoRoot());
-    if (
-      !(await dependencies.isIgnored({
-        repoRoot,
-        relativePath: PRIVATE_ROOT_RELATIVE_PATH,
-      }))
-    ) {
-      return exportFailure('Quality export private root is not ignored');
-    }
-    const inputReader = dependencies.createPrivateInputReader(privateInputConfig(repoRoot));
-    const outputWriter = dependencies.createPrivateOutputWriter(privateOutputConfig(repoRoot));
+    const inputConfig = privateInputConfig(repoRoot);
+    const outputConfig = privateOutputConfig(repoRoot);
+    await dependencies.preflightOutputRoot(outputConfig);
+    await dependencies.preflightInputRoot(inputConfig);
+    const inputReader = dependencies.createPrivateInputReader(inputConfig);
+    const outputWriter = dependencies.createPrivateOutputWriter(outputConfig);
     const reader = dependencies.createReader({ databaseUrl: dependencies.databaseUrl() });
     const modelId = dependencies.modelId();
     const promptVersion = dependencies.promptVersion();

@@ -4,7 +4,10 @@ import {
   type ConnectedMailboxDumpPostgresClient,
   type ConnectedMailboxMarkdownDumpResult,
 } from '../src/ops/connected-mailbox-markdown-dump.js';
-import { isIgnoredPrivateOutputDirectory } from '../src/ops/private-output.js';
+import {
+  prepareTrustedPrivateOutputRoot,
+  type PrivateOutputWriterConfig,
+} from '../src/ops/private-output.js';
 import { getPostgresSslOptions } from '../src/db/ssl-config.js';
 import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
@@ -51,7 +54,7 @@ export type ConnectedMailboxMarkdownDumpCommandDependencies = {
   args(): readonly string[];
   environment(): Readonly<{ DATABASE_URL?: string }>;
   repoRoot(): string;
-  isIgnored(repoRoot: string): boolean;
+  preflightOutputRoot(config: PrivateOutputWriterConfig): Promise<void>;
   createClient(databaseUrl: string): ConnectedMailboxDumpConnection;
   createDump: DumpFactory;
   writeStdout(value: string): void;
@@ -118,7 +121,9 @@ function defaultDependencies(): ConnectedMailboxMarkdownDumpCommandDependencies 
     args: () => process.argv.slice(2),
     environment: () => ({ DATABASE_URL: process.env.DATABASE_URL }),
     repoRoot: () => path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..'),
-    isIgnored: (repoRoot) => isIgnoredPrivateOutputDirectory(repoRoot, PRIVATE_DUMP_DIRECTORY_NAME),
+    preflightOutputRoot: async (config) => {
+      await prepareTrustedPrivateOutputRoot(config);
+    },
     createClient: (databaseUrl) =>
       postgres(databaseUrl, {
         ssl: getPostgresSslOptions(databaseUrl),
@@ -154,9 +159,11 @@ export function createConnectedMailboxMarkdownDumpCommand(
     let client: ConnectedMailboxDumpConnection | undefined;
     try {
       const repoRoot = dependencies.repoRoot();
-      if (!dependencies.isIgnored(repoRoot)) {
-        return writeFailure(dependencies, 'dump_failed');
-      }
+      await dependencies.preflightOutputRoot({
+        repoRoot,
+        privateDirectoryName: PRIVATE_DUMP_DIRECTORY_NAME,
+        allowedExtensions: ['.md'],
+      });
       const databaseUrl = nonBlank(dependencies.environment().DATABASE_URL);
       client = dependencies.createClient(databaseUrl);
       const dump = dependencies.createDump({ client, repoRoot });

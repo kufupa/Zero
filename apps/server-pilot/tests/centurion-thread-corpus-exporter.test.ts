@@ -138,6 +138,34 @@ describe('connected mailbox corpus exporter', () => {
     expect(loads).toBe(0);
   });
 
+  it('awaits trusted output preflight before creating its database reader', async () => {
+    let preflightCalls = 0;
+    let readerCreations = 0;
+    let loads = 0;
+    const exporter = createCenturionThreadCorpusExporter({
+      createReader: () => {
+        readerCreations += 1;
+        return makeReader();
+      },
+      preflightOutputDestination: async () => {
+        preflightCalls += 1;
+        throw new Error('unsafe physical output root');
+      },
+      load: async () => {
+        loads += 1;
+        return makeLoadedResult();
+      },
+      hydrate: async () => makeHydration(),
+      publish: async () => ({ outDir: '/private/unreachable' }),
+    });
+
+    await expect(exporter(makeRequest())).rejects.toThrow('unsafe physical output root');
+
+    expect(preflightCalls).toBe(1);
+    expect(readerCreations).toBe(0);
+    expect(loads).toBe(0);
+  });
+
   it('derives sealed active-transport context from loaded scope only', async () => {
     let validatedDestination: { repoRoot: string; outDir: string } | undefined;
     let publication:
@@ -147,9 +175,8 @@ describe('connected mailbox corpus exporter', () => {
       | undefined;
     const exporter = createCenturionThreadCorpusExporter({
       createReader: () => makeReader(),
-      validateOutputDestination: (repoRoot, outDir) => {
+      preflightOutputDestination: async (repoRoot, outDir) => {
         validatedDestination = { repoRoot, outDir };
-        return outDir;
       },
       load: async () => makeLoadedResult(),
       hydrate: async () => makeHydration(),
@@ -194,7 +221,7 @@ describe('connected mailbox corpus exporter', () => {
     let published = 0;
     const exporter = createCenturionThreadCorpusExporter({
       createReader: () => makeReader(),
-      validateOutputDestination: (_repoRoot, outDir) => outDir,
+      preflightOutputDestination: async () => undefined,
       load: async () => makeLoadedResult({ transportIds: [] }),
       hydrate: async () => {
         hydrated += 1;

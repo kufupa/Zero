@@ -1,5 +1,14 @@
-import { chmod, lstat, mkdir, mkdtemp, realpath, rename, rm, writeFile } from 'node:fs/promises';
-import { isIgnoredPrivateOutputDirectory } from './private-output.js';
+import { chmod, lstat, mkdir, mkdtemp, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import {
+  assertTrustedPrivateDirectory,
+  ensureTrustedPrivateDirectory,
+  prepareExistingTrustedPrivateOutputRoot,
+  prepareTrustedPrivateOutputRoot,
+  samePrivateOutputPath,
+  setPrivateOutputMode,
+  type PrivateOutputRootVerifier,
+  type TrustedPrivateOutputRoot,
+} from './private-output.js';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 
@@ -175,7 +184,7 @@ export type FormattedLogicalMessages = {
 export const CONNECTED_MAILBOX_CORPUS_SCHEMA_VERSION = 'connected-mailbox-corpus-v4';
 export const CONNECTED_MAILBOX_CORPUS_PRIVATE_DIRECTORY_NAME = 'connected-mailbox-corpus';
 
-export type PrivateCorpusRootVerifier = (repoRoot: string, privateDirectoryName: string) => boolean;
+export type PrivateCorpusRootVerifier = PrivateOutputRootVerifier;
 
 export type PrivateThreadCorpusPublisherOptions = {
   verifyIgnoredPrivateOutputDirectory?: PrivateCorpusRootVerifier;
@@ -385,6 +394,7 @@ export type PrivateArtifactFileSystem = {
   realpath: typeof realpath;
   rename: typeof rename;
   rm: typeof rm;
+  stat: typeof stat;
   writeFile: typeof writeFile;
 };
 
@@ -406,6 +416,7 @@ const LOCAL_PRIVATE_ARTIFACT_FILE_SYSTEM: PrivateArtifactFileSystem = {
   realpath,
   rename,
   rm,
+  stat,
   writeFile,
 };
 
@@ -433,29 +444,6 @@ function resolvePrivateCorpusOutDir(repoRoot: string, outDir: string): string {
   if (!isPathWithin(resolvedOutDir, root) || path.dirname(resolvedOutDir) !== root) {
     throw new Error(
       '--out-dir must name a direct child directory inside .private/connected-mailbox-corpus',
-    );
-  }
-  return resolvedOutDir;
-}
-
-/**
- * Validates a generic ignored direct-child destination without touching its filesystem path.
- */
-export function validatePrivateThreadCorpusOutputDestination(
-  repoRoot: string,
-  outDir: string,
-  verifyIgnoredPrivateOutputDirectory: PrivateCorpusRootVerifier = isIgnoredPrivateOutputDirectory,
-): string {
-  const resolvedRepoRoot = path.resolve(repoRoot);
-  const resolvedOutDir = resolvePrivateCorpusOutDir(resolvedRepoRoot, outDir);
-  if (
-    !verifyIgnoredPrivateOutputDirectory(
-      resolvedRepoRoot,
-      CONNECTED_MAILBOX_CORPUS_PRIVATE_DIRECTORY_NAME,
-    )
-  ) {
-    throw new Error(
-      'Private corpus output root must be an ignored direct child of a Git repository',
     );
   }
   return resolvedOutDir;
@@ -2628,108 +2616,57 @@ export function buildPrivateThreadCorpusSnapshot(
   }
 }
 
-function isMissingPathError(error: unknown): boolean {
-  return (
-    typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'ENOENT'
-  );
-}
-
-function isAlreadyExistsError(error: unknown): boolean {
-  return (
-    typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'EEXIST'
-  );
-}
-
-async function assertTrustedDirectory(
-  fileSystem: PrivateArtifactFileSystem,
-  directory: string,
-  label: string,
-): Promise<void> {
-  const entry = await fileSystem.lstat(directory);
-  if (!entry.isDirectory() || entry.isSymbolicLink()) {
-    throw new Error(`Trusted ${label} must be a non-symlink directory`);
-  }
-  if ((await fileSystem.realpath(directory)) !== directory) {
-    throw new Error(`Trusted ${label} must not cross a symlink or junction`);
-  }
-}
-
-async function ensureTrustedDirectory(
-  fileSystem: PrivateArtifactFileSystem,
-  directory: string,
-  label: string,
-): Promise<void> {
-  try {
-    await fileSystem.lstat(directory);
-  } catch (error) {
-    if (!isMissingPathError(error)) throw error;
-    try {
-      await fileSystem.mkdir(directory, { recursive: false, mode: 0o700 });
-    } catch (createError) {
-      if (!isAlreadyExistsError(createError)) throw createError;
-    }
-  }
-  await assertTrustedDirectory(fileSystem, directory, label);
-}
-
-type TrustedPrivateCorpusRoot = {
-  repoRoot: string;
-  corpusRoot: string;
+export type PrivateThreadCorpusOutputPreflightOptions = {
+  fileSystem?: PrivateArtifactFileSystem;
+  platform?: NodeJS.Platform;
+  requireExistingRoot?: boolean;
+  verifyIgnoredPrivateOutputDirectory?: PrivateCorpusRootVerifier;
 };
 
-function assertIgnoredPrivateCorpusRoot(
-  repoRoot: string,
-  verifyIgnoredPrivateOutputDirectory: PrivateCorpusRootVerifier,
-): void {
-  if (
-    !verifyIgnoredPrivateOutputDirectory(repoRoot, CONNECTED_MAILBOX_CORPUS_PRIVATE_DIRECTORY_NAME)
-  ) {
-    throw new Error(
-      'Private corpus output root must be an ignored direct child of a Git repository',
-    );
-  }
-}
+export type TrustedPrivateThreadCorpusOutputDestination = TrustedPrivateOutputRoot & {
+  outDir: string;
+};
 
-async function canonicalTrustedPrivateCorpusRoot(
-  fileSystem: PrivateArtifactFileSystem,
-  repoRoot: string,
-  verifyIgnoredPrivateOutputDirectory: PrivateCorpusRootVerifier,
-): Promise<TrustedPrivateCorpusRoot> {
-  const requestedRepoRoot = path.resolve(repoRoot);
-  assertIgnoredPrivateCorpusRoot(requestedRepoRoot, verifyIgnoredPrivateOutputDirectory);
-  const canonicalRepoRoot = await fileSystem.realpath(requestedRepoRoot);
-  if (canonicalRepoRoot !== requestedRepoRoot) {
-    throw new Error('Trusted repo root must not be a symlink or junction');
-  }
-  await assertTrustedDirectory(fileSystem, canonicalRepoRoot, 'repo root');
-
-  const privateRoot = path.join(canonicalRepoRoot, '.private');
-  await ensureTrustedDirectory(fileSystem, privateRoot, 'private root');
-  const corpusRoot = path.join(privateRoot, CONNECTED_MAILBOX_CORPUS_PRIVATE_DIRECTORY_NAME);
-  await ensureTrustedDirectory(fileSystem, corpusRoot, 'private corpus root');
-  return { repoRoot: canonicalRepoRoot, corpusRoot };
-}
-
-function directSnapshotOutDir(trustedRoot: TrustedPrivateCorpusRoot, outDir: string): string {
+function directSnapshotOutDir(trustedRoot: TrustedPrivateOutputRoot, outDir: string): string {
   const resolvedOutDir = path.resolve(trustedRoot.repoRoot, outDir);
-  if (path.dirname(resolvedOutDir) !== trustedRoot.corpusRoot) {
+  if (
+    !samePrivateOutputPath(
+      path.dirname(resolvedOutDir),
+      trustedRoot.outputRoot,
+      trustedRoot.platform,
+    )
+  ) {
     throw new Error('--out-dir must name a direct child snapshot directory');
   }
   return resolvedOutDir;
 }
 
-async function setRestrictivePermissions(
-  fileSystem: PrivateArtifactFileSystem,
-  target: string,
-  mode: number,
-): Promise<void> {
+/**
+ * Validates an ignored private corpus root and one direct-child destination before source access.
+ */
+export async function preflightPrivateThreadCorpusOutputDestination(
+  repoRoot: string,
+  outDir: string,
+  options: PrivateThreadCorpusOutputPreflightOptions = {},
+): Promise<TrustedPrivateThreadCorpusOutputDestination> {
   try {
-    await fileSystem.chmod(target, mode);
+    const config = {
+      repoRoot,
+      privateDirectoryName: CONNECTED_MAILBOX_CORPUS_PRIVATE_DIRECTORY_NAME,
+      allowedExtensions: ['.jsonl', '.json'],
+    };
+    const trustedRoot = options.requireExistingRoot
+      ? await prepareExistingTrustedPrivateOutputRoot(config, options)
+      : await prepareTrustedPrivateOutputRoot(config, options);
+    return {
+      ...trustedRoot,
+      outDir: directSnapshotOutDir(trustedRoot, outDir),
+    };
   } catch (error) {
-    const code =
-      typeof error === 'object' && error !== null ? (error as { code?: unknown }).code : undefined;
-    if (code === 'ENOSYS' || code === 'ENOTSUP' || code === 'EOPNOTSUPP' || code === 'EPERM') {
-      return;
+    if (error instanceof Error && error.message === 'Private output root is not ignored') {
+      throw new Error(
+        'Private corpus output root must be an ignored direct child of a Git repository',
+      );
     }
     throw error;
   }
@@ -2738,20 +2675,37 @@ async function setRestrictivePermissions(
 async function revalidateTrustedRoot(
   fileSystem: PrivateArtifactFileSystem,
   repoRoot: string,
-  expectedRoot: TrustedPrivateCorpusRoot,
+  expectedRoot: TrustedPrivateOutputRoot,
   requestedOutDir: string,
-  verifyIgnoredPrivateOutputDirectory: PrivateCorpusRootVerifier,
+  verifyIgnoredPrivateOutputDirectory: PrivateCorpusRootVerifier | undefined,
 ): Promise<void> {
-  const revalidatedRoot = await canonicalTrustedPrivateCorpusRoot(
-    fileSystem,
+  const revalidatedRoot = await preflightPrivateThreadCorpusOutputDestination(
     repoRoot,
-    verifyIgnoredPrivateOutputDirectory,
+    requestedOutDir,
+    {
+      fileSystem,
+      platform: expectedRoot.platform,
+      requireExistingRoot: true,
+      verifyIgnoredPrivateOutputDirectory,
+    },
   );
   if (
-    revalidatedRoot.repoRoot !== expectedRoot.repoRoot ||
-    revalidatedRoot.corpusRoot !== expectedRoot.corpusRoot ||
-    directSnapshotOutDir(revalidatedRoot, requestedOutDir) !==
-      directSnapshotOutDir(expectedRoot, requestedOutDir)
+    !samePrivateOutputPath(revalidatedRoot.repoRoot, expectedRoot.repoRoot, expectedRoot.platform) ||
+    !samePrivateOutputPath(
+      revalidatedRoot.privateRoot,
+      expectedRoot.privateRoot,
+      expectedRoot.platform,
+    ) ||
+    !samePrivateOutputPath(
+      revalidatedRoot.outputRoot,
+      expectedRoot.outputRoot,
+      expectedRoot.platform,
+    ) ||
+    !samePrivateOutputPath(
+      revalidatedRoot.outDir,
+      directSnapshotOutDir(expectedRoot, requestedOutDir),
+      expectedRoot.platform,
+    )
   ) {
     throw new Error('Trusted private corpus root changed before publication');
   }
@@ -2779,18 +2733,120 @@ function privateArtifactPath(
   return { directory, temporary, target };
 }
 
+async function assertTrustedPrivateFile(
+  fileSystem: PrivateArtifactFileSystem,
+  target: string,
+  parent: string,
+  platform: NodeJS.Platform,
+): Promise<void> {
+  const entry = await fileSystem.lstat(target);
+  if (
+    !entry.isFile() ||
+    entry.isSymbolicLink() ||
+    !samePrivateOutputPath(path.dirname(target), parent, platform) ||
+    !samePrivateOutputPath(await fileSystem.realpath(target), target, platform)
+  ) {
+    throw new Error('Trusted private snapshot file is unsafe');
+  }
+  if (platform !== 'win32' && ((await fileSystem.stat(target)).mode & 0o777) !== 0o600) {
+    throw new Error('Trusted private snapshot file has unsafe permissions');
+  }
+}
+
+async function assertAllocatedSnapshotDirectory(
+  fileSystem: PrivateArtifactFileSystem,
+  trustedRoot: TrustedPrivateOutputRoot,
+  allocatedOutDir: string,
+): Promise<void> {
+  if (
+    !samePrivateOutputPath(
+      path.dirname(allocatedOutDir),
+      trustedRoot.outputRoot,
+      trustedRoot.platform,
+    )
+  ) {
+    throw new Error('Allocated snapshot directory escaped trusted private corpus root');
+  }
+  try {
+    await assertTrustedPrivateDirectory(fileSystem, allocatedOutDir, trustedRoot.platform);
+    await setPrivateOutputMode(fileSystem, allocatedOutDir, 0o700, trustedRoot.platform);
+  } catch {
+    throw new Error('Trusted allocated snapshot directory changed before publication');
+  }
+}
+
+async function ensureTrustedArtifactDirectory(
+  fileSystem: PrivateArtifactFileSystem,
+  trustedRoot: TrustedPrivateOutputRoot,
+  allocatedOutDir: string,
+  artifactDirectory: string,
+): Promise<void> {
+  if (
+    !samePrivateOutputPath(
+      path.dirname(artifactDirectory),
+      allocatedOutDir,
+      trustedRoot.platform,
+    )
+  ) {
+    invalidPrivateSnapshotContract();
+  }
+  try {
+    await ensureTrustedPrivateDirectory(fileSystem, artifactDirectory, trustedRoot.platform);
+  } catch {
+    throw new Error('Trusted artifact directory is unsafe');
+  }
+}
+
+async function revalidateAllocatedSnapshotDirectory(
+  fileSystem: PrivateArtifactFileSystem,
+  repoRoot: string,
+  trustedRoot: TrustedPrivateOutputRoot,
+  requestedOutDir: string,
+  verifyIgnoredPrivateOutputDirectory: PrivateCorpusRootVerifier | undefined,
+  allocatedOutDir: string,
+  artifactDirectory?: string,
+): Promise<void> {
+  await revalidateTrustedRoot(
+    fileSystem,
+    repoRoot,
+    trustedRoot,
+    requestedOutDir,
+    verifyIgnoredPrivateOutputDirectory,
+  );
+  await assertAllocatedSnapshotDirectory(fileSystem, trustedRoot, allocatedOutDir);
+  if (!artifactDirectory) return;
+  if (
+    !samePrivateOutputPath(
+      path.dirname(artifactDirectory),
+      allocatedOutDir,
+      trustedRoot.platform,
+    )
+  ) {
+    invalidPrivateSnapshotContract();
+  }
+  try {
+    await assertTrustedPrivateDirectory(fileSystem, artifactDirectory, trustedRoot.platform);
+    await setPrivateOutputMode(fileSystem, artifactDirectory, 0o700, trustedRoot.platform);
+  } catch {
+    throw new Error('Trusted artifact directory is unsafe');
+  }
+}
+
 async function writePrivateTextFile(
   fileSystem: PrivateArtifactFileSystem,
   temporary: string,
   target: string,
   content: string,
   revalidate: () => Promise<void>,
+  parent: string,
+  platform: NodeJS.Platform,
 ): Promise<void> {
   await revalidate();
   await fileSystem.writeFile(temporary, content, { encoding: 'utf8', mode: 0o600 });
-  await setRestrictivePermissions(fileSystem, temporary, 0o600);
+  await setPrivateOutputMode(fileSystem, temporary, 0o600, platform);
   await revalidate();
   await fileSystem.rename(temporary, target);
+  await assertTrustedPrivateFile(fileSystem, target, parent, platform);
 }
 
 async function writePrivateArtifactFile(
@@ -2799,12 +2855,15 @@ async function writePrivateArtifactFile(
   target: string,
   content: Uint8Array,
   revalidate: () => Promise<void>,
+  parent: string,
+  platform: NodeJS.Platform,
 ): Promise<void> {
   await revalidate();
   await fileSystem.writeFile(temporary, content, { mode: 0o600 });
-  await setRestrictivePermissions(fileSystem, temporary, 0o600);
+  await setPrivateOutputMode(fileSystem, temporary, 0o600, platform);
   await revalidate();
   await fileSystem.rename(temporary, target);
+  await assertTrustedPrivateFile(fileSystem, target, parent, platform);
 }
 
 /**
@@ -2815,8 +2874,7 @@ export function createPrivateThreadCorpusPublisher(
   fileSystem: PrivateArtifactFileSystem = LOCAL_PRIVATE_ARTIFACT_FILE_SYSTEM,
   options: PrivateThreadCorpusPublisherOptions = {},
 ): (args: PrivateThreadCorpusPublishArgs) => Promise<{ outDir: string }> {
-  const verifyIgnoredPrivateOutputDirectory =
-    options.verifyIgnoredPrivateOutputDirectory ?? isIgnoredPrivateOutputDirectory;
+  const verifyIgnoredPrivateOutputDirectory = options.verifyIgnoredPrivateOutputDirectory;
 
   return async (args) => {
     const snapshot = buildPrivateThreadCorpusSnapshot({
@@ -2825,12 +2883,16 @@ export function createPrivateThreadCorpusPublisher(
       hydration: args.hydration,
     });
     validatePrivateThreadCorpusSnapshot(snapshot);
-    const trustedRoot = await canonicalTrustedPrivateCorpusRoot(
-      fileSystem,
+    const destination = await preflightPrivateThreadCorpusOutputDestination(
       args.repoRoot,
-      verifyIgnoredPrivateOutputDirectory,
+      args.outDir,
+      {
+        fileSystem,
+        verifyIgnoredPrivateOutputDirectory,
+      },
     );
-    const requestedOutDir = directSnapshotOutDir(trustedRoot, args.outDir);
+    const trustedRoot: TrustedPrivateOutputRoot = destination;
+    const requestedOutDir = destination.outDir;
     const snapshotStem = path.basename(requestedOutDir);
     let allocatedOutDir: string | undefined;
 
@@ -2842,32 +2904,33 @@ export function createPrivateThreadCorpusPublisher(
         args.outDir,
         verifyIgnoredPrivateOutputDirectory,
       );
-      allocatedOutDir = await fileSystem.mkdtemp(
-        path.join(trustedRoot.corpusRoot, `${snapshotStem}-`),
+      const allocatedDirectory = await fileSystem.mkdtemp(
+        path.join(trustedRoot.outputRoot, `${snapshotStem}-`),
       );
-      if (path.dirname(allocatedOutDir) !== trustedRoot.corpusRoot) {
-        throw new Error('Allocated snapshot directory escaped trusted private corpus root');
-      }
-      await revalidateTrustedRoot(
+      allocatedOutDir = allocatedDirectory;
+      await assertAllocatedSnapshotDirectory(fileSystem, trustedRoot, allocatedDirectory);
+      await revalidateAllocatedSnapshotDirectory(
         fileSystem,
         args.repoRoot,
         trustedRoot,
         args.outDir,
         verifyIgnoredPrivateOutputDirectory,
+        allocatedDirectory,
       );
-      await setRestrictivePermissions(fileSystem, allocatedOutDir, 0o700);
 
-      const corpusTemporaryPath = path.join(allocatedOutDir, '.corpus.jsonl.tmp');
-      const corpusPath = path.join(allocatedOutDir, 'corpus.jsonl');
-      const manifestTemporaryPath = path.join(allocatedOutDir, '.manifest.json.tmp');
-      const manifestPath = path.join(allocatedOutDir, 'manifest.json');
-      const revalidate = () =>
-        revalidateTrustedRoot(
+      const corpusTemporaryPath = path.join(allocatedDirectory, '.corpus.jsonl.tmp');
+      const corpusPath = path.join(allocatedDirectory, 'corpus.jsonl');
+      const manifestTemporaryPath = path.join(allocatedDirectory, '.manifest.json.tmp');
+      const manifestPath = path.join(allocatedDirectory, 'manifest.json');
+      const revalidate = (artifactDirectory?: string) =>
+        revalidateAllocatedSnapshotDirectory(
           fileSystem,
           args.repoRoot,
           trustedRoot,
           args.outDir,
           verifyIgnoredPrivateOutputDirectory,
+          allocatedDirectory,
+          artifactDirectory,
         );
       await writePrivateTextFile(
         fileSystem,
@@ -2875,15 +2938,21 @@ export function createPrivateThreadCorpusPublisher(
         corpusPath,
         snapshot.corpusJsonl,
         revalidate,
+        allocatedDirectory,
+        trustedRoot.platform,
       );
 
       const createdArtifactDirectories = new Set<string>();
       for (const artifact of snapshot.artifactFiles) {
-        const paths = privateArtifactPath(allocatedOutDir, artifact);
+        const paths = privateArtifactPath(allocatedDirectory, artifact);
         if (!createdArtifactDirectories.has(paths.directory)) {
           await revalidate();
-          await fileSystem.mkdir(paths.directory, { recursive: false, mode: 0o700 });
-          await setRestrictivePermissions(fileSystem, paths.directory, 0o700);
+          await ensureTrustedArtifactDirectory(
+            fileSystem,
+            trustedRoot,
+            allocatedDirectory,
+            paths.directory,
+          );
           createdArtifactDirectories.add(paths.directory);
         }
         await writePrivateArtifactFile(
@@ -2891,7 +2960,9 @@ export function createPrivateThreadCorpusPublisher(
           paths.temporary,
           paths.target,
           artifact.content,
-          revalidate,
+          () => revalidate(paths.directory),
+          paths.directory,
+          trustedRoot.platform,
         );
       }
 
@@ -2901,21 +2972,12 @@ export function createPrivateThreadCorpusPublisher(
         manifestPath,
         snapshot.manifestJson,
         revalidate,
+        allocatedDirectory,
+        trustedRoot.platform,
       );
-      await revalidateTrustedRoot(
-        fileSystem,
-        args.repoRoot,
-        trustedRoot,
-        args.outDir,
-        verifyIgnoredPrivateOutputDirectory,
-      );
-      try {
-        await setRestrictivePermissions(fileSystem, allocatedOutDir, 0o500);
-      } catch {
-        // Best effort only; local trusted filesystems cannot provide hostile-process WORM.
-      }
+      await revalidate();
 
-      const publishedOutDir = allocatedOutDir;
+      const publishedOutDir = allocatedDirectory;
       allocatedOutDir = undefined;
       return { outDir: publishedOutDir };
     } finally {

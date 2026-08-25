@@ -26,6 +26,16 @@ export type PrivateOutputFileSystem = {
   writeFile: typeof writeFile;
 };
 
+export type PrivateOutputRootFileSystem = Pick<
+  PrivateOutputFileSystem,
+  'chmod' | 'lstat' | 'mkdir' | 'realpath'
+>;
+
+export type PrivateOutputRootVerifier = (
+  repoRoot: string,
+  privateDirectoryName: string,
+) => boolean | Promise<boolean>;
+
 export type PrivateOutputWriterConfig = {
   /** Existing repository root. Symlink and junction roots are refused. */
   repoRoot: string;
@@ -35,10 +45,23 @@ export type PrivateOutputWriterConfig = {
   allowedExtensions: readonly string[];
 };
 
-export type PrivateOutputWriterOptions = {
-  fileSystem?: PrivateOutputFileSystem;
+export type TrustedPrivateOutputRoot = {
+  repoRoot: string;
+  privateRoot: string;
+  outputRoot: string;
+  platform: NodeJS.Platform;
+};
+
+export type TrustedPrivateOutputRootOptions = {
+  fileSystem?: PrivateOutputRootFileSystem;
   /** Test seam for platform-specific permission validation. */
   platform?: NodeJS.Platform;
+  /** Test seam; production uses the shared Git-ignore verifier below. */
+  verifyIgnoredPrivateOutputDirectory?: PrivateOutputRootVerifier;
+};
+
+export type PrivateOutputWriterOptions = Omit<TrustedPrivateOutputRootOptions, 'fileSystem'> & {
+  fileSystem?: PrivateOutputFileSystem;
 };
 
 export type PrivateOutputWriter = {
@@ -57,15 +80,11 @@ export type PrivateInputReader = {
   read(inputName: string): Promise<string>;
 };
 
-type TrustedPrivateRoot = {
-  repoRoot: string;
-  privateRoot: string;
-  outputRoot: string;
-};
-
 const PRIVATE_OUTPUT_WRITE_ERROR = 'Private output write failed';
 const PRIVATE_INPUT_READ_ERROR = 'Private input read failed';
 const INVALID_PRIVATE_OUTPUT_CONFIGURATION = 'Invalid private output configuration';
+const PRIVATE_OUTPUT_ROOT_PREFLIGHT_ERROR = 'Private output root preflight failed';
+const PRIVATE_OUTPUT_ROOT_NOT_IGNORED = 'Private output root is not ignored';
 const DIRECTORY_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 const OUTPUT_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const WINDOWS_RESERVED_DEVICE_NAMES = new Set([
@@ -114,6 +133,10 @@ function failRead(): never {
   throw new Error(PRIVATE_INPUT_READ_ERROR);
 }
 
+function failRootPreflight(): never {
+  throw new Error(PRIVATE_OUTPUT_ROOT_PREFLIGHT_ERROR);
+}
+
 function errorCode(error: unknown): string | undefined {
   return typeof error === 'object' &&
     error !== null &&
@@ -130,7 +153,11 @@ function isAlreadyExistsError(error: unknown): boolean {
   return errorCode(error) === 'EEXIST';
 }
 
-function samePath(left: string, right: string, platform: NodeJS.Platform): boolean {
+export function samePrivateOutputPath(
+  left: string,
+  right: string,
+  platform: NodeJS.Platform,
+): boolean {
   const normalizedLeft = path.normalize(left);
   const normalizedRight = path.normalize(right);
   return platform === 'win32'
@@ -167,7 +194,10 @@ export function isIgnoredPrivateOutputDirectory(
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
     }).trim();
-    if (!gitRepoRoot || !samePath(path.resolve(gitRepoRoot), requestedRepoRoot, process.platform)) {
+    if (
+      !gitRepoRoot ||
+      !samePrivateOutputPath(path.resolve(gitRepoRoot), requestedRepoRoot, process.platform)
+    ) {
       return false;
     }
 
@@ -232,22 +262,24 @@ function directOutputPath(
   platform: NodeJS.Platform,
 ): string {
   const outputPath = path.resolve(outputRoot, outputName);
-  if (!samePath(path.dirname(outputPath), outputRoot, platform)) failWrite();
+  if (!samePrivateOutputPath(path.dirname(outputPath), outputRoot, platform)) failWrite();
   return outputPath;
 }
 
-async function assertTrustedDirectory(
-  fileSystem: PrivateOutputFileSystem,
+export async function assertTrustedPrivateDirectory(
+  fileSystem: PrivateOutputRootFileSystem,
   directory: string,
   platform: NodeJS.Platform,
 ): Promise<void> {
   const entry = await fileSystem.lstat(directory);
-  if (!entry.isDirectory() || entry.isSymbolicLink()) failWrite();
-  if (!samePath(await fileSystem.realpath(directory), directory, platform)) failWrite();
+  if (!entry.isDirectory() || entry.isSymbolicLink()) failRootPreflight();
+  if (!samePrivateOutputPath(await fileSystem.realpath(directory), directory, platform)) {
+    failRootPreflight();
+  }
 }
 
-async function setPrivateMode(
-  fileSystem: PrivateOutputFileSystem,
+export async function setPrivateOutputMode(
+  fileSystem: Pick<PrivateOutputRootFileSystem, 'chmod' | 'lstat'>,
   target: string,
   mode: number,
   platform: NodeJS.Platform,
@@ -264,13 +296,16 @@ async function setPrivateMode(
     throw error;
   }
 
-  if (platform !== 'win32' && ((await fileSystem.stat(target)).mode & 0o777) !== mode) {
-    failWrite();
+  if (platform !== 'win32') {
+    const entry = await fileSystem.lstat(target);
+    if (entry.isSymbolicLink() || (entry.mode & 0o777) !== mode) {
+      failRootPreflight();
+    }
   }
 }
 
-async function ensureTrustedDirectory(
-  fileSystem: PrivateOutputFileSystem,
+export async function ensureTrustedPrivateDirectory(
+  fileSystem: PrivateOutputRootFileSystem,
   directory: string,
   platform: NodeJS.Platform,
 ): Promise<void> {
@@ -285,46 +320,85 @@ async function ensureTrustedDirectory(
     }
   }
 
-  await assertTrustedDirectory(fileSystem, directory, platform);
-  await setPrivateMode(fileSystem, directory, 0o700, platform);
+  await assertTrustedPrivateDirectory(fileSystem, directory, platform);
+  await setPrivateOutputMode(fileSystem, directory, 0o700, platform);
 }
 
-async function prepareTrustedPrivateRoot(
-  fileSystem: PrivateOutputFileSystem,
+async function assertIgnoredTrustedPrivateOutputRoot(
   config: PrivateOutputWriterConfig,
-  platform: NodeJS.Platform,
-): Promise<TrustedPrivateRoot> {
-  if (!isIgnoredPrivateOutputDirectory(config.repoRoot, config.privateDirectoryName)) failWrite();
-  const requestedRepoRoot = path.resolve(config.repoRoot);
-  const canonicalRepoRoot = await fileSystem.realpath(requestedRepoRoot);
-  if (!samePath(canonicalRepoRoot, requestedRepoRoot, platform)) failWrite();
-  await assertTrustedDirectory(fileSystem, canonicalRepoRoot, platform);
-
-  const privateRoot = path.join(canonicalRepoRoot, '.private');
-  await ensureTrustedDirectory(fileSystem, privateRoot, platform);
-  const outputRoot = path.join(privateRoot, config.privateDirectoryName);
-  await ensureTrustedDirectory(fileSystem, outputRoot, platform);
-
-  return { repoRoot: canonicalRepoRoot, privateRoot, outputRoot };
+  verifier: PrivateOutputRootVerifier,
+): Promise<void> {
+  let isIgnored = false;
+  try {
+    isIgnored = await verifier(config.repoRoot, config.privateDirectoryName);
+  } catch {
+    failRootPreflight();
+  }
+  if (!isIgnored) throw new Error(PRIVATE_OUTPUT_ROOT_NOT_IGNORED);
 }
 
-async function prepareExistingTrustedPrivateRoot(
-  fileSystem: PrivateOutputFileSystem,
-  config: PrivateOutputWriterConfig,
+async function canonicalTrustedPrivateRepository(
+  fileSystem: PrivateOutputRootFileSystem,
+  repoRoot: string,
   platform: NodeJS.Platform,
-): Promise<TrustedPrivateRoot> {
-  if (!isIgnoredPrivateOutputDirectory(config.repoRoot, config.privateDirectoryName)) failWrite();
-  const requestedRepoRoot = path.resolve(config.repoRoot);
+): Promise<string> {
+  const requestedRepoRoot = path.resolve(repoRoot);
   const canonicalRepoRoot = await fileSystem.realpath(requestedRepoRoot);
-  if (!samePath(canonicalRepoRoot, requestedRepoRoot, platform)) failWrite();
-  await assertTrustedDirectory(fileSystem, canonicalRepoRoot, platform);
+  if (!samePrivateOutputPath(canonicalRepoRoot, requestedRepoRoot, platform)) {
+    failRootPreflight();
+  }
+  await assertTrustedPrivateDirectory(fileSystem, canonicalRepoRoot, platform);
+  return canonicalRepoRoot;
+}
+
+export async function prepareTrustedPrivateOutputRoot(
+  inputConfig: PrivateOutputWriterConfig,
+  options: TrustedPrivateOutputRootOptions = {},
+): Promise<TrustedPrivateOutputRoot> {
+  const config = assertConfiguration(inputConfig);
+  const fileSystem = options.fileSystem ?? LOCAL_FILE_SYSTEM;
+  const platform = options.platform ?? process.platform;
+  const verifier =
+    options.verifyIgnoredPrivateOutputDirectory ?? isIgnoredPrivateOutputDirectory;
+  const canonicalRepoRoot = await canonicalTrustedPrivateRepository(
+    fileSystem,
+    config.repoRoot,
+    platform,
+  );
+  await assertIgnoredTrustedPrivateOutputRoot({ ...config, repoRoot: canonicalRepoRoot }, verifier);
+
+  const privateRoot = path.join(canonicalRepoRoot, '.private');
+  await ensureTrustedPrivateDirectory(fileSystem, privateRoot, platform);
+  const outputRoot = path.join(privateRoot, config.privateDirectoryName);
+  await ensureTrustedPrivateDirectory(fileSystem, outputRoot, platform);
+
+  return { repoRoot: canonicalRepoRoot, privateRoot, outputRoot, platform };
+}
+
+export async function prepareExistingTrustedPrivateOutputRoot(
+  inputConfig: PrivateOutputWriterConfig,
+  options: TrustedPrivateOutputRootOptions = {},
+): Promise<TrustedPrivateOutputRoot> {
+  const config = assertConfiguration(inputConfig);
+  const fileSystem = options.fileSystem ?? LOCAL_FILE_SYSTEM;
+  const platform = options.platform ?? process.platform;
+  const verifier =
+    options.verifyIgnoredPrivateOutputDirectory ?? isIgnoredPrivateOutputDirectory;
+  const canonicalRepoRoot = await canonicalTrustedPrivateRepository(
+    fileSystem,
+    config.repoRoot,
+    platform,
+  );
+  await assertIgnoredTrustedPrivateOutputRoot({ ...config, repoRoot: canonicalRepoRoot }, verifier);
 
   const privateRoot = path.join(canonicalRepoRoot, '.private');
   const outputRoot = path.join(privateRoot, config.privateDirectoryName);
-  await assertTrustedDirectory(fileSystem, privateRoot, platform);
-  await assertTrustedDirectory(fileSystem, outputRoot, platform);
+  await assertTrustedPrivateDirectory(fileSystem, privateRoot, platform);
+  await setPrivateOutputMode(fileSystem, privateRoot, 0o700, platform);
+  await assertTrustedPrivateDirectory(fileSystem, outputRoot, platform);
+  await setPrivateOutputMode(fileSystem, outputRoot, 0o700, platform);
 
-  return { repoRoot: canonicalRepoRoot, privateRoot, outputRoot };
+  return { repoRoot: canonicalRepoRoot, privateRoot, outputRoot, platform };
 }
 
 async function assertSafeExistingOutputTarget(
@@ -335,7 +409,9 @@ async function assertSafeExistingOutputTarget(
   try {
     const entry = await fileSystem.lstat(outputPath);
     if (!entry.isFile() || entry.isSymbolicLink()) failWrite();
-    if (!samePath(await fileSystem.realpath(outputPath), outputPath, platform)) failWrite();
+    if (!samePrivateOutputPath(await fileSystem.realpath(outputPath), outputPath, platform)) {
+      failWrite();
+    }
   } catch (error) {
     if (isMissingPathError(error)) return;
     throw error;
@@ -345,28 +421,27 @@ async function assertSafeExistingOutputTarget(
 async function revalidateTrustedPrivateRoot(
   fileSystem: PrivateOutputFileSystem,
   config: PrivateOutputWriterConfig,
-  expected: TrustedPrivateRoot,
+  expected: TrustedPrivateOutputRoot,
   outputName: string,
   outputPath: string,
   platform: NodeJS.Platform,
+  verifier: PrivateOutputRootVerifier | undefined,
 ): Promise<void> {
-  if (!isIgnoredPrivateOutputDirectory(config.repoRoot, config.privateDirectoryName)) failWrite();
-  const requestedRepoRoot = path.resolve(config.repoRoot);
-  const canonicalRepoRoot = await fileSystem.realpath(requestedRepoRoot);
-  if (!samePath(canonicalRepoRoot, requestedRepoRoot, platform)) failWrite();
-  await assertTrustedDirectory(fileSystem, canonicalRepoRoot, platform);
-
-  const privateRoot = path.join(canonicalRepoRoot, '.private');
-  const outputRoot = path.join(privateRoot, config.privateDirectoryName);
-  await assertTrustedDirectory(fileSystem, privateRoot, platform);
-  await assertTrustedDirectory(fileSystem, outputRoot, platform);
-
-  const revalidatedOutputPath = directOutputPath(outputRoot, outputName, platform);
+  const revalidated = await prepareExistingTrustedPrivateOutputRoot(config, {
+    fileSystem,
+    platform,
+    verifyIgnoredPrivateOutputDirectory: verifier,
+  });
+  const revalidatedOutputPath = directOutputPath(
+    revalidated.outputRoot,
+    outputName,
+    platform,
+  );
   if (
-    !samePath(canonicalRepoRoot, expected.repoRoot, platform) ||
-    !samePath(privateRoot, expected.privateRoot, platform) ||
-    !samePath(outputRoot, expected.outputRoot, platform) ||
-    !samePath(revalidatedOutputPath, outputPath, platform)
+    !samePrivateOutputPath(revalidated.repoRoot, expected.repoRoot, platform) ||
+    !samePrivateOutputPath(revalidated.privateRoot, expected.privateRoot, platform) ||
+    !samePrivateOutputPath(revalidated.outputRoot, expected.outputRoot, platform) ||
+    !samePrivateOutputPath(revalidatedOutputPath, outputPath, platform)
   ) {
     failWrite();
   }
@@ -380,34 +455,35 @@ async function assertSafeExistingInputTarget(
 ): Promise<void> {
   const entry = await fileSystem.lstat(inputPath);
   if (!entry.isFile() || entry.isSymbolicLink()) failWrite();
-  if (!samePath(await fileSystem.realpath(inputPath), inputPath, platform)) failWrite();
+  if (!samePrivateOutputPath(await fileSystem.realpath(inputPath), inputPath, platform)) {
+    failWrite();
+  }
 }
 
 async function revalidateTrustedPrivateInputRoot(
   fileSystem: PrivateOutputFileSystem,
   config: PrivateOutputWriterConfig,
-  expected: TrustedPrivateRoot,
+  expected: TrustedPrivateOutputRoot,
   inputName: string,
   inputPath: string,
   platform: NodeJS.Platform,
+  verifier: PrivateOutputRootVerifier | undefined,
 ): Promise<void> {
-  if (!isIgnoredPrivateOutputDirectory(config.repoRoot, config.privateDirectoryName)) failWrite();
-  const requestedRepoRoot = path.resolve(config.repoRoot);
-  const canonicalRepoRoot = await fileSystem.realpath(requestedRepoRoot);
-  if (!samePath(canonicalRepoRoot, requestedRepoRoot, platform)) failWrite();
-  await assertTrustedDirectory(fileSystem, canonicalRepoRoot, platform);
-
-  const privateRoot = path.join(canonicalRepoRoot, '.private');
-  const outputRoot = path.join(privateRoot, config.privateDirectoryName);
-  await assertTrustedDirectory(fileSystem, privateRoot, platform);
-  await assertTrustedDirectory(fileSystem, outputRoot, platform);
-
-  const revalidatedInputPath = directOutputPath(outputRoot, inputName, platform);
+  const revalidated = await prepareExistingTrustedPrivateOutputRoot(config, {
+    fileSystem,
+    platform,
+    verifyIgnoredPrivateOutputDirectory: verifier,
+  });
+  const revalidatedInputPath = directOutputPath(
+    revalidated.outputRoot,
+    inputName,
+    platform,
+  );
   if (
-    !samePath(canonicalRepoRoot, expected.repoRoot, platform) ||
-    !samePath(privateRoot, expected.privateRoot, platform) ||
-    !samePath(outputRoot, expected.outputRoot, platform) ||
-    !samePath(revalidatedInputPath, inputPath, platform)
+    !samePrivateOutputPath(revalidated.repoRoot, expected.repoRoot, platform) ||
+    !samePrivateOutputPath(revalidated.privateRoot, expected.privateRoot, platform) ||
+    !samePrivateOutputPath(revalidated.outputRoot, expected.outputRoot, platform) ||
+    !samePrivateOutputPath(revalidatedInputPath, inputPath, platform)
   ) {
     failWrite();
   }
@@ -425,13 +501,18 @@ export function createPrivateInputReader(
   const config = assertConfiguration(inputConfig);
   const fileSystem = options.fileSystem ?? LOCAL_FILE_SYSTEM;
   const platform = options.platform ?? process.platform;
+  const verifier = options.verifyIgnoredPrivateOutputDirectory;
   const allowedExtensions = new Set(config.allowedExtensions);
 
   return {
     async read(inputName): Promise<string> {
       try {
         assertOutputName(inputName, allowedExtensions);
-        const trustedRoot = await prepareExistingTrustedPrivateRoot(fileSystem, config, platform);
+        const trustedRoot = await prepareExistingTrustedPrivateOutputRoot(config, {
+          fileSystem,
+          platform,
+          verifyIgnoredPrivateOutputDirectory: verifier,
+        });
         const inputPath = directOutputPath(trustedRoot.outputRoot, inputName, platform);
         await assertSafeExistingInputTarget(fileSystem, inputPath, platform);
         await revalidateTrustedPrivateInputRoot(
@@ -441,6 +522,7 @@ export function createPrivateInputReader(
           inputName,
           inputPath,
           platform,
+          verifier,
         );
         const content = await fileSystem.readFile(inputPath, 'utf8');
         if (typeof content !== 'string') failRead();
@@ -451,6 +533,7 @@ export function createPrivateInputReader(
           inputName,
           inputPath,
           platform,
+          verifier,
         );
         return content;
       } catch {
@@ -471,6 +554,7 @@ export function createPrivateOutputWriter(
   const config = assertConfiguration(inputConfig);
   const fileSystem = options.fileSystem ?? LOCAL_FILE_SYSTEM;
   const platform = options.platform ?? process.platform;
+  const verifier = options.verifyIgnoredPrivateOutputDirectory;
   const allowedExtensions = new Set(config.allowedExtensions);
 
   return {
@@ -478,7 +562,11 @@ export function createPrivateOutputWriter(
       let temporaryDirectory: string | undefined;
       try {
         assertOutputName(outputName, allowedExtensions);
-        const trustedRoot = await prepareTrustedPrivateRoot(fileSystem, config, platform);
+        const trustedRoot = await prepareTrustedPrivateOutputRoot(config, {
+          fileSystem,
+          platform,
+          verifyIgnoredPrivateOutputDirectory: verifier,
+        });
         const outputPath = directOutputPath(trustedRoot.outputRoot, outputName, platform);
         await assertSafeExistingOutputTarget(fileSystem, outputPath, platform);
         await revalidateTrustedPrivateRoot(
@@ -488,18 +576,21 @@ export function createPrivateOutputWriter(
           outputName,
           outputPath,
           platform,
+          verifier,
         );
 
         temporaryDirectory = await fileSystem.mkdtemp(path.join(trustedRoot.outputRoot, '.tmp-'));
-        if (!samePath(path.dirname(temporaryDirectory), trustedRoot.outputRoot, platform))
+        if (!samePrivateOutputPath(path.dirname(temporaryDirectory), trustedRoot.outputRoot, platform))
           failWrite();
-        await assertTrustedDirectory(fileSystem, temporaryDirectory, platform);
-        await setPrivateMode(fileSystem, temporaryDirectory, 0o700, platform);
+        await assertTrustedPrivateDirectory(fileSystem, temporaryDirectory, platform);
+        await setPrivateOutputMode(fileSystem, temporaryDirectory, 0o700, platform);
 
         const temporaryPath = path.join(temporaryDirectory, outputName);
-        if (!samePath(path.dirname(temporaryPath), temporaryDirectory, platform)) failWrite();
+        if (!samePrivateOutputPath(path.dirname(temporaryPath), temporaryDirectory, platform)) {
+          failWrite();
+        }
         await fileSystem.writeFile(temporaryPath, content, { mode: 0o600 });
-        await setPrivateMode(fileSystem, temporaryPath, 0o600, platform);
+        await setPrivateOutputMode(fileSystem, temporaryPath, 0o600, platform);
         await revalidateTrustedPrivateRoot(
           fileSystem,
           config,
@@ -507,6 +598,7 @@ export function createPrivateOutputWriter(
           outputName,
           outputPath,
           platform,
+          verifier,
         );
         await fileSystem.rename(temporaryPath, outputPath);
         return outputPath;

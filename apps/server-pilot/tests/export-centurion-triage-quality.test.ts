@@ -3,7 +3,12 @@ import {
   createTriageQualityExporter,
   createTriageQualityPostgresReader,
 } from '../scripts/export-centurion-triage-quality';
-import { createPrivateInputReader, createPrivateOutputWriter } from '../src/ops/private-output';
+import {
+  createPrivateInputReader,
+  createPrivateOutputWriter,
+  prepareExistingTrustedPrivateOutputRoot,
+  prepareTrustedPrivateOutputRoot,
+} from '../src/ops/private-output';
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
@@ -119,19 +124,31 @@ function createHarness(fixture: ReaderFixture = {}, input = `${JSON.stringify(la
   const { calls, reader } = createReaderFixture(fixture);
   const inputReads: string[] = [];
   const writes: Array<{ name: string; content: string | Uint8Array }> = [];
-  const ignoredChecks: Array<{ repoRoot: string; relativePath: string }> = [];
+  const inputPreflights: Array<{
+    repoRoot: string;
+    privateDirectoryName: string;
+    allowedExtensions: readonly string[];
+  }> = [];
+  const outputPreflights: Array<{
+    repoRoot: string;
+    privateDirectoryName: string;
+    allowedExtensions: readonly string[];
+  }> = [];
 
   return {
     calls,
     inputReads,
     writes,
-    ignoredChecks,
+    inputPreflights,
+    outputPreflights,
     exporter: createTriageQualityExporter({
       repoRoot: () => '/synthetic/zero',
       databaseUrl: () => 'postgres://synthetic.invalid/zero',
-      isIgnored: async (request) => {
-        ignoredChecks.push(request);
-        return true;
+      preflightInputRoot: async (config) => {
+        inputPreflights.push(config);
+      },
+      preflightOutputRoot: async (config) => {
+        outputPreflights.push(config);
       },
       createReader: () => reader,
       createPrivateInputReader: () => ({
@@ -242,10 +259,18 @@ describe('active connected-mailbox triage quality exporter', () => {
         .sort(),
     ).toEqual(['transport-a', 'transport-b']);
     expect(harness.writes.map((write) => write.name)).toEqual(['cases.jsonl']);
-    expect(harness.ignoredChecks).toEqual([
+    expect(harness.outputPreflights).toEqual([
       {
         repoRoot: path.resolve('/synthetic/zero'),
-        relativePath: '.private/connected-mailbox-corpus/',
+        privateDirectoryName: 'connected-mailbox-corpus',
+        allowedExtensions: ['.jsonl'],
+      },
+    ]);
+    expect(harness.inputPreflights).toEqual([
+      {
+        repoRoot: path.resolve('/synthetic/zero'),
+        privateDirectoryName: 'connected-mailbox-corpus',
+        allowedExtensions: ['.json', '.jsonl'],
       },
     ]);
   });
@@ -332,10 +357,21 @@ describe('active connected-mailbox triage quality exporter', () => {
       const exporter = createTriageQualityExporter({
         repoRoot: () => repoRoot,
         databaseUrl: () => 'postgres://synthetic.invalid/zero',
-        isIgnored: async () => true,
+        preflightInputRoot: async (config) => {
+          await prepareExistingTrustedPrivateOutputRoot(config);
+        },
+        preflightOutputRoot: async (config) => {
+          await prepareTrustedPrivateOutputRoot(config);
+        },
         createReader: () => reader,
-        createPrivateInputReader,
-        createPrivateOutputWriter,
+        createPrivateInputReader: (config) =>
+          createPrivateInputReader(config, {
+            verifyIgnoredPrivateOutputDirectory: () => true,
+          }),
+        createPrivateOutputWriter: (config) =>
+          createPrivateOutputWriter(config, {
+            verifyIgnoredPrivateOutputDirectory: () => true,
+          }),
       });
 
       await expect(exporter(['--labels', 'labels.jsonl', '--out', 'cases.jsonl'])).resolves.toEqual(
@@ -372,7 +408,12 @@ describe('active connected-mailbox triage quality exporter', () => {
     const exporter = createTriageQualityExporter({
       repoRoot: () => '/synthetic/zero',
       databaseUrl: () => 'postgres://synthetic.invalid/zero',
-      isIgnored: async () => false,
+      preflightOutputRoot: async () => {
+        throw new Error('private output root is not ignored');
+      },
+      preflightInputRoot: async () => {
+        throw new Error('unexpected input preflight');
+      },
       createReader: () => reader,
       createPrivateInputReader: () => ({
         async read() {
@@ -393,6 +434,60 @@ describe('active connected-mailbox triage quality exporter', () => {
     expect(reads).toBe(0);
   });
 
+  it('fails unsafe physical private roots before database reader, snapshot, or private I/O setup', async () => {
+    await withTemporaryRepo(async (repoRoot) => {
+      await writeFile(path.join(repoRoot, '.private'), 'not-a-directory', 'utf8');
+      const { calls, reader } = createReaderFixture();
+      let databaseUrlCalls = 0;
+      let inputReaderCreations = 0;
+      let outputWriterCreations = 0;
+      let readerCreations = 0;
+      const exporter = createTriageQualityExporter({
+        repoRoot: () => repoRoot,
+        databaseUrl: () => {
+          databaseUrlCalls += 1;
+          return 'postgres://synthetic.invalid/zero';
+        },
+        preflightOutputRoot: async (config) => {
+          await prepareTrustedPrivateOutputRoot(config);
+        },
+        preflightInputRoot: async (config) => {
+          await prepareExistingTrustedPrivateOutputRoot(config);
+        },
+        createReader: () => {
+          readerCreations += 1;
+          return reader;
+        },
+        createPrivateInputReader: () => {
+          inputReaderCreations += 1;
+          return {
+            async read() {
+              throw new Error('private input must not be read');
+            },
+          };
+        },
+        createPrivateOutputWriter: () => {
+          outputWriterCreations += 1;
+          return {
+            async write() {
+              throw new Error('private output must not be written');
+            },
+          };
+        },
+      });
+
+      await expect(
+        exporter(['--labels', 'labels.jsonl', '--out', 'cases.jsonl']),
+      ).rejects.toThrow();
+
+      expect(databaseUrlCalls).toBe(0);
+      expect(inputReaderCreations).toBe(0);
+      expect(outputWriterCreations).toBe(0);
+      expect(readerCreations).toBe(0);
+      expect(calls).toEqual([]);
+    });
+  });
+
   it('emits count-only CLI metadata and never private payload or paths', async () => {
     const { reader } = createReaderFixture();
     const stdout: string[] = [];
@@ -401,7 +496,8 @@ describe('active connected-mailbox triage quality exporter', () => {
       args: () => ['--labels', 'labels.jsonl', '--out', 'cases.jsonl'],
       repoRoot: () => '/synthetic/zero',
       databaseUrl: () => 'postgres://synthetic.invalid/zero',
-      isIgnored: async () => true,
+      preflightInputRoot: async () => undefined,
+      preflightOutputRoot: async () => undefined,
       createReader: () => reader,
       createPrivateInputReader: () => ({
         async read() {
@@ -437,7 +533,8 @@ describe('active connected-mailbox triage quality exporter', () => {
       args: () => ['--labels', 'labels.jsonl', '--out', 'cases.jsonl'],
       repoRoot: () => '/synthetic/zero',
       databaseUrl: () => 'postgres://synthetic.invalid/zero',
-      isIgnored: async () => true,
+      preflightInputRoot: async () => undefined,
+      preflightOutputRoot: async () => undefined,
       createReader: () => reader,
       createPrivateInputReader: () => ({
         async read() {

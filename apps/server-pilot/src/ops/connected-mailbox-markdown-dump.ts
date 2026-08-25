@@ -1,6 +1,6 @@
 import {
   createPrivateOutputWriter,
-  isIgnoredPrivateOutputDirectory,
+  prepareTrustedPrivateOutputRoot,
   type PrivateOutputWriter,
   type PrivateOutputWriterConfig,
 } from './private-output.js';
@@ -77,11 +77,15 @@ export type ConnectedMailboxMarkdownDumpDependencies = {
   client: ConnectedMailboxDumpPostgresClient;
   repoRoot: string;
   createWriter?: (config: PrivateOutputWriterConfig) => PrivateWriter;
+  preflightOutputRoot?: (config: PrivateOutputWriterConfig) => Promise<void>;
 };
 
 const PRIVATE_DIRECTORY_NAME = 'connected-mailbox-corpus';
 const DEFAULT_WRITER = (config: PrivateOutputWriterConfig): PrivateWriter =>
   createPrivateOutputWriter(config);
+const DEFAULT_OUTPUT_ROOT_PREFLIGHT = async (config: PrivateOutputWriterConfig): Promise<void> => {
+  await prepareTrustedPrivateOutputRoot(config);
+};
 
 function textOrNull(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value : null;
@@ -303,11 +307,16 @@ export function createConnectedMailboxMarkdownDump(
   dependencies: ConnectedMailboxMarkdownDumpDependencies,
 ): (request: ConnectedMailboxMarkdownDumpRequest) => Promise<ConnectedMailboxMarkdownDumpResult> {
   const createWriter = dependencies.createWriter ?? DEFAULT_WRITER;
+  const preflightOutputRoot =
+    dependencies.preflightOutputRoot ?? DEFAULT_OUTPUT_ROOT_PREFLIGHT;
+  const outputConfig: PrivateOutputWriterConfig = {
+    repoRoot: dependencies.repoRoot,
+    privateDirectoryName: PRIVATE_DIRECTORY_NAME,
+    allowedExtensions: ['.md'],
+  };
 
   return async (request) => {
-    if (!isIgnoredPrivateOutputDirectory(dependencies.repoRoot, PRIVATE_DIRECTORY_NAME)) {
-      throw new Error('Private output root is not ignored');
-    }
+    await preflightOutputRoot(outputConfig);
 
     const snapshot = await dependencies.client.begin(
       'isolation level repeatable read read only',
@@ -318,11 +327,7 @@ export function createConnectedMailboxMarkdownDump(
         return { asOf, scope, messages };
       },
     );
-    const writer = createWriter({
-      repoRoot: dependencies.repoRoot,
-      privateDirectoryName: PRIVATE_DIRECTORY_NAME,
-      allowedExtensions: ['.md'],
-    });
+    const writer = createWriter(outputConfig);
     await writer.write(request.outputName, renderMarkdown(snapshot));
 
     return {

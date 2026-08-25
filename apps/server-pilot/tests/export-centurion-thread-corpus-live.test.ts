@@ -80,13 +80,12 @@ function makeHarness(): Harness {
       calls.push('attest');
       return true;
     },
-    isIgnored: async (input: { repoRoot: string; relativePath: string }) => {
-      calls.push('ignored');
-      expect(input).toEqual({
+    preflightOutputDestination: async (repoRoot: string, outDir: string) => {
+      calls.push('preflight');
+      expect({ repoRoot, outDir }).toEqual({
         repoRoot: REPO_ROOT,
-        relativePath: '.private/connected-mailbox-corpus/',
+        outDir: `${REPO_ROOT}/.private/connected-mailbox-corpus/${SNAPSHOT_ID}`,
       });
-      return true;
     },
     uuid: () => {
       calls.push('uuid');
@@ -162,25 +161,33 @@ async function run(harness: Harness): Promise<number> {
 }
 
 describe('connected mailbox live corpus export command', () => {
-  it('checks the generic ignored output root before source setup', async () => {
+  it('checks the generic trusted output root before source setup', async () => {
     const harness = makeHarness();
-    let ignoredRequest: { repoRoot: string; relativePath: string } | undefined;
-    harness.deps.isIgnored = async (request) => {
-      ignoredRequest = request;
-      return false;
+    let preflightRequest: { repoRoot: string; outDir: string } | undefined;
+    harness.deps.preflightOutputDestination = async (repoRoot, outDir) => {
+      harness.calls.push('preflight');
+      preflightRequest = { repoRoot, outDir };
+      throw new Error('unsafe private output root');
     };
 
     expect(await run(harness)).toBe(1);
-    expect(ignoredRequest).toEqual({
+    expect(preflightRequest).toEqual({
       repoRoot: REPO_ROOT,
-      relativePath: '.private/connected-mailbox-corpus/',
+      outDir: `${REPO_ROOT}/.private/connected-mailbox-corpus/${SNAPSHOT_ID}`,
     });
-    expect(harness.calls).toEqual(['args', 'platform', 'scriptPath', 'attest', 'uuid', 'stderr']);
+    expect(harness.calls).toEqual([
+      'args',
+      'platform',
+      'scriptPath',
+      'attest',
+      'uuid',
+      'preflight',
+      'stderr',
+    ]);
   });
 
   it('writes only integer counts on successful stdout', async () => {
     const harness = makeHarness();
-    harness.deps.isIgnored = async () => true;
 
     expect(await run(harness)).toBe(0);
     expect(harness.stdout).toEqual([

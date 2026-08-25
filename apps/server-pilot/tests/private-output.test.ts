@@ -148,6 +148,30 @@ describe('private output writer', () => {
     });
   });
 
+  it('tightens existing private reader roots before reading their content', async () => {
+    await withTemporaryRepo(async (repoRoot) => {
+      const privateDirectory = path.join(repoRoot, '.private');
+      const root = privateRoot(repoRoot);
+      await mkdir(root, { recursive: true });
+      await writeFile(path.join(root, 'labels.jsonl'), '{"synthetic":true}\n', 'utf8');
+      await chmod(privateDirectory, 0o755);
+      await chmod(root, 0o755);
+
+      await expect(createReader(repoRoot).read('labels.jsonl')).resolves.toBe(
+        '{"synthetic":true}\n',
+      );
+
+      if (process.platform !== 'win32') {
+        const [privateStats, rootStats] = await Promise.all([
+          stat(privateDirectory),
+          stat(root),
+        ]);
+        expect(privateStats.mode & 0o777).toBe(0o700);
+        expect(rootStats.mode & 0o777).toBe(0o700);
+      }
+    });
+  });
+
   it('fails closed for an unignored configured root without creating writer output', async () => {
     await withTemporaryRepo(
       async (repoRoot) => {
