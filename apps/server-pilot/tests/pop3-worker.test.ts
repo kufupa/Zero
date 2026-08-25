@@ -1,16 +1,9 @@
-import { describe, expect, it, vi } from 'vitest';
+import { FakePop3Client, type FakePop3Message } from '../src/mail/ingest/pop3-client';
+import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db';
+import { FakeS3Storage, resetS3Storage, setS3Storage } from '../src/storage/s3';
 import { ingestOnce, POISON_MAX_RETRIES } from '../src/mail/ingest/worker';
 import * as ingestStore from '../src/mail/ingest/store';
-import {
-  FakePop3Client,
-  type FakePop3Message,
-} from '../src/mail/ingest/pop3-client';
-import { FakeS3Storage, resetS3Storage, setS3Storage } from '../src/storage/s3';
-import {
-  TEST_DB_AVAILABLE,
-  probeTestDb,
-  withSeededTestDb,
-} from './helpers/test-db';
+import { describe, expect, it, vi } from 'vitest';
 import { readFixture } from './helpers/fixtures';
 
 const reachable = await probeTestDb();
@@ -25,159 +18,147 @@ function fixtureMessages(): FakePop3Message[] {
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
   'pop3 worker ingestOnce (seeded, transaction-rollback)',
   () => {
-    it(
-      'drives UIDL -> RETR -> S3 -> PG -> DELE -> QUIT and preserves order',
-      async () => {
-        const storage = new FakeS3Storage('worker-test-bucket');
-        resetS3Storage();
-        setS3Storage(storage);
-        const fakePop3 = new FakePop3Client({ messages: fixtureMessages() });
+    it('drives UIDL -> RETR -> S3 -> PG -> DELE -> QUIT and preserves order', async () => {
+      const storage = new FakeS3Storage('worker-test-bucket');
+      resetS3Storage();
+      setS3Storage(storage);
+      const fakePop3 = new FakePop3Client({ messages: fixtureMessages() });
 
-        const result = await withSeededTestDb(async (db) => {
-          return ingestOnce({
+      const result = await withSeededTestDb(async (db) => {
+        return ingestOnce({
+          pop3: fakePop3,
+          db,
+          ingestMailboxId: 'ingest-nava-legacy',
+          maxMessages: 10,
+        });
+      });
+
+      // Both messages were listed + processed.
+      expect(result.listed).toBe(2);
+      expect(result.processed).toBe(2);
+      // Both DELEd after successful persist.
+      expect(result.deled).toBe(2);
+      expect(result.usedFakePop3).toBe(true);
+      expect(result.cycleError).toBeUndefined();
+
+      // POP3 call order: connect, uidl, retr, dele, retr, dele, quit.
+      const ops = fakePop3.callLog.map((c) => c.op);
+      const uidlIdx = ops.indexOf('uidl');
+      const retrIdx = ops.indexOf('retr');
+      const deleIdx = ops.indexOf('dele');
+      const quitIdx = ops.indexOf('quit');
+      expect(uidlIdx).toBeGreaterThanOrEqual(0);
+      expect(retrIdx).toBeGreaterThan(uidlIdx);
+      expect(deleIdx).toBeGreaterThan(retrIdx);
+      expect(quitIdx).toBeGreaterThan(deleIdx);
+
+      // DELE log order: uidl-A then uidl-B (in the order UIDL returned).
+      expect(fakePop3.deleLog).toEqual(['uidl-A', 'uidl-B']);
+
+      // Both raw-mime objects landed in S3.
+      const rawKeys = storage.listKeys('raw-mime/');
+      expect(rawKeys.length).toBe(2);
+      // Each stored raw MIME matches the fixture bytes.
+      for (const key of rawKeys) {
+        const body = storage.get(key)!;
+        expect(body.length).toBeGreaterThan(0);
+      }
+
+      // Per-message outcomes.
+      expect(result.items.length).toBe(2);
+      const itemA = result.items.find((i) => i.uidl === 'uidl-A');
+      const itemB = result.items.find((i) => i.uidl === 'uidl-B');
+      expect(itemA).toBeDefined();
+      expect(itemA!.status).toBe('ok');
+      expect(itemB).toBeDefined();
+      expect(itemB!.status).toBe('ok');
+      if (itemA!.status === 'ok') {
+        expect(itemA!.result.kind).toBe('stored');
+        if (itemA!.result.kind === 'stored') {
+          expect(itemA!.result.transportId).toBe('transport-centurion');
+        }
+      }
+      if (itemB!.status === 'ok') {
+        expect(itemB!.result.kind).toBe('stored');
+        if (itemB!.result.kind === 'stored') {
+          expect(itemB!.result.transportId).toBe('transport-nava');
+        }
+      }
+    }, 30000);
+
+    it('does NOT DELE a message when persist throws (stays for retry)', async () => {
+      resetS3Storage();
+      setS3Storage(new FakeS3Storage('worker-err-bucket'));
+      const fakePop3 = new FakePop3Client({
+        messages: [{ uidl: 'uidl-err', raw: readFixture('centurion-stamped.eml') }],
+      });
+      const persistSpy = vi
+        .spyOn(ingestStore, 'persistInboundMessage')
+        .mockRejectedValue(new Error('simulated PG failure'));
+
+      try {
+        const result = await withSeededTestDb(async (db) =>
+          ingestOnce({
             pop3: fakePop3,
             db,
             ingestMailboxId: 'ingest-nava-legacy',
             maxMessages: 10,
-          });
-        });
+          }),
+        );
 
-        // Both messages were listed + processed.
-        expect(result.listed).toBe(2);
-        expect(result.processed).toBe(2);
-        // Both DELEd after successful persist.
-        expect(result.deled).toBe(2);
-        expect(result.usedFakePop3).toBe(true);
-        expect(result.cycleError).toBeUndefined();
-
-        // POP3 call order: connect, uidl, retr, dele, retr, dele, quit.
-        const ops = fakePop3.callLog.map((c) => c.op);
-        const uidlIdx = ops.indexOf('uidl');
-        const retrIdx = ops.indexOf('retr');
-        const deleIdx = ops.indexOf('dele');
-        const quitIdx = ops.indexOf('quit');
-        expect(uidlIdx).toBeGreaterThanOrEqual(0);
-        expect(retrIdx).toBeGreaterThan(uidlIdx);
-        expect(deleIdx).toBeGreaterThan(retrIdx);
-        expect(quitIdx).toBeGreaterThan(deleIdx);
-
-        // DELE log order: uidl-A then uidl-B (in the order UIDL returned).
-        expect(fakePop3.deleLog).toEqual(['uidl-A', 'uidl-B']);
-
-        // Both raw-mime objects landed in S3.
-        const rawKeys = storage.listKeys('raw-mime/');
-        expect(rawKeys.length).toBe(2);
-        // Each stored raw MIME matches the fixture bytes.
-        for (const key of rawKeys) {
-          const body = storage.get(key)!;
-          expect(body.length).toBeGreaterThan(0);
+        expect(result.processed).toBe(1);
+        expect(result.deled).toBe(0); // not DELEd
+        expect(result.items[0]!.status).toBe('error');
+        if (result.items[0]!.status === 'error') {
+          expect(result.items[0]!.error).toContain('simulated PG failure');
         }
+        // DELE never called.
+        expect(fakePop3.deleLog).toEqual([]);
+        // QUIT still called (cycle completes after the error).
+        expect(fakePop3.callLog.map((c) => c.op)).toContain('quit');
+      } finally {
+        persistSpy.mockRestore();
+      }
+    }, 30000);
 
-        // Per-message outcomes.
-        expect(result.items.length).toBe(2);
-        const itemA = result.items.find((i) => i.uidl === 'uidl-A');
-        const itemB = result.items.find((i) => i.uidl === 'uidl-B');
-        expect(itemA).toBeDefined();
-        expect(itemA!.status).toBe('ok');
-        expect(itemB).toBeDefined();
-        expect(itemB!.status).toBe('ok');
-        if (itemA!.status === 'ok') {
-          expect(itemA!.result.kind).toBe('stored');
-          if (itemA!.result.kind === 'stored') {
-            expect(itemA!.result.transportId).toBe('transport-centurion');
-          }
-        }
-        if (itemB!.status === 'ok') {
-          expect(itemB!.result.kind).toBe('stored');
-          if (itemB!.result.kind === 'stored') {
-            expect(itemB!.result.transportId).toBe('transport-nava');
-          }
-        }
-      },
-      30000,
-    );
+    it('poison UIDL quarantined across cycles when failureCounts persist', async () => {
+      const storage = new FakeS3Storage('worker-poison-loop');
+      resetS3Storage();
+      setS3Storage(storage);
+      const fakePop3 = new FakePop3Client({
+        messages: [{ uidl: 'uidl-poison-loop', raw: readFixture('centurion-stamped.eml') }],
+      });
+      const failureCounts = new Map<string, number>();
+      const persistSpy = vi
+        .spyOn(ingestStore, 'persistInboundMessage')
+        .mockRejectedValue(new Error('simulated persist failure'));
 
-    it(
-      'does NOT DELE a message when persist throws (stays for retry)',
-      async () => {
-        resetS3Storage();
-        setS3Storage(new FakeS3Storage('worker-err-bucket'));
-        const fakePop3 = new FakePop3Client({
-          messages: [{ uidl: 'uidl-err', raw: readFixture('centurion-stamped.eml') }],
-        });
-        const persistSpy = vi
-          .spyOn(ingestStore, 'persistInboundMessage')
-          .mockRejectedValue(new Error('simulated PG failure'));
-
-        try {
-          const result = await withSeededTestDb(async (db) =>
-            ingestOnce({
-              pop3: fakePop3,
-              db,
-              ingestMailboxId: 'ingest-nava-legacy',
-              maxMessages: 10,
-            }),
-          );
-
-          expect(result.processed).toBe(1);
-          expect(result.deled).toBe(0); // not DELEd
-          expect(result.items[0]!.status).toBe('error');
-          if (result.items[0]!.status === 'error') {
-            expect(result.items[0]!.error).toContain('simulated PG failure');
-          }
-          // DELE never called.
-          expect(fakePop3.deleLog).toEqual([]);
-          // QUIT still called (cycle completes after the error).
-          expect(fakePop3.callLog.map((c) => c.op)).toContain('quit');
-        } finally {
-          persistSpy.mockRestore();
-        }
-      },
-      30000,
-    );
-
-    it(
-      'poison UIDL quarantined across cycles when failureCounts persist',
-      async () => {
-        const storage = new FakeS3Storage('worker-poison-loop');
-        resetS3Storage();
-        setS3Storage(storage);
-        const fakePop3 = new FakePop3Client({
-          messages: [{ uidl: 'uidl-poison-loop', raw: readFixture('centurion-stamped.eml') }],
-        });
-        const failureCounts = new Map<string, number>();
-        const persistSpy = vi
-          .spyOn(ingestStore, 'persistInboundMessage')
-          .mockRejectedValue(new Error('simulated persist failure'));
-
-        try {
-          await withSeededTestDb(async (db) => {
-            for (let i = 0; i < POISON_MAX_RETRIES - 1; i++) {
-              const attempt = await ingestOnce({
-                pop3: fakePop3,
-                db,
-                ingestMailboxId: 'ingest-nava-legacy',
-                failureCounts,
-              });
-              expect(attempt.items[0]!.status).toBe('error');
-              expect(attempt.deled).toBe(0);
-            }
-
-            const final = await ingestOnce({
+      try {
+        await withSeededTestDb(async (db) => {
+          for (let i = 0; i < POISON_MAX_RETRIES - 1; i++) {
+            const attempt = await ingestOnce({
               pop3: fakePop3,
               db,
               ingestMailboxId: 'ingest-nava-legacy',
               failureCounts,
             });
-            expect(final.deled).toBe(1);
-            expect(final.items[0]!.status).toBe('ok');
+            expect(attempt.items[0]!.status).toBe('error');
+            expect(attempt.deled).toBe(0);
+          }
+
+          const final = await ingestOnce({
+            pop3: fakePop3,
+            db,
+            ingestMailboxId: 'ingest-nava-legacy',
+            failureCounts,
           });
-        } finally {
-          persistSpy.mockRestore();
-        }
-      },
-      30000,
-    );
+          expect(final.deled).toBe(1);
+          expect(final.items[0]!.status).toBe('ok');
+        });
+      } finally {
+        persistSpy.mockRestore();
+      }
+    }, 30000);
   },
 );
 
@@ -213,6 +194,45 @@ describe('ingestOnce returned-copy results', () => {
       });
       expect(persistSpy.mock.calls[0]?.[3]).toMatchObject({
         ingestSource: 'live-pop3',
+      });
+    } finally {
+      persistSpy.mockRestore();
+    }
+  });
+
+  it('leaves a deferred returned copy in POP3 without advancing poison retries', async () => {
+    const storage = new FakeS3Storage('worker-reconciliation-bucket');
+    resetS3Storage();
+    setS3Storage(storage);
+    const uidl = 'uidl-deferred';
+    const fakePop3 = new FakePop3Client({
+      messages: [{ uidl, raw: readFixture('centurion-stamped.eml') }],
+    });
+    const failureCounts = new Map([[uidl, POISON_MAX_RETRIES - 1]]);
+    const persistSpy = vi.spyOn(ingestStore, 'persistInboundMessage').mockResolvedValue({
+      kind: 'deferred',
+      transportId: 'transport-centurion',
+      messageId: 'canonical-message',
+      rawMimeS3Key: 'raw-mime/test.eml',
+      candidateAttachmentCleanupFailureCount: 0,
+      rawMimeCleanupFailureCount: 0,
+    } as unknown as Awaited<ReturnType<typeof ingestStore.persistInboundMessage>>);
+
+    try {
+      const result = await ingestOnce({
+        pop3: fakePop3,
+        db: {} as import('../src/db/client').DB,
+        failureCounts,
+        ingestMailboxId: 'ingest-nava-legacy',
+      });
+
+      expect(result.deled).toBe(0);
+      expect(fakePop3.deleLog).toEqual([]);
+      expect(failureCounts.has(uidl)).toBe(false);
+      expect(result.items[0]).toMatchObject({
+        status: 'deferred',
+        uidl,
+        result: { kind: 'deferred' },
       });
     } finally {
       persistSpy.mockRestore();

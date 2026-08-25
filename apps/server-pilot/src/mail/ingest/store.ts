@@ -75,7 +75,7 @@ export type QuarantineReason =
   | 'message_too_large'
   | 'parse_failure';
 
-export type PersistKind = 'stored' | 'quarantined' | 'duplicate' | 'reconciled';
+export type PersistKind = 'stored' | 'quarantined' | 'duplicate' | 'reconciled' | 'deferred';
 
 export interface IngestMeta {
   /** Mailbox id the message was ingested from (e.g. `ingest-nava-legacy`). */
@@ -129,11 +129,21 @@ export interface PersistReconciledResult {
   attachmentCount: number;
 }
 
+export interface PersistDeferredResult {
+  kind: 'deferred';
+  transportId: string;
+  messageId: string;
+  rawMimeS3Key: string;
+  candidateAttachmentCleanupFailureCount: number;
+  rawMimeCleanupFailureCount: number;
+}
+
 export type PersistResult =
   | PersistStoredResult
   | PersistQuarantinedResult
   | PersistDuplicateResult
-  | PersistReconciledResult;
+  | PersistReconciledResult
+  | PersistDeferredResult;
 
 export interface PersistOptions {
   /** DB handle (production: getDb(); tests: transaction-scoped handle). */
@@ -256,6 +266,10 @@ export async function persistInboundMessage(
   let threadId = '';
   let duplicate: PersistDuplicateResult | null = null;
   let duplicateCanonicalMessageId = messageId;
+  let deferred: Omit<
+    PersistDeferredResult,
+    'candidateAttachmentCleanupFailureCount' | 'rawMimeCleanupFailureCount'
+  > | null = null;
   let reconciliation: PersistReconciledResult | null = null;
   await db.transaction(async (tx) => {
     const transactionDb = tx as unknown as DB;
@@ -301,12 +315,36 @@ export async function persistInboundMessage(
       hasEligibleLocalQueueRow,
       parsed,
     });
+    const shouldDeferPreOutcomeReturnedCopy =
+      opts.ingestSource === 'live-pop3' &&
+      parsed.outboundCorrelation.kind === 'valid' &&
+      canonical?.queueStatus === 'sending' &&
+      !canonical.ingestMailboxId &&
+      !canonical.pop3Uidl &&
+      !hasDurablePersistedSmtpOutcome(canonical.smtpPayload) &&
+      evaluateRocketseedReturnedCopyTrust({
+        activeTransportId: canonical.transportId,
+        expectedTransportId: transport.id,
+        expectedTransportAddress: transport.email,
+        hasEligibleLocalQueueRow: true,
+        parsed,
+      }).trusted;
     if (
       opts.ingestSource === 'live-pop3' &&
       parsed.outboundCorrelation.kind === 'valid' &&
-      !returnedCopyTrust.trusted
+      !returnedCopyTrust.trusted &&
+      !shouldDeferPreOutcomeReturnedCopy
     ) {
       emitRocketseedReturnedCopyTrustRejection(returnedCopyTrust.reason);
+    }
+    if (shouldDeferPreOutcomeReturnedCopy) {
+      deferred = {
+        kind: 'deferred',
+        transportId: canonical.transportId,
+        messageId: canonical.id,
+        rawMimeS3Key,
+      };
+      return;
     }
     if (canonical && returnedCopyTrust.trusted) {
       if (canonical.ingestMailboxId || canonical.pop3Uidl) {
@@ -338,7 +376,6 @@ export async function persistInboundMessage(
           fromAddress: parsed.fromAddress ?? '',
           toAddresses: parsed.toAddresses,
           ccAddresses: parsed.ccAddresses,
-          bccAddresses: parsed.bccAddresses,
           subject: parsed.subject,
           textBody: parsed.textBody,
           htmlBody: sanitizeHtmlBodyForStorage(parsed.htmlBody),
@@ -496,6 +533,26 @@ export async function persistInboundMessage(
       candidateAttachmentCleanupFailureCount,
     );
   }
+  const deferredResult = deferred as Omit<
+    PersistDeferredResult,
+    'candidateAttachmentCleanupFailureCount' | 'rawMimeCleanupFailureCount'
+  > | null;
+  if (deferredResult) {
+    const [candidateAttachmentCleanupFailureCount, rawMimeCleanupFailureCount] = await Promise.all([
+      cleanupCandidateAttachmentObjects(
+        storage,
+        parsed.attachments,
+        messageId,
+        deferredResult.messageId,
+      ),
+      cleanupRawMimeObject(storage, rawMimeS3Key),
+    ]);
+    return {
+      ...deferredResult,
+      candidateAttachmentCleanupFailureCount,
+      rawMimeCleanupFailureCount,
+    };
+  }
   if (reconciliation) return reconciliation;
 
   return {
@@ -551,6 +608,15 @@ function withCandidateAttachmentCleanupFailures(
   candidateAttachmentCleanupFailureCount: number,
 ): PersistDuplicateResult {
   return { ...result, candidateAttachmentCleanupFailureCount };
+}
+
+async function cleanupRawMimeObject(storage: S3Storage, rawMimeS3Key: string): Promise<number> {
+  try {
+    await storage.deleteObject(rawMimeS3Key);
+    return 0;
+  } catch {
+    return 1;
+  }
 }
 
 /**
@@ -786,6 +852,14 @@ function hasProvenPersistedSendingDelivery(args: {
       !args.messageIdHeader ||
       args.messageIdHeader === outcome.messageId
     );
+  } catch {
+    return false;
+  }
+}
+
+function hasDurablePersistedSmtpOutcome(smtpPayload: unknown): boolean {
+  try {
+    return parsePersistedDeliveryOutcome(smtpPayload) !== null;
   } catch {
     return false;
   }

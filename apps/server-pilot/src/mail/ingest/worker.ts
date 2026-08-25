@@ -30,9 +30,6 @@
  *
  * Entry: `node dist/mail/ingest/worker.js` (package script `worker`).
  */
-import { isCliEntry } from '../../lib/is-cli-entry.js';
-import { parseEnv } from '../../env.js';
-import { getDb, closeDb } from '../../db/client.js';
 import {
   createPop3Client,
   type Pop3Client,
@@ -40,19 +37,18 @@ import {
   FakePop3Client as FakePop3ClientCtor,
   type FakePop3Message,
 } from './pop3-client.js';
-import { parseRawMessage, generateMessageId } from './parse-message.js';
-import { IngestTooLargeError, assertWithinIngestLimits, getIngestLimits } from './limits.js';
 import {
   persistInboundMessage,
   quarantineOversizedMessage,
   quarantineParseFailure,
   type PersistResult,
 } from './store.js';
-import {
-  rawMimeKey,
-  getS3Storage,
-  archiveQuarantineRawMime,
-} from '../../storage/s3.js';
+import { IngestTooLargeError, assertWithinIngestLimits, getIngestLimits } from './limits.js';
+import { rawMimeKey, getS3Storage, archiveQuarantineRawMime } from '../../storage/s3.js';
+import { parseRawMessage, generateMessageId } from './parse-message.js';
+import { isCliEntry } from '../../lib/is-cli-entry.js';
+import { getDb, closeDb } from '../../db/client.js';
+import { parseEnv } from '../../env.js';
 
 /** After this many consecutive failures for one UIDL, quarantine + DELE. */
 export const POISON_MAX_RETRIES = 3;
@@ -71,7 +67,7 @@ export interface IngestOnceOptions {
 }
 
 export type ItemOutcome =
-  | { uidl: string; result: PersistResult; status: 'ok' }
+  | { uidl: string; result: PersistResult; status: 'deferred' | 'ok' }
   | { uidl: string; status: 'error'; error: string };
 
 export interface IngestCycleResult {
@@ -100,9 +96,7 @@ export interface IngestCycleResult {
  *          -> PG tx -> DELE
  * Final QUIT commits the DELEs.
  */
-export async function ingestOnce(
-  opts: IngestOnceOptions = {},
-): Promise<IngestCycleResult> {
+export async function ingestOnce(opts: IngestOnceOptions = {}): Promise<IngestCycleResult> {
   let env: ReturnType<typeof parseEnv> | null = null;
   try {
     env = parseEnv(process.env);
@@ -110,8 +104,7 @@ export async function ingestOnce(
     env = null;
   }
   const ingestMailboxId = opts.ingestMailboxId ?? 'ingest-nava-legacy';
-  const maxMessages =
-    opts.maxMessages ?? env?.POP3_MAX_MESSAGES_PER_CYCLE ?? 500;
+  const maxMessages = opts.maxMessages ?? env?.POP3_MAX_MESSAGES_PER_CYCLE ?? 500;
   const failureCounts = opts.failureCounts ?? new Map<string, number>();
   let duplicateAttachmentCleanupFailureCount = 0;
 
@@ -127,8 +120,7 @@ export async function ingestOnce(
       usedFakePop3: false,
       duplicateAttachmentCleanupFailureCount,
       cycleError:
-        env?.MAIL_TRANSPORT_MODE === 'real' ||
-          env?.MAIL_TRANSPORT_MODE === 'wire'
+        env?.MAIL_TRANSPORT_MODE === 'real' || env?.MAIL_TRANSPORT_MODE === 'wire'
           ? 'no real pop3 client configured (host/port/user/secret required)'
           : 'no pop3 client configured',
     };
@@ -170,15 +162,34 @@ export async function ingestOnce(
           storage,
         });
 
-        const result = await persistInboundMessage(parsed, msg.raw, {
-          ingestMailboxId,
-          pop3Uidl: uidl,
-          messageId,
-          rawMimeS3Key: rawKey,
-        }, { db, storage, ingestSource: 'live-pop3' });
+        const result = await persistInboundMessage(
+          parsed,
+          msg.raw,
+          {
+            ingestMailboxId,
+            pop3Uidl: uidl,
+            messageId,
+            rawMimeS3Key: rawKey,
+          },
+          { db, storage, ingestSource: 'live-pop3' },
+        );
 
         if (result.kind === 'duplicate') {
           duplicateAttachmentCleanupFailureCount += result.candidateAttachmentCleanupFailureCount;
+        }
+
+        if (result.kind === 'deferred') {
+          failureCounts.delete(uidl);
+          const deferredCleanupFailureCount =
+            result.candidateAttachmentCleanupFailureCount + result.rawMimeCleanupFailureCount;
+          if (deferredCleanupFailureCount > 0) {
+            console.warn(
+              `worker: deferred returned-copy cleanup failures=${deferredCleanupFailureCount}`,
+            );
+          }
+          items.push({ uidl, result, status: 'deferred' });
+          processed += 1;
+          continue;
         }
 
         if (result.kind === 'quarantined') {
@@ -290,9 +301,7 @@ export async function ingestOnce(
  * Build a `FakePop3Client` from fixture messages. Exported so the worker
  * entry script can run the fixture/fake path when `POP3_HOST` is unset.
  */
-export function fakePop3FromMessages(
-  messages: FakePop3Message[],
-): FakePop3Client {
+export function fakePop3FromMessages(messages: FakePop3Message[]): FakePop3Client {
   return new FakePop3ClientCtor({ messages });
 }
 
@@ -304,12 +313,14 @@ export function fakePop3FromMessages(
  * Run the worker loop until SIGTERM/SIGINT. Calls `ingestOnce()` on
  * `POP3_POLL_INTERVAL_MS`. Exits 0 on signal.
  */
-export async function runWorker(opts: {
-  /** Fixture path: run one cycle against a fake POP3 with these messages, then exit. */
-  fixtures?: FakePop3Message[];
-  /** Override poll interval. Defaults to env. */
-  pollIntervalMs?: number;
-} = {}): Promise<void> {
+export async function runWorker(
+  opts: {
+    /** Fixture path: run one cycle against a fake POP3 with these messages, then exit. */
+    fixtures?: FakePop3Message[];
+    /** Override poll interval. Defaults to env. */
+    pollIntervalMs?: number;
+  } = {},
+): Promise<void> {
   const stop = { stopping: false };
 
   let env: ReturnType<typeof parseEnv> | null = null;
@@ -320,8 +331,7 @@ export async function runWorker(opts: {
   }
   const interval = opts.pollIntervalMs ?? env?.POP3_POLL_INTERVAL_MS ?? 30000;
   const mode = env?.MAIL_TRANSPORT_MODE ?? 'fixture';
-  const oneShot =
-    process.env.WORKER_ONE_SHOT === '1' || process.env.WORKER_ONE_SHOT === 'true';
+  const oneShot = process.env.WORKER_ONE_SHOT === '1' || process.env.WORKER_ONE_SHOT === 'true';
 
   const onSignal = (sig: string) => {
     if (stop.stopping) return;
@@ -334,9 +344,7 @@ export async function runWorker(opts: {
   if (opts.fixtures !== undefined) {
     console.log(`worker: transport.mode=fixture (explicit fixtures)`);
     const pop3 = fakePop3FromMessages(opts.fixtures);
-    console.log(
-      `worker: fixture mode, ${opts.fixtures.length} message(s), running one cycle`,
-    );
+    console.log(`worker: fixture mode, ${opts.fixtures.length} message(s), running one cycle`);
     const result = await ingestOnce({ pop3 });
     console.log(JSON.stringify(result, null, 2));
     await closeDb().catch(() => undefined);
@@ -389,10 +397,7 @@ export async function runWorker(opts: {
         }`,
       );
     } catch (err) {
-      console.error(
-        'worker: cycle threw:',
-        err instanceof Error ? err.message : String(err),
-      );
+      console.error('worker: cycle threw:', err instanceof Error ? err.message : String(err));
     }
     try {
       const { flushDue } = await import('../send/outbound-queue.js');
@@ -401,10 +406,7 @@ export async function runWorker(opts: {
         console.log(`worker: flushDue flushed=${flushed.flushed}`);
       }
     } catch (err) {
-      console.error(
-        'worker: flushDue threw:',
-        err instanceof Error ? err.message : String(err),
-      );
+      console.error('worker: flushDue threw:', err instanceof Error ? err.message : String(err));
     }
     const elapsed = Date.now() - start;
     const wait = Math.max(0, interval - elapsed);

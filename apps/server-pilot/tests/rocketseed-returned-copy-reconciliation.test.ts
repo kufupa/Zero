@@ -135,6 +135,7 @@ function richTrustedReturnedCopy(args: {
 async function seedCanonicalOutbound(
   db: import('../src/db/client.js').DB,
   opts: {
+    bccAddresses?: string[];
     direction?: 'inbound' | 'outbound';
     queueStatus?: string;
     returnedMessageId?: string;
@@ -175,7 +176,7 @@ async function seedCanonicalOutbound(
     fromAddress: transportAddress,
     toAddresses: [transportAddress],
     ccAddresses: [],
-    bccAddresses: [],
+    bccAddresses: opts.bccAddresses ?? [],
     subject: 'canonical outbound',
     textBody: 'outbound body',
     messageIdHeader: returnedMessageId,
@@ -341,7 +342,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
     expect(result.rows[0]?.isRead).toBe(false);
     expect(result.rows[0]?.isStarred).toBe(true);
     expect(result.rows[0]).toMatchObject({
-      bccAddresses: result.parsed.bccAddresses,
+      bccAddresses: [],
       ccAddresses: result.parsed.ccAddresses,
       fromAddress: result.parsed.fromAddress,
       htmlBody: result.parsed.htmlBody,
@@ -366,6 +367,47 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
       messageId: result.canonicalMessageId,
       s3Key: result.parsed.attachments[0]?.s3Key,
     });
+  }, 30000);
+
+  it('retains canonical BCC audit recipients when a trusted returned copy omits BCC', async () => {
+    const storage = new FakeS3Storage('test-mail-bucket');
+    const auditBcc = `audit-${randomUUID()}@zero.test`;
+    const result = await withSeededTestDb(async (db) => {
+      const canonical = await seedCanonicalOutbound(db, {
+        bccAddresses: [auditBcc],
+      });
+      const candidateMessageId = randomUUID();
+      const raw = trustedReturnedCopy({
+        outboundId: canonical.canonicalMessageId,
+        messageId: canonical.returnedMessageId,
+        transportAddress: canonical.transportAddress,
+      });
+      const parsed = await parseRawMessage(raw, {
+        messageId: candidateMessageId,
+        storage,
+      });
+      const persistResult = await persistInboundMessage(
+        parsed,
+        raw,
+        {
+          ingestMailboxId: 'ingest-nava-legacy',
+          pop3Uidl: `task-3-bcc-${randomUUID()}`,
+          messageId: candidateMessageId,
+        },
+        { db, storage, skipAiEnqueue: true },
+      );
+      const [canonicalRow] = await db
+        .select({ bccAddresses: message.bccAddresses })
+        .from(message)
+        .where(eq(message.id, canonical.canonicalMessageId))
+        .limit(1);
+
+      return { canonicalRow, parsed, persistResult };
+    });
+
+    expect(result.persistResult.kind).toBe('reconciled');
+    expect(result.parsed.bccAddresses).toEqual([]);
+    expect(result.canonicalRow?.bccAddresses).toEqual([auditBcc]);
   }, 30000);
 
   it('reconciles strict UUID correlation from a sending row when returned Message-ID is missing or rewritten', async () => {
@@ -635,7 +677,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
     }
   }, 30000);
 
-  it('uses ordinary ingest for unproven sending rows, non-sent candidates, and legacy fallback', async () => {
+  it('defers only trusted UUID copies without a durable outcome and ordinarily ingests other candidates', async () => {
     const cases = [
       {
         name: 'missing outcome',
@@ -768,13 +810,127 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
       return persisted;
     });
 
-    expect(results).toEqual(
-      cases.map(({ name }) => ({
-        kind: 'stored',
-        name,
-        rowCount: 2,
-      })),
-    );
+    expect(results).toEqual([
+      { kind: 'deferred', name: 'missing outcome', rowCount: 1 },
+      { kind: 'deferred', name: 'malformed outcome', rowCount: 1 },
+      { kind: 'stored', name: 'missing accepted transport recipient', rowCount: 2 },
+      { kind: 'stored', name: 'malformed accepted transport recipient wrapper', rowCount: 2 },
+      { kind: 'stored', name: 'pending queue', rowCount: 2 },
+      { kind: 'stored', name: 'cancelled queue', rowCount: 2 },
+      { kind: 'stored', name: 'message ID-only fallback while sending', rowCount: 2 },
+    ]);
+  }, 30000);
+
+  it('retries a deferred returned copy after durable outcome without SMTP resend or leaked ingest objects', async () => {
+    const smtp = new FakeSmtpTransport();
+    __setSmtpTransportForTests(smtp);
+
+    try {
+      const storage = new FakeS3Storage('test-mail-bucket');
+      const result = await withSeededTestDb(async (db) => {
+        const canonical = await seedCanonicalOutbound(db, { queueStatus: 'sending' });
+        const pop3Uidl = `task-3-deferred-${randomUUID()}`;
+        const raw = trustedReturnedCopy({
+          includeAttachment: true,
+          outboundId: canonical.canonicalMessageId,
+          messageId: `rewritten-${randomUUID()}@zero.test`,
+          transportAddress: canonical.transportAddress,
+        });
+        const firstMessageId = randomUUID();
+        const firstParsed = await parseRawMessage(raw, {
+          messageId: firstMessageId,
+          storage,
+        });
+        const first = await persistInboundMessage(
+          firstParsed,
+          raw,
+          {
+            ingestMailboxId: 'ingest-nava-legacy',
+            pop3Uidl,
+            messageId: firstMessageId,
+          },
+          { db, storage, skipAiEnqueue: true },
+        );
+        const rowsAfterDeferral = await db
+          .select({ id: message.id })
+          .from(message)
+          .where(inArray(message.id, [canonical.canonicalMessageId, firstMessageId]));
+        const firstAttachmentKeys = storage.listKeys(`attachments/${firstMessageId}/`);
+        const firstRawMime = storage.get(first.rawMimeS3Key);
+
+        await db
+          .update(outboundSendQueue)
+          .set({
+            claimedAt: new Date(Date.now() - RECLAIM_SENDING_AFTER_MS - 1),
+            smtpPayload: {
+              from: canonical.transportAddress,
+              to: [canonical.transportAddress],
+              cc: [],
+              bcc: [],
+              subject: 'deferred returned copy',
+              html: '<p>deferred returned copy</p>',
+              text: 'deferred returned copy',
+              deliveryOutcome: {
+                messageId: canonical.returnedMessageId,
+                accepted: [canonical.transportAddress],
+                rejected: [],
+              },
+            },
+          })
+          .where(eq(outboundSendQueue.id, canonical.queueId));
+
+        const retryMessageId = randomUUID();
+        const retryParsed = await parseRawMessage(raw, {
+          messageId: retryMessageId,
+          storage,
+        });
+        const retry = await persistInboundMessage(
+          retryParsed,
+          raw,
+          {
+            ingestMailboxId: 'ingest-nava-legacy',
+            pop3Uidl,
+            messageId: retryMessageId,
+          },
+          { db, storage, skipAiEnqueue: true },
+        );
+        const flushed = await flushDue({ db });
+        const [queue] = await db
+          .select({ status: outboundSendQueue.status })
+          .from(outboundSendQueue)
+          .where(eq(outboundSendQueue.id, canonical.queueId))
+          .limit(1);
+        const rows = await db
+          .select({ id: message.id })
+          .from(message)
+          .where(
+            inArray(message.id, [canonical.canonicalMessageId, firstMessageId, retryMessageId]),
+          );
+
+        return {
+          first,
+          firstAttachmentKeys,
+          firstRawMime,
+          flushed,
+          queue,
+          retry,
+          rows,
+          rowsAfterDeferral,
+        };
+      });
+
+      expect(result.first.kind).toBe('deferred');
+      expect(result.rowsAfterDeferral).toEqual([{ id: expect.any(String) }]);
+      expect(result.firstRawMime).toBeUndefined();
+      expect(result.firstAttachmentKeys).toEqual([]);
+      expect(result.retry.kind).toBe('reconciled');
+      expect(result.flushed).toEqual({ flushed: 1 });
+      expect(result.queue?.status).toBe('sent');
+      expect(result.rows).toHaveLength(1);
+      expect(smtp.sent).toHaveLength(0);
+    } finally {
+      __setSmtpTransportForTests(null);
+    }
   }, 30000);
 
   it('uses ordinary ingest without live POP3 reconciliation opt-in', async () => {
