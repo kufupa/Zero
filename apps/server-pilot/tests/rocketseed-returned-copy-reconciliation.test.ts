@@ -812,7 +812,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
 
     expect(results).toEqual([
       { kind: 'deferred', name: 'missing outcome', rowCount: 1 },
-      { kind: 'deferred', name: 'malformed outcome', rowCount: 1 },
+      { kind: 'quarantined', name: 'malformed outcome', rowCount: 1 },
       { kind: 'stored', name: 'missing accepted transport recipient', rowCount: 2 },
       { kind: 'stored', name: 'malformed accepted transport recipient wrapper', rowCount: 2 },
       { kind: 'stored', name: 'pending queue', rowCount: 2 },
@@ -921,7 +921,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
 
       expect(result.first.kind).toBe('deferred');
       expect(result.rowsAfterDeferral).toEqual([{ id: expect.any(String) }]);
-      expect(result.firstRawMime).toBeUndefined();
+      expect(result.firstRawMime).toBeDefined();
       expect(result.firstAttachmentKeys).toEqual([]);
       expect(result.retry.kind).toBe('reconciled');
       expect(result.flushed).toEqual({ flushed: 1 });

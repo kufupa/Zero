@@ -215,7 +215,6 @@ describe('ingestOnce returned-copy results', () => {
       messageId: 'canonical-message',
       rawMimeS3Key: 'raw-mime/test.eml',
       candidateAttachmentCleanupFailureCount: 0,
-      rawMimeCleanupFailureCount: 0,
     } as unknown as Awaited<ReturnType<typeof ingestStore.persistInboundMessage>>);
 
     try {

@@ -180,11 +180,9 @@ export async function ingestOnce(opts: IngestOnceOptions = {}): Promise<IngestCy
 
         if (result.kind === 'deferred') {
           failureCounts.delete(uidl);
-          const deferredCleanupFailureCount =
-            result.candidateAttachmentCleanupFailureCount + result.rawMimeCleanupFailureCount;
-          if (deferredCleanupFailureCount > 0) {
+          if (result.candidateAttachmentCleanupFailureCount > 0) {
             console.warn(
-              `worker: deferred returned-copy cleanup failures=${deferredCleanupFailureCount}`,
+              `worker: deferred returned-copy attachment cleanup failures=${result.candidateAttachmentCleanupFailureCount}`,
             );
           }
           items.push({ uidl, result, status: 'deferred' });
