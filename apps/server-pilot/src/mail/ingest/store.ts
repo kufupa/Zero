@@ -62,6 +62,10 @@ import { randomUUID } from 'node:crypto';
 
 const CENTURION_TRANSPORT_ID = 'transport-centurion';
 export const CANDIDATE_ATTACHMENT_DELETE_CONCURRENCY = 4;
+const QUARANTINE_CANDIDATE_ATTACHMENT_KEYS = 'candidateAttachmentCleanupKeys';
+const MAX_QUARANTINE_CANDIDATE_ATTACHMENT_KEYS = 100;
+const SAFE_QUARANTINE_CANDIDATE_ATTACHMENT_KEY =
+  /^attachments\/[A-Za-z0-9-]{1,128}\/\d{3}-[A-Za-z0-9._-]{1,80}$/;
 
 type RoutedTransport = {
   id: string;
@@ -223,12 +227,14 @@ export async function persistInboundMessage(
     ? undefined
     : await findExistingQuarantine(db, meta);
   if (existingQuarantine) {
-    const candidateAttachmentCleanupFailureCount = await cleanupCandidateAttachmentObjects(
-      storage,
+    const candidateAttachmentKeys = await persistQuarantineCandidateAttachmentKeys(
+      db,
+      existingQuarantine,
       parsed.attachments,
       meta.messageId,
-      '',
     );
+    const candidateAttachmentCleanupFailureCount =
+      await cleanupQuarantineCandidateAttachmentObjects(storage, candidateAttachmentKeys);
     return {
       kind: 'quarantined',
       quarantineId: existingQuarantine.id,
@@ -613,6 +619,20 @@ export async function cleanupCandidateAttachmentObjects(
         .filter((key) => key.startsWith(candidatePrefix)),
     ),
   ];
+  return cleanupAttachmentObjectKeys(storage, keys);
+}
+
+async function cleanupQuarantineCandidateAttachmentObjects(
+  storage: S3Storage,
+  keys: readonly string[],
+): Promise<number> {
+  return cleanupAttachmentObjectKeys(storage, boundedSafeQuarantineCandidateAttachmentKeys(keys));
+}
+
+async function cleanupAttachmentObjectKeys(
+  storage: S3Storage,
+  keys: readonly string[],
+): Promise<number> {
   let nextKeyIndex = 0;
   let failureCount = 0;
   const deleteWorker = async () => {
@@ -633,6 +653,82 @@ export async function cleanupCandidateAttachmentObjects(
     ),
   );
   return failureCount;
+}
+
+function candidateAttachmentKeysForQuarantine(
+  attachments: ParsedInboundMessage['attachments'],
+  candidateMessageId: string,
+): string[] {
+  const candidatePrefix = `attachments/${candidateMessageId}/`;
+  return boundedSafeQuarantineCandidateAttachmentKeys(
+    attachments
+      .map((attachment) => attachment.s3Key)
+      .filter((key) => key.startsWith(candidatePrefix)),
+  );
+}
+
+function persistedQuarantineCandidateAttachmentKeys(parsedHeaders: unknown): string[] {
+  if (!isRecord(parsedHeaders)) return [];
+  const keys = parsedHeaders[QUARANTINE_CANDIDATE_ATTACHMENT_KEYS];
+  return Array.isArray(keys) ? boundedSafeQuarantineCandidateAttachmentKeys(keys) : [];
+}
+
+function boundedSafeQuarantineCandidateAttachmentKeys(keys: readonly unknown[]): string[] {
+  const safeKeys: string[] = [];
+  const seen = new Set<string>();
+  for (const key of keys) {
+    if (
+      typeof key !== 'string' ||
+      key.length > 256 ||
+      !SAFE_QUARANTINE_CANDIDATE_ATTACHMENT_KEY.test(key) ||
+      seen.has(key)
+    ) {
+      continue;
+    }
+    safeKeys.push(key);
+    seen.add(key);
+    if (safeKeys.length === MAX_QUARANTINE_CANDIDATE_ATTACHMENT_KEYS) break;
+  }
+  return safeKeys;
+}
+
+async function persistQuarantineCandidateAttachmentKeys(
+  db: DB,
+  quarantine: { id: string; parsedHeaders: unknown },
+  attachments: ParsedInboundMessage['attachments'],
+  candidateMessageId: string,
+): Promise<string[]> {
+  const candidateAttachmentKeys = boundedSafeQuarantineCandidateAttachmentKeys([
+    ...persistedQuarantineCandidateAttachmentKeys(quarantine.parsedHeaders),
+    ...candidateAttachmentKeysForQuarantine(attachments, candidateMessageId),
+  ]);
+  if (candidateAttachmentKeys.length === 0) return [];
+
+  const parsedHeaders = isRecord(quarantine.parsedHeaders) ? { ...quarantine.parsedHeaders } : {};
+  parsedHeaders[QUARANTINE_CANDIDATE_ATTACHMENT_KEYS] = candidateAttachmentKeys;
+  await db
+    .update(mailIngestQuarantine)
+    .set({ parsedHeaders })
+    .where(eq(mailIngestQuarantine.id, quarantine.id));
+  return candidateAttachmentKeys;
+}
+
+function withQuarantineCandidateAttachmentKeys(
+  parsedHeaders: Record<string, unknown>,
+  attachments: ParsedInboundMessage['attachments'],
+  candidateMessageId: string,
+): Record<string, unknown> {
+  const candidateAttachmentKeys = candidateAttachmentKeysForQuarantine(
+    attachments,
+    candidateMessageId,
+  );
+  return candidateAttachmentKeys.length === 0
+    ? parsedHeaders
+    : { ...parsedHeaders, [QUARANTINE_CANDIDATE_ATTACHMENT_KEYS]: candidateAttachmentKeys };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 function withCandidateAttachmentCleanupFailures(
@@ -900,6 +996,7 @@ async function findExistingQuarantine(
       id: string;
       reason: string;
       rawMimeS3Key: string;
+      parsedHeaders: unknown;
     }
   | undefined
 > {
@@ -908,6 +1005,7 @@ async function findExistingQuarantine(
       id: mailIngestQuarantine.id,
       reason: mailIngestQuarantine.reason,
       rawMimeS3Key: mailIngestQuarantine.rawMimeS3Key,
+      parsedHeaders: mailIngestQuarantine.parsedHeaders,
     })
     .from(mailIngestQuarantine)
     .where(
@@ -1086,7 +1184,11 @@ async function quarantineUnrouted(args: {
     rawMimeS3Key,
     reason,
     ownerHeaderValue: parsed.ownerHeaderValue,
-    parsedHeaders: headerSummary(parsed),
+    parsedHeaders: withQuarantineCandidateAttachmentKeys(
+      headerSummary(parsed),
+      parsed.attachments,
+      meta.messageId,
+    ),
   });
   return {
     kind: 'quarantined',
@@ -1101,11 +1203,17 @@ async function quarantineWithAttachmentCleanup(
   args: Parameters<typeof quarantineUnrouted>[0] & { storage: S3Storage },
 ): Promise<PersistQuarantinedResult> {
   const result = await quarantineUnrouted(args);
-  const candidateAttachmentCleanupFailureCount = await cleanupCandidateAttachmentObjects(
-    args.storage,
+  const quarantine = await findExistingQuarantine(args.db, args.meta);
+  if (!quarantine) throw new Error('quarantine row missing after insert');
+  const candidateAttachmentKeys = await persistQuarantineCandidateAttachmentKeys(
+    args.db,
+    quarantine,
     args.parsed.attachments,
     args.meta.messageId,
-    '',
+  );
+  const candidateAttachmentCleanupFailureCount = await cleanupQuarantineCandidateAttachmentObjects(
+    args.storage,
+    candidateAttachmentKeys,
   );
   return { ...result, candidateAttachmentCleanupFailureCount };
 }

@@ -1,5 +1,6 @@
 import {
   attachment,
+  mailIngestQuarantine,
   mailIngestMailbox,
   mailboxTransport,
   mailThread,
@@ -818,6 +819,157 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
       { kind: 'stored', name: 'pending queue', rowCount: 2 },
       { kind: 'stored', name: 'cancelled queue', rowCount: 2 },
       { kind: 'stored', name: 'message ID-only fallback while sending', rowCount: 2 },
+    ]);
+  }, 30000);
+
+  it('retries every persisted candidate attachment after malformed returned-copy cleanup fails', async () => {
+    const storage = new FakeS3Storage('test-mail-bucket');
+    const result = await withSeededTestDb(async (db) => {
+      const canonical = await seedCanonicalOutbound(db, { queueStatus: 'sending' });
+      await db
+        .update(outboundSendQueue)
+        .set({
+          claimedAt: new Date(),
+          smtpPayload: {
+            deliveryOutcome: {
+              messageId: canonical.returnedMessageId,
+              accepted: [canonical.transportAddress],
+            },
+          },
+        })
+        .where(eq(outboundSendQueue.id, canonical.queueId));
+
+      const pop3Uidl = `malformed-cleanup-${randomUUID()}`;
+      const raw = trustedReturnedCopy({
+        includeAttachment: true,
+        outboundId: canonical.canonicalMessageId,
+        messageId: canonical.returnedMessageId,
+        transportAddress: canonical.transportAddress,
+      });
+      const firstMessageId = randomUUID();
+      const firstParsed = await parseRawMessage(raw, {
+        messageId: firstMessageId,
+        storage,
+      });
+      const firstCandidateAttachmentKey = firstParsed.attachments[0]?.s3Key;
+      if (!firstCandidateAttachmentKey) throw new Error('missing first candidate attachment');
+
+      const originalDeleteObject = storage.deleteObject.bind(storage);
+      let failFirstCleanup = true;
+      storage.deleteObject = async (key) => {
+        if (failFirstCleanup && key === firstCandidateAttachmentKey) {
+          failFirstCleanup = false;
+          throw new Error('injected first cleanup failure');
+        }
+        await originalDeleteObject(key);
+      };
+      let first: Awaited<ReturnType<typeof persistInboundMessage>>;
+      try {
+        first = await persistInboundMessage(
+          firstParsed,
+          raw,
+          {
+            ingestMailboxId: 'ingest-nava-legacy',
+            pop3Uidl,
+            messageId: firstMessageId,
+          },
+          { db, storage, skipAiEnqueue: true },
+        );
+      } finally {
+        storage.deleteObject = originalDeleteObject;
+      }
+
+      const candidateRowsAfterFirst = await db
+        .select({ id: message.id })
+        .from(message)
+        .where(eq(message.id, firstMessageId));
+      const quarantineRowsAfterFirst = await db
+        .select({
+          id: mailIngestQuarantine.id,
+          parsedHeaders: mailIngestQuarantine.parsedHeaders,
+        })
+        .from(mailIngestQuarantine)
+        .where(eq(mailIngestQuarantine.pop3Uidl, pop3Uidl));
+      const initialHeaders = quarantineRowsAfterFirst[0]?.parsedHeaders;
+      const safeHeaders =
+        initialHeaders && typeof initialHeaders === 'object' && !Array.isArray(initialHeaders)
+          ? initialHeaders
+          : {};
+      const unsafeKey = 'raw-mime/arbitrary-object.eml';
+      await storage.putObject({
+        key: unsafeKey,
+        body: Buffer.from('must not delete'),
+        contentType: 'application/octet-stream',
+      });
+      await db
+        .update(mailIngestQuarantine)
+        .set({
+          parsedHeaders: {
+            ...safeHeaders,
+            candidateAttachmentCleanupKeys: [firstCandidateAttachmentKey, unsafeKey],
+          },
+        })
+        .where(eq(mailIngestQuarantine.id, quarantineRowsAfterFirst[0]!.id));
+
+      const retryMessageId = randomUUID();
+      const retryParsed = await parseRawMessage(raw, {
+        messageId: retryMessageId,
+        storage,
+      });
+      const retryCandidateAttachmentKey = retryParsed.attachments[0]?.s3Key;
+      if (!retryCandidateAttachmentKey) throw new Error('missing retry candidate attachment');
+      const retry = await persistInboundMessage(
+        retryParsed,
+        raw,
+        {
+          ingestMailboxId: 'ingest-nava-legacy',
+          pop3Uidl,
+          messageId: retryMessageId,
+        },
+        { db, storage, skipAiEnqueue: true },
+      );
+      const candidateRowsAfterRetry = await db
+        .select({ id: message.id })
+        .from(message)
+        .where(inArray(message.id, [firstMessageId, retryMessageId]));
+      const quarantineRowsAfterRetry = await db
+        .select({ parsedHeaders: mailIngestQuarantine.parsedHeaders })
+        .from(mailIngestQuarantine)
+        .where(eq(mailIngestQuarantine.pop3Uidl, pop3Uidl));
+
+      return {
+        candidateRowsAfterFirst,
+        candidateRowsAfterRetry,
+        first,
+        firstCandidateAttachmentKey,
+        initialPendingKeys: (safeHeaders as Record<string, unknown>).candidateAttachmentCleanupKeys,
+        quarantineRowsAfterFirst,
+        retry,
+        retryCandidateAttachmentKey,
+        retryPendingKeys: (
+          quarantineRowsAfterRetry[0]?.parsedHeaders as Record<string, unknown> | undefined
+        )?.candidateAttachmentCleanupKeys,
+        unsafeKey,
+      };
+    });
+
+    expect(result.quarantineRowsAfterFirst).toHaveLength(1);
+    expect(result.candidateRowsAfterFirst).toEqual([]);
+    expect(result.first.kind).toBe('quarantined');
+    if (result.first.kind !== 'quarantined') return;
+    expect(result.first.candidateAttachmentCleanupFailureCount).toBe(1);
+    expect(result.initialPendingKeys).toEqual([result.firstCandidateAttachmentKey]);
+
+    expect(result.retry.kind).toBe('quarantined');
+    if (result.retry.kind !== 'quarantined') return;
+    expect(result.retry.candidateAttachmentCleanupFailureCount).toBe(0);
+    expect(result.candidateRowsAfterRetry).toEqual([]);
+    expect(storage.get(result.firstCandidateAttachmentKey)).toBeUndefined();
+    expect(storage.get(result.retryCandidateAttachmentKey)).toBeUndefined();
+    expect(storage.get(result.unsafeKey)).toBeDefined();
+    expect(result.retryPendingKeys).toEqual([
+      result.firstCandidateAttachmentKey,
+      result.retryCandidateAttachmentKey,
     ]);
   }, 30000);
 

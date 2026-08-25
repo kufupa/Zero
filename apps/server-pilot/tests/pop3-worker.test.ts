@@ -1,10 +1,19 @@
+import {
+  FakeS3Storage,
+  quarantineArchiveKey,
+  rawMimeKey,
+  resetS3Storage,
+  setS3Storage,
+} from '../src/storage/s3';
 import { FakePop3Client, type FakePop3Message } from '../src/mail/ingest/pop3-client';
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db';
-import { FakeS3Storage, resetS3Storage, setS3Storage } from '../src/storage/s3';
 import { ingestOnce, POISON_MAX_RETRIES } from '../src/mail/ingest/worker';
+import { mailIngestQuarantine } from '../src/db/schema/mail';
 import * as ingestStore from '../src/mail/ingest/store';
 import { describe, expect, it, vi } from 'vitest';
 import { readFixture } from './helpers/fixtures';
+import { randomUUID } from 'node:crypto';
+import { eq } from 'drizzle-orm';
 
 const reachable = await probeTestDb();
 
@@ -13,6 +22,36 @@ function fixtureMessages(): FakePop3Message[] {
     { uidl: 'uidl-A', raw: readFixture('centurion-stamped.eml') },
     { uidl: 'uidl-B', raw: readFixture('missing-owner.eml') },
   ];
+}
+
+function unknownOwnerMessage(includeAttachment = false): Buffer {
+  const body = includeAttachment
+    ? [
+        'MIME-Version: 1.0',
+        'Content-Type: multipart/mixed; boundary="cleanup-boundary"',
+        '',
+        '--cleanup-boundary',
+        'Content-Type: text/plain; charset=utf-8',
+        '',
+        'quarantine cleanup retry',
+        '--cleanup-boundary',
+        'Content-Type: application/octet-stream; name="cleanup.bin"',
+        'Content-Disposition: attachment; filename="cleanup.bin"',
+        'Content-Transfer-Encoding: base64',
+        '',
+        'Y2xlYW51cA==',
+        '--cleanup-boundary--',
+      ]
+    : ['', 'quarantine without attachment'];
+
+  return Buffer.from(
+    [
+      'X-Zero-Mailbox: unknown-owner@zero.test',
+      'From: unknown-owner@zero.test',
+      'To: unknown-owner@zero.test',
+      ...body,
+    ].join('\r\n'),
+  );
 }
 
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
@@ -158,6 +197,130 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       } finally {
         persistSpy.mockRestore();
       }
+    }, 30000);
+
+    it('holds POP3 and raw MIME until every quarantined candidate attachment cleans', async () => {
+      const storage = new FakeS3Storage('worker-quarantine-cleanup');
+      resetS3Storage();
+      setS3Storage(storage);
+      const uidl = `uidl-quarantine-cleanup-${randomUUID()}`;
+      const ingestMailboxId = 'ingest-nava-legacy';
+      const raw = unknownOwnerMessage(true);
+      const fakePop3 = new FakePop3Client({ messages: [{ uidl, raw }] });
+      const failureCounts = new Map([[uidl, POISON_MAX_RETRIES - 1]]);
+      const originalDeleteObject = storage.deleteObject.bind(storage);
+      let failFirstAttachmentCleanup = true;
+      storage.deleteObject = async (key) => {
+        if (failFirstAttachmentCleanup && key.startsWith('attachments/')) {
+          failFirstAttachmentCleanup = false;
+          throw new Error('injected quarantine attachment cleanup failure');
+        }
+        await originalDeleteObject(key);
+      };
+
+      const result = await withSeededTestDb(async (db) => {
+        let first: Awaited<ReturnType<typeof ingestOnce>>;
+        try {
+          first = await ingestOnce({
+            pop3: fakePop3,
+            db,
+            failureCounts,
+            ingestMailboxId,
+          });
+        } finally {
+          storage.deleteObject = originalDeleteObject;
+        }
+        const rawMimeS3Key = rawMimeKey({ ingestMailboxId, pop3Uidl: uidl });
+        const firstCandidateAttachmentKey = storage.listKeys('attachments/')[0];
+        if (!firstCandidateAttachmentKey) throw new Error('missing first candidate attachment');
+        const firstRawMime = storage.get(rawMimeS3Key);
+        const firstArchive = storage.get(quarantineArchiveKey({ ingestMailboxId, pop3Uidl: uidl }));
+
+        const second = await ingestOnce({
+          pop3: fakePop3,
+          db,
+          failureCounts,
+          ingestMailboxId,
+        });
+        const quarantines = await db
+          .select({ id: mailIngestQuarantine.id })
+          .from(mailIngestQuarantine)
+          .where(eq(mailIngestQuarantine.pop3Uidl, uidl));
+
+        return {
+          first,
+          firstCandidateAttachmentKey,
+          firstArchive,
+          firstRawMime,
+          quarantines,
+          rawMimeS3Key,
+          second,
+          secondArchive: storage.get(quarantineArchiveKey({ ingestMailboxId, pop3Uidl: uidl })),
+        };
+      });
+
+      expect(result.first.deled).toBe(0);
+      expect(result.first.items[0]).toMatchObject({
+        status: 'deferred',
+        uidl,
+        result: {
+          kind: 'quarantined',
+          candidateAttachmentCleanupFailureCount: 1,
+        },
+      });
+      expect(failureCounts.has(uidl)).toBe(false);
+      expect(fakePop3.deleLog).toEqual([uidl]);
+      expect(result.firstRawMime).toBeDefined();
+      expect(result.firstArchive).toBeUndefined();
+      expect(result.second.deled).toBe(1);
+      expect(result.second.items[0]).toMatchObject({ status: 'ok', uidl });
+      expect(result.quarantines).toHaveLength(1);
+      expect(storage.get(result.firstCandidateAttachmentKey)).toBeUndefined();
+      expect(result.secondArchive).toBeDefined();
+    }, 30000);
+
+    it('drains an existing no-attachment quarantine normally', async () => {
+      const storage = new FakeS3Storage('worker-no-attachment-quarantine');
+      resetS3Storage();
+      setS3Storage(storage);
+      const uidl = `uidl-no-attachment-${randomUUID()}`;
+      const ingestMailboxId = 'ingest-nava-legacy';
+      const rawMimeS3Key = rawMimeKey({ ingestMailboxId, pop3Uidl: uidl });
+      const fakePop3 = new FakePop3Client({
+        messages: [{ uidl, raw: unknownOwnerMessage() }],
+      });
+
+      const result = await withSeededTestDb(async (db) => {
+        await db.insert(mailIngestQuarantine).values({
+          id: randomUUID(),
+          ingestMailboxId,
+          pop3Uidl: uidl,
+          rawMimeS3Key,
+          reason: 'unknown_transport',
+          ownerHeaderValue: 'unknown-owner@zero.test',
+          parsedHeaders: { subject: 'legacy no attachment quarantine' },
+        });
+        const cycle = await ingestOnce({
+          pop3: fakePop3,
+          db,
+          ingestMailboxId,
+        });
+        return {
+          archive: storage.get(quarantineArchiveKey({ ingestMailboxId, pop3Uidl: uidl })),
+          cycle,
+          source: storage.get(rawMimeS3Key),
+        };
+      });
+
+      expect(result.cycle.deled).toBe(1);
+      expect(result.cycle.items[0]).toMatchObject({
+        status: 'ok',
+        uidl,
+        result: { kind: 'quarantined', candidateAttachmentCleanupFailureCount: 0 },
+      });
+      expect(fakePop3.deleLog).toEqual([uidl]);
+      expect(result.source).toBeDefined();
+      expect(result.archive).toBeDefined();
     }, 30000);
   },
 );
