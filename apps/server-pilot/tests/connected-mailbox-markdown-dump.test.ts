@@ -6,10 +6,16 @@ import {
   createConnectedMailboxMarkdownDump,
   type ConnectedMailboxDumpPostgresClient,
 } from '../src/ops/connected-mailbox-markdown-dump';
+import { execFileSync } from 'node:child_process';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
+import { fileURLToPath } from 'node:url';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 
 const AS_OF = '2026-08-25T10:00:00.000Z';
 const PRIVATE_BODY_MARKER = 'SYNTHETIC_PRIVATE_BODY_MARKER';
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 
 type FakeRow = Record<string, unknown>;
 
@@ -122,6 +128,16 @@ function queryContaining(queries: readonly Query[], fragment: string): Query {
   return query;
 }
 
+async function withTemporaryGitRoot<T>(run: (repoRoot: string) => Promise<T>): Promise<T> {
+  const repoRoot = await mkdtemp(path.join(tmpdir(), 'connected-mailbox-dump-'));
+  try {
+    execFileSync('git', ['init', '--quiet'], { cwd: repoRoot, stdio: 'ignore' });
+    return await run(repoRoot);
+  } finally {
+    await rm(repoRoot, { recursive: true, force: true });
+  }
+}
+
 function createDumpHarness(fake: FakePostgres) {
   const writes: Array<{ outputName: string; content: string }> = [];
   const writerConfigurations: Array<{
@@ -131,13 +147,13 @@ function createDumpHarness(fake: FakePostgres) {
   }> = [];
   const dump = createConnectedMailboxMarkdownDump({
     client: fake.client,
-    repoRoot: '/synthetic/zero',
+    repoRoot: REPO_ROOT,
     createWriter: (configuration) => {
       writerConfigurations.push(configuration);
       return {
         async write(outputName, content) {
           writes.push({ outputName, content: String(content) });
-          return `/synthetic/zero/.private/connected-mailbox-corpus/${outputName}`;
+          return path.join(REPO_ROOT, '.private', 'connected-mailbox-corpus', outputName);
         },
       };
     },
@@ -147,6 +163,36 @@ function createDumpHarness(fake: FakePostgres) {
 }
 
 describe('connected mailbox Markdown dump', () => {
+  it('fails before transaction or writer output when private root is unignored', async () => {
+    await withTemporaryGitRoot(async (repoRoot) => {
+      const fake = createFakePostgres();
+      let writerCreateCalls = 0;
+      let writerOutputCalls = 0;
+      const dump = createConnectedMailboxMarkdownDump({
+        client: fake.client,
+        repoRoot,
+        createWriter: () => {
+          writerCreateCalls += 1;
+          return {
+            async write() {
+              writerOutputCalls += 1;
+              return path.join(repoRoot, '.private', 'connected-mailbox-corpus', 'output.md');
+            },
+          };
+        },
+      });
+
+      await expect(dump({ outputName: 'reservationist-inbox.md' })).rejects.toThrow(
+        'Private output root is not ignored',
+      );
+
+      expect(fake.beginOptions).toEqual([]);
+      expect(fake.queries).toEqual([]);
+      expect(writerCreateCalls).toBe(0);
+      expect(writerOutputCalls).toBe(0);
+    });
+  });
+
   it('seals sorted active transports in one read-only snapshot and renders each row transport ID', async () => {
     const fake = createFakePostgres();
     const harness = createDumpHarness(fake);
@@ -177,7 +223,7 @@ describe('connected mailbox Markdown dump', () => {
     });
     expect(harness.writerConfigurations).toEqual([
       {
-        repoRoot: '/synthetic/zero',
+        repoRoot: REPO_ROOT,
         privateDirectoryName: 'connected-mailbox-corpus',
         allowedExtensions: ['.md'],
       },

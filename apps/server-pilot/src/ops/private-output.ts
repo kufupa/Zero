@@ -10,6 +10,7 @@ import {
   stat,
   writeFile,
 } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 
 export type PrivateOutputFileSystem = {
@@ -141,6 +142,45 @@ function isWindowsReservedDeviceName(name: string): boolean {
   return WINDOWS_RESERVED_DEVICE_NAMES.has(name.split('.', 1)[0]!.toUpperCase());
 }
 
+/**
+ * Returns whether one direct `.private` child is ignored under exactly this Git worktree root.
+ * It deliberately emits no command output and treats every Git failure as unsafe.
+ */
+export function isIgnoredPrivateOutputDirectory(
+  repoRoot: string,
+  privateDirectoryName: string,
+): boolean {
+  if (
+    typeof repoRoot !== 'string' ||
+    !repoRoot ||
+    typeof privateDirectoryName !== 'string' ||
+    !DIRECTORY_NAME_PATTERN.test(privateDirectoryName) ||
+    isWindowsReservedDeviceName(privateDirectoryName)
+  ) {
+    return false;
+  }
+
+  const requestedRepoRoot = path.resolve(repoRoot);
+  try {
+    const gitRepoRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      cwd: requestedRepoRoot,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    if (!gitRepoRoot || !samePath(path.resolve(gitRepoRoot), requestedRepoRoot, process.platform)) {
+      return false;
+    }
+
+    execFileSync('git', ['check-ignore', '--quiet', '--', `.private/${privateDirectoryName}/`], {
+      cwd: requestedRepoRoot,
+      stdio: 'ignore',
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function assertConfiguration(config: PrivateOutputWriterConfig): PrivateOutputWriterConfig {
   if (
     !config ||
@@ -254,6 +294,7 @@ async function prepareTrustedPrivateRoot(
   config: PrivateOutputWriterConfig,
   platform: NodeJS.Platform,
 ): Promise<TrustedPrivateRoot> {
+  if (!isIgnoredPrivateOutputDirectory(config.repoRoot, config.privateDirectoryName)) failWrite();
   const requestedRepoRoot = path.resolve(config.repoRoot);
   const canonicalRepoRoot = await fileSystem.realpath(requestedRepoRoot);
   if (!samePath(canonicalRepoRoot, requestedRepoRoot, platform)) failWrite();
@@ -272,6 +313,7 @@ async function prepareExistingTrustedPrivateRoot(
   config: PrivateOutputWriterConfig,
   platform: NodeJS.Platform,
 ): Promise<TrustedPrivateRoot> {
+  if (!isIgnoredPrivateOutputDirectory(config.repoRoot, config.privateDirectoryName)) failWrite();
   const requestedRepoRoot = path.resolve(config.repoRoot);
   const canonicalRepoRoot = await fileSystem.realpath(requestedRepoRoot);
   if (!samePath(canonicalRepoRoot, requestedRepoRoot, platform)) failWrite();
@@ -308,6 +350,7 @@ async function revalidateTrustedPrivateRoot(
   outputPath: string,
   platform: NodeJS.Platform,
 ): Promise<void> {
+  if (!isIgnoredPrivateOutputDirectory(config.repoRoot, config.privateDirectoryName)) failWrite();
   const requestedRepoRoot = path.resolve(config.repoRoot);
   const canonicalRepoRoot = await fileSystem.realpath(requestedRepoRoot);
   if (!samePath(canonicalRepoRoot, requestedRepoRoot, platform)) failWrite();
@@ -348,6 +391,7 @@ async function revalidateTrustedPrivateInputRoot(
   inputPath: string,
   platform: NodeJS.Platform,
 ): Promise<void> {
+  if (!isIgnoredPrivateOutputDirectory(config.repoRoot, config.privateDirectoryName)) failWrite();
   const requestedRepoRoot = path.resolve(config.repoRoot);
   const canonicalRepoRoot = await fileSystem.realpath(requestedRepoRoot);
   if (!samePath(canonicalRepoRoot, requestedRepoRoot, platform)) failWrite();

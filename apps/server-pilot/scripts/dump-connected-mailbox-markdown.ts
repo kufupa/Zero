@@ -4,14 +4,14 @@ import {
   type ConnectedMailboxDumpPostgresClient,
   type ConnectedMailboxMarkdownDumpResult,
 } from '../src/ops/connected-mailbox-markdown-dump.js';
+import { isIgnoredPrivateOutputDirectory } from '../src/ops/private-output.js';
 import { getPostgresSslOptions } from '../src/db/ssl-config.js';
-import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
 import path from 'node:path';
 
 const DEFAULT_OUTPUT_NAME = 'connected-mailbox-inbox.md';
-const PRIVATE_DUMP_DIRECTORY = '.private/connected-mailbox-corpus/';
+const PRIVATE_DUMP_DIRECTORY_NAME = 'connected-mailbox-corpus';
 const OUTPUT_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*\.md$/;
 const WINDOWS_RESERVED_DEVICE_NAMES = new Set([
   'AUX',
@@ -118,17 +118,7 @@ function defaultDependencies(): ConnectedMailboxMarkdownDumpCommandDependencies 
     args: () => process.argv.slice(2),
     environment: () => ({ DATABASE_URL: process.env.DATABASE_URL }),
     repoRoot: () => path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..'),
-    isIgnored: (repoRoot) => {
-      try {
-        execFileSync('git', ['check-ignore', '--quiet', '--', PRIVATE_DUMP_DIRECTORY], {
-          cwd: repoRoot,
-          stdio: 'ignore',
-        });
-        return true;
-      } catch {
-        return false;
-      }
-    },
+    isIgnored: (repoRoot) => isIgnoredPrivateOutputDirectory(repoRoot, PRIVATE_DUMP_DIRECTORY_NAME),
     createClient: (databaseUrl) =>
       postgres(databaseUrl, {
         ssl: getPostgresSslOptions(databaseUrl),

@@ -1,5 +1,6 @@
 import {
   createPrivateOutputWriter,
+  isIgnoredPrivateOutputDirectory,
   type PrivateOutputWriter,
   type PrivateOutputWriterConfig,
 } from './private-output.js';
@@ -304,6 +305,10 @@ export function createConnectedMailboxMarkdownDump(
   const createWriter = dependencies.createWriter ?? DEFAULT_WRITER;
 
   return async (request) => {
+    if (!isIgnoredPrivateOutputDirectory(dependencies.repoRoot, PRIVATE_DIRECTORY_NAME)) {
+      throw new Error('Private output root is not ignored');
+    }
+
     const snapshot = await dependencies.client.begin(
       'isolation level repeatable read read only',
       async (client) => {

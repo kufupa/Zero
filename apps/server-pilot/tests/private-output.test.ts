@@ -19,6 +19,7 @@ import {
   symlink,
   writeFile,
 } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import { describe, expect, it, vi } from 'vitest';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -36,9 +37,20 @@ const localFileSystem: PrivateOutputFileSystem = {
   writeFile,
 };
 
-async function withTemporaryRepo<T>(run: (repoRoot: string) => Promise<T>): Promise<T> {
+async function withTemporaryRepo<T>(
+  run: (repoRoot: string) => Promise<T>,
+  options: { ignoreConfiguredPrivateRoot?: boolean } = {},
+): Promise<T> {
   const repoRoot = await mkdtemp(path.join(tmpdir(), 'private-output-'));
   try {
+    execFileSync('git', ['init', '--quiet'], { cwd: repoRoot, stdio: 'ignore' });
+    if (options.ignoreConfiguredPrivateRoot ?? true) {
+      await writeFile(
+        path.join(repoRoot, '.gitignore'),
+        '/.private/connected-mailbox-corpus/\n',
+        'utf8',
+      );
+    }
     return await run(repoRoot);
   } finally {
     await rm(repoRoot, { recursive: true, force: true });
@@ -130,8 +142,38 @@ describe('private output writer', () => {
       ]) {
         await expect(reader.read(inputName)).rejects.toThrow(/^Private input read failed$/);
       }
-      await expect(readdir(repoRoot)).resolves.toEqual(['.private']);
+      await expect(readdir(repoRoot)).resolves.toEqual(
+        expect.arrayContaining(['.git', '.gitignore', '.private']),
+      );
     });
+  });
+
+  it('fails closed for an unignored configured root without creating writer output', async () => {
+    await withTemporaryRepo(
+      async (repoRoot) => {
+        await expect(createWriter(repoRoot).write('summary.md', 'synthetic')).rejects.toThrow(
+          /^Private output write failed$/,
+        );
+
+        expect(await readdir(repoRoot)).not.toContain('.private');
+      },
+      { ignoreConfiguredPrivateRoot: false },
+    );
+  });
+
+  it('fails closed for a reader when its configured root is unignored', async () => {
+    await withTemporaryRepo(
+      async (repoRoot) => {
+        const root = privateRoot(repoRoot);
+        await mkdir(root, { recursive: true });
+        await writeFile(path.join(root, 'labels.jsonl'), '{"synthetic":true}\n', 'utf8');
+
+        await expect(createReader(repoRoot).read('labels.jsonl')).rejects.toThrow(
+          /^Private input read failed$/,
+        );
+      },
+      { ignoreConfiguredPrivateRoot: false },
+    );
   });
 
   it('rejects symlinked private input targets without reading destinations', async () => {
@@ -237,7 +279,7 @@ describe('private output writer', () => {
           /^Private output write failed$/,
         );
       }
-      await expect(readdir(repoRoot)).resolves.toEqual([]);
+      expect(await readdir(repoRoot)).not.toContain('.private');
     });
   });
 
