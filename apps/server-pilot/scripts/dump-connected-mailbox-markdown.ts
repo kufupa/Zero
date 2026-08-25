@@ -5,11 +5,13 @@ import {
   type ConnectedMailboxMarkdownDumpResult,
 } from '../src/ops/connected-mailbox-markdown-dump.js';
 import { getPostgresSslOptions } from '../src/db/ssl-config.js';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
 import path from 'node:path';
 
 const DEFAULT_OUTPUT_NAME = 'connected-mailbox-inbox.md';
+const PRIVATE_DUMP_DIRECTORY = '.private/connected-mailbox-corpus/';
 const OUTPUT_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*\.md$/;
 const WINDOWS_RESERVED_DEVICE_NAMES = new Set([
   'AUX',
@@ -49,6 +51,7 @@ export type ConnectedMailboxMarkdownDumpCommandDependencies = {
   args(): readonly string[];
   environment(): Readonly<{ DATABASE_URL?: string }>;
   repoRoot(): string;
+  isIgnored(repoRoot: string): boolean;
   createClient(databaseUrl: string): ConnectedMailboxDumpConnection;
   createDump: DumpFactory;
   writeStdout(value: string): void;
@@ -115,6 +118,17 @@ function defaultDependencies(): ConnectedMailboxMarkdownDumpCommandDependencies 
     args: () => process.argv.slice(2),
     environment: () => ({ DATABASE_URL: process.env.DATABASE_URL }),
     repoRoot: () => path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..'),
+    isIgnored: (repoRoot) => {
+      try {
+        execFileSync('git', ['check-ignore', '--quiet', '--', PRIVATE_DUMP_DIRECTORY], {
+          cwd: repoRoot,
+          stdio: 'ignore',
+        });
+        return true;
+      } catch {
+        return false;
+      }
+    },
     createClient: (databaseUrl) =>
       postgres(databaseUrl, {
         ssl: getPostgresSslOptions(databaseUrl),
@@ -149,9 +163,13 @@ export function createConnectedMailboxMarkdownDumpCommand(
 
     let client: ConnectedMailboxDumpConnection | undefined;
     try {
+      const repoRoot = dependencies.repoRoot();
+      if (!dependencies.isIgnored(repoRoot)) {
+        return writeFailure(dependencies, 'dump_failed');
+      }
       const databaseUrl = nonBlank(dependencies.environment().DATABASE_URL);
       client = dependencies.createClient(databaseUrl);
-      const dump = dependencies.createDump({ client, repoRoot: dependencies.repoRoot() });
+      const dump = dependencies.createDump({ client, repoRoot });
       const result = await dump({ outputName });
       dependencies.writeStdout(`${JSON.stringify(safeCountMetadata(result))}\n`);
       return 0;

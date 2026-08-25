@@ -248,6 +248,7 @@ function createCommandHarness(args: readonly string[] = []) {
     args: () => args,
     environment: () => ({ DATABASE_URL: 'postgresql://localhost/synthetic' }),
     repoRoot: () => '/synthetic/zero',
+    isIgnored: () => true,
     createClient: () => {
       calls.push('createClient');
       return Object.assign(fake.client, {
@@ -280,6 +281,44 @@ function createCommandHarness(args: readonly string[] = []) {
 }
 
 describe('connected mailbox Markdown dump command', () => {
+  it('fails closed before environment, client, or dump when private dump root is not ignored', async () => {
+    const harness = createCommandHarness(['--out', 'reservationist-inbox.md']);
+    let environmentCalls = 0;
+    let createClientCalls = 0;
+    let createDumpCalls = 0;
+    const dependencies = {
+      ...harness.dependencies,
+      isIgnored: () => {
+        harness.calls.push('isIgnored');
+        return false;
+      },
+      environment: () => {
+        environmentCalls += 1;
+        return { DATABASE_URL: 'postgresql://localhost/synthetic' };
+      },
+      createClient: () => {
+        createClientCalls += 1;
+        throw new Error('client must not be created');
+      },
+      createDump: () => {
+        createDumpCalls += 1;
+        throw new Error('dump must not be created');
+      },
+    } as unknown as ConnectedMailboxMarkdownDumpCommandDependencies;
+
+    const code = await createConnectedMailboxMarkdownDumpCommand(dependencies)();
+
+    expect(code).toBe(1);
+    expect(environmentCalls).toBe(0);
+    expect(createClientCalls).toBe(0);
+    expect(createDumpCalls).toBe(0);
+    expect(harness.calls).toEqual(['isIgnored', 'stderr']);
+    expect(harness.stdout).toEqual([]);
+    expect(harness.stderr).toEqual([
+      `${JSON.stringify({ event: 'connected_mailbox_markdown_dump.failed', code: 'dump_failed' })}\n`,
+    ]);
+  });
+
   it('rejects unsafe --out before creating a client or private output', async () => {
     const harness = createCommandHarness(['--out', '../outside.md']);
 
