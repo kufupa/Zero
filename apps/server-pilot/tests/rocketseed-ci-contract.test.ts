@@ -74,6 +74,7 @@ describe('Rocketseed CI contract', () => {
       'tests/outbound-claim-lease.test.ts',
       'tests/attachment-access.test.ts',
       'tests/pop3-worker.test.ts',
+      'tests/candidate-attachment-cleanup-queue.test.ts',
     ]) {
       expect(transactionalJob).toContain(testFile);
     }

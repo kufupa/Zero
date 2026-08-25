@@ -55,8 +55,8 @@ import { parsePersistedDeliveryOutcome } from '../send/outbound-queue.js';
 import { refreshThreadSearchVector } from '../search/search-vector.js';
 import { sanitizeHtmlBodyForStorage } from '../sanitize-email-html.js';
 import { getSenderPreference } from '../sender-preference.js';
+import { and, asc, eq, inArray, lte, sql } from 'drizzle-orm';
 import { ingestRequireOwnerHeader } from '../../env.js';
-import { and, asc, eq, inArray } from 'drizzle-orm';
 import { markThreadRead } from '../thread-read.js';
 import type { DB } from '../../db/client.js';
 import { randomUUID } from 'node:crypto';
@@ -64,6 +64,8 @@ import { randomUUID } from 'node:crypto';
 const CENTURION_TRANSPORT_ID = 'transport-centurion';
 export const CANDIDATE_ATTACHMENT_DELETE_CONCURRENCY = 4;
 export const CANDIDATE_ATTACHMENT_CLEANUP_SWEEP_LIMIT = 500;
+const CANDIDATE_ATTACHMENT_CLEANUP_RETRY_BASE_MS = 1_000;
+const CANDIDATE_ATTACHMENT_CLEANUP_RETRY_MAX_MS = 15 * 60 * 1_000;
 const CANDIDATE_ATTACHMENT_CLEANUP_INSERT_CHUNK_SIZE = 250;
 
 type RoutedTransport = {
@@ -285,6 +287,7 @@ export async function persistInboundMessage(
   let reconciliation: PersistReconciledResult | null = null;
   await db.transaction(async (tx) => {
     const transactionDb = tx as unknown as DB;
+    await lockCandidateAttachmentCleanupOwnership(transactionDb, meta);
     const correlationId =
       parsed.outboundCorrelation.kind === 'valid'
         ? parsed.outboundCorrelation.outboundId
@@ -451,6 +454,21 @@ export async function persistInboundMessage(
         messageId: canonical.id,
         rawMimeS3Key,
         attachmentCount: parsed.attachments.length,
+      };
+      return;
+    }
+
+    if (
+      await hasPendingCandidateAttachmentCleanup(transactionDb, {
+        ingestMailboxId: meta.ingestMailboxId,
+        pop3Uidl: meta.pop3Uidl,
+      })
+    ) {
+      deferred = {
+        kind: 'deferred',
+        transportId: transport.id,
+        messageId: meta.messageId,
+        rawMimeS3Key,
       };
       return;
     }
@@ -639,24 +657,78 @@ async function registerCandidateAttachmentCleanupTasks(
   meta: IngestMeta,
 ): Promise<void> {
   const keys = ownedCandidateAttachmentKeys(attachments, meta.messageId);
-  for (
-    let start = 0;
-    start < keys.length;
-    start += CANDIDATE_ATTACHMENT_CLEANUP_INSERT_CHUNK_SIZE
-  ) {
-    const chunk = keys.slice(start, start + CANDIDATE_ATTACHMENT_CLEANUP_INSERT_CHUNK_SIZE);
-    await db
-      .insert(mailIngestCandidateAttachmentCleanup)
-      .values(
-        chunk.map((s3Key) => ({
-          s3Key,
-          candidateMessageId: meta.messageId,
-          ingestMailboxId: meta.ingestMailboxId,
-          pop3Uidl: meta.pop3Uidl,
-        })),
-      )
-      .onConflictDoNothing({ target: mailIngestCandidateAttachmentCleanup.s3Key });
-  }
+  if (keys.length === 0) return;
+
+  await db.transaction(async (tx) => {
+    const transactionDb = tx as unknown as DB;
+    // Cleanup registration and canonical attachment persistence share this
+    // transaction-scoped fence. Either the task commits first and persistence
+    // defers, or a canonical attachment commits first and cleanup skips it.
+    await lockCandidateAttachmentCleanupOwnership(transactionDb, meta);
+    const canonicalRows = await transactionDb
+      .select({ s3Key: attachment.s3Key })
+      .from(attachment)
+      .where(inArray(attachment.s3Key, keys));
+    const canonicalKeys = new Set(canonicalRows.map((row) => row.s3Key));
+    const cleanupKeys = keys.filter((key) => !canonicalKeys.has(key));
+
+    for (
+      let start = 0;
+      start < cleanupKeys.length;
+      start += CANDIDATE_ATTACHMENT_CLEANUP_INSERT_CHUNK_SIZE
+    ) {
+      const chunk = cleanupKeys.slice(
+        start,
+        start + CANDIDATE_ATTACHMENT_CLEANUP_INSERT_CHUNK_SIZE,
+      );
+      await transactionDb
+        .insert(mailIngestCandidateAttachmentCleanup)
+        .values(
+          chunk.map((s3Key) => ({
+            s3Key,
+            candidateMessageId: meta.messageId,
+            ingestMailboxId: meta.ingestMailboxId,
+            pop3Uidl: meta.pop3Uidl,
+          })),
+        )
+        .onConflictDoNothing({ target: mailIngestCandidateAttachmentCleanup.s3Key });
+    }
+  });
+}
+
+async function lockCandidateAttachmentCleanupOwnership(
+  db: DB,
+  meta: Pick<IngestMeta, 'ingestMailboxId' | 'pop3Uidl'>,
+): Promise<void> {
+  await db.execute(sql`
+    SELECT pg_advisory_xact_lock(
+      hashtext(${meta.ingestMailboxId}),
+      hashtext(${meta.pop3Uidl})
+    )
+  `);
+}
+
+async function canonicalAttachmentKeys(db: DB, s3Keys: string[]): Promise<Set<string>> {
+  if (s3Keys.length === 0) return new Set();
+  const rows = await db
+    .select({ s3Key: attachment.s3Key })
+    .from(attachment)
+    .where(inArray(attachment.s3Key, s3Keys));
+  return new Set(rows.map((row) => row.s3Key));
+}
+
+async function deleteCandidateAttachmentCleanupTask(
+  db: DB,
+  task: Pick<CandidateAttachmentCleanupTask, 's3Key' | 'candidateMessageId'>,
+): Promise<void> {
+  await db
+    .delete(mailIngestCandidateAttachmentCleanup)
+    .where(
+      and(
+        eq(mailIngestCandidateAttachmentCleanup.s3Key, task.s3Key),
+        eq(mailIngestCandidateAttachmentCleanup.candidateMessageId, task.candidateMessageId),
+      ),
+    );
 }
 
 function isOwnedCandidateAttachmentKey(s3Key: string, candidateMessageId: string): boolean {
@@ -664,10 +736,32 @@ function isOwnedCandidateAttachmentKey(s3Key: string, candidateMessageId: string
   return s3Key.startsWith(prefix) && s3Key.length > prefix.length;
 }
 
+async function mapWithBoundedConcurrency<T, R>(
+  values: T[],
+  concurrency: number,
+  map: (value: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = [];
+  results.length = values.length;
+  let nextIndex = 0;
+  const worker = async () => {
+    for (;;) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= values.length) return;
+      results[index] = await map(values[index]!);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, values.length) }, worker));
+  return results;
+}
+
 export async function hasPendingCandidateAttachmentCleanup(
   db: DB,
   meta: Pick<IngestMeta, 'ingestMailboxId' | 'pop3Uidl'>,
 ): Promise<boolean> {
+  // Do not use SKIP LOCKED here. A cleaner may hold the row lock while it
+  // deletes S3; any POP3 retry must still see the pending work and defer.
   const rows = await db
     .select({ s3Key: mailIngestCandidateAttachmentCleanup.s3Key })
     .from(mailIngestCandidateAttachmentCleanup)
@@ -681,73 +775,200 @@ export async function hasPendingCandidateAttachmentCleanup(
   return rows.length > 0;
 }
 
+type CandidateAttachmentCleanupTask = {
+  s3Key: string;
+  candidateMessageId: string;
+  attempts: number;
+};
+
+type CandidateAttachmentCleanupBatchResult = {
+  claimedTaskCount: number;
+  deletedTaskCount: number;
+  failureCount: number;
+  canContinue: boolean;
+};
+
+function nextCandidateAttachmentCleanupAttempt(attempts: number): Date {
+  const exponent = Math.min(Math.max(attempts - 1, 0), 10);
+  const delay = Math.min(
+    CANDIDATE_ATTACHMENT_CLEANUP_RETRY_BASE_MS * 2 ** exponent,
+    CANDIDATE_ATTACHMENT_CLEANUP_RETRY_MAX_MS,
+  );
+  return new Date(Date.now() + delay);
+}
+
+async function deferCandidateAttachmentCleanupTask(
+  db: DB,
+  task: CandidateAttachmentCleanupTask,
+): Promise<void> {
+  const attempts = task.attempts + 1;
+  await db
+    .update(mailIngestCandidateAttachmentCleanup)
+    .set({
+      attempts: sql`${mailIngestCandidateAttachmentCleanup.attempts} + 1`,
+      nextAttemptAt: nextCandidateAttachmentCleanupAttempt(attempts),
+    })
+    .where(
+      and(
+        eq(mailIngestCandidateAttachmentCleanup.s3Key, task.s3Key),
+        eq(mailIngestCandidateAttachmentCleanup.candidateMessageId, task.candidateMessageId),
+      ),
+    );
+}
+
+async function claimAndDeleteCandidateAttachmentCleanupTasks(args: {
+  db: DB;
+  storage: S3Storage;
+  limit: number;
+  meta?: Pick<IngestMeta, 'ingestMailboxId' | 'pop3Uidl'>;
+  dueThrough: Date;
+}): Promise<CandidateAttachmentCleanupBatchResult> {
+  let claimedTasks: CandidateAttachmentCleanupTask[] = [];
+  try {
+    return await args.db.transaction(async (tx) => {
+      const transactionDb = tx as unknown as DB;
+      const tasks = await transactionDb
+        .select({
+          s3Key: mailIngestCandidateAttachmentCleanup.s3Key,
+          candidateMessageId: mailIngestCandidateAttachmentCleanup.candidateMessageId,
+          attempts: mailIngestCandidateAttachmentCleanup.attempts,
+        })
+        .from(mailIngestCandidateAttachmentCleanup)
+        .where(
+          and(
+            args.meta
+              ? eq(mailIngestCandidateAttachmentCleanup.ingestMailboxId, args.meta.ingestMailboxId)
+              : undefined,
+            args.meta
+              ? eq(mailIngestCandidateAttachmentCleanup.pop3Uidl, args.meta.pop3Uidl)
+              : undefined,
+            lte(mailIngestCandidateAttachmentCleanup.nextAttemptAt, args.dueThrough),
+          ),
+        )
+        .orderBy(
+          asc(mailIngestCandidateAttachmentCleanup.nextAttemptAt),
+          asc(mailIngestCandidateAttachmentCleanup.s3Key),
+        )
+        .limit(args.limit)
+        .for('update', { skipLocked: true });
+      claimedTasks = tasks;
+      if (tasks.length === 0) {
+        return {
+          claimedTaskCount: 0,
+          deletedTaskCount: 0,
+          failureCount: 0,
+          canContinue: true,
+        };
+      }
+
+      const canonicalKeys = await canonicalAttachmentKeys(
+        transactionDb,
+        tasks.map((task) => task.s3Key),
+      );
+      // One transaction owns every claimed row. S3 calls stay bounded while
+      // the locks remain held, so another worker cannot promote a stale key.
+      const deletionResults = await mapWithBoundedConcurrency(
+        tasks,
+        CANDIDATE_ATTACHMENT_DELETE_CONCURRENCY,
+        async (task) => {
+          if (canonicalKeys.has(task.s3Key)) {
+            return { task, disposition: 'canonical' as const };
+          }
+          if (!isOwnedCandidateAttachmentKey(task.s3Key, task.candidateMessageId)) {
+            return { task, disposition: 'failed' as const };
+          }
+          try {
+            await args.storage.deleteObject(task.s3Key);
+            return { task, disposition: 'deleted' as const };
+          } catch {
+            return { task, disposition: 'failed' as const };
+          }
+        },
+      );
+
+      let deletedTaskCount = 0;
+      let failureCount = 0;
+      for (const result of deletionResults) {
+        if (result.disposition === 'canonical') {
+          // A pre-existing task can outlive a prior failed deployment or a
+          // crash. Once its key is canonical, delete only queue state.
+          await deleteCandidateAttachmentCleanupTask(transactionDb, result.task);
+          deletedTaskCount += 1;
+          continue;
+        }
+        if (result.disposition === 'failed') {
+          await deferCandidateAttachmentCleanupTask(transactionDb, result.task);
+          failureCount += 1;
+          continue;
+        }
+        await deleteCandidateAttachmentCleanupTask(transactionDb, result.task);
+        deletedTaskCount += 1;
+      }
+      return {
+        claimedTaskCount: tasks.length,
+        deletedTaskCount,
+        failureCount,
+        canContinue: true,
+      };
+    });
+  } catch {
+    if (claimedTasks.length === 0) {
+      return {
+        claimedTaskCount: 0,
+        deletedTaskCount: 0,
+        failureCount: 1,
+        canContinue: false,
+      };
+    }
+
+    let canContinue = true;
+    for (const task of claimedTasks) {
+      try {
+        // The transaction rolled back after an S3 operation or row delete.
+        // Preserve every task and retry idempotent deletion after backoff.
+        await deferCandidateAttachmentCleanupTask(args.db, task);
+      } catch {
+        canContinue = false;
+      }
+    }
+    return {
+      claimedTaskCount: claimedTasks.length,
+      deletedTaskCount: 0,
+      failureCount: claimedTasks.length,
+      canContinue,
+    };
+  }
+}
+
 async function drainCandidateAttachmentCleanupTasks(args: {
   db: DB;
   storage: S3Storage;
   limit: number;
   meta?: Pick<IngestMeta, 'ingestMailboxId' | 'pop3Uidl'>;
-}): Promise<{ failureCount: number; taskCount: number }> {
-  const { db, storage, limit, meta } = args;
-  const query = db
-    .select({
-      s3Key: mailIngestCandidateAttachmentCleanup.s3Key,
-      candidateMessageId: mailIngestCandidateAttachmentCleanup.candidateMessageId,
-    })
-    .from(mailIngestCandidateAttachmentCleanup)
-    .orderBy(
-      asc(mailIngestCandidateAttachmentCleanup.createdAt),
-      asc(mailIngestCandidateAttachmentCleanup.s3Key),
-    )
-    .limit(limit);
-  const tasks = meta
-    ? await query.where(
-        and(
-          eq(mailIngestCandidateAttachmentCleanup.ingestMailboxId, meta.ingestMailboxId),
-          eq(mailIngestCandidateAttachmentCleanup.pop3Uidl, meta.pop3Uidl),
-        ),
-      )
-    : await query;
-  let nextTaskIndex = 0;
+}): Promise<{ failureCount: number; taskCount: number; limitReached: boolean }> {
+  const limit = Math.max(0, args.limit);
+  if (limit === 0) {
+    return { failureCount: 0, taskCount: 0, limitReached: true };
+  }
+
   let failureCount = 0;
-  const deleteWorker = async () => {
-    while (nextTaskIndex < tasks.length) {
-      const task = tasks[nextTaskIndex++];
-      if (!task || !isOwnedCandidateAttachmentKey(task.s3Key, task.candidateMessageId)) {
-        failureCount += 1;
-        continue;
-      }
-      try {
-        await storage.deleteObject(task.s3Key);
-      } catch {
-        failureCount += 1;
-        continue;
-      }
-      try {
-        await db.transaction(async (tx) => {
-          await tx
-            .delete(mailIngestCandidateAttachmentCleanup)
-            .where(
-              and(
-                eq(mailIngestCandidateAttachmentCleanup.s3Key, task.s3Key),
-                eq(
-                  mailIngestCandidateAttachmentCleanup.candidateMessageId,
-                  task.candidateMessageId,
-                ),
-              ),
-            );
-        });
-      } catch {
-        failureCount += 1;
-      }
-    }
+  let successfulTaskCount = 0;
+  const dueThrough = new Date();
+  while (successfulTaskCount < limit) {
+    const result = await claimAndDeleteCandidateAttachmentCleanupTasks({
+      ...args,
+      limit: limit - successfulTaskCount,
+      dueThrough,
+    });
+    failureCount += result.failureCount;
+    successfulTaskCount += result.deletedTaskCount;
+    if (result.claimedTaskCount === 0 || !result.canContinue) break;
+  }
+  return {
+    failureCount,
+    taskCount: successfulTaskCount,
+    limitReached: successfulTaskCount >= limit,
   };
-  await Promise.all(
-    Array.from(
-      { length: Math.min(CANDIDATE_ATTACHMENT_DELETE_CONCURRENCY, tasks.length) },
-      deleteWorker,
-    ),
-  );
-  return { failureCount, taskCount: tasks.length };
 }
 
 export async function sweepCandidateAttachmentCleanupTasks(args: {
@@ -780,10 +1001,23 @@ async function cleanupCandidateAttachmentTasks(args: {
       limit: CANDIDATE_ATTACHMENT_CLEANUP_SWEEP_LIMIT,
     });
     failureCount += result.failureCount;
-    if (result.failureCount > 0 || result.taskCount < CANDIDATE_ATTACHMENT_CLEANUP_SWEEP_LIMIT) {
+    if (!result.limitReached) {
       return failureCount;
     }
   }
+}
+
+/**
+ * Persist and drain keys uploaded before `parseRawMessage` failed. Registration
+ * errors propagate so the POP3 worker can retain the raw message fail-closed.
+ */
+export async function cleanupPartialParseFailureAttachments(args: {
+  db: DB;
+  storage: S3Storage;
+  attachments: ParsedInboundMessage['attachments'];
+  meta: IngestMeta;
+}): Promise<number> {
+  return cleanupCandidateAttachmentTasks(args);
 }
 
 function withCandidateAttachmentCleanupFailures(

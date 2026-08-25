@@ -36,6 +36,20 @@ export interface ParsedAttachment {
   isInline: boolean;
 }
 
+export type ParseFailureWithUploadedAttachments = Error & {
+  uploadedAttachments: ParsedAttachment[];
+};
+
+/**
+ * Return only attachments whose S3 PUT completed before parsing failed.
+ * Callers use this to persist durable cleanup work before poison handling.
+ */
+export function uploadedAttachmentsFromParseFailure(error: unknown): ParsedAttachment[] {
+  if (!error || typeof error !== 'object' || !('uploadedAttachments' in error)) return [];
+  const attachments = (error as { uploadedAttachments?: unknown }).uploadedAttachments;
+  return Array.isArray(attachments) ? (attachments as ParsedAttachment[]) : [];
+}
+
 export type OutboundCorrelation =
   | { kind: 'absent' }
   | { kind: 'valid'; outboundId: string }
@@ -93,6 +107,7 @@ export async function parseRawMessage(
   let text: string | null = null;
   let html: string | null = null;
   const attachments: ParsedAttachment[] = [];
+  const uploadedAttachments: ParsedAttachment[] = [];
   const errors: Error[] = [];
 
   const attachmentPromises: Promise<void>[] = [];
@@ -152,6 +167,7 @@ export async function parseRawMessage(
             contentType: attachment.mimeType,
           });
           attachment.sizeBytes = result.bytes;
+          uploadedAttachments.push(attachment);
         } catch (err) {
           errors.push(err instanceof Error ? err : new Error(String(err)));
         } finally {
@@ -169,22 +185,32 @@ export async function parseRawMessage(
 
   // Feed the raw bytes through the parser.
   const readable = Readable.from([raw]);
-  await new Promise<void>((resolve, reject) => {
-    readable.on('error', reject);
-    parser.on('end', () => resolve());
-    parser.on('error', reject);
-    readable.pipe(parser);
-  });
+  let parserFailure: Error | undefined;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      readable.on('error', reject);
+      parser.on('end', () => resolve());
+      parser.on('error', reject);
+      readable.pipe(parser);
+    });
+  } catch (err) {
+    parserFailure = err instanceof Error ? err : new Error(String(err));
+  }
 
-  // Wait for every attachment upload to finish.
+  // A parser error can occur while another attachment PUT is in flight.
+  // Wait before exposing the failure so cleanup has an exact durable key set.
   await Promise.all(attachmentPromises);
 
-  if (errors.length > 0) {
-    throw errors[0]!;
+  const failure = parserFailure ?? errors[0];
+  if (failure) {
+    throw withUploadedAttachments(failure, uploadedAttachments);
   }
 
   if (!headers) {
-    throw new Error('parseRawMessage: headers event never fired');
+    throw withUploadedAttachments(
+      new Error('parseRawMessage: headers event never fired'),
+      uploadedAttachments,
+    );
   }
 
   return buildParsedMessage({
@@ -194,6 +220,27 @@ export async function parseRawMessage(
     html,
     attachments,
   });
+}
+
+function withUploadedAttachments(
+  error: Error,
+  uploadedAttachments: ParsedAttachment[],
+): ParseFailureWithUploadedAttachments {
+  const exactUploads = [...uploadedAttachments];
+  try {
+    Object.defineProperty(error, 'uploadedAttachments', {
+      configurable: true,
+      enumerable: true,
+      value: exactUploads,
+    });
+    return error as ParseFailureWithUploadedAttachments;
+  } catch {
+    const wrapped = new Error(error.message, {
+      cause: error,
+    }) as ParseFailureWithUploadedAttachments;
+    wrapped.uploadedAttachments = exactUploads;
+    return wrapped;
+  }
 }
 
 function buildParsedMessage(args: {

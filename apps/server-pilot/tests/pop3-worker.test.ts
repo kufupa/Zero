@@ -9,6 +9,7 @@ import { FakePop3Client, type FakePop3Message } from '../src/mail/ingest/pop3-cl
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db';
 import { ingestOnce, POISON_MAX_RETRIES } from '../src/mail/ingest/worker';
 import { mailIngestQuarantine } from '../src/db/schema/mail';
+import { mailIngestCandidateAttachmentCleanup } from '../src/db/schema/mail';
 import * as ingestStore from '../src/mail/ingest/store';
 import { describe, expect, it, vi } from 'vitest';
 import { readFixture } from './helpers/fixtures';
@@ -235,6 +236,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         if (!firstCandidateAttachmentKey) throw new Error('missing first candidate attachment');
         const firstRawMime = storage.get(rawMimeS3Key);
         const firstArchive = storage.get(quarantineArchiveKey({ ingestMailboxId, pop3Uidl: uidl }));
+        await db
+          .update(mailIngestCandidateAttachmentCleanup)
+          .set({ nextAttemptAt: new Date() })
+          .where(eq(mailIngestCandidateAttachmentCleanup.pop3Uidl, uidl));
 
         const second = await ingestOnce({
           pop3: fakePop3,

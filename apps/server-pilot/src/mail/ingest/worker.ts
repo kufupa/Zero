@@ -31,6 +31,7 @@
  * Entry: `node dist/mail/ingest/worker.js` (package script `worker`).
  */
 import {
+  cleanupPartialParseFailureAttachments,
   hasPendingCandidateAttachmentCleanup,
   persistInboundMessage,
   quarantineOversizedMessage,
@@ -48,7 +49,7 @@ import {
 import { IngestTooLargeError, assertWithinIngestLimits, getIngestLimits } from './limits.js';
 import { rawMimeKey, getS3Storage, archiveQuarantineRawMime } from '../../storage/s3.js';
 import { isCliEntry } from '../../lib/is-cli-entry.js';
-import { parseRawMessage } from './parse-message.js';
+import { parseRawMessage, uploadedAttachmentsFromParseFailure } from './parse-message.js';
 import { getDb, closeDb } from '../../db/client.js';
 import { createHash } from 'node:crypto';
 import { parseEnv } from '../../env.js';
@@ -168,7 +169,6 @@ export async function ingestOnce(opts: IngestOnceOptions = {}): Promise<IngestCy
 
     for (const uidl of uidls.slice(0, maxMessages)) {
       let rawKey: string | undefined;
-      let parsedAttachmentCount = 0;
       try {
         if (
           supportsCleanupQueue &&
@@ -203,7 +203,6 @@ export async function ingestOnce(opts: IngestOnceOptions = {}): Promise<IngestCy
           messageId,
           storage,
         });
-        parsedAttachmentCount = parsed.attachments.length;
 
         const result = await persistInboundMessage(
           parsed,
@@ -219,11 +218,6 @@ export async function ingestOnce(opts: IngestOnceOptions = {}): Promise<IngestCy
 
         if (result.kind === 'duplicate') {
           duplicateAttachmentCleanupFailureCount += result.candidateAttachmentCleanupFailureCount;
-          if (result.candidateAttachmentCleanupFailureCount > 0) {
-            console.warn(
-              `worker: duplicate candidate attachment cleanup pending failures=${result.candidateAttachmentCleanupFailureCount}`,
-            );
-          }
         }
 
         if (result.kind === 'deferred') {
@@ -264,6 +258,48 @@ export async function ingestOnce(opts: IngestOnceOptions = {}): Promise<IngestCy
         items.push({ uidl, result, status: 'ok' });
         processed += 1;
       } catch (err) {
+        const uploadedAttachments = uploadedAttachmentsFromParseFailure(err);
+        if (uploadedAttachments.length > 0 && rawKey) {
+          try {
+            await cleanupPartialParseFailureAttachments({
+              db,
+              storage,
+              attachments: uploadedAttachments,
+              meta: {
+                ingestMailboxId,
+                pop3Uidl: uidl,
+                messageId: candidateMessageIdForPop3Uidl(ingestMailboxId, uidl),
+              },
+            });
+          } catch (cleanupError) {
+            const error =
+              cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+            items.push({
+              uidl,
+              status: 'error',
+              error: `candidate attachment cleanup registration failed: ${error}`,
+            });
+            processed += 1;
+            continue;
+          }
+
+          if (
+            await hasPendingCandidateAttachmentCleanup(db, {
+              ingestMailboxId,
+              pop3Uidl: uidl,
+            })
+          ) {
+            failureCounts.delete(uidl);
+            items.push({
+              uidl,
+              status: 'deferred',
+              reason: 'candidate_attachment_cleanup_pending',
+            });
+            processed += 1;
+            continue;
+          }
+        }
+
         if (err instanceof IngestTooLargeError && !rawKey) {
           const skippedKey = `quarantine-skipped/${ingestMailboxId}/${uidl.replace(/[^A-Za-z0-9._-]+/g, '_')}.eml`;
           const result = await quarantineOversizedMessage(
@@ -321,13 +357,6 @@ export async function ingestOnce(opts: IngestOnceOptions = {}): Promise<IngestCy
         const prev = failureCounts.get(uidl) ?? 0;
         const next = prev + 1;
         failureCounts.set(uidl, next);
-
-        if (parsedAttachmentCount > 0) {
-          const error = err instanceof Error ? err.message : String(err);
-          items.push({ uidl, status: 'error', error });
-          processed += 1;
-          continue;
-        }
 
         if (next >= POISON_MAX_RETRIES && rawKey) {
           const error = err instanceof Error ? err.message : String(err);

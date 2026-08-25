@@ -130,6 +130,8 @@ export const mailIngestCandidateAttachmentCleanup = pgTable(
     candidateMessageId: text('candidate_message_id').notNull(),
     ingestMailboxId: text('ingest_mailbox_id').notNull(),
     pop3Uidl: text('pop3_uidl').notNull(),
+    attempts: integer('attempts').notNull().default(0),
+    nextAttemptAt: timestamp('next_attempt_at').notNull().defaultNow(),
     createdAt: timestamp('created_at').notNull().defaultNow(),
   },
   (t) => [
@@ -137,7 +139,7 @@ export const mailIngestCandidateAttachmentCleanup = pgTable(
       t.ingestMailboxId,
       t.pop3Uidl,
     ),
-    index('mail_ingest_candidate_attachment_cleanup_sweep_idx').on(t.createdAt, t.s3Key),
+    index('mail_ingest_candidate_attachment_cleanup_sweep_idx').on(t.nextAttemptAt, t.s3Key),
     check(
       'mail_ingest_candidate_attachment_cleanup_owned_key_check',
       sql`length(${t.s3Key}) > length('attachments/' || ${t.candidateMessageId} || '/')

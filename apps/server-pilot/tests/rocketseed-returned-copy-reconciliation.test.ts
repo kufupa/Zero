@@ -911,6 +911,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
           },
         })
         .where(eq(mailIngestQuarantine.id, quarantineRowsAfterFirst[0]!.id));
+      await db
+        .update(mailIngestCandidateAttachmentCleanup)
+        .set({ nextAttemptAt: new Date() })
+        .where(eq(mailIngestCandidateAttachmentCleanup.pop3Uidl, pop3Uidl));
 
       const retryMessageId = randomUUID();
       const retryParsed = await parseRawMessage(raw, {
@@ -1063,6 +1067,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
           },
           { db, storage, skipAiEnqueue: true },
         );
+        await db
+          .update(mailIngestCandidateAttachmentCleanup)
+          .set({ nextAttemptAt: new Date() })
+          .where(eq(mailIngestCandidateAttachmentCleanup.pop3Uidl, pop3Uidl));
         await sweepCandidateAttachmentCleanupTasks({ db, storage });
         const cleanupTasksAfterSweep = await db
           .select({ s3Key: mailIngestCandidateAttachmentCleanup.s3Key })
@@ -1896,6 +1904,9 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
         await setup.db.delete(mailboxTransport).where(eq(mailboxTransport.id, transportId));
       }
       if (ingestMailboxId) {
+        await setup.db
+          .delete(mailIngestCandidateAttachmentCleanup)
+          .where(eq(mailIngestCandidateAttachmentCleanup.ingestMailboxId, ingestMailboxId));
         await setup.db.delete(mailIngestMailbox).where(eq(mailIngestMailbox.id, ingestMailboxId));
         const remainingMailboxRows = await setup.db
           .select({ id: mailIngestMailbox.id })
