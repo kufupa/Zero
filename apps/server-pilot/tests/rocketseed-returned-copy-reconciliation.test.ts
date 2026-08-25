@@ -1,5 +1,6 @@
 import {
   attachment,
+  mailIngestCandidateAttachmentCleanup,
   mailIngestQuarantine,
   mailIngestMailbox,
   mailboxTransport,
@@ -8,12 +9,15 @@ import {
   outboundSendQueue,
 } from '../src/db/schema/mail.js';
 import {
+  persistInboundMessage as persistInboundMessageImpl,
+  sweepCandidateAttachmentCleanupTasks,
+} from '../src/mail/ingest/store.js';
+import {
   openTestDbSession,
   TEST_DB_AVAILABLE,
   probeTestDb,
   withSeededTestDb,
 } from './helpers/test-db.js';
-import { persistInboundMessage as persistInboundMessageImpl } from '../src/mail/ingest/store.js';
 import { FakeSmtpTransport, __setSmtpTransportForTests } from '../src/mail/send/smtp.js';
 import { RECLAIM_SENDING_AFTER_MS, flushDue } from '../src/mail/send/outbound-queue.js';
 import { parseRawMessage } from '../src/mail/ingest/parse-message.js';
@@ -822,7 +826,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
     ]);
   }, 30000);
 
-  it('retries every persisted candidate attachment after malformed returned-copy cleanup fails', async () => {
+  it('retries durable candidate cleanup after malformed returned-copy cleanup fails', async () => {
     const storage = new FakeS3Storage('test-mail-bucket');
     const result = await withSeededTestDb(async (db) => {
       const canonical = await seedCanonicalOutbound(db, { queueStatus: 'sending' });
@@ -886,18 +890,16 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
       const quarantineRowsAfterFirst = await db
         .select({
           id: mailIngestQuarantine.id,
-          parsedHeaders: mailIngestQuarantine.parsedHeaders,
         })
         .from(mailIngestQuarantine)
         .where(eq(mailIngestQuarantine.pop3Uidl, pop3Uidl));
-      const initialHeaders = quarantineRowsAfterFirst[0]?.parsedHeaders;
-      const safeHeaders =
-        initialHeaders && typeof initialHeaders === 'object' && !Array.isArray(initialHeaders)
-          ? initialHeaders
-          : {};
-      const unsafeKey = 'raw-mime/arbitrary-object.eml';
+      const cleanupTasksAfterFirst = await db
+        .select({ s3Key: mailIngestCandidateAttachmentCleanup.s3Key })
+        .from(mailIngestCandidateAttachmentCleanup)
+        .where(eq(mailIngestCandidateAttachmentCleanup.pop3Uidl, pop3Uidl));
+      const foreignKey = `attachments/${randomUUID()}/001-foreign.bin`;
       await storage.putObject({
-        key: unsafeKey,
+        key: foreignKey,
         body: Buffer.from('must not delete'),
         contentType: 'application/octet-stream',
       });
@@ -905,8 +907,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
         .update(mailIngestQuarantine)
         .set({
           parsedHeaders: {
-            ...safeHeaders,
-            candidateAttachmentCleanupKeys: [firstCandidateAttachmentKey, unsafeKey],
+            candidateAttachmentCleanupKeys: [firstCandidateAttachmentKey, foreignKey],
           },
         })
         .where(eq(mailIngestQuarantine.id, quarantineRowsAfterFirst[0]!.id));
@@ -932,24 +933,22 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
         .select({ id: message.id })
         .from(message)
         .where(inArray(message.id, [firstMessageId, retryMessageId]));
-      const quarantineRowsAfterRetry = await db
-        .select({ parsedHeaders: mailIngestQuarantine.parsedHeaders })
-        .from(mailIngestQuarantine)
-        .where(eq(mailIngestQuarantine.pop3Uidl, pop3Uidl));
+      const cleanupTasksAfterRetry = await db
+        .select({ s3Key: mailIngestCandidateAttachmentCleanup.s3Key })
+        .from(mailIngestCandidateAttachmentCleanup)
+        .where(eq(mailIngestCandidateAttachmentCleanup.pop3Uidl, pop3Uidl));
 
       return {
         candidateRowsAfterFirst,
         candidateRowsAfterRetry,
+        cleanupTasksAfterFirst,
+        cleanupTasksAfterRetry,
         first,
         firstCandidateAttachmentKey,
-        initialPendingKeys: (safeHeaders as Record<string, unknown>).candidateAttachmentCleanupKeys,
+        foreignKey,
         quarantineRowsAfterFirst,
         retry,
         retryCandidateAttachmentKey,
-        retryPendingKeys: (
-          quarantineRowsAfterRetry[0]?.parsedHeaders as Record<string, unknown> | undefined
-        )?.candidateAttachmentCleanupKeys,
-        unsafeKey,
       };
     });
 
@@ -958,7 +957,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
     expect(result.first.kind).toBe('quarantined');
     if (result.first.kind !== 'quarantined') return;
     expect(result.first.candidateAttachmentCleanupFailureCount).toBe(1);
-    expect(result.initialPendingKeys).toEqual([result.firstCandidateAttachmentKey]);
+    expect(result.cleanupTasksAfterFirst).toEqual([{ s3Key: result.firstCandidateAttachmentKey }]);
 
     expect(result.retry.kind).toBe('quarantined');
     if (result.retry.kind !== 'quarantined') return;
@@ -966,14 +965,11 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
     expect(result.candidateRowsAfterRetry).toEqual([]);
     expect(storage.get(result.firstCandidateAttachmentKey)).toBeUndefined();
     expect(storage.get(result.retryCandidateAttachmentKey)).toBeUndefined();
-    expect(storage.get(result.unsafeKey)).toBeDefined();
-    expect(result.retryPendingKeys).toEqual([
-      result.firstCandidateAttachmentKey,
-      result.retryCandidateAttachmentKey,
-    ]);
+    expect(storage.get(result.foreignKey)).toBeDefined();
+    expect(result.cleanupTasksAfterRetry).toEqual([]);
   }, 30000);
 
-  it('retries a deferred returned copy after durable outcome without SMTP resend or leaked ingest objects', async () => {
+  it('keeps deferred returned-copy cleanup durable through outcome reconciliation', async () => {
     const smtp = new FakeSmtpTransport();
     __setSmtpTransportForTests(smtp);
 
@@ -993,21 +989,40 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
           messageId: firstMessageId,
           storage,
         });
-        const first = await persistInboundMessage(
-          firstParsed,
-          raw,
-          {
-            ingestMailboxId: 'ingest-nava-legacy',
-            pop3Uidl,
-            messageId: firstMessageId,
-          },
-          { db, storage, skipAiEnqueue: true },
-        );
+        const firstAttachmentKey = firstParsed.attachments[0]?.s3Key;
+        if (!firstAttachmentKey) throw new Error('missing deferred attachment');
+        const originalDeleteObject = storage.deleteObject.bind(storage);
+        storage.deleteObject = async (key) => {
+          if (key === firstAttachmentKey) {
+            throw new Error('injected deferred cleanup failure');
+          }
+          await originalDeleteObject(key);
+        };
+        const first = await (async () => {
+          try {
+            return await persistInboundMessage(
+              firstParsed,
+              raw,
+              {
+                ingestMailboxId: 'ingest-nava-legacy',
+                pop3Uidl,
+                messageId: firstMessageId,
+              },
+              { db, storage, skipAiEnqueue: true },
+            );
+          } finally {
+            storage.deleteObject = originalDeleteObject;
+          }
+        })();
         const rowsAfterDeferral = await db
           .select({ id: message.id })
           .from(message)
           .where(inArray(message.id, [canonical.canonicalMessageId, firstMessageId]));
-        const firstAttachmentKeys = storage.listKeys(`attachments/${firstMessageId}/`);
+        const cleanupTasksAfterDeferral = await db
+          .select({ s3Key: mailIngestCandidateAttachmentCleanup.s3Key })
+          .from(mailIngestCandidateAttachmentCleanup)
+          .where(eq(mailIngestCandidateAttachmentCleanup.pop3Uidl, pop3Uidl));
+        const firstAttachment = storage.get(firstAttachmentKey);
         const firstRawMime = storage.get(first.rawMimeS3Key);
 
         await db
@@ -1031,13 +1046,37 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
           })
           .where(eq(outboundSendQueue.id, canonical.queueId));
 
-        const retryMessageId = randomUUID();
+        const retryMessageId = firstMessageId;
         const retryParsed = await parseRawMessage(raw, {
           messageId: retryMessageId,
           storage,
         });
+        const retryAttachmentKey = retryParsed.attachments[0]?.s3Key;
+        if (!retryAttachmentKey) throw new Error('missing reconciled attachment');
         const retry = await persistInboundMessage(
           retryParsed,
+          raw,
+          {
+            ingestMailboxId: 'ingest-nava-legacy',
+            pop3Uidl,
+            messageId: retryMessageId,
+          },
+          { db, storage, skipAiEnqueue: true },
+        );
+        await sweepCandidateAttachmentCleanupTasks({ db, storage });
+        const cleanupTasksAfterSweep = await db
+          .select({ s3Key: mailIngestCandidateAttachmentCleanup.s3Key })
+          .from(mailIngestCandidateAttachmentCleanup)
+          .where(eq(mailIngestCandidateAttachmentCleanup.pop3Uidl, pop3Uidl));
+        const attachmentAfterRetryCleanup = storage.get(firstAttachmentKey);
+        const reconciledParsed = await parseRawMessage(raw, {
+          messageId: retryMessageId,
+          storage,
+        });
+        const reconciledAttachmentKey = reconciledParsed.attachments[0]?.s3Key;
+        if (!reconciledAttachmentKey) throw new Error('missing final reconciled attachment');
+        const reconciled = await persistInboundMessage(
+          reconciledParsed,
           raw,
           {
             ingestMailboxId: 'ingest-nava-legacy',
@@ -1061,21 +1100,37 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
 
         return {
           first,
-          firstAttachmentKeys,
+          firstAttachmentKey,
+          firstAttachment,
           firstRawMime,
           flushed,
           queue,
           retry,
+          retryAttachmentKey,
+          attachmentAfterRetryCleanup,
+          reconciled,
+          reconciledAttachmentKey,
           rows,
           rowsAfterDeferral,
+          cleanupTasksAfterDeferral,
+          cleanupTasksAfterSweep,
         };
       });
 
       expect(result.first.kind).toBe('deferred');
+      if (result.first.kind !== 'deferred') return;
+      expect(result.first.candidateAttachmentCleanupFailureCount).toBe(1);
       expect(result.rowsAfterDeferral).toEqual([{ id: expect.any(String) }]);
       expect(result.firstRawMime).toBeDefined();
-      expect(result.firstAttachmentKeys).toEqual([]);
-      expect(result.retry.kind).toBe('reconciled');
+      expect(result.cleanupTasksAfterDeferral).toEqual([{ s3Key: result.firstAttachmentKey }]);
+      expect(result.firstAttachment).toBeDefined();
+      expect(result.retry.kind).toBe('deferred');
+      if (result.retry.kind !== 'deferred') return;
+      expect(result.retry.candidateAttachmentCleanupFailureCount).toBe(0);
+      expect(result.attachmentAfterRetryCleanup).toBeUndefined();
+      expect(result.cleanupTasksAfterSweep).toEqual([]);
+      expect(result.reconciled.kind).toBe('reconciled');
+      expect(storage.get(result.reconciledAttachmentKey)).toBeDefined();
       expect(result.flushed).toEqual({ flushed: 1 });
       expect(result.queue?.status).toBe('sent');
       expect(result.rows).toHaveLength(1);

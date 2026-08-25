@@ -9,6 +9,7 @@ import {
   index,
   uniqueIndex,
   primaryKey,
+  check,
   customType,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
@@ -113,6 +114,35 @@ export const mailIngestQuarantine = pgTable(
     uniqueIndex('mail_ingest_quarantine_ingest_uidl_uidx').on(
       t.ingestMailboxId,
       t.pop3Uidl,
+    ),
+  ],
+);
+
+/**
+ * Durable cleanup work for parsed attachment objects that did not become a
+ * message attachment. Intentionally has no FK to quarantine: promotion may
+ * remove a quarantine row while unresolved S3 cleanup must survive.
+ */
+export const mailIngestCandidateAttachmentCleanup = pgTable(
+  'mail_ingest_candidate_attachment_cleanup',
+  {
+    s3Key: text('s3_key').primaryKey(),
+    candidateMessageId: text('candidate_message_id').notNull(),
+    ingestMailboxId: text('ingest_mailbox_id').notNull(),
+    pop3Uidl: text('pop3_uidl').notNull(),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (t) => [
+    index('mail_ingest_candidate_attachment_cleanup_ingest_uidl_idx').on(
+      t.ingestMailboxId,
+      t.pop3Uidl,
+    ),
+    index('mail_ingest_candidate_attachment_cleanup_sweep_idx').on(t.createdAt, t.s3Key),
+    check(
+      'mail_ingest_candidate_attachment_cleanup_owned_key_check',
+      sql`length(${t.s3Key}) > length('attachments/' || ${t.candidateMessageId} || '/')
+        AND left(${t.s3Key}, length('attachments/' || ${t.candidateMessageId} || '/')) =
+          'attachments/' || ${t.candidateMessageId} || '/'`,
     ),
   ],
 );

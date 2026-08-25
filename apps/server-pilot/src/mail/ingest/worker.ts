@@ -31,27 +31,42 @@
  * Entry: `node dist/mail/ingest/worker.js` (package script `worker`).
  */
 import {
+  hasPendingCandidateAttachmentCleanup,
+  persistInboundMessage,
+  quarantineOversizedMessage,
+  quarantineParseFailure,
+  sweepCandidateAttachmentCleanupTasks,
+  type PersistResult,
+} from './store.js';
+import {
   createPop3Client,
   type Pop3Client,
   type FakePop3Client,
   FakePop3Client as FakePop3ClientCtor,
   type FakePop3Message,
 } from './pop3-client.js';
-import {
-  persistInboundMessage,
-  quarantineOversizedMessage,
-  quarantineParseFailure,
-  type PersistResult,
-} from './store.js';
 import { IngestTooLargeError, assertWithinIngestLimits, getIngestLimits } from './limits.js';
 import { rawMimeKey, getS3Storage, archiveQuarantineRawMime } from '../../storage/s3.js';
-import { parseRawMessage, generateMessageId } from './parse-message.js';
 import { isCliEntry } from '../../lib/is-cli-entry.js';
+import { parseRawMessage } from './parse-message.js';
 import { getDb, closeDb } from '../../db/client.js';
+import { createHash } from 'node:crypto';
 import { parseEnv } from '../../env.js';
 
 /** After this many consecutive failures for one UIDL, quarantine + DELE. */
 export const POISON_MAX_RETRIES = 3;
+
+function candidateMessageIdForPop3Uidl(ingestMailboxId: string, pop3Uidl: string): string {
+  const hash = createHash('sha256')
+    .update(ingestMailboxId)
+    .update('\0')
+    .update(pop3Uidl)
+    .digest('hex');
+  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-8${hash.slice(
+    17,
+    20,
+  )}-${hash.slice(20, 32)}`;
+}
 
 export interface IngestOnceOptions {
   /** Injected POP3 client (real or fake). If absent, built from env. */
@@ -68,6 +83,7 @@ export interface IngestOnceOptions {
 
 export type ItemOutcome =
   | { uidl: string; result: PersistResult; status: 'deferred' | 'ok' }
+  | { uidl: string; status: 'deferred'; reason: 'candidate_attachment_cleanup_pending' }
   | { uidl: string; status: 'error'; error: string };
 
 export interface IngestCycleResult {
@@ -132,20 +148,46 @@ export async function ingestOnce(opts: IngestOnceOptions = {}): Promise<IngestCy
   let deled = 0;
 
   try {
+    const storage = getS3Storage();
+    const db = opts.db ?? getDb();
+    const limits = getIngestLimits(process.env);
+    const supportsCleanupQueue =
+      typeof (db as unknown as { select?: unknown }).select === 'function';
+    if (supportsCleanupQueue) {
+      const cleanupSweep = await sweepCandidateAttachmentCleanupTasks({ db, storage });
+      if (cleanupSweep.failureCount > 0) {
+        console.warn(
+          `worker: candidate attachment cleanup sweep failures=${cleanupSweep.failureCount}`,
+        );
+      }
+    }
+
     await pop3.connect();
     const uidls = await pop3.listUidl();
     listed = uidls.length;
 
-    const storage = getS3Storage();
-    const db = opts.db ?? getDb();
-    const limits = getIngestLimits(process.env);
-
     for (const uidl of uidls.slice(0, maxMessages)) {
       let rawKey: string | undefined;
+      let parsedAttachmentCount = 0;
       try {
+        if (
+          supportsCleanupQueue &&
+          (await hasPendingCandidateAttachmentCleanup(db, {
+            ingestMailboxId,
+            pop3Uidl: uidl,
+          }))
+        ) {
+          failureCounts.delete(uidl);
+          items.push({
+            uidl,
+            status: 'deferred',
+            reason: 'candidate_attachment_cleanup_pending',
+          });
+          continue;
+        }
         const msg = await pop3.retr(uidl);
         assertWithinIngestLimits(msg.raw.byteLength, 'message', limits);
-        const messageId = generateMessageId();
+        const messageId = candidateMessageIdForPop3Uidl(ingestMailboxId, uidl);
 
         rawKey = rawMimeKey({
           ingestMailboxId,
@@ -161,6 +203,7 @@ export async function ingestOnce(opts: IngestOnceOptions = {}): Promise<IngestCy
           messageId,
           storage,
         });
+        parsedAttachmentCount = parsed.attachments.length;
 
         const result = await persistInboundMessage(
           parsed,
@@ -176,6 +219,11 @@ export async function ingestOnce(opts: IngestOnceOptions = {}): Promise<IngestCy
 
         if (result.kind === 'duplicate') {
           duplicateAttachmentCleanupFailureCount += result.candidateAttachmentCleanupFailureCount;
+          if (result.candidateAttachmentCleanupFailureCount > 0) {
+            console.warn(
+              `worker: duplicate candidate attachment cleanup pending failures=${result.candidateAttachmentCleanupFailureCount}`,
+            );
+          }
         }
 
         if (result.kind === 'deferred') {
@@ -191,10 +239,14 @@ export async function ingestOnce(opts: IngestOnceOptions = {}): Promise<IngestCy
         }
 
         if (result.kind === 'quarantined') {
-          if (result.candidateAttachmentCleanupFailureCount > 0) {
+          const cleanupPending = await hasPendingCandidateAttachmentCleanup(db, {
+            ingestMailboxId,
+            pop3Uidl: uidl,
+          });
+          if (cleanupPending) {
             failureCounts.delete(uidl);
             console.warn(
-              `worker: quarantine attachment cleanup failures=${result.candidateAttachmentCleanupFailureCount}`,
+              `worker: quarantine attachment cleanup pending failures=${result.candidateAttachmentCleanupFailureCount}`,
             );
             items.push({ uidl, result, status: 'deferred' });
             processed += 1;
@@ -220,6 +272,16 @@ export async function ingestOnce(opts: IngestOnceOptions = {}): Promise<IngestCy
             { db },
           );
           failureCounts.delete(uidl);
+          if (
+            await hasPendingCandidateAttachmentCleanup(db, {
+              ingestMailboxId,
+              pop3Uidl: uidl,
+            })
+          ) {
+            items.push({ uidl, result, status: 'deferred' });
+            processed += 1;
+            continue;
+          }
           await pop3.dele(uidl);
           deled += 1;
           items.push({ uidl, result, status: 'ok' });
@@ -233,6 +295,17 @@ export async function ingestOnce(opts: IngestOnceOptions = {}): Promise<IngestCy
             rawKey,
             { db },
           );
+          if (
+            await hasPendingCandidateAttachmentCleanup(db, {
+              ingestMailboxId,
+              pop3Uidl: uidl,
+            })
+          ) {
+            failureCounts.delete(uidl);
+            items.push({ uidl, result, status: 'deferred' });
+            processed += 1;
+            continue;
+          }
           await archiveQuarantineRawMime(storage, rawKey, {
             ingestMailboxId,
             pop3Uidl: uidl,
@@ -249,6 +322,13 @@ export async function ingestOnce(opts: IngestOnceOptions = {}): Promise<IngestCy
         const next = prev + 1;
         failureCounts.set(uidl, next);
 
+        if (parsedAttachmentCount > 0) {
+          const error = err instanceof Error ? err.message : String(err);
+          items.push({ uidl, status: 'error', error });
+          processed += 1;
+          continue;
+        }
+
         if (next >= POISON_MAX_RETRIES && rawKey) {
           const error = err instanceof Error ? err.message : String(err);
           const result = await quarantineParseFailure(
@@ -257,6 +337,17 @@ export async function ingestOnce(opts: IngestOnceOptions = {}): Promise<IngestCy
             { db },
             error,
           );
+          if (
+            await hasPendingCandidateAttachmentCleanup(db, {
+              ingestMailboxId,
+              pop3Uidl: uidl,
+            })
+          ) {
+            failureCounts.delete(uidl);
+            items.push({ uidl, result, status: 'deferred' });
+            processed += 1;
+            continue;
+          }
           await archiveQuarantineRawMime(storage, rawKey, {
             ingestMailboxId,
             pop3Uidl: uidl,

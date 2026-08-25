@@ -36,6 +36,7 @@ import {
 } from './rocketseed-returned-copy.js';
 import {
   attachment,
+  mailIngestCandidateAttachmentCleanup,
   mailIngestQuarantine,
   mailLabel,
   mailboxTransport,
@@ -55,17 +56,15 @@ import { refreshThreadSearchVector } from '../search/search-vector.js';
 import { sanitizeHtmlBodyForStorage } from '../sanitize-email-html.js';
 import { getSenderPreference } from '../sender-preference.js';
 import { ingestRequireOwnerHeader } from '../../env.js';
+import { and, asc, eq, inArray } from 'drizzle-orm';
 import { markThreadRead } from '../thread-read.js';
-import { and, eq, inArray } from 'drizzle-orm';
 import type { DB } from '../../db/client.js';
 import { randomUUID } from 'node:crypto';
 
 const CENTURION_TRANSPORT_ID = 'transport-centurion';
 export const CANDIDATE_ATTACHMENT_DELETE_CONCURRENCY = 4;
-const QUARANTINE_CANDIDATE_ATTACHMENT_KEYS = 'candidateAttachmentCleanupKeys';
-const MAX_QUARANTINE_CANDIDATE_ATTACHMENT_KEYS = 100;
-const SAFE_QUARANTINE_CANDIDATE_ATTACHMENT_KEY =
-  /^attachments\/[A-Za-z0-9-]{1,128}\/\d{3}-[A-Za-z0-9._-]{1,80}$/;
+export const CANDIDATE_ATTACHMENT_CLEANUP_SWEEP_LIMIT = 500;
+const CANDIDATE_ATTACHMENT_CLEANUP_INSERT_CHUNK_SIZE = 250;
 
 type RoutedTransport = {
   id: string;
@@ -208,12 +207,13 @@ export async function persistInboundMessage(
 
   const existingMessage = await findExistingInboundMessage(db, meta);
   if (existingMessage) {
-    const candidateAttachmentCleanupFailureCount = await cleanupCandidateAttachmentObjects(
+    const candidateAttachmentCleanupFailureCount = await cleanupCandidateAttachmentTasks({
+      db,
       storage,
-      parsed.attachments,
-      meta.messageId,
-      existingMessage.id,
-    );
+      attachments: parsed.attachments,
+      meta,
+      canonicalMessageId: existingMessage.id,
+    });
     return {
       kind: 'duplicate',
       transportId: existingMessage.transportId,
@@ -227,14 +227,12 @@ export async function persistInboundMessage(
     ? undefined
     : await findExistingQuarantine(db, meta);
   if (existingQuarantine) {
-    const candidateAttachmentKeys = await persistQuarantineCandidateAttachmentKeys(
+    const candidateAttachmentCleanupFailureCount = await cleanupCandidateAttachmentTasks({
       db,
-      existingQuarantine,
-      parsed.attachments,
-      meta.messageId,
-    );
-    const candidateAttachmentCleanupFailureCount =
-      await cleanupQuarantineCandidateAttachmentObjects(storage, candidateAttachmentKeys);
+      storage,
+      attachments: parsed.attachments,
+      meta,
+    });
     return {
       kind: 'quarantined',
       quarantineId: existingQuarantine.id,
@@ -379,6 +377,23 @@ export async function persistInboundMessage(
       return;
     }
     if (canonical && returnedCopyTrust.trusted) {
+      // A retry may reuse an attachment key whose deferred cleanup is still
+      // durable. Drain that task first; otherwise reconciliation could attach
+      // an object a later sweep is entitled to delete.
+      if (
+        await hasPendingCandidateAttachmentCleanup(transactionDb, {
+          ingestMailboxId: meta.ingestMailboxId,
+          pop3Uidl: meta.pop3Uidl,
+        })
+      ) {
+        deferred = {
+          kind: 'deferred',
+          transportId: canonical.transportId,
+          messageId: canonical.id,
+          rawMimeS3Key,
+        };
+        return;
+      }
       if (canonical.ingestMailboxId || canonical.pop3Uidl) {
         duplicate = {
           kind: 'duplicate',
@@ -554,12 +569,13 @@ export async function persistInboundMessage(
   });
 
   if (duplicate) {
-    const candidateAttachmentCleanupFailureCount = await cleanupCandidateAttachmentObjects(
+    const candidateAttachmentCleanupFailureCount = await cleanupCandidateAttachmentTasks({
+      db,
       storage,
-      parsed.attachments,
-      messageId,
-      duplicateCanonicalMessageId,
-    );
+      attachments: parsed.attachments,
+      meta,
+      canonicalMessageId: duplicateCanonicalMessageId,
+    });
     return withCandidateAttachmentCleanupFailures(
       duplicate,
       candidateAttachmentCleanupFailureCount,
@@ -570,12 +586,12 @@ export async function persistInboundMessage(
     'candidateAttachmentCleanupFailureCount'
   > | null;
   if (deferredResult) {
-    const candidateAttachmentCleanupFailureCount = await cleanupCandidateAttachmentObjects(
+    const candidateAttachmentCleanupFailureCount = await cleanupCandidateAttachmentTasks({
+      db,
       storage,
-      parsed.attachments,
-      messageId,
-      deferredResult.messageId,
-    );
+      attachments: parsed.attachments,
+      meta,
+    });
     return {
       ...deferredResult,
       candidateAttachmentCleanupFailureCount,
@@ -603,44 +619,123 @@ export async function persistInboundMessage(
   };
 }
 
-export async function cleanupCandidateAttachmentObjects(
-  storage: S3Storage,
+export function ownedCandidateAttachmentKeys(
   attachments: ParsedInboundMessage['attachments'],
   candidateMessageId: string,
-  canonicalMessageId: string,
-): Promise<number> {
-  if (candidateMessageId === canonicalMessageId) return 0;
-
+): string[] {
   const candidatePrefix = `attachments/${candidateMessageId}/`;
-  const keys = [
+  return [
     ...new Set(
       attachments
         .map((attachment) => attachment.s3Key)
-        .filter((key) => key.startsWith(candidatePrefix)),
+        .filter((key) => key.startsWith(candidatePrefix) && key.length > candidatePrefix.length),
     ),
   ];
-  return cleanupAttachmentObjectKeys(storage, keys);
 }
 
-async function cleanupQuarantineCandidateAttachmentObjects(
-  storage: S3Storage,
-  keys: readonly string[],
-): Promise<number> {
-  return cleanupAttachmentObjectKeys(storage, boundedSafeQuarantineCandidateAttachmentKeys(keys));
+async function registerCandidateAttachmentCleanupTasks(
+  db: DB,
+  attachments: ParsedInboundMessage['attachments'],
+  meta: IngestMeta,
+): Promise<void> {
+  const keys = ownedCandidateAttachmentKeys(attachments, meta.messageId);
+  for (
+    let start = 0;
+    start < keys.length;
+    start += CANDIDATE_ATTACHMENT_CLEANUP_INSERT_CHUNK_SIZE
+  ) {
+    const chunk = keys.slice(start, start + CANDIDATE_ATTACHMENT_CLEANUP_INSERT_CHUNK_SIZE);
+    await db
+      .insert(mailIngestCandidateAttachmentCleanup)
+      .values(
+        chunk.map((s3Key) => ({
+          s3Key,
+          candidateMessageId: meta.messageId,
+          ingestMailboxId: meta.ingestMailboxId,
+          pop3Uidl: meta.pop3Uidl,
+        })),
+      )
+      .onConflictDoNothing({ target: mailIngestCandidateAttachmentCleanup.s3Key });
+  }
 }
 
-async function cleanupAttachmentObjectKeys(
-  storage: S3Storage,
-  keys: readonly string[],
-): Promise<number> {
-  let nextKeyIndex = 0;
+function isOwnedCandidateAttachmentKey(s3Key: string, candidateMessageId: string): boolean {
+  const prefix = `attachments/${candidateMessageId}/`;
+  return s3Key.startsWith(prefix) && s3Key.length > prefix.length;
+}
+
+export async function hasPendingCandidateAttachmentCleanup(
+  db: DB,
+  meta: Pick<IngestMeta, 'ingestMailboxId' | 'pop3Uidl'>,
+): Promise<boolean> {
+  const rows = await db
+    .select({ s3Key: mailIngestCandidateAttachmentCleanup.s3Key })
+    .from(mailIngestCandidateAttachmentCleanup)
+    .where(
+      and(
+        eq(mailIngestCandidateAttachmentCleanup.ingestMailboxId, meta.ingestMailboxId),
+        eq(mailIngestCandidateAttachmentCleanup.pop3Uidl, meta.pop3Uidl),
+      ),
+    )
+    .limit(1);
+  return rows.length > 0;
+}
+
+async function drainCandidateAttachmentCleanupTasks(args: {
+  db: DB;
+  storage: S3Storage;
+  limit: number;
+  meta?: Pick<IngestMeta, 'ingestMailboxId' | 'pop3Uidl'>;
+}): Promise<{ failureCount: number; taskCount: number }> {
+  const { db, storage, limit, meta } = args;
+  const query = db
+    .select({
+      s3Key: mailIngestCandidateAttachmentCleanup.s3Key,
+      candidateMessageId: mailIngestCandidateAttachmentCleanup.candidateMessageId,
+    })
+    .from(mailIngestCandidateAttachmentCleanup)
+    .orderBy(
+      asc(mailIngestCandidateAttachmentCleanup.createdAt),
+      asc(mailIngestCandidateAttachmentCleanup.s3Key),
+    )
+    .limit(limit);
+  const tasks = meta
+    ? await query.where(
+        and(
+          eq(mailIngestCandidateAttachmentCleanup.ingestMailboxId, meta.ingestMailboxId),
+          eq(mailIngestCandidateAttachmentCleanup.pop3Uidl, meta.pop3Uidl),
+        ),
+      )
+    : await query;
+  let nextTaskIndex = 0;
   let failureCount = 0;
   const deleteWorker = async () => {
-    while (nextKeyIndex < keys.length) {
-      const key = keys[nextKeyIndex++];
-      if (!key) return;
+    while (nextTaskIndex < tasks.length) {
+      const task = tasks[nextTaskIndex++];
+      if (!task || !isOwnedCandidateAttachmentKey(task.s3Key, task.candidateMessageId)) {
+        failureCount += 1;
+        continue;
+      }
       try {
-        await storage.deleteObject(key);
+        await storage.deleteObject(task.s3Key);
+      } catch {
+        failureCount += 1;
+        continue;
+      }
+      try {
+        await db.transaction(async (tx) => {
+          await tx
+            .delete(mailIngestCandidateAttachmentCleanup)
+            .where(
+              and(
+                eq(mailIngestCandidateAttachmentCleanup.s3Key, task.s3Key),
+                eq(
+                  mailIngestCandidateAttachmentCleanup.candidateMessageId,
+                  task.candidateMessageId,
+                ),
+              ),
+            );
+        });
       } catch {
         failureCount += 1;
       }
@@ -648,87 +743,47 @@ async function cleanupAttachmentObjectKeys(
   };
   await Promise.all(
     Array.from(
-      { length: Math.min(CANDIDATE_ATTACHMENT_DELETE_CONCURRENCY, keys.length) },
+      { length: Math.min(CANDIDATE_ATTACHMENT_DELETE_CONCURRENCY, tasks.length) },
       deleteWorker,
     ),
   );
-  return failureCount;
+  return { failureCount, taskCount: tasks.length };
 }
 
-function candidateAttachmentKeysForQuarantine(
-  attachments: ParsedInboundMessage['attachments'],
-  candidateMessageId: string,
-): string[] {
-  const candidatePrefix = `attachments/${candidateMessageId}/`;
-  return boundedSafeQuarantineCandidateAttachmentKeys(
-    attachments
-      .map((attachment) => attachment.s3Key)
-      .filter((key) => key.startsWith(candidatePrefix)),
-  );
+export async function sweepCandidateAttachmentCleanupTasks(args: {
+  db: DB;
+  storage: S3Storage;
+  limit?: number;
+}): Promise<{ failureCount: number }> {
+  return drainCandidateAttachmentCleanupTasks({
+    ...args,
+    limit: args.limit ?? CANDIDATE_ATTACHMENT_CLEANUP_SWEEP_LIMIT,
+  });
 }
 
-function persistedQuarantineCandidateAttachmentKeys(parsedHeaders: unknown): string[] {
-  if (!isRecord(parsedHeaders)) return [];
-  const keys = parsedHeaders[QUARANTINE_CANDIDATE_ATTACHMENT_KEYS];
-  return Array.isArray(keys) ? boundedSafeQuarantineCandidateAttachmentKeys(keys) : [];
-}
-
-function boundedSafeQuarantineCandidateAttachmentKeys(keys: readonly unknown[]): string[] {
-  const safeKeys: string[] = [];
-  const seen = new Set<string>();
-  for (const key of keys) {
-    if (
-      typeof key !== 'string' ||
-      key.length > 256 ||
-      !SAFE_QUARANTINE_CANDIDATE_ATTACHMENT_KEY.test(key) ||
-      seen.has(key)
-    ) {
-      continue;
-    }
-    safeKeys.push(key);
-    seen.add(key);
-    if (safeKeys.length === MAX_QUARANTINE_CANDIDATE_ATTACHMENT_KEYS) break;
+async function cleanupCandidateAttachmentTasks(args: {
+  db: DB;
+  storage: S3Storage;
+  attachments: ParsedInboundMessage['attachments'];
+  meta: IngestMeta;
+  canonicalMessageId?: string;
+}): Promise<number> {
+  if (args.canonicalMessageId !== args.meta.messageId) {
+    await registerCandidateAttachmentCleanupTasks(args.db, args.attachments, args.meta);
   }
-  return safeKeys;
-}
-
-async function persistQuarantineCandidateAttachmentKeys(
-  db: DB,
-  quarantine: { id: string; parsedHeaders: unknown },
-  attachments: ParsedInboundMessage['attachments'],
-  candidateMessageId: string,
-): Promise<string[]> {
-  const candidateAttachmentKeys = boundedSafeQuarantineCandidateAttachmentKeys([
-    ...persistedQuarantineCandidateAttachmentKeys(quarantine.parsedHeaders),
-    ...candidateAttachmentKeysForQuarantine(attachments, candidateMessageId),
-  ]);
-  if (candidateAttachmentKeys.length === 0) return [];
-
-  const parsedHeaders = isRecord(quarantine.parsedHeaders) ? { ...quarantine.parsedHeaders } : {};
-  parsedHeaders[QUARANTINE_CANDIDATE_ATTACHMENT_KEYS] = candidateAttachmentKeys;
-  await db
-    .update(mailIngestQuarantine)
-    .set({ parsedHeaders })
-    .where(eq(mailIngestQuarantine.id, quarantine.id));
-  return candidateAttachmentKeys;
-}
-
-function withQuarantineCandidateAttachmentKeys(
-  parsedHeaders: Record<string, unknown>,
-  attachments: ParsedInboundMessage['attachments'],
-  candidateMessageId: string,
-): Record<string, unknown> {
-  const candidateAttachmentKeys = candidateAttachmentKeysForQuarantine(
-    attachments,
-    candidateMessageId,
-  );
-  return candidateAttachmentKeys.length === 0
-    ? parsedHeaders
-    : { ...parsedHeaders, [QUARANTINE_CANDIDATE_ATTACHMENT_KEYS]: candidateAttachmentKeys };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
+  let failureCount = 0;
+  for (;;) {
+    const result = await drainCandidateAttachmentCleanupTasks({
+      db: args.db,
+      storage: args.storage,
+      meta: args.meta,
+      limit: CANDIDATE_ATTACHMENT_CLEANUP_SWEEP_LIMIT,
+    });
+    failureCount += result.failureCount;
+    if (result.failureCount > 0 || result.taskCount < CANDIDATE_ATTACHMENT_CLEANUP_SWEEP_LIMIT) {
+      return failureCount;
+    }
+  }
 }
 
 function withCandidateAttachmentCleanupFailures(
@@ -1184,11 +1239,7 @@ async function quarantineUnrouted(args: {
     rawMimeS3Key,
     reason,
     ownerHeaderValue: parsed.ownerHeaderValue,
-    parsedHeaders: withQuarantineCandidateAttachmentKeys(
-      headerSummary(parsed),
-      parsed.attachments,
-      meta.messageId,
-    ),
+    parsedHeaders: headerSummary(parsed),
   });
   return {
     kind: 'quarantined',
@@ -1203,18 +1254,12 @@ async function quarantineWithAttachmentCleanup(
   args: Parameters<typeof quarantineUnrouted>[0] & { storage: S3Storage },
 ): Promise<PersistQuarantinedResult> {
   const result = await quarantineUnrouted(args);
-  const quarantine = await findExistingQuarantine(args.db, args.meta);
-  if (!quarantine) throw new Error('quarantine row missing after insert');
-  const candidateAttachmentKeys = await persistQuarantineCandidateAttachmentKeys(
-    args.db,
-    quarantine,
-    args.parsed.attachments,
-    args.meta.messageId,
-  );
-  const candidateAttachmentCleanupFailureCount = await cleanupQuarantineCandidateAttachmentObjects(
-    args.storage,
-    candidateAttachmentKeys,
-  );
+  const candidateAttachmentCleanupFailureCount = await cleanupCandidateAttachmentTasks({
+    db: args.db,
+    storage: args.storage,
+    attachments: args.parsed.attachments,
+    meta: args.meta,
+  });
   return { ...result, candidateAttachmentCleanupFailureCount };
 }
 
