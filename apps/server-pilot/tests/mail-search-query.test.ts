@@ -49,6 +49,7 @@ async function seedThreadWithMessage(
     threadId?: string;
     subject: string;
     snippet: string;
+    textBody?: string;
     fromAddress?: string;
     toAddresses?: string[];
     ccAddresses?: string[];
@@ -74,7 +75,6 @@ async function seedThreadWithMessage(
     labelIds: opts.labelIds ?? [],
     latestMessageAt: opts.latestMessageAt ?? new Date('2026-07-06T12:00:00Z'),
   });
-  await refreshThreadSearchVector(db, threadId);
 
   await db.insert(message).values({
     id: messageId,
@@ -86,9 +86,10 @@ async function seedThreadWithMessage(
     ccAddresses: opts.ccAddresses ?? [],
     bccAddresses: opts.bccAddresses ?? [],
     subject: opts.subject,
-    textBody: opts.snippet,
+    textBody: opts.textBody ?? opts.snippet,
     receivedAt: opts.latestMessageAt ?? new Date('2026-07-06T12:00:00Z'),
   });
+  await refreshThreadSearchVector(db, threadId);
 
   if (opts.withAttachment) {
     await db.insert(attachment).values({
@@ -117,6 +118,24 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('buildThreadSearchConditions',
       });
 
       const ids = await listThreadIdsForQuery(db, 'invoice');
+      expect(ids).toEqual([threadId]);
+    });
+  });
+
+  it('matches a token that exists only in message text_body', async () => {
+    await withSeededTestDb(async (db) => {
+      const { threadId } = await seedThreadWithMessage(db, {
+        subject: 'Housekeeping',
+        snippet: 'See note',
+        textBody: 'uniquebodytoken left in the guest bathroom',
+      });
+      await seedThreadWithMessage(db, {
+        subject: 'Housekeeping',
+        snippet: 'See note',
+        textBody: 'minibar restock only',
+      });
+
+      const ids = await listThreadIdsForQuery(db, 'uniquebodytoken');
       expect(ids).toEqual([threadId]);
     });
   });
