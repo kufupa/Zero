@@ -547,6 +547,8 @@ export const outboundSendQueue = pgTable(
     attempts: integer('attempts').notNull().default(0),
     lastError: text('last_error'),
     claimedAt: timestamp('claimed_at', { withTimezone: true }),
+    smtpAttemptedAt: timestamp('smtp_attempted_at', { withTimezone: true }),
+    smtpOutcomePersistedAt: timestamp('smtp_outcome_persisted_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },

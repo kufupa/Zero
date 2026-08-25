@@ -16,7 +16,7 @@ import {
   serializeSmtpPayload,
   deserializeSmtpPayload,
 } from '../src/mail/send/outbound-queue.js';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { message, outboundSendQueue } from '../src/db/schema/mail.js';
 import {
   TEST_DB_AVAILABLE,
@@ -24,6 +24,7 @@ import {
   withSeededTestDb,
 } from './helpers/test-db.js';
 import { callerFor } from './helpers/trpc-caller.js';
+import { readFile } from 'node:fs/promises';
 
 const reachable = await probeTestDb();
 
@@ -79,6 +80,36 @@ describe('isOutboundClaimable', () => {
           status: 'sending',
           sendAt: new Date(now.getTime() - 60_000),
           claimedAt: new Date(now.getTime() - RECLAIM_SENDING_AFTER_MS - 1),
+        },
+        now,
+      ),
+    ).toBe(true);
+  });
+
+  it('sending stale with started SMTP and no outcome → not reclaimable', () => {
+    expect(
+      isOutboundClaimable(
+        {
+          status: 'sending',
+          sendAt: new Date(now.getTime() - 60_000),
+          claimedAt: new Date(now.getTime() - RECLAIM_SENDING_AFTER_MS - 1),
+          smtpAttemptedAt: new Date(now.getTime() - RECLAIM_SENDING_AFTER_MS - 2),
+          smtpOutcomePersistedAt: null,
+        },
+        now,
+      ),
+    ).toBe(false);
+  });
+
+  it('sending stale with persisted outcome → reclaimable', () => {
+    expect(
+      isOutboundClaimable(
+        {
+          status: 'sending',
+          sendAt: new Date(now.getTime() - 60_000),
+          claimedAt: new Date(now.getTime() - RECLAIM_SENDING_AFTER_MS - 1),
+          smtpAttemptedAt: new Date(now.getTime() - RECLAIM_SENDING_AFTER_MS - 2),
+          smtpOutcomePersistedAt: new Date(now.getTime() - RECLAIM_SENDING_AFTER_MS - 2),
         },
         now,
       ),
@@ -144,6 +175,93 @@ describe('hasPersistedSmtpDelivery', () => {
     expect(hasPersistedSmtpDelivery(undefined)).toBe(false);
     expect(hasPersistedSmtpDelivery('')).toBe(false);
   });
+});
+
+describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('outbound SMTP fence migration', () => {
+  it('fences ambiguous legacy sending rows while preserving known recovery evidence', async () => {
+    await withSeededTestDb(async (db) => {
+      const caller = await callerFor('user-navaai', {
+        db,
+        requestedTransportId: 'transport-nava',
+      });
+      const [ambiguous, outcome, legacy] = await Promise.all(
+        ['ambiguous', 'outcome', 'legacy'].map((subject) =>
+          caller.mail.send({
+            to: [`${subject}@zero.test`],
+            subject,
+            html: `<p>${subject}</p>`,
+            text: subject,
+          }),
+        ),
+      );
+      const queueMessageIds = [ambiguous.messageId, outcome.messageId, legacy.messageId];
+      const stale = new Date(Date.now() - RECLAIM_SENDING_AFTER_MS - 1);
+      const [outcomeQueue] = await db
+        .select({ smtpPayload: outboundSendQueue.smtpPayload })
+        .from(outboundSendQueue)
+        .where(eq(outboundSendQueue.messageId, outcome.messageId))
+        .limit(1);
+      if (!outcomeQueue) throw new Error('missing outcome queue row');
+
+      await db
+        .update(outboundSendQueue)
+        .set({
+          status: 'sending',
+          claimedAt: stale,
+          smtpAttemptedAt: null,
+          smtpOutcomePersistedAt: null,
+        })
+        .where(inArray(outboundSendQueue.messageId, queueMessageIds));
+      await db
+        .update(outboundSendQueue)
+        .set({
+          smtpPayload: {
+            ...outcomeQueue.smtpPayload,
+            deliveryOutcome: {
+              messageId: 'outcome@zero.test',
+              accepted: ['outcome@zero.test'],
+              rejected: [],
+            },
+          },
+        })
+        .where(eq(outboundSendQueue.messageId, outcome.messageId));
+      await db
+        .update(message)
+        .set({ messageIdHeader: 'legacy@zero.test' })
+        .where(eq(message.id, legacy.messageId));
+
+      const migration = await readFile(
+        new URL('../drizzle/0019_outbound_smtp_attempt_fence.sql', import.meta.url),
+        'utf8',
+      );
+      for (const statement of migration.split('--> statement-breakpoint')) {
+        if (statement.trim()) await db.execute(sql.raw(statement));
+      }
+
+      const queues = await db
+        .select({
+          messageId: outboundSendQueue.messageId,
+          smtpAttemptedAt: outboundSendQueue.smtpAttemptedAt,
+          smtpOutcomePersistedAt: outboundSendQueue.smtpOutcomePersistedAt,
+        })
+        .from(outboundSendQueue)
+        .where(inArray(outboundSendQueue.messageId, queueMessageIds));
+      const byMessageId = new Map(queues.map((queue) => [queue.messageId, queue]));
+
+      expect(byMessageId.get(ambiguous.messageId)).toMatchObject({
+        smtpAttemptedAt: expect.any(Date),
+        smtpOutcomePersistedAt: null,
+      });
+      expect(byMessageId.get(outcome.messageId)).toMatchObject({
+        smtpAttemptedAt: expect.any(Date),
+        smtpOutcomePersistedAt: expect.any(Date),
+      });
+      expect(byMessageId.get(legacy.messageId)).toMatchObject({
+        smtpAttemptedAt: expect.any(Date),
+        smtpOutcomePersistedAt: expect.any(Date),
+      });
+    });
+  }, 30000);
 });
 
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('outbound queue (integration)', () => {

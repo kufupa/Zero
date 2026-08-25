@@ -228,10 +228,12 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('outbound queue claim lease', 
         attempts: claimed!.attempts + 1,
         lastError: null,
       });
+      expect(queue!.smtpAttemptedAt).toBeInstanceOf(Date);
+      expect(queue!.smtpOutcomePersistedAt).toBeNull();
       expect(queue!.smtpPayload).not.toHaveProperty('deliveryOutcome');
       expect(outbound!.messageIdHeader).toBeNull();
       expect(fixtureLoopbackStore.drain()).toEqual([]);
-      expect(error).not.toHaveBeenCalled();
+      expect(error).toHaveBeenCalled();
     });
   }, 30000);
 

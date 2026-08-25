@@ -37,6 +37,7 @@ import {
   flushOne,
   getSmtpDeliveryStatus,
   getUndoSendSeconds,
+  OutboundDeliveryUncertainError,
 } from '../../mail/send/outbound-queue.js';
 import {
   DEFAULT_AI_MODEL_ID,
@@ -1276,7 +1277,21 @@ export const mailRouter = tRouter({
     }
 
     if (undoSecs === 0) {
-      const smtpResult = await flushOne(messageId, transportId, db);
+      let smtpResult: Awaited<ReturnType<typeof flushOne>>;
+      try {
+        smtpResult = await flushOne(messageId, transportId, db);
+      } catch (error) {
+        if (error instanceof OutboundDeliveryUncertainError) {
+          return {
+            sent: false as const,
+            delivery: 'unknown' as const,
+            messageId,
+            threadId,
+            fromEmail: ctx.transportEmail,
+          };
+        }
+        throw error;
+      }
       if ('deliveryEvidence' in smtpResult) {
         return {
           sent: true as const,

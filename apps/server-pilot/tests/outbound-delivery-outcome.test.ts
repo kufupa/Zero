@@ -32,6 +32,14 @@ function scriptedTransport(outcome: SmtpSendResult) {
   };
 }
 
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve: (() => void) | undefined;
+  const promise = new Promise<void>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve: () => resolve?.() };
+}
+
 async function queueForMessage(db: import('../src/db/client.js').DB, messageId: string) {
   const [queue] = await db
     .select()
@@ -136,6 +144,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('outbound SMTP delivery outcom
           ),
         );
       expect(queues).toHaveLength(1);
+      expect(queues[0]!.smtpAttemptedAt).toBeNull();
       const [outbound] = await db
         .select({ messageIdHeader: message.messageIdHeader })
         .from(message)
@@ -144,6 +153,201 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('outbound SMTP delivery outcom
       expect(outbound?.messageIdHeader).toBeNull();
       expect(fixtureLoopbackStore.drain()).toEqual([]);
       expect(scripted.send).toHaveBeenCalledTimes(1);
+    });
+  }, 30000);
+
+  it('reports a zero-acceptance claim loss as uncertain without retrying it', async () => {
+    await withSeededTestDb(async (db) => {
+      const sendStarted = deferred();
+      const finishSend = deferred();
+      const send: SmtpTransport['send'] = vi.fn(async () => {
+        sendStarted.resolve();
+        await finishSend.promise;
+        return {
+          messageId: 'zero-claim-loss@zero.test',
+          accepted: [],
+          rejected: ['zero-claim-loss-recipient@zero.test'],
+        };
+      });
+      __setSmtpTransportForTests({ kind: 'fake', send });
+      const caller = await callerFor('user-navaai', {
+        db,
+        requestedTransportId: transportId,
+      });
+      const pendingResult = caller.mail.send({
+        to: ['zero-claim-loss-recipient@zero.test'],
+        subject: 'zero acceptance claim loss',
+        html: '<p>zero acceptance claim loss</p>',
+        text: 'zero acceptance claim loss',
+      });
+
+      await sendStarted.promise;
+      const [queue] = await db
+        .select()
+        .from(outboundSendQueue)
+        .where(eq(outboundSendQueue.transportId, transportId))
+        .limit(1);
+      expect(queue).toBeDefined();
+      await db
+        .update(outboundSendQueue)
+        .set({ attempts: queue!.attempts + 1 })
+        .where(eq(outboundSendQueue.id, queue!.id));
+      finishSend.resolve();
+
+      await expect(pendingResult).resolves.toMatchObject({ sent: false, delivery: 'unknown' });
+      const updatedQueue = await queueForMessage(db, queue!.messageId);
+      expect(updatedQueue.smtpAttemptedAt).toBeInstanceOf(Date);
+      expect(updatedQueue.smtpOutcomePersistedAt).toBeNull();
+      await db
+        .update(outboundSendQueue)
+        .set({ claimedAt: new Date(Date.now() - 5 * 60 * 1000 - 1) })
+        .where(eq(outboundSendQueue.id, updatedQueue.id));
+      await expect(flushDue({ db })).resolves.toEqual({ flushed: 0 });
+      expect(send).toHaveBeenCalledTimes(1);
+    });
+  }, 30000);
+
+  it('does not invoke SMTP twice after its active lease becomes stale', async () => {
+    await withSeededTestDb(async (db) => {
+      const firstSmtpCallStarted = deferred();
+      const releaseFirstSmtpCall = deferred();
+      const outcome: SmtpSendResult = {
+        messageId: 'stale-lease-outcome@zero.test',
+        accepted: ['stale-lease-recipient@zero.test'],
+        rejected: [],
+      };
+      let sendCount = 0;
+      const send: SmtpTransport['send'] = vi.fn(async () => {
+        sendCount += 1;
+        if (sendCount === 1) {
+          firstSmtpCallStarted.resolve();
+          await releaseFirstSmtpCall.promise;
+        }
+        return outcome;
+      });
+      __setSmtpTransportForTests({ kind: 'fake', send });
+      const caller = await callerFor('user-navaai', {
+        db,
+        requestedTransportId: transportId,
+      });
+      let firstSend: Promise<unknown> | undefined;
+
+      try {
+        firstSend = caller.mail.send({
+          to: ['stale-lease-recipient@zero.test'],
+          subject: 'stale lease SMTP protection',
+          html: '<p>stale lease SMTP protection</p>',
+          text: 'stale lease SMTP protection',
+        });
+        await firstSmtpCallStarted.promise;
+
+        const queue = await queueForMessage(
+          db,
+          (
+            await db
+              .select({ messageId: outboundSendQueue.messageId })
+              .from(outboundSendQueue)
+              .where(eq(outboundSendQueue.transportId, transportId))
+              .limit(1)
+          )[0]!.messageId,
+        );
+        await db
+          .update(outboundSendQueue)
+          .set({ claimedAt: new Date(Date.now() - 5 * 60 * 1000 - 1) })
+          .where(eq(outboundSendQueue.id, queue.id));
+
+        await expect(flushDue({ db })).resolves.toEqual({ flushed: 0 });
+        expect(send).toHaveBeenCalledTimes(1);
+      } finally {
+        releaseFirstSmtpCall.resolve();
+        await firstSend?.catch(() => undefined);
+      }
+    });
+  }, 30000);
+
+  it('reports a post-attempt SMTP failure as uncertain without retrying it', async () => {
+    await withSeededTestDb(async (db) => {
+      const send: SmtpTransport['send'] = vi.fn().mockRejectedValue(new Error('SMTP socket reset'));
+      __setSmtpTransportForTests({ kind: 'fake', send });
+      const caller = await callerFor('user-navaai', {
+        db,
+        requestedTransportId: transportId,
+      });
+
+      const result = await caller.mail.send({
+        to: ['uncertain-recipient@zero.test'],
+        subject: 'uncertain SMTP outcome',
+        html: '<p>uncertain SMTP outcome</p>',
+        text: 'uncertain SMTP outcome',
+      });
+
+      expect(result).toMatchObject({ sent: false, delivery: 'unknown' });
+      const queue = await queueForMessage(db, result.messageId);
+      expect(queue.status).toBe('sending');
+      expect(queue.smtpAttemptedAt).toBeInstanceOf(Date);
+      expect(queue.smtpOutcomePersistedAt).toBeNull();
+      expect(JSON.parse(queue.lastError ?? '')).toEqual({
+        code: 'SMTP_DELIVERY_OUTCOME_UNKNOWN',
+      });
+      await db
+        .update(outboundSendQueue)
+        .set({ claimedAt: new Date(Date.now() - 5 * 60 * 1000 - 1) })
+        .where(eq(outboundSendQueue.id, queue.id));
+      await expect(flushDue({ db })).resolves.toEqual({ flushed: 0 });
+      expect(send).toHaveBeenCalledTimes(1);
+    });
+  }, 30000);
+
+  it('reports a post-send claim loss as uncertain without retrying it', async () => {
+    await withSeededTestDb(async (db) => {
+      const sendStarted = deferred();
+      const finishSend = deferred();
+      const outcome: SmtpSendResult = {
+        messageId: 'lost-claim-outcome@zero.test',
+        accepted: ['lost-claim-recipient@zero.test'],
+        rejected: [],
+      };
+      const send: SmtpTransport['send'] = vi.fn(async () => {
+        sendStarted.resolve();
+        await finishSend.promise;
+        return outcome;
+      });
+      __setSmtpTransportForTests({ kind: 'fake', send });
+      const caller = await callerFor('user-navaai', {
+        db,
+        requestedTransportId: transportId,
+      });
+      const pendingResult = caller.mail.send({
+        to: ['lost-claim-recipient@zero.test'],
+        subject: 'post-send claim loss',
+        html: '<p>post-send claim loss</p>',
+        text: 'post-send claim loss',
+      });
+
+      await sendStarted.promise;
+      const [queue] = await db
+        .select()
+        .from(outboundSendQueue)
+        .where(eq(outboundSendQueue.transportId, transportId))
+        .limit(1);
+      expect(queue).toBeDefined();
+      await db
+        .update(outboundSendQueue)
+        .set({ attempts: queue!.attempts + 1 })
+        .where(eq(outboundSendQueue.id, queue!.id));
+      finishSend.resolve();
+
+      const result = await pendingResult;
+      expect(result).toMatchObject({ sent: false, delivery: 'unknown' });
+      const updatedQueue = await queueForMessage(db, result.messageId);
+      expect(updatedQueue.smtpAttemptedAt).toBeInstanceOf(Date);
+      expect(updatedQueue.smtpOutcomePersistedAt).toBeNull();
+      await db
+        .update(outboundSendQueue)
+        .set({ claimedAt: new Date(Date.now() - 5 * 60 * 1000 - 1) })
+        .where(eq(outboundSendQueue.id, updatedQueue.id));
+      await expect(flushDue({ db })).resolves.toEqual({ flushed: 0 });
+      expect(send).toHaveBeenCalledTimes(1);
     });
   }, 30000);
 
@@ -173,6 +377,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('outbound SMTP delivery outcom
         .set({
           status: 'sending',
           claimedAt: stale,
+          smtpOutcomePersistedAt: new Date(),
           smtpPayload: {
             ...(queue.smtpPayload as Record<string, unknown>),
             deliveryOutcome: {
@@ -345,6 +550,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('outbound SMTP delivery outcom
         .set({
           status: 'sending',
           claimedAt: stale,
+          smtpOutcomePersistedAt: new Date(),
           smtpPayload: {
             ...(queue.smtpPayload as Record<string, unknown>),
             deliveryOutcome: { ...outcome, messageId: 'mismatched-outcome@zero.test' },
@@ -391,6 +597,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('outbound SMTP delivery outcom
         .set({
           status: 'sending',
           claimedAt: stale,
+          smtpOutcomePersistedAt: new Date(),
           smtpPayload: {
             ...(queue.smtpPayload as Record<string, unknown>),
             deliveryOutcome: {

@@ -191,7 +191,7 @@ export const partialSendEmailResultSchema = z.object({
 });
 
 export const uncertainSendEmailResultSchema = z.object({
-  sent: z.literal(true),
+  sent: z.boolean(),
   delivery: z.literal('unknown'),
 });
 

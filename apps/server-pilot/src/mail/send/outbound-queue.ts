@@ -1,13 +1,15 @@
 /**
  * Outbound undo/schedule queue (`UNDO_SEND_SECONDS`).
  *
- * Claim: pending + sendAt<=now, or stale `sending` with claimedAt older than
- * RECLAIM_SENDING_AFTER_MS (5 min) → reclaimable after crash mid-SMTP.
+ * Claim: pending + sendAt<=now, or stale `sending` before SMTP begins / after
+ * exact SMTP outcome persists. A started SMTP attempt without an outcome is
+ * intentionally not retried automatically because standard SMTP is not
+ * provider-idempotent.
  */
 import { getSmtpTransport, type OutboundMailPayload, type SmtpSendResult } from './smtp.js';
 import { message, outboundSendQueue } from '../../db/schema/mail.js';
 import { maybeEnqueueLoopback } from '../fixture-loopback.js';
-import { and, eq, gt, isNull, lte, or } from 'drizzle-orm';
+import { and, eq, gt, isNotNull, isNull, lte, or } from 'drizzle-orm';
 import { getDb, type DB } from '../../db/client.js';
 import { randomUUID } from 'node:crypto';
 
@@ -59,6 +61,13 @@ class OutboundClaimLostError extends Error {
   constructor() {
     super('outbound queue claim lost');
     this.name = 'OutboundClaimLostError';
+  }
+}
+
+export class OutboundDeliveryUncertainError extends Error {
+  constructor() {
+    super('SMTP delivery outcome is unknown');
+    this.name = 'OutboundDeliveryUncertainError';
   }
 }
 
@@ -206,7 +215,13 @@ function partialDeliveryWarning(
 
 /** Pure claim eligibility — used by unit tests + claimDue. */
 export function isOutboundClaimable(
-  row: { status: string; sendAt: Date; claimedAt: Date | null },
+  row: {
+    status: string;
+    sendAt: Date;
+    claimedAt: Date | null;
+    smtpAttemptedAt?: Date | null;
+    smtpOutcomePersistedAt?: Date | null;
+  },
   now: Date = new Date(),
   reclaimAfterMs: number = RECLAIM_SENDING_AFTER_MS,
 ): boolean {
@@ -214,7 +229,8 @@ export function isOutboundClaimable(
   if (
     row.status === 'sending' &&
     row.claimedAt != null &&
-    now.getTime() - row.claimedAt.getTime() >= reclaimAfterMs
+    now.getTime() - row.claimedAt.getTime() >= reclaimAfterMs &&
+    (!row.smtpAttemptedAt || Boolean(row.smtpOutcomePersistedAt))
   ) {
     return true;
   }
@@ -296,7 +312,14 @@ async function claimDue(
     const conditions = [
       or(
         and(eq(outboundSendQueue.status, 'pending'), lte(outboundSendQueue.sendAt, now)),
-        and(eq(outboundSendQueue.status, 'sending'), lte(outboundSendQueue.claimedAt, staleBefore)),
+        and(
+          eq(outboundSendQueue.status, 'sending'),
+          lte(outboundSendQueue.claimedAt, staleBefore),
+          or(
+            isNull(outboundSendQueue.smtpAttemptedAt),
+            isNotNull(outboundSendQueue.smtpOutcomePersistedAt),
+          ),
+        ),
       ),
     ];
     if (opts.messageId) {
@@ -332,6 +355,10 @@ async function claimDue(
               and(
                 eq(outboundSendQueue.status, 'sending'),
                 lte(outboundSendQueue.claimedAt, staleBefore),
+                or(
+                  isNull(outboundSendQueue.smtpAttemptedAt),
+                  isNotNull(outboundSendQueue.smtpOutcomePersistedAt),
+                ),
               ),
             ),
           ),
@@ -351,6 +378,26 @@ async function renewClaimLease(row: ClaimedQueueRow, db: DB): Promise<boolean> {
     .where(claimFence(row))
     .returning({ id: outboundSendQueue.id });
   return Boolean(renewed);
+}
+
+async function markSmtpAttemptStarted(row: ClaimedQueueRow, db: DB): Promise<boolean> {
+  const now = new Date();
+  const [marked] = await db
+    .update(outboundSendQueue)
+    .set({ smtpAttemptedAt: now, updatedAt: now })
+    .where(and(claimFence(row), isNull(outboundSendQueue.smtpAttemptedAt)))
+    .returning({ id: outboundSendQueue.id });
+  return Boolean(marked);
+}
+
+async function clearSmtpAttemptStarted(row: ClaimedQueueRow, db: DB): Promise<boolean> {
+  const now = new Date();
+  const [cleared] = await db
+    .update(outboundSendQueue)
+    .set({ smtpAttemptedAt: null, updatedAt: now })
+    .where(and(claimFence(row), isNotNull(outboundSendQueue.smtpAttemptedAt)))
+    .returning({ id: outboundSendQueue.id });
+  return Boolean(cleared);
 }
 
 function startClaimLeaseRenewal(
@@ -400,6 +447,7 @@ async function persistDeliveryOutcome(
         ...payload,
         deliveryOutcome: cloneDeliveryOutcome(outcome),
       },
+      smtpOutcomePersistedAt: now,
       updatedAt: now,
     })
     .where(
@@ -553,33 +601,38 @@ async function deliverClaimed(row: ClaimedQueueRow, db: DB): Promise<OutboundDel
     return finalizeLegacyHeaderOnlyDelivery(row, db);
   }
 
+  const smtpTransport = getSmtpTransport();
+  if (!(await markSmtpAttemptStarted(row, db))) throw new OutboundClaimLostError();
   const leaseRenewal = startClaimLeaseRenewal(row, db);
   let rawSmtpResult: SmtpSendResult | undefined;
-  let smtpFailed = false;
-  let smtpError: unknown;
   try {
-    rawSmtpResult = await getSmtpTransport().send(payload);
-  } catch (err) {
-    smtpFailed = true;
-    smtpError = err;
+    rawSmtpResult = await smtpTransport.send(payload);
+  } catch {
+    await leaseRenewal.stop();
+    throw new OutboundDeliveryUncertainError();
   }
   const leaseOwned = await leaseRenewal.stop();
-  if (!leaseOwned) throw new OutboundClaimLostError();
-  if (smtpFailed) throw smtpError;
-  if (!(await renewClaimLease(row, db))) throw new OutboundClaimLostError();
+  if (!leaseOwned) throw new OutboundDeliveryUncertainError();
+  if (!(await renewClaimLease(row, db))) throw new OutboundDeliveryUncertainError();
 
-  const smtpResult = validateSmtpOutcome(rawSmtpResult!);
+  let smtpResult: SmtpDeliveryOutcome;
+  try {
+    smtpResult = validateSmtpOutcome(rawSmtpResult!);
+  } catch {
+    throw new OutboundDeliveryUncertainError();
+  }
   if (smtpResult.accepted.length === 0) {
+    if (!(await clearSmtpAttemptStarted(row, db))) throw new OutboundClaimLostError();
     throw new Error('SMTP accepted no recipients');
   }
 
-  /*
-   * SMTP acceptance precedes this durable write. A process crash in that narrow
-   * interval may resend after reclaim; once the outcome is persisted, reclaim
-   * finalizes it without calling SMTP again.
-   */
-  await persistDeliveryOutcome(row, smtpResult, db);
-  const finalized = await finalizePersistedDelivery(row, payload, smtpResult, db);
+  let finalized: SmtpSendResult;
+  try {
+    await persistDeliveryOutcome(row, smtpResult, db);
+    finalized = await finalizePersistedDelivery(row, payload, smtpResult, db);
+  } catch {
+    throw new OutboundDeliveryUncertainError();
+  }
 
   const mode =
     process.env.MAIL_TRANSPORT_MODE === 'real' || process.env.MAIL_TRANSPORT_MODE === 'wire'
@@ -591,7 +644,12 @@ async function deliverClaimed(row: ClaimedQueueRow, db: DB): Promise<OutboundDel
 
 async function markFlushError(row: ClaimedQueueRow, err: unknown, db: DB): Promise<boolean> {
   const now = new Date();
-  const lastError = err instanceof Error ? err.message : String(err);
+  const lastError =
+    err instanceof OutboundDeliveryUncertainError
+      ? JSON.stringify({ code: 'SMTP_DELIVERY_OUTCOME_UNKNOWN' })
+      : err instanceof Error
+        ? err.message
+        : String(err);
   // Leave status=sending so reclaim can retry after RECLAIM_SENDING_AFTER_MS.
   const [updated] = await db
     .update(outboundSendQueue)

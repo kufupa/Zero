@@ -85,7 +85,9 @@ export const useUndoSend = () => {
     }
     if (isUncertainSendResult(result)) {
       toast.warning('Email delivery status unknown', {
-        description: 'Recovered legacy delivery has no recipient acceptance evidence.',
+        description: result.sent
+          ? 'Recovered legacy delivery has no recipient acceptance evidence.'
+          : 'SMTP did not confirm delivery. Do not resend until this outcome is investigated.',
       });
       return;
     }
