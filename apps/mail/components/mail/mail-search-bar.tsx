@@ -32,6 +32,7 @@ import { getMailCacheScope, subscribeMailCacheScope } from '@/lib/mail/mail-cach
 import {
   attachmentFilter,
   fromFilter,
+  getRecentSearchScopeKey,
   last7DaysFilter,
   loadRecentSearches,
   MAX_EFFECTIVE_SEARCH_LENGTH,
@@ -72,6 +73,7 @@ export function MailSearchBar({ folderTitle }: MailSearchBarProps) {
   const resetVersionRef = useRef(searchValue.resetVersion);
   const [localSearch, setLocalSearch] = useState('');
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
+  const [recentSearchScopeKey, setRecentSearchScopeKey] = useState<string | null>(null);
   const [recentOpen, setRecentOpen] = useState(false);
   const [highlightedSuggestion, setHighlightedSuggestion] = useState(-1);
   const [scopeMenuOpen, setScopeMenuOpen] = useState(false);
@@ -79,12 +81,14 @@ export function MailSearchBar({ folderTitle }: MailSearchBarProps) {
   const [hasSearchControlFocus, setHasSearchControlFocus] = useState(false);
   const isDraftsRoute = folder?.toLowerCase() === 'draft' || folder?.toLowerCase() === 'drafts';
   const isThisFolderDrafts = isDraftsRoute && searchValue.scope === 'folder';
+  const currentRecentSearchScopeKey = getRecentSearchScopeKey(mailCacheScope);
 
   const suggestions = useMemo<SearchSuggestion[]>(() => {
     const term = localSearch.trim();
     if (term) return [{ kind: 'from', value: term }];
+    if (recentSearchScopeKey !== currentRecentSearchScopeKey) return [];
     return recentSearches.map((value) => ({ kind: 'recent', value }));
-  }, [localSearch, recentSearches]);
+  }, [currentRecentSearchScopeKey, localSearch, recentSearches, recentSearchScopeKey]);
   const isSuggestionPopupOpen = recentOpen && suggestions.length > 0;
 
   const effectiveQuery = mergeSearchQuery(searchValue.value, searchValue.filters);
@@ -104,6 +108,7 @@ export function MailSearchBar({ folderTitle }: MailSearchBarProps) {
 
   useEffect(() => {
     setRecentSearches([]);
+    setRecentSearchScopeKey(null);
     setRecentOpen(false);
     setHighlightedSuggestion(-1);
   }, [mailCacheScope.activeTransportId, mailCacheScope.userId]);
@@ -184,9 +189,10 @@ export function MailSearchBar({ folderTitle }: MailSearchBarProps) {
 
   const openRecentSearches = useCallback(() => {
     setRecentSearches(loadRecentSearches());
+    setRecentSearchScopeKey(currentRecentSearchScopeKey);
     setRecentOpen(true);
     setHighlightedSuggestion(-1);
-  }, []);
+  }, [currentRecentSearchScopeKey]);
 
   const applySuggestion = useCallback(
     (suggestion: SearchSuggestion) => {

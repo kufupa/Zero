@@ -3,6 +3,7 @@
  */
 import { act, fireEvent, render, screen, cleanup } from '@testing-library/react';
 import { useEffect } from 'react';
+import { flushSync } from 'react-dom';
 import { createStore, Provider, useAtomValue } from 'jotai';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MailSearchBar } from '../components/mail/mail-search-bar';
@@ -414,6 +415,22 @@ describe('MailSearchBar', () => {
 
     setMailScope('user-one', 'transport-two');
     expect(screen.queryByRole('option', { name: 'first recent' })).toBeNull();
+  });
+
+  it('does not render prior-mailbox recents during a synchronous scope transition', () => {
+    setMailScope('user-one', 'transport-one');
+    saveRecentSearch('private booking reference');
+    renderMailSearchBarWithoutControls();
+    const input = screen.getByRole('searchbox', { name: /search mail/i });
+
+    fireEvent.focus(input);
+    expect(screen.getByRole('option', { name: 'private booking reference' })).toBeTruthy();
+
+    flushSync(() => {
+      setMailCacheScope({ userId: 'user-two', activeTransportId: 'transport-one' });
+    });
+
+    expect(screen.queryByRole('option', { name: 'private booking reference' })).toBeNull();
   });
 
   it('removes legacy global recents without showing their terms', () => {

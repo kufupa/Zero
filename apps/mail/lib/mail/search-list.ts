@@ -86,12 +86,15 @@ export function isUnsupportedSearchOperatorError(error: unknown): boolean {
   );
 }
 
-function getRecentSearchesKey(): string | null {
-  const { userId, activeTransportId } = getMailCacheScope();
+export function getRecentSearchScopeKey(scope = getMailCacheScope()): string | null {
+  const { userId, activeTransportId } = scope;
   if (!userId || !activeTransportId) return null;
-  return `${SCOPED_RECENT_SEARCHES_KEY_PREFIX}:${encodeURIComponent(
-    userId,
-  )}:${encodeURIComponent(activeTransportId)}`;
+  return `${encodeURIComponent(userId)}:${encodeURIComponent(activeTransportId)}`;
+}
+
+function getRecentSearchesKey(): string | null {
+  const scopeKey = getRecentSearchScopeKey();
+  return scopeKey ? `${SCOPED_RECENT_SEARCHES_KEY_PREFIX}:${scopeKey}` : null;
 }
 
 export function removeLegacyRecentSearches(): void {
