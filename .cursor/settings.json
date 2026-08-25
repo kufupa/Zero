@@ -1,10 +1,19 @@
 {
   "plugins": {
     "vercel": {
-      "enabled": true
+      "enabled": false
     },
     "compound-engineering": {
       "enabled": true
+    },
+    "aws-serverless": {
+      "enabled": false
+    },
+    "databases-on-aws": {
+      "enabled": false
+    },
+    "aws-data-analytics": {
+      "enabled": false
     }
   }
 }
