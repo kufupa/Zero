@@ -1,13 +1,19 @@
 /**
  * @vitest-environment happy-dom
  */
-import { fireEvent, render, screen, cleanup } from '@testing-library/react';
+import { act, fireEvent, render, screen, cleanup } from '@testing-library/react';
 import { useEffect } from 'react';
 import { createStore, Provider, useAtomValue } from 'jotai';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MailSearchBar } from '../components/mail/mail-search-bar';
 import { mailSearchBarFocusedAtom, useSearchValue } from '../hooks/use-search-value';
-import { EMPTY_SEARCH_VALUE, type SearchValueState, unreadFilter } from '../lib/mail/search-list';
+import {
+  EMPTY_SEARCH_VALUE,
+  saveRecentSearch,
+  type SearchValueState,
+  unreadFilter,
+} from '../lib/mail/search-list';
+import { setMailCacheScope } from '../lib/mail/mail-cache-scope';
 
 const mocks = vi.hoisted(() => ({
   toastError: vi.fn(),
@@ -64,7 +70,15 @@ function ExternalSearchValueControls() {
       >
         Set external search
       </button>
-      <button type="button" onClick={() => setSearchValue(EMPTY_SEARCH_VALUE)}>
+      <button
+        type="button"
+        onClick={() =>
+          setSearchValue({
+            ...EMPTY_SEARCH_VALUE,
+            resetVersion: state.resetVersion + 1,
+          })
+        }
+      >
         Clear external search
       </button>
     </>
@@ -111,9 +125,16 @@ function openMenu(name: string) {
   fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false, pointerType: 'mouse' });
 }
 
+function setMailScope(userId = 'user-one', activeTransportId = 'transport-one') {
+  act(() => {
+    setMailCacheScope({ userId, activeTransportId });
+  });
+}
+
 afterEach(() => {
   cleanup();
   localStorage.clear();
+  setMailCacheScope({ userId: null, activeTransportId: null });
   vi.clearAllMocks();
   mocks.folder = 'inbox';
 });
@@ -217,7 +238,8 @@ describe('MailSearchBar', () => {
   });
 
   it('opens recents with ArrowDown and applies highlighted recent on Enter', () => {
-    localStorage.setItem('mail-recent-searches', JSON.stringify(['invoice']));
+    setMailScope();
+    saveRecentSearch('invoice');
     renderMailSearchBarWithoutControls();
     const input = screen.getByRole('searchbox', { name: /search mail/i });
 
@@ -291,6 +313,18 @@ describe('MailSearchBar', () => {
     );
   });
 
+  it('clears uncommitted text after an explicit external reset', () => {
+    renderMailSearchBar({ includeExternalControls: true });
+    const input = screen.getByRole('searchbox', { name: /search mail/i }) as HTMLInputElement;
+
+    fireEvent.change(input, { target: { value: 'draft text' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Clear external search' }));
+
+    expect(input.value).toBe('');
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+    expect(screen.getByTestId('committed').textContent).toBe('');
+  });
+
   it('syncs local text only when an external committed value changes', () => {
     renderMailSearchBar({ includeExternalControls: true });
     const input = screen.getByRole('searchbox', { name: /search mail/i }) as HTMLInputElement;
@@ -319,7 +353,8 @@ describe('MailSearchBar', () => {
   });
 
   it('closes recents for controls and only exposes popup attributes while rendered', () => {
-    localStorage.setItem('mail-recent-searches', JSON.stringify(['invoice']));
+    setMailScope();
+    saveRecentSearch('invoice');
     renderMailSearchBarWithoutControls();
     const input = screen.getByRole('searchbox', { name: /search mail/i });
     const scopeButton = screen.getByRole('button', { name: 'Inbox' });
@@ -340,7 +375,8 @@ describe('MailSearchBar', () => {
   });
 
   it('keeps a focused suggestion available until it applies', () => {
-    localStorage.setItem('mail-recent-searches', JSON.stringify(['invoice']));
+    setMailScope();
+    saveRecentSearch('invoice');
     const { store } = renderMailSearchBar();
     const input = screen.getByRole('searchbox', { name: /search mail/i });
 
@@ -351,6 +387,44 @@ describe('MailSearchBar', () => {
     fireEvent.click(suggestion);
 
     expect(screen.getByTestId('committed').textContent).toBe('invoice');
+  });
+
+  it('isolates recent suggestions across users and active transports', () => {
+    setMailScope('user-one', 'transport-one');
+    renderMailSearchBarWithoutControls();
+    const input = screen.getByRole('searchbox', { name: /search mail/i });
+
+    fireEvent.change(input, { target: { value: 'first recent' } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+    fireEvent.change(input, { target: { value: '' } });
+    fireEvent.focus(input);
+    expect(screen.getByRole('option', { name: 'first recent' })).toBeTruthy();
+
+    setMailScope('user-two', 'transport-one');
+    expect(screen.queryByRole('option', { name: 'first recent' })).toBeNull();
+
+    fireEvent.change(input, { target: { value: 'second recent' } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+    fireEvent.change(input, { target: { value: '' } });
+
+    setMailScope('user-one', 'transport-one');
+    fireEvent.focus(input);
+    expect(screen.getByRole('option', { name: 'first recent' })).toBeTruthy();
+    expect(screen.queryByRole('option', { name: 'second recent' })).toBeNull();
+
+    setMailScope('user-one', 'transport-two');
+    expect(screen.queryByRole('option', { name: 'first recent' })).toBeNull();
+  });
+
+  it('removes legacy global recents without showing their terms', () => {
+    localStorage.setItem('mail-recent-searches', JSON.stringify(['legacy recent']));
+    renderMailSearchBarWithoutControls();
+    const input = screen.getByRole('searchbox', { name: /search mail/i });
+
+    fireEvent.focus(input);
+
+    expect(screen.queryByRole('option', { name: 'legacy recent' })).toBeNull();
+    expect(localStorage.getItem('mail-recent-searches')).toBeNull();
   });
 
   it('removes an existing date chip instead of replacing its old UTC token', () => {

@@ -1,5 +1,6 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { resolveMailRouteFilter } from '../lib/mail/route-filter';
+import { setMailCacheScope } from '../lib/mail/mail-cache-scope';
 import * as searchListHelpers from '../lib/mail/search-list';
 import {
   attachmentFilter,
@@ -19,6 +20,10 @@ function expectValidSearchListRequest(result: ReturnType<typeof resolveSearchLis
 }
 
 describe('search-list helpers', () => {
+  afterEach(() => {
+    setMailCacheScope({ userId: null, activeTransportId: null });
+  });
+
   it('exports one effective-query limit and user-facing message', () => {
     const helpers = searchListHelpers as unknown as Record<string, unknown>;
 
@@ -210,6 +215,7 @@ describe('search-list helpers', () => {
   });
 
   it('rejects non-string recent-search storage entries', () => {
+    setMailCacheScope({ userId: 'user-one', activeTransportId: 'transport-one' });
     vi.stubGlobal('localStorage', { getItem: () => JSON.stringify(['valid', 1]) });
     try {
       expect(loadRecentSearches()).toEqual([]);
@@ -252,5 +258,43 @@ describe('search-list helpers', () => {
     }));
     expect(allMail.useDraftsList).toBe(false);
     expect(allMail.folder).toBe('all');
+  });
+
+  it('omits header chips from the initial this-folder Drafts request', () => {
+    const result = expectValidSearchListRequest(
+      resolveSearchListRequest({
+        scope: 'folder',
+        query: 'menu',
+        filters: [unreadFilter()],
+        routeResolved: resolveMailRouteFilter('draft', new Map()),
+        baseFilters: {},
+      }),
+    );
+
+    expect(result).toMatchObject({
+      effectiveQuery: 'menu',
+      q: 'menu',
+      filters: {},
+      useDraftsList: true,
+    });
+  });
+
+  it('keeps typed unsupported Drafts operators while omitting header chips', () => {
+    const result = expectValidSearchListRequest(
+      resolveSearchListRequest({
+        scope: 'folder',
+        query: 'from:sender',
+        filters: [unreadFilter()],
+        routeResolved: resolveMailRouteFilter('draft', new Map()),
+        baseFilters: {},
+      }),
+    );
+
+    expect(result).toMatchObject({
+      effectiveQuery: 'from:sender',
+      q: 'from:sender',
+      filters: {},
+      useDraftsList: true,
+    });
   });
 });

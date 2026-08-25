@@ -10,6 +10,7 @@ import { EMPTY_SEARCH_VALUE, unreadFilter, type SearchValueState } from '../lib/
 const mocks = vi.hoisted(() => ({
   searchValue: null as unknown as SearchValueState,
   setSearchValue: vi.fn(),
+  resetSearchValue: vi.fn(),
   useThreads: vi.fn(),
   useThread: vi.fn(),
   useDraft: vi.fn(),
@@ -18,6 +19,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('@/hooks/use-search-value', () => ({
   useSearchValue: () => [mocks.searchValue, mocks.setSearchValue],
+  useResetSearchValue: () => mocks.resetSearchValue,
 }));
 
 vi.mock('@/hooks/use-threads', () => ({
@@ -141,6 +143,7 @@ beforeEach(() => {
     filters: [unreadFilter()],
   };
   mocks.setSearchValue.mockClear();
+  mocks.resetSearchValue.mockClear();
   mocks.useThread.mockReturnValue({
     data: undefined,
     isGroupThread: false,
@@ -182,12 +185,12 @@ describe('demo mail list perf guards', () => {
     });
   });
 
-  it('clears a search miss with the empty search state', () => {
+  it('clears a search miss through the explicit reset action', () => {
     render(createElement(MailList));
 
     fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
 
-    expect(mocks.setSearchValue).toHaveBeenCalledWith(EMPTY_SEARCH_VALUE);
+    expect(mocks.resetSearchValue).toHaveBeenCalledOnce();
   });
 
   it('keeps folder-empty copy when effective query is empty', () => {

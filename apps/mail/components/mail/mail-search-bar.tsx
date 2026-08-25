@@ -7,6 +7,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from 'react';
 import { useSetAtom } from 'jotai';
 import { useParams } from 'react-router';
@@ -22,15 +23,20 @@ import {
   DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { mailSearchBarFocusedAtom, useSearchValue } from '@/hooks/use-search-value';
+import {
+  mailSearchBarFocusedAtom,
+  useResetSearchValue,
+  useSearchValue,
+} from '@/hooks/use-search-value';
+import { getMailCacheScope, subscribeMailCacheScope } from '@/lib/mail/mail-cache-scope';
 import {
   attachmentFilter,
-  EMPTY_SEARCH_VALUE,
   fromFilter,
   last7DaysFilter,
   loadRecentSearches,
   MAX_EFFECTIVE_SEARCH_LENGTH,
   mergeSearchQuery,
+  removeLegacyRecentSearches,
   SEARCH_QUERY_TOO_LONG_MESSAGE,
   saveRecentSearch,
   toggleSearchFilter,
@@ -54,9 +60,16 @@ function hasFilter(filters: ActiveSearchFilter[], next: ActiveSearchFilter) {
 export function MailSearchBar({ folderTitle }: MailSearchBarProps) {
   const { folder } = useParams<{ folder: string }>();
   const [searchValue, setSearchValue] = useSearchValue();
+  const resetSearchValue = useResetSearchValue();
   const setSearchBarFocused = useSetAtom(mailSearchBarFocusedAtom);
+  const mailCacheScope = useSyncExternalStore(
+    subscribeMailCacheScope,
+    getMailCacheScope,
+    getMailCacheScope,
+  );
   const inputRef = useRef<HTMLInputElement>(null);
   const suggestionListRef = useRef<HTMLUListElement>(null);
+  const resetVersionRef = useRef(searchValue.resetVersion);
   const [localSearch, setLocalSearch] = useState('');
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
   const [recentOpen, setRecentOpen] = useState(false);
@@ -78,6 +91,22 @@ export function MailSearchBar({ folderTitle }: MailSearchBarProps) {
   useEffect(() => {
     setLocalSearch(searchValue.value);
   }, [searchValue.value]);
+
+  useEffect(() => {
+    if (resetVersionRef.current === searchValue.resetVersion) return;
+    resetVersionRef.current = searchValue.resetVersion;
+    setLocalSearch('');
+  }, [searchValue.resetVersion]);
+
+  useEffect(() => {
+    removeLegacyRecentSearches();
+  }, []);
+
+  useEffect(() => {
+    setRecentSearches([]);
+    setRecentOpen(false);
+    setHighlightedSuggestion(-1);
+  }, [mailCacheScope.activeTransportId, mailCacheScope.userId]);
 
   useEffect(() => {
     if (!isThisFolderDrafts || searchValue.filters.length === 0) return;
@@ -342,8 +371,7 @@ export function MailSearchBar({ folderTitle }: MailSearchBarProps) {
               type="button"
               variant="ghost"
               onClick={() => {
-                setSearchValue(EMPTY_SEARCH_VALUE);
-                setLocalSearch('');
+                resetSearchValue();
                 closeRecentSearches();
               }}
             >

@@ -1,13 +1,12 @@
 import { useOptimisticActions } from '@/hooks/use-optimistic-actions';
-import { useSearchValue } from '@/hooks/use-search-value';
+import { useResetSearchValue } from '@/hooks/use-search-value';
 import { enhancedKeyboardShortcuts } from '@/config/shortcuts';
-import { EMPTY_SEARCH_VALUE } from '@/lib/mail/search-list';
 import { useShortcuts } from './use-hotkey-utils';
 import { useQueryState } from 'nuqs';
 
 export function GlobalHotkeys() {
   const [, setComposeOpen] = useQueryState('isComposeOpen');
-  const [, setSearchValue] = useSearchValue();
+  const resetSearchValue = useResetSearchValue();
   const { undoLastAction } = useOptimisticActions();
   const scope = 'global';
 
@@ -17,7 +16,7 @@ export function GlobalHotkeys() {
       document.getElementById('mail-search')?.focus();
     },
     clearAllFilters: () => {
-      setSearchValue(EMPTY_SEARCH_VALUE);
+      resetSearchValue();
     },
     undoLastAction: () => {
       undoLastAction();

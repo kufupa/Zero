@@ -1,5 +1,6 @@
 import { TRPCClientError } from '@trpc/client';
 import type { MailListFolderSlug } from './route-filter';
+import { getMailCacheScope } from './mail-cache-scope';
 import {
   resolveMailListSearch,
   type MailListStructuredFilters,
@@ -20,6 +21,7 @@ export type SearchValueState = {
   highlight: string;
   scope: SearchScope;
   filters: ActiveSearchFilter[];
+  resetVersion: number;
 };
 
 export const EMPTY_SEARCH_VALUE: SearchValueState = {
@@ -27,9 +29,11 @@ export const EMPTY_SEARCH_VALUE: SearchValueState = {
   highlight: '',
   scope: 'folder',
   filters: [],
+  resetVersion: 0,
 };
 
-const RECENT_SEARCHES_KEY = 'mail-recent-searches';
+const LEGACY_RECENT_SEARCHES_KEY = 'mail-recent-searches';
+const SCOPED_RECENT_SEARCHES_KEY_PREFIX = 'mail-recent-searches-v2';
 export const MAX_EFFECTIVE_SEARCH_LENGTH = 512;
 export const SEARCH_QUERY_TOO_LONG_MESSAGE = 'Search query must be 512 characters or fewer.';
 
@@ -82,9 +86,27 @@ export function isUnsupportedSearchOperatorError(error: unknown): boolean {
   );
 }
 
-export function loadRecentSearches(): string[] {
+function getRecentSearchesKey(): string | null {
+  const { userId, activeTransportId } = getMailCacheScope();
+  if (!userId || !activeTransportId) return null;
+  return `${SCOPED_RECENT_SEARCHES_KEY_PREFIX}:${encodeURIComponent(
+    userId,
+  )}:${encodeURIComponent(activeTransportId)}`;
+}
+
+export function removeLegacyRecentSearches(): void {
   try {
-    const raw = localStorage.getItem(RECENT_SEARCHES_KEY);
+    localStorage.removeItem(LEGACY_RECENT_SEARCHES_KEY);
+  } catch {
+    // private mode / unavailable storage — ignore
+  }
+}
+
+export function loadRecentSearches(): string[] {
+  const key = getRecentSearchesKey();
+  if (!key) return [];
+  try {
+    const raw = localStorage.getItem(key);
     const parsed: unknown = raw ? JSON.parse(raw) : [];
     return Array.isArray(parsed) && parsed.every((item) => typeof item === 'string') ? parsed : [];
   } catch {
@@ -95,9 +117,11 @@ export function loadRecentSearches(): string[] {
 export function saveRecentSearch(search: string): void {
   const trimmed = search.trim();
   if (!trimmed) return;
+  const key = getRecentSearchesKey();
+  if (!key) return;
   try {
     const next = [trimmed, ...loadRecentSearches().filter((item) => item !== trimmed)].slice(0, 10);
-    localStorage.setItem(RECENT_SEARCHES_KEY, JSON.stringify(next));
+    localStorage.setItem(key, JSON.stringify(next));
   } catch {
     // private mode / quota — ignore
   }
@@ -141,10 +165,11 @@ export function resolveSearchListRequest(input: {
   baseFilters: MailListStructuredFilters;
   userFilters?: Pick<MailListStructuredFilters, 'categoryIds' | 'labelIds'>;
 }): SearchListRequest {
-  const merged = mergeSearchQuery(input.query, input.filters);
-  const hasQuery = merged.length > 0;
   const isDraftRoute =
     input.routeResolved.folder === 'draft' || input.routeResolved.folder === 'drafts';
+  const effectiveFilters = isDraftRoute && input.scope === 'folder' ? [] : input.filters;
+  const merged = mergeSearchQuery(input.query, effectiveFilters);
+  const hasQuery = merged.length > 0;
 
   if (!hasQuery) {
     return {

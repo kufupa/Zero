@@ -26,7 +26,7 @@ import { useOptimisticActions } from '@/hooks/use-optimistic-actions';
 import { useMail, type Config } from '@/components/mail/use-mail';
 import { type ThreadDestination } from '@/lib/thread-actions';
 import { useThread, useThreads } from '@/hooks/use-threads';
-import { useSearchValue } from '@/hooks/use-search-value';
+import { useResetSearchValue, useSearchValue } from '@/hooks/use-search-value';
 import { EmptyStateIcon } from '../icons/empty-state-svg';
 import { highlightText } from '@/lib/email-utils.client';
 import { mailListPlainPreview } from '@/lib/mail/mail-list-preview';
@@ -60,7 +60,6 @@ import { resolveImportantState } from '@/lib/mail/important-ui';
 import { flushComposeBeforeLeave } from '@/lib/mail/compose-flush-registry';
 import { runComposeLeaveFlush } from '@/lib/mail/draft-persistence';
 import {
-  EMPTY_SEARCH_VALUE,
   isUnsupportedSearchOperatorError,
   mergeSearchQuery,
 } from '@/lib/mail/search-list';
@@ -861,6 +860,7 @@ export const MailList = memo(function MailList() {
     const [, setDraftId] = useQueryState('draftId');
     const [, setActiveReplyId] = useQueryState('activeReplyId');
     const [searchValue, setSearchValue] = useSearchValue();
+    const resetSearchValue = useResetSearchValue();
     const [anchorIndex, setAnchorIndex] = useState<number | null>(null);
     const [collapsedSections, setCollapsedSections] = useState<Set<MailDateBucket>>(() => new Set());
 
@@ -1057,7 +1057,7 @@ export const MailList = memo(function MailList() {
     }, [activeSearch, threadsQuery.error, threadsQuery.isError]);
 
     const clearFilters = () => {
-      setSearchValue(EMPTY_SEARCH_VALUE);
+      resetSearchValue();
     };
 
     const tryAllFolders = () => {
