@@ -7,16 +7,21 @@ import { createStore, Provider, useAtomValue } from 'jotai';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MailSearchBar } from '../components/mail/mail-search-bar';
 import { mailSearchBarFocusedAtom, useSearchValue } from '../hooks/use-search-value';
-import { EMPTY_SEARCH_VALUE, type SearchValueState } from '../lib/mail/search-list';
+import { EMPTY_SEARCH_VALUE, type SearchValueState, unreadFilter } from '../lib/mail/search-list';
 
 const mocks = vi.hoisted(() => ({
   toastError: vi.fn(),
+  folder: 'inbox',
 }));
 
 vi.mock('sonner', () => ({
   toast: {
     error: mocks.toastError,
   },
+}));
+
+vi.mock('react-router', () => ({
+  useParams: () => ({ folder: mocks.folder }),
 }));
 
 function SearchValueProbe() {
@@ -70,17 +75,19 @@ function renderMailSearchBar({
   initialSearchValue,
   includeExternalControls = false,
   store = createStore(),
+  folderTitle = 'Inbox',
 }: {
   initialSearchValue?: SearchValueState;
   includeExternalControls?: boolean;
   store?: ReturnType<typeof createStore>;
+  folderTitle?: string;
 } = {}) {
   return {
     ...render(
       <Provider store={store}>
         {initialSearchValue && <SearchValueInitializer state={initialSearchValue} />}
         {includeExternalControls && <ExternalSearchValueControls />}
-        <MailSearchBar folderTitle="Inbox" />
+        <MailSearchBar folderTitle={folderTitle} />
         <SearchValueProbe />
         <SearchFocusProbe />
       </Provider>,
@@ -89,10 +96,10 @@ function renderMailSearchBar({
   };
 }
 
-function renderMailSearchBarWithoutControls() {
+function renderMailSearchBarWithoutControls(folderTitle = 'Inbox') {
   return render(
     <Provider>
-      <MailSearchBar folderTitle="Inbox" />
+      <MailSearchBar folderTitle={folderTitle} />
       <SearchValueProbe />
       <SearchFocusProbe />
     </Provider>,
@@ -108,6 +115,7 @@ afterEach(() => {
   cleanup();
   localStorage.clear();
   vi.clearAllMocks();
+  mocks.folder = 'inbox';
 });
 
 describe('MailSearchBar', () => {
@@ -143,6 +151,56 @@ describe('MailSearchBar', () => {
     fireEvent.click(screen.getByRole('menuitemradio', { name: 'All folders' }));
 
     expect(screen.getByRole('button', { name: 'All folders' })).toBeTruthy();
+  });
+
+  it('does not expose unsupported header filters in this-folder Drafts', () => {
+    mocks.folder = 'draft';
+    renderMailSearchBar({
+      folderTitle: 'Drafts',
+      initialSearchValue: {
+        ...EMPTY_SEARCH_VALUE,
+        filters: [unreadFilter()],
+      },
+    });
+
+    expect((screen.getByRole('button', { name: 'Filters' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole('button', { name: 'Remove Unread' })).toBeNull();
+  });
+
+  it('clears header filters when switching All folders back to Drafts', () => {
+    mocks.folder = 'draft';
+    renderMailSearchBar({
+      folderTitle: 'Drafts',
+      initialSearchValue: {
+        ...EMPTY_SEARCH_VALUE,
+        scope: 'all',
+        filters: [unreadFilter()],
+      },
+    });
+
+    expect(screen.getByRole('button', { name: 'Remove Unread' })).toBeTruthy();
+
+    openMenu('All folders');
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'This folder' }));
+
+    expect(screen.queryByRole('button', { name: 'Remove Unread' })).toBeNull();
+    expect((screen.getByRole('button', { name: 'Filters' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('keeps header filters available for All folders from Drafts', () => {
+    mocks.folder = 'draft';
+    renderMailSearchBar({
+      folderTitle: 'Drafts',
+      initialSearchValue: {
+        ...EMPTY_SEARCH_VALUE,
+        scope: 'all',
+      },
+    });
+
+    openMenu('Filters');
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Unread' }));
+
+    expect(screen.getByRole('button', { name: 'Remove Unread' })).toBeTruthy();
   });
 
   it('keeps typed text local until Enter', () => {
@@ -188,6 +246,17 @@ describe('MailSearchBar', () => {
 
     fireEvent.keyDown(input, { key: 'Escape', code: 'Escape' });
     expect(document.activeElement).not.toBe(input);
+  });
+
+  it('keeps mailbox navigation guard active for search controls and open menus', () => {
+    const { store } = renderMailSearchBar();
+
+    openMenu('Inbox');
+    expect(store.get(mailSearchBarFocusedAtom)).toBe(true);
+
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'This folder' }));
+    openMenu('Filters');
+    expect(store.get(mailSearchBarFocusedAtom)).toBe(true);
   });
 
   it('rejects an over-limit committed query without truncating it', () => {
@@ -272,12 +341,13 @@ describe('MailSearchBar', () => {
 
   it('keeps a focused suggestion available until it applies', () => {
     localStorage.setItem('mail-recent-searches', JSON.stringify(['invoice']));
-    renderMailSearchBarWithoutControls();
+    const { store } = renderMailSearchBar();
     const input = screen.getByRole('searchbox', { name: /search mail/i });
 
     fireEvent.focus(input);
     const suggestion = screen.getByRole('option', { name: 'invoice' });
     fireEvent.blur(input, { relatedTarget: suggestion });
+    expect(store.get(mailSearchBarFocusedAtom)).toBe(true);
     fireEvent.click(suggestion);
 
     expect(screen.getByTestId('committed').textContent).toBe('invoice');

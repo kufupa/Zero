@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { resolveMailRouteFilter } from '../lib/mail/route-filter';
+import * as searchListHelpers from '../lib/mail/search-list';
 import {
   attachmentFilter,
   fromFilter,
@@ -18,6 +19,15 @@ function expectValidSearchListRequest(result: ReturnType<typeof resolveSearchLis
 }
 
 describe('search-list helpers', () => {
+  it('exports one effective-query limit and user-facing message', () => {
+    const helpers = searchListHelpers as unknown as Record<string, unknown>;
+
+    expect(helpers.MAX_EFFECTIVE_SEARCH_LENGTH).toBe(512);
+    expect(helpers.SEARCH_QUERY_TOO_LONG_MESSAGE).toBe(
+      'Search query must be 512 characters or fewer.',
+    );
+  });
+
   it('merges free text with optional filter tokens', () => {
     expect(mergeSearchQuery('Isaac', [])).toBe('Isaac');
     expect(mergeSearchQuery('Isaac', [fromFilter('Isaac')!])).toBe('Isaac from:Isaac');
@@ -76,6 +86,59 @@ describe('search-list helpers', () => {
     expect(result.folder).toBe('all');
     expect(result.filters.categoryIds).toBeUndefined();
     expect(result.useDraftsList).toBe(false);
+  });
+
+  it('keeps user-selected category and label filters when searching all folders', () => {
+    const result = expectValidSearchListRequest(resolveSearchListRequest({
+      scope: 'all',
+      query: 'deposit',
+      filters: [],
+      routeResolved: {
+        folder: 'inbox',
+        filters: {
+          categoryIds: ['route-category'],
+          labelIds: ['route-label'],
+        },
+      },
+      baseFilters: {
+        categoryIds: ['route-category', 'selected-category'],
+        labelIds: ['route-label', 'selected-label'],
+      },
+    }));
+
+    expect(result.folder).toBe('all');
+    expect(result.filters).toEqual({
+      categoryIds: ['selected-category'],
+      labelIds: ['selected-label'],
+    });
+  });
+
+  it('keeps a user-selected filter even when route uses the same id', () => {
+    const result = expectValidSearchListRequest(resolveSearchListRequest({
+      scope: 'all',
+      query: 'deposit',
+      filters: [],
+      routeResolved: {
+        folder: 'inbox',
+        filters: {
+          categoryIds: ['shared-category'],
+          labelIds: ['shared-label'],
+        },
+      },
+      baseFilters: {
+        categoryIds: ['shared-category'],
+        labelIds: ['shared-label'],
+      },
+      userFilters: {
+        categoryIds: ['shared-category'],
+        labelIds: ['shared-label'],
+      },
+    }));
+
+    expect(result.filters).toEqual({
+      categoryIds: ['shared-category'],
+      labelIds: ['shared-label'],
+    });
   });
 
   it('empty query ignores all-folders so mailbox list is not dumped', () => {

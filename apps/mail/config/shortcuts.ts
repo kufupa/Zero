@@ -163,6 +163,7 @@ const globalShortcuts: Shortcut[] = [
     type: 'combination',
     description: 'Focus search',
     scope: 'global',
+    preventDefault: true,
   },
   {
     keys: ['mod', 'shift', 'f'],

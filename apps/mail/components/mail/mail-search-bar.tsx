@@ -9,6 +9,7 @@ import {
   useState,
 } from 'react';
 import { useSetAtom } from 'jotai';
+import { useParams } from 'react-router';
 import { toast } from 'sonner';
 import { getMainSearchTerm } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -28,16 +29,15 @@ import {
   fromFilter,
   last7DaysFilter,
   loadRecentSearches,
+  MAX_EFFECTIVE_SEARCH_LENGTH,
   mergeSearchQuery,
+  SEARCH_QUERY_TOO_LONG_MESSAGE,
   saveRecentSearch,
   toggleSearchFilter,
   type ActiveSearchFilter,
   type SearchScope,
   unreadFilter,
 } from '@/lib/mail/search-list';
-
-const MAX_EFFECTIVE_SEARCH_LENGTH = 512;
-const QUERY_TOO_LONG_MESSAGE = 'Search query must be 512 characters or fewer.';
 
 type MailSearchBarProps = {
   folderTitle: string;
@@ -52,10 +52,10 @@ function hasFilter(filters: ActiveSearchFilter[], next: ActiveSearchFilter) {
 }
 
 export function MailSearchBar({ folderTitle }: MailSearchBarProps) {
+  const { folder } = useParams<{ folder: string }>();
   const [searchValue, setSearchValue] = useSearchValue();
   const setSearchBarFocused = useSetAtom(mailSearchBarFocusedAtom);
   const inputRef = useRef<HTMLInputElement>(null);
-  const searchFieldRef = useRef<HTMLDivElement>(null);
   const suggestionListRef = useRef<HTMLUListElement>(null);
   const [localSearch, setLocalSearch] = useState('');
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
@@ -63,6 +63,9 @@ export function MailSearchBar({ folderTitle }: MailSearchBarProps) {
   const [highlightedSuggestion, setHighlightedSuggestion] = useState(-1);
   const [scopeMenuOpen, setScopeMenuOpen] = useState(false);
   const [filtersMenuOpen, setFiltersMenuOpen] = useState(false);
+  const [hasSearchControlFocus, setHasSearchControlFocus] = useState(false);
+  const isDraftsRoute = folder?.toLowerCase() === 'draft' || folder?.toLowerCase() === 'drafts';
+  const isThisFolderDrafts = isDraftsRoute && searchValue.scope === 'folder';
 
   const suggestions = useMemo<SearchSuggestion[]>(() => {
     const term = localSearch.trim();
@@ -76,9 +79,28 @@ export function MailSearchBar({ folderTitle }: MailSearchBarProps) {
     setLocalSearch(searchValue.value);
   }, [searchValue.value]);
 
+  useEffect(() => {
+    if (!isThisFolderDrafts || searchValue.filters.length === 0) return;
+    setSearchValue({ ...searchValue, filters: [] });
+  }, [isThisFolderDrafts, searchValue, setSearchValue]);
+
+  useEffect(() => {
+    setSearchBarFocused(
+      hasSearchControlFocus || scopeMenuOpen || filtersMenuOpen || isSuggestionPopupOpen,
+    );
+  }, [
+    filtersMenuOpen,
+    hasSearchControlFocus,
+    isSuggestionPopupOpen,
+    scopeMenuOpen,
+    setSearchBarFocused,
+  ]);
+
+  useEffect(() => () => setSearchBarFocused(false), [setSearchBarFocused]);
+
   const canUseEffectiveQuery = useCallback((query: string) => {
     if (query.length <= MAX_EFFECTIVE_SEARCH_LENGTH) return true;
-    toast.error(QUERY_TOO_LONG_MESSAGE);
+    toast.error(SEARCH_QUERY_TOO_LONG_MESSAGE);
     return false;
   }, []);
 
@@ -106,6 +128,7 @@ export function MailSearchBar({ folderTitle }: MailSearchBarProps) {
 
   const toggleFilter = useCallback(
     (filter: ActiveSearchFilter) => {
+      if (isThisFolderDrafts) return false;
       const filters = toggleSearchFilter(searchValue.filters, filter);
       const nextEffectiveQuery = mergeSearchQuery(searchValue.value, filters);
       if (!canUseEffectiveQuery(nextEffectiveQuery)) return false;
@@ -113,7 +136,7 @@ export function MailSearchBar({ folderTitle }: MailSearchBarProps) {
       setSearchValue({ ...searchValue, filters });
       return true;
     },
-    [canUseEffectiveQuery, searchValue, setSearchValue],
+    [canUseEffectiveQuery, isThisFolderDrafts, searchValue, setSearchValue],
   );
 
   const toggleLast7DaysFilter = useCallback(() => {
@@ -161,16 +184,19 @@ export function MailSearchBar({ folderTitle }: MailSearchBarProps) {
     window.addEventListener('keydown', focusSearch);
     return () => {
       window.removeEventListener('keydown', focusSearch);
-      setSearchBarFocused(false);
     };
   }, [setSearchBarFocused]);
 
   const selectScope = useCallback(
     (scope: SearchScope) => {
-      setSearchValue({ ...searchValue, scope });
+      setSearchValue({
+        ...searchValue,
+        scope,
+        filters: scope === 'folder' && isDraftsRoute ? [] : searchValue.filters,
+      });
       setScopeMenuOpen(false);
     },
-    [searchValue, setSearchValue],
+    [isDraftsRoute, searchValue, setSearchValue],
   );
 
   const handleInputKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
@@ -221,6 +247,14 @@ export function MailSearchBar({ folderTitle }: MailSearchBarProps) {
     <form
       role="search"
       className="w-full"
+      onBlurCapture={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) {
+          setHasSearchControlFocus(false);
+        }
+      }}
+      onFocusCapture={() => {
+        setHasSearchControlFocus(true);
+      }}
       onSubmit={(event) => {
         event.preventDefault();
         commitSearch();
@@ -231,7 +265,6 @@ export function MailSearchBar({ folderTitle }: MailSearchBarProps) {
       </label>
       <div className="flex min-w-0 items-center gap-2">
         <div
-          ref={searchFieldRef}
           className="relative flex h-14 min-w-0 flex-1 items-center rounded-lg border border-input bg-background px-1 shadow-sm focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2"
         >
           <DropdownMenu open={scopeMenuOpen} onOpenChange={setScopeMenuOpen}>
@@ -270,7 +303,6 @@ export function MailSearchBar({ folderTitle }: MailSearchBarProps) {
             className="h-14 min-w-0 flex-1 bg-transparent px-2 text-base outline-none placeholder:text-muted-foreground"
             id="mail-search"
             onBlur={(event) => {
-              setSearchBarFocused(false);
               if (!suggestionListRef.current?.contains(event.relatedTarget)) {
                 closeRecentSearches();
               }
@@ -280,7 +312,6 @@ export function MailSearchBar({ folderTitle }: MailSearchBarProps) {
               setHighlightedSuggestion(-1);
             }}
             onFocus={() => {
-              setSearchBarFocused(true);
               openRecentSearches();
             }}
             onKeyDown={handleInputKeyDown}
@@ -353,6 +384,7 @@ export function MailSearchBar({ folderTitle }: MailSearchBarProps) {
           <DropdownMenuTrigger asChild>
             <Button
               className="min-h-11 shrink-0"
+              disabled={isThisFolderDrafts}
               size="sm"
               type="button"
               variant="secondary"

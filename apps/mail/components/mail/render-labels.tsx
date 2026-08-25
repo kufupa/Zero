@@ -3,8 +3,13 @@ import { useSearchValue } from '@/hooks/use-search-value';
 import type { Label } from '@/types';
 import { labelColorStyles } from '@/lib/label-colors';
 import { cn } from '@/lib/utils';
-import { EMPTY_SEARCH_VALUE } from '@/lib/mail/search-list';
+import {
+  EMPTY_SEARCH_VALUE,
+  MAX_EFFECTIVE_SEARCH_LENGTH,
+  SEARCH_QUERY_TOO_LONG_MESSAGE,
+} from '@/lib/mail/search-list';
 import * as React from 'react';
+import { toast } from 'sonner';
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -44,6 +49,10 @@ export const RenderLabels = ({ count = 1, labels }: { count?: number; labels: La
     }
     const token = labelSearchToken(label.name);
     const newValue = existingValue ? `${existingValue} ${token}` : token;
+    if (newValue.length > MAX_EFFECTIVE_SEARCH_LENGTH) {
+      toast.error(SEARCH_QUERY_TOO_LONG_MESSAGE);
+      return;
+    }
     setSearchValue({
       ...EMPTY_SEARCH_VALUE,
       value: newValue,

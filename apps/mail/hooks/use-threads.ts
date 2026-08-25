@@ -79,6 +79,13 @@ export const useThreads = () => {
     }),
     [routeFilter.filters.categoryIds, routeFilter.filters.labelIds, queryCategoryIds, labels],
   );
+  const userListFilters = useMemo(
+    () => ({
+      categoryIds: queryCategoryIds,
+      labelIds: [...labels],
+    }),
+    [queryCategoryIds, labels],
+  );
 
   const searchList = useMemo(
     () =>
@@ -88,8 +95,16 @@ export const useThreads = () => {
         filters: searchValue.filters ?? [],
         routeResolved: routeFilter,
         baseFilters: baseListFilters,
+        userFilters: userListFilters,
       }),
-    [searchValue.scope, searchValue.value, searchValue.filters, routeFilter, baseListFilters],
+    [
+      searchValue.scope,
+      searchValue.value,
+      searchValue.filters,
+      routeFilter,
+      baseListFilters,
+      userListFilters,
+    ],
   );
 
   const validSearchList = searchList.isValid ? searchList : undefined;

@@ -30,7 +30,8 @@ export const EMPTY_SEARCH_VALUE: SearchValueState = {
 };
 
 const RECENT_SEARCHES_KEY = 'mail-recent-searches';
-const MAX_SEARCH_QUERY_LENGTH = 512;
+export const MAX_EFFECTIVE_SEARCH_LENGTH = 512;
+export const SEARCH_QUERY_TOO_LONG_MESSAGE = 'Search query must be 512 characters or fewer.';
 
 export function mergeSearchQuery(term: string, filters: ActiveSearchFilter[]): string {
   const parts = [term.trim(), ...filters.map((filter) => filter.value.trim())].filter(Boolean);
@@ -119,6 +120,16 @@ export type InvalidSearchListRequest = {
 
 export type SearchListRequest = ValidSearchListRequest | InvalidSearchListRequest;
 
+function omitRouteOwnedIds(
+  ids: string[] | undefined,
+  routeOwnedIds: string[] | undefined,
+): string[] | undefined {
+  if (!ids?.length) return undefined;
+  const routeOwned = new Set(routeOwnedIds ?? []);
+  const kept = ids.filter((id) => !routeOwned.has(id));
+  return kept.length > 0 ? kept : undefined;
+}
+
 export function resolveSearchListRequest(input: {
   scope: SearchScope;
   query: string;
@@ -128,6 +139,7 @@ export function resolveSearchListRequest(input: {
     filters: { categoryIds?: string[]; labelIds?: string[] };
   };
   baseFilters: MailListStructuredFilters;
+  userFilters?: Pick<MailListStructuredFilters, 'categoryIds' | 'labelIds'>;
 }): SearchListRequest {
   const merged = mergeSearchQuery(input.query, input.filters);
   const hasQuery = merged.length > 0;
@@ -145,7 +157,7 @@ export function resolveSearchListRequest(input: {
     };
   }
 
-  if (merged.length > MAX_SEARCH_QUERY_LENGTH) {
+  if (merged.length > MAX_EFFECTIVE_SEARCH_LENGTH) {
     return {
       isValid: false,
       error: 'QUERY_TOO_LONG',
@@ -154,8 +166,21 @@ export function resolveSearchListRequest(input: {
   }
 
   if (input.scope === 'all') {
-    const { categoryIds: _categoryIds, labelIds: _labelIds, ...kept } = input.baseFilters;
-    const resolved = resolveMailListSearch(merged, kept);
+    const { categoryIds, labelIds, ...kept } = input.baseFilters;
+    const allFolderFilters: MailListStructuredFilters = {
+      ...kept,
+      ...(input.userFilters?.categoryIds?.length
+        ? { categoryIds: input.userFilters.categoryIds }
+        : input.userFilters
+          ? {}
+          : { categoryIds: omitRouteOwnedIds(categoryIds, input.routeResolved.filters.categoryIds) }),
+      ...(input.userFilters?.labelIds?.length
+        ? { labelIds: input.userFilters.labelIds }
+        : input.userFilters
+          ? {}
+          : { labelIds: omitRouteOwnedIds(labelIds, input.routeResolved.filters.labelIds) }),
+    };
+    const resolved = resolveMailListSearch(merged, allFolderFilters);
     const q = resolved.q ?? merged;
     return {
       isValid: true,

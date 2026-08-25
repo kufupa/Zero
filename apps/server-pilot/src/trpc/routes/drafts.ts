@@ -29,7 +29,7 @@ import {
 import { createDraftInput } from '../wire-compat.js';
 import { toDraftWire } from './draft-wire.js';
 import { buildDraftSearchConditions } from '../../mail/search/query.js';
-import { parseSearchQueryOrThrow } from '../../mail/search/trpc.js';
+import { parseDraftSearchQueryOrThrow } from '../../mail/search/trpc.js';
 import {
   EvidenceRefSchema,
   isEvidenceFresh,
@@ -557,6 +557,8 @@ export const draftsRouter = tRouter({
       }),
     )
     .query(async ({ input, ctx }) => {
+      const parsedSearch =
+        input.q && input.q.trim() ? parseDraftSearchQueryOrThrow(input.q) : null;
       const db = getDb();
       const transportId = ctx.activeTransportId;
       const limit = input.limit;
@@ -572,9 +574,8 @@ export const draftsRouter = tRouter({
         conditions.push(eq(mailDraft.threadId, input.threadId));
       }
 
-      if (input.q && input.q.trim()) {
-        const parsed = parseSearchQueryOrThrow(input.q);
-        conditions.push(...buildDraftSearchConditions(parsed));
+      if (parsedSearch) {
+        conditions.push(...buildDraftSearchConditions(parsedSearch));
       }
 
       if (input.cursor) {

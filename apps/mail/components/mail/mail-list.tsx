@@ -882,7 +882,7 @@ export const MailList = memo(function MailList() {
       };
     }, [setAnchorIndex]);
 
-    const [threadsQuery, items, , loadMore] = useThreads();
+    const [threadsQuery, items, , loadMore, searchList] = useThreads();
     const { refetch, isLoading, isFetching, isFetchingNextPage, hasNextPage } = threadsQuery;
     const trpc = useTRPC();
     const isFetchingMail = useIsFetching({ queryKey: trpc.mail.get.queryKey() }) > 0;
@@ -1066,7 +1066,8 @@ export const MailList = memo(function MailList() {
 
     const filteredItems = useMemo(() => items.filter((item) => item.id), [items]);
 
-    const Comp = useMemo(() => (folder === FOLDERS.DRAFT ? Draft : Thread), [folder]);
+    const useDraftsList = searchList?.isValid && searchList.useDraftsList;
+    const Comp = useMemo(() => (useDraftsList ? Draft : Thread), [useDraftsList]);
 
     const groupByDate = !isFiltering;
 
@@ -1149,6 +1150,19 @@ export const MailList = memo(function MailList() {
             {isLoading ? (
               <div className="flex h-32 w-full items-center justify-center">
                 <div className="h-4 w-4 animate-spin rounded-full border-2 border-neutral-900 border-t-transparent dark:border-white dark:border-t-transparent" />
+              </div>
+            ) : threadsQuery.isError ? (
+              <div className="flex w-full items-center justify-center">
+                <div className="flex flex-col items-center justify-center gap-2 text-center" role="alert">
+                  <p className="text-lg">
+                    {isUnsupportedSearchOperatorError(threadsQuery.error)
+                      ? threadsQuery.error.message
+                      : 'Unable to load search results. Please retry.'}
+                  </p>
+                  <Button type="button" size="sm" variant="secondary" onClick={() => void refetch()}>
+                    Retry search
+                  </Button>
+                </div>
               </div>
             ) : !items || items.length === 0 ? (
               <div className="flex w-full items-center justify-center">

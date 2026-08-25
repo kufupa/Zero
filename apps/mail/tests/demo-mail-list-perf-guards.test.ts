@@ -11,6 +11,9 @@ const mocks = vi.hoisted(() => ({
   searchValue: null as unknown as SearchValueState,
   setSearchValue: vi.fn(),
   useThreads: vi.fn(),
+  useThread: vi.fn(),
+  useDraft: vi.fn(),
+  folder: 'inbox',
 }));
 
 vi.mock('@/hooks/use-search-value', () => ({
@@ -19,7 +22,63 @@ vi.mock('@/hooks/use-search-value', () => ({
 
 vi.mock('@/hooks/use-threads', () => ({
   useThreads: () => mocks.useThreads(),
+  useThread: (...args: unknown[]) => mocks.useThread(...args),
 }));
+
+vi.mock('@/hooks/use-drafts', () => ({
+  useDraft: (...args: unknown[]) => mocks.useDraft(...args),
+}));
+
+vi.mock('@/components/mail/optimistic-thread-state', () => ({
+  useOptimisticThreadState: () => ({
+    shouldHide: false,
+    isRemoving: false,
+    optimisticStarred: null,
+    optimisticImportant: null,
+    optimisticRead: null,
+    optimisticLabels: null,
+  }),
+}));
+
+vi.mock('@/hooks/use-labels', () => ({
+  useThreadLabels: () => ({ labels: [] }),
+}));
+
+vi.mock('@/hooks/use-categories', () => ({
+  useCategorySettings: () => [],
+}));
+
+vi.mock('@dnd-kit/core', () => ({
+  useDraggable: () => ({
+    attributes: {},
+    listeners: {},
+    setNodeRef: vi.fn(),
+    isDragging: false,
+  }),
+}));
+
+vi.mock('@/lib/mail/build-mail-list-virtual-rows', () => ({
+  buildMailListVirtualRows: (items: Array<{ id: string }>) =>
+    items.map((message, threadIndex) => ({
+      type: 'thread',
+      key: message.id,
+      threadIndex,
+      message,
+    })),
+}));
+
+vi.mock('virtua', async () => {
+  const { createElement, forwardRef } = await import('react');
+  return {
+    VList: forwardRef((props: { count: number; children: (index: number) => unknown }, _ref) =>
+      createElement(
+        'div',
+        null,
+        Array.from({ length: props.count }, (_, index) => props.children(index)),
+      ),
+    ),
+  };
+});
 
 vi.mock('@/hooks/use-mail-navigation', async () => {
   const { atom } = await import('jotai');
@@ -58,7 +117,7 @@ vi.mock('@/hooks/use-optimistic-actions', () => ({
 }));
 
 vi.mock('react-router', () => ({
-  useParams: () => ({ folder: 'inbox' }),
+  useParams: () => ({ folder: mocks.folder }),
 }));
 
 vi.mock('nuqs', () => ({
@@ -74,6 +133,7 @@ type MemoExoticComponent = typeof MailList & {
 };
 
 beforeEach(() => {
+  mocks.folder = 'inbox';
   mocks.searchValue = {
     ...EMPTY_SEARCH_VALUE,
     value: 'deposit',
@@ -81,6 +141,14 @@ beforeEach(() => {
     filters: [unreadFilter()],
   };
   mocks.setSearchValue.mockClear();
+  mocks.useThread.mockReturnValue({
+    data: undefined,
+    isGroupThread: false,
+    latestDraft: null,
+  });
+  mocks.useThread.mockClear();
+  mocks.useDraft.mockReturnValue({ data: undefined });
+  mocks.useDraft.mockClear();
   mocks.useThreads.mockReturnValue([
     {
       refetch: vi.fn(),
@@ -129,6 +197,63 @@ describe('demo mail list perf guards', () => {
 
     expect(screen.getByText("It's empty here")).toBeTruthy();
     expect(screen.queryByText(/No emails match/)).toBeNull();
+  });
+
+  it('shows retryable search error before zero-result copy', () => {
+    const refetch = vi.fn();
+    mocks.useThreads.mockReturnValue([
+      {
+        refetch,
+        isLoading: false,
+        isFetching: false,
+        isFetchingNextPage: false,
+        hasNextPage: false,
+        isError: true,
+        error: new Error('request failed'),
+      },
+      [],
+      true,
+      vi.fn(),
+    ]);
+
+    render(createElement(MailList));
+
+    expect(screen.getByRole('alert').textContent).toContain('Unable to load search results');
+    expect(screen.queryByText('No emails match “deposit is:unread”')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry search' }));
+    expect(refetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses normal thread rows when All folders resolves from Drafts', () => {
+    mocks.folder = 'draft';
+    mocks.useThreads.mockReturnValue([
+      {
+        refetch: vi.fn(),
+        isLoading: false,
+        isFetching: false,
+        isFetchingNextPage: false,
+        hasNextPage: false,
+        isError: false,
+        error: null,
+      },
+      [{ id: 'thread-from-all-folders' }],
+      false,
+      vi.fn(),
+      {
+        isValid: true,
+        effectiveQuery: 'deposit',
+        folder: 'all',
+        filters: {},
+        q: 'deposit',
+        useDraftsList: false,
+      },
+    ]);
+
+    render(createElement(MailList));
+
+    expect(mocks.useThread).toHaveBeenCalledWith('thread-from-all-folders');
+    expect(mocks.useDraft).not.toHaveBeenCalled();
   });
 
   it('does not force MailList memo to always skip parent updates', () => {
