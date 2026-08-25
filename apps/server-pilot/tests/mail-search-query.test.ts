@@ -109,7 +109,10 @@ async function seedThreadWithMessage(
   return { threadId, messageId };
 }
 
-describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('buildThreadSearchConditions', () => {
+describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
+  'buildThreadSearchConditions',
+  { timeout: 30_000 },
+  () => {
   it('matches free text via search_vector FTS', async () => {
     await withSeededTestDb(async (db) => {
       const { threadId } = await seedThreadWithMessage(db, {
@@ -144,9 +147,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('buildThreadSearchConditions',
     });
   });
 
-  it(
-    'does not match a token beyond deterministic 20-message body cap',
-    async () => {
+    it('does not match a token beyond deterministic 20-message body cap', async () => {
       await withSeededTestDb(async (db) => {
         const receivedAt = new Date('2026-07-06T12:00:00Z');
         const { threadId } = await seedThreadWithMessage(db, {
@@ -178,13 +179,9 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('buildThreadSearchConditions',
           await listThreadIdsForQuery(db, 'messagecapboundarytoken'),
         ).toEqual([]);
       });
-    },
-    30000,
-  );
+    });
 
-  it(
-    'does not match a token after 8,000 body characters',
-    async () => {
+    it('does not match a token after 8,000 body characters', async () => {
       await withSeededTestDb(async (db) => {
         await seedThreadWithMessage(db, {
           subject: 'Housekeeping',
@@ -196,9 +193,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('buildThreadSearchConditions',
           await listThreadIdsForQuery(db, 'charcapboundarytoken'),
         ).toEqual([]);
       });
-    },
-    30000,
-  );
+    });
 
   it('filters from: via message EXISTS join', async () => {
     await withSeededTestDb(async (db) => {
@@ -218,39 +213,35 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('buildThreadSearchConditions',
     });
   });
 
-  it(
-    'filters to:, cc:, and bcc: via message address arrays',
-    async () => {
-      await withSeededTestDb(async (db) => {
-        const toThread = (
-          await seedThreadWithMessage(db, {
-            subject: 'To match',
-            snippet: 'to filter',
-            toAddresses: ['ops@corp.com'],
-          })
-        ).threadId;
-        const ccThread = (
-          await seedThreadWithMessage(db, {
-            subject: 'Cc match',
-            snippet: 'cc filter',
-            ccAddresses: ['finance@corp.com'],
-          })
-        ).threadId;
-        const bccThread = (
-          await seedThreadWithMessage(db, {
-            subject: 'Bcc match',
-            snippet: 'bcc filter',
-            bccAddresses: ['hidden@corp.com'],
-          })
-        ).threadId;
+  it('filters to:, cc:, and bcc: via message address arrays', async () => {
+    await withSeededTestDb(async (db) => {
+      const toThread = (
+        await seedThreadWithMessage(db, {
+          subject: 'To match',
+          snippet: 'to filter',
+          toAddresses: ['ops@corp.com'],
+        })
+      ).threadId;
+      const ccThread = (
+        await seedThreadWithMessage(db, {
+          subject: 'Cc match',
+          snippet: 'cc filter',
+          ccAddresses: ['finance@corp.com'],
+        })
+      ).threadId;
+      const bccThread = (
+        await seedThreadWithMessage(db, {
+          subject: 'Bcc match',
+          snippet: 'bcc filter',
+          bccAddresses: ['hidden@corp.com'],
+        })
+      ).threadId;
 
-        expect(await listThreadIdsForQuery(db, 'to:ops@corp.com')).toEqual([toThread]);
-        expect(await listThreadIdsForQuery(db, 'cc:finance@corp.com')).toEqual([ccThread]);
-        expect(await listThreadIdsForQuery(db, 'bcc:hidden@corp.com')).toEqual([bccThread]);
-      });
-    },
-    30000,
-  );
+      expect(await listThreadIdsForQuery(db, 'to:ops@corp.com')).toEqual([toThread]);
+      expect(await listThreadIdsForQuery(db, 'cc:finance@corp.com')).toEqual([ccThread]);
+      expect(await listThreadIdsForQuery(db, 'bcc:hidden@corp.com')).toEqual([bccThread]);
+    });
+  });
 
   it('filters is:read, is:starred, and is:important on mail_thread', async () => {
     await withSeededTestDb(async (db) => {

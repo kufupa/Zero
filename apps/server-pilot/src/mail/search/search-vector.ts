@@ -42,7 +42,7 @@ export function threadSearchVectorText(
 }
 
 /**
- * Recompute mail_thread.search_vector from denormalized subject + snippet + sender.
+ * Recompute mail_thread.search_vector from subject, snippet, sender, and recent message bodies.
  */
 export async function refreshThreadSearchVector(
   db: DB,
