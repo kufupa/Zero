@@ -112,6 +112,7 @@ export interface PersistQuarantinedResult {
   quarantineId: string;
   reason: QuarantineReason;
   rawMimeS3Key: string;
+  candidateAttachmentCleanupFailureCount: number;
 }
 
 export interface PersistDuplicateResult {
@@ -222,11 +223,18 @@ export async function persistInboundMessage(
     ? undefined
     : await findExistingQuarantine(db, meta);
   if (existingQuarantine) {
+    const candidateAttachmentCleanupFailureCount = await cleanupCandidateAttachmentObjects(
+      storage,
+      parsed.attachments,
+      meta.messageId,
+      '',
+    );
     return {
       kind: 'quarantined',
       quarantineId: existingQuarantine.id,
       reason: existingQuarantine.reason as QuarantineReason,
       rawMimeS3Key: existingQuarantine.rawMimeS3Key,
+      candidateAttachmentCleanupFailureCount,
     };
   }
 
@@ -239,8 +247,9 @@ export async function persistInboundMessage(
       transport = await findCenturionEquatedTransport(db, parsed);
     }
     if (!transport) {
-      return quarantineUnrouted({
+      return quarantineWithAttachmentCleanup({
         db,
+        storage,
         parsed,
         meta,
         rawMimeS3Key,
@@ -252,8 +261,9 @@ export async function persistInboundMessage(
   } else {
     transport = await findTransportByStamp(db, parsed.ownerHeaderValue);
     if (!transport) {
-      return quarantineUnrouted({
+      return quarantineWithAttachmentCleanup({
         db,
+        storage,
         parsed,
         meta,
         rawMimeS3Key,
@@ -566,9 +576,9 @@ export async function persistInboundMessage(
     };
   }
   if (malformedDeliveryOutcomeQuarantine) {
-    await cleanupCandidateAttachmentObjects(storage, parsed.attachments, messageId, '');
-    return quarantineUnrouted({
+    return quarantineWithAttachmentCleanup({
       db,
+      storage,
       parsed,
       meta,
       rawMimeS3Key,
@@ -650,6 +660,7 @@ export async function quarantineOversizedMessage(
       quarantineId: existing.id,
       reason: existing.reason as QuarantineReason,
       rawMimeS3Key: existing.rawMimeS3Key,
+      candidateAttachmentCleanupFailureCount: 0,
     };
   }
 
@@ -668,6 +679,7 @@ export async function quarantineOversizedMessage(
     quarantineId,
     reason: 'message_too_large',
     rawMimeS3Key,
+    candidateAttachmentCleanupFailureCount: 0,
   };
 }
 
@@ -687,6 +699,7 @@ export async function quarantineParseFailure(
       quarantineId: existing.id,
       reason: existing.reason as QuarantineReason,
       rawMimeS3Key: existing.rawMimeS3Key,
+      candidateAttachmentCleanupFailureCount: 0,
     };
   }
 
@@ -705,6 +718,7 @@ export async function quarantineParseFailure(
     quarantineId,
     reason: 'parse_failure',
     rawMimeS3Key,
+    candidateAttachmentCleanupFailureCount: 0,
   };
 }
 
@@ -1060,6 +1074,7 @@ async function quarantineUnrouted(args: {
       quarantineId: existing.id,
       reason: existing.reason as QuarantineReason,
       rawMimeS3Key: existing.rawMimeS3Key,
+      candidateAttachmentCleanupFailureCount: 0,
     };
   }
 
@@ -1078,7 +1093,21 @@ async function quarantineUnrouted(args: {
     quarantineId,
     reason,
     rawMimeS3Key,
+    candidateAttachmentCleanupFailureCount: 0,
   };
+}
+
+async function quarantineWithAttachmentCleanup(
+  args: Parameters<typeof quarantineUnrouted>[0] & { storage: S3Storage },
+): Promise<PersistQuarantinedResult> {
+  const result = await quarantineUnrouted(args);
+  const candidateAttachmentCleanupFailureCount = await cleanupCandidateAttachmentObjects(
+    args.storage,
+    args.parsed.attachments,
+    args.meta.messageId,
+    '',
+  );
+  return { ...result, candidateAttachmentCleanupFailureCount };
 }
 
 async function resolveThreadId(args: {

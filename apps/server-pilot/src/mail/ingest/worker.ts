@@ -191,6 +191,15 @@ export async function ingestOnce(opts: IngestOnceOptions = {}): Promise<IngestCy
         }
 
         if (result.kind === 'quarantined') {
+          if (result.candidateAttachmentCleanupFailureCount > 0) {
+            failureCounts.delete(uidl);
+            console.warn(
+              `worker: quarantine attachment cleanup failures=${result.candidateAttachmentCleanupFailureCount}`,
+            );
+            items.push({ uidl, result, status: 'deferred' });
+            processed += 1;
+            continue;
+          }
           await archiveQuarantineRawMime(storage, rawKey, {
             ingestMailboxId,
             pop3Uidl: uidl,
