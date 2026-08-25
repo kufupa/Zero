@@ -17,13 +17,17 @@ export const threadSearchVectorSourceSql: SQL = sql`
     ORDER BY "received_at" DESC NULLS LAST
     LIMIT 1
   ), '') || ' ' || coalesce((
-    SELECT string_agg(left(coalesce("text_body", ''), ${MAIL_SEARCH_BODY_CHAR_LIMIT}), ' ')
+    SELECT string_agg(
+      left(coalesce("text_body", ''), ${MAIL_SEARCH_BODY_CHAR_LIMIT}),
+      ' '
+      ORDER BY "received_at" DESC NULLS LAST, "id" DESC
+    )
     FROM (
-      SELECT "text_body"
+      SELECT "text_body", "received_at", "id"
       FROM "message"
       WHERE "message"."thread_id" = "mail_thread"."id"
         AND "message"."transport_id" = "mail_thread"."transport_id"
-      ORDER BY "received_at" DESC NULLS LAST
+      ORDER BY "received_at" DESC NULLS LAST, "id" DESC
       LIMIT ${MAIL_SEARCH_BODY_MESSAGE_LIMIT}
     ) AS recent_bodies
   ), '')

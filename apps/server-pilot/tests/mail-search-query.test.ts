@@ -47,6 +47,7 @@ async function seedThreadWithMessage(
   db: DB,
   opts: {
     threadId?: string;
+    messageId?: string;
     subject: string;
     snippet: string;
     textBody?: string;
@@ -59,10 +60,11 @@ async function seedThreadWithMessage(
     labelIds?: string[];
     latestMessageAt?: Date;
     withAttachment?: boolean;
+    refreshSearchVector?: boolean;
   },
 ): Promise<{ threadId: string; messageId: string }> {
   const threadId = opts.threadId ?? randomUUID();
-  const messageId = randomUUID();
+  const messageId = opts.messageId ?? randomUUID();
 
   await db.insert(mailThread).values({
     id: threadId,
@@ -89,7 +91,9 @@ async function seedThreadWithMessage(
     textBody: opts.textBody ?? opts.snippet,
     receivedAt: opts.latestMessageAt ?? new Date('2026-07-06T12:00:00Z'),
   });
-  await refreshThreadSearchVector(db, threadId);
+  if (opts.refreshSearchVector ?? true) {
+    await refreshThreadSearchVector(db, threadId);
+  }
 
   if (opts.withAttachment) {
     await db.insert(attachment).values({
@@ -140,6 +144,62 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('buildThreadSearchConditions',
     });
   });
 
+  it(
+    'does not match a token beyond deterministic 20-message body cap',
+    async () => {
+      await withSeededTestDb(async (db) => {
+        const receivedAt = new Date('2026-07-06T12:00:00Z');
+        const { threadId } = await seedThreadWithMessage(db, {
+          messageId: '00000000-0000-0000-0000-000000000001',
+          subject: 'Housekeeping',
+          snippet: 'See note',
+          textBody: 'messagecapboundarytoken',
+          latestMessageAt: receivedAt,
+          refreshSearchVector: false,
+        });
+        await db.insert(message).values(
+          Array.from({ length: 20 }, (_, index) => ({
+            id: `00000000-0000-0000-0000-${String(index + 2).padStart(12, '0')}`,
+            transportId: TRANSPORT_ID,
+            threadId,
+            direction: 'inbound' as const,
+            fromAddress: 'sender@example.com',
+            toAddresses: ['nava@example.com'],
+            ccAddresses: [],
+            bccAddresses: [],
+            subject: 'Housekeeping',
+            textBody: `recent message ${index}`,
+            receivedAt,
+          })),
+        );
+        await refreshThreadSearchVector(db, threadId);
+
+        expect(
+          await listThreadIdsForQuery(db, 'messagecapboundarytoken'),
+        ).toEqual([]);
+      });
+    },
+    30000,
+  );
+
+  it(
+    'does not match a token after 8,000 body characters',
+    async () => {
+      await withSeededTestDb(async (db) => {
+        await seedThreadWithMessage(db, {
+          subject: 'Housekeeping',
+          snippet: 'See note',
+          textBody: `${'a '.repeat(4000)}charcapboundarytoken`,
+        });
+
+        expect(
+          await listThreadIdsForQuery(db, 'charcapboundarytoken'),
+        ).toEqual([]);
+      });
+    },
+    30000,
+  );
+
   it('filters from: via message EXISTS join', async () => {
     await withSeededTestDb(async (db) => {
       const { threadId } = await seedThreadWithMessage(db, {
@@ -158,35 +218,39 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('buildThreadSearchConditions',
     });
   });
 
-  it('filters to:, cc:, and bcc: via message address arrays', async () => {
-    await withSeededTestDb(async (db) => {
-      const toThread = (
-        await seedThreadWithMessage(db, {
-          subject: 'To match',
-          snippet: 'to filter',
-          toAddresses: ['ops@corp.com'],
-        })
-      ).threadId;
-      const ccThread = (
-        await seedThreadWithMessage(db, {
-          subject: 'Cc match',
-          snippet: 'cc filter',
-          ccAddresses: ['finance@corp.com'],
-        })
-      ).threadId;
-      const bccThread = (
-        await seedThreadWithMessage(db, {
-          subject: 'Bcc match',
-          snippet: 'bcc filter',
-          bccAddresses: ['hidden@corp.com'],
-        })
-      ).threadId;
+  it(
+    'filters to:, cc:, and bcc: via message address arrays',
+    async () => {
+      await withSeededTestDb(async (db) => {
+        const toThread = (
+          await seedThreadWithMessage(db, {
+            subject: 'To match',
+            snippet: 'to filter',
+            toAddresses: ['ops@corp.com'],
+          })
+        ).threadId;
+        const ccThread = (
+          await seedThreadWithMessage(db, {
+            subject: 'Cc match',
+            snippet: 'cc filter',
+            ccAddresses: ['finance@corp.com'],
+          })
+        ).threadId;
+        const bccThread = (
+          await seedThreadWithMessage(db, {
+            subject: 'Bcc match',
+            snippet: 'bcc filter',
+            bccAddresses: ['hidden@corp.com'],
+          })
+        ).threadId;
 
-      expect(await listThreadIdsForQuery(db, 'to:ops@corp.com')).toEqual([toThread]);
-      expect(await listThreadIdsForQuery(db, 'cc:finance@corp.com')).toEqual([ccThread]);
-      expect(await listThreadIdsForQuery(db, 'bcc:hidden@corp.com')).toEqual([bccThread]);
-    });
-  });
+        expect(await listThreadIdsForQuery(db, 'to:ops@corp.com')).toEqual([toThread]);
+        expect(await listThreadIdsForQuery(db, 'cc:finance@corp.com')).toEqual([ccThread]);
+        expect(await listThreadIdsForQuery(db, 'bcc:hidden@corp.com')).toEqual([bccThread]);
+      });
+    },
+    30000,
+  );
 
   it('filters is:read, is:starred, and is:important on mail_thread', async () => {
     await withSeededTestDb(async (db) => {
