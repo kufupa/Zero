@@ -5,10 +5,9 @@ import {
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import { Bell, Lightning, Mail, ScanEye, Tag, User, X, Search } from '../icons/icons';
+import { Bell, Lightning, Mail, ScanEye, Tag, User, X } from '../icons/icons';
 import { useCategorySettings, useDefaultCategoryId } from '@/hooks/use-categories';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
-import { useCommandPalette } from '../context/command-palette-context';
 import { useHotkeys, useHotkeysContext } from 'react-hotkeys-hook';
 import { useCallback, useEffect, useRef, useState, lazy, Suspense } from 'react';
 import { useActiveConnection } from '@/hooks/use-connections';
@@ -18,6 +17,7 @@ import useCategoryIds from '@/hooks/use-category-ids';
 import * as CustomIcons from '@/components/icons/icons';
 import { EmptySpamButton } from '@/components/mail/empty-spam-button';
 import { MailList } from '@/components/mail/mail-list';
+import { MailSearchBar } from '@/components/mail/mail-search-bar';
 import { useNavigate, useParams } from 'react-router';
 import { useMail } from '@/components/mail/use-mail';
 import { SidebarToggle } from '../ui/sidebar-toggle';
@@ -27,7 +27,6 @@ import { useIsMobile } from '@/hooks/use-mobile';
 import { Button } from '@/components/ui/button';
 import { useSession } from '@/lib/auth-client';
 import { m } from '@/paraglide/messages';
-import { isMac } from '@/lib/platform';
 import { useQueryState } from 'nuqs';
 import { cn } from '@/lib/utils';
 import {
@@ -59,6 +58,16 @@ const MAIL_THREAD_SPLIT = {
   min: 100 - MAIL_LIST_SPLIT.max,
   max: 100 - MAIL_LIST_SPLIT.min,
 } as const;
+const MAIL_SEARCH_FOLDER_TITLES: Record<string, string> = {
+  archive: 'Archive',
+  bin: 'Bin',
+  draft: 'Drafts',
+  drafts: 'Drafts',
+  inbox: 'Inbox',
+  sent: 'Sent',
+  snoozed: 'Snoozed',
+  spam: 'Spam',
+};
 
 // const AutoLabelingSettings = () => {
 //   const trpc = useTRPC();
@@ -342,8 +351,10 @@ export function MailLayout() {
   const prevFolderRef = useRef(folder);
   const { enableScope, disableScope } = useHotkeysContext();
   const { data: activeConnection } = useActiveConnection();
-  const { activeFilters, clearAllFilters } = useCommandPalette();
-  const [, setIsCommandPaletteOpen] = useQueryState('isCommandPaletteOpen');
+  const folderTitle =
+    getHotelFolderPresentation(folder)?.title ??
+    MAIL_SEARCH_FOLDER_TITLES[folder] ??
+    folder.replace(/[-_]+/g, ' ').replace(/\b\w/g, (character) => character.toUpperCase());
 
   useEffect(() => {
     if (prevFolderRef.current !== folder && mail.bulkSelected.length > 0) {
@@ -439,14 +450,6 @@ export function MailLayout() {
   const defaultCategoryId = useDefaultCategoryId();
   const [category] = useQueryState('category', { defaultValue: defaultCategoryId });
 
-  const handleClearFilters = useCallback(
-    (e: React.MouseEvent) => {
-      e.stopPropagation();
-      clearAllFilters();
-    },
-    [clearAllFilters],
-  );
-
   const handleExitBulkSelection = useCallback(() => {
     setMail({ ...mail, bulkSelected: [] });
   }, [mail, setMail]);
@@ -454,10 +457,6 @@ export function MailLayout() {
   const handleRefetchThreads = useCallback(() => {
     refetchThreads();
   }, [refetchThreads]);
-
-  const handleOpenCommandPalette = useCallback(() => {
-    setIsCommandPaletteOpen('true');
-  }, [setIsCommandPaletteOpen]);
 
   const handleToggleListCollapsed = useCallback(() => {
     const panel = listPanelRef.current;
@@ -511,7 +510,9 @@ export function MailLayout() {
             >
               <div className="z-15 sticky top-0 p-4 pb-0">
                 <div className="flex items-center gap-2">
-                  <SidebarToggle className="h-10 w-10 md:hidden" />
+                  <div className="shrink-0">
+                    <SidebarToggle className="h-10 w-10 md:hidden" />
+                  </div>
                   {isWideSplit && !listCollapsed ? (
                     <Tooltip>
                       <TooltipTrigger asChild>
@@ -522,7 +523,7 @@ export function MailLayout() {
                           aria-expanded={!listCollapsed}
                           aria-label="Hide inbox"
                           onClick={handleToggleListCollapsed}
-                          className="border-none bg-transparent hover:bg-accent/50 h-10 w-10 rounded-lg transition-colors duration-150"
+                          className="border-none bg-transparent hover:bg-accent/50 h-10 w-10 shrink-0 rounded-lg transition-colors duration-150"
                         >
                           <CustomIcons.PanelLeftClose className="fill-iconLight dark:fill-iconDark" />
                           <span className="sr-only">Hide inbox</span>
@@ -534,50 +535,9 @@ export function MailLayout() {
 
                   {mail.bulkSelected.length === 0 ? (
                     <>
-                      <Button
-                        variant="outline"
-                        className={cn(
-                          'text-muted-foreground border-border/40 bg-background/50 hover:bg-accent/30 focus-visible:ring-ring dark:border-border/20 dark:bg-background/40 relative flex h-10 flex-1 select-none items-center justify-start overflow-hidden rounded-lg border pl-3 text-left text-sm font-normal shadow-none ring-0 backdrop-blur-sm transition-all focus-visible:ring-2 focus-visible:ring-offset-2',
-                        )}
-                        onClick={handleOpenCommandPalette}
-                      >
-                        <Search className="fill-muted-foreground h-4 w-4" />
-
-                        <span className="ml-3 hidden truncate pr-20 lg:inline-block">
-                          {activeFilters.length > 0
-                            ? activeFilters.map((f) => f.display).join(', ')
-                            : 'Search'}
-                        </span>
-                        <span className="ml-3 inline-block truncate pr-20 lg:hidden">
-                          {activeFilters.length > 0
-                            ? `${activeFilters.length} filter${activeFilters.length > 1 ? 's' : ''}`
-                            : 'Search'}
-                        </span>
-
-                        <div className="absolute right-2 flex items-center gap-2">
-                          {/* {activeFilters.length > 0 && (
-                            <Badge variant="secondary" className="ml-2 h-5 rounded px-1">
-                              {activeFilters.length}
-                            </Badge>
-                          )} */}
-                          {activeFilters.length > 0 && (
-                            <Button
-                              variant="secondary"
-                              size="sm"
-                              className="h-6 rounded-md px-2 text-xs"
-                              onClick={handleClearFilters}
-                            >
-                              Clear
-                            </Button>
-                          )}
-                          <kbd className="bg-muted border-border/40 dark:bg-muted/40 pointer-events-none hidden h-6 select-none items-center gap-1 rounded border px-2 text-xs font-medium opacity-80 sm:flex">
-                            <span className={cn('text-xs', isMac ? 'text-sm' : 'text-xs')}>
-                              {isMac ? '⌘' : 'Ctrl'}
-                            </span>
-                            <span className="text-xs">K</span>
-                          </kbd>
-                        </div>
-                      </Button>
+                      <div className="flex-1 min-w-0">
+                        <MailSearchBar folderTitle={folderTitle} />
+                      </div>
 
                       {['google', 'mailbox'].includes(activeConnection?.providerId ?? '') &&
                         folder === 'inbox' && (
@@ -609,14 +569,16 @@ export function MailLayout() {
                   )}
 
                   {folder === 'spam' && mail.bulkSelected.length === 0 ? (
-                    <EmptySpamButton onCompleted={handleRefetchThreads} />
+                    <div className="shrink-0">
+                      <EmptySpamButton onCompleted={handleRefetchThreads} />
+                    </div>
                   ) : null}
 
                   <Button
                     onClick={handleRefetchThreads}
                     variant="ghost"
                     size="icon"
-                    className="border-none bg-transparent hover:bg-accent/50 h-10 w-10 rounded-lg backdrop-blur-sm"
+                    className="border-none bg-transparent hover:bg-accent/50 h-10 w-10 shrink-0 rounded-lg backdrop-blur-sm"
                   >
                     <RefreshCcw className="text-muted-foreground h-4 w-4" />
                   </Button>

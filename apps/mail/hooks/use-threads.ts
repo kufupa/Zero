@@ -15,7 +15,6 @@ import { useAtom, useAtomValue } from 'jotai';
 import { useParams } from 'react-router';
 import { useQueryState } from 'nuqs';
 import { useMemo } from 'react';
-import useDebouncedValue from '@/hooks/use-debounce';
 import { computeThreadListEnabled } from '@/lib/mail/thread-list-query-enabled';
 import { selectLiveThreadListQuery } from '@/lib/mail/thread-list-query-policy';
 import {
@@ -27,18 +26,15 @@ import {
   shouldBlankOpenThreadData,
 } from '@/lib/mail/thread-open-stability';
 import { mergeCategoryIds, mergeLabelIds, resolveMailRouteFilter } from '@/lib/mail/route-filter';
-import { resolveMailListSearch } from '@/lib/mail/search-filters';
+import { resolveSearchListRequest } from '@/lib/mail/search-list';
 import { useCategorySettings } from './use-categories';
 import { useLabels } from './use-labels';
 
 const threadPollingMs = resolveThreadPollingMs(import.meta.env.VITE_MAIL_POLL_MS);
 const openThreadPolling = openThreadQueryPollingOptions(import.meta.env.VITE_MAIL_POLL_MS);
+const invalidListQueryFn = async () => ({ threads: [], nextPageToken: null });
 
-export type UseThreadsOptions = {
-  commandPaletteOpen?: string | null;
-};
-
-export const useThreads = (options?: UseThreadsOptions) => {
+export const useThreads = () => {
   const { folder: routeFolder } = useParams<{ folder: string }>();
   const canonicalRouteFolder = routeFolder?.toLowerCase();
   const [searchValue] = useSearchValue();
@@ -51,30 +47,99 @@ export const useThreads = (options?: UseThreadsOptions) => {
   const categories = useCategorySettings();
   const { userLabels } = useLabels();
   const demoMode = isFrontendOnlyDemo();
-  const debouncedSearchQ = useDebouncedValue(searchValue.value);
-  const liveSearchQ = demoMode ? searchValue.value : debouncedSearchQ;
-  const isPaletteMode = options != null && 'commandPaletteOpen' in options;
-  const paletteOpen = isPaletteMode ? options?.commandPaletteOpen === 'true' : false;
-  const folderForQuery = isPaletteMode ? canonicalRouteFolder ?? 'inbox' : canonicalRouteFolder;
   const baseEnabled = computeThreadListEnabled({
     demoMode,
     sessionUserId: session?.user?.id,
     routeFolder: canonicalRouteFolder,
   });
-  const demoListFolder = normalizeDemoMailFolderSlug(folderForQuery);
-  // Palette needs thread hints on non-mail routes (e.g. /settings): still require demo or session, never open live API unauthenticated.
-  const listEnabled = isPaletteMode
-    ? paletteOpen && (demoMode || Boolean(session?.user?.id))
-    : baseEnabled;
+  const listEnabled = baseEnabled;
 
+  const categoryBySlug = useMemo(
+    () =>
+      new Map(
+        categories
+          .filter((category): category is typeof category & { slug: string } => Boolean(category.slug))
+          .map((category) => [category.slug, category.id]),
+      ),
+    [categories],
+  );
+  const labelIdSet = useMemo(() => {
+    const ids = new Set<string>();
+    for (const label of userLabels ?? []) {
+      if (label.id) ids.add(label.id.toLowerCase());
+    }
+    return ids;
+  }, [userLabels]);
+  const routeFilter = resolveMailRouteFilter(canonicalRouteFolder, categoryBySlug, labelIdSet);
+
+  const baseListFilters = useMemo(
+    () => ({
+      categoryIds: mergeCategoryIds(routeFilter.filters.categoryIds, queryCategoryIds),
+      labelIds: mergeLabelIds(routeFilter.filters.labelIds, labels),
+    }),
+    [routeFilter.filters.categoryIds, routeFilter.filters.labelIds, queryCategoryIds, labels],
+  );
+  const userListFilters = useMemo(
+    () => ({
+      categoryIds: queryCategoryIds,
+      labelIds: [...labels],
+    }),
+    [queryCategoryIds, labels],
+  );
+
+  const searchList = useMemo(
+    () =>
+      resolveSearchListRequest({
+        scope: searchValue.scope ?? 'folder',
+        query: searchValue.value,
+        filters: searchValue.filters ?? [],
+        routeResolved: routeFilter,
+        baseFilters: baseListFilters,
+        userFilters: userListFilters,
+      }),
+    [
+      searchValue.scope,
+      searchValue.value,
+      searchValue.filters,
+      routeFilter,
+      baseListFilters,
+      userListFilters,
+    ],
+  );
+
+  const validSearchList = searchList.isValid ? searchList : undefined;
+  const demoListFolder =
+    validSearchList?.folder === 'all'
+      ? validSearchList.folder
+      : validSearchList
+        ? normalizeDemoMailFolderSlug(canonicalRouteFolder ?? validSearchList.folder)
+        : undefined;
+  const liveThreadListQuery = validSearchList
+    ? selectLiveThreadListQuery({
+        folder: validSearchList.folder,
+        demoMode,
+        listEnabled,
+        useDraftsList: validSearchList.useDraftsList && listEnabled && !demoMode,
+      })
+    : { useDraftsList: false, useMailListThreads: false };
   const demoDraftFolder =
-    demoMode && listEnabled && canonicalRouteFolder === 'draft';
+    demoMode && listEnabled && validSearchList?.useDraftsList === true;
+  const demoDraftQuery = validSearchList?.useDraftsList
+    ? validSearchList.q ?? ''
+    : undefined;
 
   const demoDraftsQuery = useInfiniteQuery({
-    queryKey: demoMailListDraftsQueryKey(searchValue.value),
+    queryKey:
+      demoDraftQuery === undefined
+        ? ['demo', 'mail', 'listDrafts', 'disabled']
+        : demoMailListDraftsQueryKey(demoDraftQuery),
     initialPageParam: '',
     queryFn: async () => {
-      const q = searchValue.value.trim().toLowerCase();
+      if (demoDraftQuery === undefined) {
+        return { threads: [], nextPageToken: null };
+      }
+
+      const q = demoDraftQuery.trim().toLowerCase();
       let drafts = listDemoDrafts();
       if (q) {
         drafts = drafts.filter(
@@ -100,107 +165,85 @@ export const useThreads = (options?: UseThreadsOptions) => {
   });
 
   const demoThreadsQuery = useInfiniteQuery({
-    queryKey: [
-      'demo',
-      'mail',
-      'listThreads',
-      demoListFolder,
-      searchValue.value,
-      labels.join(','),
-    ],
+    queryKey: validSearchList
+      ? [
+          'demo',
+          'mail',
+          'listThreads',
+          validSearchList.folder,
+          demoListFolder,
+          validSearchList.q ?? '',
+          validSearchList.filters.labelIds?.join(',') ?? '',
+        ]
+      : ['demo', 'mail', 'listThreads', 'disabled'],
     initialPageParam: '',
-    queryFn: async ({ pageParam }) =>
-      listDemoThreads({
+    queryFn: async ({ pageParam }) => {
+      if (!validSearchList || !demoListFolder) {
+        return { threads: [], nextPageToken: null };
+      }
+
+      return listDemoThreads({
         folder: demoListFolder,
-        q: searchValue.value,
-        labelIds: labels,
+        q: validSearchList.q ?? '',
+        labelIds: validSearchList.filters.labelIds ?? [],
         cursor: typeof pageParam === 'string' ? pageParam : '',
-      }),
+      });
+    },
     getNextPageParam: (lastPage) => lastPage?.nextPageToken ?? null,
     staleTime: 60 * 1000,
     refetchOnMount: false,
     refetchIntervalInBackground: true,
-    enabled: demoMode && listEnabled && !demoDraftFolder,
+    enabled: demoMode && listEnabled && Boolean(demoListFolder) && !demoDraftFolder,
   });
 
-  const categoryBySlug = useMemo(
-    () =>
-      new Map(
-        categories
-          .filter((category): category is typeof category & { slug: string } => Boolean(category.slug))
-          .map((category) => [category.slug, category.id]),
-      ),
-    [categories],
+  const liveDraftsQueryOptions = trpc.drafts.list.infiniteQueryOptions(
+    validSearchList?.useDraftsList
+      ? { q: validSearchList.q ?? '', limit: 50 }
+      : { limit: 50 },
+    {
+      initialCursor: '',
+      getNextPageParam: (lastPage) => lastPage?.nextPageToken ?? null,
+      enabled: liveThreadListQuery.useDraftsList,
+      staleTime: 60 * 1000,
+      refetchOnMount: false,
+    },
   );
-  const labelIdSet = useMemo(() => {
-    const ids = new Set<string>();
-    for (const label of userLabels ?? []) {
-      if (label.id) ids.add(label.id.toLowerCase());
-    }
-    return ids;
-  }, [userLabels]);
-  const routeFilter = resolveMailRouteFilter(folderForQuery, categoryBySlug, labelIdSet);
-
-  const baseListFilters = useMemo(
-    () => ({
-      categoryIds: mergeCategoryIds(routeFilter.filters.categoryIds, queryCategoryIds),
-      labelIds: mergeLabelIds(routeFilter.filters.labelIds, labels),
-    }),
-    [routeFilter.filters.categoryIds, routeFilter.filters.labelIds, queryCategoryIds, labels],
-  );
-
-  const resolvedLiveSearch = useMemo(
-    () => resolveMailListSearch(liveSearchQ, baseListFilters),
-    [liveSearchQ, baseListFilters],
-  );
-
-  const liveThreadListQuery = selectLiveThreadListQuery({
-    folder: canonicalRouteFolder,
-    demoMode,
-    listEnabled,
-  });
-  const liveDraftFolder = liveThreadListQuery.useDraftsList;
-
   const liveDraftsQuery = useInfiniteQuery(
-    trpc.drafts.list.infiniteQueryOptions(
-      {
-        q: liveSearchQ,
-        limit: 50,
-      },
-      {
-        initialCursor: '',
-        getNextPageParam: (lastPage) => lastPage?.nextPageToken ?? null,
-        enabled: liveDraftFolder,
-        staleTime: 60 * 1000,
-        refetchOnMount: false,
-      },
-    ),
+    validSearchList
+      ? liveDraftsQueryOptions
+      : { ...liveDraftsQueryOptions, queryFn: invalidListQueryFn },
   );
 
-  const threadsQuery = useInfiniteQuery(
-    trpc.mail.listThreads.infiniteQueryOptions(
-      {
-        q: resolvedLiveSearch.q,
-        folder: routeFilter.folder,
-        filters: resolvedLiveSearch.filters,
-      },
-      {
-        initialCursor: '',
-        getNextPageParam: (lastPage) => lastPage?.nextPageToken ?? null,
-        enabled: liveThreadListQuery.useMailListThreads,
-        staleTime: 60 * 1000 * 1, // 1 minute
-        refetchOnMount: false,
-        refetchInterval: threadPollingMs ?? false,
-        refetchIntervalInBackground: false,
-        refetchOnWindowFocus: true,
-      },
-    ),
+  const liveThreadsQueryOptions = trpc.mail.listThreads.infiniteQueryOptions(
+    validSearchList
+      ? {
+          q: validSearchList.q,
+          folder: validSearchList.folder,
+          filters: validSearchList.filters,
+        }
+      : {},
+    {
+      initialCursor: '',
+      getNextPageParam: (lastPage) => lastPage?.nextPageToken ?? null,
+      enabled: liveThreadListQuery.useMailListThreads,
+      staleTime: 60 * 1000 * 1, // 1 minute
+      refetchOnMount: false,
+      refetchInterval: threadPollingMs ?? false,
+      refetchIntervalInBackground: false,
+      refetchOnWindowFocus: true,
+    },
   );
+  const threadsQuery = useInfiniteQuery(
+    validSearchList
+      ? liveThreadsQueryOptions
+      : { ...liveThreadsQueryOptions, queryFn: invalidListQueryFn },
+  );
+
   const activeThreadsQuery = demoMode
     ? demoDraftFolder
       ? demoDraftsQuery
       : demoThreadsQuery
-    : liveDraftFolder
+    : liveThreadListQuery.useDraftsList
       ? liveDraftsQuery
       : threadsQuery;
 
@@ -226,7 +269,7 @@ export const useThreads = (options?: UseThreadsOptions) => {
     await activeThreadsQuery.fetchNextPage();
   };
 
-  return [activeThreadsQuery, threads, isReachingEnd, loadMore] as const;
+  return [activeThreadsQuery, threads, isReachingEnd, loadMore, searchList] as const;
 };
 
 export const useThread = (threadId: string | null) => {

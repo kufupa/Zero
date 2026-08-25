@@ -47,8 +47,10 @@ async function seedThreadWithMessage(
   db: DB,
   opts: {
     threadId?: string;
+    messageId?: string;
     subject: string;
     snippet: string;
+    textBody?: string;
     fromAddress?: string;
     toAddresses?: string[];
     ccAddresses?: string[];
@@ -58,10 +60,11 @@ async function seedThreadWithMessage(
     labelIds?: string[];
     latestMessageAt?: Date;
     withAttachment?: boolean;
+    refreshSearchVector?: boolean;
   },
 ): Promise<{ threadId: string; messageId: string }> {
   const threadId = opts.threadId ?? randomUUID();
-  const messageId = randomUUID();
+  const messageId = opts.messageId ?? randomUUID();
 
   await db.insert(mailThread).values({
     id: threadId,
@@ -74,7 +77,6 @@ async function seedThreadWithMessage(
     labelIds: opts.labelIds ?? [],
     latestMessageAt: opts.latestMessageAt ?? new Date('2026-07-06T12:00:00Z'),
   });
-  await refreshThreadSearchVector(db, threadId);
 
   await db.insert(message).values({
     id: messageId,
@@ -86,9 +88,12 @@ async function seedThreadWithMessage(
     ccAddresses: opts.ccAddresses ?? [],
     bccAddresses: opts.bccAddresses ?? [],
     subject: opts.subject,
-    textBody: opts.snippet,
+    textBody: opts.textBody ?? opts.snippet,
     receivedAt: opts.latestMessageAt ?? new Date('2026-07-06T12:00:00Z'),
   });
+  if (opts.refreshSearchVector ?? true) {
+    await refreshThreadSearchVector(db, threadId);
+  }
 
   if (opts.withAttachment) {
     await db.insert(attachment).values({
@@ -104,7 +109,10 @@ async function seedThreadWithMessage(
   return { threadId, messageId };
 }
 
-describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('buildThreadSearchConditions', () => {
+describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
+  'buildThreadSearchConditions',
+  { timeout: 30_000 },
+  () => {
   it('matches free text via search_vector FTS', async () => {
     await withSeededTestDb(async (db) => {
       const { threadId } = await seedThreadWithMessage(db, {
@@ -120,6 +128,72 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('buildThreadSearchConditions',
       expect(ids).toEqual([threadId]);
     });
   });
+
+  it('matches a token that exists only in message text_body', async () => {
+    await withSeededTestDb(async (db) => {
+      const { threadId } = await seedThreadWithMessage(db, {
+        subject: 'Housekeeping',
+        snippet: 'See note',
+        textBody: 'uniquebodytoken left in the guest bathroom',
+      });
+      await seedThreadWithMessage(db, {
+        subject: 'Housekeeping',
+        snippet: 'See note',
+        textBody: 'minibar restock only',
+      });
+
+      const ids = await listThreadIdsForQuery(db, 'uniquebodytoken');
+      expect(ids).toEqual([threadId]);
+    });
+  });
+
+    it('does not match a token beyond deterministic 20-message body cap', async () => {
+      await withSeededTestDb(async (db) => {
+        const receivedAt = new Date('2026-07-06T12:00:00Z');
+        const { threadId } = await seedThreadWithMessage(db, {
+          messageId: '00000000-0000-0000-0000-000000000001',
+          subject: 'Housekeeping',
+          snippet: 'See note',
+          textBody: 'messagecapboundarytoken',
+          latestMessageAt: receivedAt,
+          refreshSearchVector: false,
+        });
+        await db.insert(message).values(
+          Array.from({ length: 20 }, (_, index) => ({
+            id: `00000000-0000-0000-0000-${String(index + 2).padStart(12, '0')}`,
+            transportId: TRANSPORT_ID,
+            threadId,
+            direction: 'inbound' as const,
+            fromAddress: 'sender@example.com',
+            toAddresses: ['nava@example.com'],
+            ccAddresses: [],
+            bccAddresses: [],
+            subject: 'Housekeeping',
+            textBody: `recent message ${index}`,
+            receivedAt,
+          })),
+        );
+        await refreshThreadSearchVector(db, threadId);
+
+        expect(
+          await listThreadIdsForQuery(db, 'messagecapboundarytoken'),
+        ).toEqual([]);
+      });
+    });
+
+    it('does not match a token after 8,000 body characters', async () => {
+      await withSeededTestDb(async (db) => {
+        await seedThreadWithMessage(db, {
+          subject: 'Housekeeping',
+          snippet: 'See note',
+          textBody: `${'a '.repeat(4000)}charcapboundarytoken`,
+        });
+
+        expect(
+          await listThreadIdsForQuery(db, 'charcapboundarytoken'),
+        ).toEqual([]);
+      });
+    });
 
   it('filters from: via message EXISTS join', async () => {
     await withSeededTestDb(async (db) => {

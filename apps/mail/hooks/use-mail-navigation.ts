@@ -2,8 +2,9 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { useOptimisticActions } from './use-optimistic-actions';
 import { useMail } from '@/components/mail/use-mail';
+import { mailSearchBarFocusedAtom } from '@/hooks/use-search-value';
 import { useHotkeys } from 'react-hotkeys-hook';
-import { atom, useAtom } from 'jotai';
+import { atom, useAtom, useAtomValue } from 'jotai';
 import { useQueryState } from 'nuqs';
 
 export const focusedIndexAtom = atom<number | null>(null);
@@ -25,7 +26,7 @@ export function useMailNavigation({ items, containerRef, onNavigate }: UseMailNa
   const onNavigateRef = useRef(onNavigate);
   onNavigateRef.current = onNavigate;
   const [threadId] = useQueryState('threadId');
-  const [isCommandPaletteOpen] = useQueryState('isCommandPaletteOpen');
+  const isSearchBarFocused = useAtomValue(mailSearchBarFocusedAtom);
 
   const hoveredMailRef = useRef<string | null>(null);
   const keyboardActiveRef = useRef(false);
@@ -196,15 +197,15 @@ export function useMailNavigation({ items, containerRef, onNavigate }: UseMailNa
     keyboardActiveRef.current = false;
   }, [setFocusedIndex, onNavigateRef]);
 
-  useHotkeys('ArrowUp', handleArrowUp, { preventDefault: true, enabled: !isCommandPaletteOpen });
+  useHotkeys('ArrowUp', handleArrowUp, { preventDefault: true, enabled: !isSearchBarFocused });
   useHotkeys('ArrowDown', handleArrowDown, {
     preventDefault: true,
-    enabled: !isCommandPaletteOpen,
+    enabled: !isSearchBarFocused,
   });
-  useHotkeys('j', handleArrowDown, { enabled: !isCommandPaletteOpen });
-  useHotkeys('k', handleArrowUp, { enabled: !isCommandPaletteOpen });
-  useHotkeys('Enter', handleEnter, { preventDefault: true, enabled: !isCommandPaletteOpen });
-  useHotkeys('Escape', handleEscape, { preventDefault: true, enabled: !isCommandPaletteOpen });
+  useHotkeys('j', handleArrowDown, { enabled: !isSearchBarFocused });
+  useHotkeys('k', handleArrowUp, { enabled: !isSearchBarFocused });
+  useHotkeys('Enter', handleEnter, { preventDefault: true, enabled: !isSearchBarFocused });
+  useHotkeys('Escape', handleEscape, { preventDefault: true, enabled: !isSearchBarFocused });
 
   const handleMouseEnter = useCallback(
     (threadId: string) => {
@@ -245,7 +246,7 @@ export function useMailNavigation({ items, containerRef, onNavigate }: UseMailNa
     const MOVE_DELAY = 100;
 
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (isCommandPaletteOpen) return;
+      if (isSearchBarFocused) return;
       if (!event.repeat) return;
       if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
 
@@ -273,13 +274,13 @@ export function useMailNavigation({ items, containerRef, onNavigate }: UseMailNa
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [fastScroll, isCommandPaletteOpen]);
+  }, [fastScroll, isSearchBarFocused]);
 
   useEffect(() => {
-    if (isCommandPaletteOpen) {
+    if (isSearchBarFocused) {
       keyboardActiveRef.current = false;
     }
-  }, [isCommandPaletteOpen]);
+  }, [isSearchBarFocused]);
 
   return {
     focusedIndex,
