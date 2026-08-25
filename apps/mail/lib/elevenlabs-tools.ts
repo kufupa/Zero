@@ -104,7 +104,7 @@ export const toolExecutors = {
       if (isUncertainSendResult(result)) {
         return {
           success: false,
-          partial: true,
+          uncertain: true,
           message: 'Email delivery status unknown',
         };
       }

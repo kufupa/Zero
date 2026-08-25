@@ -19,4 +19,14 @@ describe('mail send delivery result contract', () => {
     expect(voiceToolSource).toContain('isPartialSendResult(result)');
     expect(voiceToolSource).toContain('partial: true');
   });
+
+  it('marks legacy delivery without recipient evidence as uncertain, not partial', () => {
+    const uncertainResultBranch = voiceToolSource.slice(
+      voiceToolSource.indexOf('if (isUncertainSendResult(result))'),
+      voiceToolSource.indexOf("return { success: true, message: 'Email sent successfully' }"),
+    );
+
+    expect(uncertainResultBranch).toContain('uncertain: true');
+    expect(uncertainResultBranch).not.toContain('partial: true');
+  });
 });
