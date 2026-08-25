@@ -1,5 +1,5 @@
 import {
-  CENTURION_THREAD_CORPUS_SCHEMA_VERSION,
+  CONNECTED_MAILBOX_CORPUS_SCHEMA_VERSION,
   buildPrivateThreadCorpusSnapshot,
   createPrivateThreadCorpusPublisher,
   createThreadCorpusSnapshotLoader,
@@ -47,7 +47,7 @@ import ts from 'typescript';
 const AS_OF = '2026-08-22T12:00:00.000Z';
 const ACTIVE_TRANSPORT_IDS = ['transport-a', 'transport-z'] as const;
 const repoRoot = path.resolve(process.cwd(), '..', '..');
-const corpusRoot = path.join(repoRoot, '.private', 'centurion-thread-corpus');
+const corpusRoot = path.join(repoRoot, '.private', 'connected-mailbox-corpus');
 
 function privateMessage(
   overrides: Partial<ThreadCorpusPrivateMessage> = {},
@@ -146,7 +146,7 @@ function artifactId(
   kind: 'raw_mime' | 'attachment_text',
   ownerId: string,
 ): string {
-  return sha256(`${CENTURION_THREAD_CORPUS_SCHEMA_VERSION}\0${snapshotId}\0${kind}\0${ownerId}`);
+  return sha256(`${CONNECTED_MAILBOX_CORPUS_SCHEMA_VERSION}\0${snapshotId}\0${kind}\0${ownerId}`);
 }
 
 function parseSnapshotCorpus(snapshot: PrivateThreadCorpusSnapshot): {
@@ -356,12 +356,21 @@ const localPrivateArtifactFileSystem: PrivateArtifactFileSystem = {
 };
 
 async function withTemporaryRepo<T>(run: (root: string) => Promise<T>): Promise<T> {
-  const root = await mkdtemp(path.join(tmpdir(), 'centurion-thread-corpus-'));
+  const root = await mkdtemp(path.join(tmpdir(), 'connected-mailbox-corpus-'));
   try {
     return await run(root);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+}
+
+function createTestPublisher(
+  fileSystem: PrivateArtifactFileSystem = localPrivateArtifactFileSystem,
+) {
+  return createPrivateThreadCorpusPublisher(fileSystem, {
+    verifyIgnoredPrivateOutputDirectory: (_repoRoot, privateDirectoryName) =>
+      privateDirectoryName === 'connected-mailbox-corpus',
+  });
 }
 
 async function tryCreateDirectoryLink(target: string, link: string): Promise<boolean> {
@@ -525,7 +534,7 @@ describe('active transport snapshot contract', () => {
 
     expect(repeated).toEqual(snapshot);
     expect(snapshot.manifest).toMatchObject({
-      schemaVersion: 'centurion-thread-corpus-v3',
+      schemaVersion: 'connected-mailbox-corpus-v4',
       scope: {
         scopeKeys: ['active_transport'],
         transportIds: ACTIVE_TRANSPORT_IDS,
@@ -652,7 +661,7 @@ describe('active transport snapshot contract', () => {
     const snapshot = buildSnapshot([sourceRow()]);
     const corruptedSnapshots = [
       resealSnapshotContract(snapshot, {
-        metadata: { schemaVersion: 'centurion-thread-corpus-v2' },
+        metadata: { schemaVersion: 'connected-mailbox-corpus-v3' },
       }),
       resealSnapshotContract(snapshot, {
         metadata: { recordCount: 99 },
@@ -661,7 +670,7 @@ describe('active transport snapshot contract', () => {
         metadata: { orderedRecordSha256: '0'.repeat(64) },
       }),
       resealSnapshotContract(snapshot, {
-        manifest: { schemaVersion: 'centurion-thread-corpus-v2' },
+        manifest: { schemaVersion: 'connected-mailbox-corpus-v3' },
       }),
       resealSnapshotContract(snapshot, {
         manifest: {
@@ -697,7 +706,7 @@ describe('active transport snapshot contract', () => {
     let mkdirCalls = 0;
     let allocationCalls = 0;
     let writeCalls = 0;
-    const publisher = createPrivateThreadCorpusPublisher({
+    const publisher = createTestPublisher({
       ...localPrivateArtifactFileSystem,
       async mkdir(...args: Parameters<typeof mkdir>) {
         mkdirCalls += 1;
@@ -720,7 +729,7 @@ describe('active transport snapshot contract', () => {
           outDir: path.join(
             temporaryRoot,
             '.private',
-            'centurion-thread-corpus',
+            'connected-mailbox-corpus',
             'invalid-hydration',
           ),
           context: snapshotContext(),
@@ -742,6 +751,70 @@ describe('active transport snapshot contract', () => {
 });
 
 describe('private snapshot publication', () => {
+  it('rejects an unverified generic root before filesystem root creation', async () => {
+    const fixture = sealedArtifactFixture();
+    await withTemporaryRepo(async (temporaryRoot) => {
+      let mkdirCalls = 0;
+      const publisher = createPrivateThreadCorpusPublisher({
+        ...localPrivateArtifactFileSystem,
+        async mkdir(...args: Parameters<typeof mkdir>) {
+          mkdirCalls += 1;
+          return mkdir(...args);
+        },
+      });
+
+      await expect(
+        publisher({
+          repoRoot: temporaryRoot,
+          outDir: path.join(temporaryRoot, '.private', 'connected-mailbox-corpus', 'snapshot'),
+          context: snapshotContext(),
+          formatted: fixture.formatted,
+          hydration: fixture.hydration,
+        }),
+      ).rejects.toThrow(
+        'Private corpus output root must be an ignored direct child of a Git repository',
+      );
+      expect(mkdirCalls).toBe(0);
+    });
+  });
+
+  it('revalidates the injected generic root verifier before private file writes', async () => {
+    const fixture = sealedArtifactFixture();
+    await withTemporaryRepo(async (temporaryRoot) => {
+      let verifierCalls = 0;
+      let writeCalls = 0;
+      const publisher = createPrivateThreadCorpusPublisher(
+        {
+          ...localPrivateArtifactFileSystem,
+          async writeFile(...args: Parameters<typeof writeFile>) {
+            writeCalls += 1;
+            return writeFile(...args);
+          },
+        },
+        {
+          verifyIgnoredPrivateOutputDirectory: () => {
+            verifierCalls += 1;
+            return verifierCalls < 4;
+          },
+        },
+      );
+
+      await expect(
+        publisher({
+          repoRoot: temporaryRoot,
+          outDir: path.join(temporaryRoot, '.private', 'connected-mailbox-corpus', 'snapshot'),
+          context: snapshotContext(),
+          formatted: fixture.formatted,
+          hydration: fixture.hydration,
+        }),
+      ).rejects.toThrow(
+        'Private corpus output root must be an ignored direct child of a Git repository',
+      );
+      expect(verifierCalls).toBe(4);
+      expect(writeCalls).toBe(0);
+    });
+  });
+
   it('publishes sealed artifacts, finalizes manifest last, and keeps restrictive modes', async () => {
     const fixture = sealedArtifactFixture();
     const context = { ...snapshotContext(), snapshotId: 'publish-snapshot' };
@@ -753,7 +826,7 @@ describe('private snapshot publication', () => {
 
     await withTemporaryRepo(async (temporaryRoot) => {
       const events: string[] = [];
-      const publisher = createPrivateThreadCorpusPublisher({
+      const publisher = createTestPublisher({
         ...localPrivateArtifactFileSystem,
         async writeFile(...args: Parameters<typeof writeFile>) {
           events.push(`write:${path.basename(String(args[0]))}`);
@@ -764,7 +837,7 @@ describe('private snapshot publication', () => {
           return rename(...args);
         },
       });
-      const outDir = path.join(temporaryRoot, '.private', 'centurion-thread-corpus', 'snapshot');
+      const outDir = path.join(temporaryRoot, '.private', 'connected-mailbox-corpus', 'snapshot');
       const published = await publisher({
         repoRoot: temporaryRoot,
         outDir,
@@ -812,12 +885,12 @@ describe('private snapshot publication', () => {
   it('rejects outside and nested targets without overwriting an existing stem', async () => {
     const fixture = sealedArtifactFixture();
     await withTemporaryRepo(async (temporaryRoot) => {
-      const privateRoot = path.join(temporaryRoot, '.private', 'centurion-thread-corpus');
+      const privateRoot = path.join(temporaryRoot, '.private', 'connected-mailbox-corpus');
       const existing = path.join(privateRoot, 'existing');
       const sentinel = path.join(existing, 'sentinel.txt');
       await mkdir(existing, { recursive: true });
       await writeFile(sentinel, 'preserve-synthetic-output', 'utf8');
-      const publisher = createPrivateThreadCorpusPublisher();
+      const publisher = createTestPublisher();
 
       await expect(
         publisher({
@@ -856,14 +929,14 @@ describe('private snapshot publication', () => {
     const fixture = sealedArtifactFixture();
     await withTemporaryRepo(async (temporaryRoot) => {
       const privateRoot = path.join(temporaryRoot, '.private');
-      const corpusRoot = path.join(privateRoot, 'centurion-thread-corpus');
+      const corpusRoot = path.join(privateRoot, 'connected-mailbox-corpus');
       const outsideRoot = path.join(temporaryRoot, 'outside');
       await mkdir(privateRoot, { recursive: true });
       await mkdir(outsideRoot, { recursive: true });
       if (!(await tryCreateDirectoryLink(outsideRoot, corpusRoot))) return;
 
       await expect(
-        createPrivateThreadCorpusPublisher()({
+        createTestPublisher()({
           repoRoot: temporaryRoot,
           outDir: path.join(corpusRoot, 'snapshot'),
           context: snapshotContext(),
@@ -878,8 +951,8 @@ describe('private snapshot publication', () => {
   it('removes temporary output after a controlled artifact write failure', async () => {
     const fixture = sealedArtifactFixture();
     await withTemporaryRepo(async (temporaryRoot) => {
-      const privateRoot = path.join(temporaryRoot, '.private', 'centurion-thread-corpus');
-      const publisher = createPrivateThreadCorpusPublisher({
+      const privateRoot = path.join(temporaryRoot, '.private', 'connected-mailbox-corpus');
+      const publisher = createTestPublisher({
         ...localPrivateArtifactFileSystem,
         async writeFile(...args: Parameters<typeof writeFile>) {
           if (String(args[0]).includes('raw-mime')) {
@@ -905,8 +978,8 @@ describe('private snapshot publication', () => {
   it('removes temporary output after a controlled artifact rename failure', async () => {
     const fixture = sealedArtifactFixture();
     await withTemporaryRepo(async (temporaryRoot) => {
-      const privateRoot = path.join(temporaryRoot, '.private', 'centurion-thread-corpus');
-      const publisher = createPrivateThreadCorpusPublisher({
+      const privateRoot = path.join(temporaryRoot, '.private', 'connected-mailbox-corpus');
+      const publisher = createTestPublisher({
         ...localPrivateArtifactFileSystem,
         async rename(...args: Parameters<typeof rename>) {
           if (String(args[1]).endsWith('.eml')) {
@@ -939,9 +1012,9 @@ describe('private snapshot publication', () => {
     });
 
     await withTemporaryRepo(async (temporaryRoot) => {
-      const privateRoot = path.join(temporaryRoot, '.private', 'centurion-thread-corpus');
+      const privateRoot = path.join(temporaryRoot, '.private', 'connected-mailbox-corpus');
       const outDir = path.join(privateRoot, 'same-stem');
-      const publisher = createPrivateThreadCorpusPublisher();
+      const publisher = createTestPublisher();
       const [first, second] = await Promise.all([
         publisher({
           repoRoot: temporaryRoot,
@@ -1289,6 +1362,7 @@ function sourceGuardViolations(sourceText: string): string[] {
       },
     ],
     ['node:path', { defaultName: 'path' }],
+    ['./private-output.js', { named: ['isIgnoredPrivateOutputDirectory'] }],
   ]);
   const violations: string[] = [];
 

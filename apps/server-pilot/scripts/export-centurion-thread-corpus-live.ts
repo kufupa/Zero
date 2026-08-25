@@ -9,16 +9,17 @@ import {
   createThreadCorpusPostgresReader,
   type ThreadCorpusPostgresReaderOptions,
 } from '../src/ops/centurion-thread-corpus-postgres-reader.js';
+import { isIgnoredPrivateOutputDirectory } from '../src/ops/private-output.js';
 import { RealS3Storage, type S3Storage } from '../src/storage/s3.js';
 import { request as httpRequest } from 'node:http';
-import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { realpathSync } from 'node:fs';
 import path from 'node:path';
 
 const APPROVED_INSTANCE_ID = 'i-008f737974a9ba9b3';
-const CORPUS_PATH_SEGMENTS = ['.private', 'centurion-thread-corpus'] as const;
+const PRIVATE_CORPUS_DIRECTORY_NAME = 'connected-mailbox-corpus';
+const CORPUS_PATH_SEGMENTS = ['.private', PRIVATE_CORPUS_DIRECTORY_NAME] as const;
 const EXPORTER_VERSION = 'connected-mailbox-corpus-live-v1';
 const IMDS_HOST = '169.254.169.254';
 const IMDS_MAX_RESPONSE_BYTES = 1024;
@@ -95,7 +96,7 @@ export type LiveCenturionThreadCorpusDependencies = {
   createExporter(
     dependencies: Pick<ThreadCorpusExportDependencies, 'createReader'>,
   ): (request: ThreadCorpusExportRequest) => Promise<ThreadCorpusExportSafeResult>;
-  validateAllocatedDir(request: AllocatedDirectoryRequest): string;
+  validateAllocatedDir(request: AllocatedDirectoryRequest): void;
   writeStdout(value: string): void;
   writeStderr(value: string): void;
 };
@@ -247,16 +248,13 @@ async function defaultAttestImdsV2(): Promise<boolean> {
 }
 
 function defaultIsIgnored(request: IgnoredDestinationRequest): boolean {
-  const result = spawnSync('git', ['check-ignore', '-q', '--no-index', request.relativePath], {
-    cwd: request.repoRoot,
-    shell: false,
-    stdio: 'ignore',
-    windowsHide: true,
-  });
-  return result.error === undefined && result.signal === null && result.status === 0;
+  return (
+    request.relativePath === `${CORPUS_PATH_SEGMENTS.join('/')}/` &&
+    isIgnoredPrivateOutputDirectory(request.repoRoot, PRIVATE_CORPUS_DIRECTORY_NAME)
+  );
 }
 
-function defaultValidateAllocatedDir(request: AllocatedDirectoryRequest): string {
+function defaultValidateAllocatedDir(request: AllocatedDirectoryRequest): void {
   if (
     !isCanonicalAbsolutePath(request.repoRoot) ||
     !isCanonicalAbsolutePath(request.corpusRoot) ||
@@ -290,7 +288,6 @@ function defaultValidateAllocatedDir(request: AllocatedDirectoryRequest): string
   ) {
     return failPreflight();
   }
-  return snapshotDir;
 }
 
 function isNonNegativeSafeInteger(value: unknown): value is number {
@@ -311,7 +308,12 @@ function isTask7CompatibleIsoTimestamp(value: unknown): value is string {
   );
 }
 
-function cloneSafeSummary(value: unknown): ThreadCorpusExportSafeResult['summary'] {
+function cloneSafeSummary(
+  value: unknown,
+): Pick<
+  ThreadCorpusExportSafeResult['summary'],
+  'includedMessageCount' | 'sourceRowCount' | 'threadCount'
+> {
   if (!isPlainRecord(value) || !hasExactKeys(value, SAFE_SUMMARY_KEYS)) {
     return failPreflight();
   }
@@ -324,7 +326,6 @@ function cloneSafeSummary(value: unknown): ThreadCorpusExportSafeResult['summary
   if (!isNonNegativeSafeInteger(sourceRowCount)) return failPreflight();
   if (!isNonNegativeSafeInteger(threadCount)) return failPreflight();
   return {
-    asOf,
     includedMessageCount,
     sourceRowCount,
     threadCount,
@@ -359,7 +360,7 @@ async function prepareExport(
   if (!UUID_PATTERN.test(uuid)) return failPreflight();
   const snapshotId = `live-${uuid}`;
   const outDir = path.posix.join(corpusRoot, snapshotId);
-  const relativePath = path.posix.join(...CORPUS_PATH_SEGMENTS, snapshotId);
+  const relativePath = `${CORPUS_PATH_SEGMENTS.join('/')}/`;
   if (!(await dependencies.isIgnored({ repoRoot, relativePath }))) return failPreflight();
   const environment = dependencies.environment();
   const databaseUrl = nonBlankEnvironmentValue(environment.DATABASE_URL);
@@ -446,20 +447,13 @@ export function createCenturionThreadCorpusLiveExportCommand(
         hydration: { storage: prepared.storage },
       });
       const summary = cloneSafeSummary(result.summary);
-      const snapshotDir = dependencies.validateAllocatedDir({
+      dependencies.validateAllocatedDir({
         repoRoot: prepared.repoRoot,
         corpusRoot: prepared.corpusRoot,
         snapshotId: prepared.snapshotId,
         outDir: result.outDir,
       });
-      dependencies.writeStdout(
-        JSON.stringify({
-          event: 'centurion_thread_corpus_export.completed',
-          snapshotId: prepared.snapshotId,
-          snapshotDir,
-          summary,
-        }) + '\n',
-      );
+      dependencies.writeStdout(`${JSON.stringify(summary)}\n`);
       return 0;
     } catch {
       return writeFailure(dependencies, 'export_failed');

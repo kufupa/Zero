@@ -1,6 +1,7 @@
 import {
   createThreadCorpusSnapshotLoader,
   publishPrivateThreadCorpusSnapshot,
+  validatePrivateThreadCorpusOutputDestination,
   type PrivateThreadCorpusPublishArgs,
   type PrivateThreadCorpusSnapshotContext,
   type ThreadCorpusSnapshotLoadResult,
@@ -26,6 +27,8 @@ export type ThreadCorpusExportRequest = {
 
 export type ThreadCorpusExportDependencies = {
   createReader(): ClosableThreadCorpusReader;
+  /** Test seam. Production defaults to Git-root and ignored-directory validation. */
+  validateOutputDestination?(repoRoot: string, outDir: string): string;
   load?(reader: ThreadCorpusSnapshotReader): Promise<ThreadCorpusSnapshotLoadResult>;
   hydrate?: typeof hydrateThreadCorpusArtifacts;
   publish?: (args: PrivateThreadCorpusPublishArgs) => Promise<{ outDir: string }>;
@@ -116,7 +119,11 @@ function cloneSafeSummary(
 export function createCenturionThreadCorpusExporter(
   dependencies: ThreadCorpusExportDependencies,
 ): (request: ThreadCorpusExportRequest) => Promise<ThreadCorpusExportSafeResult> {
+  const validateOutputDestination =
+    dependencies.validateOutputDestination ?? validatePrivateThreadCorpusOutputDestination;
+
   return async (request) => {
+    validateOutputDestination(request.repoRoot, request.outDir);
     const reader = dependencies.createReader();
     let result: ThreadCorpusSnapshotLoadResult;
 

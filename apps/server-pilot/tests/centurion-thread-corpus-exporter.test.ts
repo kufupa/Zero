@@ -18,7 +18,7 @@ const ACTIVE_TRANSPORT_IDS = ['transport-a', 'transport-z'];
 function makeRequest(): ThreadCorpusExportRequest {
   return {
     repoRoot: '/synthetic/repo',
-    outDir: '.private/centurion-thread-corpus/snapshot',
+    outDir: '.private/connected-mailbox-corpus/snapshot',
     snapshotId: 'connected-snapshot',
     exporterVersion: 'connected-mailbox-corpus-v1',
     hydration: { storage: {} } as ThreadCorpusExportRequest['hydration'],
@@ -112,7 +112,34 @@ function makeReader(onClose: () => void = () => undefined): ClosableThreadCorpus
 }
 
 describe('connected mailbox corpus exporter', () => {
+  it('rejects an unsafe output root before creating a reader or loading bodies', async () => {
+    let readerCreations = 0;
+    let loads = 0;
+    const exporter = createCenturionThreadCorpusExporter({
+      createReader: () => {
+        readerCreations += 1;
+        return makeReader();
+      },
+      load: async () => {
+        loads += 1;
+        return makeLoadedResult();
+      },
+      hydrate: async () => makeHydration(),
+      publish: async () => ({ outDir: '/private/unreachable' }),
+    });
+
+    await expect(
+      exporter({
+        ...makeRequest(),
+        outDir: '.private/centurion-thread-corpus/legacy-snapshot',
+      }),
+    ).rejects.toThrow();
+    expect(readerCreations).toBe(0);
+    expect(loads).toBe(0);
+  });
+
   it('derives sealed active-transport context from loaded scope only', async () => {
+    let validatedDestination: { repoRoot: string; outDir: string } | undefined;
     let publication:
       | {
           context: unknown;
@@ -120,6 +147,10 @@ describe('connected mailbox corpus exporter', () => {
       | undefined;
     const exporter = createCenturionThreadCorpusExporter({
       createReader: () => makeReader(),
+      validateOutputDestination: (repoRoot, outDir) => {
+        validatedDestination = { repoRoot, outDir };
+        return outDir;
+      },
       load: async () => makeLoadedResult(),
       hydrate: async () => makeHydration(),
       publish: async (args) => {
@@ -130,6 +161,10 @@ describe('connected mailbox corpus exporter', () => {
 
     const result = await exporter(makeRequest());
 
+    expect(validatedDestination).toEqual({
+      repoRoot: '/synthetic/repo',
+      outDir: '.private/connected-mailbox-corpus/snapshot',
+    });
     expect(publication?.context).toEqual({
       snapshotId: 'connected-snapshot',
       scope: {
@@ -159,6 +194,7 @@ describe('connected mailbox corpus exporter', () => {
     let published = 0;
     const exporter = createCenturionThreadCorpusExporter({
       createReader: () => makeReader(),
+      validateOutputDestination: (_repoRoot, outDir) => outDir,
       load: async () => makeLoadedResult({ transportIds: [] }),
       hydrate: async () => {
         hydrated += 1;

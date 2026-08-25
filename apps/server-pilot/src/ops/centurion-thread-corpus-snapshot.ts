@@ -1,4 +1,5 @@
 import { chmod, lstat, mkdir, mkdtemp, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { isIgnoredPrivateOutputDirectory } from './private-output.js';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 
@@ -171,7 +172,14 @@ export type FormattedLogicalMessages = {
   threads: LogicalThread[];
 };
 
-export const CENTURION_THREAD_CORPUS_SCHEMA_VERSION = 'centurion-thread-corpus-v3';
+export const CONNECTED_MAILBOX_CORPUS_SCHEMA_VERSION = 'connected-mailbox-corpus-v4';
+export const CONNECTED_MAILBOX_CORPUS_PRIVATE_DIRECTORY_NAME = 'connected-mailbox-corpus';
+
+export type PrivateCorpusRootVerifier = (repoRoot: string, privateDirectoryName: string) => boolean;
+
+export type PrivateThreadCorpusPublisherOptions = {
+  verifyIgnoredPrivateOutputDirectory?: PrivateCorpusRootVerifier;
+};
 
 export type SnapshotScope = {
   scopeKeys: ThreadCorpusScopeKey[];
@@ -293,7 +301,7 @@ export type SnapshotMessage = {
 
 export type ThreadSnapshotRecord = {
   recordType: 'thread';
-  schemaVersion: typeof CENTURION_THREAD_CORPUS_SCHEMA_VERSION;
+  schemaVersion: typeof CONNECTED_MAILBOX_CORPUS_SCHEMA_VERSION;
   snapshotId: string;
   threadId: string | null;
   threadingStatus: 'resolved' | 'unresolved';
@@ -306,7 +314,7 @@ export type SnapshotRecord = ThreadSnapshotRecord;
 
 export type SnapshotMetadataRecord = {
   recordType: 'metadata';
-  schemaVersion: typeof CENTURION_THREAD_CORPUS_SCHEMA_VERSION;
+  schemaVersion: typeof CONNECTED_MAILBOX_CORPUS_SCHEMA_VERSION;
   snapshotId: string;
   orderedRecordSha256: string;
   recordCount: number;
@@ -328,7 +336,7 @@ export type SnapshotManifestCounts = {
 };
 
 export type SnapshotManifestV2 = {
-  schemaVersion: typeof CENTURION_THREAD_CORPUS_SCHEMA_VERSION;
+  schemaVersion: typeof CONNECTED_MAILBOX_CORPUS_SCHEMA_VERSION;
   snapshotId: string;
   scope: SnapshotScope;
   window: {
@@ -415,7 +423,7 @@ function isPathWithin(candidate: string, parent: string): boolean {
 }
 
 function privateCorpusRoot(repoRoot: string): string {
-  return path.resolve(repoRoot, '.private', 'centurion-thread-corpus');
+  return path.resolve(repoRoot, '.private', CONNECTED_MAILBOX_CORPUS_PRIVATE_DIRECTORY_NAME);
 }
 
 function resolvePrivateCorpusOutDir(repoRoot: string, outDir: string): string {
@@ -424,7 +432,30 @@ function resolvePrivateCorpusOutDir(repoRoot: string, outDir: string): string {
   const resolvedOutDir = path.resolve(resolvedRepoRoot, outDir);
   if (!isPathWithin(resolvedOutDir, root) || path.dirname(resolvedOutDir) !== root) {
     throw new Error(
-      '--out-dir must name a direct child directory inside .private/centurion-thread-corpus',
+      '--out-dir must name a direct child directory inside .private/connected-mailbox-corpus',
+    );
+  }
+  return resolvedOutDir;
+}
+
+/**
+ * Validates a generic ignored direct-child destination without touching its filesystem path.
+ */
+export function validatePrivateThreadCorpusOutputDestination(
+  repoRoot: string,
+  outDir: string,
+  verifyIgnoredPrivateOutputDirectory: PrivateCorpusRootVerifier = isIgnoredPrivateOutputDirectory,
+): string {
+  const resolvedRepoRoot = path.resolve(repoRoot);
+  const resolvedOutDir = resolvePrivateCorpusOutDir(resolvedRepoRoot, outDir);
+  if (
+    !verifyIgnoredPrivateOutputDirectory(
+      resolvedRepoRoot,
+      CONNECTED_MAILBOX_CORPUS_PRIVATE_DIRECTORY_NAME,
+    )
+  ) {
+    throw new Error(
+      'Private corpus output root must be an ignored direct child of a Git repository',
     );
   }
   return resolvedOutDir;
@@ -1061,7 +1092,7 @@ function assertNoLegacyQuarantineFields(formatted: FormattedLogicalMessages): vo
 }
 
 function artifactId(snapshotId: string, kind: ThreadCorpusArtifactKind, ownerId: string): string {
-  return sha256(`${CENTURION_THREAD_CORPUS_SCHEMA_VERSION}\0${snapshotId}\0${kind}\0${ownerId}`);
+  return sha256(`${CONNECTED_MAILBOX_CORPUS_SCHEMA_VERSION}\0${snapshotId}\0${kind}\0${ownerId}`);
 }
 
 function artifactReference(
@@ -1345,7 +1376,7 @@ function toThreadSnapshotRecord(
     .sort(compareSnapshotMessages);
   return {
     recordType: 'thread',
-    schemaVersion: CENTURION_THREAD_CORPUS_SCHEMA_VERSION,
+    schemaVersion: CONNECTED_MAILBOX_CORPUS_SCHEMA_VERSION,
     snapshotId: context.snapshotId,
     threadId: thread.threadId,
     threadingStatus: thread.threadId === null ? 'unresolved' : 'resolved',
@@ -1935,7 +1966,7 @@ function isThreadSnapshotRecord(value: unknown): value is ThreadSnapshotRecord {
       'messages',
     ]) &&
     value.recordType === 'thread' &&
-    value.schemaVersion === CENTURION_THREAD_CORPUS_SCHEMA_VERSION &&
+    value.schemaVersion === CONNECTED_MAILBOX_CORPUS_SCHEMA_VERSION &&
     isOpaqueIdentifier(value.snapshotId) &&
     isStringOrNull(value.threadId) &&
     (value.threadingStatus === 'resolved' || value.threadingStatus === 'unresolved') &&
@@ -1958,7 +1989,7 @@ function isSnapshotMetadataRecord(value: unknown): value is SnapshotMetadataReco
       'recordCount',
     ]) &&
     value.recordType === 'metadata' &&
-    value.schemaVersion === CENTURION_THREAD_CORPUS_SCHEMA_VERSION &&
+    value.schemaVersion === CONNECTED_MAILBOX_CORPUS_SCHEMA_VERSION &&
     isOpaqueIdentifier(value.snapshotId) &&
     typeof value.orderedRecordSha256 === 'string' &&
     /^[a-f0-9]{64}$/.test(value.orderedRecordSha256) &&
@@ -2027,7 +2058,7 @@ function isSnapshotManifest(value: unknown): value is SnapshotManifestV2 {
       'counts',
       'sourceObject',
     ]) &&
-    value.schemaVersion === CENTURION_THREAD_CORPUS_SCHEMA_VERSION &&
+    value.schemaVersion === CONNECTED_MAILBOX_CORPUS_SCHEMA_VERSION &&
     isOpaqueIdentifier(value.snapshotId) &&
     isSnapshotScope(value.scope) &&
     isRecord(value.window) &&
@@ -2102,7 +2133,7 @@ function assertDerivedSnapshotTopology(
         return {
           recordType: 'thread' as const,
           schemaVersion:
-            CENTURION_THREAD_CORPUS_SCHEMA_VERSION as typeof CENTURION_THREAD_CORPUS_SCHEMA_VERSION,
+            CONNECTED_MAILBOX_CORPUS_SCHEMA_VERSION as typeof CONNECTED_MAILBOX_CORPUS_SCHEMA_VERSION,
           snapshotId: context.snapshotId,
           threadId: thread.threadId,
           threadingStatus:
@@ -2463,7 +2494,7 @@ function validatePrivateThreadCorpusSnapshotUnsafe(snapshot: unknown): void {
   const orderedRecordJsonl = serializeJsonLines(records);
   if (
     orderedRecordJsonl !== suppliedOrderedRecordJsonl ||
-    metadata.schemaVersion !== CENTURION_THREAD_CORPUS_SCHEMA_VERSION ||
+    metadata.schemaVersion !== CONNECTED_MAILBOX_CORPUS_SCHEMA_VERSION ||
     metadata.snapshotId !== context.snapshotId ||
     metadata.orderedRecordSha256 !== sha256(orderedRecordJsonl)
   ) {
@@ -2474,7 +2505,7 @@ function validatePrivateThreadCorpusSnapshotUnsafe(snapshot: unknown): void {
     metadata.recordCount !== records.length ||
     records.some(
       (record) =>
-        record.schemaVersion !== CENTURION_THREAD_CORPUS_SCHEMA_VERSION ||
+        record.schemaVersion !== CONNECTED_MAILBOX_CORPUS_SCHEMA_VERSION ||
         record.snapshotId !== context.snapshotId,
     )
   ) {
@@ -2513,7 +2544,7 @@ function validatePrivateThreadCorpusSnapshotUnsafe(snapshot: unknown): void {
 
   const manifest = manifestValue;
   if (
-    manifest.schemaVersion !== CENTURION_THREAD_CORPUS_SCHEMA_VERSION ||
+    manifest.schemaVersion !== CONNECTED_MAILBOX_CORPUS_SCHEMA_VERSION ||
     manifest.snapshotId !== context.snapshotId ||
     JSON.stringify(manifest.scope) !== JSON.stringify(context.scope) ||
     manifest.window.startInclusive !== null ||
@@ -2560,14 +2591,14 @@ export function buildPrivateThreadCorpusSnapshot(
     const orderedRecordSha256 = sha256(orderedRecordJsonl);
     const metadata: SnapshotMetadataRecord = {
       recordType: 'metadata',
-      schemaVersion: CENTURION_THREAD_CORPUS_SCHEMA_VERSION,
+      schemaVersion: CONNECTED_MAILBOX_CORPUS_SCHEMA_VERSION,
       snapshotId: context.snapshotId,
       orderedRecordSha256,
       recordCount: threadRecords.length,
     };
     const corpusJsonl = `${JSON.stringify(metadata)}\n${orderedRecordJsonl}`;
     const manifest: PrivateThreadCorpusManifest = {
-      schemaVersion: CENTURION_THREAD_CORPUS_SCHEMA_VERSION,
+      schemaVersion: CONNECTED_MAILBOX_CORPUS_SCHEMA_VERSION,
       snapshotId: context.snapshotId,
       scope: cloneSnapshotContext(context).scope,
       window: {
@@ -2646,11 +2677,26 @@ type TrustedPrivateCorpusRoot = {
   corpusRoot: string;
 };
 
+function assertIgnoredPrivateCorpusRoot(
+  repoRoot: string,
+  verifyIgnoredPrivateOutputDirectory: PrivateCorpusRootVerifier,
+): void {
+  if (
+    !verifyIgnoredPrivateOutputDirectory(repoRoot, CONNECTED_MAILBOX_CORPUS_PRIVATE_DIRECTORY_NAME)
+  ) {
+    throw new Error(
+      'Private corpus output root must be an ignored direct child of a Git repository',
+    );
+  }
+}
+
 async function canonicalTrustedPrivateCorpusRoot(
   fileSystem: PrivateArtifactFileSystem,
   repoRoot: string,
+  verifyIgnoredPrivateOutputDirectory: PrivateCorpusRootVerifier,
 ): Promise<TrustedPrivateCorpusRoot> {
   const requestedRepoRoot = path.resolve(repoRoot);
+  assertIgnoredPrivateCorpusRoot(requestedRepoRoot, verifyIgnoredPrivateOutputDirectory);
   const canonicalRepoRoot = await fileSystem.realpath(requestedRepoRoot);
   if (canonicalRepoRoot !== requestedRepoRoot) {
     throw new Error('Trusted repo root must not be a symlink or junction');
@@ -2659,7 +2705,7 @@ async function canonicalTrustedPrivateCorpusRoot(
 
   const privateRoot = path.join(canonicalRepoRoot, '.private');
   await ensureTrustedDirectory(fileSystem, privateRoot, 'private root');
-  const corpusRoot = path.join(privateRoot, 'centurion-thread-corpus');
+  const corpusRoot = path.join(privateRoot, CONNECTED_MAILBOX_CORPUS_PRIVATE_DIRECTORY_NAME);
   await ensureTrustedDirectory(fileSystem, corpusRoot, 'private corpus root');
   return { repoRoot: canonicalRepoRoot, corpusRoot };
 }
@@ -2694,8 +2740,13 @@ async function revalidateTrustedRoot(
   repoRoot: string,
   expectedRoot: TrustedPrivateCorpusRoot,
   requestedOutDir: string,
+  verifyIgnoredPrivateOutputDirectory: PrivateCorpusRootVerifier,
 ): Promise<void> {
-  const revalidatedRoot = await canonicalTrustedPrivateCorpusRoot(fileSystem, repoRoot);
+  const revalidatedRoot = await canonicalTrustedPrivateCorpusRoot(
+    fileSystem,
+    repoRoot,
+    verifyIgnoredPrivateOutputDirectory,
+  );
   if (
     revalidatedRoot.repoRoot !== expectedRoot.repoRoot ||
     revalidatedRoot.corpusRoot !== expectedRoot.corpusRoot ||
@@ -2735,6 +2786,7 @@ async function writePrivateTextFile(
   content: string,
   revalidate: () => Promise<void>,
 ): Promise<void> {
+  await revalidate();
   await fileSystem.writeFile(temporary, content, { encoding: 'utf8', mode: 0o600 });
   await setRestrictivePermissions(fileSystem, temporary, 0o600);
   await revalidate();
@@ -2748,6 +2800,7 @@ async function writePrivateArtifactFile(
   content: Uint8Array,
   revalidate: () => Promise<void>,
 ): Promise<void> {
+  await revalidate();
   await fileSystem.writeFile(temporary, content, { mode: 0o600 });
   await setRestrictivePermissions(fileSystem, temporary, 0o600);
   await revalidate();
@@ -2760,7 +2813,11 @@ async function writePrivateArtifactFile(
  */
 export function createPrivateThreadCorpusPublisher(
   fileSystem: PrivateArtifactFileSystem = LOCAL_PRIVATE_ARTIFACT_FILE_SYSTEM,
+  options: PrivateThreadCorpusPublisherOptions = {},
 ): (args: PrivateThreadCorpusPublishArgs) => Promise<{ outDir: string }> {
+  const verifyIgnoredPrivateOutputDirectory =
+    options.verifyIgnoredPrivateOutputDirectory ?? isIgnoredPrivateOutputDirectory;
+
   return async (args) => {
     const snapshot = buildPrivateThreadCorpusSnapshot({
       context: args.context,
@@ -2768,19 +2825,36 @@ export function createPrivateThreadCorpusPublisher(
       hydration: args.hydration,
     });
     validatePrivateThreadCorpusSnapshot(snapshot);
-    const trustedRoot = await canonicalTrustedPrivateCorpusRoot(fileSystem, args.repoRoot);
+    const trustedRoot = await canonicalTrustedPrivateCorpusRoot(
+      fileSystem,
+      args.repoRoot,
+      verifyIgnoredPrivateOutputDirectory,
+    );
     const requestedOutDir = directSnapshotOutDir(trustedRoot, args.outDir);
     const snapshotStem = path.basename(requestedOutDir);
     let allocatedOutDir: string | undefined;
 
     try {
-      await revalidateTrustedRoot(fileSystem, args.repoRoot, trustedRoot, args.outDir);
+      await revalidateTrustedRoot(
+        fileSystem,
+        args.repoRoot,
+        trustedRoot,
+        args.outDir,
+        verifyIgnoredPrivateOutputDirectory,
+      );
       allocatedOutDir = await fileSystem.mkdtemp(
         path.join(trustedRoot.corpusRoot, `${snapshotStem}-`),
       );
       if (path.dirname(allocatedOutDir) !== trustedRoot.corpusRoot) {
         throw new Error('Allocated snapshot directory escaped trusted private corpus root');
       }
+      await revalidateTrustedRoot(
+        fileSystem,
+        args.repoRoot,
+        trustedRoot,
+        args.outDir,
+        verifyIgnoredPrivateOutputDirectory,
+      );
       await setRestrictivePermissions(fileSystem, allocatedOutDir, 0o700);
 
       const corpusTemporaryPath = path.join(allocatedOutDir, '.corpus.jsonl.tmp');
@@ -2788,7 +2862,13 @@ export function createPrivateThreadCorpusPublisher(
       const manifestTemporaryPath = path.join(allocatedOutDir, '.manifest.json.tmp');
       const manifestPath = path.join(allocatedOutDir, 'manifest.json');
       const revalidate = () =>
-        revalidateTrustedRoot(fileSystem, args.repoRoot, trustedRoot, args.outDir);
+        revalidateTrustedRoot(
+          fileSystem,
+          args.repoRoot,
+          trustedRoot,
+          args.outDir,
+          verifyIgnoredPrivateOutputDirectory,
+        );
       await writePrivateTextFile(
         fileSystem,
         corpusTemporaryPath,
@@ -2801,6 +2881,7 @@ export function createPrivateThreadCorpusPublisher(
       for (const artifact of snapshot.artifactFiles) {
         const paths = privateArtifactPath(allocatedOutDir, artifact);
         if (!createdArtifactDirectories.has(paths.directory)) {
+          await revalidate();
           await fileSystem.mkdir(paths.directory, { recursive: false, mode: 0o700 });
           await setRestrictivePermissions(fileSystem, paths.directory, 0o700);
           createdArtifactDirectories.add(paths.directory);
@@ -2821,7 +2902,13 @@ export function createPrivateThreadCorpusPublisher(
         snapshot.manifestJson,
         revalidate,
       );
-      await revalidateTrustedRoot(fileSystem, args.repoRoot, trustedRoot, args.outDir);
+      await revalidateTrustedRoot(
+        fileSystem,
+        args.repoRoot,
+        trustedRoot,
+        args.outDir,
+        verifyIgnoredPrivateOutputDirectory,
+      );
       try {
         await setRestrictivePermissions(fileSystem, allocatedOutDir, 0o500);
       } catch {

@@ -18,9 +18,9 @@ const SCRIPT_PATH =
   '/synthetic/zero/apps/server-pilot/scripts/export-centurion-thread-corpus-live.ts';
 const SNAPSHOT_ID = 'live-123e4567-e89b-12d3-a456-426614174000';
 const ALLOCATED_DIR =
-  '/synthetic/zero/.private/centurion-thread-corpus/live-123e4567-e89b-12d3-a456-426614174000-allocated';
+  '/synthetic/zero/.private/connected-mailbox-corpus/live-123e4567-e89b-12d3-a456-426614174000-allocated';
 const SNAPSHOT_DIR =
-  '.private/centurion-thread-corpus/live-123e4567-e89b-12d3-a456-426614174000-allocated';
+  '.private/connected-mailbox-corpus/live-123e4567-e89b-12d3-a456-426614174000-allocated';
 const PRIVATE_DATABASE_MARKER = 'PRIVATE_DATABASE_MARKER';
 const PRIVATE_DOWNSTREAM_MARKER = 'PRIVATE_DOWNSTREAM_MARKER';
 
@@ -84,7 +84,7 @@ function makeHarness(): Harness {
       calls.push('ignored');
       expect(input).toEqual({
         repoRoot: REPO_ROOT,
-        relativePath: `.private/centurion-thread-corpus/${SNAPSHOT_ID}`,
+        relativePath: '.private/connected-mailbox-corpus/',
       });
       return true;
     },
@@ -125,7 +125,6 @@ function makeHarness(): Harness {
     },
     validateAllocatedDir: () => {
       calls.push('validate');
-      return SNAPSHOT_DIR;
     },
     writeStdout: (value: string) => {
       calls.push('stdout');
@@ -163,6 +162,40 @@ async function run(harness: Harness): Promise<number> {
 }
 
 describe('connected mailbox live corpus export command', () => {
+  it('checks the generic ignored output root before source setup', async () => {
+    const harness = makeHarness();
+    let ignoredRequest: { repoRoot: string; relativePath: string } | undefined;
+    harness.deps.isIgnored = async (request) => {
+      ignoredRequest = request;
+      return false;
+    };
+
+    expect(await run(harness)).toBe(1);
+    expect(ignoredRequest).toEqual({
+      repoRoot: REPO_ROOT,
+      relativePath: '.private/connected-mailbox-corpus/',
+    });
+    expect(harness.calls).toEqual(['args', 'platform', 'scriptPath', 'attest', 'uuid', 'stderr']);
+  });
+
+  it('writes only integer counts on successful stdout', async () => {
+    const harness = makeHarness();
+    harness.deps.isIgnored = async () => true;
+
+    expect(await run(harness)).toBe(0);
+    expect(harness.stdout).toEqual([
+      `${JSON.stringify({
+        includedMessageCount: SAFE_SUMMARY.includedMessageCount,
+        sourceRowCount: SAFE_SUMMARY.sourceRowCount,
+        threadCount: SAFE_SUMMARY.threadCount,
+      })}\n`,
+    ]);
+    expect(harness.stdout.join('')).not.toContain(SNAPSHOT_ID);
+    expect(harness.stdout.join('')).not.toContain(SAFE_SUMMARY.asOf);
+    expect(harness.stdout.join('')).not.toContain(ALLOCATED_DIR);
+    expect(harness.stdout.join('')).not.toContain(SNAPSHOT_DIR);
+  });
+
   it('runs without protected source configuration and passes no source map to reader or exporter', async () => {
     const harness = makeHarness();
 
@@ -180,13 +213,17 @@ describe('connected mailbox live corpus export command', () => {
     expect(harness.stderr).toEqual([]);
     expect(harness.stdout).toEqual([
       `${JSON.stringify({
-        event: 'centurion_thread_corpus_export.completed',
-        snapshotId: SNAPSHOT_ID,
-        snapshotDir: SNAPSHOT_DIR,
-        summary: SAFE_SUMMARY,
+        includedMessageCount: SAFE_SUMMARY.includedMessageCount,
+        sourceRowCount: SAFE_SUMMARY.sourceRowCount,
+        threadCount: SAFE_SUMMARY.threadCount,
       })}\n`,
     ]);
-    expect(`${harness.stdout}${harness.stderr}`).not.toContain(PRIVATE_DATABASE_MARKER);
+    const output = `${harness.stdout}${harness.stderr}`;
+    expect(output).not.toContain(PRIVATE_DATABASE_MARKER);
+    expect(output).not.toContain(SNAPSHOT_ID);
+    expect(output).not.toContain(SNAPSHOT_DIR);
+    expect(output).not.toContain(ALLOCATED_DIR);
+    expect(output).not.toContain(SAFE_SUMMARY.asOf);
   });
 
   it('contains private downstream errors behind fixed count-only failure output', async () => {
