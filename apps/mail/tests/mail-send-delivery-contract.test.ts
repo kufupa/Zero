@@ -14,6 +14,13 @@ describe('mail send delivery result contract', () => {
     expect(undoSendSource).toContain("toast.warning('Email partially delivered'");
   });
 
+  it('labels ordinary queued sends as pending delivery, not completed delivery', () => {
+    expect(undoSendSource).toContain('isQueuedSendResult(result)');
+    expect(undoSendSource).toContain("toast.success('Email queued'");
+    expect(undoSendSource).toContain("description: 'Delivery pending.'");
+    expect(undoSendSource).not.toContain("toast.success('Email sent'");
+  });
+
   it('keeps non-compose send consumers from claiming full delivery on partial results', () => {
     expect(unsubscribeSource).toContain('isPartialSendResult(result)');
     expect(voiceToolSource).toContain('isPartialSendResult(result)');

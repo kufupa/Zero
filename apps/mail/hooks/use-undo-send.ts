@@ -1,7 +1,13 @@
 import { useMutation } from '@tanstack/react-query';
 import { toast } from 'sonner';
 
-import { isPartialSendResult, isSendResult, isUncertainSendResult } from '@/lib/email-utils';
+import {
+  isPartialSendResult,
+  isQueuedSendResult,
+  isScheduledSendResult,
+  isSendResult,
+  isUncertainSendResult,
+} from '@/lib/email-utils';
 import { demoUnsendEmail } from '@/lib/demo/local-actions';
 import type { UserSettings } from '@zero/server/schemas';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
@@ -90,7 +96,7 @@ export const useUndoSend = () => {
       const wasUserScheduled = Boolean(emailData?.scheduleAt);
 
       if (timeRemaining > 5_000) {
-        if (wasUserScheduled) {
+        if (isScheduledSendResult(result) || wasUserScheduled) {
           toast.success('Email scheduled', {
             action: {
               label: 'Undo',
@@ -108,8 +114,9 @@ export const useUndoSend = () => {
             duration: 15_000,
             closeButton: true,
           });
-        } else {
-          toast.success('Email sent', {
+        } else if (isQueuedSendResult(result)) {
+          toast.success('Email queued', {
+            description: 'Delivery pending.',
             action: {
               label: 'Undo',
               onClick: async () => {
