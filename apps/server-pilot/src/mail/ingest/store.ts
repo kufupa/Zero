@@ -29,21 +29,22 @@
  * production the transaction commits for real.
  */
 import {
-  emitRocketseedReturnedCopyTrustRejection,
-  evaluateRocketseedReturnedCopyTrust,
-  evaluateRocketseedReturnedCopyPrecheck,
-  normalizeRocketseedMailbox,
-} from './rocketseed-returned-copy.js';
-import {
   attachment,
   mailIngestCandidateAttachmentCleanup,
   mailIngestQuarantine,
+  mailIngestUidlClaim,
   mailLabel,
   mailboxTransport,
   message,
   mailThread,
   outboundSendQueue,
 } from '../../db/schema/mail.js';
+import {
+  emitRocketseedReturnedCopyTrustRejection,
+  evaluateRocketseedReturnedCopyTrust,
+  evaluateRocketseedReturnedCopyPrecheck,
+  normalizeRocketseedMailbox,
+} from './rocketseed-returned-copy.js';
 import {
   DEFAULT_AI_MODEL_ID,
   DEFAULT_TRIAGE_PROMPT_VERSION,
@@ -54,8 +55,8 @@ import { rawMimeKey, getS3Storage, type S3Storage } from '../../storage/s3.js';
 import { parsePersistedDeliveryOutcome } from '../send/outbound-queue.js';
 import { refreshThreadSearchVector } from '../search/search-vector.js';
 import { sanitizeHtmlBodyForStorage } from '../sanitize-email-html.js';
+import { and, asc, eq, gt, inArray, lte, or, sql } from 'drizzle-orm';
 import { getSenderPreference } from '../sender-preference.js';
-import { and, asc, eq, inArray, lte, sql } from 'drizzle-orm';
 import { ingestRequireOwnerHeader } from '../../env.js';
 import { markThreadRead } from '../thread-read.js';
 import type { DB } from '../../db/client.js';
@@ -67,6 +68,7 @@ export const CANDIDATE_ATTACHMENT_CLEANUP_SWEEP_LIMIT = 500;
 const CANDIDATE_ATTACHMENT_CLEANUP_RETRY_BASE_MS = 1_000;
 const CANDIDATE_ATTACHMENT_CLEANUP_RETRY_MAX_MS = 15 * 60 * 1_000;
 const CANDIDATE_ATTACHMENT_CLEANUP_INSERT_CHUNK_SIZE = 250;
+export const INGEST_UIDL_CLAIM_LEASE_MS = 10 * 60 * 1_000;
 
 type RoutedTransport = {
   id: string;
@@ -171,6 +173,11 @@ export interface PersistOptions {
    * flooding Bedrock when bulk-recovering historical S3 MIME).
    */
   skipAiEnqueue?: boolean;
+  /**
+   * Live POP3 worker's current UIDL lease. It may clean its own candidate
+   * uploads while unrelated sweepers must defer until the lease is released.
+   */
+  activeIngestUidlClaimToken?: string;
 }
 
 /**
@@ -215,6 +222,7 @@ export async function persistInboundMessage(
       attachments: parsed.attachments,
       meta,
       canonicalMessageId: existingMessage.id,
+      activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
     });
     return {
       kind: 'duplicate',
@@ -234,6 +242,7 @@ export async function persistInboundMessage(
       storage,
       attachments: parsed.attachments,
       meta,
+      activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
     });
     return {
       kind: 'quarantined',
@@ -260,6 +269,7 @@ export async function persistInboundMessage(
         meta,
         rawMimeS3Key,
         reason: 'missing_owner_header',
+        activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
       });
     }
     // Inbox-first: direct-To without X-Zero-Mailbox still stores + enqueues
@@ -274,6 +284,7 @@ export async function persistInboundMessage(
         meta,
         rawMimeS3Key,
         reason: 'unknown_transport',
+        activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
       });
     }
   }
@@ -593,6 +604,7 @@ export async function persistInboundMessage(
       attachments: parsed.attachments,
       meta,
       canonicalMessageId: duplicateCanonicalMessageId,
+      activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
     });
     return withCandidateAttachmentCleanupFailures(
       duplicate,
@@ -609,6 +621,7 @@ export async function persistInboundMessage(
       storage,
       attachments: parsed.attachments,
       meta,
+      activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
     });
     return {
       ...deferredResult,
@@ -623,6 +636,7 @@ export async function persistInboundMessage(
       meta,
       rawMimeS3Key,
       reason: 'malformed_delivery_outcome',
+      activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
     });
   }
   if (reconciliation) return reconciliation;
@@ -775,14 +789,75 @@ export async function hasPendingCandidateAttachmentCleanup(
   return rows.length > 0;
 }
 
+export async function claimIngestUidl(
+  db: DB,
+  meta: Pick<IngestMeta, 'ingestMailboxId' | 'pop3Uidl'>,
+): Promise<string | null> {
+  const claimToken = randomUUID();
+  const expiresAt = new Date(Date.now() + INGEST_UIDL_CLAIM_LEASE_MS);
+  const claimed = await db
+    .insert(mailIngestUidlClaim)
+    .values({
+      ingestMailboxId: meta.ingestMailboxId,
+      pop3Uidl: meta.pop3Uidl,
+      claimToken,
+      expiresAt,
+    })
+    .onConflictDoUpdate({
+      target: [mailIngestUidlClaim.ingestMailboxId, mailIngestUidlClaim.pop3Uidl],
+      set: { claimToken, expiresAt },
+      setWhere: lte(mailIngestUidlClaim.expiresAt, new Date()),
+    })
+    .returning({ claimToken: mailIngestUidlClaim.claimToken });
+  return claimed[0]?.claimToken === claimToken ? claimToken : null;
+}
+
+export async function renewIngestUidlClaim(
+  db: DB,
+  meta: Pick<IngestMeta, 'ingestMailboxId' | 'pop3Uidl'>,
+  claimToken: string,
+): Promise<boolean> {
+  const renewed = await db
+    .update(mailIngestUidlClaim)
+    .set({ expiresAt: new Date(Date.now() + INGEST_UIDL_CLAIM_LEASE_MS) })
+    .where(
+      and(
+        eq(mailIngestUidlClaim.ingestMailboxId, meta.ingestMailboxId),
+        eq(mailIngestUidlClaim.pop3Uidl, meta.pop3Uidl),
+        eq(mailIngestUidlClaim.claimToken, claimToken),
+      ),
+    )
+    .returning({ claimToken: mailIngestUidlClaim.claimToken });
+  return renewed.length === 1;
+}
+
+export async function releaseIngestUidlClaim(
+  db: DB,
+  meta: Pick<IngestMeta, 'ingestMailboxId' | 'pop3Uidl'>,
+  claimToken: string,
+): Promise<void> {
+  await db
+    .delete(mailIngestUidlClaim)
+    .where(
+      and(
+        eq(mailIngestUidlClaim.ingestMailboxId, meta.ingestMailboxId),
+        eq(mailIngestUidlClaim.pop3Uidl, meta.pop3Uidl),
+        eq(mailIngestUidlClaim.claimToken, claimToken),
+      ),
+    );
+}
+
 type CandidateAttachmentCleanupTask = {
   s3Key: string;
   candidateMessageId: string;
+  ingestMailboxId: string;
+  pop3Uidl: string;
   attempts: number;
 };
 
 type CandidateAttachmentCleanupBatchResult = {
   claimedTaskCount: number;
+  selectedTaskCount: number;
   deletedTaskCount: number;
   failureCount: number;
   canContinue: boolean;
@@ -795,6 +870,12 @@ function nextCandidateAttachmentCleanupAttempt(attempts: number): Date {
     CANDIDATE_ATTACHMENT_CLEANUP_RETRY_MAX_MS,
   );
   return new Date(Date.now() + delay);
+}
+
+function ingestUidlScopeKey(
+  args: Pick<CandidateAttachmentCleanupTask, 'ingestMailboxId' | 'pop3Uidl'>,
+): string {
+  return JSON.stringify([args.ingestMailboxId, args.pop3Uidl]);
 }
 
 async function deferCandidateAttachmentCleanupTask(
@@ -816,12 +897,30 @@ async function deferCandidateAttachmentCleanupTask(
     );
 }
 
+async function deferCandidateAttachmentCleanupForActiveClaim(
+  db: DB,
+  task: CandidateAttachmentCleanupTask,
+): Promise<void> {
+  await db
+    .update(mailIngestCandidateAttachmentCleanup)
+    .set({
+      nextAttemptAt: new Date(Date.now() + CANDIDATE_ATTACHMENT_CLEANUP_RETRY_BASE_MS),
+    })
+    .where(
+      and(
+        eq(mailIngestCandidateAttachmentCleanup.s3Key, task.s3Key),
+        eq(mailIngestCandidateAttachmentCleanup.candidateMessageId, task.candidateMessageId),
+      ),
+    );
+}
+
 async function claimAndDeleteCandidateAttachmentCleanupTasks(args: {
   db: DB;
   storage: S3Storage;
   limit: number;
   meta?: Pick<IngestMeta, 'ingestMailboxId' | 'pop3Uidl'>;
   dueThrough: Date;
+  activeIngestUidlClaimToken?: string;
 }): Promise<CandidateAttachmentCleanupBatchResult> {
   let claimedTasks: CandidateAttachmentCleanupTask[] = [];
   try {
@@ -831,6 +930,8 @@ async function claimAndDeleteCandidateAttachmentCleanupTasks(args: {
         .select({
           s3Key: mailIngestCandidateAttachmentCleanup.s3Key,
           candidateMessageId: mailIngestCandidateAttachmentCleanup.candidateMessageId,
+          ingestMailboxId: mailIngestCandidateAttachmentCleanup.ingestMailboxId,
+          pop3Uidl: mailIngestCandidateAttachmentCleanup.pop3Uidl,
           attempts: mailIngestCandidateAttachmentCleanup.attempts,
         })
         .from(mailIngestCandidateAttachmentCleanup)
@@ -855,12 +956,44 @@ async function claimAndDeleteCandidateAttachmentCleanupTasks(args: {
       if (tasks.length === 0) {
         return {
           claimedTaskCount: 0,
+          selectedTaskCount: 0,
           deletedTaskCount: 0,
           failureCount: 0,
           canContinue: true,
         };
       }
 
+      const taskScopes = [
+        ...new Map(
+          tasks.map((task) => [
+            ingestUidlScopeKey(task),
+            { ingestMailboxId: task.ingestMailboxId, pop3Uidl: task.pop3Uidl },
+          ]),
+        ).values(),
+      ];
+      const activeClaims = await transactionDb
+        .select({
+          ingestMailboxId: mailIngestUidlClaim.ingestMailboxId,
+          pop3Uidl: mailIngestUidlClaim.pop3Uidl,
+          claimToken: mailIngestUidlClaim.claimToken,
+        })
+        .from(mailIngestUidlClaim)
+        .where(
+          and(
+            gt(mailIngestUidlClaim.expiresAt, new Date()),
+            or(
+              ...taskScopes.map((scope) =>
+                and(
+                  eq(mailIngestUidlClaim.ingestMailboxId, scope.ingestMailboxId),
+                  eq(mailIngestUidlClaim.pop3Uidl, scope.pop3Uidl),
+                ),
+              ),
+            ),
+          ),
+        );
+      const activeClaimTokensByScope = new Map(
+        activeClaims.map((claim) => [ingestUidlScopeKey(claim), claim.claimToken]),
+      );
       const canonicalKeys = await canonicalAttachmentKeys(
         transactionDb,
         tasks.map((task) => task.s3Key),
@@ -871,6 +1004,10 @@ async function claimAndDeleteCandidateAttachmentCleanupTasks(args: {
         tasks,
         CANDIDATE_ATTACHMENT_DELETE_CONCURRENCY,
         async (task) => {
+          const activeClaimToken = activeClaimTokensByScope.get(ingestUidlScopeKey(task));
+          if (activeClaimToken && activeClaimToken !== args.activeIngestUidlClaimToken) {
+            return { task, disposition: 'active_claim' as const };
+          }
           if (canonicalKeys.has(task.s3Key)) {
             return { task, disposition: 'canonical' as const };
           }
@@ -888,7 +1025,13 @@ async function claimAndDeleteCandidateAttachmentCleanupTasks(args: {
 
       let deletedTaskCount = 0;
       let failureCount = 0;
+      let activeClaimTaskCount = 0;
       for (const result of deletionResults) {
+        if (result.disposition === 'active_claim') {
+          await deferCandidateAttachmentCleanupForActiveClaim(transactionDb, result.task);
+          activeClaimTaskCount += 1;
+          continue;
+        }
         if (result.disposition === 'canonical') {
           // A pre-existing task can outlive a prior failed deployment or a
           // crash. Once its key is canonical, delete only queue state.
@@ -905,7 +1048,11 @@ async function claimAndDeleteCandidateAttachmentCleanupTasks(args: {
         deletedTaskCount += 1;
       }
       return {
-        claimedTaskCount: tasks.length,
+        // A task deferred for another worker's active UIDL claim has not
+        // consumed cleanup capacity. Continue this sweep so a full claimed
+        // batch cannot starve later due cleanup rows.
+        claimedTaskCount: tasks.length - activeClaimTaskCount,
+        selectedTaskCount: tasks.length,
         deletedTaskCount,
         failureCount,
         canContinue: true,
@@ -915,6 +1062,7 @@ async function claimAndDeleteCandidateAttachmentCleanupTasks(args: {
     if (claimedTasks.length === 0) {
       return {
         claimedTaskCount: 0,
+        selectedTaskCount: 0,
         deletedTaskCount: 0,
         failureCount: 1,
         canContinue: false,
@@ -933,6 +1081,7 @@ async function claimAndDeleteCandidateAttachmentCleanupTasks(args: {
     }
     return {
       claimedTaskCount: claimedTasks.length,
+      selectedTaskCount: claimedTasks.length,
       deletedTaskCount: 0,
       failureCount: claimedTasks.length,
       canContinue,
@@ -945,29 +1094,43 @@ async function drainCandidateAttachmentCleanupTasks(args: {
   storage: S3Storage;
   limit: number;
   meta?: Pick<IngestMeta, 'ingestMailboxId' | 'pop3Uidl'>;
-}): Promise<{ failureCount: number; taskCount: number; limitReached: boolean }> {
+  dueThrough?: Date;
+  activeIngestUidlClaimToken?: string;
+}): Promise<{
+  failureCount: number;
+  taskCount: number;
+  limitReached: boolean;
+  canContinue: boolean;
+}> {
   const limit = Math.max(0, args.limit);
   if (limit === 0) {
-    return { failureCount: 0, taskCount: 0, limitReached: true };
+    return { failureCount: 0, taskCount: 0, limitReached: true, canContinue: true };
   }
 
   let failureCount = 0;
-  let successfulTaskCount = 0;
-  const dueThrough = new Date();
-  while (successfulTaskCount < limit) {
+  let claimedTaskCount = 0;
+  let deletedTaskCount = 0;
+  let canContinue = true;
+  const dueThrough = args.dueThrough ?? new Date();
+  while (claimedTaskCount < limit) {
     const result = await claimAndDeleteCandidateAttachmentCleanupTasks({
       ...args,
-      limit: limit - successfulTaskCount,
+      limit: limit - claimedTaskCount,
       dueThrough,
     });
     failureCount += result.failureCount;
-    successfulTaskCount += result.deletedTaskCount;
-    if (result.claimedTaskCount === 0 || !result.canContinue) break;
+    claimedTaskCount += result.claimedTaskCount;
+    deletedTaskCount += result.deletedTaskCount;
+    if (result.selectedTaskCount === 0 || !result.canContinue) {
+      canContinue = result.canContinue;
+      break;
+    }
   }
   return {
     failureCount,
-    taskCount: successfulTaskCount,
-    limitReached: successfulTaskCount >= limit,
+    taskCount: deletedTaskCount,
+    limitReached: claimedTaskCount >= limit,
+    canContinue,
   };
 }
 
@@ -988,20 +1151,24 @@ async function cleanupCandidateAttachmentTasks(args: {
   attachments: ParsedInboundMessage['attachments'];
   meta: IngestMeta;
   canonicalMessageId?: string;
+  activeIngestUidlClaimToken?: string;
 }): Promise<number> {
   if (args.canonicalMessageId !== args.meta.messageId) {
     await registerCandidateAttachmentCleanupTasks(args.db, args.attachments, args.meta);
   }
   let failureCount = 0;
+  const dueThrough = new Date();
   for (;;) {
     const result = await drainCandidateAttachmentCleanupTasks({
       db: args.db,
       storage: args.storage,
       meta: args.meta,
       limit: CANDIDATE_ATTACHMENT_CLEANUP_SWEEP_LIMIT,
+      dueThrough,
+      activeIngestUidlClaimToken: args.activeIngestUidlClaimToken,
     });
     failureCount += result.failureCount;
-    if (!result.limitReached) {
+    if (!result.limitReached || !result.canContinue) {
       return failureCount;
     }
   }
@@ -1016,6 +1183,7 @@ export async function cleanupPartialParseFailureAttachments(args: {
   storage: S3Storage;
   attachments: ParsedInboundMessage['attachments'];
   meta: IngestMeta;
+  activeIngestUidlClaimToken?: string;
 }): Promise<number> {
   return cleanupCandidateAttachmentTasks(args);
 }
@@ -1145,9 +1313,9 @@ async function findEligibleCanonicalOutbound(
     return findCanonicalOutboundWithQueueLock(db, transportId, correlationId, ['sent', 'sending']);
   }
 
-  // Legacy Message-ID correlation remains sent-only. This unlocked join only
-  // identifies a sent candidate; locking follows queue first, then message.
-  const [candidate] = await db
+  // Legacy Message-ID correlation remains sent-only and must fail closed when
+  // a reused header identifies more than one outbound message.
+  const candidates = await db
     .select({ id: message.id })
     .from(message)
     .innerJoin(
@@ -1165,10 +1333,17 @@ async function findEligibleCanonicalOutbound(
         eq(outboundSendQueue.status, 'sent'),
       ),
     )
-    .limit(1);
-  if (!candidate) return undefined;
+    .limit(2)
+    .for('update');
+  if (candidates.length !== 1) return undefined;
 
-  return findCanonicalOutboundWithQueueLock(db, transportId, candidate.id, ['sent'], correlationId);
+  return findCanonicalOutboundWithQueueLock(
+    db,
+    transportId,
+    candidates[0]!.id,
+    ['sent'],
+    correlationId,
+  );
 }
 
 async function findCanonicalOutboundWithQueueLock(
@@ -1485,7 +1660,10 @@ async function quarantineUnrouted(args: {
 }
 
 async function quarantineWithAttachmentCleanup(
-  args: Parameters<typeof quarantineUnrouted>[0] & { storage: S3Storage },
+  args: Parameters<typeof quarantineUnrouted>[0] & {
+    storage: S3Storage;
+    activeIngestUidlClaimToken?: string;
+  },
 ): Promise<PersistQuarantinedResult> {
   const result = await quarantineUnrouted(args);
   const candidateAttachmentCleanupFailureCount = await cleanupCandidateAttachmentTasks({
@@ -1493,6 +1671,7 @@ async function quarantineWithAttachmentCleanup(
     storage: args.storage,
     attachments: args.parsed.attachments,
     meta: args.meta,
+    activeIngestUidlClaimToken: args.activeIngestUidlClaimToken,
   });
   return { ...result, candidateAttachmentCleanupFailureCount };
 }

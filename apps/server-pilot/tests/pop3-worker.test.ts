@@ -7,9 +7,9 @@ import {
 } from '../src/storage/s3';
 import { FakePop3Client, type FakePop3Message } from '../src/mail/ingest/pop3-client';
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db';
+import { mailIngestCandidateAttachmentCleanup } from '../src/db/schema/mail';
 import { ingestOnce, POISON_MAX_RETRIES } from '../src/mail/ingest/worker';
 import { mailIngestQuarantine } from '../src/db/schema/mail';
-import { mailIngestCandidateAttachmentCleanup } from '../src/db/schema/mail';
 import * as ingestStore from '../src/mail/ingest/store';
 import { describe, expect, it, vi } from 'vitest';
 import { readFixture } from './helpers/fixtures';
@@ -440,6 +440,49 @@ describe('ingestOnce returned-copy results', () => {
       persistSpy.mockRestore();
     }
   });
+});
+
+it('rotates a bounded UIDL window past deferred items across worker cycles', async () => {
+  const storage = new FakeS3Storage('worker-uidl-rotation');
+  resetS3Storage();
+  setS3Storage(storage);
+  const fakePop3 = new FakePop3Client({
+    messages: [
+      { uidl: 'uidl-rotate-A', raw: readFixture('centurion-stamped.eml') },
+      { uidl: 'uidl-rotate-B', raw: readFixture('centurion-stamped.eml') },
+      { uidl: 'uidl-rotate-C', raw: readFixture('centurion-stamped.eml') },
+      { uidl: 'uidl-rotate-D', raw: readFixture('centurion-stamped.eml') },
+    ],
+  });
+  const uidlCursor = { lastProcessedUidl: undefined as string | undefined };
+  const persistSpy = vi.spyOn(ingestStore, 'persistInboundMessage').mockResolvedValue({
+    kind: 'deferred',
+    transportId: 'transport-centurion',
+    messageId: 'canonical-message',
+    rawMimeS3Key: 'raw-mime/test.eml',
+    candidateAttachmentCleanupFailureCount: 0,
+  } as Awaited<ReturnType<typeof ingestStore.persistInboundMessage>>);
+
+  try {
+    const opts = {
+      pop3: fakePop3,
+      db: {} as import('../src/db/client').DB,
+      ingestMailboxId: 'ingest-nava-legacy',
+      maxMessages: 2,
+      uidlCursor,
+    } as unknown as Parameters<typeof ingestOnce>[0];
+    await ingestOnce(opts);
+    await ingestOnce(opts);
+
+    expect(fakePop3.callLog.filter((call) => call.op === 'retr').map((call) => call.uidl)).toEqual([
+      'uidl-rotate-A',
+      'uidl-rotate-B',
+      'uidl-rotate-C',
+      'uidl-rotate-D',
+    ]);
+  } finally {
+    persistSpy.mockRestore();
+  }
 });
 
 // Unit tests (no DB) for the fake pop3 path with no real env.

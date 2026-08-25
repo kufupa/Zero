@@ -31,11 +31,15 @@
  * Entry: `node dist/mail/ingest/worker.js` (package script `worker`).
  */
 import {
+  claimIngestUidl,
   cleanupPartialParseFailureAttachments,
   hasPendingCandidateAttachmentCleanup,
+  INGEST_UIDL_CLAIM_LEASE_MS,
   persistInboundMessage,
   quarantineOversizedMessage,
   quarantineParseFailure,
+  releaseIngestUidlClaim,
+  renewIngestUidlClaim,
   sweepCandidateAttachmentCleanupTasks,
   type PersistResult,
 } from './store.js';
@@ -46,27 +50,65 @@ import {
   FakePop3Client as FakePop3ClientCtor,
   type FakePop3Message,
 } from './pop3-client.js';
+import {
+  candidateMessageIdForPop3Uidl,
+  parseRawMessage,
+  uploadedAttachmentsFromParseFailure,
+  type ParsedInboundMessage,
+} from './parse-message.js';
 import { IngestTooLargeError, assertWithinIngestLimits, getIngestLimits } from './limits.js';
 import { rawMimeKey, getS3Storage, archiveQuarantineRawMime } from '../../storage/s3.js';
 import { isCliEntry } from '../../lib/is-cli-entry.js';
-import { parseRawMessage, uploadedAttachmentsFromParseFailure } from './parse-message.js';
 import { getDb, closeDb } from '../../db/client.js';
-import { createHash } from 'node:crypto';
 import { parseEnv } from '../../env.js';
 
 /** After this many consecutive failures for one UIDL, quarantine + DELE. */
 export const POISON_MAX_RETRIES = 3;
 
-function candidateMessageIdForPop3Uidl(ingestMailboxId: string, pop3Uidl: string): string {
-  const hash = createHash('sha256')
-    .update(ingestMailboxId)
-    .update('\0')
-    .update(pop3Uidl)
-    .digest('hex');
-  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-8${hash.slice(
-    17,
-    20,
-  )}-${hash.slice(20, 32)}`;
+class IngestUidlClaimLostError extends Error {
+  constructor() {
+    super('ingest UIDL claim was lost before POP3 processing completed');
+    this.name = 'IngestUidlClaimLostError';
+  }
+}
+
+function startIngestUidlClaimRenewal(
+  db: import('../../db/client.js').DB,
+  meta: { ingestMailboxId: string; pop3Uidl: string },
+  claimToken: string,
+): {
+  renewNow: () => Promise<void>;
+  stop: () => Promise<void>;
+} {
+  let stopped = false;
+  let lost = false;
+  let pending = Promise.resolve();
+  const renew = async () => {
+    if (stopped || lost) return;
+    try {
+      if (!(await renewIngestUidlClaim(db, meta, claimToken))) lost = true;
+    } catch {
+      lost = true;
+    }
+  };
+  const tick = async () => {
+    pending = pending.then(renew);
+    await pending;
+  };
+  const assertHeld = async () => {
+    await tick();
+    if (lost) throw new IngestUidlClaimLostError();
+  };
+  const timer = setInterval(tick, Math.max(1, Math.floor(INGEST_UIDL_CLAIM_LEASE_MS / 3)));
+
+  return {
+    renewNow: assertHeld,
+    async stop() {
+      stopped = true;
+      clearInterval(timer);
+      await pending;
+    },
+  };
 }
 
 export interface IngestOnceOptions {
@@ -80,11 +122,21 @@ export interface IngestOnceOptions {
   maxMessages?: number;
   /** Per-UIDL failure counts (tests may inject). */
   failureCounts?: Map<string, number>;
+  /** Long-lived worker state used to round-robin bounded POP3 batches. */
+  uidlCursor?: IngestUidlCursor;
+}
+
+export interface IngestUidlCursor {
+  lastProcessedUidl?: string;
 }
 
 export type ItemOutcome =
   | { uidl: string; result: PersistResult; status: 'deferred' | 'ok' }
-  | { uidl: string; status: 'deferred'; reason: 'candidate_attachment_cleanup_pending' }
+  | {
+      uidl: string;
+      status: 'deferred';
+      reason: 'candidate_attachment_cleanup_pending' | 'ingest_uidl_claim_pending';
+    }
   | { uidl: string; status: 'error'; error: string };
 
 export interface IngestCycleResult {
@@ -102,6 +154,23 @@ export interface IngestCycleResult {
   cycleError?: string;
   /** Best-effort duplicate attachment cleanup failures. */
   duplicateAttachmentCleanupFailureCount: number;
+}
+
+function selectUidlWindow(
+  uidls: string[],
+  maxMessages: number,
+  cursor: IngestUidlCursor | undefined,
+): string[] {
+  const limit = Number.isFinite(maxMessages) ? Math.max(0, Math.floor(maxMessages)) : 0;
+  if (!cursor || uidls.length <= limit) return uidls.slice(0, limit);
+  if (limit === 0 || uidls.length === 0) return [];
+
+  const previousIndex = cursor.lastProcessedUidl ? uidls.indexOf(cursor.lastProcessedUidl) : -1;
+  const start = previousIndex >= 0 ? (previousIndex + 1) % uidls.length : 0;
+  return Array.from(
+    { length: Math.min(limit, uidls.length) },
+    (_, offset) => uidls[(start + offset) % uidls.length]!,
+  );
 }
 
 /**
@@ -147,6 +216,12 @@ export async function ingestOnce(opts: IngestOnceOptions = {}): Promise<IngestCy
   let listed = 0;
   let processed = 0;
   let deled = 0;
+  let scheduledDeletions = 0;
+  const claimsHeldUntilQuit: {
+    meta: { ingestMailboxId: string; pop3Uidl: string };
+    claimToken: string;
+    renewal: ReturnType<typeof startIngestUidlClaimRenewal>;
+  }[] = [];
 
   try {
     const storage = getS3Storage();
@@ -167,8 +242,27 @@ export async function ingestOnce(opts: IngestOnceOptions = {}): Promise<IngestCy
     const uidls = await pop3.listUidl();
     listed = uidls.length;
 
-    for (const uidl of uidls.slice(0, maxMessages)) {
+    for (const uidl of selectUidlWindow(uidls, maxMessages, opts.uidlCursor)) {
+      if (opts.uidlCursor) opts.uidlCursor.lastProcessedUidl = uidl;
       let rawKey: string | undefined;
+      let parsedAttachmentsRequiringCleanup: ParsedInboundMessage['attachments'] = [];
+      const claimMeta = { ingestMailboxId, pop3Uidl: uidl };
+      let claimToken: string | null = null;
+      let claimRenewal: ReturnType<typeof startIngestUidlClaimRenewal> | undefined;
+      let retainClaimUntilExpiry = false;
+      let retainClaimUntilQuit = false;
+      const renewClaim = async (): Promise<void> => {
+        await claimRenewal?.renewNow();
+      };
+      const retainClaimForQuit = () => {
+        if (!claimToken || !claimRenewal) return;
+        retainClaimUntilQuit = true;
+        claimsHeldUntilQuit.push({
+          meta: claimMeta,
+          claimToken,
+          renewal: claimRenewal,
+        });
+      };
       try {
         if (
           supportsCleanupQueue &&
@@ -185,36 +279,61 @@ export async function ingestOnce(opts: IngestOnceOptions = {}): Promise<IngestCy
           });
           continue;
         }
+        if (supportsCleanupQueue) {
+          claimToken = await claimIngestUidl(db, claimMeta);
+          if (!claimToken) {
+            failureCounts.delete(uidl);
+            items.push({
+              uidl,
+              status: 'deferred',
+              reason: 'ingest_uidl_claim_pending',
+            });
+            continue;
+          }
+          claimRenewal = startIngestUidlClaimRenewal(db, claimMeta, claimToken);
+          if (await hasPendingCandidateAttachmentCleanup(db, claimMeta)) {
+            failureCounts.delete(uidl);
+            items.push({
+              uidl,
+              status: 'deferred',
+              reason: 'candidate_attachment_cleanup_pending',
+            });
+            continue;
+          }
+        }
         const msg = await pop3.retr(uidl);
         assertWithinIngestLimits(msg.raw.byteLength, 'message', limits);
         const messageId = candidateMessageIdForPop3Uidl(ingestMailboxId, uidl);
-
-        rawKey = rawMimeKey({
+        const currentRawKey = rawMimeKey({
           ingestMailboxId,
           pop3Uidl: uidl,
         });
+        rawKey = currentRawKey;
+        const meta = {
+          ingestMailboxId,
+          pop3Uidl: uidl,
+          messageId,
+          rawMimeS3Key: currentRawKey,
+        };
         await storage.putObject({
-          key: rawKey,
+          key: currentRawKey,
           body: msg.raw,
           contentType: 'message/rfc822',
         });
-
         const parsed = await parseRawMessage(msg.raw, {
           messageId,
           storage,
         });
+        parsedAttachmentsRequiringCleanup = parsed.attachments;
+        await renewClaim();
+        const result = await persistInboundMessage(parsed, msg.raw, meta, {
+          db,
+          storage,
+          ingestSource: 'live-pop3',
+          activeIngestUidlClaimToken: claimToken ?? undefined,
+        });
 
-        const result = await persistInboundMessage(
-          parsed,
-          msg.raw,
-          {
-            ingestMailboxId,
-            pop3Uidl: uidl,
-            messageId,
-            rawMimeS3Key: rawKey,
-          },
-          { db, storage, ingestSource: 'live-pop3' },
-        );
+        parsedAttachmentsRequiringCleanup = [];
 
         if (result.kind === 'duplicate') {
           duplicateAttachmentCleanupFailureCount += result.candidateAttachmentCleanupFailureCount;
@@ -253,12 +372,39 @@ export async function ingestOnce(opts: IngestOnceOptions = {}): Promise<IngestCy
         }
 
         failureCounts.delete(uidl);
+        await renewClaim();
         await pop3.dele(uidl);
-        deled += 1;
+        retainClaimForQuit();
+        scheduledDeletions += 1;
         items.push({ uidl, result, status: 'ok' });
         processed += 1;
       } catch (err) {
-        const uploadedAttachments = uploadedAttachmentsFromParseFailure(err);
+        let claimWasLost = err instanceof IngestUidlClaimLostError;
+        if (!claimWasLost && claimRenewal) {
+          try {
+            await claimRenewal.renewNow();
+          } catch (renewalError) {
+            claimWasLost = renewalError instanceof IngestUidlClaimLostError;
+          }
+        }
+        if (claimWasLost) {
+          failureCounts.delete(uidl);
+          items.push({
+            uidl,
+            status: 'deferred',
+            reason: 'ingest_uidl_claim_pending',
+          });
+          processed += 1;
+          continue;
+        }
+
+        const uploadedAttachments = [
+          ...new Map(
+            [...parsedAttachmentsRequiringCleanup, ...uploadedAttachmentsFromParseFailure(err)].map(
+              (attachment) => [attachment.s3Key, attachment],
+            ),
+          ).values(),
+        ];
         if (uploadedAttachments.length > 0 && rawKey) {
           try {
             await cleanupPartialParseFailureAttachments({
@@ -270,8 +416,10 @@ export async function ingestOnce(opts: IngestOnceOptions = {}): Promise<IngestCy
                 pop3Uidl: uidl,
                 messageId: candidateMessageIdForPop3Uidl(ingestMailboxId, uidl),
               },
+              activeIngestUidlClaimToken: claimToken ?? undefined,
             });
           } catch (cleanupError) {
+            retainClaimUntilExpiry = true;
             const error =
               cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
             items.push({
@@ -318,8 +466,10 @@ export async function ingestOnce(opts: IngestOnceOptions = {}): Promise<IngestCy
             processed += 1;
             continue;
           }
+          await renewClaim();
           await pop3.dele(uidl);
-          deled += 1;
+          retainClaimForQuit();
+          scheduledDeletions += 1;
           items.push({ uidl, result, status: 'ok' });
           processed += 1;
           continue;
@@ -347,8 +497,10 @@ export async function ingestOnce(opts: IngestOnceOptions = {}): Promise<IngestCy
             pop3Uidl: uidl,
           });
           failureCounts.delete(uidl);
+          await renewClaim();
           await pop3.dele(uidl);
-          deled += 1;
+          retainClaimForQuit();
+          scheduledDeletions += 1;
           items.push({ uidl, result, status: 'ok' });
           processed += 1;
           continue;
@@ -382,8 +534,10 @@ export async function ingestOnce(opts: IngestOnceOptions = {}): Promise<IngestCy
             pop3Uidl: uidl,
           });
           failureCounts.delete(uidl);
+          await renewClaim();
           await pop3.dele(uidl);
-          deled += 1;
+          retainClaimForQuit();
+          scheduledDeletions += 1;
           items.push({ uidl, result, status: 'ok' });
           processed += 1;
           continue;
@@ -392,6 +546,16 @@ export async function ingestOnce(opts: IngestOnceOptions = {}): Promise<IngestCy
         const error = err instanceof Error ? err.message : String(err);
         items.push({ uidl, status: 'error', error });
         processed += 1;
+      } finally {
+        if (!retainClaimUntilQuit) {
+          try {
+            await claimRenewal?.stop();
+          } finally {
+            if (claimToken && !retainClaimUntilExpiry) {
+              await releaseIngestUidlClaim(db, claimMeta, claimToken).catch(() => undefined);
+            }
+          }
+        }
       }
     }
 
@@ -400,7 +564,20 @@ export async function ingestOnce(opts: IngestOnceOptions = {}): Promise<IngestCy
         `worker: duplicate candidate attachment cleanup failures=${duplicateAttachmentCleanupFailureCount}`,
       );
     }
-    await pop3.quit();
+    try {
+      await Promise.all(claimsHeldUntilQuit.map(({ renewal }) => renewal.renewNow()));
+      await pop3.quit();
+      deled = scheduledDeletions;
+      await Promise.all(
+        claimsHeldUntilQuit.map(async ({ meta, claimToken, renewal }) => {
+          await renewal.stop();
+          await releaseIngestUidlClaim(db, meta, claimToken).catch(() => undefined);
+        }),
+      );
+    } catch (err) {
+      await Promise.allSettled(claimsHeldUntilQuit.map(({ renewal }) => renewal.stop()));
+      throw err;
+    }
     return {
       listed,
       processed,
@@ -514,10 +691,11 @@ export async function runWorker(
 
   console.log(`worker: starting poll loop, interval=${interval}ms, fake=${pop3.kind === 'fake'}`);
   const failureCounts = new Map<string, number>();
+  const uidlCursor: IngestUidlCursor = {};
   while (!stop.stopping) {
     const start = Date.now();
     try {
-      const result = await ingestOnce({ pop3, failureCounts });
+      const result = await ingestOnce({ pop3, failureCounts, uidlCursor });
       console.log(
         `worker: cycle listed=${result.listed} processed=${result.processed} deled=${result.deled} fake=${result.usedFakePop3}${
           result.cycleError ? ` error=${result.cycleError}` : ''

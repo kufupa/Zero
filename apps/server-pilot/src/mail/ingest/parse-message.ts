@@ -12,19 +12,11 @@
  * Routing marker `X-Zero-Mailbox` is extracted from the headers here so the
  * store layer can route without re-parsing.
  */
+import { getIngestLimits, type IngestLimits, assertWithinIngestLimits } from './limits.js';
+import { attachmentKey, getS3Storage, type S3Storage } from '../../storage/s3.js';
 import { MailParser, type Headers } from 'mailparser';
+import { createHash, randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
-import { randomUUID } from 'node:crypto';
-import {
-  attachmentKey,
-  getS3Storage,
-  type S3Storage,
-} from '../../storage/s3.js';
-import {
-  getIngestLimits,
-  type IngestLimits,
-  assertWithinIngestLimits,
-} from './limits.js';
 
 export interface ParsedAttachment {
   /** Generated S3 key under `attachments/`. */
@@ -115,7 +107,8 @@ export async function parseRawMessage(
   parser.on('headers', (h) => {
     headers = h;
     // `parser.headerLines` is populated when the headers event fires.
-    const lines = (parser as unknown as { headerLines?: { key: string; line: string }[] }).headerLines;
+    const lines = (parser as unknown as { headerLines?: { key: string; line: string }[] })
+      .headerLines;
     if (lines) rawHeaderLines = lines.map((l) => ({ key: l.key, line: l.line }));
   });
 
@@ -265,9 +258,7 @@ function buildParsedMessage(args: {
   const senderEmail = extractAddress(headers.get('sender'));
   // ponytail: Outlook calendar FW keeps organizer in From; Sender is transmitter.
   const fromAddress =
-    senderEmail &&
-    fromEmail &&
-    senderEmail.trim().toLowerCase() !== fromEmail.trim().toLowerCase()
+    senderEmail && fromEmail && senderEmail.trim().toLowerCase() !== fromEmail.trim().toLowerCase()
       ? senderEmail
       : fromEmail;
   const toAddresses = extractAddresses(headers.get('to'));
@@ -276,11 +267,7 @@ function buildParsedMessage(args: {
   const subject = firstHeader(headers, 'subject');
   const dateVal = headers.get('date');
   const receivedAt =
-    dateVal instanceof Date
-      ? dateVal
-      : typeof dateVal === 'string'
-        ? parseDate(dateVal)
-        : null;
+    dateVal instanceof Date ? dateVal : typeof dateVal === 'string' ? parseDate(dateVal) : null;
 
   return {
     ownerHeaderValue: ownerHeaderValue ? ownerHeaderValue.toLowerCase() : null,
@@ -345,7 +332,10 @@ function normalizeReferences(v: unknown): string[] {
   if (Array.isArray(v)) {
     refs = v.filter((x): x is string => typeof x === 'string');
   } else if (typeof v === 'string') {
-    refs = v.split(/\s+/).map((s) => s.trim()).filter(Boolean);
+    refs = v
+      .split(/\s+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
   } else {
     return [];
   }
@@ -404,10 +394,7 @@ function parseDate(raw: string): Date | null {
 }
 
 /** Drain a Readable into a Buffer (used for attachment S3 PUT). */
-async function streamToBuffer(
-  stream: Readable,
-  limits: IngestLimits,
-): Promise<Buffer> {
+async function streamToBuffer(stream: Readable, limits: IngestLimits): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let total = 0;
   for await (const chunk of stream as AsyncIterable<Buffer>) {
@@ -435,4 +422,21 @@ function stripAngles(raw: string): string {
  */
 export function generateMessageId(): string {
   return randomUUID();
+}
+
+/**
+ * Deterministic UUID-shaped candidate id for one POP3 mailbox/UIDL pair.
+ * Retryable ingest paths use this for attachment-key ownership before a
+ * canonical message row has committed.
+ */
+export function candidateMessageIdForPop3Uidl(ingestMailboxId: string, pop3Uidl: string): string {
+  const hash = createHash('sha256')
+    .update(ingestMailboxId)
+    .update('\0')
+    .update(pop3Uidl)
+    .digest('hex');
+  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-8${hash.slice(
+    17,
+    20,
+  )}-${hash.slice(20, 32)}`;
 }

@@ -21,21 +21,11 @@ const tsvector = customType<{ data: string; driverData: string }>({
   },
 });
 
-export const mailboxAccessRoleEnum = pgEnum('mailbox_access_role', [
-  'owner',
-  'member',
-  'admin',
-]);
+export const mailboxAccessRoleEnum = pgEnum('mailbox_access_role', ['owner', 'member', 'admin']);
 
-export const mailboxTypeEnum = pgEnum('mailbox_type', [
-  'personal',
-  'shared',
-]);
+export const mailboxTypeEnum = pgEnum('mailbox_type', ['personal', 'shared']);
 
-export const messageDirectionEnum = pgEnum('message_direction', [
-  'inbound',
-  'outbound',
-]);
+export const messageDirectionEnum = pgEnum('message_direction', ['inbound', 'outbound']);
 
 export const mailSenderPreferenceKindEnum = pgEnum('mail_sender_preference_kind', [
   'block',
@@ -49,10 +39,7 @@ export const mailDraftStatusEnum = pgEnum('mail_draft_status', [
   'sent',
 ]);
 
-export const mailDraftOriginEnum = pgEnum('mail_draft_origin', [
-  'manual',
-  'ai',
-]);
+export const mailDraftOriginEnum = pgEnum('mail_draft_origin', ['manual', 'ai']);
 
 export const mailDraftRevisionKindEnum = pgEnum('mail_draft_revision_kind', [
   'created',
@@ -111,10 +98,7 @@ export const mailIngestQuarantine = pgTable(
     index('mail_ingest_quarantine_ingest_idx').on(t.ingestMailboxId),
     index('mail_ingest_quarantine_reason_idx').on(t.reason),
     index('mail_ingest_quarantine_created_at_idx').on(t.createdAt),
-    uniqueIndex('mail_ingest_quarantine_ingest_uidl_uidx').on(
-      t.ingestMailboxId,
-      t.pop3Uidl,
-    ),
+    uniqueIndex('mail_ingest_quarantine_ingest_uidl_uidx').on(t.ingestMailboxId, t.pop3Uidl),
   ],
 );
 
@@ -146,6 +130,28 @@ export const mailIngestCandidateAttachmentCleanup = pgTable(
         AND left(${t.s3Key}, length('attachments/' || ${t.candidateMessageId} || '/')) =
           'attachments/' || ${t.candidateMessageId} || '/'`,
     ),
+  ],
+);
+
+/**
+ * Exclusive lease for one POP3 UIDL. It prevents the poller and a force-sync
+ * request from retrieving and parsing the same message concurrently.
+ */
+export const mailIngestUidlClaim = pgTable(
+  'mail_ingest_uidl_claim',
+  {
+    ingestMailboxId: text('ingest_mailbox_id').notNull(),
+    pop3Uidl: text('pop3_uidl').notNull(),
+    claimToken: text('claim_token').notNull(),
+    expiresAt: timestamp('expires_at').notNull(),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({
+      name: 'mail_ingest_uidl_claim_pk',
+      columns: [t.ingestMailboxId, t.pop3Uidl],
+    }),
+    index('mail_ingest_uidl_claim_expires_idx').on(t.expiresAt),
   ],
 );
 
@@ -292,11 +298,7 @@ export const mailThread = pgTable(
   },
   (t) => [
     uniqueIndex('mail_thread_transport_root_uidx').on(t.transportId, t.threadRootId),
-    index('mail_thread_transport_list_idx').on(
-      t.transportId,
-      t.isArchived,
-      t.latestMessageAt,
-    ),
+    index('mail_thread_transport_list_idx').on(t.transportId, t.isArchived, t.latestMessageAt),
     index('mail_thread_snooze_wake_idx')
       .on(t.snoozedUntil)
       .where(sql`${t.snoozedUntil} IS NOT NULL`),
@@ -314,10 +316,9 @@ export const message = pgTable(
     threadId: text('thread_id')
       .notNull()
       .references(() => mailThread.id, { onDelete: 'cascade' }),
-    ingestMailboxId: text('ingest_mailbox_id').references(
-      () => mailIngestMailbox.id,
-      { onDelete: 'set null' },
-    ),
+    ingestMailboxId: text('ingest_mailbox_id').references(() => mailIngestMailbox.id, {
+      onDelete: 'set null',
+    }),
     direction: messageDirectionEnum('direction').notNull(),
     pop3Uidl: text('pop3_uidl'),
     ownerHeaderValue: text('owner_header_value'),
@@ -391,9 +392,7 @@ export const aiDraftGeneration = pgTable(
     evidence: jsonb('evidence').$type<unknown[]>().notNull().default([]),
     createdAt: timestamp('created_at').notNull().defaultNow(),
   },
-  (t) => [
-    index('ai_draft_generation_thread_idx').on(t.transportId, t.threadId, t.createdAt),
-  ],
+  (t) => [index('ai_draft_generation_thread_idx').on(t.transportId, t.threadId, t.createdAt)],
 );
 
 export const mailDraft = pgTable(
@@ -415,9 +414,10 @@ export const mailDraft = pgTable(
     subject: text('subject'),
     textBody: text('text_body'),
     htmlBody: text('html_body'),
-    attachments: jsonb('attachments').$type<
-      { filename: string; mimeType: string; sizeBytes: number; s3Key: string }[]
-    >().notNull().default([]),
+    attachments: jsonb('attachments')
+      .$type<{ filename: string; mimeType: string; sizeBytes: number; s3Key: string }[]>()
+      .notNull()
+      .default([]),
     isSent: boolean('is_sent').notNull().default(false),
     status: mailDraftStatusEnum('status').notNull().default('active'),
     origin: mailDraftOriginEnum('origin').notNull().default('manual'),
@@ -467,9 +467,10 @@ export const mailDraftRevision = pgTable(
     subject: text('subject'),
     textBody: text('text_body'),
     htmlBody: text('html_body'),
-    attachments: jsonb('attachments').$type<
-      { filename: string; mimeType: string; sizeBytes: number; s3Key: string }[]
-    >().notNull().default([]),
+    attachments: jsonb('attachments')
+      .$type<{ filename: string; mimeType: string; sizeBytes: number; s3Key: string }[]>()
+      .notNull()
+      .default([]),
     createdAt: timestamp('created_at').notNull().defaultNow(),
   },
   (t) => [

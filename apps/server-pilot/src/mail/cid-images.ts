@@ -50,11 +50,6 @@ function classifyInlineImageMetadata(
   return 'eligible';
 }
 
-/** Shared metadata gate for CID projection and direct inline-attachment serving. */
-export function isEligibleInlineImageMetadata(attachment: CidAttachmentMeta): boolean {
-  return classifyInlineImageMetadata(attachment) === 'eligible';
-}
-
 /** Build normalized CID eligibility once for a complete message attachment set. */
 export function buildCidEligibilityIndex(
   attachments: readonly CidAttachmentMeta[],

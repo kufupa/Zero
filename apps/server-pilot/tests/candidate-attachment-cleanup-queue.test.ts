@@ -2,32 +2,51 @@ import {
   attachment,
   mailIngestMailbox,
   mailIngestQuarantine,
+  mailIngestUidlClaim,
   mailThread,
   mailboxTransport,
   message,
   outboundSendQueue,
 } from '../src/db/schema/mail.js';
 import {
+  claimIngestUidl,
+  persistInboundMessage,
+  releaseIngestUidlClaim,
+  sweepCandidateAttachmentCleanupTasks,
+} from '../src/mail/ingest/store.js';
+import {
   openTestDbSession,
   TEST_DB_AVAILABLE,
   probeTestDb,
   withSeededTestDb,
 } from './helpers/test-db.js';
-import {
-  persistInboundMessage,
-  sweepCandidateAttachmentCleanupTasks,
-} from '../src/mail/ingest/store.js';
 import { FakeS3Storage, rawMimeKey, resetS3Storage, setS3Storage } from '../src/storage/s3.js';
+import { ingestOnce, POISON_MAX_RETRIES } from '../src/mail/ingest/worker.js';
 import { parseRawMessage } from '../src/mail/ingest/parse-message.js';
 import { FakePop3Client } from '../src/mail/ingest/pop3-client.js';
-import { ingestOnce } from '../src/mail/ingest/worker.js';
+import { describe, expect, it, vi } from 'vitest';
 import type { DB } from '../src/db/client.js';
-import { describe, expect, it } from 'vitest';
+import { readFile } from 'node:fs/promises';
+import { and, eq, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
-import { eq, sql } from 'drizzle-orm';
 
 const reachable = await probeTestDb();
 const cleanupTaskTable = sql.raw('"mail_ingest_candidate_attachment_cleanup"');
+
+describe('candidate cleanup migration history', () => {
+  it('keeps the unshipped cleanup queue complete in one migration', async () => {
+    const queue = await readFile(
+      new URL('../drizzle/0017_candidate_attachment_cleanup_queue.sql', import.meta.url),
+      'utf8',
+    );
+
+    expect(queue).toContain('"attempts" integer NOT NULL DEFAULT 0');
+    expect(queue).toContain('"next_attempt_at" timestamp NOT NULL DEFAULT now()');
+    expect(queue).toContain(
+      'ON "mail_ingest_candidate_attachment_cleanup" ("next_attempt_at", "s3_key")',
+    );
+  });
+});
 
 function candidateMessage(args: {
   attachmentCount: number;
@@ -182,13 +201,15 @@ async function insertCleanupTasks(args: {
         "candidate_message_id",
         "ingest_mailbox_id",
         "pop3_uidl",
-        "created_at"
+        "created_at",
+        "next_attempt_at"
       )
       VALUES (
         ${task.s3Key},
         ${task.candidateMessageId},
         ${task.ingestMailboxId},
         ${task.pop3Uidl},
+        ${task.createdAt.toISOString()},
         ${task.createdAt.toISOString()}
       )
     `);
@@ -205,6 +226,452 @@ async function deleteCleanupTasksIfPresent(db: DB, ingestMailboxId: string): Pro
     WHERE "ingest_mailbox_id" = ${ingestMailboxId}
   `);
 }
+
+describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('POP3 UIDL claim', () => {
+  it('defers a concurrent worker before it retrieves the claimed message', async () => {
+    const storage = new FakeS3Storage('candidate-cleanup-uidl-claim');
+    const setup = openTestDbSession();
+    const firstWorker = openTestDbSession();
+    const secondWorker = openTestDbSession();
+    const ingestMailboxId = `ingest-uidl-claim-${randomUUID()}`;
+    const transportId = `transport-uidl-claim-${randomUUID()}`;
+    const transportEmail = `${transportId}@zero.test`;
+    const pop3Uidl = `uidl-claim-${randomUUID()}`;
+    const rawPutEntered = deferred();
+    const releaseRawPut = deferred();
+    const originalPutObject = storage.putObject.bind(storage);
+    let blockFirstRawPut = true;
+    let firstRun: Promise<unknown> | undefined;
+    let secondRun: Promise<unknown> | undefined;
+
+    try {
+      await setup.db.insert(mailIngestMailbox).values({
+        id: ingestMailboxId,
+        email: `${ingestMailboxId}@zero.test`,
+        description: 'uidl claim test',
+      });
+      await setup.db.insert(mailboxTransport).values({
+        id: transportId,
+        email: transportEmail,
+        ownerHeaderValue: transportEmail,
+        mailboxType: 'personal',
+        isActive: true,
+      });
+      const raw = candidateMessage({
+        attachmentCount: 0,
+        ownerHeaderValue: transportEmail,
+        subject: 'uidl claim',
+      });
+      const rawKey = rawMimeKey({ ingestMailboxId, pop3Uidl });
+      storage.putObject = async (opts) => {
+        if (blockFirstRawPut && opts.key === rawKey) {
+          blockFirstRawPut = false;
+          rawPutEntered.resolve();
+          await releaseRawPut.promise;
+        }
+        return originalPutObject(opts);
+      };
+      resetS3Storage();
+      setS3Storage(storage);
+      const firstPop3 = new FakePop3Client({ messages: [{ uidl: pop3Uidl, raw }] });
+      const secondPop3 = new FakePop3Client({ messages: [{ uidl: pop3Uidl, raw }] });
+      const secondRetrEntered = deferred();
+      const originalSecondRetr = secondPop3.retr.bind(secondPop3);
+      secondPop3.retr = async (uidl) => {
+        secondRetrEntered.resolve();
+        return originalSecondRetr(uidl);
+      };
+
+      firstRun = ingestOnce({
+        pop3: firstPop3,
+        db: firstWorker.db,
+        ingestMailboxId,
+      });
+      await rawPutEntered.promise;
+
+      secondRun = ingestOnce({
+        pop3: secondPop3,
+        db: secondWorker.db,
+        ingestMailboxId,
+      });
+
+      expect(
+        await Promise.race([
+          secondRetrEntered.promise.then(() => 'retrieved'),
+          wait(250).then(() => 'not_retrieved'),
+        ]),
+      ).toBe('not_retrieved');
+
+      releaseRawPut.resolve();
+      const [first, second] = await Promise.all([firstRun, secondRun]);
+
+      expect(second).toMatchObject({
+        items: [
+          {
+            uidl: pop3Uidl,
+            status: 'deferred',
+            reason: 'ingest_uidl_claim_pending',
+          },
+        ],
+      });
+      expect(secondPop3.callLog.map((call) => call.op)).not.toContain('retr');
+      expect(first).toMatchObject({ deled: 1 });
+    } finally {
+      releaseRawPut.resolve();
+      storage.putObject = originalPutObject;
+      resetS3Storage();
+      await Promise.allSettled(
+        [firstRun, secondRun].filter(
+          (promise): promise is Promise<unknown> => promise !== undefined,
+        ),
+      );
+      await setup.db
+        .delete(mailboxTransport)
+        .where(eq(mailboxTransport.id, transportId))
+        .catch(() => undefined);
+      await setup.db
+        .delete(mailIngestMailbox)
+        .where(eq(mailIngestMailbox.id, ingestMailboxId))
+        .catch(() => undefined);
+      await Promise.all([setup.close(), firstWorker.close(), secondWorker.close()]);
+    }
+  }, 30000);
+
+  it('renews a live UIDL lease before another worker can reclaim it', async () => {
+    const storage = new FakeS3Storage('candidate-cleanup-uidl-heartbeat');
+    const setup = openTestDbSession();
+    const firstWorker = openTestDbSession();
+    const secondWorker = openTestDbSession();
+    const ingestMailboxId = `ingest-uidl-heartbeat-${randomUUID()}`;
+    const transportId = `transport-uidl-heartbeat-${randomUUID()}`;
+    const transportEmail = `${transportId}@zero.test`;
+    const pop3Uidl = `uidl-heartbeat-${randomUUID()}`;
+    const rawPutEntered = deferred();
+    const releaseRawPut = deferred();
+    const originalPutObject = storage.putObject.bind(storage);
+    let blockFirstRawPut = true;
+    let firstRun: Promise<unknown> | undefined;
+    let secondRun: Promise<unknown> | undefined;
+    let renewalTick: (() => Promise<void>) | undefined;
+    const setIntervalSpy = vi.spyOn(global, 'setInterval').mockImplementation(((handler) => {
+      renewalTick = handler as () => Promise<void>;
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    }) as typeof setInterval);
+    const clearIntervalSpy = vi.spyOn(global, 'clearInterval').mockImplementation(() => undefined);
+
+    try {
+      await setup.db.insert(mailIngestMailbox).values({
+        id: ingestMailboxId,
+        email: `${ingestMailboxId}@zero.test`,
+        description: 'uidl heartbeat test',
+      });
+      await setup.db.insert(mailboxTransport).values({
+        id: transportId,
+        email: transportEmail,
+        ownerHeaderValue: transportEmail,
+        mailboxType: 'personal',
+        isActive: true,
+      });
+      const raw = candidateMessage({
+        attachmentCount: 0,
+        ownerHeaderValue: transportEmail,
+        subject: 'uidl heartbeat',
+      });
+      const rawKey = rawMimeKey({ ingestMailboxId, pop3Uidl });
+      storage.putObject = async (opts) => {
+        if (blockFirstRawPut && opts.key === rawKey) {
+          blockFirstRawPut = false;
+          rawPutEntered.resolve();
+          await releaseRawPut.promise;
+        }
+        return originalPutObject(opts);
+      };
+      resetS3Storage();
+      setS3Storage(storage);
+      const firstPop3 = new FakePop3Client({ messages: [{ uidl: pop3Uidl, raw }] });
+      const secondPop3 = new FakePop3Client({ messages: [{ uidl: pop3Uidl, raw }] });
+      const secondRetrEntered = deferred();
+      const originalSecondRetr = secondPop3.retr.bind(secondPop3);
+      secondPop3.retr = async (uidl) => {
+        secondRetrEntered.resolve();
+        return originalSecondRetr(uidl);
+      };
+
+      firstRun = ingestOnce({
+        pop3: firstPop3,
+        db: firstWorker.db,
+        ingestMailboxId,
+      });
+      await rawPutEntered.promise;
+      expect(renewalTick).toBeTypeOf('function');
+
+      await setup.db
+        .update(mailIngestUidlClaim)
+        .set({ expiresAt: new Date(Date.now() - 1) })
+        .where(
+          and(
+            eq(mailIngestUidlClaim.ingestMailboxId, ingestMailboxId),
+            eq(mailIngestUidlClaim.pop3Uidl, pop3Uidl),
+          ),
+        );
+      await renewalTick!();
+
+      secondRun = ingestOnce({
+        pop3: secondPop3,
+        db: secondWorker.db,
+        ingestMailboxId,
+      });
+      expect(
+        await Promise.race([
+          secondRetrEntered.promise.then(() => 'retrieved'),
+          wait(250).then(() => 'not_retrieved'),
+        ]),
+      ).toBe('not_retrieved');
+
+      releaseRawPut.resolve();
+      const [first, second] = await Promise.all([firstRun, secondRun]);
+      expect(first).toMatchObject({ deled: 1 });
+      expect(second).toMatchObject({
+        items: [
+          {
+            uidl: pop3Uidl,
+            status: 'deferred',
+            reason: 'ingest_uidl_claim_pending',
+          },
+        ],
+      });
+      expect(secondPop3.callLog.map((call) => call.op)).not.toContain('retr');
+    } finally {
+      releaseRawPut.resolve();
+      storage.putObject = originalPutObject;
+      resetS3Storage();
+      setIntervalSpy.mockRestore();
+      clearIntervalSpy.mockRestore();
+      await Promise.allSettled(
+        [firstRun, secondRun].filter(
+          (promise): promise is Promise<unknown> => promise !== undefined,
+        ),
+      );
+      await setup.db
+        .delete(mailboxTransport)
+        .where(eq(mailboxTransport.id, transportId))
+        .catch(() => undefined);
+      await setup.db
+        .delete(mailIngestMailbox)
+        .where(eq(mailIngestMailbox.id, ingestMailboxId))
+        .catch(() => undefined);
+      await Promise.all([setup.close(), firstWorker.close(), secondWorker.close()]);
+    }
+  }, 30000);
+
+  it('defers instead of poisoning a UIDL after its claim is lost mid-processing', async () => {
+    const storage = new FakeS3Storage('candidate-cleanup-uidl-lost-claim');
+    const setup = openTestDbSession();
+    const firstWorker = openTestDbSession();
+    const ingestMailboxId = `ingest-uidl-lost-claim-${randomUUID()}`;
+    const transportId = `transport-uidl-lost-claim-${randomUUID()}`;
+    const transportEmail = `${transportId}@zero.test`;
+    const pop3Uidl = `uidl-lost-claim-${randomUUID()}`;
+    const rawPutEntered = deferred();
+    const releaseRawPut = deferred();
+    const originalPutObject = storage.putObject.bind(storage);
+    let blockFirstRawPut = true;
+    let firstRun: Promise<unknown> | undefined;
+    let replacementClaimToken: string | null = null;
+    const setIntervalSpy = vi.spyOn(global, 'setInterval').mockImplementation(() => {
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    });
+    const clearIntervalSpy = vi.spyOn(global, 'clearInterval').mockImplementation(() => undefined);
+
+    try {
+      await setup.db.insert(mailIngestMailbox).values({
+        id: ingestMailboxId,
+        email: `${ingestMailboxId}@zero.test`,
+        description: 'uidl lost claim test',
+      });
+      await setup.db.insert(mailboxTransport).values({
+        id: transportId,
+        email: transportEmail,
+        ownerHeaderValue: transportEmail,
+        mailboxType: 'personal',
+        isActive: true,
+      });
+      const raw = candidateMessage({
+        attachmentCount: 0,
+        ownerHeaderValue: transportEmail,
+        subject: 'uidl lost claim',
+      });
+      const rawKey = rawMimeKey({ ingestMailboxId, pop3Uidl });
+      storage.putObject = async (opts) => {
+        if (blockFirstRawPut && opts.key === rawKey) {
+          blockFirstRawPut = false;
+          rawPutEntered.resolve();
+          await releaseRawPut.promise;
+        }
+        return originalPutObject(opts);
+      };
+      resetS3Storage();
+      setS3Storage(storage);
+      const firstPop3 = new FakePop3Client({ messages: [{ uidl: pop3Uidl, raw }] });
+      const failureCounts = new Map([[pop3Uidl, POISON_MAX_RETRIES - 1]]);
+
+      firstRun = ingestOnce({
+        pop3: firstPop3,
+        db: firstWorker.db,
+        ingestMailboxId,
+        failureCounts,
+      });
+      await rawPutEntered.promise;
+
+      await setup.db
+        .update(mailIngestUidlClaim)
+        .set({ expiresAt: new Date(Date.now() - 1) })
+        .where(
+          and(
+            eq(mailIngestUidlClaim.ingestMailboxId, ingestMailboxId),
+            eq(mailIngestUidlClaim.pop3Uidl, pop3Uidl),
+          ),
+        );
+      replacementClaimToken = await claimIngestUidl(setup.db, { ingestMailboxId, pop3Uidl });
+      expect(replacementClaimToken).toBeTypeOf('string');
+
+      releaseRawPut.resolve();
+      const result = await firstRun;
+      const quarantines = await setup.db
+        .select({ id: mailIngestQuarantine.id })
+        .from(mailIngestQuarantine)
+        .where(eq(mailIngestQuarantine.pop3Uidl, pop3Uidl));
+
+      expect(result).toMatchObject({
+        deled: 0,
+        items: [
+          {
+            uidl: pop3Uidl,
+            status: 'deferred',
+            reason: 'ingest_uidl_claim_pending',
+          },
+        ],
+      });
+      expect(firstPop3.deleLog).toEqual([]);
+      expect(failureCounts.has(pop3Uidl)).toBe(false);
+      expect(quarantines).toEqual([]);
+    } finally {
+      releaseRawPut.resolve();
+      storage.putObject = originalPutObject;
+      resetS3Storage();
+      setIntervalSpy.mockRestore();
+      clearIntervalSpy.mockRestore();
+      await Promise.allSettled(
+        [firstRun].filter((promise): promise is Promise<unknown> => promise !== undefined),
+      );
+      if (replacementClaimToken) {
+        await releaseIngestUidlClaim(
+          setup.db,
+          { ingestMailboxId, pop3Uidl },
+          replacementClaimToken,
+        ).catch(() => undefined);
+      }
+      await setup.db
+        .delete(mailboxTransport)
+        .where(eq(mailboxTransport.id, transportId))
+        .catch(() => undefined);
+      await setup.db
+        .delete(mailIngestMailbox)
+        .where(eq(mailIngestMailbox.id, ingestMailboxId))
+        .catch(() => undefined);
+      await Promise.all([setup.close(), firstWorker.close()]);
+    }
+  }, 30000);
+
+  it('keeps a UIDL claim until POP3 QUIT commits its deletion', async () => {
+    const storage = new FakeS3Storage('candidate-cleanup-uidl-quit');
+    const setup = openTestDbSession();
+    const firstWorker = openTestDbSession();
+    const secondWorker = openTestDbSession();
+    const ingestMailboxId = `ingest-uidl-quit-${randomUUID()}`;
+    const transportId = `transport-uidl-quit-${randomUUID()}`;
+    const transportEmail = `${transportId}@zero.test`;
+    const pop3Uidl = `uidl-quit-${randomUUID()}`;
+    const quitEntered = deferred();
+    const releaseQuit = deferred();
+    let firstRun: Promise<unknown> | undefined;
+    let secondRun: Promise<unknown> | undefined;
+
+    try {
+      await setup.db.insert(mailIngestMailbox).values({
+        id: ingestMailboxId,
+        email: `${ingestMailboxId}@zero.test`,
+        description: 'uidl quit claim test',
+      });
+      await setup.db.insert(mailboxTransport).values({
+        id: transportId,
+        email: transportEmail,
+        ownerHeaderValue: transportEmail,
+        mailboxType: 'personal',
+        isActive: true,
+      });
+      const raw = candidateMessage({
+        attachmentCount: 0,
+        ownerHeaderValue: transportEmail,
+        subject: 'uidl quit claim',
+      });
+      resetS3Storage();
+      setS3Storage(storage);
+      const firstPop3 = new FakePop3Client({ messages: [{ uidl: pop3Uidl, raw }] });
+      const secondPop3 = new FakePop3Client({ messages: [{ uidl: pop3Uidl, raw }] });
+      const originalFirstQuit = firstPop3.quit.bind(firstPop3);
+      firstPop3.quit = async () => {
+        quitEntered.resolve();
+        await releaseQuit.promise;
+        await originalFirstQuit();
+      };
+
+      firstRun = ingestOnce({
+        pop3: firstPop3,
+        db: firstWorker.db,
+        ingestMailboxId,
+      });
+      await quitEntered.promise;
+
+      secondRun = ingestOnce({
+        pop3: secondPop3,
+        db: secondWorker.db,
+        ingestMailboxId,
+      });
+      const second = await secondRun;
+      expect(second).toMatchObject({
+        items: [
+          {
+            uidl: pop3Uidl,
+            status: 'deferred',
+            reason: 'ingest_uidl_claim_pending',
+          },
+        ],
+      });
+      expect(secondPop3.callLog.map((call) => call.op)).not.toContain('retr');
+      releaseQuit.resolve();
+      const first = await firstRun;
+      expect(first).toMatchObject({ deled: 1 });
+    } finally {
+      releaseQuit.resolve();
+      resetS3Storage();
+      await Promise.allSettled(
+        [firstRun, secondRun].filter(
+          (promise): promise is Promise<unknown> => promise !== undefined,
+        ),
+      );
+      await setup.db
+        .delete(mailboxTransport)
+        .where(eq(mailboxTransport.id, transportId))
+        .catch(() => undefined);
+      await setup.db
+        .delete(mailIngestMailbox)
+        .where(eq(mailIngestMailbox.id, ingestMailboxId))
+        .catch(() => undefined);
+      await Promise.all([setup.close(), firstWorker.close(), secondWorker.close()]);
+    }
+  }, 30000);
+});
 
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
   'durable candidate attachment cleanup queue',
@@ -254,31 +721,26 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       });
     }, 30000);
 
-    it('does not let overlapping sweepers delete a retry that becomes canonical', async () => {
-      const storage = new FakeS3Storage('candidate-cleanup-overlapping-sweepers');
+    it('defers a sweeper while claimed parsing has pending cleanup', async () => {
+      const storage = new FakeS3Storage('candidate-cleanup-claimed-canonical');
       const setup = openTestDbSession();
-      const firstSweeper = openTestDbSession();
-      const secondSweeper = openTestDbSession();
-      const retry = openTestDbSession();
-      const ingestMailboxId = `ingest-cleanup-race-${randomUUID()}`;
-      const transportId = `transport-cleanup-race-${randomUUID()}`;
+      const worker = openTestDbSession();
+      const ingestMailboxId = `ingest-cleanup-claimed-${randomUUID()}`;
+      const transportId = `transport-cleanup-claimed-${randomUUID()}`;
       const transportEmail = `${transportId}@zero.test`;
-      const pop3Uidl = `cleanup-race-${randomUUID()}`;
-      const candidateMessageId = randomUUID();
-      const firstDeleteEntered = deferred();
-      const releaseFirstDelete = deferred();
-      const canonicalStored = deferred();
-      const originalDeleteObject = storage.deleteObject.bind(storage);
-      let deleteCalls = 0;
-      let firstSweep: Promise<unknown> | undefined;
-      let secondSweep: Promise<unknown> | undefined;
-      let retryPersistence: Promise<unknown> | undefined;
+      const pop3Uidl = `cleanup-claimed-${randomUUID()}`;
+      const attachmentUploaded = deferred();
+      const releaseAttachmentUpload = deferred();
+      const originalPutObject = storage.putObject.bind(storage);
+      let blockAttachmentUpload = true;
+      let candidateKey: string | undefined;
+      let workerRun: Promise<unknown> | undefined;
 
       try {
         await setup.db.insert(mailIngestMailbox).values({
           id: ingestMailboxId,
           email: `${ingestMailboxId}@zero.test`,
-          description: 'overlapping cleanup sweeper test',
+          description: 'claimed cleanup canonical test',
         });
         await setup.db.insert(mailboxTransport).values({
           id: transportId,
@@ -290,11 +752,31 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         const raw = candidateMessage({
           attachmentCount: 1,
           ownerHeaderValue: transportEmail,
-          subject: 'cleanup sweeper race',
+          subject: 'claimed cleanup canonical',
         });
-        const parsed = await parseRawMessage(raw, { messageId: candidateMessageId, storage });
-        const candidateKey = parsed.attachments[0]?.s3Key;
+
+        storage.putObject = async (opts) => {
+          const result = await originalPutObject(opts);
+          if (blockAttachmentUpload && opts.key.startsWith('attachments/')) {
+            blockAttachmentUpload = false;
+            candidateKey = opts.key;
+            attachmentUploaded.resolve();
+            await releaseAttachmentUpload.promise;
+          }
+          return result;
+        };
+        resetS3Storage();
+        setS3Storage(storage);
+        const pop3 = new FakePop3Client({ messages: [{ uidl: pop3Uidl, raw }] });
+        workerRun = ingestOnce({
+          pop3,
+          db: worker.db,
+          ingestMailboxId,
+        });
+        await attachmentUploaded.promise;
         if (!candidateKey) throw new Error('missing candidate attachment');
+        const candidateMessageId = candidateKey.split('/')[1];
+        if (!candidateMessageId) throw new Error('missing candidate message id');
         await insertCleanupTask({
           db: setup.db,
           candidateMessageId,
@@ -303,60 +785,28 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           s3Key: candidateKey,
         });
 
-        storage.deleteObject = async (key) => {
-          deleteCalls += 1;
-          if (deleteCalls === 1) {
-            firstDeleteEntered.resolve();
-            await releaseFirstDelete.promise;
-          }
-          await originalDeleteObject(key);
-        };
-
-        firstSweep = sweepCandidateAttachmentCleanupTasks({
-          db: firstSweeper.db,
-          storage,
-          limit: 1,
-        });
-        await firstDeleteEntered.promise;
-        secondSweep = sweepCandidateAttachmentCleanupTasks({
-          db: secondSweeper.db,
-          storage,
-          limit: 1,
-        });
-        await secondSweep;
-
-        retryPersistence = (async () => {
-          await retry.db.execute(sql`
-            DELETE FROM ${cleanupTaskTable}
-            WHERE "s3_key" = ${candidateKey}
-          `);
-          const retryParsed = await parseRawMessage(raw, {
-            messageId: candidateMessageId,
-            storage,
-          });
-          const result = await persistInboundMessage(
-            retryParsed,
-            raw,
-            { ingestMailboxId, pop3Uidl, messageId: candidateMessageId },
-            { db: retry.db, storage, skipAiEnqueue: true },
-          );
-          canonicalStored.resolve();
-          return result;
-        })();
-
-        await Promise.race([canonicalStored.promise, wait(750)]);
-        releaseFirstDelete.resolve();
-        const [, , retryResult] = await Promise.all([firstSweep, secondSweep, retryPersistence]);
-
-        expect(retryResult).toMatchObject({ kind: 'stored' });
+        await sweepCandidateAttachmentCleanupTasks({ db: setup.db, storage });
         expect(storage.get(candidateKey)).toBeDefined();
+        expect(await cleanupTaskCount(setup.db, ingestMailboxId, pop3Uidl)).toBe(1);
+
+        releaseAttachmentUpload.resolve();
+        const workerResult = await workerRun;
+        expect(workerResult).toMatchObject({
+          deled: 0,
+          items: [{ status: 'deferred', result: { kind: 'deferred' } }],
+        });
+
+        await makeCleanupTasksDue(setup.db, ingestMailboxId, pop3Uidl);
+        await sweepCandidateAttachmentCleanupTasks({ db: setup.db, storage });
+
+        expect(storage.get(candidateKey)).toBeUndefined();
+        expect(await cleanupTaskCount(setup.db, ingestMailboxId, pop3Uidl)).toBe(0);
       } finally {
-        releaseFirstDelete.resolve();
-        storage.deleteObject = originalDeleteObject;
+        releaseAttachmentUpload.resolve();
+        storage.putObject = originalPutObject;
+        resetS3Storage();
         await Promise.allSettled(
-          [firstSweep, secondSweep, retryPersistence].filter(
-            (promise): promise is Promise<unknown> => promise !== undefined,
-          ),
+          [workerRun].filter((promise): promise is Promise<unknown> => promise !== undefined),
         );
         await deleteCleanupTasksIfPresent(setup.db, ingestMailboxId).catch(() => undefined);
         await setup.db
@@ -367,13 +817,46 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           .delete(mailIngestMailbox)
           .where(eq(mailIngestMailbox.id, ingestMailboxId))
           .catch(() => undefined);
-        await Promise.all([
-          setup.close(),
-          firstSweeper.close(),
-          secondSweeper.close(),
-          retry.close(),
-        ]);
+        await Promise.all([setup.close(), worker.close()]);
       }
+    }, 30000);
+
+    it('defers cleanup while matching UIDL has an active processing claim', async () => {
+      const storage = new FakeS3Storage('candidate-cleanup-active-uidl-claim');
+      const ingestMailboxId = 'ingest-nava-legacy';
+      const pop3Uidl = `active-cleanup-claim-${randomUUID()}`;
+      const candidateMessageId = randomUUID();
+      const raw = candidateMessage({
+        attachmentCount: 1,
+        ownerHeaderValue: 'unknown-owner@zero.test',
+      });
+
+      await withSeededTestDb(async (db) => {
+        const parsed = await parseRawMessage(raw, { messageId: candidateMessageId, storage });
+        const candidateKey = parsed.attachments[0]?.s3Key;
+        if (!candidateKey) throw new Error('missing candidate attachment');
+        await insertCleanupTask({
+          db,
+          candidateMessageId,
+          ingestMailboxId,
+          pop3Uidl,
+          s3Key: candidateKey,
+        });
+        const claimToken = await claimIngestUidl(db, { ingestMailboxId, pop3Uidl });
+        if (!claimToken) throw new Error('missing UIDL claim');
+
+        await sweepCandidateAttachmentCleanupTasks({ db, storage });
+
+        expect(storage.get(candidateKey)).toBeDefined();
+        expect(await cleanupTaskCount(db, ingestMailboxId, pop3Uidl)).toBe(1);
+
+        await releaseIngestUidlClaim(db, { ingestMailboxId, pop3Uidl }, claimToken);
+        await makeCleanupTasksDue(db, ingestMailboxId, pop3Uidl);
+        await sweepCandidateAttachmentCleanupTasks({ db, storage });
+
+        expect(storage.get(candidateKey)).toBeUndefined();
+        expect(await cleanupTaskCount(db, ingestMailboxId, pop3Uidl)).toBe(0);
+      });
     }, 30000);
 
     it('waits for durable cleanup registration before reconciling a returned copy', async () => {
@@ -568,7 +1051,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       }
     }, 30000);
 
-    it('processes newer due cleanup after old failures are deferred', async () => {
+    it('bounds failed cleanup work while eventually reaching later due tasks', async () => {
       const storage = new FakeS3Storage('candidate-cleanup-starvation');
       const ingestMailboxId = 'ingest-nava-legacy';
       const oldUidl = `old-cleanup-failures-${randomUUID()}`;
@@ -589,6 +1072,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       const newerKey = `attachments/${newerCandidateMessageId}/000-newer.bin`;
       const originalDeleteObject = storage.deleteObject.bind(storage);
       const oldKeys = new Set(oldTasks.map((task) => task.s3Key));
+      let oldDeleteAttempts = 0;
 
       await withSeededTestDb(async (db) => {
         await insertCleanupTasks({
@@ -614,20 +1098,92 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           ),
         );
         storage.deleteObject = async (key) => {
-          if (oldKeys.has(key)) throw new Error('injected old cleanup failure');
+          if (oldKeys.has(key)) {
+            oldDeleteAttempts += 1;
+            throw new Error('injected old cleanup failure');
+          }
           await originalDeleteObject(key);
         };
 
         try {
           await sweepCandidateAttachmentCleanupTasks({ db, storage, limit: 500 });
+          expect(oldDeleteAttempts).toBe(500);
+          expect(storage.get(newerKey)).toBeDefined();
+          expect(await cleanupTaskCount(db, ingestMailboxId, newerUidl)).toBe(1);
+
+          await db.execute(sql`
+            UPDATE ${cleanupTaskTable}
+            SET "next_attempt_at" = now() + interval '1 hour'
+            WHERE "pop3_uidl" = ${oldUidl}
+              AND "attempts" > 0
+          `);
+          await sweepCandidateAttachmentCleanupTasks({ db, storage, limit: 500 });
         } finally {
           storage.deleteObject = originalDeleteObject;
         }
 
+        expect(oldDeleteAttempts).toBe(501);
         expect(storage.get(newerKey)).toBeUndefined();
         expect(await cleanupTaskCount(db, ingestMailboxId, newerUidl)).toBe(0);
       });
     }, 30000);
+
+    it('does not let active UIDL claims consume cleanup sweep capacity', async () => {
+      const storage = new FakeS3Storage('candidate-cleanup-claim-capacity');
+      const ingestMailboxId = 'ingest-nava-legacy';
+      const claimedUidl = `claimed-cleanup-${randomUUID()}`;
+      const laterUidl = `later-cleanup-${randomUUID()}`;
+      const claimedCreatedAt = new Date(Date.now() - 60_000);
+      const laterCreatedAt = new Date();
+      const claimedTasks = Array.from({ length: 500 }, () => {
+        const candidateMessageId = randomUUID();
+        return {
+          candidateMessageId,
+          createdAt: claimedCreatedAt,
+          ingestMailboxId,
+          pop3Uidl: claimedUidl,
+          s3Key: `attachments/${candidateMessageId}/000-claimed.bin`,
+        };
+      });
+      const laterCandidateMessageId = randomUUID();
+      const laterKey = `attachments/${laterCandidateMessageId}/000-later.bin`;
+
+      await withSeededTestDb(async (db) => {
+        await insertCleanupTasks({
+          db,
+          tasks: [
+            ...claimedTasks,
+            {
+              candidateMessageId: laterCandidateMessageId,
+              createdAt: laterCreatedAt,
+              ingestMailboxId,
+              pop3Uidl: laterUidl,
+              s3Key: laterKey,
+            },
+          ],
+        });
+        await Promise.all(
+          [...claimedTasks.map((task) => task.s3Key), laterKey].map((key) =>
+            storage.putObject({
+              key,
+              body: Buffer.from(key),
+              contentType: 'application/octet-stream',
+            }),
+          ),
+        );
+        const claimToken = await claimIngestUidl(db, {
+          ingestMailboxId,
+          pop3Uidl: claimedUidl,
+        });
+        if (!claimToken) throw new Error('missing active cleanup claim');
+
+        await sweepCandidateAttachmentCleanupTasks({ db, storage, limit: 500 });
+
+        expect(storage.get(laterKey)).toBeUndefined();
+        expect(await cleanupTaskCount(db, ingestMailboxId, laterUidl)).toBe(0);
+        expect(await cleanupTaskCount(db, ingestMailboxId, claimedUidl)).toBe(500);
+      });
+    }, 60000);
 
     it('exposes only attachments uploaded before parser failure', async () => {
       const storage = new FakeS3Storage('candidate-cleanup-parser-partial');
@@ -830,6 +1386,56 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       }
     }, 30000);
 
+    it('cleans parsed uploads when persistence rolls back before poison deletion', async () => {
+      const storage = new FakeS3Storage('candidate-cleanup-persist-rollback');
+      const ingestMailboxId = 'ingest-nava-legacy';
+      const pop3Uidl = `persist-rollback-${randomUUID()}`;
+      const raw = candidateMessage({
+        attachmentCount: 1,
+        ownerHeaderValue: 'centurion@legacyhotels.co.za',
+      });
+      const pop3 = new FakePop3Client({ messages: [{ uidl: pop3Uidl, raw }] });
+      const functionName = `reject_message_${randomUUID().replaceAll('-', '_')}`;
+      const triggerName = `reject_message_trigger_${randomUUID().replaceAll('-', '_')}`;
+      resetS3Storage();
+      setS3Storage(storage);
+
+      try {
+        await withSeededTestDb(async (db) => {
+          await db.execute(
+            sql.raw(`
+            CREATE FUNCTION "${functionName}"()
+            RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN
+              RAISE EXCEPTION 'injected message persistence failure';
+            END;
+            $$;
+          `),
+          );
+          await db.execute(
+            sql.raw(`
+            CREATE TRIGGER "${triggerName}"
+            BEFORE INSERT ON "message"
+            FOR EACH ROW EXECUTE FUNCTION "${functionName}"();
+          `),
+          );
+
+          const result = await ingestOnce({
+            pop3,
+            db,
+            failureCounts: new Map([[pop3Uidl, 2]]),
+            ingestMailboxId,
+          });
+
+          expect(result.deled).toBe(1);
+          expect(storage.listKeys('attachments/')).toEqual([]);
+          expect(await cleanupTaskCount(db, ingestMailboxId, pop3Uidl)).toBe(0);
+        });
+      } finally {
+        resetS3Storage();
+      }
+    }, 30000);
+
     it('persists and drains every candidate attachment beyond cleanup sweep batch size', async () => {
       const storage = new FakeS3Storage('candidate-cleanup-no-cap');
       const ingestMailboxId = 'ingest-nava-legacy';
@@ -883,7 +1489,66 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         expect(retryKeys.every((key) => storage.get(key) === undefined)).toBe(true);
         expect(await cleanupTaskCount(db, ingestMailboxId, pop3Uidl)).toBe(0);
       });
-    }, 30000);
+    }, 60000);
+
+    it('does not repeat an exact-limit cleanup batch when durable deferral fails', async () => {
+      const storage = new FakeS3Storage('candidate-cleanup-defer-failure');
+      const ingestMailboxId = 'ingest-nava-legacy';
+      const pop3Uidl = `defer-failure-${randomUUID()}`;
+      const raw = candidateMessage({
+        attachmentCount: 500,
+        ownerHeaderValue: 'unknown-owner@zero.test',
+      });
+      const functionName = `fail_cleanup_defer_${randomUUID().replaceAll('-', '_')}`;
+      const sequenceName = `fail_cleanup_defer_seq_${randomUUID().replaceAll('-', '_')}`;
+      const triggerName = `fail_cleanup_defer_trigger_${randomUUID().replaceAll('-', '_')}`;
+      const originalDeleteObject = storage.deleteObject.bind(storage);
+
+      await withSeededTestDb(async (db) => {
+        const messageId = randomUUID();
+        const parsed = await parseRawMessage(raw, { messageId, storage });
+        storage.deleteObject = async () => {
+          throw new Error('injected candidate cleanup delete failure');
+        };
+        await db.execute(sql.raw(`CREATE SEQUENCE "${sequenceName}";`));
+        await db.execute(
+          sql.raw(`
+            CREATE FUNCTION "${functionName}"()
+            RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN
+              IF nextval('${sequenceName}') <= 501 THEN
+                RAISE EXCEPTION 'injected durable cleanup deferral failure';
+              END IF;
+              RETURN NEW;
+            END;
+            $$;
+          `),
+        );
+        await db.execute(
+          sql.raw(`
+            CREATE TRIGGER "${triggerName}"
+            BEFORE UPDATE ON "mail_ingest_candidate_attachment_cleanup"
+            FOR EACH ROW EXECUTE FUNCTION "${functionName}"();
+          `),
+        );
+
+        try {
+          const result = await persistInboundMessage(
+            parsed,
+            raw,
+            { ingestMailboxId, pop3Uidl, messageId },
+            { db, storage, skipAiEnqueue: true },
+          );
+
+          expect(result).toMatchObject({
+            kind: 'quarantined',
+            candidateAttachmentCleanupFailureCount: 500,
+          });
+        } finally {
+          storage.deleteObject = originalDeleteObject;
+        }
+      });
+    }, 60000);
 
     it('retains both concurrent replay tasks until a later drain succeeds', async () => {
       const storage = new FakeS3Storage('candidate-cleanup-concurrent-replays');
@@ -1086,7 +1751,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       }
     }, 30000);
 
-    it('reuses candidate keys after failed cleanup registration instead of poison-draining them', async () => {
+    it('recovers parsed uploads after a transient cleanup registration failure', async () => {
       const storage = new FakeS3Storage('candidate-cleanup-registration-retry');
       const ingestMailboxId = `ingest-cleanup-registration-${randomUUID()}`;
       const pop3Uidl = `registration-retry-${randomUUID()}`;
@@ -1132,11 +1797,13 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         );
 
         const first = await ingestOnce({ pop3, db, ingestMailboxId });
-        const firstCandidateKey = storage.listKeys('attachments/')[0];
+        const firstCandidateKey = storage.calls.find(
+          (call) => call.op === 'PUT' && call.key.startsWith('attachments/'),
+        )?.key;
         if (!firstCandidateKey) throw new Error('missing failed-registration candidate attachment');
 
         expect(first.deled).toBe(0);
-        expect(storage.get(firstCandidateKey)).toBeDefined();
+        expect(storage.get(firstCandidateKey)).toBeUndefined();
         expect(await cleanupTaskCount(db, ingestMailboxId, pop3Uidl)).toBe(0);
 
         const second = await ingestOnce({ pop3, db, ingestMailboxId });

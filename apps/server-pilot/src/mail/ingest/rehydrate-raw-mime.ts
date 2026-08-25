@@ -6,17 +6,22 @@
  * enqueue (`skipAiEnqueue`) so bulk restore does not flood triage.
  */
 import {
+  candidateMessageIdForPop3Uidl,
+  parseRawMessage,
+  uploadedAttachmentsFromParseFailure,
+  type ParsedInboundMessage,
+} from './parse-message.js';
+import {
   ListObjectsV2Command,
   S3Client,
   type ListObjectsV2CommandOutput,
 } from '@aws-sdk/client-s3';
+import { cleanupPartialParseFailureAttachments, persistInboundMessage } from './store.js';
+import { mailIngestQuarantine, message } from '../../db/schema/mail.js';
+import { getS3Storage, type S3Storage } from '../../storage/s3.js';
+import { ingestRequireOwnerHeader } from '../../env.js';
 import { and, eq, isNotNull } from 'drizzle-orm';
 import type { DB } from '../../db/client.js';
-import { mailIngestQuarantine, message } from '../../db/schema/mail.js';
-import { ingestRequireOwnerHeader } from '../../env.js';
-import { generateMessageId, parseRawMessage } from './parse-message.js';
-import { persistInboundMessage } from './store.js';
-import { getS3Storage, type S3Storage } from '../../storage/s3.js';
 
 const DEFAULT_PREFIX = 'raw-mime/ingest-nava-legacy/';
 
@@ -57,16 +62,12 @@ export interface RehydrateResult extends RehydrateCounts {
 
 export class RehydrateEnvError extends Error {
   constructor() {
-    super(
-      'INGEST_REQUIRE_OWNER_HEADER must be false to rehydrate raw MIME into mailbox rows',
-    );
+    super('INGEST_REQUIRE_OWNER_HEADER must be false to rehydrate raw MIME into mailbox rows');
     this.name = 'RehydrateEnvError';
   }
 }
 
-export function assertRehydrateEnv(
-  input: Record<string, string | undefined> = process.env,
-): void {
+export function assertRehydrateEnv(input: Record<string, string | undefined> = process.env): void {
   if (ingestRequireOwnerHeader(input)) {
     throw new RehydrateEnvError();
   }
@@ -117,9 +118,7 @@ export async function listRawMimeKeys(opts: {
   return refs.sort((a, b) => a.key.localeCompare(b.key));
 }
 
-export async function rehydrateRawMimeFromS3(
-  opts: RehydrateOptions,
-): Promise<RehydrateResult> {
+export async function rehydrateRawMimeFromS3(opts: RehydrateOptions): Promise<RehydrateResult> {
   assertRehydrateEnv();
 
   const storage = opts.storage ?? getS3Storage();
@@ -128,8 +127,7 @@ export async function rehydrateRawMimeFromS3(
     (await listRawMimeKeys({
       prefix: opts.prefix ?? DEFAULT_PREFIX,
     }));
-  const keys =
-    opts.limit !== undefined ? allKeys.slice(0, opts.limit) : allKeys;
+  const keys = opts.limit !== undefined ? allKeys.slice(0, opts.limit) : allKeys;
 
   const existingMessageKeys = await loadExistingMessageKeys(opts.db);
   const quarantineKeys = await loadQuarantineKeys(opts.db);
@@ -220,6 +218,8 @@ async function rehydrateOne(
   opts: { db: DB; storage: S3Storage; triage: boolean },
 ): Promise<OneOutcome> {
   const { db, storage } = opts;
+  const messageId = candidateMessageIdForPop3Uidl(ref.ingestMailboxId, ref.pop3Uidl);
+  let parsed: ParsedInboundMessage | undefined;
   try {
     const existing = await findExistingAnyDirection(db, ref);
     if (existing) {
@@ -231,8 +231,7 @@ async function rehydrateOne(
       return { kind: 'error', message: `missing s3 object ${ref.key}` };
     }
 
-    const messageId = generateMessageId();
-    const parsed = await parseRawMessage(object.body, {
+    parsed = await parseRawMessage(object.body, {
       messageId,
       storage,
     });
@@ -258,6 +257,35 @@ async function rehydrateOne(
     return { kind: 'quarantined' };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    const uploadedAttachments = [
+      ...new Map(
+        [...(parsed?.attachments ?? []), ...uploadedAttachmentsFromParseFailure(err)].map(
+          (attachment) => [attachment.s3Key, attachment],
+        ),
+      ).values(),
+    ];
+    if (uploadedAttachments.length > 0) {
+      try {
+        await cleanupPartialParseFailureAttachments({
+          db,
+          storage,
+          attachments: uploadedAttachments,
+          meta: {
+            ingestMailboxId: ref.ingestMailboxId,
+            pop3Uidl: ref.pop3Uidl,
+            messageId,
+            rawMimeS3Key: ref.key,
+          },
+        });
+      } catch (cleanupError) {
+        const cleanupMessage =
+          cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+        return {
+          kind: 'error',
+          message: `${message}; candidate attachment cleanup registration failed: ${cleanupMessage}`,
+        };
+      }
+    }
     return { kind: 'error', message };
   }
 }
@@ -277,10 +305,7 @@ async function findExistingAnyDirection(
     .select({ id: message.id })
     .from(message)
     .where(
-      and(
-        eq(message.ingestMailboxId, ref.ingestMailboxId),
-        eq(message.pop3Uidl, ref.pop3Uidl),
-      ),
+      and(eq(message.ingestMailboxId, ref.ingestMailboxId), eq(message.pop3Uidl, ref.pop3Uidl)),
     )
     .limit(1);
   return byUidl[0];

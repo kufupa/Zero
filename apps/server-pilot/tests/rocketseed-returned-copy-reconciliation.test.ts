@@ -1300,6 +1300,70 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Rocketseed returned-copy reco
     );
   }, 30000);
 
+  it('does not reconcile an ambiguous sent Message-ID fallback', async () => {
+    const storage = new FakeS3Storage('test-mail-bucket');
+    const result = await withSeededTestDb(async (db) => {
+      const returnedMessageId = `returned-${randomUUID()}@zero.test`;
+      const firstCanonical = await seedCanonicalOutbound(db, { returnedMessageId });
+      const secondCanonical = await seedCanonicalOutbound(db, { returnedMessageId });
+      const candidateMessageId = randomUUID();
+      const raw = trustedReturnedCopy({
+        messageId: returnedMessageId,
+        transportAddress: firstCanonical.transportAddress,
+      });
+      const parsed = await parseRawMessage(raw, {
+        messageId: candidateMessageId,
+        storage,
+      });
+      const persistResult = await persistInboundMessage(
+        parsed,
+        raw,
+        {
+          ingestMailboxId: 'ingest-nava-legacy',
+          pop3Uidl: `task-2-${randomUUID()}`,
+          messageId: candidateMessageId,
+        },
+        { db, storage, skipAiEnqueue: true },
+      );
+      const rows = await db
+        .select({
+          id: message.id,
+          ingestMailboxId: message.ingestMailboxId,
+          pop3Uidl: message.pop3Uidl,
+        })
+        .from(message)
+        .where(
+          inArray(message.id, [
+            firstCanonical.canonicalMessageId,
+            secondCanonical.canonicalMessageId,
+            candidateMessageId,
+          ]),
+        );
+      return { candidateMessageId, firstCanonical, persistResult, rows, secondCanonical };
+    });
+
+    expect(result.persistResult.kind).toBe('stored');
+    expect(result.rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: result.firstCanonical.canonicalMessageId,
+          ingestMailboxId: null,
+          pop3Uidl: null,
+        }),
+        expect.objectContaining({
+          id: result.secondCanonical.canonicalMessageId,
+          ingestMailboxId: null,
+          pop3Uidl: null,
+        }),
+        expect.objectContaining({
+          id: result.candidateMessageId,
+          ingestMailboxId: 'ingest-nava-legacy',
+        }),
+      ]),
+    );
+    expect(result.rows).toHaveLength(3);
+  }, 30000);
+
   it('does not fall back to Message-ID for malformed or unknown outbound IDs', async () => {
     const malformed = await withSeededTestDb(async (db) => {
       const storage = new FakeS3Storage('test-mail-bucket');

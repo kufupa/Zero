@@ -6,13 +6,18 @@
  * quarantine atomically on store. Duplicate UIDL (any direction) clears
  * quarantine without inserting a second message.
  */
-import { and, asc, eq } from 'drizzle-orm';
-import type { DB } from '../../db/client.js';
+import {
+  candidateMessageIdForPop3Uidl,
+  parseRawMessage,
+  uploadedAttachmentsFromParseFailure,
+  type ParsedInboundMessage,
+} from './parse-message.js';
+import { cleanupPartialParseFailureAttachments, persistInboundMessage } from './store.js';
 import { mailIngestQuarantine, message } from '../../db/schema/mail.js';
-import { ingestRequireOwnerHeader } from '../../env.js';
-import { generateMessageId, parseRawMessage } from './parse-message.js';
-import { persistInboundMessage } from './store.js';
 import { getS3Storage, type S3Storage } from '../../storage/s3.js';
+import { ingestRequireOwnerHeader } from '../../env.js';
+import type { DB } from '../../db/client.js';
+import { and, asc, eq } from 'drizzle-orm';
 
 const PROMOTE_REASON = 'missing_owner_header';
 
@@ -45,16 +50,12 @@ export interface PromoteQuarantineResult extends PromoteQuarantineCounts {
 
 export class PromoteEnvError extends Error {
   constructor() {
-    super(
-      'INGEST_REQUIRE_OWNER_HEADER must be false to promote quarantine rows',
-    );
+    super('INGEST_REQUIRE_OWNER_HEADER must be false to promote quarantine rows');
     this.name = 'PromoteEnvError';
   }
 }
 
-export function assertPromoteEnv(
-  input: Record<string, string | undefined> = process.env,
-): void {
+export function assertPromoteEnv(input: Record<string, string | undefined> = process.env): void {
   if (ingestRequireOwnerHeader(input)) {
     throw new PromoteEnvError();
   }
@@ -145,13 +146,13 @@ async function promoteOneQuarantineRow(
     ingestMailboxId: row.ingestMailboxId,
     pop3Uidl: row.pop3Uidl,
   };
+  const messageId = candidateMessageIdForPop3Uidl(row.ingestMailboxId, row.pop3Uidl);
+  let parsed: ParsedInboundMessage | undefined;
 
   try {
     const existing = await findExistingMessageAnyDirection(db, meta);
     if (existing) {
-      await db
-        .delete(mailIngestQuarantine)
-        .where(eq(mailIngestQuarantine.id, row.id));
+      await db.delete(mailIngestQuarantine).where(eq(mailIngestQuarantine.id, row.id));
       return { kind: 'duplicate' };
     }
 
@@ -160,8 +161,7 @@ async function promoteOneQuarantineRow(
       return { kind: 'error', message: `missing s3 object ${row.rawMimeS3Key}` };
     }
 
-    const messageId = generateMessageId();
-    const parsed = await parseRawMessage(object.body, {
+    parsed = await parseRawMessage(object.body, {
       messageId,
       storage,
     });
@@ -185,14 +185,40 @@ async function promoteOneQuarantineRow(
       return { kind: 'stored' };
     }
     if (persistResult.kind === 'duplicate') {
-      await db
-        .delete(mailIngestQuarantine)
-        .where(eq(mailIngestQuarantine.id, row.id));
+      await db.delete(mailIngestQuarantine).where(eq(mailIngestQuarantine.id, row.id));
       return { kind: 'duplicate' };
     }
     return { kind: 'quarantined' };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    const uploadedAttachments = [
+      ...new Map(
+        [...(parsed?.attachments ?? []), ...uploadedAttachmentsFromParseFailure(err)].map(
+          (attachment) => [attachment.s3Key, attachment],
+        ),
+      ).values(),
+    ];
+    if (uploadedAttachments.length > 0) {
+      try {
+        await cleanupPartialParseFailureAttachments({
+          db,
+          storage,
+          attachments: uploadedAttachments,
+          meta: {
+            ...meta,
+            messageId,
+            rawMimeS3Key: row.rawMimeS3Key,
+          },
+        });
+      } catch (cleanupError) {
+        const cleanupMessage =
+          cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+        return {
+          kind: 'error',
+          message: `${message}; candidate attachment cleanup registration failed: ${cleanupMessage}`,
+        };
+      }
+    }
     return { kind: 'error', message };
   }
 }
@@ -205,10 +231,7 @@ async function findExistingMessageAnyDirection(
     .select({ id: message.id, transportId: message.transportId })
     .from(message)
     .where(
-      and(
-        eq(message.ingestMailboxId, meta.ingestMailboxId),
-        eq(message.pop3Uidl, meta.pop3Uidl),
-      ),
+      and(eq(message.ingestMailboxId, meta.ingestMailboxId), eq(message.pop3Uidl, meta.pop3Uidl)),
     )
     .limit(1);
   return rows[0];
