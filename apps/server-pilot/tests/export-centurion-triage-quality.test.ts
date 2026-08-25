@@ -4,6 +4,7 @@ import {
   createTriageQualityPostgresReader,
 } from '../scripts/export-centurion-triage-quality';
 import { createPrivateInputReader, createPrivateOutputWriter } from '../src/ops/private-output';
+import { execFileSync } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import { fileURLToPath } from 'node:url';
@@ -162,6 +163,8 @@ function privateOutputRows(harness: Harness): Array<Record<string, unknown>> {
 async function withTemporaryRepo<T>(run: (repoRoot: string) => Promise<T>): Promise<T> {
   const repoRoot = await mkdtemp(path.join(tmpdir(), 'triage-quality-export-'));
   try {
+    execFileSync('git', ['init', '--quiet'], { cwd: repoRoot });
+    await writeFile(path.join(repoRoot, '.gitignore'), '.private/connected-mailbox-corpus/\n', 'utf8');
     return await run(repoRoot);
   } finally {
     await rm(repoRoot, { recursive: true, force: true });
@@ -323,6 +326,7 @@ describe('active connected-mailbox triage quality exporter', () => {
         }),
         'utf8',
       );
+      const rootEntriesAfterFixtureSetup = await readdir(repoRoot);
 
       const { reader } = createReaderFixture();
       const exporter = createTriageQualityExporter({
@@ -358,7 +362,7 @@ describe('active connected-mailbox triage quality exporter', () => {
       await expect(
         exporter(['--labels', '../tracked.jsonl', '--out', 'nested/cases.jsonl']),
       ).rejects.toThrow();
-      await expect(readdir(repoRoot)).resolves.toEqual(['.private']);
+      await expect(readdir(repoRoot)).resolves.toEqual(rootEntriesAfterFixtureSetup);
     });
   });
 
