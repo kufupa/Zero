@@ -433,6 +433,38 @@ describe('MailSearchBar', () => {
     expect(screen.queryByRole('option', { name: 'private booking reference' })).toBeNull();
   });
 
+  it('does not render prior-mailbox recents when user scope becomes incomplete', () => {
+    setMailScope('user-one', 'transport-one');
+    saveRecentSearch('private booking reference');
+    renderMailSearchBarWithoutControls();
+    const input = screen.getByRole('searchbox', { name: /search mail/i });
+
+    fireEvent.focus(input);
+    expect(screen.getByRole('option', { name: 'private booking reference' })).toBeTruthy();
+
+    flushSync(() => {
+      setMailCacheScope({ userId: null, activeTransportId: 'transport-one' });
+    });
+
+    expect(screen.queryByRole('option', { name: 'private booking reference' })).toBeNull();
+  });
+
+  it('does not render prior-mailbox recents when transport scope becomes incomplete', () => {
+    setMailScope('user-one', 'transport-one');
+    saveRecentSearch('private booking reference');
+    renderMailSearchBarWithoutControls();
+    const input = screen.getByRole('searchbox', { name: /search mail/i });
+
+    fireEvent.focus(input);
+    expect(screen.getByRole('option', { name: 'private booking reference' })).toBeTruthy();
+
+    flushSync(() => {
+      setMailCacheScope({ userId: 'user-one', activeTransportId: null });
+    });
+
+    expect(screen.queryByRole('option', { name: 'private booking reference' })).toBeNull();
+  });
+
   it('removes legacy global recents without showing their terms', () => {
     localStorage.setItem('mail-recent-searches', JSON.stringify(['legacy recent']));
     renderMailSearchBarWithoutControls();
