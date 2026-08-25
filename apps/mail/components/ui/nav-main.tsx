@@ -87,6 +87,7 @@ export function NavMain({ items }: NavMainProps) {
 
   // Check if these are bottom navigation items by looking at the first section's title
   const isBottomNav = items[0]?.title === '';
+  const isMailSidebar = !isBottomNav && !pathname.includes('/settings');
   const showSupportLinks = isBottomNav && shouldShowSupportLinks();
 
   /**
@@ -250,26 +251,13 @@ export function NavMain({ items }: NavMainProps) {
             />
           </>
         ) : null}
-        {items.map((section) => (
-          <Collapsible
-            key={section.title}
-            defaultOpen={section.isActive}
-            className="group/collapsible"
-          >
-            <SidebarMenuItem>
-              {state !== 'collapsed' ? (
-                section.title ? (
-                  <p className="text-muted-foreground mx-2 mb-2 text-[13px] dark:text-[#898989]">
-                    {section.title}
-                  </p>
-                ) : null
-              ) : (
-                <div className="bg-muted-foreground/50 mx-2 mb-4 mt-2 h-[0.5px] dark:bg-[#262626]" />
-              )}
-              <div className="z-20 space-y-1 pb-2">
-                {section.items
-                  .filter((item) => !item.hidden)
-                  .map((item) => (
+        {items.map((section) => {
+          const isCollapsibleSection = isMailSidebar && Boolean(section.title);
+          const sectionItems = (
+            <div className="z-20 space-y-1 pb-2">
+              {section.items
+                .filter((item) => !item.hidden)
+                .map((item) => (
                   <NavItem
                     key={item.url}
                     {...item}
@@ -278,11 +266,47 @@ export function NavMain({ items }: NavMainProps) {
                     target={item.target}
                     title={item.title}
                   />
-                  ))}
-              </div>
-            </SidebarMenuItem>
-          </Collapsible>
-        ))}
+                ))}
+            </div>
+          );
+
+          return (
+            <Collapsible
+              key={section.title}
+              defaultOpen={isCollapsibleSection || section.isActive}
+              className="group/collapsible"
+            >
+              <SidebarMenuItem>
+                {state !== 'collapsed' ? (
+                  section.title ? (
+                    isCollapsibleSection ? (
+                      <CollapsibleTrigger asChild>
+                        <button
+                          type="button"
+                          className="text-muted-foreground hover:text-foreground mx-2 mb-2 flex items-center gap-1 text-[13px] dark:text-[#898989]"
+                        >
+                          <ChevronRight className="h-3 w-3 transition-transform group-data-[state=open]/collapsible:rotate-90" />
+                          {section.title}
+                        </button>
+                      </CollapsibleTrigger>
+                    ) : (
+                      <p className="text-muted-foreground mx-2 mb-2 text-[13px] dark:text-[#898989]">
+                        {section.title}
+                      </p>
+                    )
+                  ) : null
+                ) : (
+                  <div className="bg-muted-foreground/50 mx-2 mb-4 mt-2 h-[0.5px] dark:bg-[#262626]" />
+                )}
+                {isCollapsibleSection && state !== 'collapsed' ? (
+                  <CollapsibleContent>{sectionItems}</CollapsibleContent>
+                ) : (
+                  sectionItems
+                )}
+              </SidebarMenuItem>
+            </Collapsible>
+          );
+        })}
         {!pathname.includes('/settings') &&
           !isBottomNav &&
           state !== 'collapsed' &&
