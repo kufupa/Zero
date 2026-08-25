@@ -1,23 +1,15 @@
-import { createHash } from 'node:crypto';
 import { chmod, lstat, mkdir, mkdtemp, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 
 export type ExportThreadCorpusArgs = {
   outDir: string;
-  centurionTransportId: string;
-  designatedTransportId: string;
   asOf?: string;
-  designatedAddressFile?: string;
-  designatedIngestMailboxIds: string[];
 };
 
-export const CENTURION_TRANSPORT_SCOPE_KEY = 'centurion_transport' as const;
-export const DESIGNATED_RESERVATIONIST_MAILBOX_SCOPE_KEY =
-  'designated_reservationist_mailbox' as const;
+export const ACTIVE_TRANSPORT_SCOPE_KEY = 'active_transport' as const;
 
-export type ThreadCorpusScopeKey =
-  | typeof CENTURION_TRANSPORT_SCOPE_KEY
-  | typeof DESIGNATED_RESERVATIONIST_MAILBOX_SCOPE_KEY;
+export type ThreadCorpusScopeKey = typeof ACTIVE_TRANSPORT_SCOPE_KEY;
 
 export type ThreadCorpusAddresses = {
   from: string[];
@@ -84,23 +76,18 @@ export type ThreadCorpusPrivateMessage = {
   draftRevisionLinks: ThreadCorpusDraftRevisionLink[];
   outboundDelivery: ThreadCorpusOutboundDelivery;
   sourceMetadata: {
-    transportId: string | null;
-    ingestMailboxId: string | null;
-    uidl: string | null;
+    transportId: string;
   };
 };
 
-export type ThreadCorpusSourceScope = {
-  kind: 'transport' | 'ingest_mailbox';
-  id: string;
-  active: boolean;
+export type ActiveTransportScope = {
+  asOf: string;
+  transportIds: readonly string[];
 };
 
 export type ThreadCorpusMessageRow = {
   id: string;
-  transportId: string | null;
-  ingestMailboxId: string | null;
-  uidl: string | null;
+  transportId: string;
   threadId: string | null;
   messageId: string | null;
   receivedAt: string;
@@ -118,12 +105,11 @@ export type ThreadCorpusMessageRow = {
 
 export type ThreadCorpusSnapshotReadSession = {
   asOf: string;
-  discoverSourceScopes(): Promise<readonly ThreadCorpusSourceScope[]>;
+  discoverActiveTransportScope(): Promise<ActiveTransportScope>;
   readMessages(): Promise<readonly ThreadCorpusMessageRow[]>;
   readAttachmentDescriptors(): Promise<readonly ThreadCorpusAttachmentSourceDescriptor[]>;
   readDraftRevisionLinks(): Promise<readonly ThreadCorpusDraftRevisionLink[]>;
   readOutboundQueueDeliveryStates(): Promise<readonly ThreadCorpusOutboundQueueState[]>;
-  readQuarantineRows(): Promise<readonly ThreadCorpusMessageRow[]>;
 };
 
 export type ThreadCorpusSnapshotReader = {
@@ -132,20 +118,13 @@ export type ThreadCorpusSnapshotReader = {
   ): Promise<T>;
 };
 
-export type ThreadCorpusSnapshotLoadRequest = {
-  centurionTransportId: string;
-  designatedTransportId: string;
-  designatedIngestMailboxIds: readonly string[];
-  designatedAddresses: readonly string[];
-};
+export type ThreadCorpusSnapshotLoadRequest = Record<never, never>;
 
 export type ThreadCorpusSnapshotSafeSummary = {
   asOf: string;
   includedMessageCount: number;
   sourceRowCount: number;
   threadCount: number;
-  quarantineRecordCount: number;
-  unscopedQuarantineCount: number;
 };
 
 export type ThreadCorpusSourceRow = {
@@ -157,15 +136,14 @@ export type ThreadCorpusSourceRow = {
   contentFingerprint?: string | null;
   provenanceFingerprint?: string | null;
   body: string;
-  isQuarantined?: boolean;
   privateMessage?: ThreadCorpusPrivateMessage;
 };
 
 export type ThreadCorpusSnapshotLoadResult = {
   asOf: string;
+  activeTransportScope: ActiveTransportScope;
   formatted: FormattedLogicalMessages;
   attachmentLocators: ThreadCorpusAttachmentLocator[];
-  unscopedQuarantineRows: ThreadCorpusMessageRow[];
   safeSummary: ThreadCorpusSnapshotSafeSummary;
 };
 
@@ -175,7 +153,6 @@ export type LogicalMessage = {
   scopeMembership: string[];
   annotations: Array<'unresolved_duplicate_candidate'>;
   threadId: string | null;
-  quarantined: boolean;
 };
 
 export type LogicalThread =
@@ -190,24 +167,16 @@ export type LogicalThread =
       messages: [LogicalMessage];
     };
 
-export type QuarantineRecord = LogicalMessage & {
-  quarantined: true;
-  threadId: null;
-};
-
 export type FormattedLogicalMessages = {
   threads: LogicalThread[];
-  quarantineRecords: QuarantineRecord[];
 };
 
-export const CENTURION_THREAD_CORPUS_SCHEMA_VERSION = 'centurion-thread-corpus-v2';
+export const CENTURION_THREAD_CORPUS_SCHEMA_VERSION = 'centurion-thread-corpus-v3';
 
 export type SnapshotScope = {
   scopeKeys: ThreadCorpusScopeKey[];
   transportIds: string[];
-  participantAddressRef: 'private_designated_reservationist_address' | null;
-  messagePredicate: 'selected_transports_or_private_designated_address_before_as_of';
-  quarantinePredicate: 'selected_ingest_mailbox_or_owner_header_before_as_of';
+  messagePredicate: 'active_transport_before_as_of';
 };
 
 export type PrivateThreadCorpusSnapshotContext = {
@@ -215,7 +184,6 @@ export type PrivateThreadCorpusSnapshotContext = {
   scope: SnapshotScope;
   asOf: string;
   exporterVersion: string;
-  unscopedQuarantineExcluded: number;
 };
 
 export type ThreadCorpusArtifactKind = 'raw_mime' | 'attachment_text';
@@ -230,12 +198,7 @@ export type ThreadCorpusHydrationPayload =
   | {
       kind: 'raw_mime';
       sourceRowId: string;
-      status:
-        | 'available'
-        | 'expired_or_missing'
-        | 'too_large'
-        | 'budget_exhausted'
-        | 'read_failed';
+      status: 'available' | 'expired_or_missing' | 'too_large' | 'budget_exhausted' | 'read_failed';
       content?: Uint8Array;
     }
   | {
@@ -282,33 +245,28 @@ export type SnapshotRawMime = {
   artifact: ThreadCorpusArtifactReference | null;
 };
 
-export type SnapshotAttachmentTextArtifact =
-  | null
-  | {
-      status:
-        | 'available'
-        | 'expired_or_missing'
-        | 'too_large'
-        | 'budget_exhausted'
-        | 'unsupported'
-        | 'encrypted'
-        | 'no_embedded_text'
-        | 'malformed'
-        | 'too_many_pages'
-        | 'timeout'
-        | 'parser_failure'
-        | 'read_failed';
-      artifact: ThreadCorpusArtifactReference | null;
-    };
+export type SnapshotAttachmentTextArtifact = null | {
+  status:
+    | 'available'
+    | 'expired_or_missing'
+    | 'too_large'
+    | 'budget_exhausted'
+    | 'unsupported'
+    | 'encrypted'
+    | 'no_embedded_text'
+    | 'malformed'
+    | 'too_many_pages'
+    | 'timeout'
+    | 'parser_failure'
+    | 'read_failed';
+  artifact: ThreadCorpusArtifactReference | null;
+};
 
 export type SnapshotAttachmentDescriptor = ThreadCorpusAttachmentDescriptor & {
   textArtifact: SnapshotAttachmentTextArtifact;
 };
 
-export type SnapshotPrivateMessage = Omit<
-  ThreadCorpusPrivateMessage,
-  'rawMime' | 'attachments'
-> & {
+export type SnapshotPrivateMessage = Omit<ThreadCorpusPrivateMessage, 'rawMime' | 'attachments'> & {
   rawMime: SnapshotRawMime;
   attachments: SnapshotAttachmentDescriptor[];
 };
@@ -322,7 +280,6 @@ export type SnapshotSourceRow = {
   contentFingerprint: string | null;
   provenanceFingerprint: string | null;
   body: string;
-  isQuarantined: boolean;
   privateMessage?: SnapshotPrivateMessage;
 };
 
@@ -345,27 +302,14 @@ export type ThreadSnapshotRecord = {
   messages: SnapshotMessage[];
 };
 
-export type QuarantineSnapshotRecord = {
-  recordType: 'quarantine';
-  schemaVersion: typeof CENTURION_THREAD_CORPUS_SCHEMA_VERSION;
-  snapshotId: string;
-  quarantined: true;
-  timestamp: string;
-  messageId: string | null;
-  sourceRows: SnapshotSourceRow[];
-  scopeMembership: ThreadCorpusScopeKey[];
-  annotations: Array<'unresolved_duplicate_candidate'>;
-};
-
-export type SnapshotRecord = ThreadSnapshotRecord | QuarantineSnapshotRecord;
+export type SnapshotRecord = ThreadSnapshotRecord;
 
 export type SnapshotMetadataRecord = {
   recordType: 'metadata';
   schemaVersion: typeof CENTURION_THREAD_CORPUS_SCHEMA_VERSION;
   snapshotId: string;
   orderedRecordSha256: string;
-  threadRecordCount: number;
-  quarantineRecordCount: number;
+  recordCount: number;
 };
 
 export type SnapshotManifestCounts = {
@@ -376,13 +320,10 @@ export type SnapshotManifestCounts = {
   attachments: number;
   drafts: number;
   revisions: number;
-  quarantine: number;
   rawMimeAvailable: number;
   rawMimeUnavailable: number;
   attachmentTextAvailable: number;
   attachmentTextUnavailable: number;
-  scopedQuarantine: number;
-  unscopedQuarantineExcluded: number;
   messagesByScope: Record<ThreadCorpusScopeKey, number>;
 };
 
@@ -445,18 +386,9 @@ type IndexedSourceRow = {
   duplicateCandidateKey: string | null;
 };
 
-const REQUIRED_FLAGS = [
-  '--out-dir',
-  '--centurion-transport-id',
-  '--designated-transport-id',
-] as const;
+const REQUIRED_FLAGS = ['--out-dir'] as const;
 
-const VALUE_FLAGS = new Set([
-  ...REQUIRED_FLAGS,
-  '--as-of',
-  '--designated-address-file',
-  '--designated-ingest-mailbox-id',
-]);
+const VALUE_FLAGS = new Set([...REQUIRED_FLAGS, '--as-of']);
 
 const LOCAL_PRIVATE_ARTIFACT_FILE_SYSTEM: PrivateArtifactFileSystem = {
   chmod,
@@ -476,7 +408,10 @@ function compareText(left: string, right: string): number {
 
 function isPathWithin(candidate: string, parent: string): boolean {
   const relative = path.relative(parent, candidate);
-  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+  return (
+    relative === '' ||
+    (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))
+  );
 }
 
 function privateCorpusRoot(repoRoot: string): string {
@@ -488,7 +423,9 @@ function resolvePrivateCorpusOutDir(repoRoot: string, outDir: string): string {
   const root = privateCorpusRoot(resolvedRepoRoot);
   const resolvedOutDir = path.resolve(resolvedRepoRoot, outDir);
   if (!isPathWithin(resolvedOutDir, root) || path.dirname(resolvedOutDir) !== root) {
-    throw new Error('--out-dir must name a direct child directory inside .private/centurion-thread-corpus');
+    throw new Error(
+      '--out-dir must name a direct child directory inside .private/centurion-thread-corpus',
+    );
   }
   return resolvedOutDir;
 }
@@ -522,18 +459,12 @@ export function parseExportThreadCorpusArgs(
   argv: readonly string[],
   repoRoot: string,
 ): ExportThreadCorpusArgs {
-  const values: Partial<Record<(typeof VALUE_FLAGS extends Set<infer Flag> ? Flag : never), string>> =
+  const values: Partial<Record<typeof VALUE_FLAGS extends Set<infer Flag> ? Flag : never, string>> =
     {};
-  const designatedIngestMailboxIds: string[] = [];
   const seen = new Set<string>();
 
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
-    if (flag === '--designated-address') {
-      throw new Error(
-        'Direct designated address values are not allowed; use --designated-address-file',
-      );
-    }
     if (!VALUE_FLAGS.has(flag)) {
       throw new Error(`Unknown flag: ${flag}`);
     }
@@ -541,16 +472,11 @@ export function parseExportThreadCorpusArgs(
     const value = requireValue(argv, index, flag);
     index += 1;
 
-    if (flag !== '--designated-ingest-mailbox-id' && seen.has(flag)) {
+    if (seen.has(flag)) {
       throw new Error(`Duplicate flag: ${flag}`);
     }
     seen.add(flag);
-
-    if (flag === '--designated-ingest-mailbox-id') {
-      designatedIngestMailboxIds.push(value);
-    } else {
-      values[flag] = value;
-    }
+    values[flag] = value;
   }
 
   for (const flag of REQUIRED_FLAGS) {
@@ -566,24 +492,9 @@ export function parseExportThreadCorpusArgs(
   const resolvedRepoRoot = path.resolve(repoRoot);
   const outDir = resolvePrivateCorpusOutDir(resolvedRepoRoot, values['--out-dir']!);
 
-  const designatedAddressFileValue = values['--designated-address-file'];
-  const designatedAddressFile = designatedAddressFileValue
-    ? path.resolve(resolvedRepoRoot, designatedAddressFileValue)
-    : undefined;
-  if (
-    designatedAddressFile &&
-    !isPathWithin(designatedAddressFile, path.resolve(resolvedRepoRoot, '.private'))
-  ) {
-    throw new Error('--designated-address-file must be a local path inside .private');
-  }
-
   return {
     outDir,
-    centurionTransportId: values['--centurion-transport-id']!,
-    designatedTransportId: values['--designated-transport-id']!,
     asOf: values['--as-of'],
-    designatedAddressFile,
-    designatedIngestMailboxIds,
   };
 }
 
@@ -706,8 +617,6 @@ function clonePrivateMessage(message: ThreadCorpusPrivateMessage): ThreadCorpusP
     },
     sourceMetadata: {
       transportId: message.sourceMetadata.transportId,
-      ingestMailboxId: message.sourceMetadata.ingestMailboxId,
-      uidl: message.sourceMetadata.uidl,
     },
   };
 }
@@ -742,7 +651,6 @@ function sourceRowSortKey(row: ThreadCorpusSourceRow): string {
     row.contentFingerprint ?? null,
     row.provenanceFingerprint ?? null,
     row.body,
-    row.isQuarantined === true,
     [...row.scopeMembership].sort(compareText),
     privateMessageSortKey(row.privateMessage),
   ]);
@@ -753,12 +661,10 @@ function compareSourceRows(left: ThreadCorpusSourceRow, right: ThreadCorpusSourc
 }
 
 function logicalMessageSortKey(message: LogicalMessage): string {
-  const firstReceivedAt = [...message.sourceRows]
-    .map((row) => row.receivedAt)
-    .sort(compareText)[0] ?? '';
-  const firstSourceRowId = [...message.sourceRows]
-    .map((row) => row.sourceRowId)
-    .sort(compareText)[0] ?? '';
+  const firstReceivedAt =
+    [...message.sourceRows].map((row) => row.receivedAt).sort(compareText)[0] ?? '';
+  const firstSourceRowId =
+    [...message.sourceRows].map((row) => row.sourceRowId).sort(compareText)[0] ?? '';
   return JSON.stringify([firstReceivedAt, message.normalizedMessageId ?? '', firstSourceRowId]);
 }
 
@@ -783,11 +689,10 @@ function toLogicalMessage(
     scopeMembership: sortedUnique(sourceRows.flatMap((row) => [...row.scopeMembership])),
     annotations,
     threadId: threadIds.length === 1 ? threadIds[0]! : null,
-    quarantined: false,
   };
 }
 
-function formatNonQuarantinedRows(entries: readonly IndexedSourceRow[]): LogicalMessage[] {
+function formatRows(entries: readonly IndexedSourceRow[]): LogicalMessage[] {
   const byCandidateKey = new Map<string, IndexedSourceRow[]>();
   const withoutCandidateKey: IndexedSourceRow[] = [];
 
@@ -825,8 +730,7 @@ function formatNonQuarantinedRows(entries: readonly IndexedSourceRow[]): Logical
       continue;
     }
 
-    const annotation =
-      candidates.length > 1 ? (['unresolved_duplicate_candidate'] as const) : [];
+    const annotation = candidates.length > 1 ? (['unresolved_duplicate_candidate'] as const) : [];
     for (const candidate of candidates) {
       messages.push(toLogicalMessage([candidate], [...annotation]));
     }
@@ -841,14 +745,15 @@ function formatNonQuarantinedRows(entries: readonly IndexedSourceRow[]): Logical
 export function formatLogicalMessages(
   rows: readonly ThreadCorpusSourceRow[],
 ): FormattedLogicalMessages {
+  if (rows.some((row) => Object.hasOwn(row, 'isQuarantined'))) {
+    invalidThreadCorpusSourceContract();
+  }
   const indexed = rows.map((row) => ({
     row: cloneSourceRow(row),
     normalizedMessageId: normalizeMessageId(row.messageId),
     duplicateCandidateKey: duplicateCandidateKey(row.messageId),
   }));
-  const quarantined = indexed.filter((entry) => entry.row.isQuarantined === true);
-  const ordinary = indexed.filter((entry) => entry.row.isQuarantined !== true);
-  const messages = formatNonQuarantinedRows(ordinary);
+  const messages = formatRows(indexed);
   const resolvedByThreadId = new Map<string, LogicalMessage[]>();
   const unresolved: LogicalMessage[] = [];
 
@@ -881,21 +786,7 @@ export function formatLogicalMessages(
     return compareText(left.threadId ?? '', right.threadId ?? '');
   });
 
-  const quarantineRecords = quarantined
-    .map((entry) => {
-      const message = toLogicalMessage([entry]);
-      return {
-        ...message,
-        threadId: null,
-        quarantined: true as const,
-      };
-    })
-    .sort(compareLogicalMessages);
-
-  return {
-    threads,
-    quarantineRecords,
-  };
+  return { threads };
 }
 
 function normalizeAddress(value: string): string | null {
@@ -912,11 +803,7 @@ function normalizeAddress(value: string): string | null {
 
 function normalizedAddresses(row: ThreadCorpusMessageRow): ThreadCorpusAddresses {
   const normalize = (values: readonly string[]): string[] =>
-    sortedUnique(
-      values
-        .map(normalizeAddress)
-        .filter((value): value is string => value !== null),
-    );
+    sortedUnique(values.map(normalizeAddress).filter((value): value is string => value !== null));
 
   return {
     from: normalize(row.from),
@@ -935,65 +822,36 @@ function originalAddresses(row: ThreadCorpusMessageRow): ThreadCorpusAddresses {
   };
 }
 
-function allAddresses(addresses: ThreadCorpusAddresses): string[] {
-  return [...addresses.from, ...addresses.to, ...addresses.cc, ...addresses.bcc];
-}
-
-function requestedDesignatedAddresses(
-  addresses: readonly string[],
-): ReadonlySet<string> {
-  return new Set(
-    addresses
-      .map(normalizeAddress)
-      .filter((address): address is string => address !== null),
-  );
-}
-
-function assertRequestedScopesResolved(
-  scopes: readonly ThreadCorpusSourceScope[],
-  request: ThreadCorpusSnapshotLoadRequest,
-): void {
-  const resolvedScopes = new Set(
-    scopes.map((scope) => JSON.stringify([scope.kind, scope.id])),
-  );
-  const requestedScopes: Array<Pick<ThreadCorpusSourceScope, 'kind' | 'id'>> = [
-    { kind: 'transport', id: request.centurionTransportId },
-    { kind: 'transport', id: request.designatedTransportId },
-    ...request.designatedIngestMailboxIds.map((id) => ({
-      kind: 'ingest_mailbox' as const,
-      id,
-    })),
-  ];
-
-  for (const scope of requestedScopes) {
-    if (!resolvedScopes.has(JSON.stringify([scope.kind, scope.id]))) {
-      throw new Error('Requested source scope did not resolve');
-    }
+function assertActiveTransportScope(
+  value: ActiveTransportScope,
+  asOf: string,
+): ActiveTransportScope {
+  if (
+    !value ||
+    value.asOf !== asOf ||
+    !Array.isArray(value.transportIds) ||
+    !value.transportIds.every(isNonEmptyString)
+  ) {
+    invalidThreadCorpusSourceContract();
   }
+  const transportIds = sortedUnique(value.transportIds);
+  if (transportIds.length === 0) {
+    throw new Error('Active transport scope is empty');
+  }
+  if (JSON.stringify(transportIds) !== JSON.stringify(value.transportIds)) {
+    invalidThreadCorpusSourceContract();
+  }
+  return { asOf, transportIds };
 }
 
 function scopeMembershipForMessage(
   row: ThreadCorpusMessageRow,
-  request: ThreadCorpusSnapshotLoadRequest,
-  designatedAddresses: ReadonlySet<string>,
+  activeTransportScope: ActiveTransportScope,
 ): ThreadCorpusScopeKey[] {
-  const memberships: ThreadCorpusScopeKey[] = [];
-  if (row.transportId === request.centurionTransportId) {
-    memberships.push(CENTURION_TRANSPORT_SCOPE_KEY);
+  if (!activeTransportScope.transportIds.includes(row.transportId)) {
+    invalidThreadCorpusSourceContract();
   }
-
-  const matchesDesignatedAddress = allAddresses(normalizedAddresses(row)).some((address) =>
-    designatedAddresses.has(address),
-  );
-  if (
-    row.transportId === request.designatedTransportId ||
-    request.designatedIngestMailboxIds.includes(row.ingestMailboxId ?? '') ||
-    matchesDesignatedAddress
-  ) {
-    memberships.push(DESIGNATED_RESERVATIONIST_MAILBOX_SCOPE_KEY);
-  }
-
-  return sortedUnique(memberships) as ThreadCorpusScopeKey[];
+  return [ACTIVE_TRANSPORT_SCOPE_KEY];
 }
 
 function messageFingerprints(
@@ -1034,12 +892,9 @@ function groupByMessageId<T extends { messageId: string }>(
   return grouped;
 }
 
-function assertUniqueDisjointMessageSourceIds(
-  messages: readonly ThreadCorpusMessageRow[],
-  quarantineRows: readonly ThreadCorpusMessageRow[],
-): void {
+function assertUniqueMessageSourceIds(messages: readonly ThreadCorpusMessageRow[]): void {
   const sourceIds = new Set<string>();
-  for (const row of [...messages, ...quarantineRows]) {
+  for (const row of messages) {
     if (sourceIds.has(row.id)) {
       throw new Error('Message source identity collision');
     }
@@ -1062,8 +917,7 @@ function outboundDeliveryFor(
   const queueState = resolvedQueueState(queueStates);
   return {
     queueState,
-    deliveryStatus:
-      row.sentAt !== null && queueState === 'sent' ? 'smtp_accepted' : 'not_claimed',
+    deliveryStatus: row.sentAt !== null && queueState === 'sent' ? 'smtp_accepted' : 'not_claimed',
   };
 }
 
@@ -1073,7 +927,6 @@ function toThreadCorpusSourceRow(
   attachmentsByMessageId: ReadonlyMap<string, ThreadCorpusAttachmentSourceDescriptor[]>,
   draftRevisionLinksByMessageId: ReadonlyMap<string, ThreadCorpusDraftRevisionLink[]>,
   queueStatesByMessageId: ReadonlyMap<string, ThreadCorpusOutboundQueueState[]>,
-  isQuarantined: boolean,
 ): ThreadCorpusSourceRow {
   if (!isSourceRawMime(row.rawMime)) invalidThreadCorpusSourceContract();
   const addresses = normalizedAddresses(row);
@@ -1094,7 +947,6 @@ function toThreadCorpusSourceRow(
     contentFingerprint: fingerprints.content,
     provenanceFingerprint: fingerprints.provenance,
     body: row.body,
-    ...(isQuarantined ? { isQuarantined: true } : {}),
     privateMessage: {
       subject: row.subject,
       direction: row.direction,
@@ -1113,34 +965,7 @@ function toThreadCorpusSourceRow(
       outboundDelivery: outboundDeliveryFor(row, queueStates),
       sourceMetadata: {
         transportId: row.transportId,
-        ingestMailboxId: row.ingestMailboxId,
-        uidl: row.uidl,
       },
-    },
-  };
-}
-
-function cloneMessageRow(row: ThreadCorpusMessageRow): ThreadCorpusMessageRow {
-  return {
-    id: row.id,
-    transportId: row.transportId,
-    ingestMailboxId: row.ingestMailboxId,
-    uidl: row.uidl,
-    threadId: row.threadId,
-    messageId: row.messageId,
-    receivedAt: row.receivedAt,
-    sentAt: row.sentAt,
-    subject: row.subject,
-    body: row.body,
-    direction: row.direction,
-    from: [...row.from],
-    to: [...row.to],
-    cc: [...row.cc],
-    bcc: [...row.bcc],
-    canonicalHeaders: cloneCanonicalHeaders(row.canonicalHeaders),
-    rawMime: {
-      locator: row.rawMime.locator,
-      status: row.rawMime.status,
     },
   };
 }
@@ -1150,89 +975,60 @@ function cloneMessageRow(row: ThreadCorpusMessageRow): ThreadCorpusMessageRow {
  */
 export function createThreadCorpusSnapshotLoader(
   reader: ThreadCorpusSnapshotReader,
-): (request: ThreadCorpusSnapshotLoadRequest) => Promise<ThreadCorpusSnapshotLoadResult> {
-  return async (request) =>
+): () => Promise<ThreadCorpusSnapshotLoadResult> {
+  return async () =>
     reader.withRepeatableReadOnly(async (session) => {
-      const sourceScopes = await session.discoverSourceScopes();
-      assertRequestedScopesResolved(sourceScopes, request);
-
+      const activeTransportScope = assertActiveTransportScope(
+        await session.discoverActiveTransportScope(),
+        session.asOf,
+      );
       const messages = await session.readMessages();
-      const quarantineRows = await session.readQuarantineRows();
-      assertUniqueDisjointMessageSourceIds(messages, quarantineRows);
+      assertUniqueMessageSourceIds(messages);
+      const knownSourceRowIds = new Set(messages.map((row) => row.id));
+      const scopeMembershipBySourceRowId = new Map(
+        messages.map((row) => [row.id, scopeMembershipForMessage(row, activeTransportScope)]),
+      );
 
       const attachments = await session.readAttachmentDescriptors();
       const draftRevisionLinks = await session.readDraftRevisionLinks();
       const queueStates = await session.readOutboundQueueDeliveryStates();
-      const designatedAddresses = requestedDesignatedAddresses(request.designatedAddresses);
-      const sourceRows = [...messages, ...quarantineRows];
-      const scopeMembershipBySourceRowId = new Map(
-        sourceRows.map((row) => [
-          row.id,
-          scopeMembershipForMessage(row, request, designatedAddresses),
-        ]),
-      );
-      const knownSourceRowIds = new Set(sourceRows.map((row) => row.id));
-      const includedSourceRowIds = new Set(
-        [...scopeMembershipBySourceRowId.entries()]
-          .filter(([, scopeMembership]) => scopeMembership.length > 0)
-          .map(([sourceRowId]) => sourceRowId),
-      );
       const { attachmentsByMessageId, attachmentLocators } = selectIncludedAttachmentSources(
         attachments,
         knownSourceRowIds,
-        includedSourceRowIds,
+        knownSourceRowIds,
       );
+      for (const link of draftRevisionLinks) {
+        if (!isDraftRevisionLink(link) || !knownSourceRowIds.has(link.messageId)) {
+          invalidThreadCorpusSourceContract();
+        }
+      }
+      for (const queueState of queueStates) {
+        if (!isOutboundQueueState(queueState) || !knownSourceRowIds.has(queueState.messageId)) {
+          invalidThreadCorpusSourceContract();
+        }
+      }
       const draftRevisionLinksByMessageId = groupByMessageId(draftRevisionLinks);
       const queueStatesByMessageId = groupByMessageId(queueStates);
-
-      const includedRows = messages.flatMap((row) => {
-        const scopeMembership = scopeMembershipBySourceRowId.get(row.id)!;
-        return scopeMembership.length === 0
-          ? []
-          : [
-              toThreadCorpusSourceRow(
-                row,
-                scopeMembership,
-                attachmentsByMessageId,
-                draftRevisionLinksByMessageId,
-                queueStatesByMessageId,
-                false,
-              ),
-            ];
-      });
-      const scopedQuarantineRows: ThreadCorpusSourceRow[] = [];
-      const unscopedQuarantineRows: ThreadCorpusMessageRow[] = [];
-      for (const row of quarantineRows) {
-        const scopeMembership = scopeMembershipBySourceRowId.get(row.id)!;
-        if (scopeMembership.length === 0) {
-          unscopedQuarantineRows.push(cloneMessageRow(row));
-          continue;
-        }
-        scopedQuarantineRows.push(
-          toThreadCorpusSourceRow(
-            row,
-            scopeMembership,
-            attachmentsByMessageId,
-            draftRevisionLinksByMessageId,
-            queueStatesByMessageId,
-            true,
-          ),
-        );
-      }
-
-      const formatted = formatLogicalMessages([...includedRows, ...scopedQuarantineRows]);
+      const includedRows = messages.map((row) =>
+        toThreadCorpusSourceRow(
+          row,
+          scopeMembershipBySourceRowId.get(row.id)!,
+          attachmentsByMessageId,
+          draftRevisionLinksByMessageId,
+          queueStatesByMessageId,
+        ),
+      );
+      const formatted = formatLogicalMessages(includedRows);
       return {
         asOf: session.asOf,
+        activeTransportScope,
         formatted,
         attachmentLocators,
-        unscopedQuarantineRows,
         safeSummary: {
           asOf: session.asOf,
           includedMessageCount: includedRows.length,
-          sourceRowCount: includedRows.length + scopedQuarantineRows.length,
+          sourceRowCount: includedRows.length,
           threadCount: formatted.threads.length,
-          quarantineRecordCount: formatted.quarantineRecords.length,
-          unscopedQuarantineCount: unscopedQuarantineRows.length,
         },
       };
     });
@@ -1249,16 +1045,23 @@ function formattedSourceRows(formatted: FormattedLogicalMessages): ThreadCorpusS
     ...formatted.threads.flatMap((thread) =>
       thread.messages.flatMap((message) => message.sourceRows),
     ),
-    ...formatted.quarantineRecords.flatMap((record) => record.sourceRows),
   ];
 }
 
-function artifactId(
-  snapshotId: string,
-  kind: ThreadCorpusArtifactKind,
-  ownerId: string,
-): string {
-  return sha256(`centurion-thread-corpus-v2\0${snapshotId}\0${kind}\0${ownerId}`);
+function assertNoLegacyQuarantineFields(formatted: FormattedLogicalMessages): void {
+  if (Object.hasOwn(formatted, 'quarantineRecords')) invalidPrivateSnapshotContract();
+  for (const thread of formatted.threads) {
+    for (const message of thread.messages) {
+      if (Object.hasOwn(message, 'quarantined')) invalidPrivateSnapshotContract();
+      if (message.sourceRows.some((sourceRow) => Object.hasOwn(sourceRow, 'isQuarantined'))) {
+        invalidPrivateSnapshotContract();
+      }
+    }
+  }
+}
+
+function artifactId(snapshotId: string, kind: ThreadCorpusArtifactKind, ownerId: string): string {
+  return sha256(`${CENTURION_THREAD_CORPUS_SCHEMA_VERSION}\0${snapshotId}\0${kind}\0${ownerId}`);
 }
 
 function artifactReference(
@@ -1347,7 +1150,10 @@ function createHydrationPlan(
     attachmentLocators.set(locator.attachmentId, locator);
   }
 
-  const rawPayloads = new Map<string, Extract<ThreadCorpusHydrationPayload, { kind: 'raw_mime' }>>();
+  const rawPayloads = new Map<
+    string,
+    Extract<ThreadCorpusHydrationPayload, { kind: 'raw_mime' }>
+  >();
   const attachmentPayloads = new Map<
     string,
     Extract<ThreadCorpusHydrationPayload, { kind: 'attachment_text' }>
@@ -1464,10 +1270,7 @@ function toSnapshotPrivateMessage(
   };
 }
 
-function toSnapshotSourceRow(
-  row: ThreadCorpusSourceRow,
-  plan: HydrationPlan,
-): SnapshotSourceRow {
+function toSnapshotSourceRow(row: ThreadCorpusSourceRow, plan: HydrationPlan): SnapshotSourceRow {
   return {
     sourceRowId: row.sourceRowId,
     scopeMembership: sortedUnique(row.scopeMembership) as ThreadCorpusScopeKey[],
@@ -1477,7 +1280,6 @@ function toSnapshotSourceRow(
     contentFingerprint: row.contentFingerprint ?? null,
     provenanceFingerprint: row.provenanceFingerprint ?? null,
     body: row.body,
-    isQuarantined: row.isQuarantined === true,
     ...(row.privateMessage
       ? { privateMessage: toSnapshotPrivateMessage(row.privateMessage, row.sourceRowId, plan) }
       : {}),
@@ -1497,7 +1299,6 @@ function snapshotSourceRowSortKey(row: SnapshotSourceRow): string {
     row.contentFingerprint,
     row.provenanceFingerprint,
     row.body,
-    row.isQuarantined,
     row.scopeMembership,
     snapshotPrivateMessageSortKey(row.privateMessage),
   ]);
@@ -1539,7 +1340,9 @@ function toThreadSnapshotRecord(
   context: PrivateThreadCorpusSnapshotContext,
   plan: HydrationPlan,
 ): ThreadSnapshotRecord {
-  const messages = thread.messages.map((message) => toSnapshotMessage(message, plan)).sort(compareSnapshotMessages);
+  const messages = thread.messages
+    .map((message) => toSnapshotMessage(message, plan))
+    .sort(compareSnapshotMessages);
   return {
     recordType: 'thread',
     schemaVersion: CENTURION_THREAD_CORPUS_SCHEMA_VERSION,
@@ -1569,40 +1372,6 @@ function compareThreadSnapshotRecords(
   return compareText(threadSnapshotSortKey(left), threadSnapshotSortKey(right));
 }
 
-function toQuarantineSnapshotRecord(
-  record: QuarantineRecord,
-  context: PrivateThreadCorpusSnapshotContext,
-  plan: HydrationPlan,
-): QuarantineSnapshotRecord {
-  const message = toSnapshotMessage(record, plan);
-  return {
-    recordType: 'quarantine',
-    schemaVersion: CENTURION_THREAD_CORPUS_SCHEMA_VERSION,
-    snapshotId: context.snapshotId,
-    quarantined: true,
-    timestamp: message.timestamp,
-    messageId: message.messageId,
-    sourceRows: message.sourceRows,
-    scopeMembership: message.scopeMembership,
-    annotations: message.annotations,
-  };
-}
-
-function quarantineSnapshotSortKey(record: QuarantineSnapshotRecord): string {
-  return JSON.stringify([
-    record.timestamp,
-    record.messageId ?? '',
-    record.sourceRows[0] ? snapshotSourceRowSortKey(record.sourceRows[0]) : '',
-  ]);
-}
-
-function compareQuarantineSnapshotRecords(
-  left: QuarantineSnapshotRecord,
-  right: QuarantineSnapshotRecord,
-): number {
-  return compareText(quarantineSnapshotSortKey(left), quarantineSnapshotSortKey(right));
-}
-
 function sha256(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
 }
@@ -1611,10 +1380,7 @@ function sha256Bytes(value: Uint8Array): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
-const FIXED_SNAPSHOT_SCOPE_KEYS: readonly ThreadCorpusScopeKey[] = [
-  CENTURION_TRANSPORT_SCOPE_KEY,
-  DESIGNATED_RESERVATIONIST_MAILBOX_SCOPE_KEY,
-];
+const FIXED_SNAPSHOT_SCOPE_KEYS: readonly ThreadCorpusScopeKey[] = [ACTIVE_TRANSPORT_SCOPE_KEY];
 
 const TERMINAL_RAW_MIME_STATUSES = new Set([
   'available',
@@ -1629,10 +1395,7 @@ const TERMINAL_RAW_MIME_STATUSES = new Set([
   'not_applicable',
 ]);
 
-const SOURCE_RAW_MIME_STATUSES = new Set([
-  ...TERMINAL_RAW_MIME_STATUSES,
-  'pending_hydration',
-]);
+const SOURCE_RAW_MIME_STATUSES = new Set([...TERMINAL_RAW_MIME_STATUSES, 'pending_hydration']);
 
 const RAW_MIME_HYDRATION_STATUSES = new Set([
   'available',
@@ -1696,9 +1459,7 @@ function isNonNegativeSafeInteger(value: unknown): value is number {
 function isStrictIsoTimestamp(value: unknown): value is string {
   return (
     typeof value === 'string' &&
-    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/.test(
-      value,
-    ) &&
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/.test(value) &&
     isStrictIso(value)
   );
 }
@@ -1735,17 +1496,11 @@ function hasCanonicalStringOrder(values: readonly string[]): boolean {
 }
 
 function isOpaqueIdentifier(value: unknown): value is string {
-  return (
-    typeof value === 'string' &&
-    /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value)
-  );
+  return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value);
 }
 
 function isScopeKey(value: unknown): value is ThreadCorpusScopeKey {
-  return (
-    value === CENTURION_TRANSPORT_SCOPE_KEY ||
-    value === DESIGNATED_RESERVATIONIST_MAILBOX_SCOPE_KEY
-  );
+  return value === ACTIVE_TRANSPORT_SCOPE_KEY;
 }
 
 function isCanonicalScopeMembership(value: unknown): value is ThreadCorpusScopeKey[] {
@@ -1762,16 +1517,7 @@ function sameStrings(left: readonly string[], right: readonly string[]): boolean
 }
 
 function isSnapshotScope(value: unknown): value is SnapshotScope {
-  if (
-    !isRecord(value) ||
-    !hasExactKeys(value, [
-      'scopeKeys',
-      'transportIds',
-      'participantAddressRef',
-      'messagePredicate',
-      'quarantinePredicate',
-    ])
-  ) {
+  if (!isRecord(value) || !hasExactKeys(value, ['scopeKeys', 'transportIds', 'messagePredicate'])) {
     return false;
   }
 
@@ -1785,30 +1531,18 @@ function isSnapshotScope(value: unknown): value is SnapshotScope {
     transportIds.length > 0 &&
     transportIds.every(isOpaqueIdentifier) &&
     hasCanonicalStringOrder(transportIds) &&
-    (value.participantAddressRef === 'private_designated_reservationist_address' ||
-      value.participantAddressRef === null) &&
-    value.messagePredicate ===
-      'selected_transports_or_private_designated_address_before_as_of' &&
-    value.quarantinePredicate ===
-      'selected_ingest_mailbox_or_owner_header_before_as_of'
+    value.messagePredicate === 'active_transport_before_as_of'
   );
 }
 
 function isSnapshotContext(value: unknown): value is PrivateThreadCorpusSnapshotContext {
   return (
     isRecord(value) &&
-    hasExactKeys(value, [
-      'snapshotId',
-      'scope',
-      'asOf',
-      'exporterVersion',
-      'unscopedQuarantineExcluded',
-    ]) &&
+    hasExactKeys(value, ['snapshotId', 'scope', 'asOf', 'exporterVersion']) &&
     isOpaqueIdentifier(value.snapshotId) &&
     isSnapshotScope(value.scope) &&
     isStrictIsoTimestamp(value.asOf) &&
-    isOpaqueIdentifier(value.exporterVersion) &&
-    isNonNegativeSafeInteger(value.unscopedQuarantineExcluded)
+    isOpaqueIdentifier(value.exporterVersion)
   );
 }
 
@@ -1820,13 +1554,10 @@ function cloneSnapshotContext(
     scope: {
       scopeKeys: [...context.scope.scopeKeys],
       transportIds: [...context.scope.transportIds],
-      participantAddressRef: context.scope.participantAddressRef,
       messagePredicate: context.scope.messagePredicate,
-      quarantinePredicate: context.scope.quarantinePredicate,
     },
     asOf: context.asOf,
     exporterVersion: context.exporterVersion,
-    unscopedQuarantineExcluded: context.unscopedQuarantineExcluded,
   };
 }
 
@@ -1850,8 +1581,10 @@ function isSourceRawMime(value: unknown): value is ThreadCorpusRawMime {
     !isRecord(value) ||
     !hasExactKeys(value, ['locator', 'status']) ||
     !isStringOrNull(value.locator) ||
-    !(value.status === null ||
-      (typeof value.status === 'string' && SOURCE_RAW_MIME_STATUSES.has(value.status)))
+    !(
+      value.status === null ||
+      (typeof value.status === 'string' && SOURCE_RAW_MIME_STATUSES.has(value.status))
+    )
   ) {
     return false;
   }
@@ -1893,7 +1626,11 @@ function isThreadCorpusHydrationPayload(value: unknown): value is ThreadCorpusHy
   if (!isRecord(value) || typeof value.kind !== 'string') return false;
   if (value.kind === 'raw_mime') {
     return (
-      hasOnlyKeys(value, ['kind', 'sourceRowId', 'status'], ['kind', 'sourceRowId', 'status', 'content']) &&
+      hasOnlyKeys(
+        value,
+        ['kind', 'sourceRowId', 'status'],
+        ['kind', 'sourceRowId', 'status', 'content'],
+      ) &&
       isNonEmptyString(value.sourceRowId) &&
       typeof value.status === 'string' &&
       isHydrationContent(value, value.status, RAW_MIME_HYDRATION_STATUSES)
@@ -1947,9 +1684,7 @@ function isSnapshotRawMime(value: unknown): value is SnapshotRawMime {
   );
 }
 
-function isSnapshotAttachmentTextArtifact(
-  value: unknown,
-): value is SnapshotAttachmentTextArtifact {
+function isSnapshotAttachmentTextArtifact(value: unknown): value is SnapshotAttachmentTextArtifact {
   if (value === null) return true;
   return (
     isRecord(value) &&
@@ -2042,13 +1777,20 @@ function isDraftRevisionLink(value: unknown): value is ThreadCorpusDraftRevision
   );
 }
 
+function isOutboundQueueState(value: unknown): value is ThreadCorpusOutboundQueueState {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, ['messageId', 'state']) &&
+    isNonEmptyString(value.messageId) &&
+    ['sent', 'pending', 'sending', 'cancelled', 'unknown'].includes(value.state as string)
+  );
+}
+
 function isOutboundDelivery(value: unknown): value is ThreadCorpusOutboundDelivery {
   return (
     isRecord(value) &&
     hasExactKeys(value, ['queueState', 'deliveryStatus']) &&
-    ['sent', 'pending', 'sending', 'cancelled', 'unknown'].includes(
-      value.queueState as string,
-    ) &&
+    ['sent', 'pending', 'sending', 'cancelled', 'unknown'].includes(value.queueState as string) &&
     ['smtp_accepted', 'not_claimed'].includes(value.deliveryStatus as string)
   );
 }
@@ -2102,10 +1844,8 @@ function isSnapshotPrivateMessage(value: unknown): value is SnapshotPrivateMessa
     value.draftRevisionLinks.every(isDraftRevisionLink) &&
     isOutboundDelivery(value.outboundDelivery) &&
     isRecord(value.sourceMetadata) &&
-    hasExactKeys(value.sourceMetadata, ['transportId', 'ingestMailboxId', 'uidl']) &&
-    isStringOrNull(value.sourceMetadata.transportId) &&
-    isStringOrNull(value.sourceMetadata.ingestMailboxId) &&
-    isStringOrNull(value.sourceMetadata.uidl)
+    hasExactKeys(value.sourceMetadata, ['transportId']) &&
+    isOpaqueIdentifier(value.sourceMetadata.transportId)
   );
 }
 
@@ -2123,7 +1863,6 @@ function isSnapshotSourceRow(value: unknown): value is SnapshotSourceRow {
         'contentFingerprint',
         'provenanceFingerprint',
         'body',
-        'isQuarantined',
       ],
       [
         'sourceRowId',
@@ -2134,7 +1873,6 @@ function isSnapshotSourceRow(value: unknown): value is SnapshotSourceRow {
         'contentFingerprint',
         'provenanceFingerprint',
         'body',
-        'isQuarantined',
         'privateMessage',
       ],
     )
@@ -2151,7 +1889,6 @@ function isSnapshotSourceRow(value: unknown): value is SnapshotSourceRow {
     isStringOrNull(value.contentFingerprint) &&
     isStringOrNull(value.provenanceFingerprint) &&
     typeof value.body === 'string' &&
-    typeof value.isQuarantined === 'boolean' &&
     (value.privateMessage === undefined || isSnapshotPrivateMessage(value.privateMessage))
   );
 }
@@ -2210,34 +1947,6 @@ function isThreadSnapshotRecord(value: unknown): value is ThreadSnapshotRecord {
   );
 }
 
-function isQuarantineSnapshotRecord(value: unknown): value is QuarantineSnapshotRecord {
-  return (
-    isRecord(value) &&
-    hasExactKeys(value, [
-      'recordType',
-      'schemaVersion',
-      'snapshotId',
-      'quarantined',
-      'timestamp',
-      'messageId',
-      'sourceRows',
-      'scopeMembership',
-      'annotations',
-    ]) &&
-    value.recordType === 'quarantine' &&
-    value.schemaVersion === CENTURION_THREAD_CORPUS_SCHEMA_VERSION &&
-    isOpaqueIdentifier(value.snapshotId) &&
-    value.quarantined === true &&
-    isStrictIsoTimestamp(value.timestamp) &&
-    isStringOrNull(value.messageId) &&
-    Array.isArray(value.sourceRows) &&
-    value.sourceRows.length > 0 &&
-    value.sourceRows.every(isSnapshotSourceRow) &&
-    isCanonicalScopeMembership(value.scopeMembership) &&
-    isAnnotations(value.annotations)
-  );
-}
-
 function isSnapshotMetadataRecord(value: unknown): value is SnapshotMetadataRecord {
   return (
     isRecord(value) &&
@@ -2246,16 +1955,14 @@ function isSnapshotMetadataRecord(value: unknown): value is SnapshotMetadataReco
       'schemaVersion',
       'snapshotId',
       'orderedRecordSha256',
-      'threadRecordCount',
-      'quarantineRecordCount',
+      'recordCount',
     ]) &&
     value.recordType === 'metadata' &&
     value.schemaVersion === CENTURION_THREAD_CORPUS_SCHEMA_VERSION &&
     isOpaqueIdentifier(value.snapshotId) &&
     typeof value.orderedRecordSha256 === 'string' &&
     /^[a-f0-9]{64}$/.test(value.orderedRecordSha256) &&
-    isNonNegativeSafeInteger(value.threadRecordCount) &&
-    isNonNegativeSafeInteger(value.quarantineRecordCount)
+    isNonNegativeSafeInteger(value.recordCount)
   );
 }
 
@@ -2270,13 +1977,10 @@ function isSnapshotManifestCounts(value: unknown): value is SnapshotManifestCoun
       'attachments',
       'drafts',
       'revisions',
-      'quarantine',
       'rawMimeAvailable',
       'rawMimeUnavailable',
       'attachmentTextAvailable',
       'attachmentTextUnavailable',
-      'scopedQuarantine',
-      'unscopedQuarantineExcluded',
       'messagesByScope',
     ])
   ) {
@@ -2291,13 +1995,10 @@ function isSnapshotManifestCounts(value: unknown): value is SnapshotManifestCoun
     'attachments',
     'drafts',
     'revisions',
-    'quarantine',
     'rawMimeAvailable',
     'rawMimeUnavailable',
     'attachmentTextAvailable',
     'attachmentTextUnavailable',
-    'scopedQuarantine',
-    'unscopedQuarantineExcluded',
   ] as const;
   if (!numericKeys.every((key) => isNonNegativeSafeInteger(value[key]))) {
     return false;
@@ -2307,9 +2008,7 @@ function isSnapshotManifestCounts(value: unknown): value is SnapshotManifestCoun
   return (
     isRecord(messagesByScope) &&
     hasExactKeys(messagesByScope, FIXED_SNAPSHOT_SCOPE_KEYS) &&
-    FIXED_SNAPSHOT_SCOPE_KEYS.every((key) =>
-      isNonNegativeSafeInteger(messagesByScope[key]),
-    )
+    FIXED_SNAPSHOT_SCOPE_KEYS.every((key) => isNonNegativeSafeInteger(messagesByScope[key]))
   );
 }
 
@@ -2366,7 +2065,6 @@ function assertDerivedSnapshotTopology(
     contentFingerprint: sourceRow.contentFingerprint,
     provenanceFingerprint: sourceRow.provenanceFingerprint,
     body: sourceRow.body,
-    ...(sourceRow.isQuarantined ? { isQuarantined: true } : {}),
   });
   const toTopologySnapshotSourceRow = (sourceRow: ThreadCorpusSourceRow): SnapshotSourceRow => ({
     sourceRowId: sourceRow.sourceRowId,
@@ -2377,7 +2075,6 @@ function assertDerivedSnapshotTopology(
     contentFingerprint: sourceRow.contentFingerprint ?? null,
     provenanceFingerprint: sourceRow.provenanceFingerprint ?? null,
     body: sourceRow.body,
-    isQuarantined: sourceRow.isQuarantined === true,
   });
   const toTopologySnapshotMessage = (message: LogicalMessage): SnapshotMessage => {
     const sourceRows = message.sourceRows
@@ -2393,9 +2090,7 @@ function assertDerivedSnapshotTopology(
   };
   const formatted = formatLogicalMessages(
     records.flatMap((record) =>
-      record.recordType === 'thread'
-        ? record.messages.flatMap((message) => message.sourceRows.map(toTopologySourceRow))
-        : record.sourceRows.map(toTopologySourceRow),
+      record.messages.flatMap((message) => message.sourceRows.map(toTopologySourceRow)),
     ),
   );
   const expectedRecords: SnapshotRecord[] = [
@@ -2406,10 +2101,12 @@ function assertDerivedSnapshotTopology(
           .sort(compareSnapshotMessages);
         return {
           recordType: 'thread' as const,
-          schemaVersion: CENTURION_THREAD_CORPUS_SCHEMA_VERSION as typeof CENTURION_THREAD_CORPUS_SCHEMA_VERSION,
+          schemaVersion:
+            CENTURION_THREAD_CORPUS_SCHEMA_VERSION as typeof CENTURION_THREAD_CORPUS_SCHEMA_VERSION,
           snapshotId: context.snapshotId,
           threadId: thread.threadId,
-          threadingStatus: thread.threadId === null ? ('unresolved' as const) : ('resolved' as const),
+          threadingStatus:
+            thread.threadId === null ? ('unresolved' as const) : ('resolved' as const),
           threadFirstTimestamp: messages[0]?.timestamp ?? '',
           scopeMembership: sortedUnique(
             messages.flatMap((message) => message.scopeMembership),
@@ -2418,37 +2115,16 @@ function assertDerivedSnapshotTopology(
         };
       })
       .sort(compareThreadSnapshotRecords),
-    ...formatted.quarantineRecords
-      .map((record) => {
-        const message = toTopologySnapshotMessage(record);
-        return {
-          recordType: 'quarantine' as const,
-          schemaVersion: CENTURION_THREAD_CORPUS_SCHEMA_VERSION as typeof CENTURION_THREAD_CORPUS_SCHEMA_VERSION,
-          snapshotId: context.snapshotId,
-          quarantined: true as const,
-          timestamp: message.timestamp,
-          messageId: message.messageId,
-          sourceRows: message.sourceRows,
-          scopeMembership: message.scopeMembership,
-          annotations: message.annotations,
-        };
-      })
-      .sort(compareQuarantineSnapshotRecords),
   ];
-  const withoutPrivateMessages = records.map((record) =>
-    record.recordType === 'thread'
-      ? {
-          ...record,
-          messages: record.messages.map((message) => ({
-            ...message,
-            sourceRows: message.sourceRows.map(({ privateMessage: _privateMessage, ...sourceRow }) => sourceRow),
-          })),
-        }
-      : {
-          ...record,
-          sourceRows: record.sourceRows.map(({ privateMessage: _privateMessage, ...sourceRow }) => sourceRow),
-        },
-  );
+  const withoutPrivateMessages = records.map((record) => ({
+    ...record,
+    messages: record.messages.map((message) => ({
+      ...message,
+      sourceRows: message.sourceRows.map(
+        ({ privateMessage: _privateMessage, ...sourceRow }) => sourceRow,
+      ),
+    })),
+  }));
   if (
     serializeJsonLines(withoutPrivateMessages as SnapshotRecord[]) !==
     serializeJsonLines(expectedRecords)
@@ -2473,6 +2149,7 @@ function assertSnapshotRecordInvariants(
   const referencedArtifactKeys = new Set<string>();
   const referencedArtifacts: ReferencedArtifact[] = [];
   const asOf = parseStrictIsoTimestampInstant(context.asOf);
+  const activeTransportIds = new Set(context.scope.transportIds);
 
   const assertBeforeAsOf = (timestamp: string): void => {
     const candidate = parseStrictIsoTimestampInstant(timestamp);
@@ -2500,18 +2177,14 @@ function assertSnapshotRecordInvariants(
     referencedArtifacts.push({ kind, ...reference });
   };
 
-  const assertSourceRows = (
-    sourceRows: readonly SnapshotSourceRow[],
-    expectedQuarantined: boolean,
-  ): void => {
+  const assertSourceRows = (sourceRows: readonly SnapshotSourceRow[]): void => {
     if (
-      JSON.stringify(sourceRows) !==
-      JSON.stringify([...sourceRows].sort(compareSnapshotSourceRows))
+      JSON.stringify(sourceRows) !== JSON.stringify([...sourceRows].sort(compareSnapshotSourceRows))
     ) {
       invalidPrivateSnapshotContract();
     }
     for (const sourceRow of sourceRows) {
-      if (sourceRowIds.has(sourceRow.sourceRowId) || sourceRow.isQuarantined !== expectedQuarantined) {
+      if (sourceRowIds.has(sourceRow.sourceRowId)) {
         invalidPrivateSnapshotContract();
       }
       assertBeforeAsOf(sourceRow.receivedAt);
@@ -2519,29 +2192,21 @@ function assertSnapshotRecordInvariants(
 
       const privateMessage = sourceRow.privateMessage;
       if (!privateMessage) continue;
+      if (!activeTransportIds.has(privateMessage.sourceMetadata.transportId)) {
+        invalidPrivateSnapshotContract();
+      }
       if (privateMessage.sentAt !== null) assertBeforeAsOf(privateMessage.sentAt);
       if (privateMessage.rawMime.status === 'available') {
-        assertArtifact(
-          'raw_mime',
-          sourceRow.sourceRowId,
-          privateMessage.rawMime.artifact!,
-        );
+        assertArtifact('raw_mime', sourceRow.sourceRowId, privateMessage.rawMime.artifact!);
       }
       for (const attachment of privateMessage.attachments) {
-        if (
-          attachmentIds.has(attachment.id) ||
-          attachment.messageId !== sourceRow.sourceRowId
-        ) {
+        if (attachmentIds.has(attachment.id) || attachment.messageId !== sourceRow.sourceRowId) {
           invalidPrivateSnapshotContract();
         }
         attachmentIds.add(attachment.id);
         const textArtifact = attachment.textArtifact;
         if (textArtifact?.status === 'available') {
-          assertArtifact(
-            'attachment_text',
-            attachment.id,
-            textArtifact.artifact!,
-          );
+          assertArtifact('attachment_text', attachment.id, textArtifact.artifact!);
         }
       }
       for (const link of privateMessage.draftRevisionLinks) {
@@ -2559,63 +2224,48 @@ function assertSnapshotRecordInvariants(
   };
 
   for (const record of records) {
-    if (record.recordType === 'thread') {
-      if (
-        (record.threadId === null && record.threadingStatus !== 'unresolved') ||
-        (record.threadId !== null && record.threadingStatus !== 'resolved') ||
-        (record.threadId !== null && threadIds.has(record.threadId))
-      ) {
-        invalidPrivateSnapshotContract();
-      }
-      if (record.threadId !== null) threadIds.add(record.threadId);
-      if (
-        JSON.stringify(record.messages) !==
-        JSON.stringify([...record.messages].sort(compareSnapshotMessages))
-      ) {
-        invalidPrivateSnapshotContract();
-      }
-      assertBeforeAsOf(record.threadFirstTimestamp);
-      if (record.threadFirstTimestamp !== record.messages[0]?.timestamp) {
-        invalidPrivateSnapshotContract();
-      }
-
-      for (const message of record.messages) {
-        assertBeforeAsOf(message.timestamp);
-        const expectedTimestamp = [...message.sourceRows]
-          .map((sourceRow) => sourceRow.receivedAt)
-          .sort(compareText)[0];
-        if (
-          message.timestamp !== expectedTimestamp ||
-          !sameStrings(message.scopeMembership, scopesForRows(message.sourceRows))
-        ) {
-          invalidPrivateSnapshotContract();
-        }
-        assertSourceRows(message.sourceRows, false);
-      }
-      if (
-        !sameStrings(
-          record.scopeMembership,
-          sortedUnique(
-            record.messages.flatMap((message) => message.scopeMembership),
-          ) as ThreadCorpusScopeKey[],
-        )
-      ) {
-        invalidPrivateSnapshotContract();
-      }
-      continue;
-    }
-
-    assertBeforeAsOf(record.timestamp);
-    const expectedTimestamp = [...record.sourceRows]
-      .map((sourceRow) => sourceRow.receivedAt)
-      .sort(compareText)[0];
     if (
-      record.timestamp !== expectedTimestamp ||
-      !sameStrings(record.scopeMembership, scopesForRows(record.sourceRows))
+      (record.threadId === null && record.threadingStatus !== 'unresolved') ||
+      (record.threadId !== null && record.threadingStatus !== 'resolved') ||
+      (record.threadId !== null && threadIds.has(record.threadId))
     ) {
       invalidPrivateSnapshotContract();
     }
-    assertSourceRows(record.sourceRows, true);
+    if (record.threadId !== null) threadIds.add(record.threadId);
+    if (
+      JSON.stringify(record.messages) !==
+      JSON.stringify([...record.messages].sort(compareSnapshotMessages))
+    ) {
+      invalidPrivateSnapshotContract();
+    }
+    assertBeforeAsOf(record.threadFirstTimestamp);
+    if (record.threadFirstTimestamp !== record.messages[0]?.timestamp) {
+      invalidPrivateSnapshotContract();
+    }
+
+    for (const message of record.messages) {
+      assertBeforeAsOf(message.timestamp);
+      const expectedTimestamp = [...message.sourceRows]
+        .map((sourceRow) => sourceRow.receivedAt)
+        .sort(compareText)[0];
+      if (
+        message.timestamp !== expectedTimestamp ||
+        !sameStrings(message.scopeMembership, scopesForRows(message.sourceRows))
+      ) {
+        invalidPrivateSnapshotContract();
+      }
+      assertSourceRows(message.sourceRows);
+    }
+    if (
+      !sameStrings(
+        record.scopeMembership,
+        sortedUnique(
+          record.messages.flatMap((message) => message.scopeMembership),
+        ) as ThreadCorpusScopeKey[],
+      )
+    ) {
+      invalidPrivateSnapshotContract();
+    }
   }
   assertDerivedSnapshotTopology(records, context);
   return referencedArtifacts.sort(compareArtifactFiles);
@@ -2623,11 +2273,10 @@ function assertSnapshotRecordInvariants(
 
 function deriveSnapshotManifestCounts(
   records: readonly SnapshotRecord[],
-  context: PrivateThreadCorpusSnapshotContext,
+  _context: PrivateThreadCorpusSnapshotContext,
 ): SnapshotManifestCounts {
   const messagesByScope: Record<ThreadCorpusScopeKey, number> = {
-    [CENTURION_TRANSPORT_SCOPE_KEY]: 0,
-    [DESIGNATED_RESERVATIONIST_MAILBOX_SCOPE_KEY]: 0,
+    [ACTIVE_TRANSPORT_SCOPE_KEY]: 0,
   };
   let sourceRows = 0;
   let logicalMessages = 0;
@@ -2636,7 +2285,6 @@ function deriveSnapshotManifestCounts(
   let attachments = 0;
   let drafts = 0;
   let revisions = 0;
-  let quarantine = 0;
   let rawMimeAvailable = 0;
   let rawMimeUnavailable = 0;
   let attachmentTextAvailable = 0;
@@ -2662,29 +2310,22 @@ function deriveSnapshotManifestCounts(
       drafts +=
         privateMessage?.draftRevisionLinks.filter((link) => link.draftId !== null).length ?? 0;
       revisions +=
-        privateMessage?.draftRevisionLinks.filter((link) => link.revisionId !== null).length ??
-        0;
+        privateMessage?.draftRevisionLinks.filter((link) => link.revisionId !== null).length ?? 0;
     }
   };
 
   for (const record of records) {
-    if (record.recordType === 'thread') {
-      threads += 1;
-      for (const message of record.messages) {
-        logicalMessages += 1;
-        if (message.annotations.includes('unresolved_duplicate_candidate')) {
-          unresolvedDuplicateCandidates += 1;
-        }
-        for (const scopeKey of message.scopeMembership) {
-          messagesByScope[scopeKey] += 1;
-        }
-        countSourceRows(message.sourceRows);
+    threads += 1;
+    for (const message of record.messages) {
+      logicalMessages += 1;
+      if (message.annotations.includes('unresolved_duplicate_candidate')) {
+        unresolvedDuplicateCandidates += 1;
       }
-      continue;
+      for (const scopeKey of message.scopeMembership) {
+        messagesByScope[scopeKey] += 1;
+      }
+      countSourceRows(message.sourceRows);
     }
-
-    quarantine += 1;
-    countSourceRows(record.sourceRows);
   }
 
   return {
@@ -2695,19 +2336,18 @@ function deriveSnapshotManifestCounts(
     attachments,
     drafts,
     revisions,
-    quarantine,
     rawMimeAvailable,
     rawMimeUnavailable,
     attachmentTextAvailable,
     attachmentTextUnavailable,
-    scopedQuarantine: quarantine,
-    unscopedQuarantineExcluded: context.unscopedQuarantineExcluded,
     messagesByScope,
   };
 }
 
 function serializeJsonLines(records: readonly SnapshotRecord[]): string {
-  return records.length === 0 ? '' : `${records.map((record) => JSON.stringify(record)).join('\n')}\n`;
+  return records.length === 0
+    ? ''
+    : `${records.map((record) => JSON.stringify(record)).join('\n')}\n`;
 }
 
 function isPrivateThreadCorpusArtifactFile(
@@ -2730,11 +2370,16 @@ function isPrivateThreadCorpusArtifactFile(
 }
 
 function canonicalArtifactInventorySha256(
-  artifactFiles: readonly Pick<PrivateThreadCorpusArtifactFile, 'kind' | 'id' | 'sha256' | 'bytes'>[],
+  artifactFiles: readonly Pick<
+    PrivateThreadCorpusArtifactFile,
+    'kind' | 'id' | 'sha256' | 'bytes'
+  >[],
 ): string {
   return sha256(
     artifactFiles
-      .map((artifact) => `${artifact.kind}\t${artifact.id}\t${artifact.sha256}\t${artifact.bytes}\n`)
+      .map(
+        (artifact) => `${artifact.kind}\t${artifact.id}\t${artifact.sha256}\t${artifact.bytes}\n`,
+      )
       .join(''),
   );
 }
@@ -2769,7 +2414,13 @@ function parseJsonRecord(value: string): unknown {
 function validatePrivateThreadCorpusSnapshotUnsafe(snapshot: unknown): void {
   if (
     !isRecord(snapshot) ||
-    !hasExactKeys(snapshot, ['context', 'corpusJsonl', 'manifestJson', 'manifest', 'artifactFiles']) ||
+    !hasExactKeys(snapshot, [
+      'context',
+      'corpusJsonl',
+      'manifestJson',
+      'manifest',
+      'artifactFiles',
+    ]) ||
     !isSnapshotContext(snapshot.context) ||
     typeof snapshot.corpusJsonl !== 'string' ||
     typeof snapshot.manifestJson !== 'string' ||
@@ -2801,7 +2452,7 @@ function validatePrivateThreadCorpusSnapshotUnsafe(snapshot: unknown): void {
   const records: SnapshotRecord[] = [];
   for (const line of corpusLines.slice(1)) {
     const record = parseJsonRecord(line);
-    if (isThreadSnapshotRecord(record) || isQuarantineSnapshotRecord(record)) {
+    if (isThreadSnapshotRecord(record)) {
       records.push(record);
       continue;
     }
@@ -2819,15 +2470,8 @@ function validatePrivateThreadCorpusSnapshotUnsafe(snapshot: unknown): void {
     invalidPrivateSnapshotContract();
   }
 
-  const threadRecords = records.filter(
-    (record): record is ThreadSnapshotRecord => record.recordType === 'thread',
-  );
-  const quarantineRecords = records.filter(
-    (record): record is QuarantineSnapshotRecord => record.recordType === 'quarantine',
-  );
   if (
-    metadata.threadRecordCount !== threadRecords.length ||
-    metadata.quarantineRecordCount !== quarantineRecords.length ||
+    metadata.recordCount !== records.length ||
     records.some(
       (record) =>
         record.schemaVersion !== CENTURION_THREAD_CORPUS_SCHEMA_VERSION ||
@@ -2837,10 +2481,7 @@ function validatePrivateThreadCorpusSnapshotUnsafe(snapshot: unknown): void {
     invalidPrivateSnapshotContract();
   }
 
-  const canonicalRecords: SnapshotRecord[] = [
-    ...[...threadRecords].sort(compareThreadSnapshotRecords),
-    ...[...quarantineRecords].sort(compareQuarantineSnapshotRecords),
-  ];
+  const canonicalRecords: SnapshotRecord[] = [...records].sort(compareThreadSnapshotRecords);
   if (serializeJsonLines(canonicalRecords) !== orderedRecordJsonl) {
     invalidPrivateSnapshotContract();
   }
@@ -2892,9 +2533,7 @@ function validatePrivateThreadCorpusSnapshotUnsafe(snapshot: unknown): void {
 /**
  * Parses and reconciles private snapshot bytes without exposing record content in errors.
  */
-export function validatePrivateThreadCorpusSnapshot(
-  snapshot: PrivateThreadCorpusSnapshot,
-): void {
+export function validatePrivateThreadCorpusSnapshot(snapshot: PrivateThreadCorpusSnapshot): void {
   try {
     validatePrivateThreadCorpusSnapshotUnsafe(snapshot);
   } catch {
@@ -2910,15 +2549,13 @@ export function buildPrivateThreadCorpusSnapshot(
 ): PrivateThreadCorpusSnapshot {
   try {
     if (!isSnapshotContext(args.context)) invalidPrivateSnapshotContract();
+    assertNoLegacyQuarantineFields(args.formatted);
     const context = cloneSnapshotContext(args.context);
     const hydrationPlan = createHydrationPlan(context, args.formatted, args.hydration);
     const threadRecords = args.formatted.threads
       .map((thread) => toThreadSnapshotRecord(thread, context, hydrationPlan))
       .sort(compareThreadSnapshotRecords);
-    const quarantineRecords = args.formatted.quarantineRecords
-      .map((record) => toQuarantineSnapshotRecord(record, context, hydrationPlan))
-      .sort(compareQuarantineSnapshotRecords);
-    const records: SnapshotRecord[] = [...threadRecords, ...quarantineRecords];
+    const records: SnapshotRecord[] = threadRecords;
     const orderedRecordJsonl = serializeJsonLines(records);
     const orderedRecordSha256 = sha256(orderedRecordJsonl);
     const metadata: SnapshotMetadataRecord = {
@@ -2926,8 +2563,7 @@ export function buildPrivateThreadCorpusSnapshot(
       schemaVersion: CENTURION_THREAD_CORPUS_SCHEMA_VERSION,
       snapshotId: context.snapshotId,
       orderedRecordSha256,
-      threadRecordCount: threadRecords.length,
-      quarantineRecordCount: quarantineRecords.length,
+      recordCount: threadRecords.length,
     };
     const corpusJsonl = `${JSON.stringify(metadata)}\n${orderedRecordJsonl}`;
     const manifest: PrivateThreadCorpusManifest = {
@@ -2963,17 +2599,13 @@ export function buildPrivateThreadCorpusSnapshot(
 
 function isMissingPathError(error: unknown): boolean {
   return (
-    typeof error === 'object' &&
-    error !== null &&
-    (error as { code?: unknown }).code === 'ENOENT'
+    typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'ENOENT'
   );
 }
 
 function isAlreadyExistsError(error: unknown): boolean {
   return (
-    typeof error === 'object' &&
-    error !== null &&
-    (error as { code?: unknown }).code === 'EEXIST'
+    typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'EEXIST'
   );
 }
 
@@ -3032,10 +2664,7 @@ async function canonicalTrustedPrivateCorpusRoot(
   return { repoRoot: canonicalRepoRoot, corpusRoot };
 }
 
-function directSnapshotOutDir(
-  trustedRoot: TrustedPrivateCorpusRoot,
-  outDir: string,
-): string {
+function directSnapshotOutDir(trustedRoot: TrustedPrivateCorpusRoot, outDir: string): string {
   const resolvedOutDir = path.resolve(trustedRoot.repoRoot, outDir);
   if (path.dirname(resolvedOutDir) !== trustedRoot.corpusRoot) {
     throw new Error('--out-dir must name a direct child snapshot directory');
@@ -3052,9 +2681,7 @@ async function setRestrictivePermissions(
     await fileSystem.chmod(target, mode);
   } catch (error) {
     const code =
-      typeof error === 'object' && error !== null
-        ? (error as { code?: unknown }).code
-        : undefined;
+      typeof error === 'object' && error !== null ? (error as { code?: unknown }).code : undefined;
     if (code === 'ENOSYS' || code === 'ENOTSUP' || code === 'EOPNOTSUPP' || code === 'EPERM') {
       return;
     }

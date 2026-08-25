@@ -1,17 +1,17 @@
-import {
-  ARTIFACT_MAX_INPUT_BYTES,
-  ARTIFACT_MAX_OUTPUT_BYTES,
-  extractEmbeddedPdfText,
-  type SandboxRunner,
-} from '../mail/artifacts/read-artifact.js';
-import { DEFAULT_MAX_MESSAGE_BYTES } from '../mail/ingest/limits.js';
-import { S3ObjectTooLargeError, type S3Storage } from '../storage/s3.js';
 import type {
   FormattedLogicalMessages,
   ThreadCorpusAttachmentLocator,
   ThreadCorpusHydrationInput,
   ThreadCorpusHydrationPayload,
 } from './centurion-thread-corpus-snapshot.js';
+import {
+  ARTIFACT_MAX_INPUT_BYTES,
+  ARTIFACT_MAX_OUTPUT_BYTES,
+  extractEmbeddedPdfText,
+  type SandboxRunner,
+} from '../mail/artifacts/read-artifact.js';
+import { S3ObjectTooLargeError, type S3Storage } from '../storage/s3.js';
+import { DEFAULT_MAX_MESSAGE_BYTES } from '../mail/ingest/limits.js';
 
 export type ThreadCorpusHydrationLimits = Readonly<{
   maxRawMimeBytes: number;
@@ -184,7 +184,11 @@ function isAttachmentDescriptor(value: unknown): value is {
 }
 
 function formattedSourceRows(formatted: unknown): unknown[] {
-  if (!isRecord(formatted) || !Array.isArray(formatted.threads) || !Array.isArray(formatted.quarantineRecords)) {
+  if (
+    !isRecord(formatted) ||
+    !hasExactKeys(formatted, ['threads']) ||
+    !Array.isArray(formatted.threads)
+  ) {
     return invalidHydrationInput();
   }
 
@@ -192,13 +196,22 @@ function formattedSourceRows(formatted: unknown): unknown[] {
   for (const thread of formatted.threads) {
     if (!isRecord(thread) || !Array.isArray(thread.messages)) invalidHydrationInput();
     for (const message of thread.messages) {
-      if (!isRecord(message) || !Array.isArray(message.sourceRows)) invalidHydrationInput();
+      if (
+        !isRecord(message) ||
+        Object.hasOwn(message, 'quarantined') ||
+        !Array.isArray(message.sourceRows)
+      ) {
+        invalidHydrationInput();
+      }
+      if (
+        message.sourceRows.some(
+          (sourceRow) => isRecord(sourceRow) && Object.hasOwn(sourceRow, 'isQuarantined'),
+        )
+      ) {
+        invalidHydrationInput();
+      }
       rows.push(...message.sourceRows);
     }
-  }
-  for (const record of formatted.quarantineRecords) {
-    if (!isRecord(record) || !Array.isArray(record.sourceRows)) invalidHydrationInput();
-    rows.push(...record.sourceRows);
   }
   return rows;
 }
@@ -211,12 +224,7 @@ function resolveLimits(value: unknown): ThreadCorpusHydrationLimits {
     if (!isPlainRecord(value)) return invalidHydrationInput();
 
     const keys = Reflect.ownKeys(value);
-    if (
-      keys.some(
-        (key) =>
-          typeof key !== 'string' || !LIMIT_KEYS.includes(key as LimitKey),
-      )
-    ) {
+    if (keys.some((key) => typeof key !== 'string' || !LIMIT_KEYS.includes(key as LimitKey))) {
       return invalidHydrationInput();
     }
 
@@ -228,7 +236,8 @@ function resolveLimits(value: unknown): ThreadCorpusHydrationLimits {
     }
 
     return Object.freeze({
-      maxRawMimeBytes: overrides.maxRawMimeBytes ?? DEFAULT_THREAD_CORPUS_HYDRATION_LIMITS.maxRawMimeBytes,
+      maxRawMimeBytes:
+        overrides.maxRawMimeBytes ?? DEFAULT_THREAD_CORPUS_HYDRATION_LIMITS.maxRawMimeBytes,
       maxAttachmentInputBytes:
         overrides.maxAttachmentInputBytes ??
         DEFAULT_THREAD_CORPUS_HYDRATION_LIMITS.maxAttachmentInputBytes,
@@ -315,7 +324,10 @@ function bytesFrom(value: unknown): Uint8Array | null {
 
 function rawMimePayload(
   sourceRowId: string,
-  status: Exclude<Extract<ThreadCorpusHydrationPayload, { kind: 'raw_mime' }>['status'], 'available'>,
+  status: Exclude<
+    Extract<ThreadCorpusHydrationPayload, { kind: 'raw_mime' }>['status'],
+    'available'
+  >,
 ): RawMimeResult {
   return {
     payload: { kind: 'raw_mime', sourceRowId, status },
@@ -468,7 +480,8 @@ function validatedRequest(input: unknown): ValidatedRequest {
           compareText(left.attachmentId, right.attachmentId),
       ),
       limits,
-      pdfExtractor: (input.pdfExtractor as typeof extractEmbeddedPdfText | undefined) ?? extractEmbeddedPdfText,
+      pdfExtractor:
+        (input.pdfExtractor as typeof extractEmbeddedPdfText | undefined) ?? extractEmbeddedPdfText,
       pdfRunner: input.pdfRunner as SandboxRunner | undefined,
       rawMimeSources: rawMimeSources.sort((left, right) =>
         compareText(left.sourceRowId, right.sourceRowId),
@@ -501,10 +514,7 @@ async function hydrateRawMime(
   if (bounded.state === 'deadline') return rawMimePayload(source.sourceRowId, 'read_failed');
   if (bounded.state === 'rejected') {
     if (bounded.error instanceof S3ObjectTooLargeError) {
-      return rawMimePayload(
-        source.sourceRowId,
-        tooLargeStatus(bounded.error.observedBytes),
-      );
+      return rawMimePayload(source.sourceRowId, tooLargeStatus(bounded.error.observedBytes));
     }
     return rawMimePayload(source.sourceRowId, 'read_failed');
   }
@@ -515,10 +525,7 @@ async function hydrateRawMime(
     return rawMimePayload(source.sourceRowId, 'read_failed');
   }
   if (content.byteLength > readLimit) {
-    return rawMimePayload(
-      source.sourceRowId,
-      tooLargeStatus(content.byteLength),
-    );
+    return rawMimePayload(source.sourceRowId, tooLargeStatus(content.byteLength));
   }
   return {
     payload: { kind: 'raw_mime', sourceRowId: source.sourceRowId, status: 'available', content },
@@ -605,7 +612,8 @@ async function hydrateAttachment(
     return attachmentPayload(locator.attachmentId, 'parser_failure');
   }
   if (data.reason === 'text') {
-    if (typeof data.text !== 'string') return attachmentPayload(locator.attachmentId, 'parser_failure');
+    if (typeof data.text !== 'string')
+      return attachmentPayload(locator.attachmentId, 'parser_failure');
     return availableAttachmentText(locator.attachmentId, data.text, remainingBytes, limits);
   }
   if (ATTACHMENT_TEXT_STATUSES.has(data.reason)) {

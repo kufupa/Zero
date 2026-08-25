@@ -3,7 +3,6 @@ import {
   publishPrivateThreadCorpusSnapshot,
   type PrivateThreadCorpusPublishArgs,
   type PrivateThreadCorpusSnapshotContext,
-  type ThreadCorpusSnapshotLoadRequest,
   type ThreadCorpusSnapshotLoadResult,
   type ThreadCorpusSnapshotReader,
   type ThreadCorpusSnapshotSafeSummary,
@@ -19,7 +18,6 @@ export type ThreadCorpusExportRequest = {
   outDir: string;
   snapshotId: string;
   exporterVersion: string;
-  source: ThreadCorpusSnapshotLoadRequest;
   hydration: Omit<
     Parameters<typeof hydrateThreadCorpusArtifacts>[0],
     'formatted' | 'attachmentLocators'
@@ -28,14 +26,9 @@ export type ThreadCorpusExportRequest = {
 
 export type ThreadCorpusExportDependencies = {
   createReader(): ClosableThreadCorpusReader;
-  load?(
-    reader: ThreadCorpusSnapshotReader,
-    request: ThreadCorpusSnapshotLoadRequest,
-  ): Promise<ThreadCorpusSnapshotLoadResult>;
+  load?(reader: ThreadCorpusSnapshotReader): Promise<ThreadCorpusSnapshotLoadResult>;
   hydrate?: typeof hydrateThreadCorpusArtifacts;
-  publish?: (
-    args: PrivateThreadCorpusPublishArgs,
-  ) => Promise<{ outDir: string }>;
+  publish?: (args: PrivateThreadCorpusPublishArgs) => Promise<{ outDir: string }>;
 };
 
 export type ThreadCorpusExportSafeResult = {
@@ -43,13 +36,7 @@ export type ThreadCorpusExportSafeResult = {
   summary: ThreadCorpusSnapshotSafeSummary;
 };
 
-const SAFE_SUMMARY_COUNT_KEYS = [
-  'includedMessageCount',
-  'sourceRowCount',
-  'threadCount',
-  'quarantineRecordCount',
-  'unscopedQuarantineCount',
-] as const;
+const SAFE_SUMMARY_COUNT_KEYS = ['includedMessageCount', 'sourceRowCount', 'threadCount'] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -59,28 +46,35 @@ function isNonNegativeSafeInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
-function hasCoherentLoadResult(
-  result: ThreadCorpusSnapshotLoadResult,
-): boolean {
+function isSealedActiveTransportScope(value: unknown, asOf: string): boolean {
+  if (!isRecord(value) || value.asOf !== asOf || !Array.isArray(value.transportIds)) {
+    return false;
+  }
+  const transportIds = value.transportIds;
+  return (
+    transportIds.length > 0 &&
+    transportIds.every((transportId) => typeof transportId === 'string' && transportId.trim()) &&
+    transportIds.every(
+      (transportId, index) => index === 0 || transportIds[index - 1]! < transportId,
+    )
+  );
+}
+
+function hasCoherentLoadResult(result: ThreadCorpusSnapshotLoadResult): boolean {
   try {
     const candidate = result as unknown;
     if (!isRecord(candidate) || typeof candidate.asOf !== 'string') return false;
     if (!isRecord(candidate.safeSummary)) return false;
-    if (!Array.isArray(candidate.unscopedQuarantineRows)) return false;
+    if (!isSealedActiveTransportScope(candidate.activeTransportScope, candidate.asOf)) {
+      return false;
+    }
 
     const summary = candidate.safeSummary;
     if (summary.asOf !== candidate.asOf) return false;
-    if (
-      SAFE_SUMMARY_COUNT_KEYS.some(
-        (key) => !isNonNegativeSafeInteger(summary[key]),
-      )
-    ) {
+    if (SAFE_SUMMARY_COUNT_KEYS.some((key) => !isNonNegativeSafeInteger(summary[key]))) {
       return false;
     }
-    return (
-      summary.unscopedQuarantineCount ===
-      candidate.unscopedQuarantineRows.length
-    );
+    return true;
   } catch {
     return false;
   }
@@ -99,28 +93,12 @@ function contextFor(
   return {
     snapshotId: request.snapshotId,
     scope: {
-      scopeKeys: [
-        'centurion_transport',
-        'designated_reservationist_mailbox',
-      ],
-      transportIds: [
-        ...new Set([
-          request.source.centurionTransportId,
-          request.source.designatedTransportId,
-        ]),
-      ].sort(),
-      participantAddressRef:
-        request.source.designatedAddresses.length > 0
-          ? 'private_designated_reservationist_address'
-          : null,
-      messagePredicate:
-        'selected_transports_or_private_designated_address_before_as_of',
-      quarantinePredicate:
-        'selected_ingest_mailbox_or_owner_header_before_as_of',
+      scopeKeys: ['active_transport'],
+      transportIds: [...result.activeTransportScope.transportIds],
+      messagePredicate: 'active_transport_before_as_of',
     },
     asOf: result.asOf,
     exporterVersion: request.exporterVersion,
-    unscopedQuarantineExcluded: result.safeSummary.unscopedQuarantineCount,
   };
 }
 
@@ -132,24 +110,20 @@ function cloneSafeSummary(
     includedMessageCount: summary.includedMessageCount,
     sourceRowCount: summary.sourceRowCount,
     threadCount: summary.threadCount,
-    quarantineRecordCount: summary.quarantineRecordCount,
-    unscopedQuarantineCount: summary.unscopedQuarantineCount,
   };
 }
 
 export function createCenturionThreadCorpusExporter(
   dependencies: ThreadCorpusExportDependencies,
-): (
-  request: ThreadCorpusExportRequest,
-) => Promise<ThreadCorpusExportSafeResult> {
+): (request: ThreadCorpusExportRequest) => Promise<ThreadCorpusExportSafeResult> {
   return async (request) => {
     const reader = dependencies.createReader();
     let result: ThreadCorpusSnapshotLoadResult;
 
     try {
       result = dependencies.load
-        ? await dependencies.load(reader, request.source)
-        : await createThreadCorpusSnapshotLoader(reader)(request.source);
+        ? await dependencies.load(reader)
+        : await createThreadCorpusSnapshotLoader(reader)();
     } catch (error) {
       try {
         await reader.close();
@@ -160,16 +134,12 @@ export function createCenturionThreadCorpusExporter(
     await reader.close();
     validateLoadResult(result);
 
-    const hydration = await (
-      dependencies.hydrate ?? hydrateThreadCorpusArtifacts
-    )({
+    const hydration = await (dependencies.hydrate ?? hydrateThreadCorpusArtifacts)({
       ...request.hydration,
       formatted: result.formatted,
       attachmentLocators: result.attachmentLocators,
     });
-    const published = await (
-      dependencies.publish ?? publishPrivateThreadCorpusSnapshot
-    )({
+    const published = await (dependencies.publish ?? publishPrivateThreadCorpusSnapshot)({
       repoRoot: request.repoRoot,
       outDir: request.outDir,
       context: contextFor(request, result),

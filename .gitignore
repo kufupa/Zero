@@ -90,6 +90,7 @@ apps/mail/test-results/
 Nava.ovpn
 Nava.zip
 .private/centurion-thread-corpus/
+.private/connected-mailbox-corpus/
 *.mbox
 *.mailbox-dump*
 .tmp*

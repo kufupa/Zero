@@ -1,17 +1,3 @@
-import { spawnSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
-import {
-  closeSync,
-  constants as fsConstants,
-  fstatSync,
-  lstatSync,
-  openSync,
-  readFileSync,
-  realpathSync,
-} from 'node:fs';
-import { request as httpRequest } from 'node:http';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import {
   createCenturionThreadCorpusExporter,
   type ClosableThreadCorpusReader,
@@ -24,11 +10,16 @@ import {
   type ThreadCorpusPostgresReaderOptions,
 } from '../src/ops/centurion-thread-corpus-postgres-reader.js';
 import { RealS3Storage, type S3Storage } from '../src/storage/s3.js';
+import { request as httpRequest } from 'node:http';
+import { spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { realpathSync } from 'node:fs';
+import path from 'node:path';
 
 const APPROVED_INSTANCE_ID = 'i-008f737974a9ba9b3';
-const CONFIG_FILE_NAME = 'operator-config.json';
 const CORPUS_PATH_SEGMENTS = ['.private', 'centurion-thread-corpus'] as const;
-const EXPORTER_VERSION = 'centurion-thread-corpus-live-v1';
+const EXPORTER_VERSION = 'connected-mailbox-corpus-live-v1';
 const IMDS_HOST = '169.254.169.254';
 const IMDS_MAX_RESPONSE_BYTES = 1024;
 const IMDS_TIMEOUT_MS = 1_000;
@@ -37,26 +28,8 @@ const SAFE_SUMMARY_KEYS = [
   'includedMessageCount',
   'sourceRowCount',
   'threadCount',
-  'quarantineRecordCount',
-  'unscopedQuarantineCount',
 ] as const;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-export type OperatorConfig = {
-  version: 1;
-  source: {
-    centurionTransportId: string;
-    designatedTransportId: string;
-    designatedIngestMailboxIds: string[];
-    designatedAddresses: string[];
-  };
-};
-
-type ProtectedConfigRequest = {
-  repoRoot: string;
-  corpusRoot: string;
-  configPath: string;
-};
 
 type IgnoredDestinationRequest = {
   repoRoot: string;
@@ -100,10 +73,7 @@ type ImdsRequestOptions = {
 };
 
 export type DirectImdsRequestDependencies = {
-  request(
-    options: ImdsRequestOptions,
-    onResponse: (response: ImdsResponse) => void,
-  ): ImdsRequest;
+  request(options: ImdsRequestOptions, onResponse: (response: ImdsResponse) => void): ImdsRequest;
   setTimeout(callback: () => void, milliseconds: number): unknown;
   clearTimeout(timer: unknown): void;
 };
@@ -113,7 +83,6 @@ export type LiveCenturionThreadCorpusDependencies = {
   platform(): string;
   scriptPath(): string;
   attestImdsV2(): Promise<boolean>;
-  readProtectedConfig(request: ProtectedConfigRequest): Promise<string>;
   isIgnored(request: IgnoredDestinationRequest): boolean | Promise<boolean>;
   uuid(): string;
   environment(): Readonly<{
@@ -136,7 +105,6 @@ type PreparedExport = {
   corpusRoot: string;
   outDir: string;
   snapshotId: string;
-  source: OperatorConfig['source'];
   storage: Pick<S3Storage, 'getObjectBounded'>;
   exporter: (request: ThreadCorpusExportRequest) => Promise<ThreadCorpusExportSafeResult>;
 };
@@ -158,59 +126,6 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   const actual = Object.keys(value);
   return actual.length === keys.length && keys.every((key) => Object.hasOwn(value, key));
-}
-
-function opaqueId(value: unknown): string {
-  if (typeof value !== 'string' || !value.trim()) return failPreflight();
-  return value;
-}
-
-function opaqueIds(value: unknown): string[] {
-  if (!Array.isArray(value)) return failPreflight();
-  return value.map(opaqueId);
-}
-
-function normalizedAddresses(value: unknown): string[] {
-  if (!Array.isArray(value)) return failPreflight();
-  return value.map((address) => {
-    if (typeof address !== 'string') return failPreflight();
-    const normalized = address.trim();
-    if (!normalized) return failPreflight();
-    return normalized;
-  });
-}
-
-function parseOperatorConfig(text: string): OperatorConfig {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    return failPreflight();
-  }
-  if (!isPlainRecord(parsed) || !hasExactKeys(parsed, ['version', 'source'])) {
-    return failPreflight();
-  }
-  if (parsed.version !== 1 || !isPlainRecord(parsed.source)) return failPreflight();
-  if (
-    !hasExactKeys(parsed.source, [
-      'centurionTransportId',
-      'designatedTransportId',
-      'designatedIngestMailboxIds',
-      'designatedAddresses',
-    ])
-  ) {
-    return failPreflight();
-  }
-
-  return {
-    version: 1,
-    source: {
-      centurionTransportId: opaqueId(parsed.source.centurionTransportId),
-      designatedTransportId: opaqueId(parsed.source.designatedTransportId),
-      designatedIngestMailboxIds: opaqueIds(parsed.source.designatedIngestMailboxIds),
-      designatedAddresses: normalizedAddresses(parsed.source.designatedAddresses),
-    },
-  };
 }
 
 function nonBlankEnvironmentValue(value: unknown): string {
@@ -235,101 +150,6 @@ function repoRootFromScript(scriptPath: string): string {
 function corpusRootFor(repoRoot: string): string {
   if (!isCanonicalAbsolutePath(repoRoot)) return failPreflight();
   return path.posix.join(repoRoot, ...CORPUS_PATH_SEGMENTS);
-}
-
-function sameIdentity(
-  left: { dev: number; ino: number },
-  right: { dev: number; ino: number },
-): boolean {
-  return left.dev === right.dev && left.ino === right.ino;
-}
-
-function currentEffectiveUid(): number {
-  const effectiveUid = process.geteuid?.();
-  if (typeof effectiveUid !== 'number') return failPreflight();
-  return effectiveUid;
-}
-
-function trustedDirectory(directory: string): { dev: number; ino: number } {
-  const stats = lstatSync(directory);
-  const effectiveUid = currentEffectiveUid();
-  if (
-    !stats.isDirectory() ||
-    stats.isSymbolicLink() ||
-    (stats.uid !== effectiveUid && stats.uid !== 0) ||
-    (stats.mode & 0o022) !== 0 ||
-    realpathSync(directory) !== directory
-  ) {
-    return failPreflight();
-  }
-  return { dev: stats.dev, ino: stats.ino };
-}
-
-function trustedConfigLeaf(configPath: string): { dev: number; ino: number } {
-  const stats = lstatSync(configPath);
-  const effectiveUid = currentEffectiveUid();
-  if (
-    !stats.isFile() ||
-    stats.isSymbolicLink() ||
-    (stats.uid !== effectiveUid && stats.uid !== 0) ||
-    (stats.mode & 0o077) !== 0
-  ) {
-    return failPreflight();
-  }
-  return { dev: stats.dev, ino: stats.ino };
-}
-
-async function defaultReadProtectedConfig(request: ProtectedConfigRequest): Promise<string> {
-  const expectedCorpusRoot = corpusRootFor(request.repoRoot);
-  if (
-    request.corpusRoot !== expectedCorpusRoot ||
-    request.configPath !== path.posix.join(expectedCorpusRoot, CONFIG_FILE_NAME)
-  ) {
-    return failPreflight();
-  }
-
-  const directories = [
-    request.repoRoot,
-    path.posix.join(request.repoRoot, '.private'),
-    request.corpusRoot,
-  ];
-  let identities: Array<{ dev: number; ino: number }>;
-  let descriptor: number | undefined;
-  try {
-    identities = directories.map(trustedDirectory);
-    const preOpen = trustedConfigLeaf(request.configPath);
-    descriptor = openSync(
-      request.configPath,
-      fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
-    );
-    const opened = fstatSync(descriptor);
-    if (
-      !opened.isFile() ||
-      preOpen.dev !== opened.dev ||
-      preOpen.ino !== opened.ino
-    ) {
-      return failPreflight();
-    }
-    const content = readFileSync(descriptor, 'utf8');
-    const postOpen = trustedConfigLeaf(request.configPath);
-    if (!sameIdentity(preOpen, postOpen) || !sameIdentity(preOpen, opened)) {
-      return failPreflight();
-    }
-    for (let index = 0; index < directories.length; index += 1) {
-      if (!sameIdentity(identities[index]!, trustedDirectory(directories[index]!))) {
-        return failPreflight();
-      }
-    }
-    return content;
-  } catch {
-    return failPreflight();
-  } finally {
-    if (descriptor !== undefined) {
-      try {
-        closeSync(descriptor);
-      } catch {}
-    }
-  }
 }
 
 const defaultImdsRequestDependencies: DirectImdsRequestDependencies = {
@@ -427,16 +247,12 @@ async function defaultAttestImdsV2(): Promise<boolean> {
 }
 
 function defaultIsIgnored(request: IgnoredDestinationRequest): boolean {
-  const result = spawnSync(
-    'git',
-    ['check-ignore', '-q', '--no-index', request.relativePath],
-    {
-      cwd: request.repoRoot,
-      shell: false,
-      stdio: 'ignore',
-      windowsHide: true,
-    },
-  );
+  const result = spawnSync('git', ['check-ignore', '-q', '--no-index', request.relativePath], {
+    cwd: request.repoRoot,
+    shell: false,
+    stdio: 'ignore',
+    windowsHide: true,
+  });
   return result.error === undefined && result.signal === null && result.status === 0;
 }
 
@@ -490,7 +306,9 @@ function isTask7CompatibleIsoTimestamp(value: unknown): value is string {
   const year = Number(match[1]);
   const month = Number(match[2]);
   const day = Number(match[3]);
-  return month >= 1 && month <= 12 && day >= 1 && day <= new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return (
+    month >= 1 && month <= 12 && day >= 1 && day <= new Date(Date.UTC(year, month, 0)).getUTCDate()
+  );
 }
 
 function cloneSafeSummary(value: unknown): ThreadCorpusExportSafeResult['summary'] {
@@ -501,27 +319,19 @@ function cloneSafeSummary(value: unknown): ThreadCorpusExportSafeResult['summary
   const includedMessageCount = value.includedMessageCount;
   const sourceRowCount = value.sourceRowCount;
   const threadCount = value.threadCount;
-  const quarantineRecordCount = value.quarantineRecordCount;
-  const unscopedQuarantineCount = value.unscopedQuarantineCount;
   if (!isTask7CompatibleIsoTimestamp(asOf)) return failPreflight();
   if (!isNonNegativeSafeInteger(includedMessageCount)) return failPreflight();
   if (!isNonNegativeSafeInteger(sourceRowCount)) return failPreflight();
   if (!isNonNegativeSafeInteger(threadCount)) return failPreflight();
-  if (!isNonNegativeSafeInteger(quarantineRecordCount)) return failPreflight();
-  if (!isNonNegativeSafeInteger(unscopedQuarantineCount)) return failPreflight();
   return {
     asOf,
     includedMessageCount,
     sourceRowCount,
     threadCount,
-    quarantineRecordCount,
-    unscopedQuarantineCount,
   };
 }
 
-function failureJson(
-  code: 'invalid_arguments' | 'preflight_failed' | 'export_failed',
-): string {
+function failureJson(code: 'invalid_arguments' | 'preflight_failed' | 'export_failed'): string {
   return `${JSON.stringify({
     event: 'centurion_thread_corpus_export.failed',
     code,
@@ -545,13 +355,6 @@ async function prepareExport(
   const repoRoot = repoRootFromScript(dependencies.scriptPath());
   if (!(await dependencies.attestImdsV2())) return failPreflight();
   const corpusRoot = corpusRootFor(repoRoot);
-  const config = parseOperatorConfig(
-    await dependencies.readProtectedConfig({
-      repoRoot,
-      corpusRoot,
-      configPath: path.posix.join(corpusRoot, CONFIG_FILE_NAME),
-    }),
-  );
   const uuid = dependencies.uuid();
   if (!UUID_PATTERN.test(uuid)) return failPreflight();
   const snapshotId = `live-${uuid}`;
@@ -572,7 +375,6 @@ async function prepareExport(
   const createReader = (): ClosableThreadCorpusReader =>
     dependencies.createReader({
       databaseUrl,
-      ...config.source,
     });
 
   return {
@@ -580,7 +382,6 @@ async function prepareExport(
     corpusRoot,
     outDir,
     snapshotId,
-    source: config.source,
     storage: readOnlyStorage,
     exporter: dependencies.createExporter({ createReader }),
   };
@@ -592,7 +393,6 @@ function defaultDependencies(): LiveCenturionThreadCorpusDependencies {
     platform: () => process.platform,
     scriptPath: () => fileURLToPath(import.meta.url),
     attestImdsV2: defaultAttestImdsV2,
-    readProtectedConfig: defaultReadProtectedConfig,
     isIgnored: defaultIsIgnored,
     uuid: randomUUID,
     environment: () => ({
@@ -602,8 +402,7 @@ function defaultDependencies(): LiveCenturionThreadCorpusDependencies {
     }),
     createReader: (options) => createThreadCorpusPostgresReader(options),
     createRealStorage: ({ region, bucket }) => new RealS3Storage(region, bucket),
-    createExporter: ({ createReader }) =>
-      createCenturionThreadCorpusExporter({ createReader }),
+    createExporter: ({ createReader }) => createCenturionThreadCorpusExporter({ createReader }),
     validateAllocatedDir: defaultValidateAllocatedDir,
     writeStdout: (value) => {
       process.stdout.write(value);
@@ -644,7 +443,6 @@ export function createCenturionThreadCorpusLiveExportCommand(
         outDir: prepared.outDir,
         snapshotId: prepared.snapshotId,
         exporterVersion: EXPORTER_VERSION,
-        source: prepared.source,
         hydration: { storage: prepared.storage },
       });
       const summary = cloneSafeSummary(result.summary);
@@ -678,8 +476,7 @@ export async function runCenturionThreadCorpusLiveExport(
 function isEntryScript(): boolean {
   const entryPath = process.argv[1];
   return (
-    typeof entryPath === 'string' &&
-    fileURLToPath(import.meta.url) === path.resolve(entryPath)
+    typeof entryPath === 'string' && fileURLToPath(import.meta.url) === path.resolve(entryPath)
   );
 }
 

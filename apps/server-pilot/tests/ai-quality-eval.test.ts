@@ -11,6 +11,7 @@ import {
   compareQualityReports,
   hashQualitySource,
   parseQualityExportArgs,
+  parseQualityLabelsJsonl,
   qualityLabelSchema,
   runQualityEval,
   type QualityEvalReport,
@@ -121,6 +122,102 @@ describe('quality label contract', () => {
       tags: ['urgency', 'integration'],
     });
     expect(parsed.expectedCategory).toBe('ops');
+  });
+});
+
+describe('synthetic quality gold JSONL', () => {
+  const fixturePath = join(here, 'fixtures', 'triage-gold-synthetic.jsonl');
+  const validLabelLine = JSON.stringify({
+    triggerMessageId: 'synthetic-parser-valid-001',
+    asOf: AS_OF,
+    asOfSource: 'message-created-at',
+    expectedCategory: 'ops',
+    expectedUrgent: false,
+    evidenceScope: 'text-visible',
+    adjudication: 'locked',
+    policyReason: 'Synthetic parser test label',
+    tags: [],
+  });
+
+  function parserError(action: () => unknown): string {
+    try {
+      action();
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+    throw new Error('expected parser to throw');
+  }
+
+  it('parses every fixture record and permits no or one final newline', () => {
+    const jsonl = readFileSync(fixturePath, 'utf8');
+    const lines = jsonl.split(/\r?\n/);
+    const expected = lines.slice(0, -1).map((line) => qualityLabelSchema.parse(JSON.parse(line)));
+
+    expect(jsonl.endsWith('\n')).toBe(true);
+    expect(lines.at(-1)).toBe('');
+    expect(parseQualityLabelsJsonl(jsonl)).toEqual(expected);
+    expect(parseQualityLabelsJsonl(validLabelLine)).toHaveLength(1);
+    expect(parseQualityLabelsJsonl(`${validLabelLine}\n`)).toHaveLength(1);
+    expect(parseQualityLabelsJsonl(`${validLabelLine}\r\n`)).toHaveLength(1);
+  });
+
+  it('rejects a bare carriage-return terminator', () => {
+    const error = parserError(() => parseQualityLabelsJsonl(`${validLabelLine}\r`));
+
+    expect(error).toMatch(/invalid.*terminator/i);
+  });
+
+  it('rejects malformed JSON and schema lines without echoing source text', () => {
+    const malformed = '{"triggerMessageId":"do-not-echo-json-content"';
+    const invalidSchema = JSON.stringify({
+      triggerMessageId: 'synthetic-parser-invalid-002',
+      asOf: AS_OF,
+      asOfSource: 'message-created-at',
+      expectedCategory: 'not-a-category',
+      expectedUrgent: false,
+      evidenceScope: 'text-visible',
+      adjudication: 'locked',
+      policyReason: 'do-not-echo-schema-content',
+      tags: [],
+    });
+    const extraField = JSON.stringify({
+      triggerMessageId: 'synthetic-parser-extra-003',
+      asOf: AS_OF,
+      asOfSource: 'message-created-at',
+      expectedCategory: 'ops',
+      expectedUrgent: false,
+      evidenceScope: 'text-visible',
+      adjudication: 'locked',
+      policyReason: 'valid fields plus an unexpected key',
+      tags: [],
+      unexpected: 'do-not-echo-extra-field',
+    });
+
+    const malformedError = parserError(() => parseQualityLabelsJsonl(malformed));
+    expect(malformedError).toMatch(/invalid JSON.*line 1/i);
+    expect(malformedError).not.toContain('do-not-echo-json-content');
+
+    const schemaError = parserError(() => parseQualityLabelsJsonl(invalidSchema));
+    expect(schemaError).toMatch(/invalid quality label.*line 1/i);
+    expect(schemaError).not.toContain('do-not-echo-schema-content');
+
+    const extraFieldError = parserError(() => parseQualityLabelsJsonl(extraField));
+    expect(extraFieldError).toMatch(/invalid quality label.*line 1/i);
+    expect(extraFieldError).not.toContain('do-not-echo-extra-field');
+  });
+
+  it('rejects interior blank lines', () => {
+    const error = parserError(() =>
+      parseQualityLabelsJsonl(`${validLabelLine}\n\n${validLabelLine}`),
+    );
+
+    expect(error).toMatch(/blank.*line 2/i);
+  });
+
+  it('rejects extra terminal blank lines', () => {
+    const error = parserError(() => parseQualityLabelsJsonl(`${validLabelLine}\n\n`));
+
+    expect(error).toMatch(/blank.*line 2/i);
   });
 });
 

@@ -136,8 +136,66 @@ export function refineTriageOutput(
     };
   }
 
+  const isFortiMailQuarantine = /\b(?:fortimail|quarantine)\b/i.test(haystack);
+  const isGuestRevuDigest =
+    /\bguestrevu\b/i.test(haystack) && /\b(?:digest|summary)\b/i.test(haystack);
+  const isRoutineSystemMail =
+    (/\b(?:synxis|channel(?:\s+manager)?)\b/i.test(haystack) &&
+      /\b(?:confirm(?:ation|ed|s)?|cancel(?:lation|led|ed|s)?)\b/i.test(haystack)) ||
+    /\bfailed\s+to\s+integrate\b/i.test(haystack);
+  const hasTimeboxedReplyAction =
+    /\b(?:reply|respond|response|action|confirm)(?:\s+(?:is\s+)?(?:required|needed))?\s+(?:within\s+\d+\s*(?:h|hrs?|hours?)|by\s+(?:today|tomorrow|eod|\d{1,2}(?::\d{2})?\s*(?:am|pm)?))\b/i.test(
+      haystack,
+    );
+  const hasRevenueSla = /\b(?:hard\s+)?sla\b/i.test(
+    haystack.replace(
+      /\b(?:no|not|without)\s+(?:hard\s+)?sla\b|\b(?:hard\s+)?sla\s+(?:does(?:\s+not|n't)\s+apply|(?:is\s+)?not\s+applicable)\b/gi,
+      '',
+    ),
+  );
+  const hasRevenueRisk =
+    hasTimeboxedReplyAction ||
+    hasRevenueSla ||
+    /\bunpaid\b/i.test(haystack) ||
+    /\b(?:will|may|could)\s+(?:be\s+)?cancel(?:led|ed)?\b/i.test(haystack) ||
+    /\bcancel(?:lation|led|ed|s)?\b[\s\S]{0,80}\b(?:if|unless|without|pending)\b/i.test(
+      haystack,
+    );
+
+  if (output.category === 'ops' && next.category === 'ops' && isFortiMailQuarantine) {
+    next = {
+      ...next,
+      category: 'spam',
+      urgent: false,
+      policyFlags: [...next.policyFlags, 'refine:fortimail-spam'],
+      rationale: `${next.rationale} FortiMail quarantine is spam.`,
+    };
+  } else if (isGuestRevuDigest && !hasRevenueRisk) {
+    next = {
+      ...next,
+      category: 'ops',
+      urgent: false,
+      policyFlags: [...next.policyFlags, 'refine:guestrevu-ops'],
+      rationale: `${next.rationale} GuestRevu digest is ops.`,
+    };
+  } else if (
+    isRoutineSystemMail &&
+    !isFortiMailQuarantine &&
+    !hasRevenueRisk &&
+    !next.policyFlags.includes('refine:series-release-at-risk')
+  ) {
+    next = {
+      ...next,
+      category: 'ops',
+      urgent: false,
+      policyFlags: [...next.policyFlags, 'refine:system-mail-ops'],
+      rationale: `${next.rationale} Routine system mail is ops.`,
+    };
+  }
+
   if (
     next.category === 'at-risk' &&
+    !hasRevenueRisk &&
     /booking|voucher|reservation|rooms?\b/i.test(haystack) &&
     !/\b(cancel|cancell?ation|amend|release held|unpaid|pay at (check|ci)|within \d+\s*h|synxis|ota)\b/i.test(
       haystack,

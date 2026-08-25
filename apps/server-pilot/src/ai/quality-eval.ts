@@ -41,6 +41,39 @@ export const qualityLabelSchema = z.object({
 
 export type QualityLabel = z.infer<typeof qualityLabelSchema>;
 
+/**
+ * Parses strict JSONL quality labels. One final LF or CRLF terminator is allowed
+ * and does not create a blank record; every other blank line is rejected.
+ */
+export function parseQualityLabelsJsonl(jsonl: string): QualityLabel[] {
+  if (jsonl.endsWith('\r')) {
+    throw new Error('invalid quality label JSONL terminator');
+  }
+
+  const lines = jsonl.split(/\r?\n/);
+  const recordLines = jsonl.endsWith('\n') ? lines.slice(0, -1) : lines;
+
+  return recordLines.map((line, index) => {
+    const lineNumber = index + 1;
+    if (line.trim() === '') {
+      throw new Error(`blank quality label JSONL line ${lineNumber}`);
+    }
+
+    let value: unknown;
+    try {
+      value = JSON.parse(line);
+    } catch {
+      throw new Error(`invalid JSON in quality label JSONL line ${lineNumber}`);
+    }
+
+    const parsed = qualityLabelSchema.strict().safeParse(value);
+    if (!parsed.success) {
+      throw new Error(`invalid quality label JSONL line ${lineNumber}`);
+    }
+    return parsed.data;
+  });
+}
+
 const qualityMessageSchema = z.object({
   id: z.string().min(1),
   from: z.string(),

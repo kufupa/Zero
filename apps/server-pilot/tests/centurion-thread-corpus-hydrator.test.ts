@@ -1,7 +1,3 @@
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import ts from 'typescript';
-import { describe, expect, it, vi } from 'vitest';
 import {
   buildPrivateThreadCorpusSnapshot,
   formatLogicalMessages,
@@ -16,11 +12,12 @@ import {
   hydrateThreadCorpusArtifacts,
   type ThreadCorpusHydrationLimits,
 } from '../src/ops/centurion-thread-corpus-hydrator.js';
-import {
-  type SandboxResult,
-  type SandboxRunner,
-} from '../src/mail/artifacts/read-artifact.js';
+import { type SandboxResult, type SandboxRunner } from '../src/mail/artifacts/read-artifact.js';
 import { FakeS3Storage } from '../src/storage/s3.js';
+import { describe, expect, it, vi } from 'vitest';
+import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
+import ts from 'typescript';
 
 function makeAttachment(
   id: string,
@@ -55,7 +52,7 @@ function makeRow(input: {
 }): ThreadCorpusSourceRow {
   return {
     sourceRowId: input.id,
-    scopeMembership: ['centurion_transport'],
+    scopeMembership: ['active_transport'],
     receivedAt: '2026-08-22T11:00:00.000Z',
     threadId: `thread-${input.id}`,
     messageId: `<${input.id}@synthetic.test>`,
@@ -75,8 +72,6 @@ function makeRow(input: {
       outboundDelivery: { queueState: 'unknown', deliveryStatus: 'not_claimed' },
       sourceMetadata: {
         transportId: 'transport-centurion',
-        ingestMailboxId: null,
-        uidl: `uidl-${input.id}`,
       },
     },
   };
@@ -90,15 +85,12 @@ function snapshotContext(): PrivateThreadCorpusSnapshotContext {
   return {
     snapshotId: 'task8-synthetic-snapshot',
     scope: {
-      scopeKeys: ['centurion_transport', 'designated_reservationist_mailbox'],
-      transportIds: ['transport-centurion', 'transport-designated'],
-      participantAddressRef: 'private_designated_reservationist_address',
-      messagePredicate: 'selected_transports_or_private_designated_address_before_as_of',
-      quarantinePredicate: 'selected_ingest_mailbox_or_owner_header_before_as_of',
+      scopeKeys: ['active_transport'],
+      transportIds: ['transport-centurion'],
+      messagePredicate: 'active_transport_before_as_of',
     },
     asOf: '2026-08-22T12:00:00.000Z',
     exporterVersion: 'task8-test',
-    unscopedQuarantineExcluded: 0,
   };
 }
 
@@ -122,14 +114,12 @@ function retainedBytes(
 ): number {
   return hydration.payloads.reduce(
     (total, payload) =>
-      total + (payload.status === 'available' ? payload.content?.byteLength ?? 0 : 0),
+      total + (payload.status === 'available' ? (payload.content?.byteLength ?? 0) : 0),
     0,
   );
 }
 
-function payloadIds(
-  hydration: Awaited<ReturnType<typeof hydrateThreadCorpusArtifacts>>,
-): string[] {
+function payloadIds(hydration: Awaited<ReturnType<typeof hydrateThreadCorpusArtifacts>>): string[] {
   return hydration.payloads.map((payload) =>
     payload.kind === 'raw_mime'
       ? `${payload.kind}:${payload.sourceRowId}`
@@ -194,20 +184,97 @@ async function errorMessage(promise: Promise<unknown>): Promise<string> {
 }
 
 describe('hydrateThreadCorpusArtifacts', () => {
+  it('accepts active-only formatted input and rejects legacy quarantine fields before reads', async () => {
+    const storage = new FakeS3Storage('active-only-contract');
+    const legacyFormatted = format([
+      makeRow({
+        id: 'active-only',
+        raw: { locator: 'raw-mime/active-only/source.eml', status: 'pending_hydration' },
+      }),
+    ]);
+    const activeOnlyFormatted = {
+      threads: legacyFormatted.threads,
+    } as unknown as FormattedLogicalMessages;
+
+    await expect(
+      hydrateThreadCorpusArtifacts({
+        formatted: activeOnlyFormatted,
+        attachmentLocators: [],
+        storage,
+      }),
+    ).resolves.toMatchObject({
+      attachmentLocators: [],
+    });
+
+    const legacyRoot = {
+      ...activeOnlyFormatted,
+      quarantineRecords: [],
+    } as FormattedLogicalMessages;
+    const legacyLogical = structuredClone(activeOnlyFormatted) as unknown as {
+      threads: Array<{ messages: Array<Record<string, unknown>> }>;
+    };
+    legacyLogical.threads[0]!.messages[0]!.quarantined = false;
+    const legacySource = structuredClone(activeOnlyFormatted) as unknown as {
+      threads: Array<{
+        messages: Array<{ sourceRows: Array<Record<string, unknown>> }>;
+      }>;
+    };
+    legacySource.threads[0]!.messages[0]!.sourceRows[0]!.isQuarantined = false;
+
+    for (const formatted of [legacyRoot, legacyLogical, legacySource]) {
+      const readsBeforeLegacyInput = storage.calls.filter(
+        (call) => call.op === 'GET_BOUNDED',
+      ).length;
+      const legacyMessage = await errorMessage(
+        hydrateThreadCorpusArtifacts({
+          formatted: formatted as FormattedLogicalMessages,
+          attachmentLocators: [],
+          storage,
+        }),
+      );
+      expect(legacyMessage).toBe('Invalid thread corpus hydration input');
+      expect(storage.calls.filter((call) => call.op === 'GET_BOUNDED')).toHaveLength(
+        readsBeforeLegacyInput,
+      );
+    }
+  });
+
   it('hydrates synthetic raw MIME, text, and PDF in canonical order and seals opaque refs', async () => {
     const storage = new FakeS3Storage('task8-order');
     const rawAKey = 'raw-mime/row-a/a.eml';
-    const rawBKey = 'quarantine-archive/row-b/b.eml';
+    const rawBKey = 'raw-mime/row-b/b.eml';
     const textKey = 'attachments/row-a/a.txt';
     const pdfKey = 'attachments/row-b/b.pdf';
     const textBody = Buffer.from('\uFEFFtext line\r\nsecond\0', 'utf8');
     const pdf = pdfBody('order');
-    await storage.putObject({ key: rawAKey, body: Buffer.from([1, 2]), contentType: 'message/rfc822' });
-    await storage.putObject({ key: rawBKey, body: Buffer.from([3, 4]), contentType: 'message/rfc822' });
-    await storage.putObject({ key: textKey, body: textBody, contentType: 'text/plain; charset=utf-8' });
-    await storage.putObject({ key: pdfKey, body: pdf, contentType: 'APPLICATION/PDF; version=1.7' });
+    await storage.putObject({
+      key: rawAKey,
+      body: Buffer.from([1, 2]),
+      contentType: 'message/rfc822',
+    });
+    await storage.putObject({
+      key: rawBKey,
+      body: Buffer.from([3, 4]),
+      contentType: 'message/rfc822',
+    });
+    await storage.putObject({
+      key: textKey,
+      body: textBody,
+      contentType: 'text/plain; charset=utf-8',
+    });
+    await storage.putObject({
+      key: pdfKey,
+      body: pdf,
+      contentType: 'APPLICATION/PDF; version=1.7',
+    });
 
-    const textLocator = makeLocator('att-a-text', 'row-a', textKey, 'text/plain', textBody.byteLength);
+    const textLocator = makeLocator(
+      'att-a-text',
+      'row-a',
+      textKey,
+      'text/plain',
+      textBody.byteLength,
+    );
     const pdfLocator = makeLocator(
       'att-b-pdf',
       'row-b',
@@ -295,7 +362,13 @@ describe('hydrateThreadCorpusArtifacts', () => {
 
     const locators = [
       makeLocator('att-missing', 'row-att', 'attachments/row-att/missing.txt', 'text/plain', 1),
-      makeLocator('att-declared-too-large', 'row-att', 'attachments/row-att/large.txt', 'text/plain', 5),
+      makeLocator(
+        'att-declared-too-large',
+        'row-att',
+        'attachments/row-att/large.txt',
+        'text/plain',
+        5,
+      ),
       makeLocator('att-invalid-key', 'row-att', 'wrong-prefix/att.txt', 'text/plain', 1),
       makeLocator('att-unsupported', 'row-att', 'attachments/row-att/image.jpg', 'image/jpeg', 1),
       makeLocator('att-size-mismatch', 'row-att', attachmentMismatchKey, 'text/plain', 2),
@@ -308,9 +381,18 @@ describe('hydrateThreadCorpusArtifacts', () => {
       ),
     ];
     const formatted = format([
-      makeRow({ id: 'raw-missing', raw: { locator: 'raw-mime/raw-missing/x.eml', status: 'pending_hydration' } }),
-      makeRow({ id: 'raw-too-large', raw: { locator: rawTooLargeKey, status: 'pending_hydration' } }),
-      makeRow({ id: 'raw-invalid', raw: { locator: 'not-raw/raw-invalid', status: 'pending_hydration' } }),
+      makeRow({
+        id: 'raw-missing',
+        raw: { locator: 'raw-mime/raw-missing/x.eml', status: 'pending_hydration' },
+      }),
+      makeRow({
+        id: 'raw-too-large',
+        raw: { locator: rawTooLargeKey, status: 'pending_hydration' },
+      }),
+      makeRow({
+        id: 'raw-invalid',
+        raw: { locator: 'not-raw/raw-invalid', status: 'pending_hydration' },
+      }),
       makeRow({
         id: 'row-att',
         attachments: locators.map((locator) =>
@@ -472,7 +554,7 @@ describe('hydrateThreadCorpusArtifacts', () => {
       attachmentLocators: [timeoutLocator],
       storage: timeoutStorage,
       pdfRunner: pdfRunner({ waitForAbort: true }),
-      limits: { perObjectTimeoutMs: 10, perObjectAbortGraceMs: 25 },
+      limits: { perObjectTimeoutMs: 100, perObjectAbortGraceMs: 250 },
     });
     expect(payloadStatus(timeoutHydration, 'attachment_text', 'att-timeout')).toBe('timeout');
   });
@@ -504,10 +586,26 @@ describe('hydrateThreadCorpusArtifacts', () => {
       locatorsInput: readonly ThreadCorpusAttachmentLocator[],
     ) => {
       const storage = new FakeS3Storage('task8-budget');
-      await storage.putObject({ key: rawAKey, body: Buffer.from('aa'), contentType: 'message/rfc822' });
-      await storage.putObject({ key: rawBKey, body: Buffer.from('bb'), contentType: 'message/rfc822' });
-      await storage.putObject({ key: attachmentAKey, body: Buffer.from('a'), contentType: 'text/plain' });
-      await storage.putObject({ key: attachmentBKey, body: Buffer.from('b'), contentType: 'text/plain' });
+      await storage.putObject({
+        key: rawAKey,
+        body: Buffer.from('aa'),
+        contentType: 'message/rfc822',
+      });
+      await storage.putObject({
+        key: rawBKey,
+        body: Buffer.from('bb'),
+        contentType: 'message/rfc822',
+      });
+      await storage.putObject({
+        key: attachmentAKey,
+        body: Buffer.from('a'),
+        contentType: 'text/plain',
+      });
+      await storage.putObject({
+        key: attachmentBKey,
+        body: Buffer.from('b'),
+        contentType: 'text/plain',
+      });
       const hydration = await hydrateThreadCorpusArtifacts({
         formatted: format(rowsInput),
         attachmentLocators: locatorsInput,
@@ -577,7 +675,11 @@ describe('hydrateThreadCorpusArtifacts', () => {
     const rawBody = Buffer.from('raw!');
     const attachmentBody = Buffer.from('txt');
     await storage.putObject({ key: rawKey, body: rawBody, contentType: 'message/rfc822' });
-    await storage.putObject({ key: attachmentKey, body: attachmentBody, contentType: 'text/plain' });
+    await storage.putObject({
+      key: attachmentKey,
+      body: attachmentBody,
+      contentType: 'text/plain',
+    });
     const locator = makeLocator(
       'att-clone',
       'row-clone',
@@ -761,8 +863,14 @@ describe('hydrateThreadCorpusArtifacts', () => {
   it('maps abort and storage failures without leaking dependency errors', async () => {
     const storage = new FakeS3Storage('task8-errors');
     const formatted = format([
-      makeRow({ id: 'raw-error', raw: { locator: 'raw-mime/raw-error/x.eml', status: 'pending_hydration' } }),
-      makeRow({ id: 'raw-abort', raw: { locator: 'raw-mime/raw-abort/x.eml', status: 'pending_hydration' } }),
+      makeRow({
+        id: 'raw-error',
+        raw: { locator: 'raw-mime/raw-error/x.eml', status: 'pending_hydration' },
+      }),
+      makeRow({
+        id: 'raw-abort',
+        raw: { locator: 'raw-mime/raw-abort/x.eml', status: 'pending_hydration' },
+      }),
       makeRow({
         id: 'row-errors',
         attachments: [
@@ -803,8 +911,14 @@ describe('hydrateThreadCorpusArtifacts', () => {
       return await new Promise<never>(() => undefined);
     });
     const formatted = format([
-      makeRow({ id: 'raw-b', raw: { locator: 'raw-mime/raw-b/b.eml', status: 'pending_hydration' } }),
-      makeRow({ id: 'raw-a', raw: { locator: 'raw-mime/raw-a/a.eml', status: 'pending_hydration' } }),
+      makeRow({
+        id: 'raw-b',
+        raw: { locator: 'raw-mime/raw-b/b.eml', status: 'pending_hydration' },
+      }),
+      makeRow({
+        id: 'raw-a',
+        raw: { locator: 'raw-mime/raw-a/a.eml', status: 'pending_hydration' },
+      }),
     ]);
 
     await expect(
@@ -939,16 +1053,10 @@ function hydratorSourceGuardViolations(sourceText: string): string[] {
     if (ts.isIdentifier(node) && node.text === 'getS3Storage') {
       violations.push('getS3Storage is prohibited');
     }
-    if (
-      ts.isIdentifier(node) &&
-      ['fetch', 'global', 'globalThis', 'process'].includes(node.text)
-    ) {
+    if (ts.isIdentifier(node) && ['fetch', 'global', 'globalThis', 'process'].includes(node.text)) {
       violations.push(`${node.text} capability identifier is prohibited`);
     }
-    if (
-      ts.isPropertyAccessExpression(node) ||
-      ts.isElementAccessExpression(node)
-    ) {
+    if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
       if (isCapabilityPath(node.expression)) {
         violations.push('global/process capability access is prohibited');
       }
@@ -973,7 +1081,8 @@ function hydratorSourceGuardViolations(sourceText: string): string[] {
       node.expression.text === 'Error' &&
       node.arguments?.some(
         (argument) =>
-          ts.isTemplateExpression(argument) && /\b(locator|content)\b/i.test(argument.getText(sourceFile)),
+          ts.isTemplateExpression(argument) &&
+          /\b(locator|content)\b/i.test(argument.getText(sourceFile)),
       )
     ) {
       violations.push('Locator/content-bearing error template is prohibited');

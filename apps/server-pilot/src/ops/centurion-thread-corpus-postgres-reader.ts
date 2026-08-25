@@ -1,5 +1,5 @@
-import postgres from 'postgres';
 import { getPostgresSslOptions } from '../db/ssl-config.js';
+import postgres from 'postgres';
 
 type DatabaseRow = Record<string, unknown>;
 
@@ -30,9 +30,7 @@ type ThreadCorpusOutboundQueueState = {
 
 type ThreadCorpusMessageRow = {
   id: string;
-  transportId: string | null;
-  ingestMailboxId: string | null;
-  uidl: string | null;
+  transportId: string;
   threadId: string | null;
   messageId: string | null;
   receivedAt: string;
@@ -48,20 +46,18 @@ type ThreadCorpusMessageRow = {
   rawMime: ThreadCorpusRawMime;
 };
 
-type ThreadCorpusSourceScope = {
-  kind: 'transport' | 'ingest_mailbox';
-  id: string;
-  active: boolean;
+type ActiveTransportScope = {
+  asOf: string;
+  transportIds: readonly string[];
 };
 
 type ThreadCorpusSnapshotReadSession = {
   asOf: string;
-  discoverSourceScopes(): Promise<readonly ThreadCorpusSourceScope[]>;
+  discoverActiveTransportScope(): Promise<ActiveTransportScope>;
   readMessages(): Promise<readonly ThreadCorpusMessageRow[]>;
   readAttachmentDescriptors(): Promise<readonly ThreadCorpusAttachmentSourceDescriptor[]>;
   readDraftRevisionLinks(): Promise<readonly ThreadCorpusDraftRevisionLink[]>;
   readOutboundQueueDeliveryStates(): Promise<readonly ThreadCorpusOutboundQueueState[]>;
-  readQuarantineRows(): Promise<readonly ThreadCorpusMessageRow[]>;
 };
 
 type ThreadCorpusSnapshotReader = {
@@ -94,10 +90,6 @@ export type ThreadCorpusPostgresClientFactory = (
 
 export type ThreadCorpusPostgresReaderOptions = {
   databaseUrl: string;
-  centurionTransportId: string;
-  designatedTransportId: string;
-  designatedIngestMailboxIds: readonly string[];
-  designatedAddresses: readonly string[];
   asOf?: string;
   clientFactory?: ThreadCorpusPostgresClientFactory;
 };
@@ -106,23 +98,13 @@ export type ThreadCorpusPostgresReader = ThreadCorpusSnapshotReader & {
   close(): Promise<void>;
 };
 
-type TransportScopeRow = {
+type ActiveTransportRow = {
   id?: unknown;
-  email?: unknown;
-  ownerHeaderValue?: unknown;
-  active?: unknown;
-};
-
-type IngestScopeRow = {
-  id?: unknown;
-  active?: unknown;
 };
 
 type MessageRow = {
   id?: unknown;
   transportId?: unknown;
-  ingestMailboxId?: unknown;
-  uidl?: unknown;
   messageThreadId?: unknown;
   resolvedThreadId?: unknown;
   threadTransportId?: unknown;
@@ -136,7 +118,6 @@ type MessageRow = {
   toAddresses?: unknown;
   ccAddresses?: unknown;
   bccAddresses?: unknown;
-  ownerHeaderValue?: unknown;
   inReplyTo?: unknown;
   references?: unknown;
   rawMimeLocator?: unknown;
@@ -163,26 +144,7 @@ type QueueRow = {
   status?: unknown;
 };
 
-type QuarantineRow = {
-  id?: unknown;
-  ingestMailboxId?: unknown;
-  ownerHeaderValue?: unknown;
-  createdAt?: unknown;
-  rawMimeLocator?: unknown;
-};
-
-type SourceDiscovery = {
-  scopes: ThreadCorpusSourceScope[];
-  addressCandidates: string[];
-  ownerTransportIds: Map<string, string | null>;
-};
-
 type Selection = {
-  centurionTransportId: string;
-  designatedTransportId: string;
-  transportIds: string[];
-  designatedIngestMailboxIds: string[];
-  designatedAddresses: string[];
   asOf: string | undefined;
 };
 
@@ -240,15 +202,8 @@ function distinctText(values: readonly string[]): string[] {
   return result;
 }
 
-function normalizedIdentity(value: unknown): string | null {
-  const text = textOrNull(value);
-  if (!text) return null;
-  const bracketed = text.match(/<\s*([^<>]+?)\s*>/);
-  const candidate = (bracketed?.[1] ?? text).trim();
-  const email = candidate.match(
-    /[A-Z0-9!#$%&'*+/=?^_`{|}~.-]+@[A-Z0-9](?:[A-Z0-9-]*[A-Z0-9])?(?:\.[A-Z0-9](?:[A-Z0-9-]*[A-Z0-9])?)+/i,
-  )?.[0];
-  return (email ?? candidate).toLowerCase();
+function sortedDistinctText(values: readonly string[]): string[] {
+  return distinctText(values).sort((left, right) => (left === right ? 0 : left < right ? -1 : 1));
 }
 
 function stringArray(value: unknown): string[] {
@@ -269,10 +224,6 @@ function stringArray(value: unknown): string[] {
   }
 }
 
-function optionalId(value: unknown): string | null {
-  return textOrNull(value);
-}
-
 function nonNegativeInteger(value: unknown): number | null {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
@@ -281,45 +232,35 @@ function canonicalHeaders(row: MessageRow): Record<string, string[]> {
   const headers: Record<string, string[]> = {};
   const messageId = textOrNull(row.messageId);
   const inReplyTo = textOrNull(row.inReplyTo);
-  const ownerHeaderValue = textOrNull(row.ownerHeaderValue);
   const references = stringArray(row.references);
   if (messageId) headers['Message-ID'] = [messageId];
   if (inReplyTo) headers['In-Reply-To'] = [inReplyTo];
   if (references.length > 0) headers.References = references;
-  if (ownerHeaderValue) headers['X-Zero-Mailbox'] = [ownerHeaderValue];
   return headers;
 }
 
 function mapMessageRow(row: MessageRow): ThreadCorpusMessageRow | null {
-  const id = optionalId(row.id);
+  const id = textOrNull(row.id);
+  const transportId = textOrNull(row.transportId);
   const receivedAt = timestampOrNull(row.receivedAt);
-  if (!id || !receivedAt) return null;
-  const transportId = optionalId(row.transportId);
-  const messageThreadId = optionalId(row.messageThreadId);
-  const resolvedThreadId = optionalId(row.resolvedThreadId);
-  const threadTransportId = optionalId(row.threadTransportId);
-  if (
-    resolvedThreadId &&
-    transportId &&
-    threadTransportId &&
-    threadTransportId !== transportId
-  ) {
+  if (!id || !transportId || !receivedAt) return null;
+
+  const messageThreadId = textOrNull(row.messageThreadId);
+  const resolvedThreadId = textOrNull(row.resolvedThreadId);
+  const threadTransportId = textOrNull(row.threadTransportId);
+  if (resolvedThreadId && threadTransportId && threadTransportId !== transportId) {
     return null;
   }
+
   const locator = textOrNull(row.rawMimeLocator);
   return {
     id,
     transportId,
-    ingestMailboxId: optionalId(row.ingestMailboxId),
-    uidl: optionalId(row.uidl),
     threadId:
-      resolvedThreadId &&
-      messageThreadId &&
-      transportId &&
-      threadTransportId === transportId
+      resolvedThreadId && messageThreadId && threadTransportId === transportId
         ? messageThreadId
         : null,
-    messageId: optionalId(row.messageId),
+    messageId: textOrNull(row.messageId),
     receivedAt,
     sentAt: timestampOrNull(row.sentAt),
     subject: textOrEmpty(row.subject),
@@ -338,8 +279,8 @@ function mapMessageRow(row: MessageRow): ThreadCorpusMessageRow | null {
 }
 
 function mapAttachmentRow(row: AttachmentRow): ThreadCorpusAttachmentSourceDescriptor | null {
-  const id = optionalId(row.id);
-  const messageId = optionalId(row.messageId);
+  const id = textOrNull(row.id);
+  const messageId = textOrNull(row.messageId);
   const filename = textOrNull(row.filename);
   const contentType = textOrNull(row.contentType);
   const byteSize = nonNegativeInteger(row.byteSize);
@@ -349,19 +290,19 @@ function mapAttachmentRow(row: AttachmentRow): ThreadCorpusAttachmentSourceDescr
 }
 
 function mapDraftRevisionRow(row: DraftRevisionRow): ThreadCorpusDraftRevisionLink | null {
-  const messageId = optionalId(row.messageId);
-  const draftId = optionalId(row.draftId);
-  const revisionId = optionalId(row.revisionId);
+  const messageId = textOrNull(row.messageId);
+  const draftId = textOrNull(row.draftId);
+  const revisionId = textOrNull(row.revisionId);
   if (!messageId || (!draftId && !revisionId)) return null;
   return { messageId, draftId, revisionId };
 }
 
 function mapQueueRow(
   row: QueueRow,
-  transportIdByMessageId: ReadonlyMap<string, string | null>,
+  transportIdByMessageId: ReadonlyMap<string, string>,
 ): ThreadCorpusOutboundQueueState | null {
-  const messageId = optionalId(row.messageId);
-  const transportId = optionalId(row.transportId);
+  const messageId = textOrNull(row.messageId);
+  const transportId = textOrNull(row.transportId);
   const expectedTransportId = messageId ? transportIdByMessageId.get(messageId) : undefined;
   if (!messageId || !transportId || !expectedTransportId || transportId !== expectedTransportId) {
     return null;
@@ -376,69 +317,15 @@ function mapQueueRow(
   };
 }
 
-function mapQuarantineRow(
-  row: QuarantineRow,
-  designatedIngestMailboxIds: ReadonlySet<string>,
-  ownerTransportIds: ReadonlyMap<string, string | null>,
-): ThreadCorpusMessageRow | null {
-  const id = optionalId(row.id);
-  const receivedAt = timestampOrNull(row.createdAt);
-  if (!id || !receivedAt) return null;
-  const ingestMailboxId = optionalId(row.ingestMailboxId);
-  const scopedIngestMailboxId =
-    ingestMailboxId && designatedIngestMailboxIds.has(ingestMailboxId) ? ingestMailboxId : null;
-  const ownerHeaderValue = normalizedIdentity(row.ownerHeaderValue);
-  const transportId = ownerHeaderValue ? ownerTransportIds.get(ownerHeaderValue) ?? null : null;
-  const locator = textOrNull(row.rawMimeLocator);
-  const header = textOrNull(row.ownerHeaderValue);
-  return {
-    id: `quarantine:${id}`,
-    transportId,
-    ingestMailboxId: scopedIngestMailboxId,
-    uidl: null,
-    threadId: null,
-    messageId: null,
-    receivedAt,
-    sentAt: null,
-    subject: '',
-    body: '',
-    direction: 'inbound',
-    from: [],
-    to: [],
-    cc: [],
-    bcc: [],
-    canonicalHeaders: header ? { 'X-Zero-Mailbox': [header] } : {},
-    rawMime: {
-      locator,
-      status: locator ? 'pending_hydration' : 'missing',
-    },
-  };
-}
-
 function selectionFrom(options: ThreadCorpusPostgresReaderOptions): Selection {
   const databaseUrl = textOrNull(options.databaseUrl);
-  const centurionTransportId = textOrNull(options.centurionTransportId);
-  const designatedTransportId = textOrNull(options.designatedTransportId);
-  if (!databaseUrl || !centurionTransportId || !designatedTransportId) {
-    throw new Error('Reader configuration is incomplete');
+  if (!databaseUrl) throw new Error('Reader configuration is incomplete');
+  if (options.asOf === undefined) {
+    return { asOf: undefined };
   }
-  const suppliedAsOf =
-    options.asOf === undefined ? undefined : timestampOrNull(options.asOf);
-  if (options.asOf !== undefined && !suppliedAsOf) {
-    throw new Error('Snapshot timestamp is invalid');
-  }
-  return {
-    centurionTransportId,
-    designatedTransportId,
-    transportIds: distinctText([centurionTransportId, designatedTransportId]),
-    designatedIngestMailboxIds: distinctText(options.designatedIngestMailboxIds),
-    designatedAddresses: distinctText(
-      options.designatedAddresses
-        .map(normalizedIdentity)
-        .filter((value): value is string => value !== null),
-    ),
-    asOf: suppliedAsOf ?? undefined,
-  };
+  const asOf = timestampOrNull(options.asOf);
+  if (!asOf) throw new Error('Snapshot timestamp is invalid');
+  return { asOf };
 }
 
 async function resolveAsOf(
@@ -454,73 +341,36 @@ async function resolveAsOf(
   return asOf;
 }
 
-async function discoverSources(
+async function discoverActiveTransportScope(
   connection: ThreadCorpusPostgresClient,
-  selection: Selection,
-): Promise<SourceDiscovery> {
-  const transportRows = await connection<TransportScopeRow>`
-    SELECT
-      id,
-      email,
-      owner_header_value AS "ownerHeaderValue",
-      is_active AS "active"
+  asOf: string,
+): Promise<ActiveTransportScope> {
+  const rows = await connection<ActiveTransportRow>`
+    SELECT id
     FROM mailbox_transport
-    WHERE id = ANY(${selection.transportIds})
+    WHERE is_active = true
+    ORDER BY id
   `;
-  const ingestRows = await connection<IngestScopeRow>`
-    SELECT
-      id,
-      is_active AS "active"
-    FROM mail_ingest_mailbox
-    WHERE id = ANY(${selection.designatedIngestMailboxIds})
-  `;
-  const requestedTransportIds = new Set(selection.transportIds);
-  const requestedIngestMailboxIds = new Set(selection.designatedIngestMailboxIds);
-  const scopes: ThreadCorpusSourceScope[] = [];
-  const identities = [...selection.designatedAddresses];
-  const ownerTransportIds = new Map<string, string | null>();
-
-  for (const row of transportRows) {
-    const id = optionalId(row.id);
-    if (!id || !requestedTransportIds.has(id)) continue;
-    scopes.push({ kind: 'transport', id, active: row.active === true });
-    const email = normalizedIdentity(row.email);
-    const ownerHeaderValue = normalizedIdentity(row.ownerHeaderValue);
-    if (email) identities.push(email);
-    if (ownerHeaderValue) {
-      identities.push(ownerHeaderValue);
-      const previous = ownerTransportIds.get(ownerHeaderValue);
-      ownerTransportIds.set(
-        ownerHeaderValue,
-        previous === undefined || previous === id ? id : null,
-      );
-    }
-  }
-  for (const row of ingestRows) {
-    const id = optionalId(row.id);
-    if (!id || !requestedIngestMailboxIds.has(id)) continue;
-    scopes.push({ kind: 'ingest_mailbox', id, active: row.active === true });
-  }
-
   return {
-    scopes,
-    addressCandidates: distinctText(identities),
-    ownerTransportIds,
+    asOf,
+    transportIds: sortedDistinctText(rows.map((row) => textOrNull(row.id) ?? '')),
   };
+}
+
+function assertNonEmptyActiveTransportScope(scope: ActiveTransportScope): void {
+  if (scope.transportIds.length === 0) {
+    throw new Error('Active transport scope is empty');
+  }
 }
 
 async function readMessages(
   connection: ThreadCorpusPostgresClient,
-  selection: Selection,
-  discovery: SourceDiscovery,
-  asOf: string,
+  scope: ActiveTransportScope,
 ): Promise<ThreadCorpusMessageRow[]> {
   const rows = await connection<MessageRow>`
     SELECT
       m.id,
       m.transport_id AS "transportId",
-      m.ingest_mailbox_id AS "ingestMailboxId",
-      m.pop3_uidl AS "uidl",
       m.thread_id AS "messageThreadId",
       t.id AS "resolvedThreadId",
       t.transport_id AS "threadTransportId",
@@ -534,47 +384,14 @@ async function readMessages(
       m.to_addresses AS "toAddresses",
       m.cc_addresses AS "ccAddresses",
       m.bcc_addresses AS "bccAddresses",
-      m.owner_header_value AS "ownerHeaderValue",
       m.in_reply_to AS "inReplyTo",
       m."references" AS "references",
       m.raw_mime_s3_key AS "rawMimeLocator"
     FROM message AS m
     LEFT JOIN mail_thread AS t ON t.id = m.thread_id
-    WHERE COALESCE(m.received_at, m.sent_at, m.created_at) <= ${asOf}
+    WHERE COALESCE(m.received_at, m.sent_at, m.created_at) < ${scope.asOf}
+      AND m.transport_id = ANY(${scope.transportIds})
       AND (t.id IS NULL OR m.transport_id IS NULL OR t.transport_id IS NULL OR t.transport_id = m.transport_id)
-      AND (
-        m.transport_id = ANY(${selection.transportIds})
-        OR m.ingest_mailbox_id = ANY(${selection.designatedIngestMailboxIds})
-        OR lower(btrim(COALESCE(
-          substring(m.from_address FROM '<[[:space:]]*([^<>]+)[[:space:]]*>'),
-          m.from_address
-        ))) = ANY(${discovery.addressCandidates})
-        OR lower(m.owner_header_value) = ANY(${discovery.addressCandidates})
-        OR EXISTS (
-          SELECT 1
-          FROM jsonb_array_elements_text(COALESCE(m.to_addresses, '[]'::jsonb)) AS address(value)
-          WHERE lower(btrim(COALESCE(
-            substring(address.value FROM '<[[:space:]]*([^<>]+)[[:space:]]*>'),
-            address.value
-          ))) = ANY(${discovery.addressCandidates})
-        )
-        OR EXISTS (
-          SELECT 1
-          FROM jsonb_array_elements_text(COALESCE(m.cc_addresses, '[]'::jsonb)) AS address(value)
-          WHERE lower(btrim(COALESCE(
-            substring(address.value FROM '<[[:space:]]*([^<>]+)[[:space:]]*>'),
-            address.value
-          ))) = ANY(${discovery.addressCandidates})
-        )
-        OR EXISTS (
-          SELECT 1
-          FROM jsonb_array_elements_text(COALESCE(m.bcc_addresses, '[]'::jsonb)) AS address(value)
-          WHERE lower(btrim(COALESCE(
-            substring(address.value FROM '<[[:space:]]*([^<>]+)[[:space:]]*>'),
-            address.value
-          ))) = ANY(${discovery.addressCandidates})
-        )
-      )
     ORDER BY COALESCE(m.received_at, m.sent_at, m.created_at), m.id
   `;
   return rows.map(mapMessageRow).filter((row): row is ThreadCorpusMessageRow => row !== null);
@@ -583,6 +400,7 @@ async function readMessages(
 async function readAttachmentDescriptors(
   connection: ThreadCorpusPostgresClient,
   messageIds: readonly string[],
+  scope: ActiveTransportScope,
 ): Promise<ThreadCorpusAttachmentSourceDescriptor[]> {
   if (messageIds.length === 0) return [];
   const rows = await connection<AttachmentRow>`
@@ -594,7 +412,11 @@ async function readAttachmentDescriptors(
       a.size_bytes AS "byteSize",
       a.s3_key AS "s3Key"
     FROM attachment AS a
+    INNER JOIN message AS m ON m.id = a.message_id
     WHERE a.message_id = ANY(${messageIds})
+      AND m.transport_id = ANY(${scope.transportIds})
+      AND COALESCE(m.received_at, m.sent_at, m.created_at) < ${scope.asOf}
+      AND a.created_at < ${scope.asOf}
     ORDER BY a.message_id, a.id
   `;
   const selectedMessageIds = new Set(messageIds);
@@ -607,6 +429,7 @@ async function readAttachmentDescriptors(
 async function readDraftRevisionLinks(
   connection: ThreadCorpusPostgresClient,
   messageIds: readonly string[],
+  scope: ActiveTransportScope,
 ): Promise<ThreadCorpusDraftRevisionLink[]> {
   if (messageIds.length === 0) return [];
   const rows = await connection<DraftRevisionRow>`
@@ -616,14 +439,30 @@ async function readDraftRevisionLinks(
       r.id AS "revisionId"
     FROM mail_draft AS d
     LEFT JOIN mail_draft_revision AS r ON r.draft_id = d.id
+    INNER JOIN message AS m ON m.id = d.sent_message_id
     WHERE d.sent_message_id = ANY(${messageIds})
+      AND d.transport_id = ANY(${scope.transportIds})
+      AND m.transport_id = ANY(${scope.transportIds})
+      AND d.transport_id = m.transport_id
+      AND COALESCE(m.received_at, m.sent_at, m.created_at) < ${scope.asOf}
+      AND d.created_at < ${scope.asOf}
+      AND (r.id IS NULL OR r.created_at < ${scope.asOf})
     UNION
     SELECT
       r.sent_message_id AS "messageId",
       r.draft_id AS "draftId",
       r.id AS "revisionId"
     FROM mail_draft_revision AS r
+    INNER JOIN mail_draft AS d ON d.id = r.draft_id
+    INNER JOIN message AS m ON m.id = r.sent_message_id
     WHERE r.sent_message_id = ANY(${messageIds})
+      AND d.transport_id = ANY(${scope.transportIds})
+      AND m.transport_id = ANY(${scope.transportIds})
+      AND d.transport_id = m.transport_id
+      AND COALESCE(m.received_at, m.sent_at, m.created_at) < ${scope.asOf}
+      AND d.created_at < ${scope.asOf}
+      AND r.created_at < ${scope.asOf}
+    ORDER BY "messageId", "draftId", "revisionId"
   `;
   const selectedMessageIds = new Set(messageIds);
   return rows
@@ -635,57 +474,28 @@ async function readDraftRevisionLinks(
 async function readQueueStates(
   connection: ThreadCorpusPostgresClient,
   messageIds: readonly string[],
-  transportIds: readonly string[],
-  transportIdByMessageId: ReadonlyMap<string, string | null>,
+  scope: ActiveTransportScope,
+  transportIdByMessageId: ReadonlyMap<string, string>,
 ): Promise<ThreadCorpusOutboundQueueState[]> {
-  if (messageIds.length === 0 || transportIds.length === 0) return [];
+  if (messageIds.length === 0) return [];
   const rows = await connection<QueueRow>`
     SELECT
       q.message_id AS "messageId",
       q.transport_id AS "transportId",
       q.status AS "status"
     FROM outbound_send_queue AS q
+    INNER JOIN message AS m ON m.id = q.message_id
     WHERE q.message_id = ANY(${messageIds})
-      AND q.transport_id = ANY(${transportIds})
+      AND q.transport_id = ANY(${scope.transportIds})
+      AND m.transport_id = ANY(${scope.transportIds})
+      AND q.transport_id = m.transport_id
+      AND COALESCE(m.received_at, m.sent_at, m.created_at) < ${scope.asOf}
+      AND q.created_at < ${scope.asOf}
     ORDER BY q.message_id, q.id
   `;
   return rows
     .map((row) => mapQueueRow(row, transportIdByMessageId))
     .filter((row): row is ThreadCorpusOutboundQueueState => row !== null);
-}
-
-async function readQuarantineRows(
-  connection: ThreadCorpusPostgresClient,
-  selection: Selection,
-  discovery: SourceDiscovery,
-  asOf: string,
-): Promise<ThreadCorpusMessageRow[]> {
-  const ownerHeaderValues = [...discovery.ownerTransportIds.keys()];
-  const rows = await connection<QuarantineRow>`
-    SELECT
-      q.id,
-      CASE
-        WHEN q.ingest_mailbox_id = ANY(${selection.designatedIngestMailboxIds})
-          THEN q.ingest_mailbox_id
-        ELSE NULL
-      END AS "ingestMailboxId",
-      q.owner_header_value AS "ownerHeaderValue",
-      q.created_at AS "createdAt",
-      q.raw_mime_s3_key AS "rawMimeLocator"
-    FROM mail_ingest_quarantine AS q
-    WHERE q.created_at <= ${asOf}
-      AND (
-        q.ingest_mailbox_id = ANY(${selection.designatedIngestMailboxIds})
-        OR lower(q.owner_header_value) = ANY(${ownerHeaderValues})
-      )
-    ORDER BY q.created_at, q.id
-  `;
-  const designatedIngestMailboxIds = new Set(selection.designatedIngestMailboxIds);
-  return rows
-    .map((row) =>
-      mapQuarantineRow(row, designatedIngestMailboxIds, discovery.ownerTransportIds),
-    )
-    .filter((row): row is ThreadCorpusMessageRow => row !== null);
 }
 
 function makeSessionLifecycle(): SessionLifecycle {
@@ -730,91 +540,78 @@ function makeSessionLifecycle(): SessionLifecycle {
 
 function sessionFor(
   connection: ThreadCorpusPostgresClient,
-  selection: Selection,
   asOf: string,
   lifecycle: SessionLifecycle,
 ): ThreadCorpusSnapshotReadSession {
-  let discovery: Promise<SourceDiscovery> | undefined;
+  let activeTransportScope: Promise<ActiveTransportScope> | undefined;
   let messages: Promise<ThreadCorpusMessageRow[]> | undefined;
   let attachments: Promise<ThreadCorpusAttachmentSourceDescriptor[]> | undefined;
   let draftRevisionLinks: Promise<ThreadCorpusDraftRevisionLink[]> | undefined;
   let queueStates: Promise<ThreadCorpusOutboundQueueState[]> | undefined;
-  let quarantineRows: Promise<ThreadCorpusMessageRow[]> | undefined;
 
   const assertActive = (): void => {
     lifecycle.assertActive();
   };
-  const loadDiscovery = (): Promise<SourceDiscovery> => {
+  const loadActiveTransportScope = (): Promise<ActiveTransportScope> => {
     assertActive();
-    discovery ??= discoverSources(connection, selection);
-    return discovery;
+    activeTransportScope ??= discoverActiveTransportScope(connection, asOf).then((scope) => {
+      assertNonEmptyActiveTransportScope(scope);
+      return scope;
+    });
+    return activeTransportScope;
   };
   const loadMessages = async (): Promise<ThreadCorpusMessageRow[]> => {
     assertActive();
-    messages ??= loadDiscovery().then((resolvedDiscovery) =>
-      readMessages(connection, selection, resolvedDiscovery, asOf),
-    );
+    messages ??= loadActiveTransportScope().then((scope) => readMessages(connection, scope));
     return messages;
   };
 
   return {
     asOf,
-    discoverSourceScopes() {
-      return lifecycle.register(async () => (await loadDiscovery()).scopes);
+    discoverActiveTransportScope() {
+      return lifecycle.register(loadActiveTransportScope);
     },
     readMessages() {
       return lifecycle.register(loadMessages);
     },
     readAttachmentDescriptors() {
       return lifecycle.register(() => {
-        attachments ??= loadMessages().then((loadedMessages) =>
-          readAttachmentDescriptors(
-            connection,
-            distinctText(loadedMessages.map((message) => message.id)),
-          ),
+        attachments ??= Promise.all([loadMessages(), loadActiveTransportScope()]).then(
+          ([loadedMessages, scope]) =>
+            readAttachmentDescriptors(
+              connection,
+              distinctText(loadedMessages.map((message) => message.id)),
+              scope,
+            ),
         );
         return attachments;
       });
     },
     readDraftRevisionLinks() {
       return lifecycle.register(() => {
-        draftRevisionLinks ??= loadMessages().then((loadedMessages) =>
-          readDraftRevisionLinks(
-            connection,
-            distinctText(loadedMessages.map((message) => message.id)),
-          ),
+        draftRevisionLinks ??= Promise.all([loadMessages(), loadActiveTransportScope()]).then(
+          ([loadedMessages, scope]) =>
+            readDraftRevisionLinks(
+              connection,
+              distinctText(loadedMessages.map((message) => message.id)),
+              scope,
+            ),
         );
         return draftRevisionLinks;
       });
     },
     readOutboundQueueDeliveryStates() {
       return lifecycle.register(() => {
-        queueStates ??= loadMessages().then((loadedMessages) => {
-          const messageIds = distinctText(loadedMessages.map((message) => message.id));
-          const transportIdByMessageId = new Map(
-            loadedMessages.map((message) => [message.id, message.transportId]),
-          );
-          const transportIds = distinctText(
-            loadedMessages
-              .map((message) => message.transportId)
-              .filter((transportId): transportId is string => transportId !== null),
-          );
-          return readQueueStates(
-            connection,
-            messageIds,
-            transportIds,
-            transportIdByMessageId,
-          );
-        });
-        return queueStates;
-      });
-    },
-    readQuarantineRows() {
-      return lifecycle.register(() => {
-        quarantineRows ??= loadDiscovery().then((resolvedDiscovery) =>
-          readQuarantineRows(connection, selection, resolvedDiscovery, asOf),
+        queueStates ??= Promise.all([loadMessages(), loadActiveTransportScope()]).then(
+          ([loadedMessages, scope]) =>
+            readQueueStates(
+              connection,
+              distinctText(loadedMessages.map((message) => message.id)),
+              scope,
+              new Map(loadedMessages.map((message) => [message.id, message.transportId])),
+            ),
         );
-        return quarantineRows;
+        return queueStates;
       });
     },
   };
@@ -846,7 +643,7 @@ export function createThreadCorpusPostgresReader(
           async (transaction) => {
             const asOf = await resolveAsOf(transaction, selection.asOf);
             const lifecycle = makeSessionLifecycle();
-            const session = sessionFor(transaction, selection, asOf, lifecycle);
+            const session = sessionFor(transaction, asOf, lifecycle);
             try {
               return await load(session);
             } finally {

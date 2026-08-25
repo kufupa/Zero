@@ -1,0 +1,516 @@
+import {
+  createTriageQualityExportCommand,
+  createTriageQualityExporter,
+  createTriageQualityPostgresReader,
+} from '../scripts/export-centurion-triage-quality';
+import { createPrivateInputReader, createPrivateOutputWriter } from '../src/ops/private-output';
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { describe, expect, it } from 'vitest';
+import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
+const AS_OF = '2026-08-25T10:00:00.000Z';
+const CREATED_AT = new Date('2026-08-25T09:00:00.000Z');
+const PRIVATE_MARKER = 'SYNTHETIC_PRIVATE_BODY_MARKER';
+
+type FixtureMessage = {
+  id: string;
+  transportId: string;
+  threadId: string;
+  threadTransportId: string;
+  from: string;
+  subject?: string;
+  body: string;
+  direction: 'inbound' | 'outbound';
+  createdAt: Date;
+  receivedAt: Date | null;
+  sentAt: Date | null;
+};
+
+function label(triggerMessageId: string) {
+  return {
+    triggerMessageId,
+    asOf: '2026-08-25T09:00:00.000Z',
+    asOfSource: 'message-created-at' as const,
+    expectedCategory: 'ops' as const,
+    expectedUrgent: false,
+    evidenceScope: 'text-visible' as const,
+    adjudication: 'locked' as const,
+    policyReason: 'synthetic test label',
+    tags: ['integration'] as const,
+  };
+}
+
+function message(overrides: Partial<FixtureMessage> = {}): FixtureMessage {
+  return {
+    id: 'in-a',
+    transportId: 'transport-a',
+    threadId: 'thread-a',
+    threadTransportId: 'transport-a',
+    from: 'synthetic sender',
+    subject: 'synthetic subject',
+    body: PRIVATE_MARKER,
+    direction: 'inbound',
+    createdAt: CREATED_AT,
+    receivedAt: CREATED_AT,
+    sentAt: null,
+    ...overrides,
+  };
+}
+
+type ReaderFixture = {
+  asOf?: string;
+  activeTransportIds?: string[];
+  triggers?: FixtureMessage[];
+  messagesByThread?: Map<string, FixtureMessage[]>;
+  allMessages?: FixtureMessage[];
+  normalRunAsOfByTrigger?: Map<string, string>;
+};
+
+function createReaderFixture(fixture: ReaderFixture = {}) {
+  const calls: string[] = [];
+  const session = {
+    asOf: fixture.asOf ?? AS_OF,
+    async discoverActiveTransportScope() {
+      calls.push('scope');
+      return {
+        asOf: fixture.asOf ?? AS_OF,
+        transportIds: fixture.activeTransportIds ?? ['transport-a'],
+      };
+    },
+    async loadTriggers(ids: readonly string[]) {
+      calls.push(`triggers:${ids.join(',')}`);
+      return fixture.triggers ?? [message()];
+    },
+    async loadThreadMessages(transportId: string, threadId: string) {
+      calls.push(`thread:${transportId}:${threadId}`);
+      return fixture.messagesByThread?.get(`${transportId}\0${threadId}`) ?? [message()];
+    },
+    async loadNormalRunAsOfByTrigger(ids: readonly string[]) {
+      calls.push(`runs:${ids.join(',')}`);
+      return fixture.normalRunAsOfByTrigger ?? new Map();
+    },
+    async loadAllMessages() {
+      calls.push('all');
+      return fixture.allMessages ?? [message()];
+    },
+  };
+
+  return {
+    calls,
+    reader: {
+      async withRepeatableReadOnly<T>(load: (next: typeof session) => Promise<T>): Promise<T> {
+        calls.push('snapshot');
+        return await load(session);
+      },
+      async close() {
+        calls.push('close');
+      },
+    },
+  };
+}
+
+type Harness = ReturnType<typeof createHarness>;
+
+function createHarness(fixture: ReaderFixture = {}, input = `${JSON.stringify(label('in-a'))}\n`) {
+  const { calls, reader } = createReaderFixture(fixture);
+  const inputReads: string[] = [];
+  const writes: Array<{ name: string; content: string | Uint8Array }> = [];
+  const ignoredChecks: Array<{ repoRoot: string; relativePath: string }> = [];
+
+  return {
+    calls,
+    inputReads,
+    writes,
+    ignoredChecks,
+    exporter: createTriageQualityExporter({
+      repoRoot: () => '/synthetic/zero',
+      databaseUrl: () => 'postgres://synthetic.invalid/zero',
+      isIgnored: async (request) => {
+        ignoredChecks.push(request);
+        return true;
+      },
+      createReader: () => reader,
+      createPrivateInputReader: () => ({
+        async read(name: string) {
+          inputReads.push(name);
+          return input;
+        },
+      }),
+      createPrivateOutputWriter: () => ({
+        async write(name: string, content: string | Uint8Array) {
+          writes.push({ name, content });
+          return `/synthetic/zero/.private/connected-mailbox-corpus/${name}`;
+        },
+      }),
+    }),
+  };
+}
+
+function privateOutputRows(harness: Harness): Array<Record<string, unknown>> {
+  const payload = harness.writes[0]?.content;
+  expect(typeof payload).toBe('string');
+  return String(payload)
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
+async function withTemporaryRepo<T>(run: (repoRoot: string) => Promise<T>): Promise<T> {
+  const repoRoot = await mkdtemp(path.join(tmpdir(), 'triage-quality-export-'));
+  try {
+    return await run(repoRoot);
+  } finally {
+    await rm(repoRoot, { recursive: true, force: true });
+  }
+}
+
+describe('active connected-mailbox triage quality exporter', () => {
+  it('fails empty active scope before reading raw inputs or publishing output', async () => {
+    const harness = createHarness({ activeTransportIds: [] });
+
+    await expect(
+      harness.exporter(['--labels', 'labels.jsonl', '--out', 'cases.jsonl']),
+    ).rejects.toThrow(/active transport scope/i);
+
+    expect(harness.inputReads).toEqual([]);
+    expect(harness.writes).toEqual([]);
+    expect(harness.calls).toEqual(['snapshot', 'scope', 'close']);
+  });
+
+  it('rejects inactive label targets without publishing output', async () => {
+    const harness = createHarness({
+      activeTransportIds: ['transport-a'],
+      triggers: [
+        message({ transportId: 'transport-inactive', threadTransportId: 'transport-inactive' }),
+      ],
+    });
+
+    await expect(
+      harness.exporter(['--labels', 'labels.jsonl', '--out', 'cases.jsonl']),
+    ).rejects.toThrow(/not active/i);
+
+    expect(harness.inputReads).toEqual(['labels.jsonl']);
+    expect(harness.writes).toEqual([]);
+  });
+
+  it('rejects thread and trigger transport mismatch without wrong context', async () => {
+    const harness = createHarness({
+      activeTransportIds: ['transport-a', 'transport-b'],
+      triggers: [message({ threadTransportId: 'transport-b' })],
+    });
+
+    await expect(
+      harness.exporter(['--labels', 'labels.jsonl', '--out', 'cases.jsonl']),
+    ).rejects.toThrow(/thread.*transport|transport.*thread/i);
+
+    expect(harness.writes).toEqual([]);
+  });
+
+  it('keeps each actual trigger transport in label-scoped quality input cases', async () => {
+    const first = message();
+    const second = message({
+      id: 'in-b',
+      transportId: 'transport-b',
+      threadId: 'thread-b',
+      threadTransportId: 'transport-b',
+    });
+    const harness = createHarness(
+      {
+        activeTransportIds: ['transport-b', 'transport-a'],
+        triggers: [first, second],
+        messagesByThread: new Map([
+          ['transport-a\0thread-a', [first]],
+          ['transport-b\0thread-b', [second]],
+        ]),
+      },
+      `${JSON.stringify(label('in-a'))}\n${JSON.stringify(label('in-b'))}\n`,
+    );
+
+    const result = await harness.exporter(['--labels', 'labels.jsonl', '--out', 'cases.jsonl']);
+
+    expect(result).toEqual({ mode: 'labels', count: 2, transportCount: 2 });
+    expect(
+      privateOutputRows(harness)
+        .map((row) => row.transportId)
+        .sort(),
+    ).toEqual(['transport-a', 'transport-b']);
+    expect(harness.writes.map((write) => write.name)).toEqual(['cases.jsonl']);
+    expect(harness.ignoredChecks).toEqual([
+      {
+        repoRoot: path.resolve('/synthetic/zero'),
+        relativePath: '.private/connected-mailbox-corpus/',
+      },
+    ]);
+  });
+
+  it('keeps actual trigger transport for private targets manifests', async () => {
+    const target = message({
+      id: 'in-b',
+      transportId: 'transport-b',
+      threadId: 'thread-b',
+      threadTransportId: 'transport-b',
+    });
+    const harness = createHarness(
+      {
+        activeTransportIds: ['transport-a', 'transport-b'],
+        triggers: [target],
+        messagesByThread: new Map([['transport-b\0thread-b', [target]]]),
+      },
+      JSON.stringify({
+        generatedAt: '2026-08-25T09:30:00.000Z',
+        targets: [{ threadId: 'thread-b', triggerMessageId: 'in-b' }],
+      }),
+    );
+
+    const result = await harness.exporter(['--targets', 'targets.json', '--out', 'cases.jsonl']);
+
+    expect(result).toEqual({ mode: 'targets', count: 1, transportCount: 1 });
+    expect(privateOutputRows(harness).map((row) => row.transportId)).toEqual(['transport-b']);
+  });
+
+  it('uses actual active transport for each all-inbound trigger', async () => {
+    const first = message();
+    const second = message({
+      id: 'in-b',
+      transportId: 'transport-b',
+      threadId: 'thread-b',
+      threadTransportId: 'transport-b',
+    });
+    const harness = createHarness({
+      activeTransportIds: ['transport-b', 'transport-a'],
+      allMessages: [second, first],
+    });
+
+    const result = await harness.exporter(['--all-inbound-triggers', '--out', 'cases.jsonl']);
+
+    expect(result).toEqual({ mode: 'all-inbound-triggers', count: 2, transportCount: 2 });
+    expect(
+      privateOutputRows(harness)
+        .map((row) => row.transportId)
+        .sort(),
+    ).toEqual(['transport-a', 'transport-b']);
+  });
+
+  it('uses strict quality-label JSONL parsing and does not publish malformed labels', async () => {
+    const malformed = `${JSON.stringify({ ...label('in-a'), unexpected: 'forbidden' })}\n`;
+    const harness = createHarness({}, malformed);
+
+    await expect(
+      harness.exporter(['--labels', 'labels.jsonl', '--out', 'cases.jsonl']),
+    ).rejects.toThrow(/quality label JSONL/i);
+
+    expect(harness.writes).toEqual([]);
+  });
+
+  it('only accepts private direct-child inputs and outputs', async () => {
+    await withTemporaryRepo(async (repoRoot) => {
+      const privateRoot = path.join(repoRoot, '.private', 'connected-mailbox-corpus');
+      await mkdir(privateRoot, { recursive: true });
+      await writeFile(
+        path.join(privateRoot, 'labels.jsonl'),
+        `${JSON.stringify(label('in-a'))}\n`,
+        'utf8',
+      );
+      await writeFile(
+        path.join(privateRoot, 'targets.json'),
+        JSON.stringify({
+          generatedAt: '2026-08-25T09:30:00.000Z',
+          targets: [{ threadId: 'thread-a', triggerMessageId: 'in-a' }],
+        }),
+        'utf8',
+      );
+
+      const { reader } = createReaderFixture();
+      const exporter = createTriageQualityExporter({
+        repoRoot: () => repoRoot,
+        databaseUrl: () => 'postgres://synthetic.invalid/zero',
+        isIgnored: async () => true,
+        createReader: () => reader,
+        createPrivateInputReader,
+        createPrivateOutputWriter,
+      });
+
+      await expect(exporter(['--labels', 'labels.jsonl', '--out', 'cases.jsonl'])).resolves.toEqual(
+        { mode: 'labels', count: 1, transportCount: 1 },
+      );
+      await expect(readdir(privateRoot)).resolves.toEqual([
+        'cases.jsonl',
+        'labels.jsonl',
+        'targets.json',
+      ]);
+      await expect(readFile(path.join(privateRoot, 'cases.jsonl'), 'utf8')).resolves.toContain(
+        PRIVATE_MARKER,
+      );
+      await expect(
+        exporter(['--targets', 'targets.json', '--out', 'target-cases.jsonl']),
+      ).resolves.toEqual({ mode: 'targets', count: 1, transportCount: 1 });
+      await expect(readdir(privateRoot)).resolves.toEqual([
+        'cases.jsonl',
+        'labels.jsonl',
+        'target-cases.jsonl',
+        'targets.json',
+      ]);
+
+      await expect(
+        exporter(['--labels', '../tracked.jsonl', '--out', 'nested/cases.jsonl']),
+      ).rejects.toThrow();
+      await expect(readdir(repoRoot)).resolves.toEqual(['.private']);
+    });
+  });
+
+  it('requires ignored private root before reading private content', async () => {
+    const { reader } = createReaderFixture();
+    let reads = 0;
+    const exporter = createTriageQualityExporter({
+      repoRoot: () => '/synthetic/zero',
+      databaseUrl: () => 'postgres://synthetic.invalid/zero',
+      isIgnored: async () => false,
+      createReader: () => reader,
+      createPrivateInputReader: () => ({
+        async read() {
+          reads += 1;
+          return `${JSON.stringify(label('in-a'))}\n`;
+        },
+      }),
+      createPrivateOutputWriter: () => ({
+        async write() {
+          throw new Error('unexpected write');
+        },
+      }),
+    });
+
+    await expect(exporter(['--labels', 'labels.jsonl', '--out', 'cases.jsonl'])).rejects.toThrow(
+      /private/i,
+    );
+    expect(reads).toBe(0);
+  });
+
+  it('emits count-only CLI metadata and never private payload or paths', async () => {
+    const { reader } = createReaderFixture();
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const command = createTriageQualityExportCommand({
+      args: () => ['--labels', 'labels.jsonl', '--out', 'cases.jsonl'],
+      repoRoot: () => '/synthetic/zero',
+      databaseUrl: () => 'postgres://synthetic.invalid/zero',
+      isIgnored: async () => true,
+      createReader: () => reader,
+      createPrivateInputReader: () => ({
+        async read() {
+          return `${JSON.stringify(label('in-a'))}\n`;
+        },
+      }),
+      createPrivateOutputWriter: () => ({
+        async write() {
+          return '/synthetic/zero/.private/connected-mailbox-corpus/cases.jsonl';
+        },
+      }),
+      writeStdout: (line) => stdout.push(line),
+      writeStderr: (line) => stderr.push(line),
+    });
+
+    expect(await command()).toBe(0);
+    expect(stderr).toEqual([]);
+    expect(JSON.parse(stdout[0]!)).toEqual({
+      event: 'triage_quality_export.completed',
+      mode: 'labels',
+      count: 1,
+      transportCount: 1,
+    });
+    expect(`${stdout}${stderr}`).not.toContain(PRIVATE_MARKER);
+    expect(`${stdout}${stderr}`).not.toContain('/synthetic/zero/.private');
+  });
+
+  it('hides private parser failures behind fixed stderr metadata', async () => {
+    const { reader } = createReaderFixture();
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const command = createTriageQualityExportCommand({
+      args: () => ['--labels', 'labels.jsonl', '--out', 'cases.jsonl'],
+      repoRoot: () => '/synthetic/zero',
+      databaseUrl: () => 'postgres://synthetic.invalid/zero',
+      isIgnored: async () => true,
+      createReader: () => reader,
+      createPrivateInputReader: () => ({
+        async read() {
+          return PRIVATE_MARKER;
+        },
+      }),
+      createPrivateOutputWriter: () => ({
+        async write() {
+          throw new Error('unexpected write');
+        },
+      }),
+      writeStdout: (line) => stdout.push(line),
+      writeStderr: (line) => stderr.push(line),
+    });
+
+    expect(await command()).toBe(1);
+    expect(stdout).toEqual([]);
+    expect(stderr).toEqual([
+      `${JSON.stringify({ event: 'triage_quality_export.failed', code: 'export_failed' })}\n`,
+    ]);
+    expect(`${stdout}${stderr}`).not.toContain(PRIVATE_MARKER);
+  });
+
+  it('opens one repeatable-read snapshot and sorts active transport IDs before content reads', async () => {
+    const queries: Array<{ text: string; values: readonly unknown[] }> = [];
+    let beginOptions: string | undefined;
+    const client = ((strings: TemplateStringsArray, ...values: readonly unknown[]) => {
+      const text = strings.join('?');
+      queries.push({ text, values });
+      if (text.includes('CURRENT_TIMESTAMP')) {
+        return Promise.resolve([{ asOf: new Date(AS_OF) }]);
+      }
+      if (text.includes('FROM mailbox_transport')) {
+        return Promise.resolve([{ id: 'transport-z' }, { id: 'transport-a' }]);
+      }
+      throw new Error('unexpected query');
+    }) as {
+      (strings: TemplateStringsArray, ...values: readonly unknown[]): Promise<readonly unknown[]>;
+      begin<T>(options: string, load: (connection: typeof client) => Promise<T>): Promise<T>;
+      end(): Promise<void>;
+    };
+    client.begin = async (options, load) => {
+      beginOptions = options;
+      return await load(client);
+    };
+    client.end = async () => {};
+
+    const reader = createTriageQualityPostgresReader({
+      databaseUrl: 'postgres://synthetic.invalid/zero',
+      clientFactory: () => client,
+    });
+    await reader.withRepeatableReadOnly(async (session) => {
+      await expect(session.discoverActiveTransportScope()).resolves.toEqual({
+        asOf: AS_OF,
+        transportIds: ['transport-a', 'transport-z'],
+      });
+    });
+    await reader.close();
+
+    expect(beginOptions).toBe('isolation level repeatable read read only');
+    expect(queries).toHaveLength(2);
+    expect(queries[1]?.text).toMatch(/FROM mailbox_transport/);
+    expect(queries[1]?.text).toMatch(/is_active = true/);
+    expect(queries[1]?.text).not.toMatch(/from_address|text_body|html_body|owner_header/i);
+  });
+
+  it('has no fixed named source or routing fallback in exporter source', () => {
+    const sourcePath = fileURLToPath(
+      new URL('../scripts/export-centurion-triage-quality.ts', import.meta.url),
+    );
+    const source = readFileSync(sourcePath, 'utf8');
+
+    expect(source).not.toMatch(
+      /transport-centurion|owner_header|quarantine|dump-centurion-emails-md/i,
+    );
+    expect(source).not.toMatch(/\.insert\(|\.update\(|\.delete\(/);
+    expect(source).toContain('mailbox_transport');
+    expect(source).toContain('isolation level repeatable read read only');
+  });
+});
