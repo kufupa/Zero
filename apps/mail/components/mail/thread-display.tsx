@@ -48,6 +48,9 @@ import {
   canRefreshHmsCandidate,
   hmsCandidateNotice,
 } from '@/lib/mail/thread-draft-view-model';
+import { buildPitchDemoDraftViewModel } from '@/lib/pitch-demo/draft-view-model';
+import { isPitchDemoThread } from '@/lib/pitch-demo/match-thread';
+import { PitchDemoBookingAction } from '@/components/mail/pitch-demo-booking-action';
 import { cn, FOLDERS, formatDateWithWeekdayAndTime } from '@/lib/utils';
 import { m } from '@/paraglide/messages';
 import MailDisplay from './mail-display';
@@ -284,15 +287,28 @@ export function ThreadDisplay() {
     latestDraft?.id ? latestDraft.id : '__thread_draft_none__',
   );
   const hmsState = hmsCandidateQuery.data;
+  const pitchDemoActive = useMemo(
+    () =>
+      isPitchDemoThread({
+        threadId: id,
+        messages: emailData?.messages,
+      }),
+    [id, emailData?.messages],
+  );
+  const pitchDemoDraftVm = useMemo(
+    () => (pitchDemoActive ? buildPitchDemoDraftViewModel() : null),
+    [pitchDemoActive],
+  );
   const draftVm = useMemo(() => {
+    if (pitchDemoDraftVm) return pitchDemoDraftVm;
     if (draftRowOptimistic.shouldHide) return null;
     // Hide draft preview while any thread composer is open (reply / reply all / forward / continue draft).
     if (mode) return null;
     return buildThreadDraftViewModel(latestDraft);
-  }, [latestDraft, draftRowOptimistic.shouldHide, mode]);
+  }, [pitchDemoDraftVm, latestDraft, draftRowOptimistic.shouldHide, mode]);
 
   const aiDraftCandidateVms = useMemo(() => {
-    if (mode) return [];
+    if (pitchDemoActive || mode) return [];
     const hmsInput = hmsState
       ? {
           outcome: hmsState.outcome,
@@ -309,7 +325,7 @@ export function ThreadDisplay() {
     return aiDraftCandidates
       .map((candidate) => buildThreadDraftViewModel(candidate, hmsInput))
       .filter((vm): vm is NonNullable<typeof vm> => vm != null);
-  }, [aiDraftCandidates, mode, hmsState]);
+  }, [aiDraftCandidates, mode, hmsState, pitchDemoActive]);
 
   const handleRefreshHmsCandidate = useCallback(() => {
     if (!id) return;
@@ -839,14 +855,21 @@ export function ThreadDisplay() {
               m['common.threadDisplay.draftSavedPrefix']() +
               formatDateWithWeekdayAndTime(draftVm.savedAtIso)
             }
-            draftBadge={m['common.threadDisplay.draftBadge']()}
-            unsentNotice={m['common.threadDisplay.draftUnsentNotice']()}
+            draftBadge={pitchDemoActive ? 'AI draft' : m['common.threadDisplay.draftBadge']()}
+            unsentNotice={
+              pitchDemoActive
+                ? 'AI-generated quotation draft. Review before sending.'
+                : m['common.threadDisplay.draftUnsentNotice']()
+            }
             emptyPreviewLabel={m['common.threadDisplay.draftEmptyPreview']()}
             editLabel={m['common.threadDisplay.continueDraft']()}
             deleteLabel={m['common.actions.Bin']()}
             moreLabel={m['common.threadDisplay.draftMoreOptions']()}
-            onEdit={openDraftForEdit}
-            onDelete={handleDeleteThreadDraft}
+            onEdit={pitchDemoActive ? undefined : openDraftForEdit}
+            onDelete={pitchDemoActive ? undefined : handleDeleteThreadDraft}
+            isReadOnly={pitchDemoActive}
+            previewLineClamp={pitchDemoActive ? 0 : 3}
+            footer={pitchDemoActive ? <PitchDemoBookingAction /> : undefined}
           />
         ) : null}
         {aiDraftCandidateVms.map((candidateVm) => {

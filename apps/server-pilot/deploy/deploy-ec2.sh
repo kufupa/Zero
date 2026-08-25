@@ -170,6 +170,7 @@ export VITE_PUBLIC_BACKEND_URL=""
 unset VITE_PUBLIC_APP_URL
 # Near-realtime thread list poll (policy min 15s; default baked for pilot).
 export VITE_MAIL_POLL_MS="${VITE_MAIL_POLL_MS:-15000}"
+export VITE_PITCH_DEMO="${VITE_PITCH_DEMO:-}"
 pnpm --filter @zero/mail build
 
 echo "== sync SPA to ${WEB_ROOT} =="

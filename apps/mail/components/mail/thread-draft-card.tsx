@@ -26,6 +26,8 @@ export type ThreadDraftCardProps = {
   onRefresh?: () => void;
   canRefresh?: boolean;
   refreshPending?: boolean;
+  previewLineClamp?: number;
+  footer?: React.ReactNode;
 };
 
 export function ThreadDraftCard({
@@ -45,6 +47,8 @@ export function ThreadDraftCard({
   onRefresh,
   canRefresh = false,
   refreshPending = false,
+  previewLineClamp = 3,
+  footer,
 }: ThreadDraftCardProps) {
   const previewText = bodyPreview.trim() ? bodyPreview : emptyPreviewLabel;
   const showRefresh = Boolean(refreshLabel && onRefresh);
@@ -127,8 +131,27 @@ export function ThreadDraftCard({
           {subject ? <span className="line-clamp-1 min-w-0 font-medium text-foreground">{subject}</span> : null}
           <span className="shrink-0 whitespace-nowrap">{savedAtLabel}</span>
         </div>
-        <p className="text-foreground/90 dark:text-foreground/95 mt-2 line-clamp-3 text-sm">{previewText}</p>
+        <p
+          className={cn(
+            'text-foreground/90 dark:text-foreground/95 mt-2 text-sm',
+            previewLineClamp === 0 && 'whitespace-pre-wrap',
+          )}
+          style={
+            previewLineClamp > 0
+              ? {
+                  display: '-webkit-box',
+                  WebkitLineClamp: previewLineClamp,
+                  WebkitBoxOrient: 'vertical',
+                  overflow: 'hidden',
+                }
+              : undefined
+          }
+        >
+          {previewText}
+        </p>
       </div>
+
+      {footer}
 
       <div className="mt-3 flex">
         {!isReadOnly ? (
