@@ -24,7 +24,8 @@ describe('MailContent processed-output cache identity', () => {
     expect(queryKey).not.toContain('html');
     expect(source).toContain('queryKey: contentQueryKey');
     expect(source).not.toContain('0x811c9dc5');
-    expect(source).toContain("const processingTheme = 'light';");
-    expect(source).not.toContain('const { resolvedTheme } = useTheme()');
+    expect(source).not.toContain("const processingTheme = 'light';");
+    expect(source).toContain('useTheme');
+    expect(source).toContain("document.documentElement.classList.contains('dark')");
   });
 });

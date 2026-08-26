@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import { useTheme } from 'next-themes';
 import { defaultUserSettings } from '@zero/server/schemas';
 import { useTRPC } from '@/providers/query-provider';
 import { getBrowserTimezone } from '@/lib/timezones';
@@ -89,7 +90,14 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
   const shadowRootRef = useRef<ShadowRoot | null>(null);
   const trpc = useTRPC();
   const shouldLoadImages = isTrustedSender || temporaryImagesEnabled;
-  const processingTheme = 'light';
+  const { resolvedTheme } = useTheme();
+  const processingTheme: 'light' | 'dark' =
+    resolvedTheme === 'dark' ||
+    (resolvedTheme !== 'light' &&
+      typeof document !== 'undefined' &&
+      document.documentElement.classList.contains('dark'))
+      ? 'dark'
+      : 'light';
   const contentQueryKey = [
     'email-content-v3',
     id,
@@ -441,12 +449,7 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
         role="region"
         aria-label="Message content"
         tabIndex={-1}
-        className="mail-content w-full flex-1 overflow-scroll no-scrollbar px-4"
-        style={{
-          backgroundColor: '#ffffff',
-          color: '#000000',
-          colorScheme: 'light',
-        }}
+        className="mail-content w-full flex-1 overflow-scroll no-scrollbar px-4 bg-background text-foreground"
       />
     </>
   );

@@ -16,6 +16,14 @@ const mocks = vi.hoisted(() => ({
   refetchSettings: vi.fn(),
 }));
 
+const themeMocks = vi.hoisted(() => ({
+  resolvedTheme: 'light' as 'light' | 'dark' | undefined,
+}));
+
+vi.mock('next-themes', () => ({
+  useTheme: () => ({ resolvedTheme: themeMocks.resolvedTheme }),
+}));
+
 vi.mock('@/hooks/use-settings', () => ({
   useSettings: () => ({
     data: {
@@ -121,6 +129,7 @@ async function waitForProcessingCallCount(count: number) {
 }
 
 beforeEach(() => {
+  themeMocks.resolvedTheme = 'light';
   mocks.frontendOnlyDemo = false;
   mocks.processEmailContent.mockReset();
   mocks.saveUserSettings.mockReset();
@@ -509,10 +518,11 @@ describe('MailContent processing states', () => {
     expect(renderedHost()).toBeNull();
   });
 
-  it('processes legacy mail onto a fixed light-paper surface', async () => {
+  it('processes mail onto a theme-following host in dark mode', async () => {
+    themeMocks.resolvedTheme = 'dark';
     mocks.processEmailContent.mockResolvedValue({
       processedHtml:
-        '<table bgcolor="#ffffff"><tr><td><span data-legacy-mail="true">Readable</span></td></tr></table>',
+        '<table bgcolor="#FFFFFF"><tr><td><span data-legacy-mail="true">Readable</span></td></tr></table>',
       hasBlockedImages: false,
     });
 
@@ -523,7 +533,7 @@ describe('MailContent processing states', () => {
         html: RAW_HTML,
         messageId: 'message-42',
         shouldLoadImages: false,
-        theme: 'light',
+        theme: 'dark',
       });
       expect(renderedHost()?.shadowRoot?.querySelector('[data-legacy-mail="true"]')?.textContent).toBe(
         'Readable',
@@ -531,11 +541,12 @@ describe('MailContent processing states', () => {
     });
 
     const host = renderedHost();
-    expect(host?.className).not.toContain('text-black');
+    expect(host?.className).toContain('bg-background');
+    expect(host?.className).toContain('text-foreground');
     expect(host?.className).not.toContain('dark:text-white');
-    expect(host?.style.getPropertyValue('background-color')).toBe('#ffffff');
-    expect(host?.style.getPropertyValue('color')).toBe('#000000');
-    expect(host?.style.getPropertyValue('color-scheme')).toBe('light');
+    expect(host?.style.getPropertyValue('background-color')).not.toBe('#ffffff');
+    expect(host?.style.getPropertyValue('color')).not.toBe('#000000');
+    expect(host?.style.getPropertyValue('color-scheme')).toBe('');
     expect(host?.style.getPropertyValue('forced-color-adjust')).toBe('');
   });
 
@@ -552,8 +563,10 @@ describe('MailContent processing states', () => {
       );
     });
     expect(mocks.processEmailContent).not.toHaveBeenCalled();
-    expect(renderedHost()?.style.getPropertyValue('background-color')).toBe('#ffffff');
-    expect(renderedHost()?.style.getPropertyValue('color')).toBe('#000000');
-    expect(renderedHost()?.style.getPropertyValue('color-scheme')).toBe('light');
+    expect(renderedHost()?.className).toContain('bg-background');
+    expect(renderedHost()?.className).toContain('text-foreground');
+    expect(renderedHost()?.style.getPropertyValue('background-color')).not.toBe('#ffffff');
+    expect(renderedHost()?.style.getPropertyValue('color')).not.toBe('#000000');
+    expect(renderedHost()?.style.getPropertyValue('color-scheme')).toBe('');
   });
 });
