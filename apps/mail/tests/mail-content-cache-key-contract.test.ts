@@ -28,4 +28,17 @@ describe('MailContent processed-output cache identity', () => {
     expect(source).toContain('useTheme');
     expect(source).toContain("document.documentElement.classList.contains('dark')");
   });
+
+  it('keeps case-insensitive paper bgcolor selectors in the neutralize stylesheet', () => {
+    const css = readFileSync(
+      new URL('../lib/mail/mail-paper-neutralize.ts', import.meta.url),
+      'utf8',
+    );
+    expect(css).toContain('[bgcolor="#ffffff" i]');
+    expect(css).toContain('[bgcolor="#fff" i]');
+    expect(css).toContain('[bgcolor="#fffffe" i]');
+    expect(css).toContain('[bgcolor="ffffff" i]');
+    expect(css).toContain('[bgcolor="white" i]');
+    expect(css).toContain('data-nava-mail-paper');
+  });
 });

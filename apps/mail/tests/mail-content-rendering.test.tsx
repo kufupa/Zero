@@ -550,6 +550,41 @@ describe('MailContent processing states', () => {
     expect(host?.style.getPropertyValue('forced-color-adjust')).toBe('');
   });
 
+  it('prepends paper neutralize CSS in dark theme and rewrites shadow when theme flips', async () => {
+    mocks.processEmailContent.mockResolvedValue({
+      processedHtml: '<p data-plain-mail="true">Hello</p>',
+      hasBlockedImages: false,
+    });
+
+    const { queryClient, rerender } = renderMailContent();
+    await waitFor(() => {
+      expect(renderedHost()?.shadowRoot?.querySelector('[data-plain-mail="true"]')?.textContent).toBe(
+        'Hello',
+      );
+    });
+    expect(renderedHost()?.shadowRoot?.innerHTML).not.toContain('data-nava-mail-paper');
+
+    themeMocks.resolvedTheme = 'dark';
+    rerender(
+      <QueryClientProvider client={queryClient}>
+        <MailContent id="message-42" html={RAW_HTML} senderEmail="reader@example.test" />
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(mocks.processEmailContent).toHaveBeenCalledWith({
+        html: RAW_HTML,
+        messageId: 'message-42',
+        shouldLoadImages: false,
+        theme: 'dark',
+      });
+      expect(renderedHost()?.shadowRoot?.innerHTML).toContain('data-nava-mail-paper');
+      expect(renderedHost()?.shadowRoot?.querySelector('[data-plain-mail="true"]')?.textContent).toBe(
+        'Hello',
+      );
+    });
+  });
+
   it('keeps frontend-only demo on its local rendering path', async () => {
     mocks.frontendOnlyDemo = true;
 

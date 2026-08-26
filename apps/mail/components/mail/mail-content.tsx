@@ -9,6 +9,7 @@ import { m } from '@/paraglide/messages';
 import { toast } from 'sonner';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { resolveMailDisplayHtml } from '@/lib/mail/resolve-mail-display-html';
+import { MAIL_PAPER_NEUTRALIZE_STYLE } from '@/lib/mail/mail-paper-neutralize';
 import { isImageTrustedSender } from '@/lib/mail/trust-sender';
 import { demoSetSettings } from '@/lib/demo/local-actions';
 
@@ -272,6 +273,13 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
     [frontendOnlyDemo, html, processedData?.html],
   );
 
+  const shadowHtml = useMemo(() => {
+    if (!resolvedHtml) return resolvedHtml;
+    return processingTheme === 'dark'
+      ? `${MAIL_PAPER_NEUTRALIZE_STYLE}${resolvedHtml}`
+      : resolvedHtml;
+  }, [processingTheme, resolvedHtml]);
+
   useEffect(() => {
     if (isProcessingSuccess && processedData) {
       setCspViolation(processedData.hasBlockedImages);
@@ -303,10 +311,10 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
   }, [shouldRenderContent]);
 
   useEffect(() => {
-    if (!shouldRenderContent || !shadowRootRef.current || !resolvedHtml) return;
+    if (!shouldRenderContent || !shadowRootRef.current || !shadowHtml) return;
 
-    shadowRootRef.current.innerHTML = resolvedHtml;
-  }, [resolvedHtml, shouldRenderContent]);
+    shadowRootRef.current.innerHTML = shadowHtml;
+  }, [shadowHtml, shouldRenderContent]);
 
   useEffect(() => {
     if (
