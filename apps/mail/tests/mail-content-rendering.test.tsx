@@ -16,6 +16,14 @@ const mocks = vi.hoisted(() => ({
   refetchSettings: vi.fn(),
 }));
 
+const themeMocks = vi.hoisted(() => ({
+  resolvedTheme: 'light' as 'light' | 'dark' | undefined,
+}));
+
+vi.mock('next-themes', () => ({
+  useTheme: () => ({ resolvedTheme: themeMocks.resolvedTheme }),
+}));
+
 vi.mock('@/hooks/use-settings', () => ({
   useSettings: () => ({
     data: {
@@ -95,7 +103,18 @@ function renderedHost() {
   return document.querySelector<HTMLElement>('.mail-content');
 }
 
+function expectThemeFollowingHost(host: HTMLElement | null) {
+  expect(host?.className).toContain('bg-background');
+  expect(host?.className).toContain('text-foreground');
+  expect(host?.className).not.toContain('dark:text-white');
+  expect(host?.style.getPropertyValue('background-color')).not.toBe('#ffffff');
+  expect(host?.style.getPropertyValue('color')).not.toBe('#000000');
+  expect(host?.style.getPropertyValue('color-scheme')).toBe('');
+  expect(host?.style.getPropertyValue('forced-color-adjust')).toBe('');
+}
+
 beforeEach(() => {
+  themeMocks.resolvedTheme = 'light';
   mocks.frontendOnlyDemo = false;
   mocks.processEmailContent.mockReset();
   mocks.saveUserSettings.mockReset();
@@ -145,17 +164,63 @@ describe('MailContent client fallback hotfix', () => {
     expect(mocks.processEmailContent).not.toHaveBeenCalled();
   });
 
-  it('keeps light-paper surface styles', async () => {
+  it('paints a theme-following host instead of a light-paper surface', async () => {
     renderMailContent();
 
     await waitFor(() => {
       expect(renderedHost()?.shadowRoot?.querySelector('[data-raw-email="true"]')).not.toBeNull();
     });
 
-    const host = renderedHost();
-    expect(host?.style.getPropertyValue('background-color')).toBe('#ffffff');
-    expect(host?.style.getPropertyValue('color')).toBe('#000000');
-    expect(host?.style.getPropertyValue('color-scheme')).toBe('light');
+    expectThemeFollowingHost(renderedHost());
+  });
+
+  it('renders mail onto a theme-following host in dark mode', async () => {
+    themeMocks.resolvedTheme = 'dark';
+
+    renderMailContent({
+      html: '<table bgcolor="#FFFFFF"><tr><td><span data-legacy-mail="true">Readable</span></td></tr></table>',
+    });
+
+    await waitFor(() => {
+      expect(renderedHost()?.shadowRoot?.querySelector('[data-legacy-mail="true"]')?.textContent).toBe(
+        'Readable',
+      );
+    });
+
+    expect(mocks.processEmailContent).not.toHaveBeenCalled();
+    expectThemeFollowingHost(renderedHost());
+    expect(renderedHost()?.shadowRoot?.innerHTML).toContain('data-nava-mail-paper');
+  });
+
+  it('prepends paper neutralize CSS in dark theme and rewrites shadow when theme flips', async () => {
+    const { queryClient, rerender } = renderMailContent({
+      html: '<p data-plain-mail="true">Hello</p>',
+    });
+    await waitFor(() => {
+      expect(renderedHost()?.shadowRoot?.querySelector('[data-plain-mail="true"]')?.textContent).toBe(
+        'Hello',
+      );
+    });
+    expect(renderedHost()?.shadowRoot?.innerHTML).not.toContain('data-nava-mail-paper');
+
+    themeMocks.resolvedTheme = 'dark';
+    rerender(
+      <QueryClientProvider client={queryClient}>
+        <MailContent
+          id="message-42"
+          html={'<p data-plain-mail="true">Hello</p>'}
+          senderEmail="reader@example.test"
+        />
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(renderedHost()?.shadowRoot?.innerHTML).toContain('data-nava-mail-paper');
+      expect(renderedHost()?.shadowRoot?.querySelector('[data-plain-mail="true"]')?.textContent).toBe(
+        'Hello',
+      );
+    });
+    expect(mocks.processEmailContent).not.toHaveBeenCalled();
   });
 
   it('keeps frontend-only demo on its local rendering path', async () => {
@@ -171,8 +236,6 @@ describe('MailContent client fallback hotfix', () => {
       );
     });
     expect(mocks.processEmailContent).not.toHaveBeenCalled();
-    expect(renderedHost()?.style.getPropertyValue('background-color')).toBe('#ffffff');
-    expect(renderedHost()?.style.getPropertyValue('color')).toBe('#000000');
-    expect(renderedHost()?.style.getPropertyValue('color-scheme')).toBe('light');
+    expectThemeFollowingHost(renderedHost());
   });
 });

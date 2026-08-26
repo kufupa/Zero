@@ -51,10 +51,10 @@ Canonical hotel **mail body** stack: `Calibri, Arial, sans-serif` @ `11pt`. App 
 2. `mail.send` — single choke point; same wrapped HTML → DB row + SMTP + draft revision.
 3. FE `constructReplyBody` / `constructForwardBody` — same class + stack for WYSIWYG; send skips re-wrap.
 4. `processEmailHtmlForDisplay` — prepend fixed `mailBodyDisplayStyleTag()` after sanitize (no user HTML in `<style>`; fixed Calibri/wrapping only).
-5. `MailContent` owns the fixed light-paper display surface (`#ffffff` / `#000000` / `color-scheme: light`) so a dark Zero shell cannot produce white text on retained white legacy mail.
+5. `MailContent` follows the app theme (`bg-background` / `text-foreground`). Dark theme prepends paper-`bgcolor` neutralize CSS (`#ffffff` / `#fff` / `#fffffe` / `white`, case-insensitive, plus hashless hex twins) so Outlook wrapper tables do not recreate a white canvas or white-on-white text. `mailBodyDisplayStyleTag()` stays typography-only and must not force reader color.
 6. `.ProseMirror` — Calibri 11pt; color inherits theme.
 
-Boundary: fixed host guarantees only legacy light-paper inherited-text case. It intentionally does no dynamic per-node contrast rewriting and makes no recoloring or contrast guarantee for arbitrary retained dark/tinted `bgcolor` templates.
+Boundary: host theme + paper neutralize covers unstyled mail and default Outlook white wrappers. It intentionally does no per-node contrast rewriting and makes no recoloring or contrast guarantee for arbitrary retained dark/tinted `bgcolor` templates.
 
 ## Prevention
 
@@ -70,4 +70,5 @@ Boundary: fixed host guarantees only legacy light-paper inherited-text case. It 
 ## Related
 
 - Plan: `docs/superpowers/plans/2026-08-04-centurion-mail-font-parity.md`
+- Reader dark theme: `docs/superpowers/plans/2026-08-26-mail-reader-dark-theme.md`
 - Sanitize strips styles: `apps/server-pilot/src/mail/sanitize-email-html.ts`

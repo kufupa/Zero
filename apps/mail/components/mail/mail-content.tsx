@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import { useTheme } from 'next-themes';
 import { defaultUserSettings } from '@zero/server/schemas';
 import { useTRPC } from '@/providers/query-provider';
 import { getBrowserTimezone } from '@/lib/timezones';
@@ -8,6 +9,7 @@ import { m } from '@/paraglide/messages';
 import { toast } from 'sonner';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { resolveMailDisplayHtml } from '@/lib/mail/resolve-mail-display-html';
+import { MAIL_PAPER_NEUTRALIZE_STYLE } from '@/lib/mail/mail-paper-neutralize';
 import { isImageTrustedSender } from '@/lib/mail/trust-sender';
 import { demoSetSettings } from '@/lib/demo/local-actions';
 
@@ -93,7 +95,14 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
   const shadowRootRef = useRef<ShadowRoot | null>(null);
   const trpc = useTRPC();
   const shouldLoadImages = isTrustedSender || temporaryImagesEnabled;
-  const processingTheme = 'light';
+  const { resolvedTheme } = useTheme();
+  const processingTheme: 'light' | 'dark' =
+    resolvedTheme === 'dark' ||
+    (resolvedTheme !== 'light' &&
+      typeof document !== 'undefined' &&
+      document.documentElement.classList.contains('dark'))
+      ? 'dark'
+      : 'light';
   const contentQueryKey = [
     'email-content-v3',
     id,
@@ -268,6 +277,13 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
     [frontendOnlyDemo, html, processedData?.html],
   );
 
+  const shadowHtml = useMemo(() => {
+    if (!resolvedHtml) return resolvedHtml;
+    return processingTheme === 'dark'
+      ? `${MAIL_PAPER_NEUTRALIZE_STYLE}${resolvedHtml}`
+      : resolvedHtml;
+  }, [processingTheme, resolvedHtml]);
+
   useEffect(() => {
     if (isProcessingSuccess && processedData) {
       setCspViolation(processedData.hasBlockedImages);
@@ -299,10 +315,10 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
   }, [shouldRenderContent]);
 
   useEffect(() => {
-    if (!shouldRenderContent || !shadowRootRef.current || !resolvedHtml) return;
+    if (!shouldRenderContent || !shadowRootRef.current || !shadowHtml) return;
 
-    shadowRootRef.current.innerHTML = resolvedHtml;
-  }, [resolvedHtml, shouldRenderContent]);
+    shadowRootRef.current.innerHTML = shadowHtml;
+  }, [shadowHtml, shouldRenderContent]);
 
   useEffect(() => {
     if (
@@ -445,12 +461,7 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
         role="region"
         aria-label="Message content"
         tabIndex={-1}
-        className="mail-content w-full flex-1 overflow-scroll no-scrollbar px-4"
-        style={{
-          backgroundColor: '#ffffff',
-          color: '#000000',
-          colorScheme: 'light',
-        }}
+        className="mail-content w-full flex-1 overflow-scroll no-scrollbar px-4 bg-background text-foreground"
       />
     </>
   );
