@@ -154,9 +154,15 @@ vi.mock('@/components/mail/use-mail', () => ({
   useMail: () => useMailMock(),
 }));
 
-vi.mock('@/lib/email-utils', () => ({
-  isSendResult: vi.fn(() => true),
-}));
+vi.mock('@/lib/email-utils', async () => {
+  const actual = await vi.importActual<typeof import('../lib/email-utils')>('../lib/email-utils');
+
+  return {
+    ...actual,
+    isQueuedSendResult: vi.fn(() => true),
+    isSendResult: vi.fn(() => true),
+  };
+});
 
 vi.mock('@/hooks/use-threads', () => ({
   useThreads: () => useThreadsMock(),
