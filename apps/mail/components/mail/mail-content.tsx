@@ -62,7 +62,11 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
   const { data, refetch } = useSettings();
   const queryClient = useQueryClient();
   const frontendOnlyDemo = isFrontendOnlyDemo();
-  const shouldProcessContent = !frontendOnlyDemo && Boolean(html);
+  // HOTFIX: skip server processEmailContent gate — failures were blocking
+  // almost all message bodies with "Unable to load message content safely".
+  // Client resolveMailHtml (script strip) still runs. Re-enable after the
+  // processor path is reliable.
+  const shouldProcessContent = false;
   const [contentDigestRetry, setContentDigestRetry] = useState(0);
   const [contentDigestState, setContentDigestState] = useState<ContentDigestState>({
     html,
