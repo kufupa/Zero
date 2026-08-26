@@ -1,11 +1,10 @@
-
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useOptimisticActions } from './use-optimistic-actions';
 import { useMail } from '@/components/mail/use-mail';
 import { mailSearchBarFocusedAtom } from '@/hooks/use-search-value';
+import { focusThreadElement } from '@/lib/mail/mail-row-focus';
 import { useHotkeys } from 'react-hotkeys-hook';
 import { atom, useAtom, useAtomValue } from 'jotai';
-import { useQueryState } from 'nuqs';
 
 export const focusedIndexAtom = atom<number | null>(null);
 export const mailNavigationCommandAtom = atom<null | 'next' | 'previous'>(null);
@@ -25,24 +24,23 @@ export function useMailNavigation({ items, containerRef, onNavigate }: UseMailNa
   itemsRef.current = items;
   const onNavigateRef = useRef(onNavigate);
   onNavigateRef.current = onNavigate;
-  const [threadId] = useQueryState('threadId');
   const isSearchBarFocused = useAtomValue(mailSearchBarFocusedAtom);
 
   const hoveredMailRef = useRef<string | null>(null);
   const keyboardActiveRef = useRef(false);
+  const [keyboardActive, setKeyboardActive] = useState(false);
   const lastMoveTime = useRef(0);
 
-  useEffect(() => {
-    if (!keyboardActiveRef.current) {
-      //   setFocusedIndex(null);
-    }
-  }, [items, setFocusedIndex]);
+  const setKeyboardNavigationActive = useCallback((active: boolean) => {
+    keyboardActiveRef.current = active;
+    setKeyboardActive(active);
+  }, []);
 
   const resetNavigation = useCallback(() => {
     setFocusedIndex(null);
     onNavigateRef.current(null);
-    keyboardActiveRef.current = false;
-  }, [setFocusedIndex, onNavigateRef]);
+    setKeyboardNavigationActive(false);
+  }, [setFocusedIndex, onNavigateRef, setKeyboardNavigationActive]);
 
   const getThreadElement = useCallback(
     (index: number | null) => {
@@ -53,6 +51,40 @@ export function useMailNavigation({ items, containerRef, onNavigate }: UseMailNa
     },
     [containerRef],
   );
+
+  const focusThreadAtIndex = useCallback(
+    (index: number) => focusThreadElement(getThreadElement(index)),
+    [getThreadElement],
+  );
+
+  const focusedThreadId =
+    focusedIndex === null ? null : (itemsRef.current[focusedIndex]?.id ?? null);
+
+  useEffect(() => {
+    if (!keyboardActive || focusedIndex === null || !focusedThreadId) return;
+
+    let cancelled = false;
+    let frameId: number | null = null;
+    let attempts = 0;
+
+    const tryFocus = () => {
+      if (cancelled || !keyboardActiveRef.current) return;
+      if (focusThreadAtIndex(focusedIndex)) return;
+      if (attempts >= 6 || typeof window === 'undefined') return;
+
+      attempts += 1;
+      frameId = window.requestAnimationFrame(tryFocus);
+    };
+
+    tryFocus();
+
+    return () => {
+      cancelled = true;
+      if (frameId !== null && typeof window !== 'undefined') {
+        window.cancelAnimationFrame(frameId);
+      }
+    };
+  }, [focusedIndex, focusedThreadId, focusThreadAtIndex, keyboardActive]);
 
   const scrollIntoView = useCallback(
     (index: number, behavior: ScrollBehavior = 'smooth') => {
@@ -90,10 +122,12 @@ export function useMailNavigation({ items, containerRef, onNavigate }: UseMailNa
         bulkSelected: [],
       }));
     },
-    [setMail, threadId],
+    [setMail, optimisticMarkAsRead],
   );
 
   const navigateNext = useCallback(() => {
+    setKeyboardNavigationActive(true);
+
     setFocusedIndex((prevIndex) => {
       if (prevIndex === null) {
         if (itemsRef.current.length > 0) {
@@ -132,7 +166,7 @@ export function useMailNavigation({ items, containerRef, onNavigate }: UseMailNa
         }
       }
     });
-  }, [onNavigateRef, scrollIntoView, setFocusedIndex]);
+  }, [onNavigateRef, scrollIntoView, setFocusedIndex, setKeyboardNavigationActive]);
 
   useEffect(() => {
     if (command === 'next') {
@@ -148,7 +182,7 @@ export function useMailNavigation({ items, containerRef, onNavigate }: UseMailNa
 
   const moveFocus = useCallback(
     (direction: 'up' | 'down') => {
-      keyboardActiveRef.current = true;
+      setKeyboardNavigationActive(true);
 
       setFocusedIndex((prevIndex) => {
         let newIndex: number;
@@ -173,7 +207,7 @@ export function useMailNavigation({ items, containerRef, onNavigate }: UseMailNa
         return newIndex;
       });
     },
-    [setFocusedIndex, getHoveredIndex, scrollIntoView, navigateToThread],
+    [setFocusedIndex, getHoveredIndex, scrollIntoView, navigateToThread, setKeyboardNavigationActive],
   );
 
   const handleArrowUp = useCallback(() => {
@@ -194,8 +228,8 @@ export function useMailNavigation({ items, containerRef, onNavigate }: UseMailNa
   const handleEscape = useCallback(() => {
     setFocusedIndex(null);
     onNavigateRef.current(null);
-    keyboardActiveRef.current = false;
-  }, [setFocusedIndex, onNavigateRef]);
+    setKeyboardNavigationActive(false);
+  }, [setFocusedIndex, onNavigateRef, setKeyboardNavigationActive]);
 
   useHotkeys('ArrowUp', handleArrowUp, { preventDefault: true, enabled: !isSearchBarFocused });
   useHotkeys('ArrowDown', handleArrowDown, {
@@ -211,16 +245,15 @@ export function useMailNavigation({ items, containerRef, onNavigate }: UseMailNa
     (threadId: string) => {
       hoveredMailRef.current = threadId;
 
-      if (keyboardActiveRef.current) {
-        // setFocusedIndex(null);
-        keyboardActiveRef.current = false;
-      }
+      setKeyboardNavigationActive(false);
     },
-    [setFocusedIndex],
+    [setKeyboardNavigationActive],
   );
 
   const fastScroll = useCallback(
     (direction: 'up' | 'down') => {
+      setKeyboardNavigationActive(true);
+
       setFocusedIndex((prev) => {
         const { length } = itemsRef.current;
         const newIndex =
@@ -238,7 +271,7 @@ export function useMailNavigation({ items, containerRef, onNavigate }: UseMailNa
         return newIndex;
       });
     },
-    [scrollIntoView, setFocusedIndex],
+    [scrollIntoView, setFocusedIndex, setKeyboardNavigationActive],
   );
 
   useEffect(() => {
@@ -278,14 +311,14 @@ export function useMailNavigation({ items, containerRef, onNavigate }: UseMailNa
 
   useEffect(() => {
     if (isSearchBarFocused) {
-      keyboardActiveRef.current = false;
+      setKeyboardNavigationActive(false);
     }
-  }, [isSearchBarFocused]);
+  }, [isSearchBarFocused, setKeyboardNavigationActive]);
 
   return {
     focusedIndex,
     handleMouseEnter,
-    keyboardActive: keyboardActiveRef.current,
+    keyboardActive,
     resetNavigation,
   };
 }

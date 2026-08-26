@@ -57,6 +57,8 @@ import { Avatar } from '../ui/avatar';
 import { useQueryState } from 'nuqs';
 import { useAtom } from 'jotai';
 import { resolveImportantState } from '@/lib/mail/important-ui';
+import { focusThreadElement } from '@/lib/mail/mail-row-focus';
+import { getMailRowSelectionClasses } from '@/lib/mail/mail-row-selection';
 import { flushComposeBeforeLeave } from '@/lib/mail/compose-flush-registry';
 import { runComposeLeaveFlush } from '@/lib/mail/draft-persistence';
 import {
@@ -121,6 +123,7 @@ const Thread = memo(
     message,
     onClick,
     isKeyboardFocused,
+    isKeyboardNavigationActive,
     index,
   }: ThreadProps & { index?: number }) {
     const [searchValue] = useSearchValue();
@@ -162,6 +165,15 @@ const Thread = memo(
         subject: latestMessage?.subject ?? null,
       } satisfies FileDragData,
     });
+
+    const setThreadElementRef = useCallback(
+      (element: HTMLDivElement | null) => {
+        if (element && isKeyboardFocused) {
+          focusThreadElement(element);
+        }
+      },
+      [isKeyboardFocused],
+    );
 
     const { displayStarred, displayImportant, displayUnread, optimisticLabels, emailContent } =
       useMemo(() => {
@@ -312,19 +324,28 @@ const Thread = memo(
       return (
         <div
           ref={setDragNodeRef}
-          className={cn('select-none border-b md:my-1 md:border-none', isDragging && 'opacity-40')}
+          className={cn(
+            'select-none border-b md:my-1 md:border-none focus:outline-none',
+            !isKeyboardNavigationActive &&
+              'focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/60',
+            isDragging && 'opacity-40',
+          )}
           onClick={onClick ? onClick(latestMessage) : undefined}
           {...dragListeners}
           {...dragAttributes}
         >
           <div
+            ref={setThreadElementRef}
             data-thread-id={idToUse}
             key={idToUse}
             className={cn(
               'hover:bg-offsetLight dark:hover:bg-primary/5 group relative mx-1 flex cursor-pointer flex-col items-start rounded-lg py-2 text-left text-sm hover:opacity-100',
-              (isMailSelected || isMailBulkSelected || isKeyboardFocused) &&
-                'border-border bg-primary/5 opacity-100',
-              isKeyboardFocused && 'ring-primary/50',
+              getMailRowSelectionClasses({
+                isMailSelected,
+                isMailBulkSelected,
+                isKeyboardFocused: Boolean(isKeyboardFocused),
+                isKeyboardNavigationActive: Boolean(isKeyboardNavigationActive),
+              }),
               'relative',
               'group',
             )}
@@ -661,6 +682,8 @@ const Thread = memo(
       dragAttributes,
       isDragging,
       isKeyboardFocused,
+      isKeyboardNavigationActive,
+      setThreadElementRef,
       index,
       cleanName,
       displayStarred,
@@ -697,6 +720,7 @@ const Thread = memo(
       prev.message.centurionCategory === next.message.centurionCategory &&
       isSameCategoryIds &&
       prev.isKeyboardFocused === next.isKeyboardFocused &&
+      prev.isKeyboardNavigationActive === next.isKeyboardNavigationActive &&
       prev.index === next.index &&
       Object.is(prev.onClick, next.onClick);
     return isSameMessage;
@@ -999,6 +1023,7 @@ export const MailList = memo(function MailList() {
         const mode = getSelectMode();
 
         if (mode !== 'single') {
+          handleMouseEnter(message.id);
           const messageThreadId = message.threadId ?? message.id;
           const clickedIndex = itemsRef.current.findIndex((item) => item.id === messageThreadId);
           if (clickedIndex !== -1 && mode !== 'range') {
@@ -1112,6 +1137,7 @@ export const MailList = memo(function MailList() {
             <Comp
               message={row.message}
               isKeyboardFocused={focusedIndex === row.threadIndex && keyboardActive}
+              isKeyboardNavigationActive={keyboardActive}
               index={row.threadIndex}
               onClick={handleMailClick}
             />
