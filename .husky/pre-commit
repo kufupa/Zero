@@ -1,1 +1,8 @@
-pnpm dlx oxlint@1.9.0 --deny-warnings
+#!/usr/bin/env sh
+set -e
+# oxlint 1.9 does not honor ignorePatterns in .oxlintrc.json; keep CLI ignore too.
+# Lint staged JS/TS only so submodule sources and untracked WIP cannot block the gate.
+# Full-tree lint remains `pnpm precommit` and CI.
+staged=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '\.(cjs|cts|js|jsx|mjs|mts|ts|tsx)$' | grep -v '^external/' || true)
+[ -n "$staged" ] || exit 0
+echo "$staged" | xargs pnpm dlx oxlint@1.9.0 --deny-warnings --ignore-pattern 'external/**'
