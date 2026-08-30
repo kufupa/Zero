@@ -158,21 +158,17 @@ describe('MailContent client fallback hotfix', () => {
     expect(host?.style.getPropertyValue('color-scheme')).toBe('light');
   });
 
-  it('keeps frontend-only demo on its local rendering path', async () => {
-    mocks.frontendOnlyDemo = true;
-
+  it('injects style tag into shadow root for typography and color protection', async () => {
     renderMailContent({
-      html: '<p data-demo-mail="true">Demo message</p><script>window.bad = true</script>',
+      html: '<div class="guestrevu-content"><p>Survey feedback</p></div>',
     });
 
     await waitFor(() => {
-      expect(renderedHost()?.shadowRoot?.querySelector('[data-demo-mail="true"]')?.textContent).toBe(
-        'Demo message',
-      );
+      const style = renderedHost()?.shadowRoot?.querySelector('style[data-nava-mail-font="1"]');
+      expect(style).not.toBeNull();
+      expect(style?.textContent).toContain(':host');
+      expect(style?.textContent).toContain('Calibri, Arial, sans-serif');
+      expect(style?.textContent).toContain('color: #000000');
     });
-    expect(mocks.processEmailContent).not.toHaveBeenCalled();
-    expect(renderedHost()?.style.getPropertyValue('background-color')).toBe('#ffffff');
-    expect(renderedHost()?.style.getPropertyValue('color')).toBe('#000000');
-    expect(renderedHost()?.style.getPropertyValue('color-scheme')).toBe('light');
   });
 });

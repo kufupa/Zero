@@ -19,6 +19,26 @@ const normalizeText = (value: string): string =>
     .replace(/\n{2,}/g, '\n')
     .trim();
 
+export const MAIL_BODY_STYLE_TAG = `<style data-nava-mail-font="1">
+:host, .mail-content-root, .nava-mail-body {
+  font-family: Calibri, Arial, sans-serif;
+  font-size: 11pt;
+  color: #000000;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+:host table {
+  max-width: 100% !important;
+}
+:host img {
+  max-width: 100% !important;
+  object-fit: contain;
+}
+:host p.MsoNormal {
+  margin: 0;
+}
+</style>`;
+
 export function resolveMailHtml({
   rawHtml,
   processedHtml,
@@ -28,7 +48,9 @@ export function resolveMailHtml({
 }): string {
   const normalizedProcessed = processedHtml?.trim();
   if (normalizedProcessed) {
-    return normalizedProcessed;
+    return normalizedProcessed.includes('data-nava-mail-font="1"')
+      ? normalizedProcessed
+      : `${MAIL_BODY_STYLE_TAG}${normalizedProcessed}`;
   }
 
   const normalizedRaw = rawHtml?.trim();
@@ -47,9 +69,9 @@ export function resolveMailHtml({
   }
 
   if (HTML_TAG_REGEX.test(cleanedRaw)) {
-    return cleanedRaw;
+    return `${MAIL_BODY_STYLE_TAG}${cleanedRaw}`;
   }
 
   const escaped = escapeHtml(normalizeText(cleanedRaw)).replaceAll('\n', '<br />');
-  return `<div>${escaped}</div>`;
+  return `${MAIL_BODY_STYLE_TAG}<div>${escaped}</div>`;
 }

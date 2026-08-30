@@ -29,14 +29,14 @@ describe('wrapMailBodyHtml', () => {
 });
 
 describe('mailBodyDisplayStyleTag', () => {
-  it('emits fixed Calibri 11pt wrapping CSS without forced black', () => {
+  it('emits fixed Calibri 11pt wrapping CSS with default black color', () => {
     const tag = mailBodyDisplayStyleTag();
     expect(tag).toContain('<style');
     expect(tag).toContain(MAIL_BODY_FONT_FAMILY);
     expect(tag).toContain(MAIL_BODY_FONT_SIZE);
     expect(tag).toMatch(/white-space\s*:\s*normal/i);
     expect(tag).toMatch(/overflow-wrap\s*:\s*anywhere/i);
-    expect(tag).not.toMatch(/color\s*:\s*#000/i);
+    expect(tag).toMatch(/color\s*:\s*#000000/i);
   });
 
   it('contains fixed-width email tables and images within the reader', () => {
