@@ -1124,18 +1124,18 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
             )}
           </div>
           <div className="flex cursor-pointer flex-col pb-2 duration-200" onClick={toggleCollapse}>
-            <div className="mt-3 flex w-full items-start justify-between gap-4 px-4">
-              <div className="flex w-full justify-center gap-4">
+            <div className="mt-3 flex w-full min-w-0 items-start justify-between gap-4 px-4">
+              <div className="flex w-full min-w-0 justify-center gap-4">
                 <BimiAvatar
                   email={emailData?.sender?.email}
                   name={emailData?.sender?.name}
                   className="mt-3 h-8 w-8"
                 />
 
-                <div className="flex w-full items-center justify-between">
-                  <div className="flex w-full items-center justify-start">
-                    <div className="flex w-full flex-col">
-                      <div className="flex w-full items-center justify-between">
+                <div className="flex w-full min-w-0 items-center justify-between">
+                  <div className="flex w-full min-w-0 items-center justify-start">
+                    <div className="flex w-full min-w-0 flex-col">
+                      <div className="flex w-full min-w-0 items-center justify-between">
                           <div className="flex min-w-0 items-center gap-2">
                             <div className="flex min-w-0 items-center gap-2">
                               <span
@@ -1305,7 +1305,7 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                           </Popover>
                         </div>
 
-                        <div className="flex items-center justify-center">
+                        <div className="flex shrink-0 items-center justify-center">
                           <div className="text-muted-foreground flex-nowrap! mr-2 flex flex-col items-end text-sm font-medium dark:text-[#8C8C8C]">
                             <time className="whitespace-nowrap">
                               {emailData?.receivedOn ? formatDate(emailData.receivedOn) : ''}
@@ -1373,7 +1373,7 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                         </div>
                       </div>
                       <div className="flex flex-wrap items-start justify-between gap-2">
-                        <div className="flex min-w-0 flex-1 flex-wrap gap-1">
+                        <div className="flex min-w-0 flex-1 flex-col gap-1">
                           <p className="text-muted-foreground min-w-0 break-all text-sm font-medium dark:text-[#8C8C8C]">
                             {m['common.mailDisplay.to']()}:{' '}
                             {shouldCollapseRecipientToYou({

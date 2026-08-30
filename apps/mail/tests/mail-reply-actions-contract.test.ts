@@ -203,6 +203,7 @@ describe('per-message reply actions', () => {
     const actionButton = actionButtonSource();
 
     expect(recipientHeader.match(/min-w-0 break-all/g) ?? []).toHaveLength(3);
+    expect(recipientHeader).toContain('flex-col');
     expect(actionGroup).toContain('flex w-full max-w-full flex-wrap');
     expect(actionGroup).not.toContain('sm:w-auto');
     expect(actionButton).toContain('shrink-0');
@@ -211,6 +212,15 @@ describe('per-message reply actions', () => {
     expect(actionButton).not.toContain('shortcut &&');
     expect(actionButton).not.toContain('<kbd');
     expect(actionGroup).not.toContain('shortcut={');
+  });
+
+  it('keeps message header flex ancestor chain shrinkable with min-w-0', () => {
+    expect(source).toContain('className="mt-3 flex w-full min-w-0 items-start justify-between gap-4 px-4"');
+    expect(source).toContain('className="flex w-full min-w-0 justify-center gap-4"');
+    expect(source).toContain('className="flex w-full min-w-0 items-center justify-between"');
+    expect(source).toContain('className="flex w-full min-w-0 items-center justify-start"');
+    expect(source).toContain('className="flex w-full min-w-0 flex-col"');
+    expect(source).toContain('className="flex shrink-0 items-center justify-center"');
   });
 });
 
