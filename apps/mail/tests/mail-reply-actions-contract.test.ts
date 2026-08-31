@@ -175,14 +175,12 @@ describe('per-message reply actions', () => {
   });
 
   it('keeps recipient content shrinkable and action controls native and labelled', () => {
-    const recipientHeaderIndex = source.indexOf(
-      'className="flex flex-wrap items-start justify-between gap-2"',
-    );
+    const recipientHeaderIndex = source.indexOf('className={MAIL_RECIPIENT_HEADER_CLASS}');
     const mailBodyIndex = source.indexOf(mailBodyAnchor);
     const recipientHeader = source.slice(recipientHeaderIndex, mailBodyIndex);
     const actionGroup = actionGroupSource();
 
-    expect(recipientHeader).toContain('min-w-0');
+    expect(recipientHeader).toContain('MAIL_RECIPIENT_FIELDS_CLASS');
     expect(recipientHeader).toMatch(actionGroupPattern);
     expect(actionGroup.match(/<ActionButton\b/g)).toHaveLength(3);
     expect(actionGroup).toContain("text={m['common.mail.reply']()}");
@@ -194,16 +192,14 @@ describe('per-message reply actions', () => {
   });
 
   it('keeps recipient summaries and action controls pane-contained without visual hotkey badges', () => {
-    const recipientHeaderIndex = source.indexOf(
-      'className="flex flex-wrap items-start justify-between gap-2"',
-    );
+    const recipientHeaderIndex = source.indexOf('className={MAIL_RECIPIENT_HEADER_CLASS}');
     const mailBodyIndex = source.indexOf(mailBodyAnchor);
     const recipientHeader = source.slice(recipientHeaderIndex, mailBodyIndex);
     const actionGroup = actionGroupSource();
     const actionButton = actionButtonSource();
 
-    expect(recipientHeader.match(/min-w-0 break-all/g) ?? []).toHaveLength(3);
-    expect(recipientHeader).toContain('flex-col');
+    expect(recipientHeader.match(/MAIL_RECIPIENT_LINE_CLASS/g) ?? []).toHaveLength(3);
+    expect(recipientHeader).toContain('MAIL_RECIPIENT_FIELDS_CLASS');
     expect(actionGroup).toContain('flex w-full max-w-full flex-wrap');
     expect(actionGroup).not.toContain('sm:w-auto');
     expect(actionButton).toContain('shrink-0');
@@ -221,6 +217,24 @@ describe('per-message reply actions', () => {
     expect(source).toContain('className="flex w-full min-w-0 items-center justify-start"');
     expect(source).toContain('className="flex w-full min-w-0 flex-col"');
     expect(source).toContain('className="flex shrink-0 items-center justify-center"');
+  });
+
+  it('bounds the recipient+actions row below unwrapped To/Cc min-content', () => {
+    // Column flex item with default min-width:auto sizes to the unwrapped
+    // recipient string; overflow-x-clip then hides names. This node must
+    // import the bounded header class — ancestor min-w-0 is not enough.
+    expect(source).toContain('className={MAIL_RECIPIENT_HEADER_CLASS}');
+    expect(source).toContain('className={MAIL_RECIPIENT_FIELDS_CLASS}');
+  });
+
+  it('wraps each To/Cc/Bcc field at recipient boundaries inside a width-bounded line', () => {
+    const recipientHeaderIndex = source.indexOf('className={MAIL_RECIPIENT_HEADER_CLASS}');
+    const mailBodyIndex = source.indexOf(mailBodyAnchor);
+    const recipientHeader = source.slice(recipientHeaderIndex, mailBodyIndex);
+
+    expect(recipientHeader).toContain('MAIL_RECIPIENT_LINE_CLASS');
+    expect(recipientHeader).toContain('MAIL_RECIPIENT_ITEM_CLASS');
+    expect(source).toContain('className={MAIL_RECIPIENT_ITEM_CLASS}');
   });
 });
 
