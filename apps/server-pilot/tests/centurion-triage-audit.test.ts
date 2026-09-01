@@ -2,6 +2,9 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
   auditCenturionTriageRetag,
+  createPostgresAuditDriver,
+  effectiveDurableDecision,
+  hashProductionTriageInput,
   parseAuditArgs,
 } from '../scripts/audit-centurion-triage-retag.mjs';
 import {
@@ -181,6 +184,7 @@ function preCutoverThreads(): MemThread[] {
 }
 
 async function buildApprovedFixture(opts?: {
+  latestInboundFrom?: string;
   mutateLiveAfterSnapshot?: (threads: Map<string, MemThread>) => void;
   mutateRun?: (run: MemRun) => void;
   mutateManifest?: (manifest: any) => any;
@@ -188,8 +192,12 @@ async function buildApprovedFixture(opts?: {
   applySummary?: Record<string, unknown>;
   skipPostApplyMutation?: boolean;
 }) {
+  const initialThreads = preCutoverThreads();
+  if (opts?.latestInboundFrom) {
+    initialThreads[0].latestInboundFrom = opts.latestInboundFrom;
+  }
   const threads = new Map(
-    preCutoverThreads().map((t) => [
+    initialThreads.map((t) => [
       t.threadId,
       {
         ...t,
@@ -996,5 +1004,232 @@ describe('strict centurion triage audit', () => {
       'utf8',
     );
     expect(src).toMatch(/RETAG_UNSETTLE_SLUGS,\s*'spam'/);
+  });
+
+  it('hashes canonical recipients and thread signals, including address-sensitive changes', () => {
+    const base = {
+      transportId: 'transport-centurion',
+      threadId: 't-hash',
+      triggerMessageId: 'm-hash',
+      asOf: '2026-07-30T12:59:00.000Z',
+      modelId: MODEL_ID,
+      promptVersion: PROMPT_VERSION,
+      messages: [
+        {
+          id: 'm-hash',
+          from: 'guest@example.com',
+          subject: 'Booking',
+          body: 'Please confirm.',
+          direction: 'inbound',
+          createdAt: new Date('2026-07-30T12:58:00.000Z'),
+          receivedAt: new Date('2026-07-30T12:58:00.000Z'),
+          sentAt: null,
+          to: ['Staff@Example.com'],
+          cc: [],
+          bcc: [],
+        },
+      ],
+      threadSignals: { legacyHotelsOutboundResponse: false },
+    };
+
+    const reorderedAddress = {
+      ...base,
+      messages: [{ ...base.messages[0], to: ['staff@example.com'] }],
+    };
+    const changedAddress = {
+      ...base,
+      messages: [{ ...base.messages[0], to: ['other@example.com'] }],
+    };
+    const changedSignal = {
+      ...base,
+      threadSignals: { legacyHotelsOutboundResponse: true },
+    };
+
+    expect(hashProductionTriageInput(base)).toBe(hashProductionTriageInput(reorderedAddress));
+    expect(hashProductionTriageInput(changedAddress)).not.toBe(hashProductionTriageInput(base));
+    expect(hashProductionTriageInput(changedSignal)).not.toBe(hashProductionTriageInput(base));
+  });
+
+  it('recomputes production hashes from recipient columns and the causal signal window', async () => {
+    const queries: string[] = [];
+    const messages = [
+      {
+        id: 'm-later',
+        from: 'agent@legacyhotels.co.za',
+        subject: 'Later reply',
+        body: 'Later reply',
+        direction: 'outbound',
+        createdAt: new Date('2026-07-30T13:00:00.000Z'),
+        receivedAt: null,
+        sentAt: new Date('2026-07-30T13:00:00.000Z'),
+        to: ['guest@example.com'],
+        cc: [],
+        bcc: [],
+      },
+      {
+        id: 'm-trigger',
+        from: 'guest@example.com',
+        subject: 'Booking',
+        body: 'Please confirm.',
+        direction: 'inbound',
+        createdAt: new Date('2026-07-30T12:00:00.000Z'),
+        receivedAt: new Date('2026-07-30T12:00:00.000Z'),
+        sentAt: null,
+        to: ['Staff@Example.com'],
+        cc: [],
+        bcc: [],
+      },
+      {
+        id: 'm-rc',
+        from: 'pmbobo@eu.mail.reservecloud.com',
+        subject: 'Staff reply',
+        body: 'Staff reply',
+        direction: 'outbound',
+        createdAt: new Date('2026-07-30T11:00:00.000Z'),
+        receivedAt: null,
+        sentAt: new Date('2026-07-30T11:00:00.000Z'),
+        to: ['pmbobo@legacyhotels.co.za'],
+        cc: ['Staff@Example.com'],
+        bcc: [],
+      },
+    ];
+    const sql = (async (strings: TemplateStringsArray) => {
+      const statement = Array.from(strings).join(' ');
+      queries.push(statement);
+      if (/FROM message/i.test(statement)) return messages;
+      throw new Error(`unexpected SQL in driver test: ${statement}`);
+    }) as unknown as Parameters<typeof createPostgresAuditDriver>[0];
+
+    const driver = createPostgresAuditDriver(sql);
+    const actual = await driver.recomputeProductionInputHash({
+      threadId: 't-driver',
+      triggerMessageId: 'm-trigger',
+      modelId: MODEL_ID,
+      promptVersion: PROMPT_VERSION,
+      asOf: '2026-07-30T12:59:00.000Z',
+    });
+    const expected = hashProductionTriageInput({
+      transportId: 'transport-centurion',
+      threadId: 't-driver',
+      triggerMessageId: 'm-trigger',
+      asOf: '2026-07-30T12:59:00.000Z',
+      modelId: MODEL_ID,
+      promptVersion: PROMPT_VERSION,
+      messages: [messages[2], messages[1]],
+      threadSignals: {
+        legacyHotelsOutboundResponse: false,
+        reserveCloudStaffOutbound: true,
+        reserveCloudStaffOutboundFrom: 'pmbobo@eu.mail.reservecloud.com',
+        reserveCloudStaffOutboundRecipients: [
+          'pmbobo@legacyhotels.co.za',
+          'staff@example.com',
+        ],
+      },
+    });
+
+    expect(actual).toBe(expected);
+    expect(queries).toHaveLength(1);
+    expect(queries[0]).toMatch(/to_addresses AS "to"/);
+    expect(queries[0]).toMatch(/cc_addresses AS "cc"/);
+    expect(queries[0]).toMatch(/bcc_addresses AS "bcc"/);
+  });
+
+  it('derives durable expected primary from the worker exception remap', () => {
+    const target = { approvedPrimaryFolder: 'bookings', approvedIsSpam: false, approvedUrgent: false };
+    const canonical = true;
+
+    expect(
+      effectiveDurableDecision(target, {}, { latestSender: 'staff@legacyhotels.co.za' }, canonical)
+        .primaryFolder,
+    ).toBe('internal-partner');
+    expect(
+      effectiveDurableDecision(
+        target,
+        {},
+        { latestSender: 'pmbobo@eu.mail.reservecloud.com' },
+        canonical,
+      ).primaryFolder,
+    ).toBe('internal-partner');
+    expect(
+      effectiveDurableDecision(
+        { ...target, approvedPrimaryFolder: 'groups-events' },
+        {},
+        { latestSender: 'pmbobo@eu.mail.reservecloud.com' },
+        canonical,
+      ).primaryFolder,
+    ).toBe('groups-events');
+    expect(
+      effectiveDurableDecision(
+        target,
+        {},
+        { latestSender: 'aroransh17@gmail.com' },
+        canonical,
+      ).primaryFolder,
+    ).toBe('bookings');
+    expect(
+      effectiveDurableDecision(
+        { ...target, approvedPrimaryFolder: 'automated-channel' },
+        { threadSignals: { legacyHotelsOutboundResponse: true } },
+        { latestSender: 'guest@example.com' },
+        canonical,
+      ).primaryFolder,
+    ).toBe('internal-partner');
+    expect(
+      effectiveDurableDecision(
+        { ...target, approvedPrimaryFolder: 'unknown-review' },
+        {
+          threadSignals: {
+            reserveCloudStaffOutbound: true,
+            reserveCloudStaffOutboundFrom: 'pmbobo@eu.mail.reservecloud.com',
+            reserveCloudStaffOutboundRecipients:
+              'pmbobo@legacyhotels.co.za, staff@example.com',
+          },
+        },
+        { latestSender: 'guest@example.com' },
+        canonical,
+      ).primaryFolder,
+    ).toBe('internal-partner');
+  });
+
+  it('audits durable state against the worker exception remap', async () => {
+    const fx = await buildApprovedFixture({
+      latestInboundFrom: 'staff@legacyhotels.co.za',
+      mutateManifest: (m) =>
+        rehashManifest({
+          ...m,
+          targets: m.targets.map((target: Record<string, unknown>) => ({
+            ...target,
+            approvedCategory: undefined,
+            approvedPrimaryFolder: 'groups-events',
+            approvedIsSpam: false,
+            approvedUrgent: false,
+          })),
+        }),
+      mutateRun: (run) => {
+        run.metrics = {
+          inputHash: run.metrics.inputHash,
+          applyMode: 'full',
+          canonicalOutput: {
+            primaryFolder: 'groups-events',
+            urgent: false,
+            isSpam: false,
+          },
+        };
+      },
+      mutateLiveAfterSnapshot: (threads) => {
+        threads.get('t-eligible')!.aiCategorySlugs = ['internal-partner'];
+      },
+    });
+
+    const result = await auditCenturionTriageRetag({
+      driver: fx.auditDriver,
+      snapshot: fx.snapshot,
+      manifest: fx.manifest,
+      applySummary: fx.applySummary,
+      keyPrefix: KEY_PREFIX,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.errors).toEqual([]);
   });
 });

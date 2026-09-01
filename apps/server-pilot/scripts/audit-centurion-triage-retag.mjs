@@ -39,8 +39,38 @@ function isSha256Hex(value) {
   return typeof value === 'string' && /^[a-f0-9]{64}$/i.test(value);
 }
 
+const RESERVE_CLOUD_PENNY_EMAIL = 'pmbobo@eu.mail.reservecloud.com';
+const LEGACY_PENNY_EMAIL = 'pmbobo@legacyhotels.co.za';
+
+function normalizeEmailAddress(raw) {
+  const trimmed = String(raw ?? '').trim();
+  const angleMatch = trimmed.match(/<([^>]+)>/);
+  const email = angleMatch ? angleMatch[1].trim() : trimmed;
+  return email.toLowerCase();
+}
+
+function canonicalAddresses(value) {
+  const values = typeof value === 'string' ? value.split(/[,;]/) : (value ?? []);
+  return values
+    .map((address) => String(address ?? '').trim().toLowerCase())
+    .filter(Boolean)
+    .sort();
+}
+
+function canonicalThreadSignals(signals) {
+  return {
+    legacyHotelsOutboundResponse: signals?.legacyHotelsOutboundResponse === true,
+    reserveCloudStaffOutbound: signals?.reserveCloudStaffOutbound === true,
+    reserveCloudStaffOutboundFrom:
+      signals?.reserveCloudStaffOutboundFrom?.trim().toLowerCase() ?? null,
+    reserveCloudStaffOutboundRecipients: canonicalAddresses(
+      signals?.reserveCloudStaffOutboundRecipients,
+    ),
+  };
+}
+
 /** Match apps/server-pilot/src/ai/triage-input.ts hashTriageInput (production asOf). */
-function hashProductionTriageInput(input) {
+export function hashProductionTriageInput(input) {
   const canonical = {
     transportId: input.transportId,
     threadId: input.threadId,
@@ -57,9 +87,59 @@ function hashProductionTriageInput(input) {
       createdAt: m.createdAt.toISOString(),
       receivedAt: m.receivedAt ? m.receivedAt.toISOString() : null,
       sentAt: m.sentAt ? m.sentAt.toISOString() : null,
+      to: canonicalAddresses(m.to),
+      cc: canonicalAddresses(m.cc),
+      bcc: canonicalAddresses(m.bcc),
     })),
+    threadSignals: canonicalThreadSignals(input.threadSignals),
   };
   return sha256Hex(JSON.stringify(canonical));
+}
+
+function recipientAddresses(value) {
+  const values = typeof value === 'string' ? value.split(/[,;]/) : (value ?? []);
+  return values.map((address) => normalizeEmailAddress(address)).filter(Boolean);
+}
+
+/** Match worker deriveThreadSignals for the causal production message window. */
+function deriveProductionThreadSignals(messages) {
+  const legacyHotelsOutboundResponse = messages.some((message) => {
+    if (message.direction !== 'outbound') return false;
+    const from = normalizeEmailAddress(message.from ?? '');
+    const domain = from.slice(from.lastIndexOf('@') + 1);
+    return domain === 'legacyhotels.co.za' || domain === 'mail.legacyhotels.com';
+  });
+
+  const rcStaff = messages.find((message) => {
+    if (message.direction !== 'outbound') return false;
+    if (normalizeEmailAddress(message.from ?? '') !== RESERVE_CLOUD_PENNY_EMAIL) {
+      return false;
+    }
+    const recipients = [
+      ...recipientAddresses(message.to),
+      ...recipientAddresses(message.cc),
+      ...recipientAddresses(message.bcc),
+    ];
+    return recipients.some((recipient) => recipient !== LEGACY_PENNY_EMAIL);
+  });
+
+  if (!rcStaff) return { legacyHotelsOutboundResponse };
+  return {
+    legacyHotelsOutboundResponse,
+    reserveCloudStaffOutbound: true,
+    reserveCloudStaffOutboundFrom: RESERVE_CLOUD_PENNY_EMAIL,
+    reserveCloudStaffOutboundRecipients: [
+      ...recipientAddresses(rcStaff.to),
+      ...recipientAddresses(rcStaff.cc),
+      ...recipientAddresses(rcStaff.bcc),
+    ],
+  };
+}
+
+function compareCausalOrder(a, b) {
+  const byCreated = a.createdAt.getTime() - b.createdAt.getTime();
+  if (byCreated !== 0) return byCreated;
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
 
 export function parseAuditArgs(argv) {
@@ -124,6 +204,72 @@ function approvedTargetDecision(target) {
     primaryFolder: isSpam ? null : primaryFolder,
     isSpam,
     urgent: Boolean(target.approvedUrgent),
+  };
+}
+
+const AUTO_TRIAGE_NEVER_SPAM_DOMAINS = new Set([
+  'legacyhotels.co.za',
+  'mail.legacyhotels.com',
+]);
+const AUTO_TRIAGE_NEVER_SPAM_EMAILS = new Set([
+  'aroransh17@gmail.com',
+  'coleddofficial@gmail.com',
+  RESERVE_CLOUD_PENNY_EMAIL,
+]);
+
+function isHotelNeverSpamAddress(fromRaw) {
+  const email = normalizeEmailAddress(fromRaw);
+  const atIndex = email.lastIndexOf('@');
+  return atIndex !== -1 && AUTO_TRIAGE_NEVER_SPAM_DOMAINS.has(email.slice(atIndex + 1));
+}
+
+function isPilotNeverSpamAddress(fromRaw) {
+  const email = normalizeEmailAddress(fromRaw);
+  return (
+    AUTO_TRIAGE_NEVER_SPAM_EMAILS.has(email) &&
+    !isHotelNeverSpamAddress(fromRaw) &&
+    email !== RESERVE_CLOUD_PENNY_EMAIL
+  );
+}
+
+function workflowApplyExceptionFolder(requested, fromRaw, staff) {
+  if (isPilotNeverSpamAddress(fromRaw)) return 'bookings';
+  const from = normalizeEmailAddress(fromRaw);
+  if (from === RESERVE_CLOUD_PENNY_EMAIL && requested === 'groups-events') {
+    return requested;
+  }
+  if (isHotelNeverSpamAddress(fromRaw) || from === RESERVE_CLOUD_PENNY_EMAIL) {
+    return 'internal-partner';
+  }
+  if (staff && (requested === 'unknown-review' || requested === 'automated-channel')) {
+    return 'internal-partner';
+  }
+  return requested;
+}
+
+function hasStaffConversationSignal(metrics) {
+  const signals = metrics?.threadSignals;
+  if (!signals || typeof signals !== 'object') return false;
+  if (signals.legacyHotelsOutboundResponse === true) return true;
+  if (signals.reserveCloudStaffOutbound !== true) return false;
+  if (normalizeEmailAddress(signals.reserveCloudStaffOutboundFrom ?? '') !== RESERVE_CLOUD_PENNY_EMAIL) {
+    return false;
+  }
+  const recipients = recipientAddresses(signals.reserveCloudStaffOutboundRecipients);
+  return recipients.some((recipient) => recipient !== LEGACY_PENNY_EMAIL);
+}
+
+/** Apply the same workflow exception remap used by applyDurableTriageResult. */
+export function effectiveDurableDecision(target, metrics, snapshotRow, canonicalV6) {
+  const approved = approvedTargetDecision(target);
+  if (!canonicalV6 || approved.isSpam || !approved.primaryFolder) return approved;
+  return {
+    ...approved,
+    primaryFolder: workflowApplyExceptionFolder(
+      approved.primaryFolder,
+      snapshotRow?.latestSender ?? '',
+      hasStaffConversationSignal(metrics),
+    ),
   };
 }
 
@@ -338,6 +484,7 @@ export async function auditCenturionTriageRetag(opts) {
     if (metrics.draftRunId != null && metrics.draftRunId !== '') {
       push(`unexpected draft for ${target.threadId}: ${metrics.draftRunId}`);
     }
+    const snap = snapByThread.get(target.threadId);
     const approved = approvedTargetDecision(target);
     const actual = runOutputDecision(metrics);
     if (
@@ -391,14 +538,15 @@ export async function auditCenturionTriageRetag(opts) {
     }
 
     const durable = await opts.driver.listDurableAiState(target.threadId);
-    const expectedSlugs = expectedDurableSlugs(approved);
+    const durableDecision = effectiveDurableDecision(target, metrics, snap, canonicalV6);
+    const expectedSlugs = expectedDurableSlugs(durableDecision);
     const actualSlugs = [...(durable.aiCategorySlugs ?? [])].map(String).sort();
     if (JSON.stringify(actualSlugs) !== JSON.stringify(expectedSlugs)) {
       push(
         `durable category mismatch for ${target.threadId}: expected ${expectedSlugs.join(',')} got ${actualSlugs.join(',')}`,
       );
     }
-    if (approved.isSpam) {
+    if (durableDecision.isSpam) {
       if (durable.spamAt == null) {
         push(`durable spam mismatch for ${target.threadId}: expected spam_at set`);
       }
@@ -410,7 +558,7 @@ export async function auditCenturionTriageRetag(opts) {
     } else if (canonicalV6 && !actualSlugs.some((slug) => isCanonicalWorkflowPrimary(slug))) {
       push(`durable workflow primary missing for ${target.threadId}`);
     }
-    const expectedUrgent = !approved.isSpam && approved.urgent;
+    const expectedUrgent = !durableDecision.isSpam && durableDecision.urgent;
     if (Boolean(durable.aiCategorySlugs?.includes('urgent')) !== expectedUrgent) {
       push(`durable urgent mismatch for ${target.threadId}`);
     }
@@ -498,21 +646,28 @@ export function createPostgresAuditDriver(sql) {
           direction,
           created_at AS "createdAt",
           received_at AS "receivedAt",
-          sent_at AS "sentAt"
+          sent_at AS "sentAt",
+          to_addresses AS "to",
+          cc_addresses AS "cc",
+          bcc_addresses AS "bcc"
         FROM message
         WHERE thread_id = ${input.threadId}
         ORDER BY created_at ASC, id ASC
       `;
       const rows = messages.map((m) => ({
         id: m.id,
-        from: m.from,
+        from: m.from ?? '',
         subject: m.subject,
         body: m.body,
-        direction: m.direction,
+        direction: m.direction === 'outbound' ? 'outbound' : 'inbound',
         createdAt: m.createdAt instanceof Date ? m.createdAt : new Date(m.createdAt),
         receivedAt: m.receivedAt ? (m.receivedAt instanceof Date ? m.receivedAt : new Date(m.receivedAt)) : null,
         sentAt: m.sentAt ? (m.sentAt instanceof Date ? m.sentAt : new Date(m.sentAt)) : null,
+        to: m.to ?? [],
+        cc: m.cc ?? [],
+        bcc: m.bcc ?? [],
       }));
+      rows.sort(compareCausalOrder);
       const triggerIndex = rows.findIndex((r) => r.id === input.triggerMessageId);
       if (triggerIndex < 0) {
         throw new Error(`trigger not found for input hash: ${input.triggerMessageId}`);
@@ -526,6 +681,7 @@ export function createPostgresAuditDriver(sql) {
         asOf: input.asOf,
         modelId: input.modelId,
         promptVersion: input.promptVersion,
+        threadSignals: deriveProductionThreadSignals(causal),
       });
     },
 
