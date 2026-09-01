@@ -3,7 +3,6 @@ import {
   MoonIcon,
   Settings,
   Plus,
-  CopyCheckIcon,
   RefreshCcw,
   Trash2,
 } from 'lucide-react';
@@ -128,7 +127,7 @@ export function NavUser() {
   const { data: activeConnection, refetch: refetchActiveConnection } = useActiveConnection();
   const [category] = useQueryState('category', { defaultValue: 'All Mail' });
   const { setLoading } = useLoading();
-  const [{ isSyncing, syncingFolders, storageSize, shards }] = useDoState();
+  const [{ isSyncing, syncingFolders, storageSize }] = useDoState();
   const setLastSyncAt = useSetAtom(setLastSyncAtAtom);
   const frontendOnlyDemo = isFrontendOnlyDemo();
   const showLogout = !frontendOnlyDemo;
@@ -151,11 +150,6 @@ export function NavUser() {
     });
     toast.success('Cache cleared successfully');
   }, [queryClient]);
-
-  const handleCopyConnectionId = useCallback(async () => {
-    await navigator.clipboard.writeText(activeConnection?.id || '');
-    toast.success('Connection ID copied to clipboard');
-  }, [activeConnection]);
 
   const { data: activeAccount } = useActiveConnection();
 
@@ -339,12 +333,6 @@ export function NavUser() {
                 <>
                   <DropdownMenuSeparator className="mt-1" />
                   <p className="text-muted-foreground px-2 py-1 text-[11px] font-medium">Debug</p>
-                  <DropdownMenuItem onClick={handleCopyConnectionId}>
-                    <div className="flex items-center gap-2">
-                      <CopyCheckIcon size={16} className="opacity-60" />
-                      <p className="text-[13px] opacity-60">Copy Connection ID</p>
-                    </div>
-                  </DropdownMenuItem>
                   <DropdownMenuItem onClick={handleClearCache}>
                     <div className="flex items-center gap-2">
                       <Trash2 size={16} className="opacity-60" />
@@ -362,11 +350,6 @@ export function NavUser() {
                     storageSize={storageSize}
                     syncingFolders={syncingFolders}
                   />
-                  <DropdownMenuItem>
-                    <div className="flex items-center gap-2">
-                      <p className="text-[13px] opacity-60">Shards: {shards}</p>
-                    </div>
-                  </DropdownMenuItem>
                   <DropdownMenuSeparator className="mt-1" />
                   <DropdownMenuItem onSelect={() => handleThemeToggle()} className="cursor-pointer">
                     <div className="flex w-full items-center gap-2">
@@ -386,16 +369,6 @@ export function NavUser() {
                       </div>
                     </DropdownMenuItem>
                   )}
-                  <DropdownMenuSeparator className="mt-1" />
-                  <div className="text-muted-foreground/60 flex items-center justify-center gap-1 px-2 pb-2 pt-1 text-[10px]">
-                    <a href="/privacy" className="hover:underline">
-                      Privacy
-                    </a>
-                    <span>·</span>
-                    <a href="/terms" className="hover:underline">
-                      Terms
-                    </a>
-                  </div>
                 </>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -426,12 +399,6 @@ export function NavUser() {
                   <div className="space-y-1">
                   </div>
                   <p className="text-muted-foreground px-2 py-1 text-[11px] font-medium">Debug</p>
-                  <DropdownMenuItem onClick={handleCopyConnectionId}>
-                    <div className="flex items-center gap-2">
-                      <CopyCheckIcon size={16} className="opacity-60" />
-                      <p className="text-[13px] opacity-60">Copy Connection ID</p>
-                    </div>
-                  </DropdownMenuItem>
                   <DropdownMenuItem onClick={handleClearCache}>
                     <div className="flex items-center gap-2">
                       <Trash2 size={16} className="opacity-60" />
@@ -449,11 +416,6 @@ export function NavUser() {
                     storageSize={storageSize}
                     syncingFolders={syncingFolders}
                   />
-                  <DropdownMenuItem>
-                    <div className="flex items-center gap-2">
-                      <p className="text-[13px] opacity-60">Shards: {shards}</p>
-                    </div>
-                  </DropdownMenuItem>
                   <DropdownMenuSeparator className="mt-1" />
                   <DropdownMenuItem onClick={handleThemeToggle} className="cursor-pointer">
                     <div className="flex w-full items-center gap-2">
@@ -473,16 +435,6 @@ export function NavUser() {
                       </div>
                     </DropdownMenuItem>
                   )}
-                  <DropdownMenuSeparator className="mt-1" />
-                  <div className="text-muted-foreground/60 flex items-center justify-center gap-1 px-2 pb-2 pt-1 text-[10px]">
-                    <a href="/privacy" className="hover:underline">
-                      Privacy
-                    </a>
-                    <span>·</span>
-                    <a href="/terms" className="hover:underline">
-                      Terms
-                    </a>
-                  </div>
                 </DropdownMenuContent>
               </DropdownMenu>
               </div>
