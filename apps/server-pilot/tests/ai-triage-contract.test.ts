@@ -1,14 +1,3 @@
-import { describe, expect, expectTypeOf, it } from 'vitest';
-import { and, eq } from 'drizzle-orm';
-import { createFakeModelAdapter } from '../src/ai/bedrock/fake.js';
-import {
-  buildSystemPrompt,
-  buildUserPrompt,
-  classifyMailTriage,
-} from '../src/ai/workflows/mail-triage.js';
-import { AI_PRIMARY_CATEGORY_SLUGS } from '../src/ai/categories.js';
-import { isAutoTriageNeverSpam } from '../src/ai/never-spam.js';
-import { randomUUID } from 'node:crypto';
 import {
   applyDurableTriageResult,
   applyShadowTriageResult,
@@ -20,22 +9,140 @@ import {
   type LegacyTriageOutput,
   type WorkflowTriageOutput,
 } from '../src/ai/triage.js';
-import { createMastraRuntime } from '../src/ai/mastra.js';
+import {
+  buildSystemPrompt,
+  buildUserPrompt,
+  classifyMailTriage,
+  CONTEXT_BODY_LIMIT,
+  mailTriageWorkflowOutputSchema,
+  TRIGGER_BODY_LIMIT,
+} from '../src/ai/workflows/mail-triage.js';
 import { mailCategory, mailThread, mailThreadCategory } from '../src/db/schema/mail.js';
-import { mailboxTransport } from '../src/db/schema/mail.js';
-import { getDb } from '../src/db/client.js';
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
-import { TRANSPORT_ID } from '../src/db/seed.js';
+import { AI_PRIMARY_CATEGORY_SLUGS } from '../src/ai/categories.js';
+import { createFakeModelAdapter } from '../src/ai/bedrock/fake.js';
 import { seedInboxThread } from './helpers/seed-inbox-thread.js';
-import { readFileSync } from 'node:fs';
+import { isAutoTriageNeverSpam } from '../src/ai/never-spam.js';
+import { mailboxTransport } from '../src/db/schema/mail.js';
+import { describe, expect, expectTypeOf, it } from 'vitest';
+import { createMastraRuntime } from '../src/ai/mastra.js';
+import { TRANSPORT_ID } from '../src/db/seed.js';
+import { getDb } from '../src/db/client.js';
 import { dirname, join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
+import { and, eq } from 'drizzle-orm';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
 const reachable = await probeTestDb();
 
 describe('AI triage contract', () => {
+  it('v6 prompt/schema exposes workflow contract and safety boundaries', () => {
+    expect(TRIGGER_BODY_LIMIT).toBeGreaterThanOrEqual(8192);
+    expect(CONTEXT_BODY_LIMIT).toBe(2000);
+
+    const prompt = buildSystemPrompt();
+    for (const priority of ['P0', 'P1', 'P2', 'P3', 'P4', 'P5']) {
+      expect(prompt).toContain(priority);
+    }
+    for (const folder of [
+      'bookings',
+      'groups-events',
+      'manage-stay',
+      'confirm-reconcile',
+      'money-billing',
+      'documents-delivery',
+      'exceptions-recovery',
+      'guest-experience',
+      'internal-partner',
+      'automated-channel',
+      'unknown-review',
+    ]) {
+      expect(prompt).toContain(folder);
+    }
+    expect(prompt).toMatch(/R22|R23/i);
+    expect(prompt).toMatch(/Legacy.*(?:From|outbound|response)/i);
+    expect(prompt).toMatch(/ReserveCloud.*Penny.*staff/i);
+    expect(prompt).toMatch(/wrapper.*(?:staff|outbound)|staff.*wrapper/i);
+    expect(prompt).toMatch(/noreply.*spam/i);
+    expect(prompt).toMatch(/10\+|10 or more|ten or more/i);
+    expect(prompt).not.toMatch(/^-\s*ops\s*:/im);
+
+    const parsed = mailTriageWorkflowOutputSchema.parse({
+      output: {
+        primaryFolder: 'bookings',
+        priority: 'P3',
+        urgent: false,
+        overlays: { booking: true },
+        isSpam: false,
+        suggestedTools: ['hms_quote_stay'],
+        sourceScope: 'external',
+        automationState: 'candidate',
+        humanAction: 'answer_or_quote',
+        confidence: 0.8,
+        rationale: 'booking request',
+        policyFlags: [],
+        abstainReason: null,
+      },
+      shadow: {
+        primaryFolder: 'bookings',
+        priority: 'P3',
+        urgent: false,
+        isSpam: false,
+        confidence: 0.8,
+        rationale: 'booking request',
+      },
+      metrics: {},
+      traceId: 'trace-1',
+    });
+    expect(parsed.output.primaryFolder).toBe('bookings');
+    expect(parsed.output.priority).toBe('P3');
+    expect(parsed.output.isSpam).toBe(false);
+    expect(parsed.output.suggestedTools).toEqual(['hms_quote_stay']);
+  });
+
+  it('v6 user prompt gives trigger full body and context capped body plus signals', () => {
+    const triggerBody = 'trigger-' + 'x'.repeat(TRIGGER_BODY_LIMIT + 100);
+    const contextBody = 'context-' + 'y'.repeat(CONTEXT_BODY_LIMIT + 100);
+    const text = buildUserPrompt({
+      triggerMessageId: 'trigger',
+      asOf: '2026-07-01T12:00:00.000Z',
+      threadSignals: {
+        legacyHotelsOutboundResponse: true,
+        reserveCloudStaffOutbound: true,
+        reserveCloudStaffOutboundFrom: 'pmbobo@eu.mail.reservecloud.com',
+        reserveCloudStaffOutboundRecipients: ['guest@example.com'],
+      },
+      messages: [
+        {
+          id: 'context',
+          from: 'staff@legacyhotels.co.za',
+          body: contextBody,
+          direction: 'outbound',
+          createdAt: new Date('2026-07-01T10:00:00.000Z'),
+        },
+        {
+          id: 'trigger',
+          from: 'guest@example.com',
+          body: triggerBody,
+          direction: 'inbound',
+          createdAt: new Date('2026-07-01T11:00:00.000Z'),
+        },
+      ],
+    });
+    expect(text).toContain(triggerBody.slice(0, TRIGGER_BODY_LIMIT));
+    expect(text).not.toContain(triggerBody);
+    expect(text).not.toContain(contextBody);
+    expect(text).toContain(contextBody.slice(0, CONTEXT_BODY_LIMIT));
+    expect(text).toMatch(/threadSignals:/);
+    expect(text).toMatch(/legacyHotelsOutboundResponse/);
+    expect(text).toMatch(/reserveCloudStaffOutboundFrom/);
+    expect(text).toMatch(/pmbobo@eu\.mail\.reservecloud\.com/);
+    expect(text).toMatch(/guest@example\.com/);
+  });
+
   it('system prompt teaches revenue categories and spam exclusions', () => {
     const p = buildSystemPrompt();
     expect(p).toContain('new-bookings');
@@ -157,7 +264,10 @@ describe('AI triage contract', () => {
   });
 
   it('classifyMailTriage is shared path used by workflow source', () => {
-    const source = readFileSync(join(here, '..', 'src', 'ai', 'workflows', 'mail-triage.ts'), 'utf8');
+    const source = readFileSync(
+      join(here, '..', 'src', 'ai', 'workflows', 'mail-triage.ts'),
+      'utf8',
+    );
     expect(source).toMatch(/export async function classifyMailTriage/);
     expect(source).toMatch(/classifyMailTriage\(/);
     expect(source).not.toMatch(/process\.env\.AI_MODEL_ID/);
@@ -591,12 +701,14 @@ describe('AI triage contract', () => {
 
   it('accepts hotel vocabulary categories', () => {
     for (const category of [...AI_PRIMARY_CATEGORY_SLUGS, 'spam'] as const) {
-      expect(validateLegacyTriageOutput({
-        category,
-        urgent: false,
-        confidence: 0.9,
-        rationale: 'fixture',
-      }).category).toBe(category);
+      expect(
+        validateLegacyTriageOutput({
+          category,
+          urgent: false,
+          confidence: 0.9,
+          rationale: 'fixture',
+        }).category,
+      ).toBe(category);
     }
   });
 
@@ -607,14 +719,16 @@ describe('AI triage contract', () => {
       rationale: 'legacy caller',
     });
     expect(legacy.category).toBe('ops');
-    expect(() => triageOutputSchema.parse({
-      primaryFolder: 'bookings',
-      priority: 'P3',
-      isSpam: false,
-      humanAction: 'answer_or_quote',
-      confidence: 0.8,
-      rationale: 'workflow caller',
-    })).toThrow();
+    expect(() =>
+      triageOutputSchema.parse({
+        primaryFolder: 'bookings',
+        priority: 'P3',
+        isSpam: false,
+        humanAction: 'answer_or_quote',
+        confidence: 0.8,
+        rationale: 'workflow caller',
+      }),
+    ).toThrow();
 
     const raw: unknown = {
       primaryFolder: 'bookings',
@@ -710,37 +824,41 @@ describe('AI triage contract', () => {
   });
 
   it('rejects spam as a primary folder and rejects write tool ids', () => {
-    expect(() => validateTriageOutput({
-      primaryFolder: 'spam',
-      priority: 'P4',
-      urgent: false,
-      overlays: {},
-      isSpam: true,
-      suggestedTools: [],
-      sourceScope: 'external',
-      automationState: 'unknown',
-      humanAction: 'none',
-      confidence: 0.9,
-      rationale: 'spam',
-      policyFlags: [],
-      abstainReason: null,
-    })).toThrow();
+    expect(() =>
+      validateTriageOutput({
+        primaryFolder: 'spam',
+        priority: 'P4',
+        urgent: false,
+        overlays: {},
+        isSpam: true,
+        suggestedTools: [],
+        sourceScope: 'external',
+        automationState: 'unknown',
+        humanAction: 'none',
+        confidence: 0.9,
+        rationale: 'spam',
+        policyFlags: [],
+        abstainReason: null,
+      }),
+    ).toThrow();
 
-    expect(() => validateTriageOutput({
-      primaryFolder: 'bookings',
-      priority: 'P1',
-      urgent: false,
-      overlays: { booking: true },
-      isSpam: false,
-      suggestedTools: ['reservation_create'],
-      sourceScope: 'external',
-      automationState: 'candidate',
-      humanAction: 'create_or_reconcile',
-      confidence: 0.5,
-      rationale: 'create booking',
-      policyFlags: [],
-      abstainReason: null,
-    })).toThrow();
+    expect(() =>
+      validateTriageOutput({
+        primaryFolder: 'bookings',
+        priority: 'P1',
+        urgent: false,
+        overlays: { booking: true },
+        isSpam: false,
+        suggestedTools: ['reservation_create'],
+        sourceScope: 'external',
+        automationState: 'candidate',
+        humanAction: 'create_or_reconcile',
+        confidence: 0.5,
+        rationale: 'create booking',
+        policyFlags: [],
+        abstainReason: null,
+      }),
+    ).toThrow();
   });
 
   it('rejects invalid category or malformed JSON', () => {
@@ -805,7 +923,10 @@ describe('AI triage contract', () => {
     });
     expect(result.status).toBe('success');
     expect(result.result?.output).toMatchObject({
-      category: 'groups-events',
+      primaryFolder: 'groups-events',
+      priority: expect.stringMatching(/^P[0-5]$/),
+      isSpam: false,
+      suggestedTools: expect.any(Array),
       urgent: expect.any(Boolean),
       confidence: expect.any(Number),
     });
@@ -814,7 +935,9 @@ describe('AI triage contract', () => {
       promptHash: expect.stringMatching(/^[a-f0-9]{64}$/),
       inputHash: expect.stringMatching(/^[a-f0-9]{64}$/),
       modelId: 'amazon.nova-lite-v1:0',
-      rawOutput: expect.objectContaining({ category: 'groups-events' }),
+      promptVersion: 'triage-v6',
+      rawOutput: expect.objectContaining({ primaryFolder: 'groups-events' }),
+      threadSignals: expect.objectContaining({ legacyHotelsOutboundResponse: false }),
       rationale: expect.any(String),
       policyFlags: expect.any(Array),
     });
@@ -853,7 +976,9 @@ describe('AI triage contract', () => {
     });
     expect(result.status).toBe('success');
     expect(result.result?.output).toMatchObject({
-      category: expect.any(String),
+      primaryFolder: expect.any(String),
+      priority: expect.stringMatching(/^P[0-5]$/),
+      isSpam: expect.any(Boolean),
       urgent: expect.any(Boolean),
       confidence: expect.any(Number),
       rationale: expect.any(String),
@@ -1246,9 +1371,9 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI durable triage contract', 
         .where(eq(mailThreadCategory.threadId, threadId));
       const slugs = memberships.map((row) => row.slug);
       expect(slugs).toContain('urgent');
-      expect(slugs.some((slug) => (AI_PRIMARY_CATEGORY_SLUGS as readonly string[]).includes(slug))).toBe(
-        false,
-      );
+      expect(
+        slugs.some((slug) => (AI_PRIMARY_CATEGORY_SLUGS as readonly string[]).includes(slug)),
+      ).toBe(false);
     });
   });
 

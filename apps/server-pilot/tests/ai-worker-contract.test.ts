@@ -118,6 +118,16 @@ describe('ai worker contract', () => {
     expect(source).not.toMatch(/AI_MODEL_ID/);
   });
 
+  it('worker consumes v6 workflow output with thread signals and keeps draft AI disabled', () => {
+    const source = readFileSync(join(here, '..', 'src', 'ai', 'worker.ts'), 'utf8');
+    expect(source).toMatch(/TRIAGE_PROMPT_VERSION/);
+    expect(source).toMatch(/validateWorkflowTriageOutput/);
+    expect(source).toMatch(/threadSignals/);
+    expect(source).toMatch(/reserveCloudStaffOutboundRecipients/);
+    expect(source).not.toMatch(/candidate-draft:\$\{run\.triggerMessageId\}/);
+    expect(source).not.toMatch(/MONEY_DRAFT_CATEGORIES/);
+  });
+
   it('worker fences claimed-to-running with returning and scopes drain CLI', () => {
     const source = readFileSync(join(here, '..', 'src', 'ai', 'worker.ts'), 'utf8');
     expect(source).toMatch(/markAiRunRunning/);

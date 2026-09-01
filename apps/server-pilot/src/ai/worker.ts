@@ -1,32 +1,7 @@
-import { isCliEntry } from '../lib/is-cli-entry.js';
-import { createHash } from 'node:crypto';
-import { and, asc, eq } from 'drizzle-orm';
-import { closeDb, getDb } from '../db/client.js';
-import {
-  aiWorkflowRun,
-  attachment,
-  aiDraftGeneration,
-  mailDraft,
-  mailDraftRevision,
-  mailThread,
-  mailboxAccess,
-  message,
-} from '../db/schema/mail.js';
-import {
-  parseEnv,
-  requireHmsEvidenceHmacChildKey,
-  requireHmsWorkerRuntimeConfig,
-  type AiExecutorLane,
-  type EnvInput,
-} from '../env.js';
-import { createMastraRuntime } from './mastra.js';
-import { persistAiCandidateDraft, loadLatestThreadAffectingDraftRevisionId } from './drafts.js';
-import { extractDraftFeedbackLabels } from './feedback.js';
 import {
   claimNextAiRun,
   CLEANUP_RESERVE_MS,
   countNonterminalAiRuns,
-  enqueueAiRun,
   heartbeatAiRun,
   isSupportedInboundTriagePromptVersion,
   markAiRunDeadLetter,
@@ -45,8 +20,37 @@ import {
   type AiWorkflowRunKind,
   type CandidateReadPlanKind,
 } from './run-ledger.js';
+import {
+  aiWorkflowRun,
+  attachment,
+  aiDraftGeneration,
+  mailDraft,
+  mailDraftRevision,
+  mailboxAccess,
+  message,
+} from '../db/schema/mail.js';
+import {
+  parseEnv,
+  requireHmsEvidenceHmacChildKey,
+  requireHmsWorkerRuntimeConfig,
+  type AiExecutorLane,
+  type EnvInput,
+} from '../env.js';
+import {
+  validateWorkflowTriageOutput,
+  type ThreadSignals,
+  type WorkflowTriageOutput,
+} from './triage.js';
+import { persistAiCandidateDraft, loadLatestThreadAffectingDraftRevisionId } from './drafts.js';
 import { buildCausalTriageMessages, type TriageMessageRow } from './triage-input.js';
-import { validateTriageOutput } from './triage.js';
+import { TRIAGE_PROMPT_VERSION } from './workflows/mail-triage.js';
+import { extractDraftFeedbackLabels } from './feedback.js';
+import { normalizeEmailAddress } from './never-spam.js';
+import { isCliEntry } from '../lib/is-cli-entry.js';
+import { createMastraRuntime } from './mastra.js';
+import { closeDb, getDb } from '../db/client.js';
+import { and, asc, eq } from 'drizzle-orm';
+import { createHash } from 'node:crypto';
 
 function resolveWorkerLane(): AiExecutorLane {
   return parseEnv(process.env as Record<string, string | undefined>).AI_WORKER_LANE;
@@ -56,9 +60,7 @@ function resolveWorkerLane(): AiExecutorLane {
  * Fail-closed HMS shadow gate for hms-ai-worker. Default lane never invokes
  * requireHmsWorkerRuntimeConfig; mode=off on HMS lane stays secret-free.
  */
-export function assertHmsLaneRuntimeReady(
-  input: EnvInput = process.env as EnvInput,
-): void {
+export function assertHmsLaneRuntimeReady(input: EnvInput = process.env as EnvInput): void {
   const env = parseEnv(input);
   if (env.AI_WORKER_LANE !== 'hms') return;
   if (env.HMS_DRAFT_ENRICHMENT_MODE !== 'shadow') return;
@@ -72,7 +74,6 @@ export function aiWorkerOwnerId(lane: AiExecutorLane = resolveWorkerLane()): str
 /** @deprecated Prefer aiWorkerOwnerId(lane); kept for older call sites. */
 export const AI_WORKER_OWNER = aiWorkerOwnerId('default');
 
-const MONEY_DRAFT_CATEGORIES = new Set(['new-bookings', 'groups-events', 'at-risk']);
 /** Periodic lease renewal while a run executes (15–30s band). */
 export const AI_LEASE_HEARTBEAT_INTERVAL_MS = 20_000;
 export interface ExecuteAiRunResult {
@@ -99,6 +100,53 @@ export interface RunAiWorkerDrainResult {
   reason: 'drained' | 'timeout';
   remainingNonterminal: number;
   processed: number;
+}
+
+const RESERVE_CLOUD_PENNY_EMAIL = 'pmbobo@eu.mail.reservecloud.com';
+const LEGACY_PENNY_EMAIL = 'pmbobo@legacyhotels.co.za';
+
+function recipientAddresses(value: readonly string[] | null | undefined): string[] {
+  return (value ?? []).map((address) => normalizeEmailAddress(address)).filter(Boolean);
+}
+
+type WorkerTriageMessage = {
+  fromAddress: string | null;
+  direction: string;
+  toAddresses: string[] | null;
+  ccAddresses: string[] | null;
+  bccAddresses: string[] | null;
+};
+
+/** Derive R22/R23 metadata before Mastra; wrappers and noreply fail closed. */
+function deriveThreadSignals(messages: readonly WorkerTriageMessage[]): ThreadSignals {
+  const legacyHotelsOutboundResponse = messages.some((message) => {
+    if (message.direction !== 'outbound') return false;
+    const from = normalizeEmailAddress(message.fromAddress ?? '');
+    const domain = from.slice(from.lastIndexOf('@') + 1);
+    return domain === 'legacyhotels.co.za' || domain === 'mail.legacyhotels.com';
+  });
+  const rcStaff = messages.find((message) => {
+    if (message.direction !== 'outbound') return false;
+    const from = normalizeEmailAddress(message.fromAddress ?? '');
+    if (from !== RESERVE_CLOUD_PENNY_EMAIL) return false;
+    const recipients = [
+      ...recipientAddresses(message.toAddresses),
+      ...recipientAddresses(message.ccAddresses),
+      ...recipientAddresses(message.bccAddresses),
+    ];
+    return recipients.some((recipient) => recipient !== LEGACY_PENNY_EMAIL);
+  });
+  if (!rcStaff) return { legacyHotelsOutboundResponse };
+  return {
+    legacyHotelsOutboundResponse,
+    reserveCloudStaffOutbound: true,
+    reserveCloudStaffOutboundFrom: RESERVE_CLOUD_PENNY_EMAIL,
+    reserveCloudStaffOutboundRecipients: [
+      ...recipientAddresses(rcStaff.toAddresses),
+      ...recipientAddresses(rcStaff.ccAddresses),
+      ...recipientAddresses(rcStaff.bccAddresses),
+    ],
+  };
 }
 
 function claimOwnerFor(run: typeof aiWorkflowRun.$inferSelect): string {
@@ -251,32 +299,21 @@ export type CandidateSessionFactory = (
 ) => Promise<import('./candidate-draft-agent.js').CandidateToolSession>;
 
 /** Singleton production HMS runtime — one Chromium process per HMS worker. */
-let productionHmsRuntime:
-  | import('../hms/runtime.js').HmsRuntime
-  | null
-  | undefined;
+let productionHmsRuntime: import('../hms/runtime.js').HmsRuntime | null | undefined;
 
 let productionActiveReadState:
   | import('../hms/active-read-runtime.js').ActiveReadRuntimeState
   | null
   | undefined;
 
-async function getOrCreateProductionHmsRuntime(): Promise<
-  import('../hms/runtime.js').HmsRuntime
-> {
+async function getOrCreateProductionHmsRuntime(): Promise<import('../hms/runtime.js').HmsRuntime> {
   if (productionHmsRuntime) return productionHmsRuntime;
   const { createProductionHmsRuntime, resolveHmsSourceRevision } = await import(
     '../hms/production-runtime.js'
   );
-  const { runtimeFingerprintSha256 } = await import(
-    '../hms/evidence-runtime.js'
-  );
-  const { loadWorkerActiveReadSet } = await import(
-    '../hms/active-read-runtime.js'
-  );
-  const config = requireHmsWorkerRuntimeConfig(
-    process.env as Record<string, string | undefined>,
-  );
+  const { runtimeFingerprintSha256 } = await import('../hms/evidence-runtime.js');
+  const { loadWorkerActiveReadSet } = await import('../hms/active-read-runtime.js');
+  const config = requireHmsWorkerRuntimeConfig(process.env as Record<string, string | undefined>);
   const evidenceKey = requireHmsEvidenceHmacChildKey(
     process.env as Record<string, string | undefined>,
   );
@@ -310,9 +347,7 @@ export async function closeProductionHmsRuntimeForTests(): Promise<void> {
   const rt = productionHmsRuntime;
   productionHmsRuntime = null;
   productionActiveReadState = null;
-  const { clearCachedActiveReadRuntimeForTests } = await import(
-    '../hms/active-read-runtime.js'
-  );
+  const { clearCachedActiveReadRuntimeForTests } = await import('../hms/active-read-runtime.js');
   clearCachedActiveReadRuntimeForTests();
   if (rt) await rt.close();
 }
@@ -322,19 +357,13 @@ export function createLiveHmsCandidateSessionFactory(): CandidateSessionFactory 
     const runtime = await getOrCreateProductionHmsRuntime();
     const active =
       productionActiveReadState ??
-      (
-        await import('../hms/active-read-runtime.js')
-      ).getCachedActiveReadRuntime() ??
+      (await import('../hms/active-read-runtime.js')).getCachedActiveReadRuntime() ??
       null;
-    const { createLiveGuestStayDriver } = await import(
-      '../hms/live-guest-stay-driver.js'
-    );
+    const { createLiveGuestStayDriver } = await import('../hms/live-guest-stay-driver.js');
     const { createReservationCandidateSession } = await import(
       '../hms/reservation-candidate-session.js'
     );
-    const { filterExactReservationCandidates } = await import(
-      './thread-context.js'
-    );
+    const { filterExactReservationCandidates } = await import('./thread-context.js');
     const {
       buildHmsFindSessionAuthorization,
       assertFindHandlerBound,
@@ -348,17 +377,12 @@ export function createLiveHmsCandidateSessionFactory(): CandidateSessionFactory 
       buildExactOsrravSearchManifest,
       liveNotFoundCanaryCandidate,
     } = await import('../hms/live-read-manifest.js');
-    const { createLiveQuoteStayDriver } = await import(
-      '../hms/live-quote-stay-driver.js'
+    const { createLiveQuoteStayDriver } = await import('../hms/live-quote-stay-driver.js');
+    const { CENTURION_HMS_PRODUCTION_ORIGIN, resolveHmsSourceRevision } = await import(
+      '../hms/production-runtime.js'
     );
-    const { CENTURION_HMS_PRODUCTION_ORIGIN, resolveHmsSourceRevision } =
-      await import('../hms/production-runtime.js');
-    const { runtimeFingerprintSha256 } = await import(
-      '../hms/evidence-runtime.js'
-    );
-    const config = requireHmsWorkerRuntimeConfig(
-      process.env as Record<string, string | undefined>,
-    );
+    const { runtimeFingerprintSha256 } = await import('../hms/evidence-runtime.js');
+    const config = requireHmsWorkerRuntimeConfig(process.env as Record<string, string | undefined>);
     const sourceRevision = resolveHmsSourceRevision();
     const runtimeFp = runtimeFingerprintSha256({
       sourceRevision,
@@ -367,14 +391,10 @@ export function createLiveHmsCandidateSessionFactory(): CandidateSessionFactory 
     });
     const findReleaseRaw = active?.releases.get('hms_find_reservation') ?? null;
     const findRelease =
-      findReleaseRaw && findReleaseRaw.evidenceKind === 'hms'
-        ? findReleaseRaw
-        : null;
+      findReleaseRaw && findReleaseRaw.evidenceKind === 'hms' ? findReleaseRaw : null;
     const quoteReleaseRaw = active?.releases.get('hms_quote_stay') ?? null;
     const quoteRelease =
-      quoteReleaseRaw && quoteReleaseRaw.evidenceKind === 'hms'
-        ? quoteReleaseRaw
-        : null;
+      quoteReleaseRaw && quoteReleaseRaw.evidenceKind === 'hms' ? quoteReleaseRaw : null;
     const exact = filterExactReservationCandidates(input.lookupCandidates);
     const operationId = input.runId ?? `hms-live-${Date.now()}`;
     const driver = createLiveGuestStayDriver({
@@ -401,15 +421,11 @@ export function createLiveHmsCandidateSessionFactory(): CandidateSessionFactory 
           operationId,
           manifest,
           roleProofPath: config.roleProofPath,
-          roleProofSha256:
-            findRelease?.roleProofSha256 ?? placeholderDigest('role-proof'),
+          roleProofSha256: findRelease?.roleProofSha256 ?? placeholderDigest('role-proof'),
           credentialVersionHmacSha256:
-            findRelease?.credentialVersionHmacSha256 ??
-            placeholderDigest('credential'),
-          runtimeFingerprintSha256:
-            findRelease?.runtimeFingerprintSha256 ?? runtimeFp,
-          privateDigestKeyVersion:
-            findRelease?.privateDigestKeyVersion ?? 'v1',
+            findRelease?.credentialVersionHmacSha256 ?? placeholderDigest('credential'),
+          runtimeFingerprintSha256: findRelease?.runtimeFingerprintSha256 ?? runtimeFp,
+          privateDigestKeyVersion: findRelease?.privateDigestKeyVersion ?? 'v1',
           sourceRevision: findRelease?.sourceRevision ?? sourceRevision,
           release: findRelease,
         });
@@ -427,9 +443,7 @@ export function createLiveHmsCandidateSessionFactory(): CandidateSessionFactory 
       : undefined;
     // openReadSession already authenticates + verifies property; do not open a
     // second pre-tool login session (would create a second audited context).
-    const { resolvePlanScopedDraftGate } = await import(
-      '../hms/candidate-read-plan.js'
-    );
+    const { resolvePlanScopedDraftGate } = await import('../hms/candidate-read-plan.js');
     const candidates = new Map(exact.map((c) => [c.id, c]));
     const planGate = resolvePlanScopedDraftGate({
       activeReleases: active?.releases,
@@ -453,20 +467,13 @@ export function createLiveHmsCandidateSessionFactory(): CandidateSessionFactory 
         ? (quoteCand) => {
             const auth = buildHmsQuoteSessionAuthorization({
               operationId,
-              manifest: buildExactOsrravSearchManifest(
-                CENTURION_HMS_PRODUCTION_ORIGIN,
-                quoteCand,
-              ),
+              manifest: buildExactOsrravSearchManifest(CENTURION_HMS_PRODUCTION_ORIGIN, quoteCand),
               roleProofPath: config.roleProofPath,
-              roleProofSha256:
-                quoteRelease.roleProofSha256 ?? placeholderDigest('quote-role'),
+              roleProofSha256: quoteRelease.roleProofSha256 ?? placeholderDigest('quote-role'),
               credentialVersionHmacSha256:
-                quoteRelease.credentialVersionHmacSha256 ??
-                placeholderDigest('quote-credential'),
-              runtimeFingerprintSha256:
-                quoteRelease.runtimeFingerprintSha256 ?? runtimeFp,
-              privateDigestKeyVersion:
-                quoteRelease.privateDigestKeyVersion ?? 'v1',
+                quoteRelease.credentialVersionHmacSha256 ?? placeholderDigest('quote-credential'),
+              runtimeFingerprintSha256: quoteRelease.runtimeFingerprintSha256 ?? runtimeFp,
+              privateDigestKeyVersion: quoteRelease.privateDigestKeyVersion ?? 'v1',
               sourceRevision: quoteRelease.sourceRevision ?? sourceRevision,
               release: quoteRelease,
             });
@@ -484,10 +491,7 @@ export async function executeAiRun(
     shutdownSignal?: AbortSignal;
     /** Injectable claim-safe tool session (tests / Task 7 mocks). */
     candidateSessionFactory?: CandidateSessionFactory;
-    candidatePlanModel?: (prompt: {
-      systemPrompt: string;
-      userPrompt: string;
-    }) => Promise<unknown>;
+    candidatePlanModel?: (prompt: { systemPrompt: string; userPrompt: string }) => Promise<unknown>;
   } = {},
 ): Promise<ExecuteAiRunResult> {
   const db = getDb();
@@ -517,7 +521,11 @@ export async function executeAiRun(
     return { runId: run.id, state: 'dead_letter' };
   }
 
-  if (run.runKind === 'inbound_triage' && !isSupportedInboundTriagePromptVersion(run.promptVersion)) {
+  if (
+    run.runKind === 'inbound_triage' &&
+    run.promptVersion !== TRIAGE_PROMPT_VERSION &&
+    !isSupportedInboundTriagePromptVersion(run.promptVersion)
+  ) {
     const deployed = resolveDeployedTriagePromptVersion();
     await markAiRunDeadLetter({
       runId: run.id,
@@ -559,12 +567,19 @@ export async function executeAiRun(
           createdAt: message.createdAt,
           receivedAt: message.receivedAt,
           sentAt: message.sentAt,
+          toAddresses: message.toAddresses,
+          ccAddresses: message.ccAddresses,
+          bccAddresses: message.bccAddresses,
         })
         .from(message)
         .where(and(eq(message.threadId, run.threadId), eq(message.transportId, run.transportId)))
         .orderBy(asc(message.createdAt), asc(message.id));
 
-      const rows: TriageMessageRow[] = threadMessages.map((m) => ({
+      const rows: (TriageMessageRow & {
+        to?: string[];
+        cc?: string[];
+        bcc?: string[];
+      })[] = threadMessages.map((m) => ({
         id: m.id,
         from: m.fromAddress ?? '',
         subject: m.subject ?? undefined,
@@ -573,8 +588,20 @@ export async function executeAiRun(
         createdAt: m.createdAt,
         receivedAt: m.receivedAt ?? null,
         sentAt: m.sentAt ?? null,
+        to: m.toAddresses ?? [],
+        cc: m.ccAddresses ?? [],
+        bcc: m.bccAddresses ?? [],
       }));
       const messages = buildCausalTriageMessages(rows, run.triggerMessageId);
+      const threadSignals = deriveThreadSignals(
+        messages.map((m) => ({
+          fromAddress: m.from,
+          direction: m.direction,
+          toAddresses: (m as typeof m & { to?: string[] }).to ?? [],
+          ccAddresses: (m as typeof m & { cc?: string[] }).cc ?? [],
+          bccAddresses: (m as typeof m & { bcc?: string[] }).bcc ?? [],
+        })),
+      );
 
       const mastra = createMastraRuntime(process.env.MASTRA_STORAGE_PATH);
       const workflow = mastra.getWorkflow('mailTriage');
@@ -587,11 +614,14 @@ export async function executeAiRun(
           subject: trigger?.subject ?? undefined,
           from: trigger?.fromAddress ?? '',
           to: trigger?.toAddresses ?? [],
+          cc: trigger?.ccAddresses ?? [],
+          bcc: trigger?.bccAddresses ?? [],
           body: trigger?.textBody ?? trigger?.htmlBody ?? '',
           messages,
+          threadSignals,
           asOf: run.createdAt.toISOString(),
           modelId: run.modelId,
-          promptVersion: run.promptVersion,
+          promptVersion: TRIAGE_PROMPT_VERSION,
         },
         // Budget/lease fence for Mastra + future Playwright/S3/subprocess callers.
         abortSignal: signal,
@@ -600,7 +630,7 @@ export async function executeAiRun(
         throw new Error(`mail triage workflow failed: ${result.status}`);
       }
 
-      const output = validateTriageOutput(result.result?.output);
+      const output = validateWorkflowTriageOutput(result.result?.output);
 
       await db.transaction(async (tx) => {
         const applyResult = await applyDurableTriageFromWorker({
@@ -609,36 +639,12 @@ export async function executeAiRun(
           threadId: run.threadId,
           output,
           writeGateEnabled: env.AI_WRITE_GATE_ENABLED,
+          threadSignals,
+          from: trigger?.fromAddress ?? '',
+          to: trigger?.toAddresses ?? [],
+          cc: trigger?.ccAddresses ?? [],
+          bcc: trigger?.bccAddresses ?? [],
         });
-
-        const [threadBeforeDraft] = await tx
-          .select({ spamAt: mailThread.spamAt })
-          .from(mailThread)
-          .where(and(eq(mailThread.id, run.threadId), eq(mailThread.transportId, run.transportId)))
-          .limit(1);
-
-        let draftRunId: string | undefined;
-        if (
-          env.AI_DRAFTS_ENABLED &&
-          MONEY_DRAFT_CATEGORIES.has(output.category) &&
-          !threadBeforeDraft?.spamAt
-        ) {
-          const draftRun = await enqueueAiRun(
-            {
-              transportId: run.transportId,
-              threadId: run.threadId,
-              triggerMessageId: run.triggerMessageId,
-              runKind: 'candidate_draft',
-              idempotencyKey: `candidate-draft:${run.triggerMessageId}`,
-              modelId: run.modelId,
-              promptVersion: 'draft-v1',
-              promptHash: run.promptHash ?? undefined,
-              executorLane: run.executorLane ?? 'default',
-            },
-            tx as unknown as typeof db,
-          );
-          draftRunId = draftRun.id;
-        }
 
         const marked = await markAiRunSucceeded(
           {
@@ -650,7 +656,6 @@ export async function executeAiRun(
             metrics: {
               ...(result.result?.metrics as Record<string, unknown>),
               durableWrite: env.AI_WRITE_GATE_ENABLED,
-              draftRunId,
               applyMode: applyResult.applyMode,
             },
           },
@@ -760,18 +765,13 @@ export async function executeAiRun(
       // HMS lane + shadow: strict terminal writer — never persistAiCandidateDraft.
       // Default lane never enters this branch (executorLane gate).
       if (run.executorLane === 'hms' && hmsMode === 'shadow') {
-        const { runClaimSafeCandidateDraft } = await import(
-          './candidate-draft-agent.js'
+        const { runClaimSafeCandidateDraft } = await import('./candidate-draft-agent.js');
+        const { finishHmsShadowRun, failHmsShadowRun, resolveHmsShadowPreBrowser } = await import(
+          './hms-shadow.js'
         );
-        const {
-          finishHmsShadowRun,
-          failHmsShadowRun,
-          resolveHmsShadowPreBrowser,
-        } = await import('./hms-shadow.js');
-        const {
-          readAuthorizedArtifact,
-          recheckAuthorizedArtifactIdentity,
-        } = await import('../mail/artifacts/read-artifact.js');
+        const { readAuthorizedArtifact, recheckAuthorizedArtifactIdentity } = await import(
+          '../mail/artifacts/read-artifact.js'
+        );
         const { getS3Storage } = await import('../storage/s3.js');
 
         const loadThreadMessages = async () =>
@@ -789,10 +789,7 @@ export async function executeAiRun(
             })
             .from(message)
             .where(
-              and(
-                eq(message.threadId, run.threadId),
-                eq(message.transportId, run.transportId),
-              ),
+              and(eq(message.threadId, run.threadId), eq(message.transportId, run.transportId)),
             );
 
         const loadThreadAttachments = async () =>
@@ -810,10 +807,7 @@ export async function executeAiRun(
             .from(attachment)
             .innerJoin(message, eq(message.id, attachment.messageId))
             .where(
-              and(
-                eq(message.threadId, run.threadId),
-                eq(message.transportId, run.transportId),
-              ),
+              and(eq(message.threadId, run.threadId), eq(message.transportId, run.transportId)),
             );
 
         const mapMessages = (
@@ -853,8 +847,7 @@ export async function executeAiRun(
             .where(eq(aiDraftGeneration.id, generationKey))
             .limit(1);
           const principalId =
-            generationOwner?.requestedByUserId ??
-            process.env.HMS_SHADOW_SERVICE_USER_ID?.trim();
+            generationOwner?.requestedByUserId ?? process.env.HMS_SHADOW_SERVICE_USER_ID?.trim();
           if (!principalId) {
             throw Object.assign(new Error('artifact authorization unavailable'), {
               failureClass: 'AUTH' as const,
@@ -885,11 +878,10 @@ export async function executeAiRun(
                 )
                 .limit(1),
             ]);
-            const latestDraftRevisionId =
-              await loadLatestThreadAffectingDraftRevisionId(db, {
-                transportId: run.transportId,
-                threadId: run.threadId,
-              });
+            const latestDraftRevisionId = await loadLatestThreadAffectingDraftRevisionId(db, {
+              transportId: run.transportId,
+              threadId: run.threadId,
+            });
             const mapped = mapMessages(threadMessages, threadAttachments);
             const context = await import('./thread-context.js').then(({ buildThreadContext }) =>
               buildThreadContext({
@@ -965,10 +957,7 @@ export async function executeAiRun(
                   threadId: run.threadId,
                 }),
               loadMessages: async () =>
-                mapMessages(
-                  await loadThreadMessages(),
-                  await loadThreadAttachments(),
-                ),
+                mapMessages(await loadThreadMessages(), await loadThreadAttachments()),
               loadArtifactSnapshot,
               readArtifact: async (attachmentId, artifactSignal) => {
                 const reserved = await reserveReadAttempt(
@@ -1052,8 +1041,7 @@ export async function executeAiRun(
           if (signal.aborted) throw new RunDeadlineError();
 
           const sessionFactory =
-            options.candidateSessionFactory ??
-            createLiveHmsCandidateSessionFactory();
+            options.candidateSessionFactory ?? createLiveHmsCandidateSessionFactory();
           // Production HMS lane refuses missing live factory (never mock).
           if (!sessionFactory) {
             throw new Error('HMS_LIVE_SESSION_FACTORY_REQUIRED');
@@ -1068,14 +1056,10 @@ export async function executeAiRun(
             runId,
             readFence: toAiRunFence(runWithFence) ?? fence,
             readPlanKind:
-              (pre.artifactMetrics?.attempted ?? 0) > 0
-                ? 'artifact_reservation'
-                : 'reservation',
+              (pre.artifactMetrics?.attempted ?? 0) > 0 ? 'artifact_reservation' : 'reservation',
           });
 
-          const { resolvePlanScopedDraftGate } = await import(
-            '../hms/candidate-read-plan.js'
-          );
+          const { resolvePlanScopedDraftGate } = await import('../hms/candidate-read-plan.js');
           const planGate = resolvePlanScopedDraftGate({
             activeReleases: session.activeReleases,
             lookupCandidates: session.lookupCandidates,
@@ -1106,8 +1090,7 @@ export async function executeAiRun(
             claimCount: Number(claimSafe.metrics.claimCount ?? 0),
             artifactAttempted: pre.artifactMetrics?.attempted ?? 0,
             artifactReadable: pre.artifactMetrics?.readable ?? 0,
-            artifactManualRequired:
-              pre.artifactMetrics?.manualRequired ?? 0,
+            artifactManualRequired: pre.artifactMetrics?.manualRequired ?? 0,
             hmsLookupCalls: 1,
           });
           return {
@@ -1184,15 +1167,11 @@ export async function executeAiRun(
               : {}),
           })
         : createMockCandidateSession({
-            lookupCandidates: new Map(
-              context.lookupCandidates.map((c) => [c.id, c]),
-            ),
+            lookupCandidates: new Map(context.lookupCandidates.map((c) => [c.id, c])),
             authorizedAttachmentIds: new Set(context.authorizedAttachmentIds),
           });
 
-      const { resolvePlanScopedDraftGate } = await import(
-        '../hms/candidate-read-plan.js'
-      );
+      const { resolvePlanScopedDraftGate } = await import('../hms/candidate-read-plan.js');
       const planGate = resolvePlanScopedDraftGate({
         activeReleases: session.activeReleases,
         lookupCandidates: session.lookupCandidates,
@@ -1215,20 +1194,15 @@ export async function executeAiRun(
       // HMS_DRAFT_ENRICHMENT_MODE=enabled is rejected at env parse; non-HMS
       // shadow-like paths still use persistDraft=false lifecycle fencing.
       const persistDraft = false;
-      const { renderClarificationQuestions, textToSafeHtml } = await import(
-        './draft-evidence.js'
-      );
+      const { renderClarificationQuestions, textToSafeHtml } = await import('./draft-evidence.js');
       const clarificationText =
         claimSafe.outcome === 'candidate'
           ? null
           : renderClarificationQuestions(claimSafe.plan.questionCodes).join('\n\n') ||
             'Insufficient evidence for an automated candidate.';
-      const textBody =
-        claimSafe.outcome === 'candidate' ? claimSafe.textBody : clarificationText!;
+      const textBody = claimSafe.outcome === 'candidate' ? claimSafe.textBody : clarificationText!;
       const htmlBody =
-        claimSafe.outcome === 'candidate'
-          ? claimSafe.htmlBody
-          : textToSafeHtml(textBody);
+        claimSafe.outcome === 'candidate' ? claimSafe.htmlBody : textToSafeHtml(textBody);
 
       let claimFenceLost = false;
       try {
@@ -1334,8 +1308,13 @@ async function applyDurableTriageFromWorker(input: {
   db: ReturnType<typeof getDb>;
   transportId: string;
   threadId: string;
-  output: ReturnType<typeof validateTriageOutput>;
+  output: WorkflowTriageOutput;
   writeGateEnabled: boolean;
+  threadSignals?: ThreadSignals;
+  from?: string;
+  to?: string[];
+  cc?: string[];
+  bcc?: string[];
 }) {
   const { applyDurableTriageResult } = await import('./triage.js');
   return applyDurableTriageResult(input);
@@ -1377,9 +1356,7 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
   await executeAiRun(claimed.id, {
     shutdownSignal,
     // HMS lane: live factory only — never createMockCandidateSession.
-    ...(lane === 'hms'
-      ? { candidateSessionFactory: createLiveHmsCandidateSessionFactory() }
-      : {}),
+    ...(lane === 'hms' ? { candidateSessionFactory: createLiveHmsCandidateSessionFactory() } : {}),
   });
   return true;
 }
@@ -1520,10 +1497,7 @@ async function main() {
 
   // Proof isolation: ops-hms-shadow start sets AI_WORKER_IDEMPOTENCY_PREFIX.
   const idempotencyPrefix = process.env.AI_WORKER_IDEMPOTENCY_PREFIX?.trim();
-  await runAiWorkerLoop(
-    5_000,
-    idempotencyPrefix ? { idempotencyPrefix } : {},
-  );
+  await runAiWorkerLoop(5_000, idempotencyPrefix ? { idempotencyPrefix } : {});
 }
 
 if (isCliEntry(import.meta.url, 'ai-worker')) {
