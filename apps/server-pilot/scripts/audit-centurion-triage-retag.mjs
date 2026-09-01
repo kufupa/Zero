@@ -35,6 +35,10 @@ function sha256Hex(text) {
   return createHash('sha256').update(text, 'utf8').digest('hex');
 }
 
+function isSha256Hex(value) {
+  return typeof value === 'string' && /^[a-f0-9]{64}$/i.test(value);
+}
+
 /** Match apps/server-pilot/src/ai/triage-input.ts hashTriageInput (production asOf). */
 function hashProductionTriageInput(input) {
   const canonical = {
@@ -323,8 +327,8 @@ export async function auditCenturionTriageRetag(opts) {
       push(`wrong prompt version for ${target.threadId}: ${run.promptVersion}`);
     }
     const runPromptHash = run.promptHash ?? run.metrics?.promptHash;
-    if (runPromptHash !== manifest.promptHash) {
-      push(`wrong prompt hash for ${target.threadId}`);
+    if (!isSha256Hex(runPromptHash)) {
+      push(`missing or invalid prompt hash for ${target.threadId}`);
     }
 
     const metrics = run.metrics ?? {};

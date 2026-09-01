@@ -380,6 +380,58 @@ describe('strict centurion triage audit', () => {
     expect(result.errors).toEqual([]);
   });
 
+  it('accepts valid input-specific run prompt hash different from manifest hash', async () => {
+    const inputSpecificPromptHash = sha('serialized user prompt/asOf');
+    const fx = await buildApprovedFixture({
+      mutateRun: (run) => {
+        run.promptHash = inputSpecificPromptHash;
+        run.metrics = { ...run.metrics, promptHash: inputSpecificPromptHash };
+      },
+    });
+    expect(inputSpecificPromptHash).not.toBe(fx.manifest.promptHash);
+
+    const result = await auditCenturionTriageRetag({
+      driver: fx.auditDriver,
+      snapshot: fx.snapshot,
+      manifest: fx.manifest,
+      applySummary: fx.applySummary,
+      keyPrefix: KEY_PREFIX,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.errors).toEqual([]);
+  });
+
+  it('rejects missing or invalid run prompt hashes', async () => {
+    const cases: Array<(run: MemRun) => void> = [
+      (run) => {
+        run.promptHash = null;
+        run.metrics = { ...run.metrics, promptHash: undefined };
+      },
+      (run) => {
+        run.promptHash = 'not-a-sha256';
+      },
+      (run) => {
+        run.promptHash = null;
+        run.metrics = { ...run.metrics, promptHash: 'not-a-sha256' };
+      },
+    ];
+
+    for (const mutateRun of cases) {
+      const fx = await buildApprovedFixture({ mutateRun });
+      const result = await auditCenturionTriageRetag({
+        driver: fx.auditDriver,
+        snapshot: fx.snapshot,
+        manifest: fx.manifest,
+        applySummary: fx.applySummary,
+        keyPrefix: KEY_PREFIX,
+      });
+
+      expect(result.ok).toBe(false);
+      expect(result.errors.join('\n')).toMatch(/prompt hash/i);
+    }
+  });
+
   it('rejects missing/extra/duplicate target coverage', async () => {
     // Missing: drop eligible target + valid rehash → coverage path (not stale manifestHash).
     const missing = await buildApprovedFixture({
@@ -482,7 +534,7 @@ describe('strict centurion triage audit', () => {
         r.modelId = 'wrong-model';
       },
       (r) => {
-        r.promptHash = 'a'.repeat(64);
+        r.promptHash = 'not-a-sha256';
       },
       (r) => {
         r.metrics = { ...r.metrics, inputHash: '0'.repeat(64) };
