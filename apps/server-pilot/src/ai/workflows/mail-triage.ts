@@ -506,8 +506,81 @@ const LEGACY_PRIMARY_FOLDER_ALIASES: Record<
   ops: 'manage-stay',
 };
 
+const NOVA_SOURCE_SCOPE_ALIASES: Record<string, string> = {
+  external_property: 'external',
+};
+
+const NOVA_HUMAN_ACTION_ALIASES: Record<string, string> = {
+  review: 'review_required',
+  verify_email_address: 'review_required',
+};
+
+function moveNovaAlias(
+  structured: Record<string, unknown>,
+  alias: string,
+  canonical: string,
+): void {
+  if (!Object.prototype.hasOwnProperty.call(structured, alias)) return;
+  if (Object.prototype.hasOwnProperty.call(structured, canonical)) {
+    throw new Error(`model output contains both ${alias} and ${canonical}`);
+  }
+  structured[canonical] = structured[alias];
+  delete structured[alias];
+}
+
+function normalizeNovaOverlays(value: unknown): unknown {
+  if (!Array.isArray(value)) return value;
+  const overlays: Record<string, boolean> = {};
+  for (const overlay of value) {
+    if (
+      typeof overlay !== 'string' ||
+      !TRIAGE_OVERLAYS.includes(overlay as (typeof TRIAGE_OVERLAYS)[number])
+    ) {
+      throw new Error('model output contains an unknown overlay tag');
+    }
+    overlays[overlay] = true;
+  }
+  return overlays;
+}
+
+/**
+ * Nova has emitted a small, bounded dialect of the v6 contract in production.
+ * Normalize only observed aliases; the canonical Zod schema remains the final
+ * gate so unknown values, write tags, and malformed types still fail closed.
+ */
+function normalizeNovaWorkflowOutput(raw: Record<string, unknown>): Record<string, unknown> {
+  const structured = { ...raw };
+  moveNovaAlias(structured, 'workflowPrimaryFolder', 'primaryFolder');
+  moveNovaAlias(structured, 'spam', 'isSpam');
+  moveNovaAlias(structured, 'readOnlyToolTags', 'suggestedTools');
+
+  if (Object.prototype.hasOwnProperty.call(structured, 'overlays')) {
+    structured.overlays = normalizeNovaOverlays(structured.overlays);
+  }
+
+  if (typeof structured.sourceScope === 'string') {
+    structured.sourceScope =
+      NOVA_SOURCE_SCOPE_ALIASES[structured.sourceScope] ?? structured.sourceScope;
+  }
+  if (typeof structured.humanAction === 'string') {
+    structured.humanAction =
+      NOVA_HUMAN_ACTION_ALIASES[structured.humanAction] ?? structured.humanAction;
+  }
+  // The planner, not the model, owns the final read-only tag set. Nova's
+  // observed marker means "no model tags" and is safely equivalent to [].
+  if (
+    structured.suggestedTools === 'read-only' ||
+    (Array.isArray(structured.suggestedTools) &&
+      structured.suggestedTools.length === 1 &&
+      structured.suggestedTools[0] === 'read-only')
+  ) {
+    structured.suggestedTools = [];
+  }
+  return structured;
+}
+
 function parseWorkflowModelOutput(raw: unknown): WorkflowTriageOutput {
-  const structured = validateStructuredJsonOutput(raw);
+  const structured = normalizeNovaWorkflowOutput(validateStructuredJsonOutput(raw));
   const primaryFolder = structured.primaryFolder;
   if (
     typeof primaryFolder === 'string' &&

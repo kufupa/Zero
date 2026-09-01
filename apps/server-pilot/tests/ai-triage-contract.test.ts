@@ -1015,6 +1015,171 @@ describe('AI triage contract', () => {
     expect(result.output.primaryFolder).toBe('manage-stay');
   });
 
+  it('normalizes Nova v6 alternate field names and empty overlay arrays', async () => {
+    const result = await classifyWorkflowMailTriage(
+      {
+        transportId: 'transport-centurion',
+        threadId: 'thread-nova-alias',
+        triggerMessageId: 'msg-nova-alias',
+        messages: [
+          {
+            id: 'msg-nova-alias',
+            from: 'guest@example.com',
+            subject: 'Booking state',
+            body: 'Please verify booking state.',
+            direction: 'inbound',
+            createdAt: new Date('2026-07-01T10:00:00.000Z'),
+            receivedAt: new Date('2026-07-01T10:00:00.000Z'),
+            sentAt: null,
+          },
+        ],
+        asOf: '2026-07-01T12:00:00.000Z',
+        modelId: 'amazon.nova-lite-v1:0',
+        promptVersion: 'triage-v6',
+      },
+      {
+        invoke: async () => ({
+          modelId: 'amazon.nova-lite-v1:0',
+          output: {
+            workflowPrimaryFolder: 'bookings',
+            priority: 'P3',
+            urgent: false,
+            overlays: [],
+            spam: false,
+            readOnlyToolTags: [],
+            sourceScope: 'external_property',
+            automationState: 'candidate',
+            humanAction: 'review',
+            confidence: 0.8,
+            rationale: 'booking state',
+            policyFlags: [],
+            abstainReason: null,
+          },
+          usage: {
+            inputTokens: 1,
+            outputTokens: 1,
+            totalTokens: 2,
+            latencyMs: 1,
+            estimatedCostUsd: 0,
+            rateTableVersion: 'test',
+          },
+        }),
+      },
+    );
+
+    expect(result.rawOutput).toMatchObject({
+      primaryFolder: 'bookings',
+      overlays: {},
+      isSpam: false,
+      suggestedTools: [],
+      sourceScope: 'external',
+      humanAction: 'review_required',
+    });
+    expect(result.output.primaryFolder).toBe('bookings');
+  });
+
+  it('drops the observed read-only marker for planner-owned tags', async () => {
+    const result = await classifyWorkflowMailTriage(
+      {
+        transportId: 'transport-centurion',
+        threadId: 'thread-nova-read-only-marker',
+        triggerMessageId: 'msg-nova-read-only-marker',
+        from: 'guest@example.com',
+        subject: 'Booking state',
+        body: 'Please verify booking state.',
+        messages: [],
+        asOf: '2026-07-01T12:00:00.000Z',
+        modelId: 'amazon.nova-lite-v1:0',
+        promptVersion: 'triage-v6',
+      },
+      {
+        invoke: async () => ({
+          modelId: 'amazon.nova-lite-v1:0',
+          output: {
+            primaryFolder: 'bookings',
+            priority: 'P3',
+            urgent: false,
+            overlays: {},
+            isSpam: false,
+            suggestedTools: ['read-only'],
+            sourceScope: 'external',
+            automationState: 'candidate',
+            humanAction: 'answer_or_quote',
+            confidence: 0.8,
+            rationale: 'booking state',
+            policyFlags: [],
+            abstainReason: null,
+          },
+          usage: {
+            inputTokens: 1,
+            outputTokens: 1,
+            totalTokens: 2,
+            latencyMs: 1,
+            estimatedCostUsd: 0,
+            rateTableVersion: 'test',
+          },
+        }),
+      },
+    );
+
+    expect(result.rawOutput.suggestedTools).toEqual([]);
+  });
+
+  it('fails closed on unknown Nova overlay tags', async () => {
+    await expect(
+      classifyWorkflowMailTriage(
+        {
+          transportId: 'transport-centurion',
+          threadId: 'thread-nova-invalid-overlay',
+          triggerMessageId: 'msg-nova-invalid-overlay',
+          messages: [
+            {
+              id: 'msg-nova-invalid-overlay',
+              from: 'guest@example.com',
+              subject: 'Booking state',
+              body: 'Please verify booking state.',
+              direction: 'inbound',
+              createdAt: new Date('2026-07-01T10:00:00.000Z'),
+              receivedAt: new Date('2026-07-01T10:00:00.000Z'),
+              sentAt: null,
+            },
+          ],
+          asOf: '2026-07-01T12:00:00.000Z',
+          modelId: 'amazon.nova-lite-v1:0',
+          promptVersion: 'triage-v6',
+        },
+        {
+          invoke: async () => ({
+            modelId: 'amazon.nova-lite-v1:0',
+            output: {
+              workflowPrimaryFolder: 'bookings',
+              priority: 'P3',
+              urgent: false,
+              overlays: ['unknown'],
+              spam: false,
+              readOnlyToolTags: [],
+              sourceScope: 'external',
+              automationState: 'candidate',
+              humanAction: 'answer_or_quote',
+              confidence: 0.8,
+              rationale: 'booking state',
+              policyFlags: [],
+              abstainReason: null,
+            },
+            usage: {
+              inputTokens: 1,
+              outputTokens: 1,
+              totalTokens: 2,
+              latencyMs: 1,
+              estimatedCostUsd: 0,
+              rateTableVersion: 'test',
+            },
+          }),
+        },
+      ),
+    ).rejects.toThrow(/overlay/i);
+  });
+
   it('accepts from/to and does not throw on injection body before model', async () => {
     const mastra = createMastraRuntime(':memory:');
     const workflow = mastra.getWorkflow('mailTriage');
