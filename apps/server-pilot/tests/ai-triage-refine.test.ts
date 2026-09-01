@@ -1,5 +1,15 @@
+import {
+  applyDurableTriageResult,
+  refineTriageOutput,
+  staffConversationNotSpam,
+  type WorkflowTriageOutput,
+} from '../src/ai/triage.js';
+import { mailCategory, mailThread, mailThreadCategory } from '../src/db/schema/mail.js';
+import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
+import { TRANSPORT_ID } from '../src/db/seed.js';
 import { describe, expect, it } from 'vitest';
-import { refineTriageOutput } from '../src/ai/triage.js';
+import { randomUUID } from 'node:crypto';
+import { and, eq } from 'drizzle-orm';
 
 function modelOutput(category: 'at-risk' | 'new-bookings' | 'ops' | 'spam', urgent: boolean) {
   return {
@@ -8,6 +18,25 @@ function modelOutput(category: 'at-risk' | 'new-bookings' | 'ops' | 'spam', urge
     confidence: 0.9,
     rationale: 'synthetic model result',
     policyFlags: [],
+  };
+}
+
+function workflowOutput(overrides: Partial<WorkflowTriageOutput> = {}): WorkflowTriageOutput {
+  return {
+    primaryFolder: 'unknown-review',
+    priority: 'P2',
+    urgent: false,
+    overlays: {},
+    isSpam: true,
+    suggestedTools: [],
+    sourceScope: 'external',
+    automationState: 'unknown',
+    humanAction: 'review_required',
+    confidence: 0.9,
+    rationale: 'synthetic model result',
+    policyFlags: [],
+    abstainReason: null,
+    ...overrides,
   };
 }
 
@@ -223,5 +252,152 @@ describe('reservationist triage refinement order', () => {
     expect(refined.category).toBe('new-bookings');
     expect(refined.urgent).toBe(true);
     expect(refined.policyFlags).not.toContain('refine:guestrevu-ops');
+  });
+});
+
+describe('R22/R23 exception-first spam defense', () => {
+  it('forces Legacy hotel From not-spam and remaps workflow primary to internal-partner', () => {
+    const refined = refineTriageOutput(
+      {
+        from: 'jvermaak@legacyhotels.co.za',
+        subject: 'Promo?',
+        body: 'Book a demo unsubscribe',
+      },
+      workflowOutput(),
+    );
+
+    expect(refined.isSpam).toBe(false);
+    expect(refined.primaryFolder).toBe('internal-partner');
+    expect(refined.policyFlags).toContain('refine:never-spam-allowlist');
+  });
+
+  it('forces external inbound not-spam when prior Legacy outbound response exists', () => {
+    const refined = refineTriageOutput(
+      {
+        from: 'guest@example.com',
+        subject: 'Re: payment',
+        body: 'Please confirm payment.',
+        threadSignals: { legacyHotelsOutboundResponse: true },
+      },
+      workflowOutput(),
+    );
+
+    expect(refined.isSpam).toBe(false);
+    expect(refined.policyFlags).toContain('refine:staff-conversation-not-spam');
+  });
+
+  it('recognizes RC Penny to an external recipient as staff outbound', () => {
+    const signals = {
+      from: 'pmbobo@eu.mail.reservecloud.com',
+      recipients: ['guest@example.com'],
+    };
+    expect(staffConversationNotSpam(signals)).toBe(true);
+
+    const refined = refineTriageOutput(
+      {
+        ...signals,
+        subject: 'Event Proposal and Contract',
+        body: 'Please review the event proposal and contract.',
+      },
+      workflowOutput(),
+    );
+
+    expect(refined.isSpam).toBe(false);
+    expect(refined.primaryFolder).toBe('groups-events');
+    expect(refined.policyFlags).toContain('refine:staff-conversation-not-spam');
+  });
+
+  it('keeps RC Penny SCS wrapper not-spam without staff-outbound flag', () => {
+    const refined = refineTriageOutput(
+      {
+        from: 'pmbobo@eu.mail.reservecloud.com',
+        to: ['pmbobo@legacyhotels.co.za'],
+        subject: 'SCS wrapper',
+        body: 'Guest booking request forwarded by Sales and Catering.',
+      },
+      workflowOutput(),
+    );
+
+    expect(refined.isSpam).toBe(false);
+    expect(refined.policyFlags).toContain('refine:never-spam-allowlist');
+    expect(refined.policyFlags).not.toContain('refine:staff-conversation-not-spam');
+    expect(
+      staffConversationNotSpam({
+        from: 'pmbobo@eu.mail.reservecloud.com',
+        recipients: ['pmbobo@legacyhotels.co.za'],
+      }),
+    ).toBe(true);
+  });
+
+  it('does not treat noreply ReserveCloud as staff response or never-spam', () => {
+    expect(
+      staffConversationNotSpam({
+        from: 'noreply@noreply.reservecloud.com',
+        recipients: ['guest@example.com'],
+      }),
+    ).toBe(false);
+
+    const refined = refineTriageOutput(
+      {
+        from: 'noreply@noreply.reservecloud.com',
+        subject: 'Daily digest',
+        body: 'Unsubscribe from this newsletter.',
+      },
+      workflowOutput(),
+    );
+    expect(refined.isSpam).toBe(true);
+  });
+});
+
+const applyDbAvailable = TEST_DB_AVAILABLE && (await probeTestDb());
+
+describe.skipIf(!applyDbAvailable)('R22 Layer-3 durable apply', () => {
+  it('clears unlocked spamAt and joins internal-partner for forced not-spam', async () => {
+    await withSeededTestDb(async (db) => {
+      const threadId = randomUUID();
+      const internalPartnerId = randomUUID();
+      await db.insert(mailCategory).values({
+        id: internalPartnerId,
+        transportId: TRANSPORT_ID,
+        slug: 'internal-partner',
+        name: 'Internal & Partner',
+        sortOrder: 999,
+      });
+      await db.insert(mailThread).values({
+        id: threadId,
+        transportId: TRANSPORT_ID,
+        threadRootId: `<${threadId}@example.com>`,
+        subject: 'Staff response',
+        snippet: 'Reply',
+        latestMessageAt: new Date(),
+        spamAt: new Date(),
+      });
+
+      const result = await applyDurableTriageResult({
+        db,
+        transportId: TRANSPORT_ID,
+        threadId,
+        writeGateEnabled: true,
+        threadSignals: { legacyHotelsOutboundResponse: true },
+        output: workflowOutput(),
+      });
+
+      expect(result.applyMode).toBe('full');
+      const [thread] = await db
+        .select({ spamAt: mailThread.spamAt })
+        .from(mailThread)
+        .where(eq(mailThread.id, threadId));
+      expect(thread?.spamAt).toBeNull();
+      const memberships = await db
+        .select({ categoryId: mailThreadCategory.categoryId })
+        .from(mailThreadCategory)
+        .where(
+          and(
+            eq(mailThreadCategory.threadId, threadId),
+            eq(mailThreadCategory.transportId, TRANSPORT_ID),
+          ),
+        );
+      expect(memberships.map((row) => row.categoryId)).toContain(internalPartnerId);
+    });
   });
 });

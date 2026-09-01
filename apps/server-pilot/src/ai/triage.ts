@@ -1,18 +1,20 @@
-import { z } from 'zod';
-import { and, eq, inArray } from 'drizzle-orm';
-import type { DB } from '../db/client.js';
-import { READ_TOOL_IDS } from '../hms/read-tools.js';
+import {
+  AUTO_TRIAGE_NEVER_SPAM_DOMAINS,
+  AUTO_TRIAGE_NEVER_SPAM_EMAILS,
+  isAutoTriageNeverSpam,
+  normalizeEmailAddress,
+} from './never-spam.js';
 import {
   AI_MANAGED_CATEGORY_SLUGS,
   AI_PRIMARY_CATEGORY_SLUGS,
   AI_WORKFLOW_PRIMARY_SLUGS,
 } from './categories.js';
-import { isAutoTriageNeverSpam, normalizeEmailAddress } from './never-spam.js';
-import {
-  getLatestInboundFromAddress,
-  getSenderPreference,
-} from '../mail/sender-preference.js';
+import { getLatestInboundFromAddress, getSenderPreference } from '../mail/sender-preference.js';
 import { mailCategory, mailThread, mailThreadCategory } from '../db/schema/mail.js';
+import { READ_TOOL_IDS } from '../hms/read-tools.js';
+import { and, eq, inArray } from 'drizzle-orm';
+import type { DB } from '../db/client.js';
+import { z } from 'zod';
 
 export const TRIAGE_CATEGORIES = [...AI_PRIMARY_CATEGORY_SLUGS, 'spam'] as const;
 
@@ -137,14 +139,12 @@ export function validateTriageOutput(raw: WorkflowTriageOutputInput): WorkflowTr
 /** Existing model/security adapters expose a generic JSON object; keep them v5-compatible. */
 export function validateTriageOutput(raw: Record<string, unknown>): LegacyTriageOutput;
 /** Mastra's optional legacy result is still consumed by the v5 worker path. */
-export function validateTriageOutput(raw: Record<string, unknown> | null | undefined): LegacyTriageOutput;
+export function validateTriageOutput(
+  raw: Record<string, unknown> | null | undefined,
+): LegacyTriageOutput;
 export function validateTriageOutput(raw: unknown): WorkflowTriageOutput | LegacyTriageOutput;
 export function validateTriageOutput(raw: unknown): WorkflowTriageOutput | LegacyTriageOutput {
-  if (
-    typeof raw === 'object' &&
-    raw !== null &&
-    'primaryFolder' in raw
-  ) {
+  if (typeof raw === 'object' && raw !== null && 'primaryFolder' in raw) {
     return validateWorkflowTriageOutput(raw);
   }
   return validateLegacyTriageOutput(raw);
@@ -202,25 +202,291 @@ export interface ShadowTriageResult {
   metrics: Record<string, unknown>;
 }
 
+export interface ThreadSignals {
+  legacyHotelsOutboundResponse?: boolean;
+  reserveCloudStaffOutbound?: boolean;
+}
+
+/** Alias retained for callers that name causal context as triage signals. */
+export type TriageThreadSignals = ThreadSignals;
+
+type AddressListInput = string | readonly string[] | undefined;
+
+export interface TriageRefineInput {
+  from: string;
+  body: string;
+  subject?: string;
+  asOf?: string;
+  threadSignals?: ThreadSignals;
+  /** Optional parsed recipients used for the ReserveCloud staff discriminator. */
+  to?: AddressListInput;
+  cc?: AddressListInput;
+  bcc?: AddressListInput;
+  recipients?: AddressListInput;
+  toAddresses?: AddressListInput;
+  ccAddresses?: AddressListInput;
+  bccAddresses?: AddressListInput;
+}
+
+export interface StaffConversationSignals extends ThreadSignals {
+  from?: string;
+  to?: AddressListInput;
+  cc?: AddressListInput;
+  bcc?: AddressListInput;
+  recipients?: AddressListInput;
+  toAddresses?: AddressListInput;
+  ccAddresses?: AddressListInput;
+  bccAddresses?: AddressListInput;
+  threadSignals?: ThreadSignals;
+}
+
+const RESERVE_CLOUD_PENNY_EMAIL = 'pmbobo@eu.mail.reservecloud.com';
+const LEGACY_PENNY_EMAIL = 'pmbobo@legacyhotels.co.za';
+const NOREPLY_RESERVE_CLOUD_EMAIL = 'noreply@noreply.reservecloud.com';
+
+function addressList(value: AddressListInput): string[] {
+  if (!value) return [];
+  const values: readonly string[] = typeof value === 'string' ? value.split(/[,;]/) : value;
+  return values.map((part) => normalizeEmailAddress(part)).filter(Boolean);
+}
+
+function isReserveCloudStaffSend(signals: StaffConversationSignals): boolean {
+  if (normalizeEmailAddress(signals.from ?? '') !== RESERVE_CLOUD_PENNY_EMAIL) {
+    return false;
+  }
+  const recipients = [
+    ...addressList(signals.to),
+    ...addressList(signals.cc),
+    ...addressList(signals.bcc),
+    ...addressList(signals.recipients),
+    ...addressList(signals.toAddresses),
+    ...addressList(signals.ccAddresses),
+    ...addressList(signals.bccAddresses),
+  ];
+  // SCS wrapper has only Penny's Legacy address. Empty recipients are not
+  // enough to prove a staff outbound message.
+  return recipients.some((address) => address !== LEGACY_PENNY_EMAIL);
+}
+
+/** Shared R22 staff-outbound predicate; wrapper remains false here. */
+function staffOutboundResponseNotSpam(signals: StaffConversationSignals): boolean {
+  const threadSignals = signals.threadSignals;
+  if (threadSignals?.legacyHotelsOutboundResponse || signals.legacyHotelsOutboundResponse) {
+    return true;
+  }
+
+  const from = normalizeEmailAddress(signals.from ?? '');
+  // Noreply SCS is system mail, never staff response.
+  if (from === NOREPLY_RESERVE_CLOUD_EMAIL) return false;
+
+  if (threadSignals?.reserveCloudStaffOutbound || signals.reserveCloudStaffOutbound) {
+    return true;
+  }
+  return isReserveCloudStaffSend(signals);
+}
+
+/**
+ * Shared R22/R23 not-spam predicate. Includes never-spam sender identity plus
+ * causal staff response; callers needing the outbound discriminator use the
+ * internal predicate above so SCS wrappers never become outbound gold.
+ */
+export function staffConversationNotSpam(signals: StaffConversationSignals): boolean {
+  return isAutoTriageNeverSpam(signals.from ?? '') || staffOutboundResponseNotSpam(signals);
+}
+
+function isHotelNeverSpamAddress(fromRaw: string): boolean {
+  const email = normalizeEmailAddress(fromRaw);
+  const atIndex = email.lastIndexOf('@');
+  return atIndex !== -1 && AUTO_TRIAGE_NEVER_SPAM_DOMAINS.has(email.slice(atIndex + 1));
+}
+
+function isPilotNeverSpamAddress(fromRaw: string): boolean {
+  return (
+    AUTO_TRIAGE_NEVER_SPAM_EMAILS.has(normalizeEmailAddress(fromRaw)) &&
+    !isHotelNeverSpamAddress(fromRaw) &&
+    normalizeEmailAddress(fromRaw) !== RESERVE_CLOUD_PENNY_EMAIL
+  );
+}
+
+function addPolicyFlag(flags: string[], flag: string): string[] {
+  return flags.includes(flag) ? flags : [...flags, flag];
+}
+
+function workflowExceptionFolder(
+  input: TriageRefineInput,
+  staff: boolean,
+): WorkflowTriageOutput['primaryFolder'] {
+  const from = normalizeEmailAddress(input.from);
+  const isReserveCloudPenny = from === RESERVE_CLOUD_PENNY_EMAIL;
+  const haystack = `${input.subject ?? ''}\n${input.body}`;
+  if (
+    isReserveCloudPenny &&
+    staff &&
+    /event\s+(?:proposal|contract)|\b(?:conference|banquet|function|wedding)\b/i.test(haystack)
+  ) {
+    return 'groups-events';
+  }
+  if (isHotelNeverSpamAddress(input.from) || isReserveCloudPenny || staff) {
+    return 'internal-partner';
+  }
+  if (isPilotNeverSpamAddress(input.from)) return 'bookings';
+  return 'unknown-review';
+}
+
+function workflowApplyExceptionFolder(
+  requested: WorkflowTriageOutput['primaryFolder'],
+  fromRaw: string,
+  staff: boolean,
+): WorkflowTriageOutput['primaryFolder'] {
+  if (isPilotNeverSpamAddress(fromRaw)) return 'bookings';
+  const from = normalizeEmailAddress(fromRaw);
+  if (from === RESERVE_CLOUD_PENNY_EMAIL && requested === 'groups-events') {
+    return requested;
+  }
+  if (isHotelNeverSpamAddress(fromRaw) || from === RESERVE_CLOUD_PENNY_EMAIL) {
+    return 'internal-partner';
+  }
+  if (staff && (requested === 'unknown-review' || requested === 'automated-channel')) {
+    return 'internal-partner';
+  }
+  return requested;
+}
+
+function hotelConversationNotSpam(input: TriageRefineInput): boolean {
+  const haystack = `${input.subject ?? ''}\n${input.body}`;
+  const hasHotelMarker = /\b(?:centurion|bongi|legacy\s+hotels?)\b/i.test(haystack);
+  const hasQuotedHotelBlock =
+    /(?:^|\n)\s*>[^\n]*(?:centurion|bongi|legacy\s+hotels?)/i.test(haystack) ||
+    /(?:^|\n)\s*(?:from|sender):?\s*[^\n]*(?:legacyhotels|centurion|bongi)/i.test(haystack);
+  return (
+    hasHotelMarker &&
+    (hasQuotedHotelBlock ||
+      /\b(?:payment|invoice|commission|folio|deposit|paid|amount|bank)\b/i.test(haystack))
+  );
+}
+
+function refineWorkflowTriageOutput(
+  input: TriageRefineInput,
+  rawOutput: WorkflowTriageOutputInput,
+): WorkflowTriageOutput {
+  let next = validateWorkflowTriageOutput(rawOutput);
+  const neverSpamFrom = isAutoTriageNeverSpam(input.from);
+  const signals = {
+    ...input,
+    threadSignals: input.threadSignals,
+  };
+  const notSpam = staffConversationNotSpam(signals);
+  const staff = staffOutboundResponseNotSpam(signals);
+
+  if (staff) {
+    next = {
+      ...next,
+      policyFlags: addPolicyFlag(next.policyFlags, 'refine:staff-conversation-not-spam'),
+    };
+  }
+
+  if (next.isSpam && notSpam) {
+    const policyFlag = neverSpamFrom
+      ? 'refine:never-spam-allowlist'
+      : 'refine:staff-conversation-not-spam';
+    next = {
+      ...next,
+      primaryFolder: workflowExceptionFolder(input, staff),
+      isSpam: false,
+      suggestedTools: [],
+      policyFlags: addPolicyFlag(next.policyFlags, policyFlag),
+      rationale: `${next.rationale} Staff conversation/never-spam exception is not spam.`,
+    };
+  } else if (next.isSpam && hotelConversationNotSpam(input)) {
+    next = {
+      ...next,
+      primaryFolder: 'money-billing',
+      isSpam: false,
+      suggestedTools: [],
+      policyFlags: addPolicyFlag(next.policyFlags, 'refine:hotel-conversation-not-spam'),
+      rationale: `${next.rationale} Quoted hotel conversation is not spam.`,
+    };
+  }
+
+  // R22/R23 applies even when model already returned isSpam=false. Keep
+  // workflow remapping deterministic for never-spam hotel/RC senders.
+  if (!next.isSpam && neverSpamFrom) {
+    const eventFolder = workflowExceptionFolder(input, staff);
+    if (eventFolder !== 'unknown-review') next = { ...next, primaryFolder: eventFolder };
+  }
+
+  return next;
+}
+
 export function refineTriageOutput(
-  input: { from: string; body: string; subject?: string; asOf?: string },
+  input: TriageRefineInput,
   output: TriageOutput,
-): TriageOutput {
+  threadSignals?: ThreadSignals,
+): TriageOutput;
+export function refineTriageOutput(
+  input: TriageRefineInput,
+  output: WorkflowTriageOutputInput,
+  threadSignals?: ThreadSignals,
+): WorkflowTriageOutput;
+export function refineTriageOutput(
+  input: TriageRefineInput,
+  output: TriageOutput | WorkflowTriageOutputInput,
+  threadSignals?: ThreadSignals,
+): TriageOutput | WorkflowTriageOutput {
+  const resolvedInput = threadSignals ? { ...input, threadSignals } : input;
+  if (typeof output === 'object' && output !== null && 'primaryFolder' in output) {
+    return refineWorkflowTriageOutput(resolvedInput, output);
+  }
+  return refineLegacyTriageOutput(resolvedInput, output as TriageOutput);
+}
+
+function refineLegacyTriageOutput(input: TriageRefineInput, output: TriageOutput): TriageOutput {
   const subject = (input.subject ?? '').trim();
   const body = input.body.trim();
   const haystack = `${subject}\n${body}`;
   let next = output;
 
-  if (next.category === 'spam' && isAutoTriageNeverSpam(input.from)) {
-    const category = normalizeEmailAddress(input.from).endsWith('@legacyhotels.co.za')
-      || normalizeEmailAddress(input.from).endsWith('@mail.legacyhotels.com')
-      ? 'ops'
-      : 'new-bookings';
+  const neverSpamFrom = isAutoTriageNeverSpam(input.from);
+  const signals = {
+    ...input,
+    threadSignals: input.threadSignals,
+  };
+  const notSpam = staffConversationNotSpam(signals);
+  const staff = staffOutboundResponseNotSpam(signals);
+
+  if (next.category === 'spam' && notSpam) {
+    const category =
+      isHotelNeverSpamAddress(input.from) ||
+      normalizeEmailAddress(input.from) === RESERVE_CLOUD_PENNY_EMAIL ||
+      staff
+        ? 'ops'
+        : 'new-bookings';
+    const policyFlag = neverSpamFrom
+      ? 'refine:never-spam-allowlist'
+      : 'refine:staff-conversation-not-spam';
     next = {
       ...next,
       category,
-      policyFlags: [...next.policyFlags, 'refine:never-spam-allowlist'],
-      rationale: `${next.rationale} Sender is on auto-triage never-spam allowlist.`,
+      policyFlags: addPolicyFlag(next.policyFlags, policyFlag),
+      rationale: `${next.rationale} Staff conversation/never-spam exception is not spam.`,
+    };
+  }
+
+  if (next.category === 'spam' && staff) {
+    next = {
+      ...next,
+      category: 'ops',
+      policyFlags: addPolicyFlag(next.policyFlags, 'refine:staff-conversation-not-spam'),
+      rationale: `${next.rationale} Existing hotel staff response means thread is not spam.`,
+    };
+  }
+
+  if (next.category === 'spam' && hotelConversationNotSpam(input)) {
+    next = {
+      ...next,
+      category: 'ops',
+      policyFlags: addPolicyFlag(next.policyFlags, 'refine:hotel-conversation-not-spam'),
+      rationale: `${next.rationale} Quoted hotel conversation is not spam.`,
     };
   }
 
@@ -316,9 +582,7 @@ export function refineTriageOutput(
     hasRevenueSla ||
     /\bunpaid\b/i.test(haystack) ||
     /\b(?:will|may|could)\s+(?:be\s+)?cancel(?:led|ed)?\b/i.test(haystack) ||
-    /\bcancel(?:lation|led|ed|s)?\b[\s\S]{0,80}\b(?:if|unless|without|pending)\b/i.test(
-      haystack,
-    );
+    /\bcancel(?:lation|led|ed|s)?\b[\s\S]{0,80}\b(?:if|unless|without|pending)\b/i.test(haystack);
 
   if (output.category === 'ops' && next.category === 'ops' && isFortiMailQuarantine) {
     next = {
@@ -456,9 +720,11 @@ function subjectMatchesPropertyPreferWorkAllowlist(subject: string): boolean {
 }
 
 function hasSameDayCheckInSignal(haystack: string, asOf?: string): boolean {
-  if (/check\s*[- ]?in\s*:?\s*today|arrives?\s+today|arrival\s+today|ci\s+today|same[- ]day\s*(ci|check)/i.test(
-    haystack,
-  )) {
+  if (
+    /check\s*[- ]?in\s*:?\s*today|arrives?\s+today|arrival\s+today|ci\s+today|same[- ]day\s*(ci|check)/i.test(
+      haystack,
+    )
+  ) {
     return true;
   }
   if (!asOf) return false;
@@ -485,7 +751,6 @@ function hasSameDayCheckInSignal(haystack: string, asOf?: string): boolean {
   return false;
 }
 
-
 export function applyShadowTriageResult(input: ShadowTriageResult): ShadowTriageResult {
   validateTriageOutput(input.output);
   return {
@@ -504,8 +769,17 @@ export interface ApplyDurableTriageInput {
   db: DB;
   transportId: string;
   threadId: string;
-  output: TriageOutput | WorkflowTriageOutput;
+  output: TriageOutput | WorkflowTriageOutputInput;
   writeGateEnabled: boolean;
+  threadSignals?: ThreadSignals;
+  from?: string;
+  to?: AddressListInput;
+  cc?: AddressListInput;
+  bcc?: AddressListInput;
+  recipients?: AddressListInput;
+  toAddresses?: AddressListInput;
+  ccAddresses?: AddressListInput;
+  bccAddresses?: AddressListInput;
 }
 
 export type ApplyMode = 'full' | 'urgency_only' | 'skipped';
@@ -513,13 +787,15 @@ export type ApplyMode = 'full' | 'urgency_only' | 'skipped';
 export async function applyDurableTriageResult(
   input: ApplyDurableTriageInput,
 ): Promise<{ applyMode: ApplyMode }> {
-  const output =
-    'primaryFolder' in input.output
-      ? toLegacyTriageOutput(validateWorkflowTriageOutput(input.output))
-      : validateLegacyTriageOutput(input.output);
   if (!input.writeGateEnabled) return { applyMode: 'skipped' };
 
   const { db, transportId, threadId } = input;
+  const workflowOutput =
+    'primaryFolder' in input.output ? validateWorkflowTriageOutput(input.output) : undefined;
+  const legacyOutput = workflowOutput
+    ? toLegacyTriageOutput(workflowOutput)
+    : validateLegacyTriageOutput(input.output);
+  const requestedIsSpam = workflowOutput ? workflowOutput.isSpam : legacyOutput.category === 'spam';
 
   const [thread] = await db
     .select({ spamAt: mailThread.spamAt, spamUserLockedAt: mailThread.spamUserLockedAt })
@@ -535,12 +811,67 @@ export async function applyDurableTriageResult(
       and(
         eq(mailThreadCategory.threadId, threadId),
         eq(mailThreadCategory.transportId, transportId),
-        inArray(mailCategory.slug, [...AI_PRIMARY_CATEGORY_SLUGS]),
+        inArray(mailCategory.slug, [...AI_PRIMARY_CATEGORY_SLUGS, ...AI_WORKFLOW_PRIMARY_SLUGS]),
       ),
     );
 
-  const settled =
-    primaryRows.length > 0 || thread?.spamAt != null || thread?.spamUserLockedAt != null;
+  // Manual mark-spam/inbox is represented by this lock and always wins over
+  // automated R22/R23 exceptions.
+  if (thread?.spamUserLockedAt != null) {
+    const allCats = await db
+      .select({ id: mailCategory.id, slug: mailCategory.slug })
+      .from(mailCategory)
+      .where(and(eq(mailCategory.transportId, transportId), eq(mailCategory.isActive, true)));
+    const urgentId = allCats.find((c) => c.slug === 'urgent')?.id;
+    if (!urgentId) throw new Error(`AI category missing for transport ${transportId}: urgent`);
+
+    await db
+      .delete(mailThreadCategory)
+      .where(
+        and(
+          eq(mailThreadCategory.threadId, threadId),
+          eq(mailThreadCategory.transportId, transportId),
+          eq(mailThreadCategory.categoryId, urgentId),
+        ),
+      );
+    if (workflowOutput?.urgent ?? legacyOutput.urgent) {
+      await db.insert(mailThreadCategory).values({
+        threadId,
+        categoryId: urgentId,
+        transportId,
+      });
+    }
+    return { applyMode: 'urgency_only' };
+  }
+
+  // Resolve sender preference before the settled check. `block` is explicit
+  // user intent and wins over auto-never-spam; `allow` is an auto-not-spam
+  // override but still follows the same clear+join path below.
+  const latestFrom = input.from ?? (await getLatestInboundFromAddress(db, transportId, threadId));
+  const preference = latestFrom
+    ? await getSenderPreference({ db, transportId, emailRaw: latestFrom })
+    : null;
+  const signals = {
+    ...input,
+    from: latestFrom ?? input.from,
+    threadSignals: input.threadSignals,
+  };
+  const notSpam = staffConversationNotSpam(signals);
+  const staff = staffOutboundResponseNotSpam(signals);
+  const blocked = preference === 'block';
+  const exceptionNotSpam = !blocked && (preference === 'allow' || notSpam);
+  const workflowUnsettledNotSpam =
+    !blocked &&
+    Boolean(
+      workflowOutput &&
+        !workflowOutput.isSpam &&
+        thread?.spamAt != null &&
+        primaryRows.length === 0,
+    );
+  const rewriteForNotSpam = exceptionNotSpam || workflowUnsettledNotSpam;
+  const effectiveIsSpam = blocked || (requestedIsSpam && !exceptionNotSpam);
+
+  const settled = primaryRows.length > 0 || (thread?.spamAt != null && !rewriteForNotSpam);
 
   if (settled) {
     // KTD2: settled threads never flip primary/spamAt — urgency overlay only.
@@ -551,14 +882,16 @@ export async function applyDurableTriageResult(
     const urgentId = allCats.find((c) => c.slug === 'urgent')?.id;
     if (!urgentId) throw new Error(`AI category missing for transport ${transportId}: urgent`);
 
-    await db.delete(mailThreadCategory).where(
-      and(
-        eq(mailThreadCategory.threadId, threadId),
-        eq(mailThreadCategory.transportId, transportId),
-        eq(mailThreadCategory.categoryId, urgentId),
-      ),
-    );
-    if (output.urgent) {
+    await db
+      .delete(mailThreadCategory)
+      .where(
+        and(
+          eq(mailThreadCategory.threadId, threadId),
+          eq(mailThreadCategory.transportId, transportId),
+          eq(mailThreadCategory.categoryId, urgentId),
+        ),
+      );
+    if (workflowOutput?.urgent ?? legacyOutput.urgent) {
       await db.insert(mailThreadCategory).values({
         threadId,
         categoryId: urgentId,
@@ -572,33 +905,26 @@ export async function applyDurableTriageResult(
     .select({ categoryId: mailCategory.id })
     .from(mailCategory)
     .where(
-      and(eq(mailCategory.transportId, transportId), inArray(mailCategory.slug, AI_MANAGED_CATEGORY_SLUGS)),
+      and(
+        eq(mailCategory.transportId, transportId),
+        inArray(mailCategory.slug, [...AI_MANAGED_CATEGORY_SLUGS, ...AI_WORKFLOW_PRIMARY_SLUGS]),
+      ),
     );
 
   const aiManagedIds = aiManagedRows.map((row) => row.categoryId);
   if (aiManagedIds.length > 0) {
-    await db.delete(mailThreadCategory).where(
-      and(
-        eq(mailThreadCategory.threadId, threadId),
-        eq(mailThreadCategory.transportId, transportId),
-        inArray(mailThreadCategory.categoryId, aiManagedIds),
-      ),
-    );
+    await db
+      .delete(mailThreadCategory)
+      .where(
+        and(
+          eq(mailThreadCategory.threadId, threadId),
+          eq(mailThreadCategory.transportId, transportId),
+          inArray(mailThreadCategory.categoryId, aiManagedIds),
+        ),
+      );
   }
 
-  if (output.category === 'spam') {
-    const latestFrom = await getLatestInboundFromAddress(db, transportId, threadId);
-    if (latestFrom) {
-      const preference = await getSenderPreference({
-        db,
-        transportId,
-        emailRaw: latestFrom,
-      });
-      if (preference === 'allow' || isAutoTriageNeverSpam(latestFrom)) {
-        return { applyMode: 'full' };
-      }
-    }
-
+  if (effectiveIsSpam) {
     await db
       .update(mailThread)
       .set({ spamAt: new Date(), updatedAt: new Date() })
@@ -617,15 +943,27 @@ export async function applyDurableTriageResult(
     .where(and(eq(mailCategory.transportId, transportId), eq(mailCategory.isActive, true)));
 
   const bySlug = new Map(categoryRows.map((row) => [row.slug, row.id]));
-  if (!bySlug.get(output.category)) {
-    throw new Error(`AI category missing for transport ${transportId}: ${output.category}`);
+  const targetPrimary = workflowOutput
+    ? exceptionNotSpam
+      ? workflowApplyExceptionFolder(workflowOutput.primaryFolder, latestFrom ?? '', staff)
+      : workflowOutput.primaryFolder
+    : exceptionNotSpam && legacyOutput.category === 'spam'
+      ? isPilotNeverSpamAddress(latestFrom ?? '')
+        ? 'new-bookings'
+        : 'ops'
+      : legacyOutput.category;
+  if (!bySlug.get(targetPrimary)) {
+    throw new Error(`AI category missing for transport ${transportId}: ${targetPrimary}`);
   }
 
-  const targetSlugs = [output.category, ...(output.urgent ? (['urgent'] as const) : [])];
+  const targetSlugs = [
+    targetPrimary,
+    ...((workflowOutput?.urgent ?? legacyOutput.urgent) ? (['urgent'] as const) : []),
+  ];
   const categoryIds = targetSlugs
     .map((slug) => {
       const id = bySlug.get(slug);
-      if (!id && slug !== output.category) return undefined;
+      if (!id && slug !== targetPrimary) return undefined;
       if (!id) {
         throw new Error(`AI category missing for transport ${transportId}: ${slug}`);
       }
