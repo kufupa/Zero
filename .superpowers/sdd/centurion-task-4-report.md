@@ -79,3 +79,28 @@ The Layer-3 integration test is `skipIf`-gated on the disposable test DB helper.
 No `TEST_DATABASE_URL`/disposable DB was available in this run. `DATABASE_URL`
 and `VITEST_ALLOW_PILOT_RDS` were unset before every Vitest command; pilot RDS
 was never used.
+
+## Reviewer fix wave
+
+Added focused regressions before changes:
+
+- contradictory `reserveCloudStaffOutbound` without exact RC sender/recipient
+  proof remains spam and sets no staff flag;
+- validated causal RC metadata still forces not-spam;
+- unquoted hotel/payment sales text stays spam;
+- quoted hotel block plus payment shape still reaches `money-billing`.
+
+RED: 21 tests, 2 failed, 1 skipped. After minimal predicate fixes:
+
+```text
+ai-triage-refine — 21 tests; 20 passed; 1 skipped
+broader Task 4 suites — 78 passed; 28 skipped
+server typecheck — PASS
+server build — PASS
+prettier check + scoped git diff --check — PASS
+```
+
+RC boolean thread signals now require validated RC Penny sender plus an
+external recipient, or direct current-message metadata passing the same
+discriminator. Legacy outbound signal behavior remains unchanged. Hotel
+conversation belt now requires both quoted hotel block and payment-shaped text.

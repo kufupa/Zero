@@ -307,6 +307,36 @@ describe('R22/R23 exception-first spam defense', () => {
     expect(refined.policyFlags).toContain('refine:staff-conversation-not-spam');
   });
 
+  it('requires validated RC sender and recipient evidence for reserve staff signals', () => {
+    const contradictory = refineTriageOutput(
+      {
+        from: 'guest@example.com',
+        subject: 'Newsletter',
+        body: 'Routine update.',
+        threadSignals: { reserveCloudStaffOutbound: true },
+      },
+      workflowOutput(),
+    );
+    expect(contradictory.isSpam).toBe(true);
+    expect(contradictory.policyFlags).not.toContain('refine:staff-conversation-not-spam');
+
+    const validatedThreadSignal = refineTriageOutput(
+      {
+        from: 'guest@example.com',
+        subject: 'Re: event',
+        body: 'Please see the proposal.',
+        threadSignals: {
+          reserveCloudStaffOutbound: true,
+          reserveCloudStaffOutboundFrom: 'pmbobo@eu.mail.reservecloud.com',
+          reserveCloudStaffOutboundRecipients: ['guest@example.com'],
+        },
+      },
+      workflowOutput(),
+    );
+    expect(validatedThreadSignal.isSpam).toBe(false);
+    expect(validatedThreadSignal.policyFlags).toContain('refine:staff-conversation-not-spam');
+  });
+
   it('keeps RC Penny SCS wrapper not-spam without staff-outbound flag', () => {
     const refined = refineTriageOutput(
       {
@@ -346,6 +376,31 @@ describe('R22/R23 exception-first spam defense', () => {
       workflowOutput(),
     );
     expect(refined.isSpam).toBe(true);
+  });
+
+  it('requires quoted hotel block plus payment shape for FP2 refine', () => {
+    const quoted = refineTriageOutput(
+      {
+        from: 'guest@example.com',
+        subject: 'Re: payment',
+        body: `${'preamble '.repeat(400)}\n> From: Bongi <centurion@legacyhotels.co.za>\n> Payment invoice for Centurion stay.`,
+      },
+      workflowOutput(),
+    );
+    expect(quoted.isSpam).toBe(false);
+    expect(quoted.primaryFolder).toBe('money-billing');
+    expect(quoted.policyFlags).toContain('refine:hotel-conversation-not-spam');
+
+    const unquoted = refineTriageOutput(
+      {
+        from: 'vendor@example.com',
+        subject: 'Centurion payment invoice',
+        body: 'Pay this invoice for a Centurion marketing opportunity.',
+      },
+      workflowOutput(),
+    );
+    expect(unquoted.isSpam).toBe(true);
+    expect(unquoted.policyFlags).not.toContain('refine:hotel-conversation-not-spam');
   });
 });
 

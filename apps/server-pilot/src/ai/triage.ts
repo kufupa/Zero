@@ -202,15 +202,17 @@ export interface ShadowTriageResult {
   metrics: Record<string, unknown>;
 }
 
+type AddressListInput = string | readonly string[] | undefined;
+
 export interface ThreadSignals {
   legacyHotelsOutboundResponse?: boolean;
   reserveCloudStaffOutbound?: boolean;
+  reserveCloudStaffOutboundFrom?: string;
+  reserveCloudStaffOutboundRecipients?: AddressListInput;
 }
 
 /** Alias retained for callers that name causal context as triage signals. */
 export type TriageThreadSignals = ThreadSignals;
-
-type AddressListInput = string | readonly string[] | undefined;
 
 export interface TriageRefineInput {
   from: string;
@@ -226,6 +228,8 @@ export interface TriageRefineInput {
   toAddresses?: AddressListInput;
   ccAddresses?: AddressListInput;
   bccAddresses?: AddressListInput;
+  reserveCloudStaffOutboundFrom?: string;
+  reserveCloudStaffOutboundRecipients?: AddressListInput;
 }
 
 export interface StaffConversationSignals extends ThreadSignals {
@@ -279,7 +283,21 @@ function staffOutboundResponseNotSpam(signals: StaffConversationSignals): boolea
   // Noreply SCS is system mail, never staff response.
   if (from === NOREPLY_RESERVE_CLOUD_EMAIL) return false;
 
-  if (threadSignals?.reserveCloudStaffOutbound || signals.reserveCloudStaffOutbound) {
+  const threadReserveCloudMetadata = threadSignals
+    ? isReserveCloudStaffSend({
+        from: threadSignals.reserveCloudStaffOutboundFrom,
+        recipients: threadSignals.reserveCloudStaffOutboundRecipients,
+      })
+    : false;
+  const directReserveCloudMetadata = isReserveCloudStaffSend({
+    from: signals.reserveCloudStaffOutboundFrom,
+    recipients: signals.reserveCloudStaffOutboundRecipients,
+  });
+  if (
+    threadReserveCloudMetadata ||
+    directReserveCloudMetadata ||
+    (signals.reserveCloudStaffOutbound && isReserveCloudStaffSend(signals))
+  ) {
     return true;
   }
   return isReserveCloudStaffSend(signals);
@@ -354,14 +372,14 @@ function workflowApplyExceptionFolder(
 
 function hotelConversationNotSpam(input: TriageRefineInput): boolean {
   const haystack = `${input.subject ?? ''}\n${input.body}`;
-  const hasHotelMarker = /\b(?:centurion|bongi|legacy\s+hotels?)\b/i.test(haystack);
+  const hasHotelMarker = /\b(?:centurion|bongi|legacy\s*hotels?)\b/i.test(haystack);
   const hasQuotedHotelBlock =
-    /(?:^|\n)\s*>[^\n]*(?:centurion|bongi|legacy\s+hotels?)/i.test(haystack) ||
+    /(?:^|\n)\s*>[^\n]*(?:centurion|bongi|legacy\s*hotels?)/i.test(haystack) ||
     /(?:^|\n)\s*(?:from|sender):?\s*[^\n]*(?:legacyhotels|centurion|bongi)/i.test(haystack);
   return (
     hasHotelMarker &&
-    (hasQuotedHotelBlock ||
-      /\b(?:payment|invoice|commission|folio|deposit|paid|amount|bank)\b/i.test(haystack))
+    hasQuotedHotelBlock &&
+    /\b(?:payment|invoice|commission|folio|deposit|paid|amount|bank)\b/i.test(haystack)
   );
 }
 
