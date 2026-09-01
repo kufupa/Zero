@@ -454,6 +454,35 @@ describe('runQualityEval', () => {
     expect(report.protectedRegressions.some((r) => /spam|at-risk|urgent/i.test(r.reason))).toBe(true);
   });
 
+  it('passes input prompt version through to workflow hashes', async () => {
+    const messages = [row({ id: 'm-version', createdAt: new Date('2026-07-01T10:00:00.000Z') })];
+    const adapter = fixedAdapter(triageOut({ category: 'ops' }));
+
+    const v5 = await runQualityEval(
+      {
+        repeatId: 'prompt-v5',
+        inputs: [inputCase({ triggerMessageId: 'm-version', promptVersion: 'triage-v5', messages })],
+        labels: [label({ triggerMessageId: 'm-version', expectedCategory: 'ops' })],
+      },
+      adapter,
+    );
+    const v6 = await runQualityEval(
+      {
+        repeatId: 'prompt-v6',
+        inputs: [inputCase({ triggerMessageId: 'm-version', promptVersion: 'triage-v6', messages })],
+        labels: [label({ triggerMessageId: 'm-version', expectedCategory: 'ops' })],
+      },
+      adapter,
+    );
+
+    expect(v5.cases[0]?.promptHash).not.toBe(v6.cases[0]?.promptHash);
+    expect(v5.cases[0]?.inputHash).not.toBe(v6.cases[0]?.inputHash);
+    expect(v5.cases[0]?.actualCategory).toBe(v6.cases[0]?.actualCategory);
+    expect(v5.metrics.categoryErrors).toBe(v6.metrics.categoryErrors);
+    expect(v5.metrics.urgentErrors).toBe(v6.metrics.urgentErrors);
+    expect(v5.metrics.jointErrors).toBe(v6.metrics.jointErrors);
+  });
+
   it('does not branch scoring on confidence', async () => {
     const messages = [row({ id: 'm1', createdAt: new Date('2026-07-01T10:00:00.000Z'), body: 'ops' })];
     const low = await runQualityEval(

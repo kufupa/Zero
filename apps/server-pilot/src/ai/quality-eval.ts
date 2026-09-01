@@ -460,7 +460,11 @@ export async function runQualityEval(
     }
 
     try {
-      const classification = await classifyWorkflowMailTriage(toTriageInput(input), adapter);
+      const classification = await classifyWorkflowMailTriage(
+        toTriageInput(input),
+        adapter,
+        input.promptVersion,
+      );
       const actualWorkflow = classification.output;
       const actual = toLegacyTriageOutput(actualWorkflow);
       const categoryMatch = actual.category === label.expectedCategory;
