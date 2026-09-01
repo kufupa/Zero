@@ -81,6 +81,7 @@ no pilot/production DB, HMS activation, dashboard, or draft path was used.
 ## Commit
 
 Implementation: `47c0a923` (`test(ai): add v6 spam false-positive harness`)
+Fixture-shape follow-up: `68465f07` (`test(ai): cover long quoted spam FP body`)
 
 ## Concerns
 
@@ -90,3 +91,5 @@ Implementation: `47c0a923` (`test(ai): add v6 spam false-positive harness`)
   no raw mailbox bodies or live corpus data are included.
 - Quality reports now carry the canonical refined output for local harnesses;
   legacy scoring fields and evaluator write-safety contract remain intact.
+- Repository-wide `git diff --check` still reports pre-existing trailing
+  whitespace in unrelated dirty paths; Task 11 staged/commit-scoped checks pass.
