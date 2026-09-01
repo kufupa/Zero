@@ -76,6 +76,59 @@ remain unchanged.
 
 Implementation: `43a2a003` (`fix(mail): route Centurion quarantine promotions explicitly`)
 
+## Review follow-up: unresolved override fail-closed
+
+The route-review Important finding is fixed. When `transportOverride` is
+present, persistence now resolves only that active route. A missing/inactive
+override returns `quarantined` with `unknown_transport` and runs the existing
+candidate-attachment cleanup path; it never falls through to owner-header,
+direct-To, or Centurion-equated routing. With no override, the generic routing
+branch is unchanged.
+
+### TDD evidence
+
+RED, before the production change:
+
+```text
+unset DATABASE_URL VITEST_ALLOW_PILOT_RDS NODE_ENV
+pnpm exec vitest run tests/ingest-store-routing.test.ts
+
+1 failed: expected 'stored' to be 'quarantined' (received 'stored')
+```
+
+GREEN, after the fail-closed branch:
+
+```text
+unset DATABASE_URL VITEST_ALLOW_PILOT_RDS NODE_ENV
+pnpm exec vitest run tests/ingest-store-routing.test.ts
+
+1 passed
+```
+
+Relevant DB-free suites:
+
+```text
+unset DATABASE_URL VITEST_ALLOW_PILOT_RDS NODE_ENV
+pnpm exec vitest run tests/ingest-store-routing.test.ts tests/promote-quarantine.test.ts tests/ingest-store.test.ts
+
+3 files passed; 16 passed; 26 skipped (DB-backed cases safely skipped)
+```
+
+Build and scoped whitespace check:
+
+```text
+pnpm run build
+
+tsc -p tsconfig.json: PASS
+
+git diff --check -- \
+  apps/server-pilot/src/mail/ingest/store.ts \
+  apps/server-pilot/tests/ingest-store-routing.test.ts: PASS
+```
+
+No pilot/production DB access used. Review follow-up implementation commit:
+`7d17d4ed` (`fix(mail): fail closed on unresolved transport override`).
+
 ## Concerns
 
 - DB-backed promotion tests require a disposable test database and were not
