@@ -1,4 +1,3 @@
-import type { ComponentType, SVGProps } from 'react';
 import {
   Archive,
   Bin,
@@ -14,24 +13,26 @@ import {
   LockIcon,
   Clock,
 } from '@/components/icons/icons';
-import { ShieldCheck } from 'lucide-react';
-import { m } from '@/paraglide/messages';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import {
+  getHotelFolderNavTheme,
+  getHotelFolderPresentation,
+  isHotelManagedCategorySlug,
+  HOTEL_WORKFLOW_PRIMARY_SLUGS,
+} from '@/lib/mail/hotel-folder-presentation';
 import {
   DEMO_MAIL_FOLDER_DEFINITIONS,
   getCenturionCategoryColorStyle,
   isCenturionMailCategorySlug,
   type DemoMailFolderId,
 } from '@/lib/demo/folder-map';
-import { cn } from '@/lib/utils';
-import type { CSSProperties } from 'react';
-import { PILOT_CAPABILITIES } from '@/lib/pilot/capabilities';
-import {
-  getHotelFolderNavTheme,
-  getHotelFolderPresentation,
-  isHotelManagedCategorySlug,
-} from '@/lib/mail/hotel-folder-presentation';
 import { categoryColorNavTheme } from '@/lib/mail/route-filter';
+import { PILOT_CAPABILITIES } from '@/lib/pilot/capabilities';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import type { ComponentType, SVGProps } from 'react';
+import { ShieldCheck } from 'lucide-react';
+import type { CSSProperties } from 'react';
+import { m } from '@/paraglide/messages';
+import { cn } from '@/lib/utils';
 
 export interface NavItem {
   id?: string;
@@ -109,13 +110,16 @@ interface NavConfig {
 
 const DEMO_FOLDER_MODEL_ENABLED = isFrontendOnlyDemo();
 
-/** Primary hotel folder sidebar order (urgent overlay sorted separately). */
-const HOTEL_PRIMARY_NAV_ORDER = ['at-risk', 'new-bookings', 'groups-events', 'ops'] as const;
+/** Workflow sidebar order when WORKFLOW_NAV_V6 is enabled; urgent sorts separately. */
+const HOTEL_PRIMARY_NAV_ORDER = HOTEL_WORKFLOW_PRIMARY_SLUGS;
+
+/** Current sidebar remains legacy until Task 7 enables the workflow-nav flag. */
+const LEGACY_DEMO_PRIMARY_NAV_ORDER = ['at-risk', 'new-bookings', 'groups-events', 'ops'] as const;
 
 function getDemoMailFolderNavSortIndex(folderId: DemoMailFolderId): number {
   if (folderId === 'urgent') return -1;
-  const primaryIndex = HOTEL_PRIMARY_NAV_ORDER.indexOf(
-    folderId as (typeof HOTEL_PRIMARY_NAV_ORDER)[number],
+  const primaryIndex = LEGACY_DEMO_PRIMARY_NAV_ORDER.indexOf(
+    folderId as (typeof LEGACY_DEMO_PRIMARY_NAV_ORDER)[number],
   );
   if (primaryIndex >= 0) return primaryIndex;
   return HOTEL_PRIMARY_NAV_ORDER.length;
@@ -126,7 +130,9 @@ function getDemoMailFolderIcon(folderId: DemoMailFolderId): ComponentType<SVGPro
   return Folder;
 }
 
-function getDemoMailFolderNavItemTheme(folderId: DemoMailFolderId): Pick<NavItem, 'style' | 'className'> {
+function getDemoMailFolderNavItemTheme(
+  folderId: DemoMailFolderId,
+): Pick<NavItem, 'style' | 'className'> {
   if (!isCenturionMailCategorySlug(folderId)) {
     return {};
   }
@@ -144,7 +150,9 @@ function getDemoMailFolderNavItemTheme(folderId: DemoMailFolderId): Pick<NavItem
   };
 }
 
-const demoMailFolderNavItems: NavItem[] = DEMO_MAIL_FOLDER_DEFINITIONS.filter((folder) => folder.id !== 'spam')
+const demoMailFolderNavItems: NavItem[] = DEMO_MAIL_FOLDER_DEFINITIONS.filter(
+  (folder) => folder.id !== 'spam',
+)
   .sort((a, b) => getDemoMailFolderNavSortIndex(a.id) - getDemoMailFolderNavSortIndex(b.id))
   .map((folder) => {
     const theme = getDemoMailFolderNavItemTheme(folder.id);

@@ -1,5 +1,3 @@
-import { describe, expect, it } from 'vitest';
-import { buildLiveCategoryNavItems } from '@/config/navigation';
 import {
   buildCategoryIdToSlugMap,
   getHotelFolderNavTheme,
@@ -7,9 +5,26 @@ import {
   isHotelManagedCategorySlug,
   resolveThreadCategoryPresentation,
   shouldShowHotelCategoryPill,
+  isHotelPrimaryCategorySlug,
+  isHotelWorkflowPrimarySlug,
 } from '@/lib/mail/hotel-folder-presentation';
+import { buildLiveCategoryNavItems } from '@/config/navigation';
+import { describe, expect, it } from 'vitest';
 
 describe('hotel-folder-presentation', () => {
+  it('workflow folders are managed primaries and urgent stays overlay', () => {
+    expect(isHotelWorkflowPrimarySlug('bookings')).toBe(true);
+    expect(isHotelWorkflowPrimarySlug('groups-events')).toBe(true);
+    expect(isHotelWorkflowPrimarySlug('unknown-review')).toBe(true);
+    expect(isHotelPrimaryCategorySlug('urgent')).toBe(false);
+    expect(isHotelWorkflowPrimarySlug('spam')).toBe(false);
+    expect(getHotelFolderPresentation('bookings')).toEqual({
+      title: 'Bookings',
+      subtitle: 'New bookings + quotes',
+    });
+    expect(getHotelFolderPresentation('unknown-review')?.title).toMatch(/Unknown|Needs Review/i);
+  });
+
   it('locks managed slugs to AI taxonomy', () => {
     expect(isHotelManagedCategorySlug('new-bookings')).toBe(true);
     expect(isHotelManagedCategorySlug('urgent')).toBe(true);

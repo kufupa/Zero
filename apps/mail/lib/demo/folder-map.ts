@@ -5,6 +5,16 @@ export type DemoMailFolderId =
   | 'new-bookings'
   | 'groups-events'
   | 'ops'
+  | 'bookings'
+  | 'manage-stay'
+  | 'confirm-reconcile'
+  | 'money-billing'
+  | 'documents-delivery'
+  | 'exceptions-recovery'
+  | 'guest-experience'
+  | 'internal-partner'
+  | 'automated-channel'
+  | 'unknown-review'
   | 'urgent'
   | 'spam';
 
@@ -29,7 +39,10 @@ export type CenturionCategoryColorStyle = {
   darkText: string;
 };
 
-export const CENTURION_CATEGORY_COLOR_STYLES: Record<CenturionMailCategory, CenturionCategoryColorStyle> = {
+export const CENTURION_CATEGORY_COLOR_STYLES: Record<
+  CenturionMailCategory,
+  CenturionCategoryColorStyle
+> = {
   /**
    * At-risk mail: amber signals caution for cancel, SLA, and payment risk.
    */
@@ -68,7 +81,9 @@ export const CENTURION_CATEGORY_COLOR_STYLES: Record<CenturionMailCategory, Cent
   },
 };
 
-export function getCenturionCategoryColorStyle(slug: CenturionMailCategory): CenturionCategoryColorStyle {
+export function getCenturionCategoryColorStyle(
+  slug: CenturionMailCategory,
+): CenturionCategoryColorStyle {
   return CENTURION_CATEGORY_COLOR_STYLES[slug];
 }
 
@@ -112,12 +127,97 @@ export const DEMO_MAIL_FOLDER_DEFINITIONS: DemoMailFolderDefinition[] = [
   },
 ];
 
+/** Workflow presentation contract; sidebar stays on legacy folders until nav flag flip. */
+export const WORKFLOW_MAIL_FOLDER_DEFINITIONS: DemoMailFolderDefinition[] = [
+  {
+    id: 'bookings',
+    title: 'Bookings',
+    subtitle: 'New bookings + quotes',
+    aliases: [],
+  },
+  {
+    id: 'groups-events',
+    title: 'Groups & Events',
+    subtitle: '10+ rooms / events',
+    aliases: [],
+  },
+  {
+    id: 'manage-stay',
+    title: 'Manage Existing Stay',
+    subtitle: 'Amendments and servicing',
+    aliases: [],
+  },
+  {
+    id: 'confirm-reconcile',
+    title: 'Confirm & Reconcile',
+    subtitle: 'Confirmations are not PMS completion',
+    aliases: [],
+  },
+  {
+    id: 'money-billing',
+    title: 'Money & Billing',
+    subtitle: 'Payments, refunds, settlement',
+    aliases: [],
+  },
+  {
+    id: 'documents-delivery',
+    title: 'Documents & Delivery',
+    subtitle: 'Confirmations, PDFs, failed delivery',
+    aliases: [],
+  },
+  {
+    id: 'exceptions-recovery',
+    title: 'Exceptions & Recovery',
+    subtitle: 'Bounces, failures, mismatches',
+    aliases: [],
+  },
+  {
+    id: 'guest-experience',
+    title: 'Guest Experience',
+    subtitle: 'Complaints and actioned feedback',
+    aliases: [],
+  },
+  {
+    id: 'internal-partner',
+    title: 'Internal & Partner Ops',
+    subtitle: 'Staff, vendor, property coordination',
+    aliases: [],
+  },
+  {
+    id: 'automated-channel',
+    title: 'Automated / Channel',
+    subtitle: 'Clean routine system traffic only',
+    aliases: [],
+  },
+  {
+    id: 'unknown-review',
+    title: 'Unknown / Needs Review',
+    subtitle: 'Conflicting or unresolved evidence',
+    aliases: [],
+  },
+  {
+    id: 'urgent',
+    title: 'Urgent',
+    subtitle: 'Cross-folder imminent harm',
+    aliases: [],
+  },
+];
+
+const ALL_MAIL_FOLDER_DEFINITIONS = [
+  ...DEMO_MAIL_FOLDER_DEFINITIONS,
+  ...WORKFLOW_MAIL_FOLDER_DEFINITIONS,
+];
+
 const demoMailFolderBySlug = new Map<string, DemoMailFolderDefinition>(
-  DEMO_MAIL_FOLDER_DEFINITIONS.flatMap((def) => [
+  ALL_MAIL_FOLDER_DEFINITIONS.flatMap((def) => [
     [def.id, def] as const,
     ...def.aliases.map((alias) => [alias.toLowerCase(), def] as const),
   ]),
 );
+
+export function getDemoMailFolderDefinition(slug: string): DemoMailFolderDefinition | undefined {
+  return demoMailFolderBySlug.get(slug.trim().toLowerCase());
+}
 
 /** Canonical slug for list adapter + query keys (post-alias). */
 export function normalizeDemoMailFolderSlug(folder?: string): string {
@@ -137,7 +237,7 @@ export function isCenturionMailCategorySlug(value: string): value is CenturionMa
 }
 
 export function getCenturionCategoryTitle(slug: CenturionMailCategory): string {
-  const def = DEMO_MAIL_FOLDER_DEFINITIONS.find((d) => d.id === slug);
+  const def = getDemoMailFolderDefinition(slug);
   return def?.title ?? slug;
 }
 

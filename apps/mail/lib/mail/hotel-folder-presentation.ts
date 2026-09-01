@@ -1,21 +1,43 @@
-import type { CSSProperties } from 'react';
 import {
-  DEMO_MAIL_FOLDER_DEFINITIONS,
+  getDemoMailFolderDefinition,
   getCenturionCategoryColorStyle,
   isCenturionMailCategorySlug,
   normalizeDemoMailFolderSlug,
   type CenturionCategoryColorStyle,
 } from '@/lib/demo/folder-map';
+import type { CSSProperties } from 'react';
 import { cn } from '@/lib/utils';
 
 /**
  * Locked to apps/server-pilot/src/ai/categories.ts
- * AI_PRIMARY_CATEGORY_SLUGS / AI_OVERLAY_CATEGORY_SLUGS — do not drift.
+ * AI_WORKFLOW_PRIMARY_SLUGS / AI_OVERLAY_CATEGORY_SLUGS — do not drift.
  */
-export const HOTEL_PRIMARY_CATEGORY_SLUGS = [
+export const HOTEL_LEGACY_PRIMARY_CATEGORY_SLUGS = [
   'at-risk',
   'new-bookings',
   'groups-events',
+  'ops',
+] as const;
+
+export const HOTEL_WORKFLOW_PRIMARY_SLUGS = [
+  'bookings',
+  'groups-events',
+  'manage-stay',
+  'confirm-reconcile',
+  'money-billing',
+  'documents-delivery',
+  'exceptions-recovery',
+  'guest-experience',
+  'internal-partner',
+  'automated-channel',
+  'unknown-review',
+] as const;
+
+/** Legacy + workflow slugs remain readable until durable migration completes. */
+export const HOTEL_PRIMARY_CATEGORY_SLUGS = [
+  ...HOTEL_WORKFLOW_PRIMARY_SLUGS,
+  'at-risk',
+  'new-bookings',
   'ops',
 ] as const;
 
@@ -27,10 +49,12 @@ export const HOTEL_MANAGED_CATEGORY_SLUGS = [
 ] as const;
 
 export type HotelPrimarySlug = (typeof HOTEL_PRIMARY_CATEGORY_SLUGS)[number];
+export type HotelWorkflowPrimarySlug = (typeof HOTEL_WORKFLOW_PRIMARY_SLUGS)[number];
 export type HotelOverlaySlug = (typeof HOTEL_OVERLAY_CATEGORY_SLUGS)[number];
 export type HotelManagedSlug = (typeof HOTEL_MANAGED_CATEGORY_SLUGS)[number];
 
 const PRIMARY_SET = new Set<string>(HOTEL_PRIMARY_CATEGORY_SLUGS);
+const WORKFLOW_PRIMARY_SET = new Set<string>(HOTEL_WORKFLOW_PRIMARY_SLUGS);
 const MANAGED_SET = new Set<string>(HOTEL_MANAGED_CATEGORY_SLUGS);
 
 const URGENT_COLOR_STYLE: CenturionCategoryColorStyle = {
@@ -38,6 +62,13 @@ const URGENT_COLOR_STYLE: CenturionCategoryColorStyle = {
   text: '#991B1B',
   darkBg: '#7F1D1D',
   darkText: '#FEE2E2',
+};
+
+const WORKFLOW_COLOR_STYLE: CenturionCategoryColorStyle = {
+  bg: '#E2E8F0',
+  text: '#334155',
+  darkBg: '#334155',
+  darkText: '#E2E8F0',
 };
 
 export function isHotelManagedCategorySlug(slug: string): slug is HotelManagedSlug {
@@ -48,17 +79,22 @@ export function isHotelPrimaryCategorySlug(slug: string): slug is HotelPrimarySl
   return PRIMARY_SET.has(slug);
 }
 
+export function isHotelWorkflowPrimarySlug(slug: string): slug is HotelWorkflowPrimarySlug {
+  return WORKFLOW_PRIMARY_SET.has(slug);
+}
+
 export function getHotelFolderPresentation(
   slug: string,
 ): { title: string; subtitle: string } | null {
   if (!isHotelManagedCategorySlug(slug)) return null;
-  const def = DEMO_MAIL_FOLDER_DEFINITIONS.find((d) => d.id === slug);
+  const def = getDemoMailFolderDefinition(slug);
   if (!def) return null;
   return { title: def.title, subtitle: def.subtitle };
 }
 
 export function getHotelPillColorStyle(slug: HotelManagedSlug): CenturionCategoryColorStyle {
   if (slug === 'urgent') return URGENT_COLOR_STYLE;
+  if (!isCenturionMailCategorySlug(slug)) return WORKFLOW_COLOR_STYLE;
   return getCenturionCategoryColorStyle(slug);
 }
 
