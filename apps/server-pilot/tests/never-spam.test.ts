@@ -14,4 +14,11 @@ describe('never-spam allowlist', () => {
   it('does not match unrelated gmail', () => {
     expect(isAutoTriageNeverSpam('spam@gmail.com')).toBe(false);
   });
+
+  it('matches only the exact ReserveCloud sender address', () => {
+    expect(isAutoTriageNeverSpam('pmbobo@eu.mail.reservecloud.com')).toBe(true);
+    expect(isAutoTriageNeverSpam('noreply@noreply.reservecloud.com')).toBe(false);
+    expect(isAutoTriageNeverSpam('other@eu.mail.reservecloud.com')).toBe(false);
+    expect(isAutoTriageNeverSpam('jvermaak@legacyhotels.co.za')).toBe(true);
+  });
 });

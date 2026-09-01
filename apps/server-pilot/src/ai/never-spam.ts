@@ -6,6 +6,7 @@ export const AUTO_TRIAGE_NEVER_SPAM_DOMAINS: ReadonlySet<string> = new Set([
 export const AUTO_TRIAGE_NEVER_SPAM_EMAILS: ReadonlySet<string> = new Set([
   'aroransh17@gmail.com',
   'coleddofficial@gmail.com',
+  'pmbobo@eu.mail.reservecloud.com',
 ]);
 
 export function normalizeEmailAddress(raw: string): string {
