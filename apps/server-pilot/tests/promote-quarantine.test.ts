@@ -171,6 +171,83 @@ async function seedMissingOwnerQuarantine(args: {
 }
 
 describe('promote-quarantine cli helpers', () => {
+  it('routes true ReserveCloud staff promotion to Centurion before normal routing', async () => {
+    const storage = withFakeS3();
+    const raw = centurionInboundEml();
+    const row = {
+      id: 'q-u11-route',
+      ingestMailboxId: 'ingest-nava-legacy',
+      pop3Uidl: 'uidl-u11-route',
+      rawMimeS3Key: rawMimeKey({
+        ingestMailboxId: 'ingest-nava-legacy',
+        pop3Uidl: 'uidl-u11-route',
+      }),
+    };
+    await storage.putObject({
+      key: row.rawMimeS3Key,
+      body: raw,
+      contentType: 'message/rfc822',
+    });
+
+    const db = {
+      select: () => {
+        const query = {
+          from: () => query,
+          where: () => query,
+          orderBy: () => Promise.resolve([row]),
+          limit: () => Promise.resolve([]),
+        };
+        return query;
+      },
+    } as unknown as DB;
+    const persistSpy = vi
+      .spyOn(ingestStore, 'persistInboundMessage')
+      .mockImplementation(async (_parsed, _raw, meta, options) => {
+        const transportOverride = (options as { transportOverride?: string }).transportOverride;
+        if (transportOverride !== 'transport-centurion') {
+          return {
+            kind: 'quarantined',
+            quarantineId: row.id,
+            reason: 'missing_owner_header',
+            rawMimeS3Key: row.rawMimeS3Key,
+            candidateAttachmentCleanupFailureCount: 0,
+          };
+        }
+        return {
+          kind: 'stored',
+          transportId: 'transport-centurion',
+          messageId: meta.messageId,
+          threadId: 'thread-u11-route',
+          rawMimeS3Key: row.rawMimeS3Key,
+          attachmentCount: 0,
+        };
+      });
+
+    try {
+      const result = await withIngestOwnerHeaderEnv('false', () =>
+        promoteMissingOwnerHeaderQuarantine({ db, storage }),
+      );
+
+      expect(result.stored).toBe(1);
+      expect(result.quarantined).toBe(0);
+      expect(persistSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        raw,
+        expect.objectContaining({
+          ingestMailboxId: row.ingestMailboxId,
+          pop3Uidl: row.pop3Uidl,
+        }),
+        expect.objectContaining({
+          promoteQuarantineId: row.id,
+          directionOverride: 'outbound',
+          transportOverride: 'transport-centurion',
+        }),
+      );
+    } finally {
+      persistSpy.mockRestore();
+    }
+  });
+
   it('promotes only exact ReserveCloud staff with a non-wrapper recipient', () => {
     expect(
       isPromotableReserveCloudStaff({

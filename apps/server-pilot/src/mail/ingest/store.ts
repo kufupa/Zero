@@ -158,6 +158,8 @@ export interface PersistOptions {
   db: DB;
   /** S3 storage override (tests inject a fake). */
   storage?: S3Storage;
+  /** Narrow promotion-only transport route; generic ingest must not set this. */
+  transportOverride?: 'transport-centurion';
   /** Optional trusted direction selected by a narrow historical promotion. */
   directionOverride?: 'inbound' | 'outbound';
   /**
@@ -258,7 +260,16 @@ export async function persistInboundMessage(
   // Routing ------------------------------------------------------------
   let transport: RoutedTransport | null = null;
 
-  if (!parsed.ownerHeaderValue) {
+  if (opts.transportOverride === CENTURION_TRANSPORT_ID) {
+    // Promotion has already applied its exact sender/recipient gate. Still
+    // resolve the requested route from the active transport row; never trust
+    // a caller-supplied id or a stale/hard-coded transport address.
+    transport = await findActiveTransportById(db, opts.transportOverride);
+  }
+
+  if (transport) {
+    // Explicit promotion route wins over owner-header/direct-To routing.
+  } else if (!parsed.ownerHeaderValue) {
     transport = await findDirectToTransport(db, parsed.toAddresses);
     if (!transport && !ingestRequireOwnerHeader()) {
       transport = await findCenturionEquatedTransport(db, parsed);
@@ -1506,6 +1517,24 @@ async function findDirectToTransport(
   return (
     transports.find((transport) => directTo.has(normalizeEmailAddress(transport.email))) ?? null
   );
+}
+
+async function findActiveTransportById(
+  db: DB,
+  transportId: 'transport-centurion',
+): Promise<RoutedTransport | null> {
+  const rows = await db
+    .select({
+      id: mailboxTransport.id,
+      email: mailboxTransport.email,
+      sendFromConfig: mailboxTransport.sendFromConfig,
+    })
+    .from(mailboxTransport)
+    .where(
+      and(eq(mailboxTransport.id, transportId), eq(mailboxTransport.isActive, true)),
+    )
+    .limit(1);
+  return rows[0] ?? null;
 }
 
 function normalizeEmailAddress(raw: string): string {

@@ -243,6 +243,7 @@ async function promoteOneQuarantineRow(
         db,
         storage,
         promoteQuarantineId: row.id,
+        transportOverride: 'transport-centurion',
         directionOverride: 'outbound',
       },
     );
