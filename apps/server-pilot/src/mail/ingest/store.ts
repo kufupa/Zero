@@ -260,14 +260,22 @@ export async function persistInboundMessage(
   // Routing ------------------------------------------------------------
   let transport: RoutedTransport | null = null;
 
-  if (opts.transportOverride === CENTURION_TRANSPORT_ID) {
+  if (opts.transportOverride !== undefined) {
     // Promotion has already applied its exact sender/recipient gate. Still
     // resolve the requested route from the active transport row; never trust
     // a caller-supplied id or a stale/hard-coded transport address.
     transport = await findActiveTransportById(db, opts.transportOverride);
-  }
-
-  if (transport) {
+    if (!transport) {
+      return quarantineWithAttachmentCleanup({
+        db,
+        storage,
+        parsed,
+        meta,
+        rawMimeS3Key,
+        reason: 'unknown_transport',
+        activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
+      });
+    }
     // Explicit promotion route wins over owner-header/direct-To routing.
   } else if (!parsed.ownerHeaderValue) {
     transport = await findDirectToTransport(db, parsed.toAddresses);
