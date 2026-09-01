@@ -158,6 +158,8 @@ export interface PersistOptions {
   db: DB;
   /** S3 storage override (tests inject a fake). */
   storage?: S3Storage;
+  /** Optional trusted direction selected by a narrow historical promotion. */
+  directionOverride?: 'inbound' | 'outbound';
   /**
    * Returned-copy reconciliation is only valid for newly retrieved POP3
    * messages. Historical promotion and rehydration must use ordinary ingest.
@@ -502,8 +504,12 @@ export async function persistInboundMessage(
     const transportIdentities = transportIdentitySet(transport.email, transport.sendFromConfig);
     const isSelfIngestLoopback =
       transportIdentities.size > 0 && recipientEmails.some((a) => transportIdentities.has(a));
-    const isHotelSent =
+    const inferredHotelSent =
       Boolean(fromEmail) && transportIdentities.has(fromEmail) && !isSelfIngestLoopback;
+    const isHotelSent =
+      opts.directionOverride === undefined
+        ? inferredHotelSent
+        : opts.directionOverride === 'outbound';
 
     await tx.insert(message).values({
       id: messageId,

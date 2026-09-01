@@ -13,6 +13,7 @@ import {
   type ParsedInboundMessage,
 } from './parse-message.js';
 import { cleanupPartialParseFailureAttachments, persistInboundMessage } from './store.js';
+import { simpleParser, type AddressObject, type EmailAddress } from 'mailparser';
 import { mailIngestQuarantine, message } from '../../db/schema/mail.js';
 import { getS3Storage, type S3Storage } from '../../storage/s3.js';
 import { ingestRequireOwnerHeader } from '../../env.js';
@@ -20,6 +21,8 @@ import type { DB } from '../../db/client.js';
 import { and, asc, eq } from 'drizzle-orm';
 
 const PROMOTE_REASON = 'missing_owner_header';
+const RESERVE_CLOUD_PENNY_EMAIL = 'pmbobo@eu.mail.reservecloud.com';
+const LEGACY_PENNY_EMAIL = 'pmbobo@legacyhotels.co.za';
 
 export interface PromoteQuarantineRow {
   id: string;
@@ -41,6 +44,7 @@ export interface PromoteQuarantineCounts {
   duplicate: number;
   quarantined: number;
   errors: number;
+  skipped?: number;
 }
 
 export interface PromoteQuarantineResult extends PromoteQuarantineCounts {
@@ -59,6 +63,32 @@ export function assertPromoteEnv(input: Record<string, string | undefined> = pro
   if (ingestRequireOwnerHeader(input)) {
     throw new PromoteEnvError();
   }
+}
+
+export interface PromoteReserveCloudStaffSignals {
+  fromAddress?: string | null;
+  toAddresses?: readonly string[] | null;
+  ccAddresses?: readonly string[] | null;
+  bccAddresses?: readonly string[] | null;
+}
+
+/**
+ * Narrow promotion predicate. Exact sender + at least one non-Legacy recipient
+ * is required; empty and Penny-Legacy-only recipient sets fail closed.
+ */
+export function isPromotableReserveCloudStaff(parsed: PromoteReserveCloudStaffSignals): boolean {
+  if (normalizePromotionAddress(parsed.fromAddress) !== RESERVE_CLOUD_PENNY_EMAIL) {
+    return false;
+  }
+
+  const recipients = [
+    ...(parsed.toAddresses ?? []),
+    ...(parsed.ccAddresses ?? []),
+    ...(parsed.bccAddresses ?? []),
+  ]
+    .map(normalizePromotionAddress)
+    .filter(Boolean);
+  return recipients.some((address) => address !== LEGACY_PENNY_EMAIL);
 }
 
 export async function listMissingOwnerHeaderQuarantine(
@@ -96,22 +126,25 @@ export async function promoteMissingOwnerHeaderQuarantine(
     duplicate: 0,
     quarantined: 0,
     errors: 0,
+    skipped: 0,
     errorIds: [],
     dryRunIds: [],
   };
 
   for (const row of rows) {
-    if (opts.dryRun) {
-      result.dryRunIds.push(row.id);
-      continue;
-    }
-
     const outcome = await promoteOneQuarantineRow(row, {
       db: opts.db,
       storage,
+      dryRun: opts.dryRun ?? false,
     });
 
     switch (outcome.kind) {
+      case 'dry-run':
+        result.dryRunIds.push(row.id);
+        break;
+      case 'skipped':
+        result.skipped = (result.skipped ?? 0) + 1;
+        break;
       case 'stored':
         result.stored += 1;
         break;
@@ -132,6 +165,8 @@ export async function promoteMissingOwnerHeaderQuarantine(
 }
 
 type PromoteOneOutcome =
+  | { kind: 'dry-run' }
+  | { kind: 'skipped' }
   | { kind: 'stored' }
   | { kind: 'duplicate' }
   | { kind: 'quarantined' }
@@ -139,7 +174,7 @@ type PromoteOneOutcome =
 
 async function promoteOneQuarantineRow(
   row: PromoteQuarantineRow,
-  opts: { db: DB; storage: S3Storage },
+  opts: { db: DB; storage: S3Storage; dryRun: boolean },
 ): Promise<PromoteOneOutcome> {
   const { db, storage } = opts;
   const meta = {
@@ -150,21 +185,51 @@ async function promoteOneQuarantineRow(
   let parsed: ParsedInboundMessage | undefined;
 
   try {
+    const object = await storage.getObject(row.rawMimeS3Key);
+    if (!object) {
+      return { kind: 'error', message: `missing s3 object ${row.rawMimeS3Key}` };
+    }
+
+    // Dry-run and duplicate checks must not stream attachments to S3. The
+    // convenience parser only inspects headers here; promotion parses again
+    // through the streaming parser so existing attachment cleanup remains.
+    const headerSignals = await parsePromotionSignals(object.body);
+    if (!isPromotableReserveCloudStaff(headerSignals)) {
+      return { kind: 'skipped' };
+    }
+
+    if (opts.dryRun) {
+      return { kind: 'dry-run' };
+    }
+
     const existing = await findExistingMessageAnyDirection(db, meta);
     if (existing) {
       await db.delete(mailIngestQuarantine).where(eq(mailIngestQuarantine.id, row.id));
       return { kind: 'duplicate' };
     }
 
-    const object = await storage.getObject(row.rawMimeS3Key);
-    if (!object) {
-      return { kind: 'error', message: `missing s3 object ${row.rawMimeS3Key}` };
-    }
-
     parsed = await parseRawMessage(object.body, {
       messageId,
       storage,
     });
+
+    // Re-check parser output before persistence. This keeps the exact sender
+    // and recipient gate attached to the bytes being promoted.
+    if (!isPromotableReserveCloudStaff(parsed)) {
+      if (parsed.attachments.length > 0) {
+        await cleanupPartialParseFailureAttachments({
+          db,
+          storage,
+          attachments: parsed.attachments,
+          meta: {
+            ...meta,
+            messageId,
+            rawMimeS3Key: row.rawMimeS3Key,
+          },
+        });
+      }
+      return { kind: 'skipped' };
+    }
 
     const persistResult = await persistInboundMessage(
       parsed,
@@ -178,6 +243,7 @@ async function promoteOneQuarantineRow(
         db,
         storage,
         promoteQuarantineId: row.id,
+        directionOverride: 'outbound',
       },
     );
 
@@ -287,6 +353,9 @@ export function formatPromoteSummary(result: PromoteQuarantineResult): string {
     `quarantined=${result.quarantined}`,
     `errors=${result.errors}`,
   ];
+  if (result.skipped !== undefined) {
+    parts.push(`skipped=${result.skipped}`);
+  }
   if (result.dryRunIds.length > 0) {
     parts.push(`dry_run_ids=${result.dryRunIds.join(',')}`);
   }
@@ -294,4 +363,29 @@ export function formatPromoteSummary(result: PromoteQuarantineResult): string {
     parts.push(`error_ids=${result.errorIds.join(',')}`);
   }
   return parts.join(' ');
+}
+
+function normalizePromotionAddress(raw: string | null | undefined): string {
+  const value = (raw ?? '').trim().toLowerCase();
+  return value.match(/<([^>]+)>/)?.[1]?.trim() ?? value;
+}
+
+async function parsePromotionSignals(raw: Buffer): Promise<PromoteReserveCloudStaffSignals> {
+  const parsed = await simpleParser(raw, { skipHtmlToText: true });
+  return {
+    fromAddress: parsed.from?.value[0]?.address ?? null,
+    toAddresses: addressValues(parsed.to),
+    ccAddresses: addressValues(parsed.cc),
+    bccAddresses: addressValues(parsed.bcc),
+  };
+}
+
+function addressValues(value: AddressObject | AddressObject[] | undefined): string[] {
+  const objects = value ? (Array.isArray(value) ? value : [value]) : [];
+  return objects.flatMap((object) => object.value.flatMap(flattenEmailAddress));
+}
+
+function flattenEmailAddress(value: EmailAddress): string[] {
+  if (value.address) return [value.address];
+  return value.group?.flatMap(flattenEmailAddress) ?? [];
 }

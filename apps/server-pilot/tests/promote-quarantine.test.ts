@@ -1,6 +1,7 @@
 import {
   assertPromoteEnv,
   formatPromoteSummary,
+  isPromotableReserveCloudStaff,
   parsePromoteCliArgs,
   promoteMissingOwnerHeaderQuarantine,
   PromoteEnvError,
@@ -57,13 +58,13 @@ async function seedCenturionAliases(db: DB): Promise<void> {
 function centurionInboundEml(): Buffer {
   return Buffer.from(
     [
-      'From: guest@example.com',
-      'To: centurion@legacyhotels.co.za',
-      'Subject: promote AE5 inbound',
+      'From: pmbobo@eu.mail.reservecloud.com',
+      'To: centurion@legacyhotels.co.za, guest@example.com',
+      'Subject: promote ReserveCloud staff',
       'MIME-Version: 1.0',
       'Content-Type: text/plain; charset=utf-8',
       '',
-      'Unstamped Centurion copy for promote.',
+      'ReserveCloud staff copy for promote.',
     ].join('\r\n'),
     'utf-8',
   );
@@ -72,8 +73,8 @@ function centurionInboundEml(): Buffer {
 function centurionInboundWithAttachmentEml(): Buffer {
   return Buffer.from(
     [
-      'From: guest@example.com',
-      'To: centurion@legacyhotels.co.za',
+      'From: pmbobo@eu.mail.reservecloud.com',
+      'To: centurion@legacyhotels.co.za, guest@example.com',
       'Subject: promote cleanup retry',
       'MIME-Version: 1.0',
       'Content-Type: multipart/mixed; boundary="promote-boundary"',
@@ -81,7 +82,7 @@ function centurionInboundWithAttachmentEml(): Buffer {
       '--promote-boundary',
       'Content-Type: text/plain; charset=utf-8',
       '',
-      'Unstamped Centurion copy for promote cleanup.',
+      'ReserveCloud staff copy for promote cleanup.',
       '--promote-boundary',
       'Content-Type: application/octet-stream; name="promote.bin"',
       'Content-Disposition: attachment; filename="promote.bin"',
@@ -89,6 +90,36 @@ function centurionInboundWithAttachmentEml(): Buffer {
       '',
       'cHJvbW90ZQ==',
       '--promote-boundary--',
+    ].join('\r\n'),
+    'utf-8',
+  );
+}
+
+function reserveCloudWrapperEml(): Buffer {
+  return Buffer.from(
+    [
+      'From: pmbobo@eu.mail.reservecloud.com',
+      'To: pmbobo@legacyhotels.co.za',
+      'Subject: ReserveCloud wrapper',
+      'MIME-Version: 1.0',
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      'Wrapper copy.',
+    ].join('\r\n'),
+    'utf-8',
+  );
+}
+
+function reserveCloudNoreplyEml(): Buffer {
+  return Buffer.from(
+    [
+      'From: noreply@noreply.reservecloud.com',
+      'To: centurion@legacyhotels.co.za, guest@example.com',
+      'Subject: ReserveCloud automated notice',
+      'MIME-Version: 1.0',
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      'Automated notice.',
     ].join('\r\n'),
     'utf-8',
   );
@@ -114,6 +145,7 @@ async function seedMissingOwnerQuarantine(args: {
   pop3Uidl: string;
   raw: Buffer;
   quarantineId?: string;
+  reason?: string;
 }): Promise<{ quarantineId: string; rawMimeS3Key: string }> {
   const ingestMailboxId = 'ingest-nava-legacy';
   const rawMimeS3Key = rawMimeKey({
@@ -131,7 +163,7 @@ async function seedMissingOwnerQuarantine(args: {
     ingestMailboxId,
     pop3Uidl: args.pop3Uidl,
     rawMimeS3Key,
-    reason: 'missing_owner_header',
+    reason: args.reason ?? 'missing_owner_header',
     ownerHeaderValue: null,
     parsedHeaders: { subject: 'promote AE5 inbound' },
   });
@@ -139,6 +171,56 @@ async function seedMissingOwnerQuarantine(args: {
 }
 
 describe('promote-quarantine cli helpers', () => {
+  it('promotes only exact ReserveCloud staff with a non-wrapper recipient', () => {
+    expect(
+      isPromotableReserveCloudStaff({
+        fromAddress: 'pmbobo@eu.mail.reservecloud.com',
+        toAddresses: ['guest@example.com'],
+        ccAddresses: [],
+        bccAddresses: [],
+      }),
+    ).toBe(true);
+  });
+
+  it('skips Penny Legacy-only wrappers', () => {
+    expect(
+      isPromotableReserveCloudStaff({
+        fromAddress: 'pmbobo@eu.mail.reservecloud.com',
+        toAddresses: ['pmbobo@legacyhotels.co.za'],
+        ccAddresses: [],
+        bccAddresses: [],
+      }),
+    ).toBe(false);
+  });
+
+  it('skips noreply, other ReserveCloud senders, and empty recipients', () => {
+    const base = {
+      toAddresses: ['guest@example.com'],
+      ccAddresses: [],
+      bccAddresses: [],
+    };
+    expect(
+      isPromotableReserveCloudStaff({
+        ...base,
+        fromAddress: 'noreply@noreply.reservecloud.com',
+      }),
+    ).toBe(false);
+    expect(
+      isPromotableReserveCloudStaff({
+        ...base,
+        fromAddress: 'other@eu.mail.reservecloud.com',
+      }),
+    ).toBe(false);
+    expect(
+      isPromotableReserveCloudStaff({
+        fromAddress: 'pmbobo@eu.mail.reservecloud.com',
+        toAddresses: [],
+        ccAddresses: [],
+        bccAddresses: [],
+      }),
+    ).toBe(false);
+  });
+
   it('parses dry-run and limit flags', () => {
     expect(parsePromoteCliArgs(['--dry-run', '--limit', '5'])).toEqual({
       dryRun: true,
@@ -169,17 +251,18 @@ describe('promote-quarantine cli helpers', () => {
         duplicate: 0,
         quarantined: 0,
         errors: 1,
+        skipped: 0,
         errorIds: ['q-err'],
         dryRunIds: [],
       }),
-    ).toBe('scanned=2 stored=1 duplicate=0 quarantined=0 errors=1 error_ids=q-err');
+    ).toBe('scanned=2 stored=1 duplicate=0 quarantined=0 errors=1 skipped=0 error_ids=q-err');
   });
 });
 
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
   'promote missing_owner_header quarantine (seeded, rollback)',
   () => {
-    it('AE5: promotes seeded quarantine to Centurion inbound + triage + deletes quarantine', async () => {
+    it('promotes true ReserveCloud staff to outbound + deletes quarantine', async () => {
       const storage = withFakeS3();
       const pop3Uidl = 'uidl-promote-ae5';
       const raw = centurionInboundEml();
@@ -223,9 +306,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           expect(outcome.quarantineRows).toHaveLength(0);
           expect(outcome.messages).toHaveLength(1);
           expect(outcome.messages[0]!.transportId).toBe('transport-centurion');
-          expect(outcome.messages[0]!.direction).toBe('inbound');
-          expect(outcome.triageRuns.length).toBe(1);
-          expect(outcome.triageRuns[0]!.runKind).toBe('inbound_triage');
+          expect(outcome.messages[0]!.direction).toBe('outbound');
+          expect(outcome.triageRuns).toHaveLength(0);
         });
       } finally {
         if (prevGate === undefined) delete process.env.AI_WRITE_GATE_ENABLED;
@@ -343,6 +425,54 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         expect(outcome.result.errors).toBe(1);
         expect(outcome.result.errorIds).toContain(outcome.quarantineId);
         expect(outcome.quarantineRows).toHaveLength(1);
+      });
+    }, 30000);
+
+    it('skips wrappers, noreply, and rows with another quarantine reason', async () => {
+      const storage = withFakeS3();
+
+      await withIngestOwnerHeaderEnv('false', async () => {
+        const outcome = await withSeededTestDb(async (db) => {
+          const wrapper = await seedMissingOwnerQuarantine({
+            db,
+            storage,
+            pop3Uidl: 'uidl-promote-wrapper',
+            raw: reserveCloudWrapperEml(),
+          });
+          const noreply = await seedMissingOwnerQuarantine({
+            db,
+            storage,
+            pop3Uidl: 'uidl-promote-noreply',
+            raw: reserveCloudNoreplyEml(),
+          });
+          const otherReason = await seedMissingOwnerQuarantine({
+            db,
+            storage,
+            pop3Uidl: 'uidl-promote-other-reason',
+            raw: centurionInboundEml(),
+            reason: 'unknown_transport',
+          });
+
+          const result = await promoteMissingOwnerHeaderQuarantine({
+            db,
+            storage,
+          });
+          const rows = await db.select().from(mailIngestQuarantine);
+          const messages = await db.select().from(message);
+          return {
+            result,
+            rows,
+            messages,
+            ids: [wrapper.quarantineId, noreply.quarantineId, otherReason.quarantineId],
+          };
+        });
+
+        expect(outcome.result.scanned).toBe(2);
+        expect(outcome.result.skipped).toBe(2);
+        expect(outcome.result.stored).toBe(0);
+        expect(outcome.result.errors).toBe(0);
+        expect(outcome.rows.map((row) => row.id)).toEqual(expect.arrayContaining(outcome.ids));
+        expect(outcome.messages).toHaveLength(0);
       });
     }, 30000);
 

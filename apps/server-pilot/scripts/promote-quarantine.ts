@@ -6,17 +6,17 @@
  *   pnpm --filter @zero/server tsx scripts/promote-quarantine.ts --dry-run
  *   pnpm --filter @zero/server tsx scripts/promote-quarantine.ts --limit 10
  */
-import { drizzle } from 'drizzle-orm/postgres-js';
-import postgres from 'postgres';
-import * as schema from '../src/db/schema/index.js';
-import { parseEnv } from '../src/env.js';
-import { getPostgresSslOptions } from '../src/db/ssl-config.js';
 import {
   formatPromoteSummary,
   parsePromoteCliArgs,
   promoteMissingOwnerHeaderQuarantine,
   PromoteEnvError,
 } from '../src/mail/ingest/promote-quarantine.js';
+import { getPostgresSslOptions } from '../src/db/ssl-config.js';
+import * as schema from '../src/db/schema/index.js';
+import { drizzle } from 'drizzle-orm/postgres-js';
+import { parseEnv } from '../src/env.js';
+import postgres from 'postgres';
 
 async function main(): Promise<void> {
   const cli = parsePromoteCliArgs(process.argv.slice(2));
@@ -35,9 +35,10 @@ async function main(): Promise<void> {
       dryRun: cli.dryRun,
       limit: cli.limit,
     });
+    const summary = formatPromoteSummary(result);
     console.log(
       cli.dryRun ? 'promote dry-run:' : 'promote complete:',
-      formatPromoteSummary(result),
+      cli.dryRun ? `promote_candidates=${result.dryRunIds.length} ${summary}` : summary,
     );
     if (result.errors > 0) {
       process.exitCode = 1;
