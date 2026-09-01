@@ -50,6 +50,12 @@ import {
   formatMailboxEntries,
   formatMailboxPlain,
 } from '@/lib/mail/mailbox-format';
+import {
+  MAIL_RECIPIENT_FIELDS_CLASS,
+  MAIL_RECIPIENT_HEADER_CLASS,
+  MAIL_RECIPIENT_ITEM_CLASS,
+  MAIL_RECIPIENT_LINE_CLASS,
+} from '@/lib/mail/mail-recipient-line';
 import { shouldCollapseRecipientToYou } from '@/lib/mail/recipient-you-label';
 import {
   canShowHeaderDebug,
@@ -229,25 +235,24 @@ const renderMailboxSummary = (mailboxes: Sender[]) => {
   return (
     <>
       {visibleRecipients.map(({ key, value }, index) => (
-        <span key={key}>
+        <span key={key} className={MAIL_RECIPIENT_ITEM_CLASS}>
           {value}
-          {index < visibleRecipients.length - 1 ? '; ' : ''}
+          {index < visibleRecipients.length - 1 ? ';' : ''}
         </span>
       ))}
       {hiddenRecipients.length > 0 && (
-        <>
-          {visibleRecipients.length > 0 ? '; ' : ''}
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <span className="cursor-pointer">+{hiddenRecipients.length} others</span>
-            </TooltipTrigger>
-            <TooltipContent className="flex flex-col gap-1">
-              {hiddenRecipients.map(({ key, value }) => (
-                <span key={key}>{value}</span>
-              ))}
-            </TooltipContent>
-          </Tooltip>
-        </>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="cursor-pointer">
+              {visibleRecipients.length > 0 ? '; ' : ''}+{hiddenRecipients.length} others
+            </span>
+          </TooltipTrigger>
+          <TooltipContent className="flex flex-col gap-1">
+            {hiddenRecipients.map(({ key, value }) => (
+              <span key={key}>{value}</span>
+            ))}
+          </TooltipContent>
+        </Tooltip>
       )}
     </>
   );
@@ -1124,18 +1129,18 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
             )}
           </div>
           <div className="flex cursor-pointer flex-col pb-2 duration-200" onClick={toggleCollapse}>
-            <div className="mt-3 flex w-full items-start justify-between gap-4 px-4">
-              <div className="flex w-full justify-center gap-4">
+            <div className="mt-3 flex w-full min-w-0 items-start justify-between gap-4 px-4">
+              <div className="flex w-full min-w-0 justify-center gap-4">
                 <BimiAvatar
                   email={emailData?.sender?.email}
                   name={emailData?.sender?.name}
                   className="mt-3 h-8 w-8"
                 />
 
-                <div className="flex w-full items-center justify-between">
-                  <div className="flex w-full items-center justify-start">
-                    <div className="flex w-full flex-col">
-                      <div className="flex w-full items-center justify-between">
+                <div className="flex w-full min-w-0 items-center justify-between">
+                  <div className="flex w-full min-w-0 items-center justify-start">
+                    <div className="flex w-full min-w-0 flex-col">
+                      <div className="flex w-full min-w-0 items-center justify-between">
                           <div className="flex min-w-0 items-center gap-2">
                             <div className="flex min-w-0 items-center gap-2">
                               <span
@@ -1305,7 +1310,7 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                           </Popover>
                         </div>
 
-                        <div className="flex items-center justify-center">
+                        <div className="flex shrink-0 items-center justify-center">
                           <div className="text-muted-foreground flex-nowrap! mr-2 flex flex-col items-end text-sm font-medium dark:text-[#8C8C8C]">
                             <time className="whitespace-nowrap">
                               {emailData?.receivedOn ? formatDate(emailData.receivedOn) : ''}
@@ -1372,10 +1377,10 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                           </DropdownMenu>
                         </div>
                       </div>
-                      <div className="flex flex-wrap items-start justify-between gap-2">
-                        <div className="flex min-w-0 flex-1 flex-wrap gap-1">
-                          <p className="text-muted-foreground min-w-0 break-all text-sm font-medium dark:text-[#8C8C8C]">
-                            {m['common.mailDisplay.to']()}:{' '}
+                      <div className={MAIL_RECIPIENT_HEADER_CLASS}>
+                        <div className={MAIL_RECIPIENT_FIELDS_CLASS}>
+                          <div className={MAIL_RECIPIENT_LINE_CLASS}>
+                            <span className="shrink-0">{m['common.mailDisplay.to']()}:</span>
                             {shouldCollapseRecipientToYou({
                               folder,
                               to: emailData?.to || [],
@@ -1383,22 +1388,20 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                               mailboxEmail: activeConnection?.email,
                               fromEmail: emailData?.sender?.email,
                             })
-                              ? 'You'
+                              ? <span className={MAIL_RECIPIENT_ITEM_CLASS}>You</span>
                               : renderMailboxSummary(emailData?.to || [])}
-                          </p>
+                          </div>
                           {(emailData?.cc?.length || 0) > 0 && (
-                            <p className="text-muted-foreground min-w-0 break-all text-sm font-medium dark:text-[#8C8C8C]">
-                              {m['common.mailDisplay.cc']()}:{' '}
+                            <div className={MAIL_RECIPIENT_LINE_CLASS}>
+                              <span className="shrink-0">{m['common.mailDisplay.cc']()}:</span>
                               {renderMailboxSummary(emailData?.cc || [])}
-                            </p>
+                            </div>
                           )}
                           {(emailData?.bcc?.length || 0) > 0 && (
-                            <p className="text-muted-foreground min-w-0 break-all text-sm font-medium dark:text-[#8C8C8C]">
-                              Bcc:{' '}
-                              {(emailData?.bcc || [])
-                                .map((recipient) => formatMailboxPlain(recipient))
-                                .join('; ')}
-                            </p>
+                            <div className={MAIL_RECIPIENT_LINE_CLASS}>
+                              <span className="shrink-0">Bcc:</span>
+                              {renderMailboxSummary(emailData?.bcc || [])}
+                            </div>
                           )}
                         </div>
                         <div

@@ -223,6 +223,20 @@ describe('MailContent client fallback hotfix', () => {
     expect(mocks.processEmailContent).not.toHaveBeenCalled();
   });
 
+  it('injects style tag into shadow root for typography and color protection', async () => {
+    renderMailContent({
+      html: '<div class="guestrevu-content"><p>Survey feedback</p></div>',
+    });
+
+    await waitFor(() => {
+      const style = renderedHost()?.shadowRoot?.querySelector('style[data-nava-mail-font="1"]');
+      expect(style).not.toBeNull();
+      expect(style?.textContent).toContain(':host');
+      expect(style?.textContent).toContain('Calibri, Arial, sans-serif');
+      expect(style?.textContent).toContain('color: #000000');
+    });
+  });
+
   it('keeps frontend-only demo on its local rendering path', async () => {
     mocks.frontendOnlyDemo = true;
 

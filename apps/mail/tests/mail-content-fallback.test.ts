@@ -23,7 +23,8 @@ describe('resolveMailDisplayHtml', () => {
       rawHtml: MALICIOUS_RAW_HTML,
     });
 
-    expect(result).toBe('<p>visible</p>');
+    expect(result).toContain('<p>visible</p>');
+    expect(result).toContain('data-nava-mail-font="1"');
     expect(result).not.toContain('<script');
     expect(result).not.toContain('alert');
   });
@@ -35,7 +36,8 @@ describe('resolveMailDisplayHtml', () => {
       rawHtml: MALICIOUS_RAW_HTML,
     });
 
-    expect(result).toBe('<p>visible</p>');
+    expect(result).toContain('<p>visible</p>');
+    expect(result).toContain('data-nava-mail-font="1"');
     expect(result).not.toContain('<script');
   });
 });
