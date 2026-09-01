@@ -638,7 +638,12 @@ describe('AI triage contract', () => {
       primaryFolder: 'bookings',
       priority: 'P3',
     });
-    expect(validateTriageOutput(raw)).toMatchObject({ category: 'new-bookings' });
+    const workflowDispatched = validateTriageOutput(raw);
+    expect(workflowDispatched).toMatchObject({
+      primaryFolder: 'bookings',
+      priority: 'P3',
+    });
+    expectTypeOf(workflowDispatched).toEqualTypeOf<WorkflowTriageOutput | LegacyTriageOutput>();
 
     const legacyRaw: unknown = {
       category: 'ops',
@@ -647,7 +652,18 @@ describe('AI triage contract', () => {
     };
     const legacyDispatched = validateTriageOutput(legacyRaw);
     expect(legacyDispatched).toMatchObject({ category: 'ops' });
-    expectTypeOf(legacyDispatched).toEqualTypeOf<LegacyTriageOutput>();
+    expectTypeOf(legacyDispatched).toEqualTypeOf<WorkflowTriageOutput | LegacyTriageOutput>();
+
+    const typedWorkflow = validateTriageOutput({
+      primaryFolder: 'bookings',
+      priority: 'P3',
+      isSpam: false,
+      humanAction: 'answer_or_quote',
+      confidence: 0.8,
+      rationale: 'workflow caller',
+    });
+    expect(typedWorkflow).toMatchObject({ primaryFolder: 'bookings', priority: 'P3' });
+    expectTypeOf(typedWorkflow).toEqualTypeOf<WorkflowTriageOutput>();
   });
 
   it('accepts workflow triage payload with quote overlay and read-only tool tag', () => {

@@ -129,19 +129,23 @@ export function validateLegacyTriageOutput(raw: unknown): LegacyTriageOutput {
 }
 
 /**
- * Legacy-compatible dispatcher for pre-v6 callers. Canonical v6 callers must
- * use `validateWorkflowTriageOutput`; workflow-shaped input is narrowed to a
- * derived legacy payload here until `mail-triage` and its worker migrate.
+ * Transitional dispatcher: typed workflow callers retain the canonical v6
+ * payload; legacy callers retain the v5 shape until the worker migrates.
  */
 export function validateTriageOutput(raw: LegacyTriageOutput): LegacyTriageOutput;
-export function validateTriageOutput(raw: unknown): LegacyTriageOutput;
-export function validateTriageOutput(raw: unknown): LegacyTriageOutput {
+export function validateTriageOutput(raw: WorkflowTriageOutputInput): WorkflowTriageOutput;
+/** Existing model/security adapters expose a generic JSON object; keep them v5-compatible. */
+export function validateTriageOutput(raw: Record<string, unknown>): LegacyTriageOutput;
+/** Mastra's optional legacy result is still consumed by the v5 worker path. */
+export function validateTriageOutput(raw: Record<string, unknown> | null | undefined): LegacyTriageOutput;
+export function validateTriageOutput(raw: unknown): WorkflowTriageOutput | LegacyTriageOutput;
+export function validateTriageOutput(raw: unknown): WorkflowTriageOutput | LegacyTriageOutput {
   if (
     typeof raw === 'object' &&
     raw !== null &&
     'primaryFolder' in raw
   ) {
-    return toLegacyTriageOutput(validateWorkflowTriageOutput(raw));
+    return validateWorkflowTriageOutput(raw);
   }
   return validateLegacyTriageOutput(raw);
 }
@@ -500,7 +504,7 @@ export interface ApplyDurableTriageInput {
   db: DB;
   transportId: string;
   threadId: string;
-  output: TriageOutput;
+  output: TriageOutput | WorkflowTriageOutput;
   writeGateEnabled: boolean;
 }
 
@@ -509,7 +513,10 @@ export type ApplyMode = 'full' | 'urgency_only' | 'skipped';
 export async function applyDurableTriageResult(
   input: ApplyDurableTriageInput,
 ): Promise<{ applyMode: ApplyMode }> {
-  const output = validateTriageOutput(input.output);
+  const output =
+    'primaryFolder' in input.output
+      ? toLegacyTriageOutput(validateWorkflowTriageOutput(input.output))
+      : validateLegacyTriageOutput(input.output);
   if (!input.writeGateEnabled) return { applyMode: 'skipped' };
 
   const { db, transportId, threadId } = input;
