@@ -14,7 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
-  AI_MANAGED_SLUGS,
+  RETAG_UNSETTLE_SLUGS,
   DEFAULT_MODEL_ID,
   DEFAULT_PROMPT_VERSION,
   TRANSPORT_ID,
@@ -443,7 +443,7 @@ export function createPostgresSnapshotDriver(sql) {
             JOIN mail_category c ON c.id = mtc.category_id
             WHERE mtc.thread_id = t.id
               AND mtc.transport_id = ${TRANSPORT_ID}
-              AND c.slug = ANY(${AI_MANAGED_SLUGS})
+              AND c.slug = ANY(${RETAG_UNSETTLE_SLUGS})
           ), '{}') AS ai_category_slugs,
           COALESCE((
             SELECT array_agg(c.slug ORDER BY c.slug)
@@ -451,7 +451,7 @@ export function createPostgresSnapshotDriver(sql) {
             JOIN mail_category c ON c.id = mtc.category_id
             WHERE mtc.thread_id = t.id
               AND mtc.transport_id = ${TRANSPORT_ID}
-              AND NOT (c.slug = ANY(${AI_MANAGED_SLUGS}))
+              AND NOT (c.slug = ANY(${RETAG_UNSETTLE_SLUGS}))
           ), '{}') AS custom_category_slugs,
           EXISTS (
             SELECT 1

@@ -92,6 +92,7 @@ function createMemoryDriver(seed: {
   preferences?: Record<string, PrefKind>;
   existingKeys?: string[];
   failAfterInsert?: boolean;
+  lockAfterInsert?: boolean;
 }) {
   const threads = new Map(seed.threads.map((t) => [t.threadId, { ...t, aiCategorySlugs: [...t.aiCategorySlugs] }]));
   const preferences = new Map(Object.entries(seed.preferences ?? {}));
@@ -108,6 +109,7 @@ function createMemoryDriver(seed: {
     });
   }
   let failAfterInsert = seed.failAfterInsert ?? false;
+  let lockAfterInsert = seed.lockAfterInsert ?? false;
 
   return {
     threads,
@@ -159,6 +161,10 @@ function createMemoryDriver(seed: {
             async insertRunReturning(row) {
               if (runs.has(row.idempotencyKey)) return null;
               runs.set(row.idempotencyKey, { ...row, state: 'queued' });
+              if (lockAfterInsert) {
+                const t = threads.get(row.threadId);
+                if (t) t.spamUserLockedAt = new Date('2026-07-01T11:00:00.000Z');
+              }
               if (failAfterInsert) {
                 throw new Error('forced post-insert failure');
               }
@@ -173,7 +179,7 @@ function createMemoryDriver(seed: {
             },
             async clearSpamAt(threadId) {
               const t = threads.get(threadId);
-              if (t) t.spamAt = null;
+              if (t && !t.spamUserLockedAt) t.spamAt = null;
             },
           });
         } catch (err) {
@@ -719,6 +725,47 @@ describe('runCenturionRetag idempotency + skips', () => {
         manifest,
       }),
     ).rejects.toThrow(/trigger drift/i);
+  });
+
+  it('preserves spam_at when user lock appears before guarded clear', async () => {
+    const createdAt = '2026-07-01T10:00:00.000Z';
+    const spamAt = '2026-07-01T09:00:00.000Z';
+    const mem = createMemoryDriver({
+      lockAfterInsert: true,
+      threads: [
+        {
+          threadId: 't-lock-race',
+          spamAt: new Date(spamAt),
+          spamUserLockedAt: null,
+          latestInboundId: 'm-lock-race',
+          latestInboundFrom: 'guest@example.com',
+          latestInboundCreatedAt: new Date(createdAt),
+          aiCategorySlugs: ['ops'],
+          hasInbound: true,
+        },
+      ],
+    });
+    const manifest = buildManifest([
+      {
+        threadId: 't-lock-race',
+        triggerMessageId: 'm-lock-race',
+        triggerCreatedAt: createdAt,
+        spamAt,
+        aiCategorySlugs: ['ops'],
+      },
+    ]);
+
+    const result = await runCenturionRetag({
+      driver: mem.driver,
+      dryRun: false,
+      keyPrefix: 'inbound-triage-retag-v5-lock-race',
+      fromDomain: null,
+      manifest,
+    });
+
+    expect(result).toMatchObject({ inserted: 1, mutated: 1 });
+    expect(mem.threads.get('t-lock-race')?.spamAt?.toISOString()).toBe(spamAt);
+    expect(mem.threads.get('t-lock-race')?.spamUserLockedAt).not.toBeNull();
   });
 
   it('refuses pre-state drift and rows absent from manifest', async () => {

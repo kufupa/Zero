@@ -14,6 +14,7 @@ import {
   verifySnapshotAgainstLive,
 } from '../scripts/snapshot-centurion-triage.mjs';
 import {
+  RETAG_UNSETTLE_SLUGS,
   computeCanonicalManifestHash,
   computePreStateHash,
   computeTriggerHash,
@@ -176,7 +177,10 @@ function createMemoryStore(seed: {
       if (!t) throw new Error(`missing thread ${row.threadId}`);
       t.spamAt = row.spamAt;
       t.spamUserLockedAt = row.spamUserLockedAt;
-      t.aiCategorySlugs = [...row.aiCategorySlugs];
+      // Mirror restore SQL: all retag-cleared joins are restorable; customs are not.
+      t.aiCategorySlugs = [...row.aiCategorySlugs].filter((slug) =>
+        RETAG_UNSETTLE_SLUGS.includes(slug),
+      );
     },
     async listSenderPreferenceSnapshot() {
       return [...preferences.entries()].map(([email, kind]) => ({ email, kind }));
@@ -421,6 +425,28 @@ describe('centurion triage snapshot cohorts + hashes', () => {
     });
     // canonical cohort AI/spam/custom-presence must match; generatedAt fixed in test
     expect(after.snapshotHash).toBe(beforeHash);
+  });
+
+  it('restore recovers legacy invent-WHO joins cleared by retag and preserves custom categories', async () => {
+    const store = createMemoryStore({ threads: baseThreads() });
+    const eligible = store.threads.get('t-eligible')!;
+    eligible.aiCategorySlugs = ['ops', 'internal'];
+    eligible.customCategorySlugs = ['vip-desk'];
+    const snapshot = await buildCenturionTriageSnapshot({
+      driver: store.driver,
+      generatedAt: '2026-07-30T12:00:00.000Z',
+    });
+
+    // Retag clears stale invent-WHO joins before enqueue; rollback must put them back.
+    eligible.aiCategorySlugs = ['ops'];
+    await restoreCenturionTriageSnapshot({
+      driver: store.driver,
+      snapshot,
+      dryRun: false,
+    });
+
+    expect(eligible.aiCategorySlugs).toEqual(['internal', 'ops']);
+    expect(eligible.customCategorySlugs).toEqual(['vip-desk']);
   });
 
   it('restore dry-run does not mutate AI-managed state', async () => {

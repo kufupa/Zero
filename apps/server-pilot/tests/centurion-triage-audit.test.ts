@@ -705,6 +705,24 @@ describe('strict centurion triage audit', () => {
     expect(forbidden.errors.join('\n')).toMatch(/excluded|unexpected|fresh|prefix/i);
   });
 
+  it('ignores pre-existing spam category joins when auditing excluded state', async () => {
+    const fx = await buildApprovedFixture({
+      mutateLiveAfterSnapshot: (threads) => {
+        // Snapshot deliberately excludes spam joins; audit must not treat this
+        // pre-existing join as a retag mutation on an excluded thread.
+        threads.get('t-locked')!.aiCategorySlugs.push('spam');
+      },
+    });
+    const result = await auditCenturionTriageRetag({
+      driver: fx.auditDriver,
+      snapshot: fx.snapshot,
+      manifest: fx.manifest,
+      applySummary: fx.applySummary,
+      keyPrefix: KEY_PREFIX,
+    });
+    expect(result.ok).toBe(true);
+  });
+
   it('does not compare production input hash to regression hash; uses run-time recompute', async () => {
     const fx = await buildApprovedFixture();
     let seenAsOf: string | null = null;
@@ -771,6 +789,65 @@ describe('strict centurion triage audit', () => {
     expect(result.ok).toBe(true);
   });
 
+  it('matches durable worker contract for spam plus urgent output', async () => {
+    const fx = await buildApprovedFixture({
+      mutateManifest: (m) =>
+        rehashManifest({
+          ...m,
+          targets: m.targets.map((t: Record<string, unknown>) => ({
+            ...t,
+            approvedCategory: 'spam',
+            approvedUrgent: true,
+          })),
+        }),
+      mutateRun: (run) => {
+        run.metrics = {
+          inputHash: run.metrics.inputHash,
+          applyMode: 'full',
+          canonicalOutput: {
+            primaryFolder: 'bookings',
+            urgent: true,
+            isSpam: true,
+          },
+        };
+      },
+      mutateLiveAfterSnapshot: (threads) => {
+        threads.get('t-eligible')!.aiCategorySlugs = [];
+        threads.get('t-eligible')!.spamAt = '2026-07-30T13:00:00.000Z';
+      },
+    });
+    const result = await auditCenturionTriageRetag({
+      driver: fx.auditDriver,
+      snapshot: fx.snapshot,
+      manifest: fx.manifest,
+      applySummary: fx.applySummary,
+      keyPrefix: KEY_PREFIX,
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it('requires approvedUrgent boolean for every target', async () => {
+    const fx = await buildApprovedFixture({
+      mutateManifest: (m) =>
+        rehashManifest({
+          ...m,
+          targets: m.targets.map((t: Record<string, unknown>) => {
+            const { approvedUrgent: _ignored, ...withoutUrgent } = t;
+            return withoutUrgent;
+          }),
+        }),
+    });
+    const result = await auditCenturionTriageRetag({
+      driver: fx.auditDriver,
+      snapshot: fx.snapshot,
+      manifest: fx.manifest,
+      applySummary: fx.applySummary,
+      keyPrefix: KEY_PREFIX,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.errors.join('\n')).toMatch(/approved urgent|urgent required/i);
+  });
+
   it('audits canonical v6 output: spam has no primary; non-spam uses workflow primary', async () => {
     const fx = await buildApprovedFixture({
       mutateManifest: (m) =>
@@ -778,7 +855,9 @@ describe('strict centurion triage audit', () => {
           ...m,
           targets: m.targets.map((t: Record<string, unknown>) => ({
             ...t,
-            approvedCategory: 'bookings',
+            approvedPrimaryFolder: 'bookings',
+            approvedIsSpam: false,
+            approvedCategory: undefined,
             approvedUrgent: false,
           })),
         }),
@@ -864,6 +943,6 @@ describe('strict centurion triage audit', () => {
       ),
       'utf8',
     );
-    expect(src).toMatch(/AI_MANAGED_SLUGS,\s*'spam'/);
+    expect(src).toMatch(/RETAG_UNSETTLE_SLUGS,\s*'spam'/);
   });
 });

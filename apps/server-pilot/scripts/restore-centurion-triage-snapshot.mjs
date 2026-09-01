@@ -1,7 +1,8 @@
 /**
  * Restore Centurion AI-managed triage state from a cutover snapshot.
  *
- * Restores only v6 AI-managed legacy/workflow category joins + thread spam/lock fields.
+ * Restores only v6 retag-managed legacy/workflow/invent-WHO category joins
+ * + thread spam/lock fields.
  * Preserves custom categories and sender preferences.
  *
  * Note: no shebang — Windows CRLF + shebang breaks Vitest/Vite transform.
@@ -19,7 +20,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
-  AI_MANAGED_SLUGS,
+  RETAG_UNSETTLE_SLUGS,
   TRANSPORT_ID,
 } from './retag-centurion-triage.mjs';
 import {
@@ -127,17 +128,17 @@ export function createPostgresRestoreDriver(sql) {
           SELECT id, slug
           FROM mail_category
           WHERE transport_id = ${TRANSPORT_ID}
-            AND slug = ANY(${AI_MANAGED_SLUGS})
+            AND slug = ANY(${RETAG_UNSETTLE_SLUGS})
         `;
         const idBySlug = new Map(categoryRows.map((r) => [r.slug, r.id]));
-        const allAiIds = categoryRows.map((r) => r.id);
+        const allRetagManagedIds = categoryRows.map((r) => r.id);
 
-        if (allAiIds.length > 0) {
+        if (allRetagManagedIds.length > 0) {
           await tx`
             DELETE FROM mail_thread_category
             WHERE thread_id = ${row.threadId}
               AND transport_id = ${TRANSPORT_ID}
-              AND category_id = ANY(${allAiIds})
+              AND category_id = ANY(${allRetagManagedIds})
           `;
         }
 

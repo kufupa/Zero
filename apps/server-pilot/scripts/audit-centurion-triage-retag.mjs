@@ -20,7 +20,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
-  AI_MANAGED_SLUGS,
+  RETAG_UNSETTLE_SLUGS,
   WORKFLOW_PRIMARY_SLUGS,
   TRANSPORT_ID,
   retagIdempotencyKey,
@@ -146,7 +146,7 @@ function runOutputDecision(metrics) {
 function expectedDurableSlugs(decision) {
   // spam is persisted via mail_thread.spam_at, not an AI-managed category join.
   if (decision.isSpam) {
-    return decision.urgent ? ['urgent'] : [];
+    return [];
   }
   if (!decision.primaryFolder) return decision.urgent ? ['urgent'] : [];
   const slugs = [String(decision.primaryFolder)];
@@ -274,13 +274,10 @@ export async function auditCenturionTriageRetag(opts) {
     if (target.preStateHash !== snap.preStateHash) {
       push(`pre-state hash mismatch for ${target.threadId}`);
     }
-    if (
-      target.approvedCategory == null &&
-      target.approvedPrimaryFolder == null
-    ) {
+    if (target.approvedCategory == null && target.approvedPrimaryFolder == null) {
       push(`approved category/urgent required for ${target.threadId}`);
     }
-    if (target.approvedUrgent != null && typeof target.approvedUrgent !== 'boolean') {
+    if (typeof target.approvedUrgent !== 'boolean') {
       push(`approved urgent must be boolean for ${target.threadId}`);
     }
   }
@@ -409,7 +406,8 @@ export async function auditCenturionTriageRetag(opts) {
     } else if (canonicalV6 && !actualSlugs.some((slug) => isCanonicalWorkflowPrimary(slug))) {
       push(`durable workflow primary missing for ${target.threadId}`);
     }
-    if (Boolean(durable.aiCategorySlugs?.includes('urgent')) !== approved.urgent) {
+    const expectedUrgent = !approved.isSpam && approved.urgent;
+    if (Boolean(durable.aiCategorySlugs?.includes('urgent')) !== expectedUrgent) {
       push(`durable urgent mismatch for ${target.threadId}`);
     }
   }
@@ -430,7 +428,14 @@ export async function auditCenturionTriageRetag(opts) {
   for (const threadId of excluded) {
     const snap = snapByThread.get(threadId);
     const live = await opts.driver.listDurableAiState(threadId);
-    const liveSlugs = [...(live.aiCategorySlugs ?? [])].map(String).sort();
+    // Snapshot intentionally excludes spam joins; audit driver includes them
+    // so target spam-primary mutations remain visible. Compare retag-managed
+    // joins only for excluded threads to avoid false mutation failures from a
+    // pre-existing spam join.
+    const liveSlugs = [...(live.aiCategorySlugs ?? [])]
+      .map(String)
+      .filter((slug) => slug !== 'spam')
+      .sort();
     const snapSlugs = [...(snap.aiCategorySlugs ?? [])].map(String).sort();
     if (JSON.stringify(liveSlugs) !== JSON.stringify(snapSlugs)) {
       push(`excluded-thread mutation (categories) for ${threadId} cohort=${snap.cohort}`);
@@ -537,7 +542,7 @@ export function createPostgresAuditDriver(sql) {
         JOIN mail_category c ON c.id = mtc.category_id
         WHERE mtc.thread_id = ${threadId}
           AND mtc.transport_id = ${TRANSPORT_ID}
-          AND c.slug = ANY(${[...AI_MANAGED_SLUGS, 'spam']})
+          AND c.slug = ANY(${[...RETAG_UNSETTLE_SLUGS, 'spam']})
         ORDER BY c.slug
       `;
       return {

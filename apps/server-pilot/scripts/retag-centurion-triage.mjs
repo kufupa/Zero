@@ -69,7 +69,11 @@ export const LEGACY_INVENT_WHO_SLUGS = [
   'travel-agents',
 ];
 
-/** All stale AI/invent-WHO joins cleared before a newly inserted v6 run. */
+/**
+ * All joins cleared before a newly inserted v6 run. Snapshot/restore uses the
+ * same set so rollback can recover legacy invent-WHO joins; other categories
+ * remain custom and untouched.
+ */
 export const RETAG_UNSETTLE_SLUGS = [
   ...new Set([
     ...AI_MANAGED_SLUGS,
@@ -325,7 +329,7 @@ export function createPostgresRetagDriver(sql) {
                 JOIN mail_category c ON c.id = mtc.category_id
                 WHERE mtc.thread_id = t.id
                   AND mtc.transport_id = ${TRANSPORT_ID}
-                  AND c.slug = ANY(${AI_MANAGED_SLUGS})
+                  AND c.slug = ANY(${RETAG_UNSETTLE_SLUGS})
               ), '{}') AS ai_category_slugs,
               EXISTS (
                 SELECT 1
@@ -373,7 +377,7 @@ export function createPostgresRetagDriver(sql) {
                 JOIN mail_category c ON c.id = mtc.category_id
                 WHERE mtc.thread_id = t.id
                   AND mtc.transport_id = ${TRANSPORT_ID}
-                  AND c.slug = ANY(${AI_MANAGED_SLUGS})
+                  AND c.slug = ANY(${RETAG_UNSETTLE_SLUGS})
               ), '{}') AS ai_category_slugs,
               EXISTS (
                 SELECT 1
