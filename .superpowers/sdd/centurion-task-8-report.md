@@ -58,3 +58,23 @@ No `TEST_DATABASE_URL`/disposable Postgres or Docker DB was available. Pilot RDS
 - `apps/server-pilot/tests/categories-contract.test.ts`
 - `apps/server-pilot/tests/task-8-workflow-durable-apply.test.ts`
 - `.superpowers/sdd/centurion-task-8-report.md`
+
+## Review fix (2026-09-01)
+
+- Removed the workflow-gate guard from the existing spam-only/no-primary not-spam rewrite path. With `workflowTriageEnabled: false`, workflow output still converts through the legacy category mapping, clears `spam_at`, and joins the mapped legacy primary; only workflow-primary join selection remains gated.
+- Added a flag-off regression assertion for full apply, `spam_at` clearing, and `new-bookings` legacy join. Existing flag-on coverage continues to assert workflow-primary joins and settled urgency-only behavior; lock/block precedence remains unchanged.
+- Normalized `apps/server-pilot/tests/categories-contract.test.ts` from CRLF to LF.
+
+### Review-fix verification
+
+```text
+env -u DATABASE_URL -u VITEST_ALLOW_PILOT_RDS -u NODE_ENV pnpm --filter @zero/server exec vitest run \
+  tests/task-8-workflow-durable-apply.test.ts \
+  tests/categories-contract.test.ts \
+  tests/ai-triage-contract.test.ts \
+  tests/seed-contract.test.ts \
+  tests/ai-worker-contract.test.ts
+# 5 files passed; 67 passed; 37 skipped
+```
+
+Disposable DB remained unavailable, so DB-gated regression cases safely skipped; no pilot RDS access used. Scoped `git diff --check` passes for all fix paths.

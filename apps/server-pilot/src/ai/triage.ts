@@ -956,7 +956,6 @@ export async function applyDurableTriageResult(
   const blocked = preference === 'block';
   const exceptionNotSpam = !blocked && (preference === 'allow' || notSpam);
   const workflowUnsettledNotSpam =
-    workflowTriageEnabled &&
     !blocked &&
     Boolean(
       workflowOutput &&

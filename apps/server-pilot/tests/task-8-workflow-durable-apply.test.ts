@@ -129,7 +129,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Task 8 workflow durable apply
         subject: 'Booking inquiry',
         snippet: 'Need a room',
         latestMessageAt: new Date(),
-        spamAt: null,
+        spamAt: new Date(),
       });
 
       const result = await applyDurableTriageResult({
@@ -141,6 +141,12 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Task 8 workflow durable apply
         output: workflowOutput({ primaryFolder: 'bookings' }),
       });
       expect(result.applyMode).toBe('full');
+
+      const [thread] = await db
+        .select({ spamAt: mailThread.spamAt })
+        .from(mailThread)
+        .where(eq(mailThread.id, threadId));
+      expect(thread?.spamAt).toBeNull();
 
       const rows = await db
         .select({ slug: mailCategory.slug })
