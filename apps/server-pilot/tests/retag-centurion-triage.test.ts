@@ -4,11 +4,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import {
+  AI_MANAGED_SLUGS,
+  DEFAULT_KEY_PREFIX,
+  DEFAULT_PROMPT_VERSION,
   parseArgs,
   retagIdempotencyKey,
   computeCanonicalManifestHash,
   computeTriggerHash,
   computePreStateHash,
+  RETAG_UNSETTLE_SLUGS,
   validateApprovedRolloutManifest,
   runCenturionRetag,
 } from '../scripts/retag-centurion-triage.mjs';
@@ -188,7 +192,7 @@ describe('retag-centurion-triage CLI args', () => {
   it('defaults to dry-run and rejects unknown options', () => {
     expect(parseArgs(['--targets', 'm.json'])).toMatchObject({
       dryRun: true,
-      keyPrefix: 'inbound-triage-retag-v5',
+      keyPrefix: 'inbound-triage-retag-v6',
       targetsPath: 'm.json',
     });
     expect(() => parseArgs([])).toThrow(/--targets|--from-domain/i);
@@ -216,6 +220,40 @@ describe('retag-centurion-triage CLI args', () => {
       fromDomain: 'renniesbcdtravel.com',
       targetsPath: null,
     });
+  });
+
+  it('uses v6 prompt/key defaults and manages legacy plus workflow slugs', () => {
+    expect(DEFAULT_PROMPT_VERSION).toBe('triage-v6');
+    expect(DEFAULT_KEY_PREFIX).toBe('inbound-triage-retag-v6');
+    expect(AI_MANAGED_SLUGS).toEqual(
+      expect.arrayContaining([
+        'new-bookings',
+        'groups-events',
+        'at-risk',
+        'ops',
+        'bookings',
+        'manage-stay',
+        'confirm-reconcile',
+        'money-billing',
+        'documents-delivery',
+        'exceptions-recovery',
+        'guest-experience',
+        'internal-partner',
+        'automated-channel',
+        'unknown-review',
+        'urgent',
+      ]),
+    );
+    expect(new Set(AI_MANAGED_SLUGS).size).toBe(15);
+    expect(RETAG_UNSETTLE_SLUGS).toEqual(
+      expect.arrayContaining([
+        ...AI_MANAGED_SLUGS,
+        'internal',
+        'individual',
+        'group',
+        'travel-agents',
+      ]),
+    );
   });
 });
 
@@ -750,6 +788,15 @@ describe('retag script source contract', () => {
     expect(src).toMatch(/export\s+(async\s+)?function\s+runCenturionRetag/);
     expect(src).toMatch(/export\s+function\s+parseArgs/);
     expect(src).toMatch(/export\s+function\s+retagIdempotencyKey/);
+  });
+
+  it('guards spam clearing against a concurrent user spam lock', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join: pathJoin } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const src = readFileSync(pathJoin(here, '../scripts/retag-centurion-triage.mjs'), 'utf8');
+    expect(src).toMatch(/SET\s+spam_at\s*=\s*NULL[\s\S]*spam_user_locked_at\s+IS\s+NULL/i);
   });
 });
 

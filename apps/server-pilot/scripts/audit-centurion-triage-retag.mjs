@@ -11,7 +11,7 @@
  * Usage:
  *   node scripts/audit-centurion-triage-retag.mjs \
  *     --summary apply.json --manifest approved.json \
- *     --snapshot snap.json --key-prefix inbound-triage-retag-v5-...
+ *     --snapshot snap.json --key-prefix inbound-triage-retag-v6-...
  *
  * Env: DATABASE_URL (+ deploy/rds-ca-global.pem for SSL when present)
  */
@@ -21,6 +21,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   AI_MANAGED_SLUGS,
+  WORKFLOW_PRIMARY_SLUGS,
   TRANSPORT_ID,
   retagIdempotencyKey,
   validateApprovedRolloutManifest,
@@ -109,14 +110,52 @@ export function parseAuditArgs(argv) {
   return { summaryPath, manifestPath, snapshotPath, keyPrefix };
 }
 
-function expectedDurableSlugs(approvedCategory, approvedUrgent) {
+function approvedTargetDecision(target) {
+  const primaryFolder = target.approvedPrimaryFolder ?? target.approvedCategory ?? null;
+  const isSpam =
+    typeof target.approvedIsSpam === 'boolean'
+      ? target.approvedIsSpam
+      : String(primaryFolder) === 'spam';
+  return {
+    primaryFolder: isSpam ? null : primaryFolder,
+    isSpam,
+    urgent: Boolean(target.approvedUrgent),
+  };
+}
+
+function runOutputDecision(metrics) {
+  const canonical =
+    metrics?.canonicalOutput && typeof metrics.canonicalOutput === 'object'
+      ? metrics.canonicalOutput
+      : null;
+  const primaryFolder = canonical?.primaryFolder ?? metrics?.primaryFolder ?? metrics?.category ?? null;
+  const isSpam =
+    typeof canonical?.isSpam === 'boolean'
+      ? canonical.isSpam
+      : typeof metrics?.isSpam === 'boolean'
+        ? metrics.isSpam
+        : String(metrics?.category) === 'spam';
+  return {
+    primaryFolder: isSpam ? null : primaryFolder,
+    isSpam,
+    urgent: Boolean(canonical?.urgent ?? metrics?.urgent),
+    rawPrimaryFolder: primaryFolder,
+  };
+}
+
+function expectedDurableSlugs(decision) {
   // spam is persisted via mail_thread.spam_at, not an AI-managed category join.
-  if (String(approvedCategory) === 'spam') {
-    return approvedUrgent ? ['urgent'] : [];
+  if (decision.isSpam) {
+    return decision.urgent ? ['urgent'] : [];
   }
-  const slugs = [String(approvedCategory)];
-  if (approvedUrgent) slugs.push('urgent');
+  if (!decision.primaryFolder) return decision.urgent ? ['urgent'] : [];
+  const slugs = [String(decision.primaryFolder)];
+  if (decision.urgent) slugs.push('urgent');
   return [...new Set(slugs)].sort();
+}
+
+function isCanonicalWorkflowPrimary(slug) {
+  return WORKFLOW_PRIMARY_SLUGS.includes(String(slug));
 }
 
 function snapshotRowByThread(snapshot) {
@@ -235,8 +274,14 @@ export async function auditCenturionTriageRetag(opts) {
     if (target.preStateHash !== snap.preStateHash) {
       push(`pre-state hash mismatch for ${target.threadId}`);
     }
-    if (target.approvedCategory == null || typeof target.approvedUrgent !== 'boolean') {
+    if (
+      target.approvedCategory == null &&
+      target.approvedPrimaryFolder == null
+    ) {
       push(`approved category/urgent required for ${target.threadId}`);
+    }
+    if (target.approvedUrgent != null && typeof target.approvedUrgent !== 'boolean') {
+      push(`approved urgent must be boolean for ${target.threadId}`);
     }
   }
 
@@ -292,10 +337,32 @@ export async function auditCenturionTriageRetag(opts) {
     if (metrics.draftRunId != null && metrics.draftRunId !== '') {
       push(`unexpected draft for ${target.threadId}: ${metrics.draftRunId}`);
     }
-    if (metrics.category !== target.approvedCategory || Boolean(metrics.urgent) !== Boolean(target.approvedUrgent)) {
+    const approved = approvedTargetDecision(target);
+    const actual = runOutputDecision(metrics);
+    if (
+      actual.isSpam !== approved.isSpam ||
+      (!actual.isSpam && actual.primaryFolder !== approved.primaryFolder) ||
+      actual.urgent !== approved.urgent
+    ) {
       push(
-        `approved-output mismatch for ${target.threadId}: got ${metrics.category}/${metrics.urgent} approved ${target.approvedCategory}/${target.approvedUrgent}`,
+        `approved-output mismatch for ${target.threadId}: got ${
+          actual.isSpam ? 'spam' : actual.primaryFolder
+        }/${actual.urgent} approved ${
+          approved.isSpam ? 'spam' : approved.primaryFolder
+        }/${approved.urgent}`,
       );
+    }
+    const canonicalV6 =
+      (metrics?.canonicalOutput && typeof metrics.canonicalOutput === 'object') ||
+      metrics?.primaryFolder != null ||
+      metrics?.isSpam != null ||
+      target.approvedPrimaryFolder != null ||
+      target.approvedIsSpam != null;
+    if (canonicalV6 && actual.rawPrimaryFolder != null && !isCanonicalWorkflowPrimary(actual.rawPrimaryFolder)) {
+      push(`invalid workflow primary for ${target.threadId}: ${actual.rawPrimaryFolder}`);
+    }
+    if (canonicalV6 && !approved.isSpam && !isCanonicalWorkflowPrimary(approved.primaryFolder)) {
+      push(`invalid approved workflow primary for ${target.threadId}: ${approved.primaryFolder}`);
     }
 
     // Worker classifies with asOf=run.createdAt (not finishedAt).
@@ -323,21 +390,26 @@ export async function auditCenturionTriageRetag(opts) {
     }
 
     const durable = await opts.driver.listDurableAiState(target.threadId);
-    const expectedSlugs = expectedDurableSlugs(target.approvedCategory, target.approvedUrgent);
+    const expectedSlugs = expectedDurableSlugs(approved);
     const actualSlugs = [...(durable.aiCategorySlugs ?? [])].map(String).sort();
     if (JSON.stringify(actualSlugs) !== JSON.stringify(expectedSlugs)) {
       push(
         `durable category mismatch for ${target.threadId}: expected ${expectedSlugs.join(',')} got ${actualSlugs.join(',')}`,
       );
     }
-    if (String(target.approvedCategory) === 'spam') {
+    if (approved.isSpam) {
       if (durable.spamAt == null) {
         push(`durable spam mismatch for ${target.threadId}: expected spam_at set`);
       }
+      if (actualSlugs.some((slug) => slug !== 'urgent')) {
+        push(`durable primary mismatch for spam target ${target.threadId}: ${actualSlugs.join(',')}`);
+      }
     } else if (durable.spamAt != null) {
       push(`durable spam mismatch for ${target.threadId}: expected cleared spam_at`);
+    } else if (canonicalV6 && !actualSlugs.some((slug) => isCanonicalWorkflowPrimary(slug))) {
+      push(`durable workflow primary missing for ${target.threadId}`);
     }
-    if (Boolean(durable.aiCategorySlugs?.includes('urgent')) !== Boolean(target.approvedUrgent)) {
+    if (Boolean(durable.aiCategorySlugs?.includes('urgent')) !== approved.urgent) {
       push(`durable urgent mismatch for ${target.threadId}`);
     }
   }
@@ -465,7 +537,7 @@ export function createPostgresAuditDriver(sql) {
         JOIN mail_category c ON c.id = mtc.category_id
         WHERE mtc.thread_id = ${threadId}
           AND mtc.transport_id = ${TRANSPORT_ID}
-          AND c.slug = ANY(${AI_MANAGED_SLUGS})
+          AND c.slug = ANY(${[...AI_MANAGED_SLUGS, 'spam']})
         ORDER BY c.slug
       `;
       return {

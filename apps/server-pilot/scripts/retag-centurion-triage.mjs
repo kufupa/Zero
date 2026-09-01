@@ -5,14 +5,14 @@
  * Invoke via `node scripts/retag-centurion-triage.mjs`.
  *
  * Default: dry-run. Mutate with --apply.
- * Full v5 rollout requires --targets <approved-rollout-manifest.json>.
+ * Full v6 rollout requires --targets <approved-rollout-manifest.json>.
  * --from-domain is subset repair only (never with --targets).
  *
  * Usage:
- *   node scripts/retag-centurion-triage.mjs --targets approved.json --key-prefix inbound-triage-retag-v5-...
- *   node scripts/retag-centurion-triage.mjs --apply --targets approved.json --key-prefix inbound-triage-retag-v5-...
+ *   node scripts/retag-centurion-triage.mjs --targets approved.json --key-prefix inbound-triage-retag-v6-...
+ *   node scripts/retag-centurion-triage.mjs --apply --targets approved.json --key-prefix inbound-triage-retag-v6-...
  *   node scripts/retag-centurion-triage.mjs --from-domain example.com
- *   node scripts/retag-centurion-triage.mjs --apply --from-domain example.com --key-prefix inbound-triage-retag-v5-repair
+ *   node scripts/retag-centurion-triage.mjs --apply --from-domain example.com --key-prefix inbound-triage-retag-v6-repair
  *
  * Env: DATABASE_URL (+ deploy/rds-ca-global.pem for SSL when present)
  */
@@ -28,26 +28,54 @@ const root = path.resolve(__dirname, '..');
 
 export const TRANSPORT_ID = 'transport-centurion';
 export const DEFAULT_MODEL_ID = 'amazon.nova-lite-v1:0';
-export const DEFAULT_PROMPT_VERSION = 'triage-v5';
-export const DEFAULT_KEY_PREFIX = 'inbound-triage-retag-v5';
+export const DEFAULT_PROMPT_VERSION = 'triage-v6';
+export const DEFAULT_KEY_PREFIX = 'inbound-triage-retag-v6';
 
-export const AI_MANAGED_SLUGS = [
+export const LEGACY_PRIMARY_SLUGS = [
   'new-bookings',
   'groups-events',
   'at-risk',
   'ops',
-  'urgent',
 ];
 
-// Legacy invent-WHO slugs - unsettle-only during retag (clear stale joins before triage-v5).
-const LEGACY_INVENT_WHO_SLUGS = [
+export const WORKFLOW_PRIMARY_SLUGS = [
+  'bookings',
+  'groups-events',
+  'manage-stay',
+  'confirm-reconcile',
+  'money-billing',
+  'documents-delivery',
+  'exceptions-recovery',
+  'guest-experience',
+  'internal-partner',
+  'automated-channel',
+  'unknown-review',
+];
+
+/** Legacy + workflow primaries stay managed during v6 cutover; urgent is overlay. */
+export const AI_MANAGED_SLUGS = [
+  ...new Set([
+    ...LEGACY_PRIMARY_SLUGS,
+    ...WORKFLOW_PRIMARY_SLUGS,
+    'urgent',
+  ]),
+];
+
+// Legacy invent-WHO slugs - unsettle-only during retag (clear stale joins before triage-v6).
+export const LEGACY_INVENT_WHO_SLUGS = [
   'internal',
   'individual',
   'group',
   'travel-agents',
 ];
 
-const RETAG_UNSETTLE_SLUGS = [...AI_MANAGED_SLUGS, ...LEGACY_INVENT_WHO_SLUGS];
+/** All stale AI/invent-WHO joins cleared before a newly inserted v6 run. */
+export const RETAG_UNSETTLE_SLUGS = [
+  ...new Set([
+    ...AI_MANAGED_SLUGS,
+    ...LEGACY_INVENT_WHO_SLUGS,
+  ]),
+];
 
 function sha256Hex(text) {
   return createHash('sha256').update(text, 'utf8').digest('hex');
@@ -133,7 +161,7 @@ export function parseArgs(argv) {
   }
 
   if (!dryRun && !targetsPath && !fromDomain) {
-    throw new Error('full v5 --apply requires --targets <approved-rollout-manifest.json>');
+    throw new Error('full v6 --apply requires --targets <approved-rollout-manifest.json>');
   }
   if (targetsPath && fromDomain) {
     throw new Error('full rollout --targets must not use --from-domain (subset repair only)');
@@ -450,6 +478,7 @@ export function createPostgresRetagDriver(sql) {
               SET spam_at = NULL, updated_at = now()
               WHERE id = ${threadId}
                 AND transport_id = ${TRANSPORT_ID}
+                AND spam_user_locked_at IS NULL
             `;
           },
         });

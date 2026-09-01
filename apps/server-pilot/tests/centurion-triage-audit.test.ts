@@ -770,4 +770,100 @@ describe('strict centurion triage audit', () => {
     });
     expect(result.ok).toBe(true);
   });
+
+  it('audits canonical v6 output: spam has no primary; non-spam uses workflow primary', async () => {
+    const fx = await buildApprovedFixture({
+      mutateManifest: (m) =>
+        rehashManifest({
+          ...m,
+          targets: m.targets.map((t: Record<string, unknown>) => ({
+            ...t,
+            approvedCategory: 'bookings',
+            approvedUrgent: false,
+          })),
+        }),
+      mutateRun: (run) => {
+        run.metrics = {
+          inputHash: run.metrics.inputHash,
+          applyMode: 'full',
+          canonicalOutput: {
+            primaryFolder: 'bookings',
+            urgent: false,
+            isSpam: false,
+          },
+        };
+      },
+    });
+    fx.threads.get('t-eligible')!.aiCategorySlugs = ['bookings'];
+    fx.threads.get('t-eligible')!.spamAt = null;
+
+    const result = await auditCenturionTriageRetag({
+      driver: fx.auditDriver,
+      snapshot: fx.snapshot,
+      manifest: fx.manifest,
+      applySummary: fx.applySummary,
+      keyPrefix: KEY_PREFIX,
+    });
+    expect(result.ok).toBe(true);
+
+    const spam = await buildApprovedFixture({
+      mutateManifest: (m) =>
+        rehashManifest({
+          ...m,
+          targets: m.targets.map((t: Record<string, unknown>) => ({
+            ...t,
+            approvedCategory: 'spam',
+            approvedUrgent: false,
+          })),
+        }),
+      mutateRun: (run) => {
+        run.metrics = {
+          inputHash: run.metrics.inputHash,
+          applyMode: 'full',
+          canonicalOutput: {
+            primaryFolder: 'bookings',
+            urgent: false,
+            isSpam: true,
+          },
+        };
+      },
+      mutateLiveAfterSnapshot: (threads) => {
+        threads.get('t-eligible')!.aiCategorySlugs = [];
+        threads.get('t-eligible')!.spamAt = '2026-07-30T13:00:00.000Z';
+      },
+    });
+    const spamResult = await auditCenturionTriageRetag({
+      driver: spam.auditDriver,
+      snapshot: spam.snapshot,
+      manifest: spam.manifest,
+      applySummary: spam.applySummary,
+      keyPrefix: KEY_PREFIX,
+    });
+    expect(spamResult.ok).toBe(true);
+
+    spam.threads.get('t-eligible')!.aiCategorySlugs = ['spam'];
+    const spamJoinResult = await auditCenturionTriageRetag({
+      driver: spam.auditDriver,
+      snapshot: spam.snapshot,
+      manifest: spam.manifest,
+      applySummary: spam.applySummary,
+      keyPrefix: KEY_PREFIX,
+    });
+    expect(spamJoinResult.ok).toBe(false);
+    expect(spamJoinResult.errors.join('\n')).toMatch(/primary|category/i);
+  });
+
+  it('loads spam joins into durable audit state instead of hiding them as non-managed', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { dirname, join: pathJoin } = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+    const src = readFileSync(
+      pathJoin(
+        dirname(fileURLToPath(import.meta.url)),
+        '../scripts/audit-centurion-triage-retag.mjs',
+      ),
+      'utf8',
+    );
+    expect(src).toMatch(/AI_MANAGED_SLUGS,\s*'spam'/);
+  });
 });

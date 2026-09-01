@@ -15,6 +15,8 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   AI_MANAGED_SLUGS,
+  DEFAULT_MODEL_ID,
+  DEFAULT_PROMPT_VERSION,
   TRANSPORT_ID,
   computeCanonicalManifestHash,
   computePreStateHash,
@@ -512,8 +514,8 @@ async function main() {
     process.exit(1);
   }
 
-  const modelId = process.env.SNAPSHOT_MODEL_ID ?? 'amazon.nova-lite-v1:0';
-  const promptVersion = process.env.SNAPSHOT_PROMPT_VERSION ?? 'triage-v5';
+  const modelId = process.env.SNAPSHOT_MODEL_ID ?? DEFAULT_MODEL_ID;
+  const promptVersion = process.env.SNAPSHOT_PROMPT_VERSION ?? DEFAULT_PROMPT_VERSION;
   let promptHash = null;
   try {
     promptHash = requireSnapshotPromptHash(process.env.SNAPSHOT_PROMPT_HASH, {

@@ -1,7 +1,7 @@
 /**
  * Restore Centurion AI-managed triage state from a cutover snapshot.
  *
- * Restores only AI-managed category joins + thread spam/lock fields.
+ * Restores only v6 AI-managed legacy/workflow category joins + thread spam/lock fields.
  * Preserves custom categories and sender preferences.
  *
  * Note: no shebang — Windows CRLF + shebang breaks Vitest/Vite transform.
