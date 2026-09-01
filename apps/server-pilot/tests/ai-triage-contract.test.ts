@@ -1078,6 +1078,122 @@ describe('AI triage contract', () => {
     expect(result.output.primaryFolder).toBe('bookings');
   });
 
+  it('normalizes observed Nova array aliases and keeps tool tags read-only', async () => {
+    const result = await classifyWorkflowMailTriage(
+      {
+        transportId: 'transport-centurion',
+        threadId: 'thread-nova-observed-aliases',
+        triggerMessageId: 'msg-nova-observed-aliases',
+        messages: [
+          {
+            id: 'msg-nova-observed-aliases',
+            from: 'guest@example.com',
+            subject: 'Booking request',
+            body: 'Please confirm this booking.',
+            direction: 'inbound',
+            createdAt: new Date('2026-07-01T10:00:00.000Z'),
+            receivedAt: new Date('2026-07-01T10:00:00.000Z'),
+            sentAt: null,
+          },
+        ],
+        asOf: '2026-07-01T12:00:00.000Z',
+        modelId: 'amazon.nova-lite-v1:0',
+        promptVersion: 'triage-v6',
+      },
+      {
+        invoke: async () => ({
+          modelId: 'amazon.nova-lite-v1:0',
+          output: {
+            primaryFolder: 'bookings',
+            priority: 'P3',
+            urgent: false,
+            overlays: ['booking', 'quote'],
+            spamSignal: false,
+            suggestedTools: ['booking'],
+            sourceScope: 'external',
+            automationState: 'candidate',
+            humanAction: 'required',
+            confidence: 0.8,
+            rationale: 'booking request',
+            policyFlags: [],
+            abstainReason: null,
+          },
+          usage: {
+            inputTokens: 1,
+            outputTokens: 1,
+            totalTokens: 2,
+            latencyMs: 1,
+            estimatedCostUsd: 0,
+            rateTableVersion: 'test',
+          },
+        }),
+      },
+    );
+
+    expect(result.rawOutput).toMatchObject({
+      overlays: { booking: true, quote: true },
+      isSpam: false,
+      suggestedTools: [],
+      humanAction: 'review_required',
+    });
+    expect(result.output.suggestedTools).toEqual(['hms_find_reservation', 'hms_quote_stay']);
+  });
+
+  it('fails closed on unknown Nova tool tags after known overlay tags', async () => {
+    await expect(
+      classifyWorkflowMailTriage(
+        {
+          transportId: 'transport-centurion',
+          threadId: 'thread-nova-invalid-tool-tag',
+          triggerMessageId: 'msg-nova-invalid-tool-tag',
+          messages: [
+            {
+              id: 'msg-nova-invalid-tool-tag',
+              from: 'guest@example.com',
+              subject: 'Booking request',
+              body: 'Please confirm this booking.',
+              direction: 'inbound',
+              createdAt: new Date('2026-07-01T10:00:00.000Z'),
+              receivedAt: new Date('2026-07-01T10:00:00.000Z'),
+              sentAt: null,
+            },
+          ],
+          asOf: '2026-07-01T12:00:00.000Z',
+          modelId: 'amazon.nova-lite-v1:0',
+          promptVersion: 'triage-v6',
+        },
+        {
+          invoke: async () => ({
+            modelId: 'amazon.nova-lite-v1:0',
+            output: {
+              primaryFolder: 'bookings',
+              priority: 'P3',
+              urgent: false,
+              overlays: ['booking'],
+              spamSignal: false,
+              suggestedTools: ['booking', 'reservation_create'],
+              sourceScope: 'external',
+              automationState: 'candidate',
+              humanAction: 'required',
+              confidence: 0.8,
+              rationale: 'booking request',
+              policyFlags: [],
+              abstainReason: null,
+            },
+            usage: {
+              inputTokens: 1,
+              outputTokens: 1,
+              totalTokens: 2,
+              latencyMs: 1,
+              estimatedCostUsd: 0,
+              rateTableVersion: 'test',
+            },
+          }),
+        },
+      ),
+    ).rejects.toThrow(/suggestedTools|reservation_create/i);
+  });
+
   it('drops the observed read-only marker for planner-owned tags', async () => {
     const result = await classifyWorkflowMailTriage(
       {
@@ -1123,6 +1239,59 @@ describe('AI triage contract', () => {
     );
 
     expect(result.rawOutput.suggestedTools).toEqual([]);
+  });
+
+  it('normalizes the bounded Nova aliases observed during the live remainder drain', async () => {
+    const result = await classifyWorkflowMailTriage(
+      {
+        transportId: 'transport-centurion',
+        threadId: 'thread-nova-live-aliases',
+        triggerMessageId: 'msg-nova-live-aliases',
+        from: 'guest@example.com',
+        subject: 'Booking state',
+        body: 'Please verify booking state.',
+        messages: [],
+        asOf: '2026-07-01T12:00:00.000Z',
+        modelId: 'amazon.nova-lite-v1:0',
+        promptVersion: 'triage-v6',
+      },
+      {
+        invoke: async () => ({
+          modelId: 'amazon.nova-lite-v1:0',
+          output: {
+            primaryFolder: 'bookings',
+            priority: 'P3',
+            urgent: false,
+            overlays: 'booking',
+            spamSignal: false,
+            suggestedTools: ['booking'],
+            sourceScope: 'external',
+            automationState: 'candidate',
+            humanAction: 'required',
+            confidence: 0.8,
+            rationale: 'booking state',
+            policyFlags: [],
+            abstainReason: null,
+          },
+          usage: {
+            inputTokens: 1,
+            outputTokens: 1,
+            totalTokens: 2,
+            latencyMs: 1,
+            estimatedCostUsd: 0,
+            rateTableVersion: 'test',
+          },
+        }),
+      },
+    );
+
+    expect(result.rawOutput).toMatchObject({
+      primaryFolder: 'bookings',
+      overlays: { booking: true },
+      isSpam: false,
+      suggestedTools: [],
+      humanAction: 'review_required',
+    });
   });
 
   it('fails closed on unknown Nova overlay tags', async () => {
