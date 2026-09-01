@@ -8,8 +8,14 @@ import {
   type TriageInput,
   type TriageMessageRow,
 } from './triage-input.js';
-import { TRIAGE_CATEGORIES, type TriageCategory, type TriageOutput } from './triage.js';
-import { buildSystemPrompt, classifyMailTriage } from './workflows/mail-triage.js';
+import {
+  TRIAGE_CATEGORIES,
+  toLegacyTriageOutput,
+  type TriageCategory,
+  type TriageOutput,
+  type WorkflowTriageOutput,
+} from './triage.js';
+import { buildSystemPrompt, classifyWorkflowMailTriage } from './workflows/mail-triage.js';
 
 export const QUALITY_TAGS = [
   'group',
@@ -83,6 +89,9 @@ const qualityMessageSchema = z.object({
   createdAt: z.coerce.date(),
   receivedAt: z.coerce.date().nullable().optional(),
   sentAt: z.coerce.date().nullable().optional(),
+  to: z.array(z.string()).optional(),
+  cc: z.array(z.string()).optional(),
+  bcc: z.array(z.string()).optional(),
 });
 
 export const qualityInputCaseSchema = z.object({
@@ -119,6 +128,8 @@ export interface QualityCaseOutcome {
   expectedUrgent: boolean;
   actualCategory?: TriageCategory;
   actualUrgent?: boolean;
+  /** Canonical v6 output retained for workflow/apply harnesses. */
+  actualWorkflow?: WorkflowTriageOutput;
   /** Diagnostic only — never used for scoring or release. */
   confidence?: number;
   categoryMatch?: boolean;
@@ -203,6 +214,9 @@ function toTriageInput(input: QualityInputCase): TriageInput {
       createdAt: m.createdAt,
       receivedAt: m.receivedAt ?? null,
       sentAt: m.sentAt ?? null,
+      to: m.to,
+      cc: m.cc,
+      bcc: m.bcc,
     })),
   };
 }
@@ -262,6 +276,9 @@ function detectCausalLeakage(input: QualityInputCase): string | null {
         createdAt: m.createdAt,
         receivedAt: m.receivedAt ?? null,
         sentAt: m.sentAt ?? null,
+        to: m.to,
+        cc: m.cc,
+        bcc: m.bcc,
       })),
       input.triggerMessageId,
     );
@@ -296,13 +313,15 @@ function protectedRegressionFor(outcome: {
   status: 'complete' | 'incomplete';
   incompleteReason?: string;
   actual?: TriageOutput;
+  actualWorkflow?: WorkflowTriageOutput;
 }): string | null {
   if (outcome.status === 'incomplete') {
     return `incomplete:${outcome.incompleteReason ?? 'unknown'}`;
   }
   const actual = outcome.actual!;
   const { label } = outcome;
-  if (label.expectedCategory !== 'spam' && actual.category === 'spam') {
+  const actualIsSpam = outcome.actualWorkflow?.isSpam ?? actual.category === 'spam';
+  if (label.expectedCategory !== 'spam' && actualIsSpam) {
     return 'legitimate-mail-marked-spam';
   }
   if (label.expectedCategory === 'at-risk' && actual.category !== 'at-risk') {
@@ -441,8 +460,9 @@ export async function runQualityEval(
     }
 
     try {
-      const classification = await classifyMailTriage(toTriageInput(input), adapter);
-      const actual = classification.output;
+      const classification = await classifyWorkflowMailTriage(toTriageInput(input), adapter);
+      const actualWorkflow = classification.output;
+      const actual = toLegacyTriageOutput(actualWorkflow);
       const categoryMatch = actual.category === label.expectedCategory;
       const urgentMatch = actual.urgent === label.expectedUrgent;
       const jointMatch = categoryMatch && urgentMatch;
@@ -459,6 +479,7 @@ export async function runQualityEval(
         expectedUrgent: label.expectedUrgent,
         actualCategory: actual.category,
         actualUrgent: actual.urgent,
+        actualWorkflow,
         confidence: actual.confidence,
         categoryMatch,
         urgentMatch,
@@ -469,6 +490,7 @@ export async function runQualityEval(
         label,
         status: 'complete',
         actual,
+        actualWorkflow,
       });
       if (outcome.protectedRegression) {
         protectedRegressions.push({ caseId, reason: outcome.protectedRegression });
@@ -644,6 +666,9 @@ function serializeMessages(rows: TriageMessageRow[]): QualityInputCase['messages
     createdAt: m.createdAt,
     receivedAt: m.receivedAt,
     sentAt: m.sentAt,
+    to: m.to,
+    cc: m.cc,
+    bcc: m.bcc,
   }));
 }
 
