@@ -104,25 +104,8 @@ export function getHotelFolderNavTheme(slug: string): {
 } {
   if (!isHotelManagedCategorySlug(slug)) return {};
 
-  if (slug === 'urgent') {
-    const palette = URGENT_COLOR_STYLE;
-    return {
-      style: {
-        '--centurion-sidebar-bg': palette.bg,
-        '--centurion-sidebar-text': palette.text,
-        '--centurion-sidebar-bg-dark': palette.darkBg,
-        '--centurion-sidebar-text-dark': palette.darkText,
-      } as CSSProperties,
-      className: cn(
-        'bg-[var(--centurion-sidebar-bg)] text-[var(--centurion-sidebar-text)] dark:bg-[var(--centurion-sidebar-bg-dark)] dark:text-[var(--centurion-sidebar-text-dark)]',
-        "relative after:absolute after:inset-y-1.5 after:right-0 after:w-1 after:rounded-l-sm after:bg-red-500/90 after:content-['']",
-      ),
-    };
-  }
-
-  if (!isCenturionMailCategorySlug(slug)) return {};
-  const palette = getCenturionCategoryColorStyle(slug);
-  return {
+  const palette = getHotelPillColorStyle(slug);
+  const theme = {
     style: {
       '--centurion-sidebar-bg': palette.bg,
       '--centurion-sidebar-text': palette.text,
@@ -132,6 +115,17 @@ export function getHotelFolderNavTheme(slug: string): {
     className:
       'bg-[var(--centurion-sidebar-bg)] text-[var(--centurion-sidebar-text)] dark:bg-[var(--centurion-sidebar-bg-dark)] dark:text-[var(--centurion-sidebar-text-dark)]',
   };
+
+  if (slug === 'urgent') {
+    return {
+      ...theme,
+      className: cn(
+        theme.className,
+        "relative after:absolute after:inset-y-1.5 after:right-0 after:w-1 after:rounded-l-sm after:bg-red-500/90 after:content-['']",
+      ),
+    };
+  }
+  return theme;
 }
 
 export function buildCategoryIdToSlugMap(

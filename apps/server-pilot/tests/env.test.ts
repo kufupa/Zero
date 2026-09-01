@@ -139,6 +139,26 @@ describe('env', () => {
     expect(parseEnv(baseEnv()).AI_STALE_RUN_TIMEOUT_MS).toBe(15 * 60_000);
   });
 
+  it('defaults workflow nav and durable triage flags off independently', () => {
+    expect(parseEnv(baseEnv())).toMatchObject({
+      WORKFLOW_NAV_V6: false,
+      WORKFLOW_TRIAGE_V6: false,
+    });
+    expect(parseEnv(baseEnv({ WORKFLOW_NAV_V6: '1' }))).toMatchObject({
+      WORKFLOW_NAV_V6: true,
+      WORKFLOW_TRIAGE_V6: false,
+    });
+    expect(parseEnv(baseEnv({ WORKFLOW_TRIAGE_V6: 'true' }))).toMatchObject({
+      WORKFLOW_NAV_V6: false,
+      WORKFLOW_TRIAGE_V6: true,
+    });
+  });
+
+  it.each(['yes', 'on', ''])('rejects invalid workflow flag value %s', (value) => {
+    expect(() => parseEnv(baseEnv({ WORKFLOW_NAV_V6: value }))).toThrow(/WORKFLOW_NAV_V6/);
+    expect(() => parseEnv(baseEnv({ WORKFLOW_TRIAGE_V6: value }))).toThrow(/WORKFLOW_TRIAGE_V6/);
+  });
+
   it('parses AI write and draft gates when enabled', () => {
     expect(
       parseEnv({ ...baseEnv(), AI_WRITE_GATE_ENABLED: '1', AI_DRAFTS_ENABLED: 'true' }),

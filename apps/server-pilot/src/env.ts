@@ -83,6 +83,10 @@ export interface MailEnv {
   AI_ENABLED: boolean;
   AI_WRITE_GATE_ENABLED: boolean;
   AI_DRAFTS_ENABLED: boolean;
+  /** Durable/schema workflow triage capability; independent from frontend nav. */
+  WORKFLOW_TRIAGE_V6: boolean;
+  /** Frontend sidebar gate; remains off until durable backfill audit is green. */
+  WORKFLOW_NAV_V6: boolean;
   INGEST_REQUIRE_OWNER_HEADER: boolean;
   AI_STALE_RUN_TIMEOUT_MS: number;
   AI_WORKER_LANE: AiExecutorLane;
@@ -297,6 +301,8 @@ export function parseEnv(input: EnvInput): MailEnv {
     AI_ENABLED: false,
     AI_WRITE_GATE_ENABLED: false,
     AI_DRAFTS_ENABLED: false,
+    WORKFLOW_TRIAGE_V6: false,
+    WORKFLOW_NAV_V6: false,
     INGEST_REQUIRE_OWNER_HEADER: true,
     AI_STALE_RUN_TIMEOUT_MS: 15 * 60_000,
     AI_WORKER_LANE: 'default',
@@ -342,6 +348,14 @@ export function parseEnv(input: EnvInput): MailEnv {
   env.AI_DRAFTS_ENABLED = input.AI_DRAFTS_ENABLED
     ? toBool('AI_DRAFTS_ENABLED', input.AI_DRAFTS_ENABLED)
     : false;
+  env.WORKFLOW_TRIAGE_V6 =
+    input.WORKFLOW_TRIAGE_V6 === undefined
+      ? false
+      : toBool('WORKFLOW_TRIAGE_V6', input.WORKFLOW_TRIAGE_V6);
+  env.WORKFLOW_NAV_V6 =
+    input.WORKFLOW_NAV_V6 === undefined
+      ? false
+      : toBool('WORKFLOW_NAV_V6', input.WORKFLOW_NAV_V6);
   env.INGEST_REQUIRE_OWNER_HEADER = input.INGEST_REQUIRE_OWNER_HEADER
     ? toBool('INGEST_REQUIRE_OWNER_HEADER', input.INGEST_REQUIRE_OWNER_HEADER)
     : true;
