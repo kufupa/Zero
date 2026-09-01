@@ -163,6 +163,8 @@ describe('v6 spam false-positive regression harness', () => {
       'AE19',
       'newsletter-negative',
     ]);
+    const ae13 = fixtures.find((fixture) => fixture.caseId === 'AE13')!;
+    expect(ae13.input.messages[0]!.body.indexOf('> From: Bongi')).toBeGreaterThan(2000);
 
     const report = await runQualityEval(
       {
