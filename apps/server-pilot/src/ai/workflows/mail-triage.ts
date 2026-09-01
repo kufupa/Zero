@@ -511,9 +511,18 @@ const NOVA_SOURCE_SCOPE_ALIASES: Record<string, string> = {
 };
 
 const NOVA_HUMAN_ACTION_ALIASES: Record<string, string> = {
+  required: 'review_required',
   review: 'review_required',
   verify_email_address: 'review_required',
 };
+
+const NOVA_OVERLAY_ALIASES: Record<string, (typeof TRIAGE_OVERLAYS)[number]> = {
+  booking: 'booking',
+  quote: 'quote',
+  payment: 'payment',
+};
+
+const NOVA_TOOL_MARKERS_TO_DROP = new Set(['booking']);
 
 function moveNovaAlias(
   structured: Record<string, unknown>,
@@ -529,6 +538,13 @@ function moveNovaAlias(
 }
 
 function normalizeNovaOverlays(value: unknown): unknown {
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (!normalized || normalized === 'none') return {};
+    const alias = NOVA_OVERLAY_ALIASES[normalized];
+    if (!alias) throw new Error('model output contains an unknown overlay tag');
+    return { [alias]: true };
+  }
   if (!Array.isArray(value)) return value;
   const overlays: Record<string, boolean> = {};
   for (const overlay of value) {
@@ -552,6 +568,7 @@ function normalizeNovaWorkflowOutput(raw: Record<string, unknown>): Record<strin
   const structured = { ...raw };
   moveNovaAlias(structured, 'workflowPrimaryFolder', 'primaryFolder');
   moveNovaAlias(structured, 'spam', 'isSpam');
+  moveNovaAlias(structured, 'spamSignal', 'isSpam');
   moveNovaAlias(structured, 'readOnlyToolTags', 'suggestedTools');
 
   if (Object.prototype.hasOwnProperty.call(structured, 'overlays')) {
@@ -567,14 +584,13 @@ function normalizeNovaWorkflowOutput(raw: Record<string, unknown>): Record<strin
       NOVA_HUMAN_ACTION_ALIASES[structured.humanAction] ?? structured.humanAction;
   }
   // The planner, not the model, owns the final read-only tag set. Nova's
-  // observed marker means "no model tags" and is safely equivalent to [].
-  if (
-    structured.suggestedTools === 'read-only' ||
-    (Array.isArray(structured.suggestedTools) &&
-      structured.suggestedTools.length === 1 &&
-      structured.suggestedTools[0] === 'read-only')
-  ) {
-    structured.suggestedTools = [];
+  // observed markers mean "no model tags" and are safely equivalent to [].
+  if (typeof structured.suggestedTools === 'string') {
+    if (structured.suggestedTools === 'read-only') structured.suggestedTools = [];
+  } else if (Array.isArray(structured.suggestedTools)) {
+    structured.suggestedTools = structured.suggestedTools.filter(
+      (tag) => tag !== 'read-only' && !NOVA_TOOL_MARKERS_TO_DROP.has(String(tag)),
+    );
   }
   return structured;
 }
