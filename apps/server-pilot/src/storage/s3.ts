@@ -17,6 +17,7 @@ import {
   HeadBucketCommand,
   CopyObjectCommand,
   GetObjectCommand,
+  DeleteObjectCommand,
 } from '@aws-sdk/client-s3';
 
 export interface S3PutOptions {
@@ -69,6 +70,7 @@ export interface S3Storage {
     signal?: AbortSignal,
   ): Promise<S3GetResult | null>;
   copyObject(opts: S3CopyOptions): Promise<{ key: string; bucket: string }>;
+  deleteObject(key: string): Promise<void>;
 }
 
 /**
@@ -184,6 +186,10 @@ export class RealS3Storage implements S3Storage {
     return { key: opts.destKey, bucket: this.bucket };
   }
 
+  async deleteObject(key: string): Promise<void> {
+    await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }));
+  }
+
   /** Best-effort reachability probe; throws if the bucket is not accessible. */
   async probe(): Promise<void> {
     await this.client.send(new HeadBucketCommand({ Bucket: this.bucket }));
@@ -247,6 +253,11 @@ export class FakeS3Storage implements S3Storage {
       contentType: opts.contentType ?? src.contentType,
     });
     return { key: opts.destKey, bucket: this.bucket };
+  }
+
+  async deleteObject(key: string): Promise<void> {
+    this.calls.push({ op: 'DELETE', key });
+    this.stored.delete(key);
   }
 
   /** Test helper: get stored bytes for a key. */

@@ -1,11 +1,17 @@
 import { useMutation } from '@tanstack/react-query';
 import { toast } from 'sonner';
 
-import { useTRPC } from '@/providers/query-provider';
-import { isSendResult } from '@/lib/email-utils';
+import {
+  isPartialSendResult,
+  isQueuedSendResult,
+  isScheduledSendResult,
+  isSendResult,
+  isUncertainSendResult,
+} from '@/lib/email-utils';
+import { demoUnsendEmail } from '@/lib/demo/local-actions';
 import type { UserSettings } from '@zero/server/schemas';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
-import { demoUnsendEmail } from '@/lib/demo/local-actions';
+import { useTRPC } from '@/providers/query-provider';
 
 export type EmailData = {
   to: string[];
@@ -23,7 +29,7 @@ export type SerializedFile = {
   size: number;
   type: string;
   lastModified: number;
-  data: string; 
+  data: string;
 };
 
 type SerializableEmailData = Omit<EmailData, 'attachments'> & {
@@ -43,7 +49,7 @@ const serializeFiles = async (files: File[]): Promise<SerializedFile[]> => {
         reader.onerror = reject;
         reader.readAsDataURL(file);
       }),
-    }))
+    })),
   );
 };
 
@@ -63,10 +69,28 @@ export const useUndoSend = () => {
   const { mutateAsync: unsendEmail } = useMutation(trpc.mail.unsend.mutationOptions());
 
   const handleUndoSend = (
-    result: unknown, 
+    result: unknown,
     settings: { settings: UserSettings } | undefined,
-    emailData?: EmailData
+    emailData?: EmailData,
   ) => {
+    if (isPartialSendResult(result)) {
+      const rejectedSummary =
+        result.rejected.length > 0
+          ? `${result.rejected.length} recipient${result.rejected.length === 1 ? '' : 's'} rejected`
+          : 'some requested recipients were not confirmed';
+      toast.warning('Email partially delivered', {
+        description: `${result.accepted.length} recipient${result.accepted.length === 1 ? '' : 's'} accepted; ${rejectedSummary}.`,
+      });
+      return;
+    }
+    if (isUncertainSendResult(result)) {
+      toast.warning('Email delivery status unknown', {
+        description: result.sent
+          ? 'Recovered legacy delivery has no recipient acceptance evidence.'
+          : 'SMTP did not confirm delivery. Do not resend until this outcome is investigated.',
+      });
+      return;
+    }
     if (isSendResult(result) && settings?.settings?.undoSendEnabled) {
       const { messageId, sendAt } = result;
 
@@ -74,7 +98,7 @@ export const useUndoSend = () => {
       const wasUserScheduled = Boolean(emailData?.scheduleAt);
 
       if (timeRemaining > 5_000) {
-        if (wasUserScheduled) {
+        if (isScheduledSendResult(result) || wasUserScheduled) {
           toast.success('Email scheduled', {
             action: {
               label: 'Undo',
@@ -92,8 +116,9 @@ export const useUndoSend = () => {
             duration: 15_000,
             closeButton: true,
           });
-        } else {
-          toast.success('Email sent', {
+        } else if (isQueuedSendResult(result)) {
+          toast.success('Email queued', {
+            description: 'Delivery pending.',
             action: {
               label: 'Undo',
               onClick: async () => {
@@ -101,27 +126,27 @@ export const useUndoSend = () => {
                   await (isFrontendOnlyDemo()
                     ? demoUnsendEmail({ messageId })
                     : unsendEmail({ messageId }));
-                
-                if (emailData) {
-                  const serializedAttachments = await serializeFiles(emailData.attachments);
-                  const serializableData: SerializableEmailData = {
-                    ...emailData,
-                    attachments: serializedAttachments,
-                  };
-                  localStorage.setItem('undoEmailData', JSON.stringify(serializableData));
+
+                  if (emailData) {
+                    const serializedAttachments = await serializeFiles(emailData.attachments);
+                    const serializableData: SerializableEmailData = {
+                      ...emailData,
+                      attachments: serializedAttachments,
+                    };
+                    localStorage.setItem('undoEmailData', JSON.stringify(serializableData));
+                  }
+
+                  const url = new URL(window.location.href);
+                  url.searchParams.delete('activeReplyId');
+                  url.searchParams.delete('mode');
+                  url.searchParams.delete('draftId');
+                  url.searchParams.set('isComposeOpen', 'true');
+                  window.history.replaceState({}, '', url.toString());
+
+                  toast.info('Send cancelled');
+                } catch {
+                  toast.error('Failed to cancel');
                 }
-                
-                const url = new URL(window.location.href);
-                url.searchParams.delete('activeReplyId');
-                url.searchParams.delete('mode');
-                url.searchParams.delete('draftId');
-                url.searchParams.set('isComposeOpen', 'true');
-                window.history.replaceState({}, '', url.toString());
-                
-                toast.info('Send cancelled');
-              } catch {
-                toast.error('Failed to cancel');
-              }
               },
             },
             duration: 15_000,

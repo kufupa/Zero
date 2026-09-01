@@ -57,6 +57,8 @@ export function threadMatchesDemoListFolder(thread: DemoThreadInput, folderSlug:
   switch (folderSlug) {
     case 'inbox':
       return thread.folder !== 'spam';
+    case 'all':
+      return thread.folder !== 'spam';
     case 'spam':
       return thread.folder === 'spam';
     case 'urgent':

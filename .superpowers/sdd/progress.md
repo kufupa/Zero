@@ -1,3 +1,23 @@
+# Outlook Mail Search — Execution Ledger
+
+- Plan source: `C:\Users\gamin\Desktop\projs\emails hotels uis\zero\docs\superpowers\plans\2026-08-24-outlook-mail-search-bar.md`
+- Worktree: `C:\Users\gamin\.config\superpowers\worktrees\zero\outlook-mail-search-20260824`
+- Baseline feature ref: `fdd53c4d4bf17be0a9ce28393f8235555ccd38a9`
+- Upstream merge base: `65451d39c2f10bb16f2a58e8e1cb4ef508b83ad7`
+- Local main at start: `6f533755`
+- Baseline: `pnpm --filter @zero/mail test` — 87 files, 435 tests passed after one required mail build generated Paraglide and client artifacts.
+- Preflight resolution: `value` stores committed query text, including existing explicit grammar such as `label:<name>` from label clicks. New search-bar chips alone live in `filters[]`; chip tokens are never copied into `value`.
+- Pilot production deployment/backfill: blocked pending explicit production-write authorization from user; no Vitest may target pilot RDS.
+- Task 1: complete (commits fdd53c4d..cc570aaf; 17 focused tests passed; task review clean)
+- Task 2: complete (commits cc570aaf..70954a0e; committed-search atom, valid-request-only list dispatch, demo all-folder parity; 38 focused and 461 full mail tests passed; review gate passed)
+- Task 3: complete (commits d5f6a014..0e2fec98; isolated disposable Postgres migrated locally; body-only, 20-message, and 8,000-character DB proofs passed; final task re-review clean)
+- Task 4: complete (commits 70954a0e..f9e3ea4b; 26 focused component/helper tests and scoped lint passed; task review clean)
+- Task 5: complete (commit dc92e979; header search replaces palette wiring; palette context deleted; 9 focused and 471 full mail tests passed; grep clean; task review clean)
+- Task 6: complete (commits dc92e979..e42b3d07; safe no-session Playwright discovery passed; authenticated E2E intentionally skipped; task review clean)
+- Task 7: blocked — deployment/backfill authorization required
+- Cross-task contract: Task 2 narrows `SearchListRequest.isValid` before any list query; `QUERY_TOO_LONG` dispatches no request. Task 4 prevents or visibly reports an over-limit effective query.
+- Final review/remediation: complete — seven validated defects fixed with behavior coverage; independent re-review found no findings. Fresh mail regression (483 tests), server search units (12 tests), focused search-bar tests (17 tests), and mail/server production builds passed.
+- Deferred minor: `use-threads-content-query-ownership.test.ts` uses source-text assertions; Task 6/final review should assess adding behavior-level hook/tRPC dispatch coverage.
 # SDD Progress — cid-inline-images-trust
 Plan: docs/superpowers/plans/2026-07-30-cid-inline-images-trust.md
 Started: 2026-07-30

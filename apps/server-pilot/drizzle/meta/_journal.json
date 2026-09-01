@@ -120,6 +120,27 @@
       "when": 1786320000000,
       "tag": "0016_remote_auth_session",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1787623629595,
+      "tag": "0017_candidate_attachment_cleanup_queue",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1787623630000,
+      "tag": "0018_mail_ingest_uidl_claim",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1787731200000,
+      "tag": "0019_outbound_smtp_attempt_fence",
+      "breakpoints": true
     }
   ]
 }

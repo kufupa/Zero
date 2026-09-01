@@ -102,6 +102,7 @@ export interface SmtpSendResult {
   /** RFC Message-ID header value (without angle brackets). */
   messageId: string;
   accepted: string[];
+  rejected: string[];
 }
 
 export interface SmtpTransport {
@@ -121,6 +122,16 @@ export interface SmtpTransportOptions {
   forceFake?: boolean;
 }
 
+function exactRecipientAddresses(
+  recipients: readonly (string | { address?: unknown })[] | undefined,
+): string[] {
+  return (recipients ?? []).map((recipient) => {
+    if (typeof recipient === 'string') return recipient;
+    if (typeof recipient.address === 'string') return recipient.address;
+    throw new Error('SMTP response recipient malformed');
+  });
+}
+
 /** Ring buffer cap — prevents unbounded memory growth in long-running pilot. */
 export const FAKE_SMTP_RING_MAX = 100;
 
@@ -138,6 +149,7 @@ export class FakeSmtpTransport implements SmtpTransport {
     return {
       messageId,
       accepted: [...payload.to, ...payload.cc, ...payload.bcc],
+      rejected: [],
     };
   }
 }
@@ -221,13 +233,13 @@ export class RealSmtpTransport implements SmtpTransport {
 
     const rawId = info.messageId ?? '';
     const messageId = rawId.replace(/^<|>$/g, '');
-    const accepted = (info.accepted ?? []).map(String);
+    if (!messageId) {
+      throw new Error('SMTP response missing messageId');
+    }
     return {
-      messageId: messageId || `${randomUUID()}@zero-smtp.local`,
-      accepted:
-        accepted.length > 0
-          ? accepted
-          : [...payload.to, ...payload.cc, ...payload.bcc],
+      messageId,
+      accepted: exactRecipientAddresses(info.accepted),
+      rejected: exactRecipientAddresses(info.rejected),
     };
   }
 

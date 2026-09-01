@@ -12,6 +12,14 @@ describe('v4 production mail schema', () => {
     expect(schema.mailIngestQuarantine).toBeDefined();
   });
 
+  it('exports durable candidate attachment cleanup tasks', () => {
+    expect(schema.mailIngestCandidateAttachmentCleanup).toBeDefined();
+    expect(schema.mailIngestCandidateAttachmentCleanup.s3Key).toBeDefined();
+    expect(schema.mailIngestCandidateAttachmentCleanup.candidateMessageId).toBeDefined();
+    expect(schema.mailIngestCandidateAttachmentCleanup.ingestMailboxId).toBeDefined();
+    expect(schema.mailIngestCandidateAttachmentCleanup.pop3Uidl).toBeDefined();
+  });
+
   it('cuts stale table shapes', () => {
     expect((schema as Record<string, unknown>).staffMember).toBeUndefined();
     expect((schema as Record<string, unknown>).mailSnooze).toBeUndefined();

@@ -183,8 +183,22 @@ export const scheduledSendEmailResultSchema = z.object({
   sendAt: z.number().optional(),
 });
 
+export const partialSendEmailResultSchema = z.object({
+  sent: z.literal(true),
+  delivery: z.literal('partial'),
+  accepted: z.array(z.string()),
+  rejected: z.array(z.string()),
+});
+
+export const uncertainSendEmailResultSchema = z.object({
+  sent: z.boolean(),
+  delivery: z.literal('unknown'),
+});
+
 export type QueuedSendEmailResult = z.infer<typeof queuedSendEmailResultSchema>;
 export type ScheduledSendEmailResult = z.infer<typeof scheduledSendEmailResultSchema>;
+export type PartialSendEmailResult = z.infer<typeof partialSendEmailResultSchema>;
+export type UncertainSendEmailResult = z.infer<typeof uncertainSendEmailResultSchema>;
 
 export const isQueuedSendResult = (value: unknown): value is QueuedSendEmailResult => {
   return queuedSendEmailResultSchema.safeParse(value).success;
@@ -194,6 +208,16 @@ export const isScheduledSendResult = (value: unknown): value is ScheduledSendEma
   return scheduledSendEmailResultSchema.safeParse(value).success;
 };
 
-export const isSendResult = (value: unknown): value is QueuedSendEmailResult | ScheduledSendEmailResult => {
+export const isPartialSendResult = (value: unknown): value is PartialSendEmailResult => {
+  return partialSendEmailResultSchema.safeParse(value).success;
+};
+
+export const isUncertainSendResult = (value: unknown): value is UncertainSendEmailResult => {
+  return uncertainSendEmailResultSchema.safeParse(value).success;
+};
+
+export const isSendResult = (
+  value: unknown,
+): value is QueuedSendEmailResult | ScheduledSendEmailResult => {
   return isQueuedSendResult(value) || isScheduledSendResult(value);
 };

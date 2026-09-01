@@ -28,39 +28,47 @@
  * Tests run this inside `withTestDb` so the transaction is rolled back; in
  * production the transaction commits for real.
  */
-import { and, eq, inArray } from 'drizzle-orm';
-import { randomUUID } from 'node:crypto';
-import type { DB } from '../../db/client.js';
 import {
   attachment,
+  mailIngestCandidateAttachmentCleanup,
   mailIngestQuarantine,
+  mailIngestUidlClaim,
   mailLabel,
   mailboxTransport,
   message,
   mailThread,
+  outboundSendQueue,
 } from '../../db/schema/mail.js';
 import {
-  rawMimeKey,
-  getS3Storage,
-  type S3Storage,
-} from '../../storage/s3.js';
-import {
-  type ParsedInboundMessage,
-  parseRawMessage,
-  generateMessageId,
-} from './parse-message.js';
-import { sanitizeHtmlBodyForStorage } from '../sanitize-email-html.js';
+  emitRocketseedReturnedCopyTrustRejection,
+  evaluateRocketseedReturnedCopyTrust,
+  evaluateRocketseedReturnedCopyPrecheck,
+  normalizeRocketseedMailbox,
+} from './rocketseed-returned-copy.js';
 import {
   DEFAULT_AI_MODEL_ID,
   DEFAULT_TRIAGE_PROMPT_VERSION,
   enqueueAiRun,
 } from '../../ai/run-ledger.js';
+import { type ParsedInboundMessage, parseRawMessage, generateMessageId } from './parse-message.js';
+import { rawMimeKey, getS3Storage, type S3Storage } from '../../storage/s3.js';
+import { parsePersistedDeliveryOutcome } from '../send/outbound-queue.js';
 import { refreshThreadSearchVector } from '../search/search-vector.js';
+import { sanitizeHtmlBodyForStorage } from '../sanitize-email-html.js';
+import { and, asc, eq, gt, inArray, lte, or, sql } from 'drizzle-orm';
 import { getSenderPreference } from '../sender-preference.js';
-import { markThreadRead } from '../thread-read.js';
 import { ingestRequireOwnerHeader } from '../../env.js';
+import { markThreadRead } from '../thread-read.js';
+import type { DB } from '../../db/client.js';
+import { randomUUID } from 'node:crypto';
 
 const CENTURION_TRANSPORT_ID = 'transport-centurion';
+export const CANDIDATE_ATTACHMENT_DELETE_CONCURRENCY = 4;
+export const CANDIDATE_ATTACHMENT_CLEANUP_SWEEP_LIMIT = 500;
+const CANDIDATE_ATTACHMENT_CLEANUP_RETRY_BASE_MS = 1_000;
+const CANDIDATE_ATTACHMENT_CLEANUP_RETRY_MAX_MS = 15 * 60 * 1_000;
+const CANDIDATE_ATTACHMENT_CLEANUP_INSERT_CHUNK_SIZE = 250;
+export const INGEST_UIDL_CLAIM_LEASE_MS = 10 * 60 * 1_000;
 
 type RoutedTransport = {
   id: string;
@@ -72,9 +80,10 @@ export type QuarantineReason =
   | 'missing_owner_header'
   | 'unknown_transport'
   | 'message_too_large'
-  | 'parse_failure';
+  | 'parse_failure'
+  | 'malformed_delivery_outcome';
 
-export type PersistKind = 'stored' | 'quarantined' | 'duplicate';
+export type PersistKind = 'stored' | 'quarantined' | 'duplicate' | 'reconciled' | 'deferred';
 
 export interface IngestMeta {
   /** Mailbox id the message was ingested from (e.g. `ingest-nava-legacy`). */
@@ -110,6 +119,7 @@ export interface PersistQuarantinedResult {
   quarantineId: string;
   reason: QuarantineReason;
   rawMimeS3Key: string;
+  candidateAttachmentCleanupFailureCount: number;
 }
 
 export interface PersistDuplicateResult {
@@ -117,18 +127,42 @@ export interface PersistDuplicateResult {
   transportId: string;
   messageId: string;
   rawMimeS3Key: string;
+  candidateAttachmentCleanupFailureCount: number;
+}
+
+export interface PersistReconciledResult {
+  kind: 'reconciled';
+  transportId: string;
+  messageId: string;
+  rawMimeS3Key: string;
+  attachmentCount: number;
+}
+
+export interface PersistDeferredResult {
+  kind: 'deferred';
+  transportId: string;
+  messageId: string;
+  rawMimeS3Key: string;
+  candidateAttachmentCleanupFailureCount: number;
 }
 
 export type PersistResult =
   | PersistStoredResult
   | PersistQuarantinedResult
-  | PersistDuplicateResult;
+  | PersistDuplicateResult
+  | PersistReconciledResult
+  | PersistDeferredResult;
 
 export interface PersistOptions {
   /** DB handle (production: getDb(); tests: transaction-scoped handle). */
   db: DB;
   /** S3 storage override (tests inject a fake). */
   storage?: S3Storage;
+  /**
+   * Returned-copy reconciliation is only valid for newly retrieved POP3
+   * messages. Historical promotion and rehydration must use ordinary ingest.
+   */
+  ingestSource?: 'live-pop3';
   /**
    * Promote path: skip existing-quarantine short-circuit and delete this row
    * atomically when the message insert commits.
@@ -139,6 +173,11 @@ export interface PersistOptions {
    * flooding Bedrock when bulk-recovering historical S3 MIME).
    */
   skipAiEnqueue?: boolean;
+  /**
+   * Live POP3 worker's current UIDL lease. It may clean its own candidate
+   * uploads while unrelated sweepers must defer until the lease is released.
+   */
+  activeIngestUidlClaimToken?: string;
 }
 
 /**
@@ -161,10 +200,12 @@ export async function persistInboundMessage(
   const { db } = opts;
   const storage = opts.storage ?? getS3Storage();
 
-  const rawMimeS3Key = meta.rawMimeS3Key ?? rawMimeKey({
-    ingestMailboxId: meta.ingestMailboxId,
-    pop3Uidl: meta.pop3Uidl,
-  });
+  const rawMimeS3Key =
+    meta.rawMimeS3Key ??
+    rawMimeKey({
+      ingestMailboxId: meta.ingestMailboxId,
+      pop3Uidl: meta.pop3Uidl,
+    });
   if (!meta.rawMimeS3Key) {
     await storage.putObject({
       key: rawMimeS3Key,
@@ -175,11 +216,20 @@ export async function persistInboundMessage(
 
   const existingMessage = await findExistingInboundMessage(db, meta);
   if (existingMessage) {
+    const candidateAttachmentCleanupFailureCount = await cleanupCandidateAttachmentTasks({
+      db,
+      storage,
+      attachments: parsed.attachments,
+      meta,
+      canonicalMessageId: existingMessage.id,
+      activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
+    });
     return {
       kind: 'duplicate',
       transportId: existingMessage.transportId,
       messageId: existingMessage.id,
       rawMimeS3Key,
+      candidateAttachmentCleanupFailureCount,
     };
   }
 
@@ -187,11 +237,19 @@ export async function persistInboundMessage(
     ? undefined
     : await findExistingQuarantine(db, meta);
   if (existingQuarantine) {
+    const candidateAttachmentCleanupFailureCount = await cleanupCandidateAttachmentTasks({
+      db,
+      storage,
+      attachments: parsed.attachments,
+      meta,
+      activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
+    });
     return {
       kind: 'quarantined',
       quarantineId: existingQuarantine.id,
       reason: existingQuarantine.reason as QuarantineReason,
       rawMimeS3Key: existingQuarantine.rawMimeS3Key,
+      candidateAttachmentCleanupFailureCount,
     };
   }
 
@@ -204,12 +262,14 @@ export async function persistInboundMessage(
       transport = await findCenturionEquatedTransport(db, parsed);
     }
     if (!transport) {
-      return quarantineUnrouted({
+      return quarantineWithAttachmentCleanup({
         db,
+        storage,
         parsed,
         meta,
         rawMimeS3Key,
         reason: 'missing_owner_header',
+        activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
       });
     }
     // Inbox-first: direct-To without X-Zero-Mailbox still stores + enqueues
@@ -217,19 +277,213 @@ export async function persistInboundMessage(
   } else {
     transport = await findTransportByStamp(db, parsed.ownerHeaderValue);
     if (!transport) {
-      return quarantineUnrouted({
+      return quarantineWithAttachmentCleanup({
         db,
+        storage,
         parsed,
         meta,
         rawMimeS3Key,
         reason: 'unknown_transport',
+        activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
       });
     }
   }
 
   const messageId = meta.messageId;
   let threadId = '';
+  let duplicate: PersistDuplicateResult | null = null;
+  let duplicateCanonicalMessageId = messageId;
+  let deferred: Omit<PersistDeferredResult, 'candidateAttachmentCleanupFailureCount'> | null = null;
+  let malformedDeliveryOutcomeQuarantine = false;
+  let reconciliation: PersistReconciledResult | null = null;
   await db.transaction(async (tx) => {
+    const transactionDb = tx as unknown as DB;
+    await lockCandidateAttachmentCleanupOwnership(transactionDb, meta);
+    const correlationId =
+      parsed.outboundCorrelation.kind === 'valid'
+        ? parsed.outboundCorrelation.outboundId
+        : parsed.outboundCorrelation.kind === 'absent'
+          ? parsed.messageId
+          : null;
+    const useMessageIdFallback = parsed.outboundCorrelation.kind === 'absent';
+    const hasEligibleLegacyReturnedCopyPrecheck =
+      useMessageIdFallback &&
+      correlationId !== null &&
+      evaluateRocketseedReturnedCopyPrecheck({
+        expectedTransportAddress: transport.email,
+        parsed,
+      }).trusted;
+    const canonical =
+      opts.ingestSource === 'live-pop3' &&
+      correlationId &&
+      (!useMessageIdFallback || hasEligibleLegacyReturnedCopyPrecheck)
+        ? await findEligibleCanonicalOutbound(
+            transactionDb,
+            transport.id,
+            correlationId,
+            useMessageIdFallback,
+          )
+        : undefined;
+    const hasEligibleLocalQueueRow =
+      canonical?.queueStatus === 'sent' ||
+      (canonical?.queueStatus === 'sending' &&
+        hasProvenPersistedSendingDelivery({
+          expectedTransportAddress: transport.email,
+          messageIdHeader: canonical.messageIdHeader,
+          parsedMessageId: parsed.messageId,
+          requiresExactReturnedMessageId: parsed.outboundCorrelation.kind !== 'valid',
+          smtpPayload: canonical.smtpPayload,
+        }));
+    const returnedCopyTrust = evaluateRocketseedReturnedCopyTrust({
+      activeTransportId: canonical?.transportId ?? null,
+      expectedTransportId: transport.id,
+      expectedTransportAddress: transport.email,
+      hasEligibleLocalQueueRow,
+      parsed,
+    });
+    const shouldDeferPreOutcomeReturnedCopy =
+      opts.ingestSource === 'live-pop3' &&
+      parsed.outboundCorrelation.kind === 'valid' &&
+      canonical?.queueStatus === 'sending' &&
+      !canonical.ingestMailboxId &&
+      !canonical.pop3Uidl &&
+      persistedDeliveryOutcomeState(canonical.smtpPayload) === 'absent' &&
+      evaluateRocketseedReturnedCopyTrust({
+        activeTransportId: canonical.transportId,
+        expectedTransportId: transport.id,
+        expectedTransportAddress: transport.email,
+        hasEligibleLocalQueueRow: true,
+        parsed,
+      }).trusted;
+    const shouldQuarantineMalformedDeliveryOutcome =
+      opts.ingestSource === 'live-pop3' &&
+      parsed.outboundCorrelation.kind === 'valid' &&
+      canonical?.queueStatus === 'sending' &&
+      !canonical.ingestMailboxId &&
+      !canonical.pop3Uidl &&
+      persistedDeliveryOutcomeState(canonical.smtpPayload) === 'malformed' &&
+      evaluateRocketseedReturnedCopyTrust({
+        activeTransportId: canonical.transportId,
+        expectedTransportId: transport.id,
+        expectedTransportAddress: transport.email,
+        hasEligibleLocalQueueRow: true,
+        parsed,
+      }).trusted;
+    if (
+      opts.ingestSource === 'live-pop3' &&
+      parsed.outboundCorrelation.kind === 'valid' &&
+      !returnedCopyTrust.trusted &&
+      !shouldDeferPreOutcomeReturnedCopy
+    ) {
+      emitRocketseedReturnedCopyTrustRejection(returnedCopyTrust.reason);
+    }
+    if (shouldDeferPreOutcomeReturnedCopy) {
+      deferred = {
+        kind: 'deferred',
+        transportId: canonical.transportId,
+        messageId: canonical.id,
+        rawMimeS3Key,
+      };
+      return;
+    }
+    if (shouldQuarantineMalformedDeliveryOutcome) {
+      malformedDeliveryOutcomeQuarantine = true;
+      return;
+    }
+    if (canonical && returnedCopyTrust.trusted) {
+      // A retry may reuse an attachment key whose deferred cleanup is still
+      // durable. Drain that task first; otherwise reconciliation could attach
+      // an object a later sweep is entitled to delete.
+      if (
+        await hasPendingCandidateAttachmentCleanup(transactionDb, {
+          ingestMailboxId: meta.ingestMailboxId,
+          pop3Uidl: meta.pop3Uidl,
+        })
+      ) {
+        deferred = {
+          kind: 'deferred',
+          transportId: canonical.transportId,
+          messageId: canonical.id,
+          rawMimeS3Key,
+        };
+        return;
+      }
+      if (canonical.ingestMailboxId || canonical.pop3Uidl) {
+        duplicate = {
+          kind: 'duplicate',
+          transportId: canonical.transportId,
+          messageId: canonical.id,
+          rawMimeS3Key,
+          candidateAttachmentCleanupFailureCount: 0,
+        };
+        duplicateCanonicalMessageId = canonical.id;
+        return;
+      }
+      const durableSmtpMessageId =
+        parsed.outboundCorrelation.kind === 'valid' &&
+        canonical.queueStatus === 'sending' &&
+        canonical.messageIdHeader === null
+          ? (parsePersistedDeliveryOutcome(canonical.smtpPayload)?.messageId ?? null)
+          : null;
+      await transactionDb
+        .update(message)
+        .set({
+          ingestMailboxId: meta.ingestMailboxId,
+          pop3Uidl: meta.pop3Uidl,
+          ownerHeaderValue: parsed.ownerHeaderValue,
+          messageIdHeader: canonical.messageIdHeader ?? durableSmtpMessageId ?? parsed.messageId,
+          inReplyTo: parsed.inReplyTo,
+          references: parsed.references,
+          fromAddress: parsed.fromAddress ?? '',
+          toAddresses: parsed.toAddresses,
+          ccAddresses: parsed.ccAddresses,
+          subject: parsed.subject,
+          textBody: parsed.textBody,
+          htmlBody: sanitizeHtmlBodyForStorage(parsed.htmlBody),
+          rawMimeS3Key,
+          receivedAt: parsed.receivedAt ?? new Date(),
+          updatedAt: new Date(),
+        })
+        .where(and(eq(message.id, canonical.id), eq(message.transportId, canonical.transportId)));
+      if (parsed.attachments.length > 0) {
+        await transactionDb.insert(attachment).values(
+          parsed.attachments.map((a) => ({
+            id: randomUUID(),
+            messageId: canonical.id,
+            filename: a.filename,
+            mimeType: a.mimeType,
+            sizeBytes: a.sizeBytes,
+            s3Key: a.s3Key,
+            contentId: a.contentId,
+            isInline: a.isInline,
+          })),
+        );
+      }
+      reconciliation = {
+        kind: 'reconciled',
+        transportId: canonical.transportId,
+        messageId: canonical.id,
+        rawMimeS3Key,
+        attachmentCount: parsed.attachments.length,
+      };
+      return;
+    }
+
+    if (
+      await hasPendingCandidateAttachmentCleanup(transactionDb, {
+        ingestMailboxId: meta.ingestMailboxId,
+        pop3Uidl: meta.pop3Uidl,
+      })
+    ) {
+      deferred = {
+        kind: 'deferred',
+        transportId: transport.id,
+        messageId: meta.messageId,
+        rawMimeS3Key,
+      };
+      return;
+    }
+
     threadId = await resolveThreadId({
       tx: tx as unknown as DB,
       transportId: transport.id,
@@ -245,17 +499,11 @@ export async function persistInboundMessage(
       ...parsed.ccAddresses,
       ...parsed.bccAddresses,
     ].map(normalizeEmailAddress);
-    const transportIdentities = transportIdentitySet(
-      transport.email,
-      transport.sendFromConfig,
-    );
+    const transportIdentities = transportIdentitySet(transport.email, transport.sendFromConfig);
     const isSelfIngestLoopback =
-      transportIdentities.size > 0 &&
-      recipientEmails.some((a) => transportIdentities.has(a));
+      transportIdentities.size > 0 && recipientEmails.some((a) => transportIdentities.has(a));
     const isHotelSent =
-      Boolean(fromEmail) &&
-      transportIdentities.has(fromEmail) &&
-      !isSelfIngestLoopback;
+      Boolean(fromEmail) && transportIdentities.has(fromEmail) && !isSelfIngestLoopback;
 
     await tx.insert(message).values({
       id: messageId,
@@ -307,10 +555,7 @@ export async function persistInboundMessage(
       process.env.AI_WRITE_GATE_ENABLED !== 'true' &&
       isExternalFromDomain(fromEmail, transportEmail)
     ) {
-      const softLabelId = await ensureSoftQuarantineLabel(
-        tx as unknown as DB,
-        transport.id,
-      );
+      const softLabelId = await ensureSoftQuarantineLabel(tx as unknown as DB, transport.id);
       await applyThreadLabels(tx as unknown as DB, threadId, [softLabelId]);
     }
 
@@ -352,6 +597,50 @@ export async function persistInboundMessage(
     }
   });
 
+  if (duplicate) {
+    const candidateAttachmentCleanupFailureCount = await cleanupCandidateAttachmentTasks({
+      db,
+      storage,
+      attachments: parsed.attachments,
+      meta,
+      canonicalMessageId: duplicateCanonicalMessageId,
+      activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
+    });
+    return withCandidateAttachmentCleanupFailures(
+      duplicate,
+      candidateAttachmentCleanupFailureCount,
+    );
+  }
+  const deferredResult = deferred as Omit<
+    PersistDeferredResult,
+    'candidateAttachmentCleanupFailureCount'
+  > | null;
+  if (deferredResult) {
+    const candidateAttachmentCleanupFailureCount = await cleanupCandidateAttachmentTasks({
+      db,
+      storage,
+      attachments: parsed.attachments,
+      meta,
+      activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
+    });
+    return {
+      ...deferredResult,
+      candidateAttachmentCleanupFailureCount,
+    };
+  }
+  if (malformedDeliveryOutcomeQuarantine) {
+    return quarantineWithAttachmentCleanup({
+      db,
+      storage,
+      parsed,
+      meta,
+      rawMimeS3Key,
+      reason: 'malformed_delivery_outcome',
+      activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
+    });
+  }
+  if (reconciliation) return reconciliation;
+
   return {
     kind: 'stored',
     transportId: transport.id,
@@ -360,6 +649,550 @@ export async function persistInboundMessage(
     rawMimeS3Key,
     attachmentCount: parsed.attachments.length,
   };
+}
+
+export function ownedCandidateAttachmentKeys(
+  attachments: ParsedInboundMessage['attachments'],
+  candidateMessageId: string,
+): string[] {
+  const candidatePrefix = `attachments/${candidateMessageId}/`;
+  return [
+    ...new Set(
+      attachments
+        .map((attachment) => attachment.s3Key)
+        .filter((key) => key.startsWith(candidatePrefix) && key.length > candidatePrefix.length),
+    ),
+  ];
+}
+
+async function registerCandidateAttachmentCleanupTasks(
+  db: DB,
+  attachments: ParsedInboundMessage['attachments'],
+  meta: IngestMeta,
+): Promise<void> {
+  const keys = ownedCandidateAttachmentKeys(attachments, meta.messageId);
+  if (keys.length === 0) return;
+
+  await db.transaction(async (tx) => {
+    const transactionDb = tx as unknown as DB;
+    // Cleanup registration and canonical attachment persistence share this
+    // transaction-scoped fence. Either the task commits first and persistence
+    // defers, or a canonical attachment commits first and cleanup skips it.
+    await lockCandidateAttachmentCleanupOwnership(transactionDb, meta);
+    const canonicalRows = await transactionDb
+      .select({ s3Key: attachment.s3Key })
+      .from(attachment)
+      .where(inArray(attachment.s3Key, keys));
+    const canonicalKeys = new Set(canonicalRows.map((row) => row.s3Key));
+    const cleanupKeys = keys.filter((key) => !canonicalKeys.has(key));
+
+    for (
+      let start = 0;
+      start < cleanupKeys.length;
+      start += CANDIDATE_ATTACHMENT_CLEANUP_INSERT_CHUNK_SIZE
+    ) {
+      const chunk = cleanupKeys.slice(
+        start,
+        start + CANDIDATE_ATTACHMENT_CLEANUP_INSERT_CHUNK_SIZE,
+      );
+      await transactionDb
+        .insert(mailIngestCandidateAttachmentCleanup)
+        .values(
+          chunk.map((s3Key) => ({
+            s3Key,
+            candidateMessageId: meta.messageId,
+            ingestMailboxId: meta.ingestMailboxId,
+            pop3Uidl: meta.pop3Uidl,
+          })),
+        )
+        .onConflictDoNothing({ target: mailIngestCandidateAttachmentCleanup.s3Key });
+    }
+  });
+}
+
+async function lockCandidateAttachmentCleanupOwnership(
+  db: DB,
+  meta: Pick<IngestMeta, 'ingestMailboxId' | 'pop3Uidl'>,
+): Promise<void> {
+  await db.execute(sql`
+    SELECT pg_advisory_xact_lock(
+      hashtext(${meta.ingestMailboxId}),
+      hashtext(${meta.pop3Uidl})
+    )
+  `);
+}
+
+async function canonicalAttachmentKeys(db: DB, s3Keys: string[]): Promise<Set<string>> {
+  if (s3Keys.length === 0) return new Set();
+  const rows = await db
+    .select({ s3Key: attachment.s3Key })
+    .from(attachment)
+    .where(inArray(attachment.s3Key, s3Keys));
+  return new Set(rows.map((row) => row.s3Key));
+}
+
+async function deleteCandidateAttachmentCleanupTask(
+  db: DB,
+  task: Pick<CandidateAttachmentCleanupTask, 's3Key' | 'candidateMessageId'>,
+): Promise<void> {
+  await db
+    .delete(mailIngestCandidateAttachmentCleanup)
+    .where(
+      and(
+        eq(mailIngestCandidateAttachmentCleanup.s3Key, task.s3Key),
+        eq(mailIngestCandidateAttachmentCleanup.candidateMessageId, task.candidateMessageId),
+      ),
+    );
+}
+
+function isOwnedCandidateAttachmentKey(s3Key: string, candidateMessageId: string): boolean {
+  const prefix = `attachments/${candidateMessageId}/`;
+  return s3Key.startsWith(prefix) && s3Key.length > prefix.length;
+}
+
+async function mapWithBoundedConcurrency<T, R>(
+  values: T[],
+  concurrency: number,
+  map: (value: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = [];
+  results.length = values.length;
+  let nextIndex = 0;
+  const worker = async () => {
+    for (;;) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= values.length) return;
+      results[index] = await map(values[index]!);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, values.length) }, worker));
+  return results;
+}
+
+export async function hasPendingCandidateAttachmentCleanup(
+  db: DB,
+  meta: Pick<IngestMeta, 'ingestMailboxId' | 'pop3Uidl'>,
+): Promise<boolean> {
+  // Do not use SKIP LOCKED here. A cleaner may hold the row lock while it
+  // deletes S3; any POP3 retry must still see the pending work and defer.
+  const rows = await db
+    .select({ s3Key: mailIngestCandidateAttachmentCleanup.s3Key })
+    .from(mailIngestCandidateAttachmentCleanup)
+    .where(
+      and(
+        eq(mailIngestCandidateAttachmentCleanup.ingestMailboxId, meta.ingestMailboxId),
+        eq(mailIngestCandidateAttachmentCleanup.pop3Uidl, meta.pop3Uidl),
+      ),
+    )
+    .limit(1);
+  return rows.length > 0;
+}
+
+export async function claimIngestUidl(
+  db: DB,
+  meta: Pick<IngestMeta, 'ingestMailboxId' | 'pop3Uidl'>,
+): Promise<string | null> {
+  const claimToken = randomUUID();
+  const expiresAt = new Date(Date.now() + INGEST_UIDL_CLAIM_LEASE_MS);
+  const claimed = await db
+    .insert(mailIngestUidlClaim)
+    .values({
+      ingestMailboxId: meta.ingestMailboxId,
+      pop3Uidl: meta.pop3Uidl,
+      claimToken,
+      expiresAt,
+    })
+    .onConflictDoUpdate({
+      target: [mailIngestUidlClaim.ingestMailboxId, mailIngestUidlClaim.pop3Uidl],
+      set: { claimToken, expiresAt },
+      setWhere: lte(mailIngestUidlClaim.expiresAt, new Date()),
+    })
+    .returning({ claimToken: mailIngestUidlClaim.claimToken });
+  return claimed[0]?.claimToken === claimToken ? claimToken : null;
+}
+
+export async function renewIngestUidlClaim(
+  db: DB,
+  meta: Pick<IngestMeta, 'ingestMailboxId' | 'pop3Uidl'>,
+  claimToken: string,
+): Promise<boolean> {
+  const renewed = await db
+    .update(mailIngestUidlClaim)
+    .set({ expiresAt: new Date(Date.now() + INGEST_UIDL_CLAIM_LEASE_MS) })
+    .where(
+      and(
+        eq(mailIngestUidlClaim.ingestMailboxId, meta.ingestMailboxId),
+        eq(mailIngestUidlClaim.pop3Uidl, meta.pop3Uidl),
+        eq(mailIngestUidlClaim.claimToken, claimToken),
+      ),
+    )
+    .returning({ claimToken: mailIngestUidlClaim.claimToken });
+  return renewed.length === 1;
+}
+
+export async function releaseIngestUidlClaim(
+  db: DB,
+  meta: Pick<IngestMeta, 'ingestMailboxId' | 'pop3Uidl'>,
+  claimToken: string,
+): Promise<void> {
+  await db
+    .delete(mailIngestUidlClaim)
+    .where(
+      and(
+        eq(mailIngestUidlClaim.ingestMailboxId, meta.ingestMailboxId),
+        eq(mailIngestUidlClaim.pop3Uidl, meta.pop3Uidl),
+        eq(mailIngestUidlClaim.claimToken, claimToken),
+      ),
+    );
+}
+
+type CandidateAttachmentCleanupTask = {
+  s3Key: string;
+  candidateMessageId: string;
+  ingestMailboxId: string;
+  pop3Uidl: string;
+  attempts: number;
+};
+
+type CandidateAttachmentCleanupBatchResult = {
+  claimedTaskCount: number;
+  selectedTaskCount: number;
+  deletedTaskCount: number;
+  failureCount: number;
+  canContinue: boolean;
+};
+
+function nextCandidateAttachmentCleanupAttempt(attempts: number): Date {
+  const exponent = Math.min(Math.max(attempts - 1, 0), 10);
+  const delay = Math.min(
+    CANDIDATE_ATTACHMENT_CLEANUP_RETRY_BASE_MS * 2 ** exponent,
+    CANDIDATE_ATTACHMENT_CLEANUP_RETRY_MAX_MS,
+  );
+  return new Date(Date.now() + delay);
+}
+
+function ingestUidlScopeKey(
+  args: Pick<CandidateAttachmentCleanupTask, 'ingestMailboxId' | 'pop3Uidl'>,
+): string {
+  return JSON.stringify([args.ingestMailboxId, args.pop3Uidl]);
+}
+
+async function deferCandidateAttachmentCleanupTask(
+  db: DB,
+  task: CandidateAttachmentCleanupTask,
+): Promise<void> {
+  const attempts = task.attempts + 1;
+  await db
+    .update(mailIngestCandidateAttachmentCleanup)
+    .set({
+      attempts: sql`${mailIngestCandidateAttachmentCleanup.attempts} + 1`,
+      nextAttemptAt: nextCandidateAttachmentCleanupAttempt(attempts),
+    })
+    .where(
+      and(
+        eq(mailIngestCandidateAttachmentCleanup.s3Key, task.s3Key),
+        eq(mailIngestCandidateAttachmentCleanup.candidateMessageId, task.candidateMessageId),
+      ),
+    );
+}
+
+async function deferCandidateAttachmentCleanupForActiveClaim(
+  db: DB,
+  task: CandidateAttachmentCleanupTask,
+): Promise<void> {
+  await db
+    .update(mailIngestCandidateAttachmentCleanup)
+    .set({
+      nextAttemptAt: new Date(Date.now() + CANDIDATE_ATTACHMENT_CLEANUP_RETRY_BASE_MS),
+    })
+    .where(
+      and(
+        eq(mailIngestCandidateAttachmentCleanup.s3Key, task.s3Key),
+        eq(mailIngestCandidateAttachmentCleanup.candidateMessageId, task.candidateMessageId),
+      ),
+    );
+}
+
+async function claimAndDeleteCandidateAttachmentCleanupTasks(args: {
+  db: DB;
+  storage: S3Storage;
+  limit: number;
+  meta?: Pick<IngestMeta, 'ingestMailboxId' | 'pop3Uidl'>;
+  dueThrough: Date;
+  activeIngestUidlClaimToken?: string;
+}): Promise<CandidateAttachmentCleanupBatchResult> {
+  let claimedTasks: CandidateAttachmentCleanupTask[] = [];
+  try {
+    return await args.db.transaction(async (tx) => {
+      const transactionDb = tx as unknown as DB;
+      const tasks = await transactionDb
+        .select({
+          s3Key: mailIngestCandidateAttachmentCleanup.s3Key,
+          candidateMessageId: mailIngestCandidateAttachmentCleanup.candidateMessageId,
+          ingestMailboxId: mailIngestCandidateAttachmentCleanup.ingestMailboxId,
+          pop3Uidl: mailIngestCandidateAttachmentCleanup.pop3Uidl,
+          attempts: mailIngestCandidateAttachmentCleanup.attempts,
+        })
+        .from(mailIngestCandidateAttachmentCleanup)
+        .where(
+          and(
+            args.meta
+              ? eq(mailIngestCandidateAttachmentCleanup.ingestMailboxId, args.meta.ingestMailboxId)
+              : undefined,
+            args.meta
+              ? eq(mailIngestCandidateAttachmentCleanup.pop3Uidl, args.meta.pop3Uidl)
+              : undefined,
+            lte(mailIngestCandidateAttachmentCleanup.nextAttemptAt, args.dueThrough),
+          ),
+        )
+        .orderBy(
+          asc(mailIngestCandidateAttachmentCleanup.nextAttemptAt),
+          asc(mailIngestCandidateAttachmentCleanup.s3Key),
+        )
+        .limit(args.limit)
+        .for('update', { skipLocked: true });
+      claimedTasks = tasks;
+      if (tasks.length === 0) {
+        return {
+          claimedTaskCount: 0,
+          selectedTaskCount: 0,
+          deletedTaskCount: 0,
+          failureCount: 0,
+          canContinue: true,
+        };
+      }
+
+      const taskScopes = [
+        ...new Map(
+          tasks.map((task) => [
+            ingestUidlScopeKey(task),
+            { ingestMailboxId: task.ingestMailboxId, pop3Uidl: task.pop3Uidl },
+          ]),
+        ).values(),
+      ];
+      const activeClaims = await transactionDb
+        .select({
+          ingestMailboxId: mailIngestUidlClaim.ingestMailboxId,
+          pop3Uidl: mailIngestUidlClaim.pop3Uidl,
+          claimToken: mailIngestUidlClaim.claimToken,
+        })
+        .from(mailIngestUidlClaim)
+        .where(
+          and(
+            gt(mailIngestUidlClaim.expiresAt, new Date()),
+            or(
+              ...taskScopes.map((scope) =>
+                and(
+                  eq(mailIngestUidlClaim.ingestMailboxId, scope.ingestMailboxId),
+                  eq(mailIngestUidlClaim.pop3Uidl, scope.pop3Uidl),
+                ),
+              ),
+            ),
+          ),
+        );
+      const activeClaimTokensByScope = new Map(
+        activeClaims.map((claim) => [ingestUidlScopeKey(claim), claim.claimToken]),
+      );
+      const canonicalKeys = await canonicalAttachmentKeys(
+        transactionDb,
+        tasks.map((task) => task.s3Key),
+      );
+      // One transaction owns every claimed row. S3 calls stay bounded while
+      // the locks remain held, so another worker cannot promote a stale key.
+      const deletionResults = await mapWithBoundedConcurrency(
+        tasks,
+        CANDIDATE_ATTACHMENT_DELETE_CONCURRENCY,
+        async (task) => {
+          const activeClaimToken = activeClaimTokensByScope.get(ingestUidlScopeKey(task));
+          if (activeClaimToken && activeClaimToken !== args.activeIngestUidlClaimToken) {
+            return { task, disposition: 'active_claim' as const };
+          }
+          if (canonicalKeys.has(task.s3Key)) {
+            return { task, disposition: 'canonical' as const };
+          }
+          if (!isOwnedCandidateAttachmentKey(task.s3Key, task.candidateMessageId)) {
+            return { task, disposition: 'failed' as const };
+          }
+          try {
+            await args.storage.deleteObject(task.s3Key);
+            return { task, disposition: 'deleted' as const };
+          } catch {
+            return { task, disposition: 'failed' as const };
+          }
+        },
+      );
+
+      let deletedTaskCount = 0;
+      let failureCount = 0;
+      let activeClaimTaskCount = 0;
+      for (const result of deletionResults) {
+        if (result.disposition === 'active_claim') {
+          await deferCandidateAttachmentCleanupForActiveClaim(transactionDb, result.task);
+          activeClaimTaskCount += 1;
+          continue;
+        }
+        if (result.disposition === 'canonical') {
+          // A pre-existing task can outlive a prior failed deployment or a
+          // crash. Once its key is canonical, delete only queue state.
+          await deleteCandidateAttachmentCleanupTask(transactionDb, result.task);
+          deletedTaskCount += 1;
+          continue;
+        }
+        if (result.disposition === 'failed') {
+          await deferCandidateAttachmentCleanupTask(transactionDb, result.task);
+          failureCount += 1;
+          continue;
+        }
+        await deleteCandidateAttachmentCleanupTask(transactionDb, result.task);
+        deletedTaskCount += 1;
+      }
+      return {
+        // A task deferred for another worker's active UIDL claim has not
+        // consumed cleanup capacity. Continue this sweep so a full claimed
+        // batch cannot starve later due cleanup rows.
+        claimedTaskCount: tasks.length - activeClaimTaskCount,
+        selectedTaskCount: tasks.length,
+        deletedTaskCount,
+        failureCount,
+        canContinue: true,
+      };
+    });
+  } catch {
+    if (claimedTasks.length === 0) {
+      return {
+        claimedTaskCount: 0,
+        selectedTaskCount: 0,
+        deletedTaskCount: 0,
+        failureCount: 1,
+        canContinue: false,
+      };
+    }
+
+    let canContinue = true;
+    for (const task of claimedTasks) {
+      try {
+        // The transaction rolled back after an S3 operation or row delete.
+        // Preserve every task and retry idempotent deletion after backoff.
+        await deferCandidateAttachmentCleanupTask(args.db, task);
+      } catch {
+        canContinue = false;
+      }
+    }
+    return {
+      claimedTaskCount: claimedTasks.length,
+      selectedTaskCount: claimedTasks.length,
+      deletedTaskCount: 0,
+      failureCount: claimedTasks.length,
+      canContinue,
+    };
+  }
+}
+
+async function drainCandidateAttachmentCleanupTasks(args: {
+  db: DB;
+  storage: S3Storage;
+  limit: number;
+  meta?: Pick<IngestMeta, 'ingestMailboxId' | 'pop3Uidl'>;
+  dueThrough?: Date;
+  activeIngestUidlClaimToken?: string;
+}): Promise<{
+  failureCount: number;
+  taskCount: number;
+  limitReached: boolean;
+  canContinue: boolean;
+}> {
+  const limit = Math.max(0, args.limit);
+  if (limit === 0) {
+    return { failureCount: 0, taskCount: 0, limitReached: true, canContinue: true };
+  }
+
+  let failureCount = 0;
+  let claimedTaskCount = 0;
+  let deletedTaskCount = 0;
+  let canContinue = true;
+  const dueThrough = args.dueThrough ?? new Date();
+  while (claimedTaskCount < limit) {
+    const result = await claimAndDeleteCandidateAttachmentCleanupTasks({
+      ...args,
+      limit: limit - claimedTaskCount,
+      dueThrough,
+    });
+    failureCount += result.failureCount;
+    claimedTaskCount += result.claimedTaskCount;
+    deletedTaskCount += result.deletedTaskCount;
+    if (result.selectedTaskCount === 0 || !result.canContinue) {
+      canContinue = result.canContinue;
+      break;
+    }
+  }
+  return {
+    failureCount,
+    taskCount: deletedTaskCount,
+    limitReached: claimedTaskCount >= limit,
+    canContinue,
+  };
+}
+
+export async function sweepCandidateAttachmentCleanupTasks(args: {
+  db: DB;
+  storage: S3Storage;
+  limit?: number;
+}): Promise<{ failureCount: number }> {
+  return drainCandidateAttachmentCleanupTasks({
+    ...args,
+    limit: args.limit ?? CANDIDATE_ATTACHMENT_CLEANUP_SWEEP_LIMIT,
+  });
+}
+
+async function cleanupCandidateAttachmentTasks(args: {
+  db: DB;
+  storage: S3Storage;
+  attachments: ParsedInboundMessage['attachments'];
+  meta: IngestMeta;
+  canonicalMessageId?: string;
+  activeIngestUidlClaimToken?: string;
+}): Promise<number> {
+  if (args.canonicalMessageId !== args.meta.messageId) {
+    await registerCandidateAttachmentCleanupTasks(args.db, args.attachments, args.meta);
+  }
+  let failureCount = 0;
+  const dueThrough = new Date();
+  for (;;) {
+    const result = await drainCandidateAttachmentCleanupTasks({
+      db: args.db,
+      storage: args.storage,
+      meta: args.meta,
+      limit: CANDIDATE_ATTACHMENT_CLEANUP_SWEEP_LIMIT,
+      dueThrough,
+      activeIngestUidlClaimToken: args.activeIngestUidlClaimToken,
+    });
+    failureCount += result.failureCount;
+    if (!result.limitReached || !result.canContinue) {
+      return failureCount;
+    }
+  }
+}
+
+/**
+ * Persist and drain keys uploaded before `parseRawMessage` failed. Registration
+ * errors propagate so the POP3 worker can retain the raw message fail-closed.
+ */
+export async function cleanupPartialParseFailureAttachments(args: {
+  db: DB;
+  storage: S3Storage;
+  attachments: ParsedInboundMessage['attachments'];
+  meta: IngestMeta;
+  activeIngestUidlClaimToken?: string;
+}): Promise<number> {
+  return cleanupCandidateAttachmentTasks(args);
+}
+
+function withCandidateAttachmentCleanupFailures(
+  result: PersistDuplicateResult,
+  candidateAttachmentCleanupFailureCount: number,
+): PersistDuplicateResult {
+  return { ...result, candidateAttachmentCleanupFailureCount };
 }
 
 /**
@@ -380,6 +1213,7 @@ export async function quarantineOversizedMessage(
       quarantineId: existing.id,
       reason: existing.reason as QuarantineReason,
       rawMimeS3Key: existing.rawMimeS3Key,
+      candidateAttachmentCleanupFailureCount: 0,
     };
   }
 
@@ -398,6 +1232,7 @@ export async function quarantineOversizedMessage(
     quarantineId,
     reason: 'message_too_large',
     rawMimeS3Key,
+    candidateAttachmentCleanupFailureCount: 0,
   };
 }
 
@@ -417,6 +1252,7 @@ export async function quarantineParseFailure(
       quarantineId: existing.id,
       reason: existing.reason as QuarantineReason,
       rawMimeS3Key: existing.rawMimeS3Key,
+      candidateAttachmentCleanupFailureCount: 0,
     };
   }
 
@@ -435,6 +1271,7 @@ export async function quarantineParseFailure(
     quarantineId,
     reason: 'parse_failure',
     rawMimeS3Key,
+    candidateAttachmentCleanupFailureCount: 0,
   };
 }
 
@@ -456,6 +1293,165 @@ async function findExistingInboundMessage(
   return rows[0];
 }
 
+type CanonicalOutbound = {
+  id: string;
+  transportId: string;
+  ingestMailboxId: string | null;
+  pop3Uidl: string | null;
+  messageIdHeader: string | null;
+  queueStatus: string;
+  smtpPayload: unknown;
+};
+
+async function findEligibleCanonicalOutbound(
+  db: DB,
+  transportId: string,
+  correlationId: string,
+  useMessageIdFallback: boolean,
+): Promise<CanonicalOutbound | undefined> {
+  if (!useMessageIdFallback) {
+    return findCanonicalOutboundWithQueueLock(db, transportId, correlationId, ['sent', 'sending']);
+  }
+
+  // Legacy Message-ID correlation remains sent-only and must fail closed when
+  // a reused header identifies more than one outbound message.
+  const candidates = await db
+    .select({ id: message.id })
+    .from(message)
+    .innerJoin(
+      outboundSendQueue,
+      and(
+        eq(outboundSendQueue.messageId, message.id),
+        eq(outboundSendQueue.transportId, message.transportId),
+      ),
+    )
+    .where(
+      and(
+        eq(message.messageIdHeader, correlationId),
+        eq(message.transportId, transportId),
+        eq(message.direction, 'outbound'),
+        eq(outboundSendQueue.status, 'sent'),
+      ),
+    )
+    .limit(2)
+    .for('update');
+  if (candidates.length !== 1) return undefined;
+
+  return findCanonicalOutboundWithQueueLock(
+    db,
+    transportId,
+    candidates[0]!.id,
+    ['sent'],
+    correlationId,
+  );
+}
+
+async function findCanonicalOutboundWithQueueLock(
+  db: DB,
+  transportId: string,
+  canonicalMessageId: string,
+  allowedQueueStatuses: readonly string[],
+  expectedMessageIdHeader?: string,
+): Promise<CanonicalOutbound | undefined> {
+  const [queue] = await db
+    .select({
+      messageId: outboundSendQueue.messageId,
+      transportId: outboundSendQueue.transportId,
+      queueStatus: outboundSendQueue.status,
+      smtpPayload: outboundSendQueue.smtpPayload,
+    })
+    .from(outboundSendQueue)
+    .where(
+      and(
+        eq(outboundSendQueue.messageId, canonicalMessageId),
+        eq(outboundSendQueue.transportId, transportId),
+        inArray(outboundSendQueue.status, allowedQueueStatuses),
+      ),
+    )
+    .limit(1)
+    .for('update');
+  if (!queue) return undefined;
+
+  const [canonical] = await db
+    .select({
+      id: message.id,
+      transportId: message.transportId,
+      ingestMailboxId: message.ingestMailboxId,
+      pop3Uidl: message.pop3Uidl,
+      messageIdHeader: message.messageIdHeader,
+    })
+    .from(message)
+    .where(
+      expectedMessageIdHeader === undefined
+        ? and(
+            eq(message.id, queue.messageId),
+            eq(message.transportId, queue.transportId),
+            eq(message.direction, 'outbound'),
+          )
+        : and(
+            eq(message.id, queue.messageId),
+            eq(message.transportId, queue.transportId),
+            eq(message.direction, 'outbound'),
+            eq(message.messageIdHeader, expectedMessageIdHeader),
+          ),
+    )
+    .limit(1)
+    .for('update');
+  if (!canonical) return undefined;
+
+  return {
+    ...canonical,
+    queueStatus: queue.queueStatus,
+    smtpPayload: queue.smtpPayload,
+  };
+}
+
+function hasProvenPersistedSendingDelivery(args: {
+  smtpPayload: unknown;
+  parsedMessageId: string | null;
+  requiresExactReturnedMessageId: boolean;
+  expectedTransportAddress: string;
+  messageIdHeader: string | null;
+}): boolean {
+  try {
+    const outcome = parsePersistedDeliveryOutcome(args.smtpPayload);
+    if (
+      !outcome ||
+      (args.requiresExactReturnedMessageId && outcome.messageId !== args.parsedMessageId)
+    ) {
+      return false;
+    }
+
+    const normalizedExpectedTransportAddress = normalizeRocketseedMailbox(
+      args.expectedTransportAddress,
+    );
+    if (!normalizedExpectedTransportAddress) return false;
+    if (
+      !outcome.accepted.some(
+        (recipient) => normalizeRocketseedMailbox(recipient) === normalizedExpectedTransportAddress,
+      )
+    ) {
+      return false;
+    }
+
+    return (
+      !args.requiresExactReturnedMessageId ||
+      !args.messageIdHeader ||
+      args.messageIdHeader === outcome.messageId
+    );
+  } catch {
+    return false;
+  }
+}
+
+function persistedDeliveryOutcomeState(smtpPayload: unknown): 'absent' | 'valid' | 'malformed' {
+  try {
+    return parsePersistedDeliveryOutcome(smtpPayload) === null ? 'absent' : 'valid';
+  } catch {
+    return 'malformed';
+  }
+}
+
 async function findExistingQuarantine(
   db: DB,
   meta: Pick<IngestMeta, 'ingestMailboxId' | 'pop3Uidl'>,
@@ -464,6 +1460,7 @@ async function findExistingQuarantine(
       id: string;
       reason: string;
       rawMimeS3Key: string;
+      parsedHeaders: unknown;
     }
   | undefined
 > {
@@ -472,6 +1469,7 @@ async function findExistingQuarantine(
       id: mailIngestQuarantine.id,
       reason: mailIngestQuarantine.reason,
       rawMimeS3Key: mailIngestQuarantine.rawMimeS3Key,
+      parsedHeaders: mailIngestQuarantine.parsedHeaders,
     })
     .from(mailIngestQuarantine)
     .where(
@@ -500,9 +1498,7 @@ async function findDirectToTransport(
     .where(eq(mailboxTransport.isActive, true));
 
   return (
-    transports.find((transport) =>
-      directTo.has(normalizeEmailAddress(transport.email)),
-    ) ?? null
+    transports.find((transport) => directTo.has(normalizeEmailAddress(transport.email))) ?? null
   );
 }
 
@@ -532,12 +1528,7 @@ function transportIdentitySet(email: string, sendFromConfig: unknown): Set<strin
 }
 
 function equatedAddresses(parsed: ParsedInboundMessage): string[] {
-  return [
-    parsed.fromAddress,
-    ...parsed.toAddresses,
-    ...parsed.ccAddresses,
-    ...parsed.bccAddresses,
-  ]
+  return [parsed.fromAddress, ...parsed.toAddresses, ...parsed.ccAddresses, ...parsed.bccAddresses]
     .filter((address): address is string => Boolean(address))
     .map(normalizeEmailAddress)
     .filter(Boolean);
@@ -559,16 +1550,13 @@ async function findTransportByStamp(
     .where(eq(mailboxTransport.isActive, true));
 
   const byOwnerHeader = transports.find(
-    (transport) =>
-      normalizeEmailAddress(transport.ownerHeaderValue) === normalizedHeader,
+    (transport) => normalizeEmailAddress(transport.ownerHeaderValue) === normalizedHeader,
   );
   if (byOwnerHeader) return byOwnerHeader;
 
   return (
     transports.find((transport) =>
-      transportIdentitySet(transport.email, transport.sendFromConfig).has(
-        normalizedHeader,
-      ),
+      transportIdentitySet(transport.email, transport.sendFromConfig).has(normalizedHeader),
     ) ?? null
   );
 }
@@ -585,30 +1573,21 @@ async function findCenturionEquatedTransport(
     })
     .from(mailboxTransport)
     .where(
-      and(
-        eq(mailboxTransport.id, CENTURION_TRANSPORT_ID),
-        eq(mailboxTransport.isActive, true),
-      ),
+      and(eq(mailboxTransport.id, CENTURION_TRANSPORT_ID), eq(mailboxTransport.isActive, true)),
     )
     .limit(1);
 
   const centurion = centurionRows[0];
   if (!centurion) return null;
 
-  const identities = transportIdentitySet(
-    centurion.email,
-    centurion.sendFromConfig,
-  );
+  const identities = transportIdentitySet(centurion.email, centurion.sendFromConfig);
   if (equatedAddresses(parsed).some((address) => identities.has(address))) {
     return centurion;
   }
   return null;
 }
 
-async function ensureSoftQuarantineLabel(
-  db: DB,
-  transportId: string,
-): Promise<string> {
+async function ensureSoftQuarantineLabel(db: DB, transportId: string): Promise<string> {
   const id = `label-soft-quarantine-${transportId}`;
   await db
     .insert(mailLabel)
@@ -618,13 +1597,8 @@ async function ensureSoftQuarantineLabel(
 }
 
 /** From domain outside transport domain (minimal allowlist = transport domain). */
-function isExternalFromDomain(
-  fromEmail: string,
-  transportEmail: string,
-): boolean {
-  const fromDomain = fromEmail.includes('@')
-    ? fromEmail.slice(fromEmail.lastIndexOf('@') + 1)
-    : '';
+function isExternalFromDomain(fromEmail: string, transportEmail: string): boolean {
+  const fromDomain = fromEmail.includes('@') ? fromEmail.slice(fromEmail.lastIndexOf('@') + 1) : '';
   const transportDomain = transportEmail.includes('@')
     ? transportEmail.slice(transportEmail.lastIndexOf('@') + 1)
     : '';
@@ -632,11 +1606,7 @@ function isExternalFromDomain(
   return fromDomain !== transportDomain;
 }
 
-async function applyThreadLabels(
-  tx: DB,
-  threadId: string,
-  labelIds: string[],
-): Promise<void> {
+async function applyThreadLabels(tx: DB, threadId: string, labelIds: string[]): Promise<void> {
   if (labelIds.length === 0) return;
   const rows = await tx
     .select({ labelIds: mailThread.labelIds })
@@ -666,6 +1636,7 @@ async function quarantineUnrouted(args: {
       quarantineId: existing.id,
       reason: existing.reason as QuarantineReason,
       rawMimeS3Key: existing.rawMimeS3Key,
+      candidateAttachmentCleanupFailureCount: 0,
     };
   }
 
@@ -684,7 +1655,25 @@ async function quarantineUnrouted(args: {
     quarantineId,
     reason,
     rawMimeS3Key,
+    candidateAttachmentCleanupFailureCount: 0,
   };
+}
+
+async function quarantineWithAttachmentCleanup(
+  args: Parameters<typeof quarantineUnrouted>[0] & {
+    storage: S3Storage;
+    activeIngestUidlClaimToken?: string;
+  },
+): Promise<PersistQuarantinedResult> {
+  const result = await quarantineUnrouted(args);
+  const candidateAttachmentCleanupFailureCount = await cleanupCandidateAttachmentTasks({
+    db: args.db,
+    storage: args.storage,
+    attachments: args.parsed.attachments,
+    meta: args.meta,
+    activeIngestUidlClaimToken: args.activeIngestUidlClaimToken,
+  });
+  return { ...result, candidateAttachmentCleanupFailureCount };
 }
 
 async function resolveThreadId(args: {
@@ -695,14 +1684,11 @@ async function resolveThreadId(args: {
 }): Promise<string> {
   const { tx, transportId, parsed, pop3Uidl } = args;
   const now = parsed.receivedAt ?? new Date();
-  const snippet = parsed.textBody
-    ? parsed.textBody.slice(0, 200)
-    : parsed.subject ?? '';
+  const snippet = parsed.textBody ? parsed.textBody.slice(0, 200) : (parsed.subject ?? '');
 
-  const candidates = [
-    ...(parsed.inReplyTo ? [parsed.inReplyTo] : []),
-    ...parsed.references,
-  ].filter(Boolean);
+  const candidates = [...(parsed.inReplyTo ? [parsed.inReplyTo] : []), ...parsed.references].filter(
+    Boolean,
+  );
   const uniqueCandidates = [...new Set(candidates)];
 
   if (uniqueCandidates.length > 0) {
@@ -735,12 +1721,7 @@ async function resolveThreadId(args: {
   const existing = await tx
     .select({ id: mailThread.id })
     .from(mailThread)
-    .where(
-      and(
-        eq(mailThread.transportId, transportId),
-        eq(mailThread.threadRootId, threadRootId),
-      ),
-    )
+    .where(and(eq(mailThread.transportId, transportId), eq(mailThread.threadRootId, threadRootId)))
     .limit(1);
   if (existing.length > 0) {
     const threadId = existing[0]!.id;

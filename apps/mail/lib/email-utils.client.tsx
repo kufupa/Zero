@@ -1,5 +1,9 @@
+import {
+  getListUnsubscribeAction,
+  isPartialSendResult,
+  isUncertainSendResult,
+} from '@/lib/email-utils';
 import { Html, Head, Body, Container, Section, Column, Row } from '@react-email/components';
-import { getListUnsubscribeAction } from '@/lib/email-utils';
 import { trpcClient } from '@/providers/query-provider';
 import { renderToString } from 'react-dom/server';
 import type { ParsedMessage } from '@/types';
@@ -36,7 +40,7 @@ export const handleUnsubscribe = async ({ emailData }: { emailData: ParsedMessag
             clearTimeout(timeoutId);
             return true;
           case 'email':
-            await trpcClient.mail.send.mutate({
+            const result = await trpcClient.mail.send.mutate({
               to: [
                 {
                   email: listUnsubscribeAction.emailAddress,
@@ -48,6 +52,9 @@ export const handleUnsubscribe = async ({ emailData }: { emailData: ParsedMessag
                 : 'Unsubscribe Request',
               message: 'Zero sent this email to unsubscribe from this mailing list.',
             });
+            if (isPartialSendResult(result) || isUncertainSendResult(result)) {
+              return false;
+            }
             return true;
         }
         // track('Unsubscribe', {

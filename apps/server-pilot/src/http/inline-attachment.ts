@@ -4,23 +4,22 @@
  * Mounted at GET /api/mail/messages/:messageId/attachments/:attachmentId/inline
  * — cookie session required; mailbox access via join (no active-transport header).
  */
-import { and, eq } from 'drizzle-orm';
-import type { Auth } from '../lib/auth.js';
-import type { DB } from '../db/client.js';
-import { getDb } from '../db/client.js';
-import { attachment, mailboxAccess, message } from '../db/schema/mail.js';
 import {
   assertSafeInlineRaster,
   InlineImageTooLargeError,
+  MAX_INLINE_IMAGE_BYTES,
 } from '../mail/safe-inline-image.js';
+import { findUniqueEligibleInlineAttachment, type CidAttachmentMeta } from '../mail/cid-images.js';
+import { attachment, mailboxAccess, message } from '../db/schema/mail.js';
 import { getS3Storage, S3ObjectTooLargeError } from '../storage/s3.js';
+import type { Auth } from '../lib/auth.js';
+import type { DB } from '../db/client.js';
+import { and, eq, ne } from 'drizzle-orm';
+import { getDb } from '../db/client.js';
 
-const MAX_INLINE_BYTES = 5 * 1024 * 1024;
-
-export type InlineAttachmentMeta = {
+export type InlineAttachmentMeta = CidAttachmentMeta & {
   s3Key: string;
-  mimeType: string;
-  sizeBytes: number;
+  siblingAttachments: CidAttachmentMeta[];
 };
 
 export type InlineAttachmentDeps = {
@@ -46,9 +45,12 @@ export async function loadAuthorizedAttachment(
 ): Promise<InlineAttachmentMeta | null> {
   const rows = await db
     .select({
+      attachmentId: attachment.id,
       s3Key: attachment.s3Key,
+      contentId: attachment.contentId,
       mimeType: attachment.mimeType,
       sizeBytes: attachment.sizeBytes,
+      isInline: attachment.isInline,
     })
     .from(attachment)
     .innerJoin(message, eq(attachment.messageId, message.id))
@@ -61,7 +63,25 @@ export async function loadAuthorizedAttachment(
       ),
     )
     .limit(1);
-  return rows[0] ?? null;
+  const target = rows[0];
+  if (!target) return null;
+
+  const siblingAttachments = await db
+    .select({
+      attachmentId: attachment.id,
+      contentId: attachment.contentId,
+      mimeType: attachment.mimeType,
+      sizeBytes: attachment.sizeBytes,
+      isInline: attachment.isInline,
+    })
+    .from(attachment)
+    .where(and(eq(attachment.messageId, args.messageId), ne(attachment.id, args.attachmentId)));
+
+  return { ...target, siblingAttachments };
+}
+
+function opaque(status: number): Response {
+  return new Response(null, { status });
 }
 
 export function createInlineAttachmentHandler(deps: InlineAttachmentDeps) {
@@ -69,56 +89,74 @@ export function createInlineAttachmentHandler(deps: InlineAttachmentDeps) {
     req: Request,
     params: { messageId: string; attachmentId: string },
   ): Promise<Response> => {
-    const session = await deps.getSession(req);
-    if (!session?.user?.id) {
-      return new Response('Unauthorized', { status: 401 });
-    }
-
-    const meta = await deps.loadAuthorizedAttachment({
-      userId: session.user.id,
-      messageId: params.messageId,
-      attachmentId: params.attachmentId,
-    });
-    if (!meta) {
-      return new Response('Not Found', { status: 404 });
-    }
-    if (meta.sizeBytes > MAX_INLINE_BYTES) {
-      return new Response('Payload Too Large', { status: 413 });
-    }
-
-    let obj: { body: Buffer; contentType?: string } | null;
     try {
-      obj = await deps.getObjectBounded(meta.s3Key, MAX_INLINE_BYTES);
-    } catch (e) {
-      if (e instanceof S3ObjectTooLargeError) {
-        return new Response('Payload Too Large', { status: 413 });
+      const session = await deps.getSession(req);
+      if (!session?.user?.id) {
+        return opaque(401);
       }
-      throw e;
-    }
-    if (!obj) {
-      return new Response('Not Found', { status: 404 });
-    }
 
-    try {
-      assertSafeInlineRaster(obj.body, meta.mimeType);
-    } catch (e) {
-      if (e instanceof InlineImageTooLargeError) {
-        return new Response('Payload Too Large', { status: 413 });
+      const meta = await deps.loadAuthorizedAttachment({
+        userId: session.user.id,
+        messageId: params.messageId,
+        attachmentId: params.attachmentId,
+      });
+      if (!meta) {
+        return opaque(404);
       }
-      return new Response('Unsupported Media Type', { status: 415 });
-    }
 
-    return new Response(obj.body, {
-      status: 200,
-      headers: {
-        'Content-Type': meta.mimeType,
-        'Content-Length': String(obj.body.length),
-        'Content-Disposition': 'inline',
-        'Cache-Control': 'private, max-age=300',
-        'Referrer-Policy': 'no-referrer',
-        'X-Content-Type-Options': 'nosniff',
-      },
-    });
+      const resolved = findUniqueEligibleInlineAttachment(meta.contentId, [
+        meta,
+        ...meta.siblingAttachments,
+      ]);
+      if (resolved.kind !== 'eligible') {
+        return opaque(
+          resolved.kind === 'metadata-too-large'
+            ? 413
+            : resolved.kind === 'unsupported-mime'
+              ? 415
+              : 404,
+        );
+      }
+      if (resolved.attachment.attachmentId !== meta.attachmentId) {
+        return opaque(404);
+      }
+
+      let obj: { body: Buffer; contentType?: string } | null;
+      try {
+        obj = await deps.getObjectBounded(meta.s3Key, MAX_INLINE_IMAGE_BYTES);
+      } catch (error) {
+        if (error instanceof S3ObjectTooLargeError) {
+          return opaque(413);
+        }
+        return opaque(500);
+      }
+      if (!obj) {
+        return opaque(404);
+      }
+
+      try {
+        assertSafeInlineRaster(obj.body, meta.mimeType);
+      } catch (error) {
+        if (error instanceof InlineImageTooLargeError) {
+          return opaque(413);
+        }
+        return opaque(415);
+      }
+
+      return new Response(obj.body, {
+        status: 200,
+        headers: {
+          'Content-Type': meta.mimeType,
+          'Content-Length': String(obj.body.length),
+          'Content-Disposition': 'inline',
+          'Cache-Control': 'private, max-age=300',
+          'Referrer-Policy': 'no-referrer',
+          'X-Content-Type-Options': 'nosniff',
+        },
+      });
+    } catch {
+      return opaque(500);
+    }
   };
 }
 

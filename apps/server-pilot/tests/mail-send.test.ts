@@ -3,7 +3,7 @@
  */
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { eq, and } from 'drizzle-orm';
-import { mailThread, message } from '../src/db/schema/mail.js';
+import { mailThread, message, outboundSendQueue } from '../src/db/schema/mail.js';
 import {
   TEST_DB_AVAILABLE,
   probeTestDb,
@@ -123,7 +123,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.send', () => {
       __setSmtpTransportForTests(fake);
       try {
         await seedCenturionThread(db);
-        const caller = await callerFor('user-navaai', { db });
+        const caller = await callerFor('user-navaai', {
+          db,
+          requestedTransportId: 'transport-centurion',
+        });
         const result = await caller.mail.send(validCenturionReply);
         expect(result.fromEmail).toBe('centurion@legacyhotels.co.za');
         expect(result.messageId).toBeTruthy();
@@ -150,7 +153,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.send', () => {
         expect(fake.sent[0]!.bcc).toContain('centurion@legacyhotels.co.za');
         expect(rows[0]!.bccAddresses).toContain('centurion@legacyhotels.co.za');
         expect(fake.sent[0]!.inReplyTo).toBe('inbound-msg-id-1');
-        expect(fake.sent[0]!.extraHeaders).toEqual({
+        expect(fake.sent[0]!.extraHeaders).toMatchObject({
           'X-Zero-Mailbox': 'centurion@legacyhotels.co.za',
         });
       } finally {
@@ -180,6 +183,27 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.send', () => {
         expect(fake.sent[0]!.bcc).toContain('navaai@legacyhotels.co.za');
         expect(fake.sent[0]!.extraHeaders).toEqual({
           'X-Zero-Mailbox': 'navaai@legacyhotels.co.za',
+          'X-Zero-Outbound-Id': result.messageId,
+        });
+        const queueRows = await db
+          .select({ smtpPayload: outboundSendQueue.smtpPayload })
+          .from(outboundSendQueue)
+          .where(
+            and(
+              eq(outboundSendQueue.messageId, result.messageId),
+              eq(outboundSendQueue.transportId, 'transport-nava'),
+            ),
+          );
+        expect(queueRows).toHaveLength(1);
+        expect(
+          (
+            queueRows[0]!.smtpPayload as {
+              extraHeaders?: Record<string, string>;
+            }
+          ).extraHeaders,
+        ).toEqual({
+          'X-Zero-Mailbox': 'navaai@legacyhotels.co.za',
+          'X-Zero-Outbound-Id': result.messageId,
         });
       } finally {
         __setSmtpTransportForTests(null);
@@ -216,7 +240,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.send', () => {
           .set({ messageIdHeader: '<old@x>' })
           .where(eq(message.id, 'msg-centurion-inbound-1'));
 
-        const caller = await callerFor('user-navaai', { db });
+        const caller = await callerFor('user-navaai', {
+          db,
+          requestedTransportId: 'transport-centurion',
+        });
         await caller.mail.send({
           threadId: 'thread-centurion-1',
           to: ['a@example.com'],
@@ -238,7 +265,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.send', () => {
       __setSmtpTransportForTests(fake);
       try {
         await seedCenturionThread(db);
-        const caller = await callerFor('user-navaai', { db });
+        const caller = await callerFor('user-navaai', {
+          db,
+          requestedTransportId: 'transport-centurion',
+        });
         await caller.mail.send({
           threadId: 'thread-centurion-1',
           to: ['a@example.com'],

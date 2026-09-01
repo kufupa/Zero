@@ -26,7 +26,7 @@ import { useOptimisticActions } from '@/hooks/use-optimistic-actions';
 import { useMail, type Config } from '@/components/mail/use-mail';
 import { type ThreadDestination } from '@/lib/thread-actions';
 import { useThread, useThreads } from '@/hooks/use-threads';
-import { useSearchValue } from '@/hooks/use-search-value';
+import { useResetSearchValue, useSearchValue } from '@/hooks/use-search-value';
 import { EmptyStateIcon } from '../icons/empty-state-svg';
 import { highlightText } from '@/lib/email-utils.client';
 import { mailListPlainPreview } from '@/lib/mail/mail-list-preview';
@@ -57,8 +57,15 @@ import { Avatar } from '../ui/avatar';
 import { useQueryState } from 'nuqs';
 import { useAtom } from 'jotai';
 import { resolveImportantState } from '@/lib/mail/important-ui';
+import { focusThreadElement } from '@/lib/mail/mail-row-focus';
+import { getMailRowSelectionClasses } from '@/lib/mail/mail-row-selection';
 import { flushComposeBeforeLeave } from '@/lib/mail/compose-flush-registry';
 import { runComposeLeaveFlush } from '@/lib/mail/draft-persistence';
+import {
+  isUnsupportedSearchOperatorError,
+  mergeSearchQuery,
+} from '@/lib/mail/search-list';
+import { toast } from 'sonner';
 
 function mailListSectionLabel(bucket: MailDateBucket): string {
   switch (bucket) {
@@ -116,6 +123,7 @@ const Thread = memo(
     message,
     onClick,
     isKeyboardFocused,
+    isKeyboardNavigationActive,
     index,
   }: ThreadProps & { index?: number }) {
     const [searchValue] = useSearchValue();
@@ -157,6 +165,15 @@ const Thread = memo(
         subject: latestMessage?.subject ?? null,
       } satisfies FileDragData,
     });
+
+    const setThreadElementRef = useCallback(
+      (element: HTMLDivElement | null) => {
+        if (element && isKeyboardFocused) {
+          focusThreadElement(element);
+        }
+      },
+      [isKeyboardFocused],
+    );
 
     const { displayStarred, displayImportant, displayUnread, optimisticLabels, emailContent } =
       useMemo(() => {
@@ -307,19 +324,28 @@ const Thread = memo(
       return (
         <div
           ref={setDragNodeRef}
-          className={cn('select-none border-b md:my-1 md:border-none', isDragging && 'opacity-40')}
+          className={cn(
+            'select-none border-b md:my-1 md:border-none focus:outline-none',
+            !isKeyboardNavigationActive &&
+              'focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/60',
+            isDragging && 'opacity-40',
+          )}
           onClick={onClick ? onClick(latestMessage) : undefined}
           {...dragListeners}
           {...dragAttributes}
         >
           <div
+            ref={setThreadElementRef}
             data-thread-id={idToUse}
             key={idToUse}
             className={cn(
               'hover:bg-offsetLight dark:hover:bg-primary/5 group relative mx-1 flex cursor-pointer flex-col items-start rounded-lg py-2 text-left text-sm hover:opacity-100',
-              (isMailSelected || isMailBulkSelected || isKeyboardFocused) &&
-                'border-border bg-primary/5 opacity-100',
-              isKeyboardFocused && 'ring-primary/50',
+              getMailRowSelectionClasses({
+                isMailSelected,
+                isMailBulkSelected,
+                isKeyboardFocused: Boolean(isKeyboardFocused),
+                isKeyboardNavigationActive: Boolean(isKeyboardNavigationActive),
+              }),
               'relative',
               'group',
             )}
@@ -656,6 +682,8 @@ const Thread = memo(
       dragAttributes,
       isDragging,
       isKeyboardFocused,
+      isKeyboardNavigationActive,
+      setThreadElementRef,
       index,
       cleanName,
       displayStarred,
@@ -692,6 +720,7 @@ const Thread = memo(
       prev.message.centurionCategory === next.message.centurionCategory &&
       isSameCategoryIds &&
       prev.isKeyboardFocused === next.isKeyboardFocused &&
+      prev.isKeyboardNavigationActive === next.isKeyboardNavigationActive &&
       prev.index === next.index &&
       Object.is(prev.onClick, next.onClick);
     return isSameMessage;
@@ -855,6 +884,7 @@ export const MailList = memo(function MailList() {
     const [, setDraftId] = useQueryState('draftId');
     const [, setActiveReplyId] = useQueryState('activeReplyId');
     const [searchValue, setSearchValue] = useSearchValue();
+    const resetSearchValue = useResetSearchValue();
     const [anchorIndex, setAnchorIndex] = useState<number | null>(null);
     const [collapsedSections, setCollapsedSections] = useState<Set<MailDateBucket>>(() => new Set());
 
@@ -876,8 +906,8 @@ export const MailList = memo(function MailList() {
       };
     }, [setAnchorIndex]);
 
-    const [{ refetch, isLoading, isFetching, isFetchingNextPage, hasNextPage }, items, , loadMore] =
-      useThreads();
+    const [threadsQuery, items, , loadMore, searchList] = useThreads();
+    const { refetch, isLoading, isFetching, isFetchingNextPage, hasNextPage } = threadsQuery;
     const trpc = useTRPC();
     const isFetchingMail = useIsFetching({ queryKey: trpc.mail.get.queryKey() }) > 0;
     const itemsRef = useRef(items);
@@ -993,6 +1023,7 @@ export const MailList = memo(function MailList() {
         const mode = getSelectMode();
 
         if (mode !== 'single') {
+          handleMouseEnter(message.id);
           const messageThreadId = message.threadId ?? message.id;
           const clickedIndex = itemsRef.current.findIndex((item) => item.id === messageThreadId);
           if (clickedIndex !== -1 && mode !== 'range') {
@@ -1028,28 +1059,40 @@ export const MailList = memo(function MailList() {
       ],
     );
 
-    const isFiltering = searchValue.value.trim().length > 0;
+    const activeSearch = mergeSearchQuery(searchValue.value, searchValue.filters ?? []);
+    const isFiltering = activeSearch.length > 0;
 
+    const lastUnsupportedSearchErrorRef = useRef<string | null>(null);
     useEffect(() => {
-      if (isFiltering && !isLoading) {
-        setSearchValue({
-          ...searchValue,
-          isLoading: false,
-        });
+      if (!activeSearch) {
+        lastUnsupportedSearchErrorRef.current = null;
+        return;
       }
-    }, [isLoading, isFiltering, setSearchValue]);
+      if (!threadsQuery.isError || !threadsQuery.error) {
+        if (!threadsQuery.isError) lastUnsupportedSearchErrorRef.current = null;
+        return;
+      }
+      if (!isUnsupportedSearchOperatorError(threadsQuery.error)) return;
+
+      const errorKey = `${activeSearch}:${threadsQuery.error.message}`;
+      if (lastUnsupportedSearchErrorRef.current === errorKey) return;
+
+      lastUnsupportedSearchErrorRef.current = errorKey;
+      toast.error(threadsQuery.error.message);
+    }, [activeSearch, threadsQuery.error, threadsQuery.isError]);
 
     const clearFilters = () => {
-      setSearchValue({
-        value: '',
-        highlight: '',
-        folder: '',
-      });
+      resetSearchValue();
+    };
+
+    const tryAllFolders = () => {
+      setSearchValue({ ...searchValue, scope: 'all' });
     };
 
     const filteredItems = useMemo(() => items.filter((item) => item.id), [items]);
 
-    const Comp = useMemo(() => (folder === FOLDERS.DRAFT ? Draft : Thread), [folder]);
+    const useDraftsList = searchList?.isValid && searchList.useDraftsList;
+    const Comp = useMemo(() => (useDraftsList ? Draft : Thread), [useDraftsList]);
 
     const groupByDate = !isFiltering;
 
@@ -1094,6 +1137,7 @@ export const MailList = memo(function MailList() {
             <Comp
               message={row.message}
               isKeyboardFocused={focusedIndex === row.threadIndex && keyboardActive}
+              isKeyboardNavigationActive={keyboardActive}
               index={row.threadIndex}
               onClick={handleMailClick}
             />
@@ -1133,18 +1177,49 @@ export const MailList = memo(function MailList() {
               <div className="flex h-32 w-full items-center justify-center">
                 <div className="h-4 w-4 animate-spin rounded-full border-2 border-neutral-900 border-t-transparent dark:border-white dark:border-t-transparent" />
               </div>
+            ) : threadsQuery.isError ? (
+              <div className="flex w-full items-center justify-center">
+                <div className="flex flex-col items-center justify-center gap-2 text-center" role="alert">
+                  <p className="text-lg">
+                    {isUnsupportedSearchOperatorError(threadsQuery.error)
+                      ? threadsQuery.error.message
+                      : 'Unable to load search results. Please retry.'}
+                  </p>
+                  <Button type="button" size="sm" variant="secondary" onClick={() => void refetch()}>
+                    Retry search
+                  </Button>
+                </div>
+              </div>
             ) : !items || items.length === 0 ? (
               <div className="flex w-full items-center justify-center">
                 <div className="flex flex-col items-center justify-center gap-2 text-center">
                   <EmptyStateIcon width={200} height={200} />
                   <div className="mt-5">
-                    <p className="text-lg">It's empty here</p>
-                    <p className="text-md text-muted-foreground dark:text-white/50">
-                      Search for another email or{' '}
-                      <button type="button" className="underline cursor-pointer" onClick={clearFilters}>
-                        clear filters
-                      </button>
-                    </p>
+                    {activeSearch ? (
+                      <>
+                        <p className="text-lg">No emails match “{activeSearch}”</p>
+                        <div className="mt-3 flex flex-wrap justify-center gap-2">
+                          <Button type="button" size="sm" variant="secondary" onClick={clearFilters}>
+                            Clear
+                          </Button>
+                          {searchValue.scope !== 'all' ? (
+                            <Button type="button" size="sm" variant="outline" onClick={tryAllFolders}>
+                              Try All folders
+                            </Button>
+                          ) : null}
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <p className="text-lg">It&apos;s empty here</p>
+                        <p className="text-md text-muted-foreground dark:text-white/50">
+                          Search for another email or{' '}
+                          <button type="button" className="underline cursor-pointer" onClick={clearFilters}>
+                            clear filters
+                          </button>
+                        </p>
+                      </>
+                    )}
                   </div>
                 </div>
               </div>

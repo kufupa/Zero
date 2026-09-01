@@ -1,8 +1,8 @@
 import { SidebarGroup, SidebarMenu, SidebarMenuButton, SidebarMenuItem } from './sidebar';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
-import { useCommandPalette } from '../context/command-palette-context.jsx';
 import { LabelDialog } from '@/components/labels/label-dialog';
 import { useActiveConnection } from '@/hooks/use-connections';
+import { useResetSearchValue } from '@/hooks/use-search-value';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import Intercom, { show } from '@intercom/messenger-js-sdk';
 import { MessageSquare, OldPhone } from '../icons/icons';
@@ -353,7 +353,7 @@ export function NavMain({ items }: NavMainProps) {
 function NavItem(item: NavItemProps & { href: string }) {
   const iconRef = useRef<IconRefType>(null);
   const { data: stats } = useStats();
-  const { clearAllFilters } = useCommandPalette();
+  const resetSearchValue = useResetSearchValue();
 
   const { state, setOpenMobile } = useSidebar();
 
@@ -373,7 +373,7 @@ function NavItem(item: NavItemProps & { href: string }) {
     if (item.onClick) {
       item.onClick(e as React.MouseEvent<HTMLAnchorElement>);
     }
-    clearAllFilters();
+    resetSearchValue();
     setOpenMobile(false);
   };
 

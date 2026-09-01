@@ -16,4 +16,45 @@ describe('live draft folder query policy', () => {
       useMailListThreads: false,
     });
   });
+
+  it('uses resolved all-folder policy for live mail list', () => {
+    expect(
+      selectLiveThreadListQuery({
+        folder: 'all',
+        demoMode: false,
+        listEnabled: true,
+        useDraftsList: false,
+      }),
+    ).toEqual({ useDraftsList: false, useMailListThreads: true });
+  });
+
+  it('honors resolved non-draft policy over draft route', () => {
+    expect(
+      selectLiveThreadListQuery({
+        folder: 'draft',
+        demoMode: false,
+        listEnabled: true,
+        useDraftsList: false,
+      }),
+    ).toEqual({ useDraftsList: false, useMailListThreads: true });
+  });
+
+  it('keeps resolved draft policy behind live list guards', () => {
+    expect(
+      selectLiveThreadListQuery({
+        folder: 'draft',
+        demoMode: true,
+        listEnabled: true,
+        useDraftsList: true,
+      }),
+    ).toEqual({ useDraftsList: false, useMailListThreads: false });
+    expect(
+      selectLiveThreadListQuery({
+        folder: 'draft',
+        demoMode: false,
+        listEnabled: false,
+        useDraftsList: true,
+      }),
+    ).toEqual({ useDraftsList: false, useMailListThreads: false });
+  });
 });

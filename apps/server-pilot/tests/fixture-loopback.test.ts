@@ -61,7 +61,11 @@ describe('fixture loopback', () => {
         html: '<p>x</p>',
         text: 'x',
       },
-      { messageId: 'wire-1', accepted: ['navaai@legacyhotels.co.za'] },
+      {
+        messageId: 'wire-1',
+        accepted: ['navaai@legacyhotels.co.za'],
+        rejected: [],
+      },
       'wire',
       { 'X-Zero-Mailbox': 'navaai@legacyhotels.co.za' },
     );
@@ -79,10 +83,36 @@ describe('fixture loopback', () => {
         html: '<p>x</p>',
         text: 'x',
       },
-      { messageId: 'skip@local', accepted: ['navaai@legacyhotels.co.za'] },
+      {
+        messageId: 'skip@local',
+        accepted: ['navaai@legacyhotels.co.za'],
+        rejected: [],
+      },
       'real',
       { 'X-Zero-Mailbox': 'navaai@legacyhotels.co.za' },
     );
     expect(fixtureLoopbackStore.drain()).toHaveLength(0);
+  });
+
+  it('does not enqueue a returned copy when the ingest recipient was rejected', () => {
+    maybeEnqueueLoopback(
+      {
+        from: 'sender@zero.test',
+        to: ['external@zero.test'],
+        cc: [],
+        bcc: ['navaai@legacyhotels.co.za'],
+        subject: 'partial',
+        html: '<p>partial</p>',
+        text: 'partial',
+      },
+      {
+        messageId: 'partial-rejection@zero.test',
+        accepted: ['external@zero.test'],
+        rejected: ['navaai@legacyhotels.co.za'],
+      },
+      'fixture',
+    );
+
+    expect(fixtureLoopbackStore.drain()).toEqual([]);
   });
 });

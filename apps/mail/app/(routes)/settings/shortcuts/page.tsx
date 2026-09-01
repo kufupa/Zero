@@ -74,8 +74,10 @@ export default function ShortcutsPage() {
                           `pages.settings.shortcuts.actions.${shortcut.action}`
                         ]();
                   } else {
+                    const translationAction =
+                      shortcut.action === 'commandPalette' ? 'search' : shortcut.action;
                     label = (m as unknown as Record<string, () => string>)[
-                      `pages.settings.shortcuts.actions.${shortcut.action}`
+                      `pages.settings.shortcuts.actions.${translationAction}`
                     ]();
                   }
 

@@ -142,6 +142,7 @@ export type ThreadProps = {
   message: MailListThreadRow;
   onClick?: (message: ParsedMessage) => () => void;
   isKeyboardFocused?: boolean;
+  isKeyboardNavigationActive?: boolean;
 };
 
 export interface IOutgoingMessage {

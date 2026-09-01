@@ -1,8 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  UNSAFE_MAIL_CONTENT_PLACEHOLDER,
-  resolveMailDisplayHtml,
-} from '../lib/mail/resolve-mail-display-html';
+import { resolveMailDisplayHtml } from '../lib/mail/resolve-mail-display-html';
 import { isImageTrustedSender } from '../lib/mail/trust-sender';
 
 const MALICIOUS_RAW_HTML = '<body><p>visible</p><script>alert("xss")</script></body>';
@@ -19,14 +16,14 @@ describe('resolveMailDisplayHtml', () => {
     expect(result).not.toContain('<script');
   });
 
-  it('never passes through script tags when backend html is unavailable in non-demo mode', () => {
+  it('falls back to client-resolved raw html when backend html is unavailable', () => {
     const result = resolveMailDisplayHtml({
       frontendOnlyDemo: false,
       processedHtml: null,
       rawHtml: MALICIOUS_RAW_HTML,
     });
 
-    expect(result).toBe(UNSAFE_MAIL_CONTENT_PLACEHOLDER);
+    expect(result).toBe('<p>visible</p>');
     expect(result).not.toContain('<script');
     expect(result).not.toContain('alert');
   });

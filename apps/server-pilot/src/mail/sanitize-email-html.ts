@@ -12,9 +12,10 @@ function imgScheme(src: string): string {
 function isAllowedImgSrc(src: string, shouldLoadImages: boolean): boolean {
   const scheme = imgScheme(src);
   if (scheme === 'cid') return true;
+  if (scheme === 'data') return src === BLOCKED_IMAGE_PLACEHOLDER;
   if (!shouldLoadImages) return false;
   if (!scheme) return true;
-  return scheme === 'http' || scheme === 'https' || scheme === 'data';
+  return scheme === 'http' || scheme === 'https';
 }
 
 export function sanitizeEmailHtml(
@@ -30,12 +31,7 @@ export function sanitizeEmailHtml(
     : ['cid', 'data'];
 
   const sanitizeConfig: sanitizeHtml.IOptions = {
-    allowedTags: sanitizeHtml.defaults.allowedTags.concat([
-      'img',
-      'title',
-      'details',
-      'summary',
-    ]),
+    allowedTags: sanitizeHtml.defaults.allowedTags.concat(['img', 'title', 'details', 'summary']),
     allowedAttributes: {
       '*': [
         'class',
@@ -53,7 +49,7 @@ export function sanitizeEmailHtml(
       a: ['href', 'name', 'target', 'rel', 'class'],
       img: ['src', 'alt', 'width', 'height', 'class'],
     },
-    allowedSchemes: ['http', 'https', 'mailto', 'tel', 'cid'],
+    allowedSchemes: ['http', 'https', 'mailto', 'tel'],
     allowedSchemesByTag: {
       img: allowedImgSchemes,
     },
@@ -67,7 +63,8 @@ export function sanitizeEmailHtml(
         },
       }),
       img: (tagName, attribs) => {
-        const src = attribs.src ?? '';
+        const rawSrc = attribs.src;
+        const src = rawSrc?.trim() ?? '';
         if (src && !isAllowedImgSrc(src, opts.shouldLoadImages)) {
           hasBlockedImages = true;
           const blockedAttribs = { ...attribs };
@@ -80,6 +77,9 @@ export function sanitizeEmailHtml(
               src: BLOCKED_IMAGE_PLACEHOLDER,
             },
           };
+        }
+        if (rawSrc !== undefined && src !== rawSrc) {
+          return { tagName, attribs: { ...attribs, src } };
         }
         return { tagName, attribs };
       },
