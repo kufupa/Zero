@@ -639,6 +639,7 @@ export async function executeAiRun(
           threadId: run.threadId,
           output,
           writeGateEnabled: env.AI_WRITE_GATE_ENABLED,
+          workflowTriageEnabled: env.WORKFLOW_TRIAGE_V6,
           threadSignals,
           from: trigger?.fromAddress ?? '',
           to: trigger?.toAddresses ?? [],
@@ -656,6 +657,7 @@ export async function executeAiRun(
             metrics: {
               ...(result.result?.metrics as Record<string, unknown>),
               durableWrite: env.AI_WRITE_GATE_ENABLED,
+              workflowTriage: env.WORKFLOW_TRIAGE_V6,
               applyMode: applyResult.applyMode,
             },
           },
@@ -1310,6 +1312,7 @@ async function applyDurableTriageFromWorker(input: {
   threadId: string;
   output: WorkflowTriageOutput;
   writeGateEnabled: boolean;
+  workflowTriageEnabled: boolean;
   threadSignals?: ThreadSignals;
   from?: string;
   to?: string[];

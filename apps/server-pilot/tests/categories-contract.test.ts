@@ -25,6 +25,16 @@ it('primary slugs are revenue queues', () => {
     'new-bookings',
     'groups-events',
     'ops',
+    'bookings',
+    'manage-stay',
+    'confirm-reconcile',
+    'money-billing',
+    'documents-delivery',
+    'exceptions-recovery',
+    'guest-experience',
+    'internal-partner',
+    'automated-channel',
+    'unknown-review',
     'urgent',
   ]);
 });

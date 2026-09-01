@@ -5,6 +5,7 @@ import {
   normalizeEmailAddress,
 } from './never-spam.js';
 import {
+  AI_DURABLE_PRIMARY_CATEGORY_SLUGS,
   AI_MANAGED_CATEGORY_SLUGS,
   AI_PRIMARY_CATEGORY_SLUGS,
   AI_WORKFLOW_PRIMARY_SLUGS,
@@ -862,6 +863,8 @@ export interface ApplyDurableTriageInput {
   threadId: string;
   output: TriageOutput | WorkflowTriageOutputInput;
   writeGateEnabled: boolean;
+  /** Enables workflow primary joins; legacy dual-read remains available when off. */
+  workflowTriageEnabled?: boolean;
   threadSignals?: ThreadSignals;
   from?: string;
   to?: AddressListInput;
@@ -883,6 +886,7 @@ export async function applyDurableTriageResult(
   const { db, transportId, threadId } = input;
   const workflowOutput =
     'primaryFolder' in input.output ? validateWorkflowTriageOutput(input.output) : undefined;
+  const workflowTriageEnabled = input.workflowTriageEnabled ?? true;
   const legacyOutput = workflowOutput
     ? toLegacyTriageOutput(workflowOutput)
     : validateLegacyTriageOutput(input.output);
@@ -902,7 +906,7 @@ export async function applyDurableTriageResult(
       and(
         eq(mailThreadCategory.threadId, threadId),
         eq(mailThreadCategory.transportId, transportId),
-        inArray(mailCategory.slug, [...AI_PRIMARY_CATEGORY_SLUGS, ...AI_WORKFLOW_PRIMARY_SLUGS]),
+        inArray(mailCategory.slug, [...AI_DURABLE_PRIMARY_CATEGORY_SLUGS]),
       ),
     );
 
@@ -952,6 +956,7 @@ export async function applyDurableTriageResult(
   const blocked = preference === 'block';
   const exceptionNotSpam = !blocked && (preference === 'allow' || notSpam);
   const workflowUnsettledNotSpam =
+    workflowTriageEnabled &&
     !blocked &&
     Boolean(
       workflowOutput &&
@@ -1034,7 +1039,7 @@ export async function applyDurableTriageResult(
     .where(and(eq(mailCategory.transportId, transportId), eq(mailCategory.isActive, true)));
 
   const bySlug = new Map(categoryRows.map((row) => [row.slug, row.id]));
-  const targetPrimary = workflowOutput
+  const targetPrimary = workflowOutput && workflowTriageEnabled
     ? exceptionNotSpam
       ? workflowApplyExceptionFolder(workflowOutput.primaryFolder, latestFrom ?? '', staff)
       : workflowOutput.primaryFolder
