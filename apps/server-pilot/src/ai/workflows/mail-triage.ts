@@ -156,11 +156,12 @@ P0 = immediate severe revenue/security/guest impact; P1 = same-day hard action; 
 
 ## Decision sequence
 1. Underlying commercial intent: stay/quote, group/event, stay management, confirmation, money, documents, exception, guest experience, internal/partner, automation, unknown, or spam.
-2. Group shape: 10+ rooms/delegates, multi-room request, rooming list, team/squad/family block, officials, conference/banquet/catering/function, site inspection or multi-person event meal → groups-events unless exception/revenue risk wins. One-room voucher stays bookings.
+2. Group shape: groups-events requires 10+ rooms/delegates, a rooming list, team/squad/family block, officials, conference/banquet/catering/function, site inspection or multi-person event meal. A sub-10 multi-room request alone remains bookings. Exceptions/revenue risk wins. One-room voucher stays bookings.
 3. Revenue risk: explicit booking cancellation/amendment threat, unpaid near arrival, time-boxed OTA/SynXis action, or money-mail delivery failure → exceptions-recovery.
-4. Routine system mail: calendar "Canceled:" meeting and "FAILED TO INTEGRATE" channel/PMS notices → automated-channel unless real booking cancellation, revenue threat or hard reply SLA.
+4. Routine system mail: calendar "Canceled:" meeting and "FAILED TO INTEGRATE" channel/PMS notices → automated-channel unless real booking cancellation, revenue threat or hard reply SLA. Internal delivery failures → exceptions-recovery, sourceScope=internal_property, automationState=excluded_internal; never automated-channel.
 5. Urgency: tax invoice today, reply within Nh, arrival tomorrow unpaid, or check-in/CI today on real booking/agency voucher can be urgent. Subject URGENT, word cancel, or far-future date alone cannot make urgent.
 6. Spam: spam is orthogonal; primaryFolder remains one of eleven workflow folders and is never spam.
+7. Source/finance constraints: branding.legacyhotels.co.za and other internal property signals are internal_property/excluded_internal, never automated-channel. Finance/payment/invoice mail from hospitality.cloud → money-billing with payment overlay and automationState=candidate; do not blanket it P4.
 
 ## Spam inclusion
 Cold vendor/sales outreach, marketing/newsletter/promo, FortiMail/quarantine bulk digest, partner booster with no booking request, and cold charity/donation solicitation → isSpam=true. noreply system mail may remain spam when no actionable work exists.
@@ -541,6 +542,7 @@ export async function classifyWorkflowMailTriage(
   assertTriageAsOf(input.asOf);
   const causalMessages = causalPromptMessages(input);
   const causalRows = causalMessages as TriageMessageRow[];
+  const threadSignals = resolveThreadSignals(causalMessages, input.threadSignals);
   const causalInput: TriageInput = {
     transportId: input.transportId,
     threadId: input.threadId,
@@ -549,8 +551,8 @@ export async function classifyWorkflowMailTriage(
     asOf: input.asOf,
     modelId: input.modelId,
     promptVersion,
+    threadSignals,
   };
-  const threadSignals = resolveThreadSignals(causalMessages, input.threadSignals);
   const systemPrompt = buildSystemPrompt();
   const userPrompt = buildUserPrompt({
     triggerMessageId: causalInput.triggerMessageId,
@@ -561,7 +563,7 @@ export async function classifyWorkflowMailTriage(
     messages: causalMessages,
     threadSignals,
   });
-  const promptHash = hashTriagePrompt(systemPrompt);
+  const promptHash = hashTriagePrompt(systemPrompt, userPrompt, promptVersion);
   const inputHash = hashTriageInput(causalInput);
   const model = await adapter.invoke({
     modelId: causalInput.modelId,
@@ -681,6 +683,7 @@ const classifyStep = createStep({
         promptHash: classification.promptHash,
         inputHash: classification.inputHash,
         rawOutput: classification.rawOutput,
+        canonicalOutput: output,
         threadSignals: promptThreadSignals(classification.threadSignals),
         rationale: output.rationale,
         policyFlags: output.policyFlags,

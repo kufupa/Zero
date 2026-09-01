@@ -6,7 +6,11 @@ import {
   hashTriagePrompt,
   type TriageMessageRow,
 } from '../src/ai/triage-input.js';
-import { buildSystemPrompt, classifyMailTriage } from '../src/ai/workflows/mail-triage.js';
+import {
+  buildSystemPrompt,
+  buildUserPrompt,
+  classifyMailTriage,
+} from '../src/ai/workflows/mail-triage.js';
 
 function row(
   partial: Partial<TriageMessageRow> & Pick<TriageMessageRow, 'id' | 'createdAt'>,
@@ -85,6 +89,8 @@ describe('triage provenance hashes', () => {
           createdAt: new Date('2026-07-01T10:00:00.000Z'),
           body: 'Need 20 rooms for a group booking',
           subject: 'Group quote',
+          to: ['centurion@legacyhotels.co.za'],
+          cc: ['reservations@legacyhotels.co.za'],
         }),
       ],
       'm1',
@@ -103,11 +109,16 @@ describe('triage provenance hashes', () => {
       hashTriageInput({ ...input, asOf: 'not-iso' }),
     ).toThrow(/asOf/i);
 
-    const promptHash = hashTriagePrompt(buildSystemPrompt());
+    const userPrompt = buildUserPrompt({
+      triggerMessageId: input.triggerMessageId,
+      asOf: input.asOf,
+      messages,
+    });
+    const promptHash = hashTriagePrompt(buildSystemPrompt(), userPrompt, input.promptVersion);
     const inputHash = hashTriageInput(input);
     expect(promptHash).toMatch(/^[a-f0-9]{64}$/);
     expect(inputHash).toMatch(/^[a-f0-9]{64}$/);
-    expect(hashTriagePrompt(buildSystemPrompt())).toBe(promptHash);
+    expect(hashTriagePrompt(buildSystemPrompt(), userPrompt, input.promptVersion)).toBe(promptHash);
     expect(hashTriageInput(input)).toBe(inputHash);
 
     const adapter = createFakeModelAdapter();
@@ -122,6 +133,53 @@ describe('triage provenance hashes', () => {
       policyFlags: expect.any(Array),
     });
     expect(classification.usage.totalTokens).toBeGreaterThan(0);
+  });
+
+  it('hashes causal recipients and thread signals so classification inputs cannot collide', () => {
+    const base = {
+      transportId: 'transport-centurion',
+      threadId: 'thread-1',
+      triggerMessageId: 'm1',
+      messages: [
+        row({
+          id: 'm1',
+          createdAt: new Date('2026-07-01T10:00:00.000Z'),
+          body: 'Need a room',
+          to: ['centurion@legacyhotels.co.za'],
+          cc: ['reservations@legacyhotels.co.za'],
+          bcc: [],
+        }),
+      ],
+      asOf: '2026-07-01T12:00:00.000Z',
+      modelId: 'amazon.nova-lite-v1:0',
+      promptVersion: 'triage-v6',
+      threadSignals: { legacyHotelsOutboundResponse: false },
+    };
+
+    const recipientHash = hashTriageInput({
+      ...base,
+      messages: [{ ...base.messages[0]!, to: ['different-recipient@example.com'] }],
+    });
+    const signalHash = hashTriageInput({
+      ...base,
+      threadSignals: { legacyHotelsOutboundResponse: true },
+    });
+
+    expect(recipientHash).not.toBe(hashTriageInput(base));
+    expect(signalHash).not.toBe(hashTriageInput(base));
+    expect(hashTriageInput(base)).toBe(hashTriageInput(base));
+  });
+
+  it('prompt hash covers dynamic user prompt while remaining deterministic', () => {
+    const system = buildSystemPrompt();
+    expect(hashTriagePrompt(system, 'recipient: one@example.com')).not.toBe(
+      hashTriagePrompt(system, 'recipient: two@example.com'),
+    );
+    expect(hashTriagePrompt(system, 'same prompt', 'triage-v5')).not.toBe(
+      hashTriagePrompt(system, 'same prompt', 'triage-v6'),
+    );
+    const hash = hashTriagePrompt(system, 'same prompt');
+    expect(hashTriagePrompt(system, 'same prompt')).toBe(hash);
   });
 
   it('classifyMailTriage uses input.modelId not process.env.AI_MODEL_ID', async () => {

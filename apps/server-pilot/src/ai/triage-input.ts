@@ -10,6 +10,17 @@ export interface TriageMessageRow {
   createdAt: Date;
   receivedAt: Date | null;
   sentAt: Date | null;
+  /** Causal recipient metadata used by R23/source refinement. */
+  to?: string[];
+  cc?: string[];
+  bcc?: string[];
+}
+
+export interface TriageThreadSignals {
+  legacyHotelsOutboundResponse?: boolean;
+  reserveCloudStaffOutbound?: boolean;
+  reserveCloudStaffOutboundFrom?: string;
+  reserveCloudStaffOutboundRecipients?: string | readonly string[];
 }
 
 export interface TriageInput {
@@ -20,6 +31,7 @@ export interface TriageInput {
   asOf: string;
   modelId: string;
   promptVersion: string;
+  threadSignals?: TriageThreadSignals;
 }
 
 const asOfSchema = z.string().datetime({ offset: true });
@@ -59,8 +71,32 @@ export function sha256Hex(text: string): string {
   return createHash('sha256').update(text, 'utf8').digest('hex');
 }
 
-export function hashTriagePrompt(systemPrompt: string): string {
-  return sha256Hex(systemPrompt);
+export function hashTriagePrompt(
+  systemPrompt: string,
+  userPrompt = '',
+  promptVersion = '',
+): string {
+  return sha256Hex(JSON.stringify({ systemPrompt, userPrompt, promptVersion }));
+}
+
+function canonicalAddresses(value: string | readonly string[] | undefined): string[] {
+  const values = typeof value === 'string' ? value.split(/[,;]/) : (value ?? []);
+  return values
+    .map((address) => address.trim().toLowerCase())
+    .filter(Boolean)
+    .sort();
+}
+
+function canonicalThreadSignals(signals: TriageThreadSignals | undefined) {
+  return {
+    legacyHotelsOutboundResponse: signals?.legacyHotelsOutboundResponse === true,
+    reserveCloudStaffOutbound: signals?.reserveCloudStaffOutbound === true,
+    reserveCloudStaffOutboundFrom:
+      signals?.reserveCloudStaffOutboundFrom?.trim().toLowerCase() ?? null,
+    reserveCloudStaffOutboundRecipients: canonicalAddresses(
+      signals?.reserveCloudStaffOutboundRecipients,
+    ),
+  };
 }
 
 export function hashTriageInput(input: TriageInput): string {
@@ -81,7 +117,11 @@ export function hashTriageInput(input: TriageInput): string {
       createdAt: m.createdAt.toISOString(),
       receivedAt: m.receivedAt ? m.receivedAt.toISOString() : null,
       sentAt: m.sentAt ? m.sentAt.toISOString() : null,
+      to: canonicalAddresses(m.to),
+      cc: canonicalAddresses(m.cc),
+      bcc: canonicalAddresses(m.bcc),
     })),
+    threadSignals: canonicalThreadSignals(input.threadSignals),
   };
   return sha256Hex(JSON.stringify(canonical));
 }

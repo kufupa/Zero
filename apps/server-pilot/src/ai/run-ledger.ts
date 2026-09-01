@@ -11,7 +11,7 @@ import { parseEnv } from '../env.js';
 import { READ_TOOLS, type ReadToolId } from '../hms/read-tools.js';
 
 export const DEFAULT_AI_MODEL_ID = 'amazon.nova-lite-v1:0';
-export const DEFAULT_TRIAGE_PROMPT_VERSION = 'triage-v5';
+export const DEFAULT_TRIAGE_PROMPT_VERSION = 'triage-v6';
 export const DEFAULT_FEEDBACK_PROMPT_VERSION = 'feedback-v1';
 export const CLEANUP_RESERVE_MS = 10_000;
 
@@ -255,6 +255,8 @@ export function isSupportedInboundTriagePromptVersion(
   promptVersion: string,
   env: Record<string, string | undefined> = process.env as Record<string, string | undefined>,
 ): boolean {
+  // Legacy versions remain drainable only when explicitly selected through
+  // AI_TRIAGE_PROMPT_VERSION; unset env resolves to the v6 cutover default.
   return promptVersion === resolveDeployedTriagePromptVersion(env);
 }
 

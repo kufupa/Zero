@@ -17,7 +17,14 @@ import {
   message,
 } from '../src/db/schema/mail.js';
 import { user as userAuthTable } from '../src/db/schema/auth.js';
-import { enqueueAiRun, claimNextAiRun, markAiRunRetry } from '../src/ai/run-ledger.js';
+import {
+  DEFAULT_TRIAGE_PROMPT_VERSION,
+  enqueueAiRun,
+  claimNextAiRun,
+  isSupportedInboundTriagePromptVersion,
+  markAiRunRetry,
+  resolveDeployedTriagePromptVersion,
+} from '../src/ai/run-ledger.js';
 import { aiWorkerOwnerId, executeAiRun } from '../src/ai/worker.js';
 import * as mastraModule from '../src/ai/mastra.js';
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
@@ -73,6 +80,29 @@ describe('ai worker contract', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     delete process.env.AI_TRIAGE_PROMPT_VERSION;
+  });
+
+  it('new inbound triage defaults to v6 while explicit v5 compatibility stays opt-in', () => {
+    expect(DEFAULT_TRIAGE_PROMPT_VERSION).toBe('triage-v6');
+    expect(resolveDeployedTriagePromptVersion({})).toBe('triage-v6');
+    expect(isSupportedInboundTriagePromptVersion('triage-v6', {})).toBe(true);
+    expect(isSupportedInboundTriagePromptVersion('triage-v5', {})).toBe(false);
+    expect(
+      isSupportedInboundTriagePromptVersion('triage-v5', {
+        AI_TRIAGE_PROMPT_VERSION: 'triage-v5',
+      }),
+    ).toBe(true);
+    expect(
+      isSupportedInboundTriagePromptVersion('triage-v4', {
+        AI_TRIAGE_PROMPT_VERSION: 'triage-v5',
+      }),
+    ).toBe(false);
+
+    const ingestStore = readFileSync(
+      join(here, '..', 'src', 'mail', 'ingest', 'store.ts'),
+      'utf8',
+    );
+    expect(ingestStore).toMatch(/promptVersion:\s*DEFAULT_TRIAGE_PROMPT_VERSION/);
   });
 
   it('pm2 config contains ai-worker without SMTP/POP3 secret env keys', async () => {

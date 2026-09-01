@@ -370,6 +370,45 @@ function workflowApplyExceptionFolder(
   return requested;
 }
 
+const INTERNAL_PROPERTY_DOMAINS = new Set([
+  'legacyhotels.co.za',
+  'mail.legacyhotels.com',
+  'branding.legacyhotels.co.za',
+]);
+
+function emailDomain(raw: string): string {
+  const normalized = normalizeEmailAddress(raw);
+  const at = normalized.lastIndexOf('@');
+  return at < 0 ? '' : normalized.slice(at + 1);
+}
+
+function hasInternalPropertySignal(input: TriageRefineInput): boolean {
+  const fromDomain = emailDomain(input.from);
+  if (INTERNAL_PROPERTY_DOMAINS.has(fromDomain)) return true;
+  const haystack = `${input.subject ?? ''}\n${input.body}`;
+  return /(?:^|[\s<(@])(?:legacyhotels\.co\.za|mail\.legacyhotels\.com|branding\.legacyhotels\.co\.za)(?:$|[\s>),;])/i.test(
+    haystack,
+  );
+}
+
+function isInternalDeliveryFailure(input: TriageRefineInput, internalProperty: boolean): boolean {
+  if (!internalProperty) return false;
+  return /delivery\s+(?:failure|failed|status|notification)|failed\s+to\s+deliver|undeliverable|mailer[- ]daemon|returned\s+mail|failure\s+notice|could\s+not\s+be\s+delivered/i.test(
+    `${input.subject ?? ''}\n${input.body}`,
+  );
+}
+
+function isHospitalityCloudFinanceMail(input: TriageRefineInput): boolean {
+  const haystack = `${input.subject ?? ''}\n${input.body}`;
+  const fromHospitalityCloud = emailDomain(input.from) === 'hospitality.cloud';
+  const domainMentioned = /(?:^|[\s<(])hospitality\.cloud(?:$|[\s>),;])/i.test(haystack);
+  const financeSignal =
+    /\b(?:payment|paid|invoice|folio|deposit|commission|billing|remittance|proof\s+of\s+payment)\b/i.test(
+      haystack,
+    );
+  return (fromHospitalityCloud || domainMentioned) && financeSignal;
+}
+
 function hotelConversationNotSpam(input: TriageRefineInput): boolean {
   const haystack = `${input.subject ?? ''}\n${input.body}`;
   const hasHotelMarker = /\b(?:centurion|bongi|legacy\s*hotels?)\b/i.test(haystack);
@@ -431,6 +470,40 @@ function refineWorkflowTriageOutput(
   if (!next.isSpam && neverSpamFrom) {
     const eventFolder = workflowExceptionFolder(input, staff);
     if (eventFolder !== 'unknown-review') next = { ...next, primaryFolder: eventFolder };
+  }
+
+  const internalProperty = hasInternalPropertySignal(input);
+  if (isInternalDeliveryFailure(input, internalProperty)) {
+    next = {
+      ...next,
+      primaryFolder: 'exceptions-recovery',
+      sourceScope: 'internal_property',
+      automationState: 'excluded_internal',
+      humanAction: 'document_or_delivery',
+      policyFlags: addPolicyFlag(next.policyFlags, 'refine:internal-delivery-failure'),
+    };
+  } else if (internalProperty) {
+    next = {
+      ...next,
+      primaryFolder:
+        next.primaryFolder === 'automated-channel' ? 'internal-partner' : next.primaryFolder,
+      sourceScope: 'internal_property',
+      automationState: 'excluded_internal',
+      policyFlags: addPolicyFlag(next.policyFlags, 'refine:internal-property-source'),
+    };
+  }
+
+  if (isHospitalityCloudFinanceMail(input) && !internalProperty) {
+    next = {
+      ...next,
+      primaryFolder: 'money-billing',
+      priority: next.priority === 'P4' || next.priority === 'P5' ? 'P3' : next.priority,
+      overlays: { ...next.overlays, payment: true },
+      isSpam: false,
+      automationState: 'candidate',
+      humanAction: 'payment_or_finance',
+      policyFlags: addPolicyFlag(next.policyFlags, 'refine:hospitality-cloud-finance'),
+    };
   }
 
   return next;

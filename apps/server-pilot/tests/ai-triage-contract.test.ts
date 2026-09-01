@@ -68,6 +68,7 @@ describe('AI triage contract', () => {
     expect(prompt).toMatch(/wrapper.*(?:staff|outbound)|staff.*wrapper/i);
     expect(prompt).toMatch(/noreply.*spam/i);
     expect(prompt).toMatch(/10\+|10 or more|ten or more/i);
+    expect(prompt).toMatch(/sub-?10|fewer than 10|under 10/i);
     expect(prompt).not.toMatch(/^-\s*ops\s*:/im);
 
     const parsed = mailTriageWorkflowOutputSchema.parse({
@@ -178,6 +179,9 @@ describe('AI triage contract', () => {
     expect(p).toMatch(/same-day|hard.?SLA/i);
     expect(p).toMatch(/invoice|commission/i);
     expect(p).toMatch(/sender domain does not override|embedded commercial intent/i);
+    expect(p).toMatch(/internal delivery|delivery failure/i);
+    expect(p).toMatch(/hospitality\.cloud/i);
+    expect(p).toMatch(/branding\.legacyhotels\.co\.za/i);
     expect(p).toMatch(/confidence.*diagnostic|self-report/i);
     expect(p).not.toMatch(/\bOCR\b/i);
     expect(p).not.toMatch(/attachment pars/i);
@@ -937,6 +941,16 @@ describe('AI triage contract', () => {
       modelId: 'amazon.nova-lite-v1:0',
       promptVersion: 'triage-v6',
       rawOutput: expect.objectContaining({ primaryFolder: 'groups-events' }),
+      canonicalOutput: expect.objectContaining({
+        primaryFolder: 'groups-events',
+        overlays: expect.any(Object),
+        isSpam: false,
+        sourceScope: expect.any(String),
+        automationState: expect.any(String),
+        suggestedTools: expect.any(Array),
+        humanAction: expect.any(String),
+        abstainReason: null,
+      }),
       threadSignals: expect.objectContaining({ legacyHotelsOutboundResponse: false }),
       rationale: expect.any(String),
       policyFlags: expect.any(Array),

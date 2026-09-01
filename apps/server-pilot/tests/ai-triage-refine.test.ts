@@ -404,6 +404,72 @@ describe('R22/R23 exception-first spam defense', () => {
   });
 });
 
+describe('workflow source and automation refinement', () => {
+  it('routes internal delivery failures to exceptions and excludes automation', () => {
+    const refined = refineTriageOutput(
+      {
+        from: 'mailer-daemon@mail.legacyhotels.com',
+        subject: 'Delivery failure notification',
+        body: 'Internal delivery failure: message could not be delivered to the property mailbox.',
+      },
+      workflowOutput({
+        primaryFolder: 'automated-channel',
+        sourceScope: 'external',
+        automationState: 'routine_candidate',
+        humanAction: 'monitor',
+      }),
+    );
+
+    expect(refined.primaryFolder).toBe('exceptions-recovery');
+    expect(refined.sourceScope).toBe('internal_property');
+    expect(refined.automationState).toBe('excluded_internal');
+    expect(refined.primaryFolder).not.toBe('automated-channel');
+  });
+
+  it('recognizes branding.legacyhotels.co.za as internal property signal', () => {
+    const refined = refineTriageOutput(
+      {
+        from: 'notices@branding.legacyhotels.co.za',
+        subject: 'Routine property update',
+        body: 'Property branding update complete.',
+      },
+      workflowOutput({
+        primaryFolder: 'automated-channel',
+        sourceScope: 'external',
+        automationState: 'routine_candidate',
+      }),
+    );
+
+    expect(refined.sourceScope).toBe('internal_property');
+    expect(refined.automationState).toBe('excluded_internal');
+    expect(refined.primaryFolder).toBe('internal-partner');
+  });
+
+  it('deterministically routes hospitality.cloud finance mail to money billing', () => {
+    const refined = refineTriageOutput(
+      {
+        from: 'finance@hospitality.cloud',
+        subject: 'Payment confirmation',
+        body: 'Booking payment and invoice confirmation for the reservation.',
+      },
+      workflowOutput({
+        primaryFolder: 'automated-channel',
+        priority: 'P4',
+        overlays: {},
+        automationState: 'routine_candidate',
+        humanAction: 'monitor',
+      }),
+    );
+
+    expect(refined.primaryFolder).toBe('money-billing');
+    expect(refined.overlays.payment).toBe(true);
+    expect(refined.priority).toBe('P3');
+    expect(refined.automationState).toBe('candidate');
+    expect(refined.humanAction).toBe('payment_or_finance');
+    expect(refined.policyFlags).toContain('refine:hospitality-cloud-finance');
+  });
+});
+
 const applyDbAvailable = TEST_DB_AVAILABLE && (await probeTestDb());
 
 describe.skipIf(!applyDbAvailable)('R22 Layer-3 durable apply', () => {
