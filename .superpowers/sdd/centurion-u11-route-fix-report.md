@@ -47,7 +47,10 @@ unset DATABASE_URL VITEST_ALLOW_PILOT_RDS NODE_ENV
 pnpm run build
 
 tsc -p tsconfig.json: PASS
-git diff --check: PASS
+git diff --check 43a2a003^ 43a2a003 -- \
+  apps/server-pilot/src/mail/ingest/store.ts \
+  apps/server-pilot/src/mail/ingest/promote-quarantine.ts \
+  apps/server-pilot/tests/promote-quarantine.test.ts: PASS
 ```
 
 No pilot/production DB access used.
@@ -77,5 +80,7 @@ Implementation: `43a2a003` (`fix(mail): route Centurion quarantine promotions ex
 
 - DB-backed promotion tests require a disposable test database and were not
   run under the required DB-free environment.
+- Repository-wide `git diff --check` also reports pre-existing trailing
+  whitespace in unrelated dirty paths; scoped U11 commit check is clean.
 - Override is intentionally a literal-only Centurion route; no sender or
   recipient predicate was broadened.
