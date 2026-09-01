@@ -13,6 +13,7 @@ import {
   applyDurableTriageResult,
   applyShadowTriageResult,
   refineTriageOutput,
+  validateLegacyTriageOutput,
   validateTriageOutput,
 } from '../src/ai/triage.js';
 import { createMastraRuntime } from '../src/ai/mastra.js';
@@ -586,13 +587,90 @@ describe('AI triage contract', () => {
 
   it('accepts hotel vocabulary categories', () => {
     for (const category of [...AI_PRIMARY_CATEGORY_SLUGS, 'spam'] as const) {
-      expect(validateTriageOutput({
+      expect(validateLegacyTriageOutput({
         category,
         urgent: false,
         confidence: 0.9,
         rationale: 'fixture',
       }).category).toBe(category);
     }
+  });
+
+  it('accepts workflow triage payload with quote overlay and read-only tool tag', () => {
+    const parsed = validateTriageOutput({
+      primaryFolder: 'bookings',
+      priority: 'P3',
+      urgent: false,
+      overlays: { quote: true },
+      isSpam: false,
+      suggestedTools: ['hms_quote_stay'],
+      sourceScope: 'external',
+      automationState: 'candidate',
+      humanAction: 'answer_or_quote',
+      confidence: 0.7,
+      rationale: 'quote request needs availability read',
+      policyFlags: [],
+      abstainReason: null,
+    });
+    expect(parsed.primaryFolder).toBe('bookings');
+    expect(parsed.priority).toBe('P3');
+    expect(parsed.overlays.quote).toBe(true);
+    expect(parsed.isSpam).toBe(false);
+    expect(parsed.suggestedTools).toEqual(['hms_quote_stay']);
+  });
+
+  it('keeps isSpam orthogonal to the workflow primary folder', () => {
+    const parsed = validateTriageOutput({
+      primaryFolder: 'unknown-review',
+      priority: 'P2',
+      urgent: false,
+      overlays: {},
+      isSpam: true,
+      suggestedTools: [],
+      sourceScope: 'external',
+      automationState: 'unknown',
+      humanAction: 'review_required',
+      confidence: 0.9,
+      rationale: 'cold sales outreach',
+      policyFlags: ['spam:model'],
+      abstainReason: null,
+    });
+    expect(parsed.primaryFolder).toBe('unknown-review');
+    expect(parsed.isSpam).toBe(true);
+  });
+
+  it('rejects spam as a primary folder and rejects write tool ids', () => {
+    expect(() => validateTriageOutput({
+      primaryFolder: 'spam',
+      priority: 'P4',
+      urgent: false,
+      overlays: {},
+      isSpam: true,
+      suggestedTools: [],
+      sourceScope: 'external',
+      automationState: 'unknown',
+      humanAction: 'none',
+      confidence: 0.9,
+      rationale: 'spam',
+      policyFlags: [],
+      abstainReason: null,
+    })).toThrow();
+
+    expect(() => validateTriageOutput({
+      primaryFolder: 'bookings',
+      priority: 'P1',
+      urgent: false,
+      overlays: { booking: true },
+      isSpam: false,
+      suggestedTools: ['reservation_create'],
+      sourceScope: 'external',
+      automationState: 'candidate',
+      humanAction: 'create_or_reconcile',
+      confidence: 0.5,
+      rationale: 'create booking',
+      policyFlags: [],
+      abstainReason: null,
+    })).toThrow();
   });
 
   it('rejects invalid category or malformed JSON', () => {

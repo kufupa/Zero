@@ -1,7 +1,12 @@
 import { z } from 'zod';
 import { and, eq, inArray } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
-import { AI_MANAGED_CATEGORY_SLUGS, AI_PRIMARY_CATEGORY_SLUGS } from './categories.js';
+import { READ_TOOL_IDS } from '../hms/read-tools.js';
+import {
+  AI_MANAGED_CATEGORY_SLUGS,
+  AI_PRIMARY_CATEGORY_SLUGS,
+  AI_WORKFLOW_PRIMARY_SLUGS,
+} from './categories.js';
 import { isAutoTriageNeverSpam, normalizeEmailAddress } from './never-spam.js';
 import {
   getLatestInboundFromAddress,
@@ -13,7 +18,93 @@ export const TRIAGE_CATEGORIES = [...AI_PRIMARY_CATEGORY_SLUGS, 'spam'] as const
 
 export type TriageCategory = (typeof TRIAGE_CATEGORIES)[number];
 
-export const triageOutputSchema = z.object({
+/** Canonical Phase 1 workflow priorities. */
+export const WORKFLOW_PRIORITIES = ['P0', 'P1', 'P2', 'P3', 'P4', 'P5'] as const;
+export type WorkflowPriority = (typeof WORKFLOW_PRIORITIES)[number];
+
+/** Thin overlays carried in metrics; Urgent remains a separate boolean. */
+export const TRIAGE_OVERLAYS = ['booking', 'quote', 'payment'] as const;
+export type TriageOverlay = (typeof TRIAGE_OVERLAYS)[number];
+
+export const TRIAGE_SOURCE_SCOPES = ['external', 'internal_property'] as const;
+export type TriageSourceScope = (typeof TRIAGE_SOURCE_SCOPES)[number];
+
+export const TRIAGE_AUTOMATION_STATES = [
+  'excluded_internal',
+  'unknown',
+  'candidate',
+  'routine_candidate',
+  'exception_candidate',
+] as const;
+export type TriageAutomationState = (typeof TRIAGE_AUTOMATION_STATES)[number];
+
+export const TRIAGE_HUMAN_ACTIONS = [
+  'none',
+  'monitor',
+  'verify_state',
+  'answer_or_quote',
+  'create_or_reconcile',
+  'amend_or_cancel',
+  'payment_or_finance',
+  'document_or_delivery',
+  'security_or_incident',
+  'review_required',
+  'other',
+] as const;
+export type TriageHumanAction = (typeof TRIAGE_HUMAN_ACTIONS)[number];
+
+const triageOverlaysSchema = z
+  .object({
+    booking: z.boolean().optional(),
+    quote: z.boolean().optional(),
+    payment: z.boolean().optional(),
+  })
+  .strict()
+  .default({});
+
+/**
+ * Canonical workflow payload. Spam is an orthogonal signal: `primaryFolder`
+ * always remains one of the eleven workflow folders, never `spam`.
+ *
+ * `suggestedTools` is deliberately an enum of read-only tool IDs. Tags are
+ * metadata only; this schema never authorizes invocation.
+ */
+export const workflowTriageOutputSchema = z
+  .object({
+    primaryFolder: z.enum(AI_WORKFLOW_PRIMARY_SLUGS),
+    priority: z.enum(WORKFLOW_PRIORITIES),
+    urgent: z.boolean().default(false),
+    overlays: triageOverlaysSchema,
+    isSpam: z.boolean(),
+    suggestedTools: z.array(z.enum(READ_TOOL_IDS)).default([]),
+    sourceScope: z.enum(TRIAGE_SOURCE_SCOPES).default('external'),
+    automationState: z.enum(TRIAGE_AUTOMATION_STATES).default('unknown'),
+    humanAction: z.enum(TRIAGE_HUMAN_ACTIONS),
+    confidence: z.number().min(0).max(1),
+    rationale: z.string().min(1),
+    policyFlags: z.array(z.string()).default([]),
+    abstainReason: z.string().nullable().default(null),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.isSpam && value.suggestedTools.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['suggestedTools'],
+        message: 'spam output cannot carry suggested tool tags',
+      });
+    }
+  });
+
+export type WorkflowTriageOutput = z.infer<typeof workflowTriageOutputSchema>;
+export type WorkflowTriageOutputInput = z.input<typeof workflowTriageOutputSchema>;
+
+/**
+ * Legacy v5 shape retained for the pre-v6 workflow/refine/apply callers.
+ * It is intentionally separate from the canonical schema; new writes must
+ * use `WorkflowTriageOutput`.
+ */
+export const legacyTriageOutputSchema = z.object({
   category: z.enum(TRIAGE_CATEGORIES),
   urgent: z.boolean().default(false),
   confidence: z.number().min(0).max(1),
@@ -21,7 +112,75 @@ export const triageOutputSchema = z.object({
   policyFlags: z.array(z.string()).default([]),
 });
 
-export type TriageOutput = z.infer<typeof triageOutputSchema>;
+export type LegacyTriageOutput = z.infer<typeof legacyTriageOutputSchema>;
+
+/** Canonical schema export; retained name for existing schema consumers. */
+export const triageOutputSchema = workflowTriageOutputSchema;
+
+/** @deprecated Use `WorkflowTriageOutput` after the v6 workflow cutover. */
+export type TriageOutput = LegacyTriageOutput;
+
+export function validateWorkflowTriageOutput(raw: unknown): WorkflowTriageOutput {
+  return workflowTriageOutputSchema.parse(raw);
+}
+
+export function validateLegacyTriageOutput(raw: unknown): LegacyTriageOutput {
+  return legacyTriageOutputSchema.parse(raw);
+}
+
+/**
+ * Transitional validator: direct workflow-shaped inputs use the strict v6
+ * schema; old category-shaped inputs use the explicit legacy adapter until
+ * `mail-triage` and its worker migrate in Tasks 4/5.
+ */
+export function validateTriageOutput(raw: WorkflowTriageOutputInput): WorkflowTriageOutput;
+export function validateTriageOutput(raw: LegacyTriageOutput): LegacyTriageOutput;
+export function validateTriageOutput(raw: unknown): LegacyTriageOutput;
+export function validateTriageOutput(raw: unknown): WorkflowTriageOutput | LegacyTriageOutput {
+  if (
+    typeof raw === 'object' &&
+    raw !== null &&
+    'primaryFolder' in raw
+  ) {
+    return validateWorkflowTriageOutput(raw);
+  }
+  return validateLegacyTriageOutput(raw);
+}
+
+const WORKFLOW_TO_LEGACY_CATEGORY: Record<
+  (typeof AI_WORKFLOW_PRIMARY_SLUGS)[number],
+  TriageCategory
+> = {
+  bookings: 'new-bookings',
+  'groups-events': 'groups-events',
+  'manage-stay': 'ops',
+  'confirm-reconcile': 'ops',
+  'money-billing': 'ops',
+  'documents-delivery': 'ops',
+  'exceptions-recovery': 'ops',
+  'guest-experience': 'new-bookings',
+  'internal-partner': 'ops',
+  'automated-channel': 'ops',
+  'unknown-review': 'ops',
+};
+
+/** Map a workflow primary to the old category only for dual-read callers. */
+export function toLegacyCategory(
+  primaryFolder: (typeof AI_WORKFLOW_PRIMARY_SLUGS)[number],
+): TriageCategory {
+  return WORKFLOW_TO_LEGACY_CATEGORY[primaryFolder];
+}
+
+/** Convert a canonical payload for a legacy metrics/read path. */
+export function toLegacyTriageOutput(output: WorkflowTriageOutput): LegacyTriageOutput {
+  return {
+    category: output.isSpam ? 'spam' : toLegacyCategory(output.primaryFolder),
+    urgent: output.urgent,
+    confidence: output.confidence,
+    rationale: output.rationale,
+    policyFlags: output.policyFlags,
+  };
+}
 
 /**
  * Centurion-scoped property-name subjects that prefer work over spam when
@@ -38,10 +197,6 @@ export interface ShadowTriageResult {
   transportId: string;
   output: TriageOutput;
   metrics: Record<string, unknown>;
-}
-
-export function validateTriageOutput(raw: unknown): TriageOutput {
-  return triageOutputSchema.parse(raw);
 }
 
 export function refineTriageOutput(
