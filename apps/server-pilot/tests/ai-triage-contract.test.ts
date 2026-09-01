@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, expectTypeOf, it } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import { createFakeModelAdapter } from '../src/ai/bedrock/fake.js';
 import {
@@ -15,6 +15,10 @@ import {
   refineTriageOutput,
   validateLegacyTriageOutput,
   validateTriageOutput,
+  validateWorkflowTriageOutput,
+  triageOutputSchema,
+  type LegacyTriageOutput,
+  type WorkflowTriageOutput,
 } from '../src/ai/triage.js';
 import { createMastraRuntime } from '../src/ai/mastra.js';
 import { mailCategory, mailThread, mailThreadCategory } from '../src/db/schema/mail.js';
@@ -596,8 +600,58 @@ describe('AI triage contract', () => {
     }
   });
 
+  it('keeps triageOutputSchema legacy and exposes explicit workflow validation', () => {
+    const legacy = triageOutputSchema.parse({
+      category: 'ops',
+      confidence: 0.8,
+      rationale: 'legacy caller',
+    });
+    expect(legacy.category).toBe('ops');
+    expect(() => triageOutputSchema.parse({
+      primaryFolder: 'bookings',
+      priority: 'P3',
+      isSpam: false,
+      humanAction: 'answer_or_quote',
+      confidence: 0.8,
+      rationale: 'workflow caller',
+    })).toThrow();
+
+    const raw: unknown = {
+      primaryFolder: 'bookings',
+      priority: 'P3',
+      isSpam: false,
+      humanAction: 'answer_or_quote',
+      confidence: 0.8,
+      rationale: 'workflow caller',
+    };
+    const dispatched = validateWorkflowTriageOutput({
+      primaryFolder: 'bookings',
+      priority: 'P3',
+      isSpam: false,
+      humanAction: 'answer_or_quote',
+      confidence: 0.8,
+      rationale: 'workflow caller',
+    });
+    expect(dispatched).toMatchObject({ primaryFolder: 'bookings', priority: 'P3' });
+    expectTypeOf(dispatched).toEqualTypeOf<WorkflowTriageOutput>();
+    expect(validateWorkflowTriageOutput(raw)).toMatchObject({
+      primaryFolder: 'bookings',
+      priority: 'P3',
+    });
+    expect(validateTriageOutput(raw)).toMatchObject({ category: 'new-bookings' });
+
+    const legacyRaw: unknown = {
+      category: 'ops',
+      confidence: 0.8,
+      rationale: 'legacy caller',
+    };
+    const legacyDispatched = validateTriageOutput(legacyRaw);
+    expect(legacyDispatched).toMatchObject({ category: 'ops' });
+    expectTypeOf(legacyDispatched).toEqualTypeOf<LegacyTriageOutput>();
+  });
+
   it('accepts workflow triage payload with quote overlay and read-only tool tag', () => {
-    const parsed = validateTriageOutput({
+    const parsed = validateWorkflowTriageOutput({
       primaryFolder: 'bookings',
       priority: 'P3',
       urgent: false,
@@ -620,7 +674,7 @@ describe('AI triage contract', () => {
   });
 
   it('keeps isSpam orthogonal to the workflow primary folder', () => {
-    const parsed = validateTriageOutput({
+    const parsed = validateWorkflowTriageOutput({
       primaryFolder: 'unknown-review',
       priority: 'P2',
       urgent: false,

@@ -114,8 +114,8 @@ export const legacyTriageOutputSchema = z.object({
 
 export type LegacyTriageOutput = z.infer<typeof legacyTriageOutputSchema>;
 
-/** Canonical schema export; retained name for existing schema consumers. */
-export const triageOutputSchema = workflowTriageOutputSchema;
+/** Legacy schema export retained for direct v5 consumers. */
+export const triageOutputSchema = legacyTriageOutputSchema;
 
 /** @deprecated Use `WorkflowTriageOutput` after the v6 workflow cutover. */
 export type TriageOutput = LegacyTriageOutput;
@@ -129,20 +129,19 @@ export function validateLegacyTriageOutput(raw: unknown): LegacyTriageOutput {
 }
 
 /**
- * Transitional validator: direct workflow-shaped inputs use the strict v6
- * schema; old category-shaped inputs use the explicit legacy adapter until
- * `mail-triage` and its worker migrate in Tasks 4/5.
+ * Legacy-compatible dispatcher for pre-v6 callers. Canonical v6 callers must
+ * use `validateWorkflowTriageOutput`; workflow-shaped input is narrowed to a
+ * derived legacy payload here until `mail-triage` and its worker migrate.
  */
-export function validateTriageOutput(raw: WorkflowTriageOutputInput): WorkflowTriageOutput;
 export function validateTriageOutput(raw: LegacyTriageOutput): LegacyTriageOutput;
 export function validateTriageOutput(raw: unknown): LegacyTriageOutput;
-export function validateTriageOutput(raw: unknown): WorkflowTriageOutput | LegacyTriageOutput {
+export function validateTriageOutput(raw: unknown): LegacyTriageOutput {
   if (
     typeof raw === 'object' &&
     raw !== null &&
     'primaryFolder' in raw
   ) {
-    return validateWorkflowTriageOutput(raw);
+    return toLegacyTriageOutput(validateWorkflowTriageOutput(raw));
   }
   return validateLegacyTriageOutput(raw);
 }
