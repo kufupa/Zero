@@ -26,6 +26,7 @@ import { validateStructuredJsonOutput } from '../security/policy.js';
 import { createStep, createWorkflow } from '@mastra/core/workflows';
 import { AI_WORKFLOW_PRIMARY_SLUGS } from '../categories.js';
 import { createModelAdapter } from '../bedrock/factory.js';
+import { suggestReadTools } from '../suggested-tools.js';
 import { normalizeEmailAddress } from '../never-spam.js';
 import { READ_TOOL_IDS } from '../../hms/read-tools.js';
 import { z } from 'zod';
@@ -572,7 +573,7 @@ export async function classifyWorkflowMailTriage(
     causalMessages.find((message) => message.id === causalInput.triggerMessageId) ??
     causalMessages[causalMessages.length - 1]!;
   const rawOutput = parseWorkflowModelOutput(model.output);
-  const output = refineTriageOutput(
+  const refinedOutput = refineTriageOutput(
     {
       from: triggerMessage.from,
       subject: triggerMessage.subject,
@@ -585,6 +586,15 @@ export async function classifyWorkflowMailTriage(
     },
     rawOutput,
   );
+  const output = validateWorkflowTriageOutput({
+    ...refinedOutput,
+    suggestedTools: suggestReadTools(
+      refinedOutput.primaryFolder,
+      refinedOutput.overlays,
+      refinedOutput.humanAction,
+      refinedOutput.isSpam,
+    ),
+  });
   return {
     rawOutput,
     output,
