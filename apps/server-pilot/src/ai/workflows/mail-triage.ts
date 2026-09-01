@@ -496,8 +496,28 @@ function legacyToWorkflowOutput(output: TriageOutput): WorkflowTriageOutput {
   });
 }
 
+const LEGACY_PRIMARY_FOLDER_ALIASES: Record<
+  string,
+  WorkflowTriageOutput['primaryFolder']
+> = {
+  'new-bookings': 'bookings',
+  'groups-events': 'groups-events',
+  'at-risk': 'exceptions-recovery',
+  ops: 'manage-stay',
+};
+
 function parseWorkflowModelOutput(raw: unknown): WorkflowTriageOutput {
   const structured = validateStructuredJsonOutput(raw);
+  const primaryFolder = structured.primaryFolder;
+  if (
+    typeof primaryFolder === 'string' &&
+    Object.prototype.hasOwnProperty.call(LEGACY_PRIMARY_FOLDER_ALIASES, primaryFolder)
+  ) {
+    return validateWorkflowTriageOutput({
+      ...structured,
+      primaryFolder: LEGACY_PRIMARY_FOLDER_ALIASES[primaryFolder],
+    });
+  }
   if (Object.prototype.hasOwnProperty.call(structured, 'primaryFolder')) {
     return validateWorkflowTriageOutput(structured);
   }

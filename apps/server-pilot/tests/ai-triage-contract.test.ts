@@ -13,6 +13,7 @@ import {
   buildSystemPrompt,
   buildUserPrompt,
   classifyMailTriage,
+  classifyWorkflowMailTriage,
   CONTEXT_BODY_LIMIT,
   mailTriageWorkflowOutputSchema,
   TRIGGER_BODY_LIMIT,
@@ -956,6 +957,62 @@ describe('AI triage contract', () => {
       policyFlags: expect.any(Array),
     });
     expect(JSON.stringify(result.result?.metrics)).not.toMatch(/Need 20 rooms/);
+  });
+
+  it('normalizes legacy primaryFolder aliases from live model output', async () => {
+    const result = await classifyWorkflowMailTriage(
+      {
+        transportId: 'transport-centurion',
+        threadId: 'thread-legacy-alias',
+        triggerMessageId: 'msg-legacy-alias',
+        messages: [
+          {
+            id: 'msg-legacy-alias',
+            from: 'guest@example.com',
+            subject: 'Booking state',
+            body: 'Please verify booking state.',
+            direction: 'inbound',
+            createdAt: new Date('2026-07-01T10:00:00.000Z'),
+            receivedAt: new Date('2026-07-01T10:00:00.000Z'),
+            sentAt: null,
+          },
+        ],
+        asOf: '2026-07-01T12:00:00.000Z',
+        modelId: 'amazon.nova-lite-v1:0',
+        promptVersion: 'triage-v6',
+      },
+      {
+        invoke: async () => ({
+          modelId: 'amazon.nova-lite-v1:0',
+          output: {
+            primaryFolder: 'ops',
+            priority: 'P3',
+            urgent: false,
+            overlays: {},
+            isSpam: false,
+            suggestedTools: [],
+            sourceScope: 'external',
+            automationState: 'unknown',
+            humanAction: 'verify_state',
+            confidence: 0.8,
+            rationale: 'booking state',
+            policyFlags: [],
+            abstainReason: null,
+          },
+          usage: {
+            inputTokens: 1,
+            outputTokens: 1,
+            totalTokens: 2,
+            latencyMs: 1,
+            estimatedCostUsd: 0,
+            rateTableVersion: 'test',
+          },
+        }),
+      },
+    );
+
+    expect(result.rawOutput.primaryFolder).toBe('manage-stay');
+    expect(result.output.primaryFolder).toBe('manage-stay');
   });
 
   it('accepts from/to and does not throw on injection body before model', async () => {
