@@ -279,7 +279,7 @@
     @apply border-border;
   }
   html {
-    zoom: 0.8;
+    font-size: 80%;
   }
   body {
     @apply bg-background text-foreground font-sans overscroll-none style-scrollbar;
