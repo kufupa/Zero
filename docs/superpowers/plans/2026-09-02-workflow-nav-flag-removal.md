@@ -306,10 +306,10 @@ execution: code
 
 ## Completion Checklist
 
-- [ ] Tasks 1–2 implemented test-first and independently reviewed.
-- [ ] Final code review is clean or all blocking findings are fixed and rechecked.
-- [ ] Feature commit landed on `main`; `origin/main` contains the verified patch.
-- [ ] Live SPA is rebuilt/deployed from `main` with no nav flag dependency and workflow folders visible.
-- [ ] Health, perimeter, PM2, worker, AI, and HMS invariants have fresh evidence.
-- [ ] `$ce-compound mode:headless` ran exactly once after deployment and its artifact is landed.
-- [ ] Unrelated primary-checkout changes remain untouched.
+- [x] Tasks 1–2 implemented test-first and independently reviewed.
+- [x] Final code review is clean or all blocking findings are fixed and rechecked.
+- [x] Feature commit landed on `main`; `origin/main` contains the verified patch.
+- [x] Live SPA is rebuilt/deployed from `main` with no nav flag dependency and workflow folders visible.
+- [x] Health, perimeter, PM2, worker, AI, and HMS invariants have fresh evidence.
+- [x] `$ce-compound mode:headless` ran exactly once after deployment and its artifact is landed.
+- [x] Unrelated primary-checkout changes remain untouched.

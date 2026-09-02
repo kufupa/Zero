@@ -59,3 +59,6 @@ Baseline: d5188396d48024642759f603d345b611eec31db6
 Model: gpt-5.6-luna max
 Task 1: complete (working-tree implementation; review clean; focused mail suite 36/36)
 Task 2: complete (working-tree implementation; review clean; focused server/removal suite 34/34; server build and shell syntax pass)
+Task 3: complete (commit c66d9314 landed as 31d3e390; mail/server builds passed; quiesced pinned deploy verified; live asset proof HTTP 200, 46 assets, flagPresent=false, all workflow IDs; readiness unchanged NOT_READY only for pre-existing dead-letter backlog; authenticated UI gate fail-closed and not run because fixtures were unset)
+Task 4: complete (headless compound artifact committed as 02b4bf1d and pushed to origin/main; frontmatter and sanitized-content validation passed; vocabulary scanned with no new qualifying term)
+Final verification: complete (origin/main at 02b4bf1d; focused mail 36/36 and server 34/34 passed with database variables unset; diff check clean; primary dirty checkout preserved)
