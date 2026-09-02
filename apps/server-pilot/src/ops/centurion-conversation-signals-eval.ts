@@ -1,7 +1,6 @@
 /**
  * Gold eval harness for Layer B conversation signals — ports trigger selection from
- * `.private/.../defensible-daily-chart-2026-09-01.py` + snapshot parsing from
- * `staff-email-brief-analysis-2026-09-01.py`.
+ * `.private/.../regen-defensible-eod-exhaustive.py` + EOD snapshot parsing.
  */
 
 import { existsSync, readFileSync } from 'node:fs';
@@ -16,11 +15,11 @@ import {
   type IndexableMessage,
 } from '../mail/conversation-signals.js';
 
-export const GOLD_RECALL_MIN = 221;
-export const GOLD_RESPONDED_TOTAL = 246;
+export const GOLD_RECALL_MIN = 268;
+export const GOLD_RESPONDED_TOTAL = 282;
 export const GOLD_FALSE_POSITIVE_MAX = 4;
-export const GOLD_UNANSWERED_TOTAL = 192;
-export const GOLD_ACTIONABLE_TOTAL = 438;
+export const GOLD_UNANSWERED_TOTAL = 201;
+export const GOLD_ACTIONABLE_TOTAL = 483;
 
 export type SnapshotRow = {
   messageId: string;
@@ -185,7 +184,12 @@ export function resolvePrivateCorpusRoot(startDir: string): string {
   let dir = path.resolve(startDir);
   for (let depth = 0; depth < 8; depth += 1) {
     const candidate = path.join(dir, '.private', 'connected-mailbox-corpus');
-    const goldPath = path.join(candidate, 'follow-up', '_work', 'defensible-daily-chart-2026-09-01.json');
+    const goldPath = path.join(
+      candidate,
+      'follow-up',
+      '_work',
+      'defensible-daily-chart-2026-09-01-eod-threads.json',
+    );
     if (existsSync(goldPath)) return candidate;
     const parent = path.dirname(dir);
     if (parent === dir) break;
@@ -293,7 +297,12 @@ function pickTriggerMessage(messages: readonly SnapshotRow[]): SnapshotRow {
 }
 
 export function loadDefensibleGoldThreads(corpusRoot: string): DefensibleGoldThread[] {
-  const goldPath = path.join(corpusRoot, 'follow-up', '_work', 'defensible-daily-chart-2026-09-01.json');
+  const goldPath = path.join(
+    corpusRoot,
+    'follow-up',
+    '_work',
+    'defensible-daily-chart-2026-09-01-eod-threads.json',
+  );
   const parsed = JSON.parse(readFileSync(goldPath, 'utf8')) as {
     threads: Array<{ threadId: string; responded: boolean }>;
   };
@@ -435,7 +444,7 @@ export function formatConfusionMatrixStdout(matrix: ConfusionMatrixCounts): stri
 }
 
 export function runConversationSignalsGoldEvalFromCorpus(corpusRoot: string): GoldEvalResult {
-  const snapshotPath = path.join(corpusRoot, 'connected-mailbox-inbox-2026-08-30.md');
+  const snapshotPath = path.join(corpusRoot, 'connected-mailbox-inbox-2026-09-01-eod.md');
   const snapshotText = readFileSync(snapshotPath, 'utf8');
   const { rows, byThread } = parseConnectedMailboxSnapshot(snapshotText);
   const goldThreads = loadDefensibleGoldThreads(corpusRoot);

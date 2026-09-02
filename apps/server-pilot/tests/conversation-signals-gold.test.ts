@@ -381,10 +381,10 @@ describe('conversation signals gold fixture subset (CI)', () => {
   });
 
   it('documents production gate constants', () => {
-    expect(GOLD_ACTIONABLE_TOTAL).toBe(438);
-    expect(GOLD_RESPONDED_TOTAL).toBe(246);
-    expect(GOLD_UNANSWERED_TOTAL).toBe(192);
-    expect(GOLD_RECALL_MIN).toBe(221);
+    expect(GOLD_ACTIONABLE_TOTAL).toBe(483);
+    expect(GOLD_RESPONDED_TOTAL).toBe(282);
+    expect(GOLD_UNANSWERED_TOTAL).toBe(201);
+    expect(GOLD_RECALL_MIN).toBe(268);
     expect(GOLD_FALSE_POSITIVE_MAX).toBe(4);
   });
 });
