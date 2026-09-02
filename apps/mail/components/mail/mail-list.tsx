@@ -36,8 +36,9 @@ import { MailListSectionHeader } from '@/components/mail/mail-list-section-heade
 import { cn, FOLDERS, formatDateWithWeekdayAndTime } from '@/lib/utils';
 import type { FileDragData } from '@/lib/mail/file-drag';
 import { useTRPC } from '@/providers/query-provider';
-import { useThreadLabels } from '@/hooks/use-labels';
+import { useLabels, useThreadLabels } from '@/hooks/use-labels';
 import { useSettings } from '@/hooks/use-settings';
+import { buildReservedSpamLabelIdSet, isReservedSpamScopedLabelId } from '@/lib/mail/route-filter';
 import { useKeyState } from '@/hooks/use-hot-key';
 import { useDraggable } from '@dnd-kit/core';
 import { VList, type VListHandle } from 'virtua';
@@ -130,6 +131,11 @@ const Thread = memo(
     const [searchValue] = useSearchValue();
     const { folder } = useParams<{ folder: string }>();
     const [, threads] = useThreads();
+    const { userLabels } = useLabels();
+    const reservedSpamLabelIds = useMemo(
+      () => buildReservedSpamLabelIdSet(userLabels ?? []),
+      [userLabels],
+    );
     const [threadId] = useQueryState('threadId');
     const { data: getThreadData, isGroupThread, latestDraft } = useThread(message.id);
     const categorySettings = useCategorySettings();
@@ -307,11 +313,12 @@ const Thread = memo(
     const { isFolderInbox, isFolderSpam, isFolderSent, isFolderBin } = useMemo(
       () => ({
         isFolderInbox: folder === FOLDERS.INBOX || !folder,
-        isFolderSpam: folder === FOLDERS.SPAM,
+        isFolderSpam:
+          folder === FOLDERS.SPAM || isReservedSpamScopedLabelId(folder, reservedSpamLabelIds),
         isFolderSent: folder === FOLDERS.SENT,
         isFolderBin: folder === FOLDERS.BIN,
       }),
-      [folder],
+      [folder, reservedSpamLabelIds],
     );
 
     // Check if thread has a draft

@@ -1289,7 +1289,9 @@ export async function applyDurableTriageResult(
       legacyOutput,
     );
 
-    await db.transaction(async (tx) => {
+    // Prefer nested txn when `db` is a root client; test helpers pass an
+    // already-open tx which has no `.transaction` — run inline then.
+    const writeSpamAndQuarantine = async (tx: typeof db) => {
       const quarantineLabelId = attachFortimail
         ? await ensureFortimailQuarantineLabel(tx, transportId)
         : await findFortimailQuarantineLabelId(tx, transportId);
@@ -1300,11 +1302,12 @@ export async function applyDurableTriageResult(
         .where(and(eq(mailThread.id, threadId), eq(mailThread.transportId, transportId)))
         .limit(1);
       const currentLabelIds = threadRow?.labelIds ?? [];
-      const nextLabelIds = attachFortimail && quarantineLabelId
-        ? [...new Set([...currentLabelIds, quarantineLabelId])]
-        : quarantineLabelId
-          ? stripLabelId(currentLabelIds, quarantineLabelId)
-          : currentLabelIds;
+      const nextLabelIds =
+        attachFortimail && quarantineLabelId
+          ? [...new Set([...currentLabelIds, quarantineLabelId])]
+          : quarantineLabelId
+            ? stripLabelId(currentLabelIds, quarantineLabelId)
+            : currentLabelIds;
 
       await tx
         .update(mailThread)
@@ -1314,7 +1317,14 @@ export async function applyDurableTriageResult(
           updatedAt: new Date(),
         })
         .where(and(eq(mailThread.id, threadId), eq(mailThread.transportId, transportId)));
-    });
+    };
+    if (typeof db.transaction === 'function') {
+      await db.transaction(async (tx) => {
+        await writeSpamAndQuarantine(tx as unknown as typeof db);
+      });
+    } else {
+      await writeSpamAndQuarantine(db);
+    }
     return { applyMode: 'full' };
   }
 

@@ -825,8 +825,10 @@ describe.skipIf(!applyDbAvailable)('R22 Layer-3 durable apply', () => {
         .where(
           and(eq(mailLabel.transportId, TRANSPORT_ID), eq(mailLabel.name, 'Quarantine')),
         );
-      const quarantineIds = quarantineLabels.map((row) => row.id);
-      expect(thread?.labelIds ?? []).every((id) => !quarantineIds.includes(id)).toBe(true);
+      expect(quarantineLabels).toHaveLength(0);
+      for (const row of quarantineLabels) {
+        expect(thread?.labelIds ?? []).not.toContain(row.id);
+      }
     });
   });
 
@@ -913,14 +915,18 @@ describe.skipIf(!applyDbAvailable)('R22 Layer-3 durable apply', () => {
   it('clears unlocked spamAt and joins internal-partner for forced not-spam', async () => {
     await withSeededTestDb(async (db) => {
       const threadId = randomUUID();
-      const internalPartnerId = randomUUID();
-      await db.insert(mailCategory).values({
-        id: internalPartnerId,
-        transportId: TRANSPORT_ID,
-        slug: 'internal-partner',
-        name: 'Internal & Partner',
-        sortOrder: 999,
-      });
+      const [internalPartner] = await db
+        .select({ id: mailCategory.id })
+        .from(mailCategory)
+        .where(
+          and(
+            eq(mailCategory.transportId, TRANSPORT_ID),
+            eq(mailCategory.slug, 'internal-partner'),
+          ),
+        )
+        .limit(1);
+      expect(internalPartner?.id).toBeTruthy();
+
       await db.insert(mailThread).values({
         id: threadId,
         transportId: TRANSPORT_ID,
@@ -955,7 +961,7 @@ describe.skipIf(!applyDbAvailable)('R22 Layer-3 durable apply', () => {
             eq(mailThreadCategory.transportId, TRANSPORT_ID),
           ),
         );
-      expect(memberships.map((row) => row.categoryId)).toContain(internalPartnerId);
+      expect(memberships.map((row) => row.categoryId)).toContain(internalPartner!.id);
     });
   });
 });

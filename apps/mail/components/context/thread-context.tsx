@@ -36,7 +36,11 @@ import { useTRPC } from '@/providers/query-provider';
 import { useMutation } from '@tanstack/react-query';
 import { useLabels } from '@/hooks/use-labels';
 import { FOLDERS, LABELS } from '@/lib/utils';
-import { buildReservedSpamLabelIdSet, isArchiveLikeMailFolder } from '@/lib/mail/route-filter';
+import {
+  buildReservedSpamLabelIdSet,
+  isArchiveLikeMailFolder,
+  isReservedSpamScopedLabelId,
+} from '@/lib/mail/route-filter';
 import { useMail } from '../mail/use-mail';
 import { Checkbox } from '../ui/checkbox';
 import { m } from '@/paraglide/messages';
@@ -224,6 +228,8 @@ export function ThreadContextMenu({
     [userLabels],
   );
   const isArchiveFolder = isArchiveLikeMailFolder(currentFolder, reservedSpamLabelIds);
+  const isReservedSpamFolder = isReservedSpamScopedLabelId(currentFolder, reservedSpamLabelIds);
+  const effectiveIsSpam = isSpam || isReservedSpamFolder;
   const isSnoozedFolder = currentFolder === FOLDERS.SNOOZED;
   const [, setMode] = useQueryState('mode');
   const [, setThreadId] = useQueryState('threadId');
@@ -472,7 +478,7 @@ export function ThreadContextMenu({
   };
 
   const getActions = useMemo(() => {
-    if (isSpam) {
+    if (effectiveIsSpam) {
       return [
         {
           id: 'move-to-inbox',
@@ -595,7 +601,7 @@ export function ThreadContextMenu({
         disabled: false,
       },
     ];
-  }, [isSpam, isBin, isArchiveFolder, isInbox, isSent, handleMove, handleDelete]);
+  }, [effectiveIsSpam, isBin, isArchiveFolder, isInbox, isSent, handleMove, handleDelete]);
 
   const [snoozeOpen, setSnoozeOpen] = useState(false);
   const [createLabelOpen, setCreateLabelOpen] = useState(false);
