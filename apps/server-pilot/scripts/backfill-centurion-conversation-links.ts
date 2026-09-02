@@ -186,19 +186,22 @@ async function main(): Promise<void> {
       throw new Error('REFUSE apply: mail_conversation_link missing — run migrations 0020+0021 first');
     }
 
-    const superseded = cli.deactivateUnsafe
-      ? await deactivateSupersededConversationLinks(db, cli.transportId, proposals)
-      : 0;
-    const upserted = await recomputeConversationLinksForTransport(db, cli.transportId);
-    const [activeAfter] = await db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(mailConversationLink)
-      .where(
-        and(
-          eq(mailConversationLink.transportId, cli.transportId),
-          isNull(mailConversationLink.supersededAt),
-        ),
-      );
+    const { superseded, upserted, activeLinksAfter } = await db.transaction(async (tx) => {
+      const superseded = cli.deactivateUnsafe
+        ? await deactivateSupersededConversationLinks(tx, cli.transportId!, proposals)
+        : 0;
+      const upserted = await recomputeConversationLinksForTransport(tx, cli.transportId!);
+      const [activeAfter] = await tx
+        .select({ count: sql<number>`count(*)::int` })
+        .from(mailConversationLink)
+        .where(
+          and(
+            eq(mailConversationLink.transportId, cli.transportId!),
+            isNull(mailConversationLink.supersededAt),
+          ),
+        );
+      return { superseded, upserted, activeLinksAfter: activeAfter?.count ?? 0 };
+    });
 
     console.log(
       JSON.stringify({
@@ -207,7 +210,7 @@ async function main(): Promise<void> {
         deactivateUnsafe: cli.deactivateUnsafe,
         superseded,
         upserted,
-        activeLinksAfter: activeAfter?.count ?? 0,
+        activeLinksAfter,
       }),
     );
   } finally {

@@ -25,7 +25,12 @@ import {
   markAiRunRetry,
   resolveDeployedTriagePromptVersion,
 } from '../src/ai/run-ledger.js';
-import { aiWorkerOwnerId, executeAiRun, renewAiRunLease } from '../src/ai/worker.js';
+import {
+  aiWorkerOwnerId,
+  executeAiRun,
+  renewAiRunLease,
+  threadMessagesToTransportIndex,
+} from '../src/ai/worker.js';
 import * as mastraModule from '../src/ai/mastra.js';
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
 import { TRANSPORT_ID } from '../src/db/seed.js';
@@ -146,6 +151,35 @@ describe('ai worker contract', () => {
     expect(source).toMatch(/modelId:\s*run\.modelId/);
     expect(source).toMatch(/promptVersion:\s*run\.promptVersion/);
     expect(source).not.toMatch(/AI_MODEL_ID/);
+  });
+
+  it('preserves transport-wide thread identity and RFC headers for Layer B metrics', () => {
+    const rows = threadMessagesToTransportIndex([
+      {
+        id: 'msg-1',
+        threadId: 'thread-1',
+        fromAddress: 'guest@example.com',
+        subject: 'Room enquiry',
+        direction: 'inbound',
+        createdAt: new Date('2026-09-01T10:00:00Z'),
+        receivedAt: new Date('2026-09-01T10:00:00Z'),
+        sentAt: null,
+        toAddresses: ['centurion@legacyhotels.co.za'],
+        ccAddresses: [],
+        messageIdHeader: '<guest-1@example.com>',
+        inReplyTo: '<hotel-1@legacyhotels.co.za>',
+        references: ['<hotel-0@legacyhotels.co.za>', '<hotel-1@legacyhotels.co.za>'],
+      },
+    ]);
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        threadId: 'thread-1',
+        messageIdHeader: '<guest-1@example.com>',
+        inReplyTo: '<hotel-1@legacyhotels.co.za>',
+        references: ['<hotel-0@legacyhotels.co.za>', '<hotel-1@legacyhotels.co.za>'],
+      }),
+    ]);
   });
 
   it('worker consumes v6 workflow output with thread signals and keeps draft AI disabled', () => {

@@ -135,6 +135,7 @@ function messageTime(message: LinkableMessage): number {
 }
 
 function withinWindow(a: LinkableMessage, b: LinkableMessage, windowMs: number): boolean {
+  if (!a.receivedAt || !b.receivedAt) return false;
   return Math.abs(messageTime(a) - messageTime(b)) <= windowMs;
 }
 
@@ -462,6 +463,15 @@ export type PersistedConversationLink = {
   supersededAt?: Date | string | null;
 };
 
+/** Link kinds owned by deterministic discovery in this backfill. */
+const DETERMINISTIC_LINK_TYPES = new Set<MailConversationLinkType>([
+  'header_parent',
+  'domain_conf',
+  'domain_guest_email',
+  'quoted_body',
+  'subject_cluster',
+]);
+
 /**
  * Return active persisted edges no longer justified by current deterministic
  * discovery. Discovery owns all precision predicates; backfill only compares
@@ -478,6 +488,7 @@ export function findSupersededConversationLinks<T extends PersistedConversationL
   );
   return activeLinks.filter(
     (link) =>
+      DETERMINISTIC_LINK_TYPES.has(link.linkType) &&
       link.supersededAt == null &&
       !safeKeys.has(conversationLinkKey(link.srcThreadId, link.dstThreadId, link.linkType)),
   );

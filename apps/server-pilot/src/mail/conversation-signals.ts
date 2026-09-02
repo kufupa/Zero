@@ -399,7 +399,9 @@ export function detectConversationSignals(input: {
     signals.push('quoted_staff_sig');
   }
 
-  for (const message of messages) {
+  // A staff commercial reply only answers the actionable trigger when it
+  // occurs after that trigger in the causal message order.
+  for (const message of after) {
     if (message.direction !== 'inbound') continue;
     const from = message.from.toLowerCase();
     if (!from.includes('@legacyhotels.co.za')) continue;
@@ -419,7 +421,9 @@ export function detectConversationSignals(input: {
     }
   }
 
-  for (const message of after) {
+  // The trigger itself may be the guest reply carrying the hotel RFC header;
+  // later causal messages are also eligible in offline replay.
+  for (const message of messages.slice(triggerIdx)) {
     if (message.direction !== 'inbound') continue;
     if (hasHotelReplyHeader(message)) {
       signals.push('in_reply_to_hotel_msgid');

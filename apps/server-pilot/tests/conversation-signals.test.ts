@@ -295,6 +295,24 @@ describe('detectConversationSignals', () => {
     expect(signals).toContain('in_reply_to_hotel_msgid');
   });
 
+  it('detects a trigger inbound message whose RFC reply header names a hotel message', () => {
+    const signals = detectConversationSignals({
+      threadId: 'thread-trigger-header',
+      triggerMessageId: 'trigger-header',
+      messages: [
+        msg({
+          id: 'trigger-header',
+          inReplyTo: '<hotel-trigger@legacyhotels.co.za>',
+          references: ['<hotel-trigger@legacyhotels.co.za>'],
+        }),
+      ],
+      autoConfirmIndex: [],
+      orphanByGuest: new Map(),
+    });
+
+    expect(signals).toContain('in_reply_to_hotel_msgid');
+  });
+
   it('detects a staff inbound message carrying commercial reply language', () => {
     const signals = detectConversationSignals({
       threadId: 'thread-a',
@@ -313,6 +331,25 @@ describe('detectConversationSignals', () => {
     });
 
     expect(signals).toContain('staff_inbound_commercial_reply');
+  });
+
+  it('does not let a pre-trigger staff note answer a later guest ask', () => {
+    const signals = detectConversationSignals({
+      threadId: 'thread-staff-before-trigger',
+      triggerMessageId: 'guest-trigger',
+      messages: [
+        msg({
+          id: 'staff-before',
+          from: 'marthamthembu@legacyhotels.co.za',
+          bodyText: 'Please see attached quotation and provisional confirmation.',
+        }),
+        msg({ id: 'guest-trigger', from: 'guest@example.com', receivedAt: '2026-08-30T11:00:00Z' }),
+      ],
+      autoConfirmIndex: [],
+      orphanByGuest: new Map(),
+    });
+
+    expect(signals).not.toContain('staff_inbound_commercial_reply');
   });
 
   it('does not label an outbound real staff message as an inbound commercial reply', () => {

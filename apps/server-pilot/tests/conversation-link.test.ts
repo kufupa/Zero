@@ -152,6 +152,13 @@ describe('deterministic link discovery', () => {
         linkType: 'subject_cluster' as const,
         supersededAt: new Date('2026-09-02T12:00:00Z'),
       },
+      {
+        id: 'llm-edge',
+        srcThreadId: 'thread-g',
+        dstThreadId: 'thread-h',
+        linkType: 'llm_link' as const,
+        supersededAt: null,
+      },
     ];
 
     const candidates = findSupersededConversationLinks(activeEdges, [
@@ -229,6 +236,24 @@ describe('deterministic link discovery', () => {
     const links = discoverQuotedBodyLinks([prior, quoted]);
     expect(links).toHaveLength(1);
     expect(links[0]?.linkType).toBe('quoted_body');
+  });
+
+  it('fails closed when quoted sibling timestamps are missing', () => {
+    const prior = msg({
+      id: 'msg-undated-prior',
+      threadId: 'thread-undated-prior',
+      fromAddress: 'guest@example.com',
+      receivedAt: null,
+    });
+    const quoted = msg({
+      id: 'msg-undated-quoted',
+      threadId: 'thread-undated-quoted',
+      fromAddress: 'guest@example.com',
+      bodyText: 'From: Centurion Hotel Reservations <centurion@legacyhotels.co.za>',
+      receivedAt: null,
+    });
+
+    expect(discoverQuotedBodyLinks([prior, quoted])).toEqual([]);
   });
 
   it('links subject_cluster for same participants within 72h', () => {
