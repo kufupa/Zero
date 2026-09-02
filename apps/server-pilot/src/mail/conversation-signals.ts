@@ -34,7 +34,7 @@ export type OrphanOutboundRow = {
   subject: string;
   from: string;
   isAuto: boolean;
-  day?: string;
+  day: string;
 };
 
 export type IndexableMessage = {
@@ -400,8 +400,12 @@ export function detectConversationSignals(input: {
   }
 
   for (const message of messages) {
+    if (message.direction !== 'inbound') continue;
     const from = message.from.toLowerCase();
     if (!from.includes('@legacyhotels.co.za')) continue;
+    if (!responderBucket(message.from, message.subject, message.to, message.direction)) {
+      continue;
+    }
     if (
       ['noreply', 'mailer', 'guestrevu', 'scans@', 'hotels@', 'donotreply'].some((hint) =>
         from.includes(hint),
@@ -453,7 +457,7 @@ export function detectConversationSignals(input: {
           (orphanConf !== null && confMatches.has(orphanConf)) ||
           (orphanGuestNorm.length >= 5 && norm.includes(orphanGuestNorm));
         if (
-          withinDayWindow(triggerDay, orphan.day ?? '') &&
+          withinDayWindow(triggerDay, orphan.day) &&
           (hasStrongIdentity || strongQuotedHotelBlock)
         ) {
           signals.push('orphan_auto_confirm');

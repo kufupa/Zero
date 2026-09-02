@@ -315,6 +315,85 @@ describe('detectConversationSignals', () => {
     expect(signals).toContain('staff_inbound_commercial_reply');
   });
 
+  it('does not label an outbound real staff message as an inbound commercial reply', () => {
+    const signals = detectConversationSignals({
+      threadId: 'thread-a',
+      triggerMessageId: 'trigger',
+      messages: [
+        msg({ id: 'trigger' }),
+        msg({
+          id: 'staff-outbound',
+          direction: 'outbound',
+          from: 'marthamthembu@legacyhotels.co.za',
+          to: 'guest-a@example.com',
+          bodyText: 'Please be advised that the requested rate is available.',
+          receivedAt: '2026-08-30T11:00:00.000Z',
+        }),
+      ],
+      autoConfirmIndex: [],
+      orphanByGuest: new Map(),
+    });
+
+    expect(signals).not.toContain('staff_inbound_commercial_reply');
+    expect(signals).toContain('in_thread_outbound');
+  });
+
+  it.each([
+    ['mail', 'mail@legacyhotels.co.za'],
+    ['postmaster', 'postmaster@legacyhotels.co.za'],
+    ['system', 'system@legacyhotels.co.za'],
+  ])('does not infer response from an outbound %s sender with commercial language', (_label, from) => {
+    const signals = detectConversationSignals({
+      threadId: 'thread-a',
+      triggerMessageId: 'trigger',
+      messages: [
+        msg({ id: 'trigger' }),
+        msg({
+          id: `noise-outbound-${_label}`,
+          direction: 'outbound',
+          from,
+          to: 'guest-a@example.com',
+          bodyText: 'Please be advised that the requested rate is available.',
+          receivedAt: '2026-08-30T11:00:00.000Z',
+        }),
+      ],
+      autoConfirmIndex: [],
+      orphanByGuest: new Map(),
+    });
+
+    expect(signals).not.toContain('staff_inbound_commercial_reply');
+    expect(signals).not.toContain('in_thread_outbound');
+    expect(isConversationResponded(signals)).toBe(false);
+  });
+
+  it.each([
+    ['mail', 'mail@legacyhotels.co.za'],
+    ['postmaster', 'postmaster@legacyhotels.co.za'],
+    ['system', 'system@legacyhotels.co.za'],
+  ])('does not infer response from an inbound %s sender with commercial language', (_label, from) => {
+    const signals = detectConversationSignals({
+      threadId: 'thread-a',
+      triggerMessageId: 'trigger',
+      messages: [
+        msg({ id: 'trigger' }),
+        msg({
+          id: `noise-inbound-${_label}`,
+          direction: 'inbound',
+          from,
+          to: 'centurion@legacyhotels.co.za',
+          bodyText: 'Please be advised that the requested rate is available.',
+          receivedAt: '2026-08-30T11:00:00.000Z',
+        }),
+      ],
+      autoConfirmIndex: [],
+      orphanByGuest: new Map(),
+    });
+
+    expect(signals).not.toContain('staff_inbound_commercial_reply');
+    expect(signals).not.toContain('in_thread_outbound');
+    expect(isConversationResponded(signals)).toBe(false);
+  });
+
   it('detects Gmail and Apple Mail hotel quote headers', () => {
     const gmailSignals = detectConversationSignals({
       threadId: 'thread-gmail',
