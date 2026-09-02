@@ -437,7 +437,9 @@ function isSeriesReleaseAtRisk(haystack: string): boolean {
 }
 
 function isFortiMailQuarantineDigest(haystack: string): boolean {
-  return /\b(?:fortimail|quarantine)\b/i.test(haystack);
+  if (/\bquarantine\s+room\b/i.test(haystack)) return false;
+  if (/\bfortimail\b/i.test(haystack)) return true;
+  return /\bquarantine\s+(?:digest|summary)\b/i.test(haystack);
 }
 
 function isGuestRevuDigest(haystack: string): boolean {
@@ -542,6 +544,41 @@ function routineSystemMailPriority(
   return priority === 'P4' || priority === 'P5' ? priority : 'P4';
 }
 
+function isShortPersonalNotPromoSpam(input: TriageRefineInput, haystack: string): boolean {
+  const subject = (input.subject ?? '').trim();
+  const body = input.body.trim();
+  return (
+    !salesSignal(haystack) &&
+    body.length > 0 &&
+    body.length <= 120 &&
+    subject.length <= 40 &&
+    !/\b(https?:\/\/|www\.)/i.test(haystack) &&
+    (/^(hi|hello|hey|test|tester\d*|bonjour|thanks|thank you)\b/i.test(body) ||
+      /^(hi|hello|hey|test|tester\d*)\b/i.test(subject))
+  );
+}
+
+function isEmptyBodyNotPromoSpam(input: TriageRefineInput, haystack: string): boolean {
+  const subject = (input.subject ?? '').trim();
+  const body = input.body.trim();
+  return !salesSignal(haystack) && body.length === 0 && subject.length <= 80;
+}
+
+function isProtectedFromWorkflowForceSpam(
+  input: TriageRefineInput,
+  neverSpamFrom: boolean,
+  notSpam: boolean,
+): boolean {
+  return neverSpamFrom || notSpam || hotelConversationNotSpam(input);
+}
+
+function shouldForceWorkflowPromoSpam(input: TriageRefineInput, haystack: string): boolean {
+  if (!salesSignal(haystack)) return false;
+  if (isEmptyBodyNotPromoSpam(input, haystack)) return false;
+  if (isShortPersonalNotPromoSpam(input, haystack)) return false;
+  return true;
+}
+
 function refineWorkflowTriageOutput(
   input: TriageRefineInput,
   rawOutput: WorkflowTriageOutputInput,
@@ -601,6 +638,22 @@ function refineWorkflowTriageOutput(
       rationale: `${next.rationale} Held series/allocation release is exceptions-recovery.`,
     };
   } else if (
+    !isProtectedFromWorkflowForceSpam(input, neverSpamFrom, notSpam) &&
+    (isFortiMailQuarantineDigest(haystack) || shouldForceWorkflowPromoSpam(input, haystack))
+  ) {
+    const fortimail = isFortiMailQuarantineDigest(haystack);
+    next = {
+      ...next,
+      isSpam: true,
+      urgent: false,
+      suggestedTools: [],
+      policyFlags: addPolicyFlag(
+        next.policyFlags,
+        fortimail ? 'refine:fortimail-spam' : 'refine:promo-spam',
+      ),
+      rationale: `${next.rationale} ${fortimail ? 'FortiMail quarantine digest' : 'Promo/cold-sales signal'} is spam.`,
+    };
+  } else if (
     isRoutineSystemMail(input, haystack) &&
     !isFortiMailQuarantineDigest(haystack) &&
     !hasRevenueRisk(haystack)
@@ -609,6 +662,7 @@ function refineWorkflowTriageOutput(
       ...next,
       primaryFolder: 'automated-channel',
       urgent: false,
+      suggestedTools: [],
       priority: routineSystemMailPriority(next.priority),
       policyFlags: addPolicyFlag(next.policyFlags, 'refine:system-mail-automated'),
       rationale: `${next.rationale} Routine system mail is automated-channel.`,

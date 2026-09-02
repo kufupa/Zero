@@ -180,9 +180,8 @@ describe('reservationist triage refinement order', () => {
       },
       modelOutput('ops', true),
     );
-    expect(bareQuarantine.category).toBe('spam');
-    expect(bareQuarantine.urgent).toBe(false);
-    expect(bareQuarantine.policyFlags).toContain('refine:fortimail-spam');
+    expect(bareQuarantine.category).toBe('ops');
+    expect(bareQuarantine.policyFlags).not.toContain('refine:fortimail-spam');
 
     const modelRisk = refineTriageOutput(
       {
@@ -427,6 +426,7 @@ describe('workflow routine system-mail force-automate (KTD1)', () => {
 
     expect(refined.primaryFolder).toBe('automated-channel');
     expect(refined.urgent).toBe(false);
+    expect(refined.suggestedTools).toEqual([]);
     expect(refined.policyFlags).toContain('refine:system-mail-automated');
   });
 
@@ -523,6 +523,155 @@ describe('workflow routine system-mail force-automate (KTD1)', () => {
     expect(refined.primaryFolder).toBe('automated-channel');
     expect(refined.urgent).toBe(false);
     expect(refined.policyFlags).toContain('refine:system-mail-automated');
+  });
+});
+
+describe('workflow force-spam (KTD2)', () => {
+  it('workflow: bookings + isSpam:false + salesSignal → spam flag, not primaryFolder spam', () => {
+    const refined = refineTriageOutput(
+      {
+        from: 'promo@vendor.example.com',
+        subject: 'Limited-time offer',
+        body: 'Newsletter promo — unsubscribe here.',
+      },
+      workflowOutput({
+        primaryFolder: 'bookings',
+        isSpam: false,
+        urgent: true,
+        priority: 'P2',
+      }),
+    );
+
+    expect(refined.isSpam).toBe(true);
+    expect(refined.primaryFolder).not.toBe('spam');
+    expect(refined.urgent).toBe(false);
+    expect(refined.suggestedTools).toEqual([]);
+    expect(refined.policyFlags).toContain('refine:promo-spam');
+  });
+
+  it('workflow: FortiMail quarantine digest → isSpam with fortimail-spam, not urgent', () => {
+    const refined = refineTriageOutput(
+      {
+        from: 'security@fortimail.example.com',
+        subject: 'FortiMail quarantine digest',
+        body: 'Messages held in quarantine summary for review.',
+      },
+      workflowOutput({
+        primaryFolder: 'unknown-review',
+        isSpam: false,
+        urgent: true,
+        priority: 'P2',
+      }),
+    );
+
+    expect(refined.isSpam).toBe(true);
+    expect(refined.primaryFolder).not.toBe('spam');
+    expect(refined.urgent).toBe(false);
+    expect(refined.suggestedTools).toEqual([]);
+    expect(refined.policyFlags).toContain('refine:fortimail-spam');
+  });
+
+  it('workflow: Legacy Hotels From with promo body stays not spam', () => {
+    const refined = refineTriageOutput(
+      {
+        from: 'jvermaak@legacyhotels.co.za',
+        subject: 'Promo?',
+        body: 'Book a demo unsubscribe',
+      },
+      workflowOutput({
+        primaryFolder: 'bookings',
+        isSpam: true,
+        urgent: true,
+      }),
+    );
+
+    expect(refined.isSpam).toBe(false);
+    expect(refined.policyFlags).not.toContain('refine:promo-spam');
+    expect(refined.policyFlags).toContain('refine:never-spam-allowlist');
+  });
+
+  it('workflow: guest quarantine room booking is not fortimail-spam', () => {
+    const refined = refineTriageOutput(
+      {
+        from: 'guest@example.com',
+        subject: 'Quarantine room booking',
+        body: 'Please confirm our quarantine room reservation for next week.',
+      },
+      workflowOutput({
+        primaryFolder: 'bookings',
+        isSpam: false,
+        urgent: false,
+      }),
+    );
+
+    expect(refined.isSpam).toBe(false);
+    expect(refined.policyFlags).not.toContain('refine:fortimail-spam');
+  });
+
+  it('workflow: empty-body and short-personal mail are not promo-spam', () => {
+    const emptyBody = refineTriageOutput(
+      {
+        from: 'guest@example.com',
+        subject: 'Booking question',
+        body: '',
+      },
+      workflowOutput({
+        primaryFolder: 'bookings',
+        isSpam: false,
+        urgent: false,
+      }),
+    );
+    expect(emptyBody.isSpam).toBe(false);
+    expect(emptyBody.policyFlags).not.toContain('refine:promo-spam');
+
+    const shortPersonal = refineTriageOutput(
+      {
+        from: 'guest@example.com',
+        subject: 'Hi',
+        body: 'Hello, thanks for your help.',
+      },
+      workflowOutput({
+        primaryFolder: 'bookings',
+        isSpam: false,
+        urgent: false,
+      }),
+    );
+    expect(shortPersonal.isSpam).toBe(false);
+    expect(shortPersonal.policyFlags).not.toContain('refine:promo-spam');
+  });
+
+  it('workflow: forced spam paths clear urgent', () => {
+    const promo = refineTriageOutput(
+      {
+        from: 'sales@vendor.example.com',
+        subject: 'Marketing blast',
+        body: 'Click here for 20% off. Unsubscribe.',
+      },
+      workflowOutput({
+        primaryFolder: 'unknown-review',
+        isSpam: true,
+        urgent: true,
+      }),
+    );
+    expect(promo.isSpam).toBe(true);
+    expect(promo.urgent).toBe(false);
+    expect(promo.policyFlags).toContain('refine:promo-spam');
+
+    const fortimail = refineTriageOutput(
+      {
+        from: 'alerts@fortimail.example.com',
+        subject: 'Quarantine summary',
+        body: 'FortiMail held messages digest.',
+      },
+      workflowOutput({
+        primaryFolder: 'unknown-review',
+        isSpam: false,
+        urgent: true,
+      }),
+    );
+    expect(fortimail.isSpam).toBe(true);
+    expect(fortimail.urgent).toBe(false);
+    expect(fortimail.policyFlags).toContain('refine:fortimail-spam');
   });
 });
 
