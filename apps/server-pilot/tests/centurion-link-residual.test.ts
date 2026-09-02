@@ -353,13 +353,13 @@ describe.skipIf(!privateCorpusAvailable())('enumerateCenturionLinkResiduals priv
     const { readFile } = await import('node:fs/promises');
 
     const defensible = JSON.parse(
-      await readFile(path.join(workRoot, 'defensible-daily-chart-2026-09-01.json'), 'utf8'),
+      await readFile(path.join(workRoot, 'defensible-daily-chart-2026-09-01-eod-threads.json'), 'utf8'),
     ) as { threads: Array<Record<string, unknown>> };
     const staffBrief = JSON.parse(
       await readFile(path.join(workRoot, 'staff-email-brief-analysis-2026-09-01.json'), 'utf8'),
     ) as { threads: Array<{ threadId: string; subject: string; day: string; intent: string }> };
     const snapshotText = await readFile(
-      path.join(corpusRoot, 'connected-mailbox-inbox-2026-08-30.md'),
+      path.join(corpusRoot, 'connected-mailbox-inbox-2026-09-01-eod.md'),
       'utf8',
     );
     const { rows, byThread } = parseConnectedMailboxSnapshot(snapshotText);
@@ -370,14 +370,14 @@ describe.skipIf(!privateCorpusAvailable())('enumerateCenturionLinkResiduals priv
       rows,
       byThread,
       sources: {
-        defensible: path.join(workRoot, 'defensible-daily-chart-2026-09-01.json'),
+        defensible: path.join(workRoot, 'defensible-daily-chart-2026-09-01-eod-threads.json'),
         walkthrough: path.join(workRoot, 'thread-walkthrough-2026-09-01.json'),
         staffBrief: path.join(workRoot, 'staff-email-brief-analysis-2026-09-01.json'),
-        inboxMarkdown: path.join(corpusRoot, 'connected-mailbox-inbox-2026-08-30.md'),
+        inboxMarkdown: path.join(corpusRoot, 'connected-mailbox-inbox-2026-09-01-eod.md'),
       },
     });
 
-    expect(report.totals.actionable).toBe(438);
+    expect(report.totals.actionable).toBe(483);
     expect(report.totals.pairsTotal).toBeGreaterThan(50);
     expect(report.totals.byReason.cross_thread_conf).toBeGreaterThan(10);
     expect(report.totals.byReason.quoted_hotel_header).toBeGreaterThan(10);

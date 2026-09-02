@@ -39,6 +39,21 @@ Task 3: complete (commit 96d656b8; independent DB-free deploy suite 115/115, she
 Task 4: complete (fresh read-only edge inspection reached `TASK4_PRE_GATE_B_READY`; bounded log-proof and perimeter contracts pass; final Task 4 review clean)
 Task 5: in progress (dual-host compatibility, rollback state, and staged cutover proof)
 
+# Centurion Conversation Link Precision — Execution Ledger
+Plan: docs/superpowers/plans/2026-09-02-centurion-conversation-link-precision.md
+Started: 2026-09-02
+Branch: feat/centurion-link-precision
+Worktree: /home/orca/orca/workspaces/zero/wrasse (user-requested /home/ubuntu/projects/zero/.worktrees/centurion-link-precision absent)
+Baseline: bfb70253a508dd4b5bd605377faa30c6ce45bcb2 (origin/main)
+Verification baseline: not run; clean tree at start
+Model lock: GPT 5.6 Luna Max only
+Safety: unset DATABASE_URL VITEST_ALLOW_PILOT_RDS before every Vitest; never test pilot/production RDS
+Task 0: complete (commits bfb70253..9bb90c649; EOD contract + fail-closed gate; focused Vitest 15 passed/1 skipped, TS/diff check clean; task review approved)
+Task 1: complete (commits 9bb90c649..6fc7a6eb7; EOD signals + FP guards; fresh regression Vitest 93 passed/11 skipped, EOD 279 TP/2 FP PASS, TS/diff check clean; task review approved)
+Task 2: complete (commits 6fc7a6eb7..a4c178564; Layer C P1-P5 + superseded-edge filter; fresh 5-file Vitest 58 passed/4 skipped, TS/diff check clean; task review approved; audit residual documented for Task3)
+Task 3: complete (commit 5d0e78f3; explicit --deactivate-unsafe with shared canonical predicates; focused Vitest 22 passed/3 skipped, TS/diff check clean; Luna Max task review approved; pilot deploy + dry-run/apply 743 links, 0 stale candidates, health passed; pre-existing dead-letter backlog keeps launch-readiness NOT_READY; report .superpowers/sdd/task-3-centurion-link-precision-report.md)
+Review remediation: complete (commits 6c18757d/df85aaf0; EOD descriptive audit + residual paths, weak-orphan fixture correction, live RFC-header preservation; focused 144 passed/26 skipped, EOD 277 TP/5 FN/4 FP PASS, TS/diff clean)
+
 # Outlook-style Compose File Drop
 Plan: docs/superpowers/plans/2026-08-23-outlook-compose-file-drop.md
 Started: 2026-08-23

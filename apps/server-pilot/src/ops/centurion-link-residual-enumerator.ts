@@ -39,6 +39,7 @@ export type ConfidenceBand = 'high' | 'medium' | 'low';
 
 export type DefensibleThreadRow = {
   threadId: string;
+  subject?: string;
   day: string;
   intent: string;
   centurionOnly: boolean;
@@ -585,7 +586,7 @@ export function enumerateCenturionLinkResiduals(
     const fullThreadId = findThreadIdByPrefix(input.byThread, gold.threadId);
     if (!fullThreadId) continue;
     actionableThreadIds.add(fullThreadId);
-    const subject = subjectByPrefix.get(gold.threadId);
+    const subject = gold.subject ?? subjectByPrefix.get(gold.threadId);
     if (subject) subjectByThreadId.set(fullThreadId, subject);
   }
 
@@ -720,12 +721,12 @@ export async function runCenturionLinkResidualEnumerationFromCorpus(
   const workRoot = resolvePrivateCorpusWorkRoot(corpusRoot);
 
   const defensible = JSON.parse(
-    await readFile(`${workRoot}/defensible-daily-chart-2026-09-01.json`, 'utf8'),
+    await readFile(`${workRoot}/defensible-daily-chart-2026-09-01-eod-threads.json`, 'utf8'),
   ) as { threads: DefensibleThreadRow[] };
   const staffBrief = JSON.parse(
     await readFile(`${workRoot}/staff-email-brief-analysis-2026-09-01.json`, 'utf8'),
   ) as { threads: StaffBriefThreadRow[] };
-  const snapshotText = await readFile(`${corpusRoot}/connected-mailbox-inbox-2026-08-30.md`, 'utf8');
+  const snapshotText = await readFile(`${corpusRoot}/connected-mailbox-inbox-2026-09-01-eod.md`, 'utf8');
   const { rows, byThread } = parseConnectedMailboxSnapshot(snapshotText);
 
   return enumerateCenturionLinkResiduals({
@@ -734,10 +735,10 @@ export async function runCenturionLinkResidualEnumerationFromCorpus(
     rows,
     byThread,
     sources: {
-      defensible: `${workRoot}/defensible-daily-chart-2026-09-01.json`,
+      defensible: `${workRoot}/defensible-daily-chart-2026-09-01-eod-threads.json`,
       walkthrough: `${workRoot}/thread-walkthrough-2026-09-01.json`,
       staffBrief: `${workRoot}/staff-email-brief-analysis-2026-09-01.json`,
-      inboxMarkdown: `${corpusRoot}/connected-mailbox-inbox-2026-08-30.md`,
+      inboxMarkdown: `${corpusRoot}/connected-mailbox-inbox-2026-09-01-eod.md`,
     },
   });
 }

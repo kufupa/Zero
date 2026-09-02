@@ -1,11 +1,8 @@
 /**
  * Gold eval harness for Layer B conversation signals — ports trigger selection from
- * `.private/.../defensible-daily-chart-2026-09-01.py` + snapshot parsing from
- * `staff-email-brief-analysis-2026-09-01.py`.
+ * `.private/.../regen-defensible-eod-exhaustive.py` + EOD snapshot parsing.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
-import path from 'node:path';
 import {
   buildAutoConfirmIndex,
   buildOrphanOutboundIndex,
@@ -13,14 +10,17 @@ import {
   isAutoOutbound,
   isConversationResponded,
   type ConversationMessage,
+  type ConversationSignal,
   type IndexableMessage,
 } from '../mail/conversation-signals.js';
+import { existsSync, readFileSync } from 'node:fs';
+import path from 'node:path';
 
-export const GOLD_RECALL_MIN = 221;
-export const GOLD_RESPONDED_TOTAL = 246;
+export const GOLD_RECALL_MIN = 268;
+export const GOLD_RESPONDED_TOTAL = 282;
 export const GOLD_FALSE_POSITIVE_MAX = 4;
-export const GOLD_UNANSWERED_TOTAL = 192;
-export const GOLD_ACTIONABLE_TOTAL = 438;
+export const GOLD_UNANSWERED_TOTAL = 201;
+export const GOLD_ACTIONABLE_TOTAL = 483;
 
 export type SnapshotRow = {
   messageId: string;
@@ -32,6 +32,9 @@ export type SnapshotRow = {
   subject: string;
   bodyText: string;
   receivedAt: string;
+  messageIdHeader?: string | null;
+  inReplyTo?: string | null;
+  references?: readonly string[] | string | null;
 };
 
 export type DefensibleGoldThread = {
@@ -45,6 +48,7 @@ export type GoldEvalCase = {
   goldResponded: boolean;
   predictedResponded: boolean;
   triggerMessageId: string;
+  signals: readonly ConversationSignal[];
 };
 
 export type ConfusionMatrixCounts = {
@@ -128,7 +132,11 @@ function classifySender(fromAddr: string, subject: string): string {
   }
   if (SYSTEM_LOCALPART_HINTS.some((hint) => local.includes(hint))) return 'system_external';
   if (OTA_SUBJECT_HINTS.some((hint) => subj.includes(hint))) return 'ota_channel';
-  if (['invoice', 'statement', 'marketing', 'newsletter', 'unsubscribe'].some((hint) => subj.includes(hint))) {
+  if (
+    ['invoice', 'statement', 'marketing', 'newsletter', 'unsubscribe'].some((hint) =>
+      subj.includes(hint),
+    )
+  ) {
     return 'vendor_b2b';
   }
   return 'external_guest_or_partner';
@@ -137,10 +145,18 @@ function classifySender(fromAddr: string, subject: string): string {
 function classifyInboundObligation(subject: string, senderClass: string, textLen: number): string {
   const subj = (subject ?? '').toLowerCase();
   if (['system_legacy', 'system_external', 'ota_channel'].includes(senderClass)) {
-    if (['confirmation letter', 'booking update', 'reservation confirmation'].some((hint) => subj.includes(hint))) {
+    if (
+      ['confirmation letter', 'booking update', 'reservation confirmation'].some((hint) =>
+        subj.includes(hint),
+      )
+    ) {
       return 'channel_notice';
     }
-    if (['failure', 'unpaid', 'update failure', 'bounce', 'undeliverable'].some((hint) => subj.includes(hint))) {
+    if (
+      ['failure', 'unpaid', 'update failure', 'bounce', 'undeliverable'].some((hint) =>
+        subj.includes(hint),
+      )
+    ) {
       return 'exception_recovery';
     }
     if (['guestrevu', 'review', 'fortimail', 'quarantine'].some((hint) => subj.includes(hint))) {
@@ -149,13 +165,19 @@ function classifyInboundObligation(subject: string, senderClass: string, textLen
     return 'automated_or_system';
   }
   if (senderClass.startsWith('staff_legacy')) return 'internal_handoff';
-  if (subj.includes('quote') || subj.includes('availability') || subj.includes('rate')) return 'quote_request';
+  if (subj.includes('quote') || subj.includes('availability') || subj.includes('rate'))
+    return 'quote_request';
   if (subj.includes('cancel')) return 'cancellation';
-  if (['invoice', 'tax', 'receipt', 'voucher', 'document'].some((hint) => subj.includes(hint))) return 'documents';
-  if (['payment', 'deposit', 'refund', 'vcc', 'virtual card'].some((hint) => subj.includes(hint))) return 'payment';
-  if (['group', 'block', 'event', 'conference'].some((hint) => subj.includes(hint))) return 'group_event';
-  if (['modify', 'amend', 'change date', 'extension'].some((hint) => subj.includes(hint))) return 'modification';
-  if (['booking', 'reservation', 'room', 'stay'].some((hint) => subj.includes(hint))) return 'booking_request';
+  if (['invoice', 'tax', 'receipt', 'voucher', 'document'].some((hint) => subj.includes(hint)))
+    return 'documents';
+  if (['payment', 'deposit', 'refund', 'vcc', 'virtual card'].some((hint) => subj.includes(hint)))
+    return 'payment';
+  if (['group', 'block', 'event', 'conference'].some((hint) => subj.includes(hint)))
+    return 'group_event';
+  if (['modify', 'amend', 'change date', 'extension'].some((hint) => subj.includes(hint)))
+    return 'modification';
+  if (['booking', 'reservation', 'room', 'stay'].some((hint) => subj.includes(hint)))
+    return 'booking_request';
   if (textLen === 0) return 'empty_or_sparse';
   return 'guest_service_or_other';
 }
@@ -185,8 +207,20 @@ export function resolvePrivateCorpusRoot(startDir: string): string {
   let dir = path.resolve(startDir);
   for (let depth = 0; depth < 8; depth += 1) {
     const candidate = path.join(dir, '.private', 'connected-mailbox-corpus');
-    const goldPath = path.join(candidate, 'follow-up', '_work', 'defensible-daily-chart-2026-09-01.json');
+    const goldPath = path.join(
+      candidate,
+      'follow-up',
+      '_work',
+      'defensible-daily-chart-2026-09-01-eod-threads.json',
+    );
     if (existsSync(goldPath)) return candidate;
+    const directGoldPath = path.join(
+      dir,
+      'follow-up',
+      '_work',
+      'defensible-daily-chart-2026-09-01-eod-threads.json',
+    );
+    if (existsSync(directGoldPath)) return dir;
     const parent = path.dirname(dir);
     if (parent === dir) break;
     dir = parent;
@@ -218,6 +252,12 @@ export function parseConnectedMailboxSnapshot(text: string): {
     const direction = fields.get('Direction')?.toLowerCase();
     if (!threadId || !messageId || (direction !== 'inbound' && direction !== 'outbound')) continue;
 
+    const references =
+      fields
+        .get('References')
+        ?.replace(/`/g, '')
+        .match(/<[^>]+>|[^\s,]+/g) ?? [];
+
     rows.push({
       messageId,
       threadId,
@@ -228,6 +268,9 @@ export function parseConnectedMailboxSnapshot(text: string): {
       subject: subjectMatch?.[1]?.trim() ?? '',
       bodyText: textBodyMatch?.[1]?.replace(/\n$/, '') ?? '',
       receivedAt: fields.get('Received') ?? fields.get('Sent') ?? fields.get('Created') ?? '',
+      messageIdHeader: fields.get('Message-ID (header)') || null,
+      inReplyTo: fields.get('In-Reply-To') || null,
+      references,
     });
   }
 
@@ -261,6 +304,9 @@ function snapshotRowToConversationMessage(row: SnapshotRow): ConversationMessage
     subject: row.subject,
     bodyText: row.bodyText,
     receivedAt: row.receivedAt,
+    messageIdHeader: row.messageIdHeader,
+    inReplyTo: row.inReplyTo,
+    references: row.references,
   };
 }
 
@@ -293,7 +339,12 @@ function pickTriggerMessage(messages: readonly SnapshotRow[]): SnapshotRow {
 }
 
 export function loadDefensibleGoldThreads(corpusRoot: string): DefensibleGoldThread[] {
-  const goldPath = path.join(corpusRoot, 'follow-up', '_work', 'defensible-daily-chart-2026-09-01.json');
+  const goldPath = path.join(
+    corpusRoot,
+    'follow-up',
+    '_work',
+    'defensible-daily-chart-2026-09-01-eod-threads.json',
+  );
   const parsed = JSON.parse(readFileSync(goldPath, 'utf8')) as {
     threads: Array<{ threadId: string; responded: boolean }>;
   };
@@ -340,6 +391,7 @@ export function runConversationSignalsGoldEval(input: {
       goldResponded: gold.responded,
       predictedResponded,
       triggerMessageId: trigger.messageId,
+      signals,
     });
   }
 
@@ -375,6 +427,27 @@ export function runConversationSignalsGoldEval(input: {
       skippedThreads,
     },
     cases,
+  };
+}
+
+export function evaluateGoldContract(matrix: ConfusionMatrixCounts): {
+  noSkippedThreads: boolean;
+  actionableTotalPass: boolean;
+  respondedTotalPass: boolean;
+  unansweredTotalPass: boolean;
+  pass: boolean;
+} {
+  const noSkippedThreads = matrix.skippedThreads === 0;
+  const actionableTotalPass = matrix.goldTotal === GOLD_ACTIONABLE_TOTAL;
+  const respondedTotalPass = matrix.goldResponded === GOLD_RESPONDED_TOTAL;
+  const unansweredTotalPass = matrix.goldUnanswered === GOLD_UNANSWERED_TOTAL;
+
+  return {
+    noSkippedThreads,
+    actionableTotalPass,
+    respondedTotalPass,
+    unansweredTotalPass,
+    pass: noSkippedThreads && actionableTotalPass && respondedTotalPass && unansweredTotalPass,
   };
 }
 
@@ -435,7 +508,7 @@ export function formatConfusionMatrixStdout(matrix: ConfusionMatrixCounts): stri
 }
 
 export function runConversationSignalsGoldEvalFromCorpus(corpusRoot: string): GoldEvalResult {
-  const snapshotPath = path.join(corpusRoot, 'connected-mailbox-inbox-2026-08-30.md');
+  const snapshotPath = path.join(corpusRoot, 'connected-mailbox-inbox-2026-09-01-eod.md');
   const snapshotText = readFileSync(snapshotPath, 'utf8');
   const { rows, byThread } = parseConnectedMailboxSnapshot(snapshotText);
   const goldThreads = loadDefensibleGoldThreads(corpusRoot);

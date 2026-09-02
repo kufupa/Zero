@@ -14,6 +14,10 @@ export interface TriageMessageRow {
   to?: string[];
   cc?: string[];
   bcc?: string[];
+  /** RFC headers are metrics-only metadata; they are not prompt content. */
+  messageIdHeader?: string | null;
+  inReplyTo?: string | null;
+  references?: string[] | null;
 }
 
 export interface TriageThreadSignals {

@@ -10,6 +10,7 @@ import {
   resolvePrivateCorpusWorkRoot,
   runCenturionLinkResidualEnumerationFromCorpus,
 } from '../src/ops/centurion-link-residual-enumerator.js';
+import { GOLD_ACTIONABLE_TOTAL } from '../src/ops/centurion-conversation-signals-eval.js';
 
 async function main(): Promise<void> {
   const startDir = join(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -29,8 +30,10 @@ async function main(): Promise<void> {
   );
   console.log(formatResidualStdout(report));
 
-  if (report.totals.actionable !== 438) {
-    console.error(`Expected 438 actionable threads, got ${report.totals.actionable}`);
+  if (report.totals.actionable !== GOLD_ACTIONABLE_TOTAL) {
+    console.error(
+      `Expected ${GOLD_ACTIONABLE_TOTAL} EOD actionable threads, got ${report.totals.actionable}`,
+    );
     process.exit(1);
   }
   if (report.totals.pairsTotal === 0) {

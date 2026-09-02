@@ -28,6 +28,9 @@ function toIndexableMessage(row: TriageMessageRow, threadId: string): IndexableM
     cc: (row.cc ?? []).join(', '),
     subject: row.subject ?? '',
     receivedAt: messageTimestamp(row),
+    messageIdHeader: row.messageIdHeader,
+    inReplyTo: row.inReplyTo,
+    references: row.references,
   };
 }
 
