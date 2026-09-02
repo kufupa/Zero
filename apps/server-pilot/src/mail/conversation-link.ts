@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
 import {
   mailConversationLink,
   type MailConversationLinkType,
@@ -44,6 +44,7 @@ const SYSTEM_LOCALPART_HINTS = [
   'alert',
   'alerts',
   'system',
+  'navaai',
 ] as const;
 const OPS_LOCALPART_HINTS = [
   'ops',
@@ -67,6 +68,12 @@ const LOW_ENTROPY_SUBJECT_PATTERNS = [
 const MAX_SUBJECT_CLUSTER_BUCKET_SIZE = 8;
 const MAX_AUTO_ORPHAN_LINKS_PER_THREAD = 1;
 const MAX_HUMAN_ORPHAN_LINKS_PER_THREAD = 1;
+// Keep weak deterministic edges below the same eight-thread mega-cluster gate
+// used by subject buckets. Strong RFC/confidence edges are not constrained.
+const MAX_WEAK_COMPONENT_SIZE = MAX_SUBJECT_CLUSTER_BUCKET_SIZE - 1;
+const MAX_HUMAN_ORPHAN_COMPONENT_SIZE = MAX_WEAK_COMPONENT_SIZE;
+const MAX_QUOTED_BODY_LINKS_PER_MESSAGE_GUEST = 1;
+const MAX_QUOTED_BODY_COMPONENT_SIZE = MAX_WEAK_COMPONENT_SIZE;
 
 export type LinkableMessage = {
   id: string;
@@ -137,6 +144,20 @@ function messageTime(message: LinkableMessage): number {
   return message.receivedAt?.getTime() ?? 0;
 }
 
+function compareLinkableMessages(left: LinkableMessage, right: LinkableMessage): number {
+  const leftTime = left.receivedAt?.getTime() ?? Number.POSITIVE_INFINITY;
+  const rightTime = right.receivedAt?.getTime() ?? Number.POSITIVE_INFINITY;
+  return (
+    leftTime - rightTime ||
+    left.id.localeCompare(right.id) ||
+    left.threadId.localeCompare(right.threadId)
+  );
+}
+
+function orderedMessages(messages: readonly LinkableMessage[]): LinkableMessage[] {
+  return [...messages].sort(compareLinkableMessages);
+}
+
 function withinWindow(a: LinkableMessage, b: LinkableMessage, windowMs: number): boolean {
   if (!a.receivedAt || !b.receivedAt) return false;
   return Math.abs(messageTime(a) - messageTime(b)) <= windowMs;
@@ -175,13 +196,14 @@ function pushLink(
   links: ProposedConversationLink[],
   seen: Set<string>,
   proposal: ProposedConversationLink,
-): void {
+): boolean {
   const [srcThreadId, dstThreadId] = canonicalThreadPair(proposal.srcThreadId, proposal.dstThreadId);
-  if (srcThreadId === dstThreadId) return;
+  if (srcThreadId === dstThreadId) return false;
   const key = conversationLinkKey(srcThreadId, dstThreadId, proposal.linkType);
-  if (seen.has(key)) return;
+  if (seen.has(key)) return false;
   seen.add(key);
   links.push({ ...proposal, srcThreadId, dstThreadId });
+  return true;
 }
 
 export function discoverHeaderParentLinks(
@@ -191,7 +213,7 @@ export function discoverHeaderParentLinks(
   const links: ProposedConversationLink[] = [];
   const seen = new Set<string>();
 
-  for (const msg of messages) {
+  for (const msg of orderedMessages(messages)) {
     const refs = buildReferenceChain(msg.inReplyTo, msg.references ?? []);
     for (const ref of refs) {
       const parent = messageByHeader.get(ref);
@@ -213,18 +235,51 @@ export function discoverHeaderParentLinks(
 export function discoverDomainLinks(messages: readonly LinkableMessage[]): ProposedConversationLink[] {
   const links: ProposedConversationLink[] = [];
   const seen = new Set<string>();
-  const indexable = messages.map(toIndexable);
+  const sortedMessages = orderedMessages(messages);
+  const indexable = sortedMessages.map(toIndexable);
   const autoIndex = buildAutoConfirmIndex(indexable);
   const orphanByGuest = buildOrphanOutboundIndex(indexable);
   const byThread = new Map<string, LinkableMessage[]>();
 
-  for (const msg of messages) {
+  for (const msg of sortedMessages) {
     const list = byThread.get(msg.threadId) ?? [];
     list.push(msg);
     byThread.set(msg.threadId, list);
   }
 
   const humanOrphanIncomingLinks = new Map<string, number>();
+  const humanOrphanParent = new Map<string, string>();
+  const humanOrphanSize = new Map<string, number>();
+  const findHumanOrphanRoot = (threadId: string): string => {
+    const parent = humanOrphanParent.get(threadId);
+    if (!parent) {
+      humanOrphanParent.set(threadId, threadId);
+      humanOrphanSize.set(threadId, 1);
+      return threadId;
+    }
+    if (parent === threadId) return parent;
+    const root = findHumanOrphanRoot(parent);
+    humanOrphanParent.set(threadId, root);
+    return root;
+  };
+  const canJoinHumanOrphanComponent = (left: string, right: string): boolean => {
+    const leftRoot = findHumanOrphanRoot(left);
+    const rightRoot = findHumanOrphanRoot(right);
+    if (leftRoot === rightRoot) return true;
+    return (
+      (humanOrphanSize.get(leftRoot) ?? 1) + (humanOrphanSize.get(rightRoot) ?? 1) <=
+      MAX_HUMAN_ORPHAN_COMPONENT_SIZE
+    );
+  };
+  const joinHumanOrphanComponents = (left: string, right: string): void => {
+    const leftRoot = findHumanOrphanRoot(left);
+    const rightRoot = findHumanOrphanRoot(right);
+    if (leftRoot === rightRoot) return;
+    const leftSize = humanOrphanSize.get(leftRoot) ?? 1;
+    const rightSize = humanOrphanSize.get(rightRoot) ?? 1;
+    humanOrphanParent.set(rightRoot, leftRoot);
+    humanOrphanSize.set(leftRoot, leftSize + rightSize);
+  };
   for (const [threadId, threadMessages] of byThread) {
     const inboundMessages = threadMessages.filter((msg) => msg.direction === 'inbound');
     let autoLinksForThread = 0;
@@ -249,15 +304,14 @@ export function discoverDomainLinks(messages: readonly LinkableMessage[]): Propo
         if (auto.day && triggerDay && auto.day < triggerDay) continue;
 
         if (auto.conf && confMatches.has(auto.conf)) {
-          pushLink(links, seen, {
+          if (pushLink(links, seen, {
             srcThreadId: threadId,
             dstThreadId: auto.threadId,
             srcMessageId: inbound.id,
             dstMessageId: anchor.id,
             linkType: 'domain_conf',
             confidence: '0.9500',
-          });
-          autoLinksForThread += 1;
+          })) autoLinksForThread += 1;
         }
       }
 
@@ -275,6 +329,7 @@ export function discoverDomainLinks(messages: readonly LinkableMessage[]): Propo
           ) {
             continue;
           }
+          if (!canJoinHumanOrphanComponent(threadId, orphan.threadId)) continue;
           const orphanMessages = byThread.get(orphan.threadId) ?? [];
           const anchor = orphanMessages.find((msg) => msg.direction === 'outbound');
           if (!anchor || !withinWindow(inbound, anchor, MS_7D)) continue;
@@ -287,19 +342,20 @@ export function discoverDomainLinks(messages: readonly LinkableMessage[]): Propo
           }
 
           const linkType: MailConversationLinkType = 'domain_guest_email';
-          pushLink(links, seen, {
+          if (!pushLink(links, seen, {
             srcThreadId: threadId,
             dstThreadId: orphan.threadId,
             srcMessageId: inbound.id,
             dstMessageId: anchor.id,
             linkType,
             confidence: '0.9000',
-          });
+          })) continue;
           humanLinksForThread += 1;
           humanOrphanIncomingLinks.set(
             orphan.threadId,
             (humanOrphanIncomingLinks.get(orphan.threadId) ?? 0) + 1,
           );
+          joinHumanOrphanComponents(threadId, orphan.threadId);
         }
       }
     }
@@ -311,9 +367,42 @@ export function discoverDomainLinks(messages: readonly LinkableMessage[]): Propo
 export function discoverQuotedBodyLinks(messages: readonly LinkableMessage[]): ProposedConversationLink[] {
   const links: ProposedConversationLink[] = [];
   const seen = new Set<string>();
+  const sortedMessages = orderedMessages(messages);
   const inboundByGuest = new Map<string, LinkableMessage[]>();
+  const quotedParent = new Map<string, string>();
+  const quotedSize = new Map<string, number>();
+  const findQuotedRoot = (threadId: string): string => {
+    const parent = quotedParent.get(threadId);
+    if (!parent) {
+      quotedParent.set(threadId, threadId);
+      quotedSize.set(threadId, 1);
+      return threadId;
+    }
+    if (parent === threadId) return parent;
+    const root = findQuotedRoot(parent);
+    quotedParent.set(threadId, root);
+    return root;
+  };
+  const canJoinQuotedComponent = (left: string, right: string): boolean => {
+    const leftRoot = findQuotedRoot(left);
+    const rightRoot = findQuotedRoot(right);
+    if (leftRoot === rightRoot) return true;
+    return (
+      (quotedSize.get(leftRoot) ?? 1) + (quotedSize.get(rightRoot) ?? 1) <=
+      MAX_QUOTED_BODY_COMPONENT_SIZE
+    );
+  };
+  const joinQuotedComponents = (left: string, right: string): void => {
+    const leftRoot = findQuotedRoot(left);
+    const rightRoot = findQuotedRoot(right);
+    if (leftRoot === rightRoot) return;
+    const leftComponentSize = quotedSize.get(leftRoot) ?? 1;
+    const rightComponentSize = quotedSize.get(rightRoot) ?? 1;
+    quotedParent.set(rightRoot, leftRoot);
+    quotedSize.set(leftRoot, leftComponentSize + rightComponentSize);
+  };
 
-  for (const msg of messages) {
+  for (const msg of sortedMessages) {
     if (msg.direction !== 'inbound') continue;
     for (const guestEmail of externalEmails(msg.fromAddress)) {
       const list = inboundByGuest.get(guestEmail) ?? [];
@@ -322,7 +411,7 @@ export function discoverQuotedBodyLinks(messages: readonly LinkableMessage[]): P
     }
   }
 
-  for (const msg of messages) {
+  for (const msg of sortedMessages) {
     const body = msg.textBody ?? '';
     if (!QUOTED_FROM_HOTEL_RE.test(body)) continue;
     const guestEmails = new Set<string>();
@@ -333,17 +422,34 @@ export function discoverQuotedBodyLinks(messages: readonly LinkableMessage[]): P
       for (const email of externalEmails(msg.ccAddresses.join(' '))) guestEmails.add(email);
     }
     for (const guestEmail of guestEmails) {
-      for (const prior of inboundByGuest.get(guestEmail) ?? []) {
+      let acceptedForGuest = 0;
+      const candidates = [...(inboundByGuest.get(guestEmail) ?? [])].sort(
+        (left, right) =>
+          Math.abs(messageTime(left) - messageTime(msg)) -
+          Math.abs(messageTime(right) - messageTime(msg)),
+      );
+      for (const prior of candidates) {
+        if (acceptedForGuest >= MAX_QUOTED_BODY_LINKS_PER_MESSAGE_GUEST) break;
         if (prior.threadId === msg.threadId) continue;
         if (!withinWindow(prior, msg, MS_7D)) continue;
-        pushLink(links, seen, {
+        if (
+          prior.receivedAt &&
+          msg.receivedAt &&
+          prior.receivedAt.getTime() > msg.receivedAt.getTime()
+        ) {
+          continue;
+        }
+        if (!canJoinQuotedComponent(prior.threadId, msg.threadId)) continue;
+        if (!pushLink(links, seen, {
           srcThreadId: prior.threadId,
           dstThreadId: msg.threadId,
           srcMessageId: prior.id,
           dstMessageId: msg.id,
           linkType: 'quoted_body',
           confidence: '0.8500',
-        });
+        })) continue;
+        acceptedForGuest += 1;
+        joinQuotedComponents(prior.threadId, msg.threadId);
       }
     }
   }
@@ -410,9 +516,10 @@ export function discoverSubjectClusterLinks(
 ): ProposedConversationLink[] {
   const links: ProposedConversationLink[] = [];
   const seen = new Set<string>();
+  const sortedMessages = orderedMessages(messages);
   const byThread = new Map<string, LinkableMessage[]>();
 
-  for (const msg of messages) {
+  for (const msg of sortedMessages) {
     const list = byThread.get(msg.threadId) ?? [];
     list.push(msg);
     byThread.set(msg.threadId, list);
@@ -467,18 +574,59 @@ export function discoverSubjectClusterLinks(
 }
 
 export function discoverConversationLinks(messages: readonly LinkableMessage[]): ProposedConversationLink[] {
+  const sortedMessages = orderedMessages(messages);
   const messageByHeader = new Map<string, LinkableMessage>();
-  for (const msg of messages) {
+  for (const msg of sortedMessages) {
     const canon = canonicalMessageId(msg.messageIdHeader);
     if (canon) messageByHeader.set(canon, msg);
   }
 
-  return [
-    ...discoverHeaderParentLinks(messages, messageByHeader),
-    ...discoverDomainLinks(messages),
-    ...discoverQuotedBodyLinks(messages),
-    ...discoverSubjectClusterLinks(messages),
+  const proposals = [
+    ...discoverHeaderParentLinks(sortedMessages, messageByHeader),
+    ...discoverDomainLinks(sortedMessages),
+    ...discoverQuotedBodyLinks(sortedMessages),
+    ...discoverSubjectClusterLinks(sortedMessages),
   ];
+
+  // Strong RFC/confidence edges may form larger real conversations. Weak
+  // deterministic edges must not bridge components past the mega-cluster gate.
+  const weakLinkTypes = new Set<MailConversationLinkType>([
+    'domain_guest_email',
+    'quoted_body',
+    'subject_cluster',
+  ]);
+  const parent = new Map<string, string>();
+  const size = new Map<string, number>();
+  const find = (threadId: string): string => {
+    const current = parent.get(threadId);
+    if (!current) {
+      parent.set(threadId, threadId);
+      size.set(threadId, 1);
+      return threadId;
+    }
+    if (current === threadId) return current;
+    const root = find(current);
+    parent.set(threadId, root);
+    return root;
+  };
+  const bounded: ProposedConversationLink[] = [];
+  for (const proposal of proposals) {
+    const leftRoot = find(proposal.srcThreadId);
+    const rightRoot = find(proposal.dstThreadId);
+    if (
+      weakLinkTypes.has(proposal.linkType) &&
+      leftRoot !== rightRoot &&
+      (size.get(leftRoot) ?? 1) + (size.get(rightRoot) ?? 1) > MAX_WEAK_COMPONENT_SIZE
+    ) {
+      continue;
+    }
+    bounded.push(proposal);
+    if (leftRoot !== rightRoot) {
+      parent.set(rightRoot, leftRoot);
+      size.set(leftRoot, (size.get(leftRoot) ?? 1) + (size.get(rightRoot) ?? 1));
+    }
+  }
+  return bounded;
 }
 
 export type PersistedConversationLink = {
@@ -620,7 +768,8 @@ export async function recomputeConversationLinksForTransport(
       receivedAt: message.receivedAt,
     })
     .from(message)
-    .where(eq(message.transportId, transportId));
+    .where(eq(message.transportId, transportId))
+    .orderBy(asc(message.receivedAt), asc(message.id), asc(message.threadId));
 
   const linkable: LinkableMessage[] = rows.map((row) => ({
     id: row.id,

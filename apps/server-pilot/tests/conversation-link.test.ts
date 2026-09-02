@@ -7,6 +7,8 @@ import { mailThread, message } from '../src/db/schema/mail.js';
 import { TRANSPORT_ID, TRANSPORT_EMAIL } from '../src/db/seed.js';
 import {
   canonicalThreadPair,
+  conversationLinkKey,
+  discoverConversationLinks,
   discoverDomainLinks,
   discoverHeaderParentLinks,
   discoverQuotedBodyLinks,
@@ -250,6 +252,69 @@ describe('deterministic link discovery', () => {
     expect(links[0]?.linkType).toBe('quoted_body');
   });
 
+  it('caps quoted-body fanout per guest and refuses a weak mega-component', () => {
+    const prior = Array.from({ length: 9 }, (_, index) =>
+      msg({
+        id: `quoted-fanout-prior-${index}`,
+        threadId: `quoted-fanout-prior-${index}`,
+        fromAddress: 'guest@travel.com',
+        receivedAt: new Date(`2026-07-01T${String(1 + index).padStart(2, '0')}:00:00.000Z`),
+      }),
+    );
+    const quoted = msg({
+      id: 'quoted-fanout-target',
+      threadId: 'quoted-fanout-target',
+      fromAddress: 'guest@travel.com',
+      textBody:
+        'See below\nFrom: Centurion Hotel Reservations <centurion@legacyhotels.co.za>\nOriginal question',
+      receivedAt: new Date('2026-07-01T12:00:00.000Z'),
+    });
+
+    const links = discoverQuotedBodyLinks([...prior, quoted]);
+
+    expect(links).toHaveLength(1);
+    expect(links[0]?.linkType).toBe('quoted_body');
+  });
+
+  it('bounds weak components across the combined deterministic graph', () => {
+    const messages = Array.from({ length: 10 }, (_, index) =>
+      msg({
+        id: `quoted-chain-${index}`,
+        threadId: `quoted-chain-${index}`,
+        fromAddress: 'guest@travel.com',
+        textBody:
+          'See below\nFrom: Centurion Hotel Reservations <centurion@legacyhotels.co.za>\nOriginal question',
+        receivedAt: new Date(`2026-07-01T${String(10 + index).padStart(2, '0')}:00:00.000Z`),
+      }),
+    );
+
+    const links = discoverConversationLinks(messages).filter(
+      (link) => link.linkType === 'quoted_body',
+    );
+    const parent = new Map<string, string>();
+    const size = new Map<string, number>();
+    const find = (id: string): string => {
+      const current = parent.get(id);
+      if (!current) {
+        parent.set(id, id);
+        size.set(id, 1);
+        return id;
+      }
+      if (current === id) return id;
+      const root = find(current);
+      parent.set(id, root);
+      return root;
+    };
+    for (const link of links) {
+      const left = find(link.srcThreadId);
+      const right = find(link.dstThreadId);
+      if (left === right) continue;
+      parent.set(right, left);
+      size.set(left, (size.get(left) ?? 1) + (size.get(right) ?? 1));
+    }
+    expect(Math.max(...size.values())).toBeLessThanOrEqual(7);
+  });
+
   it('fails closed when quoted sibling timestamps are missing', () => {
     const prior = msg({
       id: 'msg-undated-prior',
@@ -413,6 +478,7 @@ describe('deterministic link discovery', () => {
     expect(isSystemAddress('ops@legacyhotels.co.za')).toBe(true);
     expect(isSystemAddress('mail@legacyhotels.co.za')).toBe(true);
     expect(isSystemAddress('hotels@legacyhotels.co.za')).toBe(true);
+    expect(isSystemAddress('navaai@legacyhotels.co.za')).toBe(true);
     const messages = [
       msg({
         id: 'system-subject-a',
@@ -549,6 +615,146 @@ describe('deterministic link discovery', () => {
     );
     expect(links).toHaveLength(1);
     expect([links[0]?.srcThreadId, links[0]?.dstThreadId]).toContain('human-anchor-thread');
+  });
+
+  it('does not consume orphan caps when a reverse edge is a duplicate', () => {
+    const inbounds = [
+      msg({
+        id: 'duplicate-budget-in-a',
+        threadId: 'duplicate-budget-a',
+        fromAddress: 'guest@example.com',
+        receivedAt: new Date('2026-07-01T10:00:00.000Z'),
+      }),
+      msg({
+        id: 'duplicate-budget-in-b',
+        threadId: 'duplicate-budget-b',
+        fromAddress: 'guest@example.com',
+        receivedAt: new Date('2026-07-01T11:00:00.000Z'),
+      }),
+      msg({
+        id: 'duplicate-budget-in-c',
+        threadId: 'duplicate-budget-c',
+        fromAddress: 'guest@example.com',
+        receivedAt: new Date('2026-07-02T10:00:00.000Z'),
+      }),
+    ];
+    const outbounds = [
+      msg({
+        id: 'duplicate-budget-out-a',
+        threadId: 'duplicate-budget-a',
+        direction: 'outbound',
+        fromAddress: 'centurion@legacyhotels.co.za',
+        toAddresses: ['guest@example.com'],
+        receivedAt: new Date('2026-07-01T20:00:00.000Z'),
+      }),
+      msg({
+        id: 'duplicate-budget-out-b',
+        threadId: 'duplicate-budget-b',
+        direction: 'outbound',
+        fromAddress: 'centurion@legacyhotels.co.za',
+        toAddresses: ['guest@example.com'],
+        receivedAt: new Date('2026-07-01T21:00:00.000Z'),
+      }),
+      msg({
+        id: 'duplicate-budget-out-c',
+        threadId: 'duplicate-budget-c',
+        direction: 'outbound',
+        fromAddress: 'centurion@legacyhotels.co.za',
+        toAddresses: ['guest@example.com'],
+        receivedAt: new Date('2026-07-02T11:00:00.000Z'),
+      }),
+    ];
+
+    const links = discoverDomainLinks([...inbounds, ...outbounds]).filter(
+      (link) => link.linkType === 'domain_guest_email',
+    );
+
+    expect(links).toHaveLength(2);
+    expect(links.map((link) => canonicalThreadPair(link.srcThreadId, link.dstThreadId))).toEqual([
+      ['duplicate-budget-a', 'duplicate-budget-b'],
+      ['duplicate-budget-b', 'duplicate-budget-c'],
+    ]);
+  });
+
+  it('keeps capped weak link choices stable across input permutations', () => {
+    const messages = Array.from({ length: 5 }, (_, index) => {
+      const threadId = `permutation-thread-${index}`;
+      const hour = String(10 + index).padStart(2, '0');
+      return [
+        msg({
+          id: `permutation-in-${index}`,
+          threadId,
+          fromAddress: 'guest@example.com',
+          receivedAt: new Date(`2026-07-01T${hour}:00:00.000Z`),
+        }),
+        msg({
+          id: `permutation-out-${index}`,
+          threadId,
+          direction: 'outbound',
+          fromAddress: 'centurion@legacyhotels.co.za',
+          toAddresses: ['guest@example.com'],
+          receivedAt: new Date(`2026-07-01T${hour}:30:00.000Z`),
+        }),
+      ];
+    }).flat();
+    const linkKeys = (input: readonly LinkableMessage[]) =>
+      discoverDomainLinks(input)
+        .filter((link) => link.linkType === 'domain_guest_email')
+        .map((link) => conversationLinkKey(link.srcThreadId, link.dstThreadId, link.linkType))
+        .sort();
+
+    expect(linkKeys(messages)).toEqual(linkKeys([...messages].reverse()));
+  });
+
+  it('bounds chain growth from weak human orphan edges', () => {
+    const threads = Array.from({ length: 10 }, (_, index) => {
+      const threadId = `human-chain-thread-${index}`;
+      const at = String(10 + index).padStart(2, '0');
+      return [
+        msg({
+          id: `human-chain-in-${index}`,
+          threadId,
+          fromAddress: 'guest@example.com',
+          subject: 'Room request',
+          receivedAt: new Date(`2026-07-01T${at}:00:00.000Z`),
+        }),
+        msg({
+          id: `human-chain-out-${index}`,
+          threadId,
+          direction: 'outbound',
+          fromAddress: 'centurion@legacyhotels.co.za',
+          toAddresses: ['guest@example.com'],
+          subject: 'Re: Room request',
+          receivedAt: new Date(`2026-07-01T${at}:30:00.000Z`),
+        }),
+      ];
+    }).flat();
+
+    const links = discoverDomainLinks(threads).filter(
+      (link) => link.linkType === 'domain_guest_email',
+    );
+    const parent = new Map<string, string>();
+    const size = new Map<string, number>();
+    const find = (id: string): string => {
+      const current = parent.get(id);
+      if (!current) {
+        parent.set(id, id);
+        size.set(id, 1);
+        return id;
+      }
+      if (current === id) return id;
+      const root = find(current);
+      parent.set(id, root);
+      return root;
+    };
+    for (const link of links) {
+      const left = find(link.srcThreadId);
+      const right = find(link.dstThreadId);
+      if (left === right) continue;
+      parent.set(right, left);
+      size.set(left, (size.get(left) ?? 1) + (size.get(right) ?? 1));
+    }
+    expect(Math.max(...[...size.values()])).toBeLessThanOrEqual(7);
   });
 });
 

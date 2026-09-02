@@ -8,7 +8,7 @@
  * Apply:
  *   pnpm --filter @zero/server exec tsx scripts/backfill-centurion-conversation-links.ts --transport=transport-centurion --deactivate-unsafe --apply --confirm-pilot-rds
  */
-import { and, eq, isNull, sql } from 'drizzle-orm';
+import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { drizzle } from 'drizzle-orm/postgres-js';
@@ -86,7 +86,8 @@ async function loadLinkableMessages(
       receivedAt: message.receivedAt,
     })
     .from(message)
-    .where(eq(message.transportId, transportId));
+    .where(eq(message.transportId, transportId))
+    .orderBy(asc(message.receivedAt), asc(message.id), asc(message.threadId));
 
   return rows.map((row) => ({
     id: row.id,
