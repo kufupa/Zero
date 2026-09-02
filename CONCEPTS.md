@@ -414,6 +414,10 @@ The pastel background/text pair used for primary hotel category chrome (nav rows
 
 Sidebar user-filing surface for custom folders built on mailLabel rows (slash names for nesting). Staff drag finished mail here so inbox stays unactioned work. Distinct from hotel AI Folders (category queues) and from system places (inbox/archive/spam/bin flags). Schema and API names stay mailLabel / labelIds / labels.*.
 
+### Spam-scoped My Folder
+
+A reserved user label (e.g. Quarantine for FortiMail digests) that lists under the Spam system folder with `labelIds` filtering, not under archive+labelIds. Archive-like chrome, move actions, and optimistic filing must treat these UUID routes as spam-scoped — route-filter alone is insufficient. Distinct from ordinary My folders (archive filing) and from folder-first spam membership (`spam_at` truth).
+
 ### File threads
 
 Exclusive user-label filing mutation: set the target user label on threads, archive them out of inbox, clear trash/spam placement, leave AI categoryIds untouched. Unfile is Move to Inbox (clear archive), which drops the thread from the folder list that filters archive+labelIds.
