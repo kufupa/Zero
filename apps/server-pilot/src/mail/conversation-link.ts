@@ -272,21 +272,25 @@ export function discoverQuotedBodyLinks(messages: readonly LinkableMessage[]): P
   return links;
 }
 
-function participantEmails(message: LinkableMessage): Set<string> {
+function allParticipantEmails(message: LinkableMessage): Set<string> {
   const emails = new Set<string>();
-  for (const email of externalEmails(message.fromAddress)) emails.add(email);
-  for (const email of externalEmails(message.toAddresses.join(' '))) emails.add(email);
-  for (const email of externalEmails(message.ccAddresses.join(' '))) emails.add(email);
+  const blob = [message.fromAddress, ...message.toAddresses, ...message.ccAddresses].join(' ');
+  for (const email of blob.match(/[\w.+-]+@[\w.-]+\.[a-z]{2,}/gi) ?? []) {
+    emails.add(email.toLowerCase());
+  }
   return emails;
 }
+
+/** External-only participants reserved for guest/quoted paths if needed later. */
 
 function participantsOverlap(a: readonly LinkableMessage[], b: readonly LinkableMessage[]): boolean {
   const left = new Set<string>();
   for (const msg of a) {
-    for (const email of participantEmails(msg)) left.add(email);
+    // Staff↔staff ops (Breakfast Pack class) share only internal domains — must count them.
+    for (const email of allParticipantEmails(msg)) left.add(email);
   }
   for (const msg of b) {
-    for (const email of participantEmails(msg)) {
+    for (const email of allParticipantEmails(msg)) {
       if (left.has(email)) return true;
     }
   }

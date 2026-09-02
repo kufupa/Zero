@@ -167,6 +167,30 @@ describe('deterministic link discovery', () => {
     const links = discoverSubjectClusterLinks([a, b]);
     expect(links.some((l) => l.linkType === 'subject_cluster')).toBe(true);
   });
+
+  it('links staff-internal Breakfast Pack RE chain (no external guest)', () => {
+    const a = msg({
+      id: 'bp-1',
+      threadId: 'thread-bp-1',
+      direction: 'inbound',
+      fromAddress: 'centurionrec@legacyhotels.co.za',
+      toAddresses: ['fsmith@legacyhotels.co.za'],
+      subject: 'RE: Breakfast Pack Request',
+      receivedAt: new Date('2026-08-31T16:31:00.000Z'),
+    });
+    const b = msg({
+      id: 'bp-2',
+      threadId: 'thread-bp-2',
+      direction: 'inbound',
+      fromAddress: 'centurionrec@legacyhotels.co.za',
+      toAddresses: ['fsmith@legacyhotels.co.za'],
+      subject: 'RE: Breakfast Pack Request',
+      receivedAt: new Date('2026-08-31T17:57:00.000Z'),
+    });
+    const links = discoverSubjectClusterLinks([a, b]);
+    expect(links).toHaveLength(1);
+    expect(links[0]?.linkType).toBe('subject_cluster');
+  });
 });
 
 describe('mail_conversation_link migration', () => {
