@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { eq } from 'drizzle-orm';
+import { and, eq, inArray, isNull } from 'drizzle-orm';
 import {
   mailConversationLink,
   type MailConversationLinkType,
@@ -158,12 +158,13 @@ function toConversationMessage(message: LinkableMessage): ConversationMessage {
   };
 }
 
-function linkKey(
+export function conversationLinkKey(
   srcThreadId: string,
   dstThreadId: string,
   linkType: MailConversationLinkType,
 ): string {
-  return `${srcThreadId}|${dstThreadId}|${linkType}`;
+  const [canonicalSrc, canonicalDst] = canonicalThreadPair(srcThreadId, dstThreadId);
+  return `${canonicalSrc}|${canonicalDst}|${linkType}`;
 }
 
 function pushLink(
@@ -173,7 +174,7 @@ function pushLink(
 ): void {
   const [srcThreadId, dstThreadId] = canonicalThreadPair(proposal.srcThreadId, proposal.dstThreadId);
   if (srcThreadId === dstThreadId) return;
-  const key = linkKey(srcThreadId, dstThreadId, proposal.linkType);
+  const key = conversationLinkKey(srcThreadId, dstThreadId, proposal.linkType);
   if (seen.has(key)) return;
   seen.add(key);
   links.push({ ...proposal, srcThreadId, dstThreadId });
@@ -451,6 +452,73 @@ export function discoverConversationLinks(messages: readonly LinkableMessage[]):
     ...discoverQuotedBodyLinks(messages),
     ...discoverSubjectClusterLinks(messages),
   ];
+}
+
+export type PersistedConversationLink = {
+  id: string;
+  srcThreadId: string;
+  dstThreadId: string;
+  linkType: MailConversationLinkType;
+  supersededAt?: Date | string | null;
+};
+
+/**
+ * Return active persisted edges no longer justified by current deterministic
+ * discovery. Discovery owns all precision predicates; backfill only compares
+ * canonical edge identities, so it cannot drift into a second policy.
+ */
+export function findSupersededConversationLinks<T extends PersistedConversationLink>(
+  activeLinks: readonly T[],
+  proposals: readonly ProposedConversationLink[],
+): T[] {
+  const safeKeys = new Set(
+    proposals.map((proposal) =>
+      conversationLinkKey(proposal.srcThreadId, proposal.dstThreadId, proposal.linkType),
+    ),
+  );
+  return activeLinks.filter(
+    (link) =>
+      link.supersededAt == null &&
+      !safeKeys.has(conversationLinkKey(link.srcThreadId, link.dstThreadId, link.linkType)),
+  );
+}
+
+/** Mark stale active edges without deleting history or rewriting thread_id. */
+export async function deactivateSupersededConversationLinks(
+  db: DB,
+  transportId: string,
+  proposals: readonly ProposedConversationLink[],
+  supersededAt = new Date(),
+): Promise<number> {
+  const activeLinks = await db
+    .select({
+      id: mailConversationLink.id,
+      srcThreadId: mailConversationLink.srcThreadId,
+      dstThreadId: mailConversationLink.dstThreadId,
+      linkType: mailConversationLink.linkType,
+      supersededAt: mailConversationLink.supersededAt,
+    })
+    .from(mailConversationLink)
+    .where(
+      and(eq(mailConversationLink.transportId, transportId), isNull(mailConversationLink.supersededAt)),
+    );
+  const staleLinks = findSupersededConversationLinks(activeLinks, proposals);
+  if (staleLinks.length === 0) return 0;
+
+  await db
+    .update(mailConversationLink)
+    .set({ supersededAt })
+    .where(
+      and(
+        eq(mailConversationLink.transportId, transportId),
+        isNull(mailConversationLink.supersededAt),
+        inArray(
+          mailConversationLink.id,
+          staleLinks.map((link) => link.id),
+        ),
+      ),
+    );
+  return staleLinks.length;
 }
 
 export async function upsertConversationLinks(

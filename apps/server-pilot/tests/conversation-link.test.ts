@@ -13,6 +13,8 @@ import {
   discoverSubjectClusterLinks,
   normalizeConversationSubject,
   collapseSpacedSubjectArtifacts,
+  deactivateSupersededConversationLinks,
+  findSupersededConversationLinks,
   isSystemAddress,
   upsertConversationLinks,
   type LinkableMessage,
@@ -28,6 +30,7 @@ import {
   withSeededTestDb,
 } from './helpers/test-db.js';
 import { callerFor } from './helpers/trpc-caller.js';
+import { parseArgs as parseConversationLinkBackfillArgs } from '../scripts/backfill-centurion-conversation-links.js';
 
 const reachable = await probeTestDb();
 
@@ -111,6 +114,58 @@ describe('union-find conversation groups', () => {
 });
 
 describe('deterministic link discovery', () => {
+  it('parses unsafe-edge deactivation as explicit opt-in', () => {
+    expect(
+      parseConversationLinkBackfillArgs([
+        '--transport=transport-centurion',
+        '--deactivate-unsafe',
+        '--confirm-pilot-rds',
+      ]),
+    ).toEqual({
+      transportId: 'transport-centurion',
+      apply: false,
+      confirmPilotRds: true,
+      deactivateUnsafe: true,
+    });
+  });
+
+  it('marks active persisted edges absent from current safe proposals as superseded candidates', () => {
+    const activeEdges = [
+      {
+        id: 'unsafe-subject-edge',
+        srcThreadId: 'thread-a',
+        dstThreadId: 'thread-b',
+        linkType: 'subject_cluster' as const,
+        supersededAt: null,
+      },
+      {
+        id: 'safe-header-edge',
+        srcThreadId: 'thread-c',
+        dstThreadId: 'thread-d',
+        linkType: 'header_parent' as const,
+        supersededAt: null,
+      },
+      {
+        id: 'already-superseded',
+        srcThreadId: 'thread-e',
+        dstThreadId: 'thread-f',
+        linkType: 'subject_cluster' as const,
+        supersededAt: new Date('2026-09-02T12:00:00Z'),
+      },
+    ];
+
+    const candidates = findSupersededConversationLinks(activeEdges, [
+      {
+        srcThreadId: 'thread-d',
+        dstThreadId: 'thread-c',
+        linkType: 'header_parent',
+        confidence: '1.0000',
+      },
+    ]);
+
+    expect(candidates).toEqual([activeEdges[0]]);
+  });
+
   it('links header_parent when reply references parent message in another thread', () => {
     const parent = msg({
       id: 'msg-parent',
@@ -388,6 +443,48 @@ describe('mail_conversation_link migration', () => {
 });
 
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('conversation link persistence (disposable DB)', () => {
+  it('supersedes stale active edges without deleting them', async () => {
+    await withSeededTestDb(async (db) => {
+      const threadA = randomUUID();
+      const threadB = randomUUID();
+      const now = new Date('2026-09-02T12:00:00Z');
+      await db.insert(mailThread).values([
+        {
+          id: threadA,
+          transportId: TRANSPORT_ID,
+          threadRootId: `<${threadA}@example.com>`,
+          subject: 'Thread A',
+          snippet: 'A',
+          latestMessageAt: now,
+        },
+        {
+          id: threadB,
+          transportId: TRANSPORT_ID,
+          threadRootId: `<${threadB}@example.com>`,
+          subject: 'Thread B',
+          snippet: 'B',
+          latestMessageAt: now,
+        },
+      ]);
+      await db.insert(mailConversationLink).values({
+        id: randomUUID(),
+        transportId: TRANSPORT_ID,
+        srcThreadId: threadA,
+        dstThreadId: threadB,
+        linkType: 'subject_cluster',
+        confidence: '0.7500',
+      });
+
+      const superseded = await deactivateSupersededConversationLinks(db, TRANSPORT_ID, [], now);
+      expect(superseded).toBe(1);
+      const [row] = await db
+        .select({ supersededAt: mailConversationLink.supersededAt })
+        .from(mailConversationLink)
+        .where(eq(mailConversationLink.transportId, TRANSPORT_ID));
+      expect(row?.supersededAt).toEqual(now);
+    });
+  });
+
   it('upserts links idempotently without duplicating edges', async () => {
     await withSeededTestDb(async (db) => {
       const threadA = randomUUID();
