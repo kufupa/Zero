@@ -3,8 +3,6 @@
  * `.private/.../regen-defensible-eod-exhaustive.py` + EOD snapshot parsing.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
-import path from 'node:path';
 import {
   buildAutoConfirmIndex,
   buildOrphanOutboundIndex,
@@ -12,8 +10,11 @@ import {
   isAutoOutbound,
   isConversationResponded,
   type ConversationMessage,
+  type ConversationSignal,
   type IndexableMessage,
 } from '../mail/conversation-signals.js';
+import { existsSync, readFileSync } from 'node:fs';
+import path from 'node:path';
 
 export const GOLD_RECALL_MIN = 268;
 export const GOLD_RESPONDED_TOTAL = 282;
@@ -31,6 +32,9 @@ export type SnapshotRow = {
   subject: string;
   bodyText: string;
   receivedAt: string;
+  messageIdHeader?: string | null;
+  inReplyTo?: string | null;
+  references?: readonly string[] | string | null;
 };
 
 export type DefensibleGoldThread = {
@@ -44,6 +48,7 @@ export type GoldEvalCase = {
   goldResponded: boolean;
   predictedResponded: boolean;
   triggerMessageId: string;
+  signals: readonly ConversationSignal[];
 };
 
 export type ConfusionMatrixCounts = {
@@ -127,7 +132,11 @@ function classifySender(fromAddr: string, subject: string): string {
   }
   if (SYSTEM_LOCALPART_HINTS.some((hint) => local.includes(hint))) return 'system_external';
   if (OTA_SUBJECT_HINTS.some((hint) => subj.includes(hint))) return 'ota_channel';
-  if (['invoice', 'statement', 'marketing', 'newsletter', 'unsubscribe'].some((hint) => subj.includes(hint))) {
+  if (
+    ['invoice', 'statement', 'marketing', 'newsletter', 'unsubscribe'].some((hint) =>
+      subj.includes(hint),
+    )
+  ) {
     return 'vendor_b2b';
   }
   return 'external_guest_or_partner';
@@ -136,10 +145,18 @@ function classifySender(fromAddr: string, subject: string): string {
 function classifyInboundObligation(subject: string, senderClass: string, textLen: number): string {
   const subj = (subject ?? '').toLowerCase();
   if (['system_legacy', 'system_external', 'ota_channel'].includes(senderClass)) {
-    if (['confirmation letter', 'booking update', 'reservation confirmation'].some((hint) => subj.includes(hint))) {
+    if (
+      ['confirmation letter', 'booking update', 'reservation confirmation'].some((hint) =>
+        subj.includes(hint),
+      )
+    ) {
       return 'channel_notice';
     }
-    if (['failure', 'unpaid', 'update failure', 'bounce', 'undeliverable'].some((hint) => subj.includes(hint))) {
+    if (
+      ['failure', 'unpaid', 'update failure', 'bounce', 'undeliverable'].some((hint) =>
+        subj.includes(hint),
+      )
+    ) {
       return 'exception_recovery';
     }
     if (['guestrevu', 'review', 'fortimail', 'quarantine'].some((hint) => subj.includes(hint))) {
@@ -148,13 +165,19 @@ function classifyInboundObligation(subject: string, senderClass: string, textLen
     return 'automated_or_system';
   }
   if (senderClass.startsWith('staff_legacy')) return 'internal_handoff';
-  if (subj.includes('quote') || subj.includes('availability') || subj.includes('rate')) return 'quote_request';
+  if (subj.includes('quote') || subj.includes('availability') || subj.includes('rate'))
+    return 'quote_request';
   if (subj.includes('cancel')) return 'cancellation';
-  if (['invoice', 'tax', 'receipt', 'voucher', 'document'].some((hint) => subj.includes(hint))) return 'documents';
-  if (['payment', 'deposit', 'refund', 'vcc', 'virtual card'].some((hint) => subj.includes(hint))) return 'payment';
-  if (['group', 'block', 'event', 'conference'].some((hint) => subj.includes(hint))) return 'group_event';
-  if (['modify', 'amend', 'change date', 'extension'].some((hint) => subj.includes(hint))) return 'modification';
-  if (['booking', 'reservation', 'room', 'stay'].some((hint) => subj.includes(hint))) return 'booking_request';
+  if (['invoice', 'tax', 'receipt', 'voucher', 'document'].some((hint) => subj.includes(hint)))
+    return 'documents';
+  if (['payment', 'deposit', 'refund', 'vcc', 'virtual card'].some((hint) => subj.includes(hint)))
+    return 'payment';
+  if (['group', 'block', 'event', 'conference'].some((hint) => subj.includes(hint)))
+    return 'group_event';
+  if (['modify', 'amend', 'change date', 'extension'].some((hint) => subj.includes(hint)))
+    return 'modification';
+  if (['booking', 'reservation', 'room', 'stay'].some((hint) => subj.includes(hint)))
+    return 'booking_request';
   if (textLen === 0) return 'empty_or_sparse';
   return 'guest_service_or_other';
 }
@@ -191,6 +214,13 @@ export function resolvePrivateCorpusRoot(startDir: string): string {
       'defensible-daily-chart-2026-09-01-eod-threads.json',
     );
     if (existsSync(goldPath)) return candidate;
+    const directGoldPath = path.join(
+      dir,
+      'follow-up',
+      '_work',
+      'defensible-daily-chart-2026-09-01-eod-threads.json',
+    );
+    if (existsSync(directGoldPath)) return dir;
     const parent = path.dirname(dir);
     if (parent === dir) break;
     dir = parent;
@@ -222,6 +252,12 @@ export function parseConnectedMailboxSnapshot(text: string): {
     const direction = fields.get('Direction')?.toLowerCase();
     if (!threadId || !messageId || (direction !== 'inbound' && direction !== 'outbound')) continue;
 
+    const references =
+      fields
+        .get('References')
+        ?.replace(/`/g, '')
+        .match(/<[^>]+>|[^\s,]+/g) ?? [];
+
     rows.push({
       messageId,
       threadId,
@@ -232,6 +268,9 @@ export function parseConnectedMailboxSnapshot(text: string): {
       subject: subjectMatch?.[1]?.trim() ?? '',
       bodyText: textBodyMatch?.[1]?.replace(/\n$/, '') ?? '',
       receivedAt: fields.get('Received') ?? fields.get('Sent') ?? fields.get('Created') ?? '',
+      messageIdHeader: fields.get('Message-ID (header)') || null,
+      inReplyTo: fields.get('In-Reply-To') || null,
+      references,
     });
   }
 
@@ -265,6 +304,9 @@ function snapshotRowToConversationMessage(row: SnapshotRow): ConversationMessage
     subject: row.subject,
     bodyText: row.bodyText,
     receivedAt: row.receivedAt,
+    messageIdHeader: row.messageIdHeader,
+    inReplyTo: row.inReplyTo,
+    references: row.references,
   };
 }
 
@@ -349,6 +391,7 @@ export function runConversationSignalsGoldEval(input: {
       goldResponded: gold.responded,
       predictedResponded,
       triggerMessageId: trigger.messageId,
+      signals,
     });
   }
 

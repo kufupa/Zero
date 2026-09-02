@@ -1,7 +1,5 @@
 #!/usr/bin/env npx tsx
 /** Gold eval for Layer B conversation signals — confusion matrix counts only (no PII). */
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import {
   evaluateGoldContract,
   evaluateGoldGate,
@@ -12,10 +10,12 @@ import {
   resolvePrivateCorpusRoot,
   runConversationSignalsGoldEvalFromCorpus,
 } from '../src/ops/centurion-conversation-signals-eval.js';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 function main() {
   const startDir = join(dirname(fileURLToPath(import.meta.url)), '../..');
-  const corpusRoot = resolvePrivateCorpusRoot(startDir);
+  const corpusRoot = resolvePrivateCorpusRoot(process.argv[2] ?? startDir);
   const result = runConversationSignalsGoldEvalFromCorpus(corpusRoot);
   console.log(formatConfusionMatrixStdout(result.matrix));
   if (!evaluateGoldContract(result.matrix).pass) {

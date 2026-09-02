@@ -1,6 +1,3 @@
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
 import {
   evaluateGoldContract,
   evaluateGoldGate,
@@ -15,6 +12,9 @@ import {
   type ConfusionMatrixCounts,
   type SnapshotRow,
 } from '../src/ops/centurion-conversation-signals-eval.js';
+import { describe, expect, it } from 'vitest';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
 
 const serverRoot = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(serverRoot, '../..');
@@ -105,12 +105,16 @@ const FIXTURE_THREADS: ReadonlyArray<{
   {
     threadIdPrefix: 't-orph-a',
     goldResponded: true,
-    messages: [row({ messageId: 't3-trigger', threadId: 't-orph-a-0003', from: 'guest-a@example.com' })],
+    messages: [
+      row({ messageId: 't3-trigger', threadId: 't-orph-a-0003', from: 'guest-a@example.com' }),
+    ],
   },
   {
     threadIdPrefix: 't-orph-h',
     goldResponded: true,
-    messages: [row({ messageId: 't4-trigger', threadId: 't-orph-h-0004', from: 'guest-b@example.com' })],
+    messages: [
+      row({ messageId: 't4-trigger', threadId: 't-orph-h-0004', from: 'guest-b@example.com' }),
+    ],
   },
   {
     threadIdPrefix: 't-q-hdr',
@@ -412,9 +416,9 @@ describe('conversation signals gold fixture subset (CI)', () => {
     expect(result.matrix.falsePositives).toBe(0);
     expect(result.matrix.truePositives).toBe(7);
     expect(result.matrix.falseNegatives).toBe(0);
-    expect(result.cases.every((evalCase) => evalCase.goldResponded === evalCase.predictedResponded)).toBe(
-      true,
-    );
+    expect(
+      result.cases.every((evalCase) => evalCase.goldResponded === evalCase.predictedResponded),
+    ).toBe(true);
   });
 
   it('documents production gate constants', () => {
@@ -464,6 +468,9 @@ describe('parseConnectedMailboxSnapshot', () => {
       '- **To:** centurion@legacyhotels.co.za',
       '- **CC:** ',
       '- **Received:** 2026-08-01T10:00:00.000Z',
+      '- **Message-ID (header):** `guest-1@example.com`',
+      '- **In-Reply-To:** `<hotel-1@legacyhotels.co.za>`',
+      '- **References:** `<hotel-0@legacyhotels.co.za>`, `<hotel-1@legacyhotels.co.za>`',
       '',
       '### Text body',
       '',
@@ -481,6 +488,9 @@ describe('parseConnectedMailboxSnapshot', () => {
       direction: 'inbound',
       subject: 'Test subject',
       bodyText: 'Hello',
+      messageIdHeader: 'guest-1@example.com',
+      inReplyTo: '<hotel-1@legacyhotels.co.za>',
+      references: ['<hotel-0@legacyhotels.co.za>', '<hotel-1@legacyhotels.co.za>'],
     });
     expect(parsed.byThread.get('thread-1')).toHaveLength(1);
   });

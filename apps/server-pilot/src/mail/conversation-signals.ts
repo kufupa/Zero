@@ -6,11 +6,20 @@
 
 export type ConversationSignal =
   | 'in_thread_outbound'
+  /** EOD taxonomy name; keep in_thread_outbound for existing consumers. */
+  | 'in_thread'
   | 'cross_thread_conf'
   | 'orphan_auto_confirm'
   | 'orphan_centurion_human'
   | 'quoted_hotel_header'
-  | 'quoted_hotel_phrase';
+  | 'quoted_hotel_phrase'
+  | 'quoted_outlook_legacy_from'
+  | 'in_reply_to_hotel_msgid'
+  | 'quoted_staff_sig'
+  | 'quoted_gmail_hotel'
+  | 'quoted_from_centurion_date'
+  | 'quoted_applemail_hotel'
+  | 'staff_inbound_commercial_reply';
 
 export type AutoConfirmRow = {
   conf: string | null;
@@ -25,6 +34,7 @@ export type OrphanOutboundRow = {
   subject: string;
   from: string;
   isAuto: boolean;
+  day?: string;
 };
 
 export type IndexableMessage = {
@@ -36,19 +46,17 @@ export type IndexableMessage = {
   cc?: string;
   subject: string;
   receivedAt: string;
+  /** RFC headers are optional because the original triage payload predates them. */
+  messageIdHeader?: string | null;
+  inReplyTo?: string | null;
+  references?: readonly string[] | string | null;
 };
 
 export type ConversationMessage = IndexableMessage & {
   bodyText: string;
 };
 
-const INTERNAL_DOMAINS = [
-  'legacyhotels',
-  'navaai',
-  'synxis',
-  'reservecloud',
-  'fortimail',
-] as const;
+const INTERNAL_DOMAINS = ['legacyhotels', 'navaai', 'synxis', 'reservecloud', 'fortimail'] as const;
 
 const STAFF_RESPONDER_MAP: Readonly<Record<string, string>> = {
   'centurion@legacyhotels.co.za': 'centurion',
@@ -107,6 +115,21 @@ const QUOTED_FROM_HOTEL_RE =
   /From:\s*(?:Centurion Hotel Reservations|Martha Mthembu|Isaac Seabi)\s*<(?:centurion|marthamthembu|isaacseabi)@legacyhotels/i;
 const HOTEL_REPLY_PHRASE_RE =
   /please (?:find|see) attached (?:quotation|quote|proforma)|voucher well received|kindly find attached.*quotation/i;
+const QUOTED_GMAIL_HOTEL_RE =
+  /On .{8,120}? (?:Centurion Hotel Reservations|Martha Mthembu|Isaac Seabi|Bongi Kolanisi|[A-Z][a-z]+ [A-Z][a-z]+)\s*<\s*(?:\n\s*)?[\w.+-]+@legacyhotels\.co\.za>\s*wrote:/is;
+const QUOTED_APPLEMAIL_HOTEL_RE = /On .{8,80}?[\w.+-]+@legacyhotels\.co\.za\s*wrote:/is;
+const QUOTED_FROM_CENTURION_DATE_RE = /From:\s*Centurion Hotel Reservations\s*(?:\r?\n)\s*Date:/i;
+const QUOTED_OUTLOOK_LEGACY_FROM_RE =
+  /From:\s*(?:[^<\n]{0,80}<)?[\w.+-]+@legacyhotels\.co\.za>?[\s\S]{0,40}?Sent:/i;
+const QUOTED_STAFF_SIG_RE =
+  /(?:Bongi(?:we)?\s+Kolanisi|Martha\s+Mthembu|Isaac\s+Seabi)\s+(?:Reservationist|Reservations)\b/i;
+const HOTEL_MSGID_RE = /@(?:legacyhotels\.co\.za|mail\.legacyhotels\.com)>?$/i;
+// EOD matching is deliberately short-lived: a later auto-confirm/name overlap
+// is ambiguous without a quoted hotel block, so do not carry it across a
+// multi-day booking window.
+const MAX_CROSS_THREAD_DAYS = 3;
+const STAFF_COMMERCIAL_REPLY_RE =
+  /(?:agreed (?:to )?(?:an )?industry rate|please\s+find\s+attached\s+(?:the\s+)?(?:pro\s*forma|quotation|quote|provisional\s+confirmation)|please\s+find\s+attached.{0,80}pro\s*forma|please\s+see\s+attached\s+(?:the\s+)?(?:rooming list|quotation|quote|pro\s*forma)|rates?\s+(?:are|for)\s+(?:our hotel|as follows)|kindly\s+sign\s+(?:the\s+)?quotation|thank you for (?:the |your )?booking|noted and thanks for (?:the )?update|please be advised|no[\s-]?show|settle (?:by cash|upon arrival)|airport transfers?|pleased to confirm|provisional\s+confirmation|availability (?:is dynamic|at (?:the )?centurion))/i;
 
 function emailParts(addr: string): [local: string, domain: string] {
   const trimmed = addr.trim().toLowerCase();
@@ -136,6 +159,43 @@ function extractConf(subject: string): string | null {
   return match?.[1] ?? null;
 }
 
+function headerTokens(value: readonly string[] | string | null | undefined): string[] {
+  if (!value) return [];
+  if (typeof value !== 'string') return value.flatMap((entry) => headerTokens(entry));
+  return value.match(/<[^>]+>|[^\s,]+/g) ?? [];
+}
+
+function isHotelMessageId(value: string): boolean {
+  const normalized = value.trim().replace(/^<+|>+$/g, '');
+  return HOTEL_MSGID_RE.test(normalized);
+}
+
+function hasHotelReplyHeader(message: ConversationMessage): boolean {
+  return [message.inReplyTo, ...headerTokens(message.references)].some(
+    (value) => value != null && isHotelMessageId(value),
+  );
+}
+
+function hasStrongQuotedHotelBlock(threadText: string): boolean {
+  return (
+    QUOTED_FROM_HOTEL_RE.test(threadText) ||
+    QUOTED_GMAIL_HOTEL_RE.test(threadText) ||
+    QUOTED_APPLEMAIL_HOTEL_RE.test(threadText) ||
+    QUOTED_FROM_CENTURION_DATE_RE.test(threadText) ||
+    QUOTED_OUTLOOK_LEGACY_FROM_RE.test(threadText) ||
+    QUOTED_STAFF_SIG_RE.test(threadText)
+  );
+}
+
+function withinDayWindow(triggerDay: string, otherDay: string): boolean {
+  if (!triggerDay || !otherDay) return false;
+  const trigger = Date.parse(`${triggerDay}T00:00:00Z`);
+  const other = Date.parse(`${otherDay}T00:00:00Z`);
+  if (!Number.isFinite(trigger) || !Number.isFinite(other)) return false;
+  const deltaDays = (other - trigger) / (24 * 60 * 60 * 1000);
+  return deltaDays >= 0 && deltaDays <= MAX_CROSS_THREAD_DAYS;
+}
+
 export function externalEmails(blob: string): Set<string> {
   const out = new Set<string>();
   for (const email of blob.match(EMAIL_RE) ?? []) {
@@ -162,9 +222,7 @@ export function isAutoOutbound(subject: string, toAddrs: string): boolean {
   ) {
     autoSignals += 1;
   }
-  if (
-    ['booking.com', 'expedia', 'guestrevu', 'fortimail'].some((hint) => toLower.includes(hint))
-  ) {
+  if (['booking.com', 'expedia', 'guestrevu', 'fortimail'].some((hint) => toLower.includes(hint))) {
     autoSignals += 1;
   }
 
@@ -219,9 +277,7 @@ function crossThreadMatched(
   const norm = threadText.toLowerCase().replace(/[^a-z0-9]/g, '');
 
   for (const auto of autoIndex) {
-    if (auto.day && triggerDay && auto.day < triggerDay) {
-      continue;
-    }
+    if (!withinDayWindow(triggerDay, auto.day)) continue;
     if (auto.conf && confMatches.has(auto.conf)) {
       return true;
     }
@@ -275,6 +331,7 @@ export function buildOrphanOutboundIndex(
         subject: message.subject,
         from: message.from,
         isAuto: isAutoOutbound(message.subject, message.to),
+        day: dayFromReceived(message.receivedAt),
       };
       const existing = index.get(guestEmail) ?? [];
       existing.push(row);
@@ -303,14 +360,10 @@ export function detectConversationSignals(input: {
   const triggerDay = dayFromReceived(trigger.receivedAt);
 
   for (const message of [...after, ...outbound]) {
-    const bucket = responderBucket(
-      message.from,
-      message.subject,
-      message.to,
-      message.direction,
-    );
+    const bucket = responderBucket(message.from, message.subject, message.to, message.direction);
     if (bucket) {
       signals.push('in_thread_outbound');
+      signals.push('in_thread');
       break;
     }
   }
@@ -323,10 +376,51 @@ export function detectConversationSignals(input: {
     signals.push('cross_thread_conf');
   }
 
+  const strongQuotedHotelBlock = hasStrongQuotedHotelBlock(threadText);
   if (QUOTED_FROM_HOTEL_RE.test(threadText)) {
     signals.push('quoted_hotel_header');
-  } else if (HOTEL_REPLY_PHRASE_RE.test(threadText)) {
+  }
+  if (QUOTED_GMAIL_HOTEL_RE.test(threadText)) {
+    signals.push('quoted_gmail_hotel');
+  }
+  if (QUOTED_APPLEMAIL_HOTEL_RE.test(threadText)) {
+    signals.push('quoted_applemail_hotel');
+  }
+  if (QUOTED_FROM_CENTURION_DATE_RE.test(threadText)) {
+    signals.push('quoted_from_centurion_date');
+  }
+  if (QUOTED_OUTLOOK_LEGACY_FROM_RE.test(threadText)) {
+    signals.push('quoted_outlook_legacy_from');
+  }
+  if (HOTEL_REPLY_PHRASE_RE.test(threadText)) {
     signals.push('quoted_hotel_phrase');
+  }
+  if (QUOTED_STAFF_SIG_RE.test(threadText)) {
+    signals.push('quoted_staff_sig');
+  }
+
+  for (const message of messages) {
+    const from = message.from.toLowerCase();
+    if (!from.includes('@legacyhotels.co.za')) continue;
+    if (
+      ['noreply', 'mailer', 'guestrevu', 'scans@', 'hotels@', 'donotreply'].some((hint) =>
+        from.includes(hint),
+      )
+    ) {
+      continue;
+    }
+    if (STAFF_COMMERCIAL_REPLY_RE.test(message.bodyText ?? '')) {
+      signals.push('staff_inbound_commercial_reply');
+      break;
+    }
+  }
+
+  for (const message of after) {
+    if (message.direction !== 'inbound') continue;
+    if (hasHotelReplyHeader(message)) {
+      signals.push('in_reply_to_hotel_msgid');
+      break;
+    }
   }
 
   const guestEmails = new Set<string>();
@@ -347,8 +441,24 @@ export function detectConversationSignals(input: {
       const frm = orphan.from.toLowerCase();
 
       if (subj.includes('confirmation letter')) {
-        signals.push('orphan_auto_confirm');
-        break;
+        const orphanConf = extractConf(orphan.subject);
+        const orphanGuestMatch = GUEST_FROM_AUTO_RE.exec(orphan.subject);
+        const orphanGuestNorm = orphanGuestMatch ? normalizeGuestName(orphanGuestMatch[1]!) : '';
+        const confMatches = new Set<string>();
+        for (const match of threadText.matchAll(new RegExp(CONF_RE.source, 'gi'))) {
+          if (match[1]) confMatches.add(match[1]);
+        }
+        const norm = threadText.toLowerCase().replace(/[^a-z0-9]/g, '');
+        const hasStrongIdentity =
+          (orphanConf !== null && confMatches.has(orphanConf)) ||
+          (orphanGuestNorm.length >= 5 && norm.includes(orphanGuestNorm));
+        if (
+          withinDayWindow(triggerDay, orphan.day ?? '') &&
+          (hasStrongIdentity || strongQuotedHotelBlock)
+        ) {
+          signals.push('orphan_auto_confirm');
+          break;
+        }
       }
       if (frm.includes('centurion@') && !orphan.isAuto) {
         signals.push('orphan_centurion_human');
