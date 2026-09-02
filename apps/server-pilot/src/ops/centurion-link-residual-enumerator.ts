@@ -217,8 +217,7 @@ function snapshotRowToIndexable(row: SnapshotRow): IndexableMessage {
 }
 
 function pickTriggerMessage(messages: readonly SnapshotRow[]): SnapshotRow {
-  const inbound = messages.filter((message) => message.direction === 'inbound');
-  return inbound[0] ?? messages[0]!;
+  return messages.find((message) => message.direction === 'inbound') ?? messages[0]!;
 }
 
 function primaryParticipants(rows: readonly SnapshotRow[]): Set<string> {
