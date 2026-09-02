@@ -10,7 +10,8 @@ import {
   stat,
   writeFile,
 } from 'node:fs/promises';
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
+import { promisify } from 'node:util';
 import path from 'node:path';
 
 export type PrivateOutputFileSystem = {
@@ -36,6 +37,23 @@ export type PrivateOutputRootVerifier = (
   privateDirectoryName: string,
 ) => boolean | Promise<boolean>;
 
+export type PrivateOutputWindowsAclTargetKind = 'directory' | 'file';
+
+export type PrivateOutputWindowsAclExecutor = (
+  target: string,
+  targetKind: PrivateOutputWindowsAclTargetKind,
+) => Promise<{ stderr: string; stdout: string }>;
+
+export type PrivateOutputWindowsAclEnforcer = (
+  target: string,
+  targetKind: PrivateOutputWindowsAclTargetKind,
+) => Promise<void>;
+
+export type PrivateOutputPermissionOptions = {
+  /** Test seam; production invokes the fixed PowerShell/.NET ACL verifier. */
+  windowsPrivateAclEnforcer?: PrivateOutputWindowsAclEnforcer;
+};
+
 export type PrivateOutputWriterConfig = {
   /** Existing repository root. Symlink and junction roots are refused. */
   repoRoot: string;
@@ -52,7 +70,7 @@ export type TrustedPrivateOutputRoot = {
   platform: NodeJS.Platform;
 };
 
-export type TrustedPrivateOutputRootOptions = {
+export type TrustedPrivateOutputRootOptions = PrivateOutputPermissionOptions & {
   fileSystem?: PrivateOutputRootFileSystem;
   /** Test seam for platform-specific permission validation. */
   platform?: NodeJS.Platform;
@@ -87,6 +105,9 @@ const PRIVATE_OUTPUT_ROOT_PREFLIGHT_ERROR = 'Private output root preflight faile
 const PRIVATE_OUTPUT_ROOT_NOT_IGNORED = 'Private output root is not ignored';
 const DIRECTORY_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 const OUTPUT_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const WINDOWS_PRIVATE_OUTPUT_ACL_SUCCESS = 'private-output-acl-ok';
+const WINDOWS_PRIVATE_OUTPUT_ACL_TARGET_ENV = 'ZERO_PRIVATE_OUTPUT_ACL_TARGET';
+const WINDOWS_PRIVATE_OUTPUT_ACL_TARGET_KIND_ENV = 'ZERO_PRIVATE_OUTPUT_ACL_TARGET_KIND';
 const WINDOWS_RESERVED_DEVICE_NAMES = new Set([
   'AUX',
   'COM1',
@@ -124,6 +145,182 @@ const LOCAL_FILE_SYSTEM: PrivateOutputFileSystem = {
   stat,
   writeFile,
 };
+
+const WINDOWS_PRIVATE_OUTPUT_ACL_SCRIPT = String.raw`
+$ErrorActionPreference = 'Stop'
+
+function Stop-UnsafePrivateOutputAcl {
+  exit 1
+}
+
+$targetPath = [Environment]::GetEnvironmentVariable('${WINDOWS_PRIVATE_OUTPUT_ACL_TARGET_ENV}', 'Process')
+$targetKind = [Environment]::GetEnvironmentVariable('${WINDOWS_PRIVATE_OUTPUT_ACL_TARGET_KIND_ENV}', 'Process')
+if (
+  [string]::IsNullOrWhiteSpace($targetPath) -or
+  ($targetKind -ne 'directory' -and $targetKind -ne 'file') -or
+  $targetPath.StartsWith('\\')
+) {
+  Stop-UnsafePrivateOutputAcl
+}
+
+$fullPath = [System.IO.Path]::GetFullPath($targetPath)
+if ($fullPath.StartsWith('\\') -or $fullPath -notmatch '^[A-Za-z]:\\') {
+  Stop-UnsafePrivateOutputAcl
+}
+
+$item = Get-Item -LiteralPath $fullPath -Force
+if (
+  (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) -or
+  ($targetKind -eq 'directory' -and -not ($item -is [System.IO.DirectoryInfo])) -or
+  ($targetKind -eq 'file' -and -not ($item -is [System.IO.FileInfo]))
+) {
+  Stop-UnsafePrivateOutputAcl
+}
+
+$volumeRoot = [System.IO.Path]::GetPathRoot($fullPath)
+$volume = [System.IO.DriveInfo]::new($volumeRoot)
+if ($volume.DriveType -ne [System.IO.DriveType]::Fixed -or $volume.DriveFormat -cne 'NTFS') {
+  Stop-UnsafePrivateOutputAcl
+}
+
+$currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+if ($null -eq $currentSid) {
+  Stop-UnsafePrivateOutputAcl
+}
+
+$sections = [System.Security.AccessControl.AccessControlSections]::Access -bor
+  [System.Security.AccessControl.AccessControlSections]::Owner
+$security = if ($targetKind -eq 'directory') {
+  [System.IO.Directory]::GetAccessControl($fullPath, $sections)
+} else {
+  [System.IO.File]::GetAccessControl($fullPath, $sections)
+}
+
+$security.SetAccessRuleProtection($true, $false)
+foreach ($accessRule in @(
+  $security.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier])
+)) {
+  [void]$security.RemoveAccessRuleAll($accessRule)
+}
+$security.SetOwner($currentSid)
+
+$fullControl = [System.Security.AccessControl.FileSystemRights]::FullControl
+$allow = [System.Security.AccessControl.AccessControlType]::Allow
+if ($targetKind -eq 'directory') {
+  $inheritance = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+    [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+  $allowRule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+    $currentSid,
+    $fullControl,
+    $inheritance,
+    [System.Security.AccessControl.PropagationFlags]::None,
+    $allow
+  )
+} else {
+  $allowRule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+    $currentSid,
+    $fullControl,
+    $allow
+  )
+}
+$security.AddAccessRule($allowRule)
+
+if ($targetKind -eq 'directory') {
+  [System.IO.Directory]::SetAccessControl($fullPath, $security)
+} else {
+  [System.IO.File]::SetAccessControl($fullPath, $security)
+}
+
+$verified = if ($targetKind -eq 'directory') {
+  [System.IO.Directory]::GetAccessControl($fullPath, $sections)
+} else {
+  [System.IO.File]::GetAccessControl($fullPath, $sections)
+}
+$verifiedOwner = $verified.GetOwner([System.Security.Principal.SecurityIdentifier])
+$verifiedRules = @(
+  $verified.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
+)
+if (
+  -not $verified.AreAccessRulesProtected -or
+  $null -eq $verifiedOwner -or
+  $verifiedOwner.Value -cne $currentSid.Value -or
+  $verifiedRules.Count -ne 1
+) {
+  Stop-UnsafePrivateOutputAcl
+}
+
+$verifiedRule = $verifiedRules[0]
+if (
+  $verifiedRule.IsInherited -or
+  $verifiedRule.AccessControlType -ne $allow -or
+  $verifiedRule.IdentityReference.Value -cne $currentSid.Value -or
+  $verifiedRule.FileSystemRights -ne $fullControl
+) {
+  Stop-UnsafePrivateOutputAcl
+}
+
+if (
+  $targetKind -eq 'directory' -and
+  (
+    $verifiedRule.InheritanceFlags -ne $inheritance -or
+    $verifiedRule.PropagationFlags -ne [System.Security.AccessControl.PropagationFlags]::None
+  )
+) {
+  Stop-UnsafePrivateOutputAcl
+}
+
+[Console]::Out.Write('${WINDOWS_PRIVATE_OUTPUT_ACL_SUCCESS}')
+`;
+
+const execFileAsync = promisify(execFile);
+
+const LOCAL_WINDOWS_PRIVATE_OUTPUT_ACL_EXECUTOR: PrivateOutputWindowsAclExecutor = async (
+  target,
+  targetKind,
+) => {
+  const { stderr, stdout } = await execFileAsync(
+    'powershell.exe',
+    ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', WINDOWS_PRIVATE_OUTPUT_ACL_SCRIPT],
+    {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        [WINDOWS_PRIVATE_OUTPUT_ACL_TARGET_ENV]: target,
+        [WINDOWS_PRIVATE_OUTPUT_ACL_TARGET_KIND_ENV]: targetKind,
+      },
+      maxBuffer: 1024,
+      windowsHide: true,
+    },
+  );
+  return { stderr: String(stderr), stdout: String(stdout) };
+};
+
+/**
+ * Enforces a protected owner-only DACL using a fixed PowerShell/.NET command.
+ * This protects against other Windows identities, not hostile processes running as this identity.
+ */
+export function createWindowsPrivateOutputAclEnforcer(
+  executor: PrivateOutputWindowsAclExecutor = LOCAL_WINDOWS_PRIVATE_OUTPUT_ACL_EXECUTOR,
+): PrivateOutputWindowsAclEnforcer {
+  return async (target, targetKind) => {
+    let result: { stderr: string; stdout: string };
+    try {
+      result = await executor(target, targetKind);
+    } catch {
+      failRootPreflight();
+    }
+    if (
+      typeof result!.stdout !== 'string' ||
+      typeof result!.stderr !== 'string' ||
+      result!.stdout !== WINDOWS_PRIVATE_OUTPUT_ACL_SUCCESS ||
+      result!.stderr !== ''
+    ) {
+      failRootPreflight();
+    }
+  };
+}
+
+const DEFAULT_WINDOWS_PRIVATE_OUTPUT_ACL_ENFORCER = createWindowsPrivateOutputAclEnforcer();
 
 function failWrite(): never {
   throw new Error(PRIVATE_OUTPUT_WRITE_ERROR);
@@ -167,6 +364,21 @@ export function samePrivateOutputPath(
 
 function isWindowsReservedDeviceName(name: string): boolean {
   return WINDOWS_RESERVED_DEVICE_NAMES.has(name.split('.', 1)[0]!.toUpperCase());
+}
+
+/** Returns whether a name is an allowed direct child of a private output root. */
+export function isAllowedDirectChildOutputName(
+  outputName: string,
+  allowedExtensions: ReadonlySet<string>,
+): boolean {
+  return (
+    typeof outputName === 'string' &&
+    OUTPUT_NAME_PATTERN.test(outputName) &&
+    !isWindowsReservedDeviceName(outputName) &&
+    !path.isAbsolute(outputName) &&
+    path.basename(outputName) === outputName &&
+    allowedExtensions.has(path.extname(outputName))
+  );
 }
 
 /**
@@ -244,14 +456,7 @@ function assertConfiguration(config: PrivateOutputWriterConfig): PrivateOutputWr
 }
 
 function assertOutputName(outputName: string, allowedExtensions: ReadonlySet<string>): void {
-  if (
-    typeof outputName !== 'string' ||
-    !OUTPUT_NAME_PATTERN.test(outputName) ||
-    isWindowsReservedDeviceName(outputName) ||
-    path.isAbsolute(outputName) ||
-    path.basename(outputName) !== outputName ||
-    !allowedExtensions.has(path.extname(outputName))
-  ) {
+  if (!isAllowedDirectChildOutputName(outputName, allowedExtensions)) {
     failWrite();
   }
 }
@@ -283,24 +488,43 @@ export async function setPrivateOutputMode(
   target: string,
   mode: number,
   platform: NodeJS.Platform,
+  options: PrivateOutputPermissionOptions = {},
 ): Promise<void> {
-  try {
-    await fileSystem.chmod(target, mode);
-  } catch (error) {
-    if (
-      platform === 'win32' &&
-      ['ENOSYS', 'ENOTSUP', 'EOPNOTSUPP', 'EPERM'].includes(errorCode(error) ?? '')
-    ) {
-      return;
-    }
-    throw error;
-  }
-
-  if (platform !== 'win32') {
-    const entry = await fileSystem.lstat(target);
-    if (entry.isSymbolicLink() || (entry.mode & 0o777) !== mode) {
+  if (platform === 'win32') {
+    try {
+      const entry = await fileSystem.lstat(target);
+      const targetKind = entry.isDirectory()
+        ? ('directory' as const)
+        : entry.isFile()
+          ? ('file' as const)
+          : null;
+      if (
+        entry.isSymbolicLink() ||
+        targetKind === null ||
+        (targetKind === 'directory' && mode !== 0o700) ||
+        (targetKind === 'file' && mode !== 0o600)
+      ) {
+        failRootPreflight();
+      }
+      await (options.windowsPrivateAclEnforcer ?? DEFAULT_WINDOWS_PRIVATE_OUTPUT_ACL_ENFORCER)(
+        target,
+        targetKind,
+      );
+    } catch {
       failRootPreflight();
     }
+    return;
+  }
+
+  try {
+    await fileSystem.chmod(target, mode);
+  } catch {
+    failRootPreflight();
+  }
+
+  const entry = await fileSystem.lstat(target);
+  if (entry.isSymbolicLink() || (entry.mode & 0o777) !== mode) {
+    failRootPreflight();
   }
 }
 
@@ -308,6 +532,7 @@ export async function ensureTrustedPrivateDirectory(
   fileSystem: PrivateOutputRootFileSystem,
   directory: string,
   platform: NodeJS.Platform,
+  options: PrivateOutputPermissionOptions = {},
 ): Promise<void> {
   try {
     await fileSystem.lstat(directory);
@@ -321,7 +546,7 @@ export async function ensureTrustedPrivateDirectory(
   }
 
   await assertTrustedPrivateDirectory(fileSystem, directory, platform);
-  await setPrivateOutputMode(fileSystem, directory, 0o700, platform);
+  await setPrivateOutputMode(fileSystem, directory, 0o700, platform, options);
 }
 
 async function assertIgnoredTrustedPrivateOutputRoot(
@@ -358,8 +583,7 @@ export async function prepareTrustedPrivateOutputRoot(
   const config = assertConfiguration(inputConfig);
   const fileSystem = options.fileSystem ?? LOCAL_FILE_SYSTEM;
   const platform = options.platform ?? process.platform;
-  const verifier =
-    options.verifyIgnoredPrivateOutputDirectory ?? isIgnoredPrivateOutputDirectory;
+  const verifier = options.verifyIgnoredPrivateOutputDirectory ?? isIgnoredPrivateOutputDirectory;
   const canonicalRepoRoot = await canonicalTrustedPrivateRepository(
     fileSystem,
     config.repoRoot,
@@ -368,9 +592,9 @@ export async function prepareTrustedPrivateOutputRoot(
   await assertIgnoredTrustedPrivateOutputRoot({ ...config, repoRoot: canonicalRepoRoot }, verifier);
 
   const privateRoot = path.join(canonicalRepoRoot, '.private');
-  await ensureTrustedPrivateDirectory(fileSystem, privateRoot, platform);
+  await ensureTrustedPrivateDirectory(fileSystem, privateRoot, platform, options);
   const outputRoot = path.join(privateRoot, config.privateDirectoryName);
-  await ensureTrustedPrivateDirectory(fileSystem, outputRoot, platform);
+  await ensureTrustedPrivateDirectory(fileSystem, outputRoot, platform, options);
 
   return { repoRoot: canonicalRepoRoot, privateRoot, outputRoot, platform };
 }
@@ -382,8 +606,7 @@ export async function prepareExistingTrustedPrivateOutputRoot(
   const config = assertConfiguration(inputConfig);
   const fileSystem = options.fileSystem ?? LOCAL_FILE_SYSTEM;
   const platform = options.platform ?? process.platform;
-  const verifier =
-    options.verifyIgnoredPrivateOutputDirectory ?? isIgnoredPrivateOutputDirectory;
+  const verifier = options.verifyIgnoredPrivateOutputDirectory ?? isIgnoredPrivateOutputDirectory;
   const canonicalRepoRoot = await canonicalTrustedPrivateRepository(
     fileSystem,
     config.repoRoot,
@@ -394,9 +617,9 @@ export async function prepareExistingTrustedPrivateOutputRoot(
   const privateRoot = path.join(canonicalRepoRoot, '.private');
   const outputRoot = path.join(privateRoot, config.privateDirectoryName);
   await assertTrustedPrivateDirectory(fileSystem, privateRoot, platform);
-  await setPrivateOutputMode(fileSystem, privateRoot, 0o700, platform);
+  await setPrivateOutputMode(fileSystem, privateRoot, 0o700, platform, options);
   await assertTrustedPrivateDirectory(fileSystem, outputRoot, platform);
-  await setPrivateOutputMode(fileSystem, outputRoot, 0o700, platform);
+  await setPrivateOutputMode(fileSystem, outputRoot, 0o700, platform, options);
 
   return { repoRoot: canonicalRepoRoot, privateRoot, outputRoot, platform };
 }
@@ -426,17 +649,15 @@ async function revalidateTrustedPrivateRoot(
   outputPath: string,
   platform: NodeJS.Platform,
   verifier: PrivateOutputRootVerifier | undefined,
+  windowsPrivateAclEnforcer: PrivateOutputWindowsAclEnforcer | undefined,
 ): Promise<void> {
   const revalidated = await prepareExistingTrustedPrivateOutputRoot(config, {
     fileSystem,
     platform,
     verifyIgnoredPrivateOutputDirectory: verifier,
+    windowsPrivateAclEnforcer,
   });
-  const revalidatedOutputPath = directOutputPath(
-    revalidated.outputRoot,
-    outputName,
-    platform,
-  );
+  const revalidatedOutputPath = directOutputPath(revalidated.outputRoot, outputName, platform);
   if (
     !samePrivateOutputPath(revalidated.repoRoot, expected.repoRoot, platform) ||
     !samePrivateOutputPath(revalidated.privateRoot, expected.privateRoot, platform) ||
@@ -468,17 +689,15 @@ async function revalidateTrustedPrivateInputRoot(
   inputPath: string,
   platform: NodeJS.Platform,
   verifier: PrivateOutputRootVerifier | undefined,
+  windowsPrivateAclEnforcer: PrivateOutputWindowsAclEnforcer | undefined,
 ): Promise<void> {
   const revalidated = await prepareExistingTrustedPrivateOutputRoot(config, {
     fileSystem,
     platform,
     verifyIgnoredPrivateOutputDirectory: verifier,
+    windowsPrivateAclEnforcer,
   });
-  const revalidatedInputPath = directOutputPath(
-    revalidated.outputRoot,
-    inputName,
-    platform,
-  );
+  const revalidatedInputPath = directOutputPath(revalidated.outputRoot, inputName, platform);
   if (
     !samePrivateOutputPath(revalidated.repoRoot, expected.repoRoot, platform) ||
     !samePrivateOutputPath(revalidated.privateRoot, expected.privateRoot, platform) ||
@@ -502,6 +721,7 @@ export function createPrivateInputReader(
   const fileSystem = options.fileSystem ?? LOCAL_FILE_SYSTEM;
   const platform = options.platform ?? process.platform;
   const verifier = options.verifyIgnoredPrivateOutputDirectory;
+  const windowsPrivateAclEnforcer = options.windowsPrivateAclEnforcer;
   const allowedExtensions = new Set(config.allowedExtensions);
 
   return {
@@ -512,9 +732,13 @@ export function createPrivateInputReader(
           fileSystem,
           platform,
           verifyIgnoredPrivateOutputDirectory: verifier,
+          windowsPrivateAclEnforcer,
         });
         const inputPath = directOutputPath(trustedRoot.outputRoot, inputName, platform);
         await assertSafeExistingInputTarget(fileSystem, inputPath, platform);
+        await setPrivateOutputMode(fileSystem, inputPath, 0o600, platform, {
+          windowsPrivateAclEnforcer,
+        });
         await revalidateTrustedPrivateInputRoot(
           fileSystem,
           config,
@@ -523,6 +747,7 @@ export function createPrivateInputReader(
           inputPath,
           platform,
           verifier,
+          windowsPrivateAclEnforcer,
         );
         const content = await fileSystem.readFile(inputPath, 'utf8');
         if (typeof content !== 'string') failRead();
@@ -534,6 +759,7 @@ export function createPrivateInputReader(
           inputPath,
           platform,
           verifier,
+          windowsPrivateAclEnforcer,
         );
         return content;
       } catch {
@@ -555,6 +781,7 @@ export function createPrivateOutputWriter(
   const fileSystem = options.fileSystem ?? LOCAL_FILE_SYSTEM;
   const platform = options.platform ?? process.platform;
   const verifier = options.verifyIgnoredPrivateOutputDirectory;
+  const windowsPrivateAclEnforcer = options.windowsPrivateAclEnforcer;
   const allowedExtensions = new Set(config.allowedExtensions);
 
   return {
@@ -566,6 +793,7 @@ export function createPrivateOutputWriter(
           fileSystem,
           platform,
           verifyIgnoredPrivateOutputDirectory: verifier,
+          windowsPrivateAclEnforcer,
         });
         const outputPath = directOutputPath(trustedRoot.outputRoot, outputName, platform);
         await assertSafeExistingOutputTarget(fileSystem, outputPath, platform);
@@ -577,20 +805,27 @@ export function createPrivateOutputWriter(
           outputPath,
           platform,
           verifier,
+          windowsPrivateAclEnforcer,
         );
 
         temporaryDirectory = await fileSystem.mkdtemp(path.join(trustedRoot.outputRoot, '.tmp-'));
-        if (!samePrivateOutputPath(path.dirname(temporaryDirectory), trustedRoot.outputRoot, platform))
+        if (
+          !samePrivateOutputPath(path.dirname(temporaryDirectory), trustedRoot.outputRoot, platform)
+        )
           failWrite();
         await assertTrustedPrivateDirectory(fileSystem, temporaryDirectory, platform);
-        await setPrivateOutputMode(fileSystem, temporaryDirectory, 0o700, platform);
+        await setPrivateOutputMode(fileSystem, temporaryDirectory, 0o700, platform, {
+          windowsPrivateAclEnforcer,
+        });
 
         const temporaryPath = path.join(temporaryDirectory, outputName);
         if (!samePrivateOutputPath(path.dirname(temporaryPath), temporaryDirectory, platform)) {
           failWrite();
         }
         await fileSystem.writeFile(temporaryPath, content, { mode: 0o600 });
-        await setPrivateOutputMode(fileSystem, temporaryPath, 0o600, platform);
+        await setPrivateOutputMode(fileSystem, temporaryPath, 0o600, platform, {
+          windowsPrivateAclEnforcer,
+        });
         await revalidateTrustedPrivateRoot(
           fileSystem,
           config,
@@ -599,8 +834,23 @@ export function createPrivateOutputWriter(
           outputPath,
           platform,
           verifier,
+          windowsPrivateAclEnforcer,
         );
         await fileSystem.rename(temporaryPath, outputPath);
+        await assertSafeExistingOutputTarget(fileSystem, outputPath, platform);
+        await setPrivateOutputMode(fileSystem, outputPath, 0o600, platform, {
+          windowsPrivateAclEnforcer,
+        });
+        await revalidateTrustedPrivateRoot(
+          fileSystem,
+          config,
+          trustedRoot,
+          outputName,
+          outputPath,
+          platform,
+          verifier,
+          windowsPrivateAclEnforcer,
+        );
         return outputPath;
       } catch {
         throw new Error(PRIVATE_OUTPUT_WRITE_ERROR);

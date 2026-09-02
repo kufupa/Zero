@@ -1,6 +1,7 @@
 import type {
   FormattedLogicalMessages,
   ThreadCorpusAttachmentLocator,
+  ThreadCorpusAttachmentByteStatus,
   ThreadCorpusHydrationInput,
   ThreadCorpusHydrationPayload,
 } from './centurion-thread-corpus-snapshot.js';
@@ -44,6 +45,10 @@ type ValidatedRequest = {
   pdfRunner: SandboxRunner | undefined;
   rawMimeSources: RawMimeSource[];
   storage: Pick<S3Storage, 'getObjectBounded'>;
+  retainAttachmentBytes: boolean;
+  retainRawMime: boolean;
+  decorativeAttachmentIds: ReadonlySet<string>;
+  attachmentConcurrency: number;
 };
 
 type BoundedResult<T> =
@@ -58,6 +63,7 @@ type RawMimeResult = {
 
 type AttachmentResult = {
   payload: Extract<ThreadCorpusHydrationPayload, { kind: 'attachment_text' }>;
+  bytePayload?: Extract<ThreadCorpusHydrationPayload, { kind: 'attachment_bytes' }>;
   retainedBytes: number;
 };
 
@@ -102,6 +108,9 @@ const LIMIT_KEYS = [
 ] as const;
 
 type LimitKey = (typeof LIMIT_KEYS)[number];
+
+const DEFAULT_ATTACHMENT_CONCURRENCY = 1;
+const MAX_ATTACHMENT_CONCURRENCY = 8;
 
 function invalidHydrationInput(): never {
   throw new Error(INVALID_INPUT_ERROR);
@@ -150,18 +159,26 @@ function cloneLocator(locator: ThreadCorpusAttachmentLocator): ThreadCorpusAttac
     s3Key: locator.s3Key,
     mimeType: locator.mimeType,
     sizeBytes: locator.sizeBytes,
+    ...(locator.filename !== undefined ? { filename: locator.filename } : {}),
+    ...(locator.inline !== undefined ? { inline: locator.inline } : {}),
+    ...(locator.contentId !== undefined ? { contentId: locator.contentId } : {}),
   };
 }
 
 function isAttachmentLocator(value: unknown): value is ThreadCorpusAttachmentLocator {
   return (
     isRecord(value) &&
-    hasExactKeys(value, ['attachmentId', 'messageId', 's3Key', 'mimeType', 'sizeBytes']) &&
+    (Object.keys(value).every((key) =>
+      ['attachmentId', 'messageId', 's3Key', 'mimeType', 'sizeBytes', 'filename', 'inline', 'contentId'].includes(key),
+    )) &&
     isNonEmptyString(value.attachmentId) &&
     isNonEmptyString(value.messageId) &&
     isNonEmptyString(value.s3Key) &&
     typeof value.mimeType === 'string' &&
-    isNonNegativeSafeInteger(value.sizeBytes)
+    isNonNegativeSafeInteger(value.sizeBytes) &&
+    (value.filename === undefined || typeof value.filename === 'string') &&
+    (value.inline === undefined || value.inline === true || value.inline === false || value.inline === 'unknown' || value.inline === 'inline_unknown') &&
+    (value.contentId === undefined || value.contentId === null || typeof value.contentId === 'string')
   );
 }
 
@@ -171,15 +188,21 @@ function isAttachmentDescriptor(value: unknown): value is {
   filename: string;
   contentType: string;
   byteSize: number;
+  inline?: boolean | 'unknown' | 'inline_unknown';
+  contentId?: string | null;
 } {
   return (
     isRecord(value) &&
-    hasExactKeys(value, ['id', 'messageId', 'filename', 'contentType', 'byteSize']) &&
+    (Object.keys(value).every((key) =>
+      ['id', 'messageId', 'filename', 'contentType', 'byteSize', 'inline', 'contentId'].includes(key),
+    )) &&
     isNonEmptyString(value.id) &&
     isNonEmptyString(value.messageId) &&
     typeof value.filename === 'string' &&
     typeof value.contentType === 'string' &&
-    isNonNegativeSafeInteger(value.byteSize)
+    isNonNegativeSafeInteger(value.byteSize) &&
+    (value.inline === undefined || value.inline === true || value.inline === false || value.inline === 'unknown' || value.inline === 'inline_unknown') &&
+    (value.contentId === undefined || value.contentId === null || typeof value.contentId === 'string')
   );
 }
 
@@ -289,10 +312,13 @@ function waitFor(milliseconds: number): Promise<'grace_elapsed'> {
 async function runBounded<T>(
   operation: (signal: AbortSignal) => Promise<T>,
   limits: ThreadCorpusHydrationLimits,
+  parentSignal?: AbortSignal,
 ): Promise<BoundedResult<T>> {
   const controller = new AbortController();
   const deadlineSignal = AbortSignal.timeout(limits.perObjectTimeoutMs);
-  const signal = AbortSignal.any([controller.signal, deadlineSignal]);
+  const signal = AbortSignal.any(
+    parentSignal ? [controller.signal, deadlineSignal, parentSignal] : [controller.signal, deadlineSignal],
+  );
   const pending = Promise.resolve().then(() => operation(signal));
   void pending.catch(() => undefined);
   const settled = pending.then(
@@ -306,8 +332,24 @@ async function runBounded<T>(
     }
     deadlineSignal.addEventListener('abort', () => resolve('deadline_elapsed'), { once: true });
   });
-  const first = await Promise.race([settled, deadline]);
-  if (first !== 'deadline_elapsed' && !deadlineSignal.aborted) return first;
+  const parentAbort = parentSignal
+    ? new Promise<'parent_aborted'>((resolve) => {
+        if (parentSignal.aborted) {
+          resolve('parent_aborted');
+          return;
+        }
+        parentSignal.addEventListener('abort', () => resolve('parent_aborted'), { once: true });
+      })
+    : new Promise<'parent_aborted'>(() => undefined);
+  const first = await Promise.race([settled, deadline, parentAbort]);
+  if (
+    first !== 'deadline_elapsed' &&
+    first !== 'parent_aborted' &&
+    !deadlineSignal.aborted &&
+    !parentSignal?.aborted
+  ) {
+    return first;
+  }
 
   controller.abort();
   const afterAbort = await Promise.race([settled, waitFor(limits.perObjectAbortGraceMs)]);
@@ -348,6 +390,39 @@ function attachmentPayload(
   };
 }
 
+const DECORATIVE_IMAGE_NAME_PATTERN =
+  /(?:logo|banner|signature|tracking|pixel|spacer|icon|favicon|beacon|footer|social|unsubscribe)/i;
+const GENERIC_IMAGE_NAME_PATTERN = /^(?:image|img|logo|banner|spacer|pixel|cid)(?:[-_ .]?[0-9]+)?(?:\.[a-z0-9]+)?$/i;
+
+function isLikelyDecorativeImage(locator: ThreadCorpusAttachmentLocator, filenameCount: number): boolean {
+  if (!normalizeMimeToken(locator.mimeType).startsWith('image/')) return false;
+  if (locator.inline === true || (typeof locator.contentId === 'string' && locator.contentId.trim())) {
+    return true;
+  }
+  const filename = typeof locator.filename === 'string' ? locator.filename.trim() : '';
+  if (!filename) return false;
+  return DECORATIVE_IMAGE_NAME_PATTERN.test(filename) ||
+    (filenameCount >= 20 && GENERIC_IMAGE_NAME_PATTERN.test(filename));
+}
+
+function resolveAttachmentConcurrency(value: unknown): number {
+  if (value === undefined) return DEFAULT_ATTACHMENT_CONCURRENCY;
+  if (
+    !isPositiveSafeInteger(value) ||
+    value > MAX_ATTACHMENT_CONCURRENCY
+  ) {
+    return invalidHydrationInput();
+  }
+  return value;
+}
+
+function attachmentBytesPayload(
+  attachmentId: string,
+  status: Exclude<ThreadCorpusAttachmentByteStatus, 'available'>,
+): Extract<ThreadCorpusHydrationPayload, { kind: 'attachment_bytes' }> {
+  return { kind: 'attachment_bytes', attachmentId, status };
+}
+
 function availableAttachmentText(
   attachmentId: string,
   text: string,
@@ -385,7 +460,13 @@ function validatedRequest(input: unknown): ValidatedRequest {
       typeof input.storage.getObjectBounded !== 'function' ||
       !Array.isArray(input.attachmentLocators) ||
       (input.pdfRunner !== undefined && typeof input.pdfRunner !== 'function') ||
-      (input.pdfExtractor !== undefined && typeof input.pdfExtractor !== 'function')
+      (input.pdfExtractor !== undefined && typeof input.pdfExtractor !== 'function') ||
+      (input.retainAttachmentBytes !== undefined &&
+        typeof input.retainAttachmentBytes !== 'boolean') ||
+      (input.retainRawMime !== undefined && typeof input.retainRawMime !== 'boolean') ||
+      (input.attachmentConcurrency !== undefined &&
+        (!isPositiveSafeInteger(input.attachmentConcurrency) ||
+          input.attachmentConcurrency > MAX_ATTACHMENT_CONCURRENCY))
     ) {
       return invalidHydrationInput();
     }
@@ -397,7 +478,14 @@ function validatedRequest(input: unknown): ValidatedRequest {
     const rawMimeSources: RawMimeSource[] = [];
     const attachmentDescriptors = new Map<
       string,
-      { messageId: string; contentType: string; byteSize: number }
+      {
+        messageId: string;
+        filename: string;
+        contentType: string;
+        byteSize: number;
+        inline?: boolean | 'unknown' | 'inline_unknown';
+        contentId?: string | null;
+      }
     >();
 
     for (const sourceRow of sourceRows) {
@@ -443,8 +531,11 @@ function validatedRequest(input: unknown): ValidatedRequest {
         }
         attachmentDescriptors.set(descriptor.id, {
           messageId: descriptor.messageId,
+          filename: descriptor.filename,
           contentType: descriptor.contentType,
           byteSize: descriptor.byteSize,
+          ...(descriptor.inline !== undefined ? { inline: descriptor.inline } : {}),
+          ...(descriptor.contentId !== undefined ? { contentId: descriptor.contentId } : {}),
         });
       }
     }
@@ -463,6 +554,9 @@ function validatedRequest(input: unknown): ValidatedRequest {
       if (
         !descriptor ||
         descriptor.messageId !== locator.messageId ||
+        (locator.filename !== undefined && descriptor.filename !== locator.filename) ||
+        (locator.inline !== undefined && descriptor.inline !== locator.inline) ||
+        (locator.contentId !== undefined && descriptor.contentId !== locator.contentId) ||
         descriptor.contentType !== locator.mimeType ||
         descriptor.byteSize !== locator.sizeBytes
       ) {
@@ -472,6 +566,24 @@ function validatedRequest(input: unknown): ValidatedRequest {
       attachmentKeys.add(locator.s3Key);
       return cloneLocator(locator);
     });
+    const filenameCounts = new Map<string, number>();
+    for (const locator of attachmentLocators) {
+      if (typeof locator.filename !== 'string' || !locator.filename.trim()) continue;
+      const key = locator.filename.trim().toLowerCase();
+      filenameCounts.set(key, (filenameCounts.get(key) ?? 0) + 1);
+    }
+    const decorativeAttachmentIds = new Set(
+      attachmentLocators
+        .filter((locator) =>
+          isLikelyDecorativeImage(
+            locator,
+            typeof locator.filename === 'string'
+              ? filenameCounts.get(locator.filename.trim().toLowerCase()) ?? 0
+              : 0,
+          ),
+        )
+        .map((locator) => locator.attachmentId),
+    );
 
     return {
       attachmentLocators: attachmentLocators.sort(
@@ -487,6 +599,10 @@ function validatedRequest(input: unknown): ValidatedRequest {
         compareText(left.sourceRowId, right.sourceRowId),
       ),
       storage: input.storage as Pick<S3Storage, 'getObjectBounded'>,
+      retainAttachmentBytes: input.retainAttachmentBytes === true,
+      retainRawMime: input.retainRawMime !== false,
+      decorativeAttachmentIds,
+      attachmentConcurrency: resolveAttachmentConcurrency(input.attachmentConcurrency),
     };
   } catch {
     return invalidHydrationInput();
@@ -540,46 +656,103 @@ async function hydrateAttachment(
   limits: ThreadCorpusHydrationLimits,
   pdfRunner: SandboxRunner | undefined,
   pdfExtractor: typeof extractEmbeddedPdfText,
+  retainAttachmentBytes: boolean,
+  skipStorageRead: boolean,
+  parentSignal?: AbortSignal,
 ): Promise<AttachmentResult> {
-  if (!isAttachmentKey(locator)) return attachmentPayload(locator.attachmentId, 'read_failed');
+  const failed = (
+    textStatus: Exclude<
+      Extract<ThreadCorpusHydrationPayload, { kind: 'attachment_text' }>['status'],
+      'available'
+    >,
+    byteStatus: Exclude<ThreadCorpusAttachmentByteStatus, 'available'> =
+      textStatus === 'parser_failure'
+        ? 'read_failed'
+        : (textStatus as Exclude<ThreadCorpusAttachmentByteStatus, 'available'>),
+  ): AttachmentResult => ({
+    payload: attachmentPayload(locator.attachmentId, textStatus).payload,
+    ...(retainAttachmentBytes
+      ? { bytePayload: attachmentBytesPayload(locator.attachmentId, byteStatus) }
+      : {}),
+    retainedBytes: 0,
+  });
+
+  if (!isAttachmentKey(locator)) return failed('read_failed');
+  if (skipStorageRead) return failed('unsupported', 'unsupported');
   const declaredMime = normalizeMimeToken(locator.mimeType);
-  if (declaredMime !== 'text/plain' && declaredMime !== 'application/pdf') {
-    return attachmentPayload(locator.attachmentId, 'unsupported');
+  const isPdf = declaredMime === 'application/pdf';
+  const isImage = declaredMime.startsWith('image/');
+  if (declaredMime !== 'text/plain' && !isPdf && !isImage) {
+    return failed('unsupported', 'unsupported');
+  }
+  if (isImage && !retainAttachmentBytes) {
+    return failed('unsupported', 'unsupported');
   }
   if (locator.sizeBytes > limits.maxAttachmentInputBytes) {
-    return attachmentPayload(locator.attachmentId, 'too_large');
+    return failed('too_large');
   }
-  if (remainingBytes <= 0) return attachmentPayload(locator.attachmentId, 'budget_exhausted');
+  if (remainingBytes <= 0) return failed('budget_exhausted');
 
   const bounded = await runBounded(
     (signal) => storage.getObjectBounded(locator.s3Key, limits.maxAttachmentInputBytes, signal),
     limits,
+    parentSignal,
   );
-  if (bounded.state === 'deadline') return attachmentPayload(locator.attachmentId, 'timeout');
+  if (bounded.state === 'deadline') return failed('timeout');
   if (bounded.state === 'rejected') {
     if (bounded.error instanceof S3ObjectTooLargeError) {
-      return attachmentPayload(locator.attachmentId, 'too_large');
+      return failed('too_large');
     }
-    return attachmentPayload(
-      locator.attachmentId,
-      isAbortError(bounded.error) ? 'timeout' : 'read_failed',
-    );
+    return failed(isAbortError(bounded.error) ? 'timeout' : 'read_failed');
   }
-  if (bounded.value === null) return attachmentPayload(locator.attachmentId, 'expired_or_missing');
+  if (bounded.value === null) return failed('expired_or_missing');
 
   const body = bytesFrom(bounded.value.body);
   if (body === null || body.byteLength !== locator.sizeBytes) {
-    return attachmentPayload(locator.attachmentId, 'malformed');
+    return failed('malformed');
+  }
+  if ((isPdf || isImage) && body.byteLength === 0) {
+    return failed('malformed', 'malformed');
   }
   const objectMime = normalizeMimeToken(bounded.value.contentType);
-  if (objectMime !== declaredMime) return attachmentPayload(locator.attachmentId, 'unsupported');
+  if (objectMime !== declaredMime) return failed('unsupported', 'unsupported');
+  const retainedByteContent =
+    retainAttachmentBytes &&
+    (isPdf || isImage) &&
+    body.byteLength <= remainingBytes;
+  const bytePayload = retainAttachmentBytes
+    ? !isPdf && !isImage
+      ? attachmentBytesPayload(locator.attachmentId, 'unsupported')
+      : retainedByteContent
+      ? {
+          kind: 'attachment_bytes' as const,
+          attachmentId: locator.attachmentId,
+          status: 'available' as const,
+          content: body,
+        }
+      : attachmentBytesPayload(locator.attachmentId, 'budget_exhausted')
+    : undefined;
+  const bytesRetained = retainedByteContent ? body.byteLength : 0;
+  const remainingAfterBytes = remainingBytes - bytesRetained;
   if (declaredMime === 'text/plain') {
-    return availableAttachmentText(
+    const textResult = availableAttachmentText(
       locator.attachmentId,
       Buffer.from(body).toString('utf8'),
-      remainingBytes,
+      remainingAfterBytes,
       limits,
     );
+    return {
+      ...textResult,
+      ...(bytePayload ? { bytePayload } : {}),
+      retainedBytes: textResult.retainedBytes + bytesRetained,
+    };
+  }
+  if (isImage) {
+    return {
+      payload: attachmentPayload(locator.attachmentId, 'unsupported').payload,
+      ...(bytePayload ? { bytePayload } : {}),
+      retainedBytes: bytesRetained,
+    };
   }
 
   const extracted = await runBounded(
@@ -596,36 +769,167 @@ async function hydrateAttachment(
           signal,
           attachmentId: locator.attachmentId,
         },
-      ),
+    ),
     limits,
+    parentSignal,
   );
-  if (extracted.state === 'deadline') return attachmentPayload(locator.attachmentId, 'timeout');
+  if (extracted.state === 'deadline') {
+    return {
+      ...failed('timeout'),
+      ...(bytePayload ? { bytePayload } : {}),
+      retainedBytes: bytesRetained,
+    };
+  }
   if (extracted.state === 'rejected') {
-    return attachmentPayload(
-      locator.attachmentId,
-      isAbortError(extracted.error) ? 'timeout' : 'parser_failure',
-    );
+    const result = failed(isAbortError(extracted.error) ? 'timeout' : 'parser_failure');
+    return {
+      ...result,
+      ...(bytePayload ? { bytePayload } : {}),
+      retainedBytes: bytesRetained,
+    };
   }
 
   const data = extracted.value?.data;
   if (!data || typeof data.reason !== 'string') {
-    return attachmentPayload(locator.attachmentId, 'parser_failure');
+    const result = failed('parser_failure');
+    return {
+      ...result,
+      ...(bytePayload ? { bytePayload } : {}),
+      retainedBytes: bytesRetained,
+    };
   }
   if (data.reason === 'text') {
-    if (typeof data.text !== 'string')
-      return attachmentPayload(locator.attachmentId, 'parser_failure');
-    return availableAttachmentText(locator.attachmentId, data.text, remainingBytes, limits);
+    if (typeof data.text !== 'string') {
+      const result = failed('parser_failure');
+      return {
+        ...result,
+        ...(bytePayload ? { bytePayload } : {}),
+        retainedBytes: bytesRetained,
+      };
+    }
+    const result = availableAttachmentText(
+      locator.attachmentId,
+      data.text,
+      remainingAfterBytes,
+      limits,
+    );
+    return {
+      ...result,
+      ...(bytePayload ? { bytePayload } : {}),
+      retainedBytes: result.retainedBytes + bytesRetained,
+    };
   }
   if (ATTACHMENT_TEXT_STATUSES.has(data.reason)) {
-    return attachmentPayload(
+    const result = attachmentPayload(
       locator.attachmentId,
       data.reason as Exclude<
         Extract<ThreadCorpusHydrationPayload, { kind: 'attachment_text' }>['status'],
         'available'
       >,
     );
+    return {
+      ...result,
+      ...(bytePayload ? { bytePayload } : {}),
+      retainedBytes: bytesRetained,
+    };
   }
-  return attachmentPayload(locator.attachmentId, 'parser_failure');
+  const result = failed('parser_failure');
+  return {
+    ...result,
+    ...(bytePayload ? { bytePayload } : {}),
+    retainedBytes: bytesRetained,
+  };
+}
+
+function applyAttachmentBudget(result: AttachmentResult, remainingBytes: number): AttachmentResult {
+  let remaining = Math.max(0, remainingBytes);
+  let retained = 0;
+  let bytePayload = result.bytePayload;
+  if (bytePayload?.status === 'available') {
+    const content = bytePayload.content;
+    if (!content || content.byteLength === 0) {
+      bytePayload = attachmentBytesPayload(bytePayload.attachmentId, 'malformed');
+    } else if (content.byteLength > remaining) {
+      bytePayload = attachmentBytesPayload(bytePayload.attachmentId, 'budget_exhausted');
+    } else {
+      retained += content.byteLength;
+      remaining -= content.byteLength;
+    }
+  }
+
+  let payload = result.payload;
+  if (payload.status === 'available') {
+    const content = payload.content;
+    if (!content || content.byteLength === 0) {
+      payload = attachmentPayload(payload.attachmentId, 'no_embedded_text').payload;
+    } else if (content.byteLength > remaining) {
+      payload = attachmentPayload(payload.attachmentId, 'budget_exhausted').payload;
+    } else {
+      retained += content.byteLength;
+    }
+  }
+
+  return {
+    payload,
+    ...(bytePayload ? { bytePayload } : {}),
+    retainedBytes: retained,
+  };
+}
+
+async function hydrateAttachments(
+  request: ValidatedRequest,
+  initialRetainedBytes: number,
+): Promise<{ results: AttachmentResult[]; retainedBytes: number }> {
+  const results: AttachmentResult[] = [];
+  let retainedBytes = initialRetainedBytes;
+  const hydrationLocators = [...request.attachmentLocators].sort(
+    (left, right) =>
+      Number(request.decorativeAttachmentIds.has(left.attachmentId)) -
+        Number(request.decorativeAttachmentIds.has(right.attachmentId)) ||
+      Number(normalizeMimeToken(left.mimeType).startsWith('image/')) -
+        Number(normalizeMimeToken(right.mimeType).startsWith('image/')) ||
+      compareText(left.messageId, right.messageId) ||
+      compareText(left.attachmentId, right.attachmentId),
+  );
+  for (let index = 0; index < hydrationLocators.length; ) {
+    const remainingBytes = request.limits.maxTotalArtifactBytes - retainedBytes;
+    const batch = hydrationLocators.slice(
+      index,
+      index + request.attachmentConcurrency,
+    );
+    const stopController = new AbortController();
+    const batchPromises = batch.map((locator) =>
+      hydrateAttachment(
+        locator,
+        request.storage,
+        remainingBytes,
+        request.limits,
+        request.pdfRunner,
+        request.pdfExtractor,
+        request.retainAttachmentBytes,
+        request.decorativeAttachmentIds.has(locator.attachmentId),
+        stopController.signal,
+      ),
+    );
+    let batchResults: AttachmentResult[];
+    try {
+      batchResults = await Promise.all(batchPromises);
+    } catch (error) {
+      stopController.abort();
+      await Promise.allSettled(batchPromises);
+      throw error;
+    }
+    for (const result of batchResults) {
+      const budgeted = applyAttachmentBudget(
+        result,
+        request.limits.maxTotalArtifactBytes - retainedBytes,
+      );
+      retainedBytes += budgeted.retainedBytes;
+      results.push(budgeted);
+    }
+    index += batch.length;
+  }
+  return { results, retainedBytes };
 }
 
 /**
@@ -638,40 +942,40 @@ export async function hydrateThreadCorpusArtifacts(input: {
   limits?: Partial<ThreadCorpusHydrationLimits>;
   pdfRunner?: SandboxRunner;
   pdfExtractor?: typeof extractEmbeddedPdfText;
+  retainAttachmentBytes?: boolean;
+  retainRawMime?: boolean;
+  attachmentConcurrency?: number;
 }): Promise<ThreadCorpusHydrationInput> {
   const request = validatedRequest(input);
   let retainedBytes = 0;
   const payloads: ThreadCorpusHydrationPayload[] = [];
 
   for (const source of request.rawMimeSources) {
-    const result = await hydrateRawMime(
-      source,
-      request.storage,
-      request.limits.maxTotalArtifactBytes - retainedBytes,
-      request.limits,
-    );
-    if (source.status === 'available' && result.payload.status !== 'available') {
+    const result = request.retainRawMime
+      ? await hydrateRawMime(
+          source,
+          request.storage,
+          request.limits.maxTotalArtifactBytes - retainedBytes,
+          request.limits,
+        )
+      : rawMimePayload(source.sourceRowId, 'budget_exhausted');
+    if (request.retainRawMime && source.status === 'available' && result.payload.status !== 'available') {
       return invalidHydrationInput();
     }
     retainedBytes += result.retainedBytes;
     payloads.push(result.payload);
   }
 
-  for (const locator of request.attachmentLocators) {
-    const result = await hydrateAttachment(
-      locator,
-      request.storage,
-      request.limits.maxTotalArtifactBytes - retainedBytes,
-      request.limits,
-      request.pdfRunner,
-      request.pdfExtractor,
-    );
-    retainedBytes += result.retainedBytes;
+  const attachments = await hydrateAttachments(request, retainedBytes);
+  retainedBytes = attachments.retainedBytes;
+  for (const result of attachments.results) {
     payloads.push(result.payload);
+    if (result.bytePayload) payloads.push(result.bytePayload);
   }
 
   return {
     attachmentLocators: request.attachmentLocators.map(cloneLocator),
+    ...(request.retainRawMime ? {} : { retainRawMime: false }),
     payloads: payloads.sort((left, right) => {
       const kindOrder = compareText(left.kind, right.kind);
       if (kindOrder !== 0) return kindOrder;

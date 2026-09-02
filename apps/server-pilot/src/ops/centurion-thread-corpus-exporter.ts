@@ -40,6 +40,7 @@ export type ThreadCorpusExportSafeResult = {
 };
 
 const SAFE_SUMMARY_COUNT_KEYS = ['includedMessageCount', 'sourceRowCount', 'threadCount'] as const;
+const OPTIONAL_SAFE_SUMMARY_COUNT_KEYS = ['malformedAttachmentDescriptorCount'] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -75,6 +76,12 @@ function hasCoherentLoadResult(result: ThreadCorpusSnapshotLoadResult): boolean 
     const summary = candidate.safeSummary;
     if (summary.asOf !== candidate.asOf) return false;
     if (SAFE_SUMMARY_COUNT_KEYS.some((key) => !isNonNegativeSafeInteger(summary[key]))) {
+      return false;
+    }
+    if (
+      Object.hasOwn(summary, OPTIONAL_SAFE_SUMMARY_COUNT_KEYS[0]) &&
+      !isNonNegativeSafeInteger(summary.malformedAttachmentDescriptorCount)
+    ) {
       return false;
     }
     return true;
@@ -113,6 +120,9 @@ function cloneSafeSummary(
     includedMessageCount: summary.includedMessageCount,
     sourceRowCount: summary.sourceRowCount,
     threadCount: summary.threadCount,
+    ...(summary.malformedAttachmentDescriptorCount === undefined
+      ? {}
+      : { malformedAttachmentDescriptorCount: summary.malformedAttachmentDescriptorCount }),
   };
 }
 

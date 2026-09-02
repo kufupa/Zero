@@ -352,8 +352,16 @@ const localPrivateArtifactFileSystem: PrivateArtifactFileSystem = {
   realpath,
   rename,
   rm,
+  stat,
   writeFile,
 };
+
+const testWindowsAclOptions =
+  process.platform === 'win32'
+    ? {
+        windowsPrivateAclEnforcer: async () => undefined,
+      }
+    : {};
 
 async function withTemporaryRepo<T>(run: (root: string) => Promise<T>): Promise<T> {
   const root = await mkdtemp(path.join(tmpdir(), 'connected-mailbox-corpus-'));
@@ -368,6 +376,7 @@ function createTestPublisher(
   fileSystem: PrivateArtifactFileSystem = localPrivateArtifactFileSystem,
 ) {
   return createPrivateThreadCorpusPublisher(fileSystem, {
+    ...testWindowsAclOptions,
     verifyIgnoredPrivateOutputDirectory: (_repoRoot, privateDirectoryName) =>
       privateDirectoryName === 'connected-mailbox-corpus',
   });
@@ -755,13 +764,16 @@ describe('private snapshot publication', () => {
     const fixture = sealedArtifactFixture();
     await withTemporaryRepo(async (temporaryRoot) => {
       let mkdirCalls = 0;
-      const publisher = createPrivateThreadCorpusPublisher({
-        ...localPrivateArtifactFileSystem,
-        async mkdir(...args: Parameters<typeof mkdir>) {
-          mkdirCalls += 1;
-          return mkdir(...args);
+      const publisher = createPrivateThreadCorpusPublisher(
+        {
+          ...localPrivateArtifactFileSystem,
+          async mkdir(...args: Parameters<typeof mkdir>) {
+            mkdirCalls += 1;
+            return mkdir(...args);
+          },
         },
-      });
+        testWindowsAclOptions,
+      );
 
       await expect(
         publisher({
@@ -792,6 +804,7 @@ describe('private snapshot publication', () => {
           },
         },
         {
+          ...testWindowsAclOptions,
           verifyIgnoredPrivateOutputDirectory: () => {
             verifierCalls += 1;
             return verifierCalls < 4;
@@ -811,6 +824,40 @@ describe('private snapshot publication', () => {
         'Private corpus output root must be an ignored direct child of a Git repository',
       );
       expect(verifierCalls).toBe(4);
+      expect(writeCalls).toBe(0);
+    });
+  });
+
+  it('fails before snapshot content writes when Windows ACL enforcement rejects', async () => {
+    const fixture = sealedArtifactFixture();
+    await withTemporaryRepo(async (temporaryRoot) => {
+      let writeCalls = 0;
+      const publisher = createPrivateThreadCorpusPublisher(
+        {
+          ...localPrivateArtifactFileSystem,
+          async writeFile(...args: Parameters<typeof writeFile>) {
+            writeCalls += 1;
+            return writeFile(...args);
+          },
+        },
+        {
+          platform: 'win32',
+          verifyIgnoredPrivateOutputDirectory: () => true,
+          windowsPrivateAclEnforcer: async () => {
+            throw new Error('mismatch');
+          },
+        } as unknown as Parameters<typeof createPrivateThreadCorpusPublisher>[1],
+      );
+
+      await expect(
+        publisher({
+          repoRoot: temporaryRoot,
+          outDir: path.join(temporaryRoot, '.private', 'connected-mailbox-corpus', 'snapshot'),
+          context: snapshotContext(),
+          formatted: fixture.formatted,
+          hydration: fixture.hydration,
+        }),
+      ).rejects.toThrow(/^Private output root preflight failed$/);
       expect(writeCalls).toBe(0);
     });
   });
@@ -1325,6 +1372,52 @@ describe('active transport snapshot loader', () => {
     }
   });
 
+  it('preserves draft history while counting distinct drafts and revisions', async () => {
+    const revisionLinks: ThreadCorpusDraftRevisionLink[] = [
+      { messageId: 'message-a', draftId: 'draft-a', revisionId: 'revision-created' },
+      { messageId: 'message-a', draftId: 'draft-a', revisionId: 'revision-edited' },
+      { messageId: 'message-a', draftId: 'draft-a', revisionId: 'revision-sent' },
+    ];
+    const { reader } = createSyntheticSnapshotReader({
+      messages: [messageRow()],
+      draftRevisionLinks: revisionLinks,
+    });
+
+    const result = await createThreadCorpusSnapshotLoader(reader)();
+    const rows = formattedSourceRows(result.formatted);
+    const snapshot = buildPrivateThreadCorpusSnapshot({
+      context: snapshotContext(),
+      formatted: result.formatted,
+      hydration: { attachmentLocators: [], payloads: [] },
+    });
+
+    expect(rows[0]?.privateMessage?.draftRevisionLinks).toEqual(revisionLinks);
+    expect(snapshot.manifest.counts.drafts).toBe(1);
+    expect(snapshot.manifest.counts.revisions).toBe(3);
+  });
+
+  it('rejects a revision linked to more than one source message', async () => {
+    const { reader } = createSyntheticSnapshotReader({
+      messages: [
+        messageRow(),
+        messageRow({ id: 'message-z', threadId: 'thread-z', messageId: '<message-z@example.test>' }),
+      ],
+      draftRevisionLinks: [
+        { messageId: 'message-a', draftId: 'draft-a', revisionId: 'revision-sent' },
+        { messageId: 'message-z', draftId: 'draft-a', revisionId: 'revision-sent' },
+      ],
+    });
+    const result = await createThreadCorpusSnapshotLoader(reader)();
+
+    expect(() =>
+      buildPrivateThreadCorpusSnapshot({
+        context: snapshotContext(),
+        formatted: result.formatted,
+        hydration: { attachmentLocators: [], payloads: [] },
+      }),
+    ).toThrow('Invalid private snapshot contract');
+  });
+
   it.each([
     {
       description: 'a missing raw source with locator',
@@ -1476,7 +1569,17 @@ function sourceGuardViolations(sourceText: string): string[] {
     [
       'node:fs/promises',
       {
-        named: ['chmod', 'lstat', 'mkdir', 'mkdtemp', 'realpath', 'rename', 'rm', 'stat', 'writeFile'],
+        named: [
+          'chmod',
+          'lstat',
+          'mkdir',
+          'mkdtemp',
+          'realpath',
+          'rename',
+          'rm',
+          'stat',
+          'writeFile',
+        ],
       },
     ],
     ['node:path', { defaultName: 'path' }],
@@ -1491,6 +1594,7 @@ function sourceGuardViolations(sourceText: string): string[] {
           'samePrivateOutputPath',
           'setPrivateOutputMode',
           'PrivateOutputRootVerifier',
+          'PrivateOutputWindowsAclEnforcer',
           'TrustedPrivateOutputRoot',
         ],
       },
@@ -1579,6 +1683,21 @@ describe('snapshot source boundary', () => {
 });
 
 describe('sealed active transport hydration artifacts', () => {
+  it('rejects available raw MIME bytes when raw MIME retention is disabled', () => {
+    const fixture = sealedArtifactFixture();
+
+    expect(() =>
+      buildPrivateThreadCorpusSnapshot({
+        context: snapshotContext(),
+        formatted: fixture.formatted,
+        hydration: {
+          ...fixture.hydration,
+          retainRawMime: false,
+        },
+      }),
+    ).toThrow('Invalid private snapshot contract');
+  });
+
   it('builds deterministic opaque artifact references without locators', () => {
     const fixture = sealedArtifactFixture();
     const context = { ...snapshotContext(), snapshotId: 'artifact-snapshot' };
@@ -1673,7 +1792,8 @@ describe('sealed active transport hydration artifacts', () => {
     );
 
     expect((pendingPrivateMessage.rawMime as JsonObject).status).toBe('budget_exhausted');
-    expect((budgetAttachment?.textArtifact as JsonObject).status).toBe('budget_exhausted');
+    expect(budgetAttachment).toBeDefined();
+    expect((budgetAttachment!.textArtifact as JsonObject).status).toBe('budget_exhausted');
     expect(() =>
       buildPrivateThreadCorpusSnapshot({
         context,

@@ -15,9 +15,10 @@ transport state.
 
 ## Non-negotiable boundaries
 
-- Raw PII must never travel via SSM, terminal, Git, web, remote MCP/API, or docs.
-- No remote raw corpus transfer.
+- Raw PII must never travel via terminal stdout/stderr, Git, web, remote MCP/API, or docs.
+- Approved remote raw-corpus transfer is allowed for this Zero workflow: deployment EC2 may generate the dump, upload it to the approved private encrypted S3 bucket, and coding VPS may download it into the approved local private root.
 - Never send raw mail to a remote model, service, or analysis endpoint.
+- Remote transfer must use only the approved deployment EC2, approved private encrypted bucket, immutable dated object/snapshot path, byte-count plus SHA-256 verification, and local private-root permission checks.
 - Never infer scope from a named source, sender address, owner header, or fallback
   transport.
 - Never use an allow-empty scope. A missing active scope is blocked, not an empty

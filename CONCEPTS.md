@@ -428,6 +428,36 @@ Pilot practice of removing or replacing dead/fake affordances (unavailable AI su
 
 *Avoid: keeping a disabled modal as the primary click target; flipping the whole SPA into frontend-only demo mode to recover demo chrome; conflating this with Compose-close honesty (draft Save/Discard/Keep editing).*
 
+## Connected mailbox commercial analysis
+
+Ops corpus analysis over connected-mailbox exports (not product mail UI). Used for client-facing daily charts and WINDOW commercial KPIs.
+
+### Actionable reservation thread
+
+A reservation-work thread in the analysis denominator: Luna intents for new booking, quote, group/event, or modify, after excluding pure channel confirmation digests and OTA system notices that carry no guest/agent request language. Distinct from the full mailbox thread count and from hotel-category Automated-channel filing in the SPA.
+
+### Trigger inbound
+
+The message chosen as the enquiry anchor for unanswered detection and EPV demand parse. Responders and room-night demand are scored relative to this message, not merely the chronologically first inbound. Distinct from first inbound (received-day axis / early pax-night scripts) and from cross-thread PMS confirm matching.
+
+### Channel-automated inbound
+
+Inbound mail whose sender/obligation is channel or system notice (SynXis confirms/modifications/cancellations, OTA digests, confirmation-letter style automation) rather than a guest, agent, or company request. Must not win Trigger inbound selection for EPV-eligible unanswered scoring.
+
+*Avoid: treating SynXis/OTA confirms as external guest enquiries for uEPV.*
+
+### EPV (Estimated Pipeline Value)
+
+Tiered ZAR proxy for commercial demand on an actionable thread when audited revenue is unavailable: explicit quote totals, currency-context parsed amounts, room-nights × corpus-calibrated ADR, then conservative floors. An estimate for client charts, not booked revenue.
+
+### uEPV
+
+Sum of EPV on unanswered external-enquiry threads (at-risk pipeline). Distinct from rEPV (responded) and from raw unanswered thread counts.
+
+### rEPV
+
+Sum of EPV on responded actionable threads. Distinct from uEPV.
+
 ## Agent workflow (Cursor skills)
 
 ### Nava plan
@@ -468,3 +498,5 @@ Hard override that forbids Vitest (and similar runners) against pilot/production
 - **"spam"** can mean Zimbra/server folder routing, a legacy SPAM user label, or app `spam_at` folder membership — app folder truth is `spam_at` only.
 - **"never-spam"** names the auto-triage allowlist (not a ban on manual mark-spam or ingest block); the same hotel domain list also seeds Image trust defaults — spam auto-path and image-loading are still distinct product surfaces.
 - **"nava URL"** after the hotel-HTTPS cutover means the Canonical origin on hotel DNS/VPN — not `nava.legacy.local` (legacy CORS overlap only).
+- **"SynXis exclusion"** had been applied only at actionable-thread filter — within-thread Trigger inbound can still be a Channel-automated inbound unless selection hard-excludes it; thread filter alone does not protect uEPV.
+- **"first inbound"** is not the same as Trigger inbound — received-day / early demand scripts used first inbound; unanswered EPV must not silently fall back to it when no guest/agent trigger exists.

@@ -21,6 +21,8 @@ const APPROVED_INSTANCE_ID = 'i-008f737974a9ba9b3';
 const PRIVATE_CORPUS_DIRECTORY_NAME = 'connected-mailbox-corpus';
 const CORPUS_PATH_SEGMENTS = ['.private', PRIVATE_CORPUS_DIRECTORY_NAME] as const;
 const EXPORTER_VERSION = 'connected-mailbox-corpus-live-v1';
+const ATTACHMENT_EXPORTER_VERSION = 'connected-mailbox-corpus-live-v2';
+const ATTACHMENT_HYDRATION_CONCURRENCY = 4;
 const IMDS_HOST = '169.254.169.254';
 const IMDS_MAX_RESPONSE_BYTES = 1024;
 const IMDS_TIMEOUT_MS = 1_000;
@@ -30,6 +32,7 @@ const SAFE_SUMMARY_KEYS = [
   'sourceRowCount',
   'threadCount',
 ] as const;
+const OPTIONAL_SAFE_SUMMARY_KEYS = ['malformedAttachmentDescriptorCount'] as const;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 type AllocatedDirectoryRequest = {
@@ -104,6 +107,8 @@ type PreparedExport = {
   storage: Pick<S3Storage, 'getObjectBounded'>;
   exporter: (request: ThreadCorpusExportRequest) => Promise<ThreadCorpusExportSafeResult>;
 };
+
+type ExportMode = 'metadata' | 'attachment-inclusive';
 
 function failPreflight(): never {
   throw new Error('preflight failed');
@@ -304,23 +309,50 @@ function cloneSafeSummary(
   value: unknown,
 ): Pick<
   ThreadCorpusExportSafeResult['summary'],
-  'includedMessageCount' | 'sourceRowCount' | 'threadCount'
+  | 'includedMessageCount'
+  | 'sourceRowCount'
+  | 'threadCount'
+  | 'malformedAttachmentDescriptorCount'
 > {
-  if (!isPlainRecord(value) || !hasExactKeys(value, SAFE_SUMMARY_KEYS)) {
+  if (!isPlainRecord(value)) {
+    return failPreflight();
+  }
+  const hasMalformedCount = Object.hasOwn(
+    value,
+    OPTIONAL_SAFE_SUMMARY_KEYS[0],
+  );
+  if (
+    !hasExactKeys(
+      value,
+      hasMalformedCount
+        ? [...SAFE_SUMMARY_KEYS, ...OPTIONAL_SAFE_SUMMARY_KEYS]
+        : SAFE_SUMMARY_KEYS,
+    )
+  ) {
     return failPreflight();
   }
   const asOf = value.asOf;
   const includedMessageCount = value.includedMessageCount;
   const sourceRowCount = value.sourceRowCount;
   const threadCount = value.threadCount;
+  const malformedAttachmentDescriptorCount = value.malformedAttachmentDescriptorCount;
   if (!isTask7CompatibleIsoTimestamp(asOf)) return failPreflight();
   if (!isNonNegativeSafeInteger(includedMessageCount)) return failPreflight();
   if (!isNonNegativeSafeInteger(sourceRowCount)) return failPreflight();
   if (!isNonNegativeSafeInteger(threadCount)) return failPreflight();
+  if (
+    hasMalformedCount &&
+    !isNonNegativeSafeInteger(malformedAttachmentDescriptorCount)
+  ) {
+    return failPreflight();
+  }
   return {
     includedMessageCount,
     sourceRowCount,
     threadCount,
+    ...(hasMalformedCount
+      ? { malformedAttachmentDescriptorCount }
+      : {}),
   };
 }
 
@@ -329,6 +361,15 @@ function failureJson(code: 'invalid_arguments' | 'preflight_failed' | 'export_fa
     event: 'centurion_thread_corpus_export.failed',
     code,
   })}\n`;
+}
+
+function parseExportMode(args: readonly string[]): ExportMode | null {
+  if (args.length === 0) return 'metadata';
+  if (args.length === 1 && args[0] === '--attachment-inclusive') return 'attachment-inclusive';
+  if (args.length === 2 && args[0] === '--mode' && (args[1] === 'metadata' || args[1] === 'attachment-inclusive')) {
+    return args[1];
+  }
+  return null;
 }
 
 function writeFailure(
@@ -420,7 +461,8 @@ export function createCenturionThreadCorpusLiveExportCommand(
     } catch {
       return writeFailure(dependencies, 'invalid_arguments');
     }
-    if (args.length !== 0) return writeFailure(dependencies, 'invalid_arguments');
+    const mode = parseExportMode(args);
+    if (!mode) return writeFailure(dependencies, 'invalid_arguments');
 
     let prepared: PreparedExport;
     try {
@@ -434,8 +476,13 @@ export function createCenturionThreadCorpusLiveExportCommand(
         repoRoot: prepared.repoRoot,
         outDir: prepared.outDir,
         snapshotId: prepared.snapshotId,
-        exporterVersion: EXPORTER_VERSION,
-        hydration: { storage: prepared.storage },
+        exporterVersion: mode === 'attachment-inclusive' ? ATTACHMENT_EXPORTER_VERSION : EXPORTER_VERSION,
+        hydration: {
+          storage: prepared.storage,
+          retainAttachmentBytes: mode === 'attachment-inclusive',
+          retainRawMime: mode !== 'attachment-inclusive',
+          attachmentConcurrency: ATTACHMENT_HYDRATION_CONCURRENCY,
+        },
       });
       const summary = cloneSafeSummary(result.summary);
       dependencies.validateAllocatedDir({

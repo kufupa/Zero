@@ -20,6 +20,12 @@ import path from 'node:path';
 const AS_OF = '2026-08-25T10:00:00.000Z';
 const CREATED_AT = new Date('2026-08-25T09:00:00.000Z');
 const PRIVATE_MARKER = 'SYNTHETIC_PRIVATE_BODY_MARKER';
+const privateOutputWindowsAclTestOptions =
+  process.platform === 'win32'
+    ? {
+        windowsPrivateAclEnforcer: async () => undefined,
+      }
+    : {};
 
 type FixtureMessage = {
   id: string;
@@ -189,6 +195,53 @@ async function withTemporaryRepo<T>(run: (repoRoot: string) => Promise<T>): Prom
 }
 
 describe('active connected-mailbox triage quality exporter', () => {
+  it('rejects unsafe output before private-root, reader, snapshot, input, or writer setup', async () => {
+    const { calls, reader } = createReaderFixture();
+    const sideEffects: string[] = [];
+    const exporter = createTriageQualityExporter({
+      repoRoot: () => '/synthetic/zero',
+      databaseUrl: () => {
+        sideEffects.push('database-url');
+        return 'postgres://synthetic.invalid/zero';
+      },
+      preflightInputRoot: async () => {
+        sideEffects.push('input-preflight');
+      },
+      preflightOutputRoot: async () => {
+        sideEffects.push('output-preflight');
+      },
+      createReader: () => {
+        sideEffects.push('reader');
+        return reader;
+      },
+      createPrivateInputReader: () => {
+        sideEffects.push('input-reader');
+        return {
+          async read() {
+            sideEffects.push('input-read');
+            return '';
+          },
+        };
+      },
+      createPrivateOutputWriter: () => {
+        sideEffects.push('output-writer');
+        return {
+          async write() {
+            sideEffects.push('output-write');
+            return '';
+          },
+        };
+      },
+    });
+
+    await expect(
+      exporter(['--all-inbound-triggers', '--out', '../outside.jsonl']),
+    ).rejects.toThrow(/private output name is invalid/i);
+
+    expect(sideEffects).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
   it('fails empty active scope before reading raw inputs or publishing output', async () => {
     const harness = createHarness({ activeTransportIds: [] });
 
@@ -358,19 +411,21 @@ describe('active connected-mailbox triage quality exporter', () => {
         repoRoot: () => repoRoot,
         databaseUrl: () => 'postgres://synthetic.invalid/zero',
         preflightInputRoot: async (config) => {
-          await prepareExistingTrustedPrivateOutputRoot(config);
+          await prepareExistingTrustedPrivateOutputRoot(config, privateOutputWindowsAclTestOptions);
         },
         preflightOutputRoot: async (config) => {
-          await prepareTrustedPrivateOutputRoot(config);
+          await prepareTrustedPrivateOutputRoot(config, privateOutputWindowsAclTestOptions);
         },
         createReader: () => reader,
         createPrivateInputReader: (config) =>
           createPrivateInputReader(config, {
             verifyIgnoredPrivateOutputDirectory: () => true,
+            ...privateOutputWindowsAclTestOptions,
           }),
         createPrivateOutputWriter: (config) =>
           createPrivateOutputWriter(config, {
             verifyIgnoredPrivateOutputDirectory: () => true,
+            ...privateOutputWindowsAclTestOptions,
           }),
       });
 
@@ -449,10 +504,10 @@ describe('active connected-mailbox triage quality exporter', () => {
           return 'postgres://synthetic.invalid/zero';
         },
         preflightOutputRoot: async (config) => {
-          await prepareTrustedPrivateOutputRoot(config);
+          await prepareTrustedPrivateOutputRoot(config, privateOutputWindowsAclTestOptions);
         },
         preflightInputRoot: async (config) => {
-          await prepareExistingTrustedPrivateOutputRoot(config);
+          await prepareExistingTrustedPrivateOutputRoot(config, privateOutputWindowsAclTestOptions);
         },
         createReader: () => {
           readerCreations += 1;

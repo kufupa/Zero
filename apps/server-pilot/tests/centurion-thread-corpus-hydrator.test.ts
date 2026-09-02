@@ -431,6 +431,161 @@ describe('hydrateThreadCorpusArtifacts', () => {
     expect(readKeys).not.toContain('attachments/row-att/large.txt');
   });
 
+  it('retains non-empty images only in attachment-inclusive mode and marks zero-byte files malformed', async () => {
+    const storage = new FakeS3Storage('task8-inclusive-edge-cases');
+    const imageKey = 'attachments/row-inclusive/image.png';
+    const zeroPdfKey = 'attachments/row-inclusive/empty.pdf';
+    await storage.putObject({
+      key: imageKey,
+      body: Buffer.from([1, 2, 3]),
+      contentType: 'image/png',
+    });
+    await storage.putObject({
+      key: zeroPdfKey,
+      body: Buffer.alloc(0),
+      contentType: 'application/pdf',
+    });
+    const image = makeLocator('att-image', 'row-inclusive', imageKey, 'image/png', 3);
+    const zeroPdf = makeLocator('att-zero-pdf', 'row-inclusive', zeroPdfKey, 'application/pdf', 0);
+    const formatted = format([
+      makeRow({
+        id: 'row-inclusive',
+        attachments: [
+          makeAttachment(image.attachmentId, image.messageId, image.mimeType, image.sizeBytes),
+          makeAttachment(zeroPdf.attachmentId, zeroPdf.messageId, zeroPdf.mimeType, zeroPdf.sizeBytes),
+        ],
+      }),
+    ]);
+
+    const hydration = await hydrateThreadCorpusArtifacts({
+      formatted,
+      attachmentLocators: [image, zeroPdf],
+      storage,
+      retainAttachmentBytes: true,
+      pdfRunner: pdfRunner({ text: 'should not run for an empty PDF' }),
+    });
+
+    expect(payloadStatus(hydration, 'attachment_text', image.attachmentId)).toBe('unsupported');
+    expect(payloadStatus(hydration, 'attachment_text', zeroPdf.attachmentId)).toBe('malformed');
+    expect(
+      hydration.payloads.find(
+        (payload) => payload.kind === 'attachment_bytes' && payload.attachmentId === image.attachmentId,
+      ),
+    ).toMatchObject({ kind: 'attachment_bytes', status: 'available', content: new Uint8Array([1, 2, 3]) });
+    expect(
+      hydration.payloads.find(
+        (payload) => payload.kind === 'attachment_bytes' && payload.attachmentId === zeroPdf.attachmentId,
+      ),
+    ).toEqual({ kind: 'attachment_bytes', attachmentId: zeroPdf.attachmentId, status: 'malformed' });
+    expect(() =>
+      buildPrivateThreadCorpusSnapshot({
+        context: snapshotContext(),
+        formatted,
+        hydration,
+      }),
+    ).not.toThrow();
+  });
+
+  it('defers raw MIME in attachment-inclusive mode so attachment bytes receive the aggregate budget', async () => {
+    const storage = new FakeS3Storage('task8-attachment-budget-priority');
+    const rawKey = 'raw-mime/row-priority/source.eml';
+    const pdfKey = 'attachments/row-priority/booking.pdf';
+    const pdf = pdfBody('booking');
+    await storage.putObject({
+      key: rawKey,
+      body: Buffer.alloc(64, 7),
+      contentType: 'message/rfc822',
+    });
+    await storage.putObject({
+      key: pdfKey,
+      body: pdf,
+      contentType: 'application/pdf',
+    });
+    const locator = makeLocator(
+      'att-priority-pdf',
+      'row-priority',
+      pdfKey,
+      'application/pdf',
+      pdf.byteLength,
+    );
+    const formatted = format([
+      makeRow({
+        id: 'row-priority',
+        raw: { locator: rawKey, status: 'available' },
+        attachments: [
+          makeAttachment(locator.attachmentId, locator.messageId, locator.mimeType, locator.sizeBytes),
+        ],
+      }),
+    ]);
+
+    const hydration = await hydrateThreadCorpusArtifacts({
+      formatted,
+      attachmentLocators: [locator],
+      storage,
+      retainAttachmentBytes: true,
+      retainRawMime: false,
+      pdfRunner: pdfRunner({ text: 'booking confirmation' }),
+      limits: { maxTotalArtifactBytes: 128 },
+    });
+
+    expect(hydration.retainRawMime).toBe(false);
+    expect(payloadStatus(hydration, 'raw_mime', 'row-priority')).toBe('budget_exhausted');
+    expect(
+      hydration.payloads.find(
+        (payload) =>
+          payload.kind === 'attachment_bytes' && payload.attachmentId === locator.attachmentId,
+      ),
+    ).toMatchObject({ status: 'available' });
+    expect(storage.calls.filter((call) => call.op === 'GET_BOUNDED').map((call) => call.key)).not.toContain(
+      rawKey,
+    );
+    expect(() =>
+      buildPrivateThreadCorpusSnapshot({
+        context: snapshotContext(),
+        formatted,
+        hydration,
+      }),
+    ).not.toThrow();
+  });
+
+  it('skips inline decorative images before S3 hydration', async () => {
+    const storage = new FakeS3Storage('task8-decorative-image-filter');
+    const key = 'attachments/row-decorative/logo.png';
+    const image = {
+      ...makeLocator('att-decorative', 'row-decorative', key, 'image/png', 3),
+      filename: 'logo.png',
+      inline: true,
+    } as ThreadCorpusAttachmentLocator;
+    const formatted = format([
+      makeRow({
+        id: 'row-decorative',
+        attachments: [
+          {
+            ...makeAttachment(image.attachmentId, image.messageId, image.mimeType, image.sizeBytes),
+            filename: image.filename,
+            inline: image.inline,
+          },
+        ],
+      }),
+    ]);
+
+    const hydration = await hydrateThreadCorpusArtifacts({
+      formatted,
+      attachmentLocators: [image],
+      storage,
+      retainAttachmentBytes: true,
+    });
+
+    expect(payloadStatus(hydration, 'attachment_text', image.attachmentId)).toBe('unsupported');
+    expect(
+      hydration.payloads.find(
+        (payload) =>
+          payload.kind === 'attachment_bytes' && payload.attachmentId === image.attachmentId,
+      ),
+    ).toEqual({ kind: 'attachment_bytes', attachmentId: image.attachmentId, status: 'unsupported' });
+    expect(storage.calls.filter((call) => call.op === 'GET_BOUNDED')).toHaveLength(0);
+  });
+
   it('uses injected PDF runner outcomes, normalized MIME, and configured output cap', async () => {
     const cases: Array<{
       id: string;
@@ -658,6 +813,54 @@ describe('hydrateThreadCorpusArtifacts', () => {
     expect(payloadStatus(hydration, 'raw_mime', 'raw-over-cap')).toBe('too_large');
   });
 
+  it('hydrates attachment reads in bounded parallel batches while committing budget canonically', async () => {
+    const bodies = new Map<string, Buffer>([
+      ['attachments/row-parallel/a.txt', Buffer.from('a')],
+      ['attachments/row-parallel/b.txt', Buffer.from('bb')],
+      ['attachments/row-parallel/c.txt', Buffer.from('ccc')],
+    ]);
+    let active = 0;
+    let maxActive = 0;
+    const storage = {
+      async getObjectBounded(key: string): Promise<{ body: Buffer; contentType: string } | null> {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await new Promise((resolve) => setTimeout(resolve, key.endsWith('/a.txt') ? 12 : 2));
+        active -= 1;
+        const body = bodies.get(key);
+        return body ? { body, contentType: 'text/plain' } : null;
+      },
+    };
+    const locators = [...bodies.entries()].map(([key, body], index) =>
+      makeLocator(`att-${index}`, 'row-parallel', key, 'text/plain', body.byteLength),
+    );
+    const hydration = await hydrateThreadCorpusArtifacts({
+      formatted: format([
+        makeRow({
+          id: 'row-parallel',
+          attachments: locators.map((locator) =>
+            makeAttachment(
+              locator.attachmentId,
+              locator.messageId,
+              locator.mimeType,
+              locator.sizeBytes,
+            ),
+          ),
+        }),
+      ]),
+      attachmentLocators: locators,
+      storage,
+      attachmentConcurrency: 2,
+      limits: { maxTotalArtifactBytes: 3 },
+    });
+
+    expect(maxActive).toBe(2);
+    expect(payloadStatus(hydration, 'attachment_text', 'att-0')).toBe('available');
+    expect(payloadStatus(hydration, 'attachment_text', 'att-1')).toBe('available');
+    expect(payloadStatus(hydration, 'attachment_text', 'att-2')).toBe('budget_exhausted');
+    expect(retainedBytes(hydration)).toBe(3);
+  });
+
   it('freezes resolved defaults, honors overrides, clones output, and preserves inputs', async () => {
     expect(Object.isFrozen(DEFAULT_THREAD_CORPUS_HYDRATION_LIMITS)).toBe(true);
     expect(DEFAULT_THREAD_CORPUS_HYDRATION_LIMITS).toMatchObject({
@@ -805,6 +1008,20 @@ describe('hydrateThreadCorpusArtifacts', () => {
       expect(storage.calls.filter((call) => call.op === 'GET_BOUNDED')).toEqual([]);
     }
 
+    for (const attachmentConcurrency of [0, 1.5, Number.MAX_SAFE_INTEGER + 1, 9]) {
+      const storage = new FakeS3Storage(`task8-invalid-concurrency-${String(attachmentConcurrency)}`);
+      const message = await errorMessage(
+        hydrateThreadCorpusArtifacts({
+          formatted: baseFormatted,
+          attachmentLocators: [baseLocator],
+          storage,
+          attachmentConcurrency,
+        }),
+      );
+      expect(message).toBe('Invalid thread corpus hydration input');
+      expect(storage.calls.filter((call) => call.op === 'GET_BOUNDED')).toEqual([]);
+    }
+
     const availableFormatted = format([
       makeRow({
         id: 'row-available',
@@ -858,6 +1075,46 @@ describe('hydrateThreadCorpusArtifacts', () => {
 
     expect(message).toBe('Invalid thread corpus hydration input');
     expect(storage.calls.filter((call) => call.op === 'GET_BOUNDED')).toEqual([]);
+  });
+
+  it('rejects attachment locator optional metadata mismatches before reads', async () => {
+    const descriptor: ThreadCorpusAttachmentDescriptor = {
+      ...makeAttachment('att-metadata', 'row-metadata', 'text/plain', 1),
+      inline: true,
+      contentId: '<original@example.test>',
+    };
+    const formatted = format([
+      makeRow({
+        id: 'row-metadata',
+        attachments: [descriptor],
+      }),
+    ]);
+    const baseLocator = makeLocator(
+      descriptor.id,
+      descriptor.messageId,
+      'attachments/row-metadata/metadata.txt',
+      descriptor.contentType,
+      descriptor.byteSize,
+    );
+    const mismatchedLocators: ThreadCorpusAttachmentLocator[] = [
+      { ...baseLocator, filename: 'different.txt' },
+      { ...baseLocator, inline: false },
+      { ...baseLocator, contentId: '<different@example.test>' },
+    ];
+
+    for (const [index, locator] of mismatchedLocators.entries()) {
+      const storage = new FakeS3Storage(`task8-metadata-mismatch-${index}`);
+      const message = await errorMessage(
+        hydrateThreadCorpusArtifacts({
+          formatted,
+          attachmentLocators: [locator],
+          storage,
+        }),
+      );
+
+      expect(message).toBe('Invalid thread corpus hydration input');
+      expect(storage.calls.filter((call) => call.op === 'GET_BOUNDED')).toEqual([]);
+    }
   });
 
   it('maps abort and storage failures without leaking dependency errors', async () => {

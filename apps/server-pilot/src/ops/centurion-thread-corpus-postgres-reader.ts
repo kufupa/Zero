@@ -15,6 +15,8 @@ type ThreadCorpusAttachmentSourceDescriptor = {
   contentType: string;
   byteSize: number;
   s3Key: string;
+  inline?: boolean;
+  contentId?: string | null;
 };
 
 type ThreadCorpusDraftRevisionLink = {
@@ -56,6 +58,7 @@ type ThreadCorpusSnapshotReadSession = {
   discoverActiveTransportScope(): Promise<ActiveTransportScope>;
   readMessages(): Promise<readonly ThreadCorpusMessageRow[]>;
   readAttachmentDescriptors(): Promise<readonly ThreadCorpusAttachmentSourceDescriptor[]>;
+  readMalformedAttachmentDescriptorCount?(): Promise<number>;
   readDraftRevisionLinks(): Promise<readonly ThreadCorpusDraftRevisionLink[]>;
   readOutboundQueueDeliveryStates(): Promise<readonly ThreadCorpusOutboundQueueState[]>;
 };
@@ -130,6 +133,8 @@ type AttachmentRow = {
   contentType?: unknown;
   byteSize?: unknown;
   s3Key?: unknown;
+  inline?: unknown;
+  contentId?: unknown;
 };
 
 type DraftRevisionRow = {
@@ -153,6 +158,11 @@ type SessionLifecycle = {
   register<T>(operation: () => Promise<T>): Promise<T>;
   settle(): Promise<void>;
   invalidate(): void;
+};
+
+type AttachmentDescriptorReadResult = {
+  descriptors: ThreadCorpusAttachmentSourceDescriptor[];
+  malformedCount: number;
 };
 
 const KNOWN_QUEUE_STATES = new Set<ThreadCorpusOutboundQueueState['state']>([
@@ -286,7 +296,18 @@ function mapAttachmentRow(row: AttachmentRow): ThreadCorpusAttachmentSourceDescr
   const byteSize = nonNegativeInteger(row.byteSize);
   const s3Key = textOrNull(row.s3Key);
   if (!id || !messageId || !filename || !contentType || byteSize === null || !s3Key) return null;
-  return { id, messageId, filename, contentType, byteSize, s3Key };
+  const inline = typeof row.inline === 'boolean' ? row.inline : undefined;
+  const contentId = row.contentId === null || typeof row.contentId === 'string' ? row.contentId : undefined;
+  return {
+    id,
+    messageId,
+    filename,
+    contentType,
+    byteSize,
+    s3Key,
+    ...(inline !== undefined ? { inline } : {}),
+    ...(contentId !== undefined ? { contentId } : {}),
+  };
 }
 
 function mapDraftRevisionRow(row: DraftRevisionRow): ThreadCorpusDraftRevisionLink | null {
@@ -401,8 +422,8 @@ async function readAttachmentDescriptors(
   connection: ThreadCorpusPostgresClient,
   messageIds: readonly string[],
   scope: ActiveTransportScope,
-): Promise<ThreadCorpusAttachmentSourceDescriptor[]> {
-  if (messageIds.length === 0) return [];
+): Promise<AttachmentDescriptorReadResult> {
+  if (messageIds.length === 0) return { descriptors: [], malformedCount: 0 };
   const rows = await connection<AttachmentRow>`
     SELECT
       a.id,
@@ -410,7 +431,9 @@ async function readAttachmentDescriptors(
       a.filename,
       a.mime_type AS "contentType",
       a.size_bytes AS "byteSize",
-      a.s3_key AS "s3Key"
+      a.s3_key AS "s3Key",
+      a.is_inline AS "inline",
+      a.content_id AS "contentId"
     FROM attachment AS a
     INNER JOIN message AS m ON m.id = a.message_id
     WHERE a.message_id = ANY(${messageIds})
@@ -420,10 +443,14 @@ async function readAttachmentDescriptors(
     ORDER BY a.message_id, a.id
   `;
   const selectedMessageIds = new Set(messageIds);
-  return rows
-    .map(mapAttachmentRow)
-    .filter((row): row is ThreadCorpusAttachmentSourceDescriptor => row !== null)
-    .filter((row) => selectedMessageIds.has(row.messageId));
+  const mapped = rows.map(mapAttachmentRow);
+  const malformedCount = mapped.reduce((count, row) => count + (row === null ? 1 : 0), 0);
+  return {
+    descriptors: mapped
+      .filter((row): row is ThreadCorpusAttachmentSourceDescriptor => row !== null)
+      .filter((row) => selectedMessageIds.has(row.messageId)),
+    malformedCount,
+  };
 }
 
 async function readDraftRevisionLinks(
@@ -545,6 +572,7 @@ function sessionFor(
 ): ThreadCorpusSnapshotReadSession {
   let activeTransportScope: Promise<ActiveTransportScope> | undefined;
   let messages: Promise<ThreadCorpusMessageRow[]> | undefined;
+  let attachmentRead: Promise<AttachmentDescriptorReadResult> | undefined;
   let attachments: Promise<ThreadCorpusAttachmentSourceDescriptor[]> | undefined;
   let draftRevisionLinks: Promise<ThreadCorpusDraftRevisionLink[]> | undefined;
   let queueStates: Promise<ThreadCorpusOutboundQueueState[]> | undefined;
@@ -565,6 +593,18 @@ function sessionFor(
     messages ??= loadActiveTransportScope().then((scope) => readMessages(connection, scope));
     return messages;
   };
+  const loadAttachmentRead = async (): Promise<AttachmentDescriptorReadResult> => {
+    assertActive();
+    attachmentRead ??= Promise.all([loadMessages(), loadActiveTransportScope()]).then(
+      ([loadedMessages, scope]) =>
+        readAttachmentDescriptors(
+          connection,
+          distinctText(loadedMessages.map((message) => message.id)),
+          scope,
+        ),
+    );
+    return attachmentRead;
+  };
 
   return {
     asOf,
@@ -576,16 +616,12 @@ function sessionFor(
     },
     readAttachmentDescriptors() {
       return lifecycle.register(() => {
-        attachments ??= Promise.all([loadMessages(), loadActiveTransportScope()]).then(
-          ([loadedMessages, scope]) =>
-            readAttachmentDescriptors(
-              connection,
-              distinctText(loadedMessages.map((message) => message.id)),
-              scope,
-            ),
-        );
+        attachments ??= loadAttachmentRead().then((result) => result.descriptors);
         return attachments;
       });
+    },
+    readMalformedAttachmentDescriptorCount() {
+      return lifecycle.register(() => loadAttachmentRead().then((result) => result.malformedCount));
     },
     readDraftRevisionLinks() {
       return lifecycle.register(() => {

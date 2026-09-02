@@ -66,6 +66,7 @@ function messageRow(input: {
 function createFakePostgres(
   input: {
     activeTransportRows?: readonly FakeRow[];
+    attachments?: readonly FakeRow[];
     messages?: readonly FakeRow[];
   } = {},
 ): FakePostgres {
@@ -86,6 +87,7 @@ function createFakePostgres(
       threadTransportId: 'transport-z',
     }),
   ];
+  const attachments = input.attachments ?? [];
 
   const query = async (
     strings: TemplateStringsArray,
@@ -96,7 +98,7 @@ function createFakePostgres(
     if (/CURRENT_TIMESTAMP/i.test(text)) return [{ asOf: AS_OF }];
     if (/FROM mailbox_transport/i.test(text)) return activeTransportRows;
     if (/FROM message AS m/i.test(text)) return messages;
-    if (/FROM attachment AS a/i.test(text)) return [];
+    if (/FROM attachment AS a/i.test(text)) return attachments;
     if (/FROM mail_draft AS d/i.test(text)) return [];
     if (/FROM outbound_send_queue AS q/i.test(text)) return [];
     throw new Error('Unexpected synthetic query');
@@ -190,6 +192,96 @@ describe('connected mailbox corpus PostgreSQL reader', () => {
     expect(rows.find((row) => row.sourceRowId === 'message-z')?.privateMessage).toMatchObject({
       sourceMetadata: { transportId: 'transport-z' },
     });
+  });
+
+  it('propagates attachment filename, inline, and content ID metadata through the reader', async () => {
+    const fake = createFakePostgres({
+      attachments: [
+        {
+          id: 'attachment-inline',
+          messageId: 'message-a',
+          filename: 'inline.png',
+          contentType: 'image/png',
+          byteSize: 12,
+          s3Key: 'attachments/message-a/inline.png',
+          inline: true,
+          contentId: '<inline@example.test>',
+        },
+      ],
+    });
+
+    const result = await loadSnapshot(fake);
+    const message = sourceRows(result).find((row) => row.sourceRowId === 'message-a');
+    const attachmentsQuery = queryContaining(fake.queries, 'FROM attachment AS a');
+
+    expect(attachmentsQuery.text).toMatch(/a\.is_inline\s+AS\s+"inline"/i);
+    expect(attachmentsQuery.text).toMatch(/a\.content_id\s+AS\s+"contentId"/i);
+
+    expect(message?.privateMessage).toMatchObject({
+      attachments: [
+        {
+          id: 'attachment-inline',
+          messageId: 'message-a',
+          filename: 'inline.png',
+          contentType: 'image/png',
+          byteSize: 12,
+          inline: true,
+          contentId: '<inline@example.test>',
+        },
+      ],
+    });
+    expect(result.attachmentLocators).toEqual([
+      {
+        attachmentId: 'attachment-inline',
+        messageId: 'message-a',
+        s3Key: 'attachments/message-a/inline.png',
+        mimeType: 'image/png',
+        sizeBytes: 12,
+        filename: 'inline.png',
+        inline: true,
+        contentId: '<inline@example.test>',
+      },
+    ]);
+  });
+
+  it('keeps valid attachment descriptors and reports malformed rows opaquely', async () => {
+    const fake = createFakePostgres({
+      attachments: [
+        {
+          id: 'attachment-valid',
+          messageId: 'message-a',
+          filename: 'valid.txt',
+          contentType: 'text/plain',
+          byteSize: 12,
+          s3Key: 'attachments/message-a/valid.txt',
+        },
+        {
+          id: 'attachment-malformed',
+          messageId: 'message-a',
+          filename: 'malformed.txt',
+          contentType: 'text/plain',
+          byteSize: 12,
+          s3Key: '',
+        },
+      ],
+    });
+
+    const result = await loadSnapshot(fake);
+
+    expect(result.attachmentLocators).toEqual([
+      {
+        attachmentId: 'attachment-valid',
+        messageId: 'message-a',
+        s3Key: 'attachments/message-a/valid.txt',
+        mimeType: 'text/plain',
+        sizeBytes: 12,
+        filename: 'valid.txt',
+      },
+    ]);
+    expect(
+      (result.safeSummary as unknown as Record<string, unknown>)
+        .malformedAttachmentDescriptorCount,
+    ).toBe(1);
   });
 
   it('constrains every relation query by sealed transports and snapshot asOf', async () => {

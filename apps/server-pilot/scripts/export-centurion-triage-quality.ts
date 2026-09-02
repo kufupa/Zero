@@ -16,6 +16,7 @@ import {
 import {
   createPrivateInputReader,
   createPrivateOutputWriter,
+  isAllowedDirectChildOutputName,
   prepareExistingTrustedPrivateOutputRoot,
   prepareTrustedPrivateOutputRoot,
   type PrivateInputReader,
@@ -31,6 +32,8 @@ import path from 'node:path';
 import { z } from 'zod';
 
 const PRIVATE_DIRECTORY_NAME = 'connected-mailbox-corpus';
+const QUALITY_OUTPUT_EXTENSIONS = ['.jsonl'] as const;
+const QUALITY_OUTPUT_EXTENSION_SET = new Set<string>(QUALITY_OUTPUT_EXTENSIONS);
 const READ_ONLY_REPEATABLE_SNAPSHOT = 'isolation level repeatable read read only';
 const COMPLETED_EVENT = 'triage_quality_export.completed';
 const FAILED_EVENT = 'triage_quality_export.failed';
@@ -497,7 +500,7 @@ function privateOutputConfig(repoRoot: string): PrivateOutputWriterConfig {
   return {
     repoRoot,
     privateDirectoryName: PRIVATE_DIRECTORY_NAME,
-    allowedExtensions: ['.jsonl'],
+    allowedExtensions: QUALITY_OUTPUT_EXTENSIONS,
   };
 }
 
@@ -749,6 +752,9 @@ export function createTriageQualityExporter(
 
   return async (argv) => {
     const args = parseQualityExportArgs([...argv]);
+    if (!isAllowedDirectChildOutputName(args.outPath, QUALITY_OUTPUT_EXTENSION_SET)) {
+      exportFailure('Quality export private output name is invalid');
+    }
     const repoRoot = path.resolve(dependencies.repoRoot());
     const inputConfig = privateInputConfig(repoRoot);
     const outputConfig = privateOutputConfig(repoRoot);
@@ -776,7 +782,6 @@ export function createTriageQualityExporter(
         }
 
         assertNoExpectedLabels(exported);
-        assertExtension(args.outPath, '.jsonl');
         await outputWriter.write(args.outPath, serializeJsonl(exported));
         return {
           mode: args.mode,

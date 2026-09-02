@@ -7,7 +7,7 @@ const skillPath = fileURLToPath(
 );
 
 describe('connected mailbox refresh skill contract', () => {
-  it('requires a metadata gate and approved local-only raw path', () => {
+  it('requires a metadata gate and approved private raw path', () => {
     const skill = readFileSync(skillPath, 'utf8');
     const compact = skill.replace(/\s+/g, ' ');
 
@@ -28,9 +28,10 @@ describe('connected mailbox refresh skill contract', () => {
     expect(compact).toContain('BLOCKED_LOCAL_PRIVATE_DB_ACCESS_UNAVAILABLE');
     expect(compact).toContain('Never use an allow-empty scope');
     expect(compact).toContain(
-      'Raw PII must never travel via SSM, terminal, Git, web, remote MCP/API, or docs.',
+      'Raw PII must never travel via terminal stdout/stderr, Git, web, remote MCP/API, or docs.',
     );
-    expect(compact).toContain('No remote raw corpus transfer.');
+    expect(compact).toContain('Approved remote raw-corpus transfer is allowed');
+    expect(compact).toContain('byte-count plus SHA-256 verification');
   });
 
   it('does not embed named-source or remote-transfer workflows', () => {

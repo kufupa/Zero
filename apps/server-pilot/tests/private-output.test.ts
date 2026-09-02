@@ -71,7 +71,7 @@ function createWriter(
       allowedExtensions: ['.md', '.jsonl'],
       ...overrides,
     },
-    options,
+    withWindowsAclTestSeam(options),
   );
 }
 
@@ -89,8 +89,25 @@ function createReader(
       allowedExtensions: ['.md', '.jsonl'],
       ...overrides,
     },
-    options,
+    withWindowsAclTestSeam(options),
   );
+}
+
+function withWindowsAclTestSeam(options: PrivateOutputWriterOptions): PrivateOutputWriterOptions {
+  if (process.platform !== 'win32' || options.windowsPrivateAclEnforcer) return options;
+  return {
+    ...options,
+    windowsPrivateAclEnforcer: async () => undefined,
+  };
+}
+
+function withWindowsAclEnforcer(
+  enforcer: (target: string, targetKind: 'directory' | 'file') => Promise<void>,
+): PrivateOutputWriterOptions {
+  return {
+    platform: 'win32',
+    windowsPrivateAclEnforcer: enforcer,
+  } as PrivateOutputWriterOptions;
 }
 
 function privateRoot(repoRoot: string): string {
@@ -162,10 +179,7 @@ describe('private output writer', () => {
       );
 
       if (process.platform !== 'win32') {
-        const [privateStats, rootStats] = await Promise.all([
-          stat(privateDirectory),
-          stat(root),
-        ]);
+        const [privateStats, rootStats] = await Promise.all([stat(privateDirectory), stat(root)]);
         expect(privateStats.mode & 0o777).toBe(0o700);
         expect(rootStats.mode & 0o777).toBe(0o700);
       }
@@ -267,10 +281,10 @@ describe('private output writer', () => {
       await expect(readFile(markdownPath, 'utf8')).resolves.toBe('# Synthetic summary\n');
       await expect(readFile(jsonlPath, 'utf8')).resolves.toBe('{"synthetic":true}\n');
       await expect(readdir(root)).resolves.toEqual(['corpus.jsonl', 'summary.md']);
-      expect(chmodCalls).toContainEqual({ target: root, mode: 0o700 });
-      expect(chmodCalls.some((call) => call.mode === 0o600)).toBe(true);
 
       if (process.platform !== 'win32') {
+        expect(chmodCalls).toContainEqual({ target: root, mode: 0o700 });
+        expect(chmodCalls.some((call) => call.mode === 0o600)).toBe(true);
         const [rootStats, markdownStats, jsonlStats] = await Promise.all([
           stat(root),
           stat(markdownPath),
@@ -490,6 +504,114 @@ describe('private output writer', () => {
       expect(log).not.toHaveBeenCalled();
       expect(warn).not.toHaveBeenCalled();
       expect(error).not.toHaveBeenCalled();
+    });
+  });
+
+  it('accepts only an explicit Windows ACL verification success result', async () => {
+    type WindowsAclExecutor = (
+      target: string,
+      targetKind: 'directory' | 'file',
+    ) => Promise<{ stderr: string; stdout: string }>;
+    type WindowsAclEnforcer = (target: string, targetKind: 'directory' | 'file') => Promise<void>;
+    type WindowsAclFactory = (executor: WindowsAclExecutor) => WindowsAclEnforcer;
+    const privateOutputModule = (await import('../src/ops/private-output')) as unknown as {
+      createWindowsPrivateOutputAclEnforcer?: WindowsAclFactory;
+    };
+    const factory = privateOutputModule.createWindowsPrivateOutputAclEnforcer;
+
+    expect(factory).toBeTypeOf('function');
+    if (!factory) return;
+
+    await expect(
+      factory(async () => ({ stdout: 'private-output-acl-ok', stderr: '' }))(
+        'synthetic-target',
+        'directory',
+      ),
+    ).resolves.toBeUndefined();
+    await expect(
+      factory(async () => ({ stdout: 'private-output-acl-ok\n', stderr: '' }))(
+        'synthetic-target',
+        'directory',
+      ),
+    ).rejects.toThrow(/^Private output root preflight failed$/);
+    await expect(
+      factory(async () => ({ stdout: 'unexpected-result', stderr: '' }))(
+        'synthetic-target',
+        'directory',
+      ),
+    ).rejects.toThrow(/^Private output root preflight failed$/);
+    await expect(
+      factory(async () => ({ stdout: 'private-output-acl-ok', stderr: 'unexpected' }))(
+        'synthetic-target',
+        'directory',
+      ),
+    ).rejects.toThrow(/^Private output root preflight failed$/);
+  });
+
+  it('gates Windows roots, temporary entries, and output files through injected ACL enforcement', async () => {
+    await withTemporaryRepo(async (repoRoot) => {
+      const entryKinds: Array<'directory' | 'file'> = [];
+      const writer = createWriter(
+        repoRoot,
+        {},
+        withWindowsAclEnforcer(async (_target, targetKind) => {
+          entryKinds.push(targetKind);
+        }),
+      );
+
+      await writer.write('summary.md', 'synthetic');
+
+      expect(entryKinds).toContain('directory');
+      expect(entryKinds).toContain('file');
+    });
+  });
+
+  it('fails closed before writes when Windows ACL enforcement rejects unsupported storage', async () => {
+    await withTemporaryRepo(async (repoRoot) => {
+      let writeCalls = 0;
+      const writer = createWriter(repoRoot, {}, {
+        platform: 'win32',
+        fileSystem: {
+          ...localFileSystem,
+          async writeFile(...args: Parameters<typeof writeFile>) {
+            writeCalls += 1;
+            return writeFile(...args);
+          },
+        },
+        windowsPrivateAclEnforcer: async () => {
+          throw new Error('unsupported');
+        },
+      } as PrivateOutputWriterOptions);
+
+      await expect(writer.write('summary.md', 'synthetic')).rejects.toThrow(
+        /^Private output write failed$/,
+      );
+      expect(writeCalls).toBe(0);
+    });
+  });
+
+  it('fails closed before private input reads when Windows ACL verification mismatches', async () => {
+    await withTemporaryRepo(async (repoRoot) => {
+      const root = privateRoot(repoRoot);
+      let readCalls = 0;
+      await mkdir(root, { recursive: true });
+      await writeFile(path.join(root, 'labels.jsonl'), '{"synthetic":true}\n', 'utf8');
+      const reader = createReader(repoRoot, {}, {
+        platform: 'win32',
+        fileSystem: {
+          ...localFileSystem,
+          async readFile(...args: Parameters<typeof readFile>) {
+            readCalls += 1;
+            return readFile(...args);
+          },
+        },
+        windowsPrivateAclEnforcer: async () => {
+          throw new Error('mismatch');
+        },
+      } as PrivateOutputWriterOptions);
+
+      await expect(reader.read('labels.jsonl')).rejects.toThrow(/^Private input read failed$/);
+      expect(readCalls).toBe(0);
     });
   });
 });

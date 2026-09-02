@@ -1,4 +1,3 @@
-import { chmod, lstat, mkdir, mkdtemp, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import {
   assertTrustedPrivateDirectory,
   ensureTrustedPrivateDirectory,
@@ -7,8 +6,20 @@ import {
   samePrivateOutputPath,
   setPrivateOutputMode,
   type PrivateOutputRootVerifier,
+  type PrivateOutputWindowsAclEnforcer,
   type TrustedPrivateOutputRoot,
 } from './private-output.js';
+import {
+  chmod,
+  lstat,
+  mkdir,
+  mkdtemp,
+  realpath,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 
@@ -39,6 +50,9 @@ export type ThreadCorpusAttachmentDescriptor = {
   filename: string;
   contentType: string;
   byteSize: number;
+  /** Source metadata is optional because older attachment rows do not expose it. */
+  inline?: boolean | 'unknown' | 'inline_unknown';
+  contentId?: string | null;
 };
 
 export type ThreadCorpusAttachmentSourceDescriptor = {
@@ -48,6 +62,8 @@ export type ThreadCorpusAttachmentSourceDescriptor = {
   contentType: string;
   byteSize: number;
   s3Key: string;
+  inline?: boolean | 'unknown' | 'inline_unknown';
+  contentId?: string | null;
 };
 
 export type ThreadCorpusAttachmentLocator = {
@@ -56,6 +72,9 @@ export type ThreadCorpusAttachmentLocator = {
   s3Key: string;
   mimeType: string;
   sizeBytes: number;
+  filename?: string;
+  inline?: boolean | 'unknown' | 'inline_unknown';
+  contentId?: string | null;
 };
 
 export type ThreadCorpusDraftRevisionLink = {
@@ -118,6 +137,7 @@ export type ThreadCorpusSnapshotReadSession = {
   discoverActiveTransportScope(): Promise<ActiveTransportScope>;
   readMessages(): Promise<readonly ThreadCorpusMessageRow[]>;
   readAttachmentDescriptors(): Promise<readonly ThreadCorpusAttachmentSourceDescriptor[]>;
+  readMalformedAttachmentDescriptorCount?(): Promise<number>;
   readDraftRevisionLinks(): Promise<readonly ThreadCorpusDraftRevisionLink[]>;
   readOutboundQueueDeliveryStates(): Promise<readonly ThreadCorpusOutboundQueueState[]>;
 };
@@ -135,6 +155,7 @@ export type ThreadCorpusSnapshotSafeSummary = {
   includedMessageCount: number;
   sourceRowCount: number;
   threadCount: number;
+  malformedAttachmentDescriptorCount?: number;
 };
 
 export type ThreadCorpusSourceRow = {
@@ -187,7 +208,9 @@ export const CONNECTED_MAILBOX_CORPUS_PRIVATE_DIRECTORY_NAME = 'connected-mailbo
 export type PrivateCorpusRootVerifier = PrivateOutputRootVerifier;
 
 export type PrivateThreadCorpusPublisherOptions = {
+  platform?: NodeJS.Platform;
   verifyIgnoredPrivateOutputDirectory?: PrivateCorpusRootVerifier;
+  windowsPrivateAclEnforcer?: PrivateOutputWindowsAclEnforcer;
 };
 
 export type SnapshotScope = {
@@ -203,7 +226,17 @@ export type PrivateThreadCorpusSnapshotContext = {
   exporterVersion: string;
 };
 
-export type ThreadCorpusArtifactKind = 'raw_mime' | 'attachment_text';
+export type ThreadCorpusAttachmentByteStatus =
+  | 'available'
+  | 'expired_or_missing'
+  | 'too_large'
+  | 'budget_exhausted'
+  | 'unsupported'
+  | 'timeout'
+  | 'read_failed'
+  | 'malformed';
+
+export type ThreadCorpusArtifactKind = 'raw_mime' | 'attachment_text' | 'attachment_bytes';
 
 export type ThreadCorpusArtifactReference = {
   id: string;
@@ -235,11 +268,19 @@ export type ThreadCorpusHydrationPayload =
         | 'parser_failure'
         | 'read_failed';
       content?: Uint8Array;
+    }
+  | {
+      kind: 'attachment_bytes';
+      attachmentId: string;
+      status: ThreadCorpusAttachmentByteStatus;
+      content?: Uint8Array;
     };
 
 export type ThreadCorpusHydrationInput = {
   attachmentLocators: readonly ThreadCorpusAttachmentLocator[];
   payloads: readonly ThreadCorpusHydrationPayload[];
+  /** Attachment-inclusive exports may intentionally defer raw-MIME bodies. */
+  retainRawMime?: boolean;
 };
 
 export type PrivateThreadCorpusArtifactFile = ThreadCorpusArtifactReference & {
@@ -279,8 +320,14 @@ export type SnapshotAttachmentTextArtifact = null | {
   artifact: ThreadCorpusArtifactReference | null;
 };
 
+export type SnapshotAttachmentBytesArtifact = null | {
+  status: ThreadCorpusAttachmentByteStatus;
+  artifact: ThreadCorpusArtifactReference | null;
+};
+
 export type SnapshotAttachmentDescriptor = ThreadCorpusAttachmentDescriptor & {
   textArtifact: SnapshotAttachmentTextArtifact;
+  bytesArtifact?: SnapshotAttachmentBytesArtifact;
 };
 
 export type SnapshotPrivateMessage = Omit<ThreadCorpusPrivateMessage, 'rawMime' | 'attachments'> & {
@@ -341,6 +388,8 @@ export type SnapshotManifestCounts = {
   rawMimeUnavailable: number;
   attachmentTextAvailable: number;
   attachmentTextUnavailable: number;
+  attachmentBytesAvailable?: number;
+  attachmentBytesUnavailable?: number;
   messagesByScope: Record<ThreadCorpusScopeKey, number>;
 };
 
@@ -571,6 +620,8 @@ function cloneAttachmentDescriptor(
     filename: descriptor.filename,
     contentType: descriptor.contentType,
     byteSize: descriptor.byteSize,
+    ...(descriptor.inline !== undefined ? { inline: descriptor.inline } : {}),
+    ...(descriptor.contentId !== undefined ? { contentId: descriptor.contentId } : {}),
   };
 }
 
@@ -581,6 +632,8 @@ function attachmentDescriptorSortKey(descriptor: ThreadCorpusAttachmentDescripto
     descriptor.filename,
     descriptor.contentType,
     descriptor.byteSize,
+    descriptor.inline ?? 'unknown',
+    descriptor.contentId ?? null,
   ]);
 }
 
@@ -1009,6 +1062,12 @@ export function createThreadCorpusSnapshotLoader(
       );
 
       const attachments = await session.readAttachmentDescriptors();
+      const malformedAttachmentDescriptorCount = session.readMalformedAttachmentDescriptorCount
+        ? await session.readMalformedAttachmentDescriptorCount()
+        : 0;
+      if (!isNonNegativeSafeInteger(malformedAttachmentDescriptorCount)) {
+        invalidThreadCorpusSourceContract();
+      }
       const draftRevisionLinks = await session.readDraftRevisionLinks();
       const queueStates = await session.readOutboundQueueDeliveryStates();
       const { attachmentsByMessageId, attachmentLocators } = selectIncludedAttachmentSources(
@@ -1048,6 +1107,9 @@ export function createThreadCorpusSnapshotLoader(
           includedMessageCount: includedRows.length,
           sourceRowCount: includedRows.length,
           threadCount: formatted.threads.length,
+          ...(malformedAttachmentDescriptorCount > 0
+            ? { malformedAttachmentDescriptorCount }
+            : {}),
         },
       };
     });
@@ -1056,15 +1118,15 @@ export function createThreadCorpusSnapshotLoader(
 type HydrationPlan = {
   rawMimeBySourceRowId: ReadonlyMap<string, SnapshotRawMime>;
   textArtifactByAttachmentId: ReadonlyMap<string, SnapshotAttachmentTextArtifact>;
+  bytesArtifactByAttachmentId: ReadonlyMap<string, SnapshotAttachmentBytesArtifact>;
+  includeAttachmentBytes: boolean;
   artifactFiles: PrivateThreadCorpusArtifactFile[];
 };
 
 function formattedSourceRows(formatted: FormattedLogicalMessages): ThreadCorpusSourceRow[] {
-  return [
-    ...formatted.threads.flatMap((thread) =>
-      thread.messages.flatMap((message) => message.sourceRows),
-    ),
-  ];
+  return formatted.threads.flatMap((thread) =>
+    thread.messages.flatMap((message) => message.sourceRows),
+  );
 }
 
 function assertNoLegacyQuarantineFields(formatted: FormattedLogicalMessages): void {
@@ -1162,7 +1224,10 @@ function createHydrationPlan(
       !descriptor ||
       descriptor.messageId !== locator.messageId ||
       descriptor.contentType !== locator.mimeType ||
-      descriptor.byteSize !== locator.sizeBytes
+      descriptor.byteSize !== locator.sizeBytes ||
+      (locator.filename !== undefined && descriptor.filename !== locator.filename) ||
+      (locator.inline !== undefined && descriptor.inline !== locator.inline) ||
+      (locator.contentId !== undefined && descriptor.contentId !== locator.contentId)
     ) {
       invalidPrivateSnapshotContract();
     }
@@ -1177,6 +1242,10 @@ function createHydrationPlan(
     string,
     Extract<ThreadCorpusHydrationPayload, { kind: 'attachment_text' }>
   >();
+  const attachmentBytePayloads = new Map<
+    string,
+    Extract<ThreadCorpusHydrationPayload, { kind: 'attachment_bytes' }>
+  >();
   for (const payload of hydration.payloads) {
     if (!isThreadCorpusHydrationPayload(payload)) invalidPrivateSnapshotContract();
     if (payload.kind === 'raw_mime') {
@@ -1184,7 +1253,10 @@ function createHydrationPlan(
       if (
         sourceStatus === undefined ||
         rawPayloads.has(payload.sourceRowId) ||
-        (sourceStatus === 'available' && payload.status !== 'available')
+        (hydration.retainRawMime === false && payload.status === 'available') ||
+        (hydration.retainRawMime !== false &&
+          sourceStatus === 'available' &&
+          payload.status !== 'available')
       ) {
         invalidPrivateSnapshotContract();
       }
@@ -1192,24 +1264,36 @@ function createHydrationPlan(
       continue;
     }
 
-    if (
-      !attachmentLocators.has(payload.attachmentId) ||
-      attachmentPayloads.has(payload.attachmentId)
-    ) {
-      invalidPrivateSnapshotContract();
+    if (payload.kind === 'attachment_text') {
+      if (
+        !attachmentLocators.has(payload.attachmentId) ||
+        attachmentPayloads.has(payload.attachmentId)
+      ) {
+        invalidPrivateSnapshotContract();
+      }
+      attachmentPayloads.set(payload.attachmentId, payload);
+    } else {
+      if (
+        !attachmentLocators.has(payload.attachmentId) ||
+        attachmentBytePayloads.has(payload.attachmentId)
+      ) {
+        invalidPrivateSnapshotContract();
+      }
+      attachmentBytePayloads.set(payload.attachmentId, payload);
     }
-    attachmentPayloads.set(payload.attachmentId, payload);
   }
 
   if (
     rawPayloads.size !== expectedRawPayloads.size ||
-    attachmentPayloads.size !== attachmentLocators.size
+    attachmentPayloads.size !== attachmentLocators.size ||
+    (attachmentBytePayloads.size > 0 && attachmentBytePayloads.size !== attachmentLocators.size)
   ) {
     invalidPrivateSnapshotContract();
   }
 
   const rawMimeBySourceRowId = new Map<string, SnapshotRawMime>();
   const textArtifactByAttachmentId = new Map<string, SnapshotAttachmentTextArtifact>();
+  const bytesArtifactByAttachmentId = new Map<string, SnapshotAttachmentBytesArtifact>();
   const artifactFiles: PrivateThreadCorpusArtifactFile[] = [];
   const artifactKeys = new Set<string>();
   const addArtifact = (
@@ -1264,9 +1348,28 @@ function createHydrationPlan(
     });
   }
 
+  for (const [attachmentId] of attachmentDescriptors) {
+    if (attachmentBytePayloads.size === 0) continue;
+    const locator = attachmentLocators.get(attachmentId);
+    const payload = attachmentBytePayloads.get(attachmentId);
+    if (!locator || !payload) {
+      bytesArtifactByAttachmentId.set(attachmentId, null);
+      continue;
+    }
+    bytesArtifactByAttachmentId.set(attachmentId, {
+      status: payload.status,
+      artifact:
+        payload.status === 'available'
+          ? addArtifact('attachment_bytes', attachmentId, payload.content!)
+          : null,
+    });
+  }
+
   return {
     rawMimeBySourceRowId,
     textArtifactByAttachmentId,
+    bytesArtifactByAttachmentId,
+    includeAttachmentBytes: attachmentBytePayloads.size > 0,
     artifactFiles: artifactFiles.sort(compareArtifactFiles),
   };
 }
@@ -1284,7 +1387,16 @@ function toSnapshotPrivateMessage(
     rawMime,
     attachments: cloned.attachments.map((attachment) => ({
       ...attachment,
+      ...(plan.includeAttachmentBytes
+        ? {
+            inline: attachment.inline ?? 'unknown',
+            contentId: attachment.contentId ?? null,
+          }
+        : {}),
       textArtifact: plan.textArtifactByAttachmentId.get(attachment.id) ?? null,
+      ...(plan.includeAttachmentBytes
+        ? { bytesArtifact: plan.bytesArtifactByAttachmentId.get(attachment.id) ?? null }
+        : {}),
     })),
   };
 }
@@ -1437,6 +1549,17 @@ const ATTACHMENT_TEXT_HYDRATION_STATUSES = new Set([
   'timeout',
   'parser_failure',
   'read_failed',
+]);
+
+const ATTACHMENT_BYTES_HYDRATION_STATUSES = new Set([
+  'available',
+  'expired_or_missing',
+  'too_large',
+  'budget_exhausted',
+  'unsupported',
+  'timeout',
+  'read_failed',
+  'malformed',
 ]);
 
 function invalidPrivateSnapshotContract(): never {
@@ -1616,12 +1739,19 @@ function isSourceRawMime(value: unknown): value is ThreadCorpusRawMime {
 function isThreadCorpusAttachmentLocator(value: unknown): value is ThreadCorpusAttachmentLocator {
   return (
     isRecord(value) &&
-    hasExactKeys(value, ['attachmentId', 'messageId', 's3Key', 'mimeType', 'sizeBytes']) &&
+    hasOnlyKeys(
+      value,
+      ['attachmentId', 'messageId', 's3Key', 'mimeType', 'sizeBytes'],
+      ['attachmentId', 'messageId', 's3Key', 'mimeType', 'sizeBytes', 'filename', 'inline', 'contentId'],
+    ) &&
     isNonEmptyString(value.attachmentId) &&
     isNonEmptyString(value.messageId) &&
     isNonEmptyString(value.s3Key) &&
     typeof value.mimeType === 'string' &&
-    isNonNegativeSafeInteger(value.sizeBytes)
+    isNonNegativeSafeInteger(value.sizeBytes) &&
+    (value.filename === undefined || typeof value.filename === 'string') &&
+    (value.inline === undefined || value.inline === true || value.inline === false || value.inline === 'unknown' || value.inline === 'inline_unknown') &&
+    (value.contentId === undefined || value.contentId === null || typeof value.contentId === 'string')
   );
 }
 
@@ -1667,15 +1797,32 @@ function isThreadCorpusHydrationPayload(value: unknown): value is ThreadCorpusHy
       isHydrationContent(value, value.status, ATTACHMENT_TEXT_HYDRATION_STATUSES)
     );
   }
+  if (value.kind === 'attachment_bytes') {
+    return (
+      hasOnlyKeys(
+        value,
+        ['kind', 'attachmentId', 'status'],
+        ['kind', 'attachmentId', 'status', 'content'],
+      ) &&
+      isNonEmptyString(value.attachmentId) &&
+      typeof value.status === 'string' &&
+      isHydrationContent(value, value.status, ATTACHMENT_BYTES_HYDRATION_STATUSES)
+    );
+  }
   return false;
 }
 
 function isThreadCorpusHydrationInput(value: unknown): value is ThreadCorpusHydrationInput {
   return (
     isRecord(value) &&
-    hasExactKeys(value, ['attachmentLocators', 'payloads']) &&
+    hasOnlyKeys(
+      value,
+      ['attachmentLocators', 'payloads'],
+      ['attachmentLocators', 'payloads', 'retainRawMime'],
+    ) &&
     Array.isArray(value.attachmentLocators) &&
-    Array.isArray(value.payloads)
+    Array.isArray(value.payloads) &&
+    (value.retainRawMime === undefined || typeof value.retainRawMime === 'boolean')
   );
 }
 
@@ -1715,15 +1862,35 @@ function isSnapshotAttachmentTextArtifact(value: unknown): value is SnapshotAtta
   );
 }
 
+function isSnapshotAttachmentBytesArtifact(
+  value: unknown,
+): value is SnapshotAttachmentBytesArtifact {
+  if (value === null) return true;
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, ['status', 'artifact']) &&
+    typeof value.status === 'string' &&
+    ATTACHMENT_BYTES_HYDRATION_STATUSES.has(value.status) &&
+    ((value.status === 'available' && isArtifactReference(value.artifact)) ||
+      (value.status !== 'available' && value.artifact === null))
+  );
+}
+
 function isAttachmentDescriptor(value: unknown): value is ThreadCorpusAttachmentDescriptor {
   return (
     isRecord(value) &&
-    hasExactKeys(value, ['id', 'messageId', 'filename', 'contentType', 'byteSize']) &&
+    hasOnlyKeys(
+      value,
+      ['id', 'messageId', 'filename', 'contentType', 'byteSize'],
+      ['id', 'messageId', 'filename', 'contentType', 'byteSize', 'inline', 'contentId'],
+    ) &&
     isNonEmptyString(value.id) &&
     isNonEmptyString(value.messageId) &&
     typeof value.filename === 'string' &&
     typeof value.contentType === 'string' &&
-    isNonNegativeSafeInteger(value.byteSize)
+    isNonNegativeSafeInteger(value.byteSize) &&
+    (value.inline === undefined || value.inline === true || value.inline === false || value.inline === 'unknown' || value.inline === 'inline_unknown') &&
+    (value.contentId === undefined || value.contentId === null || typeof value.contentId === 'string')
   );
 }
 
@@ -1732,13 +1899,19 @@ function isAttachmentSourceDescriptor(
 ): value is ThreadCorpusAttachmentSourceDescriptor {
   return (
     isRecord(value) &&
-    hasExactKeys(value, ['id', 'messageId', 'filename', 'contentType', 'byteSize', 's3Key']) &&
+    hasOnlyKeys(
+      value,
+      ['id', 'messageId', 'filename', 'contentType', 'byteSize', 's3Key'],
+      ['id', 'messageId', 'filename', 'contentType', 'byteSize', 's3Key', 'inline', 'contentId'],
+    ) &&
     isNonEmptyString(value.id) &&
     isNonEmptyString(value.messageId) &&
     typeof value.filename === 'string' &&
     typeof value.contentType === 'string' &&
     isNonNegativeSafeInteger(value.byteSize) &&
-    isNonEmptyString(value.s3Key)
+    isNonEmptyString(value.s3Key) &&
+    (value.inline === undefined || value.inline === true || value.inline === false || value.inline === 'unknown' || value.inline === 'inline_unknown') &&
+    (value.contentId === undefined || value.contentId === null || typeof value.contentId === 'string')
   );
 }
 
@@ -1777,6 +1950,9 @@ function selectIncludedAttachmentSources(
         s3Key: descriptor.s3Key,
         mimeType: descriptor.contentType,
         sizeBytes: descriptor.byteSize,
+        ...(descriptor.filename !== undefined ? { filename: descriptor.filename } : {}),
+        ...(descriptor.inline !== undefined ? { inline: descriptor.inline } : {}),
+        ...(descriptor.contentId !== undefined ? { contentId: descriptor.contentId } : {}),
       }))
       .sort(
         (left, right) =>
@@ -1817,20 +1993,20 @@ function isOutboundDelivery(value: unknown): value is ThreadCorpusOutboundDelive
 function isSnapshotAttachmentDescriptor(value: unknown): value is SnapshotAttachmentDescriptor {
   return (
     isRecord(value) &&
-    hasExactKeys(value, [
-      'id',
-      'messageId',
-      'filename',
-      'contentType',
-      'byteSize',
-      'textArtifact',
-    ]) &&
+    hasOnlyKeys(
+      value,
+      ['id', 'messageId', 'filename', 'contentType', 'byteSize', 'textArtifact'],
+      ['id', 'messageId', 'filename', 'contentType', 'byteSize', 'textArtifact', 'inline', 'contentId', 'bytesArtifact'],
+    ) &&
     isNonEmptyString(value.id) &&
     isNonEmptyString(value.messageId) &&
     typeof value.filename === 'string' &&
     typeof value.contentType === 'string' &&
     isNonNegativeSafeInteger(value.byteSize) &&
-    isSnapshotAttachmentTextArtifact(value.textArtifact)
+    (value.inline === undefined || value.inline === true || value.inline === false || value.inline === 'unknown' || value.inline === 'inline_unknown') &&
+    (value.contentId === undefined || value.contentId === null || typeof value.contentId === 'string') &&
+    isSnapshotAttachmentTextArtifact(value.textArtifact) &&
+    (value.bytesArtifact === undefined || isSnapshotAttachmentBytesArtifact(value.bytesArtifact))
   );
 }
 
@@ -1988,7 +2164,7 @@ function isSnapshotMetadataRecord(value: unknown): value is SnapshotMetadataReco
 function isSnapshotManifestCounts(value: unknown): value is SnapshotManifestCounts {
   if (
     !isRecord(value) ||
-    !hasExactKeys(value, [
+    !hasOnlyKeys(value, [
       'sourceRows',
       'logicalMessages',
       'unresolvedDuplicateCandidates',
@@ -2000,6 +2176,21 @@ function isSnapshotManifestCounts(value: unknown): value is SnapshotManifestCoun
       'rawMimeUnavailable',
       'attachmentTextAvailable',
       'attachmentTextUnavailable',
+      'messagesByScope',
+    ], [
+      'sourceRows',
+      'logicalMessages',
+      'unresolvedDuplicateCandidates',
+      'threads',
+      'attachments',
+      'drafts',
+      'revisions',
+      'rawMimeAvailable',
+      'rawMimeUnavailable',
+      'attachmentTextAvailable',
+      'attachmentTextUnavailable',
+      'attachmentBytesAvailable',
+      'attachmentBytesUnavailable',
       'messagesByScope',
     ])
   ) {
@@ -2020,6 +2211,13 @@ function isSnapshotManifestCounts(value: unknown): value is SnapshotManifestCoun
     'attachmentTextUnavailable',
   ] as const;
   if (!numericKeys.every((key) => isNonNegativeSafeInteger(value[key]))) {
+    return false;
+  }
+
+  const hasBytesCount = Object.hasOwn(value, 'attachmentBytesAvailable') || Object.hasOwn(value, 'attachmentBytesUnavailable');
+  if (hasBytesCount &&
+      (!isNonNegativeSafeInteger(value.attachmentBytesAvailable) ||
+        !isNonNegativeSafeInteger(value.attachmentBytesUnavailable))) {
     return false;
   }
 
@@ -2162,8 +2360,8 @@ function assertSnapshotRecordInvariants(
 ): ReferencedArtifact[] {
   const sourceRowIds = new Set<string>();
   const attachmentIds = new Set<string>();
-  const draftIds = new Set<string>();
   const revisionIds = new Set<string>();
+  const draftRevisionLinkKeys = new Set<string>();
   const threadIds = new Set<string>();
   const referencedArtifactKeys = new Set<string>();
   const referencedArtifacts: ReferencedArtifact[] = [];
@@ -2227,17 +2425,23 @@ function assertSnapshotRecordInvariants(
         if (textArtifact?.status === 'available') {
           assertArtifact('attachment_text', attachment.id, textArtifact.artifact!);
         }
+        const bytesArtifact = attachment.bytesArtifact;
+        if (bytesArtifact?.status === 'available') {
+          assertArtifact('attachment_bytes', attachment.id, bytesArtifact.artifact!);
+        }
       }
       for (const link of privateMessage.draftRevisionLinks) {
         if (link.messageId !== sourceRow.sourceRowId) invalidPrivateSnapshotContract();
-        if (link.draftId !== null) {
-          if (draftIds.has(link.draftId)) invalidPrivateSnapshotContract();
-          draftIds.add(link.draftId);
+        const linkKey = JSON.stringify([link.messageId, link.draftId, link.revisionId]);
+        if (draftRevisionLinkKeys.has(linkKey)) invalidPrivateSnapshotContract();
+        draftRevisionLinkKeys.add(linkKey);
+        // A draft legitimately appears once for each historical revision.
+        // Revision IDs remain globally unique so one revision cannot be linked
+        // to more than one source message.
+        if (link.revisionId !== null && revisionIds.has(link.revisionId)) {
+          invalidPrivateSnapshotContract();
         }
-        if (link.revisionId !== null) {
-          if (revisionIds.has(link.revisionId)) invalidPrivateSnapshotContract();
-          revisionIds.add(link.revisionId);
-        }
+        if (link.revisionId !== null) revisionIds.add(link.revisionId);
       }
     }
   };
@@ -2302,12 +2506,15 @@ function deriveSnapshotManifestCounts(
   let unresolvedDuplicateCandidates = 0;
   let threads = 0;
   let attachments = 0;
-  let drafts = 0;
-  let revisions = 0;
+  const draftIds = new Set<string>();
+  const revisionIds = new Set<string>();
   let rawMimeAvailable = 0;
   let rawMimeUnavailable = 0;
   let attachmentTextAvailable = 0;
   let attachmentTextUnavailable = 0;
+  let attachmentBytesAvailable = 0;
+  let attachmentBytesUnavailable = 0;
+  let hasAttachmentBytes = false;
 
   const countSourceRows = (rows: readonly SnapshotSourceRow[]): void => {
     for (const sourceRow of rows) {
@@ -2325,11 +2532,16 @@ function deriveSnapshotManifestCounts(
         } else {
           attachmentTextUnavailable += 1;
         }
+        if (Object.hasOwn(attachment, 'bytesArtifact')) {
+          hasAttachmentBytes = true;
+          if (attachment.bytesArtifact?.status === 'available') attachmentBytesAvailable += 1;
+          else attachmentBytesUnavailable += 1;
+        }
       }
-      drafts +=
-        privateMessage?.draftRevisionLinks.filter((link) => link.draftId !== null).length ?? 0;
-      revisions +=
-        privateMessage?.draftRevisionLinks.filter((link) => link.revisionId !== null).length ?? 0;
+      for (const link of privateMessage?.draftRevisionLinks ?? []) {
+        if (link.draftId !== null) draftIds.add(link.draftId);
+        if (link.revisionId !== null) revisionIds.add(link.revisionId);
+      }
     }
   };
 
@@ -2353,12 +2565,13 @@ function deriveSnapshotManifestCounts(
     unresolvedDuplicateCandidates,
     threads,
     attachments,
-    drafts,
-    revisions,
+    drafts: draftIds.size,
+    revisions: revisionIds.size,
     rawMimeAvailable,
     rawMimeUnavailable,
     attachmentTextAvailable,
     attachmentTextUnavailable,
+    ...(hasAttachmentBytes ? { attachmentBytesAvailable, attachmentBytesUnavailable } : {}),
     messagesByScope,
   };
 }
@@ -2375,7 +2588,7 @@ function isPrivateThreadCorpusArtifactFile(
   return (
     isRecord(value) &&
     hasExactKeys(value, ['kind', 'id', 'sha256', 'bytes', 'content']) &&
-    (value.kind === 'raw_mime' || value.kind === 'attachment_text') &&
+    (value.kind === 'raw_mime' || value.kind === 'attachment_text' || value.kind === 'attachment_bytes') &&
     typeof value.id === 'string' &&
     /^[a-f0-9]{64}$/.test(value.id) &&
     typeof value.sha256 === 'string' &&
@@ -2621,6 +2834,7 @@ export type PrivateThreadCorpusOutputPreflightOptions = {
   platform?: NodeJS.Platform;
   requireExistingRoot?: boolean;
   verifyIgnoredPrivateOutputDirectory?: PrivateCorpusRootVerifier;
+  windowsPrivateAclEnforcer?: PrivateOutputWindowsAclEnforcer;
 };
 
 export type TrustedPrivateThreadCorpusOutputDestination = TrustedPrivateOutputRoot & {
@@ -2678,6 +2892,7 @@ async function revalidateTrustedRoot(
   expectedRoot: TrustedPrivateOutputRoot,
   requestedOutDir: string,
   verifyIgnoredPrivateOutputDirectory: PrivateCorpusRootVerifier | undefined,
+  windowsPrivateAclEnforcer: PrivateOutputWindowsAclEnforcer | undefined,
 ): Promise<void> {
   const revalidatedRoot = await preflightPrivateThreadCorpusOutputDestination(
     repoRoot,
@@ -2687,10 +2902,15 @@ async function revalidateTrustedRoot(
       platform: expectedRoot.platform,
       requireExistingRoot: true,
       verifyIgnoredPrivateOutputDirectory,
+      windowsPrivateAclEnforcer,
     },
   );
   if (
-    !samePrivateOutputPath(revalidatedRoot.repoRoot, expectedRoot.repoRoot, expectedRoot.platform) ||
+    !samePrivateOutputPath(
+      revalidatedRoot.repoRoot,
+      expectedRoot.repoRoot,
+      expectedRoot.platform,
+    ) ||
     !samePrivateOutputPath(
       revalidatedRoot.privateRoot,
       expectedRoot.privateRoot,
@@ -2716,8 +2936,13 @@ function privateArtifactPath(
   artifact: Pick<PrivateThreadCorpusArtifactFile, 'kind' | 'id'>,
 ): { directory: string; temporary: string; target: string } {
   if (!/^[a-f0-9]{64}$/.test(artifact.id)) invalidPrivateSnapshotContract();
-  const directoryName = artifact.kind === 'raw_mime' ? 'raw-mime' : 'attachment-text';
-  const extension = artifact.kind === 'raw_mime' ? 'eml' : 'txt';
+  const directoryName =
+    artifact.kind === 'raw_mime'
+      ? 'raw-mime'
+      : artifact.kind === 'attachment_text'
+        ? 'attachment-text'
+        : 'attachment-bytes';
+  const extension = artifact.kind === 'raw_mime' ? 'eml' : artifact.kind === 'attachment_text' ? 'txt' : 'bin';
   const filename = `${artifact.id}.${extension}`;
   if (path.basename(filename) !== filename) invalidPrivateSnapshotContract();
   const directory = path.join(snapshotDirectory, directoryName);
@@ -2738,6 +2963,7 @@ async function assertTrustedPrivateFile(
   target: string,
   parent: string,
   platform: NodeJS.Platform,
+  windowsPrivateAclEnforcer: PrivateOutputWindowsAclEnforcer | undefined,
 ): Promise<void> {
   const entry = await fileSystem.lstat(target);
   if (
@@ -2748,6 +2974,9 @@ async function assertTrustedPrivateFile(
   ) {
     throw new Error('Trusted private snapshot file is unsafe');
   }
+  await setPrivateOutputMode(fileSystem, target, 0o600, platform, {
+    windowsPrivateAclEnforcer,
+  });
   if (platform !== 'win32' && ((await fileSystem.stat(target)).mode & 0o777) !== 0o600) {
     throw new Error('Trusted private snapshot file has unsafe permissions');
   }
@@ -2757,6 +2986,7 @@ async function assertAllocatedSnapshotDirectory(
   fileSystem: PrivateArtifactFileSystem,
   trustedRoot: TrustedPrivateOutputRoot,
   allocatedOutDir: string,
+  windowsPrivateAclEnforcer: PrivateOutputWindowsAclEnforcer | undefined,
 ): Promise<void> {
   if (
     !samePrivateOutputPath(
@@ -2769,7 +2999,9 @@ async function assertAllocatedSnapshotDirectory(
   }
   try {
     await assertTrustedPrivateDirectory(fileSystem, allocatedOutDir, trustedRoot.platform);
-    await setPrivateOutputMode(fileSystem, allocatedOutDir, 0o700, trustedRoot.platform);
+    await setPrivateOutputMode(fileSystem, allocatedOutDir, 0o700, trustedRoot.platform, {
+      windowsPrivateAclEnforcer,
+    });
   } catch {
     throw new Error('Trusted allocated snapshot directory changed before publication');
   }
@@ -2780,18 +3012,17 @@ async function ensureTrustedArtifactDirectory(
   trustedRoot: TrustedPrivateOutputRoot,
   allocatedOutDir: string,
   artifactDirectory: string,
+  windowsPrivateAclEnforcer: PrivateOutputWindowsAclEnforcer | undefined,
 ): Promise<void> {
   if (
-    !samePrivateOutputPath(
-      path.dirname(artifactDirectory),
-      allocatedOutDir,
-      trustedRoot.platform,
-    )
+    !samePrivateOutputPath(path.dirname(artifactDirectory), allocatedOutDir, trustedRoot.platform)
   ) {
     invalidPrivateSnapshotContract();
   }
   try {
-    await ensureTrustedPrivateDirectory(fileSystem, artifactDirectory, trustedRoot.platform);
+    await ensureTrustedPrivateDirectory(fileSystem, artifactDirectory, trustedRoot.platform, {
+      windowsPrivateAclEnforcer,
+    });
   } catch {
     throw new Error('Trusted artifact directory is unsafe');
   }
@@ -2803,6 +3034,7 @@ async function revalidateAllocatedSnapshotDirectory(
   trustedRoot: TrustedPrivateOutputRoot,
   requestedOutDir: string,
   verifyIgnoredPrivateOutputDirectory: PrivateCorpusRootVerifier | undefined,
+  windowsPrivateAclEnforcer: PrivateOutputWindowsAclEnforcer | undefined,
   allocatedOutDir: string,
   artifactDirectory?: string,
 ): Promise<void> {
@@ -2812,21 +3044,25 @@ async function revalidateAllocatedSnapshotDirectory(
     trustedRoot,
     requestedOutDir,
     verifyIgnoredPrivateOutputDirectory,
+    windowsPrivateAclEnforcer,
   );
-  await assertAllocatedSnapshotDirectory(fileSystem, trustedRoot, allocatedOutDir);
+  await assertAllocatedSnapshotDirectory(
+    fileSystem,
+    trustedRoot,
+    allocatedOutDir,
+    windowsPrivateAclEnforcer,
+  );
   if (!artifactDirectory) return;
   if (
-    !samePrivateOutputPath(
-      path.dirname(artifactDirectory),
-      allocatedOutDir,
-      trustedRoot.platform,
-    )
+    !samePrivateOutputPath(path.dirname(artifactDirectory), allocatedOutDir, trustedRoot.platform)
   ) {
     invalidPrivateSnapshotContract();
   }
   try {
     await assertTrustedPrivateDirectory(fileSystem, artifactDirectory, trustedRoot.platform);
-    await setPrivateOutputMode(fileSystem, artifactDirectory, 0o700, trustedRoot.platform);
+    await setPrivateOutputMode(fileSystem, artifactDirectory, 0o700, trustedRoot.platform, {
+      windowsPrivateAclEnforcer,
+    });
   } catch {
     throw new Error('Trusted artifact directory is unsafe');
   }
@@ -2840,13 +3076,16 @@ async function writePrivateTextFile(
   revalidate: () => Promise<void>,
   parent: string,
   platform: NodeJS.Platform,
+  windowsPrivateAclEnforcer: PrivateOutputWindowsAclEnforcer | undefined,
 ): Promise<void> {
   await revalidate();
   await fileSystem.writeFile(temporary, content, { encoding: 'utf8', mode: 0o600 });
-  await setPrivateOutputMode(fileSystem, temporary, 0o600, platform);
+  await setPrivateOutputMode(fileSystem, temporary, 0o600, platform, {
+    windowsPrivateAclEnforcer,
+  });
   await revalidate();
   await fileSystem.rename(temporary, target);
-  await assertTrustedPrivateFile(fileSystem, target, parent, platform);
+  await assertTrustedPrivateFile(fileSystem, target, parent, platform, windowsPrivateAclEnforcer);
 }
 
 async function writePrivateArtifactFile(
@@ -2857,13 +3096,16 @@ async function writePrivateArtifactFile(
   revalidate: () => Promise<void>,
   parent: string,
   platform: NodeJS.Platform,
+  windowsPrivateAclEnforcer: PrivateOutputWindowsAclEnforcer | undefined,
 ): Promise<void> {
   await revalidate();
   await fileSystem.writeFile(temporary, content, { mode: 0o600 });
-  await setPrivateOutputMode(fileSystem, temporary, 0o600, platform);
+  await setPrivateOutputMode(fileSystem, temporary, 0o600, platform, {
+    windowsPrivateAclEnforcer,
+  });
   await revalidate();
   await fileSystem.rename(temporary, target);
-  await assertTrustedPrivateFile(fileSystem, target, parent, platform);
+  await assertTrustedPrivateFile(fileSystem, target, parent, platform, windowsPrivateAclEnforcer);
 }
 
 /**
@@ -2874,7 +3116,9 @@ export function createPrivateThreadCorpusPublisher(
   fileSystem: PrivateArtifactFileSystem = LOCAL_PRIVATE_ARTIFACT_FILE_SYSTEM,
   options: PrivateThreadCorpusPublisherOptions = {},
 ): (args: PrivateThreadCorpusPublishArgs) => Promise<{ outDir: string }> {
+  const platform = options.platform;
   const verifyIgnoredPrivateOutputDirectory = options.verifyIgnoredPrivateOutputDirectory;
+  const windowsPrivateAclEnforcer = options.windowsPrivateAclEnforcer;
 
   return async (args) => {
     const snapshot = buildPrivateThreadCorpusSnapshot({
@@ -2888,7 +3132,9 @@ export function createPrivateThreadCorpusPublisher(
       args.outDir,
       {
         fileSystem,
+        platform,
         verifyIgnoredPrivateOutputDirectory,
+        windowsPrivateAclEnforcer,
       },
     );
     const trustedRoot: TrustedPrivateOutputRoot = destination;
@@ -2903,18 +3149,25 @@ export function createPrivateThreadCorpusPublisher(
         trustedRoot,
         args.outDir,
         verifyIgnoredPrivateOutputDirectory,
+        windowsPrivateAclEnforcer,
       );
       const allocatedDirectory = await fileSystem.mkdtemp(
         path.join(trustedRoot.outputRoot, `${snapshotStem}-`),
       );
       allocatedOutDir = allocatedDirectory;
-      await assertAllocatedSnapshotDirectory(fileSystem, trustedRoot, allocatedDirectory);
+      await assertAllocatedSnapshotDirectory(
+        fileSystem,
+        trustedRoot,
+        allocatedDirectory,
+        windowsPrivateAclEnforcer,
+      );
       await revalidateAllocatedSnapshotDirectory(
         fileSystem,
         args.repoRoot,
         trustedRoot,
         args.outDir,
         verifyIgnoredPrivateOutputDirectory,
+        windowsPrivateAclEnforcer,
         allocatedDirectory,
       );
 
@@ -2929,6 +3182,7 @@ export function createPrivateThreadCorpusPublisher(
           trustedRoot,
           args.outDir,
           verifyIgnoredPrivateOutputDirectory,
+          windowsPrivateAclEnforcer,
           allocatedDirectory,
           artifactDirectory,
         );
@@ -2940,6 +3194,7 @@ export function createPrivateThreadCorpusPublisher(
         revalidate,
         allocatedDirectory,
         trustedRoot.platform,
+        windowsPrivateAclEnforcer,
       );
 
       const createdArtifactDirectories = new Set<string>();
@@ -2952,6 +3207,7 @@ export function createPrivateThreadCorpusPublisher(
             trustedRoot,
             allocatedDirectory,
             paths.directory,
+            windowsPrivateAclEnforcer,
           );
           createdArtifactDirectories.add(paths.directory);
         }
@@ -2963,6 +3219,7 @@ export function createPrivateThreadCorpusPublisher(
           () => revalidate(paths.directory),
           paths.directory,
           trustedRoot.platform,
+          windowsPrivateAclEnforcer,
         );
       }
 
@@ -2974,6 +3231,7 @@ export function createPrivateThreadCorpusPublisher(
         revalidate,
         allocatedDirectory,
         trustedRoot.platform,
+        windowsPrivateAclEnforcer,
       );
       await revalidate();
 
