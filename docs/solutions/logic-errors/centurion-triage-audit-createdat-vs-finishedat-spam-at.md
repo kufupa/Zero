@@ -1,6 +1,7 @@
 ---
 title: Centurion Triage Retag Audit False Failures from finishedAt Hash and spam_at Semantics
 date: 2026-07-31
+last_updated: 2026-09-02
 category: logic-errors
 module: server-pilot / centurion triage retag audit
 problem_type: logic_error
@@ -20,13 +21,14 @@ related_components:
   - database
 tags:
   - centurion
-  - triage-v5
+  - workflow-triage
   - retag-audit
   - inputhash
   - createdat
   - finishedat
   - spam-at
-  - hotel-cutover
+  - durable-backfill
+  - manifest-binding
 ---
 
 # Centurion Triage Retag Audit False Failures from finishedAt Hash and spam_at Semantics
@@ -201,6 +203,60 @@ Scoped rebind after a *correct* verifier is appropriate for residual nondetermin
 - When audit fails only on `approvedOutput` for a small subset after a green inputHash pass, prefer drain-metrics rebind + remanifest over full restore.
 - Keep prod `DATABASE_URL` available to ops snapshot/retag scripts; unsetting it for "safety" breaks the cutover path. (session history)
 
+## Phase 1 v6 workflow backfill hardening
+
+The v6 continuation found and fixed five additional P1 integrity failures on the
+same snapshot → retag → worker → audit → restore rail. This section extends the
+historical v5 incident above; it is intentionally kept in one learning so the
+Centurion cutover contract does not split across near-duplicate documents.
+
+### Atomic restore and mailbox scope
+
+Restore now performs drift validation and mutation inside one `sql.begin`
+transaction. It locks inbound messages with `FOR SHARE`, then locks the target
+threads and referenced sender preferences with `FOR UPDATE`, rechecks cohort,
+policy, user-lock, custom-category, and trigger-hash drift, and only then
+restores managed joins and spam fields. The post-commit snapshot comparison is a
+second reconciliation check, not the concurrency guard.
+
+Quarantine promotion is similarly scoped: both the listing query and the
+per-row guard require an explicit Centurion ingest-mailbox allowlist before the
+sender/recipient discriminator can apply a Centurion transport override. A
+matching MIME sender alone never establishes mailbox ownership.
+
+### Canonical workflow state and bound provenance
+
+Workflow `isSpam` remains orthogonal to `primaryFolder`: effective spam writes
+`spam_at` and no primary `spam` category, even when the workflow navigation flag
+is off. For non-spam output, the apply path resolves every target category,
+including Urgent, before deleting managed joins or clearing `spam_at`; a missing
+category therefore leaves prior durable state untouched.
+
+Mutating retag manifests now require a root snapshot/source binding and, for
+every target, canonical approved folder/isSpam/Urgent decisions, a source hash
+matching the root, and a rehearsal result hash. Audit additionally requires the
+exact snapshot, key-prefix, manifest, prompt-artifact, and apply-summary
+bindings plus complete eligible coverage. Rehashing an edited manifest proves
+only byte integrity and cannot substitute for this provenance chain.
+
+### Non-destructive enqueue and recoverable retries
+
+Retag re-reads and locks each live thread before enqueue, rechecks trigger and
+pre-state hashes, and records `metrics.retagPending=true` without clearing
+categories or `spam_at`. The worker consumes that marker as `forceUnsettle` so a
+successful backfill run performs the required full apply. An idempotency
+conflict is requeued only for `retry_wait` or `dead_letter`; succeeded runs stay
+terminal and report a collision. This preserves the prior durable state across
+worker failure and makes same-key repair explicit.
+
+Fresh regression coverage includes atomic restore rollback and lock drift,
+Centurion mailbox isolation, canonical spam with navigation disabled, bound
+manifest rejection, preserved pre-worker state, and retry/dead-letter resume.
+The Phase 1 operator proof covered 2,822 eligible threads with no cohort overlap
+and 100% eligible coverage; spam audit found zero never-spam or staff-outbound
+threads in spam. Dashboard, draft AI, tool invocation, and HMS activation remain
+outside this phase.
+
 ## Related Issues
 
 - Handoff report: `docs/superpowers/plans/handoff-reports/2026-07-29-hotel-triage-v5.md`
@@ -210,3 +266,5 @@ Scoped rebind after a *correct* verifier is appropriate for residual nondetermin
 - Pilot wipe / PITR restore: `docs/solutions/database-issues/vitest-production-pilot-db-wipe.md`
 - EC2 deploy/quiesce ops: `docs/solutions/workflow-issues/ec2-pilot-ops-deploy-restart-reboot.md`
 - Files: `apps/server-pilot/scripts/audit-centurion-triage-retag.mjs`, `apps/server-pilot/tests/centurion-triage-audit.test.ts`, `apps/server-pilot/src/ai/triage-input.ts`
+- v6 continuation: `docs/superpowers/plans/handoff-reports/2026-09-01-centurion-task-12.md` and
+  `docs/superpowers/plans/2026-09-01-centurion-workflow-triage-implementation.md`.

@@ -24,7 +24,7 @@ import {
   WORKFLOW_PRIMARY_SLUGS,
   TRANSPORT_ID,
   retagIdempotencyKey,
-  validateApprovedRolloutManifest,
+  validateBoundApprovedRolloutManifest,
 } from './retag-centurion-triage.mjs';
 import { assertValidSnapshot } from './snapshot-centurion-triage.mjs';
 
@@ -377,7 +377,7 @@ export async function auditCenturionTriageRetag(opts) {
   }
 
   try {
-    manifest = validateApprovedRolloutManifest(opts.manifest);
+    manifest = validateBoundApprovedRolloutManifest(opts.manifest);
   } catch (err) {
     push(err instanceof Error ? err.message : String(err));
     return { ok: false, errors };
@@ -385,13 +385,13 @@ export async function auditCenturionTriageRetag(opts) {
 
   const keyPrefix = opts.keyPrefix;
   const applySummary = opts.applySummary ?? {};
-  if (applySummary.keyPrefix && applySummary.keyPrefix !== keyPrefix) {
+  if (applySummary.keyPrefix !== keyPrefix) {
     push(`apply summary keyPrefix mismatch: ${applySummary.keyPrefix} !== ${keyPrefix}`);
   }
-  if (applySummary.manifestHash && applySummary.manifestHash !== manifest.manifestHash) {
+  if (applySummary.manifestHash !== manifest.manifestHash) {
     push('apply summary manifestHash mismatch');
   }
-  if (manifest.snapshotHash && manifest.snapshotHash !== snapshot.snapshotHash) {
+  if (manifest.snapshotHash !== snapshot.snapshotHash) {
     push('manifest snapshotHash does not match snapshot');
   }
 
@@ -472,9 +472,12 @@ export async function auditCenturionTriageRetag(opts) {
     if (run.promptVersion !== manifest.promptVersion) {
       push(`wrong prompt version for ${target.threadId}: ${run.promptVersion}`);
     }
-    const runPromptHash = run.promptHash ?? run.metrics?.promptHash;
-    if (!isSha256Hex(runPromptHash)) {
-      push(`missing or invalid prompt hash for ${target.threadId}`);
+    // ai_workflow_run.prompt_hash is the static rollout artifact binding set
+    // by retag enqueue. The metrics promptHash is input-specific (it includes
+    // the causal user prompt/asOf), so it must not be compared to manifest
+    // promptHash or used as the rollout binding.
+    if (!isSha256Hex(run.promptHash) || run.promptHash !== manifest.promptHash) {
+      push(`prompt hash artifact binding mismatch with manifest for ${target.threadId}`);
     }
 
     const metrics = run.metrics ?? {};
@@ -506,7 +509,12 @@ export async function auditCenturionTriageRetag(opts) {
       metrics?.isSpam != null ||
       target.approvedPrimaryFolder != null ||
       target.approvedIsSpam != null;
-    if (canonicalV6 && actual.rawPrimaryFolder != null && !isCanonicalWorkflowPrimary(actual.rawPrimaryFolder)) {
+    if (
+      canonicalV6 &&
+      !actual.isSpam &&
+      actual.rawPrimaryFolder != null &&
+      !isCanonicalWorkflowPrimary(actual.rawPrimaryFolder)
+    ) {
       push(`invalid workflow primary for ${target.threadId}: ${actual.rawPrimaryFolder}`);
     }
     if (canonicalV6 && !approved.isSpam && !isCanonicalWorkflowPrimary(approved.primaryFolder)) {

@@ -1,6 +1,6 @@
 # Centurion Task 10 — Retag / snapshot / restore / audit v6
 
-Status: DONE_WITH_CONCERNS
+Status: DONE
 
 ## Scope
 

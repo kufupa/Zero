@@ -29,6 +29,7 @@ import { mergeCategoryIds, mergeLabelIds, resolveMailRouteFilter } from '@/lib/m
 import { resolveSearchListRequest } from '@/lib/mail/search-list';
 import { useCategorySettings } from './use-categories';
 import { useLabels } from './use-labels';
+import { WORKFLOW_NAV_V6 } from '@/config/navigation';
 
 const threadPollingMs = resolveThreadPollingMs(import.meta.env.VITE_MAIL_POLL_MS);
 const openThreadPolling = openThreadQueryPollingOptions(import.meta.env.VITE_MAIL_POLL_MS);
@@ -112,7 +113,7 @@ export const useThreads = () => {
     validSearchList?.folder === 'all'
       ? validSearchList.folder
       : validSearchList
-        ? normalizeDemoMailFolderSlug(canonicalRouteFolder ?? validSearchList.folder)
+        ? normalizeDemoMailFolderSlug(canonicalRouteFolder ?? validSearchList.folder, WORKFLOW_NAV_V6)
         : undefined;
   const liveThreadListQuery = validSearchList
     ? selectLiveThreadListQuery({

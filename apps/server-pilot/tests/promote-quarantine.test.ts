@@ -1,6 +1,7 @@
 import {
   assertPromoteEnv,
   formatPromoteSummary,
+  isCenturionIngestMailboxId,
   isPromotableReserveCloudStaff,
   parsePromoteCliArgs,
   promoteMissingOwnerHeaderQuarantine,
@@ -171,6 +172,12 @@ async function seedMissingOwnerQuarantine(args: {
 }
 
 describe('promote-quarantine cli helpers', () => {
+  it('allows promotion only from explicitly owned Centurion ingest mailbox', () => {
+    expect(isCenturionIngestMailboxId('ingest-nava-legacy')).toBe(true);
+    expect(isCenturionIngestMailboxId('ingest-other-mailbox')).toBe(false);
+    expect(isCenturionIngestMailboxId('')).toBe(false);
+  });
+
   it('routes true ReserveCloud staff promotion to Centurion before normal routing', async () => {
     const storage = withFakeS3();
     const raw = centurionInboundEml();

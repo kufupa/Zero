@@ -18,11 +18,18 @@ import { mailIngestQuarantine, message } from '../../db/schema/mail.js';
 import { getS3Storage, type S3Storage } from '../../storage/s3.js';
 import { ingestRequireOwnerHeader } from '../../env.js';
 import type { DB } from '../../db/client.js';
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, inArray } from 'drizzle-orm';
 
 const PROMOTE_REASON = 'missing_owner_header';
 const RESERVE_CLOUD_PENNY_EMAIL = 'pmbobo@eu.mail.reservecloud.com';
 const LEGACY_PENNY_EMAIL = 'pmbobo@legacyhotels.co.za';
+export const CENTURION_TRANSPORT_ID = 'transport-centurion';
+/** Explicit ingest mailbox ownership; never promote another mailbox into Centurion. */
+export const CENTURION_INGEST_MAILBOX_IDS = ['ingest-nava-legacy'] as const;
+
+export function isCenturionIngestMailboxId(ingestMailboxId: string): boolean {
+  return (CENTURION_INGEST_MAILBOX_IDS as readonly string[]).includes(ingestMailboxId);
+}
 
 export interface PromoteQuarantineRow {
   id: string;
@@ -103,7 +110,12 @@ export async function listMissingOwnerHeaderQuarantine(
       rawMimeS3Key: mailIngestQuarantine.rawMimeS3Key,
     })
     .from(mailIngestQuarantine)
-    .where(eq(mailIngestQuarantine.reason, PROMOTE_REASON))
+    .where(
+      and(
+        eq(mailIngestQuarantine.reason, PROMOTE_REASON),
+        inArray(mailIngestQuarantine.ingestMailboxId, [...CENTURION_INGEST_MAILBOX_IDS]),
+      ),
+    )
     .orderBy(asc(mailIngestQuarantine.createdAt));
 
   if (limit !== undefined) {
@@ -177,6 +189,9 @@ async function promoteOneQuarantineRow(
   opts: { db: DB; storage: S3Storage; dryRun: boolean },
 ): Promise<PromoteOneOutcome> {
   const { db, storage } = opts;
+  if (!isCenturionIngestMailboxId(row.ingestMailboxId)) {
+    return { kind: 'skipped' };
+  }
   const meta = {
     ingestMailboxId: row.ingestMailboxId,
     pop3Uidl: row.pop3Uidl,
@@ -243,7 +258,7 @@ async function promoteOneQuarantineRow(
         db,
         storage,
         promoteQuarantineId: row.id,
-        transportOverride: 'transport-centurion',
+        transportOverride: CENTURION_TRANSPORT_ID,
         directionOverride: 'outbound',
       },
     );

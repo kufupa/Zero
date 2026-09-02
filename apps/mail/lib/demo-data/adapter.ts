@@ -1,5 +1,11 @@
 import centurionThreads from './centurion-threads.json';
-import { parseDemoCorpus, type DemoMessage, type DemoThread, type DemoThreadInput } from './schema';
+import {
+  parseDemoCorpus,
+  type DemoMessage,
+  type DemoThread,
+  type DemoThreadFolder,
+  type DemoThreadInput,
+} from './schema';
 import { normalizeDemoMessageBody } from './normalize-demo-message-body';
 import { filterRemovedDemoLabels } from './label-filter';
 import { getDemoDeletedDraftIds, listDemoDrafts } from '../demo/local-store';
@@ -40,6 +46,26 @@ type DemoListInput = {
   labelIds?: string[];
 };
 
+/**
+ * The bundled corpus predates the workflow taxonomy. Keep legacy folders as
+ * the source of truth and project representative rows into each workflow
+ * route until the fixture corpus carries durable workflow assignments.
+ */
+const WORKFLOW_DEMO_SOURCE_FOLDERS: Partial<Record<DemoThreadFolder, readonly DemoThreadFolder[]>> =
+  {
+    bookings: ['bookings', 'new-bookings'],
+    'groups-events': ['groups-events'],
+    'manage-stay': ['manage-stay', 'ops'],
+    'confirm-reconcile': ['confirm-reconcile', 'new-bookings'],
+    'money-billing': ['money-billing', 'at-risk'],
+    'documents-delivery': ['documents-delivery', 'at-risk'],
+    'exceptions-recovery': ['exceptions-recovery', 'at-risk'],
+    'guest-experience': ['guest-experience', 'new-bookings'],
+    'internal-partner': ['internal-partner', 'ops'],
+    'automated-channel': ['automated-channel', 'ops'],
+    'unknown-review': ['unknown-review', 'at-risk'],
+  };
+
 function toCenturionCategory(folder: DemoThread['folder']): CenturionMailCategory | undefined {
   if (
     folder === 'at-risk' ||
@@ -54,6 +80,11 @@ function toCenturionCategory(folder: DemoThread['folder']): CenturionMailCategor
 
 /** Demo list views: inbox = all non-spam; category slugs = primary folder; urgent = flag; spam = quarantine only. */
 export function threadMatchesDemoListFolder(thread: DemoThreadInput, folderSlug: string): boolean {
+  const workflowSourceFolders = WORKFLOW_DEMO_SOURCE_FOLDERS[folderSlug as DemoThreadFolder];
+  if (workflowSourceFolders) {
+    return workflowSourceFolders.includes(thread.folder);
+  }
+
   switch (folderSlug) {
     case 'inbox':
       return thread.folder !== 'spam';

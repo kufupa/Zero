@@ -94,6 +94,17 @@ export function parseSnapshotArgs(argv) {
   return { outPath, targetsOutPath };
 }
 
+/** Write a private operator artifact and force restrictive mode on overwrites. */
+export function writePrivateJson(filePath, value) {
+  const resolved = path.resolve(filePath);
+  fs.mkdirSync(path.dirname(resolved), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(resolved, `${JSON.stringify(value, null, 2)}\n`, {
+    encoding: 'utf8',
+    mode: 0o600,
+  });
+  fs.chmodSync(resolved, 0o600);
+}
+
 /**
  * SNAPSHOT_PROMPT_HASH required only when emitting targets (--targets-out / bind emit path).
  * Snapshot-only runs may omit it.
@@ -295,6 +306,8 @@ export function emitTargetManifestFromSnapshot(snapshot, meta) {
  *   approvals: Array<{
  *     threadId: string,
  *     approvedCategory: string,
+ *     approvedPrimaryFolder?: string,
+ *     approvedIsSpam?: boolean,
  *     approvedUrgent: boolean,
  *     rehearsalResultHash: string,
  *     sourceHash?: string,
@@ -306,6 +319,7 @@ export function bindApprovedTargetManifest(manifest, binding) {
   if (!isSha256Hex(binding.sourceHash)) {
     throw new Error('sourceHash must be sha256 hex');
   }
+  const sourceHash = binding.sourceHash.toLowerCase();
   const byThread = new Map(binding.approvals.map((a) => [a.threadId, a]));
   if (byThread.size !== binding.approvals.length) {
     throw new Error('duplicate approval threadId');
@@ -327,18 +341,32 @@ export function bindApprovedTargetManifest(manifest, binding) {
     if (!isSha256Hex(approval.rehearsalResultHash)) {
       throw new Error(`rehearsalResultHash must be sha256 hex for ${target.threadId}`);
     }
+    if (
+      approval.sourceHash != null &&
+      (!isSha256Hex(approval.sourceHash) || approval.sourceHash.toLowerCase() !== sourceHash)
+    ) {
+      throw new Error(`sourceHash binding mismatch for ${target.threadId}`);
+    }
     return {
       ...target,
       approvedCategory: approval.approvedCategory,
+      approvedPrimaryFolder:
+        approval.approvedPrimaryFolder ?? approval.approvedCategory,
+      approvedIsSpam:
+        typeof approval.approvedIsSpam === 'boolean'
+          ? approval.approvedIsSpam
+          : approval.approvedCategory === 'spam',
       approvedUrgent: Boolean(approval.approvedUrgent),
-      sourceHash: approval.sourceHash ?? binding.sourceHash,
+      // One rollout has one canonical source artifact. Normalize any
+      // per-approval spelling to the root binding before hashing the manifest.
+      sourceHash,
       rehearsalResultHash: approval.rehearsalResultHash,
     };
   });
 
   const body = {
     ...withoutHash,
-    sourceHash: binding.sourceHash,
+    sourceHash,
     targets,
   };
   const bound = {
@@ -405,10 +433,110 @@ export async function verifySnapshotAgainstLive(opts) {
   return true;
 }
 
+/**
+ * Restore may intentionally change AI-managed categories and spam_at. Before
+ * mutation, however, reject structural drift that could overwrite a newer
+ * user lock, sender preference, custom-category set, or trigger message.
+ */
+export function assertRestoreSnapshotDrift(snapshotInput, live) {
+  const snapshot = assertValidSnapshot(snapshotInput);
+  const liveById = new Map();
+  for (const cohort of ['eligible', 'locked', 'blocked', 'allowed', 'outboundOnly']) {
+    for (const row of live.cohorts[cohort] ?? []) liveById.set(row.threadId, { ...row, cohort });
+  }
+  for (const cohort of ['eligible', 'locked', 'blocked', 'allowed', 'outboundOnly']) {
+    for (const row of snapshot.cohorts[cohort] ?? []) {
+      const liveRow = liveById.get(row.threadId);
+      if (!liveRow) throw new Error(`restore drift: thread missing ${row.threadId}`);
+      if (liveRow.cohort !== cohort || liveRow.policyState !== row.policyState) {
+        throw new Error(`restore drift: cohort/policy mismatch for ${row.threadId}`);
+      }
+      if (liveRow.spamUserLockedAt !== row.spamUserLockedAt) {
+        throw new Error(`restore drift: user lock mismatch for ${row.threadId}`);
+      }
+      if (liveRow.customCategoryPresenceHash !== row.customCategoryPresenceHash) {
+        throw new Error(`restore drift: custom category mismatch for ${row.threadId}`);
+      }
+      if (liveRow.triggerHash !== row.triggerHash) {
+        throw new Error(`restore drift: trigger mismatch for ${row.threadId}`);
+      }
+    }
+  }
+  return true;
+}
+
+export async function verifyRestoreSnapshotDrift(opts) {
+  const snapshot = assertValidSnapshot(opts.snapshot);
+  const live = await buildCenturionTriageSnapshot({
+    driver: opts.driver,
+    generatedAt: snapshot.generatedAt,
+  });
+  return assertRestoreSnapshotDrift(snapshot, live);
+}
+
 export function createPostgresSnapshotDriver(sql) {
   return {
-    async listThreads() {
-      const rows = await sql`
+    async listThreads({ threadIds = null, forUpdate = false } = {}) {
+      const lockClause = forUpdate ? sql`FOR UPDATE` : sql``;
+      const rows = threadIds
+        ? await sql`
+        SELECT
+          t.id AS thread_id,
+          t.spam_at,
+          t.spam_user_locked_at,
+          (
+            SELECT m.id
+            FROM message m
+            WHERE m.thread_id = t.id
+              AND m.direction = 'inbound'
+            ORDER BY m.created_at DESC, m.id DESC
+            LIMIT 1
+          ) AS latest_inbound_id,
+          (
+            SELECT lower(m.from_address)
+            FROM message m
+            WHERE m.thread_id = t.id
+              AND m.direction = 'inbound'
+            ORDER BY m.created_at DESC, m.id DESC
+            LIMIT 1
+          ) AS latest_inbound_from,
+          (
+            SELECT m.created_at
+            FROM message m
+            WHERE m.thread_id = t.id
+              AND m.direction = 'inbound'
+            ORDER BY m.created_at DESC, m.id DESC
+            LIMIT 1
+          ) AS latest_inbound_created_at,
+          COALESCE((
+            SELECT array_agg(c.slug ORDER BY c.slug)
+            FROM mail_thread_category mtc
+            JOIN mail_category c ON c.id = mtc.category_id
+            WHERE mtc.thread_id = t.id
+              AND mtc.transport_id = ${TRANSPORT_ID}
+              AND c.slug = ANY(${RETAG_UNSETTLE_SLUGS})
+          ), '{}') AS ai_category_slugs,
+          COALESCE((
+            SELECT array_agg(c.slug ORDER BY c.slug)
+            FROM mail_thread_category mtc
+            JOIN mail_category c ON c.id = mtc.category_id
+            WHERE mtc.thread_id = t.id
+              AND mtc.transport_id = ${TRANSPORT_ID}
+              AND NOT (c.slug = ANY(${RETAG_UNSETTLE_SLUGS}))
+          ), '{}') AS custom_category_slugs,
+          EXISTS (
+            SELECT 1
+            FROM message m2
+            WHERE m2.thread_id = t.id
+              AND m2.direction = 'inbound'
+          ) AS has_inbound
+        FROM mail_thread t
+        WHERE t.transport_id = ${TRANSPORT_ID}
+          AND t.id = ANY(${threadIds})
+        ORDER BY t.id
+        ${lockClause}
+      `
+        : await sql`
         SELECT
           t.id AS thread_id,
           t.spam_at,
@@ -462,6 +590,7 @@ export function createPostgresSnapshotDriver(sql) {
         FROM mail_thread t
         WHERE t.transport_id = ${TRANSPORT_ID}
         ORDER BY t.id
+        ${lockClause}
       `;
       return rows.map((row) => ({
         threadId: row.thread_id,
@@ -476,7 +605,7 @@ export function createPostgresSnapshotDriver(sql) {
       }));
     },
 
-    async listSenderPreferences(emails) {
+    async listSenderPreferences(emails, { forUpdate = false } = {}) {
       const out = new Map();
       if (emails.length === 0) return out;
       const rows = await sql`
@@ -484,6 +613,7 @@ export function createPostgresSnapshotDriver(sql) {
         FROM mail_sender_preference
         WHERE transport_id = ${TRANSPORT_ID}
           AND email = ANY(${emails})
+        ${forUpdate ? sql`FOR UPDATE` : sql``}
       `;
       for (const row of rows) {
         out.set(row.email, row.kind);
@@ -531,8 +661,7 @@ async function main() {
   try {
     const driver = createPostgresSnapshotDriver(sql);
     const snapshot = await buildCenturionTriageSnapshot({ driver });
-    fs.mkdirSync(path.dirname(path.resolve(args.outPath)), { recursive: true });
-    fs.writeFileSync(args.outPath, `${JSON.stringify(snapshot, null, 2)}\n`, 'utf8');
+    writePrivateJson(args.outPath, snapshot);
 
     let targetsPath = args.targetsOutPath;
     if (targetsPath) {
@@ -541,8 +670,7 @@ async function main() {
         promptVersion,
         promptHash,
       });
-      fs.mkdirSync(path.dirname(path.resolve(targetsPath)), { recursive: true });
-      fs.writeFileSync(targetsPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+      writePrivateJson(targetsPath, manifest);
     }
 
     console.log(

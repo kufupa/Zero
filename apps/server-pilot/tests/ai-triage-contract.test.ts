@@ -2,6 +2,8 @@ import {
   applyDurableTriageResult,
   applyShadowTriageResult,
   refineTriageOutput,
+  toLegacyCategory,
+  toLegacyTriageOutput,
   validateLegacyTriageOutput,
   validateTriageOutput,
   validateWorkflowTriageOutput,
@@ -40,6 +42,27 @@ const here = dirname(fileURLToPath(import.meta.url));
 const reachable = await probeTestDb();
 
 describe('AI triage contract', () => {
+  it('maps exceptions-recovery to the legacy at-risk adapter and round-trips safely', () => {
+    expect(toLegacyCategory('exceptions-recovery')).toBe('at-risk');
+    const legacy = toLegacyTriageOutput({
+      primaryFolder: 'exceptions-recovery',
+      priority: 'P1',
+      urgent: true,
+      overlays: {},
+      isSpam: false,
+      suggestedTools: [],
+      sourceScope: 'external',
+      automationState: 'exception_candidate',
+      humanAction: 'amend_or_cancel',
+      confidence: 0.9,
+      rationale: 'cancellation risk',
+      policyFlags: [],
+      abstainReason: null,
+    });
+    expect(legacy).toMatchObject({ category: 'at-risk', urgent: true });
+    expect(validateLegacyTriageOutput(legacy).category).toBe('at-risk');
+  });
+
   it('v6 prompt/schema exposes workflow contract and safety boundaries', () => {
     expect(TRIGGER_BODY_LIMIT).toBeGreaterThanOrEqual(8192);
     expect(CONTEXT_BODY_LIMIT).toBe(2000);
@@ -1845,6 +1868,82 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI durable triage contract', 
       expect(result.applyMode).toBe('full');
       const [thread] = await db.select().from(mailThread).where(eq(mailThread.id, threadId));
       expect(thread?.spamAt).toBeNull();
+    });
+  });
+
+  it('resolves every target category before deleting managed joins or clearing spam', async () => {
+    await withSeededTestDb(async (db) => {
+      const threadId = randomUUID();
+      const urgent = await db
+        .select({ id: mailCategory.id })
+        .from(mailCategory)
+        .where(and(eq(mailCategory.transportId, TRANSPORT_ID), eq(mailCategory.slug, 'urgent')))
+        .limit(1);
+      const missing = await db
+        .select({ id: mailCategory.id })
+        .from(mailCategory)
+        .where(
+          and(
+            eq(mailCategory.transportId, TRANSPORT_ID),
+            eq(mailCategory.slug, 'exceptions-recovery'),
+          ),
+        )
+        .limit(1);
+      expect(urgent[0]).toBeDefined();
+      expect(missing[0]).toBeDefined();
+
+      await db.insert(mailThread).values({
+        id: threadId,
+        transportId: TRANSPORT_ID,
+        threadRootId: `<${threadId}@example.com>`,
+        subject: 'Recovery',
+        snippet: 'Needs action',
+        latestMessageAt: new Date(),
+        spamAt: new Date('2026-07-01T00:00:00.000Z'),
+      });
+      await db.insert(mailThreadCategory).values({
+        threadId,
+        transportId: TRANSPORT_ID,
+        categoryId: urgent[0]!.id,
+      });
+      await db
+        .delete(mailCategory)
+        .where(eq(mailCategory.id, missing[0]!.id));
+
+      await expect(
+        applyDurableTriageResult({
+          db,
+          transportId: TRANSPORT_ID,
+          threadId,
+          writeGateEnabled: true,
+          output: {
+            primaryFolder: 'exceptions-recovery',
+            priority: 'P1',
+            urgent: false,
+            overlays: {},
+            isSpam: false,
+            suggestedTools: [],
+            sourceScope: 'external',
+            automationState: 'exception_candidate',
+            humanAction: 'amend_or_cancel',
+            confidence: 0.9,
+            rationale: 'recovery',
+            policyFlags: [],
+            abstainReason: null,
+          },
+        }),
+      ).rejects.toThrow(/category missing/i);
+
+      const [thread] = await db
+        .select({ spamAt: mailThread.spamAt })
+        .from(mailThread)
+        .where(eq(mailThread.id, threadId));
+      expect(thread?.spamAt?.toISOString()).toBe('2026-07-01T00:00:00.000Z');
+      const joins = await db
+        .select({ categoryId: mailThreadCategory.categoryId })
+        .from(mailThreadCategory)
+        .where(eq(mailThreadCategory.threadId, threadId));
+      expect(joins.map((row) => row.categoryId)).toEqual([urgent[0]!.id]);
     });
   });
 });

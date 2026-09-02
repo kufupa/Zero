@@ -42,7 +42,19 @@ type MemRun = {
   idempotencyKey: string;
   modelId: string;
   promptVersion: string;
+  promptHash?: string | null;
   state: string;
+  metrics?: Record<string, unknown>;
+  claimOwner?: string | null;
+  claimToken?: string | null;
+  attempts?: number;
+  nextRunAt?: Date | null;
+  startedAt?: Date | null;
+  finishedAt?: Date | null;
+  heartbeatAt?: Date | null;
+  lastError?: string | null;
+  failureClass?: string | null;
+  updatedAt?: Date;
 };
 
 function sha(text: string): string {
@@ -62,9 +74,11 @@ function buildManifest(targets: Array<{
     transportId: TRANSPORT_ID,
     generatedAt: '2026-07-30T12:00:00.000Z',
     modelId: MODEL_ID,
-    promptVersion: PROMPT_VERSION,
-    promptHash: PROMPT_HASH,
-    targets: targets.map((t) => ({
+      promptVersion: PROMPT_VERSION,
+      promptHash: PROMPT_HASH,
+      sourceHash: 'b'.repeat(64),
+      snapshotHash: 'd'.repeat(64),
+      targets: targets.map((t) => ({
       threadId: t.threadId,
       triggerMessageId: t.triggerMessageId,
       triggerHash: computeTriggerHash({
@@ -77,8 +91,12 @@ function buildManifest(targets: Array<{
         spamUserLockedAt: t.spamUserLockedAt ?? null,
         aiCategorySlugs: t.aiCategorySlugs ?? [],
       }),
-      approvedCategory: 'ops',
+      approvedCategory: 'manage-stay',
+      approvedPrimaryFolder: 'manage-stay',
       approvedUrgent: false,
+      approvedIsSpam: false,
+      sourceHash: 'b'.repeat(64),
+      rehearsalResultHash: 'c'.repeat(64),
     })),
   };
   return {
@@ -93,6 +111,7 @@ function createMemoryDriver(seed: {
   existingKeys?: string[];
   failAfterInsert?: boolean;
   lockAfterInsert?: boolean;
+  lockBeforeTransaction?: boolean;
 }) {
   const threads = new Map(seed.threads.map((t) => [t.threadId, { ...t, aiCategorySlugs: [...t.aiCategorySlugs] }]));
   const preferences = new Map(Object.entries(seed.preferences ?? {}));
@@ -110,6 +129,7 @@ function createMemoryDriver(seed: {
   }
   let failAfterInsert = seed.failAfterInsert ?? false;
   let lockAfterInsert = seed.lockAfterInsert ?? false;
+  let lockBeforeTransaction = seed.lockBeforeTransaction ?? false;
 
   return {
     threads,
@@ -141,6 +161,8 @@ function createMemoryDriver(seed: {
         return new Set(keys.filter((k) => runs.has(k)));
       },
       async transaction<T>(work: (tx: {
+        lockThreadForUpdate: (threadId: string) => Promise<MemThread | null>;
+        getSenderPreference: (email: string) => Promise<PrefKind | null>;
         insertRunReturning: (row: {
           id: string;
           threadId: string;
@@ -148,6 +170,9 @@ function createMemoryDriver(seed: {
           idempotencyKey: string;
           modelId: string;
           promptVersion: string;
+          promptHash?: string | null;
+          metrics?: Record<string, unknown>;
+          now?: Date;
         }) => Promise<string | null>;
         clearAiManagedCategories: (threadId: string) => Promise<void>;
         clearSpamAt: (threadId: string) => Promise<void>;
@@ -158,9 +183,47 @@ function createMemoryDriver(seed: {
         const snapshotRuns = new Map([...runs.entries()].map(([k, v]) => [k, { ...v }]));
         try {
           return await work({
+            async lockThreadForUpdate(threadId) {
+              const t = threads.get(threadId);
+              if (!t) return null;
+              if (lockBeforeTransaction) {
+                lockBeforeTransaction = false;
+                t.spamUserLockedAt = new Date('2026-07-01T11:00:00.000Z');
+              }
+              return { ...t, aiCategorySlugs: [...t.aiCategorySlugs] };
+            },
+            async getSenderPreference(email) {
+              return preferences.get(email) ?? null;
+            },
             async insertRunReturning(row) {
-              if (runs.has(row.idempotencyKey)) return null;
-              runs.set(row.idempotencyKey, { ...row, state: 'queued' });
+              const existing = runs.get(row.idempotencyKey);
+              if (existing) {
+                if (!['retry_wait', 'dead_letter'].includes(existing.state)) return null;
+                runs.set(row.idempotencyKey, {
+                  ...existing,
+                  ...row,
+                  id: existing.id,
+                  state: 'queued',
+                  metrics: row.metrics,
+                  claimOwner: null,
+                  claimToken: null,
+                  attempts: 0,
+                  nextRunAt: null,
+                  startedAt: null,
+                  finishedAt: null,
+                  heartbeatAt: null,
+                  lastError: null,
+                  failureClass: null,
+                  updatedAt: row.now,
+                });
+                return existing.id;
+              }
+              runs.set(row.idempotencyKey, {
+                ...row,
+                state: 'queued',
+                metrics: row.metrics,
+                updatedAt: row.now,
+              });
               if (lockAfterInsert) {
                 const t = threads.get(row.threadId);
                 if (t) t.spamUserLockedAt = new Date('2026-07-01T11:00:00.000Z');
@@ -173,6 +236,7 @@ function createMemoryDriver(seed: {
             async clearAiManagedCategories(threadId) {
               const t = threads.get(threadId);
               if (!t) return;
+              if (t.spamUserLockedAt) return;
               t.aiCategorySlugs = t.aiCategorySlugs.filter(
                 (s) => !['ops', 'urgent', 'new-bookings', 'groups-events', 'at-risk', 'internal', 'individual', 'group', 'travel-agents'].includes(s),
               );
@@ -302,6 +366,8 @@ describe('retag idempotency key + manifest validation', () => {
       modelId: dup.modelId,
       promptVersion: dup.promptVersion,
       promptHash: dup.promptHash,
+      sourceHash: dup.sourceHash,
+      snapshotHash: dup.snapshotHash,
       targets: dup.targets,
     });
     expect(() => validateApprovedRolloutManifest(dup)).toThrow(/duplicate target/i);
@@ -329,14 +395,114 @@ describe('retag idempotency key + manifest validation', () => {
           modelId: MODEL_ID,
           promptVersion: PROMPT_VERSION,
           promptHash: 'short',
+          sourceHash: manifest.sourceHash,
+          snapshotHash: manifest.snapshotHash,
           targets: manifest.targets,
         }),
       }),
     ).toThrow(/promptHash/i);
   });
+
+  it('requires approval/source/rehearsal binding before apply', async () => {
+    const createdAt = '2026-07-01T10:00:00.000Z';
+    const mem = createMemoryDriver({
+      threads: [
+        {
+          threadId: 't-unbound',
+          spamAt: null,
+          spamUserLockedAt: null,
+          latestInboundId: 'm-unbound',
+          latestInboundFrom: 'guest@example.com',
+          latestInboundCreatedAt: new Date(createdAt),
+          aiCategorySlugs: ['ops'],
+          hasInbound: true,
+        },
+      ],
+    });
+    const bound = buildManifest([
+      { threadId: 't-unbound', triggerMessageId: 'm-unbound', triggerCreatedAt: createdAt },
+    ]);
+    const { manifestHash: _ignored, sourceHash: _source, ...withoutRootBinding } = bound;
+    const unbound = {
+      ...withoutRootBinding,
+      targets: bound.targets.map(
+        ({
+          approvedCategory: _category,
+          approvedPrimaryFolder: _primary,
+          approvedUrgent: _urgent,
+          approvedIsSpam: _spam,
+          sourceHash: _targetSource,
+          rehearsalResultHash: _rehearsal,
+          ...target
+        }) => target,
+      ),
+    };
+    unbound.manifestHash = computeCanonicalManifestHash({
+      version: unbound.version,
+      transportId: unbound.transportId,
+      generatedAt: unbound.generatedAt,
+      modelId: unbound.modelId,
+      promptVersion: unbound.promptVersion,
+      promptHash: unbound.promptHash,
+      snapshotHash: unbound.snapshotHash,
+      targets: unbound.targets,
+    });
+
+    await expect(
+      runCenturionRetag({
+        driver: mem.driver,
+        dryRun: false,
+        keyPrefix: 'inbound-triage-retag-v6-unbound',
+        fromDomain: null,
+        manifest: unbound,
+      }),
+    ).rejects.toThrow(/bound|approval|rehearsal|source/i);
+    expect(mem.runs.size).toBe(0);
+    expect(mem.threads.get('t-unbound')?.aiCategorySlugs).toEqual(['ops']);
+  });
 });
 
 describe('runCenturionRetag idempotency + skips', () => {
+  it('successful enqueue preserves prior AI state until worker succeeds', async () => {
+    const createdAt = '2026-07-01T10:00:00.000Z';
+    const spamAt = new Date('2026-07-01T09:00:00.000Z');
+    const mem = createMemoryDriver({
+      threads: [
+        {
+          threadId: 't-pending',
+          spamAt,
+          spamUserLockedAt: null,
+          latestInboundId: 'm-pending',
+          latestInboundFrom: 'a@b.com',
+          latestInboundCreatedAt: new Date(createdAt),
+          aiCategorySlugs: ['ops', 'urgent'],
+          hasInbound: true,
+        },
+      ],
+    });
+    const manifest = buildManifest([
+      {
+        threadId: 't-pending',
+        triggerMessageId: 'm-pending',
+        triggerCreatedAt: createdAt,
+        spamAt: spamAt.toISOString(),
+        aiCategorySlugs: ['ops', 'urgent'],
+      },
+    ]);
+
+    const result = await runCenturionRetag({
+      driver: mem.driver,
+      dryRun: false,
+      keyPrefix: 'inbound-triage-retag-v6-pending',
+      fromDomain: null,
+      manifest,
+    });
+
+    expect(result).toMatchObject({ inserted: 1, mutated: 1 });
+    expect(mem.threads.get('t-pending')?.aiCategorySlugs).toEqual(['ops', 'urgent']);
+    expect(mem.threads.get('t-pending')?.spamAt).toEqual(spamAt);
+  });
+
   it('second identical apply reports collision, zero inserts/mutations, labels unchanged', async () => {
     const createdAt = '2026-07-01T10:00:00.000Z';
     const mem = createMemoryDriver({
@@ -378,8 +544,8 @@ describe('runCenturionRetag idempotency + skips', () => {
       mutated: 1,
       collisions: 0,
     });
-    expect(mem.threads.get('t-elig')?.aiCategorySlugs).toEqual([]);
-    expect(mem.threads.get('t-elig')?.spamAt).toBeNull();
+    expect(mem.threads.get('t-elig')?.aiCategorySlugs).toEqual(['ops', 'urgent']);
+    expect(mem.threads.get('t-elig')?.spamAt?.toISOString()).toBe('2026-07-01T09:00:00.000Z');
 
     // restore labels to prove second apply does not clear again — simulate worker re-applied
     mem.threads.get('t-elig')!.aiCategorySlugs = ['ops'];
@@ -448,6 +614,107 @@ describe('runCenturionRetag idempotency + skips', () => {
     });
     expect(result).toMatchObject({ collisions: 1, inserted: 0, mutated: 0 });
     expect(mem.threads.get('t1')?.aiCategorySlugs).toEqual(['ops']);
+  });
+
+  it('resumes the same key only from retry_wait/dead_letter and resets failure state', async () => {
+    for (const state of ['retry_wait', 'dead_letter']) {
+      const createdAt = '2026-07-01T10:00:00.000Z';
+      const keyPrefix = `inbound-triage-retag-v6-resume-${state}`;
+      const mem = createMemoryDriver({
+        threads: [
+          {
+            threadId: 't-resume',
+            spamAt: new Date('2026-07-01T09:00:00.000Z'),
+            spamUserLockedAt: null,
+            latestInboundId: 'm-resume',
+            latestInboundFrom: 'guest@example.com',
+            latestInboundCreatedAt: new Date(createdAt),
+            aiCategorySlugs: ['ops', 'urgent'],
+            hasInbound: true,
+          },
+        ],
+        existingKeys: [retagIdempotencyKey('m-resume', keyPrefix)],
+      });
+      const existing = mem.runs.get(retagIdempotencyKey('m-resume', keyPrefix))!;
+      Object.assign(existing, {
+        state,
+        claimOwner: 'stale-worker',
+        claimToken: 'stale-token',
+        attempts: 3,
+        nextRunAt: new Date('2026-07-01T11:00:00.000Z'),
+        startedAt: new Date('2026-07-01T10:30:00.000Z'),
+        finishedAt: new Date('2026-07-01T10:31:00.000Z'),
+        heartbeatAt: new Date('2026-07-01T10:30:30.000Z'),
+        lastError: 'old failure',
+        failureClass: 'transient',
+      });
+
+      const manifest = buildManifest([
+        {
+          threadId: 't-resume',
+          triggerMessageId: 'm-resume',
+          triggerCreatedAt: createdAt,
+          spamAt: '2026-07-01T09:00:00.000Z',
+          aiCategorySlugs: ['ops', 'urgent'],
+        },
+      ]);
+      const result = await runCenturionRetag({
+        driver: mem.driver,
+        dryRun: false,
+        keyPrefix,
+        fromDomain: null,
+        manifest,
+      });
+
+      expect(result).toMatchObject({ inserted: 1, mutated: 1, collisions: 0 });
+      expect(mem.runs.get(retagIdempotencyKey('m-resume', keyPrefix))).toMatchObject({
+        state: 'queued',
+        claimOwner: null,
+        claimToken: null,
+        attempts: 0,
+        nextRunAt: null,
+        startedAt: null,
+        finishedAt: null,
+        heartbeatAt: null,
+        lastError: null,
+        failureClass: null,
+        metrics: { retagPending: true },
+      });
+      expect(mem.threads.get('t-resume')?.aiCategorySlugs).toEqual(['ops', 'urgent']);
+      expect(mem.threads.get('t-resume')?.spamAt?.toISOString()).toBe('2026-07-01T09:00:00.000Z');
+    }
+
+    const terminalKeyPrefix = 'inbound-triage-retag-v6-resume-terminal';
+    const terminalMem = createMemoryDriver({
+      threads: [
+        {
+          threadId: 't-resume',
+          spamAt: null,
+          spamUserLockedAt: null,
+          latestInboundId: 'm-resume',
+          latestInboundFrom: 'guest@example.com',
+          latestInboundCreatedAt: new Date('2026-07-01T10:00:00.000Z'),
+          aiCategorySlugs: ['ops'],
+          hasInbound: true,
+        },
+      ],
+      existingKeys: [retagIdempotencyKey('m-resume', terminalKeyPrefix)],
+    });
+    const terminalResult = await runCenturionRetag({
+      driver: terminalMem.driver,
+      dryRun: false,
+      keyPrefix: terminalKeyPrefix,
+      fromDomain: null,
+      manifest: buildManifest([
+        {
+          threadId: 't-resume',
+          triggerMessageId: 'm-resume',
+          triggerCreatedAt: '2026-07-01T10:00:00.000Z',
+          aiCategorySlugs: ['ops'],
+        },
+      ]),
+    });
+    expect(terminalResult).toMatchObject({ inserted: 0, mutated: 0, collisions: 1 });
   });
 
   it('transaction rollback leaves no run and no mutation', async () => {
@@ -766,6 +1033,47 @@ describe('runCenturionRetag idempotency + skips', () => {
     expect(result).toMatchObject({ inserted: 1, mutated: 1 });
     expect(mem.threads.get('t-lock-race')?.spamAt?.toISOString()).toBe(spamAt);
     expect(mem.threads.get('t-lock-race')?.spamUserLockedAt).not.toBeNull();
+    expect(mem.threads.get('t-lock-race')?.aiCategorySlugs).toEqual(['ops']);
+  });
+
+  it('rechecks the locked row inside the mutation transaction before enqueue and clear', async () => {
+    const createdAt = '2026-07-01T10:00:00.000Z';
+    const mem = createMemoryDriver({
+      lockBeforeTransaction: true,
+      threads: [
+        {
+          threadId: 't-lock-before',
+          spamAt: new Date('2026-07-01T09:00:00.000Z'),
+          spamUserLockedAt: null,
+          latestInboundId: 'm-lock-before',
+          latestInboundFrom: 'guest@example.com',
+          latestInboundCreatedAt: new Date(createdAt),
+          aiCategorySlugs: ['ops', 'urgent'],
+          hasInbound: true,
+        },
+      ],
+    });
+    const manifest = buildManifest([
+      {
+        threadId: 't-lock-before',
+        triggerMessageId: 'm-lock-before',
+        triggerCreatedAt: createdAt,
+        spamAt: '2026-07-01T09:00:00.000Z',
+        aiCategorySlugs: ['ops', 'urgent'],
+      },
+    ]);
+
+    const result = await runCenturionRetag({
+      driver: mem.driver,
+      dryRun: false,
+      keyPrefix: 'inbound-triage-retag-v6-lock-before',
+      fromDomain: null,
+      manifest,
+    });
+
+    expect(result).toMatchObject({ skippedLocked: 1, inserted: 0, mutated: 0 });
+    expect(mem.runs.size).toBe(0);
+    expect(mem.threads.get('t-lock-before')?.aiCategorySlugs).toEqual(['ops', 'urgent']);
   });
 
   it('refuses pre-state drift and rows absent from manifest', async () => {
@@ -830,7 +1138,9 @@ describe('retag script source contract', () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const src = readFileSync(pathJoin(here, '../scripts/retag-centurion-triage.mjs'), 'utf8');
     expect(src).toMatch(/ORDER BY\s+m\.created_at DESC\s*,\s*m\.id DESC/i);
-    expect(src).toMatch(/ON CONFLICT\s*\(\s*idempotency_key\s*\)\s*DO NOTHING\s*RETURNING\s+id/i);
+    expect(src).toMatch(
+      /ON CONFLICT\s*\(\s*idempotency_key\s*\)\s*DO UPDATE[\s\S]*WHERE\s+ai_workflow_run\.state\s+IN\s*\(\s*'retry_wait'\s*,\s*'dead_letter'\s*\)[\s\S]*RETURNING\s+id/i,
+    );
     expect(src).toMatch(/probeKeys/);
     expect(src).toMatch(/export\s+(async\s+)?function\s+runCenturionRetag/);
     expect(src).toMatch(/export\s+function\s+parseArgs/);

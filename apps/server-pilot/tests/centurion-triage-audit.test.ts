@@ -392,7 +392,6 @@ describe('strict centurion triage audit', () => {
     const inputSpecificPromptHash = sha('serialized user prompt/asOf');
     const fx = await buildApprovedFixture({
       mutateRun: (run) => {
-        run.promptHash = inputSpecificPromptHash;
         run.metrics = { ...run.metrics, promptHash: inputSpecificPromptHash };
       },
     });
@@ -408,6 +407,23 @@ describe('strict centurion triage audit', () => {
 
     expect(result.ok).toBe(true);
     expect(result.errors).toEqual([]);
+  });
+
+  it('rejects a run whose static prompt artifact hash is not bound to the manifest', async () => {
+    const fx = await buildApprovedFixture({
+      mutateRun: (run) => {
+        run.promptHash = sha('different static artifact');
+      },
+    });
+    const result = await auditCenturionTriageRetag({
+      driver: fx.auditDriver,
+      snapshot: fx.snapshot,
+      manifest: fx.manifest,
+      applySummary: fx.applySummary,
+      keyPrefix: KEY_PREFIX,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.errors.join('\n')).toMatch(/prompt artifact|prompt hash.*manifest|bound/i);
   });
 
   it('rejects missing or invalid run prompt hashes', async () => {
@@ -468,7 +484,9 @@ describe('strict centurion triage audit', () => {
               triggerMessageId: 'm-locked',
               triggerHash: 'a'.repeat(64),
               preStateHash: 'a'.repeat(64),
-              approvedCategory: 'ops',
+              approvedCategory: 'bookings',
+              approvedPrimaryFolder: 'bookings',
+              approvedIsSpam: false,
               approvedUrgent: false,
               sourceHash: SOURCE_HASH,
               rehearsalResultHash: 'd'.repeat(64),
@@ -503,6 +521,37 @@ describe('strict centurion triage audit', () => {
     });
     expect(dupResult.ok).toBe(false);
     expect(dupResult.errors.join('\n')).toMatch(/duplicate target/i);
+  });
+
+  it('rejects missing or mismatched snapshot binding even after manifest rehash', async () => {
+    const missing = await buildApprovedFixture({
+      mutateManifest: (m) => rehashManifest({ ...m, snapshotHash: undefined }),
+    });
+    const missingResult = await auditCenturionTriageRetag({
+      driver: missing.auditDriver,
+      snapshot: missing.snapshot,
+      manifest: missing.manifest,
+      applySummary: { ...missing.applySummary, manifestHash: missing.manifest.manifestHash },
+      keyPrefix: KEY_PREFIX,
+    });
+    expect(missingResult.ok).toBe(false);
+    expect(missingResult.errors.join('\n')).toMatch(/snapshotHash|snapshot.*bind/i);
+
+    const mismatched = await buildApprovedFixture({
+      mutateManifest: (m) => rehashManifest({ ...m, snapshotHash: 'f'.repeat(64) }),
+    });
+    const mismatchedResult = await auditCenturionTriageRetag({
+      driver: mismatched.auditDriver,
+      snapshot: mismatched.snapshot,
+      manifest: mismatched.manifest,
+      applySummary: {
+        ...mismatched.applySummary,
+        manifestHash: mismatched.manifest.manifestHash,
+      },
+      keyPrefix: KEY_PREFIX,
+    });
+    expect(mismatchedResult.ok).toBe(false);
+    expect(mismatchedResult.errors.join('\n')).toMatch(/snapshotHash|snapshot.*bind/i);
   });
 
   it('rejects wrong trigger/pre-state hash', async () => {
@@ -832,6 +881,8 @@ describe('strict centurion triage audit', () => {
       targets: fx.manifest.targets.map((t: Record<string, unknown>) => ({
         ...t,
         approvedCategory: 'spam',
+        approvedPrimaryFolder: 'spam',
+        approvedIsSpam: true,
         approvedUrgent: false,
       })),
     });
@@ -857,6 +908,8 @@ describe('strict centurion triage audit', () => {
           targets: m.targets.map((t: Record<string, unknown>) => ({
             ...t,
             approvedCategory: 'spam',
+            approvedPrimaryFolder: 'spam',
+            approvedIsSpam: true,
             approvedUrgent: true,
           })),
         }),
@@ -952,6 +1005,8 @@ describe('strict centurion triage audit', () => {
           targets: m.targets.map((t: Record<string, unknown>) => ({
             ...t,
             approvedCategory: 'spam',
+            approvedPrimaryFolder: 'spam',
+            approvedIsSpam: true,
             approvedUrgent: false,
           })),
         }),

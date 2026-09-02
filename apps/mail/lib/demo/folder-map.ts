@@ -208,6 +208,19 @@ const ALL_MAIL_FOLDER_DEFINITIONS = [
   ...WORKFLOW_MAIL_FOLDER_DEFINITIONS,
 ];
 
+function buildDemoMailFolderMap(
+  definitions: DemoMailFolderDefinition[],
+): Map<string, DemoMailFolderDefinition> {
+  return new Map(
+    definitions.flatMap((def) => [
+      [def.id, def] as const,
+      ...def.aliases.map((alias) => [alias.toLowerCase(), def] as const),
+    ]),
+  );
+}
+
+const legacyDemoMailFolderBySlug = buildDemoMailFolderMap(DEMO_MAIL_FOLDER_DEFINITIONS);
+const workflowDemoMailFolderBySlug = buildDemoMailFolderMap(WORKFLOW_MAIL_FOLDER_DEFINITIONS);
 const demoMailFolderBySlug = new Map<string, DemoMailFolderDefinition>(
   ALL_MAIL_FOLDER_DEFINITIONS.flatMap((def) => [
     [def.id, def] as const,
@@ -215,14 +228,24 @@ const demoMailFolderBySlug = new Map<string, DemoMailFolderDefinition>(
   ]),
 );
 
-export function getDemoMailFolderDefinition(slug: string): DemoMailFolderDefinition | undefined {
-  return demoMailFolderBySlug.get(slug.trim().toLowerCase());
+export function getDemoMailFolderDefinition(
+  slug: string,
+  workflowNav?: boolean,
+): DemoMailFolderDefinition | undefined {
+  const normalized = slug.trim().toLowerCase();
+  if (workflowNav === false) return legacyDemoMailFolderBySlug.get(normalized);
+  if (workflowNav === true) {
+    return (
+      workflowDemoMailFolderBySlug.get(normalized) ?? legacyDemoMailFolderBySlug.get(normalized)
+    );
+  }
+  return demoMailFolderBySlug.get(normalized);
 }
 
 /** Canonical slug for list adapter + query keys (post-alias). */
-export function normalizeDemoMailFolderSlug(folder?: string): string {
+export function normalizeDemoMailFolderSlug(folder?: string, workflowNav = false): string {
   const raw = (folder ?? 'inbox').trim().toLowerCase() || 'inbox';
-  const mapped = demoMailFolderBySlug.get(raw);
+  const mapped = getDemoMailFolderDefinition(raw, workflowNav);
   if (mapped) return mapped.id;
   return raw;
 }

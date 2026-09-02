@@ -157,4 +157,35 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('Task 8 workflow durable apply
       expect(rows.map((row) => row.slug)).not.toContain('bookings');
     });
   });
+
+  it('sets spam_at without requiring a spam category when workflow output is spam and nav is off', async () => {
+    await withSeededTestDb(async (db) => {
+      const threadId = randomUUID();
+      await db.insert(mailThread).values({
+        id: threadId,
+        transportId: TRANSPORT_ID,
+        threadRootId: `<${threadId}@example.com>`,
+        subject: 'Promotion',
+        snippet: 'Buy now',
+        latestMessageAt: new Date(),
+        spamAt: null,
+      });
+
+      const result = await applyDurableTriageResult({
+        db,
+        transportId: TRANSPORT_ID,
+        threadId,
+        writeGateEnabled: true,
+        workflowTriageEnabled: false,
+        output: workflowOutput({ isSpam: true, primaryFolder: 'unknown-review' }),
+      });
+
+      expect(result.applyMode).toBe('full');
+      const [thread] = await db
+        .select({ spamAt: mailThread.spamAt })
+        .from(mailThread)
+        .where(eq(mailThread.id, threadId));
+      expect(thread?.spamAt).not.toBeNull();
+    });
+  });
 });

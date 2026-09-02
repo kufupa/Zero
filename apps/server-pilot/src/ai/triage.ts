@@ -161,7 +161,7 @@ const WORKFLOW_TO_LEGACY_CATEGORY: Record<
   'confirm-reconcile': 'ops',
   'money-billing': 'ops',
   'documents-delivery': 'ops',
-  'exceptions-recovery': 'ops',
+  'exceptions-recovery': 'at-risk',
   'guest-experience': 'new-bookings',
   'internal-partner': 'ops',
   'automated-channel': 'ops',
@@ -865,6 +865,8 @@ export interface ApplyDurableTriageInput {
   writeGateEnabled: boolean;
   /** Enables workflow primary joins; legacy dual-read remains available when off. */
   workflowTriageEnabled?: boolean;
+  /** Retag runs preserve prior state until worker success, then force full apply. */
+  forceUnsettle?: boolean;
   threadSignals?: ThreadSignals;
   from?: string;
   to?: AddressListInput;
@@ -966,7 +968,8 @@ export async function applyDurableTriageResult(
   const rewriteForNotSpam = exceptionNotSpam || workflowUnsettledNotSpam;
   const effectiveIsSpam = blocked || (requestedIsSpam && !exceptionNotSpam);
 
-  const settled = primaryRows.length > 0 || (thread?.spamAt != null && !rewriteForNotSpam);
+  const settled =
+    !input.forceUnsettle && (primaryRows.length > 0 || (thread?.spamAt != null && !rewriteForNotSpam));
 
   if (settled) {
     // KTD2: settled threads never flip primary/spamAt — urgency overlay only.
@@ -994,6 +997,48 @@ export async function applyDurableTriageResult(
       });
     }
     return { applyMode: 'urgency_only' };
+  }
+
+  // Resolve every category ID before any destructive join/spam mutation. A
+  // missing target category must leave the existing durable state untouched.
+  const categoryRows = await db
+    .select({ id: mailCategory.id, slug: mailCategory.slug })
+    .from(mailCategory)
+    .where(and(eq(mailCategory.transportId, transportId), eq(mailCategory.isActive, true)));
+
+  const bySlug = new Map(categoryRows.map((row) => [row.slug, row.id]));
+  let categoryIds: string[] = [];
+  // Spam is durable on mail_thread.spam_at, never via a primary category join.
+  // Do not require a legacy `spam` category when workflow output is spam and
+  // the workflow/nav capability is disabled.
+  if (!effectiveIsSpam) {
+    const targetPrimary = workflowOutput && workflowTriageEnabled
+      ? exceptionNotSpam
+        ? workflowApplyExceptionFolder(workflowOutput.primaryFolder, latestFrom ?? '', staff)
+        : workflowOutput.primaryFolder
+      : exceptionNotSpam && legacyOutput.category === 'spam'
+        ? isPilotNeverSpamAddress(latestFrom ?? '')
+          ? 'new-bookings'
+          : 'ops'
+        : legacyOutput.category;
+    if (!bySlug.get(targetPrimary)) {
+      throw new Error(`AI category missing for transport ${transportId}: ${targetPrimary}`);
+    }
+
+    const targetSlugs = [
+      targetPrimary,
+      ...((workflowOutput?.urgent ?? legacyOutput.urgent) ? (['urgent'] as const) : []),
+    ];
+    categoryIds = targetSlugs
+      .map((slug) => {
+        const id = bySlug.get(slug);
+        if (!id && slug !== targetPrimary) return undefined;
+        if (!id) {
+          throw new Error(`AI category missing for transport ${transportId}: ${slug}`);
+        }
+        return id;
+      })
+      .filter((id): id is string => Boolean(id));
   }
 
   const aiManagedRows = await db
@@ -1031,40 +1076,6 @@ export async function applyDurableTriageResult(
     .update(mailThread)
     .set({ spamAt: null, updatedAt: new Date() })
     .where(and(eq(mailThread.id, threadId), eq(mailThread.transportId, transportId)));
-
-  const categoryRows = await db
-    .select({ id: mailCategory.id, slug: mailCategory.slug })
-    .from(mailCategory)
-    .where(and(eq(mailCategory.transportId, transportId), eq(mailCategory.isActive, true)));
-
-  const bySlug = new Map(categoryRows.map((row) => [row.slug, row.id]));
-  const targetPrimary = workflowOutput && workflowTriageEnabled
-    ? exceptionNotSpam
-      ? workflowApplyExceptionFolder(workflowOutput.primaryFolder, latestFrom ?? '', staff)
-      : workflowOutput.primaryFolder
-    : exceptionNotSpam && legacyOutput.category === 'spam'
-      ? isPilotNeverSpamAddress(latestFrom ?? '')
-        ? 'new-bookings'
-        : 'ops'
-      : legacyOutput.category;
-  if (!bySlug.get(targetPrimary)) {
-    throw new Error(`AI category missing for transport ${transportId}: ${targetPrimary}`);
-  }
-
-  const targetSlugs = [
-    targetPrimary,
-    ...((workflowOutput?.urgent ?? legacyOutput.urgent) ? (['urgent'] as const) : []),
-  ];
-  const categoryIds = targetSlugs
-    .map((slug) => {
-      const id = bySlug.get(slug);
-      if (!id && slug !== targetPrimary) return undefined;
-      if (!id) {
-        throw new Error(`AI category missing for transport ${transportId}: ${slug}`);
-      }
-      return id;
-    })
-    .filter((id): id is string => Boolean(id));
 
   if (categoryIds.length > 0) {
     await db.insert(mailThreadCategory).values(

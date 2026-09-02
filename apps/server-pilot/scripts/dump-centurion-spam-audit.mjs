@@ -67,10 +67,13 @@ try {
   const triage = await sql`
     SELECT DISTINCT ON (thread_id)
       thread_id,
-      metrics->>'category' AS category,
+      metrics->'canonicalOutput'->>'primaryFolder' AS primary_folder,
+      metrics->'canonicalOutput'->>'priority' AS priority,
+      metrics->'canonicalOutput'->>'urgent' AS urgent,
+      metrics->'canonicalOutput'->>'isSpam' AS is_spam,
       metrics->>'applyMode' AS apply_mode,
       metrics->>'durableWrite' AS durable_write,
-      metrics->>'confidence' AS confidence,
+      metrics->'canonicalOutput'->>'confidence' AS confidence,
       state,
       created_at
     FROM ai_workflow_run
@@ -93,7 +96,11 @@ try {
       msgCount: t.msg_count,
       triage: tr
         ? {
-            category: tr.category,
+            category: tr.primary_folder,
+            primaryFolder: tr.primary_folder,
+            priority: tr.priority,
+            urgent: tr.urgent === 'true',
+            isSpam: tr.is_spam === 'true',
             applyMode: tr.apply_mode,
             durableWrite: tr.durable_write,
             confidence: tr.confidence,

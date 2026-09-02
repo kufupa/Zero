@@ -227,6 +227,54 @@ export function validateApprovedRolloutManifest(manifest) {
   return manifest;
 }
 
+/**
+ * Full-apply manifests must be bound to an approved decision artifact. The
+ * snapshot emitter intentionally creates an unbound target manifest for
+ * rehearsal/dry-run; only the adjudicated binding may authorize mutation.
+ */
+export function validateBoundApprovedRolloutManifest(manifest) {
+  validateApprovedRolloutManifest(manifest);
+  if (!isSha256Hex(manifest.sourceHash)) {
+    throw new Error('bound manifest sourceHash must be sha256 hex');
+  }
+  if (!isSha256Hex(manifest.snapshotHash)) {
+    throw new Error('bound manifest snapshotHash must be sha256 hex');
+  }
+  const allowedPrimaryFolders = new Set([...WORKFLOW_PRIMARY_SLUGS, 'spam']);
+  for (const target of manifest.targets) {
+    if (
+      target.approvedCategory != null &&
+      target.approvedPrimaryFolder != null &&
+      target.approvedCategory !== target.approvedPrimaryFolder
+    ) {
+      throw new Error(`target ${target.threadId}: approved category binding mismatch`);
+    }
+    const primary = target.approvedPrimaryFolder ?? target.approvedCategory;
+    if (typeof primary !== 'string' || primary.length === 0) {
+      throw new Error(`target ${target.threadId}: approved canonical decision required`);
+    }
+    if (!allowedPrimaryFolders.has(primary)) {
+      throw new Error(`target ${target.threadId}: invalid approved canonical folder ${primary}`);
+    }
+    if (typeof target.approvedIsSpam !== 'boolean') {
+      throw new Error(`target ${target.threadId}: approvedIsSpam boolean required`);
+    }
+    if (target.approvedIsSpam !== (primary === 'spam')) {
+      throw new Error(`target ${target.threadId}: approved spam/folder decision mismatch`);
+    }
+    if (typeof target.approvedUrgent !== 'boolean') {
+      throw new Error(`target ${target.threadId}: approved urgent boolean required`);
+    }
+    if (!isSha256Hex(target.sourceHash) || target.sourceHash !== manifest.sourceHash) {
+      throw new Error(`target ${target.threadId}: sourceHash binding mismatch`);
+    }
+    if (!isSha256Hex(target.rehearsalResultHash)) {
+      throw new Error(`target ${target.threadId}: rehearsalResultHash required`);
+    }
+  }
+  return manifest;
+}
+
 export function loadApprovedRolloutManifest(targetsPath) {
   const raw = fs.readFileSync(targetsPath, 'utf8');
   const parsed = JSON.parse(raw);
@@ -275,8 +323,8 @@ function isoOrNull(value) {
  * @property {(keys: string[]) => Promise<Set<string>>} probeKeys
  * @property {(work: (tx: {
  *   insertRunReturning: (row: object) => Promise<string|null>,
- *   clearAiManagedCategories: (threadId: string, categoryIds: string[]) => Promise<void>,
- *   clearSpamAt: (threadId: string) => Promise<void>,
+ *   lockThreadForUpdate: (threadId: string) => Promise<RetagThreadRow|null>,
+ *   getSenderPreference: (email: string) => Promise<'block'|'allow'|null>,
  * }) => Promise<any>) => Promise<any>} transaction
  */
 
@@ -434,6 +482,78 @@ export function createPostgresRetagDriver(sql) {
     async transaction(work) {
       return sql.begin(async (tx) => {
         return work({
+          async lockThreadForUpdate(threadId) {
+            const rows = await tx`
+              SELECT
+                t.id AS thread_id,
+                t.spam_at,
+                t.spam_user_locked_at,
+                (
+                  SELECT m.id
+                  FROM message m
+                  WHERE m.thread_id = t.id
+                    AND m.direction = 'inbound'
+                  ORDER BY m.created_at DESC, m.id DESC
+                  LIMIT 1
+                ) AS latest_inbound_id,
+                (
+                  SELECT lower(m.from_address)
+                  FROM message m
+                  WHERE m.thread_id = t.id
+                    AND m.direction = 'inbound'
+                  ORDER BY m.created_at DESC, m.id DESC
+                  LIMIT 1
+                ) AS latest_inbound_from,
+                (
+                  SELECT m.created_at
+                  FROM message m
+                  WHERE m.thread_id = t.id
+                    AND m.direction = 'inbound'
+                  ORDER BY m.created_at DESC, m.id DESC
+                  LIMIT 1
+                ) AS latest_inbound_created_at,
+                COALESCE((
+                  SELECT array_agg(c.slug ORDER BY c.slug)
+                  FROM mail_thread_category mtc
+                  JOIN mail_category c ON c.id = mtc.category_id
+                  WHERE mtc.thread_id = t.id
+                    AND mtc.transport_id = ${TRANSPORT_ID}
+                    AND c.slug = ANY(${RETAG_UNSETTLE_SLUGS})
+                ), '{}') AS ai_category_slugs,
+                EXISTS (
+                  SELECT 1
+                  FROM message m2
+                  WHERE m2.thread_id = t.id
+                    AND m2.direction = 'inbound'
+                ) AS has_inbound
+              FROM mail_thread t
+              WHERE t.transport_id = ${TRANSPORT_ID}
+                AND t.id = ${threadId}
+              FOR UPDATE
+            `;
+            const row = rows[0];
+            if (!row) return null;
+            return {
+              threadId: row.thread_id,
+              spamAt: row.spam_at,
+              spamUserLockedAt: row.spam_user_locked_at,
+              latestInboundId: row.latest_inbound_id,
+              latestInboundFrom: row.latest_inbound_from,
+              latestInboundCreatedAt: row.latest_inbound_created_at,
+              aiCategorySlugs: row.ai_category_slugs ?? [],
+              hasInbound: Boolean(row.has_inbound),
+            };
+          },
+          async getSenderPreference(email) {
+            const rows = await tx`
+              SELECT kind
+              FROM mail_sender_preference
+              WHERE transport_id = ${TRANSPORT_ID}
+                AND email = ${email}
+              LIMIT 1
+            `;
+            return rows[0]?.kind ?? null;
+          },
           async insertRunReturning(row) {
             const inserted = await tx`
               INSERT INTO ai_workflow_run (
@@ -445,11 +565,13 @@ export function createPostgresRetagDriver(sql) {
                 idempotency_key,
                 model_id,
                 prompt_version,
+                prompt_hash,
+                metrics,
                 state,
                 created_at,
                 updated_at
               )
-              VALUES (
+              SELECT
                 ${row.id},
                 ${TRANSPORT_ID},
                 ${row.threadId},
@@ -458,11 +580,33 @@ export function createPostgresRetagDriver(sql) {
                 ${row.idempotencyKey},
                 ${row.modelId},
                 ${row.promptVersion},
+                ${row.promptHash ?? null},
+                ${JSON.stringify(row.metrics ?? { retagPending: true })}::jsonb,
                 'queued',
                 ${row.now},
                 ${row.now}
+              WHERE EXISTS (
+                SELECT 1
+                FROM mail_thread
+                WHERE id = ${row.threadId}
+                  AND transport_id = ${TRANSPORT_ID}
+                  AND spam_user_locked_at IS NULL
               )
-              ON CONFLICT (idempotency_key) DO NOTHING
+              ON CONFLICT (idempotency_key) DO UPDATE
+              SET
+                state = 'queued',
+                claim_owner = NULL,
+                claim_token = NULL,
+                attempts = 0,
+                next_run_at = NULL,
+                started_at = NULL,
+                finished_at = NULL,
+                heartbeat_at = NULL,
+                last_error = NULL,
+                failure_class = NULL,
+                metrics = EXCLUDED.metrics,
+                updated_at = ${row.now}
+              WHERE ai_workflow_run.state IN ('retry_wait', 'dead_letter')
               RETURNING id
             `;
             return inserted[0]?.id ?? null;
@@ -471,9 +615,13 @@ export function createPostgresRetagDriver(sql) {
             if (categoryIds.length === 0) return;
             await tx`
               DELETE FROM mail_thread_category mtc
+              USING mail_thread t
               WHERE mtc.thread_id = ${threadId}
                 AND mtc.transport_id = ${TRANSPORT_ID}
                 AND mtc.category_id = ANY(${categoryIds})
+                AND t.id = mtc.thread_id
+                AND t.transport_id = ${TRANSPORT_ID}
+                AND t.spam_user_locked_at IS NULL
             `;
           },
           async clearSpamAt(threadId) {
@@ -526,6 +674,7 @@ export async function runCenturionRetag(opts) {
   const targetByThread = new Map();
   if (manifest) {
     validateApprovedRolloutManifest(manifest);
+    if (!dryRun) validateBoundApprovedRolloutManifest(manifest);
     for (const target of manifest.targets) {
       targetByThread.set(target.threadId, target);
     }
@@ -551,7 +700,6 @@ export async function runCenturionRetag(opts) {
     ),
   ];
   const preferences = await driver.listSenderPreferences(emails);
-  const categoryIds = dryRun ? [] : await driver.listAiManagedCategoryIds();
 
   /** @type {RetagThreadRow[]} */
   let candidates = threads;
@@ -635,13 +783,66 @@ export async function runCenturionRetag(opts) {
     }
 
     await driver.transaction(async (tx) => {
+      // The preflight row above is only a candidate list. Re-read and lock the
+      // thread here so trigger/pre-state/lock checks and both mutations share
+      // one serialization point.
+      const live = await tx.lockThreadForUpdate(row.threadId);
+      if (!live) {
+        throw new Error(`manifest target missing from database: ${row.threadId}`);
+      }
+      if (!live.hasInbound || !live.latestInboundId) {
+        counts.skippedOutboundOnly += 1;
+        return;
+      }
+      if (live.spamUserLockedAt) {
+        counts.skippedLocked += 1;
+        return;
+      }
+      const liveFrom = live.latestInboundFrom ? String(live.latestInboundFrom).toLowerCase() : '';
+      const livePreference = liveFrom ? await tx.getSenderPreference(liveFrom) : null;
+      if (livePreference === 'block') {
+        counts.skippedBlocked += 1;
+        return;
+      }
+      if (livePreference === 'allow') {
+        counts.skippedAllowed += 1;
+        return;
+      }
+      if (fromDomain && !live.spamAt) {
+        counts.skippedNotSpam += 1;
+        return;
+      }
+      if (manifest) {
+        const target = targetByThread.get(live.threadId);
+        if (!target) throw new Error(`row absent from the manifest: ${live.threadId}`);
+        const triggerHash = computeTriggerHash({
+          threadId: live.threadId,
+          triggerMessageId: live.latestInboundId,
+          createdAt: isoOrNull(live.latestInboundCreatedAt),
+        });
+        if (target.triggerMessageId !== live.latestInboundId || target.triggerHash !== triggerHash) {
+          throw new Error(`trigger drift for thread ${live.threadId}: manifest=${target.triggerMessageId} live=${live.latestInboundId}`);
+        }
+        const preStateHash = computePreStateHash({
+          spamAt: isoOrNull(live.spamAt),
+          spamUserLockedAt: isoOrNull(live.spamUserLockedAt),
+          aiCategorySlugs: live.aiCategorySlugs ?? [],
+        });
+        if (target.preStateHash !== preStateHash) {
+          throw new Error(`pre-state drift for thread ${live.threadId}`);
+        }
+      }
+
+      const liveIdempotencyKey = retagIdempotencyKey(live.latestInboundId, keyPrefix);
       const insertedId = await tx.insertRunReturning({
         id: randomUUID(),
-        threadId: row.threadId,
-        triggerMessageId: row.latestInboundId,
-        idempotencyKey,
+        threadId: live.threadId,
+        triggerMessageId: live.latestInboundId,
+        idempotencyKey: liveIdempotencyKey,
         modelId,
         promptVersion,
+        promptHash: manifest?.promptHash ?? null,
+        metrics: { retagPending: true },
         now,
       });
 
@@ -650,8 +851,6 @@ export async function runCenturionRetag(opts) {
         return;
       }
 
-      await tx.clearAiManagedCategories(row.threadId, categoryIds);
-      await tx.clearSpamAt(row.threadId);
       counts.inserted += 1;
       counts.mutated += 1;
     });

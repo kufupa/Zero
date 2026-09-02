@@ -181,6 +181,22 @@ function buildRunAbortSignal(input: {
   return AbortSignal.any([budgetSignal, input.leaseAbort.signal, input.shutdownSignal]);
 }
 
+/** Renew a claimed-run lease and fail closed on a lost lease or rejected heartbeat. */
+export async function renewAiRunLease(
+  fence: AiRunFence,
+  leaseAbort: AbortController,
+  heartbeat: (fence: AiRunFence) => Promise<boolean> = (fence) => heartbeatAiRun(fence),
+): Promise<void> {
+  try {
+    if (!(await heartbeat(fence))) leaseAbort.abort();
+  } catch {
+    // A rejected heartbeat is equivalent to an unknown/lost lease. Abort the
+    // run so no further model or durable work proceeds under an unverified
+    // claim, and consume the rejection instead of creating an unhandled one.
+    leaseAbort.abort();
+  }
+}
+
 export function parseAiWorkerCliArgs(argv: string[]): AiWorkerCliArgs {
   let drainPrefix: string | undefined;
   let transportId: string | undefined;
@@ -542,9 +558,7 @@ export async function executeAiRun(
   let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
   try {
     heartbeatTimer = setInterval(() => {
-      void heartbeatAiRun(fence).then((ok) => {
-        if (!ok) leaseAbort.abort();
-      });
+      void renewAiRunLease(fence, leaseAbort);
     }, AI_LEASE_HEARTBEAT_INTERVAL_MS);
 
     if (signal.aborted) throw new RunDeadlineError();
@@ -640,6 +654,7 @@ export async function executeAiRun(
           output,
           writeGateEnabled: env.AI_WRITE_GATE_ENABLED,
           workflowTriageEnabled: env.WORKFLOW_TRIAGE_V6,
+          forceUnsettle: run.metrics?.retagPending === true,
           threadSignals,
           from: trigger?.fromAddress ?? '',
           to: trigger?.toAddresses ?? [],
@@ -1313,6 +1328,7 @@ async function applyDurableTriageFromWorker(input: {
   output: WorkflowTriageOutput;
   writeGateEnabled: boolean;
   workflowTriageEnabled: boolean;
+  forceUnsettle?: boolean;
   threadSignals?: ThreadSignals;
   from?: string;
   to?: string[];

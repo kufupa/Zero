@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
 import {
   bindApprovedTargetManifest,
@@ -11,6 +12,8 @@ import {
   emitTargetManifestFromSnapshot,
   parseSnapshotArgs,
   requireSnapshotPromptHash,
+  verifyRestoreSnapshotDrift,
+  writePrivateJson,
   verifySnapshotAgainstLive,
 } from '../scripts/snapshot-centurion-triage.mjs';
 import {
@@ -18,6 +21,7 @@ import {
   computeCanonicalManifestHash,
   computePreStateHash,
   computeTriggerHash,
+  validateBoundApprovedRolloutManifest,
   validateApprovedRolloutManifest,
 } from '../scripts/retag-centurion-triage.mjs';
 import {
@@ -130,6 +134,7 @@ function baseThreads(): MemThread[] {
 function createMemoryStore(seed: {
   threads: MemThread[];
   preferences?: Record<string, PrefKind>;
+  failRestoreAfter?: boolean;
 }) {
   const threads = new Map(
     seed.threads.map((t) => [
@@ -182,6 +187,35 @@ function createMemoryStore(seed: {
         RETAG_UNSETTLE_SLUGS.includes(slug),
       );
     },
+    async restoreAiManagedStateBatch(rows: Array<{
+      threadId: string;
+      spamAt: string | null;
+      spamUserLockedAt: string | null;
+      aiCategorySlugs: string[];
+    }>, snapshot?: object) {
+      if (snapshot) {
+        await verifyRestoreSnapshotDrift({ driver: this, snapshot });
+      }
+      const before = new Map(
+        [...threads.entries()].map(([id, row]) => [id, {
+          ...row,
+          aiCategorySlugs: [...row.aiCategorySlugs],
+          customCategorySlugs: [...row.customCategorySlugs],
+        }]),
+      );
+      try {
+        for (const [index, row] of rows.entries()) {
+          await this.restoreAiManagedState(row);
+          if (seed.failRestoreAfter && index === 0) {
+            throw new Error('forced restore batch failure');
+          }
+        }
+      } catch (error) {
+        threads.clear();
+        for (const [id, row] of before) threads.set(id, row);
+        throw error;
+      }
+    },
     async listSenderPreferenceSnapshot() {
       return [...preferences.entries()].map(([email, kind]) => ({ email, kind }));
     },
@@ -218,6 +252,20 @@ describe('snapshot CLI args', () => {
       /SNAPSHOT_PROMPT_HASH/,
     );
     expect(requireSnapshotPromptHash(PROMPT_HASH, { emitTargets: true })).toBe(PROMPT_HASH);
+  });
+
+  it('writes snapshot and target artifacts with mode 0600, including overwrites', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'centurion-snapshot-mode-'));
+    try {
+      const out = join(dir, 'snapshot.json');
+      writePrivateJson(out, { secretFree: true });
+      expect(statSync(out).mode & 0o777).toBe(0o600);
+      chmodSync(out, 0o644);
+      writePrivateJson(out, { secretFree: true, overwritten: true });
+      expect(statSync(out).mode & 0o777).toBe(0o600);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('restore requires --snapshot and rejects unknown options', () => {
@@ -363,6 +411,49 @@ describe('centurion triage snapshot cohorts + hashes', () => {
     expect(() => validateApprovedRolloutManifest(bound)).not.toThrow();
   });
 
+  it('normalizes one canonical sourceHash across every approved target', async () => {
+    const { driver } = createMemoryStore({ threads: baseThreads() });
+    const snapshot = await buildCenturionTriageSnapshot({
+      driver,
+      generatedAt: '2026-07-30T12:00:00.000Z',
+    });
+    const base = emitTargetManifestFromSnapshot(snapshot, {
+      modelId: MODEL_ID,
+      promptVersion: PROMPT_VERSION,
+      promptHash: PROMPT_HASH,
+    });
+    const upperSourceHash = SOURCE_HASH.toUpperCase();
+    const bound = bindApprovedTargetManifest(base, {
+      sourceHash: upperSourceHash,
+      approvals: [
+        {
+          threadId: 't-eligible',
+          approvedCategory: 'groups-events',
+          approvedUrgent: true,
+          sourceHash: upperSourceHash,
+          rehearsalResultHash: 'd'.repeat(64),
+        },
+      ],
+    });
+    expect(bound.sourceHash).toBe(SOURCE_HASH);
+    expect(bound.targets[0]!.sourceHash).toBe(SOURCE_HASH);
+    expect(() => validateBoundApprovedRolloutManifest(bound)).not.toThrow();
+    expect(() =>
+      bindApprovedTargetManifest(base, {
+        sourceHash: SOURCE_HASH,
+        approvals: [
+          {
+            threadId: 't-eligible',
+            approvedCategory: 'groups-events',
+            approvedUrgent: true,
+            sourceHash: 'e'.repeat(64),
+            rehearsalResultHash: 'd'.repeat(64),
+          },
+        ],
+      }),
+    ).toThrow(/sourceHash.*mismatch/i);
+  });
+
   it('detects lock or sender-preference mismatch against live state', async () => {
     const store = createMemoryStore({ threads: baseThreads() });
     const snapshot = await buildCenturionTriageSnapshot({
@@ -425,6 +516,79 @@ describe('centurion triage snapshot cohorts + hashes', () => {
     });
     // canonical cohort AI/spam/custom-presence must match; generatedAt fixed in test
     expect(after.snapshotHash).toBe(beforeHash);
+  });
+
+  it('rejects lock drift before any restore mutation', async () => {
+    const store = createMemoryStore({ threads: baseThreads() });
+    const snapshot = await buildCenturionTriageSnapshot({
+      driver: store.driver,
+      generatedAt: '2026-07-30T12:00:00.000Z',
+    });
+    const eligible = store.threads.get('t-eligible')!;
+    eligible.aiCategorySlugs = ['new-bookings'];
+    eligible.spamAt = null;
+    eligible.spamUserLockedAt = '2026-07-31T12:00:00.000Z';
+
+    await expect(
+      restoreCenturionTriageSnapshot({
+        driver: store.driver,
+        snapshot,
+        dryRun: false,
+      }),
+    ).rejects.toThrow(/lock|drift|mismatch/i);
+
+    expect(eligible.aiCategorySlugs).toEqual(['new-bookings']);
+    expect(eligible.spamAt).toBeNull();
+    expect(eligible.spamUserLockedAt).toBe('2026-07-31T12:00:00.000Z');
+  });
+
+  it('uses one atomic restore batch so a later row failure leaves earlier rows unchanged', async () => {
+    const store = createMemoryStore({ threads: baseThreads(), failRestoreAfter: true });
+    const snapshot = await buildCenturionTriageSnapshot({
+      driver: store.driver,
+      generatedAt: '2026-07-30T12:00:00.000Z',
+    });
+    const before = [...store.threads.values()].map((row) => ({
+      threadId: row.threadId,
+      spamAt: row.spamAt,
+      spamUserLockedAt: row.spamUserLockedAt,
+      aiCategorySlugs: [...row.aiCategorySlugs],
+    }));
+
+    await expect(
+      restoreCenturionTriageSnapshot({ driver: store.driver, snapshot, dryRun: false }),
+    ).rejects.toThrow(/restore batch/i);
+    expect(
+      [...store.threads.values()].map((row) => ({
+        threadId: row.threadId,
+        spamAt: row.spamAt,
+        spamUserLockedAt: row.spamUserLockedAt,
+        aiCategorySlugs: [...row.aiCategorySlugs],
+      })),
+    ).toEqual(before);
+  });
+
+  it('passes snapshot binding into atomic restore boundary', async () => {
+    const store = createMemoryStore({ threads: baseThreads() });
+    const snapshot = await buildCenturionTriageSnapshot({
+      driver: store.driver,
+      generatedAt: '2026-07-30T12:00:00.000Z',
+    });
+    const seen: string[] = [];
+    const driver = {
+      ...store.driver,
+      async restoreAiManagedStateBatch(
+        rows: Parameters<typeof store.driver.restoreAiManagedStateBatch>[0],
+        boundSnapshot?: { snapshotHash: string },
+      ) {
+        seen.push(boundSnapshot?.snapshotHash ?? 'missing');
+        return store.driver.restoreAiManagedStateBatch(rows, boundSnapshot);
+      },
+    };
+
+    await restoreCenturionTriageSnapshot({ driver, snapshot, dryRun: false });
+
+    expect(seen).toEqual([snapshot.snapshotHash]);
   });
 
   it('restore recovers legacy invent-WHO joins cleared by retag and preserves custom categories', async () => {

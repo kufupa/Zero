@@ -308,6 +308,14 @@ Classifier/eval path that records triage output and metrics without mutating mai
 
 Ops cutover that back-applies production triage classifications onto an approved Centurion thread cohort: quiesce workers, snapshot (RDS + app), bind twice-stable approvals under a fresh ledger key prefix, dry-run, apply, scoped drain, then audit-or-restore. Distinct from Shadow triage (no durable writes) and from ordinary inbound classify of new mail. A spent key prefix must not be reused; red audit restores pre-retag durable labels while code may stay on the new prompt version.
 
+The v6 cutover treats the manifest as a provenance chain (snapshot, source,
+canonical approval, rehearsal, and apply bindings), validates restore drift and
+mutation in one serialization boundary, and enqueues retag work without clearing
+prior state. Worker success performs the explicit full rewrite; retry/dead-letter
+rows may resume under the same key while succeeded runs remain terminal. The
+workflow navigation surface is enabled only after the complete eligible cohort
+has drained and audited.
+
 ### Triage asOf
 
 The ISO instant folded into the triage input hash for a workflow run — the causal window of messages the classifier saw. Workers hash at run create time; finish time is bookkeeping only. Audits that recompute production `inputHash` must use the same instant or every target falsely mismatches.
@@ -379,7 +387,16 @@ Whether the mail reader may load remote `http(s)` images for a message. Defaults
 
 ### Hotel category
 
-An AI-managed mailbox classification (primary work queues: new-bookings, groups-events, at-risk, ops; overlay: urgent) stored as durable memberships on threads. Distinct from system folders (inbox/sent/spam/trash via thread flags) and from My folders / user labels (filing tags). Staff see them in the sidebar as **Folders**, and on `/mail` Inbox as segmented sections (same taxonomy). Legacy invent-WHO slugs (internal, individual, group, travel-agents) are remapped away.
+An AI-managed mailbox classification stored as durable memberships on threads:
+the canonical workflow work queues cover booking, servicing, reconciliation,
+money, delivery, recovery, guest experience, partner, automated-channel, and
+unknown-review concerns, with Urgent as a cross-queue overlay. Legacy
+new-bookings, groups-events, at-risk, and ops slugs remain readable during the
+dual-read transition but are not the canonical workflow taxonomy. Distinct from
+system folders (inbox/sent/spam/trash via thread flags) and from My folders /
+user labels (filing tags). Staff see them in the sidebar as **Folders**, and on
+`/mail` Inbox as segmented sections (same taxonomy). Legacy invent-WHO slugs
+(internal, individual, group, travel-agents) are remapped away.
 
 ### categoryIds filter
 

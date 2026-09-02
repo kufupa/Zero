@@ -25,7 +25,7 @@ import {
   markAiRunRetry,
   resolveDeployedTriagePromptVersion,
 } from '../src/ai/run-ledger.js';
-import { aiWorkerOwnerId, executeAiRun } from '../src/ai/worker.js';
+import { aiWorkerOwnerId, executeAiRun, renewAiRunLease } from '../src/ai/worker.js';
 import * as mastraModule from '../src/ai/mastra.js';
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
 import { TRANSPORT_ID } from '../src/db/seed.js';
@@ -156,6 +156,11 @@ describe('ai worker contract', () => {
     expect(source).toMatch(/reserveCloudStaffOutboundRecipients/);
     expect(source).not.toMatch(/candidate-draft:\$\{run\.triggerMessageId\}/);
     expect(source).not.toMatch(/MONEY_DRAFT_CATEGORIES/);
+  });
+
+  it('worker forces retag runs through full durable apply after dequeue', () => {
+    const source = readFileSync(join(here, '..', 'src', 'ai', 'worker.ts'), 'utf8');
+    expect(source).toMatch(/forceUnsettle:\s*run\.metrics\?\.retagPending\s*===\s*true/);
   });
 
   it('worker fences claimed-to-running with returning and scopes drain CLI', () => {
@@ -329,6 +334,23 @@ describe('ai worker contract', () => {
     expect(source).toMatch(/clearInterval/);
     expect(source).toMatch(/leaseAbort\.abort\(/);
     expect(source).toMatch(/finally/);
+  });
+
+  it('heartbeat rejection aborts the lease instead of becoming an unhandled rejection', async () => {
+    const leaseAbort = new AbortController();
+    await renewAiRunLease(
+      {
+        runId: 'run-heartbeat-rejection',
+        claimOwner: 'owner',
+        claimToken: 'token',
+        deadlineAt: new Date(Date.now() + 60_000),
+      },
+      leaseAbort,
+      async () => {
+        throw new Error('database connection reset');
+      },
+    );
+    expect(leaseAbort.signal.aborted).toBe(true);
   });
 
   it('running transition requires matching claimToken fence', () => {

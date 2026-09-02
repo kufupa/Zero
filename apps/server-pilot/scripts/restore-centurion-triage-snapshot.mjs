@@ -25,6 +25,8 @@ import {
 } from './retag-centurion-triage.mjs';
 import {
   assertValidSnapshot,
+  assertRestoreSnapshotDrift,
+  buildCenturionTriageSnapshot,
   createPostgresSnapshotDriver,
   verifySnapshotAgainstLive,
 } from './snapshot-centurion-triage.mjs';
@@ -74,12 +76,12 @@ function allSnapshotRows(snapshot) {
 /**
  * @param {{
  *   driver: {
- *     restoreAiManagedState: (row: {
+ *     restoreAiManagedStateBatch: (rows: Array<{
  *       threadId: string,
  *       spamAt: string|null,
  *       spamUserLockedAt: string|null,
  *       aiCategorySlugs: string[],
- *     }) => Promise<void>,
+ *     }>, snapshot: object) => Promise<void>,
  *     listThreads: () => Promise<any[]>,
  *     listSenderPreferences: (emails: string[]) => Promise<Map<string, 'block'|'allow'>>,
  *   },
@@ -99,14 +101,18 @@ export async function restoreCenturionTriageSnapshot(opts) {
     };
   }
 
-  for (const row of rows) {
-    await opts.driver.restoreAiManagedState({
+  if (typeof opts.driver.restoreAiManagedStateBatch !== 'function') {
+    throw new Error('restore driver must support atomic restoreAiManagedStateBatch');
+  }
+  await opts.driver.restoreAiManagedStateBatch(
+    rows.map((row) => ({
       threadId: row.threadId,
       spamAt: row.spamAt ?? null,
       spamUserLockedAt: row.spamUserLockedAt ?? null,
       aiCategorySlugs: [...(row.aiCategorySlugs ?? [])],
-    });
-  }
+    })),
+    snapshot,
+  );
 
   await verifySnapshotAgainstLive({ driver: opts.driver, snapshot });
 
@@ -122,8 +128,38 @@ export function createPostgresRestoreDriver(sql) {
   return {
     ...snapshotDriver,
 
-    async restoreAiManagedState(row) {
+    async restoreAiManagedStateBatch(rows, snapshotInput) {
       await sql.begin(async (tx) => {
+        const snapshot = assertValidSnapshot(snapshotInput);
+        const threadIds = rows.map((row) => row.threadId);
+        if (new Set(threadIds).size !== threadIds.length) {
+          throw new Error('duplicate snapshot thread in restore batch');
+        }
+
+        // Lock every boundary used by the drift contract in this same
+        // transaction. No newer trigger, sender preference, lock, or custom
+        // category state may slip between validation and restore mutation.
+        for (const threadId of threadIds) {
+          await tx`
+            SELECT id
+            FROM message
+            WHERE thread_id = ${threadId}
+              AND direction = 'inbound'
+            FOR SHARE
+          `;
+        }
+        const txSnapshotDriver = createPostgresSnapshotDriver(tx);
+        const live = await buildCenturionTriageSnapshot({
+          driver: {
+            listThreads: () =>
+              txSnapshotDriver.listThreads({ threadIds, forUpdate: true }),
+            listSenderPreferences: (emails) =>
+              txSnapshotDriver.listSenderPreferences(emails, { forUpdate: true }),
+          },
+          generatedAt: snapshot.generatedAt,
+        });
+        assertRestoreSnapshotDrift(snapshot, live);
+
         const categoryRows = await tx`
           SELECT id, slug
           FROM mail_category
@@ -133,36 +169,51 @@ export function createPostgresRestoreDriver(sql) {
         const idBySlug = new Map(categoryRows.map((r) => [r.slug, r.id]));
         const allRetagManagedIds = categoryRows.map((r) => r.id);
 
-        if (allRetagManagedIds.length > 0) {
-          await tx`
-            DELETE FROM mail_thread_category
-            WHERE thread_id = ${row.threadId}
-              AND transport_id = ${TRANSPORT_ID}
-              AND category_id = ANY(${allRetagManagedIds})
-          `;
-        }
-
-        for (const slug of row.aiCategorySlugs ?? []) {
-          const categoryId = idBySlug.get(slug);
-          if (!categoryId) {
-            throw new Error(`AI-managed category missing for restore: ${slug}`);
-          }
-          await tx`
-            INSERT INTO mail_thread_category (thread_id, transport_id, category_id)
-            VALUES (${row.threadId}, ${TRANSPORT_ID}, ${categoryId})
-            ON CONFLICT DO NOTHING
-          `;
-        }
-
-        await tx`
-          UPDATE mail_thread
-          SET
-            spam_at = ${row.spamAt},
-            spam_user_locked_at = ${row.spamUserLockedAt},
-            updated_at = now()
-          WHERE id = ${row.threadId}
-            AND transport_id = ${TRANSPORT_ID}
+        const existingThreads = await tx`
+          SELECT id
+          FROM mail_thread
+          WHERE transport_id = ${TRANSPORT_ID}
+            AND id = ANY(${threadIds})
         `;
+        if (existingThreads.length !== new Set(threadIds).size) {
+          throw new Error('one or more snapshot threads missing for restore');
+        }
+        for (const row of rows) {
+          for (const slug of row.aiCategorySlugs ?? []) {
+            if (!idBySlug.has(slug)) {
+              throw new Error(`AI-managed category missing for restore: ${slug}`);
+            }
+          }
+        }
+
+        for (const row of rows) {
+          if (allRetagManagedIds.length > 0) {
+            await tx`
+              DELETE FROM mail_thread_category
+              WHERE thread_id = ${row.threadId}
+                AND transport_id = ${TRANSPORT_ID}
+                AND category_id = ANY(${allRetagManagedIds})
+            `;
+          }
+          for (const slug of row.aiCategorySlugs ?? []) {
+            const categoryId = idBySlug.get(slug);
+            await tx`
+              INSERT INTO mail_thread_category (thread_id, transport_id, category_id)
+              VALUES (${row.threadId}, ${TRANSPORT_ID}, ${categoryId})
+              ON CONFLICT DO NOTHING
+            `;
+          }
+
+          await tx`
+            UPDATE mail_thread
+            SET
+              spam_at = ${row.spamAt},
+              spam_user_locked_at = ${row.spamUserLockedAt},
+              updated_at = now()
+            WHERE id = ${row.threadId}
+              AND transport_id = ${TRANSPORT_ID}
+          `;
+        }
       });
     },
   };
