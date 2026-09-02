@@ -13,6 +13,7 @@ import {
   discoverSubjectClusterLinks,
   normalizeConversationSubject,
   collapseSpacedSubjectArtifacts,
+  isSystemAddress,
   upsertConversationLinks,
   type LinkableMessage,
 } from '../src/mail/conversation-link.js';
@@ -218,16 +219,43 @@ describe('deterministic link discovery', () => {
     expect(links[0]?.linkType).toBe('subject_cluster');
   });
 
+  it('links spaced Outlook Breakfast Pack subjects after subject-key collapse', () => {
+    const a = msg({
+      id: 'bp-spaced-1',
+      threadId: 'thread-bp-spaced-1',
+      direction: 'inbound',
+      fromAddress: 'centurionrec@legacyhotels.co.za',
+      toAddresses: ['fsmith@legacyhotels.co.za'],
+      subject: 'B re akfast pa ck Request',
+      receivedAt: new Date('2026-08-31T16:31:00.000Z'),
+    });
+    const b = msg({
+      id: 'bp-spaced-2',
+      threadId: 'thread-bp-spaced-2',
+      direction: 'inbound',
+      fromAddress: 'centurionrec@legacyhotels.co.za',
+      toAddresses: ['fsmith@legacyhotels.co.za'],
+      subject: 'RE: B re akfast pa ck Request',
+      receivedAt: new Date('2026-08-31T17:57:00.000Z'),
+    });
+
+    const links = discoverSubjectClusterLinks([a, b]);
+
+    expect(links).toHaveLength(1);
+    expect(links[0]?.linkType).toBe('subject_cluster');
+  });
+
   it.each([
     ['bounce', 'Action needed: Your email did not reach the guest', 3],
     ['handover', 'Handover Report', 9],
+    ['nedbank', 'Nedbank update', 9],
     ['quotation', 'Request for a quotation', 9],
   ])('refuses %s template subject clusters', (_name, subject, count) => {
     const messages = Array.from({ length: count }, (_, index) =>
       msg({
         id: `template-${_name}-${index}`,
         threadId: `template-thread-${_name}-${index}`,
-        fromAddress: `guest-${index}@example.com`,
+        fromAddress: 'same-guest@example.com',
         toAddresses: ['ops@legacyhotels.co.za'],
         subject,
         receivedAt: new Date(`2026-07-${String(index + 1).padStart(2, '0')}T10:00:00.000Z`),
@@ -268,25 +296,49 @@ describe('deterministic link discovery', () => {
   });
 
   it('does not use system-only participant overlap for guest subject links', () => {
+    expect(isSystemAddress('mailer-daemon@legacyhotels.co.za')).toBe(true);
+    expect(isSystemAddress('ops@legacyhotels.co.za')).toBe(true);
     const messages = [
       msg({
         id: 'system-subject-a',
         threadId: 'system-subject-a',
         fromAddress: 'mailer-daemon@legacyhotels.co.za',
-        toAddresses: ['centurion@legacyhotels.co.za'],
-        subject: 'Delivery status update',
+        toAddresses: ['ops@legacyhotels.co.za'],
+        subject: 'Specific internal update',
       }),
       msg({
         id: 'system-subject-b',
         threadId: 'system-subject-b',
         fromAddress: 'mailer-daemon@legacyhotels.co.za',
-        toAddresses: ['centurion@legacyhotels.co.za'],
-        subject: 'RE: Delivery status update',
+        toAddresses: ['ops@legacyhotels.co.za'],
+        subject: 'RE: Specific internal update',
         receivedAt: new Date('2026-07-01T11:00:00.000Z'),
       }),
     ];
 
     expect(discoverSubjectClusterLinks(messages)).toEqual([]);
+  });
+
+  it('allows shared non-system internal staff participants for ordinary subjects', () => {
+    const messages = [
+      msg({
+        id: 'staff-subject-a',
+        threadId: 'staff-subject-a',
+        fromAddress: 'centurionrec@legacyhotels.co.za',
+        toAddresses: ['fsmith@legacyhotels.co.za'],
+        subject: 'Specific internal update',
+      }),
+      msg({
+        id: 'staff-subject-b',
+        threadId: 'staff-subject-b',
+        fromAddress: 'centurionrec@legacyhotels.co.za',
+        toAddresses: ['fsmith@legacyhotels.co.za'],
+        subject: 'RE: Specific internal update',
+        receivedAt: new Date('2026-07-01T11:00:00.000Z'),
+      }),
+    ];
+
+    expect(discoverSubjectClusterLinks(messages)).toHaveLength(1);
   });
 
   it('requires a matching confirmation number and caps auto-orphan links at one', () => {

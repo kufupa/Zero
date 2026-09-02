@@ -54,3 +54,28 @@ The full server-pilot suite was also attempted; unrelated pre-existing HMS/deplo
 ## Safety
 
 Every Vitest command was preceded by `unset DATABASE_URL VITEST_ALLOW_PILOT_RDS NODE_ENV`. No pilot/production DB, deploy, backfill, or destructive operation was run.
+
+## Task 2 review fix — 2026-09-02
+
+Review findings were addressed on `feat/centurion-link-precision` without changing the Layer C scope:
+
+This review-fix section supersedes the earlier implementation wording that required an external participant: the intended P3 rule is any shared participant that is not classified as system/ops.
+
+- Spaced Outlook Breakfast Pack subjects now pass the collapsed subject bucket key into `isBreakfastPackSubject`; a RED fixture covers `B re akfast pa ck Request`, while the existing normal Breakfast Pack fixture remains green.
+- Removed the `isInternalAddress`/internal-domain gate. Subject clusters now accept any shared non-system participant, including internal staff chains, while P1 still rejects system/ops-only overlap through `isSystemAddress`.
+- Corrected the system-only fixture to share only `mailer-daemon@...` and `ops@...`, with direct `isSystemAddress` assertions. Added a bounded Nedbank template refusal case and made template fixtures share a participant so the subject guard is exercised.
+
+### Review-fix TDD evidence
+
+1. RED before production edits:
+   `unset DATABASE_URL VITEST_ALLOW_PILOT_RDS NODE_ENV; pnpm exec vitest run tests/conversation-link.test.ts -t "Breakfast|internal staff|system-only"`
+   — 21 tests, 2 expected failures: spaced Breakfast Pack and ordinary internal staff overlap.
+2. GREEN focused regression:
+   `unset DATABASE_URL VITEST_ALLOW_PILOT_RDS NODE_ENV; pnpm exec vitest run tests/conversation-link.test.ts tests/conversation-signals.test.ts tests/conversation-signals-gold.test.ts tests/centurion-link-residual.test.ts tests/centurion-thread-linkage-audit.test.ts`
+   — 5 files passed; 58 passed, 4 skipped.
+3. TypeScript: `pnpm exec tsc --noEmit -p tsconfig.json` — passed.
+4. `git diff --check` — passed.
+
+Residual: `apps/server-pilot/src/ops/centurion-thread-linkage-audit.ts` still reports unguarded subject buckets for audit visibility and does not mirror production template, participant, or bucket-cap predicates. It was left unchanged because this review fix is production linker-only; the audit path must not be treated as production proposal behavior.
+
+Safety: all Vitest commands unset `DATABASE_URL`, `VITEST_ALLOW_PILOT_RDS`, and `NODE_ENV`; no pilot/production DB, deploy, backfill, or destructive operation was run.

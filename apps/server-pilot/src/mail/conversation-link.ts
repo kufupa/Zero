@@ -51,13 +51,6 @@ const OPS_LOCALPART_HINTS = [
   'channelmanager',
   'channel-manager',
 ] as const;
-const INTERNAL_DOMAIN_HINTS = [
-  'legacyhotels',
-  'navaai',
-  'synxis',
-  'reservecloud',
-  'fortimail',
-] as const;
 const SUBJECT_CLUSTER_TEMPLATE_PATTERNS = [
   /\b(?:bounce|bounced|undeliverable|undelivered|returned to sender|did not reach the guest|delivery status)\b/i,
   /\b(?:handover|hand over|night audit|daily report|discrepancy report|no\s+shows?|scans?)\b/i,
@@ -351,11 +344,6 @@ function nonSystemParticipants(messages: readonly LinkableMessage[]): Set<string
   return participants;
 }
 
-function isInternalAddress(address: string): boolean {
-  const lower = address.toLowerCase();
-  return INTERNAL_DOMAIN_HINTS.some((domain) => lower.includes(domain));
-}
-
 function isBreakfastPackSubject(normSubject: string): boolean {
   return /breakfast\s*pack/i.test(normSubject) || normSubject.includes('breakfastpack');
 }
@@ -370,10 +358,11 @@ function participantsOverlapForSubjectCluster(
   const overlap = [...left].filter((email) => right.has(email));
   if (overlap.length === 0) return false;
 
-  // Guest-facing subject links need a non-system, external participant. The
-  // one intentional internal-only exception is the Breakfast Pack RE chain.
+  // P1 excludes system-only overlap; internal staff participants remain valid
+  // for the Breakfast Pack and other non-system chains.
   if (isBreakfastPackSubject(normSubject)) return true;
-  return overlap.some((email) => !isInternalAddress(email));
+  // P3 permits any shared non-system participant, including internal staff.
+  return overlap.length > 0;
 }
 
 function isOpsDigestSubject(subject: string): boolean {
@@ -418,9 +407,10 @@ export function discoverSubjectClusterLinks(
 
   for (const threadIds of clusters.values()) {
     if (threadIds.length < 2 || threadIds.length > MAX_SUBJECT_CLUSTER_BUCKET_SIZE) continue;
-    const normSubject = normalizeConversationSubject(
-      byThread.get(threadIds[0]!)?.find((msg) => msg.subject)?.subject ?? '',
-    );
+    const firstSubject = byThread.get(threadIds[0]!)?.find((msg) => msg.subject)?.subject ?? '';
+    const normalizedSubject = normalizeConversationSubject(firstSubject);
+    const collapsedSubject = collapseSpacedSubjectArtifacts(normalizedSubject);
+    const normSubject = collapsedSubject.length >= 8 ? collapsedSubject : normalizedSubject;
     for (let i = 0; i < threadIds.length; i++) {
       for (let j = i + 1; j < threadIds.length; j++) {
         const leftId = threadIds[i]!;
