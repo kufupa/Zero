@@ -404,6 +404,128 @@ describe('R22/R23 exception-first spam defense', () => {
   });
 });
 
+describe('workflow routine system-mail force-automate (KTD1)', () => {
+  it('workflow: routine SynXis confirm → automated-channel, not urgent', () => {
+    const refined = refineTriageOutput(
+      {
+        from: 'noreply@synxis.com',
+        subject: 'SynXis Res Confirmed',
+        body: 'Reservation confirmed.',
+      },
+      workflowOutput({
+        primaryFolder: 'bookings',
+        isSpam: false,
+        urgent: true,
+        priority: 'P2',
+        overlays: { booking: false, quote: false, payment: false },
+        automationState: 'candidate',
+        humanAction: 'none',
+        confidence: 0.5,
+        rationale: 'test',
+      }),
+    );
+
+    expect(refined.primaryFolder).toBe('automated-channel');
+    expect(refined.urgent).toBe(false);
+    expect(refined.policyFlags).toContain('refine:system-mail-automated');
+  });
+
+  it('workflow: SynXis with reply-within-12h stays out of automated-channel', () => {
+    const refined = refineTriageOutput(
+      {
+        from: 'noreply@synxis.com',
+        subject: 'SynXis Res Confirmed',
+        body: 'SynXis confirms this reservation. Reply within 12 hours to keep it.',
+      },
+      workflowOutput({
+        primaryFolder: 'bookings',
+        isSpam: false,
+        urgent: true,
+        priority: 'P2',
+      }),
+    );
+
+    expect(refined.primaryFolder).not.toBe('automated-channel');
+    expect(refined.policyFlags).not.toContain('refine:system-mail-automated');
+  });
+
+  it('workflow: held series release → exceptions-recovery before automate', () => {
+    const refined = refineTriageOutput(
+      {
+        from: 'notifications@reservations.example.test',
+        subject: 'Reservation update',
+        body: 'Please release held series allocation. Channel manager confirms update.',
+      },
+      workflowOutput({
+        primaryFolder: 'bookings',
+        isSpam: false,
+        urgent: false,
+        priority: 'P2',
+      }),
+    );
+
+    expect(refined.primaryFolder).toBe('exceptions-recovery');
+    expect(refined.policyFlags).toContain('refine:series-release-at-risk');
+    expect(refined.policyFlags).not.toContain('refine:system-mail-automated');
+    expect(refined.primaryFolder).not.toBe('automated-channel');
+  });
+
+  it('workflow: internal property never stays automated-channel', () => {
+    const refined = refineTriageOutput(
+      {
+        from: 'notices@branding.legacyhotels.co.za',
+        subject: 'SynXis Res Confirmed',
+        body: 'Reservation confirmed via channel manager.',
+      },
+      workflowOutput({
+        primaryFolder: 'bookings',
+        isSpam: false,
+        urgent: true,
+        priority: 'P2',
+      }),
+    );
+
+    expect(refined.primaryFolder).not.toBe('automated-channel');
+    expect(refined.primaryFolder).toBe('internal-partner');
+    expect(refined.policyFlags).not.toContain('refine:system-mail-automated');
+  });
+
+  it.each([
+    {
+      name: 'FAILED TO INTEGRATE',
+      from: 'pms@reservations.example.test',
+      subject: 'RESERVATION FAILED TO INTEGRATE',
+      body: 'The integration will retry within 2 hours. No action is required.',
+    },
+    {
+      name: 'calendar Canceled',
+      from: 'calendar-notifications@google.com',
+      subject: 'Canceled: Front desk hold',
+      body: 'Calendar event canceled for room block review.',
+    },
+    {
+      name: 'booking.com channel notice',
+      from: 'noreply@booking.com',
+      subject: 'Booking.com: New reservation',
+      body: 'You have a new booking. Guest: Synthetic Guest. Room nights: 2.',
+    },
+  ])('workflow: routine $name → automated-channel, not urgent', ({ from, subject, body }) => {
+    const refined = refineTriageOutput(
+      { from, subject, body },
+      workflowOutput({
+        primaryFolder: 'bookings',
+        isSpam: false,
+        urgent: true,
+        priority: 'P2',
+      }),
+    );
+
+    expect(refined.primaryFolder).toBe('automated-channel');
+    expect(refined.urgent).toBe(false);
+    expect(refined.policyFlags).toContain('refine:system-mail-automated');
+  });
+});
+
 describe('workflow source and automation refinement', () => {
   it('routes internal delivery failures to exceptions and excludes automation', () => {
     const refined = refineTriageOutput(

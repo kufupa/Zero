@@ -423,6 +423,125 @@ function hotelConversationNotSpam(input: TriageRefineInput): boolean {
   );
 }
 
+function buildTriageHaystack(input: TriageRefineInput): string {
+  return `${(input.subject ?? '').trim()}\n${input.body.trim()}`;
+}
+
+function isSeriesReleaseAtRisk(haystack: string): boolean {
+  return (
+    /(?:release|cancel).{0,40}(?:held|series|allocation)|(held|series)\s+(?:allocation|block)/i.test(
+      haystack,
+    ) ||
+    (/allocation/i.test(haystack) && /series/i.test(haystack))
+  );
+}
+
+function isFortiMailQuarantineDigest(haystack: string): boolean {
+  return /\b(?:fortimail|quarantine)\b/i.test(haystack);
+}
+
+function isGuestRevuDigest(haystack: string): boolean {
+  return /\bguestrevu\b/i.test(haystack) && /\b(?:digest|summary)\b/i.test(haystack);
+}
+
+function hasRevenueRisk(haystack: string): boolean {
+  const hasTimeboxedReplyAction =
+    /\b(?:reply|respond|response|action|confirm)(?:\s+(?:is\s+)?(?:required|needed))?\s+(?:within\s+\d+\s*(?:h|hrs?|hours?)|by\s+(?:today|tomorrow|eod|\d{1,2}(?::\d{2})?\s*(?:am|pm)?))\b/i.test(
+      haystack,
+    );
+  const hasRevenueSla = /\b(?:hard\s+)?sla\b/i.test(
+    haystack.replace(
+      /\b(?:no|not|without)\s+(?:hard\s+)?sla\b|\b(?:hard\s+)?sla\s+(?:does(?:\s+not|n't)\s+apply|(?:is\s+)?not\s+applicable)\b/gi,
+      '',
+    ),
+  );
+  return (
+    hasTimeboxedReplyAction ||
+    hasRevenueSla ||
+    /\bunpaid\b/i.test(haystack) ||
+    /\b(?:will|may|could)\s+(?:be\s+)?cancel(?:led|ed)?\b/i.test(haystack) ||
+    /\bcancel(?:lation|led|ed|s)?\b[\s\S]{0,80}\b(?:if|unless|without|pending)\b/i.test(haystack)
+  );
+}
+
+/** Shared promo/cold-sales shape for workflow force-spam (Task 2). */
+function salesSignal(haystack: string): boolean {
+  return /promo|sale|discount|unsubscribe|limited[- ]time|book a demo|whatsapp|newsletter|marketing|click here|viqal|outreach|boost|% off|\$\d/i.test(
+    haystack,
+  );
+}
+
+function isRoutineSystemMail(input: TriageRefineInput, haystack = buildTriageHaystack(input)): boolean {
+  const subject = (input.subject ?? '').trim();
+
+  const synxisOrChannelConfirm =
+    /\b(?:synxis|channel(?:\s+manager)?)\b/i.test(haystack) &&
+    /\b(?:confirm(?:ation|ed|s)?|cancel(?:lation|led|ed|s)?|modif(?:ication|ied))\b/i.test(
+      haystack,
+    );
+
+  const failedToIntegrate = /\bfailed\s+to\s+integrate\b/i.test(haystack);
+
+  const calendarCanceled =
+    /^canceled:/i.test(subject) ||
+    (/\bcalendar\b/i.test(haystack) && /\bcanceled\b/i.test(haystack));
+
+  const bookingComNotice =
+    /\bbooking\.com\b/i.test(haystack) &&
+    /\b(?:new\s+reservation|reservation\s+modification|cancellation\s+notice)\b/i.test(haystack);
+
+  const profitroomNotice =
+    /\bprofitroom\b/i.test(haystack) &&
+    /\b(?:reservation\s+confirmed|booking\s+update)\b/i.test(haystack);
+
+  const tboNotice =
+    /\btbo(?:\s+holidays)?\b/i.test(haystack) &&
+    /\b(?:booking\s+confirmed|modification\s+alert)\b/i.test(haystack);
+
+  const webbedsNotice =
+    /\bwebbeds\b/i.test(haystack) &&
+    /\b(?:reservation\s+confirmation|cancellation)\b/i.test(haystack);
+
+  const expediaPartnerCentral =
+    /\bexpedia\s+partner\s+central\b/i.test(haystack) && /\bnew\s+booking\b/i.test(haystack);
+
+  const fromDomain = emailDomain(input.from ?? '');
+  const otaFromDomainNotice =
+    (fromDomain === 'booking.com' ||
+      fromDomain.endsWith('.booking.com') ||
+      fromDomain === 'profitroom.com' ||
+      fromDomain.endsWith('.profitroom.com') ||
+      fromDomain === 'tbo.com' ||
+      fromDomain.endsWith('.tbo.com') ||
+      fromDomain === 'webbeds.com' ||
+      fromDomain.endsWith('.webbeds.com') ||
+      fromDomain === 'expediapartnercentral.com' ||
+      fromDomain.endsWith('.expediapartnercentral.com') ||
+      fromDomain === 'synxis.com' ||
+      fromDomain.endsWith('.synxis.com')) &&
+    /\b(?:reservation|booking|confirmation|cancellation|modification|confirmed|cancelled)\b/i.test(
+      haystack,
+    );
+
+  return (
+    synxisOrChannelConfirm ||
+    failedToIntegrate ||
+    calendarCanceled ||
+    bookingComNotice ||
+    profitroomNotice ||
+    tboNotice ||
+    webbedsNotice ||
+    expediaPartnerCentral ||
+    otaFromDomainNotice
+  );
+}
+
+function routineSystemMailPriority(
+  priority: WorkflowTriageOutput['priority'],
+): WorkflowTriageOutput['priority'] {
+  return priority === 'P4' || priority === 'P5' ? priority : 'P4';
+}
+
 function refineWorkflowTriageOutput(
   input: TriageRefineInput,
   rawOutput: WorkflowTriageOutputInput,
@@ -473,6 +592,29 @@ function refineWorkflowTriageOutput(
     if (eventFolder !== 'unknown-review') next = { ...next, primaryFolder: eventFolder };
   }
 
+  const haystack = buildTriageHaystack(input);
+  if (isSeriesReleaseAtRisk(haystack)) {
+    next = {
+      ...next,
+      primaryFolder: 'exceptions-recovery',
+      policyFlags: addPolicyFlag(next.policyFlags, 'refine:series-release-at-risk'),
+      rationale: `${next.rationale} Held series/allocation release is exceptions-recovery.`,
+    };
+  } else if (
+    isRoutineSystemMail(input, haystack) &&
+    !isFortiMailQuarantineDigest(haystack) &&
+    !hasRevenueRisk(haystack)
+  ) {
+    next = {
+      ...next,
+      primaryFolder: 'automated-channel',
+      urgent: false,
+      priority: routineSystemMailPriority(next.priority),
+      policyFlags: addPolicyFlag(next.policyFlags, 'refine:system-mail-automated'),
+      rationale: `${next.rationale} Routine system mail is automated-channel.`,
+    };
+  }
+
   const internalProperty = hasInternalPropertySignal(input);
   if (isInternalDeliveryFailure(input, internalProperty)) {
     next = {
@@ -484,13 +626,18 @@ function refineWorkflowTriageOutput(
       policyFlags: addPolicyFlag(next.policyFlags, 'refine:internal-delivery-failure'),
     };
   } else if (internalProperty) {
+    const demotedFromAutomated = next.primaryFolder === 'automated-channel';
+    let policyFlags = next.policyFlags;
+    if (demotedFromAutomated) {
+      policyFlags = policyFlags.filter((flag) => flag !== 'refine:system-mail-automated');
+    }
     next = {
       ...next,
       primaryFolder:
         next.primaryFolder === 'automated-channel' ? 'internal-partner' : next.primaryFolder,
       sourceScope: 'internal_property',
       automationState: 'excluded_internal',
-      policyFlags: addPolicyFlag(next.policyFlags, 'refine:internal-property-source'),
+      policyFlags: addPolicyFlag(policyFlags, 'refine:internal-property-source'),
     };
   }
 
@@ -583,11 +730,8 @@ function refineLegacyTriageOutput(input: TriageRefineInput, output: TriageOutput
   }
 
   if (next.category === 'spam') {
-    const salesSignal =
-      /promo|sale|discount|unsubscribe|limited[- ]time|book a demo|whatsapp|newsletter|marketing|click here|viqal|outreach|boost|% off|\$\d/i.test(
-        haystack,
-      );
-    const emptyBodyPreferWork = !salesSignal && body.length === 0 && subject.length <= 80;
+    const haystackForSpam = haystack;
+    const emptyBodyPreferWork = !salesSignal(haystackForSpam) && body.length === 0 && subject.length <= 80;
     if (emptyBodyPreferWork) {
       next = {
         ...next,
@@ -620,7 +764,7 @@ function refineLegacyTriageOutput(input: TriageRefineInput, output: TriageOutput
       };
     }
     const shortPersonal =
-      !salesSignal &&
+      !salesSignal(haystack) &&
       body.length > 0 &&
       body.length <= 120 &&
       subject.length <= 40 &&
@@ -637,13 +781,7 @@ function refineLegacyTriageOutput(input: TriageRefineInput, output: TriageOutput
     }
   }
 
-  if (
-    next.category === 'ops' &&
-    (/(release|cancel).{0,40}(held|series|allocation|block)|(held|series)\s+allocation/i.test(
-      haystack,
-    ) ||
-      (/allocation/i.test(haystack) && /series/i.test(haystack)))
-  ) {
+  if (next.category === 'ops' && isSeriesReleaseAtRisk(haystack)) {
     next = {
       ...next,
       category: 'at-risk',
@@ -652,31 +790,7 @@ function refineLegacyTriageOutput(input: TriageRefineInput, output: TriageOutput
     };
   }
 
-  const isFortiMailQuarantine = /\b(?:fortimail|quarantine)\b/i.test(haystack);
-  const isGuestRevuDigest =
-    /\bguestrevu\b/i.test(haystack) && /\b(?:digest|summary)\b/i.test(haystack);
-  const isRoutineSystemMail =
-    (/\b(?:synxis|channel(?:\s+manager)?)\b/i.test(haystack) &&
-      /\b(?:confirm(?:ation|ed|s)?|cancel(?:lation|led|ed|s)?)\b/i.test(haystack)) ||
-    /\bfailed\s+to\s+integrate\b/i.test(haystack);
-  const hasTimeboxedReplyAction =
-    /\b(?:reply|respond|response|action|confirm)(?:\s+(?:is\s+)?(?:required|needed))?\s+(?:within\s+\d+\s*(?:h|hrs?|hours?)|by\s+(?:today|tomorrow|eod|\d{1,2}(?::\d{2})?\s*(?:am|pm)?))\b/i.test(
-      haystack,
-    );
-  const hasRevenueSla = /\b(?:hard\s+)?sla\b/i.test(
-    haystack.replace(
-      /\b(?:no|not|without)\s+(?:hard\s+)?sla\b|\b(?:hard\s+)?sla\s+(?:does(?:\s+not|n't)\s+apply|(?:is\s+)?not\s+applicable)\b/gi,
-      '',
-    ),
-  );
-  const hasRevenueRisk =
-    hasTimeboxedReplyAction ||
-    hasRevenueSla ||
-    /\bunpaid\b/i.test(haystack) ||
-    /\b(?:will|may|could)\s+(?:be\s+)?cancel(?:led|ed)?\b/i.test(haystack) ||
-    /\bcancel(?:lation|led|ed|s)?\b[\s\S]{0,80}\b(?:if|unless|without|pending)\b/i.test(haystack);
-
-  if (output.category === 'ops' && next.category === 'ops' && isFortiMailQuarantine) {
+  if (output.category === 'ops' && next.category === 'ops' && isFortiMailQuarantineDigest(haystack)) {
     next = {
       ...next,
       category: 'spam',
@@ -684,7 +798,7 @@ function refineLegacyTriageOutput(input: TriageRefineInput, output: TriageOutput
       policyFlags: [...next.policyFlags, 'refine:fortimail-spam'],
       rationale: `${next.rationale} FortiMail quarantine is spam.`,
     };
-  } else if (isGuestRevuDigest && !hasRevenueRisk) {
+  } else if (isGuestRevuDigest(haystack) && !hasRevenueRisk(haystack)) {
     next = {
       ...next,
       category: 'ops',
@@ -693,9 +807,9 @@ function refineLegacyTriageOutput(input: TriageRefineInput, output: TriageOutput
       rationale: `${next.rationale} GuestRevu digest is ops.`,
     };
   } else if (
-    isRoutineSystemMail &&
-    !isFortiMailQuarantine &&
-    !hasRevenueRisk &&
+    isRoutineSystemMail(input, haystack) &&
+    !isFortiMailQuarantineDigest(haystack) &&
+    !hasRevenueRisk(haystack) &&
     !next.policyFlags.includes('refine:series-release-at-risk')
   ) {
     next = {
@@ -709,7 +823,7 @@ function refineLegacyTriageOutput(input: TriageRefineInput, output: TriageOutput
 
   if (
     next.category === 'at-risk' &&
-    !hasRevenueRisk &&
+    !hasRevenueRisk(haystack) &&
     /booking|voucher|reservation|rooms?\b/i.test(haystack) &&
     !/\b(cancel|cancell?ation|amend|release held|unpaid|pay at (check|ci)|within \d+\s*h|synxis|ota)\b/i.test(
       haystack,
