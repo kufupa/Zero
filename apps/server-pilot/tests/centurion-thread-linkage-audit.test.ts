@@ -79,6 +79,9 @@ describe('runCenturionThreadLinkageAudit', () => {
     });
 
     expect(report.waterfall.defensibleResponded).toBe(1);
+    expect(report.auditMode).toBe('descriptive');
+    expect(report.goldTotals).toEqual({ actionable: 483, responded: 282, unanswered: 201 });
+    expect(report.waterfall.responded).toBe(1);
     expect(report.layerCounts.unlinked).toBe(1);
     expect(report.subjectClustersMultiThread.some((c) => c.threadIds.length === 2)).toBe(true);
   });
