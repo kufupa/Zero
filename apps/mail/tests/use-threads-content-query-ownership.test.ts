@@ -29,7 +29,10 @@ describe('useThread content-query ownership', () => {
 
   it('keeps demo category routes while all scope uses resolved all', () => {
     expect(source).toContain("validSearchList?.folder === 'all'");
-    expect(source).toContain('normalizeDemoMailFolderSlug(canonicalRouteFolder');
+    expect(source).toContain(
+      'normalizeDemoMailFolderSlug(canonicalRouteFolder ?? validSearchList.folder)',
+    );
+    expect(source).not.toContain('WORKFLOW_NAV_V6');
   });
 
   it('keeps unsupported-search notification in the singleton mail list', () => {

@@ -139,23 +139,17 @@ describe('env', () => {
     expect(parseEnv(baseEnv()).AI_STALE_RUN_TIMEOUT_MS).toBe(15 * 60_000);
   });
 
-  it('defaults workflow nav and durable triage flags off independently', () => {
-    expect(parseEnv(baseEnv())).toMatchObject({
-      WORKFLOW_NAV_V6: false,
-      WORKFLOW_TRIAGE_V6: false,
-    });
-    expect(parseEnv(baseEnv({ WORKFLOW_NAV_V6: '1' }))).toMatchObject({
-      WORKFLOW_NAV_V6: true,
-      WORKFLOW_TRIAGE_V6: false,
-    });
-    expect(parseEnv(baseEnv({ WORKFLOW_TRIAGE_V6: 'true' }))).toMatchObject({
-      WORKFLOW_NAV_V6: false,
-      WORKFLOW_TRIAGE_V6: true,
-    });
+  it('defaults durable workflow triage off', () => {
+    expect(parseEnv(baseEnv()).WORKFLOW_TRIAGE_V6).toBe(false);
   });
 
-  it.each(['yes', 'on', ''])('rejects invalid workflow flag value %s', (value) => {
-    expect(() => parseEnv(baseEnv({ WORKFLOW_NAV_V6: value }))).toThrow(/WORKFLOW_NAV_V6/);
+  it.each(['1', 'true', '0', 'false'])('parses durable workflow triage value %s', (value) => {
+    expect(parseEnv(baseEnv({ WORKFLOW_TRIAGE_V6: value })).WORKFLOW_TRIAGE_V6).toBe(
+      value === '1' || value === 'true',
+    );
+  });
+
+  it.each(['yes', 'on', ''])('rejects invalid durable workflow triage value %s', (value) => {
     expect(() => parseEnv(baseEnv({ WORKFLOW_TRIAGE_V6: value }))).toThrow(/WORKFLOW_TRIAGE_V6/);
   });
 

@@ -51,3 +51,11 @@ Task 1: complete (fresh Vitest 6/6 and targeted ESLint exit 0; task review clean
 Task 2: complete (fresh Vitest 3/3; task review clean; FileHandler body inspected unchanged when enabled; targeted ESLint 0 errors with pre-existing warning)
 Task 3: complete (TDD evidence recorded; two P1 review findings fixed and fresh re-review approved)
 Task 3 final verification: complete (post-review clipboard P1 fixed and fresh re-review approved; DB-safe compose suite 32/32, changed-file lint 0 errors, and mail build exit 0. Full mail lint remains blocked by 284 errors outside plan scope; no local browser server available for optional manual smoke.)
+
+# Workflow Navigation Flag Removal
+Plan: docs/superpowers/plans/2026-09-02-workflow-nav-flag-removal.md
+Worktree: /tmp/zero-workflow-nav-fix
+Baseline: d5188396d48024642759f603d345b611eec31db6
+Model: gpt-5.6-luna max
+Task 1: complete (working-tree implementation; review clean; focused mail suite 36/36)
+Task 2: complete (working-tree implementation; review clean; focused server/removal suite 34/34; server build and shell syntax pass)

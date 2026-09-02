@@ -11,9 +11,25 @@ import {
 import {
   buildDemoMailFolderNavItems,
   buildLiveCategoryNavItems,
-  isWorkflowNavV6Enabled,
+  injectLiveCategoryNavSection,
+  navigationConfig,
 } from '@/config/navigation';
 import { describe, expect, it } from 'vitest';
+
+const expectedWorkflowIds = [
+  'urgent',
+  'bookings',
+  'groups-events',
+  'manage-stay',
+  'confirm-reconcile',
+  'money-billing',
+  'documents-delivery',
+  'exceptions-recovery',
+  'guest-experience',
+  'internal-partner',
+  'automated-channel',
+  'unknown-review',
+];
 
 describe('hotel-folder-presentation', () => {
   it('workflow folders are managed primaries and urgent stays overlay', () => {
@@ -90,91 +106,68 @@ describe('hotel-folder-presentation', () => {
 });
 
 describe('buildLiveCategoryNavItems theme precedence', () => {
-  it('managed slug ignores seed hex and uses presentation title', () => {
-    const items = buildLiveCategoryNavItems([
-      {
-        slug: 'new-bookings',
-        name: 'New Bookings',
-        color: '#2563eb',
-        sortOrder: 110,
-      },
-    ]);
-    expect(items[0]?.title).toBe('New Bookings');
-    expect(items[0]?.subtitle).toBe('Win or service a stay');
-    expect(items[0]?.className).toContain('--centurion-sidebar-bg');
-    expect(JSON.stringify(items[0]?.style)).toContain('#DCFCE7');
-    expect(JSON.stringify(items[0]?.style)).not.toContain('#2563eb');
+  it('uses the fixed workflow order regardless of API sortOrder values', () => {
+    const shuffledCategories = expectedWorkflowIds.map((slug, index) => ({
+      slug,
+      name: slug,
+      sortOrder: expectedWorkflowIds.length - index,
+      ...(slug === 'urgent' ? { color: '#2563eb' } : {}),
+    }));
+
+    const items = buildLiveCategoryNavItems(shuffledCategories);
+
+    expect(items.map((item) => item.id)).toEqual(expectedWorkflowIds);
+    expect(items.find((item) => item.id === 'urgent')?.className).toContain('after:bg-red-500');
+    expect(items.find((item) => item.id === 'urgent')?.title).toBe('Urgent');
   });
 
-  it('unknown slug keeps API name and optional hex theme', () => {
-    const items = buildLiveCategoryNavItems([
-      { slug: 'vip-custom', name: 'VIP Desk', color: '#112233', sortOrder: 1 },
+  it('excludes custom and non-workflow live categories', () => {
+    const categories = [
+      { slug: 'at-risk', name: 'At risk', sortOrder: 1 },
+      { slug: 'new-bookings', name: 'New Bookings', sortOrder: 2 },
+      { slug: 'vip-custom', name: 'VIP Desk', sortOrder: 3 },
+      { slug: 'spam', name: 'Spam', sortOrder: 4 },
+    ];
+    const items = buildLiveCategoryNavItems(categories);
+
+    expect(items).toEqual([]);
+  });
+
+  it('injects live folders between Core and Management without changing static config', () => {
+    const fixtureCategories = expectedWorkflowIds.map((slug, index) => ({
+      slug,
+      name: slug,
+      sortOrder: index + 1,
+    }));
+    fixtureCategories.push({ slug: 'spam', name: 'Spam', sortOrder: 0 });
+
+    expect(navigationConfig.mail.sections.map((section) => section.title)).not.toContain('Folders');
+
+    const sections = injectLiveCategoryNavSection(
+      navigationConfig.mail.sections,
+      fixtureCategories,
+    );
+
+    expect(sections.map((section) => section.title)).toEqual(['Core', 'Folders', 'Management']);
+    expect(sections[0]?.items.map((item) => item.id)).toEqual(['inbox', 'drafts', 'sent']);
+    expect(sections[1]?.items.map((item) => item.id)).toEqual(expectedWorkflowIds);
+    expect(sections[1]?.items.map((item) => item.id)).not.toContain('spam');
+    expect(sections[2]?.items.map((item) => item.id)).toEqual([
+      'archive',
+      'snoozed',
+      'trash',
+      'spam',
     ]);
-    expect(items[0]?.title).toBe('VIP Desk');
-    expect(items[0]?.subtitle).toBeUndefined();
   });
 });
 
-describe('workflow nav flag', () => {
-  it('keeps legacy four primaries plus urgent when flag is off', () => {
-    expect(buildDemoMailFolderNavItems(false).map((item) => item.id)).toEqual([
-      'urgent',
-      'at-risk',
-      'new-bookings',
-      'groups-events',
-      'ops',
-    ]);
-  });
+describe('buildDemoMailFolderNavItems', () => {
+  it('always exposes workflow folders in canonical order without spam', () => {
+    const items = buildDemoMailFolderNavItems();
 
-  it('uses exclusive workflow primaries plus urgent when flag is on', () => {
-    const items = buildDemoMailFolderNavItems(true);
-    expect(items.map((item) => item.id)).toEqual([
-      'urgent',
-      'bookings',
-      'groups-events',
-      'manage-stay',
-      'confirm-reconcile',
-      'money-billing',
-      'documents-delivery',
-      'exceptions-recovery',
-      'guest-experience',
-      'internal-partner',
-      'automated-channel',
-      'unknown-review',
-    ]);
+    expect(items.map((item) => item.id)).toEqual(expectedWorkflowIds);
     expect(items.map((item) => item.id)).not.toContain('spam');
-    expect(items.find((item) => item.id === 'unknown-review')?.className).toContain(
-      '--centurion-sidebar-bg',
-    );
-  });
-
-  it('filters live categories to current flag set and keeps spam out of Folders', () => {
-    const categories = [
-      { slug: 'spam', name: 'Spam', sortOrder: 1 },
-      { slug: 'at-risk', name: 'At risk', sortOrder: 20 },
-      { slug: 'groups-events', name: 'Groups & Events', sortOrder: 25 },
-      { slug: 'urgent', name: 'Urgent', sortOrder: 10 },
-      { slug: 'bookings', name: 'Bookings', sortOrder: 30 },
-      { slug: 'unknown-review', name: 'Unknown', sortOrder: 40 },
-    ];
-    expect(buildLiveCategoryNavItems(categories, false).map((item) => item.id)).toEqual([
-      'urgent',
-      'at-risk',
-      'groups-events',
-    ]);
-    expect(buildLiveCategoryNavItems(categories, true).map((item) => item.id)).toEqual([
-      'urgent',
-      'groups-events',
-      'bookings',
-      'unknown-review',
-    ]);
-  });
-
-  it('parses nav flag without coupling durable triage flag', () => {
-    expect(isWorkflowNavV6Enabled({ VITE_WORKFLOW_NAV_V6: undefined })).toBe(false);
-    expect(isWorkflowNavV6Enabled({ VITE_WORKFLOW_NAV_V6: '1' })).toBe(true);
-    expect(isWorkflowNavV6Enabled({ VITE_WORKFLOW_NAV_V6: 'true' })).toBe(true);
-    expect(isWorkflowNavV6Enabled({ VITE_WORKFLOW_NAV_V6: '0' })).toBe(false);
+    expect(items.find((item) => item.id === 'urgent')?.className).toContain('after:bg-red-500');
   });
 });
 

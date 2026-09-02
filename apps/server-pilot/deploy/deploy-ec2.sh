@@ -170,23 +170,6 @@ export VITE_PUBLIC_BACKEND_URL=""
 unset VITE_PUBLIC_APP_URL
 # Near-realtime thread list poll (policy min 15s; default baked for pilot).
 export VITE_MAIL_POLL_MS="${VITE_MAIL_POLL_MS:-15000}"
-# Read only the public Vite rollout flag from the deploy env when the caller
-# did not provide it. Do not source the production env here: that would expose
-# unrelated credentials to the build process.
-if [ -z "${VITE_WORKFLOW_NAV_V6+x}" ] && [ -f "$ENV_FILE" ]; then
-  VITE_WORKFLOW_NAV_V6="$(awk -F= '
-    $1 == "VITE_WORKFLOW_NAV_V6" || $1 == "WORKFLOW_NAV_V6" {
-      sub(/^[^=]*=/, ""); print; exit
-    }
-  ' "$ENV_FILE")"
-  VITE_WORKFLOW_NAV_V6="${VITE_WORKFLOW_NAV_V6#\"}"
-  VITE_WORKFLOW_NAV_V6="${VITE_WORKFLOW_NAV_V6%\"}"
-  VITE_WORKFLOW_NAV_V6="${VITE_WORKFLOW_NAV_V6#\'}"
-  VITE_WORKFLOW_NAV_V6="${VITE_WORKFLOW_NAV_V6%\'}"
-fi
-# Preserve the operator-selected workflow navigation rollout flag in the SPA
-# build environment; Vite only embeds variables present at build time.
-export VITE_WORKFLOW_NAV_V6="${VITE_WORKFLOW_NAV_V6:-}"
 pnpm --filter @zero/mail build
 
 echo "== sync SPA to ${WEB_ROOT} =="

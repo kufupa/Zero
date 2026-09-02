@@ -18,18 +18,14 @@ describe('demo mail folder map', () => {
     ]);
   });
 
-  it('normalizes alias slugs to canonical ids', () => {
-    expect(normalizeDemoMailFolderSlug('at_risk')).toBe('at-risk');
-    expect(normalizeDemoMailFolderSlug('groups')).toBe('groups-events');
-    expect(normalizeDemoMailFolderSlug('operations')).toBe('ops');
+  it('normalizes non-alias slugs and defaults', () => {
     expect(normalizeDemoMailFolderSlug('inbox')).toBe('inbox');
+    expect(normalizeDemoMailFolderSlug(' bookings ')).toBe('bookings');
   });
 
-  it('detects demo mail folder slugs and aliases', () => {
+  it('detects demo mail folder slugs', () => {
     expect(isDemoMailFolderSlug('urgent')).toBe(true);
-    expect(isDemoMailFolderSlug('at_risk')).toBe(true);
     expect(isDemoMailFolderSlug('groups-events')).toBe(true);
-    expect(isDemoMailFolderSlug('groups')).toBe(true);
     expect(isDemoMailFolderSlug('inbox')).toBe(false);
     expect(isDemoMailFolderSlug('archive')).toBe(false);
   });

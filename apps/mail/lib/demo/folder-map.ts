@@ -127,7 +127,7 @@ export const DEMO_MAIL_FOLDER_DEFINITIONS: DemoMailFolderDefinition[] = [
   },
 ];
 
-/** Workflow presentation contract; sidebar stays on legacy folders until nav flag flip. */
+/** Workflow presentation contract used by the completed post-backfill sidebar. */
 export const WORKFLOW_MAIL_FOLDER_DEFINITIONS: DemoMailFolderDefinition[] = [
   {
     id: 'bookings',
@@ -203,11 +203,6 @@ export const WORKFLOW_MAIL_FOLDER_DEFINITIONS: DemoMailFolderDefinition[] = [
   },
 ];
 
-const ALL_MAIL_FOLDER_DEFINITIONS = [
-  ...DEMO_MAIL_FOLDER_DEFINITIONS,
-  ...WORKFLOW_MAIL_FOLDER_DEFINITIONS,
-];
-
 function buildDemoMailFolderMap(
   definitions: DemoMailFolderDefinition[],
 ): Map<string, DemoMailFolderDefinition> {
@@ -221,38 +216,24 @@ function buildDemoMailFolderMap(
 
 const legacyDemoMailFolderBySlug = buildDemoMailFolderMap(DEMO_MAIL_FOLDER_DEFINITIONS);
 const workflowDemoMailFolderBySlug = buildDemoMailFolderMap(WORKFLOW_MAIL_FOLDER_DEFINITIONS);
-const demoMailFolderBySlug = new Map<string, DemoMailFolderDefinition>(
-  ALL_MAIL_FOLDER_DEFINITIONS.flatMap((def) => [
-    [def.id, def] as const,
-    ...def.aliases.map((alias) => [alias.toLowerCase(), def] as const),
-  ]),
-);
 
-export function getDemoMailFolderDefinition(
-  slug: string,
-  workflowNav?: boolean,
-): DemoMailFolderDefinition | undefined {
+export function getDemoMailFolderDefinition(slug: string): DemoMailFolderDefinition | undefined {
   const normalized = slug.trim().toLowerCase();
-  if (workflowNav === false) return legacyDemoMailFolderBySlug.get(normalized);
-  if (workflowNav === true) {
-    return (
-      workflowDemoMailFolderBySlug.get(normalized) ?? legacyDemoMailFolderBySlug.get(normalized)
-    );
-  }
-  return demoMailFolderBySlug.get(normalized);
+  return workflowDemoMailFolderBySlug.get(normalized) ?? legacyDemoMailFolderBySlug.get(normalized);
 }
 
 /** Canonical slug for list adapter + query keys (post-alias). */
-export function normalizeDemoMailFolderSlug(folder?: string, workflowNav = false): string {
+export function normalizeDemoMailFolderSlug(folder?: string): string {
   const raw = (folder ?? 'inbox').trim().toLowerCase() || 'inbox';
-  const mapped = getDemoMailFolderDefinition(raw, workflowNav);
+  const mapped = getDemoMailFolderDefinition(raw);
   if (mapped) return mapped.id;
   return raw;
 }
 
 export function isDemoMailFolderSlug(folder?: string): boolean {
   if (!folder) return false;
-  return demoMailFolderBySlug.has(folder.trim().toLowerCase());
+  const normalized = folder.trim().toLowerCase();
+  return workflowDemoMailFolderBySlug.has(normalized) || legacyDemoMailFolderBySlug.has(normalized);
 }
 
 export function isCenturionMailCategorySlug(value: string): value is CenturionMailCategory {

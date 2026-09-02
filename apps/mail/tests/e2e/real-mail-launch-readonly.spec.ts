@@ -2,11 +2,19 @@ import { expect, test, type Page, type Request } from '@playwright/test';
 import { dismissMailOnboarding, uiLoginAsNavaai } from './helpers/real-mail';
 import { trpcMailProcedureNamesFromUrl } from './read-only-mail-procedure-audit';
 
-const QUEUES = [
-  ['at-risk', 'At risk'],
-  ['new-bookings', 'New Bookings'],
+const WORKFLOW_QUEUES = [
+  ['urgent', 'Urgent'],
+  ['bookings', 'Bookings'],
   ['groups-events', 'Groups & Events'],
-  ['ops', 'Ops'],
+  ['manage-stay', 'Manage Existing Stay'],
+  ['confirm-reconcile', 'Confirm & Reconcile'],
+  ['money-billing', 'Money & Billing'],
+  ['documents-delivery', 'Documents & Delivery'],
+  ['exceptions-recovery', 'Exceptions & Recovery'],
+  ['guest-experience', 'Guest Experience'],
+  ['internal-partner', 'Internal & Partner Ops'],
+  ['automated-channel', 'Automated / Channel'],
+  ['unknown-review', 'Unknown / Needs Review'],
 ] as const;
 
 const FORBIDDEN_MAIL_PROCEDURES = [
@@ -162,8 +170,41 @@ async function waitForReadOnlyMailProcedureAuditToSettle(audit: ReadOnlyMailProc
 }
 
 async function proveInboxListReady(page: Page) {
-  // Sidebar folder links are the durable queue chrome.
-  for (const [slug, label] of QUEUES) {
+  const section = (title: string) =>
+    page
+      .getByRole('button', { name: title, exact: true })
+      .locator('xpath=ancestor::*[@data-sidebar="menu-item"][1]');
+
+  for (const title of ['Core', 'Folders', 'Management']) {
+    await expect(page.getByRole('button', { name: title, exact: true })).toBeVisible({
+      timeout: 30_000,
+    });
+  }
+
+  const coreLinks = section('Core').locator('a[href^="/mail/"]');
+  await expect(coreLinks).toHaveCount(3);
+  expect(
+    await coreLinks.evaluateAll((links) => links.map((link) => link.getAttribute('href'))),
+  ).toEqual(['/mail/inbox', '/mail/draft', '/mail/sent']);
+
+  const folderLinks = section('Folders').locator('a[href^="/mail/"]');
+  await expect(folderLinks).toHaveCount(WORKFLOW_QUEUES.length);
+  expect(
+    await folderLinks.evaluateAll((links) => links.map((link) => link.getAttribute('href'))),
+  ).toEqual(WORKFLOW_QUEUES.map(([slug]) => `/mail/${slug}`));
+  await expect(section('Folders').locator('a[href="/mail/spam"]')).toHaveCount(0);
+  const urgentLink = section('Folders').locator('a[href="/mail/urgent"]');
+  await expect(urgentLink).toContainText('Urgent', { ignoreCase: true });
+  await expect(urgentLink).toHaveClass(/after:bg-red-500/);
+
+  const managementLinks = section('Management').locator('a[href^="/mail/"]');
+  await expect(managementLinks).toHaveCount(4);
+  expect(
+    await managementLinks.evaluateAll((links) => links.map((link) => link.getAttribute('href'))),
+  ).toEqual(['/mail/archive', '/mail/snoozed', '/mail/bin', '/mail/spam']);
+
+  // Sidebar folder links are the durable workflow queue chrome.
+  for (const [slug, label] of WORKFLOW_QUEUES) {
     const link = page.locator(`[data-sidebar="menu-button"][href="/mail/${slug}"]`);
     await expect(link, `queue nav missing for ${slug}`).toBeVisible({ timeout: 30_000 });
     await expect(link).toContainText(label, { ignoreCase: true });

@@ -16,24 +16,15 @@ import {
 import {
   getHotelFolderNavTheme,
   getHotelFolderPresentation,
-  isHotelManagedCategorySlug,
-  isHotelWorkflowPrimarySlug,
-  HOTEL_LEGACY_PRIMARY_CATEGORY_SLUGS,
   HOTEL_WORKFLOW_PRIMARY_SLUGS,
 } from '@/lib/mail/hotel-folder-presentation';
-import {
-  DEMO_MAIL_FOLDER_DEFINITIONS,
-  WORKFLOW_MAIL_FOLDER_DEFINITIONS,
-  type DemoMailFolderId,
-} from '@/lib/demo/folder-map';
-import { categoryColorNavTheme } from '@/lib/mail/route-filter';
+import { WORKFLOW_MAIL_FOLDER_DEFINITIONS, type DemoMailFolderId } from '@/lib/demo/folder-map';
 import { PILOT_CAPABILITIES } from '@/lib/pilot/capabilities';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import type { ComponentType, SVGProps } from 'react';
 import { ShieldCheck } from 'lucide-react';
 import type { CSSProperties } from 'react';
 import { m } from '@/paraglide/messages';
-import { cn } from '@/lib/utils';
 
 export interface NavItem {
   id?: string;
@@ -61,78 +52,35 @@ export type LiveCategoryNavInput = {
   slug: string;
   name: string;
   color?: string | null;
-  sortOrder?: number;
 };
 
-export type WorkflowNavEnv = {
-  VITE_WORKFLOW_NAV_V6?: string | boolean;
-  WORKFLOW_NAV_V6?: string | boolean;
-};
-
-export function isWorkflowNavV6Enabled(
-  env: WorkflowNavEnv = import.meta.env as WorkflowNavEnv,
-): boolean {
-  const raw = env.VITE_WORKFLOW_NAV_V6 ?? env.WORKFLOW_NAV_V6;
-  return raw === true || raw === '1' || raw === 'true';
-}
-
-/** Build-time frontend gate. Durable triage/schema gate lives in server env. */
-export const WORKFLOW_NAV_V6 = isWorkflowNavV6Enabled();
-
-function isLegacyOrCustomLiveCategory(slug: string): boolean {
-  if (
-    HOTEL_LEGACY_PRIMARY_CATEGORY_SLUGS.includes(
-      slug as (typeof HOTEL_LEGACY_PRIMARY_CATEGORY_SLUGS)[number],
-    )
-  ) {
-    return true;
-  }
-  return !isHotelWorkflowPrimarySlug(slug);
-}
-
-function getLiveCategoryNavSortIndex(
-  category: LiveCategoryNavInput,
-  workflowNav: boolean,
-): number {
-  const slug = category.slug.trim().toLowerCase();
+function getWorkflowNavSortIndex(slug: string): number {
   if (slug === 'urgent') return -1;
-  if (category.sortOrder !== undefined) return category.sortOrder;
-  const primaryOrder = workflowNav
-    ? HOTEL_WORKFLOW_PRIMARY_SLUGS
-    : HOTEL_LEGACY_PRIMARY_CATEGORY_SLUGS;
-  const primaryIndex = (primaryOrder as readonly string[]).indexOf(slug);
-  return primaryIndex >= 0 ? primaryIndex : primaryOrder.length;
+  return HOTEL_WORKFLOW_PRIMARY_SLUGS.indexOf(
+    slug as (typeof HOTEL_WORKFLOW_PRIMARY_SLUGS)[number],
+  );
 }
 
-export function buildLiveCategoryNavItems(
-  categories: LiveCategoryNavInput[],
-  workflowNav: boolean = WORKFLOW_NAV_V6,
-): NavItem[] {
+export function buildLiveCategoryNavItems(categories: LiveCategoryNavInput[]): NavItem[] {
   const visibleCategories = categories.filter((category) => {
     const slug = category.slug.trim().toLowerCase();
     if (slug === 'spam') return false;
-    if (workflowNav) {
-      return HOTEL_WORKFLOW_PRIMARY_SLUGS.includes(
+    return (
+      HOTEL_WORKFLOW_PRIMARY_SLUGS.includes(
         slug as (typeof HOTEL_WORKFLOW_PRIMARY_SLUGS)[number],
-      ) || slug === 'urgent';
-    }
-    // Legacy live mode keeps custom categories, but removes v6 folders until flip.
-    return isLegacyOrCustomLiveCategory(slug);
+      ) || slug === 'urgent'
+    );
   });
 
   return [...visibleCategories]
     .sort(
       (a, b) =>
-        getLiveCategoryNavSortIndex(a, workflowNav) -
-        getLiveCategoryNavSortIndex(b, workflowNav),
+        getWorkflowNavSortIndex(a.slug.trim().toLowerCase()) -
+        getWorkflowNavSortIndex(b.slug.trim().toLowerCase()),
     )
     .map((category) => {
-      const presentation = getHotelFolderPresentation(category.slug);
-      const managedTheme = isHotelManagedCategorySlug(category.slug)
-        ? getHotelFolderNavTheme(category.slug)
-        : category.color?.trim()
-          ? categoryColorNavTheme(category.color)
-          : {};
+      const slug = category.slug.trim().toLowerCase();
+      const presentation = getHotelFolderPresentation(slug);
 
       return {
         id: category.slug,
@@ -140,7 +88,7 @@ export function buildLiveCategoryNavItems(
         subtitle: presentation?.subtitle,
         url: `/mail/${category.slug}`,
         icon: Folder,
-        ...managedTheme,
+        ...getHotelFolderNavTheme(slug),
       };
     });
 }
@@ -148,13 +96,12 @@ export function buildLiveCategoryNavItems(
 export function injectLiveCategoryNavSection(
   sections: NavSection[],
   categories: LiveCategoryNavInput[],
-  workflowNav: boolean = WORKFLOW_NAV_V6,
 ): NavSection[] {
   if (!PILOT_CAPABILITIES.hotelCategories || categories.length === 0) {
     return sections;
   }
 
-  const folderItems = buildLiveCategoryNavItems(categories, workflowNav);
+  const folderItems = buildLiveCategoryNavItems(categories);
   if (folderItems.length === 0) return sections;
 
   const managementIndex = sections.findIndex((section) => section.title === 'Management');
@@ -174,57 +121,22 @@ interface NavConfig {
 
 const DEMO_FOLDER_MODEL_ENABLED = isFrontendOnlyDemo();
 
-/** Workflow sidebar order when WORKFLOW_NAV_V6 is enabled; urgent sorts separately. */
-const HOTEL_PRIMARY_NAV_ORDER = HOTEL_WORKFLOW_PRIMARY_SLUGS;
-
-/** Current sidebar remains legacy until WORKFLOW_NAV_V6 is enabled. */
-const LEGACY_DEMO_PRIMARY_NAV_ORDER = HOTEL_LEGACY_PRIMARY_CATEGORY_SLUGS;
-
-function getDemoMailFolderNavSortIndex(
-  folderId: DemoMailFolderId,
-  workflowNav: boolean,
-): number {
-  if (folderId === 'urgent') return -1;
-  const primaryOrder = workflowNav ? HOTEL_PRIMARY_NAV_ORDER : LEGACY_DEMO_PRIMARY_NAV_ORDER;
-  const primaryIndex = (primaryOrder as readonly string[]).indexOf(folderId);
-  if (primaryIndex >= 0) return primaryIndex;
-  return primaryOrder.length;
-}
-
 function getDemoMailFolderIcon(folderId: DemoMailFolderId): ComponentType<SVGProps<SVGSVGElement>> {
   if (folderId === 'urgent' || folderId === 'spam') return ExclamationCircle;
   return Folder;
 }
 
-function getDemoMailFolderNavItemTheme(
-  folderId: DemoMailFolderId,
-): Pick<NavItem, 'style' | 'className'> {
-  return getHotelFolderNavTheme(folderId);
-}
-
-export function buildDemoMailFolderNavItems(
-  workflowNav: boolean = WORKFLOW_NAV_V6,
-): NavItem[] {
-  const definitions = workflowNav
-    ? WORKFLOW_MAIL_FOLDER_DEFINITIONS
-    : DEMO_MAIL_FOLDER_DEFINITIONS;
-  return definitions
-    .filter((folder) => folder.id !== 'spam')
-    .sort(
-      (a, b) =>
-        getDemoMailFolderNavSortIndex(a.id, workflowNav) -
-        getDemoMailFolderNavSortIndex(b.id, workflowNav),
-    )
+export function buildDemoMailFolderNavItems(): NavItem[] {
+  return WORKFLOW_MAIL_FOLDER_DEFINITIONS.filter((folder) => folder.id !== 'spam')
+    .sort((a, b) => getWorkflowNavSortIndex(a.id) - getWorkflowNavSortIndex(b.id))
     .map((folder) => {
-      const theme = getDemoMailFolderNavItemTheme(folder.id);
       return {
         id: folder.id,
         title: folder.title,
         subtitle: folder.subtitle,
         url: `/mail/${folder.id}`,
         icon: getDemoMailFolderIcon(folder.id),
-        ...theme,
-        className: cn(theme.className),
+        ...getHotelFolderNavTheme(folder.id),
       };
     });
 }

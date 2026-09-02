@@ -61,7 +61,6 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
               slug: category.slug,
               name: category.name,
               color: category.color,
-              sortOrder: category.order,
             })),
         );
       }
