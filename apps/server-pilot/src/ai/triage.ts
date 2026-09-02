@@ -634,6 +634,9 @@ function refineWorkflowTriageOutput(
     next = {
       ...next,
       primaryFolder: 'exceptions-recovery',
+      isSpam: false,
+      urgent: false,
+      suggestedTools: [],
       policyFlags: addPolicyFlag(next.policyFlags, 'refine:series-release-at-risk'),
       rationale: `${next.rationale} Held series/allocation release is exceptions-recovery.`,
     };
