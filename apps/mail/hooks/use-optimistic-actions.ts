@@ -10,11 +10,13 @@ import {
   fileThreadsTo,
   moveThreadsTo,
 } from '@/lib/thread-actions';
+import { buildReservedSpamLabelIdSet } from '@/lib/mail/route-filter';
+import { useLabels } from '@/hooks/use-labels';
 import { useTRPC } from '@/providers/query-provider';
 import { useMail } from '@/components/mail/use-mail';
 import { m } from '@/paraglide/messages';
 import { useQueryState } from 'nuqs';
-import { useCallback } from 'react';
+import { useCallback, useMemo } from 'react';
 import posthog from 'posthog-js';
 import { useAtom } from 'jotai';
 import { toast } from 'sonner';
@@ -81,6 +83,11 @@ export function useOptimisticActions() {
   const [threadId, setThreadId] = useQueryState('threadId');
   const [, setActiveReplyId] = useQueryState('activeReplyId');
   const [mail, setMail] = useMail();
+  const { userLabels } = useLabels();
+  const reservedSpamLabelIds = useMemo(
+    () => buildReservedSpamLabelIdSet(userLabels ?? []),
+    [userLabels],
+  );
   const frontendOnlyDemo = isFrontendOnlyDemo();
   const { mutateAsync: markAsRead } = useMutation(trpc.mail.markAsRead.mutationOptions());
   const { mutateAsync: markAsUnread } = useMutation(trpc.mail.markAsUnread.mutationOptions());
@@ -456,7 +463,12 @@ export function useOptimisticActions() {
 
     const cachedThreads = collectCachedThreadLabelSources(queryClient.getQueriesData({}));
     // Snapshot prior labelIds + archive/spam/trash flags for undo/error restore.
-    const priorSnapshots = buildThreadFilingSnapshots(threadIds, currentFolder, cachedThreads);
+    const priorSnapshots = buildThreadFilingSnapshots(
+      threadIds,
+      currentFolder,
+      cachedThreads,
+      reservedSpamLabelIds,
+    );
 
     const moveOptimisticId = addOptimisticAction({
       type: 'MOVE',

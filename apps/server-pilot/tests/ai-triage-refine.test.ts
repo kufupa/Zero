@@ -4,8 +4,9 @@ import {
   staffConversationNotSpam,
   type WorkflowTriageOutput,
 } from '../src/ai/triage.js';
-import { mailCategory, mailThread, mailThreadCategory } from '../src/db/schema/mail.js';
+import { mailCategory, mailLabel, mailThread, mailThreadCategory } from '../src/db/schema/mail.js';
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
+import type { DB } from '../src/db/client.js';
 import { TRANSPORT_ID } from '../src/db/seed.js';
 import { describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
@@ -744,6 +745,171 @@ describe('workflow source and automation refinement', () => {
 const applyDbAvailable = TEST_DB_AVAILABLE && (await probeTestDb());
 
 describe.skipIf(!applyDbAvailable)('R22 Layer-3 durable apply', () => {
+  async function seedUnsettledThread(
+    db: DB,
+    threadId: string,
+    overrides: { spamAt?: Date | null; labelIds?: string[] } = {},
+  ) {
+    await db.insert(mailThread).values({
+      id: threadId,
+      transportId: TRANSPORT_ID,
+      threadRootId: `<${threadId}@example.com>`,
+      subject: 'Triage apply',
+      snippet: 'Triage apply',
+      latestMessageAt: new Date(),
+      spamAt: overrides.spamAt ?? null,
+      labelIds: overrides.labelIds ?? [],
+    });
+  }
+
+  it('FortiMail spam apply sets spamAt and merges Quarantine label', async () => {
+    await withSeededTestDb(async (db) => {
+      const threadId = randomUUID();
+      await seedUnsettledThread(db, threadId);
+
+      const result = await applyDurableTriageResult({
+        db,
+        transportId: TRANSPORT_ID,
+        threadId,
+        writeGateEnabled: true,
+        output: workflowOutput({
+          isSpam: true,
+          policyFlags: ['refine:fortimail-spam'],
+        }),
+      });
+
+      expect(result.applyMode).toBe('full');
+      const [thread] = await db
+        .select({ spamAt: mailThread.spamAt, labelIds: mailThread.labelIds })
+        .from(mailThread)
+        .where(eq(mailThread.id, threadId));
+      expect(thread?.spamAt).not.toBeNull();
+
+      const [quarantineLabel] = await db
+        .select({ id: mailLabel.id })
+        .from(mailLabel)
+        .where(
+          and(eq(mailLabel.transportId, TRANSPORT_ID), eq(mailLabel.name, 'Quarantine')),
+        );
+      expect(quarantineLabel).toBeDefined();
+      expect(thread?.labelIds).toContain(quarantineLabel!.id);
+    });
+  });
+
+  it('promo spam sets spamAt without Quarantine label', async () => {
+    await withSeededTestDb(async (db) => {
+      const threadId = randomUUID();
+      await seedUnsettledThread(db, threadId);
+
+      const result = await applyDurableTriageResult({
+        db,
+        transportId: TRANSPORT_ID,
+        threadId,
+        writeGateEnabled: true,
+        output: workflowOutput({
+          isSpam: true,
+          policyFlags: ['refine:promo-spam'],
+        }),
+      });
+
+      expect(result.applyMode).toBe('full');
+      const [thread] = await db
+        .select({ spamAt: mailThread.spamAt, labelIds: mailThread.labelIds })
+        .from(mailThread)
+        .where(eq(mailThread.id, threadId));
+      expect(thread?.spamAt).not.toBeNull();
+
+      const quarantineLabels = await db
+        .select({ id: mailLabel.id })
+        .from(mailLabel)
+        .where(
+          and(eq(mailLabel.transportId, TRANSPORT_ID), eq(mailLabel.name, 'Quarantine')),
+        );
+      const quarantineIds = quarantineLabels.map((row) => row.id);
+      expect(thread?.labelIds ?? []).every((id) => !quarantineIds.includes(id)).toBe(true);
+    });
+  });
+
+  it('re-apply promo spam after FortiMail strips Quarantine label', async () => {
+    await withSeededTestDb(async (db) => {
+      const threadId = randomUUID();
+      const quarantineId = randomUUID();
+      await db.insert(mailLabel).values({
+        id: quarantineId,
+        transportId: TRANSPORT_ID,
+        name: 'Quarantine',
+      });
+      await seedUnsettledThread(db, threadId, { labelIds: [quarantineId] });
+
+      await applyDurableTriageResult({
+        db,
+        transportId: TRANSPORT_ID,
+        threadId,
+        writeGateEnabled: true,
+        output: workflowOutput({
+          isSpam: true,
+          policyFlags: ['refine:fortimail-spam'],
+        }),
+      });
+
+      await applyDurableTriageResult({
+        db,
+        transportId: TRANSPORT_ID,
+        threadId,
+        writeGateEnabled: true,
+        forceUnsettle: true,
+        output: workflowOutput({
+          isSpam: true,
+          policyFlags: ['refine:promo-spam'],
+        }),
+      });
+
+      const [thread] = await db
+        .select({ spamAt: mailThread.spamAt, labelIds: mailThread.labelIds })
+        .from(mailThread)
+        .where(eq(mailThread.id, threadId));
+      expect(thread?.spamAt).not.toBeNull();
+      expect(thread?.labelIds ?? []).not.toContain(quarantineId);
+    });
+  });
+
+  it('non-spam full apply clears spamAt and strips Quarantine label', async () => {
+    await withSeededTestDb(async (db) => {
+      const threadId = randomUUID();
+      const quarantineId = randomUUID();
+      await db.insert(mailLabel).values({
+        id: quarantineId,
+        transportId: TRANSPORT_ID,
+        name: 'Quarantine',
+      });
+      await seedUnsettledThread(db, threadId, {
+        spamAt: new Date(),
+        labelIds: [quarantineId],
+      });
+
+      const result = await applyDurableTriageResult({
+        db,
+        transportId: TRANSPORT_ID,
+        threadId,
+        writeGateEnabled: true,
+        forceUnsettle: true,
+        output: workflowOutput({
+          isSpam: false,
+          primaryFolder: 'unknown-review',
+          policyFlags: [],
+        }),
+      });
+
+      expect(result.applyMode).toBe('full');
+      const [thread] = await db
+        .select({ spamAt: mailThread.spamAt, labelIds: mailThread.labelIds })
+        .from(mailThread)
+        .where(eq(mailThread.id, threadId));
+      expect(thread?.spamAt).toBeNull();
+      expect(thread?.labelIds ?? []).not.toContain(quarantineId);
+    });
+  });
+
   it('clears unlocked spamAt and joins internal-partner for forced not-spam', async () => {
     await withSeededTestDb(async (db) => {
       const threadId = randomUUID();

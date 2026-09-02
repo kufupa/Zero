@@ -58,8 +58,9 @@ import { format } from 'date-fns';
 import { useAtom } from 'jotai';
 import { toast } from 'sonner';
 import { resolveImportantState } from '@/lib/mail/important-ui';
-import { isArchiveLikeMailFolder } from '@/lib/mail/route-filter';
+import { buildReservedSpamLabelIdSet, isArchiveLikeMailFolder, isReservedSpamScopedLabelId } from '@/lib/mail/route-filter';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { useLabels } from '@/hooks/use-labels';
 import { flushComposeBeforeLeave } from '@/lib/mail/compose-flush-registry';
 import { shouldShowOpenThreadSkeleton } from '@/lib/mail/thread-open-stability';
 import { runComposeLeaveFlush } from '@/lib/mail/draft-persistence';
@@ -183,6 +184,11 @@ export function ThreadDisplay() {
   const params = useParams<{ folder: string }>();
 
   const folder = params?.folder ?? 'inbox';
+  const { userLabels } = useLabels();
+  const reservedSpamLabelIds = useMemo(
+    () => buildReservedSpamLabelIdSet(userLabels ?? []),
+    [userLabels],
+  );
   const [id, setThreadId] = useQueryState('threadId');
   const {
     data: emailData,
@@ -384,8 +390,8 @@ export function ThreadDisplay() {
     });
   };
 
-  const isInArchive = isArchiveLikeMailFolder(folder);
-  const isInSpam = folder === FOLDERS.SPAM;
+  const isInArchive = isArchiveLikeMailFolder(folder, reservedSpamLabelIds);
+  const isInSpam = folder === FOLDERS.SPAM || isReservedSpamScopedLabelId(folder, reservedSpamLabelIds);
   const isInBin = folder === FOLDERS.BIN;
   const handleClose = useCallback(async () => {
     await clearComposeContext();

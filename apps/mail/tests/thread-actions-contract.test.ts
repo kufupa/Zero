@@ -78,6 +78,31 @@ describe('thread action contract', () => {
     ]);
   });
 
+  it('isActionAvailable treats Quarantine UUID like spam for inbox/bin', () => {
+    const quarantineId = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
+    const reserved = new Set([quarantineId]);
+    expect(isActionAvailable(quarantineId, 'inbox', reserved)).toBe(true);
+    expect(isActionAvailable(quarantineId, 'bin', reserved)).toBe(true);
+    expect(isActionAvailable(quarantineId, 'spam', reserved)).toBe(false);
+    expect(isActionAvailable(quarantineId, 'archive', reserved)).toBe(false);
+  });
+
+  it('buildThreadFilingSnapshots marks Quarantine UUID as spam not archived', () => {
+    const quarantineId = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
+    const reserved = new Set([quarantineId]);
+    expect(
+      buildThreadFilingSnapshots(['t1'], quarantineId, [{ id: 't1', labelIds: [quarantineId] }], reserved),
+    ).toEqual([
+      {
+        threadId: 't1',
+        labelIds: [quarantineId],
+        isArchived: false,
+        isSpam: true,
+        isTrashed: false,
+      },
+    ]);
+  });
+
   it('isActionAvailable treats My folders UUID like archive for inbox/bin', () => {
     const labelId = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
     expect(isActionAvailable(labelId, 'inbox')).toBe(true);

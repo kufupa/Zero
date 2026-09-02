@@ -11,7 +11,7 @@ import {
   AI_WORKFLOW_PRIMARY_SLUGS,
 } from './categories.js';
 import { getLatestInboundFromAddress, getSenderPreference } from '../mail/sender-preference.js';
-import { mailCategory, mailThread, mailThreadCategory } from '../db/schema/mail.js';
+import { mailCategory, mailLabel, mailThread, mailThreadCategory } from '../db/schema/mail.js';
 import { READ_TOOL_IDS } from '../hms/read-tools.js';
 import { and, eq, inArray } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
@@ -1048,6 +1048,56 @@ export interface ApplyDurableTriageInput {
 
 export type ApplyMode = 'full' | 'urgency_only' | 'skipped';
 
+/** FortiMail digest apply attaches this user label (ensure-by-name). Not ingest soft-quarantine. */
+export const FORTIMAIL_QUARANTINE_LABEL_NAME = 'Quarantine';
+
+async function findFortimailQuarantineLabelId(db: DB, transportId: string): Promise<string | null> {
+  const rows = await db
+    .select({ id: mailLabel.id })
+    .from(mailLabel)
+    .where(
+      and(
+        eq(mailLabel.transportId, transportId),
+        eq(mailLabel.name, FORTIMAIL_QUARANTINE_LABEL_NAME),
+      ),
+    )
+    .limit(1);
+  return rows[0]?.id ?? null;
+}
+
+async function ensureFortimailQuarantineLabel(db: DB, transportId: string): Promise<string> {
+  const existing = await findFortimailQuarantineLabelId(db, transportId);
+  if (existing) return existing;
+
+  const id = `label-quarantine-${transportId}`;
+  await db
+    .insert(mailLabel)
+    .values({ id, transportId, name: FORTIMAIL_QUARANTINE_LABEL_NAME, color: null })
+    .onConflictDoNothing({ target: [mailLabel.transportId, mailLabel.name] });
+
+  const resolved = await findFortimailQuarantineLabelId(db, transportId);
+  if (!resolved) {
+    throw new Error(`Failed to ensure Quarantine label for transport ${transportId}`);
+  }
+  return resolved;
+}
+
+function stripLabelId(labelIds: string[], labelId: string): string[] {
+  return labelIds.filter((id) => id !== labelId);
+}
+
+function shouldAttachFortimailQuarantineLabel(
+  effectiveIsSpam: boolean,
+  workflowOutput: WorkflowTriageOutput | undefined,
+  legacyOutput: LegacyTriageOutput,
+): boolean {
+  if (!effectiveIsSpam) return false;
+  const policyFlags = workflowOutput?.policyFlags ?? legacyOutput.policyFlags;
+  if (!policyFlags.includes('refine:fortimail-spam')) return false;
+  if (workflowOutput) return workflowOutput.isSpam;
+  return legacyOutput.category === 'spam';
+}
+
 export async function applyDurableTriageResult(
   input: ApplyDurableTriageInput,
 ): Promise<{ applyMode: ApplyMode }> {
@@ -1233,16 +1283,59 @@ export async function applyDurableTriageResult(
   }
 
   if (effectiveIsSpam) {
-    await db
-      .update(mailThread)
-      .set({ spamAt: new Date(), updatedAt: new Date() })
-      .where(and(eq(mailThread.id, threadId), eq(mailThread.transportId, transportId)));
+    const attachFortimail = shouldAttachFortimailQuarantineLabel(
+      effectiveIsSpam,
+      workflowOutput,
+      legacyOutput,
+    );
+
+    await db.transaction(async (tx) => {
+      const quarantineLabelId = attachFortimail
+        ? await ensureFortimailQuarantineLabel(tx, transportId)
+        : await findFortimailQuarantineLabelId(tx, transportId);
+
+      const [threadRow] = await tx
+        .select({ labelIds: mailThread.labelIds })
+        .from(mailThread)
+        .where(and(eq(mailThread.id, threadId), eq(mailThread.transportId, transportId)))
+        .limit(1);
+      const currentLabelIds = threadRow?.labelIds ?? [];
+      const nextLabelIds = attachFortimail && quarantineLabelId
+        ? [...new Set([...currentLabelIds, quarantineLabelId])]
+        : quarantineLabelId
+          ? stripLabelId(currentLabelIds, quarantineLabelId)
+          : currentLabelIds;
+
+      await tx
+        .update(mailThread)
+        .set({
+          spamAt: new Date(),
+          labelIds: nextLabelIds,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(mailThread.id, threadId), eq(mailThread.transportId, transportId)));
+    });
     return { applyMode: 'full' };
   }
 
+  const quarantineLabelId = await findFortimailQuarantineLabelId(db, transportId);
+  const [threadLabelRow] = await db
+    .select({ labelIds: mailThread.labelIds })
+    .from(mailThread)
+    .where(and(eq(mailThread.id, threadId), eq(mailThread.transportId, transportId)))
+    .limit(1);
+  const clearedLabelIds =
+    quarantineLabelId && threadLabelRow
+      ? stripLabelId(threadLabelRow.labelIds ?? [], quarantineLabelId)
+      : undefined;
+
   await db
     .update(mailThread)
-    .set({ spamAt: null, updatedAt: new Date() })
+    .set({
+      spamAt: null,
+      ...(clearedLabelIds !== undefined ? { labelIds: clearedLabelIds } : {}),
+      updatedAt: new Date(),
+    })
     .where(and(eq(mailThread.id, threadId), eq(mailThread.transportId, transportId)));
 
   if (categoryIds.length > 0) {

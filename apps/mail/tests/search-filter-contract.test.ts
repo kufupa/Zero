@@ -5,8 +5,10 @@ import {
 } from '@/lib/mail/hotel-folder-presentation';
 import {
   buildListThreadsInput,
+  buildReservedSpamLabelIdSet,
   categoryColorNavTheme,
   isArchiveLikeMailFolder,
+  isReservedSpamScopedLabelId,
   isUserFolderRouteParam,
   mergeCategoryIds,
   mergeLabelIds,
@@ -61,6 +63,27 @@ describe('mail route filter contract', () => {
       folder: 'archive',
       filters: { labelIds: [unknownId] },
     });
+  });
+
+  it('maps reserved Quarantine label UUID to spam + labelIds', () => {
+    const quarantineId = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
+    const reserved = new Set([quarantineId]);
+    expect(resolveMailRouteFilter(quarantineId, new Map(), new Set([quarantineId]), reserved)).toEqual({
+      folder: 'spam',
+      filters: { labelIds: [quarantineId] },
+    });
+    expect(isArchiveLikeMailFolder(quarantineId, reserved)).toBe(false);
+    expect(isReservedSpamScopedLabelId(quarantineId, reserved)).toBe(true);
+  });
+
+  it('buildReservedSpamLabelIdSet resolves Quarantine name to id', () => {
+    const quarantineId = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
+    const reserved = buildReservedSpamLabelIdSet([
+      { id: quarantineId, name: 'Quarantine' },
+      { id: 'other-id', name: 'Follow up' },
+    ]);
+    expect(reserved.has(quarantineId.toLowerCase())).toBe(true);
+    expect(reserved.has('other-id')).toBe(false);
   });
 
   it('isArchiveLikeMailFolder covers archive + My folders UUID routes only', () => {

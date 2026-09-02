@@ -25,7 +25,7 @@ import {
   resolveOpenThreadId,
   shouldBlankOpenThreadData,
 } from '@/lib/mail/thread-open-stability';
-import { mergeCategoryIds, mergeLabelIds, resolveMailRouteFilter } from '@/lib/mail/route-filter';
+import { mergeCategoryIds, mergeLabelIds, buildReservedSpamLabelIdSet, resolveMailRouteFilter } from '@/lib/mail/route-filter';
 import { resolveSearchListRequest } from '@/lib/mail/search-list';
 import { buildConversationPrimaryListRows } from '@/lib/mail/conversation-list';
 import { useCategorySettings } from './use-categories';
@@ -71,7 +71,16 @@ export const useThreads = () => {
     }
     return ids;
   }, [userLabels]);
-  const routeFilter = resolveMailRouteFilter(canonicalRouteFolder, categoryBySlug, labelIdSet);
+  const reservedSpamLabelIdSet = useMemo(
+    () => buildReservedSpamLabelIdSet(userLabels ?? []),
+    [userLabels],
+  );
+  const routeFilter = resolveMailRouteFilter(
+    canonicalRouteFolder,
+    categoryBySlug,
+    labelIdSet,
+    reservedSpamLabelIdSet,
+  );
 
   const baseListFilters = useMemo(
     () => ({

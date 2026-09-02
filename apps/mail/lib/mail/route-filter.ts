@@ -18,6 +18,42 @@ const SYSTEM_FOLDERS = new Set([
 const LABEL_ID_SHAPE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/** My Folder label names that route under spam folder + labelIds (not archive). */
+export const RESERVED_SPAM_SCOPED_LABEL_NAMES = ['Quarantine'] as const;
+
+export type ReservedSpamScopedLabelName = (typeof RESERVED_SPAM_SCOPED_LABEL_NAMES)[number];
+
+/** True when label id is a reserved spam-scoped My Folder (e.g. Quarantine). */
+export function isReservedSpamScopedLabelId(
+  labelId: string | undefined | null,
+  reservedSpamLabelIds?: Set<string> | readonly string[],
+): boolean {
+  if (!labelId || !reservedSpamLabelIds) return false;
+  const normalized = labelId.trim().toLowerCase();
+  if (reservedSpamLabelIds instanceof Set) return reservedSpamLabelIds.has(normalized);
+  return reservedSpamLabelIds.some((id) => id.toLowerCase() === normalized);
+}
+
+/**
+ * Build reserved spam-scoped label id set from user labels (name → UUID).
+ * Callers with labels list (nav/hooks) pass result into route-filter + chrome helpers.
+ */
+export function buildReservedSpamLabelIdSet(
+  labels: Array<{ id?: string | null; name?: string | null }>,
+): Set<string> {
+  const reservedNames = new Set(
+    RESERVED_SPAM_SCOPED_LABEL_NAMES.map((name) => name.toLowerCase()),
+  );
+  const ids = new Set<string>();
+  for (const label of labels) {
+    const name = label.name?.trim().toLowerCase();
+    if (label.id && name && reservedNames.has(name)) {
+      ids.add(label.id.toLowerCase());
+    }
+  }
+  return ids;
+}
+
 /** True when `/mail/{param}` is a user My folders label id (not system/hotel slug). */
 export function isUserFolderRouteParam(folder: string | undefined | null): boolean {
   if (!folder) return false;
@@ -30,11 +66,18 @@ export function isUserFolderRouteParam(folder: string | undefined | null): boole
 
 /**
  * Archive list chrome + Move to Inbox: system archive OR My folders UUID route
- * (list filter is archive+labelIds for those paths).
+ * (list filter is archive+labelIds for those paths). Quarantine is spam-scoped.
  */
-export function isArchiveLikeMailFolder(folder: string | undefined | null): boolean {
+export function isArchiveLikeMailFolder(
+  folder: string | undefined | null,
+  reservedSpamLabelIds?: Set<string> | readonly string[],
+): boolean {
   const normalized = (folder ?? '').trim().toLowerCase();
-  return normalized === 'archive' || normalized === 'archived' || isUserFolderRouteParam(folder);
+  if (normalized === 'archive' || normalized === 'archived') return true;
+  if (isUserFolderRouteParam(folder)) {
+    return !isReservedSpamScopedLabelId(folder, reservedSpamLabelIds);
+  }
+  return false;
 }
 
 export type MailListFolderSlug =
@@ -54,6 +97,7 @@ export function resolveMailRouteFilter(
   folder: string | undefined,
   categoryBySlug: Map<string, string>,
   labelIdSet?: Set<string>,
+  reservedSpamLabelIds?: Set<string>,
 ): {
   folder: MailListFolderSlug;
   filters: { categoryIds?: string[]; labelIds?: string[] };
@@ -65,6 +109,9 @@ export function resolveMailRouteFilter(
   const categoryId = categoryBySlug.get(normalized);
   if (categoryId) return { folder: 'inbox', filters: { categoryIds: [categoryId] } };
   if (labelIdSet?.has(normalized) || LABEL_ID_SHAPE.test(raw)) {
+    if (isReservedSpamScopedLabelId(normalized, reservedSpamLabelIds)) {
+      return { folder: 'spam', filters: { labelIds: [normalized] } };
+    }
     return { folder: 'archive', filters: { labelIds: [normalized] } };
   }
   return { folder: 'inbox', filters: {} };

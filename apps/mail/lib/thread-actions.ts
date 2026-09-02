@@ -1,6 +1,6 @@
 import { trpcClient } from '@/providers/query-provider';
 import { FOLDERS } from '@/lib/utils';
-import { isUserFolderRouteParam } from '@/lib/mail/route-filter';
+import { isUserFolderRouteParam, isReservedSpamScopedLabelId } from '@/lib/mail/route-filter';
 
 export type ThreadDestination = 'inbox' | 'archive' | 'spam' | 'bin' | 'snoozed' | null;
 export type FolderLocation = 'inbox' | 'archive' | 'spam' | 'sent' | 'bin' | string;
@@ -11,10 +11,14 @@ export interface MoveThreadOptions {
   destination: ThreadDestination;
 }
 
-export function isActionAvailable(folder: FolderLocation, action: ThreadDestination): boolean {
+export function isActionAvailable(
+  folder: FolderLocation,
+  action: ThreadDestination,
+  reservedSpamLabelIds?: Set<string> | readonly string[],
+): boolean {
   if (!action) return false;
 
-  // My folders UUID routes list as archive+labelIds — same move chrome as archive.
+  // My folders UUID routes: archive-like (inbox+bin) or spam-scoped Quarantine (inbox+bin).
   if (isUserFolderRouteParam(folder)) {
     return action === 'inbox' || action === 'bin';
   }
@@ -47,9 +51,12 @@ export function isActionAvailable(folder: FolderLocation, action: ThreadDestinat
   }
 }
 
-export function getAvailableActions(folder: FolderLocation): ThreadDestination[] {
+export function getAvailableActions(
+  folder: FolderLocation,
+  reservedSpamLabelIds?: Set<string> | readonly string[],
+): ThreadDestination[] {
   const allPossibleActions: ThreadDestination[] = ['inbox', 'archive', 'spam', 'bin', 'snoozed'];
-  return allPossibleActions.filter((action) => isActionAvailable(folder, action));
+  return allPossibleActions.filter((action) => isActionAvailable(folder, action, reservedSpamLabelIds));
 }
 
 export async function moveThreadsTo({ threadIds, destination }: MoveThreadOptions) {
@@ -97,11 +104,15 @@ export function buildThreadFilingSnapshots(
   threadIds: string[],
   currentFolder: string,
   cachedThreads: Array<{ id: string; labelIds?: string[] | null }>,
+  reservedSpamLabelIds?: Set<string> | readonly string[],
 ): ThreadFilingSnapshot[] {
   const folder = currentFolder.toLowerCase();
+  const isSpamScopedLabel = isReservedSpamScopedLabelId(currentFolder, reservedSpamLabelIds);
   const isArchived =
-    folder === 'archive' || folder === 'archived' || isUserFolderRouteParam(currentFolder);
-  const isSpam = folder === 'spam';
+    folder === 'archive' ||
+    folder === 'archived' ||
+    (isUserFolderRouteParam(currentFolder) && !isSpamScopedLabel);
+  const isSpam = folder === 'spam' || isSpamScopedLabel;
   const isTrashed = folder === 'bin' || folder === 'trash';
   const byId = new Map(cachedThreads.map((thread) => [thread.id, thread]));
 
