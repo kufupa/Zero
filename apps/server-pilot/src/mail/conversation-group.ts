@@ -127,11 +127,13 @@ export function buildConversationMeta(
     srcThreadId: string;
     dstThreadId: string;
     linkType: MailConversationLinkType;
+    supersededAt?: Date | string | null;
   }[],
   stats: ReadonlyMap<string, ThreadStats>,
 ): Map<string, ThreadConversationMeta> {
   const uf = new UnionFind(requestedThreadIds);
-  for (const edge of edges) {
+  const activeEdges = edges.filter((edge) => edge.supersededAt == null);
+  for (const edge of activeEdges) {
     uf.add(edge.srcThreadId);
     uf.add(edge.dstThreadId);
     uf.union(edge.srcThreadId, edge.dstThreadId);
@@ -153,7 +155,7 @@ export function buildConversationMeta(
       (sum, threadId) => sum + (stats.get(threadId)?.messageCount ?? 0),
       0,
     );
-    const componentLinks = edges.filter(
+    const componentLinks = activeEdges.filter(
       (edge) => threadIds.includes(edge.srcThreadId) && threadIds.includes(edge.dstThreadId),
     );
     const conversationResponded = respondedForComponent(threadIds, stats, componentLinks);

@@ -30,6 +30,47 @@ const OPS_DIGEST_SUBJECT_PATTERNS = [
 const QUOTED_FROM_HOTEL_RE =
   /From:\s*(?:Centurion Hotel Reservations|Martha Mthembu|Isaac Seabi)\s*<(?:centurion|marthamthembu|isaacseabi)@legacyhotels/i;
 const CONF_RE = /n[°º]\s*(\d{6,})-1/i;
+const SYSTEM_LOCALPART_HINTS = [
+  'noreply',
+  'no-reply',
+  'donotreply',
+  'mailer-daemon',
+  'postmaster',
+  'bounce',
+  'notification',
+  'notifications',
+  'alert',
+  'alerts',
+  'system',
+] as const;
+const OPS_LOCALPART_HINTS = [
+  'ops',
+  'operations',
+  'nightaudit',
+  'night-audit',
+  'channelmanager',
+  'channel-manager',
+] as const;
+const INTERNAL_DOMAIN_HINTS = [
+  'legacyhotels',
+  'navaai',
+  'synxis',
+  'reservecloud',
+  'fortimail',
+] as const;
+const SUBJECT_CLUSTER_TEMPLATE_PATTERNS = [
+  /\b(?:bounce|bounced|undeliverable|undelivered|returned to sender|did not reach the guest|delivery status)\b/i,
+  /\b(?:handover|hand over|night audit|daily report|discrepancy report|no\s+shows?|scans?)\b/i,
+  /\bnedbank\b/i,
+  /\b(?:quote|quotation)\b/i,
+  /\b(?:digest|quarantine report|failure notification|update failure)\b/i,
+] as const;
+const LOW_ENTROPY_SUBJECT_PATTERNS = [
+  /^(?:new\s+)?(?:booking|reservation|reservations)$/i,
+  /^(?:hello|hi|test|thanks?|thank you|no subject)$/i,
+] as const;
+const MAX_SUBJECT_CLUSTER_BUCKET_SIZE = 8;
+const MAX_AUTO_ORPHAN_LINKS_PER_THREAD = 1;
 
 export type LinkableMessage = {
   id: string;
@@ -55,6 +96,21 @@ export type ProposedConversationLink = {
   linkType: MailConversationLinkType;
   confidence: string;
 };
+
+/** Addresses that are not a person and must not be the only subject overlap. */
+export function isSystemAddress(address: string): boolean {
+  const match = /<?([^<>\s]+@[^>\s]+)>?/.exec(address.trim().toLowerCase());
+  const email = match?.[1] ?? address.trim().toLowerCase();
+  const at = email.lastIndexOf('@');
+  if (at < 1) return false;
+  const local = email.slice(0, at);
+  return (
+    SYSTEM_LOCALPART_HINTS.some((hint) => local.includes(hint)) ||
+    OPS_LOCALPART_HINTS.some(
+      (hint) => local === hint || local.startsWith(`${hint}.`) || local.startsWith(`${hint}-`),
+    )
+  );
+}
 
 /** RFC-style subject normalize for conversation-layer grouping (not ingest). */
 export function normalizeConversationSubject(subject: string): string {
@@ -172,6 +228,7 @@ export function discoverDomainLinks(messages: readonly LinkableMessage[]): Propo
 
   for (const [threadId, threadMessages] of byThread) {
     const inboundMessages = threadMessages.filter((msg) => msg.direction === 'inbound');
+    let autoLinksForThread = 0;
     for (const inbound of inboundMessages) {
       const threadText = threadMessages
         .map((msg) => `${msg.subject ?? ''}\n${msg.textBody ?? ''}`)
@@ -184,6 +241,7 @@ export function discoverDomainLinks(messages: readonly LinkableMessage[]): Propo
       const guestEmails = externalEmails(inbound.fromAddress);
 
       for (const auto of autoIndex) {
+        if (autoLinksForThread >= MAX_AUTO_ORPHAN_LINKS_PER_THREAD) break;
         if (auto.threadId === threadId) continue;
         const autoMessages = byThread.get(auto.threadId) ?? [];
         const anchor = autoMessages.find((msg) => msg.direction === 'outbound');
@@ -199,27 +257,29 @@ export function discoverDomainLinks(messages: readonly LinkableMessage[]): Propo
             linkType: 'domain_conf',
             confidence: '0.9500',
           });
+          autoLinksForThread += 1;
         }
       }
 
       for (const guestEmail of guestEmails) {
         const orphans = orphanByGuest.get(guestEmail) ?? [];
         for (const orphan of orphans) {
+          // Auto-confirmations are only linkable through an exact conf# match
+          // above; guest email/name alone is deliberately insufficient.
+          if (orphan.isAuto) continue;
           if (orphan.threadId === threadId) continue;
           const orphanMessages = byThread.get(orphan.threadId) ?? [];
           const anchor = orphanMessages.find((msg) => msg.direction === 'outbound');
           if (!anchor || !withinWindow(inbound, anchor, MS_7D)) continue;
 
-          const linkType: MailConversationLinkType = orphan.isAuto
-            ? 'domain_conf'
-            : 'domain_guest_email';
+          const linkType: MailConversationLinkType = 'domain_guest_email';
           pushLink(links, seen, {
             srcThreadId: threadId,
             dstThreadId: orphan.threadId,
             srcMessageId: inbound.id,
             dstMessageId: anchor.id,
             linkType,
-            confidence: linkType === 'domain_conf' ? '0.9500' : '0.9000',
+            confidence: '0.9000',
           });
         }
       }
@@ -281,25 +341,53 @@ function allParticipantEmails(message: LinkableMessage): Set<string> {
   return emails;
 }
 
-/** External-only participants reserved for guest/quoted paths if needed later. */
-
-function participantsOverlap(a: readonly LinkableMessage[], b: readonly LinkableMessage[]): boolean {
-  const left = new Set<string>();
-  for (const msg of a) {
-    // Staff↔staff ops (Breakfast Pack class) share only internal domains — must count them.
-    for (const email of allParticipantEmails(msg)) left.add(email);
-  }
-  for (const msg of b) {
+function nonSystemParticipants(messages: readonly LinkableMessage[]): Set<string> {
+  const participants = new Set<string>();
+  for (const msg of messages) {
     for (const email of allParticipantEmails(msg)) {
-      if (left.has(email)) return true;
+      if (!isSystemAddress(email)) participants.add(email);
     }
   }
-  return false;
+  return participants;
+}
+
+function isInternalAddress(address: string): boolean {
+  const lower = address.toLowerCase();
+  return INTERNAL_DOMAIN_HINTS.some((domain) => lower.includes(domain));
+}
+
+function isBreakfastPackSubject(normSubject: string): boolean {
+  return /breakfast\s*pack/i.test(normSubject) || normSubject.includes('breakfastpack');
+}
+
+function participantsOverlapForSubjectCluster(
+  a: readonly LinkableMessage[],
+  b: readonly LinkableMessage[],
+  normSubject: string,
+): boolean {
+  const left = nonSystemParticipants(a);
+  const right = nonSystemParticipants(b);
+  const overlap = [...left].filter((email) => right.has(email));
+  if (overlap.length === 0) return false;
+
+  // Guest-facing subject links need a non-system, external participant. The
+  // one intentional internal-only exception is the Breakfast Pack RE chain.
+  if (isBreakfastPackSubject(normSubject)) return true;
+  return overlap.some((email) => !isInternalAddress(email));
 }
 
 function isOpsDigestSubject(subject: string): boolean {
   const norm = normalizeConversationSubject(subject);
   return OPS_DIGEST_SUBJECT_PATTERNS.some((pattern) => norm.includes(pattern));
+}
+
+export function isSubjectClusterTemplate(subject: string): boolean {
+  const norm = normalizeConversationSubject(subject);
+  return (
+    norm.length < 8 ||
+    LOW_ENTROPY_SUBJECT_PATTERNS.some((pattern) => pattern.test(norm)) ||
+    SUBJECT_CLUSTER_TEMPLATE_PATTERNS.some((pattern) => pattern.test(norm))
+  );
 }
 
 export function discoverSubjectClusterLinks(
@@ -318,7 +406,7 @@ export function discoverSubjectClusterLinks(
   const clusters = new Map<string, string[]>();
   for (const [threadId, threadMessages] of byThread) {
     const subject = threadMessages.find((msg) => msg.subject)?.subject ?? '';
-    if (!subject || isOpsDigestSubject(subject)) continue;
+    if (!subject || isOpsDigestSubject(subject) || isSubjectClusterTemplate(subject)) continue;
     const norm = normalizeConversationSubject(subject);
     const collapsed = collapseSpacedSubjectArtifacts(norm);
     const key = collapsed.length >= 8 ? collapsed : norm;
@@ -329,14 +417,18 @@ export function discoverSubjectClusterLinks(
   }
 
   for (const threadIds of clusters.values()) {
-    if (threadIds.length < 2) continue;
+    if (threadIds.length < 2 || threadIds.length > MAX_SUBJECT_CLUSTER_BUCKET_SIZE) continue;
+    const normSubject = normalizeConversationSubject(
+      byThread.get(threadIds[0]!)?.find((msg) => msg.subject)?.subject ?? '',
+    );
     for (let i = 0; i < threadIds.length; i++) {
       for (let j = i + 1; j < threadIds.length; j++) {
         const leftId = threadIds[i]!;
         const rightId = threadIds[j]!;
         const leftMessages = byThread.get(leftId) ?? [];
         const rightMessages = byThread.get(rightId) ?? [];
-        if (!participantsOverlap(leftMessages, rightMessages)) continue;
+        if (!participantsOverlapForSubjectCluster(leftMessages, rightMessages, normSubject))
+          continue;
 
         const times = [...leftMessages, ...rightMessages].map(messageTime).filter((t) => t > 0);
         if (times.length < 2) continue;

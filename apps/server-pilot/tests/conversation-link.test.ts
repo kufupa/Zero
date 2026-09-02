@@ -81,6 +81,32 @@ describe('union-find conversation groups', () => {
     expect(rowB?.conversationMessageCount).toBe(4);
     expect(rowB?.conversationResponded).toBe(true);
   });
+
+  it('ignores superseded edges when resolving conversation metadata', () => {
+    const edges = [
+      {
+        srcThreadId: 'thread-a',
+        dstThreadId: 'thread-b',
+        linkType: 'subject_cluster' as const,
+        supersededAt: new Date('2026-09-02T12:00:00Z'),
+      },
+    ];
+    const stats = new Map([
+      [
+        'thread-a',
+        { latestMessageAt: new Date('2026-07-01T10:00:00Z'), messageCount: 1, hasOutbound: false },
+      ],
+      [
+        'thread-b',
+        { latestMessageAt: new Date('2026-07-01T11:00:00Z'), messageCount: 1, hasOutbound: false },
+      ],
+    ]);
+
+    const meta = buildConversationMeta(TRANSPORT_ID, ['thread-a', 'thread-b'], edges, stats);
+
+    expect(meta.get('thread-a')?.linkedThreadIds).toEqual([]);
+    expect(meta.get('thread-b')?.linkedThreadIds).toEqual([]);
+  });
 });
 
 describe('deterministic link discovery', () => {
@@ -190,6 +216,110 @@ describe('deterministic link discovery', () => {
     const links = discoverSubjectClusterLinks([a, b]);
     expect(links).toHaveLength(1);
     expect(links[0]?.linkType).toBe('subject_cluster');
+  });
+
+  it.each([
+    ['bounce', 'Action needed: Your email did not reach the guest', 3],
+    ['handover', 'Handover Report', 9],
+    ['quotation', 'Request for a quotation', 9],
+  ])('refuses %s template subject clusters', (_name, subject, count) => {
+    const messages = Array.from({ length: count }, (_, index) =>
+      msg({
+        id: `template-${_name}-${index}`,
+        threadId: `template-thread-${_name}-${index}`,
+        fromAddress: `guest-${index}@example.com`,
+        toAddresses: ['ops@legacyhotels.co.za'],
+        subject,
+        receivedAt: new Date(`2026-07-${String(index + 1).padStart(2, '0')}T10:00:00.000Z`),
+      }),
+    );
+
+    expect(discoverSubjectClusterLinks(messages)).toEqual([]);
+  });
+
+  it('refuses low-entropy generic subject clusters', () => {
+    const messages = ['low-a', 'low-b'].map((threadId, index) =>
+      msg({
+        id: `${threadId}-message`,
+        threadId,
+        fromAddress: 'same-guest@example.com',
+        toAddresses: ['centurion@legacyhotels.co.za'],
+        subject: 'Booking',
+        receivedAt: new Date(`2026-07-0${index + 1}T10:00:00.000Z`),
+      }),
+    );
+
+    expect(discoverSubjectClusterLinks(messages)).toEqual([]);
+  });
+
+  it('skips any subject bucket larger than eight threads', () => {
+    const messages = Array.from({ length: 9 }, (_, index) =>
+      msg({
+        id: `large-bucket-${index}`,
+        threadId: `large-bucket-thread-${index}`,
+        fromAddress: `guest-${index}@example.com`,
+        toAddresses: ['centurion@legacyhotels.co.za'],
+        subject: 'Specific reservation request',
+        receivedAt: new Date(`2026-07-${String(index + 1).padStart(2, '0')}T10:00:00.000Z`),
+      }),
+    );
+
+    expect(discoverSubjectClusterLinks(messages)).toEqual([]);
+  });
+
+  it('does not use system-only participant overlap for guest subject links', () => {
+    const messages = [
+      msg({
+        id: 'system-subject-a',
+        threadId: 'system-subject-a',
+        fromAddress: 'mailer-daemon@legacyhotels.co.za',
+        toAddresses: ['centurion@legacyhotels.co.za'],
+        subject: 'Delivery status update',
+      }),
+      msg({
+        id: 'system-subject-b',
+        threadId: 'system-subject-b',
+        fromAddress: 'mailer-daemon@legacyhotels.co.za',
+        toAddresses: ['centurion@legacyhotels.co.za'],
+        subject: 'RE: Delivery status update',
+        receivedAt: new Date('2026-07-01T11:00:00.000Z'),
+      }),
+    ];
+
+    expect(discoverSubjectClusterLinks(messages)).toEqual([]);
+  });
+
+  it('requires a matching confirmation number and caps auto-orphan links at one', () => {
+    const autoConfirmations = Array.from({ length: 5 }, (_, index) =>
+      msg({
+        id: `agency-auto-${index}`,
+        threadId: `agency-auto-thread-${index}`,
+        direction: 'outbound',
+        fromAddress: TRANSPORT_EMAIL,
+        toAddresses: ['agency@example.com'],
+        subject: `Confirmation letter_Guest Name (N° ${1234560 + index}-1)`,
+        textBody: 'Automatic confirmation',
+        receivedAt: new Date(`2026-07-0${index + 1}T11:00:00.000Z`),
+      }),
+    );
+    const inbound = msg({
+      id: 'agency-inbound',
+      threadId: 'agency-inbound-thread',
+      fromAddress: 'agency@example.com',
+      subject: 'Agency reservation request',
+      receivedAt: new Date('2026-07-01T10:00:00.000Z'),
+    });
+
+    expect(discoverDomainLinks([inbound, ...autoConfirmations])).toEqual([]);
+
+    const matchingInbound = msg({
+      ...inbound,
+      id: 'agency-inbound-matching',
+      threadId: 'agency-inbound-matching-thread',
+      subject: 'Agency reservation request N° 1234562-1',
+    });
+    const matchingLinks = discoverDomainLinks([matchingInbound, ...autoConfirmations]);
+    expect(matchingLinks.filter((link) => link.linkType === 'domain_conf')).toHaveLength(1);
   });
 });
 
