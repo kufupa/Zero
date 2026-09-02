@@ -387,6 +387,27 @@ export function runConversationSignalsGoldEval(input: {
   };
 }
 
+export function evaluateGoldContract(matrix: ConfusionMatrixCounts): {
+  noSkippedThreads: boolean;
+  actionableTotalPass: boolean;
+  respondedTotalPass: boolean;
+  unansweredTotalPass: boolean;
+  pass: boolean;
+} {
+  const noSkippedThreads = matrix.skippedThreads === 0;
+  const actionableTotalPass = matrix.goldTotal === GOLD_ACTIONABLE_TOTAL;
+  const respondedTotalPass = matrix.goldResponded === GOLD_RESPONDED_TOTAL;
+  const unansweredTotalPass = matrix.goldUnanswered === GOLD_UNANSWERED_TOTAL;
+
+  return {
+    noSkippedThreads,
+    actionableTotalPass,
+    respondedTotalPass,
+    unansweredTotalPass,
+    pass: noSkippedThreads && actionableTotalPass && respondedTotalPass && unansweredTotalPass,
+  };
+}
+
 export function evaluateGoldGate(matrix: ConfusionMatrixCounts): {
   recallPass: boolean;
   falsePositivePass: boolean;

@@ -2,6 +2,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
+  evaluateGoldContract,
   evaluateGoldGate,
   GOLD_ACTIONABLE_TOTAL,
   GOLD_FALSE_POSITIVE_MAX,
@@ -11,6 +12,7 @@ import {
   resolvePrivateCorpusRoot,
   runConversationSignalsGoldEval,
   runConversationSignalsGoldEvalFromCorpus,
+  type ConfusionMatrixCounts,
   type SnapshotRow,
 } from '../src/ops/centurion-conversation-signals-eval.js';
 
@@ -363,6 +365,41 @@ function privateGoldAvailable(): boolean {
     return false;
   }
 }
+
+function passingGoldContractMatrix(
+  overrides: Partial<ConfusionMatrixCounts> = {},
+): ConfusionMatrixCounts {
+  return {
+    truePositives: GOLD_RECALL_MIN,
+    falseNegatives: 0,
+    falsePositives: 0,
+    trueNegatives: GOLD_UNANSWERED_TOTAL,
+    goldResponded: GOLD_RESPONDED_TOTAL,
+    goldUnanswered: GOLD_UNANSWERED_TOTAL,
+    goldTotal: GOLD_ACTIONABLE_TOTAL,
+    predictedResponded: GOLD_RECALL_MIN,
+    skippedThreads: 0,
+    ...overrides,
+  };
+}
+
+describe('conversation signals gold contract gate', () => {
+  it('fails closed when any labelled thread is skipped', () => {
+    const contract = evaluateGoldContract(passingGoldContractMatrix({ skippedThreads: 1 }));
+
+    expect(contract.pass).toBe(false);
+  });
+
+  it('fails closed when any gold denominator does not match the EOD contract', () => {
+    for (const field of ['goldTotal', 'goldResponded', 'goldUnanswered'] as const) {
+      const contract = evaluateGoldContract(
+        passingGoldContractMatrix({ [field]: passingGoldContractMatrix()[field] - 1 }),
+      );
+
+      expect(contract.pass, `${field} mismatch should fail the contract`).toBe(false);
+    }
+  });
+});
 
 describe('conversation signals gold fixture subset (CI)', () => {
   it('runs 20 opaque threads with zero false positives on unanswered', () => {
