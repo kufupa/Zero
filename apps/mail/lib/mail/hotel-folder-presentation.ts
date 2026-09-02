@@ -64,11 +64,81 @@ const URGENT_COLOR_STYLE: CenturionCategoryColorStyle = {
   darkText: '#FEE2E2',
 };
 
-const WORKFLOW_COLOR_STYLE: CenturionCategoryColorStyle = {
-  bg: '#E2E8F0',
-  text: '#334155',
-  darkBg: '#334155',
-  darkText: '#E2E8F0',
+/**
+ * Frontend-owned semantic presentation for the canonical workflow folders.
+ *
+ * These soft backgrounds keep the sidebar scannable while the paired dark
+ * foregrounds preserve readable contrast in both themes. Do not replace this
+ * with server seed colors: those are taxonomy data, while these tokens are a
+ * stable UI contract.
+ */
+const WORKFLOW_COLOR_STYLES: Record<HotelWorkflowPrimarySlug, CenturionCategoryColorStyle> = {
+  bookings: {
+    bg: '#DBEAFE',
+    text: '#1E3A8A',
+    darkBg: '#1E3A8A',
+    darkText: '#DBEAFE',
+  },
+  'groups-events': {
+    bg: '#FFEDD5',
+    text: '#9A3412',
+    darkBg: '#7C2D12',
+    darkText: '#FED7AA',
+  },
+  'manage-stay': {
+    bg: '#CCFBF1',
+    text: '#115E59',
+    darkBg: '#134E4A',
+    darkText: '#99F6E4',
+  },
+  'confirm-reconcile': {
+    bg: '#CFFAFE',
+    text: '#155E75',
+    darkBg: '#164E63',
+    darkText: '#A5F3FC',
+  },
+  'money-billing': {
+    bg: '#DCFCE7',
+    text: '#166534',
+    darkBg: '#14532D',
+    darkText: '#BBF7D0',
+  },
+  'documents-delivery': {
+    bg: '#E0E7FF',
+    text: '#3730A3',
+    darkBg: '#312E81',
+    darkText: '#C7D2FE',
+  },
+  'exceptions-recovery': {
+    bg: '#FFE4E6',
+    text: '#9F1239',
+    darkBg: '#881337',
+    darkText: '#FECDD3',
+  },
+  'guest-experience': {
+    bg: '#FCE7F3',
+    text: '#9D174D',
+    darkBg: '#831843',
+    darkText: '#FBCFE8',
+  },
+  'internal-partner': {
+    bg: '#EDE9FE',
+    text: '#5B21B6',
+    darkBg: '#4C1D95',
+    darkText: '#DDD6FE',
+  },
+  'automated-channel': {
+    bg: '#F1F5F9',
+    text: '#334155',
+    darkBg: '#1E293B',
+    darkText: '#CBD5E1',
+  },
+  'unknown-review': {
+    bg: '#FEF3C7',
+    text: '#92400E',
+    darkBg: '#78350F',
+    darkText: '#FDE68A',
+  },
 };
 
 export function isHotelManagedCategorySlug(slug: string): slug is HotelManagedSlug {
@@ -94,7 +164,8 @@ export function getHotelFolderPresentation(
 
 export function getHotelPillColorStyle(slug: HotelManagedSlug): CenturionCategoryColorStyle {
   if (slug === 'urgent') return URGENT_COLOR_STYLE;
-  if (!isCenturionMailCategorySlug(slug)) return WORKFLOW_COLOR_STYLE;
+  if (isHotelWorkflowPrimarySlug(slug)) return WORKFLOW_COLOR_STYLES[slug];
+  if (!isCenturionMailCategorySlug(slug)) return WORKFLOW_COLOR_STYLES['automated-channel'];
   return getCenturionCategoryColorStyle(slug);
 }
 

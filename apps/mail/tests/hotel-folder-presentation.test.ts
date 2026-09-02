@@ -2,6 +2,8 @@ import {
   buildCategoryIdToSlugMap,
   getHotelFolderNavTheme,
   getHotelFolderPresentation,
+  getHotelPillColorStyle,
+  HOTEL_WORKFLOW_PRIMARY_SLUGS,
   isHotelManagedCategorySlug,
   resolveThreadCategoryPresentation,
   shouldShowHotelCategoryPill,
@@ -30,6 +32,72 @@ const expectedWorkflowIds = [
   'automated-channel',
   'unknown-review',
 ];
+
+const expectedWorkflowPalettes: Record<
+  (typeof HOTEL_WORKFLOW_PRIMARY_SLUGS)[number],
+  ReturnType<typeof getHotelPillColorStyle>
+> = {
+  bookings: { bg: '#DBEAFE', text: '#1E3A8A', darkBg: '#1E3A8A', darkText: '#DBEAFE' },
+  'groups-events': {
+    bg: '#FFEDD5',
+    text: '#9A3412',
+    darkBg: '#7C2D12',
+    darkText: '#FED7AA',
+  },
+  'manage-stay': { bg: '#CCFBF1', text: '#115E59', darkBg: '#134E4A', darkText: '#99F6E4' },
+  'confirm-reconcile': {
+    bg: '#CFFAFE',
+    text: '#155E75',
+    darkBg: '#164E63',
+    darkText: '#A5F3FC',
+  },
+  'money-billing': { bg: '#DCFCE7', text: '#166534', darkBg: '#14532D', darkText: '#BBF7D0' },
+  'documents-delivery': {
+    bg: '#E0E7FF',
+    text: '#3730A3',
+    darkBg: '#312E81',
+    darkText: '#C7D2FE',
+  },
+  'exceptions-recovery': {
+    bg: '#FFE4E6',
+    text: '#9F1239',
+    darkBg: '#881337',
+    darkText: '#FECDD3',
+  },
+  'guest-experience': {
+    bg: '#FCE7F3',
+    text: '#9D174D',
+    darkBg: '#831843',
+    darkText: '#FBCFE8',
+  },
+  'internal-partner': {
+    bg: '#EDE9FE',
+    text: '#5B21B6',
+    darkBg: '#4C1D95',
+    darkText: '#DDD6FE',
+  },
+  'automated-channel': {
+    bg: '#F1F5F9',
+    text: '#334155',
+    darkBg: '#1E293B',
+    darkText: '#CBD5E1',
+  },
+  'unknown-review': {
+    bg: '#FEF3C7',
+    text: '#92400E',
+    darkBg: '#78350F',
+    darkText: '#FDE68A',
+  },
+};
+
+const expectedLegacyPalettes: Record<
+  'at-risk' | 'new-bookings' | 'ops',
+  ReturnType<typeof getHotelPillColorStyle>
+> = {
+  'at-risk': { bg: '#FEF3C7', text: '#92400E', darkBg: '#78350F', darkText: '#FEF3C7' },
+  'new-bookings': { bg: '#DCFCE7', text: '#166534', darkBg: '#14532D', darkText: '#DCFCE7' },
+  ops: { bg: '#DBEAFE', text: '#1E3A8A', darkBg: '#1E3A8A', darkText: '#DBEAFE' },
+};
 
 describe('hotel-folder-presentation', () => {
   it('workflow folders are managed primaries and urgent stays overlay', () => {
@@ -63,6 +131,37 @@ describe('hotel-folder-presentation', () => {
     const theme = getHotelFolderNavTheme('new-bookings');
     expect(theme.className).toContain('--centurion-sidebar-bg');
     expect(JSON.stringify(theme.style)).toContain('#DCFCE7');
+  });
+
+  it('assigns a distinct semantic pastel palette to every workflow folder', () => {
+    for (const slug of HOTEL_WORKFLOW_PRIMARY_SLUGS) {
+      const palette = expectedWorkflowPalettes[slug];
+      expect(getHotelPillColorStyle(slug)).toEqual(palette);
+      expect(getHotelFolderNavTheme(slug).style).toEqual({
+        '--centurion-sidebar-bg': palette.bg,
+        '--centurion-sidebar-text': palette.text,
+        '--centurion-sidebar-bg-dark': palette.darkBg,
+        '--centurion-sidebar-text-dark': palette.darkText,
+      });
+    }
+    expect(getHotelPillColorStyle('urgent')).toEqual({
+      bg: '#FEE2E2',
+      text: '#991B1B',
+      darkBg: '#7F1D1D',
+      darkText: '#FEE2E2',
+    });
+    expect(getHotelFolderNavTheme('urgent').style).toEqual({
+      '--centurion-sidebar-bg': '#FEE2E2',
+      '--centurion-sidebar-text': '#991B1B',
+      '--centurion-sidebar-bg-dark': '#7F1D1D',
+      '--centurion-sidebar-text-dark': '#FEE2E2',
+    });
+  });
+
+  it('preserves the exact palette contract for legacy Centurion folders', () => {
+    for (const [slug, palette] of Object.entries(expectedLegacyPalettes)) {
+      expect(getHotelPillColorStyle(slug as keyof typeof expectedLegacyPalettes)).toEqual(palette);
+    }
   });
 
   it('urgent nav theme includes right-edge stripe class', () => {
@@ -119,6 +218,9 @@ describe('buildLiveCategoryNavItems theme precedence', () => {
     expect(items.map((item) => item.id)).toEqual(expectedWorkflowIds);
     expect(items.find((item) => item.id === 'urgent')?.className).toContain('after:bg-red-500');
     expect(items.find((item) => item.id === 'urgent')?.title).toBe('Urgent');
+    expect(items.find((item) => item.id === 'bookings')?.style).toEqual(
+      getHotelFolderNavTheme('bookings').style,
+    );
   });
 
   it('excludes custom and non-workflow live categories', () => {
@@ -168,6 +270,9 @@ describe('buildDemoMailFolderNavItems', () => {
     expect(items.map((item) => item.id)).toEqual(expectedWorkflowIds);
     expect(items.map((item) => item.id)).not.toContain('spam');
     expect(items.find((item) => item.id === 'urgent')?.className).toContain('after:bg-red-500');
+    expect(items.find((item) => item.id === 'bookings')?.style).toEqual(
+      getHotelFolderNavTheme('bookings').style,
+    );
   });
 });
 
@@ -181,6 +286,6 @@ describe('workflow category pills', () => {
     ).toBe(true);
     const palette = getHotelFolderNavTheme('unknown-review');
     expect(palette.className).toContain('--centurion-sidebar-bg');
-    expect(JSON.stringify(palette.style)).toContain('#E2E8F0');
+    expect(JSON.stringify(palette.style)).toContain('#FEF3C7');
   });
 });
