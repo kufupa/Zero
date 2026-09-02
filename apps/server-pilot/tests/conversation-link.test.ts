@@ -523,6 +523,33 @@ describe('deterministic link discovery', () => {
     expect(humanLinks).toHaveLength(1);
     expect(humanLinks[0]?.dstThreadId).toBe('human-orphan-thread-0');
   });
+
+  it('caps reverse human orphan fanout into one destination thread', () => {
+    const humanAnchor = msg({
+      id: 'human-anchor',
+      threadId: 'human-anchor-thread',
+      direction: 'outbound',
+      fromAddress: 'centurion@legacyhotels.co.za',
+      toAddresses: ['guest@example.com'],
+      subject: 'Re: Room request',
+      receivedAt: new Date('2026-07-01T11:00:00.000Z'),
+    });
+    const inbounds = Array.from({ length: 9 }, (_, index) =>
+      msg({
+        id: `human-source-${index}`,
+        threadId: `human-source-thread-${index}`,
+        fromAddress: 'guest@example.com',
+        subject: `Room request ${index}`,
+        receivedAt: new Date(`2026-07-01T${String(10 + index).padStart(2, '0')}:00:00.000Z`),
+      }),
+    );
+
+    const links = discoverDomainLinks([humanAnchor, ...inbounds]).filter(
+      (link) => link.linkType === 'domain_guest_email',
+    );
+    expect(links).toHaveLength(1);
+    expect([links[0]?.srcThreadId, links[0]?.dstThreadId]).toContain('human-anchor-thread');
+  });
 });
 
 describe('mail_conversation_link migration', () => {

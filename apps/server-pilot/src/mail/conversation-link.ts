@@ -224,6 +224,7 @@ export function discoverDomainLinks(messages: readonly LinkableMessage[]): Propo
     byThread.set(msg.threadId, list);
   }
 
+  const humanOrphanIncomingLinks = new Map<string, number>();
   for (const [threadId, threadMessages] of byThread) {
     const inboundMessages = threadMessages.filter((msg) => msg.direction === 'inbound');
     let autoLinksForThread = 0;
@@ -268,6 +269,12 @@ export function discoverDomainLinks(messages: readonly LinkableMessage[]): Propo
           if (orphan.isAuto) continue;
           if (humanLinksForThread >= MAX_HUMAN_ORPHAN_LINKS_PER_THREAD) break;
           if (orphan.threadId === threadId) continue;
+          if (
+            (humanOrphanIncomingLinks.get(orphan.threadId) ?? 0) >=
+            MAX_HUMAN_ORPHAN_LINKS_PER_THREAD
+          ) {
+            continue;
+          }
           const orphanMessages = byThread.get(orphan.threadId) ?? [];
           const anchor = orphanMessages.find((msg) => msg.direction === 'outbound');
           if (!anchor || !withinWindow(inbound, anchor, MS_7D)) continue;
@@ -289,6 +296,10 @@ export function discoverDomainLinks(messages: readonly LinkableMessage[]): Propo
             confidence: '0.9000',
           });
           humanLinksForThread += 1;
+          humanOrphanIncomingLinks.set(
+            orphan.threadId,
+            (humanOrphanIncomingLinks.get(orphan.threadId) ?? 0) + 1,
+          );
         }
       }
     }
