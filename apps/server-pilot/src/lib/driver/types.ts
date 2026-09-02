@@ -107,6 +107,11 @@ export interface ThreadListItem {
   categoryIds: string[];
   hasDraft: boolean;
   draftCount: number;
+  conversationId?: string;
+  linkedThreadIds?: readonly string[];
+  conversationResponded?: boolean;
+  conversationMessageCount?: number;
+  primaryThreadId?: string;
   // Demo/hotel-pilot only: real Gmail pilot omits this.
   centurionCategory?: CenturionMailCategory;
 }
@@ -127,6 +132,11 @@ export interface ThreadDetailResponse {
   labels: MailLabelWire[];
   categories: MailCategory[];
   categoryIds: string[];
+  conversationId?: string;
+  linkedThreadIds?: readonly string[];
+  conversationResponded?: boolean;
+  conversationMessageCount?: number;
+  primaryThreadId?: string;
   // Demo/hotel-pilot only: real Gmail pilot omits this.
   centurionCategory?: CenturionMailCategory;
 }

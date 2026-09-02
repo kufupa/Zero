@@ -44,6 +44,9 @@ function messageRow(input: {
   id: string;
   transportId: string;
   threadTransportId?: string | null;
+  messageIdHeader?: string | null;
+  inReplyTo?: string | null;
+  references?: readonly string[] | null;
   textBody?: string;
   htmlBody?: string;
 }): FakeRow {
@@ -63,6 +66,9 @@ function messageRow(input: {
     receivedAt: '2026-08-25T09:00:00.000Z',
     sentAt: null,
     createdAt: '2026-08-25T09:00:01.000Z',
+    messageIdHeader: input.messageIdHeader ?? 'synthetic-message-id@example.test',
+    inReplyTo: input.inReplyTo ?? null,
+    references: input.references ?? [],
     textBody: input.textBody ?? 'Synthetic text',
     htmlBody: input.htmlBody ?? '<p>Synthetic html</p>',
   };
@@ -296,6 +302,35 @@ describe('connected mailbox Markdown dump', () => {
     expect(fake.queries.some((query) => /mail_ingest_quarantine/i.test(query.text))).toBe(false);
     expect(scopeQuery.text).not.toMatch(/\b(email|owner_header_value|ingest_mailbox_id)\b/i);
     expect(messageQuery.text).not.toMatch(/\b(owner_header_value|ingest_mailbox_id)\b/i);
+  });
+
+  it('selects and renders Message-ID, In-Reply-To, and References headers', async () => {
+    const fake = createFakePostgres({
+      messages: [
+        messageRow({
+          id: 'message-headers',
+          transportId: 'transport-a',
+          messageIdHeader: 'child@example.test',
+          inReplyTo: 'parent@example.test',
+          references: ['root@example.test', 'parent@example.test'],
+        }),
+      ],
+    });
+    const harness = createDumpHarness(fake);
+
+    await harness.dump({ outputName: 'reservationist-inbox.md' });
+
+    const messageQuery = queryContaining(fake.queries, 'FROM message AS m');
+    expect(messageQuery.text).toMatch(/m\.message_id_header AS "messageIdHeader"/i);
+    expect(messageQuery.text).toMatch(/m\.in_reply_to AS "inReplyTo"/i);
+    expect(messageQuery.text).toMatch(/m\.references AS "references"/i);
+
+    const markdown = harness.writes[0]?.content ?? '';
+    expect(markdown).toContain('**Message-ID (header):** `child@example.test`');
+    expect(markdown).toContain('**In-Reply-To:** `parent@example.test`');
+    expect(markdown).toContain(
+      '**References:** `root@example.test`, `parent@example.test`',
+    );
   });
 
   it('renders generic reservationist wording and keeps message bodies inside safe fences', async () => {

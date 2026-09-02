@@ -1,0 +1,456 @@
+import { randomUUID } from 'node:crypto';
+import { eq } from 'drizzle-orm';
+import {
+  mailConversationLink,
+  type MailConversationLinkType,
+} from '../db/schema/mail-conversation-link.js';
+import { message } from '../db/schema/mail.js';
+import type { DB } from '../db/client.js';
+import {
+  buildAutoConfirmIndex,
+  buildOrphanOutboundIndex,
+  externalEmails,
+  type ConversationMessage,
+  type IndexableMessage,
+} from './conversation-signals.js';
+import { buildReferenceChain, canonicalMessageId } from './ingest/message-id.js';
+
+const MS_7D = 7 * 24 * 60 * 60 * 1000;
+const MS_72H = 72 * 60 * 60 * 1000;
+
+const OPS_DIGEST_SUBJECT_PATTERNS = [
+  'daily summary',
+  'digest',
+  'fortimail',
+  'quarantine report',
+  'unpaid invoice summary',
+  'failure notification',
+] as const;
+
+const QUOTED_FROM_HOTEL_RE =
+  /From:\s*(?:Centurion Hotel Reservations|Martha Mthembu|Isaac Seabi)\s*<(?:centurion|marthamthembu|isaacseabi)@legacyhotels/i;
+const CONF_RE = /n[°º]\s*(\d{6,})-1/i;
+
+export type LinkableMessage = {
+  id: string;
+  threadId: string;
+  transportId: string;
+  direction: 'inbound' | 'outbound';
+  messageIdHeader: string | null;
+  inReplyTo: string | null;
+  references: readonly string[] | null;
+  fromAddress: string;
+  toAddresses: readonly string[];
+  ccAddresses: readonly string[];
+  subject: string | null;
+  textBody: string | null;
+  receivedAt: Date | null;
+};
+
+export type ProposedConversationLink = {
+  srcThreadId: string;
+  dstThreadId: string;
+  srcMessageId?: string;
+  dstMessageId?: string;
+  linkType: MailConversationLinkType;
+  confidence: string;
+};
+
+/** RFC-style subject normalize for conversation-layer grouping (not ingest). */
+export function normalizeConversationSubject(subject: string): string {
+  let s = subject.trim().toLowerCase();
+  for (let i = 0; i < 12; i++) {
+    const stripped = s.replace(/^(re|fwd|fw|aw|sv)\s*:\s*/i, '').trim();
+    const bracket = stripped.replace(/^\[[^\]]+\]\s*/i, '').trim();
+    if (bracket === s) break;
+    s = bracket;
+  }
+  return s.replace(/\s+/g, ' ').trim();
+}
+
+/** Collapse Outlook-style spaced subjects ("B re akfast Pack Re quest"). */
+export function collapseSpacedSubjectArtifacts(normSubject: string): string {
+  const tokens = normSubject.split(/\s+/).filter(Boolean);
+  if (tokens.length < 4) return normSubject;
+  const shortCount = tokens.filter((token) => token.length <= 3).length;
+  if (shortCount / tokens.length < 0.35) return normSubject;
+  return tokens.join('');
+}
+
+export function canonicalThreadPair(a: string, b: string): [string, string] {
+  return a < b ? [a, b] : [b, a];
+}
+
+function messageTime(message: LinkableMessage): number {
+  return message.receivedAt?.getTime() ?? 0;
+}
+
+function withinWindow(a: LinkableMessage, b: LinkableMessage, windowMs: number): boolean {
+  return Math.abs(messageTime(a) - messageTime(b)) <= windowMs;
+}
+
+function toIndexable(message: LinkableMessage): IndexableMessage {
+  return {
+    id: message.id,
+    threadId: message.threadId,
+    direction: message.direction,
+    from: message.fromAddress,
+    to: message.toAddresses.join(', '),
+    cc: message.ccAddresses.join(', '),
+    subject: message.subject ?? '',
+    receivedAt: message.receivedAt?.toISOString() ?? '',
+  };
+}
+
+function toConversationMessage(message: LinkableMessage): ConversationMessage {
+  return {
+    ...toIndexable(message),
+    bodyText: message.textBody ?? '',
+  };
+}
+
+function linkKey(
+  srcThreadId: string,
+  dstThreadId: string,
+  linkType: MailConversationLinkType,
+): string {
+  return `${srcThreadId}|${dstThreadId}|${linkType}`;
+}
+
+function pushLink(
+  links: ProposedConversationLink[],
+  seen: Set<string>,
+  proposal: ProposedConversationLink,
+): void {
+  const [srcThreadId, dstThreadId] = canonicalThreadPair(proposal.srcThreadId, proposal.dstThreadId);
+  if (srcThreadId === dstThreadId) return;
+  const key = linkKey(srcThreadId, dstThreadId, proposal.linkType);
+  if (seen.has(key)) return;
+  seen.add(key);
+  links.push({ ...proposal, srcThreadId, dstThreadId });
+}
+
+export function discoverHeaderParentLinks(
+  messages: readonly LinkableMessage[],
+  messageByHeader: ReadonlyMap<string, LinkableMessage>,
+): ProposedConversationLink[] {
+  const links: ProposedConversationLink[] = [];
+  const seen = new Set<string>();
+
+  for (const msg of messages) {
+    const refs = buildReferenceChain(msg.inReplyTo, msg.references ?? []);
+    for (const ref of refs) {
+      const parent = messageByHeader.get(ref);
+      if (!parent || parent.threadId === msg.threadId) continue;
+      pushLink(links, seen, {
+        srcThreadId: parent.threadId,
+        dstThreadId: msg.threadId,
+        srcMessageId: parent.id,
+        dstMessageId: msg.id,
+        linkType: 'header_parent',
+        confidence: '1.0000',
+      });
+    }
+  }
+
+  return links;
+}
+
+export function discoverDomainLinks(messages: readonly LinkableMessage[]): ProposedConversationLink[] {
+  const links: ProposedConversationLink[] = [];
+  const seen = new Set<string>();
+  const indexable = messages.map(toIndexable);
+  const autoIndex = buildAutoConfirmIndex(indexable);
+  const orphanByGuest = buildOrphanOutboundIndex(indexable);
+  const byThread = new Map<string, LinkableMessage[]>();
+
+  for (const msg of messages) {
+    const list = byThread.get(msg.threadId) ?? [];
+    list.push(msg);
+    byThread.set(msg.threadId, list);
+  }
+
+  for (const [threadId, threadMessages] of byThread) {
+    const inboundMessages = threadMessages.filter((msg) => msg.direction === 'inbound');
+    for (const inbound of inboundMessages) {
+      const threadText = threadMessages
+        .map((msg) => `${msg.subject ?? ''}\n${msg.textBody ?? ''}`)
+        .join('\n');
+      const triggerDay = inbound.receivedAt?.toISOString().slice(0, 10) ?? '';
+      const confMatches = new Set<string>();
+      for (const match of threadText.matchAll(new RegExp(CONF_RE.source, 'gi'))) {
+        if (match[1]) confMatches.add(match[1]);
+      }
+      const guestEmails = externalEmails(inbound.fromAddress);
+
+      for (const auto of autoIndex) {
+        if (auto.threadId === threadId) continue;
+        const autoMessages = byThread.get(auto.threadId) ?? [];
+        const anchor = autoMessages.find((msg) => msg.direction === 'outbound');
+        if (!anchor || !withinWindow(inbound, anchor, MS_7D)) continue;
+        if (auto.day && triggerDay && auto.day < triggerDay) continue;
+
+        if (auto.conf && confMatches.has(auto.conf)) {
+          pushLink(links, seen, {
+            srcThreadId: threadId,
+            dstThreadId: auto.threadId,
+            srcMessageId: inbound.id,
+            dstMessageId: anchor.id,
+            linkType: 'domain_conf',
+            confidence: '0.9500',
+          });
+        }
+      }
+
+      for (const guestEmail of guestEmails) {
+        const orphans = orphanByGuest.get(guestEmail) ?? [];
+        for (const orphan of orphans) {
+          if (orphan.threadId === threadId) continue;
+          const orphanMessages = byThread.get(orphan.threadId) ?? [];
+          const anchor = orphanMessages.find((msg) => msg.direction === 'outbound');
+          if (!anchor || !withinWindow(inbound, anchor, MS_7D)) continue;
+
+          const linkType: MailConversationLinkType = orphan.isAuto
+            ? 'domain_conf'
+            : 'domain_guest_email';
+          pushLink(links, seen, {
+            srcThreadId: threadId,
+            dstThreadId: orphan.threadId,
+            srcMessageId: inbound.id,
+            dstMessageId: anchor.id,
+            linkType,
+            confidence: linkType === 'domain_conf' ? '0.9500' : '0.9000',
+          });
+        }
+      }
+    }
+  }
+
+  return links;
+}
+
+export function discoverQuotedBodyLinks(messages: readonly LinkableMessage[]): ProposedConversationLink[] {
+  const links: ProposedConversationLink[] = [];
+  const seen = new Set<string>();
+  const inboundByGuest = new Map<string, LinkableMessage[]>();
+
+  for (const msg of messages) {
+    if (msg.direction !== 'inbound') continue;
+    for (const guestEmail of externalEmails(msg.fromAddress)) {
+      const list = inboundByGuest.get(guestEmail) ?? [];
+      list.push(msg);
+      inboundByGuest.set(guestEmail, list);
+    }
+  }
+
+  for (const msg of messages) {
+    const body = msg.textBody ?? '';
+    if (!QUOTED_FROM_HOTEL_RE.test(body)) continue;
+    const guestEmails = new Set<string>();
+    if (msg.direction === 'inbound') {
+      for (const email of externalEmails(msg.fromAddress)) guestEmails.add(email);
+    } else {
+      for (const email of externalEmails(msg.toAddresses.join(' '))) guestEmails.add(email);
+      for (const email of externalEmails(msg.ccAddresses.join(' '))) guestEmails.add(email);
+    }
+    for (const guestEmail of guestEmails) {
+      for (const prior of inboundByGuest.get(guestEmail) ?? []) {
+        if (prior.threadId === msg.threadId) continue;
+        if (!withinWindow(prior, msg, MS_7D)) continue;
+        pushLink(links, seen, {
+          srcThreadId: prior.threadId,
+          dstThreadId: msg.threadId,
+          srcMessageId: prior.id,
+          dstMessageId: msg.id,
+          linkType: 'quoted_body',
+          confidence: '0.8500',
+        });
+      }
+    }
+  }
+
+  return links;
+}
+
+function participantEmails(message: LinkableMessage): Set<string> {
+  const emails = new Set<string>();
+  for (const email of externalEmails(message.fromAddress)) emails.add(email);
+  for (const email of externalEmails(message.toAddresses.join(' '))) emails.add(email);
+  for (const email of externalEmails(message.ccAddresses.join(' '))) emails.add(email);
+  return emails;
+}
+
+function participantsOverlap(a: readonly LinkableMessage[], b: readonly LinkableMessage[]): boolean {
+  const left = new Set<string>();
+  for (const msg of a) {
+    for (const email of participantEmails(msg)) left.add(email);
+  }
+  for (const msg of b) {
+    for (const email of participantEmails(msg)) {
+      if (left.has(email)) return true;
+    }
+  }
+  return false;
+}
+
+function isOpsDigestSubject(subject: string): boolean {
+  const norm = normalizeConversationSubject(subject);
+  return OPS_DIGEST_SUBJECT_PATTERNS.some((pattern) => norm.includes(pattern));
+}
+
+export function discoverSubjectClusterLinks(
+  messages: readonly LinkableMessage[],
+): ProposedConversationLink[] {
+  const links: ProposedConversationLink[] = [];
+  const seen = new Set<string>();
+  const byThread = new Map<string, LinkableMessage[]>();
+
+  for (const msg of messages) {
+    const list = byThread.get(msg.threadId) ?? [];
+    list.push(msg);
+    byThread.set(msg.threadId, list);
+  }
+
+  const clusters = new Map<string, string[]>();
+  for (const [threadId, threadMessages] of byThread) {
+    const subject = threadMessages.find((msg) => msg.subject)?.subject ?? '';
+    if (!subject || isOpsDigestSubject(subject)) continue;
+    const norm = normalizeConversationSubject(subject);
+    const collapsed = collapseSpacedSubjectArtifacts(norm);
+    const key = collapsed.length >= 8 ? collapsed : norm;
+    if (!key) continue;
+    const bucket = clusters.get(key) ?? [];
+    bucket.push(threadId);
+    clusters.set(key, bucket);
+  }
+
+  for (const threadIds of clusters.values()) {
+    if (threadIds.length < 2) continue;
+    for (let i = 0; i < threadIds.length; i++) {
+      for (let j = i + 1; j < threadIds.length; j++) {
+        const leftId = threadIds[i]!;
+        const rightId = threadIds[j]!;
+        const leftMessages = byThread.get(leftId) ?? [];
+        const rightMessages = byThread.get(rightId) ?? [];
+        if (!participantsOverlap(leftMessages, rightMessages)) continue;
+
+        const times = [...leftMessages, ...rightMessages].map(messageTime).filter((t) => t > 0);
+        if (times.length < 2) continue;
+        const span = Math.max(...times) - Math.min(...times);
+        if (span > MS_72H) continue;
+
+        pushLink(links, seen, {
+          srcThreadId: leftId,
+          dstThreadId: rightId,
+          linkType: 'subject_cluster',
+          confidence: '0.7500',
+        });
+      }
+    }
+  }
+
+  return links;
+}
+
+export function discoverConversationLinks(messages: readonly LinkableMessage[]): ProposedConversationLink[] {
+  const messageByHeader = new Map<string, LinkableMessage>();
+  for (const msg of messages) {
+    const canon = canonicalMessageId(msg.messageIdHeader);
+    if (canon) messageByHeader.set(canon, msg);
+  }
+
+  return [
+    ...discoverHeaderParentLinks(messages, messageByHeader),
+    ...discoverDomainLinks(messages),
+    ...discoverQuotedBodyLinks(messages),
+    ...discoverSubjectClusterLinks(messages),
+  ];
+}
+
+export async function upsertConversationLinks(
+  db: DB,
+  transportId: string,
+  proposals: readonly ProposedConversationLink[],
+): Promise<number> {
+  if (proposals.length === 0) return 0;
+
+  for (const proposal of proposals) {
+    const [srcThreadId, dstThreadId] = canonicalThreadPair(proposal.srcThreadId, proposal.dstThreadId);
+    await db
+      .insert(mailConversationLink)
+      .values({
+        id: randomUUID(),
+        transportId,
+        srcThreadId,
+        dstThreadId,
+        srcMessageId: proposal.srcMessageId ?? null,
+        dstMessageId: proposal.dstMessageId ?? null,
+        linkType: proposal.linkType,
+        confidence: proposal.confidence,
+        supersededAt: null,
+      })
+      .onConflictDoUpdate({
+        target: [
+          mailConversationLink.transportId,
+          mailConversationLink.srcThreadId,
+          mailConversationLink.dstThreadId,
+          mailConversationLink.linkType,
+        ],
+        set: {
+          confidence: proposal.confidence,
+          srcMessageId: proposal.srcMessageId ?? null,
+          dstMessageId: proposal.dstMessageId ?? null,
+          supersededAt: null,
+        },
+      });
+  }
+
+  return proposals.length;
+}
+
+export async function recomputeConversationLinksForTransport(
+  db: DB,
+  transportId: string,
+): Promise<number> {
+  const rows = await db
+    .select({
+      id: message.id,
+      threadId: message.threadId,
+      transportId: message.transportId,
+      direction: message.direction,
+      messageIdHeader: message.messageIdHeader,
+      inReplyTo: message.inReplyTo,
+      references: message.references,
+      fromAddress: message.fromAddress,
+      toAddresses: message.toAddresses,
+      ccAddresses: message.ccAddresses,
+      subject: message.subject,
+      textBody: message.textBody,
+      receivedAt: message.receivedAt,
+    })
+    .from(message)
+    .where(eq(message.transportId, transportId));
+
+  const linkable: LinkableMessage[] = rows.map((row) => ({
+    id: row.id,
+    threadId: row.threadId,
+    transportId: row.transportId,
+    direction: row.direction,
+    messageIdHeader: row.messageIdHeader,
+    inReplyTo: row.inReplyTo,
+    references: row.references ?? [],
+    fromAddress: row.fromAddress,
+    toAddresses: row.toAddresses,
+    ccAddresses: row.ccAddresses,
+    subject: row.subject,
+    textBody: row.textBody,
+    receivedAt: row.receivedAt,
+  }));
+
+  const proposals = discoverConversationLinks(linkable);
+  return upsertConversationLinks(db, transportId, proposals);
+}
+
+export function toConversationMessages(messages: readonly LinkableMessage[]): ConversationMessage[] {
+  return messages.map(toConversationMessage);
+}

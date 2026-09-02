@@ -27,6 +27,7 @@ import {
 } from '@/lib/mail/thread-open-stability';
 import { mergeCategoryIds, mergeLabelIds, resolveMailRouteFilter } from '@/lib/mail/route-filter';
 import { resolveSearchListRequest } from '@/lib/mail/search-list';
+import { buildConversationPrimaryListRows } from '@/lib/mail/conversation-list';
 import { useCategorySettings } from './use-categories';
 import { useLabels } from './use-labels';
 
@@ -252,10 +253,15 @@ export const useThreads = () => {
   const threads = useMemo<ThreadListItem[]>(() => {
     if (!activeThreadsQuery.data) return [];
     const pages = activeThreadsQuery.data.pages as Array<{ threads: ThreadListItem[] }>;
-    return pages
+    const flattened = pages
       .flatMap((page) => page.threads)
       .filter((thread): thread is ThreadListItem => Boolean(thread))
       .filter((thread) => !isInQueue(`thread:${thread.id}`));
+
+    return buildConversationPrimaryListRows(flattened).map((row) => ({
+      ...row,
+      linkedStubs: row.linkedStubs,
+    }));
   }, [activeThreadsQuery.data, activeThreadsQuery.dataUpdatedAt, isInQueue, backgroundQueue]);
 
   const isEmpty = useMemo(() => threads.length === 0, [threads]);
@@ -291,6 +297,7 @@ export const useThread = (threadId: string | null) => {
     trpc.mail.get.queryOptions(
       {
         id: id!,
+        mergeLinked: true,
       },
       {
         enabled: !demoMode && !!id && !!session?.user?.id,

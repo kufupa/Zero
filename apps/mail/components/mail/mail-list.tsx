@@ -44,6 +44,7 @@ import { VList, type VListHandle } from 'virtua';
 import { BimiAvatar } from '../ui/bimi-avatar';
 import { RenderLabels } from './render-labels';
 import { CenturionCategoryPill } from './centurion-category-pill';
+import { LinkedThreadStubRow } from '@/components/mail/linked-thread-stub-row';
 import { buildCategoryIdToSlugMap } from '@/lib/mail/hotel-folder-presentation';
 import { useCategorySettings } from '@/hooks/use-categories';
 import { Badge } from '@/components/ui/badge';
@@ -547,7 +548,21 @@ const Thread = memo(
                           </span>
                         ) : null} */}
                       </span>
-                      {getThreadData.totalReplies > 1 ? (
+                      {message.conversationMessageCount && (message.linkedThreadIds?.length ?? 0) > 0 ? (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span className="rounded-md text-xs opacity-70">
+                              [{message.conversationMessageCount}]
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent className="p-1 text-xs">
+                            {message.conversationMessageCount} messages across{' '}
+                            {(message.linkedThreadIds?.length ?? 0) + 1} linked threads
+                          </TooltipContent>
+                        </Tooltip>
+                      ) : null}
+                      {getThreadData.totalReplies > 1 &&
+                      !(message.linkedThreadIds && message.linkedThreadIds.length > 0) ? (
                         <Tooltip>
                           <TooltipTrigger asChild>
                             <span className="rounded-md text-xs opacity-70">
@@ -571,7 +586,7 @@ const Thread = memo(
                           </TooltipContent>
                         </Tooltip>
                       ) : null}
-                      {!isFolderSent && getThreadData.hasReplied ? (
+                      {!isFolderSent && (message.conversationResponded ?? getThreadData?.hasReplied) ? (
                         <Tooltip>
                           <TooltipTrigger asChild>
                             <span className="text-muted-foreground inline-flex items-center">
@@ -718,6 +733,9 @@ const Thread = memo(
     const isSameMessage =
       prev.message.id === next.message.id &&
       prev.message.centurionCategory === next.message.centurionCategory &&
+      prev.message.conversationResponded === next.message.conversationResponded &&
+      (prev.message.linkedThreadIds ?? []).join(',') === (next.message.linkedThreadIds ?? []).join(',') &&
+      (prev.message.linkedStubs ?? []).length === (next.message.linkedStubs ?? []).length &&
       isSameCategoryIds &&
       prev.isKeyboardFocused === next.isKeyboardFocused &&
       prev.isKeyboardNavigationActive === next.isKeyboardNavigationActive &&
@@ -1113,6 +1131,17 @@ export const MailList = memo(function MailList() {
       [filteredItems, collapsedSections, groupByDate],
     );
 
+    const handleNavigateToLinkedThread = useCallback(
+      (threadId: string) => {
+        void runComposeLeaveFlush(flushComposeBeforeLeave, async () => {
+          setMode(null);
+          setActiveReplyId(null);
+          setDraftId(null);
+        }).then(() => setThreadId(threadId));
+      },
+      [setMode, setActiveReplyId, setDraftId, setThreadId],
+    );
+
     const vListRenderer = useCallback(
       (index: number) => {
         const row = virtualRows[index];
@@ -1125,6 +1154,19 @@ export const MailList = memo(function MailList() {
                 label={mailListSectionLabel(row.bucket)}
                 expanded={!collapsedSections.has(row.bucket)}
                 onToggle={() => toggleSection(row.bucket)}
+              />
+            </div>
+          );
+        }
+
+        if (row.type === 'linked-stub') {
+          return (
+            <div key={row.key}>
+              <LinkedThreadStubRow
+                stub={row.stub}
+                onNavigate={handleNavigateToLinkedThread}
+                isKeyboardFocused={focusedIndex === row.parentThreadIndex && keyboardActive}
+                isKeyboardNavigationActive={keyboardActive}
               />
             </div>
           );
@@ -1156,6 +1198,7 @@ export const MailList = memo(function MailList() {
         focusedIndex,
         keyboardActive,
         handleMailClick,
+        handleNavigateToLinkedThread,
         isFetchingMail,
         isFetchingNextPage,
         toggleSection,

@@ -86,7 +86,29 @@ describe('buildMailListVirtualRows', () => {
     expect(ids).toEqual(['newer', 'older-urgent']);
   });
 
-  it('emits only header and thread row types', () => {
+  it('inserts linked stub rows directly under their primary thread', () => {
+    const rows = buildMailListVirtualRows(
+      [
+        {
+          ...thread('primary', '2026-04-13T10:00:00.000Z'),
+          linkedStubs: [
+            {
+              threadId: 'linked',
+              label: 'Earlier thread',
+              latestMessageAt: '2026-04-12T10:00:00.000Z',
+            },
+          ],
+        },
+      ],
+      now,
+      new Set(),
+      { groupByDate: false },
+    );
+    expect(rows.map((row) => row.type)).toEqual(['thread', 'linked-stub']);
+    expect(rows[1].type === 'linked-stub' && rows[1].stub.threadId).toBe('linked');
+  });
+
+  it('emits only header, thread, and linked-stub row types', () => {
     const dateRows = buildMailListVirtualRows(
       [thread('a', '2026-04-13T10:00:00.000Z')],
       now,
@@ -99,8 +121,8 @@ describe('buildMailListVirtualRows', () => {
       new Set(),
       { groupByDate: false },
     );
-    expect(dateRows.every((r) => r.type === 'header' || r.type === 'thread')).toBe(true);
-    expect(flatRows.every((r) => r.type === 'thread')).toBe(true);
+    expect(dateRows.every((r) => r.type === 'header' || r.type === 'thread' || r.type === 'linked-stub')).toBe(true);
+    expect(flatRows.every((r) => r.type === 'thread' || r.type === 'linked-stub')).toBe(true);
   });
 });
 

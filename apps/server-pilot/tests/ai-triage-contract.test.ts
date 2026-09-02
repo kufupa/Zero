@@ -976,6 +976,8 @@ describe('AI triage contract', () => {
         abstainReason: null,
       }),
       threadSignals: expect.objectContaining({ legacyHotelsOutboundResponse: false }),
+      conversationResponded: false,
+      conversationSignalReasons: [],
       rationale: expect.any(String),
       policyFlags: expect.any(Array),
     });

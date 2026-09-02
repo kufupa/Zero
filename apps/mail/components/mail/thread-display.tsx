@@ -1174,6 +1174,11 @@ export function ThreadDisplay() {
                       activeReplyId={activeReplyId || undefined}
                       isMobile={isMobile}
                       trailing={threadDraftSection}
+                      linkedThreadIds={emailData.linkedThreadIds}
+                      conversationMessageCount={emailData.conversationMessageCount}
+                      onOpenLinkedThread={(threadId) => {
+                        void clearComposeContext().then(() => setThreadId(threadId));
+                      }}
                     />
                   </motion.div>
                 </AnimatePresence>
@@ -1187,6 +1192,11 @@ export function ThreadDisplay() {
                   activeReplyId={activeReplyId || undefined}
                   isMobile={isMobile}
                   trailing={threadDraftSection}
+                  linkedThreadIds={emailData.linkedThreadIds}
+                  conversationMessageCount={emailData.conversationMessageCount}
+                  onOpenLinkedThread={(threadId) => {
+                    void clearComposeContext().then(() => setThreadId(threadId));
+                  }}
                 />
               )}
             </div>
@@ -1206,6 +1216,9 @@ interface MessageListProps {
   activeReplyId?: string;
   isMobile: boolean;
   trailing?: ReactNode;
+  linkedThreadIds?: readonly string[];
+  conversationMessageCount?: number;
+  onOpenLinkedThread?: (threadId: string) => void;
 }
 
 const MessageList = ({
@@ -1217,22 +1230,70 @@ const MessageList = ({
   activeReplyId,
   isMobile,
   trailing,
+  linkedThreadIds,
+  conversationMessageCount,
+  onOpenLinkedThread,
 }: MessageListProps) => {
   const displayMessages = orderMessagesNewestFirst(messages || []);
+  const linkedThreadCount = (linkedThreadIds?.length ?? 0) + 1;
 
   return (
     <ScrollArea className={cn('min-w-0 flex-1', isMobile ? 'h-[calc(100%-1px)]' : 'h-full')} type="auto">
       <div className="min-w-0 pb-4">
+        {linkedThreadIds && linkedThreadIds.length > 0 ? (
+          <div className="border-border bg-muted/30 text-muted-foreground mx-4 mb-3 rounded-lg border px-3 py-2 text-sm">
+            <p className="font-medium text-foreground">
+              Linked conversation ({linkedThreadCount} threads)
+            </p>
+            {conversationMessageCount ? (
+              <p className="mt-1 text-xs">
+                {conversationMessageCount} messages across linked threads
+              </p>
+            ) : null}
+            {onOpenLinkedThread ? (
+              <div className="mt-2 flex flex-wrap gap-2">
+                {[...new Set([...(linkedThreadIds ?? []), ...displayMessages.map((m) => m.threadId).filter(Boolean)])].map(
+                  (threadId) =>
+                    threadId ? (
+                      <button
+                        key={threadId}
+                        type="button"
+                        className="text-primary hover:underline text-xs"
+                        onClick={() => onOpenLinkedThread(threadId)}
+                      >
+                        Open thread {threadId.slice(0, 8)}
+                      </button>
+                    ) : null,
+                )}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         {displayMessages.map((message, index) => {
           const isReplyingToThisMessage = Boolean(mode && activeReplyId === message.id);
           // After newest-first reverse, last visual index is chronologically oldest.
           const isChronologicallyOldest = index === displayMessages.length - 1;
+          const previousMessage = displayMessages[index - 1];
+          const showThreadDivider =
+            index > 0 &&
+            Boolean(message.threadId) &&
+            message.threadId !== previousMessage?.threadId;
 
           return (
-            <div
-              key={message.id}
-              className={cn('duration-200', index > 0 && 'border-border border-t')}
-            >
+            <div key={message.id}>
+              {showThreadDivider ? (
+                <div className="border-border text-muted-foreground border-t px-4 py-2 text-xs">
+                  Earlier thread
+                  {message.receivedOn
+                    ? ` · ${formatDateWithWeekdayAndTime(
+                        typeof message.receivedOn === 'string'
+                          ? message.receivedOn.split('.')[0] || message.receivedOn
+                          : message.receivedOn,
+                      )}`
+                    : ''}
+                </div>
+              ) : null}
+              <div className={cn('duration-200', index > 0 && !showThreadDivider && 'border-border border-t')}>
               {isReplyingToThisMessage ? (
                 <div
                   className="border-border border-b px-4 py-3"
@@ -1250,6 +1311,7 @@ const MessageList = ({
                 totalEmails={totalReplies}
                 threadAttachments={isChronologicallyOldest ? allThreadAttachments : undefined}
               />
+              </div>
             </div>
           );
         })}

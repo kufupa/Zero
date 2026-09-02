@@ -29,6 +29,9 @@ type MessageRow = {
   createdAt?: unknown;
   textBody?: unknown;
   htmlBody?: unknown;
+  messageIdHeader?: unknown;
+  inReplyTo?: unknown;
+  references?: unknown;
 };
 
 type ConnectedMailboxMessage = {
@@ -46,6 +49,9 @@ type ConnectedMailboxMessage = {
   createdAt: string | null;
   textBody: string;
   htmlBody: string;
+  messageIdHeader: string;
+  inReplyTo: string;
+  references: string;
 };
 
 type PrivateWriter = Pick<PrivateOutputWriter, 'write'>;
@@ -132,6 +138,14 @@ function addressText(value: unknown): string {
     .join(', ');
 }
 
+function referencesText(value: unknown): string {
+  if (!Array.isArray(value)) return '';
+  return value
+    .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
+    .filter(Boolean)
+    .join(', ');
+}
+
 function normalizeMarkdown(value: string): string {
   return value.replace(/\r\n?/g, '\n');
 }
@@ -183,6 +197,9 @@ function mapMessageRow(
     createdAt: timestampOrNull(row.createdAt),
     textBody: textOrEmpty(row.textBody),
     htmlBody: textOrEmpty(row.htmlBody),
+    messageIdHeader: textOrEmpty(row.messageIdHeader),
+    inReplyTo: textOrEmpty(row.inReplyTo),
+    references: referencesText(row.references),
   };
 }
 
@@ -231,7 +248,10 @@ async function readMessages(
       m.sent_at AS "sentAt",
       m.created_at AS "createdAt",
       m.text_body AS "textBody",
-      m.html_body AS "htmlBody"
+      m.html_body AS "htmlBody",
+      m.message_id_header AS "messageIdHeader",
+      m.in_reply_to AS "inReplyTo",
+      m.references AS "references"
     FROM message AS m
     LEFT JOIN mail_thread AS t ON t.id = m.thread_id
     WHERE COALESCE(m.received_at, m.sent_at, m.created_at) < ${scope.asOf}
@@ -262,6 +282,17 @@ function renderMessage(message: ConnectedMailboxMessage, index: number): string 
     `- **Received:** ${displayTimestamp(message.receivedAt)}`,
     `- **Sent:** ${displayTimestamp(message.sentAt)}`,
     `- **Created:** ${displayTimestamp(message.createdAt)}`,
+    `- **Message-ID (header):** ${message.messageIdHeader ? code(message.messageIdHeader) : ''}`,
+    `- **In-Reply-To:** ${message.inReplyTo ? code(message.inReplyTo) : ''}`,
+    `- **References:** ${
+      message.references
+        ? message.references
+            .split(', ')
+            .filter(Boolean)
+            .map((reference) => code(reference))
+            .join(', ')
+        : ''
+    }`,
     '',
     '### Text body',
     '',

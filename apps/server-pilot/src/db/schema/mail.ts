@@ -346,6 +346,9 @@ export const message = pgTable(
       .where(sql`${t.direction} = 'inbound'`),
     index('message_transport_thread_idx').on(t.transportId, t.threadId),
     index('message_transport_received_idx').on(t.transportId, t.receivedAt),
+    index('message_transport_header_idx')
+      .on(t.transportId, t.messageIdHeader)
+      .where(sql`${t.messageIdHeader} IS NOT NULL`),
   ],
 );
 

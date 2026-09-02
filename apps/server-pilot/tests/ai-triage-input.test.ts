@@ -6,10 +6,12 @@ import {
   hashTriagePrompt,
   type TriageMessageRow,
 } from '../src/ai/triage-input.js';
+import { refineTriageOutput } from '../src/ai/triage.js';
 import {
   buildSystemPrompt,
   buildUserPrompt,
   classifyMailTriage,
+  classifyWorkflowMailTriage,
 } from '../src/ai/workflows/mail-triage.js';
 
 function row(
@@ -180,6 +182,83 @@ describe('triage provenance hashes', () => {
     );
     const hash = hashTriagePrompt(system, 'same prompt');
     expect(hashTriagePrompt(system, 'same prompt')).toBe(hash);
+  });
+
+  it('conversation metrics stay out of hashTriageInput and user prompt', async () => {
+    const messages = buildCausalTriageMessages(
+      [
+        row({
+          id: 'm1',
+          createdAt: new Date('2026-07-01T10:00:00.000Z'),
+          body: 'Please find attached quotation for your requested dates.',
+          subject: 'Re: quote',
+        }),
+      ],
+      'm1',
+    );
+    const input = {
+      transportId: 'transport-centurion',
+      threadId: 'thread-1',
+      triggerMessageId: 'm1',
+      messages,
+      asOf: '2026-07-01T12:00:00.000Z',
+      modelId: 'amazon.nova-lite-v1:0',
+      promptVersion: 'triage-v6',
+    };
+    const hashBefore = hashTriageInput(input);
+    const userPrompt = buildUserPrompt({
+      triggerMessageId: input.triggerMessageId,
+      asOf: input.asOf,
+      messages,
+    });
+    expect(userPrompt).not.toMatch(/conversationResponded/);
+    expect(userPrompt).not.toMatch(/conversationSignalReasons/);
+
+    const classification = await classifyWorkflowMailTriage(input, createFakeModelAdapter());
+    expect(classification.conversationMetrics).toMatchObject({
+      conversationResponded: true,
+      conversationSignalReasons: ['quoted_hotel_phrase'],
+    });
+    expect(hashTriageInput(input)).toBe(hashBefore);
+  });
+
+  it('conversationResponded in metrics does not change spam refine', () => {
+    const spamOutput = {
+      primaryFolder: 'unknown-review' as const,
+      priority: 'P4' as const,
+      urgent: false,
+      overlays: { booking: false, quote: false, payment: false },
+      isSpam: true,
+      suggestedTools: [] as string[],
+      sourceScope: 'external' as const,
+      automationState: 'unknown' as const,
+      humanAction: 'review_required' as const,
+      confidence: 0.9,
+      rationale: 'cold vendor pitch',
+      policyFlags: [] as string[],
+      abstainReason: null,
+    };
+    const withQuotedBody = refineTriageOutput(
+      {
+        from: 'vendor@spam.example.com',
+        subject: 'Special offer',
+        body: 'Please find attached quotation for your requested dates.',
+        asOf: '2026-07-01T12:00:00.000Z',
+      },
+      spamOutput,
+    );
+    const withoutQuotedBody = refineTriageOutput(
+      {
+        from: 'vendor@spam.example.com',
+        subject: 'Special offer',
+        body: 'Buy our product now.',
+        asOf: '2026-07-01T12:00:00.000Z',
+      },
+      spamOutput,
+    );
+    expect(withQuotedBody.isSpam).toBe(true);
+    expect(withoutQuotedBody.isSpam).toBe(true);
+    expect(withQuotedBody.policyFlags).toEqual(withoutQuotedBody.policyFlags);
   });
 
   it('classifyMailTriage uses input.modelId not process.env.AI_MODEL_ID', async () => {

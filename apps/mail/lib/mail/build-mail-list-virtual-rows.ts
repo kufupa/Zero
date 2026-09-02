@@ -9,9 +9,17 @@ export type BuildMailListVirtualRowsOptions = {
   groupByDate: boolean;
 };
 
+export type MailListLinkedStubRow = NonNullable<MailListThreadRow['linkedStubs']>[number];
+
 export type MailListVirtualRow =
   | { type: 'header'; bucket: MailDateBucket; key: string }
-  | { type: 'thread'; key: string; message: MailListThreadRow; threadIndex: number };
+  | { type: 'thread'; key: string; message: MailListThreadRow; threadIndex: number }
+  | {
+      type: 'linked-stub';
+      key: string;
+      stub: MailListLinkedStubRow;
+      parentThreadIndex: number;
+    };
 
 function listRowReceivedOn(message: MailListThreadRow): string | Date | undefined {
   return message.receivedOn ?? message.latestMessageAt ?? undefined;
@@ -29,12 +37,24 @@ export function buildMailListVirtualRows(
   options: BuildMailListVirtualRowsOptions,
 ): MailListVirtualRow[] {
   if (!options.groupByDate) {
-    return threads.map((message, threadIndex) => ({
-      type: 'thread' as const,
-      key: `thread:${message.id}`,
-      message,
-      threadIndex,
-    }));
+    const rows: MailListVirtualRow[] = [];
+    threads.forEach((message, threadIndex) => {
+      rows.push({
+        type: 'thread',
+        key: `thread:${message.id}`,
+        message,
+        threadIndex,
+      });
+      for (const stub of message.linkedStubs ?? []) {
+        rows.push({
+          type: 'linked-stub',
+          key: `linked-stub:${message.id}:${stub.threadId}`,
+          stub,
+          parentThreadIndex: threadIndex,
+        });
+      }
+    });
+    return rows;
   }
 
   const byBucket = new Map<MailDateBucket, MailListThreadRow[]>();
@@ -65,12 +85,21 @@ export function buildMailListVirtualRows(
     rows.push({ type: 'header', bucket, key: `header:${bucket}` });
     if (!collapsedBuckets.has(bucket)) {
       for (const message of list) {
+        const threadIndex = idToIndex.get(message.id) ?? 0;
         rows.push({
           type: 'thread',
           key: `thread:${message.id}`,
           message,
-          threadIndex: idToIndex.get(message.id) ?? 0,
+          threadIndex,
         });
+        for (const stub of message.linkedStubs ?? []) {
+          rows.push({
+            type: 'linked-stub',
+            key: `linked-stub:${message.id}:${stub.threadId}`,
+            stub,
+            parentThreadIndex: threadIndex,
+          });
+        }
       }
     }
   }

@@ -136,6 +136,18 @@ export type MailListThreadRow = {
   receivedOn?: string | Date;
   tags?: Label[];
   threadId?: string;
+  subject?: string | null;
+  snippet?: string | null;
+  conversationId?: string;
+  linkedThreadIds?: readonly string[];
+  conversationResponded?: boolean;
+  conversationMessageCount?: number;
+  primaryThreadId?: string | null;
+  linkedStubs?: readonly {
+    threadId: string;
+    label: string;
+    latestMessageAt?: string | Date | null;
+  }[];
 };
 
 export type ThreadProps = {

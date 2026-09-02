@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { mailThread, message } from '../src/db/schema/mail.js';
-import { parseRawMessage, generateMessageId } from '../src/mail/ingest/parse-message.js';
+import {
+  type ParsedInboundMessage,
+  parseRawMessage,
+  generateMessageId,
+} from '../src/mail/ingest/parse-message.js';
 import { persistInboundMessage } from '../src/mail/ingest/store.js';
 import { FakeS3Storage, resetS3Storage, setS3Storage } from '../src/storage/s3.js';
 import {
@@ -10,6 +14,12 @@ import {
   withSeededTestDb,
 } from './helpers/test-db';
 import { readFixture } from './helpers/fixtures';
+import {
+  NAVA_TRANSPORT_EMAIL,
+  NAVA_TRANSPORT_ID,
+  TRANSPORT_EMAIL,
+  TRANSPORT_ID,
+} from '../src/db/seed.js';
 
 const reachable = await probeTestDb();
 
@@ -18,6 +28,81 @@ function withFakeS3(): FakeS3Storage {
   resetS3Storage();
   setS3Storage(fake);
   return fake;
+}
+
+function minimalParsed(
+  overrides: Partial<ParsedInboundMessage> & { messageId: string },
+): ParsedInboundMessage {
+  return {
+    ownerHeaderValue: TRANSPORT_EMAIL,
+    outboundCorrelation: { kind: 'absent' },
+    messageId: overrides.messageId,
+    inReplyTo: overrides.inReplyTo ?? null,
+    references: overrides.references ?? [],
+    fromAddress: overrides.fromAddress ?? 'guest@example.com',
+    toAddresses: overrides.toAddresses ?? [TRANSPORT_EMAIL],
+    ccAddresses: overrides.ccAddresses ?? [],
+    bccAddresses: overrides.bccAddresses ?? [],
+    subject: overrides.subject ?? 'Thread join test',
+    textBody: overrides.textBody ?? 'Thread join body',
+    htmlBody: overrides.htmlBody ?? null,
+    receivedAt: overrides.receivedAt ?? new Date('2026-07-02T12:00:00.000Z'),
+    attachments: overrides.attachments ?? [],
+    rawHeaderLines: overrides.rawHeaderLines ?? [],
+    ...overrides,
+  };
+}
+
+async function seedThreadMessage(
+  db: import('../src/db/client.js').DB,
+  args: {
+    threadId: string;
+    messageId: string;
+    messageIdHeader: string;
+    transportId: string;
+    transportEmail: string;
+    createdAt?: Date;
+  },
+): Promise<void> {
+  const now = args.createdAt ?? new Date('2026-07-01T10:00:00.000Z');
+  await db
+    .insert(mailThread)
+    .values({
+      id: args.threadId,
+      transportId: args.transportId,
+      threadRootId: `root-${args.threadId}`,
+      subject: 'Seeded thread',
+      snippet: 'Seeded thread',
+      isArchived: false,
+      isStarred: false,
+      isRead: false,
+      labelIds: [],
+      latestMessageAt: now,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .onConflictDoNothing({ target: mailThread.id });
+
+  await db.insert(message).values({
+    id: args.messageId,
+    transportId: args.transportId,
+    threadId: args.threadId,
+    direction: 'inbound',
+    fromAddress: 'guest@example.com',
+    toAddresses: [args.transportEmail],
+    ccAddresses: [],
+    bccAddresses: [],
+    subject: 'Seeded thread',
+    textBody: 'Seeded body',
+    ownerHeaderValue: args.transportEmail,
+    messageIdHeader: args.messageIdHeader,
+    references: [],
+    isRead: false,
+    isStarred: false,
+    receivedAt: now,
+    createdAt: args.createdAt ?? now,
+    updatedAt: args.createdAt ?? now,
+  });
 }
 
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('thread join (ingest)', () => {
@@ -101,6 +186,208 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('thread join (ingest)', () => 
       expect(result.thread!.latestMessageAt?.toISOString()).toBe(
         '2026-07-01T10:00:00.000Z',
       );
+    },
+    30000,
+  );
+
+  it(
+    'multi-ref chain joins newest parent thread when root and mid both exist',
+    async () => {
+      const storage = withFakeS3();
+      const rootHeader = 'root@chain.test';
+      const midHeader = 'mid@chain.test';
+
+      const result = await withSeededTestDb(async (db) => {
+        await seedThreadMessage(db, {
+          threadId: 'thread-chain-root',
+          messageId: 'msg-chain-root',
+          messageIdHeader: rootHeader,
+          transportId: TRANSPORT_ID,
+          transportEmail: TRANSPORT_EMAIL,
+        });
+        await seedThreadMessage(db, {
+          threadId: 'thread-chain-mid',
+          messageId: 'msg-chain-mid',
+          messageIdHeader: midHeader,
+          transportId: TRANSPORT_ID,
+          transportEmail: TRANSPORT_EMAIL,
+        });
+
+        const replyMessageId = generateMessageId();
+        const parsed = minimalParsed({
+          messageId: 'reply@chain.test',
+          inReplyTo: midHeader,
+          references: [rootHeader, midHeader],
+        });
+        const replyResult = await persistInboundMessage(
+          parsed,
+          Buffer.from('reply body'),
+          {
+            ingestMailboxId: 'ingest-nava-legacy',
+            pop3Uidl: 'uidl-chain-reply',
+            messageId: replyMessageId,
+          },
+          { db, storage },
+        );
+        return replyResult;
+      });
+
+      expect(result?.kind).toBe('stored');
+      if (!result || result.kind !== 'stored') return;
+      expect(result.threadId).toBe('thread-chain-mid');
+    },
+    30000,
+  );
+
+  it(
+    'does not join parent on another transport with the same Message-ID',
+    async () => {
+      const storage = withFakeS3();
+      const sharedHeader = 'shared@iso.test';
+
+      const result = await withSeededTestDb(async (db) => {
+        await seedThreadMessage(db, {
+          threadId: 'thread-iso-centurion',
+          messageId: 'msg-iso-centurion',
+          messageIdHeader: sharedHeader,
+          transportId: TRANSPORT_ID,
+          transportEmail: TRANSPORT_EMAIL,
+        });
+        await seedThreadMessage(db, {
+          threadId: 'thread-iso-nava',
+          messageId: 'msg-iso-nava',
+          messageIdHeader: sharedHeader,
+          transportId: NAVA_TRANSPORT_ID,
+          transportEmail: NAVA_TRANSPORT_EMAIL,
+        });
+
+        const replyMessageId = generateMessageId();
+        const parsed = minimalParsed({
+          messageId: 'reply@iso.test',
+          inReplyTo: sharedHeader,
+          references: [sharedHeader],
+        });
+        const replyResult = await persistInboundMessage(
+          parsed,
+          Buffer.from('iso reply'),
+          {
+            ingestMailboxId: 'ingest-nava-legacy',
+            pop3Uidl: 'uidl-iso-reply',
+            messageId: replyMessageId,
+          },
+          { db, storage },
+        );
+        return replyResult;
+      });
+
+      expect(result?.kind).toBe('stored');
+      if (!result || result.kind !== 'stored') return;
+      expect(result.threadId).toBe('thread-iso-centurion');
+      expect(result.threadId).not.toBe('thread-iso-nava');
+    },
+    30000,
+  );
+
+  it(
+    'duplicate Message-ID on same transport ties to oldest created message',
+    async () => {
+      const storage = withFakeS3();
+      const dupHeader = 'dup@tie.test';
+      const olderAt = new Date('2026-07-01T08:00:00.000Z');
+      const newerAt = new Date('2026-07-01T09:00:00.000Z');
+
+      const result = await withSeededTestDb(async (db) => {
+        await seedThreadMessage(db, {
+          threadId: 'thread-tie-old',
+          messageId: 'msg-tie-old',
+          messageIdHeader: dupHeader,
+          transportId: TRANSPORT_ID,
+          transportEmail: TRANSPORT_EMAIL,
+          createdAt: olderAt,
+        });
+        await seedThreadMessage(db, {
+          threadId: 'thread-tie-new',
+          messageId: 'msg-tie-new',
+          messageIdHeader: dupHeader,
+          transportId: TRANSPORT_ID,
+          transportEmail: TRANSPORT_EMAIL,
+          createdAt: newerAt,
+        });
+
+        const replyMessageId = generateMessageId();
+        const parsed = minimalParsed({
+          messageId: 'reply@tie.test',
+          inReplyTo: dupHeader,
+          references: [dupHeader],
+        });
+        const replyResult = await persistInboundMessage(
+          parsed,
+          Buffer.from('tie reply'),
+          {
+            ingestMailboxId: 'ingest-nava-legacy',
+            pop3Uidl: 'uidl-tie-reply',
+            messageId: replyMessageId,
+          },
+          { db, storage },
+        );
+        return replyResult;
+      });
+
+      expect(result?.kind).toBe('stored');
+      if (!result || result.kind !== 'stored') return;
+      expect(result.threadId).toBe('thread-tie-old');
+    },
+    30000,
+  );
+
+  it(
+    'canonicalizes messageIdHeader, inReplyTo, and references on persist',
+    async () => {
+      const storage = withFakeS3();
+      const parentHeader = 'parent@canon.test';
+
+      await withSeededTestDb(async (db) => {
+        await seedThreadMessage(db, {
+          threadId: 'thread-canon-parent',
+          messageId: 'msg-canon-parent',
+          messageIdHeader: parentHeader,
+          transportId: TRANSPORT_ID,
+          transportEmail: TRANSPORT_EMAIL,
+        });
+
+        const replyMessageId = generateMessageId();
+        const parsed = minimalParsed({
+          messageId: '<REPLY@Canon.TEST>',
+          inReplyTo: `<${parentHeader}>`,
+          references: [`<${parentHeader}>`, '<OTHER@Canon.TEST>'],
+        });
+        const replyResult = await persistInboundMessage(
+          parsed,
+          Buffer.from('canon reply'),
+          {
+            ingestMailboxId: 'ingest-nava-legacy',
+            pop3Uidl: 'uidl-canon-reply',
+            messageId: replyMessageId,
+          },
+          { db, storage },
+        );
+        expect(replyResult.kind).toBe('stored');
+        if (replyResult.kind !== 'stored') return;
+
+        const rows = await db
+          .select({
+            messageIdHeader: message.messageIdHeader,
+            inReplyTo: message.inReplyTo,
+            references: message.references,
+          })
+          .from(message)
+          .where(eq(message.id, replyMessageId));
+        expect(rows[0]).toEqual({
+          messageIdHeader: 'reply@canon.test',
+          inReplyTo: parentHeader,
+          references: [parentHeader, 'other@canon.test'],
+        });
+      });
     },
     30000,
   );

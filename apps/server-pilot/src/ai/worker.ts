@@ -44,6 +44,7 @@ import {
 import { persistAiCandidateDraft, loadLatestThreadAffectingDraftRevisionId } from './drafts.js';
 import { buildCausalTriageMessages, type TriageMessageRow } from './triage-input.js';
 import { TRIAGE_PROMPT_VERSION } from './workflows/mail-triage.js';
+import type { IndexableMessage } from '../mail/conversation-signals.js';
 import { extractDraftFeedbackLabels } from './feedback.js';
 import { normalizeEmailAddress } from './never-spam.js';
 import { isCliEntry } from '../lib/is-cli-entry.js';
@@ -147,6 +148,35 @@ function deriveThreadSignals(messages: readonly WorkerTriageMessage[]): ThreadSi
       ...recipientAddresses(rcStaff.bccAddresses),
     ],
   };
+}
+
+type WorkerThreadMessageRow = {
+  id: string;
+  fromAddress: string | null;
+  subject: string | null;
+  direction: string;
+  createdAt: Date;
+  receivedAt: Date | null;
+  sentAt: Date | null;
+  toAddresses: string[] | null;
+  ccAddresses: string[] | null;
+};
+
+/** Thread-scoped index rows for Layer B metrics; transport-wide index optional later. */
+function threadMessagesToTransportIndex(
+  threadId: string,
+  rows: readonly WorkerThreadMessageRow[],
+): IndexableMessage[] {
+  return rows.map((row) => ({
+    id: row.id,
+    threadId,
+    direction: row.direction === 'outbound' ? 'outbound' : 'inbound',
+    from: row.fromAddress ?? '',
+    to: (row.toAddresses ?? []).join(', '),
+    cc: (row.ccAddresses ?? []).join(', '),
+    subject: row.subject ?? '',
+    receivedAt: (row.receivedAt ?? row.sentAt ?? row.createdAt).toISOString(),
+  }));
 }
 
 function claimOwnerFor(run: typeof aiWorkflowRun.$inferSelect): string {
@@ -633,6 +663,7 @@ export async function executeAiRun(
           body: trigger?.textBody ?? trigger?.htmlBody ?? '',
           messages,
           threadSignals,
+          transportIndexMessages: threadMessagesToTransportIndex(run.threadId, threadMessages),
           asOf: run.createdAt.toISOString(),
           modelId: run.modelId,
           promptVersion: TRIAGE_PROMPT_VERSION,

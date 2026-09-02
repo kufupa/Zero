@@ -50,6 +50,10 @@ import {
   DEFAULT_TRIAGE_PROMPT_VERSION,
   enqueueAiRun,
 } from '../../ai/run-ledger.js';
+import {
+  buildReferenceChain,
+  canonicalMessageId,
+} from './message-id.js';
 import { type ParsedInboundMessage, parseRawMessage, generateMessageId } from './parse-message.js';
 import { rawMimeKey, getS3Storage, type S3Storage } from '../../storage/s3.js';
 import { parsePersistedDeliveryOutcome } from '../send/outbound-queue.js';
@@ -446,15 +450,17 @@ export async function persistInboundMessage(
         canonical.messageIdHeader === null
           ? (parsePersistedDeliveryOutcome(canonical.smtpPayload)?.messageId ?? null)
           : null;
+      const persistedHeaders = canonicalizePersistedHeaders(parsed);
       await transactionDb
         .update(message)
         .set({
           ingestMailboxId: meta.ingestMailboxId,
           pop3Uidl: meta.pop3Uidl,
           ownerHeaderValue: parsed.ownerHeaderValue,
-          messageIdHeader: canonical.messageIdHeader ?? durableSmtpMessageId ?? parsed.messageId,
-          inReplyTo: parsed.inReplyTo,
-          references: parsed.references,
+          messageIdHeader:
+            canonical.messageIdHeader ?? durableSmtpMessageId ?? persistedHeaders.messageIdHeader,
+          inReplyTo: persistedHeaders.inReplyTo,
+          references: persistedHeaders.references,
           fromAddress: parsed.fromAddress ?? '',
           toAddresses: parsed.toAddresses,
           ccAddresses: parsed.ccAddresses,
@@ -530,6 +536,8 @@ export async function persistInboundMessage(
         ? inferredHotelSent
         : opts.directionOverride === 'outbound';
 
+    const persistedHeaders = canonicalizePersistedHeaders(parsed);
+
     await tx.insert(message).values({
       id: messageId,
       transportId: transport.id,
@@ -538,9 +546,9 @@ export async function persistInboundMessage(
       direction: isHotelSent ? 'outbound' : 'inbound',
       pop3Uidl: meta.pop3Uidl,
       ownerHeaderValue: parsed.ownerHeaderValue,
-      messageIdHeader: parsed.messageId,
-      inReplyTo: parsed.inReplyTo,
-      references: parsed.references,
+      messageIdHeader: persistedHeaders.messageIdHeader,
+      inReplyTo: persistedHeaders.inReplyTo,
+      references: persistedHeaders.references,
       fromAddress: parsed.fromAddress ?? '',
       toAddresses: parsed.toAddresses,
       ccAddresses: parsed.ccAddresses,
@@ -1729,24 +1737,14 @@ async function resolveThreadId(args: {
   const now = parsed.receivedAt ?? new Date();
   const snippet = parsed.textBody ? parsed.textBody.slice(0, 200) : (parsed.subject ?? '');
 
-  const candidates = [...(parsed.inReplyTo ? [parsed.inReplyTo] : []), ...parsed.references].filter(
-    Boolean,
-  );
-  const uniqueCandidates = [...new Set(candidates)];
-
-  if (uniqueCandidates.length > 0) {
-    const parentRows = await tx
-      .select({ threadId: message.threadId })
-      .from(message)
-      .where(
-        and(
-          eq(message.transportId, transportId),
-          inArray(message.messageIdHeader, uniqueCandidates),
-        ),
-      )
-      .limit(1);
-    if (parentRows.length > 0) {
-      const threadId = parentRows[0]!.threadId;
+  const referenceChain = buildReferenceChain(parsed.inReplyTo, parsed.references);
+  for (let i = referenceChain.length - 1; i >= 0; i--) {
+    const parentThreadId = await findParentThreadByMessageIdHeader(
+      tx,
+      transportId,
+      referenceChain[i]!,
+    );
+    if (parentThreadId) {
       await tx
         .update(mailThread)
         .set({
@@ -1755,12 +1753,13 @@ async function resolveThreadId(args: {
           isRead: false,
           updatedAt: new Date(),
         })
-        .where(eq(mailThread.id, threadId));
-      return threadId;
+        .where(eq(mailThread.id, parentThreadId));
+      return parentThreadId;
     }
   }
 
-  const threadRootId = parsed.messageId ?? `no-message-id-${pop3Uidl}`;
+  const threadRootId =
+    canonicalMessageId(parsed.messageId) ?? `no-message-id-${pop3Uidl}`;
   const existing = await tx
     .select({ id: mailThread.id })
     .from(mailThread)
@@ -1794,6 +1793,51 @@ async function resolveThreadId(args: {
     latestMessageAt: now,
   });
   return threadId;
+}
+
+function canonicalizePersistedReferences(references: readonly string[]): string[] {
+  const canonicalRefs: string[] = [];
+  const seen = new Set<string>();
+  for (const ref of references) {
+    const canon = canonicalMessageId(ref);
+    if (!canon || seen.has(canon)) continue;
+    seen.add(canon);
+    canonicalRefs.push(canon);
+  }
+  return canonicalRefs;
+}
+
+function canonicalizePersistedHeaders(parsed: ParsedInboundMessage): {
+  messageIdHeader: string | null;
+  inReplyTo: string | null;
+  references: string[];
+} {
+  return {
+    messageIdHeader: canonicalMessageId(parsed.messageId),
+    inReplyTo: canonicalMessageId(parsed.inReplyTo),
+    references: canonicalizePersistedReferences(parsed.references),
+  };
+}
+
+async function findParentThreadByMessageIdHeader(
+  tx: DB,
+  transportId: string,
+  canonicalHeader: string,
+): Promise<string | null> {
+  const parentRows = await tx
+    .select({ threadId: message.threadId })
+    .from(message)
+    .where(
+      and(eq(message.transportId, transportId), eq(message.messageIdHeader, canonicalHeader)),
+    )
+    .orderBy(asc(message.createdAt), asc(message.id))
+    .limit(2);
+  if (parentRows.length > 1) {
+    console.warn(
+      `ingest: duplicate message_id_header ${canonicalHeader} on transport ${transportId}; tie-break oldest`,
+    );
+  }
+  return parentRows[0]?.threadId ?? null;
 }
 
 function headerSummary(parsed: ParsedInboundMessage): Record<string, unknown> {

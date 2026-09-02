@@ -66,6 +66,7 @@ import { parseSearchQueryOrThrow } from '../../mail/search/trpc.js';
 import type { Pop3Client } from '../../mail/ingest/pop3-client.js';
 import { mailboxProcedure, router as tRouter } from '../trpc.js';
 import { markThreadRead } from '../../mail/thread-read.js';
+import { loadConversationMetaForThread, loadConversationMetaForThreads, stableConversationId } from '../../mail/conversation-group.js';
 import { assertHmsDraftFreshForAction } from './drafts.js';
 import { toDraftWire } from './draft-wire.js';
 import { getDb } from '../../db/client.js';
@@ -514,24 +515,34 @@ export const mailRouter = tRouter({
         .map((row) => [row.threadId, row.count]),
     );
 
+    const conversationMetaByThread = await loadConversationMetaForThreads(db, transportId, threadIds);
+
     return {
-      threads: rows.map((r) => ({
-        id: r.id,
-        transportId: r.transportId,
-        subject: r.subject,
-        snippet: r.snippet,
-        isArchived: r.isArchived,
-        isStarred: r.isStarred,
-        isRead: r.isRead,
-        labelIds: r.labelIds,
-        snoozedUntil: r.snoozedUntil,
-        trashedAt: r.trashedAt,
-        latestMessageAt: r.latestMessageAt,
-        historyId: null as string | null,
-        categoryIds: categoryIdsByThread.get(r.id) ?? [],
-        hasDraft: (draftCountByThread.get(r.id) ?? 0) > 0,
-        draftCount: draftCountByThread.get(r.id) ?? 0,
-      })),
+      threads: rows.map((r) => {
+        const conversation = conversationMetaByThread.get(r.id);
+        return {
+          id: r.id,
+          transportId: r.transportId,
+          subject: r.subject,
+          snippet: r.snippet,
+          isArchived: r.isArchived,
+          isStarred: r.isStarred,
+          isRead: r.isRead,
+          labelIds: r.labelIds,
+          snoozedUntil: r.snoozedUntil,
+          trashedAt: r.trashedAt,
+          latestMessageAt: r.latestMessageAt,
+          historyId: null as string | null,
+          categoryIds: categoryIdsByThread.get(r.id) ?? [],
+          hasDraft: (draftCountByThread.get(r.id) ?? 0) > 0,
+          draftCount: draftCountByThread.get(r.id) ?? 0,
+          conversationId: conversation?.conversationId ?? stableConversationId(transportId, r.id),
+          linkedThreadIds: conversation?.linkedThreadIds ?? [],
+          conversationResponded: conversation?.conversationResponded ?? false,
+          conversationMessageCount: conversation?.conversationMessageCount ?? 0,
+          primaryThreadId: conversation?.primaryThreadId ?? r.id,
+        };
+      }),
       nextPageToken,
     };
   }),
@@ -539,14 +550,19 @@ export const mailRouter = tRouter({
   /**
    * Fetch a single thread with its messages, scoped to the caller's mailbox.
    */
-  get: mailboxProcedure.input(z.object({ id: z.string() })).query(async ({ input, ctx }) => {
+  get: mailboxProcedure
+    .input(z.object({ id: z.string(), mergeLinked: z.boolean().optional() }))
+    .query(async ({ input, ctx }) => {
     const db = getDb();
     const transportId = ctx.activeTransportId;
     const thread = await requireThreadForTransport(db, input.id, transportId);
+    const conversation = await loadConversationMetaForThread(db, transportId, thread.id);
+    const mergeLinked = input.mergeLinked === true && conversation.linkedThreadIds.length > 0;
+    const threadIds = mergeLinked ? [thread.id, ...conversation.linkedThreadIds] : [thread.id];
     const messages = await db
       .select()
       .from(message)
-      .where(and(eq(message.threadId, thread.id), eq(message.transportId, transportId)))
+      .where(and(eq(message.transportId, transportId), inArray(message.threadId, threadIds)))
       .orderBy(asc(message.receivedAt));
     const messageIds = messages.map((m) => m.id);
     const attachmentRows =
@@ -577,7 +593,9 @@ export const mailRouter = tRouter({
       };
     });
     const hasUnread = parsedMessages.some((m) => m.unread);
-    const hasReplied = messages.some((m) => m.direction === 'outbound');
+    const hasReplied = mergeLinked
+      ? conversation.conversationResponded
+      : messages.some((m) => m.direction === 'outbound');
     const labels = await db
       .select({ id: mailLabel.id, name: mailLabel.name })
       .from(mailLabel)
@@ -644,11 +662,18 @@ export const mailRouter = tRouter({
       latest,
       hasUnread,
       hasReplied,
-      totalReplies: Math.max(0, parsedMessages.length - 1),
+      totalReplies: mergeLinked
+        ? Math.max(0, conversation.conversationMessageCount - 1)
+        : Math.max(0, parsedMessages.length - 1),
       labels: threadLabels,
       drafts,
       categoryIds,
       categories,
+      conversationId: conversation.conversationId,
+      linkedThreadIds: conversation.linkedThreadIds,
+      conversationResponded: conversation.conversationResponded,
+      conversationMessageCount: conversation.conversationMessageCount,
+      primaryThreadId: conversation.primaryThreadId,
     };
   }),
 

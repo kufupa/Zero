@@ -23,6 +23,9 @@ import {
 } from '../triage-input.js';
 import type { ModelAdapter, ModelInvokeResult } from '../bedrock/adapter.js';
 import { validateStructuredJsonOutput } from '../security/policy.js';
+import { computeConversationTriageMetrics } from '../../mail/conversation-triage-metrics.js';
+import type { ConversationTriageMetrics } from '../../mail/conversation-triage-metrics.js';
+import type { IndexableMessage } from '../../mail/conversation-signals.js';
 import { createStep, createWorkflow } from '@mastra/core/workflows';
 import { AI_WORKFLOW_PRIMARY_SLUGS } from '../categories.js';
 import { createModelAdapter } from '../bedrock/factory.js';
@@ -54,6 +57,17 @@ const threadSignalsSchema = z
   })
   .strict();
 
+const indexableMessageSchema = z.object({
+  id: z.string(),
+  threadId: z.string(),
+  direction: z.enum(['inbound', 'outbound']),
+  from: z.string(),
+  to: z.string(),
+  cc: z.string().optional(),
+  subject: z.string(),
+  receivedAt: z.string(),
+});
+
 const triageInputSchema = z.object({
   transportId: z.string(),
   threadId: z.string(),
@@ -66,6 +80,7 @@ const triageInputSchema = z.object({
   body: z.string().default(''),
   messages: z.array(triageMessageSchema).default([]),
   threadSignals: threadSignalsSchema.optional(),
+  transportIndexMessages: z.array(indexableMessageSchema).optional(),
   asOf: z.string().datetime({ offset: true }),
   modelId: z.string().min(1),
   promptVersion: z.string().min(1),
@@ -383,6 +398,7 @@ export interface WorkflowTriageClassification {
   rawOutput: WorkflowTriageOutput;
   output: WorkflowTriageOutput;
   threadSignals: ThreadSignals;
+  conversationMetrics: ConversationTriageMetrics;
   modelId: string;
   promptHash: string;
   inputHash: string;
@@ -401,6 +417,7 @@ type MailTriageInput = {
   body?: string;
   messages: TriagePromptRow[];
   threadSignals?: ThreadSignals;
+  transportIndexMessages?: IndexableMessage[];
   asOf: string;
   modelId: string;
   promptVersion: string;
@@ -706,10 +723,17 @@ export async function classifyWorkflowMailTriage(
       refinedOutput.isSpam,
     ),
   });
+  const conversationMetrics = computeConversationTriageMetrics({
+    threadId: input.threadId,
+    triggerMessageId: causalInput.triggerMessageId,
+    causalMessages: causalRows,
+    transportIndexMessages: input.transportIndexMessages,
+  });
   return {
     rawOutput,
     output,
     threadSignals,
+    conversationMetrics,
     modelId: model.modelId,
     promptHash,
     inputHash,
@@ -767,6 +791,7 @@ const classifyStep = createStep({
         to: inputData.to,
         cc: inputData.cc,
         bcc: inputData.bcc,
+        transportIndexMessages: inputData.transportIndexMessages,
         asOf: inputData.asOf,
         modelId: inputData.modelId,
         promptVersion: TRIAGE_PROMPT_VERSION,
@@ -794,6 +819,8 @@ const classifyStep = createStep({
         rawOutput: classification.rawOutput,
         canonicalOutput: output,
         threadSignals: promptThreadSignals(classification.threadSignals),
+        conversationResponded: classification.conversationMetrics.conversationResponded,
+        conversationSignalReasons: classification.conversationMetrics.conversationSignalReasons,
         rationale: output.rationale,
         policyFlags: output.policyFlags,
       },
