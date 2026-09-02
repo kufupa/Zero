@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO="${NAVA_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+cd "$REPO"
+
+DUMP="$REPO/.private/connected-mailbox-corpus/connected-mailbox-inbox.md"
+HOURS="$REPO/.private/connected-mailbox-corpus/hours.json"
+DASH_JSON="$REPO/docs/infor-hms/nava-fte-dashboard.json"
+DASH_MD="$REPO/docs/infor-hms/nava-fte-dashboard.md"
+PRIME="$REPO/external/prime-agent/prime-agent.sh"
+KEY_FILE="$REPO/.gemini_api_key"
+
+if [[ ! -r "$DUMP" ]]; then
+  echo "missing or unreadable dump: $DUMP" >&2
+  exit 1
+fi
+
+need_hours=0
+if [[ ! -f "$HOURS" ]]; then
+  need_hours=1
+elif [[ "$DUMP" -nt "$HOURS" ]]; then
+  need_hours=1
+fi
+
+if [[ "$need_hours" -eq 1 ]]; then
+  pnpm exec tsx apps/server-pilot/scripts/nava-fte-hours.ts
+fi
+
+pnpm exec tsx apps/server-pilot/scripts/nava-fte-dashboard.ts
+
+if [[ ! -t 0 ]]; then
+  cat "$DASH_MD"
+  exit 0
+fi
+
+export NODE_PATH="$REPO/external/prime-agent/node_modules${NODE_PATH:+:$NODE_PATH}"
+pnpm exec tsx scripts/nava-dashboard-tui.ts
+
+# Live Gemini remains opt-in (often hangs / 400). Default path is staged TUI + Hermes chat.
+if [[ "${NAVA_USE_PRIME:-}" != "1" || "${NAVA_SKIP_PRIME:-}" == "1" ]]; then
+  exit 0
+fi
+
+if [[ ! -f "$KEY_FILE" ]]; then
+  echo "missing $KEY_FILE" >&2
+  exit 1
+fi
+if [[ ! -x "$PRIME" ]]; then
+  echo "missing $PRIME" >&2
+  exit 1
+fi
+
+GEMINI_API_KEY="$(head -n1 "$KEY_FILE")"
+export GEMINI_API_KEY
+export PRIME_AGENT_TELEMETRY=0
+export PYTHONPATH="$REPO/scripts/nava-sitecustomize-path${PYTHONPATH:+:$PYTHONPATH}"
+export NAVA_ALLOW_DUMP=0
+
+exec "$PRIME" --provider google --model gemini-3.7-flash --thinking medium --theme nava

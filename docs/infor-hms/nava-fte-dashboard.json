@@ -1,0 +1,206 @@
+{
+  "loaded": {
+    "mailboxes": 2,
+    "messages": 3268,
+    "threads": 2403,
+    "asOf": "2026-08-25T22:24:55.657Z"
+  },
+  "hours": {
+    "nEligibleFirstResponse": 26,
+    "medianFirstResponseMinutes": 48.95,
+    "p90FirstResponseMinutes": 712,
+    "inboundOnlyThreads": 2102,
+    "caveat": "Inbound-only is a retained-outbound gap, not proof of no reply elsewhere."
+  },
+  "inboundOnlyDisplay": {
+    "inboundOnlyThreads": 2102,
+    "threadCount": 2403,
+    "sharePercent": "87.5%"
+  },
+  "inboundOnlyDrift": false,
+  "mix": [
+    {
+      "className": "stay-human-other",
+      "count": 1069,
+      "share": "36.2%"
+    },
+    {
+      "className": "stay-human-at-risk",
+      "count": 841,
+      "share": "28.4%"
+    },
+    {
+      "className": "stay-human-groups",
+      "count": 446,
+      "share": "15.1%"
+    },
+    {
+      "className": "stay-human-new-bookings",
+      "count": 419,
+      "share": "14.2%"
+    },
+    {
+      "className": "unknown",
+      "count": 99,
+      "share": "3.3%"
+    },
+    {
+      "className": "file-spam",
+      "count": 78,
+      "share": "2.6%"
+    },
+    {
+      "className": "file-ops",
+      "count": 5,
+      "share": "0.2%"
+    }
+  ],
+  "mixTotal": 2957,
+  "mixCaption": "Mix is inbound messages (n=2957). Loaded 3268 is all messages. Unknown 99 is inbound messages, not Luna 152 unknown-route threads.",
+  "hitlLocks": [
+    "failure",
+    "payment",
+    "policy",
+    "cancellation-fee",
+    "complaint",
+    "security",
+    "VIP/privacy",
+    "documents",
+    "low-confidence",
+    "SLA/unpaid"
+  ],
+  "lunaHumanLock": {
+    "locked": 1134,
+    "threads": 2403
+  },
+  "hitlNote": "security quarantine ≠ spam",
+  "tools": [
+    {
+      "rank": 1,
+      "tool": "hms_find_reservation",
+      "evidence": "confirmation_number 1094 threads",
+      "live": false,
+      "shadow": false
+    },
+    {
+      "rank": 2,
+      "tool": "hms_list_documents",
+      "evidence": "document_delivery 1015 threads",
+      "live": false,
+      "shadow": false
+    },
+    {
+      "rank": 3,
+      "tool": "hms_find_reservation (status)",
+      "evidence": "reservation_status 947 threads",
+      "live": false,
+      "shadow": false
+    },
+    {
+      "rank": 4,
+      "tool": "hms_read_folio",
+      "evidence": "payment_deposit 892 threads",
+      "live": false,
+      "shadow": false
+    },
+    {
+      "rank": 5,
+      "tool": "hms_quote_stay",
+      "evidence": "rate_quote 849 threads; bookable=false",
+      "live": false,
+      "shadow": false
+    }
+  ],
+  "sourceFamilies": [
+    {
+      "family": "security_quarantine",
+      "threads": 526,
+      "share": "21.9%"
+    },
+    {
+      "family": "payment_gateway_pop",
+      "threads": 506,
+      "share": "21.1%"
+    },
+    {
+      "family": "confirmation_document",
+      "threads": 329,
+      "share": "13.7%"
+    },
+    {
+      "family": "ota_channel",
+      "threads": 309,
+      "share": "12.9%"
+    },
+    {
+      "family": "synxis_integration",
+      "threads": 155,
+      "share": "6.5%"
+    },
+    {
+      "family": "night_audit_internal",
+      "threads": 154,
+      "share": "6.4%"
+    },
+    {
+      "family": "reservation_pms_notice",
+      "threads": 152,
+      "share": "6.3%"
+    },
+    {
+      "family": "unknown",
+      "threads": 88,
+      "share": "3.7%"
+    },
+    {
+      "family": "vendor_newsletter",
+      "threads": 86,
+      "share": "3.6%"
+    },
+    {
+      "family": "human_external_request",
+      "threads": 63,
+      "share": "2.6%"
+    },
+    {
+      "family": "bounce_delivery",
+      "threads": 35,
+      "share": "1.5%"
+    }
+  ],
+  "lunaRoutes": [
+    {
+      "route": "ops",
+      "threads": 1097,
+      "share": "45.7%"
+    },
+    {
+      "route": "resolved",
+      "threads": 647,
+      "share": "26.9%"
+    },
+    {
+      "route": "spam",
+      "threads": 397,
+      "share": "16.5%"
+    },
+    {
+      "route": "unknown",
+      "threads": 152,
+      "share": "6.3%"
+    },
+    {
+      "route": "at-risk",
+      "threads": 110,
+      "share": "4.6%"
+    }
+  ],
+  "analysisMeta": {
+    "batches": 18,
+    "model": "Azure gpt-5.6-luna",
+    "inboundMessages": 2957,
+    "outboundMessages": 311,
+    "lowConfidenceThreads": 68,
+    "toolDemandRows": 1409
+  }
+}
