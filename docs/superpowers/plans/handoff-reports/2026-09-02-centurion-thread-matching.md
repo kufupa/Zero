@@ -65,11 +65,11 @@ By link type: `domain_guest_email` 335, `quoted_body` 42, `subject_cluster` 21, 
 |-------|--------|-------|
 | **A — Ingest threading** | Implemented | `message-id.ts`, ordered References walk in `store.ts`, migration `0020_message_transport_header_idx.sql` |
 | **B — Conversation signals** | Implemented | `conversation-signals.ts`, gold eval harness, gate ≥221/438 recall |
-| **C — Conversation groups** | Implemented | `mail_conversation_link`, `conversation-link.ts`, `conversation-group.ts`, migration `0021_mail_conversation_link.sql`, backfill script |
-| **D — Bedrock linker** | Not implemented | Gated; 63 LLM-band pairs from Task 5 |
-| **E — Frontend UX** | Implemented | Option C stub rows, `conversationResponded` badge, merged timeline (`mergeLinked`) |
+| **C — Conversation groups** | Implemented + pilot backfill | Migrations applied; **4040** active links after staff-internal `subject_cluster` fix (`92532000`) |
+| **D — Bedrock linker** | Not implemented | Gated; 63 LLM-band pairs from Task 5 (v1 optional) |
+| **E — Frontend UX** | Deployed | Option C stub rows, badge, merged timeline; Breakfast Pack RE pair share `conversationId` |
 
-**Not in this handoff:** Task 6 triage metrics wire (`conversationResponded` on workflow run) — still open.
+**Task 6:** `conversationResponded` metrics-only wire shipped (not spam refine / hash).
 
 ## Dump ancestry headers (Task 7)
 
@@ -81,39 +81,28 @@ By link type: `domain_guest_email` 335, `quoted_body` 42, `subject_cluster` 21, 
 - **Badge:** Replied icon on primary when `conversationResponded` (not per-thread `hasReplied` on inbox)
 - **Thread detail:** `mergeLinked: true` chronological timeline; divider + jump links across linked threads
 
-Breakfast Pack class: staff-internal spaced-subject RE split — not in 438 actionable set; audit found no exemplars in actionable slice (`breakfastPackExemplars: []`).
+Breakfast Pack class: staff-internal spaced-subject RE split — not in 438 actionable set (`breakfastPackExemplars: []`), but **live pilot** links the RE pair after fix:
 
-## Pilot RDS probe (2026-09-02)
+| Thread | Role |
+|--------|------|
+| `378fe50e-5be1-41b9-b322-6c128f267617` | primary |
+| `46c21823-d6ef-423e-af59-1c319556b289` | linked (same `conversationId`, `linkedThreadIds.length=5`) |
 
-- This agent host **cannot** TCP to pilot RDS (`CONNECT_TIMEOUT`) — dry-run must run on EC2 via SSM.
-- SSM `psql` diag: `transport-centurion` **4503** messages; `mail_conversation_link` **absent** (`to_regclass` null) → migrations **0020+0021** required before `--apply`.
-- Backfill script now needs only `DATABASE_URL` (not full `parseEnv`); dry-run tolerates missing link table (`tableMissing: true`).
+Smoke: `breakfast_pack.conversation_smoke` → `sameConversation: true` on EC2 @ `92532000`.
 
-## Pilot ops
+## Pilot deploy evidence (2026-09-02)
 
-1. Apply migrations **0020** + **0021** on pilot RDS (header index + `mail_conversation_link`).
-2. Backfill deterministic links:
-
-```bash
-# Dry-run first
-pnpm --filter @zero/server exec tsx scripts/backfill-centurion-conversation-links.ts \
-  --transport=transport-centurion --confirm-pilot-rds
-
-# Apply
-pnpm --filter @zero/server exec tsx scripts/backfill-centurion-conversation-links.ts \
-  --transport=transport-centurion --apply --confirm-pilot-rds
-```
-
-3. Regen private markdown dump (Task 7 headers) before offline reverse-join scripts.
-4. Merge worktree → integration after Phase 1 triage stable; deploy via `ops-deploy.sh`; smoke linked conversation in inbox.
+- EC2 HEAD: `92532000` — health `{"ok":true,"service":"server-pilot"}`
+- Migrations **0020** + **0021** applied
+- Backfill: first apply **2920** links → staff-internal fix → re-apply **4040** links
+- RCA: `subject_cluster` used `externalEmails` only → all-`@legacyhotels` Breakfast Pack got 0; fixed via `allParticipantEmails`
 
 ## Phase 2 dashboard hook (Task 9)
 
 `docs/superpowers/plans/2026-09-01-centurion-evidence-dashboard-implementation.md` — `DAILY_ANSWERED_UNANSWERED_COPY` card spec + `availability: live_conversation_signals`.
 
-## Remaining work
+## Remaining (optional / out of v1)
 
-- Task 6: Wire `conversationResponded` to triage workflow metrics (v1 metrics-only, not spam refine)
-- Task 14 (gated): Bedrock linker for 63 medium-band pairs if deterministic backfill leaves ≥10 FN pairs
-- EC2 deploy + smoke after integration merge
-- Optional: provisional `messageIdHeader` on compose send
+- Task 14 (gated): Bedrock linker for 63 medium-band pairs if residual FN ≥10 after ops review
+- Optional: provisional `messageIdHeader` on compose send; archive-both UX
+- Workflow DLQ backlog = pre-existing launch-readiness issue, not this feature

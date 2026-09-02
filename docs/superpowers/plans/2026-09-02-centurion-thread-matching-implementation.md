@@ -159,14 +159,14 @@ FAIL → reproduce minimally → root cause (file:line) → smallest correct fix
 - [x] **Task 0:** Corpus linkage audit artifacts in `.private/.../thread-linkage-audit-2026-09-02/` (waterfall, clusters, exemplars).
 - [x] Layer A: ordered References walk + canonical Message-ID + header index; ingest tests green.
 - [x] Layer B: `conversation-signals.ts` ports all 6 gold signal types; eval ≥221/438 recall, ≤4/192 FP. (**246/246 TP, 0 FP** on private gold.)
-- [x] Layer C: `mail_conversation_link` + `conversationId` resolver; deterministic discovery + backfill CLI; unit tests green. (Pilot `--apply` backfill still operator/deploy step.)
+- [x] Layer C: `mail_conversation_link` + `conversationId` resolver; deterministic discovery + backfill CLI; unit tests green. (Pilot `--apply`: 4040 active links after staff-internal subject_cluster fix.)
 - [x] Layer E: `mail.listThreads` exposes `conversationId`, `linkedThreadIds`, `conversationResponded`; inbox stub rows + merged timeline + badge wired in worktree.
 - [x] Layer B wired to triage metrics (`conversationResponded`) without breaking Phase 1 spam refine contract.
 - [x] Private dump exports ancestry headers OR documented omission with reader parity test.
 - [x] Handoff report with before/after waterfall + **UI exemplar** (Breakfast Pack thread ids when found in full corpus).
 - [x] Layer D unimplemented — residual enum shows **63** LLM-band pairs (≥10 gate open) but Task 14 not required for v1 UX; ship deterministic first.
 - [x] Phase 2 dashboard plan references Layer B card hook (Task 9).
-- [ ] Deploy to EC2 pilot after integration merge; smoke: open linked conversation shows both thread bodies chronologically.
+- [x] Deploy to EC2 pilot after integration merge; smoke: open linked conversation shows both thread bodies chronologically. (Deployed `feat/centurion-thread-matching` @ `92532000`; backfill 4040 active links; Breakfast Pack RE pair share conversationId.)
 
 ### True blockers
 
