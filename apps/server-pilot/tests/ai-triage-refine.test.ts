@@ -471,6 +471,28 @@ describe('workflow routine system-mail force-automate (KTD1)', () => {
     expect(refined.primaryFolder).not.toBe('automated-channel');
   });
 
+  it('workflow: series-release clears model isSpam so apply does not spam early-return', () => {
+    const refined = refineTriageOutput(
+      {
+        from: 'notifications@reservations.example.test',
+        subject: 'Reservation update',
+        body: 'Please release held series allocation. Channel manager confirms update.',
+      },
+      workflowOutput({
+        primaryFolder: 'bookings',
+        isSpam: true,
+        urgent: true,
+        priority: 'P2',
+      }),
+    );
+
+    expect(refined.primaryFolder).toBe('exceptions-recovery');
+    expect(refined.isSpam).toBe(false);
+    expect(refined.urgent).toBe(false);
+    expect(refined.suggestedTools).toEqual([]);
+    expect(refined.policyFlags).toContain('refine:series-release-at-risk');
+  });
+
   it('workflow: internal property never stays automated-channel', () => {
     const refined = refineTriageOutput(
       {
