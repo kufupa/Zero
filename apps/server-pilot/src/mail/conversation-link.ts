@@ -31,6 +31,8 @@ const QUOTED_FROM_HOTEL_RE =
   /From:\s*(?:Centurion Hotel Reservations|Martha Mthembu|Isaac Seabi)\s*<(?:centurion|marthamthembu|isaacseabi)@legacyhotels/i;
 const CONF_RE = /n[°º]\s*(\d{6,})-1/i;
 const SYSTEM_LOCALPART_HINTS = [
+  'mail',
+  'hotels',
   'noreply',
   'no-reply',
   'donotreply',
@@ -64,6 +66,7 @@ const LOW_ENTROPY_SUBJECT_PATTERNS = [
 ] as const;
 const MAX_SUBJECT_CLUSTER_BUCKET_SIZE = 8;
 const MAX_AUTO_ORPHAN_LINKS_PER_THREAD = 1;
+const MAX_HUMAN_ORPHAN_LINKS_PER_THREAD = 1;
 
 export type LinkableMessage = {
   id: string;
@@ -224,6 +227,7 @@ export function discoverDomainLinks(messages: readonly LinkableMessage[]): Propo
   for (const [threadId, threadMessages] of byThread) {
     const inboundMessages = threadMessages.filter((msg) => msg.direction === 'inbound');
     let autoLinksForThread = 0;
+    let humanLinksForThread = 0;
     for (const inbound of inboundMessages) {
       const threadText = threadMessages
         .map((msg) => `${msg.subject ?? ''}\n${msg.textBody ?? ''}`)
@@ -262,10 +266,18 @@ export function discoverDomainLinks(messages: readonly LinkableMessage[]): Propo
           // Auto-confirmations are only linkable through an exact conf# match
           // above; guest email/name alone is deliberately insufficient.
           if (orphan.isAuto) continue;
+          if (humanLinksForThread >= MAX_HUMAN_ORPHAN_LINKS_PER_THREAD) break;
           if (orphan.threadId === threadId) continue;
           const orphanMessages = byThread.get(orphan.threadId) ?? [];
           const anchor = orphanMessages.find((msg) => msg.direction === 'outbound');
           if (!anchor || !withinWindow(inbound, anchor, MS_7D)) continue;
+          if (
+            inbound.receivedAt &&
+            anchor.receivedAt &&
+            anchor.receivedAt.getTime() < inbound.receivedAt.getTime()
+          ) {
+            continue;
+          }
 
           const linkType: MailConversationLinkType = 'domain_guest_email';
           pushLink(links, seen, {
@@ -276,6 +288,7 @@ export function discoverDomainLinks(messages: readonly LinkableMessage[]): Propo
             linkType,
             confidence: '0.9000',
           });
+          humanLinksForThread += 1;
         }
       }
     }
@@ -408,7 +421,7 @@ export function discoverSubjectClusterLinks(
   }
 
   for (const threadIds of clusters.values()) {
-    if (threadIds.length < 2 || threadIds.length > MAX_SUBJECT_CLUSTER_BUCKET_SIZE) continue;
+    if (threadIds.length < 2 || threadIds.length >= MAX_SUBJECT_CLUSTER_BUCKET_SIZE) continue;
     const firstSubject = byThread.get(threadIds[0]!)?.find((msg) => msg.subject)?.subject ?? '';
     const normalizedSubject = normalizeConversationSubject(firstSubject);
     const collapsedSubject = collapseSpacedSubjectArtifacts(normalizedSubject);
@@ -422,8 +435,10 @@ export function discoverSubjectClusterLinks(
         if (!participantsOverlapForSubjectCluster(leftMessages, rightMessages, normSubject))
           continue;
 
-        const times = [...leftMessages, ...rightMessages].map(messageTime).filter((t) => t > 0);
-        if (times.length < 2) continue;
+        const leftTimes = leftMessages.map(messageTime).filter((t) => t > 0);
+        const rightTimes = rightMessages.map(messageTime).filter((t) => t > 0);
+        if (leftTimes.length === 0 || rightTimes.length === 0) continue;
+        const times = [...leftTimes, ...rightTimes];
         const span = Math.max(...times) - Math.min(...times);
         if (span > MS_72H) continue;
 

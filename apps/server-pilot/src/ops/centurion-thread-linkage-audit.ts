@@ -142,7 +142,13 @@ function assignLayer(row: DefensibleThreadRow): { layer: LinkageLayer; reasons: 
   }
   if (
     signals.some((s) =>
-      ['cross_thread_conf', 'orphan_auto_confirm', 'orphan_centurion_human'].includes(s),
+      [
+        'cross_thread_conf',
+        'orphan_auto_confirm',
+        'orphan_centurion_human',
+        'in_reply_to_hotel_msgid',
+        'staff_inbound_commercial_reply',
+      ].includes(s),
     )
   ) {
     reasons.push(...signals.filter((s) => !s.includes('quoted')));

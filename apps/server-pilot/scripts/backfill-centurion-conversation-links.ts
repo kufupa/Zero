@@ -21,7 +21,7 @@ import {
   deactivateSupersededConversationLinks,
   discoverConversationLinks,
   findSupersededConversationLinks,
-  recomputeConversationLinksForTransport,
+  upsertConversationLinks,
   type PersistedConversationLink,
   type LinkableMessage,
 } from '../src/mail/conversation-link.js';
@@ -186,22 +186,30 @@ async function main(): Promise<void> {
       throw new Error('REFUSE apply: mail_conversation_link missing — run migrations 0020+0021 first');
     }
 
-    const { superseded, upserted, activeLinksAfter } = await db.transaction(async (tx) => {
-      const superseded = cli.deactivateUnsafe
-        ? await deactivateSupersededConversationLinks(tx, cli.transportId!, proposals)
-        : 0;
-      const upserted = await recomputeConversationLinksForTransport(tx, cli.transportId!);
-      const [activeAfter] = await tx
-        .select({ count: sql<number>`count(*)::int` })
-        .from(mailConversationLink)
-        .where(
-          and(
-            eq(mailConversationLink.transportId, cli.transportId!),
-            isNull(mailConversationLink.supersededAt),
-          ),
-        );
-      return { superseded, upserted, activeLinksAfter: activeAfter?.count ?? 0 };
-    });
+    const { superseded, upserted, activeLinksAfter } = await db.transaction(
+      async (tx) => {
+        // Re-read and discover inside one serializable snapshot. Deactivation
+        // and upsert must use the same proposal set or a concurrent ingest can
+        // leave a stale active edge behind.
+        const txLinkable = await loadLinkableMessages(tx, cli.transportId!);
+        const txProposals = discoverConversationLinks(txLinkable);
+        const superseded = cli.deactivateUnsafe
+          ? await deactivateSupersededConversationLinks(tx, cli.transportId!, txProposals)
+          : 0;
+        const upserted = await upsertConversationLinks(tx, cli.transportId!, txProposals);
+        const [activeAfter] = await tx
+          .select({ count: sql<number>`count(*)::int` })
+          .from(mailConversationLink)
+          .where(
+            and(
+              eq(mailConversationLink.transportId, cli.transportId!),
+              isNull(mailConversationLink.supersededAt),
+            ),
+          );
+        return { superseded, upserted, activeLinksAfter: activeAfter?.count ?? 0 };
+      },
+      { isolationLevel: 'serializable' },
+    );
 
     console.log(
       JSON.stringify({

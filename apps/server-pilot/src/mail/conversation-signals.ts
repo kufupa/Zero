@@ -360,6 +360,7 @@ export function detectConversationSignals(input: {
   const triggerDay = dayFromReceived(trigger.receivedAt);
 
   for (const message of [...after, ...outbound]) {
+    if (message.direction !== 'outbound') continue;
     const bucket = responderBucket(message.from, message.subject, message.to, message.direction);
     if (bucket) {
       signals.push('in_thread_outbound');
@@ -468,7 +469,10 @@ export function detectConversationSignals(input: {
           break;
         }
       }
-      if (frm.includes('centurion@') && !orphan.isAuto) {
+      // Transport-wide human replies are only causal evidence when they are
+      // recent relative to this trigger. Guest-email indexing is the request
+      // identity; the short forward window prevents stale history leakage.
+      if (frm.includes('centurion@') && !orphan.isAuto && withinDayWindow(triggerDay, orphan.day)) {
         signals.push('orphan_centurion_human');
         break;
       }

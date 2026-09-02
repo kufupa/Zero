@@ -1,6 +1,6 @@
 # Centurion review-remediation report
 
-Date: 2026-09-02 UTC  
+Date: 2026-09-02 UTC
 Branch: `feat/centurion-link-precision`
 
 ## Findings and fixes

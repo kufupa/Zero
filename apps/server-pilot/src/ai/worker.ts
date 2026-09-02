@@ -50,7 +50,7 @@ import { normalizeEmailAddress } from './never-spam.js';
 import { isCliEntry } from '../lib/is-cli-entry.js';
 import { createMastraRuntime } from './mastra.js';
 import { closeDb, getDb } from '../db/client.js';
-import { and, asc, eq, lte } from 'drizzle-orm';
+import { and, asc, eq, lt, lte, or } from 'drizzle-orm';
 import { createHash } from 'node:crypto';
 
 function resolveWorkerLane(): AiExecutorLane {
@@ -650,7 +650,13 @@ export async function executeAiRun(
         .where(
           and(
             eq(message.transportId, run.transportId),
-            lte(message.createdAt, trigger?.createdAt ?? run.createdAt),
+            or(
+              lt(message.createdAt, trigger?.createdAt ?? run.createdAt),
+              and(
+                eq(message.createdAt, trigger?.createdAt ?? run.createdAt),
+                lte(message.id, trigger?.id ?? run.triggerMessageId),
+              ),
+            ),
           ),
         )
         .orderBy(asc(message.createdAt), asc(message.id));

@@ -431,6 +431,60 @@ describe('detectConversationSignals', () => {
     expect(isConversationResponded(signals)).toBe(false);
   });
 
+  it('does not count a real inbound staff note as an outbound response', () => {
+    const signals = detectConversationSignals({
+      threadId: 'thread-a',
+      triggerMessageId: 'trigger',
+      messages: [
+        msg({ id: 'trigger' }),
+        msg({
+          id: 'staff-inbound',
+          direction: 'inbound',
+          from: 'marthamthembu@legacyhotels.co.za',
+          to: 'centurion@legacyhotels.co.za',
+          bodyText: 'Please see attached quotation and provisional confirmation.',
+          receivedAt: '2026-08-30T11:00:00.000Z',
+        }),
+      ],
+      autoConfirmIndex: [],
+      orphanByGuest: new Map(),
+    });
+
+    expect(signals).not.toContain('in_thread_outbound');
+    expect(signals).toContain('staff_inbound_commercial_reply');
+  });
+
+  it('does not use a stale human orphan reply outside the causal day window', () => {
+    const orphanByGuest = buildOrphanOutboundIndex([
+      indexable({
+        id: 'orphan-stale-human',
+        threadId: 'thread-old',
+        direction: 'outbound',
+        from: 'centurion@legacyhotels.co.za',
+        to: 'guest-a@example.com',
+        subject: 'Re: Room request',
+        receivedAt: '2026-08-20T09:00:00.000Z',
+      }),
+    ]);
+
+    const signals = detectConversationSignals({
+      threadId: 'thread-a',
+      triggerMessageId: 'trigger',
+      messages: [
+        msg({
+          id: 'trigger',
+          from: 'guest-a@example.com',
+          receivedAt: '2026-08-30T10:00:00.000Z',
+        }),
+      ],
+      autoConfirmIndex: [],
+      orphanByGuest,
+    });
+
+    expect(signals).not.toContain('orphan_centurion_human');
+    expect(isConversationResponded(signals)).toBe(false);
+  });
+
   it('detects Gmail and Apple Mail hotel quote headers', () => {
     const gmailSignals = detectConversationSignals({
       threadId: 'thread-gmail',

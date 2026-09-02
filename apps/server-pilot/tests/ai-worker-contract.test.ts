@@ -153,6 +153,14 @@ describe('ai worker contract', () => {
     expect(source).not.toMatch(/AI_MODEL_ID/);
   });
 
+  it('cuts the transport index at the trigger id for equal-createdAt rows', () => {
+    const source = readFileSync(join(here, '..', 'src', 'ai', 'worker.ts'), 'utf8');
+    expect(source).toMatch(/lt\(message\.createdAt/);
+    expect(source).toMatch(/eq\(message\.createdAt/);
+    expect(source).toMatch(/lte\(message\.id/);
+    expect(source).toMatch(/trigger\?\.id \?\? run\.triggerMessageId/);
+  });
+
   it('preserves transport-wide thread identity and RFC headers for Layer B metrics', () => {
     const rows = threadMessagesToTransportIndex([
       {

@@ -129,6 +129,18 @@ describe('deterministic link discovery', () => {
     });
   });
 
+  it('recomputes proposals inside a serializable deactivation transaction', async () => {
+    const source = await readFile(
+      new URL('../scripts/backfill-centurion-conversation-links.ts', import.meta.url),
+      'utf8',
+    );
+    expect(source).toMatch(/isolationLevel:\s*'serializable'/);
+    expect(source).toMatch(/const txLinkable = await loadLinkableMessages\(tx/);
+    expect(source).toMatch(/const txProposals = discoverConversationLinks\(txLinkable\)/);
+    expect(source).toMatch(/deactivateSupersededConversationLinks\(tx, cli\.transportId!, txProposals\)/);
+    expect(source).toMatch(/upsertConversationLinks\(tx, cli\.transportId!, txProposals\)/);
+  });
+
   it('marks active persisted edges absent from current safe proposals as superseded candidates', () => {
     const activeEdges = [
       {
@@ -360,8 +372,8 @@ describe('deterministic link discovery', () => {
     expect(discoverSubjectClusterLinks(messages)).toEqual([]);
   });
 
-  it('skips any subject bucket larger than eight threads', () => {
-    const messages = Array.from({ length: 9 }, (_, index) =>
+  it.each([8, 9])('skips any subject bucket with %s or more threads', (count) => {
+    const messages = Array.from({ length: count }, (_, index) =>
       msg({
         id: `large-bucket-${index}`,
         threadId: `large-bucket-thread-${index}`,
@@ -375,9 +387,32 @@ describe('deterministic link discovery', () => {
     expect(discoverSubjectClusterLinks(messages)).toEqual([]);
   });
 
+  it('fails closed when one subject endpoint has no timestamps', () => {
+    const messages = [
+      msg({
+        id: 'dated-endpoint',
+        threadId: 'dated-endpoint',
+        fromAddress: 'guest@example.com',
+        subject: 'Specific reservation request',
+        receivedAt: new Date('2026-07-01T10:00:00.000Z'),
+      }),
+      msg({
+        id: 'undated-endpoint',
+        threadId: 'undated-endpoint',
+        fromAddress: 'guest@example.com',
+        subject: 'RE: Specific reservation request',
+        receivedAt: null,
+      }),
+    ];
+
+    expect(discoverSubjectClusterLinks(messages)).toEqual([]);
+  });
+
   it('does not use system-only participant overlap for guest subject links', () => {
     expect(isSystemAddress('mailer-daemon@legacyhotels.co.za')).toBe(true);
     expect(isSystemAddress('ops@legacyhotels.co.za')).toBe(true);
+    expect(isSystemAddress('mail@legacyhotels.co.za')).toBe(true);
+    expect(isSystemAddress('hotels@legacyhotels.co.za')).toBe(true);
     const messages = [
       msg({
         id: 'system-subject-a',
@@ -452,6 +487,41 @@ describe('deterministic link discovery', () => {
     });
     const matchingLinks = discoverDomainLinks([matchingInbound, ...autoConfirmations]);
     expect(matchingLinks.filter((link) => link.linkType === 'domain_conf')).toHaveLength(1);
+  });
+
+  it('caps recent human orphan fanout and rejects replies before the trigger', () => {
+    const inbound = msg({
+      id: 'human-inbound',
+      threadId: 'human-inbound-thread',
+      fromAddress: 'guest@example.com',
+      subject: 'Room request',
+      receivedAt: new Date('2026-07-01T10:00:00.000Z'),
+    });
+    const humanOrphans = Array.from({ length: 3 }, (_, index) =>
+      msg({
+        id: `human-orphan-${index}`,
+        threadId: `human-orphan-thread-${index}`,
+        direction: 'outbound',
+        fromAddress: 'centurion@legacyhotels.co.za',
+        toAddresses: ['guest@example.com'],
+        subject: `Re: Room request ${index}`,
+        receivedAt: new Date(`2026-07-01T${String(11 + index).padStart(2, '0')}:00:00.000Z`),
+      }),
+    );
+    const beforeTrigger = msg({
+      id: 'human-before',
+      threadId: 'human-before-thread',
+      direction: 'outbound',
+      fromAddress: 'centurion@legacyhotels.co.za',
+      toAddresses: ['guest@example.com'],
+      subject: 'Re: Room request before',
+      receivedAt: new Date('2026-07-01T09:00:00.000Z'),
+    });
+
+    const links = discoverDomainLinks([inbound, ...humanOrphans, beforeTrigger]);
+    const humanLinks = links.filter((link) => link.linkType === 'domain_guest_email');
+    expect(humanLinks).toHaveLength(1);
+    expect(humanLinks[0]?.dstThreadId).toBe('human-orphan-thread-0');
   });
 });
 
