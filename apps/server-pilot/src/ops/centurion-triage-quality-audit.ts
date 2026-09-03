@@ -278,7 +278,10 @@ export function evaluateGoldSpamRecall(
       { from: entry.from, subject: entry.subject, body: entry.bodySnippet },
       baseline,
     );
-    const pass = 'isSpam' in refined ? refined.isSpam === true : refined.category === 'spam';
+    const pass =
+      'isSpam' in refined
+        ? refined.isSpam === true
+        : (refined as { category?: string }).category === 'spam';
     if (pass) hits += 1;
     else {
       failures.push(`spam miss ${entry.id}: expected isSpam=true`);
