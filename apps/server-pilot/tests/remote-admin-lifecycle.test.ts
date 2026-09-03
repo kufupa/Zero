@@ -91,7 +91,8 @@ function runReadiness(
     db: {
       connected: true,
       centurionActiveTransportCount: 1,
-      centurionActiveCategoryCount: 5,
+      centurionActiveCategoryCount: 12,
+      workflowCategoryMissingCount: 0,
       workflowNonterminalCount: 0,
       workflowDeadLetterCount: 0,
       workflowDeadLetterRecentCount: 0,

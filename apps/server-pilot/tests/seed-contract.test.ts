@@ -7,7 +7,7 @@ import {
   mailboxTransport,
   mailLabel,
 } from '../src/db/schema/mail';
-import { AI_MANAGED_CATEGORY_SLUGS } from '../src/ai/categories.js';
+import { AI_MANAGED_CATEGORY_SLUGS, AI_WORKFLOW_PRIMARY_SLUGS } from '../src/ai/categories.js';
 import { user as userTable, account } from '../src/db/schema/auth';
 import {
   planPilotCredentials,
@@ -423,6 +423,9 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
 
         for (const transportId of ['transport-centurion', 'transport-nava']) {
           for (const slug of AI_MANAGED_CATEGORY_SLUGS) {
+            expect(categories).toContainEqual({ transportId, slug });
+          }
+          for (const slug of [...AI_WORKFLOW_PRIMARY_SLUGS, 'urgent'] as const) {
             expect(categories).toContainEqual({ transportId, slug });
           }
         }

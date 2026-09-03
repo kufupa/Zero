@@ -356,6 +356,7 @@ const empty = {
   connected: false,
   centurionActiveTransportCount: 0,
   centurionActiveCategoryCount: 0,
+  workflowCategoryMissingCount: 0,
   workflowNonterminalCount: 0,
   workflowDeadLetterCount: 0,
   workflowDeadLetterRecentCount: 0,
@@ -383,7 +384,30 @@ try {
     FROM mail_category
     WHERE transport_id = 'transport-centurion'
       AND is_active = true
-      AND slug IN ('at-risk', 'new-bookings', 'groups-events', 'ops', 'urgent')
+      AND slug IN (
+        'bookings','groups-events','manage-stay','confirm-reconcile','money-billing',
+        'documents-delivery','exceptions-recovery','guest-experience','internal-partner',
+        'automated-channel','unknown-review','urgent'
+      )
+  `;
+  const [workflowCats] = await sql`
+    WITH expected(slug) AS (
+      VALUES
+        ('bookings'),('groups-events'),('manage-stay'),('confirm-reconcile'),
+        ('money-billing'),('documents-delivery'),('exceptions-recovery'),
+        ('guest-experience'),('internal-partner'),('automated-channel'),
+        ('unknown-review'),('urgent')
+    )
+    SELECT count(*)::int AS missing
+    FROM mailbox_transport t
+    CROSS JOIN expected e
+    WHERE t.is_active = true
+      AND NOT EXISTS (
+        SELECT 1 FROM mail_category c
+        WHERE c.transport_id = t.id
+          AND c.slug = e.slug
+          AND c.is_active = true
+      )
   `;
   const [workflow] = await sql`
     SELECT
@@ -415,6 +439,7 @@ try {
     connected: true,
     centurionActiveTransportCount: Number(transport?.count ?? 0),
     centurionActiveCategoryCount: Number(categories?.count ?? 0),
+    workflowCategoryMissingCount: Number(workflowCats?.missing ?? 0),
     workflowNonterminalCount: Number(workflow?.nonterminal ?? 0),
     workflowDeadLetterCount: Number(workflow?.dead_letter ?? 0),
     workflowDeadLetterRecentCount: Number(workflow?.dead_letter_recent ?? 0),
@@ -436,7 +461,7 @@ try {
 NODE
 )"
 if [ -z "$DB_SUMMARY" ]; then
-  DB_SUMMARY='{"connected":false,"centurionActiveTransportCount":0,"centurionActiveCategoryCount":0,"workflowNonterminalCount":0,"workflowDeadLetterCount":0,"workflowDeadLetterRecentCount":0,"outboundNonterminalCount":0,"latestInboundAt":null,"counts":{"threads":0,"messages":0,"inboundMessages":0}}'
+  DB_SUMMARY='{"connected":false,"centurionActiveTransportCount":0,"centurionActiveCategoryCount":0,"workflowCategoryMissingCount":0,"workflowNonterminalCount":0,"workflowDeadLetterCount":0,"workflowDeadLetterRecentCount":0,"outboundNonterminalCount":0,"latestInboundAt":null,"counts":{"threads":0,"messages":0,"inboundMessages":0}}'
 fi
 
 node - "$PM2_SUMMARY" "$DB_SUMMARY" <<'NODE'
@@ -511,7 +536,7 @@ NODE
 )" || REMOTE_JSON=""
 
 if [ "$SSM_EXIT" -ne 0 ] || [ -z "$REMOTE_JSON" ]; then
-  REMOTE_JSON='{"health":{"http":false,"https":false,"tls":false},"pm2":{"required":{},"allOnline":false},"hotelProbe":false,"firewall":{"statusRead":false,"rulesRead":false,"active":false,"defaultDeny":false,"tunnel443":false,"broad443Absent":false,"listenerSafe":false},"config":{"envLoaded":false,"mailTransportModeReal":false,"betterAuthUrlCorrect":false,"undoSendSecondsCorrect":false,"aiWriteGateEnabled":false,"aiDraftsDisabled":false},"db":{"connected":false,"centurionActiveTransportCount":0,"centurionActiveCategoryCount":0,"workflowNonterminalCount":0,"workflowDeadLetterCount":0,"workflowDeadLetterRecentCount":0,"outboundNonterminalCount":0,"latestInboundAt":null,"counts":{"threads":0,"messages":0,"inboundMessages":0}},"disk":{"safe":false,"usedPercent":100,"freeMB":0}}'
+  REMOTE_JSON='{"health":{"http":false,"https":false,"tls":false},"pm2":{"required":{},"allOnline":false},"hotelProbe":false,"firewall":{"statusRead":false,"rulesRead":false,"active":false,"defaultDeny":false,"tunnel443":false,"broad443Absent":false,"listenerSafe":false},"config":{"envLoaded":false,"mailTransportModeReal":false,"betterAuthUrlCorrect":false,"undoSendSecondsCorrect":false,"aiWriteGateEnabled":false,"aiDraftsDisabled":false},"db":{"connected":false,"centurionActiveTransportCount":0,"centurionActiveCategoryCount":0,"workflowCategoryMissingCount":0,"workflowNonterminalCount":0,"workflowDeadLetterCount":0,"workflowDeadLetterRecentCount":0,"outboundNonterminalCount":0,"latestInboundAt":null,"counts":{"threads":0,"messages":0,"inboundMessages":0}},"disk":{"safe":false,"usedPercent":100,"freeMB":0}}'
 fi
 
 RDS_JSON="$(
@@ -1960,7 +1985,8 @@ const checks = {
   aiDraftsDisabled: remote.config?.aiDraftsDisabled === true,
   databaseConnected: db.connected === true,
   centurionTransportActive: db.centurionActiveTransportCount === 1,
-  centurionCategoriesActive: db.centurionActiveCategoryCount === 5,
+  centurionCategoriesActive: db.centurionActiveCategoryCount === 12,
+  workflowCategoriesComplete: Number(db.workflowCategoryMissingCount ?? 0) === 0,
   workflowNonterminalBacklogEmpty: db.workflowNonterminalCount === 0,
   // Fail only on recent dead letters (24h). Historical terminal rows stay in observations.
   workflowDeadLetterBacklogEmpty: Number(db.workflowDeadLetterRecentCount ?? 0) === 0,

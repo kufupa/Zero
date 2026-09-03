@@ -795,7 +795,8 @@ function validReportShellEnv(): Record<string, string> {
       db: {
         connected: true,
         centurionActiveTransportCount: 1,
-        centurionActiveCategoryCount: 5,
+        centurionActiveCategoryCount: 12,
+        workflowCategoryMissingCount: 0,
         workflowNonterminalCount: 0,
         workflowDeadLetterCount: 0,
         workflowDeadLetterRecentCount: 0,
@@ -4553,6 +4554,9 @@ if (!realMailGate) {
     expect(script).toContain('deletionProtection');
     expect(script).toContain('multiAZ');
     expect(script).toContain('latestInboundAt');
+    expect(script).toContain('workflowCategoryMissingCount');
+    expect(script).toContain('workflowCategoriesComplete');
+    expect(script).toContain("centurionActiveCategoryCount === 12");
     expect(script).toContain('backupLatestRestorableAt');
     expect(script).not.toMatch(/\bset\s+-x\b/);
     expect(script).not.toMatch(
