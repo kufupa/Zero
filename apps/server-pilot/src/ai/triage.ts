@@ -468,7 +468,7 @@ function hasRevenueRisk(haystack: string): boolean {
 
 /** Shared promo/cold-sales shape for workflow force-spam (Task 2). */
 function salesSignal(haystack: string): boolean {
-  return /promo|sale|discount|unsubscribe|limited[- ]time|book a demo|whatsapp|newsletter|marketing|click here|viqal|outreach|boost|% off|\$\d/i.test(
+  return /promo|sale|discount|unsubscribe|limited[- ]time|book a demo|whatsapp|newsletter|marketing|click here|viqal|outreach|boost|% off|\$\d|donation|charity|solicitation/i.test(
     haystack,
   );
 }
@@ -640,21 +640,26 @@ function refineWorkflowTriageOutput(
       policyFlags: addPolicyFlag(next.policyFlags, 'refine:series-release-at-risk'),
       rationale: `${next.rationale} Held series/allocation release is exceptions-recovery.`,
     };
-  } else if (
-    !isProtectedFromWorkflowForceSpam(input, neverSpamFrom, notSpam) &&
-    (isFortiMailQuarantineDigest(haystack) || shouldForceWorkflowPromoSpam(input, haystack))
-  ) {
-    const fortimail = isFortiMailQuarantineDigest(haystack);
+  } else if (isFortiMailQuarantineDigest(haystack)) {
     next = {
       ...next,
       isSpam: true,
       urgent: false,
       suggestedTools: [],
-      policyFlags: addPolicyFlag(
-        next.policyFlags,
-        fortimail ? 'refine:fortimail-spam' : 'refine:promo-spam',
-      ),
-      rationale: `${next.rationale} ${fortimail ? 'FortiMail quarantine digest' : 'Promo/cold-sales signal'} is spam.`,
+      policyFlags: addPolicyFlag(next.policyFlags, 'refine:fortimail-spam'),
+      rationale: `${next.rationale} FortiMail quarantine digest is spam.`,
+    };
+  } else if (
+    !isProtectedFromWorkflowForceSpam(input, neverSpamFrom, notSpam) &&
+    shouldForceWorkflowPromoSpam(input, haystack)
+  ) {
+    next = {
+      ...next,
+      isSpam: true,
+      urgent: false,
+      suggestedTools: [],
+      policyFlags: addPolicyFlag(next.policyFlags, 'refine:promo-spam'),
+      rationale: `${next.rationale} Promo/cold-sales signal is spam.`,
     };
   } else if (
     isRoutineSystemMail(input, haystack) &&

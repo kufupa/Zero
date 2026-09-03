@@ -6,12 +6,23 @@
  * asOf differs; recompute each production input hash from its own run time.
  *
  * Note: no shebang — Windows CRLF + shebang breaks Vitest/Vite transform.
- * Invoke via `node scripts/audit-centurion-triage-retag.mjs`.
+ * Invoke via `node --import tsx scripts/audit-centurion-triage-retag.mjs`.
  *
  * Usage:
- *   node scripts/audit-centurion-triage-retag.mjs \
+ *   node --import tsx scripts/audit-centurion-triage-retag.mjs \
  *     --summary apply.json --manifest approved.json \
- *     --snapshot snap.json --key-prefix inbound-triage-retag-v6-...
+ *     --snapshot snap.json --key-prefix inbound-triage-retag-v6-... \
+ *     [--quality] [--q11-volume q11.json]
+ *
+ * --quality runs fail-closed Q7 recall floors + spam-fp-v6 + neverSpam/staff spam
+ * safety + Q11 WINDOW volume sanity (shared refine from triage.ts — no duplicated
+ * heuristics). Optional --q11-volume JSON supplies live Un/Rsp/Act counts when
+ * WINDOW band cannot be inferred from folder SQL alone.
+ *
+ * Ops sequence (Wave B re-backfill):
+ *   quiesce → snapshot + KEY_PREFIX → dry-run retag → restore drill →
+ *   cohort 50 → quality+Q11 audit → 250 → remainder → final quality+Q11 →
+ *   live spot-check Automate/Spam/Quarantine/Urgent
  *
  * Env: DATABASE_URL (+ deploy/rds-ca-global.pem for SSL when present)
  */
@@ -147,6 +158,8 @@ export function parseAuditArgs(argv) {
   let manifestPath = null;
   let snapshotPath = null;
   let keyPrefix = null;
+  let quality = false;
+  let q11VolumePath = null;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -182,6 +195,18 @@ export function parseAuditArgs(argv) {
       keyPrefix = value;
       continue;
     }
+    if (arg === '--quality') {
+      quality = true;
+      continue;
+    }
+    if (arg === '--q11-volume') {
+      const value = argv[++i];
+      if (!value || value.startsWith('--')) {
+        throw new Error('--q11-volume requires a path');
+      }
+      q11VolumePath = value;
+      continue;
+    }
     throw new Error(`unknown option: ${arg}`);
   }
 
@@ -191,7 +216,7 @@ export function parseAuditArgs(argv) {
     );
   }
 
-  return { summaryPath, manifestPath, snapshotPath, keyPrefix };
+  return { summaryPath, manifestPath, snapshotPath, keyPrefix, quality, q11VolumePath };
 }
 
 function approvedTargetDecision(target) {
@@ -759,10 +784,42 @@ async function main() {
       applySummary,
       keyPrefix: args.keyPrefix,
     });
-    console.log(JSON.stringify(result));
+    const output = { coverage: result };
     if (!result.ok) {
+      console.log(JSON.stringify(output));
       process.exit(1);
     }
+
+    if (args.quality) {
+      const {
+        auditCenturionTriageQuality,
+        createPostgresCenturionTriageQualityDriver,
+      } = await import('../src/ops/centurion-triage-quality-audit.ts');
+      let q11VolumeOverride = undefined;
+      if (args.q11VolumePath) {
+        const raw = JSON.parse(fs.readFileSync(args.q11VolumePath, 'utf8'));
+        q11VolumeOverride = {
+          unanswered: raw.unanswered,
+          responded: raw.responded,
+          actionable: raw.actionable,
+        };
+      }
+      const quality = await auditCenturionTriageQuality({
+        driver: createPostgresCenturionTriageQualityDriver(
+          sql,
+          TRANSPORT_ID,
+          q11VolumeOverride,
+        ),
+      });
+      output.quality = quality;
+      console.log(JSON.stringify(output));
+      if (!quality.ok) {
+        process.exit(1);
+      }
+      return;
+    }
+
+    console.log(JSON.stringify(output));
   } finally {
     await sql.end({ timeout: 5 });
   }

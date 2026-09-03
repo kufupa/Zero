@@ -1,4 +1,7 @@
+import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   auditCenturionTriageRetag,
@@ -7,6 +10,23 @@ import {
   hashProductionTriageInput,
   parseAuditArgs,
 } from '../scripts/audit-centurion-triage-retag.mjs';
+import {
+  Q11_MIN_AUTOMATE_THREADS,
+  Q11_MIN_SPAM_THREADS,
+  Q11_WINDOW_ACTIONABLE,
+  Q11_WINDOW_RESPONDED,
+  Q11_WINDOW_UNANSWERED,
+  QUALITY_AUTOMATE_RECALL_FLOOR,
+  QUALITY_SPAM_RECALL_FLOOR,
+  auditCenturionTriageQuality,
+  evaluateGoldAutomateRecall,
+  evaluateGoldSpamRecall,
+  evaluateQ11VolumeBand,
+  evaluateSpamFpV6Refine,
+  loadCenturionTriageQualityGoldFixture,
+  type CenturionTriageQualityDriver,
+  type Q11VolumeMetrics,
+} from '../src/ops/centurion-triage-quality-audit.js';
 import {
   bindApprovedTargetManifest,
   buildCenturionTriageSnapshot,
@@ -338,6 +358,38 @@ async function buildApprovedFixture(opts?: {
   return { snapshot, manifest, applySummary, auditDriver, threads, runs, inputHash };
 }
 
+const here = dirname(fileURLToPath(import.meta.url));
+const goldFixturePath = join(here, 'fixtures', 'centurion-triage-quality-gold.json');
+
+function goodQ11Volume(): Q11VolumeMetrics {
+  return {
+    automateThreads: Q11_MIN_AUTOMATE_THREADS,
+    spamThreads: Q11_MIN_SPAM_THREADS,
+    unanswered: Q11_WINDOW_UNANSWERED,
+    responded: Q11_WINDOW_RESPONDED,
+    actionable: Q11_WINDOW_ACTIONABLE,
+  };
+}
+
+function qualityDriver(overrides?: {
+  neverSpamInSpam?: number;
+  staffOutboundInSpam?: number;
+  q11?: Partial<Q11VolumeMetrics>;
+}): CenturionTriageQualityDriver {
+  const q11 = { ...goodQ11Volume(), ...overrides?.q11 };
+  return {
+    async getSpamSafetyCounts() {
+      return {
+        neverSpamInSpam: overrides?.neverSpamInSpam ?? 0,
+        staffOutboundInSpam: overrides?.staffOutboundInSpam ?? 0,
+      };
+    },
+    async getQ11VolumeMetrics() {
+      return q11;
+    },
+  };
+}
+
 describe('audit CLI args', () => {
   it('requires summary/manifest/snapshot/key-prefix', () => {
     expect(() => parseAuditArgs([])).toThrow(/--summary|--manifest|--snapshot|--key-prefix/i);
@@ -357,6 +409,7 @@ describe('audit CLI args', () => {
       manifestPath: 'm.json',
       snapshotPath: 'snap.json',
       keyPrefix: KEY_PREFIX,
+      quality: false,
     });
     expect(() =>
       parseAuditArgs([
@@ -371,6 +424,27 @@ describe('audit CLI args', () => {
         '--bad',
       ]),
     ).toThrow(/unknown option/i);
+  });
+
+  it('accepts --quality and optional q11 volume override path', () => {
+    expect(
+      parseAuditArgs([
+        '--summary',
+        's.json',
+        '--manifest',
+        'm.json',
+        '--snapshot',
+        'snap.json',
+        '--key-prefix',
+        KEY_PREFIX,
+        '--quality',
+        '--q11-volume',
+        'q11.json',
+      ]),
+    ).toMatchObject({
+      quality: true,
+      q11VolumePath: 'q11.json',
+    });
   });
 });
 
@@ -1286,5 +1360,121 @@ describe('strict centurion triage audit', () => {
 
     expect(result.ok).toBe(true);
     expect(result.errors).toEqual([]);
+  });
+});
+
+describe('centurion triage quality --quality floors', () => {
+  it('loads gold fixture with min-N cohort floors', () => {
+    const gold = loadCenturionTriageQualityGoldFixture(goldFixturePath);
+    expect(gold.cohorts.automate.length).toBeGreaterThanOrEqual(25);
+    expect(gold.cohorts.promoSpam.length).toBeGreaterThanOrEqual(25);
+    expect(gold.cohorts.fortimailDigest.length).toBeGreaterThanOrEqual(10);
+    expect(gold.cohorts.neverSpamNegatives.length).toBeGreaterThanOrEqual(15);
+  });
+
+  it('meets automate and spam recall floors on gold re-refine', () => {
+    const gold = loadCenturionTriageQualityGoldFixture(goldFixturePath);
+    const automate = evaluateGoldAutomateRecall(gold);
+    const spam = evaluateGoldSpamRecall(gold);
+    expect(automate.recall).toBeGreaterThanOrEqual(QUALITY_AUTOMATE_RECALL_FLOOR);
+    expect(spam.recall).toBeGreaterThanOrEqual(QUALITY_SPAM_RECALL_FLOOR);
+  });
+
+  it('has zero spam-fp-v6 protected regressions after shared refine', () => {
+    const { regressions } = evaluateSpamFpV6Refine();
+    expect(regressions).toBe(0);
+  });
+
+  it('passes quality audit with good driver metrics', async () => {
+    const result = await auditCenturionTriageQuality({
+      driver: qualityDriver(),
+      goldFixturePath: goldFixturePath,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.errors).toEqual([]);
+    expect(result.metrics.automateRecall).toBeGreaterThanOrEqual(QUALITY_AUTOMATE_RECALL_FLOOR);
+    expect(result.metrics.spamRecall).toBeGreaterThanOrEqual(QUALITY_SPAM_RECALL_FLOOR);
+    expect(result.metrics.spamFpV6Regressions).toBe(0);
+    expect(result.metrics.neverSpamInSpam).toBe(0);
+    expect(result.metrics.staffOutboundInSpam).toBe(0);
+  });
+
+  it('fails closed when automate recall would drop below floor', async () => {
+    const gold = loadCenturionTriageQualityGoldFixture(goldFixturePath);
+    const broken = {
+      ...gold,
+      cohorts: {
+        ...gold.cohorts,
+        automate: gold.cohorts.automate.map((entry, index) =>
+          index < 6
+            ? {
+                ...entry,
+                subject: 'Guest reply required within 12 hours unpaid balance',
+                bodySnippet: 'Please reply within 12 hours. Unpaid arrival tomorrow.',
+              }
+            : entry,
+        ),
+      },
+    };
+    const automate = evaluateGoldAutomateRecall(broken);
+    expect(automate.recall).toBeLessThan(QUALITY_AUTOMATE_RECALL_FLOOR);
+
+    const result = await auditCenturionTriageQuality({
+      driver: qualityDriver(),
+      goldFixture: broken,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.errors.join('\n')).toMatch(/automate recall/i);
+  });
+
+  it('fails closed on neverSpamInSpam, staffOutboundInSpam, and Q11 volume', async () => {
+    const never = await auditCenturionTriageQuality({
+      driver: qualityDriver({ neverSpamInSpam: 1 }),
+      goldFixturePath: goldFixturePath,
+    });
+    expect(never.ok).toBe(false);
+    expect(never.errors.join('\n')).toMatch(/neverSpamInSpam/i);
+
+    const staff = await auditCenturionTriageQuality({
+      driver: qualityDriver({ staffOutboundInSpam: 2 }),
+      goldFixturePath: goldFixturePath,
+    });
+    expect(staff.ok).toBe(false);
+    expect(staff.errors.join('\n')).toMatch(/staffOutboundInSpam/i);
+
+    const q11Fail = evaluateQ11VolumeBand({
+      automateThreads: 0,
+      spamThreads: 4,
+      unanswered: 999,
+      responded: 999,
+      actionable: 999,
+    });
+    expect(q11Fail.ok).toBe(false);
+    expect(q11Fail.errors.join('\n')).toMatch(/automate volume|spam volume|WINDOW band/i);
+
+    const q11Audit = await auditCenturionTriageQuality({
+      driver: qualityDriver({
+        q11: {
+          automateThreads: 0,
+          spamThreads: 4,
+          unanswered: 999,
+          responded: 999,
+          actionable: 999,
+        },
+      }),
+      goldFixturePath: goldFixturePath,
+    });
+    expect(q11Audit.ok).toBe(false);
+    expect(q11Audit.errors.join('\n')).toMatch(/Q11/i);
+  });
+
+  it('documents ops sequence in audit script help comment', () => {
+    const src = readFileSync(
+      join(here, '../scripts/audit-centurion-triage-retag.mjs'),
+      'utf8',
+    );
+    expect(src).toMatch(/quiesce.*snapshot.*KEY_PREFIX.*dry-run retag.*restore drill/s);
+    expect(src).toMatch(/quality\+Q11 audit/);
+    expect(src).toMatch(/live spot-check Automate\/Spam\/Quarantine\/Urgent/);
   });
 });
