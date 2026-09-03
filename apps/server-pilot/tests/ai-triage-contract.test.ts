@@ -1200,7 +1200,7 @@ describe('AI triage contract', () => {
             isSpam: false,
             suggestedTools: ['automated-channel', 'hms_find_reservation'],
             sourceScope: 'external',
-            automationState: 'candidate',
+            automationState: 'active',
             humanAction: false,
             confidence: 0.7,
             rationale: 'routine channel confirm',
@@ -1220,6 +1220,7 @@ describe('AI triage contract', () => {
     );
 
     expect(result.rawOutput.humanAction).toBe('none');
+    expect(result.rawOutput.automationState).toBe('candidate');
     expect(result.rawOutput.suggestedTools).toEqual(['hms_find_reservation']);
   });
 
