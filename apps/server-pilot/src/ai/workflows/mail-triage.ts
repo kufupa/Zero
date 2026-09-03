@@ -540,6 +540,11 @@ const NOVA_HUMAN_ACTION_ALIASES: Record<string, string> = {
   required: 'review_required',
   review: 'review_required',
   verify_email_address: 'review_required',
+  'verify-email-address': 'review_required',
+  'email-verification': 'review_required',
+  email_verification: 'review_required',
+  acknowledge: 'none',
+  acknowledged: 'none',
 };
 
 const NOVA_OVERLAY_ALIASES: Record<string, (typeof TRIAGE_OVERLAYS)[number]> = {
@@ -555,10 +560,31 @@ const NOVA_TOOL_MARKERS_TO_DROP = new Set([
   'spam',
   'urgent',
   'read-only',
+  'email-verification',
+  'verify-email-address',
+  'acknowledge',
   ...AI_WORKFLOW_PRIMARY_SLUGS,
 ]);
 
 const READ_TOOL_ID_SET = new Set<string>(READ_TOOL_IDS);
+
+const WORKFLOW_OUTPUT_KEYS = new Set([
+  'primaryFolder',
+  'priority',
+  'urgent',
+  'overlays',
+  'isSpam',
+  'suggestedTools',
+  'sourceScope',
+  'automationState',
+  'humanAction',
+  'confidence',
+  'rationale',
+  'policyFlags',
+  'abstainReason',
+  // legacy alias keys may still be present before conversion
+  'category',
+]);
 
 function moveNovaAlias(
   structured: Record<string, unknown>,
@@ -606,6 +632,8 @@ function normalizeNovaWorkflowOutput(raw: Record<string, unknown>): Record<strin
   moveNovaAlias(structured, 'spam', 'isSpam');
   moveNovaAlias(structured, 'spamSignal', 'isSpam');
   moveNovaAlias(structured, 'readOnlyToolTags', 'suggestedTools');
+  moveNovaAlias(structured, 'read-onlyToolTags', 'suggestedTools');
+  moveNovaAlias(structured, 'absTAINReason', 'abstainReason');
 
   if (Object.prototype.hasOwnProperty.call(structured, 'overlays')) {
     structured.overlays = normalizeNovaOverlays(structured.overlays);
@@ -624,24 +652,21 @@ function normalizeNovaWorkflowOutput(raw: Record<string, unknown>): Record<strin
       NOVA_HUMAN_ACTION_ALIASES[structured.humanAction] ?? structured.humanAction;
   }
   // The planner, not the model, owns the final read-only tag set. Nova's
-  // observed markers mean "no model tags" and are safely equivalent to [].
-  // Workflow-folder leaks into suggestedTools are dropped; unknown write-like
-  // tags still fail closed at Zod.
+  // observed markers and folder leaks are dropped; remaining unknown tags are
+  // also dropped so retag does not dead-letter on model dialect noise. Write
+  // tags never authorize invocation either way.
   if (typeof structured.suggestedTools === 'string') {
     if (structured.suggestedTools === 'read-only') structured.suggestedTools = [];
   } else if (Array.isArray(structured.suggestedTools)) {
-    const kept: string[] = [];
-    for (const tag of structured.suggestedTools) {
+    structured.suggestedTools = structured.suggestedTools.filter((tag) => {
       const value = String(tag);
-      if (value === 'read-only' || NOVA_TOOL_MARKERS_TO_DROP.has(value)) continue;
-      if (READ_TOOL_ID_SET.has(value)) {
-        kept.push(value);
-        continue;
-      }
-      // Preserve fail-closed for unknown write-ish tags (e.g. reservation_create).
-      kept.push(value);
-    }
-    structured.suggestedTools = kept;
+      if (value === 'read-only' || NOVA_TOOL_MARKERS_TO_DROP.has(value)) return false;
+      return READ_TOOL_ID_SET.has(value);
+    });
+  }
+
+  for (const key of Object.keys(structured)) {
+    if (!WORKFLOW_OUTPUT_KEYS.has(key)) delete structured[key];
   }
   return structured;
 }

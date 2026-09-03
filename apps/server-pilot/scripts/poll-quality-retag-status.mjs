@@ -37,7 +37,7 @@ try {
     select count(*)::int as pending
     from ai_workflow_run
     where idempotency_key like ${prefix + ':%'}
-      and state in ('queued', 'running', 'retry_wait')
+      and state in ('queued', 'claimed', 'running', 'retry_wait')
   `;
   const folders = await sql`
     select c.slug, count(*)::int as n
