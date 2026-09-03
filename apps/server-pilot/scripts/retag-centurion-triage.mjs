@@ -876,6 +876,7 @@ export async function runCenturionRetag(opts) {
     modelId,
     keyPrefix,
     fromDomain,
+    includeNonSpam: Boolean(includeNonSpam),
     targets: manifest ? manifest.targets.length : null,
     manifestHash: manifest?.manifestHash ?? null,
     ...counts,
