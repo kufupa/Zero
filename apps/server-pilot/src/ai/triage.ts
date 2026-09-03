@@ -669,6 +669,7 @@ function refineWorkflowTriageOutput(
     next = {
       ...next,
       primaryFolder: 'automated-channel',
+      isSpam: false,
       urgent: false,
       suggestedTools: [],
       priority: routineSystemMailPriority(next.priority),

@@ -426,9 +426,36 @@ describe('workflow routine system-mail force-automate (KTD1)', () => {
     );
 
     expect(refined.primaryFolder).toBe('automated-channel');
+    expect(refined.isSpam).toBe(false);
     expect(refined.urgent).toBe(false);
     expect(refined.suggestedTools).toEqual([]);
     expect(refined.policyFlags).toContain('refine:system-mail-automated');
+  });
+
+  it('workflow: WebBeds Channel Manager update clears model spam into automated-channel', () => {
+    const refined = refineTriageOutput(
+      {
+        from: 'noreply-bookings@webbeds.com',
+        subject:
+          'Booking Update for The Centurion Hotel via Channel Manager: HTL-WBD-1042951365',
+        body:
+          'New Booking Confirmed via Channel Manager YOUR EMAIL COPY Dear Reservations team, Below is an update from Destinations of the World that has been sent to your Channel Manager.',
+      },
+      workflowOutput({
+        primaryFolder: 'unknown-review',
+        isSpam: true,
+        urgent: true,
+        priority: 'P2',
+        suggestedTools: [],
+      }),
+    );
+
+    expect(refined.primaryFolder).toBe('automated-channel');
+    expect(refined.isSpam).toBe(false);
+    expect(refined.urgent).toBe(false);
+    expect(refined.suggestedTools).toEqual([]);
+    expect(refined.policyFlags).toContain('refine:system-mail-automated');
+    expect(refined.policyFlags).not.toContain('refine:promo-spam');
   });
 
   it('workflow: SynXis with reply-within-12h stays out of automated-channel', () => {
