@@ -440,6 +440,16 @@ Ops corpus analysis over connected-mailbox exports (not product mail UI). Used f
 
 A reservation-work thread in the analysis denominator: Luna intents for new booking, quote, group/event, or modify, after excluding pure channel confirmation digests and OTA system notices that carry no guest/agent request language. Distinct from the full mailbox thread count and from hotel-category Automated-channel filing in the SPA.
 
+### Responded actionable thread
+
+An actionable reservation thread with deterministic evidence that the hotel or its automation answered the commercial request, including evidence carried by reply headers, quoted hotel blocks, or a causally matched related message. Distinct from merely having an outbound message in the same source thread and from read/unread state.
+
+### Conversation-link overlay
+
+A secondary graph relation that groups distinct mail threads for inbox display without changing their authoritative source thread IDs.
+
+Weak evidence such as guarded subject, quoted-body, or orphan matches is bounded and deterministic; when discovery rules change, unsafe persisted edges are superseded rather than deleted.
+
 ### Trigger inbound
 
 The message chosen as the enquiry anchor for unanswered detection and EPV demand parse. Responders and room-night demand are scored relative to this message, not merely the chronologically first inbound. Distinct from first inbound (received-day axis / early pax-night scripts) and from cross-thread PMS confirm matching.

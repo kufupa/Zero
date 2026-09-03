@@ -3,12 +3,14 @@
  * Recompute deterministic conversation links for one transport.
  *
  * Dry-run (default) — proposal + active-link counts only; no writes:
- *   pnpm --filter @zero/server exec tsx scripts/backfill-centurion-conversation-links.ts --transport=transport-centurion --confirm-pilot-rds
+ *   pnpm --filter @zero/server exec tsx scripts/backfill-centurion-conversation-links.ts --transport=transport-centurion --deactivate-unsafe --confirm-pilot-rds
  *
  * Apply:
- *   pnpm --filter @zero/server exec tsx scripts/backfill-centurion-conversation-links.ts --transport=transport-centurion --apply --confirm-pilot-rds
+ *   pnpm --filter @zero/server exec tsx scripts/backfill-centurion-conversation-links.ts --transport=transport-centurion --deactivate-unsafe --apply --confirm-pilot-rds
  */
-import { and, eq, isNull, sql } from 'drizzle-orm';
+import { and, asc, eq, isNull, sql } from 'drizzle-orm';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import * as schema from '../src/db/schema/index.js';
@@ -16,8 +18,11 @@ import { mailConversationLink } from '../src/db/schema/mail-conversation-link.js
 import { message } from '../src/db/schema/mail.js';
 import { getPostgresSslOptions } from '../src/db/ssl-config.js';
 import {
+  deactivateSupersededConversationLinks,
   discoverConversationLinks,
-  recomputeConversationLinksForTransport,
+  findSupersededConversationLinks,
+  upsertConversationLinks,
+  type PersistedConversationLink,
   type LinkableMessage,
 } from '../src/mail/conversation-link.js';
 
@@ -25,18 +30,21 @@ type CliArgs = {
   transportId: string | null;
   apply: boolean;
   confirmPilotRds: boolean;
+  deactivateUnsafe: boolean;
 };
 
-function parseArgs(argv: string[]): CliArgs {
+export function parseArgs(argv: string[]): CliArgs {
   let transportId: string | null = null;
   let apply = false;
   let confirmPilotRds = false;
+  let deactivateUnsafe = false;
   for (const arg of argv) {
     if (arg === '--apply') apply = true;
     else if (arg === '--confirm-pilot-rds') confirmPilotRds = true;
+    else if (arg === '--deactivate-unsafe') deactivateUnsafe = true;
     else if (arg.startsWith('--transport=')) transportId = arg.slice('--transport='.length);
   }
-  return { transportId, apply, confirmPilotRds };
+  return { transportId, apply, confirmPilotRds, deactivateUnsafe };
 }
 
 function refusePilotUrl(url: string | undefined, { apply, confirmPilotRds }: CliArgs): void {
@@ -78,7 +86,8 @@ async function loadLinkableMessages(
       receivedAt: message.receivedAt,
     })
     .from(message)
-    .where(eq(message.transportId, transportId));
+    .where(eq(message.transportId, transportId))
+    .orderBy(asc(message.receivedAt), asc(message.id), asc(message.threadId));
 
   return rows.map((row) => ({
     id: row.id,
@@ -97,11 +106,29 @@ async function loadLinkableMessages(
   }));
 }
 
+async function loadActiveLinks(
+  db: ReturnType<typeof drizzle<typeof schema>>,
+  transportId: string,
+): Promise<PersistedConversationLink[]> {
+  return db
+    .select({
+      id: mailConversationLink.id,
+      srcThreadId: mailConversationLink.srcThreadId,
+      dstThreadId: mailConversationLink.dstThreadId,
+      linkType: mailConversationLink.linkType,
+      supersededAt: mailConversationLink.supersededAt,
+    })
+    .from(mailConversationLink)
+    .where(
+      and(eq(mailConversationLink.transportId, transportId), isNull(mailConversationLink.supersededAt)),
+    );
+}
+
 async function main(): Promise<void> {
   const cli = parseArgs(process.argv.slice(2));
   if (!cli.transportId) {
     console.error(
-      'Usage: backfill-centurion-conversation-links.ts --transport=<id> [--apply] [--confirm-pilot-rds]',
+      'Usage: backfill-centurion-conversation-links.ts --transport=<id> [--deactivate-unsafe] [--apply] [--confirm-pilot-rds]',
     );
     process.exit(2);
   }
@@ -120,35 +147,35 @@ async function main(): Promise<void> {
   try {
     const linkable = await loadLinkableMessages(db, cli.transportId);
     const proposals = discoverConversationLinks(linkable);
-    let activeLinksBefore = 0;
+    let activeLinks: PersistedConversationLink[] = [];
+    let tableWasMissing = false;
     try {
-      const [activeRow] = await db
-        .select({ count: sql<number>`count(*)::int` })
-        .from(mailConversationLink)
-        .where(
-          and(
-            eq(mailConversationLink.transportId, cli.transportId),
-            isNull(mailConversationLink.supersededAt),
-          ),
-        );
-      activeLinksBefore = activeRow?.count ?? 0;
+      activeLinks = await loadActiveLinks(db, cli.transportId);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       if (!/mail_conversation_link/i.test(message) && !/does not exist/i.test(message)) {
         throw error;
       }
       // Pre-migration dry-run: table absent — still report proposals.
-      activeLinksBefore = -1;
+      tableWasMissing = true;
     }
+    // Keep table-missing state separate from zero active rows; the query above
+    // remains count-free to avoid exposing row-level data in operator output.
+    const activeLinksBefore = tableWasMissing ? -1 : activeLinks.length;
+    const supersededCandidates = cli.deactivateUnsafe && !tableWasMissing
+      ? findSupersededConversationLinks(activeLinks, proposals).length
+      : 0;
 
     const summary = {
       event: 'conversation_link_backfill.summary',
       transportId: cli.transportId,
       mode: cli.apply ? 'apply' : 'dry-run',
+      deactivateUnsafe: cli.deactivateUnsafe,
       messageCount: linkable.length,
       proposedLinks: proposals.length,
       activeLinksBefore,
-      tableMissing: activeLinksBefore < 0,
+      supersededCandidates,
+      tableMissing: tableWasMissing,
     };
     console.log(JSON.stringify(summary));
 
@@ -156,27 +183,43 @@ async function main(): Promise<void> {
       return;
     }
 
-    if (activeLinksBefore < 0) {
+    if (tableWasMissing) {
       throw new Error('REFUSE apply: mail_conversation_link missing — run migrations 0020+0021 first');
     }
 
-    const upserted = await recomputeConversationLinksForTransport(db, cli.transportId);
-    const [activeAfter] = await db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(mailConversationLink)
-      .where(
-        and(
-          eq(mailConversationLink.transportId, cli.transportId),
-          isNull(mailConversationLink.supersededAt),
-        ),
-      );
+    const { superseded, upserted, activeLinksAfter } = await db.transaction(
+      async (tx) => {
+        // Re-read and discover inside one serializable snapshot. Deactivation
+        // and upsert must use the same proposal set or a concurrent ingest can
+        // leave a stale active edge behind.
+        const txLinkable = await loadLinkableMessages(tx, cli.transportId!);
+        const txProposals = discoverConversationLinks(txLinkable);
+        const superseded = cli.deactivateUnsafe
+          ? await deactivateSupersededConversationLinks(tx, cli.transportId!, txProposals)
+          : 0;
+        const upserted = await upsertConversationLinks(tx, cli.transportId!, txProposals);
+        const [activeAfter] = await tx
+          .select({ count: sql<number>`count(*)::int` })
+          .from(mailConversationLink)
+          .where(
+            and(
+              eq(mailConversationLink.transportId, cli.transportId!),
+              isNull(mailConversationLink.supersededAt),
+            ),
+          );
+        return { superseded, upserted, activeLinksAfter: activeAfter?.count ?? 0 };
+      },
+      { isolationLevel: 'serializable' },
+    );
 
     console.log(
       JSON.stringify({
         event: 'conversation_link_backfill.completed',
         transportId: cli.transportId,
+        deactivateUnsafe: cli.deactivateUnsafe,
+        superseded,
         upserted,
-        activeLinksAfter: activeAfter?.count ?? 0,
+        activeLinksAfter,
       }),
     );
   } finally {
@@ -184,12 +227,14 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error: unknown) => {
-  console.error(
-    JSON.stringify({
-      event: 'conversation_link_backfill.failed',
-      message: error instanceof Error ? error.message : String(error),
-    }),
-  );
-  process.exit(1);
-});
+if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+  main().catch((error: unknown) => {
+    console.error(
+      JSON.stringify({
+        event: 'conversation_link_backfill.failed',
+        message: error instanceof Error ? error.message : String(error),
+      }),
+    );
+    process.exit(1);
+  });
+}

@@ -50,7 +50,7 @@ import { normalizeEmailAddress } from './never-spam.js';
 import { isCliEntry } from '../lib/is-cli-entry.js';
 import { createMastraRuntime } from './mastra.js';
 import { closeDb, getDb } from '../db/client.js';
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, lt, lte, or } from 'drizzle-orm';
 import { createHash } from 'node:crypto';
 
 function resolveWorkerLane(): AiExecutorLane {
@@ -152,6 +152,7 @@ function deriveThreadSignals(messages: readonly WorkerTriageMessage[]): ThreadSi
 
 type WorkerThreadMessageRow = {
   id: string;
+  threadId: string;
   fromAddress: string | null;
   subject: string | null;
   direction: string;
@@ -160,22 +161,27 @@ type WorkerThreadMessageRow = {
   sentAt: Date | null;
   toAddresses: string[] | null;
   ccAddresses: string[] | null;
+  messageIdHeader: string | null;
+  inReplyTo: string | null;
+  references: string[] | null;
 };
 
-/** Thread-scoped index rows for Layer B metrics; transport-wide index optional later. */
-function threadMessagesToTransportIndex(
-  threadId: string,
+/** Build the transport-wide, causal index used only by Layer B metrics. */
+export function threadMessagesToTransportIndex(
   rows: readonly WorkerThreadMessageRow[],
 ): IndexableMessage[] {
   return rows.map((row) => ({
     id: row.id,
-    threadId,
+    threadId: row.threadId,
     direction: row.direction === 'outbound' ? 'outbound' : 'inbound',
     from: row.fromAddress ?? '',
     to: (row.toAddresses ?? []).join(', '),
     cc: (row.ccAddresses ?? []).join(', '),
     subject: row.subject ?? '',
     receivedAt: (row.receivedAt ?? row.sentAt ?? row.createdAt).toISOString(),
+    messageIdHeader: row.messageIdHeader,
+    inReplyTo: row.inReplyTo,
+    references: row.references,
   }));
 }
 
@@ -603,6 +609,7 @@ export async function executeAiRun(
       const threadMessages = await db
         .select({
           id: message.id,
+          threadId: message.threadId,
           fromAddress: message.fromAddress,
           subject: message.subject,
           textBody: message.textBody,
@@ -614,9 +621,44 @@ export async function executeAiRun(
           toAddresses: message.toAddresses,
           ccAddresses: message.ccAddresses,
           bccAddresses: message.bccAddresses,
+          messageIdHeader: message.messageIdHeader,
+          inReplyTo: message.inReplyTo,
+          references: message.references,
         })
         .from(message)
         .where(and(eq(message.threadId, run.threadId), eq(message.transportId, run.transportId)))
+        .orderBy(asc(message.createdAt), asc(message.id));
+
+      const transportMessages = await db
+        .select({
+          id: message.id,
+          threadId: message.threadId,
+          fromAddress: message.fromAddress,
+          subject: message.subject,
+          direction: message.direction,
+          createdAt: message.createdAt,
+          receivedAt: message.receivedAt,
+          sentAt: message.sentAt,
+          toAddresses: message.toAddresses,
+          ccAddresses: message.ccAddresses,
+          bccAddresses: message.bccAddresses,
+          messageIdHeader: message.messageIdHeader,
+          inReplyTo: message.inReplyTo,
+          references: message.references,
+        })
+        .from(message)
+        .where(
+          and(
+            eq(message.transportId, run.transportId),
+            or(
+              lt(message.createdAt, trigger?.createdAt ?? run.createdAt),
+              and(
+                eq(message.createdAt, trigger?.createdAt ?? run.createdAt),
+                lte(message.id, trigger?.id ?? run.triggerMessageId),
+              ),
+            ),
+          ),
+        )
         .orderBy(asc(message.createdAt), asc(message.id));
 
       const rows: (TriageMessageRow & {
@@ -635,6 +677,9 @@ export async function executeAiRun(
         to: m.toAddresses ?? [],
         cc: m.ccAddresses ?? [],
         bcc: m.bccAddresses ?? [],
+        messageIdHeader: m.messageIdHeader,
+        inReplyTo: m.inReplyTo,
+        references: m.references,
       }));
       const messages = buildCausalTriageMessages(rows, run.triggerMessageId);
       const threadSignals = deriveThreadSignals(
@@ -663,7 +708,7 @@ export async function executeAiRun(
           body: trigger?.textBody ?? trigger?.htmlBody ?? '',
           messages,
           threadSignals,
-          transportIndexMessages: threadMessagesToTransportIndex(run.threadId, threadMessages),
+          transportIndexMessages: threadMessagesToTransportIndex(transportMessages),
           asOf: run.createdAt.toISOString(),
           modelId: run.modelId,
           promptVersion: TRIAGE_PROMPT_VERSION,

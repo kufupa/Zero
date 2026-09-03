@@ -1,10 +1,28 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import {
+  GOLD_ACTIONABLE_TOTAL,
+  GOLD_RESPONDED_TOTAL,
+  GOLD_UNANSWERED_TOTAL,
+} from './centurion-conversation-signals-eval.js';
+
+/**
+ * This module is a descriptive census, not a Layer C proposal/gate.
+ * Production predicates and enforceable residual counts live in the canonical
+ * residual enumerator and conversation linker.
+ */
+export const CENTURION_THREAD_LINKAGE_AUDIT_MODE = 'descriptive' as const;
+export const CENTURION_EOD_GOLD_TOTALS = {
+  actionable: GOLD_ACTIONABLE_TOTAL,
+  responded: GOLD_RESPONDED_TOTAL,
+  unanswered: GOLD_UNANSWERED_TOTAL,
+} as const;
 
 export type LinkageLayer = 'layer_a_header' | 'layer_b_signal' | 'layer_c_deterministic' | 'layer_d_llm' | 'unlinked';
 
 export type DefensibleThreadRow = {
   threadId: string;
+  subject?: string;
   day: string;
   intent: string;
   centurionOnly: boolean;
@@ -59,6 +77,8 @@ export type ThreadLinkageRow = {
 
 export type ThreadLinkageAuditReport = {
   generatedAt: string;
+  auditMode: typeof CENTURION_THREAD_LINKAGE_AUDIT_MODE;
+  goldTotals: typeof CENTURION_EOD_GOLD_TOTALS;
   sources: {
     defensible: string;
     walkthrough: string;
@@ -68,6 +88,7 @@ export type ThreadLinkageAuditReport = {
     inThreadOnlyResponded: number;
     withCrossThreadConf: number;
     defensibleResponded: number;
+    responded: number;
     actionable: number;
     unanswered: number;
   };
@@ -121,7 +142,13 @@ function assignLayer(row: DefensibleThreadRow): { layer: LinkageLayer; reasons: 
   }
   if (
     signals.some((s) =>
-      ['cross_thread_conf', 'orphan_auto_confirm', 'orphan_centurion_human'].includes(s),
+      [
+        'cross_thread_conf',
+        'orphan_auto_confirm',
+        'orphan_centurion_human',
+        'in_reply_to_hotel_msgid',
+        'staff_inbound_commercial_reply',
+      ].includes(s),
     )
   ) {
     reasons.push(...signals.filter((s) => !s.includes('quoted')));
@@ -156,7 +183,7 @@ export async function runCenturionThreadLinkageAudit(
 
   const threads: ThreadLinkageRow[] = defensible.threads.map((row) => {
     const walk = walkById.get(row.threadId);
-    const subject = subjectById.get(row.threadId);
+    const subject = row.subject ?? subjectById.get(row.threadId);
     const normSubject = subject ? normalizeConversationSubject(subject) : undefined;
     const { layer, reasons } = assignLayer(row);
     return {
@@ -236,6 +263,8 @@ export async function runCenturionThreadLinkageAudit(
 
   return {
     generatedAt: new Date().toISOString(),
+    auditMode: CENTURION_THREAD_LINKAGE_AUDIT_MODE,
+    goldTotals: CENTURION_EOD_GOLD_TOTALS,
     sources: {
       defensible: input.defensiblePath,
       walkthrough: input.walkthroughPath,
@@ -245,6 +274,7 @@ export async function runCenturionThreadLinkageAudit(
       inThreadOnlyResponded: inThreadOnly,
       withCrossThreadConf: withCross,
       defensibleResponded,
+      responded: defensibleResponded,
       actionable: defensible.totals.actionable ?? threads.length,
       unanswered: defensible.totals.unanswered ?? residualUnanswered.length,
     },
@@ -270,18 +300,28 @@ export async function writeCenturionThreadLinkageAudit(
     .map((c) => `- ${c.normSubject}: ${c.threadIds.length} threads, ${c.spanDays} days`)
     .join('\n');
 
-  const summary = `# Centurion thread linkage audit
+  const summary = `# Centurion thread linkage audit (descriptive)
 
 Generated: ${report.generatedAt}
 
-## Waterfall (438 actionable)
+Mode: **${report.auditMode}**. Subject clusters below are descriptive census
+only; they are not production Layer C proposals or an enforceable gate. Use
+the canonical residual enumerator/linker for guarded predicates and residual
+counts.
+
+## EOD gold reference (${report.goldTotals.actionable} actionable / ${report.goldTotals.responded} responded / ${report.goldTotals.unanswered} unanswered)
 
 | Metric | Count |
 |--------|------:|
+| EOD actionable target | ${report.goldTotals.actionable} |
+| EOD responded target | ${report.goldTotals.responded} |
+| EOD unanswered target | ${report.goldTotals.unanswered} |
+| Observed actionable | ${report.waterfall.actionable} |
+| Observed responded | ${report.waterfall.responded} |
+| Observed unanswered | ${report.waterfall.unanswered} |
 | In-thread-only responded (exclusive proxy) | ${report.waterfall.inThreadOnlyResponded} |
 | With cross_thread signal | ${report.waterfall.withCrossThreadConf} |
 | Defensible responded | ${report.waterfall.defensibleResponded} |
-| Unanswered | ${report.waterfall.unanswered} |
 
 ## Layer assignment (actionable threads)
 

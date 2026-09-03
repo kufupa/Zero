@@ -1,7 +1,5 @@
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
 import {
+  evaluateGoldContract,
   evaluateGoldGate,
   GOLD_ACTIONABLE_TOTAL,
   GOLD_FALSE_POSITIVE_MAX,
@@ -11,8 +9,12 @@ import {
   resolvePrivateCorpusRoot,
   runConversationSignalsGoldEval,
   runConversationSignalsGoldEvalFromCorpus,
+  type ConfusionMatrixCounts,
   type SnapshotRow,
 } from '../src/ops/centurion-conversation-signals-eval.js';
+import { describe, expect, it } from 'vitest';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
 
 const serverRoot = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(serverRoot, '../..');
@@ -49,7 +51,7 @@ const FIXTURE_GLOBAL_OUTBOUNDS: readonly SnapshotRow[] = [
     threadId: 'thread-orphan-auto',
     direction: 'outbound',
     from: 'centurion@legacyhotels.co.za',
-    to: 'guest-a@example.com',
+    to: 'guest-z@example.com',
     subject: 'Confirmation letter for guest stay',
     bodyText: '',
     receivedAt: '2026-08-02T09:00:00.000Z',
@@ -102,13 +104,19 @@ const FIXTURE_THREADS: ReadonlyArray<{
   },
   {
     threadIdPrefix: 't-orph-a',
-    goldResponded: true,
-    messages: [row({ messageId: 't3-trigger', threadId: 't-orph-a-0003', from: 'guest-a@example.com' })],
+    // Generic confirmation-letter orphan has no conf#, guest identity, or
+    // quoted hotel block. EOD FP policy keeps weak orphan evidence unanswered.
+    goldResponded: false,
+    messages: [
+      row({ messageId: 't3-trigger', threadId: 't-orph-a-0003', from: 'guest-z@example.com' }),
+    ],
   },
   {
     threadIdPrefix: 't-orph-h',
     goldResponded: true,
-    messages: [row({ messageId: 't4-trigger', threadId: 't-orph-h-0004', from: 'guest-b@example.com' })],
+    messages: [
+      row({ messageId: 't4-trigger', threadId: 't-orph-h-0004', from: 'guest-b@example.com' }),
+    ],
   },
   {
     threadIdPrefix: 't-q-hdr',
@@ -364,27 +372,67 @@ function privateGoldAvailable(): boolean {
   }
 }
 
+function passingGoldContractMatrix(
+  overrides: Partial<ConfusionMatrixCounts> = {},
+): ConfusionMatrixCounts {
+  return {
+    truePositives: GOLD_RECALL_MIN,
+    falseNegatives: 0,
+    falsePositives: 0,
+    trueNegatives: GOLD_UNANSWERED_TOTAL,
+    goldResponded: GOLD_RESPONDED_TOTAL,
+    goldUnanswered: GOLD_UNANSWERED_TOTAL,
+    goldTotal: GOLD_ACTIONABLE_TOTAL,
+    predictedResponded: GOLD_RECALL_MIN,
+    skippedThreads: 0,
+    ...overrides,
+  };
+}
+
+describe('conversation signals gold contract gate', () => {
+  it('fails closed when any labelled thread is skipped', () => {
+    const contract = evaluateGoldContract(passingGoldContractMatrix({ skippedThreads: 1 }));
+
+    expect(contract.pass).toBe(false);
+  });
+
+  it('fails closed when any gold denominator does not match the EOD contract', () => {
+    for (const field of ['goldTotal', 'goldResponded', 'goldUnanswered'] as const) {
+      const contract = evaluateGoldContract(
+        passingGoldContractMatrix({ [field]: passingGoldContractMatrix()[field] - 1 }),
+      );
+
+      expect(contract.pass, `${field} mismatch should fail the contract`).toBe(false);
+    }
+  });
+});
+
 describe('conversation signals gold fixture subset (CI)', () => {
-  it('runs 20 opaque threads with zero false positives on unanswered', () => {
+  it('keeps weak generic orphan unanswered in the binary gold contract', () => {
     const result = runConversationSignalsGoldEval(buildFixtureEvalInput());
 
     expect(FIXTURE_THREADS).toHaveLength(20);
     expect(result.matrix.goldTotal).toBe(20);
-    expect(result.matrix.goldResponded).toBe(7);
-    expect(result.matrix.goldUnanswered).toBe(13);
+    expect(result.matrix.goldResponded).toBe(6);
+    expect(result.matrix.goldUnanswered).toBe(14);
     expect(result.matrix.falsePositives).toBe(0);
-    expect(result.matrix.truePositives).toBe(7);
+    expect(result.matrix.truePositives).toBe(6);
     expect(result.matrix.falseNegatives).toBe(0);
-    expect(result.cases.every((evalCase) => evalCase.goldResponded === evalCase.predictedResponded)).toBe(
-      true,
-    );
+    expect(result.cases.find((evalCase) => evalCase.threadIdPrefix === 't-orph-a')).toMatchObject({
+      goldResponded: false,
+      predictedResponded: false,
+      signals: [],
+    });
+    expect(
+      result.cases.every((evalCase) => evalCase.goldResponded === evalCase.predictedResponded),
+    ).toBe(true);
   });
 
   it('documents production gate constants', () => {
-    expect(GOLD_ACTIONABLE_TOTAL).toBe(438);
-    expect(GOLD_RESPONDED_TOTAL).toBe(246);
-    expect(GOLD_UNANSWERED_TOTAL).toBe(192);
-    expect(GOLD_RECALL_MIN).toBe(221);
+    expect(GOLD_ACTIONABLE_TOTAL).toBe(483);
+    expect(GOLD_RESPONDED_TOTAL).toBe(282);
+    expect(GOLD_UNANSWERED_TOTAL).toBe(201);
+    expect(GOLD_RECALL_MIN).toBe(268);
     expect(GOLD_FALSE_POSITIVE_MAX).toBe(4);
   });
 });
@@ -427,6 +475,9 @@ describe('parseConnectedMailboxSnapshot', () => {
       '- **To:** centurion@legacyhotels.co.za',
       '- **CC:** ',
       '- **Received:** 2026-08-01T10:00:00.000Z',
+      '- **Message-ID (header):** `guest-1@example.com`',
+      '- **In-Reply-To:** `<hotel-1@legacyhotels.co.za>`',
+      '- **References:** `<hotel-0@legacyhotels.co.za>`, `<hotel-1@legacyhotels.co.za>`',
       '',
       '### Text body',
       '',
@@ -444,6 +495,9 @@ describe('parseConnectedMailboxSnapshot', () => {
       direction: 'inbound',
       subject: 'Test subject',
       bodyText: 'Hello',
+      messageIdHeader: 'guest-1@example.com',
+      inReplyTo: '<hotel-1@legacyhotels.co.za>',
+      references: ['<hotel-0@legacyhotels.co.za>', '<hotel-1@legacyhotels.co.za>'],
     });
     expect(parsed.byThread.get('thread-1')).toHaveLength(1);
   });

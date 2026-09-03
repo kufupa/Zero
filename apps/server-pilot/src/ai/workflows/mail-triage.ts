@@ -46,6 +46,9 @@ const triageMessageSchema = z.object({
   to: z.array(z.string()).optional(),
   cc: z.array(z.string()).optional(),
   bcc: z.array(z.string()).optional(),
+  messageIdHeader: z.string().nullable().optional(),
+  inReplyTo: z.string().nullable().optional(),
+  references: z.array(z.string()).nullable().optional(),
 });
 
 const threadSignalsSchema = z
@@ -66,6 +69,9 @@ const indexableMessageSchema = z.object({
   cc: z.string().optional(),
   subject: z.string(),
   receivedAt: z.string(),
+  messageIdHeader: z.string().nullable().optional(),
+  inReplyTo: z.string().nullable().optional(),
+  references: z.array(z.string()).nullable().optional(),
 });
 
 const triageInputSchema = z.object({
@@ -461,6 +467,9 @@ function toTriageMessageRows(input: z.infer<typeof triageInputSchema>): TriagePr
     to: m.to,
     cc: m.cc,
     bcc: m.bcc,
+    messageIdHeader: m.messageIdHeader,
+    inReplyTo: m.inReplyTo,
+    references: m.references,
   }));
 }
 
