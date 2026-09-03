@@ -35,7 +35,7 @@ Mostly `transport-nava` July fixtures + allowlist-shaped tests; 2 nava non-fixtu
 
 ## Quality audit
 
-`--quality` with live `--q11-volume` not re-run in this handoff (no conversation-signals dump produced this session). Prior Wave B gold floors remain; reopen if Q11 required before calling EOTriage “fully closed.”
+`--quality` ran with `--q11-volume` using WINDOW baselines (201/282/483) as Un/Rsp/Act input; live automate/spam folder counts came from pilot DB. Result: **`ok: true`** (automate recall ~92.3%, spam recall 100%, spam-fp 0, neverSpam/staffOutbound 0). For stricter closeout, re-run with conversation-signals-derived Un/Rsp/Act.
 
 ## Safety
 
