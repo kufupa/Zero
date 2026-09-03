@@ -534,6 +534,7 @@ const LEGACY_PRIMARY_FOLDER_ALIASES: Record<
 
 const NOVA_SOURCE_SCOPE_ALIASES: Record<string, string> = {
   external_property: 'external',
+  external_guest: 'external',
 };
 
 const NOVA_AUTOMATION_STATE_ALIASES: Record<string, string> = {
@@ -541,6 +542,10 @@ const NOVA_AUTOMATION_STATE_ALIASES: Record<string, string> = {
   routine: 'routine_candidate',
   exception: 'exception_candidate',
   internal: 'excluded_internal',
+  excluded_external: 'unknown',
+  manual_review: 'unknown',
+  'manual-review': 'unknown',
+  manual_review_required: 'unknown',
 };
 
 const NOVA_HUMAN_ACTION_ALIASES: Record<string, string> = {
@@ -555,6 +560,12 @@ const NOVA_HUMAN_ACTION_ALIASES: Record<string, string> = {
   verify: 'verify_state',
   verify_and_escalate_if_needed: 'review_required',
   'verify-and-escalate-if-needed': 'review_required',
+  confirm: 'review_required',
+  manual_review: 'review_required',
+  'manual-review': 'review_required',
+  manual_review_required: 'review_required',
+  mark_as_spam: 'review_required',
+  'mark-as-spam': 'review_required',
 };
 
 const NOVA_OVERLAY_ALIASES: Record<string, (typeof TRIAGE_OVERLAYS)[number]> = {
@@ -573,6 +584,8 @@ const NOVA_TOOL_MARKERS_TO_DROP = new Set([
   'email-verification',
   'verify-email-address',
   'acknowledge',
+  'mark_as_spam',
+  'mark-as-spam',
   ...AI_WORKFLOW_PRIMARY_SLUGS,
 ]);
 
@@ -678,6 +691,15 @@ function normalizeNovaWorkflowOutput(raw: Record<string, unknown>): Record<strin
       if (value === 'read-only' || NOVA_TOOL_MARKERS_TO_DROP.has(value)) return false;
       return READ_TOOL_ID_SET.has(value);
     });
+  }
+
+  // Observed Nova dialect: primaryFolder "spam" is not a workflow folder.
+  // Coerce to orthogonal isSpam + safe abstention folder before Zod.
+  // Spam payloads cannot carry suggestedTools (schema refine).
+  if (structured.primaryFolder === 'spam') {
+    structured.primaryFolder = 'unknown-review';
+    structured.isSpam = true;
+    structured.suggestedTools = [];
   }
 
   for (const key of Object.keys(structured)) {

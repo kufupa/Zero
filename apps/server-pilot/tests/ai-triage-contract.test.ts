@@ -1224,6 +1224,180 @@ describe('AI triage contract', () => {
     expect(result.rawOutput.suggestedTools).toEqual(['hms_find_reservation']);
   });
 
+  it('normalizes residual Nova dialect that dead-lettered live inbound triage', async () => {
+    const result = await classifyWorkflowMailTriage(
+      {
+        transportId: 'transport-centurion',
+        threadId: 'thread-nova-residual-dialect',
+        triggerMessageId: 'msg-nova-residual-dialect',
+        messages: [
+          {
+            id: 'msg-nova-residual-dialect',
+            from: 'veronica.steyn@daisy.co.za',
+            subject: 'Is Your Business POPIA Compliant?',
+            body: 'We offer a free network security audit. Marketing outreach.',
+            direction: 'inbound',
+            createdAt: new Date('2026-09-03T10:08:00.000Z'),
+            receivedAt: new Date('2026-09-03T10:08:00.000Z'),
+            sentAt: null,
+          },
+        ],
+        asOf: '2026-09-03T10:09:00.000Z',
+        modelId: 'amazon.nova-lite-v1:0',
+        promptVersion: 'triage-v6',
+      },
+      {
+        invoke: async () => ({
+          modelId: 'amazon.nova-lite-v1:0',
+          output: {
+            primaryFolder: 'spam',
+            priority: 'P4',
+            urgent: false,
+            overlays: {},
+            isSpam: false,
+            suggestedTools: ['mark_as_spam', 'hms_find_reservation'],
+            sourceScope: 'external_guest',
+            automationState: 'excluded_external',
+            humanAction: 'confirm',
+            confidence: 0.6,
+            rationale: 'cold outreach',
+            policyFlags: [],
+            abstainReason: null,
+          },
+          usage: {
+            inputTokens: 1,
+            outputTokens: 1,
+            totalTokens: 2,
+            latencyMs: 1,
+            estimatedCostUsd: 0,
+            rateTableVersion: 'test',
+          },
+        }),
+      },
+    );
+
+    expect(result.rawOutput).toMatchObject({
+      primaryFolder: 'unknown-review',
+      isSpam: true,
+      sourceScope: 'external',
+      automationState: 'unknown',
+      humanAction: 'review_required',
+      suggestedTools: [],
+    });
+  });
+
+  it('normalizes manual_review dialect variants on automationState and humanAction', async () => {
+    const result = await classifyWorkflowMailTriage(
+      {
+        transportId: 'transport-centurion',
+        threadId: 'thread-nova-manual-review',
+        triggerMessageId: 'msg-nova-manual-review',
+        messages: [
+          {
+            id: 'msg-nova-manual-review',
+            from: 'guest@example.com',
+            subject: 'Please review',
+            body: 'Need a human to look at this booking.',
+            direction: 'inbound',
+            createdAt: new Date('2026-07-01T10:00:00.000Z'),
+            receivedAt: new Date('2026-07-01T10:00:00.000Z'),
+            sentAt: null,
+          },
+        ],
+        asOf: '2026-07-01T12:00:00.000Z',
+        modelId: 'amazon.nova-lite-v1:0',
+        promptVersion: 'triage-v6',
+      },
+      {
+        invoke: async () => ({
+          modelId: 'amazon.nova-lite-v1:0',
+          output: {
+            primaryFolder: 'bookings',
+            priority: 'P2',
+            urgent: false,
+            overlays: {},
+            isSpam: false,
+            suggestedTools: ['mark-as-spam'],
+            sourceScope: 'external',
+            automationState: 'manual_review_required',
+            humanAction: 'manual-review',
+            confidence: 0.5,
+            rationale: 'needs review',
+            policyFlags: [],
+            abstainReason: null,
+          },
+          usage: {
+            inputTokens: 1,
+            outputTokens: 1,
+            totalTokens: 2,
+            latencyMs: 1,
+            estimatedCostUsd: 0,
+            rateTableVersion: 'test',
+          },
+        }),
+      },
+    );
+
+    expect(result.rawOutput.automationState).toBe('unknown');
+    expect(result.rawOutput.humanAction).toBe('review_required');
+    expect(result.rawOutput.suggestedTools).toEqual([]);
+  });
+
+  it('fails closed on unknown Nova automationState after residual normalize', async () => {
+    await expect(
+      classifyWorkflowMailTriage(
+        {
+          transportId: 'transport-centurion',
+          threadId: 'thread-nova-unknown-automation',
+          triggerMessageId: 'msg-nova-unknown-automation',
+          messages: [
+            {
+              id: 'msg-nova-unknown-automation',
+              from: 'guest@example.com',
+              subject: 'Hello',
+              body: 'Test body',
+              direction: 'inbound',
+              createdAt: new Date('2026-07-01T10:00:00.000Z'),
+              receivedAt: new Date('2026-07-01T10:00:00.000Z'),
+              sentAt: null,
+            },
+          ],
+          asOf: '2026-07-01T12:00:00.000Z',
+          modelId: 'amazon.nova-lite-v1:0',
+          promptVersion: 'triage-v6',
+        },
+        {
+          invoke: async () => ({
+            modelId: 'amazon.nova-lite-v1:0',
+            output: {
+              primaryFolder: 'bookings',
+              priority: 'P3',
+              urgent: false,
+              overlays: {},
+              isSpam: false,
+              suggestedTools: [],
+              sourceScope: 'external',
+              automationState: 'totally_unknown_xyz',
+              humanAction: 'none',
+              confidence: 0.5,
+              rationale: 'bad dialect',
+              policyFlags: [],
+              abstainReason: null,
+            },
+            usage: {
+              inputTokens: 1,
+              outputTokens: 1,
+              totalTokens: 2,
+              latencyMs: 1,
+              estimatedCostUsd: 0,
+              rateTableVersion: 'test',
+            },
+          }),
+        },
+      ),
+    ).rejects.toThrow();
+  });
+
   it('drops unknown Nova tool tags after known overlay tags', async () => {
     const result = await classifyWorkflowMailTriage(
       {
