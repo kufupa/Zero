@@ -548,7 +548,17 @@ const NOVA_OVERLAY_ALIASES: Record<string, (typeof TRIAGE_OVERLAYS)[number]> = {
   payment: 'payment',
 };
 
-const NOVA_TOOL_MARKERS_TO_DROP = new Set(['booking']);
+const NOVA_TOOL_MARKERS_TO_DROP = new Set([
+  'booking',
+  'quote',
+  'payment',
+  'spam',
+  'urgent',
+  'read-only',
+  ...AI_WORKFLOW_PRIMARY_SLUGS,
+]);
+
+const READ_TOOL_ID_SET = new Set<string>(READ_TOOL_IDS);
 
 function moveNovaAlias(
   structured: Record<string, unknown>,
@@ -605,18 +615,33 @@ function normalizeNovaWorkflowOutput(raw: Record<string, unknown>): Record<strin
     structured.sourceScope =
       NOVA_SOURCE_SCOPE_ALIASES[structured.sourceScope] ?? structured.sourceScope;
   }
-  if (typeof structured.humanAction === 'string') {
+  if (typeof structured.humanAction === 'boolean') {
+    // Observed Nova dialect: boolean humanAction means "needs human?" rather
+    // than the canonical enum. Map to none / review_required only.
+    structured.humanAction = structured.humanAction ? 'review_required' : 'none';
+  } else if (typeof structured.humanAction === 'string') {
     structured.humanAction =
       NOVA_HUMAN_ACTION_ALIASES[structured.humanAction] ?? structured.humanAction;
   }
   // The planner, not the model, owns the final read-only tag set. Nova's
   // observed markers mean "no model tags" and are safely equivalent to [].
+  // Workflow-folder leaks into suggestedTools are dropped; unknown write-like
+  // tags still fail closed at Zod.
   if (typeof structured.suggestedTools === 'string') {
     if (structured.suggestedTools === 'read-only') structured.suggestedTools = [];
   } else if (Array.isArray(structured.suggestedTools)) {
-    structured.suggestedTools = structured.suggestedTools.filter(
-      (tag) => tag !== 'read-only' && !NOVA_TOOL_MARKERS_TO_DROP.has(String(tag)),
-    );
+    const kept: string[] = [];
+    for (const tag of structured.suggestedTools) {
+      const value = String(tag);
+      if (value === 'read-only' || NOVA_TOOL_MARKERS_TO_DROP.has(value)) continue;
+      if (READ_TOOL_ID_SET.has(value)) {
+        kept.push(value);
+        continue;
+      }
+      // Preserve fail-closed for unknown write-ish tags (e.g. reservation_create).
+      kept.push(value);
+    }
+    structured.suggestedTools = kept;
   }
   return structured;
 }

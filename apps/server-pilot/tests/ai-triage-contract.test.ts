@@ -1167,6 +1167,62 @@ describe('AI triage contract', () => {
     expect(result.output.suggestedTools).toEqual(['hms_find_reservation', 'hms_quote_stay']);
   });
 
+  it('coerces boolean humanAction and drops workflow-folder tool leaks', async () => {
+    const result = await classifyWorkflowMailTriage(
+      {
+        transportId: 'transport-centurion',
+        threadId: 'thread-nova-bool-human-action',
+        triggerMessageId: 'msg-nova-bool-human-action',
+        messages: [
+          {
+            id: 'msg-nova-bool-human-action',
+            from: 'noreply@synxis.com',
+            subject: 'Reservation Confirmed',
+            body: 'Res Confirmed for arrival tomorrow. No action required.',
+            direction: 'inbound',
+            createdAt: new Date('2026-07-01T10:00:00.000Z'),
+            receivedAt: new Date('2026-07-01T10:00:00.000Z'),
+            sentAt: null,
+          },
+        ],
+        asOf: '2026-07-01T12:00:00.000Z',
+        modelId: 'amazon.nova-lite-v1:0',
+        promptVersion: 'triage-v6',
+      },
+      {
+        invoke: async () => ({
+          modelId: 'amazon.nova-lite-v1:0',
+          output: {
+            primaryFolder: 'bookings',
+            priority: 'P4',
+            urgent: false,
+            overlays: {},
+            isSpam: false,
+            suggestedTools: ['automated-channel', 'hms_find_reservation'],
+            sourceScope: 'external',
+            automationState: 'candidate',
+            humanAction: false,
+            confidence: 0.7,
+            rationale: 'routine channel confirm',
+            policyFlags: [],
+            abstainReason: null,
+          },
+          usage: {
+            inputTokens: 1,
+            outputTokens: 1,
+            totalTokens: 2,
+            latencyMs: 1,
+            estimatedCostUsd: 0,
+            rateTableVersion: 'test',
+          },
+        }),
+      },
+    );
+
+    expect(result.rawOutput.humanAction).toBe('none');
+    expect(result.rawOutput.suggestedTools).toEqual(['hms_find_reservation']);
+  });
+
   it('fails closed on unknown Nova tool tags after known overlay tags', async () => {
     await expect(
       classifyWorkflowMailTriage(
