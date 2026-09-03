@@ -251,9 +251,15 @@ export function evaluateGoldAutomateRecall(
       refined.isSpam === false;
     if (pass) hits += 1;
     else {
-      failures.push(
-        `automate miss ${entry.id}: got ${'primaryFolder' in refined ? refined.primaryFolder : refined.category}/spam=${'isSpam' in refined ? refined.isSpam : refined.category === 'spam'}`,
-      );
+      const folder =
+        'primaryFolder' in refined
+          ? refined.primaryFolder
+          : (refined as { category?: string }).category ?? 'unknown';
+      const spam =
+        'isSpam' in refined
+          ? refined.isSpam
+          : (refined as { category?: string }).category === 'spam';
+      failures.push(`automate miss ${entry.id}: got ${folder}/spam=${spam}`);
     }
   }
   const total = fixture.cohorts.automate.length;
