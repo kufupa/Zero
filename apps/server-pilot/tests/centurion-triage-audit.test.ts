@@ -20,6 +20,7 @@ import {
   QUALITY_SPAM_RECALL_FLOOR,
   auditCenturionTriageQuality,
   evaluateGoldAutomateRecall,
+  evaluateGoldNeverSpamNegatives,
   evaluateGoldSpamRecall,
   evaluateQ11VolumeBand,
   evaluateSpamFpV6Refine,
@@ -445,6 +446,14 @@ describe('audit CLI args', () => {
       quality: true,
       q11VolumePath: 'q11.json',
     });
+  });
+
+  it('documents that --quality requires --q11-volume in audit help', () => {
+    const src = readFileSync(
+      join(here, '../scripts/audit-centurion-triage-retag.mjs'),
+      'utf8',
+    );
+    expect(src).toMatch(/--quality requires --q11-volume/);
   });
 });
 
@@ -1425,6 +1434,42 @@ describe('centurion triage quality --quality floors', () => {
     });
     expect(result.ok).toBe(false);
     expect(result.errors.join('\n')).toMatch(/automate recall/i);
+  });
+
+  it('fails closed when Q11 Un/Rsp/Act volume is omitted (no WINDOW default)', () => {
+    const missing = evaluateQ11VolumeBand({
+      automateThreads: Q11_MIN_AUTOMATE_THREADS,
+      spamThreads: Q11_MIN_SPAM_THREADS,
+      unanswered: null,
+      responded: null,
+      actionable: null,
+    });
+    expect(missing.ok).toBe(false);
+    expect(missing.errors.join('\n')).toMatch(/q11-volume|Un\/Rsp\/Act|WINDOW default/i);
+  });
+
+  it('fails --quality when gold neverSpamNegatives regress to spam under forced-spam refine', async () => {
+    const gold = loadCenturionTriageQualityGoldFixture(goldFixturePath);
+    const never = evaluateGoldNeverSpamNegatives(gold);
+    expect(never.failures.length).toBe(0);
+    expect(never.hits).toBe(never.total);
+    expect(never.total).toBeGreaterThanOrEqual(15);
+
+    const broken = structuredClone(gold);
+    broken.cohorts.neverSpamNegatives[0] = {
+      ...broken.cohorts.neverSpamNegatives[0]!,
+      from: 'noreply@fortimail-01.vox.co.za',
+      subject: 'FortiMail Quarantine Digest',
+      bodySnippet: 'Quarantine report: 12 messages held for review.',
+    };
+    expect(evaluateGoldNeverSpamNegatives(broken).failures.length).toBeGreaterThan(0);
+
+    const result = await auditCenturionTriageQuality({
+      driver: qualityDriver(),
+      goldFixture: broken,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.errors.join('\n')).toMatch(/neverSpamNegatives|never-spam negative/i);
   });
 
   it('fails closed on neverSpamInSpam, staffOutboundInSpam, and Q11 volume', async () => {

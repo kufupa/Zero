@@ -16,8 +16,8 @@
  *
  * --quality runs fail-closed Q7 recall floors + spam-fp-v6 + neverSpam/staff spam
  * safety + Q11 WINDOW volume sanity (shared refine from triage.ts — no duplicated
- * heuristics). Optional --q11-volume JSON supplies live Un/Rsp/Act counts when
- * WINDOW band cannot be inferred from folder SQL alone.
+ * heuristics). --quality requires --q11-volume JSON with live Un/Rsp/Act from
+ * conversation-signals; without it the quality gate fails closed (no WINDOW default).
  *
  * Ops sequence (Wave B re-backfill):
  *   quiesce → snapshot + KEY_PREFIX → dry-run retag → restore drill →
@@ -795,14 +795,21 @@ async function main() {
         auditCenturionTriageQuality,
         createPostgresCenturionTriageQualityDriver,
       } = await import('../src/ops/centurion-triage-quality-audit.ts');
-      let q11VolumeOverride = undefined;
-      if (args.q11VolumePath) {
-        const raw = JSON.parse(fs.readFileSync(args.q11VolumePath, 'utf8'));
-        q11VolumeOverride = {
-          unanswered: raw.unanswered,
-          responded: raw.responded,
-          actionable: raw.actionable,
-        };
+      if (!args.q11VolumePath) {
+        throw new Error(
+          '--quality requires --q11-volume <path> (live Un/Rsp/Act; refuse WINDOW default)',
+        );
+      }
+      const raw = JSON.parse(fs.readFileSync(args.q11VolumePath, 'utf8'));
+      const q11VolumeOverride = {
+        unanswered: raw.unanswered,
+        responded: raw.responded,
+        actionable: raw.actionable,
+      };
+      for (const key of ['unanswered', 'responded', 'actionable']) {
+        if (typeof q11VolumeOverride[key] !== 'number') {
+          throw new Error(`--q11-volume JSON missing numeric ${key}`);
+        }
       }
       const quality = await auditCenturionTriageQuality({
         driver: createPostgresCenturionTriageQualityDriver(

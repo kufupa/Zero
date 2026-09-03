@@ -151,9 +151,10 @@ const spamFpFixtureSchema = z.object({
 export type Q11VolumeMetrics = {
   automateThreads: number;
   spamThreads: number;
-  unanswered: number;
-  responded: number;
-  actionable: number;
+  /** Live conversation-signals Un count; null until --q11-volume supplies it (no WINDOW default). */
+  unanswered: number | null;
+  responded: number | null;
+  actionable: number | null;
 };
 
 export type CenturionTriageQualityDriver = {
@@ -291,6 +292,53 @@ export function evaluateGoldSpamRecall(
   return { hits, total, recall: recall(hits, total), failures };
 }
 
+/**
+ * Gold never-spam negatives must not gain promo/FortiMail force-spam from refine.
+ * Allowlisted From also clears a forced-spam model output (R22).
+ */
+export function evaluateGoldNeverSpamNegatives(
+  fixture: CenturionTriageQualityGoldFixture,
+): { hits: number; total: number; recall: number; failures: string[] } {
+  const baseline = baselineMislabeledBookingsOutput();
+  const forced = forcedSpamModelOutput();
+  let hits = 0;
+  const failures: string[] = [];
+  for (const entry of fixture.cohorts.neverSpamNegatives) {
+    const input = { from: entry.from, subject: entry.subject, body: entry.bodySnippet };
+    const refined = refineTriageOutput(input, baseline);
+    const isSpam =
+      'isSpam' in refined
+        ? refined.isSpam === true
+        : (refined as { category?: string }).category === 'spam';
+    const flags = 'policyFlags' in refined ? refined.policyFlags : [];
+    const forcedSpamFlag = flags.some(
+      (f) => f === 'refine:promo-spam' || f === 'refine:fortimail-spam',
+    );
+    let pass = !isSpam && !forcedSpamFlag;
+    if (pass && isAutoTriageNeverSpam(entry.from)) {
+      const cleared = refineTriageOutput(input, forced);
+      const stillSpam =
+        'isSpam' in cleared
+          ? cleared.isSpam === true
+          : (cleared as { category?: string }).category === 'spam';
+      if (stillSpam) {
+        pass = false;
+        failures.push(
+          `never-spam negative miss ${entry.id}: allowlist From did not clear forced spam`,
+        );
+      }
+    }
+    if (pass) hits += 1;
+    else if (!failures.some((f) => f.includes(entry.id))) {
+      failures.push(
+        `never-spam negative miss ${entry.id}: expected non-spam without promo/fortimail force (spam=${isSpam}, flags=${flags.join(',')})`,
+      );
+    }
+  }
+  const total = fixture.cohorts.neverSpamNegatives.length;
+  return { hits, total, recall: recall(hits, total), failures };
+}
+
 export function evaluateSpamFpV6Refine(
   fixturePath: string = defaultSpamFpFixturePath(),
 ): { regressions: number; failures: string[] } {
@@ -381,20 +429,30 @@ export function evaluateQ11VolumeBand(metrics: Q11VolumeMetrics): {
   if (metrics.spamThreads < Q11_MIN_SPAM_THREADS) {
     errors.push(`Q11 spam volume too low: ${metrics.spamThreads} < min ${Q11_MIN_SPAM_THREADS} (must be ≫9)`);
   }
-  if (!isWithinQ11WindowBand(metrics.unanswered, Q11_WINDOW_UNANSWERED)) {
+  if (
+    metrics.unanswered == null ||
+    metrics.responded == null ||
+    metrics.actionable == null
+  ) {
     errors.push(
-      `Q11 unanswered out of WINDOW band: ${metrics.unanswered} vs baseline ${Q11_WINDOW_UNANSWERED}`,
+      'Q11 Un/Rsp/Act requires --q11-volume (live conversation-signals counts); refuse WINDOW default',
     );
-  }
-  if (!isWithinQ11WindowBand(metrics.responded, Q11_WINDOW_RESPONDED)) {
-    errors.push(
-      `Q11 responded out of WINDOW band: ${metrics.responded} vs baseline ${Q11_WINDOW_RESPONDED}`,
-    );
-  }
-  if (!isWithinQ11WindowBand(metrics.actionable, Q11_WINDOW_ACTIONABLE)) {
-    errors.push(
-      `Q11 actionable out of WINDOW band: ${metrics.actionable} vs baseline ${Q11_WINDOW_ACTIONABLE}`,
-    );
+  } else {
+    if (!isWithinQ11WindowBand(metrics.unanswered, Q11_WINDOW_UNANSWERED)) {
+      errors.push(
+        `Q11 unanswered out of WINDOW band: ${metrics.unanswered} vs baseline ${Q11_WINDOW_UNANSWERED}`,
+      );
+    }
+    if (!isWithinQ11WindowBand(metrics.responded, Q11_WINDOW_RESPONDED)) {
+      errors.push(
+        `Q11 responded out of WINDOW band: ${metrics.responded} vs baseline ${Q11_WINDOW_RESPONDED}`,
+      );
+    }
+    if (!isWithinQ11WindowBand(metrics.actionable, Q11_WINDOW_ACTIONABLE)) {
+      errors.push(
+        `Q11 actionable out of WINDOW band: ${metrics.actionable} vs baseline ${Q11_WINDOW_ACTIONABLE}`,
+      );
+    }
   }
   return { ok: errors.length === 0, errors };
 }
@@ -430,6 +488,14 @@ export async function auditCenturionTriageQuality(opts: {
   if (spamFp.regressions !== 0) {
     errors.push(`spam-fp-v6 protected regressions=${spamFp.regressions} (expected 0)`);
     errors.push(...spamFp.failures.slice(0, 5));
+  }
+
+  const neverSpamNeg = evaluateGoldNeverSpamNegatives(fixture);
+  if (neverSpamNeg.failures.length > 0) {
+    errors.push(
+      `neverSpamNegatives regressions=${neverSpamNeg.failures.length} (${neverSpamNeg.hits}/${neverSpamNeg.total} held non-spam)`,
+    );
+    errors.push(...neverSpamNeg.failures.slice(0, 5));
   }
 
   const safety = await opts.driver.getSpamSafetyCounts();
@@ -544,12 +610,18 @@ export function createPostgresCenturionTriageQualityDriver(
       const row = rows[0] ?? {};
       const automateThreads = Number(row.automateThreads ?? 0);
       const spamThreads = Number(row.spamThreads ?? 0);
+      const unanswered =
+        typeof q11VolumeOverride?.unanswered === 'number' ? q11VolumeOverride.unanswered : null;
+      const responded =
+        typeof q11VolumeOverride?.responded === 'number' ? q11VolumeOverride.responded : null;
+      const actionable =
+        typeof q11VolumeOverride?.actionable === 'number' ? q11VolumeOverride.actionable : null;
       return {
         automateThreads,
         spamThreads,
-        unanswered: q11VolumeOverride?.unanswered ?? Q11_WINDOW_UNANSWERED,
-        responded: q11VolumeOverride?.responded ?? Q11_WINDOW_RESPONDED,
-        actionable: q11VolumeOverride?.actionable ?? Q11_WINDOW_ACTIONABLE,
+        unanswered,
+        responded,
+        actionable,
       };
     },
   };
