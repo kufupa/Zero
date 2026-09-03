@@ -651,7 +651,8 @@ function refineWorkflowTriageOutput(
     };
   } else if (
     !isProtectedFromWorkflowForceSpam(input, neverSpamFrom, notSpam) &&
-    shouldForceWorkflowPromoSpam(input, haystack)
+    shouldForceWorkflowPromoSpam(input, haystack) &&
+    !isRoutineSystemMail(input, haystack)
   ) {
     next = {
       ...next,

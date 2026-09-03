@@ -439,7 +439,7 @@ describe('workflow routine system-mail force-automate (KTD1)', () => {
         subject:
           'Booking Update for The Centurion Hotel via Channel Manager: HTL-WBD-1042951365',
         body:
-          'New Booking Confirmed via Channel Manager YOUR EMAIL COPY Dear Reservations team, Below is an update from Destinations of the World that has been sent to your Channel Manager.',
+          'New Booking Confirmed via Channel Manager YOUR EMAIL COPY Dear Reservations team, Below is an update from Destinations of the World that has been sent to your Channel Manager. Please click here https://extranet.webbeds.com/book to open your account.',
       },
       workflowOutput({
         primaryFolder: 'unknown-review',
