@@ -536,6 +536,13 @@ const NOVA_SOURCE_SCOPE_ALIASES: Record<string, string> = {
   external_property: 'external',
 };
 
+const NOVA_AUTOMATION_STATE_ALIASES: Record<string, string> = {
+  active: 'candidate',
+  routine: 'routine_candidate',
+  exception: 'exception_candidate',
+  internal: 'excluded_internal',
+};
+
 const NOVA_HUMAN_ACTION_ALIASES: Record<string, string> = {
   required: 'review_required',
   review: 'review_required',
@@ -545,6 +552,9 @@ const NOVA_HUMAN_ACTION_ALIASES: Record<string, string> = {
   email_verification: 'review_required',
   acknowledge: 'none',
   acknowledged: 'none',
+  verify: 'verify_state',
+  verify_and_escalate_if_needed: 'review_required',
+  'verify-and-escalate-if-needed': 'review_required',
 };
 
 const NOVA_OVERLAY_ALIASES: Record<string, (typeof TRIAGE_OVERLAYS)[number]> = {
@@ -642,6 +652,11 @@ function normalizeNovaWorkflowOutput(raw: Record<string, unknown>): Record<strin
   if (typeof structured.sourceScope === 'string') {
     structured.sourceScope =
       NOVA_SOURCE_SCOPE_ALIASES[structured.sourceScope] ?? structured.sourceScope;
+  }
+  if (typeof structured.automationState === 'string') {
+    structured.automationState =
+      NOVA_AUTOMATION_STATE_ALIASES[structured.automationState] ??
+      structured.automationState;
   }
   if (typeof structured.humanAction === 'boolean') {
     // Observed Nova dialect: boolean humanAction means "needs human?" rather
