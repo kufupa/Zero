@@ -23,6 +23,7 @@ import {
   computePreStateHash,
   computeTriggerHash,
   validateBoundApprovedRolloutManifest,
+  createPostgresRetagDriver,
 } from './retag-centurion-triage.mjs';
 import {
   assertValidSnapshot,
@@ -222,42 +223,11 @@ function isoOrNull(value) {
 }
 
 export function createPostgresActionableDriver(sql) {
+  const retagDriver = createPostgresRetagDriver(sql);
   return {
     async listCandidateRows() {
-      const rows = await sql`
-        SELECT
-          t.id AS thread_id,
-          t.spam_at,
-          t.spam_user_locked_at,
-          t.subject,
-          EXISTS (
-            SELECT 1 FROM message m
-            WHERE m.thread_id = t.id AND m.direction = 'inbound'
-          ) AS has_inbound,
-          (
-            SELECT m.id FROM message m
-            WHERE m.thread_id = t.id AND m.direction = 'inbound'
-            ORDER BY coalesce(m.received_at, m.created_at) DESC
-            LIMIT 1
-          ) AS latest_inbound_id,
-          (
-            SELECT m.from_address FROM message m
-            WHERE m.thread_id = t.id AND m.direction = 'inbound'
-            ORDER BY coalesce(m.received_at, m.created_at) DESC
-            LIMIT 1
-          ) AS latest_inbound_from,
-          (
-            SELECT coalesce(m.received_at, m.created_at) FROM message m
-            WHERE m.thread_id = t.id AND m.direction = 'inbound'
-            ORDER BY coalesce(m.received_at, m.created_at) DESC
-            LIMIT 1
-          ) AS latest_inbound_created_at,
-          coalesce((
-            SELECT array_agg(c.slug ORDER BY c.slug)
-            FROM mail_thread_category mtc
-            JOIN mail_category c ON c.id = mtc.category_id
-            WHERE mtc.thread_id = t.id
-          ), '{}'::text[]) AS ai_category_slugs
+      const idRows = await sql`
+        SELECT t.id AS thread_id, t.subject
         FROM mail_thread t
         WHERE t.transport_id = ${TRANSPORT_ID}
           AND t.spam_at IS NULL
@@ -269,17 +239,25 @@ export function createPostgresActionableDriver(sql) {
             SELECT 1 FROM mail_thread_category mtc WHERE mtc.thread_id = t.id
           )
       `;
-      return rows.map((row) => ({
-        threadId: String(row.thread_id),
-        spamAt: isoOrNull(row.spam_at),
-        spamUserLockedAt: isoOrNull(row.spam_user_locked_at),
-        hasInbound: Boolean(row.has_inbound),
-        latestInboundId: row.latest_inbound_id ? String(row.latest_inbound_id) : null,
-        latestInboundFrom: row.latest_inbound_from ? String(row.latest_inbound_from) : null,
-        latestInboundCreatedAt: isoOrNull(row.latest_inbound_created_at),
-        subject: row.subject != null ? String(row.subject) : null,
-        aiCategorySlugs: Array.isArray(row.ai_category_slugs)
-          ? row.ai_category_slugs.map(String)
+      if (idRows.length === 0) return [];
+      const threadIds = idRows.map((r) => String(r.thread_id));
+      const subjectById = new Map(
+        idRows.map((r) => [String(r.thread_id), r.subject != null ? String(r.subject) : null]),
+      );
+      const live = await retagDriver.listThreads({ threadIds });
+      return live.map((row) => ({
+        threadId: String(row.threadId),
+        spamAt: row.spamAt != null ? isoOrNull(row.spamAt) : null,
+        spamUserLockedAt:
+          row.spamUserLockedAt != null ? isoOrNull(row.spamUserLockedAt) : null,
+        hasInbound: Boolean(row.hasInbound),
+        latestInboundId: row.latestInboundId ? String(row.latestInboundId) : null,
+        latestInboundFrom: row.latestInboundFrom ? String(row.latestInboundFrom) : null,
+        latestInboundCreatedAt:
+          row.latestInboundCreatedAt != null ? isoOrNull(row.latestInboundCreatedAt) : null,
+        subject: subjectById.get(String(row.threadId)) ?? null,
+        aiCategorySlugs: Array.isArray(row.aiCategorySlugs)
+          ? row.aiCategorySlugs.map(String)
           : [],
       }));
     },
