@@ -289,7 +289,15 @@ describe('retag-centurion-triage CLI args', () => {
       dryRun: true,
       fromDomain: 'renniesbcdtravel.com',
       targetsPath: null,
+      includeNonSpam: false,
     });
+    expect(
+      parseArgs(['--from-domain', 'synxis.com', '--include-non-spam']),
+    ).toMatchObject({
+      fromDomain: 'synxis.com',
+      includeNonSpam: true,
+    });
+    expect(() => parseArgs(['--include-non-spam'])).toThrow(/--from-domain/i);
   });
 
   it('uses v6 prompt/key defaults and manages legacy plus workflow slugs', () => {
@@ -956,6 +964,56 @@ describe('runCenturionRetag idempotency + skips', () => {
     expect(mem.threads.get('t-allow')?.aiCategorySlugs).toEqual(['ops']);
     expect(mem.threads.get('t-nospam')?.aiCategorySlugs).toEqual(['ops']);
     expect(mem.runs.size).toBe(0);
+  });
+
+  it('includeNonSpam allows from-domain quality repair of non-spam Automate donors', async () => {
+    const createdAt = '2026-07-01T10:00:00.000Z';
+    const mem = createMemoryDriver({
+      threads: [
+        {
+          threadId: 't-synxis',
+          spamAt: null,
+          spamUserLockedAt: null,
+          latestInboundId: 'm-synxis',
+          latestInboundFrom: 'notice@synxis.com',
+          latestInboundCreatedAt: new Date(createdAt),
+          aiCategorySlugs: ['bookings'],
+          hasInbound: true,
+        },
+      ],
+    });
+
+    const dry = await runCenturionRetag({
+      driver: mem.driver,
+      dryRun: true,
+      keyPrefix: 'inbound-triage-retag-v6-quality-domain',
+      fromDomain: 'synxis.com',
+      includeNonSpam: true,
+      manifest: null,
+    });
+    expect(dry).toMatchObject({
+      scanned: 1,
+      eligible: 1,
+      skippedNotSpam: 0,
+      wouldInsert: 1,
+    });
+
+    const applied = await runCenturionRetag({
+      driver: mem.driver,
+      dryRun: false,
+      keyPrefix: 'inbound-triage-retag-v6-quality-domain',
+      fromDomain: 'synxis.com',
+      includeNonSpam: true,
+      manifest: null,
+    });
+    expect(applied).toMatchObject({
+      eligible: 1,
+      inserted: 1,
+      mutated: 1,
+      skippedNotSpam: 0,
+    });
+    expect(mem.runs.size).toBe(1);
+    expect([...mem.runs.values()][0]?.metrics).toMatchObject({ retagPending: true });
   });
 
   it('selects latest inbound by createdAt/id not backdated received dates', async () => {

@@ -13,6 +13,8 @@
  *   node scripts/retag-centurion-triage.mjs --apply --targets approved.json --key-prefix inbound-triage-retag-v6-...
  *   node scripts/retag-centurion-triage.mjs --from-domain example.com
  *   node scripts/retag-centurion-triage.mjs --apply --from-domain example.com --key-prefix inbound-triage-retag-v6-repair
+ *   node scripts/retag-centurion-triage.mjs --from-domain synxis.com --include-non-spam
+ *   node scripts/retag-centurion-triage.mjs --apply --from-domain synxis.com --include-non-spam --key-prefix inbound-triage-retag-v6-quality
  *
  * Env: DATABASE_URL (+ deploy/rds-ca-global.pem for SSL when present)
  */
@@ -130,11 +132,16 @@ export function parseArgs(argv) {
   let fromDomain = null;
   let targetsPath = null;
   let dryRun = true;
+  let includeNonSpam = false;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--apply') {
       dryRun = false;
+      continue;
+    }
+    if (arg === '--include-non-spam') {
+      includeNonSpam = true;
       continue;
     }
     if (arg === '--key-prefix') {
@@ -174,8 +181,11 @@ export function parseArgs(argv) {
     // Exploratory dry-run without scope is unsafe for full rollout; require explicit mode.
     throw new Error('require --targets <manifest> (full rollout) or --from-domain <domain> (subset repair)');
   }
+  if (includeNonSpam && !fromDomain) {
+    throw new Error('--include-non-spam requires --from-domain (quality domain repair)');
+  }
 
-  return { dryRun, keyPrefix, fromDomain, targetsPath };
+  return { dryRun, keyPrefix, fromDomain, targetsPath, includeNonSpam };
 }
 
 function isSha256Hex(value) {
@@ -653,6 +663,7 @@ function sslOptions() {
  *   dryRun: boolean,
  *   keyPrefix: string,
  *   fromDomain: string|null,
+ *   includeNonSpam?: boolean,
  *   manifest: object|null,
  *   now?: Date,
  * }} opts
@@ -663,6 +674,7 @@ export async function runCenturionRetag(opts) {
     dryRun,
     keyPrefix,
     fromDomain,
+    includeNonSpam = false,
     manifest,
     now = new Date(),
   } = opts;
@@ -735,8 +747,9 @@ export async function runCenturionRetag(opts) {
       continue;
     }
 
-    if (fromDomain && !row.spamAt) {
-      // subset repair historically only retagged spam-tagged domain mail
+    if (fromDomain && !row.spamAt && !includeNonSpam) {
+      // subset repair historically only retagged spam-tagged domain mail;
+      // --include-non-spam opens quality Automate/domain repair for Bookings misfiles
       counts.skippedNotSpam += 1;
       continue;
     }
@@ -808,7 +821,7 @@ export async function runCenturionRetag(opts) {
         counts.skippedAllowed += 1;
         return;
       }
-      if (fromDomain && !live.spamAt) {
+      if (fromDomain && !live.spamAt && !includeNonSpam) {
         counts.skippedNotSpam += 1;
         return;
       }
@@ -891,6 +904,7 @@ async function main() {
       dryRun: args.dryRun,
       keyPrefix: args.keyPrefix,
       fromDomain: args.fromDomain,
+      includeNonSpam: args.includeNonSpam,
       manifest,
     });
     console.log(JSON.stringify(summary));
