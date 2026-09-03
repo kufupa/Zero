@@ -86,12 +86,12 @@ FAIL → reproduce → root cause (file:line) → smallest correct fix → test 
 
 ### Done criteria
 
-- [ ] Layer B eval vs EOD gold **483/282/201**: recall ≥95% of 282 responded (≥268 TP), FP ≤2% of 201 unanswered (≤4 FP) — or documented residual with RCA + gold-edge evidence.
-- [ ] Signal taxonomy ports EOD prefixes used for revenue (quoted_* family, in_reply_to_hotel_msgid, orphan_*, cross_thread_conf, staff_inbound_commercial_reply, in_thread) without loose orphan/cross FPs that exhaustive audit flipped.
-- [ ] Layer C: no template mega-component ≥8 (bounce/handover/Nedbank/quotation); Zuko-class ≤5; Breakfast Pack staff RE still links.
-- [ ] Pilot: deactivate superseded unsafe edges + re-backfill; bounce/Zuko screenshots fixed; health OK.
-- [ ] No LLM; no `thread_id` rewrite; UI polish not required this ship.
-- [ ] Handoff updated with before/after KPI + link totals.
+- [x] Layer B eval vs EOD gold **483/282/201**: recall ≥95% of 282 responded (≥268 TP), FP ≤2% of 201 unanswered (≤4 FP) — or documented residual with RCA + gold-edge evidence.
+- [x] Signal taxonomy ports EOD prefixes used for revenue (quoted_* family, in_reply_to_hotel_msgid, orphan_*, cross_thread_conf, staff_inbound_commercial_reply, in_thread) without loose orphan/cross FPs that exhaustive audit flipped.
+- [x] Layer C: no template mega-component ≥8 (bounce/handover/Nedbank/quotation); Zuko-class ≤5; Breakfast Pack staff RE still links.
+- [x] Pilot: deactivate superseded unsafe edges + re-backfill; bounce/Zuko screenshots fixed; health OK.
+- [x] No LLM; no `thread_id` rewrite; UI polish not required this ship.
+- [x] Handoff updated with before/after KPI + link totals.
 
 ### True blockers
 
@@ -264,40 +264,40 @@ Layer E  UI         reads B badge + C grouping; polish later   MINIMAL
 
 ### Task 0: Gold contract lock
 
-- [ ] **Step 1:** Point eval at EOD paths; set `GOLD_ACTIONABLE=483`, `GOLD_RESPONDED=282`, `GOLD_UNANSWERED=201`, `GOLD_RECALL_MIN=268`, `GOLD_FALSE_POSITIVE_MAX=4`. Prefer loading labels from `…-eod-threads.json` (`responded` field).
-- [ ] **Step 2:** Failing eval against current detector (expect miss vs 282 / FP vs correction set). Update CLI hardcoded 438 gate.
-- [ ] **Step 3:** Commit constants + failing eval baseline note.
+- [x] **Step 1:** Point eval at EOD paths; set `GOLD_ACTIONABLE=483`, `GOLD_RESPONDED=282`, `GOLD_UNANSWERED=201`, `GOLD_RECALL_MIN=268`, `GOLD_FALSE_POSITIVE_MAX=4`. Prefer loading labels from `…-eod-threads.json` (`responded` field).
+- [x] **Step 2:** Failing eval against current detector (expect miss vs 282 / FP vs correction set). Update CLI hardcoded 438 gate.
+- [x] **Step 3:** Commit constants + failing eval baseline note.
 
 ### Task 1: Layer B signal port (TDD)
 
 **Files:** `conversation-signals.ts`, `tests/conversation-signals*.ts`, eval ops
 
-- [ ] **Step 1: Failing tests** per new signal family (Outlook quoted From, In-Reply-To hotel MID, staff inbound commercial, Apple/Gmail variants) + FP cases (loose orphan flipped in audit).
-- [ ] **Step 2: Implement detectors** (deterministic regex/header only — no LLM).
-- [ ] **Step 3: PASS unit tests** with `unset DATABASE_URL VITEST_ALLOW_PILOT_RDS`.
-- [ ] **Step 4: Run eval vs EOD ledger** — iterate until done-criteria recall/FP met.
-- [ ] **Step 5: Commit**
+- [x] **Step 1: Failing tests** per new signal family (Outlook quoted From, In-Reply-To hotel MID, staff inbound commercial, Apple/Gmail variants) + FP cases (loose orphan flipped in audit).
+- [x] **Step 2: Implement detectors** (deterministic regex/header only — no LLM).
+- [x] **Step 3: PASS unit tests** with `unset DATABASE_URL VITEST_ALLOW_PILOT_RDS`.
+- [x] **Step 4: Run eval vs EOD ledger** — iterate until done-criteria recall/FP met.
+- [x] **Step 5: Commit**
 
 ### Task 2: Layer C precision harden (TDD)
 
 **Files:** `conversation-link.ts`, `conversation-link.test.ts`
 
-- [ ] **Step 1: Failing tests** — bounce×3, handover×9, quotation×9 → 0 SC; agency 5 auto confs different conf# → 0; one conf in inbound → 1 link; Breakfast Pack → 1 SC.
-- [ ] **Step 2: Implement P1–P5**; ensure grouper skips `supersededAt IS NOT NULL`.
-- [ ] **Step 3: PASS vitest**; offline audit gates (SC ≤10% baseline, no template component ≥8, Zuko ≤5).
-- [ ] **Step 4: Commit**
+- [x] **Step 1: Failing tests** — bounce×3, handover×9, quotation×9 → 0 SC; agency 5 auto confs different conf# → 0; one conf in inbound → 1 link; Breakfast Pack → 1 SC.
+- [x] **Step 2: Implement P1–P5**; ensure grouper skips `supersededAt IS NOT NULL`.
+- [x] **Step 3: PASS vitest**; offline audit gates (SC ≤10% baseline, no template component ≥8, Zuko ≤5).
+- [x] **Step 4: Commit**
 
 ### Task 3: Pilot ship
 
-- [ ] **Step 1:** Land on branch from `main`; deploy `GIT_BRANCH=… ops-deploy.sh`.
-- [ ] **Step 2:** `--deactivate-unsafe` dry-run → apply; backfill `--apply --confirm-pilot-rds`.
-- [ ] **Step 3:** Verify bounce=1, Zuko≤5, Breakfast Pack linked; health OK; triage still gets `conversationResponded` from Layer B.
-- [ ] **Step 4:** Handoff + commit
+- [x] **Step 1:** Land on branch from `main`; deploy `GIT_BRANCH=… ops-deploy.sh`.
+- [x] **Step 2:** `--deactivate-unsafe` dry-run → apply; backfill `--apply --confirm-pilot-rds`.
+- [x] **Step 3:** Verify bounce=1, Zuko≤5, Breakfast Pack linked; health OK; triage still gets `conversationResponded` from Layer B.
+- [x] **Step 4:** Handoff + commit
 
 ### Task 4: CE review
 
-- [ ] **Step 1:** ce-code-review on diff.
-- [ ] **Step 2:** Confirm done criteria checklist green.
+- [x] **Step 1:** ce-code-review on diff.
+- [x] **Step 2:** Confirm done criteria checklist green.
 
 ---
 
