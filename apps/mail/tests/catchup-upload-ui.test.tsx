@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { navigationConfig } from '../config/navigation';
+import { navigationConfig, bottomNavItems } from '../config/navigation';
 import { CatchupUploadContent } from '../components/settings/catchup-upload';
 import {
   MAX_CATCHUP_FILE_BYTES,
@@ -15,6 +15,17 @@ describe('catchup upload UI navigation and component contract', () => {
     expect(catchupItem?.title).toBe('Upload backup');
     expect(catchupItem?.url).toBe('/settings/catchup-upload');
     expect(catchupItem?.hidden).toBe(true);
+  });
+
+  it('registers catchup-upload in bottomNavItems immediately after settings', () => {
+    const bottomSection = bottomNavItems[0];
+    const settingsIdx = bottomSection.items.findIndex((item) => item.id === 'settings');
+    const catchupIdx = bottomSection.items.findIndex((item) => item.id === 'catchup-upload');
+
+    expect(settingsIdx).toBeGreaterThanOrEqual(0);
+    expect(catchupIdx).toBe(settingsIdx + 1);
+    expect(bottomSection.items[catchupIdx].title).toBe('Upload backup');
+    expect(bottomSection.items[catchupIdx].hidden).toBe(true);
   });
 
   it('exports CatchupUploadContent component', () => {

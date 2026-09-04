@@ -96,11 +96,15 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
 
       const footerItems = bottomNavItems.map((section) => ({
         ...section,
-        items: section.items.map((item) =>
-          item.id === 'admin-dashboard'
-            ? { ...item, hidden: !(currentSection === 'mail' && showAdminDashboard) }
-            : item,
-        ),
+        items: section.items.map((item) => {
+          if (item.id === 'admin-dashboard') {
+            return { ...item, hidden: !(currentSection === 'mail' && showAdminDashboard) };
+          }
+          if (item.id === 'catchup-upload') {
+            return { ...item, hidden: !showCatchupUpload };
+          }
+          return item;
+        }),
       }));
 
       return { currentSection, navItems: items, footerItems };

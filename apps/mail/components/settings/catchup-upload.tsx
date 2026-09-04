@@ -93,7 +93,7 @@ export function CatchupUploadContent() {
           });
         }
 
-        toast.success(`Successfully uploaded ${file.name}`);
+        toast.success('Backup received');
         refetchUploads();
       } catch (err: unknown) {
         if (abortController.signal.aborted) {
@@ -146,7 +146,7 @@ export function CatchupUploadContent() {
     <div className="space-y-6">
       <SettingsCard
         title="Upload Outlook backup"
-        description="Upload sent email archives (.pst, .zip, .msg). Files are saved to secure storage for mailbox catch-up. Max 50 GB per file."
+        description="Export Sent mail from Outlook as a .pst, a .zip of .msg files, or a single .msg. Drop it here. We store it for Nava — it will not appear in your inbox yet."
       >
         <div className="space-y-4">
           <input
@@ -180,10 +180,22 @@ export function CatchupUploadContent() {
                 <Upload className="h-6 w-6 text-muted-foreground" />
               </div>
               <p className="text-sm font-medium">
-                Click or drag and drop to upload backup file
+                Drop .pst, .zip, or .msg here
               </p>
-              <p className="text-xs text-muted-foreground mt-1">
-                Accepted formats: .pst, .zip, .msg (up to 50 GB)
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                className="mt-2"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  fileInputRef.current?.click();
+                }}
+              >
+                Choose file
+              </Button>
+              <p className="text-xs text-muted-foreground mt-2">
+                Max 50 GB
               </p>
             </div>
           ) : (
@@ -211,12 +223,15 @@ export function CatchupUploadContent() {
               <div className="flex justify-between text-xs text-muted-foreground">
                 <span className="flex items-center">
                   <Loader2 className="h-3 w-3 animate-spin mr-1.5" />
-                  Uploading... {progress.percent}%
+                  Uploading… {progress.percent}%
                 </span>
                 <span>
                   {progress.formattedUploaded} / {progress.formattedTotal}
                 </span>
               </div>
+              <p className="text-xs text-muted-foreground">
+                Keep this window open until it finishes.
+              </p>
             </div>
           )}
         </div>
@@ -229,7 +244,7 @@ export function CatchupUploadContent() {
         <div className="overflow-x-auto">
           {!uploads || uploads.length === 0 ? (
             <p className="text-sm text-muted-foreground py-4">
-              No backups uploaded yet.
+              No backups yet.
             </p>
           ) : (
             <table className="w-full text-left text-sm">
@@ -256,17 +271,17 @@ export function CatchupUploadContent() {
                     <td className="py-2.5">
                       {row.status === 'stored' && (
                         <Badge variant="default" className="bg-emerald-600/90 text-white hover:bg-emerald-600">
-                          <CheckCircle2 className="h-3 w-3 mr-1" /> Stored
+                          <CheckCircle2 className="h-3 w-3 mr-1" /> Received
                         </Badge>
                       )}
                       {row.status === 'pending' && (
                         <Badge variant="secondary">
-                          <Loader2 className="h-3 w-3 mr-1 animate-spin" /> Pending
+                          <Loader2 className="h-3 w-3 mr-1 animate-spin" /> In progress
                         </Badge>
                       )}
                       {row.status === 'aborted' && (
                         <Badge variant="destructive">
-                          <AlertCircle className="h-3 w-3 mr-1" /> Aborted
+                          <AlertCircle className="h-3 w-3 mr-1" /> Cancelled
                         </Badge>
                       )}
                     </td>

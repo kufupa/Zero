@@ -23,7 +23,7 @@ describe('catchup upload client validation and helpers', () => {
     const res = validateCatchupFile({ name: 'notes.pdf', size: 1024 });
     expect(res.valid).toBe(false);
     if (!res.valid) {
-      expect(res.error).toMatch(/Allowed formats: \.pst, \.zip, \.msg/i);
+      expect(res.error).toBe('That file type isn’t supported. Use .pst, .zip, or .msg.');
     }
   });
 
@@ -34,7 +34,7 @@ describe('catchup upload client validation and helpers', () => {
     const overRes = validateCatchupFile({ name: 'too-big.pst', size: MAX_CATCHUP_FILE_BYTES + 1 });
     expect(overRes.valid).toBe(false);
     if (!overRes.valid) {
-      expect(overRes.error).toMatch(/exceeds maximum 50 GB limit/i);
+      expect(overRes.error).toBe('This file is too large. Maximum is 50 GB.');
     }
   });
 

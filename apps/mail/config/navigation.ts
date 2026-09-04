@@ -22,7 +22,7 @@ import { WORKFLOW_MAIL_FOLDER_DEFINITIONS, type DemoMailFolderId } from '@/lib/d
 import { PILOT_CAPABILITIES } from '@/lib/pilot/capabilities';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import type { ComponentType, SVGProps } from 'react';
-import { ShieldCheck } from 'lucide-react';
+import { ShieldCheck, Upload } from 'lucide-react';
 import type { CSSProperties } from 'react';
 import { m } from '@/paraglide/messages';
 
@@ -297,6 +297,13 @@ export const bottomNavItems = [
         url: '/settings/general',
         icon: SettingsGear,
         isSettingsButton: true,
+      },
+      {
+        id: 'catchup-upload',
+        title: 'Upload backup',
+        url: '/settings/catchup-upload',
+        icon: Upload,
+        hidden: true,
       },
     ],
   },

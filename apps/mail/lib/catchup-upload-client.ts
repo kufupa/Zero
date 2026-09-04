@@ -15,7 +15,7 @@ export function validateCatchupFile(file: { name: string; size: number }):
   if (!ALLOWED_CATCHUP_EXTENSIONS.includes(ext as (typeof ALLOWED_CATCHUP_EXTENSIONS)[number])) {
     return {
       valid: false,
-      error: `Invalid file type "${ext}". Allowed formats: .pst, .zip, .msg`,
+      error: 'That file type isn’t supported. Use .pst, .zip, or .msg.',
     };
   }
 
@@ -29,7 +29,7 @@ export function validateCatchupFile(file: { name: string; size: number }):
   if (file.size > MAX_CATCHUP_FILE_BYTES) {
     return {
       valid: false,
-      error: `File exceeds maximum 50 GB limit (${formatFileSize(MAX_CATCHUP_FILE_BYTES)}).`,
+      error: 'This file is too large. Maximum is 50 GB.',
     };
   }
 
