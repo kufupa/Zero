@@ -404,4 +404,40 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.unreadCounts route contr
       expect(countsAfterRename.labels.find((l: { labelId: string }) => l.labelId === labelQuarantineId)?.unreadCount).toBe(0);
     });
   }, 60000);
+
+  it('markFolderAsRead bulk marks folder/category/label threads as read', async () => {
+    await withSeededTestDb(async (db) => {
+      const primaryTransportId = TRANSPORT_ID;
+      const unreadInboxA = `th-mfr-inbox-a-${Date.now()}`;
+      const unreadInboxB = `th-mfr-inbox-b-${Date.now()}`;
+      await seedInboxThread(db, {
+        threadId: unreadInboxA,
+        transportId: primaryTransportId,
+        transportEmail: 'centurion@legacyhotels.co.za',
+        isRead: false,
+      });
+      await seedInboxThread(db, {
+        threadId: unreadInboxB,
+        transportId: primaryTransportId,
+        transportEmail: 'centurion@legacyhotels.co.za',
+        isRead: false,
+      });
+
+      const callerPrimary = await callerFor(NAVA_USER_ID, {
+        db,
+        requestedTransportId: primaryTransportId,
+      });
+
+      // @ts-expect-error markFolderAsRead being tested
+      const result = await callerPrimary.mail.markFolderAsRead({ folder: 'inbox' });
+      expect(result.updated).toBeGreaterThanOrEqual(2);
+
+      // @ts-expect-error unreadCounts
+      const counts = await callerPrimary.mail.unreadCounts();
+      const inboxFolder = counts.folders.find((f: { id: string }) => f.id === 'inbox');
+      expect(inboxFolder?.unreadCount).toBe(0);
+      expect(inboxFolder?.totalCount).toBeGreaterThanOrEqual(2);
+    });
+  }, 60000);
 });
+

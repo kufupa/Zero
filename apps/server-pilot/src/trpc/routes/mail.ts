@@ -163,6 +163,12 @@ const moveThreadsInput = z.object({
   destination: z.enum(['inbox', 'archive', 'spam', 'bin']),
 });
 
+export const markFolderAsReadInput = z.object({
+  folder: z.string().optional(),
+  categoryId: z.string().optional(),
+  labelId: z.string().optional(),
+});
+
 export const listThreadsInput = z.object({
   folder: z.enum(MAIL_FOLDER_VALUES).default('inbox'),
   q: z.string().max(512).optional(),
@@ -646,6 +652,76 @@ export const mailRouter = tRouter({
     }
     return { updated: visibleIds.length };
   }),
+
+  markFolderAsRead: mailboxProcedure
+    .input(markFolderAsReadInput)
+    .mutation(async ({ input, ctx }) => {
+      const db = getDb();
+      const transportId = ctx.activeTransportId;
+
+      let targetThreadIds: string[] = [];
+
+      if (input.folder) {
+        const folderVal = input.folder.toLowerCase() as MailFolderValue;
+        const conditions = buildMailFolderConditions(db, transportId, folderVal);
+        const rows = await db
+          .select({ id: mailThread.id })
+          .from(mailThread)
+          .where(and(...conditions, eq(mailThread.isRead, false)));
+        targetThreadIds = rows.map((r) => r.id);
+      } else if (input.categoryId) {
+        const rows = await db
+          .select({ id: mailThread.id })
+          .from(mailThreadCategory)
+          .innerJoin(mailThread, eq(mailThreadCategory.threadId, mailThread.id))
+          .where(
+            and(
+              eq(mailThreadCategory.transportId, transportId),
+              eq(mailThreadCategory.categoryId, input.categoryId),
+              eq(mailThread.transportId, transportId),
+              eq(mailThread.isRead, false),
+              isNull(mailThread.trashedAt),
+              isNull(mailThread.spamAt),
+              eq(mailThread.isArchived, false),
+            ),
+          );
+        targetThreadIds = rows.map((r) => r.id);
+      } else if (input.labelId) {
+        const [lbl] = await db
+          .select({ name: mailLabel.name })
+          .from(mailLabel)
+          .where(and(eq(mailLabel.id, input.labelId), eq(mailLabel.transportId, transportId)));
+
+        const isQuarantine = lbl?.name.toLowerCase() === 'quarantine';
+        const labelCond = isQuarantine
+          ? and(isNotNull(mailThread.spamAt), isNull(mailThread.trashedAt))
+          : and(eq(mailThread.isArchived, true), isNull(mailThread.spamAt), isNull(mailThread.trashedAt));
+
+        const rows = await db
+          .select({ id: mailThread.id })
+          .from(mailThread)
+          .where(
+            and(
+              eq(mailThread.transportId, transportId),
+              eq(mailThread.isRead, false),
+              labelCond,
+              sql`${mailThread.labelIds} ? ${input.labelId}`,
+            ),
+          );
+        targetThreadIds = rows.map((r) => r.id);
+      }
+
+      if (targetThreadIds.length === 0) {
+        return { updated: 0 };
+      }
+
+      for (let i = 0; i < targetThreadIds.length; i += 500) {
+        const chunk = targetThreadIds.slice(i, i + 500);
+        await markThreadRead(db, transportId, chunk);
+      }
+
+      return { updated: targetThreadIds.length };
+    }),
 
   toggleStar: mailboxProcedure.input(bulkIdsInput).mutation(async ({ input, ctx }) => {
     const db = getDb();

@@ -103,7 +103,7 @@ Task 5: complete (server-pilot 4/4 and mail 25/25 test suites passing against lo
 - Baseline ref: 93730d464b404c852548ccb2664462bacb94eb93
 - Safety: disposable TEST_DATABASE_URL only, never test pilot/prod RDS
 - Task 1: complete (single-pass unread + total counts and active drafts; disposable DB test passed)
-- Task 2: pending (Server markFolderAsRead bulk mutation)
+- Task 2: complete (markFolderAsRead bulk mutation; disposable DB test passed)
 - Task 3: pending (Frontend snapshot mapping & tooltip helpers)
 - Task 4: pending (UI tooltips & Draft badges in sidebar)
 - Task 5: pending (Folder context menu "Mark all as read")
