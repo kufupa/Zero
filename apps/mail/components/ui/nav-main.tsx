@@ -3,7 +3,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { LabelDialog } from '@/components/labels/label-dialog';
 import { useActiveConnection } from '@/hooks/use-connections';
 import { useResetSearchValue } from '@/hooks/use-search-value';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import Intercom, { show } from '@intercom/messenger-js-sdk';
 import { MessageSquare, OldPhone } from '../icons/icons';
 import { useSidebar } from '../context/sidebar-context';
@@ -24,7 +24,7 @@ import SidebarLabels from './sidebar-labels';
 import { useCallback, useRef } from 'react';
 import { shouldShowSupportLinks } from '@/lib/demo/support-links';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
-import { ChevronRight, Plus } from 'lucide-react';
+import { ChevronRight, Plus, CheckCheck } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import * as React from 'react';
@@ -32,6 +32,13 @@ import type { SidebarUnreadCountSnapshot } from '@/lib/mail/sidebar-unread-count
 import { getNavUnreadCount } from '@/lib/mail/sidebar-unread-counts';
 import { useCategorySettings } from '@/hooks/use-categories';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from '@/components/ui/context-menu';
+import { markFolderAsReadInContext } from '@/components/context/label-sidebar-context';
 
 interface IconProps extends React.SVGProps<SVGSVGElement> {
   ref?: React.Ref<SVGSVGElement>;
@@ -46,6 +53,7 @@ interface NavItemProps extends NavItem {
   isSettingsPage?: boolean;
   subtitle?: string;
   badgeTooltip?: string;
+  categoryId?: string;
 }
 
 interface NavMainProps {
@@ -285,6 +293,7 @@ export function NavMain({ items, unreadCountsSnapshot }: NavMainProps) {
                     <NavItem
                       key={item.url}
                       {...item}
+                      categoryId={categoryId}
                       badge={badge}
                       badgeTooltip={badgeTooltip}
                       isActive={isUrlActive(item.url)}
@@ -421,7 +430,42 @@ function NavItem(item: NavItemProps & { href: string }) {
 
   const hasCustomTheme = Boolean(item.style);
 
-  return (
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const { mutateAsync: markFolderAsRead } = useMutation(
+    trpc.mail.markFolderAsRead.mutationOptions(),
+  );
+
+  const normalizedId = item.id?.trim().toLowerCase();
+  const canMarkAsRead =
+    Boolean(item.id) &&
+    normalizedId !== 'drafts' &&
+    normalizedId !== 'draft' &&
+    normalizedId !== 'settings' &&
+    !item.disabled;
+
+  const handleMarkAllAsRead = () => {
+    if (!item.id) return;
+    const isCategory = Boolean(item.categoryId);
+    const folder = isCategory ? undefined : item.id === 'trash' ? 'bin' : item.id;
+    const categoryId = item.categoryId;
+
+    void markFolderAsReadInContext({
+      folder,
+      categoryId,
+      isFrontendOnlyDemoMode: isFrontendOnlyDemo(),
+      markAsReadMutation: async (params) => markFolderAsRead(params),
+      invalidateQueries: async () => {
+        await queryClient.invalidateQueries({ queryKey: trpc.mail.unreadCounts.queryKey() });
+        await queryClient.invalidateQueries({ queryKey: trpc.mail.getThreads.queryKey() });
+        await queryClient.invalidateQueries({ queryKey: trpc.mail.listThreads.queryKey() });
+      },
+      successMessage: 'Marked all as read',
+      errorMessage: 'Failed to mark all as read',
+    });
+  };
+
+  const itemContent = (
     <Collapsible defaultOpen={item.isActive}>
       <CollapsibleTrigger asChild>
         <SidebarMenuButton
@@ -476,5 +520,32 @@ function NavItem(item: NavItemProps & { href: string }) {
         </SidebarMenuButton>
       </CollapsibleTrigger>
     </Collapsible>
+  );
+
+  if (!canMarkAsRead) {
+    return itemContent;
+  }
+
+  return (
+    <ContextMenu modal={false}>
+      <ContextMenuTrigger asChild>{itemContent}</ContextMenuTrigger>
+      <ContextMenuContent className="bg-white dark:bg-[#313131]">
+        <ContextMenuItem
+          asChild
+          onClick={handleMarkAllAsRead}
+          disabled={false}
+          className="gap-2 text-sm cursor-pointer"
+        >
+          <Button
+            size="sm"
+            variant="ghost"
+            className="hover:bg-black/10 dark:hover:bg-[#404040] [&_svg]:size-3.5"
+          >
+            <CheckCheck className="text-muted-foreground" />
+            <span>Mark all as read</span>
+          </Button>
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   );
 }

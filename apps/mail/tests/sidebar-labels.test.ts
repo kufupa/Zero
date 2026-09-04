@@ -212,3 +212,49 @@ describe('SidebarLabels', () => {
     expect(groupCount).toBe(0);
   });
 });
+
+import { markFolderAsReadInContext } from '@/components/context/label-sidebar-context';
+
+describe('Folder and Label Context Menu - Mark all as read', () => {
+  it('executes markFolderAsReadInContext mutation and invalidates queries for labels', async () => {
+    const markAsReadMutation = vi.fn().mockResolvedValue({ updated: 5 });
+    const invalidateQueries = vi.fn().mockResolvedValue(undefined);
+
+    await markFolderAsReadInContext({
+      labelId: 'lbl-work',
+      isFrontendOnlyDemoMode: false,
+      markAsReadMutation,
+      invalidateQueries,
+      successMessage: 'Marked all as read',
+      errorMessage: 'Failed to mark all as read',
+    });
+
+    expect(markAsReadMutation).toHaveBeenCalledWith({
+      labelId: 'lbl-work',
+      folder: undefined,
+      categoryId: undefined,
+    });
+    expect(invalidateQueries).toHaveBeenCalled();
+  });
+
+  it('executes markFolderAsReadInContext mutation for system folders', async () => {
+    const markAsReadMutation = vi.fn().mockResolvedValue({ updated: 12 });
+    const invalidateQueries = vi.fn().mockResolvedValue(undefined);
+
+    await markFolderAsReadInContext({
+      folder: 'inbox',
+      isFrontendOnlyDemoMode: false,
+      markAsReadMutation,
+      invalidateQueries,
+      successMessage: 'Marked all as read',
+      errorMessage: 'Failed to mark all as read',
+    });
+
+    expect(markAsReadMutation).toHaveBeenCalledWith({
+      folder: 'inbox',
+      categoryId: undefined,
+      labelId: undefined,
+    });
+    expect(invalidateQueries).toHaveBeenCalled();
+  });
+});
