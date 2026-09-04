@@ -17,6 +17,7 @@ import { templatesRouter } from './routes/templates.js';
 import { bimiRouter } from './routes/bimi.js';
 import { categoriesRouter } from './routes/categories.js';
 import { adminDashboardRouter } from './routes/admin-dashboard.js';
+import { catchupRouter } from './routes/catchup.js';
 
 export const appRouter = router({
   mail: mailRouter,
@@ -32,6 +33,7 @@ export const appRouter = router({
   bimi: bimiRouter,
   categories: categoriesRouter,
   adminDashboard: adminDashboardRouter,
+  catchup: catchupRouter,
 });
 
 export type AppRouter = typeof appRouter;
