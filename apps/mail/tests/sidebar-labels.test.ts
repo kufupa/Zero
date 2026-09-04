@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Label } from '@/types';
 import { isUserFolderDroppableId } from '@/lib/mail/file-drag';
+import type { SidebarUnreadCountSnapshot } from '@/lib/mail/sidebar-unread-counts';
 
 const mocks = vi.hoisted(() => ({
   activeAccount: { providerId: 'google' },
@@ -166,5 +167,48 @@ describe('SidebarLabels', () => {
       'istanbul',
       'İzmir',
     ]);
+  });
+
+  it('resolves root and child counts independently via getCount callback when snapshot is provided', () => {
+    mocks.activeAccount = { providerId: 'mailbox' };
+
+    const projects = makeLabel('projects-root', 'Projects', { type: 'user' });
+    const projectChild = makeLabel('projects-child', 'Projects/Subfolder');
+
+    const snapshot: SidebarUnreadCountSnapshot = {
+      folders: { inbox: 0, sent: 0, archive: 0, snoozed: 0, bin: 0, spam: 0 },
+      categories: {},
+      labels: {
+        'projects-root': 5,
+        'projects-child': 2,
+      },
+      legacy: [],
+      source: 'pilot',
+      scopeKey: 't1',
+    };
+
+    renderToStaticMarkup(
+      createElement(SidebarLabels, {
+        data: [projects, projectChild],
+        unreadCountsSnapshot: snapshot,
+      }),
+    );
+
+    const rendered = mocks.recursiveFolder.mock.calls.map(
+      ([props]) => props as RecursiveFolderProps & { getCount?: (label: any) => number },
+    );
+
+    const projectsCall = rendered.find((r) => r.label.id === 'projects-root');
+    expect(projectsCall).toBeDefined();
+    expect(projectsCall?.count).toBe(5);
+    expect(projectsCall?.getCount).toBeDefined();
+
+    // Verify child count resolved via getCount callback is 2, not root count 5
+    const childCallCount = projectsCall?.getCount?.({ id: 'projects-child', name: 'Subfolder' });
+    expect(childCallCount).toBe(2);
+
+    // Verify synthetic group resolves to 0
+    const groupCount = projectsCall?.getCount?.({ id: 'group-other', name: 'Other' });
+    expect(groupCount).toBe(0);
   });
 });

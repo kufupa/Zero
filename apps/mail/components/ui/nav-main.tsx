@@ -20,7 +20,6 @@ import { m } from '../../paraglide/messages.js';
 import { Button } from '@/components/ui/button';
 import { useLabels } from '@/hooks/use-labels';
 import { Badge } from '@/components/ui/badge';
-import { useStats } from '@/hooks/use-stats';
 import SidebarLabels from './sidebar-labels';
 import { useCallback, useRef } from 'react';
 import { shouldShowSupportLinks } from '@/lib/demo/support-links';
@@ -29,6 +28,9 @@ import { ChevronRight, Plus } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import * as React from 'react';
+import type { SidebarUnreadCountSnapshot } from '@/lib/mail/sidebar-unread-counts';
+import { getNavUnreadCount } from '@/lib/mail/sidebar-unread-counts';
+import { useCategorySettings } from '@/hooks/use-categories';
 
 interface IconProps extends React.SVGProps<SVGSVGElement> {
   ref?: React.Ref<SVGSVGElement>;
@@ -50,6 +52,7 @@ interface NavMainProps {
     items: NavItemProps[];
     isActive?: boolean;
   }[];
+  unreadCountsSnapshot?: SidebarUnreadCountSnapshot;
 }
 
 type IconRefType = SVGSVGElement & {
@@ -57,11 +60,22 @@ type IconRefType = SVGSVGElement & {
   stopAnimation?: () => void;
 };
 
-export function NavMain({ items }: NavMainProps) {
+export function NavMain({ items, unreadCountsSnapshot }: NavMainProps) {
   const location = useLocation();
   const pathname = location.pathname;
   const searchParams = new URLSearchParams(location.search);
   const frontendOnlyDemo = isFrontendOnlyDemo();
+  const categorySettings = useCategorySettings();
+
+  const categoryIdBySlug = React.useMemo(() => {
+    const map = new Map<string, string>();
+    for (const cat of categorySettings) {
+      if (cat.slug && cat.id) {
+        map.set(cat.slug, cat.id);
+      }
+    }
+    return map;
+  }, [categorySettings]);
 
   const trpc = useTRPC();
   const { data: intercomToken } = useQuery(
@@ -257,16 +271,21 @@ export function NavMain({ items }: NavMainProps) {
             <div className="z-20 space-y-1 pb-2">
               {section.items
                 .filter((item) => !item.hidden)
-                .map((item) => (
-                  <NavItem
-                    key={item.url}
-                    {...item}
-                    isActive={isUrlActive(item.url)}
-                    href={getHref(item)}
-                    target={item.target}
-                    title={item.title}
-                  />
-                ))}
+                .map((item) => {
+                  const categoryId = item.id ? categoryIdBySlug.get(item.id) : undefined;
+                  const badge = getNavUnreadCount(unreadCountsSnapshot, item.id, categoryId);
+                  return (
+                    <NavItem
+                      key={item.url}
+                      {...item}
+                      badge={badge}
+                      isActive={isUrlActive(item.url)}
+                      href={getHref(item)}
+                      target={item.target}
+                      title={item.title}
+                    />
+                  );
+                })}
             </div>
           );
 
@@ -340,7 +359,12 @@ export function NavMain({ items }: NavMainProps) {
               </div>
 
               <CollapsibleContent>
-                {activeAccount ? <SidebarLabels data={userLabels ?? []} /> : null}
+                {activeAccount ? (
+                  <SidebarLabels
+                    data={userLabels ?? []}
+                    unreadCountsSnapshot={unreadCountsSnapshot}
+                  />
+                ) : null}
               </CollapsibleContent>
             </SidebarMenuItem>
           </Collapsible>
@@ -352,10 +376,19 @@ export function NavMain({ items }: NavMainProps) {
 
 function NavItem(item: NavItemProps & { href: string }) {
   const iconRef = useRef<IconRefType>(null);
-  const { data: stats } = useStats();
   const resetSearchValue = useResetSearchValue();
 
   const { state, setOpenMobile } = useSidebar();
+
+  const unreadCount = item.badge;
+  const hasUnread = typeof unreadCount === 'number' && unreadCount > 0;
+  const unreadText = hasUnread ? `${unreadCount} unread` : undefined;
+  const tooltipText = React.useMemo(() => {
+    if (state !== 'collapsed') return undefined;
+    const base = item.subtitle ? `${item.title} — ${item.subtitle}` : item.title;
+    return unreadText ? `${base}: ${unreadText}` : base;
+  }, [state, item.subtitle, item.title, unreadText]);
+  const linkAriaLabel = unreadText ? `${item.title}: ${unreadText}` : undefined;
 
   if (item.disabled) {
     return (
@@ -384,13 +417,7 @@ function NavItem(item: NavItemProps & { href: string }) {
       <CollapsibleTrigger asChild>
         <SidebarMenuButton
           asChild
-          tooltip={
-            state === 'collapsed'
-              ? item.subtitle
-                ? `${item.title} — ${item.subtitle}`
-                : item.title
-              : undefined
-          }
+          tooltip={tooltipText}
           className={cn(
             'hover:bg-subtleWhite flex items-center dark:hover:bg-[#202020]',
             item.isActive && 'bg-subtleWhite text-accent-foreground dark:bg-[#202020]',
@@ -399,7 +426,7 @@ function NavItem(item: NavItemProps & { href: string }) {
           style={item.style}
           onClick={handleClick}
         >
-          <Link target={item.target} to={item.href}>
+          <Link target={item.target} to={item.href} aria-label={linkAriaLabel}>
             {item.icon && <item.icon ref={iconRef} className="mr-2 shrink-0" />}
             <span className="relative bottom-px mt-0.5 min-w-0 flex-1 truncate text-left">
               <span className="block truncate text-[13px] leading-tight">{item.title}</span>
@@ -415,14 +442,11 @@ function NavItem(item: NavItemProps & { href: string }) {
                 </span>
               ) : null}
             </span>
-            {stats &&
-              stats.some((stat) => stat.label?.toLowerCase() === item.id?.toLowerCase()) && (
-                <Badge className="text-muted-foreground ml-auto shrink-0 rounded-full border-none bg-transparent">
-                  {stats
-                    .find((stat) => stat.label?.toLowerCase() === item.id?.toLowerCase())
-                    ?.count?.toLocaleString() || '0'}
-                </Badge>
-              )}
+            {state !== 'collapsed' && hasUnread && (
+              <Badge className="text-muted-foreground ml-auto shrink-0 rounded-full border-none bg-transparent">
+                {unreadCount.toLocaleString()}
+              </Badge>
+            )}
           </Link>
         </SidebarMenuButton>
       </CollapsibleTrigger>

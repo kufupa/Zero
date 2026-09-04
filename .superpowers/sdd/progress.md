@@ -77,3 +77,21 @@ Task 2: complete (working-tree implementation; review clean; focused server/remo
 Task 3: complete (commit c66d9314 landed as 31d3e390; mail/server builds passed; quiesced pinned deploy verified; live asset proof HTTP 200, 46 assets, flagPresent=false, all workflow IDs; readiness unchanged NOT_READY only for pre-existing dead-letter backlog; authenticated UI gate fail-closed and not run because fixtures were unset)
 Task 4: complete (headless compound artifact committed as 02b4bf1d and pushed to origin/main; frontmatter and sanitized-content validation passed; vocabulary scanned with no new qualifying term)
 Final verification: complete (origin/main at 02b4bf1d; focused mail 36/36 and server 34/34 passed with database variables unset; diff check clean; primary dirty checkout preserved)
+
+# Unread Folder Count Badges
+Plan: docs/superpowers/plans/2026-09-04-unread-folder-count-badges.md
+Started: 2026-09-04
+Branch: kufupa/bongi-req
+Task 1: complete (mail.unreadCounts contract, folder-semantics, folder-unread-counts, and pilot-route-surface updated; tests pass on disposable DB)
+Task 2: complete (use-unread-counts hook, sidebar-unread-counts pure mapping, stable-key resolution, and focused tests passed)
+Task 3: complete (stable-key navigation wiring, independent recursive child counts, accessible count tooltips/aria-labels, focused tests passed)
+Task 4: complete (refreshData invalidates unreadCounts alongside labels, forceSync & account switch invalidation, connections page invalidation, freshness tests passed)
+Task 5: complete (server-pilot 4/4 and mail 25/25 test suites passing against local disposable test DB; git diff --check clean)
+
+# Email Drag-and-Drop Fixes — Execution Ledger
+- Plan: docs/superpowers/plans/2026-09-04-email-drag-drop-fixes.md
+- Started: 2026-09-04
+- Branch: kufupa/bongi-req
+- Baseline ref: 4a9b0942e835e157e30070abb59f8b49a5f0dcc4
+- Baseline verification: 18/18 tests passed (tests/file-drag.test.ts, tests/thread-actions-contract.test.ts) with pilot database variables unset. Pre-existing uncommitted work on unread count badges preserved.
+- Task 1: complete (commit e161a780; snapCenterToCursor overlay, pointer-events-none, pure mailFileCollisionDetection, behavioral tests 14/14 pass; review clean)

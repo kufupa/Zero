@@ -242,6 +242,7 @@ const Folder = ({
               },
               role: 'button',
               tabIndex: 0,
+              'aria-label': count > 0 ? `${element}: ${count} unread` : element,
             }
           : {})}
       >
@@ -278,6 +279,7 @@ const Folder = ({
                 },
                 role: 'button',
                 tabIndex: 0,
+                'aria-label': count > 0 ? `${element}: ${count} unread` : element,
               }
             : {})}
         >

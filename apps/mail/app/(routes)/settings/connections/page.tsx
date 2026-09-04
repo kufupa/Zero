@@ -117,7 +117,10 @@ export default function ConnectionsPage() {
       refetchConnections,
       refetchSession: refetch,
       invalidateThreads: () =>
-        queryClient.invalidateQueries({ queryKey: trpc.mail.listThreads.infiniteQueryKey() }),
+        Promise.all([
+          queryClient.invalidateQueries({ queryKey: trpc.mail.listThreads.infiniteQueryKey() }),
+          queryClient.invalidateQueries({ queryKey: trpc.mail.unreadCounts.queryKey() }),
+        ]),
       onMailboxSwitched: (nextDefaultId) => {
         setMailCacheScope({
           userId: sessionData?.user?.id ?? null,
