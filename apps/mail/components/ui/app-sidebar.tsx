@@ -26,6 +26,7 @@ import { useLocation } from 'react-router';
 import { cn, FOLDERS } from '@/lib/utils';
 import { m } from '@/paraglide/messages';
 import { isAdminDashboardEnabled } from '@/lib/admin-dashboard/access';
+import { usePilotCapabilities } from '@/hooks/use-pilot-capabilities';
 // import { Video } from 'lucide-react';
 import { NavUser } from './nav-user';
 import { NavMain } from './nav-main';
@@ -39,6 +40,8 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const location = useLocation();
   const { data: session } = useSession();
   const showAdminDashboard = isAdminDashboardEnabled(session);
+  const capabilities = usePilotCapabilities();
+  const showCatchupUpload = Boolean(capabilities.catchupUpload);
   const categorySettings = useCategorySettings();
   const demoMode = isFrontendOnlyDemo();
 
@@ -68,9 +71,15 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
       if (currentSection === 'settings' && items[0]) {
         items[0] = {
           ...items[0],
-          items: items[0].items.map((item) =>
-            item.id === 'admin-dashboard' ? { ...item, hidden: !showAdminDashboard } : item,
-          ),
+          items: items[0].items.map((item) => {
+            if (item.id === 'admin-dashboard') {
+              return { ...item, hidden: !showAdminDashboard };
+            }
+            if (item.id === 'catchup-upload') {
+              return { ...item, hidden: !showCatchupUpload };
+            }
+            return item;
+          }),
         };
       }
 
@@ -102,7 +111,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         footerItems: bottomNavItems,
       };
     }
-  }, [location.pathname, stats, showAdminDashboard, categorySettings, demoMode]);
+  }, [location.pathname, stats, showAdminDashboard, showCatchupUpload, categorySettings, demoMode]);
 
   const showComposeButton = currentSection === 'mail';
   const { state } = useSidebar();

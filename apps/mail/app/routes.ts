@@ -45,6 +45,7 @@ export default [
         route('/privacy', '(routes)/settings/privacy/page.tsx'),
         route('/security', '(routes)/settings/security/page.tsx'),
         route('/shortcuts', '(routes)/settings/shortcuts/page.tsx'),
+        route('/catchup-upload', '(routes)/settings/catchup-upload/page.tsx'),
         route('/*', '(routes)/settings/[...settings]/page.tsx'),
       ]),
     ),

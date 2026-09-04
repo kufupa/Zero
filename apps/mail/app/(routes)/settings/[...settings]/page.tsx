@@ -5,6 +5,7 @@ import SecurityPage from '../security/page';
 import { m } from '@/paraglide/messages';
 import GeneralPage from '../general/page';
 import AdminDashboardPage from '../admin-dashboard/page';
+import CatchupUploadPage from '../catchup-upload/page';
 import { useLocation } from 'react-router';
 import LabelsPage from '../labels/page';
 
@@ -16,6 +17,7 @@ const settingsPages: Record<string, React.ComponentType> = {
   notifications: NotificationsPage,
   labels: LabelsPage,
   'admin-dashboard': AdminDashboardPage,
+  'catchup-upload': CatchupUploadPage,
 };
 
 export default function SettingsPage() {

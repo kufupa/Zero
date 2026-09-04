@@ -264,6 +264,13 @@ export const navigationConfig: Record<string, NavConfig> = {
             icon: ShieldCheck,
             hidden: true,
           },
+          {
+            id: 'catchup-upload',
+            title: 'Upload backup',
+            url: '/settings/catchup-upload',
+            icon: Archive,
+            hidden: true,
+          },
         ].map((item) => ({
           ...item,
           isSettingsPage: true,
