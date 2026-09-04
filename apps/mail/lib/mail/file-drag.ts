@@ -56,3 +56,16 @@ export type FileDragData = {
   threadId: string;
   subject?: string | null;
 };
+
+const MAX_TOAST_FOLDER_LENGTH = 24;
+
+export function formatFileSuccessMessage(folderName?: string | null): string {
+  const cleanName = folderName?.trim();
+  if (!cleanName) {
+    return 'Moved to folder';
+  }
+  if (cleanName.length > MAX_TOAST_FOLDER_LENGTH) {
+    return `Moved to ${cleanName.slice(0, MAX_TOAST_FOLDER_LENGTH)}...`;
+  }
+  return `Moved to ${cleanName}`;
+}

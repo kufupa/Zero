@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   fileDragOverlayLabel,
+  formatFileSuccessMessage,
   isUserFolderDroppableId,
   mailFileCollisionDetection,
   resolveFileDragThreadIds,
@@ -142,5 +143,24 @@ describe('mailFileCollisionDetection', () => {
     } as unknown as CollisionArgs;
 
     expect(mailFileCollisionDetection(args)).toEqual([]);
+  });
+});
+
+describe('formatFileSuccessMessage', () => {
+  it('formats specific folder name when provided', () => {
+    expect(formatFileSuccessMessage('Bookings')).toBe('Moved to Bookings');
+    expect(formatFileSuccessMessage('Inquiries')).toBe('Moved to Inquiries');
+  });
+
+  it('truncates long folder names to 24 chars to avoid clipping toast undo button', () => {
+    expect(formatFileSuccessMessage('Super Extremely Long Hotel Folder Name')).toBe(
+      'Moved to Super Extremely Long Hot...',
+    );
+  });
+
+  it('falls back gracefully when folder name is missing or whitespace', () => {
+    expect(formatFileSuccessMessage(null)).toBe('Moved to folder');
+    expect(formatFileSuccessMessage(undefined)).toBe('Moved to folder');
+    expect(formatFileSuccessMessage('   ')).toBe('Moved to folder');
   });
 });

@@ -20,6 +20,7 @@ import { useCallback, useMemo } from 'react';
 import posthog from 'posthog-js';
 import { useAtom } from 'jotai';
 import { toast } from 'sonner';
+import { formatFileSuccessMessage } from '@/lib/mail/file-drag';
 import { DEMO_MAIL_LIST_DRAFTS_QUERY_PREFIX } from '@/lib/demo/demo-mail-query-keys';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import {
@@ -515,6 +516,9 @@ export function useOptimisticActions() {
       removeOptimisticAction(labelOptimisticId);
     };
 
+    const targetLabel = userLabels?.find((l) => l.id === labelId);
+    const successToastMessage = formatFileSuccessMessage(targetLabel?.name);
+
     createPendingAction({
       type: 'MOVE',
       threadIds,
@@ -563,7 +567,7 @@ export function useOptimisticActions() {
         });
         void priorSnapshots;
       },
-      toastMessage: m['common.actions.archived'](),
+      toastMessage: successToastMessage,
       folders: [currentFolder, 'archive'],
     });
   }
@@ -740,7 +744,7 @@ export function useOptimisticActions() {
     createPendingAction({
       type: 'UNSNOOZE',
       threadIds,
-      params: { currentFolder } as any,
+      params: { currentFolder },
       optimisticId,
       execute: async () => {
           if (frontendOnlyDemo) {
@@ -768,7 +772,7 @@ export function useOptimisticActions() {
     createPendingAction({
       type: 'DELETE_DRAFT',
       threadIds: [draftId],
-      params: {} as any,
+      params: {},
       optimisticId,
       execute: async () => {
           if (frontendOnlyDemo) {

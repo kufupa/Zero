@@ -95,6 +95,7 @@ Task 5: complete (server-pilot 4/4 and mail 25/25 test suites passing against lo
 - Baseline ref: 4a9b0942e835e157e30070abb59f8b49a5f0dcc4
 - Baseline verification: 18/18 tests passed (tests/file-drag.test.ts, tests/thread-actions-contract.test.ts) with pilot database variables unset. Pre-existing uncommitted work on unread count badges preserved.
 - Task 1: complete (commit e161a780; snapCenterToCursor overlay, pointer-events-none, pure mailFileCollisionDetection, behavioral tests 14/14 pass; review clean)
+- Task 2: complete (folder name in move toast with 24-char truncation, mobile scroll guard on row drag, tests 24/24 pass)
 
 # Advanced Folder Counts & Search Insights — Execution Ledger
 - Plan: docs/superpowers/plans/2026-09-04-advanced-folder-counts-and-search.md

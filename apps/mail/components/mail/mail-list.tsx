@@ -18,6 +18,7 @@ import {
 import { useOptimisticThreadState } from '@/components/mail/optimistic-thread-state';
 import { focusedIndexAtom, useMailNavigation } from '@/hooks/use-mail-navigation';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { useSidebar } from '@/components/ui/sidebar';
 import { useIsFetching, type UseQueryResult } from '@tanstack/react-query';
 import type { MailSelectMode, ParsedMessage, ThreadProps } from '@/types';
 import type { ParsedDraft } from '@zero/server/driver/types';
@@ -162,6 +163,7 @@ const Thread = memo(
     }, [getThreadData?.latest]);
 
     const optimisticState = useOptimisticThreadState(idToUse ?? '');
+    const { isMobile } = useSidebar();
 
     const {
       attributes: dragAttributes,
@@ -170,7 +172,7 @@ const Thread = memo(
       isDragging,
     } = useDraggable({
       id: idToUse ?? message.id,
-      disabled: !idToUse,
+      disabled: !idToUse || isMobile,
       data: {
         type: 'mail-thread',
         threadId: idToUse ?? message.id,
