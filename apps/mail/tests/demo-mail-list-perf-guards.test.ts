@@ -44,6 +44,7 @@ vi.mock('@/components/mail/optimistic-thread-state', () => ({
 
 vi.mock('@/hooks/use-labels', () => ({
   useThreadLabels: () => ({ labels: [] }),
+  useLabels: () => ({ userLabels: [], systemLabels: [] }),
 }));
 
 vi.mock('@/hooks/use-categories', () => ({

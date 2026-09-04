@@ -1279,7 +1279,7 @@ export const MailList = memo(function MailList() {
                   ref={vListRef}
                   count={virtualRows.length}
                   overscan={5}
-                  className="scrollbar-none flex-1 overflow-x-hidden"
+                  className="scrollbar scrollbar-w-1 scrollbar-thumb-accent/40 scrollbar-track-transparent hover:scrollbar-thumb-accent scrollbar-thumb-rounded-full flex-1 overflow-x-hidden"
                   onScroll={() => {
                     if (!vListRef.current) return;
                     const endIndex = vListRef.current.findEndIndex();
