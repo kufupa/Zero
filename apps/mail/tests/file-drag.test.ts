@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   fileDragOverlayLabel,
   isUserFolderDroppableId,
+  mailFileCollisionDetection,
   resolveFileDragThreadIds,
   shouldFileOnDragEnd,
 } from '@/lib/mail/file-drag';
@@ -72,5 +73,74 @@ describe('fileDragOverlayLabel', () => {
   it('falls back when subject missing', () => {
     expect(fileDragOverlayLabel(['t1'], null)).toBe('1 thread');
     expect(fileDragOverlayLabel(['t1'], '  ')).toBe('1 thread');
+  });
+});
+
+describe('mailFileCollisionDetection', () => {
+  const containerId = '550e8400-e29b-41d4-a716-446655440000';
+  const droppableContainers = [
+    {
+      id: containerId,
+      key: containerId,
+      data: { current: undefined },
+      disabled: false,
+      node: { current: null },
+      rect: { current: null },
+    },
+  ];
+
+  const droppableRects = new Map([
+    [
+      containerId,
+      {
+        top: 100,
+        left: 100,
+        bottom: 200,
+        right: 200,
+        width: 100,
+        height: 100,
+      },
+    ],
+  ]);
+
+  type CollisionArgs = Parameters<typeof mailFileCollisionDetection>[0];
+
+  it('returns container collision when pointer is inside container bounds', () => {
+    const args = {
+      active: { id: 'thread-1' },
+      collisionRect: { top: 0, left: 0, bottom: 20, right: 100, width: 100, height: 20 },
+      droppableContainers,
+      droppableRects,
+      pointerCoordinates: { x: 150, y: 150 },
+    } as unknown as CollisionArgs;
+
+    const collisions = mailFileCollisionDetection(args);
+    expect(collisions.length).toBeGreaterThan(0);
+    expect(collisions[0]?.id).toBe(containerId);
+  });
+
+  it('returns empty array when pointer is outside container bounds (no distant closestCenter fallback)', () => {
+    const args = {
+      active: { id: 'thread-1' },
+      collisionRect: { top: 0, left: 0, bottom: 20, right: 100, width: 100, height: 20 },
+      droppableContainers,
+      droppableRects,
+      pointerCoordinates: { x: 500, y: 500 },
+    } as unknown as CollisionArgs;
+
+    const collisions = mailFileCollisionDetection(args);
+    expect(collisions).toEqual([]);
+  });
+
+  it('returns empty array when pointerCoordinates is null', () => {
+    const args = {
+      active: { id: 'thread-1' },
+      collisionRect: { top: 0, left: 0, bottom: 20, right: 100, width: 100, height: 20 },
+      droppableContainers,
+      droppableRects,
+      pointerCoordinates: null,
+    } as unknown as CollisionArgs;
+
+    expect(mailFileCollisionDetection(args)).toEqual([]);
   });
 });

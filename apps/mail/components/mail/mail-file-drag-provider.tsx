@@ -1,22 +1,21 @@
 'use client';
 
 import {
-  closestCenter,
   DndContext,
   DragOverlay,
   PointerSensor,
-  pointerWithin,
   useSensor,
   useSensors,
-  type CollisionDetection,
   type DragEndEvent,
   type DragStartEvent,
 } from '@dnd-kit/core';
+import { snapCenterToCursor } from '@dnd-kit/modifiers';
 import { useOptimisticActions } from '@/hooks/use-optimistic-actions';
 import { useActiveConnection } from '@/hooks/use-connections';
 import { useMail } from '@/components/mail/use-mail';
 import {
   fileDragOverlayLabel,
+  mailFileCollisionDetection,
   resolveFileDragThreadIds,
   shouldFileOnDragEnd,
   type FileDragData,
@@ -24,16 +23,11 @@ import {
 import { useParams } from 'react-router';
 import { useCallback, useRef, useState, type ReactNode } from 'react';
 
+export { mailFileCollisionDetection };
+
 type ActiveFileDrag = {
   threadIds: string[];
   subject?: string | null;
-};
-
-/** Prefer pointer hit; fall back to closest center near folder edge. */
-export const mailFileCollisionDetection: CollisionDetection = (args) => {
-  const pointerHits = pointerWithin(args);
-  if (pointerHits.length > 0) return pointerHits;
-  return closestCenter(args);
 };
 
 /**
@@ -117,9 +111,9 @@ export function MailFileDragProvider({ children }: { children: ReactNode }) {
       onDragCancel={clearDrag}
     >
       {children}
-      <DragOverlay dropAnimation={null}>
+      <DragOverlay modifiers={[snapCenterToCursor]} dropAnimation={null}>
         {activeDrag ? (
-          <div className="dark:bg-panelDark max-w-[240px] truncate rounded-md border border-[#E7E7E7] bg-white px-3 py-2 text-sm text-black shadow-md dark:border-[#252525] dark:text-white/90">
+          <div className="dark:bg-panelDark pointer-events-none max-w-[240px] select-none truncate rounded-md border border-[#E7E7E7] bg-white px-3 py-2 text-sm text-black opacity-95 shadow-lg dark:border-[#252525] dark:text-white/90">
             {fileDragOverlayLabel(activeDrag.threadIds, activeDrag.subject)}
           </div>
         ) : null}
