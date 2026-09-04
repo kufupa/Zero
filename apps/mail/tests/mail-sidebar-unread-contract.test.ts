@@ -48,18 +48,30 @@ describe('mail sidebar unread contracts', () => {
     expect(getNavUnreadCount(snapshot, 'spam')).toBe(2);
   });
 
-  it('omits badges for drafts and pilot synthetic group IDs', () => {
-    const snapshot = toSidebarUnreadCountSnapshot(
+  it('resolves active drafts badge when draftsCount > 0 and omits when 0', () => {
+    const snapshotZero = toSidebarUnreadCountSnapshot(
       samplePilotCounts,
       [],
       'mailbox',
       'transport-1',
     );
+    expect(getNavUnreadCount(snapshotZero, 'drafts')).toBeUndefined();
+    expect(getNavUnreadCount(snapshotZero, 'draft')).toBeUndefined();
+    expect(getLabelUnreadCount(snapshotZero, 'group-projects')).toBeUndefined();
+    expect(getLabelUnreadCount(snapshotZero, 'group-other')).toBeUndefined();
 
-    expect(getNavUnreadCount(snapshot, 'drafts')).toBeUndefined();
-    expect(getNavUnreadCount(snapshot, 'draft')).toBeUndefined();
-    expect(getLabelUnreadCount(snapshot, 'group-projects')).toBeUndefined();
-    expect(getLabelUnreadCount(snapshot, 'group-other')).toBeUndefined();
+    const snapshotWithDrafts = toSidebarUnreadCountSnapshot(
+      {
+        ...samplePilotCounts,
+        draftsCount: 4,
+      },
+      [],
+      'mailbox',
+      'transport-1',
+    );
+    expect(getNavUnreadCount(snapshotWithDrafts, 'drafts')).toBe(4);
+    expect(getNavUnreadCount(snapshotWithDrafts, 'draft')).toBe(4);
+    expect(snapshotWithDrafts.getTooltip('drafts', 'Drafts')).toBe('4 active drafts');
   });
 
   it('maps live category slug to opaque category ID', () => {
@@ -132,4 +144,20 @@ describe('mail sidebar unread contracts', () => {
     expect(appSidebarContent).toContain('<NavMain items={navItems}');
     expect(appSidebarContent).toContain('<NavMain items={footerItems}');
   });
+
+  it('wires rich folder tooltips into nav-main and recursive-folder components', () => {
+    const navMainContent = fs.readFileSync(
+      path.resolve(__dirname, '../components/ui/nav-main.tsx'),
+      'utf-8',
+    );
+    expect(navMainContent).toContain('badgeTooltip');
+    expect(navMainContent).toContain('TooltipContent');
+
+    const recursiveFolderContent = fs.readFileSync(
+      path.resolve(__dirname, '../components/ui/recursive-folder.tsx'),
+      'utf-8',
+    );
+    expect(recursiveFolderContent).toContain('getTooltip');
+  });
 });
+

@@ -31,6 +31,7 @@ import * as React from 'react';
 import type { SidebarUnreadCountSnapshot } from '@/lib/mail/sidebar-unread-counts';
 import { getNavUnreadCount } from '@/lib/mail/sidebar-unread-counts';
 import { useCategorySettings } from '@/hooks/use-categories';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 
 interface IconProps extends React.SVGProps<SVGSVGElement> {
   ref?: React.Ref<SVGSVGElement>;
@@ -44,6 +45,7 @@ interface NavItemProps extends NavItem {
   suffix?: React.ComponentType<IconProps>;
   isSettingsPage?: boolean;
   subtitle?: string;
+  badgeTooltip?: string;
 }
 
 interface NavMainProps {
@@ -274,11 +276,17 @@ export function NavMain({ items, unreadCountsSnapshot }: NavMainProps) {
                 .map((item) => {
                   const categoryId = item.id ? categoryIdBySlug.get(item.id) : undefined;
                   const badge = getNavUnreadCount(unreadCountsSnapshot, item.id, categoryId);
+                  const badgeTooltip = unreadCountsSnapshot?.getTooltip(
+                    item.id ?? item.title,
+                    item.title,
+                    categoryId,
+                  );
                   return (
                     <NavItem
                       key={item.url}
                       {...item}
                       badge={badge}
+                      badgeTooltip={badgeTooltip}
                       isActive={isUrlActive(item.url)}
                       href={getHref(item)}
                       target={item.target}
@@ -382,7 +390,8 @@ function NavItem(item: NavItemProps & { href: string }) {
 
   const unreadCount = item.badge;
   const hasUnread = typeof unreadCount === 'number' && unreadCount > 0;
-  const unreadText = hasUnread ? `${unreadCount} unread` : undefined;
+  const badgeTooltip = item.badgeTooltip;
+  const unreadText = hasUnread ? (badgeTooltip ?? `${unreadCount} unread`) : undefined;
   const tooltipText = React.useMemo(() => {
     if (state !== 'collapsed') return undefined;
     const base = item.subtitle ? `${item.title} — ${item.subtitle}` : item.title;
@@ -443,9 +452,25 @@ function NavItem(item: NavItemProps & { href: string }) {
               ) : null}
             </span>
             {state !== 'collapsed' && hasUnread && (
-              <Badge className="text-muted-foreground ml-auto shrink-0 rounded-full border-none bg-transparent">
-                {unreadCount.toLocaleString()}
-              </Badge>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span
+                    title={badgeTooltip}
+                    className="ml-auto inline-flex items-center"
+                    tabIndex={-1}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <Badge className="text-muted-foreground shrink-0 rounded-full border-none bg-transparent">
+                      {unreadCount.toLocaleString()}
+                    </Badge>
+                  </span>
+                </TooltipTrigger>
+                {badgeTooltip && (
+                  <TooltipContent side="right">
+                    {badgeTooltip}
+                  </TooltipContent>
+                )}
+              </Tooltip>
             )}
           </Link>
         </SidebarMenuButton>

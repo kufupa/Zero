@@ -134,8 +134,8 @@ export function toSidebarUnreadCountSnapshot(
     getTooltip: (key: string, title?: string, categoryIdForSlug?: string) => {
       const normalizedKey = key.trim().toLowerCase();
       const isDrafts = normalizedKey === 'drafts' || normalizedKey === 'draft';
-      const unread = snapshot.getCount(key, categoryIdForSlug);
-      const total = snapshot.getTotal(key, categoryIdForSlug);
+      const unread = isDrafts ? snapshot.draftsCount : snapshot.getCount(key, categoryIdForSlug);
+      const total = isDrafts ? snapshot.draftsCount : snapshot.getTotal(key, categoryIdForSlug);
       return formatFolderTooltip(title ?? key, unread, total, isDrafts);
     },
   };
@@ -145,7 +145,7 @@ export function toSidebarUnreadCountSnapshot(
 
 /**
  * Returns unread count for a navigation item.
- * undefined = no badge contract (e.g. unknown item)
+ * undefined = no badge contract (e.g. unknown item or 0 drafts)
  * number >= 0 = badge count (render when > 0)
  */
 export function getNavUnreadCount(
@@ -160,14 +160,14 @@ export function getNavUnreadCount(
   const normalizedId = itemId.trim().toLowerCase();
   if (normalizedId === 'drafts' || normalizedId === 'draft') {
     if (snapshot.source === 'pilot') {
-      return snapshot.draftsCount;
+      return snapshot.draftsCount > 0 ? snapshot.draftsCount : undefined;
     }
     if (snapshot.source === 'legacy') {
       const stat = snapshot.legacy.find((s) => {
         const lbl = s.label?.trim().toLowerCase();
         return lbl === 'drafts' || lbl === 'draft';
       });
-      return stat ? stat.count : undefined;
+      return stat && stat.count > 0 ? stat.count : undefined;
     }
     return undefined;
   }

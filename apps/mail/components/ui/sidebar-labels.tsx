@@ -38,6 +38,16 @@ const SidebarLabels = ({ data, unreadCountsSnapshot }: Props) => {
     [unreadCountsSnapshot, getLabelCount],
   );
 
+  const getTooltip = useCallback(
+    (label: { id: string; name?: string }): string | undefined => {
+      if (unreadCountsSnapshot) {
+        return unreadCountsSnapshot.getTooltip(label.id, label.name);
+      }
+      return undefined;
+    },
+    [unreadCountsSnapshot],
+  );
+
   const myFoldersTree = data
     ? buildMyFoldersSidebarTree(data, activeAccount?.providerId, getLocale())
     : [];
@@ -53,6 +63,7 @@ const SidebarLabels = ({ data, unreadCountsSnapshot }: Props) => {
               activeAccount={activeAccount}
               count={getCount(label)}
               getCount={getCount}
+              getTooltip={getTooltip}
             />
           ))}
         </Tree>
