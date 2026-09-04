@@ -432,7 +432,8 @@ function isSeriesReleaseAtRisk(haystack: string): boolean {
     /(?:release|cancel).{0,40}(?:held|series|allocation)|(held|series)\s+(?:allocation|block)/i.test(
       haystack,
     ) ||
-    (/allocation/i.test(haystack) && /series/i.test(haystack))
+    (/allocation/i.test(haystack) && /series/i.test(haystack)) ||
+    /\brelease\s+the\s+bookings?\b/i.test(haystack)
   );
 }
 
@@ -468,10 +469,59 @@ function hasRevenueRisk(haystack: string): boolean {
 
 /** Shared promo/cold-sales shape for workflow force-spam (Task 2). */
 function salesSignal(haystack: string): boolean {
-  return /promo|sale|discount|unsubscribe|limited[- ]time|book a demo|whatsapp|newsletter|marketing|click here|viqal|outreach|boost|% off|\$\d|donation|charity|solicitation/i.test(
+  return /promo|sale|discount|unsubscribe|limited[- ]time|book a demo|whatsapp|newsletter|marketing|click here|viqal|outreach|boost|% off|\$\d|donation|charity|solicitation|is your business|free\s+(?:\w+\s+){0,5}(?:security\s+)?audit|business development|managed (?:network|document)|document management solutions/i.test(
     haystack,
   );
 }
+
+/** Guest complaint / service-recovery work → guest-experience. */
+function isGuestServiceRecovery(haystack: string): boolean {
+  return (
+    /\b(?:bed\s*bugs?|service recovery|complaint|infestation)\b/i.test(haystack) ||
+    /\b(?:leave a (?:public )?review|report this to (?:booking\.com|expedia|hotels\.com))\b/i.test(
+      haystack,
+    ) ||
+    (/\b(?:discovered|found)\b/i.test(haystack) &&
+      /\b(?:bed\s*bugs?|bugs?|pests?)\b/i.test(haystack) &&
+      /\b(?:guest|stay|room|property|hotel)\b/i.test(haystack))
+  );
+}
+
+/**
+ * Human-requested cancel/release of a booking or group (not SynXis system
+ * cancel notices — those stay on the routine-system path).
+ */
+function isHumanBookingCancelOrRelease(haystack: string): boolean {
+  return (
+    /\bcancellation\s+request\b/i.test(haystack) ||
+    /\brelease\s+the\s+bookings?\b/i.test(haystack) ||
+    /\b(?:kindly|please|could you|can you)\s+(?:\w+\s+){0,6}(?:cancel|release)\b/i.test(
+      haystack,
+    ) ||
+    /\b(?:cancel|release)\s+(?:the\s+)?(?:attached\s+)?(?:booking|reservation|group|rooms?)\b/i.test(
+      haystack,
+    )
+  );
+}
+
+/** Group/event commercial work (rooming lists, function runs, group blocks). */
+function isGroupsEventsWork(haystack: string): boolean {
+  return (
+    /\brooming\s+list\b/i.test(haystack) ||
+    /\bfunction\s+run\b/i.test(haystack) ||
+    /\bgroup\s+res(?:ervation)?\s*#?\s*\d+/i.test(haystack) ||
+    /\b(?:group|tour|conference|banquet|function)\s+(?:accommodation|booking|reservation|block|quote|enquiry|inquiry)\b/i.test(
+      haystack,
+    ) ||
+    /\b(?:event\s+(?:proposal|contract)|wedding\s+enquiry)\b/i.test(haystack)
+  );
+}
+
+/** Folders never-spam senders may still be remapped away from. */
+const NEVER_SPAM_WEAK_FOLDERS = new Set<WorkflowTriageOutput['primaryFolder']>([
+  'unknown-review',
+  'automated-channel',
+]);
 
 function isRoutineSystemMail(input: TriageRefineInput, haystack = buildTriageHaystack(input)): boolean {
   const subject = (input.subject ?? '').trim();
@@ -622,24 +672,59 @@ function refineWorkflowTriageOutput(
     };
   }
 
-  // R22/R23 applies even when model already returned isSpam=false. Keep
-  // workflow remapping deterministic for never-spam hotel/RC senders.
-  if (!next.isSpam && neverSpamFrom) {
-    const eventFolder = workflowExceptionFolder(input, staff);
-    if (eventFolder !== 'unknown-review') next = { ...next, primaryFolder: eventFolder };
-  }
-
   const haystack = buildTriageHaystack(input);
-  if (isSeriesReleaseAtRisk(haystack)) {
+
+  // Content-intent folders beat blanket never-spam remaps (legacy staff FW of
+  // rooming lists must stay groups-events; guest complaints must not stay bookings).
+  // Cancel/series also clears erroneous model isSpam (apply early-return guard).
+  if (isGuestServiceRecovery(haystack)) {
+    next = {
+      ...next,
+      primaryFolder: 'guest-experience',
+      isSpam: false,
+      suggestedTools: [],
+      policyFlags: addPolicyFlag(next.policyFlags, 'refine:guest-service-recovery'),
+      rationale: `${next.rationale} Guest complaint/service recovery is guest-experience.`,
+    };
+  } else if (isHumanBookingCancelOrRelease(haystack) || isSeriesReleaseAtRisk(haystack)) {
     next = {
       ...next,
       primaryFolder: 'exceptions-recovery',
       isSpam: false,
       urgent: false,
       suggestedTools: [],
-      policyFlags: addPolicyFlag(next.policyFlags, 'refine:series-release-at-risk'),
-      rationale: `${next.rationale} Held series/allocation release is exceptions-recovery.`,
+      policyFlags: addPolicyFlag(
+        next.policyFlags,
+        isSeriesReleaseAtRisk(haystack)
+          ? 'refine:series-release-at-risk'
+          : 'refine:booking-cancel-or-release',
+      ),
+      rationale: `${next.rationale} Human booking cancel/release is exceptions-recovery.`,
     };
+  } else if (isGroupsEventsWork(haystack)) {
+    next = {
+      ...next,
+      primaryFolder: 'groups-events',
+      isSpam: false,
+      suggestedTools: [],
+      policyFlags: addPolicyFlag(next.policyFlags, 'refine:groups-events-work'),
+      rationale: `${next.rationale} Group/event commercial work is groups-events.`,
+    };
+  } else if (!next.isSpam && neverSpamFrom && NEVER_SPAM_WEAK_FOLDERS.has(next.primaryFolder)) {
+    // R22/R23: never-spam hotel/RC senders only leave weak folders. Do not
+    // stomp commercial work folders the model (or content detectors) already set.
+    const eventFolder = workflowExceptionFolder(input, staff);
+    if (eventFolder !== 'unknown-review') next = { ...next, primaryFolder: eventFolder };
+  }
+
+  const contentIntentLocked =
+    next.policyFlags.includes('refine:guest-service-recovery') ||
+    next.policyFlags.includes('refine:booking-cancel-or-release') ||
+    next.policyFlags.includes('refine:series-release-at-risk') ||
+    next.policyFlags.includes('refine:groups-events-work');
+
+  if (contentIntentLocked) {
+    // Keep content-intent folder; skip fortimail/promo/routine remaps.
   } else if (isFortiMailQuarantineDigest(haystack)) {
     next = {
       ...next,

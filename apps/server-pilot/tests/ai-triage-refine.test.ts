@@ -576,6 +576,102 @@ describe('workflow routine system-mail force-automate (KTD1)', () => {
   });
 });
 
+describe('workflow content-intent overrides (quality day-sample)', () => {
+  it('workflow: cold vendor free security-audit pitch → isSpam (general salesSignal)', () => {
+    const refined = refineTriageOutput(
+      {
+        from: 'rep@vendor.example.com',
+        subject: 'Is Your Business POPIA Compliant?',
+        body:
+          "That's where we can help. We're offering a 100% FREE Network Security Audit. Business Development Associate.",
+      },
+      workflowOutput({
+        primaryFolder: 'bookings',
+        isSpam: false,
+        urgent: false,
+      }),
+    );
+
+    expect(refined.isSpam).toBe(true);
+    expect(refined.policyFlags).toContain('refine:promo-spam');
+  });
+
+  it('workflow: guest bed-bug complaint → guest-experience, not bookings', () => {
+    const refined = refineTriageOutput(
+      {
+        from: 'guest@example.com',
+        subject: 'Bed bugs found during my stay',
+        body:
+          'I was a guest at your property. I discovered bed bugs in the room. If I do not receive a proper response I will leave a public review.',
+      },
+      workflowOutput({
+        primaryFolder: 'bookings',
+        isSpam: false,
+        urgent: false,
+      }),
+    );
+
+    expect(refined.primaryFolder).toBe('guest-experience');
+    expect(refined.isSpam).toBe(false);
+    expect(refined.policyFlags).toContain('refine:guest-service-recovery');
+  });
+
+  it('workflow: agency cancellation request → exceptions-recovery, not groups-events', () => {
+    const refined = refineTriageOutput(
+      {
+        from: 'agent@tours.example.com',
+        subject: 'CANCELLATION REQUEST - CTI X4684',
+        body: 'Could you kindly cancel the attached booking. GROUP NAME: CENTURION HOTEL STATUS 01 NIGHT',
+      },
+      workflowOutput({
+        primaryFolder: 'groups-events',
+        isSpam: false,
+        urgent: false,
+      }),
+    );
+
+    expect(refined.primaryFolder).toBe('exceptions-recovery');
+    expect(refined.policyFlags).toContain('refine:booking-cancel-or-release');
+  });
+
+  it('workflow: legacy staff FW rooming list stays groups-events (never-spam must not stomp)', () => {
+    const refined = refineTriageOutput(
+      {
+        from: 'crsa@legacyhotels.co.za',
+        subject: 'FW: Tours Group in October 2026 Accommodation',
+        body: 'please find below rooming list for the Group Res#9500533',
+      },
+      workflowOutput({
+        primaryFolder: 'groups-events',
+        isSpam: false,
+        urgent: false,
+      }),
+    );
+
+    expect(refined.primaryFolder).toBe('groups-events');
+    expect(refined.isSpam).toBe(false);
+    expect(refined.policyFlags).toContain('refine:groups-events-work');
+  });
+
+  it('workflow: release bookings for groups → exceptions-recovery', () => {
+    const refined = refineTriageOutput(
+      {
+        from: 'agent@agency.example.com',
+        subject: 'RE: CTI OSA SA+VFA 7D SGL 1016',
+        body: "Please can you release the bookings for the following groups as they won't travel:",
+      },
+      workflowOutput({
+        primaryFolder: 'manage-stay',
+        isSpam: false,
+        urgent: false,
+      }),
+    );
+
+    expect(refined.primaryFolder).toBe('exceptions-recovery');
+    expect(refined.policyFlags).toContain('refine:series-release-at-risk');
+  });
+});
+
 describe('workflow force-spam (KTD2)', () => {
   it('workflow: bookings + isSpam:false + salesSignal → spam flag, not primaryFolder spam', () => {
     const refined = refineTriageOutput(
