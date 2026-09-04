@@ -105,9 +105,25 @@ export function useOptimisticActions() {
   const generatePendingActionId = () =>
     `pending_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 
+  const { mutateAsync: setThreadCategories } = useMutation(
+    trpc.categories.setThreadCategories.mutationOptions(),
+  );
+
   const refreshData = useCallback(async () => {
-    return await queryClient.refetchQueries({ queryKey: trpc.labels.list.queryKey() });
-  }, [queryClient]);
+    return await Promise.all([
+      queryClient.refetchQueries({ queryKey: trpc.labels.list.queryKey() }),
+      queryClient.refetchQueries({ queryKey: trpc.mail.unreadCounts.queryKey() }),
+    ]);
+  }, [queryClient, trpc]);
+
+  const setCategoriesForThread = useCallback(
+    async (threadId: string, categoryIds: string[]) => {
+      const res = await setThreadCategories({ threadId, categoryIds });
+      await refreshData();
+      return res;
+    },
+    [setThreadCategories, refreshData],
+  );
 
   function createPendingAction({
     type,
@@ -176,8 +192,11 @@ export function useOptimisticActions() {
 
         optimisticActionsManager.pendingActions.delete(pendingActionId);
         optimisticActionsManager.pendingActionsByType.get(type)?.delete(pendingActionId);
-        if (typeActions?.size === 1) {
+        const remaining = optimisticActionsManager.pendingActionsByType.get(type)?.size ?? 0;
+        if (remaining === 0 || typeActions?.size === 1) {
           await refreshData();
+          removeOptimisticAction(optimisticId);
+        } else {
           removeOptimisticAction(optimisticId);
         }
       } catch (error) {
@@ -807,6 +826,7 @@ export function useOptimisticActions() {
     optimisticSnooze,
     optimisticUnsnooze,
     optimisticDeleteDraft,
+    setCategoriesForThread,
     undoLastAction,
   };
 }

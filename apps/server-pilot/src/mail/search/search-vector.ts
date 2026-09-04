@@ -6,30 +6,41 @@ export const THREAD_SEARCH_VECTOR_CONFIG = 'simple' as const;
 export const MAIL_SEARCH_BODY_MESSAGE_LIMIT = 20;
 export const MAIL_SEARCH_BODY_CHAR_LIMIT = 8000;
 
-/** Source text for mail_thread.search_vector (subject + snippet + sender + recent bodies). */
+/** Source text for mail_thread.search_vector (subject + snippet + sender + recipients + recent bodies). */
 export const threadSearchVectorSourceSql: SQL = sql`
   coalesce("subject", '') || ' ' || coalesce("snippet", '') || ' ' || coalesce((
-    SELECT "from_address"
-    FROM "message"
-    WHERE "message"."thread_id" = "mail_thread"."id"
-      AND "message"."transport_id" = "mail_thread"."transport_id"
-      AND "message"."direction" = 'inbound'
-    ORDER BY "received_at" DESC NULLS LAST
-    LIMIT 1
-  ), '') || ' ' || coalesce((
     SELECT string_agg(
-      left(coalesce("text_body", ''), ${MAIL_SEARCH_BODY_CHAR_LIMIT}),
+      translate(
+        coalesce("from_address", '') || ' ' || coalesce(recipients.to_list, ''),
+        '@.<>"''+_',
+        '        '
+      ) || ' ' ||
+      left(
+        coalesce(
+          nullif(trim("text_body"), ''),
+          regexp_replace(coalesce("html_body", ''), '<[^>]+>', ' ', 'g')
+        ),
+        ${MAIL_SEARCH_BODY_CHAR_LIMIT}
+      ),
       ' '
-      ORDER BY "received_at" DESC NULLS LAST, "id" DESC
     )
     FROM (
-      SELECT "text_body", "received_at", "id"
+      SELECT "from_address", "to_addresses", "text_body", "html_body"
       FROM "message"
       WHERE "message"."thread_id" = "mail_thread"."id"
         AND "message"."transport_id" = "mail_thread"."transport_id"
       ORDER BY "received_at" DESC NULLS LAST, "id" DESC
       LIMIT ${MAIL_SEARCH_BODY_MESSAGE_LIMIT}
-    ) AS recent_bodies
+    ) AS recent_msgs
+    LEFT JOIN LATERAL (
+      SELECT string_agg(addr, ' ') AS to_list
+      FROM jsonb_array_elements_text(
+        CASE
+          WHEN jsonb_typeof(recent_msgs."to_addresses") = 'array' THEN recent_msgs."to_addresses"
+          ELSE '[]'::jsonb
+        END
+      ) AS addr
+    ) AS recipients ON true
   ), '')
 `;
 

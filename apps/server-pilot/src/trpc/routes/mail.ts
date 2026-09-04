@@ -54,7 +54,7 @@ import {
   getLatestInboundFromAddress,
   upsertSenderPreference,
 } from '../../mail/sender-preference.js';
-import { and, eq, asc, desc, isNotNull, isNull, inArray, sql, exists, or, lte } from 'drizzle-orm';
+import { and, eq, asc, desc, isNotNull, isNull, inArray, sql, exists } from 'drizzle-orm';
 import { formatContentDispositionFilename } from '../../mail/attachment-filename.js';
 import { withMailboxIngestLock } from '../../mail/ingest/mailbox-ingest-lock.js';
 import { assertSafeOutboundFields } from '../../mail/send/validate-outbound.js';
@@ -75,20 +75,21 @@ import { randomUUID } from 'node:crypto';
 import { parseEnv } from '../../env.js';
 import { z } from 'zod';
 
-/** FE + pilot folder slugs accepted by listThreads. */
-export const MAIL_FOLDER_VALUES = [
-  'inbox',
-  'sent',
-  'drafts',
-  'draft',
-  'archived',
-  'archive',
-  'bin',
-  'spam',
-  'starred',
-  'snoozed',
-  'all',
-] as const;
+import {
+  MAIL_FOLDER_VALUES,
+  type MailFolderValue,
+  clearExpiredSnoozes,
+  buildMailFolderConditions,
+} from '../../mail/folder-semantics.js';
+import {
+  loadUnreadCounts,
+  type MailUnreadCounts,
+  type MailUnreadFolderId,
+} from '../../mail/folder-unread-counts.js';
+
+/** FE + pilot folder slugs accepted by listThreads. Re-exported for backward compatibility. */
+export { MAIL_FOLDER_VALUES, type MailFolderValue };
+export type { MailUnreadCounts, MailUnreadFolderId };
 
 /** FE bulk mutations send `{ ids }`; normalize to internal `threadIds`. */
 export const bulkIdsInput = z.union([
@@ -160,6 +161,12 @@ export const modifyLabelsInput = z.union([
 const moveThreadsInput = z.object({
   threadIds: z.array(z.string()).min(1),
   destination: z.enum(['inbox', 'archive', 'spam', 'bin']),
+});
+
+export const markFolderAsReadInput = z.object({
+  folder: z.string().optional(),
+  categoryId: z.string().optional(),
+  labelId: z.string().optional(),
 });
 
 export const listThreadsInput = z.object({
@@ -285,6 +292,14 @@ async function loadThreadCategoriesForGet(
 
 export const mailRouter = tRouter({
   /**
+   * Return direct unread thread counts for system folders, active categories,
+   * and visible user labels scoped to the caller's active mailbox transport.
+   */
+  unreadCounts: mailboxProcedure.query(async ({ ctx }) => {
+    return loadUnreadCounts(getDb(), ctx.activeTransportId);
+  }),
+
+  /**
    * List threads in the caller's active mailbox, filtered by folder/search.
    *
    * Folder semantics:
@@ -303,79 +318,13 @@ export const mailRouter = tRouter({
     const limit = input.limit;
 
     // Lazy-clear expired snoozes so they reappear in inbox without a cron.
-    await db
-      .update(mailThread)
-      .set({ snoozedUntil: null, updatedAt: new Date() })
-      .where(
-        and(
-          eq(mailThread.transportId, transportId),
-          isNotNull(mailThread.snoozedUntil),
-          lte(mailThread.snoozedUntil, sql`now()`),
-        ),
-      );
+    await clearExpiredSnoozes(db, transportId);
 
     if (input.folder === 'drafts' || input.folder === 'draft') {
       return { threads: [] as { id: string; transportId: string }[], nextPageToken: null };
     }
 
-    const conditions = [eq(mailThread.transportId, transportId)];
-
-    if (input.folder === 'bin') {
-      conditions.push(isNotNull(mailThread.trashedAt));
-    } else {
-      conditions.push(isNull(mailThread.trashedAt));
-    }
-
-    if (input.folder === 'spam') {
-      conditions.push(isNotNull(mailThread.spamAt));
-    } else {
-      conditions.push(isNull(mailThread.spamAt));
-    }
-
-    if (input.folder === 'inbox') {
-      conditions.push(eq(mailThread.isArchived, false));
-      conditions.push(
-        or(isNull(mailThread.snoozedUntil), lte(mailThread.snoozedUntil, sql`now()`))!,
-      );
-      // Inbox = has inbound mail; outbound-only compose threads live in sent.
-      conditions.push(
-        exists(
-          db
-            .select({ one: sql`1` })
-            .from(message)
-            .where(
-              and(
-                eq(message.threadId, mailThread.id),
-                eq(message.transportId, transportId),
-                eq(message.direction, 'inbound'),
-              ),
-            ),
-        ),
-      );
-    } else if (input.folder === 'archived' || input.folder === 'archive') {
-      conditions.push(eq(mailThread.isArchived, true));
-    } else if (input.folder === 'starred') {
-      conditions.push(eq(mailThread.isStarred, true));
-    } else if (input.folder === 'snoozed') {
-      conditions.push(isNotNull(mailThread.snoozedUntil));
-    }
-
-    if (input.folder === 'sent') {
-      conditions.push(
-        exists(
-          db
-            .select({ one: sql`1` })
-            .from(message)
-            .where(
-              and(
-                eq(message.threadId, mailThread.id),
-                eq(message.transportId, transportId),
-                eq(message.direction, 'outbound'),
-              ),
-            ),
-        ),
-      );
-    }
+    const conditions = buildMailFolderConditions(db, transportId, input.folder);
 
     if (input.labelIds && input.labelIds.length > 0) {
       conditions.push(
@@ -703,6 +652,76 @@ export const mailRouter = tRouter({
     }
     return { updated: visibleIds.length };
   }),
+
+  markFolderAsRead: mailboxProcedure
+    .input(markFolderAsReadInput)
+    .mutation(async ({ input, ctx }) => {
+      const db = getDb();
+      const transportId = ctx.activeTransportId;
+
+      let targetThreadIds: string[] = [];
+
+      if (input.folder) {
+        const folderVal = input.folder.toLowerCase() as MailFolderValue;
+        const conditions = buildMailFolderConditions(db, transportId, folderVal);
+        const rows = await db
+          .select({ id: mailThread.id })
+          .from(mailThread)
+          .where(and(...conditions, eq(mailThread.isRead, false)));
+        targetThreadIds = rows.map((r) => r.id);
+      } else if (input.categoryId) {
+        const rows = await db
+          .select({ id: mailThread.id })
+          .from(mailThreadCategory)
+          .innerJoin(mailThread, eq(mailThreadCategory.threadId, mailThread.id))
+          .where(
+            and(
+              eq(mailThreadCategory.transportId, transportId),
+              eq(mailThreadCategory.categoryId, input.categoryId),
+              eq(mailThread.transportId, transportId),
+              eq(mailThread.isRead, false),
+              isNull(mailThread.trashedAt),
+              isNull(mailThread.spamAt),
+              eq(mailThread.isArchived, false),
+            ),
+          );
+        targetThreadIds = rows.map((r) => r.id);
+      } else if (input.labelId) {
+        const [lbl] = await db
+          .select({ name: mailLabel.name })
+          .from(mailLabel)
+          .where(and(eq(mailLabel.id, input.labelId), eq(mailLabel.transportId, transportId)));
+
+        const isQuarantine = lbl?.name.toLowerCase() === 'quarantine';
+        const labelCond = isQuarantine
+          ? and(isNotNull(mailThread.spamAt), isNull(mailThread.trashedAt))
+          : and(eq(mailThread.isArchived, true), isNull(mailThread.spamAt), isNull(mailThread.trashedAt));
+
+        const rows = await db
+          .select({ id: mailThread.id })
+          .from(mailThread)
+          .where(
+            and(
+              eq(mailThread.transportId, transportId),
+              eq(mailThread.isRead, false),
+              labelCond,
+              sql`${mailThread.labelIds} ? ${input.labelId}`,
+            ),
+          );
+        targetThreadIds = rows.map((r) => r.id);
+      }
+
+      if (targetThreadIds.length === 0) {
+        return { updated: 0 };
+      }
+
+      for (let i = 0; i < targetThreadIds.length; i += 500) {
+        const chunk = targetThreadIds.slice(i, i + 500);
+        await markThreadRead(db, transportId, chunk);
+      }
+
+      return { updated: targetThreadIds.length };
+    }),
 
   toggleStar: mailboxProcedure.input(bulkIdsInput).mutation(async ({ input, ctx }) => {
     const db = getDb();

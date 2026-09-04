@@ -16,6 +16,7 @@ import { Button } from '@/components/ui/button';
 import { FileIcon } from 'lucide-react';
 import { Accordion } from 'radix-ui';
 import { cn } from '@/lib/utils';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 
 type TreeViewElement = {
   id: string;
@@ -196,6 +197,7 @@ type FolderProps = {
   onFolderClick?: (id: string) => void;
   hasChildren?: boolean;
   color?: string;
+  badgeTooltip?: string;
 } & FolderComponentProps;
 
 const Folder = ({
@@ -208,6 +210,7 @@ const Folder = ({
   children,
   onFolderClick,
   hasChildren,
+  badgeTooltip,
   ...props
 }: FolderProps) => {
   const childrenCount = React.Children.count(children);
@@ -242,6 +245,12 @@ const Folder = ({
               },
               role: 'button',
               tabIndex: 0,
+              'aria-label':
+                count > 0
+                  ? badgeTooltip
+                    ? `${element}: ${badgeTooltip}`
+                    : `${element}: ${count} unread`
+                  : element,
             }
           : {})}
       >
@@ -278,19 +287,36 @@ const Folder = ({
                 },
                 role: 'button',
                 tabIndex: 0,
+                'aria-label':
+                  count > 0
+                    ? badgeTooltip
+                      ? `${element}: ${badgeTooltip}`
+                      : `${element}: ${count} unread`
+                    : element,
               }
             : {})}
         >
           {element}
         </span>
         {count > 0 && (
-          <span
-            className={cn(
-              'text-muted-foreground ml-auto shrink-0 rounded-full bg-transparent px-2 py-0.5 text-xs font-medium',
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span
+                title={badgeTooltip}
+                tabIndex={-1}
+                className={cn(
+                  'text-muted-foreground ml-auto shrink-0 rounded-full bg-transparent px-2 py-0.5 text-xs font-medium',
+                )}
+              >
+                {count}
+              </span>
+            </TooltipTrigger>
+            {badgeTooltip && (
+              <TooltipContent side="right">
+                {badgeTooltip}
+              </TooltipContent>
             )}
-          >
-            {count}
-          </span>
+          </Tooltip>
         )}
       </div>
       <Accordion.Content className="data-[state=closed]:animate-accordion-up data-[state=open]:animate-accordion-down relative h-full overflow-hidden text-sm">

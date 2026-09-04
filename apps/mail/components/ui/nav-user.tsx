@@ -165,6 +165,7 @@ export function NavUser() {
     try {
       setLoading(true, m['common.navUser.switchingAccounts']());
       setThreadId(null);
+      queryClient.removeQueries({ queryKey: trpc.mail.unreadCounts.queryKey() });
       const previousScope = previousScopeBeforeSwitch({
         current: getMailCacheScope(),
         nextTransportId: connectionId,
@@ -180,7 +181,10 @@ export function NavUser() {
           await del(idbCacheKeyForScope(previousScope));
         },
       });
-      await queryClient.refetchQueries({ queryKey: trpc.mail.listThreads.infiniteQueryKey() });
+      await Promise.all([
+        queryClient.refetchQueries({ queryKey: trpc.mail.listThreads.infiniteQueryKey() }),
+        queryClient.refetchQueries({ queryKey: trpc.mail.unreadCounts.queryKey() }),
+      ]);
     } catch (error) {
       console.error('Error switching accounts:', error);
       toast.error(m['common.navUser.failedToSwitchAccount']());
@@ -197,9 +201,14 @@ export function NavUser() {
       runForceSync: async () => {
         await handleForceSync();
         setLastSyncAt(Date.now());
-        await queryClient.invalidateQueries({
-          queryKey: trpc.mail.listThreads.infiniteQueryKey(),
-        });
+        await Promise.all([
+          queryClient.invalidateQueries({
+            queryKey: trpc.mail.listThreads.infiniteQueryKey(),
+          }),
+          queryClient.invalidateQueries({
+            queryKey: trpc.mail.unreadCounts.queryKey(),
+          }),
+        ]);
       },
       onBlocked: () => {
         toast.info('This action is not available in demo mode');

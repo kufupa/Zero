@@ -16,10 +16,14 @@ export const RecursiveFolder = ({
   label,
   activeAccount,
   count,
+  getCount,
+  getTooltip,
 }: {
   label: Label & { originalLabel?: Label };
   activeAccount?: any;
   count?: number;
+  getCount?: (label: Label & { originalLabel?: Label }) => number;
+  getTooltip?: (label: Label & { originalLabel?: Label }) => string | undefined;
 }) => {
   const { labels, setLabels } = useSearchLabels();
   const location = useLocation();
@@ -71,6 +75,11 @@ export const RecursiveFolder = ({
 
   const hasChildren = label.labels && label.labels.length > 0;
 
+  const nodeCount = getCount ? getCount(label) : (count || 0);
+  const resolvedCount =
+    label.id.startsWith('group-') && activeAccount?.providerId === 'mailbox' ? 0 : nodeCount;
+  const nodeTooltip = getTooltip ? getTooltip(label) : undefined;
+
   return (
     <LabelSidebarContextMenu
       labelId={label.id}
@@ -85,7 +94,8 @@ export const RecursiveFolder = ({
           hasChildren={hasChildren}
           onFolderClick={handleFolderClick}
           isSelect={isFolderActive || (canDrop && isOver)}
-          count={count || 0}
+          count={resolvedCount}
+          badgeTooltip={nodeTooltip}
           className="max-w-[192px]"
         >
           {label.labels?.map((childLabel: any) => (
@@ -93,7 +103,9 @@ export const RecursiveFolder = ({
               key={childLabel.id}
               label={childLabel}
               activeAccount={activeAccount}
-              count={count}
+              count={getCount ? getCount(childLabel) : count}
+              getCount={getCount}
+              getTooltip={getTooltip}
             />
           ))}
         </Folder>

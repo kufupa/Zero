@@ -21,9 +21,9 @@ import { PencilCompose } from '../icons/icons';
 import { useIsMobile } from '@/hooks/use-mobile';
 import React, { useMemo } from 'react';
 import { useSession } from '@/lib/auth-client';
-import { useStats } from '@/hooks/use-stats';
+import { useUnreadCounts } from '@/hooks/use-unread-counts';
 import { useLocation } from 'react-router';
-import { cn, FOLDERS } from '@/lib/utils';
+import { cn } from '@/lib/utils';
 import { m } from '@/paraglide/messages';
 import { isAdminDashboardEnabled } from '@/lib/admin-dashboard/access';
 import { usePilotCapabilities } from '@/hooks/use-pilot-capabilities';
@@ -36,7 +36,7 @@ import { useQueryState } from 'nuqs';
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   //   const trpc = useTRPC();
   //   const { mutateAsync: createMeet } = useMutation(trpc.meet.create.mutationOptions());
-  const { data: stats } = useStats();
+  const { data: unreadCounts } = useUnreadCounts();
   const location = useLocation();
   const { data: session } = useSession();
   const showAdminDashboard = isAdminDashboardEnabled(session);
@@ -83,17 +83,6 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         };
       }
 
-      if (currentSection === 'mail' && stats && stats.length) {
-        if (items[0]?.items[0]) {
-          items[0].items[0].badge =
-            stats.find((stat) => stat.label?.toLowerCase() === FOLDERS.INBOX)?.count ?? 0;
-        }
-        if (items[0]?.items[3]) {
-          items[0].items[3].badge =
-            stats.find((stat) => stat.label?.toLowerCase() === FOLDERS.SENT)?.count ?? 0;
-        }
-      }
-
       const footerItems = bottomNavItems.map((section) => ({
         ...section,
         items: section.items.map((item) => {
@@ -115,7 +104,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         footerItems: bottomNavItems,
       };
     }
-  }, [location.pathname, stats, showAdminDashboard, showCatchupUpload, categorySettings, demoMode]);
+  }, [location.pathname, showAdminDashboard, showCatchupUpload, categorySettings, demoMode]);
 
   const showComposeButton = currentSection === 'mail';
   const { state } = useSidebar();
@@ -164,12 +153,12 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         className={`scrollbar scrollbar-w-1 scrollbar-thumb-accent/40 scrollbar-track-transparent hover:scrollbar-thumb-accent scrollbar-thumb-rounded-full overflow-x-hidden py-0 pt-0 ${state !== 'collapsed' ? 'mt-5 md:px-4' : 'px-2'}`}
       >
         <div className="flex-1 py-0">
-          <NavMain items={navItems} />
+          <NavMain items={navItems} unreadCountsSnapshot={unreadCounts} />
         </div>
       </SidebarContent>
 
       <SidebarFooter className={`px-0 pb-0 ${state === 'collapsed' ? 'md:px-2' : 'md:px-4'}`}>
-        <NavMain items={footerItems} />
+        <NavMain items={footerItems} unreadCountsSnapshot={unreadCounts} />
       </SidebarFooter>
     </Sidebar>
   );

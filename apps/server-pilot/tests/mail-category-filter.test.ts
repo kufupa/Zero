@@ -79,7 +79,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.listThreads category and
         subject: 'Re: VIP airport transfer',
       });
 
-      const { mail } = await callerFor('user-navaai', { db });
+      const { mail } = await callerFor('user-navaai', {
+        db,
+        requestedTransportId: TRANSPORT_ID,
+      });
       const result = await mail.listThreads({
         folder: 'all',
         filters: { unread: true, categoryIds: [travelId] },
@@ -130,7 +133,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.listThreads category and
         transportId: TRANSPORT_ID,
       });
 
-      const { mail } = await callerFor('user-navaai', { db });
+      const { mail } = await callerFor('user-navaai', {
+        db,
+        requestedTransportId: TRANSPORT_ID,
+      });
       const inbox = await mail.listThreads({ folder: 'inbox', limit: 20 });
       expect(inbox.threads.map((t) => t.id)).toContain(threadId);
 
@@ -179,7 +185,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.listThreads category and
         transportId: TRANSPORT_ID,
       });
 
-      const { mail } = await callerFor('user-navaai', { db });
+      const { mail } = await callerFor('user-navaai', {
+        db,
+        requestedTransportId: TRANSPORT_ID,
+      });
       const detail = await mail.get({ id: threadId });
       expect(detail.categoryIds).toEqual([groupCategory!.id]);
       expect(detail.categories.map((c) => c.slug)).toEqual(['groups-events']);

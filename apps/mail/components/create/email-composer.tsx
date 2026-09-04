@@ -728,6 +728,12 @@ export function EmailComposer({
       });
       if (!sent) return;
 
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: trpc.drafts.list.queryKey() }),
+        queryClient.invalidateQueries({ queryKey: trpc.mail.unreadCounts.queryKey() }),
+        queryClient.invalidateQueries({ queryKey: trpc.mail.listThreads.infiniteQueryKey() }),
+      ]);
+
       activeDraftIdRef.current = null;
       void setDraftId(null);
       setHasUnsavedChanges(false);
@@ -842,6 +848,7 @@ export function EmailComposer({
           const savedDraftId = response?.id ?? snapshot.draftId;
           void Promise.all([
             queryClient.invalidateQueries({ queryKey: trpc.drafts.list.queryKey() }),
+            queryClient.invalidateQueries({ queryKey: trpc.mail.unreadCounts.queryKey() }),
             savedDraftId
               ? queryClient.invalidateQueries({
                   queryKey: trpc.drafts.get.queryKey({ id: savedDraftId }),

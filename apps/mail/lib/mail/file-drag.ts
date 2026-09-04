@@ -1,7 +1,17 @@
+import { pointerWithin, type CollisionDetection } from '@dnd-kit/core';
+
 /**
  * Pure helpers for mail-list → My folders drag-to-file.
  * Droppables are real user label ids only (never synthetic `group-*` rows).
  */
+
+/**
+ * Pointer hit only: drop only registers when pointer is directly within a folder.
+ * Omits closestCenter fallback to prevent drops on empty space from filing into nearest folder.
+ */
+export const mailFileCollisionDetection: CollisionDetection = (args) => {
+  return pointerWithin(args);
+};
 
 export function resolveFileDragThreadIds(
   draggedId: string,

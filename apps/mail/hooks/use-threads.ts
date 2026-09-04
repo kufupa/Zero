@@ -1,5 +1,5 @@
 import { backgroundQueueAtom, isThreadInBackgroundQueueAtom } from '@/store/backgroundQueue';
-import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import type { IGetThreadResponse, ThreadListItem } from '@zero/server/driver/types';
 import { useSearchValue } from '@/hooks/use-search-value';
 import { useTRPC } from '@/providers/query-provider';
@@ -241,6 +241,7 @@ export const useThreads = () => {
       refetchInterval: threadPollingMs ?? false,
       refetchIntervalInBackground: false,
       refetchOnWindowFocus: true,
+      placeholderData: keepPreviousData,
     },
   );
   const threadsQuery = useInfiniteQuery(

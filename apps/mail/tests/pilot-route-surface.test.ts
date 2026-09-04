@@ -23,5 +23,9 @@ describe('pilot route surface', () => {
     expect(expected).toContain('mail');
     expect(expected).toContain('categories');
     expect(expected).toContain('brain');
+
+    type MailRouterKeys = keyof AppRouter['_def']['record']['mail'];
+    const expectedMail = ['listThreads', 'unreadCounts'] satisfies MailRouterKeys[];
+    expect(expectedMail).toContain('unreadCounts');
   });
 });

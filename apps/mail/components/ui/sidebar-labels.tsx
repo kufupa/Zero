@@ -7,11 +7,15 @@ import { getLocale } from '@/paraglide/runtime';
 import { Tree } from '../magicui/file-tree';
 import { useCallback } from 'react';
 
+import type { SidebarUnreadCountSnapshot } from '@/lib/mail/sidebar-unread-counts';
+import { getLabelUnreadCount } from '@/lib/mail/sidebar-unread-counts';
+
 type Props = {
   data: LabelType[];
+  unreadCountsSnapshot?: SidebarUnreadCountSnapshot;
 };
 
-const SidebarLabels = ({ data }: Props) => {
+const SidebarLabels = ({ data, unreadCountsSnapshot }: Props) => {
   const { data: stats } = useStats();
   const { data: activeAccount } = useActiveConnection();
   const getLabelCount = useCallback(
@@ -23,6 +27,27 @@ const SidebarLabels = ({ data }: Props) => {
     },
     [stats],
   );
+
+  const getCount = useCallback(
+    (label: { id: string; name?: string }): number => {
+      if (unreadCountsSnapshot) {
+        return getLabelUnreadCount(unreadCountsSnapshot, label.id, label.name) ?? 0;
+      }
+      return getLabelCount(label.name);
+    },
+    [unreadCountsSnapshot, getLabelCount],
+  );
+
+  const getTooltip = useCallback(
+    (label: { id: string; name?: string }): string | undefined => {
+      if (unreadCountsSnapshot) {
+        return unreadCountsSnapshot.getTooltip(label.id, label.name);
+      }
+      return undefined;
+    },
+    [unreadCountsSnapshot],
+  );
+
   const myFoldersTree = data
     ? buildMyFoldersSidebarTree(data, activeAccount?.providerId, getLocale())
     : [];
@@ -36,7 +61,9 @@ const SidebarLabels = ({ data }: Props) => {
               key={label.id}
               label={label}
               activeAccount={activeAccount}
-              count={getLabelCount(label.name)}
+              count={getCount(label)}
+              getCount={getCount}
+              getTooltip={getTooltip}
             />
           ))}
         </Tree>

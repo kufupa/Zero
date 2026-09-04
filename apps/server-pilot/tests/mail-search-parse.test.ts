@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import { parseSearchQuery } from '../src/mail/search/parse.js';
-import { SearchParseError } from '../src/mail/search/types.js';
 
 describe('parseSearchQuery', () => {
   it('parses from: operator', () => {
@@ -31,23 +30,25 @@ describe('parseSearchQuery', () => {
     });
   });
 
-  it('rejects Outlook spellings', () => {
-    for (const q of ['read:no', 'hasattachment:yes', 'importance:high', 'is:flagged']) {
-      expect(() => parseSearchQuery(q)).toThrow(SearchParseError);
-    }
+  it('parses Outlook aliases', () => {
+    expect(parseSearchQuery('hasattachments:yes')).toMatchObject({ hasAttachment: true });
+    expect(parseSearchQuery('hasattachments:no')).toMatchObject({ hasAttachment: false });
+    expect(parseSearchQuery('isread:no')).toMatchObject({ isRead: false });
+    expect(parseSearchQuery('isread:yes')).toMatchObject({ isRead: true });
   });
 
-  it('accepts canonical is: and has: values only', () => {
+  it('accepts canonical is: and has: values', () => {
     expect(parseSearchQuery('is:unread')).toMatchObject({ isRead: false });
     expect(parseSearchQuery('has:attachment')).toMatchObject({ hasAttachment: true });
-    expect(() => parseSearchQuery('is:flagged')).toThrow(SearchParseError);
   });
 
   it('keeps bare text as freeText', () => {
     expect(parseSearchQuery('hotel invoice')).toMatchObject({ freeText: 'hotel invoice' });
   });
 
-  it('throws on unsupported operator', () => {
-    expect(() => parseSearchQuery('kind:email')).toThrow(SearchParseError);
+  it('treats unsupported operators as freeText instead of throwing', () => {
+    expect(parseSearchQuery('kind:email')).toMatchObject({ freeText: 'kind:email' });
+    expect(parseSearchQuery('is:flagged')).toMatchObject({ freeText: 'is:flagged' });
+    expect(parseSearchQuery('ref:12345')).toMatchObject({ freeText: 'ref:12345' });
   });
 });

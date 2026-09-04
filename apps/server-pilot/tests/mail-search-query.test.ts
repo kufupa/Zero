@@ -10,8 +10,9 @@ import {
   message,
 } from '../src/db/schema/mail.js';
 import { TRANSPORT_ID } from '../src/db/seed.js';
+import { buildParsedMessage } from '../src/mail/ingest/parse-message.js';
 import { parseSearchQuery } from '../src/mail/search/parse.js';
-import { buildThreadSearchConditions } from '../src/mail/search/query.js';
+import { buildFreeTextTsQuery, buildThreadSearchConditions } from '../src/mail/search/query.js';
 import { refreshThreadSearchVector } from '../src/mail/search/search-vector.js';
 import type { ParsedSearchQuery } from '../src/mail/search/types.js';
 import {
@@ -19,6 +20,109 @@ import {
   probeTestDb,
   withSeededTestDb,
 } from './helpers/test-db';
+
+describe('buildFreeTextTsQuery', () => {
+  it('builds quoted prefix conjuncts from words and punctuation', () => {
+    expect(buildFreeTextTsQuery('Ansh')).toBe("'ansh':*");
+    expect(buildFreeTextTsQuery('aroransh17@gmail.com')).toBe(
+      "'aroransh17':* & 'gmail':* & 'com':*",
+    );
+    expect(buildFreeTextTsQuery('info@nexct.co')).toBe("'info':* & 'nexct':* & 'co'");
+    expect(buildFreeTextTsQuery('nex')).toBe("'nex':*");
+  });
+
+  it('handles short tokens as exact matches without wildcard to prevent GIN floods', () => {
+    expect(buildFreeTextTsQuery('JD')).toBe("'jd'");
+    expect(buildFreeTextTsQuery('Room 2B')).toBe("'room':* & '2b'");
+  });
+
+  it('returns null for empty string or whitespace only', () => {
+    expect(buildFreeTextTsQuery('')).toBeNull();
+    expect(buildFreeTextTsQuery('   ')).toBeNull();
+  });
+
+  it('quotes lexemes so boolean operators and punctuation do not break to_tsquery', () => {
+    expect(buildFreeTextTsQuery('and or not')).toBe("'and':* & 'or' & 'not':*");
+    expect(buildFreeTextTsQuery('voucher & booking')).toBe("'voucher':* & 'booking':*");
+  });
+});
+
+describe('buildParsedMessage sender display name preservation', () => {
+  function makeHeaders(headersMap: Record<string, unknown>) {
+    return {
+      get(name: string) {
+        return headersMap[name.toLowerCase()];
+      },
+    } as any;
+  }
+
+  it('preserves display name and email when from header has Name <email>', () => {
+    const res = buildParsedMessage({
+      headers: makeHeaders({ from: 'Ansh Arora <aroransh17@gmail.com>' }),
+      rawHeaderLines: [],
+      text: 'body',
+      html: null,
+      attachments: [],
+    });
+    expect(res.fromAddress).toBe('Ansh Arora <aroransh17@gmail.com>');
+  });
+
+  it('preserves display name when from header is structured object with text', () => {
+    const res = buildParsedMessage({
+      headers: makeHeaders({
+        from: {
+          value: [{ name: 'Ansh Arora', address: 'aroransh17@gmail.com' }],
+          text: 'Ansh Arora <aroransh17@gmail.com>',
+        },
+      }),
+      rawHeaderLines: [],
+      text: 'body',
+      html: null,
+      attachments: [],
+    });
+    expect(res.fromAddress).toBe('Ansh Arora <aroransh17@gmail.com>');
+  });
+
+  it('formats display name and address when from header is structured value array', () => {
+    const res = buildParsedMessage({
+      headers: makeHeaders({
+        from: {
+          value: [{ name: 'Ansh Arora', address: 'aroransh17@gmail.com' }],
+        },
+      }),
+      rawHeaderLines: [],
+      text: 'body',
+      html: null,
+      attachments: [],
+    });
+    expect(res.fromAddress).toBe('Ansh Arora <aroransh17@gmail.com>');
+  });
+
+  it('keeps bare email when from header has no display name', () => {
+    const res = buildParsedMessage({
+      headers: makeHeaders({ from: 'aroransh17@gmail.com' }),
+      rawHeaderLines: [],
+      text: 'body',
+      html: null,
+      attachments: [],
+    });
+    expect(res.fromAddress).toBe('aroransh17@gmail.com');
+  });
+
+  it('falls back to transmitter when sender header differs (Outlook calendar FW)', () => {
+    const res = buildParsedMessage({
+      headers: makeHeaders({
+        from: 'Organizer <organizer@example.com>',
+        sender: 'transmitter@example.com',
+      }),
+      rawHeaderLines: [],
+      text: 'body',
+      html: null,
+      attachments: [],
+    });
+    expect(res.fromAddress).toBe('transmitter@example.com');
+  });
+});
 
 const reachable = await probeTestDb();
 
@@ -51,6 +155,7 @@ async function seedThreadWithMessage(
     subject: string;
     snippet: string;
     textBody?: string;
+    htmlBody?: string;
     fromAddress?: string;
     toAddresses?: string[];
     ccAddresses?: string[];
@@ -88,7 +193,8 @@ async function seedThreadWithMessage(
     ccAddresses: opts.ccAddresses ?? [],
     bccAddresses: opts.bccAddresses ?? [],
     subject: opts.subject,
-    textBody: opts.textBody ?? opts.snippet,
+    textBody: opts.textBody !== undefined ? opts.textBody : opts.snippet,
+    htmlBody: opts.htmlBody,
     receivedAt: opts.latestMessageAt ?? new Date('2026-07-06T12:00:00Z'),
   });
   if (opts.refreshSearchVector ?? true) {
@@ -147,7 +253,61 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     });
   });
 
-    it('does not match a token beyond deterministic 20-message body cap', async () => {
+  it('matches sender with display name via prefix query', async () => {
+    await withSeededTestDb(async (db) => {
+      const { threadId } = await seedThreadWithMessage(db, {
+        subject: 'Flight itinerary',
+        snippet: 'Your upcoming travel',
+        fromAddress: 'Ansh Arora <aroransh17@gmail.com>',
+      });
+      await seedThreadWithMessage(db, {
+        subject: 'Meeting notes',
+        snippet: 'Team sync',
+        fromAddress: 'John Doe <john@example.com>',
+      });
+
+      expect(await listThreadIdsForQuery(db, 'ansh')).toEqual([threadId]);
+      expect(await listThreadIdsForQuery(db, 'aroransh17')).toEqual([threadId]);
+    });
+  });
+
+  it('matches HTML body fallback when textBody is empty or null', async () => {
+    await withSeededTestDb(async (db) => {
+      const { threadId } = await seedThreadWithMessage(db, {
+        subject: 'Reservation details',
+        snippet: '',
+        textBody: '',
+        htmlBody: '<p>NexCT Voucher Cancellation Confirmation</p>',
+      });
+      await seedThreadWithMessage(db, {
+        subject: 'Other email',
+        snippet: 'Regular text',
+        textBody: 'Some other body',
+      });
+
+      expect(await listThreadIdsForQuery(db, 'nexct')).toEqual([threadId]);
+      expect(await listThreadIdsForQuery(db, 'voucher')).toEqual([threadId]);
+    });
+  });
+
+  it('matches recipients in toAddresses via prefix query', async () => {
+    await withSeededTestDb(async (db) => {
+      const { threadId } = await seedThreadWithMessage(db, {
+        subject: 'Group message',
+        snippet: 'Check this out',
+        toAddresses: ['aroransh17@gmail.com', 'team@example.com'],
+      });
+      await seedThreadWithMessage(db, {
+        subject: 'Another thread',
+        snippet: 'Different recipient',
+        toAddresses: ['other@example.com'],
+      });
+
+      expect(await listThreadIdsForQuery(db, 'aroransh17')).toEqual([threadId]);
+    });
+  });
+
+  it('does not match a token beyond deterministic 20-message body cap', async () => {
       await withSeededTestDb(async (db) => {
         const receivedAt = new Date('2026-07-06T12:00:00Z');
         const { threadId } = await seedThreadWithMessage(db, {

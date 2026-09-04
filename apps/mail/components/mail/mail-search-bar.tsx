@@ -9,29 +9,29 @@ import {
   useState,
   useSyncExternalStore,
 } from 'react';
-import { useSetAtom } from 'jotai';
+import { useAtomValue, useSetAtom } from 'jotai';
 import { useParams } from 'react-router';
 import { toast } from 'sonner';
 import { getMainSearchTerm } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
-  DropdownMenuItem,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import {
   mailSearchBarFocusedAtom,
+  searchResultCountAtom,
   useResetSearchValue,
   useSearchValue,
 } from '@/hooks/use-search-value';
 import { getMailCacheScope, subscribeMailCacheScope } from '@/lib/mail/mail-cache-scope';
 import {
   attachmentFilter,
-  fromFilter,
   getRecentSearchScopeKey,
   last7DaysFilter,
   loadRecentSearches,
@@ -48,17 +48,16 @@ import {
 
 type MailSearchBarProps = {
   folderTitle: string;
+  resultCount?: number;
 };
 
-type SearchSuggestion =
-  | { kind: 'recent'; value: string }
-  | { kind: 'from'; value: string };
+type SearchSuggestion = { kind: 'recent'; value: string };
 
 function hasFilter(filters: ActiveSearchFilter[], next: ActiveSearchFilter) {
   return filters.some((filter) => filter.type === next.type && filter.value === next.value);
 }
 
-export function MailSearchBar({ folderTitle }: MailSearchBarProps) {
+export function MailSearchBar({ folderTitle, resultCount }: MailSearchBarProps) {
   const { folder } = useParams<{ folder: string }>();
   const [searchValue, setSearchValue] = useSearchValue();
   const resetSearchValue = useResetSearchValue();
@@ -71,7 +70,7 @@ export function MailSearchBar({ folderTitle }: MailSearchBarProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const suggestionListRef = useRef<HTMLUListElement>(null);
   const resetVersionRef = useRef(searchValue.resetVersion);
-  const [localSearch, setLocalSearch] = useState('');
+  const [localSearch, setLocalSearch] = useState(searchValue.value);
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
   const [recentSearchScopeKey, setRecentSearchScopeKey] = useState<string | null>(null);
   const [recentOpen, setRecentOpen] = useState(false);
@@ -79,19 +78,25 @@ export function MailSearchBar({ folderTitle }: MailSearchBarProps) {
   const [scopeMenuOpen, setScopeMenuOpen] = useState(false);
   const [filtersMenuOpen, setFiltersMenuOpen] = useState(false);
   const [hasSearchControlFocus, setHasSearchControlFocus] = useState(false);
+  const atomResultCount = useAtomValue(searchResultCountAtom);
+  const effectiveResultCount = resultCount !== undefined ? resultCount : atomResultCount;
   const isDraftsRoute = folder?.toLowerCase() === 'draft' || folder?.toLowerCase() === 'drafts';
   const isThisFolderDrafts = isDraftsRoute && searchValue.scope === 'folder';
   const currentRecentSearchScopeKey = getRecentSearchScopeKey(mailCacheScope);
+  const hasActiveSearch = Boolean(
+    localSearch.trim() || searchValue.value.trim() || searchValue.filters.length > 0,
+  );
 
   const suggestions = useMemo<SearchSuggestion[]>(() => {
-    const term = localSearch.trim();
-    if (term) return [{ kind: 'from', value: term }];
+    if (localSearch.trim()) return [];
     if (recentSearchScopeKey !== currentRecentSearchScopeKey) return [];
     return recentSearches.map((value) => ({ kind: 'recent', value }));
   }, [currentRecentSearchScopeKey, localSearch, recentSearches, recentSearchScopeKey]);
   const isSuggestionPopupOpen = recentOpen && suggestions.length > 0;
 
   const effectiveQuery = mergeSearchQuery(searchValue.value, searchValue.filters);
+  const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
+
   useEffect(() => {
     setLocalSearch(searchValue.value);
   }, [searchValue.value]);
@@ -138,6 +143,42 @@ export function MailSearchBar({ folderTitle }: MailSearchBarProps) {
     return false;
   }, []);
 
+  useEffect(() => {
+    if (!localSearch.trim()) {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+        debounceTimerRef.current = null;
+      }
+      return;
+    }
+
+    if (localSearch === searchValue.value) {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+        debounceTimerRef.current = null;
+      }
+      return;
+    }
+
+    debounceTimerRef.current = setTimeout(() => {
+      const nextEffectiveQuery = mergeSearchQuery(localSearch, searchValue.filters);
+      if (canUseEffectiveQuery(nextEffectiveQuery)) {
+        setSearchValue((prev) => ({
+          ...prev,
+          value: localSearch,
+          highlight: getMainSearchTerm(localSearch),
+        }));
+      }
+      debounceTimerRef.current = null;
+    }, 800);
+
+    return () => {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+      }
+    };
+  }, [canUseEffectiveQuery, localSearch, searchValue.filters, searchValue.value, setSearchValue]);
+
   const closeRecentSearches = useCallback(() => {
     setRecentOpen(false);
     setHighlightedSuggestion(-1);
@@ -145,19 +186,25 @@ export function MailSearchBar({ folderTitle }: MailSearchBarProps) {
 
   const commitSearch = useCallback(
     (nextValue = localSearch) => {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+        debounceTimerRef.current = null;
+      }
       const nextEffectiveQuery = mergeSearchQuery(nextValue, searchValue.filters);
       if (!canUseEffectiveQuery(nextEffectiveQuery)) return false;
 
-      setSearchValue({
-        ...searchValue,
+      setSearchValue((prev) => ({
+        ...prev,
         value: nextValue,
         highlight: getMainSearchTerm(nextValue),
-      });
-      saveRecentSearch(nextValue);
+      }));
+      if (nextValue.trim()) {
+        saveRecentSearch(nextValue);
+      }
       closeRecentSearches();
       return true;
     },
-    [canUseEffectiveQuery, closeRecentSearches, localSearch, searchValue, setSearchValue],
+    [canUseEffectiveQuery, closeRecentSearches, localSearch, searchValue.filters, setSearchValue],
   );
 
   const toggleFilter = useCallback(
@@ -178,15 +225,6 @@ export function MailSearchBar({ folderTitle }: MailSearchBarProps) {
     return toggleFilter(activeDateFilter ?? last7DaysFilter());
   }, [searchValue.filters, toggleFilter]);
 
-  const addFromFilter = useCallback(() => {
-    const filter = fromFilter(localSearch);
-    if (!filter) {
-      toast.error('Type a name first');
-      return false;
-    }
-    return toggleFilter(filter);
-  }, [localSearch, toggleFilter]);
-
   const openRecentSearches = useCallback(() => {
     setRecentSearches(loadRecentSearches());
     setRecentSearchScopeKey(currentRecentSearchScopeKey);
@@ -196,16 +234,10 @@ export function MailSearchBar({ folderTitle }: MailSearchBarProps) {
 
   const applySuggestion = useCallback(
     (suggestion: SearchSuggestion) => {
-      if (suggestion.kind === 'from') {
-        addFromFilter();
-        closeRecentSearches();
-        return;
-      }
-
       setLocalSearch(suggestion.value);
       commitSearch(suggestion.value);
     },
-    [addFromFilter, closeRecentSearches, commitSearch],
+    [commitSearch],
   );
 
   useEffect(() => {
@@ -238,6 +270,19 @@ export function MailSearchBar({ folderTitle }: MailSearchBarProps) {
     if (event.key === 'Escape') {
       setScopeMenuOpen(false);
       setFiltersMenuOpen(false);
+      if (isSuggestionPopupOpen) {
+        closeRecentSearches();
+        return;
+      }
+      if (localSearch || searchValue.value || searchValue.filters.length > 0) {
+        if (debounceTimerRef.current) {
+          clearTimeout(debounceTimerRef.current);
+          debounceTimerRef.current = null;
+        }
+        setLocalSearch('');
+        resetSearchValue();
+        return;
+      }
       closeRecentSearches();
       event.currentTarget.blur();
       return;
@@ -343,8 +388,22 @@ export function MailSearchBar({ folderTitle }: MailSearchBarProps) {
               }
             }}
             onChange={(event) => {
-              setLocalSearch(event.target.value);
+              const next = event.target.value;
+              setLocalSearch(next);
               setHighlightedSuggestion(-1);
+              if (!next.trim()) {
+                if (debounceTimerRef.current) {
+                  clearTimeout(debounceTimerRef.current);
+                  debounceTimerRef.current = null;
+                }
+                if (searchValue.value !== '') {
+                  setSearchValue((prev) => ({
+                    ...prev,
+                    value: '',
+                    highlight: '',
+                  }));
+                }
+              }
             }}
             onFocus={() => {
               openRecentSearches();
@@ -357,7 +416,17 @@ export function MailSearchBar({ folderTitle }: MailSearchBarProps) {
             value={localSearch}
           />
 
-          {!localSearch && (
+          {hasActiveSearch && effectiveResultCount !== undefined && (
+            <Badge
+              variant="secondary"
+              className="h-5 px-1.5 text-[11px] font-normal text-muted-foreground shrink-0"
+              aria-label={`${effectiveResultCount} ${effectiveResultCount === 1 ? 'result' : 'results'} found`}
+            >
+              {effectiveResultCount} {effectiveResultCount === 1 ? 'result' : 'results'}
+            </Badge>
+          )}
+
+          {!localSearch && !hasActiveSearch && (
             <>
               <span className="sr-only">Press Command or Control K to focus search</span>
               <kbd
@@ -377,8 +446,14 @@ export function MailSearchBar({ folderTitle }: MailSearchBarProps) {
               type="button"
               variant="ghost"
               onClick={() => {
+                if (debounceTimerRef.current) {
+                  clearTimeout(debounceTimerRef.current);
+                  debounceTimerRef.current = null;
+                }
+                setLocalSearch('');
                 resetSearchValue();
                 closeRecentSearches();
+                inputRef.current?.focus();
               }}
             >
               <span aria-hidden="true">×</span>
@@ -392,24 +467,20 @@ export function MailSearchBar({ folderTitle }: MailSearchBarProps) {
               ref={suggestionListRef}
               role="listbox"
             >
-              {suggestions.map((suggestion, index) => {
-                const label =
-                  suggestion.kind === 'from' ? `From ${suggestion.value}` : suggestion.value;
-                return (
-                  <li key={`${suggestion.kind}-${suggestion.value}`} role="none">
-                    <button
-                      aria-selected={highlightedSuggestion === index}
-                      className="hover:bg-accent flex min-h-11 w-full cursor-pointer items-center rounded-sm px-2 text-left text-sm"
-                      id={`mail-search-suggestion-${index}`}
-                      role="option"
-                      type="button"
-                      onClick={() => applySuggestion(suggestion)}
-                    >
-                      {label}
-                    </button>
-                  </li>
-                );
-              })}
+              {suggestions.map((suggestion, index) => (
+                <li key={`${suggestion.kind}-${suggestion.value}`} role="none">
+                  <button
+                    aria-selected={highlightedSuggestion === index}
+                    className="hover:bg-accent flex min-h-11 w-full cursor-pointer items-center rounded-sm px-2 text-left text-sm"
+                    id={`mail-search-suggestion-${index}`}
+                    role="option"
+                    type="button"
+                    onClick={() => applySuggestion(suggestion)}
+                  >
+                    {suggestion.value}
+                  </button>
+                </li>
+              ))}
             </ul>
           )}
         </div>
@@ -454,14 +525,6 @@ export function MailSearchBar({ folderTitle }: MailSearchBarProps) {
             >
               Last 7 days
             </DropdownMenuCheckboxItem>
-            <DropdownMenuItem
-              onSelect={() => {
-                addFromFilter();
-                setFiltersMenuOpen(false);
-              }}
-            >
-              From
-            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
