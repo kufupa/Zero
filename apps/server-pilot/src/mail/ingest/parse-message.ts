@@ -236,7 +236,7 @@ function withUploadedAttachments(
   }
 }
 
-function buildParsedMessage(args: {
+export function buildParsedMessage(args: {
   headers: Headers;
   rawHeaderLines: { key: string; line: string }[];
   text: string | null;
@@ -257,10 +257,18 @@ function buildParsedMessage(args: {
   const fromEmail = extractAddress(headers.get('from')) ?? fromHeaderRaw;
   const senderEmail = extractAddress(headers.get('sender'));
   // ponytail: Outlook calendar FW keeps organizer in From; Sender is transmitter.
-  const fromAddress =
+  const effectiveEmail =
     senderEmail && fromEmail && senderEmail.trim().toLowerCase() !== fromEmail.trim().toLowerCase()
       ? senderEmail
       : fromEmail;
+  // Preserve display name if available in fromHeaderRaw: "Name <email@domain.com>"
+  const fromAddress =
+    effectiveEmail === fromEmail &&
+    fromHeaderRaw &&
+    fromHeaderRaw.includes('<') &&
+    fromHeaderRaw.includes('>')
+      ? fromHeaderRaw.trim()
+      : effectiveEmail;
   const toAddresses = extractAddresses(headers.get('to'));
   const ccAddresses = extractAddresses(headers.get('cc'));
   const bccAddresses = extractAddresses(headers.get('bcc'));
@@ -291,11 +299,45 @@ function buildParsedMessage(args: {
 function firstHeader(headers: Headers, name: string): string | null {
   const v = headers.get(name);
   if (!v) return null;
+  if (typeof v === 'string') return v.trim();
   if (Array.isArray(v)) {
     const first = v[0];
-    return typeof first === 'string' ? first.trim() : null;
+    if (typeof first === 'string') return first.trim();
+    if (first && typeof first === 'object') {
+      if ('text' in first && typeof (first as { text?: unknown }).text === 'string') {
+        return (first as { text: string }).text.trim();
+      }
+      if ('value' in first) {
+        const val = (first as { value?: unknown }).value;
+        if (Array.isArray(val) && val.length > 0) {
+          const item = val[0];
+          if (item && typeof item === 'object') {
+            const { name: itemName, address: itemAddr } = item as { name?: string; address?: string };
+            if (itemName && itemAddr) return `${itemName.trim()} <${itemAddr.trim()}>`;
+            if (itemAddr) return itemAddr.trim();
+          }
+        }
+      }
+    }
+    return null;
   }
-  return typeof v === 'string' ? v.trim() : null;
+  if (typeof v === 'object' && v) {
+    if ('text' in v && typeof (v as { text?: unknown }).text === 'string') {
+      return (v as { text: string }).text.trim();
+    }
+    if ('value' in v) {
+      const val = (v as { value?: unknown }).value;
+      if (Array.isArray(val) && val.length > 0) {
+        const item = val[0];
+        if (item && typeof item === 'object') {
+          const { name: itemName, address: itemAddr } = item as { name?: string; address?: string };
+          if (itemName && itemAddr) return `${itemName.trim()} <${itemAddr.trim()}>`;
+          if (itemAddr) return itemAddr.trim();
+        }
+      }
+    }
+  }
+  return null;
 }
 
 /** Last non-empty occurrence — trusted relay stamp wins over forged earlier values. */
