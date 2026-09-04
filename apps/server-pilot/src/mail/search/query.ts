@@ -76,6 +76,29 @@ function messageAddressExists(
   );
 }
 
+const TOKEN_RE = /[a-z0-9]+/gi;
+const MIN_PREFIX_LENGTH = 3;
+
+/**
+ * Safe prefix tsquery for mail_thread.search_vector ('simple' dictionary).
+ * - Terms of length >= 3 get prefix matching: 'ansh':*
+ * - Short terms (< 3) get exact word matching: 'ny', 'jd' (prevents GIN index scans on 1-2 char wildcards)
+ * - Quoted lexemes prevent boolean keyword syntax collision (and/or/not)
+ */
+export function buildFreeTextTsQuery(freeText: string): string | null {
+  const tokens: string[] = [];
+  for (const match of freeText.toLowerCase().matchAll(TOKEN_RE)) {
+    const token = match[0];
+    if (token.length >= MIN_PREFIX_LENGTH) {
+      tokens.push(`'${token}':*`);
+    } else if (token.length > 0) {
+      tokens.push(`'${token}'`);
+    }
+  }
+  if (tokens.length === 0) return null;
+  return tokens.join(' & ');
+}
+
 /**
  * Parsed mail search query → Drizzle SQL fragments to AND into listThreads.
  */
@@ -88,9 +111,12 @@ export function buildThreadSearchConditions(
 
   const freeText = parsed.freeText.trim();
   if (freeText) {
-    conditions.push(
-      sql`${mailThread.searchVector} @@ plainto_tsquery(${THREAD_SEARCH_VECTOR_CONFIG}, ${freeText})`,
-    );
+    const tsQuery = buildFreeTextTsQuery(freeText);
+    if (tsQuery) {
+      conditions.push(
+        sql`${mailThread.searchVector} @@ to_tsquery(${THREAD_SEARCH_VECTOR_CONFIG}, ${tsQuery})`,
+      );
+    }
   }
 
   if (parsed.subject) {

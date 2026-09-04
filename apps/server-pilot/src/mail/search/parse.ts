@@ -17,6 +17,8 @@ const KNOWN_PREFIXES = new Set([
   'category',
   'is',
   'has',
+  'hasattachments',
+  'isread',
 ]);
 
 const TOKEN_RE = /"([^"\\]|\\.)*"|'([^'\\]|\\.)*'|[^\s]+/g;
@@ -93,9 +95,33 @@ function applyOperator(
       }
       throw new SearchParseError(token);
     }
+    case 'isread': {
+      const normalized = value.toLowerCase();
+      if (normalized === 'no' || normalized === 'false') {
+        parsed.isRead = false;
+        return;
+      }
+      if (normalized === 'yes' || normalized === 'true') {
+        parsed.isRead = true;
+        return;
+      }
+      throw new SearchParseError(token);
+    }
     case 'has': {
       if (value.toLowerCase() === 'attachment') {
         parsed.hasAttachment = true;
+        return;
+      }
+      throw new SearchParseError(token);
+    }
+    case 'hasattachments': {
+      const normalized = value.toLowerCase();
+      if (normalized === 'yes' || normalized === 'true') {
+        parsed.hasAttachment = true;
+        return;
+      }
+      if (normalized === 'no' || normalized === 'false') {
+        parsed.hasAttachment = false;
         return;
       }
       throw new SearchParseError(token);
@@ -142,10 +168,21 @@ export function parseSearchQuery(q: string): ParsedSearchQuery {
     i += consumed - 1;
 
     if (!KNOWN_PREFIXES.has(prefix)) {
-      throw new SearchParseError(token);
+      // Treat unknown operator prefix as free text instead of throwing 400
+      freeTextParts.push(unquote(token));
+      continue;
     }
 
-    applyOperator(parsed, prefix, value, token);
+    try {
+      applyOperator(parsed, prefix, value, token);
+    } catch (err) {
+      if (err instanceof SearchParseError) {
+        // Unknown operator value: treat as free text word
+        freeTextParts.push(unquote(token));
+      } else {
+        throw err;
+      }
+    }
   }
 
   parsed.freeText = freeTextParts.join(' ').trim();

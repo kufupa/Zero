@@ -11,7 +11,7 @@ import {
 } from '../src/db/schema/mail.js';
 import { TRANSPORT_ID } from '../src/db/seed.js';
 import { parseSearchQuery } from '../src/mail/search/parse.js';
-import { buildThreadSearchConditions } from '../src/mail/search/query.js';
+import { buildFreeTextTsQuery, buildThreadSearchConditions } from '../src/mail/search/query.js';
 import { refreshThreadSearchVector } from '../src/mail/search/search-vector.js';
 import type { ParsedSearchQuery } from '../src/mail/search/types.js';
 import {
@@ -19,6 +19,32 @@ import {
   probeTestDb,
   withSeededTestDb,
 } from './helpers/test-db';
+
+describe('buildFreeTextTsQuery', () => {
+  it('builds quoted prefix conjuncts from words and punctuation', () => {
+    expect(buildFreeTextTsQuery('Ansh')).toBe("'ansh':*");
+    expect(buildFreeTextTsQuery('aroransh17@gmail.com')).toBe(
+      "'aroransh17':* & 'gmail':* & 'com':*",
+    );
+    expect(buildFreeTextTsQuery('info@nexct.co')).toBe("'info':* & 'nexct':* & 'co'");
+    expect(buildFreeTextTsQuery('nex')).toBe("'nex':*");
+  });
+
+  it('handles short tokens as exact matches without wildcard to prevent GIN floods', () => {
+    expect(buildFreeTextTsQuery('JD')).toBe("'jd'");
+    expect(buildFreeTextTsQuery('Room 2B')).toBe("'room':* & '2b'");
+  });
+
+  it('returns null for empty string or whitespace only', () => {
+    expect(buildFreeTextTsQuery('')).toBeNull();
+    expect(buildFreeTextTsQuery('   ')).toBeNull();
+  });
+
+  it('quotes lexemes so boolean operators and punctuation do not break to_tsquery', () => {
+    expect(buildFreeTextTsQuery('and or not')).toBe("'and':* & 'or' & 'not':*");
+    expect(buildFreeTextTsQuery('voucher & booking')).toBe("'voucher':* & 'booking':*");
+  });
+});
 
 const reachable = await probeTestDb();
 
