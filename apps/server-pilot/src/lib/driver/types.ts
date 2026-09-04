@@ -150,6 +150,7 @@ export interface PilotCapabilities {
   gmailSearchGrammar: true;
   hotelCategories: true;
   staleDraftWarning: true;
+  catchupUpload: boolean;
 }
 
 export interface ManagerConfig {

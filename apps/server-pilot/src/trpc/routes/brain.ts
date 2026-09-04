@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { router as tRouter, privateProcedure } from '../trpc.js';
 import type { PilotCapabilities } from '../../lib/driver/types.js';
+import { isCatchupUploadEnabled } from '../../env.js';
 
 export const pilotCapabilities = {
   ai: false,
@@ -11,10 +12,18 @@ export const pilotCapabilities = {
   gmailSearchGrammar: true,
   hotelCategories: true,
   staleDraftWarning: true,
+  catchupUpload: false,
 } satisfies PilotCapabilities;
 
+export function getPilotCapabilities(): PilotCapabilities {
+  return {
+    ...pilotCapabilities,
+    catchupUpload: isCatchupUploadEnabled(),
+  };
+}
+
 export const brainRouter = tRouter({
-  getCapabilities: privateProcedure.query(() => pilotCapabilities),
+  getCapabilities: privateProcedure.query(() => getPilotCapabilities()),
   generateSummary: privateProcedure
     .input(z.object({ threadId: z.string().optional() }).optional())
     .query(() => null),

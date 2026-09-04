@@ -59,6 +59,15 @@ describe('env', () => {
 
     expect(env.AWS_REGION).toBe('af-south-1');
     expect(env.POP3_MAX_MESSAGES_PER_CYCLE).toBe(500);
+    expect(env.CATCHUP_UPLOAD_ENABLED).toBe(false);
+  });
+
+  it('parses CATCHUP_UPLOAD_ENABLED correctly', () => {
+    expect(parseEnv(baseEnv({ CATCHUP_UPLOAD_ENABLED: 'true' })).CATCHUP_UPLOAD_ENABLED).toBe(true);
+    expect(parseEnv(baseEnv({ CATCHUP_UPLOAD_ENABLED: '1' })).CATCHUP_UPLOAD_ENABLED).toBe(true);
+    expect(parseEnv(baseEnv({ CATCHUP_UPLOAD_ENABLED: 'false' })).CATCHUP_UPLOAD_ENABLED).toBe(false);
+    expect(parseEnv(baseEnv({ CATCHUP_UPLOAD_ENABLED: '0' })).CATCHUP_UPLOAD_ENABLED).toBe(false);
+    expect(() => parseEnv(baseEnv({ CATCHUP_UPLOAD_ENABLED: 'invalid' }))).toThrow(/CATCHUP_UPLOAD_ENABLED/);
   });
 
   it('throws on missing required keys', () => {

@@ -12,6 +12,7 @@ describe('pilot capabilities', () => {
       gmailSearchGrammar: true,
       hotelCategories: true,
       staleDraftWarning: true,
+      catchupUpload: false,
     });
 
     expect(shouldRenderLegacySurface('ai')).toBe(false);

@@ -83,6 +83,8 @@ export interface MailEnv {
   AI_ENABLED: boolean;
   AI_WRITE_GATE_ENABLED: boolean;
   AI_DRAFTS_ENABLED: boolean;
+  /** Centurion catch-up manual upload (.pst/.zip/.msg) capability gate. */
+  CATCHUP_UPLOAD_ENABLED: boolean;
   /** Durable/schema workflow triage capability; independent from frontend nav. */
   WORKFLOW_TRIAGE_V6: boolean;
   INGEST_REQUIRE_OWNER_HEADER: boolean;
@@ -150,6 +152,13 @@ function toBool(name: string, raw: string): boolean {
   if (raw === 'true' || raw === '1') return true;
   if (raw === 'false' || raw === '0') return false;
   throw new Error(`env ${name} must be boolean (true|false|1|0), got: ${raw}`);
+}
+
+/** Check whether catch-up manual mail dump upload is enabled at runtime. */
+export function isCatchupUploadEnabled(input: EnvInput = process.env): boolean {
+  const val = input.CATCHUP_UPLOAD_ENABLED;
+  if (val === undefined || val === '') return false;
+  return toBool('CATCHUP_UPLOAD_ENABLED', val);
 }
 
 function requireNonEmpty(name: string, raw: string | undefined): string {
@@ -299,6 +308,7 @@ export function parseEnv(input: EnvInput): MailEnv {
     AI_ENABLED: false,
     AI_WRITE_GATE_ENABLED: false,
     AI_DRAFTS_ENABLED: false,
+    CATCHUP_UPLOAD_ENABLED: isCatchupUploadEnabled(input),
     WORKFLOW_TRIAGE_V6: false,
     INGEST_REQUIRE_OWNER_HEADER: true,
     AI_STALE_RUN_TIMEOUT_MS: 15 * 60_000,

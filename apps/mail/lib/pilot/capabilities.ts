@@ -9,6 +9,7 @@ export const PILOT_CAPABILITIES = {
   gmailSearchGrammar: true,
   hotelCategories: true,
   staleDraftWarning: true,
+  catchupUpload: false,
 } satisfies PilotCapabilities;
 
 export function canUseNaturalLanguageSearch(): boolean {

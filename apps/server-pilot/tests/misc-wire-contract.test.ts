@@ -147,7 +147,22 @@ describe('pilot inert legacy routers', () => {
       gmailSearchGrammar: true,
       hotelCategories: true,
       staleDraftWarning: true,
+      catchupUpload: false,
     });
+
+    const prevFlag = process.env.CATCHUP_UPLOAD_ENABLED;
+    try {
+      process.env.CATCHUP_UPLOAD_ENABLED = 'true';
+      await expect(caller.brain.getCapabilities()).resolves.toMatchObject({
+        catchupUpload: true,
+      });
+    } finally {
+      if (prevFlag === undefined) {
+        delete process.env.CATCHUP_UPLOAD_ENABLED;
+      } else {
+        process.env.CATCHUP_UPLOAD_ENABLED = prevFlag;
+      }
+    }
 
     await expect(caller.ai.generateSearchQuery({ prompt: 'find urgent mail' })).resolves.toEqual({
       query: '',
