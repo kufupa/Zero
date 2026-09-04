@@ -1109,4 +1109,45 @@ describe.skipIf(!applyDbAvailable)('R22 Layer-3 durable apply', () => {
       expect(memberships.map((row) => row.categoryId)).toContain(internalPartner!.id);
     });
   });
+
+  it('apply keeps groups-events for legacy From (commercial work not stomped)', async () => {
+    await withSeededTestDb(async (db) => {
+      const threadId = randomUUID();
+      await seedUnsettledThread(db, threadId);
+      const [groupsEvents] = await db
+        .select({ id: mailCategory.id })
+        .from(mailCategory)
+        .where(
+          and(eq(mailCategory.transportId, TRANSPORT_ID), eq(mailCategory.slug, 'groups-events')),
+        )
+        .limit(1);
+      expect(groupsEvents?.id).toBeTruthy();
+
+      const result = await applyDurableTriageResult({
+        db,
+        transportId: TRANSPORT_ID,
+        threadId,
+        writeGateEnabled: true,
+        forceUnsettle: true,
+        from: 'crsa@legacyhotels.co.za',
+        output: workflowOutput({
+          isSpam: false,
+          primaryFolder: 'groups-events',
+          policyFlags: ['refine:groups-events-work'],
+        }),
+      });
+
+      expect(result.applyMode).toBe('full');
+      const memberships = await db
+        .select({ categoryId: mailThreadCategory.categoryId })
+        .from(mailThreadCategory)
+        .where(
+          and(
+            eq(mailThreadCategory.threadId, threadId),
+            eq(mailThreadCategory.transportId, TRANSPORT_ID),
+          ),
+        );
+      expect(memberships.map((row) => row.categoryId)).toContain(groupsEvents!.id);
+    });
+  });
 });

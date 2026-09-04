@@ -263,6 +263,18 @@ function workflowApplyExceptionFolder(requested, fromRaw, staff) {
   if (from === RESERVE_CLOUD_PENNY_EMAIL && requested === 'groups-events') {
     return requested;
   }
+  const commercialWorkFolders = new Set([
+    'groups-events',
+    'exceptions-recovery',
+    'guest-experience',
+    'manage-stay',
+    'money-billing',
+    'documents-delivery',
+    'confirm-reconcile',
+  ]);
+  if (commercialWorkFolders.has(requested)) {
+    return requested;
+  }
   if (isHotelNeverSpamAddress(fromRaw) || from === RESERVE_CLOUD_PENNY_EMAIL) {
     return 'internal-partner';
   }
