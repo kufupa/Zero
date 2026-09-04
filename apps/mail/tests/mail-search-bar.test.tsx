@@ -227,17 +227,63 @@ describe('MailSearchBar', () => {
     expect(screen.getByRole('button', { name: 'Remove Unread' })).toBeTruthy();
   });
 
-  it('keeps typed text local until Enter', () => {
+  it('updates search value after 800ms debounce without pressing Enter', () => {
+    vi.useFakeTimers();
+    try {
+      renderMailSearchBarWithoutControls();
+      const input = screen.getByRole('searchbox', { name: /search mail/i });
+
+      fireEvent.change(input, { target: { value: 'deposit' } });
+      expect(screen.getByTestId('committed').textContent).toBe('');
+
+      // Advance by 799ms - still not committed
+      act(() => {
+        vi.advanceTimersByTime(799);
+      });
+      expect(screen.getByTestId('committed').textContent).toBe('');
+
+      // Advance past 800ms - committed without Enter!
+      act(() => {
+        vi.advanceTimersByTime(1);
+      });
+      expect(screen.getByTestId('committed').textContent).toBe('deposit');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('immediately commits search on Enter before 800ms debounce and saves to recents', () => {
+    setMailScope();
     renderMailSearchBarWithoutControls();
     const input = screen.getByRole('searchbox', { name: /search mail/i });
 
-    fireEvent.change(input, { target: { value: 'deposit' } });
-
+    fireEvent.change(input, { target: { value: 'instant-commit' } });
     expect(screen.getByTestId('committed').textContent).toBe('');
 
     fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+    expect(screen.getByTestId('committed').textContent).toBe('instant-commit');
 
-    expect(screen.getByTestId('committed').textContent).toBe('deposit');
+    // Verify it was saved to recents
+    fireEvent.change(input, { target: { value: '' } });
+    fireEvent.focus(input);
+    expect(screen.getByRole('option', { name: 'instant-commit' })).toBeTruthy();
+  });
+
+  it('clears search immediately (0ms) and preserves input focus when Clear button is clicked', () => {
+    renderMailSearchBar({
+      initialSearchValue: {
+        ...EMPTY_SEARCH_VALUE,
+        value: 'tobe-cleared',
+      },
+    });
+    const input = screen.getByRole('searchbox', { name: /search mail/i });
+    expect(screen.getByTestId('committed').textContent).toBe('tobe-cleared');
+
+    const clearButton = screen.getByRole('button', { name: 'Clear search' });
+    fireEvent.click(clearButton);
+
+    expect(screen.getByTestId('committed').textContent).toBe('');
+    expect(document.activeElement).toBe(input);
   });
 
   it('opens recents with ArrowDown and applies highlighted recent on Enter', () => {
