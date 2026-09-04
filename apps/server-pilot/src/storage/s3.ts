@@ -15,6 +15,7 @@ import {
   S3Client,
   PutObjectCommand,
   HeadBucketCommand,
+  HeadObjectCommand,
   CopyObjectCommand,
   GetObjectCommand,
   DeleteObjectCommand,
@@ -43,6 +44,12 @@ export interface S3GetResult {
   contentType: string;
 }
 
+export interface S3HeadResult {
+  sizeBytes: number;
+  contentType?: string;
+  eTag?: string;
+}
+
 /** Thrown when a bounded read would exceed maxBytes; callers must not keep the body. */
 export class S3ObjectTooLargeError extends Error {
   readonly maxBytes: number;
@@ -69,6 +76,7 @@ export interface S3Storage {
     maxBytes: number,
     signal?: AbortSignal,
   ): Promise<S3GetResult | null>;
+  headObject(key: string): Promise<S3HeadResult | null>;
   copyObject(opts: S3CopyOptions): Promise<{ key: string; bucket: string }>;
   deleteObject(key: string): Promise<void>;
 }
@@ -82,7 +90,7 @@ export interface S3Storage {
 export class RealS3Storage implements S3Storage {
   readonly kind = 'real' as const;
   readonly bucket: string;
-  private readonly client: S3Client;
+  readonly client: S3Client;
 
   constructor(region: string, bucket: string) {
     this.bucket = bucket;
@@ -190,6 +198,32 @@ export class RealS3Storage implements S3Storage {
     await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }));
   }
 
+  async headObject(key: string): Promise<S3HeadResult | null> {
+    try {
+      const response = await this.client.send(
+        new HeadObjectCommand({ Bucket: this.bucket, Key: key }),
+      );
+      return {
+        sizeBytes: response.ContentLength ?? 0,
+        contentType: response.ContentType,
+        eTag: response.ETag,
+      };
+    } catch (err: unknown) {
+      const code =
+        err && typeof err === 'object' && 'name' in err
+          ? String((err as { name?: string }).name)
+          : '';
+      if (
+        code === 'NoSuchKey' ||
+        code === 'NotFound' ||
+        (err as { $metadata?: { httpStatusCode?: number } })?.$metadata?.httpStatusCode === 404
+      ) {
+        return null;
+      }
+      throw err;
+    }
+  }
+
   /** Best-effort reachability probe; throws if the bucket is not accessible. */
   async probe(): Promise<void> {
     await this.client.send(new HeadBucketCommand({ Bucket: this.bucket }));
@@ -258,6 +292,17 @@ export class FakeS3Storage implements S3Storage {
   async deleteObject(key: string): Promise<void> {
     this.calls.push({ op: 'DELETE', key });
     this.stored.delete(key);
+  }
+
+  async headObject(key: string): Promise<S3HeadResult | null> {
+    this.calls.push({ op: 'HEAD', key });
+    const entry = this.stored.get(key);
+    if (!entry) return null;
+    return {
+      sizeBytes: entry.body.byteLength,
+      contentType: entry.contentType,
+      eTag: '"fake-etag"',
+    };
   }
 
   /** Test helper: get stored bytes for a key. */
