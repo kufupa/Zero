@@ -11,6 +11,7 @@ const resetSearchValueAtom = atom(null, (get, set) => {
 });
 
 export const mailSearchBarFocusedAtom = atom(false);
+export const searchResultCountAtom = atom<number | undefined>(undefined);
 
 export function useSearchValue() {
   return useAtom(configAtom);

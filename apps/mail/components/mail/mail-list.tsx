@@ -26,7 +26,12 @@ import { useOptimisticActions } from '@/hooks/use-optimistic-actions';
 import { useMail, type Config } from '@/components/mail/use-mail';
 import { type ThreadDestination } from '@/lib/thread-actions';
 import { useThread, useThreads } from '@/hooks/use-threads';
-import { useResetSearchValue, useSearchValue } from '@/hooks/use-search-value';
+import { useSetAtom } from 'jotai';
+import {
+  searchResultCountAtom,
+  useResetSearchValue,
+  useSearchValue,
+} from '@/hooks/use-search-value';
 import { EmptyStateIcon } from '../icons/empty-state-svg';
 import { highlightText } from '@/lib/email-utils.client';
 import { mailListPlainPreview } from '@/lib/mail/mail-list-preview';
@@ -1115,6 +1120,21 @@ export const MailList = memo(function MailList() {
     };
 
     const filteredItems = useMemo(() => items.filter((item) => item.id), [items]);
+    const setSearchResultCount = useSetAtom(searchResultCountAtom);
+
+    useEffect(() => {
+      if (isFiltering) {
+        setSearchResultCount(filteredItems.length);
+      } else {
+        setSearchResultCount(undefined);
+      }
+    }, [isFiltering, filteredItems.length, setSearchResultCount]);
+
+    useEffect(() => {
+      return () => {
+        setSearchResultCount(undefined);
+      };
+    }, [setSearchResultCount]);
 
     const useDraftsList = searchList?.isValid && searchList.useDraftsList;
     const Comp = useMemo(() => (useDraftsList ? Draft : Thread), [useDraftsList]);

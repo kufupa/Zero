@@ -91,18 +91,20 @@ function renderMailSearchBar({
   includeExternalControls = false,
   store = createStore(),
   folderTitle = 'Inbox',
+  resultCount,
 }: {
   initialSearchValue?: SearchValueState;
   includeExternalControls?: boolean;
   store?: ReturnType<typeof createStore>;
   folderTitle?: string;
+  resultCount?: number;
 } = {}) {
   return {
     ...render(
       <Provider store={store}>
         {initialSearchValue && <SearchValueInitializer state={initialSearchValue} />}
         {includeExternalControls && <ExternalSearchValueControls />}
-        <MailSearchBar folderTitle={folderTitle} />
+        <MailSearchBar folderTitle={folderTitle} resultCount={resultCount} />
         <SearchValueProbe />
         <SearchFocusProbe />
       </Provider>,
@@ -496,5 +498,42 @@ describe('MailSearchBar', () => {
     fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Last 7 days' }));
 
     expect(screen.queryByRole('button', { name: 'Remove Last 7 days' })).toBeNull();
+  });
+
+  it('renders search result counter badge when search has active query and resultCount is provided', () => {
+    renderMailSearchBar({
+      initialSearchValue: {
+        ...EMPTY_SEARCH_VALUE,
+        value: 'invoice',
+      },
+      resultCount: 14,
+    });
+
+    const badge = screen.getByLabelText(/14.*results found/i);
+    expect(badge).toBeDefined();
+    expect(badge.textContent).toBe('14 results');
+  });
+
+  it('renders singular "1 result" counter badge when resultCount is 1', () => {
+    renderMailSearchBar({
+      initialSearchValue: {
+        ...EMPTY_SEARCH_VALUE,
+        value: 'urgent',
+      },
+      resultCount: 1,
+    });
+
+    const badge = screen.getByLabelText(/1.*result found/i);
+    expect(badge).toBeDefined();
+    expect(badge.textContent).toBe('1 result');
+  });
+
+  it('does not render result counter badge when search query is empty', () => {
+    renderMailSearchBar({
+      initialSearchValue: EMPTY_SEARCH_VALUE,
+      resultCount: 14,
+    });
+
+    expect(screen.queryByLabelText(/results found/i)).toBeNull();
   });
 });

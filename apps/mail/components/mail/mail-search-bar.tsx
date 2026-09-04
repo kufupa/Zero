@@ -9,11 +9,12 @@ import {
   useState,
   useSyncExternalStore,
 } from 'react';
-import { useSetAtom } from 'jotai';
+import { useAtomValue, useSetAtom } from 'jotai';
 import { useParams } from 'react-router';
 import { toast } from 'sonner';
 import { getMainSearchTerm } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -25,6 +26,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import {
   mailSearchBarFocusedAtom,
+  searchResultCountAtom,
   useResetSearchValue,
   useSearchValue,
 } from '@/hooks/use-search-value';
@@ -48,6 +50,7 @@ import {
 
 type MailSearchBarProps = {
   folderTitle: string;
+  resultCount?: number;
 };
 
 type SearchSuggestion =
@@ -58,7 +61,7 @@ function hasFilter(filters: ActiveSearchFilter[], next: ActiveSearchFilter) {
   return filters.some((filter) => filter.type === next.type && filter.value === next.value);
 }
 
-export function MailSearchBar({ folderTitle }: MailSearchBarProps) {
+export function MailSearchBar({ folderTitle, resultCount }: MailSearchBarProps) {
   const { folder } = useParams<{ folder: string }>();
   const [searchValue, setSearchValue] = useSearchValue();
   const resetSearchValue = useResetSearchValue();
@@ -79,9 +82,14 @@ export function MailSearchBar({ folderTitle }: MailSearchBarProps) {
   const [scopeMenuOpen, setScopeMenuOpen] = useState(false);
   const [filtersMenuOpen, setFiltersMenuOpen] = useState(false);
   const [hasSearchControlFocus, setHasSearchControlFocus] = useState(false);
+  const atomResultCount = useAtomValue(searchResultCountAtom);
+  const effectiveResultCount = resultCount !== undefined ? resultCount : atomResultCount;
   const isDraftsRoute = folder?.toLowerCase() === 'draft' || folder?.toLowerCase() === 'drafts';
   const isThisFolderDrafts = isDraftsRoute && searchValue.scope === 'folder';
   const currentRecentSearchScopeKey = getRecentSearchScopeKey(mailCacheScope);
+  const hasActiveSearch = Boolean(
+    localSearch.trim() || searchValue.value.trim() || searchValue.filters.length > 0,
+  );
 
   const suggestions = useMemo<SearchSuggestion[]>(() => {
     const term = localSearch.trim();
@@ -357,7 +365,17 @@ export function MailSearchBar({ folderTitle }: MailSearchBarProps) {
             value={localSearch}
           />
 
-          {!localSearch && (
+          {hasActiveSearch && effectiveResultCount !== undefined && (
+            <Badge
+              variant="secondary"
+              className="h-5 px-1.5 text-[11px] font-normal text-muted-foreground shrink-0"
+              aria-label={`${effectiveResultCount} ${effectiveResultCount === 1 ? 'result' : 'results'} found`}
+            >
+              {effectiveResultCount} {effectiveResultCount === 1 ? 'result' : 'results'}
+            </Badge>
+          )}
+
+          {!localSearch && !hasActiveSearch && (
             <>
               <span className="sr-only">Press Command or Control K to focus search</span>
               <kbd
