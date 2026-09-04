@@ -3378,6 +3378,43 @@ if (!realMailGate) {
     });
     expect(remoteCorsWithPut.checks.s3CorsRemoteAdmin).toBe(false);
 
+    const remoteCorsWithSeparatePut = await runLaunchReadinessReport({
+      remoteAdminMode: true,
+      remoteTargetHealthRequired: false,
+      firewall: { remoteAlb8443Only: true },
+      cors: {
+        CORSRules: [
+          {
+            ...validCors([CANONICAL_ORIGIN]).CORSRules[0],
+            AllowedMethods: ['GET', 'HEAD', 'PUT'],
+            ExposeHeaders: ['Content-Disposition', 'Content-Type', 'Content-Length', 'ETag'],
+          },
+          {
+            AllowedOrigins: [`https://${REMOTE_ADMIN_HOST}`],
+            AllowedMethods: ['GET', 'HEAD'],
+            AllowedHeaders: ['*'],
+            ExposeHeaders: ['Content-Disposition', 'Content-Type', 'Content-Length'],
+            MaxAgeSeconds: 300,
+          },
+          {
+            AllowedOrigins: [`https://${REMOTE_ADMIN_HOST}`],
+            AllowedMethods: ['PUT'],
+            AllowedHeaders: ['*'],
+            ExposeHeaders: ['Content-Disposition', 'Content-Type', 'Content-Length', 'ETag'],
+            MaxAgeSeconds: 300,
+          },
+        ],
+      },
+      instanceNetwork: remoteInstanceNetwork,
+      securityGroups: remoteSecurityGroups,
+      remoteAdminFacts: {
+        ...validRemoteAdminReadinessFacts(),
+        hostForwardExact: false,
+        targetHealthy: false,
+      },
+    });
+    expect(remoteCorsWithSeparatePut.checks.s3CorsRemoteAdmin).toBe(true);
+
     const preregistrationDirty = await runLaunchReadinessReport({
       remoteAdminMode: true,
       remoteTargetHealthRequired: false,
@@ -4101,13 +4138,20 @@ if (!realMailGate) {
             ExposeHeaders: ['Content-Disposition', 'Content-Type', 'Content-Length', 'ETag'],
             MaxAgeSeconds: 300,
           },
-          {
-            AllowedOrigins: [`https://${REMOTE_ADMIN_HOST}`],
-            AllowedMethods: ['GET', 'HEAD'],
-            AllowedHeaders: ['*'],
-            ExposeHeaders: ['Content-Disposition', 'Content-Type', 'Content-Length'],
-            MaxAgeSeconds: 300,
-          },
+                 {
+                   AllowedOrigins: [`https://${REMOTE_ADMIN_HOST}`],
+                   AllowedMethods: ['GET', 'HEAD'],
+                   AllowedHeaders: ['*'],
+                   ExposeHeaders: ['Content-Disposition', 'Content-Type', 'Content-Length'],
+                   MaxAgeSeconds: 300,
+                 },
+                 {
+                   AllowedOrigins: [`https://${REMOTE_ADMIN_HOST}`],
+                   AllowedMethods: ['PUT'],
+                   AllowedHeaders: ['*'],
+                   ExposeHeaders: ['Content-Disposition', 'Content-Type', 'Content-Length', 'ETag'],
+                   MaxAgeSeconds: 300,
+                 },
         ],
       },
     });
