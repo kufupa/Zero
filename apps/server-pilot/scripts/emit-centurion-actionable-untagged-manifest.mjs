@@ -72,12 +72,14 @@ export function buildActionableUntaggedRepairArtifacts(opts) {
     promptVersion = DEFAULT_PROMPT_VERSION,
     promptHash,
     sourceLabel = 'deadletter-untagged-repair',
+    /** When true, trust caller rows (already-tagged quality retarget). */
+    skipActionableFilter = false,
   } = opts;
   if (!promptHash || !/^[a-f0-9]{64}$/i.test(promptHash)) {
     throw new Error('promptHash must be sha256 hex');
   }
 
-  const actionable = selectActionableRows(rows);
+  const actionable = skipActionableFilter ? rows : selectActionableRows(rows);
   const eligible = actionable.map((row) => {
     const triggerCreatedAt = row.latestInboundCreatedAt;
     const triggerMessageId = row.latestInboundId;
