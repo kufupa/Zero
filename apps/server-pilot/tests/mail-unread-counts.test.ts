@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import {
   mailCategory,
+  mailDraft,
   mailLabel,
   mailThread,
   mailThreadCategory,
@@ -207,6 +208,38 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.unreadCounts route contr
         isRead: false,
       });
 
+      // 8. Drafts on primary and second transport
+      await db.insert(mailDraft).values([
+        {
+          id: `draft-act-1-${Date.now()}`,
+          transportId: primaryTransportId,
+          createdByUserId: NAVA_USER_ID,
+          status: 'active',
+          isSent: false,
+        },
+        {
+          id: `draft-cand-2-${Date.now()}`,
+          transportId: primaryTransportId,
+          createdByUserId: NAVA_USER_ID,
+          status: 'candidate',
+          isSent: false,
+        },
+        {
+          id: `draft-sent-3-${Date.now()}`,
+          transportId: primaryTransportId,
+          createdByUserId: NAVA_USER_ID,
+          status: 'sent',
+          isSent: true,
+        },
+        {
+          id: `draft-other-box-${Date.now()}`,
+          transportId: secondTransportId,
+          createdByUserId: NAVA_USER_ID,
+          status: 'active',
+          isSent: false,
+        },
+      ]);
+
       // Create caller for primary transport
       const callerPrimary = await callerFor(NAVA_USER_ID, {
         db,
@@ -230,20 +263,28 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.unreadCounts route contr
       for (const item of counts.folders) {
         expect(typeof item.unreadCount).toBe('number');
         expect(item.unreadCount).toBeGreaterThanOrEqual(0);
+        expect(typeof item.totalCount).toBe('number');
+        expect(item.totalCount).toBeGreaterThanOrEqual(item.unreadCount);
       }
 
+      // Drafts count contract: active + candidate on primary transport = 2
+      expect(counts.draftsCount).toBe(2);
+
       // Expected folder counts:
-      // Inbox: unreadInbox1 + unreadInbox2 + unreadExpiredSnooze (lazy cleared) = 3
-      const inboxCount = counts.folders.find((f: { id: string }) => f.id === 'inbox')?.unreadCount;
-      expect(inboxCount).toBe(3);
+      // Inbox: unreadInbox1 + unreadInbox2 + unreadExpiredSnooze (lazy cleared) = 3 unread, 4 total (incl readInbox1)
+      const inboxFolder = counts.folders.find((f: { id: string }) => f.id === 'inbox');
+      expect(inboxFolder?.unreadCount).toBe(3);
+      expect(inboxFolder?.totalCount).toBe(4);
 
-      // Sent: unreadSent1 = 1
-      const sentCount = counts.folders.find((f: { id: string }) => f.id === 'sent')?.unreadCount;
-      expect(sentCount).toBe(1);
+      // Sent: unreadSent1 = 1 unread, 1 total
+      const sentFolder = counts.folders.find((f: { id: string }) => f.id === 'sent');
+      expect(sentFolder?.unreadCount).toBe(1);
+      expect(sentFolder?.totalCount).toBe(1);
 
-      // Archive: unreadArchived1 = 1
-      const archiveCount = counts.folders.find((f: { id: string }) => f.id === 'archive')?.unreadCount;
-      expect(archiveCount).toBe(1);
+      // Archive: unreadArchived1 (1) + readArchived1 (1) = 1 unread, 2 total
+      const archiveFolder = counts.folders.find((f: { id: string }) => f.id === 'archive');
+      expect(archiveFolder?.unreadCount).toBe(1);
+      expect(archiveFolder?.totalCount).toBe(2);
 
       // Snoozed: unreadActiveSnooze = 1
       const snoozedCount = counts.folders.find((f: { id: string }) => f.id === 'snoozed')?.unreadCount;

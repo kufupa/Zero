@@ -95,3 +95,17 @@ Task 5: complete (server-pilot 4/4 and mail 25/25 test suites passing against lo
 - Baseline ref: 4a9b0942e835e157e30070abb59f8b49a5f0dcc4
 - Baseline verification: 18/18 tests passed (tests/file-drag.test.ts, tests/thread-actions-contract.test.ts) with pilot database variables unset. Pre-existing uncommitted work on unread count badges preserved.
 - Task 1: complete (commit e161a780; snapCenterToCursor overlay, pointer-events-none, pure mailFileCollisionDetection, behavioral tests 14/14 pass; review clean)
+
+# Advanced Folder Counts & Search Insights — Execution Ledger
+- Plan: docs/superpowers/plans/2026-09-04-advanced-folder-counts-and-search.md
+- Started: 2026-09-04
+- Branch: kufupa/bongi-req
+- Baseline ref: 93730d464b404c852548ccb2664462bacb94eb93
+- Safety: disposable TEST_DATABASE_URL only, never test pilot/prod RDS
+- Task 1: complete (single-pass unread + total counts and active drafts; disposable DB test passed)
+- Task 2: pending (Server markFolderAsRead bulk mutation)
+- Task 3: pending (Frontend snapshot mapping & tooltip helpers)
+- Task 4: pending (UI tooltips & Draft badges in sidebar)
+- Task 5: pending (Folder context menu "Mark all as read")
+- Task 6: pending (Search result aggregate count in MailSearchBar)
+- Task 7: pending (Draft lifecycle invalidation & verification)
