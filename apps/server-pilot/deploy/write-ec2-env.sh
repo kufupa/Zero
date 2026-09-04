@@ -87,6 +87,7 @@ append_env SMTP_USER "${SMTP_USER:-}"
 # Optional: leftover SMTP_PASSWORD is ignored by RealSmtpTransport on Rocketseed.
 append_env SMTP_PASSWORD "${SMTP_PASSWORD:-}"
 append_env AI_DRAFTS_ENABLED "${AI_DRAFTS_ENABLED:-}"
+append_env CATCHUP_UPLOAD_ENABLED "${CATCHUP_UPLOAD_ENABLED:-}"
 # Real-mail: durable triage writes on by default (ops can still override).
 if [[ "${MAIL_TRANSPORT_MODE:-fixture}" == "real" ]]; then
   append_env AI_WRITE_GATE_ENABLED "${AI_WRITE_GATE_ENABLED:-true}"
