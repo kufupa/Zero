@@ -9,13 +9,26 @@ export type LegacyStat = {
   count: number;
 };
 
+export type FolderCountData = {
+  unread: number;
+  total: number;
+};
+
 export type SidebarUnreadCountSnapshot = {
   folders: Record<MailUnreadFolderId, number>;
   categories: Record<string, number>;
   labels: Record<string, number>;
+  folderTotals: Record<MailUnreadFolderId, number>;
+  categoryTotals: Record<string, number>;
+  labelTotals: Record<string, number>;
+  draftsCount: number;
   legacy: readonly LegacyStat[];
   source: 'pilot' | 'legacy' | 'none';
   scopeKey: string | null;
+  hasData: boolean;
+  getCount: (key: string, categoryIdForSlug?: string) => number | undefined;
+  getTotal: (key: string, categoryIdForSlug?: string) => number | undefined;
+  getTooltip: (key: string, title?: string, categoryIdForSlug?: string) => string;
 };
 
 const DEFAULT_FOLDERS: Record<MailUnreadFolderId, number> = {
@@ -27,62 +40,112 @@ const DEFAULT_FOLDERS: Record<MailUnreadFolderId, number> = {
   spam: 0,
 };
 
+export function formatFolderTooltip(
+  title: string | undefined,
+  unreadCount: number | undefined,
+  totalCount: number | undefined,
+  isDrafts?: boolean,
+): string {
+  if (isDrafts) {
+    const drafts = unreadCount ?? totalCount ?? 0;
+    return `${drafts} active ${drafts === 1 ? 'draft' : 'drafts'}`;
+  }
+
+  const unread = unreadCount ?? 0;
+  if (totalCount !== undefined) {
+    const threadLabel = totalCount === 1 ? 'thread' : 'threads';
+    if (unread > 0) {
+      return `${unread} unread of ${totalCount} ${threadLabel}`;
+    }
+    return `${totalCount} ${threadLabel} (all read)`;
+  }
+
+  if (unread > 0) {
+    return `${unread} unread`;
+  }
+
+  return title ? `${title} (all read)` : 'All read';
+}
+
 export function toSidebarUnreadCountSnapshot(
   payload: PilotUnreadCounts | undefined,
   legacyStats: readonly LegacyStat[] | undefined,
   providerId: string | undefined,
   scopeKey: string | null = null,
 ): SidebarUnreadCountSnapshot {
-  if (providerId === 'mailbox' && payload) {
-    const folders: Record<MailUnreadFolderId, number> = { ...DEFAULT_FOLDERS };
+  const isPilot = providerId === 'mailbox' && Boolean(payload);
+
+  const folders: Record<MailUnreadFolderId, number> = { ...DEFAULT_FOLDERS };
+  const folderTotals: Record<MailUnreadFolderId, number> = { ...DEFAULT_FOLDERS };
+  const categories: Record<string, number> = {};
+  const categoryTotals: Record<string, number> = {};
+  const labels: Record<string, number> = {};
+  const labelTotals: Record<string, number> = {};
+  let draftsCount = 0;
+
+  if (isPilot && payload) {
     for (const f of payload.folders) {
       folders[f.id] = f.unreadCount;
+      folderTotals[f.id] = f.totalCount ?? f.unreadCount;
     }
 
-    const categories: Record<string, number> = {};
     for (const c of payload.categories) {
       categories[c.categoryId] = c.unreadCount;
+      categoryTotals[c.categoryId] = c.totalCount ?? c.unreadCount;
     }
 
-    const labels: Record<string, number> = {};
     for (const l of payload.labels) {
       labels[l.labelId] = l.unreadCount;
+      labelTotals[l.labelId] = l.totalCount ?? l.unreadCount;
     }
 
-    return {
-      folders,
-      categories,
-      labels,
-      legacy: legacyStats ?? [],
-      source: 'pilot',
-      scopeKey,
-    };
+    draftsCount = payload.draftsCount ?? 0;
   }
 
-  if (legacyStats && legacyStats.length > 0) {
-    return {
-      folders: { ...DEFAULT_FOLDERS },
-      categories: {},
-      labels: {},
-      legacy: legacyStats,
-      source: 'legacy',
-      scopeKey: null,
-    };
-  }
+  const source: 'pilot' | 'legacy' | 'none' = isPilot
+    ? 'pilot'
+    : legacyStats && legacyStats.length > 0
+      ? 'legacy'
+      : 'none';
 
-  return {
-    folders: { ...DEFAULT_FOLDERS },
-    categories: {},
-    labels: {},
+  const hasData =
+    source === 'pilot' ? true : source === 'legacy' ? (legacyStats?.length ?? 0) > 0 : false;
+
+  const snapshot: SidebarUnreadCountSnapshot = {
+    folders,
+    folderTotals,
+    categories,
+    categoryTotals,
+    labels,
+    labelTotals,
+    draftsCount,
     legacy: legacyStats ?? [],
-    source: 'none',
-    scopeKey: null,
+    source,
+    scopeKey: isPilot ? scopeKey : null,
+    hasData,
+    getCount: (key: string, categoryIdForSlug?: string) => {
+      const navCount = getNavUnreadCount(snapshot, key, categoryIdForSlug);
+      if (navCount !== undefined) return navCount;
+      return getLabelUnreadCount(snapshot, key);
+    },
+    getTotal: (key: string, categoryIdForSlug?: string) => {
+      return getFolderTotal(snapshot, key, categoryIdForSlug);
+    },
+    getTooltip: (key: string, title?: string, categoryIdForSlug?: string) => {
+      const normalizedKey = key.trim().toLowerCase();
+      const isDrafts = normalizedKey === 'drafts' || normalizedKey === 'draft';
+      const unread = snapshot.getCount(key, categoryIdForSlug);
+      const total = snapshot.getTotal(key, categoryIdForSlug);
+      return formatFolderTooltip(title ?? key, unread, total, isDrafts);
+    },
   };
+
+  return snapshot;
 }
 
 /**
  * Returns unread count for a navigation item.
- * undefined = no badge contract (e.g. Drafts, synthetic group, or unknown)
+ * undefined = no badge contract (e.g. unknown item)
  * number >= 0 = badge count (render when > 0)
  */
 export function getNavUnreadCount(
@@ -96,6 +159,16 @@ export function getNavUnreadCount(
 
   const normalizedId = itemId.trim().toLowerCase();
   if (normalizedId === 'drafts' || normalizedId === 'draft') {
+    if (snapshot.source === 'pilot') {
+      return snapshot.draftsCount;
+    }
+    if (snapshot.source === 'legacy') {
+      const stat = snapshot.legacy.find((s) => {
+        const lbl = s.label?.trim().toLowerCase();
+        return lbl === 'drafts' || lbl === 'draft';
+      });
+      return stat ? stat.count : undefined;
+    }
     return undefined;
   }
 
@@ -120,6 +193,47 @@ export function getNavUnreadCount(
     const targetLabel = normalizedId === 'trash' ? 'trash' : normalizedId;
     const stat = snapshot.legacy.find((s) => s.label?.trim().toLowerCase() === targetLabel);
     return stat ? stat.count : undefined;
+  }
+
+  return undefined;
+}
+
+/**
+ * Returns total thread count for a navigation item, category, or label.
+ */
+export function getFolderTotal(
+  snapshot: SidebarUnreadCountSnapshot | undefined,
+  itemId: string | undefined,
+  categoryIdForSlug?: string,
+): number | undefined {
+  if (!snapshot || snapshot.source === 'none' || !itemId) {
+    return undefined;
+  }
+
+  const normalizedId = itemId.trim().toLowerCase();
+  if (normalizedId === 'drafts' || normalizedId === 'draft') {
+    return snapshot.source === 'pilot' ? snapshot.draftsCount : undefined;
+  }
+
+  if (snapshot.source === 'pilot') {
+    const folderKey = normalizedId === 'trash' ? 'bin' : (normalizedId as MailUnreadFolderId);
+    if (folderKey in snapshot.folderTotals) {
+      return snapshot.folderTotals[folderKey] ?? 0;
+    }
+
+    if (categoryIdForSlug && categoryIdForSlug in snapshot.categoryTotals) {
+      return snapshot.categoryTotals[categoryIdForSlug] ?? 0;
+    }
+
+    if (itemId in snapshot.categoryTotals) {
+      return snapshot.categoryTotals[itemId] ?? 0;
+    }
+
+    if (itemId in snapshot.labelTotals) {
+      return snapshot.labelTotals[itemId] ?? 0;
+    }
+
+    return undefined;
   }
 
   return undefined;
@@ -160,3 +274,4 @@ export function getLabelUnreadCount(
 
   return undefined;
 }
+
