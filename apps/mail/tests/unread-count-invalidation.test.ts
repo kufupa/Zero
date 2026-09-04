@@ -48,4 +48,27 @@ describe('unread count invalidation and freshness contract', () => {
     expect(content).toContain('resolveThreadPollingMs');
     expect(content).toContain('@/lib/mail/thread-polling-policy');
   });
+
+  it('verifies email-composer invalidates unreadCounts on draft save', () => {
+    const filePath = path.resolve(__dirname, '../components/create/email-composer.tsx');
+    const content = fs.readFileSync(filePath, 'utf-8');
+
+    // persistDraftOnce must invalidate trpc.mail.unreadCounts alongside drafts.list
+    expect(content).toContain('queryClient.invalidateQueries({ queryKey: trpc.mail.unreadCounts.queryKey() })');
+  });
+
+  it('verifies email-composer invalidates unreadCounts after sending email', () => {
+    const filePath = path.resolve(__dirname, '../components/create/email-composer.tsx');
+    const content = fs.readFileSync(filePath, 'utf-8');
+
+    // proceedWithSend must invalidate trpc.mail.unreadCounts when message is sent
+    const proceedWithSendIndex = content.indexOf('const proceedWithSend = async');
+    const handleSendIndex = content.indexOf('const handleSend = async');
+    expect(proceedWithSendIndex).toBeGreaterThanOrEqual(0);
+    expect(handleSendIndex).toBeGreaterThan(proceedWithSendIndex);
+
+    const proceedSnippet = content.slice(proceedWithSendIndex, handleSendIndex);
+    expect(proceedSnippet).toContain('trpc.mail.unreadCounts.queryKey()');
+  });
 });
+
