@@ -4086,6 +4086,32 @@ if (!realMailGate) {
       ]),
     });
     expect(final.checks.s3CorsCanonical).toBe(true);
+
+    const withPutAndEtag = await runLaunchReadinessReport({
+      cors: {
+        CORSRules: [
+          {
+            AllowedOrigins: [
+              CANONICAL_ORIGIN,
+              'http://localhost:3000',
+              'https://localhost:3000',
+            ],
+            AllowedMethods: ['GET', 'HEAD', 'PUT'],
+            AllowedHeaders: ['*'],
+            ExposeHeaders: ['Content-Disposition', 'Content-Type', 'Content-Length', 'ETag'],
+            MaxAgeSeconds: 300,
+          },
+          {
+            AllowedOrigins: [`https://${REMOTE_ADMIN_HOST}`],
+            AllowedMethods: ['GET', 'HEAD'],
+            AllowedHeaders: ['*'],
+            ExposeHeaders: ['Content-Disposition', 'Content-Type', 'Content-Length'],
+            MaxAgeSeconds: 300,
+          },
+        ],
+      },
+    });
+    expect(withPutAndEtag.checks.s3CorsCanonical).toBe(true);
   });
 
   it('launch readiness requires canonical CORS origin and methods in one valid rule', async () => {

@@ -114,8 +114,8 @@ aws s3api put-bucket-encryption --region "$AWS_REGION" --bucket "$NAVA_MAIL_BUCK
 aws s3api put-bucket-lifecycle-configuration --region "$AWS_REGION" --bucket "$NAVA_MAIL_BUCKET" --lifecycle-configuration '{"Rules":[{"ID":"expire-raw-mime-30d","Status":"Enabled","Filter":{"Prefix":"raw-mime/"},"Expiration":{"Days":30}},{"ID":"expire-attachments-90d","Status":"Enabled","Filter":{"Prefix":"attachments/"},"Expiration":{"Days":90}},{"ID":"abort-incomplete-multipart-1d","Status":"Enabled","Filter":{"Prefix":""},"AbortIncompleteMultipartUpload":{"DaysAfterInitiation":1}},{"ID":"HmsBrowserProofTransferExpire1Day","Status":"Enabled","Filter":{"Prefix":"hms-browser-proof-transfer/v1/"},"Expiration":{"Days":1}}]}'
 # Proof wrappers semantically merge/read back this named rule; never replace
 # unrelated lifecycle rules during ordinary proof operation.
-# Browser attachment fetch during cutover overlap. Origin allowlist only — never *.
-aws s3api put-bucket-cors --region "$AWS_REGION" --bucket "$NAVA_MAIL_BUCKET" --cors-configuration '{"CORSRules":[{"AllowedOrigins":["https://nava.legacyhotels.co.za","https://nava.legacy.local","http://localhost:3000","https://localhost:3000"],"AllowedMethods":["GET","HEAD"],"AllowedHeaders":["*"],"ExposeHeaders":["Content-Disposition","Content-Type","Content-Length"],"MaxAgeSeconds":300}]}'
+# Browser attachment fetch and catch-up upload. Origin allowlist only — never *.
+aws s3api put-bucket-cors --region "$AWS_REGION" --bucket "$NAVA_MAIL_BUCKET" --cors-configuration '{"CORSRules":[{"AllowedOrigins":["https://nava.legacyhotels.co.za","https://nava.legacy.local","http://localhost:3000","https://localhost:3000"],"AllowedMethods":["GET","HEAD","PUT"],"AllowedHeaders":["*"],"ExposeHeaders":["Content-Disposition","Content-Type","Content-Length","ETag"],"MaxAgeSeconds":300},{"AllowedOrigins":["https://nava-admin.trynava.io"],"AllowedMethods":["GET","HEAD"],"AllowedHeaders":["*"],"ExposeHeaders":["Content-Disposition","Content-Type","Content-Length"],"MaxAgeSeconds":300}]}'
 
 # 6. EC2 instance role inline policies
 ROLE=nava-prod-public-ipv4-WorkerRole-bPmrMEkmdwLU
