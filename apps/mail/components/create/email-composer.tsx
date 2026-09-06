@@ -781,6 +781,7 @@ export function EmailComposer({
   const persistDraftOnce = useCallback((): Promise<'saved' | 'skipped' | 'failed'> => {
     if (saveInFlightRef.current) return saveInFlightRef.current;
 
+    let savePromiseRef: Promise<'saved' | 'skipped' | 'failed'> | null = null;
     const savePromise = (async (): Promise<'saved' | 'skipped' | 'failed'> => {
       try {
         await drainComposeFileWork();
@@ -874,13 +875,14 @@ export function EmailComposer({
         setAutosaveSuppressedAfterFailure(true);
         return 'failed';
       } finally {
-        if (saveInFlightRef.current === savePromise) {
+        if (saveInFlightRef.current === savePromiseRef) {
           saveInFlightRef.current = null;
         }
         setIsSavingDraft(false);
       }
     })();
 
+    savePromiseRef = savePromise;
     saveInFlightRef.current = savePromise;
     return savePromise;
   }, [

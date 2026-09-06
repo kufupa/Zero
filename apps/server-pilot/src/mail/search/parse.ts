@@ -133,8 +133,8 @@ function applyOperator(
 
 function isOpenQuote(value: string): boolean {
   return (
-    (value.startsWith('"') && !value.endsWith('"')) ||
-    (value.startsWith("'") && !value.endsWith("'"))
+    (value.startsWith('"') && (!value.endsWith('"') || value.length === 1)) ||
+    (value.startsWith("'") && (!value.endsWith("'") || value.length === 1))
   );
 }
 

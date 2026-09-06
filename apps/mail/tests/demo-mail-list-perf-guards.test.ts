@@ -4,6 +4,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { createElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { atom } from 'jotai';
 import { MailList, areMailLabelsEqual } from '../components/mail/mail-list';
 import { EMPTY_SEARCH_VALUE, unreadFilter, type SearchValueState } from '../lib/mail/search-list';
 
@@ -20,6 +21,8 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@/hooks/use-search-value', () => ({
   useSearchValue: () => [mocks.searchValue, mocks.setSearchValue],
   useResetSearchValue: () => mocks.resetSearchValue,
+  searchResultCountAtom: atom<number | undefined>(undefined),
+  mailSearchBarFocusedAtom: atom(false),
 }));
 
 vi.mock('@/hooks/use-threads', () => ({
@@ -60,6 +63,10 @@ vi.mock('@dnd-kit/core', () => ({
   }),
 }));
 
+vi.mock('@/components/ui/sidebar', () => ({
+  useSidebar: () => ({ isMobile: false }),
+}));
+
 vi.mock('@/lib/mail/build-mail-list-virtual-rows', () => ({
   buildMailListVirtualRows: (items: Array<{ id: string }>) =>
     items.map((message, threadIndex) => ({
@@ -73,12 +80,13 @@ vi.mock('@/lib/mail/build-mail-list-virtual-rows', () => ({
 vi.mock('virtua', async () => {
   const { createElement, forwardRef } = await import('react');
   return {
-    VList: forwardRef((props: { count: number; children: (index: number) => unknown }, _ref) =>
-      createElement(
-        'div',
-        null,
-        Array.from({ length: props.count }, (_, index) => props.children(index)),
-      ),
+    VList: forwardRef(
+      (props: { count: number; children: (index: number) => React.ReactNode }, _ref) =>
+        createElement(
+          'div',
+          null,
+          Array.from({ length: props.count }, (_, index) => props.children(index)),
+        ),
     ),
   };
 });

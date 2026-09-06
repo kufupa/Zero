@@ -51,4 +51,42 @@ describe('parseSearchQuery', () => {
     expect(parseSearchQuery('is:flagged')).toMatchObject({ freeText: 'is:flagged' });
     expect(parseSearchQuery('ref:12345')).toMatchObject({ freeText: 'ref:12345' });
   });
+
+  it('parses quoted values with leading spaces and multiple words', () => {
+    expect(parseSearchQuery('from:" Ansh Arora"')).toMatchObject({
+      from: [' Ansh Arora'],
+      freeText: '',
+    });
+    expect(parseSearchQuery('subject:" Urgent Booking Request "')).toMatchObject({
+      subject: ' Urgent Booking Request ',
+      freeText: '',
+    });
+  });
+
+  it('parses single-quoted operator values', () => {
+    expect(parseSearchQuery("from:'Bongi Reception'")).toMatchObject({
+      from: ['Bongi Reception'],
+      freeText: '',
+    });
+  });
+
+  it('parses to, cc, bcc, after, before, label, and category operators', () => {
+    const query = 'to:reservations@hotel.com cc:manager@hotel.com bcc:audit@hotel.com after:2026/09/01 before:2026/09/10 label:VIP category:reservations';
+    expect(parseSearchQuery(query)).toMatchObject({
+      to: ['reservations@hotel.com'],
+      cc: ['manager@hotel.com'],
+      bcc: ['audit@hotel.com'],
+      after: '2026/09/01',
+      before: '2026/09/10',
+      labelIds: ['VIP'],
+      categorySlugs: ['reservations'],
+    });
+  });
+
+  it('parses international Unicode characters in operators and free text', () => {
+    expect(parseSearchQuery('from:"Frédéric Chopin" réservation hôtel')).toMatchObject({
+      from: ['Frédéric Chopin'],
+      freeText: 'réservation hôtel',
+    });
+  });
 });

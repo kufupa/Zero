@@ -118,7 +118,6 @@ export function LabelSidebarContextMenu({ children, labelId, hide }: LabelSideba
       markAsReadMutation: async (params) => markFolderAsRead(params),
       invalidateQueries: async () => {
         await queryClient.invalidateQueries({ queryKey: trpc.mail.unreadCounts.queryKey() });
-        await queryClient.invalidateQueries({ queryKey: trpc.mail.getThreads.queryKey() });
         await queryClient.invalidateQueries({ queryKey: trpc.mail.listThreads.queryKey() });
       },
       successMessage: 'Marked all as read',

@@ -76,7 +76,7 @@ function messageAddressExists(
   );
 }
 
-const TOKEN_RE = /[a-z0-9]+/gi;
+const TOKEN_RE = /[\p{L}\p{N}]+/gu;
 const MIN_PREFIX_LENGTH = 3;
 
 /**

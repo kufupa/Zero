@@ -12,7 +12,12 @@ import {
 import { TRANSPORT_ID } from '../src/db/seed.js';
 import { buildParsedMessage } from '../src/mail/ingest/parse-message.js';
 import { parseSearchQuery } from '../src/mail/search/parse.js';
-import { buildFreeTextTsQuery, buildThreadSearchConditions } from '../src/mail/search/query.js';
+import {
+  buildDraftSearchConditions,
+  buildFreeTextTsQuery,
+  buildThreadSearchConditions,
+  parseSearchDate,
+} from '../src/mail/search/query.js';
 import { refreshThreadSearchVector } from '../src/mail/search/search-vector.js';
 import type { ParsedSearchQuery } from '../src/mail/search/types.js';
 import {
@@ -36,14 +41,53 @@ describe('buildFreeTextTsQuery', () => {
     expect(buildFreeTextTsQuery('Room 2B')).toBe("'room':* & '2b'");
   });
 
+  it('handles Unicode international words with accents', () => {
+    expect(buildFreeTextTsQuery('réservation')).toBe("'réservation':*");
+    expect(buildFreeTextTsQuery('hôtel Müller')).toBe("'hôtel':* & 'müller':*");
+    expect(buildFreeTextTsQuery('José García')).toBe("'josé':* & 'garcía':*");
+  });
+
   it('returns null for empty string or whitespace only', () => {
     expect(buildFreeTextTsQuery('')).toBeNull();
     expect(buildFreeTextTsQuery('   ')).toBeNull();
+    expect(buildFreeTextTsQuery('!@#$%^&*()')).toBeNull();
   });
 
   it('quotes lexemes so boolean operators and punctuation do not break to_tsquery', () => {
     expect(buildFreeTextTsQuery('and or not')).toBe("'and':* & 'or' & 'not':*");
     expect(buildFreeTextTsQuery('voucher & booking')).toBe("'voucher':* & 'booking':*");
+  });
+});
+
+describe('parseSearchDate', () => {
+  it('parses YYYY/MM/DD and YYYY-MM-DD into UTC midnight', () => {
+    const d1 = parseSearchDate('2026/09/04');
+    expect(d1?.toISOString()).toBe('2026-09-04T00:00:00.000Z');
+
+    const d2 = parseSearchDate('2026-09-04');
+    expect(d2?.toISOString()).toBe('2026-09-04T00:00:00.000Z');
+
+    const d3 = parseSearchDate('  2026/9/4  ');
+    expect(d3?.toISOString()).toBe('2026-09-04T00:00:00.000Z');
+  });
+
+  it('returns null for unparseable dates', () => {
+    expect(parseSearchDate('not-a-date')).toBeNull();
+    expect(parseSearchDate('')).toBeNull();
+  });
+});
+
+describe('buildDraftSearchConditions', () => {
+  it('generates conditions for freeText, subject, and to/cc/bcc recipients', () => {
+    const parsed = parseSearchQuery('freeText subject:Urgent to:guest@example.com');
+    const conditions = buildDraftSearchConditions(parsed);
+    expect(conditions.length).toBe(3);
+  });
+
+  it('returns empty array when no draft-searchable terms are present', () => {
+    const parsed = parseSearchQuery('is:unread');
+    const conditions = buildDraftSearchConditions(parsed);
+    expect(conditions.length).toBe(0);
   });
 });
 

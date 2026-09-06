@@ -13,22 +13,23 @@ type PilotUnreadCounts = Outputs['mail']['unreadCounts'];
 describe('mail sidebar unread contracts', () => {
   const samplePilotCounts: PilotUnreadCounts = {
     folders: [
-      { id: 'inbox', unreadCount: 15 },
-      { id: 'sent', unreadCount: 0 },
-      { id: 'archive', unreadCount: 8 },
-      { id: 'snoozed', unreadCount: 3 },
-      { id: 'bin', unreadCount: 4 },
-      { id: 'spam', unreadCount: 2 },
+      { id: 'inbox', unreadCount: 15, totalCount: 100 },
+      { id: 'sent', unreadCount: 0, totalCount: 50 },
+      { id: 'archive', unreadCount: 8, totalCount: 40 },
+      { id: 'snoozed', unreadCount: 3, totalCount: 10 },
+      { id: 'bin', unreadCount: 4, totalCount: 20 },
+      { id: 'spam', unreadCount: 2, totalCount: 5 },
     ],
     categories: [
-      { categoryId: 'cat-vip-id', unreadCount: 5 },
-      { categoryId: 'cat-empty-id', unreadCount: 0 },
+      { categoryId: 'cat-vip-id', unreadCount: 5, totalCount: 25 },
+      { categoryId: 'cat-empty-id', unreadCount: 0, totalCount: 0 },
     ],
     labels: [
-      { labelId: 'lbl-work-id', unreadCount: 7 },
-      { labelId: 'lbl-empty-id', unreadCount: 0 },
-      { labelId: 'lbl-quarantine-id', unreadCount: 2 },
+      { labelId: 'lbl-work-id', unreadCount: 7, totalCount: 30 },
+      { labelId: 'lbl-empty-id', unreadCount: 0, totalCount: 0 },
+      { labelId: 'lbl-quarantine-id', unreadCount: 2, totalCount: 2 },
     ],
+    draftsCount: 0,
   };
 
   it('maps system IDs: inbox, sent, archive, snoozed, spam and trash->bin', () => {

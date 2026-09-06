@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Label } from '@/types';
 import { isUserFolderDroppableId } from '@/lib/mail/file-drag';
-import type { SidebarUnreadCountSnapshot } from '@/lib/mail/sidebar-unread-counts';
+import { toSidebarUnreadCountSnapshot } from '@/lib/mail/sidebar-unread-counts';
 
 const mocks = vi.hoisted(() => ({
   activeAccount: { providerId: 'google' },
@@ -175,17 +175,20 @@ describe('SidebarLabels', () => {
     const projects = makeLabel('projects-root', 'Projects', { type: 'user' });
     const projectChild = makeLabel('projects-child', 'Projects/Subfolder');
 
-    const snapshot: SidebarUnreadCountSnapshot = {
-      folders: { inbox: 0, sent: 0, archive: 0, snoozed: 0, bin: 0, spam: 0 },
-      categories: {},
-      labels: {
-        'projects-root': 5,
-        'projects-child': 2,
+    const snapshot = toSidebarUnreadCountSnapshot(
+      {
+        folders: [],
+        categories: [],
+        labels: [
+          { labelId: 'projects-root', unreadCount: 5, totalCount: 10 },
+          { labelId: 'projects-child', unreadCount: 2, totalCount: 5 },
+        ],
+        draftsCount: 0,
       },
-      legacy: [],
-      source: 'pilot',
-      scopeKey: 't1',
-    };
+      [],
+      'mailbox',
+      't1',
+    );
 
     renderToStaticMarkup(
       createElement(SidebarLabels, {
