@@ -4,12 +4,25 @@ import { useTRPC } from '@/providers/query-provider';
 import { isAdminDashboardEnabled, describeAdminSource } from '@/lib/admin-dashboard/access';
 import { ADMIN_DASHBOARD_PLACEHOLDER_DATA } from '@/lib/admin-dashboard/demo-data';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
-import type { AdminDashboardData, AdminDashboardMetrics } from '@/lib/admin-dashboard/types';
+import type {
+  AdminDashboardData,
+  AdminDashboardMetrics,
+  DashboardCohortId,
+  DashboardWindowPreset,
+} from '@/lib/admin-dashboard/types';
+
+export type AdminDashboardQueryInput = {
+  cohortId?: DashboardCohortId;
+  window?: DashboardWindowPreset;
+  observationCutoff?: string;
+};
 
 export type AdminDashboardState = {
   canAccess: boolean;
   isLoading: boolean;
   isError: boolean;
+  /** A previous snapshot remains visible while the selected query refreshes. */
+  isStale: boolean;
   source: 'demo' | 'hosted';
   /** Demo fixtures only — never used for hosted LIVE numbers. */
   data: AdminDashboardData | null;
@@ -17,7 +30,7 @@ export type AdminDashboardState = {
   metrics: AdminDashboardMetrics | null;
 };
 
-export function useAdminDashboardData(): AdminDashboardState {
+export function useAdminDashboardData(queryInput?: AdminDashboardQueryInput): AdminDashboardState {
   const { data: session, isLoading: isSessionLoading, isError: isSessionError } = useSession();
   const source = describeAdminSource(session);
   const canAccess = isAdminDashboardEnabled(session);
@@ -25,7 +38,7 @@ export function useAdminDashboardData(): AdminDashboardState {
   const trpc = useTRPC();
 
   const metricsQuery = useQuery(
-    trpc.adminDashboard.getMetrics.queryOptions(undefined, {
+    trpc.adminDashboard.getMetrics.queryOptions(queryInput, {
       enabled: !demoMode && canAccess && !isSessionLoading && !isSessionError,
     }),
   );
@@ -35,6 +48,7 @@ export function useAdminDashboardData(): AdminDashboardState {
       canAccess: false,
       isLoading: true,
       isError: false,
+      isStale: false,
       source,
       data: null,
       metrics: null,
@@ -46,6 +60,7 @@ export function useAdminDashboardData(): AdminDashboardState {
       canAccess: false,
       isLoading: false,
       isError: Boolean(isSessionError),
+      isStale: false,
       source,
       data: null,
       metrics: null,
@@ -57,6 +72,7 @@ export function useAdminDashboardData(): AdminDashboardState {
       canAccess: true,
       isLoading: false,
       isError: false,
+      isStale: false,
       source: 'demo',
       data: ADMIN_DASHBOARD_PLACEHOLDER_DATA,
       metrics: null,
@@ -65,8 +81,9 @@ export function useAdminDashboardData(): AdminDashboardState {
 
   return {
     canAccess: true,
-    isLoading: metricsQuery.isLoading,
+    isLoading: metricsQuery.isLoading && !metricsQuery.data,
     isError: metricsQuery.isError,
+    isStale: Boolean(metricsQuery.data) && (metricsQuery.isFetching || metricsQuery.isError),
     source: 'hosted',
     data: null,
     metrics: (metricsQuery.data as AdminDashboardMetrics | undefined) ?? null,
