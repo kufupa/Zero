@@ -495,6 +495,52 @@ describe('aggregateAdminDashboardMetrics', () => {
     expect(result.service.unansweredEligible).toBe(0);
   });
 
+  it('publishes strict service count evidence with the configured measurement start', () => {
+    const cutoff = new Date('2026-09-08T00:00:00.000Z');
+    const measurementStartAt = '2026-09-01T00:00:00.000Z';
+    const result = aggregateAdminDashboardMetrics({
+      cohortId: 'centurion',
+      observationCutoff: cutoff,
+      classificationSnapshot: null,
+      measurementConfig: {
+        version: 1,
+        transportId: 'transport-centurion',
+        cohortId: 'centurion',
+        measurementStartAt,
+        captureAssumptionBasis: 'verified-two-way-feed',
+        confirmedGapIntervals: [],
+      },
+      threads: [thread({ id: 'count-evidence', transportId: 'transport-centurion' })],
+      messages: [
+        msg({
+          id: 'count-evidence-inbound',
+          threadId: 'count-evidence',
+          transportId: 'transport-centurion',
+          direction: 'inbound',
+          receivedAt: new Date('2026-09-02T10:00:00.000Z'),
+          authorClass: 'external_human',
+          qualifiesNewConversation: true,
+        }),
+      ],
+      transports: [{ id: 'transport-centurion', email: 'centurion@legacyhotels.co.za', displayName: 'Centurion' }],
+      windowStart: new Date('2026-09-01T00:00:00.000Z'),
+      windowEnd: cutoff,
+    });
+
+    expect(result.service.counts).toMatchObject({
+      eligibleNewConversations: {
+        availability: 'available',
+        value: 1,
+        unit: 'conversations',
+        denominator: null,
+        captureBasis: 'measurement_start_at:2026-09-01T00:00:00.000Z; verified-two-way-feed',
+      },
+      unansweredEligible: { availability: 'available', value: 1 },
+      unscorable: { availability: 'available', value: 0 },
+      measurementStartAt,
+    });
+  });
+
   it('does not classify an unknown outbound author as a known unanswered request', () => {
     const cutoff = new Date('2026-09-08T00:00:00.000Z');
     const result = aggregateAdminDashboardMetrics({

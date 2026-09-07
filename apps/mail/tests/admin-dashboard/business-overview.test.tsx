@@ -2,7 +2,11 @@ import * as React from 'react';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AdminDashboardMetrics, MetricResult } from '@/lib/admin-dashboard/types';
+import type {
+  AdminDashboardDailyPoint,
+  AdminDashboardMetrics,
+  MetricResult,
+} from '@/lib/admin-dashboard/types';
 
 const { useAdminDashboardDataMock } = vi.hoisted(() => ({
   useAdminDashboardDataMock: vi.fn(),
@@ -130,6 +134,12 @@ const metrics: AdminDashboardMetrics = {
   service: {
     firstObservedHumanReply: unavailableMetric('calendar minutes', 'reply_evidence_unavailable'),
     firstUsefulReply: unavailableMetric('calendar minutes', 'not_implemented'),
+    counts: {
+      eligibleNewConversations: unavailableMetric('conversations', 'reply_evidence_unavailable'),
+      unansweredEligible: unavailableMetric('conversations', 'reply_evidence_unavailable'),
+      unscorable: unavailableMetric('conversations', 'reply_evidence_unavailable'),
+      measurementStartAt: null,
+    },
     eligibleNewConversationCount: null,
     unansweredEligible: null,
     unscorable: null,
@@ -220,5 +230,160 @@ describe('AdminDashboardPage executive business overview', () => {
     expect(markup).toContain('classificationAsOf');
     expect(markup).toContain('View data table');
     expect(markup).not.toContain('Total revenue');
+  });
+
+  it('labels the prior snapshot while a changed selection is still refreshing', () => {
+    useAdminDashboardDataMock.mockReturnValue({
+      canAccess: true,
+      isLoading: false,
+      isError: false,
+      isStale: true,
+      source: 'hosted',
+      data: null,
+      metrics: {
+        ...metrics,
+        query: { ...metrics.query!, window: '28d' },
+      },
+    });
+
+    const markup = renderToStaticMarkup(createElement(AdminDashboardPage));
+
+    expect(markup).toContain('The selected 7d query is refreshing; showing the previous 28d snapshot.');
+    expect(markup).toContain('<dt class="font-medium text-foreground">Window</dt><dd>28d</dd>');
+  });
+
+  it('labels the prior snapshot when a changed selection fails', () => {
+    useAdminDashboardDataMock.mockReturnValue({
+      canAccess: true,
+      isLoading: false,
+      isError: true,
+      isStale: true,
+      source: 'hosted',
+      data: null,
+      metrics: {
+        ...metrics,
+        query: { ...metrics.query!, window: '28d' },
+      },
+    });
+
+    const markup = renderToStaticMarkup(createElement(AdminDashboardPage));
+
+    expect(markup).toContain('The selected 7d query failed. Showing the previous 28d snapshot; no demo data is substituted.');
+    expect(markup).toContain('<dt class="font-medium text-foreground">Window</dt><dd>28d</dd>');
+  });
+
+  it('keeps unavailable chart evidence inspectable instead of reducing it to a reason-only state', () => {
+    useAdminDashboardDataMock.mockReturnValue({
+      canAccess: true,
+      isLoading: false,
+      isError: false,
+      isStale: false,
+      source: 'hosted',
+      data: null,
+      metrics: {
+        ...metrics,
+        traffic: {
+          ...metrics.traffic!,
+          daily: unavailableMetric<AdminDashboardDailyPoint[]>('messages per day', 'classification_snapshot_unavailable'),
+        },
+      },
+    });
+
+    const markup = renderToStaticMarkup(createElement(AdminDashboardPage));
+
+    expect(markup).toContain('Message trend unavailable');
+    expect(markup).toContain('aria-label="Message trend evidence"');
+    expect(markup).toContain('classification snapshot unavailable');
+  });
+
+  it('shows diagnostic ratios and shares only when their denominators are known', () => {
+    useAdminDashboardDataMock.mockReturnValue({
+      canAccess: true,
+      isLoading: false,
+      isError: false,
+      isStale: false,
+      source: 'hosted',
+      data: null,
+      metrics: {
+        ...metrics,
+        dataHealth: {
+          ...metrics.dataHealth!,
+          quotedMailboxReplyNoMatchingOutbound: {
+            numerator: 2,
+            denominator: 4,
+            availability: 'available',
+          },
+        },
+      },
+    });
+
+    const availableMarkup = renderToStaticMarkup(createElement(AdminDashboardPage));
+    expect(availableMarkup).toContain('Direction ratio');
+    expect(availableMarkup).toContain('6:4');
+    expect(availableMarkup).toContain('Singleton quoted-mailbox-reply share');
+    expect(availableMarkup).toContain('50.0% (2/4)');
+    expect(availableMarkup).toContain('Inbound clock basis');
+
+    useAdminDashboardDataMock.mockReturnValue({
+      canAccess: true,
+      isLoading: false,
+      isError: false,
+      isStale: false,
+      source: 'hosted',
+      data: null,
+      metrics: {
+        ...metrics,
+        dataHealth: {
+          ...metrics.dataHealth!,
+          availability: 'unavailable',
+          availabilityReason: 'missing_evidence',
+          directionCounts: { inbound: null, outbound: null },
+          lastObservedAt: { inbound: null, outbound: null },
+          lastObservedBasis: { inbound: null, outbound: null },
+          singleton: { numerator: null, denominator: null },
+          quotedMailboxReplyNoMatchingOutbound: {
+            numerator: null,
+            denominator: null,
+            availability: 'unavailable',
+            reason: 'quote_projection_unavailable',
+          },
+        },
+      },
+    });
+
+    const unavailableMarkup = renderToStaticMarkup(createElement(AdminDashboardPage));
+    expect(unavailableMarkup).toContain('Diagnostics unavailable: missing evidence');
+    expect(unavailableMarkup).not.toContain('Unscorable events');
+  });
+
+  it('renders strict service count evidence with the configured measurement start', () => {
+    const strictService = {
+      ...metrics.service!,
+      counts: {
+        eligibleNewConversations: metric(2, 'conversations'),
+        unansweredEligible: metric(1, 'conversations'),
+        unscorable: metric(0, 'conversations'),
+        measurementStartAt: '2026-08-01T00:00:00.000Z',
+      },
+    } as unknown as AdminDashboardMetrics['service'];
+    useAdminDashboardDataMock.mockReturnValue({
+      canAccess: true,
+      isLoading: false,
+      isError: false,
+      isStale: false,
+      source: 'hosted',
+      data: null,
+      metrics: {
+        ...metrics,
+        service: strictService,
+      },
+    });
+
+    const markup = renderToStaticMarkup(createElement(AdminDashboardPage));
+
+    expect(markup).toContain('Eligible new conversations');
+    expect(markup).toContain('aria-label="Eligible new conversations evidence"');
+    expect(markup).toContain('Measurement start');
+    expect(markup).toContain('01 Aug 2026');
   });
 });

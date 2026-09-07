@@ -1,9 +1,11 @@
-import { useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import { useEffect, useRef, useSyncExternalStore } from 'react';
 import { useSession } from '@/lib/auth-client';
 import { useTRPC } from '@/providers/query-provider';
 import { isAdminDashboardEnabled, describeAdminSource } from '@/lib/admin-dashboard/access';
 import { ADMIN_DASHBOARD_PLACEHOLDER_DATA } from '@/lib/admin-dashboard/demo-data';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { getMailCacheScope, subscribeMailCacheScope } from '@/lib/mail/mail-cache-scope';
 import type {
   AdminDashboardData,
   AdminDashboardMetrics,
@@ -16,6 +18,9 @@ export type AdminDashboardQueryInput = {
   window?: DashboardWindowPreset;
   observationCutoff?: string;
 };
+
+/** Bump when the dashboard interpretation/provenance contract changes. */
+export const ADMIN_DASHBOARD_REPORT_VERSION = 'executive-dashboard-v2';
 
 export type AdminDashboardState = {
   canAccess: boolean;
@@ -36,12 +41,48 @@ export function useAdminDashboardData(queryInput?: AdminDashboardQueryInput): Ad
   const canAccess = isAdminDashboardEnabled(session);
   const demoMode = isFrontendOnlyDemo();
   const trpc = useTRPC();
-
-  const metricsQuery = useQuery(
-    trpc.adminDashboard.getMetrics.queryOptions(queryInput, {
-      enabled: !demoMode && canAccess && !isSessionLoading && !isSessionError,
-    }),
+  const cacheScope = useSyncExternalStore(
+    subscribeMailCacheScope,
+    getMailCacheScope,
+    getMailCacheScope,
   );
+  const viewerScopeKey = JSON.stringify({
+    sessionUserId: session?.user?.id ?? null,
+    cacheUserId: cacheScope.userId,
+    activeTransportId: cacheScope.activeTransportId,
+  });
+  const cacheScopeKey = viewerScopeKey;
+  const previousScopeKeyRef = useRef(cacheScopeKey);
+  const canReusePreviousSnapshot = previousScopeKeyRef.current === cacheScopeKey;
+
+  useEffect(() => {
+    previousScopeKeyRef.current = cacheScopeKey;
+  }, [cacheScopeKey]);
+
+  const dashboardQueryOptions = trpc.adminDashboard.getMetrics.queryOptions(queryInput, {
+    enabled: !demoMode && canAccess && !isSessionLoading && !isSessionError,
+    placeholderData: canReusePreviousSnapshot ? keepPreviousData : undefined,
+  });
+  const metricsQuery = useQuery({
+    ...dashboardQueryOptions,
+    queryKey: [
+      ...(dashboardQueryOptions.queryKey as readonly unknown[]),
+      ADMIN_DASHBOARD_REPORT_VERSION,
+      viewerScopeKey,
+    ] as unknown as typeof dashboardQueryOptions.queryKey,
+  });
+  const lastSuccessfulSnapshotRef = useRef<{
+    scopeKey: string;
+    metrics: AdminDashboardMetrics;
+  } | null>(null);
+  const queryMetrics = metricsQuery.data as AdminDashboardMetrics | undefined;
+  if (queryMetrics && !metricsQuery.isPlaceholderData && !metricsQuery.isError) {
+    lastSuccessfulSnapshotRef.current = { scopeKey: cacheScopeKey, metrics: queryMetrics };
+  }
+  const retainedSnapshot = lastSuccessfulSnapshotRef.current?.scopeKey === cacheScopeKey
+    ? lastSuccessfulSnapshotRef.current.metrics
+    : undefined;
+  const metrics = queryMetrics ?? retainedSnapshot ?? null;
 
   if (isSessionLoading) {
     return {
@@ -81,11 +122,11 @@ export function useAdminDashboardData(queryInput?: AdminDashboardQueryInput): Ad
 
   return {
     canAccess: true,
-    isLoading: metricsQuery.isLoading && !metricsQuery.data,
+    isLoading: metricsQuery.isLoading && !metrics,
     isError: metricsQuery.isError,
-    isStale: Boolean(metricsQuery.data) && (metricsQuery.isFetching || metricsQuery.isError),
+    isStale: Boolean(metrics) && (metricsQuery.isFetching || metricsQuery.isError || metricsQuery.isPlaceholderData),
     source: 'hosted',
     data: null,
-    metrics: (metricsQuery.data as AdminDashboardMetrics | undefined) ?? null,
+    metrics,
   };
 }

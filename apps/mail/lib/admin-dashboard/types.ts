@@ -89,9 +89,18 @@ export type AdminDashboardCorrespondents = {
   externalDomains: MetricResult<AdminDashboardDomainRow[]>;
 };
 
+export type AdminDashboardServiceCounts = {
+  eligibleNewConversations: MetricResult<number>;
+  unansweredEligible: MetricResult<number>;
+  unscorable: MetricResult<number>;
+  /** Configured prospective measurement start; null means no trusted T0 was returned. */
+  measurementStartAt: string | null;
+};
+
 export type AdminDashboardService = {
   firstObservedHumanReply: MetricResult<number>;
   firstUsefulReply: MetricResult<number>;
+  counts: AdminDashboardServiceCounts;
   eligibleNewConversationCount: number | null;
   unansweredEligible: number | null;
   unscorable: number | null;

@@ -105,9 +105,18 @@ export type AdminDashboardCorrespondents = {
   externalDomains: MetricResult<AdminDashboardDomainRow[]>;
 };
 
+export type AdminDashboardServiceCounts = {
+  eligibleNewConversations: MetricResult<number>;
+  unansweredEligible: MetricResult<number>;
+  unscorable: MetricResult<number>;
+  /** Configured prospective measurement start; null means no trusted T0 was returned. */
+  measurementStartAt: string | null;
+};
+
 export type AdminDashboardService = {
   firstObservedHumanReply: MetricResult<number>;
   firstUsefulReply: MetricResult<number>;
+  counts: AdminDashboardServiceCounts;
   /** Null when the retained evidence cannot establish the eligible set. */
   eligibleNewConversationCount: number | null;
   unansweredEligible: number | null;
@@ -622,6 +631,21 @@ function aggregateLegacyAdminDashboardMetrics(input: {
       sourceVintage: legacyQuery.sourceVintage,
     }),
   };
+  const legacyServiceCounts: AdminDashboardServiceCounts = {
+    eligibleNewConversations: unavailableMetric<number>('measurement_config_unavailable', {
+      unit: 'conversations',
+      sourceVintage: legacyQuery.sourceVintage,
+    }),
+    unansweredEligible: unavailableMetric<number>('measurement_config_unavailable', {
+      unit: 'conversations',
+      sourceVintage: legacyQuery.sourceVintage,
+    }),
+    unscorable: unavailableMetric<number>('measurement_config_unavailable', {
+      unit: 'conversations',
+      sourceVintage: legacyQuery.sourceVintage,
+    }),
+    measurementStartAt: null,
+  };
 
   return {
     query: legacyQuery,
@@ -677,6 +701,7 @@ function aggregateLegacyAdminDashboardMetrics(input: {
         unit: 'minutes',
         sourceVintage: legacyQuery.sourceVintage,
       }),
+      counts: legacyServiceCounts,
       eligibleNewConversationCount: 0,
       unansweredEligible: 0,
       unscorable: 0,
@@ -1378,25 +1403,51 @@ function aggregateExecutiveDashboardMetrics(input: ExecutiveAggregateInput): Adm
   const serviceEligibleOutput = serviceCountsKnown ? serviceEligible : null;
   const serviceUnansweredOutput = serviceCountsKnown ? serviceUnanswered : null;
   const serviceUnscorableOutput = serviceCountsKnown ? serviceUnscorable : null;
+  const serviceCaptureBasis = measurementConfig?.measurementStartAt
+    ? `measurement_start_at:${measurementConfig.measurementStartAt}; ${measurementConfig.captureAssumptionBasis}`
+    : metricBase.captureBasis;
   const serviceMetricOptions = {
     ...metricBase,
     unit: 'calendar minutes',
     denominator: serviceEligibleOutput,
+    captureBasis: serviceCaptureBasis,
     exclusions: serviceCountsKnown
       ? { unanswered: serviceUnanswered, unscorable: serviceUnscorable }
       : ({} as Record<string, number>),
   };
-  const serviceUnavailableReason = !configuredMeasurement
-    ? 'measurement_config_unavailable'
-    : !measurementConfig
-      ? 'measurement_config_scope_mismatch'
-      : measurementStartMillis === null
-        ? 'measurement_start_unavailable'
-        : !replyEvidenceAvailable
-          ? 'reply_evidence_unavailable'
-          : serviceEligible === 0
-            ? 'no_eligible_new_conversations'
-            : 'no_answered_conversations';
+  const serviceUnavailableReason =
+    !configuredMeasurement
+      ? 'measurement_config_unavailable'
+      : !measurementConfig
+        ? 'measurement_config_scope_mismatch'
+        : measurementStartMillis === null
+          ? 'measurement_start_unavailable'
+          : !replyEvidenceAvailable
+            ? 'reply_evidence_unavailable'
+            : serviceEligible === 0
+              ? 'no_eligible_new_conversations'
+              : 'no_answered_conversations';
+  const serviceCountMetricOptions = {
+    ...metricBase,
+    unit: 'conversations',
+    denominator: null,
+    captureBasis: serviceCaptureBasis,
+  };
+  const serviceCounts: AdminDashboardServiceCounts = {
+    eligibleNewConversations:
+      serviceCountsKnown && serviceEligibleOutput !== null
+        ? legacyMetric(serviceEligibleOutput, serviceCountMetricOptions)
+        : unavailableMetric<number>(serviceUnavailableReason, serviceCountMetricOptions),
+    unansweredEligible:
+      serviceCountsKnown && serviceUnansweredOutput !== null
+        ? legacyMetric(serviceUnansweredOutput, serviceCountMetricOptions)
+        : unavailableMetric<number>(serviceUnavailableReason, serviceCountMetricOptions),
+    unscorable:
+      serviceCountsKnown && serviceUnscorableOutput !== null
+        ? legacyMetric(serviceUnscorableOutput, serviceCountMetricOptions)
+        : unavailableMetric<number>(serviceUnavailableReason, serviceCountMetricOptions),
+    measurementStartAt: measurementConfig?.measurementStartAt ?? null,
+  };
   const serviceMetric =
     serviceCountsKnown && serviceDurations.length > 0
       ? legacyMetric(
@@ -1427,6 +1478,7 @@ function aggregateExecutiveDashboardMetrics(input: ExecutiveAggregateInput): Adm
   const service: AdminDashboardService = {
     firstObservedHumanReply: serviceMetric,
     firstUsefulReply: firstUseful,
+    counts: serviceCounts,
     eligibleNewConversationCount: serviceEligibleOutput,
     unansweredEligible: serviceUnansweredOutput,
     unscorable: serviceUnscorableOutput,

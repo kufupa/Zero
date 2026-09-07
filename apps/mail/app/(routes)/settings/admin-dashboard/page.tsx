@@ -124,7 +124,7 @@ function EvidenceDetails<T>({
 }) {
   return (
     <details className="mt-3 rounded-md border border-dashed p-2 text-xs text-muted-foreground">
-      <summary className="cursor-pointer select-none font-medium text-foreground">Definition &amp; evidence</summary>
+      <summary className="flex min-h-11 cursor-pointer select-none items-center font-medium text-foreground">Definition &amp; evidence</summary>
       <dl className="mt-2 grid gap-1 sm:grid-cols-2" aria-label={`${label} evidence`}>
         <div>
           <dt className="font-medium text-foreground">Unit</dt>
@@ -197,30 +197,6 @@ function MetricCard<T>({
   );
 }
 
-function ScalarCard({
-  label,
-  value,
-  description,
-}: {
-  label: string;
-  value: number | null | undefined;
-  description: string;
-}) {
-  const available = value !== null && value !== undefined;
-  return (
-    <Card className="min-w-0">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm">{label}</CardTitle>
-        <CardDescription>{description}</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <p className="text-2xl font-semibold tabular-nums">{available ? formatNumber(value) : '—'}</p>
-        {!available ? <p className="mt-1 text-xs text-muted-foreground">Unavailable: denominator not established.</p> : null}
-      </CardContent>
-    </Card>
-  );
-}
-
 function DataTable({
   caption,
   headers,
@@ -232,7 +208,7 @@ function DataTable({
 }) {
   return (
     <details className="mt-3 rounded-md border p-2 text-xs">
-      <summary className="cursor-pointer select-none font-medium">View data table</summary>
+      <summary className="flex min-h-11 cursor-pointer select-none items-center font-medium">View data table</summary>
       <div className="mt-2 overflow-x-auto">
         <table className="min-w-full border-collapse text-left">
           <caption className="sr-only">{caption}</caption>
@@ -296,6 +272,7 @@ function ChartUnavailable({ metric, label }: { metric: Metric<unknown>; label: s
       <div>
         <p>{label} unavailable</p>
         <p className="mt-1 text-xs">{metricReason(metric)}</p>
+        <EvidenceDetails metric={metric} label={label} />
       </div>
     </div>
   );
@@ -325,8 +302,8 @@ function DashboardControls({
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="centurion">Centurion</SelectItem>
-            <SelectItem value="research">Research (operator)</SelectItem>
+            <SelectItem className="min-h-11 py-2" value="centurion">Centurion</SelectItem>
+            <SelectItem className="min-h-11 py-2" value="research">Research (operator)</SelectItem>
           </SelectContent>
         </Select>
         <p id="dashboard-cohort-help" className="text-xs text-muted-foreground">
@@ -340,8 +317,8 @@ function DashboardControls({
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="7d">7 days</SelectItem>
-            <SelectItem value="28d">28 days</SelectItem>
+            <SelectItem className="min-h-11 py-2" value="7d">7 days</SelectItem>
+            <SelectItem className="min-h-11 py-2" value="28d">28 days</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -624,6 +601,7 @@ function CorrespondentSection({ metrics }: { metrics: AdminDashboardMetrics }) {
 
 function ServiceSection({ metrics }: { metrics: AdminDashboardMetrics }) {
   const service = metrics.service;
+  const serviceCounts = service?.counts;
   const conversations: AdminDashboardConversations | undefined = metrics.conversations;
   const firstReply = service?.firstObservedHumanReply;
   const firstUseful = service?.firstUsefulReply;
@@ -644,10 +622,13 @@ function ServiceSection({ metrics }: { metrics: AdminDashboardMetrics }) {
         <MetricCard label="First observed human reply" metric={firstReply} formatter={formatMinutes} description={responseUnavailable ? 'Response metrics temporarily unavailable.' : 'Median among valid eligible new conversations.'} />
         <MetricCard label="P90 first observed human reply" metric={p90Reply} formatter={formatMinutes} description="Answered-only tail latency; not a service-level target." />
         <MetricCard label="First useful reply" metric={firstUseful} formatter={formatMinutes} description="Ask-aware useful-response evidence is not implemented in this slice." />
-        <ScalarCard label="Eligible new conversations" value={service?.eligibleNewConversationCount} description="T0-scoped denominator." />
-        <ScalarCard label="Unanswered eligible" value={service?.unansweredEligible} description="Known eligible requests without a qualifying reply." />
-        <ScalarCard label="Unscorable / unknown" value={service?.unscorable} description="Invalid clocks, confirmed gaps, or unknown reply evidence." />
+        <MetricCard label="Eligible new conversations" metric={serviceCounts?.eligibleNewConversations} formatter={formatNumber} description="T0-scoped denominator; strict service evidence only." />
+        <MetricCard label="Unanswered eligible" metric={serviceCounts?.unansweredEligible} formatter={formatNumber} description="Known eligible requests without a qualifying reply." />
+        <MetricCard label="Unscorable / unknown" metric={serviceCounts?.unscorable} formatter={formatNumber} description="Invalid clocks, confirmed gaps, or unknown reply evidence." />
       </div>
+      <p className="text-xs text-muted-foreground">
+        Measurement start (T0): {displayDate(serviceCounts?.measurementStartAt)}. Legacy count fields are not rendered without strict evidence.
+      </p>
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <MetricCard label="Awaiting hotel reply" metric={conversations?.awaitingHotel} formatter={formatNumber} description="Request-state projection." />
         <MetricCard label="Awaiting customer information" metric={conversations?.awaitingCustomer} formatter={formatNumber} description="Request-state projection." />
@@ -673,9 +654,28 @@ function DataHealthSection({ dataHealth }: { dataHealth: AdminDashboardDataHealt
     );
   }
 
+  if (dataHealth.availability !== 'available') {
+    return (
+      <section aria-labelledby="health-heading" className="grid gap-3">
+        <h2 id="health-heading" className="text-lg font-semibold">Data diagnostics</h2>
+        <div role="status" className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+          Diagnostics unavailable: {(dataHealth.availabilityReason ?? 'evidence unavailable').replaceAll('_', ' ')}.
+        </div>
+        <p className="text-xs text-muted-foreground">Health snapshot cutoff: {displayDate(dataHealth.observationCutoff)}.</p>
+      </section>
+    );
+  }
+
   const singleton = dataHealth.singleton.numerator == null || dataHealth.singleton.denominator == null || dataHealth.singleton.denominator === 0
     ? 'Unavailable'
     : formatPercent((dataHealth.singleton.numerator / dataHealth.singleton.denominator) * 100);
+  const inbound = dataHealth.directionCounts.inbound;
+  const outbound = dataHealth.directionCounts.outbound;
+  const directionRatio = inbound == null || outbound == null ? 'Unavailable' : `${formatNumber(inbound)}:${formatNumber(outbound)}`;
+  const quote = dataHealth.quotedMailboxReplyNoMatchingOutbound;
+  const quotedShare = quote.availability !== 'available' || quote.numerator == null || quote.denominator == null || quote.denominator === 0
+    ? 'Unavailable'
+    : `${formatPercent((quote.numerator / quote.denominator) * 100)} (${formatNumber(quote.numerator)}/${formatNumber(quote.denominator)})`;
 
   return (
     <section aria-labelledby="health-heading" className="grid gap-4">
@@ -685,17 +685,18 @@ function DataHealthSection({ dataHealth }: { dataHealth: AdminDashboardDataHealt
       </div>
       <Card>
         <CardContent className="grid gap-4 p-4 sm:grid-cols-2 lg:grid-cols-4">
-          <div><p className="text-xs text-muted-foreground">Last incoming</p><p className="font-medium">{displayDate(dataHealth.lastObservedAt.inbound)}</p></div>
-          <div><p className="text-xs text-muted-foreground">Last outgoing</p><p className="font-medium">{displayDate(dataHealth.lastObservedAt.outbound)}</p></div>
-          <div><p className="text-xs text-muted-foreground">Direction counts</p><p className="font-medium">{dataHealth.directionCounts.inbound ?? 'Unknown'} in / {dataHealth.directionCounts.outbound ?? 'Unknown'} out</p></div>
+          <div><p className="text-xs text-muted-foreground">Last incoming</p><p className="font-medium">{displayDate(dataHealth.lastObservedAt.inbound)}</p><p className="text-xs text-muted-foreground">Inbound clock basis: {dataHealth.lastObservedBasis.inbound ?? 'Unknown'}</p></div>
+          <div><p className="text-xs text-muted-foreground">Last outgoing</p><p className="font-medium">{displayDate(dataHealth.lastObservedAt.outbound)}</p><p className="text-xs text-muted-foreground">Outbound clock basis: {dataHealth.lastObservedBasis.outbound ?? 'Unknown'}</p></div>
+          <div><p className="text-xs text-muted-foreground">Direction counts</p><p className="font-medium">{inbound ?? 'Unknown'} in / {outbound ?? 'Unknown'} out</p></div>
+          <div><p className="text-xs text-muted-foreground">Direction ratio</p><p className="font-medium">{directionRatio}</p></div>
           <div><p className="text-xs text-muted-foreground">Singleton share</p><p className="font-medium">{singleton}</p></div>
           <div><p className="text-xs text-muted-foreground">Unscorable events</p><p className="font-medium">{formatNumber(dataHealth.unscorable.total)}</p></div>
           <div><p className="text-xs text-muted-foreground">Missing clocks</p><p className="font-medium">{formatNumber(dataHealth.unscorable.missingClock)}</p></div>
           <div><p className="text-xs text-muted-foreground">Invalid clocks</p><p className="font-medium">{formatNumber(dataHealth.unscorable.invalidClock)}</p></div>
-          <div><p className="text-xs text-muted-foreground">Quoted reply linkage</p><p className="font-medium">{dataHealth.quotedMailboxReplyNoMatchingOutbound.availability === 'available' ? formatNumber(dataHealth.quotedMailboxReplyNoMatchingOutbound.numerator ?? 0) : 'Unavailable'}</p></div>
+          <div><p className="text-xs text-muted-foreground">Singleton quoted-mailbox-reply share</p><p className="font-medium">{quotedShare}</p><p className="text-xs text-muted-foreground">{quote.reason?.replaceAll('_', ' ') ?? 'Retained quote projection'}</p></div>
         </CardContent>
       </Card>
-      <p className="text-xs text-muted-foreground">Health snapshot cutoff: {displayDate(dataHealth.observationCutoff)}. Last-clock bases are retained in the metric definitions.</p>
+      <p className="text-xs text-muted-foreground">Health snapshot cutoff: {displayDate(dataHealth.observationCutoff)}. Last-clock bases are shown with each observed clock.</p>
     </section>
   );
 }
@@ -704,11 +705,27 @@ function HostedAdminDashboardView({
   metrics,
   isStale,
   isError,
+  selectedCohort,
+  selectedWindow,
 }: {
   metrics: AdminDashboardMetrics;
   isStale: boolean;
   isError: boolean;
+  selectedCohort: DashboardCohortId;
+  selectedWindow: DashboardWindowPreset;
 }) {
+  const snapshotQuery = metrics.query;
+  const selectionMismatch = Boolean(
+    snapshotQuery &&
+      (snapshotQuery.cohortId !== selectedCohort || snapshotQuery.window !== selectedWindow),
+  );
+  const staleSelectionMessage = selectionMismatch
+    ? `The selected ${selectedWindow} query is refreshing; showing the previous ${snapshotQuery?.window ?? 'unknown'} snapshot.`
+    : 'Refreshing metrics. The previous snapshot remains visible and is labelled as stale.';
+  const errorSelectionMessage = selectionMismatch
+    ? `The selected ${selectedWindow} query failed. Showing the previous ${snapshotQuery?.window ?? 'unknown'} snapshot; no demo data is substituted.`
+    : 'Refresh failed. Showing the last successful snapshot as stale; no demo data is substituted.';
+
   return (
     <SettingsCard
       title="Executive email dashboard"
@@ -717,11 +734,11 @@ function HostedAdminDashboardView({
       <div className="grid gap-6">
         {isError ? (
           <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm">
-            Refresh failed. Showing the last successful snapshot as stale; no demo data is substituted.
+            {errorSelectionMessage}
           </div>
         ) : isStale ? (
           <div role="status" className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm">
-            Refreshing metrics. The previous snapshot remains visible and is labelled as stale.
+            {staleSelectionMessage}
           </div>
         ) : null}
         <SnapshotNote metrics={metrics} />
@@ -796,7 +813,13 @@ export default function AdminDashboardPage() {
         onWindowChange={setWindowPreset}
         onCutoffChange={setObservationCutoff}
       />
-      <HostedAdminDashboardView metrics={metrics} isStale={isStale} isError={isError} />
+      <HostedAdminDashboardView
+        metrics={metrics}
+        isStale={isStale}
+        isError={isError}
+        selectedCohort={cohortId}
+        selectedWindow={windowPreset}
+      />
     </div>
   );
 }
