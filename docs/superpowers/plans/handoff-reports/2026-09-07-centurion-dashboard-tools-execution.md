@@ -26,10 +26,10 @@
 
 | Unit | Scope | Status | Evidence / dependency |
 | --- | --- | --- | --- |
-| P0 | Baseline reconciliation and safe local test setup | In progress | Fresh fetch and worktree isolation verified; independent Luna checks running |
-| U1 | Synthetic fixtures, safe test gate, evaluation-manifest contract | Pending | P0 |
+| P0 | Baseline reconciliation and safe local test setup | Complete for initial gates | Baseline reconciliation passed; 41 pure tests passed; private Chromium launch and owned loopback PostgreSQL control verified |
+| U1 | Synthetic fixtures, safe test gate, evaluation-manifest contract | Pure-unit entry approved; remaining repairs in progress | Reviewer approved bounded U12a unit use at `f1fa5e18`; browser/DB/Phase 2/B approval remains pending; task base `a5aa50b6` |
 | U10 | Executive dashboard | Pending | U1; U12 for prospective metrics |
-| U12 | Measurement start and lean diagnostics | Pending | U1; delivered with initial dashboard |
+| U12 | Measurement start and lean diagnostics | U12a pure contracts in progress | Initial pure-unit prerequisite approved; U10 integration/query proof still pending |
 | U8 | Independent audited reads and reservation context | Pending | Initial U10/U12 slice; U1 |
 | U9 | Existing documents and mail artifacts | Pending | U8 |
 | U17 | Finance and deposit evidence | Pending | U8; after useful document slice |
@@ -44,12 +44,26 @@
 
 ## Verification and claims
 
-- No product implementation or application-verification claim is recorded yet.
+- U1 initial implementation is committed locally at `86d38cec`; independent Luna review found 7 Important issues. Repairs are committed at `f1fa5e18` and undergoing focused independent re-review. No implementation unit is complete yet.
+- Root fresh repair verification at 16:22 UTC: exact U1 test file, 19 passed / 0 skipped; dedicated `unit gate` passed with an allowlisted environment. Shell syntax, both Node helper syntax checks and diff check passed. Commit hook initially rejected one style warning; Luna corrected it, reran 19 tests, and the final commit-scoped oxlint check passed with zero warnings/errors. Shell executable mode is recorded as 100755 despite the repository's `core.filemode=false`.
+- Focused independent re-review confirmed all original seven findings and executable mode are repaired, but found three further Important issues: evaluation eligibility/blocked outcomes, Chromium-process network isolation, and validation of the effective default config. Full U1 is still incomplete; the same writer is repairing these with behavioral regressions.
+- A separate bounded spec/quality verdict approved U1's pure `unit measurement` entry for synthetic U12a work: minimal child environment, exact file mapping, stable refusal and strict report checks. This satisfies only the initial pure-unit dependency, not browser/DB/evaluation use. U12a now proceeds in disjoint files while the remaining U1 repairs continue, respecting U1's requirement not to delay the first dashboard with later evaluation fixtures.
+- Root fresh U1 check at 15:47 UTC: exact `reservation-pilot-gate.test.ts`, sanitized environment, 1 file / 10 passed / 0 skipped; shell syntax, diff check and commit-scoped oxlint passed. The implementation's initial dashboard/measurement unit commands currently run U1 self-tests; they do not prove the dashboard or measurement implementation. Slice enforcement is included in the pending review.
+- Initial local baseline: 4 files / 41 pure tests passed with sanitized test environment; private Chromium 1169 installation/launch evidence recorded. This is not dashboard completion or live PMS proof.
+- Source reconciliation passed: initial U1/U10/U12 source paths are unchanged relative to the historical checkout; expected implementation gaps remain. Migration numbers 0023/0024/0025 remain unused, subject to recheck.
+- Disposable PostgreSQL is now available in an independently owned, labelled, loopback-only container; database-owner and synthetic sentinel controls passed. Its current version is PostgreSQL 17, not the pilot's documented PostgreSQL 16, so version-parity verification remains explicit before final migration claims. The gate must recheck ownership before each DB child; setup proof alone is not application DB-test proof.
+- Luna provider rate limits interrupted setup once and U1 once. Saved artifacts were preserved and the same Luna workers resumed; no model fallback was used. Product writing is serialized; bounded isolated setup can overlap read-only review.
+- A separate owned PostgreSQL 16 target is now ready and major-version/role/owner/sentinel verified, using the official image pinned by digest. Its loopback-only binding is distinct from the preserved PostgreSQL 17 target. Private artifacts are under the run's `pg16/` directory; no migrations or application DB tests have run.
+- Plan/ledger checkpoint: `a5aa50b6` (local branch only).
 - Initial plan amendments passed focused independent Luna specification/quality review before execution; that is document review, not application proof.
 - Production activation has not been requested. Later live reads require current role, transport, scope and release evidence; live model processing requires the approved route.
 - Model usage is currently unavailable to the controller. The 90% Luna token share remains a target, not a measured claim.
+- An optional read-only Phase 2/3 activation-readiness check encountered two transient Luna rate limits and is parked for later retry; no model fallback, secret access or live calls occurred. Active product work continues on Luna.
 - Final whole-branch review, compounding and fresh completion verification remain pending.
 
 ## Minor findings / follow-ups
 
-- None recorded for this implementation run yet.
+- U1 Important findings addressed by the writer with behavioral regression tests: inherited environment; advisory browser/network checks; extra Docker port bindings; browser-slice aliases; future-file-dependent refusal test; placeholder hashes; declarative-only mode/holdout isolation. Independent re-review is pending; writer assertions are not approval.
+- U1 Minor executable-mode mismatch is corrected in the Git index and repair commit.
+- Root exact-slice clarification: U1 self-tests cannot certify U10/U12 dashboard/measurement suites. Missing downstream required files must refuse; a dedicated gate-selftest slice is acceptable.
+- Review's Playwright-installation uncertainty is resolved by P0's package/browser receipt; actual skipped-report parsing remains a required behavior check.
