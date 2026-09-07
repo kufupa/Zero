@@ -461,7 +461,7 @@ export function MailContent({ id, html, senderEmail }: MailContentProps) {
         role="region"
         aria-label="Message content"
         tabIndex={-1}
-        className="mail-content w-full flex-1 overflow-scroll no-scrollbar px-4 bg-background text-foreground"
+        className="mail-content min-w-0 max-w-full w-full flex-1 overflow-scroll no-scrollbar px-4 bg-background text-foreground"
       />
     </>
   );

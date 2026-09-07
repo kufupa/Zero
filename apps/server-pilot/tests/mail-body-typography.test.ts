@@ -42,9 +42,23 @@ describe('mailBodyDisplayStyleTag', () => {
   it('contains fixed-width email tables and images within the reader', () => {
     const tag = mailBodyDisplayStyleTag();
     expect(tag).toMatch(/table\s*\{[^}]*max-width\s*:\s*100%\s*!important/i);
+    expect(tag).toMatch(/table\s*\{[^}]*width\s*:\s*auto\s*!important/i);
     expect(tag).toMatch(/img\s*\{[^}]*max-width\s*:\s*100%\s*!important/i);
     expect(tag).toMatch(/img\s*\{[^}]*object-fit\s*:\s*contain/i);
     expect(tag).not.toMatch(/height\s*:\s*auto\s*!important/i);
+  });
+
+  it('forces nested Outlook table cells and paragraphs to wrap long disclaimer lines', () => {
+    const tag = mailBodyDisplayStyleTag();
+    expect(tag).toMatch(/:host(?:,\s*\.mail-content-root,\s*\.nava-mail-body)?\s*\{[^}]*max-width\s*:\s*100%/i);
+    expect(tag).toMatch(/:host(?:,\s*\.mail-content-root,\s*\.nava-mail-body)?\s*\{[^}]*word-break\s*:\s*break-word/i);
+    expect(tag).toMatch(
+      /:host\s+(?:td|th|p|div|li|span)(?:,\s*:host\s+(?:td|th|p|div|li|span))*\s*\{[^}]*overflow-wrap\s*:\s*anywhere\s*!important/i,
+    );
+    expect(tag).toMatch(
+      /:host\s+(?:td|th|p|div|li|span)(?:,\s*:host\s+(?:td|th|p|div|li|span))*\s*\{[^}]*word-break\s*:\s*break-word\s*!important/i,
+    );
+    expect(tag).toMatch(/:host\s+pre(?:,\s*:host\s+code)?\s*\{[^}]*white-space\s*:\s*pre-wrap\s*!important/i);
   });
 
   it('restores zero margins for sanitized Outlook MsoNormal paragraphs', () => {

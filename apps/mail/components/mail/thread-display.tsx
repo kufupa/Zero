@@ -50,7 +50,7 @@ import {
 } from '@/lib/mail/thread-draft-view-model';
 import { cn, FOLDERS, formatDateWithWeekdayAndTime } from '@/lib/utils';
 import { m } from '@/paraglide/messages';
-import MailDisplay from './mail-display';
+import MailDisplay, { ThreadAttachments } from './mail-display';
 import { useParams } from 'react-router';
 import { Inbox } from 'lucide-react';
 import { parseAsString, useQueryState, useQueryStates } from 'nuqs';
@@ -976,7 +976,7 @@ export function ThreadDisplay() {
                   className="hidden md:flex"
                 />
               </div>
-              <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
+              <div className="flex w-full min-w-0 flex-wrap items-center justify-end gap-2">
                 <div
                   role="group"
                   aria-label="Thread reply actions"
@@ -984,6 +984,7 @@ export function ThreadDisplay() {
                 >
                   <button
                     type="button"
+                    aria-label={m['common.mail.reply']()}
                     onClick={(e) => {
                       e.stopPropagation();
                       openComposeForLatestMessage('reply');
@@ -991,12 +992,13 @@ export function ThreadDisplay() {
                     className="inline-flex h-7 items-center justify-center gap-1 overflow-hidden rounded-lg border bg-white px-1.5 dark:border-none dark:bg-[#313131] hover:bg-gray-100 dark:hover:bg-[#404040] transition-colors cursor-pointer"
                   >
                     <Reply className="fill-muted-foreground dark:fill-[#9B9B9B]" />
-                    <span className="whitespace-nowrap text-sm leading-none text-black dark:text-white">
+                    <span className="hidden whitespace-nowrap text-sm leading-none text-black md:inline dark:text-white">
                       {m['common.mail.reply']()}
                     </span>
                   </button>
                   <button
                     type="button"
+                    aria-label={m['common.threadDisplay.replyAll']()}
                     onClick={(e) => {
                       e.stopPropagation();
                       openComposeForLatestMessage('replyAll');
@@ -1004,12 +1006,13 @@ export function ThreadDisplay() {
                     className="inline-flex h-7 items-center justify-center gap-1 overflow-hidden rounded-lg border bg-white px-1.5 dark:border-none dark:bg-[#313131] hover:bg-gray-100 dark:hover:bg-[#404040] transition-colors cursor-pointer"
                   >
                     <ReplyAll className="fill-muted-foreground dark:fill-[#9B9B9B]" />
-                    <span className="whitespace-nowrap text-sm leading-none text-black dark:text-white">
+                    <span className="hidden whitespace-nowrap text-sm leading-none text-black md:inline dark:text-white">
                       {m['common.threadDisplay.replyAll']()}
                     </span>
                   </button>
                   <button
                     type="button"
+                    aria-label={m['common.mail.forward']()}
                     onClick={(e) => {
                       e.stopPropagation();
                       openComposeForLatestMessage('forward');
@@ -1017,7 +1020,7 @@ export function ThreadDisplay() {
                     className="inline-flex h-7 items-center justify-center gap-1 overflow-hidden rounded-lg border bg-white px-1.5 dark:border-none dark:bg-[#313131] hover:bg-gray-100 dark:hover:bg-[#404040] transition-colors cursor-pointer"
                   >
                     <Forward className="fill-muted-foreground dark:fill-[#9B9B9B]" />
-                    <span className="whitespace-nowrap text-sm leading-none text-black dark:text-white">
+                    <span className="hidden whitespace-nowrap text-sm leading-none text-black md:inline dark:text-white">
                       {m['common.mail.forward']()}
                     </span>
                   </button>
@@ -1275,10 +1278,13 @@ const MessageList = ({
             ) : null}
           </div>
         ) : null}
+        {allThreadAttachments && allThreadAttachments.length > 0 ? (
+          <div className="min-w-0 w-full max-w-full px-4">
+            <ThreadAttachments attachments={allThreadAttachments} />
+          </div>
+        ) : null}
         {displayMessages.map((message, index) => {
           const isReplyingToThisMessage = Boolean(mode && activeReplyId === message.id);
-          // After newest-first reverse, last visual index is chronologically oldest.
-          const isChronologicallyOldest = index === displayMessages.length - 1;
           const previousMessage = displayMessages[index - 1];
           const showThreadDivider =
             index > 0 &&
@@ -1286,7 +1292,7 @@ const MessageList = ({
             message.threadId !== previousMessage?.threadId;
 
           return (
-            <div key={message.id}>
+            <div key={message.id} className="min-w-0">
               {showThreadDivider ? (
                 <div className="border-border text-muted-foreground border-t px-4 py-2 text-xs">
                   Earlier thread
@@ -1299,7 +1305,7 @@ const MessageList = ({
                     : ''}
                 </div>
               ) : null}
-              <div className={cn('duration-200', index > 0 && !showThreadDivider && 'border-border border-t')}>
+              <div className={cn('min-w-0 duration-200', index > 0 && !showThreadDivider && 'border-border border-t')}>
               {isReplyingToThisMessage ? (
                 <div
                   className="border-border border-b px-4 py-3"
@@ -1315,7 +1321,6 @@ const MessageList = ({
                 isLoading={false}
                 index={index}
                 totalEmails={totalReplies}
-                threadAttachments={isChronologicallyOldest ? allThreadAttachments : undefined}
               />
               </div>
             </div>

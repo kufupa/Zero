@@ -45,4 +45,11 @@ describe('resolveMailHtml', () => {
       '<p><em>No email content available</em></p>',
     );
   });
+
+  it('client style twin contains nested table cells so long disclaimers wrap', () => {
+    const result = resolveMailHtml({ rawHtml: '<p>hi</p>' });
+    expect(result).toMatch(/table\s*\{[^}]*width\s*:\s*auto\s*!important/i);
+    expect(result).toMatch(/word-break\s*:\s*break-word/i);
+    expect(result).toMatch(/td[\s\S]*overflow-wrap\s*:\s*anywhere\s*!important/i);
+  });
 });

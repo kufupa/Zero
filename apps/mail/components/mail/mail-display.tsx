@@ -129,7 +129,6 @@ type Props = {
   onReply?: () => void;
   onReplyAll?: () => void;
   onForward?: () => void;
-  threadAttachments?: Attachment[];
 };
 
 const MailDisplayLabels = ({ labels }: { labels: string[] }) => {
@@ -258,7 +257,7 @@ const renderMailboxSummary = (mailboxes: Sender[]) => {
   );
 };
 
-const ThreadAttachments = ({ attachments }: { attachments: Attachment[] }) => {
+export const ThreadAttachments = ({ attachments }: { attachments: Attachment[] }) => {
   if (!attachments || attachments.length === 0) return null;
 
   const ordered = sortAttachmentsForDisplay(attachments);
@@ -319,12 +318,13 @@ const ActionButton = ({ onClick, icon, text }: ActionButtonProps) => {
     <button
       type="button"
       onClick={onClick}
-      className="inline-flex h-7 shrink-0 items-center justify-center gap-1 overflow-hidden whitespace-nowrap rounded-md border bg-white px-1.5 dark:border-none dark:bg-[#313131] cursor-pointer hover:bg-gray-100 dark:hover:bg-[#3d3d3d] transition-colors"
+      aria-label={text}
+      className="inline-flex h-7 items-center justify-center gap-1 overflow-hidden rounded-md border bg-white px-1.5 dark:border-none dark:bg-[#313131] cursor-pointer hover:bg-gray-100 dark:hover:bg-[#3d3d3d] transition-colors"
     >
       {icon}
-      <div className="flex shrink-0 items-center justify-center gap-2.5 whitespace-nowrap pl-0.5 pr-1">
-        <div className="justify-start text-sm leading-none text-black dark:text-white">{text}</div>
-      </div>
+      <span className="hidden whitespace-nowrap pl-0.5 pr-1 text-sm leading-none text-black md:inline dark:text-white">
+        {text}
+      </span>
     </button>
   );
 };
@@ -454,7 +454,7 @@ const openAttachment = async (
   }
 };
 
-const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }: Props) => {
+const MailDisplay = ({ emailData, index, totalEmails, demo }: Props) => {
   const [isCollapsed, setIsCollapsed] = useState<boolean>(false);
   const { data: threadData } = useThread(emailData.threadId ?? null);
   const { data: messageAttachments } = useAttachments(emailData.id);
@@ -1123,9 +1123,6 @@ const MailDisplay = ({ emailData, index, totalEmails, demo, threadAttachments }:
                   </div>
                 </div>
               </>
-            )}
-            {threadAttachments && threadAttachments.length > 0 && (
-              <ThreadAttachments attachments={threadAttachments} />
             )}
           </div>
           <div className="flex cursor-pointer flex-col pb-2 duration-200" onClick={toggleCollapse}>
