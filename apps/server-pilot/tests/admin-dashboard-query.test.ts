@@ -281,6 +281,18 @@ if (process.env.CONFIRM_DISPOSABLE_TEST_DB === '1' && process.env.TEST_DATABASE_
             receivedAt: eventAt,
             createdAt: eventAt,
           });
+          await db.insert(message).values({
+            id: 'u10a-current-classification-unknown-history',
+            transportId: 'transport-centurion',
+            threadId,
+            direction: 'inbound',
+            messageIdHeader: '<u10a-current-classification-unknown@example.com>',
+            fromAddress: 'unknown-history@example.com',
+            toAddresses: ['centurion@legacyhotels.co.za'],
+            ccAddresses: [],
+            bccAddresses: [],
+            createdAt: new Date(now - 8 * 24 * 60 * 60 * 1000),
+          });
           return loadAdminDashboardMetrics(
             resolveExecutiveDashboardQuery({ cohortId: 'centurion', window: '7d' }),
           );
@@ -290,6 +302,16 @@ if (process.env.CONFIRM_DISPOSABLE_TEST_DB === '1' && process.env.TEST_DATABASE_
       });
 
       expect(result.activity.activeConversations.value).toBe(1);
+      expect(result.activity.newlyObservedConversations).toMatchObject({
+        availability: 'unavailable',
+        value: null,
+        availabilityReason: 'pre_window_history_unknown',
+      });
+      expect(result.activity.continuingConversations).toMatchObject({
+        availability: 'unavailable',
+        value: null,
+        availabilityReason: 'pre_window_history_unknown',
+      });
       expect(result.folders.mix.availability).toBe('available');
       expect(result.folders.mix.classificationAsOf).toBe(result.query.observationCutoff);
       expect(result.folders.mix.value).toEqual(

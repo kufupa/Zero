@@ -721,6 +721,8 @@ export type ExecutiveAggregateInput = {
   previousMessages?: readonly AdminDashboardMessageRow[];
   /** Bounded pre-window projection for current-window thread continuity. */
   preWindowThreadIds?: readonly string[];
+  /** Threads with retained pre-window rows whose source event clocks are unusable. */
+  preWindowUnknownThreadIds?: readonly string[];
   preWindowEvidenceAvailable?: boolean;
 };
 
@@ -906,12 +908,15 @@ function executiveHasFutureClock(
   message: AdminDashboardMessageRow,
   observationCutoffMillis: number,
 ): boolean {
-  const values = [
+  const primaryValues = [
     message.sourceEventAt,
     message.eventAt,
     message.direction === 'inbound' ? message.receivedAt : message.sentAt,
     message.direction === 'outbound' && !message.sentAt ? message.receivedAt : null,
   ];
+  const values = primaryValues.some((value) => value !== undefined && value !== null)
+    ? primaryValues
+    : [...primaryValues, message.headerDateAt];
   return values.some((value) => {
     const millis = asValidMillis(value);
     return millis !== null && millis > observationCutoffMillis;
@@ -998,6 +1003,7 @@ function buildExecutiveDataHealth(
     threadId: message.threadId,
     sourceEventAt: asIso(message.sourceEventAt),
     eventAt: asIso(message.eventAt),
+    headerDateAt: asIso(message.headerDateAt),
     receivedAt: asIso(message.receivedAt),
     sentAt: asIso(message.sentAt),
     firstKnownAt: asIso(message.firstKnownAt),
@@ -1135,11 +1141,24 @@ function aggregateExecutiveDashboardMetrics(input: ExecutiveAggregateInput): Adm
   });
   const activityThreadIds = new Set(businessRows.map((row) => row.message.threadId));
   const preWindowThreadIds = new Set(input.preWindowThreadIds ?? []);
+  const preWindowUnknownThreadIds = new Set(input.preWindowUnknownThreadIds ?? []);
   const preWindowEvidenceAvailable = input.preWindowEvidenceAvailable === true;
-  const newlyObserved = preWindowEvidenceAvailable
+  const unknownHistoryThreadIds = new Set(
+    [...activityThreadIds].filter(
+      (threadId) =>
+        preWindowUnknownThreadIds.has(threadId) && !preWindowThreadIds.has(threadId),
+    ),
+  );
+  const historyUnavailableReason = !preWindowEvidenceAvailable
+    ? 'pre_window_history_unavailable'
+    : unknownHistoryThreadIds.size > 0
+      ? 'pre_window_history_unknown'
+      : null;
+  const historyKnown = historyUnavailableReason === null;
+  const newlyObserved = historyKnown
     ? [...activityThreadIds].filter((threadId) => !preWindowThreadIds.has(threadId)).length
     : null;
-  const continuingObserved = preWindowEvidenceAvailable
+  const continuingObserved = historyKnown
     ? [...activityThreadIds].filter((threadId) => preWindowThreadIds.has(threadId)).length
     : null;
   const distinctExternalAddresses = new Set(
@@ -1169,17 +1188,17 @@ function aggregateExecutiveDashboardMetrics(input: ExecutiveAggregateInput): Adm
   const activity: AdminDashboardActivity = classificationMatches
     ? {
         activeConversations: legacyMetric(activityThreadIds.size, { ...metricBase, unit: 'conversations', denominator: activityThreadIds.size, exclusions: exclusionCounts }),
-        newlyObservedConversations: preWindowEvidenceAvailable
+        newlyObservedConversations: historyKnown
           ? legacyMetric(newlyObserved, { ...metricBase, unit: 'conversations', denominator: activityThreadIds.size, exclusions: exclusionCounts })
-          : unavailableMetric<number>('pre_window_history_unavailable', {
+          : unavailableMetric<number>(historyUnavailableReason!, {
               ...metricBase,
               unit: 'conversations',
               denominator: null,
               exclusions: exclusionCounts,
             }),
-        continuingConversations: preWindowEvidenceAvailable
+        continuingConversations: historyKnown
           ? legacyMetric(continuingObserved, { ...metricBase, unit: 'conversations', denominator: activityThreadIds.size, exclusions: exclusionCounts })
-          : unavailableMetric<number>('pre_window_history_unavailable', {
+          : unavailableMetric<number>(historyUnavailableReason!, {
               ...metricBase,
               unit: 'conversations',
               denominator: null,
@@ -1286,7 +1305,14 @@ function aggregateExecutiveDashboardMetrics(input: ExecutiveAggregateInput): Adm
   if (replyEvidenceAvailable && measurementStartMillis !== null && measurementConfig !== null) {
     for (const group of serviceGroups.values()) {
       const inbound = group.inbound
-        .filter(({ at, message }) => at.getTime() >= measurementStartMillis && at.getTime() < cutoffMillis && message.qualifiesNewConversation === true && message.authorClass === 'external_human')
+        .filter(({ at, message }) =>
+          at.getTime() >= measurementStartMillis &&
+          at.getTime() >= input.windowStart.getTime() &&
+          at.getTime() < input.windowEnd.getTime() &&
+          at.getTime() < cutoffMillis &&
+          message.qualifiesNewConversation === true &&
+          message.authorClass === 'external_human',
+        )
         .sort((left, right) => left.at.getTime() - right.at.getTime())[0];
       if (!inbound) continue;
       serviceEligible += 1;
@@ -1299,6 +1325,16 @@ function aggregateExecutiveDashboardMetrics(input: ExecutiveAggregateInput): Adm
         .filter(({ at, message }) => at.getTime() >= inbound.at.getTime() && at.getTime() < cutoffMillis && message.authorClass === 'internal_human' && message.hasScopedReplyLink === true)
         .sort((left, right) => left.at.getTime() - right.at.getTime())[0];
       if (!outbound) {
+        const unknownOutbound = group.outbound.some(
+          ({ at, message }) =>
+            at.getTime() >= inbound.at.getTime() &&
+            at.getTime() < cutoffMillis &&
+            message.authorClass === 'unknown',
+        );
+        if (unknownOutbound) {
+          serviceUnscorable += 1;
+          continue;
+        }
         const gapAfterInbound = measurementConfig?.confirmedGapIntervals.some((gap) => {
           const gapStart = asValidMillis(gap.startAt);
           return gapStart !== null && gapStart >= inbound.at.getTime() && gapStart < cutoffMillis;

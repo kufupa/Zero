@@ -163,6 +163,7 @@ async function loadQueryRows(
   messages: QueryMessageRow[];
   previousMessages: QueryMessageRow[];
   preWindowThreadIds: string[];
+  preWindowUnknownThreadIds: string[];
   preWindowEvidenceAvailable: boolean;
   threads: Array<{
     id: string;
@@ -178,6 +179,7 @@ async function loadQueryRows(
       messages: [],
       previousMessages: [],
       preWindowThreadIds: [],
+      preWindowUnknownThreadIds: [],
       preWindowEvidenceAvailable: false,
       threads: [],
     };
@@ -217,6 +219,7 @@ async function loadQueryRows(
       messages,
       previousMessages,
       preWindowThreadIds: [],
+      preWindowUnknownThreadIds: [],
       preWindowEvidenceAvailable: true,
       threads: [],
     };
@@ -230,6 +233,18 @@ async function loadQueryRows(
         inArray(message.transportId, [...transportIds]),
         inArray(message.threadId, threadIds),
         or(lt(message.receivedAt, windowStart), lt(message.sentAt, windowStart)),
+      ),
+    );
+  const preWindowUnknownRows = await db
+    .selectDistinct({ threadId: message.threadId })
+    .from(message)
+    .where(
+      and(
+        inArray(message.transportId, [...transportIds]),
+        inArray(message.threadId, threadIds),
+        isNull(message.receivedAt),
+        isNull(message.sentAt),
+        lt(message.createdAt, windowStart),
       ),
     );
 
@@ -278,6 +293,7 @@ async function loadQueryRows(
     messages: [...byId.values()],
     previousMessages: previousMessages.map((row) => byId.get(row.id) ?? row),
     preWindowThreadIds: preWindowRows.map((row) => row.threadId),
+    preWindowUnknownThreadIds: preWindowUnknownRows.map((row) => row.threadId),
     preWindowEvidenceAvailable: true,
     threads,
   };
@@ -397,6 +413,7 @@ export async function loadAdminDashboardMetrics(
     messages: loaded.messages,
     previousMessages: loaded.previousMessages,
     preWindowThreadIds: loaded.preWindowThreadIds,
+    preWindowUnknownThreadIds: loaded.preWindowUnknownThreadIds,
     preWindowEvidenceAvailable: loaded.preWindowEvidenceAvailable,
     transports,
     windowStart: new Date(query.windowStart),

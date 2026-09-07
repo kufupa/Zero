@@ -191,6 +191,47 @@ describe('aggregateAdminDashboardMetrics', () => {
     ]);
   });
 
+  it('does not infer newly observed from pre-window history with no source event clock', () => {
+    const cutoff = new Date('2026-08-08T00:00:00.000Z');
+    const result = aggregateAdminDashboardMetrics({
+      cohortId: 'centurion',
+      observationCutoff: cutoff,
+      classificationSnapshot: {
+        classificationAsOf: cutoff,
+        snapshotBasis: 'retained_matching_snapshot',
+        threads: [{ threadId: 'unknown-history', primaryFolder: 'bookings', spam: false, trashed: false }],
+      },
+      threads: [thread({ id: 'unknown-history', transportId: 'transport-centurion' })],
+      messages: [
+        msg({
+          id: 'unknown-history-current',
+          threadId: 'unknown-history',
+          transportId: 'transport-centurion',
+          direction: 'inbound',
+          receivedAt: new Date('2026-08-02T08:00:00.000Z'),
+        }),
+      ],
+      transports: [{ id: 'transport-centurion', email: 'centurion@legacyhotels.co.za', displayName: 'Centurion' }],
+      preWindowThreadIds: [],
+      preWindowUnknownThreadIds: ['unknown-history'],
+      preWindowEvidenceAvailable: true,
+      windowStart: WINDOW_START,
+      windowEnd: cutoff,
+    });
+
+    expect(result.activity.activeConversations.value).toBe(1);
+    expect(result.activity.newlyObservedConversations).toMatchObject({
+      availability: 'unavailable',
+      value: null,
+      availabilityReason: 'pre_window_history_unknown',
+    });
+    expect(result.activity.continuingConversations).toMatchObject({
+      availability: 'unavailable',
+      value: null,
+      availabilityReason: 'pre_window_history_unknown',
+    });
+  });
+
   it('keeps traffic available but gates mutable folder and spam/trash work without a matching snapshot', () => {
     const result = aggregateAdminDashboardMetrics({
       cohortId: 'centurion',
@@ -398,6 +439,110 @@ describe('aggregateAdminDashboardMetrics', () => {
     expect(result.p90FirstResponseMinutes).toMatchObject({ availability: 'live', value: 120 });
     expect(result.service.eligibleNewConversationCount).toBe(2);
     expect(result.service.unansweredEligible).toBe(0);
+  });
+
+  it('does not use an inbound start after window end even when its reply is before cutoff', () => {
+    const windowStart = new Date('2026-09-01T00:00:00.000Z');
+    const windowEnd = new Date('2026-09-06T00:00:00.000Z');
+    const cutoff = new Date('2026-09-08T00:00:00.000Z');
+    const result = aggregateAdminDashboardMetrics({
+      cohortId: 'centurion',
+      observationCutoff: cutoff,
+      classificationSnapshot: null,
+      measurementConfig: {
+        version: 1,
+        transportId: 'transport-centurion',
+        cohortId: 'centurion',
+        measurementStartAt: windowStart.toISOString(),
+        captureAssumptionBasis: 'verified-two-way-feed',
+        confirmedGapIntervals: [],
+      },
+      threads: [thread({ id: 'late-start', transportId: 'transport-centurion' })],
+      messages: [
+        msg({
+          id: 'late-start-inbound',
+          threadId: 'late-start',
+          transportId: 'transport-centurion',
+          direction: 'inbound',
+          receivedAt: new Date('2026-09-07T10:00:00.000Z'),
+          authorClass: 'external_human',
+          qualifiesNewConversation: true,
+        }),
+        msg({
+          id: 'late-start-outbound',
+          threadId: 'late-start',
+          transportId: 'transport-centurion',
+          direction: 'outbound',
+          sentAt: new Date('2026-09-07T11:00:00.000Z'),
+          authorClass: 'internal_human',
+          hasScopedReplyLink: true,
+          sendState: 'sent',
+        }),
+      ],
+      transports: [{ id: 'transport-centurion', email: 'centurion@legacyhotels.co.za', displayName: 'Centurion' }],
+      windowStart,
+      windowEnd,
+    });
+
+    expect(result.traffic.inbound.value).toBe(0);
+    expect(result.traffic.outbound.value).toBe(0);
+    expect(result.service.firstObservedHumanReply).toMatchObject({
+      availability: 'unavailable',
+      value: null,
+      availabilityReason: 'no_eligible_new_conversations',
+    });
+    expect(result.service.eligibleNewConversationCount).toBe(0);
+    expect(result.service.unansweredEligible).toBe(0);
+  });
+
+  it('does not classify an unknown outbound author as a known unanswered request', () => {
+    const cutoff = new Date('2026-09-08T00:00:00.000Z');
+    const result = aggregateAdminDashboardMetrics({
+      cohortId: 'centurion',
+      observationCutoff: cutoff,
+      classificationSnapshot: null,
+      measurementConfig: {
+        version: 1,
+        transportId: 'transport-centurion',
+        cohortId: 'centurion',
+        measurementStartAt: '2026-09-01T00:00:00.000Z',
+        captureAssumptionBasis: 'verified-two-way-feed',
+        confirmedGapIntervals: [],
+      },
+      threads: [thread({ id: 'unknown-outbound', transportId: 'transport-centurion' })],
+      messages: [
+        msg({
+          id: 'unknown-outbound-inbound',
+          threadId: 'unknown-outbound',
+          transportId: 'transport-centurion',
+          direction: 'inbound',
+          receivedAt: new Date('2026-09-02T10:00:00.000Z'),
+          authorClass: 'external_human',
+          qualifiesNewConversation: true,
+        }),
+        msg({
+          id: 'unknown-outbound-reply',
+          threadId: 'unknown-outbound',
+          transportId: 'transport-centurion',
+          direction: 'outbound',
+          sentAt: new Date('2026-09-02T11:00:00.000Z'),
+          authorClass: 'unknown',
+          hasScopedReplyLink: true,
+          sendState: 'sent',
+        }),
+      ],
+      transports: [{ id: 'transport-centurion', email: 'centurion@legacyhotels.co.za', displayName: 'Centurion' }],
+      windowStart: new Date('2026-09-01T00:00:00.000Z'),
+      windowEnd: cutoff,
+    });
+
+    expect(result.service.eligibleNewConversationCount).toBe(1);
+    expect(result.service.unansweredEligible).toBe(0);
+    expect(result.service.unscorable).toBe(1);
+    expect(result.service.firstObservedHumanReply.exclusions).toMatchObject({
+      unanswered: 0,
+      unscorable: 1,
+    });
   });
 
   it('keeps a sent duplicate observed when a queued copy arrives first and normalizes source IDs', () => {
