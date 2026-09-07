@@ -100,14 +100,14 @@ Implement → focused tests → relevant broader tests/build → `ops-deploy` to
 
 ### Done criteria
 
-- [ ] `leading` draft stack mounts after attachments and before newest message in `MessageList`
-- [ ] Call sites pass `leading={threadDraftSection}`; no `trailing` draft mount remains
-- [ ] Manual-then-AI order + hide-on-`mode` / optimistic-hide unchanged
-- [ ] Contract Vitest green with `DATABASE_URL` unset
-- [ ] Changes committed (conventional commits)
-- [ ] Deployed to pilot EC2 via `ops-deploy.sh`; health `8788`/`8789` ok
-- [ ] Live proof: thread with saved draft shows draft card above newest email; composer open hides card
-- [ ] No unresolved blocker affecting plan goal
+- [x] `leading` draft stack mounts after attachments and before newest message in `MessageList`
+- [x] Call sites pass `leading={threadDraftSection}`; no `trailing` draft mount remains
+- [x] Manual-then-AI order + hide-on-`mode` / optimistic-hide unchanged
+- [x] Contract Vitest green with `DATABASE_URL` unset
+- [x] Changes committed (conventional commits)
+- [x] Deployed to pilot EC2 via `ops-deploy.sh`; health `8788`/`8789` ok
+- [x] Live proof: thread with saved draft shows draft card above newest email; composer open hides card
+- [x] No unresolved blocker affecting plan goal
 
 ### True blockers
 
