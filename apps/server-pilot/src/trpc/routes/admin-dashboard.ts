@@ -86,6 +86,9 @@ export function parseExecutiveDashboardQuery(
   if (windowEnd.getTime() > cutoff.getTime()) {
     throw new Error('dashboard window cannot extend beyond observation cutoff');
   }
+  if (windowEnd.getTime() - windowStart.getTime() > duration) {
+    throw new Error(`dashboard window exceeds selected ${preset} preset`);
+  }
   return {
     cohortId: parsed?.cohortId ?? 'centurion',
     window: preset,
@@ -128,6 +131,14 @@ function dbClockPredicate(windowStart: Date, observationCutoff: Date) {
       gte(message.createdAt, windowStart),
       lt(message.createdAt, observationCutoff),
     ),
+    // Retain a bounded diagnostic row when its source clock is future-dated;
+    // the aggregate labels it invalid rather than recasting createdAt as an
+    // event clock. This keeps future-clock coverage visible to data health.
+    and(
+      gte(message.createdAt, windowStart),
+      lt(message.createdAt, observationCutoff),
+      or(gte(message.receivedAt, observationCutoff), gte(message.sentAt, observationCutoff)),
+    ),
   );
 }
 
@@ -150,6 +161,9 @@ async function loadQueryRows(
   transportIds: readonly string[],
 ): Promise<{
   messages: QueryMessageRow[];
+  previousMessages: QueryMessageRow[];
+  preWindowThreadIds: string[];
+  preWindowEvidenceAvailable: boolean;
   threads: Array<{
     id: string;
     transportId: string;
@@ -159,9 +173,20 @@ async function loadQueryRows(
     latestMessageAt: Date | null;
   }>;
 }> {
-  if (transportIds.length === 0) return { messages: [], threads: [] };
+  if (transportIds.length === 0) {
+    return {
+      messages: [],
+      previousMessages: [],
+      preWindowThreadIds: [],
+      preWindowEvidenceAvailable: false,
+      threads: [],
+    };
+  }
   const windowStart = new Date(query.windowStart);
+  const windowEnd = new Date(query.windowEnd);
   const cutoff = new Date(query.observationCutoff);
+  const windowDuration = windowEnd.getTime() - windowStart.getTime();
+  const previousStart = new Date(windowStart.getTime() - windowDuration);
   const columns = {
     id: message.id,
     threadId: message.threadId,
@@ -177,8 +202,36 @@ async function loadQueryRows(
     .select(columns)
     .from(message)
     .where(and(inArray(message.transportId, [...transportIds]), dbClockPredicate(windowStart, cutoff)))) as QueryMessageRow[];
+  const previousMessages = (await db
+    .select(columns)
+    .from(message)
+    .where(
+      and(
+        inArray(message.transportId, [...transportIds]),
+        dbClockPredicate(previousStart, windowStart),
+      ),
+    )) as QueryMessageRow[];
   const threadIds = [...new Set(messages.map((row) => row.threadId))];
-  if (threadIds.length === 0) return { messages, threads: [] };
+  if (threadIds.length === 0) {
+    return {
+      messages,
+      previousMessages,
+      preWindowThreadIds: [],
+      preWindowEvidenceAvailable: true,
+      threads: [],
+    };
+  }
+
+  const preWindowRows = await db
+    .selectDistinct({ threadId: message.threadId })
+    .from(message)
+    .where(
+      and(
+        inArray(message.transportId, [...transportIds]),
+        inArray(message.threadId, threadIds),
+        or(lt(message.receivedAt, windowStart), lt(message.sentAt, windowStart)),
+      ),
+    );
 
   const threads = await db
     .select({
@@ -199,6 +252,7 @@ async function loadQueryRows(
     .from(message)
     .where(
       and(
+        inArray(message.transportId, [...transportIds]),
         inArray(message.threadId, threadIds),
         eq(message.direction, 'outbound'),
         dbClockPredicate(windowStart, cutoff),
@@ -220,7 +274,13 @@ async function loadQueryRows(
     else if (status === 'failed') row.sendState = 'failed';
     else if (status === 'accepted') row.sendState = 'accepted';
   }
-  return { messages: [...byId.values()], threads };
+  return {
+    messages: [...byId.values()],
+    previousMessages: previousMessages.map((row) => byId.get(row.id) ?? row),
+    preWindowThreadIds: preWindowRows.map((row) => row.threadId),
+    preWindowEvidenceAvailable: true,
+    threads,
+  };
 }
 
 const CURRENT_CLASSIFICATION_MAX_AGE_MS = 5_000;
@@ -335,6 +395,9 @@ export async function loadAdminDashboardMetrics(
     measurementConfig,
     threads: loaded.threads,
     messages: loaded.messages,
+    previousMessages: loaded.previousMessages,
+    preWindowThreadIds: loaded.preWindowThreadIds,
+    preWindowEvidenceAvailable: loaded.preWindowEvidenceAvailable,
     transports,
     windowStart: new Date(query.windowStart),
     windowEnd: new Date(query.windowEnd),

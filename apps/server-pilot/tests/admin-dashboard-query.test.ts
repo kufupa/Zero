@@ -62,6 +62,32 @@ describe('executive dashboard query and grants', () => {
         observationCutoff: CUTOFF,
       }),
     ).toThrow(/window/i);
+
+    expect(() =>
+      parseExecutiveDashboardQuery({
+        cohortId: 'centurion',
+        window: '7d',
+        windowStart: '2026-08-01T00:00:00.000Z',
+        windowEnd: '2026-09-06T00:00:00.000Z',
+        observationCutoff: '2026-09-07T00:00:00.000Z',
+      }, new Date('2026-09-07T00:00:00.000Z')),
+    ).toThrow(/window/i);
+  });
+
+  it('denies raw drilldown and export operations for an aggregate-only caller', async () => {
+    const caller = appRouter.createCaller({
+      auth: null as never,
+      reqHeaders: new Headers(),
+      sessionUser: { id: 'u10a-aggregate-only', email: 'ropperman@legacyhotels.co.za', name: null },
+    });
+    await expect(caller.adminDashboard.getMetrics({ operation: 'drilldown' })).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+      message: 'ADMIN_DASHBOARD_DRILLDOWN_FORBIDDEN',
+    });
+    await expect(caller.adminDashboard.getMetrics({ operation: 'export' })).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+      message: 'ADMIN_DASHBOARD_EXPORT_FORBIDDEN',
+    });
   });
 
   it('resolves a bounded default Centurion query with an explicit cutoff and source vintage', () => {
@@ -129,6 +155,19 @@ if (process.env.CONFIRM_DISPOSABLE_TEST_DB === '1' && process.env.TEST_DATABASE_
               createdAt: new Date('2026-08-02T08:01:00.000Z'),
             },
             {
+              id: 'u10a-dashboard-query-prior',
+              transportId: 'transport-centurion',
+              threadId,
+              direction: 'inbound',
+              messageIdHeader: '<u10a-dashboard-prior@example.com>',
+              fromAddress: 'prior-guest@example.com',
+              toAddresses: ['centurion@legacyhotels.co.za'],
+              ccAddresses: [],
+              bccAddresses: [],
+              receivedAt: new Date('2026-07-30T08:00:00.000Z'),
+              createdAt: new Date('2026-07-30T08:01:00.000Z'),
+            },
+            {
               id: 'u10a-dashboard-query-outbound',
               transportId: 'transport-centurion',
               threadId,
@@ -165,7 +204,7 @@ if (process.env.CONFIRM_DISPOSABLE_TEST_DB === '1' && process.env.TEST_DATABASE_
               ccAddresses: [],
               bccAddresses: [],
               receivedAt: new Date('2026-08-09T08:00:00.000Z'),
-              createdAt: new Date('2026-08-09T08:01:00.000Z'),
+              createdAt: new Date('2026-08-05T08:01:00.000Z'),
             },
           ]);
           return loadAdminDashboardMetrics(query);
@@ -183,7 +222,14 @@ if (process.env.CONFIRM_DISPOSABLE_TEST_DB === '1' && process.env.TEST_DATABASE_
       expect(result.traffic.inbound.value).toBe(1);
       expect(result.traffic.outbound.value).toBe(1);
       expect(result.dataHealth?.directionCounts).toMatchObject({ inbound: 1, outbound: 2 });
-      expect(result.traffic.inbound.exclusions).toMatchObject({ future_or_cutoff: 0 });
+      expect(result.dataHealth?.unscorable.invalidClock).toBe(1);
+      expect(result.traffic.comparableWindowChangePercent).toMatchObject({
+        availability: 'available',
+        value: 0,
+      });
+      // A bounded row with a future source clock is retained for explicit
+      // unknown/diagnostic coverage, but it must not enter traffic totals.
+      expect(result.traffic.inbound.exclusions).toMatchObject({ future_or_cutoff: 1 });
       expect(result.transports.map((transport) => transport.id)).toEqual(['transport-centurion']);
     });
 

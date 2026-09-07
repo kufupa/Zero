@@ -59,6 +59,8 @@ describe('aggregateAdminDashboardMetrics', () => {
         thread({ id: 'c4', transportId: 'transport-centurion-b' }),
         thread({ id: 'research', transportId: 'transport-pmbobo' }),
       ],
+      preWindowThreadIds: ['c2'],
+      preWindowEvidenceAvailable: true,
       messages: [
         msg({
           id: 'c1-in-copy',
@@ -164,6 +166,9 @@ describe('aggregateAdminDashboardMetrics', () => {
     expect(result.traffic.inbound.value).toBe(4);
     expect(result.traffic.outbound.value).toBe(1);
     expect(result.activity.distinctExternalSenderAddresses.value).toBe(2);
+    expect(result.activity.newlyObservedConversations.value).toBe(1);
+    expect(result.activity.continuingConversations.value).toBe(1);
+    expect(result.traffic.inbound.captureBasis).toBe('raw_observed_transport_messages');
     expect(result.folders.mix.value).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ folder: 'bookings', count: 1 }),
@@ -267,6 +272,210 @@ describe('aggregateAdminDashboardMetrics', () => {
     expect(result.service.firstObservedHumanReply.value).toBeNull();
     expect(result.service.unscorable).toBe(1);
     expect(result.service.firstObservedHumanReply.exclusions).toMatchObject({ unscorable: 1 });
+  });
+
+  it('marks first observed reply unavailable when route rows omit approved evidence fields', () => {
+    const cutoff = new Date('2026-09-08T00:00:00.000Z');
+    const result = aggregateAdminDashboardMetrics({
+      cohortId: 'centurion',
+      observationCutoff: cutoff,
+      classificationSnapshot: {
+        classificationAsOf: cutoff,
+        snapshotBasis: 'retained_matching_snapshot',
+        threads: [{ threadId: 'route-thread', primaryFolder: 'bookings', spam: false, trashed: false }],
+      },
+      measurementConfig: {
+        version: 1,
+        transportId: 'transport-centurion',
+        cohortId: 'centurion',
+        measurementStartAt: '2026-09-01T00:00:00.000Z',
+        captureAssumptionBasis: 'verified-two-way-feed',
+        confirmedGapIntervals: [],
+      },
+      threads: [thread({ id: 'route-thread', transportId: 'transport-centurion' })],
+      messages: [
+        msg({
+          id: 'route-inbound',
+          threadId: 'route-thread',
+          transportId: 'transport-centurion',
+          direction: 'inbound',
+          receivedAt: new Date('2026-09-02T12:00:00.000Z'),
+          fromAddress: 'route-guest@example.com',
+        }),
+      ],
+      transports: [{ id: 'transport-centurion', email: 'centurion@legacyhotels.co.za', displayName: 'Centurion' }],
+      windowStart: new Date('2026-09-01T00:00:00.000Z'),
+      windowEnd: cutoff,
+    });
+
+    expect(result.service.firstObservedHumanReply).toMatchObject({
+      availability: 'unavailable',
+      value: null,
+      availabilityReason: 'reply_evidence_unavailable',
+    });
+    expect(result.service.eligibleNewConversationCount).toBeNull();
+    expect(result.service.unansweredEligible).toBeNull();
+    expect(result.eligibleThreadCount).toBeNull();
+    expect(result.unansweredEligible).toBeNull();
+    expect(result.perTransport[0]?.unanswered).toBeNull();
+  });
+
+  it('computes median and p90 only from complete first-observed-human-reply evidence', () => {
+    const cutoff = new Date('2026-09-08T00:00:00.000Z');
+    const common = {
+      cohortId: 'centurion' as const,
+      observationCutoff: cutoff,
+      classificationSnapshot: {
+        classificationAsOf: cutoff,
+        snapshotBasis: 'retained_matching_snapshot',
+        threads: [
+          { threadId: 'reply-a', primaryFolder: 'bookings', spam: false, trashed: false },
+          { threadId: 'reply-b', primaryFolder: 'bookings', spam: false, trashed: false },
+        ],
+      },
+      measurementConfig: {
+        version: 1 as const,
+        transportId: 'transport-centurion',
+        cohortId: 'centurion',
+        measurementStartAt: '2026-09-01T00:00:00.000Z',
+        captureAssumptionBasis: 'verified-two-way-feed',
+        confirmedGapIntervals: [],
+      },
+      threads: [
+        thread({ id: 'reply-a', transportId: 'transport-centurion' }),
+        thread({ id: 'reply-b', transportId: 'transport-centurion' }),
+      ],
+      transports: [{ id: 'transport-centurion', email: 'centurion@legacyhotels.co.za', displayName: 'Centurion' }],
+      windowStart: new Date('2026-09-01T00:00:00.000Z'),
+      windowEnd: cutoff,
+    };
+    const result = aggregateAdminDashboardMetrics({
+      ...common,
+      messages: [
+        msg({
+          id: 'reply-a-in',
+          threadId: 'reply-a',
+          transportId: 'transport-centurion',
+          direction: 'inbound',
+          receivedAt: new Date('2026-09-02T12:00:00.000Z'),
+          authorClass: 'external_human',
+          qualifiesNewConversation: true,
+        }),
+        msg({
+          id: 'reply-a-out',
+          threadId: 'reply-a',
+          transportId: 'transport-centurion',
+          direction: 'outbound',
+          sentAt: new Date('2026-09-02T12:30:00.000Z'),
+          authorClass: 'internal_human',
+          hasScopedReplyLink: true,
+          sendState: 'sent',
+        }),
+        msg({
+          id: 'reply-b-in',
+          threadId: 'reply-b',
+          transportId: 'transport-centurion',
+          direction: 'inbound',
+          receivedAt: new Date('2026-09-03T12:00:00.000Z'),
+          authorClass: 'external_human',
+          qualifiesNewConversation: true,
+        }),
+        msg({
+          id: 'reply-b-out',
+          threadId: 'reply-b',
+          transportId: 'transport-centurion',
+          direction: 'outbound',
+          sentAt: new Date('2026-09-03T14:00:00.000Z'),
+          authorClass: 'internal_human',
+          hasScopedReplyLink: true,
+          sendState: 'sent',
+        }),
+      ],
+    });
+
+    expect(result.service.firstObservedHumanReply.availability).toBe('available');
+    expect(result.medianFirstResponseMinutes).toMatchObject({ availability: 'live', value: 75 });
+    expect(result.p90FirstResponseMinutes).toMatchObject({ availability: 'live', value: 120 });
+    expect(result.service.eligibleNewConversationCount).toBe(2);
+    expect(result.service.unansweredEligible).toBe(0);
+  });
+
+  it('keeps a sent duplicate observed when a queued copy arrives first and normalizes source IDs', () => {
+    const cutoff = new Date('2026-08-08T00:00:00.000Z');
+    const result = aggregateAdminDashboardMetrics({
+      cohortId: 'centurion',
+      observationCutoff: cutoff,
+      classificationSnapshot: null,
+      threads: [],
+      messages: [
+        msg({
+          id: 'queued-copy',
+          sourceMessageId: '  "<Same-Source@example.com>" ',
+          threadId: 'queue-thread',
+          transportId: 'transport-centurion',
+          direction: 'outbound',
+          sentAt: new Date('2026-08-02T12:00:00.000Z'),
+          sendState: 'pending',
+        }),
+        msg({
+          id: 'sent-copy',
+          sourceMessageId: '<same-source@example.com>',
+          threadId: 'queue-thread',
+          transportId: 'transport-centurion',
+          direction: 'outbound',
+          sentAt: new Date('2026-08-02T12:01:00.000Z'),
+          sendState: 'sent',
+        }),
+      ],
+      transports: [{ id: 'transport-centurion', email: 'centurion@legacyhotels.co.za', displayName: 'Centurion' }],
+      windowStart: WINDOW_START,
+      windowEnd: WINDOW_END,
+    });
+
+    expect(result.traffic.outbound.value).toBe(1);
+    expect(result.traffic.outbound.exclusions).toMatchObject({
+      duplicate_source_copies: 1,
+      non_observed_send_state: 0,
+    });
+  });
+
+  it('keeps a sent duplicate observed when the queued copy arrives second', () => {
+    const cutoff = new Date('2026-08-08T00:00:00.000Z');
+    const result = aggregateAdminDashboardMetrics({
+      cohortId: 'centurion',
+      observationCutoff: cutoff,
+      classificationSnapshot: null,
+      threads: [],
+      messages: [
+        msg({
+          id: 'sent-first-copy',
+          sourceMessageId: '<sent-first@example.com>',
+          threadId: 'sent-first-thread',
+          transportId: 'transport-centurion',
+          direction: 'outbound',
+          sentAt: new Date('2026-08-02T12:00:00.000Z'),
+          sendState: 'sent',
+        }),
+        msg({
+          id: 'queued-second-copy',
+          sourceMessageId: '  "<SENT-FIRST@example.com>"  ',
+          threadId: 'sent-first-thread',
+          transportId: 'transport-centurion',
+          direction: 'outbound',
+          sentAt: new Date('2026-08-02T12:01:00.000Z'),
+          sendState: 'pending',
+        }),
+      ],
+      transports: [{ id: 'transport-centurion', email: 'centurion@legacyhotels.co.za', displayName: 'Centurion' }],
+      windowStart: WINDOW_START,
+      windowEnd: WINDOW_END,
+    });
+
+    expect(result.traffic.outbound.value).toBe(1);
+    expect(result.traffic.outbound.exclusions).toMatchObject({
+      duplicate_source_copies: 1,
+      non_observed_send_state: 0,
+    });
   });
 
   it('returns empty live zeros and unavailable nava cells for empty window', () => {

@@ -92,9 +92,9 @@ export type AdminDashboardCorrespondents = {
 export type AdminDashboardService = {
   firstObservedHumanReply: MetricResult<number>;
   firstUsefulReply: MetricResult<number>;
-  eligibleNewConversationCount: number;
-  unansweredEligible: number;
-  unscorable: number;
+  eligibleNewConversationCount: number | null;
+  unansweredEligible: number | null;
+  unscorable: number | null;
 };
 
 export type AdminDashboardDataHealth = {
@@ -176,7 +176,7 @@ export type AdminDashboardTransportSeries = {
   label: string;
   inbound: number;
   latenciesMinutes: number[];
-  unanswered: number;
+  unanswered: number | null;
 };
 
 /** Hosted metrics payload from adminDashboard.getMetrics */
@@ -198,8 +198,8 @@ export type AdminDashboardMetrics = {
   aiAssistedSendRate: MetricCell;
   medianEditDistance: MetricCell;
   totalRevenue: MetricCell;
-  eligibleThreadCount: number;
-  unansweredEligible: number;
+  eligibleThreadCount: number | null;
+  unansweredEligible: number | null;
   inboundPerDay: AdminDashboardInboundDay[];
   comparison: AdminDashboardComparisonRow[];
   perTransport: AdminDashboardTransportSeries[];
@@ -298,11 +298,14 @@ export function summarizeTransportSeries(series: readonly AdminDashboardTranspor
   medianMinutes: number | null;
   p90Minutes: number | null;
   answeredWithin3hPercent: number | null;
-  unanswered: number;
+  unanswered: number | null;
 } {
   const latencies = series.flatMap((row) => row.latenciesMinutes).sort((a, b) => a - b);
-  const unanswered = series.reduce((total, row) => total + row.unanswered, 0);
-  const eligible = latencies.length + unanswered;
+  const unansweredKnown = series.every((row) => row.unanswered !== null);
+  const unanswered = unansweredKnown
+    ? series.reduce((total, row) => total + (row.unanswered ?? 0), 0)
+    : null;
+  const eligible = unanswered === null ? null : latencies.length + unanswered;
   const within3h = latencies.filter((minutes) => minutes <= 180).length;
 
   const median = (() => {
@@ -325,7 +328,7 @@ export function summarizeTransportSeries(series: readonly AdminDashboardTranspor
     medianMinutes: round1(median),
     p90Minutes: round1(p90),
     answeredWithin3hPercent:
-      eligible === 0 ? null : Math.round((within3h / eligible) * 1000) / 10,
+      eligible === null || eligible === 0 ? null : Math.round((within3h / eligible) * 1000) / 10,
     unanswered,
   };
 }
