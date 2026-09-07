@@ -292,8 +292,13 @@ async function main() {
           UPDATE ai_workflow_run
           SET
             metrics = jsonb_set(
-              jsonb_set(coalesce(metrics, '{}'::jsonb), '{canonicalOutput}', ${JSON.stringify(refined)}::jsonb),
-              '{policyFlags}', ${JSON.stringify(refined.policyFlags)}::jsonb
+              jsonb_set(
+                case when jsonb_typeof(metrics) = 'object' then metrics else '{}'::jsonb end,
+                '{canonicalOutput}',
+                ${JSON.stringify(refined)}::jsonb
+              ),
+              '{policyFlags}',
+              ${JSON.stringify(refined.policyFlags)}::jsonb
             ),
             updated_at = now()
           WHERE id = ${row.run_id}
