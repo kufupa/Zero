@@ -30,7 +30,7 @@
 | U1 | Synthetic fixtures, safe test gate, evaluation-manifest contract | Implementation complete; reviewed | Final checkpoint `227432c0`; 21 scoped tests and fresh gate pass; independent spec/quality pass. Downstream application/runtime proof remains pending |
 | U10 | Executive dashboard | Complete for initial local implementation/proof | Final slice `08721bd7` independently spec/quality PASS; real production-style desktop/mobile journey, unit/owned-DB/build evidence. No deployment/live-data claim |
 | U12 | Measurement start and lean diagnostics | Complete for initial local implementation/proof | Pure contracts, bounded backend integration and client display reviewed; initial U11-A proof approved. No real T0/feed value invented; later ask-aware work remains U2 |
-| U8 | Independent audited reads and reservation context | In progress | Fresh Luna Max worker from `08721bd7`; independent read_tool service/worker/property-lock/reservation context and exact tests only |
+| U8 | Independent audited reads and reservation context | Implementation checkpoint; required DB verification pending | Unit reads/server build/model-free synthetic receipt PASS. Separate diagnosis confirms owned PG16 healthy; original gate failed under unprivileged Docker context. Same Luna owner finishing exact elevated gate/migration proof; independent review/runtime proof pending |
 | U9 | Existing documents and mail artifacts | Pending | U8 |
 | U17 | Finance and deposit evidence | Pending | U8; after useful document slice |
 | U7 | All-night availability/rate evidence | Pending | U8 |
@@ -96,6 +96,10 @@
 - Model usage is currently unavailable to the controller. The 90% Luna token share remains a target, not a measured claim.
 - An optional read-only Phase 2/3 activation-readiness check encountered two transient Luna rate limits and is parked for later retry; no model fallback, secret access or live calls occurred. Active product work continues on Luna.
 - Final whole-branch review, compounding and fresh completion verification remain pending.
+
+- U8 checkpoint retrieved after a bounded status-only interruption: implementation edits are preserved; no in-flight worker processes remain. Luna reports intended missing-module RED, exact unit reads PASS, server build PASS, and a synthetic typed receipt with `modelId=not_applicable`. A broader regression run retained DB skips, so it is not accepted as required DB proof. The `live-guest-stay-driver.ts` extension is scoped to property-lock admission around the existing PMS session and will be independently reviewed. Required owned-PG16 gate reportedly refused at container discovery; no replacement/shared/production DB was used, migration 0023 remains unverified, and a separate Luna read-only infrastructure diagnosis is running. No live capability or Phase 3 release is claimed.
+
+- Separate U8 DB diagnosis confirms the exact receipt-matching PG16 container is present/running with pinned image, ownership labels and sole loopback15433 publication. The original gate refusal was Docker socket permission under unprivileged `orca`, not a missing target. No diagnostic test, database mutation or container lifecycle operation occurred. Same U8 Luna owner resumed with the already-established elevated gate/child invocation and only the authorized additive0023 migration if needed. Root fresh exact `unit reads` gate and diff check pass; migration/required DB/capability approval is still pending. Private diagnosis preserves the original symptom and corrected cause without exposing connection secrets.
 
 ## Minor findings / follow-ups
 
