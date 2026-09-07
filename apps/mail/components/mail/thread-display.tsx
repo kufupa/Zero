@@ -1182,7 +1182,7 @@ export function ThreadDisplay() {
                       mode={mode || undefined}
                       activeReplyId={activeReplyId || undefined}
                       isMobile={isMobile}
-                      trailing={threadDraftSection}
+                      leading={threadDraftSection}
                       linkedThreadIds={emailData.linkedThreadIds}
                       conversationMessageCount={emailData.conversationMessageCount}
                       onOpenLinkedThread={(threadId) => {
@@ -1200,7 +1200,7 @@ export function ThreadDisplay() {
                   mode={mode || undefined}
                   activeReplyId={activeReplyId || undefined}
                   isMobile={isMobile}
-                  trailing={threadDraftSection}
+                  leading={threadDraftSection}
                   linkedThreadIds={emailData.linkedThreadIds}
                   conversationMessageCount={emailData.conversationMessageCount}
                   onOpenLinkedThread={(threadId) => {
@@ -1224,7 +1224,7 @@ interface MessageListProps {
   mode?: string;
   activeReplyId?: string;
   isMobile: boolean;
-  trailing?: ReactNode;
+  leading?: ReactNode;
   linkedThreadIds?: readonly string[];
   conversationMessageCount?: number;
   onOpenLinkedThread?: (threadId: string) => void;
@@ -1238,7 +1238,7 @@ const MessageList = ({
   mode,
   activeReplyId,
   isMobile,
-  trailing,
+  leading,
   linkedThreadIds,
   conversationMessageCount,
   onOpenLinkedThread,
@@ -1281,6 +1281,11 @@ const MessageList = ({
         {allThreadAttachments && allThreadAttachments.length > 0 ? (
           <div className="min-w-0 w-full max-w-full px-4">
             <ThreadAttachments attachments={allThreadAttachments} />
+          </div>
+        ) : null}
+        {leading ? (
+          <div className={cn('duration-200', displayMessages.length > 0 && 'border-border border-b')}>
+            {leading}
           </div>
         ) : null}
         {displayMessages.map((message, index) => {
@@ -1326,11 +1331,6 @@ const MessageList = ({
             </div>
           );
         })}
-        {trailing ? (
-          <div className={cn('duration-200', displayMessages.length > 0 && 'border-border border-t')}>
-            {trailing}
-          </div>
-        ) : null}
       </div>
     </ScrollArea>
   );

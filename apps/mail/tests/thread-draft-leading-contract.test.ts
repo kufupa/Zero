@@ -27,7 +27,8 @@ describe('thread draft leading placement contract', () => {
     const list = messageListSource();
     const attachments = list.indexOf('ThreadAttachments');
     const leadingMount = list.indexOf('{leading ?');
-    const messagesMap = list.indexOf('displayMessages.map');
+    // JSX list mount — not linked-thread id `displayMessages.map` earlier in MessageList.
+    const messagesMap = list.indexOf('{displayMessages.map');
     expect(attachments).toBeGreaterThan(-1);
     expect(leadingMount).toBeGreaterThan(attachments);
     expect(messagesMap).toBeGreaterThan(leadingMount);
