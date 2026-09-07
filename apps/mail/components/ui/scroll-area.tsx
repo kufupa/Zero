@@ -2,7 +2,10 @@ import { ScrollArea as ScrollAreaPrimitive } from 'radix-ui';
 import * as React from 'react';
 
 import { cn } from '@/lib/utils';
-import { SCROLL_AREA_FLEX_MIN_W_CLASS } from '@/lib/attachment-chip-scroll';
+import {
+  SCROLL_AREA_FLEX_MIN_W_CLASS,
+  SCROLL_AREA_VIEWPORT_CONTENT_CLASS,
+} from '@/lib/attachment-chip-scroll';
 
 interface ScrollAreaProps extends React.ComponentPropsWithoutRef<typeof ScrollAreaPrimitive.Root> {
   hideScrollbar?: boolean;
@@ -18,7 +21,11 @@ const ScrollArea = React.forwardRef<
   >
     <ScrollAreaPrimitive.Viewport
       ref={ref}
-      className={cn('h-full w-full rounded-[inherit]', SCROLL_AREA_FLEX_MIN_W_CLASS)}
+      className={cn(
+        'h-full w-full rounded-[inherit]',
+        SCROLL_AREA_FLEX_MIN_W_CLASS,
+        SCROLL_AREA_VIEWPORT_CONTENT_CLASS,
+      )}
     >
       {children}
     </ScrollAreaPrimitive.Viewport>

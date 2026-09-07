@@ -5,7 +5,9 @@ import {
   MAIL_DISPLAY_ROOT_CLASS,
   MAIL_DISPLAY_BODY_SHELL_CLASS,
   SCROLL_AREA_FLEX_MIN_W_CLASS,
+  SCROLL_AREA_VIEWPORT_CONTENT_CLASS,
 } from '../lib/attachment-chip-scroll';
+import { readFileSync } from 'node:fs';
 
 /**
  * Contract for Outlook-like one-row chip H-scroll.
@@ -42,5 +44,16 @@ describe('attachment chip scrollport contract', () => {
 
   it('ScrollArea flex children advertise min-w-0 so chip scrollports can shrink', () => {
     expect(SCROLL_AREA_FLEX_MIN_W_CLASS).toMatch(/min-w-0/);
+  });
+
+  it('ScrollArea Viewport overrides Radix display:table child so wide mail cannot inflate pane', () => {
+    expect(SCROLL_AREA_VIEWPORT_CONTENT_CLASS).toMatch(/\[&>div\]:!block/);
+    expect(SCROLL_AREA_VIEWPORT_CONTENT_CLASS).toMatch(/\[&>div\]:min-w-0/);
+    expect(SCROLL_AREA_VIEWPORT_CONTENT_CLASS).toMatch(/\[&>div\]:max-w-full/);
+    const scrollAreaSource = readFileSync(
+      new URL('../components/ui/scroll-area.tsx', import.meta.url),
+      'utf8',
+    );
+    expect(scrollAreaSource).toContain('SCROLL_AREA_VIEWPORT_CONTENT_CLASS');
   });
 });
