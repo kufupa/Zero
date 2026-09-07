@@ -158,17 +158,17 @@ Output JSON only. Pick exactly one workflow primary folder, P0–P5 priority, Ur
 Sender domain does not override embedded commercial intent in guest/agency forwards (FW: of an RFQ/booking). Cold sales mail remains spam even when forwarded internally.
 
 ## Workflow primary folders (pick exactly one; eleven total)
-- bookings: normal stay request, guest/agency one-room voucher, quote or booking service
+- bookings: normal stay request, direct guest booking inquiry, quote or booking service
 - groups-events: 10+ rooms/delegates, rooming list, team/squad, conference, banquet, event, MICE or catering
 - manage-stay: confirmed-stay changes, arrivals, rooming, check-in/out or stay servicing
 - confirm-reconcile: confirmation, amendment reconciliation, duplicate/record matching or state verification
 - money-billing: payment, invoice, folio, deposit, commission or finance evidence
-- documents-delivery: vouchers, tax documents, attachments, delivery or document follow-up
+- documents-delivery: agency travel vouchers, tax documents, attachments, delivery or document follow-up
 - exceptions-recovery: cancellation risk, failed delivery, revenue escalation or recovery action
 - guest-experience: review, complaint, service recovery or guest-experience follow-up
 - internal-partner: Legacy Hotels/internal or known partner correspondence and handover
 - automated-channel: routine OTA/channel/PMS/system notification with no revenue SLA
-- unknown-review: ambiguous, security-sensitive or manual-review work
+- unknown-review: ambiguous, security-sensitive, external job applications/CVs or manual-review work
 Legacy v5 ops is an adapter label only; ops is never a v6 primary workflow folder.
 Legacy v5 aliases new-bookings, groups-events, and at-risk map to workflow folders through an adapter only.
 
@@ -177,7 +177,7 @@ P0 = immediate severe revenue/security/guest impact; P1 = same-day hard action; 
 
 ## Decision sequence
 1. Underlying commercial intent: stay/quote, group/event, stay management, confirmation, money, documents, exception, guest experience, internal/partner, automation, unknown, or spam.
-2. Group shape: groups-events requires 10+ rooms/delegates, a rooming list, team/squad/family block, officials, conference/banquet/catering/function, site inspection or multi-person event meal. A sub-10 multi-room request alone remains bookings. Exceptions/revenue risk wins. One-room voucher stays bookings.
+2. Group shape: groups-events requires 10+ rooms/delegates, a rooming list, team/squad/family block, officials, conference/banquet/catering/function, site inspection or multi-person event meal. A sub-10 multi-room request alone remains bookings. Exceptions/revenue risk wins. Agency travel vouchers route to documents-delivery (or money-billing if invoice/POP requested); one-room guest booking quote stays bookings.
 3. Revenue risk: explicit booking cancellation/amendment threat, unpaid near arrival, time-boxed OTA/SynXis action, or money-mail delivery failure → exceptions-recovery.
 4. Routine system mail: calendar "Canceled:" meeting and "FAILED TO INTEGRATE" channel/PMS notices → automated-channel unless real booking cancellation, revenue threat or hard reply SLA. Internal delivery failures → exceptions-recovery, sourceScope=internal_property, automationState=excluded_internal; never automated-channel.
 5. Urgency: tax invoice today, reply within Nh, arrival tomorrow unpaid, or check-in/CI today on real booking/agency voucher can be urgent. Subject URGENT, word cancel, or far-future date alone cannot make urgent.

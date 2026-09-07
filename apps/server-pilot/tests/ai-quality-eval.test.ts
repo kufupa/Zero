@@ -451,7 +451,7 @@ describe('runQualityEval', () => {
     expect(report.metrics.totalEstimatedCostUsd).toBeGreaterThan(0);
     expect(report.metrics.avgLatencyMs).toBeGreaterThan(0);
     expect(report.protectedRegressions.length).toBeGreaterThan(0);
-    expect(report.protectedRegressions.some((r) => /spam|at-risk|urgent/i.test(r.reason))).toBe(true);
+    expect(report.protectedRegressions.some((r) => /spam|at-risk|urgent|urgency/i.test(r.reason))).toBe(true);
   });
 
   it('passes input prompt version through to workflow hashes', async () => {

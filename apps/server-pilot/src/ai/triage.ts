@@ -365,6 +365,7 @@ function workflowApplyExceptionFolder(
   // Hotel/RC never-spam must not stomp commercial work folders that refine
   // (or the model) already chose — e.g. legacy staff FW of a rooming list.
   const commercialWorkFolders = new Set<WorkflowTriageOutput['primaryFolder']>([
+    'bookings',
     'groups-events',
     'exceptions-recovery',
     'guest-experience',
@@ -401,7 +402,7 @@ function hasInternalPropertySignal(input: TriageRefineInput): boolean {
   const fromDomain = emailDomain(input.from);
   if (INTERNAL_PROPERTY_DOMAINS.has(fromDomain)) return true;
   const haystack = `${input.subject ?? ''}\n${input.body}`;
-  return /(?:^|[\s<(@])(?:legacyhotels\.co\.za|mail\.legacyhotels\.com|branding\.legacyhotels\.co\.za)(?:$|[\s>),;])/i.test(
+  return /(?:^|[\s<(@])(?:mail\.legacyhotels\.com|branding\.legacyhotels\.co\.za)(?:$|[\s>),;])/i.test(
     haystack,
   );
 }
@@ -463,7 +464,11 @@ function isGuestRevuDigest(haystack: string): boolean {
 
 function hasRevenueRisk(haystack: string): boolean {
   const hasTimeboxedReplyAction =
-    /\b(?:reply|respond|response|action|confirm)(?:\s+(?:is\s+)?(?:required|needed))?\s+(?:within\s+\d+\s*(?:h|hrs?|hours?)|by\s+(?:today|tomorrow|eod|\d{1,2}(?::\d{2})?\s*(?:am|pm)?))\b/i.test(
+    /\b(?:reply|respond|response|action|confirm)(?:\s+(?:is\s+)?(?:required|needed))?\s+(?:within\s+(?:the\s+next\s+)?\d+\s*(?:h|hrs?|hours?)|by\s+(?:today|tomorrow|eod|\d{1,2}(?::\d{2})?\s*(?:am|pm)?))\b/i.test(
+      haystack,
+    ) ||
+    /\b(?:reply\s+now|respond\s+now|action\s+required\s+now)\b/i.test(haystack) ||
+    /\b(?:due\s+to\s+arrive|arriving)\s+(?:within\s+(?:the\s+next\s+)?(?:24|48)\s*(?:h|hrs?|hours?)|today|tomorrow)\b/i.test(
       haystack,
     );
   const hasRevenueSla = /\b(?:hard\s+)?sla\b/i.test(
@@ -628,12 +633,27 @@ function isEmptyBodyNotPromoSpam(input: TriageRefineInput, haystack: string): bo
   return !salesSignal(haystack) && body.length === 0 && subject.length <= 80;
 }
 
+function isFinancialServiceSender(fromRaw?: string): boolean {
+  if (!fromRaw) return false;
+  const from = normalizeEmailAddress(fromRaw);
+  return (
+    /(?:^|@|\.)(?:nedbank|standardbank|fnb|absa|capitec|firstrand|investec)\.co\.za$/i.test(from) ||
+    /epay-noreply@/i.test(from) ||
+    /@(?:[a-z0-9-]+\.)*nedbank\.co\.za$/i.test(from)
+  );
+}
+
 function isProtectedFromWorkflowForceSpam(
   input: TriageRefineInput,
   neverSpamFrom: boolean,
   notSpam: boolean,
 ): boolean {
-  return neverSpamFrom || notSpam || hotelConversationNotSpam(input);
+  return (
+    neverSpamFrom ||
+    notSpam ||
+    hotelConversationNotSpam(input) ||
+    isFinancialServiceSender(input.from)
+  );
 }
 
 function shouldForceWorkflowPromoSpam(input: TriageRefineInput, haystack: string): boolean {
@@ -641,6 +661,80 @@ function shouldForceWorkflowPromoSpam(input: TriageRefineInput, haystack: string
   if (isEmptyBodyNotPromoSpam(input, haystack)) return false;
   if (isShortPersonalNotPromoSpam(input, haystack)) return false;
   return true;
+}
+
+/** Detects internal staff forwarding external guest/client RFQs or quote requests. */
+function isStaffForwardedRFQ(input: TriageRefineInput, haystack: string): boolean {
+  const from = normalizeEmailAddress(input.from ?? '');
+  const isStaff = isHotelNeverSpamAddress(from) || from === RESERVE_CLOUD_PENNY_EMAIL;
+  if (!isStaff) return false;
+
+  const subject = input.subject ?? '';
+  const isForwardOrReply =
+    /^(?:fw|fwd|re):/i.test(subject) ||
+    /\b(?:forwarded\s+message|-----original\s+message-----|from:)\b/i.test(input.body);
+  if (!isForwardOrReply) return false;
+
+  const staffAsksToQuote =
+    /\b(?:please|kindly|can you|could you)\s+(?:quote|send\s+(?:a\s+)?quote|assist\s+with\s+(?:a\s+)?quote|make\s+a\s+booking|assist\s+with\s+(?:this\s+)?booking|quote\s+as\s+per)\b/i.test(
+      haystack,
+    );
+  const clientRFQSignals =
+    /\b(?:quotation|quote|rate)\s+(?:for|request)\b/i.test(haystack) &&
+    /\b(?:check[- ]in|arrival|accommodation|rooms?)\b/i.test(haystack);
+
+  return staffAsksToQuote || clientRFQSignals;
+}
+
+/** Detects internal staff coordinating rate/channel/system mapping without a guest stay. */
+function isInternalRateOrSystemMapping(input: TriageRefineInput, haystack: string): boolean {
+  const from = normalizeEmailAddress(input.from ?? '');
+  if (!isHotelNeverSpamAddress(from)) return false;
+  const hasRateOrChannelSetup =
+    /\b(?:infor|profitroom|synxis|channel\s+mapping|rate\s+setup|set\s+up\s+the\s+rate|package\s+mapping|dinner\s+allowance\s+meal\s+plan)\b/i.test(
+      haystack,
+    );
+  const hasNoGuestReservation =
+    !/\b(?:res(?:ervation)?\s*#?\s*\d+|booking\s*#?\s*\d+|check[- ]in|pax|guest\s+name)\b/i.test(
+      haystack,
+    );
+  return hasRateOrChannelSetup && hasNoGuestReservation;
+}
+
+/** Detects corporate/agency travel vouchers (Nexus, Rennies BCD, XL Turners, etc.). */
+function isAgencyTravelVoucher(input: TriageRefineInput, haystack: string): boolean {
+  const from = normalizeEmailAddress(input.from ?? '');
+  const subject = input.subject ?? '';
+  const isAgencySender =
+    /@(?:[a-z0-9-]+\.)*(?:nexustravel|renniesbcdtravel|xlturnerstravel|nexct|travelit|corporatetraveller|zimasatravel|atlantiscorporate|destini\.travel)\.co(?:\.za)?$/i.test(
+      from,
+    ) || /\bnexus_travx\b/i.test(input.from ?? '');
+  const isVoucherSubjectOrContent =
+    /\bvoucher\b/i.test(subject) ||
+    /\b(?:accommodation|supplier)\s+voucher\b/i.test(haystack) ||
+    /\byour\s+voucher\s+for\s+travel\b/i.test(subject);
+
+  return (
+    (isAgencySender && isVoucherSubjectOrContent) ||
+    (isVoucherSubjectOrContent &&
+      /\b(?:voucher\s+[a-z0-9-]+|attached\s+voucher|see\s+attached\s+vouchers?)\b/i.test(haystack))
+  );
+}
+
+/** Detects whether a voucher email is accompanied by an invoice or payment settlement request. */
+function isVoucherInvoiceOrPaymentRequest(haystack: string): boolean {
+  return /\b(?:tax\s+invoice|proforma|invoice\s+for\s+payment|assist\s+with\s+invoices?|send\s+us\s+a\s+tax\s+invoice|proof\s+of\s+payment|pop|remittance|charge\s+the\s+below|diners\s+club|mastercard|visa\s+card|vcc)\b/i.test(
+    haystack,
+  );
+}
+
+/** Detects external job applications / CVs. */
+function isJobApplication(input: TriageRefineInput, haystack: string): boolean {
+  const from = normalizeEmailAddress(input.from ?? '');
+  if (isHotelNeverSpamAddress(from)) return false;
+  return /\b(?:(?:job|position|post)\s+application|application\s+for\s+(?:the\s+)?(?:position|post|job)|applying\s+for\s+(?:the\s+)?(?:position|post|job)|curriculum\s+vitae|attached\s+(?:is\s+)?(?:my\s+)?cv|seeking\s+employment|employment\s+opportunit(?:y|ies))\b/i.test(
+    haystack,
+  );
 }
 
 function refineWorkflowTriageOutput(
@@ -724,6 +818,67 @@ function refineWorkflowTriageOutput(
       policyFlags: addPolicyFlag(next.policyFlags, 'refine:groups-events-work'),
       rationale: `${next.rationale} Group/event commercial work is groups-events.`,
     };
+  } else if (isStaffForwardedRFQ(input, haystack)) {
+    const isGroup = isGroupsEventsWork(haystack);
+    next = {
+      ...next,
+      primaryFolder: isGroup ? 'groups-events' : 'bookings',
+      isSpam: false,
+      overlays: { ...next.overlays, quote: true },
+      humanAction: 'answer_or_quote',
+      suggestedTools: isGroup ? ['hms_group_block_read', 'hms_quote_stay'] : ['hms_quote_stay'],
+      priority: next.priority === 'P4' || next.priority === 'P5' ? 'P3' : next.priority,
+      policyFlags: addPolicyFlag(next.policyFlags, 'refine:staff-forwarded-rfq'),
+      rationale: `${next.rationale} Staff forward of client quote/booking is ${isGroup ? 'groups-events' : 'bookings'}.`,
+    };
+  } else if (isInternalRateOrSystemMapping(input, haystack)) {
+    next = {
+      ...next,
+      primaryFolder: 'internal-partner',
+      sourceScope: 'internal_property',
+      automationState: 'excluded_internal',
+      humanAction: 'other',
+      suggestedTools: [],
+      isSpam: false,
+      policyFlags: addPolicyFlag(next.policyFlags, 'refine:internal-system-mapping'),
+      rationale: `${next.rationale} Internal hotel rate/system configuration is internal-partner.`,
+    };
+  } else if (isAgencyTravelVoucher(input, haystack)) {
+    const isInvoiceRequest = isVoucherInvoiceOrPaymentRequest(haystack);
+    if (isInvoiceRequest) {
+      next = {
+        ...next,
+        primaryFolder: 'money-billing',
+        overlays: { ...next.overlays, payment: true },
+        humanAction: 'payment_or_finance',
+        suggestedTools: ['hms_read_folio', 'hms_find_reservation'],
+        isSpam: false,
+        policyFlags: addPolicyFlag(next.policyFlags, 'refine:voucher-invoice-request'),
+        rationale: `${next.rationale} Travel voucher invoice/payment request is money-billing.`,
+      };
+    } else {
+      next = {
+        ...next,
+        primaryFolder: 'documents-delivery',
+        humanAction: 'document_or_delivery',
+        suggestedTools: ['hms_list_documents', 'mail_read_artifact'],
+        isSpam: false,
+        policyFlags: addPolicyFlag(next.policyFlags, 'refine:agency-voucher-delivery'),
+        rationale: `${next.rationale} Agency travel voucher delivery is documents-delivery.`,
+      };
+    }
+  } else if (isJobApplication(input, haystack)) {
+    next = {
+      ...next,
+      primaryFolder: 'unknown-review',
+      priority: 'P5',
+      urgent: false,
+      humanAction: 'review_required',
+      suggestedTools: [],
+      isSpam: false,
+      policyFlags: addPolicyFlag(next.policyFlags, 'refine:job-application'),
+      rationale: `${next.rationale} External job application / CV is unknown-review (P5).`,
+    };
   } else if (!next.isSpam && neverSpamFrom && NEVER_SPAM_WEAK_FOLDERS.has(next.primaryFolder)) {
     // R22/R23: never-spam hotel/RC senders only leave weak folders. Do not
     // stomp commercial work folders the model (or content detectors) already set.
@@ -735,7 +890,12 @@ function refineWorkflowTriageOutput(
     next.policyFlags.includes('refine:guest-service-recovery') ||
     next.policyFlags.includes('refine:booking-cancel-or-release') ||
     next.policyFlags.includes('refine:series-release-at-risk') ||
-    next.policyFlags.includes('refine:groups-events-work');
+    next.policyFlags.includes('refine:groups-events-work') ||
+    next.policyFlags.includes('refine:staff-forwarded-rfq') ||
+    next.policyFlags.includes('refine:internal-system-mapping') ||
+    next.policyFlags.includes('refine:voucher-invoice-request') ||
+    next.policyFlags.includes('refine:agency-voucher-delivery') ||
+    next.policyFlags.includes('refine:job-application');
 
   if (contentIntentLocked) {
     // Keep content-intent folder; skip fortimail/promo/routine remaps.
@@ -751,7 +911,8 @@ function refineWorkflowTriageOutput(
   } else if (
     !isProtectedFromWorkflowForceSpam(input, neverSpamFrom, notSpam) &&
     shouldForceWorkflowPromoSpam(input, haystack) &&
-    !isRoutineSystemMail(input, haystack)
+    !isRoutineSystemMail(input, haystack) &&
+    (next.primaryFolder === 'bookings' || next.primaryFolder === 'unknown-review')
   ) {
     next = {
       ...next,
