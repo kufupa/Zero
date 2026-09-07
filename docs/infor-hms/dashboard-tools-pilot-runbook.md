@@ -41,9 +41,14 @@ The journey covers:
   dashboard request.
 
 The transport validates the actual tRPC batch envelope and finite
-cohort/window/cutoff values. Missing, malformed, unknown, or non-finite inputs
-return 400; valid 28-day outage input returns 503. Request receipts retain only
-method/path/status and normalized query metadata, never request bodies.
+cohort/window/cutoff values. The latest/undefined SuperJSON form is accepted
+only with `observationCutoff: null` and the exact
+`meta.values.observationCutoff: ["undefined"]` marker; an explicit ISO cutoff
+is accepted without metadata. Missing cutoffs, malformed/unknown metadata, and
+other malformed or non-finite inputs return 400 with a null query receipt;
+valid 28-day outage input returns 503. The exact browser test covers ten such
+400 probes. Request receipts retain only method/path/status and normalized
+query metadata, never request bodies.
 
 ### Evidence and limits
 
@@ -60,9 +65,10 @@ Fresh production-theme screenshots are:
 .private/centurion-dashboard-tools-execution/u11a-browser-artifacts/reservation-tools-pilot-reservation-tools-pilot-dashboard/dashboard-mobile.png
 ```
 
-The historical RED `error-context.md` remains private diagnostic evidence. The
-fresh desktop/mobile and test-finished captures are production-theme artifacts
-from the post-fix GREEN run. The former 35px target failure was caused by the
+The focused metadata RED run was consumed as private diagnostic evidence before
+the fresh green rerun. The current desktop/mobile and test-finished captures
+are production-theme artifacts from the post-repair GREEN run. The former 35px
+target failure was caused by the
 production `html { font-size: 80% }` root scale combined with rem-based
 `min-h-11`; the target owner replaced the ten page-local floors with explicit
 `min-h-[44px]` and added a production-root-scale regression. No global CSS,

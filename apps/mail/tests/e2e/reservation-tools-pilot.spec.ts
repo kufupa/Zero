@@ -202,6 +202,11 @@ test('reservation-tools-pilot/dashboard', async ({ page, browser }, testInfo: Te
     'not-json',
     '{"0":{"json":{"cohortId":"unknown","window":"7d"}}}',
     `{"0":{"json":{"cohortId":"centurion","window":"7d","observationCutoff":"not-a-date"}}}`,
+    '{"0":{"json":{"cohortId":"centurion","window":"7d"},"meta":42}}',
+    '{"0":{"json":{"cohortId":"centurion","window":"7d"},"meta":{"unexpected":true}}}',
+    '{"0":{"json":{"cohortId":"centurion","window":"7d"},"meta":{"values":{"observationCutoff":["date"]}}}}',
+    '{"0":{"json":{"cohortId":"centurion","window":"7d"},"meta":{"values":{"other":["undefined"]}}}}',
+    '{"0":{"json":{"cohortId":"centurion","window":"7d"}}}',
   ];
   const malformedResponses = await page.evaluate(async (bodies) => {
     const responses = [];

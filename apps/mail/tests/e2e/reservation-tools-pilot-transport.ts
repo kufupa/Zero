@@ -75,6 +75,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
+function isUndefinedObservationCutoffMeta(value: unknown): boolean {
+  if (!isRecord(value) || Object.keys(value).length !== 1 || !isRecord(value.values)) return false;
+  if (Object.keys(value.values).length !== 1) return false;
+  const marker = value.values.observationCutoff;
+  return Array.isArray(marker) && marker.length === 1 && marker[0] === 'undefined';
+}
+
 function parseDashboardInput(body: string | undefined): DashboardInputResult {
   if (!body?.trim()) return { ok: false, reason: 'missing_body' };
   let parsed: unknown;
@@ -111,12 +118,15 @@ function parseDashboardInput(body: string | undefined): DashboardInputResult {
   if (input.window !== '7d' && input.window !== '28d') {
     return { ok: false, reason: 'invalid_window' };
   }
+  const hasObservationCutoff = Object.hasOwn(input, 'observationCutoff');
+  const hasMeta = Object.hasOwn(envelope, 'meta');
+  if (hasMeta && (!isUndefinedObservationCutoffMeta(envelope.meta) || input.observationCutoff !== null)) {
+    return { ok: false, reason: 'invalid_trpc_metadata' };
+  }
+  if (!hasObservationCutoff) return { ok: false, reason: 'missing_observation_cutoff' };
   let observationCutoff: string | undefined;
   if (input.observationCutoff === null) {
-    const metaValues = isRecord(envelope.meta) && isRecord(envelope.meta.values)
-      ? envelope.meta.values.observationCutoff
-      : undefined;
-    if (!Array.isArray(metaValues) || !metaValues.includes('undefined')) {
+    if (!hasMeta || !isUndefinedObservationCutoffMeta(envelope.meta)) {
       return { ok: false, reason: 'invalid_observation_cutoff' };
     }
   } else if (input.observationCutoff !== undefined) {
