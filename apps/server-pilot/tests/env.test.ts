@@ -62,6 +62,24 @@ describe('env', () => {
     expect(env.CATCHUP_UPLOAD_ENABLED).toBe(false);
   });
 
+  it('keeps optional measurement config server-only and does not reject ordinary mail on malformed JSON', () => {
+    const rawConfig = JSON.stringify({
+      version: 1,
+      transportId: 'transport-centurion',
+      cohortId: 'centurion',
+      measurementStartAt: null,
+      captureAssumptionBasis: 'operator-confirmed',
+      confirmedGapIntervals: [],
+    });
+
+    expect(parseEnv(baseEnv({ MAIL_MEASUREMENT_CONFIG_JSON: rawConfig }))).toMatchObject({
+      MAIL_MEASUREMENT_CONFIG_JSON: rawConfig,
+    });
+    expect(
+      parseEnv(baseEnv({ MAIL_MEASUREMENT_CONFIG_JSON: '{not-json' })),
+    ).toMatchObject({ MAIL_MEASUREMENT_CONFIG_JSON: '{not-json' });
+  });
+
   it('parses CATCHUP_UPLOAD_ENABLED correctly', () => {
     expect(parseEnv(baseEnv({ CATCHUP_UPLOAD_ENABLED: 'true' })).CATCHUP_UPLOAD_ENABLED).toBe(true);
     expect(parseEnv(baseEnv({ CATCHUP_UPLOAD_ENABLED: '1' })).CATCHUP_UPLOAD_ENABLED).toBe(true);

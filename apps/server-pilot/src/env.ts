@@ -63,6 +63,8 @@ export interface MailEnv {
   AWS_REGION: string;
   S3_BUCKET: string;
   MAIL_TRANSPORT_MODE: MailTransportMode;
+  /** Optional server-only prospective measurement config; parsed by metrics code. */
+  MAIL_MEASUREMENT_CONFIG_JSON?: string;
   POP3_POLL_INTERVAL_MS: number;
   POP3_MAX_MESSAGES_PER_CYCLE: number;
   INGEST_FIXTURE_DIR?: string;
@@ -318,6 +320,12 @@ export function parseEnv(input: EnvInput): MailEnv {
     HMS_HEALTH_STATUS_PATH: '/tmp/nava-zero-hms-health.json',
     HMS_CIRCUIT_COOLDOWN_MS: 30_000,
   };
+
+  if (input.MAIL_MEASUREMENT_CONFIG_JSON !== undefined) {
+    // Keep this raw and optional here: malformed measurement config must not
+    // prevent ordinary mail startup. Dependent metrics parse it fail-closed.
+    env.MAIL_MEASUREMENT_CONFIG_JSON = input.MAIL_MEASUREMENT_CONFIG_JSON;
+  }
 
   if (input.INGEST_FIXTURE_DIR) env.INGEST_FIXTURE_DIR = input.INGEST_FIXTURE_DIR;
   if (input.POP3_HOST) env.POP3_HOST = input.POP3_HOST;
