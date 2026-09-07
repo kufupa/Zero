@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Reservation tools pilot fixture</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      (() => {
+        let handler;
+        const pending = [];
+        Object.defineProperty(window, '__reservationToolsPilotFetchHandler', {
+          configurable: true,
+          get: () => handler,
+          set: (next) => {
+            handler = next;
+            while (pending.length) pending.shift()();
+          },
+        });
+        window.fetch = (input, init) => {
+          return new Promise((resolve, reject) => {
+            const invoke = () => {
+              try {
+                Promise.resolve(handler(input, init)).then(resolve, reject);
+              } catch (error) {
+                reject(error);
+              }
+            };
+            if (handler) invoke();
+            else pending.push(invoke);
+          });
+        };
+      })();
+    </script>
+    <script type="module" src="/bootstrap.ts"></script>
+    <script type="module" src="/entry.tsx"></script>
+  </body>
+</html>

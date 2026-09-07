@@ -1,0 +1,337 @@
+import type { AdminDashboardMetrics, MetricResult } from '@/lib/admin-dashboard/types';
+
+declare global {
+  interface Window {
+    __reservationToolsPilotRequests?: Array<{ method: string; path: string }>;
+    __reservationToolsPilotFetchHandler?: typeof fetch;
+  }
+}
+
+const FIXTURE_CUTOFF = '2026-09-07T12:00:00.000Z';
+const FIXTURE_ORIGIN = 'http://127.0.0.1:4179';
+
+type DashboardInput = {
+  cohortId?: 'centurion' | 'research';
+  window?: '7d' | '28d';
+  observationCutoff?: string;
+};
+
+type FixtureMode = 'default' | 'unauthorized' | 'error';
+
+const INITIAL_FIXTURE_MODE = new URL(window.location.href).searchParams.get('fixture');
+
+function fixtureMode(): FixtureMode {
+  const mode = new URL(window.location.href).searchParams.get('fixture');
+  if (mode === 'unauthorized' || mode === 'error') return mode;
+  if (INITIAL_FIXTURE_MODE === 'unauthorized' || INITIAL_FIXTURE_MODE === 'error') {
+    return INITIAL_FIXTURE_MODE;
+  }
+  return 'default';
+}
+
+function metric<T>(
+  value: T,
+  unit: string,
+  denominator: number | null,
+  cutoff: string,
+  options: Partial<MetricResult<T>> = {},
+): MetricResult<T> {
+  return {
+    value,
+    availability: 'available',
+    unit,
+    denominator,
+    exclusions: {},
+    timestampBasis: 'source_event',
+    captureBasis: 'fixture_fake_transport',
+    sourceVintage: cutoff,
+    classificationAsOf: cutoff,
+    snapshotBasis: 'current_observed_snapshot_at_request',
+    availabilityReason: null,
+    ...options,
+  };
+}
+
+function unavailable<T>(unit: string, cutoff: string, reason: string): MetricResult<T> {
+  return metric<T>(null as T, unit, null, cutoff, {
+    availability: 'unavailable',
+    timestampBasis: null,
+    classificationAsOf: null,
+    snapshotBasis: null,
+    availabilityReason: reason,
+  });
+}
+
+function parseDashboardInput(body: string | undefined): DashboardInput {
+  if (!body) return {};
+  try {
+    const parsed = JSON.parse(body) as unknown;
+    const first = Array.isArray(parsed)
+      ? parsed[0]
+      : parsed && typeof parsed === 'object' && '0' in parsed
+        ? (parsed as Record<string, unknown>)['0']
+        : parsed;
+    const json = (first as { json?: unknown } | null)?.json;
+    const input = (json as { json?: unknown } | null)?.json ?? json;
+    return (input ?? {}) as DashboardInput;
+  } catch {
+    return {};
+  }
+}
+
+function isoWithDays(cutoff: string, days: number): string {
+  const value = Date.parse(cutoff);
+  return Number.isFinite(value)
+    ? new Date(value - days * 24 * 60 * 60 * 1000).toISOString()
+    : cutoff;
+}
+
+function dashboardPayload(input: DashboardInput): AdminDashboardMetrics {
+  const cohortId = input.cohortId === 'research' ? 'research' : 'centurion';
+  const preset = input.window === '28d' ? '28d' : '7d';
+  const cutoff = input.observationCutoff ?? FIXTURE_CUTOFF;
+  const historical = Boolean(input.observationCutoff && input.observationCutoff < FIXTURE_CUTOFF);
+  const inbound = cohortId === 'research' ? 2 : preset === '28d' ? 10 : 6;
+  const outbound = cohortId === 'research' ? 1 : preset === '28d' ? 7 : 4;
+  const conversations = cohortId === 'research' ? 1 : preset === '28d' ? 5 : 3;
+  const daily = [
+    { period: '2026-09-01', inbound: cohortId === 'research' ? 1 : 2, outbound: 1, byTransport: {} },
+    { period: '2026-09-02', inbound: 0, outbound: 0, byTransport: {} },
+    { period: '2026-09-03', inbound: inbound - (cohortId === 'research' ? 1 : 2), outbound: outbound - 1, byTransport: {} },
+  ];
+  const unavailableFolders = unavailable<NonNullable<AdminDashboardMetrics['folders']>['mix']['value']>(
+    'conversations by folder',
+    cutoff,
+    'classification_snapshot_unavailable',
+  );
+  const unavailableMetric = <T>(unit: string, reason: string) => unavailable<T>(unit, cutoff, reason);
+  const folders = historical
+    ? {
+        mix: unavailableFolders,
+        urgent: unavailable<number>('urgent conversations', cutoff, 'classification_snapshot_unavailable'),
+        exclusions: {},
+      }
+    : {
+        mix: metric(
+          [
+            { folder: 'bookings', label: 'Bookings', count: conversations - 1, urgentCount: 1, classification: 'primary' },
+            { folder: 'groups-events', label: 'Groups & Events', count: 1, urgentCount: 0, classification: 'primary' },
+            { folder: 'unknown-review', label: 'Unknown / Needs Review', count: 0, urgentCount: 0, classification: 'unclassified' },
+          ],
+          'conversations by folder',
+          conversations,
+          cutoff,
+        ),
+        urgent: metric(1, 'urgent conversations', conversations, cutoff),
+        exclusions: { spam: 1, trash: 1 },
+      };
+
+  return {
+    query: {
+      cohortId,
+      window: preset,
+      windowStart: isoWithDays(cutoff, preset === '28d' ? 28 : 7),
+      windowEnd: cutoff,
+      observationCutoff: cutoff,
+      sourceVintage: cutoff,
+    },
+    traffic: {
+      inbound: metric(inbound, 'messages', inbound, cutoff),
+      outbound: metric(outbound, 'messages', outbound, cutoff),
+      daily: metric(daily, 'messages per day', inbound + outbound, cutoff),
+      comparableWindowChangePercent: metric(cohortId === 'research' ? 10 : 20, 'percent', inbound, cutoff),
+    },
+    activity: {
+      activeConversations: metric(conversations, 'conversations', conversations, cutoff),
+      newlyObservedConversations: metric(Math.max(1, conversations - 1), 'conversations', conversations, cutoff),
+      continuingConversations: metric(1, 'conversations', conversations, cutoff),
+      distinctExternalSenderAddresses: metric(cohortId === 'research' ? 2 : 4, 'email addresses', inbound, cutoff),
+      weekdayArrivals: metric({ Monday: Math.max(1, inbound - 2), Wednesday: 2 }, 'arrivals by weekday', inbound, cutoff),
+      hourArrivals: metric({ '09': Math.max(1, inbound - 3), '14': 3 }, 'arrivals by hour', inbound, cutoff),
+    },
+    folders,
+    correspondents: {
+      externalDomains: historical
+        ? unavailableMetric('external domains', 'classification_snapshot_unavailable')
+        : metric(
+            [
+              { domain: 'public-email', count: inbound - 2, addresses: 2 },
+              { domain: 'example.org', count: 2, addresses: 2 },
+            ],
+            'external domains',
+            inbound,
+            cutoff,
+          ),
+    },
+    service: {
+      firstObservedHumanReply: unavailableMetric('calendar minutes', 'reply_evidence_unavailable'),
+      firstUsefulReply: unavailableMetric('calendar minutes', 'not_implemented'),
+      counts: {
+        eligibleNewConversations: {
+          ...unavailableMetric<number>('conversations', 'reply_evidence_unavailable'),
+          denominatorStatus: 'not_applicable',
+        },
+        unansweredEligible: {
+          ...unavailableMetric<number>('conversations', 'reply_evidence_unavailable'),
+          denominatorStatus: 'unknown',
+        },
+        unscorable: {
+          ...unavailableMetric<number>('conversations', 'reply_evidence_unavailable'),
+          denominatorStatus: 'unknown',
+        },
+        measurementStartAt: null,
+      },
+      eligibleNewConversationCount: null,
+      unansweredEligible: null,
+      unscorable: null,
+    },
+    conversations: {
+      awaitingHotel: unavailableMetric('conversations', 'request_projection_unavailable'),
+      awaitingCustomer: unavailableMetric('conversations', 'request_projection_unavailable'),
+      hotelActionPending: unavailableMetric('conversations', 'request_projection_unavailable'),
+      partial: unavailableMetric('conversations', 'request_projection_unavailable'),
+      unknown: unavailableMetric('conversations', 'request_projection_unavailable'),
+      ageBands: unavailableMetric('calendar age bands', 'request_projection_unavailable'),
+    },
+    dataHealth: historical
+      ? {
+          availability: 'unavailable',
+          availabilityReason: 'missing_evidence',
+          observationCutoff: cutoff,
+          directionCounts: { inbound: null, outbound: null },
+          lastObservedAt: { inbound: null, outbound: null },
+          lastObservedBasis: { inbound: null, outbound: null },
+          singleton: { numerator: null, denominator: null },
+          quotedMailboxReplyNoMatchingOutbound: {
+            numerator: null,
+            denominator: null,
+            availability: 'unavailable',
+            reason: 'quote_projection_unavailable',
+          },
+          unscorable: {
+            total: 0,
+            inbound: 0,
+            outbound: 0,
+            missingClock: 0,
+            invalidClock: 0,
+            missingThreadLinkage: 0,
+            missingIdentity: 0,
+          },
+        }
+      : {
+          availability: 'available',
+          observationCutoff: cutoff,
+          directionCounts: { inbound, outbound },
+          lastObservedAt: { inbound: cutoff, outbound: cutoff },
+          lastObservedBasis: { inbound: 'source_event', outbound: 'source_event' },
+          singleton: { numerator: 1, denominator: conversations },
+          quotedMailboxReplyNoMatchingOutbound: {
+            numerator: 1,
+            denominator: inbound,
+            availability: 'available',
+          },
+          unscorable: {
+            total: 1,
+            inbound: 1,
+            outbound: 0,
+            missingClock: 1,
+            invalidClock: 0,
+            missingThreadLinkage: 0,
+            missingIdentity: 0,
+          },
+        },
+    inboundVolume: { availability: 'live', value: inbound },
+    medianFirstResponseMinutes: { availability: 'unavailable', value: null },
+    p90FirstResponseMinutes: { availability: 'unavailable', value: null },
+    answeredWithin3hPercent: { availability: 'unavailable', value: null },
+    draftCreationMinutes: { availability: 'unavailable', value: null },
+    aiAssistedSendRate: { availability: 'unavailable', value: null },
+    medianEditDistance: { availability: 'unavailable', value: null },
+    totalRevenue: { availability: 'unavailable', value: null },
+    eligibleThreadCount: null,
+    unansweredEligible: null,
+    inboundPerDay: [],
+    comparison: [],
+    perTransport: [],
+    transports: [
+      {
+        id: cohortId === 'research' ? 'transport-nava' : 'transport-centurion',
+        email: cohortId === 'research' ? 'research@example.org' : 'centurion@example.org',
+        displayName: cohortId === 'research' ? 'Research fixture' : 'Centurion fixture',
+      },
+    ],
+    assumptions: ['Synthetic public-safe fixture; no live mail or model calls.'],
+    footnote: 'Synthetic public-safe dashboard fixture.',
+    windowStart: isoWithDays(cutoff, preset === '28d' ? 28 : 7),
+    windowEnd: cutoff,
+  } as AdminDashboardMetrics;
+}
+
+function response(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+function trpcResponse(data: unknown): Response {
+  return response([{ result: { data: { json: data } } }]);
+}
+
+export function installReservationToolsPilotTransport(): void {
+  window.__reservationToolsPilotFetchHandler = async (input, init) => {
+    const requestUrl =
+      typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    const url = new URL(requestUrl, window.location.href);
+    const requestLog = (window.__reservationToolsPilotRequests ??= []);
+    requestLog.push({ method: init?.method ?? 'GET', path: url.pathname });
+    if (url.origin !== FIXTURE_ORIGIN) {
+      throw new Error(`fixture transport refused non-loopback origin ${url.origin}`);
+    }
+
+    if (url.pathname.endsWith('/api/auth/get-session') || url.pathname.endsWith('/settings/undefined')) {
+      const unauthorized = fixtureMode() === 'unauthorized';
+      return response(
+        unauthorized
+          ? { user: { id: 'fixture-denied', email: 'denied@example.org' }, session: { id: 'fixture-session' } }
+          : { user: { id: 'fixture-viewer', email: 'navaai@legacyhotels.co.za' }, session: { id: 'fixture-session' } },
+      );
+    }
+
+    if (url.pathname.endsWith('/adminDashboard.getMetrics')) {
+      const input = parseDashboardInput(typeof init?.body === 'string' ? init.body : undefined);
+      if (fixtureMode() === 'error' && input.window === '28d') {
+        return response(
+          {
+            error: {
+              json: {
+                message: 'fixture dashboard outage',
+                code: -32603,
+                data: {
+                  code: 'INTERNAL_SERVER_ERROR',
+                  httpStatus: 503,
+                  path: 'adminDashboard.getMetrics',
+                },
+              },
+            },
+          },
+          503,
+        );
+      }
+      return trpcResponse(dashboardPayload(input));
+    }
+
+    if (url.pathname.endsWith('/connections.getDefault')) {
+      return trpcResponse({
+        id: 'transport-centurion',
+        email: 'centurion@example.org',
+        name: 'Centurion fixture',
+        picture: null,
+        createdAt: null,
+        providerId: 'mailbox',
+      });
+    }
+
+    return response({ error: { message: 'fixture route unavailable' } }, 404);
+  };
+}

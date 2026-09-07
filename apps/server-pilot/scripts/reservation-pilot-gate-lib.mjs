@@ -674,6 +674,12 @@ export function buildChildEnvironment(parent, { kind, guardPath }) {
   output.NODE_OPTIONS = `--import=${path.resolve(guardPath)}`;
   if (typeof parent.NAVA_FIXTURE_ORIGIN === 'string') {
     output.NAVA_FIXTURE_ORIGIN = assertLoopbackOrigin(parent.NAVA_FIXTURE_ORIGIN);
+    output.VITE_PUBLIC_BACKEND_URL = output.NAVA_FIXTURE_ORIGIN;
+    output.VITE_FRONTEND_ONLY = '0';
+    output.VITE_ZERO_DEMO_MODE = '0';
+    output.ZERO_DEMO_MODE = '0';
+    output.PLAYWRIGHT_BROWSERS_PATH =
+      '/home/ubuntu/projects/zero/.worktrees/centurion-dashboard-tools/.private/centurion-dashboard-tools-execution/playwright-browsers';
   }
   if (kind === 'db') {
     if (!parent.NAVA_TEST_DATABASE_URL) throw new Error('verified NAVA_TEST_DATABASE_URL required');

@@ -427,12 +427,17 @@ run_browser_slice() {
   trap 'rm -f "$report_path" "$error_path"' RETURN
   local -a command=(
     pnpm
+    --dir
+    "${REPO_ROOT}/apps/mail"
     exec
     playwright
     test
-    "apps/mail/tests/e2e/reservation-tools-pilot.spec.ts"
-    --grep="^${grep_pattern}$"
-    "--config=${config}"
+    "tests/e2e/reservation-tools-pilot.spec.ts"
+    # Playwright applies --grep to the file-qualified full title.  Anchor the
+    # reviewed slice at the suffix so the mapping remains exact without
+    # selecting zero tests because of the generated file prefix.
+    --grep=".*${grep_pattern}$"
+    --config=vite.pilot-fixture.config.ts
     --reporter=json
     --forbid-only
     --workers=1
