@@ -5,6 +5,7 @@ import {
 } from '../src/metrics/mail-data-health';
 
 const cutoff = '2026-09-07T00:00:00.000Z';
+const scopeKey = 'transport-centurion/cohort-centurion';
 
 describe('mail data health', () => {
   it('deduplicates canonical source copies and reports both directions through the cutoff', () => {
@@ -29,6 +30,7 @@ describe('mail data health', () => {
 
     const health = buildMailDataHealth({
       observationCutoff: cutoff,
+      scopeKey,
       messages: [inbound, { ...inbound, sourceMessageId: 'copy-of-in-1' }, outbound],
       quoteProjection: 'available',
     });
@@ -48,6 +50,7 @@ describe('mail data health', () => {
   it('deduplicates rows that share either a canonical or source identity', () => {
     const health = buildMailDataHealth({
       observationCutoff: cutoff,
+      scopeKey,
       messages: [
         {
           canonicalId: 'canonical-1',
@@ -71,6 +74,7 @@ describe('mail data health', () => {
   it('does not treat a queued native send as the last observed outbound', () => {
     const health = buildMailDataHealth({
       observationCutoff: cutoff,
+      scopeKey,
       messages: [
         {
           canonicalId: 'sent',
@@ -96,6 +100,7 @@ describe('mail data health', () => {
   it('labels header-date fallback and does not use import availability as an event clock', () => {
     const health = buildMailDataHealth({
       observationCutoff: cutoff,
+      scopeKey,
       messages: [
         {
           canonicalId: 'header-dated',
@@ -114,6 +119,7 @@ describe('mail data health', () => {
   it('uses a trusted outbound send clock as a source event', () => {
     const health = buildMailDataHealth({
       observationCutoff: cutoff,
+      scopeKey,
       messages: [
         {
           canonicalId: 'sent-1',
@@ -133,6 +139,7 @@ describe('mail data health', () => {
   it('keeps singleton and quoted-mailbox-reply diagnostics independently scoped', () => {
     const health = buildMailDataHealth({
       observationCutoff: cutoff,
+      scopeKey,
       messages: [
         {
           canonicalId: 'singleton-1',
@@ -173,6 +180,7 @@ describe('mail data health', () => {
   it('returns unknown quote counts when the bounded projection is unavailable', () => {
     const health = buildMailDataHealth({
       observationCutoff: cutoff,
+      scopeKey,
       messages: [
         {
           canonicalId: 'inbound-1',
@@ -197,6 +205,7 @@ describe('mail data health', () => {
   it('does not turn a known empty covered period into an unavailable zero', () => {
     const health = buildMailDataHealth({
       observationCutoff: cutoff,
+      scopeKey,
       messages: [],
       quoteProjection: 'available',
     });
@@ -241,6 +250,205 @@ describe('mail data health', () => {
         denominator: 4,
         availability: 'available',
       },
+      unscorable: {
+        total: 0,
+        inbound: 0,
+        outbound: 0,
+        missingClock: 0,
+        invalidClock: 0,
+        missingThreadLinkage: 0,
+        missingIdentity: 0,
+      },
     });
+  });
+
+  it('fails closed when no bounded evidence source is supplied', () => {
+    const health = buildMailDataHealth({ observationCutoff: cutoff });
+
+    expect(health.availability).toBe('unavailable');
+    expect(health.directionCounts).toEqual({ inbound: null, outbound: null });
+    expect(health.singleton).toEqual({ numerator: null, denominator: null });
+  });
+
+  it('fails closed when a row has no usable event or observation clock', () => {
+    const health = buildMailDataHealth({
+      observationCutoff: cutoff,
+      scopeKey,
+      messages: [{ canonicalId: 'clockless', direction: 'inbound', threadId: 'thread-1' }],
+      quoteProjection: 'available',
+    });
+
+    expect(health.availability).toBe('unavailable');
+    expect(health.directionCounts).toEqual({ inbound: null, outbound: null });
+    expect(health.unscorable).toMatchObject({ total: 1, missingClock: 1 });
+    expect(health.quotedMailboxReplyNoMatchingOutbound.availability).toBe('unavailable');
+  });
+
+  it('does not count an invalid/future event through a first-known fallback', () => {
+    const health = buildMailDataHealth({
+      observationCutoff: cutoff,
+      scopeKey,
+      messages: [
+        {
+          canonicalId: 'future-event',
+          direction: 'inbound',
+          sourceEventAt: '2026-09-08T10:00:00.000Z',
+          firstKnownAt: '2026-09-06T10:00:00.000Z',
+          threadId: 'thread-1',
+          hasQuotedMailboxReply: true,
+        },
+      ],
+      quoteProjection: 'available',
+    });
+
+    expect(health.availability).toBe('unavailable');
+    expect(health.directionCounts).toEqual({ inbound: null, outbound: null });
+    expect(health.singleton).toEqual({ numerator: null, denominator: null });
+    expect(health.lastObservedAt).toEqual({ inbound: null, outbound: null });
+    expect(health.lastObservedBasis).toEqual({ inbound: null, outbound: null });
+    expect(health.unscorable).toMatchObject({ total: 1, invalidClock: 1 });
+  });
+
+  it('requires source summary clock basis instead of inferring first-known', () => {
+    const health = buildMailDataHealth({
+      observationCutoff: cutoff,
+      directionCounts: { inbound: 1, outbound: 0 },
+      lastObservedAt: { inbound: '2026-09-06T10:00:00.000Z', outbound: null },
+      singleton: { numerator: 1, denominator: 1 },
+      quotedMailboxReplyNoMatchingOutbound: { numerator: 0, denominator: 1 },
+    });
+
+    expect(health.availability).toBe('unavailable');
+    expect(health.lastObservedBasis).toEqual({ inbound: null, outbound: null });
+  });
+
+  it('does not certify singleton or quote evidence without thread linkage', () => {
+    const health = buildMailDataHealth({
+      observationCutoff: cutoff,
+      scopeKey,
+      messages: [
+        {
+          canonicalId: 'unlinked-1',
+          direction: 'inbound',
+          sourceEventAt: '2026-09-05T10:00:00.000Z',
+          hasQuotedMailboxReply: true,
+        },
+        {
+          canonicalId: 'unlinked-2',
+          direction: 'inbound',
+          sourceEventAt: '2026-09-05T11:00:00.000Z',
+          hasQuotedMailboxReply: false,
+        },
+      ],
+      quoteProjection: 'available',
+    });
+
+    expect(health.directionCounts).toEqual({ inbound: 2, outbound: 0 });
+    expect(health.singleton).toEqual({ numerator: null, denominator: null });
+    expect(health.quotedMailboxReplyNoMatchingOutbound).toMatchObject({
+      numerator: null,
+      denominator: null,
+      availability: 'unavailable',
+      reason: 'thread_linkage_unavailable',
+    });
+    expect(health.unscorable).toMatchObject({ total: 2, missingThreadLinkage: 2 });
+  });
+
+  it('merges duplicate identities so a valid later source clock is not hidden by the first row', () => {
+    const health = buildMailDataHealth({
+      observationCutoff: cutoff,
+      scopeKey,
+      messages: [
+        {
+          canonicalId: 'same-message',
+          direction: 'inbound',
+          threadId: 'thread-1',
+        },
+        {
+          canonicalId: 'same-message',
+          sourceMessageId: '<same-message@example.test>',
+          direction: 'inbound',
+          sourceEventAt: '2026-09-05T12:00:00.000Z',
+          threadId: 'thread-1',
+          hasQuotedMailboxReply: false,
+        },
+      ],
+      quoteProjection: 'available',
+    });
+
+    expect(health.directionCounts).toEqual({ inbound: 1, outbound: 0 });
+    expect(health.unscorable.total).toBe(0);
+  });
+
+  it('merges later sent and quote evidence instead of letting an earlier queued copy win', () => {
+    const health = buildMailDataHealth({
+      observationCutoff: cutoff,
+      scopeKey,
+      messages: [
+        {
+          canonicalId: 'same-outbound',
+          direction: 'outbound',
+          sourceEventAt: '2026-09-05T12:00:00.000Z',
+          threadId: 'thread-1',
+          sendState: 'pending',
+          hasQuotedMailboxReply: false,
+        },
+        {
+          canonicalId: 'same-outbound',
+          direction: 'outbound',
+          sourceMessageId: '<same-outbound@example.test>',
+          sourceEventAt: '2026-09-05T12:00:00.000Z',
+          threadId: 'thread-1',
+          sendState: 'sent',
+          hasQuotedMailboxReply: true,
+        },
+      ],
+      quoteProjection: 'available',
+    });
+
+    expect(health.directionCounts).toEqual({ inbound: 0, outbound: 1 });
+    expect(health.lastObservedAt.outbound).toBe('2026-09-05T12:00:00.000Z');
+    expect(health.unscorable.total).toBe(0);
+  });
+
+  it('requires a non-empty scope key for row diagnostics', () => {
+    const health = buildMailDataHealth({
+      observationCutoff: cutoff,
+      scopeKey: ' ',
+      messages: [
+        {
+          canonicalId: 'message-1',
+          direction: 'inbound',
+          sourceEventAt: '2026-09-05T12:00:00.000Z',
+        },
+      ],
+      quoteProjection: 'available',
+    });
+
+    expect(health.availability).toBe('unavailable');
+  });
+
+  it('allowlists summary scalars instead of copying tainted extra fields', () => {
+    const quote = {
+      numerator: 1,
+      denominator: 2,
+      rawBody: 'quoted body must not be returned',
+    } as unknown as { numerator: number; denominator: number };
+    const health = buildMailDataHealth({
+      observationCutoff: cutoff,
+      directionCounts: { inbound: 2, outbound: 1 },
+      lastObservedAt: { inbound: '2026-09-06T10:00:00.000Z', outbound: null },
+      lastObservedBasis: { inbound: 'source_event', outbound: null },
+      singleton: { numerator: 1, denominator: 2 },
+      quotedMailboxReplyNoMatchingOutbound: quote,
+    });
+
+    expect(health.quotedMailboxReplyNoMatchingOutbound).toEqual({
+      numerator: 1,
+      denominator: 2,
+      availability: 'available',
+    });
+    expect(health).not.toHaveProperty('rawBody');
+    expect(JSON.stringify(health)).not.toContain('quoted body');
   });
 });
