@@ -22,7 +22,7 @@ SPA chrome that calls `connections.setDefault` to flip `is_default` and rescope 
 
 ### Mail shell
 
-Desktop reading chrome for the mail SPA: fixed app sidebar beside list and thread columns. Layout bands differ: Wide split mounts both columns; Mid-width exclusive panes mounts only one at a time. Wide thread content (Reply composer, long HTML) must scroll inside the thread column; it must not shove the inbox list sideways off the viewport. Distinct from Mailbox switcher (transport identity chrome) and from folder/category filters inside the list.
+Desktop reading chrome for the mail SPA: fixed app sidebar beside list and thread columns. Layout bands differ: Wide split mounts both columns; Mid-width exclusive panes mounts only one at a time. Wide thread content (Reply composer, long HTML, banner-heavy mail) must stay width-contained inside the thread column; it must not inflate that column’s content width or shove the inbox list sideways off the viewport. Distinct from Mailbox switcher (transport identity chrome) and from folder/category filters inside the list.
 
 ### Wide split
 
@@ -39,6 +39,12 @@ Staff-facing Close/X contract on Mid-width exclusive panes: clearing thread sele
 ### Newest-on-top thread display
 
 Reading-pane message order that shows the chronologically newest message first. Wire/`mail.get` order stays oldest → newest; the pane reverses only at the list boundary. `latest` remains the chronological last message (not the first visual row). Reply composer mounts above the target message. Distinct from Mail shell (column chrome) and from inbox list sort.
+
+Thread-level chrome that must stay above the whole message list (notably Thread Attachments) cannot hang on the chronologically oldest message — under newest-on-top that row paints mid-list or last, not at the top.
+
+### Thread Attachments
+
+Reading-pane strip that aggregates downloadable attachments across every message in the open thread and sits above the message list. Distinct from per-message attachment chips under a single message body. When many filenames are present, chips scroll horizontally inside a shrinkable row rather than widening the thread column.
 
 ### Reply action scope
 
@@ -414,10 +420,6 @@ The pastel background/text pair used for primary hotel category chrome (nav rows
 
 Sidebar user-filing surface for custom folders built on mailLabel rows (slash names for nesting). Staff drag finished mail here so inbox stays unactioned work. Distinct from hotel AI Folders (category queues) and from system places (inbox/archive/spam/bin flags). Schema and API names stay mailLabel / labelIds / labels.*.
 
-### Spam-scoped My Folder
-
-A reserved user label (e.g. Quarantine for FortiMail digests) that lists under the Spam system folder with `labelIds` filtering, not under archive+labelIds. Archive-like chrome, move actions, and optimistic filing must treat these UUID routes as spam-scoped — route-filter alone is insufficient. Distinct from ordinary My folders (archive filing) and from folder-first spam membership (`spam_at` truth).
-
 ### File threads
 
 Exclusive user-label filing mutation: set the target user label on threads, archive them out of inbox, clear trash/spam placement, leave AI categoryIds untouched. Unfile is Move to Inbox (clear archive), which drops the thread from the folder list that filters archive+labelIds.
@@ -439,16 +441,6 @@ Ops corpus analysis over connected-mailbox exports (not product mail UI). Used f
 ### Actionable reservation thread
 
 A reservation-work thread in the analysis denominator: Luna intents for new booking, quote, group/event, or modify, after excluding pure channel confirmation digests and OTA system notices that carry no guest/agent request language. Distinct from the full mailbox thread count and from hotel-category Automated-channel filing in the SPA.
-
-### Responded actionable thread
-
-An actionable reservation thread with deterministic evidence that the hotel or its automation answered the commercial request, including evidence carried by reply headers, quoted hotel blocks, or a causally matched related message. Distinct from merely having an outbound message in the same source thread and from read/unread state.
-
-### Conversation-link overlay
-
-A secondary graph relation that groups distinct mail threads for inbox display without changing their authoritative source thread IDs.
-
-Weak evidence such as guarded subject, quoted-body, or orphan matches is bounded and deterministic; when discovery rules change, unsafe persisted edges are superseded rather than deleted.
 
 ### Trigger inbound
 
@@ -514,3 +506,17 @@ Hard override that forbids Vitest (and similar runners) against pilot/production
 - **"nava URL"** after the hotel-HTTPS cutover means the Canonical origin on hotel DNS/VPN — not `nava.legacy.local` (legacy CORS overlap only).
 - **"SynXis exclusion"** had been applied only at actionable-thread filter — within-thread Trigger inbound can still be a Channel-automated inbound unless selection hard-excludes it; thread filter alone does not protect uEPV.
 - **"first inbound"** is not the same as Trigger inbound — received-day / early demand scripts used first inbound; unanswered EPV must not silently fall back to it when no guest/agent trigger exists.
+
+## Pilot measurement
+
+### Coverage-qualified mail baseline
+
+Observed mailbox service over an explicit arrival window and observation cutoff, qualified by reconciled incoming/sent source coverage and timestamp provenance. Missing sent mail, unknown source intervals and off-email work are not evidence of staff inactivity or lost revenue. Distinct from a complete baseline of all hotel operations and from Nava treatment-effect measurement.
+
+### Private reply shadow
+
+Background reply prediction sealed with its available-at-the-time inputs and later compared with observed staff replies and supporting facts. It stores private evaluation artifacts without exposing a draft, changing mailbox/work state or sending mail. Distinct from legacy Live reservation shadow, whose contract intentionally retains counters rather than business evidence or draft bodies.
+
+### Embedded task measurement
+
+Optional timing and quality comparison during visits already occurring in the one-person pilot. Assistance offered, actual exposure and complete task effort are separate observations; partial or abandoned timing cannot become a time-saving claim. Distinct from always-on passive mail-service metrics and from a hotel-wide revenue experiment.
