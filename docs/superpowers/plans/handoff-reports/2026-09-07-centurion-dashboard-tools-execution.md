@@ -27,7 +27,7 @@
 | Unit | Scope | Status | Evidence / dependency |
 | --- | --- | --- | --- |
 | P0 | Baseline reconciliation and safe local test setup | Complete for initial gates | Baseline reconciliation passed; 41 pure tests passed; private Chromium launch and owned loopback PostgreSQL control verified |
-| U1 | Synthetic fixtures, safe test gate, evaluation-manifest contract | Pure-unit entry approved; remaining repairs in progress | Reviewer approved bounded U12a unit use at `f1fa5e18`; browser/DB/Phase 2/B approval remains pending; task base `a5aa50b6` |
+| U1 | Synthetic fixtures, safe test gate, evaluation-manifest contract | Implementation complete; reviewed | Final checkpoint `227432c0`; 21 scoped tests and fresh gate pass; independent spec/quality pass. Downstream application/runtime proof remains pending |
 | U10 | Executive dashboard | Pending | U1; U12 for prospective metrics |
 | U12 | Measurement start and lean diagnostics | U12a pure contracts in progress | Initial pure-unit prerequisite approved; U10 integration/query proof still pending |
 | U8 | Independent audited reads and reservation context | Pending | Initial U10/U12 slice; U1 |
@@ -44,10 +44,12 @@
 
 ## Verification and claims
 
-- U1 initial implementation is committed locally at `86d38cec`; independent Luna review found 7 Important issues. Repairs are committed at `f1fa5e18` and undergoing focused independent re-review. No implementation unit is complete yet.
+- U1 implementation is complete and independently reviewed. Local checkpoints are `86d38cec` (initial), `f1fa5e18` (first repairs) and `227432c0` (second repairs); all Critical/Important review findings are resolved. This is safe-entry/fixture implementation completion, not a dashboard, live-tool or drafting milestone.
 - Root fresh repair verification at 16:22 UTC: exact U1 test file, 19 passed / 0 skipped; dedicated `unit gate` passed with an allowlisted environment. Shell syntax, both Node helper syntax checks and diff check passed. Commit hook initially rejected one style warning; Luna corrected it, reran 19 tests, and the final commit-scoped oxlint check passed with zero warnings/errors. Shell executable mode is recorded as 100755 despite the repository's `core.filemode=false`.
 - Focused independent re-review confirmed all original seven findings and executable mode are repaired, but found three further Important issues: evaluation eligibility/blocked outcomes, Chromium-process network isolation, and validation of the effective default config. Full U1 is still incomplete; the same writer is repairing these with behavioral regressions.
 - A separate bounded spec/quality verdict approved U1's pure `unit measurement` entry for synthetic U12a work: minimal child environment, exact file mapping, stable refusal and strict report checks. This satisfies only the initial pure-unit dependency, not browser/DB/evaluation use. U12a now proceeds in disjoint files while the remaining U1 repairs continue, respecting U1's requirement not to delay the first dashboard with later evaluation fixtures.
+- Final U1 review at `227432c0`: specification and task quality both passed. The second repair enforces runnable/unblocked evaluation eligibility, actual default-config validation, and loopback-only Linux network namespace execution for future Playwright children. Fresh writer tests: 21/21; root fresh `unit gate`: PASS; commit-scoped oxlint: zero warnings/errors. A namespace capability/control probe passed without external connections; actual future browser/DB application suites remain unrun. Browser fixtures must start their server inside that namespace and fail closed if the required isolation is unavailable.
+- U12a encountered two provider rate limits before implementation progressed. It has now resumed as the sole active Luna worker; optional readiness work remains parked to reduce request pressure. U12a's task baseline is `227432c0` for the resumed run.
 - Root fresh U1 check at 15:47 UTC: exact `reservation-pilot-gate.test.ts`, sanitized environment, 1 file / 10 passed / 0 skipped; shell syntax, diff check and commit-scoped oxlint passed. The implementation's initial dashboard/measurement unit commands currently run U1 self-tests; they do not prove the dashboard or measurement implementation. Slice enforcement is included in the pending review.
 - Initial local baseline: 4 files / 41 pure tests passed with sanitized test environment; private Chromium 1169 installation/launch evidence recorded. This is not dashboard completion or live PMS proof.
 - Source reconciliation passed: initial U1/U10/U12 source paths are unchanged relative to the historical checkout; expected implementation gaps remain. Migration numbers 0023/0024/0025 remain unused, subject to recheck.
@@ -63,7 +65,7 @@
 
 ## Minor findings / follow-ups
 
-- U1 Important findings addressed by the writer with behavioral regression tests: inherited environment; advisory browser/network checks; extra Docker port bindings; browser-slice aliases; future-file-dependent refusal test; placeholder hashes; declarative-only mode/holdout isolation. Independent re-review is pending; writer assertions are not approval.
+- U1 Important findings are resolved and independently approved, including the later eligibility, default-config and Chromium-egress findings. No U1 Critical/Important finding remains open.
 - U1 Minor executable-mode mismatch is corrected in the Git index and repair commit.
 - Root exact-slice clarification: U1 self-tests cannot certify U10/U12 dashboard/measurement suites. Missing downstream required files must refuse; a dedicated gate-selftest slice is acceptable.
 - Review's Playwright-installation uncertainty is resolved by P0's package/browser receipt; actual skipped-report parsing remains a required behavior check.
