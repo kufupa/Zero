@@ -9,10 +9,24 @@ import type {
 } from '../db/schema/mail.js';
 import { parseEnv } from '../env.js';
 import { READ_TOOLS, type ReadToolId } from '../hms/read-tools.js';
+import { readRequestSchema } from '../hms/read-service.js';
+import { readRefSchema } from '../hms/read-service-contracts.js';
 
 export const DEFAULT_AI_MODEL_ID = 'amazon.nova-lite-v1:0';
 export const DEFAULT_TRIAGE_PROMPT_VERSION = 'triage-v6';
 export const DEFAULT_FEEDBACK_PROMPT_VERSION = 'feedback-v1';
+export const NOT_APPLICABLE_MODEL_ID = 'not_applicable';
+export const READ_TOOL_PROMPT_VERSION = 'hms-read/1';
+export const READ_TOOL_RUN_KIND = 'read_tool' as const;
+
+export function canClaimReadToolRun(input: {
+  runKind: AiWorkflowRunKind | string;
+  lane: AiExecutorLane | string;
+  readServiceEnabled: boolean;
+}): boolean {
+  return input.runKind !== READ_TOOL_RUN_KIND ||
+    (input.lane === 'hms' && input.readServiceEnabled);
+}
 export const CLEANUP_RESERVE_MS = 10_000;
 
 export type AiWorkflowRunKind = (typeof aiWorkflowRunKindEnum.enumValues)[number];
@@ -179,6 +193,10 @@ export interface EnqueueAiRunInput {
   promptVersion: string;
   promptHash?: string;
   executorLane?: AiExecutorLane;
+  /** Closed, trusted read request; only present for read_tool runs. */
+  readRequest?: Record<string, unknown>;
+  /** Private typed receipt reference; only present for read_tool runs. */
+  readResultRef?: string;
 }
 
 export interface AiRunScopeFilter {
@@ -205,6 +223,7 @@ export interface MarkAiRunSucceededInput {
   mastraScorerId?: string;
   generationId?: string;
   metrics?: Record<string, unknown>;
+  readResultRef?: string;
 }
 
 export interface MarkAiRunRetryInput {
@@ -299,6 +318,21 @@ export function toAiRunFence(run: AiWorkflowRun): AiRunFence | null {
 
 export async function enqueueAiRun(input: EnqueueAiRunInput, db: DB = getDb()) {
   assertMailRunLinks(input);
+  if (input.runKind === 'read_tool') {
+    if (input.executorLane !== 'hms') {
+      throw new Error('read_tool runs must use the hms executor lane');
+    }
+    if (input.modelId !== NOT_APPLICABLE_MODEL_ID) {
+      throw new Error('read_tool runs require modelId=not_applicable');
+    }
+    if (input.promptVersion !== READ_TOOL_PROMPT_VERSION) {
+      throw new Error(`read_tool runs require promptVersion=${READ_TOOL_PROMPT_VERSION}`);
+    }
+    if (!input.readRequest || typeof input.readRequest !== 'object') throw new Error('read_tool runs require a closed readRequest');
+    if (!input.readResultRef) throw new Error('read_tool runs require a private readResultRef');
+    input.readRequest = readRequestSchema.parse(input.readRequest);
+    input.readResultRef = readRefSchema.parse(input.readResultRef);
+  }
   const now = new Date();
   const id = randomUUID();
 
@@ -314,6 +348,8 @@ export async function enqueueAiRun(input: EnqueueAiRunInput, db: DB = getDb()) {
       modelId: input.modelId,
       promptVersion: input.promptVersion,
       promptHash: input.promptHash,
+      readRequest: input.readRequest,
+      readResultRef: input.readResultRef,
       executorLane: input.executorLane ?? 'default',
       state: 'queued',
       createdAt: now,
@@ -336,9 +372,15 @@ export async function enqueueAiRun(input: EnqueueAiRunInput, db: DB = getDb()) {
 }
 
 export async function claimNextAiRun(input: ClaimNextAiRunInput) {
+  if (input.runKind === 'read_tool' && input.lane !== 'hms') return null;
   const db = input.db ?? getDb();
   const now = input.now ?? new Date();
   const env = parseEnv(process.env as Record<string, string | undefined>);
+  if (!canClaimReadToolRun({
+    runKind: input.runKind ?? '',
+    lane: input.lane,
+    readServiceEnabled: env.HMS_READ_SERVICE_ENABLED,
+  })) return null;
   const staleRunTimeoutMs = input.staleRunTimeoutMs ?? env.AI_STALE_RUN_TIMEOUT_MS;
   const staleBefore = new Date(now.getTime() - staleRunTimeoutMs);
   const runDeadlineMs = env.HMS_RUN_DEADLINE_MS;
@@ -529,6 +571,7 @@ export async function markAiRunSucceeded(input: MarkAiRunSucceededInput, db: DB 
         mastraTraceId: input.mastraTraceId,
         mastraScorerId: input.mastraScorerId,
         generationId: input.generationId,
+        ...(input.readResultRef === undefined ? {} : { readResultRef: input.readResultRef }),
         metrics: mergeTerminalRunMetrics(current.metrics, input.metrics),
         finishedAt: now,
         updatedAt: now,

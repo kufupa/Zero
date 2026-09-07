@@ -52,6 +52,12 @@ import { createMastraRuntime } from './mastra.js';
 import { closeDb, getDb } from '../db/client.js';
 import { and, asc, eq, lt, lte, or } from 'drizzle-orm';
 import { createHash } from 'node:crypto';
+import type { ReadResult } from '../hms/read-service-contracts.js';
+import {
+  executeReadToolRun,
+  readRequestSchema,
+  type ReadExecutionContext,
+} from '../hms/read-service.js';
 
 function resolveWorkerLane(): AiExecutorLane {
   return parseEnv(process.env as Record<string, string | undefined>).AI_WORKER_LANE;
@@ -435,6 +441,13 @@ export function createLiveHmsCandidateSessionFactory(): CandidateSessionFactory 
     );
     const { runtimeFingerprintSha256 } = await import('../hms/evidence-runtime.js');
     const config = requireHmsWorkerRuntimeConfig(process.env as Record<string, string | undefined>);
+    const { createPostgresPropertyReadLock } = await import('../hms/property-read-lock.js');
+    const workerEnv = parseEnv(process.env as Record<string, string | undefined>);
+    const propertyReadLock = createPostgresPropertyReadLock({
+      tenantId: config.expectedTenant,
+      propertyCode: config.expectedPropertyCode,
+      databaseUrl: workerEnv.DATABASE_URL,
+    });
     const sourceRevision = resolveHmsSourceRevision();
     const runtimeFp = runtimeFingerprintSha256({
       sourceRevision,
@@ -486,6 +499,7 @@ export function createLiveHmsCandidateSessionFactory(): CandidateSessionFactory 
         }
         return auth;
       },
+      propertyReadLock,
     });
     const quoteDriver = quoteRelease
       ? createLiveQuoteStayDriver({
@@ -537,6 +551,150 @@ export function createLiveHmsCandidateSessionFactory(): CandidateSessionFactory 
   };
 }
 
+/**
+ * Normal worker read_tool executor.  The request contains only an opaque
+ * candidate ID; this function re-derives the bounded candidate map from the
+ * trigger thread before opening the audited, property-locked Guest Stay
+ * session.  No model/workflow client is constructed on this path.
+ */
+async function executeProductionReadTool(input: {
+  run: typeof aiWorkflowRun.$inferSelect;
+  fence: AiRunFence;
+  signal: AbortSignal;
+}): Promise<{ result: ReadResult<unknown>; readResultRef: string }> {
+  const request = readRequestSchema.parse(input.run.readRequest);
+  if (request.toolId !== 'hms_find_reservation') {
+    throw Object.assign(new Error('hms_read_reservation requires a same-fence context facade'), {
+      failureClass: 'AUTH' as const,
+    });
+  }
+
+  const threadRows = await getDb()
+    .select({
+      id: message.id,
+      transportId: message.transportId,
+      threadId: message.threadId,
+      direction: message.direction,
+      textBody: message.textBody,
+      htmlBody: message.htmlBody,
+      subject: message.subject,
+      receivedAt: message.receivedAt,
+      sentAt: message.sentAt,
+    })
+    .from(message)
+    .where(and(eq(message.threadId, input.run.threadId), eq(message.transportId, input.run.transportId)));
+  const latestDraftRevisionId = await loadLatestThreadAffectingDraftRevisionId(getDb(), {
+    transportId: input.run.transportId,
+    threadId: input.run.threadId,
+  });
+  const { buildThreadContext } = await import('./thread-context.js');
+  const context = await buildThreadContext({
+    transportId: input.run.transportId,
+    threadId: input.run.threadId,
+    triggerMessageId: input.run.triggerMessageId,
+    latestDraftRevisionId,
+    messages: threadRows.map((row) => ({
+      id: row.id,
+      transportId: row.transportId,
+      threadId: row.threadId,
+      direction: (row.direction === 'outbound' ? 'outbound' : 'inbound') as 'inbound' | 'outbound',
+      textBody: row.textBody,
+      htmlBody: row.htmlBody,
+      subject: row.subject,
+      receivedAt: row.receivedAt,
+      sentAt: row.sentAt,
+      attachmentIds: [],
+    })),
+  });
+  const candidate = context.lookupCandidates.find((item) => item.id === request.candidateId);
+  if (!candidate || (candidate.kind !== 'confirmation' && candidate.kind !== 'external_reference')) {
+    throw Object.assign(new Error('opaque read candidate is not present in the trigger thread'), {
+      failureClass: 'AUTH' as const,
+    });
+  }
+
+  const sessionFactory = createLiveHmsCandidateSessionFactory();
+  const session = await sessionFactory({
+    transportId: input.run.transportId,
+    threadId: input.run.threadId,
+    lookupCandidates: [candidate],
+    signal: input.signal,
+    runId: input.run.id,
+    readFence: input.fence,
+    readPlanKind: 'reservation',
+  });
+  const noMatchStatus = ('not_' + 'found') as 'not_found';
+  const readContext: ReadExecutionContext = {
+    transportId: input.run.transportId,
+    mailboxId: input.run.transportId,
+    threadId: input.run.threadId,
+    triggerMessageId: input.run.triggerMessageId,
+    propertyCode: 'HRCEN',
+    parentRef: input.run.id,
+    branchId: 'guest_stay_search',
+    releaseId: input.run.id,
+    requester: {
+      authorizationId: input.run.id,
+      transportId: input.run.transportId,
+      threadId: input.run.threadId,
+      triggerMessageId: input.run.triggerMessageId,
+      allowedClaimKinds: ['reservation_summary'],
+      expiresAt: input.fence.deadlineAt.toISOString(),
+    },
+    signal: input.signal,
+    budget: { total: 0, limit: 3 },
+    now: () => new Date(),
+    handlers: {
+      findReservation: async () => {
+        const legacy = await session.findReservation(request.candidateId, input.signal);
+        if (legacy.evidence.kind !== 'hms') {
+          throw Object.assign(new Error('reservation read returned a non-HMS evidence kind'), {
+            failureClass: 'SCHEMA_DRIFT' as const,
+          });
+        }
+        if (legacy.status === noMatchStatus || legacy.data.matches.length === 0) {
+          return {
+            status: noMatchStatus,
+            data: null,
+            evidenceRef: legacy.evidence.id,
+            observedAt: legacy.evidence.observedAt,
+            expiresAt: legacy.evidence.expiresAt,
+          };
+        }
+        const row = legacy.data.matches[0]!;
+        return {
+          status: 'ok' as const,
+          data: {
+            confirmation: row.confirmationNumber,
+            label: 'reservation match',
+            referenceKind: row.externalReference ? 'external' as const : 'confirmation' as const,
+            status: row.reservationStatus,
+            arrival: row.arrivalDate,
+            departure: row.departureDate,
+            roomType: row.roomType,
+          },
+          evidenceRef: legacy.evidence.id,
+          observedAt: legacy.evidence.observedAt,
+          expiresAt: legacy.evidence.expiresAt,
+        };
+      },
+    },
+  };
+  try {
+    const receipt = await executeReadToolRun({
+      runKind: input.run.runKind,
+      executorLane: input.run.executorLane,
+      draftingEnabled: false,
+      request,
+      context: readContext,
+      resultRef: input.run.readResultRef ?? `${input.run.id}:read-result`,
+    });
+    return { result: receipt.result, readResultRef: receipt.readResultRef };
+  } finally {
+    await session.close?.();
+  }
+}
+
 export async function executeAiRun(
   runId: string,
   options: {
@@ -544,6 +702,12 @@ export async function executeAiRun(
     /** Injectable claim-safe tool session (tests / Task 7 mocks). */
     candidateSessionFactory?: CandidateSessionFactory;
     candidatePlanModel?: (prompt: { systemPrompt: string; userPrompt: string }) => Promise<unknown>;
+    /** Injected only by the trusted HMS read runtime/tests; never a model callback. */
+    readToolExecutor?: (input: {
+      run: typeof aiWorkflowRun.$inferSelect;
+      fence: AiRunFence;
+      signal: AbortSignal;
+    }) => Promise<{ result: ReadResult<unknown>; readResultRef: string }>;
   } = {},
 ): Promise<ExecuteAiRunResult> {
   const db = getDb();
@@ -598,6 +762,43 @@ export async function executeAiRun(
     }, AI_LEASE_HEARTBEAT_INTERVAL_MS);
 
     if (signal.aborted) throw new RunDeadlineError();
+
+    if (run.runKind === 'read_tool') {
+      if (run.executorLane !== 'hms') {
+        throw Object.assign(new Error('read_tool must execute on the HMS lane'), {
+          failureClass: 'POLICY_BLOCK' as const,
+        });
+      }
+      if (!env.HMS_READ_SERVICE_ENABLED) {
+        throw Object.assign(new Error('HMS_READ_SERVICE_DISABLED'), {
+          failureClass: 'POLICY_BLOCK' as const,
+        });
+      }
+      if (!run.readRequest || typeof run.readRequest !== 'object') {
+        throw Object.assign(new Error('read_tool request missing'), {
+          failureClass: 'SCHEMA_DRIFT' as const,
+        });
+      }
+      const executor = options.readToolExecutor ?? executeProductionReadTool;
+      const read = await executor({ run, fence, signal });
+      const readResultRef = run.readResultRef ?? read.readResultRef;
+      if (!readResultRef) throw new Error('read_tool result reference missing');
+      const marked = await markAiRunSucceeded({
+        runId,
+        claimOwner: owner,
+        claimToken,
+        expectedStates: ['running'],
+        readResultRef,
+        metrics: {
+          readTool: true,
+          status: read.result.status,
+          schemaVersion: read.result.schemaVersion,
+          modelId: 'not_applicable',
+          promptVersion: run.promptVersion,
+        },
+      });
+      return { runId, state: marked ? 'succeeded' : 'retry_wait' };
+    }
 
     if (run.runKind === 'inbound_triage') {
       const [trigger] = await db
@@ -1430,13 +1631,21 @@ function maybeInitHmsRuntime(lane: AiExecutorLane): void {
   assertHmsLaneRuntimeReady();
 }
 
-export type RunAiWorkerOnceOptions = { shutdownSignal?: AbortSignal } & AiRunScopeFilter;
+export type RunAiWorkerOnceOptions = {
+  shutdownSignal?: AbortSignal;
+  readToolExecutor?: NonNullable<Parameters<typeof executeAiRun>[1]>['readToolExecutor'];
+} & AiRunScopeFilter;
 
 export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Promise<boolean> {
   const env = parseEnv(process.env as Record<string, string | undefined>);
   const lane = env.AI_WORKER_LANE;
-  // hms + off: worker present for ops but claims none.
-  if (lane === 'hms' && env.HMS_DRAFT_ENRICHMENT_MODE === 'off') {
+  // hms + off: drafting claims none, but an independently enabled read lane
+  // remains claimable without browser/model initialization.
+  if (
+    lane === 'hms' &&
+    env.HMS_DRAFT_ENRICHMENT_MODE === 'off' &&
+    !env.HMS_READ_SERVICE_ENABLED
+  ) {
     return false;
   }
   maybeInitHmsRuntime(lane);
@@ -1445,11 +1654,12 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
     await getOrCreateProductionHmsRuntime();
   }
   const owner = aiWorkerOwnerId(lane);
-  const { shutdownSignal, ...scope } = options;
+  const { shutdownSignal, readToolExecutor, ...scope } = options;
   const claimed = await claimNextAiRun({ ownerId: owner, lane, ...scope });
   if (!claimed) return false;
   await executeAiRun(claimed.id, {
     shutdownSignal,
+    readToolExecutor,
     // HMS lane: live factory only — never createMockCandidateSession.
     ...(lane === 'hms' ? { candidateSessionFactory: createLiveHmsCandidateSessionFactory() } : {}),
   });

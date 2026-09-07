@@ -1,12 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import type { ReadToolId } from './read-tools.js';
+import type { ReadToolId, ReservationContextToolId } from './read-tools.js';
 
 const childToolSchema = z.enum([
   'hms_list_documents',
   'hms_sent_email_audit',
   'hms_read_folio',
   'hms_company_account_read',
+  'hms_read_reservation',
 ]);
 
 export const readCandidateChildSchema = z
@@ -27,7 +28,10 @@ export type ReadCandidateChild = z.infer<typeof readCandidateChildSchema>;
 export function mintReadCandidateChildren(input: {
   sessionId: string;
   parentEvidenceId: string;
-  tools: Array<{ toolId: ReadToolId; requestBranchId: string }>;
+  tools: Array<{
+    toolId: ReadToolId | ReservationContextToolId;
+    requestBranchId: string;
+  }>;
   propertyCode: string;
   scopeHash: string;
   expiresAt: Date;
@@ -62,7 +66,7 @@ export function resolveReadCandidateChild(input: {
   id: string;
   sessionId: string;
   parentEvidenceId: string;
-  toolId: ReadToolId;
+  toolId: ReadToolId | ReservationContextToolId;
   requestBranchId: string;
   propertyCode: string;
   scopeHash: string;

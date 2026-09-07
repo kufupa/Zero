@@ -98,6 +98,8 @@ export interface MailEnv {
   BEDROCK_GUARDRAIL_VERSION?: string;
   MASTRA_STORAGE_PATH?: string;
   HMS_DRAFT_ENRICHMENT_MODE: HmsDraftEnrichmentMode;
+  /** Independent model-free HMS read worker gate; defaults off. */
+  HMS_READ_SERVICE_ENABLED: boolean;
   HMS_RUN_DEADLINE_MS: number;
   HMS_HEALTH_STATUS_PATH: string;
   HMS_CIRCUIT_COOLDOWN_MS: number;
@@ -316,6 +318,7 @@ export function parseEnv(input: EnvInput): MailEnv {
     AI_STALE_RUN_TIMEOUT_MS: 15 * 60_000,
     AI_WORKER_LANE: 'default',
     HMS_DRAFT_ENRICHMENT_MODE: 'off',
+    HMS_READ_SERVICE_ENABLED: false,
     HMS_RUN_DEADLINE_MS: 150_000,
     HMS_HEALTH_STATUS_PATH: '/tmp/nava-zero-hms-health.json',
     HMS_CIRCUIT_COOLDOWN_MS: 30_000,
@@ -386,6 +389,9 @@ export function parseEnv(input: EnvInput): MailEnv {
   // requireHmsWorkerRuntimeConfig() on the HMS worker path.
   const hmsControl = parseHmsControlConfig(input);
   env.HMS_DRAFT_ENRICHMENT_MODE = hmsControl.mode;
+  env.HMS_READ_SERVICE_ENABLED = input.HMS_READ_SERVICE_ENABLED
+    ? toBool('HMS_READ_SERVICE_ENABLED', input.HMS_READ_SERVICE_ENABLED)
+    : false;
   env.HMS_HEALTH_STATUS_PATH = hmsControl.healthPath;
   env.HMS_RUN_DEADLINE_MS = input.HMS_RUN_DEADLINE_MS
     ? toInt('HMS_RUN_DEADLINE_MS', input.HMS_RUN_DEADLINE_MS)

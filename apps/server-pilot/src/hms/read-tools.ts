@@ -27,6 +27,14 @@ export const READ_TOOL_IDS = [
 
 export type ReadToolId = (typeof READ_TOOL_IDS)[number];
 
+/**
+ * U8 context reads are dispatched by the closed read service and are kept
+ * outside the Phase-B promotion registry until their own release evidence is
+ * installed.  Keeping a separate union preserves existing portfolio IDs.
+ */
+export const RESERVATION_CONTEXT_TOOL_IDS = ['hms_read_reservation'] as const;
+export type ReservationContextToolId = (typeof RESERVATION_CONTEXT_TOOL_IDS)[number];
+
 export const HMS_READ_TOOL_IDS = [
   'hms_find_reservation',
   'hms_quote_stay',

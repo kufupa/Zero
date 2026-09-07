@@ -282,3 +282,47 @@ export function validateTrustedRequesterAuthorization(
     return null;
   }
 }
+
+/**
+ * Scope check used by the independent typed read lane.  The regular HMAC
+ * authorization remains the source of truth; this small adapter binds the
+ * already-issued grant to the concrete worker context before a read handler
+ * is admitted.
+ */
+export function assertReadRequesterScope(input: {
+  requester: {
+    authorizationId: string;
+    transportId: string;
+    threadId: string;
+    triggerMessageId: string;
+    allowedClaimKinds: readonly string[];
+    expiresAt: string;
+  };
+  context: {
+    transportId: string;
+    threadId: string;
+    triggerMessageId: string;
+  };
+  now: Date;
+}): void {
+  const expiry = Date.parse(input.requester.expiresAt);
+  if (!input.requester.authorizationId || !Number.isFinite(expiry) || !Number.isFinite(input.now.getTime()) || input.now.getTime() >= expiry) {
+    throw Object.assign(new Error('read authorization is expired'), {
+      code: 'READ_AUTHORIZATION_EXPIRED',
+    });
+  }
+  if (
+    input.requester.transportId !== input.context.transportId ||
+    input.requester.threadId !== input.context.threadId ||
+    input.requester.triggerMessageId !== input.context.triggerMessageId
+  ) {
+    throw Object.assign(new Error('read authorization scope does not match request'), {
+      code: 'READ_AUTHORIZATION_SCOPE_MISMATCH',
+    });
+  }
+  if (!input.requester.allowedClaimKinds.includes('reservation_summary')) {
+    throw Object.assign(new Error('requester is not entitled to reservation reads'), {
+      code: 'READ_CLAIM_NOT_ALLOWED',
+    });
+  }
+}

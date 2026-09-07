@@ -26,6 +26,7 @@ import {
   createFindReservationFacade,
   type FindReservationFacade,
 } from './find-reservation-facade.js';
+import type { PropertyReadLock } from './property-read-lock.js';
 
 export type { ExactReservationCandidate };
 
@@ -118,6 +119,8 @@ export type LiveGuestStayDriverOptions = {
     candidate: ExactReservationCandidate | null;
     inputClass: 'authorized_exact' | 'synthetic_not_found';
   }) => import('./release-kernel.js').HmsSessionAuthorization;
+  /** Dedicated tenant/property advisory lock held before session admission. */
+  propertyReadLock?: PropertyReadLock;
 };
 
 const NO_RESULTS_RE =
@@ -489,7 +492,13 @@ export function createLiveGuestStayDriver(
       outcome: 'succeeded' | 'unverified_negative';
       terminalCode: 'OK' | 'UNVERIFIED_NEGATIVE';
     },
+    lockHeld = false,
   ): Promise<T> {
+    if (!lockHeld && options.propertyReadLock) {
+      return options.propertyReadLock.withLock(() =>
+        withSession(signal, candidate, fn, receiptForResult, true),
+      );
+    }
     const canary = liveNotFoundCanaryCandidate();
     const inputClass =
       candidate &&
