@@ -732,7 +732,7 @@ function isVoucherInvoiceOrPaymentRequest(haystack: string): boolean {
 function isJobApplication(input: TriageRefineInput, haystack: string): boolean {
   const from = normalizeEmailAddress(input.from ?? '');
   if (isHotelNeverSpamAddress(from)) return false;
-  return /\b(?:(?:job|position|post)\s+application|application\s+for\s+(?:the\s+)?(?:position|post|job)|applying\s+for\s+(?:the\s+)?(?:position|post|job)|curriculum\s+vitae|attached\s+(?:is\s+)?(?:my\s+)?cv|seeking\s+employment|employment\s+opportunit(?:y|ies))\b/i.test(
+  return /\b(?:(?:job|position|post|internship|learnership)\s+application|application\s+for\s+(?:the\s+)?(?:position|post|job|employment|in-service\s+training|internship|learnership|work\s+integrated\s+learning|work\s+experience)|applying\s+for\s+(?:the\s+)?(?:position|post|job|employment|internship|in-service\s+training)|curriculum\s+vitae|\battached\s+(?:is\s+)?(?:my\s+)?cv\b|\bmy\s+cv\b|seeking\s+employment|employment\s+opportunit(?:y|ies))\b/i.test(
     haystack,
   );
 }
