@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildMailDataHealth,
   type MailDataHealthMessage,
+  type MailDataHealthSummaryInput,
 } from '../src/metrics/mail-data-health';
 
 const cutoff = '2026-09-07T00:00:00.000Z';
@@ -309,6 +310,42 @@ describe('mail data health', () => {
     expect(health.unscorable).toMatchObject({ total: 1, invalidClock: 1 });
   });
 
+  it('rejects any future primary clock even when another primary clock is before cutoff', () => {
+    const health = buildMailDataHealth({
+      observationCutoff: cutoff,
+      scopeKey,
+      messages: [
+        {
+          canonicalId: 'future-inbound',
+          direction: 'inbound',
+          sourceEventAt: '2026-09-08T10:00:00.000Z',
+          receivedAt: '2026-09-06T10:00:00.000Z',
+          threadId: 'thread-inbound',
+          hasQuotedMailboxReply: false,
+        },
+        {
+          canonicalId: 'future-outbound',
+          direction: 'outbound',
+          sourceEventAt: '2026-09-08T11:00:00.000Z',
+          sentAt: '2026-09-06T11:00:00.000Z',
+          sendState: 'sent',
+          threadId: 'thread-outbound',
+          hasQuotedMailboxReply: false,
+        },
+      ],
+      quoteProjection: 'available',
+    });
+
+    expect(health.availability).toBe('unavailable');
+    expect(health.directionCounts).toEqual({ inbound: null, outbound: null });
+    expect(health.unscorable).toMatchObject({
+      total: 2,
+      inbound: 1,
+      outbound: 1,
+      invalidClock: 2,
+    });
+  });
+
   it('requires source summary clock basis instead of inferring first-known', () => {
     const health = buildMailDataHealth({
       observationCutoff: cutoff,
@@ -320,6 +357,60 @@ describe('mail data health', () => {
 
     expect(health.availability).toBe('unavailable');
     expect(health.lastObservedBasis).toEqual({ inbound: null, outbound: null });
+  });
+
+  it('requires summary timestamp and basis nullness to agree in both directions', () => {
+    const base: MailDataHealthSummaryInput = {
+      observationCutoff: cutoff,
+      directionCounts: { inbound: 1, outbound: 0 },
+      lastObservedAt: { inbound: null, outbound: null },
+      lastObservedBasis: { inbound: null, outbound: null },
+      singleton: { numerator: 0, denominator: 0 },
+      quotedMailboxReplyNoMatchingOutbound: { numerator: 0, denominator: 0 },
+    };
+
+    const missingTime = buildMailDataHealth({
+      ...base,
+      lastObservedBasis: { inbound: 'source_event', outbound: null },
+    });
+    const missingBasis = buildMailDataHealth({
+      ...base,
+      lastObservedAt: {
+        inbound: '2026-09-06T10:00:00.000Z',
+        outbound: null,
+      },
+    });
+
+    expect(missingTime.availability).toBe('unavailable');
+    expect(missingBasis.availability).toBe('unavailable');
+  });
+
+  it('fails closed instead of throwing for malformed summary containers', () => {
+    const base: MailDataHealthSummaryInput = {
+      observationCutoff: cutoff,
+      directionCounts: { inbound: 1, outbound: 0 },
+      lastObservedAt: {
+        inbound: '2026-09-06T10:00:00.000Z',
+        outbound: null,
+      },
+      lastObservedBasis: { inbound: 'source_event', outbound: null },
+      singleton: { numerator: 0, denominator: 0 },
+      quotedMailboxReplyNoMatchingOutbound: { numerator: 0, denominator: 0 },
+    };
+
+    const malformedCounts = {
+      ...base,
+      directionCounts: undefined,
+    } as unknown as Parameters<typeof buildMailDataHealth>[0];
+    const malformedTimes = {
+      ...base,
+      lastObservedAt: undefined,
+    } as unknown as Parameters<typeof buildMailDataHealth>[0];
+
+    expect(() => buildMailDataHealth(malformedCounts)).not.toThrow();
+    expect(() => buildMailDataHealth(malformedTimes)).not.toThrow();
+    expect(buildMailDataHealth(malformedCounts).availability).toBe('unavailable');
+    expect(buildMailDataHealth(malformedTimes).availability).toBe('unavailable');
   });
 
   it('does not certify singleton or quote evidence without thread linkage', () => {

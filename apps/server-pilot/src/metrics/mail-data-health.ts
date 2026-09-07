@@ -177,6 +177,14 @@ function validBasis(value: unknown): value is MailDataTimestampBasis {
   return typeof value === 'string' && ALLOWED_BASES.has(value as MailDataTimestampBasis);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function validTimestampOrNull(value: unknown): value is string | null {
+  return value === null || (typeof value === 'string' && validTimestamp(value) !== null);
+}
+
 function unknownCounts(): MailDataUnscorableCounts {
   return {
     total: 0,
@@ -409,14 +417,15 @@ function chooseObservedTime(message: MailDataHealthMessage, cutoff: number): Clo
       primaryValid.push({ value, raw: candidate.value!, basis: candidate.basis });
     }
   }
+  const primaryFuture = primaryValid.some(({ value }) => value > cutoff);
   const primaryAtCutoff = primaryValid.filter(({ value }) => value <= cutoff);
   if (primaryAtCutoff.length > 0) {
     const selected = primaryAtCutoff[0]!;
     return {
       at: selected.raw,
       basis: selected.basis,
-      counterEligible: !primaryInvalid,
-      reason: primaryInvalid ? 'invalid_clock' : null,
+      counterEligible: !primaryInvalid && !primaryFuture,
+      reason: primaryInvalid || primaryFuture ? 'invalid_clock' : null,
     };
   }
 
@@ -498,18 +507,47 @@ function normalizeSummaryReason(
 }
 
 function copySummary(input: MailDataHealthSummaryInput, cutoff: number): MailDataHealth {
+  const directionCounts = input.directionCounts as unknown;
+  const lastObservedAt = input.lastObservedAt as unknown;
+  const lastObservedBasis = input.lastObservedBasis as unknown;
   if (
-    !input.lastObservedBasis ||
-    !validCount(input.directionCounts.inbound) ||
-    !validCount(input.directionCounts.outbound) ||
-    !validCountPair(input.singleton) ||
-    !validBasisOrNull(input.lastObservedBasis.inbound) ||
-    !validBasisOrNull(input.lastObservedBasis.outbound)
+    !isRecord(directionCounts) ||
+    !isRecord(lastObservedAt) ||
+    !isRecord(lastObservedBasis)
   ) {
     return unavailableHealth(input.observationCutoff, 'missing_summary_basis');
   }
-  for (const at of [input.lastObservedAt.inbound, input.lastObservedAt.outbound]) {
-    if (at !== null && (validTimestamp(at) === null || validTimestamp(at)! > cutoff)) {
+
+  const inboundCount = directionCounts.inbound;
+  const outboundCount = directionCounts.outbound;
+  const inboundAt = lastObservedAt.inbound;
+  const outboundAt = lastObservedAt.outbound;
+  const inboundBasis = lastObservedBasis.inbound;
+  const outboundBasis = lastObservedBasis.outbound;
+  const singleton = input.singleton as unknown;
+  if (
+    !validCount(inboundCount) ||
+    !validCount(outboundCount) ||
+    !validCountPair(singleton) ||
+    !validBasisOrNull(inboundBasis) ||
+    !validBasisOrNull(outboundBasis)
+  ) {
+    return unavailableHealth(input.observationCutoff, 'missing_summary_basis');
+  }
+  if (
+    !validTimestampOrNull(inboundAt) ||
+    !validTimestampOrNull(outboundAt)
+  ) {
+    return unavailableHealth(input.observationCutoff, 'unusable_evidence');
+  }
+  if (
+    (inboundAt === null) !== (inboundBasis === null) ||
+    (outboundAt === null) !== (outboundBasis === null)
+  ) {
+    return unavailableHealth(input.observationCutoff, 'missing_summary_basis');
+  }
+  for (const at of [inboundAt, outboundAt]) {
+    if (at !== null && validTimestamp(at)! > cutoff) {
       return unavailableHealth(input.observationCutoff, 'unusable_evidence');
     }
   }
@@ -544,20 +582,20 @@ function copySummary(input: MailDataHealthSummaryInput, cutoff: number): MailDat
     availability: 'available',
     observationCutoff: input.observationCutoff,
     directionCounts: {
-      inbound: input.directionCounts.inbound,
-      outbound: input.directionCounts.outbound,
+      inbound: inboundCount,
+      outbound: outboundCount,
     },
     lastObservedAt: {
-      inbound: input.lastObservedAt.inbound,
-      outbound: input.lastObservedAt.outbound,
+      inbound: inboundAt,
+      outbound: outboundAt,
     },
     lastObservedBasis: {
-      inbound: input.lastObservedBasis.inbound,
-      outbound: input.lastObservedBasis.outbound,
+      inbound: inboundBasis,
+      outbound: outboundBasis,
     },
     singleton: {
-      numerator: input.singleton.numerator,
-      denominator: input.singleton.denominator,
+      numerator: singleton.numerator,
+      denominator: singleton.denominator,
     },
     quotedMailboxReplyNoMatchingOutbound: copiedQuote,
     unscorable: unknownCounts(),
