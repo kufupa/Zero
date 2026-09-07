@@ -6,6 +6,10 @@ import {
   SCROLL_AREA_FLEX_MIN_W_CLASS,
   SCROLL_AREA_VIEWPORT_CONTENT_CLASS,
 } from '@/lib/attachment-chip-scroll';
+import {
+  RADIX_SCROLLBAR_HORIZONTAL_SIZE_CLASS,
+  RADIX_SCROLLBAR_VERTICAL_SIZE_CLASS,
+} from '@/lib/scrollbar-chrome';
 
 interface ScrollAreaProps extends React.ComponentPropsWithoutRef<typeof ScrollAreaPrimitive.Root> {
   hideScrollbar?: boolean;
@@ -50,8 +54,13 @@ const ScrollBar = React.forwardRef<
     className={cn(
       'flex touch-none select-none transition-colors',
       hideScrollbar && 'opacity-0',
-      orientation === 'vertical' && 'h-full w-2.5 border-l border-l-transparent p-px',
-      orientation === 'horizontal' && 'h-2.5 flex-col border-t border-t-transparent p-px',
+      orientation === 'vertical' &&
+        cn('h-full border-l border-l-transparent p-px', RADIX_SCROLLBAR_VERTICAL_SIZE_CLASS),
+      orientation === 'horizontal' &&
+        cn(
+          'flex-col border-t border-t-transparent p-px',
+          RADIX_SCROLLBAR_HORIZONTAL_SIZE_CLASS,
+        ),
       className,
     )}
     {...props}

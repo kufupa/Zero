@@ -37,6 +37,7 @@ import { EmptyStateIcon } from '../icons/empty-state-svg';
 import { highlightText } from '@/lib/email-utils.client';
 import { mailListPlainPreview } from '@/lib/mail/mail-list-preview';
 import { buildMailListVirtualRows } from '@/lib/mail/build-mail-list-virtual-rows';
+import { NATIVE_VISIBLE_SCROLLBAR_CLASSES } from '@/lib/scrollbar-chrome';
 import type { MailDateBucket } from '@/lib/mail/thread-date-bucket';
 import { MailListSectionHeader } from '@/components/mail/mail-list-section-header';
 import { cn, FOLDERS, formatDateWithWeekdayAndTime } from '@/lib/utils';
@@ -1301,7 +1302,10 @@ export const MailList = memo(function MailList() {
                   ref={vListRef}
                   count={virtualRows.length}
                   overscan={5}
-                  className="scrollbar scrollbar-w-1 scrollbar-thumb-accent/40 scrollbar-track-transparent hover:scrollbar-thumb-accent scrollbar-thumb-rounded-full flex-1 overflow-x-hidden"
+                  className={cn(
+                    NATIVE_VISIBLE_SCROLLBAR_CLASSES,
+                    'flex-1 overflow-x-hidden',
+                  )}
                   onScroll={() => {
                     if (!vListRef.current) return;
                     const endIndex = vListRef.current.findEndIndex();
