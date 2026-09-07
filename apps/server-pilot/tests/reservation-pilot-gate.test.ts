@@ -95,6 +95,10 @@ function readManifest(): PilotManifest {
   return JSON.parse(readFileSync(fixturePath, 'utf8')) as PilotManifest;
 }
 
+async function loadGateLib() {
+  return import('../scripts/reservation-pilot-gate-lib.mjs');
+}
+
 function runGate(
   mode: string,
   slice: string,
@@ -111,7 +115,7 @@ function runGate(
   });
 }
 
-describe('reservation pilot synthetic fixture [dashboard]', () => {
+describe('reservation pilot synthetic fixture [gate-selftest]', () => {
   it('pins synthetic source/hash versions and exact bounded counts', () => {
     const manifest = readManifest();
 
@@ -146,7 +150,7 @@ describe('reservation pilot synthetic fixture [dashboard]', () => {
     );
     expect(manifest.browserSafety.externalSocketsAllowed).toBe(false);
     expect(manifest.browserSafety.transport).toBe('fake');
-    expect(manifest.browserSafety.allowedOrigins).toEqual(['http://127.0.0.1']);
+    expect(manifest.browserSafety.allowedOrigins).toEqual(['http://127.0.0.1:4179']);
     expect(manifest.browserSafety.prohibitedEffects).toEqual(
       expect.arrayContaining(['create', 'amend', 'cancel', 'payment', 'send', 'folder-mutation']),
     );
@@ -161,7 +165,7 @@ describe('reservation pilot synthetic fixture [dashboard]', () => {
   });
 });
 
-describe('reservation pilot Phase 2/B contract [measurement]', () => {
+describe('reservation pilot Phase 2/B contract [gate-selftest]', () => {
   it('freezes membership by conversation before outcomes and keeps gold evaluator-only', () => {
     const manifest = readManifest();
 
@@ -197,6 +201,9 @@ describe('reservation pilot Phase 2/B contract [measurement]', () => {
     const manifest = readManifest();
     const allowed = new Set(manifest.phase2B.allowedOutcomes);
     const blockedPasses = new Set(manifest.phase2B.blockedPassOutcomes);
+    const observedOutcomes = new Set(
+      manifest.cases.flatMap((pilotCase) => Object.values(pilotCase.fieldOutcomes)),
+    );
 
     expect(manifest.phase2B.allowedOutcomes).toEqual(
       expect.arrayContaining([
@@ -218,6 +225,13 @@ describe('reservation pilot Phase 2/B contract [measurement]', () => {
         'missing_capability',
       ]),
     );
+    expect([...blockedPasses].sort()).toEqual(
+      ['ambiguous', 'changed_state', 'denied', 'missing_capability', 'unscorable'].sort(),
+    );
+    expect(blockedPasses.has('match')).toBe(false);
+    for (const blockedOutcome of blockedPasses) {
+      expect(observedOutcomes.has(blockedOutcome)).toBe(true);
+    }
 
     const explicitSkipped = manifest.cases.filter(
       (pilotCase) => pilotCase.selectionStatus !== 'runnable',
@@ -230,7 +244,6 @@ describe('reservation pilot Phase 2/B contract [measurement]', () => {
     for (const pilotCase of manifest.cases) {
       for (const outcome of Object.values(pilotCase.fieldOutcomes)) {
         expect(allowed.has(outcome)).toBe(true);
-        if (blockedPasses.has(outcome)) expect(outcome).not.toBe('match');
       }
       expect(pilotCase.evaluationMode).toBeDefined();
     }
@@ -268,6 +281,257 @@ describe('reservation pilot Phase 2/B contract [measurement]', () => {
       excludesTargetAndFutureContext: true,
       includesNoReplyEpisode: true,
     });
+  });
+});
+
+describe('reservation pilot runtime validators', () => {
+  it('binds the manifest to deterministic canonical digests and validates the contract', async () => {
+    const gate = await loadGateLib();
+    const manifest = readManifest();
+
+    expect(() => gate.assertManifestContract(manifest)).not.toThrow();
+    expect(gate.computeManifestDigests(manifest)).toEqual({
+      contentHash: manifest.source.contentHash,
+      mappingHash: manifest.source.mappingHash,
+      selectionHash: manifest.phase2B.selectionHash,
+    });
+  });
+
+  it('enforces mode/split isolation and a real holdout unseal transition', async () => {
+    const gate = await loadGateLib();
+    const session = gate.createEvaluationSession(readManifest());
+
+    expect(() => session.aggregate('future-shadow', 'holdout')).toThrow(/holdout/i);
+    expect(session.canUse('prohibited-browser-effects', 'tune')).toBe(false);
+    expect(session.canUse('prohibited-browser-effects', 'repair')).toBe(false);
+    expect(session.canUse('prohibited-browser-effects', 'choose-fixture')).toBe(false);
+    expect(session.canUse('prohibited-browser-effects', 'retry')).toBe(false);
+    expect(session.canUse('zero-label-unscorable', 'tune')).toBe(false);
+
+    const retired = session.unsealHoldout('prohibited-browser-effects', {
+      sideEffects: 'denied',
+    });
+    expect(retired.split).toBe('development');
+    expect(retired.exposure).toMatchObject({
+      state: 'unsealed-retired',
+      originalScorePreserved: true,
+      originalExposurePreserved: true,
+    });
+    expect(session.canUse('prohibited-browser-effects', 'tune')).toBe(false);
+    expect(
+      session.manifest.cases.find((pilotCase) => pilotCase.id === 'prohibited-browser-effects')
+        ?.retirement,
+    ).not.toHaveProperty('originalOutcome');
+    expect(session.aggregate('future-shadow', 'development').caseIds).not.toContain(
+      'prohibited-browser-effects',
+    );
+    expect(session.aggregate('current-state', 'development').caseIds).not.toContain(
+      'future-shadow-negation',
+    );
+  });
+
+  it('builds a minimal child environment and strips ambient DB/model/browser/mail/Vite state', async () => {
+    const gate = await loadGateLib();
+    const environment = gate.buildChildEnvironment(
+      {
+        PATH: process.env.PATH,
+        HOME: process.env.HOME,
+        PGHOST: 'live-db.example',
+        PGPORT: '5432',
+        PGPASSWORD: 'do-not-copy',
+        POSTGRES_HOST: 'live-db.example',
+        POSTGRES_PASSWORD: 'do-not-copy',
+        NODE_OPTIONS: '--require=/tmp/live-preload.cjs',
+        VITE_API_URL: 'https://live.example',
+        OPENAI_API_KEY: 'do-not-copy',
+        DATABASE_URL: 'postgres://live.example/prod',
+      },
+      { kind: 'fixture', guardPath: '/tmp/reservation-pilot-fixture-guard.mjs' },
+    );
+
+    expect(environment).toMatchObject({
+      NODE_ENV: 'test',
+      MAIL_TRANSPORT_MODE: 'fixture',
+      NAVA_FIXTURE_NETWORK: 'loopback-only',
+      NAVA_EXTERNAL_SOCKETS: 'deny',
+      NODE_OPTIONS: '--import=/tmp/reservation-pilot-fixture-guard.mjs',
+    });
+    expect(environment).not.toHaveProperty('PGHOST');
+    expect(environment).not.toHaveProperty('PGPORT');
+    expect(environment).not.toHaveProperty('PGPASSWORD');
+    expect(environment).not.toHaveProperty('POSTGRES_HOST');
+    expect(environment).not.toHaveProperty('POSTGRES_PASSWORD');
+    expect(environment).not.toHaveProperty('VITE_API_URL');
+    expect(environment).not.toHaveProperty('DATABASE_URL');
+    expect(environment).not.toHaveProperty('OPENAI_API_KEY');
+    expect(Object.keys(environment).every((key) => gate.CHILD_ENV_ALLOWLIST.has(key))).toBe(true);
+  });
+
+  it('rejects external sockets through the actual fixture guard before connect', () => {
+    const guardPath = path.join(here, '..', 'scripts', 'reservation-pilot-fixture-guard.mjs');
+    const result = spawnSync(
+      process.execPath,
+      [
+        '--import',
+        guardPath,
+        '--input-type=module',
+        '-e',
+        "import net from 'node:net'; try { net.connect({ host: '198.51.100.10', port: 9 }); console.log('not-denied'); } catch (error) { console.log(error.message); }",
+      ],
+      {
+        env: {
+          PATH: process.env.PATH,
+          HOME: process.env.HOME,
+        },
+        encoding: 'utf8',
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(`${result.stdout}${result.stderr}`).toMatch(/external sockets denied/i);
+    expect(`${result.stdout}${result.stderr}`).not.toContain('not-denied');
+  });
+
+  it('parses an executable fixture config contract rather than trusting comments', async () => {
+    const gate = await loadGateLib();
+    const valid = `
+      import { defineConfig } from 'vite';
+      export const pilotFixtureContract = {
+        mode: 'fixture', envFiles: false, liveBindings: false,
+        externalSockets: false, networkPolicy: 'loopback-only', transport: 'fake',
+        allowedOrigins: ['http://127.0.0.1:4179'],
+        publicOrigin: 'http://127.0.0.1:4179',
+      } as const;
+      export default defineConfig({ envDir: '/dev/null', server: { host: '127.0.0.1', port: 4179 } });
+    `;
+    expect(
+      gate.validateFixtureConfigSource(valid, ['http://127.0.0.1:4179']),
+    ).toMatchObject({ envFiles: false, externalSockets: false });
+
+    const commentOnly = `// envFiles: false, externalSockets: false\nexport default {};`;
+    expect(() => gate.validateFixtureConfigSource(commentOnly, ['http://127.0.0.1:4179'])).toThrow(
+      /pilotFixtureContract|fixture contract/i,
+    );
+    expect(() =>
+      gate.validateFixtureConfigSource(
+        valid.replace(
+          'export const pilotFixtureContract',
+          "const ambient = process['env']; export const pilotFixtureContract",
+        ),
+        ['http://127.0.0.1:4179'],
+      ),
+    ).toThrow(/live|process\.env/i);
+  });
+
+  it('rejects any unexpected Docker Postgres publication', async () => {
+    const gate = await loadGateLib();
+    expect(gate.getDbProfile('pg16')).toMatchObject({
+      major: '16',
+      port: '15433',
+      runLabel: '20260907-pg16-u1setup',
+      sentinelTable: 'centurion_u1_pg16_setup_sentinel',
+    });
+    expect(() => gate.getDbProfile('production')).toThrow(/unknown disposable database profile/i);
+    expect(() =>
+      gate.validatePostgresPortBindings({
+        '5432/tcp': [
+          { HostIp: '127.0.0.1', HostPort: '15432' },
+          { HostIp: '0.0.0.0', HostPort: '15432' },
+        ],
+      }),
+    ).toThrow(/binding|exposure/i);
+    expect(
+      gate.validatePostgresPortBindings({
+        '5432/tcp': [{ HostIp: '127.0.0.1', HostPort: '15432' }],
+      }),
+    ).toBe(true);
+    expect(
+      gate.validatePostgresPortBindings(
+        { '5432/tcp': [{ HostIp: '127.0.0.1', HostPort: '15433' }] },
+        '15433',
+      ),
+    ).toBe(true);
+  });
+
+  it('requires a nonempty, fully passing exact browser title selection', async () => {
+    const gate = await loadGateLib();
+    const report = {
+      suites: [
+        {
+          title: '',
+          specs: [
+            {
+              title: 'reservation-tools-pilot/dashboard',
+              tests: [{ status: 'expected', results: [{ status: 'passed' }] }],
+            },
+          ],
+        },
+      ],
+    };
+    expect(gate.validatePlaywrightReport(report, 'reservation-tools-pilot/dashboard')).toEqual({
+      testCount: 1,
+      skipped: 0,
+      failed: 0,
+    });
+    expect(() =>
+      gate.validatePlaywrightReport(
+        { suites: [{ title: '', specs: [{ title: 'reservation-tools-pilot/dashboard', tests: [] }] }] },
+        'reservation-tools-pilot/dashboard',
+      ),
+    ).toThrow(/zero tests|selected no tests/i);
+    expect(() =>
+      gate.validatePlaywrightReport(
+        {
+          suites: [
+            {
+              title: '',
+              specs: [
+                {
+                  title: 'reservation-tools-pilot/dashboard',
+                  tests: [{ status: 'flaky', results: [{ status: 'passed' }] }],
+                },
+              ],
+            },
+          ],
+        },
+        'reservation-tools-pilot/dashboard',
+      ),
+    ).toThrow(/skipped\/failed/i);
+  });
+
+  it('maps dashboard and measurement to downstream named tests and keeps U1 self-tests separate', async () => {
+    const gate = await loadGateLib();
+    expect(gate.getSlicePlan('unit', 'dashboard')).toEqual({
+      server: [
+        'tests/admin-dashboard-access.test.ts',
+        'tests/admin-dashboard-metrics.test.ts',
+        'tests/admin-dashboard-query.test.ts',
+      ],
+      mail: [
+        'tests/admin-dashboard/response-metrics-availability.test.ts',
+        'tests/admin-dashboard/business-overview.test.tsx',
+      ],
+    });
+    expect(gate.getSlicePlan('unit', 'measurement')).toEqual({
+      server: ['tests/mail-measurement-config.test.ts', 'tests/mail-data-health.test.ts'],
+    });
+    expect(gate.getSlicePlan('unit', 'gate')).toEqual({
+      server: [
+        'tests/reservation-pilot-gate.test.ts',
+        'tests/fixtures/reservation-tools-pilot.json',
+        'scripts/reservation-pilot-gate-lib.mjs',
+        'scripts/reservation-pilot-fixture-guard.mjs',
+      ],
+    });
+  });
+
+  it('refuses a deterministic missing path without launching a future test runner', async () => {
+    const gate = await loadGateLib();
+    expect(() =>
+      gate.assertRequiredFiles(path.join(here, '..', '..', '..'), [
+        'apps/server-pilot/tests/__u1_required_path_is_absent__.test.ts',
+      ]),
+    ).toThrow(/required file|missing/i);
   });
 });
 
@@ -309,15 +573,12 @@ describe('reservation pilot gate refusal contract', () => {
     expect(output).not.toContain(secret);
   });
 
-  it('refuses a future slice when its named test/config is absent instead of skipping green', () => {
-    const result = runGate('unit', 'reads', {
-      DATABASE_URL: undefined,
-      VITEST_ALLOW_PILOT_RDS: undefined,
-    });
-    const output = `${result.stdout}${result.stderr}`;
-
-    expect(result.status).not.toBe(0);
-    expect(output).toMatch(/required file|missing|not available/i);
-    expect(output).not.toMatch(/pass(ed)?\s+with\s+no\s+tests/i);
+  it('refuses a missing future requirement without skipping green', async () => {
+    const gate = await loadGateLib();
+    expect(() =>
+      gate.assertRequiredFiles(path.join(here, '..', '..', '..'), [
+        'apps/server-pilot/tests/__u1_future_requirement_is_absent__.test.ts',
+      ]),
+    ).toThrow(/required file|missing/i);
   });
 });

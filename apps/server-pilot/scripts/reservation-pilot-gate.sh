@@ -11,6 +11,11 @@ SERVER_PILOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 REPO_ROOT="$(cd "${SERVER_PILOT}/../.." && pwd)"
 
 readonly FIXTURE_MANIFEST="${SERVER_PILOT}/tests/fixtures/reservation-tools-pilot.json"
+readonly GATE_LIB="${SERVER_PILOT}/scripts/reservation-pilot-gate-lib.mjs"
+
+run_gate_helper() {
+  env -i PATH="${PATH:-/usr/local/bin:/usr/bin:/bin}" HOME=/tmp node "$GATE_LIB" "$@"
+}
 
 die() {
   local message=$1
@@ -40,245 +45,49 @@ case "$MODE" in
   *) die "unknown mode '${MODE}' (expected unit, db, browser, or build)" 65 ;;
 esac
 
-require_file() {
-  local relative_path=$1
-  local absolute_path="${REPO_ROOT}/${relative_path}"
-  [[ -f "$absolute_path" ]] || die "required file/config missing for ${MODE} ${SLICE}: ${relative_path}" 69
-}
+if [[ "$MODE" == db ]]; then
+  DB_PROFILE=${NAVA_TEST_DATABASE_PROFILE:-pg17}
+  DB_PROFILE_VALUES=$(run_gate_helper db-profile "$DB_PROFILE" all) || \
+    die "unknown disposable database profile '${DB_PROFILE}'" 66
+  IFS=$'\t' read -r DB_PORT DB_RUN_LABEL DB_MAJOR DB_RECEIPT_REL DB_CONNECTION_REL \
+    DB_SENTINEL_TABLE DB_SENTINEL_MARKER <<<"$DB_PROFILE_VALUES"
+  DB_RECEIPT="${REPO_ROOT}/${DB_RECEIPT_REL}"
+  DB_CONNECTION="${REPO_ROOT}/${DB_CONNECTION_REL}"
+fi
 
 require_files() {
-  local relative_path
-  for relative_path in "$@"; do
-    require_file "$relative_path"
-  done
+  run_gate_helper assert-files "$REPO_ROOT" "$@" || \
+    die "required file/config missing for ${MODE} ${SLICE}" 69
 }
 
-case "${MODE}:${SLICE}" in
-  unit:dashboard|unit:measurement)
-    require_files \
-      "apps/server-pilot/scripts/reservation-pilot-gate.sh" \
-      "apps/server-pilot/tests/reservation-pilot-gate.test.ts" \
-      "apps/server-pilot/tests/fixtures/reservation-tools-pilot.json"
+case "$MODE" in
+  unit|db)
+    run_gate_helper assert-plan-files "$REPO_ROOT" "$MODE" "$SLICE" || \
+      die "unknown slice '${SLICE}' for mode '${MODE}' or required file/config is missing" 69
     ;;
-  unit:reads)
-    require_files \
-      "apps/server-pilot/tests/hms-read-service.test.ts" \
-      "apps/server-pilot/tests/hms-normal-runtime-read-service.test.ts" \
-      "apps/server-pilot/tests/hms-reservation-context.test.ts" \
-      "apps/server-pilot/tests/hms-property-read-lock.test.ts"
-    ;;
-  unit:documents)
-    require_files \
-      "apps/server-pilot/tests/existing-document-service.test.ts" \
-      "apps/server-pilot/tests/existing-document-validation.test.ts" \
-      "apps/server-pilot/tests/hms-live-communications-reads.test.ts" \
-      "apps/server-pilot/tests/hms-artifact.test.ts"
-    ;;
-  unit:finance)
-    require_files \
-      "apps/server-pilot/tests/hms-folio-read.test.ts" \
-      "apps/server-pilot/tests/hms-live-folio-read.test.ts" \
-      "apps/server-pilot/tests/hms-finance-completeness.test.ts"
-    ;;
-  unit:quotes)
-    require_files \
-      "apps/server-pilot/tests/hms-quote-stay-v2.test.ts" \
-      "apps/server-pilot/tests/hms-live-quote-stay.test.ts" \
-      "apps/server-pilot/tests/hms-quote-request-normalization.test.ts" \
-      "apps/server-pilot/tests/hms-quote-completeness.test.ts"
-    ;;
-  unit:contexts)
-    require_files \
-      "apps/server-pilot/tests/hms-context-reads.test.ts" \
-      "apps/server-pilot/tests/hms-notes-traces-read.test.ts"
-    ;;
-  unit:knowledge)
-    require_files \
-      "apps/server-pilot/tests/property-knowledge-read.test.ts" \
-      "apps/server-pilot/tests/fixtures/property-knowledge.json"
-    ;;
-  unit:drafting)
-    require_files \
-      "apps/server-pilot/tests/reply-playbooks.test.ts" \
-      "apps/server-pilot/tests/reply-assessment.test.ts" \
-      "apps/server-pilot/tests/prepared-draft-input.test.ts" \
-      "apps/server-pilot/tests/local-model-adapter-contract.test.ts" \
-      "apps/server-pilot/tests/shadow-model-routing.test.ts"
-    ;;
-  unit:baseline)
-    require_files \
-      "apps/server-pilot/tests/mail-baseline.test.ts" \
-      "apps/server-pilot/tests/mail-baseline-projection.test.ts" \
-      "apps/server-pilot/tests/mail-baseline-extraction.test.ts"
-    ;;
-  unit:shadow)
-    require_files \
-      "apps/server-pilot/tests/shadow-evaluation.test.ts" \
-      "apps/server-pilot/tests/shadow-reference-matcher.test.ts" \
-      "apps/server-pilot/tests/shadow-scorecard.test.ts"
-    ;;
-  unit:approval)
-    require_files \
-      "apps/server-pilot/tests/draft-approval.test.ts" \
-      "apps/server-pilot/tests/draft-refresh-generation.test.ts"
-    ;;
-  db:dashboard)
-    require_files "apps/server-pilot/tests/admin-dashboard-query.test.ts"
-    ;;
-  db:reads)
-    require_files \
-      "apps/server-pilot/tests/hms-read-service.test.ts" \
-      "apps/server-pilot/tests/hms-normal-runtime-read-service.test.ts"
-    ;;
-  db:documents)
-    require_files "apps/server-pilot/tests/existing-document-validation.test.ts"
-    ;;
-  db:baseline)
-    require_files "apps/server-pilot/tests/mail-baseline-projection.test.ts"
-    ;;
-  db:shadow)
-    require_files "apps/server-pilot/tests/shadow-evaluation.test.ts"
-    ;;
-  db:outbox)
-    require_files "apps/server-pilot/tests/outbound-queue.test.ts"
-    ;;
-  browser:dashboard|browser:documents|browser:pilot)
+  browser)
+    run_gate_helper assert-plan-files "$REPO_ROOT" "$MODE" "$SLICE" || \
+      die "unknown slice '${SLICE}' for mode '${MODE}' or required file/config is missing" 69
     require_files \
       "apps/mail/tests/e2e/reservation-tools-pilot.spec.ts" \
-      "apps/mail/vite.pilot-fixture.config.ts"
+      "apps/mail/vite.pilot-fixture.config.ts" \
+      "apps/server-pilot/scripts/reservation-pilot-fixture-guard.mjs"
     ;;
-  build:server)
-    require_files "apps/server-pilot/package.json"
-    ;;
-  build:mail)
-    require_files "apps/mail/package.json"
-    ;;
-  *)
-    die "unknown slice '${SLICE}' for mode '${MODE}'" 65
+  build)
+    case "$SLICE" in
+      server) require_files "apps/server-pilot/package.json" ;;
+      mail) require_files "apps/mail/package.json" ;;
+      *) die "unknown slice '${SLICE}' for mode '${MODE}'" 65 ;;
+    esac
     ;;
 esac
 
-readonly CLEAN_UNSET_VARS=(
-  DATABASE_URL
-  TEST_DATABASE_URL
-  NAVA_TEST_DATABASE_URL
-  NAVA_TEST_DATABASE_CONNECTION_FILE
-  NAVA_TEST_DATABASE_RECEIPT
-  NAVA_EXPECTED_DATABASE
-  NAVA_EXPECTED_ROLE
-  NAVA_EXPECTED_RUN
-  CONFIRM_DISPOSABLE_TEST_DB
-  VITEST_ALLOW_PILOT_RDS
-  OPENAI_API_KEY
-  ANTHROPIC_API_KEY
-  GOOGLE_API_KEY
-  GOOGLE_APPLICATION_CREDENTIALS
-  AZURE_OPENAI_API_KEY
-  AZURE_CLIENT_ID
-  AZURE_CLIENT_SECRET
-  AZURE_TENANT_ID
-  COHERE_API_KEY
-  MISTRAL_API_KEY
-  OPENROUTER_API_KEY
-  GROQ_API_KEY
-  AWS_ACCESS_KEY_ID
-  AWS_SECRET_ACCESS_KEY
-  AWS_SESSION_TOKEN
-  AWS_PROFILE
-  AWS_DEFAULT_PROFILE
-  AWS_WEB_IDENTITY_TOKEN_FILE
-  AWS_BEARER_TOKEN_BEDROCK
-  BEDROCK_API_KEY
-  BEDROCK_MODEL_ID
-  MODEL_API_KEY
-  MODEL_BASE_URL
-  LLM_API_KEY
-  AI_ENABLED
-  AI_MODEL
-  HMS_USERNAME
-  HMS_PASSWORD
-  HMS_SECRET_ARN
-  HMS_SESSION_TOKEN
-  HMS_API_KEY
-  PMS_USERNAME
-  PMS_PASSWORD
-  PMS_TOKEN
-  PMS_SECRET_ARN
-  PMS_API_KEY
-  PLAYWRIGHT_BASE_URL
-  PLAYWRIGHT_WS_ENDPOINT
-  PLAYWRIGHT_BROWSERS_PATH
-  BROWSERSTACK_USERNAME
-  BROWSERSTACK_ACCESS_KEY
-  MAIL_USERNAME
-  MAIL_PASSWORD
-  MAIL_API_KEY
-  MAIL_SMTP_PASSWORD
-  MAIL_IMAP_PASSWORD
-  MAILGUN_API_KEY
-  SENDGRID_API_KEY
-  RESEND_API_KEY
-  SMTP_USERNAME
-  SMTP_PASSWORD
-  SMTP_URL
-  IMAP_URL
-  POP3_URL
-  POP3_USERNAME
-  POP3_PASSWORD
-  DOTENV_CONFIG_PATH
-)
-
 run_clean_command() {
-  local -a unset_args=()
-  local key
-  for key in "${CLEAN_UNSET_VARS[@]}"; do
-    unset_args+=(-u "$key")
-  done
-  env \
-    "${unset_args[@]}" \
-    NODE_ENV=test \
-    CI=1 \
-    MAIL_TRANSPORT_MODE=fixture \
-    HMS_TRANSPORT_MODE=fixture \
-    PMS_TRANSPORT_MODE=fixture \
-    AWS_EC2_METADATA_DISABLED=true \
-    NO_PROXY='*' \
-    HTTP_PROXY= \
-    HTTPS_PROXY= \
-    ALL_PROXY= \
-    DOTENV_CONFIG_PATH=/dev/null \
-    NAVA_FIXTURE_NETWORK=loopback-only \
-    NAVA_EXTERNAL_SOCKETS=deny \
-    "$@"
+  node "$GATE_LIB" run-child --kind=fixture --cwd="$PWD" -- "$@"
 }
 
 run_clean_db_command() {
-  local -a unset_args=()
-  local key
-  for key in "${CLEAN_UNSET_VARS[@]}"; do
-    unset_args+=(-u "$key")
-  done
-  env \
-    "${unset_args[@]}" \
-    NODE_ENV=test \
-    CI=1 \
-    MAIL_TRANSPORT_MODE=fixture \
-    HMS_TRANSPORT_MODE=fixture \
-    PMS_TRANSPORT_MODE=fixture \
-    AWS_EC2_METADATA_DISABLED=true \
-    NO_PROXY='*' \
-    HTTP_PROXY= \
-    HTTPS_PROXY= \
-    ALL_PROXY= \
-    DOTENV_CONFIG_PATH=/dev/null \
-    NAVA_FIXTURE_NETWORK=loopback-only \
-    NAVA_EXTERNAL_SOCKETS=deny \
-    NAVA_TEST_DATABASE_URL="$NAVA_TEST_DATABASE_URL" \
-    TEST_DATABASE_URL="$NAVA_TEST_DATABASE_URL" \
-    CONFIRM_DISPOSABLE_TEST_DB=1 \
-    HMS_DB_TEST_REQUIRED=1 \
-    NAVA_TEST_DATABASE_SCOPE=reservation-pilot-owned \
-    "$@"
+  node "$GATE_LIB" run-child --kind=db --cwd="$PWD" -- "$@"
 }
 
 verify_vitest_report() {
@@ -316,17 +125,14 @@ if (failed > 0 || skipped > 0 || assertionSkipped > 0 || passed !== total) {
 NODE
 }
 
-run_vitest() {
+run_vitest_in_dir() {
+  local cwd=$1
+  shift
   local report_path
   report_path=$(mktemp "${TMPDIR:-/tmp}/reservation-pilot-vitest.XXXXXX.json")
   trap 'rm -f "$report_path"' RETURN
 
   local -a test_files=("$@")
-  local test_name_pattern=''
-  if [[ "${test_files[0]}" == --pattern=* ]]; then
-    test_name_pattern=${test_files[0]#--pattern=}
-    test_files=("${test_files[@]:1}")
-  fi
 
   local -a command=(
     pnpm
@@ -337,15 +143,15 @@ run_vitest() {
     --reporter=json
     "--outputFile=${report_path}"
   )
-  if [[ -n "$test_name_pattern" ]]; then
-    command+=(--testNamePattern "$test_name_pattern")
-  fi
-
-  (cd "$SERVER_PILOT" && run_clean_command "${command[@]}")
+  (cd "$cwd" && run_clean_command "${command[@]}")
   [[ -s "$report_path" ]] || die 'Vitest produced no result report; required slice cannot skip green' 1
   verify_vitest_report "$report_path" || die 'required Vitest slice failed or skipped' 1
   rm -f "$report_path"
   trap - RETURN
+}
+
+run_vitest() {
+  run_vitest_in_dir "$SERVER_PILOT" "$@"
 }
 
 validate_disposable_url() {
@@ -353,8 +159,9 @@ validate_disposable_url() {
   [[ "${CONFIRM_DISPOSABLE_TEST_DB:-}" == '1' ]] || \
     die 'db mode requires CONFIRM_DISPOSABLE_TEST_DB=1; ambient DB values are never accepted' 66
 
-  if ! env NAVA_TEST_DATABASE_URL="$NAVA_TEST_DATABASE_URL" node --input-type=module >/dev/null 2>/dev/null <<'NODE'
+  if ! env -i PATH="$PATH" NAVA_TEST_DATABASE_URL="$NAVA_TEST_DATABASE_URL" NAVA_EXPECTED_DB_PORT="$DB_PORT" node --input-type=module >/dev/null 2>/dev/null <<'NODE'
 const raw = process.env.NAVA_TEST_DATABASE_URL?.trim() ?? '';
+const expectedPort = process.env.NAVA_EXPECTED_DB_PORT;
 let parsed;
 try {
   parsed = new URL(raw);
@@ -377,7 +184,7 @@ if (!loopback) {
   console.error('unknown database host; only loopback disposable targets are accepted');
   process.exit(1);
 }
-if (host !== '127.0.0.1' || parsed.port !== '15432') {
+if (host !== '127.0.0.1' || parsed.port !== expectedPort) {
   console.error('database endpoint does not match the owned loopback mapping');
   process.exit(1);
 }
@@ -396,7 +203,7 @@ NODE
 }
 
 verify_connection_artifact() {
-  local connection_file="${NAVA_TEST_DATABASE_CONNECTION_FILE:-${REPO_ROOT}/.private/centurion-dashboard-tools-execution/disposable-postgres-connection.env}"
+  local connection_file="$DB_CONNECTION"
   [[ -f "$connection_file" ]] || die 'disposable connection artifact is missing; ownership is not proven' 66
   local mode
   mode=$(stat -c '%a' "$connection_file" 2>/dev/null || true)
@@ -412,29 +219,32 @@ verify_connection_artifact() {
 }
 
 verify_owned_disposable_target() {
-  local receipt="${NAVA_TEST_DATABASE_RECEIPT:-${REPO_ROOT}/.private/centurion-dashboard-tools-execution/disposable-postgres-receipt.txt}"
+  local receipt="$DB_RECEIPT"
   [[ -f "$receipt" ]] || die 'disposable ownership receipt is missing; DB mode refuses before connection' 66
 
-  local container_name container_id image_ref host_binding database_name role_name run_label
+  local container_name container_id image_ref host_binding database_name role_name run_label receipt_major
   container_name=$(sed -n 's/^Container name: //p' "$receipt" | head -n 1)
   container_id=$(sed -n 's/^Container ID: //p' "$receipt" | head -n 1)
-  image_ref=$(sed -n 's/^Image: //p' "$receipt" | head -n 1)
+  image_ref=$(sed -n -e 's/^Image: //p' -e 's/^Resolved image: //p' "$receipt" | head -n 1)
   host_binding=$(sed -n 's/^Host binding: //p' "$receipt" | head -n 1)
   database_name=$(sed -n 's/^Database: //p' "$receipt" | head -n 1)
   role_name=$(sed -n 's/^Role: //p' "$receipt" | head -n 1)
   run_label=$(sed -n 's/^Run label: //p' "$receipt" | head -n 1)
+  receipt_major=$(sed -n 's/^PostgreSQL major observed: //p' "$receipt" | head -n 1)
 
   [[ "$container_name" =~ ^[A-Za-z0-9_.-]+$ ]] || die 'disposable receipt has an invalid container name' 66
   [[ "$container_id" =~ ^[a-f0-9]{64}$ ]] || die 'disposable receipt has an invalid container ID' 66
   [[ "$image_ref" =~ ^postgres@sha256:[a-f0-9]{64}$ ]] || die 'disposable receipt has no pinned Postgres image digest' 66
-  [[ "$host_binding" == '127.0.0.1:15432 -> container 5432/tcp' ]] || \
+  [[ "$host_binding" == "127.0.0.1:${DB_PORT} -> container 5432/tcp" ]] || \
     die 'disposable DB host mapping is not the owned loopback mapping' 66
   [[ "$database_name" =~ ^[A-Za-z0-9_.-]+$ && "$role_name" =~ ^[A-Za-z0-9_.-]+$ ]] || \
     die 'disposable receipt has invalid database identity' 66
-  [[ "$run_label" == '20260907-u1setup' ]] || die 'disposable receipt run label mismatch' 66
+  [[ "$run_label" == "$DB_RUN_LABEL" ]] || die 'disposable receipt run label mismatch' 66
+  [[ -z "$receipt_major" || "$receipt_major" == "$DB_MAJOR" ]] || \
+    die 'disposable receipt PostgreSQL major does not match the selected profile' 66
 
   command -v docker >/dev/null 2>&1 || die 'Docker is required to verify the owned disposable target' 66
-  local actual_id state actual_image expected_image_id actual_host_ip actual_host_port
+  local actual_id state actual_image expected_image_id bindings_json
   actual_id=$(docker inspect --format '{{.Id}}' "$container_name" 2>/dev/null || true)
   state=$(docker inspect --format '{{.State.Status}}' "$container_name" 2>/dev/null || true)
   [[ "$actual_id" == "$container_id" && "$state" == 'running' ]] || \
@@ -445,10 +255,10 @@ verify_owned_disposable_target() {
   [[ -n "$expected_image_id" && "$actual_image" == "$expected_image_id" ]] || \
     die 'disposable container image digest does not match the ownership receipt' 66
 
-  actual_host_ip=$(docker inspect --format '{{(index (index .HostConfig.PortBindings "5432/tcp") 0).HostIp}}' "$container_name" 2>/dev/null || true)
-  actual_host_port=$(docker inspect --format '{{(index (index .HostConfig.PortBindings "5432/tcp") 0).HostPort}}' "$container_name" 2>/dev/null || true)
-  [[ "$actual_host_ip" == '127.0.0.1' && "$actual_host_port" == '15432' ]] || \
-    die 'disposable container has a wildcard or unexpected host mapping' 66
+  bindings_json=$(docker inspect --format '{{json .HostConfig.PortBindings}}' "$container_name" 2>/dev/null || true)
+  if ! printf '%s' "$bindings_json" | run_gate_helper validate-port-bindings /dev/stdin "$DB_PORT" >/dev/null 2>&1; then
+    die 'disposable container has a wildcard, extra, or unexpected host mapping' 66
+  fi
 
   local owner_label run_label_actual lifecycle_label
   owner_label=$(docker inspect --format '{{index .Config.Labels "zero.owner"}}' "$container_name" 2>/dev/null || true)
@@ -456,15 +266,26 @@ verify_owned_disposable_target() {
   lifecycle_label=$(docker inspect --format '{{index .Config.Labels "zero.lifecycle"}}' "$container_name" 2>/dev/null || true)
   [[ "$owner_label" == 'centurion-dashboard-tools' && "$run_label_actual" == "$run_label" && "$lifecycle_label" == 'disposable' ]] || \
     die 'disposable container ownership/lifecycle labels do not match the receipt' 66
+  if [[ "$DB_PROFILE" == 'pg16' ]]; then
+    local purpose_label major_label
+    purpose_label=$(docker inspect --format '{{index .Config.Labels "zero.purpose"}}' "$container_name" 2>/dev/null || true)
+    major_label=$(docker inspect --format '{{index .Config.Labels "zero.postgres-major"}}' "$container_name" 2>/dev/null || true)
+    [[ "$purpose_label" == 'migration-parity' && "$major_label" == "$DB_MAJOR" ]] || \
+      die 'disposable PG16 purpose/major labels do not match the ownership receipt' 66
+  fi
 
   local url=$NAVA_TEST_DATABASE_URL
   if ! (
     cd "$SERVER_PILOT"
-    env \
+    env -i PATH="$PATH" HOME="${HOME:-/tmp}" \
       NAVA_TEST_DATABASE_URL="$url" \
       NAVA_EXPECTED_DATABASE="$database_name" \
       NAVA_EXPECTED_ROLE="$role_name" \
       NAVA_EXPECTED_RUN="$run_label" \
+      NAVA_EXPECTED_MAJOR="$DB_MAJOR" \
+      NAVA_EXPECTED_PORT='5432' \
+      NAVA_EXPECTED_SENTINEL_TABLE="$DB_SENTINEL_TABLE" \
+      NAVA_EXPECTED_SENTINEL_MARKER="$DB_SENTINEL_MARKER" \
       node --input-type=module >/dev/null 2>/dev/null <<'NODE'
 import postgres from 'postgres';
 
@@ -472,7 +293,11 @@ const url = process.env.NAVA_TEST_DATABASE_URL;
 const expectedDatabase = process.env.NAVA_EXPECTED_DATABASE;
 const expectedRole = process.env.NAVA_EXPECTED_ROLE;
 const expectedRun = process.env.NAVA_EXPECTED_RUN;
-if (!url || !expectedDatabase || !expectedRole || !expectedRun) process.exit(1);
+const expectedMajor = process.env.NAVA_EXPECTED_MAJOR;
+const expectedPort = process.env.NAVA_EXPECTED_PORT;
+const expectedSentinelTable = process.env.NAVA_EXPECTED_SENTINEL_TABLE;
+const expectedSentinelMarker = process.env.NAVA_EXPECTED_SENTINEL_MARKER;
+if (!url || !expectedDatabase || !expectedRole || !expectedRun || !expectedMajor || !expectedPort || !expectedSentinelMarker || !/^[A-Za-z0-9_]+$/.test(expectedSentinelTable ?? '')) process.exit(1);
 
 const connection = postgres(url, { max: 1, connect_timeout: 5, idle_timeout: 5 });
 try {
@@ -480,7 +305,9 @@ try {
     select
       current_database() as database_name,
       current_user as role_name,
-      pg_get_userbyid(datdba) as owner_name
+      pg_get_userbyid(datdba) as owner_name,
+      current_setting('server_version') as server_version,
+      current_setting('port') as server_port
     from pg_database
     where datname = current_database()
   `;
@@ -488,13 +315,15 @@ try {
     !identity ||
     identity.database_name !== expectedDatabase ||
     identity.role_name !== expectedRole ||
-    identity.owner_name !== expectedRole
+    identity.owner_name !== expectedRole ||
+    String(identity.server_version).match(/^\d+/)?.[0] !== expectedMajor ||
+    String(identity.server_port) !== expectedPort
   ) process.exit(1);
 
-  const sentinelRows = await connection.unsafe('select * from "centurion_u1_setup_sentinel"');
+  const sentinelRows = await connection.unsafe(`select * from "${expectedSentinelTable}"`);
   if (sentinelRows.length !== 1) process.exit(1);
   const markerEntry = Object.entries(sentinelRows[0]).find(([key]) => /marker|run/i.test(key));
-  if (!markerEntry || String(markerEntry[1]) !== expectedRun) process.exit(1);
+  if (!markerEntry || String(markerEntry[1]) !== expectedSentinelMarker || expectedSentinelMarker !== expectedRun) process.exit(1);
 } catch {
   process.exitCode = 1;
 } finally {
@@ -510,7 +339,7 @@ probe_disposable_database() {
   local url=$NAVA_TEST_DATABASE_URL
   if ! (
     cd "$SERVER_PILOT"
-    env NAVA_TEST_DATABASE_URL="$url" node --input-type=module >/dev/null 2>/dev/null <<'NODE'
+    env -i PATH="$PATH" HOME="${HOME:-/tmp}" NAVA_TEST_DATABASE_URL="$url" node --input-type=module >/dev/null 2>/dev/null <<'NODE'
 import postgres from 'postgres';
 
 const url = process.env.NAVA_TEST_DATABASE_URL;
@@ -565,19 +394,19 @@ run_db_slice() {
 
 run_browser_slice() {
   local config="${REPO_ROOT}/apps/mail/vite.pilot-fixture.config.ts"
-  local -a test_files=("$@")
-  if ! rg -q '127\.0\.0\.1|localhost|loopback' "$config"; then
-    die 'browser fixture config must explicitly use a loopback origin' 69
-  fi
-  local origin=${NAVA_FIXTURE_ORIGIN:-http://127.0.0.1:4179}
-  if ! NAVA_GATE_ORIGIN="$origin" node --input-type=module >/dev/null 2>/dev/null <<'NODE'
-const origin = process.env.NAVA_GATE_ORIGIN;
-const parsed = new URL(origin);
-if (!['127.0.0.1', 'localhost', '[::1]'].includes(parsed.hostname)) process.exit(1);
-NODE
-  then
-    die 'browser fixture origin must be loopback-only' 66
-  fi
+  local slice=${1:-}
+  local grep_pattern
+  case "$slice" in
+    dashboard) grep_pattern='reservation-tools-pilot/dashboard' ;;
+    documents) grep_pattern='reservation-tools-pilot/documents' ;;
+    pilot) grep_pattern='reservation-tools-pilot/pilot' ;;
+    *) die "unknown browser slice '${slice}'" 65 ;;
+  esac
+  run_gate_helper validate-browser-config "$config" "$FIXTURE_MANIFEST" || \
+    die 'browser fixture config does not enforce literal fake loopback mode' 69
+  local origin
+  origin=$(run_gate_helper manifest-origin "$FIXTURE_MANIFEST") || \
+    die 'browser fixture manifest origin is invalid' 69
 
   local report_path
   report_path=$(mktemp "${TMPDIR:-/tmp}/reservation-pilot-browser.XXXXXX.json")
@@ -589,7 +418,8 @@ NODE
     exec
     playwright
     test
-    "${test_files[@]}"
+    "apps/mail/tests/e2e/reservation-tools-pilot.spec.ts"
+    --grep="^${grep_pattern}$"
     "--config=${config}"
     --reporter=json
     --forbid-only
@@ -598,26 +428,11 @@ NODE
 
   (
     cd "$REPO_ROOT"
-    run_clean_command "${command[@]}" >"$report_path" 2>"$error_path"
+    NAVA_FIXTURE_ORIGIN="$origin" run_clean_command "${command[@]}" >"$report_path" 2>"$error_path"
   ) || die 'browser fixture runner failed; no external or live service is permitted' 1
   [[ -s "$report_path" ]] || die 'browser runner produced no result report; required slice cannot skip green' 1
-  node --input-type=module - "$report_path" <<'NODE'
-import { readFileSync } from 'node:fs';
-
-const report = JSON.parse(readFileSync(process.argv[2], 'utf8'));
-let specs = 0;
-let skipped = 0;
-function visitSuite(suite) {
-  for (const spec of suite.specs ?? []) {
-    specs += 1;
-    if (spec.ok === false || spec.skip === true || spec.status === 'skipped') skipped += 1;
-  }
-  for (const child of suite.suites ?? []) visitSuite(child);
-}
-for (const suite of report.suites ?? []) visitSuite(suite);
-if (specs < 1) throw new Error('required browser slice selected zero tests');
-if (skipped > 0) throw new Error(`required browser slice skipped ${skipped} test(s)`);
-NODE
+  run_gate_helper validate-browser-report "$report_path" "$grep_pattern" || \
+    die 'required browser slice selected zero tests, skipped, or failed' 1
   rm -f "$report_path" "$error_path"
   trap - RETURN
 }
@@ -631,11 +446,23 @@ run_build_slice() {
 }
 
 case "${MODE}:${SLICE}" in
-  unit:dashboard)
+  unit:gate)
+    run_gate_helper validate-manifest "$FIXTURE_MANIFEST" || die 'synthetic fixture manifest validation failed' 69
     run_vitest "tests/reservation-pilot-gate.test.ts"
     ;;
+  unit:dashboard)
+    run_vitest \
+      "tests/admin-dashboard-access.test.ts" \
+      "tests/admin-dashboard-metrics.test.ts" \
+      "tests/admin-dashboard-query.test.ts"
+    run_vitest_in_dir "${REPO_ROOT}/apps/mail" \
+      "tests/admin-dashboard/response-metrics-availability.test.ts" \
+      "tests/admin-dashboard/business-overview.test.tsx"
+    ;;
   unit:measurement)
-    run_vitest "tests/reservation-pilot-gate.test.ts"
+    run_vitest \
+      "tests/mail-measurement-config.test.ts" \
+      "tests/mail-data-health.test.ts"
     ;;
   unit:reads)
     run_vitest \
@@ -718,7 +545,7 @@ case "${MODE}:${SLICE}" in
     run_db_slice "tests/outbound-queue.test.ts"
     ;;
   browser:dashboard|browser:documents|browser:pilot)
-    run_browser_slice "apps/mail/tests/e2e/reservation-tools-pilot.spec.ts"
+    run_browser_slice "$SLICE"
     ;;
   build:server)
     run_build_slice '@zero/server'
