@@ -2,7 +2,7 @@
 
 ## Initial dashboard slice (U11-A)
 
-Status: fixture-verified browser proof only. This slice exercises the reviewed
+Status: current production-style browser proof GREEN. This slice exercises the reviewed
 `AdminDashboardPage` and its real query/provider path with deterministic,
 public-safe loopback transports. It does not claim live mail, PMS, model,
 database, population, or release/agent activation proof.
@@ -26,8 +26,12 @@ aggregate dashboard reads; it has no mutation or live-service path.
 
 The journey covers:
 
-- desktop and mobile layouts with keyboard-visible controls and 44px minimum
-  control, disclosure, and option targets;
+- desktop (1280x900) and mobile (390x844) layouts using the production
+  Tailwind Vite plugin and imported production `app/globals.css`; the former
+  hand-authored fixture utility CSS has been removed;
+- keyboard-only cohort/window menus, disclosure Enter/Space toggles, tab order,
+  `:focus-visible`, return focus, and refresh/error focus retention at both
+  viewport sizes;
 - authorized Centurion/current data and the Research cohort;
 - an explicit historical cutoff with unavailable folder/classification
   evidence;
@@ -36,6 +40,11 @@ The journey covers:
 - unauthorized access redirecting to general settings without an aggregate
   dashboard request.
 
+The transport validates the actual tRPC batch envelope and finite
+cohort/window/cutoff values. Missing, malformed, unknown, or non-finite inputs
+return 400; valid 28-day outage input returns 503. Request receipts retain only
+method/path/status and normalized query metadata, never request bodies.
+
 ### Evidence and limits
 
 Trace, video, and screenshots are written only under:
@@ -43,6 +52,21 @@ Trace, video, and screenshots are written only under:
 ```text
 .private/centurion-dashboard-tools-execution/u11a-browser-artifacts/
 ```
+
+Fresh production-theme screenshots are:
+
+```text
+.private/centurion-dashboard-tools-execution/u11a-browser-artifacts/reservation-tools-pilot-reservation-tools-pilot-dashboard/dashboard-desktop.png
+.private/centurion-dashboard-tools-execution/u11a-browser-artifacts/reservation-tools-pilot-reservation-tools-pilot-dashboard/dashboard-mobile.png
+```
+
+The historical RED `error-context.md` remains private diagnostic evidence. The
+fresh desktop/mobile and test-finished captures are production-theme artifacts
+from the post-fix GREEN run. The former 35px target failure was caused by the
+production `html { font-size: 80% }` root scale combined with rem-based
+`min-h-11`; the target owner replaced the ten page-local floors with explicit
+`min-h-[44px]` and added a production-root-scale regression. No global CSS,
+fixture threshold, config, or gate change was made.
 
 These artifacts are runtime evidence, not public fixtures. Preserve their
 expiry and access controls; do not copy raw browser state, cookies, response
@@ -58,4 +82,5 @@ mapping/environment edits; deleting the ignored artifact directory is safe
 after retention obligations are met. Stopping the gate terminates the local
 Vite/Chromium processes. Later dashboard release, live activation, tool/agent
 release, shadow/draft journeys, and write capabilities require separate
-reviewed gates and are not enabled by this proof.
+reviewed gates and are not enabled by this proof. The exact dashboard gate is
+now fresh green for this slice; later activation bounds remain unchanged.

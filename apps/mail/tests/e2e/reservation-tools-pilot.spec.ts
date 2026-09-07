@@ -1,7 +1,21 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page, type TestInfo } from '@playwright/test';
 
 const FIXTURE_ORIGIN = 'http://127.0.0.1:4179';
 const DASHBOARD_PATH = '/settings/admin-dashboard';
+const HISTORICAL_CUTOFF = '2026-09-01T21:59:59.999Z';
+
+type DashboardQueryMetadata = {
+  cohortId: 'centurion' | 'research';
+  window: '7d' | '28d';
+  observationCutoff?: string;
+};
+
+type RecordedFixtureRequest = {
+  method: string;
+  path: string;
+  status?: number;
+  query?: DashboardQueryMetadata | null;
+};
 
 function dashboardUrl(mode = 'default'): string {
   return `${FIXTURE_ORIGIN}${DASHBOARD_PATH}?fixture=${mode}`;
@@ -15,17 +29,81 @@ async function expectDashboardReady(page: Page) {
   await expect(page.getByRole('heading', { name: 'Data diagnostics' })).toBeVisible();
 }
 
-async function selectOption(page: Page, label: string, option: string) {
-  await page.getByRole('combobox', { name: label }).click();
-  await page.getByRole('option', { name: option, exact: true }).click();
+async function selectOptionKeyboard(page: Page, label: string, option: string) {
+  const trigger = page.getByRole('combobox', { name: label });
+  await trigger.focus();
+  await trigger.press('Space');
+  const options = page.getByRole('option');
+  await expect(options.filter({ hasText: option }).first()).toBeVisible();
+  const optionLabels = await options.allTextContents();
+  const optionIndex = optionLabels.findIndex((value) => value.trim() === option);
+  expect(optionIndex, `keyboard option ${option}`).toBeGreaterThanOrEqual(0);
+  await page.keyboard.press('Home');
+  for (let index = 0; index < optionIndex; index += 1) {
+    await page.keyboard.press('ArrowDown');
+  }
+  await page.keyboard.press('Enter');
+  await expect(trigger).toContainText(option);
+  await expect(trigger).toBeFocused();
+  expect(await trigger.evaluate((element) => element.matches(':focus-visible'))).toBe(true);
 }
 
-async function expectTouchTarget(locator: ReturnType<Page['locator']>, label: string) {
-  const heights = await locator.evaluateAll((elements) =>
-    elements.map((element) => Math.round(element.getBoundingClientRect().height)),
+async function toggleDisclosureKeyboard(page: Page, summary: ReturnType<Page['locator']>) {
+  const details = summary.locator('xpath=..');
+  await summary.focus();
+  await summary.press('Enter');
+  await expect(details).toHaveAttribute('open', '');
+  await expect(summary).toBeFocused();
+  expect(await summary.evaluate((element) => element.matches(':focus-visible'))).toBe(true);
+  await summary.press('Space');
+  await expect(details).not.toHaveAttribute('open');
+  await expect(summary).toBeFocused();
+}
+
+async function readTouchTargetBoxes(locator: ReturnType<Page['locator']>) {
+  return locator.evaluateAll((elements) =>
+    elements.map((element) => {
+      const rect = element.getBoundingClientRect();
+      return { width: Math.round(rect.width), height: Math.round(rect.height) };
+    }),
   );
-  expect(heights, `${label} target heights`).not.toHaveLength(0);
-  expect(heights.every((height) => height >= 44), `${label} targets must be at least 44px`).toBe(true);
+}
+
+function touchTargetFailures(
+  boxes: Array<{ width: number; height: number }>,
+  label: string,
+): string[] {
+  if (boxes.length === 0) return [`${label}: no target elements`];
+  return boxes.flatMap(({ width, height }, index) =>
+    width >= 44 && height >= 44
+      ? []
+      : [`${label}[${index}] is ${width}x${height}px`],
+  );
+}
+
+function expectTouchTargetBoxes(
+  measurements: Array<{ label: string; boxes: Array<{ width: number; height: number }> }>,
+) {
+  const failures = measurements.flatMap(({ label, boxes }) => touchTargetFailures(boxes, label));
+  expect(failures, `44px target measurements: ${JSON.stringify(measurements)}`).toEqual([]);
+}
+
+async function expectProductLayout(page: Page, viewport: 'desktop' | 'mobile') {
+  const cards = page
+    .locator('section[aria-labelledby="traffic-heading"] > div')
+    .nth(1)
+    .locator(':scope > *');
+  const boxes = await cards.evaluateAll((elements) =>
+    elements.map((element) => {
+      const rect = element.getBoundingClientRect();
+      return { x: Math.round(rect.x), width: Math.round(rect.width), height: Math.round(rect.height) };
+    }),
+  );
+  expect(boxes, `${viewport} traffic cards`).toHaveLength(4);
+  expect(boxes.every(({ width, height }) => width >= 140 && height >= 90)).toBe(true);
+  const columns = new Set(boxes.map(({ x }) => x));
+  expect(columns.size, `${viewport} traffic card columns`).toBe(viewport === 'desktop' ? 4 : 1);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 }
 
 async function assertLoopbackAndReadOnly(page: Page) {
@@ -44,11 +122,15 @@ async function assertLoopbackAndReadOnly(page: Page) {
   return { requests, forbidden };
 }
 
-test('reservation-tools-pilot/dashboard', async ({ page, browser }) => {
+test('reservation-tools-pilot/dashboard', async ({ page, browser }, testInfo: TestInfo) => {
   const audit = await assertLoopbackAndReadOnly(page);
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto(dashboardUrl(), { waitUntil: 'domcontentloaded' });
   await expectDashboardReady(page);
+  await expectProductLayout(page, 'desktop');
+  const desktopControlBoxes = await readTouchTargetBoxes(page.locator('#dashboard-cohort, #dashboard-window, #dashboard-cutoff'));
+  const desktopDisclosureBoxes = await readTouchTargetBoxes(page.locator('summary'));
+  await page.screenshot({ path: testInfo.outputPath('dashboard-desktop.png'), fullPage: true });
 
   await expect(page.getByRole('combobox', { name: 'Cohort' })).toBeVisible();
   await expect(page.locator('#dashboard-cohort')).toContainText('Centurion');
@@ -58,12 +140,18 @@ test('reservation-tools-pilot/dashboard', async ({ page, browser }) => {
   await expect(page.getByText('First observed human reply', { exact: true })).toBeVisible();
   await expect(page.getByText('Unavailable: reply evidence unavailable', { exact: true }).first()).toBeVisible();
 
-  await selectOption(page, 'Cohort', 'Research (operator)');
+  await selectOptionKeyboard(page, 'Cohort', 'Research (operator)');
   await expect(page.getByText('research', { exact: true })).toBeVisible();
   await expect(page.locator('section[aria-labelledby="traffic-heading"] p[aria-live="polite"]').first()).toHaveText('2');
+  await page.keyboard.press('Tab');
+  await expect(page.locator('#dashboard-window')).toBeFocused();
 
-  await page.locator('#dashboard-cutoff').fill('2026-09-01');
+  const desktopCutoff = page.locator('#dashboard-cutoff');
+  await desktopCutoff.focus();
+  await desktopCutoff.fill('2026-09-01');
   await expect(page.getByText('Folder classification unavailable', { exact: true })).toBeVisible();
+  await expect(desktopCutoff).toBeFocused();
+  await toggleDisclosureKeyboard(page, page.locator('summary').first());
   await expect(
     page.getByRole('region', { name: 'Business breakdown' }).getByText('classification snapshot unavailable', { exact: true }).first(),
   ).toBeVisible();
@@ -72,25 +160,66 @@ test('reservation-tools-pilot/dashboard', async ({ page, browser }) => {
   ).toContainText('01 Sept 2026');
 
   await page.evaluate(() => window.history.replaceState({}, '', `${location.pathname}?fixture=error`));
-  await selectOption(page, 'Window', '28 days');
+  await selectOptionKeyboard(page, 'Window', '28 days');
   await expect(page.getByRole('alert')).toContainText('selected query');
   await expect(page.getByRole('alert')).toContainText('showing the observed snapshot');
   await expect(page.getByRole('alert')).toContainText('no demo data is substituted');
+  await expect(page.getByRole('alert')).toContainText(`research / 28d / ${HISTORICAL_CUTOFF}`);
+  await expect(page.locator('#dashboard-window')).toBeFocused();
+  const desktopFixtureRequests = (await page.evaluate(
+    () => window.__reservationToolsPilotRequests ?? [],
+  )) as RecordedFixtureRequest[];
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(dashboardUrl(), { waitUntil: 'domcontentloaded' });
   await expectDashboardReady(page);
-  await expectTouchTarget(page.locator('#dashboard-cohort, #dashboard-window, #dashboard-cutoff'), 'dashboard controls');
-  await expectTouchTarget(page.getByRole('button', { name: 'Latest observed', exact: true }), 'latest observed button');
-  await expectTouchTarget(page.locator('summary'), 'definition/data-table disclosures');
-  await page.getByRole('combobox', { name: 'Cohort' }).click();
-  await expectTouchTarget(page.locator('[role="option"]:visible'), 'cohort options');
-  await page.getByRole('option', { name: 'Research (operator)', exact: true }).click();
+  await expectProductLayout(page, 'mobile');
+  const mobileControlBoxes = await readTouchTargetBoxes(page.locator('#dashboard-cohort, #dashboard-window, #dashboard-cutoff'));
+  const mobileLatestBoxes = await readTouchTargetBoxes(page.getByRole('button', { name: 'Latest observed', exact: true }));
+  const mobileDisclosureBoxes = await readTouchTargetBoxes(page.locator('summary'));
+  await page.screenshot({ path: testInfo.outputPath('dashboard-mobile.png'), fullPage: true });
+  await selectOptionKeyboard(page, 'Cohort', 'Research (operator)');
+  await toggleDisclosureKeyboard(page, page.locator('summary').first());
+  const mobileCutoff = page.locator('#dashboard-cutoff');
+  await mobileCutoff.focus();
+  await mobileCutoff.fill('2026-09-01');
+  await expect(page.getByText('Folder classification unavailable', { exact: true })).toBeVisible();
+  await expect(mobileCutoff).toBeFocused();
+  await page.evaluate(() => window.history.replaceState({}, '', `${location.pathname}?fixture=error`));
+  await selectOptionKeyboard(page, 'Window', '28 days');
+  await expect(page.getByRole('alert')).toContainText('showing the observed snapshot');
+  await expect(page.locator('#dashboard-window')).toBeFocused();
+  await page.getByRole('combobox', { name: 'Cohort' }).focus();
+  await page.keyboard.press('Space');
+  const mobileOptionBoxes = await readTouchTargetBoxes(page.locator('[role="option"]:visible'));
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('combobox', { name: 'Cohort' })).toBeFocused();
 
   expect(audit.forbidden).toEqual([]);
-  const fixtureRequests = await page.evaluate(
+  const malformedBodies: Array<string | undefined> = [
+    undefined,
+    '{}',
+    'not-json',
+    '{"0":{"json":{"cohortId":"unknown","window":"7d"}}}',
+    `{"0":{"json":{"cohortId":"centurion","window":"7d","observationCutoff":"not-a-date"}}}`,
+  ];
+  const malformedResponses = await page.evaluate(async (bodies) => {
+    const responses = [];
+    for (const body of bodies) {
+      const response = await fetch('/api/trpc/adminDashboard.getMetrics', {
+        method: 'POST',
+        ...(body === undefined ? {} : { body }),
+      });
+      responses.push({ status: response.status });
+    }
+    return responses;
+  }, malformedBodies);
+  expect(malformedResponses.every(({ status }) => status === 400)).toBe(true);
+
+  const mobileFixtureRequests = (await page.evaluate(
     () => window.__reservationToolsPilotRequests ?? [],
-  );
+  )) as RecordedFixtureRequest[];
+  const fixtureRequests = [...desktopFixtureRequests, ...mobileFixtureRequests];
   const allowedFixturePaths = new Set([
     '/settings/undefined',
     '/api/auth/get-session',
@@ -99,7 +228,43 @@ test('reservation-tools-pilot/dashboard', async ({ page, browser }) => {
   ]);
   expect(fixtureRequests.every((request) => allowedFixturePaths.has(request.path))).toBe(true);
   expect(fixtureRequests.every((request) => ['GET', 'POST'].includes(request.method))).toBe(true);
-  expect(fixtureRequests.some((request) => request.path.endsWith('/api/trpc/adminDashboard.getMetrics'))).toBe(true);
+  const dashboardRequests = fixtureRequests.filter((request) =>
+    request.path.endsWith('/api/trpc/adminDashboard.getMetrics'),
+  );
+  expect(dashboardRequests.length).toBeGreaterThan(0);
+  expect(dashboardRequests.every((request) => request.method === 'POST')).toBe(true);
+  expect(dashboardRequests.filter((request) => request.status === 400)).toHaveLength(malformedBodies.length);
+  expect(
+    dashboardRequests
+      .filter((request) => request.status === 400)
+      .every((request) => request.query === null),
+  ).toBe(true);
+  const successfulDashboardRequests = dashboardRequests.filter((request) => request.status !== 400);
+  expect(successfulDashboardRequests.every((request) => request.query)).toBe(true);
+  expect(successfulDashboardRequests).toContainEqual(
+    expect.objectContaining({
+      status: 200,
+      query: { cohortId: 'centurion', window: '7d' },
+    }),
+  );
+  expect(successfulDashboardRequests).toContainEqual(
+    expect.objectContaining({
+      status: 200,
+      query: { cohortId: 'research', window: '7d' },
+    }),
+  );
+  expect(successfulDashboardRequests).toContainEqual(
+    expect.objectContaining({
+      status: 200,
+      query: { cohortId: 'research', window: '7d', observationCutoff: HISTORICAL_CUTOFF },
+    }),
+  );
+  expect(successfulDashboardRequests).toContainEqual(
+    expect.objectContaining({
+      status: 503,
+      query: { cohortId: 'research', window: '28d', observationCutoff: HISTORICAL_CUTOFF },
+    }),
+  );
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const authPage = await context.newPage();
   const authRequests = () => authPage.evaluate(() => window.__reservationToolsPilotRequests ?? []);
@@ -108,4 +273,13 @@ test('reservation-tools-pilot/dashboard', async ({ page, browser }) => {
   const deniedRequests = await authRequests();
   expect(deniedRequests.some((request) => request.path.endsWith('/api/trpc/adminDashboard.getMetrics'))).toBe(false);
   await context.close();
+
+  expectTouchTargetBoxes([
+    { label: 'desktop dashboard controls', boxes: desktopControlBoxes },
+    { label: 'desktop definition/data-table disclosures', boxes: desktopDisclosureBoxes },
+    { label: 'mobile dashboard controls', boxes: mobileControlBoxes },
+    { label: 'mobile latest observed button', boxes: mobileLatestBoxes },
+    { label: 'mobile definition/data-table disclosures', boxes: mobileDisclosureBoxes },
+    { label: 'mobile cohort options', boxes: mobileOptionBoxes },
+  ]);
 });

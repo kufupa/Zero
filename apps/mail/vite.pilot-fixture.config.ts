@@ -1,4 +1,5 @@
 import { defineConfig } from 'vite';
+import tailwindcss from '@tailwindcss/vite';
 
 export const pilotFixtureContract = {
   mode: 'fixture',
@@ -14,6 +15,7 @@ export const pilotFixtureContract = {
 export default defineConfig({
   envDir: '/dev/null',
   root: 'tests/e2e/fixture',
+  plugins: [tailwindcss()],
   resolve: {
     alias: {
       '@': '/home/ubuntu/projects/zero/.worktrees/centurion-dashboard-tools/apps/mail',

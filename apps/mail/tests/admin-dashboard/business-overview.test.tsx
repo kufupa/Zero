@@ -241,6 +241,14 @@ describe('AdminDashboardPage executive business overview', () => {
     expect(markup).not.toContain('Total revenue');
   });
 
+  it('uses CSS-pixel touch-target floors under the scaled document root', () => {
+    const markup = renderToStaticMarkup(createElement(AdminDashboardPage));
+    const pixelTargetCount = (markup.match(/min-h-\[44px\]/g) ?? []).length;
+
+    expect(pixelTargetCount, 'dashboard interactive targets').toBe(30);
+    expect(markup).not.toContain('min-h-11');
+  });
+
   it('labels the prior snapshot while a changed selection is still refreshing', () => {
     useAdminDashboardDataMock.mockReturnValue({
       canAccess: true,

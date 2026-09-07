@@ -1,20 +1,29 @@
 import type { AdminDashboardMetrics, MetricResult } from '@/lib/admin-dashboard/types';
 
+type DashboardInput = {
+  cohortId: 'centurion' | 'research';
+  window: '7d' | '28d';
+  observationCutoff?: string;
+};
+
+type DashboardInputResult =
+  | { ok: true; input: DashboardInput }
+  | { ok: false; reason: string };
+
 declare global {
   interface Window {
-    __reservationToolsPilotRequests?: Array<{ method: string; path: string }>;
+    __reservationToolsPilotRequests?: Array<{
+      method: string;
+      path: string;
+      status: number;
+      query?: DashboardInput | null;
+    }>;
     __reservationToolsPilotFetchHandler?: typeof fetch;
   }
 }
 
 const FIXTURE_CUTOFF = '2026-09-07T12:00:00.000Z';
 const FIXTURE_ORIGIN = 'http://127.0.0.1:4179';
-
-type DashboardInput = {
-  cohortId?: 'centurion' | 'research';
-  window?: '7d' | '28d';
-  observationCutoff?: string;
-};
 
 type FixtureMode = 'default' | 'unauthorized' | 'error';
 
@@ -62,21 +71,75 @@ function unavailable<T>(unit: string, cutoff: string, reason: string): MetricRes
   });
 }
 
-function parseDashboardInput(body: string | undefined): DashboardInput {
-  if (!body) return {};
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function parseDashboardInput(body: string | undefined): DashboardInputResult {
+  if (!body?.trim()) return { ok: false, reason: 'missing_body' };
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(body) as unknown;
-    const first = Array.isArray(parsed)
-      ? parsed[0]
-      : parsed && typeof parsed === 'object' && '0' in parsed
-        ? (parsed as Record<string, unknown>)['0']
-        : parsed;
-    const json = (first as { json?: unknown } | null)?.json;
-    const input = (json as { json?: unknown } | null)?.json ?? json;
-    return (input ?? {}) as DashboardInput;
+    parsed = JSON.parse(body) as unknown;
   } catch {
-    return {};
+    return { ok: false, reason: 'invalid_json' };
   }
+
+  const envelope = Array.isArray(parsed)
+    ? parsed.length === 1
+      ? parsed[0]
+      : undefined
+    : isRecord(parsed) && Object.keys(parsed).length === 1 && '0' in parsed
+      ? parsed['0']
+      : undefined;
+  if (
+    !isRecord(envelope) ||
+    !Object.hasOwn(envelope, 'json') ||
+    !isRecord(envelope.json) ||
+    Object.keys(envelope).some((key) => key !== 'json' && key !== 'meta')
+  ) {
+    return { ok: false, reason: 'invalid_trpc_envelope' };
+  }
+
+  const input = envelope.json;
+  const allowedKeys = new Set(['cohortId', 'window', 'observationCutoff']);
+  if (Object.keys(input).some((key) => !allowedKeys.has(key))) {
+    return { ok: false, reason: 'unknown_input_field' };
+  }
+  if (input.cohortId !== 'centurion' && input.cohortId !== 'research') {
+    return { ok: false, reason: 'invalid_cohort' };
+  }
+  if (input.window !== '7d' && input.window !== '28d') {
+    return { ok: false, reason: 'invalid_window' };
+  }
+  let observationCutoff: string | undefined;
+  if (input.observationCutoff === null) {
+    const metaValues = isRecord(envelope.meta) && isRecord(envelope.meta.values)
+      ? envelope.meta.values.observationCutoff
+      : undefined;
+    if (!Array.isArray(metaValues) || !metaValues.includes('undefined')) {
+      return { ok: false, reason: 'invalid_observation_cutoff' };
+    }
+  } else if (input.observationCutoff !== undefined) {
+    if (
+      typeof input.observationCutoff !== 'string' ||
+      !Number.isFinite(Date.parse(input.observationCutoff)) ||
+      new Date(input.observationCutoff).toISOString() !== input.observationCutoff
+    ) {
+      return { ok: false, reason: 'invalid_observation_cutoff' };
+    }
+    observationCutoff = input.observationCutoff;
+  }
+
+  return {
+    ok: true,
+    input: {
+      cohortId: input.cohortId,
+      window: input.window,
+      ...(observationCutoff === undefined
+        ? {}
+        : { observationCutoff }),
+    },
+  };
 }
 
 function isoWithDays(cutoff: string, days: number): string {
@@ -87,8 +150,8 @@ function isoWithDays(cutoff: string, days: number): string {
 }
 
 function dashboardPayload(input: DashboardInput): AdminDashboardMetrics {
-  const cohortId = input.cohortId === 'research' ? 'research' : 'centurion';
-  const preset = input.window === '28d' ? '28d' : '7d';
+  const cohortId = input.cohortId;
+  const preset = input.window;
   const cutoff = input.observationCutoff ?? FIXTURE_CUTOFF;
   const historical = Boolean(input.observationCutoff && input.observationCutoff < FIXTURE_CUTOFF);
   const inbound = cohortId === 'research' ? 2 : preset === '28d' ? 10 : 6;
@@ -284,13 +347,27 @@ export function installReservationToolsPilotTransport(): void {
       typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     const url = new URL(requestUrl, window.location.href);
     const requestLog = (window.__reservationToolsPilotRequests ??= []);
-    requestLog.push({ method: init?.method ?? 'GET', path: url.pathname });
+    const method = init?.method ?? 'GET';
+    const record = (status: number, query?: DashboardInput | null) => {
+      requestLog.push({
+        method,
+        path: url.pathname,
+        status,
+        ...(query === undefined ? {} : { query }),
+      });
+    };
     if (url.origin !== FIXTURE_ORIGIN) {
+      record(0, null);
       throw new Error(`fixture transport refused non-loopback origin ${url.origin}`);
     }
 
     if (url.pathname.endsWith('/api/auth/get-session') || url.pathname.endsWith('/settings/undefined')) {
+      if (method !== 'GET') {
+        record(405, null);
+        return response({ error: { message: 'fixture route requires GET' } }, 405);
+      }
       const unauthorized = fixtureMode() === 'unauthorized';
+      record(200);
       return response(
         unauthorized
           ? { user: { id: 'fixture-denied', email: 'denied@example.org' }, session: { id: 'fixture-session' } }
@@ -299,8 +376,26 @@ export function installReservationToolsPilotTransport(): void {
     }
 
     if (url.pathname.endsWith('/adminDashboard.getMetrics')) {
-      const input = parseDashboardInput(typeof init?.body === 'string' ? init.body : undefined);
+      if (method !== 'POST') {
+        record(405, null);
+        return response({ error: { message: 'fixture dashboard route requires POST' } }, 405);
+      }
+      const parsedInput = parseDashboardInput(typeof init?.body === 'string' ? init.body : undefined);
+      if (!parsedInput.ok) {
+        record(400, null);
+        return response(
+          {
+            error: {
+              message: 'fixture dashboard request rejected',
+              data: { code: 'BAD_REQUEST', reason: parsedInput.reason },
+            },
+          },
+          400,
+        );
+      }
+      const input = parsedInput.input;
       if (fixtureMode() === 'error' && input.window === '28d') {
+        record(503, input);
         return response(
           {
             error: {
@@ -318,10 +413,12 @@ export function installReservationToolsPilotTransport(): void {
           503,
         );
       }
+      record(200, input);
       return trpcResponse(dashboardPayload(input));
     }
 
     if (url.pathname.endsWith('/connections.getDefault')) {
+      record(200);
       return trpcResponse({
         id: 'transport-centurion',
         email: 'centurion@example.org',
@@ -332,6 +429,7 @@ export function installReservationToolsPilotTransport(): void {
       });
     }
 
+    record(404, null);
     return response({ error: { message: 'fixture route unavailable' } }, 404);
   };
 }

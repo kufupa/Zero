@@ -710,6 +710,17 @@ function unwrapExpression(expression) {
 
 function literalValue(expression) {
   const current = unwrapExpression(expression);
+  // The fixture may use the installed production Tailwind Vite plugin so its
+  // real theme compiles. Keep this as the only executable config exception;
+  // all safety-contract fields remain literal and are still inspected below.
+  if (
+    ts.isCallExpression(current) &&
+    ts.isIdentifier(current.expression) &&
+    current.expression.text === 'tailwindcss' &&
+    current.arguments.length === 0
+  ) {
+    return '__approved_local_tailwindcss_vite_plugin__';
+  }
   if (ts.isStringLiteral(current) || ts.isNoSubstitutionTemplateLiteral(current)) {
     return current.text;
   }
@@ -850,6 +861,27 @@ export function validateFixtureConfigSource(source, expectedOrigins) {
     ts.forEachChild(node, visitUnsafe);
   }
   visitUnsafe(sourceFile);
+  const hasApprovedTailwindImport = sourceFile.statements.some(
+    (statement) =>
+      ts.isImportDeclaration(statement) &&
+      statement.moduleSpecifier.text === '@tailwindcss/vite' &&
+      statement.importClause?.name?.text === 'tailwindcss',
+  );
+  let usesTailwindPluginCall = false;
+  function visitTailwindPlugin(node) {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === 'tailwindcss'
+    ) {
+      usesTailwindPluginCall = true;
+    }
+    ts.forEachChild(node, visitTailwindPlugin);
+  }
+  visitTailwindPlugin(sourceFile);
+  if (usesTailwindPluginCall && !hasApprovedTailwindImport) {
+    throw new Error('fixture Tailwind plugin must come from the installed @tailwindcss/vite package');
+  }
   const contract = findLiteralExport(sourceFile, 'pilotFixtureContract');
   const config = findDefaultDefineConfigLiteral(sourceFile);
   assertNoUnsupportedBrowserConfig(config);

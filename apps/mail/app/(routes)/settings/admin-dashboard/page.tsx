@@ -149,7 +149,7 @@ function EvidenceDetails<T>({
 }) {
   return (
     <details className="mt-3 rounded-md border border-dashed p-2 text-xs text-muted-foreground">
-      <summary className="flex min-h-11 cursor-pointer select-none items-center font-medium text-foreground">Definition &amp; evidence</summary>
+      <summary className="flex min-h-[44px] cursor-pointer select-none items-center font-medium text-foreground">Definition &amp; evidence</summary>
       <dl className="mt-2 grid gap-1 sm:grid-cols-2" aria-label={`${label} evidence`}>
         <div>
           <dt className="font-medium text-foreground">Unit</dt>
@@ -239,7 +239,7 @@ function DataTable({
 }) {
   return (
     <details className="mt-3 rounded-md border p-2 text-xs">
-      <summary className="flex min-h-11 cursor-pointer select-none items-center font-medium">View data table</summary>
+      <summary className="flex min-h-[44px] cursor-pointer select-none items-center font-medium">View data table</summary>
       <div className="mt-2 overflow-x-auto">
         <table className="min-w-full border-collapse text-left">
           <caption className="sr-only">{caption}</caption>
@@ -329,12 +329,12 @@ function DashboardControls({
       <div className="grid gap-1.5">
         <Label htmlFor="dashboard-cohort">Cohort</Label>
         <Select value={cohortId} onValueChange={(value) => onCohortChange(value as DashboardCohortId)}>
-          <SelectTrigger id="dashboard-cohort" className="min-h-11" aria-describedby="dashboard-cohort-help">
+          <SelectTrigger id="dashboard-cohort" className="min-h-[44px]" aria-describedby="dashboard-cohort-help">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem className="min-h-11 py-2" value="centurion">Centurion</SelectItem>
-            <SelectItem className="min-h-11 py-2" value="research">Research (operator)</SelectItem>
+            <SelectItem className="min-h-[44px] py-2" value="centurion">Centurion</SelectItem>
+            <SelectItem className="min-h-[44px] py-2" value="research">Research (operator)</SelectItem>
           </SelectContent>
         </Select>
         <p id="dashboard-cohort-help" className="text-xs text-muted-foreground">
@@ -344,12 +344,12 @@ function DashboardControls({
       <div className="grid gap-1.5">
         <Label htmlFor="dashboard-window">Window</Label>
         <Select value={windowPreset} onValueChange={(value) => onWindowChange(value as DashboardWindowPreset)}>
-          <SelectTrigger id="dashboard-window" className="min-h-11">
+          <SelectTrigger id="dashboard-window" className="min-h-[44px]">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem className="min-h-11 py-2" value="7d">7 days</SelectItem>
-            <SelectItem className="min-h-11 py-2" value="28d">28 days</SelectItem>
+            <SelectItem className="min-h-[44px] py-2" value="7d">7 days</SelectItem>
+            <SelectItem className="min-h-[44px] py-2" value="28d">28 days</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -360,7 +360,7 @@ function DashboardControls({
           type="date"
           value={observationCutoff}
           onChange={(event) => onCutoffChange(event.currentTarget.value)}
-          className="min-h-11 rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+          className="min-h-[44px] rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           aria-describedby="dashboard-cutoff-help"
         />
         <p id="dashboard-cutoff-help" className="text-xs text-muted-foreground">
@@ -370,7 +370,7 @@ function DashboardControls({
       <Button
         type="button"
         variant="outline"
-        className="min-h-11"
+        className="min-h-[44px]"
         onClick={() => onCutoffChange('')}
         disabled={!observationCutoff}
       >
