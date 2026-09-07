@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readFileSync, statSync } from 'node:fs';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import path from 'node:path';
 import * as ts from 'typescript';
 
@@ -440,6 +440,16 @@ export function assertManifestContract(manifest) {
   return true;
 }
 
+function hasBlockedFieldOutcome(pilotCase) {
+  return Object.values(pilotCase.fieldOutcomes ?? {}).some((outcome) =>
+    BLOCKED_OUTCOMES.has(outcome),
+  );
+}
+
+function isEligibleEvaluationCase(pilotCase) {
+  return pilotCase.selectionStatus === 'runnable' && !hasBlockedFieldOutcome(pilotCase);
+}
+
 export function createEvaluationSession(manifest) {
   assertManifestContract(manifest);
   let current = clone(manifest);
@@ -473,7 +483,9 @@ export function createEvaluationSession(manifest) {
       const pilotCase = findCase(caseId);
       if (!HOLDOUT_ACTIONS.has(action)) throw new Error(`unknown holdout action ${action}`);
       return (
-        pilotCase.split === 'development' && pilotCase.exposure?.state !== 'unsealed-retired'
+        isEligibleEvaluationCase(pilotCase) &&
+        pilotCase.split === 'development' &&
+        pilotCase.exposure?.state !== 'unsealed-retired'
       );
     },
     aggregate(evaluationMode, split = 'development') {
@@ -486,7 +498,7 @@ export function createEvaluationSession(manifest) {
           (pilotCase) =>
             pilotCase.split === 'development' &&
             pilotCase.evaluationMode === evaluationMode &&
-            pilotCase.selectionStatus === 'runnable' &&
+            isEligibleEvaluationCase(pilotCase) &&
             pilotCase.exposure?.state !== 'unsealed-retired',
         )
         .map((pilotCase) => pilotCase.id);
@@ -496,7 +508,13 @@ export function createEvaluationSession(manifest) {
       const pilotCase = findCase(caseId);
       const frozen = frozenMembership.get(caseId);
       if (frozen.evaluationMode !== evaluationMode) throw new Error('evaluation mode mismatch');
+      if (!isEligibleEvaluationCase(pilotCase)) {
+        throw new Error('evaluation case is not eligible for implementation outcome use');
+      }
       if (!ALLOWED_OUTCOMES.has(outcome)) throw new Error('unknown field outcome');
+      if (BLOCKED_OUTCOMES.has(outcome)) {
+        throw new Error('blocked outcome cannot be used as a passing implementation result');
+      }
       if (pilotCase.split === 'holdout') {
         throw new Error('held-out outcome is sealed from implementation consumers');
       }
@@ -720,22 +738,55 @@ function findLiteralExport(sourceFile, name) {
   return found;
 }
 
-function findDefineConfigLiteral(sourceFile) {
-  let found;
+function isDefineConfigCall(node) {
+  const current = unwrapExpression(node);
+  return (
+    ts.isCallExpression(current) &&
+    ts.isIdentifier(current.expression) &&
+    current.expression.text === 'defineConfig' &&
+    current.arguments.length === 1
+  );
+}
+
+function findDefaultDefineConfigLiteral(sourceFile) {
+  const calls = [];
+  let defaultCall;
   function visit(node) {
-    if (
-      ts.isCallExpression(node) &&
-      ts.isIdentifier(node.expression) &&
-      node.expression.text === 'defineConfig' &&
-      node.arguments.length === 1
-    ) {
-      found = literalValue(node.arguments[0]);
+    if (isDefineConfigCall(node)) {
+      calls.push(unwrapExpression(node));
+    }
+    if (ts.isExportAssignment(node) && !node.isExportEquals) {
+      const expression = unwrapExpression(node.expression);
+      if (isDefineConfigCall(expression)) defaultCall = expression;
     }
     ts.forEachChild(node, visit);
   }
   visit(sourceFile);
-  if (!found) throw new Error('fixture config must call defineConfig with a literal object');
-  return found;
+  if (calls.length !== 1 || !defaultCall || calls[0] !== defaultCall) {
+    throw new Error('fixture config must have exactly one default defineConfig export');
+  }
+  return literalValue(defaultCall.arguments[0]);
+}
+
+function assertNoUnsupportedBrowserConfig(value, pathName = 'config') {
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => assertNoUnsupportedBrowserConfig(item, `${pathName}[${index}]`));
+    return;
+  }
+  if (!value || typeof value !== 'object') return;
+  for (const [key, nested] of Object.entries(value)) {
+    if (
+      /proxy|endpoint|target|url|origin|websocket|socket|remote|external|pms|hms|mail|model|hmr/i.test(
+        key,
+      )
+    ) {
+      throw new Error(`fixture config contains unsupported live browser entry ${pathName}.${key}`);
+    }
+    if (typeof nested === 'string' && /^https?:\/\//i.test(nested) && !/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(?::\d+)?\/?$/i.test(nested)) {
+      throw new Error(`fixture config contains external endpoint ${pathName}.${key}`);
+    }
+    assertNoUnsupportedBrowserConfig(nested, `${pathName}.${key}`);
+  }
 }
 
 export function validateFixtureConfigSource(source, expectedOrigins) {
@@ -794,7 +845,8 @@ export function validateFixtureConfigSource(source, expectedOrigins) {
   }
   visitUnsafe(sourceFile);
   const contract = findLiteralExport(sourceFile, 'pilotFixtureContract');
-  const config = findDefineConfigLiteral(sourceFile);
+  const config = findDefaultDefineConfigLiteral(sourceFile);
+  assertNoUnsupportedBrowserConfig(config);
   if (
     contract.mode !== 'fixture' ||
     contract.envFiles !== false ||
@@ -881,6 +933,37 @@ export function validatePlaywrightReport(report, expectedTitle) {
   return { testCount, skipped, failed };
 }
 
+export function assertBrowserNetworkBoundary() {
+  const probe = spawnSync(
+    'unshare',
+    [
+      '--user',
+      '--map-root-user',
+      '--net',
+      '--fork',
+      '/bin/sh',
+      '-ceu',
+      `
+        /usr/sbin/ip link set lo up
+        interfaces=$(/usr/sbin/ip -o link show | /usr/bin/awk -F': ' '{print $2}' | /usr/bin/cut -d: -f1)
+        for interface in $interfaces; do
+          test "$interface" = lo
+        done
+        printf browser-network-namespace-ready
+      `,
+    ],
+    {
+      env: { PATH: '/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin', HOME: '/tmp' },
+      encoding: 'utf8',
+      timeout: 3000,
+    },
+  );
+  if (probe.error || probe.status !== 0 || !probe.stdout.includes('browser-network-namespace-ready')) {
+    throw new Error('actual browser egress isolation is unavailable');
+  }
+  return true;
+}
+
 function runChild(argv) {
   const kindArg = argv.find((arg) => arg.startsWith('--kind='));
   const cwdArg = argv.find((arg) => arg.startsWith('--cwd='));
@@ -946,6 +1029,11 @@ function runCli(argv) {
   if (command === 'validate-browser-report') {
     if (argv.length !== 3) throw new Error('validate-browser-report requires report and title');
     validatePlaywrightReport(readJsonFile(argv[1], 'browser report'), argv[2]);
+    return;
+  }
+  if (command === 'check-browser-boundary') {
+    if (argv.length !== 1) throw new Error('check-browser-boundary takes no arguments');
+    assertBrowserNetworkBoundary();
     return;
   }
   if (command === 'validate-port-bindings') {

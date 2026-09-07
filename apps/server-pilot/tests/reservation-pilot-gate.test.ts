@@ -330,6 +330,27 @@ describe('reservation pilot runtime validators', () => {
     );
   });
 
+  it('does not admit non-runnable or blocked cases to implementation or aggregation', async () => {
+    const gate = await loadGateLib();
+    const session = gate.createEvaluationSession(readManifest());
+
+    expect(session.canUse('ambiguous-reservation', 'tune')).toBe(false);
+    expect(session.canUse('partial-read', 'repair')).toBe(false);
+    expect(session.canUse('wrong-document', 'choose-fixture')).toBe(false);
+    expect(() => session.recordOutcome('partial-read', 'current-state', 'match')).toThrow(
+      /eligible|runnable|blocked/i,
+    );
+    expect(() => session.recordOutcome('traffic-cohort-t0', 'current-state', 'match')).toThrow(
+      /eligible|blocked/i,
+    );
+    expect(session.aggregate('current-state', 'development')).toEqual({
+      evaluationMode: 'current-state',
+      split: 'development',
+      caseIds: [],
+      eligibleCount: 0,
+    });
+  });
+
   it('builds a minimal child environment and strips ambient DB/model/browser/mail/Vite state', async () => {
     const gate = await loadGateLib();
     const environment = gate.buildChildEnvironment(
@@ -421,6 +442,41 @@ describe('reservation pilot runtime validators', () => {
         ['http://127.0.0.1:4179'],
       ),
     ).toThrow(/live|process\.env/i);
+
+    const dummyConfigThenObjectDefault = `
+      import { defineConfig } from 'vite';
+      export const pilotFixtureContract = {
+        mode: 'fixture', envFiles: false, liveBindings: false,
+        externalSockets: false, networkPolicy: 'loopback-only', transport: 'fake',
+        allowedOrigins: ['http://127.0.0.1:4179'], publicOrigin: 'http://127.0.0.1:4179',
+      } as const;
+      const safeDummy = defineConfig({ envDir: '/dev/null', server: { host: '127.0.0.1', port: 4179 } });
+      export default {};
+    `;
+    expect(() =>
+      gate.validateFixtureConfigSource(dummyConfigThenObjectDefault, ['http://127.0.0.1:4179']),
+    ).toThrow(/default|defineConfig/i);
+
+    const proxyDefault = `
+      import { defineConfig } from 'vite';
+      export const pilotFixtureContract = {
+        mode: 'fixture', envFiles: false, liveBindings: false,
+        externalSockets: false, networkPolicy: 'loopback-only', transport: 'fake',
+        allowedOrigins: ['http://127.0.0.1:4179'], publicOrigin: 'http://127.0.0.1:4179',
+      } as const;
+      export default defineConfig({
+        envDir: '/dev/null',
+        server: { host: '127.0.0.1', port: 4179, proxy: { '/pms': { target: 'https://pms.example' } } },
+      });
+    `;
+    expect(() => gate.validateFixtureConfigSource(proxyDefault, ['http://127.0.0.1:4179'])).toThrow(
+      /proxy|endpoint|external/i,
+    );
+  });
+
+  it('requires an actual browser egress boundary before a Chromium child', async () => {
+    const gate = await loadGateLib();
+    expect(() => gate.assertBrowserNetworkBoundary()).not.toThrow();
   });
 
   it('rejects any unexpected Docker Postgres publication', async () => {

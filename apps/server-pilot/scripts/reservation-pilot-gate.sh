@@ -12,6 +12,16 @@ REPO_ROOT="$(cd "${SERVER_PILOT}/../.." && pwd)"
 
 readonly FIXTURE_MANIFEST="${SERVER_PILOT}/tests/fixtures/reservation-tools-pilot.json"
 readonly GATE_LIB="${SERVER_PILOT}/scripts/reservation-pilot-gate-lib.mjs"
+readonly BROWSER_NAMESPACE_SCRIPT='
+set -eu
+/usr/sbin/ip link set lo up
+interfaces=$(/usr/sbin/ip -o link show)
+printf "%s\n" "$interfaces" | /usr/bin/grep -q ": lo:"
+if printf "%s\n" "$interfaces" | /usr/bin/grep -v -q ": lo:"; then
+  exit 1
+fi
+exec "$@"
+'
 
 run_gate_helper() {
   env -i PATH="${PATH:-/usr/local/bin:/usr/bin:/bin}" HOME=/tmp node "$GATE_LIB" "$@"
@@ -404,6 +414,8 @@ run_browser_slice() {
   esac
   run_gate_helper validate-browser-config "$config" "$FIXTURE_MANIFEST" || \
     die 'browser fixture config does not enforce literal fake loopback mode' 69
+  run_gate_helper check-browser-boundary || \
+    die 'actual browser egress isolation is unavailable; browser slice refuses' 69
   local origin
   origin=$(run_gate_helper manifest-origin "$FIXTURE_MANIFEST") || \
     die 'browser fixture manifest origin is invalid' 69
@@ -426,9 +438,22 @@ run_browser_slice() {
     --workers=1
   )
 
+  local -a isolated_command=(
+    /usr/bin/unshare
+    --user
+    --map-root-user
+    --net
+    --fork
+    /bin/sh
+    -ceu
+    "$BROWSER_NAMESPACE_SCRIPT"
+    reservation-browser-network
+    "${command[@]}"
+  )
+
   (
     cd "$REPO_ROOT"
-    NAVA_FIXTURE_ORIGIN="$origin" run_clean_command "${command[@]}" >"$report_path" 2>"$error_path"
+    NAVA_FIXTURE_ORIGIN="$origin" run_clean_command "${isolated_command[@]}" >"$report_path" 2>"$error_path"
   ) || die 'browser fixture runner failed; no external or live service is permitted' 1
   [[ -s "$report_path" ]] || die 'browser runner produced no result report; required slice cannot skip green' 1
   run_gate_helper validate-browser-report "$report_path" "$grep_pattern" || \
