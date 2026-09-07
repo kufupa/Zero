@@ -32,10 +32,16 @@ import type {
   AdminDashboardDomainRow,
   AdminDashboardFolderRow,
   AdminDashboardMetrics,
+  AdminDashboardCountDenominatorStatus,
+  AdminDashboardSelection,
   DashboardCohortId,
   DashboardWindowPreset,
   MetricCell,
   MetricResult,
+} from '@/lib/admin-dashboard/types';
+import {
+  normalizeAdminDashboardCutoff,
+  normalizeAdminDashboardSelection,
 } from '@/lib/admin-dashboard/types';
 
 type Metric<T> = MetricResult<T> | null | undefined;
@@ -97,6 +103,25 @@ function metricReason<T>(metric: Metric<T>): string {
   return 'Observed from the selected window.';
 }
 
+function countDenominatorStatus(metric: Metric<unknown>): AdminDashboardCountDenominatorStatus | null {
+  const status = (metric as { denominatorStatus?: AdminDashboardCountDenominatorStatus } | null | undefined)
+    ?.denominatorStatus;
+  return status ?? null;
+}
+
+function denominatorText(metric: Metric<unknown>): string {
+  const status = countDenominatorStatus(metric);
+  if (status === 'not_applicable') return 'Not applicable (absolute count)';
+  if (metric?.denominator == null) return 'Unknown';
+  return formatNumber(metric.denominator);
+}
+
+function denominatorStatusText(status: AdminDashboardCountDenominatorStatus): string {
+  if (status === 'not_applicable') return 'Not applicable (absolute count)';
+  if (status === 'known') return 'Known eligible new conversations';
+  return 'Unknown eligible population';
+}
+
 function metricFromLegacyCell(cell: MetricCell | null | undefined, basis: Metric<number> | undefined): Metric<number> {
   if (!basis) return null;
   const available = cell?.availability === 'live' && cell.value !== null;
@@ -132,8 +157,14 @@ function EvidenceDetails<T>({
         </div>
         <div>
           <dt className="font-medium text-foreground">Denominator</dt>
-          <dd>{metric?.denominator == null ? 'Unknown' : formatNumber(metric.denominator)}</dd>
+          <dd>{denominatorText(metric)}</dd>
         </div>
+        {countDenominatorStatus(metric) ? (
+          <div>
+            <dt className="font-medium text-foreground">Denominator status</dt>
+            <dd>{denominatorStatusText(countDenominatorStatus(metric)!)}</dd>
+          </div>
+        ) : null}
         <div>
           <dt className="font-medium text-foreground">Exclusions</dt>
           <dd>{exclusionText(metric?.exclusions)}</dd>
@@ -707,24 +738,46 @@ function HostedAdminDashboardView({
   isError,
   selectedCohort,
   selectedWindow,
+  selectedObservationCutoff,
+  snapshotSelection,
 }: {
   metrics: AdminDashboardMetrics;
   isStale: boolean;
   isError: boolean;
   selectedCohort: DashboardCohortId;
   selectedWindow: DashboardWindowPreset;
+  selectedObservationCutoff?: string;
+  snapshotSelection?: AdminDashboardSelection | null;
 }) {
   const snapshotQuery = metrics.query;
+  const selectedQuery = normalizeAdminDashboardSelection({
+    cohortId: selectedCohort,
+    window: selectedWindow,
+    observationCutoff: selectedObservationCutoff,
+  });
+  const observedCutoff = normalizeAdminDashboardCutoff(snapshotQuery?.observationCutoff) ?? 'latest';
+  const observedSelection = snapshotSelection ?? {
+    cohortId: snapshotQuery?.cohortId ?? selectedQuery.cohortId,
+    window: snapshotQuery?.window ?? selectedQuery.window,
+    observationCutoff: snapshotQuery?.observationCutoff,
+  };
+  const selectedCutoff = selectedQuery.observationCutoff ?? 'latest';
+  const observedSelectionCutoff = observedSelection.observationCutoff
+    ? normalizeAdminDashboardCutoff(observedSelection.observationCutoff)
+    : undefined;
   const selectionMismatch = Boolean(
     snapshotQuery &&
-      (snapshotQuery.cohortId !== selectedCohort || snapshotQuery.window !== selectedWindow),
+      (snapshotQuery.cohortId !== selectedQuery.cohortId ||
+        snapshotQuery.window !== selectedQuery.window ||
+        selectedQuery.observationCutoff !== observedSelectionCutoff),
   );
+  const selectionLabel = `Selected cohort/window/cutoff: ${selectedQuery.cohortId} / ${selectedQuery.window} / ${selectedCutoff}. Observed cohort/window/cutoff: ${snapshotQuery?.cohortId ?? 'unknown'} / ${snapshotQuery?.window ?? 'unknown'} / ${observedCutoff}.`;
   const staleSelectionMessage = selectionMismatch
-    ? `The selected ${selectedWindow} query is refreshing; showing the previous ${snapshotQuery?.window ?? 'unknown'} snapshot.`
-    : 'Refreshing metrics. The previous snapshot remains visible and is labelled as stale.';
+    ? `${selectionLabel} The selected query is refreshing; showing the observed snapshot.`
+    : `${selectionLabel} Refreshing the selected query; the observed snapshot remains visible and is labelled as stale.`;
   const errorSelectionMessage = selectionMismatch
-    ? `The selected ${selectedWindow} query failed. Showing the previous ${snapshotQuery?.window ?? 'unknown'} snapshot; no demo data is substituted.`
-    : 'Refresh failed. Showing the last successful snapshot as stale; no demo data is substituted.';
+    ? `${selectionLabel} The selected query failed; showing the observed snapshot; no demo data is substituted.`
+    : `${selectionLabel} Refresh failed; the observed snapshot remains visible as stale; no demo data is substituted.`;
 
   return (
     <SettingsCard
@@ -781,7 +834,15 @@ export default function AdminDashboardPage() {
     }),
     [cohortId, observationCutoff, windowPreset],
   );
-  const { canAccess, isLoading, metrics, isError, isStale, source } = useAdminDashboardData(queryInput);
+  const {
+    canAccess,
+    isLoading,
+    metrics,
+    isError,
+    isStale,
+    source,
+    snapshotSelection,
+  } = useAdminDashboardData(queryInput);
 
   if (isLoading && !metrics) {
     return <EmptyDashboardState title="Loading executive dashboard" message="Retrieving the selected aggregate snapshot…" />;
@@ -819,6 +880,8 @@ export default function AdminDashboardPage() {
         isError={isError}
         selectedCohort={cohortId}
         selectedWindow={windowPreset}
+        selectedObservationCutoff={queryInput.observationCutoff}
+        snapshotSelection={snapshotSelection}
       />
     </div>
   );

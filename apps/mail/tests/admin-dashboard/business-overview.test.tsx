@@ -135,9 +135,18 @@ const metrics: AdminDashboardMetrics = {
     firstObservedHumanReply: unavailableMetric('calendar minutes', 'reply_evidence_unavailable'),
     firstUsefulReply: unavailableMetric('calendar minutes', 'not_implemented'),
     counts: {
-      eligibleNewConversations: unavailableMetric('conversations', 'reply_evidence_unavailable'),
-      unansweredEligible: unavailableMetric('conversations', 'reply_evidence_unavailable'),
-      unscorable: unavailableMetric('conversations', 'reply_evidence_unavailable'),
+      eligibleNewConversations: {
+        ...unavailableMetric('conversations', 'reply_evidence_unavailable'),
+        denominatorStatus: 'not_applicable',
+      },
+      unansweredEligible: {
+        ...unavailableMetric('conversations', 'reply_evidence_unavailable'),
+        denominatorStatus: 'unknown',
+      },
+      unscorable: {
+        ...unavailableMetric('conversations', 'reply_evidence_unavailable'),
+        denominatorStatus: 'unknown',
+      },
       measurementStartAt: null,
     },
     eligibleNewConversationCount: null,
@@ -248,8 +257,33 @@ describe('AdminDashboardPage executive business overview', () => {
 
     const markup = renderToStaticMarkup(createElement(AdminDashboardPage));
 
-    expect(markup).toContain('The selected 7d query is refreshing; showing the previous 28d snapshot.');
+    expect(markup).toContain(
+      'Selected cohort/window/cutoff: centurion / 7d / latest. Observed cohort/window/cutoff: centurion / 28d / 2026-09-07T12:00:00.000Z.',
+    );
+    expect(markup).toContain('The selected query is refreshing; showing the observed snapshot.');
     expect(markup).toContain('<dt class="font-medium text-foreground">Window</dt><dd>28d</dd>');
+  });
+
+  it('labels a latest selection separately from an explicitly cut-off observed snapshot', () => {
+    useAdminDashboardDataMock.mockReturnValue({
+      canAccess: true,
+      isLoading: false,
+      isError: true,
+      isStale: true,
+      source: 'hosted',
+      data: null,
+      metrics: {
+        ...metrics,
+        query: { ...metrics.query!, observationCutoff: '2026-09-06T12:00:00.000Z' },
+      },
+    });
+
+    const markup = renderToStaticMarkup(createElement(AdminDashboardPage));
+
+    expect(markup).toContain(
+      'Selected cohort/window/cutoff: centurion / 7d / latest. Observed cohort/window/cutoff: centurion / 7d / 2026-09-06T12:00:00.000Z.',
+    );
+    expect(markup).toContain('The selected query failed; showing the observed snapshot; no demo data is substituted.');
   });
 
   it('labels the prior snapshot when a changed selection fails', () => {
@@ -268,7 +302,10 @@ describe('AdminDashboardPage executive business overview', () => {
 
     const markup = renderToStaticMarkup(createElement(AdminDashboardPage));
 
-    expect(markup).toContain('The selected 7d query failed. Showing the previous 28d snapshot; no demo data is substituted.');
+    expect(markup).toContain(
+      'Selected cohort/window/cutoff: centurion / 7d / latest. Observed cohort/window/cutoff: centurion / 28d / 2026-09-07T12:00:00.000Z.',
+    );
+    expect(markup).toContain('The selected query failed; showing the observed snapshot; no demo data is substituted.');
     expect(markup).toContain('<dt class="font-medium text-foreground">Window</dt><dd>28d</dd>');
   });
 
@@ -360,9 +397,18 @@ describe('AdminDashboardPage executive business overview', () => {
     const strictService = {
       ...metrics.service!,
       counts: {
-        eligibleNewConversations: metric(2, 'conversations'),
-        unansweredEligible: metric(1, 'conversations'),
-        unscorable: metric(0, 'conversations'),
+        eligibleNewConversations: {
+          ...metric(2, 'conversations', null),
+          denominatorStatus: 'not_applicable',
+        },
+        unansweredEligible: {
+          ...metric(1, 'conversations', 2),
+          denominatorStatus: 'known',
+        },
+        unscorable: {
+          ...metric(0, 'conversations', 2),
+          denominatorStatus: 'known',
+        },
         measurementStartAt: '2026-08-01T00:00:00.000Z',
       },
     } as unknown as AdminDashboardMetrics['service'];
@@ -385,5 +431,7 @@ describe('AdminDashboardPage executive business overview', () => {
     expect(markup).toContain('aria-label="Eligible new conversations evidence"');
     expect(markup).toContain('Measurement start');
     expect(markup).toContain('01 Aug 2026');
+    expect(markup).toContain('Not applicable (absolute count)');
+    expect(markup).toContain('Known eligible new conversations');
   });
 });

@@ -9,9 +9,11 @@ import { getMailCacheScope, subscribeMailCacheScope } from '@/lib/mail/mail-cach
 import type {
   AdminDashboardData,
   AdminDashboardMetrics,
+  AdminDashboardSelection,
   DashboardCohortId,
   DashboardWindowPreset,
 } from '@/lib/admin-dashboard/types';
+import { normalizeAdminDashboardSelection } from '@/lib/admin-dashboard/types';
 
 export type AdminDashboardQueryInput = {
   cohortId?: DashboardCohortId;
@@ -33,6 +35,8 @@ export type AdminDashboardState = {
   data: AdminDashboardData | null;
   /** Hosted compute-on-read metrics; null in demo mode. */
   metrics: AdminDashboardMetrics | null;
+  /** Selection semantics for the snapshot currently displayed, scoped with the snapshot. */
+  snapshotSelection: AdminDashboardSelection | null;
 };
 
 export function useAdminDashboardData(queryInput?: AdminDashboardQueryInput): AdminDashboardState {
@@ -74,14 +78,24 @@ export function useAdminDashboardData(queryInput?: AdminDashboardQueryInput): Ad
   const lastSuccessfulSnapshotRef = useRef<{
     scopeKey: string;
     metrics: AdminDashboardMetrics;
+    selection: AdminDashboardSelection;
   } | null>(null);
+  const currentSelection = normalizeAdminDashboardSelection(queryInput);
   const queryMetrics = metricsQuery.data as AdminDashboardMetrics | undefined;
   if (queryMetrics && !metricsQuery.isPlaceholderData && !metricsQuery.isError) {
-    lastSuccessfulSnapshotRef.current = { scopeKey: cacheScopeKey, metrics: queryMetrics };
+    lastSuccessfulSnapshotRef.current = {
+      scopeKey: cacheScopeKey,
+      metrics: queryMetrics,
+      selection: currentSelection,
+    };
   }
-  const retainedSnapshot = lastSuccessfulSnapshotRef.current?.scopeKey === cacheScopeKey
-    ? lastSuccessfulSnapshotRef.current.metrics
+  const retainedSnapshotRecord = lastSuccessfulSnapshotRef.current?.scopeKey === cacheScopeKey
+    ? lastSuccessfulSnapshotRef.current
     : undefined;
+  const retainedSnapshot = retainedSnapshotRecord?.metrics;
+  const snapshotSelection = queryMetrics && !metricsQuery.isPlaceholderData
+    ? currentSelection
+    : retainedSnapshotRecord?.selection ?? null;
   const metrics = queryMetrics ?? retainedSnapshot ?? null;
 
   if (isSessionLoading) {
@@ -93,6 +107,7 @@ export function useAdminDashboardData(queryInput?: AdminDashboardQueryInput): Ad
       source,
       data: null,
       metrics: null,
+      snapshotSelection: null,
     };
   }
 
@@ -105,6 +120,7 @@ export function useAdminDashboardData(queryInput?: AdminDashboardQueryInput): Ad
       source,
       data: null,
       metrics: null,
+      snapshotSelection: null,
     };
   }
 
@@ -117,6 +133,7 @@ export function useAdminDashboardData(queryInput?: AdminDashboardQueryInput): Ad
       source: 'demo',
       data: ADMIN_DASHBOARD_PLACEHOLDER_DATA,
       metrics: null,
+      snapshotSelection: null,
     };
   }
 
@@ -128,5 +145,6 @@ export function useAdminDashboardData(queryInput?: AdminDashboardQueryInput): Ad
     source: 'hosted',
     data: null,
     metrics,
+    snapshotSelection,
   };
 }

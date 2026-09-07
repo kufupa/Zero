@@ -354,6 +354,24 @@ describe('aggregateAdminDashboardMetrics', () => {
       value: null,
       availabilityReason: 'reply_evidence_unavailable',
     });
+    expect(result.service.counts.eligibleNewConversations).toMatchObject({
+      availability: 'unavailable',
+      value: null,
+      denominator: null,
+      denominatorStatus: 'not_applicable',
+    });
+    expect(result.service.counts.unansweredEligible).toMatchObject({
+      availability: 'unavailable',
+      value: null,
+      denominator: null,
+      denominatorStatus: 'unknown',
+    });
+    expect(result.service.counts.unscorable).toMatchObject({
+      availability: 'unavailable',
+      value: null,
+      denominator: null,
+      denominatorStatus: 'unknown',
+    });
     expect(result.service.eligibleNewConversationCount).toBeNull();
     expect(result.service.unansweredEligible).toBeNull();
     expect(result.eligibleThreadCount).toBeNull();
@@ -533,10 +551,21 @@ describe('aggregateAdminDashboardMetrics', () => {
         value: 1,
         unit: 'conversations',
         denominator: null,
+        denominatorStatus: 'not_applicable',
         captureBasis: 'measurement_start_at:2026-09-01T00:00:00.000Z; verified-two-way-feed',
       },
-      unansweredEligible: { availability: 'available', value: 1 },
-      unscorable: { availability: 'available', value: 0 },
+      unansweredEligible: {
+        availability: 'available',
+        value: 1,
+        denominator: 1,
+        denominatorStatus: 'known',
+      },
+      unscorable: {
+        availability: 'available',
+        value: 0,
+        denominator: 1,
+        denominatorStatus: 'known',
+      },
       measurementStartAt,
     });
   });
@@ -588,6 +617,47 @@ describe('aggregateAdminDashboardMetrics', () => {
     expect(result.service.firstObservedHumanReply.exclusions).toMatchObject({
       unanswered: 0,
       unscorable: 1,
+    });
+  });
+
+  it('does not assign the known eligible denominator to unknown-author unscorable starts', () => {
+    const cutoff = new Date('2026-09-08T00:00:00.000Z');
+    const result = aggregateAdminDashboardMetrics({
+      cohortId: 'centurion',
+      observationCutoff: cutoff,
+      classificationSnapshot: null,
+      measurementConfig: {
+        version: 1,
+        transportId: 'transport-centurion',
+        cohortId: 'centurion',
+        measurementStartAt: '2026-09-01T00:00:00.000Z',
+        captureAssumptionBasis: 'verified-two-way-feed',
+        confirmedGapIntervals: [],
+      },
+      threads: [thread({ id: 'unknown-author-start', transportId: 'transport-centurion' })],
+      messages: [
+        msg({
+          id: 'unknown-author-start-inbound',
+          threadId: 'unknown-author-start',
+          transportId: 'transport-centurion',
+          direction: 'inbound',
+          receivedAt: new Date('2026-09-02T10:00:00.000Z'),
+          authorClass: 'unknown',
+          qualifiesNewConversation: true,
+        }),
+      ],
+      transports: [{ id: 'transport-centurion', email: 'centurion@legacyhotels.co.za', displayName: 'Centurion' }],
+      windowStart: new Date('2026-09-01T00:00:00.000Z'),
+      windowEnd: cutoff,
+    });
+
+    expect(result.service.eligibleNewConversationCount).toBe(0);
+    expect(result.service.unscorable).toBe(1);
+    expect(result.service.counts.unscorable).toMatchObject({
+      availability: 'available',
+      value: 1,
+      denominator: null,
+      denominatorStatus: 'unknown',
     });
   });
 

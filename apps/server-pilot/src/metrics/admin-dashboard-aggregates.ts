@@ -31,6 +31,13 @@ export type MetricResult<T> = {
   availabilityReason: string | null;
 };
 
+export type AdminDashboardCountDenominatorStatus = 'known' | 'unknown' | 'not_applicable';
+
+export type AdminDashboardCountMetric = MetricResult<number> & {
+  /** Distinguishes an absolute count from a count whose population is unknown. */
+  denominatorStatus: AdminDashboardCountDenominatorStatus;
+};
+
 export type DashboardCohortId = 'centurion' | 'research';
 export type DashboardWindowPreset = '7d' | '28d';
 
@@ -106,9 +113,9 @@ export type AdminDashboardCorrespondents = {
 };
 
 export type AdminDashboardServiceCounts = {
-  eligibleNewConversations: MetricResult<number>;
-  unansweredEligible: MetricResult<number>;
-  unscorable: MetricResult<number>;
+  eligibleNewConversations: AdminDashboardCountMetric;
+  unansweredEligible: AdminDashboardCountMetric;
+  unscorable: AdminDashboardCountMetric;
   /** Configured prospective measurement start; null means no trusted T0 was returned. */
   measurementStartAt: string | null;
 };
@@ -332,6 +339,13 @@ function unavailableMetric<T>(
     snapshotBasis: options.snapshotBasis ?? null,
     availabilityReason: reason,
   };
+}
+
+function withCountDenominatorStatus(
+  metric: MetricResult<number>,
+  denominatorStatus: AdminDashboardCountDenominatorStatus,
+): AdminDashboardCountMetric {
+  return { ...metric, denominatorStatus };
 }
 
 function resultDailyFromLegacy(
@@ -632,18 +646,27 @@ function aggregateLegacyAdminDashboardMetrics(input: {
     }),
   };
   const legacyServiceCounts: AdminDashboardServiceCounts = {
-    eligibleNewConversations: unavailableMetric<number>('measurement_config_unavailable', {
-      unit: 'conversations',
-      sourceVintage: legacyQuery.sourceVintage,
-    }),
-    unansweredEligible: unavailableMetric<number>('measurement_config_unavailable', {
-      unit: 'conversations',
-      sourceVintage: legacyQuery.sourceVintage,
-    }),
-    unscorable: unavailableMetric<number>('measurement_config_unavailable', {
-      unit: 'conversations',
-      sourceVintage: legacyQuery.sourceVintage,
-    }),
+    eligibleNewConversations: withCountDenominatorStatus(
+      unavailableMetric<number>('measurement_config_unavailable', {
+        unit: 'conversations',
+        sourceVintage: legacyQuery.sourceVintage,
+      }),
+      'not_applicable',
+    ),
+    unansweredEligible: withCountDenominatorStatus(
+      unavailableMetric<number>('measurement_config_unavailable', {
+        unit: 'conversations',
+        sourceVintage: legacyQuery.sourceVintage,
+      }),
+      'unknown',
+    ),
+    unscorable: withCountDenominatorStatus(
+      unavailableMetric<number>('measurement_config_unavailable', {
+        unit: 'conversations',
+        sourceVintage: legacyQuery.sourceVintage,
+      }),
+      'unknown',
+    ),
     measurementStartAt: null,
   };
 
@@ -1327,6 +1350,9 @@ function aggregateExecutiveDashboardMetrics(input: ExecutiveAggregateInput): Adm
   let serviceEligible = 0;
   let serviceUnanswered = 0;
   let serviceUnscorable = 0;
+  const unknownAuthorUnscorableCount = rows.filter(
+    (row) => row.message.qualifiesNewConversation === true && row.message.authorClass === 'unknown',
+  ).length;
   if (replyEvidenceAvailable && measurementStartMillis !== null && measurementConfig !== null) {
     for (const group of serviceGroups.values()) {
       const inbound = group.inbound
@@ -1395,9 +1421,7 @@ function aggregateExecutiveDashboardMetrics(input: ExecutiveAggregateInput): Adm
       transportDurations.push(duration);
       serviceDurationsByTransport.set(transportId, transportDurations);
     }
-    serviceUnscorable += rows.filter(
-      (row) => row.message.qualifiesNewConversation === true && row.message.authorClass === 'unknown',
-    ).length;
+    serviceUnscorable += unknownAuthorUnscorableCount;
   }
   const serviceCountsKnown = replyEvidenceAvailable && measurementStartMillis !== null;
   const serviceEligibleOutput = serviceCountsKnown ? serviceEligible : null;
@@ -1433,19 +1457,38 @@ function aggregateExecutiveDashboardMetrics(input: ExecutiveAggregateInput): Adm
     denominator: null,
     captureBasis: serviceCaptureBasis,
   };
+  const serviceUnscorableDenominatorStatus: AdminDashboardCountDenominatorStatus =
+    !serviceCountsKnown || unknownAuthorUnscorableCount > 0 ? 'unknown' : 'known';
+  const serviceDependentCountMetricOptions = {
+    ...serviceCountMetricOptions,
+    denominator: serviceCountsKnown ? serviceEligibleOutput : null,
+  };
+  const serviceUnscorableCountMetricOptions = {
+    ...serviceCountMetricOptions,
+    denominator: serviceUnscorableDenominatorStatus === 'known' ? serviceEligibleOutput : null,
+  };
   const serviceCounts: AdminDashboardServiceCounts = {
     eligibleNewConversations:
-      serviceCountsKnown && serviceEligibleOutput !== null
-        ? legacyMetric(serviceEligibleOutput, serviceCountMetricOptions)
-        : unavailableMetric<number>(serviceUnavailableReason, serviceCountMetricOptions),
+      withCountDenominatorStatus(
+        serviceCountsKnown && serviceEligibleOutput !== null
+          ? legacyMetric(serviceEligibleOutput, serviceCountMetricOptions)
+          : unavailableMetric<number>(serviceUnavailableReason, serviceCountMetricOptions),
+        'not_applicable',
+      ),
     unansweredEligible:
-      serviceCountsKnown && serviceUnansweredOutput !== null
-        ? legacyMetric(serviceUnansweredOutput, serviceCountMetricOptions)
-        : unavailableMetric<number>(serviceUnavailableReason, serviceCountMetricOptions),
+      withCountDenominatorStatus(
+        serviceCountsKnown && serviceUnansweredOutput !== null
+          ? legacyMetric(serviceUnansweredOutput, serviceDependentCountMetricOptions)
+          : unavailableMetric<number>(serviceUnavailableReason, serviceDependentCountMetricOptions),
+        serviceCountsKnown ? 'known' : 'unknown',
+      ),
     unscorable:
-      serviceCountsKnown && serviceUnscorableOutput !== null
-        ? legacyMetric(serviceUnscorableOutput, serviceCountMetricOptions)
-        : unavailableMetric<number>(serviceUnavailableReason, serviceCountMetricOptions),
+      withCountDenominatorStatus(
+        serviceCountsKnown && serviceUnscorableOutput !== null
+          ? legacyMetric(serviceUnscorableOutput, serviceUnscorableCountMetricOptions)
+          : unavailableMetric<number>(serviceUnavailableReason, serviceUnscorableCountMetricOptions),
+        serviceUnscorableDenominatorStatus,
+      ),
     measurementStartAt: measurementConfig?.measurementStartAt ?? null,
   };
   const serviceMetric =

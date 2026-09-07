@@ -33,6 +33,36 @@ export type MetricResult<T> = {
 export type DashboardCohortId = 'centurion' | 'research';
 export type DashboardWindowPreset = '7d' | '28d';
 
+export type AdminDashboardCountDenominatorStatus = 'known' | 'unknown' | 'not_applicable';
+
+export type AdminDashboardCountMetric = MetricResult<number> & {
+  /** Distinguishes an absolute count from a count whose population is unknown. */
+  denominatorStatus: AdminDashboardCountDenominatorStatus;
+};
+
+export type AdminDashboardSelection = {
+  cohortId: DashboardCohortId;
+  window: DashboardWindowPreset;
+  /** Undefined is the server-resolved latest observation; explicit values are normalized ISO instants. */
+  observationCutoff?: string;
+};
+
+export function normalizeAdminDashboardCutoff(value: string | null | undefined): string | undefined {
+  if (!value) return undefined;
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : value;
+}
+
+export function normalizeAdminDashboardSelection(
+  input?: Partial<AdminDashboardSelection> | null,
+): AdminDashboardSelection {
+  return {
+    cohortId: input?.cohortId ?? 'centurion',
+    window: input?.window ?? '7d',
+    observationCutoff: normalizeAdminDashboardCutoff(input?.observationCutoff),
+  };
+}
+
 export type ExecutiveDashboardQuery = {
   cohortId: DashboardCohortId;
   window: DashboardWindowPreset;
@@ -90,9 +120,9 @@ export type AdminDashboardCorrespondents = {
 };
 
 export type AdminDashboardServiceCounts = {
-  eligibleNewConversations: MetricResult<number>;
-  unansweredEligible: MetricResult<number>;
-  unscorable: MetricResult<number>;
+  eligibleNewConversations: AdminDashboardCountMetric;
+  unansweredEligible: AdminDashboardCountMetric;
+  unscorable: AdminDashboardCountMetric;
   /** Configured prospective measurement start; null means no trusted T0 was returned. */
   measurementStartAt: string | null;
 };
