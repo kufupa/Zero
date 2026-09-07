@@ -6,6 +6,152 @@ export type MetricCell = {
   value: number | null;
 };
 
+export type DashboardMetricAvailability = 'available' | 'unavailable';
+export type DashboardTimestampBasis =
+  | 'source_event'
+  | 'sender_timestamp_estimate'
+  | 'first_known'
+  | 'availability'
+  | 'mixed'
+  | 'unknown';
+
+/** Truthful hosted metric contract; unavailable values are always null. */
+export type MetricResult<T> = {
+  value: T | null;
+  availability: DashboardMetricAvailability;
+  unit: string;
+  denominator: number | null;
+  exclusions: Record<string, number>;
+  timestampBasis: DashboardTimestampBasis | null;
+  captureBasis: string | null;
+  sourceVintage: string;
+  classificationAsOf: string | null;
+  snapshotBasis: string | null;
+  availabilityReason: string | null;
+};
+
+export type DashboardCohortId = 'centurion' | 'research';
+export type DashboardWindowPreset = '7d' | '28d';
+
+export type ExecutiveDashboardQuery = {
+  cohortId: DashboardCohortId;
+  window: DashboardWindowPreset;
+  windowStart: string;
+  windowEnd: string;
+  observationCutoff: string;
+  sourceVintage: string;
+};
+
+export type AdminDashboardDailyPoint = {
+  period: string;
+  inbound: number;
+  outbound: number;
+  byTransport: Record<string, { inbound: number; outbound: number }>;
+};
+
+export type AdminDashboardFolderRow = {
+  folder: string;
+  label: string;
+  count: number;
+  urgentCount: number;
+  classification: 'primary' | 'ambiguous' | 'legacy' | 'unclassified';
+};
+
+export type AdminDashboardDomainRow = {
+  domain: string;
+  count: number;
+  addresses: number;
+};
+
+export type AdminDashboardTraffic = {
+  inbound: MetricResult<number>;
+  outbound: MetricResult<number>;
+  daily: MetricResult<AdminDashboardDailyPoint[]>;
+  comparableWindowChangePercent: MetricResult<number>;
+};
+
+export type AdminDashboardActivity = {
+  activeConversations: MetricResult<number>;
+  newlyObservedConversations: MetricResult<number>;
+  continuingConversations: MetricResult<number>;
+  distinctExternalSenderAddresses: MetricResult<number>;
+  weekdayArrivals: MetricResult<Record<string, number>>;
+  hourArrivals: MetricResult<Record<string, number>>;
+};
+
+export type AdminDashboardFolders = {
+  mix: MetricResult<AdminDashboardFolderRow[]>;
+  urgent: MetricResult<number>;
+  exclusions: Record<string, number>;
+};
+
+export type AdminDashboardCorrespondents = {
+  externalDomains: MetricResult<AdminDashboardDomainRow[]>;
+};
+
+export type AdminDashboardService = {
+  firstObservedHumanReply: MetricResult<number>;
+  firstUsefulReply: MetricResult<number>;
+  eligibleNewConversationCount: number;
+  unansweredEligible: number;
+  unscorable: number;
+};
+
+export type AdminDashboardDataHealth = {
+  availability: 'available' | 'unavailable';
+  availabilityReason?:
+    | 'missing_evidence'
+    | 'invalid_observation_cutoff'
+    | 'missing_scope'
+    | 'missing_summary_basis'
+    | 'unusable_evidence';
+  observationCutoff: string;
+  directionCounts: { inbound: number | null; outbound: number | null };
+  lastObservedAt: { inbound: string | null; outbound: string | null };
+  lastObservedBasis: {
+    inbound: DashboardTimestampBasis | null;
+    outbound: DashboardTimestampBasis | null;
+  };
+  singleton: { numerator: number | null; denominator: number | null };
+  quotedMailboxReplyNoMatchingOutbound: {
+    numerator: number | null;
+    denominator: number | null;
+    availability: 'available' | 'unavailable';
+    reason?: 'quote_projection_unavailable' | 'thread_linkage_unavailable';
+  };
+  unscorable: {
+    total: number;
+    inbound: number;
+    outbound: number;
+    missingClock: number;
+    invalidClock: number;
+    missingThreadLinkage: number;
+    missingIdentity: number;
+  };
+};
+
+export type AdminDashboardConversations = {
+  awaitingHotel: MetricResult<number>;
+  awaitingCustomer: MetricResult<number>;
+  hotelActionPending: MetricResult<number>;
+  partial: MetricResult<number>;
+  unknown: MetricResult<number>;
+  ageBands: MetricResult<Record<string, number>>;
+};
+
+export type AdminDashboardPayload = {
+  query: ExecutiveDashboardQuery;
+  traffic: AdminDashboardTraffic;
+  activity: AdminDashboardActivity;
+  conversations: AdminDashboardConversations;
+  folders: AdminDashboardFolders;
+  correspondents: AdminDashboardCorrespondents;
+  service: AdminDashboardService;
+  dataHealth: AdminDashboardDataHealth | null;
+};
+
+export type ExecutiveDashboardPayload = AdminDashboardPayload;
+
 export type AdminDashboardTransport = {
   id: string;
   email: string;
@@ -35,6 +181,15 @@ export type AdminDashboardTransportSeries = {
 
 /** Hosted metrics payload from adminDashboard.getMetrics */
 export type AdminDashboardMetrics = {
+  /** New executive payload; optional for legacy demo/hosted consumers during migration. */
+  query?: ExecutiveDashboardQuery;
+  traffic?: AdminDashboardTraffic;
+  activity?: AdminDashboardActivity;
+  conversations?: AdminDashboardConversations;
+  folders?: AdminDashboardFolders;
+  correspondents?: AdminDashboardCorrespondents;
+  service?: AdminDashboardService;
+  dataHealth?: AdminDashboardPayload['dataHealth'];
   inboundVolume: MetricCell;
   medianFirstResponseMinutes: MetricCell;
   p90FirstResponseMinutes: MetricCell;

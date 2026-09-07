@@ -31,6 +31,244 @@ function thread(
 }
 
 describe('aggregateAdminDashboardMetrics', () => {
+  it('keeps the strict executive payload truthful across cohorts, clocks, duplicates, and sends', () => {
+    const cutoff = new Date('2026-08-08T00:00:00.000Z');
+    const result = aggregateAdminDashboardMetrics({
+      cohortId: 'centurion',
+      observationCutoff: cutoff,
+      classificationSnapshot: {
+        classificationAsOf: cutoff,
+        snapshotBasis: 'retained_matching_snapshot',
+        threads: [
+          { threadId: 'c1', primaryFolder: 'bookings', urgent: true, spam: false, trashed: false },
+          {
+            threadId: 'c2',
+            primaryFolder: null,
+            folderSlugs: ['money-billing', 'documents-delivery'],
+            spam: false,
+            trashed: false,
+          },
+          { threadId: 'c3', primaryFolder: 'groups-events', spam: true, trashed: false },
+          { threadId: 'c4', primaryFolder: 'manage-stay', spam: false, trashed: true },
+        ],
+      },
+      threads: [
+        thread({ id: 'c1', transportId: 'transport-centurion-a' }),
+        thread({ id: 'c2', transportId: 'transport-centurion-b' }),
+        thread({ id: 'c3', transportId: 'transport-centurion-a' }),
+        thread({ id: 'c4', transportId: 'transport-centurion-b' }),
+        thread({ id: 'research', transportId: 'transport-pmbobo' }),
+      ],
+      messages: [
+        msg({
+          id: 'c1-in-copy',
+          sourceMessageId: 'source-c1-in',
+          threadId: 'c1',
+          transportId: 'transport-centurion-a',
+          direction: 'inbound',
+          receivedAt: new Date('2026-08-02T08:00:00.000Z'),
+          fromAddress: 'guest-one@example.com',
+        }),
+        msg({
+          id: 'c1-in',
+          sourceMessageId: 'source-c1-in',
+          threadId: 'c1',
+          transportId: 'transport-centurion-a',
+          direction: 'inbound',
+          receivedAt: new Date('2026-08-02T08:01:00.000Z'),
+          fromAddress: 'guest-one@example.com',
+        }),
+        msg({
+          id: 'c1-accepted',
+          threadId: 'c1',
+          transportId: 'transport-centurion-a',
+          direction: 'outbound',
+          sentAt: new Date('2026-08-02T09:00:00.000Z'),
+          sendState: 'accepted',
+        }),
+        msg({
+          id: 'c1-queued',
+          threadId: 'c1',
+          transportId: 'transport-centurion-a',
+          direction: 'outbound',
+          sentAt: new Date('2026-08-02T09:10:00.000Z'),
+          sendState: 'pending',
+        }),
+        msg({
+          id: 'c2-in',
+          threadId: 'c2',
+          transportId: 'transport-centurion-b',
+          direction: 'inbound',
+          receivedAt: new Date('2026-08-03T08:00:00.000Z'),
+          fromAddress: 'guest-two@example.com',
+        }),
+        msg({
+          id: 'c2-failed',
+          threadId: 'c2',
+          transportId: 'transport-centurion-b',
+          direction: 'outbound',
+          sentAt: new Date('2026-08-03T09:00:00.000Z'),
+          sendState: 'failed',
+        }),
+        msg({
+          id: 'c3-in',
+          threadId: 'c3',
+          transportId: 'transport-centurion-a',
+          direction: 'inbound',
+          receivedAt: new Date('2026-08-04T08:00:00.000Z'),
+          fromAddress: 'guest-three@example.com',
+        }),
+        msg({
+          id: 'c4-in',
+          threadId: 'c4',
+          transportId: 'transport-centurion-b',
+          direction: 'inbound',
+          receivedAt: new Date('2026-08-04T08:00:00.000Z'),
+          fromAddress: 'guest-four@example.com',
+        }),
+        msg({
+          id: 'imported-old',
+          threadId: 'c1',
+          transportId: 'transport-centurion-a',
+          direction: 'inbound',
+          receivedAt: new Date('2026-07-01T08:00:00.000Z'),
+          createdAt: new Date('2026-08-05T08:00:00.000Z'),
+          fromAddress: 'old@example.com',
+        }),
+        msg({
+          id: 'future',
+          threadId: 'c1',
+          transportId: 'transport-centurion-a',
+          direction: 'outbound',
+          sentAt: new Date('2026-08-08T00:00:00.000Z'),
+          sendState: 'sent',
+        }),
+        msg({
+          id: 'research-in',
+          threadId: 'research',
+          transportId: 'transport-pmbobo',
+          direction: 'inbound',
+          receivedAt: new Date('2026-08-02T08:00:00.000Z'),
+          fromAddress: 'research@example.com',
+        }),
+      ],
+      transports: [
+        { id: 'transport-centurion-a', email: 'centurion-a@legacyhotels.co.za', displayName: 'A' },
+        { id: 'transport-centurion-b', email: 'centurion-b@legacyhotels.co.za', displayName: 'B' },
+        { id: 'transport-pmbobo', email: 'pmbobo@legacyhotels.co.za', displayName: 'Research' },
+      ],
+      windowStart: WINDOW_START,
+      windowEnd: cutoff,
+    });
+
+    expect(result.traffic.inbound.value).toBe(4);
+    expect(result.traffic.outbound.value).toBe(1);
+    expect(result.activity.distinctExternalSenderAddresses.value).toBe(2);
+    expect(result.folders.mix.value).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ folder: 'bookings', count: 1 }),
+        expect.objectContaining({ folder: 'unknown-review', count: 1 }),
+      ]),
+    );
+    expect(result.folders.urgent.value).toBe(1);
+    expect(result.folders.exclusions).toMatchObject({ spam: 1, trash: 1 });
+    expect(result.service.firstObservedHumanReply.value).toBeNull();
+    expect(result.service.firstObservedHumanReply.availabilityReason).toBe(
+      'measurement_config_unavailable',
+    );
+    expect(result.conversations.awaitingHotel.value).toBeNull();
+    expect(result.conversations.awaitingHotel.availabilityReason).toBe(
+      'request_projection_unavailable',
+    );
+    expect(result.transports.map((transport) => transport.id)).toEqual([
+      'transport-centurion-a',
+      'transport-centurion-b',
+    ]);
+  });
+
+  it('keeps traffic available but gates mutable folder and spam/trash work without a matching snapshot', () => {
+    const result = aggregateAdminDashboardMetrics({
+      cohortId: 'centurion',
+      observationCutoff: WINDOW_END,
+      classificationSnapshot: null,
+      threads: [thread({ id: 't1', transportId: 'transport-centurion' })],
+      messages: [
+        msg({
+          id: 'm1',
+          threadId: 't1',
+          transportId: 'transport-centurion',
+          direction: 'inbound',
+          receivedAt: new Date('2026-08-02T08:00:00.000Z'),
+        }),
+      ],
+      transports: [{ id: 'transport-centurion', email: 'centurion@legacyhotels.co.za', displayName: 'Centurion' }],
+      windowStart: WINDOW_START,
+      windowEnd: WINDOW_END,
+    });
+
+    expect(result.traffic.inbound.value).toBe(1);
+    expect(result.folders.mix.value).toBeNull();
+    expect(result.folders.mix.availability).toBe('unavailable');
+    expect(result.folders.mix.availabilityReason).toBe('classification_snapshot_unavailable');
+    expect(result.activity.activeConversations.value).toBeNull();
+    expect(result.activity.distinctExternalSenderAddresses.value).toBeNull();
+    expect(result.conversations.unknown.value).toBeNull();
+    expect(result.service.firstObservedHumanReply.value).toBeNull();
+  });
+
+  it('keeps confirmed capture-gap intervals out of first observed reply durations', () => {
+    const cutoff = new Date('2026-09-08T00:00:00.000Z');
+    const result = aggregateAdminDashboardMetrics({
+      cohortId: 'centurion',
+      observationCutoff: cutoff,
+      classificationSnapshot: {
+        classificationAsOf: cutoff,
+        snapshotBasis: 'retained_matching_snapshot',
+        threads: [{ threadId: 'gap-thread', primaryFolder: 'bookings', spam: false, trashed: false }],
+      },
+      measurementConfig: {
+        version: 1,
+        transportId: 'transport-centurion',
+        cohortId: 'centurion',
+        measurementStartAt: '2026-09-01T00:00:00.000Z',
+        captureAssumptionBasis: 'verified-two-way-feed',
+        confirmedGapIntervals: [
+          { startAt: '2026-09-03T00:00:00.000Z', endAt: '2026-09-04T00:00:00.000Z' },
+        ],
+      },
+      threads: [thread({ id: 'gap-thread', transportId: 'transport-centurion' })],
+      messages: [
+        msg({
+          id: 'gap-inbound',
+          threadId: 'gap-thread',
+          transportId: 'transport-centurion',
+          direction: 'inbound',
+          receivedAt: new Date('2026-09-02T12:00:00.000Z'),
+          fromAddress: 'gap-guest@example.com',
+          authorClass: 'external_human',
+          qualifiesNewConversation: true,
+        }),
+        msg({
+          id: 'gap-outbound',
+          threadId: 'gap-thread',
+          transportId: 'transport-centurion',
+          direction: 'outbound',
+          sentAt: new Date('2026-09-04T12:00:00.000Z'),
+          authorClass: 'internal_human',
+          hasScopedReplyLink: true,
+          sendState: 'accepted',
+        }),
+      ],
+      transports: [{ id: 'transport-centurion', email: 'centurion@legacyhotels.co.za', displayName: 'Centurion' }],
+      windowStart: new Date('2026-09-01T00:00:00.000Z'),
+      windowEnd: cutoff,
+    });
+
+    expect(result.service.firstObservedHumanReply.value).toBeNull();
+    expect(result.service.unscorable).toBe(1);
+    expect(result.service.firstObservedHumanReply.exclusions).toMatchObject({ unscorable: 1 });
+  });
+
   it('returns empty live zeros and unavailable nava cells for empty window', () => {
     const result = aggregateAdminDashboardMetrics({
       threads: [],

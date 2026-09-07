@@ -1,14 +1,52 @@
-import { and, gte, inArray, isNull, lt, or, sql } from 'drizzle-orm';
+import { and, asc, eq, gte, inArray, isNull, lt, or } from 'drizzle-orm';
+import { z } from 'zod';
 import { privateProcedure, router as tRouter } from '../trpc.js';
 import { getDb } from '../../db/client.js';
-import { mailThread, mailboxTransport, message } from '../../db/schema/mail.js';
-import { assertAdminDashboardAccess } from '../../metrics/admin-dashboard-access.js';
+import {
+  mailCategory,
+  mailThread,
+  mailThreadCategory,
+  mailboxTransport,
+  message,
+  outboundSendQueue,
+} from '../../db/schema/mail.js';
+import {
+  assertAdminDashboardGrant,
+  resolveAdminDashboardGrant,
+  type AdminDashboardCohort,
+  type AdminDashboardGrant,
+} from '../../metrics/admin-dashboard-access.js';
 import {
   aggregateAdminDashboardMetrics,
+  type AdminDashboardClassificationSnapshot,
   type AdminDashboardAggregateResult,
+  type ExecutiveDashboardQuery,
 } from '../../metrics/admin-dashboard-aggregates.js';
+import {
+  parseMailboxMeasurementConfig,
+  type MailboxMeasurementConfig,
+} from '../../metrics/mail-measurement-config.js';
 
 const WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+const LONG_WINDOW_MS = 28 * 24 * 60 * 60 * 1000;
+const CENTURION_TRANSPORT_IDS = ['transport-centurion'] as const;
+// Current pilot data contract has one non-Centurion transport. PMBOBO rows
+// remain excluded from the default cohort; no unseeded transport ID is
+// invented here until an owned mailbox config names one.
+const RESEARCH_TRANSPORT_IDS = ['transport-nava'] as const;
+
+export const executiveDashboardQueryInput = z
+  .object({
+    cohortId: z.enum(['centurion', 'research']).optional(),
+    window: z.enum(['7d', '28d']).optional(),
+    windowStart: z.string().optional(),
+    windowEnd: z.string().optional(),
+    observationCutoff: z.string().optional(),
+    operation: z.enum(['aggregate', 'drilldown', 'export']).optional(),
+  })
+  .optional();
+
+export type ExecutiveDashboardQueryInput = z.infer<typeof executiveDashboardQueryInput>;
 
 export function resolveAdminDashboardWindow(now: Date = new Date()): {
   windowStart: Date;
@@ -19,12 +57,258 @@ export function resolveAdminDashboardWindow(now: Date = new Date()): {
   return { windowStart, windowEnd };
 }
 
-export async function loadAdminDashboardMetrics(
-  now: Date = new Date(),
-): Promise<AdminDashboardAggregateResult> {
-  const db = getDb();
-  const { windowStart, windowEnd } = resolveAdminDashboardWindow(now);
+function parseInstant(raw: string | undefined, name: string): Date | null {
+  if (raw === undefined) return null;
+  const parsed = new Date(raw);
+  if (!Number.isFinite(parsed.getTime())) throw new Error(`invalid ${name}`);
+  return parsed;
+}
 
+/** Validate untrusted query input without making a database call. */
+export function parseExecutiveDashboardQuery(
+  raw: ExecutiveDashboardQueryInput | undefined,
+  now: Date = new Date(),
+): NonNullable<ExecutiveDashboardQueryInput> {
+  const parsed = executiveDashboardQueryInput.parse(raw) ?? {};
+  const nowMillis = now.getTime();
+  const cutoff = parseInstant(parsed?.observationCutoff, 'observation cutoff') ?? now;
+  if (cutoff.getTime() > nowMillis) throw new Error('observation cutoff cannot be in the future');
+
+  const windowEnd = parseInstant(parsed?.windowEnd, 'window end') ?? cutoff;
+  const preset = parsed?.window ?? '7d';
+  const duration = preset === '28d' ? LONG_WINDOW_MS : WINDOW_MS;
+  const windowStart =
+    parseInstant(parsed?.windowStart, 'window start') ??
+    new Date(windowEnd.getTime() - duration);
+  if (windowStart.getTime() >= windowEnd.getTime()) {
+    throw new Error('dashboard window must have a start before its end');
+  }
+  if (windowEnd.getTime() > cutoff.getTime()) {
+    throw new Error('dashboard window cannot extend beyond observation cutoff');
+  }
+  return {
+    cohortId: parsed?.cohortId ?? 'centurion',
+    window: preset,
+    windowStart: windowStart.toISOString(),
+    windowEnd: windowEnd.toISOString(),
+    observationCutoff: cutoff.toISOString(),
+    operation: parsed?.operation ?? 'aggregate',
+  };
+}
+
+export function resolveExecutiveDashboardQuery(
+  raw: ExecutiveDashboardQueryInput | undefined,
+  now: Date = new Date(),
+): ExecutiveDashboardQuery {
+  const parsed = parseExecutiveDashboardQuery(raw, now);
+  return {
+    cohortId: parsed.cohortId ?? 'centurion',
+    window: parsed.window ?? '7d',
+    windowStart: parsed.windowStart!,
+    windowEnd: parsed.windowEnd!,
+    observationCutoff: parsed.observationCutoff!,
+    sourceVintage: parsed.observationCutoff!,
+  };
+}
+
+function queryTransportIds(cohortId: AdminDashboardCohort): readonly string[] {
+  return cohortId === 'research' ? RESEARCH_TRANSPORT_IDS : CENTURION_TRANSPORT_IDS;
+}
+
+function dbClockPredicate(windowStart: Date, observationCutoff: Date) {
+  // createdAt is included only to retain rows whose historical event clock is
+  // unknown for an explicit unscorable diagnostic; the pure aggregate never
+  // treats it as an event clock.
+  return or(
+    and(gte(message.receivedAt, windowStart), lt(message.receivedAt, observationCutoff)),
+    and(gte(message.sentAt, windowStart), lt(message.sentAt, observationCutoff)),
+    and(
+      isNull(message.receivedAt),
+      isNull(message.sentAt),
+      gte(message.createdAt, windowStart),
+      lt(message.createdAt, observationCutoff),
+    ),
+  );
+}
+
+type QueryMessageRow = {
+  id: string;
+  threadId: string;
+  transportId: string;
+  direction: 'inbound' | 'outbound';
+  sourceMessageId: string | null;
+  fromAddress: string;
+  receivedAt: Date | null;
+  sentAt: Date | null;
+  createdAt: Date;
+  sendState?: 'pending' | 'sending' | 'sent' | 'accepted' | 'cancelled' | 'failed' | null;
+};
+
+async function loadQueryRows(
+  query: ExecutiveDashboardQuery,
+  db: ReturnType<typeof getDb>,
+  transportIds: readonly string[],
+): Promise<{
+  messages: QueryMessageRow[];
+  threads: Array<{
+    id: string;
+    transportId: string;
+    spamAt: Date | null;
+    trashedAt: Date | null;
+    createdAt: Date;
+    latestMessageAt: Date | null;
+  }>;
+}> {
+  if (transportIds.length === 0) return { messages: [], threads: [] };
+  const windowStart = new Date(query.windowStart);
+  const cutoff = new Date(query.observationCutoff);
+  const columns = {
+    id: message.id,
+    threadId: message.threadId,
+    transportId: message.transportId,
+    direction: message.direction,
+    sourceMessageId: message.messageIdHeader,
+    fromAddress: message.fromAddress,
+    receivedAt: message.receivedAt,
+    sentAt: message.sentAt,
+    createdAt: message.createdAt,
+  };
+  const messages = (await db
+    .select(columns)
+    .from(message)
+    .where(and(inArray(message.transportId, [...transportIds]), dbClockPredicate(windowStart, cutoff)))) as QueryMessageRow[];
+  const threadIds = [...new Set(messages.map((row) => row.threadId))];
+  if (threadIds.length === 0) return { messages, threads: [] };
+
+  const threads = await db
+    .select({
+      id: mailThread.id,
+      transportId: mailThread.transportId,
+      spamAt: mailThread.spamAt,
+      trashedAt: mailThread.trashedAt,
+      createdAt: mailThread.createdAt,
+      latestMessageAt: mailThread.latestMessageAt,
+    })
+    .from(mailThread)
+    .where(and(inArray(mailThread.id, threadIds), inArray(mailThread.transportId, [...transportIds])));
+
+  // A response may be after the activity window, but never after the
+  // observation cutoff. This upper bound is part of every evidence join.
+  const outboundExtras = (await db
+    .select(columns)
+    .from(message)
+    .where(
+      and(
+        inArray(message.threadId, threadIds),
+        eq(message.direction, 'outbound'),
+        dbClockPredicate(windowStart, cutoff),
+      ),
+    )) as QueryMessageRow[];
+  const byId = new Map<string, QueryMessageRow>();
+  for (const row of [...messages, ...outboundExtras]) byId.set(row.id, row);
+
+  const queueRows = await db
+    .select({ messageId: outboundSendQueue.messageId, status: outboundSendQueue.status })
+    .from(outboundSendQueue)
+    .where(inArray(outboundSendQueue.messageId, [...byId.keys()]));
+  const statusByMessage = new Map(queueRows.map((row) => [row.messageId, row.status]));
+  for (const row of byId.values()) {
+    if (row.direction !== 'outbound') continue;
+    const status = statusByMessage.get(row.id);
+    if (status === 'pending' || status === 'sending' || status === 'cancelled') row.sendState = status;
+    else if (status === 'sent') row.sendState = 'sent';
+    else if (status === 'failed') row.sendState = 'failed';
+    else if (status === 'accepted') row.sendState = 'accepted';
+  }
+  return { messages: [...byId.values()], threads };
+}
+
+const CURRENT_CLASSIFICATION_MAX_AGE_MS = 5_000;
+
+function canUseCurrentClassificationSnapshot(query: ExecutiveDashboardQuery, now = new Date()): boolean {
+  const cutoff = new Date(query.observationCutoff).getTime();
+  return Number.isFinite(cutoff) && Math.abs(now.getTime() - cutoff) <= CURRENT_CLASSIFICATION_MAX_AGE_MS;
+}
+
+/**
+ * Project the currently retained folder/spam/trash state for a current
+ * request. A historical cutoff never reuses this mutable state: callers get
+ * null and the aggregate keeps classification-dependent sections unavailable.
+ */
+async function loadCurrentClassificationSnapshot(
+  db: ReturnType<typeof getDb>,
+  query: ExecutiveDashboardQuery,
+  threads: readonly {
+    id: string;
+    transportId: string;
+    spamAt: Date | null;
+    trashedAt: Date | null;
+  }[],
+  transportIds: readonly string[],
+): Promise<AdminDashboardClassificationSnapshot | null> {
+  if (!canUseCurrentClassificationSnapshot(query)) return null;
+
+  if (threads.length === 0) {
+    return {
+      classificationAsOf: query.observationCutoff,
+      snapshotBasis: 'current_observed_snapshot_at_request',
+      threads: [],
+    };
+  }
+
+  const threadIds = threads.map((thread) => thread.id);
+  const transportByThread = new Map(threads.map((thread) => [thread.id, thread.transportId]));
+  const categoryRows = await db
+    .select({
+      threadId: mailThreadCategory.threadId,
+      transportId: mailThreadCategory.transportId,
+      slug: mailCategory.slug,
+      sortOrder: mailCategory.sortOrder,
+    })
+    .from(mailThreadCategory)
+    .innerJoin(mailCategory, eq(mailCategory.id, mailThreadCategory.categoryId))
+    .where(
+      and(
+        inArray(mailThreadCategory.threadId, threadIds),
+        inArray(mailThreadCategory.transportId, [...transportIds]),
+      ),
+    )
+    .orderBy(asc(mailCategory.sortOrder), asc(mailCategory.slug));
+  const byThread = new Map<string, string[]>();
+  for (const row of categoryRows) {
+    if (row.transportId !== transportByThread.get(row.threadId)) continue;
+    const slugs = byThread.get(row.threadId) ?? [];
+    if (!slugs.includes(row.slug)) slugs.push(row.slug);
+    byThread.set(row.threadId, slugs);
+  }
+
+  return {
+    classificationAsOf: query.observationCutoff,
+    snapshotBasis: 'current_observed_snapshot_at_request',
+    threads: threads.map((thread) => {
+      const slugs = byThread.get(thread.id) ?? [];
+      const primarySlugs = slugs.filter((slug) => slug !== 'urgent');
+      return {
+        threadId: thread.id,
+        primaryFolder: primarySlugs[0] ?? null,
+        folderSlugs: primarySlugs,
+        urgent: slugs.includes('urgent'),
+        spam: thread.spamAt != null,
+        trashed: thread.trashedAt != null,
+      };
+    }),
+  };
+}
+
+export async function loadAdminDashboardMetrics(
+  queryOrNow?: ExecutiveDashboardQuery | Date,
+): Promise<AdminDashboardAggregateResult> {
+  const query =
+    queryOrNow instanceof Date
+      ? resolveExecutiveDashboardQuery(undefined, queryOrNow)
+      : queryOrNow ?? resolveExecutiveDashboardQuery(undefined);
+  const db = getDb();
+  const transportIds = queryTransportIds(query.cohortId);
   const transports = await db
     .select({
       id: mailboxTransport.id,
@@ -32,96 +316,42 @@ export async function loadAdminDashboardMetrics(
       displayName: mailboxTransport.displayName,
     })
     .from(mailboxTransport)
-    .where(sql`${mailboxTransport.isActive} = true`);
-
-  const transportIds = transports.map((row) => row.id);
-  if (transportIds.length === 0) {
-    return aggregateAdminDashboardMetrics({
-      threads: [],
-      messages: [],
-      transports: [],
-      windowStart,
-      windowEnd,
-    });
-  }
-
-  // Window-bounded message pull first; sargable so message_transport_received_idx applies.
-  // Use Drizzle gte/lt (not raw Date interpolation) — postgres.js rejects Date in sql``.
-  const messageColumns = {
-    id: message.id,
-    threadId: message.threadId,
-    transportId: message.transportId,
-    direction: message.direction,
-    receivedAt: message.receivedAt,
-    sentAt: message.sentAt,
-    createdAt: message.createdAt,
-  };
-  const inWindow = or(
-    and(gte(message.receivedAt, windowStart), lt(message.receivedAt, windowEnd)),
-    and(isNull(message.receivedAt), gte(message.createdAt, windowStart), lt(message.createdAt, windowEnd)),
+    .where(and(eq(mailboxTransport.isActive, true), inArray(mailboxTransport.id, [...transportIds])));
+  const selectedTransportIds = transports.map((transport) => transport.id);
+  const loaded = await loadQueryRows(query, db, selectedTransportIds);
+  const classificationSnapshot = await loadCurrentClassificationSnapshot(
+    db,
+    query,
+    loaded.threads,
+    selectedTransportIds,
   );
-
-  const messages = await db
-    .select(messageColumns)
-    .from(message)
-    .where(and(inArray(message.transportId, transportIds), inWindow));
-
-  const threadIds = [...new Set(messages.map((row) => row.threadId))];
-  if (threadIds.length === 0) {
-    return aggregateAdminDashboardMetrics({
-      threads: [],
-      messages: [],
-      transports,
-      windowStart,
-      windowEnd,
-    });
-  }
-
-  // Only threads touched in-window; spam/trash eligibility filtered in the pure aggregate.
-  const threads = await db
-    .select({
-      id: mailThread.id,
-      transportId: mailThread.transportId,
-      spamAt: mailThread.spamAt,
-      trashedAt: mailThread.trashedAt,
-    })
-    .from(mailThread)
-    .where(inArray(mailThread.id, threadIds));
-
-  // Replies can land after windowEnd, so extend the outbound pull forward only.
-  // Prefer sentAt; fall back to receivedAt/createdAt with the same sargable Date helpers.
-  const outboundExtras = await db
-    .select(messageColumns)
-    .from(message)
-    .where(
-      and(
-        inArray(message.threadId, threadIds),
-        sql`${message.direction} = 'outbound'`,
-        or(
-          gte(message.sentAt, windowStart),
-          and(isNull(message.sentAt), gte(message.receivedAt, windowStart)),
-          and(isNull(message.sentAt), isNull(message.receivedAt), gte(message.createdAt, windowStart)),
-        ),
-      ),
-    );
-
-  const byId = new Map<string, (typeof messages)[number]>();
-  for (const row of [...messages, ...outboundExtras]) {
-    byId.set(row.id, row);
-  }
-
+  const measurementConfig: MailboxMeasurementConfig | null = parseMailboxMeasurementConfig(
+    process.env.MAIL_MEASUREMENT_CONFIG_JSON,
+  );
   return aggregateAdminDashboardMetrics({
-    threads,
-    messages: [...byId.values()],
+    cohortId: query.cohortId,
+    observationCutoff: new Date(query.observationCutoff),
+    classificationSnapshot,
+    measurementConfig,
+    threads: loaded.threads,
+    messages: loaded.messages,
     transports,
-    windowStart,
-    windowEnd,
+    windowStart: new Date(query.windowStart),
+    windowEnd: new Date(query.windowEnd),
   });
 }
 
 export const adminDashboardRouter = tRouter({
-  getMetrics: privateProcedure.query(async ({ ctx }) => {
-    assertAdminDashboardAccess(ctx.sessionUser.email);
-    return loadAdminDashboardMetrics();
-  }),
+  getMetrics: privateProcedure
+    .input(executiveDashboardQueryInput)
+    .query(async ({ input, ctx }) => {
+      // Resolve and authorize the cohort/grant before touching the database.
+      const query = resolveExecutiveDashboardQuery(input);
+      const grant: AdminDashboardGrant = resolveAdminDashboardGrant(
+        ctx.sessionUser.email,
+        query.cohortId,
+      );
+      assertAdminDashboardGrant(grant, input?.operation ?? 'aggregate');
+      return loadAdminDashboardMetrics(query);
+    }),
 });

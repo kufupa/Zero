@@ -1,0 +1,254 @@
+import { describe, expect, it } from 'vitest';
+import { TRPCError } from '@trpc/server';
+import {
+  assertAdminDashboardGrant,
+  resolveAdminDashboardGrant,
+  type AdminDashboardGrant,
+} from '../src/metrics/admin-dashboard-access.js';
+import {
+  parseExecutiveDashboardQuery,
+  resolveExecutiveDashboardQuery,
+  loadAdminDashboardMetrics,
+} from '../src/trpc/routes/admin-dashboard.js';
+import { __setDbForTests } from '../src/db/client.js';
+import { mailThread, mailThreadCategory, message } from '../src/db/schema/mail.js';
+import { appRouter } from '../src/trpc/router.js';
+import { TEST_DB_AVAILABLE, withSeededTestDb } from './helpers/test-db.js';
+
+const CUTOFF = '2026-08-08T00:00:00.000Z';
+
+describe('executive dashboard query and grants', () => {
+  it('authorizes the cohort and operation independently before any data load', () => {
+    const client = resolveAdminDashboardGrant('ropperman@legacyhotels.co.za', 'centurion');
+    expect(client).toMatchObject({ cohortId: 'centurion', aggregate: true, drilldown: false, export: false });
+    expect(() => assertAdminDashboardGrant(client, 'aggregate')).not.toThrow();
+    expect(() => assertAdminDashboardGrant(client, 'drilldown')).toThrowError(TRPCError);
+    expect(() => assertAdminDashboardGrant(client, 'export')).toThrowError(TRPCError);
+
+    const operator = resolveAdminDashboardGrant('navaai@legacyhotels.co.za', 'research');
+    expect(operator).toMatchObject({ cohortId: 'research', aggregate: true, drilldown: true, export: true });
+
+    expect(() => resolveAdminDashboardGrant('not-allowed@example.com', 'centurion')).toThrowError(
+      TRPCError,
+    );
+  });
+
+  it('rejects an unauthorized dashboard caller before resolving the database', async () => {
+    const caller = appRouter.createCaller({
+      auth: null as never,
+      reqHeaders: new Headers(),
+      sessionUser: { id: 'u10a-unauthorized', email: 'not-allowed@example.com', name: null },
+    });
+    await expect(caller.adminDashboard.getMetrics()).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+      message: 'ADMIN_DASHBOARD_FORBIDDEN',
+    });
+  });
+
+  it('rejects a future or inverted cutoff instead of widening the evidence window', () => {
+    expect(() =>
+      parseExecutiveDashboardQuery({
+        cohortId: 'centurion',
+        window: '7d',
+        observationCutoff: '2026-08-09T00:00:00.000Z',
+      }, new Date(CUTOFF)),
+    ).toThrow(/cutoff/i);
+
+    expect(() =>
+      parseExecutiveDashboardQuery({
+        cohortId: 'centurion',
+        windowStart: '2026-08-09T00:00:00.000Z',
+        windowEnd: '2026-08-08T00:00:00.000Z',
+        observationCutoff: CUTOFF,
+      }),
+    ).toThrow(/window/i);
+  });
+
+  it('resolves a bounded default Centurion query with an explicit cutoff and source vintage', () => {
+    const query = resolveExecutiveDashboardQuery(
+      { cohortId: 'centurion', window: '7d', observationCutoff: CUTOFF },
+      new Date(CUTOFF),
+    );
+    expect(query).toMatchObject({
+      cohortId: 'centurion',
+      windowStart: '2026-08-01T00:00:00.000Z',
+      windowEnd: CUTOFF,
+      observationCutoff: CUTOFF,
+      sourceVintage: CUTOFF,
+    });
+  });
+});
+
+// The disposable-DB gate supplies this profile explicitly. Keep DB assertions out
+// of the pure unit child when that prerequisite is absent; the DB child is required
+// and fails closed before Vitest if the profile is missing.
+if (process.env.CONFIRM_DISPOSABLE_TEST_DB === '1' && process.env.TEST_DATABASE_URL) {
+  describe('executive dashboard bounded query (disposable DB)', () => {
+    it('loads only selected-cohort rows with event clocks bounded by window and cutoff', async () => {
+      if (!TEST_DB_AVAILABLE) {
+        throw new Error('disposable dashboard DB profile was not made available');
+      }
+
+      const query = resolveExecutiveDashboardQuery(
+        {
+          cohortId: 'centurion',
+          windowStart: '2026-08-01T00:00:00.000Z',
+          windowEnd: '2026-08-06T00:00:00.000Z',
+          observationCutoff: CUTOFF,
+        },
+        new Date(CUTOFF),
+      );
+
+      const result = await withSeededTestDb(async (db) => {
+        __setDbForTests({ db, conn: null as never });
+        try {
+          const threadId = 'u10a-dashboard-query-thread';
+          const now = new Date('2026-08-01T00:00:00.000Z');
+          await db.insert(mailThread).values({
+            id: threadId,
+            transportId: 'transport-centurion',
+            threadRootId: 'u10a-dashboard-query-root',
+            subject: 'dashboard query fixture',
+            snippet: 'synthetic query fixture',
+            createdAt: now,
+            updatedAt: now,
+            latestMessageAt: new Date('2026-08-07T12:00:00.000Z'),
+          });
+          await db.insert(message).values([
+            {
+              id: 'u10a-dashboard-query-inbound',
+              transportId: 'transport-centurion',
+              threadId,
+              direction: 'inbound',
+              messageIdHeader: '<u10a-dashboard-inbound@example.com>',
+              fromAddress: 'guest@example.com',
+              toAddresses: ['centurion@legacyhotels.co.za'],
+              ccAddresses: [],
+              bccAddresses: [],
+              receivedAt: new Date('2026-08-02T08:00:00.000Z'),
+              createdAt: new Date('2026-08-02T08:01:00.000Z'),
+            },
+            {
+              id: 'u10a-dashboard-query-outbound',
+              transportId: 'transport-centurion',
+              threadId,
+              direction: 'outbound',
+              messageIdHeader: '<u10a-dashboard-outbound@example.com>',
+              fromAddress: 'centurion@legacyhotels.co.za',
+              toAddresses: ['guest@example.com'],
+              ccAddresses: [],
+              bccAddresses: [],
+              sentAt: new Date('2026-08-03T09:00:00.000Z'),
+              createdAt: new Date('2026-08-03T09:01:00.000Z'),
+            },
+            {
+              id: 'u10a-dashboard-query-late-outbound',
+              transportId: 'transport-centurion',
+              threadId,
+              direction: 'outbound',
+              messageIdHeader: '<u10a-dashboard-late-outbound@example.com>',
+              fromAddress: 'centurion@legacyhotels.co.za',
+              toAddresses: ['guest@example.com'],
+              ccAddresses: [],
+              bccAddresses: [],
+              sentAt: new Date('2026-08-07T12:00:00.000Z'),
+              createdAt: new Date('2026-08-07T12:01:00.000Z'),
+            },
+            {
+              id: 'u10a-dashboard-query-future',
+              transportId: 'transport-centurion',
+              threadId,
+              direction: 'inbound',
+              messageIdHeader: '<u10a-dashboard-future@example.com>',
+              fromAddress: 'future@example.com',
+              toAddresses: ['centurion@legacyhotels.co.za'],
+              ccAddresses: [],
+              bccAddresses: [],
+              receivedAt: new Date('2026-08-09T08:00:00.000Z'),
+              createdAt: new Date('2026-08-09T08:01:00.000Z'),
+            },
+          ]);
+          return loadAdminDashboardMetrics(query);
+        } finally {
+          __setDbForTests(null);
+        }
+      });
+
+      expect(result.query).toMatchObject({
+        cohortId: 'centurion',
+        windowStart: '2026-08-01T00:00:00.000Z',
+        windowEnd: '2026-08-06T00:00:00.000Z',
+        observationCutoff: CUTOFF,
+      });
+      expect(result.traffic.inbound.value).toBe(1);
+      expect(result.traffic.outbound.value).toBe(1);
+      expect(result.dataHealth?.directionCounts).toMatchObject({ inbound: 1, outbound: 2 });
+      expect(result.traffic.inbound.exclusions).toMatchObject({ future_or_cutoff: 0 });
+      expect(result.transports.map((transport) => transport.id)).toEqual(['transport-centurion']);
+    });
+
+    it('keeps aggregate, drilldown, and export grants distinct', () => {
+      const grant: AdminDashboardGrant = resolveAdminDashboardGrant(
+        'ropperman@legacyhotels.co.za',
+        'centurion',
+      );
+      expect(grant.aggregate).toBe(true);
+      expect(grant.drilldown).toBe(false);
+      expect(grant.export).toBe(false);
+    });
+
+    it('projects the current retained folder snapshot for a current-cutoff query', async () => {
+      if (!TEST_DB_AVAILABLE) {
+        throw new Error('disposable dashboard DB profile was not made available');
+      }
+
+      const result = await withSeededTestDb(async (db) => {
+        __setDbForTests({ db, conn: null as never });
+        try {
+          const now = Date.now();
+          const threadId = 'u10a-current-classification-thread';
+          const eventAt = new Date(now - 60 * 60 * 1000);
+          await db.insert(mailThread).values({
+            id: threadId,
+            transportId: 'transport-centurion',
+            threadRootId: 'u10a-current-classification-root',
+            subject: 'current classification fixture',
+            createdAt: eventAt,
+            updatedAt: eventAt,
+            latestMessageAt: eventAt,
+          });
+          await db.insert(mailThreadCategory).values({
+            threadId,
+            categoryId: 'category-transport-centurion-bookings',
+            transportId: 'transport-centurion',
+          });
+          await db.insert(message).values({
+            id: 'u10a-current-classification-message',
+            transportId: 'transport-centurion',
+            threadId,
+            direction: 'inbound',
+            messageIdHeader: '<u10a-current-classification@example.com>',
+            fromAddress: 'current-guest@example.com',
+            toAddresses: ['centurion@legacyhotels.co.za'],
+            ccAddresses: [],
+            bccAddresses: [],
+            receivedAt: eventAt,
+            createdAt: eventAt,
+          });
+          return loadAdminDashboardMetrics(
+            resolveExecutiveDashboardQuery({ cohortId: 'centurion', window: '7d' }),
+          );
+        } finally {
+          __setDbForTests(null);
+        }
+      });
+
+      expect(result.activity.activeConversations.value).toBe(1);
+      expect(result.folders.mix.availability).toBe('available');
+      expect(result.folders.mix.classificationAsOf).toBe(result.query.observationCutoff);
+      expect(result.folders.mix.value).toEqual(
+        expect.arrayContaining([expect.objectContaining({ folder: 'bookings', count: 1 })]),
+      );
+    });
+  });
+}
