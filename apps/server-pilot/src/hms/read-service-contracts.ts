@@ -3,12 +3,57 @@
  * proof/receipt callers.  Browser locators, URLs and credentials deliberately
  * do not have a representation in these schemas.
  */
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
 export const readRefSchema = z
   .string()
   .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/, 'expected opaque read reference');
 export type ReadRef = z.infer<typeof readRefSchema>;
+
+const readDigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
+
+/**
+ * Trusted worker-side admission binding. It is carried beside (never inside
+ * model-visible) request fields and is checked before any external read.
+ */
+export const readAdmissionSchema = z
+  .object({
+    releaseId: readRefSchema,
+    requestBranchId: z.string().min(1).max(128),
+    requesterAuthorizationId: readRefSchema,
+    inputDigest: readDigestSchema,
+    captureRequired: z.boolean(),
+    captureBindingRef: readRefSchema.nullable(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.captureRequired && value.captureBindingRef === null) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['captureBindingRef'],
+        message: 'capture binding is required for this read admission',
+      });
+    }
+  });
+export type ReadAdmission = z.infer<typeof readAdmissionSchema>;
+
+function sortDigestValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortDigestValue);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, child]) => [key, sortDigestValue(child)]),
+  );
+}
+
+/** Stable private digest for the exact closed request, excluding admission. */
+export function readInputDigest(value: unknown): string {
+  return createHash('sha256')
+    .update(JSON.stringify(sortDigestValue(value)), 'utf8')
+    .digest('hex');
+}
 
 export const readTimestampSchema = z.string().datetime({ offset: true });
 export const readLocalDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
@@ -172,8 +217,15 @@ export const readStatusSchema = z.enum([
 ]);
 export type ReadStatus = z.infer<typeof readStatusSchema>;
 
+export const readToolResultIdSchema = z.enum([
+  'hms_find_reservation',
+  'hms_read_reservation',
+]);
+export type ReadToolResultId = z.infer<typeof readToolResultIdSchema>;
+
 export const readResultSchema = z
   .object({
+    toolId: readToolResultIdSchema,
     schemaVersion: z.string().min(1),
     status: readStatusSchema,
     data: z.unknown().nullable(),

@@ -499,7 +499,8 @@ case "${MODE}:${SLICE}" in
       "tests/hms-read-service.test.ts" \
       "tests/hms-normal-runtime-read-service.test.ts" \
       "tests/hms-reservation-context.test.ts" \
-      "tests/hms-property-read-lock.test.ts"
+      "tests/hms-property-read-lock.test.ts" \
+      "tests/hms-independent-read-review.test.ts"
     ;;
   unit:documents)
     run_vitest \
@@ -560,7 +561,8 @@ case "${MODE}:${SLICE}" in
   db:reads)
     run_db_slice \
       "tests/hms-read-service.test.ts" \
-      "tests/hms-normal-runtime-read-service.test.ts"
+      "tests/hms-normal-runtime-read-service.test.ts" \
+      "tests/hms-independent-read-db-review.test.ts"
     ;;
   db:documents)
     run_db_slice "tests/existing-document-validation.test.ts"

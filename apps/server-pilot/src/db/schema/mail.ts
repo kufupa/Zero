@@ -506,6 +506,10 @@ export const aiWorkflowRun = pgTable(
     readRequest: jsonb('read_request').$type<Record<string, unknown>>(),
     /** Durable typed receipt reference for read_tool runs. */
     readResultRef: text('read_result_ref'),
+    /** Private typed receipt body; populated only after a fenced read succeeds. */
+    readResult: jsonb('read_result').$type<Record<string, unknown>>(),
+    /** Receipt TTL copied from the trusted typed result evidence. */
+    readResultExpiresAt: timestamp('read_result_expires_at'),
     state: aiWorkflowRunStateEnum('state').notNull().default('queued'),
     executorLane: aiExecutorLaneEnum('executor_lane').notNull().default('default'),
     claimOwner: text('claim_owner'),

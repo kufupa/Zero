@@ -230,6 +230,8 @@ export type CreateReservationCandidateSessionInput = {
   buildQuoteAuthorization?: (
     candidate: QuoteStayCandidate,
   ) => HmsSessionAuthorization;
+  /** Exposed only so the U8 read adapter can fence the full dispatch. */
+  propertyReadLock?: import('./property-read-lock.js').PropertyReadLock;
 };
 
 /**
@@ -273,6 +275,7 @@ export function createReservationCandidateSession(
     activeReleases: input.activeReleases,
     candidateBindings: input.candidateBindings,
     requesterAuthorization: input.requesterAuthorization,
+    propertyReadLock: input.propertyReadLock,
     findReservation: async (candidateId, signal) => {
       if (signal.aborted) {
         const err = new Error('reservation session aborted');

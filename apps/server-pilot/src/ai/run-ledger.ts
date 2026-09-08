@@ -10,7 +10,15 @@ import type {
 import { parseEnv } from '../env.js';
 import { READ_TOOLS, type ReadToolId } from '../hms/read-tools.js';
 import { readRequestSchema } from '../hms/read-service.js';
-import { readRefSchema } from '../hms/read-service-contracts.js';
+import {
+  readRefSchema,
+  readResultSchema,
+  type ReadResult,
+} from '../hms/read-service-contracts.js';
+import {
+  reservationContextReadResultSchema,
+  reservationFindResultSchema,
+} from '../hms/reservation-context-contract.js';
 
 export const DEFAULT_AI_MODEL_ID = 'amazon.nova-lite-v1:0';
 export const DEFAULT_TRIAGE_PROMPT_VERSION = 'triage-v6';
@@ -224,6 +232,8 @@ export interface MarkAiRunSucceededInput {
   generationId?: string;
   metrics?: Record<string, unknown>;
   readResultRef?: string;
+  readResult?: ReadResult<unknown>;
+  readResultExpiresAt?: Date;
 }
 
 export interface MarkAiRunRetryInput {
@@ -558,7 +568,7 @@ export async function markAiRunSucceeded(input: MarkAiRunSucceededInput, db: DB 
       inArray(aiWorkflowRun.state, input.expectedStates),
     );
     const [current] = await tx
-      .select({ metrics: aiWorkflowRun.metrics })
+      .select({ metrics: aiWorkflowRun.metrics, runKind: aiWorkflowRun.runKind })
       .from(aiWorkflowRun)
       .where(predicate)
       .limit(1)
@@ -572,6 +582,10 @@ export async function markAiRunSucceeded(input: MarkAiRunSucceededInput, db: DB 
         mastraScorerId: input.mastraScorerId,
         generationId: input.generationId,
         ...(input.readResultRef === undefined ? {} : { readResultRef: input.readResultRef }),
+        ...(input.readResult === undefined ? {} : { readResult: input.readResult }),
+        ...(input.readResultExpiresAt === undefined
+          ? {}
+          : { readResultExpiresAt: input.readResultExpiresAt }),
         metrics: mergeTerminalRunMetrics(current.metrics, input.metrics),
         finishedAt: now,
         updatedAt: now,
@@ -582,6 +596,60 @@ export async function markAiRunSucceeded(input: MarkAiRunSucceededInput, db: DB 
       .returning();
     return row ?? null;
   });
+}
+
+export interface ReadAiRunReceiptInput {
+  readResultRef: string;
+  transportId: string;
+  threadId: string;
+  triggerMessageId: string;
+  requesterAuthorizationId: string;
+  now?: Date;
+}
+
+/**
+ * Read a private typed receipt only for the exact triggering mail scope and
+ * trusted requester that admitted the run. Expired or unbound receipts are
+ * deliberately indistinguishable from a missing receipt.
+ */
+export async function readAiRunReceipt(
+  input: ReadAiRunReceiptInput,
+  db: DB = getDb(),
+): Promise<{ readResultRef: string; result: ReadResult<unknown>; expiresAt: Date } | null> {
+  const ref = readRefSchema.parse(input.readResultRef);
+  const [run] = await db
+    .select()
+    .from(aiWorkflowRun)
+    .where(eq(aiWorkflowRun.readResultRef, ref))
+    .limit(1);
+  if (
+    !run ||
+    run.runKind !== 'read_tool' ||
+    run.transportId !== input.transportId ||
+    run.threadId !== input.threadId ||
+    run.triggerMessageId !== input.triggerMessageId ||
+    !run.readResult ||
+    !run.readResultExpiresAt
+  ) {
+    return null;
+  }
+  const request = readRequestSchema.safeParse(run.readRequest);
+  const admission = request.success && 'admission' in request.data ? request.data.admission : undefined;
+  if (!admission || admission.requesterAuthorizationId !== input.requesterAuthorizationId) {
+    return null;
+  }
+  const now = input.now ?? new Date();
+  if (run.readResultExpiresAt.getTime() <= now.getTime()) return null;
+  const result = readResultSchema.parse(run.readResult);
+  const concrete =
+    result.toolId === 'hms_find_reservation'
+      ? reservationFindResultSchema.parse(result)
+      : reservationContextReadResultSchema.parse(result);
+  return {
+    readResultRef: ref,
+    result: concrete as ReadResult<unknown>,
+    expiresAt: run.readResultExpiresAt,
+  };
 }
 
 export async function markAiRunRetry(input: MarkAiRunRetryInput, db: DB = getDb()) {

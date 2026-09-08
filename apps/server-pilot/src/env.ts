@@ -194,17 +194,7 @@ export function parseHmsControlConfig(input: EnvInput): HmsControlConfig {
   };
 }
 
-/**
- * Require full HMS worker runtime config for shadow. Call from hms-ai-worker
- * startup only — default worker must not invoke this.
- */
-export function requireHmsWorkerRuntimeConfig(input: EnvInput): HmsWorkerRuntimeConfig {
-  const control = parseHmsControlConfig(input);
-  if (control.mode !== 'shadow') {
-    throw new Error(
-      `requireHmsWorkerRuntimeConfig requires HMS_DRAFT_ENRICHMENT_MODE=shadow, got: ${control.mode}`,
-    );
-  }
+function requireHmsRuntimeConfig(input: EnvInput): HmsWorkerRuntimeConfig {
   const healthPath = requireNonEmpty('HMS_HEALTH_STATUS_PATH', input.HMS_HEALTH_STATUS_PATH);
   const expectedPropertyCode = requireNonEmpty(
     'HMS_EXPECTED_PROPERTY_CODE',
@@ -253,6 +243,29 @@ export function requireHmsWorkerRuntimeConfig(input: EnvInput): HmsWorkerRuntime
       input.HMS_EVIDENCE_HMAC_KEY_VERSION,
     ),
   };
+}
+
+/**
+ * Require full HMS worker runtime config for shadow. Call from hms-ai-worker
+ * startup only — default worker must not invoke this.
+ */
+export function requireHmsWorkerRuntimeConfig(input: EnvInput): HmsWorkerRuntimeConfig {
+  const control = parseHmsControlConfig(input);
+  if (control.mode !== 'shadow') {
+    throw new Error(
+      `requireHmsWorkerRuntimeConfig requires HMS_DRAFT_ENRICHMENT_MODE=shadow, got: ${control.mode}`,
+    );
+  }
+  return requireHmsRuntimeConfig(input);
+}
+
+/**
+ * Require the browser/secret configuration for the independent model-free
+ * read lane.  Read service enablement is intentionally orthogonal to draft
+ * enrichment, so `HMS_DRAFT_ENRICHMENT_MODE=off` is valid here.
+ */
+export function requireHmsReadRuntimeConfig(input: EnvInput): HmsWorkerRuntimeConfig {
+  return requireHmsRuntimeConfig(input);
 }
 
 /**

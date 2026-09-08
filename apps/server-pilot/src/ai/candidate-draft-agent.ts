@@ -137,6 +137,8 @@ export type CandidateToolSession = {
   /** Plan-scoped bindings — set by worker/session when activeReleases non-empty. */
   candidateBindings?: ReadonlyMap<string, CandidateBinding>;
   requesterAuthorization?: TrustedRequesterAuthorizationV1;
+  /** U8 production read path owns the lock around the whole typed dispatch. */
+  propertyReadLock?: import('../hms/property-read-lock.js').PropertyReadLock;
   close?: () => Promise<void>;
 };
 

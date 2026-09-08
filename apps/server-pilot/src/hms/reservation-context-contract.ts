@@ -1,12 +1,14 @@
 import { z } from 'zod';
 import {
   readFactSchema,
+  readAdmissionSchema,
   readLocalDateSchema,
   readMoneySchema,
   readPageSchema,
   readRefSchema,
   readResultSchema,
-  readSectionSchema,
+  readSectionAvailableSchema,
+  readSectionUnavailableSchema,
   readTimestampSchema,
   type ReadFact,
   type ReadResult,
@@ -33,6 +35,8 @@ export const reservationContextRequestSchema = z
   .object({
     toolId: z.literal('hms_read_reservation'),
     reservationRef: readRefSchema,
+    /** Optional exact candidate binding used by the worker re-derivation path. */
+    candidateId: readRefSchema.optional(),
     sections: z
       .array(reservationContextSectionSchema)
       .min(1)
@@ -40,12 +44,17 @@ export const reservationContextRequestSchema = z
       .refine((sections) => new Set(sections).size === sections.length, 'sections must be unique')
       .default(['core', 'stay']),
     detail: reservationDetailSchema.default('summary'),
+    admission: readAdmissionSchema.optional(),
   })
   .strict();
 export type ReservationContextRequest = z.infer<typeof reservationContextRequestSchema>;
 
 export const reservationFindRequestSchema = z
-  .object({ toolId: z.literal('hms_find_reservation'), candidateId: readRefSchema })
+  .object({
+    toolId: z.literal('hms_find_reservation'),
+    candidateId: readRefSchema,
+    admission: readAdmissionSchema.optional(),
+  })
   .strict();
 export type ReservationFindRequest = z.infer<typeof reservationFindRequestSchema>;
 
@@ -136,11 +145,26 @@ export const reservationOperationListSchema = z
 
 export const reservationContextDataSchema = z
   .object({
-    core: readSectionSchema,
-    stay: readSectionSchema,
-    rates: readSectionSchema,
-    policies: readSectionSchema,
-    operations: readSectionSchema,
+    core: z.union([
+      readSectionAvailableSchema.extend({ data: reservationCoreSchema }),
+      readSectionUnavailableSchema,
+    ]),
+    stay: z.union([
+      readSectionAvailableSchema.extend({ data: reservationStaySchema }),
+      readSectionUnavailableSchema,
+    ]),
+    rates: z.union([
+      readSectionAvailableSchema.extend({ data: reservationRateListSchema }),
+      readSectionUnavailableSchema,
+    ]),
+    policies: z.union([
+      readSectionAvailableSchema.extend({ data: reservationPoliciesSchema }),
+      readSectionUnavailableSchema,
+    ]),
+    operations: z.union([
+      readSectionAvailableSchema.extend({ data: reservationOperationListSchema }),
+      readSectionUnavailableSchema,
+    ]),
   })
   .strict();
 export type ReservationContextData = {
@@ -198,4 +222,3 @@ export type ReservationFindResult = ReadResult<ReservationFindData>;
 // Keep these exports close to the U8 contract for callers that want to build
 // reservation facts without knowing the shared contract module's internals.
 export { readFactSchema, readMoneySchema, readTimestampSchema };
-

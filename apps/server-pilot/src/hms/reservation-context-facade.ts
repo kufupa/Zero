@@ -45,7 +45,8 @@ export interface ReservationRow {
 export type ReservationLookupResult =
   | { status: 'matched'; row: ReservationRow; evidenceRef?: string; observedAt?: Date | string; expiresAt?: Date | string }
   | { status: 'ambiguous'; rows: ReservationRow[]; evidenceRef?: string; observedAt?: Date | string; expiresAt?: Date | string }
-  | { status: 'not_found'; evidenceRef?: string; observedAt?: Date | string; expiresAt?: Date | string };
+  | { status: 'not_found'; evidenceRef?: string; observedAt?: Date | string; expiresAt?: Date | string }
+  | { status: 'unverified_negative'; evidenceRef?: string; observedAt?: Date | string; expiresAt?: Date | string };
 
 export type ReservationContextLookupFn = (
   input: ReservationContextLookup,
@@ -69,6 +70,8 @@ type FacadeOptions = {
   now: () => Date;
   lookup: ReservationContextLookupFn;
   readContext: ReservationContextReader;
+  /** Trusted worker binding for a persisted, opaque reservation reference. */
+  reservationRefFor?: (input: ReservationContextLookup, row: ReservationRow) => string;
 };
 
 function iso(value: Date | string): string {
@@ -233,7 +236,8 @@ export function createReservationContextFacade(options: FacadeOptions) {
     const rows = result.status === 'matched' ? [result.row] : result.status === 'ambiguous' ? result.rows : [];
     const matches = rows.map((row) => {
       if (result.status !== 'matched') return matchFor(row, input, null, evidenceRef, observedAt, expiresAt, true);
-      const reservationRef = safeRef();
+      const reservationRef = options.reservationRefFor?.(input, row) ?? safeRef();
+      readRefSchema.parse(reservationRef);
       bindings.set(reservationRef, {
         reservationRef,
         lookup: input,
@@ -245,15 +249,27 @@ export function createReservationContextFacade(options: FacadeOptions) {
       return matchFor(row, input, reservationRef, evidenceRef, observedAt, expiresAt, false);
     });
     const response = {
+      toolId: 'hms_find_reservation' as const,
       schemaVersion: 'reservation-find/1' as const,
-      status: result.status === 'matched' ? 'ok' as const : result.status === 'ambiguous' ? 'ambiguous' as const : 'not_found' as const,
+      status: result.status === 'matched'
+        ? 'ok' as const
+        : result.status === 'ambiguous'
+          ? 'ambiguous' as const
+          : result.status === 'unverified_negative'
+            ? 'unverified_negative' as const
+            : 'not_found' as const,
       data: { matches, matchCount: matches.length, capped: false },
       completeness: 'complete' as const,
       unavailableSections: [],
       scopeRef: input.parentRef,
       evidence: [evidence(evidenceRef, input, observedAt, expiresAt)],
       page: null,
-      issues: result.status === 'not_found' ? [readIssue('SOURCE_UNAVAILABLE', 'request_input')] : [],
+      issues:
+        result.status === 'not_found'
+          ? [readIssue('SOURCE_UNAVAILABLE', 'request_input')]
+          : result.status === 'unverified_negative'
+            ? [readIssue('UNVERIFIED_NEGATIVE', 'manual_review')]
+            : [],
     };
     return reservationFindResultSchema.parse(response);
   }
@@ -294,6 +310,7 @@ export function createReservationContextFacade(options: FacadeOptions) {
       }));
     const status = unavailableSections.length === 0 ? 'ok' : unavailableSections.length === sections.length ? 'partial' : 'partial';
     return reservationContextReadResultSchema.parse({
+      toolId: 'hms_read_reservation' as const,
       schemaVersion: 'reservation-context/1',
       status,
       data,

@@ -28,7 +28,7 @@ export function propertyReadLockKey(tenantId: string, propertyCode: string): str
   return String(digest.readInt32BE(0));
 }
 
-function lockError(cause: unknown): Error & { code: string; cause?: unknown } {
+function lockError(cause?: unknown): Error & { code: string; cause?: unknown } {
   const error = Object.assign(new Error('property read advisory lock could not be acquired'), {
     code: 'PROPERTY_READ_LOCK_LOST',
     cause,
@@ -48,26 +48,48 @@ export function createPropertyReadLock(options: PropertyReadLockOptions) {
       } catch (cause) {
         throw lockError(cause);
       }
-      let held = false;
+      let held = true;
+      let result: T | undefined;
+      let callbackError: unknown;
       try {
-        try {
-          await connection.query(`SELECT pg_advisory_lock(${key})`);
-          held = true;
-        } catch (cause) {
-          throw lockError(cause);
-        }
-        return await callback(connection);
-      } finally {
-        if (held) {
-          try {
-            await connection.query(`SELECT pg_advisory_unlock(${key})`);
-          } catch {
-            // The read result is not a proof of a clean release.  Connection
-            // close below still guarantees the backend cannot retain it.
-          }
-        }
-        await connection.close();
+        await connection.query(`SELECT pg_advisory_lock(${key})`);
+      } catch (cause) {
+        held = false;
+        await connection.close().catch(() => undefined);
+        throw lockError(cause);
       }
+      try {
+        result = await callback(connection);
+      } catch (cause) {
+        callbackError = cause;
+      }
+
+      let releaseError: Error & { code: string; cause?: unknown } | undefined;
+      if (held) {
+        try {
+          const released = await connection.query<ReadonlyArray<Record<string, unknown>>>(
+            `SELECT pg_advisory_unlock(${key})`,
+          );
+          const releaseRow = Array.isArray(released) ? released[0] : undefined;
+          if (releaseRow && Object.values(releaseRow).some((value) => value === false)) {
+            releaseError = lockError();
+          }
+        } catch (cause) {
+          // Connection close below still guarantees the backend cannot retain
+          // a lost lock, but the read must fail closed.
+          releaseError = lockError(cause);
+        }
+      }
+      let closeError: unknown;
+      try {
+        await connection.close();
+      } catch (cause) {
+        closeError = cause;
+      }
+      if (releaseError) throw releaseError;
+      if (closeError) throw lockError(closeError);
+      if (callbackError) throw callbackError;
+      return result as T;
     },
   };
 }

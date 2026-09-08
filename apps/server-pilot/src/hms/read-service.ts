@@ -11,7 +11,13 @@ import {
   type ReservationLookupResult,
   type ReservationRow,
 } from './reservation-context-facade.js';
-import { readRefSchema, readResultSchema, type ReadResult } from './read-service-contracts.js';
+import {
+  readAdmissionSchema,
+  readInputDigest,
+  readRefSchema,
+  readResultSchema,
+  type ReadResult,
+} from './read-service-contracts.js';
 import type { PropertyReadLock } from './property-read-lock.js';
 import { assertReadRequesterScope } from './requester-authorization.js';
 
@@ -24,7 +30,7 @@ export type ReadRequest = ReservationFindRequest | ReservationContextRequest;
 export type ReadHandlerResult =
   | ReservationLookupResult
   | {
-      status: 'ok' | 'not_found' | 'ambiguous';
+      status: 'ok' | 'not_found' | 'unverified_negative' | 'ambiguous';
       data: {
         confirmation: string | null;
         label: string | null;
@@ -71,6 +77,10 @@ export interface ReadExecutionContext {
   reservationFacade?: ReturnType<typeof createReservationContextFacade>;
   /** Optional property lock; live worker/proof callers must provide it. */
   propertyReadLock?: PropertyReadLock;
+  /** Production worker paths must carry a trusted release/input/capture bind. */
+  requireAdmissionBinding?: boolean;
+  /** Internal marker when the caller already owns the dedicated lock. */
+  propertyReadLockHeld?: boolean;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -93,6 +103,8 @@ const executionKeys = new Set([
   'handlers',
   'reservationFacade',
   'propertyReadLock',
+  'requireAdmissionBinding',
+  'propertyReadLockHeld',
 ]);
 
 function validExecutionContext(value: unknown): value is ReadExecutionContext {
@@ -109,7 +121,9 @@ function validExecutionContext(value: unknown): value is ReadExecutionContext {
     typeof value.requester.expiresAt === 'string' &&
     isRecord(value.budget) && typeof value.budget.total === 'number' && typeof value.budget.limit === 'number' &&
     !!value.signal && typeof (value.signal as AbortSignal).aborted === 'boolean' &&
-    typeof value.now === 'function';
+    typeof value.now === 'function' &&
+    (value.requireAdmissionBinding === undefined || typeof value.requireAdmissionBinding === 'boolean') &&
+    (value.propertyReadLockHeld === undefined || typeof value.propertyReadLockHeld === 'boolean');
 }
 
 // A custom schema is used because an execution context intentionally carries
@@ -145,9 +159,9 @@ function toLookup(context: ReadExecutionContext, candidateId: string): Reservati
 
 function normalizeHandlerResult(result: ReadHandlerResult): ReservationLookupResult {
   if ('row' in result || 'rows' in result) return result as ReservationLookupResult;
-  if (result.status === 'not_found' || !result.data) {
+  if (result.status === 'not_found' || result.status === 'unverified_negative' || !result.data) {
     return {
-      status: 'not_found',
+      status: result.status === 'unverified_negative' ? 'unverified_negative' : 'not_found',
       evidenceRef: result.evidenceRef,
       observedAt: result.observedAt,
       expiresAt: result.expiresAt,
@@ -172,12 +186,38 @@ function normalizeHandlerResult(result: ReadHandlerResult): ReservationLookupRes
   } as ReservationLookupResult;
 }
 
-function assertContext(context: ReadExecutionContext) {
+function assertContext(context: ReadExecutionContext, request: ReadRequest) {
   readExecutionContextSchema.parse(context);
   const now = context.now();
   assertReadRequesterScope({ requester: context.requester, context, now });
   if (context.signal.aborted) throw codedError('READ_ABORTED', 'read was aborted');
   if (context.budget.total >= context.budget.limit) throw codedError('READ_BUDGET_EXCEEDED', 'read budget exhausted');
+  if (context.requireAdmissionBinding) {
+    if (!context.propertyReadLock) {
+      throw codedError('READ_PROPERTY_LOCK_REQUIRED', 'property read lock is required for admitted dispatch');
+    }
+    const admission = 'admission' in request ? request.admission : undefined;
+    if (!admission) throw codedError('READ_ADMISSION_MISSING', 'trusted read admission is required');
+    const parsed = readAdmissionSchema.parse(admission);
+    const { admission: _ignored, ...closedRequest } = request as typeof request & {
+      admission?: unknown;
+    };
+    if (parsed.releaseId !== context.releaseId) {
+      throw codedError('READ_RELEASE_BINDING_MISMATCH', 'read release binding mismatch');
+    }
+    if (parsed.requesterAuthorizationId !== context.requester.authorizationId) {
+      throw codedError('READ_REQUESTER_BINDING_MISMATCH', 'read requester binding mismatch');
+    }
+    if (parsed.requestBranchId !== context.branchId) {
+      throw codedError('READ_BRANCH_BINDING_MISMATCH', 'read branch binding mismatch');
+    }
+    if (parsed.inputDigest !== readInputDigest(closedRequest)) {
+      throw codedError('READ_INPUT_BINDING_MISMATCH', 'read input binding mismatch');
+    }
+    if (parsed.captureRequired && parsed.captureBindingRef !== context.parentRef) {
+      throw codedError('READ_CAPTURE_BINDING_MISMATCH', 'read capture binding mismatch');
+    }
+  }
   context.budget.total += 1;
 }
 
@@ -193,7 +233,7 @@ async function dispatchRead(
     const lookupInput = toLookup(context, parsed.candidateId);
     const facade = createReservationContextFacade({
       now: context.now,
-      lookup: async (input) => normalizeHandlerResult(await handler(input), input),
+      lookup: async (input) => normalizeHandlerResult(await handler(input)),
       readContext: async (input, row) => {
         if (!context.handlers?.readReservation) return { core: { status: 'available', confirmation: row.confirmationNumber }, stay: { status: 'available', arrival: row.arrivalDate, departure: row.departureDate } };
         const value = await context.handlers.readReservation(input);
@@ -219,14 +259,15 @@ export async function executeRead(
   context: ReadExecutionContext,
   request: ReadRequest,
 ): Promise<ReadResult<unknown>> {
-  assertContext(context);
+  const parsed = readRequestSchema.parse(request);
+  assertContext(context, parsed);
   // A lock is held around the complete typed dispatch, including any driver
   // admission.  PropertyReadLock itself owns a dedicated connection and
   // closes it on both success and failure.
-  if (context.propertyReadLock) {
-    return context.propertyReadLock.withLock(() => dispatchRead(context, request));
+  if (context.propertyReadLock && !context.propertyReadLockHeld) {
+    return context.propertyReadLock.withLock(() => dispatchRead(context, parsed));
   }
-  return dispatchRead(context, request);
+  return dispatchRead(context, parsed);
 }
 
 export interface ReadToolRunInput {
