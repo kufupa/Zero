@@ -29,10 +29,11 @@ import {
   type ReservationFindResult,
 } from './reservation-context-contract.js';
 import { extractLookupCandidates, filterExactReservationCandidates } from '../ai/thread-context.js';
+import { DOCUMENT_LIST_MAX_ROWS } from './document-list-contract.js';
 import { normalizeMessageText } from '../ai/thread-context.js';
+import { and, asc, desc, eq, lte, or } from 'drizzle-orm';
 import { readAiRunReceipt } from '../ai/run-ledger.js';
 import { readRequestSchema } from './read-service.js';
-import { and, desc, eq, lte, or } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 
 export type ReadAdmissionReleaseInput = {
@@ -145,6 +146,7 @@ async function loadTrigger(input: IssueMailboxReadAdmissionInput, db: DB) {
 type DocumentScopeAuthority = {
   scope: ExistingDocumentScope;
   records: ExistingDocumentRecord[];
+  recordsComplete: boolean;
 };
 
 async function loadDocumentScopeAuthority(input: {
@@ -154,6 +156,7 @@ async function loadDocumentScopeAuthority(input: {
   triggerMessageId: string;
   requestedKind?: DocumentKind;
   requestedPriceVisibility?: 'allowed' | 'forbidden' | 'unknown';
+  includeRecords?: boolean;
 }): Promise<DocumentScopeAuthority> {
   const [trigger] = await input.db
     .select({
@@ -192,6 +195,11 @@ async function loadDocumentScopeAuthority(input: {
     requestedPriceVisibility: input.requestedPriceVisibility ?? 'allowed',
   };
 
+  // List admission only proves the current trigger/scope. The worker owns the
+  // bounded source query; do not materialize every attachment or message body
+  // merely to issue a queued list request.
+  if (input.includeRecords !== true) return { scope, records: [], recordsComplete: true };
+
   const rows = await input.db
     .select({
       id: attachment.id,
@@ -201,9 +209,6 @@ async function loadDocumentScopeAuthority(input: {
       sizeBytes: attachment.sizeBytes,
       s3Key: attachment.s3Key,
       messageDirection: message.direction,
-      textBody: message.textBody,
-      htmlBody: message.htmlBody,
-      subject: message.subject,
       receivedAt: message.receivedAt,
       createdAt: message.createdAt,
     })
@@ -220,9 +225,13 @@ async function loadDocumentScopeAuthority(input: {
             )
           : eq(message.id, trigger.id),
       ),
-    );
-  const authorizedAttachmentIds = new Set(rows.map((row) => row.id));
-  const records = rows.map((row) =>
+    )
+    .orderBy(asc(message.receivedAt), asc(message.createdAt), asc(attachment.id))
+    .limit(DOCUMENT_LIST_MAX_ROWS + 1);
+  const recordsComplete = rows.length <= DOCUMENT_LIST_MAX_ROWS;
+  const boundedRows = rows.slice(0, DOCUMENT_LIST_MAX_ROWS);
+  const authorizedAttachmentIds = new Set(boundedRows.map((row) => row.id));
+  const records = boundedRows.map((row) =>
     mailAttachmentRecord({
       scope,
       source: row.messageDirection === 'outbound' ? 'hms_sent_attachment' : 'mail_attachment',
@@ -233,15 +242,13 @@ async function loadDocumentScopeAuthority(input: {
       mimeType: row.mimeType,
       sizeBytes: row.sizeBytes,
       s3Key: row.s3Key,
-      text: [row.subject?.trim() ?? '', row.textBody ?? row.htmlBody ?? '']
-        .filter(Boolean)
-        .join('\n'),
+      text: row.filename,
       observedAt:
         (row.messageDirection === 'inbound' ? row.receivedAt : row.createdAt)?.toISOString() ??
         null,
     }),
   );
-  return { scope, records };
+  return { scope, records, recordsComplete };
 }
 
 async function assertDocumentRefInCurrentScope(input: {
@@ -257,6 +264,7 @@ async function assertDocumentRefInCurrentScope(input: {
     threadId: input.threadId,
     triggerMessageId: input.triggerMessageId,
     requestedPriceVisibility: 'allowed',
+    includeRecords: true,
   });
   const expectedSha256 = existingDocumentSha256FromRef(input.documentRef);
   const found = authority.records.some((record) => {
@@ -270,8 +278,10 @@ async function assertDocumentRefInCurrentScope(input: {
   });
   if (!found) {
     throw authError(
-      'DOCUMENT_REF_SCOPE_DENIED',
-      'document reference is not current and authorized for this mailbox thread',
+      authority.recordsComplete ? 'DOCUMENT_REF_SCOPE_DENIED' : 'DOCUMENT_REF_SCOPE_UNRESOLVED',
+      authority.recordsComplete
+        ? 'document reference is not current and authorized for this mailbox thread'
+        : 'document reference could not be resolved within the bounded current mailbox scope',
     );
   }
 }
@@ -412,6 +422,7 @@ export async function issueReadAdmissionFromMailbox(
       triggerMessageId: trigger.triggerMessageId,
       requestedKind: input.kind,
       requestedPriceVisibility: input.requestedPriceVisibility,
+      includeRecords: false,
     });
     issued = issueReadAdmission({
       source,

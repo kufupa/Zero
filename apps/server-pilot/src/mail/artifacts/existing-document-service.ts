@@ -529,6 +529,29 @@ export function createExistingDocumentService(input: ExistingDocumentServiceInpu
       return manualList('SOURCE_UNAVAILABLE');
     }
 
+    // A bounded source may be unable to resolve an opaque continuation within
+    // its scan window. Preserve that explicit incomplete outcome; do not turn
+    // it into a generic invalid cursor or a verified empty result.
+    if (page.blocker === 'LIST_CURSOR_UNRESOLVED') {
+      const data = existingDocumentListDataSchema.parse({
+        documents: [],
+        page: { returnedCount: 0, hasMore: false, nextCursor: null },
+        sourceOutcomes: [
+          {
+            source: request.source,
+            status: 'partial',
+            issues: [issue(page.blocker)],
+          },
+        ],
+      });
+      return {
+        status: 'partial',
+        data,
+        blocker: page.blocker,
+        issues: [issue(page.blocker)],
+      };
+    }
+
     const rows: Array<{
       metadata: DocumentMetadata;
       validation: DocumentValidation;

@@ -868,7 +868,29 @@ async function loadMailDocumentAuthority(input: {
     requestedPriceVisibility: input.requestedPriceVisibility ?? 'allowed',
   };
 
-  const rows = await db
+  const requestedSource =
+    input.request.source === 'mail_attachment' || input.request.source === 'hms_sent_attachment'
+      ? input.request.source
+      : null;
+  const requestedLimit =
+    typeof input.request.limit === 'number'
+      ? Math.min(Math.max(Math.trunc(input.request.limit), 1), DOCUMENT_LIST_MAX_ROWS)
+      : 20;
+  const requestedCursor = typeof input.request.cursor === 'string' ? input.request.cursor : null;
+  const listRequest = input.includeHashes && input.request.toolId === 'documents_list_existing';
+  const sourcePredicate =
+    requestedSource === 'mail_attachment'
+      ? eq(message.direction, 'inbound')
+      : requestedSource === 'hms_sent_attachment'
+        ? eq(message.direction, 'outbound')
+        : undefined;
+  const causalHorizon = trigger.receivedAt
+    ? or(
+        and(eq(message.direction, 'inbound'), lte(message.receivedAt, trigger.receivedAt)),
+        and(eq(message.direction, 'outbound'), lte(message.sentAt, trigger.receivedAt)),
+      )
+    : eq(message.id, trigger.id);
+  const sourceQuery = db
     .select({
       id: attachment.id,
       messageId: attachment.messageId,
@@ -877,11 +899,9 @@ async function loadMailDocumentAuthority(input: {
       sizeBytes: attachment.sizeBytes,
       s3Key: attachment.s3Key,
       direction: message.direction,
-      textBody: message.textBody,
-      htmlBody: message.htmlBody,
-      subject: message.subject,
       receivedAt: message.receivedAt,
       sentAt: message.sentAt,
+      createdAt: message.createdAt,
     })
     .from(attachment)
     .innerJoin(message, eq(message.id, attachment.messageId))
@@ -889,14 +909,19 @@ async function loadMailDocumentAuthority(input: {
       and(
         eq(message.threadId, input.run.threadId),
         eq(message.transportId, input.run.transportId),
-        trigger.receivedAt
-          ? or(
-              and(eq(message.direction, 'inbound'), lte(message.receivedAt, trigger.receivedAt)),
-              and(eq(message.direction, 'outbound'), lte(message.sentAt, trigger.receivedAt)),
-            )
-          : eq(message.id, trigger.id),
+        causalHorizon,
+        sourcePredicate,
       ),
+    )
+    .orderBy(
+      asc(message.receivedAt),
+      asc(message.sentAt),
+      asc(message.createdAt),
+      asc(attachment.id),
     );
+  const rows = listRequest
+    ? await sourceQuery.limit(requestedCursor ? DOCUMENT_LIST_MAX_ROWS + 1 : requestedLimit + 1)
+    : await sourceQuery.limit(DOCUMENT_LIST_MAX_ROWS + 1);
   const authorizedAttachmentIds = new Set(rows.map((row) => row.id));
   const locators = new Map<string, AttachmentLocator>(
     rows.map((row) => [
@@ -920,9 +945,9 @@ async function loadMailDocumentAuthority(input: {
       mimeType: row.mimeType,
       sizeBytes: row.sizeBytes,
       s3Key: row.s3Key,
-      text: [row.subject?.trim() ?? '', row.textBody ?? row.htmlBody ?? '']
-        .filter(Boolean)
-        .join('\n'),
+      // Filename is a display/type hint only; message bodies are intentionally
+      // not selected for this conservative unknown-metadata path.
+      text: row.filename,
       observedAt:
         (row.direction === 'inbound' ? row.receivedAt : row.sentAt)?.toISOString() ?? null,
     }),
@@ -938,15 +963,6 @@ async function loadMailDocumentAuthority(input: {
     };
   }
 
-  const requestedSource =
-    input.request.source === 'mail_attachment' || input.request.source === 'hms_sent_attachment'
-      ? input.request.source
-      : null;
-  const requestedLimit =
-    typeof input.request.limit === 'number'
-      ? Math.min(Math.max(Math.trunc(input.request.limit), 1), DOCUMENT_LIST_MAX_ROWS)
-      : 20;
-  const requestedCursor = typeof input.request.cursor === 'string' ? input.request.cursor : null;
   const sourceIndices = records.reduce<number[]>((indices, record, index) => {
     if (requestedSource === null || record.source === requestedSource) indices.push(index);
     return indices;
@@ -1090,7 +1106,15 @@ function createMailDocumentService(input: {
 
   const source = (sourceId: 'mail_attachment' | 'hms_sent_attachment') => ({
     source: sourceId,
-    async list({ scope }: { scope: ExistingDocumentScope }) {
+    async list({
+      scope,
+      limit,
+      cursor,
+    }: {
+      scope: ExistingDocumentScope;
+      limit: number;
+      cursor?: string;
+    }) {
       const current = await authority();
       if (current.scope.scopeRef !== scope.scopeRef) {
         return { records: [], inventoryComplete: true, blocker: 'SCOPE_DENIED' };
@@ -1110,10 +1134,25 @@ function createMailDocumentService(input: {
           blocker: current.listBlocker,
         };
       }
+      const pageLimit = Math.min(Math.max(Math.trunc(limit), 1), DOCUMENT_LIST_MAX_ROWS);
+      let start = 0;
+      if (cursor) {
+        start = records.findIndex((record) => existingDocumentRefForRecord(record) === cursor);
+        if (start < 0) {
+          return {
+            records: [],
+            inventoryComplete: false,
+            hasMore: false,
+            blocker: 'LIST_CURSOR_UNRESOLVED',
+          };
+        }
+      }
+      const pageRecords = records.slice(start, start + pageLimit + 1);
+      const hasMore = current.listHasMore || start + pageRecords.length < records.length;
       return {
-        records,
-        inventoryComplete: current.listBlocker === null,
-        hasMore: current.listHasMore,
+        records: pageRecords,
+        inventoryComplete: current.listBlocker === null && !hasMore,
+        hasMore,
         blocker: current.listBlocker ?? undefined,
       };
     },

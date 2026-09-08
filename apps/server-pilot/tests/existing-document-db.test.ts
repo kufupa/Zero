@@ -8,7 +8,7 @@ import {
 } from '../src/db/schema/mail.js';
 import { FakeS3Storage, getS3Storage, resetS3Storage, setS3Storage } from '../src/storage/s3.js';
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CENTURION_USER_ID, TRANSPORT_ID } from '../src/db/seed.js';
 import { resolveMailboxContext } from '../src/trpc/context.js';
 import { __setDbForTests, type DB } from '../src/db/client.js';
@@ -58,6 +58,10 @@ type ExistingDocumentMetadata = {
 
 type ExistingDocumentReadData = {
   documents?: ExistingDocumentMetadata[];
+  sourceOutcomes?: Array<{
+    status?: string;
+    issues?: Array<{ code: string }>;
+  }>;
   document?: {
     documentRef: string | null;
     artifactRef?: string | null;
@@ -91,6 +95,76 @@ type ExistingDocumentCaller = {
     };
   }>;
 };
+
+type ObservedDocumentQuery = {
+  limit: number | null;
+  orderBy: boolean;
+  sql: string;
+};
+
+/**
+ * Observe the real Drizzle select builders while delegating every operation
+ * to the supplied DB. This is intentionally a test-only boundary assertion:
+ * authority, joins, and execution still use the actual PG handle.
+ */
+function observeDocumentQueries(db: DB) {
+  const queries: ObservedDocumentQuery[] = [];
+  type QueryObject = object & {
+    toSQL?: () => { sql?: unknown };
+  };
+  type SelectDb = {
+    select: (...args: unknown[]) => unknown;
+  };
+
+  const wrapQuery = (query: unknown): unknown => {
+    if (!query || typeof query !== 'object') return query;
+    const state = { limit: null as number | null, orderBy: false };
+    const proxy = (value: unknown): unknown => {
+      if (!value || typeof value !== 'object') return value;
+      return new Proxy(value as object, {
+        get(target, property) {
+          const member = Reflect.get(target, property, target);
+          if (property === 'then' && typeof member === 'function') {
+            return (...args: unknown[]) => {
+              const toSQL = Reflect.get(target, 'toSQL', target);
+              const sqlResult =
+                typeof toSQL === 'function'
+                  ? (toSQL as (this: QueryObject) => { sql?: unknown }).call(target)
+                  : null;
+              if (typeof sqlResult?.sql === 'string') {
+                queries.push({
+                  limit: state.limit,
+                  orderBy: state.orderBy,
+                  sql: sqlResult.sql,
+                });
+              }
+              return (member as (...values: unknown[]) => unknown).apply(target, args);
+            };
+          }
+          if (typeof member !== 'function') return member;
+          return (...args: unknown[]) => {
+            if (property === 'limit' && typeof args[0] === 'number') {
+              state.limit = args[0];
+            }
+            if (property === 'orderBy') state.orderBy = true;
+            return proxy((member as (...values: unknown[]) => unknown).apply(target, args));
+          };
+        },
+      });
+    };
+    return proxy(query);
+  };
+
+  const selectDb = db as unknown as SelectDb;
+  const originalSelect = selectDb.select.bind(selectDb);
+  const selectSpy = vi
+    .spyOn(selectDb, 'select')
+    .mockImplementation((...args) => wrapQuery(originalSelect(...args)));
+  return {
+    queries,
+    restore: () => selectSpy.mockRestore(),
+  };
+}
 
 const WORKER_ENV_KEYS = [
   'PORT',
@@ -841,6 +915,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U9 existing-document trusted 
           storageReads += 1;
           return originalGetObjectBounded(key, maxBytes, signal);
         };
+        const observed = observeDocumentQueries(db);
         const caller = await authenticatedDocumentCaller(db);
         const listed = await executeDocumentList(db, caller, {
           threadId: fixture.threadId,
@@ -852,6 +927,96 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U9 existing-document trusted 
         expect(listed.result.data?.page.hasMore).toBe(true);
         expect(listed.result.data?.page.nextCursor).toMatch(/^doc:/);
         expect(storageReads).toBe(1);
+
+        storageReads = 0;
+        const nextCaller = await authenticatedDocumentCaller(db);
+        const nextPage = await executeDocumentList(db, nextCaller, {
+          threadId: fixture.threadId,
+          source: 'mail_attachment',
+          limit: 1,
+          cursor: listed.result.data?.page.nextCursor!,
+        });
+        expect(nextPage.result.status).toBe('ok');
+        expect(nextPage.result.data?.documents).toHaveLength(1);
+        expect(nextPage.result.data?.documents?.[0]?.documentRef).not.toBe(
+          listed.result.data?.documents?.[0]?.documentRef,
+        );
+        expect(nextPage.result.data?.page.hasMore).toBe(true);
+        // Resolving a cursor whose opaque ref contains the prior content hash
+        // must hash the cursor row once, then the next returned row once.
+        expect(storageReads).toBe(2);
+
+        const firstDocumentRef = listed.result.data?.documents?.[0]?.documentRef;
+        expect(firstDocumentRef).toMatch(/^doc:/);
+        const queriesBeforeRead = observed.queries.length;
+        const readCaller = await authenticatedDocumentCaller(db);
+        const read = await executeDocumentRead(db, readCaller, {
+          threadId: fixture.threadId,
+          documentRef: firstDocumentRef!,
+          format: 'text',
+        });
+        expect(read.result.status).toBe('manual_required');
+        expect(read.result.data?.document?.documentRef).toBe(firstDocumentRef);
+        expect(read.result.data?.text).toBe(DOCUMENT_BYTES.toString('utf8').trim());
+
+        // The worker source query is distinguished from issuer/ref checks by
+        // its causal outbound timestamp and deterministic attachment fields.
+        // This keeps the regression non-vacuous: a generic attachment query
+        // with a limit cannot satisfy the normal list-path proof.
+        const workerSourceQueries = observed.queries.filter(
+          (query) =>
+            query.limit !== null &&
+            query.limit >= 2 &&
+            /from "attachment"/i.test(query.sql) &&
+            /"attachment"\."s3_key"/i.test(query.sql) &&
+            /"message"\."sent_at"/i.test(query.sql) &&
+            /"message"\."created_at"/i.test(query.sql),
+        );
+        expect(workerSourceQueries.length).toBeGreaterThanOrEqual(2);
+        for (const query of workerSourceQueries) {
+          expect(query.orderBy).toBe(true);
+          expect(query.sql).toMatch(/order by/i);
+          expect(query.sql).not.toMatch(/text_body|html_body|subject/i);
+        }
+        const readAttachmentQueries = observed.queries
+          .slice(queriesBeforeRead)
+          .filter(
+            (query) =>
+              query.limit === 51 &&
+              /from "attachment"/i.test(query.sql) &&
+              /"attachment"\."s3_key"/i.test(query.sql),
+          );
+        expect(readAttachmentQueries.length).toBeGreaterThanOrEqual(2);
+        for (const query of readAttachmentQueries) {
+          expect(query.orderBy).toBe(true);
+          expect(query.sql).toMatch(/order by/i);
+          expect(query.sql).not.toMatch(/text_body|html_body|subject/i);
+        }
+        observed.restore();
+      }),
+    );
+  }, 30000);
+
+  it('returns an explicit unresolved cursor outcome for a valid-shaped missing page ref', async () => {
+    await withReadOnlyWorkerEnv(() =>
+      withSeededTestDb(async (db) => {
+        __setDbForTests({ db, conn: null as never });
+        const fixture = await seedDocumentMailbox(db);
+        const caller = await authenticatedDocumentCaller(db);
+        const unresolved = await executeDocumentList(db, caller, {
+          threadId: fixture.threadId,
+          source: 'mail_attachment',
+          limit: 1,
+          cursor: `doc:${'a'.repeat(64)}:${'b'.repeat(64)}`,
+        });
+        expect(unresolved.result.status).toBe('partial');
+        expect(unresolved.result.data?.sourceOutcomes?.[0]).toMatchObject({
+          status: 'partial',
+          issues: [{ code: 'LIST_CURSOR_UNRESOLVED' }],
+        });
+        expect(unresolved.result.issues?.[0]?.code).toBe('SOURCE_UNAVAILABLE');
+        expect(unresolved.result.data?.documents ?? []).toHaveLength(0);
+        expect(unresolved.result.data?.page.hasMore).toBe(false);
       }),
     );
   }, 30000);
