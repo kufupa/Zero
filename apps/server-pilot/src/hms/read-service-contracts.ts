@@ -243,6 +243,8 @@ export const readEvidenceSchema = z
     expiresAt: readTimestampSchema,
     scopeVerified: z.boolean(),
     artifactRef: readRefSchema.nullable(),
+    artifactRefs: z.array(readRefSchema).min(1).optional(),
+    sourceHash: readDigestSchema.optional(),
   })
   .strict();
 export type ReadEvidence = z.infer<typeof readEvidenceSchema>;

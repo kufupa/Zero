@@ -88,6 +88,8 @@ export type ReadAdmissionSource = {
   triggerMessageId: string;
   releaseId: string;
   requestBranchId: string;
+  /** Private read-result reference that the browser artifact must join. */
+  captureBindingRef?: string;
 };
 
 type ReadAdmissionIssuerMarker = {
@@ -239,6 +241,14 @@ export function issueReadAdmission(input: IssueReadAdmissionInput): IssuedReadAd
   requiredRef(source.triggerMessageId, 'triggerMessageId');
   requiredRef(source.releaseId, 'releaseId');
   requiredRef(source.requestBranchId, 'requestBranchId');
+  const captureRequired =
+    input.toolId === 'hms_find_reservation' ||
+    input.toolId === 'hms_read_reservation' ||
+    input.toolId === 'hms_read_folio' ||
+    input.toolId === 'hms_quote_stay';
+  const captureBindingRef = captureRequired
+    ? requiredRef(source.captureBindingRef ?? '', 'captureBindingRef')
+    : null;
   let candidateId: string | null;
   if (
     input.toolId === 'documents_list_existing' ||
@@ -328,8 +338,8 @@ export function issueReadAdmission(input: IssueReadAdmissionInput): IssuedReadAd
     requestBranchId: source.requestBranchId,
     requesterAuthorizationId: source.mailboxAccessId,
     inputDigest,
-    captureRequired: false,
-    captureBindingRef: null,
+    captureRequired,
+    captureBindingRef,
     reservationRef,
     reservationRefIssuedAt,
     reservationRefExpiresAt,

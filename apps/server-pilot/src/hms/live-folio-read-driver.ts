@@ -15,6 +15,7 @@ import {
   type FolioReadData,
 } from './folio-read-contract.js';
 import { knownFact, readIssue, unknownFact } from './read-service-contracts.js';
+import type { HmsBrowserArtifactReceiptV1 } from './browser-artifacts.js';
 import type { ExactReservationCandidate } from './live-read-manifest.js';
 import { extractOsressPageData } from './live-guest-stay-driver.js';
 import type { HmsSessionAuthorization } from './release-kernel.js';
@@ -27,6 +28,7 @@ import { createHash, randomUUID } from 'node:crypto';
 
 export const DEPOSIT_LEDGER_RESERVATION_SCOPE_BLOCKER =
   'BLOCKED_DEPOSIT_LEDGER_RESERVATION_SCOPE_UNPROVEN';
+export const FOLIO_RESERVATION_SCOPE_BLOCKER = 'BLOCKED_FOLIO_RESERVATION_SCOPE_UNPROVEN';
 
 export const LIVE_FOLIO_BALANCE_ALIAS_KEYS = ['foliobalance', 'propertycurrency'] as const;
 
@@ -56,6 +58,10 @@ export type FolioBalanceKernelResult = {
   bytesObserved?: number;
   durationMs?: number;
   observedAt?: string;
+  reservationScopeProven?: boolean;
+  scopeVerified?: boolean;
+  artifactRef?: string;
+  finalizedReceipt?: FinalizedFolioReceipt;
 };
 
 export type DepositSummaryKernelResult = {
@@ -70,15 +76,59 @@ export type DepositSummaryKernelResult = {
   observedAt?: string;
   completeness?: 'complete' | 'partial' | 'unknown';
   unmappedActivities?: readonly string[];
+  reservationScopeProven?: boolean;
+  scopeVerified?: boolean;
+  artifactRef?: string;
+  finalizedReceipt?: FinalizedFolioReceipt;
 };
+
+export type FinalizedFolioReceipt = Pick<
+  HmsBrowserArtifactReceiptV1,
+  | 'artifactId'
+  | 'operationId'
+  | 'toolId'
+  | 'toolVersion'
+  | 'executionClass'
+  | 'inputClass'
+  | 'requestBranchId'
+  | 'operationOutcome'
+> & { requestBranchId: string };
 
 export type TrustedFolioDisclosure = {
   recipientClass: FolioReadData['disclosure']['recipientClass'];
   inquiryClass: FolioReadData['disclosure']['inquiryClass'];
 };
 
+export type FolioEvidenceBinding = {
+  runId: string;
+  readResultRef: string;
+  transportId: string;
+  threadId: string;
+  triggerMessageId: string;
+  candidateId: string;
+  reservationRef: string;
+  inputDigest: string;
+  requesterAuthorizationId: string;
+  releaseId: string;
+  requestBranchIds: readonly ('folio_summary' | 'deposit_ledger_summary')[];
+  captureBindingRef: string;
+  propertyCode: 'HRCEN';
+  confirmationToken: string;
+};
+
 function sha256Hex(input: string): string {
   return createHash('sha256').update(input).digest('hex');
+}
+
+function canonicalJson(value: unknown): string {
+  if (value === undefined) return 'null';
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
+    .join(',')}}`;
 }
 
 function assertNotAborted(signal: AbortSignal): void {
@@ -195,8 +245,12 @@ export function buildDepositSummary(raw: {
 }
 
 /** Pull foliobalance / propertycurrency from grid rows or flat pageData. */
-export function parseFolioBalanceTransport(text: string): {
+export function parseFolioBalanceTransport(
+  text: string,
+  expectedConfirmationToken: string,
+): {
   envelopeRecognized: boolean;
+  reservationScopeProven: boolean;
   currency: string | null;
   totalBalance: string | null;
   rowsScanned: number;
@@ -217,6 +271,7 @@ export function parseFolioBalanceTransport(text: string): {
   if (!pageData) {
     return {
       envelopeRecognized: false,
+      reservationScopeProven: false,
       currency: null,
       totalBalance: null,
       rowsScanned: 0,
@@ -226,12 +281,32 @@ export function parseFolioBalanceTransport(text: string): {
   }
 
   const rows = gridDataRows(pageData);
+  const confirmationToken = expectedConfirmationToken.trim();
+  const pageConfirmation =
+    strOrEmpty(pageData.confirmationnumber) || strOrEmpty(pageData.confirmation);
+  const flatScopeProven = confirmationToken.length > 0 && pageConfirmation === confirmationToken;
+  const scopedRows = rows.filter((row) => {
+    const confirmation = strOrEmpty(row.confirmationnumber) || strOrEmpty(row.confirmation);
+    return confirmationToken.length > 0 && confirmation === confirmationToken;
+  });
+  if (scopedRows.length === 0 && !flatScopeProven) {
+    return {
+      envelopeRecognized: true,
+      reservationScopeProven: false,
+      currency: null,
+      totalBalance: null,
+      rowsScanned: Math.min(rows.length, FOLIO_READ_MAX_ROWS),
+      bytesObserved,
+      hasCardLeak,
+    };
+  }
+
   let currency: string | null = null;
   let totalBalance: string | null = null;
   let rowsScanned = 0;
   const currencies = new Set<string>();
 
-  for (const row of rows) {
+  for (const row of scopedRows) {
     rowsScanned += 1;
     if (rowsScanned > FOLIO_READ_MAX_ROWS) break;
     const bal =
@@ -246,13 +321,13 @@ export function parseFolioBalanceTransport(text: string): {
     }
   }
 
-  if (totalBalance == null) {
+  if (totalBalance == null && flatScopeProven) {
     totalBalance = normalizeMoney(pageData.foliobalance);
   }
-  if (currency == null) {
+  if (currency == null && flatScopeProven) {
     currency = normalizeCurrency(pageData.propertycurrency) ?? normalizeCurrency(pageData.currency);
   }
-  const fields = pageData.fields;
+  const fields = flatScopeProven ? pageData.fields : null;
   if (fields && typeof fields === 'object') {
     const f = fields as Record<string, unknown>;
     if (totalBalance == null) totalBalance = normalizeMoney(f.foliobalance);
@@ -262,6 +337,7 @@ export function parseFolioBalanceTransport(text: string): {
   if (currencies.size > 1) {
     return {
       envelopeRecognized: true,
+      reservationScopeProven: true,
       currency: null,
       totalBalance: null,
       rowsScanned: Math.max(rowsScanned, totalBalance != null ? 1 : 0),
@@ -272,6 +348,7 @@ export function parseFolioBalanceTransport(text: string): {
 
   return {
     envelopeRecognized: true,
+    reservationScopeProven: true,
     currency,
     totalBalance,
     rowsScanned: Math.max(rowsScanned, totalBalance != null ? 1 : 0),
@@ -644,10 +721,51 @@ function assertFolioAuth(
   }
 }
 
+function finalizedFolioReceipt(
+  session: { lastReceipt?: () => HmsBrowserArtifactReceiptV1 | null },
+  auditSpec: HmsBrowserAuditSpec | undefined,
+  requestBranchId: string,
+): FinalizedFolioReceipt | null {
+  if (!auditSpec || typeof session.lastReceipt !== 'function') return null;
+  let receipt: HmsBrowserArtifactReceiptV1 | null;
+  try {
+    receipt = session.lastReceipt();
+  } catch {
+    return null;
+  }
+  if (
+    !receipt ||
+    receipt.artifactState !== 'complete' ||
+    typeof receipt.artifactId !== 'string' ||
+    receipt.artifactId.length === 0 ||
+    receipt.operationId !== auditSpec.operationId ||
+    receipt.toolId !== auditSpec.toolId ||
+    receipt.toolVersion !== auditSpec.toolVersion ||
+    receipt.executionClass !== auditSpec.executionClass ||
+    receipt.inputClass !== auditSpec.inputClass ||
+    receipt.requestBranchId !== requestBranchId ||
+    receipt.operationOutcome !== 'succeeded'
+  ) {
+    return null;
+  }
+  return {
+    artifactId: receipt.artifactId,
+    operationId: receipt.operationId,
+    toolId: receipt.toolId,
+    toolVersion: receipt.toolVersion,
+    executionClass: receipt.executionClass,
+    inputClass: receipt.inputClass,
+    requestBranchId,
+    operationOutcome: receipt.operationOutcome,
+  };
+}
+
 function emptyEvidence(
   observedAt: string,
   sourceSeed: string,
+  extras?: { artifactRefs?: readonly string[]; scopeVerified?: boolean },
 ): Extract<ToolResult<FolioReadData>['evidence'], { kind: 'hms' }> {
+  const artifactRefs = extras?.artifactRefs ? [...new Set(extras.artifactRefs)] : [];
   return {
     kind: 'hms',
     id: randomUUID(),
@@ -658,6 +776,8 @@ function emptyEvidence(
     expiresAt: new Date(Date.parse(observedAt) + FOLIO_READ_MAX_SOURCE_AGE_MS).toISOString(),
     claimKeys: [],
     sourceHash: sha256Hex(sourceSeed),
+    ...(artifactRefs.length > 0 ? { artifactRef: artifactRefs[0], artifactRefs } : {}),
+    ...(extras?.scopeVerified === undefined ? {} : { scopeVerified: extras.scopeVerified }),
   };
 }
 
@@ -778,9 +898,14 @@ export function mergeFolioEvidence(
     'balance',
     'deposits',
   ],
+  binding?: FolioEvidenceBinding,
 ): ToolResult<FolioReadData> {
   const observedAt = steps.find((s) => s.observedAt)?.observedAt ?? new Date().toISOString();
-  const evidence = emptyEvidence(observedAt, JSON.stringify(steps.map((s) => s.evidenceId)));
+  const evidence = emptyEvidence(
+    observedAt,
+    JSON.stringify(steps.map((s) => s.evidenceId)),
+    binding ? { scopeVerified: false } : undefined,
+  );
 
   if (!trustedDisclosure) {
     return {
@@ -788,6 +913,72 @@ export function mergeFolioEvidence(
       draftReady: false,
       data: {} as FolioReadData,
       unresolvedFields: ['FOLIO_TRUSTED_DISCLOSURE_REQUIRED'],
+      evidence,
+    };
+  }
+
+  const successfulSteps = steps.filter((step) => step.status === 'ok');
+  const artifactRefs = [
+    ...new Set(
+      successfulSteps.flatMap((step) =>
+        [step.artifactRef, step.finalizedReceipt?.artifactId].filter(
+          (ref): ref is string => typeof ref === 'string' && ref.length > 0,
+        ),
+      ),
+    ),
+  ];
+  const bindingFields = binding
+    ? [
+        binding.runId,
+        binding.readResultRef,
+        binding.transportId,
+        binding.threadId,
+        binding.triggerMessageId,
+        binding.candidateId,
+        binding.reservationRef,
+        binding.inputDigest,
+        binding.requesterAuthorizationId,
+        binding.releaseId,
+        binding.captureBindingRef,
+        binding.propertyCode,
+        binding.confirmationToken,
+      ]
+    : [];
+  const bindingValid =
+    !binding ||
+    (bindingFields.every((field) => typeof field === 'string' && field.trim().length > 0) &&
+      Array.isArray(binding.requestBranchIds) &&
+      binding.requestBranchIds.length > 0 &&
+      binding.captureBindingRef === binding.readResultRef);
+  const receiptBound = (step: FolioBalanceKernelResult | DepositSummaryKernelResult): boolean => {
+    if (!binding || step.status !== 'ok') return true;
+    const receipt = step.finalizedReceipt;
+    const expectedBranch = Object.prototype.hasOwnProperty.call(step, 'totalBalance')
+      ? 'folio_summary'
+      : 'deposit_ledger_summary';
+    return (
+      step.scopeVerified === true &&
+      typeof step.artifactRef === 'string' &&
+      receipt?.artifactId === step.artifactRef &&
+      receipt.operationId === binding.runId &&
+      receipt.toolId === 'hms_read_folio' &&
+      receipt.toolVersion === '1.0.0' &&
+      receipt.executionClass === 'normal' &&
+      receipt.inputClass === 'authorized_exact' &&
+      receipt.requestBranchId === expectedBranch &&
+      binding.requestBranchIds.includes(expectedBranch) &&
+      receipt.operationOutcome === 'succeeded'
+    );
+  };
+  if (binding && (!bindingValid || successfulSteps.some((step) => !receiptBound(step)))) {
+    return {
+      status: 'manual_required',
+      draftReady: false,
+      data: {} as FolioReadData,
+      unresolvedFields: [
+        ...(bindingValid ? [] : ['FOLIO_EVIDENCE_BINDING_INVALID']),
+        ...(bindingValid ? ['FOLIO_FINALIZED_RECEIPT_REQUIRED'] : []),
+      ],
       evidence,
     };
   }
@@ -941,7 +1132,32 @@ export function mergeFolioEvidence(
       evidence: {
         ...evidence,
         claimKeys: ['folio_deposit_summary'],
-        sourceHash: sha256Hex(JSON.stringify(data)),
+        sourceHash: sha256Hex(
+          canonicalJson({
+            binding: binding ?? null,
+            requestedSections: [...requested],
+            steps: steps.map((step) => ({
+              status: step.status,
+              currency: step.currency,
+              totalBalance: 'totalBalance' in step ? step.totalBalance : null,
+              depositSummary: 'depositSummary' in step ? step.depositSummary : null,
+              evidenceId: step.evidenceId,
+              blocker: step.blocker,
+              scopeVerified: step.scopeVerified ?? false,
+              artifactRef: step.artifactRef ?? null,
+              finalizedReceipt: step.finalizedReceipt ?? null,
+              completeness: 'completeness' in step ? (step.completeness ?? null) : null,
+              unmappedActivities:
+                'unmappedActivities' in step ? (step.unmappedActivities ?? []) : [],
+              observedAt: step.observedAt ?? null,
+            })),
+            data,
+          }),
+        ),
+        ...(artifactRefs.length > 0 ? { artifactRef: artifactRefs[0], artifactRefs } : {}),
+        ...(binding && successfulSteps.length > 0
+          ? { scopeVerified: successfulSteps.every((step) => step.scopeVerified === true) }
+          : {}),
       },
     };
   } catch {
@@ -987,13 +1203,20 @@ export function createLiveFolioReadDriver(input: LiveFolioReadDriverInput): Live
 
       const observedAt = new Date();
       const started = observedAt.getTime();
+      const auditSpec = input.auditSpecFor?.({ branchId: 'folio_summary' });
       const session = await runtime.openReadSession({
         transportId,
         signal,
         allowUnstarted: true,
-        auditSpec: input.auditSpecFor?.({ branchId: 'folio_summary' }),
+        auditSpec,
         sessionAuthorization: authorization,
       });
+      let sessionClosed = false;
+      const closeSession = async () => {
+        if (sessionClosed) return;
+        sessionClosed = true;
+        await session.close();
+      };
 
       try {
         assertNotAborted(signal);
@@ -1019,7 +1242,7 @@ export function createLiveFolioReadDriver(input: LiveFolioReadDriverInput): Live
         }
 
         assertNotAborted(signal);
-        const parsed = parseFolioBalanceTransport(text);
+        const parsed = parseFolioBalanceTransport(text, expectedConfirmationToken);
         const durationMs = Date.now() - started;
         if (parsed.hasCardLeak) {
           return {
@@ -1034,6 +1257,20 @@ export function createLiveFolioReadDriver(input: LiveFolioReadDriverInput): Live
             rowsScanned: parsed.rowsScanned,
           };
         }
+        if (!parsed.reservationScopeProven) {
+          return {
+            status: 'manual_required',
+            currency: null,
+            totalBalance: null,
+            evidenceId: null,
+            blocker: FOLIO_RESERVATION_SCOPE_BLOCKER,
+            observedAt: observedAt.toISOString(),
+            durationMs,
+            bytesObserved: parsed.bytesObserved,
+            rowsScanned: parsed.rowsScanned,
+            reservationScopeProven: false,
+          };
+        }
         if (!parsed.envelopeRecognized || parsed.totalBalance == null || parsed.currency == null) {
           return {
             status: 'unverified_negative',
@@ -1045,6 +1282,7 @@ export function createLiveFolioReadDriver(input: LiveFolioReadDriverInput): Live
             durationMs,
             bytesObserved: parsed.bytesObserved,
             rowsScanned: parsed.rowsScanned,
+            reservationScopeProven: parsed.reservationScopeProven,
           };
         }
         if (
@@ -1062,9 +1300,27 @@ export function createLiveFolioReadDriver(input: LiveFolioReadDriverInput): Live
             durationMs,
             bytesObserved: parsed.bytesObserved,
             rowsScanned: parsed.rowsScanned,
+            reservationScopeProven: parsed.reservationScopeProven,
           };
         }
 
+        await closeSession();
+        const finalizedReceipt = finalizedFolioReceipt(session, auditSpec, 'folio_summary');
+        if (auditSpec && !finalizedReceipt) {
+          return {
+            status: 'manual_required',
+            currency: null,
+            totalBalance: null,
+            evidenceId: null,
+            blocker: 'FOLIO_FINALIZED_RECEIPT_INVALID',
+            observedAt: observedAt.toISOString(),
+            durationMs,
+            bytesObserved: parsed.bytesObserved,
+            rowsScanned: parsed.rowsScanned,
+            reservationScopeProven: true,
+            scopeVerified: false,
+          };
+        }
         return {
           status: 'ok',
           currency: parsed.currency,
@@ -1075,9 +1331,14 @@ export function createLiveFolioReadDriver(input: LiveFolioReadDriverInput): Live
           durationMs,
           bytesObserved: parsed.bytesObserved,
           rowsScanned: Math.max(parsed.rowsScanned, 1),
+          reservationScopeProven: true,
+          scopeVerified: true,
+          ...(finalizedReceipt
+            ? { artifactRef: finalizedReceipt.artifactId, finalizedReceipt }
+            : {}),
         };
       } finally {
-        await session.close();
+        await closeSession();
       }
     },
 
@@ -1092,13 +1353,20 @@ export function createLiveFolioReadDriver(input: LiveFolioReadDriverInput): Live
 
       const observedAt = new Date();
       const started = observedAt.getTime();
+      const auditSpec = input.auditSpecFor?.({ branchId: 'deposit_ledger_summary' });
       const session = await runtime.openReadSession({
         transportId,
         signal,
         allowUnstarted: true,
-        auditSpec: input.auditSpecFor?.({ branchId: 'deposit_ledger_summary' }),
+        auditSpec,
         sessionAuthorization: authorization,
       });
+      let sessionClosed = false;
+      const closeSession = async () => {
+        if (sessionClosed) return;
+        sessionClosed = true;
+        await session.close();
+      };
 
       try {
         assertNotAborted(signal);
@@ -1219,6 +1487,29 @@ export function createLiveFolioReadDriver(input: LiveFolioReadDriverInput): Live
           ? [...parsed.unmappedActivities, 'DEPOSIT_LEDGER_DATE_SCOPE_TRUNCATED']
           : parsed.unmappedActivities;
 
+        await closeSession();
+        const finalizedReceipt = finalizedFolioReceipt(
+          session,
+          auditSpec,
+          'deposit_ledger_summary',
+        );
+        if (auditSpec && !finalizedReceipt) {
+          return {
+            status: 'manual_required',
+            currency: null,
+            depositSummary: null,
+            evidenceId: null,
+            blocker: 'FOLIO_FINALIZED_RECEIPT_INVALID',
+            observedAt: observedAt.toISOString(),
+            durationMs,
+            bytesObserved: totalBytesObserved,
+            rowsScanned: parsed.rowsScanned,
+            reservationScopeProven: true,
+            scopeVerified: false,
+            completeness,
+            unmappedActivities,
+          };
+        }
         return {
           status: 'ok',
           currency: parsed.currency,
@@ -1231,9 +1522,14 @@ export function createLiveFolioReadDriver(input: LiveFolioReadDriverInput): Live
           rowsScanned: parsed.rowsScanned,
           completeness,
           unmappedActivities,
+          reservationScopeProven: true,
+          scopeVerified: true,
+          ...(finalizedReceipt
+            ? { artifactRef: finalizedReceipt.artifactId, finalizedReceipt }
+            : {}),
         };
       } finally {
-        await session.close();
+        await closeSession();
       }
     },
   };

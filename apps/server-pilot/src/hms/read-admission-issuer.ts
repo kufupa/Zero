@@ -66,6 +66,7 @@ export type IssueMailboxReadAdmissionInput = ReadAdmissionReleaseInput & {
   documentRef?: string;
   format?: 'text' | 'artifact';
   quoteRequestRef?: string;
+  captureBindingRef?: string;
 };
 
 export type IssuedMailboxReadAdmission = IssuedReadAdmission & {
@@ -433,6 +434,7 @@ export async function issueReadAdmissionFromMailbox(
     triggerMessageId: trigger.triggerMessageId,
     releaseId: input.releaseId,
     requestBranchId: input.requestBranchId,
+    ...(input.captureBindingRef ? { captureBindingRef: input.captureBindingRef } : {}),
   };
   let issued: IssuedReadAdmission;
   if (input.toolId === 'documents_list_existing') {

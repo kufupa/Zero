@@ -128,6 +128,8 @@ export interface ReadExecutionContext {
   propertyReadLockConnection?: PropertyReadConnection;
   /** Production worker paths must carry a trusted release/input/capture bind. */
   requireAdmissionBinding?: boolean;
+  /** Private durable result scope used by capture-required admitted reads. */
+  readResultRef?: string;
   /** Production worker paths must carry server-authenticated current app access. */
   requireCurrentAppAccess?: boolean;
   currentAppAccessProof?: CurrentAppAccessProof;
@@ -158,6 +160,7 @@ const executionKeys = new Set([
   'propertyReadLock',
   'propertyReadLockConnection',
   'requireAdmissionBinding',
+  'readResultRef',
   'requireCurrentAppAccess',
   'currentAppAccessProof',
   'quoteRequests',
@@ -192,6 +195,7 @@ function validExecutionContext(value: unknown): value is ReadExecutionContext {
     typeof value.now === 'function' &&
     (value.requireAdmissionBinding === undefined ||
       typeof value.requireAdmissionBinding === 'boolean') &&
+    (value.readResultRef === undefined || typeof value.readResultRef === 'string') &&
     (value.requireCurrentAppAccess === undefined ||
       typeof value.requireCurrentAppAccess === 'boolean') &&
     (value.existingDocumentService === undefined ||
@@ -491,7 +495,10 @@ function assertContext(context: ReadExecutionContext, request: ReadRequest) {
     if (parsed.inputDigest !== readInputDigest(closedRequest)) {
       throw codedError('READ_INPUT_BINDING_MISMATCH', 'read input binding mismatch');
     }
-    if (parsed.captureRequired && parsed.captureBindingRef !== context.parentRef) {
+    if (
+      parsed.captureRequired &&
+      (!context.readResultRef || parsed.captureBindingRef !== context.readResultRef)
+    ) {
       throw codedError('READ_CAPTURE_BINDING_MISMATCH', 'read capture binding mismatch');
     }
     const expectedReservationRef =

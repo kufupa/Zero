@@ -401,10 +401,13 @@ export function assertReadAdmissionPlanBinding(input: {
 export type CandidateSessionInput = {
   transportId: string;
   threadId: string;
+  triggerMessageId?: string;
   lookupCandidates: readonly import('./thread-context.js').LookupCandidate[];
   signal: AbortSignal;
   /** AI run UUID — becomes HMS browser audit operationId when capture is enabled. */
   runId?: string;
+  /** Private durable result reference bound into audited browser capture. */
+  readResultRef?: string;
   /** Claimed-run lease; tools reserve durable read budget against it before I/O. */
   readFence?: AiRunFence;
   readPlanKind?: CandidateReadPlanKind;
@@ -512,6 +515,7 @@ export function createLiveHmsCandidateSessionFactory(
       assertFindHandlerBound,
       buildHmsQuoteSessionAuthorization,
       assertQuoteHandlerBound,
+      buildHmsFolioSessionAuthorization,
       placeholderDigest,
     } = await import('../hms/active-read-runtime.js');
     const {
@@ -594,7 +598,10 @@ export function createLiveHmsCandidateSessionFactory(
           failureClass: 'AUTH' as const,
         });
       }
-      if (readAdmission.captureRequired && readAdmission.captureBindingRef !== input.runId) {
+      if (
+        readAdmission.captureRequired &&
+        (!input.readResultRef || readAdmission.captureBindingRef !== input.readResultRef)
+      ) {
         throw Object.assign(new Error('read capture admission does not match the run fence'), {
           failureClass: 'AUTH' as const,
         });
@@ -730,14 +737,10 @@ export function createLiveHmsCandidateSessionFactory(
                 branchId === 'folio_summary'
                   ? buildLiveFolioReadManifest(CENTURION_HMS_PRODUCTION_ORIGIN)
                   : buildLiveDepositLedgerManifest(CENTURION_HMS_PRODUCTION_ORIGIN);
-              const authorization = {
+              const authorization = buildHmsFolioSessionAuthorization({
                 operationId,
-                toolId: 'hms_read_folio' as const,
-                discoveryOperationId: branch.discoveryOperationId,
-                releaseId: folioRelease.releaseId,
-                requestBranchId: branch.id,
+                requestBranchId: branchId,
                 manifest,
-                manifestSha256: branch.manifestSha256,
                 roleProofPath: config.roleProofPath,
                 roleProofSha256: folioRelease.roleProofSha256 ?? placeholderDigest('folio-role'),
                 credentialVersionHmacSha256:
@@ -746,7 +749,8 @@ export function createLiveHmsCandidateSessionFactory(
                 privateDigestKeyVersion: folioRelease.privateDigestKeyVersion ?? 'v1',
                 sourceRevision: folioRelease.sourceRevision ?? sourceRevision,
                 expiresAt: expiresAt.toISOString(),
-              };
+                release: folioRelease,
+              });
               createReadToolHandler(folioRelease, authorization);
               if (branchId === 'folio_summary') {
                 return driver.observeFolioBalance(authorization, child, signal);
@@ -784,6 +788,28 @@ export function createLiveHmsCandidateSessionFactory(
                 inquiryClass: 'other',
               },
               sections,
+              {
+                runId: operationId,
+                readResultRef: input.readResultRef ?? '',
+                transportId: input.transportId,
+                threadId: input.threadId,
+                triggerMessageId: input.triggerMessageId ?? '',
+                candidateId,
+                reservationRef: readAdmission.reservationRef ?? '',
+                inputDigest: readAdmission.inputDigest,
+                requesterAuthorizationId: readAdmission.requesterAuthorizationId,
+                releaseId: readAdmission.releaseId,
+                requestBranchIds:
+                  sections.includes('balance') &&
+                  (sections.includes('deposits') || sections.includes('transactions'))
+                    ? ['folio_summary', 'deposit_ledger_summary']
+                    : sections.includes('balance')
+                      ? ['folio_summary']
+                      : ['deposit_ledger_summary'],
+                captureBindingRef: readAdmission.captureBindingRef ?? input.readResultRef ?? '',
+                propertyCode: 'HRCEN',
+                confirmationToken: candidate.value,
+              },
             );
           }
         : undefined;
@@ -1621,6 +1647,14 @@ async function executeProductionReadTool(input: {
       failureClass: 'AUTH' as const,
     });
   }
+  if (
+    admission.captureRequired &&
+    (!input.run.readResultRef || admission.captureBindingRef !== input.run.readResultRef)
+  ) {
+    throw Object.assign(new Error('read capture admission does not match private result scope'), {
+      failureClass: 'AUTH' as const,
+    });
+  }
   const currentAppAccessProof = await assertCurrentReadAdmissionAuthority({
     run: input.run,
     request: request as unknown as Record<string, unknown>,
@@ -1695,9 +1729,11 @@ async function executeProductionReadTool(input: {
     const session = await sessionFactory({
       transportId: input.run.transportId,
       threadId: input.run.threadId,
+      triggerMessageId: input.run.triggerMessageId,
       lookupCandidates: [],
       signal: input.signal,
       runId: input.run.id,
+      readResultRef: input.run.readResultRef ?? undefined,
       readFence: input.fence,
       readPlanKind: 'reservation',
       readOnly: true,
@@ -1772,8 +1808,12 @@ async function executeProductionReadTool(input: {
                   observedAt: legacy.evidence.observedAt,
                   sourceUpdatedAt: null,
                   expiresAt: legacy.evidence.expiresAt,
-                  scopeVerified: true,
+                  scopeVerified: legacy.evidence.scopeVerified ?? legacy.status === 'ok',
                   artifactRef: legacy.evidence.artifactRef ?? null,
+                  ...(legacy.evidence.artifactRefs
+                    ? { artifactRefs: legacy.evidence.artifactRefs }
+                    : {}),
+                  sourceHash: legacy.evidence.sourceHash,
                 },
               ]
             : [],
@@ -1848,6 +1888,7 @@ async function executeProductionReadTool(input: {
       budget: { total: 0, limit: 3 },
       now: () => new Date(),
       requireAdmissionBinding: true,
+      readResultRef: input.run.readResultRef ?? '',
       requireCurrentAppAccess: true,
       currentAppAccessProof,
       propertyReadLock,
@@ -2035,9 +2076,11 @@ async function executeProductionReadTool(input: {
   const session = await sessionFactory({
     transportId: input.run.transportId,
     threadId: input.run.threadId,
+    triggerMessageId: input.run.triggerMessageId,
     lookupCandidates: [candidate],
     signal: input.signal,
     runId: input.run.id,
+    readResultRef: input.run.readResultRef ?? undefined,
     readFence: input.fence,
     readPlanKind: 'reservation',
     readOnly: true,
@@ -2198,8 +2241,10 @@ async function executeProductionReadTool(input: {
           observedAt: legacy.evidence.observedAt,
           sourceUpdatedAt: null,
           expiresAt: legacy.evidence.expiresAt,
-          scopeVerified: true,
+          scopeVerified: legacy.evidence.scopeVerified === true,
           artifactRef: legacy.evidence.artifactRef ?? null,
+          ...(legacy.evidence.artifactRefs ? { artifactRefs: legacy.evidence.artifactRefs } : {}),
+          sourceHash: legacy.evidence.sourceHash,
         },
       ],
       page: null,
@@ -2251,6 +2296,7 @@ async function executeProductionReadTool(input: {
     budget: { total: 0, limit: 3 },
     now: () => new Date(),
     requireAdmissionBinding: true,
+    readResultRef: input.run.readResultRef ?? '',
     requireCurrentAppAccess: true,
     currentAppAccessProof,
     propertyReadLock,

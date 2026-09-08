@@ -288,6 +288,7 @@ async function issueAndEnqueueQuote(
   releaseId: string,
   suffix: string,
 ) {
+  const readResultRef = `u7-quote-db-${suffix}-${randomUUID()}`;
   const issued = await issueReadAdmissionFromMailbox({
     db,
     userId: CENTURION_USER_ID,
@@ -297,8 +298,8 @@ async function issueAndEnqueueQuote(
     releaseId,
     requestBranchId: 'quote_availability_search',
     detail: 'detail',
+    captureBindingRef: readResultRef,
   });
-  const readResultRef = `u7-quote-db-${suffix}-${randomUUID()}`;
   const run = await enqueueAiRun(
     {
       ...context,
@@ -351,12 +352,15 @@ describe('U7 normal audited quote runtime with guarded PG16 lock', () => {
         runtime: fixture.runtime,
         activeReadState,
       });
+      const runId = randomUUID();
+      const readResultRef = `u7-quote-session-${randomUUID()}`;
       const session = await factory({
         transportId: 'transport-centurion',
         threadId: 'u7-quote-db-thread',
         lookupCandidates: [],
         signal: new AbortController().signal,
-        runId: randomUUID(),
+        runId,
+        readResultRef,
         readOnly: true,
         readToolId: 'hms_quote_stay',
         readAdmission: {
@@ -364,8 +368,8 @@ describe('U7 normal audited quote runtime with guarded PG16 lock', () => {
           requestBranchId: 'quote_availability_search',
           requesterAuthorizationId: 'access-u7-quote',
           inputDigest: '0'.repeat(64),
-          captureRequired: false,
-          captureBindingRef: null,
+          captureRequired: true,
+          captureBindingRef: readResultRef,
           reservationRef: null,
           reservationRefIssuedAt: null,
           reservationRefExpiresAt: null,
@@ -482,9 +486,23 @@ describe('U7 normal audited quote runtime with guarded PG16 lock', () => {
             },
           });
           expect(
-            (stored?.readResult as { evidence?: Array<{ artifactRef?: string | null }> } | null)
-              ?.evidence?.[0]?.artifactRef,
+            (
+              stored?.readResult as {
+                evidence?: Array<{ artifactRef?: string | null; scopeVerified?: boolean }>;
+              } | null
+            )?.evidence?.[0]?.artifactRef,
           ).toMatch(/^u7-quote-artifact-/);
+          expect(
+            (stored?.readResult as { evidence?: Array<{ scopeVerified?: boolean }> } | null)
+              ?.evidence?.[0]?.scopeVerified,
+          ).toBe(true);
+          expect(
+            (
+              stored?.readResult as {
+                evidence?: Array<{ sourceHash?: string; artifactRef?: string | null }>;
+              } | null
+            )?.evidence?.[0]?.sourceHash,
+          ).toMatch(/^[a-f0-9]{64}$/);
           const receipt = await readAiRunReceipt(
             {
               readResultRef,
@@ -501,9 +519,23 @@ describe('U7 normal audited quote runtime with guarded PG16 lock', () => {
             scopeRef: normalized.request.quoteRequestRef,
           });
           expect(
-            (receipt?.result as { evidence?: Array<{ artifactRef?: string | null }> } | null)
-              ?.evidence?.[0]?.artifactRef,
+            (
+              receipt?.result as {
+                evidence?: Array<{ artifactRef?: string | null; scopeVerified?: boolean }>;
+              } | null
+            )?.evidence?.[0]?.artifactRef,
           ).toMatch(/^u7-quote-artifact-/);
+          expect(
+            (receipt?.result as { evidence?: Array<{ scopeVerified?: boolean }> } | null)
+              ?.evidence?.[0]?.scopeVerified,
+          ).toBe(true);
+          expect(
+            (
+              receipt?.result as {
+                evidence?: Array<{ sourceHash?: string; artifactRef?: string | null }>;
+              } | null
+            )?.evidence?.[0]?.sourceHash,
+          ).toMatch(/^[a-f0-9]{64}$/);
         } finally {
           clearCachedActiveReadRuntimeForTests();
         }
@@ -603,6 +635,7 @@ describe('U7 normal audited quote runtime with guarded PG16 lock', () => {
             releaseId,
             requestBranchId: 'quote_availability_search',
             detail: 'detail',
+            captureBindingRef: `u7-quote-db-second-${randomUUID()}`,
           });
           expect(second.quoteRequestRef).not.toBe(first.issued.quoteRequestRef);
           const { admission: _secondAdmission, ...secondClosedRequest } = second.readRequest;

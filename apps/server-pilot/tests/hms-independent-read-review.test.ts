@@ -10,6 +10,7 @@ import { readResultSchema } from '../src/hms/read-service-contracts.js';
 import { readInputDigest } from '../src/hms/read-service-contracts.js';
 import { requireHmsReadRuntimeConfig } from '../src/env.js';
 import { describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
 
 const observedAt = '2026-09-07T12:00:00.000Z';
 const expiresAt = '2026-09-07T12:05:00.000Z';
@@ -265,6 +266,24 @@ describe('U8 independent review RED contracts', () => {
   });
 
   it('binds live session authorization to the requested release branch', () => {
+    const manifest = {
+      rules: [
+        {
+          id: 'review-rule',
+          origin: 'https://example.test',
+          method: 'GET' as const,
+          path: '/review',
+          resourceTypes: ['document' as const],
+          fixedQuery: {},
+          variableQuery: {},
+          fixedBody: {},
+          variableBody: {},
+          maxBodyBytes: 4096,
+          redirectPolicy: 'same-reviewed-chain' as const,
+        },
+      ],
+    };
+    const manifestSha256 = createHash('sha256').update(JSON.stringify(manifest)).digest('hex');
     const release = {
       evidenceKind: 'hms' as const,
       releaseId: 'release-red',
@@ -272,12 +291,12 @@ describe('U8 independent review RED contracts', () => {
         {
           id: 'guest_stay_search',
           discoveryOperationId: 'guest_stay_search' as const,
-          manifestSha256: 'a'.repeat(64),
+          manifestSha256,
         },
         {
           id: 'requested_branch',
           discoveryOperationId: 'guest_stay_search' as const,
-          manifestSha256: 'b'.repeat(64),
+          manifestSha256,
         },
       ],
       roleProofSha256: 'a'.repeat(64),
@@ -288,7 +307,7 @@ describe('U8 independent review RED contracts', () => {
     } as never;
     const authorizationInput = {
       operationId: 'operation-red',
-      manifest: {} as never,
+      manifest,
       roleProofPath: '/private/red-role-proof.json',
       roleProofSha256: 'a'.repeat(64),
       credentialVersionHmacSha256: 'a'.repeat(64),

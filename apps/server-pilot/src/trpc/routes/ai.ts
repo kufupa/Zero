@@ -254,6 +254,7 @@ export const aiRouter = tRouter({
       const db = getDb();
       const isQuote = input.toolId === 'hms_quote_stay';
       const release = isQuote ? await activeQuoteAdmission() : await activeFindAdmission();
+      const readResultRef = `hms-read-${randomUUID()}`;
       const issued = await issueReadAdmissionFromMailbox({
         db,
         userId: ctx.sessionUser.id,
@@ -261,9 +262,9 @@ export const aiRouter = tRouter({
         threadId: input.threadId,
         toolId: input.toolId,
         ...(isQuote ? { quoteRequestRef: input.quoteRequestRef, detail: input.detail } : {}),
+        captureBindingRef: readResultRef,
         ...release,
       });
-      const readResultRef = `hms-read-${randomUUID()}`;
       const run = await enqueueAiRun(
         {
           transportId: ctx.activeTransportId,
@@ -312,6 +313,7 @@ export const aiRouter = tRouter({
     .mutation(async ({ input, ctx }) => {
       const db = getDb();
       const release = await activeFindAdmission();
+      const readResultRef = `hms-read-${randomUUID()}`;
       const issued = await issueReadAdmissionFromMailbox({
         db,
         userId: ctx.sessionUser.id,
@@ -321,9 +323,9 @@ export const aiRouter = tRouter({
         parentReadResultRef: input.findResultRef,
         sections: input.sections,
         detail: input.detail,
+        captureBindingRef: readResultRef,
         ...release,
       });
-      const readResultRef = `hms-read-${randomUUID()}`;
       const run = await enqueueAiRun(
         {
           transportId: ctx.activeTransportId,
@@ -367,6 +369,7 @@ export const aiRouter = tRouter({
     .mutation(async ({ input, ctx }) => {
       const db = getDb();
       const release = await activeFolioAdmission(input.sections);
+      const readResultRef = `hms-read-${randomUUID()}`;
       const issued = await issueReadAdmissionFromMailbox({
         db,
         userId: ctx.sessionUser.id,
@@ -375,9 +378,9 @@ export const aiRouter = tRouter({
         toolId: 'hms_read_folio',
         parentReadResultRef: input.findResultRef,
         sections: input.sections,
+        captureBindingRef: readResultRef,
         ...release,
       });
-      const readResultRef = `hms-read-${randomUUID()}`;
       const run = await enqueueAiRun(
         {
           transportId: ctx.activeTransportId,

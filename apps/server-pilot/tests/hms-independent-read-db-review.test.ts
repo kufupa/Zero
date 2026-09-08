@@ -232,6 +232,7 @@ async function readRunInput(
   context: Awaited<ReturnType<typeof seededMailContext>>,
   suffix: string,
 ) {
+  const readResultRef = `receipt-red-${suffix}`;
   const issued = await issueReadAdmissionFromMailbox({
     db: getDb(),
     userId: CENTURION_USER_ID,
@@ -240,6 +241,7 @@ async function readRunInput(
     toolId: 'hms_find_reservation',
     releaseId: 'release-red',
     requestBranchId: 'guest_stay_search',
+    captureBindingRef: readResultRef,
   });
   return {
     ...context,
@@ -250,7 +252,7 @@ async function readRunInput(
     executorLane: 'hms' as const,
     readRequest: issued.readRequest,
     readAdmissionIssuer: issued.issuer,
-    readResultRef: `receipt-red-${suffix}`,
+    readResultRef,
   };
 }
 
@@ -266,6 +268,7 @@ async function contextReadRunInput(
 ) {
   const db = getDb();
   const parentRef = `parent-red-${suffix}-${randomUUID()}`;
+  const readResultRef = `receipt-red-${suffix}`;
   const find = await issueReadAdmissionFromMailbox({
     db,
     userId: CENTURION_USER_ID,
@@ -274,6 +277,7 @@ async function contextReadRunInput(
     toolId: 'hms_find_reservation',
     releaseId: 'release-red',
     requestBranchId: 'guest_stay_search',
+    captureBindingRef: parentRef,
   });
   const parent = await enqueueAiRun(
     {
@@ -308,6 +312,7 @@ async function contextReadRunInput(
     detail: 'summary',
     releaseId: 'release-red',
     requestBranchId: 'guest_stay_search',
+    captureBindingRef: readResultRef,
   });
   return {
     ...context,
@@ -336,7 +341,7 @@ async function contextReadRunInput(
       },
     },
     readAdmissionIssuer: issued.issuer,
-    readResultRef: `receipt-red-${suffix}`,
+    readResultRef,
   };
 }
 

@@ -188,6 +188,7 @@ describe('trusted quote completeness contract', () => {
         triggerMessageId: 'message-quote',
         releaseId: 'release-quote',
         requestBranchId: 'quote_availability_search',
+        captureBindingRef: 'read-result-quote',
       },
       now: new Date('2026-09-08T00:00:00.000Z'),
       toolId: 'hms_quote_stay',
@@ -195,6 +196,8 @@ describe('trusted quote completeness contract', () => {
       detail: 'detail',
     });
     expect(issued.admission.reservationRef).toBeNull();
+    expect(issued.admission.captureRequired).toBe(true);
+    expect(issued.admission.captureBindingRef).toBe('read-result-quote');
     expect(issued.readRequest).toMatchObject({
       toolId: 'hms_quote_stay',
       quoteRequestRef: normalized.request.quoteRequestRef,

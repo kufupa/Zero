@@ -14,6 +14,9 @@ export type HmsEvidenceRef = {
   sourceHash: string;
   /** Private durable join to the finalized browser capture, when audited. */
   artifactRef?: string;
+  /** All finalized branch artifacts joined by one typed result. */
+  artifactRefs?: string[];
+  scopeVerified?: boolean;
 };
 
 export type MailEvidenceRef = {
@@ -83,6 +86,8 @@ export const HmsEvidenceRefSchema = z
     claimKeys: z.array(z.string().min(1)).max(64),
     sourceHash: sha256Hex,
     artifactRef: z.string().min(1).optional(),
+    artifactRefs: z.array(z.string().min(1)).min(1).optional(),
+    scopeVerified: z.boolean().optional(),
   })
   .strict();
 

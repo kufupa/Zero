@@ -328,10 +328,11 @@ describe('U17 finance completeness RED contracts', () => {
 
   it('retains pre-clamp row observations for oversized folio input', () => {
     const rows = Array.from({ length: FOLIO_READ_MAX_ROWS + 1 }, (_, index) => ({
+      confirmationnumber: CONFIRMATION,
       foliobalance: index === 0 ? '75.00' : '0.01',
       propertycurrency: 'ZAR',
     }));
-    const parsed = parseFolioBalanceTransport(envelope(rows));
+    const parsed = parseFolioBalanceTransport(envelope(rows), CONFIRMATION);
 
     expect(parsed.rowsScanned).toBeGreaterThan(FOLIO_READ_MAX_ROWS);
   });
@@ -340,11 +341,13 @@ describe('U17 finance completeness RED contracts', () => {
     const parsed = parseFolioBalanceTransport(
       envelope([
         {
+          confirmationnumber: CONFIRMATION,
           foliobalance: '75.00',
           propertycurrency: 'ZAR',
           boundedPadding: 'x'.repeat(FOLIO_READ_MAX_BYTES),
         },
       ]),
+      CONFIRMATION,
     );
 
     expect(parsed.bytesObserved).toBeGreaterThan(FOLIO_READ_MAX_BYTES);

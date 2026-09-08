@@ -19,6 +19,7 @@ import {
 import { FOLIO_READ_IMPL_V1, createReadToolHandler } from '../src/hms/read-handler-index.js';
 import { aiWorkflowRun, mailboxAccess, mailThread, message } from '../src/db/schema/mail.js';
 import { CENTURION_USER_ID, MARTHA_USER_ID, TRANSPORT_ID } from '../src/db/seed.js';
+import { reviewedManifestSha256 } from '../src/hms/release-manifest-binding.js';
 import { resolveHmsSourceRevision } from '../src/hms/production-runtime.js';
 import { mergeFolioEvidence } from '../src/hms/live-folio-read-driver.js';
 import { runtimeFingerprintSha256 } from '../src/hms/evidence-runtime.js';
@@ -89,17 +90,27 @@ async function installRealFolioRelease(): Promise<{
   });
   const toolsetVersion = 'u17-finance-test-tools';
   const toolsetFingerprint = fingerprintReadToolRegistry();
-  const folioManifestSha256 = sha256Hex(
+  const folioManifestSha256 = reviewedManifestSha256(
     await readFile(
       join(process.cwd(), 'src/hms/request-manifests/hms_read_folio.folio.1.0.0.json'),
       'utf8',
     ),
+    {
+      toolId: 'hms_read_folio',
+      toolVersion: '1.0.0',
+      discoveryOperationId: 'folio_summary',
+    },
   );
-  const depositManifestSha256 = sha256Hex(
+  const depositManifestSha256 = reviewedManifestSha256(
     await readFile(
       join(process.cwd(), 'src/hms/request-manifests/hms_read_folio.deposit-ledger.1.0.0.json'),
       'utf8',
     ),
+    {
+      toolId: 'hms_read_folio',
+      toolVersion: '1.0.0',
+      discoveryOperationId: 'deposit_ledger_summary',
+    },
   );
   const digest = (label: string) => sha256Hex(`u17-finance-release:${label}`);
   const release = hmsPortfolioToolReleaseV2Schema.parse({
@@ -264,7 +275,7 @@ async function withReadOnlyWorkerEnv<T>(callback: () => Promise<T>): Promise<T> 
   }
 }
 
-function makeLowerIoRuntime(): {
+function makeLowerIoRuntime(options: { finalizedReceipt?: boolean } = {}): {
   runtime: import('../src/hms/runtime.js').HmsRuntime;
   calls: Array<{
     releaseId: string;
@@ -356,6 +367,16 @@ function makeLowerIoRuntime(): {
     evaluateStableDom: async <T>() => undefined as T,
     evaluate: async <T>() => undefined as T,
   };
+  let latestAuditSpec:
+    | {
+        operationId?: string;
+        toolId?: string;
+        toolVersion?: string;
+        executionClass?: string;
+        inputClass?: string;
+        requestBranchId?: string;
+      }
+    | undefined;
   const runtime = {
     start: async () => undefined,
     openReadSession: async (input: {
@@ -365,9 +386,11 @@ function makeLowerIoRuntime(): {
         manifestSha256: string;
         runtimeFingerprintSha256: string;
       };
+      auditSpec?: typeof latestAuditSpec;
     }) => {
       const authorization = input.sessionAuthorization;
       if (!authorization) throw new Error('lower runtime requires session authorization');
+      latestAuditSpec = input.auditSpec;
       calls.push({
         releaseId: authorization.releaseId,
         requestBranchId: authorization.requestBranchId,
@@ -382,7 +405,40 @@ function makeLowerIoRuntime(): {
         violation: () => null,
         terminal: () => false,
         page,
-        lastReceipt: () => null,
+        lastReceipt: () => {
+          if (!options.finalizedReceipt || !latestAuditSpec) return null;
+          return {
+            schemaVersion: 1,
+            artifactId: `u17-folio-artifact-${latestAuditSpec.requestBranchId ?? 'unknown'}`,
+            operationId: latestAuditSpec.operationId ?? 'unknown',
+            sourceRevision: 'u17-finance-test-source',
+            toolId: latestAuditSpec.toolId ?? 'hms_read_folio',
+            toolVersion: latestAuditSpec.toolVersion ?? '1.0.0',
+            dependencyRevision: 'playwright-1.52.0-chromium-1169',
+            playwrightRevision: '1.52.0',
+            chromiumRevision: '1169',
+            executionClass: latestAuditSpec.executionClass ?? 'normal',
+            inputClass: latestAuditSpec.inputClass ?? 'authorized_exact',
+            credentialMode: 'view_only',
+            roleProofSha256: null,
+            roleProofExpiresAt: null,
+            requestBranchId: latestAuditSpec.requestBranchId ?? null,
+            operationOutcome: 'succeeded',
+            requestRules: [],
+            blockedRequests: 0,
+            mutationRequests: 0,
+            popupCount: 0,
+            downloadCount: 0,
+            webSocketCount: 0,
+            milestones: {},
+            terminalCode: 'OK',
+            terminalStage: 'receipt_finalize',
+            expiresAt: '2099-09-07T12:05:00.000Z',
+            artifactState: 'complete',
+            trace: { sha256: '1'.repeat(64), bytes: 1 },
+            video: null,
+          };
+        },
         close: async () => undefined,
       };
     },
@@ -446,6 +502,7 @@ describe('U17 finance normal-runtime DB RED contract', () => {
           ],
           signal: new AbortController().signal,
           runId: 'u17-runtime-run',
+          readResultRef: 'u17-runtime-read-result',
           readOnly: true,
           readToolId: 'hms_read_folio',
           folioSections: ['balance', 'deposits'],
@@ -454,8 +511,8 @@ describe('U17 finance normal-runtime DB RED contract', () => {
             requestBranchId: 'folio_summary',
             requesterAuthorizationId: 'access-u17',
             inputDigest: '0'.repeat(64),
-            captureRequired: false,
-            captureBindingRef: null,
+            captureRequired: true,
+            captureBindingRef: 'u17-runtime-read-result',
             reservationRef: 'reservation-u17',
             reservationRefIssuedAt: '2026-09-07T12:00:00.000Z',
             reservationRefExpiresAt: '2099-09-07T12:05:00.000Z',
@@ -467,8 +524,9 @@ describe('U17 finance normal-runtime DB RED contract', () => {
           new AbortController().signal,
         );
 
-        expect(result.status).toBe('ok');
-        expect(result.data).toMatchObject({ totalBalance: '120.00', currency: 'ZAR' });
+        expect(result.status).toBe('manual_required');
+        expect(result.data).toEqual(expect.any(Object));
+        expect(result.evidence).toEqual(expect.objectContaining({ scopeVerified: false }));
         expect(lowerIo.calls).toHaveLength(2);
         expect(lowerIo.calls.map((call) => call.releaseId)).toEqual([
           installed.releaseId,
@@ -625,7 +683,7 @@ describe('U17 finance normal-runtime DB RED contract', () => {
 
       await withReadOnlyWorkerEnv(async () => {
         const installed = await installRealFolioRelease();
-        const lowerIo = makeLowerIoRuntime();
+        const lowerIo = makeLowerIoRuntime({ finalizedReceipt: true });
         try {
           expect(
             await claimNextAiRun({
@@ -699,6 +757,12 @@ describe('U17 finance normal-runtime DB RED contract', () => {
           expect(receipt.result.data).toMatchObject({
             totalBalance: '120.00',
             disclosure: { claimEligibility: 'blocked' },
+          });
+          expect(receipt.result.evidence[0]).toMatchObject({
+            scopeVerified: true,
+            artifactRef: expect.stringMatching(/^u17-folio-artifact-/),
+            artifactRefs: expect.arrayContaining([expect.stringMatching(/^u17-folio-artifact-/)]),
+            sourceHash: expect.stringMatching(/^[a-f0-9]{64}$/),
           });
 
           const authorizationFinance = await caller.ai.enqueueHmsFolioRead({
