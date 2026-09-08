@@ -76,6 +76,8 @@ function admittedRequest(overrides: Record<string, unknown> = {}) {
       captureRequired: false,
       captureBindingRef: null,
       reservationRef: null,
+      reservationRefIssuedAt: null,
+      reservationRefExpiresAt: null,
       ...overrides,
     },
   };

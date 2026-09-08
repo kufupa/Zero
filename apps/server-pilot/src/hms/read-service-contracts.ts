@@ -11,6 +11,8 @@ export const readRefSchema = z
   .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/, 'expected opaque read reference');
 export type ReadRef = z.infer<typeof readRefSchema>;
 
+export const readTimestampSchema = z.string().datetime({ offset: true });
+
 const readDigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
 
 /**
@@ -27,6 +29,9 @@ export const readAdmissionSchema = z
     captureBindingRef: readRefSchema.nullable(),
     /** Server-minted reservation reference for resolved-context reads. */
     reservationRef: readRefSchema.nullable(),
+    /** Issuance window carried by the trusted reservation admission. */
+    reservationRefIssuedAt: readTimestampSchema.nullable(),
+    reservationRefExpiresAt: readTimestampSchema.nullable(),
   })
   .strict()
   .superRefine((value, context) => {
@@ -37,8 +42,43 @@ export const readAdmissionSchema = z
         message: 'capture binding is required for this read admission',
       });
     }
+    const hasReservationRef = value.reservationRef !== null;
+    const hasIssuanceWindow =
+      value.reservationRefIssuedAt !== null && value.reservationRefExpiresAt !== null;
+    if (hasReservationRef !== hasIssuanceWindow) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['reservationRef'],
+        message: 'reservation reference issuance window must match the reference',
+      });
+    }
+    if (hasIssuanceWindow) {
+      const issuedAt = Date.parse(value.reservationRefIssuedAt!);
+      const expiresAt = Date.parse(value.reservationRefExpiresAt!);
+      if (!Number.isFinite(issuedAt) || !Number.isFinite(expiresAt) || expiresAt <= issuedAt) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['reservationRefExpiresAt'],
+          message: 'reservation reference expiry must follow issuance',
+        });
+      }
+    }
   });
 export type ReadAdmission = z.infer<typeof readAdmissionSchema>;
+
+/** Persisted server-side proof that a context admission was issued for this scope. */
+export const readReservationBindingSchema = z
+  .object({
+    transportId: readRefSchema,
+    threadId: readRefSchema,
+    triggerMessageId: readRefSchema,
+    candidateId: readRefSchema,
+    reservationRef: readRefSchema,
+    reservationRefIssuedAt: readTimestampSchema,
+    reservationRefExpiresAt: readTimestampSchema,
+  })
+  .strict();
+export type ReadReservationBinding = z.infer<typeof readReservationBindingSchema>;
 
 function sortDigestValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sortDigestValue);
@@ -67,6 +107,7 @@ export function readReservationRef(input: {
   threadId: string;
   triggerMessageId: string;
   candidateId: string;
+  reservationRefExpiresAt: string;
 }): ReadRef {
   return readRefSchema.parse(
     createHash('sha256')
@@ -77,6 +118,7 @@ export function readReservationRef(input: {
           input.threadId,
           input.triggerMessageId,
           input.candidateId,
+          input.reservationRefExpiresAt,
         ]),
         'utf8',
       )
@@ -84,7 +126,6 @@ export function readReservationRef(input: {
   );
 }
 
-export const readTimestampSchema = z.string().datetime({ offset: true });
 export const readLocalDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
 export const readReasonCodeSchema = z.enum([

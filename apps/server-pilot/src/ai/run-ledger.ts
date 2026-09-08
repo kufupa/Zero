@@ -12,7 +12,9 @@ import { READ_TOOLS, type ReadToolId } from '../hms/read-tools.js';
 import { readRequestSchema } from '../hms/read-service.js';
 import {
   readRefSchema,
+  readReservationBindingSchema,
   readResultSchema,
+  type ReadReservationBinding,
   type ReadResult,
 } from '../hms/read-service-contracts.js';
 import {
@@ -328,6 +330,7 @@ export function toAiRunFence(run: AiWorkflowRun): AiRunFence | null {
 
 export async function enqueueAiRun(input: EnqueueAiRunInput, db: DB = getDb()) {
   assertMailRunLinks(input);
+  let readAdmissionBinding: ReadReservationBinding | undefined;
   if (input.runKind === 'read_tool') {
     if (input.executorLane !== 'hms') {
       throw new Error('read_tool runs must use the hms executor lane');
@@ -349,6 +352,20 @@ export async function enqueueAiRun(input: EnqueueAiRunInput, db: DB = getDb()) {
     ) {
       throw new Error('read_tool reservation reference is not bound to trusted admission');
     }
+    if (parsedReadRequest.toolId === 'hms_read_reservation') {
+      if (!parsedReadRequest.candidateId) {
+        throw new Error('resolved read_tool runs require a server-bound candidateId');
+      }
+      readAdmissionBinding = readReservationBindingSchema.parse({
+        transportId: input.transportId,
+        threadId: input.threadId,
+        triggerMessageId: input.triggerMessageId,
+        candidateId: parsedReadRequest.candidateId,
+        reservationRef: admission.reservationRef,
+        reservationRefIssuedAt: admission.reservationRefIssuedAt,
+        reservationRefExpiresAt: admission.reservationRefExpiresAt,
+      });
+    }
     input.readRequest = parsedReadRequest;
     input.readResultRef = readRefSchema.parse(input.readResultRef);
   }
@@ -369,6 +386,7 @@ export async function enqueueAiRun(input: EnqueueAiRunInput, db: DB = getDb()) {
       promptHash: input.promptHash,
       readRequest: input.readRequest,
       readResultRef: input.readResultRef,
+      ...(readAdmissionBinding ? { metrics: { readAdmissionBinding } } : {}),
       executorLane: input.executorLane ?? 'default',
       state: 'queued',
       createdAt: now,

@@ -157,6 +157,8 @@ function readRunInput(context: Awaited<ReturnType<typeof seededMailContext>>, su
         captureRequired: false,
         captureBindingRef: null,
         reservationRef: null,
+        reservationRefIssuedAt: null,
+        reservationRefExpiresAt: null,
       },
     },
     readResultRef: `receipt-red-${suffix}`,
@@ -166,9 +168,15 @@ function readRunInput(context: Awaited<ReturnType<typeof seededMailContext>>, su
 function contextReadRunInput(
   context: Awaited<ReturnType<typeof seededMailContext>>,
   suffix: string,
-  overrides: { reservationRef?: string; candidateId?: string } = {},
+  overrides: {
+    reservationRef?: string;
+    candidateId?: string;
+    reservationRefIssuedAt?: string;
+    reservationRefExpiresAt?: string;
+  } = {},
 ) {
   const candidateId = overrides.candidateId ?? '61029cf2ae474e6a';
+  const reservationRefExpiresAt = overrides.reservationRefExpiresAt ?? '2099-09-07T12:05:00.000Z';
   const closedRequest = {
     toolId: 'hms_read_reservation' as const,
     reservationRef: overrides.reservationRef ?? readReservationRef({
@@ -176,6 +184,7 @@ function contextReadRunInput(
       threadId: context.threadId,
       triggerMessageId: context.triggerMessageId,
       candidateId,
+      reservationRefExpiresAt,
     }),
     candidateId,
     sections: ['core', 'stay'] as const,
@@ -198,6 +207,8 @@ function contextReadRunInput(
         captureRequired: false,
         captureBindingRef: null,
         reservationRef: closedRequest.reservationRef,
+        reservationRefIssuedAt: overrides.reservationRefIssuedAt ?? '2026-09-07T12:00:00.000Z',
+        reservationRefExpiresAt,
       },
     },
     readResultRef: `receipt-red-${suffix}`,
@@ -339,6 +350,19 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U8 independent review DB RED 
       const { admission: _admission, ...closedRequest } = input.readRequest;
 
       await expect(enqueueAiRun({ ...input, readRequest: closedRequest }, db)).rejects.toThrow(/admission/i);
+    });
+  });
+
+  it('rejects a resolved-context admission with a missing issuance window', async () => {
+    await withWorkerDb(async (db) => {
+      const context = await seededMailContext(db);
+      const input = contextReadRunInput(context, 'missing-ref-expiry');
+      const { reservationRefIssuedAt: _issuedAt, reservationRefExpiresAt: _expiresAt, ...admission } = input.readRequest.admission;
+
+      await expect(enqueueAiRun({
+        ...input,
+        readRequest: { ...input.readRequest, admission },
+      }, db)).rejects.toThrow();
     });
   });
 
@@ -704,6 +728,95 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U8 independent review DB RED 
 
         expect(result.state).toBe('dead_letter');
         expect(externalBoundary).toHaveBeenCalledOnce();
+      });
+    });
+  });
+
+  it('rejects an expired previously-issued context reference before opening a session', async () => {
+    await withWorkerDb(async (db) => {
+      await withReadOnlyWorkerEnv(async () => {
+        const context = await seededMailContext(db);
+        const run = await enqueueAiRun(
+          contextReadRunInput(context, 'expired-issued-ref', {
+            reservationRefIssuedAt: '2026-09-07T11:00:00.000Z',
+            reservationRefExpiresAt: '2026-09-07T12:00:00.000Z',
+          }),
+          db,
+        );
+        expect(await claimNextAiRun({ ownerId: 'hms-review-worker', lane: 'hms', runKind: 'read_tool', db })).toMatchObject({ id: run.id });
+        const externalBoundary = vi.fn(async () =>
+          syntheticMatchedRead('evidence-red-expired-issued', '2099-09-07T12:05:00.000Z'));
+        const sessionFactory = vi.fn(syntheticReadSessionFactory(externalBoundary));
+
+        const result = await executeAiRun(run.id, { candidateSessionFactory: sessionFactory });
+
+        expect(result.state).toBe('dead_letter');
+        expect(sessionFactory).not.toHaveBeenCalled();
+        expect(externalBoundary).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  it('rejects a persisted admission whose expiry was tampered after issuance', async () => {
+    await withWorkerDb(async (db) => {
+      await withReadOnlyWorkerEnv(async () => {
+        const context = await seededMailContext(db);
+        const run = await enqueueAiRun(contextReadRunInput(context, 'tampered-ref-expiry'), db);
+        const request = run.readRequest as Record<string, unknown>;
+        const admission = request.admission as Record<string, unknown>;
+        await db.update(aiWorkflowRun).set({
+          readRequest: {
+            ...request,
+            admission: {
+              ...admission,
+              reservationRefExpiresAt: '2099-09-07T12:06:00.000Z',
+            },
+          },
+        }).where(eq(aiWorkflowRun.id, run.id));
+        expect(await claimNextAiRun({ ownerId: 'hms-review-worker', lane: 'hms', runKind: 'read_tool', db })).toMatchObject({ id: run.id });
+        const externalBoundary = vi.fn(async () =>
+          syntheticMatchedRead('evidence-red-tampered-expiry', '2099-09-07T12:05:00.000Z'));
+        const sessionFactory = vi.fn(syntheticReadSessionFactory(externalBoundary));
+
+        const result = await executeAiRun(run.id, { candidateSessionFactory: sessionFactory });
+
+        expect(result.state).toBe('dead_letter');
+        expect(sessionFactory).not.toHaveBeenCalled();
+        expect(externalBoundary).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  it('rejects refreshing an already-issued reservation reference with a new expiry', async () => {
+    await withWorkerDb(async (db) => {
+      await withReadOnlyWorkerEnv(async () => {
+        const context = await seededMailContext(db);
+        const run = await enqueueAiRun(contextReadRunInput(context, 'ref-refresh'), db);
+        const request = run.readRequest as Record<string, unknown>;
+        const admission = request.admission as Record<string, unknown>;
+        const metrics = run.metrics as Record<string, unknown>;
+        const binding = metrics.readAdmissionBinding as Record<string, unknown>;
+        const refreshedExpiry = '2099-09-07T12:06:00.000Z';
+        await db.update(aiWorkflowRun).set({
+          readRequest: {
+            ...request,
+            admission: { ...admission, reservationRefExpiresAt: refreshedExpiry },
+          },
+          metrics: {
+            ...metrics,
+            readAdmissionBinding: { ...binding, reservationRefExpiresAt: refreshedExpiry },
+          },
+        }).where(eq(aiWorkflowRun.id, run.id));
+        expect(await claimNextAiRun({ ownerId: 'hms-review-worker', lane: 'hms', runKind: 'read_tool', db })).toMatchObject({ id: run.id });
+        const externalBoundary = vi.fn(async () =>
+          syntheticMatchedRead('evidence-red-ref-refresh', refreshedExpiry));
+        const sessionFactory = vi.fn(syntheticReadSessionFactory(externalBoundary));
+
+        const result = await executeAiRun(run.id, { candidateSessionFactory: sessionFactory });
+
+        expect(result.state).toBe('dead_letter');
+        expect(sessionFactory).not.toHaveBeenCalled();
+        expect(externalBoundary).not.toHaveBeenCalled();
       });
     });
   });

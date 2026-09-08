@@ -53,7 +53,11 @@ import { createMastraRuntime } from './mastra.js';
 import { closeDb, getDb } from '../db/client.js';
 import { and, asc, eq, lt, lte, or } from 'drizzle-orm';
 import { createHash } from 'node:crypto';
-import { readReservationRef, type ReadResult } from '../hms/read-service-contracts.js';
+import {
+  readReservationBindingSchema,
+  readReservationRef,
+  type ReadResult,
+} from '../hms/read-service-contracts.js';
 import {
   executeReadToolRun,
   readRequestSchema,
@@ -348,6 +352,8 @@ export type ReadAdmissionBinding = {
   captureRequired: boolean;
   captureBindingRef: string | null;
   reservationRef: string | null;
+  reservationRefIssuedAt: string | null;
+  reservationRefExpiresAt: string | null;
 };
 
 export function assertReadAdmissionPlanBinding(input: {
@@ -711,6 +717,70 @@ async function executeProductionReadTool(input: {
       failureClass: 'AUTH' as const,
     });
   }
+  const candidateId = request.candidateId;
+  if (!candidateId) {
+    throw Object.assign(new Error('resolved reservation reads require a server-bound candidateId'), {
+      failureClass: 'AUTH' as const,
+    });
+  }
+  if (request.toolId === 'hms_read_reservation') {
+    const reservationRef = admission.reservationRef;
+    const reservationRefIssuedAt = admission.reservationRefIssuedAt;
+    const reservationRefExpiresAt = admission.reservationRefExpiresAt;
+    const metrics =
+      input.run.metrics && typeof input.run.metrics === 'object'
+        ? (input.run.metrics as Record<string, unknown>)
+        : null;
+    const persistedBinding = readReservationBindingSchema.safeParse(
+      metrics?.readAdmissionBinding,
+    );
+    if (
+      !persistedBinding.success ||
+      !reservationRef ||
+      !reservationRefIssuedAt ||
+      !reservationRefExpiresAt
+    ) {
+      throw Object.assign(new Error('resolved reservation reference issuance is not trusted'), {
+        failureClass: 'AUTH' as const,
+      });
+    }
+    const binding = persistedBinding.data;
+    const expectedReservationRef = readReservationRef({
+      transportId: input.run.transportId,
+      threadId: input.run.threadId,
+      triggerMessageId: input.run.triggerMessageId,
+      candidateId,
+      reservationRefExpiresAt,
+    });
+    const bindingMatches =
+      binding.transportId === input.run.transportId &&
+      binding.threadId === input.run.threadId &&
+      binding.triggerMessageId === input.run.triggerMessageId &&
+      binding.candidateId === candidateId &&
+      binding.reservationRef === reservationRef &&
+      binding.reservationRefIssuedAt === reservationRefIssuedAt &&
+      binding.reservationRefExpiresAt === reservationRefExpiresAt &&
+      reservationRef === request.reservationRef &&
+      reservationRef === expectedReservationRef;
+    if (!bindingMatches) {
+      throw Object.assign(new Error('resolved reservation reference issuance binding is stale or forged'), {
+        failureClass: 'AUTH' as const,
+      });
+    }
+    const nowMs = Date.now();
+    const issuedAtMs = Date.parse(reservationRefIssuedAt);
+    const expiresAtMs = Date.parse(reservationRefExpiresAt);
+    if (
+      !Number.isFinite(issuedAtMs) ||
+      !Number.isFinite(expiresAtMs) ||
+      issuedAtMs > nowMs ||
+      expiresAtMs <= nowMs
+    ) {
+      throw Object.assign(new Error('resolved reservation reference is expired or not yet issued'), {
+        failureClass: 'AUTH' as const,
+      });
+    }
+  }
 
   const threadRows = await getDb()
     .select({
@@ -749,15 +819,6 @@ async function executeProductionReadTool(input: {
       attachmentIds: [],
     })),
   });
-  const candidateId =
-    request.toolId === 'hms_find_reservation'
-      ? request.candidateId
-      : request.candidateId;
-  if (!candidateId) {
-    throw Object.assign(new Error('resolved reservation reads require a server-bound candidateId'), {
-      failureClass: 'AUTH' as const,
-    });
-  }
   const candidate = context.lookupCandidates.find((item) => item.id === candidateId);
   if (!candidate || (candidate.kind !== 'confirmation' && candidate.kind !== 'external_reference')) {
     throw Object.assign(new Error('opaque read candidate is not present in the trigger thread'), {
@@ -765,12 +826,16 @@ async function executeProductionReadTool(input: {
     });
   }
   const trustedReservationRef = request.toolId === 'hms_read_reservation' ? admission.reservationRef : null;
-  const expectedReservationRef = readReservationRef({
-    transportId: input.run.transportId,
-    threadId: input.run.threadId,
-    triggerMessageId: input.run.triggerMessageId,
-    candidateId,
-  });
+  const expectedReservationRef =
+    request.toolId === 'hms_read_reservation'
+      ? readReservationRef({
+          transportId: input.run.transportId,
+          threadId: input.run.threadId,
+          triggerMessageId: input.run.triggerMessageId,
+          candidateId,
+          reservationRefExpiresAt: admission.reservationRefExpiresAt!,
+        })
+      : null;
   if (
     request.toolId === 'hms_read_reservation' &&
     (!trustedReservationRef ||
