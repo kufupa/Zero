@@ -509,6 +509,27 @@ describe('reservation pilot runtime validators', () => {
     ).toMatchObject({ transport: 'fake' });
 
     expect(() =>
+      gate.validateFixtureConfigSource(config('documentServiceFixturePlugin()'), [
+        'http://127.0.0.1:4179',
+      ]),
+    ).toThrow(/plugin|literal/i);
+    expect(() =>
+      gate.validateFixtureConfigSource(
+        config('[tailwindcss(), [tailwindcss(), documentServiceFixturePlugin()]]'),
+        ['http://127.0.0.1:4179'],
+      ),
+    ).toThrow(/plugin|literal/i);
+    expect(() =>
+      gate.validateFixtureConfigSource(
+        config(
+          '[tailwindcss()]',
+          undefined,
+          'plugins: [tailwindcss(), documentServiceFixturePlugin()],',
+        ),
+        ['http://127.0.0.1:4179'],
+      ),
+    ).toThrow(/plugins|plugin|literal/i);
+    expect(() =>
       gate.validateFixtureConfigSource(config('[documentServiceFixturePlugin(), tailwindcss()]'), [
         'http://127.0.0.1:4179',
       ]),

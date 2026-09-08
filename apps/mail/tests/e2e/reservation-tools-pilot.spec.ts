@@ -348,6 +348,41 @@ test('reservation-tools-pilot/documents', async ({ page }, testInfo: TestInfo) =
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto(documentsUrl(), { waitUntil: 'domcontentloaded' });
 
+  const documentInput = {
+    scopeRef: 'scope:fixture-documents',
+    source: 'mail_attachment',
+    kinds: ['tax_invoice'],
+    limit: 20,
+  };
+  const noOrigin = await page.request.post(`${FIXTURE_ORIGIN}/api/trpc/documents.listExisting`, {
+    headers: { 'content-type': 'application/json' },
+    data: [{ json: documentInput }],
+  });
+  expect(noOrigin.status()).toBe(400);
+  const wrongOrigin = await page.request.post(`${FIXTURE_ORIGIN}/api/trpc/documents.listExisting`, {
+    headers: {
+      'content-type': 'application/json',
+      origin: 'http://localhost:4179',
+    },
+    data: [{ json: documentInput }],
+  });
+  expect(wrongOrigin.status()).toBe(400);
+  const wrongMethod = await page.request.get(`${FIXTURE_ORIGIN}/api/trpc/documents.listExisting`, {
+    headers: { origin: FIXTURE_ORIGIN },
+  });
+  expect(wrongMethod.status()).toBe(400);
+  const malformedEnvelope = await page.request.post(
+    `${FIXTURE_ORIGIN}/api/trpc/documents.listExisting`,
+    {
+      headers: {
+        'content-type': 'application/json',
+        origin: FIXTURE_ORIGIN,
+      },
+      data: [{ json: documentInput }, { json: documentInput }],
+    },
+  );
+  expect(malformedEnvelope.status()).toBe(400);
+
   await expect(page.getByRole('heading', { name: 'Existing documents' })).toBeVisible();
   const documentSelect = page.getByRole('combobox', { name: 'Document' });
   await expect(documentSelect).toBeVisible();

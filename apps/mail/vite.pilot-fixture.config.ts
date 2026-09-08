@@ -271,7 +271,7 @@ function documentServiceFixturePlugin(): Plugin {
         if (
           req.method !== 'POST' ||
           req.headers.host !== '127.0.0.1:4179' ||
-          (req.headers.origin !== undefined && req.headers.origin !== DOCUMENT_FIXTURE_ORIGIN) ||
+          req.headers.origin !== DOCUMENT_FIXTURE_ORIGIN ||
           !String(req.headers['content-type'] ?? '')
             .toLowerCase()
             .startsWith('application/json')

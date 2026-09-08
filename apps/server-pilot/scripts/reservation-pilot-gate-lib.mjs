@@ -751,7 +751,14 @@ function assertExplicitFixturePluginShape(sourceFile, configExpression) {
   const pluginProperty = pluginProperties[0];
   if (!pluginProperty || !ts.isPropertyAssignment(pluginProperty)) return;
   const plugins = unwrapExpression(pluginProperty.initializer);
-  if (!ts.isArrayLiteralExpression(plugins)) return;
+  if (!ts.isArrayLiteralExpression(plugins)) {
+    if (namedZeroArgCall(plugins, DOCUMENT_SERVICE_FIXTURE_PLUGIN)) {
+      throw new Error(
+        'document fixture plugin must be the second element in the exact two-plugin shape',
+      );
+    }
+    return;
+  }
   const serviceCalls = plugins.elements.filter((element) => {
     const current = unwrapExpression(element);
     return (
@@ -788,7 +795,7 @@ function assertExplicitFixturePluginShape(sourceFile, configExpression) {
 function literalValue(expression, options = {}) {
   const current = unwrapExpression(expression);
   if (
-    options.allowDocumentServicePlugin === true &&
+    options.allowDocumentServicePluginSecondElement === true &&
     namedZeroArgCall(current, DOCUMENT_SERVICE_FIXTURE_PLUGIN)
   ) {
     return '__approved_local_document_service_fixture_plugin__';
@@ -812,8 +819,12 @@ function literalValue(expression, options = {}) {
   if (ts.isNumericLiteral(current)) return Number(current.text);
   if (ts.isArrayLiteralExpression(current)) {
     return current.elements.map((element, index) => {
-      if (options.allowDocumentServicePlugin === true && index === 1) {
-        return literalValue(element, { allowDocumentServicePlugin: true });
+      if (
+        options.allowDocumentServicePluginSecondElement === true &&
+        index === 1 &&
+        namedZeroArgCall(element, DOCUMENT_SERVICE_FIXTURE_PLUGIN)
+      ) {
+        return '__approved_local_document_service_fixture_plugin__';
       }
       return literalValue(element);
     });
@@ -827,8 +838,8 @@ function literalValue(expression, options = {}) {
       const key = ts.isIdentifier(name) || ts.isStringLiteral(name) ? name.text : undefined;
       if (!key) throw new Error('fixture config has a non-literal property name');
       result[key] = literalValue(property.initializer, {
-        allowDocumentServicePlugin:
-          options.allowDocumentServicePlugin === true && key === 'plugins',
+        allowDocumentServicePluginSecondElement:
+          options.allowDocumentServicePluginSecondElement === true && key === 'plugins',
       });
     }
     return result;
@@ -877,7 +888,9 @@ function findDefaultDefineConfigLiteral(sourceFile) {
     throw new Error('fixture config must have exactly one default defineConfig export');
   }
   assertExplicitFixturePluginShape(sourceFile, defaultCall.arguments[0]);
-  return literalValue(defaultCall.arguments[0], { allowDocumentServicePlugin: true });
+  return literalValue(defaultCall.arguments[0], {
+    allowDocumentServicePluginSecondElement: true,
+  });
 }
 
 function assertNoUnsupportedBrowserConfig(value, pathName = 'config') {
